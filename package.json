@@ -1,0 +1,44 @@
+{
+  "name": "@xgen/dex-cli",
+  "version": "0.1.0",
+  "description": "XGEN Dex CLI, terminal UI, and local engine",
+  "type": "module",
+  "bin": {
+    "dex": "dist/cli.js",
+    "xgen-dex": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/args.test.ts test/config.test.ts test/engine.test.ts test/local-tools.test.ts test/local-tool-bridge.test.ts test/mode.test.ts test/rpc.test.ts test/tui-state.test.ts test/tui.test.tsx",
+    "verify": "npm run check && npm test && npm run build && node dist/cli.js --version",
+    "vscode:install": "npm --prefix vscode-extension install",
+    "vscode:verify": "npm --prefix vscode-extension run verify",
+    "verify:all": "npm run verify && npm run vscode:verify"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ink": "^6.8.0",
+    "keytar": "^7.9.0",
+    "react": "^19.2.0",
+    "string-width": "^8.2.2",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "Apache-2.0"
+}

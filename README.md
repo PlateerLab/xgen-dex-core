@@ -1,7 +1,7 @@
 # Dex CLI
 
-XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 기존
-`xgen-connector/src/core` transport를 재사용하며 Electron이나 React 없이 실행됩니다.
+XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
+필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.
 
 현재 구현된 범위:
 
@@ -150,6 +150,9 @@ code vscode-extension
 열린 VS Code 창에서 `F5`를 눌러 Extension Development Host를 실행할 수 있습니다. 자세한 구조와
 보안 경계는 [docs/VSCODE.md](docs/VSCODE.md)를 참고하세요.
 
+추가 기능을 개발할 때 필요한 Connector 참고 파일과 이관 순서는
+[docs/CONNECTOR_FEATURE_MAP.md](docs/CONNECTOR_FEATURE_MAP.md)에 정리되어 있습니다.
+
 ## 데이터와 보안
 
 - 일반 설정: 플랫폼별 사용자 config 디렉터리의 `xgen-dex-cli/config.json`
@@ -163,10 +166,10 @@ code vscode-extension
 Linux에서는 Secret Service와 실행 중인 keyring이 필요합니다. 사용할 수 없으면 CLI는 평문
 파일로 조용히 fallback하지 않고 `credential_store_unavailable` 오류를 반환합니다.
 
-## 현재 소스 경계
+## 소스 경계
 
-첫 수직 기능을 빠르게 검증하기 위해 빌드 시 인접한
-`../xgen-connector/src/core/index.ts`를 번들합니다. 다음 리팩터링에서는 이 디렉터리를
-독립 `@xgen/core` workspace package로 이동하고 Electron connector와 CLI가 동일한 package
-dependency를 사용하게 할 예정입니다.
+`src/xgen/`은 CLI가 사용하는 최소 XGEN transport만 포함합니다. 로그인과 토큰 회전, Agent 목록,
+SSE 채팅, 대화 기록 API가 여기에 있으며 Electron 앱이나 인접 저장소를 참조하지 않습니다.
+따라서 `dex-cli` 디렉터리만 복제해 `npm install`, `npm run verify`를 실행할 수 있습니다. VS Code
+확장까지 빌드할 때는 이어서 `npm run vscode:install`, `npm run vscode:verify`를 실행합니다.
 # dex-cli

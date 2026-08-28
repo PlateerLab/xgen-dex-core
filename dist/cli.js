@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import {
   DexError,
-  XgenClient,
+  HttpClient,
   isUnauthorized,
   publicError
-} from "./chunks/chunk-GL6MYQ62.js";
+} from "./chunks/chunk-QUBF2SZA.js";
 
 // src/cli.ts
 import { stdin as stdin2, stdout, stderr as stderr2 } from "node:process";
@@ -247,6 +247,504 @@ var KeytarCredentialStore = class {
 
 // src/engine.ts
 import { randomUUID } from "node:crypto";
+
+// src/xgen/agents.ts
+function mapAgent(raw) {
+  return {
+    id: raw.id,
+    workflowId: raw.workflow_id,
+    workflowName: raw.workflow_name,
+    nodeCount: raw.node_count ?? 0,
+    isShared: !!raw.is_shared,
+    isDeployed: !!raw.is_deployed,
+    isCompleted: !!raw.is_completed,
+    workflowType: raw.workflow_type ?? "canvas",
+    description: raw.description ?? "",
+    username: raw.username ?? "",
+    fullName: raw.full_name ?? "",
+    createdAt: raw.created_at ?? "",
+    updatedAt: raw.updated_at ?? "",
+    hasAgentGeny: !!raw.has_agent_geny
+  };
+}
+var AgentsApi = class {
+  constructor(http) {
+    this.http = http;
+  }
+  async list(query = {}) {
+    const params = new URLSearchParams();
+    params.set("page", String(query.page ?? 1));
+    params.set("page_size", String(query.pageSize ?? 24));
+    if (query.search) params.set("search", query.search);
+    if (query.status) params.set("status", query.status);
+    if (query.owner) params.set("owner", query.owner);
+    if (query.includeHarness) params.set("include_harness", "true");
+    const response = await this.http.get(`/api/agentflow/list/detail?${params}`);
+    const items = (response.items ?? response.workflows ?? []).map(mapAgent);
+    return {
+      items,
+      pagination: {
+        page: response.pagination?.page ?? query.page ?? 1,
+        pageSize: response.pagination?.page_size ?? query.pageSize ?? 24,
+        totalCount: response.pagination?.total_count ?? items.length,
+        totalPages: response.pagination?.total_pages ?? 1
+      }
+    };
+  }
+  async listAll(query = {}, maxPages = 50) {
+    const first = await this.list({ ...query, page: 1 });
+    const items = [...first.items];
+    for (let page = 2; page <= Math.min(first.pagination.totalPages, maxPages); page += 1) {
+      items.push(...(await this.list({ ...query, page })).items);
+    }
+    return items;
+  }
+};
+
+// src/xgen/auth.ts
+import { createHash } from "node:crypto";
+var AuthApi = class {
+  constructor(http) {
+    this.http = http;
+  }
+  async login(email, password) {
+    const passwordHash = createHash("sha256").update(password).digest("hex");
+    const response = await this.http.post("/api/auth/login", {
+      email,
+      password: passwordHash,
+      token: null
+    });
+    if (!response.success || !response.access_token) {
+      throw new Error(response.message || "\uB85C\uADF8\uC778\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
+    }
+    return {
+      accessToken: response.access_token,
+      refreshToken: response.refresh_token ?? void 0,
+      tokenType: response.token_type ?? "bearer",
+      userId: response.user_id ?? "",
+      username: response.username ?? email
+    };
+  }
+  async validate(accessToken, refreshToken) {
+    const response = await this.http.post(
+      "/api/auth/validate-token",
+      { token: accessToken, refresh_token: refreshToken },
+      { auth: false }
+    );
+    if (!response.valid) {
+      return { user: null, newAccessToken: response.new_access_token ?? void 0 };
+    }
+    return {
+      user: {
+        userId: response.user_id ?? "",
+        username: response.username ?? "",
+        isSuperuser: !!response.is_superuser,
+        roles: response.roles ?? [],
+        permissions: response.permissions ?? []
+      },
+      newAccessToken: response.new_access_token ?? void 0
+    };
+  }
+  async refresh(refreshToken) {
+    const response = await this.http.post(
+      "/api/auth/refresh",
+      { refresh_token: refreshToken },
+      { auth: false }
+    );
+    return response.success ? response.access_token : null;
+  }
+  async logout(accessToken) {
+    try {
+      await this.http.post("/api/auth/logout", { token: accessToken }, { timeoutMs: 8e3 });
+    } catch {
+    }
+  }
+};
+
+// src/xgen/sse.ts
+var SseParser = class {
+  buffer = "";
+  push(chunk) {
+    this.buffer += chunk;
+    const frames = [];
+    let separator;
+    while ((separator = this.nextSeparator()) !== -1) {
+      const rawFrame = this.buffer.slice(0, separator);
+      this.buffer = this.buffer.slice(this.advanceAfterSeparator(separator));
+      const frame = this.parseFrame(rawFrame);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+  flush() {
+    const rest = this.buffer.trim();
+    this.buffer = "";
+    if (!rest) return [];
+    const frame = this.parseFrame(rest);
+    return frame ? [frame] : [];
+  }
+  nextSeparator() {
+    const lf = this.buffer.indexOf("\n\n");
+    const crlf = this.buffer.indexOf("\r\n\r\n");
+    if (lf === -1) return crlf;
+    if (crlf === -1) return lf;
+    return Math.min(lf, crlf);
+  }
+  advanceAfterSeparator(separator) {
+    return this.buffer.startsWith("\r\n\r\n", separator) ? separator + 4 : separator + 2;
+  }
+  parseFrame(raw) {
+    let event;
+    const data = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (data.length === 0 && event === void 0) return null;
+    return { event, data: data.join("\n") };
+  }
+};
+
+// src/xgen/chat.ts
+function requestBody(request) {
+  return {
+    workflow_name: request.workflowName,
+    workflow_id: request.workflowId,
+    input_data: request.input,
+    interaction_id: request.interactionId,
+    selected_collections: request.selectedCollections ?? [],
+    selected_files: request.selectedFiles ?? [],
+    include_logs: request.includeLogs ?? true,
+    include_node_status: request.includeNodeStatus ?? true,
+    include_tool_events: request.includeToolEvents ?? true,
+    response_format: "stream",
+    client_surface: "connector",
+    ...request.executionTarget ? { execution_target: request.executionTarget } : {}
+  };
+}
+function toolEvent(data) {
+  return {
+    eventType: String(data.event_type ?? data.type ?? "tool"),
+    toolName: data.tool_name,
+    toolInput: data.tool_input,
+    result: data.result,
+    resultLength: data.result_length,
+    error: data.error,
+    citations: data.citations,
+    runId: data.run_id,
+    indicator: data.indicator,
+    durationMs: data.duration_ms,
+    timestamp: data.timestamp
+  };
+}
+function objectData(raw) {
+  try {
+    const value = JSON.parse(raw);
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function frameToChatEvent(frameEvent, raw) {
+  const data = objectData(raw);
+  switch (frameEvent) {
+    case "tool":
+      return data ? { kind: "tool", event: toolEvent(data) } : null;
+    case "node_status":
+      return data ? { kind: "node_status", event: { nodeId: String(data.node_id ?? ""), status: String(data.status ?? ""), ...data } } : null;
+    case "log":
+      return { kind: "log", data: data ?? raw };
+    case "execution_io":
+      return data ? { kind: "execution_io", executionIoId: Number(data.execution_io_id ?? 0) } : null;
+    case "download_artifact":
+      return data ? { kind: "download", data } : null;
+    case "a2ui_command":
+      return data ? { kind: "ui_command", surface: "a2ui", command: data } : null;
+    case "floui_command":
+      return data ? { kind: "ui_command", surface: "floui", command: data } : null;
+    case "quota_warning":
+      return data ? { kind: "quota", level: "warning", data } : null;
+    case "quota_exceeded":
+      return data ? { kind: "quota", level: "exceeded", data } : null;
+    case "execution_suspended":
+      return { kind: "error", detail: "\uC6CC\uD06C\uD50C\uB85C\uC6B0\uAC00 \uAD00\uB9AC\uC790\uC5D0 \uC758\uD574 \uC77C\uC2DC \uC911\uC9C0\uB418\uC5C8\uC2B5\uB2C8\uB2E4." };
+    case void 0:
+    case "":
+    case "message":
+      break;
+    default:
+      return null;
+  }
+  if (!data) return null;
+  switch (data.type) {
+    case "data":
+      return { kind: "text", content: String(data.content ?? "") };
+    case "summary": {
+      const summary = data.data ?? {};
+      const outputs = summary.outputs ?? [];
+      return { kind: "summary", text: outputs.map(String).join(""), data: summary };
+    }
+    case "end":
+      return { kind: "end" };
+    case "error":
+      return { kind: "error", detail: String(data.detail ?? data.error ?? "unknown error") };
+    case "tool_call":
+    case "tool_start":
+    case "tool_result":
+    case "tool_error":
+      return { kind: "tool", event: toolEvent(data) };
+    default:
+      return null;
+  }
+}
+var ChatApi = class {
+  constructor(http) {
+    this.http = http;
+  }
+  async *stream(request, signal) {
+    const response = await this.http.stream(
+      "/api/agentflow/execute/based-id/stream",
+      requestBody(request),
+      signal
+    );
+    if (!response.body) throw new Error("\uC2A4\uD2B8\uB9BC \uC751\uB2F5 \uBCF8\uBB38\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const parser = new SseParser();
+    try {
+      for (; ; ) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+          const event = frameToChatEvent(frame.event, frame.data);
+          if (!event) continue;
+          yield event;
+          if (event.kind === "end") return;
+        }
+      }
+      for (const frame of parser.flush()) {
+        const event = frameToChatEvent(frame.event, frame.data);
+        if (event) yield event;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+      }
+    }
+  }
+};
+
+// src/xgen/history.ts
+var BROWSER_CONTEXT_START = "<xgen_browser_context>";
+var BROWSER_CONTEXT_END = "</xgen_browser_context>";
+function stripBrowserContext(text) {
+  if (!text.startsWith(BROWSER_CONTEXT_START)) return text;
+  const end = text.indexOf(BROWSER_CONTEXT_END);
+  if (end < 0) return text;
+  return text.slice(end + BROWSER_CONTEXT_END.length).replace(/^\r?\n/, "");
+}
+function displayText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return stripBrowserContext(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value.map((block) => {
+      if (block == null) return "";
+      if (typeof block === "string") return block;
+      if (typeof block === "object") {
+        const data = block;
+        if (typeof data.text === "string") return data.text;
+        if (typeof data.type === "string" && data.type.includes("image")) return "[\uC774\uBBF8\uC9C0]";
+        try {
+          return JSON.stringify(block);
+        } catch {
+          return String(block);
+        }
+      }
+      return String(block);
+    });
+    return stripBrowserContext(parts.filter(Boolean).join("\n"));
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+function historyAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  const attachments = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item;
+    const path = String(raw.minioPath ?? raw.filePath ?? raw.object_name ?? raw.path ?? "").trim();
+    if (!path) continue;
+    const contentType = String(raw.contentType ?? raw.content_type ?? "application/octet-stream").split(";", 1)[0].trim().toLocaleLowerCase();
+    const size = Number(raw.size ?? raw.file_size ?? 0);
+    attachments.push({
+      id: typeof raw.id === "string" || typeof raw.id === "number" ? raw.id : void 0,
+      name: String(raw.name ?? raw.original_name ?? path.split("/").pop() ?? "attachment"),
+      size: Number.isFinite(size) && size > 0 ? size : 0,
+      contentType,
+      type: raw.type === "picture" || contentType.startsWith("image/") ? "picture" : "file",
+      path,
+      bucket: String(raw.bucket ?? "")
+    });
+  }
+  return attachments;
+}
+var HistoryApi = class {
+  constructor(http) {
+    this.http = http;
+  }
+  async turns(workflowId, interactionId, workflowName) {
+    const params = new URLSearchParams({ workflow_id: workflowId, interaction_id: interactionId });
+    if (workflowName) params.set("workflow_name", workflowName);
+    const response = await this.http.get(`/api/chat/io-logs?${params}`);
+    return (response.in_out_logs ?? []).map((raw) => ({
+      logId: raw.log_id,
+      ioId: raw.io_id,
+      interactionId: raw.interaction_id,
+      workflowId: raw.workflow_id,
+      workflowName: raw.workflow_name,
+      input: displayText(raw.input_data),
+      output: displayText(raw.output_data),
+      attachments: historyAttachments(raw.attachments),
+      updatedAt: raw.updated_at
+    }));
+  }
+  async conversations() {
+    const response = await this.http.get("/api/interaction/list");
+    return (response.execution_meta_list ?? []).map((raw) => ({
+      id: raw.id,
+      interactionId: raw.interaction_id,
+      workflowId: raw.workflow_id,
+      workflowName: raw.workflow_name,
+      interactionCount: raw.interaction_count ?? 0,
+      metadata: raw.metadata ?? {},
+      createdAt: raw.created_at ?? "",
+      updatedAt: raw.updated_at ?? ""
+    }));
+  }
+};
+
+// src/xgen/index.ts
+var XgenClient = class {
+  http;
+  auth;
+  agents;
+  chat;
+  history;
+  refreshToken;
+  onTokensRotated;
+  refreshing = null;
+  user = null;
+  constructor(options) {
+    this.http = new HttpClient({
+      baseUrl: options.baseUrl,
+      fetch: options.fetch,
+      onAuthFailure: options.onAuthFailure
+    });
+    if (options.accessToken) this.http.setToken(options.accessToken);
+    this.refreshToken = options.refreshToken;
+    this.onTokensRotated = options.onTokensRotated;
+    this.auth = new AuthApi(this.http);
+    this.agents = new AgentsApi(this.http);
+    this.chat = new ChatApi(this.http);
+    this.history = new HistoryApi(this.http);
+  }
+  setTokens(accessToken, refreshToken) {
+    this.http.setToken(accessToken);
+    if (refreshToken !== void 0) this.refreshToken = refreshToken;
+  }
+  async login(email, password) {
+    const result2 = await this.auth.login(email, password);
+    this.http.setToken(result2.accessToken);
+    this.refreshToken = result2.refreshToken;
+    this.onTokensRotated?.(result2.accessToken, result2.refreshToken);
+    this.user = {
+      userId: result2.userId,
+      username: result2.username,
+      isSuperuser: false,
+      roles: [],
+      permissions: []
+    };
+    try {
+      const validated = await this.auth.validate(result2.accessToken, result2.refreshToken);
+      if (validated.user) this.user = validated.user;
+    } catch {
+    }
+    return result2;
+  }
+  async restoreDetailed(accessToken, refreshToken) {
+    this.http.setToken(accessToken);
+    this.refreshToken = refreshToken;
+    let networkFailure = false;
+    try {
+      const validated = await this.auth.validate(accessToken, refreshToken);
+      if (validated.newAccessToken) {
+        this.http.setToken(validated.newAccessToken);
+        this.onTokensRotated?.(validated.newAccessToken, refreshToken);
+      }
+      if (validated.user) {
+        this.user = validated.user;
+        return "valid";
+      }
+    } catch {
+      networkFailure = true;
+    }
+    if (refreshToken) {
+      try {
+        const fresh = await this.auth.refresh(refreshToken);
+        if (fresh) {
+          this.http.setToken(fresh);
+          this.onTokensRotated?.(fresh, refreshToken);
+          const validated = await this.auth.validate(fresh, refreshToken);
+          if (validated.user) {
+            this.user = validated.user;
+            return "valid";
+          }
+        }
+        networkFailure = false;
+      } catch {
+        networkFailure = true;
+      }
+    }
+    return networkFailure ? "network" : "invalid";
+  }
+  getAccessTokenAfterRotation() {
+    return this.http.getToken();
+  }
+  async ensureFreshAuth(fallbackRefreshToken) {
+    if (this.refreshing) return this.refreshing;
+    const refreshToken = this.refreshToken ?? fallbackRefreshToken;
+    if (!refreshToken) return null;
+    this.refreshing = (async () => {
+      try {
+        const accessToken = await this.auth.refresh(refreshToken);
+        if (!accessToken) return null;
+        this.http.setToken(accessToken);
+        this.refreshToken = refreshToken;
+        this.onTokensRotated?.(accessToken, refreshToken);
+        return accessToken;
+      } catch {
+        return null;
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+  async logout() {
+    const accessToken = this.http.getToken();
+    if (accessToken) await this.auth.logout(accessToken);
+    this.http.setToken(null);
+    this.refreshToken = void 0;
+    this.user = null;
+  }
+};
 
 // src/local-tool-bridge.ts
 import WebSocket from "ws";
@@ -1840,7 +2338,7 @@ async function run() {
     ci: process.env.CI
   };
   if (shouldLaunchTui(args.positionals, terminal)) {
-    const { runTui } = await import("./chunks/tui-4SAMYYOS.js");
+    const { runTui } = await import("./chunks/tui-A6FZSJQ7.js");
     try {
       await runTui(engine);
     } finally {

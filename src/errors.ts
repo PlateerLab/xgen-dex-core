@@ -1,4 +1,4 @@
-import { ApiError } from '../../xgen-connector/src/core/index';
+import { ApiError } from './xgen/client';
 
 export type DexErrorCode =
   | 'auth_required'

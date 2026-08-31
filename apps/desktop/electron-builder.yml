@@ -60,14 +60,14 @@ linux:
   synopsis: XGen Dex desktop connector - log in, browse your agents, chat
   artifactName: XGen-Dex-${version}.${ext}
   # 창 ↔ .desktop 매칭 (GNOME 독 아이콘 중복/무명 창 방지). Electron 의
-  # WM_CLASS 는 package.json name("xgen-connector")에서 온다 — 브랜드명과
+  # WM_CLASS 는 package.json name("xgen-dex")에서 온다 — 브랜드명과
   # 무관한 기술 식별자라 리브랜딩(XGen Dex) 이후에도 그대로 둔다(기존 사용자의
   # 독/작업 표시줄 고정 아이콘이 갈라지지 않는다).
   # ⚠ electron-builder 24 는 desktop 키를 FLAT 맵으로 받는다 (v26 의
   # desktop.entry 중첩형을 쓰면 조용히 무시되어 기본 productName 이 들어간다
   # — 실빌드 dpkg-deb 검증으로 확인).
   desktop:
-    StartupWMClass: xgen-connector
+    StartupWMClass: xgen-dex
     # 설치 경로는 공백이 없어야 하지만(위 참조) 런처에 보이는 이름은 예쁘게.
     Name: XGen Dex
 deb:
@@ -101,6 +101,18 @@ deb:
     # Ubuntu 24.04 에서 libfuse2 는 libfuse2t64 로 개명됐다 — 둘 다 받는다.
     - libfuse2 | libfuse2t64
     - fuse3 | fuse
+  # AppStream 메타데이터를 /usr/share/metainfo/ 에 넣는다.
+  #
+  # 이게 없으면 dpkg 에는 설치돼 있어도 우분투 [앱 센터]의 "설치 및 업데이트됨" 에
+  # **나타나지 않는다** — 앱 센터는 이 파일로 앱을 인식한다. 그러면 GUI 로 제거할
+  # 방법이 없고, 사용자는 터미널 없이는 지우지도 못한다. 실제로 옛 Geny 빌드가
+  # 그 상태로 남아 있었다.
+  #
+  # electron-builder 는 .desktop 과 아이콘만 넣어 주므로 fpm 입력으로 직접 건넨다
+  # (FpmTarget 이 options.fpm 을 fpm 인자로 그대로 흘려보내고, fpm 은 플래그가
+  # 아닌 인자를 `원본=대상` 입력으로 읽는다).
+  fpm:
+    - build/xgen-dex.metainfo.xml=/usr/share/metainfo/com.plateerlab.xgen.dex.metainfo.xml
 win:
   target:
     - nsis

@@ -3,6 +3,7 @@ import { stdout } from 'node:process';
 import type { DexEngine } from '@dex/engine';
 import { App } from './app';
 import { createScreenGuard } from './screen';
+import { readPreferences, writePreferences } from './preferences';
 
 /**
  * TUI 를 대체 화면에서 띄운다. 규칙은 `./screen` 에 있다 — 여기서는 프로세스가
@@ -22,13 +23,26 @@ export async function runTui(engine: DexEngine): Promise<void> {
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
 
+  // 취향은 그리기 전에 읽는다. 나중에 읽으면 첫 프레임이 EN 으로 떴다가 바뀌어,
+  // 한글로 쓰던 사람에게는 모드가 꺼진 것처럼 보인다.
+  const preferences = await readPreferences();
+
   screen.enter();
 
   try {
-    const instance = render(<App engine={engine} />, {
-      exitOnCtrlC: true,
-      patchConsole: true,
-    });
+    const instance = render(
+      <App
+        engine={engine}
+        preferences={{
+          hangulMode: preferences.hangulMode,
+          onHangulModeChange: (enabled) => void writePreferences({ hangulMode: enabled }),
+        }}
+      />,
+      {
+        exitOnCtrlC: true,
+        patchConsole: true,
+      },
+    );
     await instance.waitUntilExit();
   } finally {
     restore();

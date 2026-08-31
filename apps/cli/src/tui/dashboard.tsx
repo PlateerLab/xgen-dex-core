@@ -108,10 +108,16 @@ function Composer(props: {
   onSubmit: (value: string) => void;
   focused: boolean;
   disabled: boolean;
+  hangulMode: boolean;
+  onHangulModeChange: (enabled: boolean) => void;
 }): React.ReactNode {
   return (
     <Box borderStyle="round" borderColor={props.focused ? 'cyan' : 'gray'} paddingX={1}>
-      <Text color="cyan">› </Text>
+      {/* 지금 무엇이 쳐지는지 늘 보이게 둔다 — 모르고 치면 `dkssud` 이 나온다. */}
+      <Text color={props.hangulMode ? 'yellow' : undefined} dimColor={!props.hangulMode}>
+        {props.hangulMode ? '한' : 'EN'}
+      </Text>
+      <Text color="cyan"> › </Text>
       {props.disabled ? (
         <Text dimColor>응답을 기다리는 중...</Text>
       ) : (
@@ -121,6 +127,8 @@ function Composer(props: {
           onSubmit={props.onSubmit}
           focus={props.focused}
           placeholder="메시지를 입력하세요"
+          hangulMode={props.hangulMode}
+          onHangulModeChange={props.onHangulModeChange}
         />
       )}
     </Box>
@@ -132,6 +140,7 @@ export function Dashboard(props: {
   session: TuiSession;
   onProfiles: () => void;
   onLogout: () => void;
+  preferences?: { hangulMode: boolean; onHangulModeChange?: (enabled: boolean) => void };
 }): React.ReactNode {
   const { exit } = useApp();
   const size = useTerminalSize();
@@ -155,6 +164,17 @@ export function Dashboard(props: {
    * 새 줄이 와도 그 자리를 지킨다. 읽던 곳이 튀어 내려가면 읽을 수가 없다.
    */
   const [scrollUp, setScrollUp] = useState(0);
+  /**
+   * 한글 조합 켬/끔.
+   *
+   * 터미널 IME 에 맡기던 것을 CLI 안으로 들여왔다 — 터미널마다 다르고 SSH·tmux 를
+   * 거치면 아예 안 오던 자리라, 우리가 조합해야 어디서든 같게 동작한다.
+   */
+  const [hangulMode, setHangulMode] = useState(props.preferences?.hangulMode ?? false);
+  const changeHangulMode = (enabled: boolean): void => {
+    setHangulMode(enabled);
+    props.preferences?.onHangulModeChange?.(enabled);
+  };
   const viewport = useRef({ lineCount: 0, height: 0 });
   const [starting, setStarting] = useState(false);
   const controller = useRef<AbortController | null>(null);
@@ -383,6 +403,8 @@ export function Dashboard(props: {
           onSubmit={(value) => void send(value)}
           focused={focus === 'composer'}
           disabled={chat.running || !selected}
+          hangulMode={hangulMode}
+          onHangulModeChange={changeHangulMode}
         />
       </Box>
     );
@@ -403,7 +425,7 @@ export function Dashboard(props: {
         connected
       />
       {body}
-      <Footer text="Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료" />
+      <Footer text="Ctrl+Space 한/영 · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료" />
     </Box>
   );
 }

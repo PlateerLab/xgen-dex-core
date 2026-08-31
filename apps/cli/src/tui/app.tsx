@@ -11,7 +11,14 @@ import { ServerScreen } from './server-screen';
 
 type Route = 'boot' | 'server' | 'login' | 'dashboard' | 'profiles' | 'fatal';
 
-export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
+export function App({
+  engine,
+  preferences,
+}: {
+  engine: TuiEngine;
+  /** 기억해 둔 터미널 취향. 지금은 한/영 하나뿐이다. */
+  preferences?: { hangulMode: boolean; onHangulModeChange?: (enabled: boolean) => void };
+}): React.ReactNode {
   const { exit } = useApp();
   const [route, setRoute] = useState<Route>('boot');
   const [session, setSession] = useState<TuiSession>();
@@ -225,6 +232,7 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
   if (route === 'dashboard' && session) {
     return (
       <Dashboard
+        preferences={preferences}
         engine={engine}
         session={session}
         onProfiles={() => void openProfiles()}

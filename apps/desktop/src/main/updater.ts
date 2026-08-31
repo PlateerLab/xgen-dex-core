@@ -40,7 +40,9 @@ import {
 // default export instead (Geny's proven pattern).
 const { autoUpdater } = electronUpdater;
 
-const REPO = 'PlateerLab/xgen-connector';
+// electron-builder.yml 의 publish 와 **같은 저장소여야 한다**. 여기만 옛 값으로
+// 남으면 "지금 최신인가" 판정과 실제 다운로드가 서로 다른 곳을 본다.
+const REPO = 'PlateerLab/xgen-dex-core';
 const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
 const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
 const SIX_HOURS = 6 * 60 * 60 * 1000;

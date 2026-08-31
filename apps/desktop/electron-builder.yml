@@ -25,7 +25,11 @@ directories:
 publish:
   provider: github
   owner: PlateerLab
-  repo: xgen-connector
+  # ⚠ 이 값이 패키징된 앱의 app-update.yml 에 **박힌다**. 저장소를 옮기고 여기를
+  # 안 고치면, 새 앱이 옛 저장소의 릴리스를 보고 "새 버전이 있다"고 말한다 —
+  # 실제로 1.0.1 이 옛 3.4.1 을 내려받아 설치하려 했다(버전이 더 크니까).
+  # 사용자는 방금 깐 앱이 스스로 옛 앱으로 되돌아가는 것을 보게 된다.
+  repo: xgen-dex-core
 # Ad-hoc sign the macOS .app so Apple Silicon doesn't hard-block the
 # un-notarized build as "손상됨 — 휴지통으로 이동". No-op once a Developer ID
 # (CSC_LINK / CSC_IDENTITY) is configured.

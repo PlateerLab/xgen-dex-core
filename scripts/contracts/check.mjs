@@ -108,6 +108,34 @@ if (existsSync(vsix)) {
   }
 }
 
+// ── 6. 자동 업데이트는 이 저장소를 본다 ─────────────────────────────
+//
+// electron-builder.yml 의 publish 대상이 패키징된 앱에 박히고, updater.ts 의 REPO 는
+// "지금 최신인가" 판정에 쓰인다. **둘이 같아야 하고, 둘 다 이 저장소여야 한다.**
+//
+// 실제로 저장소를 옮기면서 이 둘을 안 고쳤더니, 새로 깐 1.0.1 이 옛 저장소의 3.4.1 을
+// 보고 "새 버전이 있다"며 옛 앱을 내려받았다(3.4.1 > 1.0.1 이니까). 사용자는 방금 깐
+// 앱이 스스로 되돌아가는 것을 봤다. 이건 사람이 기억할 일이 아니다.
+{
+  const SELF = 'xgen-dex-core';
+  const ymlPath = join(ROOT, 'apps/desktop/electron-builder.yml');
+  if (existsSync(ymlPath)) {
+    const yml = readFileSync(ymlPath, 'utf8');
+    const repo = yml.match(/^\s*repo:\s*(\S+)/m)?.[1];
+    if (repo && repo !== SELF) {
+      add('update-feed-points-here', ymlPath, 0, `publish repo='${repo}' (이 저장소가 아니다)`);
+    }
+  }
+  const updaterPath = join(ROOT, 'apps/desktop/src/main/updater.ts');
+  if (existsSync(updaterPath)) {
+    const src = readFileSync(updaterPath, 'utf8');
+    const m = src.match(/const REPO = '([^']+)'/);
+    if (m && !m[1].endsWith(`/${SELF}`)) {
+      add('update-feed-points-here', updaterPath, 0, `REPO='${m[1]}' (이 저장소가 아니다)`);
+    }
+  }
+}
+
 // ── 보고 ────────────────────────────────────────────────────────────
 const RULES = {
   'no-direct-api': '앱이 서버 경로를 직접 부른다 — @dex/protocol 에 넣고 거기서 부르세요',
@@ -115,6 +143,8 @@ const RULES = {
   'engine-knows-no-host': '패키지가 electron 을 안다 — 포트(ports/index.ts)로 받으세요',
   'no-redeclared-domain-type': '도메인 타입을 다시 선언했다 — @dex/protocol 에서 가져오세요',
   'rpc-boundary': '확장 번들에 엔진이 들어갔다 — @dex/rpc/client 만 가져오세요',
+  'update-feed-points-here':
+    '자동 업데이트가 다른 저장소를 본다 — 그쪽 최신 릴리스가 이 앱을 덮어쓴다',
 };
 
 if (violations.length === 0) {

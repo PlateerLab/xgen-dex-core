@@ -10,6 +10,7 @@ import { isInteractiveTerminal, shouldLaunchTui } from './mode';
 import { DexRpcServer } from '@dex/rpc/server';
 import type { LocalToolsStatus } from '@dex/engine';
 import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
+import { bindCliHost } from './dex-host';
 
 const VERSION = '0.1.0';
 
@@ -215,7 +216,11 @@ async function run(): Promise<void> {
     return;
   }
 
-  const engine = new DexEngine(new FileConfigStore(), new KeytarCredentialStore());
+  // 엔진에 이 호스트를 붙인다 — **엔진을 만들기 전에**. 로컬 도구와 MCP 가 전부
+  // 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히 던진다.
+  const configStore = new FileConfigStore();
+  bindCliHost(configStore);
+  const engine = new DexEngine(configStore, new KeytarCredentialStore());
   const terminal = {
     stdinIsTty: !!stdin.isTTY,
     stdoutIsTty: !!stdout.isTTY,
@@ -292,13 +297,26 @@ async function run(): Promise<void> {
     return;
   }
   if (command === 'tools' && action === 'list') {
-    // 설정을 반영한 실제 목록을 쓴다 — 정적 스키마 목록을 따로 부르면 켜짐/꺼짐과
-    // 무관하게 같은 목록이 나와서, 꺼 둔 사용자가 "왜 안 되지"를 묻게 된다.
-    const tools = (await engine.localToolsStatus()).tools;
-    if (asJson) writeJson(tools);
+    // 전체 카탈로그를 보여 주되 **지금 노출 중인지**를 함께 말한다. 노출 목록만
+    // 보여 주면 꺼 둔 사용자에게는 빈 화면이라 "뭘 할 수 있는지" 알 수 없고,
+    // 카탈로그만 보여 주면 꺼 둔 줄 모르고 "왜 안 되지"를 묻게 된다.
+    const status = await engine.localToolsStatus();
+    const exposed = new Set(status.tools.map((t) => t.name));
+    if (asJson) writeJson({ enabled: status.config.enabled, catalog: status.catalog, exposed: [...exposed] });
     else {
-      stdout.write(`${cell('TOOL', 14)}  DESCRIPTION\n`);
-      for (const tool of tools) stdout.write(`${cell(tool.name, 14)}  ${tool.description}\n`);
+      if (!status.config.enabled) {
+        stdout.write('로컬 도구가 꺼져 있습니다 — 아래는 켰을 때 쓸 수 있는 목록입니다.\n');
+        stdout.write('켜기: dex tools enable\n\n');
+      }
+      stdout.write(`${cell('TOOL', 14)}  ${cell('노출', 5)}  DESCRIPTION\n`);
+      for (const tool of status.catalog) {
+        // 설명 첫 줄만 — 이 도구들의 description 은 모델을 위한 것이라 수십 줄이다.
+        // 전문은 --json 으로 본다.
+        const summary = String(tool.description ?? '').split('\n')[0] ?? '';
+        stdout.write(
+          `${cell(tool.name, 14)}  ${cell(exposed.has(tool.name) ? '●' : '·', 5)}  ${summary.slice(0, 96)}\n`,
+        );
+      }
     }
     return;
   }

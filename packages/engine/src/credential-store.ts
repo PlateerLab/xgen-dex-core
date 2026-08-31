@@ -48,6 +48,28 @@ function parseSession(raw: string | null): StoredSession | null {
 }
 
 export class KeytarCredentialStore implements CredentialStore {
+  /**
+   * 엔진의 `SecretPort` 로 내보내는 두 함수 — 프로파일 세션 말고 **임의의 비밀**
+   * (MCP 서버 시크릿 · OAuth 상태)을 같은 백엔드에 둔다.
+   *
+   * 저장소를 나누지 않는 이유: 사용자에게는 "이 앱이 내 키체인에 무엇을 넣었나"가
+   * 하나의 질문이고, 두 곳에 나뉘면 로그아웃할 때 한쪽이 남는다.
+   */
+  async getRaw(name: string): Promise<string | null> {
+    const keytar = await loadKeytar();
+    return keytar.getPassword(SERVICE, name);
+  }
+
+  async setRaw(name: string, value: string | null): Promise<boolean> {
+    const keytar = await loadKeytar();
+    if (value === null) {
+      await keytar.deletePassword(SERVICE, name);
+      return true;
+    }
+    await keytar.setPassword(SERVICE, name, value);
+    return true;
+  }
+
   async get(profile: string): Promise<StoredSession | null> {
     const keytar = await loadKeytar();
     return parseSession(await keytar.getPassword(SERVICE, ACCOUNT_PREFIX + profile));

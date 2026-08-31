@@ -95,16 +95,19 @@ jobs:
         with: { node-version: 20 }
       - run: npm ci --no-audit --no-fund
 
+      # `npm --prefix` 는 pack 의 --pack-destination 과 같이 쓰면 경로를 못 찾는다
+      # (prefix 는 설치 루트를 바꾸지 cwd 를 바꾸지 않는다). 디렉터리에서 직접 돈다.
       - name: CLI tarball
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist-release"
           npm --prefix apps/cli run build
-          npm --prefix apps/cli pack --pack-destination ../../dist-release
+          cd apps/cli && npm pack --pack-destination "$GITHUB_WORKSPACE/dist-release"
 
       - name: 확장 .vsix
         run: |
           npm --prefix apps/vscode run build
-          npx --yes @vscode/vsce package --no-dependencies \
-            --out ../../dist-release/ --cwd apps/vscode
+          cd apps/vscode && npx --yes @vscode/vsce package --no-dependencies \
+            --out "$GITHUB_WORKSPACE/dist-release/"
 
       # 확장이 엔진을 품지 않았는지 — 여기서 막지 않으면 설치 시점에야 터진다.
       - name: RPC 경계 확인

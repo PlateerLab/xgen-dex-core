@@ -922,6 +922,27 @@ export class LocalToolProvider {
   }
 
   /** Tools advertised into the catalog. Empty when the capability is off. */
+  /**
+   * 셸/파일 도구의 **전체 카탈로그** — 켜져 있는지와 무관하게.
+   *
+   * `advertise()` 는 "지금 에이전트에게 노출되는 것"이라 꺼져 있으면 빈 목록이다.
+   * 그건 서버에 광고할 때는 맞지만, 사용자가 "이 도구로 뭘 할 수 있지"를 물을 때는
+   * 아무 답이 안 된다. 두 질문은 다르므로 답도 둘이다.
+   */
+  catalog(): LocalToolSchema[] {
+    return [
+      shellToolSchema(),
+      shellJobToolSchema(),
+      openToolSchema(),
+      readFileToolSchema(),
+      writeFileToolSchema(),
+      listDirToolSchema(),
+      searchToolSchema(),
+      clipboardToolSchema(),
+      notifyToolSchema(),
+    ];
+  }
+
   advertise(): LocalToolSchema[] {
     const shell = this.cfg.enabled
       ? [

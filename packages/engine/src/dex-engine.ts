@@ -53,7 +53,11 @@ export interface ProfileSummary extends DexProfile {
 
 export interface LocalToolsStatus {
   config: LocalToolsConfig;
+  /** 지금 **에이전트에게 노출되는** 도구. 꺼져 있으면 비어 있다. */
   tools: LocalToolSchema[];
+  /** 이 기기가 제공할 수 있는 전체 목록 — 켜짐 여부와 무관. 사용자가
+   *  "뭘 할 수 있지"를 물을 때의 답이다. */
+  catalog: LocalToolSchema[];
   bridge: McpBridgeStatus;
 }
 
@@ -117,7 +121,7 @@ export class DexEngine {
     // 손으로 채웠는데, 그러면 "서버가 확인한 수"와 "우리가 가진 수"가 같은 필드에
     // 섞여 카탈로그가 아직 안 붙었는데 붙은 것처럼 보였다.
     const bridge = this.localToolBridge.status();
-    return { config, tools, bridge };
+    return { config, tools, catalog: this.localTools.catalog(), bridge };
   }
 
   async configureLocalTools(patch: Partial<LocalToolsConfig>): Promise<LocalToolsStatus> {

@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 import {
+  DANGEROUS_COMMAND_PROMPT,
   DexEngine,
   DexError,
   FileConfigStore,
   KeytarCredentialStore,
+  bindHost,
+  dataDirectory,
+  openerInvocation,
   publicError
-} from "./chunks/chunk-CTEPQXLL.js";
+} from "./chunks/chunk-QXSCKZEG.js";
 
 // src/cli.ts
-import { stdin as stdin2, stdout, stderr as stderr2 } from "node:process";
+import { stdin as stdin3, stdout as stdout2, stderr as stderr2 } from "node:process";
 
 // src/args.ts
 var BOOLEAN_OPTIONS = /* @__PURE__ */ new Set([
@@ -143,12 +147,14 @@ function shouldLaunchTui(positionals, terminal) {
   return positionals.length === 0 || positionals.length === 1 && positionals[0] === "ui";
 }
 
+// ../../packages/rpc/src/server.ts
+import { createInterface as createInterface2 } from "node:readline";
+import { randomUUID } from "node:crypto";
+
 // ../../packages/rpc/src/wire.ts
 var DEX_PROTOCOL_VERSION = 1;
 
 // ../../packages/rpc/src/server.ts
-import { createInterface as createInterface2 } from "node:readline";
-import { randomUUID } from "node:crypto";
 var RpcFailure = class extends Error {
   constructor(rpcCode, message, data) {
     super(message);
@@ -304,7 +310,8 @@ var DexRpcServer = class {
             chatStreaming: true,
             chatCancellation: true,
             history: true,
-            localTools: true
+            localTools: true,
+            ssh: true
           }
         };
       }
@@ -337,6 +344,38 @@ var DexRpcServer = class {
       case "auth/logout":
         await this.engine.logout(optionalString(params, "profile"));
         return { ok: true };
+      // ── SSH ──
+      // 프로토콜에는 Teams · 음성 · 알림도 있지만 RPC 로 열지 않는다. CLI 와
+      // 편집기에서 쓸 일이 아직 없고, 열어 두면 "되는 줄 알고" 부르는 경로가
+      // 생긴다. 타입은 @dex/protocol 에 그대로 있으므로 여는 것은 한 줄이다.
+      case "ssh/config":
+        return this.engine.sshConfig(optionalString(params, "profile"));
+      case "ssh/setEnabled":
+        return this.engine.setSshEnabled(
+          params.enabled === true,
+          optionalString(params, "profile")
+        );
+      case "ssh/createServer":
+        return this.engine.createSshServer(
+          objectParams(params.server),
+          optionalString(params, "profile")
+        );
+      case "ssh/updateServer":
+        return this.engine.updateSshServer(
+          requiredString(params, "name"),
+          objectParams(params.server),
+          optionalString(params, "profile")
+        );
+      case "ssh/deleteServer":
+        return this.engine.deleteSshServer(
+          requiredString(params, "name"),
+          optionalString(params, "profile")
+        );
+      case "ssh/testServer":
+        return this.engine.testSshServer(
+          requiredString(params, "name"),
+          optionalString(params, "profile")
+        );
       case "localTools/status":
         return this.engine.localToolsStatus();
       case "localTools/list":
@@ -462,6 +501,127 @@ var DexRpcServer = class {
   }
 };
 
+// src/dex-host.ts
+import { spawn } from "node:child_process";
+import { createInterface as createInterface3 } from "node:readline";
+import { platform } from "node:os";
+import { stdin as stdin2, stdout } from "node:process";
+function run(file, args, input) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(file, args, { stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      resolve({ ok: false, out: "" });
+      return;
+    }
+    let out = "";
+    child.stdout?.on("data", (c) => out += c.toString("utf8"));
+    child.on("error", () => resolve({ ok: false, out: "" }));
+    child.on("close", (code) => resolve({ ok: code === 0, out }));
+    if (input !== void 0) child.stdin?.end(input);
+    else child.stdin?.end();
+  });
+}
+function clipboardCommands() {
+  const os = platform();
+  if (os === "darwin") return { read: ["pbpaste", []], write: ["pbcopy", []] };
+  if (os === "win32") {
+    return {
+      read: ["powershell", ["-NoProfile", "-Command", "Get-Clipboard"]],
+      write: ["clip", []]
+    };
+  }
+  return { read: ["xclip", ["-selection", "clipboard", "-o"]], write: ["xclip", ["-selection", "clipboard"]] };
+}
+async function confirmDangerous(command) {
+  if (!stdin2.isTTY || !stdout.isTTY) return "deny";
+  const rl = createInterface3({ input: stdin2, output: stdout });
+  try {
+    stdout.write(`
+${DANGEROUS_COMMAND_PROMPT.title}
+${DANGEROUS_COMMAND_PROMPT.message}
+`);
+    stdout.write(`  ${DANGEROUS_COMMAND_PROMPT.detail(command)}
+`);
+    const answer = await new Promise(
+      (resolve) => rl.question("\uD5C8\uC6A9\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C? [n=\uAC70\uBD80 / y=\uC774\uBC88\uB9CC / a=\uC774 \uC138\uC158 \uB3D9\uC548] ", resolve)
+    );
+    const a = answer.trim().toLowerCase();
+    return a === "a" ? "session" : a === "y" ? "once" : "deny";
+  } finally {
+    rl.close();
+  }
+}
+var clip = clipboardCommands();
+var terminalInteraction = {
+  confirmDangerous,
+  clipboard: clip ? {
+    async read() {
+      const r = await run(clip.read[0], clip.read[1]);
+      if (!r.ok) throw new Error(`\uD074\uB9BD\uBCF4\uB4DC\uB97C \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (${clip.read[0]} \uAC00 \uD544\uC694\uD569\uB2C8\uB2E4).`);
+      return r.out;
+    },
+    async write(text) {
+      const r = await run(clip.write[0], clip.write[1], text);
+      if (!r.ok) throw new Error(`\uD074\uB9BD\uBCF4\uB4DC\uC5D0 \uC4F0\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (${clip.write[0]} \uAC00 \uD544\uC694\uD569\uB2C8\uB2E4).`);
+    }
+  } : void 0,
+  /**
+   * 터미널에는 알림 센터가 없다. OS 도우미가 있으면 그것으로, 없으면 **표준
+   * 오류에 한 줄** 쓴다 — 사용자가 보고 있는 곳이 거기다. 조용히 성공한 척하지
+   * 않는 것이 규칙이지만, 여기서는 실제로 사람에게 닿는다.
+   */
+  async notify(title, body) {
+    const os = platform();
+    if (os === "darwin") {
+      const script = `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`;
+      const r = await run("osascript", ["-e", script]);
+      if (r.ok) return true;
+    } else if (os === "linux") {
+      const r = await run("notify-send", [title, body]);
+      if (r.ok) return true;
+    }
+    process.stderr.write(`
+[\uC54C\uB9BC] ${title}${body ? `: ${body}` : ""}
+`);
+    return true;
+  },
+  async openExternal(url) {
+    const { file, args } = openerInvocation(url);
+    const r = await run(file, args);
+    if (!r.ok) throw new Error(`\uC5F4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (${file} \uAC00 \uD544\uC694\uD569\uB2C8\uB2E4).`);
+  },
+  async openPath(absolutePath) {
+    const { file, args } = openerInvocation(absolutePath);
+    const r = await run(file, args);
+    return r.ok ? "" : `\uC5F4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (${file} \uAC00 \uD544\uC694\uD569\uB2C8\uB2E4).`;
+  }
+};
+function bindCliHost(configStore) {
+  let cached = null;
+  void configStore.read().then((c) => cached = c).catch(() => void 0);
+  const ports = {
+    secrets: {
+      get: (name) => credentials.getRaw(name),
+      set: (name, value) => credentials.setRaw(name, value)
+    },
+    config: {
+      load: () => cached ?? {},
+      save: (patch) => {
+        const next = { ...cached ?? {}, ...patch };
+        cached = next;
+        void configStore.write(next).catch(() => void 0);
+        return next;
+      }
+    },
+    paths: { dataRoot: () => dataDirectory() },
+    interaction: terminalInteraction
+  };
+  bindHost(ports);
+}
+var credentials = new KeytarCredentialStore();
+
 // src/cli.ts
 var VERSION = "0.1.0";
 var HELP = `XGEN Dex CLI ${VERSION}
@@ -485,7 +645,10 @@ Usage:
   dex tools configure [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--timeout <ms>]
                       [--allow-dangerous|--no-allow-dangerous]
   dex tools disable
-  dex tools run <Shell|ReadFile|WriteFile|ListDir|Search|Open> [--args <json>] [--json]
+  dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>] [--json]
+  dex ssh list [--json]
+  dex ssh enable | dex ssh disable
+  dex ssh test <name> [--json]
   dex tools serve [--profile <name>]   \uB85C\uCEEC \uB3C4\uAD6C \uBE0C\uB9AC\uC9C0\uB9CC \uACC4\uC18D \uC2E4\uD589
   dex tool ...                         dex tools ...\uC758 \uB2E8\uC218\uD615 \uBCC4\uCE6D
   dex serve --stdio
@@ -505,7 +668,7 @@ Examples:
   echo '\uC774 \uC800\uC7A5\uC18C\uB97C \uC124\uBA85\uD574\uC918' | dex chat --agent wf_abc
 `;
 function writeJson(value) {
-  stdout.write(`${JSON.stringify(value, null, 2)}
+  stdout2.write(`${JSON.stringify(value, null, 2)}
 `);
 }
 function cell(value, width) {
@@ -514,13 +677,13 @@ function cell(value, width) {
 }
 function printAgents(agents) {
   if (agents.length === 0) {
-    stdout.write("Agent\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
+    stdout2.write("Agent\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
     return;
   }
-  stdout.write(`${cell("WORKFLOW ID", 28)}  ${cell("NAME", 30)}  OWNER
+  stdout2.write(`${cell("WORKFLOW ID", 28)}  ${cell("NAME", 30)}  OWNER
 `);
   for (const agent of agents) {
-    stdout.write(
+    stdout2.write(
       `${cell(agent.workflowId, 28)}  ${cell(agent.workflowName, 30)}  ${agent.isShared ? "shared" : "personal"}
 `
     );
@@ -528,19 +691,19 @@ function printAgents(agents) {
 }
 function printConversations(items) {
   if (items.length === 0) {
-    stdout.write("\uB300\uD654 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
+    stdout2.write("\uB300\uD654 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
     return;
   }
-  stdout.write(`${cell("INTERACTION ID", 38)}  ${cell("AGENT", 28)}  UPDATED
+  stdout2.write(`${cell("INTERACTION ID", 38)}  ${cell("AGENT", 28)}  UPDATED
 `);
   for (const item of items) {
-    stdout.write(`${cell(item.interactionId, 38)}  ${cell(item.workflowName, 28)}  ${item.updatedAt}
+    stdout2.write(`${cell(item.interactionId, 38)}  ${cell(item.workflowName, 28)}  ${item.updatedAt}
 `);
   }
 }
 function printTurns(items) {
   for (const item of items) {
-    stdout.write(`
+    stdout2.write(`
 [You]
 ${item.input}
 
@@ -548,7 +711,7 @@ ${item.input}
 ${item.output}
 `);
   }
-  if (items.length === 0) stdout.write("\uB300\uD654 turn\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
+  if (items.length === 0) stdout2.write("\uB300\uD654 turn\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
 }
 function describeEvent(event) {
   if (event.kind === "status") return `${event.surface}: ${event.detail ?? event.reason ?? "\uC0C1\uD0DC \uBCC0\uACBD"}`;
@@ -559,19 +722,19 @@ function describeEvent(event) {
   return null;
 }
 function printLocalToolsStatus(status) {
-  stdout.write(`\uB85C\uCEEC \uB3C4\uAD6C: ${status.config.enabled ? "\uCF1C\uC9D0" : "\uAEBC\uC9D0"}
+  stdout2.write(`\uB85C\uCEEC \uB3C4\uAD6C: ${status.config.enabled ? "\uCF1C\uC9D0" : "\uAEBC\uC9D0"}
 `);
-  stdout.write(`\uC791\uC5C5 \uD3F4\uB354: ${status.config.cwd || "(\uBBF8\uC124\uC815)"}
+  stdout2.write(`\uC791\uC5C5 \uD3F4\uB354: ${status.config.cwd || "(\uBBF8\uC124\uC815)"}
 `);
-  stdout.write(`\uD5C8\uC6A9 \uACBD\uB85C: ${status.config.allowedRoots.join(", ") || "(\uC791\uC5C5 \uD3F4\uB354)"}
+  stdout2.write(`\uD5C8\uC6A9 \uACBD\uB85C: ${status.config.allowedRoots.join(", ") || "(\uC791\uC5C5 \uD3F4\uB354)"}
 `);
-  stdout.write(`\uC704\uD5D8 \uBA85\uB839: ${status.config.allowDangerous ? "\uD5C8\uC6A9" : "\uCC28\uB2E8"}
+  stdout2.write(`\uC704\uD5D8 \uBA85\uB839: ${status.config.allowDangerous ? "\uD5C8\uC6A9" : "\uCC28\uB2E8"}
 `);
-  stdout.write(
+  stdout2.write(
     `\uBE0C\uB9AC\uC9C0: ${status.bridge.catalogSynced ? `\uC5F0\uACB0\uB428 (\uB3C4\uAD6C ${status.bridge.serverToolCount}\uAC1C)` : status.bridge.connected ? "\uCE74\uD0C8\uB85C\uADF8 \uB3D9\uAE30\uD654 \uC911" : status.bridge.enabled ? "\uC5F0\uACB0 \uB300\uAE30 \uC911" : "\uC911\uC9C0\uB428"}
 `
   );
-  if (status.bridge.error) stdout.write(`\uC624\uB958: ${status.bridge.error}
+  if (status.bridge.error) stdout2.write(`\uC624\uB958: ${status.bridge.error}
 `);
 }
 function csvOption(args, name) {
@@ -613,7 +776,7 @@ function exitCode(error) {
 }
 async function runChat(engine, args) {
   const workflowId = requiredOption(args, "agent");
-  const input = flag(args, "stdin") || !stdin2.isTTY ? await readStdin() : await promptLine("Message: ");
+  const input = flag(args, "stdin") || !stdin3.isTTY ? await readStdin() : await promptLine("Message: ");
   if (!input.trim()) throw new DexError("usage_error", "\uBCF4\uB0BC \uBA54\uC2DC\uC9C0\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
   const resolved = await engine.resolveChatInput({
     profile: option(args, "profile"),
@@ -632,44 +795,46 @@ async function runChat(engine, args) {
   try {
     for await (const event of engine.chat(resolved, controller.signal)) {
       if (jsonl) {
-        stdout.write(`${JSON.stringify(event)}
+        stdout2.write(`${JSON.stringify(event)}
 `);
       } else if (event.kind === "text") {
-        stdout.write(event.content);
+        stdout2.write(event.content);
       } else if (event.kind === "summary") {
-        stdout.write(event.text);
+        stdout2.write(event.text);
       } else {
         const description = describeEvent(event);
         if (description) stderr2.write(`[${description}]
 `);
       }
     }
-    if (!jsonl) stdout.write("\n");
+    if (!jsonl) stdout2.write("\n");
   } finally {
     process.off("SIGINT", onInterrupt);
     engine.stopLocalTools();
   }
 }
-async function run() {
+async function run2() {
   const args = parseArgs(process.argv.slice(2));
   if (flag(args, "version")) {
-    stdout.write(`${VERSION}
+    stdout2.write(`${VERSION}
 `);
     return;
   }
   if (flag(args, "help")) {
-    stdout.write(HELP);
+    stdout2.write(HELP);
     return;
   }
-  const engine = new DexEngine(new FileConfigStore(), new KeytarCredentialStore());
+  const configStore = new FileConfigStore();
+  bindCliHost(configStore);
+  const engine = new DexEngine(configStore, new KeytarCredentialStore());
   const terminal = {
-    stdinIsTty: !!stdin2.isTTY,
-    stdoutIsTty: !!stdout.isTTY,
+    stdinIsTty: !!stdin3.isTTY,
+    stdoutIsTty: !!stdout2.isTTY,
     term: process.env.TERM,
     ci: process.env.CI
   };
   if (shouldLaunchTui(args.positionals, terminal)) {
-    const { runTui } = await import("./chunks/tui-ZM72ORCJ.js");
+    const { runTui } = await import("./chunks/tui-DMHUMWPG.js");
     try {
       await runTui(engine);
     } finally {
@@ -678,7 +843,7 @@ async function run() {
     return;
   }
   if (args.positionals.length === 0) {
-    stdout.write(HELP);
+    stdout2.write(HELP);
     return;
   }
   if (args.positionals[0] === "ui" && !isInteractiveTerminal(terminal)) {
@@ -690,7 +855,7 @@ async function run() {
   if (command === "profile" && action === "set") {
     const profile = await engine.setProfile(args.positionals[2] ?? "default", requiredOption(args, "server"));
     if (asJson) writeJson(profile);
-    else stdout.write(`\uD504\uB85C\uD544 \uC800\uC7A5: ${profile.name} \u2192 ${profile.serverUrl}
+    else stdout2.write(`\uD504\uB85C\uD544 \uC800\uC7A5: ${profile.name} \u2192 ${profile.serverUrl}
 `);
     return;
   }
@@ -699,27 +864,27 @@ async function run() {
     if (!name) throw new DexError("usage_error", "\uC0AC\uC6A9\uD560 \uD504\uB85C\uD544 \uC774\uB984\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
     const profile = await engine.useProfile(name);
     if (asJson) writeJson(profile);
-    else stdout.write(`\uD604\uC7AC \uD504\uB85C\uD544: ${profile.name}
+    else stdout2.write(`\uD604\uC7AC \uD504\uB85C\uD544: ${profile.name}
 `);
     return;
   }
   if (command === "profile" && action === "list") {
     const profiles = await engine.listProfiles();
     if (asJson) writeJson(profiles);
-    else if (profiles.length === 0) stdout.write("\uD504\uB85C\uD544\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
+    else if (profiles.length === 0) stdout2.write("\uD504\uB85C\uD544\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
     else {
       for (const profile of profiles) {
-        stdout.write(`${profile.current ? "*" : " "} ${profile.name.padEnd(16)} ${profile.serverUrl}
+        stdout2.write(`${profile.current ? "*" : " "} ${profile.name.padEnd(16)} ${profile.serverUrl}
 `);
       }
     }
     return;
   }
   if (command === "login") {
-    const password = flag(args, "password-stdin") || !stdin2.isTTY ? await readStdin() : await promptSecret("Password: ");
+    const password = flag(args, "password-stdin") || !stdin3.isTTY ? await readStdin() : await promptSecret("Password: ");
     const status = await engine.login(requiredOption(args, "email"), password, option(args, "profile"));
     if (asJson) writeJson(status);
-    else stdout.write(`\uB85C\uADF8\uC778\uB428: ${status.user?.username ?? "unknown"} (${status.profile})
+    else stdout2.write(`\uB85C\uADF8\uC778\uB428: ${status.user?.username ?? "unknown"} (${status.profile})
 `);
     return;
   }
@@ -727,10 +892,10 @@ async function run() {
     const status = await engine.authStatus(option(args, "profile"));
     if (asJson) writeJson(status);
     else if (status.authenticated) {
-      stdout.write(`\uB85C\uADF8\uC778\uB428: ${status.user?.username ?? "unknown"} @ ${status.serverUrl}
+      stdout2.write(`\uB85C\uADF8\uC778\uB428: ${status.user?.username ?? "unknown"} @ ${status.serverUrl}
 `);
     } else {
-      stdout.write(`\uB85C\uADF8\uC544\uC6C3\uB428: ${status.profile} (${status.reason ?? "unknown"})
+      stdout2.write(`\uB85C\uADF8\uC544\uC6C3\uB428: ${status.profile} (${status.reason ?? "unknown"})
 `);
     }
     return;
@@ -738,17 +903,27 @@ async function run() {
   if (command === "logout") {
     await engine.logout(option(args, "profile"));
     if (asJson) writeJson({ ok: true });
-    else stdout.write("\uB85C\uADF8\uC544\uC6C3\uD588\uC2B5\uB2C8\uB2E4.\n");
+    else stdout2.write("\uB85C\uADF8\uC544\uC6C3\uD588\uC2B5\uB2C8\uB2E4.\n");
     return;
   }
   if (command === "tools" && action === "list") {
-    const tools = (await engine.localToolsStatus()).tools;
-    if (asJson) writeJson(tools);
+    const status = await engine.localToolsStatus();
+    const exposed = new Set(status.tools.map((t) => t.name));
+    if (asJson) writeJson({ enabled: status.config.enabled, catalog: status.catalog, exposed: [...exposed] });
     else {
-      stdout.write(`${cell("TOOL", 14)}  DESCRIPTION
+      if (!status.config.enabled) {
+        stdout2.write("\uB85C\uCEEC \uB3C4\uAD6C\uAC00 \uAEBC\uC838 \uC788\uC2B5\uB2C8\uB2E4 \u2014 \uC544\uB798\uB294 \uCF30\uC744 \uB54C \uC4F8 \uC218 \uC788\uB294 \uBAA9\uB85D\uC785\uB2C8\uB2E4.\n");
+        stdout2.write("\uCF1C\uAE30: dex tools enable\n\n");
+      }
+      stdout2.write(`${cell("TOOL", 14)}  ${cell("\uB178\uCD9C", 5)}  DESCRIPTION
 `);
-      for (const tool of tools) stdout.write(`${cell(tool.name, 14)}  ${tool.description}
-`);
+      for (const tool of status.catalog) {
+        const summary = String(tool.description ?? "").split("\n")[0] ?? "";
+        stdout2.write(
+          `${cell(tool.name, 14)}  ${cell(exposed.has(tool.name) ? "\u25CF" : "\xB7", 5)}  ${summary.slice(0, 96)}
+`
+        );
+      }
     }
     return;
   }
@@ -786,7 +961,7 @@ async function run() {
     if (!tool) throw new DexError("usage_error", "\uC2E4\uD589\uD560 \uB85C\uCEEC \uB3C4\uAD6C \uC774\uB984\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
     const result = await engine.runLocalTool(tool, jsonObjectOption(args, "args"));
     if (asJson) writeJson(result);
-    else for (const content of result.content) stdout.write(`${content.text}
+    else for (const content of result.content) stdout2.write(`${content.text}
 `);
     if (result.isError) process.exitCode = 1;
     return;
@@ -864,9 +1039,50 @@ async function run() {
     server.start();
     return;
   }
+  if (command === "ssh" && (action === "list" || action === void 0)) {
+    const config = await engine.sshConfig(option(args, "profile"));
+    if (asJson) writeJson(config);
+    else {
+      stdout2.write(`SSH \uC5F0\uB3D9: ${config.enabled ? "\uCF1C\uC9D0" : "\uAEBC\uC9D0"}
+`);
+      if (config.servers.length === 0) stdout2.write("\uB4F1\uB85D\uB41C \uC11C\uBC84\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.\n");
+      for (const srv of config.servers) {
+        const via = srv.jump_via.length ? ` (\uACBD\uC720 ${srv.jump_via.join(" \u2192 ")})` : "";
+        const off = srv.enabled ? "" : " [\uC0AC\uC6A9 \uC548 \uD568]";
+        stdout2.write(`${cell(srv.name, 18)}  ${srv.username}@${srv.host}:${srv.port}  ${srv.auth}${via}${off}
+`);
+      }
+    }
+    return;
+  }
+  if (command === "ssh" && (action === "enable" || action === "disable")) {
+    const config = await engine.setSshEnabled(action === "enable", option(args, "profile"));
+    if (asJson) writeJson(config);
+    else stdout2.write(`SSH \uC5F0\uB3D9\uC744 ${config.enabled ? "\uCF30\uC2B5\uB2C8\uB2E4" : "\uAED0\uC2B5\uB2C8\uB2E4"}.
+`);
+    return;
+  }
+  if (command === "ssh" && action === "test") {
+    const name = args.positionals[2];
+    if (!name) throw new DexError("usage_error", "\uC11C\uBC84 \uC774\uB984\uC774 \uD544\uC694\uD569\uB2C8\uB2E4: dex ssh test <name>");
+    const result = await engine.testSshServer(name, option(args, "profile"));
+    if (asJson) writeJson(result);
+    else {
+      stdout2.write(
+        result.success ? `\uC811\uC18D \uC131\uACF5 (${Math.round(result.latency_ms ?? 0)}ms)
+` : `\uC811\uC18D \uC2E4\uD328 \u2014 ${result.error ?? ""}
+`
+      );
+      if (result.hops && result.hops.length > 1) {
+        stdout2.write(`\uACBD\uB85C: ${result.hops.join(" \u2192 ")}
+`);
+      }
+    }
+    return;
+  }
   throw new DexError("usage_error", `\uC54C \uC218 \uC5C6\uB294 \uBA85\uB839\uC785\uB2C8\uB2E4: ${args.positionals.join(" ")}`);
 }
-run().catch((error) => {
+run2().catch((error) => {
   const exposed = publicError(error);
   const machine = process.argv.includes("--json") || process.argv.includes("--jsonl");
   if (machine) stderr2.write(`${JSON.stringify({ error: exposed })}

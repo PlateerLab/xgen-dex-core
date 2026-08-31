@@ -1,7 +1,7 @@
 {
-  "name": "@xgen/dex-cli",
-  "version": "1.1.0",
-  "description": "XGEN Dex CLI, terminal UI, and local engine",
+  "name": "xgen-dex-cli",
+  "version": "1.2.0",
+  "description": "XGEN Dex CLI — 터미널에서 XGEN 에이전트와 대화하고, 이 컴퓨터의 셸·파일·MCP 를 에이전트에게 빌려 줍니다.",
   "type": "module",
   "bin": {
     "dex": "dist/cli.js",
@@ -49,5 +49,17 @@
   },
   "bugs": {
     "url": "https://github.com/PlateerLab/xgen-dex-core/issues"
+  },
+  "keywords": [
+    "xgen",
+    "dex",
+    "agent",
+    "llm",
+    "cli",
+    "tui",
+    "mcp"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

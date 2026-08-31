@@ -5,7 +5,7 @@ XGEN 에이전트를 쓰는 세 가지 방법.
 | | 무엇 | 받는 것 |
 |---|---|---|
 | **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 워크스페이스 동기화 | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
-| **CLI** | 터미널. 대화형 UI 와 일회성 명령, 스크립트에서 쓰는 JSON 출력 | npm 패키지 `.tgz` |
+| **CLI** | 터미널. 대화형 UI 와 일회성 명령, 스크립트에서 쓰는 JSON 출력 | npm — [`xgen-dex-cli`](https://www.npmjs.com/package/xgen-dex-cli) |
 | **VSCode 확장** | 편집기 안에서 대화. 사이드바 + 명령 팔레트 | `.vsix` |
 
 셋 다 같은 XGEN 서버에 붙고, 같은 계정·같은 에이전트를 봅니다. 로컬 도구(셸 · 파일 ·
@@ -63,10 +63,17 @@ chmod +x XGen-Dex-<버전>.AppImage
 Node.js 20 이상이 필요합니다.
 
 ```bash
-npm i -g ./xgen-dex-cli-<버전>.tgz
+npm i -g xgen-dex-cli
 ```
 
 `dex` 와 `xgen-dex` 두 이름으로 설치됩니다.
+
+npm 레지스트리에 나갈 수 없는 사내망이라면 Releases 의 `xgen-dex-cli-<버전>.tgz` 를
+받아 설치합니다:
+
+```bash
+npm i -g ./xgen-dex-cli-<버전>.tgz
+```
 
 ### 쓰기
 
@@ -130,7 +137,8 @@ VS Code 1.95 이상이 필요합니다.
 기본은 이 저장소의 Releases 를 보지만, 사내망처럼 GitHub 에 나갈 수 없는 곳에서는
 같은 화면에서 **XGEN** 으로 바꿔 자기 서버의 다운로드 센터를 보게 할 수 있습니다.
 
-CLI 와 확장은 자동 업데이트가 없습니다 — 새 릴리스의 파일로 다시 설치하세요.
+CLI 는 `npm i -g xgen-dex-cli` 를 다시 실행하면 최신이 됩니다. 확장은 자동 업데이트가
+없으니 새 `.vsix` 로 다시 설치하세요.
 
 ---
 
@@ -199,7 +207,7 @@ cd apps/vscode && npx @vscode/vsce package --no-dependencies
 ### 릴리스
 
 모든 `package.json` 의 버전을 같은 값으로 올리고 태그를 밀면, CI 가 세 산출물을 만들어
-하나의 GitHub Release 에 올립니다.
+하나의 GitHub Release 에 올리고 CLI 를 npm 에 배포합니다.
 
 ```bash
 git tag -a v1.2.0 -m "..." && git push origin v1.2.0

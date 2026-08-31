@@ -119,6 +119,71 @@ jobs:
           path: dist-release/*
           if-no-files-found: error
 
+  # ── npm 배포 ──
+  #
+  # GitHub Release 와 **따로** 두는 이유: npm 은 같은 버전을 두 번 올릴 수 없다.
+  # 한 잡에 묶으면 재실행할 때마다 'You cannot publish over the previously
+  # published versions' 로 릴리스 전체가 빨개진다. 이미 올라간 버전이면 조용히
+  # 건너뛰고 넘어가는 것이 맞다 — 그건 실패가 아니라 '할 일이 없음' 이다.
+  #
+  # 데스크톱 설치본과 .vsix 는 npm 에 올리지 않는다. 설치본은 Release 자산이고,
+  # 확장은 VS Marketplace 가 자기 자리다.
+  npm:
+    name: npm 배포
+    needs: [packages]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # --provenance 는 이 권한 없이는 실패한다. 출처 증명이 붙으면 npm 페이지에
+      # "이 커밋의 이 워크플로가 만들었다" 가 표시되고, 받는 쪽이 그것을 검증할 수 있다.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - run: npm ci --no-audit --no-fund
+
+      # 배포물은 번들이라 소스가 필요 없다 — 하지만 **여기서 다시 만든다.**
+      # 다른 잡이 만든 것을 받아 쓰면 그 사이에 무엇이 바뀌었는지 보장할 수 없다.
+      - name: 빌드
+        run: npm --prefix apps/cli run build
+
+      - name: 이미 올라간 버전인지 확인
+        id: check
+        run: |
+          NAME=$(node -p "require('./apps/cli/package.json').name")
+          VER=$(node -p "require('./apps/cli/package.json').version")
+          echo "name=$NAME"     >> "$GITHUB_OUTPUT"
+          echo "version=$VER"   >> "$GITHUB_OUTPUT"
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VER 는 이미 npm 에 있습니다 — 배포를 건너뜁니다."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 배포
+        if: steps.check.outputs.exists == 'false'
+        working-directory: apps/cli
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 설치되는지 실제로 확인
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          # 레지스트리 전파에 잠깐 걸린다. 올라간 것을 **정말로 깔아서** 실행해 본다 —
+          # publish 성공만으로는 bin 이 붙었는지, 의존이 빠지지 않았는지 알 수 없다.
+          for i in 1 2 3 4 5 6; do
+            npm view "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}" version && break
+            sleep 10
+          done
+          npm i -g "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}"
+          dex --version
+          xgen-dex --version
+
   publish:
     name: 릴리스 발행
     needs: [desktop, packages]
@@ -160,10 +225,13 @@ jobs:
             ### CLI
 
             ```
-            npm i -g ./xgen-dex-cli-*.tgz
+            npm i -g xgen-dex-cli
             dex            # 대화형 터미널 UI
             dex --help
             ```
+
+            npm 을 쓸 수 없는 환경이면 아래 `xgen-dex-cli-*.tgz` 를 받아
+            `npm i -g ./xgen-dex-cli-*.tgz` 로 설치합니다.
 
             ### VSCode 확장
 

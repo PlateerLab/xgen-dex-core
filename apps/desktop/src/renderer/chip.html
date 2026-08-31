@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 잠긴 아바타의 컨트롤 창. 아바타 런타임을 싣지 않는다 — 버튼 몇 개를
+         위해 두 번째 WebGL 컨텍스트를 띄울 이유가 없고, 그게 앱을 죽인 전례가
+         있다. 로컬 자산만 쓰므로 CSP 도 좁게 잡는다. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: http:"
+    />
+    <title>XGEN Avatar Controls</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/chip.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 아바타 설정 뷰가 메인 창에서 모델/사진을 렌더한다: 에셋은 전부
+         main-process 프록시 스킴(xgenavatar:)으로만 로드하고(연결 목적지는
+         커넥터가 아는 서버뿐), 크롭 편집기는 blob: 오브젝트 URL 을 쓴다.
+         네트워크 직접 연결(https:/http:)은 여전히 차단 — 오버레이보다 좁다. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: xgenavatar:; media-src 'self' blob: data:; connect-src 'self' blob: data: xgenavatar:; worker-src 'self' blob:"
+    />
+    <title>XGen Dex</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Live2D Cubism core — 아바타 미리보기(설정 뷰)용. 오버레이와 동일 파일. -->
+    <script src="./live2dcubismcore.min.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

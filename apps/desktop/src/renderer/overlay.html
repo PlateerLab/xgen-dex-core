@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Overlay composites onto the desktop: it must never paint a background.
+         The avatar renderer fetches the model3.json + moc3/textures/atlas from
+         the user-configured XGEN server (a capability URL, no auth), so http/https
+         must be allowed for connect-src + img-src (the server origin isn't known
+         at build time). The Cubism Core script + pixi bundle are local ('self'). -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http: xgenavatar:; media-src 'self' blob: data:; connect-src 'self' https: http: blob: data: xgenavatar:; worker-src 'self' blob:"
+    />
+    <title>XGEN Avatar</title>
+    <!-- Live2D Cubism Core (proprietary redistributable) — must define the global
+         before any model loads. Non-module so it runs before the deferred bundle. -->
+    <script src="./live2dcubismcore.min.js"></script>
+  </head>
+  <body class="overlay-html">
+    <div id="root"></div>
+    <script type="module" src="/src/overlay.tsx"></script>
+  </body>
+</html>

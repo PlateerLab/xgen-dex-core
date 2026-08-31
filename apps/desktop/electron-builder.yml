@@ -1,0 +1,135 @@
+# ⚠ appId 는 절대 바꾸지 않는다 — NSIS 의 설치/업데이트 식별 GUID
+# (Software\<GUID> 레지스트리 키)와 macOS 번들 ID 가 여기서 파생된다.
+# electron-builder 소스로 직접 확인: guid = options.guid || UUID.v5(appId, ...) —
+# productName 과는 무관하다. 브랜드명(표시 이름)만 "XGen Dex"로 바뀌어도 이 값이
+# 그대로면 기존 사용자는 같은 앱으로 인식되어 제자리 업데이트되고, userData
+# 데이터 폴더(로그인 세션·로컬 런타임·동기화 상태)도 그대로 보존된다
+# (src/main/index.ts 최상단의 app.setName('XGEN-Connector') 참고 — Electron 은
+# userData 경로를 productName 이 아니라 app.name 에서 파생시키므로 별도로 고정해뒀다).
+appId: com.plateerlab.xgen.connector
+# ⚠ **공백을 넣지 말 것.** 리눅스는 /opt/<productName> 에 설치되는데, 경로에
+# 공백이 있으면 Chromium zygote 가 자기 자신을 재실행할 때 그 지점에서 잘려
+# 죽는다 (실기 확인):
+#     LaunchProcess: failed to execvp: /opt/XGEN
+#     FATAL:zygote_host_impl_linux.cc(201) Check failed
+# 사용자에게 보이는 이름("XGen Dex", 공백 있음)은 .desktop 의 Name / nsis 의
+# shortcutName / mac 의 extendInfo.CFBundleDisplayName 이 따로 담당한다 — 이
+# productName 자체는 파일시스템 경로에 그대로 쓰이므로 하이픈으로 공백을 피한다.
+productName: XGen-Dex
+directories:
+  buildResources: build
+  output: release
+# Explicit publish provider so electron-builder can resolve update-info even
+# with GH_TOKEN present. Actual upload is done by the release workflow via
+# action-gh-release; the packaging step runs with `--publish never`.
+publish:
+  provider: github
+  owner: PlateerLab
+  repo: xgen-connector
+# Ad-hoc sign the macOS .app so Apple Silicon doesn't hard-block the
+# un-notarized build as "손상됨 — 휴지통으로 이동". No-op once a Developer ID
+# (CSC_LINK / CSC_IDENTITY) is configured.
+afterPack: build/afterPack.cjs
+files:
+  - out/**
+  - package.json
+# Native .node addons (keytar) must be unpacked from the asar or they fail to
+# load at runtime ("cannot find module .node").
+asarUnpack:
+  - '**/*.node'
+  - '**/node_modules/keytar/**'
+  # FUSE 바인딩(가상 드라이브, Linux) — .node 는 asar 안에서 dlopen 이 안 된다.
+  - '**/node_modules/@cocalc/**'
+  # ws + the MCP SDK spawn stdio subprocesses / load from disk — unpack so they
+  # resolve outside the asar at runtime.
+  - '**/node_modules/ws/**'
+  - '**/node_modules/@modelcontextprotocol/**'
+  # Pinned Apache-2.0 native browser automation helper. Executables cannot run
+  # from inside app.asar; the npm package carries verified OS/arch binaries.
+  - '**/node_modules/agent-browser/bin/**'
+  - '**/node_modules/agent-browser/LICENSE'
+# Hyphenated, space-free artifact names — productName 자체를 공백 없이 유지하는
+# 이유와 같다. electron-updater 는 빌드 파일·latest*.yml·GitHub 자산의 공백
+# 인코딩이 어긋나면 404 를 낸다 — 하이픈 형태는 어디서나 동일하다.
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+  maintainer: PlateerLab <noreply@plateerlab.dev>
+  synopsis: XGen Dex desktop connector - log in, browse your agents, chat
+  artifactName: XGen-Dex-${version}.${ext}
+  # 창 ↔ .desktop 매칭 (GNOME 독 아이콘 중복/무명 창 방지). Electron 의
+  # WM_CLASS 는 package.json name("xgen-connector")에서 온다 — 브랜드명과
+  # 무관한 기술 식별자라 리브랜딩(XGen Dex) 이후에도 그대로 둔다(기존 사용자의
+  # 독/작업 표시줄 고정 아이콘이 갈라지지 않는다).
+  # ⚠ electron-builder 24 는 desktop 키를 FLAT 맵으로 받는다 (v26 의
+  # desktop.entry 중첩형을 쓰면 조용히 무시되어 기본 productName 이 들어간다
+  # — 실빌드 dpkg-deb 검증으로 확인).
+  desktop:
+    StartupWMClass: xgen-connector
+    # 설치 경로는 공백이 없어야 하지만(위 참조) 런처에 보이는 이름은 예쁘게.
+    Name: XGen Dex
+deb:
+  # 커스텀 postinst: chrome-sandbox 를 **무조건** SUID-root 로 만든다. 기본
+  # 템플릿의 `unshare --user` 프로브는 root 로 돌아 항상 성공하지만, Ubuntu
+  # 23.10+/24.04 는 apparmor_restrict_unprivileged_userns=1 로 실제 사용자의
+  # userns 를 막는다 → 헬퍼가 0755 로 남아 앱이 SIGTRAP 으로 죽는다.
+  afterInstall: build/linux-after-install.tpl
+  # ⚠ 기본 depends 를 재기술하면 통째로 **대체**되므로 전체 목록을 명시한다.
+  # electron-builder 의 기본값에는 GNOME2/Unity 시대 패키지(gconf2,
+  # gconf-service, libappindicator1)가 남아 있는데, **Ubuntu 22.04+ 에서
+  # 제거되어 존재하지 않는다** → 설치가 "의존성 해결 불가"로 실패한다
+  # (앱 센터에서는 이유 없이 실패한 것처럼 보인다). 실제로 후보가 있는
+  # 패키지만 남긴다.
+  #
+  # t64 전환(24.04)으로 이름이 바뀐 것들은 **양쪽을 대안으로** 적는다 —
+  # 한쪽만 적으면 그 배포판에서 설치가 막힌다.
+  depends:
+    - libnotify4
+    - libxtst6
+    - libnss3
+    - libsecret-1-0
+    - libxss1
+    - xdg-utils
+    - libgtk-3-0 | libgtk-3-0t64
+    - libatspi2.0-0 | libatspi2.0-0t64
+    - libayatana-appindicator3-1 | libappindicator3-1
+    # XGEN 워크스페이스(가상 드라이브). 근거는 추측이 아니라 바이너리다:
+    #   ldd fuse.node → libfuse.so.2   (애드온이 libfuse2 를 동적 링크)
+    #   /usr/bin/fusermount → setuid root  (비루트 마운트에 필수)
+    # Ubuntu 24.04 에서 libfuse2 는 libfuse2t64 로 개명됐다 — 둘 다 받는다.
+    - libfuse2 | libfuse2t64
+    - fuse3 | fuse
+win:
+  target:
+    - nsis
+  artifactName: XGen-Dex-Setup-${version}.${ext}
+nsis:
+  # 통합 데이터 폴더 선택 페이지(build/installer.nsh)를 보이려면 assisted 설치가
+  # 필요하다 — one-click 은 커스텀 페이지를 건너뛴다.
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # NSIS auto-selects installer UI language by OS locale among these.
+  installerLanguages:
+    - en_US
+    - ko_KR
+  unicode: true
+  # 바탕화면/시작 메뉴 바로가기 라벨 — productName(XGen-Dex, 하이픈)과 별개로
+  # 지정한다. 미지정 시 기본값은 sanitizedProductName(=productName 그대로,
+  # 하이픈 포함)이라 바로가기가 "XGen-Dex"로 보인다.
+  shortcutName: XGen Dex
+  # 설치 시 WebDAV 파일 크기 상한 해제 + WebClient 자동 시작 (관리자 단계).
+  # 기본 50MiB 상한에 걸리면 탐색기가 조용히 거부해 "파일이 안 열린다"로만
+  # 보인다 — 설치 때 한 번 올려 두는 것이 유일하게 깨끗한 지점이다.
+  include: build/installer.nsh
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  artifactName: XGen-Dex-${version}.${ext}
+  # Finder/Dock/메뉴바 표시 이름 — productName(XGen-Dex, 하이픈)과 별개로
+  # 지정한다. macPackager 가 CFBundleName/CFBundleDisplayName 을 기본
+  # productName 으로 채운 뒤 extendInfo 를 덮어써 여기 값이 이긴다.
+  extendInfo:
+    CFBundleDisplayName: XGen Dex

@@ -44,7 +44,6 @@ export function ServerScreen(props: {
             onChange={setServerUrl}
             onSubmit={(value) => value.trim() && props.onSubmit(value.trim())}
             focus={!props.busy}
-            cursorOrigin={{ x: 16, y: 6 }}
             placeholder="xgen.example.com"
           />
         </Box>

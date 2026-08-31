@@ -157,7 +157,6 @@ function ImeInputHarness(props: { onSubmit: (value: string) => void }): React.Re
       onChange={setValue}
       onSubmit={props.onSubmit}
       focus
-      cursorOrigin={{ x: 0, y: 0 }}
       placeholder="입력"
     />
   );

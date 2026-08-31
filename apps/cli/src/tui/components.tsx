@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Box, Text } from 'ink';
-import { ImeTextInput, type CursorOrigin } from './ime-text-input';
+import { ImeTextInput } from './ime-text-input';
 
 export function Header(props: {
   profile?: string;
@@ -56,13 +56,14 @@ export function FormField(props: {
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
   focus: boolean;
-  cursorOrigin: CursorOrigin;
   placeholder?: string;
   secret?: boolean;
 }): ReactNode {
   return (
-    <Box>
-      <Box width={14}>
+    // 가로로 늘려 둬야 입력 칸이 남는 폭을 알 수 있다. 내용만큼만 넓으면 칸의 폭이
+    // 곧 글자 폭이 되어, 긴 주소가 스스로를 잘라 내는 꼴이 된다.
+    <Box flexGrow={1}>
+      <Box width={14} flexShrink={0}>
         <Text color={props.focus ? 'cyan' : undefined}>{props.focus ? '›' : ' '} {props.label}</Text>
       </Box>
       <ImeTextInput
@@ -70,7 +71,6 @@ export function FormField(props: {
         onChange={props.onChange}
         onSubmit={props.onSubmit}
         focus={props.focus}
-        cursorOrigin={props.cursorOrigin}
         placeholder={props.placeholder}
         mask={props.secret ? '•' : undefined}
       />

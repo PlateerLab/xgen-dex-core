@@ -7,7 +7,7 @@ import { CommandPalette, type PaletteAction } from './command-palette';
 import { Footer, Header } from './components';
 import { HistoryScreen } from './history-screen';
 import { StartPanel } from './start-panel';
-import { ImeTextInput, type CursorOrigin } from './ime-text-input';
+import { ImeTextInput } from './ime-text-input';
 import type { TuiEngine, TuiSession } from './model';
 import { useTerminalSize } from './use-terminal-size';
 
@@ -96,7 +96,6 @@ function Composer(props: {
   onSubmit: (value: string) => void;
   focused: boolean;
   disabled: boolean;
-  cursorOrigin: CursorOrigin;
 }): React.ReactNode {
   return (
     <Box borderStyle="round" borderColor={props.focused ? 'cyan' : 'gray'} paddingX={1}>
@@ -109,7 +108,6 @@ function Composer(props: {
           onChange={props.onChange}
           onSubmit={props.onSubmit}
           focus={props.focused}
-          cursorOrigin={props.cursorOrigin}
           placeholder="메시지를 입력하세요"
         />
       )}
@@ -338,7 +336,6 @@ export function Dashboard(props: {
           onSubmit={(value) => void send(value)}
           focused={focus === 'composer'}
           disabled={chat.running || !selected}
-          cursorOrigin={{ x: size.wide ? 34 : 4, y: bodyHeight - 1 }}
         />
       </Box>
     );

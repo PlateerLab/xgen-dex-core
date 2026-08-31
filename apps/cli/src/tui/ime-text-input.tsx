@@ -1,18 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { Text, useCursor, useInput, useStdout } from 'ink';
+import { Box, Text, useCursor, useInput, type DOMElement } from 'ink';
 import stringWidth from 'string-width';
-
-export interface CursorOrigin {
-  x: number;
-  y: number;
-}
+import { classifyInput } from './terminal-input';
 
 interface ImeTextInputProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit?: (value: string) => void;
   focus: boolean;
-  cursorOrigin: CursorOrigin;
   placeholder?: string;
   mask?: string;
 }
@@ -25,6 +20,36 @@ function graphemes(value: string): string[] {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+export interface Placement {
+  x: number;
+  y: number;
+  width: number;
+}
+
+/**
+ * 이 입력 칸이 화면의 **몇 번째 칸·몇 번째 줄** 에 그려지는지 레이아웃에서 읽어 온다.
+ *
+ * 예전에는 화면마다 `{ x: 16, y: 6 }` 처럼 손으로 세어 넣었다. 그 숫자는 그때의
+ * 레이아웃에서만 맞다 — 라벨 한 글자, 테두리 하나, 사이드바 폭이 바뀌면 조용히
+ * 어긋나고, 진짜 터미널 커서가 글자와 다른 자리에 선다. 터미널 IME 는 그 커서
+ * 자리에 조합 중인 한글을 그리므로, 어긋나면 한글이 엉뚱한 데 나타난다.
+ *
+ * yoga 가 이미 정확히 알고 있는 값이라 셀 이유가 없다.
+ */
+export function placementOf(node: DOMElement | null): Placement | undefined {
+  const width = node?.yogaNode?.getComputedWidth();
+  if (!node || width === undefined) return undefined;
+  let x = 0;
+  let y = 0;
+  for (let current: DOMElement | undefined = node; current; current = current.parentNode) {
+    const yoga = current.yogaNode;
+    if (!yoga) continue;
+    x += yoga.getComputedLeft();
+    y += yoga.getComputedTop();
+  }
+  return { x, y, width };
 }
 
 function visibleInput(
@@ -59,22 +84,40 @@ function visibleInput(
   };
 }
 
-function TerminalCursor({ origin, offset }: { origin: CursorOrigin; offset: number }): null {
+function TerminalCursor({ x, y }: { x: number; y: number }): null {
   const { setCursorPosition } = useCursor();
-  setCursorPosition({ x: origin.x + offset, y: origin.y });
+  setCursorPosition({ x, y });
   return null;
 }
 
 /**
- * A controlled, single-line input that leaves the real terminal cursor visible.
- * The terminal IME draws its in-progress Hangul composition at that cursor.
+ * 진짜 터미널 커서를 글자 자리에 두는 한 줄 입력 칸.
+ *
+ * 터미널 IME 는 조합 중인 한글을 커서 자리에 그린다. 그래서 커서가 어디에 서는지가
+ * 곧 한글이 어디에 보이는지다.
  */
 export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
-  const { stdout } = useStdout();
+  const ref = useRef<DOMElement | null>(null);
+  const [placement, setPlacement] = useState<Placement | undefined>(undefined);
   const initialSegments = graphemes(props.value);
   const [cursor, setCursor] = useState(initialSegments.length);
   const valueRef = useRef(props.value);
   const cursorRef = useRef(initialSegments.length);
+  const pastingRef = useRef(false);
+
+  // 레이아웃은 커밋 뒤에 계산되므로 여기서 읽으면 한 프레임 늦다. 달라졌을 때만
+  // 상태를 바꿔 다음 프레임에서 맞춘다 — 매번 바꾸면 렌더가 끝없이 돈다.
+  useEffect(() => {
+    const measured = placementOf(ref.current);
+    if (!measured) return;
+    if (
+      placement?.x !== measured.x ||
+      placement?.y !== measured.y ||
+      placement?.width !== measured.width
+    ) {
+      setPlacement(measured);
+    }
+  });
 
   const moveCursor = (next: number, length: number): void => {
     const resolved = clamp(next, 0, length);
@@ -102,6 +145,27 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
     (input, key) => {
       const current = graphemes(valueRef.current);
       const currentCursor = clamp(cursorRef.current, 0, current.length);
+      const event = classifyInput(input, pastingRef.current);
+
+      if (event.kind === 'paste-start') {
+        pastingRef.current = true;
+        return;
+      }
+      if (event.kind === 'paste-end') {
+        pastingRef.current = false;
+        return;
+      }
+
+      // 붙여넣는 동안은 키로 읽지 않는다. 붙인 내용 안의 줄바꿈이 "전송" 으로
+      // 읽히면 반쪽짜리 메시지가 나가 버린다.
+      if (pastingRef.current) {
+        if (event.kind === 'text') {
+          const inserted = graphemes(event.text);
+          current.splice(currentCursor, 0, ...inserted);
+          updateValue(current, currentCursor + inserted.length);
+        }
+        return;
+      }
 
       if (key.return) {
         props.onSubmit?.(valueRef.current);
@@ -130,7 +194,6 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
         return;
       }
       if (
-        !input ||
         key.ctrl ||
         key.meta ||
         key.tab ||
@@ -142,8 +205,9 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       ) {
         return;
       }
+      if (event.kind !== 'text') return;
 
-      const inserted = graphemes(input);
+      const inserted = graphemes(event.text);
       current.splice(currentCursor, 0, ...inserted);
       updateValue(current, currentCursor + inserted.length);
     },
@@ -153,18 +217,20 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
   const rawSegments = graphemes(props.value);
   const safeCursor = clamp(cursor, 0, rawSegments.length);
   const displayedSegments = props.mask ? rawSegments.map(() => props.mask ?? '') : rawSegments;
-  // Keep one cell free for the IME's composing character and one for the surrounding UI.
-  const maximumWidth = Math.max(1, (stdout.columns || 100) - props.cursorOrigin.x - 3);
+  // 조합 중인 글자가 설 자리 한 칸을 남긴다.
+  const maximumWidth = Math.max(1, (placement?.width ?? 40) - 1);
   const visible = visibleInput(displayedSegments, safeCursor, maximumWidth);
 
   return (
-    <>
+    <Box ref={ref} flexGrow={1}>
       {rawSegments.length === 0 ? (
         <Text dimColor>{props.placeholder ?? ''}</Text>
       ) : (
         <Text>{visible.text}</Text>
       )}
-      {props.focus ? <TerminalCursor origin={props.cursorOrigin} offset={visible.cursorWidth} /> : null}
-    </>
+      {props.focus && placement ? (
+        <TerminalCursor x={placement.x + visible.cursorWidth} y={placement.y} />
+      ) : null}
+    </Box>
   );
 }

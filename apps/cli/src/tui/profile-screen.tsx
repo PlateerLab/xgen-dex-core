@@ -64,7 +64,6 @@ export function ProfileScreen(props: {
               onChange={setName}
               onSubmit={() => setFocus('url')}
               focus={!props.busy && focus === 'name'}
-              cursorOrigin={{ x: 16, y: 5 }}
               placeholder="corp"
             />
             <FormField
@@ -73,7 +72,6 @@ export function ProfileScreen(props: {
               onChange={setServerUrl}
               onSubmit={create}
               focus={!props.busy && focus === 'url'}
-              cursorOrigin={{ x: 16, y: 6 }}
               placeholder="https://xgen.example.com"
             />
           </Box>

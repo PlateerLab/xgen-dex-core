@@ -175,6 +175,33 @@ if (existsSync(vsix)) {
   }
 }
 
+// ── 8. 커서 자리는 세지 말고 재라 ──────────────────────────────────
+//
+// 터미널 IME 는 조합 중인 한글을 **진짜 터미널 커서 자리**에 그린다. 그래서 커서가
+// 글자와 다른 칸에 서면 한글이 엉뚱한 데 나타나고, 사용자에게는 "한글이 입력되지
+// 않는다" 로 보인다.
+//
+// 예전에는 화면마다 `cursorOrigin={{ x: 16, y: 6 }}` 처럼 손으로 세어 넣었다. 그
+// 숫자는 그때의 레이아웃에서만 맞다 — 라벨 한 글자, 테두리 하나, 사이드바 폭이
+// 바뀌면 조용히 어긋난다. yoga 가 이미 정확히 아는 값이므로 셀 이유가 없다.
+{
+  const tuiDir = join(ROOT, 'apps/cli/src/tui');
+  const owner = join(tuiDir, 'ime-text-input.tsx');
+  if (existsSync(tuiDir)) {
+    for (const file of walk(tuiDir)) {
+      const src = readFileSync(file, 'utf8');
+      src.split('\n').forEach((text, i) => {
+        if (/cursorOrigin/.test(text)) {
+          add('cursor-is-measured', file, i + 1, '커서 자리를 손으로 넘긴다 — 레이아웃에서 재세요');
+        }
+        if (file !== owner && /setCursorPosition|useCursor\s*\(/.test(text)) {
+          add('cursor-is-measured', file, i + 1, '커서를 직접 옮긴다 — ImeTextInput 만 이 일을 합니다');
+        }
+      });
+    }
+  }
+}
+
 // ── 보고 ────────────────────────────────────────────────────────────
 const RULES = {
   'no-direct-api': '앱이 서버 경로를 직접 부른다 — @dex/protocol 에 넣고 거기서 부르세요',
@@ -185,6 +212,8 @@ const RULES = {
   'update-feed-points-here':
     '자동 업데이트가 다른 저장소를 본다 — 그쪽 최신 릴리스가 이 앱을 덮어쓴다',
   'one-version': '버전이 갈라졌다 — 태그 하나는 검증된 조합 하나여야 한다',
+  'cursor-is-measured':
+    '커서 자리를 손으로 셌다 — 레이아웃이 바뀌면 어긋나고 IME 한글이 엉뚱한 데 나타난다',
 };
 
 if (violations.length === 0) {

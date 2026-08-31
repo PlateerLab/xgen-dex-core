@@ -53,7 +53,6 @@ export function LoginScreen(props: {
             onChange={setEmail}
             onSubmit={() => setFocus('password')}
             focus={!props.busy && focus === 'email'}
-            cursorOrigin={{ x: 16, y: 6 }}
             placeholder="me@corp.com"
           />
           <FormField
@@ -62,7 +61,6 @@ export function LoginScreen(props: {
             onChange={setPassword}
             onSubmit={submit}
             focus={!props.busy && focus === 'password'}
-            cursorOrigin={{ x: 16, y: 7 }}
             secret
           />
         </Box>

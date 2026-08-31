@@ -6,7 +6,7 @@ import type {
   LocalToolCallContext,
   LocalToolResult,
   LocalToolSchema,
-} from './local-tools';
+} from '@dex/engine/local-tools';
 
 export const BROWSER_TABS_TOOL = 'BrowserTabs';
 export const BROWSER_NAVIGATE_TOOL = 'BrowserNavigate';

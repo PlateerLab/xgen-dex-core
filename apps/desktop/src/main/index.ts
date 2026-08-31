@@ -50,6 +50,7 @@ import {
   type NotificationTarget,
   type TeamsEvent,
 } from '@dex/protocol';
+import { bindDesktopHost } from './dex-host';
 import {
   loadConfig,
   saveConfig,
@@ -66,8 +67,8 @@ import {
   mcpSecretStore,
   mcpOAuthStore,
 } from './keychain';
-import { splitServerSecrets, withResolvedSecrets } from './mcp-secrets';
-import { authorizeMcpServer, hasOAuthTokens, clearOAuth } from './mcp-oauth';
+import { splitServerSecrets, withResolvedSecrets } from '@dex/engine/mcp-secrets';
+import { authorizeMcpServer, hasOAuthTokens, clearOAuth } from '@dex/engine/mcp-oauth';
 import {
   initUpdater,
   setAutoUpdate,
@@ -98,8 +99,8 @@ import { hostname, userInfo } from 'os';
 import { defaultDeviceName } from './device-name';
 import { accountKey, describeAccount, moveRoot, rootConflict, rootOf } from './workspace';
 import { TRAY_ICON_B64 } from './tray-icon';
-import { getMcpManager, type McpHttpFetch } from './mcp-manager';
-import { getMcpBridge } from './mcp-bridge';
+import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
+import { getMcpBridge } from '@dex/engine/mcp-bridge';
 import {
   getLocalToolProvider,
   mcpAddServerToolSchema,
@@ -110,19 +111,19 @@ import {
   MCP_LIST_TOOL,
   type LocalToolDelegate,
   type LocalToolResult,
-} from './local-tools';
+} from '@dex/engine/local-tools';
 import {
   clearMcpRuntimeLogs,
   mcpRuntimeLogs,
   onMcpRuntimeLog,
   setMcpRuntimeLogEnabled,
-} from './mcp-runtime-log';
+} from '@dex/engine/mcp-runtime-log';
 import {
   buildSsoUrl,
   parseSsoLoginResponse,
   shouldAllowPrivateCertificate,
   shouldIgnorePrivateCertificateError,
-} from './connection-security';
+} from '@dex/engine/connection-security';
 import { createSsoWindowOptions } from './sso-window-options';
 import { getBrowserRuntime } from './browser-runtime';
 import { BrowserHistoryStore } from './browser-history';
@@ -3547,6 +3548,11 @@ if (!gotLock) {
   app.on('second-instance', () => showMain());
 
   app.whenReady().then(() => {
+    // 엔진에 이 호스트를 붙인다 — **가장 먼저**. 로컬 도구·MCP 매니저·서버
+    // 브릿지가 전부 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히
+    // 던진다(조용히 메모리로 폴백해서 사용자의 MCP 인증을 매번 잃는 대신).
+    bindDesktopHost();
+
     const cfg = loadConfig();
     if (cfg.theme) nativeTheme.themeSource = cfg.theme;
     applyCertificatePolicy();

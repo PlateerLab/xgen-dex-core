@@ -8,8 +8,8 @@
  * All functions here are pure and unit-tested; the async keychain/config wiring
  * lives in index.ts (save) and mcp-manager.ts (connect).
  */
-import type { McpServerConfig } from './config';
-import type { McpServerSecrets } from './keychain';
+import type { McpServerConfig } from './mcp-types';
+import type { McpServerSecrets } from './mcp-types';
 
 type Kv = Record<string, string>;
 

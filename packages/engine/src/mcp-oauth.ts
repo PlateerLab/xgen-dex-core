@@ -20,8 +20,8 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import type { McpServerConfig } from './config';
-import { mcpOAuthStore } from './keychain';
+import type { McpServerConfig } from './mcp-types';
+import { interaction, mcpOAuthStore } from './host';
 import type { McpHttpFetch } from './mcp-manager';
 
 // The SDK's OAuth types are structural; we keep them loose to avoid a hard
@@ -273,12 +273,13 @@ export async function authorizeMcpServer(
   }
   if (!cfg.url) return { ok: false, error: '서버 URL 이 없습니다.' };
 
-  const openExternal =
-    opts.openExternal ??
-    (async (url: string) => {
-      const { shell } = await import('electron');
-      await shell.openExternal(url);
-    });
+  // 호출부가 명시적으로 준 것 > 호스트 포트. 포트도 없으면 인증을 시작하지
+  // 않는다 — 브라우저를 못 여는데 시작하면 사용자는 아무 일도 안 일어나는 화면을
+  // 보며 기다리게 된다.
+  const openExternal = opts.openExternal ?? interaction().openExternal;
+  if (!openExternal) {
+    return { ok: false, error: '이 호스트에서는 브라우저를 열 수 없어 OAuth 인증을 시작할 수 없습니다.' };
+  }
 
   const state = randomBytes(24).toString('base64url');
   const loop = await startLoopback(state);

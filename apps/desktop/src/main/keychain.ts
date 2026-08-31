@@ -114,6 +114,16 @@ function fileGet(account: string): string | null {
  *  파일 폴백에 남은 사본이, keytar 가 복구된 뒤의 로그아웃에서 살아남아
  *  get() 이 낡은 토큰을 부활시키는 구멍을 막는다 (mac 은 ad-hoc 재서명
  *  업데이트마다 키체인 프롬프트가 재출현해 이 경로가 실제로 밟힌다). */
+/**
+ * 엔진의 `SecretPort` 로 내보내는 두 함수.
+ *
+ * 엔진(MCP 시크릿·OAuth 상태)은 이 두 개만 알면 되고, 키체인 → 암호화 파일 →
+ * 메모리로 내려가는 사다리는 여기 안에 남는다. 그 사다리는 데스크톱의 사정이다.
+ */
+export const secretGet = (account: string): Promise<string | null> => get(account);
+export const secretSet = (account: string, value: string | null): Promise<boolean> =>
+  set(account, value);
+
 async function set(account: string, value: string | null): Promise<boolean> {
   const k = await keytar();
   if (value === null) {

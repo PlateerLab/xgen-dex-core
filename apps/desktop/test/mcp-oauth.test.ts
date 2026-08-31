@@ -6,7 +6,7 @@ import {
   ConnectorOAuthProvider,
   makeSilentOAuthProvider,
   oauthTransportOptions,
-} from '../src/main/mcp-oauth'
+} from '@dex/engine/mcp-oauth'
 import type { McpServerConfig } from '../src/main/config'
 
 test('oauthTransportOptions: auth!=oauth 는 그대로, oauth 는 authProvider 부착', () => {

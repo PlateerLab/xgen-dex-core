@@ -9,8 +9,8 @@
  * The @modelcontextprotocol/sdk is lazy-imported so a build that can't resolve
  * it still boots — MCP just reports unavailable. Ported from geny-connector.
  */
-import type { McpServerConfig } from './config';
-import { mcpSecretStore } from './keychain';
+import type { McpServerConfig } from './mcp-types';
+import { mcpSecretStore } from './host';
 import { withResolvedSecrets } from './mcp-secrets';
 import { oauthTransportOptions } from './mcp-oauth';
 import { homedir } from 'os';

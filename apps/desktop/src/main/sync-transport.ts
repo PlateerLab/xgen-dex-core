@@ -20,7 +20,7 @@ import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import WebSocket from 'ws'
 import { ApprovalPendingError, ChangesResponse, SyncConflictError, Transport } from './sync-protocol'
-import { xgenWebSocketTlsOptions } from './connection-security'
+import { xgenWebSocketTlsOptions } from '@dex/engine/connection-security'
 
 export type NetworkFetch = (input: string | Request, init?: RequestInit) => Promise<Response>
 

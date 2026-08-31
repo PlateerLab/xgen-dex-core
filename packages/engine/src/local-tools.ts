@@ -47,6 +47,7 @@ import {
   extname,
 } from 'node:path';
 import { augmentedPath, buildChildEnv } from './exec-resolve';
+import { interaction } from './host';
 
 /** Reserved MCP "server" name for connector-hosted built-ins. Agents see the
  *  tool as `mcp_local_<Tool>` after backend sanitization — keep it stable. */
@@ -287,35 +288,30 @@ let sessionApprovedDangerous = false;
 async function ensureDangerousApproval(command: string): Promise<boolean> {
   if (!isDangerousShellCommand(command)) return true;
   if (sessionApprovedDangerous) return true;
+  const ask = interaction().confirmDangerous;
+  // 물을 방법이 없으면 **거부**한다. "물을 필요가 없다"가 아니라 "동의를 받을 수
+  // 없다"이고, 그때 실행하면 사용자가 모르는 사이에 파괴적인 명령이 돈다.
+  if (!ask) return false;
   try {
-    const { dialog, BrowserWindow } = await import('electron');
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-    const result = await (win
-      ? dialog.showMessageBox(win, dangerousDialogOptions(command))
-      : dialog.showMessageBox(dangerousDialogOptions(command)));
-    if (result.response === 2) {
+    const answer = await ask(command);
+    if (answer === 'session') {
       sessionApprovedDangerous = true;
       return true;
     }
-    return result.response === 1; // 1 = 이번만 허용, 0 = 거부
+    return answer === 'once';
   } catch {
-    // dialog 를 띄울 수 없으면(창 없음 등) 안전하게 거부한다.
+    // 물다가 실패하면(창이 없다거나) 안전하게 거부한다.
     return false;
   }
 }
 
-function dangerousDialogOptions(command: string) {
-  return {
-    type: 'warning' as const,
-    buttons: ['거부', '이번만 허용', '이 세션 동안 허용'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-    title: '위험할 수 있는 명령 실행 확인',
-    message: 'XGEN 에이전트가 이 PC 에서 되돌리기 어려운 명령을 실행하려 합니다.',
-    detail: command.length > 800 ? `${command.slice(0, 800)} …` : command,
-  };
-}
+/** 확인 창에 쓸 문구 — 호스트가 어떤 UI 로 묻든 **같은 말**을 하도록 여기 둔다.
+ *  데스크톱은 다이얼로그로, 터미널은 프롬프트로 묻지만 사용자가 읽는 경고는 하나여야 한다. */
+export const DANGEROUS_COMMAND_PROMPT = {
+  title: '위험할 수 있는 명령 실행 확인',
+  message: 'XGEN 에이전트가 이 PC 에서 되돌리기 어려운 명령을 실행하려 합니다.',
+  detail: (command: string) => command,
+} as const;
 
 /** Clamp + label combined stdout/stderr into an MCP text result. */
 export function shapeResult(
@@ -1116,13 +1112,19 @@ export class LocalToolProvider {
   private async clipboard(args: unknown): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
     const action = String(a.action ?? 'read');
+    const clip = interaction().clipboard;
+    if (!clip) {
+      return {
+        content: [{ type: 'text', text: '이 호스트에서는 클립보드를 쓸 수 없습니다.' }],
+        isError: true,
+      };
+    }
     try {
-      const { clipboard } = await import('electron');
       if (action === 'write') {
-        clipboard.writeText(String(a.text ?? ''));
+        await clip.write(String(a.text ?? ''));
         return { content: [{ type: 'text', text: '클립보드에 복사했습니다.' }] };
       }
-      const text = clipboard.readText();
+      const text = await clip.read();
       return { content: [{ type: 'text', text: text || '(클립보드가 비어 있습니다)' }] };
     } catch (e) {
       return {
@@ -1150,15 +1152,19 @@ export class LocalToolProvider {
           ],
         };
       }
-      const { Notification } = await import('electron');
-      if (!Notification.isSupported()) {
+      const notify = interaction().notify;
+      if (!notify) {
         return {
-          content: [{ type: 'text', text: '이 OS 에서 알림을 지원하지 않습니다.' }],
+          content: [{ type: 'text', text: '이 호스트에서는 알림을 표시할 수 없습니다.' }],
           isError: true,
         };
       }
-      new Notification({ title, body }).show();
-      return { content: [{ type: 'text', text: '알림을 표시했습니다.' }] };
+      const shown = await notify(title, body);
+      return {
+        content: [
+          { type: 'text', text: shown ? '알림을 표시했습니다.' : '알림이 표시되지 않았습니다.' },
+        ],
+      };
     } catch (e) {
       return {
         content: [{ type: 'text', text: `알림 실패: ${(e as Error).message}` }],
@@ -1239,16 +1245,34 @@ export class LocalToolProvider {
     if (cls.kind === 'blocked') {
       return { content: [{ type: 'text', text: `열 수 없습니다: ${cls.reason}` }], isError: true };
     }
+    const host = interaction();
+    if (!host.openExternal && !host.openPath) {
+      return {
+        content: [{ type: 'text', text: '이 호스트에서는 외부 열기를 지원하지 않습니다.' }],
+        isError: true,
+      };
+    }
     try {
-      const { shell: electronShell } = await import('electron');
       if (cls.kind === 'url') {
-        await electronShell.openExternal(cls.value);
+        if (!host.openExternal) {
+          return {
+            content: [{ type: 'text', text: '이 호스트에서는 링크를 열 수 없습니다.' }],
+            isError: true,
+          };
+        }
+        await host.openExternal(cls.value);
         return { content: [{ type: 'text', text: `열었습니다: ${cls.value}` }] };
       }
       // Filesystem path — scope to allowedRoots (like the file tools), then open
       // with the OS default app. guardPath throws (caught below) if out of scope.
       const abs = this.guardPath(cls.value);
-      const err = await electronShell.openPath(abs); // '' on success, else message
+      if (!host.openPath) {
+        return {
+          content: [{ type: 'text', text: '이 호스트에서는 파일을 열 수 없습니다.' }],
+          isError: true,
+        };
+      }
+      const err = await host.openPath(abs); // '' on success, else message
       if (err) return { content: [{ type: 'text', text: `열기 실패: ${err}` }], isError: true };
       return { content: [{ type: 'text', text: `열었습니다: ${abs}` }] };
     } catch (e) {

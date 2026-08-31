@@ -7,10 +7,14 @@ import {
   shouldAllowPrivateCertificate,
   shouldIgnorePrivateCertificateError,
   xgenWebSocketTlsOptions,
-} from '../src/main/connection-security';
+} from '@dex/engine/connection-security';
 import { HttpSyncTransport, type NetworkFetch } from '../src/main/sync-transport';
-import { MCPManager, type McpHttpFetch } from '../src/main/mcp-manager';
-import type { McpServerConfig } from '../src/main/config';
+import { MCPManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
+import type { McpServerConfig } from '@dex/engine';
+import { bindHost, memoryPorts } from '@dex/engine';
+
+// 이 테스트는 MCP 매니저를 쓴다 — 엔진은 호스트가 붙어야 돌고, 안 붙으면 던진다.
+bindHost(memoryPorts());
 
 test('사설 CA 오류는 활성화된 동일 hostname에서만 허용한다', () => {
   assert.equal(

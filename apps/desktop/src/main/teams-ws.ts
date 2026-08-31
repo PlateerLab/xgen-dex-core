@@ -22,7 +22,7 @@
 import WebSocket from 'ws';
 import { safeMapMessage, mapTeamsReactions } from '@dex/protocol/teams';
 import type { TeamsEvent } from '@dex/protocol/types';
-import { xgenWebSocketTlsOptions } from './connection-security';
+import { xgenWebSocketTlsOptions } from '@dex/engine/connection-security';
 
 /** 방 소켓이 유휴일 때 서버에 보내는 ping 주기. 서버는 pong 으로 답한다. */
 const HEARTBEAT_MS = 25_000;

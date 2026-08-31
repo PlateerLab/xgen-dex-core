@@ -13,7 +13,11 @@ import {
   parseEnvPath,
   resolveExecutable,
   runtimeFor,
-} from '../src/main/exec-resolve'
+} from '@dex/engine/exec-resolve'
+import { bindTestHost, recordingInteraction } from './_host';
+
+// 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
+bindTestHost({ interaction: recordingInteraction('session').port });
 
 const isWin = process.platform === 'win32'
 

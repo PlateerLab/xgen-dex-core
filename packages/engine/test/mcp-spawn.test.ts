@@ -4,7 +4,11 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
-import { getMcpManager, tailLines } from '../src/main/mcp-manager'
+import { getMcpManager, tailLines } from '@dex/engine/mcp-manager'
+import { bindTestHost, recordingInteraction } from './_host';
+
+// 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
+bindTestHost({ interaction: recordingInteraction('session').port });
 
 const here = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = join(here, 'fixtures', 'fake-mcp-server.mjs')

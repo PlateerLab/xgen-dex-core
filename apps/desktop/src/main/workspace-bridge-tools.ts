@@ -22,8 +22,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
-import { augmentedPath, buildChildEnv } from './exec-resolve';
-import type { LocalToolResult, LocalToolSchema } from './local-tools';
+import { augmentedPath, buildChildEnv } from '@dex/engine/exec-resolve';
+import type { LocalToolResult, LocalToolSchema } from '@dex/engine/local-tools';
 
 export const WORKSPACE_INFO_TOOL = '_WorkspaceInfo';
 export const EXEC_TOOL = '_Exec';

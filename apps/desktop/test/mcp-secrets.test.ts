@@ -7,7 +7,7 @@ import {
   resolveSecretKv,
   splitServerSecrets,
   withResolvedSecrets,
-} from '../src/main/mcp-secrets'
+} from '@dex/engine/mcp-secrets'
 import type { McpServerConfig } from '../src/main/config'
 
 test('redactKv: 키는 남기고 값만 비운다', () => {

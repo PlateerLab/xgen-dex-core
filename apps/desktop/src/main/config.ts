@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import type { BrowserAddressSearchConfig, BrowserPopupPermissions } from '@dex/protocol/browser';
 import type { AgentViewerSub } from '@dex/protocol/agent-data';
 import type { NotificationSettings } from '@dex/protocol/notifications';
-import { DEPLOYMENT_DEFAULTS } from './deployment-defaults';
+import { DEPLOYMENT_DEFAULTS } from '@dex/engine/deployment-defaults';
 
 /** A local MCP server the connector hosts + proxies to the user's XGEN agents. */
 export interface McpServerConfig {

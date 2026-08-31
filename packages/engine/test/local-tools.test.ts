@@ -33,7 +33,11 @@ import {
   mcpAddServerToolSchema,
   mcpRemoveServerToolSchema,
   mcpListServersToolSchema,
-} from '../src/main/local-tools';
+} from '@dex/engine/local-tools';
+import { bindTestHost, recordingInteraction } from './_host';
+
+// 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
+bindTestHost({ interaction: recordingInteraction('session').port });
 
 const isWin = platform() === 'win32';
 

@@ -105,15 +105,45 @@ export function validateProfileName(input: string): string {
   return name;
 }
 
+/**
+ * 사람이 친 것을 서버 주소로 만든다.
+ *
+ * **스킴을 생략해도 된다.** `xgen.example.com` 이라고 치면 `https://` 를 붙인다 —
+ * 브라우저 주소창이 하는 일과 같다. 예전에는 여기서 거절하고 "http:// 또는
+ * https://로 시작해야 합니다" 라고 했는데, 그 말은 맞지만 사용자가 할 일은
+ * 여덟 글자를 앞에 더 치는 것뿐이었다. 기계가 할 수 있는 일이다.
+ *
+ * `http://` 를 붙이지 않고 `https://` 를 붙이는 이유: 평문으로 떨어뜨리는 쪽이
+ * 조용한 사고이기 때문이다. 정말로 http 가 필요한 사내 서버라면 그렇게 적으면 된다.
+ *
+ * 붙여 주지 않는 경우도 있다 — `ftp://` 처럼 **다른 스킴을 명시**했을 때다.
+ * 그건 오타가 아니라 의도이고, 그 의도가 틀렸다는 것을 말해 줘야 한다.
+ */
 export function validateServerUrl(input: string): string {
+  const raw = input.trim();
+  if (!raw) {
+    throw new DexError('config_invalid', '서버 주소를 입력하세요.');
+  }
+  // 스킴이 아예 없을 때만 붙인다. `//host` 도 스킴 없는 것으로 본다.
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw);
+  const bare = raw.replace(/^\/+/, '');
+  // 로컬 주소만 http 로 붙인다. https 를 붙이면 TLS 로 반드시 실패하고, 사용자는
+  // 서버가 죽은 줄 안다 — 로컬 개발 서버는 거의 언제나 평문이다. 정말로 로컬에
+  // https 를 쓴다면 그렇게 적으면 된다.
+  const local = /^(localhost|127\.0\.0\.1|\[?::1\]?)(:|$|\/)/i.test(bare);
+  const candidate = hasScheme ? raw : `${local ? 'http' : 'https'}://${bare}`;
+
   let url: URL;
   try {
-    url = new URL(input.trim());
+    url = new URL(candidate);
   } catch {
-    throw new DexError('config_invalid', '서버 URL은 http:// 또는 https://로 시작해야 합니다.');
+    throw new DexError('config_invalid', '서버 주소를 알아볼 수 없습니다. 예: xgen.example.com');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new DexError('config_invalid', '서버 URL은 http:// 또는 https://만 사용할 수 있습니다.');
+  }
+  if (!url.hostname) {
+    throw new DexError('config_invalid', '서버 주소에 호스트가 없습니다. 예: xgen.example.com');
   }
   if (url.username || url.password || url.search || url.hash) {
     throw new DexError('config_invalid', '서버 URL에는 자격 증명, query, fragment를 넣을 수 없습니다.');

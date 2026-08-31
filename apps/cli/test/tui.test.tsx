@@ -3,14 +3,17 @@ import { test } from 'node:test';
 import { useState } from 'react';
 import { render } from 'ink-testing-library';
 import type { ProfileSummary } from '@dex/engine';
-import type { ChatInput, ResolvedChatInput } from '@dex/engine';
+import type { ChatInput, Conversation, HistoryTurn, ResolvedChatInput } from '@dex/engine';
 import { App } from '../src/tui/app';
 import { ImeTextInput } from '../src/tui/ime-text-input';
 import type { TuiEngine } from '../src/tui/model';
 
-function fakeEngine(profileList: ProfileSummary[] = [
-  { name: 'corp', serverUrl: 'https://xgen.example.com', current: true },
-]): TuiEngine {
+function fakeEngine(
+  profileList: ProfileSummary[] = [
+    { name: 'corp', serverUrl: 'https://xgen.example.com', current: true },
+  ],
+  conversations: Conversation[] = [],
+): TuiEngine {
   return {
     async listProfiles() {
       return profileList;
@@ -63,10 +66,22 @@ function fakeEngine(profileList: ProfileSummary[] = [
       };
     },
     async listConversations() {
-      return [];
+      return conversations;
     },
-    async historyTurns() {
-      return [];
+    async historyTurns(): Promise<HistoryTurn[]> {
+      return [
+        {
+          logId: 1,
+          ioId: 1,
+          interactionId: 'int-1',
+          workflowId: 'wf_abc',
+          workflowName: 'Sales Agent',
+          input: '지난 질문',
+          output: '지난 답',
+          attachments: [],
+          updatedAt: '2026-08-30T02:00:00.000Z',
+        },
+      ];
     },
     async resolveChatInput(input: ChatInput): Promise<ResolvedChatInput> {
       return {
@@ -203,6 +218,125 @@ test('IME input edits by grapheme instead of UTF-16 code unit', async () => {
     view.stdin.write('\u007F');
     const frame = await waitForFrame(view.lastFrame, (value) => value.includes('한글'));
     assert.doesNotMatch(frame, /국/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+
+// ── 에이전트를 고른 뒤의 갈림길 ─────────────────────────────────────
+//
+// 예전에는 Enter 를 누르면 바로 빈 대화가 열렸고, 이어서 하려면 Ctrl+H 로 **모든**
+// 에이전트의 목록에서 찾아야 했다. 방금 고른 에이전트가 화면에 있는데도.
+
+const CONVERSATION: Conversation = {
+  id: 1,
+  interactionId: 'int-1',
+  workflowId: 'wf_abc',
+  workflowName: 'Sales Agent',
+  interactionCount: 4,
+  metadata: {},
+  createdAt: '2026-08-30T01:00:00.000Z',
+  updatedAt: '2026-08-30T02:00:00.000Z',
+};
+
+test('이전 대화가 있으면 [새 대화]와 함께 고를 수 있다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION])} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('어떻게 시작할까요'));
+    assert.match(frame, /새 대화/);
+    assert.match(frame, /4턴/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('이전 대화를 고르면 그 내용이 대화창에 올라온다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION])} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('어떻게 시작할까요'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B[B'); // ↓ — [새 대화] 아래가 이전 대화다
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+    view.stdin.write('\r');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
+    assert.match(frame, /지난 질문/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('이전 대화가 없으면 갈림길을 띄우지 않고 바로 연다', async () => {
+  // 선택지가 하나뿐인 질문은 도움이 아니라 한 번 더 누르게 하는 일이다.
+  const view = render(<App engine={fakeEngine()} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS * 2));
+    assert.ok(
+      !(view.lastFrame() ?? '').includes('어떻게 시작할까요'),
+      '이력이 없는데 갈림길이 떴다',
+    );
+    // 그리고 바로 입력할 수 있어야 한다.
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+  } finally {
+    view.cleanup();
+  }
+});
+
+
+// ── 서버 주소를 잘못 쳤을 때 ────────────────────────────────────────
+//
+// 예전에는 로그인 화면에서 되돌아올 길이 없었다. 할 수 있는 것은 Ctrl+P 로 프로필
+// 목록에 가서 **새 프로필을 만드는 것**뿐이었고, 오타 하나에 프로필이 하나 늘었다.
+
+test('로그인 화면에서 Ctrl+E 로 서버 주소를 고친다 — 프로필은 늘지 않는다', async () => {
+  const engine = fakeEngine();
+  const created: { name: string; serverUrl: string }[] = [];
+  engine.setProfile = async (name, serverUrl) => {
+    created.push({ name, serverUrl });
+    return { name, serverUrl, current: true };
+  };
+  // 로그인 안 된 상태로 들어가 로그인 화면을 띄운다.
+  engine.authStatus = async (profile) => ({
+    profile: profile ?? 'corp',
+    serverUrl: 'https://xgen.example.com',
+    authenticated: false,
+    reason: 'missing_session' as const,
+  });
+
+  const view = render(<App engine={engine} />);
+  try {
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('로그인'));
+    assert.match(frame, /Ctrl\+E/, '서버를 고칠 수 있다는 것이 화면에 있어야 한다');
+
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u0005'); // Ctrl+E
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('서버 주소 바꾸기'));
+    // 지금 값이 채워져 있어야 한다 — 다시 치는 게 아니라 고치는 것이다.
+    // 출처는 **프로필**이다(authStatus 가 아니라) — 지금 어느 서버를 가리키고 있는지는
+    // 프로필이 정한다.
+    assert.match(frame, /https:\/\/xgen\.example\.com/);
+
+    assert.deepEqual(created, [], '아직 아무것도 저장하지 않았다');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('처음 설정 화면은 https 를 생략해도 된다고 말한다', async () => {
+  const view = render(<App engine={fakeEngine([])} />);
+  try {
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('처음 오셨군요'));
+    assert.match(frame, /https:\/\/ 는 생략해도 됩니다/);
   } finally {
     view.cleanup();
   }

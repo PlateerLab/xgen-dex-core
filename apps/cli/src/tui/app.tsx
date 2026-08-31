@@ -7,9 +7,9 @@ import { Footer, Header, Loading, Notice } from './components';
 import { LoginScreen } from './login-screen';
 import type { TuiEngine, TuiSession } from './model';
 import { ProfileScreen } from './profile-screen';
-import { SetupScreen } from './setup-screen';
+import { ServerScreen } from './server-screen';
 
-type Route = 'boot' | 'setup' | 'login' | 'dashboard' | 'profiles' | 'fatal';
+type Route = 'boot' | 'server' | 'login' | 'dashboard' | 'profiles' | 'fatal';
 
 export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
   const { exit } = useApp();
@@ -17,6 +17,8 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
   const [session, setSession] = useState<TuiSession>();
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [loginTarget, setLoginTarget] = useState<{ profile: string; serverUrl: string }>();
+  /** 서버 주소를 고치는 중 — 지금 값이 화면에 채워진다. */
+  const [editingServer, setEditingServer] = useState<{ profile: string; serverUrl: string }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -34,7 +36,7 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
         setProfiles(available);
         if (available.length === 0) {
           setSession(undefined);
-          setRoute('setup');
+          setRoute('server');
           return;
         }
         if (preferredProfile) {
@@ -79,14 +81,22 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
     void bootstrap();
   }, [bootstrap]);
 
+  /**
+   * 서버 주소를 정한다 — 처음이든 고치는 것이든 같은 길.
+   *
+   * 고칠 때는 **지금 프로필을 그대로 덮어쓴다.** 예전에는 되돌아올 길이 없어서
+   * 오타 하나에 프로필이 하나씩 늘었다.
+   */
   const configure = async (serverUrl: string): Promise<void> => {
     setBusy(true);
     setError(undefined);
+    const target = editingServer?.profile ?? loginTarget?.profile ?? 'default';
     try {
-      const profile = await engine.setProfile('default', serverUrl);
+      const profile = await engine.setProfile(target, serverUrl);
       await engine.useProfile(profile.name);
       setLoginTarget({ profile: profile.name, serverUrl: profile.serverUrl });
       setProfiles(await engine.listProfiles());
+      setEditingServer(undefined);
       setRoute('login');
     } catch (reason) {
       setError(publicError(reason).message);
@@ -162,8 +172,26 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
       </Box>
     );
   }
-  if (route === 'setup') {
-    return <SetupScreen busy={busy} error={error} onSubmit={(url) => void configure(url)} />;
+  if (route === 'server') {
+    return (
+      <ServerScreen
+        initialValue={editingServer?.serverUrl}
+        profile={editingServer?.profile}
+        busy={busy}
+        error={error}
+        onSubmit={(url) => void configure(url)}
+        // 처음 설정에는 취소가 없다 — 돌아갈 곳이 없다.
+        onCancel={
+          editingServer
+            ? () => {
+                setEditingServer(undefined);
+                setError(undefined);
+                setRoute('login');
+              }
+            : undefined
+        }
+      />
+    );
   }
   if (route === 'login' && loginTarget) {
     return (
@@ -174,6 +202,11 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
         error={error}
         onSubmit={(email, password) => void login(email, password)}
         onProfiles={() => void openProfiles()}
+        onEditServer={() => {
+          setEditingServer(loginTarget);
+          setError(undefined);
+          setRoute('server');
+        }}
       />
     );
   }
@@ -185,7 +218,7 @@ export function App({ engine }: { engine: TuiEngine }): React.ReactNode {
         error={error}
         onSelect={(name) => void bootstrap(name)}
         onCreate={(name, url) => void createProfile(name, url)}
-        onCancel={() => setRoute(session ? 'dashboard' : loginTarget ? 'login' : 'setup')}
+        onCancel={() => setRoute(session ? 'dashboard' : loginTarget ? 'login' : 'server')}
       />
     );
   }

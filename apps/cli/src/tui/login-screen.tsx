@@ -9,6 +9,8 @@ export function LoginScreen(props: {
   error?: string;
   onSubmit: (email: string, password: string) => void;
   onProfiles: () => void;
+  /** 주소를 잘못 친 것을 여기서 바로 고친다 — 프로필을 새로 만들지 않고. */
+  onEditServer: () => void;
 }): React.ReactNode {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,6 +20,7 @@ export function LoginScreen(props: {
     (input, key) => {
       if (key.tab) setFocus((current) => (current === 'email' ? 'password' : 'email'));
       if (key.ctrl && input === 'p') props.onProfiles();
+      if (key.ctrl && input === 'e') props.onEditServer();
     },
     { isActive: !props.busy },
   );
@@ -39,7 +42,10 @@ export function LoginScreen(props: {
       <Header profile={props.profile} connected={false} />
       <Box flexDirection="column" borderStyle="round" borderColor="blue" padding={1}>
         <Text bold>로그인</Text>
-        <Text dimColor>{props.serverUrl}</Text>
+        {/* 주소를 크게 보여 준다 — 로그인이 안 될 때 가장 먼저 의심할 값이다. */}
+        <Text dimColor>
+          {props.serverUrl} <Text color="cyan">(Ctrl+E 바꾸기)</Text>
+        </Text>
         <Box flexDirection="column" marginTop={1}>
           <FormField
             label="Email"
@@ -63,7 +69,7 @@ export function LoginScreen(props: {
         {props.busy ? <Loading label="로그인하는 중..." /> : null}
         {props.error ? <Notice error>{props.error}</Notice> : null}
       </Box>
-      <Footer text="Tab 이동 · Enter 로그인 · Ctrl+P 프로필 · Ctrl+Q 종료" />
+      <Footer text="Tab 이동 · Enter 로그인 · Ctrl+E 서버 · Ctrl+P 프로필 · Ctrl+Q 종료" />
     </Box>
   );
 }

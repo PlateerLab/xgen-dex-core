@@ -6,6 +6,7 @@ import { chatReducer, initialChatState, type ChatMessage } from './chat-state';
 import { CommandPalette, type PaletteAction } from './command-palette';
 import { Footer, Header } from './components';
 import { HistoryScreen } from './history-screen';
+import { StartPanel } from './start-panel';
 import { ImeTextInput, type CursorOrigin } from './ime-text-input';
 import type { TuiEngine, TuiSession } from './model';
 import { useTerminalSize } from './use-terminal-size';
@@ -135,15 +136,53 @@ export function Dashboard(props: {
   const [chat, dispatch] = useReducer(chatReducer, initialChatState);
   const [palette, setPalette] = useState(false);
   const [history, setHistory] = useState(false);
+  /** 에이전트를 고른 직후의 갈림길. 이력이 있을 때만 채워진다. */
+  const [start, setStart] = useState<{ agent: AgentRef; conversations: Conversation[] }>();
+  const [starting, setStarting] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   useEffect(() => () => controller.current?.abort(), []);
 
-  const selectAgent = (): void => {
+  /**
+   * 에이전트를 고른다.
+   *
+   * 이 에이전트에 **이전 대화가 있으면** 갈림길을 보여 준다(새로 시작 / 이어가기).
+   * 없으면 바로 새 대화를 연다 — 선택지가 하나뿐인 질문은 한 번 더 누르게 하는
+   * 일일 뿐이다.
+   *
+   * 목록 조회가 실패해도 막지 않는다. 이력을 못 읽는 것과 대화를 못 하는 것은
+   * 다른 일이고, 후자를 전자 때문에 막으면 안 된다 — 그냥 새 대화로 연다.
+   */
+  const selectAgent = async (): Promise<void> => {
     const agent = props.session.agents[cursor];
-    if (!agent || chat.running) return;
-    setSelected({ workflowId: agent.workflowId, workflowName: agent.workflowName });
+    if (!agent || chat.running || starting) return;
+    const ref: AgentRef = { workflowId: agent.workflowId, workflowName: agent.workflowName };
+
+    setStarting(true);
+    let conversations: Conversation[] = [];
+    try {
+      const all = await props.engine.listConversations(props.session.profile);
+      conversations = all.filter((item) => item.workflowId === ref.workflowId);
+    } catch {
+      conversations = [];
+    } finally {
+      setStarting(false);
+    }
+
+    if (conversations.length === 0) {
+      openNewChat(ref);
+      return;
+    }
+    setSelected(ref);
+    setStart({ agent: ref, conversations });
+  };
+
+  /** 빈 대화를 연다 — 갈림길에서 [새 대화] 를 고른 것과 같은 자리. */
+  const openNewChat = (ref: AgentRef): void => {
+    setSelected(ref);
     dispatch({ type: 'reset' });
+    setInput('');
+    setStart(undefined);
     setFocus('composer');
   };
 
@@ -153,6 +192,7 @@ export function Dashboard(props: {
     const index = props.session.agents.findIndex((agent) => agent.workflowId === conversation.workflowId);
     if (index >= 0) setCursor(index);
     setHistory(false);
+    setStart(undefined);
     setFocus('composer');
   };
 
@@ -214,9 +254,11 @@ export function Dashboard(props: {
       else if (focus === 'agents' && key.upArrow) setCursor((current) => Math.max(0, current - 1));
       else if (focus === 'agents' && key.downArrow && props.session.agents.length > 0) {
         setCursor((current) => Math.min(props.session.agents.length - 1, current + 1));
-      } else if (focus === 'agents' && key.return) selectAgent();
+      } else if (focus === 'agents' && key.return) void selectAgent();
     },
-    { isActive: !palette && !history },
+    // 갈림길·팔레트·이력 화면이 떠 있으면 그 화면이 키를 갖는다 — 여기서도 받으면
+    // 방향키 하나가 두 곳에서 움직인다.
+    { isActive: !palette && !history && !start },
   );
 
   const paletteActions: PaletteAction[] = [
@@ -272,7 +314,22 @@ export function Dashboard(props: {
         height={bodyHeight}
       />
     );
-    const conversation = (
+    // 갈림길이 열려 있으면 대화창 자리를 그것이 쓴다 — 목록은 그대로 옆에 남아
+    // 어느 에이전트를 고른 것인지 보인다.
+    const conversation = start ? (
+      <StartPanel
+        engine={props.engine}
+        profile={props.session.profile}
+        agentName={start.agent.workflowName}
+        conversations={start.conversations}
+        onNew={() => openNewChat(start.agent)}
+        onOpen={openHistory}
+        onCancel={() => {
+          setStart(undefined);
+          setFocus('agents');
+        }}
+      />
+    ) : (
       <Box flexDirection="column" flexGrow={1}>
         <ChatPane agent={selected} messages={chat.messages} status={chat.status} height={bodyHeight - 3} />
         <Composer

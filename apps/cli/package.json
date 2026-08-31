@@ -1,6 +1,6 @@
 {
   "name": "@xgen/dex-cli",
-  "version": "4.0.0",
+  "version": "1.0.0",
   "description": "XGEN Dex CLI, terminal UI, and local engine",
   "type": "module",
   "bin": {

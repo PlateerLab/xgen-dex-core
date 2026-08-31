@@ -2,7 +2,7 @@
   "name": "xgen-dex-vscode",
   "displayName": "XGEN Dex",
   "description": "Use XGEN Dex agents in Visual Studio Code through the dex-cli engine.",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "publisher": "xgen",
   "license": "Apache-2.0",
   "engines": {
@@ -96,6 +96,11 @@
       {
         "command": "xgenDex.restartEngine",
         "title": "XGEN Dex: CLI 엔진 다시 시작"
+      },
+      {
+        "command": "xgenDex.installCli",
+        "title": "CLI 설치 / 복구",
+        "category": "XGEN Dex"
       }
     ],
     "configuration": {

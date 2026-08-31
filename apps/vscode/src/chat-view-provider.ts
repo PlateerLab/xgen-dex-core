@@ -557,7 +557,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     </header>
     <main class="agents-content">
       <div class="agents-heading">
-        <div><div class="eyebrow">SELECT AN AGENT</div><h1>어떤 Agent와 대화할까요?</h1><p>업무에 맞는 Agent를 선택하면 바로 새 대화를 시작합니다.</p></div>
+        <div><h1>어떤 Agent와 대화할까요?</h1><p>업무에 맞는 Agent를 선택하면 바로 새 대화를 시작합니다.</p></div>
         <span id="agent-count" class="count-badge"></span>
       </div>
       <div class="agent-toolbar">
@@ -574,16 +574,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   <section id="chat-screen" class="screen chat-screen hidden">
     <header class="agent-header">
-      <div class="agent-avatar" aria-hidden="true">✦</div>
       <div class="agent-copy">
-        <div class="agent-eyebrow">ACTIVE AGENT</div>
-        <div id="agent-name" class="agent-name"></div>
-        <div class="agent-meta">
+        <div class="agent-line">
+          <div id="agent-name" class="agent-name"></div>
           <span id="agent-scope" class="meta-badge"></span>
           <span id="agent-status" class="meta-badge subtle"></span>
-          <span id="agent-id" class="agent-id"></span>
         </div>
-        <div id="agent-description" class="agent-description"></div>
+        <div class="agent-meta"><span id="agent-id" class="agent-id"></span><span id="agent-description" class="agent-description"></span></div>
       </div>
       <div class="agent-actions">
         <button id="change-agent" class="secondary-button compact" type="button">Agent 변경</button>

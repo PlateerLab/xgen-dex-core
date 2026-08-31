@@ -67,8 +67,7 @@ button:disabled {
   height: 100%;
 }
 
-.eyebrow,
-.agent-eyebrow {
+.eyebrow {
   color: var(--vscode-descriptionForeground);
   font-size: 9px;
   font-weight: 750;
@@ -368,7 +367,7 @@ button:disabled {
 .agents-content {
   width: min(100%, 1040px);
   margin: 0 auto;
-  padding: 24px 18px 32px;
+  padding: 12px 12px 18px;
 }
 
 .agents-heading {
@@ -379,15 +378,24 @@ button:disabled {
 }
 
 .agents-heading h1 {
-  margin: 6px 0 0;
-  font-size: 19px;
-  line-height: 1.35;
+  margin: 3px 0 0;
+  font-size: 15px;
+  line-height: 1.3;
 }
 
+/* 고르는 법을 설명하는 문장은 한 번 읽으면 그만이다. 좁은 사이드바에서는
+   자리를 내주고, 넓을 때만 보여 준다. */
 .agents-heading p {
-  margin: 6px 0 0;
+  display: none;
+  margin: 4px 0 0;
   color: var(--vscode-descriptionForeground);
   font-size: 10px;
+}
+
+@media (min-width: 620px) {
+  .agents-heading p {
+    display: block;
+  }
 }
 
 .count-badge,
@@ -472,26 +480,30 @@ button:disabled {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dex-accent) 24%, transparent);
 }
 
+/* 사이드바에서는 한 줄에 하나씩이 가장 많이 보인다. 넓게 열어 두면 그때만
+   두 칸으로 벌어진다. */
 .agent-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 9px;
-  margin-top: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 4px;
+  margin-top: 10px;
 }
 
+/* 예전에는 카드 하나가 154px 였다 — 장식 아이콘, 없는 설명 자리, '대화 시작 →'
+   안내가 각각 한 줄씩 먹은 결과다. 사이드바에서는 화면에 서너 개밖에 안 들어와
+   목록을 훑을 수가 없었다. 이제 이름 한 줄이 기본이고, 설명이 있을 때만 늘어난다. */
 .agent-card {
   display: flex;
   min-width: 0;
-  min-height: 154px;
-  padding: 13px;
+  padding: 7px 9px;
   flex-direction: column;
+  gap: 2px;
   color: var(--vscode-foreground);
-  border-color: var(--dex-border);
-  border-radius: 9px;
+  border-color: transparent;
+  border-radius: 6px;
   background: var(--dex-surface);
   text-align: left;
-  box-shadow: 0 5px 18px color-mix(in srgb, #000 8%, transparent);
-  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 .agent-card:hover {
@@ -500,32 +512,17 @@ button:disabled {
   background:
     linear-gradient(var(--dex-accent-soft), var(--dex-accent-soft)),
     var(--dex-surface);
-  box-shadow: 0 8px 25px color-mix(in srgb, #000 13%, transparent);
-  transform: translateY(-1px);
 }
 
 .agent-card-top,
-.agent-card-footer,
 .agent-card-badges {
   display: flex;
   align-items: center;
 }
 
-.agent-card-top,
-.agent-card-footer {
+.agent-card-top {
+  gap: 6px;
   justify-content: space-between;
-}
-
-.agent-card-icon {
-  display: grid;
-  width: 29px;
-  height: 29px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--dex-accent) 32%, transparent);
-  border-radius: 8px;
-  color: var(--dex-accent);
-  background: var(--dex-accent-soft);
-  font-size: 14px;
 }
 
 .agent-card-badges {
@@ -555,42 +552,31 @@ button:disabled {
 }
 
 .agent-card > strong {
-  margin-top: 13px;
+  min-width: 0;
   overflow: hidden;
   font-size: 12px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .agent-card > p {
   display: -webkit-box;
-  margin: 6px 0 12px;
+  margin: 0;
   overflow: hidden;
   color: var(--vscode-descriptionForeground);
-  font-size: 9px;
-  line-height: 1.5;
+  font-size: 10px;
+  line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-.agent-card-footer {
-  gap: 8px;
-  margin-top: auto;
-  padding-top: 9px;
-  border-top: 1px solid var(--dex-soft-border);
-  color: var(--vscode-descriptionForeground);
-  font-size: 8px;
-}
-
-.agent-card-footer > span:first-child {
+.agent-card-meta {
   overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-card-action {
-  flex: 0 0 auto;
-  color: var(--dex-accent);
 }
 
 .agent-empty {
@@ -621,22 +607,28 @@ button:disabled {
 
 /* Chat */
 
+/* 예전에는 88px 를 썼다 — 장식 아바타, 'ACTIVE AGENT' 라는 머리글, 이름, 배지,
+   설명이 각각 제 줄을 차지한 결과다. 대화창은 그만큼 밀려났다. 이름과 배지는 한
+   줄에 두고, 아이디와 설명은 그 아래 한 줄로 합쳤다. */
 .agent-header {
   position: relative;
   display: flex;
   flex: 0 0 auto;
-  min-height: 88px;
-  padding: 12px 14px 11px;
-  align-items: flex-start;
-  gap: 11px;
+  padding: 7px 10px;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   border-bottom: 1px solid var(--dex-border);
-  background:
-    radial-gradient(circle at 12px 5px, var(--dex-accent-soft), transparent 105px),
-    var(--vscode-sideBar-background);
+  background: var(--vscode-sideBar-background);
 }
 
-.agent-avatar,
+.agent-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
 .message-avatar {
   display: grid;
   flex: 0 0 auto;
@@ -647,25 +639,16 @@ button:disabled {
   font-weight: 700;
 }
 
-.agent-avatar {
-  width: 36px;
-  height: 36px;
-  margin-top: 2px;
-  border-radius: 10px;
-  font-size: 17px;
-  box-shadow: 0 5px 18px color-mix(in srgb, var(--dex-accent) 10%, transparent);
-}
-
 .agent-copy {
   min-width: 0;
 }
 
 .agent-name {
+  min-width: 0;
   overflow: hidden;
-  margin-top: 2px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
-  line-height: 1.35;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -673,9 +656,18 @@ button:disabled {
 .agent-meta {
   display: flex;
   min-width: 0;
-  margin-top: 5px;
+  margin-top: 2px;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.agent-meta > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .meta-badge {
@@ -711,15 +703,9 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* 이제 아이디와 같은 줄에 있다 — 제 여백과 색을 갖지 않고 그 줄을 따른다. */
 .agent-description {
-  max-width: 680px;
-  margin-top: 5px;
-  overflow: hidden;
-  color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
 }
 
 .agent-actions {

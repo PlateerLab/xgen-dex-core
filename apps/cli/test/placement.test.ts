@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DOMElement } from 'ink';
-import { placementOf } from '../src/tui/ime-text-input';
+import { placementOf } from '../src/tui/measure';
 
 /** 부모를 타고 올라가는 계산만 보면 되므로 yoga 는 흉내만 낸다. */
 function node(left: number, top: number, width: number, parent?: DOMElement): DOMElement {
@@ -18,6 +18,7 @@ function node(left: number, top: number, width: number, parent?: DOMElement): DO
       getComputedLeft: () => left,
       getComputedTop: () => top,
       getComputedWidth: () => width,
+      getComputedHeight: () => 1,
     },
     parentNode: parent,
   } as unknown as DOMElement;
@@ -28,11 +29,11 @@ test('부모를 따라 올라가며 좌표를 더한다', () => {
   const body = node(30, 1, 90, root);
   const box = node(2, 27, 86, body);
   const input = node(2, 0, 84, box);
-  assert.deepEqual(placementOf(input), { x: 34, y: 28, width: 84 });
+  assert.deepEqual(placementOf(input), { x: 34, y: 28, width: 84, height: 1 });
 });
 
 test('가장 바깥 노드는 그 자리 그대로다', () => {
-  assert.deepEqual(placementOf(node(0, 0, 100)), { x: 0, y: 0, width: 100 });
+  assert.deepEqual(placementOf(node(0, 0, 100)), { x: 0, y: 0, width: 100, height: 1 });
 });
 
 test('yoga 가 없는 조상은 건너뛴다', () => {
@@ -40,7 +41,7 @@ test('yoga 가 없는 조상은 건너뛴다', () => {
   const root = node(0, 0, 80);
   const virtual = { parentNode: root } as unknown as DOMElement;
   const input = node(5, 3, 40, virtual);
-  assert.deepEqual(placementOf(input), { x: 5, y: 3, width: 40 });
+  assert.deepEqual(placementOf(input), { x: 5, y: 3, width: 40, height: 1 });
 });
 
 test('아직 레이아웃이 없으면 아무것도 말하지 않는다', () => {

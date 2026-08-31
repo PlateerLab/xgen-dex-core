@@ -21,6 +21,50 @@ export function activate(context: vscode.ExtensionContext): void {
     await Promise.all([chat.refreshSession(), updateStatus(service, status)]);
   };
 
+  /**
+   * `dex` 가 있는지 확인하고, 없으면 깔아 준다.
+   *
+   * 확장은 대화를 직접 하지 않는다 — CLI 엔진을 자식 프로세스로 띄워 쓴다. 그래서
+   * CLI 가 없으면 아무것도 안 되는데, 예전에는 `spawn dex ENOENT` 라는 말만 나왔다.
+   * 무엇을 하라는 말이 없으니 사용자는 거기서 막힌다.
+   *
+   * 묻고 깐다. 사용자 컴퓨터에 전역으로 무언가를 설치하는 일이라 말없이 하지 않는다.
+   */
+  const ensureCli = async (interactive: boolean): Promise<boolean> => {
+    if (await service.findCli()) return true;
+    if (!interactive) return false;
+
+    const install = '지금 설치';
+    const answer = await vscode.window.showInformationMessage(
+      'XGEN Dex CLI가 필요합니다.',
+      {
+        modal: true,
+        detail:
+          '확장은 CLI 엔진을 통해 XGEN 서버와 대화합니다.\n' +
+          `npm 으로 확장과 같은 버전(${service.cliVersion()})을 전역 설치합니다.`,
+      },
+      install,
+    );
+    if (answer !== install) return false;
+
+    const outcome = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'XGEN Dex CLI를 설치하는 중...' },
+      () => service.installCli(),
+    );
+    if (!outcome.ok) {
+      const showLog = '로그 보기';
+      void vscode.window
+        .showErrorMessage(`CLI를 설치하지 못했습니다.\n${outcome.reason}`, { modal: true }, showLog)
+        .then((choice) => {
+          if (choice === showLog) service.showOutput();
+        });
+      return false;
+    }
+    void vscode.window.showInformationMessage(`XGEN Dex CLI를 설치했습니다 (${outcome.location.command}).`);
+    await service.restart().catch(() => undefined);
+    return true;
+  };
+
   context.subscriptions.push(
     service,
     chat,
@@ -72,6 +116,9 @@ export function activate(context: vscode.ExtensionContext): void {
         await refreshAll();
       }
     }),
+    vscode.commands.registerCommand('xgenDex.installCli', async () => {
+      if (await ensureCli(true)) await refreshAll();
+    }),
     vscode.commands.registerCommand('xgenDex.restartEngine', async () => {
       await withProgress('dex-cli 엔진을 다시 시작하는 중...', () => service.restart());
       await refreshAll();
@@ -87,7 +134,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  void refreshAll();
+  void (async () => {
+    await ensureCli(true);
+    await refreshAll();
+  })();
 }
 
 export async function deactivate(): Promise<void> {
@@ -121,6 +171,13 @@ async function updateStatus(service: DexService, status: vscode.StatusBarItem): 
       status.command = 'xgenDex.login';
     }
   } catch (error) {
+    // CLI 자체가 없는 것과 서버가 대답을 안 하는 것은 고치는 방법이 다르다.
+    if (!(await service.findCli())) {
+      status.text = '$(cloud-download) Dex CLI 설치';
+      status.tooltip = 'XGEN Dex CLI가 없습니다. 눌러서 설치하세요.';
+      status.command = 'xgenDex.installCli';
+      return;
+    }
     status.text = '$(error) Dex CLI';
     status.tooltip = errorMessage(error);
     status.command = 'xgenDex.restartEngine';

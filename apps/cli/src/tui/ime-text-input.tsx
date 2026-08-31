@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Text, useCursor, useInput, type DOMElement } from 'ink';
+import { Box, Text, useCursor, useInput } from 'ink';
 import stringWidth from 'string-width';
+import { useMeasured } from './measure';
 import { classifyInput } from './terminal-input';
 
 interface ImeTextInputProps {
@@ -20,36 +21,6 @@ function graphemes(value: string): string[] {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
-}
-
-export interface Placement {
-  x: number;
-  y: number;
-  width: number;
-}
-
-/**
- * 이 입력 칸이 화면의 **몇 번째 칸·몇 번째 줄** 에 그려지는지 레이아웃에서 읽어 온다.
- *
- * 예전에는 화면마다 `{ x: 16, y: 6 }` 처럼 손으로 세어 넣었다. 그 숫자는 그때의
- * 레이아웃에서만 맞다 — 라벨 한 글자, 테두리 하나, 사이드바 폭이 바뀌면 조용히
- * 어긋나고, 진짜 터미널 커서가 글자와 다른 자리에 선다. 터미널 IME 는 그 커서
- * 자리에 조합 중인 한글을 그리므로, 어긋나면 한글이 엉뚱한 데 나타난다.
- *
- * yoga 가 이미 정확히 알고 있는 값이라 셀 이유가 없다.
- */
-export function placementOf(node: DOMElement | null): Placement | undefined {
-  const width = node?.yogaNode?.getComputedWidth();
-  if (!node || width === undefined) return undefined;
-  let x = 0;
-  let y = 0;
-  for (let current: DOMElement | undefined = node; current; current = current.parentNode) {
-    const yoga = current.yogaNode;
-    if (!yoga) continue;
-    x += yoga.getComputedLeft();
-    y += yoga.getComputedTop();
-  }
-  return { x, y, width };
 }
 
 function visibleInput(
@@ -97,27 +68,12 @@ function TerminalCursor({ x, y }: { x: number; y: number }): null {
  * 곧 한글이 어디에 보이는지다.
  */
 export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
-  const ref = useRef<DOMElement | null>(null);
-  const [placement, setPlacement] = useState<Placement | undefined>(undefined);
+  const [ref, placement] = useMeasured();
   const initialSegments = graphemes(props.value);
   const [cursor, setCursor] = useState(initialSegments.length);
   const valueRef = useRef(props.value);
   const cursorRef = useRef(initialSegments.length);
   const pastingRef = useRef(false);
-
-  // 레이아웃은 커밋 뒤에 계산되므로 여기서 읽으면 한 프레임 늦다. 달라졌을 때만
-  // 상태를 바꿔 다음 프레임에서 맞춘다 — 매번 바꾸면 렌더가 끝없이 돈다.
-  useEffect(() => {
-    const measured = placementOf(ref.current);
-    if (!measured) return;
-    if (
-      placement?.x !== measured.x ||
-      placement?.y !== measured.y ||
-      placement?.width !== measured.width
-    ) {
-      setPlacement(measured);
-    }
-  });
 
   const moveCursor = (next: number, length: number): void => {
     const resolved = clamp(next, 0, length);

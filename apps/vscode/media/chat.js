@@ -397,31 +397,37 @@
     button.type = 'button';
     button.className = 'agent-card';
     button.addEventListener('click', () => post('selectAgent', { workflowId: agent.workflowId }));
+
+    // 이름과 배지를 한 줄에 둔다. 예전에는 장식용 ✦ 와 '대화 시작 →' 가 카드마다
+    // 두 줄을 더 먹었는데, 아이콘은 어느 카드나 같아서 고르는 데 도움이 안 되고
+    // 카드 전체가 이미 버튼이라 그 안내도 없어도 된다.
     const top = document.createElement('div');
     top.className = 'agent-card-top';
-    const icon = document.createElement('span');
-    icon.className = 'agent-card-icon';
-    icon.textContent = '✦';
-    const badges = document.createElement('span');
-    badges.className = 'agent-card-badges';
-    badges.append(
-      badge(agent.isShared ? '공유' : '개인', agent.isShared ? 'shared' : 'personal'),
-      badge(agent.isDeployed ? '배포됨' : '초안', agent.isDeployed ? 'deployed' : 'draft'),
-    );
-    top.append(icon, badges);
     const name = document.createElement('strong');
     name.textContent = agent.workflowName;
-    const description = document.createElement('p');
-    description.textContent = agent.description || '등록된 설명이 없습니다.';
-    const footer = document.createElement('div');
-    footer.className = 'agent-card-footer';
-    const owner = document.createElement('span');
-    owner.textContent = agent.fullName || agent.username || `${agent.nodeCount || 0} nodes`;
-    const action = document.createElement('span');
-    action.className = 'agent-card-action';
-    action.textContent = '대화 시작 →';
-    footer.append(owner, action);
-    button.append(top, name, description, footer);
+    const badges = document.createElement('span');
+    badges.className = 'agent-card-badges';
+    badges.append(badge(agent.isShared ? '공유' : '개인', agent.isShared ? 'shared' : 'personal'));
+    // 배포 여부는 초안일 때만 말한다 — 대부분이 초안이라 둘 다 붙이면 소음이다.
+    if (agent.isDeployed) badges.append(badge('배포됨', 'deployed'));
+    top.append(name, badges);
+    button.append(top);
+
+    // 설명이 없는 Agent 가 대부분이다. '등록된 설명이 없습니다.' 로 한 줄을
+    // 채우느니 그 줄을 아예 없앤다.
+    const summary = (agent.description || '').trim();
+    const owner = agent.fullName || agent.username || '';
+    if (summary) {
+      const description = document.createElement('p');
+      description.textContent = summary;
+      button.append(description);
+    }
+    if (owner) {
+      const meta = document.createElement('span');
+      meta.className = 'agent-card-meta';
+      meta.textContent = owner;
+      button.append(meta);
+    }
     return button;
   }
 
@@ -479,7 +485,9 @@
     const agentChanged = previousAgentId !== agent.workflowId;
     previousAgentId = agent.workflowId;
     elements.agentName.textContent = agent.workflowName;
-    elements.agentDescription.textContent = agent.description || '이 Agent에 등록된 설명이 없습니다.';
+    // 설명이 없으면 그 자리를 비운다. 헤더는 아이디와 한 줄을 나눠 쓰므로,
+    // '없습니다' 를 채워 넣으면 진짜 정보가 밀린다.
+    elements.agentDescription.textContent = (agent.description || '').trim();
     elements.agentScope.textContent = agent.isShared ? '공유 Agent' : '개인 Agent';
     elements.agentStatus.textContent = agent.isDeployed ? '배포됨' : '초안';
     elements.agentStatus.classList.toggle('deployed', !!agent.isDeployed);

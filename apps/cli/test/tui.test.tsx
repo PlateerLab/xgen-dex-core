@@ -88,9 +88,31 @@ function fakeEngine(profileList: ProfileSummary[] = [
   };
 }
 
-/** TUI 렌더가 한 바퀴 돌 여유. 고정 대기지만 **넉넉해야** 한다 — 20ms 는 이 기계에서만
- *  맞았고 CI 러너에서는 입력이 처리되기 전에 다음 키가 얹혔다. */
+/** TUI 렌더가 한 바퀴 돌 여유. */
 const SETTLE_MS = 250;
+
+/**
+ * 화면이 **더 이상 변하지 않을 때까지** 기다린다.
+ *
+ * 어떤 문구가 나타나는 것과 앱이 그 입력을 받을 준비가 된 것은 다르다. 목록에
+ * 'Sales Agent' 가 그려진 뒤에도 대시보드로 그 목록이 내려가는 상태 갱신이 아직
+ * 남아 있을 수 있고, 그 사이에 Enter 를 누르면 selectAgent() 가 빈 목록을 보고
+ * 조용히 되돌아간다 — 아무 일도 일어나지 않고 테스트는 타임아웃까지 기다린다.
+ *
+ * 이건 추측이 아니라 관찰이다: 이 자리에 console.error 한 줄(=이벤트 루프 양보)을
+ * 넣었더니 6/6 통과했다. 그래서 '문구가 보인다'가 아니라 '화면이 잠잠하다'를
+ * 기다린다.
+ */
+async function waitForSettled(lastFrame: () => string | undefined): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let previous = lastFrame();
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const current = lastFrame();
+    if (current === previous) return;
+    previous = current;
+  }
+}
 
 /**
  * 화면이 조건을 만족할 때까지 기다린다.
@@ -141,6 +163,7 @@ test('TUI boots an authenticated profile and streams a chat turn', async () => {
   try {
     let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
     assert.match(frame, /Connected/);
+    await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
     await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     view.stdin.write('hello');

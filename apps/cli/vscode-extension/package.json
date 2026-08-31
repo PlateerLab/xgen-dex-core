@@ -1,0 +1,175 @@
+{
+  "name": "xgen-dex-vscode",
+  "displayName": "XGEN Dex",
+  "description": "Use XGEN Dex agents in Visual Studio Code through the dex-cli engine.",
+  "version": "0.1.0",
+  "publisher": "xgen",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "xgen",
+    "dex",
+    "agent",
+    "ai",
+    "chat"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:xgenDex.chat",
+    "onCommand:xgenDex.setupProfile",
+    "onCommand:xgenDex.login",
+    "onCommand:xgenDex.switchProfile"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "verify": "npm run check && npm test && npm run build",
+    "vscode:prepublish": "npm run build",
+    "package": "npm run verify && vsce package --no-dependencies"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "xgenDex.refresh",
+        "title": "XGEN Dex: 새로 고침",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "xgenDex.searchAgents",
+        "title": "XGEN Dex: Agent 검색",
+        "icon": "$(search)"
+      },
+      {
+        "command": "xgenDex.openAgent",
+        "title": "XGEN Dex: Agent와 대화",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "xgenDex.showAgents",
+        "title": "XGEN Dex: Agent 변경",
+        "icon": "$(hubot)"
+      },
+      {
+        "command": "xgenDex.showSettings",
+        "title": "XGEN Dex: 계정 및 연결 설정",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "xgenDex.newChat",
+        "title": "XGEN Dex: 새 대화",
+        "icon": "$(add)"
+      },
+      {
+        "command": "xgenDex.cancelChat",
+        "title": "XGEN Dex: 응답 취소",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "xgenDex.openHistory",
+        "title": "XGEN Dex: 대화 기록",
+        "icon": "$(history)"
+      },
+      {
+        "command": "xgenDex.setupProfile",
+        "title": "XGEN Dex: 서버 프로필 설정"
+      },
+      {
+        "command": "xgenDex.login",
+        "title": "XGEN Dex: 로그인"
+      },
+      {
+        "command": "xgenDex.logout",
+        "title": "XGEN Dex: 로그아웃"
+      },
+      {
+        "command": "xgenDex.switchProfile",
+        "title": "XGEN Dex: 프로필 전환"
+      },
+      {
+        "command": "xgenDex.restartEngine",
+        "title": "XGEN Dex: CLI 엔진 다시 시작"
+      }
+    ],
+    "configuration": {
+      "title": "XGEN Dex",
+      "properties": {
+        "xgenDex.cliPath": {
+          "type": "string",
+          "default": "dex",
+          "scope": "application",
+          "description": "dex-cli 실행 파일 경로입니다. JavaScript 엔트리를 지정하면 node로 실행합니다."
+        },
+        "xgenDex.profile": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "확장에서 사용할 프로필입니다. 비어 있으면 dex-cli의 현재 프로필을 사용합니다."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "xgenDex",
+          "title": "XGEN Dex",
+          "icon": "resources/xgen-dex.svg"
+        }
+      ]
+    },
+    "views": {
+      "xgenDex": [
+        {
+          "id": "xgenDex.chat",
+          "name": "Workspace",
+          "type": "webview",
+          "icon": "resources/xgen-dex.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "xgenDex.newChat",
+          "when": "view == xgenDex.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "xgenDex.openHistory",
+          "when": "view == xgenDex.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "xgenDex.cancelChat",
+          "when": "view == xgenDex.chat && xgenDex.chatRunning",
+          "group": "navigation@3"
+        },
+        {
+          "command": "xgenDex.refresh",
+          "when": "view == xgenDex.chat",
+          "group": "navigation@4"
+        },
+        {
+          "command": "xgenDex.showSettings",
+          "when": "view == xgenDex.chat",
+          "group": "navigation@5"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/vscode": "1.95.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.0",
+    "typescript": "^7.0.2"
+  }
+}

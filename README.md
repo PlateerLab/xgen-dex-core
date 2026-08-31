@@ -1,72 +1,208 @@
 # XGEN Dex
 
-XGEN 에이전트를 쓰는 세 가지 방법 — **데스크톱 앱**, **터미널**, **VSCode 확장**.
-셋은 하나의 코어를 공유한다.
+XGEN 에이전트를 쓰는 세 가지 방법.
 
+| | 무엇 | 받는 것 |
+|---|---|---|
+| **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 워크스페이스 동기화 | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
+| **CLI** | 터미널. 대화형 UI 와 일회성 명령, 스크립트에서 쓰는 JSON 출력 | npm 패키지 `.tgz` |
+| **VSCode 확장** | 편집기 안에서 대화. 사이드바 + 명령 팔레트 | `.vsix` |
+
+셋 다 같은 XGEN 서버에 붙고, 같은 계정·같은 에이전트를 봅니다. 로컬 도구(셸 · 파일 ·
+MCP 서버)도 같은 것을 씁니다.
+
+모든 파일은 [**Releases**](https://github.com/PlateerLab/xgen-dex-core/releases/latest)
+에서 받습니다. 같은 태그의 셋은 함께 검증된 조합입니다.
+
+---
+
+## 앱 설치
+
+### Windows
+
+`XGen-Dex-Setup-<버전>.exe` 를 실행합니다.
+
+서명되지 않은 빌드라 SmartScreen 이 막을 수 있습니다 — **추가 정보 → 실행** 을 누르면
+됩니다.
+
+### macOS
+
+`XGen-Dex-<버전>.dmg` 를 열고 **XGen-Dex.app** 을 **응용 프로그램** 으로 끕니다.
+
+첫 실행은 아이콘을 **우클릭 → 열기** 로 해야 합니다(그냥 더블클릭하면 "확인되지 않은
+개발자" 로 막힙니다). 그래도 *"손상되었기 때문에 열 수 없습니다"* 가 뜨면 터미널에서:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/XGen-Dex.app"
 ```
-packages/protocol   XGEN 서버와 말하는 법. 의존 0.
-packages/engine     이 기기에서 실제로 무언가를 하는 것. Electron 은 모른다.
-packages/rpc        엔진을 다른 프로세스에 빌려주는 법.
 
-apps/desktop        Electron — 창 · 트레이 · 오버레이 아바타 · 자동 업데이트
-apps/cli            터미널 — Ink TUI + 일회성 명령
-apps/vscode         편집기 — 웹뷰 + CLI 엔진을 RPC 로
+### Linux
+
+```bash
+# deb (Ubuntu / Debian) — 권장. 앱 목록과 자동 업데이트가 함께 붙습니다.
+sudo dpkg -i XGen-Dex-<버전>.deb
+sudo apt-get -f install          # 의존성이 빠졌다는 말이 나오면
+
+# AppImage — 설치 없이 실행
+chmod +x XGen-Dex-<버전>.AppImage
+./XGen-Dex-<버전>.AppImage
 ```
 
-구조와 그 이유는 [ARCHITECTURE.md](./ARCHITECTURE.md).
+### 처음 실행하면
 
-## 왜 한 저장소인가
+**서버 주소**(예: `https://xgen.example.com`)와 **계정**을 입력합니다. 기본 서버는
+들어 있지 않습니다 — 각자의 XGEN 배포를 가리키세요.
 
-예전에는 데스크톱과 CLI 가 **다른 저장소**에 있었고, CLI 는 데스크톱의 API 계층을
-복사해서 시작했다. 3일 만에 갈라졌다 — `history.ts` 는 28%만 같았고, 첨부 파싱이
-빠져 CLI 로 열면 첨부가 없는 것처럼 보였으며, 사내 인증서 옵션이 따라오지 않아
-사내망에서 CLI 만 붙지 않았다. 무엇보다 같은 WebSocket 프로토콜을 각자 구현해서
-재접속 정책이 서로 달랐다.
+사설 인증서를 쓰는 사내 서버라면 설정 → **일반 → 서버** 에서 *사설 인증서 허용* 을
+켭니다. SSO 를 쓴다면 같은 자리에서 켜고 경로를 지정합니다.
 
-버전 붙인 패키지로 나눠도 같은 일이 반복된다 — 서버 API 하나 바뀌면 PR 이 다섯 건이
-되고, 하나만 잊으면 그대로 오늘로 돌아간다. 한 저장소면 **PR 하나**고, 코어를 고치면
-세 표면의 CI 가 그 자리에서 같이 돈다.
+---
+
+## CLI 설치
+
+Node.js 20 이상이 필요합니다.
+
+```bash
+npm i -g ./xgen-dex-cli-<버전>.tgz
+```
+
+`dex` 와 `xgen-dex` 두 이름으로 설치됩니다.
+
+### 쓰기
+
+```bash
+dex                                              # 대화형 터미널 UI
+dex profile set corp --server https://xgen.example.com
+dex login --email me@corp.com
+dex agents list
+dex chat --agent <workflow-id>
+```
+
+에이전트에게 이 컴퓨터의 셸과 파일을 열어 주려면 로컬 도구를 켭니다. 기본은 꺼져
+있습니다.
+
+```bash
+dex tools enable --cwd ~/work --allow ~/work
+dex tools list                                   # 무엇이 노출되는지
+```
+
+스크립트에서 쓸 때는 `--json`(단일 결과) 또는 `--jsonl`(채팅 이벤트 스트림)을 붙입니다.
+전체 명령은 `dex --help`.
+
+---
+
+## VSCode 확장 설치
+
+**CLI 를 먼저 설치하세요.** 확장은 대화를 직접 하지 않고 CLI 엔진을 자식 프로세스로
+띄워 씁니다.
+
+1. VS Code → 확장 → `…` → **VSIX에서 설치**
+2. `xgen-dex-vscode-<버전>.vsix` 선택
+
+또는 터미널에서:
+
+```bash
+code --install-extension xgen-dex-vscode-<버전>.vsix
+```
+
+VS Code 1.95 이상이 필요합니다.
+
+### 쓰기
+
+명령 팔레트(`Ctrl/Cmd+Shift+P`)에서 **XGEN Dex** 로 시작하는 명령을 씁니다 —
+`서버 프로필 설정` → `로그인` → `Agent와 대화` 순서입니다.
+
+`dex` 가 `PATH` 에 없거나 다른 위치에 있으면 설정에서 지정합니다:
+
+| 설정 | 뜻 |
+|---|---|
+| `xgenDex.cliPath` | `dex` 실행 파일 경로. 비우면 `PATH` 에서 찾습니다 |
+| `xgenDex.profile` | 쓸 서버 프로필. 비우면 CLI 의 현재 프로필 |
+
+---
+
+## 업데이트
+
+앱은 스스로 확인합니다 — 설정 → **일반 → 업데이트**. Windows 와 Linux 는 앱 안에서
+설치까지 하고, macOS 는 서명 문제로 새 `.dmg` 를 받아 열어 주기까지 합니다(끌어다
+놓는 것은 직접).
+
+기본은 이 저장소의 Releases 를 보지만, 사내망처럼 GitHub 에 나갈 수 없는 곳에서는
+같은 화면에서 **XGEN** 으로 바꿔 자기 서버의 다운로드 센터를 보게 할 수 있습니다.
+
+CLI 와 확장은 자동 업데이트가 없습니다 — 새 릴리스의 파일로 다시 설치하세요.
+
+---
 
 ## 개발
 
-```bash
-npm install                    # packages/* + apps/cli + apps/vscode
-npm --prefix apps/desktop install   # 데스크톱은 따로 (electron + 네이티브 FUSE)
+```
+packages/protocol   XGEN 서버와 말하는 법. 의존 0.
+packages/engine     이 기기에서 실제로 하는 일 — 로컬 도구 · MCP · 서버 브리지.
+packages/rpc        엔진을 다른 프로세스에 빌려주는 JSON-RPC.
 
-npm run contracts              # 앱이 코어를 우회하지 않는지
-npm test                       # 전 워크스페이스
-npm --prefix apps/desktop run dev   # 데스크톱 개발 실행
-npm --prefix apps/cli run build && node apps/cli/dist/cli.js
+apps/desktop        Electron
+apps/cli            Ink 터미널 UI + 명령
+apps/vscode         웹뷰 + CLI 엔진 (RPC)
 ```
 
-`apps/desktop` 이 workspace 밖인 이유: electron 과 네이티브 FUSE 바인딩이 루트로
-호이스팅되면 electron-builder 가 패키징할 때 조용히 어긋난다. 대신 세 앱 모두
-`@dex/*` 를 **경로 별칭으로 소스 번들**한다 — 심링크도 버전 올림도 없다.
+구조와 그 규칙은 [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-## 배포
+### 준비
 
-`v*` 태그를 push 하면 하나의 GitHub Release 에 셋이 함께 올라간다.
+Node.js 20 이상.
 
-- 데스크톱 설치본 — Windows `.exe` · macOS `.dmg` · Linux `.AppImage`/`.deb`
-  (+ electron-updater 피드)
-- CLI — npm tarball
-- VSCode 확장 — `.vsix`
+```bash
+npm install                        # packages/* + apps/cli + apps/vscode
+npm --prefix apps/desktop install  # 데스크톱은 따로 (electron + 네이티브 FUSE)
+```
 
-**태그 하나 = 함께 검증된 조합 하나.** 버전이 갈라지면 "내 CLI 는 되는데 확장은 안
-된다"가 되고, 그때 어느 조합이 검증된 것인지 아무도 모른다.
+리눅스에서 데스크톱을 빌드하려면 FUSE 헤더가 필요합니다(워크스페이스 가상 드라이브):
 
-자동 업데이트는 GitHub Release 뿐 아니라 **사용자의 XGEN 서버**(다운로드 센터)도 볼 수
-있다. 사내망 배포는 GitHub 에 못 나가고, 조직마다 배포 시점을 따로 잡기 때문이다.
+```bash
+sudo apt-get install libfuse-dev fuse3 pkg-config
+```
 
-## 지금 각 표면이 여는 것
+`apps/desktop` 이 npm workspace 밖인 이유는 electron 과 네이티브 바인딩이 루트로
+호이스팅되면 electron-builder 가 패키징할 때 어긋나기 때문입니다. 대신 세 앱 모두
+`@dex/*` 를 **경로 별칭으로 소스 번들** 합니다 — 심링크도 버전 올림도 없습니다.
 
-| | 데스크톱 | CLI | 확장 |
-|---|:---:|:---:|:---:|
-| 채팅 · 에이전트 · 이력 | ● | ● | ● |
-| 로컬 도구 (Shell · 파일 · MCP) | ● | ● | ● |
-| SSH 서버 | ● | ● | ○ |
-| Teams | ● | — | — |
-| 음성 · 아바타 · 브라우저 제어 | ● | — | — |
+### 실행
 
-— 는 "인터페이스는 있고 표면만 없다"는 뜻이다. 타입과 클라이언트는
-`packages/protocol` 에 그대로 있고, 여는 것은 RPC 에 case 한 줄 + 명령 하나다.
+```bash
+npm --prefix apps/desktop run dev        # 데스크톱 (핫 리로드)
+npm --prefix apps/cli run build && node apps/cli/dist/cli.js
+npm --prefix apps/vscode run watch       # 확장 — F5 로 디버그 창
+```
+
+### 검사
+
+```bash
+npm run contracts   # 앱이 코어를 우회하지 않는지
+npm test            # 전 워크스페이스
+npm --prefix apps/desktop test
+```
+
+`npm run contracts` 는 이 저장소가 지키는 규칙을 기계가 확인합니다 — 앱이 `/api/` 를
+직접 부르지 않는지, WebSocket 을 직접 열지 않는지, 패키지가 electron 을 알지 않는지,
+도메인 타입을 다시 선언하지 않는지, 확장 번들에 엔진이 섞이지 않았는지, 자동 업데이트가
+이 저장소를 보는지. CI 가 PR 마다 돌립니다.
+
+### 패키징
+
+```bash
+npm --prefix apps/desktop run dist:linux   # 또는 dist:win / dist:mac
+cd apps/cli && npm pack
+cd apps/vscode && npx @vscode/vsce package --no-dependencies
+```
+
+### 릴리스
+
+모든 `package.json` 의 버전을 같은 값으로 올리고 태그를 밀면, CI 가 세 산출물을 만들어
+하나의 GitHub Release 에 올립니다.
+
+```bash
+git tag -a v1.2.0 -m "..." && git push origin v1.2.0
+```
+
+버전을 하나로 두는 이유는 태그 하나가 **함께 검증된 조합** 하나이기 때문입니다.

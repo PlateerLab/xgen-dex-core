@@ -88,11 +88,22 @@ function fakeEngine(profileList: ProfileSummary[] = [
   };
 }
 
+/** TUI 렌더가 한 바퀴 돌 여유. 고정 대기지만 **넉넉해야** 한다 — 20ms 는 이 기계에서만
+ *  맞았고 CI 러너에서는 입력이 처리되기 전에 다음 키가 얹혔다. */
+const SETTLE_MS = 250;
+
+/**
+ * 화면이 조건을 만족할 때까지 기다린다.
+ *
+ * 마감은 **안전망이지 타이밍 단언이 아니다** — 2초는 느린 러너에서 진짜 실패와
+ * 단순히 느린 것을 구분하지 못한다. 넉넉히 두면 통과할 것은 통과하고, 깨진 것은
+ * 여전히 깨진다.
+ */
 async function waitForFrame(
   lastFrame: () => string | undefined,
   predicate: (frame: string) => boolean,
 ): Promise<string> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const frame = lastFrame() ?? '';
     if (predicate(frame)) return frame;
@@ -131,9 +142,9 @@ test('TUI boots an authenticated profile and streams a chat turn', async () => {
     let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
     assert.match(frame, /Connected/);
     view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     view.stdin.write('hello');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     view.stdin.write('\r');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
     assert.match(frame, /You said: hello/);

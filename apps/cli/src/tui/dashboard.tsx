@@ -140,7 +140,11 @@ export function Dashboard(props: {
   session: TuiSession;
   onProfiles: () => void;
   onLogout: () => void;
-  preferences?: { hangulMode: boolean; onHangulModeChange?: (enabled: boolean) => void };
+  preferences?: {
+    hangulMode: boolean;
+    onHangulModeChange?: (enabled: boolean) => void;
+    onModeKey?: (listener: () => void) => () => void;
+  };
 }): React.ReactNode {
   const { exit } = useApp();
   const size = useTerminalSize();
@@ -175,6 +179,19 @@ export function Dashboard(props: {
     setHangulMode(enabled);
     props.preferences?.onHangulModeChange?.(enabled);
   };
+
+  // 한/영 키(오른쪽 Alt 자리)와 Caps Lock. 글자를 만들지 않는 키라 stdin 을 읽는
+  // 자리에서만 보이고, 되는 터미널에서만 온다.
+  useEffect(
+    () =>
+      props.preferences?.onModeKey?.(() =>
+        setHangulMode((current) => {
+          props.preferences?.onHangulModeChange?.(!current);
+          return !current;
+        }),
+      ),
+    [props.preferences],
+  );
   const viewport = useRef({ lineCount: 0, height: 0 });
   const [starting, setStarting] = useState(false);
   const controller = useRef<AbortController | null>(null);

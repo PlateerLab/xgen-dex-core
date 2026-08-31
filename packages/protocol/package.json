@@ -1,6 +1,6 @@
 {
   "name": "@dex/protocol",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "private": true,
   "type": "module",
   "description": "XGEN 서버와 말하는 법 — 순수 TypeScript, 의존 0",

@@ -4,7 +4,7 @@ import type { DexEngine } from '@dex/engine';
 import { App } from './app';
 import { createScreenGuard } from './screen';
 import { readPreferences, writePreferences } from './preferences';
-import { supportsKittyKeyboard } from './kitty';
+import { createKeySignal, normalizedStdin, supportsKittyKeyboard } from './kitty';
 
 /**
  * TUI 를 대체 화면에서 띄운다. 규칙은 `./screen` 에 있다 — 여기서는 프로세스가
@@ -34,6 +34,10 @@ export async function runTui(engine: DexEngine): Promise<void> {
   const kitty = await supportsKittyKeyboard({ stdin, stdout, isTTY: stdin.isTTY });
   screen = createScreenGuard(stdout, { kittyKeyboard: kitty });
 
+  // 한/영 키와 Caps Lock 키는 stdin 을 읽는 자리에서 보이고, 그것을 다루는 곳은
+  // 화면 쪽이다. 그 사이를 잇는다.
+  const modeKeys = createKeySignal();
+
   screen.enter();
 
   try {
@@ -43,11 +47,21 @@ export async function runTui(engine: DexEngine): Promise<void> {
         preferences={{
           hangulMode: preferences.hangulMode,
           onHangulModeChange: (enabled) => void writePreferences({ hangulMode: enabled }),
+          onModeKey: modeKeys.subscribe,
         }}
       />,
       {
         exitOnCtrlC: true,
         patchConsole: true,
+        // 프로토콜을 켜면 kitty 가 ink 이 못 읽는 모양으로 키를 보낸다 — 사이에서
+        // 고쳐 넘기지 않으면 글자가 하나도 입력되지 않는다.
+        ...(kitty
+          ? {
+              stdin: normalizedStdin(stdin, (name) => {
+                if (name === 'rightalt' || name === 'capslock') modeKeys.notify(name);
+              }),
+            }
+          : {}),
         // 모든 키를 이스케이프로 받아야 한/영 키(오른쪽 Alt)와 Caps Lock 이 사건으로
         // 온다. 그런데 그렇게만 켜면 터미널이 **글쇠 코드만** 보내서 Shift+r 이
         // 소문자 `r` 로 도착한다 — 된소리도 영문 대문자도 사라진다. 그래서 글자까지

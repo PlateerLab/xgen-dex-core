@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Text, useCursor, useInput, useStdin } from 'ink';
+import { Box, Text, useCursor, useInput } from 'ink';
 import stringWidth from 'string-width';
 import { useMeasured } from './measure';
 import { classifyInput } from './terminal-input';
 import * as hangul from './hangul';
-import { parseKeyEvents } from './kitty';
 
 interface ImeTextInputProps {
   value: string;
@@ -110,28 +109,6 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
     moveCursor(nextCursor, segments.length);
     props.onChange(nextValue);
   };
-
-  // 한/영 키(오른쪽 Alt 자리)와 Caps Lock 은 글자를 만들지 않아 보통은 앱에 오지
-  // 않는다. Kitty 키보드 프로토콜을 아는 터미널만 이 사건을 보내 주므로, 원시
-  // 입력을 곁에서 지켜본다 — ink 은 이 사건들을 빈 입력으로 흘려보낸다.
-  const { stdin, isRawModeSupported } = useStdin();
-  const onModeKeyRef = useRef<(() => void) | undefined>(undefined);
-  onModeKeyRef.current = () => props.onHangulModeChange?.(!props.hangulMode);
-  useEffect(() => {
-    if (!props.focus || !isRawModeSupported) return undefined;
-    const onData = (data: Buffer | string): void => {
-      const chunk = typeof data === 'string' ? data : data.toString('utf8');
-      for (const event of parseKeyEvents(chunk)) {
-        // 터미널이 알려 주면 추정 대신 그 값을 믿는다.
-        typingRef.current = { ...typingRef.current, capsLock: event.capsLock };
-        // 뗄 때가 아니라 누를 때 한 번만 바꾼다.
-        if (event.eventType !== 1) continue;
-        if (event.name === 'rightalt' || event.name === 'capslock') onModeKeyRef.current?.();
-      }
-    };
-    stdin?.on('data', onData);
-    return () => void stdin?.off('data', onData);
-  }, [props.focus, isRawModeSupported, stdin]);
 
   // 포커스를 잃거나 한글 모드를 끄면 조합을 끝낸다. 남겨 두면 다음에 돌아왔을 때
   // 엉뚱한 글자에 이어 붙는다.

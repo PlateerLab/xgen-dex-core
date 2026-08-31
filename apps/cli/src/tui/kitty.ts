@@ -139,3 +139,123 @@ export async function supportsKittyKeyboard(
     streams.stdout.write(QUERY);
   });
 }
+
+/**
+ * kitty 가 보내는 키 사건을 **ink 이 읽을 수 있는 모양으로** 고친다.
+ *
+ * 프로토콜은 필드를 비워 둘 수 있고, 글쇠 코드 뒤에 대체 글쇠를 `:` 로 붙일 수 있다.
+ * 실제 kitty 는 수식이 없으면 그 자리를 비워 `ESC[97;;97u` 로, 시프트가 걸리면
+ * `ESC[97:65;2;65u` 로 보낸다. ink 의 파서는 이 두 모양을 알아보지 못하고 통째로
+ * 흘려보낸다 — **글자가 하나도 입력되지 않는다.**
+ *
+ * 그래서 우리가 사이에서 고쳐 준다: 빈 수식 자리를 1 로 채우고, 대체 글쇠를 떼어
+ * 낸다. 글자 필드는 그대로 남겨 두므로 시프트 기호(`!`)도, 자판이 무엇이든,
+ * 입력기가 만들어 준 한글도 있는 그대로 들어간다.
+ */
+const KEY_EVENT = /\u001B\[([0-9]+)(?::[0-9:]*)?(?:;([0-9]*(?::[0-9]+)?))?(?:;([0-9:]+))?u/g;
+
+export function normalizeKeyEvents(chunk: string): string {
+  return chunk.replace(
+    KEY_EVENT,
+    (all: string, code: string, modifiers: string | undefined, text: string | undefined) => {
+      // 이미 ink 이 읽을 수 있는 모양이면 손대지 않는다. 멀쩡한 것을 고치면 그 자체가
+      // 새 위험이다.
+      const hasAlternate = all.slice(0, all.indexOf(';') === -1 ? all.length : all.indexOf(';')).includes(':');
+      const needsModifier = modifiers !== undefined && modifiers.length === 0;
+      if (!hasAlternate && !needsModifier) return all;
+
+      const mods = modifiers === undefined ? undefined : modifiers.length > 0 ? modifiers : '1';
+      const fields = [code, mods, text].filter((field) => field !== undefined).join(';');
+      return `\u001B[${fields}u`;
+    },
+  );
+}
+
+/** 아직 끝나지 않은 제어 시퀀스의 꼬리. 다음 덩어리와 이어 붙여야 온전해진다. */
+const PARTIAL_TAIL = /\u001B\[[0-9:;]*$/;
+/** 이만큼 모였는데도 안 끝나면 시퀀스가 아니다 — 붙들고 있지 말고 흘려보낸다. */
+const MAX_PARTIAL = 64;
+
+/**
+ * 덩어리 경계에서 잘린 시퀀스를 이어 붙이며 고친다.
+ *
+ * 터미널 입력은 아무 데서나 쪼개져 도착한다. 잘린 채로 고치려 들면 반쪽짜리가
+ * 글자로 새어 나간다.
+ */
+export function createNormalizer(): (chunk: string) => string {
+  let pending = '';
+  return (chunk) => {
+    const combined = pending + chunk;
+    const match = PARTIAL_TAIL.exec(combined);
+    if (match && combined.length - match.index <= MAX_PARTIAL) {
+      pending = combined.slice(match.index);
+      return normalizeKeyEvents(combined.slice(0, match.index));
+    }
+    pending = '';
+    return normalizeKeyEvents(combined);
+  };
+}
+
+/**
+ * ink 에게 건넬 stdin.
+ *
+ * ink 은 `data` 이벤트가 아니라 **`readable` + `read()`** 로 읽는다. 그래서 곁에서
+ * `data` 리스너를 붙이면 스트림이 흐름 모드로 바뀌어 ink 의 `read()` 가 굶는다 —
+ * 글자가 하나도 들어가지 않는다. 읽는 길은 하나뿐이어야 한다.
+ *
+ * 그래서 `read()` 한 곳에서 다 한다: kitty 가 보낸 모양을 ink 이 읽을 수 있게 고치고,
+ * 지나가는 김에 한/영 키와 Caps Lock 키를 알려 준다.
+ */
+export function normalizedStdin<T extends NodeJS.ReadStream>(
+  stdin: T,
+  onSpecialKey?: (name: string) => void,
+): T {
+  const normalize = createNormalizer();
+
+  return new Proxy(stdin, {
+    get(target, property, receiver) {
+      if (property === 'read') {
+        return (...args: unknown[]): string | null => {
+          const chunk = (target.read as (...rest: unknown[]) => unknown)(...args);
+          if (chunk === null || chunk === undefined) return null;
+          const text = typeof chunk === 'string' ? chunk : String(chunk);
+          if (onSpecialKey) {
+            for (const event of parseKeyEvents(text)) {
+              // 뗄 때가 아니라 누를 때 한 번만 알린다.
+              if (event.name && event.eventType === 1) onSpecialKey(event.name);
+            }
+          }
+          return normalize(text);
+        };
+      }
+      void receiver;
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === 'function'
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+}
+
+/**
+ * 키 하나를 여러 곳에 알리는 아주 작은 신호통.
+ *
+ * 한/영 키는 stdin 을 읽는 자리에서 보이는데, 그것을 다루는 곳은 화면 쪽이다.
+ */
+export interface KeySignal {
+  notify(name: string): void;
+  subscribe(listener: (name: string) => void): () => void;
+}
+
+export function createKeySignal(): KeySignal {
+  const listeners = new Set<(name: string) => void>();
+  return {
+    notify(name) {
+      for (const listener of listeners) listener(name);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+  };
+}

@@ -17,7 +17,12 @@ export function App({
 }: {
   engine: TuiEngine;
   /** 기억해 둔 터미널 취향. 지금은 한/영 하나뿐이다. */
-  preferences?: { hangulMode: boolean; onHangulModeChange?: (enabled: boolean) => void };
+  preferences?: {
+    hangulMode: boolean;
+    onHangulModeChange?: (enabled: boolean) => void;
+    /** 한/영 키를 누르면 알려 준다. 되는 터미널에서만 온다. */
+    onModeKey?: (listener: () => void) => () => void;
+  };
 }): React.ReactNode {
   const { exit } = useApp();
   const [route, setRoute] = useState<Route>('boot');

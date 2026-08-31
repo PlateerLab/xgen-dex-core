@@ -1,6 +1,6 @@
 {
   "name": "@xgen/dex-cli",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "XGEN Dex CLI, terminal UI, and local engine",
   "type": "module",
   "bin": {
@@ -40,5 +40,14 @@
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/PlateerLab/xgen-dex-core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PlateerLab/xgen-dex-core.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/PlateerLab/xgen-dex-core/issues"
+  }
 }

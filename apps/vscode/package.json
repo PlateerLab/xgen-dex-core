@@ -2,7 +2,7 @@
   "name": "xgen-dex-vscode",
   "displayName": "XGEN Dex",
   "description": "Use XGEN Dex agents in Visual Studio Code through the dex-cli engine.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "xgen",
   "license": "Apache-2.0",
   "engines": {
@@ -171,5 +171,14 @@
     "esbuild": "^0.28.2",
     "tsx": "^4.20.0",
     "typescript": "^7.0.2"
+  },
+  "homepage": "https://github.com/PlateerLab/xgen-dex-core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PlateerLab/xgen-dex-core.git",
+    "directory": "apps/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/PlateerLab/xgen-dex-core/issues"
   }
 }

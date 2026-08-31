@@ -1,6 +1,6 @@
 {
   "name": "xgen-dex",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "XGEN Dex — 데스크톱 · CLI · VSCode 확장이 하나의 코어를 공유하는 저장소",
   "license": "Apache-2.0",

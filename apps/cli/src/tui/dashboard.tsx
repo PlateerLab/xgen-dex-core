@@ -425,7 +425,10 @@ export function Dashboard(props: {
         connected
       />
       {body}
-      <Footer text="Ctrl+Space 한/영 · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료" />
+      <Footer
+        mode={hangulMode ? '한' : 'EN'}
+        text="Ctrl+Space 한/영 · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료"
+      />
     </Box>
   );
 }

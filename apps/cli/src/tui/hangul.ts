@@ -69,12 +69,53 @@ export interface Composition {
 
 export const EMPTY: Composition = {};
 
-/** 이 키가 한글 낱자인가. 아니면 조합기를 거치지 않고 그대로 들어간다. */
-export function jamoOf(key: string): string | undefined {
-  if (KEYS[key]) return KEYS[key];
+/**
+ * 시프트를 눌러야 뜻이 달라지는 키들 — 된소리와 ㅒㅖ.
+ *
+ * 나머지 글쇠는 시프트를 눌러도 같은 낱자다. 그래서 그런 글쇠에 시프트가 걸려
+ * 있다는 것은 **Caps Lock 이 켜져 있다는 뜻**이다 (아무 이득도 없는 시프트를 일부러
+ * 누를 이유가 없다). 이 성질을 Caps Lock 판단에 쓴다.
+ */
+const SHIFTED_KEYS = new Set(['r', 'e', 'q', 't', 'w', 'o', 'p']);
+
+/**
+ * 이 키가 한글 낱자인가. 아니면 조합기를 거치지 않고 그대로 들어간다.
+ *
+ * `capsLock` 이 참이면 대소문자를 뒤집어 본다. Caps Lock 이 켜져 있으면 그냥 누른
+ * 글쇠가 대문자로 오고, 시프트를 눌러야 소문자가 온다 — 뒤집지 않으면 `안녕` 을
+ * 치려다 `ㅃㅑㄸㄸ` 같은 것이 나온다.
+ */
+export function jamoOf(key: string, capsLock = false): string | undefined {
+  const effective = capsLock ? swapCase(key) : key;
+  if (KEYS[effective]) return KEYS[effective];
   // 시프트를 눌러도 같은 낱자인 대문자들 — 실제 IME 와 같게 소문자로 본다.
+  const lower = effective.toLowerCase();
+  return lower === effective ? undefined : KEYS[lower];
+}
+
+function swapCase(key: string): string {
   const lower = key.toLowerCase();
-  return lower === key ? undefined : KEYS[lower];
+  return key === lower ? key.toUpperCase() : lower;
+}
+
+/**
+ * 글자 하나를 보고 Caps Lock 이 켜져 있는지 고쳐 잡는다.
+ *
+ * 터미널은 Caps Lock 상태를 알려 주지 않는다 — 우리에게 오는 것은 결과 글자뿐이라
+ * `R` 이 Shift+r 인지 Caps+r 인지 구별할 수 없다. 대신 **뜻 없는 시프트**를 신호로
+ * 쓴다: `ㅁ` 자리(a)에 시프트를 눌러도 `ㅁ` 이므로, 대문자 `A` 가 왔다면 사람이
+ * 일부러 누른 것이 아니라 Caps Lock 이 켜져 있는 것이다. 반대쪽도 같다 — Caps 가
+ * 켜진 상태에서 소문자 `a` 가 왔다면 그때만 시프트를 뗀 셈이니 Caps 가 꺼진 것이다.
+ *
+ * 된소리 글쇠(rㆍeㆍqㆍtㆍwㆍoㆍp)는 시프트에 뜻이 있으므로 판단에 쓰지 않는다.
+ */
+export function detectCapsLock(current: boolean, key: string): boolean {
+  const lower = key.toLowerCase();
+  const upper = key.toUpperCase();
+  if (lower === upper) return current; // 글자가 아니면 아무것도 말해 주지 않는다
+  if (!KEYS[lower]) return current; // 한글 자판 밖의 글쇠
+  if (SHIFTED_KEYS.has(lower)) return current; // 시프트에 뜻이 있는 글쇠
+  return key === upper;
 }
 
 function isVowel(jamo: string): boolean {
@@ -193,23 +234,88 @@ export function flush(state: Composition): { commit: string; state: Composition 
 }
 
 /**
+ * 타자 한 판. 조합 중인 글자와, 그것을 만든 글쇠와, Caps Lock 판단을 함께 든다.
+ *
+ * 글쇠를 함께 드는 이유는 Caps Lock 판단이 **늦게 서기 때문**이다. 된소리 글쇠는
+ * 시프트에 뜻이 있어 판단 근거가 못 되므로, `까` 를 치려고 시프트를 먼저 누르면
+ * 그 글쇠는 증거 없이 읽힌다. 다음 글쇠에서 판단이 뒤집히면 지금 글자를 처음부터
+ * 다시 짚어야 한다 — 그러지 않으면 첫 글자만 엉뚱하게 남는다.
+ */
+export interface Typing {
+  state: Composition;
+  keys: string[];
+  capsLock: boolean;
+}
+
+export const IDLE: Typing = { state: EMPTY, keys: [], capsLock: false };
+
+export interface TypeResult {
+  session: Typing;
+  /** 확정되어 값에 들어갈 글자. 되짚느라 늘어날 수도 있다. */
+  commit: string;
+  /** 아직 조합 중인 글자. 값의 커서 앞 한 글자를 차지한다. */
+  composing: string;
+}
+
+/** 글쇠 하나를 친다. 한글 낱자가 아니면 조합을 끝내고 그 글자를 그대로 싣는다. */
+export function typeKey(session: Typing, key: string): TypeResult {
+  const caps = detectCapsLock(session.capsLock, key);
+  let { state, keys } = session;
+  let commit = '';
+
+  // 판단이 뒤집혔으면 지금 글자를 처음부터 다시 짚는다.
+  if (caps !== session.capsLock && keys.length > 0) {
+    let rebuilt: Composition = EMPTY;
+    for (const previous of keys) {
+      const jamo = jamoOf(previous, caps);
+      if (!jamo) continue;
+      const step = feed(rebuilt, jamo);
+      commit += step.commit;
+      rebuilt = step.state;
+    }
+    state = rebuilt;
+  }
+
+  const jamo = jamoOf(key, caps);
+  if (!jamo) {
+    commit += display(state) + key;
+    return { session: { state: EMPTY, keys: [], capsLock: caps }, commit, composing: '' };
+  }
+
+  const result = feed(state, jamo);
+  commit += result.commit;
+  // 글자가 확정되면 앞 글자의 글쇠는 잊는다 — 되짚을 대상은 지금 글자뿐이다.
+  keys = result.commit ? [key] : [...keys, key];
+  return {
+    session: { state: result.state, keys, capsLock: caps },
+    commit,
+    composing: display(result.state),
+  };
+}
+
+/** 조합 중인 글자를 한 단계 되짚는다. 글쇠 기록도 함께 줄인다. */
+export function backspace(session: Typing): { session: Typing; composing: string; handled: boolean } {
+  const stepped = back(session.state);
+  if (!stepped.handled) return { session, composing: '', handled: false };
+  return {
+    session: { ...session, state: stepped.state, keys: session.keys.slice(0, -1) },
+    composing: display(stepped.state),
+    handled: true,
+  };
+}
+
+/**
  * 문자열 하나를 통째로 조합한다. 시험과 붙여넣기에 쓴다.
  *
  * `'rkstk'` → `'간사'` 처럼, 키를 순서대로 눌렀을 때 나오는 결과.
  */
-export function compose(keys: string): string {
-  let state: Composition = EMPTY;
+export function compose(keys: string, capsLock = false): string {
+  let session: Typing = { ...IDLE, capsLock };
   let text = '';
   for (const key of keys) {
-    const jamo = jamoOf(key);
-    if (!jamo) {
-      text += flush(state).commit + key;
-      state = EMPTY;
-      continue;
-    }
-    const result = feed(state, jamo);
+    const result = typeKey(session, key);
     text += result.commit;
-    state = result.state;
+    session = result.session;
   }
-  return text + flush(state).commit;
+  return text + display(session.state);
 }

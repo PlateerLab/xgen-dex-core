@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EMPTY, back, compose, display, feed, flush, jamoOf } from '../src/tui/hangul';
+import { EMPTY, back, compose, detectCapsLock, display, feed, flush, jamoOf } from '../src/tui/hangul';
 
 test('키 하나가 낱자 하나로', () => {
   assert.equal(jamoOf('r'), 'ㄱ');
@@ -115,4 +115,37 @@ test('자음만 잇달아 치면 낱자로 남는다', () => {
 test('모음만 잇달아 치면 낱자로 남는다', () => {
   assert.equal(compose('kk'), 'ㅏㅏ', '합쳐지지 않는 짝은 따로 남는다');
   assert.equal(compose('hk'), 'ㅘ', 'ㅗ + ㅏ 는 겹모음이 된다');
+});
+
+test('Caps Lock 이 켜져 있어도 같은 글자가 나온다', () => {
+  // Caps Lock 이 켜지면 그냥 누른 글쇠가 대문자로 오고, 시프트를 눌러야 소문자가
+  // 온다. 뒤집어 읽지 않으면 `안녕` 을 치려다 엉뚱한 것이 나온다.
+  assert.equal(compose('dkssud'), '안녕');
+  assert.equal(compose('DKSSUD'), '안녕', 'Caps Lock 켜짐');
+  assert.equal(compose('EKFR'), '닭', 'Caps Lock 켜짐');
+  assert.equal(compose('TKFKDGO'), '사랑해', 'Caps Lock 켜짐');
+});
+
+test('Caps Lock 이 켜져 있으면 시프트가 된소리를 만든다', () => {
+  // 켜진 상태에서 시프트를 누르면 소문자가 온다 — 그게 된소리다.
+  assert.equal(compose('Rk'), '까', 'Caps 꺼짐: 시프트로 ㄲ');
+  assert.equal(compose('rK'), '까', 'Caps 켜짐: 시프트로 ㄲ');
+  assert.equal(compose('QkQkd'), '빠빵', 'Caps 꺼짐');
+  assert.equal(compose('qKqKD'), '빠빵', 'Caps 켜짐');
+});
+
+test('뜻 없는 시프트를 보고 Caps Lock 을 알아챈다', () => {
+  // `ㅁ` 자리(a)는 시프트를 눌러도 `ㅁ` 이다. 그런데 대문자 `A` 가 왔다면 사람이
+  // 일부러 누른 것이 아니라 Caps Lock 이 켜져 있는 것이다.
+  assert.equal(detectCapsLock(false, 'A'), true);
+  assert.equal(detectCapsLock(true, 'a'), false, '반대쪽도 같다');
+
+  // 된소리 글쇠는 시프트에 뜻이 있으므로 판단에 쓰지 않는다.
+  assert.equal(detectCapsLock(false, 'R'), false, 'Shift+r 은 ㄲ 를 치려는 것이다');
+  assert.equal(detectCapsLock(true, 'r'), true, 'Caps 켜짐에서 시프트로 ㄲ');
+
+  // 한글 자판 밖의 글쇠는 아무것도 말해 주지 않는다.
+  assert.equal(detectCapsLock(true, '1'), true);
+  assert.equal(detectCapsLock(false, '!'), false);
+  assert.equal(detectCapsLock(true, '한'), true);
 });

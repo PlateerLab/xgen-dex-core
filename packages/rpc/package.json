@@ -1,6 +1,6 @@
 {
   "name": "@dex/rpc",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "description": "엔진을 다른 프로세스에 빌려주는 법 — JSON-RPC 서버와 클라이언트",

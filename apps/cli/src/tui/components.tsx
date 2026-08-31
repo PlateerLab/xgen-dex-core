@@ -26,10 +26,19 @@ export function Header(props: {
   );
 }
 
-export function Footer({ text }: { text: string }): ReactNode {
+export function Footer({ text, mode }: { text: string; mode?: string }): ReactNode {
   return (
     <Box paddingX={1}>
-      <Text dimColor>{text}</Text>
+      {/* 지금 한글인지 영문인지는 상태바에서도 보여야 한다 — 입력창에서 눈을 떼고
+          있다가 모르고 치면 `dkssud` 이 나온다. */}
+      {mode ? (
+        <Text bold color={mode === '한' ? 'yellow' : 'gray'}>
+          [{mode}]{' '}
+        </Text>
+      ) : null}
+      <Text dimColor wrap="truncate-end">
+        {text}
+      </Text>
     </Box>
   );
 }

@@ -54,6 +54,21 @@ const DISABLE_REPORTS = [
 const ENABLE_BRACKETED_PASTE = `${ESC}[?2004h`;
 const DISABLE_BRACKETED_PASTE = `${ESC}[?2004l`;
 
+/**
+ * Kitty 키보드 프로토콜을 원래대로 되돌린다.
+ *
+ * 켠 채로 나가면 다음에 이 터미널을 쓰는 프로그램이 낯선 이스케이프를 받는다 —
+ * 셸에서 방향키가 글자로 찍히는 식으로 망가진다. ink 도 정리하지만 Ctrl+Q 나
+ * 신호로 죽을 때는 거치지 못할 수 있어, 화면을 되돌리는 자리에서 함께 되돌린다.
+ * 켠 적이 없어도 안전하다 — 빈 것을 꺼내는 것은 아무 일도 하지 않는다.
+ */
+const POP_KITTY_KEYBOARD = `${ESC}[<u`;
+
+export interface ScreenGuardOptions {
+  /** Kitty 키보드 프로토콜을 켜서 들어왔는가. 나갈 때 되돌려야 한다. */
+  kittyKeyboard?: boolean;
+}
+
 export interface ScreenGuard {
   /** 대체 화면으로 들어간다. TTY 가 아니면 아무 것도 하지 않는다. */
   enter(): void;
@@ -61,7 +76,10 @@ export interface ScreenGuard {
   restore(): void;
 }
 
-export function createScreenGuard(stream: ScreenStream): ScreenGuard {
+export function createScreenGuard(
+  stream: ScreenStream,
+  options: ScreenGuardOptions = {},
+): ScreenGuard {
   // TTY 가 아니면 손대지 않는다 — 파이프나 CI 로그에 제어 문자를 뿌릴 이유가 없다.
   const alt = Boolean(stream.isTTY);
   let entered = false;
@@ -79,7 +97,13 @@ export function createScreenGuard(stream: ScreenStream): ScreenGuard {
       if (restored) return;
       restored = true;
       // 켠 것만 되돌린다. 보고 모드는 원래 꺼져 있어야 정상이므로 다시 켜지 않는다.
-      if (entered) stream.write(DISABLE_BRACKETED_PASTE + LEAVE_ALT_SCREEN);
+      if (entered) {
+        stream.write(
+          (options.kittyKeyboard ? POP_KITTY_KEYBOARD : '') +
+            DISABLE_BRACKETED_PASTE +
+            LEAVE_ALT_SCREEN,
+        );
+      }
       stream.write(SHOW_CURSOR);
     },
   };

@@ -1,16 +1,17 @@
 import { render } from 'ink';
-import { stdout } from 'node:process';
+import { stdin, stdout } from 'node:process';
 import type { DexEngine } from '@dex/engine';
 import { App } from './app';
 import { createScreenGuard } from './screen';
 import { readPreferences, writePreferences } from './preferences';
+import { supportsKittyKeyboard } from './kitty';
 
 /**
  * TUI 를 대체 화면에서 띄운다. 규칙은 `./screen` 에 있다 — 여기서는 프로세스가
  * **어떻게 끝나든** 되돌아가게 배선만 한다.
  */
 export async function runTui(engine: DexEngine): Promise<void> {
-  const screen = createScreenGuard(stdout);
+  let screen = createScreenGuard(stdout);
   const restore = (): void => screen.restore();
 
   // SIGINT/SIGTERM 은 Ink 의 정리를 거치지 않고 곧장 죽을 수 있다. 'exit' 은
@@ -27,6 +28,12 @@ export async function runTui(engine: DexEngine): Promise<void> {
   // 한글로 쓰던 사람에게는 모드가 꺼진 것처럼 보인다.
   const preferences = await readPreferences();
 
+  // 한/영 키(오른쪽 Alt 자리)와 Caps Lock 은 글자를 만들지 않아 보통 앱에 오지
+  // 않는다. 그 키들까지 보고하는 터미널인지 먼저 물어본다 — ink 은 kitty·ghostty·
+  // WezTerm 만 이름으로 짐작하지만, 요즘은 더 많은 터미널이 이 프로토콜을 안다.
+  const kitty = await supportsKittyKeyboard({ stdin, stdout, isTTY: stdin.isTTY });
+  screen = createScreenGuard(stdout, { kittyKeyboard: kitty });
+
   screen.enter();
 
   try {
@@ -41,6 +48,15 @@ export async function runTui(engine: DexEngine): Promise<void> {
       {
         exitOnCtrlC: true,
         patchConsole: true,
+        // 모든 키를 이스케이프로 받아야 수식 키 자체가 사건으로 온다.
+        ...(kitty
+          ? {
+              kittyKeyboard: {
+                mode: 'enabled' as const,
+                flags: ['disambiguateEscapeCodes' as const, 'reportAllKeysAsEscapeCodes' as const],
+              },
+            }
+          : {}),
       },
     );
     await instance.waitUntilExit();

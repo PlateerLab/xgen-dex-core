@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Text, useCursor, useInput } from 'ink';
+import { Box, Text, useCursor, useInput, useStdin } from 'ink';
 import stringWidth from 'string-width';
 import { useMeasured } from './measure';
 import { classifyInput } from './terminal-input';
 import * as hangul from './hangul';
+import { parseKeyEvents } from './kitty';
 
 interface ImeTextInputProps {
   value: string;
@@ -79,7 +80,7 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
   const cursorRef = useRef(initialSegments.length);
   const pastingRef = useRef(false);
   /** 아직 완성되지 않은 한글 한 글자. 값에는 이미 보이지만 다음 키로 바뀔 수 있다. */
-  const composingRef = useRef<hangul.Composition>(hangul.EMPTY);
+  const typingRef = useRef<hangul.Typing>(hangul.IDLE);
 
   const moveCursor = (next: number, length: number): void => {
     const resolved = clamp(next, 0, length);
@@ -94,10 +95,35 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
     props.onChange(nextValue);
   };
 
+  // 한/영 키(오른쪽 Alt 자리)와 Caps Lock 은 글자를 만들지 않아 보통은 앱에 오지
+  // 않는다. Kitty 키보드 프로토콜을 아는 터미널만 이 사건을 보내 주므로, 원시
+  // 입력을 곁에서 지켜본다 — ink 은 이 사건들을 빈 입력으로 흘려보낸다.
+  const { stdin, isRawModeSupported } = useStdin();
+  const onModeKeyRef = useRef<(() => void) | undefined>(undefined);
+  onModeKeyRef.current = () => props.onHangulModeChange?.(!props.hangulMode);
+  useEffect(() => {
+    if (!props.focus || !isRawModeSupported) return undefined;
+    const onData = (data: Buffer | string): void => {
+      const chunk = typeof data === 'string' ? data : data.toString('utf8');
+      for (const event of parseKeyEvents(chunk)) {
+        // 터미널이 알려 주면 추정 대신 그 값을 믿는다.
+        typingRef.current = { ...typingRef.current, capsLock: event.capsLock };
+        // 뗄 때가 아니라 누를 때 한 번만 바꾼다.
+        if (event.eventType !== 1) continue;
+        if (event.name === 'rightalt' || event.name === 'capslock') onModeKeyRef.current?.();
+      }
+    };
+    stdin?.on('data', onData);
+    return () => void stdin?.off('data', onData);
+  }, [props.focus, isRawModeSupported, stdin]);
+
   // 포커스를 잃거나 한글 모드를 끄면 조합을 끝낸다. 남겨 두면 다음에 돌아왔을 때
   // 엉뚱한 글자에 이어 붙는다.
   useEffect(() => {
-    if (!props.focus || !props.hangulMode) composingRef.current = hangul.EMPTY;
+    // Caps Lock 판단은 남겨 둔다 — 모드를 껐다 켠다고 자판이 바뀌지는 않는다.
+    if (!props.focus || !props.hangulMode) {
+      typingRef.current = { ...hangul.IDLE, capsLock: typingRef.current.capsLock };
+    }
   }, [props.focus, props.hangulMode]);
 
   useEffect(() => {
@@ -134,12 +160,11 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       const current = graphemes(valueRef.current);
       const currentCursor = clamp(cursorRef.current, 0, current.length);
       const event = classifyInput(input, pastingRef.current);
-      const composing = composingRef.current;
-      const shown = hangul.display(composing);
+      const shown = hangul.display(typingRef.current.state);
 
-      /** 조합을 끝내고 값에 확정한다. 커서를 옮기거나 전송하기 전에 부른다. */
+      /** 조합을 끝낸다. 커서를 옮기거나 전송하기 전에 부른다. */
       const settle = (): void => {
-        composingRef.current = hangul.EMPTY;
+        typingRef.current = { ...hangul.IDLE, capsLock: typingRef.current.capsLock };
       };
 
       if (event.kind === 'paste-start') {
@@ -166,7 +191,9 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       // Ctrl+Space 로 한/영을 바꾼다 — ibus·fcitx 를 쓰던 손이 이미 아는 자리다.
       // (ink 은 Ctrl+Space 를 ctrl + '`' 로 준다.) Ctrl+L 도 받는다: 터미널이나
       // tmux 가 Ctrl+Space 를 먼저 채가는 경우가 있다.
-      if (key.ctrl && (input === '`' || input === 'l')) {
+      // Alt+Space 도 받는다. 한국어 자판의 한/영 키는 오른쪽 Alt 자리에 있어서,
+      // 그 키가 Alt 로 도착하는 환경에서는 오른손 엄지로 그대로 닿는다.
+      if ((key.ctrl && (input === '`' || input === 'l')) || (key.meta && input === ' ')) {
         settle();
         props.onHangulModeChange?.(!props.hangulMode);
         return;
@@ -200,10 +227,10 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       if (key.backspace || key.delete) {
         // 조합 중이면 글자를 되짚는다: `한` → `하` → `ㅎ`. 통째로 지우면 오타
         // 하나에 처음부터 다시 쳐야 한다.
-        const stepped = hangul.back(composing);
+        const stepped = hangul.backspace(typingRef.current);
         if (stepped.handled) {
-          composingRef.current = stepped.state;
-          applyComposition(current, currentCursor, shown, '', hangul.display(stepped.state));
+          typingRef.current = stepped.session;
+          applyComposition(current, currentCursor, shown, '', stepped.composing);
           return;
         }
         if (currentCursor === 0) return;
@@ -227,31 +254,20 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       if (event.kind !== 'text') return;
 
       if (props.hangulMode) {
-        // 한 번에 여러 글자가 오는 것(붙여넣기 아닌 빠른 입력)도 순서대로 먹인다.
-        let state = composing;
+        // 한 번에 여러 글자가 오는 것(빠른 입력)도 순서대로 먹인다.
+        let session = typingRef.current;
         let previous = shown;
         let segments = current;
         let cursor = currentCursor;
         for (const character of event.text) {
-          const jamo = hangul.jamoOf(character);
-          if (!jamo) {
-            const flushed = hangul.flush(state);
-            state = flushed.state;
-            applyComposition(segments, cursor, previous, flushed.commit + character, '');
-            segments = graphemes(valueRef.current);
-            cursor = cursorRef.current;
-            previous = '';
-            continue;
-          }
-          const result = hangul.feed(state, jamo);
-          state = result.state;
-          const next = hangul.display(state);
-          applyComposition(segments, cursor, previous, result.commit, next);
+          const result = hangul.typeKey(session, character);
+          session = result.session;
+          applyComposition(segments, cursor, previous, result.commit, result.composing);
           segments = graphemes(valueRef.current);
           cursor = cursorRef.current;
-          previous = next;
+          previous = result.composing;
         }
-        composingRef.current = state;
+        typingRef.current = session;
         return;
       }
 

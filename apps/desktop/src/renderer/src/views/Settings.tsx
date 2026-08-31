@@ -32,10 +32,9 @@ type Theme = NonNullable<ConnectorConfig['theme']>;
 // 업데이트는 일반의 한 섹션이고(따로 탭일 만큼 크지 않다), 옛 [로컬 도구]는
 // 성격이 다른 두 기능이 섞여 있어 [PC 컨트롤](셸·파일)과 [MCP]로 가른다.
 type Tab =
-  | 'connection' | 'general' | 'notifications' | 'avatar'
+  | 'general' | 'notifications' | 'avatar'
   | 'browser' | 'pc' | 'mcp' | 'ssh' | 'storage';
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'connection', label: '연결' },
   { id: 'general', label: '일반' },
   { id: 'notifications', label: '알림' },
   { id: 'avatar', label: '아바타' },
@@ -89,7 +88,7 @@ export const Settings: React.FC<{
 }> = ({ config, onClose, onChanged, embedded }) => {
   // 탭으로 박혀 있을 때(embedded)는 Esc 로 닫을 대상이 아니다.
   useModalDismiss(onClose, !embedded);
-  const [tab, setTab] = useState<Tab>('connection');
+  const [tab, setTab] = useState<Tab>('general');
   const [serverUrl, setServerUrl] = useState(config.serverUrl);
   const [allowPrivateCertificate, setAllowPrivateCertificate] = useState(
     config.allowPrivateCertificate ?? false,
@@ -363,71 +362,9 @@ export const Settings: React.FC<{
 
       <div className="settings-panel">
         {/* ─── 연결 ─── */}
-        {tab === 'connection' && (
-          <SettingsSection title="서버">
-            <label className="field">
-              <span>서버 주소</span>
-              <div className="row">
-                <input
-                  className="grow"
-                  value={serverUrl}
-                  onChange={(e) => {
-                    setServerUrl(e.target.value);
-                    setConfirmServer(false);
-                  }}
-                  onKeyDown={(e) => e.key === 'Enter' && void saveServer()}
-                />
-                <button
-                  className={confirmServer ? 'danger' : 'secondary'}
-                  onClick={() => void saveServer()}
-                >
-                  {confirmServer ? '변경 및 로그아웃' : saved ? '저장됨' : '저장'}
-                </button>
-              </div>
-              {confirmServer && (
-                <span className="small notice-warn">
-                  서버 주소를 변경하면 현재 세션이 종료되고 새 서버에 다시 로그인해야 합니다.
-                  계속하려면 버튼을 한 번 더 누르세요.
-                </span>
-              )}
-            </label>
-
-            <label className="setup-option settings-option">
-              <input
-                type="checkbox"
-                checked={allowPrivateCertificate}
-                onChange={(e) => setAllowPrivateCertificate(e.target.checked)}
-              />
-              <span>
-                사설 인증서 허용
-                <small>설정한 서버의 사설 CA 신뢰 오류만 허용합니다.</small>
-              </span>
-            </label>
-            <label className="setup-option settings-option">
-              <input
-                type="checkbox"
-                checked={ssoEnabled}
-                onChange={(e) => setSsoEnabled(e.target.checked)}
-              />
-              <span>SSO 로그인 사용</span>
-            </label>
-            {ssoEnabled && (
-              <label className="field setup-nested-field settings-sso-path">
-                <span>SSO PATH</span>
-                <input
-                  value={ssoPath}
-                  onChange={(e) => setSsoPath(e.target.value)}
-                  placeholder="/sso/signin"
-                />
-              </label>
-            )}
-            <p className="settings-hint">
-              사설 인증서·SSO 를 바꾼 뒤에는 위 <b>저장</b> 버튼을 눌러 적용하세요.
-            </p>
-          </SettingsSection>
-        )}
-
-        {/* ─── 일반 — [일반][업데이트][설치] 세 분류(공통 SettingsSection) ─── */}
+        {/* ─── 일반 — [일반][업데이트][설치][서버] 네 분류(공통 SettingsSection).
+             서버(연결)를 맨 아래 두는 이유: 한 번 정하면 거의 안 건드리는 값인데
+             첫 탭이라 매번 지나쳐야 했다. 자주 만지는 것부터 위로. ─── */}
         {tab === 'general' && (
           <>
             <SettingsSection title="일반">
@@ -648,6 +585,68 @@ export const Settings: React.FC<{
                 (브라우저·셸·로컬 MCP)를 에이전트에게 빌려 줍니다.
               </p>
             </SettingsSection>
+
+          <SettingsSection title="서버">
+            <label className="field">
+              <span>서버 주소</span>
+              <div className="row">
+                <input
+                  className="grow"
+                  value={serverUrl}
+                  onChange={(e) => {
+                    setServerUrl(e.target.value);
+                    setConfirmServer(false);
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && void saveServer()}
+                />
+                <button
+                  className={confirmServer ? 'danger' : 'secondary'}
+                  onClick={() => void saveServer()}
+                >
+                  {confirmServer ? '변경 및 로그아웃' : saved ? '저장됨' : '저장'}
+                </button>
+              </div>
+              {confirmServer && (
+                <span className="small notice-warn">
+                  서버 주소를 변경하면 현재 세션이 종료되고 새 서버에 다시 로그인해야 합니다.
+                  계속하려면 버튼을 한 번 더 누르세요.
+                </span>
+              )}
+            </label>
+
+            <label className="setup-option settings-option">
+              <input
+                type="checkbox"
+                checked={allowPrivateCertificate}
+                onChange={(e) => setAllowPrivateCertificate(e.target.checked)}
+              />
+              <span>
+                사설 인증서 허용
+                <small>설정한 서버의 사설 CA 신뢰 오류만 허용합니다.</small>
+              </span>
+            </label>
+            <label className="setup-option settings-option">
+              <input
+                type="checkbox"
+                checked={ssoEnabled}
+                onChange={(e) => setSsoEnabled(e.target.checked)}
+              />
+              <span>SSO 로그인 사용</span>
+            </label>
+            {ssoEnabled && (
+              <label className="field setup-nested-field settings-sso-path">
+                <span>SSO PATH</span>
+                <input
+                  value={ssoPath}
+                  onChange={(e) => setSsoPath(e.target.value)}
+                  placeholder="/sso/signin"
+                />
+              </label>
+            )}
+            <p className="settings-hint">
+              사설 인증서·SSO 를 바꾼 뒤에는 위 <b>저장</b> 버튼을 눌러 적용하세요.
+            </p>
+          </SettingsSection>
           </>
         )}
 

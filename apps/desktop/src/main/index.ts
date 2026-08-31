@@ -49,7 +49,7 @@ import {
   type NotificationRendererContext,
   type NotificationTarget,
   type TeamsEvent,
-} from '../core/index';
+} from '@dex/protocol';
 import {
   loadConfig,
   saveConfig,
@@ -134,7 +134,7 @@ import type {
   BrowserHistorySuggestionsRequest,
   BrowserPopupPermission,
   BrowserPopupResolveRequest,
-} from '../core/browser';
+} from '@dex/protocol/browser';
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
 import { NotificationCenter } from './notification-center';

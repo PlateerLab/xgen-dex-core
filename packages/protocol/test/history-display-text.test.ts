@@ -9,7 +9,7 @@
  */
 import assert from 'assert'
 import { test } from 'node:test'
-import { toDisplayText, toHistoryAttachments, xgenyHistoryWorkspacePath } from '../src/core/history'
+import { toDisplayText, toHistoryAttachments, xgenyHistoryWorkspacePath } from '@dex/protocol/history'
 
 test('문자열은 그대로', () => {
   assert.equal(toDisplayText('안녕하세요'), '안녕하세요')

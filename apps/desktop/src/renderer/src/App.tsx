@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { xgen } from './bridge';
 import { sessionStore } from './session';
-import type { CurrentUser } from '../../core/index';
+import type { CurrentUser } from '@dex/protocol';
 import type { ConnectorConfig } from '../../main/config';
 import { ServerSetup } from './views/ServerSetup';
 import { Login } from './views/Login';

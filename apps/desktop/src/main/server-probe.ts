@@ -13,7 +13,7 @@
  * 로그인 실패 문구도 여기 둔다 — 렌더러에 IPC 래핑 원문("Error invoking remote
  * method …")이 그대로 보이던 것을, 사람이 읽을 문장으로 바꾼다.
  */
-import { ApiError } from '../core/client';
+import { ApiError } from '@dex/protocol/client';
 
 /** 입력 → 시도할 후보 목록. 스킴이 있으면 그것만, 없으면 https 먼저. */
 export function candidatesFor(input: string): string[] {

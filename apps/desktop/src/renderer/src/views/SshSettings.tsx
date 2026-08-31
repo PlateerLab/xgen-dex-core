@@ -16,7 +16,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { xgen } from '../bridge';
 import { SettingsSection } from './SettingsSection';
-import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '../../../core/index';
+import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol';
 
 const EMPTY: SshConfig = {
   enabled: false,

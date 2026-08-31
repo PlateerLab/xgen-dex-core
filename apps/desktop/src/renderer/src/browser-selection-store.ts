@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { BrowserSelectionResult } from '../../core/browser';
+import type { BrowserSelectionResult } from '@dex/protocol/browser';
 
 const EMPTY: BrowserSelectionResult[] = [];
 const MAX_SELECTIONS_PER_TURN = 5;

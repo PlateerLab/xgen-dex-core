@@ -18,7 +18,7 @@ import { createPortal } from 'react-dom';
 import { xgen } from '../bridge';
 import { teamsStore, useTeams } from '../teams';
 import { notificationStore, useNotifications } from '../notifications';
-import type { TeamsMessage, TeamsRoom, TeamsUser } from '../../../core/index';
+import type { TeamsMessage, TeamsRoom, TeamsUser } from '@dex/protocol';
 import { badgeText, filterRooms, messagePreview, roomTime } from './teams-store';
 import { useModalDismiss, useOutsideDismiss } from './use-modal-dismiss';
 import {

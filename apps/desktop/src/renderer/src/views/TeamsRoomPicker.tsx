@@ -10,7 +10,7 @@
  * 문맥 쪽은 붙자마자 닫힌다. 감싸는 모양은 호출자가 정한다.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import type { TeamsRoom } from '../../../core/index';
+import type { TeamsRoom } from '@dex/protocol';
 import { teamsStore, useTeams } from '../teams';
 import { ChatIcon, TeamsIcon } from '../brand/icons';
 import { filterRooms, roomTime } from './teams-store';

@@ -28,9 +28,9 @@ import type {
   Citation,
   HistoryAttachment,
   ToolEvent,
-} from '../../core/index';
-import { stripBrowserContext, type BrowserSelectionResult } from '../../core/browser';
-import { stripTeamsContext } from '../../core/teams-bridge';
+} from '@dex/protocol';
+import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
+import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
 
 /** One rendered chat message (mirrors the old Chat.Msg shape). */

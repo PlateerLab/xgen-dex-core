@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "strict": true,
     "noEmit": true,
     "noUnusedLocals": true,
@@ -12,7 +16,35 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "baseUrl": "../..",
+    "paths": {
+      "@dex/protocol": [
+        "packages/protocol/src/index.ts"
+      ],
+      "@dex/protocol/*": [
+        "packages/protocol/src/*"
+      ],
+      "@dex/engine": [
+        "packages/engine/src/index.ts"
+      ],
+      "@dex/engine/*": [
+        "packages/engine/src/*"
+      ],
+      "@dex/rpc": [
+        "packages/rpc/src/index.ts"
+      ],
+      "@dex/rpc/*": [
+        "packages/rpc/src/*"
+      ]
+    }
   },
-  "include": ["src", "test", "build.mjs"]
+  "include": [
+    "src",
+    "test",
+    "build.mjs",
+    "../../packages/*/src"
+  ]
 }

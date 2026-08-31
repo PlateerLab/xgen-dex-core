@@ -8,7 +8,7 @@
 import React, { useEffect, useState } from 'react';
 import { useModalDismiss } from './use-modal-dismiss';
 import { xgen } from '../bridge';
-import type { VoiceConfig } from '../../../core/index';
+import type { VoiceConfig } from '@dex/protocol';
 
 export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // Esc 로도 닫힌다 (바깥 클릭은 backdrop 이 처리).

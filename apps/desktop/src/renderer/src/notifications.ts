@@ -9,7 +9,7 @@ import {
   type NotificationProfile,
   type NotificationScope,
   type NotificationSystemStatus,
-} from '../../core/notifications';
+} from '@dex/protocol/notifications';
 import { xgen } from './bridge';
 
 export interface NotificationSnapshot {

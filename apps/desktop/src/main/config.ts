@@ -8,9 +8,9 @@
 import { app } from 'electron';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BrowserAddressSearchConfig, BrowserPopupPermissions } from '../core/browser';
-import type { AgentViewerSub } from '../core/agent-data';
-import type { NotificationSettings } from '../core/notifications';
+import type { BrowserAddressSearchConfig, BrowserPopupPermissions } from '@dex/protocol/browser';
+import type { AgentViewerSub } from '@dex/protocol/agent-data';
+import type { NotificationSettings } from '@dex/protocol/notifications';
 import { DEPLOYMENT_DEFAULTS } from './deployment-defaults';
 
 /** A local MCP server the connector hosts + proxies to the user's XGEN agents. */

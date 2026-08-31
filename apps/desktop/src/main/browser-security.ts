@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { normalizeBrowserUrl } from '../core/browser';
+import { normalizeBrowserUrl } from '@dex/protocol/browser';
 
 export const BROWSER_PARTITION_PREFIX = 'persist:xgen-browser-';
 

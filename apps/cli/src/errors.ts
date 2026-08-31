@@ -1,4 +1,4 @@
-import { ApiError } from './xgen/client';
+import { ApiError } from '@dex/protocol/client';
 
 export type DexErrorCode =
   | 'auth_required'

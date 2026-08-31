@@ -34,7 +34,7 @@ import {
   type TeamsRoom as Room,
   type TeamsShareRef,
   type TeamsUser,
-} from '../../../core/index';
+} from '@dex/protocol';
 import {
   formatBytes,
   isPending,

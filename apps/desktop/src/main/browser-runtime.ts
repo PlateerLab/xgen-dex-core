@@ -16,8 +16,8 @@ import type {
   BrowserSelectionResult,
   BrowserSelectionSession,
   BrowserState,
-} from '../core/browser';
-import { browserOrigin, sanitizedBrowserUrl } from '../core/browser';
+} from '@dex/protocol/browser';
+import { browserOrigin, sanitizedBrowserUrl } from '@dex/protocol/browser';
 import { AgentBrowserRunner } from './agent-browser-runner';
 import {
   captureBrowserSelection,

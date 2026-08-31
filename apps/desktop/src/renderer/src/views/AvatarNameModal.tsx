@@ -9,7 +9,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { useModalDismiss } from './use-modal-dismiss';
-import type { AvatarDescriptor } from '../../../core/preferences';
+import type { AvatarDescriptor } from '@dex/protocol/preferences';
 import { AvatarModel } from '../avatar/Live2DCanvas';
 
 /** 이미 있는 이름이면 "name (2)", "name (3)" … 식으로 빈 자리를 찾는다. */

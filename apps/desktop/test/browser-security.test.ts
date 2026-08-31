@@ -10,7 +10,7 @@ import {
   resolveBrowserAddress,
   type BrowserConnectionEvent,
   type BrowserPageInfo,
-} from '../src/core/browser';
+} from '@dex/protocol/browser';
 import { BrowserRuntime } from '../src/main/browser-runtime';
 import { BROWSER_TABS_TOOL, BrowserToolProvider } from '../src/main/browser-tools';
 import {

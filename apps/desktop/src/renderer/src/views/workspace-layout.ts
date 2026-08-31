@@ -9,7 +9,7 @@ export type WorkspaceTabKind =
   | 'agent-viewer';
 
 /** 에이전트 뷰어가 처음 열 하위 탭 — 정의는 core(main 의 영속 스키마와 공유). */
-import type { AgentViewerSub } from '../../../core/index';
+import type { AgentViewerSub } from '@dex/protocol';
 
 export type { AgentViewerSub };
 export type SplitDirection = 'horizontal' | 'vertical';

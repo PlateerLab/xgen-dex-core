@@ -9,7 +9,7 @@
  */
 import assert from 'assert'
 import { test } from 'node:test'
-import { SshApi } from '../src/core/ssh'
+import { SshApi } from '@dex/protocol/ssh'
 
 interface Call {
   method: string

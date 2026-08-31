@@ -13,7 +13,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { copyText } from '../bridge';
-import type { ToolEvent } from '../../../core/types';
+import type { ToolEvent } from '@dex/protocol/types';
 import { CloseIcon, CopyIcon, DocIcon } from '../brand/icons';
 
 interface Props {

@@ -12,7 +12,16 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": "../..",
+    "paths": {
+      "@dex/protocol": ["packages/protocol/src/index.ts"],
+      "@dex/protocol/*": ["packages/protocol/src/*"],
+      "@dex/engine": ["packages/engine/src/index.ts"],
+      "@dex/engine/*": ["packages/engine/src/*"],
+      "@dex/rpc": ["packages/rpc/src/index.ts"],
+      "@dex/rpc/*": ["packages/rpc/src/*"]
+    }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "../../packages/*/src"]
 }

@@ -1,5 +1,5 @@
 import { BrowserWindow, dialog } from 'electron';
-import type { BrowserPageInfo } from '../core/browser';
+import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { browserPathWithinRoots } from './browser-security';
 import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
 import type {

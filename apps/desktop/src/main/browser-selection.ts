@@ -5,7 +5,7 @@ import type {
   BrowserSelectionPoint,
   BrowserSelectionPreview,
   BrowserSelectionRect,
-} from '../core/browser';
+} from '@dex/protocol/browser';
 
 const MAX_CAPTURE_EDGE = 1600;
 const MAX_PNG_BYTES = 4 * 1024 * 1024;

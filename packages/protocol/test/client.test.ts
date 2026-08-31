@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
-import { XgenClient } from '../src/core/index';
+import { XgenClient } from '@dex/protocol';
 
 /**
  * A tiny mock of the XGEN gateway that implements exactly the endpoints the

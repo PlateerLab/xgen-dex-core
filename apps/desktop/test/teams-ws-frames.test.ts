@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { handleRoomFrame, handleUserFrame } from '../src/main/teams-ws';
-import type { TeamsEvent } from '../src/core/index';
+import type { TeamsEvent } from '@dex/protocol';
 
 /** 프레임 하나를 흘려 넣고 나온 이벤트를 모은다. */
 function feed(frame: Record<string, unknown>): TeamsEvent[] {

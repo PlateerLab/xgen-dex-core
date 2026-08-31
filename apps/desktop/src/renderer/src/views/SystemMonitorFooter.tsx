@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { AppMemoryProcessKind, SystemMetrics } from '../../../core/system-metrics';
+import type { AppMemoryProcessKind, SystemMetrics } from '@dex/protocol/system-metrics';
 import { xgen } from '../bridge';
 import { formatMemorySize, formatNetworkRate } from './system-monitor-model';
 

@@ -20,8 +20,8 @@
  * 회전된 뒤 **폐기된 토큰으로 영원히 재시도**하는 상태에 갇힌다(실기 사례).
  */
 import WebSocket from 'ws';
-import { safeMapMessage, mapTeamsReactions } from '../core/teams';
-import type { TeamsEvent } from '../core/types';
+import { safeMapMessage, mapTeamsReactions } from '@dex/protocol/teams';
+import type { TeamsEvent } from '@dex/protocol/types';
 import { xgenWebSocketTlsOptions } from './connection-security';
 
 /** 방 소켓이 유휴일 때 서버에 보내는 ping 주기. 서버는 pong 으로 답한다. */

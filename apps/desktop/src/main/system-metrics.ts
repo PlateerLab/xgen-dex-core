@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
 import { cpus, freemem, totalmem } from 'node:os';
 import { basename } from 'node:path';
-import type { AppMemoryProcess, AppMemoryProcessKind, SystemMetrics } from '../core/system-metrics';
+import type { AppMemoryProcess, AppMemoryProcessKind, SystemMetrics } from '@dex/protocol/system-metrics';
 
 interface CpuCounters {
   idle: number;

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { BrowserPageInfo } from '../src/core/browser';
+import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { BrowserHistoryStore, type BrowserHistoryRuntimeEvent } from '../src/main/browser-history';
 import { BrowserRuntime } from '../src/main/browser-runtime';
 import { browserPartition } from '../src/main/browser-security';

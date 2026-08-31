@@ -6,8 +6,8 @@ import type {
   BrowserHistoryListResult,
   BrowserHistoryRemoveRequest,
   BrowserHistorySuggestion,
-} from '../core/browser';
-import { normalizeBrowserUrl } from '../core/browser';
+} from '@dex/protocol/browser';
+import { normalizeBrowserUrl } from '@dex/protocol/browser';
 import { BROWSER_PARTITION_PREFIX } from './browser-security';
 
 const HISTORY_VERSION = 1;

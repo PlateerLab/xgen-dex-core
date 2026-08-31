@@ -9,7 +9,7 @@ import {
   type BrowserPopupDecision,
   type BrowserSelectionMode,
   type BrowserSelectionSession,
-} from '../../../core/browser';
+} from '@dex/protocol/browser';
 import { xgen } from '../bridge';
 import { useBrowserState } from '../browser-state';
 import {

@@ -6,7 +6,7 @@ import type {
   Conversation,
   CurrentUser,
   HistoryTurn,
-} from './xgen/types';
+} from '@dex/protocol/types';
 
 export const DEX_PROTOCOL_VERSION = 1;
 

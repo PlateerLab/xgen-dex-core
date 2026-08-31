@@ -8,7 +8,7 @@ import {
   notificationProfileForAccount,
   withNotificationProfile,
   type NotificationEvent,
-} from '../src/core/notifications';
+} from '@dex/protocol/notifications';
 
 function event(over: Partial<NotificationEvent> = {}): NotificationEvent {
   return {

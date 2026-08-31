@@ -10,7 +10,7 @@
  */
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { xgen } from '../bridge';
-import { teamsAttachmentRejectReason } from '../../../core/index';
+import { teamsAttachmentRejectReason } from '@dex/protocol';
 import { ShareToTeamsModal } from './ShareToTeams';
 import type { LocalSyncStatusLike, WorkspaceStatusLike } from '../../../preload/index';
 import {

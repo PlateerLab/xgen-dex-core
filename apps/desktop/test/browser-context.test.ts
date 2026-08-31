@@ -7,7 +7,7 @@ import {
   stripBrowserContext,
   type BrowserSelectionResult,
   type BrowserState,
-} from '../src/core/browser';
+} from '@dex/protocol/browser';
 import { normalizedSelectionRect } from '../src/main/browser-selection';
 
 const state: BrowserState = {

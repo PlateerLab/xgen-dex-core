@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { xgen } from '../bridge';
-import type { CurrentUser } from '../../../core/index';
+import type { CurrentUser } from '@dex/protocol';
 import { XgenWordmark } from '../brand/Logo';
 import { EyeIcon, EyeOffIcon } from '../brand/icons';
 

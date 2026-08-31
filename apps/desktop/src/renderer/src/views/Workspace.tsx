@@ -6,20 +6,20 @@ import { teamsContextStore } from '../teams-context';
 import { useBrowserState } from '../browser-state';
 import { browserSelectionStore } from '../browser-selection-store';
 import { notificationStore } from '../notifications';
-import { notificationChatKey, type NotificationTarget } from '../../../core/notifications';
+import { notificationChatKey, type NotificationTarget } from '@dex/protocol/notifications';
 import type {
   Agent,
   CurrentUser,
   TeamsRoom as TeamsRoomModel,
   TeamsShareRef,
-} from '../../../core/index';
+} from '@dex/protocol';
 import type {
   BrowserConnectionEvent,
   BrowserPageInfo,
   BrowserSelectionMode,
   BrowserSelectionResult,
   BrowserSelectionSession,
-} from '../../../core/browser';
+} from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
 import { Chat } from './Chat';
 import { Settings } from './Settings';

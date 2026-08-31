@@ -5,7 +5,7 @@ import {
   BROWSER_SEARCH_PROVIDERS,
   normalizeBrowserUrl,
   type BrowserSearchProvider,
-} from '../../../core/browser';
+} from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
 import { HotkeyCapture } from './HotkeyCapture';
 import { SettingsSection } from './SettingsSection';
@@ -15,7 +15,7 @@ import { SyncSettings } from './SyncSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { Selector } from './Selector';
 import { notificationStore, useNotifications } from '../notifications';
-import type { NotificationEventType, NotificationPrivacy } from '../../../core/notifications';
+import type { NotificationEventType, NotificationPrivacy } from '@dex/protocol/notifications';
 import {
   BrowserIcon,
   BellIcon,

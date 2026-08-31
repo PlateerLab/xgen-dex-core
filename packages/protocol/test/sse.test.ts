@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SseParser } from '../src/core/sse';
-import { frameToChatEvent } from '../src/core/chat';
+import { SseParser } from '@dex/protocol/sse';
+import { frameToChatEvent } from '@dex/protocol/chat';
 
 test('SseParser: splits frames on blank line', () => {
   const p = new SseParser();

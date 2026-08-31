@@ -20,10 +20,10 @@ import {
   toContextEntries,
   type TeamsContextEnvelope,
   type TeamsShareRef,
-} from '../src/core/teams-bridge';
-import { stripBrowserContext } from '../src/core/browser';
-import { mapMessage } from '../src/core/teams';
-import type { TeamsMessage } from '../src/core/index';
+} from '@dex/protocol/teams-bridge';
+import { stripBrowserContext } from '@dex/protocol/browser';
+import { mapMessage } from '@dex/protocol/teams';
+import type { TeamsMessage } from '@dex/protocol';
 
 const ROOM = { id: 'r1', name: '3팀 개발방', isDirect: false };
 

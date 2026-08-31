@@ -14,14 +14,14 @@
  */
 // 값 import 는 **순수 모듈에서 직접** 가져온다. core/index 를 거치면 클라이언트
 // 전체(HttpClient·아바타·음성…)가 딸려 들어와 node 단위 테스트가 무거워진다.
-import { shareBodyOf } from '../../../core/teams-bridge';
+import { shareBodyOf } from '@dex/protocol/teams-bridge';
 import type {
   TeamsAttachment,
   TeamsMember,
   TeamsMessage,
   TeamsReaction,
   TeamsRoom,
-} from '../../../core/index';
+} from '@dex/protocol';
 
 /** 낙관적으로 그려 둔, 아직 서버가 확정하지 않은 메시지의 id 접두사. */
 export const PENDING_PREFIX = 'pending:';

@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import { createServer, type IncomingMessage } from 'http'
 import { WebSocketServer } from 'ws'
 import { HttpSyncTransport, WorkspaceWsClient } from '../src/main/sync-transport'
-import { XgenClient } from '../src/core/index'
+import { XgenClient } from '@dex/protocol'
 
 // ── 1) HTTP 전송: 401 → refreshAuth → 새 토큰으로 1회 재발송 ────────────────
 

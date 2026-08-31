@@ -6,7 +6,7 @@ import type {
   BrowserSelectionRect,
   BrowserSelectionResult,
   BrowserSelectionSession,
-} from '../../../core/browser';
+} from '@dex/protocol/browser';
 import { xgen } from '../bridge';
 import type { BrowserSurfaceRect } from './BrowserPane';
 

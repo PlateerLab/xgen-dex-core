@@ -1,7 +1,7 @@
 // 서버 주소 자동 확정(https→http)과 로그인 실패 문구를 검증한다.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ApiError } from '../src/core/client';
+import { ApiError } from '@dex/protocol/client';
 import {
   candidatesFor,
   isTlsVerifyError,

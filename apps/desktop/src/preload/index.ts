@@ -45,12 +45,12 @@ import type {
   NotificationTarget,
   NotificationDeliveryResult,
   NotificationSystemStatus,
-} from '../core/index';
-import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '../core/ssh';
-import type { AvatarConfig, AvatarDescriptor } from '../core/preferences';
-import type { StoreAvatar } from '../core/avatars';
+} from '@dex/protocol';
+import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
+import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
+import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
-import type { SystemMetrics } from '../core/system-metrics';
+import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
   BrowserConnectionEvent,
   BrowserCreateRequest,
@@ -69,7 +69,7 @@ import type {
   BrowserSelectionResult,
   BrowserSelectionSession,
   BrowserState,
-} from '../core/browser';
+} from '@dex/protocol/browser';
 
 /** 로컬 실행 환경 상태(설정 화면) — 메인의 localRuntimeStatus 응답. */
 export interface LocalExecStatus {

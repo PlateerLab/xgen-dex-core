@@ -18,7 +18,7 @@ import type {
   TeamsMember,
   TeamsMessage,
   TeamsRoom,
-} from '../../core/index';
+} from '@dex/protocol';
 import {
   PENDING_PREFIX,
   applyEdit,

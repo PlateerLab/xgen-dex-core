@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { XgenClient } from './xgen/index';
+import { XgenClient } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { defaultLocalToolsConfig, validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';

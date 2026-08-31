@@ -1,5 +1,5 @@
 // 서버별 인증서 예외와 SSO 완료 응답을 안전하게 검증하는 연결 보안 도우미
-import type { LoginResult } from '../core/types';
+import type { LoginResult } from '@dex/protocol/types';
 
 const PRIVATE_CA_ERROR = 'CERT_AUTHORITY_INVALID';
 

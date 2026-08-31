@@ -11,8 +11,8 @@ import {
   type SessionState,
   type SessionTransport,
 } from '../src/renderer/src/session-store'
-import type { Agent, ChatEvent, HistoryAttachment } from '../src/core/index'
-import type { BrowserSelectionResult } from '../src/core/browser'
+import type { Agent, ChatEvent, HistoryAttachment } from '@dex/protocol'
+import type { BrowserSelectionResult } from '@dex/protocol/browser'
 
 function agent(workflowId: string, name = workflowId): Agent {
   return {

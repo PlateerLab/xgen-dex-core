@@ -31,7 +31,7 @@ import {
   toContextEntries,
   type ChatRequest,
   type TeamsRoom,
-} from '../../core/index';
+} from '@dex/protocol';
 import { isPending } from './views/teams-store';
 import { teamsStore } from './teams';
 

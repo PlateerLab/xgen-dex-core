@@ -10,7 +10,7 @@ import { xgen } from './bridge';
 import { SessionStore, type StoreSnapshot } from './session-store';
 import { browserStateStore } from './browser-state';
 import { teamsContextStore } from './teams-context';
-import { xgenyHistoryWorkspacePath } from '../../core/history';
+import { xgenyHistoryWorkspacePath } from '@dex/protocol/history';
 
 const HISTORY_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 

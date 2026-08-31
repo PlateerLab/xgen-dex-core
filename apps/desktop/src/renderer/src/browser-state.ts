@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
-import type { BrowserSelectionResult, BrowserState } from '../../core/browser';
-import { prependBrowserContext } from '../../core/browser';
-import type { ChatRequest } from '../../core/types';
+import type { BrowserSelectionResult, BrowserState } from '@dex/protocol/browser';
+import { prependBrowserContext } from '@dex/protocol/browser';
+import type { ChatRequest } from '@dex/protocol/types';
 import { xgen } from './bridge';
 
 const EMPTY: BrowserState = { enabled: false, pages: [], activeByWorkflow: {}, popupRequests: [] };

@@ -11,7 +11,7 @@ import {
   type NotificationTarget,
   type NotificationDeliveryResult,
   type NotificationSystemStatus,
-} from '../core/notifications';
+} from '@dex/protocol/notifications';
 
 export interface NotificationCenterDeps {
   profile: () => NotificationProfile;

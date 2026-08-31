@@ -14,8 +14,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useModalDismiss } from './use-modal-dismiss';
 import { xgen } from '../bridge';
-import type { CurrentUser, StoreAvatar } from '../../../core/index';
-import type { AvatarConfig, AvatarDescriptor } from '../../../core/preferences';
+import type { CurrentUser, StoreAvatar } from '@dex/protocol';
+import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import { AvatarModel, type AvatarTransform } from '../avatar/Live2DCanvas';
 import { AvatarCropModal } from './AvatarCropModal';
 import { AvatarNameModal, dedupeName } from './AvatarNameModal';

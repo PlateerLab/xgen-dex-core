@@ -28,7 +28,7 @@ import type {
   JobRun,
   ForgedTool,
   WsNode,
-} from '../../../core/index';
+} from '@dex/protocol';
 
 interface Props {
   workflowId: string;

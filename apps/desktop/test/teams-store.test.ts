@@ -23,9 +23,9 @@ import {
   startsGroup,
   unreadCount,
 } from '../src/renderer/src/views/teams-store';
-import { buildSharedMessage } from '../src/core/teams-bridge';
-import { directRoomNameForViewer, TeamsApi, teamsAttachmentRejectReason } from '../src/core/teams';
-import type { TeamsMember, TeamsMessage, TeamsRoom } from '../src/core/index';
+import { buildSharedMessage } from '@dex/protocol/teams-bridge';
+import { directRoomNameForViewer, TeamsApi, teamsAttachmentRejectReason } from '@dex/protocol/teams';
+import type { TeamsMember, TeamsMessage, TeamsRoom } from '@dex/protocol';
 
 function msg(id: string, createdAt: string, over: Partial<TeamsMessage> = {}): TeamsMessage {
   return {

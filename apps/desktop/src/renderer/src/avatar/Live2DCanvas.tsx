@@ -16,7 +16,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { xgen } from '../bridge';
 import { XgenMark } from '../brand/Logo';
 import type { AvatarState } from './AvatarSlot';
-import type { AvatarConfig, AvatarDescriptor } from '../../../core/preferences';
+import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 
 const CUBISM_CORE_SRC = './live2dcubismcore.min.js';
 let _spineAliasSeq = 0;

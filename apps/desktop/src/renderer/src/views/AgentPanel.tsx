@@ -17,7 +17,7 @@ import {
   sessionDotState,
   type SessionState,
 } from '../session-store';
-import type { Agent, Conversation } from '../../../core/index';
+import type { Agent, Conversation } from '@dex/protocol';
 import type { ConnectorConfig } from '../../../main/config';
 import { BackIcon, ChatIcon, CloseIcon, HistoryIcon, PlusIcon, RefreshIcon } from '../brand/icons';
 

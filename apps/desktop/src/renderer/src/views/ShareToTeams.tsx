@@ -25,7 +25,7 @@ import {
   type TeamsAttachment,
   type TeamsRoom,
   type TeamsShareRef,
-} from '../../../core/index';
+} from '@dex/protocol';
 import { xgen } from '../bridge';
 import { teamsStore, useTeams } from '../teams';
 import { formatBytes } from './teams-store';

@@ -1,0 +1,174 @@
+name: Release
+
+# 세 산출물을 **한 릴리스**로 낸다 — 데스크톱 설치본(3 OS) · CLI 패키지 · VSCode 확장.
+#
+# 하나의 릴리스인 이유: 셋이 같은 코어를 공유하므로 버전이 갈라지면 "내 CLI 는
+# 되는데 확장은 안 된다"가 되고, 그때 어느 조합이 검증된 것인지 아무도 모른다.
+# 태그 하나 = 검증된 조합 하나다.
+#
+# 트리거: v* 태그 push, 또는 수동.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 데스크톱 설치본 (OS 별로 그 OS 에서 빌드해야 한다) ──
+  desktop:
+    name: 데스크톱 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # latest*.yml + blockmap 은 electron-updater 의 피드다 — 설치본과 함께
+          # 올려야 자동 업데이트가 새 버전을 찾는다.
+          - os: ubuntu-latest
+            flag: --linux
+            glob: |
+              apps/desktop/release/*.AppImage
+              apps/desktop/release/*.deb
+              apps/desktop/release/latest-linux.yml
+          - os: windows-latest
+            flag: --win
+            glob: |
+              apps/desktop/release/*.exe
+              apps/desktop/release/*.blockmap
+              apps/desktop/release/latest.yml
+          - os: macos-latest
+            flag: --mac
+            glob: |
+              apps/desktop/release/*.dmg
+              apps/desktop/release/*.blockmap
+              apps/desktop/release/latest-mac.yml
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+
+      - name: FUSE 빌드 의존 (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libfuse-dev fuse3 pkg-config
+
+      # 루트 install 은 packages/* 의 의존(ws · MCP SDK)을 놓는다 — 데스크톱이
+      # 그것을 소스로 번들하므로 둘 다 필요하다.
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+
+      # optional 이라 실패해도 npm 은 통과한다 — 배포본에 실제로 들어갔는지
+      # 여기서 못 박는다 (조용한 기능 증발 방지).
+      - name: FUSE 바인딩 확인 (linux)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: apps/desktop
+        run: |
+          node -e "require('@cocalc/fuse-native'); console.log('fuse binding OK')"
+          ldd node_modules/@cocalc/fuse-native/build/Release/fuse.node | grep -q libfuse.so.2 \
+            || { echo '::error::fuse.node 가 libfuse2 를 링크하지 않았다'; exit 1; }
+
+      - name: 빌드
+        run: npm --prefix apps/desktop run build
+
+      - name: 패키징
+        working-directory: apps/desktop
+        run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+
+  # ── CLI · VSCode 확장 (플랫폼 무관) ──
+  packages:
+    name: CLI + 확장
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci --no-audit --no-fund
+
+      - name: CLI tarball
+        run: |
+          npm --prefix apps/cli run build
+          npm --prefix apps/cli pack --pack-destination ../../dist-release
+
+      - name: 확장 .vsix
+        run: |
+          npm --prefix apps/vscode run build
+          npx --yes @vscode/vsce package --no-dependencies \
+            --out ../../dist-release/ --cwd apps/vscode
+
+      # 확장이 엔진을 품지 않았는지 — 여기서 막지 않으면 설치 시점에야 터진다.
+      - name: RPC 경계 확인
+        run: npm run contracts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist-release/*
+          if-no-files-found: error
+
+  publish:
+    name: 릴리스 발행
+    needs: [desktop, packages]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+
+      - name: 버전 읽기
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: XGEN Dex v${{ steps.ver.outputs.version }}
+          files: artifacts/**/*
+          fail_on_unmatched_files: true
+          body: |
+            **XGEN Dex** — 데스크톱 · CLI · VSCode 확장. 셋 다 같은 코어에서 나왔고,
+            이 태그는 **함께 검증된 조합**입니다.
+
+            ### 데스크톱
+
+            | OS | 파일 | 설치 |
+            |---|---|---|
+            | Windows | `XGen-Dex-Setup-*.exe` | 실행 → SmartScreen 이 뜨면 **추가 정보 → 실행** |
+            | macOS | `XGen-Dex-*.dmg` | 열어서 **XGen-Dex.app** 을 **응용 프로그램**으로 → 첫 실행은 **우클릭 → 열기** |
+            | Linux | `*.AppImage` / `*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
+
+            > macOS 가 "손상됨" 이라고 하면:
+            > `xattr -dr com.apple.quarantine "/Applications/XGen-Dex.app"`
+
+            ### CLI
+
+            ```
+            npm i -g ./xgen-dex-cli-*.tgz
+            dex            # 대화형 터미널 UI
+            dex --help
+            ```
+
+            ### VSCode 확장
+
+            `xgen-dex-vscode-*.vsix` 를 받아 **확장 → … → VSIX에서 설치**.
+            확장은 CLI 엔진을 자식 프로세스로 띄웁니다 — CLI 를 먼저 설치하거나
+            설정에서 실행 파일 경로를 지정하세요.
+
+            ---
+
+            처음 실행하면 **XGEN 서버 주소**와 **계정**을 입력합니다. 기본 서버는
+            들어 있지 않습니다 — 각자의 XGEN 배포를 가리키세요.

@@ -1,0 +1,55 @@
+name: CI
+
+# 모든 PR 과 main push. 세 앱과 세 패키지를 **한 번에** 검사한다 — 코어를 고치면
+# 그 자리에서 세 표면이 같이 돌아야, 한쪽만 깨진 채로 머지되는 일이 없다.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    name: 계약 · 타입 · 테스트
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # 데스크톱은 workspace 밖이라(electron + 네이티브 FUSE) 따로 설치한다.
+      # FUSE 헤더가 없으면 optionalDependency 라 조용히 빠지고, 배포본에서
+      # 워크스페이스 기능이 통째로 사라진다.
+      - name: FUSE 빌드 의존 (linux)
+        run: sudo apt-get update && sudo apt-get install -y libfuse-dev fuse3 pkg-config
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+
+      # 산출물이 필요한 검사(확장 번들에 엔진이 없는지)가 있으므로 빌드가 먼저다.
+      - name: 빌드
+        run: |
+          npm --prefix apps/cli run build
+          npm --prefix apps/vscode run build
+          npm --prefix apps/desktop run build
+
+      - name: 계약 검사
+        run: npm run contracts
+
+      - name: 타입체크
+        run: |
+          npx tsc --noEmit -p packages/protocol/tsconfig.json
+          npx tsc --noEmit -p packages/engine/tsconfig.json
+          npx tsc --noEmit -p packages/rpc/tsconfig.json
+          npx tsc --noEmit -p apps/cli/tsconfig.json
+          npx tsc --noEmit -p apps/vscode/tsconfig.json
+
+      - name: 테스트
+        run: |
+          npm --prefix packages/protocol test
+          npm --prefix packages/engine test
+          npm --prefix apps/cli test
+          npm --prefix apps/vscode test
+          npm --prefix apps/desktop test

@@ -2,6 +2,31 @@
 
 XGEN 에이전트를 쓰는 세 가지 방법.
 
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="images/2026-08-31_14-22.png">
+        <img src="images/2026-08-31_14-22.png" alt="XGEN Dex 데스크톱 앱 — 왼쪽에 대화 목록, 가운데에 답변" width="100%">
+      </a>
+    </td>
+    <td width="33%" valign="top">
+      <a href="images/2026-08-31_14-08.png">
+        <img src="images/2026-08-31_14-08.png" alt="XGEN Dex CLI — 터미널에서 Agent 목록과 대화" width="100%">
+      </a>
+    </td>
+    <td width="33%" valign="top">
+      <a href="images/2026-08-31_14-07.png">
+        <img src="images/2026-08-31_14-07.png" alt="XGEN Dex VS Code 확장 — 사이드바에서 Agent와 대화" width="100%">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><b>앱</b><br><sub>데스크톱</sub></td>
+    <td align="center"><b>CLI</b><br><sub>터미널</sub></td>
+    <td align="center"><b>VS Code 확장</b><br><sub>편집기 사이드바</sub></td>
+  </tr>
+</table>
+
 | | 무엇 | 받는 것 |
 |---|---|---|
 | **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 워크스페이스 동기화 | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
@@ -208,26 +233,12 @@ npm test            # 전 워크스페이스
 npm --prefix apps/desktop test
 ```
 
-`npm run contracts` 는 이 저장소가 지키는 규칙을 기계가 확인합니다 — 앱이 `/api/` 를
-직접 부르지 않는지, WebSocket 을 직접 열지 않는지, 패키지가 electron 을 알지 않는지,
-도메인 타입을 다시 선언하지 않는지, 확장 번들에 엔진이 섞이지 않았는지, 자동 업데이트가
-이 저장소를 보는지. CI 가 PR 마다 돌립니다.
+`npm run contracts` 는 앱이 코어를 우회하는 곳이 없는지 기계가 확인합니다 — 서버 경로를
+직접 부르거나, WebSocket 을 직접 열거나, 패키지가 electron 을 알거나, 확장 번들에 엔진이
+섞이는 일. 규칙과 그 이유는 [scripts/contracts/check.mjs](./scripts/contracts/check.mjs)
+안에 적혀 있습니다.
 
-### 패키징
+### 빌드와 배포
 
-```bash
-npm --prefix apps/desktop run dist:linux   # 또는 dist:win / dist:mac
-cd apps/cli && npm pack
-cd apps/vscode && npx @vscode/vsce package --no-dependencies
-```
-
-### 릴리스
-
-모든 `package.json` 의 버전을 같은 값으로 올리고 태그를 밀면, CI 가 세 산출물을 만들어
-하나의 GitHub Release 에 올리고 CLI 를 npm 에 배포합니다.
-
-```bash
-git tag -a v1.2.0 -m "..." && git push origin v1.2.0
-```
-
-버전을 하나로 두는 이유는 태그 하나가 **함께 검증된 조합** 하나이기 때문입니다.
+[GitHub Actions](.github/workflows) 가 합니다. PR 마다 검사를 돌리고, 태그를 밀면 세
+산출물을 만들어 하나의 Release 에 올리고 CLI 를 npm 에 배포합니다.

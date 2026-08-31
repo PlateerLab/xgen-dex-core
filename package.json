@@ -1,0 +1,29 @@
+{
+  "name": "xgen-dex",
+  "version": "1.0.0",
+  "private": true,
+  "description": "XGEN Dex — 데스크톱 · CLI · VSCode 확장이 하나의 코어를 공유하는 저장소",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/PlateerLab/xgen-dex-core.git" },
+  "engines": { "node": ">=20" },
+  "workspaces": [
+    "packages/*",
+    "apps/cli",
+    "apps/vscode"
+  ],
+  "scripts": {
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "verify": "npm run check && npm run test && npm run build",
+    "contracts": "node scripts/contracts/check.mjs",
+    "desktop": "npm --prefix apps/desktop run",
+    "cli": "npm --prefix apps/cli run",
+    "vscode": "npm --prefix apps/vscode run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

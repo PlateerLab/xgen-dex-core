@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM"],
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@dex/protocol": ["packages/protocol/src/index.ts"],
+      "@dex/protocol/*": ["packages/protocol/src/*"],
+      "@dex/engine": ["packages/engine/src/index.ts"],
+      "@dex/engine/*": ["packages/engine/src/*"],
+      "@dex/rpc": ["packages/rpc/src/index.ts"],
+      "@dex/rpc/*": ["packages/rpc/src/*"]
+    }
+  }
+}

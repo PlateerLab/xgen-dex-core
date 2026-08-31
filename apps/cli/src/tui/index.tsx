@@ -48,12 +48,19 @@ export async function runTui(engine: DexEngine): Promise<void> {
       {
         exitOnCtrlC: true,
         patchConsole: true,
-        // 모든 키를 이스케이프로 받아야 수식 키 자체가 사건으로 온다.
+        // 모든 키를 이스케이프로 받아야 한/영 키(오른쪽 Alt)와 Caps Lock 이 사건으로
+        // 온다. 그런데 그렇게만 켜면 터미널이 **글쇠 코드만** 보내서 Shift+r 이
+        // 소문자 `r` 로 도착한다 — 된소리도 영문 대문자도 사라진다. 그래서 글자까지
+        // 함께 보내 달라고(reportAssociatedText) 요청한다.
         ...(kitty
           ? {
               kittyKeyboard: {
                 mode: 'enabled' as const,
-                flags: ['disambiguateEscapeCodes' as const, 'reportAllKeysAsEscapeCodes' as const],
+                flags: [
+                  'disambiguateEscapeCodes' as const,
+                  'reportAllKeysAsEscapeCodes' as const,
+                  'reportAssociatedText' as const,
+                ],
               },
             }
           : {}),

@@ -8,7 +8,12 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
-import { QUERY, parseKeyEvents, supportsKittyKeyboard } from '../src/tui/kitty';
+import {
+  QUERY,
+  knownKittyTerminal,
+  parseKeyEvents,
+  supportsKittyKeyboard,
+} from '../src/tui/kitty';
 
 const CSI = '\u001B[';
 
@@ -74,36 +79,74 @@ function fakeTerminal(answer?: string): {
 
 test('아는 터미널은 답한다', async () => {
   const terminal = fakeTerminal(`${CSI}?1u`);
-  assert.equal(await supportsKittyKeyboard({ ...terminal, isTTY: true }), true);
+  assert.equal(
+    await supportsKittyKeyboard({ ...terminal, isTTY: true }, 200, {} as NodeJS.ProcessEnv),
+    true,
+  );
   assert.deepEqual(terminal.written, [QUERY]);
 });
 
 test('모르는 터미널은 기다리다 넘어간다', async () => {
   // 답이 없다고 켜 버리면 모르는 터미널이 우리 질문을 글자로 뱉어 화면에 찍힌다.
   const terminal = fakeTerminal();
-  assert.equal(await supportsKittyKeyboard({ ...terminal, isTTY: true }, 30), false);
+  assert.equal(
+    await supportsKittyKeyboard({ ...terminal, isTTY: true }, 30, {} as NodeJS.ProcessEnv),
+    false,
+  );
 });
 
 test('물어보는 동안만 원시 모드로 바꾸고 되돌린다', async () => {
   // 답은 줄바꿈 없이 오므로 행 단위 모드에서는 커널이 붙들고 있다 — 그러면 지원하는
   // 터미널도 대답하지 않는 것처럼 보인다.
   const terminal = fakeTerminal(`${CSI}?1u`);
-  await supportsKittyKeyboard({ ...terminal, isTTY: true });
+  await supportsKittyKeyboard({ ...terminal, isTTY: true }, 200, {} as NodeJS.ProcessEnv);
   assert.deepEqual(terminal.rawModes, [true, false]);
 });
 
 test('TTY 가 아니면 묻지 않는다', async () => {
   const terminal = fakeTerminal(`${CSI}?1u`);
-  assert.equal(await supportsKittyKeyboard({ ...terminal, isTTY: false }), false);
+  assert.equal(
+    await supportsKittyKeyboard({ ...terminal, isTTY: false }, 200, {} as NodeJS.ProcessEnv),
+    false,
+  );
   assert.deepEqual(terminal.written, [], '파이프에 제어 문자를 뿌릴 이유가 없다');
 });
 
 test('끌 수 있다', async () => {
   const terminal = fakeTerminal(`${CSI}?1u`);
-  process.env.DEX_NO_KITTY = '1';
-  try {
-    assert.equal(await supportsKittyKeyboard({ ...terminal, isTTY: true }), false);
-  } finally {
-    delete process.env.DEX_NO_KITTY;
+  assert.equal(
+    await supportsKittyKeyboard({ ...terminal, isTTY: true }, 200, {
+      DEX_NO_KITTY: '1',
+      TERM: 'xterm-kitty',
+    } as NodeJS.ProcessEnv),
+    false,
+    '아는 터미널이어도 끄면 꺼진다',
+  );
+});
+
+test('이름만으로 아는 터미널은 묻지 않는다', async () => {
+  // 물어보고 기다리는 시간은 짧지만, SSH 처럼 왕복이 느린 곳에서는 답이 늦어
+  // 지원하는 터미널을 놓친다.
+  for (const env of [
+    { KITTY_WINDOW_ID: '1' },
+    { TERM: 'xterm-kitty' },
+    { TERM: 'xterm-ghostty' },
+    { TERM: 'foot-extra' },
+    { TERM_PROGRAM: 'WezTerm' },
+    { GHOSTTY_RESOURCES_DIR: '/usr/share/ghostty' },
+  ]) {
+    assert.equal(knownKittyTerminal(env as NodeJS.ProcessEnv), true, JSON.stringify(env));
   }
+  for (const env of [{ TERM: 'xterm-256color' }, { TERM: 'screen' }, {}]) {
+    assert.equal(knownKittyTerminal(env as NodeJS.ProcessEnv), false, JSON.stringify(env));
+  }
+
+  const terminal = fakeTerminal();
+  assert.equal(
+    await supportsKittyKeyboard({ ...terminal, isTTY: true }, 30, {
+      TERM: 'xterm-kitty',
+    } as NodeJS.ProcessEnv),
+    true,
+  );
+  assert.deepEqual(terminal.written, [], '아는 터미널에는 묻지 않는다');
 });

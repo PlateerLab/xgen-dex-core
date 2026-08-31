@@ -60,6 +60,22 @@ function visibleInput(
   };
 }
 
+/**
+ * 이 입력이 한/영 전환인가.
+ *
+ * 터미널마다 같은 키가 다른 모습으로 온다. 하나를 놓치면 그 터미널에서는 한글을
+ * 켜지도 끄지도 못한다.
+ */
+export function isHangulToggle(
+  input: string,
+  key: { ctrl: boolean; meta: boolean; shift: boolean },
+): boolean {
+  if (key.ctrl && (input === '`' || input === ' ' || input === 'l')) return true; // Ctrl+Space · Ctrl+L
+  if (key.meta && input === ' ') return true; // Alt+Space — 한/영 키가 놓인 자리
+  if (key.shift && input === ' ') return true; // Shift+Space
+  return false;
+}
+
 function TerminalCursor({ x, y }: { x: number; y: number }): null {
   const { setCursorPosition } = useCursor();
   setCursorPosition({ x, y });
@@ -191,9 +207,16 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       // Ctrl+Space 로 한/영을 바꾼다 — ibus·fcitx 를 쓰던 손이 이미 아는 자리다.
       // (ink 은 Ctrl+Space 를 ctrl + '`' 로 준다.) Ctrl+L 도 받는다: 터미널이나
       // tmux 가 Ctrl+Space 를 먼저 채가는 경우가 있다.
-      // Alt+Space 도 받는다. 한국어 자판의 한/영 키는 오른쪽 Alt 자리에 있어서,
-      // 그 키가 Alt 로 도착하는 환경에서는 오른손 엄지로 그대로 닿는다.
-      if ((key.ctrl && (input === '`' || input === 'l')) || (key.meta && input === ' ')) {
+      // 한/영 전환 키들.
+      //
+      // 같은 Ctrl+Space 라도 터미널에 따라 다르게 도착한다. 예전 방식에서는 NUL 이
+      // 와서 ink 이 ctrl + '`' 로 읽고, Kitty 키보드 프로토콜에서는 **ctrl 이 붙은
+      // 공백**으로 온다. 앞의 것만 보고 있어서 kitty 에서는 아무 일도 일어나지
+      // 않았다 — 모드가 켜져 있어도 되돌릴 수가 없었다.
+      //
+      // Shift+Space 도 받는다(리눅스 입력기의 오랜 한/영 자리). 수식 없는 그냥 공백은
+      // 걸리지 않으므로 글 쓰는 데 지장이 없다.
+      if (isHangulToggle(input, key)) {
         settle();
         props.onHangulModeChange?.(!props.hangulMode);
         return;

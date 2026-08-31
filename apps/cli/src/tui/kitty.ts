@@ -86,12 +86,29 @@ export interface QueryStreams {
  * 대답이 없으면 모르는 것이다 — 기다리다 그냥 넘어간다. 답을 못 받았다고 켜 버리면
  * 모르는 터미널이 우리 질문을 글자로 뱉어 화면에 `[?u` 가 찍힌다.
  */
+/**
+ * 이름만으로 아는 터미널인가.
+ *
+ * 물어보고 기다리는 200ms 는 짧지만, 이미 아는 터미널에까지 물을 이유는 없다.
+ * SSH 처럼 왕복이 느린 곳에서는 답이 늦어 지원하는 터미널을 놓치기도 한다.
+ */
+export function knownKittyTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.KITTY_WINDOW_ID) return true;
+  if (env.GHOSTTY_RESOURCES_DIR) return true;
+  const term = (env.TERM ?? '').toLowerCase();
+  if (term === 'xterm-kitty' || term === 'xterm-ghostty' || term.includes('foot')) return true;
+  const program = (env.TERM_PROGRAM ?? '').toLowerCase();
+  return program === 'wezterm' || program === 'ghostty' || program === 'kitty';
+}
+
 export async function supportsKittyKeyboard(
   streams: QueryStreams,
   timeoutMs = 200,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
-  if (process.env.DEX_NO_KITTY === '1') return false;
+  if (env.DEX_NO_KITTY === '1') return false;
   if (!streams.stdout.isTTY || !streams.isTTY) return false;
+  if (knownKittyTerminal(env)) return true;
 
   const wasRaw = streams.stdin.isRaw === true;
   const wasPaused = !wasRaw;

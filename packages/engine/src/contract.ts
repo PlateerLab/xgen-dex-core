@@ -8,11 +8,14 @@
  */
 import type {
   Agent,
+  AgentCreateOptions,
+  AgentCreateSetting,
   AgentListQuery,
   AgentListResult,
   ChatEvent,
   Conversation,
   CurrentUser,
+  CreateAgentInput,
   HistoryTurn,
   ToolEvent,
 } from '@dex/protocol/types';
@@ -62,10 +65,13 @@ export interface ResolvedChatInput {
 
 export type {
   Agent,
+  AgentCreateOptions,
+  AgentCreateSetting,
   AgentListQuery,
   AgentListResult,
   ChatEvent,
   Conversation,
+  CreateAgentInput,
   HistoryTurn,
   ToolEvent,
 };

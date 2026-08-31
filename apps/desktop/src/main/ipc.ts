@@ -35,6 +35,8 @@ export const CHANNELS = {
   avatarRefresh: 'avatar:refresh', // main → overlay (auth ready / config changed → refetch now)
 
   agentsList: 'agents:list',
+  agentsCreateOptions: 'agents:create-options',
+  agentsCreate: 'agents:create',
 
   // Voice (STT/TTS) — renderer captures audio, main proxies to the backend
   // (secrets stay server-side). Audio crosses IPC as Uint8Array + mime.

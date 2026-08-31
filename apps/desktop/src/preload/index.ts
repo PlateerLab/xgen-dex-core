@@ -45,6 +45,8 @@ import type {
   NotificationTarget,
   NotificationDeliveryResult,
   NotificationSystemStatus,
+  AgentCreateOptions,
+  CreateAgentInput,
 } from '@dex/protocol';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
@@ -287,6 +289,12 @@ const api = {
   agents: {
     list: (query?: AgentListQuery): Promise<AgentListResult> =>
       ipcRenderer.invoke(CHANNELS.agentsList, query),
+    /** 만들기 화면이 그릴 것 — 서버가 Agent XGeny 노드에서 읽어 내려 준다. */
+    createOptions: (): Promise<AgentCreateOptions> =>
+      ipcRenderer.invoke(CHANNELS.agentsCreateOptions),
+    /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
+    create: (input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> =>
+      ipcRenderer.invoke(CHANNELS.agentsCreate, input),
   },
 
   /**

@@ -20,8 +20,10 @@ import {
 import { hostPorts, bindHost, isHostBound } from './host';
 import type {
   Agent,
+  AgentCreateOptions,
   AgentListQuery,
   AgentListResult,
+  CreateAgentInput,
   AuthStatus,
   ChatEvent,
   ChatInput,
@@ -329,6 +331,34 @@ export class DexEngine {
 
   async listAgents(query: AgentListQuery = {}, requestedProfile?: string): Promise<AgentListResult> {
     return this.withAuthRetry(requestedProfile, (client) => client.agents.list(query));
+  }
+
+  /**
+   * 만들기 화면이 그릴 것 — 프로바이더·모델과 손댈 수 있는 설정.
+   *
+   * 목록은 서버가 Agent XGeny 노드에서 읽어 내려 준다. 커넥터와 CLI 가 각자 적어
+   * 두면 노드가 바뀔 때마다 조용히 낡는다.
+   */
+  async agentCreateOptions(requestedProfile?: string): Promise<AgentCreateOptions> {
+    return this.withAuthRetry(requestedProfile, (client) => client.agents.createOptions());
+  }
+
+  /**
+   * 에이전트 하나를 세운다 — Agent XGeny 노드 하나짜리 워크플로우.
+   *
+   * 엣지가 없는 것이 이 노드의 성질이다. 도구도 기억도 위임도 자기진화도 그 안에
+   * 있어서 연결 없이 그대로 대화가 된다.
+   */
+  async createAgent(
+    input: CreateAgentInput,
+    requestedProfile?: string,
+  ): Promise<{ workflowId: string; workflowName: string }> {
+    const name = input.name.trim();
+    if (!name) throw new DexError('usage_error', '에이전트 이름이 필요합니다.');
+    if (!input.provider) throw new DexError('usage_error', 'AI 제공사가 필요합니다.');
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.agents.create({ ...input, name }),
+    );
   }
 
   async listConversations(requestedProfile?: string): Promise<Conversation[]> {

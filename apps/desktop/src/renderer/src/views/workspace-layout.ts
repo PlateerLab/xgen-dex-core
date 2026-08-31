@@ -6,7 +6,8 @@ export type WorkspaceTabKind =
   | 'avatar'
   | 'teams'
   | 'settings'
-  | 'agent-viewer';
+  | 'agent-viewer'
+  | 'agent-create';
 
 /** 에이전트 뷰어가 처음 열 하위 탭 — 정의는 core(main 의 영속 스키마와 공유). */
 import type { AgentViewerSub } from '@dex/protocol';

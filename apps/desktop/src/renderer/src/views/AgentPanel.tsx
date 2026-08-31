@@ -67,7 +67,11 @@ function synthAgent(c: Conversation, agents: Agent[]): Agent {
   );
 }
 
-export const AgentPanel: React.FC<{ config: ConnectorConfig }> = ({ config }) => {
+export const AgentPanel: React.FC<{
+  config: ConnectorConfig;
+  /** [+] — 새 에이전트를 만드는 화면을 메인에 연다. */
+  onCreateAgent?: () => void;
+}> = ({ config, onCreateAgent }) => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -370,6 +374,10 @@ export const AgentPanel: React.FC<{ config: ConnectorConfig }> = ({ config }) =>
                 {o === 'all' ? '전체' : o === 'personal' ? '개인' : '공유'}
               </button>
             ))}
+            {/* 목록을 거르는 칩들과 다른 일이라 사이를 띄우고 오른쪽 끝에 둔다. */}
+            <button className="chip new-agent" title="새 에이전트" onClick={onCreateAgent}>
+              +
+            </button>
           </div>
 
           <div className="agent-list">

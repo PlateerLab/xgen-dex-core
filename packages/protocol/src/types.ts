@@ -383,3 +383,46 @@ export type TeamsEvent =
       roomId: string;
       reason?: 'invited' | 'removed' | 'updated';
     };
+
+/**
+ * 에이전트 만들기 — 이름과 모델만으로 XGeny 노드 하나짜리 워크플로우.
+ *
+ * 프로바이더·모델·설정 목록을 여기 적지 않는다. 노드에는 파라미터가 28개 있고 같은
+ * 화면이 웹·커넥터·CLI 세 곳에 있다. 세 곳이 각자 적어 두면 노드가 바뀔 때마다 세
+ * 곳이 조용히 낡는다 — 서버가 노드에서 읽어 내려 준다.
+ */
+export interface AgentCreateProviderOption {
+  value: string;
+  label: string;
+  models: Array<{ value: string; label: string }>;
+  defaultModel?: string;
+  needsBaseUrl?: boolean;
+}
+
+export interface AgentCreateSetting {
+  id: string;
+  label: string;
+  /** 노드 파라미터 타입 — 'STR' | 'BOOL' | 'INT' | 'FLOAT' 등. */
+  type: string;
+  default: unknown;
+  options?: Array<{ value: string; label: string }>;
+  description?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface AgentCreateOptions {
+  providers: AgentCreateProviderOption[];
+  defaultProvider: string;
+  settings: AgentCreateSetting[];
+  defaults: Record<string, unknown>;
+}
+
+export interface CreateAgentInput {
+  name: string;
+  provider: string;
+  model?: string;
+  /** [세부설정]. 서버가 목록 밖의 키는 버린다 — 자격증명은 이 경로로 가지 않는다. */
+  settings?: Record<string, unknown>;
+}

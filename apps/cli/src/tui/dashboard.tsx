@@ -9,6 +9,7 @@ import { CommandPalette, type PaletteAction } from './command-palette';
 import { Footer, Header } from './components';
 import { HistoryScreen } from './history-screen';
 import { StartPanel } from './start-panel';
+import { AgentCreateScreen } from './agent-create';
 import { ImeTextInput } from './ime-text-input';
 import type { TuiEngine, TuiSession } from './model';
 import { useTerminalSize } from './use-terminal-size';
@@ -31,6 +32,11 @@ function AgentSidebar(props: {
   return (
     <Box flexDirection="column" width={30} borderStyle="round" borderColor={props.focused ? 'cyan' : 'gray'} paddingX={1}>
       <Text bold>Agents</Text>
+      {/* 목록의 한 줄로 둔다 — 따로 단축키를 외우게 하는 대신 ↑↓ 로 닿는다.
+          커서 -1 이 이 줄이다. */}
+      <Text color={props.cursor === -1 && props.focused ? 'cyan' : undefined} wrap="truncate-end">
+        {props.cursor === -1 ? '›' : ' '} ＋ 새 에이전트
+      </Text>
       {visible.map((agent) => {
         const index = props.agents.indexOf(agent);
         const cursor = index === props.cursor;
@@ -150,7 +156,9 @@ export function Dashboard(props: {
   const size = useTerminalSize();
   const bodyHeight = Math.max(12, size.rows - 5);
   const [focus, setFocus] = useState<'agents' | 'composer'>('agents');
+  // -1 은 목록 맨 위의 [＋ 새 에이전트] 줄이다.
   const [cursor, setCursor] = useState(0);
+  const [creatingAgent, setCreatingAgent] = useState(false);
   const [selected, setSelected] = useState<AgentRef | undefined>(() => {
     const first = props.session.agents[0];
     return first ? { workflowId: first.workflowId, workflowName: first.workflowName } : undefined;
@@ -209,6 +217,10 @@ export function Dashboard(props: {
    * 다른 일이고, 후자를 전자 때문에 막으면 안 된다 — 그냥 새 대화로 연다.
    */
   const selectAgent = async (): Promise<void> => {
+    if (cursor === -1) {
+      setCreatingAgent(true);
+      return;
+    }
     const agent = props.session.agents[cursor];
     if (!agent || chat.running || starting) return;
     const ref: AgentRef = { workflowId: agent.workflowId, workflowName: agent.workflowName };
@@ -325,14 +337,14 @@ export function Dashboard(props: {
       else if (key.escape && chat.running) cancelTurn();
       else if (key.escape) setFocus('agents');
       else if (key.tab) setFocus((current) => (current === 'agents' ? 'composer' : 'agents'));
-      else if (focus === 'agents' && key.upArrow) setCursor((current) => Math.max(0, current - 1));
+      else if (focus === 'agents' && key.upArrow) setCursor((current) => Math.max(-1, current - 1));
       else if (focus === 'agents' && key.downArrow && props.session.agents.length > 0) {
         setCursor((current) => Math.min(props.session.agents.length - 1, current + 1));
       } else if (focus === 'agents' && key.return) void selectAgent();
     },
     // 갈림길·팔레트·이력 화면이 떠 있으면 그 화면이 키를 갖는다 — 여기서도 받으면
     // 방향키 하나가 두 곳에서 움직인다.
-    { isActive: !palette && !history && !start },
+    { isActive: !palette && !history && !start && !creatingAgent },
   );
 
   const paletteActions: PaletteAction[] = [
@@ -367,7 +379,23 @@ export function Dashboard(props: {
   ];
 
   let body: React.ReactNode;
-  if (palette) {
+  if (creatingAgent) {
+    body = (
+      <AgentCreateScreen
+        engine={props.engine}
+        profile={props.session.profile}
+        hangulMode={hangulMode}
+        onHangulModeChange={changeHangulMode}
+        onCancel={() => setCreatingAgent(false)}
+        onCreated={(agent) => {
+          // 만들자마자 그 에이전트와 대화를 연다. 목록에서 다시 찾아 들어가야
+          // 한다면 "만들면 바로 쓸 수 있다"가 성립하지 않는다.
+          setCreatingAgent(false);
+          openNewChat(agent);
+        }}
+      />
+    );
+  } else if (palette) {
     body = <CommandPalette actions={paletteActions} onCancel={() => setPalette(false)} />;
   } else if (history) {
     body = (

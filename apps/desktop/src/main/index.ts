@@ -2114,6 +2114,8 @@ ipcMain.handle(CHANNELS.avatarStoreUnpublish, (_e, storeId: string) =>
 
 // ── IPC: agents ──────────────────────────────────────────────────
 ipcMain.handle(CHANNELS.agentsList, (_e, query) => getClient().agents.list(query ?? {}));
+ipcMain.handle(CHANNELS.agentsCreateOptions, () => getClient().agents.createOptions());
+ipcMain.handle(CHANNELS.agentsCreate, (_e, input) => getClient().agents.create(input));
 
 // ── IPC: voice (STT/TTS) ─────────────────────────────────────────
 // The renderer captures audio via getUserMedia and hands bytes to main; main

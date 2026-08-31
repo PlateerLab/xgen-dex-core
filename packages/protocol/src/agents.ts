@@ -8,7 +8,14 @@
  * appear here and all chat through the same execute-stream endpoint.
  */
 import { HttpClient } from './client';
-import type { Agent, AgentListQuery, AgentListResult } from './types';
+import type {
+  Agent,
+  AgentCreateOptions,
+  AgentListQuery,
+  AgentListResult,
+  AgentCreateSetting,
+  CreateAgentInput,
+} from './types';
 
 interface RawAgent {
   id: number;
@@ -57,6 +64,19 @@ function mapAgent(r: RawAgent): Agent {
   };
 }
 
+interface RawCreateOptions {
+  providers?: Array<{
+    value?: string;
+    label?: string;
+    models?: Array<{ value?: string; label?: string }>;
+    default_model?: string;
+    needs_base_url?: boolean;
+  }>;
+  default_provider?: string;
+  settings?: Array<Record<string, unknown>>;
+  defaults?: Record<string, unknown>;
+}
+
 export class AgentsApi {
   constructor(private http: HttpClient) {}
 
@@ -95,5 +115,56 @@ export class AgentsApi {
       all.push(...next.items);
     }
     return all;
+  }
+  /** 만들기 화면이 그릴 것 — 프로바이더·모델 목록과 손댈 수 있는 설정. */
+  async createOptions(): Promise<AgentCreateOptions> {
+    const res = await this.http.get<RawCreateOptions>('/api/agentflow/create/options');
+    return {
+      providers: (res.providers ?? []).map((p) => ({
+        value: String(p.value ?? ''),
+        label: p.label ?? String(p.value ?? ''),
+        models: (p.models ?? []).map((m) => ({
+          value: String(m.value ?? ''),
+          label: m.label ?? String(m.value ?? ''),
+        })),
+        defaultModel: p.default_model,
+        needsBaseUrl: !!p.needs_base_url,
+      })),
+      defaultProvider: res.default_provider ?? 'openai',
+      settings: (res.settings ?? []).map((raw) => ({
+        id: String(raw.id ?? ''),
+        label: String(raw.label ?? raw.id ?? ''),
+        type: String(raw.type ?? 'STR'),
+        default: raw.default,
+        options: raw.options as AgentCreateSetting['options'],
+        description: raw.description as string | undefined,
+        min: raw.min as number | undefined,
+        max: raw.max as number | undefined,
+        step: raw.step as number | undefined,
+      })),
+      defaults: res.defaults ?? {},
+    };
+  }
+
+  /**
+   * 에이전트 하나를 세우고 그 workflowId 를 돌려준다.
+   *
+   * 만들어지는 것은 노드 하나짜리 워크플로우다. 엣지가 없는 것이 이 노드의 성질이라
+   * 연결 없이 그대로 대화가 된다.
+   */
+  async create(input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> {
+    const res = await this.http.post<{ workflow_id?: string; workflow_name?: string }>(
+      '/api/agentflow/create',
+      {
+        workflow_name: input.name,
+        provider: input.provider,
+        model: input.model ?? null,
+        settings: input.settings ?? null,
+      },
+    );
+    return {
+      workflowId: String(res.workflow_id ?? ''),
+      workflowName: String(res.workflow_name ?? input.name),
+    };
   }
 }

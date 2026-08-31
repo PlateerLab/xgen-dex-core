@@ -7413,3 +7413,126 @@ button.sm {
 .ssh-secret-head > :first-child {
   flex: 1;
 }
+
+/* [+] 새 에이전트 — 목록을 거르는 칩들과는 다른 일이라 사이를 띄우고 끝으로 민다. */
+.chip.new-agent {
+  margin-left: auto;
+  padding: 5px 10px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--accent, #4f8cff);
+  border-color: color-mix(in srgb, var(--accent, #4f8cff) 40%, transparent);
+}
+.chip.new-agent:hover {
+  color: #fff;
+  background: var(--accent, #4f8cff);
+  border-color: var(--accent, #4f8cff);
+}
+
+/* 새 에이전트 만들기 화면 */
+.agent-create {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 28px 24px 40px;
+  overflow-y: auto;
+}
+.agent-create header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+.agent-create header p {
+  margin: 6px 0 22px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.agent-create .field {
+  display: block;
+  margin-bottom: 14px;
+}
+.agent-create .field > span {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-create .field input,
+.agent-create .field select,
+.agent-create .field textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.agent-create .field small,
+.agent-create .switch-field small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.agent-create .field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.agent-create .link {
+  border: 0;
+  background: none;
+  color: var(--accent, #4f8cff);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.agent-create .advanced {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.agent-create .switch-field {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.agent-create .switch-field b {
+  display: block;
+  font-size: 12px;
+}
+.agent-create .actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 22px;
+}
+.agent-create .actions .primary {
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent, #4f8cff);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.agent-create .actions .primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.agent-create .actions .secondary {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.agent-create .error {
+  margin-top: 14px;
+  color: var(--danger, #e5484d);
+  font-size: 12px;
+}

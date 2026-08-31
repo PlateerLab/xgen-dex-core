@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 export interface MockXgen {
   server: Server;
   baseUrl: string;
-  requests: { chatInputs: unknown[] };
+  requests: { chatInputs: unknown[]; createdAgents: unknown[] };
 }
 
 async function bodyOf(request: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
@@ -21,11 +21,59 @@ function json(response: import('node:http').ServerResponse, status: number, valu
 
 export async function startMockXgen(): Promise<MockXgen> {
   const passwordHash = createHash('sha256').update('pw123').digest('hex');
-  const requests = { chatInputs: [] as unknown[] };
+  const requests = { chatInputs: [] as unknown[], createdAgents: [] as unknown[] };
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://mock');
       const bearer = String(request.headers.authorization ?? '').replace(/^Bearer\s+/, '');
+      // 에이전트 만들기 — 이름·모델만으로 XGeny 노드 하나짜리 워크플로우.
+      if (url.pathname === '/api/agentflow/create/options' && request.method === 'GET') {
+        json(response, 200, {
+          providers: [
+            {
+              value: 'openai',
+              label: 'OpenAI',
+              models: [
+                { value: 'gpt-4o', label: 'GPT-4o' },
+                { value: 'gpt-4o-mini', label: 'GPT-4o mini' },
+              ],
+              default_model: 'gpt-4o-mini',
+            },
+            {
+              value: 'anthropic',
+              label: 'Anthropic',
+              models: [{ value: 'claude-sonnet-4', label: 'Claude Sonnet 4' }],
+              default_model: 'claude-sonnet-4',
+            },
+          ],
+          default_provider: 'openai',
+          settings: [
+            {
+              id: 'tool_exposure',
+              label: '도구 노출 방식',
+              type: 'STR',
+              default: 'hierarchy',
+              options: [
+                { value: 'hierarchy', label: '계층형 (기본 도구는 보이고 나머지는 필요할 때)' },
+                { value: 'flat', label: '평면형 (전부 선노출)' },
+              ],
+            },
+            { id: 'enable_self_evolution', label: '자기진화 (워크플로 편집)', type: 'BOOL', default: true },
+            { id: 'temperature', label: '창의성', type: 'FLOAT', default: 0.7 },
+          ],
+          defaults: { tool_exposure: 'hierarchy', enable_self_evolution: true },
+        });
+        return;
+      }
+      if (url.pathname === '/api/agentflow/create' && request.method === 'POST') {
+        const body = await bodyOf(request);
+        requests.createdAgents.push(body);
+        json(response, 200, {
+          workflow_id: 'wf_created_1',
+          workflow_name: String(body.workflow_name ?? ''),
+        });
+        return;
+      }
       if (url.pathname === '/api/auth/login' && request.method === 'POST') {
         const body = await bodyOf(request);
         if (body.email !== 'me@corp.com' || body.password !== passwordHash) {

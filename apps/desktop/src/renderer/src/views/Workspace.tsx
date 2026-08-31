@@ -25,6 +25,7 @@ import { Chat } from './Chat';
 import { Settings } from './Settings';
 import { AvatarSettings } from './AvatarSettings';
 import { AgentViewer } from './AgentViewer';
+import { AgentCreate } from './AgentCreate';
 import { ActivityBar, type SideView } from './ActivityBar';
 import { AgentPanel } from './AgentPanel';
 import { ExplorerPanel } from './ExplorerPanel';
@@ -559,6 +560,21 @@ export const Workspace: React.FC<{
     [],
   );
 
+  /** 새 에이전트 만들기 — 메인에 탭 하나. 이미 열려 있으면 그리로 간다. */
+  const openAgentCreate = useCallback(() => {
+    setLayout((current) =>
+      addWorkspaceTab(current, current.focusedGroupId, { id: 'agent-create', kind: 'agent-create' }),
+    );
+  }, []);
+
+  /** 만들어진 에이전트로 곧장 대화를 연다. */
+  const openAgentChat = useCallback((agent: { workflowId: string; workflowName: string }) => {
+    sessionStore.openNew({
+      workflowId: agent.workflowId,
+      workflowName: agent.workflowName,
+    } as Agent);
+  }, []);
+
   const selectTab = useCallback((groupId: string, tabId: string) => {
     if (suppressClickRef.current) {
       suppressClickRef.current = false;
@@ -962,6 +978,22 @@ export const Workspace: React.FC<{
         </div>
       );
     }
+    if (active?.kind === 'agent-create') {
+      return (
+        <div className="pane-fill">
+          <AgentCreate
+            key={active.id}
+            onCreated={(agent) => {
+              // 만들자마자 그 에이전트와 대화를 연다. 목록에서 다시 찾아 들어가야
+              // 한다면 "만들면 바로 쓸 수 있다"가 성립하지 않는다.
+              closeTab(active);
+              openAgentChat(agent);
+            }}
+            onClose={() => closeTab(active)}
+          />
+        </div>
+      );
+    }
     if (active?.kind === 'agent-viewer' && active.workflowId) {
       return (
         <AgentViewer
@@ -1009,7 +1041,7 @@ export const Workspace: React.FC<{
         style={{ width: sidebarWidth }}
       >
         <div className="panel-host" style={{ display: sideView === 'agent' ? undefined : 'none' }}>
-          <AgentPanel config={config} />
+          <AgentPanel config={config} onCreateAgent={openAgentCreate} />
         </div>
         <div
           className="panel-host"

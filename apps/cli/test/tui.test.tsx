@@ -43,6 +43,45 @@ function fakeEngine(
       };
     },
     async logout() {},
+    async agentCreateOptions() {
+      return {
+        providers: [
+          {
+            value: 'openai',
+            label: 'OpenAI',
+            models: [
+              { value: 'gpt-4o', label: 'GPT-4o' },
+              { value: 'gpt-4o-mini', label: 'GPT-4o mini' },
+            ],
+            defaultModel: 'gpt-4o-mini',
+          },
+          {
+            value: 'anthropic',
+            label: 'Anthropic',
+            models: [{ value: 'claude-sonnet', label: 'Claude Sonnet' }],
+            defaultModel: 'claude-sonnet',
+          },
+        ],
+        defaultProvider: 'openai',
+        settings: [
+          {
+            id: 'tool_exposure',
+            label: '도구 노출 방식',
+            type: 'STR',
+            default: 'hierarchy',
+            options: [
+              { value: 'hierarchy', label: '계층형' },
+              { value: 'flat', label: '평면형' },
+            ],
+          },
+          { id: 'enable_self_evolution', label: '자기진화', type: 'BOOL', default: true },
+        ],
+        defaults: { tool_exposure: 'hierarchy', enable_self_evolution: true },
+      };
+    },
+    async createAgent(input) {
+      return { workflowId: 'wf_new', workflowName: input.name };
+    },
     async listAgents() {
       return {
         items: [

@@ -198,6 +198,7 @@ export class DexRpcServer {
             chatCancellation: true,
             history: true,
             localTools: true,
+            ssh: true,
           },
         };
       }
@@ -230,6 +231,39 @@ export class DexRpcServer {
       case 'auth/logout':
         await this.engine.logout(optionalString(params, 'profile'));
         return { ok: true };
+      // ── SSH ──
+      // 프로토콜에는 Teams · 음성 · 알림도 있지만 RPC 로 열지 않는다. CLI 와
+      // 편집기에서 쓸 일이 아직 없고, 열어 두면 "되는 줄 알고" 부르는 경로가
+      // 생긴다. 타입은 @dex/protocol 에 그대로 있으므로 여는 것은 한 줄이다.
+      case 'ssh/config':
+        return this.engine.sshConfig(optionalString(params, 'profile'));
+      case 'ssh/setEnabled':
+        return this.engine.setSshEnabled(
+          params.enabled === true,
+          optionalString(params, 'profile'),
+        );
+      case 'ssh/createServer':
+        return this.engine.createSshServer(
+          objectParams(params.server),
+          optionalString(params, 'profile'),
+        );
+      case 'ssh/updateServer':
+        return this.engine.updateSshServer(
+          requiredString(params, 'name'),
+          objectParams(params.server),
+          optionalString(params, 'profile'),
+        );
+      case 'ssh/deleteServer':
+        return this.engine.deleteSshServer(
+          requiredString(params, 'name'),
+          optionalString(params, 'profile'),
+        );
+      case 'ssh/testServer':
+        return this.engine.testSshServer(
+          requiredString(params, 'name'),
+          optionalString(params, 'profile'),
+        );
+
       case 'localTools/status':
         return this.engine.localToolsStatus();
       case 'localTools/list':

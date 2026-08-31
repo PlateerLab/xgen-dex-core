@@ -272,3 +272,17 @@ export type {
   TeamsShareRef,
   ParsedSharedMessage,
 } from './teams-bridge';
+
+// ── 다운로드 센터 · 클라우드 링크 · Teams 소켓 주소 ──
+// 앱 안에 박혀 있던 경로들을 여기로 올렸다. 데스크톱만 쓰는 것도 있지만, 경로가
+// 앱에 있으면 다음 앱이 그것을 **복사**한다 — 이 저장소가 없애려는 바로 그 일이다.
+export { InstallersApi, installerListPath, installerDownloadPath } from './installers';
+export type { InstallerPackage, InstallerListResponse } from './installers';
+export { CloudLinksApi, CLOUD_LINKS_PATH, cloudLinkPath } from './cloud-links';
+export type { CloudLink, CloudLinksResponse } from './cloud-links';
+export {
+  teamsUserSocketUrl,
+  teamsRoomSocketUrl,
+  TEAMS_USER_SOCKET_PATH,
+  teamsRoomSocketPath,
+} from './teams-ws';

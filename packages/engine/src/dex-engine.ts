@@ -31,6 +31,12 @@ import type {
   ResolvedChatInput,
   StoredSession,
 } from './contract';
+import type {
+  SshConfig,
+  SshServer,
+  SshServerInput,
+  SshTestResult,
+} from '@dex/protocol/ssh';
 
 interface ClientRecord {
   profile: string;
@@ -168,6 +174,52 @@ export class DexEngine {
 
   stopLocalTools(): void {
     this.localToolBridge.stop();
+  }
+
+  // ── SSH ───────────────────────────────────────────────────────────
+  //
+  // 개인 SSH 서버 목록은 XGEN 계정에 있고 접속은 서버가 연다 — 이 기기에서
+  // 닿는지는 에이전트에게 아무 의미가 없다. 그래서 여기는 얇은 통과 계층이고,
+  // 검증(이름 규칙 · 점프 그래프 · 자격증명 유무)은 전부 서버가 한다.
+  //
+  // 비밀번호와 개인키는 응답에 실리지 않는다. 쓰기는 부분 수정이라 보내지 않은
+  // 자격증명은 유지되고 빈 문자열로만 지워진다 — 설명만 고치려던 저장이 접속을
+  // 끊으면 안 된다.
+
+  async sshConfig(profile?: string): Promise<SshConfig> {
+    const record = await this.authenticatedRecord(profile);
+    return record.client.ssh.getConfig();
+  }
+
+  async setSshEnabled(enabled: boolean, profile?: string): Promise<SshConfig> {
+    const record = await this.authenticatedRecord(profile);
+    return record.client.ssh.setEnabled(enabled);
+  }
+
+  async createSshServer(input: SshServerInput, profile?: string): Promise<SshServer> {
+    const record = await this.authenticatedRecord(profile);
+    return record.client.ssh.createServer(input);
+  }
+
+  async updateSshServer(
+    name: string,
+    input: SshServerInput,
+    profile?: string,
+  ): Promise<SshServer> {
+    const record = await this.authenticatedRecord(profile);
+    return record.client.ssh.updateServer(name, input);
+  }
+
+  async deleteSshServer(name: string, profile?: string): Promise<SshConfig> {
+    const record = await this.authenticatedRecord(profile);
+    return record.client.ssh.deleteServer(name);
+  }
+
+  /** 서버가 점프 경로를 그대로 타고 실제로 접속해 본다. 마스터 스위치와 무관하다 —
+   *  켜기 전에 맞는지 확인할 수 있어야 한다. */
+  async testSshServer(name: string, profile?: string): Promise<SshTestResult> {
+    const record = await this.authenticatedRecord(profile);
+    return record.client.ssh.testServer(name);
   }
 
   async setProfile(nameInput: string, serverUrlInput: string): Promise<ProfileSummary> {

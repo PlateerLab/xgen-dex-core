@@ -50,6 +50,7 @@ import {
   type NotificationTarget,
   type TeamsEvent,
 } from '@dex/protocol';
+import { CLOUD_LINKS_PATH, cloudLinkPath } from '@dex/protocol';
 import { bindDesktopHost } from './dex-host';
 import {
   loadConfig,
@@ -3068,7 +3069,7 @@ function wireWorkspaceManager(): void {
      */
     // 연결된 에이전트의 **원본은 서버**다 — 커넥터 설정은 그 사본일 뿐이다.
     cloudLinks: async () => {
-      const body = (await cloudLinkRequest('GET', '/api/cloud/links')) as {
+      const body = (await cloudLinkRequest('GET', CLOUD_LINKS_PATH)) as {
         links?: Array<{
           workflow_id: string;
           label?: string;
@@ -3349,7 +3350,7 @@ ipcMain.handle(CHANNELS.workspaceStatus, () => {
 ipcMain.handle(
   CHANNELS.workspaceAttach,
   async (_e, agent: { workflowId: string; label: string }) => {
-    await cloudLinkRequest('POST', '/api/cloud/links', {
+    await cloudLinkRequest('POST', CLOUD_LINKS_PATH, {
       workflow_id: agent.workflowId,
       label: agent.label,
     });
@@ -3358,7 +3359,7 @@ ipcMain.handle(
   },
 );
 ipcMain.handle(CHANNELS.workspaceDetach, async (_e, workflowId: string) => {
-  await cloudLinkRequest('DELETE', `/api/cloud/links/${encodeURIComponent(workflowId)}`);
+  await cloudLinkRequest('DELETE', cloudLinkPath(workflowId));
   await getWorkspaceManager()?.reconcile();
   return getWorkspaceManager()?.status();
 });

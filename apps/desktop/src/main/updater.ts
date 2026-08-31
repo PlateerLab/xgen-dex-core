@@ -24,6 +24,7 @@ import { once } from 'node:events';
 import { finished } from 'node:stream/promises';
 import { basename, join } from 'node:path';
 import electronUpdater, { type AppUpdater } from 'electron-updater';
+import { installerDownloadPath, installerListPath } from '@dex/protocol';
 import {
   compareVersions,
   selectXgenUpdate,
@@ -279,7 +280,7 @@ async function downloadXgenPackage(pkg: XgenInstallerPackage, token: string): Pr
     throw new Error('설치 파일의 SHA-256 정보가 없습니다.');
   }
   const id = encodeURIComponent(String(pkg.id));
-  const res = await xgenRequest(`/api/support/v1/installers/download/${id}`, token, 180000);
+  const res = await xgenRequest(installerDownloadPath(pkg.id), token, 180000);
   if (!res.ok) throw new Error(`XGEN 다운로드 센터 ${res.status}`);
   if (!res.body) throw new Error('설치 파일 응답이 비어 있습니다.');
 
@@ -409,7 +410,7 @@ async function xgenCheck(manual: boolean): Promise<void> {
     return;
   }
 
-  const res = await xgenRequest('/api/support/v1/installers/list?product=connector', token);
+  const res = await xgenRequest(installerListPath('connector'), token);
   if (!res.ok) throw new Error(`XGEN 다운로드 센터 ${res.status}`);
   const body = (await res.json()) as XgenInstallerListResponse;
   const pkg = selectXgenUpdate(Array.isArray(body.data) ? body.data : [], process.platform, app.getVersion());

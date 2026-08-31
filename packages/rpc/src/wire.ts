@@ -60,6 +60,8 @@ export interface InitializeResult {
     chatCancellation: boolean;
     history: boolean;
     localTools: boolean;
+    /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
+    ssh?: boolean;
   };
 }
 

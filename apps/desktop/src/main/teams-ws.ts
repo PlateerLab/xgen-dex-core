@@ -23,6 +23,7 @@ import WebSocket from 'ws';
 import { safeMapMessage, mapTeamsReactions } from '@dex/protocol/teams';
 import type { TeamsEvent } from '@dex/protocol/types';
 import { xgenWebSocketTlsOptions } from '@dex/engine/connection-security';
+import { TEAMS_USER_SOCKET_PATH, teamsRoomSocketPath } from '@dex/protocol';
 
 /** 방 소켓이 유휴일 때 서버에 보내는 ping 주기. 서버는 pong 으로 답한다. */
 const HEARTBEAT_MS = 25_000;
@@ -202,7 +203,7 @@ export class TeamsSocketHub {
     if (!this.deps || this.userSocket) return;
     const deps = this.deps;
     this.userSocket = new Socket(
-      '/api/teams/ws/user',
+      TEAMS_USER_SOCKET_PATH,
       deps,
       (frame) => handleUserFrame(frame, deps.emit),
       (connected) => {
@@ -226,7 +227,7 @@ export class TeamsSocketHub {
     if (!this.deps || !roomId || this.rooms.has(roomId)) return;
     const deps = this.deps;
     const socket = new Socket(
-      `/api/teams/ws/${encodeURIComponent(roomId)}`,
+      teamsRoomSocketPath(roomId),
       deps,
       (frame) => handleRoomFrame(roomId, frame, deps.emit),
       (connected) => deps.emit({ kind: 'status', roomId, connected }),

@@ -34,7 +34,10 @@ Usage:
   dex tools configure [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--timeout <ms>]
                       [--allow-dangerous|--no-allow-dangerous]
   dex tools disable
-  dex tools run <Shell|ReadFile|WriteFile|ListDir|Search|Open> [--args <json>] [--json]
+  dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>] [--json]
+  dex ssh list [--json]
+  dex ssh enable | dex ssh disable
+  dex ssh test <name> [--json]
   dex tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
   dex tool ...                         dex tools ...의 단수형 별칭
   dex serve --stdio
@@ -414,6 +417,48 @@ async function run(): Promise<void> {
     server.start();
     return;
   }
+  // ── SSH ──
+  // 목록·켜고 끄기·연결 테스트만 연다. 서버 등록/편집은 자격증명 입력이라
+  // 마이페이지나 데스크톱에서 하는 편이 안전하고, 그쪽 화면이 이미 있다.
+  if (command === 'ssh' && (action === 'list' || action === undefined)) {
+    const config = await engine.sshConfig(option(args, 'profile'));
+    if (asJson) writeJson(config);
+    else {
+      stdout.write(`SSH 연동: ${config.enabled ? '켜짐' : '꺼짐'}\n`);
+      if (config.servers.length === 0) stdout.write('등록된 서버가 없습니다.\n');
+      for (const srv of config.servers) {
+        const via = srv.jump_via.length ? ` (경유 ${srv.jump_via.join(' → ')})` : '';
+        const off = srv.enabled ? '' : ' [사용 안 함]';
+        stdout.write(`${cell(srv.name, 18)}  ${srv.username}@${srv.host}:${srv.port}  ${srv.auth}${via}${off}\n`);
+      }
+    }
+    return;
+  }
+  if (command === 'ssh' && (action === 'enable' || action === 'disable')) {
+    const config = await engine.setSshEnabled(action === 'enable', option(args, 'profile'));
+    if (asJson) writeJson(config);
+    else stdout.write(`SSH 연동을 ${config.enabled ? '켰습니다' : '껐습니다'}.\n`);
+    return;
+  }
+  if (command === 'ssh' && action === 'test') {
+    const name = args.positionals[2];
+    if (!name) throw new DexError('usage_error', '서버 이름이 필요합니다: dex ssh test <name>');
+    const result = await engine.testSshServer(name, option(args, 'profile'));
+    if (asJson) writeJson(result);
+    else {
+      stdout.write(
+        result.success
+          ? `접속 성공 (${Math.round(result.latency_ms ?? 0)}ms)\n`
+          : `접속 실패 — ${result.error ?? ''}\n`,
+      );
+      // 3단 경로에서 "실패"만 알면 어디를 고쳐야 할지 알 수 없다.
+      if (result.hops && result.hops.length > 1) {
+        stdout.write(`경로: ${result.hops.join(' → ')}\n`);
+      }
+    }
+    return;
+  }
+
   throw new DexError('usage_error', `알 수 없는 명령입니다: ${args.positionals.join(' ')}`);
 }
 

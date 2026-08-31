@@ -136,6 +136,45 @@ if (existsSync(vsix)) {
   }
 }
 
+// ── 7. 버전은 한 곳에서만 온다 ──────────────────────────────────────
+//
+// 태그 하나가 검증된 조합 하나라면, 그 안의 모든 package.json 이 같은 값이어야 한다.
+// 하나만 뒤처지면 릴리스 자산 이름과 실제 앱이 말하는 버전이 갈라진다.
+//
+// 그리고 소스에 버전을 박지 않는다 — CLI 가 실제로 그랬고, package.json 은 1.2.0
+// 인데 `dex --version` 은 0.1.0 을 말했다. 배포 후 실행해 보는 CI 단계가 잡았다.
+{
+  const manifests = [
+    'package.json',
+    'apps/desktop/package.json', 'apps/cli/package.json', 'apps/vscode/package.json',
+    'packages/protocol/package.json', 'packages/engine/package.json', 'packages/rpc/package.json',
+  ];
+  const seen = new Map();
+  for (const rel of manifests) {
+    const full = join(ROOT, rel);
+    if (!existsSync(full)) continue;
+    const v = JSON.parse(readFileSync(full, 'utf8')).version;
+    seen.set(rel, v);
+  }
+  const versions = [...new Set(seen.values())];
+  if (versions.length > 1) {
+    for (const [rel, v] of seen) {
+      if (v !== seen.get('package.json')) {
+        add('one-version', join(ROOT, rel), 0, `${v} (루트는 ${seen.get('package.json')})`);
+      }
+    }
+  }
+  // 소스에 박힌 버전 리터럴
+  const cli = join(ROOT, 'apps/cli/src/cli.ts');
+  if (existsSync(cli)) {
+    readFileSync(cli, 'utf8').split('\n').forEach((text, i) => {
+      if (/^\s*const VERSION\s*=\s*['"`]\d+\.\d+\.\d+/.test(text)) {
+        add('one-version', cli, i + 1, '버전이 소스에 박혀 있다 — 빌드가 주입하게 하세요');
+      }
+    });
+  }
+}
+
 // ── 보고 ────────────────────────────────────────────────────────────
 const RULES = {
   'no-direct-api': '앱이 서버 경로를 직접 부른다 — @dex/protocol 에 넣고 거기서 부르세요',
@@ -145,6 +184,7 @@ const RULES = {
   'rpc-boundary': '확장 번들에 엔진이 들어갔다 — @dex/rpc/client 만 가져오세요',
   'update-feed-points-here':
     '자동 업데이트가 다른 저장소를 본다 — 그쪽 최신 릴리스가 이 앱을 덮어쓴다',
+  'one-version': '버전이 갈라졌다 — 태그 하나는 검증된 조합 하나여야 한다',
 };
 
 if (violations.length === 0) {

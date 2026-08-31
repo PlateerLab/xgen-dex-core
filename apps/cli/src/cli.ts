@@ -12,7 +12,17 @@ import type { LocalToolsStatus } from '@dex/engine';
 import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
 import { bindCliHost } from './dex-host';
 
-const VERSION = '0.1.0';
+/**
+ * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
+ *
+ * 예전에는 여기 문자열로 박혀 있었다. package.json 만 올리고 이 줄을 잊으면
+ * `npm view` 는 1.2.0 인데 `dex --version` 은 0.1.0 을 말한다 — 실제로 그랬고,
+ * 배포 후 실행해 보는 CI 단계가 그것을 잡았다. 사람이 두 곳을 기억할 일이 아니다.
+ *
+ * tsx 로 소스를 직접 돌릴 때(개발·테스트)는 define 이 없으므로 'dev' 가 된다.
+ */
+declare const __DEX_VERSION__: string | undefined;
+const VERSION = typeof __DEX_VERSION__ === 'string' ? __DEX_VERSION__ : 'dev';
 
 const HELP = `XGEN Dex CLI ${VERSION}
 

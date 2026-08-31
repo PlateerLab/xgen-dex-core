@@ -1,9 +1,13 @@
 import { chmod, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/** 버전은 package.json 하나가 정본이다 — 소스에 박아 두면 릴리스와 어긋난다. */
+const version = JSON.parse(readFileSync(resolve(here, 'package.json'), 'utf8')).version;
 const pkg = (name) => resolve(here, '../../packages', name, 'src');
 
 /**
@@ -34,6 +38,7 @@ await build({
   target: 'node20',
   sourcemap: true,
   packages: 'external',
+  define: { __DEX_VERSION__: JSON.stringify(version) },
   chunkNames: 'chunks/[name]-[hash]',
   plugins: [dexAlias],
 });

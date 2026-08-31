@@ -623,7 +623,7 @@ function bindCliHost(configStore) {
 var credentials = new KeytarCredentialStore();
 
 // src/cli.ts
-var VERSION = "0.1.0";
+var VERSION = true ? "1.2.1" : "dev";
 var HELP = `XGEN Dex CLI ${VERSION}
 
 Usage:

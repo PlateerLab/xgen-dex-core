@@ -1,6 +1,6 @@
 {
   "name": "xgen-dex-cli",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "XGEN Dex CLI — 터미널에서 XGEN 에이전트와 대화하고, 이 컴퓨터의 셸·파일·MCP 를 에이전트에게 빌려 줍니다.",
   "type": "module",
   "bin": {
@@ -15,7 +15,7 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/args.test.ts test/config.test.ts test/engine.test.ts test/mode.test.ts test/rpc.test.ts test/tui-state.test.ts test/tui.test.tsx",
+    "test": "tsx --test test/*.test.ts test/*.test.tsx",
     "verify": "npm run check && npm test && npm run build && node dist/cli.js --version",
     "vscode:install": "npm --prefix vscode-extension install",
     "vscode:verify": "npm --prefix vscode-extension run verify",

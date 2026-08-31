@@ -52,6 +52,7 @@ Usage:
   dex tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
   dex tool ...                         dex tools ...의 단수형 별칭
   dex serve --stdio
+  dex update [--check]    새 버전 확인 · 설치
 
 Global options:
   --profile <name>  사용할 서버 프로필
@@ -134,6 +135,70 @@ function printLocalToolsStatus(status: LocalToolsStatus): void {
     }\n`,
   );
   if (status.bridge.error) stdout.write(`오류: ${status.bridge.error}\n`);
+}
+
+/**
+ * 새 버전이 있으면 올리고, 아니면 최신이라고 말한다.
+ *
+ * `--check` 면 확인만 한다 — 스크립트가 "업데이트가 있나" 만 묻고 싶을 때.
+ */
+async function runUpdate(args: ReturnType<typeof parseArgs>, asJson: boolean): Promise<void> {
+  const { checkForUpdate, globalInstallRoot, runCommand, explainNpmFailure } = await import('./update');
+
+  let check;
+  try {
+    check = await checkForUpdate(VERSION);
+  } catch (error) {
+    // 확인 자체가 실패한 것을 "최신입니다" 로 덮지 않는다 — 그러면 사용자는
+    // 업데이트가 없는 줄 알고 옛 버전에 남는다.
+    throw new DexError(
+      'network_error',
+      `새 버전을 확인하지 못했습니다: ${publicError(error).message}`,
+    );
+  }
+
+  if (!check.outdated) {
+    if (asJson) writeJson({ ...check, action: 'none' });
+    else stdout.write(`최신 버전입니다 (v${check.current})\n`);
+    return;
+  }
+
+  if (flag(args, 'check')) {
+    if (asJson) writeJson({ ...check, action: 'available' });
+    else stdout.write(`새 버전이 있습니다: v${check.current} → v${check.latest}\n`);
+    return;
+  }
+
+  // 전역 설치가 아니면 npm 명령을 쏘지 않는다 — 엉뚱한 곳을 건드리거나 아무 일도
+  // 일어나지 않고, 사용자는 업데이트한 줄 안다.
+  const globalRoot = await globalInstallRoot();
+  if (!globalRoot) {
+    if (asJson) writeJson({ ...check, action: 'manual' });
+    else {
+      stdout.write(`새 버전이 있습니다: v${check.current} → v${check.latest}\n`);
+      stdout.write('이 dex 는 전역 npm 설치가 아니라 자동으로 올릴 수 없습니다.\n');
+      stdout.write('  npm i -g xgen-dex-cli@latest\n');
+    }
+    return;
+  }
+
+  if (!asJson) stdout.write(`업데이트: v${check.current} → v${check.latest}\n`);
+  const result = await runCommand('npm', ['i', '-g', `xgen-dex-cli@${check.latest}`], {
+    // npm 진행 상황을 그대로 흘려 보낸다 — 수십 초 걸릴 수 있고, 아무것도 안 보이면
+    // 멈춘 줄 안다.
+    stream: asJson ? undefined : (chunk) => stderr.write(chunk),
+  });
+
+  if (result.code !== 0) {
+    const reason = explainNpmFailure(`${result.stdout}\n${result.stderr}`);
+    if (asJson) writeJson({ ...check, action: 'failed', error: reason });
+    else stdout.write(`\n업데이트에 실패했습니다.\n${reason}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (asJson) writeJson({ ...check, action: 'updated' });
+  else stdout.write(`\nv${check.latest} 로 업데이트했습니다. 새 터미널에서 dex 를 다시 실행하세요.\n`);
 }
 
 function csvOption(args: ReturnType<typeof parseArgs>, name: string): string[] | undefined {
@@ -455,6 +520,12 @@ async function run(): Promise<void> {
     server.start();
     return;
   }
+  // ── 업데이트 ──
+  if (command === 'update') {
+    await runUpdate(args, asJson);
+    return;
+  }
+
   // ── SSH ──
   // 목록·켜고 끄기·연결 테스트만 연다. 서버 등록/편집은 자격증명 입력이라
   // 마이페이지나 데스크톱에서 하는 편이 안전하고, 그쪽 화면이 이미 있다.

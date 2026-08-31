@@ -2,7 +2,7 @@
 import { stdin, stdout, stderr } from 'node:process';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
-import { KeytarCredentialStore } from '@dex/engine';
+import { SystemCredentialStore, credentialBackend } from '@dex/engine';
 import { DexEngine } from '@dex/engine';
 import { DexError, publicError } from '@dex/engine';
 import { promptLine, promptSecret, readStdin } from './io';
@@ -230,7 +230,7 @@ async function run(): Promise<void> {
   // 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히 던진다.
   const configStore = new FileConfigStore();
   bindCliHost(configStore);
-  const engine = new DexEngine(configStore, new KeytarCredentialStore());
+  const engine = new DexEngine(configStore, new SystemCredentialStore());
   const terminal = {
     stdinIsTty: !!stdin.isTTY,
     stdoutIsTty: !!stdout.isTTY,
@@ -292,11 +292,21 @@ async function run(): Promise<void> {
   }
   if (command === 'status') {
     const status = await engine.authStatus(option(args, 'profile'));
-    if (asJson) writeJson(status);
-    else if (status.authenticated) {
-      stdout.write(`로그인됨: ${status.user?.username ?? 'unknown'} @ ${status.serverUrl}\n`);
-    } else {
-      stdout.write(`로그아웃됨: ${status.profile} (${status.reason ?? 'unknown'})\n`);
+    // 어디에 저장하는지는 authStatus 를 부른 **뒤에** 물어야 안다 — 그때 실제로
+    // 저장소를 한 번 건드리기 때문이다.
+    const backend = credentialBackend();
+    if (asJson) writeJson({ ...status, credentialBackend: backend });
+    else {
+      if (status.authenticated) {
+        stdout.write(`로그인됨: ${status.user?.username ?? 'unknown'} @ ${status.serverUrl}\n`);
+      } else {
+        stdout.write(`로그아웃됨: ${status.profile} (${status.reason ?? 'unknown'})\n`);
+      }
+      stdout.write(
+        backend === 'keychain'
+          ? '자격증명: OS 키체인\n'
+          : '자격증명: 파일 (OS 키체인을 쓸 수 없어 소유자 전용 파일에 저장합니다)\n',
+      );
     }
     return;
   }

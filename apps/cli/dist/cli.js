@@ -4,12 +4,13 @@ import {
   DexEngine,
   DexError,
   FileConfigStore,
-  KeytarCredentialStore,
+  SystemCredentialStore,
   bindHost,
+  credentialBackend,
   dataDirectory,
   openerInvocation,
   publicError
-} from "./chunks/chunk-QXSCKZEG.js";
+} from "./chunks/chunk-GS2Q7ZZA.js";
 
 // src/cli.ts
 import { stdin as stdin3, stdout as stdout2, stderr as stderr2 } from "node:process";
@@ -620,7 +621,7 @@ function bindCliHost(configStore) {
   };
   bindHost(ports);
 }
-var credentials = new KeytarCredentialStore();
+var credentials = new SystemCredentialStore();
 
 // src/cli.ts
 var VERSION = true ? "1.2.1" : "dev";
@@ -826,7 +827,7 @@ async function run2() {
   }
   const configStore = new FileConfigStore();
   bindCliHost(configStore);
-  const engine = new DexEngine(configStore, new KeytarCredentialStore());
+  const engine = new DexEngine(configStore, new SystemCredentialStore());
   const terminal = {
     stdinIsTty: !!stdin3.isTTY,
     stdoutIsTty: !!stdout2.isTTY,
@@ -834,7 +835,7 @@ async function run2() {
     ci: process.env.CI
   };
   if (shouldLaunchTui(args.positionals, terminal)) {
-    const { runTui } = await import("./chunks/tui-DMHUMWPG.js");
+    const { runTui } = await import("./chunks/tui-PNFWGJTJ.js");
     try {
       await runTui(engine);
     } finally {
@@ -890,13 +891,19 @@ async function run2() {
   }
   if (command === "status") {
     const status = await engine.authStatus(option(args, "profile"));
-    if (asJson) writeJson(status);
-    else if (status.authenticated) {
-      stdout2.write(`\uB85C\uADF8\uC778\uB428: ${status.user?.username ?? "unknown"} @ ${status.serverUrl}
+    const backend = credentialBackend();
+    if (asJson) writeJson({ ...status, credentialBackend: backend });
+    else {
+      if (status.authenticated) {
+        stdout2.write(`\uB85C\uADF8\uC778\uB428: ${status.user?.username ?? "unknown"} @ ${status.serverUrl}
 `);
-    } else {
-      stdout2.write(`\uB85C\uADF8\uC544\uC6C3\uB428: ${status.profile} (${status.reason ?? "unknown"})
+      } else {
+        stdout2.write(`\uB85C\uADF8\uC544\uC6C3\uB428: ${status.profile} (${status.reason ?? "unknown"})
 `);
+      }
+      stdout2.write(
+        backend === "keychain" ? "\uC790\uACA9\uC99D\uBA85: OS \uD0A4\uCCB4\uC778\n" : "\uC790\uACA9\uC99D\uBA85: \uD30C\uC77C (OS \uD0A4\uCCB4\uC778\uC744 \uC4F8 \uC218 \uC5C6\uC5B4 \uC18C\uC720\uC790 \uC804\uC6A9 \uD30C\uC77C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4)\n"
+      );
     }
     return;
   }

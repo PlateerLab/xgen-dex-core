@@ -18,7 +18,7 @@ import {
   type DexConfig,
 } from '@dex/engine';
 import { FileConfigStore, dataDirectory } from '@dex/engine';
-import { KeytarCredentialStore } from '@dex/engine';
+import { SystemCredentialStore } from '@dex/engine';
 
 /** 한 줄 실행하고 (성공, 표준출력) 을 돌려준다. 없는 명령은 조용히 실패한다. */
 function run(file: string, args: string[], input?: string): Promise<{ ok: boolean; out: string }> {
@@ -156,4 +156,4 @@ export function bindCliHost(configStore: FileConfigStore): void {
 }
 
 /** 비밀 저장은 프로파일 세션과 같은 백엔드(keytar → 파일 폴백)를 쓴다. */
-const credentials = new KeytarCredentialStore();
+const credentials = new SystemCredentialStore();

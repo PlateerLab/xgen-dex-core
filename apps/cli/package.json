@@ -1,6 +1,6 @@
 {
   "name": "xgen-dex-cli",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "XGEN Dex CLI — 터미널에서 XGEN 에이전트와 대화하고, 이 컴퓨터의 셸·파일·MCP 를 에이전트에게 빌려 줍니다.",
   "type": "module",
   "bin": {
@@ -26,7 +26,6 @@
   },
   "dependencies": {
     "ink": "^6.8.0",
-    "keytar": "^7.9.0",
     "react": "^19.2.0",
     "string-width": "^8.2.2",
     "ws": "^8.21.3"
@@ -61,5 +60,8 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
   }
 }

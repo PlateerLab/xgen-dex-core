@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { DexRpcClient, DexRpcError } from '../src/rpc-client';
-import type { RpcNotification } from '../src/protocol';
+import { DexRpcClient, DexRpcError } from '@dex/rpc/client';
+import type { RpcNotification } from '@dex/rpc';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(testDirectory, 'fixtures', 'rpc-engine.mjs');

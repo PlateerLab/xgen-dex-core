@@ -1,5 +1,5 @@
 import { render } from 'ink';
-import type { DexEngine } from '../engine';
+import type { DexEngine } from '@dex/engine';
 import { App } from './app';
 
 export async function runTui(engine: DexEngine): Promise<void> {

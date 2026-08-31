@@ -8,7 +8,7 @@ import {
   defaultConfig,
   validateProfileName,
   validateServerUrl,
-} from '../src/config-store';
+} from '@dex/engine';
 
 test('FileConfigStore atomically persists a versioned config with private permissions', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dex-cli-config-'));

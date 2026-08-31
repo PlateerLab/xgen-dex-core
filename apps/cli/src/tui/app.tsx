@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import { DexError, publicError } from '../errors';
-import type { ProfileSummary } from '../engine';
+import { DexError, publicError } from '@dex/engine';
+import type { ProfileSummary } from '@dex/engine';
 import { Dashboard } from './dashboard';
 import { Footer, Header, Loading, Notice } from './components';
 import { LoginScreen } from './login-screen';

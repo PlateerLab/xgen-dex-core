@@ -1,4 +1,4 @@
-import { DexError } from './errors';
+import { DexError } from '@dex/engine';
 
 const BOOLEAN_OPTIONS = new Set([
   'allow-dangerous',

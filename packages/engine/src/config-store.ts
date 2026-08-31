@@ -2,7 +2,8 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { DexError } from './errors';
-import type { DexConfig, DexProfile, LocalToolsConfig } from './types';
+import type { DexConfig, DexProfile } from './contract';
+import { defaultLocalToolsConfig, normalizeLocalToolsConfig } from './local-tools-config';
 
 const DEFAULT_PROFILE = 'default';
 
@@ -17,17 +18,6 @@ export function defaultConfig(): DexConfig {
     currentProfile: DEFAULT_PROFILE,
     profiles: {},
     localTools: defaultLocalToolsConfig(),
-  };
-}
-
-export function defaultLocalToolsConfig(): LocalToolsConfig {
-  return {
-    enabled: false,
-    cwd: '',
-    timeoutMs: 120_000,
-    allowedRoots: [],
-    blockedCommands: [],
-    allowDangerous: false,
   };
 }
 
@@ -53,33 +43,15 @@ function parseConfig(raw: unknown): DexConfig {
       if (serverUrl) profiles[name] = { serverUrl };
     }
   }
-  const localTools = parseLocalToolsConfig(value.localTools);
+  // 정규화는 한 곳(local-tools-config)에만 있다 — 예전엔 여기와 도구 쪽에 각각
+  // 있었고, 상한값이 서로 달랐다.
+  const localTools = normalizeLocalToolsConfig(value.localTools);
   return {
     version: 1,
     currentProfile: String(value.currentProfile || DEFAULT_PROFILE),
     profiles,
     localTools,
   };
-}
-
-function parseLocalToolsConfig(raw: unknown): LocalToolsConfig {
-  const defaults = defaultLocalToolsConfig();
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return defaults;
-  const value = raw as Record<string, unknown>;
-  const timeout = Number(value.timeoutMs);
-  return {
-    enabled: value.enabled === true,
-    cwd: typeof value.cwd === 'string' ? value.cwd.trim() : '',
-    timeoutMs: Number.isFinite(timeout) ? Math.max(1_000, Math.min(3_600_000, Math.round(timeout))) : defaults.timeoutMs,
-    allowedRoots: stringArray(value.allowedRoots),
-    blockedCommands: stringArray(value.blockedCommands),
-    allowDangerous: value.allowDangerous === true,
-  };
-}
-
-function stringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))];
 }
 
 export class FileConfigStore implements ConfigStore {

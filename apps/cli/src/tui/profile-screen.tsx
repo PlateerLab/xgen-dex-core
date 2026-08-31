@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import type { ProfileSummary } from '../engine';
+import type { ProfileSummary } from '@dex/engine';
 import { Footer, FormField, Header, Loading, Notice } from './components';
 
 export function ProfileScreen(props: {

@@ -1,11 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { XgenClient } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
-import { defaultLocalToolsConfig, validateProfileName, validateServerUrl } from './config-store';
+import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
 import { DexError, isUnauthorized } from './errors';
-import { LocalToolBridge, type LocalToolBridgeStatus } from './local-tool-bridge';
-import { LocalToolProvider, normalizeLocalToolsConfig, type LocalToolResult, type LocalToolSchema } from './local-tools';
+import { getMcpBridge, type McpBridge, type McpBridgeStatus } from './mcp-bridge';
+import {
+  getLocalToolProvider,
+  type LocalToolProvider,
+  type LocalToolResult,
+  type LocalToolSchema,
+} from './local-tools';
+import {
+  dangerousApprovalFromConfig,
+  normalizeLocalToolsConfig,
+  toShellConfig,
+  type LocalToolsConfig,
+} from './local-tools-config';
+import { hostPorts, bindHost, isHostBound } from './host';
 import type {
   Agent,
   AgentListQuery,
@@ -16,10 +28,9 @@ import type {
   Conversation,
   DexProfile,
   HistoryTurn,
-  LocalToolsConfig,
   ResolvedChatInput,
   StoredSession,
-} from './types';
+} from './contract';
 
 interface ClientRecord {
   profile: string;
@@ -37,27 +48,27 @@ export interface ProfileSummary extends DexProfile {
 export interface LocalToolsStatus {
   config: LocalToolsConfig;
   tools: LocalToolSchema[];
-  bridge: LocalToolBridgeStatus;
+  bridge: McpBridgeStatus;
 }
 
 export interface DexEngineOptions {
   localToolProvider?: LocalToolProvider;
-  localToolBridge?: LocalToolBridge;
+  localToolBridge?: McpBridge;
   log?: (message: string) => void;
 }
 
 export class DexEngine {
   private clients = new Map<string, ClientRecord>();
   private readonly localTools: LocalToolProvider;
-  private readonly localToolBridge: LocalToolBridge;
+  private readonly localToolBridge: McpBridge;
 
   constructor(
     private readonly configs: ConfigStore,
     private readonly credentials: CredentialStore,
     options: DexEngineOptions = {},
   ) {
-    this.localTools = options.localToolProvider ?? new LocalToolProvider(defaultLocalToolsConfig());
-    this.localToolBridge = options.localToolBridge ?? new LocalToolBridge(this.localTools, options.log);
+    this.localTools = options.localToolProvider ?? getLocalToolProvider();
+    this.localToolBridge = options.localToolBridge ?? getMcpBridge();
   }
 
   async listProfiles(): Promise<ProfileSummary[]> {
@@ -67,16 +78,39 @@ export class DexEngine {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  onLocalToolsStatus(listener: (status: LocalToolBridgeStatus) => void): () => void {
-    return this.localToolBridge.onStatus(listener);
+  onLocalToolsStatus(listener: (status: McpBridgeStatus) => void): () => void {
+    this.localToolBridge.setStatusListener(listener);
+    return () => this.localToolBridge.setStatusListener(() => undefined);
+  }
+
+  /**
+   * 설정을 도구 제공자에 반영한다.
+   *
+   * `allowDangerous` 는 여기서 승인 포트로 바뀐다 — 물을 사람이 없는 실행에서
+   * "설정으로 미리 승인했다"를 표현하는 유일한 자리다. 이미 호스트가 붙어 있으면
+   * 그 포트를 유지한 채 승인 답만 덮는다(데스크톱에서 물을 수 있는 능력을
+   * 설정 하나로 잃지 않게).
+   */
+  private applyToolConfig(config: LocalToolsConfig): void {
+    this.localTools.configure(toShellConfig(config));
+    const preApproved = dangerousApprovalFromConfig(config);
+    if (!preApproved) return;
+    const current = isHostBound() ? hostPorts() : null;
+    if (!current) return;
+    bindHost({
+      ...current,
+      interaction: { ...(current.interaction ?? {}), confirmDangerous: preApproved },
+    });
   }
 
   async localToolsStatus(): Promise<LocalToolsStatus> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
-    this.localTools.configure(config);
-    const tools = this.localTools.schemas();
+    this.applyToolConfig(config);
+    const tools = this.localTools.advertise();
+    // 상태는 브릿지가 말하는 그대로 쓴다 — 예전 CLI 는 여기서 advertisedTools 를
+    // 손으로 채웠는데, 그러면 "서버가 확인한 수"와 "우리가 가진 수"가 같은 필드에
+    // 섞여 카탈로그가 아직 안 붙었는데 붙은 것처럼 보였다.
     const bridge = this.localToolBridge.status();
-    if (config.enabled && !bridge.running) bridge.advertisedTools = tools.length;
     return { config, tools, bridge };
   }
 
@@ -90,7 +124,7 @@ export class DexEngine {
       blockedCommands: patch.blockedCommands ?? current.blockedCommands,
     });
     await this.configs.write(config);
-    this.localTools.configure(config.localTools);
+    this.applyToolConfig(config.localTools);
     if (!config.localTools.enabled) this.localToolBridge.stop();
     else this.localToolBridge.refreshCatalog();
     return this.localToolsStatus();
@@ -98,13 +132,13 @@ export class DexEngine {
 
   async runLocalTool(tool: string, args: unknown): Promise<LocalToolResult> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
-    this.localTools.configure(config);
-    return this.localTools.call(tool, args);
+    this.applyToolConfig(config);
+    return this.localTools.callTool(tool, args);
   }
 
   async startLocalTools(requestedProfile?: string, waitMs = 0): Promise<LocalToolsStatus> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
-    this.localTools.configure(config);
+    this.applyToolConfig(config);
     if (!config.enabled) {
       this.localToolBridge.stop();
       return this.localToolsStatus();
@@ -113,9 +147,10 @@ export class DexEngine {
     const userId = record.client.user?.userId?.trim();
     if (!userId) throw new DexError('auth_invalid', '로컬 도구 연결에 필요한 사용자 ID가 없습니다.');
     this.localToolBridge.start({
-      profile: record.profile,
       serverUrl: record.serverUrl,
       userId,
+      // CLI 는 사내 인증서를 아직 설정으로 받지 않는다 — 기본은 검증이다.
+      allowPrivateCertificate: false,
       getToken: async () => {
         await this.flush(record);
         return record.client.getAccessTokenAfterRotation() || (await this.credentials.get(record.profile))?.accessToken || null;
@@ -284,7 +319,7 @@ export class DexEngine {
           ? {
               kind: 'status',
               surface: 'connector_local',
-              detail: `로컬 도구 ${local.bridge.serverTools || local.tools.length}개 연결됨`,
+              detail: `로컬 도구 ${local.bridge.serverToolCount || local.tools.length}개 연결됨`,
             }
           : {
               kind: 'status',

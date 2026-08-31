@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { MemoryConfigStore } from '../src/config-store';
-import { MemoryCredentialStore } from '../src/credential-store';
-import { DexEngine } from '../src/engine';
-import { DexRpcServer } from '../src/rpc-server';
+import { MemoryConfigStore } from '@dex/engine';
+import { MemoryCredentialStore } from '@dex/engine';
+import { DexEngine } from '@dex/engine';
+import { DexRpcServer } from '@dex/rpc/server';
 import { startMockXgen } from './mock-xgen';
 
 interface RpcMessage {

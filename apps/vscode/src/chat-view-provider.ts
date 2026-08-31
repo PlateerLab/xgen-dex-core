@@ -18,7 +18,7 @@ import type {
   ProfileSummary,
   RpcNotification,
   ToolEvent,
-} from './protocol';
+} from '@dex/rpc';
 
 type MessageRole = 'user' | 'assistant' | 'activity' | 'system';
 type ViewScreen = 'loading' | 'setup' | 'login' | 'offline' | 'agents' | 'chat' | 'settings' | 'error';
@@ -738,9 +738,9 @@ function isLocalToolBridgeStatus(value: unknown): value is LocalToolBridgeStatus
 
 function localToolsBridgeLabel(status: LocalToolsStatus): string {
   if (!status.config.enabled) return '로컬 도구가 꺼져 있습니다.';
-  if (status.bridge.catalogSynced) return `연결됨 · ${status.bridge.serverTools || status.tools.length}개 도구 사용 가능`;
+  if (status.bridge.catalogSynced) return `연결됨 · ${status.bridge.serverToolCount || status.tools.length}개 도구 사용 가능`;
   if (status.bridge.error) return `연결 확인 필요 · ${status.bridge.error}`;
   if (status.bridge.connected) return '서버와 도구 목록을 동기화하는 중입니다.';
-  if (status.bridge.running) return 'XGEN 서버에 연결하는 중입니다.';
+  if (status.bridge.enabled) return 'XGEN 서버에 연결하는 중입니다.';
   return '설정됨 · 로그인 후 브리지가 자동으로 연결됩니다.';
 }

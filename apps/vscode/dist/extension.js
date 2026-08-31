@@ -675,10 +675,10 @@ function isLocalToolBridgeStatus(value) {
 }
 function localToolsBridgeLabel(status) {
   if (!status.config.enabled) return "\uB85C\uCEEC \uB3C4\uAD6C\uAC00 \uAEBC\uC838 \uC788\uC2B5\uB2C8\uB2E4.";
-  if (status.bridge.catalogSynced) return `\uC5F0\uACB0\uB428 \xB7 ${status.bridge.serverTools || status.tools.length}\uAC1C \uB3C4\uAD6C \uC0AC\uC6A9 \uAC00\uB2A5`;
+  if (status.bridge.catalogSynced) return `\uC5F0\uACB0\uB428 \xB7 ${status.bridge.serverToolCount || status.tools.length}\uAC1C \uB3C4\uAD6C \uC0AC\uC6A9 \uAC00\uB2A5`;
   if (status.bridge.error) return `\uC5F0\uACB0 \uD655\uC778 \uD544\uC694 \xB7 ${status.bridge.error}`;
   if (status.bridge.connected) return "\uC11C\uBC84\uC640 \uB3C4\uAD6C \uBAA9\uB85D\uC744 \uB3D9\uAE30\uD654\uD558\uB294 \uC911\uC785\uB2C8\uB2E4.";
-  if (status.bridge.running) return "XGEN \uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD558\uB294 \uC911\uC785\uB2C8\uB2E4.";
+  if (status.bridge.enabled) return "XGEN \uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD558\uB294 \uC911\uC785\uB2C8\uB2E4.";
   return "\uC124\uC815\uB428 \xB7 \uB85C\uADF8\uC778 \uD6C4 \uBE0C\uB9AC\uC9C0\uAC00 \uC790\uB3D9\uC73C\uB85C \uC5F0\uACB0\uB429\uB2C8\uB2E4.";
 }
 
@@ -687,14 +687,14 @@ var fs = __toESM(require("node:fs"));
 var path = __toESM(require("node:path"));
 var vscode2 = __toESM(require("vscode"));
 
-// src/rpc-client.ts
+// ../../packages/rpc/src/client.ts
 var import_node_child_process = require("node:child_process");
 var import_node_readline = require("node:readline");
 
-// src/protocol.ts
+// ../../packages/rpc/src/wire.ts
 var DEX_PROTOCOL_VERSION = 1;
 
-// src/rpc-client.ts
+// ../../packages/rpc/src/client.ts
 var DexRpcError = class extends Error {
   constructor(message2, rpcCode, data) {
     super(message2);

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
-import { DEX_PROTOCOL_VERSION, type InitializeResult, type RpcNotification } from './protocol';
+import { DEX_PROTOCOL_VERSION, type InitializeResult, type RpcNotification } from './wire';
 
 interface RpcResponse {
   jsonrpc: '2.0';

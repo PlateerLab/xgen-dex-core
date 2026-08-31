@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MemoryConfigStore } from '../src/config-store';
-import { MemoryCredentialStore } from '../src/credential-store';
-import { DexEngine } from '../src/engine';
+import { MemoryConfigStore } from '@dex/engine';
+import { MemoryCredentialStore } from '@dex/engine';
+import { DexEngine } from '@dex/engine';
 import { startMockXgen } from './mock-xgen';
 
 test('engine covers profile → login → restore → agents → streamed chat → history', async () => {

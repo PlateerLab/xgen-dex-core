@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -12,16 +16,33 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
-    "types": ["node"],
-    "baseUrl": "../..",
+    "types": [
+      "node"
+    ],
     "paths": {
-      "@dex/protocol": ["packages/protocol/src/index.ts"],
-      "@dex/protocol/*": ["packages/protocol/src/*"],
-      "@dex/engine": ["packages/engine/src/index.ts"],
-      "@dex/engine/*": ["packages/engine/src/*"],
-      "@dex/rpc": ["packages/rpc/src/index.ts"],
-      "@dex/rpc/*": ["packages/rpc/src/*"]
+      "@dex/protocol": [
+        "../../packages/protocol/src/index.ts"
+      ],
+      "@dex/protocol/*": [
+        "../../packages/protocol/src/*"
+      ],
+      "@dex/engine": [
+        "../../packages/engine/src/index.ts"
+      ],
+      "@dex/engine/*": [
+        "../../packages/engine/src/*"
+      ],
+      "@dex/rpc": [
+        "../../packages/rpc/src/index.ts"
+      ],
+      "@dex/rpc/*": [
+        "../../packages/rpc/src/*"
+      ]
     }
   },
-  "include": ["src", "test", "../../packages/*/src"]
+  "include": [
+    "src",
+    "test",
+    "../../packages/*/src"
+  ]
 }

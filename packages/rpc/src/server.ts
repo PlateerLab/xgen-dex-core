@@ -1,11 +1,14 @@
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
-import { DexEngine } from './engine';
-import { DexError, publicError } from './errors';
-import { DEX_PROTOCOL_VERSION } from './types';
-import type { AgentListQuery, ChatInput, ResolvedChatInput } from './types';
-import type { LocalToolsConfig } from './types';
+import { DexEngine, DexError, publicError } from '@dex/engine';
+import type {
+  AgentListQuery,
+  ChatInput,
+  LocalToolsConfig,
+  ResolvedChatInput,
+} from '@dex/engine';
+import { DEX_PROTOCOL_VERSION } from './wire';
 
 type RpcId = string | number | null;
 

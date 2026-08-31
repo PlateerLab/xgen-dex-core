@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { DexRpcClient, type RpcProcessSpec } from './rpc-client';
+import { DexRpcClient, type RpcProcessSpec } from '@dex/rpc/client';
 
 export class DexService implements vscode.Disposable {
   readonly output = vscode.window.createOutputChannel('XGEN Dex');

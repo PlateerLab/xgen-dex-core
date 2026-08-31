@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { ChatViewProvider } from './chat-view-provider';
 import { DexService } from './dex-service';
-import type { Agent, AuthStatus, ProfileSummary } from './protocol';
-import { DexRpcError } from './rpc-client';
+import type { Agent, AuthStatus, ProfileSummary } from '@dex/rpc';
+import { DexRpcError } from '@dex/rpc/client';
 
 let activeService: DexService | undefined;
 

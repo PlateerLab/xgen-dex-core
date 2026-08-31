@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import { publicError } from '../errors';
-import type { Agent, Conversation, HistoryTurn } from '../types';
+import { publicError } from '@dex/engine';
+import type { Agent, Conversation, HistoryTurn } from '@dex/engine';
 import { chatReducer, initialChatState, type ChatMessage } from './chat-state';
 import { CommandPalette, type PaletteAction } from './command-palette';
 import { Footer, Header } from './components';

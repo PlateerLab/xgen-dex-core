@@ -39,6 +39,16 @@ export * from './mcp-runtime-log';
 // ── 서버로 도구를 광고하는 유일한 통로 ──
 export * from './mcp-bridge';
 
+// ── 헤드리스 애플리케이션 코어 — 프로파일·인증·채팅·이력 ──
+// CLI 와 RPC 서버가 이것을 그대로 쓴다. 데스크톱은 아직 자기 배선을 쓰지만
+// 같은 자리에 있다 (다음 단계에서 합류).
+export * from './dex-engine';
+export * from './contract';
+export * from './config-store';
+export * from './credential-store';
+export * from './errors';
+export * from './local-tools-config';
+
 // ── 연결 보안 (사내 인증서 · SSO) ──
 export * from './connection-security';
 export * from './deployment-defaults';

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { publicError } from '../errors';
-import type { Conversation, HistoryTurn } from '../types';
+import { publicError } from '@dex/engine';
+import type { Conversation, HistoryTurn } from '@dex/engine';
 import type { TuiEngine } from './model';
 import { Footer, Loading, Notice } from './components';
 

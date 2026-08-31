@@ -141,8 +141,16 @@ export class McpBridge {
     this.stopped = true;
     this.clearTimers();
     try {
-      this.ws?.removeAllListeners();
-      this.ws?.close();
+      const ws = this.ws;
+      if (ws) {
+        ws.removeAllListeners();
+        // 연결 중인 소켓을 닫으면 ws 가 'error' 를 낸다("WebSocket was closed
+        // before the connection was established"). 리스너를 모두 뗀 뒤라 받을
+        // 핸들러가 없고, EventEmitter 의 미처리 'error' 는 **던진다** — 프로세스가
+        // 죽는다. 그래서 닫기 직전에 삼킬 핸들러 하나를 다시 단다.
+        ws.on('error', () => undefined);
+        ws.close();
+      }
     } catch {
       /* ignore */
     }
@@ -168,6 +176,38 @@ export class McpBridge {
    * 나중에 설치한 경우)를 여기서 끊는다. sendHello() 는 열려 있을 때만
    * 실제로 전송하고, 상태는 항상 emit 한다.
    */
+  /**
+   * 카탈로그가 서버에 반영될 때까지 기다린다 (헤드리스 실행용).
+   *
+   * CLI 는 한 번 물어보고 끝나는 명령이 많다 — 브릿지가 붙기 전에 채팅을 시작하면
+   * 에이전트에게 로컬 도구가 없는 채로 첫 턴이 돈다. 데스크톱은 창이 떠 있으니
+   * 상태 표시로 충분하지만 CLI 에는 기다릴 자리가 필요하다.
+   *
+   * 타임아웃은 실패가 아니다 — 현재 상태를 그대로 돌려주고, 부를 쪽이 판단한다.
+   */
+  async waitUntilReady(timeoutMs = 3_000): Promise<McpBridgeStatus> {
+    if (this.status().catalogSynced) return this.status();
+    return new Promise((resolve) => {
+      // 기존 리스너를 가로채고 끝나면 되돌린다 — 데스크톱은 상태 표시를 이
+      // 리스너로 받고 있어서, 잠깐 기다린 대가로 그게 죽으면 안 된다.
+      const previous = this.onStatus;
+      let done = false;
+      const finish = (s: McpBridgeStatus): void => {
+        if (done) return;
+        done = true;
+        this.setStatusListener(previous);
+        resolve(s);
+      };
+      const timer = setTimeout(() => finish(this.status()), Math.max(0, timeoutMs));
+      this.setStatusListener((s) => {
+        previous(s);
+        if (!s.catalogSynced) return;
+        clearTimeout(timer);
+        finish(s);
+      });
+    });
+  }
+
   async refreshCatalog(): Promise<void> {
     await this.sendHello();
   }
@@ -203,8 +243,16 @@ export class McpBridge {
       this.hb = null;
     }
     try {
-      this.ws?.removeAllListeners();
-      this.ws?.close();
+      const ws = this.ws;
+      if (ws) {
+        ws.removeAllListeners();
+        // 연결 중인 소켓을 닫으면 ws 가 'error' 를 낸다("WebSocket was closed
+        // before the connection was established"). 리스너를 모두 뗀 뒤라 받을
+        // 핸들러가 없고, EventEmitter 의 미처리 'error' 는 **던진다** — 프로세스가
+        // 죽는다. 그래서 닫기 직전에 삼킬 핸들러 하나를 다시 단다.
+        ws.on('error', () => undefined);
+        ws.close();
+      }
     } catch {
       /* ignore */
     }

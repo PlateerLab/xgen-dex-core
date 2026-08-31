@@ -1,4 +1,4 @@
-import type { ProfileSummary } from '../engine';
+import type { ProfileSummary } from '@dex/engine';
 import type {
   AgentListQuery,
   AgentListResult,
@@ -8,7 +8,7 @@ import type {
   Conversation,
   HistoryTurn,
   ResolvedChatInput,
-} from '../types';
+} from '@dex/engine';
 
 export interface TuiEngine {
   listProfiles(): Promise<ProfileSummary[]>;

@@ -14,8 +14,8 @@
   ],
   "scripts": {
     "build": "node build.mjs",
-    "check": "tsc --noEmit",
-    "test": "tsx --test test/args.test.ts test/config.test.ts test/engine.test.ts test/local-tools.test.ts test/local-tool-bridge.test.ts test/mode.test.ts test/rpc.test.ts test/tui-state.test.ts test/tui.test.tsx",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/args.test.ts test/config.test.ts test/engine.test.ts test/mode.test.ts test/rpc.test.ts test/tui-state.test.ts test/tui.test.tsx",
     "verify": "npm run check && npm test && npm run build && node dist/cli.js --version",
     "vscode:install": "npm --prefix vscode-extension install",
     "vscode:verify": "npm --prefix vscode-extension run verify",

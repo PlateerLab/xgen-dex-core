@@ -19,25 +19,24 @@
     "types": [
       "node"
     ],
-    "baseUrl": "../..",
     "paths": {
       "@dex/protocol": [
-        "packages/protocol/src/index.ts"
+        "../../packages/protocol/src/index.ts"
       ],
       "@dex/protocol/*": [
-        "packages/protocol/src/*"
+        "../../packages/protocol/src/*"
       ],
       "@dex/engine": [
-        "packages/engine/src/index.ts"
+        "../../packages/engine/src/index.ts"
       ],
       "@dex/engine/*": [
-        "packages/engine/src/*"
+        "../../packages/engine/src/*"
       ],
       "@dex/rpc": [
-        "packages/rpc/src/index.ts"
+        "../../packages/rpc/src/index.ts"
       ],
       "@dex/rpc/*": [
-        "packages/rpc/src/*"
+        "../../packages/rpc/src/*"
       ]
     }
   },

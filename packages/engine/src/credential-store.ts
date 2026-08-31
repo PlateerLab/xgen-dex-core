@@ -1,5 +1,5 @@
 import { DexError } from './errors';
-import type { StoredSession } from './types';
+import type { StoredSession } from './contract';
 
 const SERVICE = 'xgen-dex-cli';
 const ACCOUNT_PREFIX = 'profile:';

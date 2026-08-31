@@ -1,5 +1,33 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "noEmit": true, "baseUrl": "../..", "types": ["node"] },
-  "include": ["src/**/*", "test/**/*"]
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [
+      "node"
+    ],
+    "paths": {
+      "@dex/protocol": [
+        "../protocol/src/index.ts"
+      ],
+      "@dex/protocol/*": [
+        "../protocol/src/*"
+      ],
+      "@dex/engine": [
+        "../engine/src/index.ts"
+      ],
+      "@dex/engine/*": [
+        "../engine/src/*"
+      ],
+      "@dex/rpc": [
+        "../rpc/src/index.ts"
+      ],
+      "@dex/rpc/*": [
+        "../rpc/src/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "test/**/*"
+  ]
 }

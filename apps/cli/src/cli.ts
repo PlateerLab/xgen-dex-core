@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 import { stdin, stdout, stderr } from 'node:process';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
-import { FileConfigStore } from './config-store';
-import { KeytarCredentialStore } from './credential-store';
-import { DexEngine } from './engine';
-import { DexError, publicError } from './errors';
+import { FileConfigStore } from '@dex/engine';
+import { KeytarCredentialStore } from '@dex/engine';
+import { DexEngine } from '@dex/engine';
+import { DexError, publicError } from '@dex/engine';
 import { promptLine, promptSecret, readStdin } from './io';
 import { isInteractiveTerminal, shouldLaunchTui } from './mode';
-import { DexRpcServer } from './rpc-server';
-import { localToolSchemas } from './local-tools';
-import type { LocalToolsStatus } from './engine';
-import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from './types';
+import { DexRpcServer } from '@dex/rpc/server';
+import type { LocalToolsStatus } from '@dex/engine';
+import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
 
 const VERSION = '0.1.0';
 
@@ -110,7 +109,15 @@ function printLocalToolsStatus(status: LocalToolsStatus): void {
   stdout.write(`허용 경로: ${status.config.allowedRoots.join(', ') || '(작업 폴더)'}\n`);
   stdout.write(`위험 명령: ${status.config.allowDangerous ? '허용' : '차단'}\n`);
   stdout.write(
-    `브리지: ${status.bridge.catalogSynced ? `연결됨 (${status.bridge.serverTools} tools)` : status.bridge.connected ? '카탈로그 동기화 중' : status.bridge.running ? '연결 대기 중' : '중지됨'}\n`,
+    `브리지: ${
+      status.bridge.catalogSynced
+        ? `연결됨 (도구 ${status.bridge.serverToolCount}개)`
+        : status.bridge.connected
+          ? '카탈로그 동기화 중'
+          : status.bridge.enabled
+            ? '연결 대기 중'
+            : '중지됨'
+    }\n`,
   );
   if (status.bridge.error) stdout.write(`오류: ${status.bridge.error}\n`);
 }
@@ -282,7 +289,9 @@ async function run(): Promise<void> {
     return;
   }
   if (command === 'tools' && action === 'list') {
-    const tools = localToolSchemas();
+    // 설정을 반영한 실제 목록을 쓴다 — 정적 스키마 목록을 따로 부르면 켜짐/꺼짐과
+    // 무관하게 같은 목록이 나와서, 꺼 둔 사용자가 "왜 안 되지"를 묻게 된다.
+    const tools = (await engine.localToolsStatus()).tools;
     if (asJson) writeJson(tools);
     else {
       stdout.write(`${cell('TOOL', 14)}  DESCRIPTION\n`);

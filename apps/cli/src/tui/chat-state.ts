@@ -1,4 +1,4 @@
-import type { ChatEvent, HistoryTurn } from '../types';
+import type { ChatEvent, HistoryTurn } from '@dex/engine';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'activity' | 'system';
 

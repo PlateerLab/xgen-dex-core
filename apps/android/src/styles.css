@@ -94,3 +94,8 @@ button.primary:disabled { opacity: 0.45; }
   border-top: 1px solid var(--border); background: var(--panel);
 }
 .composer textarea { flex: 1; resize: none; max-height: 120px; }
+
+/* 진단 */
+.diag { border-top: 1px solid var(--border); background: var(--panel); padding: 6px 14px calc(6px + env(safe-area-inset-bottom)); }
+.diag-body { max-height: 40vh; overflow-y: auto; padding-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.mono { font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; color: var(--muted); }

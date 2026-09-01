@@ -1,7 +1,7 @@
 {
   "name": "xgen-dex-android",
   "private": true,
-  "version": "1.19.0",
+  "version": "1.20.0",
   "description": "XGEN Dex Android — 서버 세션 채팅 + 모바일 도구 브리지 (데스크톱/CLI/VSCode 와 독립)",
   "type": "module",
   "scripts": {

@@ -125,9 +125,35 @@ test('dispatchExec — summary/quota/error 이벤트 매핑', () => {
   assert.equal(dispatchExec('log', {}, cb), null); // 미소비 이벤트는 무해 무시
 });
 
-test('stripAgentMarkers — 상태 마커/think 블록 제거', () => {
+test('stripAgentMarkers — 상태 마커/think 블록 제거 (누적본 적용)', () => {
   assert.equal(
     stripAgentMarkers('앞[AGENT_STATUS]{"a":1}[/AGENT_STATUS]<think>추론</think>뒤'),
     '앞뒤',
   );
+});
+
+test('stripAgentMarkers — 청크 경계에서 잘린(미폐쇄) 블록은 숨긴다', () => {
+  // 스트리밍 중간: 열림만 도착 — 마커 절반이 새면 안 된다.
+  assert.equal(stripAgentMarkers('답변[AGENT_STATUS]{"진행'), '답변');
+  assert.equal(stripAgentMarkers('먼저 <think>이건 아직'), '먼저 ');
+  // 닫힘이 도착한 누적본 — 정식 제거로 수렴한다.
+  assert.equal(stripAgentMarkers('답변[AGENT_STATUS]{"진행":1}[/AGENT_STATUS] 끝'), '답변 끝');
+});
+
+test('스트리밍 청크가 마커를 반으로 갈라도 — 누적 후 렌더가 온전하다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  const done = chat.execute('q');
+  // 마커가 청크 경계에서 갈라진다 — 전송 계층은 원문 그대로 전달해야 한다.
+  ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: '결과[AGENT_ST' } } });
+  ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: 'ATUS]x[/AGENT_STATUS]끝' } } });
+  ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'end' } } });
+  await done;
+  const accumulated = got.data.join('');
+  assert.equal(accumulated, '결과[AGENT_STATUS]x[/AGENT_STATUS]끝'); // 원문 보존
+  assert.equal(stripAgentMarkers(accumulated), '결과끝'); // 렌더 시 온전 제거
+  chat.close();
 });

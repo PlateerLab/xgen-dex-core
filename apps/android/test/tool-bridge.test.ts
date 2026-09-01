@@ -111,6 +111,27 @@ test('도구 실행 예외 — ok:false 로 오류를 서버에 돌려준다', a
   bridge.stop();
 });
 
+test('kick — 끊긴 브리지를 백오프 없이 즉시 재연결한다 (앱 복귀)', () => {
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.close(); // 백그라운드 단절 흉내 — 백오프 재시도 예약 상태
+  bridge.kick();
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first); // 대기 없이 새 소켓
+  second.open();
+  assert.equal((second.sent[0] as { type: string }).type, 'hello'); // 카탈로그 재광고
+  bridge.stop();
+});
+
 test('stop — 소켓 종료 + off 상태, 재접속 시도 없음', () => {
   const statuses: string[] = [];
   const bridge = new MobileToolBridge({

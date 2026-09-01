@@ -20,7 +20,17 @@ import type { DevicePort } from './mobile-tools';
 const ROOT = 'XGenDex';
 const abs = (rel: string): string => (rel ? `${ROOT}/${rel}` : ROOT);
 
-/** 파일/알림 권한을 미리 확보한다 — 도구 호출 중 권한 팝업으로 실패하지 않게. */
+/**
+ * 파일 루트 디렉터리 — 공용 Documents 우선, 실패 시 앱 스코프(External:
+ * Android/data/<pkg>/files) 폴백.
+ *
+ * Android 13+ 스코프드 스토리지에서 공용 Documents 쓰기는 기기/OEM 에 따라
+ * 거부될 수 있다 — 그때 도구 전체가 죽는 대신 앱 스코프 폴더로 계속
+ * 동작한다 (파일 앱에서 Android/data 경로로 접근 가능).
+ */
+let fsDirectory: Directory = Directory.Documents;
+
+/** 파일/알림 권한 + 루트 폴더를 미리 확보한다 — 도구 호출 중 실패하지 않게. */
 export async function ensureDevicePermissions(): Promise<void> {
   try {
     await Filesystem.requestPermissions();
@@ -34,8 +44,21 @@ export async function ensureDevicePermissions(): Promise<void> {
   }
   try {
     await Filesystem.mkdir({ path: ROOT, directory: Directory.Documents, recursive: true });
-  } catch {
-    /* 이미 있음 */
+    fsDirectory = Directory.Documents;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/exist/i.test(msg)) {
+      fsDirectory = Directory.Documents; // 이미 있음 — 정상
+      return;
+    }
+    try {
+      await Filesystem.mkdir({ path: ROOT, directory: Directory.External, recursive: true });
+      fsDirectory = Directory.External;
+    } catch (e2) {
+      const m2 = e2 instanceof Error ? e2.message : String(e2);
+      if (/exist/i.test(m2)) fsDirectory = Directory.External;
+      /* 그 외 실패 — 파일 도구가 호출 시점 오류를 돌려준다 */
+    }
   }
 }
 
@@ -43,7 +66,7 @@ export const capacitorPort: DevicePort = {
   async readFile(path) {
     const r = await Filesystem.readFile({
       path: abs(path),
-      directory: Directory.Documents,
+      directory: fsDirectory,
       encoding: Encoding.UTF8,
     });
     return typeof r.data === 'string' ? r.data : '';
@@ -52,7 +75,7 @@ export const capacitorPort: DevicePort = {
     const opts = {
       path: abs(path),
       data: content,
-      directory: Directory.Documents,
+      directory: fsDirectory,
       encoding: Encoding.UTF8,
       recursive: true,
     };
@@ -60,7 +83,7 @@ export const capacitorPort: DevicePort = {
     else await Filesystem.writeFile(opts);
   },
   async listDir(path) {
-    const r = await Filesystem.readdir({ path: abs(path), directory: Directory.Documents });
+    const r = await Filesystem.readdir({ path: abs(path), directory: fsDirectory });
     return r.files.map((f) => ({
       name: f.name,
       isDir: f.type === 'directory',
@@ -68,7 +91,7 @@ export const capacitorPort: DevicePort = {
     }));
   },
   async deleteFile(path) {
-    await Filesystem.deleteFile({ path: abs(path), directory: Directory.Documents });
+    await Filesystem.deleteFile({ path: abs(path), directory: fsDirectory });
   },
   async notify(title, body) {
     await LocalNotifications.schedule({
@@ -120,7 +143,7 @@ export const capacitorPort: DevicePort = {
     await Filesystem.writeFile({
       path: abs(rel),
       data: photo.base64String ?? '',
-      directory: Directory.Documents,
+      directory: fsDirectory,
       recursive: true,
     });
     return rel;

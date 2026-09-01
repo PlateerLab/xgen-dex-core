@@ -92,12 +92,12 @@ export const FileSystemSettings: React.FC<{ embedded?: boolean }> = () => {
   }): React.ReactNode => {
     if (t.state === 'syncing') {
       const p = t.progress;
-      if (p?.phase === 'apply' && p.total > 0) {
+      if (p && p.total > 0 && (p.phase === 'apply' || p.phase === 'scan')) {
         const done = Math.min(p.done, p.total);
         return (
           <span className="row" style={{ gap: 8, alignItems: 'center' }}>
             <span>
-              동기화 중 — 파일 {done}/{p.total}
+              동기화 중 — {p.phase === 'apply' ? '파일' : '검사'} {done}/{p.total}
             </span>
             <ProgressBar done={done} total={p.total} />
           </span>

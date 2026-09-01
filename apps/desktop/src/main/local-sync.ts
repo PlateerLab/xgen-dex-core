@@ -112,6 +112,28 @@ const EMPTY_REPORT = (): SyncReport => ({
   errors: [],
 });
 
+/** 파일 전송(다운로드/업로드/충돌) 동시 실행 수 — 네트워크 왕복 은닉용.
+ *  2000-파일 워크스페이스를 직렬로 옮기면 왕복×2000 이 그대로 벽시계다. */
+const TRANSFER_CONCURRENCY = 8;
+/** 로컬 해싱 동시 실행 수 — 디스크/CPU 바운드라 전송보다 보수적으로. */
+const HASH_CONCURRENCY = 4;
+
+/** 항목들을 최대 limit 개 워커로 소진한다. fn 은 항목별 예외를 스스로 처리한다. */
+async function runPool<T>(
+  limit: number,
+  items: readonly T[],
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const item = items[next++];
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
 function sha256File(absPath: string): Promise<string> {
   return new Promise((res, rej) => {
     const h = createHash('sha256');
@@ -190,6 +212,9 @@ export class SyncPair {
   // ── 로컬 스캔 ────────────────────────────────────────────────────
   private async scanLocal(base: BaseState, ignores: string[]): Promise<LocalState> {
     const out: LocalState = new Map();
+    // 1패스: 트리 걷기 + stat — 해싱은 모아서 병렬로 돌린다 (첫 사이클의
+    // 대형 워크스페이스는 전 파일 해싱이라 직렬이면 그게 그대로 벽시계다).
+    const toHash: Array<{ rel: string; size: number; mtimeMs: number }> = [];
     const walk = async (rel: string): Promise<void> => {
       const abs = rel ? join(this.deps.dir, rel) : this.deps.dir;
       let entries;
@@ -210,17 +235,31 @@ export class SyncPair {
         try {
           const st = await stat(join(this.deps.dir, childRel));
           const known = base.get(childRel);
-          const sha =
-            known && known.size === st.size && known.mtimeMs === Math.floor(st.mtimeMs)
-              ? known.sha // 크기·시각이 그대로면 내용도 그대로라고 본다 (재해시 생략)
-              : await sha256File(join(this.deps.dir, childRel));
-          out.set(childRel, { sha, size: st.size, mtimeMs: Math.floor(st.mtimeMs) });
+          if (known && known.size === st.size && known.mtimeMs === Math.floor(st.mtimeMs)) {
+            // 크기·시각이 그대로면 내용도 그대로라고 본다 (재해시 생략)
+            out.set(childRel, { sha: known.sha, size: st.size, mtimeMs: Math.floor(st.mtimeMs) });
+          } else {
+            toHash.push({ rel: childRel, size: st.size, mtimeMs: Math.floor(st.mtimeMs) });
+          }
         } catch {
           /* 스캔 도중 사라진 파일 — 다음 사이클이 본다 */
         }
       }
     };
     await walk('');
+    if (toHash.length > 0) {
+      let hashed = 0;
+      this.progress('scan', 0, toHash.length);
+      await runPool(HASH_CONCURRENCY, toHash, async (f) => {
+        try {
+          const sha = await sha256File(join(this.deps.dir, ...f.rel.split('/')));
+          out.set(f.rel, { sha, size: f.size, mtimeMs: f.mtimeMs });
+        } catch {
+          /* 해싱 도중 사라진/잠긴 파일 — 다음 사이클이 본다 */
+        }
+        this.progress('scan', ++hashed, toHash.length);
+      });
+    }
     return out;
   }
 
@@ -268,16 +307,25 @@ export class SyncPair {
     this.progress('scan', 0, 0);
     const local = await this.scanLocal(base, ignores);
 
-    // 3. 실행.
+    // 3. 실행 — plan 은 경로당 액션 하나라 순서 의존이 없다. 장부 갱신만
+    // 하는 액션(adopt/forget)은 즉시, IO 액션은 **제한 병렬**로 돈다.
+    // 직렬이면 파일 2000개 = 왕복 2000번이 그대로 벽시계가 된다 (실기).
     const actions = planSync(base, local, remote);
     this.progress('apply', 0, actions.length);
     let applied = 0;
+    const ioActions: SyncAction[] = [];
     for (const a of actions) {
       if (!isSafeRelPath(a.path)) {
         report.errors.push(`경로 거부: ${a.path}`);
         this.progress('apply', ++applied, actions.length);
-        continue;
+      } else if (a.kind === 'adopt' || a.kind === 'forget') {
+        await this.apply(a, base, remote, local, report, maxBytes);
+        this.progress('apply', ++applied, actions.length);
+      } else {
+        ioActions.push(a);
       }
+    }
+    await runPool(TRANSFER_CONCURRENCY, ioActions, async (a) => {
       try {
         await this.apply(a, base, remote, local, report, maxBytes);
       } catch (e) {
@@ -287,7 +335,7 @@ export class SyncPair {
         if ((e as { status?: number }).status !== 409) report.errors.push(`${a.path}: ${msg}`);
       }
       this.progress('apply', ++applied, actions.length);
-    }
+    });
 
     // 4. 커서·base 저장. (커서는 이번에 **본** 서버 상태까지만 전진한다)
     const nextState: PersistedState = { cursor: res.latest_seq ?? state.cursor, base: {} };

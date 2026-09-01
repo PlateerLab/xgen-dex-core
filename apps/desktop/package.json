@@ -1,6 +1,6 @@
 {
   "name": "xgen-dex",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "XGen Dex — XGEN 에이전트를 쓰는 데스크톱 앱 (터미널 CLI · VSCode 확장과 같은 코어)",
   "author": "PlateerLab",
   "license": "Apache-2.0",
@@ -11,7 +11,7 @@
     "url": "https://github.com/PlateerLab/xgen-dex-core.git"
   },
   "scripts": {
-    "test": "tsx --test test/auth-selfheal.test.ts test/markdown-core.test.ts test/session-store.test.ts test/teams-store.test.ts test/teams-ws-frames.test.ts test/connection-security.test.ts test/diag-log.test.ts test/harness.test.ts test/mcp-debug.test.ts test/mcp-import.test.ts test/mcp-secrets.test.ts test/mcp-oauth.test.ts test/mcp-status.test.ts test/settings-reset.test.ts test/server-reason.test.ts test/sso-preload.test.ts test/sso-window-options.test.ts test/tool-activity.test.ts test/upload-transport.test.ts test/update-source.test.ts test/device-name.test.ts test/avatar-live-text.test.ts test/overlay-lock.test.ts test/screen-capture.test.ts test/tool-log.test.ts test/explorer-model.test.ts test/tab-model.test.ts test/workspace-layout.test.ts test/workspace-tab-focus.test.ts test/browser-context.test.ts test/browser-security.test.ts test/browser-history.test.ts test/cdp-page-proxy.test.ts test/system-metrics.test.ts test/server-probe.test.ts test/sync-plan.test.ts test/file-system.test.ts test/local-sync.test.ts test/local-sync-queue.test.ts test/workspace-bridge.test.ts test/selector.test.ts test/local-sync-folder.test.ts test/data-root.test.ts test/no-local-require.test.ts test/mcp-exposed-filter.test.ts",
+    "test": "tsx --test test/auth-selfheal.test.ts test/markdown-core.test.ts test/session-store.test.ts test/teams-store.test.ts test/teams-ws-frames.test.ts test/connection-security.test.ts test/diag-log.test.ts test/harness.test.ts test/mcp-debug.test.ts test/mcp-import.test.ts test/mcp-secrets.test.ts test/mcp-oauth.test.ts test/mcp-status.test.ts test/settings-reset.test.ts test/server-reason.test.ts test/sso-preload.test.ts test/sso-window-options.test.ts test/tool-activity.test.ts test/upload-transport.test.ts test/update-source.test.ts test/device-name.test.ts test/avatar-live-text.test.ts test/overlay-lock.test.ts test/screen-capture.test.ts test/tool-log.test.ts test/explorer-model.test.ts test/tab-model.test.ts test/workspace-layout.test.ts test/workspace-tab-focus.test.ts test/browser-context.test.ts test/browser-security.test.ts test/browser-history.test.ts test/cdp-page-proxy.test.ts test/system-metrics.test.ts test/server-probe.test.ts test/sync-plan.test.ts test/file-system.test.ts test/local-sync.test.ts test/local-sync-queue.test.ts test/local-sync-parallel.test.ts test/workspace-bridge.test.ts test/selector.test.ts test/local-sync-folder.test.ts test/data-root.test.ts test/no-local-require.test.ts test/mcp-exposed-filter.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:teams": "electron verify/teams-smoke.cjs",
     "verify:browser-selection": "electron -r tsx/cjs verify/browser-selection-smoke.cjs",

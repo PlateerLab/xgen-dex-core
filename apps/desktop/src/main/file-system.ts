@@ -103,8 +103,12 @@ export interface FileSystemDeps {
   stateDir: () => string;
   deviceName: string;
   onStatus?: (s: FileSystemStatus) => void;
+  /** 벌크 인덱스 probe — LocalSyncDeps.indexSeqs 그대로 (양쪽 매니저 공용). */
+  indexSeqs?: LocalSyncDeps['indexSeqs'];
   /** 테스트용 — 보험 타이머 간격. */
   intervalMs?: number;
+  /** 테스트용 — 느린 전체 사이클 스윕 간격. */
+  fullSweepMs?: number;
 }
 
 export const CLOUD_FOLDER = 'cloud';
@@ -142,7 +146,9 @@ export class FileSystemController {
       presenceFor: deps.presenceFor,
       stateDir: deps.stateDir,
       deviceName: deps.deviceName,
+      indexSeqs: deps.indexSeqs,
       intervalMs: deps.intervalMs,
+      fullSweepMs: deps.fullSweepMs,
     };
     this.cloud = new LocalSyncManager({
       ...common,

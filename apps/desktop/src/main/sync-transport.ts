@@ -137,6 +137,32 @@ function conflict409(body: unknown): Error {
   return new SyncConflictError((detail as { current_sha?: string })?.current_sha)
 }
 
+/**
+ * 벌크 인덱스 probe — 여러 저장소의 원본 seq 를 요청 **한 번**으로 읽는다.
+ *
+ * 보험 폴링이 저장소마다 /storage/changes 를 도는 대신 이걸로 "seq 가 내
+ * 커서와 다른 저장소"만 골라 정식 사이클을 돈다 (100+ 저장소 계정에서
+ * 5분마다 요청 폭주 → 게이트웨이 504 가 나던 실기 사고의 해법).
+ *
+ * ⚠ 서버는 원본 인덱스만 답한다 (hydrate/publish 없음) — 파드 로컬 미발행
+ * 산출물은 안 보이므로 호출측은 느린 전체 사이클 스윕을 별도 유지한다.
+ * 구버전 서버(404)는 그냥 throw — 호출측이 전수 폴링으로 폴백한다.
+ */
+export async function fetchIndexSeqs(
+  auth: TransportAuth,
+  owners: string[],
+): Promise<Record<string, number>> {
+  if (owners.length === 0) return {}
+  const u = new URL(`${auth.baseUrl}/api/agentflow/geny-workspace/index-seqs`)
+  u.searchParams.set('owners', owners.join(','))
+  const res = await transportFetch(auth, u.toString(), {
+    headers: await authHeaders(auth),
+  })
+  if (!res.ok) throw await httpError('index-seqs', res)
+  const body = (await res.json()) as { seqs?: Record<string, number> }
+  return body.seqs ?? {}
+}
+
 export class HttpSyncTransport implements Transport {
   private chunkThreshold: number
 

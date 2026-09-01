@@ -64,6 +64,18 @@ export interface LocalSyncDeps {
   intervalMs?: number;
   /** 동시에 도는 사이클 수. 기본 1 — 큐가 하나하나 처리한다. */
   concurrency?: number;
+  /**
+   * 벌크 인덱스 probe — 여러 저장소의 원본 seq 를 요청 한 번으로. 있으면
+   * 보험 주기가 "seq 가 커서와 다른 페어"만 큐에 세운다 (100+ 페어 전수
+   * 폴링 → 게이트웨이 504 폭주 방지). 실패/미지원(구서버)이면 전수 폴백.
+   */
+  indexSeqs?: (owners: string[]) => Promise<Record<string, number>>;
+  /**
+   * 느린 전체 사이클 스윕 간격(ms). probe 는 원본 인덱스만 보므로(파드
+   * 로컬 미발행 산출물 안 보임) 이 주기마다는 probe 결과와 무관하게 정식
+   * 사이클을 돈다. 기본 1시간. 0 = 스윕 없음(테스트).
+   */
+  fullSweepMs?: number;
 }
 
 /** 큐 안에서의 페어 상태. syncing(boolean)은 하위호환용 파생값이다. */
@@ -104,11 +116,14 @@ interface Live {
   pair: SyncPair;
   watcher: FSWatcher | null;
   presence: { start(): Promise<void>; stop(): void } | null;
-  timer: ReturnType<typeof setInterval> | null;
   debounce: ReturnType<typeof setTimeout> | null;
   state: SyncQueueState;
   /** 실행 중에 새 요청이 오면 표시만 해 두고, 끝난 뒤 큐에 다시 선다. */
   rerun: boolean;
+  /** 연속 실패 횟수 — 보험 주기의 지수 백오프 재료 (성공 시 0). */
+  failures: number;
+  /** 이 시각 전에는 보험 주기가 이 페어를 다시 세우지 않는다 (명시 요청은 무시). */
+  nextRetryAt: number;
   /** 이 페어의 다음 완료를 기다리는 쪽 (syncNow/ensureSynced/flushSync). */
   waiters: Array<(ok: boolean) => void>;
   progress?: SyncProgress;
@@ -120,6 +135,11 @@ interface Live {
 const WATCH_DEBOUNCE_MS = 1200;
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_CONCURRENCY = 1;
+/** probe 와 무관하게 정식 사이클을 강제하는 스윕 주기 — 기본 1시간. */
+const DEFAULT_FULL_SWEEP_MS = 60 * 60 * 1000;
+/** 실패 백오프: 1분 × 2^(n-1), 상한 30분. */
+const BACKOFF_BASE_MS = 60 * 1000;
+const BACKOFF_MAX_MS = 30 * 60 * 1000;
 /** 진행률 status 방송 간격 — apply 가 수백 파일이어도 IPC 를 도배하지 않게. */
 const PROGRESS_EMIT_MS = 200;
 
@@ -130,6 +150,9 @@ export class LocalSyncManager {
   private queue: string[] = [];
   private activeCount = 0;
   private lastProgressEmit = 0;
+  /** 매니저 전역 보험 타이머 — 페어별 타이머는 없다 (전원이 같은 시각에
+   *  발사되는 thundering herd 가 5분 정각 504 폭주의 절반이었다). */
+  private insuranceTimer: ReturnType<typeof setInterval> | null = null;
   /**
    * 온디맨드 페어 — 서버가 커넥터 세션에서 **어느 에이전트든** 로컬로 실행하려
    * 할 때(ensurePair) 여기 쌓인다. config.targets(클라우드 연결 목록)와 달리
@@ -218,10 +241,11 @@ export class LocalSyncManager {
       pair,
       watcher: null,
       presence: null,
-      timer: null,
       debounce: null,
       state: 'idle',
       rerun: false,
+      failures: 0,
+      nextRetryAt: 0,
       waiters: [],
     };
     this.live.set(target.workflowId, live);
@@ -252,14 +276,17 @@ export class LocalSyncManager {
       });
     }
 
-    const interval = this.deps.intervalMs ?? DEFAULT_INTERVAL_MS;
-    if (interval > 0) {
-      live.timer = setInterval(() => this.schedule(target.workflowId, 0), interval);
-      live.timer.unref?.();
-    }
+    this.ensureInsuranceTimer();
 
     diag('local-sync', `페어 시작: ${target.label} ↔ ${dir}`);
     this.schedule(target.workflowId, 0);
+  }
+
+  private ensureInsuranceTimer(): void {
+    const interval = this.deps.intervalMs ?? DEFAULT_INTERVAL_MS;
+    if (interval <= 0 || this.insuranceTimer) return;
+    this.insuranceTimer = setInterval(() => void this.insuranceTick(), interval);
+    this.insuranceTimer.unref?.();
   }
 
   private teardown(id: string): void {
@@ -270,8 +297,11 @@ export class LocalSyncManager {
     // 기다리는 쪽을 매달아 두지 않는다 — 페어가 사라졌으면 실패로 정리.
     for (const w of l.waiters.splice(0)) w(false);
     if (l.debounce) clearTimeout(l.debounce);
-    if (l.timer) clearInterval(l.timer);
     l.presence?.stop();
+    if (this.live.size === 0 && this.insuranceTimer) {
+      clearInterval(this.insuranceTimer);
+      this.insuranceTimer = null;
+    }
     void l.watcher?.close().catch(() => undefined);
     l.pair.dispose();
     diag('local-sync', `페어 종료: ${l.target.label}`);
@@ -353,6 +383,8 @@ export class LocalSyncManager {
       const r = await l.pair.sync();
       l.lastSyncAt = Date.now();
       l.lastError = r.errors[0];
+      l.failures = 0;
+      l.nextRetryAt = 0;
       l.last = {
         downloaded: r.downloaded,
         uploaded: r.uploaded,
@@ -362,6 +394,11 @@ export class LocalSyncManager {
       };
     } catch (e) {
       l.lastError = (e as Error).message;
+      // 지수 백오프 — 죽은 서버를 보험 주기마다 다시 두드리지 않는다.
+      // (명시 요청 — 사용자 클릭·watcher·presence — 은 이 시각을 무시한다.)
+      l.failures += 1;
+      l.nextRetryAt =
+        Date.now() + Math.min(BACKOFF_BASE_MS * 2 ** (l.failures - 1), BACKOFF_MAX_MS);
       diag('local-sync', `동기화 실패 ${l.target.label}: ${l.lastError}`);
     }
   }
@@ -377,6 +414,51 @@ export class LocalSyncManager {
     if (isFinal || now - this.lastProgressEmit >= PROGRESS_EMIT_MS) {
       this.lastProgressEmit = now;
       this.emit();
+    }
+  }
+
+  /**
+   * 보험 주기 — 놓친 알림(WS 드롭 등)의 안전망. **파일 인덱스 기반**이다:
+   *
+   *   1. 벌크 probe 한 번으로 전 페어의 원본 seq 를 읽고,
+   *   2. seq 가 내 커서와 **다른** 페어만 큐에 세운다 (같으면 서버 쪽 변경
+   *      없음 — 로컬 변경은 watcher 가 따로 잡는다),
+   *   3. 단 fullSweepMs 가 지난 페어는 probe 결과와 무관하게 정식 사이클을
+   *      돈다 — probe 는 파드 로컬 미발행 산출물을 못 보기 때문이다.
+   *
+   * probe 미지원(구서버)·실패면 전수 큐잉으로 폴백한다 — 그래도 큐라서
+   * 동시 요청은 concurrency 개뿐이다. 연속 실패 중인 페어는 지수 백오프
+   * (1분×2^n, 상한 30분) 동안 건너뛴다.
+   */
+  async insuranceTick(): Promise<void> {
+    if (this.stopped || this.live.size === 0) return;
+    const now = Date.now();
+    const sweepMs = this.deps.fullSweepMs ?? DEFAULT_FULL_SWEEP_MS;
+    const eligible = [...this.live.values()].filter((l) => now >= l.nextRetryAt);
+    if (eligible.length === 0) return;
+
+    let seqs: Record<string, number> | null = null;
+    if (this.deps.indexSeqs) {
+      try {
+        seqs = await this.deps.indexSeqs(eligible.map((l) => l.target.workflowId));
+      } catch (e) {
+        // 구서버(404)·일시 장애 — 전수 폴백. 로그는 한 줄이면 충분하다.
+        diag('local-sync', `인덱스 probe 실패 (전수 폴백): ${(e as Error).message}`);
+      }
+    }
+    for (const l of eligible) {
+      const id = l.target.workflowId;
+      if (seqs) {
+        const cursor = l.pair.cursor;
+        const seq = seqs[id];
+        const sweepDue =
+          sweepMs > 0 && (!l.lastSyncAt || now - l.lastSyncAt >= sweepMs);
+        // cursor === null: 이 프로세스에서 아직 안 돌았다 — 오프라인 로컬
+        // 변경 스캔이 필요하므로 건너뛰지 않는다. seq === undefined: 서버가
+        // 이 owner 를 답하지 않았다(권한/미지원) — 모르는 것은 돌린다.
+        if (cursor !== null && seq !== undefined && seq === cursor && !sweepDue) continue;
+      }
+      void this.enqueue(id);
     }
   }
 
@@ -490,6 +572,10 @@ export class LocalSyncManager {
 
   stop(): void {
     this.stopped = true;
+    if (this.insuranceTimer) {
+      clearInterval(this.insuranceTimer);
+      this.insuranceTimer = null;
+    }
     for (const id of [...this.live.keys()]) this.teardown(id);
     this.emit();
   }

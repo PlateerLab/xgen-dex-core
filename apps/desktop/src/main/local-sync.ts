@@ -126,8 +126,19 @@ export class SyncPair {
   private running: Promise<SyncReport> | null = null;
   private rerun = false;
   private disposed = false;
+  /** 마지막으로 저장한 서버 커서 — 이 프로세스에서 사이클이 돈 뒤에만 안다. */
+  private lastCursor: number | null = null;
 
   constructor(private deps: SyncPairDeps) {}
+
+  /**
+   * 이 페어가 마지막으로 본 서버 인덱스 seq. null = 이 프로세스에서 아직
+   * 사이클이 안 돌았다 — 앱 시작 직후엔 로컬 오프라인 변경 스캔이 필요하니
+   * 인덱스 probe 로 건너뛰면 안 된다는 뜻이기도 하다.
+   */
+  get cursor(): number | null {
+    return this.lastCursor;
+  }
 
   /**
    * 한 사이클. 이미 도는 중이면 **끝난 뒤 한 번 더** 돌도록 표시만 한다 —
@@ -282,6 +293,7 @@ export class SyncPair {
     const nextState: PersistedState = { cursor: res.latest_seq ?? state.cursor, base: {} };
     for (const [p, s] of base) nextState.base[p] = s;
     await this.saveState(nextState);
+    this.lastCursor = nextState.cursor;
 
     if (
       report.downloaded ||

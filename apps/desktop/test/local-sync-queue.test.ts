@@ -13,11 +13,16 @@ import type { ChangesResponse } from '../src/main/sync-protocol';
 class GatedRemote implements SyncRemote {
   calls = 0;
   private gate: Array<() => void> = [];
+  /** 대기자보다 먼저 도착한 release — 잃어버리지 않고 크레딧으로 적립한다.
+   *  (매니저는 state='syncing' 을 changes() 마이크로태스크보다 먼저 세우므로,
+   *  "syncing 을 보고 release" 하는 테스트는 이 크레딧 없이는 레이스다.) */
+  private credits = 0;
   gated = true;
 
   release(): void {
     const r = this.gate.shift();
     if (r) r();
+    else this.credits++;
   }
   releaseAll(): void {
     while (this.gate.length) this.release();
@@ -25,7 +30,10 @@ class GatedRemote implements SyncRemote {
   }
   async changes(_since: number): Promise<ChangesResponse> {
     this.calls++;
-    if (this.gated) await new Promise<void>((r) => this.gate.push(r));
+    if (this.gated) {
+      if (this.credits > 0) this.credits--;
+      else await new Promise<void>((r) => this.gate.push(r));
+    }
     return { latest_seq: 0, changes: [] };
   }
   async download(_path: string, _toAbs: string): Promise<void> {
@@ -45,7 +53,7 @@ class GatedRemote implements SyncRemote {
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 /** 조건이 참이 될 때까지 폴링 — 전체 스위트 부하에서 고정 tick 은 플레이크다. */
-async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
+async function waitFor(cond: () => boolean, timeoutMs = 30_000): Promise<void> {
   const start = Date.now();
   while (!cond()) {
     if (Date.now() - start > timeoutMs) throw new Error('waitFor 시간 초과');
@@ -53,7 +61,15 @@ async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
   }
 }
 
-function makeManager(root: string, remotes: Map<string, GatedRemote>, ids: string[]) {
+function makeManager(
+  root: string,
+  remotes: Map<string, GatedRemote>,
+  ids: string[],
+  extra: {
+    indexSeqs?: (owners: string[]) => Promise<Record<string, number>>;
+    fullSweepMs?: number;
+  } = {},
+) {
   for (const id of ids) remotes.set(id, new GatedRemote());
   return new LocalSyncManager({
     config: () => ({
@@ -66,7 +82,17 @@ function makeManager(root: string, remotes: Map<string, GatedRemote>, ids: strin
     stateDir: () => join(root, '.state'),
     deviceName: 'test-pc',
     intervalMs: 0,
+    fullSweepMs: 0,
+    ...extra,
   });
+}
+
+/** 초기 사이클을 전부 끝내 커서를 확정한다 (probe 게이팅의 전제 상태). */
+async function settle(m: LocalSyncManager, remotes: Map<string, GatedRemote>): Promise<void> {
+  m.reconcile();
+  await tick();
+  for (const r of remotes.values()) r.releaseAll();
+  await waitFor(() => m.status().agents.every((x) => x.state === 'idle' && !!x.lastSyncAt));
 }
 
 test('큐 — 사이클은 하나씩 돌고, 나머지는 순번을 갖고 기다린다', async () => {
@@ -112,7 +138,7 @@ test('큐 — 사이클은 하나씩 돌고, 나머지는 순번을 갖고 기�
     );
   } finally {
     m.stop();
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -137,7 +163,7 @@ test('syncNow(id) — 대기열 맨 앞에 끼어든다 (턴 크리티컬 경로
     await cDone;
   } finally {
     m.stop();
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -160,7 +186,7 @@ test('연타 접힘 — 실행 중 재요청은 "끝난 뒤 한 번 더" 하나�
     assert.equal(m.status().agents[0].state, 'idle');
   } finally {
     m.stop();
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -185,7 +211,7 @@ test('stop — 대기 중이던 syncNow 가 매달리지 않고 풀린다', asyn
     ]);
     assert.notEqual(outcome, 'hung');
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -196,9 +222,11 @@ test('진행률 — apply 단계의 done/total 이 status 로 나간다', async 
   class DownloadGated extends GatedRemote {
     downloads = 0;
     private dlGate: Array<() => void> = [];
+    private dlCredits = 0;
     dlRelease(): void {
       const r = this.dlGate.shift();
       if (r) r();
+      else this.dlCredits++;
     }
     override async changes(): Promise<ChangesResponse> {
       this.calls++;
@@ -215,7 +243,8 @@ test('진행률 — apply 단계의 done/total 이 status 로 나간다', async 
     }
     override async download(_path: string, toAbs: string): Promise<void> {
       this.downloads++;
-      await new Promise<void>((r) => this.dlGate.push(r));
+      if (this.dlCredits > 0) this.dlCredits--;
+      else await new Promise<void>((r) => this.dlGate.push(r));
       const { writeFileSync } = await import('node:fs');
       writeFileSync(toAbs, 'x');
     }
@@ -254,6 +283,141 @@ test('진행률 — apply 단계의 done/total 이 status 로 나간다', async 
     assert.equal(finalA.last?.downloaded, 2);
   } finally {
     m.stop();
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+// ── 파일 인덱스 기반 보험 주기 ──────────────────────────────────────
+
+test('인덱스 probe — seq 가 커서와 같은 페어는 사이클을 돌지 않는다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  let probed: string[] = [];
+  // GatedRemote 는 latest_seq=0 을 준다 → 첫 사이클 뒤 커서 = 0.
+  const m = makeManager(root, remotes, ['a', 'b'], {
+    indexSeqs: async (owners) => {
+      probed = owners;
+      return { a: 0, b: 7 }; // a = 변경 없음, b = 서버가 앞섬
+    },
+  });
+  try {
+    await settle(m, remotes);
+    const callsBefore = { a: remotes.get('a')!.calls, b: remotes.get('b')!.calls };
+
+    await m.insuranceTick();
+    await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+
+    assert.deepEqual(probed.sort(), ['a', 'b']); // probe 는 요청 한 번의 재료
+    assert.equal(remotes.get('a')!.calls, callsBefore.a); // 깨끗한 페어는 무동작
+    assert.equal(remotes.get('b')!.calls, callsBefore.b + 1); // 변한 페어만 사이클
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('인덱스 probe — 응답에 없는 owner 와 커서 미확정 페어는 안전하게 돌린다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const m = makeManager(root, remotes, ['a'], {
+    indexSeqs: async () => ({}), // 서버가 이 owner 를 답하지 않음 (권한/미지원)
+  });
+  try {
+    await settle(m, remotes);
+    const before = remotes.get('a')!.calls;
+    await m.insuranceTick();
+    await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+    assert.equal(remotes.get('a')!.calls, before + 1); // 모르는 것은 돌린다
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('인덱스 probe 실패 — 전수 폴백 (그래도 큐라서 하나씩)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const m = makeManager(root, remotes, ['a', 'b'], {
+    indexSeqs: async () => {
+      throw new Error('HTTP 404'); // 구서버
+    },
+  });
+  try {
+    await settle(m, remotes);
+    const before = { a: remotes.get('a')!.calls, b: remotes.get('b')!.calls };
+    await m.insuranceTick();
+    await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+    assert.equal(remotes.get('a')!.calls, before.a + 1);
+    assert.equal(remotes.get('b')!.calls, before.b + 1);
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('느린 전체 스윕 — probe 가 깨끗하다 해도 스윕 주기가 지난 페어는 돈다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const m = makeManager(root, remotes, ['a'], {
+    indexSeqs: async () => ({ a: 0 }), // 항상 "변경 없음"
+    fullSweepMs: 1, // 즉시 스윕 대상
+  });
+  try {
+    await settle(m, remotes);
+    const before = remotes.get('a')!.calls;
+    await tick(10); // lastSyncAt 로부터 1ms 경과 보장
+    await m.insuranceTick();
+    await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+    // probe 는 파드 로컬 미발행 산출물을 못 본다 — 스윕이 그 구멍을 막는다.
+    assert.equal(remotes.get('a')!.calls, before + 1);
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('실패 백오프 — 죽은 서버를 보험 주기마다 다시 두드리지 않는다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+
+  class FailingRemote extends GatedRemote {
+    override async changes(): Promise<ChangesResponse> {
+      this.calls++;
+      throw new Error('HTTP 504');
+    }
+  }
+  const remote = new FailingRemote();
+  remote.gated = false;
+  const m = new LocalSyncManager({
+    config: () => ({
+      enabled: true,
+      root,
+      targets: [{ workflowId: 'a', label: 'a', folder: 'a' }],
+    }),
+    loggedIn: () => true,
+    remoteFor: () => remote as unknown as SyncRemote,
+    stateDir: () => join(root, '.state'),
+    deviceName: 'test-pc',
+    intervalMs: 0,
+    fullSweepMs: 0,
+  });
+  try {
+    m.reconcile();
+    await waitFor(() => {
+      const a = m.status().agents[0];
+      return a?.state === 'idle' && !!a.lastError; // 첫 사이클 실패 완료
+    });
+    const after1 = remote.calls;
+
+    // 백오프 창(1분) 안의 보험 주기 — 다시 두드리지 않는다.
+    await m.insuranceTick();
+    await tick(50);
+    assert.equal(remote.calls, after1);
+
+    // 명시 요청(사용자 클릭)은 백오프를 무시한다.
+    await m.syncNow('a').catch(() => undefined);
+    assert.equal(remote.calls, after1 + 1);
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

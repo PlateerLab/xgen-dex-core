@@ -41,6 +41,14 @@ export interface SyncTarget {
   workflowId: string;
   label: string;
   folder: string;
+  /**
+   * base 스냅숏 세대 표식 — **원격 백엔드가 바뀌면 반드시 바꾼다.**
+   * 옛 백엔드의 base 를 새 백엔드 스냅숏에 재사용하면 3-way 가 "서버에서
+   * 삭제됨"으로 오판해 로컬 파일을 지운다 (클라우드의 geny→파일 저장소
+   * 전환이 정확히 이 경우다 — 새 태그로 base 를 처음부터 다시 세운다:
+   * 첫 사이클은 양방향 합집합 업로드/다운로드라 안전하다).
+   */
+  stateTag?: string;
 }
 
 export interface LocalSyncConfig {
@@ -257,7 +265,8 @@ export class LocalSyncManager {
       // 전체 삭제"로 오판해 서버 파일을 지운다.
       statePath: join(
         this.deps.stateDir(),
-        `${safeName(target.workflowId)}@${safeName(target.folder)}.json`,
+        `${safeName(target.workflowId)}@${safeName(target.folder)}` +
+          `${target.stateTag ? `@${safeName(target.stateTag)}` : ''}.json`,
       ),
       deviceName: this.deps.deviceName,
       onProgress: (p) => this.onProgress(target.workflowId, p),

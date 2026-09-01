@@ -118,7 +118,14 @@ export const AGENT_WORKSPACE_FOLDER = 'agent_workspace';
 /** 클라우드 동기화 대상 — 토글 ON + 로그인일 때 하나. */
 export function cloudTargets(userId: string | null, enabled: boolean): SyncTarget[] {
   if (!enabled || !userId) return [];
-  return [{ workflowId: `user:${userId}`, label: 'XGen 클라우드', folder: CLOUD_FOLDER }];
+  return [{
+    workflowId: `user:${userId}`,
+    label: '파일 저장소',
+    folder: CLOUD_FOLDER,
+    // 백엔드가 geny-workspace → 파일 저장소로 바뀌었다 — base 는 새 세대로.
+    // (옛 base 재사용 = "서버에서 삭제됨" 오판 → 로컬 삭제 사고.)
+    stateTag: 'filestore',
+  }];
 }
 
 /** 에이전트 동기화 대상 — 토글 ON 이면 전부, 폴더명은 라벨 기반 중복 제거. */

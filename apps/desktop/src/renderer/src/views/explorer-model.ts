@@ -37,7 +37,7 @@ export function sectionsFor(status: FileSystemStatusLike | null): ExplorerSectio
   if (status.cloud.owner) {
     out.push({
       id: 'cloud',
-      title: 'XgenCloud',
+      title: '파일 저장소',
       kind: 'cloud',
       workflowId: status.cloud.owner,
       synced: status.cloud.enabled && status.cloud.synced,

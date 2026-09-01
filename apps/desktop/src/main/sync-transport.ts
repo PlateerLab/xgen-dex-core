@@ -138,6 +138,104 @@ function conflict409(body: unknown): Error {
 }
 
 /**
+ * FilestoreSyncTransport — [XGen 클라우드 연결]의 서버 반쪽, **파일 저장소**.
+ *
+ * 구 geny-workspace user 스코프가 아니라 xgen-documents 의
+ * `/api/filestore/sync/*` 표면과 말한다. 스냅숏 커서 모델(카운터 seq +
+ * stale_cursor 전체 재당김)이라 ChangesResponse 형상은 그대로 맞는다.
+ * rmdir 를 구현한다 — 로컬에서 폴더째 지웠을 때 서버의 빈 폴더 정리.
+ */
+export class FilestoreSyncTransport implements Transport {
+  constructor(
+    private auth: TransportAuth,
+    private tmpDir: string,
+  ) {}
+
+  private url(path: string, qs: Record<string, string | number | undefined> = {}): string {
+    const u = new URL(`${this.auth.baseUrl}/api/filestore/sync${path}`)
+    for (const [k, v] of Object.entries(qs)) {
+      if (v !== undefined) u.searchParams.set(k, String(v))
+    }
+    return u.toString()
+  }
+
+  async changes(since: number): Promise<ChangesResponse> {
+    const res = await transportFetch(this.auth, this.url('/changes', { since }), {
+      headers: await authHeaders(this.auth),
+    })
+    if (!res.ok) throw await httpError('changes', res)
+    return (await res.json()) as ChangesResponse
+  }
+
+  async download(path: string, toAbs: string): Promise<void> {
+    const res = await transportFetch(this.auth, this.url('/raw', { path }), {
+      headers: await authHeaders(this.auth),
+    })
+    if (!res.ok || !res.body) throw await httpError('download', res)
+    await mkdir(this.tmpDir, { recursive: true })
+    const tmp = join(this.tmpDir, `fsdl-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    try {
+      await pipeline(Readable.fromWeb(res.body as any), createWriteStream(tmp))
+      await mkdir(dirname(toAbs), { recursive: true })
+      await rename(tmp, toAbs)
+    } catch (e) {
+      await rm(tmp, { force: true })
+      throw e
+    }
+  }
+
+  async put(path: string, fromAbs: string, baseSha: string): Promise<{ sha256: string }> {
+    // 파일 저장소 표면은 단일 PUT 본문이다 — 상한은 서버 max_file_bytes 가
+    // 지고(초과 로컬 파일은 엔진이 스킵), 여기서는 통으로 읽어 보낸다.
+    const body = await readFile(fromAbs)
+    const res = await transportFetch(this.auth, this.url('/file', { path, base_sha: baseSha }), {
+      method: 'PUT',
+      headers: { ...(await authHeaders(this.auth)), 'Content-Type': 'application/octet-stream' },
+      body,
+    })
+    if (res.status === 409) {
+      const parsed = (await res.json().catch(() => ({}))) as {
+        detail?: { current_sha?: string }
+      }
+      throw new SyncConflictError(parsed?.detail?.current_sha)
+    }
+    if (!res.ok) throw await httpError('put', res)
+    return (await res.json()) as { sha256: string }
+  }
+
+  async del(path: string, baseSha?: string, opts?: { force?: boolean }): Promise<void> {
+    const res = await transportFetch(
+      this.auth,
+      this.url('/entry', { path, base_sha: baseSha ?? '', force: opts?.force ? 'true' : undefined }),
+      { method: 'DELETE', headers: await authHeaders(this.auth) },
+    )
+    if (res.status === 409) {
+      const parsed = (await res.json().catch(() => ({}))) as {
+        detail?: { current_sha?: string }
+      }
+      throw new SyncConflictError(parsed?.detail?.current_sha)
+    }
+    if (!res.ok) throw await httpError('del', res)
+  }
+
+  async mkdir(path: string): Promise<void> {
+    const res = await transportFetch(this.auth, this.url('/mkdir', { path }), {
+      method: 'POST',
+      headers: await authHeaders(this.auth),
+    })
+    if (!res.ok) throw await httpError('mkdir', res)
+  }
+
+  async rmdir(path: string): Promise<void> {
+    const res = await transportFetch(this.auth, this.url('/folder', { path }), {
+      method: 'DELETE',
+      headers: await authHeaders(this.auth),
+    })
+    if (!res.ok) throw await httpError('rmdir', res)
+  }
+}
+
+/**
  * 벌크 인덱스 probe — 여러 저장소의 원본 seq 를 요청 **한 번**으로 읽는다.
  *
  * 보험 폴링이 저장소마다 /storage/changes 를 도는 대신 이걸로 "seq 가 내

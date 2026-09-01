@@ -29,7 +29,7 @@
  *     status() 로 나가 UI 가 개별 프로그레스를 보여준다.
  */
 import { watch, type FSWatcher } from 'chokidar';
-import { existsSync, readdirSync, renameSync } from 'fs';
+import { existsSync, readdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { diag } from './diag-log';
 import { SyncPair, type SyncProgress, type SyncRemote, type SyncReport } from './local-sync';
@@ -302,12 +302,12 @@ export class LocalSyncManager {
   }
 
   /**
-   * stateTag 세대 전환 — 옛 세대(무태그) base 가 있고 새 세대 base 가 아직
-   * 없는데 로컬 폴더가 비어 있지 않으면, 그 내용물은 **옛 백엔드의 산출물**
-   * 이다 (클라우드의 geny → 파일 저장소 전환이 그 경우). 그대로 두면 첫
-   * 합집합 사이클이 옛 잔재(.Trash-*, 기기 폴더 등)를 새 저장소로 올려
-   * 오염시킨다 — 폴더를 통째로 백업 이름으로 밀어내고, 새 저장소를 깨끗한
-   * 폴더에 하이드레이트한다. 데이터는 지우지 않는다(백업 폴더에 전부 남는다).
+   * stateTag 세대 전환 — 로컬 폴더는 **파일 저장소로 통하는 통로(미러)일
+   * 뿐, 원본이 아니다.** 옛 세대(무태그) base 가 있고 새 세대 base 가 아직
+   * 없으면, 로컬 내용물은 옛 백엔드(geny)의 산출물이다 — 그대로 두면 첫
+   * 합집합 사이클이 잔재(.Trash-*, 기기 폴더 등)를 새 저장소로 올려
+   * 오염시킨다. **즉시 비운다** — 원본은 파일 저장소에 전부 있으므로 로컬
+   * 삭제는 손실이 아니고, 바로 이어지는 첫 사이클이 깨끗한 미러를 내린다.
    */
   private migrateGeneration(dir: string, target: SyncTarget): void {
     if (!target.stateTag) return;
@@ -323,16 +323,12 @@ export class LocalSyncManager {
       );
       if (existsSync(newState) || !existsSync(oldState)) return;
       if (!existsSync(dir) || readdirSync(dir).length === 0) return;
-      let backup = `${dir}-이전-클라우드-백업`;
-      for (let i = 2; existsSync(backup); i++) backup = `${dir}-이전-클라우드-백업-${i}`;
-      renameSync(dir, backup);
-      diag(
-        'local-sync',
-        `백엔드 세대 전환: 옛 클라우드 로컬 사본을 백업으로 이동 — ${backup}`,
-      );
+      rmSync(dir, { recursive: true, force: true });
+      diag('local-sync', `백엔드 세대 전환: 옛 클라우드 로컬 사본 정리 — ${dir} (원본은 파일 저장소)`);
     } catch (e) {
-      // 백업 실패(잠긴 파일 등)면 그대로 진행한다 — 합집합 사이클이라 파괴는 없다.
-      diag('local-sync', `세대 전환 백업 실패 (계속): ${(e as Error).message}`);
+      // 정리 실패(잠긴 파일 등)면 그대로 진행한다 — 아래 서킷브레이커가
+      // 잔재의 대량 업로드를 잡지는 못하지만, 서버 원본 삭제는 없다.
+      diag('local-sync', `세대 전환 정리 실패 (계속): ${(e as Error).message}`);
     }
   }
 

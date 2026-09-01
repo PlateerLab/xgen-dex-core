@@ -262,24 +262,20 @@ test('대량 서버 삭제 보류 — 로컬이 통째로 비면 지우지 않�
   }
 });
 
-test('대량 로컬 삭제 보류 — 서버가 통째로 비어 보이면 로컬을 지우지 않는다', async () => {
+test('서버→로컬 삭제는 미러 그대로 흐른다 — 원본(저장소)이 비면 로컬도 빈다', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mass-'));
   const remote = new PruneRemote();
   for (let i = 0; i < 12; i++) remote.files.set(`d/f${i}.txt`, Buffer.from(`v${i}`));
   const p = pair(root, remote);
   try {
     await p.sync();
-    // 서버가 리셋 등으로 텅 빈 스냅숏을 주는 상황.
+    // 서버(원본)에서 전부 삭제된 상황 — 로컬은 통로일 뿐, 보류 없이 따라간다.
     remote.files.clear();
     remote.seq++;
 
     const r = await p.sync();
-    assert.equal(r.deletedLocal, 0); // 로컬 파일 보존
-    assert.ok(existsSync(join(root, 'ws', 'd', 'f0.txt')));
-    assert.match(r.errors[0], /대량 로컬 삭제 보류/);
-
-    const r2 = await p.sync({ allowMassDelete: true });
-    assert.equal(r2.deletedLocal, 12);
+    assert.equal(r.deletedLocal, 12);
+    assert.equal(r.errors.length, 0);
     assert.ok(!existsSync(join(root, 'ws', 'd', 'f0.txt')));
   } finally {
     p.dispose();
@@ -308,7 +304,7 @@ test('소규모 삭제는 보류 없이 그대로 전파된다 (폴더 삭제 UX
 
 // ── 백엔드 세대 전환 — 옛 클라우드 로컬 사본 백업 ─────────────────
 
-test('세대 전환 — 옛 geny 로컬 사본은 백업으로 밀려나고 새 폴더가 저장소를 비춘다', async () => {
+test('세대 전환 — 옛 geny 로컬 사본은 정리되고 새 폴더가 저장소를 그대로 비춘다', async () => {
   const root = mkdtempSync(join(tmpdir(), 'gen-'));
   const stateDir = join(root, '.state');
   const { mkdirSync, writeFileSync: wf } = await import('node:fs');
@@ -337,19 +333,18 @@ test('세대 전환 — 옛 geny 로컬 사본은 백업으로 밀려나고 새 
     m.reconcile();
     await m.syncNow('user:7');
 
-    // 옛 잔재는 백업 폴더로 통째로 이동 — 데이터 보존.
-    assert.ok(existsSync(join(root, 'cloud-이전-클라우드-백업', '옛기기폴더.txt')));
-    assert.ok(existsSync(join(root, 'cloud-이전-클라우드-백업', '.Trash-1000')));
-    // 새 cloud 폴더 = 파일 저장소 미러 (잔재 없음).
-    assert.ok(existsSync(join(root, 'cloud', '저장소파일.txt')));
+    // 로컬은 통로 — 옛 잔재는 그냥 정리된다 (원본은 파일 저장소에 있다).
     assert.ok(!existsSync(join(root, 'cloud', '옛기기폴더.txt')));
+    assert.ok(!existsSync(join(root, 'cloud', '.Trash-1000')));
+    // 새 cloud 폴더 = 파일 저장소의 깨끗한 미러.
+    assert.ok(existsSync(join(root, 'cloud', '저장소파일.txt')));
     // 잔재가 저장소로 업로드되지 않았다.
     assert.deepEqual([...remote.files.keys()], ['저장소파일.txt']);
 
-    // 두 번째 reconcile — 재백업 없음 (새 세대 state 가 이미 있다).
+    // 두 번째 reconcile — 재정리 없음 (새 세대 state 가 이미 있고 미러는 유지).
     m.reconcile();
     await m.syncNow('user:7');
-    assert.ok(!existsSync(join(root, 'cloud-이전-클라우드-백업-2')));
+    assert.ok(existsSync(join(root, 'cloud', '저장소파일.txt')));
   } finally {
     m.stop();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

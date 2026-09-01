@@ -14,12 +14,27 @@
  *
  * 트리거: 서버 변경 알림(WS presence) · 로컬 파일 워처(chokidar, 디바운스) ·
  * 보험용 주기 타이머. 사이클 자체는 SyncPair 가 한 줄로 세운다.
+ *
+ * ## 큐 (에이전트 100+ 대비)
+ *
+ * 트리거는 페어를 직접 돌리지 않고 **매니저 전역 FIFO 큐**에 넣는다 — 동시에
+ * 도는 사이클은 concurrency(기본 1)개뿐이다. 전에는 reconcile/syncNow 가 전
+ * 페어를 한꺼번에 돌려(Promise.all) 네트워크·디스크가 서로를 밀어내며 전체가
+ * 느려졌다. 큐에서는:
+ *   · 같은 페어의 연타는 하나로 접힌다 (대기 중 재요청 무시, 실행 중이면
+ *     끝난 뒤 한 번 더).
+ *   · 턴 크리티컬 경로(ensureSynced/flushSync — 커넥터 세션 시작·종료)는
+ *     맨 앞에 끼어든다 (front).
+ *   · 각 페어의 상태(idle/queued/syncing + 대기 순번 + 사이클 진행률)가
+ *     status() 로 나가 UI 가 개별 프로그레스를 보여준다.
  */
 import { watch, type FSWatcher } from 'chokidar';
 import { join } from 'path';
 import { diag } from './diag-log';
-import { SyncPair, type SyncRemote, type SyncReport } from './local-sync';
+import { SyncPair, type SyncProgress, type SyncRemote, type SyncReport } from './local-sync';
 import { pickFolderName, safeName } from './local-sync-folder';
+
+export type { SyncProgress } from './local-sync';
 
 export interface SyncTarget {
   workflowId: string;
@@ -47,7 +62,12 @@ export interface LocalSyncDeps {
   onStatus?: (s: LocalSyncStatus) => void;
   /** 보험 타이머 간격(ms). 기본 5분. 테스트에서 끈다(0). */
   intervalMs?: number;
+  /** 동시에 도는 사이클 수. 기본 1 — 큐가 하나하나 처리한다. */
+  concurrency?: number;
 }
+
+/** 큐 안에서의 페어 상태. syncing(boolean)은 하위호환용 파생값이다. */
+export type SyncQueueState = 'idle' | 'queued' | 'syncing';
 
 export interface AgentSyncStatus {
   workflowId: string;
@@ -55,6 +75,11 @@ export interface AgentSyncStatus {
   folder: string;
   /** 로컬 절대 경로. */
   dir: string;
+  state: SyncQueueState;
+  /** state === 'queued' 일 때 1-기반 대기 순번. */
+  queuePosition?: number;
+  /** state === 'syncing' 일 때 현재 사이클 진행률. */
+  progress?: SyncProgress;
   syncing: boolean;
   lastSyncAt?: number;
   lastError?: string;
@@ -81,7 +106,12 @@ interface Live {
   presence: { start(): Promise<void>; stop(): void } | null;
   timer: ReturnType<typeof setInterval> | null;
   debounce: ReturnType<typeof setTimeout> | null;
-  syncing: boolean;
+  state: SyncQueueState;
+  /** 실행 중에 새 요청이 오면 표시만 해 두고, 끝난 뒤 큐에 다시 선다. */
+  rerun: boolean;
+  /** 이 페어의 다음 완료를 기다리는 쪽 (syncNow/ensureSynced/flushSync). */
+  waiters: Array<(ok: boolean) => void>;
+  progress?: SyncProgress;
   lastSyncAt?: number;
   lastError?: string;
   last?: AgentSyncStatus['last'];
@@ -89,10 +119,17 @@ interface Live {
 
 const WATCH_DEBOUNCE_MS = 1200;
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_CONCURRENCY = 1;
+/** 진행률 status 방송 간격 — apply 가 수백 파일이어도 IPC 를 도배하지 않게. */
+const PROGRESS_EMIT_MS = 200;
 
 export class LocalSyncManager {
   private live = new Map<string, Live>();
   private stopped = false;
+  /** 전역 FIFO 큐 — 대기 중인 페어 id. 실행 중(active)인 id 는 없다. */
+  private queue: string[] = [];
+  private activeCount = 0;
+  private lastProgressEmit = 0;
   /**
    * 온디맨드 페어 — 서버가 커넥터 세션에서 **어느 에이전트든** 로컬로 실행하려
    * 할 때(ensurePair) 여기 쌓인다. config.targets(클라우드 연결 목록)와 달리
@@ -173,6 +210,7 @@ export class LocalSyncManager {
         `${safeName(target.workflowId)}@${safeName(target.folder)}.json`,
       ),
       deviceName: this.deps.deviceName,
+      onProgress: (p) => this.onProgress(target.workflowId, p),
     });
     const live: Live = {
       target,
@@ -182,7 +220,9 @@ export class LocalSyncManager {
       presence: null,
       timer: null,
       debounce: null,
-      syncing: false,
+      state: 'idle',
+      rerun: false,
+      waiters: [],
     };
     this.live.set(target.workflowId, live);
 
@@ -226,6 +266,9 @@ export class LocalSyncManager {
     const l = this.live.get(id);
     if (!l) return;
     this.live.delete(id);
+    this.queue = this.queue.filter((q) => q !== id);
+    // 기다리는 쪽을 매달아 두지 않는다 — 페어가 사라졌으면 실패로 정리.
+    for (const w of l.waiters.splice(0)) w(false);
     if (l.debounce) clearTimeout(l.debounce);
     if (l.timer) clearInterval(l.timer);
     l.presence?.stop();
@@ -240,16 +283,72 @@ export class LocalSyncManager {
     if (l.debounce) clearTimeout(l.debounce);
     l.debounce = setTimeout(() => {
       l.debounce = null;
-      void this.run(id);
+      void this.enqueue(id);
     }, delayMs);
     l.debounce.unref?.();
   }
 
-  private async run(id: string): Promise<void> {
+  /**
+   * 큐에 세운다. 반환 Promise 는 **이 요청 이후에 시작된 사이클이 끝날 때**
+   * 풀린다 (실행 중이었으면 끝난 뒤 한 번 더 돈 사이클까지 — 그 사이 변경이
+   * 반영된 시점이라야 flushSync 의 의미가 맞다). front 는 대기열 맨 앞 —
+   * 커넥터 세션의 턴 시작/종료 같은 크리티컬 경로 전용이다.
+   */
+  private enqueue(id: string, opts?: { front?: boolean }): Promise<boolean> {
     const l = this.live.get(id);
-    if (!l) return;
-    l.syncing = true;
-    this.emit();
+    if (!l || this.stopped) return Promise.resolve(false);
+    const done = new Promise<boolean>((resolve) => l.waiters.push(resolve));
+    if (l.state === 'syncing') {
+      // 이미 도는 중 — 끝난 뒤 한 번 더 (연타는 이 표시 하나로 접힌다).
+      l.rerun = true;
+    } else if (l.state === 'queued') {
+      // 이미 줄에 서 있다 — front 요청이면 앞으로 끌어올린다.
+      if (opts?.front && this.queue[0] !== id) {
+        this.queue = this.queue.filter((q) => q !== id);
+        this.queue.unshift(id);
+        this.emit();
+      }
+    } else {
+      l.state = 'queued';
+      if (opts?.front) this.queue.unshift(id);
+      else this.queue.push(id);
+      this.emit();
+      this.drain();
+    }
+    return done;
+  }
+
+  /** 큐를 concurrency 만큼만 비운다 — 나머지는 순번을 기다린다. */
+  private drain(): void {
+    const limit = Math.max(1, this.deps.concurrency ?? DEFAULT_CONCURRENCY);
+    while (this.activeCount < limit && this.queue.length > 0) {
+      const id = this.queue.shift() as string;
+      const l = this.live.get(id);
+      if (!l || l.state !== 'queued') continue;
+      this.activeCount++;
+      l.state = 'syncing';
+      l.progress = undefined;
+      this.emit();
+      void this.runCycle(l).finally(() => {
+        this.activeCount--;
+        if (l.rerun && this.live.has(id) && !this.stopped) {
+          // 실행 중 들어온 변경 — 대기자(waiters)는 그대로 들고 다시 줄을 선다.
+          l.rerun = false;
+          l.state = 'queued';
+          this.queue.unshift(id);
+        } else {
+          l.state = 'idle';
+          l.progress = undefined;
+          const ok = !l.lastError;
+          for (const w of l.waiters.splice(0)) w(ok);
+        }
+        this.emit();
+        this.drain();
+      });
+    }
+  }
+
+  private async runCycle(l: Live): Promise<void> {
     try {
       const r = await l.pair.sync();
       l.lastSyncAt = Date.now();
@@ -264,8 +363,19 @@ export class LocalSyncManager {
     } catch (e) {
       l.lastError = (e as Error).message;
       diag('local-sync', `동기화 실패 ${l.target.label}: ${l.lastError}`);
-    } finally {
-      l.syncing = false;
+    }
+  }
+
+  private onProgress(id: string, p: SyncProgress): void {
+    const l = this.live.get(id);
+    if (!l) return;
+    l.progress = p;
+    // 파일 수백 개짜리 apply 가 IPC 를 도배하지 않게 방송은 간격을 둔다.
+    // 단 마지막(완료) 표시는 항상 내보내 done/total 이 어긋난 채 남지 않게.
+    const now = Date.now();
+    const isFinal = p.phase === 'apply' && p.total > 0 && p.done >= p.total;
+    if (isFinal || now - this.lastProgressEmit >= PROGRESS_EMIT_MS) {
+      this.lastProgressEmit = now;
       this.emit();
     }
   }
@@ -276,10 +386,21 @@ export class LocalSyncManager {
     this.schedule(workflowId, 800);
   }
 
-  /** 지금 동기화 — id 없으면 전부. */
+  /**
+   * 지금 동기화 — id 없으면 전부 **큐에 세운다** (동시 실행이 아니라 순차).
+   * 특정 id 지정은 크리티컬 경로(사용자 클릭·턴 시작/종료)이므로 맨 앞에
+   * 끼어든다.
+   */
   async syncNow(workflowId?: string): Promise<void> {
-    const ids = workflowId ? [workflowId] : [...this.live.keys()];
-    await Promise.all(ids.map((id) => this.run(id)));
+    if (workflowId) {
+      const ok = await this.enqueue(workflowId, { front: true });
+      if (!ok) {
+        const err = this.live.get(workflowId)?.lastError;
+        if (err) throw new Error(err);
+      }
+      return;
+    }
+    await Promise.all([...this.live.keys()].map((id) => this.enqueue(id)));
   }
 
   /**
@@ -324,7 +445,7 @@ export class LocalSyncManager {
 
   /** 이 에이전트가 지금 동기화 중인가 (상태 표시용). */
   isSyncing(workflowId: string): boolean {
-    return this.live.get(workflowId)?.syncing ?? false;
+    return this.live.get(workflowId)?.state === 'syncing';
   }
 
   status(): LocalSyncStatus {
@@ -340,16 +461,22 @@ export class LocalSyncManager {
       enabled: !reason,
       reason,
       root: cfg.root || undefined,
-      agents: [...this.live.values()].map((l) => ({
-        workflowId: l.target.workflowId,
-        label: l.target.label,
-        folder: l.target.folder,
-        dir: l.dir,
-        syncing: l.syncing,
-        lastSyncAt: l.lastSyncAt,
-        lastError: l.lastError,
-        last: l.last,
-      })),
+      agents: [...this.live.values()].map((l) => {
+        const pos = l.state === 'queued' ? this.queue.indexOf(l.target.workflowId) : -1;
+        return {
+          workflowId: l.target.workflowId,
+          label: l.target.label,
+          folder: l.target.folder,
+          dir: l.dir,
+          state: l.state,
+          queuePosition: pos >= 0 ? pos + 1 : undefined,
+          progress: l.state === 'syncing' ? l.progress : undefined,
+          syncing: l.state === 'syncing',
+          lastSyncAt: l.lastSyncAt,
+          lastError: l.lastError,
+          last: l.last,
+        };
+      }),
     };
   }
 

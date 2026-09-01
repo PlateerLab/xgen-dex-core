@@ -371,29 +371,28 @@ export class SyncPair {
     // 직렬이면 파일 2000개 = 왕복 2000번이 그대로 벽시계가 된다 (실기).
     let actions = planSync(base, local, remote);
 
-    // ── 대량 삭제 서킷브레이커 ─────────────────────────────────────
-    // 한쪽이 "통째로 비어 보이는" 상태(관리자 리셋·마운트 이탈·스캔 오류·
-    // 서버 오응답)에서 3-way 는 그것을 전체 삭제로 읽는다. 파일 10개 이상
-    // 이면서 base 의 90% 이상을 지우는 계획은 **보류**하고 사유를 남긴다 —
-    // 정말 의도한 전체 삭제라면 사용자의 [지금 동기화](force)가 통과시킨다.
+    // ── 대량 삭제 서킷브레이커 (서버 방향만) ────────────────────────
+    // **원본은 서버다** — 로컬 폴더는 저장소로 통하는 통로(미러)일 뿐이다.
+    // 그래서 서버→로컬 삭제는 항상 그대로 흐른다(서버가 비면 로컬도 빈다 —
+    // 그것이 미러다). 반대로 로컬이 "통째로 비어 보이는" 상태(마운트 이탈·
+    // 스캔 오류·실수 삭제)가 서버 원본을 쓸어버리는 것은 사고다: 파일 10개
+    // 이상이면서 base 의 90% 이상을 지우는 delete-remote 계획은 **보류**하고
+    // 사유를 남긴다 — 정말 의도한 전체 삭제라면 사용자의 [지금 동기화]
+    // (force)가 통과시킨다.
     const allowMass = this.allowMassDeleteOnce;
     this.allowMassDeleteOnce = false;
     let massHeld = false;
     if (!allowMass && base.size >= MASS_DELETE_MIN) {
       const threshold = Math.max(MASS_DELETE_MIN, Math.floor(base.size * 0.9));
-      for (const kind of ['delete-remote', 'delete-local'] as const) {
-        const planned = actions.filter((a) => a.kind === kind).length;
-        if (planned >= threshold) {
-          actions = actions.filter((a) => a.kind !== kind);
-          massHeld = true;
-          report.deferred += planned;
-          report.errors.push(
-            kind === 'delete-remote'
-              ? `대량 서버 삭제 보류: 로컬에서 파일 ${planned}개가 사라졌습니다 — 의도한 것이면 [지금 동기화]를 누르세요`
-              : `대량 로컬 삭제 보류: 서버에서 파일 ${planned}개가 사라졌습니다 — 의도한 것이면 [지금 동기화]를 누르세요`,
-          );
-          diag('local-sync', `대량 ${kind} ${planned}건 보류 (base ${base.size})`);
-        }
+      const planned = actions.filter((a) => a.kind === 'delete-remote').length;
+      if (planned >= threshold) {
+        actions = actions.filter((a) => a.kind !== 'delete-remote');
+        massHeld = true;
+        report.deferred += planned;
+        report.errors.push(
+          `대량 서버 삭제 보류: 로컬에서 파일 ${planned}개가 사라졌습니다 — 의도한 것이면 [지금 동기화]를 누르세요`,
+        );
+        diag('local-sync', `대량 delete-remote ${planned}건 보류 (base ${base.size})`);
       }
     }
 

@@ -29,6 +29,7 @@
  *     status() 로 나가 UI 가 개별 프로그레스를 보여준다.
  */
 import { watch, type FSWatcher } from 'chokidar';
+import { existsSync, readdirSync, renameSync } from 'fs';
 import { join } from 'path';
 import { diag } from './diag-log';
 import { SyncPair, type SyncProgress, type SyncRemote, type SyncReport } from './local-sync';
@@ -139,6 +140,8 @@ interface Live {
   failures: number;
   /** 이 시각 전에는 보험 주기가 이 페어를 다시 세우지 않는다 (명시 요청은 무시). */
   nextRetryAt: number;
+  /** 다음 사이클에 대량 삭제 허용 — 사용자 명시 [지금 동기화]만 세운다. */
+  forceNext: boolean;
   /** 이 페어의 다음 완료를 기다리는 쪽 (syncNow/ensureSynced/flushSync). */
   waiters: Array<(ok: boolean) => void>;
   progress?: SyncProgress;
@@ -257,6 +260,7 @@ export class LocalSyncManager {
 
   private setup(root: string, target: SyncTarget): void {
     const dir = join(root, target.folder);
+    this.migrateGeneration(dir, target);
     const pair = new SyncPair({
       remote: this.deps.remoteFor(target.workflowId),
       dir,
@@ -282,6 +286,7 @@ export class LocalSyncManager {
       rerun: false,
       failures: 0,
       nextRetryAt: 0,
+      forceNext: false,
       waiters: [],
     };
     this.live.set(target.workflowId, live);
@@ -294,6 +299,41 @@ export class LocalSyncManager {
 
     this.ensureInsuranceTimer();
     this.schedule(target.workflowId, 0);
+  }
+
+  /**
+   * stateTag 세대 전환 — 옛 세대(무태그) base 가 있고 새 세대 base 가 아직
+   * 없는데 로컬 폴더가 비어 있지 않으면, 그 내용물은 **옛 백엔드의 산출물**
+   * 이다 (클라우드의 geny → 파일 저장소 전환이 그 경우). 그대로 두면 첫
+   * 합집합 사이클이 옛 잔재(.Trash-*, 기기 폴더 등)를 새 저장소로 올려
+   * 오염시킨다 — 폴더를 통째로 백업 이름으로 밀어내고, 새 저장소를 깨끗한
+   * 폴더에 하이드레이트한다. 데이터는 지우지 않는다(백업 폴더에 전부 남는다).
+   */
+  private migrateGeneration(dir: string, target: SyncTarget): void {
+    if (!target.stateTag) return;
+    try {
+      const stateDir = this.deps.stateDir();
+      const newState = join(
+        stateDir,
+        `${safeName(target.workflowId)}@${safeName(target.folder)}@${safeName(target.stateTag)}.json`,
+      );
+      const oldState = join(
+        stateDir,
+        `${safeName(target.workflowId)}@${safeName(target.folder)}.json`,
+      );
+      if (existsSync(newState) || !existsSync(oldState)) return;
+      if (!existsSync(dir) || readdirSync(dir).length === 0) return;
+      let backup = `${dir}-이전-클라우드-백업`;
+      for (let i = 2; existsSync(backup); i++) backup = `${dir}-이전-클라우드-백업-${i}`;
+      renameSync(dir, backup);
+      diag(
+        'local-sync',
+        `백엔드 세대 전환: 옛 클라우드 로컬 사본을 백업으로 이동 — ${backup}`,
+      );
+    } catch (e) {
+      // 백업 실패(잠긴 파일 등)면 그대로 진행한다 — 합집합 사이클이라 파괴는 없다.
+      diag('local-sync', `세대 전환 백업 실패 (계속): ${(e as Error).message}`);
+    }
   }
 
   /** 첫 사이클 완료 후 — 로컬 워처와 서버 변경 알림(WS)을 붙인다. */
@@ -411,8 +451,10 @@ export class LocalSyncManager {
   }
 
   private async runCycle(l: Live): Promise<void> {
+    const force = l.forceNext;
+    l.forceNext = false;
     try {
-      const r = await l.pair.sync();
+      const r = await l.pair.sync(force ? { allowMassDelete: true } : undefined);
       l.lastSyncAt = Date.now();
       l.lastError = r.errors[0];
       l.failures = 0;
@@ -505,8 +547,12 @@ export class LocalSyncManager {
    * 특정 id 지정은 크리티컬 경로(사용자 클릭·턴 시작/종료)이므로 맨 앞에
    * 끼어든다.
    */
-  async syncNow(workflowId?: string): Promise<void> {
+  async syncNow(workflowId?: string, opts?: { force?: boolean }): Promise<void> {
     if (workflowId) {
+      if (opts?.force) {
+        const l = this.live.get(workflowId);
+        if (l) l.forceNext = true; // 대량 삭제 보류를 이번 한 번 통과시킨다
+      }
       const ok = await this.enqueue(workflowId, { front: true });
       if (!ok) {
         const err = this.live.get(workflowId)?.lastError;

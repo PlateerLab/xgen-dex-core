@@ -761,6 +761,11 @@ const api = {
     /** 동기화 폴더의 직계 자식 (로컬 실파일). */
     list: (workflowId: string, rel?: string): Promise<WorkspaceEntryLike[]> =>
       ipcRenderer.invoke(CHANNELS.fsList, workflowId, rel ?? ''),
+    /** 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료의 읽기 전용 관측.
+     *  geny 가 아니라 파일 저장소 스냅숏이다. */
+    cloudServerTree: (): Promise<
+      Array<{ name: string; path: string; is_dir: boolean; size?: number; modified_at?: string }>
+    > => ipcRenderer.invoke(CHANNELS.fsCloudServerTree),
     /** 동기화 폴더 안 경로를 OS 로 연다. */
     openPath: (workflowId: string, rel?: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke(CHANNELS.fsOpenPath, workflowId, rel ?? ''),

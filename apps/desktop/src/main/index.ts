@@ -81,7 +81,7 @@ import { CHANNELS } from './ipc';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
-import { HttpSyncTransport, WorkspaceWsClient } from './sync-transport';
+import { HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient } from './sync-transport';
 import { FileSystemController } from './file-system';
 import { WorkspaceBridge } from './workspace-bridge-tools';
 import {
@@ -2978,6 +2978,21 @@ function wireFileSystem(): void {
       }));
     },
     remoteFor: syncRemoteFor,
+    // 벌크 인덱스 probe — 보험 주기가 저장소마다 changes 를 돌지 않고 요청
+    // 한 번으로 "변한 저장소"만 고른다 (구서버는 404 → 매니저가 전수 폴백).
+    indexSeqs: (owners: string[]) =>
+      fetchIndexSeqs(
+        {
+          baseUrl: normalizeServerUrl(loadConfig().serverUrl),
+          token: liveAccessToken,
+          refreshAuth: refreshAuthToken,
+          workflowId: '',
+          deviceId: ensureDeviceId(),
+          fetch: (input, init) => net.fetch(input, init),
+          allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
+        },
+        owners,
+      ),
     presenceFor: (owner: string, onChanged: () => void) =>
       new WorkspaceWsClient(
         {

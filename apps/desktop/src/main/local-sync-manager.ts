@@ -165,7 +165,13 @@ export class LocalSyncManager {
     const pair = new SyncPair({
       remote: this.deps.remoteFor(target.workflowId),
       dir,
-      statePath: join(this.deps.stateDir(), `${safeName(target.workflowId)}.json`),
+      // 폴더명까지 키에 넣는다 — 폴더가 바뀌면(라벨 변경 등) base 도 새로
+      // 시작해야 한다. 옛 base 를 새(빈) 폴더에 재사용하면 3-way 가 "로컬
+      // 전체 삭제"로 오판해 서버 파일을 지운다.
+      statePath: join(
+        this.deps.stateDir(),
+        `${safeName(target.workflowId)}@${safeName(target.folder)}.json`,
+      ),
       deviceName: this.deps.deviceName,
     });
     const live: Live = {

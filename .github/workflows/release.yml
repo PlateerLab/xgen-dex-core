@@ -50,24 +50,10 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
 
-      - name: FUSE 빌드 의존 (linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libfuse-dev fuse3 pkg-config
-
       # 루트 install 은 packages/* 의 의존(ws · MCP SDK)을 놓는다 — 데스크톱이
       # 그것을 소스로 번들하므로 둘 다 필요하다.
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
-
-      # optional 이라 실패해도 npm 은 통과한다 — 배포본에 실제로 들어갔는지
-      # 여기서 못 박는다 (조용한 기능 증발 방지).
-      - name: FUSE 바인딩 확인 (linux)
-        if: matrix.os == 'ubuntu-latest'
-        working-directory: apps/desktop
-        run: |
-          node -e "require('@cocalc/fuse-native'); console.log('fuse binding OK')"
-          ldd node_modules/@cocalc/fuse-native/build/Release/fuse.node | grep -q libfuse.so.2 \
-            || { echo '::error::fuse.node 가 libfuse2 를 링크하지 않았다'; exit 1; }
 
       - name: 빌드
         run: npm --prefix apps/desktop run build

@@ -91,13 +91,5 @@ test('사유를 버리는 지점이 남아 있지 않다', () => {
   assert.deepEqual(bare, [], `서버 사유를 버리는 지점이 남았다: ${bare.join(', ')}`)
 })
 
-test('안내 문구가 두 경우를 모두 덮는다', () => {
-  // 예전에는 조직 전체가 꺼졌을 때도 "마이페이지에서 켜라"고만 해서, 사용자가
-  // 이미 켜져 있는 자기 설정만 들여다보게 만들었다.
-  const ui = readFileSync(
-    new URL('../src/renderer/src/views/SyncSettings.tsx', import.meta.url),
-    'utf8',
-  )
-  assert.ok(ui.includes('마이페이지'), '본인 설정 안내가 없다')
-  assert.ok(ui.includes('관리자'), '조직 전체가 꺼진 경우 안내가 없다')
-})
+// (가상 드라이브 시절의 '스토리지 꺼짐 안내 문구' 소스 검사는 드라이브 UI 와 함께
+//  제거됐다 — 지금은 동기화 오류가 각 대상 행의 lastError 로 그대로 표면화된다.)

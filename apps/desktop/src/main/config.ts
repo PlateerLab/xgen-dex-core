@@ -45,8 +45,10 @@ export interface ConnectorConfig {
    * 루트·부착 에이전트를 그대로 물고, 두 계정이 같은 폴더를 클라우드로 가리켜
    * 서로의 파일을 덮어쓴다 (실기 신고).
    */
+  /** @deprecated 가상 드라이브 시절 설정 — 더 이상 읽지 않는다 (fileSystems 로
+   *  대체). 기존 파일과의 호환을 위해 타입만 남긴다. */
   workspaces?: Record<string, WorkspacePersistConfig>;
-  /** @deprecated 전역 단일 워크스페이스. 최초 로그인 시 workspaces 로 이관된다. */
+  /** @deprecated 전역 단일 워크스페이스 (가상 드라이브 시절). */
   workspace?: WorkspacePersistConfig;
   /** Gateway origin, e.g. "https://xgen.example.com". Empty on first run. */
   serverUrl: string;
@@ -131,6 +133,9 @@ export interface ConnectorConfig {
   /** 통합 데이터 루트(기본 ~/xgen-dex) — workspace/·cloud/ 의 부모.
    *  인스톨러 선택 또는 설정에서 변경. 개별 경로 명시가 항상 우선. */
   dataRoot?: string;
+  /** 파일 시스템 — XGen 저장소 로컬 동기화 토글 (계정별, 기본 둘 다 OFF).
+   *  키 = `${serverUrl}|${userId}`. */
+  fileSystems?: Record<string, { cloudSync?: boolean; agentSync?: boolean }>;
   /** Workspace 동기화 페어링 (에이전트 workflow ↔ 로컬 폴더). */
   /** 이 설치본의 안정 디바이스 id (최초 1회 생성) — 동기화 텔레메트리/충돌 사본 이름. */
   deviceId?: string;

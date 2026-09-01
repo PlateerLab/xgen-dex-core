@@ -19,12 +19,7 @@ jobs:
           node-version: 20
           cache: npm
 
-      # 데스크톱은 workspace 밖이라(electron + 네이티브 FUSE) 따로 설치한다.
-      # FUSE 헤더가 없으면 optionalDependency 라 조용히 빠지고, 배포본에서
-      # 워크스페이스 기능이 통째로 사라진다.
-      - name: FUSE 빌드 의존 (linux)
-        run: sudo apt-get update && sudo apt-get install -y libfuse-dev fuse3 pkg-config
-
+      # 데스크톱은 workspace 밖이라(electron) 따로 설치한다.
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
 

@@ -12,6 +12,7 @@
 import { CapacitorCookies } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
 import { XgenClient } from '@dex/protocol';
+import { diagLog, loggingFetch } from './diag';
 
 export interface MobileSession {
   serverUrl: string;
@@ -22,6 +23,29 @@ export interface MobileSession {
 }
 
 const PREF_KEY = 'xgen-session';
+const CRED_KEY = 'xgen-credentials';
+
+/** 자동 로그인용 자격증명 (사용자가 켠 경우에만 저장). */
+export interface SavedCredentials {
+  serverUrl: string;
+  email: string;
+  password: string;
+}
+
+export async function saveCredentials(c: SavedCredentials | null): Promise<void> {
+  if (c) await Preferences.set({ key: CRED_KEY, value: JSON.stringify(c) });
+  else await Preferences.remove({ key: CRED_KEY });
+}
+
+export async function loadCredentials(): Promise<SavedCredentials | null> {
+  const r = await Preferences.get({ key: CRED_KEY });
+  if (!r.value) return null;
+  try {
+    return JSON.parse(r.value) as SavedCredentials;
+  } catch {
+    return null;
+  }
+}
 
 export function normalizeServerUrl(raw: string): string {
   let url = raw.trim().replace(/\/+$/, '');
@@ -52,6 +76,7 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
     baseUrl: session.serverUrl,
     accessToken: session.accessToken,
     refreshToken: session.refreshToken,
+    fetch: loggingFetch, // 진단 패널에 모든 REST 왕복 기록
     onAuthFailure,
     // 토큰 회전 시 저장분/쿠키 동기화 — WS(채팅/도구 브리지)가 폐기 토큰
     // 쿠키로 403 을 맞지 않게 한다.
@@ -71,8 +96,9 @@ export async function login(
   password: string,
 ): Promise<MobileSession> {
   const serverUrl = normalizeServerUrl(serverUrlRaw);
-  const api = new XgenClient({ baseUrl: serverUrl });
+  const api = new XgenClient({ baseUrl: serverUrl, fetch: loggingFetch });
   const r = await api.login(email, password);
+  diagLog(`로그인 성공: user=${r.userId} (${r.username})`);
   const session: MobileSession = {
     serverUrl,
     accessToken: r.accessToken,

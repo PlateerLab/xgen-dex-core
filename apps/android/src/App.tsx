@@ -16,12 +16,15 @@ import { capacitorPort, ensureDevicePermissions } from './lib/capacitor-port';
 import {
   buildClient,
   clearSession,
+  loadCredentials,
   login,
   newInteractionId,
   restoreSession,
+  saveCredentials,
   wsBaseOf,
   type XgenMobileClient,
 } from './lib/xgen';
+import { diagEntries, diagLog, onDiag } from './lib/diag';
 
 type Screen = 'login' | 'agents' | 'chat';
 
@@ -38,21 +41,45 @@ export default function App(): React.ReactElement {
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const bridgeRef = useRef<MobileToolBridge | null>(null);
 
-  // ── 세션 복원 — 저장 토큰을 서버에 **검증/회전**하고 나서야 화면을 연다
-  //    (만료 토큰이면 조용히 로그인 화면으로; 회전되면 onTokensRotated 가
-  //    쿠키/저장분을 갱신해 WS 인증까지 정합). ──
+  // ── 자동 로그인 체인 ──
+  //   1) 저장 토큰을 서버에 검증/회전(api.restore) — 성공이면 바로 입장.
+  //   2) 실패면 저장 자격증명(자동 로그인 켠 경우)으로 재로그인.
+  //   3) 그래도 실패면 로그인 화면 (서버/이메일 프리필).
+  const [booting, setBooting] = useState(true);
   useEffect(() => {
-    void restoreSession().then(async (s) => {
-      if (!s) return;
-      const c = buildClient(s, () => void handleLogout());
-      const alive = await c.api.restore(s.accessToken, s.refreshToken).catch(() => false);
-      if (!alive) {
-        await clearSession();
-        return;
+    void (async () => {
+      try {
+        const s = await restoreSession();
+        if (s) {
+          const c = buildClient(s, () => void handleLogout());
+          const alive = await c.api.restore(s.accessToken, s.refreshToken).catch((e) => {
+            diagLog(`토큰 복원 실패: ${e instanceof Error ? e.message : String(e)}`);
+            return false;
+          });
+          if (alive) {
+            diagLog('자동 로그인: 저장 토큰 유효');
+            setClient(c);
+            setScreen('agents');
+            return;
+          }
+          await clearSession();
+        }
+        const cred = await loadCredentials();
+        if (cred) {
+          try {
+            const session = await login(cred.serverUrl, cred.email, cred.password);
+            diagLog('자동 로그인: 저장 자격증명으로 재로그인');
+            setClient(buildClient(session, () => void handleLogout()));
+            setScreen('agents');
+            return;
+          } catch (e) {
+            diagLog(`자동 재로그인 실패: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      } finally {
+        setBooting(false);
       }
-      setClient(c);
-      setScreen('agents');
-    });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -86,16 +113,21 @@ export default function App(): React.ReactElement {
     return () => bridge.stop();
   }, [client, toolsEnabled]);
 
-  const handleLogin = useCallback(async (server: string, email: string, password: string) => {
-    const session = await login(server, email, password);
-    setClient(buildClient(session, () => void handleLogout()));
-    setScreen('agents');
+  const handleLogin = useCallback(
+    async (server: string, email: string, password: string, remember: boolean) => {
+      const session = await login(server, email, password);
+      await saveCredentials(remember ? { serverUrl: session.serverUrl, email, password } : null);
+      setClient(buildClient(session, () => void handleLogout()));
+      setScreen('agents');
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    [],
+  );
 
   const handleLogout = useCallback(async () => {
     bridgeRef.current?.stop();
     await clearSession();
+    await saveCredentials(null);
     setClient(null);
     setScreen('login');
   }, []);
@@ -110,6 +142,13 @@ export default function App(): React.ReactElement {
     setScreen('chat');
   }, []);
 
+  if (booting) {
+    return (
+      <div className="screen login">
+        <p className="muted center">자동 로그인 확인 중…</p>
+      </div>
+    );
+  }
   if (screen === 'login' || !client) {
     return <LoginScreen onLogin={handleLogin} />;
   }
@@ -141,19 +180,30 @@ export default function App(): React.ReactElement {
 function LoginScreen({
   onLogin,
 }: {
-  onLogin: (server: string, email: string, password: string) => Promise<void>;
+  onLogin: (server: string, email: string, password: string, remember: boolean) => Promise<void>;
 }): React.ReactElement {
   const [server, setServer] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // 최근 서버/이메일 프리필 — 자동 재로그인이 실패해 여기 왔어도 다시 다
+  // 입력하게 하지 않는다.
+  useEffect(() => {
+    void loadCredentials().then((c) => {
+      if (!c) return;
+      setServer((v) => v || c.serverUrl);
+      setEmail((v) => v || c.email);
+    });
+  }, []);
 
   const submit = async (): Promise<void> => {
     setBusy(true);
     setError('');
     try {
-      await onLogin(server, email, password);
+      await onLogin(server, email, password, remember);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -185,6 +235,10 @@ function LoginScreen({
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
+        <label className="switch-row">
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          <span>자동 로그인 (이 기기에 계정 저장)</span>
+        </label>
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy || !server || !email || !password} onClick={() => void submit()}>
           {busy ? '로그인 중…' : '로그인'}
@@ -225,10 +279,19 @@ function AgentsScreen({
         client.api.agents.list({ pageSize: 100 }),
         client.api.history.conversations().catch(() => [] as Conversation[]),
       ]);
+      diagLog(`에이전트 ${list.items.length}개 / 대화 ${convs.length}개 로드`);
       setAgents(list.items);
       setConversations(convs);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // ApiError 는 상태코드+서버 본문까지 보여준다 — "빈 화면" 디버깅 불가 방지.
+      const detail =
+        e && typeof e === 'object' && 'status' in e
+          ? `HTTP ${(e as { status: number }).status} — ${JSON.stringify((e as { body?: unknown }).body ?? '').slice(0, 200)}`
+          : e instanceof Error
+            ? e.message || '알 수 없는 오류'
+            : String(e);
+      diagLog(`에이전트 목록 실패: ${detail}`);
+      setError(detail);
     } finally {
       setLoading(false);
     }
@@ -311,7 +374,7 @@ function AgentsScreen({
           return (
             <div key={a.workflowId} className="agent-card">
               <button className="agent-main" onClick={() => onOpenChat(a)}>
-                <span className="agent-name">{a.workflowName || a.workflowId}</span>
+                <span className="agent-name">{a.workflowName || a.workflowId || '(이름 없음)'}</span>
                 <span className="muted small">새 대화</span>
               </button>
               {recent.map((c) => (
@@ -326,8 +389,43 @@ function AgentsScreen({
             </div>
           );
         })}
-        {!loading && filtered.length === 0 && <p className="muted center">에이전트가 없습니다.</p>}
+        {!loading && filtered.length === 0 && !error && (
+          <p className="muted center">에이전트가 없습니다.</p>
+        )}
       </div>
+
+      <DiagPanel client={client} />
+    </div>
+  );
+}
+
+/** 접이식 진단 — 실기기 문제를 스크린샷 한 장으로 확정하기 위한 최근 기록. */
+function DiagPanel({ client }: { client: XgenMobileClient }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [, force] = useState(0);
+  useEffect(() => onDiag(() => force((n) => n + 1)), []);
+  return (
+    <div className="diag">
+      <button className="link" onClick={() => setOpen((v) => !v)}>
+        {open ? '진단 닫기' : '진단'}
+      </button>
+      {open && (
+        <div className="diag-body">
+          <div className="small">
+            서버 {client.session.serverUrl} · user {client.session.userId} (
+            {client.session.username})
+          </div>
+          {diagEntries()
+            .slice()
+            .reverse()
+            .map((e, i) => (
+              <div key={i} className="small mono">
+                {e.at} {e.line}
+              </div>
+            ))}
+          {diagEntries().length === 0 && <div className="small muted">기록 없음</div>}
+        </div>
+      )}
     </div>
   );
 }

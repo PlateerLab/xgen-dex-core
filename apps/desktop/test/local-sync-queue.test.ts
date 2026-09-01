@@ -265,7 +265,8 @@ test('진행률 — apply 단계의 done/total 이 status 로 나간다', async 
   });
   try {
     m.reconcile();
-    await waitFor(() => remote.downloads === 1); // 첫 다운로드가 게이트에 잡힘
+    // 전송은 병렬이다 — 두 다운로드가 **동시에** 게이트에 잡힌다.
+    await waitFor(() => remote.downloads === 2);
 
     const a = m.status().agents[0];
     assert.equal(a.state, 'syncing');

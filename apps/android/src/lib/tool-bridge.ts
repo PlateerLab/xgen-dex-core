@@ -71,6 +71,18 @@ export class MobileToolBridge {
     return this.status;
   }
 
+  /** 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다 (연결돼 있으면 no-op). */
+  kick(): void {
+    if (this.stopped) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.retry) {
+      clearTimeout(this.retry);
+      this.retry = null;
+    }
+    this.backoff = RECONNECT_MIN_MS;
+    this.connect();
+  }
+
   private emit(s: BridgeStatus): void {
     this.status = s;
     this.opts.onStatus?.(s);
@@ -114,9 +126,12 @@ export class MobileToolBridge {
       this.backoff = RECONNECT_MIN_MS;
       this.sendHello();
       this.clearHeartbeat();
-      this.hb = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-      }, this.opts.heartbeatMs ?? HEARTBEAT_MS);
+      const hbMs = this.opts.heartbeatMs ?? HEARTBEAT_MS;
+      if (hbMs > 0) {
+        this.hb = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+        }, hbMs);
+      }
     };
     ws.onmessage = (evt: MessageEvent) => {
       void this.onMessage(String(evt.data));

@@ -8,7 +8,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Conversation } from '@dex/protocol';
-import { createChat, type ChatWsHandle, type ChatWsState } from './lib/chat-ws';
+import { App as CapApp } from '@capacitor/app';
+import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState } from './lib/chat-ws';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import { advertiseMobileTools, callMobileTool } from './lib/mobile-tools';
 import { capacitorPort, ensureDevicePermissions } from './lib/capacitor-port';
@@ -37,15 +38,31 @@ export default function App(): React.ReactElement {
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const bridgeRef = useRef<MobileToolBridge | null>(null);
 
-  // ── 세션 복원 ──
+  // ── 세션 복원 — 저장 토큰을 서버에 **검증/회전**하고 나서야 화면을 연다
+  //    (만료 토큰이면 조용히 로그인 화면으로; 회전되면 onTokensRotated 가
+  //    쿠키/저장분을 갱신해 WS 인증까지 정합). ──
   useEffect(() => {
-    void restoreSession().then((s) => {
-      if (s) {
-        setClient(buildClient(s, () => void handleLogout()));
-        setScreen('agents');
+    void restoreSession().then(async (s) => {
+      if (!s) return;
+      const c = buildClient(s, () => void handleLogout());
+      const alive = await c.api.restore(s.accessToken, s.refreshToken).catch(() => false);
+      if (!alive) {
+        await clearSession();
+        return;
       }
+      setClient(c);
+      setScreen('agents');
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 앱 복귀 — 백그라운드에서 끊긴 도구 브리지를 즉시 다시 세운다
+  // (백오프 대기를 기다리지 않는다).
+  useEffect(() => {
+    const sub = CapApp.addListener('resume', () => bridgeRef.current?.kick());
+    return () => {
+      void sub.then((h) => h.remove());
+    };
   }, []);
 
   // ── 모바일 도구 브리지 수명 — 로그인 상태 + 토글에 따른다 ──
@@ -442,12 +459,16 @@ function ChatScreen({
       </header>
 
       <div className="messages" ref={scrollRef}>
-        {messages.map((m, i) => (
-          <div key={i} className={`msg ${m.role}`}>
-            {m.text}
-            {m.streaming && <span className="cursor">▍</span>}
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          const text = m.role === 'assistant' ? stripAgentMarkers(m.text) : m.text;
+          if (!text && !m.streaming) return null;
+          return (
+            <div key={i} className={`msg ${m.role}`}>
+              {text}
+              {m.streaming && <span className="cursor">▍</span>}
+            </div>
+          );
+        })}
         {messages.length === 0 && (
           <p className="muted center">메시지를 보내 대화를 시작하세요.</p>
         )}

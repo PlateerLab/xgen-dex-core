@@ -96,7 +96,10 @@ export function dispatchExec(
   const type = (parsed as { type?: string } | undefined)?.type;
   if (type === 'data') {
     const content = (parsed as { content?: unknown }).content;
-    if (typeof content === 'string') cb.onData?.(stripAgentMarkers(content));
+    // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면
+    // 절반이 화면에 샌다. 원문을 그대로 넘기고, 표시는 누적본에
+    // stripAgentMarkers 를 적용한다 (App 렌더).
+    if (typeof content === 'string') cb.onData?.(content);
     return null;
   }
   if (type === 'summary') {
@@ -115,11 +118,21 @@ export function dispatchExec(
   return null;
 }
 
-/** XGEN 특수 마커([AGENT_STATUS]…[/AGENT_STATUS] 등) 제거 — 채팅 표시용. */
+/**
+ * XGEN 특수 마커([AGENT_STATUS]…[/AGENT_STATUS], <think>…</think>) 제거 —
+ * 채팅 표시용. **누적본**에 적용해야 한다 (청크 경계에서 마커가 잘려도,
+ * 닫힘이 도착하는 순간 통째로 사라진다). 스트리밍 중 아직 닫히지 않은
+ * 블록(꼬리의 미폐쇄 마커/think)은 열림 지점부터 잘라 숨긴다 — 닫힘이
+ * 오면 위 규칙이 정식으로 지운다.
+ */
 export function stripAgentMarkers(text: string): string {
-  return text
+  let out = text
     .replace(/\[AGENT_(?:STATUS|EVENT)\][\s\S]*?\[\/AGENT_(?:STATUS|EVENT)\]/g, '')
     .replace(/<think>[\s\S]*?<\/think>/g, '');
+  // 미폐쇄 블록 — 스트리밍 중간 상태. 열림 이후를 통째로 숨긴다.
+  out = out.replace(/\[AGENT_(?:STATUS|EVENT)\][\s\S]*$/, '');
+  out = out.replace(/<think>[\s\S]*$/, '');
+  return out;
 }
 
 export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {

@@ -52,12 +52,8 @@ export default defineConfig({
     // 명시해 회귀를 차단한다.
     build: {
       rollupOptions: {
-        // 진입점 둘. fuse-host 는 **별도 프로세스**로 실행되는 FUSE 마운트
-        // 호스트다 — Electron 메인에서 FUSE 네이티브를 직접 다루면 그쪽
-        // 크래시(SIGSEGV)가 앱 전체를 죽인다.
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
-          'fuse-host': resolve(__dirname, 'src/main/fuse-host.ts'),
         },
         external: [
           'keytar',

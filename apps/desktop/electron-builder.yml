@@ -42,8 +42,6 @@ files:
 asarUnpack:
   - '**/*.node'
   - '**/node_modules/keytar/**'
-  # FUSE 바인딩(가상 드라이브, Linux) — .node 는 asar 안에서 dlopen 이 안 된다.
-  - '**/node_modules/@cocalc/**'
   # ws + the MCP SDK spawn stdio subprocesses / load from disk — unpack so they
   # resolve outside the asar at runtime.
   - '**/node_modules/ws/**'
@@ -99,12 +97,6 @@ deb:
     - libgtk-3-0 | libgtk-3-0t64
     - libatspi2.0-0 | libatspi2.0-0t64
     - libayatana-appindicator3-1 | libappindicator3-1
-    # XGEN 워크스페이스(가상 드라이브). 근거는 추측이 아니라 바이너리다:
-    #   ldd fuse.node → libfuse.so.2   (애드온이 libfuse2 를 동적 링크)
-    #   /usr/bin/fusermount → setuid root  (비루트 마운트에 필수)
-    # Ubuntu 24.04 에서 libfuse2 는 libfuse2t64 로 개명됐다 — 둘 다 받는다.
-    - libfuse2 | libfuse2t64
-    - fuse3 | fuse
   # AppStream 메타데이터를 /usr/share/metainfo/ 에 넣는다.
   #
   # 이게 없으면 dpkg 에는 설치돼 있어도 우분투 [앱 센터]의 "설치 및 업데이트됨" 에

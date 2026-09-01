@@ -11,7 +11,7 @@ import { HotkeyCapture } from './HotkeyCapture';
 import { SettingsSection } from './SettingsSection';
 import { SshSettings } from './SshSettings';
 import { McpSettings } from './McpSettings';
-import { SyncSettings } from './SyncSettings';
+import { FileSystemSettings } from './FileSystemSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { Selector } from './Selector';
 import { notificationStore, useNotifications } from '../notifications';
@@ -33,7 +33,7 @@ type Theme = NonNullable<ConnectorConfig['theme']>;
 // 성격이 다른 두 기능이 섞여 있어 [PC 컨트롤](셸·파일)과 [MCP]로 가른다.
 type Tab =
   | 'general' | 'notifications' | 'avatar'
-  | 'browser' | 'pc' | 'mcp' | 'ssh' | 'storage';
+  | 'browser' | 'pc' | 'mcp' | 'ssh' | 'filesystem';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: '일반' },
   { id: 'notifications', label: '알림' },
@@ -44,7 +44,7 @@ const TABS: { id: Tab; label: string }[] = [
   // SSH 는 이 PC 의 기능이 아니라 **XGEN 계정의 설정**이다 (접속은 서버가 연다).
   // 그래도 여기 두는 이유: 사용자는 "Agent 가 뭘 할 수 있나"를 이 창에서 찾는다.
   { id: 'ssh', label: 'SSH' },
-  { id: 'storage', label: '스토리지' },
+  { id: 'filesystem', label: '파일 시스템' },
 ];
 
 const NOTIFICATION_EVENTS: Array<{
@@ -343,7 +343,7 @@ export const Settings: React.FC<{
   // 임베드 안에서 렌더링돼도 창 전체를 덮는다).
   const voiceModal = showVoice ? <VoiceSettings onClose={() => setShowVoice(false)} /> : null;
 
-  // 본문(탭 줄 + 패널)은 모달/임베드가 같은 것을 쓴다 — SyncSettings 동형.
+  // 본문(탭 줄 + 패널)은 모달/임베드가 같은 것을 쓴다.
   const body = (
     <>
       <div className="settings-tabs" role="tablist">
@@ -1237,13 +1237,10 @@ export const Settings: React.FC<{
           </SettingsSection>
         )}
 
-        {/* ─── 스토리지 ─── */}
-        {/* 예전에는 카드 + [관리] 버튼을 한 번 더 눌러야 전체 설정이 떴다.
-              스토리지 탭이 곧 워크스페이스 동기화 화면이므로 본문을 그대로
-              임베드해 한 단계 클릭을 없앤다. */}
-        {tab === 'storage' && (
-          <SettingsSection plain title="스토리지">
-            <SyncSettings embedded />
+        {/* ─── 파일 시스템 ─── */}
+        {tab === 'filesystem' && (
+          <SettingsSection plain title="파일 시스템">
+            <FileSystemSettings embedded />
           </SettingsSection>
         )}
       </div>

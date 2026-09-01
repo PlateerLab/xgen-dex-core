@@ -626,7 +626,7 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
       .catch(() => undefined);
   };
 
-  // 본문은 모달/임베드(설정 [MCP] 탭) 양쪽에서 같은 것을 쓴다 — SyncSettings 동형.
+  // 본문은 모달/임베드(설정 [MCP] 탭) 양쪽에서 같은 것을 쓴다 — FileSystemSettings 동형.
   const body = (
     <>
       <p className="small muted" style={{ margin: '0 0 8px' }}>

@@ -13,6 +13,7 @@ import {
   resolveDataRoot,
   runtimeDirOf,
   settleDataRoot,
+  agentWorkspaceDirOf,
   workspaceDirOf,
 } from '../src/main/data-root';
 import type { ConnectorConfig } from '../src/main/config';
@@ -32,23 +33,26 @@ test('settleDataRoot: 트리 생성 + 미설정 기본 채움, 명시 설정은 
     const { root, patch } = settleDataRoot(cfg, home);
     assert.equal(root, join(home, 'xgen-dex'));
     // 트리가 실제로 만들어졌다.
-    for (const d of [root, workspaceDirOf(root), cloudDirOf(root), runtimeDirOf(root)])
+    for (const d of [
+      root,
+      workspaceDirOf(root),
+      cloudDirOf(root),
+      agentWorkspaceDirOf(root),
+      runtimeDirOf(root),
+    ])
       assert.ok(existsSync(d), d);
     // 미설정 → dataRoot 파생 기본이 패치로.
     assert.equal(patch.dataRoot, root);
     assert.equal(patch.localShell?.cwd, workspaceDirOf(root));
-    assert.equal(patch.workspace?.root, cloudDirOf(root));
 
     // 명시 설정은 절대 덮지 않는다.
     const explicit = {
       dataRoot: join(home, 'else'),
       localShell: { cwd: '/my/ws' },
-      workspace: { root: '/my/cloud', agents: [] },
     } as unknown as ConnectorConfig;
     const r2 = settleDataRoot(explicit, home);
     assert.equal(r2.root, join(home, 'else'));
     assert.equal(r2.patch.localShell, undefined);
-    assert.equal(r2.patch.workspace, undefined);
     assert.equal(r2.patch.dataRoot, undefined);
   } finally {
     rmSync(home, { recursive: true, force: true });

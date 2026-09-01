@@ -119,11 +119,16 @@ export function resolveDataRoot(cfg: Pick<ConnectorConfig, 'dataRoot'>, home = h
 export function workspaceDirOf(root: string): string {
   return join(root, 'workspace');
 }
+/** 클라우드 동기화 폴더 — [XGen 클라우드 연결] 토글의 대상. */
 export function cloudDirOf(root: string): string {
   return join(root, 'cloud');
 }
 export function runtimeDirOf(root: string): string {
   return join(root, 'local-runtime');
+}
+/** 에이전트 워크스페이스 동기화 폴더 — [Agent Workspace 연결] 토글의 대상. */
+export function agentWorkspaceDirOf(root: string): string {
+  return join(root, 'agent_workspace');
 }
 
 /**
@@ -136,7 +141,13 @@ export function settleDataRoot(
 ): { root: string; patch: Partial<ConnectorConfig> } {
   const root = resolveDataRoot(cfg, home);
   const patch: Partial<ConnectorConfig> = {};
-  for (const d of [root, workspaceDirOf(root), cloudDirOf(root), runtimeDirOf(root)]) {
+  for (const d of [
+    root,
+    workspaceDirOf(root),
+    cloudDirOf(root),
+    agentWorkspaceDirOf(root),
+    runtimeDirOf(root),
+  ]) {
     try {
       mkdirSync(d, { recursive: true });
     } catch {
@@ -147,10 +158,6 @@ export function settleDataRoot(
   // PC 컨트롤 작업 폴더(=에이전트 로컬 동기화 루트) 기본.
   if (!(cfg.localShell?.cwd ?? '').trim()) {
     patch.localShell = { ...(cfg.localShell ?? {}), cwd: workspaceDirOf(root) };
-  }
-  // 스토리지(가상 드라이브) 루트 기본.
-  if (!(cfg.workspace?.root ?? '').trim()) {
-    patch.workspace = { agents: [], ...(cfg.workspace ?? {}), root: cloudDirOf(root) };
   }
   return { root, patch };
 }

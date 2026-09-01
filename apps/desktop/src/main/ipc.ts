@@ -214,22 +214,19 @@ export const CHANNELS = {
   mcpRenameSecrets: 'mcp:renameSecrets',
   diagText: 'diag:text',
   diagCopy: 'diag:copy',
-  workspaceStatus: 'workspace:status',
-  workspaceStatusEvent: 'workspace:statusEvent',
-  workspaceAttach: 'workspace:attach',
-  workspaceDetach: 'workspace:detach',
-  workspaceOpen: 'workspace:open',
-  workspaceRoot: 'workspace:root',
-  workspaceSetRoot: 'workspace:setRoot',
-  workspaceSetEnabled: 'workspace:setEnabled',
-  workspaceRemount: 'workspace:remount',
-  workspaceRefresh: 'workspace:refresh',
-  /** 연결된 에이전트 목록만 서버에서 다시 읽는다 (파일 캐시는 건드리지 않는다). */
-  workspaceRefreshAgents: 'workspace:refresh-agents',
-  /** 가상 드라이브 한 폴더의 직계 자식 목록 — 인앱 탐색기 사이드바용. */
-  workspaceList: 'workspace:list',
-  /** 드라이브 안 경로 하나를 OS 기본 앱/파일 관리자로 연다. */
-  workspaceOpenPath: 'workspace:openPath',
+  // 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스) 로컬 동기화
+  fsStatus: 'fs:status',
+  fsStatusEvent: 'fs:statusEvent',
+  fsSetCloud: 'fs:setCloud',
+  fsSetAgents: 'fs:setAgents',
+  fsSyncNow: 'fs:syncNow',
+  fsRefreshAgents: 'fs:refreshAgents',
+  /** 동기화 폴더의 직계 자식 목록 — 인앱 탐색기용 (로컬 실파일). */
+  fsList: 'fs:list',
+  /** 동기화 폴더 안 경로를 OS 파일 관리자/기본 앱으로 연다. */
+  fsOpenPath: 'fs:openPath',
+  /** 루트 폴더('cloud'|'agents'|'data')를 OS 로 연다. */
+  fsOpenRoot: 'fs:openRoot',
   mcpStatus: 'mcp:status',
   mcpStatusEvent: 'mcp:statusEvent',
 
@@ -244,15 +241,6 @@ export const CHANNELS = {
   quickSend: 'connector:quickSend', // main → main-window Chat (deliver message)
 
   openExternal: 'shell:openExternal',
-
-  // 로컬 동기화 — 에이전트 workspace 저장소 ↔ 로컬 도구 기본 작업 폴더
-  syncStatus: 'sync:status',
-  syncStatusEvent: 'sync:statusEvent',
-  syncNow: 'sync:now',
-  /** 동기화된 에이전트 폴더의 직계 자식 (인앱 탐색기용, 로컬 fs). */
-  syncList: 'sync:list',
-  /** 동기화된 에이전트 폴더 안 경로를 OS 로 연다. */
-  syncOpenPath: 'sync:openPath',
 
   // 로그인 시크릿 저장 상태 (키체인/암호화 저장 불가 표면화)
   secureStorageStatus: 'secure:storageStatus',

@@ -25,6 +25,7 @@
 import { createHash } from 'crypto';
 import { createReadStream } from 'fs';
 import {
+  chmod,
   mkdir,
   readdir,
   rename,
@@ -173,6 +174,25 @@ async function runPool<T>(
     }
   });
   await Promise.all(workers);
+}
+
+/**
+ * 로컬 파일 삭제 — Windows 내성 포함. 읽기전용 속성/EPERM 은 쓰기 가능으로
+ * 바꾼 뒤 한 번 재시도한다 (미러 추종 삭제가 파일 속성 때문에 막히면 로컬이
+ * 저장소와 어긋난 채 굳는다). ENOENT 는 성공으로 본다 — 삭제 목표는 달성됐다.
+ */
+async function removeLocalFile(abs: string): Promise<void> {
+  try {
+    await unlink(abs);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === 'ENOENT') return;
+    if (code !== 'EPERM' && code !== 'EACCES') throw e;
+    await chmod(abs, 0o666).catch(() => undefined);
+    await unlink(abs).catch(async (e2) => {
+      if ((e2 as { code?: string }).code !== 'ENOENT') throw e2;
+    });
+  }
 }
 
 function sha256File(absPath: string): Promise<string> {
@@ -476,9 +496,7 @@ export class SyncPair {
         return;
       }
       case 'delete-local': {
-        await unlink(this.abs(a.path)).catch(async (e) => {
-          if ((e as { code?: string }).code !== 'ENOENT') throw e;
-        });
+        await removeLocalFile(this.abs(a.path));
         base.delete(a.path);
         report.deletedLocal++;
         await this.pruneEmptyDirs(a.path);

@@ -761,6 +761,10 @@ const api = {
     /** 동기화 폴더의 직계 자식 (로컬 실파일). */
     list: (workflowId: string, rel?: string): Promise<WorkspaceEntryLike[]> =>
       ipcRenderer.invoke(CHANNELS.fsList, workflowId, rel ?? ''),
+    /** [미러 재구성] — 로컬 클라우드 폴더를 비우고 저장소에서 새로 내려받는다
+     *  (로컬은 통로 — 손실 없음). 탐색기가 권한/사용 중으로 못 지울 때의 정석. */
+    cloudReset: (): Promise<FileSystemStatusLike | null> =>
+      ipcRenderer.invoke(CHANNELS.fsCloudReset),
     /** 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료의 읽기 전용 관측.
      *  geny 가 아니라 파일 저장소 스냅숏이다. */
     cloudServerTree: (): Promise<

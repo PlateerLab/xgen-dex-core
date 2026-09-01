@@ -1,6 +1,6 @@
 {
   "name": "@dex/engine",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "private": true,
   "type": "module",
   "description": "이 기기에서 실제로 무언가를 하는 것 — 로컬 도구 · MCP · 서버 브릿지. Electron 은 모른다.",

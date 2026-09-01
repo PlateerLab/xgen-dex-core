@@ -350,3 +350,50 @@ test('세대 전환 — 옛 geny 로컬 사본은 정리되고 새 폴더가 저
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+// ── [미러 재구성] — 로컬을 비우고 저장소에서 새로 내려받는다 ────────
+
+test('미러 재구성 — 로컬 잔재/base 를 걷고 저장소만 깨끗하게 다시 내린다', async () => {
+  const { FileSystemController } = await import('../src/main/file-system');
+  const { mkdirSync, writeFileSync: wf } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'reset-'));
+  const remote = new PruneRemote();
+  remote.files.set('저장소파일.txt', Buffer.from('원본'));
+  let cfg: { cloudSync?: boolean; agentSync?: boolean } = { cloudSync: true };
+  const ctrl = new FileSystemController({
+    dataRoot: () => root,
+    loggedIn: () => true,
+    userId: () => '7',
+    config: () => cfg,
+    persist: (next) => {
+      cfg = next;
+    },
+    listAgents: async () => [],
+    remoteFor: () => remote as unknown as SyncRemote,
+    stateDir: () => join(root, '.state'),
+    deviceName: 'test-pc',
+    intervalMs: 0,
+    fullSweepMs: 0,
+  });
+  try {
+    ctrl.reconcile();
+    await ctrl.syncNow('user:7');
+    assert.ok(existsSync(join(root, 'cloud', '저장소파일.txt'))); // 하이드레이션 확인
+
+    // 로컬이 꼬인 상황 흉내 — 잔재 폴더/파일 (권한 문제로 못 지우던 그 종류).
+    mkdirSync(join(root, 'cloud', '.Trash-1000'), { recursive: true });
+    wf(join(root, 'cloud', '잔재.txt'), 'junk');
+
+    const status = await ctrl.resetCloudMirror();
+
+    assert.ok(status?.cloud.enabled); // 토글은 켜진 채 끝난다
+    assert.ok(existsSync(join(root, 'cloud', '저장소파일.txt'))); // 저장소 미러 복원
+    assert.ok(!existsSync(join(root, 'cloud', '잔재.txt'))); // 잔재 소멸
+    assert.ok(!existsSync(join(root, 'cloud', '.Trash-1000')));
+    // 잔재는 저장소로 업로드되지 않았다 (삭제가 재동기화보다 먼저다).
+    assert.deepEqual([...remote.files.keys()], ['저장소파일.txt']);
+  } finally {
+    ctrl.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});

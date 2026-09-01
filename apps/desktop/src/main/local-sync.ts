@@ -185,10 +185,15 @@ function sha256File(absPath: string): Promise<string> {
   });
 }
 
+/** 대량 삭제 보류 기준 — 이 개수 이상이면서 base 의 90% 이상이면 잡는다. */
+const MASS_DELETE_MIN = 10;
+
 export class SyncPair {
   private running: Promise<SyncReport> | null = null;
   private rerun = false;
   private disposed = false;
+  /** 다음 사이클 한 번에 한해 대량 삭제를 허용한다 (사용자 명시 동기화). */
+  private allowMassDeleteOnce = false;
   /** 마지막으로 저장한 서버 커서 — 이 프로세스에서 사이클이 돈 뒤에만 안다. */
   private lastCursor: number | null = null;
 
@@ -207,7 +212,8 @@ export class SyncPair {
    * 한 사이클. 이미 도는 중이면 **끝난 뒤 한 번 더** 돌도록 표시만 한다 —
    * 알림(WS·파일 워처)이 몰려도 사이클은 항상 한 줄이다.
    */
-  sync(): Promise<SyncReport> {
+  sync(opts?: { allowMassDelete?: boolean }): Promise<SyncReport> {
+    if (opts?.allowMassDelete) this.allowMassDeleteOnce = true;
     if (this.running) {
       this.rerun = true;
       return this.running;
@@ -363,7 +369,34 @@ export class SyncPair {
     // 3. 실행 — plan 은 경로당 액션 하나라 순서 의존이 없다. 장부 갱신만
     // 하는 액션(adopt/forget)은 즉시, IO 액션은 **제한 병렬**로 돈다.
     // 직렬이면 파일 2000개 = 왕복 2000번이 그대로 벽시계가 된다 (실기).
-    const actions = planSync(base, local, remote);
+    let actions = planSync(base, local, remote);
+
+    // ── 대량 삭제 서킷브레이커 ─────────────────────────────────────
+    // 한쪽이 "통째로 비어 보이는" 상태(관리자 리셋·마운트 이탈·스캔 오류·
+    // 서버 오응답)에서 3-way 는 그것을 전체 삭제로 읽는다. 파일 10개 이상
+    // 이면서 base 의 90% 이상을 지우는 계획은 **보류**하고 사유를 남긴다 —
+    // 정말 의도한 전체 삭제라면 사용자의 [지금 동기화](force)가 통과시킨다.
+    const allowMass = this.allowMassDeleteOnce;
+    this.allowMassDeleteOnce = false;
+    let massHeld = false;
+    if (!allowMass && base.size >= MASS_DELETE_MIN) {
+      const threshold = Math.max(MASS_DELETE_MIN, Math.floor(base.size * 0.9));
+      for (const kind of ['delete-remote', 'delete-local'] as const) {
+        const planned = actions.filter((a) => a.kind === kind).length;
+        if (planned >= threshold) {
+          actions = actions.filter((a) => a.kind !== kind);
+          massHeld = true;
+          report.deferred += planned;
+          report.errors.push(
+            kind === 'delete-remote'
+              ? `대량 서버 삭제 보류: 로컬에서 파일 ${planned}개가 사라졌습니다 — 의도한 것이면 [지금 동기화]를 누르세요`
+              : `대량 로컬 삭제 보류: 서버에서 파일 ${planned}개가 사라졌습니다 — 의도한 것이면 [지금 동기화]를 누르세요`,
+          );
+          diag('local-sync', `대량 ${kind} ${planned}건 보류 (base ${base.size})`);
+        }
+      }
+    }
+
     this.progress('apply', 0, actions.length);
     let applied = 0;
     const ioActions: SyncAction[] = [];
@@ -391,7 +424,13 @@ export class SyncPair {
     });
 
     // 4. 커서·base 저장. (커서는 이번에 **본** 서버 상태까지만 전진한다)
-    const nextState: PersistedState = { cursor: res.latest_seq ?? state.cursor, base: {} };
+    // ⚠ 대량 삭제를 보류했으면 커서를 전진시키지 않는다 — 전진하면 다음
+    // 사이클이 같은 서버 상태를 "변경 없음"으로 읽어 보류분을 영원히 다시
+    // 못 본다 (force 사이클이 재계획할 근거가 사라진다).
+    const nextState: PersistedState = {
+      cursor: massHeld ? state.cursor : (res.latest_seq ?? state.cursor),
+      base: {},
+    };
     for (const [p, s] of base) nextState.base[p] = s;
     await this.saveState(nextState);
     this.lastCursor = nextState.cursor;

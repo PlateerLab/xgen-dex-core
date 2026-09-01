@@ -3134,6 +3134,43 @@ ipcMain.handle(CHANNELS.fsRefreshAgents, async () => {
   await fileSystem?.refreshAgents();
   return fileSystem?.status();
 });
+/** 탐색기의 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료 상태의
+ *  읽기 전용 관측. ⚠ geny(agentData.workspaceTree)가 아니라 **파일 저장소**
+ *  스냅숏을 읽는다 — 클라우드 섹션이 구 xgen-cloud 를 비추면 안 된다. */
+ipcMain.handle(CHANNELS.fsCloudServerTree, async () => {
+  const uid = client?.user?.userId != null ? String(client.user.userId) : null;
+  if (!uid) return [];
+  const transport = new FilestoreSyncTransport(
+    {
+      baseUrl: normalizeServerUrl(loadConfig().serverUrl),
+      token: liveAccessToken,
+      refreshAuth: refreshAuthToken,
+      workflowId: `user:${uid}`,
+      deviceId: ensureDeviceId(),
+      fetch: (input, init) => net.fetch(input, init),
+      allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
+    },
+    join(app.getPath('userData'), 'sync-staging'),
+  );
+  try {
+    const res = await transport.changes(0);
+    return (res.changes ?? [])
+      .filter((c) => !c.deleted)
+      .map((c) => ({
+        name: c.path.split('/').pop() ?? c.path,
+        path: c.path,
+        is_dir: !!c.is_dir,
+        size: c.size ?? 0,
+        modified_at: c.mtime_ns ? new Date(c.mtime_ns / 1e6).toISOString() : undefined,
+      }));
+  } catch (e) {
+    void import('./diag-log').then(({ diag }) =>
+      diag('file-system', `파일 저장소 서버 트리 조회 실패: ${(e as Error).message}`),
+    );
+    return [];
+  }
+});
+
 /** 동기화 폴더 나열 — 탐색기가 로컬 실파일을 그대로 본다.
  *  workflowId 'user:<id>' 는 클라우드 폴더다. */
 ipcMain.handle(CHANNELS.fsList, async (_e, workflowId: unknown, rel: unknown) => {

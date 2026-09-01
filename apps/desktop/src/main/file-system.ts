@@ -233,8 +233,10 @@ export class FileSystemController {
       await Promise.all([this.cloud.syncNow(), this.agents.syncNow()]);
       return;
     }
-    if (workflowId.startsWith('user:')) await this.cloud.syncNow(workflowId);
-    else await this.agents.syncNow(workflowId);
+    // 특정 대상의 [지금 동기화] = 사용자 명시 — 대량 삭제 보류(서킷브레이커)를
+    // 이번 한 번 통과시킨다. 전체 동기화·자동 트리거는 절대 통과 못 한다.
+    if (workflowId.startsWith('user:')) await this.cloud.syncNow(workflowId, { force: true });
+    else await this.agents.syncNow(workflowId, { force: true });
   }
 
   /** 브리지(ConnectorLocalSandbox)용 — 토글과 무관한 온디맨드 페어. */

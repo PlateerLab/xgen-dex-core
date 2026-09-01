@@ -82,8 +82,14 @@ export const ExplorerPanel: React.FC<{
       if (section.synced) return xgen.fileSystem.list(section.workflowId, rel);
       let nodes = remoteRef.current.get(section.workflowId);
       if (!nodes || force) {
-        const r = await xgen.agentData.workspaceTree(section.workflowId);
-        nodes = (r?.files ?? []) as RemoteNodeLike[];
+        if (section.kind === 'cloud') {
+          // 클라우드 = **파일 저장소** — geny(agentData.workspaceTree)를 읽으면
+          // 구 xgen-cloud 를 비추게 된다 (실사고).
+          nodes = (await xgen.fileSystem.cloudServerTree()) as RemoteNodeLike[];
+        } else {
+          const r = await xgen.agentData.workspaceTree(section.workflowId);
+          nodes = (r?.files ?? []) as RemoteNodeLike[];
+        }
         remoteRef.current.set(section.workflowId, nodes);
       }
       return entriesAt(nodes, rel);

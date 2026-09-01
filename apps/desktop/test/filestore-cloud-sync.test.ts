@@ -91,7 +91,11 @@ class PruneRemote implements SyncRemote {
   rmdirs: string[] = [];
   seq = 1;
 
-  async changes(_since: number): Promise<ChangesResponse> {
+  async changes(since: number): Promise<ChangesResponse> {
+    // 파일 저장소 서버와 같은 스냅숏 커서 의미론: since==seq 는 무변경,
+    // 어긋난 커서는 stale_cursor 로 전체 재스냅숏을 유도한다.
+    if (since > 0 && since === this.seq) return { latest_seq: this.seq, changes: [] };
+    if (since > 0) return { latest_seq: this.seq, changes: [], stale_cursor: true };
     const changes: RemoteChange[] = [...this.files.entries()].map(([path, buf], i) => ({
       path,
       is_dir: false,
@@ -229,4 +233,125 @@ test('stateTag — 태그가 다르면 base 상태 파일도 다르다 (옛 base
   assert.equal(files.length, 2, `state files=${files}`);
   assert.ok(files.some((f) => f.includes('@filestore')), `files=${files}`);
   rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+});
+
+// ── 대량 삭제 서킷브레이커 ─────────────────────────────────────────
+
+test('대량 서버 삭제 보류 — 로컬이 통째로 비면 지우지 않고 보류한다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mass-'));
+  const remote = new PruneRemote();
+  for (let i = 0; i < 12; i++) remote.files.set(`d/f${i}.txt`, Buffer.from(`v${i}`));
+  const p = pair(root, remote);
+  try {
+    await p.sync(); // 하이드레이트 (base 12)
+    rmSync(join(root, 'ws'), { recursive: true, force: true }); // 로컬 전체 소실 흉내
+
+    const r = await p.sync();
+    assert.equal(remote.files.size, 12); // 서버는 그대로 — 보류
+    assert.equal(r.deletedRemote, 0);
+    assert.equal(r.deferred, 12);
+    assert.match(r.errors[0], /대량 서버 삭제 보류/);
+
+    // 사용자가 의도를 확인([지금 동기화] = force)하면 통과한다.
+    const r2 = await p.sync({ allowMassDelete: true });
+    assert.equal(r2.deletedRemote, 12);
+    assert.equal(remote.files.size, 0);
+  } finally {
+    p.dispose();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('대량 로컬 삭제 보류 — 서버가 통째로 비어 보이면 로컬을 지우지 않는다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mass-'));
+  const remote = new PruneRemote();
+  for (let i = 0; i < 12; i++) remote.files.set(`d/f${i}.txt`, Buffer.from(`v${i}`));
+  const p = pair(root, remote);
+  try {
+    await p.sync();
+    // 서버가 리셋 등으로 텅 빈 스냅숏을 주는 상황.
+    remote.files.clear();
+    remote.seq++;
+
+    const r = await p.sync();
+    assert.equal(r.deletedLocal, 0); // 로컬 파일 보존
+    assert.ok(existsSync(join(root, 'ws', 'd', 'f0.txt')));
+    assert.match(r.errors[0], /대량 로컬 삭제 보류/);
+
+    const r2 = await p.sync({ allowMassDelete: true });
+    assert.equal(r2.deletedLocal, 12);
+    assert.ok(!existsSync(join(root, 'ws', 'd', 'f0.txt')));
+  } finally {
+    p.dispose();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('소규모 삭제는 보류 없이 그대로 전파된다 (폴더 삭제 UX 유지)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mass-'));
+  const remote = new PruneRemote();
+  for (let i = 0; i < 12; i++) remote.files.set(`keep/f${i}.txt`, Buffer.from('k'));
+  remote.files.set('del/a.txt', Buffer.from('a'));
+  remote.files.set('del/b.txt', Buffer.from('b'));
+  const p = pair(root, remote);
+  try {
+    await p.sync();
+    rmSync(join(root, 'ws', 'del'), { recursive: true, force: true }); // 일부 폴더만
+    const r = await p.sync();
+    assert.equal(r.deletedRemote, 2); // 임계(10개·90%) 미만 — 즉시 전파
+    assert.equal(r.errors.length, 0);
+  } finally {
+    p.dispose();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+// ── 백엔드 세대 전환 — 옛 클라우드 로컬 사본 백업 ─────────────────
+
+test('세대 전환 — 옛 geny 로컬 사본은 백업으로 밀려나고 새 폴더가 저장소를 비춘다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gen-'));
+  const stateDir = join(root, '.state');
+  const { mkdirSync, writeFileSync: wf } = await import('node:fs');
+  mkdirSync(stateDir, { recursive: true });
+  // 옛 세대의 흔적: 무태그 base 상태 파일 + 옛 백엔드 산출물이 든 cloud 폴더.
+  wf(join(stateDir, 'user_7@cloud.json'), '{"cursor":9,"base":{}}');
+  mkdirSync(join(root, 'cloud', '.Trash-1000'), { recursive: true });
+  wf(join(root, 'cloud', '옛기기폴더.txt'), 'geny 잔재');
+
+  const remote = new PruneRemote();
+  remote.files.set('저장소파일.txt', Buffer.from('filestore'));
+  const m = new LocalSyncManager({
+    config: () => ({
+      enabled: true,
+      root,
+      targets: [{ workflowId: 'user:7', label: '파일 저장소', folder: 'cloud', stateTag: 'filestore' }],
+    }),
+    loggedIn: () => true,
+    remoteFor: () => remote as unknown as SyncRemote,
+    stateDir: () => stateDir,
+    deviceName: 'test-pc',
+    intervalMs: 0,
+    fullSweepMs: 0,
+  });
+  try {
+    m.reconcile();
+    await m.syncNow('user:7');
+
+    // 옛 잔재는 백업 폴더로 통째로 이동 — 데이터 보존.
+    assert.ok(existsSync(join(root, 'cloud-이전-클라우드-백업', '옛기기폴더.txt')));
+    assert.ok(existsSync(join(root, 'cloud-이전-클라우드-백업', '.Trash-1000')));
+    // 새 cloud 폴더 = 파일 저장소 미러 (잔재 없음).
+    assert.ok(existsSync(join(root, 'cloud', '저장소파일.txt')));
+    assert.ok(!existsSync(join(root, 'cloud', '옛기기폴더.txt')));
+    // 잔재가 저장소로 업로드되지 않았다.
+    assert.deepEqual([...remote.files.keys()], ['저장소파일.txt']);
+
+    // 두 번째 reconcile — 재백업 없음 (새 세대 state 가 이미 있다).
+    m.reconcile();
+    await m.syncNow('user:7');
+    assert.ok(!existsSync(join(root, 'cloud-이전-클라우드-백업-2')));
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });

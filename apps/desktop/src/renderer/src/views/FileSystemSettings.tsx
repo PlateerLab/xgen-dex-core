@@ -163,6 +163,24 @@ export const FileSystemSettings: React.FC<{ embedded?: boolean }> = () => {
               >
                 지금 동기화
               </button>
+              {/* 로컬은 통로 — 꼬이면(권한/사용 중/잔재) 비우고 저장소에서 새로 받는다. */}
+              <button
+                className="link"
+                disabled={busy === 'cloud-reset'}
+                title="로컬 폴더를 비우고 파일 저장소에서 새로 내려받습니다 (저장소의 원본은 그대로)"
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      '로컬 폴더를 비우고 파일 저장소에서 새로 내려받습니다.\n' +
+                        '저장소의 원본은 그대로이며, 아직 업로드되지 않은 로컬 변경은 사라집니다.',
+                    )
+                  )
+                    return;
+                  void run('cloud-reset', () => xgen.fileSystem.cloudReset());
+                }}
+              >
+                미러 재구성
+              </button>
             </span>
           </div>
         )}

@@ -3134,6 +3134,10 @@ ipcMain.handle(CHANNELS.fsRefreshAgents, async () => {
   await fileSystem?.refreshAgents();
   return fileSystem?.status();
 });
+/** [미러 재구성] — 로컬 클라우드 폴더를 앱이 비우고 저장소에서 새로 내려받는다. */
+ipcMain.handle(CHANNELS.fsCloudReset, async () => {
+  return (await fileSystem?.resetCloudMirror()) ?? null;
+});
 /** 탐색기의 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료 상태의
  *  읽기 전용 관측. ⚠ geny(agentData.workspaceTree)가 아니라 **파일 저장소**
  *  스냅숏을 읽는다 — 클라우드 섹션이 구 xgen-cloud 를 비추면 안 된다. */

@@ -18,6 +18,7 @@
  * 동기화되고, 꺼도 서버 브리지(ConnectorLocalSandbox)가 요구하는 온디맨드
  * 페어(ensurePair)는 계속 동작한다 — 커넥터 세션 실행은 토글과 무관하다.
  */
+import { rmSync } from 'fs';
 import { join } from 'path';
 import { diag } from './diag-log';
 import {
@@ -28,7 +29,7 @@ import {
   type SyncTarget,
 } from './local-sync-manager';
 import { SyncScheduler } from './sync-scheduler';
-import { pickFolderName } from './local-sync-folder';
+import { pickFolderName, safeName } from './local-sync-folder';
 
 /** 계정 키 — `${serverUrl}|${userId}` (예전 workspace.ts 의 accountKey 승계). */
 export function accountKey(serverUrl: string, userId: string | number): string {
@@ -254,6 +255,47 @@ export class FileSystemController {
 
   poke(workflowId: string): void {
     this.agents.poke(workflowId);
+  }
+
+  /**
+   * [미러 재구성] — 로컬 클라우드 폴더를 앱이 직접 비우고 저장소에서 새로
+   * 내려받는다. 로컬은 통로일 뿐이라 손실이 없고, 탐색기가 "사용 중/권한"
+   * 으로 지우지 못하는 상황(워처·진행 중 전송이 핸들을 쥔 경우)도 **핸들의
+   * 주인인 앱이 페어를 내리고 지우므로** 확실히 풀린다.
+   *
+   * 순서: 페어 철거(워처/전송 종료) → 로컬 폴더 삭제(재시도) → base 상태
+   * 파일 삭제 → 페어 재기동 → 즉시 동기화(깨끗한 하이드레이션).
+   */
+  async resetCloudMirror(): Promise<FileSystemStatus | undefined> {
+    const uid = this.deps.userId();
+    if (!uid || this.cfg().cloudSync !== true) return this.status();
+    const owner = `user:${uid}`;
+    const dir = join(this.deps.dataRoot(), CLOUD_FOLDER);
+
+    // 1) 페어 철거 — 토글을 잠시 내려 reconcile 이 워처/페어를 걷게 한다.
+    this.deps.persist({ ...this.cfg(), cloudSync: false });
+    this.reconcile();
+    // 2) 로컬 미러 + base 상태 삭제 (원본은 파일 저장소 — 손실 없음).
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (e) {
+      diag('file-system', `미러 재구성: 로컬 폴더 삭제 실패 (계속): ${(e as Error).message}`);
+    }
+    try {
+      const stateDir = this.deps.stateDir();
+      const { readdirSync, rmSync: rmStateSync } = await import('fs');
+      const prefix = `${safeName(owner)}@`; // 매니저 statePath 규칙과 동일
+      for (const f of readdirSync(stateDir)) {
+        if (f.startsWith(prefix)) rmStateSync(join(stateDir, f), { force: true });
+      }
+    } catch {
+      /* state 폴더가 아직 없을 수 있다 */
+    }
+    // 3) 재기동 + 즉시 하이드레이션.
+    this.deps.persist({ ...this.cfg(), cloudSync: true });
+    this.reconcile();
+    await this.cloud.syncNow(owner).catch(() => undefined);
+    return this.status();
   }
 
   /** 클라우드 로컬 폴더 — 토글 ON + 페어 살아 있을 때만. 브리지 /cloud 용. */

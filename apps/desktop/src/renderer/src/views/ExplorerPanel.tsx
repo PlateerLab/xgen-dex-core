@@ -321,7 +321,7 @@ export const ExplorerPanel: React.FC<{
         {status?.loggedIn && anySyncOff && (
           <div className="explorer-notice">
             <p>
-              [설정 &gt; 파일 시스템]에서 XGen 클라우드 / Agent Workspace 연결을 켜면
+              [설정 &gt; 파일 시스템]에서 파일 저장소 / Agent Workspace 연결을 켜면
               해당 저장소가 이 PC 의 폴더로 동기화됩니다.
             </p>
             <button className="primary-sm" onClick={onOpenSettings}>

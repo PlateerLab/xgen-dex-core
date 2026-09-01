@@ -46,7 +46,7 @@ test('XgenCloud 가 항상 먼저, 에이전트는 **동기화 여부와 무관�
     }),
   );
   assert.equal(s[0].id, 'cloud');
-  assert.equal(s[0].title, 'XgenCloud');
+  assert.equal(s[0].title, '파일 저장소');
   assert.equal(s[0].workflowId, 'user:7'); // 서버 트리 읽기용 소유 키
   assert.equal(s[0].synced, false); // 토글 OFF → 서버 보기
   assert.deepEqual(

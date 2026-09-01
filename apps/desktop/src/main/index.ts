@@ -81,7 +81,7 @@ import { CHANNELS } from './ipc';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
-import { HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient } from './sync-transport';
+import { FilestoreSyncTransport, HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient } from './sync-transport';
 import { FileSystemController } from './file-system';
 import { WorkspaceBridge } from './workspace-bridge-tools';
 import {
@@ -2932,19 +2932,31 @@ let fileSystem: FileSystemController | null = null;
 
 /** 동기화 엔진용 전송 — latest_seq 포함 타입. */
 function syncRemoteFor(workflowId: string): SyncRemote {
-  const transport = () =>
-    new HttpSyncTransport(
-      {
-        baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-        token: liveAccessToken,
-        refreshAuth: refreshAuthToken,
-        workflowId,
-        deviceId: ensureDeviceId(),
-        fetch: (input, init) => net.fetch(input, init),
-        allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-      },
-      join(app.getPath('userData'), 'sync-staging'),
-    );
+  const auth = () => ({
+    baseUrl: normalizeServerUrl(loadConfig().serverUrl),
+    token: liveAccessToken,
+    refreshAuth: refreshAuthToken,
+    workflowId,
+    deviceId: ensureDeviceId(),
+    fetch: (input: Parameters<typeof net.fetch>[0], init?: Parameters<typeof net.fetch>[1]) =>
+      net.fetch(input, init),
+    allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
+  });
+  const staging = () => join(app.getPath('userData'), 'sync-staging');
+  if (workflowId.startsWith('user:')) {
+    // 사용자 클라우드 = **파일 저장소** — geny-workspace 가 아니라
+    // /api/filestore/sync/* 표면과 말한다 (rmdir: 빈 원격 폴더 정리 포함).
+    const transport = () => new FilestoreSyncTransport(auth(), staging());
+    return {
+      changes: (since) => transport().changes(since),
+      download: (path, toAbs) => transport().download(path, toAbs),
+      put: (path, fromAbs, baseSha) => transport().put(path, fromAbs, baseSha),
+      del: (path, baseSha, opts) => transport().del(path, baseSha, opts),
+      mkdir: (path) => transport().mkdir(path),
+      rmdir: (path) => transport().rmdir(path),
+    };
+  }
+  const transport = () => new HttpSyncTransport(auth(), staging());
   return {
     changes: (since) => transport().changes(since),
     download: (path, toAbs) => transport().download(path, toAbs),
@@ -2993,8 +3005,13 @@ function wireFileSystem(): void {
         },
         owners,
       ),
-    presenceFor: (owner: string, onChanged: () => void) =>
-      new WorkspaceWsClient(
+    presenceFor: (owner: string, onChanged: () => void) => {
+      if (owner.startsWith('user:')) {
+        // 파일 저장소에는 변경 WS 가 없다 — 인덱스 probe(5분)와 스윕이 담당.
+        // geny WS 를 붙이면 **다른 저장소**의 알림으로 엉뚱한 사이클만 돈다.
+        return { start: async () => undefined, stop: () => undefined };
+      }
+      return new WorkspaceWsClient(
         {
           baseUrl: normalizeServerUrl(loadConfig().serverUrl).replace(/\/$/, ''),
           token: liveAccessToken,
@@ -3008,7 +3025,8 @@ function wireFileSystem(): void {
         deviceNameOf(),
         () => onChanged(),
         () => undefined,
-      ),
+      );
+    },
     // ⚠ 'fs' 하위로 **새 네임스페이스** — 옛 로컬 동기화(기본 작업 폴더 시절)의
     // base 스냅숏을 새(빈) agent_workspace 루트에 재사용하면 3-way 가 "로컬
     // 전체 삭제"로 오판해 서버 파일을 지운다. 루트가 바뀌었으니 base 도

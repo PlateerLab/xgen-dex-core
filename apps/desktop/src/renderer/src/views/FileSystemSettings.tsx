@@ -4,7 +4,7 @@
  * 철학: 서버에서는 어차피 전부 정상 실행된다 — 이 탭의 두 토글은 그것을
  * **이 PC 의 실제 폴더로 볼 수 있느냐**만 정한다 (기본 둘 다 OFF).
  *
- *   [XGen 클라우드 연결]     <dataRoot>/cloud            ↔ 내 클라우드 저장소
+ *   [파일 저장소 연결]       <dataRoot>/cloud            ↔ 내 파일 저장소
  *   [Agent Workspace 연결]  <dataRoot>/agent_workspace/ ↔ 모든 에이전트 워크스페이스
  *
  * 가상 드라이브·에이전트 개별 연결(cloud links)은 폐기됐다 — 에이전트는
@@ -126,13 +126,13 @@ export const FileSystemSettings: React.FC<{ embedded?: boolean }> = () => {
         <p className="small muted">로그인하면 동기화를 켤 수 있습니다.</p>
       )}
 
-      {/* ── XGen 클라우드 연결 ── */}
+      {/* ── 파일 저장소 연결 ── */}
       <div className="mcp-form" style={{ marginBottom: 12 }}>
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div>
-            <div style={{ fontWeight: 600 }}>XGen 클라우드 연결</div>
+            <div style={{ fontWeight: 600 }}>파일 저장소 연결</div>
             <div className="small muted" style={{ marginTop: 2 }}>
-              내 클라우드 저장소를 <code>{cloud.dir}</code> 폴더로 동기화합니다.
+              내 <b>파일 저장소</b>를 <code>{cloud.dir}</code> 폴더로 동기화합니다.
             </div>
           </div>
           <label className="switch">

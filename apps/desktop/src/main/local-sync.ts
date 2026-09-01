@@ -58,6 +58,12 @@ export interface SyncRemote {
   put(path: string, fromAbs: string, baseSha: string): Promise<{ sha256: string }>;
   del(path: string, baseSha?: string, opts?: { force?: boolean }): Promise<void>;
   mkdir(path: string): Promise<void>;
+  /**
+   * 빈 원격 폴더 정리 (best-effort, 선택 구현) — 로컬에서 폴더째 지워
+   * 파일 삭제만으로는 서버에 빈 폴더가 유령처럼 남는 백엔드(파일 저장소)용.
+   * 서버는 폴더가 비어 있을 때만 지운다 — 그 사이 새 파일이 들어왔으면 no-op.
+   */
+  rmdir?(path: string): Promise<void>;
 }
 
 /**
@@ -459,6 +465,9 @@ export class SyncPair {
         await this.meta(`delete ${a.path}`, this.deps.remote.del(a.path, a.baseSha));
         base.delete(a.path);
         report.deletedRemote++;
+        // 로컬에서 폴더째 지운 경우 — 파일 삭제만으로는 서버(파일 저장소)에
+        // 빈 폴더가 남는다. 로컬에 더 이상 없는 조상 폴더만 서버에서도 걷는다.
+        await this.pruneRemoteDirs(a.path).catch(() => undefined);
         return;
       }
       case 'conflict': {
@@ -505,6 +514,33 @@ export class SyncPair {
         base.delete(a.path);
         return;
       }
+    }
+  }
+
+  /**
+   * 원격 빈 폴더 정리 — delete-remote 뒤, **로컬에 더 이상 존재하지 않는**
+   * 조상 폴더에 한해 서버에도 정리를 요청한다 (로컬에 살아 있으면 사용자가
+   * 폴더를 남긴 것이다 — 파일 하나 지웠다고 폴더까지 걷으면 안 된다).
+   * 서버 쪽도 "비었을 때만" 지우므로 이중 안전하다. rmdir 미구현 원격
+   * (geny-workspace)은 조용히 건너뛴다.
+   */
+  private async pruneRemoteDirs(rel: string): Promise<void> {
+    const rmdir = this.deps.remote.rmdir?.bind(this.deps.remote);
+    if (!rmdir) return;
+    let dir = dirname(rel);
+    while (dir && dir !== '.' && dir !== '/') {
+      try {
+        await stat(this.abs(dir));
+        return; // 로컬에 폴더가 남아 있다 — 서버도 남긴다
+      } catch {
+        /* 로컬에 없음 → 서버에서도 정리 시도 */
+      }
+      try {
+        await this.meta(`rmdir ${dir}`, rmdir(dir));
+      } catch {
+        return; // best-effort — 실패는 다음 기회(스윕)에
+      }
+      dir = dirname(dir);
     }
   }
 

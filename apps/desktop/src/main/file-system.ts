@@ -27,6 +27,7 @@ import {
   type SyncQueueState,
   type SyncTarget,
 } from './local-sync-manager';
+import { SyncScheduler } from './sync-scheduler';
 import { pickFolderName } from './local-sync-folder';
 
 /** 계정 키 — `${serverUrl}|${userId}` (예전 workspace.ts 의 accountKey 승계). */
@@ -138,9 +139,14 @@ export class FileSystemController {
   private agents: LocalSyncManager;
   private agentCache: FileSystemAgent[] = [];
   private refreshing: Promise<void> | null = null;
+  /** 클라우드와 Agent Workspace 가 **하나의 대기열**을 공유한다 — 계정
+   *  전체에서 동시에 도는 사이클은 1개다 (두 토글이 병렬로 서버를 두드리는
+   *  일이 없다). */
+  private scheduler = new SyncScheduler(1);
 
   constructor(private deps: FileSystemDeps) {
     const common = {
+      scheduler: this.scheduler,
       loggedIn: deps.loggedIn,
       remoteFor: deps.remoteFor,
       presenceFor: deps.presenceFor,

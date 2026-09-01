@@ -6,7 +6,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalSyncManager } from '../src/main/local-sync-manager';
-import type { SyncRemote } from '../src/main/local-sync';
+import { SyncScheduler } from '../src/main/sync-scheduler';
+import { SyncPair, type SyncRemote } from '../src/main/local-sync';
 import type { ChangesResponse } from '../src/main/sync-protocol';
 
 /** changes() 가 명시 release 까지 멈추는 원격 — 큐 상태를 중간에 관찰하게 한다. */
@@ -419,6 +420,133 @@ test('실패 백오프 — 죽은 서버를 보험 주기마다 다시 두드리
     assert.equal(remote.calls, after1 + 1);
   } finally {
     m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+// ── 공유 스케줄러 · 지연 신호 · 타임아웃 ────────────────────────────
+
+test('공유 스케줄러 — 클라우드와 에이전트 매니저가 하나의 대기열에서 하나씩 돈다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const scheduler = new SyncScheduler(1);
+  const remotes = new Map<string, GatedRemote>();
+  const make = (ids: string[], sub: string) => {
+    for (const id of ids) remotes.set(id, new GatedRemote());
+    return new LocalSyncManager({
+      config: () => ({
+        enabled: true,
+        root: join(root, sub),
+        targets: ids.map((id) => ({ workflowId: id, label: id, folder: id })),
+      }),
+      loggedIn: () => true,
+      remoteFor: (id) => remotes.get(id) as unknown as SyncRemote,
+      stateDir: () => join(root, '.state', sub),
+      deviceName: 'test-pc',
+      intervalMs: 0,
+      fullSweepMs: 0,
+      scheduler,
+    });
+  };
+  const cloud = make(['user:7'], 'cloud');
+  const agents = make(['wf-1', 'wf-2'], 'agents');
+  try {
+    cloud.reconcile();
+    agents.reconcile();
+    await waitFor(() => {
+      const all = [...cloud.status().agents, ...agents.status().agents];
+      return all.filter((x) => x.state === 'syncing').length === 1 &&
+        all.filter((x) => x.state === 'queued').length === 2;
+    });
+
+    // 전역에서 동시에 도는 것은 1개 — 클라우드가 돌 때 에이전트는 시작 전.
+    const syncingId = [...cloud.status().agents, ...agents.status().agents]
+      .find((x) => x.state === 'syncing')!.workflowId;
+    assert.equal(syncingId, 'user:7'); // 먼저 줄 선 순서
+    assert.equal(remotes.get('wf-1')!.calls + remotes.get('wf-2')!.calls, 0);
+
+    // 대기 순번은 두 매니저 합산 전역 순번이다.
+    const wf1 = agents.status().agents.find((x) => x.workflowId === 'wf-1')!;
+    const wf2 = agents.status().agents.find((x) => x.workflowId === 'wf-2')!;
+    assert.deepEqual([wf1.queuePosition, wf2.queuePosition], [1, 2]);
+
+    for (const r of remotes.values()) r.releaseAll();
+    await waitFor(() =>
+      [...cloud.status().agents, ...agents.status().agents].every(
+        (x) => x.state === 'idle' && !!x.lastSyncAt,
+      ),
+    );
+  } finally {
+    cloud.stop();
+    agents.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('지연 신호 기동 — 변경 알림(WS)은 첫 사이클이 끝난 뒤에야 붙는다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const presenceStarts: string[] = [];
+  const m = new LocalSyncManager({
+    config: () => ({
+      enabled: true,
+      root,
+      targets: ['a', 'b'].map((id) => ({ workflowId: id, label: id, folder: id })),
+    }),
+    loggedIn: () => true,
+    remoteFor: (id) => {
+      if (!remotes.has(id)) remotes.set(id, new GatedRemote());
+      return remotes.get(id) as unknown as SyncRemote;
+    },
+    presenceFor: (owner) => ({
+      start: async () => {
+        presenceStarts.push(owner);
+      },
+      stop: () => undefined,
+    }),
+    stateDir: () => join(root, '.state'),
+    deviceName: 'test-pc',
+    intervalMs: 0,
+    fullSweepMs: 0,
+  });
+  try {
+    m.reconcile();
+    await waitFor(() => m.status().agents.some((x) => x.state === 'syncing'));
+    // a 가 게이트에 잡혀 있는 동안 — 어떤 WS 도 아직 안 붙었다 (기동 storm 방지).
+    assert.equal(presenceStarts.length, 0);
+
+    remotes.get('a')!.releaseAll();
+    await waitFor(() => presenceStarts.includes('a'));
+    // b 는 아직 자기 첫 사이클 전이면 미기동 — 큐가 시차를 만든다.
+    remotes.get('b')?.releaseAll();
+    await waitFor(() => presenceStarts.includes('b'));
+    assert.deepEqual(presenceStarts, ['a', 'b']); // 사이클 완료 순서대로
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('원격 타임아웃 — 걸린 changes 가 큐를 무기한 틀어막지 않는다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const pair = new SyncPair({
+    remote: {
+      changes: () => new Promise(() => undefined), // 영원히 무응답 (게이트웨이 hang)
+      download: async () => undefined,
+      put: async () => ({ sha256: '' }),
+      del: async () => undefined,
+      mkdir: async () => undefined,
+    } as unknown as SyncRemote,
+    dir: join(root, 'ws'),
+    statePath: join(root, 'state.json'),
+    deviceName: 'test-pc',
+    timeouts: { metaMs: 120 },
+  });
+  try {
+    const started = Date.now();
+    await assert.rejects(pair.sync(), /시간 초과/);
+    assert.ok(Date.now() - started < 5000, '타임아웃이 제때 걸리지 않았다');
+  } finally {
+    pair.dispose();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

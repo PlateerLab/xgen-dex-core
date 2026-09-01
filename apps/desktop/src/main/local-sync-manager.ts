@@ -33,6 +33,7 @@ import { join } from 'path';
 import { diag } from './diag-log';
 import { SyncPair, type SyncProgress, type SyncRemote, type SyncReport } from './local-sync';
 import { pickFolderName, safeName } from './local-sync-folder';
+import { SyncScheduler } from './sync-scheduler';
 
 export type { SyncProgress } from './local-sync';
 
@@ -64,6 +65,12 @@ export interface LocalSyncDeps {
   intervalMs?: number;
   /** 동시에 도는 사이클 수. 기본 1 — 큐가 하나하나 처리한다. */
   concurrency?: number;
+  /**
+   * 공유 스케줄러 — [XGen 클라우드]와 [Agent Workspace] 매니저에 **같은
+   * 인스턴스**를 주면 두 저장소가 하나의 대기열에서 하나씩 돈다. 없으면
+   * 매니저 전용 스케줄러를 만든다 (테스트/단독 사용).
+   */
+  scheduler?: SyncScheduler;
   /**
    * 벌크 인덱스 probe — 여러 저장소의 원본 seq 를 요청 한 번으로. 있으면
    * 보험 주기가 "seq 가 커서와 다른 페어"만 큐에 세운다 (100+ 페어 전수
@@ -146,9 +153,9 @@ const PROGRESS_EMIT_MS = 200;
 export class LocalSyncManager {
   private live = new Map<string, Live>();
   private stopped = false;
-  /** 전역 FIFO 큐 — 대기 중인 페어 id. 실행 중(active)인 id 는 없다. */
-  private queue: string[] = [];
-  private activeCount = 0;
+  /** 실행 게이트 — 공유(deps.scheduler) 또는 매니저 전용. */
+  private scheduler: SyncScheduler;
+  private unsubscribeScheduler: (() => void) | null = null;
   private lastProgressEmit = 0;
   /** 매니저 전역 보험 타이머 — 페어별 타이머는 없다 (전원이 같은 시각에
    *  발사되는 thundering herd 가 5분 정각 504 폭주의 절반이었다). */
@@ -161,7 +168,12 @@ export class LocalSyncManager {
    */
   private extra = new Map<string, SyncTarget>();
 
-  constructor(private deps: LocalSyncDeps) {}
+  constructor(private deps: LocalSyncDeps) {
+    this.scheduler = deps.scheduler ?? new SyncScheduler(deps.concurrency ?? DEFAULT_CONCURRENCY);
+    // 공유 스케줄러에서는 다른 매니저의 진출입으로도 내 대기 순번이 바뀐다 —
+    // 대기열 변화를 status 방송으로 되비춘다.
+    this.unsubscribeScheduler = this.scheduler.subscribe(() => this.emit());
+  }
 
   /**
    * 이 에이전트를 로컬로 실행할 폴더를 확보한다 (없으면 만든다). 서버의
@@ -208,14 +220,29 @@ export class LocalSyncManager {
     }
 
     // 걷기 — 목록에서 빠졌거나 루트가 바뀐 페어.
+    let torn = 0;
     for (const [id, l] of [...this.live]) {
       const t = want.get(id);
       const dir = t ? join(cfg.root, t.folder) : null;
-      if (!t || l.dir !== dir) this.teardown(id);
+      if (!t || l.dir !== dir) {
+        this.teardown(id);
+        torn++;
+      }
     }
     // 세우기.
+    let made = 0;
     for (const [id, t] of want) {
-      if (!this.live.has(id)) this.setup(cfg.root, t);
+      if (!this.live.has(id)) {
+        this.setup(cfg.root, t);
+        made++;
+      }
+    }
+    // 페어당 한 줄씩 100+ 줄을 도배하지 않는다 — 정비 결과만 요약한다.
+    if (made || torn) {
+      diag(
+        'local-sync',
+        `페어 정비: +${made} / -${torn} (총 ${this.live.size}개 — 큐에서 하나씩 동기화)`,
+      );
     }
     this.emit();
   }
@@ -250,36 +277,44 @@ export class LocalSyncManager {
     };
     this.live.set(target.workflowId, live);
 
-    // 로컬 워처 — 내가 방금 쓴 파일(다운로드)도 이벤트를 내지만, 사이클이
-    // 한 줄로 서고 무변경 사이클은 무동작이므로 저렴한 재확인일 뿐이다.
-    try {
-      live.watcher = watch(dir, {
-        ignoreInitial: true,
-        ignored: /(^|[/\\])(\.git|node_modules|__pycache__|\.venv|\.xgeny-session)([/\\]|$)/,
-        awaitWriteFinish: { stabilityThreshold: 700, pollInterval: 150 },
-      });
-      live.watcher.on('all', () => this.schedule(target.workflowId, WATCH_DEBOUNCE_MS));
-      live.watcher.on('error', (e) =>
-        diag('local-sync', `워처 오류 ${target.label}: ${(e as Error).message}`),
-      );
-    } catch (e) {
-      diag('local-sync', `워처 시작 실패 ${target.label}: ${(e as Error).message}`);
-    }
-
-    // 서버 변경 알림 — 에이전트 턴이 publish 하면 즉시 내려받는다.
-    if (this.deps.presenceFor) {
-      live.presence = this.deps.presenceFor(target.workflowId, () =>
-        this.schedule(target.workflowId, 300),
-      );
-      void live.presence.start().catch((e) => {
-        diag('local-sync', `변경 알림 연결 실패 ${target.label}: ${(e as Error).message}`);
-      });
-    }
+    // ⚠ 워처/변경 알림은 여기서 켜지 않는다 — 첫 사이클이 끝난 뒤
+    // attachSignals 가 붙인다. 페어 100+ 개의 워처(디스크 스캔)와 WS 연결을
+    // 시작 시각에 전부 기동하면 그 자체가 storm 이다. 큐가 사이클을 하나씩
+    // 돌리므로 신호 기동도 자연히 시차를 갖는다. (워처가 없는 동안의 로컬
+    // 변경은 어차피 첫 사이클의 스캔이 잡는다.)
 
     this.ensureInsuranceTimer();
-
-    diag('local-sync', `페어 시작: ${target.label} ↔ ${dir}`);
     this.schedule(target.workflowId, 0);
+  }
+
+  /** 첫 사이클 완료 후 — 로컬 워처와 서버 변경 알림(WS)을 붙인다. */
+  private attachSignals(l: Live): void {
+    if (this.stopped || !this.live.has(l.target.workflowId)) return;
+    const id = l.target.workflowId;
+    if (!l.watcher) {
+      // 로컬 워처 — 내가 방금 쓴 파일(다운로드)도 이벤트를 내지만, 사이클이
+      // 한 줄로 서고 무변경 사이클은 무동작이므로 저렴한 재확인일 뿐이다.
+      try {
+        l.watcher = watch(l.dir, {
+          ignoreInitial: true,
+          ignored: /(^|[/\\])(\.git|node_modules|__pycache__|\.venv|\.xgeny-session)([/\\]|$)/,
+          awaitWriteFinish: { stabilityThreshold: 700, pollInterval: 150 },
+        });
+        l.watcher.on('all', () => this.schedule(id, WATCH_DEBOUNCE_MS));
+        l.watcher.on('error', (e) =>
+          diag('local-sync', `워처 오류 ${l.target.label}: ${(e as Error).message}`),
+        );
+      } catch (e) {
+        diag('local-sync', `워처 시작 실패 ${l.target.label}: ${(e as Error).message}`);
+      }
+    }
+    if (!l.presence && this.deps.presenceFor) {
+      // 서버 변경 알림 — 에이전트 턴이 publish 하면 즉시 내려받는다.
+      l.presence = this.deps.presenceFor(id, () => this.schedule(id, 300));
+      void l.presence.start().catch((e) => {
+        diag('local-sync', `변경 알림 연결 실패 ${l.target.label}: ${(e as Error).message}`);
+      });
+    }
   }
 
   private ensureInsuranceTimer(): void {
@@ -293,7 +328,7 @@ export class LocalSyncManager {
     const l = this.live.get(id);
     if (!l) return;
     this.live.delete(id);
-    this.queue = this.queue.filter((q) => q !== id);
+    this.scheduler.remove(id);
     // 기다리는 쪽을 매달아 두지 않는다 — 페어가 사라졌으면 실패로 정리.
     for (const w of l.waiters.splice(0)) w(false);
     if (l.debounce) clearTimeout(l.debounce);
@@ -304,7 +339,6 @@ export class LocalSyncManager {
     }
     void l.watcher?.close().catch(() => undefined);
     l.pair.dispose();
-    diag('local-sync', `페어 종료: ${l.target.label}`);
   }
 
   private schedule(id: string, delayMs: number): void {
@@ -333,49 +367,38 @@ export class LocalSyncManager {
       l.rerun = true;
     } else if (l.state === 'queued') {
       // 이미 줄에 서 있다 — front 요청이면 앞으로 끌어올린다.
-      if (opts?.front && this.queue[0] !== id) {
-        this.queue = this.queue.filter((q) => q !== id);
-        this.queue.unshift(id);
-        this.emit();
-      }
+      if (opts?.front) this.scheduler.promote(id);
     } else {
       l.state = 'queued';
-      if (opts?.front) this.queue.unshift(id);
-      else this.queue.push(id);
       this.emit();
-      this.drain();
+      this.scheduler.enqueue(id, () => this.executeSlot(id), opts);
     }
     return done;
   }
 
-  /** 큐를 concurrency 만큼만 비운다 — 나머지는 순번을 기다린다. */
-  private drain(): void {
-    const limit = Math.max(1, this.deps.concurrency ?? DEFAULT_CONCURRENCY);
-    while (this.activeCount < limit && this.queue.length > 0) {
-      const id = this.queue.shift() as string;
-      const l = this.live.get(id);
-      if (!l || l.state !== 'queued') continue;
-      this.activeCount++;
-      l.state = 'syncing';
+  /** 스케줄러가 이 페어의 차례를 줬을 때 — 한 사이클 + 상태 전이 전부. */
+  private async executeSlot(id: string): Promise<void> {
+    const l = this.live.get(id);
+    if (!l || l.state !== 'queued' || this.stopped) return;
+    l.state = 'syncing';
+    l.progress = undefined;
+    this.emit();
+    await this.runCycle(l);
+    // 첫 사이클 뒤에야 워처/알림을 붙인다 — 큐가 기동 시차를 만든다.
+    this.attachSignals(l);
+    if (l.rerun && this.live.has(id) && !this.stopped) {
+      // 실행 중 들어온 변경 — 대기자(waiters)는 그대로 들고 다시 줄을 선다.
+      // (스케줄러는 실행 중 재등록을 rerun 으로 적립해 끝난 뒤 맨 앞에서 돌린다.)
+      l.rerun = false;
+      l.state = 'queued';
+      this.scheduler.enqueue(id, () => this.executeSlot(id), { front: true });
+    } else {
+      l.state = 'idle';
       l.progress = undefined;
-      this.emit();
-      void this.runCycle(l).finally(() => {
-        this.activeCount--;
-        if (l.rerun && this.live.has(id) && !this.stopped) {
-          // 실행 중 들어온 변경 — 대기자(waiters)는 그대로 들고 다시 줄을 선다.
-          l.rerun = false;
-          l.state = 'queued';
-          this.queue.unshift(id);
-        } else {
-          l.state = 'idle';
-          l.progress = undefined;
-          const ok = !l.lastError;
-          for (const w of l.waiters.splice(0)) w(ok);
-        }
-        this.emit();
-        this.drain();
-      });
+      const ok = !l.lastError;
+      for (const w of l.waiters.splice(0)) w(ok);
     }
+    this.emit();
   }
 
   private async runCycle(l: Live): Promise<void> {
@@ -544,14 +567,15 @@ export class LocalSyncManager {
       reason,
       root: cfg.root || undefined,
       agents: [...this.live.values()].map((l) => {
-        const pos = l.state === 'queued' ? this.queue.indexOf(l.target.workflowId) : -1;
+        const pos =
+          l.state === 'queued' ? this.scheduler.positionOf(l.target.workflowId) : undefined;
         return {
           workflowId: l.target.workflowId,
           label: l.target.label,
           folder: l.target.folder,
           dir: l.dir,
           state: l.state,
-          queuePosition: pos >= 0 ? pos + 1 : undefined,
+          queuePosition: pos,
           progress: l.state === 'syncing' ? l.progress : undefined,
           syncing: l.state === 'syncing',
           lastSyncAt: l.lastSyncAt,
@@ -572,6 +596,8 @@ export class LocalSyncManager {
 
   stop(): void {
     this.stopped = true;
+    this.unsubscribeScheduler?.();
+    this.unsubscribeScheduler = null;
     if (this.insuranceTimer) {
       clearInterval(this.insuranceTimer);
       this.insuranceTimer = null;

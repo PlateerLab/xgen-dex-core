@@ -72,6 +72,39 @@ export interface SyncProgress {
   total: number;
 }
 
+/** 원격 호출 시간 상한 — 큐 선두의 걸린 요청 하나가 전체 대기열을 몇 분씩
+ *  틀어막지 않게 한다 (실기: 게이트웨이가 밀릴 때 changes 가 무기한 대기). */
+export interface SyncTimeouts {
+  /** changes/del/mkdir 등 메타 호출. 기본 60초. 0 = 무제한. */
+  metaMs?: number;
+  /** download/put 파일 전송 (대형 파일 고려해 넉넉히). 기본 10분. 0 = 무제한. */
+  transferMs?: number;
+}
+
+const DEFAULT_META_TIMEOUT_MS = 60_000;
+const DEFAULT_TRANSFER_TIMEOUT_MS = 10 * 60_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  if (!ms || ms <= 0) return p;
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${label} 시간 초과 (${Math.round(ms / 1000)}s)`)),
+      ms,
+    );
+    t.unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 export interface SyncPairDeps {
   /** 이 페어의 서버 쪽 (에이전트 workflow_id 하나). */
   remote: SyncRemote;
@@ -83,6 +116,8 @@ export interface SyncPairDeps {
   deviceName: string;
   /** 사이클 진행률 (best-effort — 실패해도 동기화는 계속). */
   onProgress?: (p: SyncProgress) => void;
+  /** 원격 호출 시간 상한 (테스트/특수 환경 오버라이드). */
+  timeouts?: SyncTimeouts;
   now?: () => number;
 }
 
@@ -263,6 +298,18 @@ export class SyncPair {
     return out;
   }
 
+  private meta<T>(label: string, p: Promise<T>): Promise<T> {
+    return withTimeout(p, this.deps.timeouts?.metaMs ?? DEFAULT_META_TIMEOUT_MS, label);
+  }
+
+  private transfer<T>(label: string, p: Promise<T>): Promise<T> {
+    return withTimeout(
+      p,
+      this.deps.timeouts?.transferMs ?? DEFAULT_TRANSFER_TIMEOUT_MS,
+      label,
+    );
+  }
+
   private progress(phase: SyncProgress['phase'], done: number, total: number): void {
     try {
       this.deps.onProgress?.({ phase, done, total });
@@ -280,13 +327,13 @@ export class SyncPair {
 
     // 1. 서버 상태.
     this.progress('check', 0, 0);
-    let res = await this.deps.remote.changes(state.cursor);
+    let res = await this.meta('changes', this.deps.remote.changes(state.cursor));
     let remote;
     if (state.cursor === 0) {
       remote = snapshotRemote(res.changes);
     } else if (res.stale_cursor) {
       // 커서가 프룬을 넘겼다 — 델타에 삭제가 빠져 있다. 전체로 다시.
-      res = await this.deps.remote.changes(0);
+      res = await this.meta('changes', this.deps.remote.changes(0));
       remote = snapshotRemote(res.changes);
     } else {
       remote = overlayRemote(base, res.changes);
@@ -374,7 +421,7 @@ export class SyncPair {
       case 'download': {
         const abs = this.abs(a.path);
         await mkdir(dirname(abs), { recursive: true });
-        await this.deps.remote.download(a.path, abs);
+        await this.transfer(`download ${a.path}`, this.deps.remote.download(a.path, abs));
         const r = remote.get(a.path);
         // 서버 mtime 으로 맞춘다 — 다음 스캔이 재해시하지 않게. (실패는 무해)
         if (r?.mtimeMs)
@@ -400,13 +447,16 @@ export class SyncPair {
           report.errors.push(`${a.path}: 서버 제한(${maxBytes}B)보다 크다 — 건너뜀`);
           return;
         }
-        const { sha256 } = await this.deps.remote.put(a.path, this.abs(a.path), a.baseSha);
+        const { sha256 } = await this.transfer(
+          `upload ${a.path}`,
+          this.deps.remote.put(a.path, this.abs(a.path), a.baseSha),
+        );
         base.set(a.path, { sha: sha256, size: l.size, mtimeMs: l.mtimeMs });
         report.uploaded++;
         return;
       }
       case 'delete-remote': {
-        await this.deps.remote.del(a.path, a.baseSha);
+        await this.meta(`delete ${a.path}`, this.deps.remote.del(a.path, a.baseSha));
         base.delete(a.path);
         report.deletedRemote++;
         return;
@@ -424,7 +474,10 @@ export class SyncPair {
         await mkdir(dirname(absCopy), { recursive: true });
         await rename(absPath, absCopy);
         try {
-          const { sha256 } = await this.deps.remote.put(copyRel, absCopy, '');
+          const { sha256 } = await this.transfer(
+            `upload ${copyRel}`,
+            this.deps.remote.put(copyRel, absCopy, ''),
+          );
           const st = await stat(absCopy);
           base.set(copyRel, { sha: sha256, size: st.size, mtimeMs: Math.floor(st.mtimeMs) });
         } catch (e) {
@@ -432,7 +485,10 @@ export class SyncPair {
           report.errors.push(`${copyRel}: 충돌 사본 업로드 실패: ${(e as Error).message}`);
         }
         await mkdir(dirname(absPath), { recursive: true });
-        await this.deps.remote.download(a.path, absPath);
+        await this.transfer(
+          `download ${a.path}`,
+          this.deps.remote.download(a.path, absPath),
+        );
         const r = remote.get(a.path);
         if (r?.mtimeMs)
           await utimes(absPath, new Date(r.mtimeMs), new Date(r.mtimeMs)).catch(() => undefined);

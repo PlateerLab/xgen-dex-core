@@ -133,6 +133,13 @@ export interface LocalExecStatus {
 }
 
 /** 파일 시스템 상태 (main file-system.FileSystemStatus 미러). */
+/** 동기화 사이클 진행률 — check(서버 확인)/scan(폴더 검사)/apply(파일 전송). */
+export interface SyncProgressLike {
+  phase: 'check' | 'scan' | 'apply';
+  done: number;
+  total: number;
+}
+
 export interface FileSystemStatusLike {
   loggedIn: boolean;
   dataRoot: string;
@@ -142,6 +149,10 @@ export interface FileSystemStatusLike {
     /** 서버 소유 키 'user:<id>' — 탐색기가 서버 트리를 읽을 때 쓴다. */
     owner: string | null;
     synced: boolean;
+    /** 큐 상태 — 대기열에 서 있으면 'queued' + queuePosition(1-기반). */
+    state: 'idle' | 'queued' | 'syncing';
+    queuePosition?: number;
+    progress?: SyncProgressLike;
     syncing: boolean;
     lastSyncAt?: number;
     lastError?: string;
@@ -155,6 +166,9 @@ export interface FileSystemStatusLike {
       folder: string;
       dir: string | null;
       synced: boolean;
+      state: 'idle' | 'queued' | 'syncing';
+      queuePosition?: number;
+      progress?: SyncProgressLike;
       syncing: boolean;
       lastSyncAt?: number;
       lastError?: string;

@@ -12,8 +12,33 @@
  */
 import React, { useEffect, useState } from 'react';
 import { xgen } from '../bridge';
-import type { FileSystemStatusLike } from '../../../preload/index';
+import type { FileSystemStatusLike, SyncProgressLike } from '../../../preload/index';
 import { syncedAgo } from './explorer-model';
+
+/** apply 단계의 파일 단위 진행 막대 — 개별 프로그레스의 시각 표시. */
+const ProgressBar: React.FC<{ done: number; total: number }> = ({ done, total }) => (
+  <span
+    style={{
+      display: 'inline-block',
+      width: 90,
+      height: 4,
+      borderRadius: 2,
+      background: 'var(--border)',
+      overflow: 'hidden',
+      verticalAlign: 'middle',
+    }}
+  >
+    <span
+      style={{
+        display: 'block',
+        height: '100%',
+        width: `${total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0}%`,
+        background: 'var(--primary)',
+        transition: 'width 200ms ease',
+      }}
+    />
+  </span>
+);
 
 export const FileSystemSettings: React.FC<{ embedded?: boolean }> = () => {
   const [status, setStatus] = useState<FileSystemStatusLike | null>(null);
@@ -51,21 +76,43 @@ export const FileSystemSettings: React.FC<{ embedded?: boolean }> = () => {
   const cloud = status.cloud;
   const agents = status.agents;
   const syncedAgents = agents.list.filter((a) => a.synced);
+  // 큐 요약 — 전체가 아니라 "지금 무엇이 돌고, 몇 개가 줄 서 있는지"를 보여준다.
+  const syncingCount = agents.list.filter((a) => a.state === 'syncing').length;
+  const queuedCount = agents.list.filter((a) => a.state === 'queued').length;
+  const doneCount = syncedAgents.filter(
+    (a) => a.state === 'idle' && a.lastSyncAt && !a.lastError,
+  ).length;
 
   const stateLine = (t: {
-    syncing: boolean;
+    state: 'idle' | 'queued' | 'syncing';
+    queuePosition?: number;
+    progress?: SyncProgressLike;
     lastError?: string;
     lastSyncAt?: number;
-  }): React.ReactNode =>
-    t.syncing ? (
-      '동기화 중…'
-    ) : t.lastError ? (
-      <span className="error">오류: {t.lastError}</span>
-    ) : t.lastSyncAt ? (
-      syncedAgo(t.lastSyncAt, Date.now())
-    ) : (
-      '대기 중'
-    );
+  }): React.ReactNode => {
+    if (t.state === 'syncing') {
+      const p = t.progress;
+      if (p?.phase === 'apply' && p.total > 0) {
+        const done = Math.min(p.done, p.total);
+        return (
+          <span className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <span>
+              동기화 중 — 파일 {done}/{p.total}
+            </span>
+            <ProgressBar done={done} total={p.total} />
+          </span>
+        );
+      }
+      if (p?.phase === 'scan') return '동기화 중 — 폴더 검사…';
+      return '동기화 중 — 변경 확인…';
+    }
+    if (t.state === 'queued') {
+      return t.queuePosition ? `대기열 ${t.queuePosition}번째` : '대기열 등록됨';
+    }
+    if (t.lastError) return <span className="error">오류: {t.lastError}</span>;
+    if (t.lastSyncAt) return syncedAgo(t.lastSyncAt, Date.now());
+    return '대기 중';
+  };
 
   return (
     <>
@@ -148,7 +195,7 @@ export const FileSystemSettings: React.FC<{ embedded?: boolean }> = () => {
           <span className="small muted">
             에이전트 {agents.list.length}개
             {agents.enabled
-              ? ` · ${syncedAgents.length}개 동기화 중`
+              ? ` · 동기화 중 ${syncingCount} · 대기 ${queuedCount} · 완료 ${doneCount}`
               : ' — 연결이 꺼져 있습니다 (서버에서만 실행)'}
           </span>
           <span className="row" style={{ gap: 10 }}>

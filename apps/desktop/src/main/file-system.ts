@@ -20,7 +20,13 @@
  */
 import { join } from 'path';
 import { diag } from './diag-log';
-import { LocalSyncManager, type LocalSyncDeps, type SyncTarget } from './local-sync-manager';
+import {
+  LocalSyncManager,
+  type LocalSyncDeps,
+  type SyncProgress,
+  type SyncQueueState,
+  type SyncTarget,
+} from './local-sync-manager';
 import { pickFolderName } from './local-sync-folder';
 
 /** 계정 키 — `${serverUrl}|${userId}` (예전 workspace.ts 의 accountKey 승계). */
@@ -46,6 +52,12 @@ export interface FileSystemTargetStatus {
   /** 로컬 절대 경로 — 페어가 살아 있을 때만. */
   dir: string | null;
   synced: boolean;
+  /** 큐 상태 — 페어가 없으면 'idle'. syncing(boolean)은 하위호환 파생값. */
+  state: SyncQueueState;
+  /** 대기열 순번 (state === 'queued', 1-기반). */
+  queuePosition?: number;
+  /** 현재 사이클 진행률 (state === 'syncing'). */
+  progress?: SyncProgress;
   syncing: boolean;
   lastSyncAt?: number;
   lastError?: string;
@@ -60,6 +72,9 @@ export interface FileSystemStatus {
     /** 서버 쪽 소유 키 ('user:<id>') — 탐색기가 서버 트리를 읽을 때 쓴다. */
     owner: string | null;
     synced: boolean;
+    state: SyncQueueState;
+    queuePosition?: number;
+    progress?: SyncProgress;
     syncing: boolean;
     lastSyncAt?: number;
     lastError?: string;
@@ -251,6 +266,9 @@ export class FileSystemController {
         folder: live?.folder ?? '',
         dir: live?.dir ?? null,
         synced: !!live,
+        state: live?.state ?? 'idle',
+        queuePosition: live?.queuePosition,
+        progress: live?.progress,
         syncing: live?.syncing ?? false,
         lastSyncAt: live?.lastSyncAt,
         lastError: live?.lastError,
@@ -265,6 +283,9 @@ export class FileSystemController {
           folder: live.folder,
           dir: live.dir,
           synced: true,
+          state: live.state,
+          queuePosition: live.queuePosition,
+          progress: live.progress,
           syncing: live.syncing,
           lastSyncAt: live.lastSyncAt,
           lastError: live.lastError,
@@ -279,6 +300,9 @@ export class FileSystemController {
         dir: join(root, CLOUD_FOLDER),
         owner,
         synced: !!cloudLive,
+        state: cloudLive?.state ?? 'idle',
+        queuePosition: cloudLive?.queuePosition,
+        progress: cloudLive?.progress,
         syncing: cloudLive?.syncing ?? false,
         lastSyncAt: cloudLive?.lastSyncAt,
         lastError: cloudLive?.lastError,

@@ -60,6 +60,18 @@ export interface SyncRemote {
   mkdir(path: string): Promise<void>;
 }
 
+/**
+ * 사이클 진행률 — UI 의 개별 프로그레스 표시용.
+ *   check: 서버 델타 조회 중 (total 미정 = 0)
+ *   scan:  로컬 폴더 스캔 중 (total 미정 = 0)
+ *   apply: 파일 전송/적용 중 — done/total 이 실제 개수
+ */
+export interface SyncProgress {
+  phase: 'check' | 'scan' | 'apply';
+  done: number;
+  total: number;
+}
+
 export interface SyncPairDeps {
   /** 이 페어의 서버 쪽 (에이전트 workflow_id 하나). */
   remote: SyncRemote;
@@ -69,6 +81,8 @@ export interface SyncPairDeps {
   statePath: string;
   /** 충돌 사본 이름에 쓸 이 PC 이름. */
   deviceName: string;
+  /** 사이클 진행률 (best-effort — 실패해도 동기화는 계속). */
+  onProgress?: (p: SyncProgress) => void;
   now?: () => number;
 }
 
@@ -199,6 +213,14 @@ export class SyncPair {
     return out;
   }
 
+  private progress(phase: SyncProgress['phase'], done: number, total: number): void {
+    try {
+      this.deps.onProgress?.({ phase, done, total });
+    } catch {
+      /* 진행률 리스너 오류가 동기화를 막으면 안 된다 */
+    }
+  }
+
   // ── 사이클 ───────────────────────────────────────────────────────
   private async cycle(): Promise<SyncReport> {
     const report = EMPTY_REPORT();
@@ -207,6 +229,7 @@ export class SyncPair {
     const base: BaseState = new Map(Object.entries(state.base));
 
     // 1. 서버 상태.
+    this.progress('check', 0, 0);
     let res = await this.deps.remote.changes(state.cursor);
     let remote;
     if (state.cursor === 0) {
@@ -231,13 +254,17 @@ export class SyncPair {
     }
 
     // 2. 로컬 상태.
+    this.progress('scan', 0, 0);
     const local = await this.scanLocal(base, ignores);
 
     // 3. 실행.
     const actions = planSync(base, local, remote);
+    this.progress('apply', 0, actions.length);
+    let applied = 0;
     for (const a of actions) {
       if (!isSafeRelPath(a.path)) {
         report.errors.push(`경로 거부: ${a.path}`);
+        this.progress('apply', ++applied, actions.length);
         continue;
       }
       try {
@@ -248,6 +275,7 @@ export class SyncPair {
         // 409 경합은 정상 흐름이다 — 다음 사이클이 3-way 로 다시 판정한다.
         if ((e as { status?: number }).status !== 409) report.errors.push(`${a.path}: ${msg}`);
       }
+      this.progress('apply', ++applied, actions.length);
     }
 
     // 4. 커서·base 저장. (커서는 이번에 **본** 서버 상태까지만 전진한다)

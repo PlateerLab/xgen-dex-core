@@ -770,6 +770,27 @@ const api = {
     cloudServerTree: (): Promise<
       Array<{ name: string; path: string; is_dir: boolean; size?: number; modified_at?: string }>
     > => ipcRenderer.invoke(CHANNELS.fsCloudServerTree),
+    /** 동기화 파일 바이트 읽기 — 파일 뷰어 (로컬 실파일). */
+    readFile: (
+      workflowId: string,
+      rel: string,
+    ): Promise<{ ok: boolean; bytes?: Uint8Array; size?: number; mtime?: number; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.fsReadFile, workflowId, rel),
+    /** 파일 저장소 원바이트 — 클라우드 동기화 OFF 일 때의 뷰어 경로. */
+    cloudReadRaw: (
+      path: string,
+    ): Promise<{ ok: boolean; bytes?: Uint8Array; size?: number; contentType?: string; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.fsCloudReadRaw, path),
+    /** 오피스 문서 서버 렌더 (파일 저장소 filestore-preview) — 페이지 이미지 목록. */
+    cloudOfficePreview: (
+      path: string,
+    ): Promise<{ ok: boolean; itemId?: number; pages?: string[]; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.fsCloudOfficePreview, path),
+    cloudOfficePreviewPage: (
+      itemId: number,
+      page: string,
+    ): Promise<{ ok: boolean; bytes?: Uint8Array; contentType?: string; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.fsCloudOfficePreviewPage, itemId, page),
     /** 동기화 폴더 안 경로를 OS 로 연다. */
     openPath: (workflowId: string, rel?: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke(CHANNELS.fsOpenPath, workflowId, rel ?? ''),

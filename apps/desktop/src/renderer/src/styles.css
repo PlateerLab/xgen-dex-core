@@ -7548,3 +7548,91 @@ button.sm {
   color: var(--danger, #e5484d);
   font-size: 12px;
 }
+
+/* ── 파일 뷰어 (탐색기 → 콘텐츠 탭) ─────────────────────────── */
+.fv-root { display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--bg); }
+.fv-head {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  border-bottom: 1px solid var(--border); background: var(--panel); flex: none;
+}
+.fv-title { font-weight: 700; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fv-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.fv-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; flex: none; }
+.viewer-btn.on { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary); }
+.fv-body { flex: 1; min-height: 0; overflow: auto; }
+.fv-note { padding: 18px; color: var(--muted); font-size: 13px; text-align: center; }
+.fv-note.error { color: var(--danger, #e5484d); }
+
+/* 코드 — VS Code 풍: 줄 번호 거터 + 강조, 논리 줄 단위 행이라 줄바꿈 토글에도 번호가 어긋나지 않는다 */
+.fv-code {
+  font-family: var(--mono, ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace);
+  font-size: 12.5px; line-height: 1.55; padding: 8px 0 24px; min-width: fit-content;
+}
+.fv-line { display: flex; align-items: flex-start; }
+.fv-line:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.fv-ln {
+  flex: none; text-align: right; padding: 0 14px 0 16px; user-select: none;
+  color: var(--muted); opacity: 0.65; font-variant-numeric: tabular-nums;
+}
+.fv-lc { white-space: pre; flex: 1 0 auto; padding-right: 24px; }
+.fv-code.wrap { min-width: 0; }
+.fv-code.wrap .fv-lc { white-space: pre-wrap; word-break: break-all; flex: 1 1 0; min-width: 0; }
+
+/* highlight.js 토큰 — 앱 테마 토큰에 맞춘 VS Code 풍 팔레트 (라이트/다크 겸용) */
+.fv-lc .hljs-comment, .fv-lc .hljs-quote { color: #6a9955; font-style: italic; }
+.fv-lc .hljs-keyword, .fv-lc .hljs-selector-tag, .fv-lc .hljs-literal, .fv-lc .hljs-type { color: #569cd6; }
+.fv-lc .hljs-string, .fv-lc .hljs-regexp, .fv-lc .hljs-addition { color: #ce9178; }
+.fv-lc .hljs-number, .fv-lc .hljs-symbol, .fv-lc .hljs-bullet { color: #b5cea8; }
+.fv-lc .hljs-title, .fv-lc .hljs-title.function_, .fv-lc .hljs-section { color: #dcdcaa; }
+.fv-lc .hljs-title.class_, .fv-lc .hljs-built_in { color: #4ec9b0; }
+.fv-lc .hljs-attr, .fv-lc .hljs-attribute, .fv-lc .hljs-variable, .fv-lc .hljs-template-variable, .fv-lc .hljs-name { color: #9cdcfe; }
+.fv-lc .hljs-meta, .fv-lc .hljs-doctag { color: #c586c0; }
+.fv-lc .hljs-deletion { color: #e5484d; }
+.fv-lc .hljs-emphasis { font-style: italic; }
+.fv-lc .hljs-strong { font-weight: 700; }
+[data-theme='light'] .fv-lc .hljs-comment, [data-theme='light'] .fv-lc .hljs-quote { color: #008000; }
+[data-theme='light'] .fv-lc .hljs-keyword, [data-theme='light'] .fv-lc .hljs-selector-tag, [data-theme='light'] .fv-lc .hljs-literal, [data-theme='light'] .fv-lc .hljs-type { color: #0000ff; }
+[data-theme='light'] .fv-lc .hljs-string, [data-theme='light'] .fv-lc .hljs-regexp, [data-theme='light'] .fv-lc .hljs-addition { color: #a31515; }
+[data-theme='light'] .fv-lc .hljs-number, [data-theme='light'] .fv-lc .hljs-symbol { color: #098658; }
+[data-theme='light'] .fv-lc .hljs-title, [data-theme='light'] .fv-lc .hljs-title.function_, [data-theme='light'] .fv-lc .hljs-section { color: #795e26; }
+[data-theme='light'] .fv-lc .hljs-title.class_, [data-theme='light'] .fv-lc .hljs-built_in { color: #267f99; }
+[data-theme='light'] .fv-lc .hljs-attr, [data-theme='light'] .fv-lc .hljs-attribute, [data-theme='light'] .fv-lc .hljs-variable, [data-theme='light'] .fv-lc .hljs-name { color: #001080; }
+[data-theme='light'] .fv-lc .hljs-meta, [data-theme='light'] .fv-lc .hljs-doctag { color: #af00db; }
+
+/* 미디어 */
+.fv-media { display: flex; align-items: center; justify-content: center; min-height: 100%; padding: 24px; }
+.fv-image {
+  max-width: 100%; max-height: calc(100vh - 220px); border-radius: 6px;
+  background:
+    conic-gradient(color-mix(in srgb, var(--muted) 18%, transparent) 0 25%, transparent 0 50%,
+      color-mix(in srgb, var(--muted) 18%, transparent) 0 75%, transparent 0) 0 0 / 20px 20px;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.25);
+}
+.fv-pdf { width: 100%; height: 100%; border: none; display: block; }
+.fv-audio { width: min(520px, 90%); }
+.fv-video { max-width: 100%; max-height: calc(100vh - 220px); }
+
+/* 마크다운 렌더 */
+.fv-md { max-width: 860px; margin: 0 auto; padding: 24px 28px 48px; font-size: 14px; }
+
+/* CSV 표 */
+.fv-csv-scroll { overflow: auto; padding: 0 0 24px; }
+.fv-csv { border-collapse: collapse; font-size: 12.5px; min-width: 100%; }
+.fv-csv th, .fv-csv td {
+  border: 1px solid var(--border); padding: 5px 10px; text-align: left;
+  white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis;
+}
+.fv-csv thead th { position: sticky; top: 0; background: var(--panel); font-weight: 700; z-index: 1; }
+.fv-csv-ln { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; user-select: none; background: var(--panel); }
+
+/* 오피스 문서 — 서버 렌더 페이지 이미지 (웹 파일 저장소와 동형) */
+.fv-office { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 24px; }
+.fv-office-page { width: min(900px, 100%); background: #fff; border-radius: 4px; box-shadow: 0 2px 16px rgba(0, 0, 0, 0.28); }
+
+/* 바이너리/미지원 정보 패널 */
+.fv-binary {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; min-height: 60%; color: var(--muted); padding: 32px;
+}
+.fv-binary-name { font-weight: 700; color: var(--text); font-size: 14px; }
+.fv-binary-actions { display: flex; gap: 8px; margin-top: 6px; }

@@ -5,6 +5,7 @@ import { App } from './app';
 import { createScreenGuard } from './screen';
 import { readPreferences, writePreferences } from './preferences';
 import { createKeySignal, normalizedStdin, supportsKittyKeyboard } from './kitty';
+import { imePolicy } from './ime-policy';
 
 /**
  * TUI 를 대체 화면에서 띄운다. 규칙은 `./screen` 에 있다 — 여기서는 프로세스가
@@ -24,14 +25,19 @@ export async function runTui(engine: DexEngine): Promise<void> {
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
 
-  // 취향은 그리기 전에 읽는다. 나중에 읽으면 첫 프레임이 EN 으로 떴다가 바뀌어,
-  // 한글로 쓰던 사람에게는 모드가 꺼진 것처럼 보인다.
-  const preferences = await readPreferences();
+  const ime = imePolicy();
+
+  // macOS 는 Caps Lock 으로 시스템 입력 소스를 바꾸고, 입력기가 만든 한글을 그대로
+  // 받는다. CLI 조합기의 저장 상태를 함께 켜면 OS 와 CLI 의 한/영 상태가 갈라진다.
+  // 그 밖의 OS 에서만 취향을 읽어 자체 두벌식 조합기를 복원한다.
+  const preferences = ime.native ? { hangulMode: false } : await readPreferences();
 
   // 한/영 키(오른쪽 Alt 자리)와 Caps Lock 은 글자를 만들지 않아 보통 앱에 오지
   // 않는다. 그 키들까지 보고하는 터미널인지 먼저 물어본다 — ink 은 kitty·ghostty·
   // WezTerm 만 이름으로 짐작하지만, 요즘은 더 많은 터미널이 이 프로토콜을 안다.
-  const kitty = await supportsKittyKeyboard({ stdin, stdout, isTTY: stdin.isTTY });
+  const kitty = ime.native
+    ? false
+    : await supportsKittyKeyboard({ stdin, stdout, isTTY: stdin.isTTY });
   screen = createScreenGuard(stdout, { kittyKeyboard: kitty });
 
   // 한/영 키와 Caps Lock 키는 stdin 을 읽는 자리에서 보이고, 그것을 다루는 곳은
@@ -45,9 +51,16 @@ export async function runTui(engine: DexEngine): Promise<void> {
       <App
         engine={engine}
         preferences={{
+          nativeIme: ime.native,
+          imeShortcut: ime.shortcut,
           hangulMode: preferences.hangulMode,
-          onHangulModeChange: (enabled) => void writePreferences({ hangulMode: enabled }),
-          onModeKey: modeKeys.subscribe,
+          ...(ime.native
+            ? {}
+            : {
+                onHangulModeChange: (enabled: boolean) =>
+                  void writePreferences({ hangulMode: enabled }),
+                onModeKey: modeKeys.subscribe,
+              }),
         }}
       />,
       {

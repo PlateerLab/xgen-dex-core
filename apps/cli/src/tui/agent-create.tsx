@@ -71,6 +71,7 @@ export function AgentCreateScreen(props: {
   profile: string;
   onCreated: (agent: { workflowId: string; workflowName: string }) => void;
   onCancel: () => void;
+  nativeIme?: boolean;
   hangulMode: boolean;
   onHangulModeChange: (enabled: boolean) => void;
 }): React.ReactNode {
@@ -263,6 +264,7 @@ export function AgentCreateScreen(props: {
                 onSubmit={() => void submit()}
                 focus
                 placeholder={field.hint ?? ''}
+                nativeIme={props.nativeIme}
                 hangulMode={props.hangulMode}
                 onHangulModeChange={props.onHangulModeChange}
               />

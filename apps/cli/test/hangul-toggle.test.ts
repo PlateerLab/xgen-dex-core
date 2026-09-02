@@ -26,6 +26,11 @@ test('Kitty 프로토콜의 Ctrl+Space', () => {
   assert.equal(isHangulToggle(' ', key({ ctrl: true })), true);
 });
 
+test('macOS 시스템 IME 모드에서는 Ctrl+Space를 CLI가 함께 처리하지 않는다', () => {
+  assert.equal(isHangulToggle('`', key({ ctrl: true }), true), false);
+  assert.equal(isHangulToggle(' ', key({ ctrl: true }), true), false);
+});
+
 test('Ctrl+L — 터미널이나 tmux 가 Ctrl+Space 를 채갈 때', () => {
   assert.equal(isHangulToggle('l', key({ ctrl: true })), true);
 });

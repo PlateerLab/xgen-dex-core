@@ -12,6 +12,8 @@ interface ImeTextInputProps {
   focus: boolean;
   placeholder?: string;
   mask?: string;
+  /** macOS 시스템 입력기가 만든 글자를 그대로 받으며 자체 조합기를 쓰지 않는다. */
+  nativeIme?: boolean;
   /** 한글 조합 중인가. 모드 표시를 옆에 붙이는 쪽에서 쓴다. */
   hangulMode?: boolean;
   onHangulModeChange?: (enabled: boolean) => void;
@@ -68,7 +70,11 @@ function visibleInput(
 export function isHangulToggle(
   input: string,
   key: { ctrl: boolean; meta: boolean; shift: boolean },
+  nativeIme = false,
 ): boolean {
+  // macOS 에서는 같은 키를 CLI 와 OS 가 함께 처리하지 않는다. Caps Lock 으로 바뀐
+  // 시스템 입력 소스가 실제 한/영 상태의 유일한 주인이다.
+  if (nativeIme) return false;
   if (key.ctrl && (input === '`' || input === ' ' || input === 'l')) return true; // Ctrl+Space · Ctrl+L
   if (key.meta && input === ' ') return true; // Alt+Space — 한/영 키가 놓인 자리
   if (key.shift && input === ' ') return true; // Shift+Space
@@ -114,10 +120,10 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
   // 엉뚱한 글자에 이어 붙는다.
   useEffect(() => {
     // Caps Lock 판단은 남겨 둔다 — 모드를 껐다 켠다고 자판이 바뀌지는 않는다.
-    if (!props.focus || !props.hangulMode) {
+    if (props.nativeIme || !props.focus || !props.hangulMode) {
       typingRef.current = { ...hangul.IDLE, capsLock: typingRef.current.capsLock };
     }
-  }, [props.focus, props.hangulMode]);
+  }, [props.focus, props.hangulMode, props.nativeIme]);
 
   useEffect(() => {
     if (props.value === valueRef.current) return;
@@ -193,7 +199,7 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       //
       // Shift+Space 도 받는다(리눅스 입력기의 오랜 한/영 자리). 수식 없는 그냥 공백은
       // 걸리지 않으므로 글 쓰는 데 지장이 없다.
-      if (isHangulToggle(input, key)) {
+      if (isHangulToggle(input, key, props.nativeIme)) {
         settle();
         props.onHangulModeChange?.(!props.hangulMode);
         return;
@@ -253,7 +259,7 @@ export function ImeTextInput(props: ImeTextInputProps): React.ReactNode {
       }
       if (event.kind !== 'text') return;
 
-      if (props.hangulMode) {
+      if (!props.nativeIme && props.hangulMode) {
         // 한 번에 여러 글자가 오는 것(빠른 입력)도 순서대로 먹인다.
         let session = typingRef.current;
         let previous = shown;

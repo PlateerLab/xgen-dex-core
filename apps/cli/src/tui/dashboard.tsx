@@ -114,14 +114,18 @@ function Composer(props: {
   onSubmit: (value: string) => void;
   focused: boolean;
   disabled: boolean;
+  nativeIme: boolean;
   hangulMode: boolean;
   onHangulModeChange: (enabled: boolean) => void;
 }): React.ReactNode {
   return (
     <Box borderStyle="round" borderColor={props.focused ? 'cyan' : 'gray'} paddingX={1}>
-      {/* 지금 무엇이 쳐지는지 늘 보이게 둔다 — 모르고 치면 `dkssud` 이 나온다. */}
-      <Text color={props.hangulMode ? 'yellow' : undefined} dimColor={!props.hangulMode}>
-        {props.hangulMode ? '한' : 'EN'}
+      {/* 자체 조합기는 상태를 표시하고, macOS 에서는 시스템 입력기를 쓴다고 알린다. */}
+      <Text
+        color={props.nativeIme || props.hangulMode ? 'yellow' : undefined}
+        dimColor={!props.nativeIme && !props.hangulMode}
+      >
+        {props.nativeIme ? '한/영' : props.hangulMode ? '한' : 'EN'}
       </Text>
       <Text color="cyan"> › </Text>
       {props.disabled ? (
@@ -133,6 +137,7 @@ function Composer(props: {
           onSubmit={props.onSubmit}
           focus={props.focused}
           placeholder="메시지를 입력하세요"
+          nativeIme={props.nativeIme}
           hangulMode={props.hangulMode}
           onHangulModeChange={props.onHangulModeChange}
         />
@@ -147,6 +152,8 @@ export function Dashboard(props: {
   onProfiles: () => void;
   onLogout: () => void;
   preferences?: {
+    nativeIme?: boolean;
+    imeShortcut?: 'Caps Lock' | 'Ctrl+Space';
     hangulMode: boolean;
     onHangulModeChange?: (enabled: boolean) => void;
     onModeKey?: (listener: () => void) => () => void;
@@ -182,24 +189,28 @@ export function Dashboard(props: {
    * 터미널 IME 에 맡기던 것을 CLI 안으로 들여왔다 — 터미널마다 다르고 SSH·tmux 를
    * 거치면 아예 안 오던 자리라, 우리가 조합해야 어디서든 같게 동작한다.
    */
-  const [hangulMode, setHangulMode] = useState(props.preferences?.hangulMode ?? false);
+  const nativeIme = props.preferences?.nativeIme === true;
+  const imeShortcut = props.preferences?.imeShortcut ?? (nativeIme ? 'Caps Lock' : 'Ctrl+Space');
+  const [hangulMode, setHangulMode] = useState(
+    nativeIme ? false : (props.preferences?.hangulMode ?? false),
+  );
   const changeHangulMode = (enabled: boolean): void => {
+    if (nativeIme) return;
     setHangulMode(enabled);
     props.preferences?.onHangulModeChange?.(enabled);
   };
 
   // 한/영 키(오른쪽 Alt 자리)와 Caps Lock. 글자를 만들지 않는 키라 stdin 을 읽는
   // 자리에서만 보이고, 되는 터미널에서만 온다.
-  useEffect(
-    () =>
-      props.preferences?.onModeKey?.(() =>
-        setHangulMode((current) => {
-          props.preferences?.onHangulModeChange?.(!current);
-          return !current;
-        }),
-      ),
-    [props.preferences],
-  );
+  useEffect(() => {
+    if (nativeIme) return undefined;
+    return props.preferences?.onModeKey?.(() =>
+      setHangulMode((current) => {
+        props.preferences?.onHangulModeChange?.(!current);
+        return !current;
+      }),
+    );
+  }, [nativeIme, props.preferences]);
   const viewport = useRef({ lineCount: 0, height: 0 });
   const [starting, setStarting] = useState(false);
   const controller = useRef<AbortController | null>(null);
@@ -385,6 +396,7 @@ export function Dashboard(props: {
         engine={props.engine}
         profile={props.session.profile}
         hangulMode={hangulMode}
+        nativeIme={nativeIme}
         onHangulModeChange={changeHangulMode}
         onCancel={() => setCreatingAgent(false)}
         onCreated={(agent) => {
@@ -448,6 +460,7 @@ export function Dashboard(props: {
           onSubmit={(value) => void send(value)}
           focused={focus === 'composer'}
           disabled={chat.running || !selected}
+          nativeIme={nativeIme}
           hangulMode={hangulMode}
           onHangulModeChange={changeHangulMode}
         />
@@ -471,8 +484,8 @@ export function Dashboard(props: {
       />
       {body}
       <Footer
-        mode={hangulMode ? '한' : 'EN'}
-        text="Ctrl+Space 한/영 · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료"
+        mode={nativeIme ? undefined : hangulMode ? '한' : 'EN'}
+        text={`${imeShortcut} 한/영 · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`}
       />
     </Box>
   );

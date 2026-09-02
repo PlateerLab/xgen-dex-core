@@ -201,6 +201,20 @@ function ImeInputHarness(props: { onSubmit: (value: string) => void }): React.Re
   );
 }
 
+function NativeImeInputHarness(): React.ReactNode {
+  const [value, setValue] = useState('');
+  return (
+    <ImeTextInput
+      value={value}
+      onChange={setValue}
+      focus
+      nativeIme
+      // 저장 파일에 예전 자체 조합 상태가 남아 있어도 nativeIme가 우선해야 한다.
+      hangulMode
+    />
+  );
+}
+
 test('TUI shows onboarding when no profile exists', async () => {
   const view = render(<App engine={fakeEngine([])} />);
   try {
@@ -240,6 +254,31 @@ test('IME input keeps consecutive Hangul commits and submits the current value',
 
     view.stdin.write('\r');
     assert.equal(submitted, 'ㅎㅇ');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('macOS native IME mode passes both Latin and composed Hangul through unchanged', async () => {
+  const view = render(<NativeImeInputHarness />);
+  try {
+    view.stdin.write('dkssud');
+    view.stdin.write('안녕');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('dkssud안녕'));
+    assert.match(frame, /dkssud안녕/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('macOS dashboard tells the user to switch with Caps Lock', async () => {
+  const view = render(
+    <App engine={fakeEngine()} preferences={{ nativeIme: true, hangulMode: true }} />,
+  );
+  try {
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('Caps Lock 한/영'));
+    assert.doesNotMatch(frame, /Ctrl\+Space 한\/영/);
+    assert.doesNotMatch(frame, /\[EN\]/);
   } finally {
     view.cleanup();
   }

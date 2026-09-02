@@ -216,3 +216,41 @@ input[type='checkbox'] {
 .kv span:first-child { color: var(--muted); flex: none; }
 .kv span:last-child { text-align: right; word-break: break-all; }
 .diag-body { margin-top: 8px; max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+
+/* ── 에이전트 행 (아이콘 없는 정리형) ── */
+.agent-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 16px; min-height: 60px;
+}
+.agent-row:active { background: var(--panel-2); }
+.agent-go { color: var(--muted); font-size: 18px; font-weight: 700; }
+
+/* ── 바텀 시트 (대화 내역 / 새 에이전트) ── */
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 22;
+  background: var(--panel); border-top-left-radius: 18px; border-top-right-radius: 18px;
+  border: 1px solid var(--border); border-bottom: none;
+  padding: 10px 16px calc(16px + env(safe-area-inset-bottom));
+  max-height: 78vh; display: flex; flex-direction: column; gap: 10px;
+}
+.sheet-handle { width: 40px; height: 4px; border-radius: 2px; background: var(--border); margin: 2px auto 4px; }
+.sheet-title { font-size: 16px; font-weight: 800; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-new { width: 100%; }
+.sheet-label { font-size: 12px; font-weight: 700; color: var(--muted); margin-top: 4px; }
+.sheet-scroll { overflow-y: auto; min-height: 0; }
+.conv-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 4px; border-bottom: 1px solid var(--border);
+}
+.conv-row:last-child { border-bottom: none; }
+.conv-row:active { background: var(--panel-2); }
+.conv-main { flex: 1; min-width: 0; }
+.conv-title { font-size: 14px; font-weight: 700; }
+.conv-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.sheet .field { display: flex; flex-direction: column; gap: 6px; }
+.sheet .field span { font-size: 12px; color: var(--muted); font-weight: 600; }
+select {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: 13px 14px; font-size: 15px; width: 100%; appearance: none; -webkit-appearance: none;
+}

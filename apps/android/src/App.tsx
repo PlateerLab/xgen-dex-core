@@ -120,6 +120,7 @@ export default function App(): React.ReactElement {
       catalog: advertiseMobileTools,
       call: (tool, args) => callMobileTool(capacitorPort, tool, args),
       onStatus: setBridgeStatus,
+      log: diagLog,
     });
     bridge.start();
     bridgeRef.current = bridge;
@@ -394,6 +395,17 @@ function LoginScreen({
 
 // ── 에이전트 목록 ────────────────────────────────────────────────
 
+function formatWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (sameDay) return `${hh}:${mm}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+}
+
 function AgentsSection({
   client,
   onOpenChat,
@@ -406,6 +418,9 @@ function AgentsSection({
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  /** 탭한 에이전트 — 대화 내역 시트가 열린다. */
+  const [picked, setPicked] = useState<Agent | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -439,14 +454,13 @@ function AgentsSection({
     );
   }, [agents, search]);
 
-  const latestConv = useMemo(() => {
-    const map = new Map<string, Conversation>();
-    for (const c of conversations) {
-      const cur = map.get(c.workflowId);
-      if (!cur || c.updatedAt > cur.updatedAt) map.set(c.workflowId, c);
-    }
-    return map;
-  }, [conversations]);
+  const convsFor = useCallback(
+    (workflowId: string) =>
+      conversations
+        .filter((c) => c.workflowId === workflowId)
+        .sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1)),
+    [conversations],
+  );
 
   return (
     <div className="pane">
@@ -457,7 +471,9 @@ function AgentsSection({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="pane-count">{loading ? '…' : `${filtered.length}개`}</div>
+        <div className="btn small" role="button" onClick={() => setCreating(true)}>
+          + 새 에이전트
+        </div>
       </div>
 
       {error && (
@@ -476,33 +492,222 @@ function AgentsSection({
       <div className="agent-scroll">
         {filtered.map((a) => {
           const name = a.workflowName || a.workflowId || '(이름 없음)';
-          const recent = latestConv.get(a.workflowId);
+          const count = convsFor(a.workflowId).length;
           return (
-            <div key={a.workflowId || String(a.id)} className="agent-row">
-              <div className="agent-line" role="button" onClick={() => onOpenChat(a)}>
-                <div className="agent-avatar">{name.slice(0, 1).toUpperCase()}</div>
-                <div className="agent-meta">
-                  <div className="agent-title">{name}</div>
-                  <div className="agent-sub">
-                    {a.description || (a.isShared ? '공유 에이전트' : '내 에이전트')}
-                  </div>
+            <div
+              key={a.workflowId || String(a.id)}
+              className="agent-row"
+              role="button"
+              onClick={() => setPicked(a)}
+            >
+              <div className="agent-meta">
+                <div className="agent-title">{name}</div>
+                <div className="agent-sub">
+                  {count > 0 ? `대화 ${count}개` : '대화 없음'}
+                  {a.description ? ` · ${a.description}` : ''}
                 </div>
-                <div className="agent-go">새 대화</div>
               </div>
-              {recent && (
-                <div
-                  className="agent-continue"
-                  role="button"
-                  onClick={() => onOpenChat(a, recent.interactionId)}
-                >
-                  최근 대화 이어하기
-                </div>
-              )}
+              <div className="agent-go">›</div>
             </div>
           );
         })}
       </div>
+
+      {picked && (
+        <ConversationSheet
+          agent={picked}
+          conversations={convsFor(picked.workflowId)}
+          onClose={() => setPicked(null)}
+          onPick={(iid) => {
+            const a = picked;
+            setPicked(null);
+            onOpenChat(a, iid);
+          }}
+        />
+      )}
+      {creating && (
+        <CreateAgentSheet
+          client={client}
+          onClose={() => setCreating(false)}
+          onCreated={(agent) => {
+            setCreating(false);
+            void load();
+            onOpenChat(agent);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** 에이전트 탭 → 대화 내역 시트: [새 대화] + 과거 대화 목록에서 선택해 이동. */
+function ConversationSheet({
+  agent,
+  conversations,
+  onClose,
+  onPick,
+}: {
+  agent: Agent;
+  conversations: Conversation[];
+  onClose: () => void;
+  onPick: (interactionId?: string) => void;
+}): React.ReactElement {
+  return (
+    <>
+      <div className="scrim" onClick={onClose} />
+      <div className="sheet">
+        <div className="sheet-handle" />
+        <div className="sheet-title">{agent.workflowName || agent.workflowId}</div>
+        <div className="btn primary sheet-new" role="button" onClick={() => onPick(undefined)}>
+          새 대화 시작
+        </div>
+        {conversations.length > 0 && <div className="sheet-label">대화 내역</div>}
+        <div className="sheet-scroll">
+          {conversations.map((c) => (
+            <div
+              key={c.interactionId}
+              className="conv-row"
+              role="button"
+              onClick={() => onPick(c.interactionId)}
+            >
+              <div className="conv-main">
+                <div className="conv-title">{formatWhen(c.updatedAt) || '대화'}</div>
+                <div className="conv-sub">메시지 {c.interactionCount}개</div>
+              </div>
+              <div className="agent-go">›</div>
+            </div>
+          ))}
+          {conversations.length === 0 && (
+            <div className="notice">아직 대화가 없습니다.</div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** [새 에이전트] — 이름 + 제공자/모델(서버 옵션, 기본값 선반영) → 생성 → 바로 채팅. */
+function CreateAgentSheet({
+  client,
+  onClose,
+  onCreated,
+}: {
+  client: XgenMobileClient;
+  onClose: () => void;
+  onCreated: (agent: Agent) => void;
+}): React.ReactElement {
+  const [name, setName] = useState('');
+  const [providers, setProviders] = useState<
+    Array<{ value: string; label: string; models: Array<{ value: string; label: string }>; defaultModel?: string }>
+  >([]);
+  const [provider, setProvider] = useState('');
+  const [model, setModel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    void client.api.agents
+      .createOptions()
+      .then((opts) => {
+        setProviders(opts.providers);
+        const def = opts.providers.find((p) => p.value === opts.defaultProvider) ?? opts.providers[0];
+        if (def) {
+          setProvider(def.value);
+          setModel(def.defaultModel ?? def.models[0]?.value ?? '');
+        }
+      })
+      .catch((e) => setError(friendlyError(e, '생성 옵션을 불러오지 못했습니다.')));
+  }, [client]);
+
+  const current = providers.find((p) => p.value === provider);
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError('');
+    try {
+      const created = await client.api.agents.create({ name: name.trim(), provider, model: model || undefined });
+      diagLog(`새 에이전트 생성: ${created.workflowName} (${created.workflowId})`);
+      onCreated({
+        id: 0,
+        workflowId: created.workflowId,
+        workflowName: created.workflowName,
+        nodeCount: 0,
+        isShared: false,
+        isDeployed: false,
+        isCompleted: false,
+        workflowType: 'canvas',
+        description: '',
+        username: '',
+        fullName: '',
+        createdAt: '',
+        updatedAt: '',
+        hasAgentGeny: true,
+      } as Agent);
+    } catch (e) {
+      setError(friendlyError(e, '에이전트 생성에 실패했습니다.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="scrim" onClick={onClose} />
+      <div className="sheet">
+        <div className="sheet-handle" />
+        <div className="sheet-title">새 에이전트</div>
+        <label className="field">
+          <span>이름</span>
+          <input
+            placeholder="예: 리서치 도우미"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        {providers.length > 0 && (
+          <label className="field">
+            <span>AI 제공자</span>
+            <select
+              value={provider}
+              onChange={(e) => {
+                const v = e.target.value;
+                setProvider(v);
+                const p = providers.find((x) => x.value === v);
+                setModel(p?.defaultModel ?? p?.models[0]?.value ?? '');
+              }}
+            >
+              {providers.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {current && current.models.length > 0 && (
+          <label className="field">
+            <span>모델</span>
+            <select value={model} onChange={(e) => setModel(e.target.value)}>
+              {current.models.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {error && <div className="form-error">{error}</div>}
+        <div
+          className={busy || !name.trim() || !provider ? 'btn primary disabled' : 'btn primary'}
+          role="button"
+          onClick={() => {
+            if (!busy && name.trim() && provider) void submit();
+          }}
+        >
+          {busy ? '만드는 중…' : '만들기'}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -563,6 +768,7 @@ function ChatSection({
       workflowName: agent.workflowName || agent.workflowId,
       interactionId,
       onState: setWsState,
+      log: diagLog,
       callbacks: {
         onData: (text) => {
           setMessages((prev) => {

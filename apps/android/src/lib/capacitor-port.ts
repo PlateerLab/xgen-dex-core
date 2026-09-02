@@ -15,6 +15,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { Network } from '@capacitor/network';
 import { Share } from '@capacitor/share';
 import { Browser } from '@capacitor/browser';
+import { Geolocation } from '@capacitor/geolocation';
 import type { DevicePort } from './mobile-tools';
 
 const ROOT = 'XGenDex';
@@ -130,6 +131,40 @@ export const capacitorPort: DevicePort = {
   },
   async vibrate() {
     await Haptics.impact({ style: ImpactStyle.Medium });
+  },
+  async location() {
+    const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 15_000 });
+    return {
+      latitude: pos.coords.latitude,
+      longitude: pos.coords.longitude,
+      accuracy: pos.coords.accuracy,
+    };
+  },
+  async requestPermission(kind) {
+    // [도구 켜기]의 실체 — 여기서 OS 승인 다이얼로그가 뜬다. 결과를
+    // granted/denied/prompt 로 정규화해 설정 UI 가 상태를 보여준다.
+    try {
+      if (kind === 'files') {
+        const r = await Filesystem.requestPermissions();
+        return (r.publicStorage as string) === 'granted' ? 'granted'
+          : (r.publicStorage as string) === 'denied' ? 'denied' : 'granted';
+        // API 33+ 는 publicStorage 개념이 없어 'prompt' 류가 와도 실사용 가능 — granted 취급.
+      }
+      if (kind === 'notifications') {
+        const r = await LocalNotifications.requestPermissions();
+        return r.display === 'granted' ? 'granted' : r.display === 'denied' ? 'denied' : 'prompt';
+      }
+      if (kind === 'camera') {
+        const r = await Camera.requestPermissions({ permissions: ['camera'] });
+        return r.camera === 'granted' ? 'granted' : r.camera === 'denied' ? 'denied' : 'prompt';
+      }
+      const r = await Geolocation.requestPermissions();
+      return r.location === 'granted' ? 'granted'
+        : r.location === 'denied' ? 'denied' : 'prompt';
+    } catch {
+      // 일부 기기/버전에서 요청 API 자체가 없으면 실제 사용 시점 프롬프트에 맡긴다.
+      return 'prompt';
+    }
   },
   async takePhoto(fileName) {
     const photo = await Camera.getPhoto({

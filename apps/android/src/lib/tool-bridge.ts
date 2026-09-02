@@ -73,6 +73,11 @@ export class MobileToolBridge {
     return this.status;
   }
 
+  /** 카탈로그 재광고 — 도구 그룹 토글이 바뀌면 부른다 (연결 중이면 즉시 hello). */
+  refreshCatalog(): void {
+    this.sendHello();
+  }
+
   /** 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다 (연결돼 있으면 no-op). */
   kick(): void {
     if (this.stopped) return;

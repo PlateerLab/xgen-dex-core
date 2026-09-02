@@ -1,7 +1,7 @@
 {
   "name": "xgen-dex-android",
   "private": true,
-  "version": "1.23.0",
+  "version": "1.24.0",
   "description": "XGEN Dex Android — 서버 세션 채팅 + 모바일 도구 브리지 (데스크톱/CLI/VSCode 와 독립)",
   "type": "module",
   "scripts": {
@@ -20,6 +20,7 @@
     "@capacitor/core": "^7.0.0",
     "@capacitor/device": "^7.0.0",
     "@capacitor/filesystem": "^7.0.0",
+    "@capacitor/geolocation": "^7.1.8",
     "@capacitor/haptics": "^7.0.0",
     "@capacitor/local-notifications": "^7.0.0",
     "@capacitor/network": "^7.0.0",

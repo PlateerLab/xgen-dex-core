@@ -117,11 +117,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
+      # gradle 배포판 + 의존성 + 빌드 캐시를 런 사이에 재사용 — 콜드 다운로드 제거.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
 
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
 
@@ -148,7 +155,7 @@ jobs:
 
       - name: APK 빌드
         working-directory: apps/mobile/android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assembleRelease
         env:
           ANDROID_KEYSTORE_FILE: /tmp/xgen-dex.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'xgen-dex-release' }}
@@ -183,25 +190,53 @@ jobs:
     # 코드와 비호환(빌드 실패 실측). Xcode 16 이 실려 있는 macos-15 로 고정한다.
     runs-on: macos-15
     continue-on-error: true
+    env:
+      CCACHE_DIR: /Users/runner/.ccache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
       - name: Xcode 16 선택
         run: |
           XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
           [ -n "$XC" ] && sudo xcode-select -s "$XC"
           xcodebuild -version
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
+
+      # ccache — RN 코어(C++) 재컴파일이 iOS 잡의 대부분이다. Podfile 이
+      # apple.ccacheEnabled 로 컴파일러를 ccache 로 감싸므로, 캐시 디렉터리만
+      # 런 사이에 보존하면 두 번째 릴리스부터 컴파일이 캐시 히트로 끝난다.
+      - name: ccache 설치
+        run: brew install ccache || true
+      - uses: actions/cache@v4
+        with:
+          path: /Users/runner/.ccache
+          key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
+          restore-keys: ios-ccache-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            apps/mobile/ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json', 'apps/mobile/ios/Podfile', 'apps/mobile/ios/Podfile.properties.json') }}
+          restore-keys: ios-pods-
+
       - name: Pod install
         working-directory: apps/mobile/ios
         run: pod install
+      - name: ccache 통계 초기화
+        run: ccache -z || true
       - name: Xcode 빌드 (서명 없이)
         working-directory: apps/mobile/ios
         run: |
           xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
             -configuration Release -sdk iphoneos -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: ccache 통계
+        run: ccache -s || true
       - name: 무서명 IPA 패키징
         run: |
           VER=$(node -p "require('./package.json').version")

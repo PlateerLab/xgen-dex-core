@@ -54,6 +54,7 @@
     localToolsState: byId('local-tools-state'),
     localToolsDescription: byId('local-tools-description'),
     localToolsEnabled: byId('local-tools-enabled'),
+    localToolsShell: byId('local-tools-shell'),
     localToolsCwd: byId('local-tools-cwd'),
     localToolsRoots: byId('local-tools-roots'),
     localToolsTimeout: byId('local-tools-timeout'),
@@ -593,6 +594,7 @@
     const bridge = localTools?.bridge;
     if (!localToolsDirty) {
       elements.localToolsEnabled.checked = !!localConfig?.enabled;
+      elements.localToolsShell.checked = !!localConfig?.shellEnabled;
       elements.localToolsCwd.value = localConfig?.cwd || state.workspaceRoot || '';
       elements.localToolsRoots.value = (localConfig?.allowedRoots?.length
         ? localConfig.allowedRoots
@@ -617,8 +619,8 @@
     elements.localToolsState.classList.toggle('connected', !!localConfig?.enabled && !!bridge?.catalogSynced);
     elements.localToolsState.classList.toggle('warning', !!localConfig?.enabled && !!bridge?.error);
     elements.localToolsDescription.textContent = localConfig?.enabled
-      ? `Shell, ReadFile, WriteFile, ListDir, Search, Open · ${bridge?.advertisedTools || localTools.tools.length}개 광고`
-      : 'Shell, 파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.';
+      ? `${localConfig.shellEnabled ? 'Shell, ' : ''}ReadFile, WriteFile, ListDir, Search, Open · ${bridge?.advertisedTools || localTools.tools.length}개 광고`
+      : '허용 경로 안의 파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.';
     elements.localToolsMessage.textContent = state.localToolsMessage || (!localConfig?.enabled
       ? '로컬 도구는 기본적으로 꺼져 있습니다.'
       : bridge?.catalogSynced
@@ -629,6 +631,7 @@
     const localToolsUnavailable = !localTools || !!state.localToolsSaving;
     for (const control of [
       elements.localToolsEnabled,
+      elements.localToolsShell,
       elements.localToolsCwd,
       elements.localToolsRoots,
       elements.localToolsTimeout,
@@ -703,6 +706,7 @@
   elements.addProfile.addEventListener('click', () => post('setupProfile'));
   for (const control of [
     elements.localToolsEnabled,
+    elements.localToolsShell,
     elements.localToolsCwd,
     elements.localToolsRoots,
     elements.localToolsTimeout,
@@ -726,6 +730,7 @@
     post('configureLocalTools', {
       config: {
         enabled: elements.localToolsEnabled.checked,
+        shellEnabled: elements.localToolsShell.checked,
         cwd: elements.localToolsCwd.value.trim(),
         timeoutMs: Number(elements.localToolsTimeout.value),
         allowedRoots: splitList(elements.localToolsRoots.value),

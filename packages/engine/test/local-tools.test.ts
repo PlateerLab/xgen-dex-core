@@ -2,7 +2,7 @@
 import assert from 'assert';
 import { test } from 'node:test';
 import { platform, homedir, tmpdir } from 'os';
-import { mkdtemp } from 'fs/promises';
+import { mkdtemp, symlink, writeFile } from 'fs/promises';
 import { join, resolve } from 'path';
 import {
   LOCAL_SERVER,
@@ -65,7 +65,8 @@ test('기본은 꺼짐(opt-in) — enabled 미지정이면 셸 접근 OFF', () =
   assert.equal(shellEnabled(undefined), false);
   assert.equal(shellEnabled({}), false);
   assert.equal(shellEnabled({ enabled: false }), false);
-  assert.equal(shellEnabled({ enabled: true }), true);
+  assert.equal(shellEnabled({ enabled: true }), false);
+  assert.equal(shellEnabled({ enabled: true, shellEnabled: true }), true);
 });
 
 test('isDangerousShellCommand: 파괴적 패턴만 승인 대상', () => {
@@ -101,15 +102,13 @@ test('shellConfig 는 timeout 을 [1s, 1h] 로 clamp 한다', () => {
   assert.equal(shellConfig({}).timeoutMs, 600_000); // 기본 10분
 });
 
-test('꺼져 있으면 카탈로그가 비고, 켜져 있으면 Shell+Open', () => {
+test('PC 도구와 전체 Shell은 별도 opt-in으로 노출된다', () => {
   const p = new LocalToolProvider();
   p.configure({ enabled: false });
   assert.deepEqual(p.advertise(), []);
   p.configure({ enabled: true });
   const names = p.advertise().map((t) => t.name);
   assert.deepEqual(names, [
-    SHELL_TOOL,
-    SHELL_JOB_TOOL,
     OPEN_TOOL,
     'ReadFile',
     'WriteFile',
@@ -118,6 +117,14 @@ test('꺼져 있으면 카탈로그가 비고, 켜져 있으면 Shell+Open', () 
     'Clipboard',
     'Notify',
   ]);
+  p.configure({ enabled: true, shellEnabled: true });
+  assert.deepEqual(
+    p
+      .advertise()
+      .map((t) => t.name)
+      .slice(0, 2),
+    [SHELL_TOOL, SHELL_JOB_TOOL],
+  );
 });
 
 test('Notify 는 공통 알림 처리기에 에이전트/채팅 범위를 전달한다', async () => {
@@ -258,6 +265,7 @@ test('coerceShellArgs 는 느슨한 입력을 정규화한다', () => {
       cwd: '/tmp',
       shell: 'bash',
       timeoutMs: 5000,
+      backgroundAfterMs: undefined,
       background: false,
     },
   );
@@ -291,20 +299,58 @@ test('꺼진 상태에서 callTool 은 명확한 오류를 던진다', async () 
 
 test('빈 command / 알 수 없는 도구는 거절한다', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true });
+  p.configure({ enabled: true, shellEnabled: true });
   await assert.rejects(() => p.callTool(SHELL_TOOL, { command: '   ' }), /empty/);
   await assert.rejects(() => p.callTool('Nope', {}), /unknown local tool/);
 });
 
+test('전체 셸 opt-in이 없으면 Shell과 내부 _Exec을 거절한다', async () => {
+  const p = new LocalToolProvider();
+  p.configure({ enabled: true });
+  await assert.rejects(() => p.callTool(SHELL_TOOL, { command: 'echo no' }), /전체 셸 접근/);
+  await assert.rejects(() => p.callTool('_Exec', {}), /전체 셸 접근/);
+});
+
+test('파일 도구는 허용 루트 안의 심볼릭 링크 탈출을 거절한다', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xgen-root-'));
+  const outside = await mkdtemp(join(tmpdir(), 'xgen-outside-'));
+  await writeFile(join(outside, 'secret.txt'), 'secret');
+  await symlink(outside, join(root, 'escape'), isWin ? 'junction' : 'dir');
+  const p = new LocalToolProvider();
+  p.configure({ enabled: true, allowedRoots: [root] });
+  await assert.rejects(
+    () => p.callTool('ReadFile', { path: join(root, 'escape', 'secret.txt') }),
+    /PATH_DOMAIN_MISMATCH/,
+  );
+});
+
+test('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', async () => {
+  const p = new LocalToolProvider();
+  p.configure({ enabled: true, shellEnabled: true, timeoutMs: 5_000 });
+  const cmd = isWin ? 'Start-Sleep -Seconds 2' : 'sleep 2';
+  const started = Date.now();
+  const res = await p.callTool(SHELL_TOOL, {
+    command: cmd,
+    background_after_ms: 200,
+  });
+  assert.ok(Date.now() - started < 1_500, '자동 백그라운드 전환이 늦다');
+  assert.equal(res.structuredContent?.status, 'running');
+  assert.equal(res.structuredContent?.execution_surface, 'connector_local');
+  assert.match(res.content[0].text, /자동으로 백그라운드/);
+  const jobId = String(res.structuredContent?.job_id ?? '');
+  assert.ok(jobId);
+  await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId });
+});
+
 test('차단된 명령은 실행 전에 거절한다', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true, blocked: ['rm'] });
+  p.configure({ enabled: true, shellEnabled: true, blocked: ['rm'] });
   await assert.rejects(() => p.callTool(SHELL_TOOL, { command: 'rm -rf /' }), /차단 목록/);
 });
 
 test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true });
+  p.configure({ enabled: true, shellEnabled: true });
   const cmd = isWin ? 'Write-Output hello-xgen' : 'echo hello-xgen';
   const res = await p.callTool(SHELL_TOOL, { command: cmd });
   assert.equal(res.isError, false, JSON.stringify(res));
@@ -313,7 +359,7 @@ test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
 
 test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true });
+  p.configure({ enabled: true, shellEnabled: true });
   const cmd = isWin ? 'exit 3' : 'exit 3';
   const res = await p.callTool(SHELL_TOOL, { command: cmd });
   assert.equal(res.isError, true);
@@ -325,7 +371,7 @@ test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝�
   // stdin 이 열려 있으면 이 명령은 영원히 매달린다 — stdio ignore 로 EOF 를 받아
   // 곧바로 끝나야 한다. 넉넉한 timeout(8s)을 줘도 훨씬 빨리 반환되면 통과.
   const p = new LocalToolProvider();
-  p.configure({ enabled: true });
+  p.configure({ enabled: true, shellEnabled: true });
   const cmd = isWin ? '$input | Out-String' : 'cat';
   const started = Date.now();
   const res = await p.callTool(SHELL_TOOL, { command: cmd, timeout_ms: 8000 });
@@ -336,7 +382,7 @@ test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝�
 
 test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 안내가 붙는다', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true });
+  p.configure({ enabled: true, shellEnabled: true });
   const cmd = isWin ? 'Start-Sleep -Seconds 5' : 'sleep 5';
   const started = Date.now();
   const res = await p.callTool(SHELL_TOOL, { command: cmd, timeout_ms: 1200 });
@@ -348,7 +394,7 @@ test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 �
 
 test('E2E: background 는 즉시 반환하고, 그 프로세스는 타임아웃에 죽지 않는다', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true, timeoutMs: 1000 }); // 짧은 기본 타임아웃
+  p.configure({ enabled: true, shellEnabled: true, timeoutMs: 1000 }); // 짧은 기본 타임아웃
   // 3초 자는 프로세스를 백그라운드로 — 1초 타임아웃보다 오래 살아야 한다.
   const cmd = isWin ? 'Start-Sleep -Seconds 3' : 'sleep 3';
   const started = Date.now();
@@ -406,7 +452,7 @@ test('Open 은 위험 스킴을 throw 없이 거절한다', async () => {
 
 test('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true, timeoutMs: 1000 });
+  p.configure({ enabled: true, shellEnabled: true, timeoutMs: 1000 });
   const cmd = isWin
     ? 'Write-Output started-xgen; Start-Sleep -Seconds 3'
     : 'echo started-xgen; sleep 3';
@@ -436,7 +482,7 @@ test('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async
 
 test('ShellJob: 없는 job_id 는 오류', async () => {
   const p = new LocalToolProvider();
-  p.configure({ enabled: true });
+  p.configure({ enabled: true, shellEnabled: true });
   const r = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: 'does-not-exist' });
   assert.equal(r.isError, true);
 });

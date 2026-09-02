@@ -23,7 +23,11 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { augmentedPath, buildChildEnv } from '@dex/engine/exec-resolve';
-import type { LocalToolResult, LocalToolSchema } from '@dex/engine/local-tools';
+import {
+  resolveWithinRootsReal,
+  type LocalToolResult,
+  type LocalToolSchema,
+} from '@dex/engine/local-tools';
 
 export const WORKSPACE_INFO_TOOL = '_WorkspaceInfo';
 export const EXEC_TOOL = '_Exec';
@@ -176,12 +180,13 @@ export class WorkspaceBridge {
   }
 
   /** 가상 경로 → 실경로. 규약 밖이거나 클라우드 미마운트면 null. */
-  private realPath(info: BridgeWorkspaceInfo, virtual: string): string | null {
+  private async realPath(info: BridgeWorkspaceInfo, virtual: string): Promise<string | null> {
     const split = splitVirtualPath(virtual);
     if (!split) return null;
     const base = split.root === 'ws' ? info.dir : this.deps.cloudDir();
     if (!base) return null;
-    return split.rel ? join(base, ...split.rel.split('/')) : base;
+    const candidate = split.rel ? join(base, ...split.rel.split('/')) : base;
+    return resolveWithinRootsReal(candidate, [base]);
   }
 
   private async workspaceInfo(workflowId: string, workflowName?: string): Promise<LocalToolResult> {
@@ -194,12 +199,15 @@ export class WorkspaceBridge {
     return jsonResult({
       enabled: true,
       synced, // false 면 서버가 프롬프트로 '동기화 진행 중'을 알린다
+      pathDomain: 'connector_virtual',
       virtualRoot: VIRTUAL_WS,
-      dir: info.dir,
+      // Backward-compatible field names, but never leak the physical desktop
+      // path onto the wire. Older server adapters commonly read `dir`.
+      dir: VIRTUAL_WS,
       label: info.label,
       cloudMounted: !!cloud,
       cloudVirtualRoot: cloud ? VIRTUAL_CLOUD : undefined,
-      cloudDir: cloud ?? undefined,
+      cloudDir: cloud ? VIRTUAL_CLOUD : undefined,
       platform: platform(),
     });
   }
@@ -212,9 +220,15 @@ export class WorkspaceBridge {
     const argv = Array.isArray(a.argv) ? a.argv.map((x) => String(x)) : [];
     if (argv.length === 0) return jsonResult({ error: 'argv 가 비어 있습니다.' }, true);
     const cwdVirtual = String(a.cwd ?? '').trim() || VIRTUAL_WS;
-    const cwd = this.realPath(info, cwdVirtual);
+    const cwd = await this.realPath(info, cwdVirtual);
     if (!cwd)
-      return jsonResult({ error: `실행 폴더가 워크스페이스 밖입니다: ${cwdVirtual}` }, true);
+      return jsonResult(
+        {
+          code: 'PATH_DOMAIN_MISMATCH',
+          error: `실행 폴더가 커넥터 가상 워크스페이스 밖입니다: ${cwdVirtual}`,
+        },
+        true,
+      );
     await mkdir(cwd, { recursive: true }).catch(() => undefined);
 
     const timeoutS = Math.max(1, Math.min(MAX_TIMEOUT_S, Number(a.timeoutS) || DEFAULT_TIMEOUT_S));
@@ -324,9 +338,15 @@ export class WorkspaceBridge {
     info: BridgeWorkspaceInfo,
     a: Record<string, unknown>,
   ): Promise<LocalToolResult> {
-    const abs = this.realPath(info, String(a.path ?? ''));
+    const abs = await this.realPath(info, String(a.path ?? ''));
     if (!abs)
-      return jsonResult({ error: `경로가 워크스페이스 밖입니다: ${String(a.path ?? '')}` }, true);
+      return jsonResult(
+        {
+          code: 'PATH_DOMAIN_MISMATCH',
+          error: `경로가 커넥터 가상 워크스페이스 밖입니다: ${String(a.path ?? '')}`,
+        },
+        true,
+      );
     try {
       const st = await stat(abs);
       if (st.size > FILE_CAP) {
@@ -345,15 +365,32 @@ export class WorkspaceBridge {
     info: BridgeWorkspaceInfo,
     a: Record<string, unknown>,
   ): Promise<LocalToolResult> {
-    const abs = this.realPath(info, String(a.path ?? ''));
+    const abs = await this.realPath(info, String(a.path ?? ''));
     if (!abs)
-      return jsonResult({ error: `경로가 워크스페이스 밖입니다: ${String(a.path ?? '')}` }, true);
+      return jsonResult(
+        {
+          code: 'PATH_DOMAIN_MISMATCH',
+          error: `경로가 커넥터 가상 워크스페이스 밖입니다: ${String(a.path ?? '')}`,
+        },
+        true,
+      );
     const data = typeof a.dataB64 === 'string' ? Buffer.from(a.dataB64, 'base64') : Buffer.alloc(0);
     if (data.length > FILE_CAP) {
       return jsonResult({ error: `파일이 너무 큽니다 (${data.length}B > ${FILE_CAP}B).` }, true);
     }
     try {
       await mkdir(dirname(abs), { recursive: true });
+      if (
+        !(await resolveWithinRootsReal(dirname(abs), [info.dir, this.deps.cloudDir() ?? info.dir]))
+      ) {
+        return jsonResult(
+          {
+            code: 'PATH_DOMAIN_MISMATCH',
+            error: '생성된 상위 폴더가 커넥터 가상 워크스페이스 밖입니다.',
+          },
+          true,
+        );
+      }
       await writeFile(abs, data);
       this.deps.poke(workflowId);
       return jsonResult({ bytes: data.length });

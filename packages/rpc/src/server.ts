@@ -271,12 +271,14 @@ export class DexRpcServer {
       case 'localTools/configure': {
         const patch: Partial<LocalToolsConfig> = {};
         const enabled = optionalBoolean(params, 'enabled');
+        const shellEnabled = optionalBoolean(params, 'shellEnabled');
         const cwd = optionalString(params, 'cwd');
         const timeoutMs = optionalInteger(params, 'timeoutMs');
         const allowedRoots = optionalStringArray(params, 'allowedRoots');
         const blockedCommands = optionalStringArray(params, 'blockedCommands');
         const allowDangerous = optionalBoolean(params, 'allowDangerous');
         if (enabled !== undefined) patch.enabled = enabled;
+        if (shellEnabled !== undefined) patch.shellEnabled = shellEnabled;
         if (cwd !== undefined) patch.cwd = cwd;
         if (timeoutMs !== undefined) patch.timeoutMs = timeoutMs;
         if (allowedRoots !== undefined) patch.allowedRoots = allowedRoots;

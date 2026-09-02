@@ -22,6 +22,7 @@ test('FileConfigStore atomically persists a versioned config with private permis
       profiles: { corp: { serverUrl: 'https://xgen.example.com' } },
       localTools: {
         enabled: true,
+        shellEnabled: false,
         cwd: directory,
         timeoutMs: 30_000,
         allowedRoots: [directory],
@@ -61,6 +62,7 @@ test('existing version 1 config files receive safe local tool defaults', async (
     );
     const config = await new FileConfigStore(path).read();
     assert.equal(config.localTools.enabled, false);
+    assert.equal(config.localTools.shellEnabled, false);
     assert.equal(config.localTools.allowDangerous, false);
     assert.deepEqual(config.localTools.allowedRoots, []);
   } finally {

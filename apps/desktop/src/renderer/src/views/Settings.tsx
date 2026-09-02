@@ -114,6 +114,7 @@ export const Settings: React.FC<{
   // ── 로컬 셸 접근 (기본 OFF, opt-in) ──
   const ls = config.localShell ?? {};
   const [shellOn, setShellOn] = useState(ls.enabled === true);
+  const [fullShellOn, setFullShellOn] = useState(ls.shellEnabled === true);
   const [shellCwd, setShellCwd] = useState(ls.cwd ?? '');
   const [shellTimeoutS, setShellTimeoutS] = useState(Math.round((ls.timeoutMs ?? 600_000) / 1000));
   // 차단 명령 — 칩 목록 + 프리셋(누르면 추가) + 직접 입력. 첫 단어 기준 매칭.
@@ -197,6 +198,7 @@ export const Settings: React.FC<{
   const commitShell = (
     over: Partial<{
       enabled: boolean;
+      shellEnabled: boolean;
       cwd: string;
       timeoutS: number;
       blocked: string[];
@@ -204,6 +206,7 @@ export const Settings: React.FC<{
     }> = {},
   ) => {
     const enabled = over.enabled ?? shellOn;
+    const shellEnabled = over.shellEnabled ?? fullShellOn;
     const cwd = (over.cwd ?? shellCwd).trim();
     const timeoutS = Math.max(1, Math.round(over.timeoutS ?? shellTimeoutS));
     const blocked = (over.blocked ?? shellBlocked).map((s) => s.trim()).filter(Boolean);
@@ -211,6 +214,7 @@ export const Settings: React.FC<{
     void apply({
       localShell: {
         enabled,
+        shellEnabled,
         cwd: cwd || undefined,
         timeoutMs: timeoutS * 1000,
         blocked,
@@ -1056,15 +1060,14 @@ export const Settings: React.FC<{
                 </span>
                 <div className="tool-card-text">
                   <div className="tool-card-title">
-                    로컬 도구 접근 (셸 · 파일) — 서버 실행 시 이 PC 프록시
+                    로컬 PC 도구 접근 — 서버 실행 시 이 PC 프록시
                   </div>
                   <div className="tool-card-desc">
                     켜면, 에이전트가 <b>서버(웹)에서 실행되거나 로컬 실행이 서버로 폴백된 상황</b>
-                    에서도 이 PC 의 셸(PowerShell/bash)·파일 읽기/쓰기·목록·검색·클립보드·알림으로
-                    "내 컴퓨터"를 직접 조작할 수 있습니다 — 커넥터가 자동으로 프록시가 됩니다(MCP
-                    설정과 무관, 이 스위치만으로 동작). 커넥터에서 그대로 <b>로컬 실행</b>되는 기본
-                    경우엔 에이전트가 이미 이 PC 에서 자기 런타임 도구로 직접 조작하므로 이 도구들은
-                    쓰이지 않습니다. 파일 도구는 아래 허용 폴더로 제한됩니다.
+                    에서도 이 PC 의 파일 읽기/쓰기·목록·검색·클립보드·알림으로 "내 컴퓨터"를 직접
+                    조작할 수 있습니다 — 커넥터가 자동으로 프록시가 됩니다(MCP 설정과 무관, 이
+                    스위치만으로 동작). 파일 도구는 아래 허용 폴더로 제한됩니다. 로그인 사용자
+                    권한의 전체 셸은 아래에서 별도로 켜야 합니다.
                   </div>
                 </div>
                 <label className="switch">
@@ -1082,6 +1085,29 @@ export const Settings: React.FC<{
 
               {shellOn && (
                 <div className="tool-card-body">
+                  <div className="field">
+                    <div className="tool-card-main">
+                      <div className="tool-card-text">
+                        <div className="tool-card-title">전체 셸 접근 (고급)</div>
+                        <div className="tool-card-desc">
+                          PowerShell/bash와 내부 실행 도구를 로그인 사용자 권한으로 실행합니다. 셸
+                          명령은 허용 폴더로 안전하게 제한할 수 없으므로 PC의 다른 경로에도 접근할
+                          수 있습니다.
+                        </div>
+                      </div>
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={fullShellOn}
+                          onChange={(e) => {
+                            setFullShellOn(e.target.checked);
+                            commitShell({ shellEnabled: e.target.checked });
+                          }}
+                        />
+                        <span className="track" />
+                      </label>
+                    </div>
+                  </div>
                   <div className="field">
                     <span>기본 작업 폴더</span>
                     <div className="picker-row">
@@ -1219,10 +1245,10 @@ export const Settings: React.FC<{
                     </span>
                   </div>
                   <p className="settings-hint warn">
-                    ⚠ 켜면 파일 읽기/쓰기·목록·검색·클립보드·알림 도구와 셸이 에이전트에 노출됩니다.
-                    셸은 로그인 사용자 권한으로 실행되며, 되돌리기 어려운 명령(rm -rf 등)은 실행
-                    직전 확인을 요청합니다. 파일 도구는 위 허용 폴더 범위로 제한됩니다. 실행 내역은
-                    항상 도구 로그에 기록됩니다.
+                    ⚠ 파일 도구는 위 허용 폴더로 제한되며 심볼릭 링크로 범위를 벗어날 수 없습니다.
+                    전체 셸 접근을 별도로 켜면 셸은 로그인 사용자 권한 전체로 실행되고, 되돌리기
+                    어려운 명령(rm -rf 등)은 직전 확인을 요청합니다. 실행 내역은 항상 도구 로그에
+                    기록됩니다.
                   </p>
                 </div>
               )}

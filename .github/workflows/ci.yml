@@ -9,18 +9,18 @@ on:
     branches: [main]
 
 jobs:
-  # 안드로이드는 별도 npm 프로젝트 — 다른 표면과 완전히 독립이라 잡도 분리한다
-  # (여기 실패해도 verify 산출과 무관, verify 실패와도 무관).
-  android:
-    name: 안드로이드 (웹 번들 · 테스트)
+  # 모바일(React Native)은 별도 npm 프로젝트 — 다른 표면과 완전히 독립이라 잡도
+  # 분리한다 (여기 실패해도 verify 산출과 무관, verify 실패와도 무관).
+  mobile:
+    name: 모바일 (타입 · 테스트)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm --prefix apps/android ci --no-audit --no-fund
-      - run: npm --prefix apps/android test
-      - run: npm --prefix apps/android run build
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - run: npm --prefix apps/mobile test
+      - run: npm --prefix apps/mobile run typecheck
 
   verify:
     name: 계약 · 타입 · 테스트

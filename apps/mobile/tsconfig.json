@@ -1,0 +1,13 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUnusedLocals": true,
+    "baseUrl": ".",
+    "paths": {
+      "@dex/protocol": ["../../packages/protocol/src/index.ts"],
+      "@dex/protocol/*": ["../../packages/protocol/src/*"]
+    }
+  },
+  "include": ["src", "test", "index.js", "app.json"]
+}

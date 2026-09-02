@@ -1,0 +1,42 @@
+{
+  "name": "xgen-dex-mobile",
+  "private": true,
+  "version": "1.25.0",
+  "description": "XGEN Dex Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS). 서버 세션 채팅 + 모바일 도구.",
+  "main": "index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/errors.test.ts",
+    "start": "expo start",
+    "prebuild": "expo prebuild",
+    "apk": "cd android && ./gradlew assembleRelease",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.1.2",
+    "expo": "~53.0.0",
+    "expo-battery": "~9.1.4",
+    "expo-clipboard": "~7.1.5",
+    "expo-device": "~7.1.4",
+    "expo-file-system": "~18.1.11",
+    "expo-haptics": "~14.1.4",
+    "expo-image-picker": "~16.1.4",
+    "expo-linking": "~7.1.7",
+    "expo-location": "~18.1.6",
+    "expo-network": "~7.1.5",
+    "expo-notifications": "~0.31.4",
+    "expo-secure-store": "~14.2.4",
+    "expo-sharing": "~13.1.5",
+    "expo-status-bar": "~2.2.3",
+    "js-sha256": "^0.11.0",
+    "react": "19.0.0",
+    "react-native": "0.79.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "~19.0.10",
+    "tsx": "^4.16.2",
+    "typescript": "~5.8.3"
+  }
+}

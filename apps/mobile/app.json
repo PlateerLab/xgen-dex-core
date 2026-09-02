@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "XGEN Dex",
+    "slug": "xgen-dex",
+    "version": "1.25.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#4354EB"
+    },
+    "android": {
+      "package": "com.plateerlab.xgendex",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#4354EB"
+      },
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.VIBRATE",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "usesCleartextTraffic": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.plateerlab.xgendex",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "에이전트의 TakePhoto 도구가 사진을 촬영합니다.",
+        "NSLocationWhenInUseUsageDescription": "에이전트의 Location 도구가 현재 위치를 조회합니다.",
+        "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": true }
+      }
+    },
+    "plugins": [
+      ["expo-location", { "locationWhenInUsePermission": "에이전트의 Location 도구가 현재 위치를 조회합니다." }],
+      ["expo-image-picker", { "cameraPermission": "에이전트의 TakePhoto 도구가 사진을 촬영합니다." }],
+      ["expo-notifications", {}]
+    ]
+  }
+}

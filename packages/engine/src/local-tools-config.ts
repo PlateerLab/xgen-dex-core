@@ -20,6 +20,8 @@ import type { LocalShellConfig } from './local-tools';
 export interface LocalToolsConfig {
   /** 명시적 opt-in. false 면 로컬 도구가 전혀 노출되지 않는다. */
   enabled: boolean;
+  /** 로그인 사용자 권한의 무제한 Shell/ShellJob. 별도 명시 opt-in. */
+  shellEnabled: boolean;
   /** Shell 과 상대경로 파일 도구의 기본 작업 디렉터리. */
   cwd: string;
   /** 포그라운드 Shell 의 벽시계 상한(ms). */
@@ -35,6 +37,7 @@ export interface LocalToolsConfig {
 export function defaultLocalToolsConfig(): LocalToolsConfig {
   return {
     enabled: false,
+    shellEnabled: false,
     cwd: '',
     timeoutMs: 120_000,
     allowedRoots: [],
@@ -62,6 +65,7 @@ export function normalizeLocalToolsConfig(value: unknown): LocalToolsConfig {
   const timeout = Number(v.timeoutMs);
   return {
     enabled: v.enabled === true,
+    shellEnabled: v.shellEnabled === true,
     cwd: String(v.cwd ?? '').trim(),
     timeoutMs: Number.isFinite(timeout)
       ? Math.min(MAX_TIMEOUT, Math.max(MIN_TIMEOUT, Math.round(timeout)))
@@ -76,6 +80,7 @@ export function normalizeLocalToolsConfig(value: unknown): LocalToolsConfig {
 export function toShellConfig(config: LocalToolsConfig): LocalShellConfig {
   return {
     enabled: config.enabled,
+    shellEnabled: config.shellEnabled,
     cwd: config.cwd,
     timeoutMs: config.timeoutMs,
     allowedRoots: config.allowedRoots,

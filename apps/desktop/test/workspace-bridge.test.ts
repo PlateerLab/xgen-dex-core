@@ -2,7 +2,7 @@
 // 쓰는 내부 도구(_WorkspaceInfo/_Exec/_ReadBytes/_WriteBytes)를 검증한다.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -47,25 +47,28 @@ test('가상 경로 규약 — /ws·/cloud 만 통과, 탈출 경로는 거절',
   assert.equal(splitVirtualPath(''), null);
 });
 
-test('_WorkspaceInfo — 하이드레이트 후 가상 루트·실경로·클라우드·synced 를 알린다', async () => {
+test('_WorkspaceInfo — 물리 경로를 숨기고 가상 루트·클라우드·synced 를 알린다', async () => {
   const { dir, bridge } = setup('/mnt/xgen-drive');
   const on = parse(await bridge.callTool(WORKSPACE_INFO_TOOL, { workflowId: 'wf-1' }));
   assert.equal(on.enabled, true);
   assert.equal(on.synced, true); // ensureSynced 가 하이드레이트를 끝냈다
   assert.equal(on.virtualRoot, '/ws');
-  assert.equal(on.dir, dir);
+  assert.equal(on.dir, '/ws');
+  assert.notEqual(on.dir, dir);
+  assert.equal(on.pathDomain, 'connector_virtual');
   assert.equal(on.cloudMounted, true);
   assert.equal(on.cloudVirtualRoot, '/cloud');
+  assert.equal(on.cloudDir, '/cloud');
   const off = parse(await bridge.callTool(WORKSPACE_INFO_TOOL, { workflowId: 'wf-없음' }));
   assert.equal(off.enabled, false);
 });
 
-test('_WorkspaceInfo — 하이드레이트가 늦으면 synced:false 여도 폴더는 준다', async () => {
-  const { dir, bridge } = setup(null, { synced: false });
+test('_WorkspaceInfo — 하이드레이트가 늦어도 물리 경로 없이 synced:false를 준다', async () => {
+  const { bridge } = setup(null, { synced: false });
   const on = parse(await bridge.callTool(WORKSPACE_INFO_TOOL, { workflowId: 'wf-1' }));
   assert.equal(on.enabled, true);
   assert.equal(on.synced, false); // 실행은 진행, 서버가 프롬프트로 안내
-  assert.equal(on.dir, dir);
+  assert.equal(on.dir, '/ws');
 });
 
 test('_FlushSync — 턴 종료에 로컬 변경을 인덱스로 밀고 결과를 준다', async () => {
@@ -170,6 +173,21 @@ test('_ReadBytes — 없는 파일은 notFound (오류 뭉개기 금지)', async
     await bridge.callTool(READ_BYTES_TOOL, { workflowId: 'wf-1', path: '/ws/없다.md' }),
   );
   assert.equal(r.notFound, true);
+});
+
+test('_ReadBytes — /ws 내부 심볼릭 링크로 물리 루트를 탈출할 수 없다', async () => {
+  const outside = mkdtempSync(join(tmpdir(), 'xgen-bridge-outside-'));
+  writeFileSync(join(outside, 'secret.txt'), 'secret');
+  const { dir, bridge } = setup();
+  symlinkSync(outside, join(dir, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+  const r = await bridge.callTool(READ_BYTES_TOOL, {
+    workflowId: 'wf-1',
+    path: '/ws/escape/secret.txt',
+  });
+  assert.equal(r.isError, true);
+  assert.equal(parse(r).code, 'PATH_DOMAIN_MISMATCH');
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
 });
 
 test('클라우드 루트 — 마운트돼 있으면 /cloud 가 드라이브 실경로로 매핑된다', async () => {

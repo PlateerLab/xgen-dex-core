@@ -41,9 +41,9 @@ Usage:
   dex history turns --workflow <id> --interaction <id> [--json]
   dex tools list [--json]
   dex tools status [--profile <name>] [--json]
-  dex tools enable [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--allow-dangerous]
+  dex tools enable [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--shell] [--allow-dangerous]
   dex tools configure [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--timeout <ms>]
-                      [--allow-dangerous|--no-allow-dangerous]
+                      [--shell|--no-shell] [--allow-dangerous|--no-allow-dangerous]
   dex tools disable
   dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>] [--json]
   dex ssh list [--json]
@@ -120,6 +120,7 @@ function describeEvent(event: ChatEvent): string | null {
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
   stdout.write(`로컬 도구: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
+  stdout.write(`전체 셸 접근: ${status.config.shellEnabled ? '켜짐' : '꺼짐'}\n`);
   stdout.write(`작업 폴더: ${status.config.cwd || '(미설정)'}\n`);
   stdout.write(`허용 경로: ${status.config.allowedRoots.join(', ') || '(작업 폴더)'}\n`);
   stdout.write(`위험 명령: ${status.config.allowDangerous ? '허용' : '차단'}\n`);
@@ -420,8 +421,14 @@ async function run(): Promise<void> {
       : flag(args, 'no-allow-dangerous')
         ? false
         : current.allowDangerous;
+    const shellEnabled = flag(args, 'shell')
+      ? true
+      : flag(args, 'no-shell')
+        ? false
+        : current.shellEnabled;
     const status = await engine.configureLocalTools({
       enabled: action === 'enable' ? true : current.enabled,
+      shellEnabled,
       cwd,
       timeoutMs,
       allowedRoots,

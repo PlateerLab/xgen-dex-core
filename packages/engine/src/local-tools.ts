@@ -36,6 +36,8 @@ import {
   appendFile as fsAppendFile,
   readdir,
   stat,
+  lstat,
+  realpath,
   mkdir,
 } from 'node:fs/promises';
 import {
@@ -76,6 +78,9 @@ export interface LocalShellConfig {
   /** Master switch for the built-in local tools. Default OFF (opt-in) — running
    *  arbitrary local commands from the cloud must be turned on explicitly. */
   enabled?: boolean;
+  /** Expose unrestricted native Shell/ShellJob execution. Separate opt-in from
+   * structured PC/file tools because cwd/allowedRoots cannot confine a shell. */
+  shellEnabled?: boolean;
   /** Default working directory for commands. Empty → the user's home. */
   cwd?: string;
   /** Per-command wall-clock cap (ms). Default 120s; clamped to [1s, 1h]. */
@@ -105,6 +110,8 @@ export interface LocalToolSchema {
 export interface LocalToolResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
+  /** Machine-readable result metadata for routers that must preserve path/job domains. */
+  structuredContent?: Record<string, unknown>;
 }
 
 /** Server-attested identity of the workflow that initiated a local tool call. */
@@ -150,6 +157,8 @@ const MAX_TIMEOUT_MS = 60 * 60_000;
 const OUTPUT_CAP = 200_000; // chars kept from stdout+stderr
 /** Grace we wait for a background launch to fail (ENOENT) before reporting success. */
 const BG_SETTLE_MS = 350;
+/** Foreground commands still running after this grace become pollable jobs. */
+const AUTO_BACKGROUND_AFTER_MS = 15_000;
 /** Per-stream ring-buffer cap for a background job (chars). */
 const JOB_STREAM_CAP = 262_144; // 256KB stdout + 256KB stderr per job
 /** Max background jobs retained; oldest FINISHED jobs are evicted past this. */
@@ -174,6 +183,7 @@ export function shellConfig(cfg: LocalShellConfig | undefined): Required<LocalSh
   const allowedRoots = cwd ? [...(listed.length ? listed : ['~']), cwd] : listed;
   return {
     enabled: c.enabled === true, // opt-in (default OFF) — 로컬 셸은 명시적으로 켜야 한다
+    shellEnabled: c.shellEnabled === true, // unrestricted Shell is a second explicit opt-in
     cwd,
     timeoutMs: Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Math.round(t))),
     blocked: Array.isArray(c.blocked) ? c.blocked.map((b) => String(b).trim()).filter(Boolean) : [],
@@ -182,7 +192,8 @@ export function shellConfig(cfg: LocalShellConfig | undefined): Required<LocalSh
 }
 
 export function shellEnabled(cfg: LocalShellConfig | undefined): boolean {
-  return shellConfig(cfg).enabled;
+  const normalized = shellConfig(cfg);
+  return normalized.enabled && normalized.shellEnabled;
 }
 
 /** Human label for the OS's native shell (shown in the tool description). */
@@ -331,6 +342,12 @@ export function shapeResult(
   return {
     content: [{ type: 'text', text: parts.join('\n\n') || '(no output)' }],
     isError: failed,
+    structuredContent: {
+      execution_surface: 'connector_local',
+      path_domain: 'physical_local',
+      exit_code: code,
+      signal,
+    },
   };
 }
 
@@ -435,7 +452,10 @@ export function shellToolSchema(): LocalToolSchema {
       `Run ONE command on the USER'S OWN COMPUTER (the local desktop where this connector runs), ` +
       `through its native shell (${nativeShellLabel()}), as the logged-in user. This is the ` +
       `physical machine — NOT the cloud workspace/sandbox. Use it to operate that computer: run ` +
-      `scripts, read/write local files, inspect the system, launch apps.` +
+      `scripts, read/write local files, inspect the system, launch apps. SECURITY DOMAIN: this ` +
+      `tool has unrestricted logged-in-user filesystem access; allowed folders apply only to the ` +
+      `structured file tools. Never pass a physical path returned here to sandbox Read/Write. ` +
+      `Use local ReadFile/WriteFile for physical paths and /ws paths for workspace Read/Write.` +
       SYNCED_WORKSPACE_NOTE +
       `\n` +
       `IMPORTANT for reliability:\n` +
@@ -445,6 +465,8 @@ export function shellToolSchema(): LocalToolSchema {
       `servers, watchers) — or ANY job that may run longer than a couple of minutes — set ` +
       `background:true. It starts detached, returns a job_id at once, and is NOT killed at the ` +
       `timeout; its output is captured. Poll it later with the ShellJob tool (action:'poll', job_id).\n` +
+      `• A foreground command that is still running after a short grace is automatically converted ` +
+      `to a ShellJob. Poll the returned job_id; do not switch to sandbox tools to inspect local output.\n` +
       `• To just open a file/URL/folder with its default app, prefer the Open tool.\n` +
       `Returns combined stdout/stderr and the exit code (foreground); a job_id (background). For huge ` +
       `output, pass head/tail (lines) or max_bytes to page it.`,
@@ -470,7 +492,12 @@ export function shellToolSchema(): LocalToolSchema {
         },
         timeout_ms: {
           type: 'integer',
-          description: 'Optional per-command timeout override (ms). Ignored when background=true.',
+          description:
+            'Optional maximum runtime (ms). Ignored when background=true; retained after automatic job conversion.',
+        },
+        background_after_ms: {
+          type: 'integer',
+          description: `Foreground grace before automatic ShellJob conversion (default ${AUTO_BACKGROUND_AFTER_MS}ms).`,
         },
         tail: {
           type: 'integer',
@@ -544,6 +571,7 @@ export function coerceShellArgs(args: unknown): {
   cwd?: string;
   shell?: string;
   timeoutMs?: number;
+  backgroundAfterMs?: number;
   background: boolean;
 } {
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
@@ -552,9 +580,14 @@ export function coerceShellArgs(args: unknown): {
   const shell = typeof a.shell === 'string' ? a.shell : undefined;
   const t = a.timeout_ms ?? a.timeoutMs;
   const timeoutMs = typeof t === 'number' && t > 0 ? t : undefined;
+  const auto = Number(a.background_after_ms ?? a.backgroundAfterMs);
+  const backgroundAfterMs =
+    Number.isFinite(auto) && auto > 0
+      ? Math.max(100, Math.min(60_000, Math.round(auto)))
+      : undefined;
   const bg = a.background ?? a.detach ?? a.detached;
   const background = bg === true || bg === 'true' || bg === 1;
-  return { command, cwd, shell, timeoutMs, background };
+  return { command, cwd, shell, timeoutMs, backgroundAfterMs, background };
 }
 
 export function coerceOpenArgs(args: unknown): { target: string } {
@@ -775,13 +808,56 @@ export function resolveWithinRoots(input: string, roots: string[]): string | nul
   return null;
 }
 
+function pathInside(root: string, target: string): boolean {
+  const rel = pathRelative(root, target);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Symlink-aware variant used at the actual filesystem boundary.
+ *
+ * `resolveWithinRoots` remains a synchronous lexical helper for forms/tests, but
+ * lexical checks alone allow `<allowed>/link -> /outside` escapes. For missing
+ * write targets we canonicalize the nearest existing ancestor and append only
+ * its missing suffix.
+ */
+export async function resolveWithinRootsReal(
+  input: string,
+  roots: string[],
+): Promise<string | null> {
+  const home = homedir();
+  const effective = (roots && roots.length ? roots : [home]).map((r) => resolveOne(r, home));
+  const canonicalRoots = (
+    await Promise.all(effective.map((root) => realpath(root).catch(() => null)))
+  ).filter((root): root is string => typeof root === 'string');
+  if (!canonicalRoots.length) return null;
+
+  const abs = resolveOne(String(input || ''), home);
+  let cursor = abs;
+  let canonical: string | null = null;
+  while (true) {
+    try {
+      const existing = await realpath(cursor);
+      canonical = pathResolve(existing, pathRelative(cursor, abs));
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+      const parent = dirname(cursor);
+      if (parent === cursor) return null;
+      cursor = parent;
+    }
+  }
+  return canonicalRoots.some((root) => pathInside(root, canonical!)) ? canonical : null;
+}
+
 export function readFileToolSchema(): LocalToolSchema {
   return {
     name: READ_FILE_TOOL,
     description:
       "Read a text file on the USER'S OWN COMPUTER (the local desktop), within the " +
       'allowed folders. Prefer this over `Shell cat` — it distinguishes “not found” ' +
-      'from “no permission” cleanly. Returns UTF-8 text (truncated at maxBytes).' +
+      'from “no permission” cleanly. This is the only Read tool for physical local paths; ' +
+      'never send those paths to sandbox Read. Returns UTF-8 text (truncated at maxBytes).' +
       SYNCED_WORKSPACE_NOTE,
     inputSchema: {
       type: 'object',
@@ -944,10 +1020,8 @@ export class LocalToolProvider {
   }
 
   advertise(): LocalToolSchema[] {
-    const shell = this.cfg.enabled
+    const pcTools = this.cfg.enabled
       ? [
-          shellToolSchema(),
-          shellJobToolSchema(),
           openToolSchema(),
           readFileToolSchema(),
           writeFileToolSchema(),
@@ -957,14 +1031,22 @@ export class LocalToolProvider {
           notifyToolSchema(),
         ]
       : [];
+    // A native shell cannot be confined by validating cwd or parsing command
+    // text. It therefore has a second, explicit unrestricted-access opt-in.
+    const shell =
+      this.cfg.enabled && this.cfg.shellEnabled ? [shellToolSchema(), shellJobToolSchema()] : [];
     // 워크스페이스 브리지(_Exec 등)는 로컬 도구와 같은 능력 등급이므로 같은
     // 스위치에 묶인다. `_` 접두라 서버가 LLM 노출에서 걸러낸다 — 카탈로그에는
     // 실려야 서버 어댑터가 존재를 확인한다.
-    const bridge = this.cfg.enabled ? (this.workspaceBridge?.advertise() ?? []) : [];
+    const bridge = this.cfg.enabled
+      ? (this.workspaceBridge?.advertise() ?? []).filter(
+          (tool) => this.cfg.shellEnabled || tool.name !== '_Exec',
+        )
+      : [];
     // MCP 자기관리 도구는 로컬 셸(cfg.enabled) 과 무관하게 로컬 MCP 스위치로 게이트된다
     // (delegate 가 스스로 판단) — 로컬 MCP 만 켜도 에이전트가 서버를 추가/제거할 수 있다.
     const mcpAdmin = this.mcpAdmin?.advertise() ?? [];
-    return [...shell, ...bridge, ...mcpAdmin, ...(this.delegate?.advertise() ?? [])];
+    return [...shell, ...pcTools, ...bridge, ...mcpAdmin, ...(this.delegate?.advertise() ?? [])];
   }
 
   async callTool(
@@ -976,6 +1058,14 @@ export class LocalToolProvider {
     // MCP 자기관리 도구는 로컬 셸 게이트 이전에 처리(로컬 MCP 스위치로만 게이트됨).
     if (this.mcpAdmin?.owns(tool)) return this.mcpAdmin.callTool(tool, args);
     if (!this.cfg.enabled) throw new Error('로컬 도구 접근이 꺼져 있습니다 (설정 > 로컬 도구).');
+    if (
+      (tool === SHELL_TOOL || tool === SHELL_JOB_TOOL || tool === '_Exec') &&
+      !this.cfg.shellEnabled
+    ) {
+      throw new Error(
+        '전체 셸 접근이 꺼져 있습니다. 파일 작업은 ReadFile/WriteFile/ListDir/Search를 사용하세요.',
+      );
+    }
     if (this.workspaceBridge?.owns(tool)) return this.workspaceBridge.callTool(tool, args);
     if (tool === SHELL_TOOL) return this.shell(args);
     if (tool === SHELL_JOB_TOOL) return this.shellJob(args);
@@ -989,12 +1079,12 @@ export class LocalToolProvider {
     throw new Error(`unknown local tool: ${tool}`);
   }
 
-  /** Resolve + scope-check a file path against allowedRoots (throws if outside). */
-  private guardPath(p: unknown): string {
-    const abs = resolveWithinRoots(String(p ?? ''), this.cfg.allowedRoots);
+  /** Resolve + symlink-aware scope-check a file path against allowedRoots. */
+  private async guardPath(p: unknown): Promise<string> {
+    const abs = await resolveWithinRootsReal(String(p ?? ''), this.cfg.allowedRoots);
     if (!abs) {
       throw new Error(
-        `경로가 허용된 범위 밖입니다: ${String(p ?? '')} ` +
+        `[PATH_DOMAIN_MISMATCH] 경로가 허용된 로컬 범위 밖입니다: ${String(p ?? '')} ` +
           `(설정 > 로컬 도구 > 허용 폴더에서 범위를 넓힐 수 있습니다).`,
       );
     }
@@ -1003,7 +1093,7 @@ export class LocalToolProvider {
 
   private async readFile(args: unknown): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = this.guardPath(a.path);
+    const abs = await this.guardPath(a.path);
     const maxBytes = Math.max(1, Math.min(OUTPUT_CAP, Number(a.maxBytes) || OUTPUT_CAP));
     try {
       const buf = await fsReadFile(abs);
@@ -1021,11 +1111,16 @@ export class LocalToolProvider {
 
   private async writeFile(args: unknown): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = this.guardPath(a.path);
+    const abs = await this.guardPath(a.path);
     const content = typeof a.content === 'string' ? a.content : String(a.content ?? '');
     const append = a.mode === 'append' || a.append === true;
     try {
       await mkdir(dirname(abs), { recursive: true });
+      // Re-check after mkdir so an existing parent symlink cannot carry the
+      // write outside an allowed root.
+      if (!(await resolveWithinRootsReal(dirname(abs), this.cfg.allowedRoots))) {
+        throw new Error('[PATH_DOMAIN_MISMATCH] 생성된 상위 폴더가 허용 범위 밖입니다.');
+      }
       if (append) await fsAppendFile(abs, content, 'utf8');
       else await fsWriteFile(abs, content, 'utf8');
       return {
@@ -1046,7 +1141,7 @@ export class LocalToolProvider {
 
   private async listDir(args: unknown): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = this.guardPath(a.path ?? '~');
+    const abs = await this.guardPath(a.path ?? '~');
     try {
       const names = await readdir(abs);
       const rows: string[] = [];
@@ -1072,7 +1167,7 @@ export class LocalToolProvider {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
     const query = String(a.query ?? '');
     if (!query) throw new Error('query must not be empty');
-    const abs = this.guardPath(a.path ?? '~');
+    const abs = await this.guardPath(a.path ?? '~');
     const maxResults = Math.max(1, Math.min(500, Number(a.maxResults) || 100));
     const hits: string[] = [];
     const skipDirs = new Set([
@@ -1097,10 +1192,11 @@ export class LocalToolProvider {
         const full = pathJoin(dir, name);
         let s;
         try {
-          s = await stat(full);
+          s = await lstat(full);
         } catch {
           continue;
         }
+        if (s.isSymbolicLink()) continue;
         if (s.isDirectory()) {
           if (!skipDirs.has(name) && !name.startsWith('.')) await walk(full, depth + 1);
         } else if (s.size <= 2_000_000 && !BINARY_EXT.has(extname(name).toLowerCase())) {
@@ -1195,7 +1291,7 @@ export class LocalToolProvider {
   }
 
   private async shell(args: unknown): Promise<LocalToolResult> {
-    const { command, cwd, shell, timeoutMs, background } = coerceShellArgs(args);
+    const { command, cwd, shell, timeoutMs, backgroundAfterMs, background } = coerceShellArgs(args);
     if (!command.trim()) throw new Error('command must not be empty');
     if (isBlocked(command, this.cfg.blocked)) {
       throw new Error(`명령 '${firstToken(command)}' 은(는) 차단 목록에 있어 실행할 수 없습니다.`);
@@ -1221,6 +1317,13 @@ export class LocalToolProvider {
       MIN_TIMEOUT_MS,
       Math.min(MAX_TIMEOUT_MS, Math.round(timeoutMs || this.cfg.timeoutMs)),
     );
+    const autoBackgroundAfter = backgroundAfterMs ?? AUTO_BACKGROUND_AFTER_MS;
+    if (timeout > autoBackgroundAfter) {
+      return this.spawnBackground(command, file, argv, env, runCwd, {
+        autoAfterMs: autoBackgroundAfter,
+        maxRuntimeMs: timeout,
+      });
+    }
     const r = await this.spawnCapture(file, argv, env, runCwd, timeout);
     if (r.error)
       return {
@@ -1286,7 +1389,7 @@ export class LocalToolProvider {
       }
       // Filesystem path — scope to allowedRoots (like the file tools), then open
       // with the OS default app. guardPath throws (caught below) if out of scope.
-      const abs = this.guardPath(cls.value);
+      const abs = await this.guardPath(cls.value);
       if (!host.openPath) {
         return {
           content: [{ type: 'text', text: '이 호스트에서는 파일을 열 수 없습니다.' }],
@@ -1367,6 +1470,7 @@ export class LocalToolProvider {
     argv: string[],
     env: Record<string, string>,
     cwd: string,
+    options?: { autoAfterMs: number; maxRuntimeMs: number },
   ): Promise<LocalToolResult> {
     const detachedGroup = !IS_WIN;
     return new Promise<LocalToolResult>((resolve) => {
@@ -1431,9 +1535,12 @@ export class LocalToolProvider {
       });
 
       let settled = false;
+      let settleTimer: ReturnType<typeof setTimeout> | undefined;
+      let maxRuntimeTimer: ReturnType<typeof setTimeout> | undefined;
       const done = (r: LocalToolResult) => {
         if (settled) return;
         settled = true;
+        if (settleTimer) clearTimeout(settleTimer);
         resolve(r);
       };
       child.on('error', (e) => {
@@ -1442,6 +1549,8 @@ export class LocalToolProvider {
           job.errorMsg = e.message;
           job.endedAt = Date.now();
         }
+        if (maxRuntimeTimer) clearTimeout(maxRuntimeTimer);
+        if (options && !settled) bgJobs.delete(job.id);
         done({
           content: [{ type: 'text', text: `백그라운드 실행 실패: ${e.message}` }],
           isError: true,
@@ -1458,28 +1567,54 @@ export class LocalToolProvider {
         } else if (!job.endedAt) {
           job.endedAt = Date.now();
         }
+        if (maxRuntimeTimer) clearTimeout(maxRuntimeTimer);
+        // Automatic foreground conversion preserves the ordinary foreground
+        // result when the command finishes within the grace period.
+        if (options && !settled) {
+          bgJobs.delete(job.id);
+          done(shapeResult(job.stdout, job.stderr, code, signal));
+        }
       });
       // Don't let the piped child keep the connector's event loop alive on quit —
       // unref the process AND its stdout/stderr sockets (the pipes hold the loop).
       child.unref();
       (child.stdout as unknown as { unref?: () => void })?.unref?.();
       (child.stderr as unknown as { unref?: () => void })?.unref?.();
-      // Brief grace so an ENOENT launch reports failure instead of a false success.
-      setTimeout(
-        () =>
-          done({
-            content: [
-              {
-                type: 'text',
-                text:
-                  `백그라운드 작업을 시작했습니다.\njob_id: ${job.id}  (pid ${job.pid ?? '?'})\n` +
-                  `계속 실행되며 출력이 캡처됩니다. 상태·출력은 ShellJob(action:'poll', job_id) 로, ` +
-                  `종료는 ShellJob(action:'kill', job_id) 로 확인/제어하세요.`,
-              },
-            ],
-          }),
-        BG_SETTLE_MS,
-      );
+      if (options) {
+        maxRuntimeTimer = setTimeout(() => {
+          if (job.status !== 'running') return;
+          job.status = 'killed';
+          job.errorMsg = `maximum runtime ${options.maxRuntimeMs}ms exceeded`;
+          job.endedAt = Date.now();
+          killTree(child, detachedGroup);
+        }, options.maxRuntimeMs);
+      }
+      // Explicit background returns after a short spawn-settle grace. Automatic
+      // mode waits longer, then hands the still-running process to ShellJob.
+      const settleMs = options?.autoAfterMs ?? BG_SETTLE_MS;
+      settleTimer = setTimeout(() => {
+        const automatic = !!options;
+        done({
+          content: [
+            {
+              type: 'text',
+              text:
+                `${automatic ? '명령이 계속 실행 중이어서 자동으로 백그라운드 작업으로 전환했습니다.' : '백그라운드 작업을 시작했습니다.'}\n` +
+                `job_id: ${job.id}  (pid ${job.pid ?? '?'})\n` +
+                `계속 실행되며 출력이 캡처됩니다. 상태·출력은 ShellJob(action:'poll', job_id) 로, ` +
+                `종료는 ShellJob(action:'kill', job_id) 로 확인/제어하세요.`,
+            },
+          ],
+          structuredContent: {
+            status: 'running',
+            job_id: job.id,
+            pid: job.pid,
+            execution_surface: 'connector_local',
+            path_domain: 'physical_local',
+            automatic,
+          },
+        });
+      }, settleMs);
     });
   }
 
@@ -1503,7 +1638,17 @@ export class LocalToolProvider {
           const exit = j.status === 'running' ? '' : ` exit=${j.signal ? j.signal : j.code}`;
           return `${j.id}  [${j.status}${exit}]  pid=${j.pid ?? '?'}  ${dur}s  ${j.command.slice(0, 80)}`;
         });
-      return { content: [{ type: 'text', text: rows.join('\n') }] };
+      return {
+        content: [{ type: 'text', text: rows.join('\n') }],
+        structuredContent: {
+          execution_surface: 'connector_local',
+          path_domain: 'physical_local',
+          jobs: [...bgJobs.values()].map((job) => ({
+            id: job.id,
+            status: job.status,
+          })),
+        },
+      };
     }
 
     const job = jobId ? bgJobs.get(jobId) : undefined;
@@ -1529,6 +1674,12 @@ export class LocalToolProvider {
         content: [
           { type: 'text', text: `작업 ${job.id} 을(를) 종료했습니다 (상태: ${job.status}).` },
         ],
+        structuredContent: {
+          execution_surface: 'connector_local',
+          path_domain: 'physical_local',
+          job_id: job.id,
+          status: job.status,
+        },
       };
     }
 
@@ -1557,6 +1708,14 @@ export class LocalToolProvider {
       return {
         content: [{ type: 'text', text: parts.join('\n\n') }],
         isError: job.status === 'error',
+        structuredContent: {
+          execution_surface: 'connector_local',
+          path_domain: 'physical_local',
+          job_id: job.id,
+          status: job.status,
+          exit_code: job.code,
+          signal: job.signal,
+        },
       };
     }
 

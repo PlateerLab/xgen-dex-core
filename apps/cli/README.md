@@ -88,11 +88,14 @@ dex tools list
 dex tools status
 ```
 
-지원 도구는 `Shell`, `ReadFile`, `WriteFile`, `ListDir`, `Search`, `Open`입니다. 로컬 실행만 먼저
+기본 지원 도구는 `ReadFile`, `WriteFile`, `ListDir`, `Search`, `Open`입니다. `Shell`과
+`ShellJob`은 PC 전체 경로에 접근할 수 있으므로 `dex tools configure --shell`로 별도
+활성화해야 합니다. 로컬 실행만 먼저
 검증하려면 다음과 같이 호출할 수 있습니다.
 
 ```bash
 dex tools run ListDir --args '{"path":"."}'
+dex tools configure --shell
 dex tools run Shell --args '{"command":"npm test","timeoutMs":120000}'
 ```
 
@@ -104,7 +107,7 @@ dex tools serve --profile corp
 ```
 
 구조화된 파일 도구와 `Open`의 파일 경로는 `--allow` 범위로 제한됩니다. `Shell`은 로그인한 OS
-사용자 권한으로 실행되므로 opt-in 기능이며, `--block`의 명령과 파괴적 명령 패턴은 거부됩니다.
+사용자 권한 전체로 실행되는 별도 opt-in 기능이며, `--block`의 명령과 파괴적 명령 패턴은 거부됩니다.
 파괴적 명령이 꼭 필요할 때만 `dex tools configure --allow-dangerous`를 명시적으로 실행하세요.
 
 대화를 이어가려면 같은 interaction ID를 전달합니다.

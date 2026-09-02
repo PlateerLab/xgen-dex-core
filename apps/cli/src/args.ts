@@ -8,9 +8,11 @@ const BOOLEAN_OPTIONS = new Set([
   'json',
   'jsonl',
   'no-allow-dangerous',
+  'no-shell',
   'password-stdin',
   'stdin',
   'stdio',
+  'shell',
   'version',
 ]);
 

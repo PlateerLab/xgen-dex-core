@@ -8,7 +8,10 @@
  * 각 테스트 파일이 자기 스텁을 따로 만들면 그 스텁들이 갈라진다 — 이 저장소가
  * 없애려는 바로 그 병이라 여기 한 곳에 둔다.
  */
-import { bindHost, memoryPorts, type InteractionPort } from '../src/index';
+// Import the narrow modules under test. Pulling the package barrel here also
+// initializes MCP/network dependencies that local-tool unit tests do not use.
+import { bindHost } from '../src/host';
+import { memoryPorts, type InteractionPort } from '../src/ports/index';
 
 export interface TestHostOptions {
   /** 기본은 거부 — 안전장치가 실제로 도는지 보려면 명시적으로 켜야 한다. */

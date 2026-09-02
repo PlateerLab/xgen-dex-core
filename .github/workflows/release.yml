@@ -132,18 +132,34 @@ jobs:
       - name: Capacitor sync
         run: cd apps/android && npx cap sync android
 
+      # ⚠ 서명 키는 **릴리스마다 같아야** 안드로이드가 업데이트 설치를 허용한다
+      # (키가 다르면 '패키지가 기존 패키지와 충돌' — 삭제 후 재설치 강요, 실사고).
+      # 고정 키는 저장소 시크릿(ANDROID_KEYSTORE_B64 등)에 있다 — 레포가 public
+      # 이라 커밋 금지. 시크릿이 없으면(포크 등) 임시 키로 폴백하되 경고한다.
       - name: 서명 키 준비
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          keytool -genkeypair -v -keystore /tmp/xgen-dex.keystore             -alias xgen-dex -keyalg RSA -keysize 2048 -validity 3650             -storepass xgen-dex-release -keypass xgen-dex-release             -dname "CN=XGEN Dex, O=PlateerLab"
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > /tmp/xgen-dex.keystore
+            echo "고정 릴리스 키 사용 — 기존 설치 위 업데이트 가능"
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 시크릿이 없어 임시 키로 서명합니다 — 이 APK 는 기존 설치 위에 업데이트되지 않습니다."
+            keytool -genkeypair -v -keystore /tmp/xgen-dex.keystore -alias xgen-dex -keyalg RSA -keysize 2048 -validity 3650 -storepass xgen-dex-release -keypass xgen-dex-release -dname "CN=XGEN Dex, O=PlateerLab"
+          fi
 
       - name: APK 빌드
         working-directory: apps/android/android
         run: ./gradlew assembleRelease --no-daemon
         env:
           ANDROID_KEYSTORE_FILE: /tmp/xgen-dex.keystore
-          ANDROID_KEYSTORE_PASSWORD: xgen-dex-release
-          ANDROID_KEY_ALIAS: xgen-dex
-          ANDROID_KEY_PASSWORD: xgen-dex-release
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'xgen-dex-release' }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'xgen-dex' }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'xgen-dex-release' }}
+
+      - name: 서명 검증 (지문 로그)
+        run: |
+          keytool -printcert -jarfile apps/android/android/app/build/outputs/apk/release/app-release.apk | grep -E "SHA-?256" | head -2
 
       - name: 이름 정리
         run: |
@@ -263,6 +279,8 @@ jobs:
             ### 안드로이드
 
             `XGen-Dex-*.apk` 를 받아 설치합니다 (알 수 없는 앱 설치 허용 필요).
+            같은 서명 키로 릴리스되므로 **기존 설치 위에 바로 업데이트**됩니다
+            (v1.21 이하에서 올라올 때만 1회 삭제 후 설치 필요 — 서명 키 교체).
             안드로이드 앱은 **서버 세션 채팅 + 모바일 도구** 전용입니다 —
             에이전트가 휴대폰의 파일(문서/XGenDex)·알림·클립보드·카메라 등을
             도구로 사용할 수 있습니다. 데스크톱의 클라우드/브라우저 기능은

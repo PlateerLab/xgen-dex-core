@@ -179,12 +179,19 @@ jobs:
   # 변동으로 릴리스 전체가 막히지 않도록 실패는 릴리스를 막지 않는다.
   ios:
     name: 모바일 — iOS (무서명)
-    runs-on: macos-latest
+    # macos-latest(=Xcode 26)의 새 clang 은 RN 0.79 가 쓰는 fmt 의 consteval
+    # 코드와 비호환(빌드 실패 실측). Xcode 16 이 실려 있는 macos-15 로 고정한다.
+    runs-on: macos-15
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
+      - name: Xcode 16 선택
+        run: |
+          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XC" ] && sudo xcode-select -s "$XC"
+          xcodebuild -version
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
       - name: Pod install
         working-directory: apps/mobile/ios

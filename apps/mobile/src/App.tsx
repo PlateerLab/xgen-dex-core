@@ -503,6 +503,7 @@ function Field({
         autoCorrect={false}
         secureTextEntry={secure}
         keyboardType={keyboard}
+        returnKeyType="done"
       />
     </View>
   );
@@ -632,8 +633,9 @@ function AgentsSection({
 
       <Modal visible={!!picked} transparent animationType="slide" onRequestClose={() => setPicked(null)}>
         <Pressable style={st.scrim} onPress={() => setPicked(null)} />
-        {picked && (
-          <View style={st.sheet}>
+        <KeyboardAvoidingView behavior="padding" style={st.sheetHost} pointerEvents="box-none">
+          {picked && (
+            <View style={st.sheet}>
             <View style={st.sheetHandle} />
             <Text style={st.sheetTitle} numberOfLines={1}>
               {picked.workflowName || picked.workflowId}
@@ -674,20 +676,23 @@ function AgentsSection({
                 </Pressable>
               )}
             />
-          </View>
-        )}
+            </View>
+          )}
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={creating} transparent animationType="slide" onRequestClose={() => setCreating(false)}>
         <Pressable style={st.scrim} onPress={() => setCreating(false)} />
-        <CreateAgentSheet
-          client={client}
-          onCreated={(agent) => {
-            setCreating(false);
-            void load();
-            onOpenChat(agent);
-          }}
-        />
+        <KeyboardAvoidingView behavior="padding" style={st.sheetHost} pointerEvents="box-none">
+          <CreateAgentSheet
+            client={client}
+            onCreated={(agent) => {
+              setCreating(false);
+              void load();
+              onOpenChat(agent);
+            }}
+          />
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -761,6 +766,14 @@ function CreateAgentSheet({
     <View style={st.sheet}>
       <View style={st.sheetHandle} />
       <Text style={st.sheetTitle}>새 에이전트</Text>
+      {/* 키보드가 떠서 공간이 줄어도 provider/model/만들기 버튼이 전부 닿도록
+          내용은 스크롤 컨테이너에 담고, 키보드를 내리지 않고도 칩을 바로
+          누를 수 있게 keyboardShouldPersistTaps 를 켠다. */}
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ gap: 10 }}
+      >
       <Field label="이름" value={name} onChange={setName} placeholder="예: 리서치 도우미" />
       {providers.length > 0 && (
         <View style={{ width: '100%', marginBottom: 10 }}>
@@ -807,6 +820,7 @@ function CreateAgentSheet({
       <Pressable style={[st.btnPrimary, !ready && { opacity: 0.4 }]} disabled={!ready} onPress={() => void submit()}>
         {busy ? <ActivityIndicator color={p.onPrimary} /> : <Text style={st.btnPrimaryText}>만들기</Text>}
       </Pressable>
+      </ScrollView>
     </View>
   );
 }
@@ -1227,10 +1241,15 @@ function makeStyles(p: Palette) {
     agentTitle: { color: p.text, fontSize: 15, fontWeight: '700' },
 
     sheet: {
-      position: 'absolute', left: 0, right: 0, bottom: 0,
+      width: '100%',
       backgroundColor: p.panel, borderTopLeftRadius: 18, borderTopRightRadius: 18,
       borderWidth: 1, borderColor: p.border, padding: 16, paddingBottom: 28, gap: 10, maxHeight: '80%',
     },
+    // 시트를 바닥에 붙이면서 키보드가 뜨면 겹치는 만큼만 밀어 올리고, 내려가면
+    // 원위치로 되돌리는 컨테이너. RN Modal 은 별도 윈도우라 adjustResize 를
+    // 못 받는 경우가 있어(안드로이드 실사고: provider/model 선택이 키보드에
+    // 밀려 들어감) 겹침 기반 KeyboardAvoidingView 로 결정적으로 처리한다.
+    sheetHost: { flex: 1, justifyContent: 'flex-end' },
     sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: p.border, alignSelf: 'center' },
     sheetTitle: { fontSize: 16, fontWeight: '800', color: p.text, textAlign: 'center' },
     convRow: {

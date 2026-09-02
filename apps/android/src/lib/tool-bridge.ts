@@ -28,6 +28,8 @@ export interface ToolBridgeOptions {
   onStatus?: (s: BridgeStatus) => void;
   wsFactory?: (url: string) => WebSocket;
   heartbeatMs?: number;
+  /** 진단 로그 (선택). */
+  log?: (line: string) => void;
 }
 
 const HEARTBEAT_MS = 20_000;
@@ -123,6 +125,7 @@ export class MobileToolBridge {
     this.emit({ state: 'connecting', toolCount: 0 });
 
     ws.onopen = () => {
+      this.opts.log?.('도구 브리지 WS 연결');
       this.backoff = RECONNECT_MIN_MS;
       this.sendHello();
       this.clearHeartbeat();
@@ -136,7 +139,8 @@ export class MobileToolBridge {
     ws.onmessage = (evt: MessageEvent) => {
       void this.onMessage(String(evt.data));
     };
-    ws.onclose = () => {
+    ws.onclose = (evt: CloseEvent) => {
+      this.opts.log?.(`도구 브리지 WS 종료 code=${evt?.code ?? '?'}`);
       this.clearHeartbeat();
       if (this.ws === ws) this.ws = null;
       if (!this.stopped) {

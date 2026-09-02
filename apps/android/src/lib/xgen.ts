@@ -64,10 +64,19 @@ export interface XgenMobileClient {
 
 async function setAuthCookie(serverUrl: string, token: string): Promise<void> {
   // 게이트웨이 WS(geny-chat / connector-mcp) 인증 재료 — 웹 프론트와 동일 쿠키.
+  //
+  // ⚠ SameSite: WebView 오리진(https://localhost)에서 게이트웨이로 가는 WS 는
+  // **크로스사이트**다 — 기본 SameSite=Lax 쿠키는 핸드셰이크에 실리지 않아
+  // 401 → '연결 중' 무한이 된다 (실사고). CapacitorCookies 는 속성 인자가
+  // 없지만 네이티브 CookieManager 가 "key=value; 속성..." 전체 문자열을
+  // 파싱하므로 value 뒤에 속성을 실어 보낸다. SameSite=None 은 Secure 필수
+  // — https 서버에서만 붙인다 (http 사내 게이트웨이는 Lax 로 두되, 그 경우
+  // WebView 정책상 WS 쿠키가 막힐 수 있어 https 사용을 권장).
+  const secure = serverUrl.startsWith('https://');
   await CapacitorCookies.setCookie({
     url: serverUrl,
     key: 'xgen_access_token',
-    value: token,
+    value: secure ? `${token}; Path=/; SameSite=None; Secure` : `${token}; Path=/`,
   });
 }
 

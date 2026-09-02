@@ -47,6 +47,8 @@ export interface ChatWsHandle {
 }
 
 export interface ChatWsOptions {
+  /** 진단 로그 (선택) — WS 수명 이벤트를 남긴다. */
+  log?: (line: string) => void;
   wsBase: string; // ws(s)://gateway
   workflowId: string;
   workflowName: string;
@@ -184,6 +186,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       return;
     }
     ws.onopen = () => {
+      opts.log?.(`채팅 WS 연결 (${opts.workflowId})`);
       attempts = 0;
       subscribed = false;
       ws?.send(
@@ -238,7 +241,8 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     ws.onerror = () => {
       /* onclose 가 뒤따른다 */
     };
-    ws.onclose = () => {
+    ws.onclose = (evt: CloseEvent) => {
+      opts.log?.(`채팅 WS 종료 code=${evt?.code ?? '?'} (${opts.workflowId})`);
       if (pending) failPending('연결이 끊어졌습니다.');
       if (!closedByUser) scheduleReconnect();
     };

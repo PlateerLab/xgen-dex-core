@@ -105,13 +105,14 @@ jobs:
           path: dist-release/*
           if-no-files-found: error
 
-  # ── 안드로이드 APK ──
+  # ── 모바일 (React Native) ──
   #
-  # 데스크톱/CLI/확장과 **독립**이다 — 별도 npm 프로젝트(apps/android)를 여기서만
-  # 빌드하며, 다른 잡의 입력/산출물에 관여하지 않는다. 서명은 CI 가 만든
-  # 자가서명 키(사이드로드 배포용)다.
+  # 데스크톱/CLI/확장과 **독립**이다 — 별도 npm 프로젝트(apps/mobile, Expo/RN)를
+  # 여기서만 빌드하며, 다른 잡의 입력/산출물에 관여하지 않는다. 네이티브
+  # 프로젝트(android/, ios/)는 prebuild 결과물을 커밋해 두었다 — CI 는 재생성
+  # 없이 그대로 빌드한다(결정적).
   android:
-    name: 안드로이드 APK
+    name: 모바일 — 안드로이드 APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,15 +123,12 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - run: npm --prefix apps/android ci --no-audit --no-fund
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
 
-      - name: 웹 빌드 + 테스트
+      - name: 타입 + 테스트
         run: |
-          npm --prefix apps/android test
-          npm --prefix apps/android run build
-
-      - name: Capacitor sync
-        run: cd apps/android && npx cap sync android
+          npm --prefix apps/mobile test
+          npm --prefix apps/mobile run typecheck
 
       # ⚠ 서명 키는 **릴리스마다 같아야** 안드로이드가 업데이트 설치를 허용한다
       # (키가 다르면 '패키지가 기존 패키지와 충돌' — 삭제 후 재설치 강요, 실사고).
@@ -149,7 +147,7 @@ jobs:
           fi
 
       - name: APK 빌드
-        working-directory: apps/android/android
+        working-directory: apps/mobile/android
         run: ./gradlew assembleRelease --no-daemon
         env:
           ANDROID_KEYSTORE_FILE: /tmp/xgen-dex.keystore
@@ -159,18 +157,55 @@ jobs:
 
       - name: 서명 검증 (지문 로그)
         run: |
-          keytool -printcert -jarfile apps/android/android/app/build/outputs/apk/release/app-release.apk | grep -E "SHA-?256" | head -2
+          keytool -printcert -jarfile apps/mobile/android/app/build/outputs/apk/release/app-release.apk | grep -E "SHA-?256" | head -2
 
       - name: 이름 정리
         run: |
           VER=$(node -p "require('./package.json').version")
           mkdir -p dist-android
-          cp apps/android/android/app/build/outputs/apk/release/app-release.apk              "dist-android/XGen-Dex-$VER.apk"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk              "dist-android/XGen-Dex-$VER.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: android
           path: dist-android/*.apk
+          if-no-files-found: error
+
+  # ── 모바일 — iOS (무서명 빌드) ──
+  #
+  # Apple 배포 서명(개발자 인증서/프로비저닝)은 시크릿이 없으면 불가능하다.
+  # 여기서는 크로스플랫폼 빌드가 **살아 있음을 보증**하고, 무서명 .ipa 를
+  # 자산으로 남긴다(사내 재서명/TestFlight 파이프라인의 입력). Apple 툴체인
+  # 변동으로 릴리스 전체가 막히지 않도록 실패는 릴리스를 막지 않는다.
+  ios:
+    name: 모바일 — iOS (무서명)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - name: Pod install
+        working-directory: apps/mobile/ios
+        run: pod install
+      - name: Xcode 빌드 (서명 없이)
+        working-directory: apps/mobile/ios
+        run: |
+          xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: 무서명 IPA 패키징
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          APP=$(find apps/mobile/ios/build/Build/Products -name "*.app" -maxdepth 3 | head -1)
+          mkdir -p /tmp/Payload dist-ios
+          cp -R "$APP" /tmp/Payload/
+          (cd /tmp && zip -qry "$OLDPWD/dist-ios/XGen-Dex-$VER-ios-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: dist-ios/*.ipa
           if-no-files-found: error
 
   # ── npm 배포 ──
@@ -276,15 +311,19 @@ jobs:
             > macOS 가 "손상됨" 이라고 하면:
             > `xattr -dr com.apple.quarantine "/Applications/XGen-Dex.app"`
 
-            ### 안드로이드
+            ### 모바일 (React Native — 안드로이드 / iOS)
 
-            `XGen-Dex-*.apk` 를 받아 설치합니다 (알 수 없는 앱 설치 허용 필요).
-            같은 서명 키로 릴리스되므로 **기존 설치 위에 바로 업데이트**됩니다
-            (v1.21 이하에서 올라올 때만 1회 삭제 후 설치 필요 — 서명 키 교체).
-            안드로이드 앱은 **서버 세션 채팅 + 모바일 도구** 전용입니다 —
-            에이전트가 휴대폰의 파일(문서/XGenDex)·알림·클립보드·카메라 등을
+            모바일 앱은 **서버 세션 채팅 + 모바일 도구** 전용입니다 — 에이전트가
+            휴대폰의 파일·알림·클립보드·카메라·위치 등을 (설정에서 그룹별 승인 후)
             도구로 사용할 수 있습니다. 데스크톱의 클라우드/브라우저 기능은
             포함되지 않습니다.
+
+            - **안드로이드**: `XGen-Dex-*.apk` 를 받아 설치합니다 (알 수 없는 앱
+              설치 허용 필요). 같은 서명 키로 릴리스되므로 **기존 설치 위에 바로
+              업데이트**됩니다 (v1.21 이하에서 올라올 때만 1회 삭제 후 설치 —
+              서명 키 교체).
+            - **iOS**: `XGen-Dex-*-ios-unsigned.ipa` 는 무서명 빌드입니다 — Apple
+              개발자 인증서로 재서명(사내 배포/TestFlight)해야 설치할 수 있습니다.
 
             ### CLI
 

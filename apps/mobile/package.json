@@ -1,7 +1,7 @@
 {
   "name": "xgen-dex-mobile",
   "private": true,
-  "version": "1.25.3",
+  "version": "1.25.4",
   "description": "XGEN Dex Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS). 서버 세션 채팅 + 모바일 도구.",
   "main": "index.js",
   "scripts": {
@@ -14,14 +14,18 @@
     "ios": "expo run:ios"
   },
   "dependencies": {
+    "@expo/vector-icons": "^14.1.0",
     "@react-native-async-storage/async-storage": "2.1.2",
     "expo": "~53.0.0",
+    "expo-asset": "~11.1.7",
     "expo-battery": "~9.1.4",
     "expo-clipboard": "~7.1.5",
     "expo-device": "~7.1.4",
     "expo-file-system": "~18.1.11",
+    "expo-font": "~13.3.2",
     "expo-haptics": "~14.1.4",
     "expo-image-picker": "~16.1.4",
+    "expo-keep-awake": "~14.1.4",
     "expo-linking": "~7.1.7",
     "expo-location": "~18.1.6",
     "expo-network": "~7.1.5",

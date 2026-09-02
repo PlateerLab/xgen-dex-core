@@ -35,6 +35,9 @@ export interface ToolBridgeOptions {
 const HEARTBEAT_MS = 20_000;
 const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
+/** hello 후 이 시간 안에 매칭 ready 가 없으면 연결이 죽었거나 서버가 hello 를
+ *  놓친 것 — 소켓을 끊고 재연결해 반드시 fresh hello 로 수렴시킨다. */
+const READY_ACK_TIMEOUT_MS = 6_000;
 
 export class MobileToolBridge {
   private ws: WebSocket | null = null;
@@ -44,6 +47,7 @@ export class MobileToolBridge {
   private hb: ReturnType<typeof setInterval> | null = null;
   private catalogSeq = 0;
   private pendingCatalogId = '';
+  private ackWatchdog: ReturnType<typeof setTimeout> | null = null;
   private status: BridgeStatus = { state: 'off', toolCount: 0 };
 
   constructor(private opts: ToolBridgeOptions) {}
@@ -60,6 +64,7 @@ export class MobileToolBridge {
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
     this.clearHeartbeat();
+    this.clearAckWatchdog();
     try {
       this.ws?.close();
     } catch {
@@ -73,9 +78,17 @@ export class MobileToolBridge {
     return this.status;
   }
 
-  /** 카탈로그 재광고 — 도구 그룹 토글이 바뀌면 부른다 (연결 중이면 즉시 hello). */
+  /** 카탈로그 재광고 — 도구 그룹 토글이 바뀌면 부른다.
+   *  연결돼 있으면 즉시 hello(서버는 hello 마다 카탈로그를 통째로 교체하고
+   *  다음 실행부터 반영한다). 연결 전/재연결 대기 중이면 kick — 어느 경로든
+   *  onopen 의 hello 가 현재 그룹을 읽으므로 최신 카탈로그로 수렴한다. */
   refreshCatalog(): void {
-    this.sendHello();
+    if (this.stopped) return;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.sendHello();
+    } else {
+      this.kick();
+    }
   }
 
   /** 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다 (연결돼 있으면 no-op). */
@@ -100,6 +113,11 @@ export class MobileToolBridge {
     this.hb = null;
   }
 
+  private clearAckWatchdog(): void {
+    if (this.ackWatchdog) clearTimeout(this.ackWatchdog);
+    this.ackWatchdog = null;
+  }
+
   private scheduleRetry(): void {
     if (this.stopped || this.retry) return;
     const delay = this.backoff;
@@ -117,6 +135,18 @@ export class MobileToolBridge {
 
   private connect(): void {
     if (this.stopped) return;
+    // 이전 소켓이 남아 있으면(CONNECTING 중 kick 등) 핸들러를 떼고 닫는다 —
+    // 고아 소켓이 뒤늦게 열려 이중 연결이 되는 것을 막는다.
+    if (this.ws) {
+      const prev = this.ws;
+      this.ws = null;
+      prev.onopen = prev.onmessage = prev.onclose = prev.onerror = null;
+      try {
+        prev.close();
+      } catch {
+        /* noop */
+      }
+    }
     const factory = this.opts.wsFactory ?? ((url: string) => new WebSocket(url));
     let ws: WebSocket;
     try {
@@ -147,6 +177,7 @@ export class MobileToolBridge {
     ws.onclose = (evt: CloseEvent) => {
       this.opts.log?.(`도구 브리지 WS 종료 code=${evt?.code ?? '?'}`);
       this.clearHeartbeat();
+      this.clearAckWatchdog();
       if (this.ws === ws) this.ws = null;
       if (!this.stopped) {
         this.emit({ state: 'connecting', toolCount: 0, error: this.status.error });
@@ -164,6 +195,19 @@ export class MobileToolBridge {
     const catalogId = `${Date.now()}-${++this.catalogSeq}`;
     this.pendingCatalogId = catalogId;
     this.ws.send(JSON.stringify({ type: 'hello', catalog_id: catalogId, tools }));
+    // ready ACK 워치독 — 광고가 실제로 접수됐음을 확인할 때까지는 성공으로
+    // 치지 않는다. 시간 안에 ACK 가 없으면 소켓을 끊어 재연결(fresh hello).
+    this.clearAckWatchdog();
+    this.ackWatchdog = setTimeout(() => {
+      this.ackWatchdog = null;
+      if (this.stopped) return;
+      this.opts.log?.('도구 카탈로그 ready 미수신 — 재연결로 재광고');
+      try {
+        this.ws?.close();
+      } catch {
+        /* onclose 가 재연결을 잡는다 */
+      }
+    }, READY_ACK_TIMEOUT_MS);
   }
 
   private async onMessage(text: string): Promise<void> {
@@ -183,6 +227,7 @@ export class MobileToolBridge {
     }
     if (msg.type === 'ready') {
       if (msg.catalog_id !== this.pendingCatalogId) return;
+      this.clearAckWatchdog();
       this.emit({
         state: 'connected',
         toolCount: Number.isFinite(msg.tool_count) ? Math.max(0, Math.trunc(msg.tool_count as number)) : 0,

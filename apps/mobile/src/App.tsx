@@ -157,17 +157,30 @@ export default function App(): React.ReactElement {
   }, [handleLogout]);
 
   // 도구 그룹 설정 영속.
+  //
+  // ⚠ groupsRef 는 렌더 때만 따라오므로, hello(카탈로그 광고)가 그룹 변경을
+  // **즉시** 보려면 ref 를 상태보다 먼저 직접 갱신해야 한다 — 안 그러면
+  // 토글 직후의 재광고가 옛 카탈로그를 내보내는 스테일 버그가 된다(실사고:
+  // 세션 실행 중 [위치] 를 켜도 에이전트에 Location 도구가 안 보임).
   useEffect(() => {
     void AsyncStorage.getItem('tool-groups').then((v) => {
       if (!v) return;
       try {
-        setToolGroups((prev) => ({ ...prev, ...(JSON.parse(v) as object) }));
+        const merged = { ...groupsRef.current, ...(JSON.parse(v) as object) } as Record<
+          ToolGroup,
+          boolean
+        >;
+        groupsRef.current = merged;
+        setToolGroups(merged);
+        // 브리지가 저장값 로드 전에 기본 카탈로그로 hello 했을 수 있다 — 재광고.
+        bridgeRef.current?.refreshCatalog();
       } catch {
         /* 무시 */
       }
     });
   }, []);
   const persistGroups = useCallback((next: Record<ToolGroup, boolean>) => {
+    groupsRef.current = next; // 재광고가 새 그룹을 보도록 렌더보다 먼저.
     setToolGroups(next);
     void AsyncStorage.setItem('tool-groups', JSON.stringify(next));
     bridgeRef.current?.refreshCatalog();

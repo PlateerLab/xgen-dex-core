@@ -254,3 +254,54 @@ select {
   border: 1px solid var(--border); border-radius: 12px;
   padding: 13px 14px; font-size: 15px; width: 100%; appearance: none; -webkit-appearance: none;
 }
+
+/* ── 컴포저 개편 — 필 입력창 + 원형 전송 버튼 ── */
+.composer { background: var(--panel); border-top: 1px solid var(--border); padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+.composer-box {
+  display: flex; align-items: flex-end; gap: 8px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 22px; padding: 6px 6px 6px 16px;
+}
+.composer-box:focus-within { border-color: var(--primary); }
+.composer-box textarea {
+  flex: 1; resize: none; border: none; background: transparent; padding: 8px 0;
+  max-height: 132px; min-height: 22px; line-height: 22px; border-radius: 0;
+}
+.composer-box textarea:focus { border: none; }
+.send-btn {
+  flex: none; width: 38px; height: 38px; border-radius: 50%;
+  background: var(--primary); color: var(--on-primary);
+  display: flex; align-items: center; justify-content: center;
+}
+.send-btn svg { display: block; margin-left: 1px; }
+.send-btn:active { background: var(--primary-press); }
+.send-btn.disabled { opacity: 0.35; pointer-events: none; }
+.send-btn.stop { background: var(--danger); }
+.send-btn.stop svg { margin-left: 0; }
+
+/* ── 설정 도구 그룹 (스위치) ── */
+.group-list { margin-top: 12px; border-top: 1px solid var(--border); }
+.group-row { display: flex; align-items: center; gap: 12px; padding: 12px 2px; border-bottom: 1px solid var(--border); }
+.group-row:last-child { border-bottom: none; }
+.group-meta { flex: 1; min-width: 0; }
+.group-name { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.group-perm-tag {
+  font-size: 10px; font-weight: 700; color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border-radius: 6px; padding: 1px 6px;
+}
+.group-desc { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.group-denied { font-size: 11px; color: var(--danger); margin-top: 3px; }
+.switch { position: relative; flex: none; width: 46px; height: 28px; display: inline-block; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; }
+.switch .track {
+  position: absolute; inset: 0; border-radius: 14px; background: var(--border); transition: background 150ms;
+}
+.switch .track::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px;
+  border-radius: 50%; background: #fff; transition: transform 150ms;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.switch input:checked + .track { background: var(--primary); }
+.switch input:checked + .track::after { transform: translateX(18px); }
+.switch input:disabled + .track { opacity: 0.4; }

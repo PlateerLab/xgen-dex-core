@@ -66,6 +66,12 @@ function fakePort(): DevicePort & { files: Map<string, string>; notified: string
       files.set(fileName, '<jpeg>');
       return fileName;
     },
+    async location() {
+      return { latitude: 37.5665, longitude: 126.978, accuracy: 12 };
+    },
+    async requestPermission() {
+      return 'granted' as const;
+    },
   };
 }
 
@@ -123,6 +129,29 @@ test('알림/클립보드/기기정보 — 결과가 LocalToolResult 계약을 �
   const parsed = JSON.parse(info.content[0].text);
   assert.equal(parsed.model, 'Pixel-테스트');
   assert.equal(parsed.network.connectionType, 'wifi');
+});
+
+test('그룹 게이트 — 꺼진 그룹의 도구는 카탈로그에서 빠지고 호출도 거부된다', async () => {
+  const { advertiseMobileTools: adv, TOOL_TO_GROUP } = await import('../src/lib/mobile-tools');
+  const enabled = { location: false, camera: false } as const;
+  const names = adv(enabled).map((t) => t.name);
+  assert.ok(!names.includes('Location'));
+  assert.ok(!names.includes('TakePhoto'));
+  assert.ok(names.includes('ReadFile')); // 다른 그룹은 그대로
+
+  const port = fakePort();
+  const blocked = await callMobileTool(port, 'Location', {}, enabled);
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.content[0].text, /꺼 두었습니다/);
+  assert.equal(TOOL_TO_GROUP.Location, 'location');
+});
+
+test('Location — 위도/경도/지도 링크를 돌려준다', async () => {
+  const port = fakePort();
+  const r = await callMobileTool(port, 'Location', {});
+  const parsed = JSON.parse(r.content[0].text);
+  assert.equal(parsed.latitude, 37.5665);
+  assert.match(parsed.maps, /maps\.google\.com/);
 });
 
 test('OpenUrl — http(s) 만, TakePhoto — 기본 파일명 자동', async () => {

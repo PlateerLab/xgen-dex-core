@@ -42,6 +42,8 @@
     <!-- 모바일 도구 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" /> <!-- Notify (API 33+) -->
     <uses-permission android:name="android.permission.CAMERA" />             <!-- TakePhoto -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" /> <!-- Location -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />   <!-- Location -->
     <uses-permission android:name="android.permission.VIBRATE" />            <!-- Vibrate -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" /> <!-- DeviceInfo -->
     <!-- 파일 도구(공용 Documents/XGenDex) — API 32 이하 하위호환 -->

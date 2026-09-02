@@ -17,7 +17,14 @@ import type { Agent, Conversation } from '@dex/protocol';
 import { App as CapApp } from '@capacitor/app';
 import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState } from './lib/chat-ws';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
-import { advertiseMobileTools, callMobileTool } from './lib/mobile-tools';
+import {
+  advertiseMobileTools,
+  callMobileTool,
+  TOOL_GROUPS,
+  type PermissionState,
+  type ToolGroup,
+} from './lib/mobile-tools';
+import { Preferences } from '@capacitor/preferences';
 import { capacitorPort, ensureDevicePermissions } from './lib/capacitor-port';
 import { friendlyError } from './lib/errors';
 import { diagEntries, diagLog, onDiag } from './lib/diag';
@@ -54,7 +61,51 @@ export default function App(): React.ReactElement {
   const [drawer, setDrawer] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ state: 'off', toolCount: 0 });
   const [toolsEnabled, setToolsEnabled] = useState(true);
+  /** 그룹별 on/off — [도구 켜기] = OS 승인까지 통과해야 true. 영속. */
+  const [toolGroups, setToolGroups] = useState<Record<ToolGroup, boolean>>({
+    files: true, notify: true, clipboard: true, device: true,
+    camera: true, location: false, actions: true,
+  });
+  const [permStates, setPermStates] = useState<Partial<Record<ToolGroup, PermissionState>>>({});
+  const groupsRef = useRef(toolGroups);
+  groupsRef.current = toolGroups;
   const bridgeRef = useRef<MobileToolBridge | null>(null);
+
+  // 그룹 설정 영속화 — 위치는 기본 off (민감 권한은 명시적 켜기).
+  useEffect(() => {
+    void Preferences.get({ key: 'tool-groups' }).then((r) => {
+      if (!r.value) return;
+      try {
+        setToolGroups((prev) => ({ ...prev, ...(JSON.parse(r.value as string) as object) }));
+      } catch {
+        /* 무시 */
+      }
+    });
+  }, []);
+  const persistGroups = useCallback((next: Record<ToolGroup, boolean>) => {
+    setToolGroups(next);
+    void Preferences.set({ key: 'tool-groups', value: JSON.stringify(next) });
+    bridgeRef.current?.refreshCatalog(); // 서버 카탈로그 즉시 갱신
+  }, []);
+
+  /** [도구 켜기] — 켜는 순간 OS 승인 요청. 거부되면 켜지지 않는다. */
+  const toggleGroup = useCallback(
+    async (id: ToolGroup, on: boolean) => {
+      if (!on) {
+        persistGroups({ ...groupsRef.current, [id]: false });
+        return;
+      }
+      const meta = TOOL_GROUPS.find((g) => g.id === id);
+      if (meta?.permission) {
+        const state = await capacitorPort.requestPermission(meta.permission);
+        setPermStates((prev) => ({ ...prev, [id]: state }));
+        diagLog(`도구 그룹 '${id}' 권한 요청 → ${state}`);
+        if (state === 'denied') return; // 승인 없인 켜지 않는다
+      }
+      persistGroups({ ...groupsRef.current, [id]: true });
+    },
+    [persistGroups],
+  );
 
   // 채팅 대상 — 섹션을 오가도 유지된다 ([현재 채팅]의 실체).
   const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
@@ -117,8 +168,8 @@ export default function App(): React.ReactElement {
     const bridge = new MobileToolBridge({
       wsBase: wsBaseOf(client.session.serverUrl),
       userId: client.session.userId,
-      catalog: advertiseMobileTools,
-      call: (tool, args) => callMobileTool(capacitorPort, tool, args),
+      catalog: () => advertiseMobileTools(groupsRef.current),
+      call: (tool, args) => callMobileTool(capacitorPort, tool, args, groupsRef.current),
       onStatus: setBridgeStatus,
       log: diagLog,
     });
@@ -206,6 +257,9 @@ export default function App(): React.ReactElement {
             bridgeStatus={bridgeStatus}
             toolsEnabled={toolsEnabled}
             onToggleTools={setToolsEnabled}
+            toolGroups={toolGroups}
+            permStates={permStates}
+            onToggleGroup={(id: ToolGroup, on: boolean) => void toggleGroup(id, on)}
             onLogout={() => void handleLogout()}
           />
         </div>
@@ -805,10 +859,12 @@ function ChatSection({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const send = async (): Promise<void> => {
     const text = input.trim();
     if (!text || running || !chatRef.current) return;
     setInput('');
+    if (composerRef.current) composerRef.current.style.height = 'auto';
     setRunning(true);
     setMessages((prev) => [...prev, { role: 'user', text }]);
     try {
@@ -853,41 +909,63 @@ function ChatSection({
       </div>
 
       <div className="composer">
-        <textarea
-          value={input}
-          placeholder={
-            wsState === 'connected'
-              ? '메시지…'
-              : wsState === 'unsupported'
-                ? '이 에이전트는 모바일 채팅을 지원하지 않습니다'
-                : '연결 중…'
-          }
-          rows={1}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void send();
+        <div className="composer-box">
+          <textarea
+            ref={composerRef}
+            value={input}
+            placeholder={
+              wsState === 'connected'
+                ? '메시지를 입력하세요'
+                : wsState === 'unsupported'
+                  ? '이 에이전트는 모바일 채팅을 지원하지 않습니다'
+                  : '연결 중…'
             }
-          }}
-        />
-        {running ? (
-          <div className="btn primary" role="button" onClick={() => chatRef.current?.stop()}>
-            중지
-          </div>
-        ) : (
-          <div
-            className={
-              wsState !== 'connected' || !input.trim() ? 'btn primary disabled' : 'btn primary'
-            }
-            role="button"
-            onClick={() => {
-              if (wsState === 'connected' && input.trim()) void send();
+            rows={1}
+            onChange={(e) => {
+              setInput(e.target.value);
+              // 자동 확장 — 내용만큼 (최대 높이는 CSS 가 자른다).
+              const el = e.target;
+              el.style.height = 'auto';
+              el.style.height = `${el.scrollHeight}px`;
             }}
-          >
-            전송
-          </div>
-        )}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          {running ? (
+            <div
+              className="send-btn stop"
+              role="button"
+              aria-label="중지"
+              onClick={() => chatRef.current?.stop()}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+              </svg>
+            </div>
+          ) : (
+            <div
+              className={
+                wsState !== 'connected' || !input.trim() ? 'send-btn disabled' : 'send-btn'
+              }
+              role="button"
+              aria-label="전송"
+              onClick={() => {
+                if (wsState === 'connected' && input.trim()) void send();
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18">
+                <path
+                  d="M3.4 20.4 21 12 3.4 3.6 3.4 10.2 15 12 3.4 13.8Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -900,15 +978,20 @@ function SettingsSection({
   bridgeStatus,
   toolsEnabled,
   onToggleTools,
+  toolGroups,
+  permStates,
+  onToggleGroup,
   onLogout,
 }: {
   client: XgenMobileClient;
   bridgeStatus: BridgeStatus;
   toolsEnabled: boolean;
   onToggleTools: (on: boolean) => void;
+  toolGroups: Record<ToolGroup, boolean>;
+  permStates: Partial<Record<ToolGroup, PermissionState>>;
+  onToggleGroup: (id: ToolGroup, on: boolean) => void;
   onLogout: () => void;
 }): React.ReactElement {
-  const tools = useMemo(() => advertiseMobileTools(), []);
   const bridgeLabel =
     bridgeStatus.state === 'connected'
       ? `연결됨 · 서버에 도구 ${bridgeStatus.toolCount}개 적용`
@@ -932,17 +1015,41 @@ function SettingsSection({
         </label>
         <div className={`tool-state ${bridgeStatus.state}`}>{bridgeLabel}</div>
         <div className="card-sub">
-          켜져 있으면 대화 중 에이전트가 아래 도구로 휴대폰을 조작할 수 있습니다. 파일 도구의
-          범위는 <b>문서/XGenDex</b> 폴더입니다. 데스크톱 커넥터가 켜져 있어도 이 앱이 연결된
-          동안은 휴대폰 도구가 우선합니다.
+          그룹을 켜면 필요한 <b>시스템 권한 승인</b>을 먼저 요청합니다 — 승인해야 켜집니다.
+          꺼진 그룹의 도구는 에이전트에게 노출되지 않습니다. 데스크톱 커넥터가 켜져 있어도
+          이 앱이 연결된 동안은 휴대폰 도구가 우선합니다.
         </div>
-        <div className="tool-list">
-          {tools.map((t) => (
-            <div key={t.name} className="tool-item">
-              <div className="tool-name">{t.name}</div>
-              <div className="tool-desc">{t.description}</div>
-            </div>
-          ))}
+
+        <div className="group-list">
+          {TOOL_GROUPS.map((g) => {
+            const on = toolGroups[g.id];
+            const perm = permStates[g.id];
+            return (
+              <div key={g.id} className="group-row">
+                <div className="group-meta">
+                  <div className="group-name">
+                    {g.label}
+                    {g.permission && <span className="group-perm-tag">권한 필요</span>}
+                  </div>
+                  <div className="group-desc">{g.description}</div>
+                  {perm === 'denied' && (
+                    <div className="group-denied">
+                      권한이 거부되었습니다 — 휴대폰 설정 &gt; 앱 &gt; XGEN Dex 에서 허용하세요.
+                    </div>
+                  )}
+                </div>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={!toolsEnabled}
+                    onChange={(e) => onToggleGroup(g.id, e.target.checked)}
+                  />
+                  <span className="track" />
+                </label>
+              </div>
+            );
+          })}
         </div>
       </div>
 

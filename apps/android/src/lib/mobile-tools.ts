@@ -18,6 +18,46 @@
 
 export const MOBILE_SERVER = 'mobile';
 
+/**
+ * 도구 그룹 — 설정의 [도구 켜기] 단위이자 OS 권한 승인 단위.
+ * 그룹을 켜는 순간 해당 OS 권한을 실제로 요청하고(승인 구조), 꺼진 그룹의
+ * 도구는 카탈로그에서 빠지며 호출도 거부된다.
+ */
+export type ToolGroup = 'files' | 'notify' | 'clipboard' | 'device' | 'camera' | 'location' | 'actions';
+
+export const TOOL_GROUPS: Array<{
+  id: ToolGroup;
+  label: string;
+  description: string;
+  /** 켤 때 요청할 OS 권한 (없으면 승인 불필요). */
+  permission?: 'files' | 'notifications' | 'camera' | 'location';
+}> = [
+  { id: 'files', label: '파일', description: '문서/XGenDex 폴더 읽기·쓰기·삭제', permission: 'files' },
+  { id: 'notify', label: '알림', description: '휴대폰 알림 표시', permission: 'notifications' },
+  { id: 'clipboard', label: '클립보드', description: '클립보드 읽기·쓰기' },
+  { id: 'device', label: '기기 정보', description: '모델·배터리·네트워크 상태 조회' },
+  { id: 'camera', label: '카메라', description: '사진 촬영 후 문서 폴더에 저장', permission: 'camera' },
+  { id: 'location', label: '위치', description: '현재 위치(GPS) 조회', permission: 'location' },
+  { id: 'actions', label: '동작', description: '공유 시트·URL 열기·진동' },
+];
+
+export const TOOL_TO_GROUP: Record<string, ToolGroup> = {
+  ReadFile: 'files',
+  WriteFile: 'files',
+  ListDir: 'files',
+  DeleteFile: 'files',
+  Notify: 'notify',
+  Clipboard: 'clipboard',
+  DeviceInfo: 'device',
+  TakePhoto: 'camera',
+  Location: 'location',
+  Share: 'actions',
+  OpenUrl: 'actions',
+  Vibrate: 'actions',
+};
+
+export type PermissionState = 'granted' | 'denied' | 'prompt';
+
 export interface ToolResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
@@ -48,12 +88,17 @@ export interface DevicePort {
   vibrate(): Promise<void>;
   /** 카메라 촬영 → 루트 아래 저장, 저장된 상대 경로 반환. */
   takePhoto(fileName: string): Promise<string>;
+  /** 현재 위치 (GPS). */
+  location(): Promise<{ latitude: number; longitude: number; accuracy?: number }>;
+  /** OS 권한 요청 — [도구 켜기]가 부른다. */
+  requestPermission(kind: 'files' | 'notifications' | 'camera' | 'location'): Promise<PermissionState>;
 }
 
 const str = (desc: string): Record<string, unknown> => ({ type: 'string', description: desc });
 
-/** 카탈로그 — hello 프레임에 그대로 실린다. 스키마는 JSON Schema. */
-export function advertiseMobileTools(): ToolAdvert[] {
+/** 카탈로그 — hello 프레임에 그대로 실린다. 스키마는 JSON Schema.
+ *  enabled 를 주면 켜진 그룹의 도구만 광고한다 ([도구 켜기] 단위 노출). */
+export function advertiseMobileTools(enabled?: Partial<Record<ToolGroup, boolean>>): ToolAdvert[] {
   const t = (
     name: string,
     description: string,
@@ -65,7 +110,7 @@ export function advertiseMobileTools(): ToolAdvert[] {
     description,
     inputSchema: { type: 'object', properties, required },
   });
-  return [
+  const all: ToolAdvert[] = [
     t('ReadFile', '휴대폰의 XGenDex 문서 폴더에서 텍스트 파일을 읽습니다.', {
       path: str('루트 상대 경로 (예: "메모/할일.txt")'),
     }, ['path']),
@@ -101,7 +146,10 @@ export function advertiseMobileTools(): ToolAdvert[] {
     t('TakePhoto', '카메라를 열어 사진을 찍고 XGenDex 문서 폴더에 저장합니다.', {
       fileName: str('저장 파일명 (예: "현장사진.jpg", 비우면 자동)'),
     }),
+    t('Location', '휴대폰의 현재 위치(위도/경도)를 조회합니다.', {}),
   ];
+  if (!enabled) return all;
+  return all.filter((t2) => enabled[TOOL_TO_GROUP[t2.name]] !== false);
 }
 
 const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] });
@@ -121,8 +169,14 @@ export async function callMobileTool(
   port: DevicePort,
   tool: string,
   rawArgs: unknown,
+  enabled?: Partial<Record<ToolGroup, boolean>>,
 ): Promise<ToolResult> {
   const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>;
+  // 꺼진 그룹의 도구는 (카탈로그 재광고 전 레이스로 호출이 와도) 거부한다.
+  const group = TOOL_TO_GROUP[tool];
+  if (enabled && group && enabled[group] === false) {
+    return err(`이 도구는 사용자가 설정에서 꺼 두었습니다 (${group}).`);
+  }
   try {
     switch (tool) {
       case 'ReadFile': {
@@ -191,6 +245,21 @@ export async function callMobileTool(
         const name = safeRelPath(args.fileName ?? '') || `photo-${Date.now()}.jpg`;
         const saved = await port.takePhoto(name);
         return ok(`사진을 저장했습니다: ${saved}`);
+      }
+      case 'Location': {
+        const pos = await port.location();
+        return ok(
+          JSON.stringify(
+            {
+              latitude: pos.latitude,
+              longitude: pos.longitude,
+              accuracy_m: pos.accuracy ?? null,
+              maps: `https://maps.google.com/?q=${pos.latitude},${pos.longitude}`,
+            },
+            null,
+            2,
+          ),
+        );
       }
       default:
         return err(`알 수 없는 도구: ${tool}`);

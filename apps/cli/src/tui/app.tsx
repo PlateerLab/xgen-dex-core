@@ -18,6 +18,9 @@ export function App({
   engine: TuiEngine;
   /** 기억해 둔 터미널 취향. 지금은 한/영 하나뿐이다. */
   preferences?: {
+    /** macOS 시스템 입력기를 쓰며 CLI 자체 조합기를 끄는가. */
+    nativeIme?: boolean;
+    imeShortcut?: 'Caps Lock' | 'Ctrl+Space';
     hangulMode: boolean;
     onHangulModeChange?: (enabled: boolean) => void;
     /** 한/영 키를 누르면 알려 준다. 되는 터미널에서만 온다. */

@@ -17,10 +17,89 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
       - run: npm --prefix apps/mobile test
       - run: npm --prefix apps/mobile run typecheck
+
+  # ── 캐시 워밍 (main 푸시에서만) ──
+  #
+  # 태그(릴리스) 런은 **main 에 저장된 캐시만** 복원할 수 있다 — 태그 런이
+  # 스스로 저장한 캐시는 다음 태그가 못 쓴다. 그래서 릴리스가 빨라지려면
+  # main 푸시 시점에 gradle 의존성과 iOS 컴파일 캐시(ccache)를 미리 만들어
+  # 둬야 한다. PR 검증과 무관하게 병렬로 돌고, 실패해도 아무것도 막지 않는다.
+  warm-android:
+    name: 캐시 워밍 — 안드로이드
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - name: APK 빌드 (debug 폴백 키 — 캐시 생성용)
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleRelease
+
+  warm-ios:
+    name: 캐시 워밍 — iOS
+    if: github.event_name == 'push'
+    runs-on: macos-15
+    continue-on-error: true
+    env:
+      CCACHE_DIR: /Users/runner/.ccache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - name: Xcode 16 선택
+        run: |
+          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XC" ] && sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - name: ccache 설치
+        run: brew install ccache || true
+      - uses: actions/cache@v4
+        with:
+          path: /Users/runner/.ccache
+          key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
+          restore-keys: ios-ccache-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            apps/mobile/ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json', 'apps/mobile/ios/Podfile', 'apps/mobile/ios/Podfile.properties.json') }}
+          restore-keys: ios-pods-
+      - name: Pod install
+        working-directory: apps/mobile/ios
+        run: pod install
+      - name: Xcode 빌드 (캐시 생성용)
+        working-directory: apps/mobile/ios
+        run: |
+          xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: ccache 통계
+        run: ccache -s || true
 
   verify:
     name: 계약 · 타입 · 테스트

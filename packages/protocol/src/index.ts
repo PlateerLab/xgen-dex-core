@@ -20,6 +20,7 @@
  * (keychain) and base-URL config are the host's concern (Electron main).
  */
 import { AgentDataApi } from './agent-data';
+import { FilestoreApi } from './filestore';
 import { AgentsApi } from './agents';
 import { AuthApi } from './auth';
 import { AvatarsApi } from './avatars';
@@ -59,6 +60,7 @@ export class XgenClient {
   readonly avatars: AvatarsApi;
   readonly voice: VoiceApi;
   readonly agentData: AgentDataApi;
+  readonly filestore: FilestoreApi;
 
   private refreshToken?: string;
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
@@ -85,6 +87,7 @@ export class XgenClient {
     this.avatars = new AvatarsApi(this.http);
     this.voice = new VoiceApi(this.http);
     this.agentData = new AgentDataApi(this.http);
+    this.filestore = new FilestoreApi(this.http);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -235,6 +238,7 @@ export class XgenClient {
 
 export * from './types';
 export * from './agent-data';
+export * from './filestore';
 export * from './notifications';
 export { ApiError } from './client';
 export { SseParser } from './sse';

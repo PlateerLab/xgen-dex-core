@@ -3282,71 +3282,28 @@ ipcMain.handle(CHANNELS.fsCloudReadRaw, async (_e, path: unknown) => {
   }
 });
 
-/** 파일 저장소 경로 → 항목 id. 폴더 평면 트리(full_path)와 폴더 항목 목록으로 푼다. */
-async function resolveFilestoreItemId(auth: TransportAuth, path: string): Promise<number | null> {
-  const get = async <T>(p: string): Promise<T | null> => {
-    const res = await syncTransportFetch(auth, `${auth.baseUrl}${p}`, {
-      headers: await syncAuthHeaders(auth),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  };
-  const clean = path.replace(/^\/+/, '');
-  const slash = clean.lastIndexOf('/');
-  const dirPath = slash === -1 ? '' : clean.slice(0, slash);
-  const fileName = slash === -1 ? clean : clean.slice(slash + 1);
-  let contents: { items?: Array<{ id: number; file_name: string }> } | null = null;
-  if (!dirPath) {
-    contents = await get('/api/filestore/root');
-  } else {
-    const tree = await get<{ folders?: Array<{ id: number; full_path: string }> }>(
-      '/api/filestore/tree',
-    );
-    const folder = (tree?.folders ?? []).find(
-      (f) => String(f.full_path ?? '').replace(/^\/+|\/+$/g, '') === dirPath,
-    );
-    if (!folder) return null;
-    contents = await get(`/api/filestore/folders/${folder.id}/items`);
-  }
-  const item = (contents?.items ?? []).find((it) => it.file_name === fileName);
-  return item ? item.id : null;
-}
-
 ipcMain.handle(CHANNELS.fsCloudOfficePreview, async (_e, path: unknown) => {
-  const auth = viewerCloudAuth();
-  if (!auth || typeof path !== 'string' || !path) return { ok: false, error: '연결되지 않음' };
+  if (!client || typeof path !== 'string' || !path) return { ok: false, error: '연결되지 않음' };
   try {
-    const itemId = await resolveFilestoreItemId(auth, path);
-    if (itemId == null) return { ok: false, error: '파일 저장소에서 항목을 찾지 못했습니다' };
-    // 콜드 렌더는 수십 초까지 걸린다 (웹 파일 저장소와 동일 계약).
-    const res = await syncTransportFetch(auth, `${auth.baseUrl}/api/agentflow/filestore-preview/${itemId}`, {
-      headers: await syncAuthHeaders(auth),
-    });
-    if (!res.ok) return { ok: false, error: `미리보기 렌더 실패 (${res.status})` };
-    const body = (await res.json()) as { pages?: string[] };
-    return { ok: true, itemId, pages: Array.isArray(body.pages) ? body.pages : [] };
+    // 경로→항목 해석과 렌더 호출은 전부 프로토콜(FilestoreApi) — 앱은 서버
+    // 경로를 직접 부르지 않는다 (계약 검사 no-direct-api).
+    const item = await client.filestore.resolveItemByPath(path);
+    if (!item) return { ok: false, error: '파일 저장소에서 항목을 찾지 못했습니다' };
+    const preview = await client.filestore.officePreview(item.id);
+    if (preview.pages.length === 0) return { ok: false, error: '미리보기 페이지가 없습니다' };
+    return { ok: true, itemId: item.id, pages: preview.pages };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
 });
 
 ipcMain.handle(CHANNELS.fsCloudOfficePreviewPage, async (_e, itemId: unknown, page: unknown) => {
-  const auth = viewerCloudAuth();
   const id = typeof itemId === 'number' ? itemId : NaN;
-  if (!auth || !Number.isFinite(id) || typeof page !== 'string' || !page)
+  if (!client || !Number.isFinite(id) || typeof page !== 'string' || !page)
     return { ok: false, error: '잘못된 요청' };
   try {
-    const res = await syncTransportFetch(
-      auth,
-      `${auth.baseUrl}/api/agentflow/filestore-preview/${id}/page/${encodeURIComponent(page)}`,
-      { headers: await syncAuthHeaders(auth) },
-    );
-    if (!res.ok) return { ok: false, error: `페이지 조회 실패 (${res.status})` };
-    return {
-      ok: true,
-      bytes: new Uint8Array(await res.arrayBuffer()),
-      contentType: res.headers.get('content-type') ?? '',
-    };
+    const res = await client.filestore.officePreviewPage(id, page);
+    return { ok: true, bytes: res.bytes, contentType: res.contentType };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

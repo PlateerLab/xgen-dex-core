@@ -190,8 +190,6 @@ jobs:
     # 코드와 비호환(빌드 실패 실측). Xcode 16 이 실려 있는 macos-15 로 고정한다.
     runs-on: macos-15
     continue-on-error: true
-    env:
-      CCACHE_DIR: /Users/runner/.ccache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -211,9 +209,12 @@ jobs:
       # 런 사이에 보존하면 두 번째 릴리스부터 컴파일이 캐시 히트로 끝난다.
       - name: ccache 설치
         run: brew install ccache || true
+      # ⚠ CCACHE_DIR env 는 쓰지 않는다 — xcodebuild 의 컴파일은 별도 빌드 서비스
+      # 프로세스에서 돌아 CLI env 를 물려받지 않는다(실측: 커스텀 디렉터리 0.0GiB).
+      # macOS 기본 캐시 디렉터리를 그대로 쓰고 그 경로를 저장한다.
       - uses: actions/cache@v4
         with:
-          path: /Users/runner/.ccache
+          path: ~/Library/Caches/ccache
           key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
           restore-keys: ios-ccache-
       - uses: actions/cache@v4

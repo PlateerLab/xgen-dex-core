@@ -60,8 +60,6 @@ jobs:
     if: github.event_name == 'push'
     runs-on: macos-15
     continue-on-error: true
-    env:
-      CCACHE_DIR: /Users/runner/.ccache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -77,9 +75,12 @@ jobs:
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
       - name: ccache 설치
         run: brew install ccache || true
+      # ⚠ CCACHE_DIR env 는 쓰지 않는다 — xcodebuild 의 컴파일은 별도 빌드 서비스
+      # 프로세스에서 돌아 CLI env 를 물려받지 않는다(실측: 커스텀 디렉터리 0.0GiB).
+      # macOS 기본 캐시 디렉터리를 그대로 쓰고 그 경로를 저장한다.
       - uses: actions/cache@v4
         with:
-          path: /Users/runner/.ccache
+          path: ~/Library/Caches/ccache
           key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
           restore-keys: ios-ccache-
       - uses: actions/cache@v4

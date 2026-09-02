@@ -228,6 +228,22 @@ jobs:
       - name: Pod install
         working-directory: apps/mobile/ios
         run: pod install
+      - name: ccache 구성 (절대경로 래퍼)
+        run: |
+          # RN 의 ccache 래퍼는 CCACHE_BINARY '빌드 설정'에 의존하는데, Xcode 가
+          # 컴파일러 프로세스에 이를 env 로 넘기지 않아 조용히 순정 clang 으로
+          # 폴백한다(실측: 캐시 활동 0). 절대경로를 박은 래퍼를 만들어
+          # xcodebuild CLI 인자(CC/CXX)로 전 타깃에 강제한다 — env 의존 0.
+          CCACHE=$(brew --prefix)/bin/ccache
+          CLANG=$(xcrun -f clang); CLANGXX=$(xcrun -f clang++)
+          printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANG"   > /tmp/ccache-clang.sh
+          printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANGXX" > /tmp/ccache-clang++.sh
+          chmod +x /tmp/ccache-clang.sh /tmp/ccache-clang++.sh
+          # RN 권장 sloppiness — 전역 설정에 기록해 래퍼/통계가 같은 구성을 본다.
+          $CCACHE --set-config sloppiness=clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
+          $CCACHE --set-config file_clone=true
+          $CCACHE --set-config depend_mode=true
+          $CCACHE --set-config inode_cache=true
       - name: ccache 통계 초기화
         run: ccache -z || true
       - name: Xcode 빌드 (서명 없이)
@@ -235,6 +251,7 @@ jobs:
         run: |
           xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
             -configuration Release -sdk iphoneos -derivedDataPath build \
+            CC=/tmp/ccache-clang.sh CXX=/tmp/ccache-clang++.sh \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
       - name: ccache 통계
         run: ccache -s || true

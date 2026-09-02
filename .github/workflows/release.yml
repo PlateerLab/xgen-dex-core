@@ -317,7 +317,13 @@ jobs:
 
   publish:
     name: 릴리스 발행
-    needs: [desktop, packages, android]
+    # ios 를 needs 에 넣되 결과는 보지 않는다 — ipa 가 나왔으면 릴리스에 싣고,
+    # iOS 가 실패했어도(비차단 설계) 나머지 자산으로 릴리스는 발행한다.
+    # ios 를 기다리지 않으면 ipa 아티팩트가 릴리스에 못 붙는다(v1.25.1 실측).
+    needs: [desktop, packages, android, ios]
+    if: >-
+      always() && needs.desktop.result == 'success' &&
+      needs.packages.result == 'success' && needs.android.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

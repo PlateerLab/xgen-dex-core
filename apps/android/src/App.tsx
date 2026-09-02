@@ -1,9 +1,15 @@
 /**
  * XGEN Dex Android — 서버 세션 채팅 + 모바일 도구.
  *
- * 화면 셋: 로그인 → 에이전트 목록 → 채팅. 데스크톱의 클라우드/브라우저 등
- * 특수 기능은 없다 — 모바일은 "서버 세션의 채팅 클라이언트 + 이 휴대폰을
- * 조작하는 도구"가 전부다 (제품 정의).
+ * 구조(제품 지시): 좌상단 [☰] → 사이드바(드로어)로 세 섹션 이동:
+ *   [현재 채팅]      마지막으로 연 대화 — 섹션을 오가도 WS/스트림이 살아 있다
+ *   [에이전트 목록]  검색 + 새 대화/이어하기
+ *   [설정]           모바일 도구(토글·상태·도구 목록)·계정·진단·앱 정보
+ *
+ * 세 섹션은 전부 마운트를 유지하고 hidden 으로만 전환한다 — 채팅 WS 와
+ * 스크롤 위치가 이동 중에도 보존된다. 목록/버튼류는 <button>-flex 대신
+ * 일반 블록 마크업을 쓴다 (일부 안드로이드 WebView 의 button 렌더 특이점
+ * 회피 — 실기기에서 목록이 빈 줄로 그려진 사고의 재발 방지).
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -13,6 +19,8 @@ import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState } fr
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import { advertiseMobileTools, callMobileTool } from './lib/mobile-tools';
 import { capacitorPort, ensureDevicePermissions } from './lib/capacitor-port';
+import { friendlyError } from './lib/errors';
+import { diagEntries, diagLog, onDiag } from './lib/diag';
 import {
   buildClient,
   clearSession,
@@ -24,9 +32,14 @@ import {
   wsBaseOf,
   type XgenMobileClient,
 } from './lib/xgen';
-import { diagEntries, diagLog, onDiag } from './lib/diag';
 
-type Screen = 'login' | 'agents' | 'chat';
+type Section = 'chat' | 'agents' | 'settings';
+
+const SECTION_TITLE: Record<Section, string> = {
+  chat: '현재 채팅',
+  agents: '에이전트',
+  settings: '설정',
+};
 
 interface Message {
   role: 'user' | 'assistant' | 'tool' | 'error';
@@ -35,17 +48,29 @@ interface Message {
 }
 
 export default function App(): React.ReactElement {
-  const [screen, setScreen] = useState<Screen>('login');
+  const [booting, setBooting] = useState(true);
   const [client, setClient] = useState<XgenMobileClient | null>(null);
+  const [section, setSection] = useState<Section>('agents');
+  const [drawer, setDrawer] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ state: 'off', toolCount: 0 });
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const bridgeRef = useRef<MobileToolBridge | null>(null);
 
-  // ── 자동 로그인 체인 ──
-  //   1) 저장 토큰을 서버에 검증/회전(api.restore) — 성공이면 바로 입장.
-  //   2) 실패면 저장 자격증명(자동 로그인 켠 경우)으로 재로그인.
-  //   3) 그래도 실패면 로그인 화면 (서버/이메일 프리필).
-  const [booting, setBooting] = useState(true);
+  // 채팅 대상 — 섹션을 오가도 유지된다 ([현재 채팅]의 실체).
+  const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
+  const [activeInteraction, setActiveInteraction] = useState('');
+  const [chatWsState, setChatWsState] = useState<ChatWsState>('closed');
+
+  const handleLogout = useCallback(async () => {
+    bridgeRef.current?.stop();
+    await clearSession();
+    await saveCredentials(null);
+    setClient(null);
+    setActiveAgent(null);
+    setSection('agents');
+  }, []);
+
+  // ── 자동 로그인 체인: 토큰 검증/회전 → 저장 자격증명 재로그인 → 로그인 화면 ──
   useEffect(() => {
     void (async () => {
       try {
@@ -59,7 +84,6 @@ export default function App(): React.ReactElement {
           if (alive) {
             diagLog('자동 로그인: 저장 토큰 유효');
             setClient(c);
-            setScreen('agents');
             return;
           }
           await clearSession();
@@ -70,7 +94,6 @@ export default function App(): React.ReactElement {
             const session = await login(cred.serverUrl, cred.email, cred.password);
             diagLog('자동 로그인: 저장 자격증명으로 재로그인');
             setClient(buildClient(session, () => void handleLogout()));
-            setScreen('agents');
             return;
           } catch (e) {
             diagLog(`자동 재로그인 실패: ${e instanceof Error ? e.message : String(e)}`);
@@ -80,19 +103,9 @@ export default function App(): React.ReactElement {
         setBooting(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [handleLogout]);
 
-  // 앱 복귀 — 백그라운드에서 끊긴 도구 브리지를 즉시 다시 세운다
-  // (백오프 대기를 기다리지 않는다).
-  useEffect(() => {
-    const sub = CapApp.addListener('resume', () => bridgeRef.current?.kick());
-    return () => {
-      void sub.then((h) => h.remove());
-    };
-  }, []);
-
-  // ── 모바일 도구 브리지 수명 — 로그인 상태 + 토글에 따른다 ──
+  // ── 모바일 도구 브리지 수명 ──
   useEffect(() => {
     bridgeRef.current?.stop();
     bridgeRef.current = null;
@@ -113,66 +126,179 @@ export default function App(): React.ReactElement {
     return () => bridge.stop();
   }, [client, toolsEnabled]);
 
+  useEffect(() => {
+    const sub = CapApp.addListener('resume', () => bridgeRef.current?.kick());
+    return () => {
+      void sub.then((h) => h.remove());
+    };
+  }, []);
+
   const handleLogin = useCallback(
     async (server: string, email: string, password: string, remember: boolean) => {
       const session = await login(server, email, password);
       await saveCredentials(remember ? { serverUrl: session.serverUrl, email, password } : null);
       setClient(buildClient(session, () => void handleLogout()));
-      setScreen('agents');
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [handleLogout],
   );
-
-  const handleLogout = useCallback(async () => {
-    bridgeRef.current?.stop();
-    await clearSession();
-    await saveCredentials(null);
-    setClient(null);
-    setScreen('login');
-  }, []);
-
-  // ── 채팅 대상 ──
-  const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
-  const [activeInteraction, setActiveInteraction] = useState<string>('');
 
   const openChat = useCallback((agent: Agent, interactionId?: string) => {
     setActiveAgent(agent);
     setActiveInteraction(interactionId ?? newInteractionId(agent.workflowId));
-    setScreen('chat');
+    setSection('chat');
+    setDrawer(false);
+  }, []);
+
+  const go = useCallback((s: Section) => {
+    setSection(s);
+    setDrawer(false);
   }, []);
 
   if (booting) {
     return (
-      <div className="screen login">
-        <p className="muted center">자동 로그인 확인 중…</p>
+      <div className="boot">
+        <div className="boot-logo">XGEN Dex</div>
+        <div className="boot-sub">자동 로그인 확인 중…</div>
       </div>
     );
   }
-  if (screen === 'login' || !client) {
+  if (!client) {
     return <LoginScreen onLogin={handleLogin} />;
   }
-  if (screen === 'chat' && activeAgent) {
-    return (
-      <ChatScreen
-        client={client}
-        agent={activeAgent}
-        interactionId={activeInteraction}
-        bridgeStatus={bridgeStatus}
-        onBack={() => setScreen('agents')}
-      />
-    );
-  }
+
   return (
-    <AgentsScreen
-      client={client}
-      bridgeStatus={bridgeStatus}
-      toolsEnabled={toolsEnabled}
-      onToggleTools={setToolsEnabled}
-      onOpenChat={openChat}
-      onLogout={() => void handleLogout()}
-    />
+    <div className="shell">
+      <header className="topbar">
+        <div
+          className="icon-btn"
+          role="button"
+          aria-label="메뉴"
+          onClick={() => setDrawer(true)}
+        >
+          <span className="hamburger" />
+        </div>
+        <div className="topbar-title">
+          {section === 'chat' && activeAgent
+            ? activeAgent.workflowName || activeAgent.workflowId
+            : SECTION_TITLE[section]}
+        </div>
+        {section === 'chat' && <WsBadge state={chatWsState} bridge={bridgeStatus} />}
+      </header>
+
+      {/* 세 섹션 상시 마운트 — hidden 전환으로 채팅 WS/스크롤 보존 */}
+      <main className="content">
+        <div className={section === 'chat' ? 'section' : 'section off'}>
+          <ChatSection
+            client={client}
+            agent={activeAgent}
+            interactionId={activeInteraction}
+            onWsState={setChatWsState}
+            onPickAgent={() => go('agents')}
+          />
+        </div>
+        <div className={section === 'agents' ? 'section' : 'section off'}>
+          <AgentsSection client={client} onOpenChat={openChat} />
+        </div>
+        <div className={section === 'settings' ? 'section' : 'section off'}>
+          <SettingsSection
+            client={client}
+            bridgeStatus={bridgeStatus}
+            toolsEnabled={toolsEnabled}
+            onToggleTools={setToolsEnabled}
+            onLogout={() => void handleLogout()}
+          />
+        </div>
+      </main>
+
+      {/* 드로어 */}
+      {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
+      <nav className={drawer ? 'drawer open' : 'drawer'}>
+        <div className="drawer-head">
+          <div className="drawer-app">XGEN Dex</div>
+          <div className="drawer-user">
+            {client.session.username} · {shortHost(client.session.serverUrl)}
+          </div>
+        </div>
+        <DrawerItem
+          label="현재 채팅"
+          hint={activeAgent ? activeAgent.workflowName || activeAgent.workflowId : '대화 없음'}
+          active={section === 'chat'}
+          onClick={() => go('chat')}
+        />
+        <DrawerItem
+          label="에이전트 목록"
+          active={section === 'agents'}
+          onClick={() => go('agents')}
+        />
+        <DrawerItem
+          label="설정"
+          hint={
+            bridgeStatus.state === 'connected'
+              ? `모바일 도구 ${bridgeStatus.toolCount}개 연결됨`
+              : toolsEnabled
+                ? '모바일 도구 연결 중'
+                : '모바일 도구 꺼짐'
+          }
+          active={section === 'settings'}
+          onClick={() => go('settings')}
+        />
+      </nav>
+    </div>
   );
+}
+
+function shortHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function DrawerItem({
+  label,
+  hint,
+  active,
+  onClick,
+}: {
+  label: string;
+  hint?: string;
+  active: boolean;
+  onClick: () => void;
+}): React.ReactElement {
+  return (
+    <div
+      className={active ? 'drawer-item active' : 'drawer-item'}
+      role="button"
+      onClick={onClick}
+    >
+      <div className="drawer-item-label">{label}</div>
+      {hint && <div className="drawer-item-hint">{hint}</div>}
+    </div>
+  );
+}
+
+function WsBadge({
+  state,
+  bridge,
+}: {
+  state: ChatWsState;
+  bridge: BridgeStatus;
+}): React.ReactElement {
+  const label =
+    state === 'connected'
+      ? bridge.state === 'connected'
+        ? '연결됨 · 도구'
+        : '연결됨'
+      : state === 'unsupported'
+        ? '미지원'
+        : state === 'failed'
+          ? '연결 실패'
+          : state === 'closed'
+            ? ''
+            : '연결 중';
+  if (!label) return <span />;
+  return <span className={`ws-badge ${state}`}>{label}</span>;
 }
 
 // ── 로그인 ──────────────────────────────────────────────────────
@@ -189,8 +315,6 @@ function LoginScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  // 최근 서버/이메일 프리필 — 자동 재로그인이 실패해 여기 왔어도 다시 다
-  // 입력하게 하지 않는다.
   useEffect(() => {
     void loadCredentials().then((c) => {
       if (!c) return;
@@ -205,44 +329,64 @@ function LoginScreen({
     try {
       await onLogin(server, email, password, remember);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e, '로그인에 실패했습니다. 서버 주소와 계정을 확인하세요.'));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="screen login">
+    <div className="login">
       <div className="login-card">
-        <h1>XGEN Dex</h1>
-        <p className="muted">서버 세션 채팅 · 모바일 도구</p>
-        <input
-          placeholder="XGEN 서버 주소 (예: xgen.plateer.com)"
-          value={server}
-          onChange={(e) => setServer(e.target.value)}
-          autoCapitalize="none"
-        />
-        <input
-          placeholder="이메일"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoCapitalize="none"
-          inputMode="email"
-        />
-        <input
-          placeholder="비밀번호"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <label className="switch-row">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+        <div className="login-logo">XGEN Dex</div>
+        <div className="login-sub">서버 세션 채팅 · 모바일 도구</div>
+        <label className="field">
+          <span>서버 주소</span>
+          <input
+            placeholder="dev-xgen.x2bee.com"
+            value={server}
+            onChange={(e) => setServer(e.target.value)}
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+        </label>
+        <label className="field">
+          <span>이메일</span>
+          <input
+            placeholder="you@company.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoCapitalize="none"
+            inputMode="email"
+          />
+        </label>
+        <label className="field">
+          <span>비밀번호</span>
+          <input
+            placeholder="••••••••"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+          />
           <span>자동 로그인 (이 기기에 계정 저장)</span>
         </label>
-        {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy || !server || !email || !password} onClick={() => void submit()}>
+        {error && <div className="form-error">{error}</div>}
+        <div
+          className={busy || !server || !email || !password ? 'btn primary disabled' : 'btn primary'}
+          role="button"
+          onClick={() => {
+            if (!busy && server && email && password) void submit();
+          }}
+        >
           {busy ? '로그인 중…' : '로그인'}
-        </button>
+        </div>
       </div>
     </div>
   );
@@ -250,20 +394,12 @@ function LoginScreen({
 
 // ── 에이전트 목록 ────────────────────────────────────────────────
 
-function AgentsScreen({
+function AgentsSection({
   client,
-  bridgeStatus,
-  toolsEnabled,
-  onToggleTools,
   onOpenChat,
-  onLogout,
 }: {
   client: XgenMobileClient;
-  bridgeStatus: BridgeStatus;
-  toolsEnabled: boolean;
-  onToggleTools: (on: boolean) => void;
   onOpenChat: (agent: Agent, interactionId?: string) => void;
-  onLogout: () => void;
 }): React.ReactElement {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -276,22 +412,16 @@ function AgentsScreen({
     setError('');
     try {
       const [list, convs] = await Promise.all([
-        client.api.agents.list({ pageSize: 100 }),
+        client.api.agents.listAll({ pageSize: 100 }, 5),
         client.api.history.conversations().catch(() => [] as Conversation[]),
       ]);
-      diagLog(`에이전트 ${list.items.length}개 / 대화 ${convs.length}개 로드`);
-      setAgents(list.items);
+      diagLog(`에이전트 ${list.length}개 / 대화 ${convs.length}개 로드`);
+      setAgents(list);
       setConversations(convs);
     } catch (e) {
-      // ApiError 는 상태코드+서버 본문까지 보여준다 — "빈 화면" 디버깅 불가 방지.
-      const detail =
-        e && typeof e === 'object' && 'status' in e
-          ? `HTTP ${(e as { status: number }).status} — ${JSON.stringify((e as { body?: unknown }).body ?? '').slice(0, 200)}`
-          : e instanceof Error
-            ? e.message || '알 수 없는 오류'
-            : String(e);
-      diagLog(`에이전트 목록 실패: ${detail}`);
-      setError(detail);
+      const msg = friendlyError(e, '에이전트 목록을 불러오지 못했습니다.');
+      diagLog(`에이전트 목록 실패: ${msg}`);
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -301,160 +431,112 @@ function AgentsScreen({
     void load();
   }, [load]);
 
-  const filtered = useMemo(
-    () =>
-      agents.filter((a) =>
-        (a.workflowName || a.workflowId).toLowerCase().includes(search.trim().toLowerCase()),
-      ),
-    [agents, search],
-  );
-  const recentFor = useCallback(
-    (workflowId: string) =>
-      conversations
-        .filter((c) => c.workflowId === workflowId)
-        .sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))
-        .slice(0, 1),
-    [conversations],
-  );
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return agents;
+    return agents.filter((a) =>
+      `${a.workflowName ?? ''} ${a.workflowId ?? ''}`.toLowerCase().includes(q),
+    );
+  }, [agents, search]);
 
-  const bridgeLabel =
-    bridgeStatus.state === 'connected'
-      ? `모바일 도구 연결됨 · ${bridgeStatus.toolCount}개`
-      : bridgeStatus.state === 'connecting'
-        ? '모바일 도구 연결 중…'
-        : bridgeStatus.state === 'error'
-          ? '모바일 도구 오류'
-          : '모바일 도구 꺼짐';
+  const latestConv = useMemo(() => {
+    const map = new Map<string, Conversation>();
+    for (const c of conversations) {
+      const cur = map.get(c.workflowId);
+      if (!cur || c.updatedAt > cur.updatedAt) map.set(c.workflowId, c);
+    }
+    return map;
+  }, [conversations]);
 
   return (
-    <div className="screen">
-      <header className="bar">
-        <span className="title">에이전트</span>
-        <button className="link" onClick={onLogout}>
-          로그아웃
-        </button>
-      </header>
-
-      <div className="tools-row">
-        <label className="switch-row">
-          <input
-            type="checkbox"
-            checked={toolsEnabled}
-            onChange={(e) => onToggleTools(e.target.checked)}
-          />
-          <span>{bridgeLabel}</span>
-        </label>
-        <p className="muted small">
-          켜져 있으면 에이전트가 이 휴대폰의 파일(문서/XGenDex)·알림·클립보드·카메라 등을 도구로
-          사용합니다. 데스크톱 커넥터가 켜져 있어도 이 앱이 연결된 동안은 휴대폰 도구가
-          우선합니다.
-        </p>
+    <div className="pane">
+      <div className="pane-toolbar">
+        <input
+          className="search"
+          placeholder="에이전트 검색…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="pane-count">{loading ? '…' : `${filtered.length}개`}</div>
       </div>
 
-      <input
-        className="search"
-        placeholder="에이전트 검색…"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
-
-      {loading && <p className="muted center">불러오는 중…</p>}
       {error && (
-        <p className="error center">
-          {error}{' '}
-          <button className="link" onClick={() => void load()}>
+        <div className="notice error-notice">
+          <div>{error}</div>
+          <div className="btn small" role="button" onClick={() => void load()}>
             다시 시도
-          </button>
-        </p>
+          </div>
+        </div>
+      )}
+      {loading && <div className="notice">불러오는 중…</div>}
+      {!loading && !error && filtered.length === 0 && (
+        <div className="notice">에이전트가 없습니다.</div>
       )}
 
-      <div className="agent-list">
+      <div className="agent-scroll">
         {filtered.map((a) => {
-          const recent = recentFor(a.workflowId);
+          const name = a.workflowName || a.workflowId || '(이름 없음)';
+          const recent = latestConv.get(a.workflowId);
           return (
-            <div key={a.workflowId} className="agent-card">
-              <button className="agent-main" onClick={() => onOpenChat(a)}>
-                <span className="agent-name">{a.workflowName || a.workflowId || '(이름 없음)'}</span>
-                <span className="muted small">새 대화</span>
-              </button>
-              {recent.map((c) => (
-                <button
-                  key={c.interactionId}
-                  className="agent-recent"
-                  onClick={() => onOpenChat(a, c.interactionId)}
+            <div key={a.workflowId || String(a.id)} className="agent-row">
+              <div className="agent-line" role="button" onClick={() => onOpenChat(a)}>
+                <div className="agent-avatar">{name.slice(0, 1).toUpperCase()}</div>
+                <div className="agent-meta">
+                  <div className="agent-title">{name}</div>
+                  <div className="agent-sub">
+                    {a.description || (a.isShared ? '공유 에이전트' : '내 에이전트')}
+                  </div>
+                </div>
+                <div className="agent-go">새 대화</div>
+              </div>
+              {recent && (
+                <div
+                  className="agent-continue"
+                  role="button"
+                  onClick={() => onOpenChat(a, recent.interactionId)}
                 >
                   최근 대화 이어하기
-                </button>
-              ))}
+                </div>
+              )}
             </div>
           );
         })}
-        {!loading && filtered.length === 0 && !error && (
-          <p className="muted center">에이전트가 없습니다.</p>
-        )}
       </div>
-
-      <DiagPanel client={client} />
     </div>
   );
 }
 
-/** 접이식 진단 — 실기기 문제를 스크린샷 한 장으로 확정하기 위한 최근 기록. */
-function DiagPanel({ client }: { client: XgenMobileClient }): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  const [, force] = useState(0);
-  useEffect(() => onDiag(() => force((n) => n + 1)), []);
-  return (
-    <div className="diag">
-      <button className="link" onClick={() => setOpen((v) => !v)}>
-        {open ? '진단 닫기' : '진단'}
-      </button>
-      {open && (
-        <div className="diag-body">
-          <div className="small">
-            서버 {client.session.serverUrl} · user {client.session.userId} (
-            {client.session.username})
-          </div>
-          {diagEntries()
-            .slice()
-            .reverse()
-            .map((e, i) => (
-              <div key={i} className="small mono">
-                {e.at} {e.line}
-              </div>
-            ))}
-          {diagEntries().length === 0 && <div className="small muted">기록 없음</div>}
-        </div>
-      )}
-    </div>
-  );
-}
+// ── 현재 채팅 ────────────────────────────────────────────────────
 
-// ── 채팅 ────────────────────────────────────────────────────────
-
-function ChatScreen({
+function ChatSection({
   client,
   agent,
   interactionId,
-  bridgeStatus,
-  onBack,
+  onWsState,
+  onPickAgent,
 }: {
   client: XgenMobileClient;
-  agent: Agent;
+  agent: Agent | null;
   interactionId: string;
-  bridgeStatus: BridgeStatus;
-  onBack: () => void;
+  onWsState: (s: ChatWsState) => void;
+  onPickAgent: () => void;
 }): React.ReactElement {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [wsState, setWsState] = useState<ChatWsState>('connecting');
+  const [wsState, setWsState] = useState<ChatWsState>('closed');
   const [running, setRunning] = useState(false);
   const chatRef = useRef<ChatWsHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    onWsState(wsState);
+  }, [wsState, onWsState]);
+
   // 과거 턴 로드 (이어하기).
   useEffect(() => {
+    if (!agent) return;
     let cancelled = false;
+    setMessages([]);
     void client.api.history
       .turns(agent.workflowId, interactionId, agent.workflowName)
       .then((turns) => {
@@ -472,8 +554,9 @@ function ChatScreen({
     };
   }, [client, agent, interactionId]);
 
-  // WS 연결 — 화면 수명과 함께.
+  // WS 연결 — 대화 단위 수명. 섹션 전환에도 살아 있다 (부모가 상시 마운트).
   useEffect(() => {
+    if (!agent) return;
     const handle = createChat({
       wsBase: wsBaseOf(client.session.serverUrl),
       workflowId: agent.workflowId,
@@ -500,9 +583,7 @@ function ChatScreen({
         },
         onEnd: () => {
           setRunning(false);
-          setMessages((prev) =>
-            prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
-          );
+          setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
         },
         onError: (message) => {
           setRunning(false);
@@ -528,34 +609,27 @@ function ChatScreen({
       await chatRef.current.execute(text);
     } catch (e) {
       setRunning(false);
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = friendlyError(e, '실행에 실패했습니다.');
       setMessages((prev) =>
         prev[prev.length - 1]?.role === 'error' ? prev : [...prev, { role: 'error', text: msg }],
       );
     }
   };
 
-  const stateLabel =
-    wsState === 'connected'
-      ? bridgeStatus.state === 'connected'
-        ? '연결됨 · 모바일 도구 사용 가능'
-        : '연결됨'
-      : wsState === 'unsupported'
-        ? '이 에이전트는 모바일 채팅을 지원하지 않습니다'
-        : wsState === 'failed'
-          ? '연결 실패'
-          : '연결 중…';
+  if (!agent) {
+    return (
+      <div className="pane center-pane">
+        <div className="empty-title">진행 중인 대화가 없습니다</div>
+        <div className="empty-sub">에이전트를 선택해 대화를 시작하세요.</div>
+        <div className="btn primary" role="button" onClick={onPickAgent}>
+          에이전트 목록 열기
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="screen chat">
-      <header className="bar">
-        <button className="link" onClick={onBack}>
-          ← 목록
-        </button>
-        <span className="title">{agent.workflowName || agent.workflowId}</span>
-        <span className={`ws-state ${wsState}`}>{stateLabel}</span>
-      </header>
-
+    <div className="pane chat-pane">
       <div className="messages" ref={scrollRef}>
         {messages.map((m, i) => {
           const text = m.role === 'assistant' ? stripAgentMarkers(m.text) : m.text;
@@ -568,14 +642,20 @@ function ChatScreen({
           );
         })}
         {messages.length === 0 && (
-          <p className="muted center">메시지를 보내 대화를 시작하세요.</p>
+          <div className="notice">메시지를 보내 대화를 시작하세요.</div>
         )}
       </div>
 
       <div className="composer">
         <textarea
           value={input}
-          placeholder="메시지…"
+          placeholder={
+            wsState === 'connected'
+              ? '메시지…'
+              : wsState === 'unsupported'
+                ? '이 에이전트는 모바일 채팅을 지원하지 않습니다'
+                : '연결 중…'
+          }
           rows={1}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -586,19 +666,133 @@ function ChatScreen({
           }}
         />
         {running ? (
-          <button className="primary" onClick={() => chatRef.current?.stop()}>
+          <div className="btn primary" role="button" onClick={() => chatRef.current?.stop()}>
             중지
-          </button>
+          </div>
         ) : (
-          <button
-            className="primary"
-            disabled={wsState !== 'connected' || !input.trim()}
-            onClick={() => void send()}
+          <div
+            className={
+              wsState !== 'connected' || !input.trim() ? 'btn primary disabled' : 'btn primary'
+            }
+            role="button"
+            onClick={() => {
+              if (wsState === 'connected' && input.trim()) void send();
+            }}
           >
             전송
-          </button>
+          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── 설정 ────────────────────────────────────────────────────────
+
+function SettingsSection({
+  client,
+  bridgeStatus,
+  toolsEnabled,
+  onToggleTools,
+  onLogout,
+}: {
+  client: XgenMobileClient;
+  bridgeStatus: BridgeStatus;
+  toolsEnabled: boolean;
+  onToggleTools: (on: boolean) => void;
+  onLogout: () => void;
+}): React.ReactElement {
+  const tools = useMemo(() => advertiseMobileTools(), []);
+  const bridgeLabel =
+    bridgeStatus.state === 'connected'
+      ? `연결됨 · 서버에 도구 ${bridgeStatus.toolCount}개 적용`
+      : bridgeStatus.state === 'connecting'
+        ? '연결 중…'
+        : bridgeStatus.state === 'error'
+          ? `오류: ${bridgeStatus.error ?? ''}`
+          : '꺼짐';
+
+  return (
+    <div className="pane settings-scroll">
+      <div className="card">
+        <div className="card-title">모바일 도구</div>
+        <label className="check-row big">
+          <input
+            type="checkbox"
+            checked={toolsEnabled}
+            onChange={(e) => onToggleTools(e.target.checked)}
+          />
+          <span>에이전트가 이 휴대폰을 도구로 사용</span>
+        </label>
+        <div className={`tool-state ${bridgeStatus.state}`}>{bridgeLabel}</div>
+        <div className="card-sub">
+          켜져 있으면 대화 중 에이전트가 아래 도구로 휴대폰을 조작할 수 있습니다. 파일 도구의
+          범위는 <b>문서/XGenDex</b> 폴더입니다. 데스크톱 커넥터가 켜져 있어도 이 앱이 연결된
+          동안은 휴대폰 도구가 우선합니다.
+        </div>
+        <div className="tool-list">
+          {tools.map((t) => (
+            <div key={t.name} className="tool-item">
+              <div className="tool-name">{t.name}</div>
+              <div className="tool-desc">{t.description}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">계정</div>
+        <div className="kv">
+          <span>서버</span>
+          <span>{client.session.serverUrl}</span>
+        </div>
+        <div className="kv">
+          <span>사용자</span>
+          <span>
+            {client.session.username} (id {client.session.userId})
+          </span>
+        </div>
+        <div className="btn danger" role="button" onClick={onLogout}>
+          로그아웃
+        </div>
+      </div>
+
+      <DiagCard />
+
+      <div className="card">
+        <div className="card-title">정보</div>
+        <div className="card-sub">
+          XGEN Dex Android — 서버 세션 채팅 + 모바일 도구. 클라우드/브라우저 등 데스크톱 특수
+          기능은 포함하지 않습니다.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiagCard(): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [, force] = useState(0);
+  useEffect(() => onDiag(() => force((n) => n + 1)), []);
+  return (
+    <div className="card">
+      <div className="card-title-row" role="button" onClick={() => setOpen((v) => !v)}>
+        <div className="card-title">진단</div>
+        <div className="card-chevron">{open ? '▾' : '▸'}</div>
+      </div>
+      {open && (
+        <div className="diag-body">
+          {diagEntries()
+            .slice()
+            .reverse()
+            .map((e, i) => (
+              <div key={i} className="mono">
+                {e.at} {e.line}
+              </div>
+            ))}
+          {diagEntries().length === 0 && <div className="card-sub">기록 없음</div>}
+        </div>
+      )}
     </div>
   );
 }

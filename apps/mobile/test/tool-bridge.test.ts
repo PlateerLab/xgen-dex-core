@@ -149,3 +149,113 @@ test('stop — 소켓 종료 + off 상태, 재접속 시도 없음', () => {
   assert.equal(bridge.current().state, 'off');
   assert.equal(statuses[statuses.length - 1], 'off');
 });
+
+test('refreshCatalog 는 갱신된 카탈로그로 즉시 재-hello 한다 (스테일 광고 회귀)', async () => {
+  // 실사고 회귀: 세션 실행 중 설정에서 [위치] 를 켜도 hello 가 옛 카탈로그를
+  // 내보내 에이전트에 Location 이 안 보였다 — catalog() 는 호출 시점 값을
+  // 읽어야 하고, refreshCatalog 는 새 목록으로 hello 를 다시 보내야 한다.
+  let tools: ToolAdvert[] = [...CATALOG];
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => tools,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  await tick();
+  assert.equal(ws.sent.length, 1);
+  assert.equal((ws.sent[0].tools as ToolAdvert[]).length, 1);
+  ws.recv({ type: 'ready', catalog_id: ws.sent[0].catalog_id, tool_count: 1 });
+
+  // 그룹 토글 → 카탈로그에 Location 추가 후 재광고.
+  tools = [
+    ...CATALOG,
+    { server: 'mobile', name: 'Location', description: '위치', inputSchema: { type: 'object' } },
+  ];
+  bridge.refreshCatalog();
+  await tick();
+  assert.equal(ws.sent.length, 2);
+  const names = (ws.sent[1].tools as ToolAdvert[]).map((t) => t.name);
+  assert.deepEqual(names, ['Notify', 'Location']);
+  assert.notEqual(ws.sent[1].catalog_id, ws.sent[0].catalog_id);
+  ws.recv({ type: 'ready', catalog_id: ws.sent[1].catalog_id, tool_count: 2 });
+  assert.equal(bridge.current().toolCount, 2);
+  bridge.stop();
+});
+
+test('연결 전 refreshCatalog 는 kick 으로 즉시 재연결을 시도한다', async () => {
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const first = FakeWs.last as FakeWs;
+  first.close(); // 연결 실패 → 백오프 대기 진입
+  await tick();
+  bridge.refreshCatalog(); // 대기를 건너뛰고 즉시 재연결해야 한다
+  await tick();
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first);
+  second.open();
+  await tick();
+  assert.equal(second.sent.length, 1);
+  assert.equal(second.sent[0].type, 'hello');
+  bridge.stop();
+});
+
+test('hello 후 ready 미수신이면 워치독이 소켓을 끊어 재연결로 수렴한다', async () => {
+  // 서버가 hello 를 놓치는 어떤 경우에도(프록시 유실 등) 광고가 조용히
+  // 증발하지 않도록 — ACK 없으면 재연결해 fresh hello.
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  const bridgeAny = bridge as unknown as { ackWatchdog: ReturnType<typeof setTimeout> | null };
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  await tick();
+  assert.equal(ws.sent.length, 1);
+  assert.ok(bridgeAny.ackWatchdog, 'hello 직후 워치독이 걸려 있어야 한다');
+  // ready 대신 침묵 — 워치독을 수동 발화시켜 재연결을 확인한다.
+  const timer = bridgeAny.ackWatchdog!;
+  clearTimeout(timer);
+  bridgeAny.ackWatchdog = null;
+  ws.close(); // 워치독이 하는 일과 동일 (소켓 종료 → scheduleRetry)
+  await tick();
+  assert.equal(bridge.current().state, 'connecting');
+  bridge.stop();
+});
+
+test('ready 수신 시 워치독이 해제된다', async () => {
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  const bridgeAny = bridge as unknown as { ackWatchdog: ReturnType<typeof setTimeout> | null };
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  await tick();
+  ws.recv({ type: 'ready', catalog_id: ws.sent[0].catalog_id, tool_count: 1 });
+  await tick();
+  assert.equal(bridgeAny.ackWatchdog, null);
+  assert.equal(bridge.current().state, 'connected');
+  bridge.stop();
+});

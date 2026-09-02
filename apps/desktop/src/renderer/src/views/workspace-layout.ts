@@ -7,7 +7,8 @@ export type WorkspaceTabKind =
   | 'teams'
   | 'settings'
   | 'agent-viewer'
-  | 'agent-create';
+  | 'agent-create'
+  | 'file-viewer';
 
 /** 에이전트 뷰어가 처음 열 하위 탭 — 정의는 core(main 의 영속 스키마와 공유). */
 import type { AgentViewerSub } from '@dex/protocol';
@@ -27,6 +28,10 @@ export interface WorkspaceTab {
   roomName?: string;
   /** kind==='agent-viewer' 일 때 처음 열 하위 탭. */
   viewerSub?: AgentViewerSub;
+  /** kind==='file-viewer' — 탐색기에서 연 파일. */
+  fileRel?: string;
+  fileName?: string;
+  fileSection?: 'cloud' | 'agent';
 }
 
 export interface WorkspaceGroup {
@@ -64,7 +69,9 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   const tab = raw as Partial<WorkspaceTab>;
   if (
     typeof tab.id !== 'string' ||
-    !['chat', 'browser', 'avatar', 'teams', 'settings', 'agent-viewer'].includes(String(tab.kind))
+    !['chat', 'browser', 'avatar', 'teams', 'settings', 'agent-viewer', 'file-viewer'].includes(
+      String(tab.kind),
+    )
   ) {
     return null;
   }
@@ -77,6 +84,9 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
     workflowName: typeof tab.workflowName === 'string' ? tab.workflowName : undefined,
     roomId: typeof tab.roomId === 'string' ? tab.roomId : undefined,
     roomName: typeof tab.roomName === 'string' ? tab.roomName : undefined,
+    fileRel: typeof tab.fileRel === 'string' ? tab.fileRel : undefined,
+    fileName: typeof tab.fileName === 'string' ? tab.fileName : undefined,
+    fileSection: tab.fileSection === 'cloud' || tab.fileSection === 'agent' ? tab.fileSection : undefined,
     viewerSub: viewerSubs.includes(String(tab.viewerSub))
       ? (tab.viewerSub as AgentViewerSub)
       : undefined,

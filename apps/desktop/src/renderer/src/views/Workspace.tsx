@@ -29,6 +29,8 @@ import { AgentCreate } from './AgentCreate';
 import { ActivityBar, type SideView } from './ActivityBar';
 import { AgentPanel } from './AgentPanel';
 import { ExplorerPanel } from './ExplorerPanel';
+import { FileViewerPane } from './FileViewerPane';
+import { fileTabId } from './file-viewer-model';
 import { TeamsPanel } from './TeamsPanel';
 import { TeamsRoom } from './TeamsRoom';
 import { TabBar } from './TabBar';
@@ -545,6 +547,23 @@ export const Workspace: React.FC<{
   }, [openNotificationTarget]);
 
   /** 채팅 헤더 [...] → 에이전트 뷰어 탭을 연다 (에이전트당 하나, 하위 탭만 바뀐다). */
+  /** 탐색기에서 파일 클릭 → 콘텐츠 영역에 뷰어 탭. 같은 파일이면 기존 탭 선택. */
+  const openFileViewer = useCallback(
+    (sectionKind: 'cloud' | 'agent', workflowId: string, rel: string, name: string) => {
+      setLayout((current) =>
+        addWorkspaceTab(current, current.focusedGroupId, {
+          id: fileTabId(workflowId, rel),
+          kind: 'file-viewer',
+          workflowId,
+          fileRel: rel,
+          fileName: name,
+          fileSection: sectionKind,
+        }),
+      );
+    },
+    [setLayout],
+  );
+
   const openAgentViewer = useCallback(
     (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub) => {
       setLayout((current) =>
@@ -994,6 +1013,17 @@ export const Workspace: React.FC<{
         </div>
       );
     }
+    if (active?.kind === 'file-viewer' && active.workflowId && active.fileRel && active.fileName) {
+      return (
+        <FileViewerPane
+          key={active.id}
+          sectionKind={active.fileSection ?? 'agent'}
+          workflowId={active.workflowId}
+          rel={active.fileRel}
+          fileName={active.fileName}
+        />
+      );
+    }
     if (active?.kind === 'agent-viewer' && active.workflowId) {
       return (
         <AgentViewer
@@ -1047,7 +1077,11 @@ export const Workspace: React.FC<{
           className="panel-host"
           style={{ display: sideView === 'explorer' ? undefined : 'none' }}
         >
-          <ExplorerPanel onOpenSettings={openSettings} myName={user.username || '나'} />
+          <ExplorerPanel
+            onOpenSettings={openSettings}
+            myName={user.username || '나'}
+            onOpenFile={openFileViewer}
+          />
         </div>
         <div className="panel-host" style={{ display: sideView === 'teams' ? undefined : 'none' }}>
           <TeamsPanel

@@ -59,11 +59,11 @@ function encPath(p: string): string {
   return p.split('/').map(encodeURIComponent).join('/')
 }
 
-async function authHeaders(auth: TransportAuth): Promise<Record<string, string>> {
+export async function authHeaders(auth: TransportAuth): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${await auth.token()}` }
 }
 
-async function transportFetch(auth: TransportAuth, input: string, init?: RequestInit): Promise<Response> {
+export async function transportFetch(auth: TransportAuth, input: string, init?: RequestInit): Promise<Response> {
   const f = auth.fetch ?? globalThis.fetch
   const res = await f(input, init)
   // 401 = 토큰이 회전/회수됐다 — refresh 로 한 번 자가치유 후 같은 요청을 재발송.

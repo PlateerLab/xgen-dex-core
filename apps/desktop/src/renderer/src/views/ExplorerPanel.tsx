@@ -49,7 +49,9 @@ export const ExplorerPanel: React.FC<{
   onOpenSettings: () => void;
   /** 로그인 사용자 표시 이름 — 파일을 Teams 로 공유할 때 낙관적 렌더에 쓴다. */
   myName: string;
-}> = ({ onOpenSettings, myName }) => {
+  /** 파일 클릭 → 콘텐츠 영역 뷰어 탭. */
+  onOpenFile?: (sectionKind: 'cloud' | 'agent', workflowId: string, rel: string, name: string) => void;
+}> = ({ onOpenSettings, myName, onOpenFile }) => {
   /** Teams 로 공유하려고 고른 파일의 클라우드 경로. null 이면 모달이 닫혀 있다. */
   const [sharePath, setSharePath] = useState<{ path: string; name: string; size: number } | null>(
     null,
@@ -232,9 +234,12 @@ export const ExplorerPanel: React.FC<{
           style={{ paddingLeft: depth * 14 + 8 }}
           role="button"
           tabIndex={0}
-          onClick={() => setSelected(key)}
+          onClick={() => {
+            setSelected(key);
+            onOpenFile?.(section.kind, section.workflowId, p, e.name);
+          }}
           onDoubleClick={() => openInOs(section, p)}
-          title={section.synced ? `${e.name} — 두 번 눌러 열기` : e.name}
+          title={section.synced ? `${e.name} — 두 번 누르면 OS로 열기` : e.name}
         >
           <span className="tree-chevron" />
           <span className="tree-icon">

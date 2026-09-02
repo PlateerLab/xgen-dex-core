@@ -118,3 +118,36 @@ test('agent browser reuses the group opposite its chat', () => {
     findTab(layout, 'browser:workflow-a')?.group.id,
   );
 });
+
+test('file-viewer 탭은 파일 필드와 함께 영속을 통과한다', () => {
+  const restored = normalizeWorkspaceLayout({
+    groups: [
+      {
+        id: 'g1',
+        tabs: [
+          {
+            id: 'file:wf1:tools/a.py',
+            kind: 'file-viewer',
+            workflowId: 'wf1',
+            fileRel: 'tools/a.py',
+            fileName: 'a.py',
+            fileSection: 'agent',
+          },
+          { id: 'bad', kind: 'file-viewer', fileSection: 'nope' },
+        ],
+        activeTabId: 'file:wf1:tools/a.py',
+      },
+    ],
+    direction: 'horizontal',
+    ratio: 0.5,
+    focusedGroupId: 'g1',
+  });
+  const tabs = restored.groups[0].tabs;
+  assert.equal(tabs.length, 2);
+  assert.equal(tabs[0].kind, 'file-viewer');
+  assert.equal(tabs[0].fileRel, 'tools/a.py');
+  assert.equal(tabs[0].fileName, 'a.py');
+  assert.equal(tabs[0].fileSection, 'agent');
+  // 알 수 없는 fileSection 은 버려지되 탭 자체는 살아남는다.
+  assert.equal(tabs[1].fileSection, undefined);
+});

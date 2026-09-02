@@ -223,6 +223,10 @@ export const CHANNELS = {
   fsRefreshAgents: 'fs:refreshAgents',
   /** 동기화 폴더의 직계 자식 목록 — 인앱 탐색기용 (로컬 실파일). */
   fsList: 'fs:list',
+  fsReadFile: 'fs:read-file',
+  fsCloudReadRaw: 'fs:cloud-read-raw',
+  fsCloudOfficePreview: 'fs:cloud-office-preview',
+  fsCloudOfficePreviewPage: 'fs:cloud-office-preview-page',
   fsCloudServerTree: 'fs:cloud-server-tree',
   fsCloudReset: 'fs:cloud-reset',
   /** 동기화 폴더 안 경로를 OS 파일 관리자/기본 앱으로 연다. */

@@ -183,13 +183,24 @@ export interface WorkspaceLayoutPersistConfig {
     id: string;
     tabs: Array<{
       id: string;
-      kind: 'chat' | 'browser' | 'avatar' | 'teams' | 'settings' | 'agent-viewer' | 'agent-create';
+      kind:
+        | 'chat'
+        | 'browser'
+        | 'avatar'
+        | 'teams'
+        | 'settings'
+        | 'agent-viewer'
+        | 'agent-create'
+        | 'file-viewer';
       sessionKey?: string;
       workflowId?: string;
       workflowName?: string;
       roomId?: string;
       roomName?: string;
       viewerSub?: AgentViewerSub;
+      fileRel?: string;
+      fileName?: string;
+      fileSection?: 'cloud' | 'agent';
     }>;
     activeTabId: string | null;
   }>;

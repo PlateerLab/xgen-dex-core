@@ -81,7 +81,7 @@ import { CHANNELS } from './ipc';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
-import { FilestoreSyncTransport, HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient } from './sync-transport';
+import { FilestoreSyncTransport, HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient, authHeaders as syncAuthHeaders, transportFetch as syncTransportFetch, type TransportAuth } from './sync-transport';
 import { FileSystemController } from './file-system';
 import { WorkspaceBridge } from './workspace-bridge-tools';
 import {
@@ -3214,6 +3214,144 @@ ipcMain.handle(CHANNELS.fsOpenPath, (_e, workflowId: unknown, rel: unknown) => {
   openInFileManager(join(dir, ...relPath.split('/').filter(Boolean)));
   return { ok: true };
 });
+/* ── 파일 뷰어 읽기 표면 ─────────────────────────────────────────
+ *
+ * 탐색기에서 파일을 클릭하면 콘텐츠 영역 탭으로 여는 뷰어의 데이터 경로.
+ *   · 동기화 ON  → fsReadFile  (로컬 실파일 바이트)
+ *   · 클라우드 OFF → fsCloudReadRaw (파일 저장소 /sync/raw)
+ *   · 에이전트 OFF → 기존 agentData.workspaceBinary 를 그대로 쓴다.
+ * 오피스 문서(docx/xlsx/pptx/hwp…)는 웹 [파일 저장소]와 같은 서버 렌더
+ * (filestore-preview 페이지 이미지)를 쓴다 — 경로→항목 id 해석 포함.
+ */
+
+/** 뷰어가 통으로 IPC 로 나를 수 있는 상한 — 이보다 크면 열지 않는다. */
+const VIEWER_MAX_BYTES = 64 * 1024 * 1024;
+
+function viewerCloudAuth(): TransportAuth | null {
+  const uid = client?.user?.userId != null ? String(client.user.userId) : null;
+  if (!uid) return null;
+  return {
+    baseUrl: normalizeServerUrl(loadConfig().serverUrl),
+    token: liveAccessToken,
+    refreshAuth: refreshAuthToken,
+    workflowId: `user:${uid}`,
+    deviceId: ensureDeviceId(),
+    fetch: (input, init) => net.fetch(input, init),
+    allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
+  };
+}
+
+ipcMain.handle(CHANNELS.fsReadFile, async (_e, workflowId: unknown, rel: unknown) => {
+  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
+  const relPath = typeof rel === 'string' ? rel : '';
+  if (!dir || !relPath || !isSafeRelPath(relPath)) return { ok: false, error: '잘못된 경로' };
+  const abs = join(dir, ...relPath.split('/').filter(Boolean));
+  try {
+    const { stat, readFile } = await import('fs/promises');
+    const st = await stat(abs);
+    if (!st.isFile()) return { ok: false, error: '파일이 아닙니다' };
+    if (st.size > VIEWER_MAX_BYTES)
+      return { ok: false, error: `파일이 너무 큽니다 (${Math.round(st.size / 1024 / 1024)}MB)` };
+    const buf = await readFile(abs);
+    return { ok: true, bytes: new Uint8Array(buf), size: st.size, mtime: st.mtimeMs };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+});
+
+ipcMain.handle(CHANNELS.fsCloudReadRaw, async (_e, path: unknown) => {
+  const auth = viewerCloudAuth();
+  if (!auth || typeof path !== 'string' || !path) return { ok: false, error: '연결되지 않음' };
+  try {
+    const u = new URL(`${auth.baseUrl}/api/filestore/sync/raw`);
+    u.searchParams.set('path', path);
+    const res = await syncTransportFetch(auth, u.toString(), {
+      headers: await syncAuthHeaders(auth),
+    });
+    if (!res.ok) return { ok: false, error: `다운로드 실패 (${res.status})` };
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > VIEWER_MAX_BYTES) return { ok: false, error: '파일이 너무 큽니다' };
+    return {
+      ok: true,
+      bytes: buf,
+      size: buf.byteLength,
+      contentType: res.headers.get('content-type') ?? '',
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+});
+
+/** 파일 저장소 경로 → 항목 id. 폴더 평면 트리(full_path)와 폴더 항목 목록으로 푼다. */
+async function resolveFilestoreItemId(auth: TransportAuth, path: string): Promise<number | null> {
+  const get = async <T>(p: string): Promise<T | null> => {
+    const res = await syncTransportFetch(auth, `${auth.baseUrl}${p}`, {
+      headers: await syncAuthHeaders(auth),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  };
+  const clean = path.replace(/^\/+/, '');
+  const slash = clean.lastIndexOf('/');
+  const dirPath = slash === -1 ? '' : clean.slice(0, slash);
+  const fileName = slash === -1 ? clean : clean.slice(slash + 1);
+  let contents: { items?: Array<{ id: number; file_name: string }> } | null = null;
+  if (!dirPath) {
+    contents = await get('/api/filestore/root');
+  } else {
+    const tree = await get<{ folders?: Array<{ id: number; full_path: string }> }>(
+      '/api/filestore/tree',
+    );
+    const folder = (tree?.folders ?? []).find(
+      (f) => String(f.full_path ?? '').replace(/^\/+|\/+$/g, '') === dirPath,
+    );
+    if (!folder) return null;
+    contents = await get(`/api/filestore/folders/${folder.id}/items`);
+  }
+  const item = (contents?.items ?? []).find((it) => it.file_name === fileName);
+  return item ? item.id : null;
+}
+
+ipcMain.handle(CHANNELS.fsCloudOfficePreview, async (_e, path: unknown) => {
+  const auth = viewerCloudAuth();
+  if (!auth || typeof path !== 'string' || !path) return { ok: false, error: '연결되지 않음' };
+  try {
+    const itemId = await resolveFilestoreItemId(auth, path);
+    if (itemId == null) return { ok: false, error: '파일 저장소에서 항목을 찾지 못했습니다' };
+    // 콜드 렌더는 수십 초까지 걸린다 (웹 파일 저장소와 동일 계약).
+    const res = await syncTransportFetch(auth, `${auth.baseUrl}/api/agentflow/filestore-preview/${itemId}`, {
+      headers: await syncAuthHeaders(auth),
+    });
+    if (!res.ok) return { ok: false, error: `미리보기 렌더 실패 (${res.status})` };
+    const body = (await res.json()) as { pages?: string[] };
+    return { ok: true, itemId, pages: Array.isArray(body.pages) ? body.pages : [] };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+});
+
+ipcMain.handle(CHANNELS.fsCloudOfficePreviewPage, async (_e, itemId: unknown, page: unknown) => {
+  const auth = viewerCloudAuth();
+  const id = typeof itemId === 'number' ? itemId : NaN;
+  if (!auth || !Number.isFinite(id) || typeof page !== 'string' || !page)
+    return { ok: false, error: '잘못된 요청' };
+  try {
+    const res = await syncTransportFetch(
+      auth,
+      `${auth.baseUrl}/api/agentflow/filestore-preview/${id}/page/${encodeURIComponent(page)}`,
+      { headers: await syncAuthHeaders(auth) },
+    );
+    if (!res.ok) return { ok: false, error: `페이지 조회 실패 (${res.status})` };
+    return {
+      ok: true,
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      contentType: res.headers.get('content-type') ?? '',
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+});
+
 /** 루트 폴더 열기 — 'cloud' | 'agents' | 'data'. 동기화 여부와 무관하게
  *  폴더 자체는 dataRoot 트리에 존재한다. */
 ipcMain.handle(CHANNELS.fsOpenRoot, (_e, kind: unknown) => {

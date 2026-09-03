@@ -172,6 +172,20 @@ export function Dashboard(props: {
   });
   const [input, setInput] = useState('');
   const [chat, dispatch] = useReducer(chatReducer, initialChatState);
+  // 대화 소켓 push — 서버 주입 턴(트리거 반응)을 열린 대화에 실시간 반영.
+  const chatInteractionRef = useRef<string | undefined>(undefined);
+  chatInteractionRef.current = chat.interactionId;
+  useEffect(() => {
+    props.engine.onConversationTurn = (turn) => {
+      if (turn.interactionId !== chatInteractionRef.current) return;
+      if (turn.source !== 'subagent_report' || !turn.output) return;
+      dispatch({ type: 'server_turn', ioId: turn.ioId, input: turn.input, output: turn.output });
+    };
+    return () => {
+      props.engine.onConversationTurn = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [palette, setPalette] = useState(false);
   const [history, setHistory] = useState(false);
   /** 에이전트를 고른 직후의 갈림길. 이력이 있을 때만 채워진다. */
@@ -268,6 +282,12 @@ export function Dashboard(props: {
   const openHistory = (conversation: Conversation, turns: HistoryTurn[]): void => {
     setSelected({ workflowId: conversation.workflowId, workflowName: conversation.workflowName });
     dispatch({ type: 'history_loaded', interactionId: conversation.interactionId, turns });
+    void props.engine.watchConversation?.(
+      conversation.workflowId,
+      conversation.workflowName,
+      conversation.interactionId,
+      props.session.profile,
+    );
     // 불러온 대화는 맨 아래(가장 최근)부터 보여 준다.
     setScrollUp(0);
     const index = props.session.agents.findIndex((agent) => agent.workflowId === conversation.workflowId);
@@ -305,6 +325,12 @@ export function Dashboard(props: {
       setInput('');
       setScrollUp(0);
       dispatch({ type: 'turn_started', interactionId: resolved.interactionId, input: text });
+      void props.engine.watchConversation?.(
+        resolved.workflowId,
+        resolved.workflowName,
+        resolved.interactionId,
+        props.session.profile,
+      );
       const active = new AbortController();
       controller.current = active;
       for await (const event of props.engine.chat(resolved, active.signal)) {

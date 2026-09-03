@@ -27,6 +27,10 @@ export const sessionStore = new SessionStore({
     ),
   historyTurns: (workflowId, interactionId, name) =>
     xgen.history.turns(workflowId, interactionId, name),
+  // 대화 소켓 감시 — 서버 주입 턴(트리거 반응)을 실시간으로 받는다.
+  watchConversation: (workflowId, workflowName, interactionId) =>
+    void xgen?.chatWatch?.start(workflowId, workflowName, interactionId),
+  unwatchConversation: (interactionId) => void xgen?.chatWatch?.stop(interactionId),
   historyImage: async (workflowId, attachment) => {
     const path = xgenyHistoryWorkspacePath(attachment);
     if (!path) return null;
@@ -74,3 +78,7 @@ export function useSessions(): StoreSnapshot {
     sessionStore.getSnapshot,
   );
 }
+
+
+// 대화 소켓 push — 서버가 주입한 턴(트리거 반응)을 세션에 실시간 반영.
+xgen?.chatWatch?.onTurn((turn) => sessionStore.applyExternalTurn(turn));

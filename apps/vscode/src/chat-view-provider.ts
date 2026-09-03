@@ -262,6 +262,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       await this.clearConversation();
       this.selectedAgent = this.agents.find((agent) => agent.workflowId === conversation.workflowId) ?? agentFromConversation(conversation);
       this.interactionId = conversation.interactionId;
+      this.syncConversationWatch();
       this.messages = turns.flatMap((turn) => [
         message('user', '나', turn.input),
         message('assistant', conversation.workflowName, turn.output),
@@ -318,6 +319,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       });
       if (this.streamId !== streamId) return;
       this.interactionId = started.interactionId;
+      this.syncConversationWatch();
       this.status = '응답 생성 중...';
       this.postState();
     } catch (error) {
@@ -330,7 +332,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  /** 대화 소켓 감시 — 현재 대화의 서버 주입 턴(트리거 반응)을 실시간 수신. */
+  private watchedInteraction: string | undefined;
+  private syncConversationWatch(): void {
+    const agent = this.selectedAgent;
+    const next = this.interactionId;
+    if (this.watchedInteraction && this.watchedInteraction !== next) {
+      void this.service
+        .request('chat/unwatch', { interactionId: this.watchedInteraction })
+        .catch(() => undefined);
+      this.watchedInteraction = undefined;
+    }
+    if (next && agent && this.watchedInteraction !== next) {
+      this.watchedInteraction = next;
+      void this.service
+        .request('chat/watch', {
+          ...this.activeProfileParams(),
+          workflowId: agent.workflowId,
+          workflowName: agent.workflowName,
+          interactionId: next,
+        })
+        .catch(() => undefined);
+    }
+  }
+
   private onNotification(notification: RpcNotification): void {
+    if (notification.method === 'chat/serverTurn') {
+      // 서버가 주입한 완결 턴(트리거 반응) — 새로고침 없이 흐른다.
+      const p = notification.params as
+        | { interactionId?: string; ioId?: number; input?: string; output?: string; source?: string }
+        | undefined;
+      if (
+        p &&
+        p.interactionId === this.interactionId &&
+        p.source === 'subagent_report' &&
+        p.output
+      ) {
+        const key = `turn:${p.ioId ?? ''}`;
+        if (!this.toolMessages.has(key)) {
+          this.toolMessages.set(key, 'seen'); // io_id 중복 push 멱등
+          this.messages.push(message('user', '나', String(p.input ?? '')));
+          this.messages.push(
+            message('assistant', this.selectedAgent?.workflowName ?? 'Agent', String(p.output)),
+          );
+          this.postState();
+        }
+      }
+      return;
+    }
     if (notification.method === 'localTools/status') {
       if (this.localTools && isLocalToolBridgeStatus(notification.params)) {
         this.localTools = { ...this.localTools, bridge: notification.params };

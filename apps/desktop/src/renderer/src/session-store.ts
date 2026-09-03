@@ -162,6 +162,10 @@ export interface SessionTransport {
   ) => Promise<ChatImageAttachment | null>;
   /** Release renderer resources created by historyImage (normally a blob: URL). */
   releaseHistoryImage?: (previewUrl: string) => void;
+  /** 대화 소켓 감시 시작/중지 — 서버 주입 턴(트리거 반응)의 실시간 수신.
+   *  세션이 열릴 때 붙고 닫힐 때 떨어진다. 미구현(테스트)이면 no-op. */
+  watchConversation?: (workflowId: string, workflowName: string, interactionId: string) => void;
+  unwatchConversation?: (interactionId: string) => void;
 }
 
 function imageBytes(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
@@ -177,6 +181,8 @@ function imageBytes(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
 interface Runtime {
   cancel: (() => void) | null;
   tools: ToolEvent[];
+  /** 대화 소켓으로 이미 반영한 외부 턴의 io_id — push 중복 방지. */
+  externalIoSeen?: Set<number>;
   citations: Citation[];
   historyImageUrls: Set<string>;
 }
@@ -298,6 +304,7 @@ export class SessionStore {
       updatedAt: t,
     });
     this.rt.set(iid, { cancel: null, tools: [], citations: [], historyImageUrls: new Set() });
+    this.transport.watchConversation?.(agent.workflowId, agent.workflowName || agent.workflowId, iid);
     this._active = iid;
     this.emit();
     return iid;
@@ -334,6 +341,11 @@ export class SessionStore {
       citations: [],
       historyImageUrls: new Set(),
     });
+    this.transport.watchConversation?.(
+      agent.workflowId,
+      workflowName || agent.workflowName || agent.workflowId,
+      interactionId,
+    );
     this._active = interactionId;
     this.emit();
     void this.loadHistory(interactionId, agent, workflowName);
@@ -448,6 +460,7 @@ export class SessionStore {
     if (!s.streaming && !s.loadingHistory && s.messages.length === 0) {
       this.rt.get(key)?.cancel?.();
       this.releaseHistoryImages(key);
+      this.transport.unwatchConversation?.(key);
       this.rt.delete(key);
       this.map.delete(key);
       if (this._active === key) this._active = null;
@@ -673,6 +686,7 @@ export class SessionStore {
     }
     this.rt.get(key)?.cancel?.();
     this.releaseHistoryImages(key);
+    this.transport.unwatchConversation?.(key);
     this.rt.delete(key);
     this.map.delete(key);
     if (this._active === key) {
@@ -689,10 +703,44 @@ export class SessionStore {
     for (const [key, rt] of this.rt.entries()) {
       rt.cancel?.();
       this.releaseHistoryImages(key);
+      this.transport.unwatchConversation?.(key);
     }
     this.map.clear();
     this.rt.clear();
     this._active = null;
+    this.emit();
+  }
+
+  /**
+   * 대화 소켓이 push 한 **서버 주입 턴**(Job/sub-agent 트리거의 반응)을 열린
+   * 세션에 실시간 반영한다 — 이게 없으면 새로고침해야 보였다.
+   *
+   * 완결 턴만 온다(서버가 진행 중 반응 턴을 보류). 자기 자신이 보낸 사용자
+   * 턴도 push 로 오지만(source='user') 그건 SSE 스트림이 이미 그렸으므로
+   * 트리거 턴(source='subagent_report')만 집는다. io_id 로 중복을 막는다.
+   */
+  applyExternalTurn(turn: {
+    interactionId: string;
+    ioId: number;
+    input: string;
+    output: string;
+    source: string;
+  }): void {
+    const s = this.map.get(turn.interactionId);
+    const rt = this.rt.get(turn.interactionId);
+    if (!s || !rt) return;
+    if (turn.source !== 'subagent_report') return;
+    if (!turn.output) return; // 미완결 — 완결 push 를 기다린다
+    rt.externalIoSeen = rt.externalIoSeen ?? new Set<number>();
+    if (turn.ioId && rt.externalIoSeen.has(turn.ioId)) return;
+    if (turn.ioId) rt.externalIoSeen.add(turn.ioId);
+    s.messages = [
+      ...s.messages,
+      { role: 'user', text: turn.input },
+      { role: 'assistant', text: turn.output },
+    ];
+    s.updatedAt = this.now();
+    if (this._active !== turn.interactionId) s.unseen = true;
     this.emit();
   }
 }

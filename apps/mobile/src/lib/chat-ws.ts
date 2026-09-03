@@ -39,6 +39,15 @@ export interface ExecCallbacks {
   onError?: (message: string) => void;
 }
 
+/** 서버가 push 한 완결 턴 — Job/sub-agent 트리거의 반응이 대표다.
+ *  (자기 실행 턴도 올 수 있다 — 소비자가 source 로 거른다.) */
+export interface ServerTurn {
+  ioId: number;
+  input: string;
+  output: string;
+  source: string;
+}
+
 export interface ChatWsHandle {
   execute(input: string): Promise<void>;
   stop(): void;
@@ -56,6 +65,8 @@ export interface ChatWsOptions {
   onState?: (s: ChatWsState) => void;
   /** 테스트 주입용 — 기본은 전역 WebSocket. */
   wsFactory?: (url: string) => WebSocket;
+  /** 서버 push 완결 턴(트리거 반응 등) — 실시간 반영용. */
+  onServerTurn?: (turn: ServerTurn) => void;
 }
 
 const RECONNECT_BASE_MS = 1000;
@@ -217,6 +228,17 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         setState('unsupported');
         closedByUser = true;
         failPending('이 에이전트는 모바일 채팅을 지원하지 않습니다.');
+        return;
+      }
+      if (frame.type === 'message' && frame.data) {
+        // 대화 소켓 push — 서버가 주입한 완결 턴(트리거 반응 등).
+        const d = frame.data as Record<string, unknown>;
+        opts.onServerTurn?.({
+          ioId: Number(d.io_id ?? 0),
+          input: String(d.input_data ?? ''),
+          output: String(d.output_data ?? ''),
+          source: String(d.source ?? 'user'),
+        });
         return;
       }
       if (frame.type === 'exec' && frame.data) {

@@ -325,6 +325,21 @@ export class DexRpcServer {
         );
       case 'chat/start':
         return this.startChat(params);
+      case 'chat/watch': {
+        // 대화 소켓 감시 — 서버 주입 턴(트리거 반응)이 chat/serverTurn
+        // notification 으로 실시간 흐른다 (새로고침 불필요).
+        this.engine.onConversationTurn = (turn) => this.notify('chat/serverTurn', turn);
+        await this.engine.watchConversation(
+          requiredString(params, 'workflowId'),
+          optionalString(params, 'workflowName') ?? requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
+        return { ok: true };
+      }
+      case 'chat/unwatch':
+        this.engine.unwatchConversation(requiredString(params, 'interactionId'));
+        return { ok: true };
       case 'chat/cancel': {
         const streamId = requiredString(params, 'streamId');
         const controller = this.activeChats.get(streamId);

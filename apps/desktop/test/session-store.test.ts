@@ -560,3 +560,47 @@ test('sessionDotState: idle 임계를 넘기면 회색(idle) — 삭제 예정',
   assert.equal(sessionDotState(mkSession({ updatedAt: now - CONNECTOR_SESSION_IDLE_MS }), now), 'idle')
   assert.equal(sessionDotState(mkSession({ updatedAt: 0 }), now), 'idle')
 })
+
+test('대화 소켓 push — 트리거 턴이 실시간으로 세션에 붙는다 (dedup·source 필터)', () => {
+  const watched: string[] = []
+  const unwatched: string[] = []
+  const store = new SessionStore({
+    stream: () => ({ cancel: () => undefined }),
+    historyTurns: async () => [],
+    watchConversation: (_wf: string, _name: string, iid: string) => watched.push(iid),
+    unwatchConversation: (iid: string) => unwatched.push(iid),
+  } as unknown as SessionTransport)
+  const key = store.openNew(agent('wf-1', 'Agent'))
+  assert.deepEqual(watched, [key], '세션이 열리면 대화 소켓을 감시해야 한다')
+
+  const turn = {
+    interactionId: key,
+    ioId: 11,
+    input: '<agent_trigger:agent source="worker-1">보고</agent_trigger:agent>',
+    output: '서브에이전트 결과를 정리했습니다.',
+    source: 'subagent_report',
+  }
+  store.applyExternalTurn(turn)
+  let msgs = store.getSnapshot().sessions.find((s) => s.key === key)!.messages
+  assert.equal(msgs.length, 2)
+  assert.equal(msgs[0].role, 'user')
+  assert.match(msgs[0].text, /agent_trigger:agent/)
+  assert.equal(msgs[1].role, 'assistant')
+
+  // 같은 io_id 재수신(하트비트 폴백 중복) — 멱등.
+  store.applyExternalTurn(turn)
+  msgs = store.getSnapshot().sessions.find((s) => s.key === key)!.messages
+  assert.equal(msgs.length, 2, '중복 push 가 두 번 붙었다')
+
+  // 자기 사용자 턴 push 는 스트림이 이미 그렸다 — 무시.
+  store.applyExternalTurn({ ...turn, ioId: 12, source: 'user' })
+  msgs = store.getSnapshot().sessions.find((s) => s.key === key)!.messages
+  assert.equal(msgs.length, 2)
+
+  // 미완결(output 없음)은 완결 push 를 기다린다.
+  store.applyExternalTurn({ ...turn, ioId: 13, output: '' })
+  assert.equal(store.getSnapshot().sessions.find((s) => s.key === key)!.messages.length, 2)
+
+  store.endChat(key)
+  assert.ok(unwatched.includes(key), '세션이 닫히면 감시를 내려야 한다')
+})

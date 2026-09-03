@@ -52,3 +52,4 @@ export * from './local-tools-config';
 // ── 연결 보안 (사내 인증서 · SSO) ──
 export * from './connection-security';
 export * from './deployment-defaults';
+export * from './conversation-watch';

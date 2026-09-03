@@ -397,15 +397,13 @@
       row.type = 'button';
       row.className = 'trigger-row';
       row.title = '클릭하면 트리거 원문을 봅니다';
-      const bolt = document.createElement('span');
-      bolt.textContent = '⚡';
       const label = document.createElement('span');
       label.className = 'trigger-label';
       label.textContent = item.trigger.rowLabel || 'Trigger';
       const caret = document.createElement('span');
       caret.className = 'trigger-caret';
       caret.textContent = '+';
-      row.append(bolt, label, caret);
+      row.append(label, caret);
       const detail = document.createElement('pre');
       detail.className = 'trigger-detail';
       detail.textContent = item.trigger.body || '(내용 없음)';

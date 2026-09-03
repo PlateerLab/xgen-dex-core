@@ -258,6 +258,126 @@
     if (inCode || codeLines.length) flushCode();
   }
 
+  /* ── 전체 도구 로그 오버레이 — 데스크톱 ToolLogModal 과 같은 정보 구조.
+     항목 행(이름/상태/소요) 클릭으로 입력·오류·결과를 펼친다. initialIndex 가
+     있으면 그 항목이 펼쳐진 채 열리고 화면 가운데로 스크롤한다. */
+  function shortToolName(raw) {
+    const name = String(raw || '').trim();
+    if (!name) return '(이름 없음)';
+    return name.replace(/^mcp__connector__/, '').replace(/^mcp_(mcp-)?/, '');
+  }
+  function toolPhase(event) {
+    if (event.eventType === 'tool_error' || event.error) return { label: '실패', tone: 'err' };
+    if (event.eventType === 'tool_result') return { label: '완료', tone: 'ok' };
+    return { label: '실행', tone: 'run' };
+  }
+  function prettyValue(value) {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  }
+  function openToolLog(assistantId, initialIndex) {
+    const source = state.messages.find((item) => item.id === assistantId);
+    const events = (source && source.tools) || [];
+    document.querySelector('.toollog-backdrop')?.remove();
+    const backdrop = document.createElement('div');
+    backdrop.className = 'toollog-backdrop';
+    backdrop.addEventListener('mousedown', (event) => {
+      if (event.target === backdrop) backdrop.remove();
+    });
+    const panel = document.createElement('div');
+    panel.className = 'toollog';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '도구 실행 기록');
+    const head = document.createElement('div');
+    head.className = 'toollog-head';
+    const title = document.createElement('span');
+    title.className = 'toollog-title';
+    title.textContent = `도구 실행 기록 · ${events.length}건`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toollog-close';
+    close.textContent = '✕';
+    close.setAttribute('aria-label', '닫기');
+    close.addEventListener('click', () => backdrop.remove());
+    head.append(title, close);
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'toollog-body';
+    let focusRow = null;
+    events.forEach((event, index) => {
+      const phase = toolPhase(event);
+      const itemEl = document.createElement('div');
+      itemEl.className = `toollog-item ${phase.tone}`;
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'toollog-row';
+      const idx = document.createElement('span');
+      idx.className = 'toollog-idx';
+      idx.textContent = String(index + 1);
+      const name = document.createElement('span');
+      name.className = 'toollog-name';
+      name.textContent = shortToolName(event.toolName);
+      name.title = event.toolName || '';
+      const phaseEl = document.createElement('span');
+      phaseEl.className = `toollog-phase ${phase.tone}`;
+      phaseEl.textContent = phase.label;
+      row.append(idx, name, phaseEl);
+      if (typeof event.durationMs === 'number') {
+        const ms = document.createElement('span');
+        ms.className = 'toollog-ms';
+        ms.textContent = `${event.durationMs}ms`;
+        row.append(ms);
+      }
+      const caret = document.createElement('span');
+      caret.className = 'toollog-caret';
+      row.append(caret);
+      const detail = document.createElement('div');
+      detail.className = 'toollog-detail';
+      const addBlock = (labelText, value, err) => {
+        if (!value) return;
+        const blockLabel = document.createElement('div');
+        blockLabel.className = `toollog-label${err ? ' err' : ''}`;
+        blockLabel.textContent = labelText;
+        const pre = document.createElement('pre');
+        if (err) pre.className = 'err';
+        pre.textContent = value;
+        detail.append(blockLabel, pre);
+      };
+      addBlock('입력', prettyValue(event.toolInput));
+      addBlock('오류', event.error ? String(event.error) : '', true);
+      addBlock('결과', prettyValue(event.result));
+      const setOpen = (openNow) => {
+        itemEl.classList.toggle('open', openNow);
+        caret.textContent = openNow ? '−' : '+';
+      };
+      setOpen(index === initialIndex);
+      if (index === initialIndex) {
+        itemEl.classList.add('focused');
+        focusRow = itemEl;
+      }
+      row.addEventListener('click', () => setOpen(!itemEl.classList.contains('open')));
+      itemEl.append(row, detail);
+      bodyEl.append(itemEl);
+    });
+    if (!events.length) {
+      const empty = document.createElement('div');
+      empty.className = 'toollog-empty';
+      empty.textContent = '이 답변에서는 도구를 쓰지 않았습니다.';
+      bodyEl.append(empty);
+    }
+    panel.append(head, bodyEl);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        backdrop.remove();
+        window.removeEventListener('keydown', onKey);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    if (focusRow) focusRow.scrollIntoView({ block: 'center' });
+  }
+
   function typingIndicator() {
     const indicator = document.createElement('span');
     indicator.className = 'typing-indicator';
@@ -276,6 +396,16 @@
       const activityText = document.createElement('span');
       activityText.textContent = item.text;
       article.append(activityIcon, activityText);
+      // 도구 줄은 빠르게 지나간다 — 누르면 그 도구가 펼쳐진 전체 로그로.
+      if (item.toolRef) {
+        article.classList.add('clickable');
+        article.title = '눌러서 이 도구의 전체 로그 보기';
+        article.setAttribute('role', 'button');
+        article.tabIndex = 0;
+        const openRef = () => openToolLog(item.toolRef.assistantId, item.toolRef.index);
+        article.addEventListener('click', openRef);
+        article.addEventListener('keydown', (event) => event.key === 'Enter' && openRef());
+      }
       return article;
     }
 
@@ -290,13 +420,36 @@
     label.className = 'message-label';
     label.textContent = item.label;
     header.append(label);
-    if (item.text) header.append(copyButton(item.text, '메시지 복사'));
+    if (item.text && item.role !== 'assistant') header.append(copyButton(item.text, '메시지 복사'));
     const content = document.createElement('div');
     content.className = 'message-content';
     if (!item.text && item.role === 'assistant') content.append(typingIndicator());
     else if (item.role === 'assistant') renderRichText(content, item.text);
     else content.textContent = item.text;
     body.append(header, content);
+    // 답변 푸터 한 줄 — 좌: 복사(호버에만 드러남), 우: 전체 로그(상시).
+    // 데스크톱 앱과 같은 배치 계약이다.
+    if (item.role === 'assistant' && (item.text || (item.tools && item.tools.length))) {
+      const footer = document.createElement('div');
+      footer.className = 'msg-footer';
+      if (item.text) {
+        const actions = document.createElement('div');
+        actions.className = 'msg-actions';
+        const copy = copyButton(item.text, '답변 복사');
+        copy.classList.add('inline');
+        actions.append(copy);
+        footer.append(actions);
+      }
+      if (item.tools && item.tools.length) {
+        const openLog = document.createElement('button');
+        openLog.type = 'button';
+        openLog.className = 'toollog-open';
+        openLog.textContent = `전체 로그 보기 · ${item.tools.length}건`;
+        openLog.addEventListener('click', () => openToolLog(item.id));
+        footer.append(openLog);
+      }
+      body.append(footer);
+    }
     article.append(avatar, body);
     return article;
   }

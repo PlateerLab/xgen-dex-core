@@ -95,9 +95,22 @@ test('답변 아래에 작은 버튼으로 붙는다', () => {
   assert.match(CHAT, /전체 로그 보기/);
 });
 
-test('진행 중에는 열지 않는다', () => {
-  // 아직 늘어나는 목록을 펼쳐 두면 사용자는 그게 전부라고 믿는다.
-  assert.match(CHAT, /!m\.streaming && m\.tools && m\.tools\.length > 0/);
+test('푸터의 전체 로그 버튼은 끝난 뒤에만 붙는다', () => {
+  // 아직 늘어나는 목록의 "전체"를 자처하지 않는다 — 푸터 자체가
+  // !m.streaming 게이트 안에 있다.
+  assert.match(CHAT, /!m\.streaming &&\s*\n?\s*\(\(!!m\.text/);
+});
+
+test('진행 중에는 도구 칩 클릭이 그 시점의 로그를 연다', () => {
+  // 칩은 하나씩 빠르게 지나간다 — 누르면 클릭 시점 스냅숏이, 그 도구가
+  // 펼쳐진 채(initialOpen) 열린다.
+  assert.match(CHAT, /onOpen=\{\(ev\)/);
+  assert.match(CHAT, /lastIndexOf\(ev\)/);
+  assert.match(MODAL, /initialOpen/);
+});
+
+test('푸터는 한 줄이다 — 복사\/공유(좌) · 전체 로그(우)', () => {
+  assert.match(CHAT, /className="msg-footer"/);
 });
 
 test('복사가 1급이다', () => {

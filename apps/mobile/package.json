@@ -1,7 +1,7 @@
 {
   "name": "xgen-dex-mobile",
   "private": true,
-  "version": "1.26.0",
+  "version": "1.27.0",
   "description": "XGEN Dex Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS). 서버 세션 채팅 + 모바일 도구.",
   "main": "index.js",
   "scripts": {
@@ -35,7 +35,8 @@
     "expo-status-bar": "~2.2.3",
     "js-sha256": "^0.11.0",
     "react": "19.0.0",
-    "react-native": "0.79.5"
+    "react-native": "0.79.5",
+    "react-native-markdown-display": "^7.0.2"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

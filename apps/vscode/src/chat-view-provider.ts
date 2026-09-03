@@ -28,6 +28,10 @@ interface ChatMessage {
   role: MessageRole;
   label: string;
   text: string;
+  /** assistant — 이 답변에서 쓴 도구 이벤트 전부 (전체 로그의 원천, 수신 순). */
+  tools?: ToolEvent[];
+  /** activity — 클릭하면 열 전체 로그의 위치 (assistant 메시지 id + tools 인덱스). */
+  toolRef?: { assistantId: string; index: number };
 }
 
 interface ChatViewState {
@@ -377,15 +381,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private updateTool(event: ToolEvent): void {
+    // 전체 로그의 원천 — 답변 메시지에 이벤트를 수신 순으로 쌓는다
+    // (데스크톱 세션 스토어와 같은 모델).
+    const assistant = this.messages.find((item) => item.id === this.assistantMessageId);
+    let index = -1;
+    if (assistant) {
+      assistant.tools = assistant.tools ?? [];
+      assistant.tools.push(event);
+      index = assistant.tools.length - 1;
+    }
     const key = event.runId || `${event.toolName ?? 'tool'}:${event.eventType}`;
     const existingId = this.toolMessages.get(key);
     const text = describeTool(event);
     const existing = existingId ? this.messages.find((item) => item.id === existingId) : undefined;
     if (existing) {
       existing.text = text;
+      // 같은 실행의 후속 이벤트(완료/실패) — 클릭이 최신 상태 항목을 열도록 갱신.
+      if (assistant && index >= 0) existing.toolRef = { assistantId: assistant.id, index };
       return;
     }
     const item = message('activity', 'Tool', text);
+    if (assistant && index >= 0) item.toolRef = { assistantId: assistant.id, index };
     this.messages.push(item);
     this.toolMessages.set(key, item.id);
   }

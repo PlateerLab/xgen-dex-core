@@ -70,10 +70,12 @@ interface ToolSlot {
   ev: ToolEvent;
 }
 
-const ToolActivity: React.FC<{ events: ToolEvent[]; streaming: boolean }> = ({
-  events,
-  streaming,
-}) => {
+const ToolActivity: React.FC<{
+  events: ToolEvent[];
+  streaming: boolean;
+  /** 칩 클릭 — 그 도구가 펼쳐진 전체 로그로 (칩은 빠르게 지나가므로 이게 통로다). */
+  onOpen?: (ev: ToolEvent) => void;
+}> = ({ events, streaming, onOpen }) => {
   // 연속 동일 도구 이벤트를 한 단계로 접는다 (마지막 상태만 유지).
   const steps = useMemo(() => collapseToolSteps(events), [events]);
 
@@ -129,10 +131,12 @@ const ToolActivity: React.FC<{ events: ToolEvent[]; streaming: boolean }> = ({
 
   if (!cur && !out) return null;
   const chip = (slot: ToolSlot, leaving: boolean) => (
-    <span
+    <button
       key={`${slot.key}-${leaving ? 'out' : 'in'}`}
       className={`tool-chip ${slot.ev.eventType ?? ''} ${leaving ? 'leaving' : 'entering'}`}
-      title={slot.ev.toolName}
+      title={`${slot.ev.toolName ?? 'tool'} — 눌러서 이 도구의 로그 보기`}
+      onClick={() => !leaving && onOpen?.(slot.ev)}
+      disabled={leaving}
     >
       <span className="tname">{slot.ev.toolName ?? 'tool'}</span>
       {!leaving && steps.length > 1 && (
@@ -140,7 +144,7 @@ const ToolActivity: React.FC<{ events: ToolEvent[]; streaming: boolean }> = ({
           {Math.min(slot.key + 1, steps.length)}/{steps.length}
         </span>
       )}
-    </span>
+    </button>
   );
   return (
     <div className="tool-activity">
@@ -266,7 +270,9 @@ export const Chat: React.FC<{
   const [screenCaptureOn, setScreenCaptureOn] = useState(false);
   const [captureNotice, setCaptureNotice] = useState('');
   // 전체 도구 로그 — 흐름에는 하나씩 지나가게 두고, 필요할 때 여기서 펼친다.
-  const [logFor, setLogFor] = useState<ToolEvent[] | null>(null);
+  const [logFor, setLogFor] = useState<{ events: ToolEvent[]; initialOpen?: number } | null>(
+    null,
+  );
   // Teams 문맥 — 칩이 붙은 채 처음 보낼 때 확인창을 띄우고, 확인될 때까지
   // 사용자가 친 문장을 여기에 들고 있는다 (입력창은 이미 비워졌으므로).
   const [ctxConfirm, setCtxConfirm] = useState<{
@@ -1095,7 +1101,16 @@ export const Chat: React.FC<{
                   </div>
                 )}
                 {m.tools && m.tools.length > 0 && (
-                  <ToolActivity events={m.tools} streaming={!!m.streaming} />
+                  <ToolActivity
+                    events={m.tools}
+                    streaming={!!m.streaming}
+                    onOpen={(ev) => {
+                      // 클릭 시점의 스냅숏 — 지나간 칩의 "그 시점"이 그대로 열린다.
+                      const events = [...(m.tools ?? [])];
+                      const at = events.lastIndexOf(ev);
+                      setLogFor({ events, initialOpen: at >= 0 ? at : undefined });
+                    }}
+                  />
                 )}
                 <div
                   className={`bubble ${m.role} ${m.error ? 'error' : ''}${m.images?.length ? ' has-images' : ''}`}
@@ -1168,33 +1183,49 @@ export const Chat: React.FC<{
                     공유하면 잘린 글이 방에 남고, 방에는 삭제가 없다.
                     복사는 main 의 clipboard 를 쓴다: 렌더러 navigator.clipboard 는
                     Electron 에서 권한/보안 컨텍스트 때문에 조용히 실패할 수 있다. */}
-                {m.role === 'assistant' && !m.streaming && !!m.text && !m.error && (
-                  <div className="msg-actions">
-                    <button
-                      onClick={() => {
-                        void copyText(m.text).then((ok) => {
-                          if (!ok) return;
-                          setCopiedAt(i);
-                          window.setTimeout(() => setCopiedAt((at) => (at === i ? -1 : at)), 1200);
-                        });
-                      }}
-                      title="답변 복사"
-                    >
-                      <CopyIcon size={13} /> {copiedAt === i ? '복사됨' : '복사'}
-                    </button>
-                    <button onClick={() => setShareBody(m.text)} title="이 답변을 Teams 방에 공유">
-                      <ShareIcon size={13} /> Teams로 공유
-                    </button>
-                  </div>
-                )}
-                {/* 전체 도구 로그 — 흐름의 도구 칩은 하나씩 지나가므로,
-                    무엇이 있었는지 되짚으려면 펼칠 곳이 필요하다. 답변이
-                    끝난 뒤에만 보인다 (진행 중에는 아직 늘어난다). */}
-                {m.role === 'assistant' && !m.streaming && m.tools && m.tools.length > 0 && (
-                  <button className="toollog-open" onClick={() => setLogFor(m.tools ?? [])}>
-                    전체 로그 보기 · {m.tools.length}건
-                  </button>
-                )}
+                {/* 푸터 한 줄 — 좌: 복사/공유(호버에만), 우: 전체 로그(상시).
+                    한 row 로 붙어야 답변 하단이 두 줄로 널뛰지 않는다. */}
+                {m.role === 'assistant' &&
+                  !m.streaming &&
+                  ((!!m.text && !m.error) || (m.tools && m.tools.length > 0)) && (
+                    <div className="msg-footer">
+                      {!!m.text && !m.error && (
+                        <div className="msg-actions">
+                          <button
+                            onClick={() => {
+                              void copyText(m.text).then((ok) => {
+                                if (!ok) return;
+                                setCopiedAt(i);
+                                window.setTimeout(
+                                  () => setCopiedAt((at) => (at === i ? -1 : at)),
+                                  1200,
+                                );
+                              });
+                            }}
+                            title="답변 복사"
+                          >
+                            <CopyIcon size={13} /> {copiedAt === i ? '복사됨' : '복사'}
+                          </button>
+                          <button
+                            onClick={() => setShareBody(m.text)}
+                            title="이 답변을 Teams 방에 공유"
+                          >
+                            <ShareIcon size={13} /> Teams로 공유
+                          </button>
+                        </div>
+                      )}
+                      {/* 전체 도구 로그 — 흐름의 도구 칩은 하나씩 지나가므로,
+                          무엇이 있었는지 되짚으려면 펼칠 곳이 필요하다. */}
+                      {m.tools && m.tools.length > 0 && (
+                        <button
+                          className="toollog-open"
+                          onClick={() => setLogFor({ events: [...(m.tools ?? [])] })}
+                        >
+                          전체 로그 보기 · {m.tools.length}건
+                        </button>
+                      )}
+                    </div>
+                  )}
                 {m.citations && m.citations.length > 0 && (
                   <div className="citations">
                     <span className="label">출처</span>
@@ -1221,7 +1252,13 @@ export const Chat: React.FC<{
             음성 재생 실패: {voiceError}
           </div>
         )}
-        {logFor && <ToolLogModal events={logFor} onClose={() => setLogFor(null)} />}
+        {logFor && (
+          <ToolLogModal
+            events={logFor.events}
+            initialOpen={logFor.initialOpen}
+            onClose={() => setLogFor(null)}
+          />
+        )}
         {captureNotice && (
           <div className="voice-error small" title={captureNotice}>
             화면을 첨부하지 못했습니다: {captureNotice}

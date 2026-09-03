@@ -27,6 +27,8 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Linking from 'expo-linking';
+import MarkdownDisplay from 'react-native-markdown-display';
 import type { Agent, Conversation } from '@dex/protocol';
 import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState } from './lib/chat-ws';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
@@ -825,6 +827,65 @@ function CreateAgentSheet({
   );
 }
 
+// ── 어시스턴트 마크다운 ──────────────────────────────────────────
+
+/** 채팅 답변 마크다운 렌더 — 웹/데스크톱과 동일하게 볼드·리스트·표·코드블록·
+ *  링크가 실제로 그려진다 (이전엔 평문이라 마크업 기호가 그대로 보였다). */
+const AssistantMarkdown: React.FC<{ text: string }> = React.memo(({ text }) => {
+  const p = useP();
+  const styles = useMemo(
+    () => ({
+      body: { color: p.text, fontSize: 15, lineHeight: 22 },
+      paragraph: { marginTop: 0, marginBottom: 8 },
+      heading1: { fontSize: 20, fontWeight: '800' as const, marginBottom: 8, color: p.text },
+      heading2: { fontSize: 18, fontWeight: '800' as const, marginBottom: 6, color: p.text },
+      heading3: { fontSize: 16, fontWeight: '700' as const, marginBottom: 6, color: p.text },
+      heading4: { fontSize: 15, fontWeight: '700' as const, color: p.text },
+      strong: { fontWeight: '700' as const },
+      link: { color: p.primary, textDecorationLine: 'underline' as const },
+      bullet_list: { marginBottom: 8 },
+      ordered_list: { marginBottom: 8 },
+      list_item: { flexDirection: 'row' as const, marginBottom: 3 },
+      blockquote: {
+        backgroundColor: p.panel2, borderLeftWidth: 3, borderLeftColor: p.primary,
+        paddingHorizontal: 10, paddingVertical: 4, marginBottom: 8, borderRadius: 4,
+      },
+      code_inline: {
+        backgroundColor: p.panel2, color: p.text, borderRadius: 4,
+        paddingHorizontal: 4, fontSize: 13,
+        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+      },
+      code_block: {
+        backgroundColor: p.panel2, color: p.text, borderRadius: 8, padding: 10,
+        fontSize: 12.5, borderWidth: 0,
+        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+      },
+      fence: {
+        backgroundColor: p.panel2, color: p.text, borderRadius: 8, padding: 10,
+        fontSize: 12.5, borderWidth: 0, marginBottom: 8,
+        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+      },
+      table: { borderWidth: 1, borderColor: p.border, borderRadius: 6, marginBottom: 8 },
+      th: { padding: 6, fontWeight: '700' as const },
+      td: { padding: 6, borderTopWidth: 1, borderColor: p.border },
+      hr: { backgroundColor: p.border, height: 1, marginVertical: 10 },
+    }),
+    [p],
+  );
+  return (
+    <MarkdownDisplay
+      style={styles}
+      onLinkPress={(url) => {
+        void Linking.openURL(url).catch(() => undefined);
+        return false; // 기본 핸들러 중복 방지
+      }}
+    >
+      {text}
+    </MarkdownDisplay>
+  );
+});
+AssistantMarkdown.displayName = 'AssistantMarkdown';
+
 // ── 현재 채팅 ────────────────────────────────────────────────────
 
 function ChatSection({
@@ -973,15 +1034,18 @@ function ChatSection({
                 m.role === 'error' && st.msgError,
               ]}
             >
-              <Text
-                style={{
-                  color: m.role === 'user' ? '#fff' : m.role === 'error' ? p.danger : m.role === 'tool' ? p.muted : p.text,
-                  fontSize: m.role === 'tool' || m.role === 'error' ? 12 : 15,
-                }}
-              >
-                {text}
-                {m.streaming ? ' ▍' : ''}
-              </Text>
+              {m.role === 'assistant' ? (
+                <AssistantMarkdown text={m.streaming ? `${text} ▍` : text} />
+              ) : (
+                <Text
+                  style={{
+                    color: m.role === 'user' ? '#fff' : m.role === 'error' ? p.danger : p.muted,
+                    fontSize: m.role === 'tool' || m.role === 'error' ? 12 : 15,
+                  }}
+                >
+                  {text}
+                </Text>
+              )}
             </View>
           );
         }}

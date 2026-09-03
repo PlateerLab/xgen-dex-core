@@ -7649,3 +7649,37 @@ button.sm {
 .tool-chip { cursor: pointer; }
 .tool-chip:disabled { cursor: default; }
 .toollog-item.focused { outline: 1px solid var(--primary-soft-border); border-radius: 6px; }
+
+/* ── [Trigger] 행 — Job/sub-agent 가 세션을 깨운 턴 (사용자 말풍선 아님) ── */
+.msg-row.trigger { justify-content: center; }
+.trigger-block { max-width: min(680px, 92%); width: fit-content; }
+.trigger-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.trigger-row:hover { color: var(--text); border-color: var(--primary-soft-border); background: var(--primary-soft); }
+.trigger-bolt { font-size: 11px; }
+.trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trigger-caret { flex: none; opacity: 0.7; }
+.trigger-detail {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow: auto;
+}

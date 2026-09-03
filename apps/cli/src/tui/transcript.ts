@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { parseAgentTrigger, triggerRowLabel } from '@dex/protocol';
 import type { ChatMessage } from './chat-state';
 
 /**
@@ -124,6 +125,24 @@ export function renderTranscript(
 
   for (const message of messages) {
     const color = colorOf(message.role);
+
+    // [Trigger] 턴 — Job/sub-agent 가 세션을 깨운 주입이다. 사용자 발화가
+    // 아니므로 You 블록 대신 활동 줄과 같은 한 줄로 지나간다 (전 앱 공통
+    // 계약 — GUI 는 클릭 상세, TUI 는 한 줄 요약).
+    if (message.role === 'user') {
+      const trig = parseAgentTrigger(message.text);
+      if (trig) {
+        for (const [index, text] of wrapToWidth(`⚡ ${triggerRowLabel(trig)}`, bodyWidth).entries()) {
+          lines.push({
+            key: `${message.id}:${index}`,
+            text: `${index === 0 ? '' : INDENT}${text}`,
+            role: 'activity',
+            color: 'yellow',
+          });
+        }
+        continue;
+      }
+    }
 
     // 도구 활동은 대화가 아니라 곁다리다. 가로줄까지 두면 진짜 대화가 묻힌다.
     if (message.role === 'activity') {

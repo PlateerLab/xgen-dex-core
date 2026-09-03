@@ -30,6 +30,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as Linking from 'expo-linking';
 import MarkdownDisplay from 'react-native-markdown-display';
 import type { Agent, Conversation } from '@dex/protocol';
+import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState } from './lib/chat-ws';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -827,6 +828,46 @@ function CreateAgentSheet({
   );
 }
 
+// ── [Trigger] 행 — Job/sub-agent 가 세션을 깨운 턴 ────────────────
+
+/** 사용자 말풍선 대신 한 줄 [Trigger · 종류 · 출처] + 탭하면 원문 상세.
+ *  전 앱(CLI/VSCode/데스크톱/웹) 공통 계약 — @dex/protocol parseAgentTrigger. */
+const TriggerRow: React.FC<{ trigger: AgentTrigger }> = ({ trigger }) => {
+  const p = useP();
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ alignSelf: 'center', maxWidth: '92%' }}>
+      <Pressable
+        onPress={() => setOpen((v) => !v)}
+        style={{
+          flexDirection: 'row', alignItems: 'center', gap: 6,
+          borderWidth: 1, borderStyle: 'dashed', borderColor: p.border,
+          borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5,
+          backgroundColor: p.panel,
+        }}
+      >
+        <Text style={{ fontSize: 11 }}>⚡</Text>
+        <Text numberOfLines={1} style={{ color: p.muted, fontSize: 11.5, flexShrink: 1 }}>
+          {triggerRowLabel(trigger)}
+        </Text>
+        <Text style={{ color: p.muted, fontSize: 12 }}>{open ? '−' : '+'}</Text>
+      </Pressable>
+      {open && (
+        <View
+          style={{
+            marginTop: 6, borderWidth: 1, borderColor: p.border, borderRadius: 10,
+            backgroundColor: p.panel, padding: 10, maxHeight: 280,
+          }}
+        >
+          <ScrollView nestedScrollEnabled>
+            <Text style={{ color: p.muted, fontSize: 11.5 }}>{trigger.body || '(내용 없음)'}</Text>
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+};
+
 // ── 어시스턴트 마크다운 ──────────────────────────────────────────
 
 /** 채팅 답변 마크다운 렌더 — 웹/데스크톱과 동일하게 볼드·리스트·표·코드블록·
@@ -1024,6 +1065,10 @@ function ChatSection({
         renderItem={({ item: m }) => {
           const text = m.role === 'assistant' ? stripAgentMarkers(m.text) : m.text;
           if (!text && !m.streaming) return null;
+          if (m.role === 'user') {
+            const trig = parseAgentTrigger(text);
+            if (trig) return <TriggerRow trigger={trig} />;
+          }
           return (
             <View
               style={[

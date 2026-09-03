@@ -30,6 +30,7 @@ import { collapseToolSteps, nextToolIndex } from './tool-activity-model';
 import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
+import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
 import {
@@ -51,6 +52,30 @@ import {
   TeamsIcon,
 } from '../brand/icons';
 import type { AgentViewerSub } from './workspace-layout';
+
+/** [Trigger] 행 — Job/sub-agent 결과가 세션을 깨운 턴.
+ *
+ * 서버는 이 턴을 사용자 발화와 같은 경로로 주입하지만(<agent_trigger:*> 태그),
+ * 사용자가 친 채팅이 아니므로 말풍선으로 그리지 않는다: 한 줄
+ * [Trigger · 종류 · 출처] + 클릭하면 원문 상세. 전 앱(CLI/VSCode/모바일/웹)
+ * 공통 계약이다. */
+const TriggerRow: React.FC<{ trigger: AgentTrigger }> = ({ trigger }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="trigger-block">
+      <button
+        className="trigger-row"
+        onClick={() => setOpen((v) => !v)}
+        title="클릭하면 트리거 원문을 봅니다"
+      >
+        <span className="trigger-bolt">⚡</span>
+        <span className="trigger-label">{triggerRowLabel(trigger)}</span>
+        <span className="trigger-caret">{open ? '−' : '+'}</span>
+      </button>
+      {open && <pre className="trigger-detail">{trigger.body || '(내용 없음)'}</pre>}
+    </div>
+  );
+};
 
 /** 도구 활동 표시 — **한 번에 하나**만 보여주고 다음 것으로 스르륵 교체된다.
  *
@@ -1075,6 +1100,17 @@ export const Chat: React.FC<{
           </div>
         ) : (
           messages.map((m, i) => (
+            (() => {
+              // 트리거 턴 — 사용자 말풍선 대신 [Trigger] 1행 (+클릭 상세).
+              const trig = m.role === 'user' ? parseAgentTrigger(m.text) : null;
+              if (trig) {
+                return (
+                  <div key={i} className="msg-row trigger">
+                    <TriggerRow trigger={trig} />
+                  </div>
+                );
+              }
+              return (
             <div key={i} className={`msg-row ${m.role}`}>
               {m.role === 'assistant' && (
                 <div className="msg-avatar assistant">
@@ -1242,6 +1278,8 @@ export const Chat: React.FC<{
                 )}
               </div>
             </div>
+              );
+            })()
           ))
         )}
       </div>

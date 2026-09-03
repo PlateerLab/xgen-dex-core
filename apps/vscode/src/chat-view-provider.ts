@@ -19,6 +19,7 @@ import type {
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
+import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 
 type MessageRole = 'user' | 'assistant' | 'activity' | 'system';
 type ViewScreen = 'loading' | 'setup' | 'login' | 'offline' | 'agents' | 'chat' | 'settings' | 'error';
@@ -28,6 +29,9 @@ interface ChatMessage {
   role: MessageRole;
   label: string;
   text: string;
+  /** user — 이 턴이 Job/sub-agent 트리거 주입이면 렌더용 파싱 결과.
+   *  webview 는 이 필드가 있으면 말풍선 대신 [Trigger] 행을 그린다. */
+  trigger?: AgentTrigger & { rowLabel: string };
   /** assistant — 이 답변에서 쓴 도구 이벤트 전부 (전체 로그의 원천, 수신 순). */
   tools?: ToolEvent[];
   /** activity — 클릭하면 열 전체 로그의 위치 (assistant 메시지 id + tools 인덱스). */
@@ -678,7 +682,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 }
 
 function message(role: MessageRole, label: string, text: string): ChatMessage {
-  return { id: randomUUID(), role, label, text };
+  const item: ChatMessage = { id: randomUUID(), role, label, text };
+  if (role === 'user') {
+    // Job/sub-agent 트리거 주입 턴 — 사용자 발화가 아니므로 렌더가 다르다.
+    const trig = parseAgentTrigger(text);
+    if (trig) item.trigger = { ...trig, rowLabel: triggerRowLabel(trig) };
+  }
+  return item;
 }
 
 function agentFromConversation(conversation: Conversation): Agent {

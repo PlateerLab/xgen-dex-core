@@ -96,25 +96,28 @@ export class ResourceApi {
 
   /** 그래프(노드·엣지·카운트). agent 가 있으면 그 에이전트 뷰. */
   graph(agent?: string): Promise<ResourceGraphResponse> {
-    return this.http.get<ResourceGraphResponse>(`/api/retrieval/resource/graph${withAgent({ agent })}`);
+    return this.http.get<ResourceGraphResponse>(`/api/retrieval/resource/graph${withAgent({ agent })}`, { timeoutMs: 60_000 });
   }
 
   /** 유형별 목록 + 카운트. */
   catalog(agent?: string, type?: ResourceNodeType): Promise<ResourceCatalogResponse> {
-    return this.http.get<ResourceCatalogResponse>(`/api/retrieval/resource/catalog${withAgent({ agent, type })}`);
+    return this.http.get<ResourceCatalogResponse>(`/api/retrieval/resource/catalog${withAgent({ agent, type })}`, { timeoutMs: 60_000 });
   }
 
   /** 융합 검색(메타·내용·관계·범주·확답) + 기억 선조회. */
   search(q: string, opts: { agent?: string; topK?: number } = {}): Promise<ResourceSearchResponse> {
+    // 첫 검색은 서버가 색인을 새로 세운다(임베딩 포함) - 기본 30s 로는 잘린다.
     return this.http.get<ResourceSearchResponse>(
       `/api/retrieval/resource/search${withAgent({ q, agent: opts.agent, top_k: opts.topK })}`,
+      { timeoutMs: 120_000 },
     );
   }
 
   /** 질문 → 답. 같은 질문의 기억이 있으면 기억만으로, 없으면 검색해 답을 만들고 vault 에 남긴다. force 는 기억을 건너뛴다. */
   answer(q: string, opts: { agent?: string; force?: boolean; topK?: number } = {}): Promise<ResourceAnswerResponse> {
+    // 검색 + LLM 답 생성 + vault 저장 - 여유 있게 잡는다.
     return this.http.post<ResourceAnswerResponse>('/api/retrieval/resource/answer', {
       q, agent: opts.agent ?? null, force: opts.force ?? false, top_k: opts.topK ?? 8, save: true,
-    });
+    }, { timeoutMs: 300_000 });
   }
 }

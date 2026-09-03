@@ -3,6 +3,7 @@ import { DexError } from '@dex/engine';
 const BOOLEAN_OPTIONS = new Set([
   'allow-dangerous',
   'check',
+  'force',
   'help',
   'include-harness',
   'json',

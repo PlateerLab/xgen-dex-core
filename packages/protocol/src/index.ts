@@ -239,6 +239,7 @@ export class XgenClient {
 export * from './types';
 export * from './agent-data';
 export * from './filestore';
+export * from './agent-trigger';
 export * from './notifications';
 export { ApiError } from './client';
 export { SseParser } from './sse';

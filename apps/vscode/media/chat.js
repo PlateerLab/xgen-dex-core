@@ -389,6 +389,34 @@
   function messageElement(item) {
     const article = document.createElement('article');
     article.className = `message ${item.role}`;
+    // [Trigger] 행 — Job/sub-agent 가 세션을 깨운 턴. 사용자 말풍선 대신
+    // 한 줄 라벨 + 클릭 상세 (전 앱 공통 계약).
+    if (item.role === 'user' && item.trigger) {
+      article.className = 'message trigger';
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'trigger-row';
+      row.title = '클릭하면 트리거 원문을 봅니다';
+      const bolt = document.createElement('span');
+      bolt.textContent = '⚡';
+      const label = document.createElement('span');
+      label.className = 'trigger-label';
+      label.textContent = item.trigger.rowLabel || 'Trigger';
+      const caret = document.createElement('span');
+      caret.className = 'trigger-caret';
+      caret.textContent = '+';
+      row.append(bolt, label, caret);
+      const detail = document.createElement('pre');
+      detail.className = 'trigger-detail';
+      detail.textContent = item.trigger.body || '(내용 없음)';
+      detail.hidden = true;
+      row.addEventListener('click', () => {
+        detail.hidden = !detail.hidden;
+        caret.textContent = detail.hidden ? '+' : '−';
+      });
+      article.append(row, detail);
+      return article;
+    }
     if (item.role === 'activity') {
       const activityIcon = document.createElement('span');
       activityIcon.className = 'activity-icon';

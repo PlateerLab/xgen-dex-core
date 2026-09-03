@@ -846,7 +846,6 @@ const TriggerRow: React.FC<{ trigger: AgentTrigger }> = ({ trigger }) => {
           backgroundColor: p.panel,
         }}
       >
-        <Text style={{ fontSize: 11 }}>⚡</Text>
         <Text numberOfLines={1} style={{ color: p.muted, fontSize: 11.5, flexShrink: 1 }}>
           {triggerRowLabel(trigger)}
         </Text>
@@ -978,6 +977,7 @@ function ChatSection({
 
   useEffect(() => {
     if (!agent) return;
+    const seenExternalIo = new Set<number>();
     const handle = createChat({
       wsBase: wsBaseOf(client.session.serverUrl),
       workflowId: agent.workflowId,
@@ -986,6 +986,18 @@ function ChatSection({
       onState: setWsState,
       wsFactory: client.wsFactory,
       log: diagLog,
+      // 서버 주입 턴(트리거 반응) 실시간 반영 — 새로고침 없이 흐른다.
+      // 자기 실행 턴 push(source=user)는 스트림이 이미 그렸으므로 거른다.
+      onServerTurn: (turn) => {
+        if (turn.source !== 'subagent_report' || !turn.output) return;
+        if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
+        if (turn.ioId) seenExternalIo.add(turn.ioId);
+        setMessages((prev) => [
+          ...prev,
+          { role: 'user', text: turn.input },
+          { role: 'assistant', text: turn.output },
+        ]);
+      },
       callbacks: {
         onData: (text) => {
           setMessages((prev) => {

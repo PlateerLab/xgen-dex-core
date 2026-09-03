@@ -23,7 +23,14 @@ export type ChatAction =
   | { type: 'event_received'; event: ChatEvent }
   | { type: 'turn_completed' }
   | { type: 'turn_cancelled' }
-  | { type: 'turn_failed'; message: string };
+  | { type: 'turn_failed'; message: string }
+  | {
+      /** 대화 소켓 push — 서버가 주입한 완결 턴(트리거 반응). */
+      type: 'server_turn';
+      ioId: number;
+      input: string;
+      output: string;
+    };
 
 export const initialChatState: ChatState = { messages: [], running: false };
 
@@ -153,5 +160,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           { id: `failure-${state.messages.length}`, role: 'system', text: action.message },
         ],
       };
+    case 'server_turn': {
+      // 서버가 주입한 완결 턴(트리거 반응) — 새로고침 없이 흐른다. 같은
+      // io_id 재수신(하트비트 폴백)은 멱등.
+      const dupe = state.messages.some((m) => m.id === `server-${action.ioId}`);
+      if (dupe) return state;
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `server-${action.ioId}`, role: 'user', text: action.input },
+          { id: `server-${action.ioId}-out`, role: 'assistant', text: action.output },
+        ],
+      };
+    }
   }
 }

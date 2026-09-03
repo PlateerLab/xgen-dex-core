@@ -68,7 +68,6 @@ const TriggerRow: React.FC<{ trigger: AgentTrigger }> = ({ trigger }) => {
         onClick={() => setOpen((v) => !v)}
         title="클릭하면 트리거 원문을 봅니다"
       >
-        <span className="trigger-bolt">⚡</span>
         <span className="trigger-label">{triggerRowLabel(trigger)}</span>
         <span className="trigger-caret">{open ? '−' : '+'}</span>
       </button>

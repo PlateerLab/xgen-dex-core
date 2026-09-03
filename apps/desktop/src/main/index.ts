@@ -135,6 +135,7 @@ import type {
 } from '@dex/protocol/browser';
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
+import { ConversationWatchHub } from '@dex/engine/conversation-watch';
 import { NotificationCenter } from './notification-center';
 import {
   openAttachmentTemp,
@@ -1438,6 +1439,33 @@ async function refreshAuthToken(): Promise<string | null> {
  * 브릿지·워크스페이스 동기화가 같은 이유로 같은 규칙을 쓴다.
  */
 const teamsHub = new TeamsSocketHub();
+// 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)을 열린 채팅에 실시간 반영.
+const conversationWatchHub = new ConversationWatchHub((turn) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(CHANNELS.chatWatchTurn, turn);
+  }
+});
+ipcMain.handle(
+  CHANNELS.chatWatchStart,
+  (_e, workflowId: unknown, workflowName: unknown, interactionId: unknown) => {
+    if (typeof workflowId !== 'string' || typeof interactionId !== 'string') return { ok: false };
+    conversationWatchHub.setDeps({
+      baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+      token: async () => liveAccessToken(),
+      allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+    });
+    conversationWatchHub.watch(
+      workflowId,
+      typeof workflowName === 'string' ? workflowName : workflowId,
+      interactionId,
+    );
+    return { ok: true };
+  },
+);
+ipcMain.handle(CHANNELS.chatWatchStop, (_e, interactionId: unknown) => {
+  if (typeof interactionId === 'string') conversationWatchHub.unwatch(interactionId);
+  return { ok: true };
+});
 let teamsHubConfigured = false;
 
 function publishTeamsNotification(event: TeamsEvent): void {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ConversationWatchHub, type ConversationTurn } from './conversation-watch';
 import { XgenClient } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
@@ -180,6 +181,45 @@ export class DexEngine {
 
   stopLocalTools(): void {
     this.localToolBridge.stop();
+  }
+
+  // ── 대화 소켓 감시 (서버 주입 턴 실시간 수신) ────────────────────
+
+  /** 호스트(rpc 서버/TUI)가 설정 — 감시 중인 대화의 서버 push 완결 턴. */
+  onConversationTurn: ((turn: ConversationTurn) => void) | null = null;
+  private conversationHub: ConversationWatchHub | null = null;
+
+  /** 대화 소켓 감시 시작 — Job/sub-agent 트리거의 반응 턴이 실시간으로
+   *  onConversationTurn 에 흐른다 (새로고침 불필요). */
+  async watchConversation(
+    workflowId: string,
+    workflowName: string,
+    interactionId: string,
+    requestedProfile?: string,
+  ): Promise<void> {
+    const record = await this.authenticatedRecord(requestedProfile);
+    if (!this.conversationHub) {
+      this.conversationHub = new ConversationWatchHub((turn) => {
+        this.onConversationTurn?.(turn);
+      });
+    }
+    this.conversationHub.setDeps({
+      baseUrl: () => record.serverUrl,
+      token: async () => {
+        await this.flush(record);
+        return (
+          record.client.getAccessTokenAfterRotation() ||
+          (await this.credentials.get(record.profile))?.accessToken ||
+          null
+        );
+      },
+      allowPrivateCertificate: () => false,
+    });
+    this.conversationHub.watch(workflowId, workflowName, interactionId);
+  }
+
+  unwatchConversation(interactionId: string): void {
+    this.conversationHub?.unwatch(interactionId);
   }
 
   // ── SSH ───────────────────────────────────────────────────────────

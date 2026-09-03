@@ -224,6 +224,9 @@ export const CHANNELS = {
   /** 동기화 폴더의 직계 자식 목록 — 인앱 탐색기용 (로컬 실파일). */
   fsList: 'fs:list',
   fsReadFile: 'fs:read-file',
+  chatWatchStart: 'chat:watch-start',
+  chatWatchStop: 'chat:watch-stop',
+  chatWatchTurn: 'chat:watch-turn',
   fsCloudReadRaw: 'fs:cloud-read-raw',
   fsCloudOfficePreview: 'fs:cloud-office-preview',
   fsCloudOfficePreviewPage: 'fs:cloud-office-preview-page',

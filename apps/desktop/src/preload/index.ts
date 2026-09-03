@@ -742,6 +742,28 @@ const api = {
   },
 
   /** 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스)를 로컬 폴더로. */
+  /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */
+  chatWatch: {
+    start: (workflowId: string, workflowName: string, interactionId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.chatWatchStart, workflowId, workflowName, interactionId),
+    stop: (interactionId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.chatWatchStop, interactionId),
+    onTurn: (
+      cb: (turn: {
+        interactionId: string;
+        ioId: number;
+        input: string;
+        output: string;
+        source: string;
+        updatedAt: string;
+      }) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, turn: Parameters<typeof cb>[0]) => cb(turn);
+      ipcRenderer.on(CHANNELS.chatWatchTurn, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatWatchTurn, h);
+    },
+  },
+
   fileSystem: {
     diagText: (): Promise<string> => ipcRenderer.invoke(CHANNELS.diagText),
     /** 진단 로그를 **main 의 clipboard 로** 복사 (렌더러 clipboard 는 막힐 수 있다). */

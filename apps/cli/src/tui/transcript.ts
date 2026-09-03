@@ -132,7 +132,7 @@ export function renderTranscript(
     if (message.role === 'user') {
       const trig = parseAgentTrigger(message.text);
       if (trig) {
-        for (const [index, text] of wrapToWidth(`⚡ ${triggerRowLabel(trig)}`, bodyWidth).entries()) {
+        for (const [index, text] of wrapToWidth(`· ${triggerRowLabel(trig)}`, bodyWidth).entries()) {
           lines.push({
             key: `${message.id}:${index}`,
             text: `${index === 0 ? '' : INDENT}${text}`,

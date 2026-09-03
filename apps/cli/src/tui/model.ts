@@ -36,6 +36,24 @@ export interface TuiEngine {
   ): Promise<HistoryTurn[]>;
   resolveChatInput(input: ChatInput): Promise<ResolvedChatInput>;
   chat(input: ChatInput, signal?: AbortSignal): AsyncGenerator<ChatEvent, ResolvedChatInput>;
+  /** 대화 소켓 감시 — 서버 주입 턴(트리거 반응)의 실시간 수신 (선택 구현). */
+  watchConversation?(
+    workflowId: string,
+    workflowName: string,
+    interactionId: string,
+    profile?: string,
+  ): Promise<void>;
+  unwatchConversation?(interactionId: string): void;
+  onConversationTurn?:
+    | ((turn: {
+        interactionId: string;
+        ioId: number;
+        input: string;
+        output: string;
+        source: string;
+        updatedAt: string;
+      }) => void)
+    | null;
 }
 
 export interface TuiSession {

@@ -1743,3 +1743,121 @@ kbd {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── 답변 푸터 한 줄 — 좌: 복사(호버), 우: 전체 로그(상시). 데스크톱과 동일 배치 ── */
+.msg-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.msg-footer .msg-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.message:hover .msg-footer .msg-actions,
+.msg-footer .msg-actions:focus-within {
+  opacity: 1;
+}
+.msg-footer .copy-button.inline {
+  position: static;
+  opacity: 1;
+}
+.msg-footer .toollog-open {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.msg-footer .toollog-open:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+.message.activity.clickable { cursor: pointer; border-radius: 6px; }
+.message.activity.clickable:hover { background: var(--vscode-toolbar-hoverBackground); }
+
+/* ── 전체 도구 로그 오버레이 ── */
+.toollog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 20px;
+}
+.toollog {
+  width: min(680px, 96vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 10px;
+  overflow: hidden;
+}
+.toollog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.toollog-close {
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 13px;
+}
+.toollog-body { overflow: auto; padding: 8px 10px 14px; }
+.toollog-item { border: 1px solid var(--vscode-panel-border); border-radius: 8px; margin-bottom: 6px; overflow: hidden; }
+.toollog-item.focused { outline: 1px solid var(--vscode-focusBorder); }
+.toollog-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.toollog-row:hover { background: var(--vscode-toolbar-hoverBackground); }
+.toollog-idx { color: var(--vscode-descriptionForeground); min-width: 16px; text-align: right; }
+.toollog-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
+.toollog-phase { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+.toollog-phase.run { color: var(--vscode-charts-blue, #569cd6); background: rgba(86, 156, 214, 0.14); }
+.toollog-phase.ok { color: var(--vscode-charts-green, #89d185); background: rgba(137, 209, 133, 0.14); }
+.toollog-phase.err { color: var(--vscode-charts-red, #f48771); background: rgba(244, 135, 113, 0.14); }
+.toollog-ms { color: var(--vscode-descriptionForeground); font-size: 11px; }
+.toollog-caret { color: var(--vscode-descriptionForeground); width: 12px; text-align: center; }
+.toollog-detail { display: none; padding: 4px 12px 10px; border-top: 1px dashed var(--vscode-panel-border); }
+.toollog-item.open .toollog-detail { display: block; }
+.toollog-label { font-size: 10.5px; font-weight: 700; color: var(--vscode-descriptionForeground); margin: 8px 0 4px; }
+.toollog-label.err { color: var(--vscode-charts-red, #f48771); }
+.toollog-detail pre {
+  margin: 0;
+  padding: 8px;
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.2));
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+  overflow: auto;
+}
+.toollog-detail pre.err { color: var(--vscode-charts-red, #f48771); }
+.toollog-empty { color: var(--vscode-descriptionForeground); text-align: center; padding: 20px; font-size: 12px; }

@@ -11,7 +11,7 @@
  * 동료, 다른 대화)으로 옮기려는 참이다. 스크롤해서 드래그하게 만들면 그
  * 순간 이 기능이 없는 것과 같아진다.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { copyText } from '../bridge';
 import type { ToolEvent } from '@dex/protocol/types';
 import { CloseIcon, CopyIcon, DocIcon } from '../brand/icons';
@@ -19,6 +19,9 @@ import { CloseIcon, CopyIcon, DocIcon } from '../brand/icons';
 interface Props {
   events: ToolEvent[];
   onClose: () => void;
+  /** 이 인덱스의 항목을 펼친 채 연다 — 흐름의 도구 칩을 눌러 "그 시점"으로
+   *  바로 들어오는 경로 (칩은 하나씩 빠르게 지나가므로). */
+  initialOpen?: number;
 }
 
 /**
@@ -75,10 +78,21 @@ export function formatToolLog(events: ToolEvent[]): string {
   return lines.join('\n');
 }
 
-export const ToolLogModal: React.FC<Props> = ({ events, onClose }) => {
+export const ToolLogModal: React.FC<Props> = ({ events, onClose, initialOpen }) => {
   const [copied, setCopied] = useState('');
-  const [open, setOpen] = useState<Set<number>>(() => new Set());
+  const [open, setOpen] = useState<Set<number>>(() =>
+    initialOpen !== undefined && initialOpen >= 0 && initialOpen < events.length
+      ? new Set([initialOpen])
+      : new Set(),
+  );
   const [copyError, setCopyError] = useState('');
+  const focusRef = useRef<HTMLDivElement | null>(null);
+
+  // 지목된 항목이 보이는 위치로 — 펼쳐놓고 스크롤 밖이면 연 의미가 없다.
+  useEffect(() => {
+    focusRef.current?.scrollIntoView({ block: 'center' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const text = useMemo(() => formatToolLog(events), [events]);
 
@@ -149,7 +163,11 @@ export const ToolLogModal: React.FC<Props> = ({ events, onClose }) => {
               const input = pretty(e.toolInput);
               const result = pretty(e.result);
               return (
-                <div className={`toollog-item ${tone}`} key={i}>
+                <div
+                  className={`toollog-item ${tone}${i === initialOpen ? ' focused' : ''}`}
+                  key={i}
+                  ref={i === initialOpen ? focusRef : undefined}
+                >
                   <button className="toollog-row" onClick={() => toggle(i)}>
                     <span className="toollog-idx">{i + 1}</span>
                     <span className="toollog-name" title={e.toolName}>

@@ -7636,3 +7636,16 @@ button.sm {
 }
 .fv-binary-name { font-weight: 700; color: var(--text); font-size: 14px; }
 .fv-binary-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* ── 답변 푸터 한 줄 — 좌: 복사/공유(호버), 우: 전체 로그(상시) ── */
+.msg-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.msg-footer .msg-actions { margin-top: 0; flex: none; }
+.msg-footer .toollog-open { margin-left: auto; margin-top: 0; }
+.tool-chip { cursor: pointer; }
+.tool-chip:disabled { cursor: default; }
+.toollog-item.focused { outline: 1px solid var(--primary-soft-border); border-radius: 6px; }

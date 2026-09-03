@@ -24,6 +24,23 @@ export interface AgentTrigger {
 
 const OPEN_RE = /^\s*<agent_trigger:([a-z_]+)((?:\s+[a-zA-Z_-]+="[^"]*")*)\s*>/;
 const LEGACY_PREFIX = '[SUB_AGENT_RESULT]';
+const LEGACY_JOB_PREFIX = '[영구 작업 결과 보고]';
+
+/**
+ * 과거 서버가 본문에 섞어 넣던 **LLM 지시문을 걷어낸다** — 지시문은 사용자
+ * 화면(클릭 상세)에 노출되면 안 된다. 현행 서버는 지시문을 아예 넣지 않지만
+ * (결과 + 최소 영어 사실 문구만), 이미 저장된 대화의 렌더 호환으로 남긴다.
+ */
+export function stripTriggerInstructions(body: string): string {
+  let b = body;
+  // 미래 호환 — 지시문 전용 블록.
+  b = b.replace(/<trigger_instructions>[\s\S]*?<\/trigger_instructions>\s*/g, '');
+  // 구형 sub-agent 안내 괄호 블록 (선두).
+  b = b.replace(/^\s*\(당신이 위임했던 sub-agent 작업이 완료되었습니다\.[\s\S]*?\)\s*/, '');
+  // 구형 schedule 지시 문장 (선두 한 문단).
+  b = b.replace(/^\s*작업 '[^']*' 이 방금 실행되었다\. 아래 실행 결과를[\s\S]*?하지 마라\.\s*/, '');
+  return b.trim();
+}
 
 function unescapeAttr(v: string): string {
   return v
@@ -41,7 +58,17 @@ export function parseAgentTrigger(text: string | null | undefined): AgentTrigger
     return {
       kind: 'agent',
       source: 'sub-agent',
-      body: stripped.slice(LEGACY_PREFIX.length).replace(/^\s+/, ''),
+      body: stripTriggerInstructions(stripped.slice(LEGACY_PREFIX.length)),
+    };
+  }
+  if (stripped.startsWith(LEGACY_JOB_PREFIX)) {
+    // 태그 도입 전의 영구 작업 보고 평문 — 트리거 행으로 정리한다.
+    const rest = stripped.slice(LEGACY_JOB_PREFIX.length);
+    const nameMatch = /작업 '([^']*)'/.exec(rest);
+    return {
+      kind: 'schedule',
+      source: nameMatch?.[1] ?? '',
+      body: stripTriggerInstructions(rest),
     };
   }
   const m = OPEN_RE.exec(stripped);
@@ -54,7 +81,9 @@ export function parseAgentTrigger(text: string | null | undefined): AgentTrigger
   const afterOpen = stripped.slice(m[0].length);
   const close = `</agent_trigger:${kind}>`;
   const closeAt = afterOpen.lastIndexOf(close);
-  const body = (closeAt === -1 ? afterOpen : afterOpen.slice(0, closeAt)).trim();
+  const body = stripTriggerInstructions(
+    (closeAt === -1 ? afterOpen : afterOpen.slice(0, closeAt)).trim(),
+  );
   return { kind, source: attrs.source ?? '', body };
 }
 

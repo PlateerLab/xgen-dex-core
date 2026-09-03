@@ -39,3 +39,42 @@ test('사용자 발화는 오탐하지 않는다', () => {
     assert.equal(parseAgentTrigger(s as string), null);
   }
 });
+
+test('지시문 노출 금지 — 구형 본문의 LLM 지시문을 걷어낸다', () => {
+  // v1.29 이전 서버가 저장한 턴 — 안내 괄호 블록이 본문 선두에 있었다.
+  const legacyAgent = parseAgentTrigger(
+    '<agent_trigger:agent source="worker-1">\n' +
+      '(당신이 위임했던 sub-agent 작업이 완료되었습니다. 아래 결과를 사용자에게\n' +
+      ' 자연스럽게 보고하세요. 이 턴에서는 새로운 위임을 하지 마세요.)\n\n' +
+      "- sub-agent 'w1' — 완료\n  [결과]\n실제 결과\n</agent_trigger:agent>",
+  );
+  assert.ok(legacyAgent);
+  assert.ok(!legacyAgent.body.includes('보고하세요'), legacyAgent.body);
+  assert.ok(legacyAgent.body.includes('실제 결과'));
+
+  const legacySchedule = parseAgentTrigger(
+    '<agent_trigger:schedule source="야간">\n' +
+      "작업 '야간' 이 방금 실행되었다. 아래 실행 결과를 사용자에게 간결하게 전달하라 — 새 작업을 걸거나 다른 행동을 하지 마라.\n\n" +
+      '결과 텍스트\n</agent_trigger:schedule>',
+  );
+  assert.ok(legacySchedule);
+  assert.equal(legacySchedule.body, '결과 텍스트');
+});
+
+test('태그 이전 세대의 [영구 작업 결과 보고] 평문도 트리거로 정리한다', () => {
+  const t = parseAgentTrigger(
+    "[영구 작업 결과 보고] 작업 '야간 리포트' 이 방금 실행되었다. 아래 실행 결과를 사용자에게 간결하게 전달하라 — 새 작업을 걸거나 다른 행동을 하지 마라.\n\n결과 A",
+  );
+  assert.ok(t);
+  assert.equal(t.kind, 'schedule');
+  assert.equal(t.source, '야간 리포트');
+  assert.equal(t.body, '결과 A');
+});
+
+test('현행 서버의 최소 영어 본문은 그대로 통과한다', () => {
+  const t = parseAgentTrigger(
+    '<agent_trigger:schedule source="nightly">\nJob \'nightly\' ended. Output:\n\nhello\n</agent_trigger:schedule>',
+  );
+  assert.ok(t);
+  assert.equal(t.body, "Job 'nightly' ended. Output:\n\nhello");
+});

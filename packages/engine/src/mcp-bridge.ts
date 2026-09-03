@@ -69,6 +69,12 @@ export class McpBridge {
   private lastError: string | undefined;
   private lastEmit = '';
   private onStatus: (s: McpBridgeStatus) => void = () => {};
+  /** 이 PC 의 기기 id·이름 - hello 에 실어 서버가 "어느 PC 가 빌려준 도구인지" 알게 한다 (자원 그래프의 기기 결속). */
+  private device: { device_id: string; device_name: string } | null = null;
+
+  setDevice(device: { id: string; name: string } | null): void {
+    this.device = device && device.id ? { device_id: device.id, device_name: device.name } : null;
+  }
 
   setStatusListener(cb: (s: McpBridgeStatus) => void): void {
     this.onStatus = cb;
@@ -401,7 +407,7 @@ export class McpBridge {
         this.pendingCatalogId = catalogId;
         this.catalogSynced = false;
         this.serverToolCount = 0;
-        this.ws.send(JSON.stringify({ type: 'hello', catalog_id: catalogId, tools }));
+        this.ws.send(JSON.stringify({ type: 'hello', catalog_id: catalogId, tools, ...(this.device ? { device: this.device } : {}) }));
         appendMcpRuntimeLog({
           kind: 'catalog',
           message: `도구 카탈로그 ${tools.length}개 재초기화 요청`,

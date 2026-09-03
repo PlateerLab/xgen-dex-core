@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { hostname } from 'node:os';
 import { stdin, stdout, stderr } from 'node:process';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
@@ -39,6 +40,9 @@ Usage:
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
   dex history list [--json]
   dex history turns --workflow <id> --interaction <id> [--json]
+  dex resources list --agent <workflow-id> [--type <type>] [--json]   에이전트의 자원 목록(도구·기억·파일·기기·모델)
+  dex resources search --agent <workflow-id> <검색어> [--json]
+  dex resources ask --agent <workflow-id> <질문> [--force] [--json]      답을 만들고 그 에이전트의 기억으로 남긴다
   dex tools list [--json]
   dex tools status [--profile <name>] [--json]
   dex tools enable [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--shell] [--allow-dangerous]
@@ -243,6 +247,32 @@ function exitCode(error: unknown): number {
   return 1;
 }
 
+const RESOURCE_TYPE_LABEL: Record<string, string> = {
+  agent: '에이전트', tool: '도구', api_tool: 'API 도구', tool_collection: 'API 컬렉션', mcp: 'MCP',
+  memory: '기억', collection: '컬렉션', file: '파일', device: '기기', llm: '모델', user: '계정',
+};
+
+function printResources(items: Array<{ type: string; name: string; status?: string; context?: string; detail?: string }>, counts: Record<string, number>): void {
+  const summary = Object.entries(counts).filter(([, n]) => n > 0).map(([k, n]) => `${RESOURCE_TYPE_LABEL[k] ?? k} ${n}`).join(' · ');
+  stdout.write(`${summary || '자원 없음'}\n`);
+  for (const it of items) {
+    const tail = [it.status, it.context, it.detail].filter(Boolean).join(' · ');
+    stdout.write(`  [${RESOURCE_TYPE_LABEL[it.type] ?? it.type}] ${it.name}${tail ? `  (${tail})` : ''}\n`);
+  }
+}
+
+function printResourceHits(hits: Array<{ type: string; label: string; channels?: string[]; snippet?: string | null }>): void {
+  if (hits.length === 0) { stdout.write('검색 결과 없음\n'); return; }
+  for (const h of hits) {
+    stdout.write(`  [${RESOURCE_TYPE_LABEL[h.type] ?? h.type}] ${h.label}  ${(h.channels ?? []).join('·')}${h.snippet ? `\n      ${h.snippet.slice(0, 120)}` : ''}\n`);
+  }
+}
+
+function printResourceAnswer(res: { answer: string; from_memory: boolean; saved: boolean; note_id: string | null; sources: Array<{ type: string; label: string }> }): void {
+  stdout.write(`${res.from_memory ? '[기억에서 답변]' : res.saved ? '[새 답변 · 기억에 저장]' : '[새 답변]'}\n${res.answer}\n`);
+  if (res.sources.length) stdout.write(`근거: ${res.sources.map((s) => `${RESOURCE_TYPE_LABEL[s.type] ?? s.type} ${s.label}`).join(', ')}\n`);
+}
+
 async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): Promise<void> {
   const workflowId = requiredOption(args, 'agent');
   const input = flag(args, 'stdin') || !stdin.isTTY ? await readStdin() : await promptLine('Message: ');
@@ -296,7 +326,10 @@ async function run(): Promise<void> {
   // 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히 던진다.
   const configStore = new FileConfigStore();
   bindCliHost(configStore);
-  const engine = new DexEngine(configStore, new SystemCredentialStore());
+  const engine = new DexEngine(configStore, new SystemCredentialStore(), {
+    // CLI 는 앱 설정에 기기 id 가 없어 호스트명으로 안정적인 id 를 만든다.
+    device: { id: `cli:${hostname()}`, name: `${hostname()} (dex cli)` },
+  });
   const terminal = {
     stdinIsTty: !!stdin.isTTY,
     stdoutIsTty: !!stdout.isTTY,
@@ -503,6 +536,34 @@ async function run(): Promise<void> {
   if (command === 'chat') {
     await runChat(engine, args);
     return;
+  }
+  if (command === 'resources' || command === 'resource') {
+    const agent = option(args, 'agent');
+    const profile = option(args, 'profile');
+    const text = args.positionals.slice(2).join(' ').trim();
+    if (action === 'list' || action === undefined) {
+      const result = await engine.resourceCatalog(agent, profile);
+      const type = option(args, 'type');
+      const items = type ? result.items.filter((i) => i.type === type) : result.items;
+      if (asJson) writeJson({ ...result, items });
+      else printResources(items, result.counts);
+      return;
+    }
+    if (action === 'search') {
+      if (!text) throw new DexError('usage_error', '검색어가 필요합니다.');
+      const result = await engine.resourceSearch(text, agent, profile);
+      if (asJson) writeJson(result);
+      else printResourceHits(result.hits);
+      return;
+    }
+    if (action === 'ask') {
+      if (!text) throw new DexError('usage_error', '질문이 필요합니다.');
+      const result = await engine.resourceAsk(text, agent, flag(args, 'force'), profile);
+      if (asJson) writeJson(result);
+      else printResourceAnswer(result);
+      return;
+    }
+    throw new DexError('usage_error', 'dex resources list|search|ask');
   }
   if (command === 'history' && action === 'list') {
     const conversations = await engine.listConversations(option(args, 'profile'));

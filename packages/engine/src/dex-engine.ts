@@ -67,6 +67,8 @@ export interface DexEngineOptions {
   localToolProvider?: LocalToolProvider;
   localToolBridge?: McpBridge;
   log?: (message: string) => void;
+  /** 이 PC 의 기기 id·이름 - 로컬 도구 브리지 hello 에 실린다. 없으면 서버는 기기를 모른 채 도구만 받는다. */
+  device?: { id: string; name: string };
 }
 
 export class DexEngine {
@@ -81,6 +83,7 @@ export class DexEngine {
   ) {
     this.localTools = options.localToolProvider ?? getLocalToolProvider();
     this.localToolBridge = options.localToolBridge ?? getMcpBridge();
+    if (options.device) this.localToolBridge.setDevice(options.device);
   }
 
   async listProfiles(): Promise<ProfileSummary[]> {
@@ -331,6 +334,19 @@ export class DexEngine {
 
   async listAgents(query: AgentListQuery = {}, requestedProfile?: string): Promise<AgentListResult> {
     return this.withAuthRetry(requestedProfile, (client) => client.agents.list(query));
+  }
+
+  // ── 자원(에이전트 단위 지식그래프) ──
+  async resourceCatalog(agent: string | undefined, requestedProfile?: string) {
+    return this.withAuthRetry(requestedProfile, (client) => client.resources.catalog(agent));
+  }
+
+  async resourceSearch(q: string, agent: string | undefined, requestedProfile?: string) {
+    return this.withAuthRetry(requestedProfile, (client) => client.resources.search(q, { agent }));
+  }
+
+  async resourceAsk(q: string, agent: string | undefined, force: boolean, requestedProfile?: string) {
+    return this.withAuthRetry(requestedProfile, (client) => client.resources.answer(q, { agent, force }));
   }
 
   /**

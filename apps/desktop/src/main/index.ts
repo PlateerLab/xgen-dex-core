@@ -1663,6 +1663,7 @@ function syncMcp(): void {
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
+  bridge.setDevice({ id: ensureDeviceId(), name: deviceNameOf() });
   if (!mcpStatusWired) {
     mcpStatusWired = true;
     bridge.setStatusListener((s) => safeSend(mainWindow, CHANNELS.mcpStatusEvent, s));
@@ -2938,6 +2939,8 @@ function syncRemoteFor(workflowId: string): SyncRemote {
     refreshAuth: refreshAuthToken,
     workflowId,
     deviceId: ensureDeviceId(),
+    // 파일 저장소 동기화도 이름을 실어야 한다 - 서버(filestore_devices)가 기기 레일을 그린다.
+    deviceName: deviceNameOf(),
     fetch: (input: Parameters<typeof net.fetch>[0], init?: Parameters<typeof net.fetch>[1]) =>
       net.fetch(input, init),
     allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,

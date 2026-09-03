@@ -153,8 +153,10 @@ export class FilestoreSyncTransport implements Transport {
 
   private url(path: string, qs: Record<string, string | number | undefined> = {}): string {
     const u = new URL(`${this.auth.baseUrl}/api/filestore/sync${path}`)
-    for (const [k, v] of Object.entries(qs)) {
-      if (v !== undefined) u.searchParams.set(k, String(v))
+    // 모든 요청에 기기 id·이름 - 서버가 이 PC 를 기기(filestore_devices)로 기록하고 커서 귀속에 쓴다.
+    const merged = { device: this.auth.deviceId, device_name: this.auth.deviceName, ...qs }
+    for (const [k, v] of Object.entries(merged)) {
+      if (v !== undefined && v !== '') u.searchParams.set(k, String(v))
     }
     return u.toString()
   }

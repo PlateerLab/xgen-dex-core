@@ -393,6 +393,19 @@ export class DexEngine {
     return this.withAuthRetry(requestedProfile, (client) => client.agents.list(query));
   }
 
+  // ── 자원(에이전트 단위 지식그래프) ──
+  async resourceCatalog(agent: string | undefined, requestedProfile?: string) {
+    return this.withAuthRetry(requestedProfile, (client) => client.resources.catalog(agent));
+  }
+
+  async resourceSearch(q: string, agent: string | undefined, requestedProfile?: string) {
+    return this.withAuthRetry(requestedProfile, (client) => client.resources.search(q, { agent }));
+  }
+
+  async resourceAsk(q: string, agent: string | undefined, force: boolean, requestedProfile?: string) {
+    return this.withAuthRetry(requestedProfile, (client) => client.resources.answer(q, { agent, force }));
+  }
+
   /**
    * 만들기 화면이 그릴 것 — 프로바이더·모델과 손댈 수 있는 설정.
    *

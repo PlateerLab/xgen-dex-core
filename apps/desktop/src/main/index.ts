@@ -2980,6 +2980,8 @@ function syncRemoteFor(workflowId: string): SyncRemote {
     refreshAuth: refreshAuthToken,
     workflowId,
     deviceId: ensureDeviceId(),
+    // 파일 저장소 동기화도 이름을 실어야 한다 - 서버(filestore_devices)가 기기 레일을 그린다.
+    deviceName: deviceNameOf(),
     fetch: (input: Parameters<typeof net.fetch>[0], init?: Parameters<typeof net.fetch>[1]) =>
       net.fetch(input, init),
     allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,

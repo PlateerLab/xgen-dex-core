@@ -67,6 +67,8 @@ export interface ChatWsOptions {
   wsFactory?: (url: string) => WebSocket;
   /** 서버 push 완결 턴(트리거 반응 등) — 실시간 반영용. */
   onServerTurn?: (turn: ServerTurn) => void;
+  /** 이 기기의 커넥터 슬롯 키 — 실행에 client_device_id 로 실린다. */
+  clientDeviceId?: string;
 }
 
 const RECONNECT_BASE_MS = 1000;
@@ -293,6 +295,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
               // 모바일 도구 주입 게이트 — connector 표면이어야 커넥터-호스팅
               // MCP 카탈로그(모바일 도구)가 에이전트에 노출된다.
               client_surface: 'connector',
+              ...(opts.clientDeviceId ? { client_device_id: opts.clientDeviceId } : {}),
               // 실행은 항상 서버 sandbox — 모바일에는 로컬 실행이 없다.
               execution_target: 'sandbox',
             },

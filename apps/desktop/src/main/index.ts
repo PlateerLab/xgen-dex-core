@@ -1716,6 +1716,9 @@ function syncMcp(): void {
       // 라이브 토큰 우선 — keychain 만 읽으면 세션 중 회전 시 폐기 토큰을 집는다.
       getToken: async () => (await liveAccessToken()) || null,
       refreshAuth: refreshAuthToken,
+      // 멀티 디바이스 — 같은 계정의 다른 커넥터(폰/CLI)와 공존하는 키.
+      deviceId: ensureDeviceId(),
+      deviceName: `${hostname()} · 데스크톱`,
     });
   } else {
     bridge.stop();

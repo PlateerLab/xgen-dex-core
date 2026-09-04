@@ -144,6 +144,9 @@ export interface ChatRequest {
   /** 서버에 보내는 실행 환경 지시 — 커넥터가 로컬 실행 불가로 폴백할 때 'sandbox'
    *  (서버는 커넥터 로컬 워크스페이스 프로브를 건너뛰고 서버 sandbox 에서 돌린다). */
   executionTarget?: 'sandbox';
+  /** 이 대화 표면의 커넥터 기기 id — 서버가 멀티 디바이스에서 "그 기기의
+   *  도구"를 우선 주입한다 (없으면 최근 활동 기기 폴백). */
+  clientDeviceId?: string;
   includeLogs?: boolean;
   includeNodeStatus?: boolean;
   includeToolEvents?: boolean;

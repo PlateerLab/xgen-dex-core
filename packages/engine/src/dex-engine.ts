@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { ConversationWatchHub, type ConversationTurn } from './conversation-watch';
 import { XgenClient } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
@@ -164,6 +165,9 @@ export class DexEngine {
       userId,
       // CLI 는 사내 인증서를 아직 설정으로 받지 않는다 — 기본은 검증이다.
       allowPrivateCertificate: false,
+      // 멀티 디바이스 — 데스크톱 앱과 같은 계정으로 붙어도 서로를 밀어내지 않는다.
+      deviceId: await this.ensureDeviceId(),
+      deviceName: `${hostname()} · CLI`,
       getToken: async () => {
         await this.flush(record);
         return record.client.getAccessTokenAfterRotation() || (await this.credentials.get(record.profile))?.accessToken || null;
@@ -177,6 +181,15 @@ export class DexEngine {
     });
     if (waitMs > 0) await this.localToolBridge.waitUntilReady(waitMs);
     return this.localToolsStatus();
+  }
+
+  /** 이 설치의 안정적 기기 id — 커넥터 멀티 디바이스 슬롯 키. 설정에 영속. */
+  private async ensureDeviceId(): Promise<string> {
+    const config = await this.configs.read();
+    if (config.deviceId) return config.deviceId;
+    const id = randomUUID();
+    await this.configs.write({ ...config, deviceId: id });
+    return id;
   }
 
   stopLocalTools(): void {
@@ -471,6 +484,8 @@ export class DexEngine {
             workflowName: resolved.workflowName,
             input: resolved.input,
             interactionId: resolved.interactionId,
+            // 이 표면(CLI/VSCode)의 기기 — 멀티 디바이스에서 내 도구가 주입되게.
+            clientDeviceId: await this.ensureDeviceId(),
           },
           signal,
         )) {

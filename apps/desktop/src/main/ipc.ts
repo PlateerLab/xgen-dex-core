@@ -225,6 +225,7 @@ export const CHANNELS = {
   fsList: 'fs:list',
   fsReadFile: 'fs:read-file',
   chatWatchStart: 'chat:watch-start',
+  connectorDevices: 'connector:devices',
   chatWatchStop: 'chat:watch-stop',
   chatWatchTurn: 'chat:watch-turn',
   fsCloudReadRaw: 'fs:cloud-read-raw',

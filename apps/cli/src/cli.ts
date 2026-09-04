@@ -119,7 +119,7 @@ function describeEvent(event: ChatEvent): string | null {
 }
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
-  stdout.write(`로컬 도구: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
+  stdout.write(`Local PC MCP: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
   stdout.write(`전체 셸 접근: ${status.config.shellEnabled ? '켜짐' : '꺼짐'}\n`);
   stdout.write(`작업 폴더: ${status.config.cwd || '(미설정)'}\n`);
   stdout.write(`허용 경로: ${status.config.allowedRoots.join(', ') || '(작업 폴더)'}\n`);
@@ -467,8 +467,23 @@ async function run(): Promise<void> {
         };
       }
     }
-    if (asJson) writeJson(status);
-    else printLocalToolsStatus(status);
+    // 멀티 디바이스 — 같은 계정에 붙은 커넥터 기기 전부 (이 CLI 포함).
+    let devices: Awaited<ReturnType<typeof engine.listConnectorDevices>> = [];
+    try {
+      devices = await engine.listConnectorDevices(option(args, 'profile'));
+    } catch {
+      /* 서버 미지원(구버전)·미인증 — 기기 목록 없이 상태만 */
+    }
+    if (asJson) writeJson({ ...status, devices });
+    else {
+      printLocalToolsStatus(status);
+      if (devices.length > 0) {
+        stdout.write(`연결된 기기 (${devices.length}):\n`);
+        for (const d of devices) {
+          stdout.write(`  · ${d.name} [${d.platform || '?'}] — 도구 ${d.toolCount}개\n`);
+        }
+      }
+    }
     if (action === 'serve') {
       if (!status.config.enabled) throw new DexError('local_tools_disabled', '먼저 dex tools enable을 실행하세요.');
       if (!asJson) stderr.write('로컬 도구 브리지가 실행 중입니다. 종료하려면 Ctrl+C를 누르세요.\n');

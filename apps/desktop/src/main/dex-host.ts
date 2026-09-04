@@ -7,7 +7,7 @@
  */
 import { app, BrowserWindow, clipboard, dialog, Notification, shell } from 'electron';
 import { bindHost, type HostPorts, type InteractionPort } from '@dex/engine';
-import { DANGEROUS_COMMAND_PROMPT } from '@dex/engine/local-tools';
+import { DANGEROUS_COMMAND_PROMPT, openWithDefaultApp } from '@dex/engine/local-tools';
 import { loadConfig, saveConfig, type ConnectorConfig } from './config';
 import { resolveDataRoot } from './data-root';
 import { secretGet, secretSet } from './keychain';
@@ -55,7 +55,12 @@ const desktopInteraction: InteractionPort = {
     await shell.openExternal(url);
   },
   async openPath(absolutePath) {
-    return shell.openPath(absolutePath);
+    // ⚠ shell.openPath 금지 (2026-09 실사고): 경로를 **동기 확인**하므로 대상이
+    // 우리 가상 드라이브(이 프로세스의 루프가 서빙)면 루프째 데드락 — 이후 모든
+    // 로컬 도구 호출이 멈춘다. 리눅스에선 연 앱의 종료까지 기다려, 메모장이
+    // 떴는데도 120s MCP 타임아웃으로 실패 보고되는 문제도 같은 뿌리다.
+    // (index.ts openInFileManager / teams-files 주석과 같은 함정.)
+    return openWithDefaultApp(absolutePath);
   },
 };
 

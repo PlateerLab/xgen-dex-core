@@ -12,7 +12,7 @@ import { stdin, stdout } from 'node:process';
 import {
   bindHost,
   DANGEROUS_COMMAND_PROMPT,
-  openerInvocation,
+  openWithDefaultApp,
   type HostPorts,
   type InteractionPort,
   type DexConfig,
@@ -112,15 +112,16 @@ const terminalInteraction: InteractionPort = {
     process.stderr.write(`\n[알림] ${title}${body ? `: ${body}` : ''}\n`);
     return true;
   },
+  // ⚠ 오프너를 run()(종료 대기)으로 돌리면 안 된다 — xdg-open 이 앱을 fork
+  // 하지 않고 직접 실행하는 환경에선 앱을 닫을 때까지 안 돌아온다 (2026-09
+  // 실사고: 메모장은 떴는데 도구 호출은 120s 타임아웃). openWithDefaultApp 은
+  // detached 로 띄우고 즉시 실패만 잠깐 살핀 뒤 성공으로 확정한다.
   async openExternal(url) {
-    const { file, args } = openerInvocation(url);
-    const r = await run(file, args);
-    if (!r.ok) throw new Error(`열지 못했습니다 (${file} 가 필요합니다).`);
+    const err = await openWithDefaultApp(url);
+    if (err) throw new Error(err);
   },
   async openPath(absolutePath) {
-    const { file, args } = openerInvocation(absolutePath);
-    const r = await run(file, args);
-    return r.ok ? '' : `열지 못했습니다 (${file} 가 필요합니다).`;
+    return openWithDefaultApp(absolutePath);
   },
 };
 

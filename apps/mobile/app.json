@@ -2,7 +2,7 @@
   "expo": {
     "name": "XGEN Dex",
     "slug": "xgen-dex",
-    "version": "1.31.0",
+    "version": "1.31.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -35,13 +35,28 @@
       "infoPlist": {
         "NSCameraUsageDescription": "에이전트의 TakePhoto 도구가 사진을 촬영합니다.",
         "NSLocationWhenInUseUsageDescription": "에이전트의 Location 도구가 현재 위치를 조회합니다.",
-        "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": true }
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
       }
     },
     "plugins": [
-      ["expo-location", { "locationWhenInUsePermission": "에이전트의 Location 도구가 현재 위치를 조회합니다." }],
-      ["expo-image-picker", { "cameraPermission": "에이전트의 TakePhoto 도구가 사진을 촬영합니다." }],
-      ["expo-notifications", {}]
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "에이전트의 Location 도구가 현재 위치를 조회합니다."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "에이전트의 TakePhoto 도구가 사진을 촬영합니다."
+        }
+      ],
+      [
+        "expo-notifications",
+        {}
+      ]
     ]
   }
 }

@@ -41,6 +41,7 @@ import {
   type ToolGroup,
 } from './lib/mobile-tools';
 import { rnPort, ensureToolRoot } from './lib/rn-port';
+import { ensureDeviceId, cachedDeviceId, deviceName, devicePlatform } from './lib/device';
 import { friendlyError } from './lib/errors';
 import { diagEntries, diagLog, onDiag } from './lib/diag';
 import {
@@ -97,6 +98,10 @@ export default function App(): React.ReactElement {
   const p = PALETTES[scheme === 'light' ? 'light' : 'dark'];
 
   const [booting, setBooting] = useState(true);
+  // 커넥터 기기 id — 부팅 시 확보(모듈 캐시), 브리지/채팅이 동기 조회한다.
+  useEffect(() => {
+    void ensureDeviceId();
+  }, []);
   const [client, setClient] = useState<XgenMobileClient | null>(null);
   const [section, setSection] = useState<Section>('agents');
   const [drawer, setDrawer] = useState(false);
@@ -218,6 +223,9 @@ export default function App(): React.ReactElement {
     const bridge = new MobileToolBridge({
       wsBase: wsBaseOf(client.session.serverUrl),
       userId: client.session.userId,
+      deviceId: cachedDeviceId() || undefined,
+      deviceName: deviceName(),
+      devicePlatform: devicePlatform(),
       catalog: () => advertiseMobileTools(groupsRef.current),
       call: (tool, args) => callMobileTool(rnPort, tool, args, groupsRef.current),
       onStatus: setBridgeStatus,
@@ -983,6 +991,7 @@ function ChatSection({
       workflowId: agent.workflowId,
       workflowName: agent.workflowName || agent.workflowId,
       interactionId,
+      clientDeviceId: cachedDeviceId() || undefined,
       onState: setWsState,
       wsFactory: client.wsFactory,
       log: diagLog,

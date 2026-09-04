@@ -30,6 +30,10 @@ export interface ToolBridgeOptions {
   heartbeatMs?: number;
   /** 진단 로그 (선택). */
   log?: (line: string) => void;
+  /** 기기 식별 — 같은 계정의 데스크톱/CLI 커넥터와 공존하는 슬롯 키. */
+  deviceId?: string;
+  deviceName?: string;
+  devicePlatform?: string;
 }
 
 const HEARTBEAT_MS = 20_000;
@@ -194,7 +198,20 @@ export class MobileToolBridge {
     const tools = this.opts.catalog();
     const catalogId = `${Date.now()}-${++this.catalogSeq}`;
     this.pendingCatalogId = catalogId;
-    this.ws.send(JSON.stringify({ type: 'hello', catalog_id: catalogId, tools }));
+    this.ws.send(
+      JSON.stringify({
+        type: 'hello',
+        catalog_id: catalogId,
+        tools,
+        ...(this.opts.deviceId
+          ? {
+              device_id: this.opts.deviceId,
+              device_name: this.opts.deviceName || this.opts.deviceId,
+              device_platform: this.opts.devicePlatform || '',
+            }
+          : {}),
+      }),
+    );
     // ready ACK 워치독 — 광고가 실제로 접수됐음을 확인할 때까지는 성공으로
     // 치지 않는다. 시간 안에 ACK 가 없으면 소켓을 끊어 재연결(fresh hello).
     this.clearAckWatchdog();

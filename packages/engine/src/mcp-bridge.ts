@@ -109,6 +109,9 @@ export class McpBridge {
     this.onStatus(s);
   }
 
+  private deviceId = '';
+  private deviceName = '';
+
   start(opts: {
     serverUrl: string;
     userId: string;
@@ -116,6 +119,10 @@ export class McpBridge {
     getToken: () => Promise<string | null>;
     /** 핸드셰이크 401/403 자가치유 — refresh 로 토큰 회전(single-flight). */
     refreshAuth?: () => Promise<string | null>;
+    /** 기기 식별 — 서버가 같은 계정의 여러 커넥터를 공존시키는 키.
+     *  미지정이면 서버가 'legacy' 슬롯으로 받는다 (구 계약 호환). */
+    deviceId?: string;
+    deviceName?: string;
   }): void {
     // A no-op restart (same target, already running) must NOT tear down a live
     // socket — that alone would cause a visible flap on every auth refresh.
@@ -128,6 +135,8 @@ export class McpBridge {
     this.allowPrivateCertificate = opts.allowPrivateCertificate;
     this.getToken = opts.getToken;
     if (opts.refreshAuth) this.refreshAuth = opts.refreshAuth;
+    if (opts.deviceId) this.deviceId = opts.deviceId;
+    if (opts.deviceName) this.deviceName = opts.deviceName;
     if (!this.stopped && sameTarget && (this.ws || this.retry)) {
       void this.refreshCatalog();
       return;
@@ -401,7 +410,21 @@ export class McpBridge {
         this.pendingCatalogId = catalogId;
         this.catalogSynced = false;
         this.serverToolCount = 0;
-        this.ws.send(JSON.stringify({ type: 'hello', catalog_id: catalogId, tools }));
+        this.ws.send(
+          JSON.stringify({
+            type: 'hello',
+            catalog_id: catalogId,
+            tools,
+            // 멀티 디바이스 — 같은 계정의 데스크톱/CLI/VSCode/모바일이 공존한다.
+            ...(this.deviceId
+              ? {
+                  device_id: this.deviceId,
+                  device_name: this.deviceName || this.deviceId,
+                  device_platform: process.platform,
+                }
+              : {}),
+          }),
+        );
         appendMcpRuntimeLog({
           kind: 'catalog',
           message: `도구 카탈로그 ${tools.length}개 재초기화 요청`,

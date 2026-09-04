@@ -36,6 +36,8 @@ function toRequestBody(req: ChatRequest): Record<string, unknown> {
     // 실행 환경 지시 — 로컬 실행 v2 폴백 턴은 'sandbox'(서버 sandbox 강제; 커넥터
     // 로컬 워크스페이스를 원격 조작하는 중간 형태를 쓰지 않는다). 없으면 생략(auto).
     ...(req.executionTarget ? { execution_target: req.executionTarget } : {}),
+    // 멀티 디바이스 — 이 표면의 커넥터 기기. 서버 resolve_device 의 prefer.
+    ...(req.clientDeviceId ? { client_device_id: req.clientDeviceId } : {}),
   };
 }
 

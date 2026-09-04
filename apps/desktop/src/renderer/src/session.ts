@@ -14,13 +14,23 @@ import { xgenyHistoryWorkspacePath } from '@dex/protocol/history';
 
 const HISTORY_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
+// 이 설치의 커넥터 기기 id — 채팅 요청의 clientDeviceId (멀티 디바이스에서
+// "이 PC 의 도구"가 주입되게). 부팅 시 한 번 읽어 캐시한다.
+let cachedDeviceId = '';
+void xgen?.config
+  ?.get()
+  .then((cfg) => {
+    cachedDeviceId = String((cfg as { deviceId?: string })?.deviceId ?? '');
+  })
+  .catch(() => undefined);
+
 export const sessionStore = new SessionStore({
   // 컨텍스트 봉투는 **바깥쪽이 브라우저**가 되도록 겹친다. 히스토리를 다시 읽을 때
   // 벗기는 순서(`session-store.ts`: browser → teams)와 짝이 맞아야 한다.
   stream: (req, onEvent, context) =>
     xgen.chat.stream(
       browserStateStore.contextualize(
-        teamsContextStore.contextualize(req),
+        teamsContextStore.contextualize({ ...req, clientDeviceId: cachedDeviceId || undefined }),
         context?.browserSelections,
       ),
       onEvent,

@@ -259,3 +259,25 @@ test('ready 수신 시 워치독이 해제된다', async () => {
   assert.equal(bridge.current().state, 'connected');
   bridge.stop();
 });
+
+test('hello 에 기기 식별이 실린다 — 멀티 디바이스 슬롯 키', async () => {
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+    deviceId: 'mob-abc',
+    deviceName: 'Galaxy · 모바일',
+    devicePlatform: 'android',
+  });
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  await tick();
+  assert.equal(ws.sent[0].device_id, 'mob-abc');
+  assert.equal(ws.sent[0].device_name, 'Galaxy · 모바일');
+  assert.equal(ws.sent[0].device_platform, 'android');
+  bridge.stop();
+});

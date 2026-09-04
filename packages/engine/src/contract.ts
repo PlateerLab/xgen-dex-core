@@ -31,6 +31,8 @@ export interface DexConfig {
   currentProfile: string;
   profiles: Record<string, DexProfile>;
   localTools: LocalToolsConfig;
+  /** 이 설치의 안정적 기기 id — 커넥터 멀티 디바이스 슬롯 키 (최초 기동 시 생성). */
+  deviceId?: string;
 }
 
 export interface StoredSession {

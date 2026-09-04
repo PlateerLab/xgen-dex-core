@@ -247,6 +247,97 @@ export function openerInvocation(target: string): { file: string; args: string[]
   return { file: 'xdg-open', args: [t] };
 }
 
+/** How long the opener gets to report an immediate failure before we declare
+ *  success. Some environments' openers do not exit until the launched app
+ *  closes (an xdg-open that execs the editor directly; Electron's
+ *  shell.openPath) — by then the launch has already happened, and awaiting the
+ *  exit turned into the 2026-09 real incident: the editor visibly opened but
+ *  the tool call sat until the 120s MCP timeout and reported failure. */
+export const OPENER_ERROR_WINDOW_MS = 1_500;
+
+/** Open 도구가 호스트의 openPath/openExternal 응답을 기다려 주는 상한.
+ *  오프너 오류 창(1.5s)보다 넉넉히 길게 — 정상 호스트는 그 안에 답한다. */
+const OPEN_HOST_TIMEOUT_MS = 8_000;
+
+/** 호스트 open 호출을 시간 상한으로 감싼다 — 상한이 지나면 성공('')으로
+ *  확정한다 (launch 는 이미 일어났고, 기다리던 것은 앱의 "종료"였다). */
+function boundedOpen(p: Promise<string>, timeoutMs = OPEN_HOST_TIMEOUT_MS): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(''), timeoutMs);
+    timer.unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Open a file/folder with the OS default app via a DETACHED child, resolving
+ * '' on success or an error message — never waiting for the launched app to
+ * exit, and never doing a synchronous path check on this process's event loop
+ * (Electron's shell.openPath does, which deadlocks against our own workspace
+ * mount served by the same loop). Shared by the desktop and CLI hosts.
+ */
+export function openWithDefaultApp(
+  target: string,
+  spawnImpl: typeof spawn = spawn,
+  errorWindowMs = OPENER_ERROR_WINDOW_MS,
+): Promise<string> {
+  const { file, args } = openerInvocation(target);
+  return new Promise((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (msg: string) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve(msg);
+    };
+    let child: ChildProcess;
+    try {
+      child = spawnImpl(file, args, {
+        detached: !IS_WIN,
+        windowsHide: true,
+        // stderr 만 잠깐 본다 — 즉시 실패("no application found" 류)의 사유를
+        // 사용자에게 돌려주기 위해서다.
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+    } catch (e) {
+      resolve(`열지 못했습니다: ${(e as Error).message}`);
+      return;
+    }
+    let err = '';
+    child.stderr?.on('data', (d) => {
+      err += String(d);
+    });
+    child.on('error', (e) => finish(`열지 못했습니다: ${e.message} (${file} 필요)`));
+    child.on('exit', (code) => {
+      // Windows explorer 는 성공해도 종료코드 1 을 준다 — 오류가 아니다.
+      if (code && !(IS_WIN && code === 1)) {
+        finish(err.trim() || `${file} exited with code ${code}`);
+      } else {
+        finish('');
+      }
+    });
+    timer = setTimeout(() => {
+      try {
+        child.unref();
+      } catch {
+        /* noop */
+      }
+      finish(''); // 창이 지나도록 안 죽었으면 앱은 떴다 — 성공으로 확정
+    }, errorWindowMs);
+    timer.unref?.();
+  });
+}
+
 /** First program token of a command line (for the blocklist check). */
 export function firstToken(command: string): string {
   const m = String(command || '')
@@ -1384,7 +1475,7 @@ export class LocalToolProvider {
             isError: true,
           };
         }
-        await host.openExternal(cls.value);
+        await boundedOpen(host.openExternal(cls.value).then(() => ''));
         return { content: [{ type: 'text', text: `열었습니다: ${cls.value}` }] };
       }
       // Filesystem path — scope to allowedRoots (like the file tools), then open
@@ -1396,7 +1487,10 @@ export class LocalToolProvider {
           isError: true,
         };
       }
-      const err = await host.openPath(abs); // '' on success, else message
+      // 안전망: 호스트 구현이 "연 앱의 종료"를 기다리는 부류(과거 shell.openPath,
+      // 옛 CLI run)여도 도구 호출이 120s MCP 타임아웃까지 끌려가 실패로 보고되면
+      // 안 된다 — 창을 넘기면 앱은 이미 떴다고 보고 성공으로 확정한다.
+      const err = await boundedOpen(host.openPath(abs)); // '' on success, else message
       if (err) return { content: [{ type: 'text', text: `열기 실패: ${err}` }], isError: true };
       return { content: [{ type: 'text', text: `열었습니다: ${abs}` }] };
     } catch (e) {

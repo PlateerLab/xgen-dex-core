@@ -100,6 +100,7 @@ import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
 import {
   getLocalToolProvider,
+  openWithDefaultApp,
   mcpAddServerToolSchema,
   mcpRemoveServerToolSchema,
   mcpListServersToolSchema,
@@ -2775,7 +2776,8 @@ ipcMain.handle(CHANNELS.appOpenFolder, async (_e, p: unknown) => {
   } catch {
     /* 열기에서 드러남 */
   }
-  const err = await shell.openPath(dir);
+  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (마운트 동기 확인 데드락).
+  const err = await openWithDefaultApp(dir);
   return { ok: !err, error: err || undefined };
 });
 ipcMain.handle(CHANNELS.autostartGet, () => loadConfig().autoLaunch === true);

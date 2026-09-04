@@ -16,6 +16,7 @@ import {
   firstToken,
   isBlocked,
   openerInvocation,
+  openWithDefaultApp,
   openToolSchema,
   paginate,
   classifyOpenTarget,
@@ -538,4 +539,61 @@ test('MCP 관리 도구 스키마 — 이름/필수필드', () => {
   assert.equal(mcpRemoveServerToolSchema().name, MCP_REMOVE_TOOL);
   assert.deepEqual(mcpRemoveServerToolSchema().inputSchema?.required, ['name']);
   assert.equal(mcpListServersToolSchema().name, MCP_LIST_TOOL);
+});
+
+// ── openWithDefaultApp — 디태치 오프너 (2026-09 Open 120s 타임아웃 실사고) ──
+
+import { EventEmitter } from 'node:events';
+
+function fakeOpenerChild() {
+  const child = new EventEmitter() as EventEmitter & {
+    stderr: EventEmitter;
+    unref: () => void;
+    unrefed: boolean;
+  };
+  child.stderr = new EventEmitter();
+  child.unrefed = false;
+  child.unref = () => {
+    child.unrefed = true;
+  };
+  return child;
+}
+
+test('openWithDefaultApp: 즉시 정상 종료(code 0) → 성공', async () => {
+  const child = fakeOpenerChild();
+  const p = openWithDefaultApp('/tmp/x.txt', (() => child) as never, 200);
+  child.emit('exit', 0);
+  assert.equal(await p, '');
+});
+
+test('openWithDefaultApp: 오프너가 앱 종료를 기다려 안 죽어도 창(window) 뒤 성공 확정', async () => {
+  // xdg-open 이 에디터를 직접 실행해 붙잡혀 있는 환경 — 예전 코드는 여기서
+  // 120s MCP 타임아웃까지 끌려갔다. 이제 오류 창(여기선 30ms)만 지나면
+  // 성공으로 확정하고 자식은 unref 로 놓아준다.
+  const child = fakeOpenerChild();
+  const started = Date.now();
+  // 구현이 타이머를 unref 하므로(프로세스를 붙잡지 않기 위해 — 그게 요점)
+  // 테스트 루프가 먼저 비지 않게 keep-alive 를 하나 잡아 둔다.
+  const keepAlive = setTimeout(() => undefined, 5_000);
+  const p = openWithDefaultApp('/tmp/x.txt', (() => child) as never, 30);
+  assert.equal(await p, '');
+  clearTimeout(keepAlive);
+  assert.ok(Date.now() - started < 5_000, '창을 한참 넘겨 기다렸다');
+  assert.ok(child.unrefed, '앱을 붙잡은 자식을 unref 로 놓아주지 않았다');
+});
+
+test('openWithDefaultApp: 창 안의 비정상 종료는 stderr 사유와 함께 실패', async () => {
+  const child = fakeOpenerChild();
+  const p = openWithDefaultApp('/tmp/x.txt', (() => child) as never, 200);
+  child.stderr.emit('data', 'no application found\n');
+  child.emit('exit', 4);
+  assert.equal(await p, 'no application found');
+});
+
+test('openWithDefaultApp: spawn 자체 실패(error 이벤트) → 실패 메시지', async () => {
+  const child = fakeOpenerChild();
+  const p = openWithDefaultApp('/tmp/x.txt', (() => child) as never, 200);
+  child.emit('error', new Error('ENOENT'));
+  const msg = await p;
+  assert.ok(msg.includes('ENOENT'), msg);
 });

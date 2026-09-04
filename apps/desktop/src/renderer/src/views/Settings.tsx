@@ -34,12 +34,77 @@ type Theme = NonNullable<ConnectorConfig['theme']>;
 type Tab =
   | 'general' | 'notifications' | 'avatar'
   | 'browser' | 'pc' | 'mcp' | 'ssh' | 'filesystem';
+/** [연결된 기기] — 같은 계정의 커넥터(이 PC·폰·CLI/VSCode) 현황. 멀티 디바이스
+ *  커넥터의 상태 대시보드: 어느 기기의 어떤 도구가 몇 개 광고 중인지 한눈에. */
+const ConnectorDevicesCard: React.FC = () => {
+  const [devices, setDevices] = useState<
+    Array<{ deviceId: string; name: string; platform: string; lastActivity?: number; toolCount: number }>
+  >([]);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const r = await xgen.connectorDevices();
+      setDevices(r.devices ?? []);
+      setError(r.error ?? '');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+  const ago = (t?: number): string => {
+    if (!t) return '';
+    const s = Math.max(0, Math.floor(Date.now() / 1000 - t));
+    if (s < 60) return '방금 활동';
+    if (s < 3600) return `${Math.floor(s / 60)}분 전 활동`;
+    return `${Math.floor(s / 3600)}시간 전 활동`;
+  };
+  return (
+    <div className="tool-card">
+      <div className="tool-card-main">
+        <span className="tool-card-icon">
+          <MonitorIcon size={18} />
+        </span>
+        <div className="tool-card-text">
+          <div className="tool-card-title">연결된 기기</div>
+          <div className="tool-card-desc">
+            같은 계정으로 붙어 있는 커넥터들입니다. 대화를 시작한 표면의 기기 도구가 그 대화에
+            주입됩니다 — 이 PC 와 휴대폰이 동시에 연결되어 있어도 서로를 밀어내지 않습니다.
+          </div>
+        </div>
+        <button className="secondary" onClick={() => void load()} disabled={busy}>
+          {busy ? '조회 중…' : '새로고침'}
+        </button>
+      </div>
+      <div className="tool-card-body">
+        {error && <p className="settings-hint warn">기기 목록 조회 실패: {error}</p>}
+        {!error && devices.length === 0 && (
+          <p className="small muted">연결된 커넥터가 없습니다. (이 PC 의 도구 접근을 켜면 여기 나타납니다)</p>
+        )}
+        {devices.map((d) => (
+          <div key={d.deviceId} className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontWeight: 600 }}>{d.name}</span>
+            <span className="small muted">[{d.platform || '?'}]</span>
+            <span className="small muted">도구 {d.toolCount}개</span>
+            <span className="small muted" style={{ marginLeft: 'auto' }}>{ago(d.lastActivity)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: '일반' },
   { id: 'notifications', label: '알림' },
   { id: 'avatar', label: '아바타' },
   { id: 'browser', label: '브라우저' },
-  { id: 'pc', label: 'PC 컨트롤' },
+  { id: 'pc', label: 'Local PC MCP' },
   { id: 'mcp', label: 'MCP' },
   // SSH 는 이 PC 의 기능이 아니라 **XGEN 계정의 설정**이다 (접속은 서버가 연다).
   // 그래도 여기 두는 이유: 사용자는 "Agent 가 뭘 할 수 있나"를 이 창에서 찾는다.
@@ -1049,10 +1114,9 @@ export const Settings: React.FC<{
           </SettingsSection>
         )}
 
-        {/* ─── 로컬 도구 ─── */}
-        {/* ─── PC 컨트롤 (셸·파일 — 에이전트가 이 PC 를 다룬다) ─── */}
+        {/* ─── Local PC MCP (셸·파일 — 서버 런타임 에이전트가 이 PC 를 도구로) ─── */}
         {tab === 'pc' && (
-          <SettingsSection plain title="PC 컨트롤">
+          <SettingsSection plain title="Local PC MCP">
             <div className="tool-card">
               <div className="tool-card-main">
                 <span className="tool-card-icon">
@@ -1060,7 +1124,7 @@ export const Settings: React.FC<{
                 </span>
                 <div className="tool-card-text">
                   <div className="tool-card-title">
-                    로컬 PC 도구 접근 — 서버 실행 시 이 PC 프록시
+                    Local PC MCP — 이 PC 를 에이전트의 도구로
                   </div>
                   <div className="tool-card-desc">
                     켜면, 에이전트가 <b>서버(웹)에서 실행되거나 로컬 실행이 서버로 폴백된 상황</b>
@@ -1107,30 +1171,6 @@ export const Settings: React.FC<{
                         <span className="track" />
                       </label>
                     </div>
-                  </div>
-                  <div className="field">
-                    <span>기본 작업 폴더</span>
-                    <div className="picker-row">
-                      <span
-                        className={`picker-path ${shellCwd ? '' : 'muted'}`}
-                        title={shellCwd || undefined}
-                      >
-                        {shellCwd || `${defaultShellCwd} (기본값)`}
-                      </span>
-                      <button className="secondary" onClick={() => void pickShellCwd()}>
-                        폴더 선택…
-                      </button>
-                      {shellCwd && (
-                        <button className="link" onClick={clearShellCwd}>
-                          기본값으로
-                        </button>
-                      )}
-                    </div>
-                    <span className="small muted" style={{ marginTop: 4 }}>
-                      지정하면 <b>연결된 에이전트의 워크스페이스</b>가 이 폴더 아래로 동기화됩니다 —
-                      커넥터로 접속한 에이전트는 서버 sandbox 대신 그 폴더를 자기 작업 공간으로
-                      씁니다. (스토리지 탭에서 에이전트 연결)
-                    </span>
                   </div>
                   <div className="field">
                     <span>
@@ -1253,6 +1293,52 @@ export const Settings: React.FC<{
                 </div>
               )}
             </div>
+
+            {/* ─── 작업 공간 위치 — 도구 접근과는 다른 축: 에이전트 워크스페이스가
+                어디에 사는가 (서버 sandbox ↔ 이 PC 의 sync 폴더) ─── */}
+            <div className="tool-card">
+              <div className="tool-card-main">
+                <span className="tool-card-icon">
+                  <FolderIcon size={18} />
+                </span>
+                <div className="tool-card-text">
+                  <div className="tool-card-title">작업 공간 위치</div>
+                  <div className="tool-card-desc">
+                    에이전트의 기본 작업 공간은 <b>서버의 자기 워크스페이스(sandbox)</b>입니다.
+                    아래 폴더를 지정하고 스토리지 탭에서 에이전트를 연결하면, 그 에이전트의
+                    워크스페이스가 이 폴더 아래로 동기화되고 커넥터 대화에서는 이 폴더가 작업
+                    공간이 됩니다. 위의 도구 접근 스위치와는 별개 설정입니다.
+                  </div>
+                </div>
+              </div>
+              <div className="tool-card-body">
+                <div className="field">
+                  <span>기본 작업 폴더</span>
+                  <div className="picker-row">
+                    <span
+                      className={`picker-path ${shellCwd ? '' : 'muted'}`}
+                      title={shellCwd || undefined}
+                    >
+                      {shellCwd || `${defaultShellCwd} (기본값)`}
+                    </span>
+                    <button className="secondary" onClick={() => void pickShellCwd()}>
+                      폴더 선택…
+                    </button>
+                    {shellCwd && (
+                      <button className="link" onClick={clearShellCwd}>
+                        기본값으로
+                      </button>
+                    )}
+                  </div>
+                  <span className="small muted" style={{ marginTop: 4 }}>
+                    Shell 도구와 상대경로 파일 도구의 기준 폴더이기도 합니다.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ─── 연결된 기기 — 같은 계정의 커넥터들(이 PC·폰·CLI) 현황 ─── */}
+            <ConnectorDevicesCard />
           </SettingsSection>
         )}
 

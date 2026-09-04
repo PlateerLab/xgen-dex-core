@@ -742,6 +742,18 @@ const api = {
   },
 
   /** 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스)를 로컬 폴더로. */
+  /** 같은 계정에 연결된 커넥터 기기 목록 (Local PC MCP 상태 패널). */
+  connectorDevices: (): Promise<{
+    devices: Array<{
+      deviceId: string;
+      name: string;
+      platform: string;
+      lastActivity?: number;
+      toolCount: number;
+    }>;
+    error?: string;
+  }> => ipcRenderer.invoke(CHANNELS.connectorDevices),
+
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */
   chatWatch: {
     start: (workflowId: string, workflowName: string, interactionId: string): Promise<{ ok: boolean }> =>

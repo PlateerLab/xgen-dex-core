@@ -1462,6 +1462,15 @@ ipcMain.handle(
     return { ok: true };
   },
 );
+/** 같은 계정에 연결된 커넥터 기기 목록 — Local PC MCP 상태 패널. */
+ipcMain.handle(CHANNELS.connectorDevices, async () => {
+  if (!client) return { devices: [] };
+  try {
+    return { devices: await client.connectorDevices.list() };
+  } catch (e) {
+    return { devices: [], error: (e as Error).message };
+  }
+});
 ipcMain.handle(CHANNELS.chatWatchStop, (_e, interactionId: unknown) => {
   if (typeof interactionId === 'string') conversationWatchHub.unwatch(interactionId);
   return { ok: true };

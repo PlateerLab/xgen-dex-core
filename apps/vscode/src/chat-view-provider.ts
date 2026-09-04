@@ -697,11 +697,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div id="profiles-list" class="profiles-list"></div>
       </section>
       <section class="settings-section">
-        <div class="section-heading"><div><span>로컬 도구</span><small>Agent가 이 컴퓨터의 프로젝트 파일과 명령을 사용할 수 있게 합니다.</small></div><span id="local-tools-state" class="state-pill">꺼짐</span></div>
+        <div class="section-heading"><div><span>Local PC MCP</span><small>서버에서 실행되는 Agent가 이 컴퓨터의 프로젝트 파일과 명령을 도구로 사용할 수 있게 합니다.</small></div><span id="local-tools-state" class="state-pill">꺼짐</span></div>
         <div class="settings-card local-tools-card">
           <div class="local-tools-summary">
             <div class="local-tools-icon" aria-hidden="true">⌘</div>
-            <div><b>CLI 로컬 도구 브리지</b><span id="local-tools-description">허용 경로 안의 파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.</span></div>
+            <div><b>Local PC MCP 브리지</b><span id="local-tools-description">허용 경로 안의 파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.</span></div>
             <label class="switch-control"><input id="local-tools-enabled" type="checkbox"><span aria-hidden="true"></span><em>사용</em></label>
           </div>
           <div class="local-tools-form">

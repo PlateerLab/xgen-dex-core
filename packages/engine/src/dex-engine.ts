@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ConnectorDevice } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, type ConversationTurn } from './conversation-watch';
 import { XgenClient } from '@dex/protocol';
@@ -190,6 +191,12 @@ export class DexEngine {
     const id = randomUUID();
     await this.configs.write({ ...config, deviceId: id });
     return id;
+  }
+
+  /** 연결된 커넥터 기기 목록 — Local PC MCP 상태 대시보드. */
+  async listConnectorDevices(requestedProfile?: string): Promise<ConnectorDevice[]> {
+    const record = await this.authenticatedRecord(requestedProfile);
+    return record.client.connectorDevices.list();
   }
 
   stopLocalTools(): void {

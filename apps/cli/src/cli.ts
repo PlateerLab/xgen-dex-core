@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { hostname } from 'node:os';
 import { stdin, stdout, stderr } from 'node:process';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';

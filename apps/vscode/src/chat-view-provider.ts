@@ -21,6 +21,9 @@ import type {
 } from '@dex/rpc';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 
+/** 창을 껐다 켠 뒤 되찾을 대화가 적히는 자리(globalState). */
+const LAST_CONVERSATION_KEY = 'xgenDex.lastConversation';
+
 type MessageRole = 'user' | 'assistant' | 'activity' | 'system';
 type ViewScreen = 'loading' | 'setup' | 'login' | 'offline' | 'agents' | 'chat' | 'settings' | 'error';
 
@@ -75,6 +78,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    */
   private remoteRunning = false;
   private remotePoll: ReturnType<typeof setInterval> | undefined;
+  /** 마지막 대화 복원은 확장 활성화당 한 번 — refreshSession 은 여러 번 돈다. */
+  private restoredLastConversation = false;
   private assistantMessageId: string | undefined;
   private status: string | undefined;
   private error: string | undefined;
@@ -177,6 +182,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.interactionId = undefined;
         }
       }
+      // 에이전트 목록까지 온 뒤에 되살린다 — 목록이 있어야 자리표시가 아닌
+      // 진짜 에이전트로 붙는다. 화면 결정보다 **먼저** 와야 복원한 대화가
+      // 곧바로 보인다.
+      await this.restoreLastConversation();
+      if (version !== this.refreshVersion) return;
       if (previousScreen === 'settings') this.screen = 'settings';
       else this.screen = this.selectedAgent ? 'chat' : 'agents';
     } catch (error) {
@@ -329,6 +339,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.messages = [];
     this.toolMessages.clear();
     this.status = undefined;
+    // 대화를 비웠으니 구독도 놓고 기억도 지운다 — 안 그러면 다음 실행에서
+    // 사용자가 이미 떠난 대화가 되살아난다.
+    this.syncConversationWatch();
     await this.setRunning(false);
     if (activeStream) await this.service.request('chat/cancel', { streamId: activeStream }).catch(() => undefined);
   }
@@ -393,6 +406,82 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           interactionId: next,
         })
         .catch(() => undefined);
+    }
+    this.rememberConversation();
+  }
+
+  /**
+   * 지금 보고 있는 대화를 적어 둔다 — 창을 껐다 켜도(확장 호스트 재시작) 되찾기
+   * 위해서다.
+   *
+   * 서버 실행은 연결이 아니라 **대화**에 매여 있다. 창을 닫아도 턴은 계속 돌고,
+   * 다시 켰을 때 그 대화를 열지 않으면 진행 중인 실행이 화면에 없는 것과 같다 —
+   * [중지] 버튼도 없다. 되찾는 데 필요한 것은 workflowId 와 interactionId 뿐이다.
+   *
+   * globalState 를 쓴다: 대화는 폴더에 속하지 않는다.
+   */
+  private rememberConversation(): void {
+    const agent = this.selectedAgent;
+    const value =
+      agent && this.interactionId
+        ? {
+            workflowId: agent.workflowId,
+            workflowName: agent.workflowName,
+            interactionId: this.interactionId,
+          }
+        : undefined;
+    void this.context.globalState.update(LAST_CONVERSATION_KEY, value);
+  }
+
+  /**
+   * 확장이 다시 뜰 때 마지막 대화를 되살린다 — 활성화당 한 번만.
+   *
+   * 실패는 조용히 삼킨다. 지워졌거나 남의 계정 대화일 수 있고, 그때 오류를
+   * 띄우면 확장을 켤 때마다 사용자가 모르는 대화의 실패를 본다.
+   */
+  private async restoreLastConversation(): Promise<void> {
+    if (this.restoredLastConversation) return;
+    this.restoredLastConversation = true;
+    if (this.interactionId) return; // 이미 대화 중 — 덮지 않는다
+    const saved = this.context.globalState.get<{
+      workflowId?: string;
+      workflowName?: string;
+      interactionId?: string;
+    }>(LAST_CONVERSATION_KEY);
+    if (!saved?.interactionId || !saved.workflowId) return;
+    const name = saved.workflowName || saved.workflowId;
+    const snapshot = await this.service
+      .request<ConversationSnapshot>('history/snapshot', {
+        ...this.activeProfileParams(),
+        workflowId: saved.workflowId,
+        workflowName: name,
+        interactionId: saved.interactionId,
+      })
+      .catch(() => undefined);
+    if (!snapshot) return;
+    const turns = snapshot.turns ?? [];
+    // 돌고 있지도 않고 남긴 것도 없는 대화는 되살릴 값이 없다.
+    if (!snapshot.running && turns.length === 0) return;
+    this.selectedAgent =
+      this.agents.find((agent) => agent.workflowId === saved.workflowId) ??
+      agentFromConversation({
+        workflowId: saved.workflowId,
+        workflowName: name,
+        interactionId: saved.interactionId,
+        interactionCount: turns.length,
+        createdAt: '',
+        updatedAt: '',
+      } as Conversation);
+    this.interactionId = saved.interactionId;
+    this.syncConversationWatch();
+    this.messages = turns.flatMap((turn) => [
+      message('user', '나', turn.input),
+      message('assistant', name, turn.output),
+    ]);
+    this.screen = 'chat';
+    if (snapshot.running) {
+      this.status = '다른 곳에서 시작한 응답이 진행 중입니다.';
+      this.watchRemoteRun();
     }
   }
 

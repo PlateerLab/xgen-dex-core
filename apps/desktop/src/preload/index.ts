@@ -10,6 +10,8 @@ import { CHANNELS } from '../main/ipc';
 import type {
   ChatEvent,
   ChatRequest,
+  ChatStopResult,
+  ConversationSnapshot,
   CurrentUser,
   TeamsAttachment,
   TeamsEvent,
@@ -343,6 +345,13 @@ const api = {
   history: {
     turns: (workflowId: string, interactionId: string, name?: string): Promise<HistoryTurn[]> =>
       ipcRenderer.invoke(CHANNELS.historyTurns, workflowId, interactionId, name),
+    /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 복원용. */
+    snapshot: (
+      workflowId: string,
+      interactionId: string,
+      name?: string,
+    ): Promise<ConversationSnapshot> =>
+      ipcRenderer.invoke(CHANNELS.historySnapshot, workflowId, interactionId, name),
     conversations: (): Promise<Conversation[]> => ipcRenderer.invoke(CHANNELS.historyConversations),
   },
 
@@ -456,7 +465,10 @@ const api = {
      * Start a streamed chat turn. `onEvent` is called for each ChatEvent;
      * returns a handle with `cancel()`. Resolves the terminal `end`/`error`.
      */
-    stream: (req: ChatRequest, onEvent: (e: ChatEvent) => void): { cancel: () => void } => {
+    stream: (
+      req: ChatRequest,
+      onEvent: (e: ChatEvent) => void,
+    ): { cancel: () => void; stop: (interactionId: string) => Promise<ChatStopResult> } => {
       const streamId = `s${Date.now()}_${streamSeq++}`;
       const h = (_e: unknown, id: string, ev: ChatEvent) => {
         if (id !== streamId) return;
@@ -468,12 +480,24 @@ const api = {
       ipcRenderer.on(CHANNELS.chatEvent, h);
       void ipcRenderer.invoke(CHANNELS.chatStart, streamId, req);
       return {
+        /** 이 스트림을 그만 본다 — **서버 실행은 계속된다**. */
         cancel: () => {
           void ipcRenderer.invoke(CHANNELS.chatCancel, streamId);
           ipcRenderer.removeListener(CHANNELS.chatEvent, h);
         },
+        /** 사람이 누른 [정지] — 스트림을 놓고 서버 실행도 멈춘다. */
+        stop: (interactionId: string): Promise<ChatStopResult> => {
+          ipcRenderer.removeListener(CHANNELS.chatEvent, h);
+          return ipcRenderer.invoke(CHANNELS.chatStop, interactionId, streamId);
+        },
       };
     },
+    /**
+     * 스트림을 쥐고 있지 않은 대화도 멈춘다 — 다른 기기(웹·CLI·VSCode)에서
+     * 시작해 이 창에서는 [진행 중] 으로만 보이던 턴.
+     */
+    stop: (interactionId: string): Promise<ChatStopResult> =>
+      ipcRenderer.invoke(CHANNELS.chatStop, interactionId),
     /** '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). best-effort. */
     endSession: (workflowId: string, interactionId: string): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.chatEndSession, workflowId, interactionId),
@@ -773,6 +797,14 @@ const api = {
       const h = (_e: unknown, turn: Parameters<typeof cb>[0]) => cb(turn);
       ipcRenderer.on(CHANNELS.chatWatchTurn, h);
       return () => ipcRenderer.removeListener(CHANNELS.chatWatchTurn, h);
+    },
+    /** 이 대화에 지금 도는 턴이 있는가 — 구독 확립/재연결 때마다 온다. */
+    onRunning: (
+      cb: (state: { interactionId: string; running: boolean }) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, state: Parameters<typeof cb>[0]) => cb(state);
+      ipcRenderer.on(CHANNELS.chatWatchRunning, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatWatchRunning, h);
     },
   },
 

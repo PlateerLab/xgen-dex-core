@@ -41,6 +41,7 @@ function session(partial: Partial<SessionState> & { key: string }): SessionState
     historyLoaded: true,
     messages: [],
     streaming: false,
+  remote: false,
     error: null,
     unseen: false,
     createdAt: 0,

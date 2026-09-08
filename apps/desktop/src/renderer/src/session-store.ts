@@ -72,6 +72,17 @@ export interface SessionState {
   messages: ChatMsg[];
   /** A turn is actively streaming (the connector is live). */
   streaming: boolean;
+  /**
+   * 이 창이 아니라 **다른 곳**(웹·모바일·VSCode·CLI)에서 시작한 턴이 이 대화에서
+   * 돌고 있는가.
+   *
+   * 서버 실행은 연결이 아니라 대화에 매여 있다 — 앱을 껐다 켜거나 화면이 잠겨도
+   * 계속 돈다. 그 사실을 모르면 여기서는 끝난 대화처럼 보이고, 그 위에 새 턴을
+   * 보내 같은 대화에서 두 실행이 겹친다. `streaming` 과 함께 [진행 중] 을 그리되,
+   * 토큰은 흐르지 않는다 — 서버는 진행 중인 턴을 재전송하지 않고 완결된 턴만
+   * 히스토리에 남기므로, 끝나면 폴링이 그 답을 받아 온다.
+   */
+  remote: boolean;
   error: string | null;
   /**
    * A turn finished (성공/에러) while this session was **not** the focused tab,
@@ -136,7 +147,12 @@ export interface SessionTransport {
     req: ChatRequest,
     onEvent: (e: ChatEvent) => void,
     context?: { browserSelections?: BrowserSelectionResult[] },
-  ): { cancel: () => void };
+  ): {
+    /** 이 스트림을 그만 본다 — 서버 실행은 계속된다. */
+    cancel: () => void;
+    /** 사람이 누른 [정지] — 서버 실행도 멈춘다. */
+    stop?: (interactionId: string) => Promise<unknown>;
+  };
   uploadWorkspaceImage?: (request: {
     workflowId: string;
     interactionId: string;
@@ -155,6 +171,23 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
   ): Promise<Array<{ input: string; output: string; attachments?: HistoryAttachment[] }>>;
+  /**
+   * 지난 턴 + **지금 도는 턴이 있는가** — 창을 연 첫 순간의 상태.
+   *
+   * 이후의 변화는 대화 소켓이 알려 준다(setRemoteRunning). 첫 페인트까지 소켓을
+   * 기다리면 그 사이 작성기가 열려 있어, 이미 도는 턴 위에 새 턴을 얹을 수 있다.
+   * 없으면 historyTurns 로 물러난다(구버전 preload) — 진행 중을 복원하지 못할 뿐이다.
+   */
+  historySnapshot?: (
+    workflowId: string,
+    interactionId: string,
+    name?: string,
+  ) => Promise<{
+    turns: Array<{ input: string; output: string; attachments?: HistoryAttachment[] }>;
+    running: boolean;
+  }>;
+  /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
+  stopChat?: (interactionId: string) => Promise<unknown>;
   /** Download one server-issued XGeny history reference into a renderer preview URL. */
   historyImage?: (
     workflowId: string,
@@ -180,6 +213,8 @@ function imageBytes(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
 /** Per-session mutable runtime kept out of the public snapshot. */
 interface Runtime {
   cancel: (() => void) | null;
+  /** 사람이 누른 [정지] 를 서버에 전하는 길 (stream 핸들이 준다). */
+  stopServer: ((interactionId: string) => Promise<unknown>) | null;
   tools: ToolEvent[];
   /** 대화 소켓으로 이미 반영한 외부 턴의 io_id — push 중복 방지. */
   externalIoSeen?: Set<number>;
@@ -298,12 +333,19 @@ export class SessionStore {
       historyLoaded: true,
       messages: [],
       streaming: false,
+      remote: false,
       error: null,
       unseen: false,
       createdAt: t,
       updatedAt: t,
     });
-    this.rt.set(iid, { cancel: null, tools: [], citations: [], historyImageUrls: new Set() });
+    this.rt.set(iid, {
+      cancel: null,
+      stopServer: null,
+      tools: [],
+      citations: [],
+      historyImageUrls: new Set(),
+    });
     this.transport.watchConversation?.(agent.workflowId, agent.workflowName || agent.workflowId, iid);
     this._active = iid;
     this.emit();
@@ -330,6 +372,7 @@ export class SessionStore {
       historyLoaded: false,
       messages: [],
       streaming: false,
+      remote: false,
       error: null,
       unseen: false,
       createdAt: t,
@@ -337,6 +380,7 @@ export class SessionStore {
     });
     this.rt.set(interactionId, {
       cancel: null,
+      stopServer: null,
       tools: [],
       citations: [],
       historyImageUrls: new Set(),
@@ -355,11 +399,20 @@ export class SessionStore {
   private async loadHistory(key: string, agent: Agent, name?: string): Promise<void> {
     const loadedUrls: string[] = [];
     try {
-      const turns = await this.transport.historyTurns(
-        agent.workflowId,
-        key,
-        name ?? agent.workflowName,
-      );
+      // 지난 턴만이 아니라 **지금 도는 턴이 있는가**도 함께 읽는다. 웹·모바일·
+      // VSCode·CLI 에서 시작한 턴이 아직 돌고 있으면 이 창도 [진행 중] 이어야
+      // 하고, 그 위에 새 턴을 얹어서는 안 된다.
+      const snapshot = this.transport.historySnapshot
+        ? await this.transport.historySnapshot(agent.workflowId, key, name ?? agent.workflowName)
+        : {
+            turns: await this.transport.historyTurns(
+              agent.workflowId,
+              key,
+              name ?? agent.workflowName,
+            ),
+            running: false,
+          };
+      const turns = snapshot.turns;
       const msgs: ChatMsg[] = [];
       for (const tn of turns) {
         // 최종 방어: text 는 무조건 문자열이어야 렌더가 안전하다 (transport 가
@@ -410,6 +463,7 @@ export class SessionStore {
           messages: msgs,
           loadingHistory: false,
           historyLoaded: true,
+          remote: snapshot.running,
           updatedAt: this.now(),
         }));
       }
@@ -484,7 +538,9 @@ export class SessionStore {
     const attached = images.filter((image) =>
       /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(image.dataUrl),
     );
-    if (!s || !rt || s.streaming || (!text.trim() && attached.length === 0)) return;
+    // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
+    // 두 실행이 겹치고, 두 답이 서로를 덮어쓴다. 멈추려면 [정지] 를 눌러야 한다.
+    if (!s || !rt || s.streaming || s.remote || (!text.trim() && attached.length === 0)) return;
     rt.tools = [];
     rt.citations = [];
     const userMsg: ChatMsg = {
@@ -548,6 +604,9 @@ export class SessionStore {
         { browserSelections },
       );
       rt.cancel = handle.cancel;
+      // 사람이 [정지] 를 누르면 이 길로 서버까지 닿는다. abort 만으로는 멈추지
+      // 않는다 — 서버는 연결 끊김을 더 이상 취소로 읽지 않는다.
+      rt.stopServer = handle.stop ?? null;
     };
 
     if (multimodal && s.agent.hasAgentGeny && this.transport.uploadWorkspaceImage) {
@@ -555,6 +614,8 @@ export class SessionStore {
       rt.cancel = () => {
         cancelled = true;
       };
+      // 업로드 단계에서는 아직 서버 실행이 없다 — 스트림이 열리면 위에서 채운다.
+      rt.stopServer = null;
       const pending = [
         ...attached.map((image) => ({
           dataUrl: image.dataUrl,
@@ -657,19 +718,59 @@ export class SessionStore {
     this.emit();
   }
 
-  /** Stop the in-flight turn on `key` (the transcript so far is kept). */
+  /**
+   * 사람이 누른 [정지] — 스트림에서 손을 떼고 **서버 실행도** 멈춘다.
+   * (여기까지 쌓인 대화는 그대로 둔다.)
+   *
+   * abort 만 하던 시절의 전제는 "연결을 끊으면 서버가 멈춘다" 였다. 서버는 더
+   * 이상 그렇게 읽지 않는다 — 그렇게 읽던 탓에 화면 잠금·절전·기기 이동이 곧
+   * 실행 중단이었고, 사용자는 [정지] 를 누른 적이 없었다. 그래서 이제 정지는
+   * 연결이 아니라 **대화**를 향해야 하고, 그 길이 여기다. 부르지 않으면 버려진
+   * 턴이 끝까지 돌아 이 대화에 답을 적는다.
+   */
   stop(key: string): void {
     const rt = this.rt.get(key);
+    const interactionId = this.map.get(key)?.interactionId ?? key;
+    const stopServer = rt?.stopServer ?? this.transport.stopChat ?? null;
     rt?.cancel?.();
-    if (rt) rt.cancel = null;
+    if (rt) {
+      rt.cancel = null;
+      rt.stopServer = null;
+    }
+    // 서버에 닿지 못해도 화면은 멈춘 것으로 둔다 — 되돌리면 사용자가 누른
+    // 버튼이 되살아나는 것처럼 보인다.
+    if (stopServer) void Promise.resolve(stopServer(interactionId)).catch(() => undefined);
     this.patch(key, (s) => {
       const messages = s.messages.slice();
       const last = messages[messages.length - 1];
       if (last?.role === 'assistant') messages[messages.length - 1] = { ...last, streaming: false };
-      return { ...s, messages, streaming: false, updatedAt: this.now() };
+      return { ...s, messages, streaming: false, remote: false, updatedAt: this.now() };
     });
     this.emit();
   }
+
+  /**
+   * 이 대화에 **다른 곳에서 시작한 턴**이 도는가 — 대화 소켓이 알려 준다.
+   *
+   * 서버 실행은 연결이 아니라 대화에 매여 있어서, 웹이나 다른 기기에서 시작한
+   * 턴이 이 창을 켠 순간에도 돌고 있을 수 있다. 그 사실을 모르면 여기서는 끝난
+   * 대화처럼 보이고, 그 위에 새 턴을 보내 같은 대화에서 둘이 겹친다.
+   *
+   * 폴링하지 않는 이유: 소켓이 구독 확립과 재연결마다 이 값을 다시 보고하므로,
+   * 끊겼다 붙는 것만으로 상태가 스스로 맞춰진다. 끝났다는 소식은 완결 턴 push
+   * (applyExternalTurn)로 온다 — 서버는 진행 중인 턴의 토큰을 재전송하지 않고
+   * 완결된 턴만 남기기 때문에, 우리가 할 수 있는 정직한 일이 그것뿐이다.
+   */
+  setRemoteRunning(key: string, running: boolean): void {
+    const s = this.map.get(key);
+    if (!s) return;
+    // 이 창이 스트림을 쥐고 있으면 그 턴은 '다른 곳' 이 아니다.
+    const next = running && !s.streaming;
+    if (s.remote === next) return;
+    this.patch(key, (cur) => ({ ...cur, remote: next, updatedAt: this.now() }));
+    this.emit();
+  }
+
 
   /** 채팅 종료 — cancel any stream and forget the session entirely. */
   endChat(key: string): void {
@@ -701,6 +802,7 @@ export class SessionStore {
   /** Tear everything down (logout / auth failure). */
   reset(): void {
     for (const [key, rt] of this.rt.entries()) {
+      // 로그아웃·인증 실패는 [정지] 가 아니다 — 스트림만 놓고 서버 실행은 둔다.
       rt.cancel?.();
       this.releaseHistoryImages(key);
       this.transport.unwatchConversation?.(key);
@@ -729,7 +831,17 @@ export class SessionStore {
     const s = this.map.get(turn.interactionId);
     const rt = this.rt.get(turn.interactionId);
     if (!s || !rt) return;
-    if (turn.source !== 'subagent_report') return;
+    /**
+     * 어떤 턴을 받아 그리는가.
+     *
+     * - `subagent_report` — 서버가 세션에 주입한 반응 턴. 어느 스트림에도 실리지
+     *   않으므로 여기서만 화면에 닿는다.
+     * - 그 밖(`user` 등) — 보통은 **우리 스트림이 이미 그렸다.** 다만 다른
+     *   기기에서 시작한 턴(`remote`)은 이 창이 그린 적이 없다 — 그것까지 버리면
+     *   웹에서 보낸 질문이 앱에서는 영영 안 보인다.
+     */
+    const mine = !s.remote;
+    if (turn.source !== 'subagent_report' && mine) return;
     if (!turn.output) return; // 미완결 — 완결 push 를 기다린다
     rt.externalIoSeen = rt.externalIoSeen ?? new Set<number>();
     if (turn.ioId && rt.externalIoSeen.has(turn.ioId)) return;
@@ -740,6 +852,8 @@ export class SessionStore {
       { role: 'assistant', text: turn.output },
     ];
     s.updatedAt = this.now();
+    // 다른 곳에서 돌던 턴이 끝났다 — 답이 여기 도착했으니 [진행 중] 을 내린다.
+    if (s.remote) s.remote = false;
     if (this._active !== turn.interactionId) s.unseen = true;
     this.emit();
   }

@@ -37,6 +37,12 @@ export const sessionStore = new SessionStore({
     ),
   historyTurns: (workflowId, interactionId, name) =>
     xgen.history.turns(workflowId, interactionId, name),
+  // 지난 턴 + **지금 도는 턴이 있는가** — 다른 기기에서 시작한 실행을 이 창이
+  // 그대로 이어 보이려면 이 값이 필요하다.
+  historySnapshot: (workflowId, interactionId, name) =>
+    xgen.history.snapshot(workflowId, interactionId, name),
+  // 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴.
+  stopChat: (interactionId) => xgen.chat.stop(interactionId),
   // 대화 소켓 감시 — 서버 주입 턴(트리거 반응)을 실시간으로 받는다.
   watchConversation: (workflowId, workflowName, interactionId) =>
     void xgen?.chatWatch?.start(workflowId, workflowName, interactionId),
@@ -92,3 +98,8 @@ export function useSessions(): StoreSnapshot {
 
 // 대화 소켓 push — 서버가 주입한 턴(트리거 반응)을 세션에 실시간 반영.
 xgen?.chatWatch?.onTurn((turn) => sessionStore.applyExternalTurn(turn));
+// 같은 소켓이 "지금 도는 턴이 있는가" 도 알려 준다 — 다른 기기에서 시작한 실행을
+// 이 창이 [진행 중] 으로 이어 보이는 근거. 재연결마다 다시 오므로 폴링이 없다.
+xgen?.chatWatch?.onRunning(({ interactionId, running }) =>
+  sessionStore.setRemoteRunning(interactionId, running),
+);

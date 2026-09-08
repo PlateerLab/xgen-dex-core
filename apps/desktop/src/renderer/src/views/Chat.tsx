@@ -276,6 +276,15 @@ export const Chat: React.FC<{
   const { agent } = session;
   const messages = session.messages;
   const streaming = session.streaming;
+  /**
+   * 다른 곳(웹·모바일·VSCode·CLI)에서 시작한 턴이 이 대화에서 돌고 있다.
+   *
+   * 화면은 [진행 중] 으로 그리고 작성기는 잠그되, 토큰은 흐르지 않는다 — 서버는
+   * 진행 중인 턴을 재전송하지 않는다. 끝나면 스토어의 폴링이 그 답을 받아 온다.
+   */
+  const remote = session.remote;
+  /** 이 대화에 도는 턴이 있는가 — 여기서 시작했든 다른 곳에서 시작했든. */
+  const busy = streaming || remote;
   const loadingHistory = session.loadingHistory;
   const notificationSnapshot = useNotifications();
 
@@ -653,7 +662,7 @@ export const Chat: React.FC<{
       const attachmentBytes =
         images.reduce((sum, image) => sum + image.size, 0) +
         selections.reduce((sum, selection) => sum + selection.image.size, 0);
-      if ((!text && attachmentCount === 0) || streaming || preparingImages > 0) return;
+      if ((!text && attachmentCount === 0) || busy || preparingImages > 0) return;
       if (attachmentCount > CHAT_IMAGE_MAX_COUNT) {
         setImageNotice(
           `이미지는 브라우저 캡처를 포함해 최대 ${CHAT_IMAGE_MAX_COUNT}장까지 보낼 수 있습니다.`,
@@ -692,7 +701,7 @@ export const Chat: React.FC<{
       }
       await dispatch(text, images, selections);
     },
-    [input, streaming, preparingImages, session.key, dispatch, replaceStagedImages],
+    [input, busy, preparingImages, session.key, dispatch, replaceStagedImages],
   );
 
   /** 확인창의 [보내기] — 승인 기록을 남기고 그대로 이어서 보낸다. */
@@ -940,7 +949,13 @@ export const Chat: React.FC<{
               {kind}
               {agent.nodeCount ? ` · 노드 ${agent.nodeCount}개` : ''}
               {agent.isShared ? ' · 공유' : ''}
-              {streaming ? ' · 진행 중' : session.resume ? ' · 이어보기' : ''}
+              {streaming
+                ? ' · 진행 중'
+                : remote
+                  ? ' · 다른 곳에서 진행 중'
+                  : session.resume
+                    ? ' · 이어보기'
+                    : ''}
             </div>
           </div>
         </div>
@@ -1468,7 +1483,7 @@ export const Chat: React.FC<{
             className="composer-attach"
             onClick={() => imageInputRef.current?.click()}
             disabled={
-              streaming ||
+              busy ||
               preparingImages > 0 ||
               stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
             }
@@ -1487,15 +1502,20 @@ export const Chat: React.FC<{
             <button
               className={`composer-mic${recording ? ' recording' : ''}`}
               onClick={toggleMic}
-              disabled={transcribing || streaming}
+              disabled={transcribing || busy}
               title={transcribing ? '변환 중…' : recording ? '녹음 중지' : '음성 입력'}
               aria-label="음성 입력"
             >
               {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
             </button>
           )}
-          {streaming ? (
-            <button className="composer-send stop" onClick={stop} title="중지" aria-label="중지">
+          {busy ? (
+            <button
+              className="composer-send stop"
+              onClick={stop}
+              title={remote ? '다른 곳에서 진행 중인 응답 중지' : '중지'}
+              aria-label="중지"
+            >
               <StopIcon size={15} />
             </button>
           ) : (

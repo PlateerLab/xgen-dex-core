@@ -6,6 +6,10 @@ export interface MockXgen {
   server: Server;
   baseUrl: string;
   requests: { chatInputs: unknown[]; createdAgents: unknown[] };
+  /** 이 대화들은 "지금 도는 턴이 있다" 고 답한다 — io-logs 의 `running`. */
+  running: Set<string>;
+  /** POST /execute/stop/{id} 로 실제로 닿은 대화들. */
+  stopped: string[];
 }
 
 async function bodyOf(request: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
@@ -22,6 +26,8 @@ function json(response: import('node:http').ServerResponse, status: number, valu
 export async function startMockXgen(): Promise<MockXgen> {
   const passwordHash = createHash('sha256').update('pw123').digest('hex');
   const requests = { chatInputs: [] as unknown[], createdAgents: [] as unknown[] };
+  const running = new Set<string>();
+  const stopped: string[] = [];
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://mock');
@@ -160,8 +166,19 @@ export async function startMockXgen(): Promise<MockXgen> {
         });
         return;
       }
+      // 사람이 누른 [정지] 가 닿는 자리 — 실행은 연결이 아니라 대화에 매여 있다.
+      if (url.pathname.startsWith('/api/agentflow/execute/stop/') && request.method === 'POST') {
+        const id = decodeURIComponent(url.pathname.slice('/api/agentflow/execute/stop/'.length));
+        stopped.push(id);
+        running.delete(id);
+        json(response, 200, { stopped: true, interaction_id: id });
+        return;
+      }
       if (url.pathname === '/api/chat/io-logs' && request.method === 'GET') {
         json(response, 200, {
+          // 이 대화에 지금 도는 턴이 있는가 — 기기를 옮겨 들어온 클라이언트가
+          // [진행 중] 을 복원하는 근거.
+          running: running.has(String(url.searchParams.get('interaction_id'))),
           in_out_logs: [
             {
               log_id: 1,
@@ -184,5 +201,5 @@ export async function startMockXgen(): Promise<MockXgen> {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
-  return { server, baseUrl: `http://127.0.0.1:${port}`, requests };
+  return { server, baseUrl: `http://127.0.0.1:${port}`, requests, running, stopped };
 }

@@ -259,7 +259,14 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
   else stderr.write(`interaction: ${resolved.interactionId}\n`);
 
   const controller = new AbortController();
-  const onInterrupt = (): void => controller.abort();
+  // Ctrl+C 는 사람이 누른 [정지]다 — 스트림을 끊는 것만으로는 서버가 멈추지
+  // 않는다. 서버는 연결 끊김을 더 이상 취소로 읽지 않으므로(그렇게 읽던 시절엔
+  // 화면 잠금·기기 이동이 실행 중단이었다), 여기서 대화를 향해 정지를 보내지
+  // 않으면 버려진 턴이 끝까지 돌아 대화에 답을 적는다.
+  const onInterrupt = (): void => {
+    controller.abort();
+    void engine.stopChat(resolved.interactionId, resolved.profile).catch(() => undefined);
+  };
   process.once('SIGINT', onInterrupt);
   try {
     for await (const event of engine.chat(resolved, controller.signal)) {

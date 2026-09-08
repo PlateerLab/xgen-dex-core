@@ -38,12 +38,16 @@ interface FakeStream {
   browserSelections?: BrowserSelectionResult[]
   onEvent: (e: ChatEvent) => void
   cancelled: boolean
+  /** 서버까지 닿은 [정지] — abort(cancelled)와 **다른 일**이다. */
+  stopped: boolean
 }
 
 function makeStore(
   history: Record<string, Array<{ input: string; output: string; attachments?: HistoryAttachment[] }>> = {},
+  running: Record<string, boolean> = {},
 ) {
   const streams: FakeStream[] = []
+  const stopCalls: string[] = []
   let historyCalls = 0
   const transport: SessionTransport = {
     stream(req, onEvent, context) {
@@ -53,18 +57,33 @@ function makeStore(
         browserSelections: context?.browserSelections,
         onEvent,
         cancelled: false,
+        stopped: false,
       }
       streams.push(s)
-      return { cancel: () => { s.cancelled = true } }
+      return {
+        cancel: () => { s.cancelled = true },
+        stop: async (interactionId: string) => {
+          s.cancelled = true
+          s.stopped = true
+          stopCalls.push(interactionId)
+        },
+      }
     },
     async historyTurns(_w, interactionId) {
       historyCalls++
       return history[interactionId] ?? []
     },
+    async historySnapshot(_w, interactionId) {
+      historyCalls++
+      return { turns: history[interactionId] ?? [], running: running[interactionId] === true }
+    },
+    async stopChat(interactionId) {
+      stopCalls.push(interactionId)
+    },
   }
   let clock = 1000
   const store = new SessionStore(transport, () => clock++)
-  return { store, streams, historyCalls: () => historyCalls }
+  return { store, streams, stopCalls, historyCalls: () => historyCalls }
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
@@ -210,6 +229,7 @@ test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행�
         input: req.input,
         onEvent,
         cancelled: false,
+        stopped: false,
       }
       streams.push(stream)
       return { cancel: () => { stream.cancelled = true } }
@@ -532,6 +552,7 @@ function mkSession(over: Partial<SessionState>): SessionState {
     historyLoaded: true,
     messages: [],
     streaming: false,
+  remote: false,
     error: null,
     unseen: false,
     createdAt: 0,
@@ -603,4 +624,97 @@ test('대화 소켓 push — 트리거 턴이 실시간으로 세션에 붙는�
 
   store.endChat(key)
   assert.ok(unwatched.includes(key), '세션이 닫히면 감시를 내려야 한다')
+})
+
+// ── 실행은 연결이 아니라 대화에 매여 있다 ────────────────────────────────
+//
+// 서버는 더 이상 연결 끊김을 취소로 읽지 않는다 — 그렇게 읽던 시절엔 화면
+// 잠금·절전·기기 이동이 곧 실행 중단이었고, 사용자는 [정지] 를 누른 적이
+// 없었다. 그 대신 두 가지가 클라이언트의 몫이 됐다: 정지를 **대화**에 전하는
+// 것, 그리고 다른 곳에서 도는 턴을 **그대로 보여 주는** 것.
+
+test('[정지] 는 스트림을 끊는 것으로 그치지 않고 서버 실행까지 멈춘다', async () => {
+  const { store, streams, stopCalls } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '안녕')
+  await flush()
+  assert.equal(streams.length, 1)
+
+  store.stop(key)
+  assert.equal(streams[0].cancelled, true)
+  // abort 만 하면 버려진 턴이 끝까지 돌아 이 대화에 답을 적는다.
+  assert.equal(streams[0].stopped, true)
+  assert.deepEqual(stopCalls, [key])
+  assert.equal(store.get(key)?.streaming, false)
+})
+
+test('다른 곳에서 도는 턴은 이어보기로 열 때 [진행 중] 으로 복원된다', async () => {
+  const { store } = makeStore(
+    { 'int-live': [{ input: '앞선 질문', output: '앞선 답' }] },
+    { 'int-live': true },
+  )
+  store.openResume(agent('A'), 'int-live')
+  await flush()
+
+  const s = store.get('int-live')
+  assert.equal(s?.remote, true)
+  assert.equal(s?.messages.length, 2)
+
+  // 그 위에 새 턴을 얹으면 같은 대화에서 두 실행이 겹친다 — 막아야 한다.
+  store.send('int-live', '겹쳐 보내기')
+  await flush()
+  assert.equal(store.get('int-live')?.messages.length, 2)
+
+  // 이 창이 스트림을 쥐고 있지 않아도 [정지] 는 대화를 향해 닿는다.
+  store.stop('int-live')
+  assert.equal(store.get('int-live')?.remote, false)
+})
+
+test('도는 턴이 없으면 이어보기는 평소처럼 열린다', async () => {
+  const { store } = makeStore({ 'int-done': [{ input: 'q', output: 'a' }] })
+  store.openResume(agent('A'), 'int-done')
+  await flush()
+  assert.equal(store.get('int-done')?.remote, false)
+  store.send('int-done', '이어서')
+  await flush()
+  assert.equal(store.get('int-done')?.streaming, true)
+})
+
+test('대화 소켓이 [진행 중] 을 켜고, 완결 턴이 도착하면 끈다', async () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+
+  // 다른 기기에서 시작한 턴 — 소켓의 구독 확립이 알려 준다.
+  store.setRemoteRunning(key, true)
+  assert.equal(store.get(key)?.remote, true)
+  store.send(key, '겹쳐 보내기')
+  await flush()
+  assert.equal(store.get(key)?.messages.length, 0, '도는 턴 위에 새 턴이 얹혔다')
+
+  // 그 턴이 끝나면 답이 완결 push 로 도착한다 — 이 창은 그린 적이 없는 턴이다.
+  store.applyExternalTurn({
+    interactionId: key,
+    ioId: 7,
+    input: '웹에서 보낸 질문',
+    output: '그 답',
+    source: 'user',
+  })
+  const s = store.get(key)
+  assert.equal(s?.remote, false)
+  assert.deepEqual(s?.messages.map((m) => m.text), ['웹에서 보낸 질문', '그 답'])
+
+  // 이제 다시 보낼 수 있다.
+  store.send(key, '이어서')
+  await flush()
+  assert.equal(store.get(key)?.streaming, true)
+})
+
+test('내 스트림이 도는 동안의 소켓 running 은 [다른 곳] 이 아니다', async () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '내 턴')
+  await flush()
+  // 서버는 "돈다" 고 말하지만 그건 **내가** 돌리는 턴이다.
+  store.setRemoteRunning(key, true)
+  assert.equal(store.get(key)?.remote, false)
 })

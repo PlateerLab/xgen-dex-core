@@ -30,7 +30,9 @@ import type {
   AuthStatus,
   ChatEvent,
   ChatInput,
+  ChatStopResult,
   Conversation,
+  ConversationSnapshot,
   DexProfile,
   HistoryTurn,
   ResolvedChatInput,
@@ -431,12 +433,39 @@ export class DexEngine {
     workflowName?: string,
     requestedProfile?: string,
   ): Promise<HistoryTurn[]> {
+    return (await this.historySnapshot(workflowId, interactionId, workflowName, requestedProfile))
+      .turns;
+  }
+
+  /**
+   * 지난 턴 + **지금 도는 턴이 있는가**. 기기를 옮겨 들어온 화면이 "진행 중" 을
+   * 복원하려면 이 값이 있어야 한다 — 서버 실행은 연결이 아니라 대화에 매여 있다.
+   */
+  async historySnapshot(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+    requestedProfile?: string,
+  ): Promise<ConversationSnapshot> {
     if (!workflowId || !interactionId) {
       throw new DexError('usage_error', 'workflowId와 interactionId가 필요합니다.');
     }
     return this.withAuthRetry(requestedProfile, (client) =>
-      client.history.turns(workflowId, interactionId, workflowName),
+      client.history.snapshot(workflowId, interactionId, workflowName),
     );
+  }
+
+  /**
+   * 사람이 누른 [정지] — 스트림을 끊는 것이 아니라 **대화의 실행**을 멈춘다.
+   *
+   * 스트림 abort 는 더 이상 취소가 아니다(서버가 그렇게 읽으면 화면 잠금·기기
+   * 이동까지 실행 중단이 된다). 그래서 abort 만 하고 이것을 부르지 않으면
+   * 버려진 턴이 끝까지 돌아 대화에 답을 적는다.
+   */
+  async stopChat(interactionId: string, requestedProfile?: string): Promise<ChatStopResult> {
+    const id = interactionId?.trim();
+    if (!id) return { stopped: false, reason: 'not_running' };
+    return this.withAuthRetry(requestedProfile, (client) => client.chat.stop(id));
   }
 
   async resolveChatInput(input: ChatInput): Promise<ResolvedChatInput> {

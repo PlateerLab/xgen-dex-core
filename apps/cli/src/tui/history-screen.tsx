@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { publicError } from '@dex/engine';
-import type { Conversation, HistoryTurn } from '@dex/engine';
+import type { Conversation, ConversationSnapshot } from '@dex/engine';
 import type { TuiEngine } from './model';
 import { Footer, Loading, Notice } from './components';
 
 export function HistoryScreen(props: {
   engine: TuiEngine;
   profile: string;
-  onOpen: (conversation: Conversation, turns: HistoryTurn[]) => void;
+  onOpen: (conversation: Conversation, snapshot: ConversationSnapshot) => void;
   onCancel: () => void;
 }): React.ReactNode {
   const [items, setItems] = useState<Conversation[]>([]);
@@ -40,13 +40,15 @@ export function HistoryScreen(props: {
         setLoading(true);
         setError(undefined);
         props.engine
-          .historyTurns(
+          // turns 만이 아니라 running 도 함께 읽는다 — 웹·앱에서 시작한 턴이
+          // 아직 돌고 있으면 그 사실을 그대로 복원해야 한다.
+          .historySnapshot(
             conversation.workflowId,
             conversation.interactionId,
             conversation.workflowName,
             props.profile,
           )
-          .then((turns) => props.onOpen(conversation, turns))
+          .then((snapshot) => props.onOpen(conversation, snapshot))
           .catch((reason: unknown) => setError(publicError(reason).message))
           .finally(() => setLoading(false));
       }

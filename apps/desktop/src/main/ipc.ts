@@ -102,6 +102,8 @@ export const CHANNELS = {
   teamsShareWorkspaceFile: 'teams:shareWorkspaceFile',
 
   historyTurns: 'history:turns',
+  /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 [진행 중] 복원. */
+  historySnapshot: 'history:snapshot',
   historyConversations: 'history:conversations',
 
   // Agent Viewer — 한 에이전트의 읽기 전용 관측 데이터 (메모리/작업/도구/스토리지/전체로그).
@@ -122,7 +124,11 @@ export const CHANNELS = {
   agentWsUpload: 'agent:wsUpload',
 
   chatStart: 'chat:start',
+  //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).
   chatCancel: 'chat:cancel',
+  //: 사람이 누른 [정지] — 스트림을 놓고 서버 실행도 멈춘다. abort 만으로는
+  //  멈추지 않는다(서버는 연결 끊김을 취소로 읽지 않는다).
+  chatStop: 'chat:stop',
   chatEvent: 'chat:event',
   //: '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). 이력은 보존.
   chatEndSession: 'chat:end-session',
@@ -228,6 +234,9 @@ export const CHANNELS = {
   connectorDevices: 'connector:devices',
   chatWatchStop: 'chat:watch-stop',
   chatWatchTurn: 'chat:watch-turn',
+  /** 이 대화에 **지금 도는 턴이 있는가** — 대화 소켓의 구독 확립이 알려 준다.
+   *  다른 기기에서 시작한 실행을 이 창이 [진행 중] 으로 이어 보이는 근거다. */
+  chatWatchRunning: 'chat:watch-running',
   fsCloudReadRaw: 'fs:cloud-read-raw',
   fsCloudOfficePreview: 'fs:cloud-office-preview',
   fsCloudOfficePreviewPage: 'fs:cloud-office-preview-page',

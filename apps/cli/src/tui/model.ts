@@ -6,7 +6,9 @@ import type {
   AuthStatus,
   ChatEvent,
   ChatInput,
+  ChatStopResult,
   Conversation,
+  ConversationSnapshot,
   HistoryTurn,
   CreateAgentInput,
   ResolvedChatInput,
@@ -40,6 +42,19 @@ export interface TuiEngine {
     workflowName?: string,
     profile?: string,
   ): Promise<HistoryTurn[]>;
+  /** 지난 턴 + **지금 도는 턴이 있는가** — 다른 기기에서 시작한 턴도 보인다. */
+  historySnapshot(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+    profile?: string,
+  ): Promise<ConversationSnapshot>;
+  /**
+   * 사람이 누른 [정지]. 스트림 abort 만으로는 서버가 멈추지 않는다 — 서버는
+   * 연결 끊김을 취소로 읽지 않기 때문에(화면 잠금·기기 이동이 실행 중단이 되던
+   * 시절의 교훈), 이것을 부르지 않으면 버려진 턴이 끝까지 돌아 답을 적는다.
+   */
+  stopChat(interactionId: string, profile?: string): Promise<ChatStopResult>;
   resolveChatInput(input: ChatInput): Promise<ResolvedChatInput>;
   chat(input: ChatInput, signal?: AbortSignal): AsyncGenerator<ChatEvent, ResolvedChatInput>;
   /** 대화 소켓 감시 — 서버 주입 턴(트리거 반응)의 실시간 수신 (선택 구현). */

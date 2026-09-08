@@ -88,12 +88,23 @@ export interface RpcServerOptions {
   version?: string;
 }
 
+interface ActiveChat {
+  controller: AbortController;
+  interactionId: string;
+  profile: string;
+}
+
 export class DexRpcServer {
   private readonly input: Readable;
   private readonly output: Writable;
   private readonly log: (message: string) => void;
   private readonly version: string;
-  private readonly activeChats = new Map<string, AbortController>();
+  /**
+   * 도는 스트림들. AbortController 만으로는 부족하다 — abort 는 이제 "나는 안
+   * 볼게" 일 뿐이라(서버가 연결 끊김을 취소로 읽지 않는다) 사람이 누른 [정지]
+   * 를 서버에 전하려면 그 스트림이 **어느 대화**의 것인지도 알아야 한다.
+   */
+  private readonly activeChats = new Map<string, ActiveChat>();
   private readline: ReadlineInterface | null = null;
   private initialized = false;
   private closed = false;
@@ -122,7 +133,7 @@ export class DexRpcServer {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    for (const controller of this.activeChats.values()) controller.abort();
+    for (const active of this.activeChats.values()) active.controller.abort();
     this.activeChats.clear();
     this.engine.stopLocalTools();
     this.removeLocalToolsListener();
@@ -340,13 +351,37 @@ export class DexRpcServer {
       case 'chat/unwatch':
         this.engine.unwatchConversation(requiredString(params, 'interactionId'));
         return { ok: true };
+      // 이 스트림을 **그만 본다**. 서버 실행은 건드리지 않는다 — 새 대화를
+      // 열거나 화면을 닫는 것은 "멈춰 달라" 가 아니다. 멈추려면 chat/stop.
       case 'chat/cancel': {
         const streamId = requiredString(params, 'streamId');
-        const controller = this.activeChats.get(streamId);
-        if (!controller) return { cancelled: false };
-        controller.abort();
+        const active = this.activeChats.get(streamId);
+        if (!active) return { cancelled: false };
+        active.controller.abort();
         return { cancelled: true };
       }
+      // 사람이 누른 [정지] — 스트림에서 손을 떼고, **서버 실행도** 멈춘다.
+      // 이것을 부르지 않으면 버려진 턴이 끝까지 돌아 대화에 답을 적는다.
+      case 'chat/stop': {
+        const streamId = optionalString(params, 'streamId');
+        const active = streamId ? this.activeChats.get(streamId) : undefined;
+        // 이 프로세스가 안 도는 대화도 멈출 수 있다 — 다른 기기에서 시작한 턴.
+        const interactionId = optionalString(params, 'interactionId') ?? active?.interactionId;
+        active?.controller.abort();
+        if (!interactionId) return { cancelled: !!active, stopped: false, reason: 'not_running' };
+        const result = await this.engine.stopChat(
+          interactionId,
+          optionalString(params, 'profile') ?? active?.profile,
+        );
+        return { cancelled: !!active, ...result };
+      }
+      case 'history/snapshot':
+        return this.engine.historySnapshot(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'workflowName'),
+          optionalString(params, 'profile'),
+        );
       default:
         throw new RpcFailure(-32601, `Method not found: ${method}`);
     }
@@ -377,7 +412,11 @@ export class DexRpcServer {
     const streamId = optionalString(params, 'streamId') ?? randomUUID();
     if (this.activeChats.has(streamId)) throw new RpcFailure(-32602, `streamId already exists: ${streamId}`);
     const controller = new AbortController();
-    this.activeChats.set(streamId, controller);
+    this.activeChats.set(streamId, {
+      controller,
+      interactionId: resolved.interactionId,
+      profile: resolved.profile,
+    });
     // start response가 notification보다 반드시 먼저 나가야 client가 streamId를 등록할 수 있다.
     setImmediate(() => void this.runChat(streamId, resolved, controller));
     return {

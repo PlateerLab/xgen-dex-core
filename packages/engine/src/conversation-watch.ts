@@ -48,7 +48,17 @@ export class ConversationWatchHub {
   private entries = new Map<string, WatchEntry>();
   private deps: WatchDeps | null = null;
 
-  constructor(private onTurn: (turn: ConversationTurn) => void) {}
+  /**
+   * @param onTurn    완결된 턴이 서버에서 밀려왔다.
+   * @param onRunning 구독 시점에 **이미 도는 턴이 있는가**. 서버 실행은 연결이
+   *   아니라 대화에 매여 있어서(연결을 끊어도 계속 돈다), 웹이나 다른 기기에서
+   *   시작한 턴이 이 앱을 켠 순간에도 돌고 있을 수 있다. 재연결 때마다 다시
+   *   보고되므로, 소켓이 끊겼다 붙는 것만으로 상태가 스스로 맞춰진다.
+   */
+  constructor(
+    private onTurn: (turn: ConversationTurn) => void,
+    private onRunning?: (interactionId: string, running: boolean) => void,
+  ) {}
 
   setDeps(deps: WatchDeps): void {
     this.deps = deps;
@@ -147,6 +157,16 @@ export class ConversationWatchHub {
       if (frame?.type === 'unsupported') {
         // geny 에이전트 아님 — 이 대화는 감시 대상이 아니다.
         this.unwatch(interactionId);
+        return;
+      }
+      if (frame?.type === 'subscribed') {
+        // 서버가 구독 확립과 함께 "지금 도는 턴이 있는가" 를 알려 준다.
+        this.onRunning?.(interactionId, frame.data?.running === true);
+        return;
+      }
+      if (frame?.type === 'exec_done' || frame?.type === 'exec_error' || frame?.type === 'exec_stopped') {
+        // 이 대화의 실행이 끝났다 — 우리 스트림이 아니어도 상태는 정리한다.
+        this.onRunning?.(interactionId, false);
         return;
       }
       if (frame?.type !== 'message' || !frame.data) return;

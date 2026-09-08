@@ -5,7 +5,7 @@
  * - interactions: the list of past conversations for a sidebar.
  */
 import { HttpClient } from './client';
-import type { Conversation, HistoryAttachment, HistoryTurn } from './types';
+import type { Conversation, ConversationSnapshot, HistoryAttachment, HistoryTurn } from './types';
 import { stripBrowserContext } from './browser';
 
 interface RawIoLog {
@@ -129,10 +129,27 @@ export class HistoryApi {
 
   /** Ordered turns of one conversation. */
   async turns(workflowId: string, interactionId: string, workflowName?: string): Promise<HistoryTurn[]> {
+    return (await this.snapshot(workflowId, interactionId, workflowName)).turns;
+  }
+
+  /**
+   * 지난 턴들 + **지금 도는 턴이 있는가**, 한 번의 호출로.
+   *
+   * 서버는 실행을 연결이 아니라 대화에 매어 둔다 — 웹에서 시작한 턴이 앱을 켠
+   * 순간에도 돌고 있을 수 있다. `running` 을 함께 읽지 않으면 여기서는 대화가
+   * 끝난 것처럼 보이고, 그 위에 새 턴을 보내 같은 대화에서 둘이 겹친다.
+   */
+  async snapshot(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+  ): Promise<ConversationSnapshot> {
     const params = new URLSearchParams({ workflow_id: workflowId, interaction_id: interactionId });
     if (workflowName) params.set('workflow_name', workflowName);
-    const res = await this.http.get<{ in_out_logs?: RawIoLog[] }>(`/api/chat/io-logs?${params}`);
-    return (res.in_out_logs ?? []).map((r) => ({
+    const res = await this.http.get<{ in_out_logs?: RawIoLog[]; running?: boolean }>(
+      `/api/chat/io-logs?${params}`,
+    );
+    const turns = (res.in_out_logs ?? []).map((r) => ({
       logId: r.log_id,
       ioId: r.io_id,
       interactionId: r.interaction_id,
@@ -143,6 +160,9 @@ export class HistoryApi {
       attachments: toHistoryAttachments(r.attachments),
       updatedAt: r.updated_at,
     }));
+    // 구버전 서버(필드 없음)에서는 false — "모른다" 를 "돌고 있다" 로 읽으면
+    // 작성기가 영원히 잠긴다. 모르면 평소처럼 쓸 수 있어야 한다.
+    return { turns, running: res.running === true };
   }
 
   /** Past conversations (interactions) for the sidebar. */

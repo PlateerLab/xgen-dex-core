@@ -39,6 +39,7 @@ import {
   type TeamsAttachment,
   type TtsSpeakOptions,
   type SshServerInput,
+  type ChatStopResult,
   applyNotificationPreferenceUpdate,
   notificationProfileForAccount,
   shareBodyOf,
@@ -1441,11 +1442,20 @@ async function refreshAuthToken(): Promise<string | null> {
  */
 const teamsHub = new TeamsSocketHub();
 // 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)을 열린 채팅에 실시간 반영.
-const conversationWatchHub = new ConversationWatchHub((turn) => {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(CHANNELS.chatWatchTurn, turn);
-  }
-});
+const conversationWatchHub = new ConversationWatchHub(
+  (turn) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.chatWatchTurn, turn);
+    }
+  },
+  // 다른 기기에서 시작한 턴이 도는 중인가. 소켓이 끊겼다 붙을 때마다 다시
+  // 보고되므로, 이 값은 폴링 없이도 스스로 맞춰진다.
+  (interactionId, running) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.chatWatchRunning, { interactionId, running });
+    }
+  },
+);
 ipcMain.handle(
   CHANNELS.chatWatchStart,
   (_e, workflowId: unknown, workflowName: unknown, interactionId: unknown) => {
@@ -2198,6 +2208,11 @@ ipcMain.handle(
   (_e, workflowId: string, interactionId: string, name?: string) =>
     getClient().history.turns(workflowId, interactionId, name),
 );
+ipcMain.handle(
+  CHANNELS.historySnapshot,
+  (_e, workflowId: string, interactionId: string, name?: string) =>
+    getClient().history.snapshot(workflowId, interactionId, name),
+);
 ipcMain.handle(CHANNELS.historyConversations, () => getClient().history.conversations());
 
 // ── IPC: Agent Viewer (읽기 전용 관측 데이터) ───────────────────────
@@ -2519,6 +2534,29 @@ ipcMain.handle(CHANNELS.chatCancel, (_e, streamId: string) => {
   aborters.delete(streamId);
   return true;
 });
+
+/**
+ * 사람이 누른 [정지] — 스트림에서 손을 떼고 **서버 실행도** 멈춘다.
+ *
+ * abort 는 이제 "나는 안 볼게" 일 뿐이다. 서버가 연결 끊김을 취소로 읽던 시절엔
+ * 화면 잠금·절전·기기 이동이 곧 실행 중단이었고, 사용자는 [정지] 를 누른 적이
+ * 없었다. 그래서 정지는 연결이 아니라 **대화**를 향한다 — streamId 가 없어도
+ * (다른 기기에서 시작한 턴) interactionId 만으로 닿는다.
+ */
+ipcMain.handle(
+  CHANNELS.chatStop,
+  async (_e, interactionId: string, streamId?: string): Promise<ChatStopResult> => {
+    if (streamId) {
+      aborters.get(streamId)?.abort();
+      aborters.delete(streamId);
+    }
+    try {
+      return await getClient().chat.stop(interactionId);
+    } catch (err) {
+      return { stopped: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
 
 // '진행 중 대화' 삭제 → 서버 세션 RAM(executor + 라우팅)을 완전 정리한다. 이력은 보존.
 // best-effort — 서버 미도달/미인증이어도 로컬 삭제 UX 는 막지 않는다.

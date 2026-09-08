@@ -954,7 +954,24 @@ function ChatSection({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [wsState, setWsState] = useState<ChatWsState>('closed');
-  const [running, setRunning] = useState(false);
+  const [running, setRunningState] = useState(false);
+  /**
+   * `running` 의 ref 사본. 소켓 콜백은 렌더 사이에도 오는데, 그때 state 는 아직
+   * 옛 값이라 "내 턴인가" 를 state 로 물으면 틀린 답을 얻는다.
+   */
+  const runningRef = useRef(false);
+  const setRunning = useCallback((v: boolean): void => {
+    runningRef.current = v;
+    setRunningState(v);
+  }, []);
+  /**
+   * 지금 도는 턴이 **다른 기기**의 것인가.
+   *
+   * `running` 하나로는 두 경우를 구분하지 못한다: 내가 방금 보낸 턴과, 웹·앱에서
+   * 시작해 아직 도는 턴. 구분이 필요한 곳은 완결 push 다 — 내 턴의 답은 스트림이
+   * 이미 그렸지만, 다른 기기의 턴은 이 폰이 그린 적이 없어서 push 를 받아 그려야 한다.
+   */
+  const runningElsewhereRef = useRef(false);
   const chatRef = useRef<ChatWsHandle | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
@@ -997,8 +1014,21 @@ function ChatSection({
       log: diagLog,
       // 서버 주입 턴(트리거 반응) 실시간 반영 — 새로고침 없이 흐른다.
       // 자기 실행 턴 push(source=user)는 스트림이 이미 그렸으므로 거른다.
+      // 다른 기기에서 시작한 턴이 도는가 — 그동안 작성기를 잠그고 [중지] 를 연다.
+      // 내가 돌리는 턴이면 running 은 이미 켜져 있으므로 덮어써도 같은 값이다.
+      onRunning: (isRunning) => {
+        // 내 턴이 도는 중이면 그대로 둔다 — 그건 '다른 곳' 이 아니다.
+        // 내 턴이 도는 중이면 그건 '다른 곳' 이 아니다 — 그대로 둔다.
+        if (isRunning && !runningRef.current) runningElsewhereRef.current = true;
+        if (!isRunning) runningElsewhereRef.current = false;
+        if (isRunning !== runningRef.current) setRunning(isRunning || runningRef.current);
+      },
       onServerTurn: (turn) => {
-        if (turn.source !== 'subagent_report' || !turn.output) return;
+        // 다른 기기에서 시작한 턴은 이 폰이 그린 적이 없다 — 완결 push 로 받는다.
+        // (자기 실행 턴은 스트림이 이미 그렸으므로 거른다.)
+        const mine = !runningElsewhereRef.current;
+        if (turn.source !== 'subagent_report' && mine) return;
+        if (!turn.output) return;
         if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
         if (turn.ioId) seenExternalIo.add(turn.ioId);
         setMessages((prev) => [
@@ -1006,6 +1036,9 @@ function ChatSection({
           { role: 'user', text: turn.input },
           { role: 'assistant', text: turn.output },
         ]);
+        // 다른 곳에서 돌던 턴이 끝났다 — 답이 도착했으니 [진행 중] 을 내린다.
+        runningElsewhereRef.current = false;
+        setRunning(false);
       },
       callbacks: {
         onData: (text) => {

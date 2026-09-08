@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { publicError } from '@dex/engine';
-import type { Agent, Conversation, HistoryTurn } from '@dex/engine';
+import type { Agent, Conversation, ConversationSnapshot } from '@dex/engine';
 import { chatReducer, initialChatState, type ChatMessage } from './chat-state';
 import { useMeasured } from './measure';
 import { maximumScroll, renderTranscript, viewportOf } from './transcript';
@@ -232,6 +232,34 @@ export function Dashboard(props: {
   useEffect(() => () => controller.current?.abort(), []);
 
   /**
+   * 다른 곳에서 도는 턴을 지켜본다 — 끝나면 그 답을 히스토리에서 받아 그린다.
+   *
+   * 이 CLI 는 그 스트림을 쥐고 있지 않아 이벤트가 오지 않는다. 서버도 진행 중인
+   * 턴의 토큰을 재전송하지 않는다(완결된 턴만 execution_io 에 남는다). 그래서
+   * 할 수 있는 정직한 일은 [진행 중] 을 보여 주고 완결을 기다리는 것이다.
+   */
+  useEffect(() => {
+    if (!chat.remote || !chat.interactionId || !selected) return;
+    const interactionId = chat.interactionId;
+    const ref = selected;
+    let alive = true;
+    const timer = setInterval(() => {
+      void props.engine
+        .historySnapshot(ref.workflowId, interactionId, ref.workflowName, props.session.profile)
+        .then((snapshot) => {
+          if (!alive || snapshot.running) return;
+          dispatch({ type: 'remote_finished', interactionId, turns: snapshot.turns });
+        })
+        // 서버에 못 닿았다 — 다음 회차에 다시 본다. 폴링 실패로 화면을 깨지 않는다.
+        .catch(() => undefined);
+    }, 5_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [chat.remote, chat.interactionId, selected, props.engine, props.session.profile]);
+
+  /**
    * 에이전트를 고른다.
    *
    * 이 에이전트에 **이전 대화가 있으면** 갈림길을 보여 준다(새로 시작 / 이어가기).
@@ -279,9 +307,16 @@ export function Dashboard(props: {
     setFocus('composer');
   };
 
-  const openHistory = (conversation: Conversation, turns: HistoryTurn[]): void => {
+  const openHistory = (conversation: Conversation, snapshot: ConversationSnapshot): void => {
     setSelected({ workflowId: conversation.workflowId, workflowName: conversation.workflowName });
-    dispatch({ type: 'history_loaded', interactionId: conversation.interactionId, turns });
+    // running 을 그대로 싣는다 — 웹·앱·VSCode 에서 시작한 턴이 아직 돌고 있으면
+    // 여기서도 [진행 중] 이어야 하고, 그 위에 새 턴을 얹어서는 안 된다.
+    dispatch({
+      type: 'history_loaded',
+      interactionId: conversation.interactionId,
+      turns: snapshot.turns,
+      running: snapshot.running,
+    });
     void props.engine.watchConversation?.(
       conversation.workflowId,
       conversation.workflowName,
@@ -297,7 +332,26 @@ export function Dashboard(props: {
     setFocus('composer');
   };
 
-  const cancelTurn = (): void => {
+  /**
+   * 사람이 누른 [정지] (Esc) — 스트림에서 손을 떼고 **서버 실행도** 멈춘다.
+   *
+   * abort 만으로는 멈추지 않는다. 서버는 연결 끊김을 더 이상 취소로 읽지
+   * 않으므로(그렇게 읽던 시절엔 화면 잠금·기기 이동이 실행 중단이었다),
+   * 버려진 턴은 끝까지 돌아 대화에 답을 적는다.
+   */
+  const stopTurn = (): void => {
+    const interactionId = chat.interactionId;
+    controller.current?.abort();
+    dispatch({ type: 'turn_cancelled' });
+    if (interactionId) {
+      // 정지가 서버에 닿지 못해도 화면은 멈춘 것으로 둔다 — 되돌리면 사용자가
+      // 누른 버튼이 되살아나는 것처럼 보인다. 실패는 조용히 넘긴다.
+      void props.engine.stopChat(interactionId, props.session.profile).catch(() => undefined);
+    }
+  };
+
+  /** 이 대화를 **그만 본다** — 서버 실행은 계속된다(다른 화면으로 옮길 때). */
+  const detachTurn = (): void => {
     controller.current?.abort();
     dispatch({ type: 'turn_cancelled' });
   };
@@ -365,13 +419,13 @@ export function Dashboard(props: {
         controller.current?.abort();
         props.onProfiles();
       } else if (key.ctrl && keyInput === 'h') {
-        if (chat.running) cancelTurn();
+        if (chat.running) detachTurn();
         setHistory(true);
       }
       else if (key.ctrl && keyInput === 'n') newConversation();
       else if (key.pageUp) scrollBy(-1);
       else if (key.pageDown) scrollBy(1);
-      else if (key.escape && chat.running) cancelTurn();
+      else if (key.escape && chat.running) stopTurn();
       else if (key.escape) setFocus('agents');
       else if (key.tab) setFocus((current) => (current === 'agents' ? 'composer' : 'agents'));
       else if (focus === 'agents' && key.upArrow) setCursor((current) => Math.max(-1, current - 1));
@@ -390,7 +444,7 @@ export function Dashboard(props: {
         id: 'history',
         label: '대화 기록',
         run: () => {
-          if (chat.running) cancelTurn();
+          if (chat.running) detachTurn();
           setPalette(false);
           setHistory(true);
         },

@@ -11,9 +11,9 @@
  * node status, citations (inside tool_result), an `execution_io` id, and a
  * terminal `end`.
  */
-import { HttpClient } from './client';
+import { ApiError, HttpClient } from './client';
 import { SseParser } from './sse';
-import type { ChatEvent, ChatRequest, ToolEvent } from './types';
+import type { ChatEvent, ChatRequest, ChatStopResult, ToolEvent } from './types';
 
 function toRequestBody(req: ChatRequest): Record<string, unknown> {
   return {
@@ -139,6 +139,37 @@ export function frameToChatEvent(
 
 export class ChatApi {
   constructor(private http: HttpClient) {}
+
+  /**
+   * 사람이 누른 [정지] 를 서버에 전한다.
+   *
+   * 예전에는 정지가 곧 **연결 끊기**였다 — 스트림을 abort 하면 서버가 그것을
+   * 취소로 읽었다. 서버는 더 이상 그렇게 읽지 않는다(화면 잠금·절전·기기 이동이
+   * 실행을 끊어 버렸기 때문에). 그래서 abort 는 이제 "나는 안 볼게" 일 뿐이고,
+   * **정지는 이 호출이다.** 부르지 않으면 버려진 턴이 끝까지 돌아 답을 대화에
+   * 적는다 — 사용자가 멈췄다고 믿은 그 대화에.
+   *
+   * 정지는 연결이 아니라 **대화**를 향하므로, 시작한 기기가 아니어도 닿는다.
+   * 멈출 것이 없거나(404) 다른 파드가 돌리는 턴이면(409) 던지지 않고 이유를
+   * 돌려준다 — 정지 버튼이 예외로 UX 를 깨서는 안 된다.
+   */
+  async stop(interactionId: string): Promise<ChatStopResult> {
+    const id = interactionId.trim();
+    if (!id) return { stopped: false, reason: 'not_running' };
+    try {
+      await this.http.post(`/api/agentflow/execute/stop/${encodeURIComponent(id)}`);
+      return { stopped: true };
+    } catch (error) {
+      const status = error instanceof ApiError ? error.status : 0;
+      if (status === 404) return { stopped: false, reason: 'not_running' };
+      if (status === 409) return { stopped: false, reason: 'elsewhere' };
+      return {
+        stopped: false,
+        reason: 'error',
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
 
   /**
    * Stream a chat turn. Yields normalized ChatEvents until the terminal `end`

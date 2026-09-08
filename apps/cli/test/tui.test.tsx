@@ -3,7 +3,14 @@ import { test } from 'node:test';
 import { useState } from 'react';
 import { render } from 'ink-testing-library';
 import type { ProfileSummary } from '@dex/engine';
-import type { ChatInput, Conversation, HistoryTurn, ResolvedChatInput } from '@dex/engine';
+import type {
+  ChatInput,
+  ChatStopResult,
+  Conversation,
+  ConversationSnapshot,
+  HistoryTurn,
+  ResolvedChatInput,
+} from '@dex/engine';
 import { App } from '../src/tui/app';
 import { ImeTextInput } from '../src/tui/ime-text-input';
 import type { TuiEngine } from '../src/tui/model';
@@ -121,6 +128,13 @@ function fakeEngine(
           updatedAt: '2026-08-30T02:00:00.000Z',
         },
       ];
+    },
+    async historySnapshot(): Promise<ConversationSnapshot> {
+      // 이 가짜 서버에서는 도는 턴이 없다 — 이력만 그린다.
+      return { turns: await this.historyTurns('wf_abc', 'int-1'), running: false };
+    },
+    async stopChat(): Promise<ChatStopResult> {
+      return { stopped: true };
     },
     async resolveChatInput(input: ChatInput): Promise<ResolvedChatInput> {
       return {

@@ -13,12 +13,21 @@ export interface ChatState {
   interactionId?: string;
   messages: ChatMessage[];
   running: boolean;
+  /**
+   * 이 CLI 가 아니라 **다른 곳**(웹·앱·VSCode)에서 시작한 턴이 이 대화에서
+   * 돌고 있는가. 서버 실행은 연결이 아니라 대화에 매여 있어서, 여기서 스트림을
+   * 쥐고 있지 않아도 대화는 진행 중일 수 있다. 이때 작성기는 잠기지만
+   * (같은 대화에서 두 실행이 겹치면 안 된다) 토큰은 흐르지 않는다 — 서버는
+   * 진행 중인 턴을 재전송하지 않고, 완결된 턴만 히스토리에 남긴다.
+   */
+  remote: boolean;
   status?: string;
 }
 
 export type ChatAction =
   | { type: 'reset' }
-  | { type: 'history_loaded'; interactionId: string; turns: HistoryTurn[] }
+  | { type: 'history_loaded'; interactionId: string; turns: HistoryTurn[]; running?: boolean }
+  | { type: 'remote_finished'; interactionId: string; turns: HistoryTurn[] }
   | { type: 'turn_started'; interactionId: string; input: string }
   | { type: 'event_received'; event: ChatEvent }
   | { type: 'turn_completed' }
@@ -32,7 +41,7 @@ export type ChatAction =
       output: string;
     };
 
-export const initialChatState: ChatState = { messages: [], running: false };
+export const initialChatState: ChatState = { messages: [], running: false, remote: false };
 
 function lastMessageIndex(
   messages: ChatMessage[],
@@ -108,6 +117,7 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
     return {
       ...state,
       running: false,
+      remote: false,
       status: undefined,
       messages: [
         ...state.messages,
@@ -115,8 +125,15 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
       ],
     };
   }
-  if (event.kind === 'end') return { ...state, running: false, status: undefined };
+  if (event.kind === 'end') return { ...state, running: false, remote: false, status: undefined };
   return state;
+}
+
+function historyMessages(turns: HistoryTurn[]): ChatMessage[] {
+  return turns.flatMap((turn, index) => [
+    { id: `history-user-${index}`, role: 'user' as const, text: turn.input },
+    { id: `history-assistant-${index}`, role: 'assistant' as const, text: turn.output },
+  ]);
 }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -126,17 +143,27 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'history_loaded':
       return {
         interactionId: action.interactionId,
+        running: !!action.running,
+        remote: !!action.running,
+        status: action.running ? '다른 곳에서 시작한 응답이 진행 중' : undefined,
+        messages: historyMessages(action.turns),
+      };
+    // 다른 곳에서 돌던 턴이 끝났다 — 그 답을 히스토리에서 받아 그린다.
+    case 'remote_finished':
+      if (!state.remote || state.interactionId !== action.interactionId) return state;
+      return {
+        interactionId: action.interactionId,
         running: false,
-        messages: action.turns.flatMap((turn, index) => [
-          { id: `history-user-${index}`, role: 'user' as const, text: turn.input },
-          { id: `history-assistant-${index}`, role: 'assistant' as const, text: turn.output },
-        ]),
+        remote: false,
+        status: undefined,
+        messages: historyMessages(action.turns),
       };
     case 'turn_started':
       return {
         ...state,
         interactionId: action.interactionId,
         running: true,
+        remote: false,
         status: '응답을 기다리는 중',
         messages: [
           ...state.messages,
@@ -147,13 +174,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'event_received':
       return eventState(state, action.event);
     case 'turn_completed':
-      return { ...state, running: false, status: undefined };
+      return { ...state, running: false, remote: false, status: undefined };
     case 'turn_cancelled':
-      return { ...state, running: false, status: undefined };
+      return { ...state, running: false, remote: false, status: undefined };
     case 'turn_failed':
       return {
         ...state,
         running: false,
+        remote: false,
         status: undefined,
         messages: [
           ...state.messages,

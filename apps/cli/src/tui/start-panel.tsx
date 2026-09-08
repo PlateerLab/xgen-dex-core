@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { publicError } from '@dex/engine';
-import type { Conversation, HistoryTurn } from '@dex/engine';
+import type { Conversation, ConversationSnapshot } from '@dex/engine';
 import type { TuiEngine } from './model';
 import { Loading, Notice } from './components';
 
@@ -29,7 +29,7 @@ export function StartPanel(props: {
   agentName: string;
   conversations: Conversation[];
   onNew: () => void;
-  onOpen: (conversation: Conversation, turns: HistoryTurn[]) => void;
+  onOpen: (conversation: Conversation, snapshot: ConversationSnapshot) => void;
   onCancel: () => void;
 }): React.ReactNode {
   const rows: Row[] = [
@@ -65,13 +65,13 @@ export function StartPanel(props: {
       setOpening(true);
       setError(undefined);
       props.engine
-        .historyTurns(
+        .historySnapshot(
           conversation.workflowId,
           conversation.interactionId,
           conversation.workflowName,
           props.profile,
         )
-        .then((turns) => props.onOpen(conversation, turns))
+        .then((snapshot) => props.onOpen(conversation, snapshot))
         .catch((reason: unknown) => {
           setError(publicError(reason).message);
           setOpening(false);

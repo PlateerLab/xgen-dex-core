@@ -11,7 +11,7 @@ import type {
   ChatEventNotification,
   ChatStartResult,
   Conversation,
-  HistoryTurn,
+  ConversationSnapshot,
   LocalToolBridgeStatus,
   LocalToolsConfig,
   LocalToolsStatus,
@@ -68,6 +68,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private messages: ChatMessage[] = [];
   private interactionId: string | undefined;
   private streamId: string | undefined;
+  /**
+   * 이 확장이 아니라 **다른 곳**(웹·앱·CLI)에서 시작한 턴이 이 대화에서 돌고
+   * 있는가. 서버 실행은 연결이 아니라 대화에 매여 있어서, 여기서 스트림을 쥐고
+   * 있지 않아도 대화는 진행 중일 수 있다.
+   */
+  private remoteRunning = false;
+  private remotePoll: ReturnType<typeof setInterval> | undefined;
   private assistantMessageId: string | undefined;
   private status: string | undefined;
   private error: string | undefined;
@@ -228,11 +235,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.postState();
   }
 
+  /**
+   * 사람이 누른 [응답 중지] — 스트림에서 손을 떼는 것으로는 부족하다.
+   *
+   * 서버는 더 이상 연결 끊김을 취소로 읽지 않는다(그렇게 읽던 시절엔 화면
+   * 잠금·기기 이동이 실행 중단이었다). 그래서 `chat/cancel` 만 부르면 버려진
+   * 턴이 끝까지 돌아 대화에 답을 적는다. 정지는 **대화**를 향해야 한다 —
+   * 그래서 다른 기기에서 시작한 턴(remoteRunning)도 여기서 멈출 수 있다.
+   */
   async cancel(): Promise<void> {
-    if (!this.streamId) return;
-    this.status = '응답을 취소하는 중...';
+    if (!this.streamId && !this.remoteRunning) return;
+    this.status = '응답을 중지하는 중...';
     this.postState();
-    await this.service.request('chat/cancel', { streamId: this.streamId });
+    try {
+      await this.service.request('chat/stop', {
+        ...this.activeProfileParams(),
+        ...(this.streamId ? { streamId: this.streamId } : {}),
+        ...(this.interactionId ? { interactionId: this.interactionId } : {}),
+      });
+    } catch (error) {
+      this.status = `중지하지 못했습니다: ${errorMessage(error)}`;
+      this.postState();
+      return;
+    }
+    if (this.remoteRunning) {
+      // 원격 턴은 이 확장이 스트림을 쥐고 있지 않아 chat/complete 가 오지 않는다.
+      // 폴링이 다음 회차에 히스토리를 다시 읽어 마지막 상태를 그린다.
+      this.status = '중지를 요청했습니다.';
+      this.postState();
+    }
   }
 
   async openHistory(): Promise<void> {
@@ -253,12 +284,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       );
       if (!picked) return;
       const conversation = picked.conversation;
-      const turns = await this.service.request<HistoryTurn[]>('history/turns', {
+      // 지난 턴과 함께 **지금 도는 턴이 있는가**도 읽는다 — 웹이나 앱에서
+      // 시작한 턴이 아직 돌고 있을 수 있다. 이걸 모르면 끝난 대화처럼 보이고,
+      // 그 위에 새 턴을 보내 같은 대화에서 두 실행이 겹친다.
+      const snapshot = await this.service.request<ConversationSnapshot>('history/snapshot', {
         ...this.activeProfileParams(),
         workflowId: conversation.workflowId,
         workflowName: conversation.workflowName,
         interactionId: conversation.interactionId,
       });
+      const turns = snapshot.turns ?? [];
       await this.clearConversation();
       this.selectedAgent = this.agents.find((agent) => agent.workflowId === conversation.workflowId) ?? agentFromConversation(conversation);
       this.interactionId = conversation.interactionId;
@@ -267,8 +302,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         message('user', '나', turn.input),
         message('assistant', conversation.workflowName, turn.output),
       ]);
-      this.status = `${turns.length}개의 이전 대화를 불러왔습니다.`;
+      this.status = snapshot.running
+        ? '다른 곳에서 시작한 응답이 진행 중입니다.'
+        : `${turns.length}개의 이전 대화를 불러왔습니다.`;
       this.screen = 'chat';
+      if (snapshot.running) this.watchRemoteRun();
       this.postState();
       await vscode.commands.executeCommand('xgenDex.chat.focus');
     } catch (error) {
@@ -277,11 +315,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   dispose(): void {
+    this.stopWatchingRemoteRun();
     this.removeNotificationListener();
     if (this.renderTimer) clearTimeout(this.renderTimer);
   }
 
   private async clearConversation(): Promise<void> {
+    this.stopWatchingRemoteRun();
     const activeStream = this.streamId;
     this.streamId = undefined;
     this.assistantMessageId = undefined;
@@ -547,6 +587,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   }
 
+  /**
+   * 다른 곳에서 도는 턴을 지켜본다 — 끝나면 히스토리를 다시 읽어 답을 그린다.
+   *
+   * 이 확장은 그 스트림을 쥐고 있지 않으므로 `chat/complete` 가 오지 않는다.
+   * 서버가 진행 중인 턴의 토큰을 재전송해 주지는 않으니(완결된 턴만 남는다),
+   * 할 수 있는 정직한 일은 "진행 중" 을 보여 주고 완결을 기다리는 것이다.
+   */
+  private watchRemoteRun(): void {
+    this.stopWatchingRemoteRun();
+    this.remoteRunning = true;
+    void this.setRunning(true);
+    this.remotePoll = setInterval(() => void this.pollRemoteRun(), 5_000);
+  }
+
+  private stopWatchingRemoteRun(): void {
+    if (this.remotePoll) clearInterval(this.remotePoll);
+    this.remotePoll = undefined;
+    if (this.remoteRunning) {
+      this.remoteRunning = false;
+      void this.setRunning(!!this.streamId);
+    }
+  }
+
+  private async pollRemoteRun(): Promise<void> {
+    const agent = this.selectedAgent;
+    const interactionId = this.interactionId;
+    if (!agent || !interactionId) return this.stopWatchingRemoteRun();
+    try {
+      const snapshot = await this.service.request<ConversationSnapshot>('history/snapshot', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        workflowName: agent.workflowName,
+        interactionId,
+      });
+      if (snapshot.running) return;
+      // 끝났다 — 이 대화가 화면에서 바뀌지 않았을 때만 다시 그린다.
+      if (this.interactionId !== interactionId) return this.stopWatchingRemoteRun();
+      this.stopWatchingRemoteRun();
+      this.messages = (snapshot.turns ?? []).flatMap((turn) => [
+        message('user', '나', turn.input),
+        message('assistant', agent.workflowName, turn.output),
+      ]);
+      this.status = undefined;
+      this.postState();
+    } catch {
+      // 서버에 못 닿았다 — 다음 회차에 다시 본다. 폴링 실패로 화면을 깨지 않는다.
+    }
+  }
+
   private async setRunning(running: boolean): Promise<void> {
     await vscode.commands.executeCommand('setContext', 'xgenDex.chatRunning', running);
   }
@@ -568,7 +657,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       agentTotal: this.agentTotal,
       agent: this.selectedAgent,
       messages: this.messages,
-      running: !!this.streamId,
+      running: !!this.streamId || this.remoteRunning,
       refreshing: this.refreshing,
       status: this.status,
       error: this.error,

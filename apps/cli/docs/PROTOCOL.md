@@ -110,6 +110,12 @@ Bridge 연결 상태가 바뀌면 다음 notification을 전송합니다.
 
 - `history/conversations({profile?})`
 - `history/turns({profile?, workflowId, workflowName?, interactionId})`
+- `history/snapshot({profile?, workflowId, workflowName?, interactionId})` → `{turns, running}`
+
+`running` 은 **그 대화에 지금 도는 턴이 있는가**입니다. 서버 실행은 연결이 아니라
+대화에 매여 있어서, 웹에서 시작한 턴이 이 클라이언트를 켠 순간에도 돌 수 있습니다.
+화면을 복원할 때 이 값을 읽지 않으면 대화가 끝난 것처럼 보이고, 그 위에 새 턴을
+보내 같은 대화에서 두 실행이 겹칩니다.
 
 ### Chat
 
@@ -158,11 +164,24 @@ Terminal notifications:
 {"jsonrpc":"2.0","method":"chat/error","params":{"streamId":"b4df...","error":{"code":"network_error","message":"..."}}}
 ```
 
-Cancel request:
+Cancel / stop requests — **다른 일입니다**:
 
 ```json
 {"jsonrpc":"2.0","id":21,"method":"chat/cancel","params":{"streamId":"b4df..."}}
+{"jsonrpc":"2.0","id":22,"method":"chat/stop","params":{"streamId":"b4df..."}}
 ```
+
+- `chat/cancel` — 이 스트림을 **그만 봅니다**. 서버 실행은 계속됩니다. 새 대화를
+  열거나 화면을 닫을 때 쓰세요.
+- `chat/stop` — 사람이 누른 [정지]. 스트림에서 손을 떼고 **서버 실행도** 멈춥니다
+  (`POST /api/agentflow/execute/stop/{interactionId}`). `streamId` 없이
+  `interactionId` 만 줘도 되며, 그러면 다른 기기에서 시작한 턴도 멈춥니다.
+  응답은 `{cancelled, stopped, reason?}` — `reason` 은 `not_running`(멈출 것이
+  없었음) · `elsewhere`(다른 서버 파드가 도는 턴) · `error`(서버 미도달).
+
+`chat/cancel` 이 서버 실행을 멈추지 않는 이유: 서버는 더 이상 연결 끊김을 취소로
+읽지 않습니다. 그렇게 읽던 시절에는 화면 잠금·절전·기기 이동이 곧 실행 중단이었고,
+사용자는 [정지] 를 누른 적이 없었습니다.
 
 ## Errors
 

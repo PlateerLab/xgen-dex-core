@@ -228,6 +228,31 @@ export interface HistoryTurn {
   updatedAt: string;
 }
 
+/**
+ * 한 대화의 지금 상태 — 지난 턴들과 **지금 도는 턴이 있는가**.
+ *
+ * 실행은 연결이 아니라 대화에 매여 있으므로, 다른 기기에서 시작한 턴도 여기서
+ * 보인다. 이 값이 없으면 앱을 옮겨 들어온 사용자에게 대화가 끝난 것처럼 보이고,
+ * 그 위에 새 턴을 보내 같은 대화에서 두 실행이 겹친다.
+ */
+export interface ConversationSnapshot {
+  turns: HistoryTurn[];
+  /** 이 대화에서 지금 도는 턴이 있는가 (어느 기기·어느 파드에서든). */
+  running: boolean;
+}
+
+/** [정지] 요청의 결과. `stopped=false` 는 실패가 아니라 사실의 종류다. */
+export interface ChatStopResult {
+  stopped: boolean;
+  /**
+   * - `not_running` — 멈출 것이 없었다 (이미 끝났다).
+   * - `elsewhere` — 다른 서버 파드가 돌리는 턴이라 여기서 못 멈춘다.
+   * - `error` — 서버에 닿지 못했다.
+   */
+  reason?: 'not_running' | 'elsewhere' | 'error';
+  detail?: string;
+}
+
 /** A past conversation (interaction) for the sidebar. */
 export interface Conversation {
   id: number;

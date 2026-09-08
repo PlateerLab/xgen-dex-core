@@ -187,6 +187,13 @@ export class ChatApi {
     const reader = (body as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const parser = new SseParser();
+    /**
+     * 터미널 프레임(`end` / `error`)을 봤는가.
+     *
+     * 이 한 비트가 "끝났다" 와 "끊겼다" 를 가른다. 없으면 둘이 똑같이 보이고,
+     * 그때 받다 만 텍스트가 최종 답이 되거나 멀쩡히 도는 턴이 실패로 표시된다.
+     */
+    let terminal = false;
     try {
       for (;;) {
         const { value, done } = await reader.read();
@@ -195,6 +202,7 @@ export class ChatApi {
         for (const f of frames) {
           const ev = frameToChatEvent(f.event, f.data);
           if (ev) {
+            if (ev.kind === 'end' || ev.kind === 'error') terminal = true;
             yield ev;
             if (ev.kind === 'end') return;
           }
@@ -202,8 +210,19 @@ export class ChatApi {
       }
       for (const f of parser.flush()) {
         const ev = frameToChatEvent(f.event, f.data);
-        if (ev) yield ev;
+        if (ev) {
+          if (ev.kind === 'end' || ev.kind === 'error') terminal = true;
+          yield ev;
+        }
       }
+      // 본문이 터미널 프레임 없이 끝났다 — 게이트웨이의 1시간 컷, 프록시, 절전,
+      // 네트워크 전환. 서버의 그 턴은 **계속 돌고 있다.**
+      if (!terminal) yield { kind: 'detached', reason: 'stream_closed' };
+    } catch (e) {
+      // 취소(AbortSignal)는 사용자가 이 스트림을 그만 보겠다는 뜻이라 그대로 던진다.
+      // 그 밖의 전송 오류는 끊김이다 — 같은 규약으로 분리를 알린다.
+      if ((e as { name?: string })?.name === 'AbortError') throw e;
+      yield { kind: 'detached', reason: 'network' };
     } finally {
       try {
         reader.releaseLock();
@@ -221,12 +240,23 @@ export class ChatApi {
     req: ChatRequest,
     onEvent?: (e: ChatEvent) => void,
     signal?: AbortSignal,
-  ): Promise<{ text: string; tools: ToolEvent[]; error?: string; executionIoId?: number }> {
+  ): Promise<{
+    text: string;
+    tools: ToolEvent[];
+    error?: string;
+    executionIoId?: number;
+    /**
+     * 스트림이 끊겼고 **그 턴은 서버에서 계속 돈다.** 이때 `text` 는 받다 만
+     * 조각이지 답이 아니다 — 최종 답은 히스토리로 온다.
+     */
+    detached?: boolean;
+  }> {
     let text = '';
     let summary = '';
     const tools: ToolEvent[] = [];
     let error: string | undefined;
     let executionIoId: number | undefined;
+    let detached = false;
     for await (const e of this.stream(req, signal)) {
       onEvent?.(e);
       if (e.kind === 'text') text += e.content;
@@ -234,7 +264,14 @@ export class ChatApi {
       else if (e.kind === 'tool') tools.push(e.event);
       else if (e.kind === 'execution_io') executionIoId = e.executionIoId;
       else if (e.kind === 'error') error = e.detail;
+      else if (e.kind === 'detached') detached = true;
     }
-    return { text: text || summary, tools, error, executionIoId };
+    return {
+      text: text || summary,
+      tools,
+      error,
+      executionIoId,
+      ...(detached ? { detached: true } : {}),
+    };
   }
 }

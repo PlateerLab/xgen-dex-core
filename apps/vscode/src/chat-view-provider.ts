@@ -465,6 +465,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     else if (event.kind === 'quota') this.messages.push(message('system', '사용량', `사용량 ${event.level}`));
     else if (event.kind === 'error') this.messages.push(message('system', '시스템', event.detail));
     else if (event.kind === 'status') this.status = event.detail || event.reason || event.surface;
+    else if (event.kind === 'detached') {
+      // 스트림이 끊겼을 뿐 서버의 턴은 계속 돈다(게이트웨이 1시간 컷·프록시·절전).
+      // 이 스트림은 놓되 [진행 중] 은 유지하고, 완결은 대화 소켓으로 받는다.
+      this.streamId = undefined;
+      this.status = '연결이 끊겼습니다 — 서버에서 계속 진행 중입니다.';
+      this.watchRemoteRun();
+    }
     this.scheduleState();
   }
 

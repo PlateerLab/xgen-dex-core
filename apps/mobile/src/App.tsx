@@ -1063,6 +1063,16 @@ function ChatSection({
           setRunning(false);
           setMessages((prev) => [...prev, { role: 'error', text: message }]);
         },
+        // 끊김은 실패가 아니다 — 폰이 잠기거나 지하철에 들어가거나 게이트웨이가
+        // 시간 제한으로 자른 것이고, 서버의 턴은 계속 돈다. 오류를 그리지 않고
+        // [진행 중] 을 유지한 채 재연결에 맡긴다.
+        onDetached: () => {
+          runningElsewhereRef.current = true;
+          setRunning(true);
+          setMessages((prev) =>
+            prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+          );
+        },
       },
     });
     chatRef.current = handle;

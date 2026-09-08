@@ -37,6 +37,13 @@ export interface ExecCallbacks {
   onTool?: (ev: { eventType: string; toolName?: string; error?: string }) => void;
   onEnd?: () => void;
   onError?: (message: string) => void;
+  /**
+   * 스트림이 끊겼다 — **실패가 아니다.** 서버의 그 턴은 계속 돈다.
+   *
+   * 받는 쪽이 할 일: 오류를 그리지 말고 [진행 중] 을 유지한다. 재연결이 상태를
+   * 다시 확인하고(subscribed.running), 그 사이 끝난 턴은 완결 push 로 온다.
+   */
+  onDetached?: () => void;
 }
 
 /** 서버가 push 한 완결 턴 — Job/sub-agent 트리거의 반응이 대표다.
@@ -188,6 +195,22 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     p.reject(new Error(msg));
   };
 
+  /**
+   * 진행 중이던 턴을 **실패시키지 않고** 놓는다.
+   *
+   * 이 스트림은 여기서 끝나지만 서버의 턴은 계속 돈다. 그래서 promise 는 정상
+   * 종료시키고(호출부가 예외를 오류로 그리지 않도록), running 은 켜 둔다 —
+   * 재연결이 상태를 다시 확인하고 완결 턴은 push 로 온다.
+   */
+  const detachPending = (): void => {
+    if (!pending) return;
+    const p = pending;
+    pending = null;
+    p.cb.onDetached?.();
+    opts.onRunning?.(true);
+    p.resolve();
+  };
+
   const scheduleReconnect = (): void => {
     if (closedByUser || state === 'unsupported') return;
     if (attempts >= RECONNECT_MAX_ATTEMPTS) {
@@ -289,7 +312,16 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     };
     ws.onclose = (evt: CloseEvent) => {
       opts.log?.(`채팅 WS 종료 code=${evt?.code ?? '?'} (${opts.workflowId})`);
-      if (pending) failPending('연결이 끊어졌습니다.');
+      // 소켓이 끊겼다고 **턴이 실패한 것이 아니다.** 서버 실행은 연결이 아니라
+      // 대화에 매여 있어서 그 턴은 계속 돈다 — 사용자가 [정지] 를 누르지 않는 한.
+      //
+      // 예전에는 여기서 곧장 실패로 접었다. 폰이 잠기거나 지하철에 들어가거나
+      // 게이트웨이가 시간 제한으로 자르면, 멀쩡히 도는 턴이 "연결이 끊어졌습니다"
+      // 로 끝난 것처럼 보였고 진짜 답은 아무 데도 안 보였다.
+      //
+      // 이제 분리로 알리고 재연결에 맡긴다. 다시 붙으면 subscribed 가 running 을
+      // 다시 보고하고, 그 사이 끝난 턴은 완결 push(message)로 도착한다.
+      if (pending) detachPending();
       if (!closedByUser) scheduleReconnect();
     };
   };

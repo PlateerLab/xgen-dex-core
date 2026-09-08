@@ -703,6 +703,20 @@ export class SessionStore {
       let streaming = s.streaming;
       let error = s.error;
       let unseen = s.unseen;
+      let remote = s.remote;
+      if (ev.kind === 'detached') {
+        // 스트림이 끊겼을 뿐, **그 턴은 서버에서 계속 돈다.** 여기서 끝난 것으로
+        // 표시하면 받다 만 조각이 최종 답이 되고, 실제 답은 다음 새로고침까지
+        // 아무 데도 안 보인다 — 2026-09-08 의 76분짜리 턴이 그렇게 사라졌다.
+        //
+        // 스트림 소유권만 내려놓고 '다른 곳에서 진행 중' 으로 넘긴다. 그 상태를
+        // 지켜보는 것은 이미 붙어 있는 대화 소켓이고(setRemoteRunning /
+        // applyExternalTurn), 완결된 턴이 오면 그때 답이 채워진다.
+        streaming = false;
+        remote = true;
+        nl.streaming = false;
+        nl.surfaceNote = '연결이 끊겼습니다 — 서버에서 계속 진행 중입니다.';
+      }
       if (ev.kind === 'end' || ev.kind === 'error') {
         streaming = false;
         nl.streaming = false;
@@ -712,9 +726,13 @@ export class SessionStore {
         unseen = this._active !== key;
       }
       messages[messages.length - 1] = nl;
-      return { ...s, messages, streaming, error, unseen, updatedAt: this.now() };
+      return { ...s, messages, streaming, remote, error, unseen, updatedAt: this.now() };
     });
-    if (ev.kind === 'end' || ev.kind === 'error') rt.cancel = null;
+    if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
+      rt.cancel = null;
+      // 분리된 턴을 멈추는 길은 남겨 둔다 — [정지] 는 스트림이 아니라 대화를 향한다.
+      if (ev.kind !== 'detached') rt.stopServer = null;
+    }
     this.emit();
   }
 

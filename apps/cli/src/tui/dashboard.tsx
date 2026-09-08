@@ -387,11 +387,16 @@ export function Dashboard(props: {
       );
       const active = new AbortController();
       controller.current = active;
+      let detached = false;
       for await (const event of props.engine.chat(resolved, active.signal)) {
+        if (event.kind === 'detached') detached = true;
         dispatch({ type: 'event_received', event });
       }
       if (active.signal.aborted) dispatch({ type: 'turn_cancelled' });
-      else dispatch({ type: 'turn_completed' });
+      // 분리는 종료가 아니다 — reducer 가 이미 [진행 중] 으로 넘겼고, 대화 소켓이
+      // 완결 턴을 밀어 주면 그때 답이 채워진다. 여기서 turn_completed 를 보내면
+      // 그 상태를 도로 꺼 버린다.
+      else if (!detached) dispatch({ type: 'turn_completed' });
     } catch (error) {
       if (controller.current?.signal.aborted) dispatch({ type: 'turn_cancelled' });
       else dispatch({ type: 'turn_failed', message: publicError(error).message });

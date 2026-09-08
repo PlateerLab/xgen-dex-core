@@ -718,3 +718,58 @@ test('내 스트림이 도는 동안의 소켓 running 은 [다른 곳] 이 아�
   store.setRemoteRunning(key, true)
   assert.equal(store.get(key)?.remote, false)
 })
+
+// ── 끊겨도 끝난 것이 아니다 ────────────────────────────────────────────
+//
+// 게이트웨이는 스트리밍 응답을 1시간에 자른다. 프록시·절전·네트워크 전환도 같은
+// 모양으로 끊는다. 그때 서버의 턴은 **계속 돈다** — 실행은 연결이 아니라 대화에
+// 매여 있기 때문이다.
+//
+// 예전에는 그 끊김이 `end` 와 구분되지 않아, 받다 만 조각이 최종 답이 되고
+// 화면은 조용히 멈췄다(2026-09-08, 76분짜리 턴).
+
+test('스트림이 끊기면 실패가 아니라 [다른 곳에서 진행 중] 으로 넘어간다', async () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '오래 걸리는 일')
+  await flush()
+  streams[0].onEvent({ kind: 'text', content: '중간까지 받은 조각' })
+
+  streams[0].onEvent({ kind: 'detached', reason: 'stream_closed' })
+
+  const s = store.get(key)!
+  assert.equal(s.streaming, false, '이 스트림은 놓는다')
+  assert.equal(s.remote, true, '그러나 턴은 아직 돈다')
+  const last = s.messages[s.messages.length - 1]
+  assert.equal(last.error, undefined, '끊김은 오류가 아니다')
+  assert.match(String(last.surfaceNote), /계속 진행/)
+
+  // 작성기는 잠겨 있어야 한다 — 도는 턴 위에 새 턴을 얹으면 둘이 겹친다.
+  store.send(key, '겹쳐 보내기')
+  await flush()
+  assert.equal(streams.length, 1, '분리 중에 새 스트림이 열렸다')
+
+  // 끝나면 완결 push 가 답을 채운다 (대화 소켓).
+  store.applyExternalTurn({
+    interactionId: key,
+    ioId: 3,
+    input: '오래 걸리는 일',
+    output: '진짜 최종 답',
+    source: 'user',
+  })
+  const after = store.get(key)!
+  assert.equal(after.remote, false)
+  assert.equal(after.messages[after.messages.length - 1].text, '진짜 최종 답')
+})
+
+test('정상 종료는 그대로 종료다 — 분리와 섞이지 않는다', async () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '금방 끝나는 일')
+  await flush()
+  streams[0].onEvent({ kind: 'text', content: '답' })
+  streams[0].onEvent({ kind: 'end' })
+  const s = store.get(key)!
+  assert.equal(s.streaming, false)
+  assert.equal(s.remote, false, '끝난 턴을 진행 중으로 두면 작성기가 영영 잠긴다')
+})

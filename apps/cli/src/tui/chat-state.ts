@@ -125,6 +125,16 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
       ],
     };
   }
+  if (event.kind === 'detached') {
+    // 스트림이 끊겼을 뿐 서버의 턴은 계속 돈다. 끝난 것으로 표시하면 받다 만
+    // 조각이 최종 답이 되고, 진짜 답은 아무 데도 안 보인다.
+    return {
+      ...state,
+      running: true,
+      remote: true,
+      status: '연결이 끊겼습니다 — 서버에서 계속 진행 중',
+    };
+  }
   if (event.kind === 'end') return { ...state, running: false, remote: false, status: undefined };
   return state;
 }

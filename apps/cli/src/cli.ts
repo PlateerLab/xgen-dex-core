@@ -268,8 +268,10 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
     void engine.stopChat(resolved.interactionId, resolved.profile).catch(() => undefined);
   };
   process.once('SIGINT', onInterrupt);
+  let detached = false;
   try {
     for await (const event of engine.chat(resolved, controller.signal)) {
+      if (event.kind === 'detached') detached = true;
       if (jsonl) {
         stdout.write(`${JSON.stringify(event)}\n`);
       } else if (event.kind === 'text') {
@@ -282,6 +284,14 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
       }
     }
     if (!jsonl) stdout.write('\n');
+    if (detached && !jsonl) {
+      // 끊겼을 뿐 서버의 턴은 계속 돈다. 위에 찍힌 것은 받다 만 조각이지 답이
+      // 아니다 — 그걸 말해 주지 않으면 잘린 답을 최종 답으로 읽는다.
+      stderr.write(
+        `\n[연결이 끊겼습니다 — 서버에서 계속 진행 중입니다]\n` +
+          `  결과 보기: dex chat --agent ${resolved.workflowId} --interaction ${resolved.interactionId}\n`,
+      );
+    }
   } finally {
     process.off('SIGINT', onInterrupt);
     engine.stopLocalTools();

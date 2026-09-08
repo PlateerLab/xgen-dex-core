@@ -159,6 +159,15 @@ export class ConversationWatchHub {
         this.unwatch(interactionId);
         return;
       }
+      if (frame?.type === 'heartbeat') {
+        // 하트비트가 **현재 사실**을 되풀이해 말한다 — 지금 도는 턴이 있는가.
+        // subscribed(구독 시점)와 message(완결) 사이가 비어 있어, 스트림이
+        // 분리된 뒤 다른 기기에서 새로 시작된 턴을 놓치던 자리다.
+        if (typeof frame.data?.running === 'boolean') {
+          this.onRunning?.(interactionId, frame.data.running === true);
+        }
+        return;
+      }
       if (frame?.type === 'subscribed') {
         // 서버가 구독 확립과 함께 "지금 도는 턴이 있는가" 를 알려 준다.
         this.onRunning?.(interactionId, frame.data?.running === true);

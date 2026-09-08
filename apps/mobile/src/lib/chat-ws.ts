@@ -253,6 +253,15 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       } catch {
         return;
       }
+      if (frame.type === 'heartbeat') {
+        // 하트비트가 **현재 사실**을 되풀이해 말한다 — 지금 도는 턴이 있는가.
+        // subscribed 는 구독 시점만, message 는 완결만 알려 줘서, 그 사이에
+        // 다른 기기에서 새로 시작된 턴을 놓치던 자리다.
+        if (typeof (frame.data as { running?: unknown } | undefined)?.running === 'boolean') {
+          opts.onRunning?.((frame.data as { running: boolean }).running);
+        }
+        return;
+      }
       if (frame.type === 'subscribed') {
         subscribed = true;
         setState('connected');

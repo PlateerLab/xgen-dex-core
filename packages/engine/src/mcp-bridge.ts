@@ -304,6 +304,13 @@ export class McpBridge {
         if (this.ws === ws) this.ws = null;
         try {
           ws.removeAllListeners();
+          // 위 두 곳(stop·reconnect)과 **같은 이유**로 삼킬 핸들러를 다시 단다.
+          // 여기가 특히 잘 터지는 자리다: unexpected-response 는 핸드셰이크가
+          // HTTP 로 떨어졌다는 뜻이라 소켓이 아직 CONNECTING 이고, 그 상태에서
+          // close() 하면 ws 가 'error' 를 낸다. 리스너를 다 뗀 뒤라 받을 사람이
+          // 없고, EventEmitter 의 미처리 'error' 는 **던진다** — 앱에서는 main
+          // 프로세스가 죽고, CI 에서는 관계없는 테스트가 무작위로 깨졌다.
+          ws.on('error', () => undefined);
           ws.close();
         } catch {
           /* ignore */

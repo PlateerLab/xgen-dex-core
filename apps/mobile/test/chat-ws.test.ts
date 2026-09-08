@@ -99,16 +99,42 @@ test('unsupported — geny 아님은 재접속 없이 명확히 종료', async (
   chat.close();
 });
 
-test('실행 중 연결 단절 — 실행은 오류로 끝나고 원인이 전달된다', async () => {
+test('실행 중 연결 단절 — 실패가 아니라 분리다 (턴은 서버에서 계속 돈다)', async () => {
+  /**
+   * 예전에는 여기서 곧장 실패로 접었다 — `onError('연결이 끊어졌습니다.')` +
+   * promise reject. 그런데 서버 실행은 연결이 아니라 **대화**에 매여 있어서,
+   * 폰이 잠기거나 지하철에 들어가거나 게이트웨이가 시간 제한으로 자른 뒤에도
+   * 그 턴은 계속 돈다. 실패로 접으면 멀쩡히 도는 턴이 끝난 것처럼 보이고,
+   * 진짜 답은 아무 데도 안 보인다(2026-09-08 실측).
+   *
+   * 이제: 오류 없음, promise 는 정상 종료, running 은 켜진 채로 재연결에 맡긴다.
+   */
   const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
-  const chat = makeChat(got);
+  const detached: number[] = [];
+  const running: boolean[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-cut',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onRunning: (r) => running.push(r),
+    callbacks: {
+      onData: (t) => got.data.push(t),
+      onError: (m) => got.errors.push(m),
+      onDetached: () => detached.push(1),
+    },
+  });
   const ws = FakeWs.last as FakeWs;
   ws.open();
   ws.recv({ type: 'subscribed' });
   const done = chat.execute('질문');
   ws.close();
-  await assert.rejects(done);
-  assert.deepEqual(got.errors, ['연결이 끊어졌습니다.']);
+
+  await done; // 던지지 않는다 — 실패가 아니다
+  assert.deepEqual(got.errors, [], '끊김을 오류로 그리면 안 된다');
+  assert.deepEqual(detached, [1], '분리를 알려야 화면이 [진행 중] 을 유지한다');
+  assert.equal(running.at(-1), true, '턴은 아직 돈다');
   chat.close();
 });
 

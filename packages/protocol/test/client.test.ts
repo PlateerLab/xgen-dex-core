@@ -8,6 +8,7 @@ import { XgenClient } from '@dex/protocol';
 // 그 계층만 직접 세워 본다(index 는 이 둘을 밖으로 내보내지 않는다).
 import { AgentDataApi } from '../src/agent-data';
 import { HttpClient } from '../src/client';
+import { ChatApi } from '../src/chat';
 
 /**
  * A tiny mock of the XGEN gateway that implements exactly the endpoints the
@@ -305,3 +306,74 @@ test('선언된 path 에 이미 쿼리가 있으면 & 로 잇는다', async () =
   await api.artifactCallApi([{ alias: 'c', path: '/api/list', method: 'GET' }], 'c');
   assert.ok(seen[2].endsWith('/api/list'), seen[2]);
 });
+
+// ── 끊김은 종료가 아니다 ───────────────────────────────────────────────
+//
+// 게이트웨이는 스트리밍 응답을 1시간에 자른다(proxy.rs). 절전·네트워크 전환·
+// 프록시도 같은 모양으로 끊는다. 그때 서버의 턴은 **계속 돈다** — 실행은 연결이
+// 아니라 대화에 매여 있기 때문이다.
+//
+// 예전에는 구분할 방법이 없었다: 본문이 그냥 끝나면 `end` 와 똑같이 보였고
+// (받다 만 텍스트가 최종 답이 됐다), 예외로 떨어지면 오류로 보였다(멀쩡히 도는
+// 턴이 실패로 표시됐다). 2026-09-08 의 76분짜리 턴이 그렇게 사라졌다.
+
+function sseStream(chunks: string[], { cut = false } = {}): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const c of chunks) controller.enqueue(enc.encode(c));
+      if (cut) controller.error(new TypeError('network error'));
+      else controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+function chatApi(res: Response): ChatApi {
+  const http = new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async () => res,
+  });
+  return new ChatApi(http);
+}
+
+test('터미널 프레임 없이 본문이 끝나면 분리다 (종료 아님)', async () => {
+  const api = chatApi(sseStream(['data: {"type":"data","content":"절반"}\n\n']));
+  const seen: string[] = [];
+  for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' })) {
+    seen.push(e.kind);
+  }
+  assert.deepEqual(seen, ['text', 'detached'])
+})
+
+test('전송이 끊겨도(ERR_INCOMPLETE_CHUNKED_ENCODING) 분리다 — 실패가 아니다', async () => {
+  const api = chatApi(sseStream(['data: {"type":"data","content":"절반"}\n\n'], { cut: true }));
+  const seen: string[] = [];
+  // **던지지 않는 것**이 핵심이다 — 던지면 호출부가 오류로 그리고, 멀쩡히 도는
+  // 턴이 실패로 표시된다. (스트림이 error 로 닫히면 큐에 있던 청크는 버려질 수
+  // 있으므로 text 가 오는지는 여기서 고정하지 않는다 — 하네스 사정이다.)
+  for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' })) {
+    seen.push(e.kind);
+  }
+  assert.equal(seen.at(-1), 'detached', `분리로 끝나야 한다: ${seen.join(',')}`)
+  assert.ok(!seen.includes('error'), '끊김을 오류 이벤트로 바꾸면 안 된다')
+})
+
+test('end 를 받았으면 분리가 아니다 — 둘이 섞이면 안 된다', async () => {
+  const api = chatApi(
+    sseStream(['data: {"type":"data","content":"답"}\n\n', 'data: {"type":"end"}\n\n']),
+  );
+  const seen: string[] = [];
+  for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' })) {
+    seen.push(e.kind);
+  }
+  assert.deepEqual(seen, ['text', 'end'])
+})
+
+test('complete() 는 분리를 결과에 싣는다 — text 는 답이 아니라 조각이다', async () => {
+  const api = chatApi(sseStream(['data: {"type":"data","content":"조각"}\n\n']));
+  const out = await api.complete({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' });
+  assert.equal(out.detached, true);
+  assert.equal(out.error, undefined, '끊김은 오류가 아니다');
+  assert.equal(out.text, '조각');
+})

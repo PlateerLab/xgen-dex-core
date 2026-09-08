@@ -433,10 +433,15 @@ export class DexRpcServer {
     controller: AbortController,
   ): Promise<void> {
     try {
+      let detached = false;
       for await (const event of this.engine.chat(input, controller.signal)) {
+        if (event.kind === 'detached') detached = true;
         this.notify('chat/event', { streamId, event });
       }
-      this.notify('chat/complete', { streamId, interactionId: input.interactionId });
+      // 분리는 완료가 아니다. `chat/complete` 를 보내면 받는 쪽이 "끝났다" 로 읽어
+      // [진행 중] 을 꺼 버리는데, 서버의 그 턴은 계속 돌고 있다. 분리 사실은 이미
+      // chat/event 로 나갔으니 여기서는 아무 말도 하지 않는다.
+      if (!detached) this.notify('chat/complete', { streamId, interactionId: input.interactionId });
     } catch (error) {
       const exposed = publicError(error);
       this.notify('chat/error', { streamId, error: exposed });

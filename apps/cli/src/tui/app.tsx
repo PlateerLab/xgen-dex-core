@@ -8,6 +8,7 @@ import { LoginScreen } from './login-screen';
 import type { TuiEngine, TuiSession } from './model';
 import { ProfileScreen } from './profile-screen';
 import { ServerScreen } from './server-screen';
+import type { LastChat } from './preferences';
 
 type Route = 'boot' | 'server' | 'login' | 'dashboard' | 'profiles' | 'fatal';
 
@@ -25,6 +26,9 @@ export function App({
     onHangulModeChange?: (enabled: boolean) => void;
     /** 한/영 키를 누르면 알려 준다. 되는 터미널에서만 온다. */
     onModeKey?: (listener: () => void) => () => void;
+    /** 지난 실행에서 마지막으로 보던 대화 — 아직 돌고 있으면 되찾는다. */
+    lastChat?: LastChat;
+    onLastChatChange?: (value: LastChat | undefined) => void;
   };
 }): React.ReactNode {
   const { exit } = useApp();

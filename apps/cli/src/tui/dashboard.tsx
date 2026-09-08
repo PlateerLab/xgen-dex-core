@@ -12,6 +12,7 @@ import { StartPanel } from './start-panel';
 import { AgentCreateScreen } from './agent-create';
 import { ImeTextInput } from './ime-text-input';
 import type { TuiEngine, TuiSession } from './model';
+import type { LastChat } from './preferences';
 import { useTerminalSize } from './use-terminal-size';
 
 interface AgentRef {
@@ -157,6 +158,9 @@ export function Dashboard(props: {
     hangulMode: boolean;
     onHangulModeChange?: (enabled: boolean) => void;
     onModeKey?: (listener: () => void) => () => void;
+    /** 지난 실행에서 마지막으로 보던 대화 — 아직 돌고 있으면 되찾는다. */
+    lastChat?: LastChat;
+    onLastChatChange?: (value: LastChat | undefined) => void;
   };
 }): React.ReactNode {
   const { exit } = useApp();
@@ -331,6 +335,61 @@ export function Dashboard(props: {
     setStart(undefined);
     setFocus('composer');
   };
+
+  /**
+   * 지금 보는 대화를 적어 둔다 — 터미널을 닫았다 다시 열 때 되찾을 자리.
+   *
+   * [새 대화] 로 비운 사이에는 지우지 않는다. 그때도 "마지막으로 보던 대화" 는
+   * 여전히 직전 그것이고, 새 대화는 첫 턴에서 제 값으로 덮는다.
+   */
+  useEffect(() => {
+    if (!chat.interactionId || !selected) return;
+    props.preferences?.onLastChatChange?.({
+      workflowId: selected.workflowId,
+      workflowName: selected.workflowName,
+      interactionId: chat.interactionId,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.interactionId, selected?.workflowId]);
+
+  /**
+   * 터미널을 닫았다 다시 연다 — 그때 **돌고 있던** 대화가 그대로 돌아온다.
+   *
+   * 끝난 대화는 열지 않는다. CLI 는 매번 새로 시작하는 자리라, 묻지도 않고 지난
+   * 대화를 펼치는 것은 놀라운 일이다. 되찾을 값이 있는 것은 아직 도는 실행뿐이고
+   * — 그건 열어 줘야 [진행 중] 과 Esc(정지) 가 돌아온다.
+   */
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    const last = props.preferences?.lastChat;
+    if (!last) return;
+    let alive = true;
+    void props.engine
+      .historySnapshot(last.workflowId, last.interactionId, last.workflowName, props.session.profile)
+      .then((snapshot) => {
+        // 그 사이 사용자가 직접 대화를 시작했으면 그쪽이 이긴다.
+        if (!alive || !snapshot.running || chatInteractionRef.current) return;
+        openHistory(
+          {
+            workflowId: last.workflowId,
+            workflowName: last.workflowName,
+            interactionId: last.interactionId,
+            interactionCount: snapshot.turns.length,
+            createdAt: '',
+            updatedAt: '',
+          } as Conversation,
+          snapshot,
+        );
+      })
+      // 서버에 못 닿았다 — 되찾기 실패로 화면을 막지 않는다.
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * 사람이 누른 [정지] (Esc) — 스트림에서 손을 떼고 **서버 실행도** 멈춘다.

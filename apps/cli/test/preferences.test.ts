@@ -96,3 +96,56 @@ test('쓸 수 없는 곳이어도 던지지 않는다', async () => {
     assert.deepEqual(await readPreferences({ ...blocked, LANG: 'ko_KR.UTF-8' }), { hangulMode: true });
   });
 });
+
+/**
+ * 마지막 대화 — 터미널을 닫았다 다시 열 때 되찾을 자리.
+ *
+ * CLI 는 매 실행이 새 프로세스라, 기억해 둘 곳이 없으면 진행 중이던 대화를
+ * 되찾을 방법 자체가 없다. 서버 실행은 연결이 아니라 대화에 매여 있으므로
+ * workflowId + interactionId 만 있으면 충분하다.
+ */
+test('마지막 대화를 기억하고 되읽는다', async () => {
+  await withHome(async (env) => {
+    const last = { workflowId: 'wf-1', workflowName: '봇', interactionId: 'int-1' };
+    await writePreferences({ lastChat: last }, env);
+    assert.deepEqual((await readPreferences(env)).lastChat, last);
+  });
+});
+
+test('한/영을 바꿔도 마지막 대화가 지워지지 않는다', async () => {
+  // 통째로 덮어쓰던 시절의 버그: 서로 아무 관계 없는 두 값이 같은 파일에 산다는
+  // 이유만으로, 한/영 토글 한 번에 되찾을 대화가 사라졌다.
+  await withHome(async (env) => {
+    const last = { workflowId: 'wf-1', workflowName: '봇', interactionId: 'int-1' };
+    await writePreferences({ lastChat: last }, env);
+    await writePreferences({ hangulMode: true }, env);
+    const saved = await readPreferences(env);
+    assert.deepEqual(saved.lastChat, last);
+    assert.equal(saved.hangulMode, true);
+  });
+});
+
+test('마지막 대화를 명시적으로 비우면 지워진다', async () => {
+  await withHome(async (env) => {
+    await writePreferences(
+      { lastChat: { workflowId: 'wf-1', workflowName: '봇', interactionId: 'int-1' } },
+      env,
+    );
+    await writePreferences({ lastChat: undefined }, env);
+    assert.equal((await readPreferences(env)).lastChat, undefined);
+  });
+});
+
+test('반쪽짜리 기록은 없는 것으로 본다', async () => {
+  // interactionId 없이 workflowId 만 있으면 되찾을 대화를 특정할 수 없다.
+  await withHome(async (env) => {
+    await writeFile(
+      preferencesPath(env),
+      JSON.stringify({ hangulMode: true, lastChat: { workflowId: 'wf-1' } }),
+      'utf8',
+    );
+    const saved = await readPreferences(env);
+    assert.equal(saved.lastChat, undefined);
+    assert.equal(saved.hangulMode, true);
+  });
+});

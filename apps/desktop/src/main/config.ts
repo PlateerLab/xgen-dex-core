@@ -147,6 +147,15 @@ export interface ConnectorConfig {
     sidebarCollapsed?: boolean;
     sidebarWidth?: number;
     workspaceLayout?: WorkspaceLayoutPersistConfig;
+    /**
+     * 저장된 배치를 만든 계정(userId).
+     *
+     * 배치에는 대화 탭이 들어 있고, 대화 탭에는 상대 에이전트의 이름이 붙는다.
+     * 계정이 바뀐 뒤에도 그대로 되살리면 남의 에이전트 이름이 탭 줄에 뜬다.
+     * 주인이 다르면 대화 탭만 버린다 — 창 크기·사이드바 같은 나머지는 이 PC 의
+     * 취향이므로 남긴다.
+     */
+    workspaceOwner?: string;
   };
   /**
    * Teams 로컬 상태. 서버는 "안 읽음" 을 세어 주지 않으므로(웹 Teams 도 항상 0)

@@ -109,12 +109,19 @@ function fallbackBrowserAgent(connection: BrowserConnectionEvent): Agent {
 export function layoutWithLiveSessions(
   current: WorkspaceLayout,
   sessions: ReturnType<typeof chatTabs>,
+  pendingRestore?: ReadonlySet<string>,
 ): WorkspaceLayout {
   const liveIds = new Set(sessions.map((session) => `chat:${session.key}`));
   let next = current;
   for (const group of current.groups) {
     for (const tab of group.tabs) {
-      if (tab.kind === 'chat' && !liveIds.has(tab.id)) next = removeWorkspaceTab(next, tab.id);
+      if (tab.kind !== 'chat' || liveIds.has(tab.id)) continue;
+      // 아직 되살리는 중인 탭은 살아 있지 않을 뿐 죽은 것이 아니다. 여기서
+      // 지우면 앱을 켤 때마다 저장된 대화 탭이 통째로 사라지고(스토어는 그때
+      // 비어 있다), 되살아난 뒤에는 원래 자리·분할이 아니라 포커스된 그룹 끝에
+      // 새로 붙는다 — 사용자가 짜 둔 배치가 재시작마다 무너진다.
+      if (pendingRestore?.has(tab.sessionKey ?? '')) continue;
+      next = removeWorkspaceTab(next, tab.id);
     }
   }
   for (const session of sessions) {
@@ -122,6 +129,55 @@ export function layoutWithLiveSessions(
     if (!findTab(next, tab.id)) next = addWorkspaceTab(next, next.focusedGroupId, tab);
   }
   return next;
+}
+
+/**
+ * 저장된 배치가 이 계정 것인가 — 아니면 대화 탭만 버린다.
+ *
+ * 대화 탭에는 상대 에이전트의 이름이 붙는다. 계정이 바뀐 뒤 그대로 되살리면 남의
+ * 에이전트 이름이 탭 줄에 뜬다(내용은 서버가 막지만, 이름은 이미 이 PC 에 있다).
+ * 창 크기·사이드바 같은 나머지는 이 PC 의 취향이므로 남긴다.
+ *
+ * 주인을 적기 전에 저장된 배치(undefined)는 이 계정 것으로 본다 — 업그레이드
+ * 한 번에 열어 두던 대화를 다 잃는 것이 더 나쁘다.
+ */
+export function layoutForOwner(
+  layout: WorkspaceLayout,
+  owner: string | undefined,
+  userId: string,
+): WorkspaceLayout {
+  if (owner === undefined || owner === userId) return layout;
+  let next = layout;
+  for (const group of layout.groups) {
+    for (const tab of group.tabs) {
+      if (tab.kind === 'chat') next = removeWorkspaceTab(next, tab.id);
+    }
+  }
+  return next;
+}
+
+/**
+ * 저장된 배치에 남아 있는 대화 탭들 — 앱을 켤 때 되살릴 목록.
+ *
+ * 탭은 `sessionKey`(=interactionId)와 `workflowId` 를 이미 들고 저장된다. 서버
+ * 실행은 연결이 아니라 대화에 매여 있으므로, 그 둘만 있으면 커넥터를 닫았다
+ * 켠 뒤에도 돌고 있던 턴을 그대로 되찾을 수 있다.
+ */
+export function restorableChats(
+  layout: WorkspaceLayout,
+): { workflowId: string; workflowName?: string; interactionId: string }[] {
+  const out: { workflowId: string; workflowName?: string; interactionId: string }[] = [];
+  for (const group of layout.groups) {
+    for (const tab of group.tabs) {
+      if (tab.kind !== 'chat' || !tab.sessionKey || !tab.workflowId) continue;
+      out.push({
+        workflowId: tab.workflowId,
+        workflowName: tab.workflowName,
+        interactionId: tab.sessionKey,
+      });
+    }
+  }
+  return out;
 }
 
 // activeKey 가 실제로 바뀔 때만(사이드바에서 새 대화를 열거나 기존 대화를 "이어보기"할 때)
@@ -147,7 +203,11 @@ export const Workspace: React.FC<{
   const [collapsed, setCollapsed] = useState(config.ui?.sidebarCollapsed ?? false);
   const [sidebarWidth, setSidebarWidth] = useState(clampWidth(config.ui?.sidebarWidth ?? 300));
   const [layout, setLayout] = useState<WorkspaceLayout>(() =>
-    normalizeWorkspaceLayout(config.ui?.workspaceLayout ?? newWorkspaceLayout()),
+    layoutForOwner(
+      normalizeWorkspaceLayout(config.ui?.workspaceLayout ?? newWorkspaceLayout()),
+      config.ui?.workspaceOwner,
+      user.userId,
+    ),
   );
   const [overlayOn, setOverlayOn] = useState(config.avatarOverlay ?? false);
   const [notice, setNotice] = useState('');
@@ -162,6 +222,12 @@ export const Workspace: React.FC<{
   const asideRef = useRef<HTMLElement | null>(null);
   const suppressClickRef = useRef(false);
   const notificationContextRef = useRef('');
+  // 앱을 켠 직후, 저장된 대화 탭은 아직 스토어에 없다(복원 effect 는 첫 렌더
+  // 뒤에 돈다). 그 한 패스 동안 이 대기표가 탭을 지킨다 — 없으면 저장된 배치가
+  // 지워진 뒤 다시 그려져 분할·순서·포커스가 재시작마다 무너진다.
+  const pendingRestoreRef = useRef<Set<string>>(
+    new Set(restorableChats(layout).map((entry) => entry.interactionId)),
+  );
 
   useEffect(() => {
     layoutRef.current = layout;
@@ -176,11 +242,12 @@ export const Workspace: React.FC<{
           sidebarCollapsed: collapsed,
           sidebarWidth,
           workspaceLayout: layout,
+          workspaceOwner: user.userId,
         },
       });
     }, 120);
     return () => clearTimeout(timer);
-  }, [sideView, collapsed, sidebarWidth, layout]);
+  }, [sideView, collapsed, sidebarWidth, layout, user.userId]);
 
   const pressView = useCallback(
     (view: SideView) => {
@@ -412,8 +479,22 @@ export const Workspace: React.FC<{
     [],
   );
 
+  // 앱을 켤 때 한 번: 저장된 배치에 남아 있던 대화를 되살린다. 사용자가 실수로
+  // 커넥터를 닫아도 서버 실행은 계속 돌기 때문에(정지는 연결이 아니라 대화를
+  // 향한다), 다시 켰을 때 그 대화가 열려 있어야 [진행 중]과 [정지]가 살아난다.
+  // 되살아난 세션은 대화 소켓 구독과 히스토리 조회로 running 을 받아 온다.
   useEffect(() => {
-    setLayout((current) => layoutWithLiveSessions(current, visibleSessions));
+    const entries = restorableChats(layoutRef.current);
+    if (entries.length) sessionStore.restore(entries);
+  }, []);
+
+  useEffect(() => {
+    // 되살아난 세션은 더 이상 '복원 대기'가 아니다. 히스토리가 비어 끝내
+    // 유지되지 않을 대화라면 여기서 대기표를 놓아야 탭이 정상적으로 정리된다.
+    for (const session of sessions) pendingRestoreRef.current.delete(session.key);
+    setLayout((current) =>
+      layoutWithLiveSessions(current, visibleSessions, pendingRestoreRef.current),
+    );
   }, [visibleSessions]);
 
   useEffect(() => {
@@ -609,6 +690,8 @@ export const Workspace: React.FC<{
   const closeTab = useCallback((tab: WorkspaceTab) => {
     setLayout((current) => removeWorkspaceTab(current, tab.id));
     if (tab.kind === 'chat' && tab.sessionKey) {
+      // 사용자가 닫은 탭은 되살릴 대상이 아니다 — 대기표를 먼저 거둔다.
+      pendingRestoreRef.current.delete(tab.sessionKey);
       sessionStore.endChat(tab.sessionKey);
       // 세션이 사라지면 그 세션에 매달린 Teams 문맥 설정도 함께 버린다.
       teamsContextStore.forgetSession(tab.sessionKey);

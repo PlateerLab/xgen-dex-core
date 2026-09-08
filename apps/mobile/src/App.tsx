@@ -59,6 +59,32 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type Section = 'chat' | 'agents' | 'settings';
 
+/** 앱을 껐다 켠 뒤 되찾을 대화가 적히는 자리. */
+const LAST_CHAT_KEY = 'last-chat';
+
+/**
+ * 복원한 대화의 자리표시 에이전트.
+ *
+ * 저장된 값이 아는 것은 workflowId 와 이름뿐이다 — 에이전트 목록을 기다렸다가
+ * 대화를 열면, 목록 조회가 느리거나 실패한 동안 진행 중인 실행이 화면에서
+ * 사라진다. 대화를 되찾는 데 필요한 것은 그 둘뿐이므로 나머지는 비워 둔다.
+ */
+const EMPTY_AGENT = {
+  id: 0,
+  workflowId: '',
+  workflowName: '',
+  nodeCount: 0,
+  isShared: false,
+  isDeployed: true,
+  isCompleted: true,
+  workflowType: 'canvas',
+  description: '',
+  username: '',
+  fullName: '',
+  createdAt: '',
+  updatedAt: '',
+} satisfies Agent;
+
 const SECTION_TITLE: Record<Section, string> = {
   chat: '현재 채팅',
   agents: '에이전트',
@@ -117,6 +143,9 @@ export default function App(): React.ReactElement {
   const bridgeRef = useRef<MobileToolBridge | null>(null);
 
   const [activeAgent, setActiveAgent] = useState<Agent | null>(null);
+  // 복원은 비동기라 setState 를 기다린다 — 그 사이 사용자가 대화를 열었는지
+  // 알려면 렌더와 무관한 현재값이 필요하다.
+  const activeAgentRef = useRef<Agent | null>(null);
   const [activeInteraction, setActiveInteraction] = useState('');
   const [chatWsState, setChatWsState] = useState<ChatWsState>('closed');
 
@@ -124,8 +153,11 @@ export default function App(): React.ReactElement {
     bridgeRef.current?.stop();
     await clearSession();
     await saveCredentials(null);
+    // 계정을 나가면 되찾을 대화도 없다 — 다음 사람이 남의 대화로 들어가지 않는다.
+    await AsyncStorage.removeItem(LAST_CHAT_KEY).catch(() => undefined);
     setClient(null);
     setActiveAgent(null);
+    activeAgentRef.current = null;
     setSection('agents');
   }, []);
 
@@ -255,11 +287,61 @@ export default function App(): React.ReactElement {
   );
 
   const openChat = useCallback((agent: Agent, interactionId?: string) => {
+    const iid = interactionId ?? newInteractionId(agent.workflowId);
     setActiveAgent(agent);
-    setActiveInteraction(interactionId ?? newInteractionId(agent.workflowId));
+    activeAgentRef.current = agent;
+    setActiveInteraction(iid);
     setSection('chat');
     setDrawer(false);
+    // 앱을 껐다 켰을 때 되찾을 자리. 되찾는 데 필요한 것은 이 셋뿐이다.
+    void AsyncStorage.setItem(
+      LAST_CHAT_KEY,
+      JSON.stringify({
+        workflowId: agent.workflowId,
+        workflowName: agent.workflowName,
+        interactionId: iid,
+      }),
+    );
   }, []);
+
+  /**
+   * 앱을 내렸다 다시 켜면 마지막 대화로 돌아온다.
+   *
+   * 서버 실행은 연결이 아니라 **대화**에 매여 있다 — 앱을 내린 사이에도 턴은
+   * 계속 돈다. 그 대화를 열지 않으면 진행 중인 실행이 화면에 없는 것과 같고,
+   * [중지]도 없다. 열기만 하면 대화 소켓의 `subscribed.running` 이 진행 상태를
+   * 다시 실어 온다 — 여기서 따로 물어볼 것이 없다.
+   */
+  useEffect(() => {
+    if (!client || activeAgentRef.current) return;
+    let cancelled = false;
+    void AsyncStorage.getItem(LAST_CHAT_KEY).then((raw) => {
+      // 그 사이 사용자가 직접 대화를 열었으면 그쪽이 이긴다.
+      if (cancelled || !raw || activeAgentRef.current) return;
+      try {
+        const saved = JSON.parse(raw) as {
+          workflowId?: string;
+          workflowName?: string;
+          interactionId?: string;
+        };
+        if (!saved.workflowId || !saved.interactionId) return;
+        const agent = {
+          ...EMPTY_AGENT,
+          workflowId: saved.workflowId,
+          workflowName: saved.workflowName || saved.workflowId,
+        } as Agent;
+        activeAgentRef.current = agent;
+        setActiveAgent(agent);
+        setActiveInteraction(saved.interactionId);
+        setSection('chat');
+      } catch {
+        /* 저장값이 깨졌다 — 목록에서 시작하면 된다 */
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   const go = useCallback((s: Section) => {
     setSection(s);

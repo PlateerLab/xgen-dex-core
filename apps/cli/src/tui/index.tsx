@@ -28,9 +28,11 @@ export async function runTui(engine: DexEngine): Promise<void> {
   const ime = imePolicy();
 
   // macOS 는 Caps Lock 으로 시스템 입력 소스를 바꾸고, 입력기가 만든 한글을 그대로
-  // 받는다. CLI 조합기의 저장 상태를 함께 켜면 OS 와 CLI 의 한/영 상태가 갈라진다.
-  // 그 밖의 OS 에서만 취향을 읽어 자체 두벌식 조합기를 복원한다.
-  const preferences = ime.native ? { hangulMode: false } : await readPreferences();
+  // 받는다. CLI 조합기의 저장 상태를 함께 켜면 OS 와 CLI 의 한/영 상태가 갈라지므로
+  // 거기서는 조합기만 끈다 — **파일 전체를 건너뛰지는 않는다.** 예전에는 그랬고,
+  // 그래서 macOS 에서는 마지막 대화 같은 다른 취향도 함께 사라졌다.
+  const stored = await readPreferences();
+  const preferences = ime.native ? { ...stored, hangulMode: false } : stored;
 
   // 한/영 키(오른쪽 Alt 자리)와 Caps Lock 은 글자를 만들지 않아 보통 앱에 오지
   // 않는다. 그 키들까지 보고하는 터미널인지 먼저 물어본다 — ink 은 kitty·ghostty·
@@ -54,6 +56,10 @@ export async function runTui(engine: DexEngine): Promise<void> {
           nativeIme: ime.native,
           imeShortcut: ime.shortcut,
           hangulMode: preferences.hangulMode,
+          // 지난 실행에서 보던 대화. 되찾을지는 화면이 정한다 — 아직 돌고 있는
+          // 대화만 자동으로 연다(끝난 대화를 멋대로 여는 것은 놀라운 일이다).
+          lastChat: preferences.lastChat,
+          onLastChatChange: (value) => void writePreferences({ lastChat: value }),
           ...(ime.native
             ? {}
             : {

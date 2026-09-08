@@ -33,6 +33,29 @@ import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
 
+/**
+ * 복원한 대화의 자리표시 에이전트.
+ *
+ * 저장된 탭이 아는 것은 `workflowId` 와 이름뿐이다 — 에이전트 목록을 기다렸다가
+ * 대화를 되살리면, 목록 조회가 느리거나 실패한 동안 진행 중인 실행이 화면에서
+ * 사라진다. 실행을 되찾는 데 필요한 것은 그 둘뿐이므로 나머지는 비워 둔다.
+ */
+const EMPTY_AGENT: Agent = {
+  id: 0,
+  workflowId: '',
+  workflowName: '',
+  nodeCount: 0,
+  isShared: false,
+  isDeployed: false,
+  isCompleted: true,
+  workflowType: 'canvas',
+  description: '',
+  username: '',
+  fullName: '',
+  createdAt: '',
+  updatedAt: '',
+};
+
 /** One rendered chat message (mirrors the old Chat.Msg shape). */
 export interface ChatMsg {
   role: 'user' | 'assistant';
@@ -241,10 +264,22 @@ export function mergeCitations(into: Citation[], add?: Citation[]): Citation[] {
   return out;
 }
 
-/** A session is worth keeping (listed, preserved on switch) once it has content
- *  or a live stream. A brand-new empty session is a throwaway. */
+/**
+ * A session is worth keeping (listed, preserved on switch) once it has content
+ * or a live stream. A brand-new empty session is a throwaway.
+ *
+ * 내용도 스트림도 없지만 **버리면 안 되는** 두 경우를 함께 본다:
+ *
+ * - `remote` — 다른 곳에서 시작한 턴이 이 대화에서 돌고 있다. 토큰은 이 창으로
+ *   흐르지 않으므로 `streaming` 은 거짓이지만, 실행은 살아 있다. 버리면 [정지]
+ *   버튼째로 사라지고, 사용자는 멈출 수단을 잃는다.
+ * - `resume && !historyLoaded` — 되살리는 중이다. 히스토리가 도착하기 전의 몇
+ *   백 ms 를 "빈 세션" 으로 읽으면 탭이 떴다가 사라진다.
+ */
 export function isKeepable(s: SessionState): boolean {
-  return s.streaming || s.messages.length > 0;
+  if (s.streaming || s.messages.length > 0) return true;
+  if (s.remote) return true;
+  return s.resume && !s.historyLoaded;
 }
 
 /** Open sessions, most-recently-active first. */
@@ -362,6 +397,51 @@ export class SessionStore {
       return interactionId;
     }
     this.gcActiveIfEmpty();
+    this.spawnResume(agent, interactionId, workflowName, true);
+    return interactionId;
+  }
+
+  /**
+   * 앱을 껐다 켠 뒤, 저장된 워크스페이스 탭에 남아 있던 대화를 되살린다.
+   *
+   * 왜 필요한가. 서버 실행은 **연결이 아니라 대화**에 매여 있다 — 커넥터를
+   * 실수로 닫아도 턴은 계속 돈다. 그런데 다시 켰을 때 그 대화가 열려 있지
+   * 않으면, 창은 아무것도 모른 채 빈 화면을 그리고 [정지] 버튼도 없다. 사용자
+   * 입장에서는 실행이 사라진 것과 구분되지 않는다.
+   *
+   * :meth:`openResume` 과 하는 일은 같지만 두 가지가 다르다:
+   *
+   * 1. **포커스를 옮기지 않는다.** 복원은 사용자가 한 행동이 아니다. 저장된
+   *    활성 탭이 그대로 활성이어야 한다(여럿을 되살리면 마지막 것이 포커스를
+   *    가로챈다).
+   * 2. **이미 열린 것은 건드리지 않는다.** 재진입해도 스트림이 끊기지 않는다.
+   *
+   * 되살린 세션은 곧바로 대화 소켓을 구독하고 히스토리를 읽는다 — 그 두 길이
+   * `running` 을 실어 오므로([진행 중]·[정지]), 상태는 스스로 제자리를 찾는다.
+   */
+  restore(entries: { workflowId: string; workflowName?: string; interactionId: string }[]): void {
+    let added = false;
+    for (const entry of entries) {
+      if (!entry.interactionId || !entry.workflowId) continue;
+      if (this.map.has(entry.interactionId)) continue;
+      const agent = {
+        ...EMPTY_AGENT,
+        workflowId: entry.workflowId,
+        workflowName: entry.workflowName || entry.workflowId,
+      };
+      this.spawnResume(agent, entry.interactionId, entry.workflowName, false);
+      added = true;
+    }
+    if (added) this.emit();
+  }
+
+  /** openResume / restore 의 공통 몸통. `focus` 만이 둘을 가른다. */
+  private spawnResume(
+    agent: Agent,
+    interactionId: string,
+    workflowName: string | undefined,
+    focus: boolean,
+  ): void {
     const t = this.now();
     this.map.set(interactionId, {
       key: interactionId,
@@ -390,10 +470,11 @@ export class SessionStore {
       workflowName || agent.workflowName || agent.workflowId,
       interactionId,
     );
-    this._active = interactionId;
-    this.emit();
+    if (focus) {
+      this._active = interactionId;
+      this.emit();
+    }
     void this.loadHistory(interactionId, agent, workflowName);
-    return interactionId;
   }
 
   private async loadHistory(key: string, agent: Agent, name?: string): Promise<void> {

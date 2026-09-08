@@ -230,3 +230,53 @@ test('도는 턴이 없으면 running=false 로 알려 준다', () => {
   assert.deepEqual(seen, [false]);
   chat.close();
 });
+
+test('하트비트가 지금 도는 턴을 되풀이해 말한다 — 분리 뒤의 유일한 근거', () => {
+  /**
+   * subscribed 는 **구독 시점**만, message 는 **완결**만 알려 준다. 그 사이에
+   * 다른 기기에서 새 턴이 시작되면 완결까지 아무도 몰랐다.
+   *
+   * 엣지 이벤트(exec_started) 대신 하트비트에 실은 이유: 시작을 한 번만 알리는
+   * 신호는 그 순간 연결이 끊겨 있으면 영영 놓친다. 하트비트는 10초마다 현재
+   * 사실을 다시 말하므로, 끊겼다 붙어도·늦게 들어와도 저절로 맞춰진다.
+   */
+  const seen: boolean[] = []
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-hb',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onRunning: (r) => seen.push(r),
+    callbacks: {},
+  })
+  const ws = FakeWs.last as FakeWs
+  ws.open()
+  ws.recv({ type: 'subscribed', data: { cursor: 0, running: false } })
+  // 다른 기기에서 턴이 시작됐다 — 다음 하트비트가 그 사실을 나른다.
+  ws.recv({ type: 'heartbeat', data: { ts: 1, running: true } })
+  ws.recv({ type: 'heartbeat', data: { ts: 2, running: true } })
+  ws.recv({ type: 'heartbeat', data: { ts: 3, running: false } })
+  assert.deepEqual(seen, [false, true, true, false])
+  chat.close()
+})
+
+test('running 없는 하트비트는 상태를 건드리지 않는다 (구버전 서버)', () => {
+  const seen: boolean[] = []
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-old',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onRunning: (r) => seen.push(r),
+    callbacks: {},
+  })
+  const ws = FakeWs.last as FakeWs
+  ws.open()
+  ws.recv({ type: 'subscribed', data: { cursor: 0 } })
+  ws.recv({ type: 'heartbeat', data: { ts: 1 } })
+  // subscribed 의 false 하나뿐 — 하트비트가 없는 값을 지어내면 안 된다.
+  assert.deepEqual(seen, [false])
+  chat.close()
+})

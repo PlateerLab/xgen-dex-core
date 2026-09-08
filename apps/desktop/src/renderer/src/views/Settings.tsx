@@ -104,7 +104,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'notifications', label: '알림' },
   { id: 'avatar', label: '아바타' },
   { id: 'browser', label: '브라우저' },
-  { id: 'pc', label: 'Local PC MCP' },
+  { id: 'pc', label: '로컬 컨트롤' },
   { id: 'mcp', label: 'MCP' },
   // SSH 는 이 PC 의 기능이 아니라 **XGEN 계정의 설정**이다 (접속은 서버가 연다).
   // 그래도 여기 두는 이유: 사용자는 "Agent 가 뭘 할 수 있나"를 이 창에서 찾는다.
@@ -1114,9 +1114,13 @@ export const Settings: React.FC<{
           </SettingsSection>
         )}
 
-        {/* ─── Local PC MCP (셸·파일 — 서버 런타임 에이전트가 이 PC 를 도구로) ─── */}
+        {/* ─── 로컬 컨트롤 (이 PC 를 에이전트가 조작한다) ─────────────────────
+             이름에 대하여: 예전 이름은 "Local PC MCP" 였다. MCP 는 이 기능이 서버에
+             도구를 전하는 **수단**일 뿐인데 이름이 그 수단을 앞세워, 사용자에게는
+             무슨 기능인지 읽히지 않았다. 사람이 읽어야 하는 것은 "이 컴퓨터를
+             에이전트가 조작한다" 이다. */}
         {tab === 'pc' && (
-          <SettingsSection plain title="Local PC MCP">
+          <SettingsSection plain title="로컬 컨트롤">
             <div className="tool-card">
               <div className="tool-card-main">
                 <span className="tool-card-icon">
@@ -1124,14 +1128,17 @@ export const Settings: React.FC<{
                 </span>
                 <div className="tool-card-text">
                   <div className="tool-card-title">
-                    Local PC MCP — 이 PC 를 에이전트의 도구로
+                    로컬 컨트롤 — 이 PC 를 에이전트가 조작합니다
                   </div>
                   <div className="tool-card-desc">
-                    켜면, 에이전트가 <b>서버(웹)에서 실행되거나 로컬 실행이 서버로 폴백된 상황</b>
-                    에서도 이 PC 의 파일 읽기/쓰기·목록·검색·클립보드·알림으로 "내 컴퓨터"를 직접
-                    조작할 수 있습니다 — 커넥터가 자동으로 프록시가 됩니다(MCP 설정과 무관, 이
-                    스위치만으로 동작). 파일 도구는 아래 허용 폴더로 제한됩니다. 로그인 사용자
-                    권한의 전체 셸은 아래에서 별도로 켜야 합니다.
+                    켜면 에이전트가 이 컴퓨터의 파일 읽기/쓰기·목록·검색·클립보드·알림으로
+                    "내 컴퓨터"를 직접 조작할 수 있습니다 — 커넥터가 자동으로 프록시가 됩니다
+                    (MCP 설정과 무관, 이 스위치만으로 동작). 파일 도구는 아래 허용 폴더로
+                    제한되고, 로그인 사용자 권한의 전체 셸은 아래에서 별도로 켜야 합니다.
+                    <br />
+                    <b>에이전트의 기본 작업 공간은 여전히 서버의 sandbox 입니다.</b> 이 PC 의
+                    도구는 대화에서 <b>[로컬 컨트롤]</b> 이라는 문을 통해서만 열리므로, 코드·
+                    빌드 같은 자기 작업이 실수로 이 컴퓨터에서 돌지 않습니다.
                   </div>
                 </div>
                 <label className="switch">

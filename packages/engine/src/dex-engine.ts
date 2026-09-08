@@ -195,7 +195,7 @@ export class DexEngine {
     return id;
   }
 
-  /** 연결된 커넥터 기기 목록 — Local PC MCP 상태 대시보드. */
+  /** 연결된 커넥터 기기 목록 — 로컬 컨트롤 상태 대시보드. */
   async listConnectorDevices(requestedProfile?: string): Promise<ConnectorDevice[]> {
     const record = await this.authenticatedRecord(requestedProfile);
     return record.client.connectorDevices.list();

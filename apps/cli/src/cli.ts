@@ -119,7 +119,7 @@ function describeEvent(event: ChatEvent): string | null {
 }
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
-  stdout.write(`Local PC MCP: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
+  stdout.write(`로컬 컨트롤: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
   stdout.write(`전체 셸 접근: ${status.config.shellEnabled ? '켜짐' : '꺼짐'}\n`);
   stdout.write(`작업 폴더: ${status.config.cwd || '(미설정)'}\n`);
   stdout.write(`허용 경로: ${status.config.allowedRoots.join(', ') || '(작업 폴더)'}\n`);

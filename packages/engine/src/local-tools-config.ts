@@ -39,7 +39,11 @@ export function defaultLocalToolsConfig(): LocalToolsConfig {
     enabled: false,
     shellEnabled: false,
     cwd: '',
-    timeoutMs: 120_000,
+    // 10분. 2분이었다 — 사용자 PC 의 한 명령이 2분 안에 끝난다는 가정은 자주
+    // 틀렸고(설치·빌드·큰 검색), 틀릴 때마다 **결과 없이** 2분을 버렸다.
+    // 서버의 MCP_CALL_TIMEOUT_S 와 같은 값이어야 한다: 어긋나면 짧은 쪽이 이겨서
+    // 이 설정 화면이 거짓말을 한다.
+    timeoutMs: 600_000,
     allowedRoots: [],
     blockedCommands: [],
     allowDangerous: false,

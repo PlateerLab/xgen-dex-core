@@ -1507,7 +1507,7 @@ ipcMain.handle(
     return { ok: true };
   },
 );
-/** 같은 계정에 연결된 커넥터 기기 목록 — Local PC MCP 상태 패널. */
+/** 같은 계정에 연결된 커넥터 기기 목록 — 로컬 컨트롤 상태 패널. */
 ipcMain.handle(CHANNELS.connectorDevices, async () => {
   if (!client) return { devices: [] };
   try {

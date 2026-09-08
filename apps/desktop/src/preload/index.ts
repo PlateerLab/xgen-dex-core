@@ -770,7 +770,7 @@ const api = {
   },
 
   /** 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스)를 로컬 폴더로. */
-  /** 같은 계정에 연결된 커넥터 기기 목록 (Local PC MCP 상태 패널). */
+  /** 같은 계정에 연결된 커넥터 기기 목록 (로컬 컨트롤 상태 패널). */
   connectorDevices: (): Promise<{
     devices: Array<{
       deviceId: string;

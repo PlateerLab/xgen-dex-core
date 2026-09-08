@@ -40,6 +40,9 @@ import {
   type TtsSpeakOptions,
   type SshServerInput,
   type ChatStopResult,
+  type Agent,
+  type ArtifactApiDeclaration,
+  type ArtifactGalleryItem,
   applyNotificationPreferenceUpdate,
   notificationProfileForAccount,
   shareBodyOf,
@@ -79,6 +82,7 @@ import {
   disposeUpdater,
 } from './updater';
 import { CHANNELS } from './ipc';
+import { ARTIFACT_FRAME_CSP, ARTIFACT_FRAME_HTML } from './artifact-frame';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
@@ -173,7 +177,37 @@ const IS_LINUX = process.platform === 'linux';
 // by deployment); routing them through the MAIN process (Electron net.fetch, no
 // CORS, no CSP) makes it work regardless. `standard` lets relative sibling refs
 // (moc3/textures/atlas) resolve; `corsEnabled`+`bypassCSP` keep WebGL happy.
+// 아티팩트 실행 프레임: xgenartifact://frame/ 하나만 낸다.
+//
+// **왜 스킴을 따로 파는가.** 에이전트가 쓴 코드는 반드시 이 앱 렌더러와 **다른
+// 오리진**에서 돌아야 한다 — 렌더러에는 `window.xgen` 이 있고 그것은 이 PC 의
+// 셸·파일·키체인으로 이어지는 다리다. 스킴이 다르면 오리진이 다르고, 그러면
+// `window.parent.*` 가 교차 오리진 규칙으로 막힌다. 그것이 다리를 지키는 실제
+// 장치다(sandbox 속성은 그 위의 두 번째 자물쇠).
+//
+// 다른 방법이 안 되는 이유:
+//   · `srcdoc` — about:srcdoc 은 **부모의 CSP 를 상속**한다. 렌더러 CSP 가
+//     `script-src 'self'` 라 프레임의 인라인 스크립트가 아예 실행되지 못한다.
+//   · file:// 하위 프레임 — 개발(http)과 배포(file)에서 규칙이 달라 기댈 수 없고,
+//     무엇보다 렌더러와 **같은 스킴**이라 1번 자물쇠가 약해진다.
+// 자기 스킴이면 자기 문서·자기 CSP 이고, 그 CSP 를 **응답 헤더로** 붙일 수 있어
+// 웹(미들웨어가 같은 경로에 같은 헤더를 붙인다)과 같은 모양이 된다.
+//
+// **privileges 를 늘리지 마라.** 실측(verify/artifact-frame-smoke.cjs 와 같은
+// 하네스)으로 확인한 것:
+//   · bypassCSP 를 주면 이 문서가 CSP 를 안 받는다 — 그러면 네트워크가 열린다.
+//     avatar 스킴과 정반대의 이유로, 여기서는 CSP 를 **받아야** 한다.
+//   · standard 를 주면 이 문서가 진짜 오리진(xgenartifact://frame)을 갖는다.
+//     그 자체로는 아직 안전하지만(sandbox 가 두 번째 자물쇠다), standard:true 와
+//     iframe 의 allow-same-origin 이 **함께** 들어오는 순간 프레임은 오리진을
+//     되찾고 document.cookie 가 열린다. 둘 중 하나도 열지 않는 이유다.
+// 상대 경로로 곁의 파일을 끌어올 이유도 없다 — 필요한 것은 전부 호스트가
+// postMessage 로 건넨다.
 protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'xgenartifact',
+    privileges: { secure: true },
+  },
   {
     scheme: 'xgenavatar',
     privileges: {
@@ -2239,6 +2273,77 @@ ipcMain.handle(CHANNELS.agentToolGet, (_e, wf: string, functionId: string) =>
 ipcMain.handle(CHANNELS.agentWsTree, (_e, wf: string, path?: string) =>
   getClient().agentData.workspaceTree(wf, path),
 );
+
+/** [아티팩트 모음] 의 응답 — 못 읽은 에이전트도 숨기지 않고 함께 돌려준다. */
+interface ArtifactGalleryResult {
+  items: ArtifactGalleryItem[];
+  /** 훑어본 에이전트 수 (XGeny 만). */
+  scanned: number;
+  /** 목록을 못 읽은 에이전트 이름들 — 조용히 빠뜨리지 않는다. */
+  failed: string[];
+  error?: string;
+}
+
+// ── 아티팩트 ──────────────────────────────────────────────────────
+ipcMain.handle(CHANNELS.artifactList, (_e, wf: string) => getClient().agentData.artifactList(wf));
+ipcMain.handle(CHANNELS.artifactGet, (_e, wf: string, slug: string) =>
+  getClient().agentData.artifactGet(wf, slug),
+);
+ipcMain.handle(
+  CHANNELS.artifactCallApi,
+  (_e, apis: ArtifactApiDeclaration[], alias: string, params?: Record<string, string>) =>
+    getClient().agentData.artifactCallApi(apis, alias, params ?? null),
+);
+
+/**
+ * [아티팩트 모음] — 모든 에이전트가 만든 것 중 **지금 열리는 것**만.
+ *
+ * 서버에 "전부 다오" 엔드포인트는 없다(아티팩트는 에이전트 workspace 안의
+ * 폴더라, 소유자별로만 물어볼 수 있다). 그래서 여기서 훑는다 — 렌더러가 아니라
+ * main 인 이유는 왕복이 에이전트 수만큼 생기기 때문이다. IPC 한 번으로 끝난다.
+ *
+ * XGeny 에이전트만 묻는다: workspace 가 있는 것이 그것뿐이라, 나머지에 물으면
+ * 확실히 빈 목록을 받으려고 요청을 낭비하는 셈이다.
+ */
+ipcMain.handle(CHANNELS.artifactGallery, async (): Promise<ArtifactGalleryResult> => {
+  const client = getClient();
+  let agents: Agent[];
+  try {
+    // listAll — 한 페이지만 읽으면 에이전트가 많은 계정에서 **조용히** 잘린다.
+    // 그건 이 화면이 가장 하지 말아야 할 실패다(빠진 줄을 아무도 모른다).
+    agents = await client.agents.listAll();
+  } catch (e) {
+    return { items: [], scanned: 0, failed: [], error: (e as Error).message };
+  }
+  const targets = agents.filter((a) => a.hasAgentGeny);
+  const items: ArtifactGalleryItem[] = [];
+  const failed: string[] = [];
+  // 동시 요청은 묶어서 — 에이전트가 수십 개여도 서버를 한꺼번에 때리지 않는다.
+  const LANES = 6;
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(LANES, targets.length) }, async () => {
+      for (;;) {
+        const agent = targets[cursor++];
+        if (!agent) return;
+        try {
+          const res = await client.agentData.artifactList(agent.workflowId);
+          for (const a of res.artifacts) {
+            // "현재 serving 되고 있는 것만" — 열 수 없는 것은 그 에이전트의
+            // [아티팩트] 탭에서 이유와 함께 본다. 모음은 **여는 자리**다.
+            if (!a.ready) continue;
+            items.push({ ...a, workflowId: agent.workflowId, workflowName: agent.workflowName });
+          }
+        } catch {
+          // 한 에이전트를 못 읽는 것과 모음을 못 여는 것은 다른 일이다.
+          failed.push(agent.workflowName || agent.workflowId);
+        }
+      }
+    }),
+  );
+  items.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
+  return { items, scanned: targets.length, failed };
+});
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),
 );
@@ -3518,6 +3623,23 @@ if (!gotLock) {
           status: 502,
         });
       }
+    });
+    // 아티팩트 실행 프레임 — 문서 하나. 응답 헤더로 CSP 를 붙여, 이 문서에는
+    // 네트워크가 전혀 남지 않게 한다(웹의 미들웨어와 같은 값).
+    protocol.handle('xgenartifact', (request) => {
+      const u = new URL(request.url);
+      if (u.host !== 'frame' || (u.pathname !== '/' && u.pathname !== '')) {
+        return new Response('not found', { status: 404 });
+      }
+      return new Response(ARTIFACT_FRAME_HTML, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': ARTIFACT_FRAME_CSP,
+          // 이 문서는 캐시할 것이 없다 — 내용은 빌드에 박혀 있다.
+          'Cache-Control': 'no-store',
+        },
+      });
     });
     // The install callback flips appQuitting so quitAndInstall isn't blocked by
     // the close-to-tray guard.

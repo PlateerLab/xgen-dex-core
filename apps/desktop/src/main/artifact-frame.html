@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>XGEN Artifact</title>
+<!--
+  아티팩트 실행 프레임 — 에이전트가 쓴 코드가 도는 **유일한** 문서.
+
+  이 문서는 `sandbox="allow-scripts"` 로 열린다 (allow-same-origin **없이**). 그래서
+  오리진이 불투명하고, 부모 창(렌더러)의 어떤 것에도 손이 닿지 않는다. 이게 전부의
+  이유다: 이 앱의 렌더러에는 `window.xgen` 이 있고, 그것은 이 PC 의 셸·파일·키체인
+  으로 이어지는 다리다. 같은 오리진에서 남의 코드를 돌리면 그 코드가 다리를 건넌다.
+  **allow-same-origin 은 어떤 이유로도 더하지 않는다** — 함께 주면 샌드박스가 풀린다.
+
+  네트워크도 없다 (아래 CSP `default-src 'none'`, `connect-src 'none'`). 필요한 것은
+  전부 호스트가 postMessage 로 건네준다 — 런타임(React/Babel), 아티팩트 소스, 선언된
+  파일, 그리고 선언된 API 호출의 **결과**. 프레임은 무엇을 부를지 고르지 못하고
+  호스트에게 alias 로 부탁만 한다.
+
+  외부 스크립트를 한 줄도 쓰지 않는 이유: 샌드박스 문서는 오리진이 불투명해서
+  CSP 의 `'self'` 가 아무 것도 가리키지 않는다. 그래서 인라인 + eval 만으로 닫았다.
+
+  ── 웹과의 관계 ──────────────────────────────────────────────────────
+  정본은 xgen-frontend 의 `apps/web/public/artifact-frame.html` 이고 이것은 그
+  **복사본**이다(두 저장소가 갈라져 있어 공유 패키지로 둘 수 없다). 같은 아티팩트가
+  웹에서도 앱에서도 같은 방식으로 돌아야 하므로, 한쪽을 고치면 다른 쪽도 옮긴다.
+
+  다른 점은 둘뿐이다:
+   1. 웹은 `/artifact-frame.html` 경로에 미들웨어가 CSP **헤더**를 붙인다. 여기서는
+      문서를 `srcdoc` 으로 심으므로 붙일 경로가 없어 `<meta>` 로 선언한다. 파싱
+      시점에 적용되므로, 나중에 주입되는 아티팩트 코드보다 항상 먼저다.
+   2. 개발 서버(http)와 배포(file://)에서 같게 동작해야 해서 `srcdoc` 을 쓴다 —
+      file:// 하위 프레임의 로딩 규칙에 기대지 않기 위해서다.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { font: 14px/1.5 Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #fff; }
+  #root { min-height: 100%; }
+  .xa-state { padding: 32px 24px; color: #6b7280; font-size: 13px; }
+  .xa-error { padding: 20px 24px; color: #b91c1c; background: #fef2f2; border-bottom: 1px solid #fecaca; }
+  .xa-error h2 { margin: 0 0 6px; font-size: 13px; font-weight: 700; }
+  .xa-error pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; color: #7f1d1d; }
+</style>
+</head>
+<body>
+<div id="root"><div class="xa-state">준비 중…</div></div>
+<script>
+(function () {
+  'use strict';
+
+  var HOST = null;          // 호스트 창 (init 을 보낸 쪽)
+  var ORIGIN = null;        // 호스트 오리진 — 이후 모든 postMessage 의 목적지
+  var pending = {};         // 진행 중인 fetch 요청 (id → {resolve, reject})
+  var seq = 0;
+  var files = {};           // 선언된 파일 (경로 → 텍스트)
+  var booted = false;
+
+  function show(html) { document.getElementById('root').innerHTML = html; }
+  function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]; }); }
+  function fail(title, detail) {
+    show('<div class="xa-error"><h2>' + esc(title) + '</h2><pre>' + esc(detail || '') + '</pre></div>');
+    if (HOST) HOST.postMessage({ type: 'artifact:error', title: title, detail: String(detail || '') }, ORIGIN);
+  }
+
+  // 높이를 호스트에 알려 프레임이 내용에 맞게 자란다.
+  function reportHeight() {
+    if (!HOST) return;
+    var h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    HOST.postMessage({ type: 'artifact:height', height: h }, ORIGIN);
+  }
+
+  // ── 아티팩트에 주는 API ────────────────────────────────────────────
+  // 선언한 것만 닿는다. 고르는 쪽은 호스트다 — 여기서는 alias 만 말할 수 있다.
+  var xgen = {
+    file: function (path) {
+      if (!Object.prototype.hasOwnProperty.call(files, path)) {
+        throw new Error("artifact.json 의 data.files 에 '" + path + "' 를 선언하세요");
+      }
+      return files[path];
+    },
+    json: function (path) { return JSON.parse(xgen.file(path)); },
+    fetch: function (alias, params) {
+      var id = ++seq;
+      return new Promise(function (resolve, reject) {
+        pending[id] = { resolve: resolve, reject: reject };
+        HOST.postMessage({ type: 'artifact:fetch', id: id, alias: String(alias), params: params || null }, ORIGIN);
+      });
+    },
+  };
+
+  function run(payload) {
+    var R = globalThis.__ARTIFACT_REACT__;
+    if (!R) { fail('런타임을 세우지 못했습니다', 'react-runtime.js 가 실행되지 않았습니다'); return; }
+    var React = R.React;
+
+    var isTs = /\.tsx?$/i.test(payload.entry || '');
+    var presets = [['react', { runtime: 'classic' }]];
+    if (isTs) presets.push(['typescript', { isTSX: /\.tsx$/i.test(payload.entry), allExtensions: true }]);
+
+    var code;
+    try {
+      code = globalThis.Babel.transform(payload.source, {
+        filename: payload.entry || 'App.jsx',
+        presets: presets,
+        plugins: ['transform-modules-commonjs'],
+        sourceType: 'module',
+      }).code;
+    } catch (e) {
+      fail('코드를 변환하지 못했습니다', e && e.message);
+      return;
+    }
+
+    var exports = {};
+    var module = { exports: exports };
+
+    // import 를 **진짜로 해석해 준다.** 번들러가 없다고 import 를 금지하면,
+    // 모든 React 코드가 손끝에서 `import React from 'react'` 로 시작하는 습관과
+    // 매 번 싸우게 된다 — 그리고 그 싸움은 조용한 실패로 끝난다.
+    // transform-modules-commonjs 가 import 를 require 로 바꿔 놓으므로, 우리가
+    // require 를 주면 된다. 없는 모듈은 이름을 대고 분명히 거절한다.
+    var MODULES = {
+      react: React,
+      'react-dom': { createRoot: R.createRoot, version: React.version },
+      'react-dom/client': { createRoot: R.createRoot },
+    };
+    function requireShim(name) {
+      var key = String(name);
+      if (Object.prototype.hasOwnProperty.call(MODULES, key)) return MODULES[key];
+      throw new Error(
+        "'" + key + "' 은(는) 아티팩트에서 쓸 수 없습니다. 이 화면에는 번들러도 패키지 설치도 " +
+        "없습니다 — react 와 react-dom 만 쓸 수 있고, 데이터는 artifact.json 의 data 에 " +
+        "선언해 xgen.file()/xgen.fetch() 로 읽으세요."
+      );
+    }
+
+    // React 와 훅은 인자로도 건넨다 — import 없이 바로 쓰는 코드도 그대로 돈다.
+    var argNames = ['React', 'exports', 'module', 'require', 'xgen', 'Fragment',
+      'useState', 'useEffect', 'useMemo', 'useCallback', 'useRef', 'useReducer', 'useContext'];
+    var argVals = [React, exports, module, requireShim, xgen, React.Fragment,
+      React.useState, React.useEffect, React.useMemo, React.useCallback, React.useRef, React.useReducer, React.useContext];
+    var Component;
+    try {
+      // eslint-disable-next-line no-new-func
+      var factory = new Function(argNames.join(','), code);
+      factory.apply(null, argVals);
+      Component = exports.default || module.exports;
+      if (typeof Component !== 'function') {
+        throw new Error('엔트리 파일이 React 컴포넌트를 export default 하지 않았습니다');
+      }
+    } catch (e) {
+      fail('아티팩트를 실행하지 못했습니다', (e && e.stack) || (e && e.message));
+      return;
+    }
+
+    // 렌더 중 예외가 프레임을 **흰 화면**으로 만들지 않게 경계를 둔다.
+    //
+    // 반드시 진짜 에러 경계(class + componentDidCatch)여야 한다. window 'error'
+    // 리스너로는 React 의 렌더 예외를 못 잡아서, 예전에는 선언하지 않은 파일을
+    // 읽는 아티팩트가 아무 말 없이 빈 화면이 됐다 (실측). 조용히 안 되는 것이
+    // 이 화면에서 가장 나쁜 실패다.
+    function Boundary(props) { React.Component.call(this, props); this.state = { err: null }; }
+    Boundary.prototype = Object.create(React.Component.prototype);
+    Boundary.prototype.constructor = Boundary;
+    Boundary.getDerivedStateFromError = function (err) { return { err: err }; };
+    Boundary.prototype.componentDidCatch = function (err) {
+      if (HOST) HOST.postMessage({
+        type: 'artifact:error', title: '아티팩트가 오류로 멈췄습니다',
+        detail: String((err && err.stack) || err),
+      }, ORIGIN);
+    };
+    Boundary.prototype.render = function () {
+      if (this.state.err) {
+        var e = this.state.err;
+        return React.createElement('div', { className: 'xa-error' },
+          React.createElement('h2', null, '아티팩트가 오류로 멈췄습니다'),
+          React.createElement('pre', null, String((e && e.stack) || e)));
+      }
+      return this.props.children;
+    };
+
+    // 렌더 밖(비동기 콜백·타이머)에서 터진 것은 경계가 못 잡는다 — 그것도 말해 준다.
+    window.addEventListener('error', function (ev) {
+      if (HOST) HOST.postMessage({
+        type: 'artifact:error', title: '아티팩트에서 오류가 났습니다',
+        detail: String((ev.error && ev.error.stack) || ev.message || ''),
+      }, ORIGIN);
+    });
+    window.addEventListener('unhandledrejection', function (ev) {
+      if (HOST) HOST.postMessage({
+        type: 'artifact:error', title: '아티팩트에서 처리되지 않은 오류가 났습니다',
+        detail: String((ev.reason && ev.reason.stack) || ev.reason || ''),
+      }, ORIGIN);
+    });
+
+    try {
+      var root = R.createRoot(document.getElementById('root'));
+      root.render(React.createElement(Boundary, null, React.createElement(Component, null)));
+    } catch (e) {
+      fail('아티팩트를 그리지 못했습니다', (e && e.stack) || (e && e.message));
+      return;
+    }
+    setTimeout(reportHeight, 0);
+    if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
+    HOST.postMessage({ type: 'artifact:ready' }, ORIGIN);
+  }
+
+  window.addEventListener('message', function (ev) {
+    var msg = ev.data;
+    if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === 'artifact:init') {
+      // 첫 init 이 호스트를 정한다. 이후 다른 창에서 오는 것은 무시한다.
+      if (booted) return;
+      booted = true;
+      HOST = ev.source;
+      ORIGIN = ev.origin && ev.origin !== 'null' ? ev.origin : '*';
+      files = msg.files || {};
+      try {
+        // eslint-disable-next-line no-new-func
+        new Function(msg.runtimeJs)();
+        new Function(msg.babelJs)();
+      } catch (e) {
+        fail('런타임을 세우지 못했습니다', (e && e.stack) || (e && e.message));
+        return;
+      }
+      run(msg);
+      return;
+    }
+
+    if (ev.source !== HOST) return;   // init 이후에는 호스트만 말할 수 있다
+
+    if (msg.type === 'artifact:fetch-result') {
+      var p = pending[msg.id];
+      if (!p) return;
+      delete pending[msg.id];
+      if (msg.ok) p.resolve(msg.data);
+      else p.reject(new Error(msg.error || '요청이 실패했습니다'));
+      return;
+    }
+  });
+
+  // 부모가 살아 있는데 init 이 오지 않으면 조용히 비어 있지 않게 말한다.
+  setTimeout(function () { if (!booted) show('<div class="xa-state">호스트가 아티팩트를 보내지 않았습니다.</div>'); }, 8000);
+})();
+</script>
+</body>
+</html>

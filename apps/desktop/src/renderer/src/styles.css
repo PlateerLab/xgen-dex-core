@@ -7683,3 +7683,90 @@ button.sm {
   max-height: 300px;
   overflow: auto;
 }
+
+/* ── 아티팩트 ────────────────────────────────────────────────────────
+   에이전트가 만든 화면. 실행은 격리 프레임이 하므로 여기서 잡는 것은 **프레임을
+   담는 자리**와 고르는 줄뿐이다 — 프레임 안쪽은 자기 문서의 스타일을 쓴다.       */
+.artifacts-view {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.artifacts-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.artifacts-picker {
+  min-width: 200px;
+  max-width: 320px;
+}
+.artifacts-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.artifacts-refresh {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.artifacts-refresh:hover {
+  color: inherit;
+}
+.artifacts-issues {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid #fcd34d;
+  border-radius: 6px;
+  background: rgba(252, 211, 77, 0.12);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.artifacts-issues ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+/* 프레임은 자기 높이를 알려 오므로 여기서는 스크롤만 맡는다. */
+.artifacts-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.artifact-frame-host {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+/* 호스트만 아는 실패(런타임을 못 받아왔다) — 프레임 안의 오류는 프레임이 그린다. */
+.artifact-run-error {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.artifact-gallery-foot {
+  padding: 10px 12px 14px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}

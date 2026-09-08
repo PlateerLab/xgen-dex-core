@@ -118,6 +118,34 @@ const api = {
       return { items, pagination: { page: 1, pageSize: 24, totalCount: items.length, totalPages: 1 } };
     },
   },
+  // 아티팩트 — 사이드바 [아티팩트] 모음과 에이전트 상세 [아티팩트] 탭이 쓴다.
+  // 실행 프레임(xgenartifact://)은 main 이 내므로 여기서 흉내 내지 않는다.
+  artifacts: {
+    gallery: async () => ({
+      items: [
+        { slug: 'sales-board', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 240, issues: [], workflowId: 'wf1', workflowName: '한국마사회 RAG 상담' },
+        { slug: 'race-calendar', title: '경주 일정표', description: '이번 달 경주 일정', entry: 'App.tsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 5400, issues: [], workflowId: 'wf2', workflowName: '경마 데이터 분석가' },
+        { slug: 'doc-index', title: '사내 문서 색인', description: '수집한 문서 목록과 최신 갱신일', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 2 * 86400, issues: [], workflowId: 'wf4', workflowName: '사내 문서 도우미' },
+      ],
+      scanned: 4,
+      failed: [],
+    }),
+    list: async () => ({
+      workflow_id: 'wf1',
+      total: 2,
+      ready: 1,
+      artifacts: [
+        { slug: 'sales-board', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 240, issues: [] },
+        { slug: 'broken-one', title: '만들다 만 화면', description: '', entry: '', ready: false, updated_at: null, issues: ['artifact.json 에 entry 가 없습니다'] },
+      ],
+    }),
+    get: async (workflowId, slug) => ({
+      workflow_id: workflowId, slug, title: '분기 매출 보드', description: '분기별 발매액과 채널 비중',
+      entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 240, issues: [],
+      source: 'export default function App(){ return null }', files: {}, apis: [],
+    }),
+    callApi: async () => ({}),
+  },
   history: {
     conversations: async () => [
       { id: 1, interactionId: 'c-1', workflowId: 'wf1', workflowName: '한국마사회 RAG 상담', interactionCount: 6, metadata: {}, createdAt: '', updatedAt: new Date(Date.now() - 12 * 60000).toISOString() },

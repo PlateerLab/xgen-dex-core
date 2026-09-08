@@ -16,7 +16,14 @@ import { HttpClient } from './client';
  * 렌더러(workspace-layout)와 main(config 의 레이아웃 영속 스키마)이 둘 다 쓴다.
  * 예전엔 두 곳에 유니온이 복제돼 있어서, 탭을 하나 늘리면 저장 스키마 쪽이 조용히
  * 안 맞고 레이아웃 복원에서 그 탭만 사라졌다. */
-export type AgentViewerSub = 'basic' | 'memory' | 'tasks' | 'tools' | 'storage' | 'fulllog';
+export type AgentViewerSub =
+  | 'basic'
+  | 'memory'
+  | 'tasks'
+  | 'tools'
+  | 'artifacts'
+  | 'storage'
+  | 'fulllog';
 
 export interface WorkspaceUploadResult {
   ok: boolean;
@@ -280,6 +287,59 @@ export interface ToolsResult {
   unverified?: number;
 }
 
+// ── 아티팩트(agent-artifacts) ─────────────────────────────────────
+//
+// 에이전트가 만든 React 화면. 새 저장소가 아니라 workspace 의 약속된 폴더
+// (`workspace/artifacts/<slug>/`)라, 여기서 만들거나 지우지 않는다 — 만드는 것은
+// 에이전트고 파일을 손보는 자리는 스토리지다. 서버가 폴더를 읽어 **검증**해
+// 주므로, 틀린 매니페스트도 버려지지 않고 `issues` 로 돌아온다.
+//
+// 와이어 포맷(snake_case)은 그대로 둔다 — 웹과 같은 응답을 같은 이름으로 읽어야
+// 두 화면이 갈라지지 않는다.
+
+/** 아티팩트가 선언한 읽기 전용 API 한 개 — 서버가 이미 검증했다(GET + 허용 접두). */
+export interface ArtifactApiDeclaration {
+  alias: string;
+  path: string;
+  method: 'GET';
+}
+
+export interface ArtifactSummary {
+  slug: string;
+  title: string;
+  description: string;
+  /** 엔트리 파일. 비어 있으면 열 수 없다(그 이유는 issues 에). */
+  entry: string;
+  /** 지금 **열리는가**. false 면 매니페스트나 파일에 문제가 있다. */
+  ready: boolean;
+  /** epoch 초. 폴더 안에서 가장 최근에 바뀐 파일 기준. */
+  updated_at: number | null;
+  /** 매니페스트 진단 — 비어 있으면 문제 없음. */
+  issues: string[];
+}
+
+export interface ArtifactDetail extends ArtifactSummary {
+  workflow_id: string;
+  /** 엔트리 파일 원문 (프레임이 변환해 실행한다). */
+  source: string;
+  /** 선언된 데이터 파일 (경로 → 텍스트). */
+  files: Record<string, string>;
+  apis: ArtifactApiDeclaration[];
+}
+
+export interface ArtifactListResult {
+  workflow_id: string;
+  artifacts: ArtifactSummary[];
+  total: number;
+  ready: number;
+}
+
+/** 아티팩트 하나 + 그것을 만든 에이전트 — [아티팩트 모음] 의 한 줄. */
+export interface ArtifactGalleryItem extends ArtifactSummary {
+  workflowId: string;
+  workflowName: string;
+}
+
 // ── 스토리지(geny-workspace) ──────────────────────────────────────
 export interface WsNode {
   name: string;
@@ -406,6 +466,54 @@ export class AgentDataApi {
     return this.http.get<ForgedTool>(
       `/api/agentflow/geny-tools/${encodeURIComponent(workflowId)}/${encodeURIComponent(functionId)}?with_source=true`,
     );
+  }
+
+  // ── 아티팩트 ──────────────────────────────────────────────────
+  /** 이 에이전트의 아티팩트 목록 (열 수 없는 것도 이유와 함께 온다). */
+  artifactList(workflowId: string): Promise<ArtifactListResult> {
+    return this.http.get<ArtifactListResult>(
+      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/list`,
+    );
+  }
+
+  /** 아티팩트 하나 — 소스·선언된 파일·선언된 API 까지. */
+  artifactGet(workflowId: string, slug: string): Promise<ArtifactDetail> {
+    return this.http.get<ArtifactDetail>(
+      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`,
+    );
+  }
+
+  /**
+   * 아티팩트가 선언한 alias 를 **사용자 권한으로** 대신 호출한다.
+   *
+   * 프레임에는 네트워크가 없다. 무엇을 부를지도 프레임이 고르지 못하고 alias 만
+   * 말할 수 있으며, 그 alias 가 어떤 경로인지는 서버가 검증해 내려준 선언에만
+   * 있다. 여기서 한 번 더 확인하는 이유는 이 함수가 **실제로 호출을 실행하는
+   * 곳**이기 때문이다 — 판정과 실행이 같은 자리에 있어야 한쪽만 느슨해지지 않는다.
+   */
+  async artifactCallApi(
+    apis: ArtifactApiDeclaration[],
+    alias: string,
+    params?: Record<string, string | number | boolean | undefined> | null,
+  ): Promise<unknown> {
+    // `async` 인 것이 중요하다. 검사 실패가 **동기 예외**로 나가면 호출부의
+    // `.catch` 를 건너뛰고, 프레임은 답을 못 받아 '불러오는 중' 에서 멈춘다 —
+    // 거절은 네트워크 실패와 같은 길로 돌아와야 한다.
+    const decl = apis.find((a) => a.alias === alias);
+    if (!decl) throw new Error(`선언되지 않은 alias 입니다: ${alias}`);
+    if (decl.method !== 'GET') throw new Error('읽기(GET)만 허용됩니다');
+    if (!decl.path.startsWith('/api/')) throw new Error('허용되지 않은 경로입니다');
+    const query = new URLSearchParams();
+    for (const [k, v] of Object.entries(params ?? {})) {
+      if (v !== undefined && v !== null) query.set(k, String(v));
+    }
+    const qs = query.toString();
+    if (!qs) return this.http.get<unknown>(decl.path);
+    // 선언된 path 에 이미 쿼리가 붙어 있을 수 있다 — 서버는 접두만 보고 통과시키므로
+    // `/api/...?page_size=5` 같은 선언이 그대로 온다. 무조건 '?' 를 붙이면 그때
+    // 주소가 깨지고, 아티팩트는 이유를 알 수 없는 실패를 본다.
+    const sep = decl.path.includes('?') ? '&' : '?';
+    return this.http.get<unknown>(`${decl.path}${sep}${qs}`);
   }
 
   // ── 스토리지 ──────────────────────────────────────────────────

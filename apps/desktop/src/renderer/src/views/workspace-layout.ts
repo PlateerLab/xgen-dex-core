@@ -75,7 +75,17 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   ) {
     return null;
   }
-  const viewerSubs = ['memory', 'tasks', 'tools', 'storage', 'fulllog'];
+  // AgentViewerSub 전부 — 하나라도 빠지면 그 탭으로 열려 있던 뷰어가 재시작 후
+  // 조용히 기본 탭으로 돌아간다. ('basic' 이 실제로 그렇게 빠져 있었다.)
+  const viewerSubs: AgentViewerSub[] = [
+    'basic',
+    'memory',
+    'tasks',
+    'tools',
+    'artifacts',
+    'storage',
+    'fulllog',
+  ];
   return {
     id: tab.id,
     kind: tab.kind as WorkspaceTabKind,
@@ -87,7 +97,7 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
     fileRel: typeof tab.fileRel === 'string' ? tab.fileRel : undefined,
     fileName: typeof tab.fileName === 'string' ? tab.fileName : undefined,
     fileSection: tab.fileSection === 'cloud' || tab.fileSection === 'agent' ? tab.fileSection : undefined,
-    viewerSub: viewerSubs.includes(String(tab.viewerSub))
+    viewerSub: viewerSubs.includes(tab.viewerSub as AgentViewerSub)
       ? (tab.viewerSub as AgentViewerSub)
       : undefined,
   };

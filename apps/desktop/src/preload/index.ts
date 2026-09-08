@@ -10,6 +10,10 @@ import { CHANNELS } from '../main/ipc';
 import type {
   ChatEvent,
   ChatRequest,
+  ArtifactApiDeclaration,
+  ArtifactDetail,
+  ArtifactListResult,
+  ArtifactSummary,
   ChatStopResult,
   ConversationSnapshot,
   CurrentUser,
@@ -777,6 +781,32 @@ const api = {
     }>;
     error?: string;
   }> => ipcRenderer.invoke(CHANNELS.connectorDevices),
+
+  /**
+   * 아티팩트 — 에이전트가 만든 화면.
+   *
+   * 읽기만 한다. 만드는 것은 에이전트고(workspace 의 약속된 폴더), 파일을 손보는
+   * 자리는 스토리지다. `callApi` 는 격리 프레임이 부탁한 alias 를 **사용자
+   * 권한으로** 대신 호출하는 통로다 — 프레임 자신에게는 네트워크가 없다.
+   */
+  artifacts: {
+    list: (workflowId: string): Promise<ArtifactListResult> =>
+      ipcRenderer.invoke(CHANNELS.artifactList, workflowId),
+    get: (workflowId: string, slug: string): Promise<ArtifactDetail> =>
+      ipcRenderer.invoke(CHANNELS.artifactGet, workflowId, slug),
+    /** 모든 에이전트의 **지금 열리는** 아티팩트 — 사이드바 [아티팩트 모음]. */
+    gallery: (): Promise<{
+      items: Array<ArtifactSummary & { workflowId: string; workflowName: string }>;
+      scanned: number;
+      failed: string[];
+      error?: string;
+    }> => ipcRenderer.invoke(CHANNELS.artifactGallery),
+    callApi: (
+      apis: ArtifactApiDeclaration[],
+      alias: string,
+      params?: Record<string, string | number | boolean | undefined> | null,
+    ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.artifactCallApi, apis, alias, params ?? null),
+  },
 
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */
   chatWatch: {

@@ -123,6 +123,14 @@ export const CHANNELS = {
   agentWsBinary: 'agent:wsBinary',
   agentWsUpload: 'agent:wsUpload',
 
+  // 아티팩트 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
+  // gallery 는 **모든 에이전트**를 훑어 지금 열리는 것만 모아 준다(사이드바).
+  artifactList: 'artifact:list',
+  artifactGet: 'artifact:get',
+  artifactGallery: 'artifact:gallery',
+  /** 프레임이 부탁한 alias 를 사용자 권한으로 대신 호출한다. */
+  artifactCallApi: 'artifact:callApi',
+
   chatStart: 'chat:start',
   //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).
   chatCancel: 'chat:cancel',
@@ -271,3 +279,11 @@ export const CHANNELS = {
   /** 설치 폴더 등 로컬 폴더를 OS 파일 관리자로 연다. */
   appOpenFolder: 'app:openFolder',
 } as const;
+
+/**
+ * 아티팩트가 도는 문서의 주소 — main 이 `protocol.handle('xgenartifact')` 로 낸다.
+ *
+ * 렌더러는 이 URL 을 `sandbox="allow-scripts"` iframe 의 src 로만 쓴다. 상수를
+ * 여기 두는 이유는 이것이 main ↔ 렌더러의 약속이기 때문이다 — 채널 이름과 같은 종류.
+ */
+export const ARTIFACT_FRAME_URL = 'xgenartifact://frame/';

@@ -32,6 +32,7 @@ import { ExplorerPanel } from './ExplorerPanel';
 import { FileViewerPane } from './FileViewerPane';
 import { fileTabId } from './file-viewer-model';
 import { TeamsPanel } from './TeamsPanel';
+import { ArtifactsPanel } from '../artifacts/ArtifactsPanel';
 import { TeamsRoom } from './TeamsRoom';
 import { TabBar } from './TabBar';
 import { BrowserPane, type BrowserSurfaceRect } from './BrowserPane';
@@ -1088,6 +1089,18 @@ export const Workspace: React.FC<{
             activeRoomId={activeRoomId}
             onOpenRoom={openRoomTab}
             onRoomRemoved={closeRoomTabs}
+          />
+        </div>
+        <div
+          className="panel-host"
+          style={{ display: sideView === 'artifacts' ? undefined : 'none' }}
+        >
+          {/* 모음에서 고른 아티팩트는 **그 에이전트의 [아티팩트] 탭**으로 연다 —
+              같은 화면을 두 벌 만들지 않고, 고른 것이 어디 사는지도 함께 보인다. */}
+          <ArtifactsPanel
+            onOpen={(workflowId, workflowName) =>
+              openAgentViewer(workflowId, workflowName, 'artifacts')
+            }
           />
         </div>
         <div className="sidebar-resize" onMouseDown={startSidebarResize} />

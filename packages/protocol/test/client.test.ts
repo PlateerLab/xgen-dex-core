@@ -4,6 +4,10 @@ import { createServer, type Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
 import { XgenClient } from '@dex/protocol';
+// 아티팩트 alias 실행 규칙은 AgentDataApi 안에 있다 — 클라이언트 전체를 세우지 않고
+// 그 계층만 직접 세워 본다(index 는 이 둘을 밖으로 내보내지 않는다).
+import { AgentDataApi } from '../src/agent-data';
+import { HttpClient } from '../src/client';
 
 /**
  * A tiny mock of the XGEN gateway that implements exactly the endpoints the
@@ -244,4 +248,60 @@ test('onAuthFailure fires on 401 for authed call', async () => {
   } finally {
     server.close();
   }
+});
+
+// ── 아티팩트 alias 호출 ────────────────────────────────────────────────
+//
+// 프레임에는 네트워크가 없다. 무엇을 부를지도 프레임이 고르지 못하고 alias 만
+// 말할 수 있으며, 그 alias 가 어떤 경로인지는 서버가 검증해 내려준 선언에만 있다.
+// 여기서 지키는 것은 그 선언을 **실행하는 쪽**의 규칙이다.
+
+test('선언되지 않은 alias 는 거절한다', async () => {
+  const api = new AgentDataApi(new HttpClient({ baseUrl: 'https://x.example' }));
+  await assert.rejects(
+    () => api.artifactCallApi([{ alias: 'rows', path: '/api/a', method: 'GET' }], 'other'),
+    /선언되지 않은 alias/,
+  );
+});
+
+test('GET 이 아니거나 /api/ 밖이면 거절한다', async () => {
+  const api = new AgentDataApi(new HttpClient({ baseUrl: 'https://x.example' }));
+  await assert.rejects(
+    () =>
+      api.artifactCallApi(
+        [{ alias: 'w', path: '/api/a', method: 'POST' as 'GET' }],
+        'w',
+      ),
+    /읽기\(GET\)만/,
+  );
+  await assert.rejects(
+    () => api.artifactCallApi([{ alias: 'x', path: '/etc/passwd', method: 'GET' }], 'x'),
+    /허용되지 않은 경로/,
+  );
+});
+
+test('선언된 path 에 이미 쿼리가 있으면 & 로 잇는다', async () => {
+  const seen: string[] = [];
+  const http = new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async (url: string) => {
+      seen.push(String(url));
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const api = new AgentDataApi(http);
+  await api.artifactCallApi(
+    [{ alias: 'a', path: '/api/list?page_size=5', method: 'GET' }],
+    'a',
+    { limit: 3 },
+  );
+  // '?' 를 한 번 더 붙이면 주소가 깨지고, 아티팩트는 이유 모를 실패를 본다.
+  assert.ok(seen[0].endsWith('/api/list?page_size=5&limit=3'), seen[0]);
+
+  await api.artifactCallApi([{ alias: 'b', path: '/api/list', method: 'GET' }], 'b', { limit: 3 });
+  assert.ok(seen[1].endsWith('/api/list?limit=3'), seen[1]);
+
+  // 파라미터가 없으면 물음표도 붙이지 않는다.
+  await api.artifactCallApi([{ alias: 'c', path: '/api/list', method: 'GET' }], 'c');
+  assert.ok(seen[2].endsWith('/api/list'), seen[2]);
 });

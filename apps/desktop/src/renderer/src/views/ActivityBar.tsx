@@ -13,6 +13,7 @@
 import React, { useState } from 'react';
 import { XgenMark } from '../brand/Logo';
 import {
+  ArtifactIcon,
   BotIcon,
   ChatIcon,
   FilesIcon,
@@ -22,12 +23,13 @@ import {
   TeamsIcon,
 } from '../brand/icons';
 
-export type SideView = 'agent' | 'explorer' | 'teams';
+export type SideView = 'agent' | 'explorer' | 'teams' | 'artifacts';
 
 const VIEWS: Array<{ id: SideView; title: string; icon: React.FC<{ size?: number }> }> = [
   { id: 'agent', title: 'Agent', icon: ChatIcon },
   { id: 'explorer', title: '탐색기', icon: FilesIcon },
   { id: 'teams', title: 'Teams', icon: TeamsIcon },
+  { id: 'artifacts', title: '아티팩트', icon: ArtifactIcon },
 ];
 
 export const ActivityBar: React.FC<{

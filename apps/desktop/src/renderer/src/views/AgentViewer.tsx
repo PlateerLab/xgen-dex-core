@@ -18,6 +18,7 @@ import remarkGfm from 'remark-gfm';
 import { xgen, copyText } from '../bridge';
 import { BotIcon, CopyIcon, FolderIcon, FolderOpenIcon, DocIcon } from '../brand/icons';
 import type { AgentViewerSub } from './workspace-layout';
+import { ArtifactsView } from '../artifacts/ArtifactsView';
 import type {
   Span,
   Trace,
@@ -38,11 +39,21 @@ interface Props {
   onClose?: () => void;
 }
 
+/**
+ * 하위 탭 — **웹 Agent 상세와 같은 순서**로 둔다.
+ *
+ * 같은 에이전트를 웹에서도 앱에서도 본다. 순서가 다르면 "도구 다음이 스토리지" 같은
+ * 손버릇이 한쪽에서만 맞고, 옮겨 갈 때마다 눈으로 다시 찾게 된다.
+ *
+ * 웹에는 [진화 이력] 이 하나 더 있다(도구 다음, 전체로그 앞). 여기에는 그 화면이
+ * 아직 없어서 자리를 비워 뒀을 뿐, **남은 것들의 상대 순서는 웹과 같다.**
+ */
 const SUBS: [AgentViewerSub, string][] = [
   ['basic', '기본정보'],
   ['memory', '메모리'],
   ['tasks', '작업'],
   ['tools', '도구'],
+  ['artifacts', '아티팩트'],
   ['storage', '스토리지'],
   ['fulllog', '전체로그'],
 ];
@@ -1396,6 +1407,9 @@ export const AgentViewer: React.FC<Props> = ({ workflowId, workflowName, initial
         {sub === 'memory' && <MemoryView workflowId={workflowId} />}
         {sub === 'tasks' && <TasksView workflowId={workflowId} />}
         {sub === 'tools' && <ToolsView workflowId={workflowId} />}
+        {sub === 'artifacts' && (
+          <ArtifactsView workflowId={workflowId} workflowName={workflowName} />
+        )}
         {sub === 'storage' && <StorageView workflowId={workflowId} />}
       </div>
     </div>

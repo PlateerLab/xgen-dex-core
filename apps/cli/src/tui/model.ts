@@ -20,7 +20,7 @@ export interface TuiEngine {
   useProfile(name: string): Promise<ProfileSummary>;
   login(email: string, password: string, profile?: string): Promise<AuthStatus>;
   authStatus(profile?: string): Promise<AuthStatus>;
-  /** Local PC MCP — 로그인 완료 시 켜져 있으면 자동 기동한다 (선택 구현). */
+  /** 로컬 컨트롤 — 로그인 완료 시 켜져 있으면 자동 기동한다 (선택 구현). */
   startLocalTools?(profile?: string, waitMs?: number): Promise<{
     config: { enabled: boolean };
     bridge: { connected: boolean; catalogSynced: boolean; serverToolCount: number; error?: string };

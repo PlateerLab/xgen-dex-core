@@ -157,3 +157,50 @@ test('스트리밍 청크가 마커를 반으로 갈라도 — 누적 후 렌더
   assert.equal(stripAgentMarkers(accumulated), '결과끝'); // 렌더 시 온전 제거
   chat.close();
 });
+
+// ── 다른 기기에서 도는 턴 ──────────────────────────────────────────────
+//
+// 서버 실행은 연결이 아니라 대화에 매여 있다 — 연결을 끊어도 계속 돈다. 그래서
+// 웹이나 앱에서 시작한 턴이 이 폰을 켠 순간에도 돌 수 있고, 그 사실을 모르면
+// 화면에는 끝난 대화처럼 보인 채 그 위에 새 턴을 얹게 된다.
+
+test('구독 확립이 지금 도는 턴을 알려 준다 — 재연결마다 다시', () => {
+  const seen: boolean[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-1',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onRunning: (r) => seen.push(r),
+    callbacks: {},
+  });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { cursor: 0, running: true } });
+  assert.deepEqual(seen, [true], '도는 턴이 있다는 사실이 전달되지 않았다');
+
+  // 그 턴이 끝나면 — 우리 스트림이 아니어도 상태는 내려가야 한다.
+  ws.recv({ type: 'exec_done', data: {} });
+  assert.deepEqual(seen, [true, false]);
+  chat.close();
+});
+
+test('도는 턴이 없으면 running=false 로 알려 준다', () => {
+  const seen: boolean[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-2',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onRunning: (r) => seen.push(r),
+    callbacks: {},
+  });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  // 구버전 서버는 running 을 안 싣는다 — 모르면 false 여야 한다(작성기가 잠기면 안 된다).
+  ws.recv({ type: 'subscribed', data: { cursor: 0 } });
+  assert.deepEqual(seen, [false]);
+  chat.close();
+});

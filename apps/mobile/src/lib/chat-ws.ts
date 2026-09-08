@@ -67,6 +67,16 @@ export interface ChatWsOptions {
   wsFactory?: (url: string) => WebSocket;
   /** 서버 push 완결 턴(트리거 반응 등) — 실시간 반영용. */
   onServerTurn?: (turn: ServerTurn) => void;
+  /**
+   * 이 대화에 **지금 도는 턴이 있는가** — 구독 확립과 재연결마다 온다.
+   *
+   * 서버 실행은 연결이 아니라 대화에 매여 있다(끊어도 계속 돈다). 웹이나 앱에서
+   * 시작한 턴이 이 폰을 켠 순간에도 돌 수 있는데, 그 사실을 모르면 여기서는 끝난
+   * 대화처럼 보이고 그 위에 새 턴을 보내 같은 대화에서 둘이 겹친다.
+   *
+   * 재연결마다 다시 보고되므로 폴링이 필요 없다 — 소켓이 붙는 것만으로 맞춰진다.
+   */
+  onRunning?: (running: boolean) => void;
   /** 이 기기의 커넥터 슬롯 키 — 실행에 client_device_id 로 실린다. */
   clientDeviceId?: string;
 }
@@ -223,6 +233,9 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       if (frame.type === 'subscribed') {
         subscribed = true;
         setState('connected');
+        // 다른 기기에서 시작한 턴이 아직 도는가. 이 값이 없으면 폰에서는 대화가
+        // 끝난 것처럼 보이고, 그 위에 새 턴을 얹게 된다.
+        opts.onRunning?.((frame.data as { running?: unknown } | undefined)?.running === true);
         return;
       }
       if (frame.type === 'unsupported') {
@@ -241,6 +254,15 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
           output: String(d.output_data ?? ''),
           source: String(d.source ?? 'user'),
         });
+        return;
+      }
+      // 이 대화의 실행이 끝났다 — 우리 턴이 아니어도 [진행 중] 은 내려야 한다.
+      if (
+        frame.type === 'exec_done' ||
+        frame.type === 'exec_error' ||
+        frame.type === 'exec_stopped'
+      ) {
+        if (!pending) opts.onRunning?.(false);
         return;
       }
       if (frame.type === 'exec' && frame.data) {

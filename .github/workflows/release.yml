@@ -333,6 +333,61 @@ jobs:
           dex --version
           xgen-dex --version
 
+      # ── 프로토콜 (xgen-dex-protocol) ────────────────────────────────
+      #
+      # 모노레포 안에서는 `@dex/protocol` 이지만 밖으로는 `xgen-dex-protocol` 로
+      # 나간다. npm 에 `@xgen` org 권한이 없어(403 실측) 기존 `xgen-dex-cli` 와
+      # 같은 무스코프 규약을 따른다. 내부 별칭은 tsconfig·vite·metro 에 박혀 있어
+      # 이름을 바꾸면 90여 파일과 번들러 설정이 함께 움직인다 — 얻는 것 없이
+      # 위험만 큰 변경이라, 밖으로 나가는 이름만 정한다.
+      #
+      # 이 패키지가 밖으로 나가는 이유: 웹(xgen-frontend)이 같은 계약으로 서버와
+      # 말해야 한다. 지금은 표면마다 해석기를 새로 쓰고 있어 새 이벤트가 생기면
+      # 안 고친 곳이 조용히 무시한다.
+      - name: 프로토콜 빌드
+        run: npm --prefix packages/protocol run build
+
+      - name: 프로토콜 — 이미 올라간 버전인지 확인
+        id: proto
+        run: |
+          NAME=$(node -p "require('./packages/protocol/dist-pkg/package.json').name")
+          VER=$(node -p "require('./packages/protocol/dist-pkg/package.json').version")
+          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VER 는 이미 npm 에 있습니다 — 배포를 건너뜁니다."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 프로토콜 배포
+        if: steps.proto.outputs.exists == 'false'
+        working-directory: packages/protocol/dist-pkg
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 프로토콜 — 설치해서 실제로 불러 본다
+        if: steps.proto.outputs.exists == 'false'
+        run: |
+          # publish 성공은 "올라갔다" 일 뿐이다. 소비자는 루트와 서브경로를 둘 다
+          # import 하므로, 그 둘이 실제로 해석되는지 여기서 확인한다.
+          for i in 1 2 3 4 5 6; do
+            npm view "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}" version && break
+            sleep 10
+          done
+          TMP=$(mktemp -d); cd "$TMP"
+          npm init -y >/dev/null
+          npm i "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}"
+          node --input-type=module -e "
+            import * as root from '${{ steps.proto.outputs.name }}';
+            import * as browser from '${{ steps.proto.outputs.name }}/browser';
+            if (!Object.keys(root).length) throw new Error('루트 export 가 비어 있다');
+            if (!Object.keys(browser).length) throw new Error('서브경로 export 가 비어 있다');
+            console.log('root', Object.keys(root).length, '· browser', Object.keys(browser).length);
+          "
+
   publish:
     name: 릴리스 발행
     # ios 를 needs 에 넣되 결과는 보지 않는다 — ipa 가 나왔으면 릴리스에 싣고,

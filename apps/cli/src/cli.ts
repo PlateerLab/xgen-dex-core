@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { describeStreamError } from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
@@ -114,7 +115,10 @@ function describeEvent(event: ChatEvent): string | null {
   if (event.kind === 'tool') return `tool: ${event.event.toolName ?? event.event.eventType}`;
   if (event.kind === 'node_status') return `node: ${event.event.nodeId} ${event.event.status}`;
   if (event.kind === 'quota') return `quota: ${event.level}`;
-  if (event.kind === 'error') return `error: ${event.detail}`;
+  if (event.kind === 'error') {
+    const info = event.info ?? describeStreamError(event.detail);
+    return `error: ${info.title} (${info.code})`;
+  }
   return null;
 }
 

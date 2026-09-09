@@ -23,7 +23,8 @@ import { ShareToTeamsModal } from './ShareToTeams';
 import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
-import type { ToolEvent, Citation, VoiceConfig } from '@dex/protocol';
+import type { ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
+import { INTERRUPTED_TEXT } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from './tool-activity-model';
@@ -264,6 +265,46 @@ async function prepareChatImage(file: File): Promise<StagedChatImage> {
     height,
   };
 }
+
+/**
+ * 실패한 답변 — 사용자가 읽을 수 있는 형태로.
+ *
+ * 예전에는 서버·전송 계층의 원문(`stream /api/... → 502`)이 그대로 말풍선에
+ * 들어갔다. 그 문장은 일반 사용자에게 아무 정보도 주지 못한다. 이제 화면에
+ * 서는 것은 **무슨 일이 있었는지 · 이제 뭘 하면 되는지 · 문의할 때 말할 코드**
+ * 세 가지이고, 원문은 [자세히]로 접어 둔다 — 지운 게 아니라 접은 것이라
+ * 개발자와 지원은 그대로 볼 수 있다.
+ */
+const ErrorBlock: React.FC<{ info: XgenErrorInfo }> = ({ info }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="chat-error" role="alert">
+      <div className="chat-error-head">
+        <span className="chat-error-icon" aria-hidden>
+          ⚠️
+        </span>
+        <span className="chat-error-title">{info.title}</span>
+      </div>
+      {info.hint && <p className="chat-error-hint">{info.hint}</p>}
+      <div className="chat-error-foot">
+        <span className="chat-error-code" title="문의하실 때 이 코드를 알려 주세요">
+          {info.code}
+        </span>
+        {info.detail && (
+          <button
+            type="button"
+            className="chat-error-toggle"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? '자세히 접기' : '자세히'}
+          </button>
+        )}
+      </div>
+      {open && info.detail && <pre className="chat-error-detail">{info.detail}</pre>}
+    </div>
+  );
+};
 
 export const Chat: React.FC<{
   session: SessionState;
@@ -1169,7 +1210,12 @@ export const Chat: React.FC<{
                       볼드/리스트/표/코드블록/링크. 사용자가 입력한 메시지는
                       리터럴 텍스트라 평문(pre-wrap)으로 둔다. */}
                   {m.role === 'assistant' ? (
-                    m.text ? (
+                    m.errorInfo ? (
+                      // 실패는 **구조**로 보여준다: 무슨 일인지 한 줄, 이제 뭘
+                      // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
+                      // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
+                      <ErrorBlock info={m.errorInfo} />
+                    ) : m.text ? (
                       <Markdown text={m.text} />
                     ) : (
                       m.streaming && <span className="cursor" />
@@ -1207,6 +1253,13 @@ export const Chat: React.FC<{
                   )}
                   {m.role === 'assistant' && m.text && m.streaming && <span className="cursor" />}
                 </div>
+                {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.
+                    (한 글자도 못 받았으면 본문 자리에 이미 같은 문구가 서 있다.) */}
+                {m.interrupted && m.text !== INTERRUPTED_TEXT && (
+                  <div className="shot-note" role="status">
+                    <span>{INTERRUPTED_TEXT}</span>
+                  </div>
+                )}
                 {/* 이 메시지와 함께 화면이 나갔다는 사실을 남긴다. 대화 기록만
                     봐도 언제 무엇을 보냈는지 알 수 있어야 한다. */}
                 {m.screenshot && (

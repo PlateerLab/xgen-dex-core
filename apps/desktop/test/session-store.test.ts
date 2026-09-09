@@ -12,6 +12,7 @@ import {
   type SessionTransport,
 } from '../src/renderer/src/session-store'
 import type { Agent, ChatEvent, HistoryAttachment } from '@dex/protocol'
+import { INTERRUPTED_TEXT } from '@dex/protocol'
 import type { BrowserSelectionResult } from '@dex/protocol/browser'
 
 function agent(workflowId: string, name = workflowId): Agent {
@@ -327,6 +328,63 @@ test('stop 은 스트림을 취소하고 스트리밍 상태를 내린다', () =
   assert.equal(streams[0].cancelled, true)
   assert.equal(store.get(k)!.streaming, false)
   assert.equal(store.get(k)!.messages.at(-1)!.streaming, false)
+})
+
+test('한 글자도 못 받고 중단하면 빈 말풍선이 아니라 중단 사실이 남는다', () => {
+  // 실제 신고: [정지] 를 누르면 답변이 **빈 칸**으로 남아 아무 일도 없었던 것처럼
+  // 보였다. 중단은 실패가 아니지만 사용자에게는 보여야 하는 사건이다.
+  const { store } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, 'q')
+  store.stop(k)
+  const last = store.get(k)!.messages.at(-1)!
+  assert.equal(last.text, INTERRUPTED_TEXT)
+  assert.equal(last.interrupted, true)
+  assert.ok(!last.error, '중단은 실패가 아니다 — 오류로 칠하지 않는다')
+})
+
+test('받다 만 글이 있으면 그 글을 지우지 않고 중단 표시만 얹는다', () => {
+  const { store, streams } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, 'q')
+  streams[0].onEvent({ kind: 'text', content: '여기까지 답하다' })
+  store.stop(k)
+  const last = store.get(k)!.messages.at(-1)!
+  assert.equal(last.text, '여기까지 답하다', '받은 답을 중단 문구로 덮어쓰면 안 된다')
+  assert.equal(last.interrupted, true)
+})
+
+test('실패는 원문이 아니라 코드·제목으로 남는다', () => {
+  // `stream /api/... → 502` 를 본문에 그대로 넣던 자리.
+  const { store, streams } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, 'q')
+  streams[0].onEvent({
+    kind: 'error',
+    detail: 'stream /api/agentflow/execute/based-id/stream → 502',
+    info: {
+      code: 'XGEN-921',
+      title: '서버에 연결하지 못했습니다.',
+      hint: '1~2분 뒤에 다시 시도해 주세요.',
+      detail: 'stream /api/agentflow/execute/based-id/stream → 502',
+      retryable: true,
+    },
+  })
+  const last = store.get(k)!.messages.at(-1)!
+  assert.equal(last.error, true)
+  assert.equal(last.errorInfo?.code, 'XGEN-921')
+  assert.ok(!last.text.includes('/api/'), '원문이 본문에 새어 나왔다')
+  assert.equal(store.get(k)!.error, '서버에 연결하지 못했습니다.', '세션 요약도 사용자 문구여야 한다')
+})
+
+test('info 없는 구형 error 이벤트도 코드가 붙는다 (서버·구버전 호환)', () => {
+  const { store, streams } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, 'q')
+  streams[0].onEvent({ kind: 'error', detail: '[ERROR510: 문서 검색 중 오류가 발생했습니다.]' })
+  const last = store.get(k)!.messages.at(-1)!
+  assert.equal(last.errorInfo?.code, 'XGEN-510')
+  assert.equal(last.errorInfo?.title, '문서 검색 중 오류가 발생했습니다.')
 })
 
 test('endChat 은 스트림을 끊고 세션을 지우며 다음 세션을 활성화한다', () => {

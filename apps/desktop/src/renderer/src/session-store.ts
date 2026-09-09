@@ -28,7 +28,9 @@ import type {
   Citation,
   HistoryAttachment,
   ToolEvent,
+  XgenErrorInfo,
 } from '@dex/protocol';
+import { INTERRUPTED_TEXT, describeStreamError } from '@dex/protocol';
 import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
@@ -64,6 +66,10 @@ export interface ChatMsg {
   citations?: Citation[];
   streaming?: boolean;
   error?: boolean;
+  /** 실패의 사용자용 형태(코드·제목·안내·원문). 화면은 이것을 그린다. */
+  errorInfo?: XgenErrorInfo;
+  /** 사용자가 [정지]로 끊은 턴. 실패가 아니라 **중단**이라 다르게 표시한다. */
+  interrupted?: boolean;
   /** 이 메시지와 함께 보낸 화면 캡처 — 무엇을 찍었는지(창 이름). */
   screenshot?: { sourceName: string; width: number; height: number };
   /** 사용자가 붙였거나 이력에서 복원한 그림. 미리보기 URL은 열린 세션에서만 보관한다. */
@@ -778,7 +784,10 @@ export class SessionStore {
         rt.citations = mergeCitations(rt.citations, ev.event.citations);
         nl.citations = rt.citations;
       } else if (ev.kind === 'error') {
-        nl.text = nl.text + (nl.text ? '\n\n' : '') + `⚠️ ${ev.detail}`;
+        // 본문에 원문을 붙이지 않는다 — `stream … → 502` 를 사용자에게 그대로
+        // 보이던 자리다. 코드·제목·안내는 errorInfo 로 넘기고 화면이 구조를
+        // 갖춰 그린다(원문은 그 안에서 [자세히]로 펼친다).
+        nl.errorInfo = ev.info ?? describeStreamError(ev.detail);
         nl.error = true;
       }
       let streaming = s.streaming;
@@ -801,7 +810,7 @@ export class SessionStore {
       if (ev.kind === 'end' || ev.kind === 'error') {
         streaming = false;
         nl.streaming = false;
-        if (ev.kind === 'error') error = ev.detail;
+        if (ev.kind === 'error') error = (ev.info ?? describeStreamError(ev.detail)).title;
         // 이 세션이 지금 포커스된 탭이 아니면 결과를 아직 못 본 것 — 탭 강제 전환 대신
         // 점(dot)으로만 알린다. 포그라운드에서 끝났으면 이미 화면에 보이므로 표시 안 함.
         unseen = this._active !== key;
@@ -842,7 +851,18 @@ export class SessionStore {
     this.patch(key, (s) => {
       const messages = s.messages.slice();
       const last = messages[messages.length - 1];
-      if (last?.role === 'assistant') messages[messages.length - 1] = { ...last, streaming: false };
+      if (last?.role === 'assistant') {
+        // 중단은 실패가 아니다 — 지금까지 받은 글은 그대로 두고 **중단됐다는
+        // 사실만** 남긴다. 한 글자도 못 받고 끊긴 턴은 예전에 빈 말풍선으로
+        // 남아 "아무 일도 없었던 것" 처럼 보였다(사용자 보고). 그 자리에는
+        // 중단 문구를 세운다.
+        messages[messages.length - 1] = {
+          ...last,
+          streaming: false,
+          interrupted: true,
+          text: last.text || INTERRUPTED_TEXT,
+        };
+      }
       return { ...s, messages, streaming: false, remote: false, updatedAt: this.now() };
     });
     this.emit();

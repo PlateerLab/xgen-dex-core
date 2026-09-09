@@ -7,6 +7,8 @@
  * tooling.
  */
 
+import type { XgenErrorInfo } from './errors';
+
 export interface ServerConfig {
   /** Gateway origin, e.g. "https://xgen.example.com" or "http://localhost:8000". */
   baseUrl: string;
@@ -119,7 +121,9 @@ export type ChatEvent =
   | { kind: 'ui_command'; surface: 'a2ui' | 'floui'; command: Record<string, unknown> }
   | { kind: 'quota'; level: 'warning' | 'exceeded'; data: Record<string, unknown> }
   | { kind: 'summary'; text: string; data: Record<string, unknown> }
-  | { kind: 'error'; detail: string }
+  // detail 은 **원문 그대로** 유지한다(로그·디버깅). info 는 사용자에게 보여줄
+  // 형태(코드·제목·안내) — 화면은 info 를, 로그는 detail 을 본다.
+  | { kind: 'error'; detail: string; info?: XgenErrorInfo }
   // 실행 환경 안내(커넥터 전용) — 이 턴이 어디서 도는지. connector_local = 이 PC 의
   // 사이드카, server_sandbox = 서버 sandbox(로컬 불가 사유 reason 포함),
   // blocked = 실행 자체가 차단됨(reason: 'quota_exceeded' 등 — 서버 폴백 없이 턴 종료).

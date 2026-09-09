@@ -1126,6 +1126,56 @@ function ChatSection({
           return [...prev, { role: 'assistant', text: live.text, remotePartial: true }];
         });
       },
+      // ── 다른 화면이 **지금** 돌리는 턴 ────────────────────────────
+      //
+      // onLiveTurn 과 자리를 나눈다: 그쪽은 폰을 다시 켰을 때 이미 돌던 턴의
+      // 스냅샷(매번 통째로 덮어쓴다)이고, 이쪽은 지금 일어나는 일의 흐름
+      // (토큰마다 이어붙인다)이다. 둘 다 같은 말풍선(remotePartial)을 쓰므로
+      // 어느 쪽이 먼저 와도 화면은 하나로 보인다.
+      //
+      // 이것이 없던 동안, 웹에서 던진 질문은 폰에 **턴이 끝날 때까지** 나타나지
+      // 않았다 — 상대가 무엇을 물었는지조차 완결 뒤에야 알 수 있었다.
+      onPeerTurn: (event) => {
+        // 내가 돌리는 턴이면 손대지 않는다. 서버도 표식으로 걸러 주지만, 화면이
+        // 그 사실에만 기대면 표식이 빠진 날 조용히 글이 두 번 그려진다.
+        if (runningRef.current) return;
+        // 구멍(gap)은 따로 메우지 않는다 — 종료 프레임이 완결 본문을 통째로
+        // 싣고 오므로 마지막에는 반드시 맞는다.
+        if (event.kind === 'gap') return;
+        if (event.kind === 'started') {
+          runningElsewhereRef.current = true;
+          setRunning(true);
+          setMessages((prev) => [
+            ...prev.filter((m) => !m.remotePartial),
+            { role: 'user', text: event.input },
+            { role: 'assistant', text: '', remotePartial: true },
+          ]);
+          return;
+        }
+        if (event.kind === 'exec') {
+          const d = event.data as { type?: string; content?: unknown } | undefined;
+          if (event.event !== 'message' || d?.type !== 'data') return;
+          const text = typeof d.content === 'string' ? d.content : '';
+          if (!text) return;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (!last?.remotePartial) return prev;
+            return [...prev.slice(0, -1), { ...last, text: (last.text || '') + text }];
+          });
+          return;
+        }
+        // 종료 — 완결 본문으로 덮어쓴다(중간에 몇 조각을 놓쳤어도 마지막이 맞는다).
+        // 뒤이어 오는 완결 push(onServerTurn)가 같은 답을 또 세우지 않도록
+        // io_id 를 미리 본 것으로 기록한다.
+        if (event.ioId) seenExternalIo.add(event.ioId);
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last?.remotePartial) return prev;
+          return [...prev.slice(0, -1), { role: 'assistant', text: event.output }];
+        });
+        runningElsewhereRef.current = false;
+        setRunning(false);
+      },
       onServerTurn: (turn) => {
         // 다른 기기에서 시작한 턴은 이 폰이 그린 적이 없다 — 완결 push 로 받는다.
         // (자기 실행 턴은 스트림이 이미 그렸으므로 거른다.)

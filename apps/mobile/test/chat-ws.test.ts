@@ -1,7 +1,12 @@
 // 채팅 WS — 구독/실행/스트리밍/종료/unsupported 계약 (가짜 WebSocket).
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createChat, dispatchExec, stripAgentMarkers } from '../src/lib/chat-ws';
+import {
+  createChat,
+  dispatchExec,
+  stripAgentMarkers,
+  type PeerTurnEvent,
+} from '../src/lib/chat-ws';
 
 class FakeWs {
   static last: FakeWs | null = null;
@@ -38,8 +43,12 @@ class FakeWs {
 // node 환경엔 WebSocket.OPEN 상수 접근이 필요하다 (핸들이 비교에 사용).
 (globalThis as { WebSocket?: unknown }).WebSocket = Object.assign(FakeWs, { OPEN: 1 });
 
-function makeChat(collect: { data: string[]; tools: string[]; errors: string[] }) {
+function makeChat(
+  collect: { data: string[]; tools: string[]; errors: string[] },
+  extra: { onPeerTurn?: (event: PeerTurnEvent) => void } = {},
+) {
   return createChat({
+    ...extra,
     wsBase: 'wss://gw.example',
     workflowId: 'wf-1',
     workflowName: '리서치봇',
@@ -60,11 +69,19 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
 
   assert.match(ws.url, /\/api\/agentflow\/ws\/geny-chat\/mob-wf-1-1$/);
   ws.open();
-  // 구독 프레임 — workflow 식별자 포함.
-  assert.deepEqual(ws.sent[0], {
-    type: 'subscribe',
-    data: { workflow_id: 'wf-1', workflow_name: '리서치봇', after: null },
-  });
+  // 구독 프레임 — workflow 식별자 + 이 화면의 표식.
+  //
+  // 통째 비교를 그만둔 이유: 필드가 하나 늘 때마다 이 단언이 깨지는데, 깨진 이유가
+  // "계약이 틀렸다" 가 아니라 "필드가 늘었다" 였다. 지켜야 할 사실만 본다.
+  const sub = ws.sent[0] as { type: string; data: Record<string, unknown> };
+  assert.equal(sub.type, 'subscribe');
+  assert.equal(sub.data.workflow_id, 'wf-1');
+  assert.equal(sub.data.workflow_name, '리서치봇');
+  assert.equal(sub.data.after, null);
+  // 표식이 없으면 서버가 자기 턴의 메아리를 걸러 줄 수 없다 — 이 화면만 글자를
+  // 두 번 본다. 실행 요청의 origin_id 와 **같은 값**이어야 짝이 맞는다.
+  assert.equal(typeof sub.data.origin_id, 'string');
+  assert.ok(String(sub.data.origin_id).startsWith('mobile-'));
   ws.recv({ type: 'subscribed' });
   assert.equal(chat.state(), 'connected');
 
@@ -75,6 +92,8 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   // 모바일 도구 주입 게이트 + 서버 sandbox 강제 — 이 두 값이 제품 정의다.
   assert.equal(exec.data.client_surface, 'connector');
   assert.equal(exec.data.execution_target, 'sandbox');
+  // 소켓과 실행이 같은 표식을 쓴다 — 다르면 서버가 이 화면을 못 알아본다.
+  assert.equal(exec.data.origin_id, sub.data.origin_id);
 
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: '안녕하' } } });
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: '세요' } } });
@@ -285,3 +304,83 @@ test('running 없는 하트비트는 상태를 건드리지 않는다 (구버전
   assert.deepEqual(seen, [false])
   chat.close()
 })
+
+
+// ── 다른 화면에서 하는 대화가 폰에도 보인다 ──────────────────────────
+//
+// 무엇이 없었나: 같은 대화를 폰과 웹에 나란히 열어 두고 웹에서 말을 걸면, 폰에는
+// **턴이 끝날 때까지** 아무것도 나타나지 않았다. 상대가 무엇을 물었는지조차
+// 완결 뒤에야 알 수 있었고, 그것도 서버가 하트비트마다 DB 를 다시 읽을 때까지
+// (최대 10초) 기다려야 했다.
+
+test('전파를 받겠다고 말한 화면만 선언을 보낸다', () => {
+  // 옛 화면과 새 화면이 같은 서버에 붙는다 — 선언이 곧 계약이다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  makeChat(got);
+  const plain = FakeWs.last as FakeWs;
+  plain.open();
+  assert.equal(
+    (plain.sent[0] as { data: Record<string, unknown> }).data.live_exec,
+    undefined,
+    'onPeerTurn 을 주지 않은 화면은 전파를 요청하지 않는다',
+  );
+
+  const peer: PeerTurnEvent[] = [];
+  makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const live = FakeWs.last as FakeWs;
+  live.open();
+  assert.equal((live.sent[0] as { data: Record<string, unknown> }).data.live_exec, true);
+});
+
+test('다른 화면의 질문이 곧바로 오고, 답이 토큰마다 자라고, 완결로 덮인다', () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 10 } });
+
+  ws.recv({ type: 'turn_started', seq: 11, data: { input: '주가 알려줘' } });
+  ws.recv({ type: 'exec', seq: 12, data: { event: 'message', data: { type: 'data', content: '삼성' } } });
+  ws.recv({ type: 'exec', seq: 13, data: { event: 'message', data: { type: 'data', content: '전자' } } });
+  ws.recv({ type: 'turn_ended', seq: 14, data: { io_id: 42, input: '주가 알려줘', output: '삼성전자입니다' } });
+
+  assert.deepEqual(
+    peer.map((e) => e.kind),
+    ['started', 'exec', 'exec', 'ended'],
+  );
+  assert.equal((peer[0] as { input: string }).input, '주가 알려줘');
+  assert.equal((peer[3] as { output: string }).output, '삼성전자입니다');
+  assert.equal((peer[3] as { ioId: number | null }).ioId, 42);
+});
+
+test('내 실행 스트림은 전파 경로로 새지 않는다', () => {
+  // 자기 턴의 exec 에는 seq 가 없다 — 그것이 두 경로를 가르는 표식이다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const chat = makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  void chat.execute('내 질문');
+  ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: '내 답' } } });
+
+  assert.deepEqual(peer, [], '자기 스트림이 피어 경로로 가면 글자가 두 번 그려진다');
+  assert.deepEqual(got.data, ['내 답'], '자기 스트림은 그대로 자기 콜백으로 간다');
+});
+
+test('번호가 건너뛰면 알린다', () => {
+  // 밀어 주는 구조는 유실을 없앨 수 없다 — 셀 수 있게 만드는 것이 우리가 할 수
+  // 있는 일이고, 그래야 "혹시 몰라 계속 다시 읽기" 를 안 해도 된다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 10 } });
+  ws.recv({ type: 'exec', seq: 11, data: { event: 'message', data: {} } });
+  assert.equal(peer.filter((e) => e.kind === 'gap').length, 0, '이어지는 번호는 구멍이 아니다');
+  ws.recv({ type: 'exec', seq: 14, data: { event: 'message', data: {} } });
+  assert.equal(peer.filter((e) => e.kind === 'gap').length, 1, '11 다음에 14 — 12·13 이 사라졌다');
+});
+

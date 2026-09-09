@@ -62,7 +62,24 @@ fixSpecifiers(distDir);
 // ── 배포 디렉터리 ─────────────────────────────────────────────────
 mkdirSync(outDir, { recursive: true });
 cpSync(distDir, join(outDir, 'dist'), { recursive: true });
-cpSync(join(pkgDir, 'README.md'), join(outDir, 'README.md'));
+// README 는 **배포용 머리말**을 붙여 낸다. 레포 안 README 의 제목은 내부 이름
+// (`@dex/protocol`)인데, 그대로 올리면 npm 페이지가 설치 이름과 다른 제목을 단다 —
+// 받는 사람은 무엇을 설치해야 하는지 알 수 없다.
+const readme = readFileSync(join(pkgDir, 'README.md'), 'utf8')
+  .replace(/^#\s*@dex\/protocol\s*\n/, '');
+writeFileSync(join(outDir, 'README.md'), [
+  `# ${PUBLIC_NAME}`,
+  '',
+  '```bash',
+  `npm i ${PUBLIC_NAME}`,
+  '```',
+  '',
+  '> 모노레포(`PlateerLab/xgen-dex-core`) 안에서는 `@dex/protocol` 이라는 별칭으로',
+  '> 쓴다. 같은 코드이고, 밖으로 나갈 때만 이 이름이다 — npm 에 `@xgen` 스코프',
+  '> 권한이 없어 기존 `xgen-dex-cli` 와 같은 무스코프 규약을 따른다.',
+  '',
+  readme.trimStart(),
+].join('\n'));
 
 const source = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
 /**

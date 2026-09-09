@@ -361,8 +361,8 @@ const api = {
 
   // 에이전트 뷰어 — 읽기 전용 관측 데이터. 전부 GET, 변경 경로 없음.
   agentData: {
-    traceList: (wf: string): Promise<TraceListResult> =>
-      ipcRenderer.invoke(CHANNELS.agentTraceList, wf),
+    traceList: (wf: string, page?: number, pageSize?: number): Promise<TraceListResult> =>
+      ipcRenderer.invoke(CHANNELS.agentTraceList, wf, page, pageSize),
     traceDetail: (traceId: string): Promise<TraceDetail> =>
       ipcRenderer.invoke(CHANNELS.agentTraceDetail, traceId),
     memoryList: (wf: string): Promise<MemoryListResult> =>

@@ -18,6 +18,7 @@ import { xgen } from '../bridge';
 import { RefreshIcon } from '../brand/icons';
 import { Selector } from '../views/Selector';
 import { ArtifactFrame } from './ArtifactFrame';
+import { ViewerEmpty } from '../views/agent-viewer-shared';
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -139,10 +140,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
       ) : null}
 
       {!loading && items.length === 0 && !error ? (
-        <div className="viewer-note">
-          아직 아티팩트가 없습니다. 에이전트에게 화면을 만들어 달라고 하면
-          workspace/artifacts/ 아래에 만들고, 여기서 열립니다.
-        </div>
+        <ViewerEmpty title="아직 아티팩트가 없습니다" description="에이전트가 만든 화면이나 결과물을 이곳에서 열어볼 수 있습니다." />
       ) : null}
 
       {detail?.ready ? (

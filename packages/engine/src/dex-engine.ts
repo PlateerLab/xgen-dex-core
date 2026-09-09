@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ConnectorDevice } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, type ConversationTurn } from './conversation-watch';
-import { XgenClient } from '@dex/protocol';
+import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
@@ -209,6 +209,20 @@ export class DexEngine {
 
   /** 호스트(rpc 서버/TUI)가 설정 — 감시 중인 대화의 서버 push 완결 턴. */
   onConversationTurn: ((turn: ConversationTurn) => void) | null = null;
+
+  /**
+   * 호스트가 설정 — 감시 중인 대화에 **지금 도는 턴이 있는가**, 그리고 돌고
+   * 있다면 그 턴의 **여기까지**(`live`).
+   *
+   * 이 훅이 없던 동안 CLI 와 VSCode 는 소켓에서 이 신호를 아예 못 받았다.
+   * 허브를 onTurn 하나만 주고 만들었기 때문이다 — 데스크톱·모바일은 자기
+   * 허브를 따로 만들어 running 을 받고 있었으므로, 같은 서버 사실을 표면마다
+   * 다르게 알고 있었다. 히스토리를 부르는 순간의 running 만 알던 두 표면은
+   * 그 뒤 다른 기기에서 시작된 턴을 완결까지 놓쳤다.
+   */
+  onConversationRunning:
+    | ((event: { interactionId: string; running: boolean; live?: LiveTurnSnapshot | null }) => void)
+    | null = null;
   private conversationHub: ConversationWatchHub | null = null;
 
   /** 대화 소켓 감시 시작 — Job/sub-agent 트리거의 반응 턴이 실시간으로
@@ -221,9 +235,14 @@ export class DexEngine {
   ): Promise<void> {
     const record = await this.authenticatedRecord(requestedProfile);
     if (!this.conversationHub) {
-      this.conversationHub = new ConversationWatchHub((turn) => {
-        this.onConversationTurn?.(turn);
-      });
+      this.conversationHub = new ConversationWatchHub(
+        (turn) => {
+          this.onConversationTurn?.(turn);
+        },
+        (id, running, live) => {
+          this.onConversationRunning?.({ interactionId: id, running, live });
+        },
+      );
     }
     this.conversationHub.setDeps({
       baseUrl: () => record.serverUrl,

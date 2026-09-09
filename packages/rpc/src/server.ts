@@ -340,6 +340,11 @@ export class DexRpcServer {
         // 대화 소켓 감시 — 서버 주입 턴(트리거 반응)이 chat/serverTurn
         // notification 으로 실시간 흐른다 (새로고침 불필요).
         this.engine.onConversationTurn = (turn) => this.notify('chat/serverTurn', turn);
+        // 같은 소켓이 "지금 도는 턴이 있는가" 와, 돌고 있다면 그 턴의 여기까지를
+        // 알려 준다 — 구독 확립과 하트비트마다. 이게 없던 동안 CLI·VSCode 는
+        // 히스토리를 부르는 순간의 running 만 알았고, 그 뒤 다른 기기에서
+        // 시작된 턴은 완결까지 못 봤다.
+        this.engine.onConversationRunning = (event) => this.notify('chat/running', event);
         await this.engine.watchConversation(
           requiredString(params, 'workflowId'),
           optionalString(params, 'workflowName') ?? requiredString(params, 'workflowId'),

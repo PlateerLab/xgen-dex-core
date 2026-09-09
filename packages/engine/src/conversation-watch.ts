@@ -12,6 +12,7 @@
  * 다시 붙지 않는다.
  */
 
+import { parseSubscribed, type LiveTurnSnapshot } from '@dex/protocol';
 import WebSocket from 'ws';
 import { xgenWebSocketTlsOptions } from './connection-security';
 
@@ -54,10 +55,19 @@ export class ConversationWatchHub {
    *   아니라 대화에 매여 있어서(연결을 끊어도 계속 돈다), 웹이나 다른 기기에서
    *   시작한 턴이 이 앱을 켠 순간에도 돌고 있을 수 있다. 재연결 때마다 다시
    *   보고되므로, 소켓이 끊겼다 붙는 것만으로 상태가 스스로 맞춰진다.
+   *
+   *   세 번째 인자 `live` 는 그 턴의 **여기까지**다(구독 시점에만 온다;
+   *   하트비트·종료 알림에는 없어서 `undefined`). 이것이 없으면 다시 붙은 화면은
+   *   "진행 중" 표시와 **빈 답변**을 함께 보여 준다 — 서버는 열심히 돌고 있는데
+   *   화면에는 아무것도 없는 상태다.
    */
   constructor(
     private onTurn: (turn: ConversationTurn) => void,
-    private onRunning?: (interactionId: string, running: boolean) => void,
+    private onRunning?: (
+      interactionId: string,
+      running: boolean,
+      live?: LiveTurnSnapshot | null,
+    ) => void,
   ) {}
 
   setDeps(deps: WatchDeps): void {
@@ -169,8 +179,12 @@ export class ConversationWatchHub {
         return;
       }
       if (frame?.type === 'subscribed') {
-        // 서버가 구독 확립과 함께 "지금 도는 턴이 있는가" 를 알려 준다.
-        this.onRunning?.(interactionId, frame.data?.running === true);
+        // 서버가 구독 확립과 함께 "지금 도는 턴이 있는가" 와, 돌고 있다면
+        // **그 턴의 여기까지**를 알려 준다. 꺼내는 자리는 정본 파서 하나다
+        // (@dex/protocol parseSubscribed) — 예전에는 소비자 셋이 각자
+        // `data.running` 만 읽고 진행분은 통째로 버렸다.
+        const state = parseSubscribed(frame.data);
+        this.onRunning?.(interactionId, state.running, state.live);
         return;
       }
       if (frame?.type === 'exec_done' || frame?.type === 'exec_error' || frame?.type === 'exec_stopped') {

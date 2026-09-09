@@ -18,8 +18,9 @@ export interface ChatState {
    * 이 CLI 가 아니라 **다른 곳**(웹·앱·VSCode)에서 시작한 턴이 이 대화에서
    * 돌고 있는가. 서버 실행은 연결이 아니라 대화에 매여 있어서, 여기서 스트림을
    * 쥐고 있지 않아도 대화는 진행 중일 수 있다. 이때 작성기는 잠기지만
-   * (같은 대화에서 두 실행이 겹치면 안 된다) 토큰은 흐르지 않는다 — 서버는
-   * 진행 중인 턴을 재전송하지 않고, 완결된 턴만 히스토리에 남긴다.
+   * (같은 대화에서 두 실행이 겹치면 안 된다) 토큰이 흐르지는 않는다. 대신
+   * 서버가 진행 중인 턴을 짧게 사는 버퍼(turn_stream)에 남기므로, 구독 확립과
+   * 하트비트마다 **여기까지의 본문**을 스냅샷으로 받아 그 자리를 채운다.
    */
   remote: boolean;
   status?: string;
@@ -40,7 +41,23 @@ export type ChatAction =
       ioId: number;
       input: string;
       output: string;
+    }
+  | {
+      /**
+       * 대화 소켓이 알려 준 "지금 도는 턴이 있는가" + 그 턴의 진행분.
+       * 구독 확립·하트비트마다 오고, `text` 는 **처음부터 다시** 온다.
+       */
+      type: 'remote_running';
+      interactionId: string;
+      running: boolean;
+      text?: string;
     };
+
+/**
+ * 진행분 말풍선의 고정 id — 스냅샷이 올 때마다 이 한 줄을 덮어쓴다.
+ * 고정이라야 재연결이 잦아도 줄이 늘지 않는다.
+ */
+const REMOTE_PARTIAL_ID = 'remote-partial';
 
 export const initialChatState: ChatState = { messages: [], running: false, remote: false };
 
@@ -213,6 +230,33 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           { id: `failure-${state.messages.length}`, role: 'system', text: action.message },
         ],
       };
+    case 'remote_running': {
+      if (state.interactionId !== action.interactionId) return state;
+      // 이 CLI 가 스트림을 쥐고 있으면 그 턴은 '다른 곳' 이 아니다 — 토큰이
+      // 이미 흐르고 있으므로 스냅샷으로 덮으면 안 된다.
+      if (state.running && !state.remote) return state;
+      const messages = [...state.messages];
+      const idx = messages.findIndex((m) => m.id === REMOTE_PARTIAL_ID);
+      if (action.running && action.text) {
+        // 스냅샷은 매번 처음부터 오므로 **덮어쓴다**. 이어붙이면 같은 글이
+        // 재연결 횟수만큼 쌓인다.
+        const msg = { id: REMOTE_PARTIAL_ID, role: 'assistant' as const, text: action.text };
+        if (idx >= 0) {
+          if (messages[idx].text === action.text) return { ...state, running: true, remote: true };
+          messages[idx] = msg;
+        } else messages.push(msg);
+      } else if (!action.running && idx >= 0) {
+        // 끝났다 — 완결 턴이 히스토리로 온다(remote_finished). 진행분은 놓는다.
+        messages.splice(idx, 1);
+      }
+      return {
+        ...state,
+        messages,
+        running: action.running,
+        remote: action.running,
+        status: action.running ? '다른 곳에서 시작한 응답이 진행 중' : undefined,
+      };
+    }
     case 'server_turn': {
       // 서버가 주입한 완결 턴(트리거 반응) — 새로고침 없이 흐른다. 같은
       // io_id 재수신(하트비트 폴백)은 멱등.

@@ -86,6 +86,12 @@ export interface ChatMsg {
   surface?: 'connector_local' | 'server_sandbox' | 'blocked';
   /** 서버 폴백 사유·차단 사유·로컬 안내(동기화 미완료 등) — 있으면 배지 옆에 표시. */
   surfaceNote?: string;
+  /**
+   * 이 말풍선은 **다른 곳에서 도는 턴의 진행분**이다 — 우리가 받은 스트림이
+   * 아니라 서버 버퍼의 스냅샷이라, 새 스냅샷이 올 때마다 통째로 덮어쓴다.
+   * 턴이 끝나면 완결 턴이 이 자리를 대신한다.
+   */
+  remotePartial?: boolean;
 }
 
 /** Public, immutable-per-change snapshot of one open session. */
@@ -876,17 +882,49 @@ export class SessionStore {
    * 대화처럼 보이고, 그 위에 새 턴을 보내 같은 대화에서 둘이 겹친다.
    *
    * 폴링하지 않는 이유: 소켓이 구독 확립과 재연결마다 이 값을 다시 보고하므로,
-   * 끊겼다 붙는 것만으로 상태가 스스로 맞춰진다. 끝났다는 소식은 완결 턴 push
-   * (applyExternalTurn)로 온다 — 서버는 진행 중인 턴의 토큰을 재전송하지 않고
-   * 완결된 턴만 남기기 때문에, 우리가 할 수 있는 정직한 일이 그것뿐이다.
+   * 끊겼다 붙는 것만으로 상태가 스스로 맞춰진다.
+   *
+   * ``live`` — 돌고 있는 턴의 **여기까지**. 예전에는 이 자리가 비어 있었고
+   * (서버가 진행 중인 턴을 어디에도 남기지 않았다), 그래서 다시 켠 창은
+   * "진행 중" 표시와 **빈 말풍선**을 함께 보여 줬다. 이제 서버가 짧게 사는
+   * 버퍼(turn_stream)에 진행분을 남기고 구독 확립 때 실어 준다.
+   *
+   * 스냅샷은 재연결·하트비트마다 **처음부터 다시** 오므로 이어붙이면 같은 글이
+   * 여러 번 쌓인다. 전용 말풍선 하나를 두고 매번 덮어쓴다. 턴이 끝나면 완결
+   * 턴 push(applyExternalTurn)가 이 자리를 대신한다.
    */
-  setRemoteRunning(key: string, running: boolean): void {
+  setRemoteRunning(
+    key: string,
+    running: boolean,
+    live?: { text?: string } | null,
+  ): void {
     const s = this.map.get(key);
     if (!s) return;
-    // 이 창이 스트림을 쥐고 있으면 그 턴은 '다른 곳' 이 아니다.
+    // 이 창이 스트림을 쥐고 있으면 그 턴은 '다른 곳' 이 아니다 — 진행분도
+    // 우리 스트림이 이미 그리고 있으므로 덮어쓰면 안 된다.
     const next = running && !s.streaming;
-    if (s.remote === next) return;
-    this.patch(key, (cur) => ({ ...cur, remote: next, updatedAt: this.now() }));
+    const partial = next && typeof live?.text === 'string' ? live.text : '';
+    const hadPartial = s.messages[s.messages.length - 1]?.remotePartial === true;
+    if (s.remote === next && !partial && !hadPartial) return;
+    this.patch(key, (cur) => {
+      const messages = [...cur.messages];
+      const last = messages[messages.length - 1];
+      if (partial) {
+        if (last?.remotePartial) {
+          if (last.text === partial) return { ...cur, remote: next };
+          messages[messages.length - 1] = { ...last, text: partial };
+        } else {
+          messages.push({
+            role: 'assistant', text: partial, streaming: true, remotePartial: true,
+            surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+          });
+        }
+      } else if (!next && last?.remotePartial) {
+        // 턴이 끝났다 — 완결 턴이 곧 온다. 진행분 말풍선은 놓는다.
+        messages.pop();
+      }
+      return { ...cur, messages, remote: next, updatedAt: this.now() };
+    });
     this.emit();
   }
 

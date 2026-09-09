@@ -185,8 +185,19 @@ export function Dashboard(props: {
       if (turn.source !== 'subagent_report' || !turn.output) return;
       dispatch({ type: 'server_turn', ioId: turn.ioId, input: turn.input, output: turn.output });
     };
+    // 같은 소켓이 "지금 도는 턴이 있는가" 와 그 턴의 진행분을 알려 준다.
+    props.engine.onConversationRunning = (event) => {
+      if (event.interactionId !== chatInteractionRef.current) return;
+      dispatch({
+        type: 'remote_running',
+        interactionId: event.interactionId,
+        running: event.running,
+        text: typeof event.live?.text === 'string' ? event.live.text : undefined,
+      });
+    };
     return () => {
       props.engine.onConversationTurn = null;
+      props.engine.onConversationRunning = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

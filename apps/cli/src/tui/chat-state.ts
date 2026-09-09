@@ -1,3 +1,4 @@
+import { INTERRUPTED_TEXT, describeStreamError, formatErrorLine } from '@dex/protocol';
 import type { ChatEvent, HistoryTurn } from '@dex/engine';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'activity' | 'system';
@@ -121,7 +122,12 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
       status: undefined,
       messages: [
         ...state.messages,
-        { id: `error-${state.messages.length}`, role: 'system', text: event.detail },
+        {
+          id: `error-${state.messages.length}`,
+          role: 'system',
+          // 원문이 아니라 사용자용 문구 — 코드가 붙어 있어 지원 문의가 가능하다.
+          text: formatErrorLine(event.info ?? describeStreamError(event.detail)),
+        },
       ],
     };
   }
@@ -185,8 +191,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return eventState(state, action.event);
     case 'turn_completed':
       return { ...state, running: false, remote: false, status: undefined };
-    case 'turn_cancelled':
-      return { ...state, running: false, remote: false, status: undefined };
+    case 'turn_cancelled': {
+      // 중단은 실패가 아니다 — 받다 만 글은 그대로 두고, 한 글자도 못 받은
+      // 자리에만 중단 사실을 세운다(빈 답변으로 남으면 아무 일도 없었던 것처럼
+      // 보인다). 데스크톱·웹과 같은 문구를 쓴다.
+      const index = lastMessageIndex(state.messages, (m) => m.role === 'assistant');
+      const messages =
+        index >= 0 && !state.messages[index].text.trim()
+          ? state.messages.map((m, i) => (i === index ? { ...m, text: INTERRUPTED_TEXT } : m))
+          : state.messages;
+      return { ...state, messages, running: false, remote: false, status: undefined };
+    }
     case 'turn_failed':
       return {
         ...state,

@@ -11,6 +11,7 @@
  * node status, citations (inside tool_result), an `execution_io` id, and a
  * terminal `end`.
  */
+import { describeStreamError } from './errors';
 import { ApiError, HttpClient } from './client';
 import { SseParser } from './sse';
 import type { ChatEvent, ChatRequest, ChatStopResult, ToolEvent } from './types';
@@ -102,7 +103,16 @@ export function frameToChatEvent(
     case 'quota_exceeded':
       return d ? { kind: 'quota', level: 'exceeded', data: d } : null;
     case 'execution_suspended':
-      return { kind: 'error', detail: '워크플로우가 관리자에 의해 일시 중지되었습니다.' };
+      return {
+        kind: 'error',
+        detail: '워크플로우가 관리자에 의해 일시 중지되었습니다.',
+        info: {
+          code: 'XGEN-930',
+          title: '이 에이전트가 관리자에 의해 일시 중지되었습니다.',
+          hint: '관리자가 다시 시작할 때까지 기다려 주세요.',
+          retryable: false,
+        },
+      };
     case undefined:
     case '':
     case 'message':
@@ -124,8 +134,12 @@ export function frameToChatEvent(
     }
     case 'end':
       return { kind: 'end' };
-    case 'error':
-      return { kind: 'error', detail: String(d.detail ?? d.error ?? 'unknown error') };
+    case 'error': {
+      // 서버 실행 오류 — 대개 `[ERRORnnn: 사용자용 메시지]` 마커가 들어 있다.
+      // 원문(detail)은 그대로 두고, 화면이 쓸 형태(info)를 함께 싣는다.
+      const detail = String(d.detail ?? d.error ?? 'unknown error');
+      return { kind: 'error', detail, info: describeStreamError(detail) };
+    }
     // Some tool/agent frames arrive as bare `data:` JSON (no event: line).
     case 'tool_call':
     case 'tool_start':

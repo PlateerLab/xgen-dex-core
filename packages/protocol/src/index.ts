@@ -239,6 +239,7 @@ export class XgenClient {
   }
 }
 
+export * from './errors';
 export * from './types';
 export * from './agent-data';
 export * from './filestore';

@@ -43,6 +43,7 @@ import {
   type Agent,
   type ArtifactApiDeclaration,
   type ArtifactGalleryItem,
+  describeError,
   applyNotificationPreferenceUpdate,
   notificationProfileForAccount,
   shareBodyOf,
@@ -2625,8 +2626,12 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 사용자가 [중지]한 Abort 는 실패 알림이 아니다.
       if (!controller.signal.aborted && !sender.isDestroyed()) {
         const detail = err instanceof Error ? err.message : String(err);
-        sender.send(CHANNELS.chatEvent, streamId, { kind: 'error', detail });
-        publishTerminal('failed', detail);
+        // 원문(detail)은 로그·진단용으로 그대로 두고, 화면이 읽을 형태(info)를
+        // 함께 보낸다 — `stream … → 502` 같은 문장을 사용자에게 그대로 보이지
+        // 않기 위해서다. 알림 본문도 사용자용 문구를 쓴다.
+        const info = describeError(err);
+        sender.send(CHANNELS.chatEvent, streamId, { kind: 'error', detail, info });
+        publishTerminal('failed', info.title);
       }
     } finally {
       aborters.delete(streamId);

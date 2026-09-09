@@ -1,3 +1,4 @@
+import { describeStreamError, formatErrorLine } from '@dex/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { DexService } from './dex-service';
@@ -552,7 +553,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     else if (event.kind === 'tool') this.updateTool(event.event);
     else if (event.kind === 'node_status') this.status = `${event.event.nodeId} · ${event.event.status}`;
     else if (event.kind === 'quota') this.messages.push(message('system', '사용량', `사용량 ${event.level}`));
-    else if (event.kind === 'error') this.messages.push(message('system', '시스템', event.detail));
+    else if (event.kind === 'error')
+      this.messages.push(
+        message('system', '시스템', formatErrorLine(event.info ?? describeStreamError(event.detail))),
+      );
     else if (event.kind === 'status') this.status = event.detail || event.reason || event.surface;
     else if (event.kind === 'detached') {
       // 스트림이 끊겼을 뿐 서버의 턴은 계속 돈다(게이트웨이 1시간 컷·프록시·절전).

@@ -83,10 +83,14 @@ test('frameToChatEvent: node_status, execution_io, end, error', () => {
     executionIoId: 55,
   });
   assert.deepEqual(frameToChatEvent(undefined, '{"type":"end"}'), { kind: 'end' });
-  assert.deepEqual(frameToChatEvent(undefined, '{"type":"error","detail":"boom"}'), {
-    kind: 'error',
-    detail: 'boom',
-  });
+  // error 프레임은 원문(detail)에 더해 **사용자에게 보여줄 형태**(info: 코드·제목)를
+  // 함께 싣는다 — 화면이 원문을 그대로 뿌리지 않게 하기 위한 계약. see errors.test.ts.
+  const errorEvent = frameToChatEvent(undefined, '{"type":"error","detail":"boom"}');
+  assert.equal(errorEvent?.kind, 'error');
+  if (errorEvent?.kind === 'error') {
+    assert.equal(errorEvent.detail, 'boom');
+    assert.match(errorEvent.info?.code ?? '', /^XGEN-\d{3}$/);
+  }
 });
 
 test('frameToChatEvent: summary flattens outputs', () => {

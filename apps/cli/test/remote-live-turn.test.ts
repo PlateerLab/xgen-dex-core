@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { chatReducer, initialChatState, type ChatState } from '../src/tui/chat-state.ts';
+import { chatReducer, initialChatState, type ChatState } from '../src/tui/chat-state';
 
 const CONV = 'conv-1';
 

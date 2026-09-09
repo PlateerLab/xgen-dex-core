@@ -56,6 +56,31 @@ export interface ServerTurn {
   source: string;
 }
 
+/**
+ * 이 화면의 표식. **연결마다** 새로 만든다 — 기기가 아니라 화면 단위여야 한다
+ * (같은 계정으로 폰과 웹을 함께 열면 기기는 둘이지만, 표식은 화면이 소유한다).
+ *
+ * 서버는 이 표식으로 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다 —
+ * 자기 스트림으로 이미 받고 있으므로, 없으면 이 화면만 글자를 두 번 본다.
+ */
+export function newOriginId(): string {
+  return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * **다른 화면**(웹·PC 앱·다른 폰)이 돌리는 턴.
+ *
+ * 이것이 없던 동안, 웹에서 던진 질문은 폰 화면에 **턴이 끝날 때까지** 나타나지
+ * 않았고, 끝난 뒤에도 서버가 하트비트마다 DB 를 다시 읽을 때까지(최대 10초)
+ * 기다려야 했다.
+ */
+export type PeerTurnEvent =
+  | { kind: 'started'; input: string }
+  | { kind: 'exec'; event: string; data: unknown }
+  | { kind: 'ended'; ioId: number | null; input: string; output: string }
+  /** 전파에 구멍이 났다 — 이때만 다시 맞추면 된다. */
+  | { kind: 'gap' };
+
 export interface ChatWsHandle {
   execute(input: string): Promise<void>;
   stop(): void;
@@ -75,6 +100,14 @@ export interface ChatWsOptions {
   wsFactory?: (url: string) => WebSocket;
   /** 서버 push 완결 턴(트리거 반응 등) — 실시간 반영용. */
   onServerTurn?: (turn: ServerTurn) => void;
+  /**
+   * 다른 화면이 돌리는 턴 — 시작(질문 본문)·진행(토큰)·종료(완결 본문)·구멍.
+   *
+   * 이 콜백을 주면 구독할 때 서버에 `live_exec` 를 선언한다. 주지 않으면 서버는
+   * 전파 프레임을 보내지 않는다 — 옛 화면과 새 화면이 같은 서버에 붙기 때문에
+   * 그 선언이 계약이다.
+   */
+  onPeerTurn?: (event: PeerTurnEvent) => void;
   /**
    * 이 대화에 **지금 도는 턴이 있는가** — 구독 확립과 재연결마다 온다.
    *
@@ -188,6 +221,10 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
   let ws: WebSocket | null = null;
   let state: ChatWsState = 'connecting';
   let subscribed = false;
+  /** 이 화면의 표식 — 소켓과 실행 요청이 같은 값을 써야 짝이 맞는다. */
+  const originId = newOriginId();
+  /** 마지막으로 받은 전파 번호 — 간격이 곧 유실 신호다. */
+  let lastSeq = 0;
   let closedByUser = false;
   let attempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -254,6 +291,10 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
             workflow_id: opts.workflowId,
             workflow_name: opts.workflowName,
             after: null,
+            origin_id: originId,
+            // **남의 턴도 실시간으로 보겠다**는 선언. 콜백을 받은 화면만 말한다 —
+            // 서버는 말하지 않은 화면에 전파 프레임을 보내지 않는다.
+            ...(opts.onPeerTurn ? { live_exec: true } : {}),
           },
         }),
       );
@@ -274,9 +315,47 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         }
         return;
       }
+      // ── 다른 화면이 돌리는 턴 ──────────────────────────────────────
+      //
+      // 자기 턴은 서버가 표식으로 걸러 준다. 자기 실행 스트림의 exec 에는 seq 가
+      // 없다 — 그것이 두 경로를 가르는 표식이다.
+      if (
+        frame.type === 'turn_started' ||
+        frame.type === 'turn_ended' ||
+        (frame.type === 'exec' && typeof (frame as { seq?: unknown }).seq === 'number')
+      ) {
+        const seq = (frame as { seq?: number }).seq;
+        if (typeof seq === 'number') {
+          if (!(lastSeq === 0 || seq === lastSeq + 1)) opts.onPeerTurn?.({ kind: 'gap' });
+          lastSeq = seq;
+        }
+        const d = (frame.data ?? {}) as Record<string, unknown>;
+        if (frame.type === 'turn_started') {
+          opts.onPeerTurn?.({ kind: 'started', input: String(d.input ?? '') });
+        } else if (frame.type === 'turn_ended') {
+          opts.onPeerTurn?.({
+            kind: 'ended',
+            ioId: typeof d.io_id === 'number' ? d.io_id : null,
+            input: String(d.input ?? ''),
+            output: String(d.output ?? ''),
+          });
+        } else {
+          opts.onPeerTurn?.({
+            kind: 'exec',
+            event: String(d.event ?? 'message'),
+            data: (d as { data?: unknown }).data,
+          });
+        }
+        return;
+      }
       if (frame.type === 'subscribed') {
         subscribed = true;
         setState('connected');
+        // 번호 기준선. 재연결마다 다시 받으므로 끊긴 사이의 유실은 여기서 조용히
+        // 지나간다 — 그 구간은 완결 push(message)가 메운다.
+        lastSeq = typeof (frame.data as { seq?: unknown } | undefined)?.seq === 'number'
+          ? ((frame.data as { seq: number }).seq)
+          : 0;
         // 다른 기기에서 시작한 턴이 아직 도는가, 그리고 돈다면 **어디까지 왔나**.
         // 앞의 것이 없으면 폰에서는 대화가 끝난 것처럼 보여 그 위에 새 턴을 얹게
         // 되고, 뒤의 것이 없으면 "진행 중" 옆이 빈 말풍선으로 남는다.
@@ -374,6 +453,8 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
               // 모바일 도구 주입 게이트 — connector 표면이어야 커넥터-호스팅
               // MCP 카탈로그(모바일 도구)가 에이전트에 노출된다.
               client_surface: 'connector',
+              // 이 화면의 표식 — 서버가 이 턴의 전파를 여기로 되돌리지 않는다.
+              origin_id: originId,
               ...(opts.clientDeviceId ? { client_device_id: opts.clientDeviceId } : {}),
               // 실행은 항상 서버 sandbox — 모바일에는 로컬 실행이 없다.
               execution_target: 'sandbox',

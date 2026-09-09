@@ -25,6 +25,7 @@ import { Chat } from './Chat';
 import { Settings } from './Settings';
 import { AvatarSettings } from './AvatarSettings';
 import { AgentViewer } from './AgentViewer';
+import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
 import { AgentCreate } from './AgentCreate';
 import { ActivityBar, type SideView } from './ActivityBar';
 import { AgentPanel } from './AgentPanel';
@@ -217,6 +218,17 @@ export const Workspace: React.FC<{
   const [resizingSplit, setResizingSplit] = useState(false);
   const [surfaceRects, setSurfaceRects] = useState<Record<string, BrowserSurfaceRect>>({});
   const [browserSelection, setBrowserSelection] = useState<BrowserSelectionSession | null>(null);
+  const viewerNavigation = useRef(new Map<string, AgentViewerState>());
+  useEffect(() => {
+    const openViewers = new Set(
+      layout.groups.flatMap((group) =>
+        group.tabs.filter((tab) => tab.kind === 'agent-viewer').map((tab) => tab.id),
+      ),
+    );
+    for (const id of viewerNavigation.current.keys()) {
+      if (!openViewers.has(id)) viewerNavigation.current.delete(id);
+    }
+  }, [layout]);
   const layoutRef = useRef(layout);
   const layoutHostRef = useRef<HTMLDivElement | null>(null);
   const asideRef = useRef<HTMLElement | null>(null);
@@ -1109,12 +1121,27 @@ export const Workspace: React.FC<{
       );
     }
     if (active?.kind === 'agent-viewer' && active.workflowId) {
+      let navigation = viewerNavigation.current.get(active.id);
+      if (!navigation) {
+        navigation = createAgentViewerState();
+        viewerNavigation.current.set(active.id, navigation);
+      }
       return (
         <AgentViewer
           key={active.id}
           workflowId={active.workflowId}
           workflowName={active.workflowName}
           initialSub={active.viewerSub}
+          navigation={navigation}
+          onSubChange={(viewerSub) =>
+            setLayout((current) => ({
+              ...current,
+              groups: current.groups.map((item) => ({
+                ...item,
+                tabs: item.tabs.map((tab) => tab.id === active.id ? { ...tab, viewerSub } : tab),
+              })),
+            }))
+          }
           onClose={() => closeTab(active)}
         />
       );

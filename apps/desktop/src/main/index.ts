@@ -1485,9 +1485,11 @@ const conversationWatchHub = new ConversationWatchHub(
   },
   // 다른 기기에서 시작한 턴이 도는 중인가. 소켓이 끊겼다 붙을 때마다 다시
   // 보고되므로, 이 값은 폴링 없이도 스스로 맞춰진다.
-  (interactionId, running) => {
+  // 돌고 있으면 그 턴의 **여기까지**(live)도 함께 나른다 — 이게 없으면 다시
+  // 켠 창은 "진행 중" 표시와 빈 말풍선을 같이 보여 준다.
+  (interactionId, running, live) => {
     for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(CHANNELS.chatWatchRunning, { interactionId, running });
+      win.webContents.send(CHANNELS.chatWatchRunning, { interactionId, running, live });
     }
   },
 );

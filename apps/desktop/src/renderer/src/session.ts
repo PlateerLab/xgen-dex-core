@@ -100,6 +100,6 @@ export function useSessions(): StoreSnapshot {
 xgen?.chatWatch?.onTurn((turn) => sessionStore.applyExternalTurn(turn));
 // 같은 소켓이 "지금 도는 턴이 있는가" 도 알려 준다 — 다른 기기에서 시작한 실행을
 // 이 창이 [진행 중] 으로 이어 보이는 근거. 재연결마다 다시 오므로 폴링이 없다.
-xgen?.chatWatch?.onRunning(({ interactionId, running }) =>
-  sessionStore.setRemoteRunning(interactionId, running),
+xgen?.chatWatch?.onRunning(({ interactionId, running, live }) =>
+  sessionStore.setRemoteRunning(interactionId, running, live),
 );

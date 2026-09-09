@@ -828,9 +828,14 @@ const api = {
       ipcRenderer.on(CHANNELS.chatWatchTurn, h);
       return () => ipcRenderer.removeListener(CHANNELS.chatWatchTurn, h);
     },
-    /** 이 대화에 지금 도는 턴이 있는가 — 구독 확립/재연결 때마다 온다. */
+    /** 이 대화에 지금 도는 턴이 있는가 — 구독 확립/재연결 때마다 온다.
+     *  돌고 있으면 그 턴의 진행분(live)이 함께 온다. */
     onRunning: (
-      cb: (state: { interactionId: string; running: boolean }) => void,
+      cb: (state: {
+        interactionId: string;
+        running: boolean;
+        live?: { text: string; events: unknown[] } | null;
+      }) => void,
     ): (() => void) => {
       const h = (_e: unknown, state: Parameters<typeof cb>[0]) => cb(state);
       ipcRenderer.on(CHANNELS.chatWatchRunning, h);

@@ -385,12 +385,14 @@ export class AgentDataApi {
   constructor(private http: HttpClient) {}
 
   // ── 전체로그 ──────────────────────────────────────────────────
-  /** 이 에이전트의 실행 트레이스 목록(최근 50). */
-  traceList(workflowId: string): Promise<TraceListResult> {
+  /** Paginated execution summaries; existing callers still receive the most recent 50. */
+  traceList(workflowId: string, page = 1, pageSize = 50): Promise<TraceListResult> {
+    const positiveInt = (value: number, fallback: number) =>
+      Number.isFinite(value) ? Math.max(1, Math.floor(value)) : fallback;
     const params = new URLSearchParams({
       workflow_id: workflowId,
-      page: '1',
-      page_size: '50',
+      page: String(positiveInt(page, 1)),
+      page_size: String(Math.min(50, positiveInt(pageSize, 50))),
     });
     return this.http.get<TraceListResult>(`/api/agentflow/trace/list?${params}`);
   }

@@ -2251,7 +2251,9 @@ ipcMain.handle(
 ipcMain.handle(CHANNELS.historyConversations, () => getClient().history.conversations());
 
 // ── IPC: Agent Viewer (읽기 전용 관측 데이터) ───────────────────────
-ipcMain.handle(CHANNELS.agentTraceList, (_e, wf: string) => getClient().agentData.traceList(wf));
+ipcMain.handle(CHANNELS.agentTraceList, (_e, wf: string, page?: number, pageSize?: number) =>
+  getClient().agentData.traceList(wf, page, pageSize),
+);
 ipcMain.handle(CHANNELS.agentTraceDetail, (_e, traceId: string) =>
   getClient().agentData.traceDetail(traceId),
 );

@@ -1083,8 +1083,8 @@ export const Chat: React.FC<{
           {onOpenViewer && (
             <button
               className="secondary"
-              onClick={() => onOpenViewer('memory')}
-              title="이 에이전트의 메모리·작업·도구·스토리지·전체로그를 새 탭으로 봅니다"
+              onClick={() => onOpenViewer('basic')}
+              title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
               상세보기
             </button>

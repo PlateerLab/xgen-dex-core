@@ -660,15 +660,25 @@ export const Workspace: React.FC<{
 
   const openAgentViewer = useCallback(
     (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub) => {
-      setLayout((current) =>
-        addWorkspaceTab(current, current.focusedGroupId, {
+      setLayout((current) => {
+        const opened = addWorkspaceTab(current, current.focusedGroupId, {
           id: `viewer:${workflowId}`,
           kind: 'agent-viewer',
           workflowId,
           workflowName,
           viewerSub: sub,
-        }),
-      );
+        });
+        // Explicit links choose their destination even when the viewer is already open.
+        return {
+          ...opened,
+          groups: opened.groups.map((group) => ({
+            ...group,
+            tabs: group.tabs.map((tab) =>
+              tab.id === `viewer:${workflowId}` ? { ...tab, viewerSub: sub } : tab,
+            ),
+          })),
+        };
+      });
     },
     [],
   );

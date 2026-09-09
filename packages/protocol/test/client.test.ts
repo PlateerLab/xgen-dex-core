@@ -10,6 +10,26 @@ import { AgentDataApi } from '../src/agent-data';
 import { HttpClient } from '../src/client';
 import { ChatApi } from '../src/chat';
 
+test('trace summaries forward pagination and preserve legacy defaults', async () => {
+  const seen: URL[] = [];
+  const api = new AgentDataApi(new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async (url: string) => {
+      seen.push(new URL(String(url)));
+      return new Response('{"traces":[]}', { headers: { 'Content-Type': 'application/json' } });
+    },
+  }));
+  await api.traceList('wf / &?');
+  await api.traceList('wf', 2, 20);
+  await api.traceList('wf', 1, 5);
+  await api.traceList('wf', Number.NaN, Number.POSITIVE_INFINITY);
+  await api.traceList('wf', -2, 500);
+  assert.equal(seen[0].pathname, '/api/agentflow/trace/list');
+  assert.equal(seen[0].searchParams.get('workflow_id'), 'wf / &?');
+  assert.deepEqual(seen.map((url) => [url.searchParams.get('page'), url.searchParams.get('page_size')]),
+    [['1', '50'], ['2', '20'], ['1', '5'], ['1', '50'], ['1', '50']]);
+});
+
 /**
  * A tiny mock of the XGEN gateway that implements exactly the endpoints the
  * connector uses, with the real wire shapes (SHA-256 password check, paged

@@ -20,7 +20,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { turnEventToChatEvent } from '../src/chat';
+import { TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, turnEventToChatEvent } from '../src/chat';
 
 /**
  * 서버 `controller/workflow/utils/turn_events.py` 의 TURN_EVENTS 표.
@@ -30,15 +30,10 @@ import { turnEventToChatEvent } from '../src/chat';
  * 대조**하고(test_turn_events.py), 여기는 그 표를 받아 적는다. 두 검사가 만나는
  * 지점이 이 목록이다.
  */
-const SERVER_TURN_EVENTS = [
-  'log', 'node_status', 'tool', 'execution_io',
-  'llm_progress', 'llm_end', 'llm_contract_error',
-  'a2ui_command', 'floui_command', 'canvas_command', 'download_artifact',
-  'quota_exceeded', 'quota_warning', 'execution_suspended',
-] as const;
+const SERVER_TURN_EVENTS = TURN_EVENT_NAMES;
 
 /** 기본 채널로 오는 것 — payload 의 `type` 으로 갈린다. */
-const MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
+const MESSAGE_TYPES = TURN_MESSAGE_TYPES;
 
 function payloadFor(name: string): Record<string, unknown> {
   if (name === 'execution_io') return { execution_io_id: 7 };

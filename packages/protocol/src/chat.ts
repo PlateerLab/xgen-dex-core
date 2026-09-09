@@ -79,6 +79,41 @@ export function frameToChatEvent(
 }
 
 /**
+ * 서버가 내보내는 **이름 있는** 턴 이벤트 전부.
+ *
+ * 서버 ``controller/workflow/utils/turn_events.py`` 의 TURN_EVENTS 표와 짝이다.
+ * 그쪽 테스트가 자기 표와 코어 방출을 기계적으로 대조하고, 이쪽은 그 표를 받아
+ * 적는다 — 레포가 달라 자동 대조가 안 되므로 **두 검사가 만나는 지점**이 이 목록이다.
+ *
+ * 목록을 값으로 내보내는 이유: 소비자(웹·모바일)가 자기 해석기가 뒤처졌는지
+ * **스스로 검사할 수 있어야** 한다. 예전에는 각자 이름을 손으로 나열해서, 서버가
+ * 이벤트를 늘려도 아무 신호가 나지 않았다 — 해석기 셋이 각각 15·16·10종을 알고
+ * 있었고 나머지는 조용히 버려졌다.
+ */
+export const TURN_EVENT_NAMES = [
+  'log',
+  'node_status',
+  'tool',
+  'execution_io',
+  'llm_progress',
+  'llm_end',
+  'llm_contract_error',
+  'a2ui_command',
+  'floui_command',
+  'canvas_command',
+  'download_artifact',
+  'quota_exceeded',
+  'quota_warning',
+  'execution_suspended',
+] as const;
+
+/**
+ * 기본 채널(SSE 의 이름 없는 프레임 / WS 의 ``event: 'message'``)로 오는 것들.
+ * payload 의 ``type`` 으로 갈린다.
+ */
+export const TURN_MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
+
+/**
  * 턴 이벤트 하나 → ChatEvent. **전송로를 모른다.**
  *
  * SSE 는 `event:` 줄과 `data:` 원문을, WS 는 `{event, data}` 봉투를 준다 — 봉투만

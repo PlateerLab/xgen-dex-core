@@ -187,8 +187,8 @@ export const Settings: React.FC<{
     (ls.blocked ?? []).map((b) => String(b).trim()).filter(Boolean),
   );
   const [blockedDraft, setBlockedDraft] = useState('');
-  // 파일 도구(ReadFile/WriteFile/ListDir/Search)가 접근할 수 있는 폴더 목록.
-  // 비우면 홈 폴더로 제한된다. 손 타이핑이 아니라 [+ 폴더 추가]의 네이티브
+  // 기본 셸과 파일 도구가 접근할 수 있는 폴더 목록.
+  // 비우면 기본 작업 폴더(미설정 시 홈)로 제한된다. [+ 폴더 추가]의 네이티브
   // 선택기로만 늘어난다 — 오타 하나로 스코프가 빗나가는 일을 없앤다.
   const [shellRoots, setShellRoots] = useState<string[]>(
     (ls.allowedRoots ?? []).map((r) => String(r).trim()).filter(Boolean),
@@ -1131,14 +1131,15 @@ export const Settings: React.FC<{
                     로컬 컨트롤 — 이 PC 를 에이전트가 조작합니다
                   </div>
                   <div className="tool-card-desc">
-                    켜면 에이전트가 이 컴퓨터의 파일 읽기/쓰기·목록·검색·클립보드·알림으로
+                    켜면 에이전트가 이 컴퓨터의 셸·파일 읽기/쓰기·목록·검색·클립보드·알림으로
                     "내 컴퓨터"를 직접 조작할 수 있습니다 — 커넥터가 자동으로 프록시가 됩니다
-                    (MCP 설정과 무관, 이 스위치만으로 동작). 파일 도구는 아래 허용 폴더로
-                    제한되고, 로그인 사용자 권한의 전체 셸은 아래에서 별도로 켜야 합니다.
+                    (MCP 설정과 무관, 이 스위치만으로 동작). 기본 셸과 파일 도구는 아래
+                    허용 작업 공간의 파일을 다룹니다. 전체 셸 접근을 켜면 셸의 접근 범위가
+                    작업 공간 밖으로 넓어집니다.
                     <br />
                     <b>에이전트의 기본 작업 공간은 여전히 서버의 sandbox 입니다.</b> 이 PC 의
-                    도구는 대화에서 <b>[로컬 컨트롤]</b> 이라는 문을 통해서만 열리므로, 코드·
-                    빌드 같은 자기 작업이 실수로 이 컴퓨터에서 돌지 않습니다.
+                    도구는 <b>이 PC의 작업</b>을 요청할 때 사용합니다. 일반 코드·빌드 작업은
+                    서버 작업 공간의 도구를 사용합니다.
                   </div>
                 </div>
                 <label className="switch">
@@ -1159,11 +1160,11 @@ export const Settings: React.FC<{
                   <div className="field">
                     <div className="tool-card-main">
                       <div className="tool-card-text">
-                        <div className="tool-card-title">전체 셸 접근 (고급)</div>
+                        <div className="tool-card-title">전체 셸 접근 — 작업 공간 밖까지 허용</div>
                         <div className="tool-card-desc">
-                          PowerShell/bash와 내부 실행 도구를 로그인 사용자 권한으로 실행합니다. 셸
-                          명령은 허용 폴더로 안전하게 제한할 수 없으므로 PC의 다른 경로에도 접근할
-                          수 있습니다.
+                          꺼짐: 기본 셸을 허용 작업 공간 안에서 사용합니다. 켜짐: 로그인 사용자
+                          권한으로 작업 공간 밖의 파일과 명령에도 접근합니다. 파일 읽기·쓰기
+                          전용 도구의 허용 폴더는 그대로 적용됩니다.
                         </div>
                       </div>
                       <label className="switch">
@@ -1181,13 +1182,12 @@ export const Settings: React.FC<{
                   </div>
                   <div className="field">
                     <span>
-                      허용 폴더 <span className="small muted">(파일 도구 접근 범위)</span>
+                      허용 작업 공간 <span className="small muted">(기본 셸·파일 도구 접근 범위)</span>
                     </span>
                     <div className="roots-list">
                       {shellRoots.length === 0 && (
                         <div className="roots-empty small muted">
-                          홈 디렉터리만 허용 (기본값)
-                          {shellCwd ? ' — 기본 작업 폴더는 항상 포함됩니다.' : ''}
+                          {shellCwd ? '기본 작업 폴더만 허용' : '홈 디렉터리만 허용 (기본값)'}
                         </div>
                       )}
                       {shellRoots.map((r, i) => (
@@ -1216,6 +1216,11 @@ export const Settings: React.FC<{
                         기본 작업 폴더는 목록과 무관하게 항상 허용에 포함됩니다.
                       </span>
                     )}
+                    <span className="small muted" style={{ marginTop: 4 }}>
+                      기본 셸은 macOS와 Linux에서 작업 공간의 파일 접근을 제한합니다.
+                      실행에 필요한 시스템 파일은 읽을 수 있으며, 셸의 홈·임시 파일은 작업
+                      공간 안에 생성됩니다. Windows의 작업 공간 제한 셸은 아직 지원하지 않습니다.
+                    </span>
                   </div>
                   <div className="field">
                     <span>
@@ -1312,9 +1317,8 @@ export const Settings: React.FC<{
                   <div className="tool-card-title">작업 공간 위치</div>
                   <div className="tool-card-desc">
                     에이전트의 기본 작업 공간은 <b>서버의 자기 워크스페이스(sandbox)</b>입니다.
-                    아래 폴더를 지정하고 스토리지 탭에서 에이전트를 연결하면, 그 에이전트의
-                    워크스페이스가 이 폴더 아래로 동기화되고 커넥터 대화에서는 이 폴더가 작업
-                    공간이 됩니다. 위의 도구 접근 스위치와는 별개 설정입니다.
+                    아래 폴더는 이 PC의 셸 명령을 실행하는 기본 위치이며 허용 작업 공간에
+                    포함됩니다. 파일 동기화 설정은 에이전트의 서버 실행 위치를 바꾸지 않습니다.
                   </div>
                 </div>
               </div>

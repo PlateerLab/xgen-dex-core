@@ -124,7 +124,7 @@ function describeEvent(event: ChatEvent): string | null {
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
   stdout.write(`로컬 컨트롤: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
-  stdout.write(`전체 셸 접근: ${status.config.shellEnabled ? '켜짐' : '꺼짐'}\n`);
+  stdout.write(`셸 범위: ${!status.config.enabled ? '로컬 컨트롤 꺼짐' : status.config.shellEnabled ? '전체 PC (작업 공간 밖까지 허용)' : '허용 작업 공간 안'}\n`);
   stdout.write(`작업 폴더: ${status.config.cwd || '(미설정)'}\n`);
   stdout.write(`허용 경로: ${status.config.allowedRoots.join(', ') || '(작업 폴더)'}\n`);
   stdout.write(`위험 명령: ${status.config.allowDangerous ? '허용' : '차단'}\n`);

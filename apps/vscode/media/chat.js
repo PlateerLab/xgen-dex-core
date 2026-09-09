@@ -798,8 +798,8 @@
     elements.localToolsState.classList.toggle('connected', !!localConfig?.enabled && !!bridge?.catalogSynced);
     elements.localToolsState.classList.toggle('warning', !!localConfig?.enabled && !!bridge?.error);
     elements.localToolsDescription.textContent = localConfig?.enabled
-      ? `${localConfig.shellEnabled ? 'Shell, ' : ''}ReadFile, WriteFile, ListDir, Search, Open · ${bridge?.advertisedTools || localTools.tools.length}개 광고`
-      : '허용 경로 안의 파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.';
+      ? `Shell (${localConfig.shellEnabled ? '전체 PC' : '허용 작업 공간'}), ReadFile, WriteFile, ListDir, Search, Open · ${bridge?.advertisedTools || localTools.tools.length}개 광고`
+      : '허용 작업 공간의 셸·파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.';
     elements.localToolsMessage.textContent = state.localToolsMessage || (!localConfig?.enabled
       ? '로컬 도구는 기본적으로 꺼져 있습니다.'
       : bridge?.catalogSynced

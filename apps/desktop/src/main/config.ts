@@ -221,9 +221,9 @@ export interface WorkspaceLayoutPersistConfig {
 /** 로컬 셸 접근 설정 (영속). local-tools.LocalShellConfig 와 구조 동일 —
  *  config 는 leaf 라 그 모듈을 import 하지 않고 형태만 미러한다. */
 export interface LocalShellPersistConfig {
-  /** 구조화 PC/파일 도구 마스터 스위치. 기본 OFF. */
+  /** 로컬 셸·PC·파일 도구 마스터 스위치. 기본 OFF. */
   enabled?: boolean;
-  /** 로그인 사용자 권한의 무제한 Shell/ShellJob. 별도 명시 opt-in. */
+  /** 허용 작업 공간 밖에서도 셸 실행을 허용. false면 작업 공간 제한 셸을 제공한다. */
   shellEnabled?: boolean;
   /** 명령 기본 작업 디렉터리. 비우면 홈. */
   cwd?: string;

@@ -120,6 +120,21 @@ export type ChatEvent =
   | { kind: 'download'; data: Record<string, unknown> }
   | { kind: 'ui_command'; surface: 'a2ui' | 'floui'; command: Record<string, unknown> }
   | { kind: 'quota'; level: 'warning' | 'exceeded'; data: Record<string, unknown> }
+  /**
+   * 에이전트가 **자기 워크플로 그래프를 고쳤다**(WorkflowSelf 자기진화). 캔버스를
+   * 열어 둔 화면은 이걸 받아 즉시 다시 그린다.
+   *
+   * @dex/protocol 이 이 이름을 몰라서, 서버는 보내는데 앱·CLI·VSCode 는 조용히
+   * 버리고 있었다(2026-09-09 실측 — 모바일만 알고 있었다).
+   */
+  | { kind: 'canvas_command'; command: Record<string, unknown> }
+  /**
+   * 계약 기반 자동화의 증빙 — 모델·temperature·prompt·usage 를 검증한 진행/완료.
+   *
+   * **세 표면 모두** 이 셋을 몰랐다. 서버의 WS 직렬화도 같이 버리고 있었으니,
+   * 이 이벤트는 만들어진 뒤 아무 데도 닿지 못한 채였다.
+   */
+  | { kind: 'llm_contract'; phase: 'progress' | 'end' | 'error'; data: Record<string, unknown> }
   | { kind: 'summary'; text: string; data: Record<string, unknown> }
   // detail 은 **원문 그대로** 유지한다(로그·디버깅). info 는 사용자에게 보여줄
   // 형태(코드·제목·안내) — 화면은 info 를, 로그는 detail 을 본다.

@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // 배포물은 **선언과 JS 를 실제로 낸다** — 워크스페이스 tsconfig 는 noEmit 이다
+    // (모노레포 안에서는 소스를 그대로 쓰기 때문). 그 설정으로 배포하면 빈 패키지가 나간다.
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"],
+    // 배포물의 소비자는 우리 tsconfig 의 paths 를 모른다. 프로토콜은 자립이므로
+    // (다른 @dex 를 쓰지 않는다) paths 없이 컴파일된다 — 그 사실을 여기서 강제한다.
+    "paths": {}
+  },
+  "include": ["src/**/*"],
+  "exclude": ["test/**/*"]
+}

@@ -22,6 +22,7 @@
  *   - `execution_target: 'sandbox'` — 실행은 항상 서버 sandbox. 모바일은 로컬
  *     워크스페이스 실행이 없다 (도구만 모바일에서 돈다).
  */
+import { turnEventToChatEvent } from '@dex/protocol';
 
 export type ChatWsState =
   | 'connecting'
@@ -92,62 +93,63 @@ const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_MAX_ATTEMPTS = 8;
 
-/** exec 프레임 1건 → 콜백. 'end'/'error' 반환 시 실행 종료. */
+/**
+ * exec 프레임 1건 → 콜백. ``'end'``/``'error'`` 반환 시 실행 종료.
+ *
+ * **해석은 정본이 한다** (``turnEventToChatEvent``). 예전에는 여기에 이벤트 이름을
+ * 손으로 나열한 분기가 있었고, 같은 뜻의 분기가 @dex/protocol 과 웹에도 따로
+ * 있었다 — 해석기가 셋이었다. 서버가 내보내는 것은 18종인데 아는 이름은 각각
+ * 15·16·10종이었고, 모르는 이벤트는 **조용히 버려졌다.**
+ *
+ * 그래서 새 이벤트가 생기면 세 곳을 고쳐야 했고, 안 고친 곳은 아무 신호 없이
+ * 다르게 동작했다. 이제 이름을 아는 일은 한 곳이고, 여기는 **이 화면이 그중
+ * 무엇을 쓰는가**만 정한다.
+ */
 export function dispatchExec(
   eventName: string,
   parsed: Record<string, unknown> | undefined,
   cb: ExecCallbacks,
 ): 'end' | 'error' | null {
-  if (eventName === 'tool') {
-    const p = parsed ?? {};
-    cb.onTool?.({
-      eventType: String(p.event_type ?? p.type ?? 'tool'),
-      toolName: p.tool_name as string | undefined,
-      error: p.error as string | undefined,
-    });
-    return null;
-  }
-  if (
-    eventName === 'log' ||
-    eventName === 'node_status' ||
-    eventName === 'execution_io' ||
-    eventName === 'canvas_command' ||
-    eventName === 'a2ui_command' ||
-    eventName === 'floui_command' ||
-    eventName === 'download_artifact' ||
-    eventName === 'quota_warning' ||
-    eventName === 'execution_suspended'
-  ) {
-    return null; // 모바일 화면이 아직 소비하지 않는 이벤트 — 무해 무시
-  }
-  if (eventName === 'quota_exceeded') {
-    cb.onError?.('토큰 한도를 초과했습니다.');
-    return 'error';
-  }
-  // event 명 없는 message — parsed.type 으로 분기 (웹 dispatchExecEvent 동일).
-  const type = (parsed as { type?: string } | undefined)?.type;
-  if (type === 'data') {
-    const content = (parsed as { content?: unknown }).content;
-    // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면
-    // 절반이 화면에 샌다. 원문을 그대로 넘기고, 표시는 누적본에
-    // stripAgentMarkers 를 적용한다 (App 렌더).
-    if (typeof content === 'string') cb.onData?.(content);
-    return null;
-  }
-  if (type === 'summary') {
-    const outputs = (parsed as { data?: { outputs?: unknown[] } }).data?.outputs;
-    if (Array.isArray(outputs) && outputs.length > 0) {
-      const first = outputs[0];
-      cb.onData?.(typeof first === 'string' ? first : JSON.stringify(first, null, 2));
+  const ev = turnEventToChatEvent(eventName, parsed ?? null);
+  if (!ev) return null;
+  switch (ev.kind) {
+    case 'tool': {
+      const p = parsed ?? {};
+      cb.onTool?.({
+        eventType: String(p.event_type ?? p.type ?? 'tool'),
+        toolName: p.tool_name as string | undefined,
+        error: p.error as string | undefined,
+      });
+      return null;
     }
-    return null;
+    case 'text':
+      // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면 절반이
+      // 화면에 샌다. 원문을 그대로 넘기고, 표시는 누적본에 stripAgentMarkers 를
+      // 적용한다 (App 렌더).
+      cb.onData?.(ev.content);
+      return null;
+    case 'summary': {
+      const outputs = (ev.data as { outputs?: unknown[] })?.outputs;
+      if (Array.isArray(outputs) && outputs.length > 0) {
+        const first = outputs[0];
+        cb.onData?.(typeof first === 'string' ? first : JSON.stringify(first, null, 2));
+      }
+      return null;
+    }
+    case 'quota':
+      if (ev.level !== 'exceeded') return null;
+      cb.onError?.('토큰 한도를 초과했습니다.');
+      return 'error';
+    case 'end':
+      return 'end';
+    case 'error':
+      cb.onError?.(ev.detail || '실행 오류');
+      return 'error';
+    default:
+      // 이 화면이 아직 안 쓰는 이벤트 — 무해 무시. **버리는 것과 모르는 것은
+      // 다르다**: 정본이 이미 이름을 알고 있으므로, 쓰기로 하는 날 여기 한 줄이면 된다.
+      return null;
   }
-  if (type === 'end') return 'end';
-  if (type === 'error') {
-    cb.onError?.(String((parsed as { message?: unknown })?.message ?? '실행 오류'));
-    return 'error';
-  }
-  return null;
 }
 
 /**

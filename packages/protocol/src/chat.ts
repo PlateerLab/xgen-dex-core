@@ -75,7 +75,67 @@ export function frameToChatEvent(
   frameEvent: string | undefined,
   rawData: string,
 ): ChatEvent | null {
-  const d = parseData(rawData);
+  return turnEventToChatEvent(frameEvent, parseData(rawData), rawData);
+}
+
+/**
+ * 서버가 내보내는 **이름 있는** 턴 이벤트 전부.
+ *
+ * 서버 ``controller/workflow/utils/turn_events.py`` 의 TURN_EVENTS 표와 짝이다.
+ * 그쪽 테스트가 자기 표와 코어 방출을 기계적으로 대조하고, 이쪽은 그 표를 받아
+ * 적는다 — 레포가 달라 자동 대조가 안 되므로 **두 검사가 만나는 지점**이 이 목록이다.
+ *
+ * 목록을 값으로 내보내는 이유: 소비자(웹·모바일)가 자기 해석기가 뒤처졌는지
+ * **스스로 검사할 수 있어야** 한다. 예전에는 각자 이름을 손으로 나열해서, 서버가
+ * 이벤트를 늘려도 아무 신호가 나지 않았다 — 해석기 셋이 각각 15·16·10종을 알고
+ * 있었고 나머지는 조용히 버려졌다.
+ */
+export const TURN_EVENT_NAMES = [
+  'log',
+  'node_status',
+  'tool',
+  'execution_io',
+  'llm_progress',
+  'llm_end',
+  'llm_contract_error',
+  'a2ui_command',
+  'floui_command',
+  'canvas_command',
+  'download_artifact',
+  'quota_exceeded',
+  'quota_warning',
+  'execution_suspended',
+] as const;
+
+/**
+ * 기본 채널(SSE 의 이름 없는 프레임 / WS 의 ``event: 'message'``)로 오는 것들.
+ * payload 의 ``type`` 으로 갈린다.
+ */
+export const TURN_MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
+
+/**
+ * 턴 이벤트 하나 → ChatEvent. **전송로를 모른다.**
+ *
+ * SSE 는 `event:` 줄과 `data:` 원문을, WS 는 `{event, data}` 봉투를 준다 — 봉투만
+ * 다르고 속은 같다(서버 `turn_events` 표가 그것을 보장한다). 그래서 해석은 여기
+ * 하나면 된다.
+ *
+ * 이 함수가 생긴 이유: 해석기가 **세 벌**이었다(@dex/protocol 15종 · 모바일 16종 ·
+ * 웹 10종). 서버가 내보내는 것은 18종인데 아무도 전부를 알지 못했고, 모르는
+ * 이벤트는 조용히 버려졌다 — 새 이벤트를 만들면 세 곳을 고쳐야 했고, 안 고친
+ * 곳은 아무 신호 없이 다르게 동작했다.
+ *
+ * @param name    이벤트 이름. SSE 의 이름 없는 기본 프레임은 `undefined`/`''`/`'message'`.
+ * @param payload 파싱된 payload. WS 는 이미 객체를 들고 있다.
+ * @param raw     원문(있으면). `log` 는 파싱 실패 시 원문을 그대로 싣는다.
+ */
+export function turnEventToChatEvent(
+  name: string | undefined,
+  payload: Record<string, unknown> | null,
+  raw = '',
+): ChatEvent | null {
+  const d = payload;
+  const frameEvent = name;
 
   // Named event frames.
   switch (frameEvent) {
@@ -89,7 +149,7 @@ export function frameToChatEvent(
           }
         : null;
     case 'log':
-      return { kind: 'log', data: d ?? rawData };
+      return { kind: 'log', data: d ?? raw };
     case 'execution_io':
       return d ? { kind: 'execution_io', executionIoId: Number(d.execution_io_id ?? 0) } : null;
     case 'download_artifact':
@@ -98,6 +158,16 @@ export function frameToChatEvent(
       return d ? { kind: 'ui_command', surface: 'a2ui', command: d } : null;
     case 'floui_command':
       return d ? { kind: 'ui_command', surface: 'floui', command: d } : null;
+    case 'canvas_command':
+      // 에이전트가 자기 그래프를 고쳤다(WorkflowSelf). 캔버스를 연 화면이 다시 그린다.
+      // 이 줄이 없어서 앱·CLI·VSCode 는 서버가 보낸 것을 조용히 버리고 있었다.
+      return d ? { kind: 'canvas_command', command: d } : null;
+    case 'llm_progress':
+      return d ? { kind: 'llm_contract', phase: 'progress', data: d } : null;
+    case 'llm_end':
+      return d ? { kind: 'llm_contract', phase: 'end', data: d } : null;
+    case 'llm_contract_error':
+      return d ? { kind: 'llm_contract', phase: 'error', data: d } : null;
     case 'quota_warning':
       return d ? { kind: 'quota', level: 'warning', data: d } : null;
     case 'quota_exceeded':

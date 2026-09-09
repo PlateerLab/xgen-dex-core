@@ -47,13 +47,17 @@ import {
   join as pathJoin,
   dirname,
   extname,
+  delimiter,
 } from 'node:path';
-import { augmentedPath, buildChildEnv } from './exec-resolve';
+import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
 import { interaction } from './host';
+import { prepareWorkspaceShell } from './workspace-shell';
 
 /** Reserved MCP "server" name for connector-hosted built-ins. Agents see the
  *  tool as `mcp_local_<Tool>` after backend sanitization — keep it stable. */
 export const LOCAL_SERVER = 'local';
+/** First-turn gateway recognized by the runtime's hierarchical tool exposure. */
+export const LOCAL_CONTROL_TOOL = 'LocalControl';
 export const SHELL_TOOL = 'Shell';
 /** 로컬 MCP 서버 자기관리 도구 — 로컬 MCP(cfg.mcp) 가 켜져 있을 때만 노출된다.
  *  에이전트가 이 PC(커넥터 로컬)에서 도는 MCP 서버를 스스로 추가/제거/조회한다. */
@@ -78,10 +82,11 @@ export interface LocalShellConfig {
   /** Master switch for the built-in local tools. Default OFF (opt-in) — running
    *  arbitrary local commands from the cloud must be turned on explicitly. */
   enabled?: boolean;
-  /** Expose unrestricted native Shell/ShellJob execution. Separate opt-in from
-   * structured PC/file tools because cwd/allowedRoots cannot confine a shell. */
+  /** Allow shell access outside the permitted workspace. False/omitted keeps
+   * Shell available with OS-enforced workspace restrictions. Persisted name
+   * retained for compatibility; this is NOT the shell's on/off switch. */
   shellEnabled?: boolean;
-  /** Default working directory for commands. Empty → the user's home. */
+  /** Default working directory. Empty → first allowed root, then user's home. */
   cwd?: string;
   /** Per-command wall-clock cap (ms). Default 120s; clamped to [1s, 1h]. */
   timeoutMs?: number;
@@ -93,10 +98,10 @@ export interface LocalShellConfig {
    */
   blocked?: string[];
   /**
-   * Directory roots the file tools (ReadFile/WriteFile/ListDir/Search) may touch.
+   * Directory roots file tools and the default workspace shell may touch.
    * A path outside every root is refused. Empty → defaults to the user's home
-   * directory. This is a real scope for the STRUCTURED file tools (unlike Shell,
-   * which is unrestricted once enabled). Paths may use `~` for home.
+   * directory (or cwd when configured). Full shell access lifts this scope for
+   * shell commands only. Paths may use `~` for home.
    */
   allowedRoots?: string[];
 }
@@ -176,14 +181,12 @@ export function shellConfig(cfg: LocalShellConfig | undefined): Required<LocalSh
   const listed = Array.isArray(c.allowedRoots)
     ? c.allowedRoots.map((r) => String(r).trim()).filter(Boolean)
     : [];
-  // 기본 작업 폴더는 **항상** 파일 도구의 허용 범위에 든다 — 에이전트
-  // 워크스페이스가 그 아래로 동기화되는데(local-sync) 허용 폴더 목록이 홈이나
-  // 다른 곳만 가리키면, 에이전트는 자기 워크스페이스조차 못 읽는다. 목록이
-  // 비어 있으면 기본(홈)도 유지한다 — cwd 하나로 좁히면 홈이 막힌다.
-  const allowedRoots = cwd ? [...(listed.length ? listed : ['~']), cwd] : listed;
+  // 기본 작업 폴더는 셸과 파일 도구의 허용 범위에 항상 포함한다.
+  // 목록이 비어 있으면 기본 작업 폴더만 허용하며 홈 전체를 추가하지 않는다.
+  const allowedRoots = [...new Set(cwd ? [...listed, cwd] : listed)];
   return {
-    enabled: c.enabled === true, // opt-in (default OFF) — 로컬 셸은 명시적으로 켜야 한다
-    shellEnabled: c.shellEnabled === true, // unrestricted Shell is a second explicit opt-in
+    enabled: c.enabled === true, // opt-in (default OFF) — 로컬 컨트롤의 사용 여부
+    shellEnabled: c.shellEnabled === true, // full access, not shell availability
     cwd,
     timeoutMs: Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Math.round(t))),
     blocked: Array.isArray(c.blocked) ? c.blocked.map((b) => String(b).trim()).filter(Boolean) : [],
@@ -192,8 +195,7 @@ export function shellConfig(cfg: LocalShellConfig | undefined): Required<LocalSh
 }
 
 export function shellEnabled(cfg: LocalShellConfig | undefined): boolean {
-  const normalized = shellConfig(cfg);
-  return normalized.enabled && normalized.shellEnabled;
+  return shellConfig(cfg).enabled;
 }
 
 /** Human label for the OS's native shell (shown in the tool description). */
@@ -443,18 +445,24 @@ export function shapeResult(
 }
 
 /**
- * 동기화된 에이전트 워크스페이스 안내 — 도구 설명에 붙는 공통 문장.
- *
- * 커넥터 세션의 에이전트는 서버 sandbox 가 아니라 **이 PC 의 폴더**를 자기
- * 워크스페이스로 쓴다(local-sync 가 서버 저장소와 맞춘다). 모델이 어느 도구를
- * 고를지는 이 설명이 전부이므로, 여기서 명시적으로 알려야 로컬 도구를 쓴다.
+ * 로컬 PC 도구의 실행 위치 안내. 동기화 여부가 기본 실행지를 바꾸지는 않는다.
+ * 내장 Bash/Read/Write의 서버 작업 공간과 사용자 PC의 물리 경로를 구분한다.
  */
 export const SYNCED_WORKSPACE_NOTE =
-  `\nAGENT WORKSPACE ON THIS COMPUTER: when connected through this desktop connector, ` +
-  `your own agent workspace is synced to a LOCAL folder — under the configured default ` +
-  `working folder, one subfolder per connected agent (named after the agent). PREFER ` +
-  `working there with these local tools; every change syncs back to your server ` +
-  `workspace automatically, so web sessions and the sandbox see the same files.`;
+  `\nEXECUTION SURFACE: the PC running this client. Paths belong to that PC. ` +
+  `File synchronization does not change the execution surface or share processes ` +
+  `and network ports with the agent's execution environment.`;
+
+export function localControlToolSchema(): LocalToolSchema {
+  return {
+    name: LOCAL_CONTROL_TOOL,
+    description:
+      `List currently enabled tools provided by the PC running this client, ` +
+      `with their descriptions and configured access scope. This is a read-only ` +
+      `capability inventory; it does not execute commands or change settings.`,
+    inputSchema: { type: 'object', properties: {} },
+  };
+}
 
 /** The Shell tool schema advertised to the agent. */
 /** McpAddServer — 이 PC(커넥터 로컬)에 MCP 서버를 등록/갱신하고 그 도구를 지금 세션
@@ -536,17 +544,27 @@ export function mcpListServersToolSchema(): LocalToolSchema {
   };
 }
 
-export function shellToolSchema(): LocalToolSchema {
+export function shellToolSchema(cfg?: LocalShellConfig): LocalToolSchema {
+  const fullAccess = cfg?.shellEnabled === true;
+  const configured = shellConfig(cfg);
+  const folders = configured.allowedRoots.length ? configured.allowedRoots : ['~'];
   return {
     name: SHELL_TOOL,
     description:
       `Run ONE command on the USER'S OWN COMPUTER (the local desktop where this connector runs), ` +
       `through its native shell (${nativeShellLabel()}), as the logged-in user. This is the ` +
       `physical machine — NOT the cloud workspace/sandbox. Use it to operate that computer: run ` +
-      `scripts, read/write local files, inspect the system, launch apps. SECURITY DOMAIN: this ` +
-      `tool has unrestricted logged-in-user filesystem access; allowed folders apply only to the ` +
-      `structured file tools. Never pass a physical path returned here to sandbox Read/Write. ` +
-      `Use local ReadFile/WriteFile for physical paths and /ws paths for workspace Read/Write.` +
+      `scripts and read/write local files. ` +
+      (fullAccess
+        ? `ACCESS MODE: full PC shell access. Commands may run outside the allowed workspace, ` +
+          `with the logged-in user's permissions. Structured file tools still use allowed folders. `
+        : `ACCESS MODE: workspace shell. Commands and child processes can read/write user files ` +
+          `only in the allowed local folders. System runtimes are readable; home and temporary ` +
+          `files use a temporary directory inside the workspace. Workspace shell currently supports ` +
+          `macOS and Linux (bubblewrap required). A restriction failure never falls back to full access. `) +
+      `Never pass a physical PC path to the server's Read/Write tools. ` +
+      `Default PC working folder: ${JSON.stringify(configured.cwd || folders[0])}. ` +
+      `Allowed local folders: ${JSON.stringify(folders)}. ` +
       SYNCED_WORKSPACE_NOTE +
       `\n` +
       `IMPORTANT for reliability:\n` +
@@ -574,7 +592,9 @@ export function shellToolSchema(): LocalToolSchema {
         cwd: {
           type: 'string',
           description:
-            'Working directory (absolute). Defaults to the configured directory or home.',
+            'Physical PC working directory. Relative paths use the configured working folder. ' +
+            'Default: configured folder, first allowed folder, or home. Must be in an allowed ' +
+            'folder unless full shell access is enabled.',
         },
         shell: {
           type: 'string',
@@ -955,7 +975,7 @@ export function readFileToolSchema(): LocalToolSchema {
       properties: {
         path: {
           type: 'string',
-          description: 'File path. Absolute, ~ for home, or relative to home.',
+          description: 'Physical PC file path. Absolute, ~ for home, or relative to the configured working folder.',
         },
         maxBytes: {
           type: 'number',
@@ -979,7 +999,7 @@ export function writeFileToolSchema(): LocalToolSchema {
       properties: {
         path: {
           type: 'string',
-          description: 'File path. Absolute, ~ for home, or relative to home.',
+          description: 'Physical PC file path. Absolute, ~ for home, or relative to the configured working folder.',
         },
         content: { type: 'string', description: 'Text to write.' },
         mode: { type: 'string', enum: ['overwrite', 'append'], description: 'Default overwrite.' },
@@ -997,7 +1017,7 @@ export function listDirToolSchema(): LocalToolSchema {
       SYNCED_WORKSPACE_NOTE,
     inputSchema: {
       type: 'object',
-      properties: { path: { type: 'string', description: 'Directory path (default: home).' } },
+      properties: { path: { type: 'string', description: 'Physical PC directory path (default: configured working folder).' } },
     },
   };
 }
@@ -1012,7 +1032,7 @@ export function searchToolSchema(): LocalToolSchema {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Literal substring to find.' },
-        path: { type: 'string', description: 'Root folder to search (default: home).' },
+        path: { type: 'string', description: 'Physical PC folder to search (default: configured working folder).' },
         maxResults: { type: 'number', description: 'Max matches (default 100, cap 500).' },
       },
       required: ['query'],
@@ -1098,7 +1118,8 @@ export class LocalToolProvider {
    */
   catalog(): LocalToolSchema[] {
     return [
-      shellToolSchema(),
+      localControlToolSchema(),
+      shellToolSchema(this.cfg),
       shellJobToolSchema(),
       openToolSchema(),
       readFileToolSchema(),
@@ -1122,10 +1143,9 @@ export class LocalToolProvider {
           notifyToolSchema(),
         ]
       : [];
-    // A native shell cannot be confined by validating cwd or parsing command
-    // text. It therefore has a second, explicit unrestricted-access opt-in.
-    const shell =
-      this.cfg.enabled && this.cfg.shellEnabled ? [shellToolSchema(), shellJobToolSchema()] : [];
+    // Both modes provide Shell. Full access changes the execution scope;
+    // the default mode wraps the process in an OS-enforced filesystem scope.
+    const shell = this.cfg.enabled ? [shellToolSchema(this.cfg), shellJobToolSchema()] : [];
     // 워크스페이스 브리지(_Exec 등)는 로컬 도구와 같은 능력 등급이므로 같은
     // 스위치에 묶인다. `_` 접두라 서버가 LLM 노출에서 걸러낸다 — 카탈로그에는
     // 실려야 서버 어댑터가 존재를 확인한다.
@@ -1137,7 +1157,8 @@ export class LocalToolProvider {
     // MCP 자기관리 도구는 로컬 셸(cfg.enabled) 과 무관하게 로컬 MCP 스위치로 게이트된다
     // (delegate 가 스스로 판단) — 로컬 MCP 만 켜도 에이전트가 서버를 추가/제거할 수 있다.
     const mcpAdmin = this.mcpAdmin?.advertise() ?? [];
-    return [...shell, ...pcTools, ...bridge, ...mcpAdmin, ...(this.delegate?.advertise() ?? [])];
+    const tools = [...shell, ...pcTools, ...bridge, ...mcpAdmin, ...(this.delegate?.advertise() ?? [])];
+    return tools.length ? [localControlToolSchema(), ...tools] : [];
   }
 
   async callTool(
@@ -1145,16 +1166,14 @@ export class LocalToolProvider {
     args: unknown,
     context?: LocalToolCallContext,
   ): Promise<LocalToolResult> {
+    if (tool === LOCAL_CONTROL_TOOL) return this.localControl();
     if (this.delegate?.owns(tool)) return this.delegate.callTool(tool, args, context);
     // MCP 자기관리 도구는 로컬 셸 게이트 이전에 처리(로컬 MCP 스위치로만 게이트됨).
     if (this.mcpAdmin?.owns(tool)) return this.mcpAdmin.callTool(tool, args);
     if (!this.cfg.enabled) throw new Error('로컬 도구 접근이 꺼져 있습니다 (설정 > 로컬 도구).');
-    if (
-      (tool === SHELL_TOOL || tool === SHELL_JOB_TOOL || tool === '_Exec') &&
-      !this.cfg.shellEnabled
-    ) {
+    if (tool === '_Exec' && !this.cfg.shellEnabled) {
       throw new Error(
-        '전체 셸 접근이 꺼져 있습니다. 파일 작업은 ReadFile/WriteFile/ListDir/Search를 사용하세요.',
+        '내부 _Exec은 전체 셸 접근이 필요합니다. 허용된 작업 공간의 명령은 Shell을 사용하세요.',
       );
     }
     if (this.workspaceBridge?.owns(tool)) return this.workspaceBridge.callTool(tool, args);
@@ -1170,9 +1189,38 @@ export class LocalToolProvider {
     throw new Error(`unknown local tool: ${tool}`);
   }
 
+  /** Return current capability data, including through text-only server bridges. */
+  private localControl(): LocalToolResult {
+    const tools = this.advertise().filter(
+      (tool) => tool.name !== LOCAL_CONTROL_TOOL && !tool.name.startsWith('_'),
+    );
+    if (!tools.length) throw new Error('이 PC에서 사용할 수 있는 로컬 도구가 없습니다.');
+    const roots = this.cfg.allowedRoots.length ? this.cfg.allowedRoots : ['~'];
+    const inventory = {
+      execution_surface: 'connector_local',
+      ...(this.cfg.enabled
+        ? {
+            working_directory: this.cfg.cwd || roots[0],
+            allowed_roots: roots,
+            shell_access: this.cfg.shellEnabled ? 'full_user' : 'workspace',
+            file_access: 'workspace',
+          }
+        : {}),
+      tools: tools.map((tool) => ({
+        name: `mcp_local_${tool.name}`,
+        description: tool.description || '',
+      })),
+    };
+    return {
+      content: [{ type: 'text', text: JSON.stringify(inventory) }],
+      structuredContent: inventory,
+    };
+  }
+
   /** Resolve + symlink-aware scope-check a file path against allowedRoots. */
   private async guardPath(p: unknown): Promise<string> {
-    const abs = await resolveWithinRootsReal(String(p ?? ''), this.cfg.allowedRoots);
+    const base = resolveOne(this.cfg.cwd || this.cfg.allowedRoots[0] || homedir(), homedir());
+    const abs = await resolveWithinRootsReal(resolveOne(String(p ?? ''), base), this.cfg.allowedRoots);
     if (!abs) {
       throw new Error(
         `[PATH_DOMAIN_MISMATCH] 경로가 허용된 로컬 범위 밖입니다: ${String(p ?? '')} ` +
@@ -1232,7 +1280,7 @@ export class LocalToolProvider {
 
   private async listDir(args: unknown): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = await this.guardPath(a.path ?? '~');
+    const abs = await this.guardPath(a.path ?? '');
     try {
       const names = await readdir(abs);
       const rows: string[] = [];
@@ -1258,7 +1306,7 @@ export class LocalToolProvider {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
     const query = String(a.query ?? '');
     if (!query) throw new Error('query must not be empty');
-    const abs = await this.guardPath(a.path ?? '~');
+    const abs = await this.guardPath(a.path ?? '');
     const maxResults = Math.max(1, Math.min(500, Number(a.maxResults) || 100));
     const hits: string[] = [];
     const skipDirs = new Set([
@@ -1384,7 +1432,20 @@ export class LocalToolProvider {
   private async shell(args: unknown): Promise<LocalToolResult> {
     const { command, cwd, shell, timeoutMs, backgroundAfterMs, background } = coerceShellArgs(args);
     if (!command.trim()) throw new Error('command must not be empty');
-    if (isBlocked(command, this.cfg.blocked)) {
+    const cfg = this.cfg;
+    const defaultCwd = resolveOne(cfg.cwd || cfg.allowedRoots[0] || homedir(), homedir());
+    let runCwd = resolveOne(cwd || defaultCwd, defaultCwd);
+    if (!cfg.shellEnabled) {
+      const allowed = await resolveWithinRootsReal(runCwd, cfg.allowedRoots);
+      if (!allowed) {
+        throw new Error(
+          `[PATH_DOMAIN_MISMATCH] 셸 작업 폴더가 허용 범위 밖입니다: ${runCwd}. ` +
+          '허용 폴더 안에서 실행하거나 설정에서 허용 범위를 변경하세요.',
+        );
+      }
+      runCwd = allowed;
+    }
+    if (isBlocked(command, cfg.blocked)) {
       throw new Error(`명령 '${firstToken(command)}' 은(는) 차단 목록에 있어 실행할 수 없습니다.`);
     }
     // 되돌리기 어려운 명령은 사용자 승인을 받는다 (위험 패턴만 — 일반 명령은 확인 없이).
@@ -1396,26 +1457,52 @@ export class LocalToolProvider {
         isError: true,
       };
     }
-    const pathStr = await augmentedPath();
+    // A restricted command must not execute login startup files outside its
+    // wrapper just to discover PATH. Resolve common binary directories as data.
+    const pathStr = cfg.shellEnabled
+      ? await augmentedPath()
+      : [process.env.PATH || '', ...commonBinDirs()].join(delimiter);
     const userShellBin = IS_WIN ? null : process.env.SHELL || null;
     const { file, args: argv } = shellInvocation(command, userShellBin, shell);
     const env = buildChildEnv(pathStr);
-    const runCwd = cwd || this.cfg.cwd || homedir();
+    const roots = cfg.shellEnabled
+      ? []
+      : (
+          await Promise.all(
+            (cfg.allowedRoots.length ? cfg.allowedRoots : [homedir()]).map((root) =>
+              realpath(resolveOne(root, homedir())).catch(() => null),
+            ),
+          )
+        ).filter((root): root is string => root !== null);
+    const launch = cfg.shellEnabled
+      ? { file, args: argv, env, cleanup: async () => {} }
+      : await prepareWorkspaceShell(file, argv, env, runCwd, roots);
 
-    if (background) return this.spawnBackground(command, file, argv, env, runCwd);
+    if (background) {
+      return this.spawnBackground(
+        command, launch.file, launch.args, launch.env, runCwd, undefined, launch.cleanup,
+      );
+    }
 
     const timeout = Math.max(
       MIN_TIMEOUT_MS,
-      Math.min(MAX_TIMEOUT_MS, Math.round(timeoutMs || this.cfg.timeoutMs)),
+      Math.min(MAX_TIMEOUT_MS, Math.round(timeoutMs || cfg.timeoutMs)),
     );
     const autoBackgroundAfter = backgroundAfterMs ?? AUTO_BACKGROUND_AFTER_MS;
     if (timeout > autoBackgroundAfter) {
-      return this.spawnBackground(command, file, argv, env, runCwd, {
-        autoAfterMs: autoBackgroundAfter,
-        maxRuntimeMs: timeout,
-      });
+      return this.spawnBackground(
+        command,
+        launch.file,
+        launch.args,
+        launch.env,
+        runCwd,
+        { autoAfterMs: autoBackgroundAfter, maxRuntimeMs: timeout },
+        launch.cleanup,
+      );
     }
-    const r = await this.spawnCapture(file, argv, env, runCwd, timeout);
+    const r = await this.spawnCapture(launch.file, launch.args, launch.env, runCwd, timeout).finally(
+      launch.cleanup,
+    );
     if (r.error)
       return {
         content: [{ type: 'text', text: `셸 실행 실패: ${r.error.message}` }],
@@ -1565,6 +1652,7 @@ export class LocalToolProvider {
     env: Record<string, string>,
     cwd: string,
     options?: { autoAfterMs: number; maxRuntimeMs: number },
+    cleanup: () => Promise<void> = async () => {},
   ): Promise<LocalToolResult> {
     const detachedGroup = !IS_WIN;
     return new Promise<LocalToolResult>((resolve) => {
@@ -1572,6 +1660,7 @@ export class LocalToolProvider {
       // processes/pipe FDs without limit (finished jobs are evicted separately).
       const running = [...bgJobs.values()].filter((j) => j.status === 'running').length;
       if (running >= MAX_RUNNING_JOBS) {
+        void cleanup();
         resolve({
           content: [
             {
@@ -1594,6 +1683,7 @@ export class LocalToolProvider {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (e) {
+        void cleanup();
         resolve({
           content: [
             {
@@ -1638,6 +1728,7 @@ export class LocalToolProvider {
         resolve(r);
       };
       child.on('error', (e) => {
+        void cleanup();
         if (job.status === 'running') {
           job.status = 'error';
           job.errorMsg = e.message;
@@ -1651,6 +1742,7 @@ export class LocalToolProvider {
         });
       });
       child.on('close', (code, signal) => {
+        void cleanup();
         // Always record the real exit code/signal (even for a job we killed, so
         // list/poll can show it); only transition status if still running.
         job.code = code;
@@ -1664,7 +1756,7 @@ export class LocalToolProvider {
         if (maxRuntimeTimer) clearTimeout(maxRuntimeTimer);
         // Automatic foreground conversion preserves the ordinary foreground
         // result when the command finishes within the grace period.
-        if (options && !settled) {
+        if (!settled && (options || code !== 0 || signal)) {
           bgJobs.delete(job.id);
           done(shapeResult(job.stdout, job.stderr, code, signal));
         }

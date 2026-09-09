@@ -88,14 +88,24 @@ dex tools list
 dex tools status
 ```
 
-기본 지원 도구는 `ReadFile`, `WriteFile`, `ListDir`, `Search`, `Open`입니다. `Shell`과
-`ShellJob`은 PC 전체 경로에 접근할 수 있으므로 `dex tools configure --shell`로 별도
-활성화해야 합니다. 로컬 실행만 먼저
-검증하려면 다음과 같이 호출할 수 있습니다.
+기본 지원 도구는 `Shell`, `ShellJob`, `ReadFile`, `WriteFile`, `ListDir`, `Search`,
+`Open`입니다. 기본 셸은 허용 작업 공간의 파일만 읽고 쓰며, 명령의 자식 프로세스에도
+같은 범위를 적용합니다. 작업 폴더가 설정돼 있으면 허용 범위에 포함됩니다.
+`LocalControl`은 현재 사용 가능한 PC 도구와 접근 범위를 조회합니다.
+
+`dex tools configure --shell`은 **작업 공간 밖까지 셸 접근을 허용**합니다.
+`--no-shell`은 기본 작업 공간 제한으로 돌아갑니다. 셸 자체를 끄는 옵션이 아닙니다.
+파일 전용 도구는 전체 셸 접근과 무관하게 허용 폴더를 지킵니다.
+
+작업 공간 제한 셸은 macOS 및 Linux(bubblewrap 설치 필요)에서 지원합니다.
+Windows에서는 아직 지원하지 않으며, 제한 없는 실행으로 자동 전환하지 않습니다.
+시스템 런타임은 읽기 전용으로 제공하고, 홈·임시 파일은 작업 공간 안의 명령별 임시
+폴더를 사용합니다. 해당 폴더는 명령 종료 시 정리됩니다.
+
+기본 작업 공간에서 실행을 검증하려면 다음과 같이 호출합니다.
 
 ```bash
 dex tools run ListDir --args '{"path":"."}'
-dex tools configure --shell
 dex tools run Shell --args '{"command":"npm test","timeoutMs":120000}'
 ```
 

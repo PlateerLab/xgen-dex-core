@@ -890,13 +890,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div class="settings-card local-tools-card">
           <div class="local-tools-summary">
             <div class="local-tools-icon" aria-hidden="true">⌘</div>
-            <div><b>로컬 컨트롤 브리지</b><span id="local-tools-description">허용 경로 안의 파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.</span></div>
+            <div><b>로컬 컨트롤 브리지</b><span id="local-tools-description">허용 작업 공간의 셸·파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.</span></div>
             <label class="switch-control"><input id="local-tools-enabled" type="checkbox"><span aria-hidden="true"></span><em>사용</em></label>
           </div>
           <div class="local-tools-form">
-            <label class="dangerous-setting field-wide"><input id="local-tools-shell" type="checkbox"><span><b>전체 셸 접근</b><small>Shell은 허용 경로 제한 없이 로그인 사용자 권한 전체로 실행됩니다.</small></span></label>
+            <label class="dangerous-setting field-wide"><input id="local-tools-shell" type="checkbox"><span><b>전체 셸 접근 — 작업 공간 밖까지 허용</b><small>꺼짐: 허용 작업 공간의 기본 셸. 켜짐: 작업 공간 밖에서도 로그인 사용자 권한으로 실행. 작업 공간 제한 셸은 macOS·Linux에서 지원하며, 시스템 파일 읽기와 작업 공간 안의 임시 홈을 사용합니다.</small></span></label>
             <label class="settings-field field-wide"><span>작업 폴더</span><div class="field-with-action"><input id="local-tools-cwd" class="settings-input" type="text" spellcheck="false" placeholder="/path/to/project"><button id="use-workspace-root" class="secondary-button" type="button">현재 Workspace</button></div><small>Shell 명령의 기본 실행 위치입니다.</small></label>
-            <label class="settings-field field-wide"><span>허용 경로</span><textarea id="local-tools-roots" class="settings-textarea" rows="2" spellcheck="false" placeholder="한 줄에 하나씩 입력"></textarea><small>파일 도구와 Open이 접근할 수 있는 폴더입니다.</small></label>
+            <label class="settings-field field-wide"><span>허용 작업 공간</span><textarea id="local-tools-roots" class="settings-textarea" rows="2" spellcheck="false" placeholder="한 줄에 하나씩 입력"></textarea><small>기본 셸·파일 도구·Open의 접근 범위입니다. 비우면 작업 폴더, 작업 폴더도 없으면 홈을 사용합니다.</small></label>
             <label class="settings-field"><span>명령 제한 시간</span><div class="input-suffix"><input id="local-tools-timeout" class="settings-input" type="number" min="1000" max="3600000" step="1000"><span>ms</span></div></label>
             <label class="settings-field"><span>차단 명령</span><input id="local-tools-blocked" class="settings-input" type="text" spellcheck="false" placeholder="sudo, rm"><small>쉼표 또는 줄바꿈으로 구분합니다.</small></label>
             <label class="dangerous-setting field-wide"><input id="local-tools-dangerous" type="checkbox"><span><b>위험 명령 패턴 허용</b><small>파괴적 명령 차단을 해제합니다. 필요한 경우에만 사용하세요.</small></span></label>

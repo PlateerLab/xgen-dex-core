@@ -6,6 +6,7 @@ import { mkdtemp, symlink, writeFile } from 'fs/promises';
 import { join, resolve } from 'path';
 import {
   LOCAL_SERVER,
+  LOCAL_CONTROL_TOOL,
   NOTIFY_TOOL,
   OPEN_TOOL,
   SHELL_TOOL,
@@ -66,7 +67,7 @@ test('기본은 꺼짐(opt-in) — enabled 미지정이면 셸 접근 OFF', () =
   assert.equal(shellEnabled(undefined), false);
   assert.equal(shellEnabled({}), false);
   assert.equal(shellEnabled({ enabled: false }), false);
-  assert.equal(shellEnabled({ enabled: true }), false);
+  assert.equal(shellEnabled({ enabled: true }), true);
   assert.equal(shellEnabled({ enabled: true, shellEnabled: true }), true);
 });
 
@@ -103,13 +104,16 @@ test('shellConfig 는 timeout 을 [1s, 1h] 로 clamp 한다', () => {
   assert.equal(shellConfig({}).timeoutMs, 600_000); // 기본 10분
 });
 
-test('PC 도구와 전체 Shell은 별도 opt-in으로 노출된다', () => {
+test('기본 셸과 전체 접근 셸은 모두 로컬 컨트롤을 켜면 노출된다', () => {
   const p = new LocalToolProvider();
   p.configure({ enabled: false });
   assert.deepEqual(p.advertise(), []);
   p.configure({ enabled: true });
   const names = p.advertise().map((t) => t.name);
   assert.deepEqual(names, [
+    LOCAL_CONTROL_TOOL,
+    SHELL_TOOL,
+    SHELL_JOB_TOOL,
     OPEN_TOOL,
     'ReadFile',
     'WriteFile',
@@ -123,9 +127,40 @@ test('PC 도구와 전체 Shell은 별도 opt-in으로 노출된다', () => {
     p
       .advertise()
       .map((t) => t.name)
-      .slice(0, 2),
-    [SHELL_TOOL, SHELL_JOB_TOOL],
+      .slice(0, 3),
+    [LOCAL_CONTROL_TOOL, SHELL_TOOL, SHELL_JOB_TOOL],
   );
+});
+
+test('LocalControl은 실행 지시 없이 현재 도구 목록과 접근 범위를 반환한다', async () => {
+  const p = new LocalToolProvider();
+  await assert.rejects(p.callTool(LOCAL_CONTROL_TOOL, {}), /로컬 도구가 없습니다/);
+  p.configure({ enabled: true, cwd: '/project' });
+  const result = await p.callTool(LOCAL_CONTROL_TOOL, {});
+  const inventory = JSON.parse(result.content[0].text);
+  assert.deepEqual(inventory, result.structuredContent);
+  assert.equal(inventory.execution_surface, 'connector_local');
+  assert.equal(inventory.working_directory, '/project');
+  assert.equal(inventory.shell_access, 'workspace');
+  assert.equal(inventory.file_access, 'workspace');
+  assert.deepEqual(inventory.tools.map((tool: { name: string }) => tool.name),
+    p.advertise().filter((tool) => tool.name !== LOCAL_CONTROL_TOOL).map((tool) => `mcp_local_${tool.name}`));
+  p.configure({ enabled: true, shellEnabled: true, cwd: '/project' });
+  const full = (await p.callTool(LOCAL_CONTROL_TOOL, {})).structuredContent;
+  assert.equal(full?.shell_access, 'full_user');
+  assert.equal(full?.file_access, 'workspace');
+  assert.equal(full?.execution_surface, inventory.execution_surface);
+
+  p.configure({ enabled: false }, {
+    advertise: () => [{ name: 'BrowserTabs' }],
+    owns: (tool) => tool === 'BrowserTabs',
+    callTool: async () => { throw new Error('guide must not operate the browser'); },
+  });
+  const browserOnly = (await p.callTool(LOCAL_CONTROL_TOOL, {})).structuredContent;
+  assert.deepEqual(browserOnly?.tools, [{ name: 'mcp_local_BrowserTabs', description: '' }]);
+  assert.equal(browserOnly?.shell_access, undefined);
+  p.configure({ enabled: false });
+  assert.deepEqual(p.advertise(), []);
 });
 
 test('Notify 는 공통 알림 처리기에 에이전트/채팅 범위를 전달한다', async () => {
@@ -305,10 +340,10 @@ test('빈 command / 알 수 없는 도구는 거절한다', async () => {
   await assert.rejects(() => p.callTool('Nope', {}), /unknown local tool/);
 });
 
-test('전체 셸 opt-in이 없으면 Shell과 내부 _Exec을 거절한다', async () => {
+test('원시 내부 _Exec은 기본 셸의 작업 공간 제한을 우회하지 않는다', async () => {
   const p = new LocalToolProvider();
   p.configure({ enabled: true });
-  await assert.rejects(() => p.callTool(SHELL_TOOL, { command: 'echo no' }), /전체 셸 접근/);
+  assert.ok(p.advertise().some((t) => t.name === SHELL_TOOL));
   await assert.rejects(() => p.callTool('_Exec', {}), /전체 셸 접근/);
 });
 

@@ -20,7 +20,7 @@ import type { LocalShellConfig } from './local-tools';
 export interface LocalToolsConfig {
   /** 명시적 opt-in. false 면 로컬 도구가 전혀 노출되지 않는다. */
   enabled: boolean;
-  /** 로그인 사용자 권한의 무제한 Shell/ShellJob. 별도 명시 opt-in. */
+  /** 허용 작업 공간 밖의 셸 접근. false여도 작업 공간 제한 Shell/ShellJob은 제공한다. */
   shellEnabled: boolean;
   /** Shell 과 상대경로 파일 도구의 기본 작업 디렉터리. */
   cwd: string;

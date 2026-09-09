@@ -114,6 +114,62 @@ export const TURN_EVENT_NAMES = [
 export const TURN_MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
 
 /**
+ * 진행 중인 턴의 **여기까지** — 서버 `turn_stream` 버퍼의 스냅샷.
+ *
+ * 서버 실행은 연결이 아니라 대화에 매여 있다. 접속기를 닫아도 턴은 계속 도는데,
+ * 다시 켰을 때 그 진행분을 볼 길이 없었다: `subscribed` 는 `running: true` 만
+ * 알려 주고 히스토리에는 완결 턴만 있으니, 사용자에게는 **"진행 중" 표시와 빈
+ * 답변**이 함께 보인다 — 서버는 열심히 돌고 있는데 화면은 비어 있는 상태다.
+ */
+export interface LiveTurnSnapshot {
+  /** 지금까지의 답변 본문. 빈 문자열일 수 있다 — 아직 한 글자도 안 나온 턴이다. */
+  text: string;
+  /** 본문이 아닌 진행(도구·노드 상태 등). 서버가 아직 안 실으면 빈 배열. */
+  events: unknown[];
+}
+
+/** `subscribed` 프레임이 말하는 것 — 커서, 지금 도는 턴이 있는가, 그 진행분. */
+export interface SubscribedState {
+  cursor: number;
+  running: boolean;
+  /**
+   * `null` 과 `{text: ''}` 는 다르다. 전자는 "이 대화에 도는 턴이 없다",
+   * 후자는 "돌고 있는데 아직 한 글자도 안 나왔다" — 화면이 그 둘을 다르게 그린다
+   * (전자는 평소 화면, 후자는 빈 말풍선 + 진행 표시).
+   */
+  live: LiveTurnSnapshot | null;
+}
+
+/**
+ * `subscribed` 프레임의 data → {@link SubscribedState}.
+ *
+ * 세 소비자(엔진·모바일·웹)가 각자 `data.running` 만 꺼내 읽고 `live` 는 통째로
+ * 버리고 있었다 — 서버가 진행분을 실어 보내는데 받는 쪽이 없었다. 꺼내는 자리를
+ * 하나로 둬야 다음 필드가 늘 때도 세 곳이 같이 움직인다.
+ *
+ * 서버가 `live` 를 생략하거나(도는 턴 없음) 형태가 어긋나면 `live: null` 이다 —
+ * 구 서버에 붙어도 예전과 똑같이 동작한다.
+ */
+export function parseSubscribed(data: unknown): SubscribedState {
+  const d = (data ?? {}) as Record<string, unknown>;
+  const running = d.running === true;
+  const rawLive = d.live;
+  let live: LiveTurnSnapshot | null = null;
+  if (running && rawLive && typeof rawLive === 'object') {
+    const l = rawLive as Record<string, unknown>;
+    live = {
+      text: typeof l.text === 'string' ? l.text : '',
+      events: Array.isArray(l.events) ? l.events : [],
+    };
+  }
+  return {
+    cursor: typeof d.cursor === 'number' ? d.cursor : Number(d.cursor ?? 0) || 0,
+    running,
+    live,
+  };
+}
+
+/**
  * 턴 이벤트 하나 → ChatEvent. **전송로를 모른다.**
  *
  * SSE 는 `event:` 줄과 `data:` 원문을, WS 는 `{event, data}` 봉투를 준다 — 봉투만

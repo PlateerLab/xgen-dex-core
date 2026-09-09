@@ -83,6 +83,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private restoredLastConversation = false;
   private assistantMessageId: string | undefined;
   private status: string | undefined;
+  /** 다른 곳에서 도는 턴의 진행분을 담은 말풍선 — 매번 덮어쓸 대상. */
+  private remotePartialId: string | undefined;
   private error: string | undefined;
   private initialSearch: string | undefined;
   private localTools: LocalToolsStatus | undefined;
@@ -510,6 +512,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
       return;
     }
+    if (notification.method === 'chat/running') {
+      // 이 대화에 도는 턴이 있는가 — 그리고 돌고 있다면 그 턴의 **여기까지**.
+      //
+      // 예전에는 히스토리를 부르는 순간의 running 만 알고 5초 폴링으로
+      // 끝났는지만 물었다. 그래서 다시 붙은 화면에는 "진행 중입니다" 라는
+      // 안내와 **빈 자리**가 함께 있었다 — 서버는 열심히 돌고 있는데 보여 줄
+      // 것이 없었다. 이제 진행분을 받아 그 자리를 채운다.
+      const p = notification.params as
+        | { interactionId?: string; running?: boolean; live?: { text?: string } | null }
+        | undefined;
+      if (!p || p.interactionId !== this.interactionId) return;
+      if (!p.running) return; // 끝났다는 소식은 완결 턴/폴링이 다룬다.
+      if (!this.remoteRunning) this.watchRemoteRun();
+      const text = typeof p.live?.text === 'string' ? p.live.text : '';
+      if (text) this.showRemotePartial(text);
+      return;
+    }
     if (notification.method === 'localTools/status') {
       if (this.localTools && isLocalToolBridgeStatus(notification.params)) {
         this.localTools = { ...this.localTools, bridge: notification.params };
@@ -566,6 +585,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.watchRemoteRun();
     }
     this.scheduleState();
+  }
+
+  /**
+   * 다른 곳에서 도는 턴의 진행분을 화면에 세운다.
+   *
+   * 스냅샷은 재연결·하트비트마다 **처음부터 다시** 오므로 이어붙이면 같은 글이
+   * 여러 번 쌓인다. 그래서 전용 말풍선 하나를 두고 매번 덮어쓴다. 턴이 끝나면
+   * 완결 턴이 히스토리로 와서 이 자리를 대신한다(pollRemoteRun 이 다시 그린다).
+   */
+  private showRemotePartial(text: string): void {
+    const name = this.selectedAgent?.workflowName ?? 'Agent';
+    const existing = this.messages.find((item) => item.id === this.remotePartialId);
+    if (existing) {
+      if (existing.text === text) return;
+      existing.text = text;
+    } else {
+      const msg = message('assistant', name, text);
+      this.remotePartialId = msg.id;
+      this.messages.push(msg);
+    }
+    this.postState();
   }
 
   private updateAssistant(chunk: string): void {
@@ -704,6 +744,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private stopWatchingRemoteRun(): void {
     if (this.remotePoll) clearInterval(this.remotePoll);
     this.remotePoll = undefined;
+    // 진행분 말풍선은 여기서 놓는다 — 호출자가 곧 히스토리로 다시 그리거나
+    // 대화를 바꾼다. 남겨 두면 다음 턴의 진행분이 지난 턴 자리에 덮인다.
+    this.remotePartialId = undefined;
     if (this.remoteRunning) {
       this.remoteRunning = false;
       void this.setRunning(!!this.streamId);

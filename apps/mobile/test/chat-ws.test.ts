@@ -146,7 +146,12 @@ test('dispatchExec — summary/quota/error 이벤트 매핑', () => {
   assert.equal(dispatchExec('message', { type: 'summary', data: { outputs: ['요약'] } }, cb), null);
   assert.deepEqual(got, ['요약']);
   assert.equal(dispatchExec('quota_exceeded', {}, cb), 'error');
-  assert.equal(dispatchExec('message', { type: 'error', message: '노드 실패' }, cb), 'error');
+  // 서버는 오류를 **`detail`** 로 보낸다 (execution_core 의 6개 yield 전부, 그리고
+  // 웹도 parsed.detail 을 읽는다). 예전 이 테스트는 `message` 를 넣고 있었고,
+  // 구현도 `message` 를 읽었다 — 서버가 보내지 않는 필드라 모바일은 모든 오류를
+  // '실행 오류' 로만 보여 주고 **진짜 사유를 잃고 있었다.** 해석을 정본에 맡기며
+  // 드러난 잠복 버그다.
+  assert.equal(dispatchExec('message', { type: 'error', detail: '노드 실패' }, cb), 'error');
   assert.deepEqual(errs, ['토큰 한도를 초과했습니다.', '노드 실패']);
   assert.equal(dispatchExec('log', {}, cb), null); // 미소비 이벤트는 무해 무시
 });

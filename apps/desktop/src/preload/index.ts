@@ -841,6 +841,37 @@ const api = {
       ipcRenderer.on(CHANNELS.chatWatchRunning, h);
       return () => ipcRenderer.removeListener(CHANNELS.chatWatchRunning, h);
     },
+    /**
+     * **다른 화면**(다른 기기·웹 탭)이 돌리는 턴. 시작(질문 본문)·진행(토큰)·
+     * 종료(완결 본문)가 온다. 자기 턴은 서버가 걸러 준다.
+     */
+    onPeer: (
+      cb: (event: {
+        kind: 'started' | 'exec' | 'ended' | 'gap';
+        interactionId: string;
+        input?: string;
+        output?: string;
+        ioId?: number | null;
+        event?: string;
+        data?: unknown;
+      }) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
+      ipcRenderer.on(CHANNELS.chatWatchPeer, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatWatchPeer, h);
+    },
+    /**
+     * 대화 **목록** 변화 — 다른 기기에서 만든/지운/이름 바꾼 대화.
+     * 실행 시작·종료(`conversation_running`)도 오지만, 그것 때문에 목록 전체를
+     * 다시 읽으면 대화 하나가 도는 동안 목록이 계속 깜빡인다.
+     */
+    onConversationsChanged: (
+      cb: (event: { kind: string; interactionId: string; workflowId: string; running?: boolean }) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
+      ipcRenderer.on(CHANNELS.conversationsChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.conversationsChanged, h);
+    },
   },
 
   fileSystem: {

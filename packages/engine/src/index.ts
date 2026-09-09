@@ -53,3 +53,4 @@ export * from './local-tools-config';
 export * from './connection-security';
 export * from './deployment-defaults';
 export * from './conversation-watch';
+export * from './conversations-watch';

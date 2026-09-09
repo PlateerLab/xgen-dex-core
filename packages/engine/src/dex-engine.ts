@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ConnectorDevice } from '@dex/protocol';
 import { hostname } from 'node:os';
-import { ConversationWatchHub, type ConversationTurn } from './conversation-watch';
+import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
@@ -541,6 +541,9 @@ export class DexEngine {
             interactionId: resolved.interactionId,
             // 이 표면(CLI/VSCode)의 기기 — 멀티 디바이스에서 내 도구가 주입되게.
             clientDeviceId: await this.ensureDeviceId(),
+            // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같다. 서버는 이 표식으로
+            // 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다.
+            originId: DEX_ORIGIN_ID,
           },
           signal,
         )) {

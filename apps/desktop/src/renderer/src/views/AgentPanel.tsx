@@ -143,6 +143,20 @@ export const AgentPanel: React.FC<{
     void loadConversations();
   }, [loadConversations]);
 
+  // 다른 기기에서 일어난 목록 변화를 **밀어 받는다**. 예전에는 이 목록이 열릴 때
+  // 한 번 읽고 끝이라, 웹에서 만든 대화가 여기 없고 웹에서 지운 대화가 남아
+  // 눌러 보면 빈 대화가 열렸다. 주기적으로 묻지 않고, 바뀌었다는 말을 들었을
+  // 때만 다시 읽는다.
+  useEffect(() => {
+    const off = xgen?.chatWatch?.onConversationsChanged?.((event) => {
+      // 실행 시작·종료는 목록의 내용이 아니다 — 그것 때문에 다시 읽으면 대화
+      // 하나가 도는 동안 목록이 계속 깜빡인다.
+      if (event.kind === 'conversation_running') return;
+      void loadConversations();
+    });
+    return () => off?.();
+  }, [loadConversations]);
+
   // 랜딩: 최초 로드 때 마지막(또는 첫) 에이전트와의 대화를 바로 연다. 한 번만.
   const landedRef = useRef(false);
   useEffect(() => {

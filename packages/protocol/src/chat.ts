@@ -39,6 +39,12 @@ function toRequestBody(req: ChatRequest): Record<string, unknown> {
     ...(req.executionTarget ? { execution_target: req.executionTarget } : {}),
     // 멀티 디바이스 — 이 표면의 커넥터 기기. 서버 resolve_device 의 prefer.
     ...(req.clientDeviceId ? { client_device_id: req.clientDeviceId } : {}),
+    // 이 턴을 시작한 **화면**의 표식. 서버는 턴의 진행을 이 대화를 열어 둔 모든
+    // 화면에 밀어 주는데, 시작한 화면은 이 스트림으로 같은 것을 이미 받는다 —
+    // 표식이 있어야 서버가 그 화면에는 되돌려 보내지 않는다. 없으면 그 화면만
+    // 모든 글자를 두 번 본다. 기기(client_device_id)가 아니라 화면 단위다:
+    // 같은 PC 에서 앱과 웹을 나란히 열면 기기는 하나지만 화면은 둘이다.
+    ...(req.originId ? { origin_id: req.originId } : {}),
   };
 }
 

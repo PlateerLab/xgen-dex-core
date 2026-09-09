@@ -143,6 +143,7 @@ import type {
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
 import { ConversationWatchHub } from '@dex/engine/conversation-watch';
+import { ConversationsWatch } from '@dex/engine/conversations-watch';
 import { NotificationCenter } from './notification-center';
 import {
   openAttachmentTemp,
@@ -1492,7 +1493,26 @@ const conversationWatchHub = new ConversationWatchHub(
       win.webContents.send(CHANNELS.chatWatchRunning, { interactionId, running, live });
     }
   },
+  // 다른 화면이 돌리는 턴을 그대로 흘린다. 이것이 없던 동안, 웹에서 던진 질문은
+  // 이 앱 화면에 **턴이 끝날 때까지** 나타나지 않았다.
+  (event) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(CHANNELS.chatWatchPeer, event);
+    }
+  },
 );
+/**
+ * 대화 **목록** 소켓 — 사용자당 하나.
+ *
+ * 이것이 없던 동안, 웹에서 만든 대화는 이 앱 목록에 없었고 웹에서 지운 대화는
+ * 남아 있어 눌러 보면 빈 대화가 열렸다. 목록을 주기적으로 다시 읽는 대신,
+ * **바뀌었다는 말을 들었을 때만** 다시 읽는다.
+ */
+const conversationsWatch = new ConversationsWatch((event) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(CHANNELS.conversationsChanged, event);
+  }
+});
 ipcMain.handle(
   CHANNELS.chatWatchStart,
   (_e, workflowId: unknown, workflowName: unknown, interactionId: unknown) => {
@@ -1507,6 +1527,13 @@ ipcMain.handle(
       typeof workflowName === 'string' ? workflowName : workflowId,
       interactionId,
     );
+    // 목록 소켓은 대화와 무관하게 하나면 된다 — 이미 붙어 있으면 no-op 이다.
+    conversationsWatch.setDeps({
+      baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+      token: async () => liveAccessToken(),
+      allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+    });
+    conversationsWatch.start();
     return { ok: true };
   },
 );

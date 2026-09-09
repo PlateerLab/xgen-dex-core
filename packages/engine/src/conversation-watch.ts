@@ -26,6 +26,20 @@ export interface WatchDeps {
   allowPrivateCertificate: () => boolean;
 }
 
+/**
+ * **다른 화면**에서 벌어지는 턴 — 시작·진행·종료.
+ *
+ * 이것이 없던 동안, 앱과 웹을 나란히 열어 두고 한 쪽에서 말을 걸면 다른 쪽에는
+ * 턴이 끝날 때까지 아무것도 나타나지 않았다. 그리고 끝난 뒤에도 최대 10초 뒤에야
+ * 나타났다(서버가 하트비트마다 DB 를 다시 읽었다).
+ */
+export type PeerTurnEvent =
+  | { kind: 'started'; interactionId: string; input: string }
+  | { kind: 'exec'; interactionId: string; event: string; data: unknown }
+  | { kind: 'ended'; interactionId: string; ioId: number | null; input: string; output: string }
+  /** 전파에 구멍이 났다 — 이때만 히스토리를 다시 읽으면 된다. */
+  | { kind: 'gap'; interactionId: string };
+
 export interface ConversationTurn {
   interactionId: string;
   ioId: number;
@@ -43,7 +57,15 @@ interface WatchEntry {
   retryTimer: NodeJS.Timeout | null;
   heartbeat: NodeJS.Timeout | null;
   closed: boolean;
+  /** 마지막으로 받은 전파 번호 — 간격이 곧 유실 신호다. */
+  lastSeq: number;
 }
+
+/**
+ * 이 앱 화면의 표식. **프로세스마다 하나**다 — 같은 PC 에서 앱과 웹을 나란히
+ * 열면 기기는 하나지만 화면은 둘이고, 각자 자기 스트림을 본다.
+ */
+export const DEX_ORIGIN_ID = `dex-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 export class ConversationWatchHub {
   private entries = new Map<string, WatchEntry>();
@@ -68,6 +90,8 @@ export class ConversationWatchHub {
       running: boolean,
       live?: LiveTurnSnapshot | null,
     ) => void,
+    /** 다른 화면이 돌리는 턴 — 시작·진행·종료·구멍. */
+    private onPeer?: (event: PeerTurnEvent) => void,
   ) {}
 
   setDeps(deps: WatchDeps): void {
@@ -84,6 +108,7 @@ export class ConversationWatchHub {
       retryTimer: null,
       heartbeat: null,
       closed: false,
+      lastSeq: 0,
     };
     this.entries.set(interactionId, entry);
     this.connect(interactionId, entry);
@@ -105,6 +130,19 @@ export class ConversationWatchHub {
 
   stopAll(): void {
     for (const id of [...this.entries.keys()]) this.unwatch(id);
+  }
+
+  /**
+   * 번호가 하나씩 늘었는가. 늘지 않았으면 그 사이 프레임이 사라진 것이다.
+   *
+   * 밀어 주는 구조에서 유실은 없앨 수 없다 — **감지할 수 있게** 만드는 것이
+   * 우리가 할 수 있는 일이고, 그래야 "혹시 몰라 계속 다시 읽기" 를 안 해도 된다.
+   */
+  private checkSeq(interactionId: string, entry: WatchEntry, seq: unknown): void {
+    if (typeof seq !== 'number') return;
+    const ok = entry.lastSeq === 0 || seq === entry.lastSeq + 1;
+    entry.lastSeq = seq;
+    if (!ok) this.onPeer?.({ kind: 'gap', interactionId });
   }
 
   private scheduleRetry(interactionId: string, entry: WatchEntry): void {
@@ -148,6 +186,10 @@ export class ConversationWatchHub {
             workflow_id: entry.workflowId,
             workflow_name: entry.workflowName,
             after: null,
+            origin_id: DEX_ORIGIN_ID,
+            // **남의 턴도 실시간으로 보겠다**는 선언. 서버는 이 말을 한 화면에만
+            // 전파 프레임을 보낸다 — 옛 화면과 새 화면이 같은 서버에 붙는다.
+            live_exec: true,
           },
         }),
       );
@@ -158,10 +200,41 @@ export class ConversationWatchHub {
     });
 
     ws.on('message', (raw) => {
-      let frame: { type?: string; data?: Record<string, unknown> };
+      let frame: { type?: string; seq?: number; origin_id?: string; data?: Record<string, unknown> };
       try {
         frame = JSON.parse(String(raw));
       } catch {
+        return;
+      }
+      // ── 다른 화면이 돌리는 턴 ─────────────────────────────────────
+      //
+      // 자기 턴은 서버가 걸러 준다(origin_id). 자기 실행 스트림의 exec 에는
+      // seq 가 없다 — 그것이 두 경로를 가르는 표식이다.
+      if (
+        frame?.type === 'turn_started'
+        || frame?.type === 'turn_ended'
+        || (frame?.type === 'exec' && typeof frame.seq === 'number')
+      ) {
+        this.checkSeq(interactionId, entry, frame.seq);
+        const d = frame.data ?? {};
+        if (frame.type === 'turn_started') {
+          this.onPeer?.({ kind: 'started', interactionId, input: String(d.input ?? '') });
+        } else if (frame.type === 'turn_ended') {
+          this.onPeer?.({
+            kind: 'ended',
+            interactionId,
+            ioId: typeof d.io_id === 'number' ? d.io_id : null,
+            input: String(d.input ?? ''),
+            output: String(d.output ?? ''),
+          });
+        } else {
+          this.onPeer?.({
+            kind: 'exec',
+            interactionId,
+            event: String((d as { event?: unknown }).event ?? 'message'),
+            data: (d as { data?: unknown }).data,
+          });
+        }
         return;
       }
       if (frame?.type === 'unsupported') {
@@ -184,6 +257,9 @@ export class ConversationWatchHub {
         // (@dex/protocol parseSubscribed) — 예전에는 소비자 셋이 각자
         // `data.running` 만 읽고 진행분은 통째로 버렸다.
         const state = parseSubscribed(frame.data);
+        // 번호 기준선. 재연결마다 다시 받으므로 끊긴 사이의 유실은 여기서
+        // 조용히 지나간다 — 그 구간은 히스토리 재조회가 메운다.
+        entry.lastSeq = typeof frame.data?.seq === 'number' ? (frame.data.seq as number) : 0;
         this.onRunning?.(interactionId, state.running, state.live);
         return;
       }

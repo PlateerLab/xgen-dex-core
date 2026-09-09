@@ -245,6 +245,10 @@ export const CHANNELS = {
   /** 이 대화에 **지금 도는 턴이 있는가** — 대화 소켓의 구독 확립이 알려 준다.
    *  다른 기기에서 시작한 실행을 이 창이 [진행 중] 으로 이어 보이는 근거다. */
   chatWatchRunning: 'chat:watch-running',
+  /** 다른 화면(다른 기기·웹)이 돌리는 턴 — 시작·진행·종료·구멍. */
+  chatWatchPeer: 'chat:watch-peer',
+  /** 대화 **목록** 변화 — 다른 기기에서 만든/지운/이름 바꾼 대화. */
+  conversationsChanged: 'chat:conversations-changed',
   fsCloudReadRaw: 'fs:cloud-read-raw',
   fsCloudOfficePreview: 'fs:cloud-office-preview',
   fsCloudOfficePreviewPage: 'fs:cloud-office-preview-page',

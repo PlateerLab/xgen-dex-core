@@ -767,6 +767,77 @@ test('대화 소켓이 [진행 중] 을 켜고, 완결 턴이 도착하면 끈�
   assert.equal(store.get(key)?.streaming, true)
 })
 
+// ── 다른 화면에서 하는 대화가 이 창에도 보인다 ──────────────────────
+//
+// 무엇이 없었나: 같은 대화를 앱과 웹에 나란히 열어 두고 한 쪽에서 말을 걸면,
+// 다른 쪽에는 **턴이 끝날 때까지 아무것도** 나타나지 않았다. 상대가 무엇을
+// 물었는지조차 완결 뒤에야 알 수 있었고, 그것도 최대 10초 뒤였다(서버가
+// 하트비트마다 DB 를 다시 읽는 것이 유일한 길이었다).
+
+test('다른 화면의 질문이 곧바로 보이고, 답이 토큰마다 자란다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '웹에서 보낸 질문' })
+  let s = store.get(key)
+  assert.deepEqual(s?.messages.map((m) => m.text), ['웹에서 보낸 질문', ''])
+  assert.equal(s?.remote, true, '다른 곳에서 도는 턴이다')
+
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key,
+    event: 'message', data: { type: 'data', content: '삼성' },
+  })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key,
+    event: 'message', data: { type: 'data', content: '전자' },
+  })
+  s = store.get(key)
+  assert.equal(s?.messages[1].text, '삼성전자', '토큰이 이어붙어야 한다')
+  assert.equal(s?.messages[1].streaming, true)
+})
+
+test('다른 화면의 턴이 끝나면 완결 본문으로 덮어쓴다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '질문' })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key,
+    event: 'message', data: { type: 'data', content: '조각만' },
+  })
+  // 중간에 몇 조각을 놓쳤어도 마지막은 맞아야 한다 — 종료 프레임이 완결 본문을
+  // 통째로 싣고 온다.
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, output: '완전한 답' })
+  const s = store.get(key)
+  assert.equal(s?.messages[1].text, '완전한 답')
+  assert.equal(s?.messages[1].streaming, false)
+  assert.equal(s?.remote, false)
+})
+
+test('내가 돌리는 턴에는 전파가 끼어들지 않는다', async () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '내 턴')
+  await flush()
+  const before = store.get(key)?.messages.length
+  // 서버가 표식(origin_id)으로 걸러 주지만, 화면이 그 사실에만 기대면 표식이
+  // 빠진 날 조용히 글이 두 번 그려진다.
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '남의 질문' })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key,
+    event: 'message', data: { type: 'data', content: '남의 답' },
+  })
+  assert.equal(store.get(key)?.messages.length, before, '내 턴 위에 남의 턴이 얹혔다')
+})
+
+test('전파에 구멍이 나도 마지막은 맞는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '질문' })
+  store.applyPeerEvent({ kind: 'gap', interactionId: key })
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, output: '완결' })
+  assert.equal(store.get(key)?.messages[1].text, '완결')
+})
+
 test('내 스트림이 도는 동안의 소켓 running 은 [다른 곳] 이 아니다', async () => {
   const { store } = makeStore()
   const key = store.openNew(agent('A'))

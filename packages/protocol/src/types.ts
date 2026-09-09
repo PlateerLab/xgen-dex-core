@@ -182,6 +182,12 @@ export interface ChatRequest {
   /** 이 대화 표면의 커넥터 기기 id — 서버가 멀티 디바이스에서 "그 기기의
    *  도구"를 우선 주입한다 (없으면 최근 활동 기기 폴백). */
   clientDeviceId?: string;
+  /**
+   * 이 턴을 시작한 **화면**의 표식 — 대화 소켓(`ConversationWatchHub`)에 넘긴
+   * 값과 같아야 짝이 맞는다. 서버는 이 표식으로 시작한 턴의 전파를 그 화면에
+   * 되돌려 보내지 않는다(자기 스트림으로 이미 받고 있으므로).
+   */
+  originId?: string;
   includeLogs?: boolean;
   includeNodeStatus?: boolean;
   includeToolEvents?: boolean;

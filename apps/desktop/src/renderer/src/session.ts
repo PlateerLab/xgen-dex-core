@@ -12,6 +12,8 @@ import { browserStateStore } from './browser-state';
 import { teamsContextStore } from './teams-context';
 import { xgenyHistoryWorkspacePath } from '@dex/protocol/history';
 
+import { DEX_ORIGIN_ID } from '@dex/engine/conversation-watch';
+
 const HISTORY_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 // 이 설치의 커넥터 기기 id — 채팅 요청의 clientDeviceId (멀티 디바이스에서
@@ -30,7 +32,15 @@ export const sessionStore = new SessionStore({
   stream: (req, onEvent, context) =>
     xgen.chat.stream(
       browserStateStore.contextualize(
-        teamsContextStore.contextualize({ ...req, clientDeviceId: cachedDeviceId || undefined }),
+        teamsContextStore.contextualize({
+          ...req,
+          clientDeviceId: cachedDeviceId || undefined,
+          // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같아야 서버가 이 턴의
+          // 전파를 여기로 되돌리지 않는다(안 그러면 글자가 두 번 그려진다).
+          // 기기 id 와 다른 이유: 같은 PC 에서 앱과 웹을 나란히 열면 기기는
+          // 하나지만 화면은 둘이다.
+          originId: DEX_ORIGIN_ID,
+        }),
         context?.browserSelections,
       ),
       onEvent,
@@ -103,3 +113,6 @@ xgen?.chatWatch?.onTurn((turn) => sessionStore.applyExternalTurn(turn));
 xgen?.chatWatch?.onRunning(({ interactionId, running, live }) =>
   sessionStore.setRemoteRunning(interactionId, running, live),
 );
+// 그리고 **지금 일어나는 일**: 다른 화면이 돌리는 턴의 질문·토큰·완결.
+// 이것이 없던 동안 이 창은 남의 턴이 끝나기를 기다리는 수밖에 없었다.
+xgen?.chatWatch?.onPeer((event) => sessionStore.applyPeerEvent(event));

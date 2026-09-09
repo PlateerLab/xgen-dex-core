@@ -75,6 +75,20 @@ export interface TuiEngine {
         updatedAt: string;
       }) => void)
     | null;
+  /**
+   * 이 대화에 **지금 도는 턴이 있는가**, 그리고 돌고 있다면 그 턴의 여기까지.
+   * 구독 확립과 하트비트마다 온다 — 폴링이 필요 없다.
+   *
+   * 이 신호가 없던 동안 CLI 는 히스토리를 부르는 순간의 running 만 알았고,
+   * 그 뒤 다른 기기(웹·앱·모바일)에서 시작된 턴은 완결까지 못 봤다.
+   */
+  onConversationRunning?:
+    | ((event: {
+        interactionId: string;
+        running: boolean;
+        live?: { text: string; events: unknown[] } | null;
+      }) => void)
+    | null;
 }
 
 export interface TuiSession {

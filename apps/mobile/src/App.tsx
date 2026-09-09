@@ -95,6 +95,12 @@ interface Message {
   role: 'user' | 'assistant' | 'tool' | 'error';
   text: string;
   streaming?: boolean;
+  /**
+   * 다른 곳에서 도는 턴의 **진행분** — 우리가 받은 스트림이 아니라 서버
+   * 버퍼의 스냅샷이다. 재연결마다 처음부터 다시 오므로 이어붙이지 않고
+   * 이 말풍선 하나를 덮어쓴다. 턴이 끝나면 완결 턴이 이 자리를 대신한다.
+   */
+  remotePartial?: boolean;
 }
 
 // ── 팔레트 (라이트/다크) ─────────────────────────────────────────
@@ -1105,6 +1111,21 @@ function ChatSection({
         if (!isRunning) runningElsewhereRef.current = false;
         if (isRunning !== runningRef.current) setRunning(isRunning || runningRef.current);
       },
+      // 다른 곳에서 도는 턴이 어디까지 왔는가 — 구독 확립 때 서버가 준다.
+      // 이게 없으면 폰을 다시 켠 화면은 "진행 중" 표시와 **빈 말풍선**을 함께
+      // 보여 준다: 서버는 열심히 돌고 있는데 폰에는 아무것도 없는 상태다.
+      onLiveTurn: (live) => {
+        if (!live.text) return; // 돌고 있지만 아직 한 글자도 안 나왔다.
+        if (runningRef.current) return; // 내 턴이면 스트림이 이미 그리고 있다.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.remotePartial) {
+            if (last.text === live.text) return prev;
+            return [...prev.slice(0, -1), { ...last, text: live.text }];
+          }
+          return [...prev, { role: 'assistant', text: live.text, remotePartial: true }];
+        });
+      },
       onServerTurn: (turn) => {
         // 다른 기기에서 시작한 턴은 이 폰이 그린 적이 없다 — 완결 push 로 받는다.
         // (자기 실행 턴은 스트림이 이미 그렸으므로 거른다.)
@@ -1114,7 +1135,9 @@ function ChatSection({
         if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
         if (turn.ioId) seenExternalIo.add(turn.ioId);
         setMessages((prev) => [
-          ...prev,
+          // 완결 턴이 왔으니 진행분 말풍선은 걷어낸다 — 안 그러면 같은 답이
+          // 진행분과 완결본으로 두 번 선다.
+          ...prev.filter((m) => !m.remotePartial),
           { role: 'user', text: turn.input },
           { role: 'assistant', text: turn.output },
         ]);

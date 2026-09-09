@@ -22,7 +22,7 @@
  *   - `execution_target: 'sandbox'` — 실행은 항상 서버 sandbox. 모바일은 로컬
  *     워크스페이스 실행이 없다 (도구만 모바일에서 돈다).
  */
-import { turnEventToChatEvent } from '@dex/protocol';
+import { parseSubscribed, turnEventToChatEvent, type LiveTurnSnapshot } from '@dex/protocol';
 
 export type ChatWsState =
   | 'connecting'
@@ -85,6 +85,16 @@ export interface ChatWsOptions {
    * 재연결마다 다시 보고되므로 폴링이 필요 없다 — 소켓이 붙는 것만으로 맞춰진다.
    */
   onRunning?: (running: boolean) => void;
+  /**
+   * 구독 시점에 이미 도는 턴이 있다면 **그 턴의 여기까지**. 도는 턴이 없으면
+   * 부르지 않는다.
+   *
+   * 이것이 없으면 폰을 다시 켠 화면은 "진행 중" 표시와 **빈 말풍선**을 함께
+   * 보여 준다 — 서버는 열심히 돌고 있는데 폰에는 아무것도 없는 상태다.
+   * `text` 가 빈 문자열인 것과 아예 안 불리는 것은 다르다: 전자는 "돌고 있는데
+   * 아직 한 글자도 안 나왔다".
+   */
+  onLiveTurn?: (live: LiveTurnSnapshot) => void;
   /** 이 기기의 커넥터 슬롯 키 — 실행에 client_device_id 로 실린다. */
   clientDeviceId?: string;
 }
@@ -267,9 +277,13 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       if (frame.type === 'subscribed') {
         subscribed = true;
         setState('connected');
-        // 다른 기기에서 시작한 턴이 아직 도는가. 이 값이 없으면 폰에서는 대화가
-        // 끝난 것처럼 보이고, 그 위에 새 턴을 얹게 된다.
-        opts.onRunning?.((frame.data as { running?: unknown } | undefined)?.running === true);
+        // 다른 기기에서 시작한 턴이 아직 도는가, 그리고 돈다면 **어디까지 왔나**.
+        // 앞의 것이 없으면 폰에서는 대화가 끝난 것처럼 보여 그 위에 새 턴을 얹게
+        // 되고, 뒤의 것이 없으면 "진행 중" 옆이 빈 말풍선으로 남는다.
+        // 꺼내는 자리는 정본 파서 하나다 (@dex/protocol parseSubscribed).
+        const state = parseSubscribed(frame.data);
+        opts.onRunning?.(state.running);
+        if (state.live) opts.onLiveTurn?.(state.live);
         return;
       }
       if (frame.type === 'unsupported') {

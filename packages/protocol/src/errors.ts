@@ -30,8 +30,21 @@
  * @see xgen-workflow/controller/helper/utils/workflow_helpers.py (ERROR_CODE_PATTERN)
  */
 
-/** 사용자가 [정지]를 눌러 턴이 끊겼을 때의 문구 — 모든 표면이 이 하나를 쓴다. */
+/** 중단 **배지**에 쓰는 짧은 말 — 받다 만 글 옆/아래에 붙는다. */
 export const INTERRUPTED_TEXT = '작업이 중단되었습니다';
+
+/**
+ * 중단된 턴의 **본문**에 들어가는 문구.
+ *
+ * 서버가 execution_io 에 남기는 것과 **글자까지 같아야 한다**
+ * (xgen-workflow: controller/workflow/utils/turn_outcome.INTERRUPTED_NOTE).
+ *
+ * 왜 배지와 나누나: 배지는 한 줄짜리 표식이고, 본문은 **이력을 다시 읽었을 때
+ * 서버가 돌려주는 바로 그 글**이다. 둘을 같은 상수로 묶으면 한쪽이 길어지는
+ * 순간 다른 쪽이 망가진다. 반대로 본문 문구가 서버와 다르면, 대화를 다시 여는
+ * 순간 같은 턴의 설명이 바뀐다 — 화면과 기록이 두 말을 하면 어느 쪽도 못 믿는다.
+ */
+export const INTERRUPTED_NOTE = '[중단됨] 에이전트 실행이 중단되었습니다. 다시 시도해 주세요.';
 
 export interface XgenErrorInfo {
   /** 지원 문의용 식별자. 예: `XGEN-921`. */

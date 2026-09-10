@@ -30,7 +30,7 @@ import type {
   ToolEvent,
   XgenErrorInfo,
 } from '@dex/protocol';
-import { INTERRUPTED_TEXT, describeStreamError } from '@dex/protocol';
+import { INTERRUPTED_NOTE, describeStreamError } from '@dex/protocol';
 import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
@@ -866,7 +866,9 @@ export class SessionStore {
           ...last,
           streaming: false,
           interrupted: true,
-          text: last.text || INTERRUPTED_TEXT,
+          // 본문 자리에는 **서버가 기록에 남기는 그 글**을 쓴다 — 대화를 다시
+          // 열면 히스토리가 같은 문장을 돌려주므로 설명이 바뀌지 않는다.
+          text: last.text || INTERRUPTED_NOTE,
         };
       }
       return { ...s, messages, streaming: false, remote: false, updatedAt: this.now() };

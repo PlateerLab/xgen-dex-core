@@ -1,4 +1,4 @@
-import { INTERRUPTED_TEXT, describeStreamError, formatErrorLine } from '@dex/protocol';
+import { INTERRUPTED_NOTE, describeStreamError, formatErrorLine } from '@dex/protocol';
 import type { ChatEvent, HistoryTurn } from '@dex/engine';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'activity' | 'system';
@@ -209,13 +209,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'turn_completed':
       return { ...state, running: false, remote: false, status: undefined };
     case 'turn_cancelled': {
-      // 중단은 실패가 아니다 — 받다 만 글은 그대로 두고, 한 글자도 못 받은
-      // 자리에만 중단 사실을 세운다(빈 답변으로 남으면 아무 일도 없었던 것처럼
-      // 보인다). 데스크톱·웹과 같은 문구를 쓴다.
+      // 중단은 실패가 아니다 — 받다 만 글은 **덮지 않고**, 그 뒤에 사실을
+      // 덧붙인다.
+      //
+      // 예전에는 한 글자도 못 받은 자리에만 세웠다. 그런데 TUI 에는 배지를 달
+      // 자리가 없으므로(데스크톱은 말풍선 아래에 단다), 몇 글자라도 흘렀으면
+      // 왜 끊겼는지가 화면에서 완전히 사라졌다. 문구는 서버가 기록에 남기는
+      // 것과 같다 — 대화를 다시 열어도 설명이 바뀌지 않는다.
       const index = lastMessageIndex(state.messages, (m) => m.role === 'assistant');
       const messages =
-        index >= 0 && !state.messages[index].text.trim()
-          ? state.messages.map((m, i) => (i === index ? { ...m, text: INTERRUPTED_TEXT } : m))
+        index >= 0
+          ? state.messages.map((m, i) => {
+              if (i !== index) return m;
+              const body = m.text.trim();
+              if (body.includes(INTERRUPTED_NOTE)) return m;
+              return { ...m, text: body ? `${m.text}\n\n${INTERRUPTED_NOTE}` : INTERRUPTED_NOTE };
+            })
           : state.messages;
       return { ...state, messages, running: false, remote: false, status: undefined };
     }

@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  INTERRUPTED_NOTE,
   INTERRUPTED_TEXT,
   TRANSPORT_CODES,
   describeError,
@@ -156,6 +157,13 @@ test('한 줄 포맷에는 코드가 들어가고 원문은 안 들어간다', (
 
 test('중단 문구는 한 곳에서만 온다 — 표면마다 달라지면 안 된다', () => {
   assert.equal(INTERRUPTED_TEXT, '작업이 중단되었습니다');
+  // 본문 문구는 **서버가 기록에 남기는 그 글**이어야 한다
+  // (xgen-workflow turn_outcome.INTERRUPTED_NOTE). 다르면 대화를 다시 여는
+  // 순간 같은 턴의 설명이 바뀐다 — 화면과 기록이 두 말을 하면 어느 쪽도 못 믿는다.
+  assert.equal(
+    INTERRUPTED_NOTE,
+    '[중단됨] 에이전트 실행이 중단되었습니다. 다시 시도해 주세요.',
+  );
 });
 
 test('모든 상태 코드가 코드·제목·안내를 갖는다 (빈손으로 돌아오지 않는다)', () => {

@@ -24,7 +24,7 @@ import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
 import type { ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
-import { INTERRUPTED_TEXT } from '@dex/protocol';
+import { INTERRUPTED_NOTE, INTERRUPTED_TEXT } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from './tool-activity-model';
@@ -1255,7 +1255,7 @@ export const Chat: React.FC<{
                 </div>
                 {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.
                     (한 글자도 못 받았으면 본문 자리에 이미 같은 문구가 서 있다.) */}
-                {m.interrupted && m.text !== INTERRUPTED_TEXT && (
+                {m.interrupted && m.text !== INTERRUPTED_NOTE && (
                   <div className="shot-note" role="status">
                     <span>{INTERRUPTED_TEXT}</span>
                   </div>

@@ -12,7 +12,7 @@ import {
   type SessionTransport,
 } from '../src/renderer/src/session-store'
 import type { Agent, ChatEvent, HistoryAttachment } from '@dex/protocol'
-import { INTERRUPTED_TEXT } from '@dex/protocol'
+import { INTERRUPTED_NOTE } from '@dex/protocol'
 import type { BrowserSelectionResult } from '@dex/protocol/browser'
 
 function agent(workflowId: string, name = workflowId): Agent {
@@ -338,7 +338,7 @@ test('한 글자도 못 받고 중단하면 빈 말풍선이 아니라 중단 �
   store.send(k, 'q')
   store.stop(k)
   const last = store.get(k)!.messages.at(-1)!
-  assert.equal(last.text, INTERRUPTED_TEXT)
+  assert.equal(last.text, INTERRUPTED_NOTE)
   assert.equal(last.interrupted, true)
   assert.ok(!last.error, '중단은 실패가 아니다 — 오류로 칠하지 않는다')
 })

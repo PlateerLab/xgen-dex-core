@@ -130,6 +130,12 @@ export const CHANNELS = {
   artifactGallery: 'artifact:gallery',
   /** 프레임이 부탁한 alias 를 사용자 권한으로 대신 호출한다. */
   artifactCallApi: 'artifact:callApi',
+  artifactSetServing: 'artifact:setServing',
+  artifactSetShare: 'artifact:setShare',
+  artifactDelete: 'artifact:delete',
+  // 웹의 같은 화면을 기본 브라우저로 연다. 주소를 렌더러가 조립하지 않는 이유는
+  // 렌더러가 서버 주소를 모르기 때문이다 — 그건 main 의 설정이다.
+  artifactOpenWeb: 'artifact:openWeb',
 
   chatStart: 'chat:start',
   //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).

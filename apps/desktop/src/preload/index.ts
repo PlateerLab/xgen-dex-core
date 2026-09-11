@@ -13,6 +13,8 @@ import type {
   ArtifactApiDeclaration,
   ArtifactDetail,
   ArtifactListResult,
+  ArtifactServingState,
+  ArtifactShareState,
   ArtifactSummary,
   ChatStopResult,
   ConversationSnapshot,
@@ -806,6 +808,18 @@ const api = {
       alias: string,
       params?: Record<string, string | number | boolean | undefined> | null,
     ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.artifactCallApi, apis, alias, params ?? null),
+    setServing: (workflowId: string, slug: string, serving: boolean): Promise<ArtifactServingState> =>
+      ipcRenderer.invoke(CHANNELS.artifactSetServing, workflowId, slug, serving),
+    /** 절대 주소(`url`)까지 붙여 돌아온다 — 렌더러는 서버 주소를 모른다. */
+    setShare: (
+      workflowId: string, slug: string, shared: boolean,
+    ): Promise<ArtifactShareState & { url: string }> =>
+      ipcRenderer.invoke(CHANNELS.artifactSetShare, workflowId, slug, shared),
+    remove: (workflowId: string, slug: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.artifactDelete, workflowId, slug),
+    /** 웹의 같은 화면을 기본 브라우저로 연다. 만들어진 주소를 돌려준다. */
+    openWeb: (workflowId: string, slug: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.artifactOpenWeb, workflowId, slug),
   },
 
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */

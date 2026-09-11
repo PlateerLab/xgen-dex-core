@@ -2321,6 +2321,36 @@ ipcMain.handle(CHANNELS.artifactList, (_e, wf: string) => getClient().agentData.
 ipcMain.handle(CHANNELS.artifactGet, (_e, wf: string, slug: string) =>
   getClient().agentData.artifactGet(wf, slug),
 );
+ipcMain.handle(CHANNELS.artifactSetServing, (_e, wf: string, slug: string, serving: boolean) =>
+  getClient().agentData.artifactSetServing(wf, slug, serving),
+);
+ipcMain.handle(CHANNELS.artifactDelete, (_e, wf: string, slug: string) =>
+  getClient().agentData.artifactDelete(wf, slug),
+);
+
+/**
+ * 공개 링크 토글 — 서버가 준 **경로**를 여기서 절대 주소로 만든다.
+ *
+ * 렌더러는 서버 주소를 모른다(그건 main 의 설정이다). 서버도 자기가 어떤
+ * 호스트로 보이는지 모른다. 둘을 아는 자리는 여기뿐이다.
+ */
+ipcMain.handle(
+  CHANNELS.artifactSetShare,
+  async (_e, wf: string, slug: string, shared: boolean) => {
+    const res = await getClient().agentData.artifactSetShare(wf, slug, shared);
+    const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
+    return { ...res, url: res.shared && res.path ? `${base}${res.path}` : '' };
+  },
+);
+
+/** 웹의 같은 아티팩트 화면을 기본 브라우저로 연다(사내 링크 — 로그인이 필요하다). */
+ipcMain.handle(CHANNELS.artifactOpenWeb, (_e, wf: string, slug: string) => {
+  const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
+  const url = `${base}/artifact/${encodeURIComponent(wf)}/${encodeURIComponent(slug)}`;
+  void shell.openExternal(url);
+  return url;
+});
+
 ipcMain.handle(
   CHANNELS.artifactCallApi,
   (_e, apis: ArtifactApiDeclaration[], alias: string, params?: Record<string, string>) =>

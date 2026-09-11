@@ -8008,6 +8008,53 @@ button.sm {
 .artifacts-refresh:hover {
   color: inherit;
 }
+/* 바 안의 동작 버튼들 — [새 창으로 열기]·[서빙 중지]·[공유]·[삭제]. */
+.artifacts-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.artifacts-action:hover:not(:disabled) {
+  background: var(--hover, rgba(127, 127, 127, 0.12));
+}
+.artifacts-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* 되돌릴 수 없는 것 하나만 빨갛다 — 전부 빨가면 아무것도 빨갛지 않다. */
+.artifacts-action.danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+/* 공개 중이라는 사실은 **늘 보여야 한다** — 밖에서 보이고 있다는 것을 잊게 두지 않는다. */
+.artifacts-share {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid #fcd34d;
+  border-radius: 6px;
+  background: rgba(252, 211, 77, 0.12);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.artifacts-share p {
+  margin: 2px 0 0;
+}
+.artifacts-share code {
+  display: block;
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  word-break: break-all;
+}
 .artifacts-issues {
   margin: 10px 12px 0;
   padding: 8px 10px;

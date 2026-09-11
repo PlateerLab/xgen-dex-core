@@ -310,8 +310,25 @@ export interface ArtifactSummary {
   description: string;
   /** 엔트리 파일. 비어 있으면 열 수 없다(그 이유는 issues 에). */
   entry: string;
-  /** 지금 **열리는가**. false 면 매니페스트나 파일에 문제가 있다. */
+  /**
+   * 지금 **열리는가**. 매니페스트가 멀쩡해도 사람이 서빙을 내렸으면 false 다 —
+   * 목록의 불빛과 실제로 열리는지가 어긋나면 안 된다.
+   */
   ready: boolean;
+  /** 사람이 내려놓지 않았는가. false 면 서버가 소스를 주지 않는다. */
+  serving: boolean;
+  /** 누가 내렸는지(사용자 id). 서빙 중이면 빈 문자열. */
+  stopped_by: string;
+  stopped_at: number | null;
+  /**
+   * 로그인 없이 열리는 공개 링크가 있는가.
+   *
+   * **토큰은 여기 오지 않는다** — 목록은 공유·감독으로 들어온 사람도 읽으므로,
+   * 공개됐다는 *사실*과 그 *링크를 쥐는 것*을 구분한다.
+   */
+  shared: boolean;
+  shared_by: string;
+  shared_at: number | null;
   /** epoch 초. 폴더 안에서 가장 최근에 바뀐 파일 기준. */
   updated_at: number | null;
   /** 매니페스트 진단 — 비어 있으면 문제 없음. */
@@ -325,6 +342,26 @@ export interface ArtifactDetail extends ArtifactSummary {
   /** 선언된 데이터 파일 (경로 → 텍스트). */
   files: Record<string, string>;
   apis: ArtifactApiDeclaration[];
+}
+
+export interface ArtifactServingState {
+  ok: boolean;
+  slug: string;
+  serving: boolean;
+  stopped_by: string;
+  stopped_at: number | null;
+}
+
+export interface ArtifactShareState {
+  ok: boolean;
+  slug: string;
+  shared: boolean;
+  shared_by: string;
+  shared_at: number | null;
+  /** 공개 토큰 — **켠 사람에게만** 돌아온다. 목록에는 없다. */
+  token: string;
+  /** 공개 주소의 경로(서버 기준). 공개 중이 아니면 빈 문자열. */
+  path: string;
 }
 
 export interface ArtifactListResult {
@@ -481,6 +518,44 @@ export class AgentDataApi {
   /** 아티팩트 하나 — 소스·선언된 파일·선언된 API 까지. */
   artifactGet(workflowId: string, slug: string): Promise<ArtifactDetail> {
     return this.http.get<ArtifactDetail>(
+      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`,
+    );
+  }
+
+  /**
+   * 서빙을 내리거나 올린다 — **지우지 않는다.**
+   *
+   * 파일은 그대로 있고 에이전트도 계속 고칠 수 있다. 달라지는 것은 하나다:
+   * 서버가 이 아티팩트의 소스를 아무에게도 주지 않는다. 그래서 앱·웹·공유 링크가
+   * 함께 닫힌다 — 판정이 한 군데라 한쪽만 열려 있는 상태가 없다.
+   */
+  artifactSetServing(workflowId: string, slug: string, serving: boolean): Promise<ArtifactServingState> {
+    return this.http.post<ArtifactServingState>(
+      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/serving`,
+      { serving },
+    );
+  }
+
+  /**
+   * 공개 링크를 만들거나 없앤다 — **로그인 없이 열리는 주소**가 생긴다.
+   *
+   * 부르기 전에 반드시 사람에게 확인을 받아야 한다. 화면과 그 안의 데이터 파일은
+   * 링크를 아는 누구나 보지만, 아티팩트가 선언한 API 는 공개 화면에서 동작하지
+   * **않는다** — 그 호출은 보는 사람의 권한으로 나가는데 익명에게는 권한이 없다.
+   * 공유는 화면을 보여 주는 것이지 권한을 빌려주는 것이 아니다.
+   *
+   * 다시 켜면 새 토큰이라 이미 나간 링크는 되살아나지 않는다.
+   */
+  artifactSetShare(workflowId: string, slug: string, shared: boolean): Promise<ArtifactShareState> {
+    return this.http.post<ArtifactShareState>(
+      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/share`,
+      { shared },
+    );
+  }
+
+  /** 아티팩트 폴더를 지운다 — **되돌릴 수 없다**(원본까지 함께 지워진다). */
+  artifactDelete(workflowId: string, slug: string): Promise<{ ok: boolean }> {
+    return this.http.del<{ ok: boolean }>(
       `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`,
     );
   }

@@ -134,10 +134,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   const onToggleServing = useCallback(() => {
     if (!slug) return;
     const next = !serving;
-    if (!next && !window.confirm(
-      '서빙을 중지할까요?\n\n내용은 지우지 않습니다. 중지하는 동안에는 이 앱에서도 '
-      + '웹에서도, 공유 링크로도 열리지 않습니다.',
-    )) return;
+    if (!next && !window.confirm('서빙을 중지할까요?\n내용은 그대로 두고 닫습니다.')) return;
     void act(async () => {
       await xgen.artifacts.setServing(workflowId, slug, next);
       return 'ok';
@@ -152,14 +149,13 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   const onToggleShare = useCallback(() => {
     if (!slug) return;
     const next = !shared;
+    // 웹과 **같은 문장**이다 — 같은 에이전트를 두 곳에서 보므로 한쪽만 다른 말을
+    // 하면 안 된다. 길게 적어 봤더니 아무도 안 읽었고, 안 읽히는 확인은 확인이
+    // 아니다. 나머지 사실은 공개 중 내내 떠 있는 배너가 말한다.
     const ok = window.confirm(
       next
-        ? '공개 링크를 만들까요?\n\n링크를 아는 사람은 누구나 로그인 없이 이 화면과 '
-          + '그 안의 데이터를 봅니다.\n아티팩트가 선언한 API 는 공개 화면에서 동작하지 '
-          + '않습니다 — 그 호출은 보는 사람의 권한으로 나가는데 익명에게는 권한이 '
-          + '없습니다.\n\n언제든 [공유 중지]로 닫을 수 있습니다.'
-        : '공개 링크를 닫을까요?\n\n지금 링크는 즉시 열리지 않습니다. 다시 공개하면 '
-          + '새 주소가 발급되므로 이미 나간 링크는 되살아나지 않습니다.',
+        ? '공개 링크를 만들까요?\n아티팩트의 API는 동작하지 않습니다.'
+        : '공개 링크를 닫을까요?\n이미 나간 링크는 되살아나지 않습니다.',
     );
     if (!ok) return;
     void act(async () => {
@@ -178,10 +174,9 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   const onDelete = useCallback(() => {
     if (!slug) return;
     const name = current?.title || slug;
-    if (!window.confirm(
-      `'${name}' 아티팩트를 삭제할까요?\n\n폴더와 그 안의 파일이 모두 지워집니다. `
-      + '되돌릴 수 없습니다.\n잠깐 닫아 두려는 것이라면 [서빙 중지]를 쓰세요.',
-    )) return;
+    // 이름 뒤에 조사를 바로 붙이면 받침에 따라 을/를 이 갈린다. 명사 하나를
+    // 사이에 두면 이름이 무엇이든 문장이 맞는다.
+    if (!window.confirm(`'${name}' 아티팩트를 삭제할까요?\n되돌릴 수 없습니다.`)) return;
     void act(async () => {
       await xgen.artifacts.remove(workflowId, slug);
       // 지운 것을 계속 고르고 있으면 안 된다.

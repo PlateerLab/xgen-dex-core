@@ -36,7 +36,22 @@
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'" />
 <style>
+  /*
+    프레임은 **호스트가 준 크기 안에서 산다.** 스스로 높이를 정하지 않는다.
+
+    예전에는 내용 높이를 재서 호스트에 알리고 호스트가 iframe 을 그만큼 키웠다.
+    그런데 아티팩트는 거의 언제나 100vh 를 쓴다(대시보드의 기본 뼈대다). 그러면
+    내용 높이가 **프레임 높이에 의존**하는데 프레임 높이는 다시 내용 높이에서
+    나온다 — 이득이 1 이상인 양의 되먹임이라, 재는 방법을 아무리 고쳐도 멈추지
+    않는다. 실측(크로미움): minHeight:100vh + padding:32 짜리 대시보드가 4초에
+    15,076px, 곧 20,000px 상한. padding 이 없어도 자식 margin 만큼 계속 자랐다.
+
+    그래서 높이 협상을 **없앴다**. 호스트가 프레임에 확정 높이를 주고, 내용이
+    길면 프레임 안에서 스크롤된다. 이러면 아티팩트가 쓴 100vh 도 비로소 저자가
+    의도한 뜻("보이는 화면 한 장")이 된다.
+  */
   html, body { margin: 0; padding: 0; height: 100%; }
+  html { background: #fff; }
   body { font: 14px/1.5 Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #fff; }
   #root { min-height: 100%; }
   .xa-state { padding: 32px 24px; color: #6b7280; font-size: 13px; }
@@ -63,13 +78,6 @@
   function fail(title, detail) {
     show('<div class="xa-error"><h2>' + esc(title) + '</h2><pre>' + esc(detail || '') + '</pre></div>');
     if (HOST) HOST.postMessage({ type: 'artifact:error', title: title, detail: String(detail || '') }, ORIGIN);
-  }
-
-  // 높이를 호스트에 알려 프레임이 내용에 맞게 자란다.
-  function reportHeight() {
-    if (!HOST) return;
-    var h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
-    HOST.postMessage({ type: 'artifact:height', height: h }, ORIGIN);
   }
 
   // ── 아티팩트에 주는 API ────────────────────────────────────────────
@@ -136,11 +144,35 @@
       );
     }
 
-    // React 와 훅은 인자로도 건넨다 — import 없이 바로 쓰는 코드도 그대로 돈다.
-    var argNames = ['React', 'exports', 'module', 'require', 'xgen', 'Fragment',
-      'useState', 'useEffect', 'useMemo', 'useCallback', 'useRef', 'useReducer', 'useContext'];
-    var argVals = [React, exports, module, requireShim, xgen, React.Fragment,
-      React.useState, React.useEffect, React.useMemo, React.useCallback, React.useRef, React.useReducer, React.useContext];
+    // React·훅·xgen 은 **전역에 둔다 — 인자로 주지 않는다.**
+    //
+    // 실측 사고 (2026-09-11): 인자로 주면 아티팩트가
+    //
+    //     const { useState, useEffect } = React;
+    //
+    // 라고 쓰는 순간 `SyntaxError: Identifier 'useState' has already been
+    // declared` 로 **한 줄도 못 돌고** 죽었다. new Function 의 매개변수와 본문
+    // 최상위의 const/let 은 같은 스코프라, 같은 이름을 다시 선언하는 것이 문법
+    // 오류이기 때문이다 (var 는 되지만 아무도 var 로 안 쓴다).
+    //
+    // 그리고 저 한 줄은 CDN React 의 **표준 관용구**다. 우리가 에이전트에게
+    // "React 와 훅은 스코프에 있다" 고 안내하는 한, 모델은 계속 저렇게 쓴다 —
+    // 즉 이건 드문 입력이 아니라 가장 흔한 입력이었다.
+    //
+    // 전역은 스코프 사슬 한 칸 밖이라 본문의 선언이 **가리기(shadow)** 만 하고
+    // 충돌하지 않는다. 'import 없이 바로 쓰기'는 그대로 되고, 직접 선언해도 된다.
+    var EXPOSED = { React: React, Fragment: React.Fragment, xgen: xgen };
+    [
+      'useState', 'useEffect', 'useMemo', 'useCallback', 'useRef', 'useReducer',
+      'useContext', 'useLayoutEffect', 'useId', 'useTransition',
+      'useDeferredValue', 'useSyncExternalStore', 'useImperativeHandle',
+    ].forEach(function (h) { if (typeof React[h] === 'function') EXPOSED[h] = React[h]; });
+    Object.keys(EXPOSED).forEach(function (k) { globalThis[k] = EXPOSED[k]; });
+
+    // 본문에 넘기는 것은 CommonJS 출력이 **실제로 쓰는** 셋뿐이다. 이 셋은
+    // 번들러 관례상 아무도 재선언하지 않는다.
+    var argNames = ['exports', 'module', 'require'];
+    var argVals = [exports, module, requireShim];
     var Component;
     try {
       // eslint-disable-next-line no-new-func
@@ -202,8 +234,6 @@
       fail('아티팩트를 그리지 못했습니다', (e && e.stack) || (e && e.message));
       return;
     }
-    setTimeout(reportHeight, 0);
-    if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
     HOST.postMessage({ type: 'artifact:ready' }, ORIGIN);
   }
 

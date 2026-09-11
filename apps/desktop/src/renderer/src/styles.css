@@ -8021,11 +8021,18 @@ button.sm {
   margin: 4px 0 0;
   padding-left: 18px;
 }
-/* 프레임은 자기 높이를 알려 오므로 여기서는 스크롤만 맡는다. */
+/*
+  프레임은 **자기 높이를 정하지 않는다** — 여기서 준 높이를 채우고, 내용이 길면
+  프레임 안에서 스크롤된다. 그래서 이 상자는 flex 열이어야 하고(블록이면 안쪽
+  flex 가 높이를 못 받아 프레임이 주저앉는다), 바깥에서 또 스크롤하지 않는다
+  (스크롤바가 둘이 된다).
+*/
 .artifacts-stage {
+  display: flex;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  flex-direction: column;
+  overflow: hidden;
   margin: 10px 12px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -8035,6 +8042,18 @@ button.sm {
   min-height: 0;
   flex: 1;
   flex-direction: column;
+}
+/* 절대 위치의 기준. 프레임은 흐름 밖이라 이 상자를 밀 수 없다. */
+.artifact-frame-box {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.artifact-frame-box > iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 /* 호스트만 아는 실패(런타임을 못 받아왔다) — 프레임 안의 오류는 프레임이 그린다. */
 .artifact-run-error {

@@ -33,6 +33,17 @@
  *
  * 프레임에서 오는 메시지는 `ev.origin` 으로 가릴 수 없다 — 불투명 오리진이라 값이
  * null 이다. 그래서 창 자체, 즉 `ev.source` 로 판정한다.
+ *
+ * 크기 — 프레임은 **스스로 높이를 정하지 않는다**
+ * ------------------------------------------------
+ * 예전에는 프레임이 내용 높이를 재서 알리고 여기서 iframe 을 그만큼 키웠다. 그런데
+ * 아티팩트는 거의 언제나 `100vh` 를 쓴다(대시보드의 기본 뼈대다). 그러면 내용
+ * 높이가 프레임 높이에 의존하는데 프레임 높이는 다시 내용 높이에서 나온다 —
+ * **이득이 1 이상인 양의 되먹임**이라 재는 방법을 고쳐도 멈추지 않는다(실측:
+ * minHeight:100vh + padding:32 인 대시보드가 4초에 15,076px, 곧 상한 20,000px).
+ *
+ * 그래서 높이 협상을 없앴다. iframe 은 **절대 위치**로 상자를 채운다 — 흐름 밖이라
+ * 상자 높이에 영향을 줄 수 없고, 되먹임이 생길 구조 자체가 없다.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ArtifactDetail } from '@dex/protocol';
@@ -67,7 +78,10 @@ export interface ArtifactFrameProps {
   artifact: ArtifactDetail;
   /** 이 값이 바뀌면 프레임을 새로 세운다 (에이전트가 소스를 고쳤을 때). */
   reloadKey?: string | number;
-  /** 최소 높이(px). 내용이 길면 프레임이 알려 주는 높이로 자란다. */
+  /**
+   * 최소 높이(px). 프레임은 **바깥이 준 높이를 채우고**, 내용이 길면 그 안에서
+   * 스크롤된다 — 내용에 맞춰 자라지 않는다(그 협상이 무한 확대의 원인이었다).
+   */
   minHeight?: number;
 }
 
@@ -77,7 +91,6 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
   minHeight = 420,
 }) => {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(minHeight);
   const [error, setError] = useState('');
 
   // 프레임에서 오는 말 — 창 자체로 판정한다 (불투명 오리진이라 origin 은 'null').
@@ -88,11 +101,6 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
       const msg = ev.data as Record<string, unknown> | null;
       if (!msg || typeof msg !== 'object') return;
 
-      if (msg.type === 'artifact:height') {
-        const h = Number(msg.height) || 0;
-        if (h > 0) setHeight(Math.max(minHeight, Math.min(h + 8, 20000)));
-        return;
-      }
       if (msg.type === 'artifact:ready') {
         setError('');
         return;
@@ -156,17 +164,23 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
   return (
     <div className="artifact-frame-host">
       {error ? <pre className="artifact-run-error">{error}</pre> : null}
-      <iframe
-        key={`${artifact.slug}:${reloadKey ?? ''}`}
-        ref={frameRef}
-        title={artifact.title}
-        src={ARTIFACT_FRAME_URL}
-        onLoad={onLoad}
-        /* allow-same-origin 을 **절대** 더하지 않는다 (위 2번 자물쇠). */
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-        style={{ width: '100%', height, border: 0, background: '#fff' }}
-      />
+      {/*
+        프레임을 **절대 위치**로 띄운다. 흐름 밖이라 이 상자의 높이에 영향을 줄 수
+        없다 — 되먹임이 생길 구조 자체가 없다. 상자 높이는 바깥과 minHeight 에서만.
+      */}
+      <div className="artifact-frame-box" style={{ minHeight }}>
+        <iframe
+          key={`${artifact.slug}:${reloadKey ?? ''}`}
+          ref={frameRef}
+          title={artifact.title}
+          src={ARTIFACT_FRAME_URL}
+          onLoad={onLoad}
+          /* allow-same-origin 을 **절대** 더하지 않는다 (위 2번 자물쇠). */
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          style={{ border: 0, background: '#fff' }}
+        />
+      </div>
     </div>
   );
 };

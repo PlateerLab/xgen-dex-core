@@ -19,7 +19,6 @@ const agents = [
     nodeCount: 7,
     isShared: false,
     isDeployed: true,
-    workflowType: 'canvas',
     description: '',
   },
 ];

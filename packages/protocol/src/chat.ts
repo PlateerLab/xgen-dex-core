@@ -2,8 +2,8 @@
  * Chat streaming against an XGEN agent.
  *
  * Endpoint: POST /api/agentflow/execute/based-id/stream → text/event-stream.
- * This one endpoint drives EVERY agent node type (agent_geny, agent_xgen,
- * agent_harness, …) — the connector is node-agnostic. Continue a conversation
+ * This one endpoint drives EVERY agent node type (agent_geny, agent_xgen)
+ * — the connector is node-agnostic. Continue a conversation
  * by reusing the same `interactionId` across turns.
  *
  * The raw SSE frames are normalized into the `ChatEvent` union (see types.ts)

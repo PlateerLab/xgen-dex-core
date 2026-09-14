@@ -171,7 +171,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         profile: auth.profile,
         page: 1,
         pageSize: 100,
-        includeHarness: true,
       });
       if (version !== this.refreshVersion) return;
       this.agents = result.items;
@@ -981,7 +980,6 @@ function agentFromConversation(conversation: Conversation): Agent {
     isShared: false,
     isDeployed: true,
     isCompleted: true,
-    workflowType: 'history',
     description: '이전 대화에서 불러온 Agent',
     username: '',
     fullName: '',

@@ -321,7 +321,6 @@ export class DexRpcServer {
           search: optionalString(params, 'search'),
           status: optionalString(params, 'status'),
           owner: owner as AgentListQuery['owner'],
-          includeHarness: params.includeHarness === true,
         };
         return this.engine.listAgents(query, optionalString(params, 'profile'));
       }

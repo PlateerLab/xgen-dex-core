@@ -42,7 +42,6 @@ export interface Agent {
   isShared: boolean; // false=개인(personal), true=공유(shared)
   isDeployed: boolean; // false=미배포, true=배포
   isCompleted: boolean;
-  workflowType: string; // "canvas" | "harness"
   description: string;
   username: string;
   fullName: string;
@@ -72,7 +71,6 @@ export interface AgentListQuery {
   status?: string;
   /** "personal" (개인) | "shared" (공유) */
   owner?: 'personal' | 'shared';
-  includeHarness?: boolean;
 }
 
 /** A citation attached to a tool result (RAG source). */

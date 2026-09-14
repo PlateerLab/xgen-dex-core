@@ -57,7 +57,6 @@ function synthAgent(c: Conversation, agents: Agent[]): Agent {
       isShared: false,
       isDeployed: false,
       isCompleted: true,
-      workflowType: 'canvas',
       description: '',
       username: '',
       fullName: '',

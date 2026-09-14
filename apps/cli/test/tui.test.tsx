@@ -100,7 +100,6 @@ function fakeEngine(
             isShared: false,
             isDeployed: true,
             isCompleted: true,
-            workflowType: 'canvas',
             description: '',
             username: 'alice',
             fullName: 'Alice',

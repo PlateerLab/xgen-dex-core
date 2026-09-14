@@ -78,7 +78,7 @@ export function App({
           setRoute('login');
           return;
         }
-        const agents = await engine.listAgents({ pageSize: 100, includeHarness: true }, current.name);
+        const agents = await engine.listAgents({ pageSize: 100 }, current.name);
         setSession({
           profile: current.name,
           serverUrl: current.serverUrl,

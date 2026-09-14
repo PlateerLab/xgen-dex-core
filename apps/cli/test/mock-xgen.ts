@@ -131,7 +131,6 @@ export async function startMockXgen(): Promise<MockXgen> {
               workflow_id: 'wf_abc',
               workflow_name: 'Sales Agent',
               node_count: 7,
-              workflow_type: 'canvas',
               description: 'demo',
               username: 'alice',
               full_name: 'Alice',

@@ -6,7 +6,7 @@ any of them with live streaming. Built as an Electron app with a small,
 framework-agnostic transport core.
 
 It is **node-agnostic**: it works with every XGEN agent node type —
-`agent_geny`, `agent_xgen`, `agent_harness` — because it drives the single XGEN
+`agent_geny`, `agent_xgen` — because it drives the single XGEN
 agent execution stream. Avatar/overlay support is intentionally left as an
 **extension point** for a future release (see `AvatarSlot`).
 
@@ -80,7 +80,7 @@ enter your **XGEN server URL** and **account**, then pick an agent and chat.
   type + Enter relays the message into the active agent's chat.
 - **Local MCP** — host MCP servers on your machine (stdio or Streamable HTTP) and
   the connector bridges their tools to your XGEN agents: the backend auto-injects
-  them into the selected session's agent (agent_xgen / agent_harness / agent_geny),
+  them into the selected session's agent (agent_xgen / agent_geny),
   no agentflow edit needed. Configure servers in Settings → 로컬 MCP. The bridge
   runs in the main process over `/api/tools/ws/connector-mcp/{user_id}` (requires
   the matching xgen-workflow backend).

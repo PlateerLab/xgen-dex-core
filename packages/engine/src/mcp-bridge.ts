@@ -7,7 +7,7 @@
  * the local MCP server through MCPManager and replying with `mcp_result`.
  *
  * The XGEN backend auto-injects these tools into the user's running agents
- * (agent_xgen / agent_harness / agent_geny), so any chat with the logged-in
+ * (agent_xgen / agent_geny), so any chat with the logged-in
  * user can call the connector-hosted tools.
  *
  * Lives in the MAIN process: tokens + subprocess spawning stay out of the

@@ -4,11 +4,11 @@ const { contextBridge } = require('electron');
 
 const user = { userId: '1', username: 'admin', isSuperuser: true, roles: [], permissions: [] };
 const agents = [
-  { workflowId: 'wf1', workflowName: '한국마사회 RAG 상담', nodeCount: 7, isShared: false, isDeployed: true, workflowType: 'canvas', description: '' },
-  { workflowId: 'wf2', workflowName: '경마 데이터 분석가', nodeCount: 12, isShared: true, isDeployed: false, workflowType: 'canvas', description: '' },
-  { workflowId: 'wf3', workflowName: 'Agentflow (4)', nodeCount: 4, isShared: false, isDeployed: false, workflowType: 'canvas', description: '' },
-  { workflowId: 'wf4', workflowName: '사내 문서 도우미', nodeCount: 9, isShared: true, isDeployed: true, workflowType: 'harness', description: '' },
-  { workflowId: 'wf5', workflowName: '릴리즈 노트 작성기', nodeCount: 5, isShared: false, isDeployed: false, workflowType: 'canvas', description: '' },
+  { workflowId: 'wf1', workflowName: '한국마사회 RAG 상담', nodeCount: 7, isShared: false, isDeployed: true, description: '' },
+  { workflowId: 'wf2', workflowName: '경마 데이터 분석가', nodeCount: 12, isShared: true, isDeployed: false, description: '' },
+  { workflowId: 'wf3', workflowName: 'Agentflow (4)', nodeCount: 4, isShared: false, isDeployed: false, description: '' },
+  { workflowId: 'wf4', workflowName: '사내 문서 도우미', nodeCount: 9, isShared: true, isDeployed: true, description: '' },
+  { workflowId: 'wf5', workflowName: '릴리즈 노트 작성기', nodeCount: 5, isShared: false, isDeployed: false, description: '' },
 ];
 
 const cfgListeners = new Set();

@@ -16,7 +16,7 @@
  * 그것을 버리고 있었으니, 자기진화가 화면에 그려지지 않았다. `llm_*` 셋은 서버의
  * WS 직렬화도 함께 버리고 있어서, 만들어진 뒤 **아무 데도 닿지 못한** 채였다.
  *
- * 여기서 고정하는 것: 정본이 서버의 18종을 빠짐없이 안다.
+ * 여기서 고정하는 것: 정본이 서버의 표를 빠짐없이 알고, 서버가 뺀 이름은 모른다.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -87,6 +87,15 @@ test('전송로를 모른다 — 같은 이름·payload 면 같은 결과', () =
   const fromSse = turnEventToChatEvent('execution_io', JSON.parse(JSON.stringify(payload)));
   assert.deepEqual(fromWs, fromSse);
   assert.equal((fromWs as { executionIoId: number }).executionIoId, 42);
+});
+
+test('서버 표에서 빠진 이름은 정본에도 없다', () => {
+  // 2026-09-14 Live Canvas(FloUI · A2UI) 제거로 서버가 더 이상 내지 않는다.
+  // 정본에 다시 들어오면 서버 표와 어긋나고, 웹 canon 테스트도 같이 틀린다.
+  for (const name of ['a2ui_command', 'floui_command']) {
+    assert.equal((TURN_EVENT_NAMES as readonly string[]).includes(name), false, name);
+    assert.equal(turnEventToChatEvent(name, { k: 'v' }), null, name);
+  }
 });
 
 test('모르는 이름은 null — 버리는 것과 모르는 것은 다르다', () => {

@@ -104,8 +104,6 @@ export const TURN_EVENT_NAMES = [
   'llm_progress',
   'llm_end',
   'llm_contract_error',
-  'a2ui_command',
-  'floui_command',
   'canvas_command',
   'download_artifact',
   'quota_exceeded',
@@ -216,10 +214,6 @@ export function turnEventToChatEvent(
       return d ? { kind: 'execution_io', executionIoId: Number(d.execution_io_id ?? 0) } : null;
     case 'download_artifact':
       return d ? { kind: 'download', data: d } : null;
-    case 'a2ui_command':
-      return d ? { kind: 'ui_command', surface: 'a2ui', command: d } : null;
-    case 'floui_command':
-      return d ? { kind: 'ui_command', surface: 'floui', command: d } : null;
     case 'canvas_command':
       // 에이전트가 자기 그래프를 고쳤다(WorkflowSelf). 캔버스를 연 화면이 다시 그린다.
       // 이 줄이 없어서 앱·CLI·VSCode 는 서버가 보낸 것을 조용히 버리고 있었다.

@@ -52,8 +52,8 @@ Reuse the same `interaction_id` to continue a conversation.
 Response: `Content-Type: text/event-stream`. Two frame shapes, separated by a
 blank line:
 - Named: `event: <name>\ndata: <json>\n\n` — `log`, `node_status`, `tool`,
-  `a2ui_command`, `floui_command`, `download_artifact`, `execution_io`,
-  `quota_warning`, `quota_exceeded`, `execution_suspended`.
+  `download_artifact`, `execution_io`, `quota_warning`, `quota_exceeded`,
+  `execution_suspended`.
 - Default: `data: <json>\n\n` where json has a `type` — `data` (text chunk),
   `summary`, `end`, `error`. Some `tool_*` frames also arrive bare (no `event:`).
 

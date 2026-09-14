@@ -158,7 +158,7 @@ metadata column on Teams messages, which is why the marker lives in the body.
 
 The chat SSE stream is normalized into a single `ChatEvent` union:
 `text` · `tool` · `node_status` · `execution_io` · `summary` · `error` · `end`
-(plus `log` / `ui_command` / `download` / `quota`).
+(plus `log` / `download` / `quota`).
 
 ## Develop
 

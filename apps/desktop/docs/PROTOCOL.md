@@ -28,12 +28,12 @@ Response `200`:
 - `POST /api/auth/logout` `{ "token": "<access>" }`.
 
 ## Agent list — `GET /api/agentflow/list/detail`
-Query: `page` (1), `page_size` (24), `search`, `status`, `owner` (`personal`|`shared`),
-`include_harness`. Response:
+Query: `page` (1), `page_size` (24), `search`, `status`, `owner` (`personal`|`shared`).
+Response:
 ```json
 { "items": [ { "id": 42, "workflow_id": "wf_abc", "workflow_name": "Sales Agent",
     "node_count": 7, "is_shared": false, "is_deployed": false, "is_completed": true,
-    "workflow_type": "canvas", "description": "...", "username": "alice",
+    "description": "...", "username": "alice",
     "full_name": "Alice Kim", "created_at": "...", "updated_at": "..." } ],
   "pagination": { "page": 1, "page_size": 24, "total_count": 32, "total_pages": 2 } }
 ```
@@ -69,7 +69,7 @@ Terminal marker: `data: {"type":"end"}`. Stop reading there.
 
 The connector flattens all of this into the `ChatEvent` union (see
 `src/core/types.ts`). This one endpoint drives every agent node type
-(agent_geny / agent_xgen / agent_harness).
+(agent_geny / agent_xgen).
 
 ## History
 - `GET /api/chat/io-logs?workflow_id=&interaction_id=&workflow_name=` → ordered turns.

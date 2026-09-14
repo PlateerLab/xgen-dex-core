@@ -104,7 +104,6 @@ function mockXgen(): Promise<{ server: Server; baseUrl: string }> {
                 is_shared: false,
                 is_deployed: false,
                 is_completed: true,
-                workflow_type: 'canvas',
                 description: 'demo',
                 username: 'alice',
                 full_name: 'Alice Kim',

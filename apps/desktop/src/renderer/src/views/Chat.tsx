@@ -9,7 +9,7 @@
  * owns only foreground concerns — the composer, TTS/STT, screen capture, the
  * avatar overlay feed, and the tool-activity animation.
  *
- * Node-agnostic: works for agent_geny / agent_xgen / agent_harness because the
+ * Node-agnostic: works for agent_geny / agent_xgen because the
  * store drives the single execute-stream endpoint.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -205,8 +205,6 @@ function sentenceCut(pending: string): number {
   }
   return cut;
 }
-
-const AGENT_KIND: Record<string, string> = { canvas: 'Canvas', harness: 'Harness' };
 
 const CHAT_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const CHAT_IMAGE_ACCEPT = [...CHAT_IMAGE_TYPES].join(',');
@@ -968,7 +966,6 @@ export const Chat: React.FC<{
   // Quick-chat: a message from the global hotkey bar sends to this agent.
   useEffect(() => xgen.quickChat.onQuickSend((t) => send(t)), [send]);
 
-  const kind = AGENT_KIND[agent.workflowType ?? ''] ?? (agent.workflowType || 'Agent');
   const mcpIndicator = mcpChatStatus(mcpStatus);
   const agentNotificationMuted = !!notificationSnapshot.profile.mutedAgents[agent.workflowId];
   const chatNotificationMuted =
@@ -987,7 +984,7 @@ export const Chat: React.FC<{
           <div className="chat-title-text">
             <strong>{agent.workflowName}</strong>
             <div className="agent-meta">
-              {kind}
+              Agent
               {agent.nodeCount ? ` · 노드 ${agent.nodeCount}개` : ''}
               {agent.isShared ? ' · 공유' : ''}
               {streaming

@@ -4,8 +4,8 @@
  * Uses GET /api/agentflow/list/detail (paged) which is exactly what the UI grid
  * shows. Requires the `main.agentflow:read` permission on the logged-in user.
  * The returned {workflowId, workflowName} pair is what identifies an agent for
- * starting a chat. Node-agnostic: agent_geny / agent_xgen / agent_harness all
- * appear here and all chat through the same execute-stream endpoint.
+ * starting a chat. Node-agnostic: agent_geny / agent_xgen both
+ * appear here and both chat through the same execute-stream endpoint.
  */
 import { HttpClient } from './client';
 import type {
@@ -25,7 +25,6 @@ interface RawAgent {
   is_shared?: boolean;
   is_deployed?: boolean;
   is_completed?: boolean;
-  workflow_type?: string;
   description?: string;
   username?: string;
   full_name?: string;
@@ -54,7 +53,6 @@ function mapAgent(r: RawAgent): Agent {
     isShared: !!r.is_shared,
     isDeployed: !!r.is_deployed,
     isCompleted: !!r.is_completed,
-    workflowType: r.workflow_type ?? 'canvas',
     description: r.description ?? '',
     username: r.username ?? '',
     fullName: r.full_name ?? '',
@@ -88,7 +86,6 @@ export class AgentsApi {
     if (query.search) params.set('search', query.search);
     if (query.status) params.set('status', query.status);
     if (query.owner) params.set('owner', query.owner);
-    if (query.includeHarness) params.set('include_harness', 'true');
 
     const res = await this.http.get<RawListResponse>(`/api/agentflow/list/detail?${params}`);
     const raw = res.items ?? res.workflows ?? [];

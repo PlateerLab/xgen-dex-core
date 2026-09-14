@@ -15,8 +15,8 @@
  * }
  * ```
  *
- * Node-agnostic: the same chat stream drives agent_geny, agent_xgen and
- * agent_harness agents. The class holds tokens in memory only — persistence
+ * Node-agnostic: the same chat stream drives agent_geny and agent_xgen
+ * agents. The class holds tokens in memory only — persistence
  * (keychain) and base-URL config are the host's concern (Electron main).
  */
 import { AgentDataApi } from './agent-data';

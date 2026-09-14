@@ -82,8 +82,7 @@ Response:
     "page": 1,
     "pageSize": 24,
     "search": "sales",
-    "owner": "personal",
-    "includeHarness": true
+    "owner": "personal"
   }
 }
 ```

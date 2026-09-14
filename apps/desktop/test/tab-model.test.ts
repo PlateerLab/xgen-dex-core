@@ -14,7 +14,6 @@ function session(partial: Partial<SessionState> & { key: string }): SessionState
       isShared: false,
       isDeployed: false,
       isCompleted: true,
-      workflowType: 'canvas',
       description: '',
       username: '',
       fullName: '',

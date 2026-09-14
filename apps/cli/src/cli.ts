@@ -529,7 +529,6 @@ async function run(): Promise<void> {
       search: option(args, 'search'),
       owner: owner as AgentListQuery['owner'],
       status: option(args, 'status'),
-      includeHarness: flag(args, 'include-harness'),
     };
     const result = await engine.listAgents(query, option(args, 'profile'));
     if (asJson) writeJson(result);

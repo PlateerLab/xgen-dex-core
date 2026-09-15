@@ -785,7 +785,7 @@
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 40;
-  width: 280px;
+  width: 300px;
   padding: 6px;
   border-radius: 12px;
   border: 1px solid var(--border);
@@ -826,6 +826,7 @@
   font-size: 12px;
   line-height: 1.4;
   color: var(--muted);
+  word-break: keep-all; /* 한글이 글자 중간("보/여")에서 줄바꿈되지 않게 */
 }
 .composer-mode-option-check {
   grid-column: 2;

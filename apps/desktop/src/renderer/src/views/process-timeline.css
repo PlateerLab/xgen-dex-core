@@ -1,5 +1,6 @@
 /* 작업 과정 타임라인 (ProcessTimeline.tsx) · 답변 아래 만든 파일 (TurnFiles.tsx) · 채팅 헤더 버튼.
-   색은 전역 토큰만 써서 다크 테마에서도 같이 바뀐다. 테두리·배경은 꼭 필요한 곳(실행 중, 결과 카드)에만. */
+   원칙: 구조(단계 번호·도구 묶음)와 색(도구 종류 배지·브랜드 진행선)으로 위계를 만들고,
+   상태 변화는 서서히 — 짧은 도구가 칠했다 지워지며 번쩍이지 않게. 색은 전역 토큰 + 옅은 틴트. */
 
 /* ── 채팅 헤더: 테두리 없는 가벼운 버튼 (아이콘은 툴팁으로 설명) ───────────────── */
 .chat-header-actions {
@@ -36,14 +37,8 @@
   background: var(--error-bg);
   color: var(--error);
 }
-.chat-hbtn-sep {
-  width: 1px;
-  height: 16px;
-  background: var(--border);
-  margin: 0 6px;
-}
 
-/* ── 타임라인 머리 줄 (펼치기/접기) ─────────────────────────────────────── */
+/* ── 머리 줄 ───────────────────────────────────────────────────────────── */
 .ptl {
   min-width: 0;
 }
@@ -59,17 +54,32 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 4px 8px 4px 2px;
-  margin-left: -2px;
-  border-radius: var(--radius-md);
+  padding: 4px 10px 4px 4px;
+  margin-left: -4px;
+  border-radius: 999px;
+  border: 1px solid transparent;
   cursor: pointer;
   font-size: 13px;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
 }
 .ptl-head-toggle:hover {
   background: var(--panel-2);
 }
 .ptl-head-toggle:focus-visible {
   outline: 2px solid var(--primary-soft-border);
+}
+/* 끝나고 접힌 요약은 알약 모양 */
+.ptl.done.collapsed .ptl-head-toggle {
+  margin-left: 0;
+  padding: 5px 12px 5px 6px;
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.ptl.done.collapsed .ptl-head-toggle:hover {
+  border-color: var(--primary-soft-border);
+  background: var(--primary-soft);
 }
 .ptl-head-label {
   font-weight: 600;
@@ -81,6 +91,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 .ptl-chevron {
   color: var(--muted);
@@ -93,7 +104,7 @@
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
 }
 .ptl-link:hover {
@@ -101,14 +112,25 @@
   background: var(--panel-2);
 }
 .ptl-pulse {
-  width: 8px;
-  height: 8px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  background: var(--success);
+  display: grid;
+  place-items: center;
   flex: none;
+  color: var(--success);
+  background: rgba(46, 177, 70, 0.14);
 }
-.ptl-head.live .ptl-pulse {
+.ptl-pulse svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.2;
+}
+.ptl.live .ptl-pulse {
   background: var(--primary);
+  width: 9px;
+  height: 9px;
+  margin: 0 4px;
   animation: ptl-pulse 1.6s infinite;
 }
 @keyframes ptl-pulse {
@@ -122,54 +144,107 @@
     box-shadow: 0 0 0 0 transparent;
   }
 }
+/* 실행 중 브랜드 진행선 */
+.ptl-progress {
+  position: relative;
+  height: 2px;
+  margin: 8px 0 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--primary-soft);
+}
+.ptl-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--primary-grad);
+  animation: ptl-slide 1.8s ease-in-out infinite;
+}
+@keyframes ptl-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
 
 /* ── 단계 ─────────────────────────────────────────────────────────────── */
 .ptl-steps {
-  margin: 10px 0 0 4px;
+  margin: 12px 0 0;
 }
 .ptl-step {
   position: relative;
-  padding: 0 0 10px 22px;
+  padding: 0 0 14px 32px;
 }
 .ptl-step::before {
   content: '';
   position: absolute;
-  left: 4px;
-  top: 16px;
+  left: 10px;
+  top: 24px;
   bottom: 2px;
-  width: 1.5px;
+  width: 2px;
+  border-radius: 2px;
   background: var(--border);
 }
 .ptl-step:last-child::before {
   display: none;
 }
+.ptl-step.ok::before {
+  background: linear-gradient(var(--success), var(--border));
+  opacity: 0.45;
+}
 .ptl-node {
   position: absolute;
   left: 0;
-  top: 5px;
-  width: 10px;
-  height: 10px;
+  top: 0;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
-  border: 1.5px solid var(--success);
-  background: var(--panel);
+  display: grid;
+  place-items: center;
   box-sizing: border-box;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1.5px solid var(--border);
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease,
+    border-color 0.3s ease;
+}
+.ptl-node svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.2;
 }
 .ptl-step.ok .ptl-node {
-  background: var(--success);
+  color: var(--success);
+  background: rgba(46, 177, 70, 0.14);
+  border-color: transparent;
 }
 .ptl-step.err .ptl-node {
-  border-color: var(--error);
-  background: var(--error);
+  color: var(--error);
+  background: var(--error-bg);
+  border-color: var(--error-border);
 }
-.ptl-step.run .ptl-node,
-.ptl-step.wait .ptl-node {
-  border: 1.5px solid var(--primary);
-  border-top-color: transparent;
-  animation: ptl-spin 0.9s linear infinite;
-}
-.ptl-step.wait .ptl-node {
+.ptl-step.run .ptl-node {
+  color: var(--primary);
+  background: var(--primary-soft);
   border-color: var(--primary-soft-border);
-  border-top-color: transparent;
+}
+.ptl-step.run .ptl-node::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--primary);
+  animation: ptl-spin 0.9s linear infinite;
 }
 @keyframes ptl-spin {
   to {
@@ -177,31 +252,118 @@
   }
 }
 .ptl-title {
-  font-size: 13.5px;
-  line-height: 1.5;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
   color: var(--text);
-  margin-bottom: 4px;
+}
+.ptl-step.current .ptl-title {
+  color: var(--primary);
 }
 .ptl-step.wait .ptl-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+.ptl-step.wait .ptl-node {
+  border-style: dashed;
+  border-color: var(--primary-soft-border);
+  background: var(--panel);
+}
+.ptl-shimmer {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--primary) 50%, var(--muted) 65%, var(--muted) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ptl-shimmer 2.2s linear infinite;
+}
+@keyframes ptl-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+.ptl-wait-sec {
+  font-size: 12px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ptl-dots {
+  display: inline-flex;
+  gap: 2px;
+}
+.ptl-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: ptl-dot 1.2s ease-in-out infinite;
+}
+.ptl-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.ptl-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes ptl-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
-/* ── 도구 행: 평소엔 한 줄, 실행 중·펼침·실패만 강조 ─────────────────────────── */
+/* ── 단계 안의 도구 묶음 ─────────────────────────────────────────────────── */
+.ptl-tools {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
 .ptl-tool {
-  border-radius: var(--radius-md);
-  margin: 0 0 2px -6px;
-  border: 1px solid transparent;
+  position: relative;
+  background-color: transparent;
+  transition: background-color 0.4s ease;
+}
+.ptl-tool + .ptl-tool {
+  border-top: 1px solid var(--border-soft);
 }
 .ptl-tool.run {
-  background: var(--primary-soft);
-  border-color: var(--primary-soft-border);
+  background-color: var(--primary-soft);
 }
-.ptl-tool.err {
-  background: var(--error-bg);
+/* 오래 도는 도구에만 흐르는 빛 — 막 시작한 도구는 pending 이라 칠하지 않는다 */
+.ptl-tool.run::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.55) 50%, transparent 100%);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: ptl-sweep 2.4s ease-in-out infinite;
+  opacity: 0.6;
+}
+@keyframes ptl-sweep {
+  0% {
+    background-position: -40% 0;
+  }
+  100% {
+    background-position: 140% 0;
+  }
 }
 .ptl-tool.open {
-  background: var(--panel-2);
-  border-color: var(--border);
+  background-color: var(--panel-2);
 }
 .ptl-tool-head {
   all: unset;
@@ -209,9 +371,8 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 6px;
-  border-radius: var(--radius-md);
+  gap: 10px;
+  padding: 8px 12px;
   cursor: pointer;
 }
 .ptl-tool:not(.run):not(.open) .ptl-tool-head:hover {
@@ -219,73 +380,119 @@
 }
 .ptl-tool-head:focus-visible {
   outline: 2px solid var(--primary-soft-border);
+  outline-offset: -2px;
 }
+/* 도구 종류별 색 배지 */
 .ptl-ico {
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
   display: grid;
   place-items: center;
-  color: var(--muted);
   flex: none;
+  color: #475569;
+  background: rgba(71, 85, 105, 0.1);
 }
 .ptl-ico svg {
   width: 14px;
   height: 14px;
 }
-/* 기본 도구가 아닌 외부 도구(MCP·API·커넥터) — 시스템 연동이 눈에 띄게 */
-.ptl-tool.ptl-kind-external .ptl-ico {
-  color: var(--primary);
+.ptl-kind-terminal .ptl-ico {
+  color: #334155;
+  background: rgba(51, 65, 85, 0.1);
+}
+.ptl-kind-package .ptl-ico {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+}
+.ptl-kind-search .ptl-ico {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.11);
+}
+.ptl-kind-file .ptl-ico {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.11);
+}
+.ptl-kind-edit .ptl-ico {
+  color: #0f766e;
+  background: rgba(13, 148, 136, 0.12);
+}
+.ptl-kind-web .ptl-ico {
+  color: #0e7490;
+  background: rgba(8, 145, 178, 0.12);
+}
+.ptl-kind-external .ptl-ico {
+  color: #fff;
+  background: var(--primary-grad);
+}
+:root[data-theme='dark'] .ptl-ico {
+  filter: brightness(1.5) saturate(1.1);
 }
 .ptl-sum {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: 13.5px;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ptl-tool.run .ptl-sum {
-  color: var(--text);
+.ptl-tool.pending .ptl-sum {
+  color: var(--text-secondary);
 }
-.ptl-stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  white-space: nowrap;
+.ptl-tool.err .ptl-sum {
+  color: var(--error);
+}
+.ptl-dur {
   flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
   color: var(--muted);
+  background: var(--panel-2);
   font-variant-numeric: tabular-nums;
 }
-.ptl-tool.run .ptl-stat {
-  color: var(--primary);
-  font-weight: 600;
+.ptl-dur.slow {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
 }
-.ptl-tool.err .ptl-stat {
+.ptl-dur.err {
   color: var(--error);
+  background: var(--error-bg);
+}
+.ptl-live {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
 }
 .ptl-spin {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  border: 1.5px solid var(--primary);
-  border-top-color: transparent;
+  border: 2px solid var(--primary-soft-border);
+  border-top-color: var(--primary);
   animation: ptl-spin 0.8s linear infinite;
   box-sizing: border-box;
 }
 .ptl-preview {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
-  padding: 0 8px 4px 34px;
+  padding: 0 12px 8px 48px;
+  margin-top: -3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .ptl-detail {
-  padding: 4px 8px 8px 34px;
+  padding: 2px 12px 10px 48px;
 }
 .ptl-detail label {
   display: block;
@@ -301,7 +508,7 @@
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   padding: 8px 10px;
-  max-height: 200px;
+  max-height: 220px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
@@ -309,25 +516,25 @@
 
 /* ── 도구 결과: JSON 모양대로 (이름 있는 객체 → 카드, 목록 → 표, 그 밖 → 키·값) ── */
 .ptl-result {
-  margin: 2px 8px 8px 34px;
+  margin: -2px 12px 10px 48px;
   min-width: 0;
 }
 .ptl-result.entity {
-  border: 1px solid var(--border);
-  background: var(--panel);
-  border-radius: var(--radius-md);
-  padding: 8px 11px;
+  border: 1px solid var(--primary-soft-border);
+  background: linear-gradient(135deg, var(--primary-soft), transparent 70%);
+  border-radius: 10px;
+  padding: 9px 12px;
 }
 .ptl-result-title {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
 .ptl-result-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px 12px;
+  gap: 4px 12px;
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -336,18 +543,18 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
-  margin-right: 2px;
+  margin-right: 3px;
 }
 .ptl-flag {
   font-family: var(--font-mono);
   font-size: 11px;
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 999px;
   line-height: 18px;
 }
 .ptl-flag.on {
   color: var(--success);
-  background: rgba(46, 177, 70, 0.12);
+  background: rgba(46, 177, 70, 0.14);
 }
 .ptl-flag.off {
   color: var(--muted);
@@ -357,7 +564,7 @@
   margin-top: 4px;
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
 }
 .ptl-table {
   border-collapse: collapse;
@@ -368,7 +575,7 @@
 .ptl-table th,
 .ptl-table td {
   border-bottom: 1px solid var(--border-soft);
-  padding: 4px 9px;
+  padding: 5px 10px;
   text-align: left;
   white-space: nowrap;
   max-width: 280px;
@@ -377,6 +584,9 @@
 }
 .ptl-table tr:last-child td {
   border-bottom: 0;
+}
+.ptl-table tbody tr:hover td {
+  background: var(--panel-2);
 }
 .ptl-table th {
   font-family: var(--font-mono);
@@ -392,9 +602,12 @@
 }
 
 .ptl-answer {
-  margin-top: 10px;
-  padding-top: 12px;
+  margin-top: 12px;
+  padding-top: 14px;
   border-top: 1px solid var(--border-soft);
+}
+.ptl.collapsed .ptl-answer {
+  margin-top: 10px;
 }
 
 /* ── 답변 아래 만든 파일: 칩 한 줄 ─────────────────────────────────────────── */
@@ -403,7 +616,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin: 8px 0 2px;
+  margin: 10px 0 2px;
 }
 .turn-files-label {
   font-size: 12px;
@@ -417,7 +630,15 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--panel);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.turn-file-chip:hover {
+  border-color: var(--primary-soft-border);
+  box-shadow: var(--shadow-md);
 }
 .turn-file-chip.failed {
   border-color: var(--error-border);
@@ -433,23 +654,27 @@
   color: var(--text-secondary);
 }
 .turn-file-open {
-  padding: 4px 8px 4px 11px;
+  padding: 5px 9px 5px 12px;
   min-width: 0;
 }
+.turn-file-open svg {
+  color: var(--primary);
+}
 .turn-file-dl {
-  padding: 4px 10px 4px 8px;
+  padding: 5px 11px 5px 9px;
   border-left: 1px solid var(--border-soft);
 }
 .turn-file-open:hover,
 .turn-file-dl:hover {
-  background: var(--panel-2);
-  color: var(--text);
+  background: var(--primary-soft);
+  color: var(--primary);
 }
 .turn-file-chip.failed .turn-file-dl {
   color: var(--error);
 }
 .turn-file-name {
   font-size: 12.5px;
+  font-weight: 500;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -459,4 +684,47 @@
   font-size: 11px;
   color: var(--muted);
   flex: none;
+}
+
+.turn-files-more {
+  all: unset;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+.turn-files-more:hover,
+.turn-files-more[aria-expanded='true'] {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.turn-files-others {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+.turn-file-chip.minor {
+  box-shadow: none;
+  background: var(--panel-2);
+}
+.turn-file-chip.minor .turn-file-name {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.turn-file-chip.minor .turn-file-open svg {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ptl-progress::after,
+  .ptl-tool.run::after,
+  .ptl-shimmer,
+  .ptl-dots i,
+  .ptl.live .ptl-pulse,
+  .ptl-step.run .ptl-node::after,
+  .ptl-spin {
+    animation: none;
+  }
 }

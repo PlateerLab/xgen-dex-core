@@ -89,6 +89,20 @@ export function splitFirstParagraph(text: string): { title: string; body: string
   return at < 0 ? { title: s.trim(), body: '' } : { title: s.slice(0, at).trim(), body: s.slice(at + 2) };
 }
 
+/**
+ * 최종 답 본문 앞뒤의 가로줄(`---`·`***`·`___`)과 빈 줄을 걷는다. 타임라인이 이미 답 위에 구분선을 긋는데
+ * 에이전트 답이 `---` 로 시작하면 선이 두 줄로 겹쳐 보였다(9/16 사용자 지적). 본문 중간의 가로줄은 그대로 둔다.
+ */
+export function trimAnswer(body: string): string {
+  const lines = body.split('\n');
+  const isRule = (line: string): boolean => /^\s*([-*_])(\s*\1){2,}\s*$/.test(line);
+  let start = 0;
+  let end = lines.length;
+  while (start < end && (!lines[start].trim() || isRule(lines[start]))) start += 1;
+  while (end > start && (!lines[end - 1].trim() || isRule(lines[end - 1]))) end -= 1;
+  return lines.slice(start, end).join('\n');
+}
+
 export type ToolIcon = 'terminal' | 'package' | 'search' | 'file' | 'edit' | 'web' | 'list' | 'external';
 
 export function parseToolInput(input: unknown): Record<string, unknown> {

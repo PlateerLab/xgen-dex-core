@@ -16,6 +16,7 @@ import {
   resultView,
   splitFirstParagraph,
   summarizeCommand,
+  trimAnswer,
   type TimelineFlowItem,
 } from '../src/renderer/src/views/process-timeline-model';
 
@@ -61,6 +62,11 @@ test('id 로 호출을 맞춘다 — 같은 이름의 동시 호출이 섞여도
   assert.equal(first.error, 'boom');
   assert.equal(second.phase, 'ok');
   assert.equal(second.result, 'b');
+});
+
+test('최종 답 앞뒤의 가로줄·빈 줄은 걷고 본문 중간과 표 구분 행은 그대로 둔다', () => {
+  assert.equal(trimAnswer('\n---\n\n## 결과\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n끝\n\n***\n'), '## 결과\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n끝');
+  assert.equal(trimAnswer('그냥 답'), '그냥 답');
 });
 
 // ── 이름표 ────────────────────────────────────────────────────────────

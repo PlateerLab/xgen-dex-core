@@ -34,6 +34,7 @@ import { ToolLogModal } from './ToolLogModal';
 import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
+import { requestBefore } from './turn-files-model';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -1293,7 +1294,12 @@ export const Chat: React.FC<{
                 {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.
                     (한 글자도 못 받았으면 본문 자리에 이미 같은 문구가 서 있다.) */}
                 {m.role === 'assistant' && (
-                  <TurnFiles workflowId={agent.workflowId} msg={m} onOpenFile={onOpenFile} />
+                  <TurnFiles
+                    workflowId={agent.workflowId}
+                    msg={m}
+                    request={requestBefore(messages, i)}
+                    onOpenFile={onOpenFile}
+                  />
                 )}
                 {m.interrupted && m.text !== INTERRUPTED_NOTE && (
                   <div className="shot-note" role="status">

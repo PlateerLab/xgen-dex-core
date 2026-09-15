@@ -18,6 +18,9 @@ const USER_ORIGINS = new Set(['web', 'user', 'upload']);
 
 const hidden = (path: string): boolean => path.split('/').some((seg) => seg.startsWith('.'));
 
+/** 비교용 — 대소문자와 한글 자모 조합 방식(맥 NFD ↔ 리눅스·모델 NFC)을 맞춘다. */
+const fold = (text: string): string => text.normalize('NFC').toLowerCase();
+
 /**
  * 턴 동안 바뀐 파일. `startedAt`·`endedAt` 은 이 PC 시계(ms), 노드의 `modified_at` 은 서버 시각(ISO).
  * 폴더·숨김 경로·사용자 업로드는 뺀다. 경로 순으로 돌려준다.
@@ -32,6 +35,25 @@ export function filesChangedDuringTurn(nodes: readonly WsNode[], startedAt: numb
     if (n.origin && USER_ORIGINS.has(n.origin)) continue;
     const at = n.modified_at ? Date.parse(n.modified_at) : NaN;
     if (!Number.isFinite(at) || at < from || at > to) continue;
+    seen.add(n.path);
+    out.push(n);
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * 이력에서 되살린 답(이어보기·앱 재시작 — 시작 시각을 모름)의 파일. 시각으로 고를 수 없으니
+ * 답 글에 **경로**가 적힌 작업 공간 파일만 믿는다(이름만 적힌 하위 폴더 파일은 오인을 피해 뺀다).
+ */
+export function filesNamedInAnswer(nodes: readonly WsNode[], answer: string): WsNode[] {
+  const lower = fold(answer);
+  if (!lower.trim()) return [];
+  const seen = new Set<string>();
+  const out: WsNode[] = [];
+  for (const n of nodes) {
+    if (!n || n.is_dir || !n.path || seen.has(n.path) || hidden(n.path)) continue;
+    if (n.origin && USER_ORIGINS.has(n.origin)) continue;
+    if (!lower.includes(fold(n.path))) continue;
     seen.add(n.path);
     out.push(n);
   }
@@ -84,13 +106,14 @@ export function splitRequestedFiles(
   request: string,
   answer: string,
 ): { requested: WsNode[]; others: WsNode[] } {
-  const names = new Set([...request.matchAll(FILE_NAME_RE)].map((m) => m[0].toLowerCase()));
-  const prose = request.replace(FILE_NAME_RE, ' ');
+  const req = request.normalize('NFC');
+  const names = new Set([...req.matchAll(FILE_NAME_RE)].map((m) => fold(m[0])));
+  const prose = req.replace(FILE_NAME_RE, ' ');
   const exts = new Set(REQUESTED_TYPES.filter(([re]) => re.test(prose)).flatMap(([, e]) => e));
-  let requested = files.filter((f) => names.has(f.name.toLowerCase()) || exts.has(extOf(f.name)));
+  let requested = files.filter((f) => names.has(fold(f.name)) || exts.has(extOf(f.name)));
   if (requested.length === 0 && answer) {
-    const lower = answer.toLowerCase();
-    requested = files.filter((f) => lower.includes(f.path.toLowerCase()) || lower.includes(f.name.toLowerCase()));
+    const lower = fold(answer);
+    requested = files.filter((f) => lower.includes(fold(f.path)) || lower.includes(fold(f.name)));
   }
   const picked = new Set(requested.map((f) => f.path));
   return { requested, others: files.filter((f) => !picked.has(f.path)) };

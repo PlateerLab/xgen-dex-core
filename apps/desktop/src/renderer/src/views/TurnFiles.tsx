@@ -2,14 +2,15 @@
  * 답변 아래 "만든 파일" — 턴이 끝나면 에이전트 작업 공간 목록을 한 번 받아, 그 턴 동안 생기거나 바뀐 파일 중
  * **사용자가 요청한 결과물**만 칩으로 보여 준다. 중간 파일(원본 수집·임시 결과 등)은 "그 외 N개" 로 접어 둔다
  * — 전부 늘어놓으면 받을 파일을 찾을 수 없다(9/16 사용자 지적). 이름을 누르면 파일 뷰어 탭, ↓ 는 바로 저장.
- * 고르는 규칙은 turn-files-model 에 있다. 이 창이 스트림으로 받은 턴만 시작 시각을 알아 목록을 그린다.
+ * 고르는 규칙은 turn-files-model 에 있다. 이 창이 스트림으로 받은 턴은 시작 시각으로, 이력에서 되살린
+ * 마지막 답은 답 글에 적힌 경로로 파일을 찾는다.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import type { WsNode } from '@dex/protocol';
 import { xgen } from '../bridge';
 import type { ChatMsg } from '../session-store';
 import { DocIcon, DownloadIcon } from '../brand/icons';
-import { filesChangedDuringTurn, formatFileSize, splitRequestedFiles } from './turn-files-model';
+import { filesChangedDuringTurn, filesNamedInAnswer, formatFileSize, splitRequestedFiles } from './turn-files-model';
 
 function saveBytes(bytes: Uint8Array, contentType: string, fileName: string): void {
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -28,22 +29,35 @@ export const TurnFiles: React.FC<{
   request?: string;
   /** 파일 뷰어 탭 열기 — 없으면 이름을 눌러도 열지 않는다. */
   onOpenFile?: (workflowId: string, rel: string, name: string) => void;
-}> = ({ workflowId, msg, request = '', onOpenFile }) => {
+  /**
+   * 대화의 마지막 답인가. 이력에서 되살린 답(시작 시각 없음)은 마지막 것만 답 글에 적힌 경로로 파일을 찾는다
+   * — 앞선 답이 가리키던 파일은 그 뒤 실행에서 이미 바뀌었을 수 있다.
+   */
+  latest?: boolean;
+}> = ({ workflowId, msg, request = '', onOpenFile, latest = false }) => {
   const [files, setFiles] = useState<WsNode[]>([]);
   const [showOthers, setShowOthers] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const startedAt = msg.startedAt;
   const endedAt = msg.lastEventAt;
-  const finished = msg.role === 'assistant' && !msg.streaming && startedAt !== undefined;
+  const answer = msg.text ?? '';
+  const restored = startedAt === undefined;
+  const finished = msg.role === 'assistant' && !msg.streaming && (!restored || latest);
 
   useEffect(() => {
-    if (!finished || !workflowId || startedAt === undefined) return;
+    if (!finished || !workflowId) return;
     let alive = true;
     xgen.agentData
       .workspaceTree(workflowId)
       .then((res) => {
-        if (alive) setFiles(filesChangedDuringTurn(res.files ?? [], startedAt, endedAt ?? Date.now()));
+        if (!alive) return;
+        const nodes = res.files ?? [];
+        setFiles(
+          startedAt === undefined
+            ? filesNamedInAnswer(nodes, answer)
+            : filesChangedDuringTurn(nodes, startedAt, endedAt ?? Date.now()),
+        );
       })
       .catch(() => {
         // 목록을 못 받으면 아무것도 그리지 않는다(답변 자체는 그대로)
@@ -51,12 +65,9 @@ export const TurnFiles: React.FC<{
     return () => {
       alive = false;
     };
-  }, [finished, workflowId, startedAt, endedAt]);
+  }, [finished, workflowId, startedAt, endedAt, answer]);
 
-  const { requested, others } = useMemo(
-    () => splitRequestedFiles(files, request, msg.text ?? ''),
-    [files, request, msg.text],
-  );
+  const { requested, others } = useMemo(() => splitRequestedFiles(files, request, answer), [files, request, answer]);
 
   if (!finished || files.length === 0) return null;
 

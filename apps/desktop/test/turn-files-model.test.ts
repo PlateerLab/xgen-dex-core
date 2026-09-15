@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import type { WsNode } from '@dex/protocol';
 import {
   filesChangedDuringTurn,
+  filesNamedInAnswer,
   formatFileSize,
   parentDir,
   requestBefore,
@@ -108,6 +109,26 @@ test('요청에 파일 언급이 없으면 답에 이름이 나온 파일, 그�
 test('영어 단어 속 형식 이름을 오인하지 않는다 (keyword ≠ word)', () => {
   const files = [node('a/list.docx', 1)];
   assert.equal(splitRequestedFiles(files, '검색 keyword 를 정리해 주세요', '').requested.length, 0);
+});
+
+test('되살린 답은 답 글에 경로가 적힌 파일만 (사용자 업로드·폴더·숨김·이름만 언급은 제외)', () => {
+  const nodes = [
+    node('out/report.xlsx', -600),
+    node('out/raw.json', -600),
+    node('out', -600, { is_dir: true }),
+    node('uploads/source.pdf', -900, { origin: 'web' }),
+    node('work/notes.txt', -600),
+    node('.xgeny/env.json', -600),
+  ];
+  const answer = '원본 `uploads/source.pdf` 를 읽어 `/workspace/out/report.xlsx` 와 out/raw.json 에 저장했습니다. 메모는 notes.txt 참고';
+  assert.deepEqual(filesNamedInAnswer(nodes, answer).map((n) => n.path), ['out/raw.json', 'out/report.xlsx']);
+  assert.deepEqual(filesNamedInAnswer(nodes, '   '), []);
+});
+
+test('한글 파일 이름은 자모 조합 방식(NFD/NFC)이 달라도 같은 이름으로 본다', () => {
+  const nfd = node('out/점검결과.xlsx'.normalize('NFD'), 1);
+  assert.equal(filesNamedInAnswer([nfd], '`out/점검결과.xlsx` 에 저장'.normalize('NFC')).length, 1);
+  assert.equal(splitRequestedFiles([nfd], '점검결과.xlsx 로 만들어 주세요'.normalize('NFC'), '').requested.length, 1);
 });
 
 test('크기와 폴더 표기', () => {

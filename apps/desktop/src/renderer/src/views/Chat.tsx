@@ -318,6 +318,7 @@ export const Chat: React.FC<{
 }> = ({ session, myName, mcpDebug = false, onOpenViewer, onOpenFile }) => {
   const { agent } = session;
   const messages = session.messages;
+  const lastAssistantIndex = messages.reduce((at, msg, idx) => (msg.role === 'assistant' ? idx : at), -1);
   const streaming = session.streaming;
   /**
    * 다른 곳(웹·모바일·VSCode·CLI)에서 시작한 턴이 이 대화에서 돌고 있다.
@@ -1299,6 +1300,7 @@ export const Chat: React.FC<{
                     msg={m}
                     request={requestBefore(messages, i)}
                     onOpenFile={onOpenFile}
+                    latest={i === lastAssistantIndex}
                   />
                 )}
                 {/* 실행 중에 [간단히] 로 껐으면 끝나기 전에도 되돌릴 수 있어야 한다 — 끝난 답의 푸터와 같은 자리. */}

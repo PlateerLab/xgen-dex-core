@@ -34,6 +34,7 @@ import { INTERRUPTED_NOTE, describeStreamError } from '@dex/protocol';
 import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
+import { attachTurnProcesses, browserStorage, rememberTurnProcess, type KeyValueStorage } from './turn-process-memory';
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -349,6 +350,8 @@ export class SessionStore {
   constructor(
     private transport: SessionTransport,
     private now: () => number = () => Date.now(),
+    /** 끝난 턴의 작업 과정을 남겨 두는 곳 — 대화를 다시 열 때 되붙인다(turn-process-memory). */
+    private processMemory: KeyValueStorage | null = browserStorage(),
   ) {}
 
   // ── useSyncExternalStore contract (stable arrow refs) ──────────────
@@ -591,7 +594,8 @@ export class SessionStore {
       } else {
         this.patch(key, (s) => ({
           ...s,
-          messages: msgs,
+          // 서버 이력은 글만 준다 — 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙인다
+          messages: attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs),
           loadingHistory: false,
           historyLoaded: true,
           remote: snapshot.running,
@@ -889,6 +893,10 @@ export class SessionStore {
       messages[messages.length - 1] = nl;
       return { ...s, messages, streaming, remote, error, unseen, updatedAt: this.now() };
     });
+    if (ev.kind === 'end' && this.processMemory) {
+      const done = this.map.get(key);
+      rememberTurnProcess(this.processMemory, done?.interactionId ?? key, done?.messages[done.messages.length - 1], this.now());
+    }
     if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
       rt.cancel = null;
       // 분리된 턴을 멈추는 길은 남겨 둔다 — [정지] 는 스트림이 아니라 대화를 향한다.

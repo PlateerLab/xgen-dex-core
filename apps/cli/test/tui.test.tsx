@@ -142,6 +142,17 @@ function fakeEngine(
         workflowName: input.workflowName ?? 'Sales Agent',
         interactionId: input.interactionId ?? 'interaction-1',
         input: input.input,
+        attachments: input.attachments ?? [],
+      };
+    },
+    async uploadChatAttachment() {
+      return {
+        kind: 'file',
+        attachment_id: 'att-1',
+        name: 'sample.txt',
+        mime_type: 'text/plain',
+        size: 1,
+        workspace_path: 'attachments/interaction-1/att-1/sample.txt',
       };
     },
     async *chat(input: ChatInput): AsyncGenerator<

@@ -2703,6 +2703,18 @@ button {
   outline: 3px solid var(--primary);
   outline-offset: -3px;
 }
+.chat-message-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  cursor: default;
+  overflow-wrap: anywhere;
+}
 .chat-message-images img {
   display: block;
   width: 100%;
@@ -3179,6 +3191,11 @@ button {
   border-radius: 7px;
   object-fit: cover;
   background: var(--input-bg);
+}
+.composer-image > svg {
+  display: block;
+  margin: 20px auto;
+  color: var(--text-secondary);
 }
 .composer-image-name {
   display: block;

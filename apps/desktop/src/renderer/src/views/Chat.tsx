@@ -207,10 +207,10 @@ function sentenceCut(pending: string): number {
 }
 
 const CHAT_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-const CHAT_IMAGE_ACCEPT = [...CHAT_IMAGE_TYPES].join(',');
-const CHAT_IMAGE_MAX_COUNT = 5;
-const CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-const CHAT_IMAGE_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+const CHAT_IMAGE_ACCEPT = '*/*';
+const CHAT_IMAGE_MAX_COUNT = 10;
+const CHAT_IMAGE_MAX_BYTES = 100 * 1024 * 1024;
+const CHAT_IMAGE_MAX_TOTAL_BYTES = 250 * 1024 * 1024;
 
 interface StagedChatImage extends ChatImageAttachment {
   id: string;
@@ -221,9 +221,9 @@ function fileAsDataUrl(file: File): Promise<string> {
     const reader = new FileReader();
     reader.onload = () =>
       typeof reader.result === 'string'
-        ? resolve(reader.result)
-        : reject(new Error('이미지를 읽지 못했습니다.'));
-    reader.onerror = () => reject(reader.error ?? new Error('이미지를 읽지 못했습니다.'));
+        ? resolve(reader.result.replace(/^data:;base64,/, 'data:application/octet-stream;base64,'))
+        : reject(new Error('파일을 읽지 못했습니다.'));
+    reader.onerror = () => reject(reader.error ?? new Error('파일을 읽지 못했습니다.'));
     reader.readAsDataURL(file);
   });
 }
@@ -238,12 +238,9 @@ function imageDimensions(dataUrl: string): Promise<{ width: number; height: numb
 }
 
 function imageError(file: File): string | null {
-  if (!CHAT_IMAGE_TYPES.has(file.type.toLowerCase())) {
-    return `${file.name || '이미지'}: PNG, JPEG, WebP, GIF 형식만 첨부할 수 있습니다.`;
-  }
-  if (file.size <= 0) return `${file.name || '이미지'}: 빈 파일은 첨부할 수 없습니다.`;
+  if (file.size <= 0) return `${file.name || '파일'}: 빈 파일은 첨부할 수 없습니다.`;
   if (file.size > CHAT_IMAGE_MAX_BYTES) {
-    return `${file.name || '이미지'}: 이미지 한 장은 10MB까지 첨부할 수 있습니다.`;
+    return `${file.name || '파일'}: 파일 한 개는 100MiB까지 첨부할 수 있습니다.`;
   }
   return null;
 }
@@ -252,15 +249,16 @@ async function prepareChatImage(file: File): Promise<StagedChatImage> {
   const problem = imageError(file);
   if (problem) throw new Error(problem);
   const dataUrl = await fileAsDataUrl(file);
-  const { width, height } = await imageDimensions(dataUrl);
+  const isImage = CHAT_IMAGE_TYPES.has(file.type.toLowerCase());
+  const dimensions = isImage ? await imageDimensions(dataUrl) : {};
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     dataUrl,
     name: file.name || `붙여넣은 이미지.${file.type.split('/')[1] || 'png'}`,
-    mime: file.type.toLowerCase(),
+    mime: file.type.toLowerCase() || 'application/octet-stream',
     size: file.size,
-    width,
-    height,
+    kind: isImage ? 'image' : 'file',
+    ...dimensions,
   };
 }
 
@@ -331,6 +329,8 @@ export const Chat: React.FC<{
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
   const [stagedImages, setStagedImages] = useState<StagedChatImage[]>([]);
+  const activeSessionKey = useRef(session.key);
+  activeSessionKey.current = session.key;
   const stagedImagesRef = useRef<StagedChatImage[]>([]);
   const browserSelections = useBrowserSelections(session.key);
   const browserSelectionsRef = useRef<BrowserSelectionResult[]>(browserSelections);
@@ -461,11 +461,7 @@ export const Chat: React.FC<{
 
   const addImageFiles = useCallback(
     async (files: File[]) => {
-      const candidates = files.filter((file) => file.type.toLowerCase().startsWith('image/'));
-      if (candidates.length === 0) {
-        setImageNotice('이미지 파일을 선택하거나 클립보드에서 붙여넣어 주세요.');
-        return;
-      }
+      const candidates = files;
 
       setPreparingImages((count) => count + 1);
       const problems: string[] = [];
@@ -475,7 +471,7 @@ export const Chat: React.FC<{
           const selected = browserSelectionsRef.current;
           if (current.length + selected.length >= CHAT_IMAGE_MAX_COUNT) {
             problems.push(
-              `이미지는 한 번에 최대 ${CHAT_IMAGE_MAX_COUNT}장까지 첨부할 수 있습니다.`,
+              `파일은 한 번에 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다.`,
             );
             break;
           }
@@ -488,14 +484,14 @@ export const Chat: React.FC<{
             current.reduce((sum, image) => sum + image.size, 0) +
             selected.reduce((sum, selection) => sum + selection.image.size, 0);
           if (usedBytes + file.size > CHAT_IMAGE_MAX_TOTAL_BYTES) {
-            problems.push('첨부 이미지의 전체 크기는 25MB를 넘을 수 없습니다.');
+            problems.push('첨부 파일의 전체 크기는 250MiB를 넘을 수 없습니다.');
             break;
           }
           try {
             const image = await prepareChatImage(file);
             replaceStagedImages([...stagedImagesRef.current, image]);
           } catch (error) {
-            problems.push(error instanceof Error ? error.message : '이미지를 읽지 못했습니다.');
+            problems.push(error instanceof Error ? error.message : '파일을 읽지 못했습니다.');
           }
         }
       } finally {
@@ -685,7 +681,12 @@ export const Chat: React.FC<{
       }));
       // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
       // 답변은 백그라운드에서 계속 도착한다.
-      sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections);
+      sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections, () => {
+        if (activeSessionKey.current !== session.key) return;
+        setInput((current) => current || text);
+        const existing = stagedImagesRef.current;
+        replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
+      });
     },
     [session.key, screenCaptureOn],
   );
@@ -704,12 +705,12 @@ export const Chat: React.FC<{
       if ((!text && attachmentCount === 0) || busy || preparingImages > 0) return;
       if (attachmentCount > CHAT_IMAGE_MAX_COUNT) {
         setImageNotice(
-          `이미지는 브라우저 캡처를 포함해 최대 ${CHAT_IMAGE_MAX_COUNT}장까지 보낼 수 있습니다.`,
+          `파일은 브라우저 캡처를 포함해 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 보낼 수 있습니다.`,
         );
         return;
       }
       if (attachmentBytes > CHAT_IMAGE_MAX_TOTAL_BYTES) {
-        setImageNotice('브라우저 캡처를 포함한 이미지 전체 크기는 25MB를 넘을 수 없습니다.');
+        setImageNotice('브라우저 캡처를 포함한 첨부 파일 전체 크기는 250MiB를 넘을 수 없습니다.');
         return;
       }
       if (override === undefined) {
@@ -1222,25 +1223,29 @@ export const Chat: React.FC<{
                       {m.images && m.images.length > 0 && (
                         <div
                           className={`chat-message-images count-${Math.min(m.images.length, 4)}`}
-                          aria-label={`첨부 이미지 ${m.images.length}장`}
+                          aria-label={`첨부 파일 ${m.images.length}개`}
                         >
                           {m.images.map((image, imageIndex) => (
                             <button
                               key={`${image.name}-${imageIndex}`}
                               type="button"
                               className="chat-message-image-button"
-                              onClick={() => setPreviewImage(image)}
-                              aria-label={`${image.name || `첨부 이미지 ${imageIndex + 1}`} 확대 보기`}
+                              onClick={() => image.kind !== 'file' && setPreviewImage(image)}
+                              aria-label={`${image.name || `첨부 파일 ${imageIndex + 1}`}${image.kind === 'file' ? '' : ' 확대 보기'}`}
                               title={
                                 image.width && image.height
                                   ? `${image.name} · ${image.width}×${image.height} · 클릭하여 확대`
                                   : `${image.name} · 클릭하여 확대`
                               }
                             >
-                              <img
-                                src={image.dataUrl}
-                                alt={image.name || `첨부 이미지 ${imageIndex + 1}`}
-                              />
+                              {image.kind === 'file' ? (
+                                <span className="chat-message-file"><DocIcon size={20} /> {image.name}</span>
+                              ) : (
+                                <img
+                                  src={image.dataUrl}
+                                  alt={image.name || `첨부 이미지 ${imageIndex + 1}`}
+                                />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -1439,10 +1444,10 @@ export const Chat: React.FC<{
           }}
         />
         {stagedImages.length > 0 && (
-          <div className="composer-images" aria-label={`전송 대기 이미지 ${stagedImages.length}장`}>
+          <div className="composer-images" aria-label={`전송 대기 파일 ${stagedImages.length}개`}>
             {stagedImages.map((image) => (
               <div className="composer-image" key={image.id}>
-                <img src={image.dataUrl} alt="" />
+                {image.kind === 'image' ? <img src={image.dataUrl} alt="" /> : <DocIcon size={24} />}
                 <span className="composer-image-name" title={image.name}>
                   {image.name}
                 </span>
@@ -1539,12 +1544,12 @@ export const Chat: React.FC<{
             }
             title={
               stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
-                ? `이미지는 최대 ${CHAT_IMAGE_MAX_COUNT}장까지 첨부할 수 있습니다`
+                ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
                 : preparingImages > 0
-                  ? '이미지를 준비하는 중…'
-                  : '이미지 첨부'
+                  ? '파일을 준비하는 중…'
+                  : '파일 첨부'
             }
-            aria-label="이미지 첨부"
+            aria-label="파일 첨부"
           >
             <PlusIcon size={17} />
           </button>
@@ -1587,7 +1592,7 @@ export const Chat: React.FC<{
           <span className="kbd-hint">
             <kbd>Enter</kbd> 전송 · <kbd>Shift + Enter</kbd> 줄바꿈
           </span>
-          <span className="composer-image-hint">이미지는 붙여넣기 또는 + · 최대 5장</span>
+          <span className="composer-image-hint">파일은 +로 첨부 · 이미지는 붙여넣기 가능 · 최대 10개</span>
         </div>
       </div>
 

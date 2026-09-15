@@ -35,6 +35,8 @@
     status: byId('status'),
     statusText: byId('status-text'),
     input: byId('input'),
+    attachments: byId('attachments'),
+    attach: byId('attach'),
     send: byId('send'),
     cancel: byId('cancel'),
     settingsBack: byId('settings-back'),
@@ -113,9 +115,27 @@
 
   function send() {
     const text = elements.input.value.trim();
-    if (!text || state.running || !state.agent) return;
+    if ((!text && !(state.attachments || []).length) || state.running || !state.agent) return;
     post('send', { text });
     elements.input.value = '';
+  }
+
+  function renderAttachments() {
+    elements.attachments.replaceChildren();
+    for (const item of state.attachments || []) {
+      const chip = document.createElement('span');
+      chip.className = 'chat-attachment-chip';
+      chip.textContent = `📎 ${item.name}`;
+      chip.title = `${item.name} · ${item.mime_type} · ${item.size} bytes`;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '×';
+      remove.setAttribute('aria-label', `${item.name} 첨부 취소`);
+      remove.addEventListener('click', () => post('removeAttachment', { id: item.attachment_id }));
+      chip.append(remove);
+      elements.attachments.append(chip);
+    }
+    elements.attachments.classList.toggle('hidden', !(state.attachments || []).length);
   }
 
   function copyButton(text, label) {
@@ -687,6 +707,8 @@
     elements.input.disabled = !!state.running;
     elements.input.placeholder = `${agent.workflowName}에게 메시지 보내기`;
     elements.send.disabled = !!state.running;
+    elements.attach.disabled = !!state.running;
+    renderAttachments();
     elements.changeAgent.disabled = !!state.running;
     elements.cancel.classList.toggle('hidden', !state.running);
     if (wasNearBottom) elements.messages.scrollTop = elements.messages.scrollHeight;
@@ -861,6 +883,7 @@
   elements.changeAgent.addEventListener('click', () => post('showAgents'));
   elements.chatSettings.addEventListener('click', () => post('showSettings'));
   elements.send.addEventListener('click', send);
+  elements.attach.addEventListener('click', () => post('attach'));
   elements.cancel.addEventListener('click', () => post('cancel'));
   elements.input.addEventListener('compositionstart', () => {
     composing = true;

@@ -6,6 +6,7 @@ import type {
   AuthStatus,
   ChatEvent,
   ChatInput,
+  ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
   ConversationSnapshot,
@@ -56,6 +57,9 @@ export interface TuiEngine {
    */
   stopChat(interactionId: string, profile?: string): Promise<ChatStopResult>;
   resolveChatInput(input: ChatInput): Promise<ResolvedChatInput>;
+  uploadChatAttachment(input: {
+    profile?: string; workflowId: string; interactionId: string; path: string;
+  }): Promise<ChatAttachmentDescriptor>;
   chat(input: ChatInput, signal?: AbortSignal): AsyncGenerator<ChatEvent, ResolvedChatInput>;
   /** 대화 소켓 감시 — 서버 주입 턴(트리거 반응)의 실시간 수신 (선택 구현). */
   watchConversation?(

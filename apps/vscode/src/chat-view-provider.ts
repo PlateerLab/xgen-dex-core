@@ -9,6 +9,7 @@ import type {
   ChatCompleteNotification,
   ChatErrorNotification,
   ChatEvent,
+  ChatAttachmentDescriptor,
   ChatEventNotification,
   ChatStartResult,
   Conversation,
@@ -59,6 +60,7 @@ interface ChatViewState {
   localTools?: LocalToolsStatus;
   localToolsSaving: boolean;
   localToolsMessage?: string;
+  attachments: ChatAttachmentDescriptor[];
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -71,6 +73,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private selectedAgent: Agent | undefined;
   private messages: ChatMessage[] = [];
   private interactionId: string | undefined;
+  private attachments: ChatAttachmentDescriptor[] = [];
+  private uploadingAttachments = false;
   private streamId: string | undefined;
   /**
    * 이 확장이 아니라 **다른 곳**(웹·앱·CLI)에서 시작한 턴이 이 대화에서 돌고
@@ -309,6 +313,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       await this.clearConversation();
       this.selectedAgent = this.agents.find((agent) => agent.workflowId === conversation.workflowId) ?? agentFromConversation(conversation);
       this.interactionId = conversation.interactionId;
+      this.attachments = [];
       this.syncConversationWatch();
       this.messages = turns.flatMap((turn) => [
         message('user', '나', turn.input),
@@ -338,6 +343,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.streamId = undefined;
     this.assistantMessageId = undefined;
     this.interactionId = undefined;
+    this.attachments = [];
     this.messages = [];
     this.toolMessages.clear();
     this.status = undefined;
@@ -350,12 +356,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private async send(input: string): Promise<void> {
     const text = input.trim();
-    if (!text || !this.selectedAgent || this.streamId) return;
+    if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId || this.uploadingAttachments) return;
     const agent = this.selectedAgent;
     const streamId = randomUUID();
     this.streamId = streamId;
     this.status = '응답을 기다리는 중...';
-    this.messages.push(message('user', '나', text));
+    const attachments = [...this.attachments];
+    this.attachments = [];
+    this.messages.push(message('user', '나', text || `첨부 파일 ${attachments.length}개`));
     const assistant = message('assistant', agent.workflowName, '');
     this.messages.push(assistant);
     this.assistantMessageId = assistant.id;
@@ -371,6 +379,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         workflowName: agent.workflowName,
         ...(this.interactionId ? { interactionId: this.interactionId } : {}),
         input: text,
+        attachments,
       });
       if (this.streamId !== streamId) return;
       this.interactionId = started.interactionId;
@@ -380,9 +389,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     } catch (error) {
       if (this.streamId !== streamId) return;
       this.streamId = undefined;
+      this.attachments = [...attachments, ...this.attachments];
       this.status = undefined;
       this.updateAssistant(`오류: ${errorMessage(error)}`);
       await this.setRunning(false);
+      this.postState();
+    }
+  }
+
+  private async attachFiles(): Promise<void> {
+    const agent = this.selectedAgent;
+    if (!agent || this.streamId || this.uploadingAttachments) return;
+    this.uploadingAttachments = true;
+    this.interactionId ??= randomUUID();
+    const interactionId = this.interactionId;
+    const profile = this.activeProfileParams();
+    const isCurrent = () => this.selectedAgent?.workflowId === agent.workflowId && this.interactionId === interactionId;
+    try {
+      const picked = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: true, canSelectFolders: false });
+      if (!picked?.length || !isCurrent()) return;
+      this.status = '파일을 업로드하는 중...';
+      this.postState();
+      for (const uri of picked) {
+        if (!isCurrent()) return;
+        const uploaded = await this.service.request<ChatAttachmentDescriptor>('chat/attachment/upload', {
+          ...profile, workflowId: agent.workflowId, interactionId, path: uri.fsPath,
+        });
+        if (!isCurrent()) return;
+        this.attachments.push(uploaded);
+        this.postState();
+      }
+      this.status = undefined;
+    } catch (error) {
+      if (isCurrent()) this.status = `파일을 첨부하지 못했습니다: ${errorMessage(error)}`;
+    } finally {
+      this.uploadingAttachments = false;
       this.postState();
     }
   }
@@ -643,6 +684,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const data = raw as Record<string, unknown>;
     if (data.type === 'ready') this.postState();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
+    else if (data.type === 'attach') void this.attachFiles();
+    else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
+      this.attachments = this.attachments.filter((item) => item.attachment_id !== data.id);
+      this.postState();
+    }
     else if (data.type === 'selectAgent' && typeof data.workflowId === 'string') {
       const agent = this.agents.find((item) => item.workflowId === data.workflowId);
       if (agent) void this.selectAgent(agent);
@@ -808,6 +854,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       localTools: this.localTools,
       localToolsSaving: this.localToolsSaving,
       localToolsMessage: this.localToolsMessage,
+      attachments: this.attachments,
     };
     void this.view?.webview.postMessage({ type: 'state', state });
   }
@@ -891,9 +938,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     <div id="status" class="status hidden" role="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text"></span></div>
     <footer class="composer-shell">
       <div class="composer-card">
+        <div id="attachments" class="chat-attachments" aria-live="polite"></div>
         <textarea id="input" rows="2" placeholder="Agent에게 메시지 보내기" aria-label="메시지"></textarea>
         <div class="composer-actions">
           <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
+          <button id="attach" class="secondary-button compact" type="button" title="파일 첨부">📎 첨부</button>
           <button id="cancel" class="secondary-button hidden" type="button">응답 중지</button>
           <button id="send" class="send-button" type="button"><span>전송</span><span class="send-icon" aria-hidden="true">↑</span></button>
         </div>

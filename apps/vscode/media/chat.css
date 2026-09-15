@@ -1892,3 +1892,6 @@ kbd {
   max-height: 280px;
   overflow: auto;
 }
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
+.chat-attachment-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 999px; font-size: 12px; }
+.chat-attachment-chip button { border: 0; color: inherit; background: transparent; cursor: pointer; }

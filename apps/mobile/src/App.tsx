@@ -27,11 +27,13 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
 import * as Linking from 'expo-linking';
 import MarkdownDisplay from 'react-native-markdown-display';
 import type { Agent, Conversation } from '@dex/protocol';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
-import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState } from './lib/chat-ws';
+import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState, type MobileChatAttachment } from './lib/chat-ws';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
   advertiseMobileTools,
@@ -61,6 +63,40 @@ type Section = 'chat' | 'agents' | 'settings';
 
 /** 앱을 껐다 켠 뒤 되찾을 대화가 적히는 자리. */
 const LAST_CHAT_KEY = 'last-chat';
+
+function base64Bytes(value: string): Uint8Array {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = value.replace(/[^A-Za-z0-9+/]/g, '');
+  const out = new Uint8Array(Math.floor((clean.length * 6) / 8));
+  let buffer = 0;
+  let bits = 0;
+  let offset = 0;
+  for (const char of clean) {
+    const n = alphabet.indexOf(char);
+    if (n < 0) continue;
+    buffer = (buffer << 6) | n;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[offset++] = (buffer >> bits) & 0xff;
+    }
+  }
+  return offset === out.length ? out : out.slice(0, offset);
+}
+
+function imageMime(bytes: Uint8Array): string | undefined {
+  const png = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length >= 8 && png.every((value, index) => bytes[index] === value)) return 'image/png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
+    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
+  ) return 'image/webp';
+  const gif = String.fromCharCode(...bytes.slice(0, 6));
+  if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
+  return undefined;
+}
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -1039,6 +1075,13 @@ function ChatSection({
   const st = useMemo(() => makeStyles(p), [p]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<MobileChatAttachment[]>([]);
+  const [attachmentStatus, setAttachmentStatus] = useState('');
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const uploadBusy = useRef(false);
+  const attachmentContext = `${agent?.workflowId ?? ''}:${interactionId}`;
+  const attachmentContextRef = useRef(attachmentContext);
+  attachmentContextRef.current = attachmentContext;
   const [wsState, setWsState] = useState<ChatWsState>('closed');
   const [running, setRunningState] = useState(false);
   /**
@@ -1069,6 +1112,8 @@ function ChatSection({
     if (!agent) return;
     let cancelled = false;
     setMessages([]);
+    setAttachments([]);
+    setAttachmentStatus('');
     void client.api.history
       .turns(agent.workflowId, interactionId, agent.workflowName)
       .then((turns) => {
@@ -1239,18 +1284,62 @@ function ChatSection({
 
   const send = async (): Promise<void> => {
     const text = input.trim();
-    if (!text || running || !chatRef.current) return;
+    if ((!text && attachments.length === 0) || running || uploadBusy.current || !chatRef.current) return;
+    const sendingAttachments = [...attachments];
     setInput('');
+    setAttachments([]);
+    setAttachmentStatus('');
     setRunning(true);
-    setMessages((prev) => [...prev, { role: 'user', text }]);
+    setMessages((prev) => [...prev, { role: 'user', text: text || `첨부 파일 ${sendingAttachments.length}개` }]);
     try {
-      await chatRef.current.execute(text);
+      await chatRef.current.execute(text, sendingAttachments);
     } catch (e) {
       setRunning(false);
+      setAttachments((current) => [...sendingAttachments, ...current]);
       const msg = friendlyError(e, '실행에 실패했습니다.');
       setMessages((prev) =>
         prev[prev.length - 1]?.role === 'error' ? prev : [...prev, { role: 'error', text: msg }],
       );
+    }
+  };
+
+  const attachFiles = async (): Promise<void> => {
+    if (running || !agent || uploadBusy.current) return;
+    uploadBusy.current = true;
+    setUploadingAttachments(true);
+    const context = attachmentContextRef.current;
+    const isCurrent = () => attachmentContextRef.current === context;
+    let count = 0;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
+      if (picked.canceled || !isCurrent()) return;
+      setAttachmentStatus('파일을 업로드하는 중…');
+      for (const asset of picked.assets) {
+        if (!isCurrent()) return;
+        if ((asset.size ?? 0) > 100 * 1024 * 1024) throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
+        const b64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+        const bytes = base64Bytes(b64);
+        if (bytes.byteLength > 100 * 1024 * 1024) throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
+        const detectedImageMime = imageMime(bytes);
+        const mime = detectedImageMime || (asset.mimeType || 'application/octet-stream').toLowerCase();
+        const kind: 'image' | 'file' = detectedImageMime ? 'image' : 'file';
+        const attachmentId = `mob-att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const result = await client.api.agentData.workspaceUpload(agent.workflowId, bytes, asset.name, mime, interactionId, attachmentId);
+        if (!isCurrent()) return;
+        if (result.status === 'pending_approval') throw new Error('파일 업로드가 승인 대기 중입니다.');
+        if (!result.workspace_path) throw new Error('Workspace 업로드 경로가 없습니다.');
+        const attachment: MobileChatAttachment = { kind, attachment_id: attachmentId, name: asset.name, mime_type: mime,
+          size: result.size ?? bytes.byteLength, sha256: result.sha256, workspace_path: result.workspace_path };
+        // Keep each successful file even if a later upload fails.
+        setAttachments((current) => [...current, attachment]);
+        count += 1;
+      }
+      setAttachmentStatus(`${count}개 파일 첨부됨`);
+    } catch (error) {
+      if (isCurrent()) setAttachmentStatus(friendlyError(error, '파일을 첨부하지 못했습니다.'));
+    } finally {
+      uploadBusy.current = false;
+      setUploadingAttachments(false);
     }
   };
 
@@ -1270,7 +1359,7 @@ function ChatSection({
     );
   }
 
-  const canSend = wsState === 'connected' && !!input.trim();
+  const canSend = !uploadingAttachments && wsState === 'connected' && (!!input.trim() || attachments.length > 0);
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -1315,7 +1404,21 @@ function ChatSection({
       />
 
       <View style={st.composer}>
+        {attachments.length > 0 && (
+          <ScrollView horizontal contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
+            {attachments.map((item) => (
+              <Pressable key={item.attachment_id} style={st.attachmentChip}
+                onPress={() => setAttachments((current) => current.filter((a) => a.attachment_id !== item.attachment_id))}>
+                <Text style={{ color: p.text, fontSize: 12 }}>📎 {item.name} ×</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        )}
+        {!!attachmentStatus && <Text style={[st.mutedText, { marginBottom: 5 }]}>{attachmentStatus}</Text>}
         <View style={st.composerBox}>
+          <Pressable style={st.attachBtn} disabled={running || uploadingAttachments} onPress={() => void attachFiles()}>
+            <Text style={{ color: p.text, fontSize: 18 }}>📎</Text>
+          </Pressable>
           <TextInput
             style={st.composerInput}
             value={input}
@@ -1603,6 +1706,8 @@ function makeStyles(p: Palette) {
       borderRadius: 22, paddingLeft: 16, paddingRight: 6, paddingVertical: 6,
     },
     composerInput: { flex: 1, color: p.text, fontSize: 15, maxHeight: 132, paddingVertical: 6 },
+    attachBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+    attachmentChip: { borderWidth: 1, borderColor: p.border, borderRadius: 14, paddingHorizontal: 9, paddingVertical: 5 },
     sendBtn: {
       width: 38, height: 38, borderRadius: 19, backgroundColor: p.primary,
       alignItems: 'center', justifyContent: 'center',

@@ -1029,7 +1029,7 @@ export const Chat: React.FC<{
         <div className="chat-header-actions">
           <div className="teams-menu-wrap">
             <button
-              className="secondary"
+              className="chat-hbtn icon"
               onClick={() => setNotificationMenuOpen((open) => !open)}
               title="이 에이전트와 대화의 알림 설정"
               aria-label="알림 설정"
@@ -1093,19 +1093,9 @@ export const Chat: React.FC<{
               {mcpIndicator.label}
             </button>
           )}
-          <button
-            type="button"
-            className={`secondary process-view-toggle${processView ? ' on' : ''}`}
-            onClick={toggleProcessView}
-            title={processView ? '작업 과정 타임라인 끄기 (도구 칩으로 보기)' : '작업 과정 타임라인 켜기'}
-            aria-pressed={processView}
-          >
-            <span className="process-view-dot" />
-            작업 과정
-          </button>
           {ttsOn && (
             <button
-              className="secondary"
+              className="chat-hbtn icon"
               onClick={() => setMuted((v) => !v)}
               title={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
               aria-label={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
@@ -1118,7 +1108,7 @@ export const Chat: React.FC<{
               에이전트를 다시 선택해 여는 흐름과 중복이라 제거. */}
           {onOpenViewer && (
             <button
-              className="secondary"
+              className="chat-hbtn"
               onClick={() => onOpenViewer('basic')}
               title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
@@ -1126,7 +1116,7 @@ export const Chat: React.FC<{
             </button>
           )}
           <button
-            className="secondary end-chat"
+            className="chat-hbtn end-chat"
             onClick={endChat}
             title="이 대화를 종료하고 목록으로 돌아갑니다"
           >
@@ -1251,11 +1241,11 @@ export const Chat: React.FC<{
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
                       <>
-                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />}
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} onHide={toggleProcessView} />}
                         <ErrorBlock info={m.errorInfo} />
                       </>
                     ) : processView && hasProcessFlow(m) ? (
-                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
+                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} onHide={toggleProcessView} />
                     ) : m.text ? (
                       <Markdown text={m.text} />
                     ) : (
@@ -1369,6 +1359,15 @@ export const Chat: React.FC<{
                       )}
                       {/* 전체 도구 로그 — 흐름의 도구 칩은 하나씩 지나가므로,
                           무엇이 있었는지 되짚으려면 펼칠 곳이 필요하다. */}
+                      {!processView && hasProcessFlow(m) && (
+                        <button
+                          className="toollog-open process-view-on"
+                          onClick={toggleProcessView}
+                          title="답변을 작업 과정 타임라인과 함께 봅니다"
+                        >
+                          과정 보기
+                        </button>
+                      )}
                       {m.tools && m.tools.length > 0 && (
                         <button
                           className="toollog-open"

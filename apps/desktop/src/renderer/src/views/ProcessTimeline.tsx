@@ -6,9 +6,10 @@
  * 동안 화면에 새로 보이는 것이 없었다(모델이 긴 스크립트를 쓰는 시간 + 셸 대기). 서버는 이미 도구마다
  * 입력·결과·소요 시간을 보내 주므로 서버 변경 없이 이 화면만으로 채운다.
  *
- * - 진행 문장(도구 사이 텍스트의 첫 문단)이 단계 제목, 그 아래에 그 단계에서 부른 도구 카드
+ * - 실행 중에는 펼쳐서 단계와 도구를 실시간으로, 끝나면 한 줄 요약으로 접어 최종 답이 먼저 보이게 한다
+ *   (요약 줄을 누르면 다시 펼친다)
+ * - 진행 문장(도구 사이 텍스트의 첫 문단)이 단계 제목, 그 아래에 그 단계에서 부른 도구 행
  * - 실행 중인 도구와 "다음 단계를 준비하는" 공백에 경과 초를 계속 보여 준다
- * - 마지막 단계 뒤의 본문(표·권고 등)은 평소 답변처럼 마크다운으로 그린다
  * - 무엇을 어떻게 부를지·그릴지는 전부 process-timeline-model 의 범용 규칙이다(도구 이름으로 특수 처리하지 않음)
  * - 스트림으로 받은 턴만 순서(flow)를 안다. 이력에서 복원한 턴은 flow 가 없어 기존 화면으로 그린다
  */
@@ -109,7 +110,7 @@ function useNow(active: boolean): number {
 /** 도구 결과 — JSON 모양대로(카드·표·키값), 아니면 첫 줄. */
 const ResultBlock: React.FC<{ view: ResultView }> = ({ view }) => {
   if (view.line !== undefined && !view.title && !view.table) {
-    return <div className="ptl-preview">↳ {view.line}</div>;
+    return <div className="ptl-preview">{view.line}</div>;
   }
   return (
     <div className={`ptl-result${view.title ? ' entity' : ''}`}>
@@ -155,7 +156,7 @@ const ResultBlock: React.FC<{ view: ResultView }> = ({ view }) => {
   );
 };
 
-const ToolCard: React.FC<{
+const ToolRow: React.FC<{
   row: TimelineRow;
   now: number;
   open: boolean;
@@ -168,29 +169,32 @@ const ToolCard: React.FC<{
     row.phase === 'run' ? (
       <>
         <span className="ptl-spin" />
-        실행 중 · {fmtSec(now - row.startedAt)}
+        {fmtSec(now - row.startedAt)}
       </>
+    ) : row.phase === 'err' ? (
+      `실패${row.durationMs !== undefined ? ` · ${fmtDuration(row.durationMs)}` : ''}`
     ) : (
-      <>
-        {row.phase === 'err' ? '실패' : '완료'}
-        {row.durationMs !== undefined ? ` · ${fmtDuration(row.durationMs)}` : ''}
-      </>
+      fmtDuration(row.durationMs)
     );
   return (
-    <div className={`ptl-tool ${row.phase} ptl-kind-${d.icon}`}>
-      <button type="button" className="ptl-tool-head" onClick={onToggle} title="눌러서 입력과 결과 보기">
-        <span className="ptl-caret">{open ? '▾' : '▸'}</span>
+    <div className={`ptl-tool ${row.phase} ptl-kind-${d.icon}${open ? ' open' : ''}`}>
+      <button
+        type="button"
+        className="ptl-tool-head"
+        onClick={onToggle}
+        title={`${shortToolName(row.name)} — 눌러서 입력과 결과 보기`}
+        aria-expanded={open}
+      >
         <span className="ptl-ico">
           <Icon kind={d.icon} />
         </span>
         <span className="ptl-sum">{d.text}</span>
-        <span className="ptl-name">{shortToolName(row.name)}</span>
         <span className="ptl-stat">{status}</span>
       </button>
       {view && <ResultBlock view={view} />}
       {open && (
         <div className="ptl-detail">
-          <label>입력</label>
+          <label>{shortToolName(row.name)} 입력</label>
           <pre>{toolValueText(row.input)}</pre>
           {(row.error ?? row.result) !== undefined && (
             <>
@@ -206,22 +210,29 @@ const ToolCard: React.FC<{
 
 export const ProcessTimeline: React.FC<{
   msg: ChatMsg;
-  /** 에이전트에 등록된 도구 설명(도구 이름 → 설명). 있으면 카드 이름표에 쓴다. */
+  /** 에이전트에 등록된 도구 설명(도구 이름 → 설명). 있으면 도구 행 이름표에 쓴다. */
   toolDescriptions?: Readonly<Record<string, string>>;
-}> = ({ msg, toolDescriptions }) => {
+  /** 타임라인 없이 답만 보기로 바꾼다(전역 설정). */
+  onHide?: () => void;
+}> = ({ msg, toolDescriptions, onHide }) => {
   const streaming = !!msg.streaming;
   const now = useNow(streaming);
-  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  // 펼침: 사용자가 누르기 전에는 실행 중이면 펼치고, 끝나면 접는다.
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const expanded = manualOpen ?? streaming;
+  const [openRows, setOpenRows] = useState<Set<string>>(() => new Set());
   const steps = useMemo(() => buildSteps(msg.flow ?? []), [msg.flow]);
 
   const allRows = steps.flatMap((s) => s.rows);
   const running = allRows.find((r) => r.phase === 'run');
+  const failed = allRows.filter((r) => r.phase === 'err').length;
   const startedAt = msg.startedAt ?? msg.flow?.[0]?.at ?? now;
   const lastAt = msg.lastEventAt ?? startedAt;
   const describe = (name: string) => toolDescriptions?.[name] ?? toolDescriptions?.[shortToolName(name)];
 
   // 마지막 단계에 도구가 없으면 그 뒤 본문은 최종 답이다.
   let answer = '';
+  let stepCount = 0;
   const rendered = steps.map((step, i) => {
     const last = i === steps.length - 1;
     let { title, body } = splitFirstParagraph(step.text);
@@ -238,6 +249,7 @@ export const ProcessTimeline: React.FC<{
     const typing = last && streaming && step.rows.length === 0 && !answer;
     const phase = step.rows.some((r) => r.phase === 'run') || typing ? 'run' : step.rows.some((r) => r.phase === 'err') ? 'err' : 'ok';
     if (!title && step.rows.length === 0) return null;
+    stepCount += 1;
     return (
       <div key={i} className={`ptl-step ${phase}`}>
         <span className="ptl-node" />
@@ -248,14 +260,14 @@ export const ProcessTimeline: React.FC<{
           </div>
         )}
         {step.rows.map((row) => (
-          <ToolCard
+          <ToolRow
             key={row.key}
             row={row}
             now={now}
             description={describe(row.name)}
-            open={open.has(row.key)}
+            open={openRows.has(row.key)}
             onToggle={() =>
-              setOpen((prev) => {
+              setOpenRows((prev) => {
                 const next = new Set(prev);
                 if (next.has(row.key)) next.delete(row.key);
                 else next.add(row.key);
@@ -269,25 +281,43 @@ export const ProcessTimeline: React.FC<{
   });
 
   const idle = streaming && !running && !answer && now - lastAt >= IDLE_HINT_MS;
+  const summary = streaming
+    ? `${fmtSec(now - startedAt)} · 도구 ${allRows.length}회${running ? ` · ${shortToolName(running.name)} 실행 중` : ''}`
+    : `${stepCount}단계 · 도구 ${allRows.length}회${failed ? ` · 실패 ${failed}` : ''} · ${fmtSec(lastAt - startedAt)}`;
+
   return (
-    <div className="ptl">
-      <div className={`ptl-head${streaming ? '' : ' done'}`}>
-        <span className="ptl-pulse" />
-        <b>{streaming ? '작업 중' : '완료'}</b>
-        <span>· {fmtSec((streaming ? now : lastAt) - startedAt)}</span>
-        <span className="ptl-head-meta">
-          도구 {allRows.length}회{running ? ` · ${shortToolName(running.name)} 실행 중` : ''}
-        </span>
-      </div>
-      <div className="ptl-steps">
-        {rendered}
-        {idle && (
-          <div className="ptl-step wait">
-            <span className="ptl-node" />
-            <div className="ptl-title">다음 단계를 준비하고 있어요 · {fmtSec(now - lastAt)}</div>
-          </div>
+    <div className={`ptl${expanded ? ' expanded' : ' collapsed'}`}>
+      <div className={`ptl-head${streaming ? ' live' : ''}`}>
+        <button type="button" className="ptl-head-toggle" onClick={() => setManualOpen(!expanded)} aria-expanded={expanded}>
+          <span className="ptl-pulse" />
+          <span className="ptl-head-label">{streaming ? '작업 중' : '작업 과정'}</span>
+          <span className="ptl-head-sub">{summary}</span>
+          <span className="ptl-chevron" aria-hidden>
+            {expanded ? '▾' : '▸'}
+          </span>
+        </button>
+        {onHide && (
+          <button
+            type="button"
+            className="ptl-link"
+            onClick={onHide}
+            title="작업 과정 없이 답만 보기 — 다시 켜려면 답변 아래 [과정 보기]"
+          >
+            간단히
+          </button>
         )}
       </div>
+      {expanded && (
+        <div className="ptl-steps">
+          {rendered}
+          {idle && (
+            <div className="ptl-step wait">
+              <span className="ptl-node" />
+              <div className="ptl-title">다음 단계를 준비하고 있어요 · {fmtSec(now - lastAt)}</div>
+            </div>
+          )}
+        </div>
+      )}
       {answer && (
         <div className="ptl-answer">
           <Markdown text={answer} />

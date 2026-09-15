@@ -1,6 +1,6 @@
 /**
  * 답변 아래 "이 답변에서 만든 파일" — 턴이 끝나면 에이전트 작업 공간 목록을 한 번 받아, 그 턴 동안
- * 생기거나 바뀐 파일을 [열기](파일 뷰어 탭: 미리보기·다운로드) · [받기](바로 저장)로 보여 준다.
+ * 생기거나 바뀐 파일을 칩으로 보여 준다. 이름을 누르면 파일 뷰어 탭(미리보기·다운로드), ↓ 는 바로 저장.
  * 고르는 규칙은 turn-files-model 에 있다. 이 창이 스트림으로 받은 턴만 시작 시각을 알아 목록을 그린다.
  */
 import React, { useEffect, useState } from 'react';
@@ -8,7 +8,7 @@ import type { WsNode } from '@dex/protocol';
 import { xgen } from '../bridge';
 import type { ChatMsg } from '../session-store';
 import { DocIcon, DownloadIcon } from '../brand/icons';
-import { filesChangedDuringTurn, formatFileSize, parentDir } from './turn-files-model';
+import { filesChangedDuringTurn, formatFileSize } from './turn-files-model';
 
 function saveBytes(bytes: Uint8Array, contentType: string, fileName: string): void {
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -23,7 +23,7 @@ function saveBytes(bytes: Uint8Array, contentType: string, fileName: string): vo
 export const TurnFiles: React.FC<{
   workflowId: string;
   msg: ChatMsg;
-  /** 파일 뷰어 탭 열기 — 없으면 [열기] 를 숨긴다. */
+  /** 파일 뷰어 탭 열기 — 없으면 이름을 눌러도 열지 않는다. */
   onOpenFile?: (workflowId: string, rel: string, name: string) => void;
 }> = ({ workflowId, msg, onOpenFile }) => {
   const [files, setFiles] = useState<WsNode[]>([]);
@@ -66,31 +66,31 @@ export const TurnFiles: React.FC<{
 
   return (
     <div className="turn-files" aria-label="이 답변에서 만든 파일">
-      <div className="turn-files-head">이 답변에서 만든 파일 · {files.length}개</div>
+      <span className="turn-files-label">만든 파일</span>
       {files.map((node) => (
-        <div key={node.path} className="turn-file">
-          <DocIcon size={14} className="turn-file-icon" />
-          <span className="turn-file-name" title={node.path}>
-            {node.name}
-            {parentDir(node.path) && <span className="turn-file-dir">{parentDir(node.path)}/</span>}
-          </span>
-          <span className="turn-file-size">{formatFileSize(node.size)}</span>
-          {failed === node.path && <span className="turn-file-error">받기 실패</span>}
-          {onOpenFile && (
-            <button type="button" className="secondary sm" onClick={() => onOpenFile(workflowId, node.path, node.name)}>
-              열기
-            </button>
-          )}
+        <span key={node.path} className={`turn-file-chip${failed === node.path ? ' failed' : ''}`} title={node.path}>
           <button
             type="button"
-            className="secondary sm"
+            className="turn-file-open"
+            onClick={() => onOpenFile?.(workflowId, node.path, node.name)}
+            disabled={!onOpenFile}
+            title={`${node.path} — 눌러서 열기`}
+          >
+            <DocIcon size={13} />
+            <span className="turn-file-name">{node.name}</span>
+            <span className="turn-file-size">{formatFileSize(node.size)}</span>
+          </button>
+          <button
+            type="button"
+            className="turn-file-dl"
             onClick={() => void download(node)}
             disabled={busy === node.path}
-            title="이 PC 에 저장"
+            title={failed === node.path ? '받기 실패 — 다시 시도' : '이 PC 에 저장'}
+            aria-label={`${node.name} 받기`}
           >
-            <DownloadIcon size={13} /> {busy === node.path ? '받는 중…' : '받기'}
+            {busy === node.path ? <span className="ptl-spin" /> : <DownloadIcon size={13} />}
           </button>
-        </div>
+        </span>
       ))}
     </div>
   );

@@ -1,61 +1,143 @@
-/* 작업 과정 타임라인 (ProcessTimeline.tsx) — 색은 전역 토큰만 써서 다크 테마에서도 같이 바뀐다. */
+/* 작업 과정 타임라인 (ProcessTimeline.tsx) · 답변 아래 만든 파일 (TurnFiles.tsx) · 채팅 헤더 버튼.
+   색은 전역 토큰만 써서 다크 테마에서도 같이 바뀐다. 테두리·배경은 꼭 필요한 곳(실행 중, 결과 카드)에만. */
+
+/* ── 채팅 헤더: 테두리 없는 가벼운 버튼 (아이콘은 툴팁으로 설명) ───────────────── */
+.chat-header-actions {
+  gap: 2px;
+}
+.chat-hbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.chat-hbtn.icon {
+  padding: 0;
+}
+.chat-hbtn:hover:not(:disabled),
+.chat-hbtn[aria-expanded='true'] {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.chat-hbtn.end-chat:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: var(--error);
+}
+.chat-hbtn-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 6px;
+}
+
+/* ── 타임라인 머리 줄 (펼치기/접기) ─────────────────────────────────────── */
 .ptl {
   min-width: 0;
 }
-
 .ptl-head {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.ptl-head-toggle {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px 4px 2px;
+  margin-left: -2px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
   font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
 }
-.ptl-head b {
+.ptl-head-toggle:hover {
+  background: var(--panel-2);
+}
+.ptl-head-toggle:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+}
+.ptl-head-label {
+  font-weight: 600;
   color: var(--text);
+  flex: none;
 }
-.ptl-head-meta {
+.ptl-head-sub {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ptl-chevron {
+  color: var(--muted);
+  font-size: 11px;
+  flex: none;
+}
+.ptl-link {
+  all: unset;
   margin-left: auto;
   font-size: 12px;
   color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.ptl-link:hover {
+  color: var(--text);
+  background: var(--panel-2);
 }
 .ptl-pulse {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
+  background: var(--success);
+  flex: none;
+}
+.ptl-head.live .ptl-pulse {
   background: var(--primary);
   animation: ptl-pulse 1.6s infinite;
-}
-.ptl-head.done .ptl-pulse {
-  background: var(--success);
-  animation: none;
 }
 @keyframes ptl-pulse {
   0% {
     box-shadow: 0 0 0 0 var(--primary-soft-border);
   }
   70% {
-    box-shadow: 0 0 0 9px transparent;
+    box-shadow: 0 0 0 8px transparent;
   }
   100% {
     box-shadow: 0 0 0 0 transparent;
   }
 }
 
+/* ── 단계 ─────────────────────────────────────────────────────────────── */
 .ptl-steps {
-  margin-left: 4px;
+  margin: 10px 0 0 4px;
 }
 .ptl-step {
   position: relative;
-  padding: 0 0 12px 24px;
+  padding: 0 0 10px 22px;
 }
 .ptl-step::before {
   content: '';
   position: absolute;
-  left: 5px;
-  top: 18px;
-  bottom: 0;
-  width: 2px;
+  left: 4px;
+  top: 16px;
+  bottom: 2px;
+  width: 1.5px;
   background: var(--border);
 }
 .ptl-step:last-child::before {
@@ -65,26 +147,15 @@
   position: absolute;
   left: 0;
   top: 5px;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  border: 2px solid var(--success);
+  border: 1.5px solid var(--success);
   background: var(--panel);
   box-sizing: border-box;
 }
 .ptl-step.ok .ptl-node {
   background: var(--success);
-}
-.ptl-step.ok .ptl-node::after {
-  content: '';
-  position: absolute;
-  left: 3px;
-  top: 0;
-  width: 3px;
-  height: 6px;
-  border: solid #fff;
-  border-width: 0 1.6px 1.6px 0;
-  transform: rotate(45deg);
 }
 .ptl-step.err .ptl-node {
   border-color: var(--error);
@@ -92,7 +163,7 @@
 }
 .ptl-step.run .ptl-node,
 .ptl-step.wait .ptl-node {
-  border-color: var(--primary);
+  border: 1.5px solid var(--primary);
   border-top-color: transparent;
   animation: ptl-spin 0.9s linear infinite;
 }
@@ -106,29 +177,31 @@
   }
 }
 .ptl-title {
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 13.5px;
+  line-height: 1.5;
   color: var(--text);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 .ptl-step.wait .ptl-title {
   color: var(--muted);
 }
 
+/* ── 도구 행: 평소엔 한 줄, 실행 중·펼침·실패만 강조 ─────────────────────────── */
 .ptl-tool {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--panel-2);
-  margin: 0 0 8px;
-  overflow: hidden;
+  border-radius: var(--radius-md);
+  margin: 0 0 2px -6px;
+  border: 1px solid transparent;
 }
 .ptl-tool.run {
-  border-color: var(--primary-soft-border);
   background: var(--primary-soft);
+  border-color: var(--primary-soft-border);
 }
 .ptl-tool.err {
-  border-color: var(--error-border);
   background: var(--error-bg);
+}
+.ptl-tool.open {
+  background: var(--panel-2);
+  border-color: var(--border);
 }
 .ptl-tool-head {
   all: unset;
@@ -136,63 +209,54 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
+}
+.ptl-tool:not(.run):not(.open) .ptl-tool-head:hover {
+  background: var(--panel-2);
 }
 .ptl-tool-head:focus-visible {
   outline: 2px solid var(--primary-soft-border);
 }
-.ptl-caret {
-  width: 10px;
-  font-size: 11px;
+.ptl-ico {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
   color: var(--muted);
   flex: none;
 }
-.ptl-ico {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  display: grid;
-  place-items: center;
-  background: var(--panel);
-  border: 1px solid var(--border-soft);
-  color: var(--text-secondary);
-  flex: none;
-}
 .ptl-ico svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
 }
 /* 기본 도구가 아닌 외부 도구(MCP·API·커넥터) — 시스템 연동이 눈에 띄게 */
 .ptl-tool.ptl-kind-external .ptl-ico {
   color: var(--primary);
-  background: var(--primary-soft);
-  border-color: var(--primary-soft-border);
 }
 .ptl-sum {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
-  color: var(--text);
+  font-size: 13px;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ptl-name {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--muted);
-  flex: none;
+.ptl-tool.run .ptl-sum {
+  color: var(--text);
 }
 .ptl-stat {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 5px;
+  font-size: 11.5px;
   white-space: nowrap;
   flex: none;
-  color: var(--success);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .ptl-tool.run .ptl-stat {
   color: var(--primary);
@@ -202,25 +266,26 @@
   color: var(--error);
 }
 .ptl-spin {
-  width: 11px;
-  height: 11px;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  border: 2px solid var(--primary);
+  border: 1.5px solid var(--primary);
   border-top-color: transparent;
   animation: ptl-spin 0.8s linear infinite;
+  box-sizing: border-box;
 }
 .ptl-preview {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--muted);
-  padding: 0 12px 8px 58px;
+  padding: 0 8px 4px 34px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .ptl-detail {
-  border-top: 1px solid var(--border-soft);
-  padding: 8px 12px 10px 58px;
+  padding: 4px 8px 8px 34px;
 }
 .ptl-detail label {
   display: block;
@@ -242,27 +307,27 @@
   word-break: break-all;
 }
 
-/* 도구 결과 — JSON 모양대로 (이름 있는 객체 → 카드, 목록 → 표, 그 밖 → 키·값) */
+/* ── 도구 결과: JSON 모양대로 (이름 있는 객체 → 카드, 목록 → 표, 그 밖 → 키·값) ── */
 .ptl-result {
-  margin: 0 12px 10px 58px;
+  margin: 2px 8px 8px 34px;
   min-width: 0;
 }
 .ptl-result.entity {
   border: 1px solid var(--border);
   background: var(--panel);
   border-radius: var(--radius-md);
-  padding: 9px 12px;
+  padding: 8px 11px;
 }
 .ptl-result-title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 .ptl-result-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  gap: 3px 12px;
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -289,8 +354,10 @@
   background: var(--border-soft);
 }
 .ptl-table-wrap {
-  margin-top: 6px;
+  margin-top: 4px;
   overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 .ptl-table {
   border-collapse: collapse;
@@ -300,13 +367,16 @@
 }
 .ptl-table th,
 .ptl-table td {
-  border: 1px solid var(--border);
-  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 4px 9px;
   text-align: left;
   white-space: nowrap;
   max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.ptl-table tr:last-child td {
+  border-bottom: 0;
 }
 .ptl-table th {
   font-family: var(--font-mono);
@@ -322,90 +392,71 @@
 }
 
 .ptl-answer {
-  border-top: 1px dashed var(--border);
-  margin-top: 4px;
+  margin-top: 10px;
   padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
 }
 
-/* 채팅 상단 [작업 과정] 토글 */
-.process-view-toggle {
+/* ── 답변 아래 만든 파일: 칩 한 줄 ─────────────────────────────────────────── */
+.turn-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 2px;
+}
+.turn-files-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+.turn-file-chip {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.turn-file-chip.failed {
+  border-color: var(--error-border);
+}
+.turn-file-open,
+.turn-file-dl {
+  all: unset;
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.process-view-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-  opacity: 0.5;
-}
-.process-view-toggle.on {
-  color: var(--primary);
-  border-color: var(--primary-soft-border);
-  background: var(--primary-soft);
-}
-.process-view-toggle.on .process-view-dot {
-  background: var(--primary);
-  opacity: 1;
-}
-
-/* 답변 아래 "이 답변에서 만든 파일" (TurnFiles.tsx) */
-.turn-files {
-  margin: 8px 0 2px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--panel);
-  padding: 8px 12px;
-  max-width: 100%;
-}
-.turn-files-head {
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-.turn-file {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  border-top: 1px solid var(--border-soft);
-}
-.turn-files-head + .turn-file {
-  border-top: 0;
-}
-.turn-file-icon {
+  cursor: pointer;
   color: var(--text-secondary);
-  flex: none;
+}
+.turn-file-open {
+  padding: 4px 8px 4px 11px;
+  min-width: 0;
+}
+.turn-file-dl {
+  padding: 4px 10px 4px 8px;
+  border-left: 1px solid var(--border-soft);
+}
+.turn-file-open:hover,
+.turn-file-dl:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.turn-file-chip.failed .turn-file-dl {
+  color: var(--error);
 }
 .turn-file-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.turn-file-dir {
-  margin-left: 8px;
-  font-family: var(--font-mono);
+.turn-file-size {
   font-size: 11px;
   color: var(--muted);
-}
-.turn-file-size {
-  font-size: 11.5px;
-  color: var(--muted);
-  flex: none;
-}
-.turn-file-error {
-  font-size: 11.5px;
-  color: var(--error);
-  flex: none;
-}
-.turn-file button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   flex: none;
 }

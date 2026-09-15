@@ -11,16 +11,7 @@ import { xgen } from '../bridge';
 import type { ChatMsg } from '../session-store';
 import { DocIcon, DownloadIcon } from '../brand/icons';
 import { filesChangedDuringTurn, filesNamedInAnswer, formatFileSize, splitRequestedFiles } from './turn-files-model';
-
-function saveBytes(bytes: Uint8Array, contentType: string, fileName: string): void {
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const url = URL.createObjectURL(new Blob([buffer], { type: contentType || 'application/octet-stream' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
+import { saveBytes } from './file-save';
 
 export const TurnFiles: React.FC<{
   workflowId: string;

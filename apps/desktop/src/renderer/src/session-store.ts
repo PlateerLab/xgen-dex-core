@@ -35,6 +35,7 @@ import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
 import { attachTurnProcesses, browserStorage, rememberTurnProcess, type KeyValueStorage } from './turn-process-memory';
+import { workspacePathOf } from './views/attachment-model';
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -202,6 +203,8 @@ export interface ChatAttachment {
   kind?: 'file' | 'image';
   width?: number;
   height?: number;
+  /** 에이전트 작업 공간에 올라간 자리(작업 공간 기준 경로) — 대화에서 이 파일을 다시 열고 받는 근거. */
+  workspacePath?: string;
 }
 
 export type ChatImageAttachment = ChatAttachment;
@@ -559,7 +562,7 @@ export class SessionStore {
           typeof tn.output === 'string' ? tn.output : tn.output == null ? '' : String(tn.output);
         const images: ChatImageAttachment[] = [];
         for (const attachment of tn.attachments ?? []) {
-          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '' });
+          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '', workspacePath: workspacePathOf(attachment.path) });
         }
         if (this.transport.historyImage) {
           for (const attachment of tn.attachments ?? []) {
@@ -810,6 +813,24 @@ export class SessionStore {
       )
         .then((attachments) => {
           if (cancelled) return;
+          // 올라간 자리를 말풍선의 첨부에 적어 둔다 — 대화에서 바로 열고 받을 수 있게.
+          // (첨부 순서 = 업로드 순서, 화면 캡처는 맨 뒤라 앞쪽 인덱스가 그대로 맞는다)
+          if (userMsg.images?.length) {
+            this.patch(key, (st) => {
+              const at = st.messages.indexOf(userMsg);
+              if (at < 0) return st;
+              const messages = st.messages.slice();
+              messages[at] = {
+                ...userMsg,
+                images: userMsg.images?.map((image, index) => ({
+                  ...image,
+                  workspacePath: workspacePathOf(attachments[index]?.workspace_path) ?? image.workspacePath,
+                })),
+              };
+              return { ...st, messages };
+            });
+            this.emit();
+          }
           startStream({ input_str: text, attachments });
         })
         .catch((error: unknown) => {

@@ -35,6 +35,7 @@ import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeli
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
 import { requestBefore } from './turn-files-model';
+import { MessageFiles } from './MessageFiles';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -1194,6 +1195,9 @@ export const Chat: React.FC<{
                   </div>
                 );
               }
+              // 사용자 메시지의 첨부: 파일은 말풍선 위 카드(열기·저장), 그림은 말풍선 안 미리보기
+              const files = m.role === 'user' ? (m.images ?? []).filter((image) => image.kind === 'file') : [];
+              const pictures = (m.images ?? []).filter((image) => image.kind !== 'file');
               return (
             <div key={i} className={`msg-row ${m.role}`}>
               {m.role === 'assistant' && (
@@ -1232,8 +1236,11 @@ export const Chat: React.FC<{
                     }}
                   />
                 )}
+                {files.length > 0 && (
+                  <MessageFiles files={files} workflowId={agent.workflowId} onOpenFile={onOpenFile} />
+                )}
                 <div
-                  className={`bubble ${m.role} ${m.error ? 'error' : ''}${m.images?.length ? ' has-images' : ''}`}
+                  className={`bubble ${m.role} ${m.error ? 'error' : ''}${pictures.length ? ' has-images' : ''}${m.role === 'user' && !m.text && pictures.length === 0 ? ' empty' : ''}`}
                 >
                   {/* 어시스턴트 답변은 웹 채팅과 동일하게 마크다운 렌더 —
                       볼드/리스트/표/코드블록/링크. 사용자가 입력한 메시지는
@@ -1256,32 +1263,28 @@ export const Chat: React.FC<{
                     )
                   ) : (
                     <>
-                      {m.images && m.images.length > 0 && (
+                      {pictures.length > 0 && (
                         <div
-                          className={`chat-message-images count-${Math.min(m.images.length, 4)}`}
-                          aria-label={`첨부 파일 ${m.images.length}개`}
+                          className={`chat-message-images count-${Math.min(pictures.length, 4)}`}
+                          aria-label={`첨부 이미지 ${pictures.length}개`}
                         >
-                          {m.images.map((image, imageIndex) => (
+                          {pictures.map((image, imageIndex) => (
                             <button
                               key={`${image.name}-${imageIndex}`}
                               type="button"
                               className="chat-message-image-button"
-                              onClick={() => image.kind !== 'file' && setPreviewImage(image)}
-                              aria-label={`${image.name || `첨부 파일 ${imageIndex + 1}`}${image.kind === 'file' ? '' : ' 확대 보기'}`}
+                              onClick={() => setPreviewImage(image)}
+                              aria-label={`${image.name || `첨부 이미지 ${imageIndex + 1}`} 확대 보기`}
                               title={
                                 image.width && image.height
                                   ? `${image.name} · ${image.width}×${image.height} · 클릭하여 확대`
                                   : `${image.name} · 클릭하여 확대`
                               }
                             >
-                              {image.kind === 'file' ? (
-                                <span className="chat-message-file"><DocIcon size={20} /> {image.name}</span>
-                              ) : (
-                                <img
-                                  src={image.dataUrl}
-                                  alt={image.name || `첨부 이미지 ${imageIndex + 1}`}
-                                />
-                              )}
+                              <img
+                                src={image.dataUrl}
+                                alt={image.name || `첨부 이미지 ${imageIndex + 1}`}
+                              />
                             </button>
                           ))}
                         </div>

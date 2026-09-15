@@ -33,6 +33,7 @@ import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { connectedToolGroups } from './agent-inspector-model';
+import { TurnFiles } from './TurnFiles';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -311,7 +312,9 @@ export const Chat: React.FC<{
   mcpDebug?: boolean;
   /** 헤더 [...] 메뉴 → 에이전트 뷰어 탭을 연다 (메모리/작업/도구/스토리지/전체로그). */
   onOpenViewer?: (sub: AgentViewerSub) => void;
-}> = ({ session, myName, mcpDebug = false, onOpenViewer }) => {
+  /** 에이전트 작업 공간 파일을 파일 뷰어 탭으로 연다 (답변 아래 "이 답변에서 만든 파일"). */
+  onOpenFile?: (workflowId: string, rel: string, name: string) => void;
+}> = ({ session, myName, mcpDebug = false, onOpenViewer, onOpenFile }) => {
   const { agent } = session;
   const messages = session.messages;
   const streaming = session.streaming;
@@ -1299,6 +1302,9 @@ export const Chat: React.FC<{
                 </div>
                 {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.
                     (한 글자도 못 받았으면 본문 자리에 이미 같은 문구가 서 있다.) */}
+                {m.role === 'assistant' && (
+                  <TurnFiles workflowId={agent.workflowId} msg={m} onOpenFile={onOpenFile} />
+                )}
                 {m.interrupted && m.text !== INTERRUPTED_NOTE && (
                   <div className="shot-note" role="status">
                     <span>{INTERRUPTED_TEXT}</span>

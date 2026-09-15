@@ -1042,6 +1042,7 @@ export const Workspace: React.FC<{
             session={chat}
             myName={user.username || '나'}
             mcpDebug={config.mcpDebug === true}
+            onOpenFile={(workflowId, rel, name) => openFileViewer('agent', workflowId, rel, name)}
             onOpenViewer={(sub) =>
               openAgentViewer(
                 active.workflowId || chat.agent.workflowId,

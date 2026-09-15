@@ -175,6 +175,8 @@ export function Dashboard(props: {
     return first ? { workflowId: first.workflowId, workflowName: first.workflowName } : undefined;
   });
   const [input, setInput] = useState('');
+  const attachmentEpoch = useRef(0);
+  const uploadBusy = useRef(false);
   const [attachments, setAttachments] = useState<ChatAttachmentDescriptor[]>([]);
   const [attachmentInteractionId, setAttachmentInteractionId] = useState<string>();
   const [attachmentNotice, setAttachmentNotice] = useState('');
@@ -320,6 +322,7 @@ export function Dashboard(props: {
     setSelected(ref);
     dispatch({ type: 'reset' });
     setInput('');
+    attachmentEpoch.current += 1;
     setAttachments([]);
     setAttachmentInteractionId(undefined);
     setAttachmentNotice('');
@@ -330,6 +333,7 @@ export function Dashboard(props: {
 
   const openHistory = (conversation: Conversation, snapshot: ConversationSnapshot): void => {
     setSelected({ workflowId: conversation.workflowId, workflowName: conversation.workflowName });
+    attachmentEpoch.current += 1;
     setAttachments([]);
     setAttachmentInteractionId(undefined);
     setAttachmentNotice('');
@@ -442,6 +446,7 @@ export function Dashboard(props: {
     setScrollUp(0);
     setPalette(false);
     setFocus('composer');
+    attachmentEpoch.current += 1;
     setAttachments([]);
     setAttachmentInteractionId(undefined);
     setAttachmentNotice('');
@@ -449,10 +454,13 @@ export function Dashboard(props: {
 
   const send = async (value: string): Promise<void> => {
     const text = value.trim();
-    if (!selected || chat.running) return;
+    if (!selected || chat.running || uploadBusy.current) return;
     if (text.startsWith('/attach ')) {
       const path = text.slice('/attach '.length).trim().replace(/^['"]|['"]$/g, '');
       if (!path) return;
+      const epoch = attachmentEpoch.current;
+      uploadBusy.current = true;
+      setAttachmentNotice('파일을 업로드하는 중…');
       try {
         const seed = await props.engine.resolveChatInput({
           profile: props.session.profile, workflowId: selected.workflowId,
@@ -463,12 +471,15 @@ export function Dashboard(props: {
           profile: props.session.profile, workflowId: selected.workflowId,
           interactionId: seed.interactionId, path,
         });
+        if (attachmentEpoch.current !== epoch) return;
         setAttachmentInteractionId(seed.interactionId);
         setAttachments((current) => [...current, uploaded]);
         setAttachmentNotice(`첨부됨: ${uploaded.name} · 총 ${attachments.length + 1}개`);
         setInput('');
       } catch (error) {
-        setAttachmentNotice(`첨부 실패: ${publicError(error).message}`);
+        if (attachmentEpoch.current === epoch) setAttachmentNotice(`첨부 실패: ${publicError(error).message}`);
+      } finally {
+        uploadBusy.current = false;
       }
       return;
     }
@@ -478,7 +489,8 @@ export function Dashboard(props: {
       return;
     }
     if (text === '/detach') {
-      setAttachments([]);
+      attachmentEpoch.current += 1;
+    setAttachments([]);
       setAttachmentInteractionId(undefined);
       setAttachmentNotice('첨부를 모두 제거했습니다.');
       setInput('');
@@ -497,7 +509,8 @@ export function Dashboard(props: {
       setInput('');
       setScrollUp(0);
       dispatch({ type: 'turn_started', interactionId: resolved.interactionId, input: text });
-      setAttachments([]);
+      attachmentEpoch.current += 1;
+    setAttachments([]);
       setAttachmentInteractionId(undefined);
       setAttachmentNotice('');
       void props.engine.watchConversation?.(

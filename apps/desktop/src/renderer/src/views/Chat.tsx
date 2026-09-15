@@ -329,6 +329,8 @@ export const Chat: React.FC<{
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
   const [stagedImages, setStagedImages] = useState<StagedChatImage[]>([]);
+  const activeSessionKey = useRef(session.key);
+  activeSessionKey.current = session.key;
   const stagedImagesRef = useRef<StagedChatImage[]>([]);
   const browserSelections = useBrowserSelections(session.key);
   const browserSelectionsRef = useRef<BrowserSelectionResult[]>(browserSelections);
@@ -679,7 +681,12 @@ export const Chat: React.FC<{
       }));
       // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
       // 답변은 백그라운드에서 계속 도착한다.
-      sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections);
+      sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections, () => {
+        if (activeSessionKey.current !== session.key) return;
+        setInput((current) => current || text);
+        const existing = stagedImagesRef.current;
+        replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
+      });
     },
     [session.key, screenCaptureOn],
   );

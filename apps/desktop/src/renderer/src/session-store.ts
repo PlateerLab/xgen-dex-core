@@ -526,6 +526,9 @@ export class SessionStore {
         const output =
           typeof tn.output === 'string' ? tn.output : tn.output == null ? '' : String(tn.output);
         const images: ChatImageAttachment[] = [];
+        for (const attachment of tn.attachments ?? []) {
+          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '' });
+        }
         if (this.transport.historyImage) {
           for (const attachment of tn.attachments ?? []) {
             if (attachment.type !== 'picture') continue;
@@ -629,6 +632,7 @@ export class SessionStore {
     shot?: OutgoingShot | null,
     images: ChatImageAttachment[] = [],
     browserSelections: BrowserSelectionResult[] = [],
+    onUploadError?: () => void,
   ): void {
     const s = this.map.get(key);
     const rt = this.rt.get(key);
@@ -641,7 +645,7 @@ export class SessionStore {
     );
     // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
     // 두 실행이 겹치고, 두 답이 서로를 덮어쓴다. 멈추려면 [정지] 를 눌러야 한다.
-    if (!s || !rt || s.streaming || s.remote || (!text.trim() && attached.length === 0)) return;
+    if (!s || !rt || s.streaming || s.remote || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
     rt.tools = [];
     rt.citations = [];
     const userMsg: ChatMsg = {
@@ -716,6 +720,11 @@ export class SessionStore {
 
     const workspaceUploader =
       this.transport.uploadWorkspaceAttachment ?? this.transport.uploadWorkspaceImage;
+    if ((attached.length > 0 || !!shot?.dataUrl) && s.agent.hasAgentGeny && !workspaceUploader) {
+      this.onEvent(key, { kind: 'error', detail: '파일 업로드 연결을 사용할 수 없습니다. 앱을 업데이트한 후 다시 시도해 주세요.' });
+      onUploadError?.();
+      return;
+    }
     if ((attached.length > 0 || !!shot?.dataUrl) && s.agent.hasAgentGeny && workspaceUploader) {
       let cancelled = false;
       rt.cancel = () => {
@@ -739,7 +748,7 @@ export class SessionStore {
           if (decoded.bytes.byteLength > 100 * 1024 * 1024) {
             throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
           }
-          const attachmentId = `conn-${s.interactionId}-${index + 1}`;
+          const attachmentId = `conn-${crypto.randomUUID()}`;
           const result = await workspaceUploader({
             workflowId: s.agent.workflowId,
             interactionId: s.interactionId,
@@ -769,6 +778,7 @@ export class SessionStore {
         })
         .catch((error: unknown) => {
           if (cancelled) return;
+          onUploadError?.();
           this.onEvent(key, {
             kind: 'error',
             detail: error instanceof Error ? error.message : String(error),

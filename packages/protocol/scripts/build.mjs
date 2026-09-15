@@ -94,6 +94,7 @@ const manifest = {
   type: 'module',
   main: './dist/index.js',
   types: './dist/index.d.ts',
+  browser: { './dist/hash.js': './dist/hash.browser.js' },
   exports: {
     '.': { types: './dist/index.d.ts', default: './dist/index.js' },
     // 서브경로 — `@dex/protocol/browser` 처럼 쓰던 것이 공개 이름으로도 그대로 된다.

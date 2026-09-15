@@ -537,6 +537,7 @@ export class DexEngine {
     const filePath = resolve(input.path);
     const info = await stat(filePath);
     if (!info.isFile()) throw new DexError('usage_error', `파일이 아닙니다: ${input.path}`);
+    if (info.size > 100 * 1024 * 1024) throw new DexError('usage_error', '첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
     const bytes = new Uint8Array(await readFile(filePath));
     const name = basename(filePath);
     const detected = detectAttachment(bytes, name);
@@ -605,7 +606,9 @@ export class DexEngine {
             workflowId: resolved.workflowId,
             workflowName: resolved.workflowName,
             input: resolved.attachments.length > 0
-              ? { input_str: resolved.input, attachments: resolved.attachments }
+              ? typeof resolved.input === 'object' && resolved.input !== null && !Array.isArray(resolved.input)
+                ? { ...resolved.input, attachments: [...(Array.isArray(resolved.input.attachments) ? resolved.input.attachments : []), ...resolved.attachments] }
+                : { input_str: resolved.input, attachments: resolved.attachments }
               : resolved.input,
             interactionId: resolved.interactionId,
             // 이 표면(CLI/VSCode)의 기기 — 멀티 디바이스에서 내 도구가 주입되게.

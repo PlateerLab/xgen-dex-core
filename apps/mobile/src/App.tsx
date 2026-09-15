@@ -1077,6 +1077,11 @@ function ChatSection({
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<MobileChatAttachment[]>([]);
   const [attachmentStatus, setAttachmentStatus] = useState('');
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const uploadBusy = useRef(false);
+  const attachmentContext = `${agent?.workflowId ?? ''}:${interactionId}`;
+  const attachmentContextRef = useRef(attachmentContext);
+  attachmentContextRef.current = attachmentContext;
   const [wsState, setWsState] = useState<ChatWsState>('closed');
   const [running, setRunningState] = useState(false);
   /**
@@ -1279,7 +1284,7 @@ function ChatSection({
 
   const send = async (): Promise<void> => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || running || !chatRef.current) return;
+    if ((!text && attachments.length === 0) || running || uploadBusy.current || !chatRef.current) return;
     const sendingAttachments = [...attachments];
     setInput('');
     setAttachments([]);
@@ -1299,34 +1304,42 @@ function ChatSection({
   };
 
   const attachFiles = async (): Promise<void> => {
-    if (running || !agent) return;
-    const picked = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
-    if (picked.canceled) return;
-    setAttachmentStatus('Agent workspace에 업로드하는 중…');
+    if (running || !agent || uploadBusy.current) return;
+    uploadBusy.current = true;
+    setUploadingAttachments(true);
+    const context = attachmentContextRef.current;
+    const isCurrent = () => attachmentContextRef.current === context;
+    let count = 0;
     try {
-      const uploaded: MobileChatAttachment[] = [];
+      const picked = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
+      if (picked.canceled || !isCurrent()) return;
+      setAttachmentStatus('파일을 업로드하는 중…');
       for (const asset of picked.assets) {
+        if (!isCurrent()) return;
+        if ((asset.size ?? 0) > 100 * 1024 * 1024) throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
         const b64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
         const bytes = base64Bytes(b64);
+        if (bytes.byteLength > 100 * 1024 * 1024) throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
         const detectedImageMime = imageMime(bytes);
         const mime = detectedImageMime || (asset.mimeType || 'application/octet-stream').toLowerCase();
         const kind: 'image' | 'file' = detectedImageMime ? 'image' : 'file';
         const attachmentId = `mob-att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const result = await client.api.agentData.workspaceUpload(
-          agent.workflowId, bytes, asset.name, mime, interactionId, attachmentId,
-        );
+        const result = await client.api.agentData.workspaceUpload(agent.workflowId, bytes, asset.name, mime, interactionId, attachmentId);
+        if (!isCurrent()) return;
         if (result.status === 'pending_approval') throw new Error('파일 업로드가 승인 대기 중입니다.');
         if (!result.workspace_path) throw new Error('Workspace 업로드 경로가 없습니다.');
-        uploaded.push({
-          kind, attachment_id: attachmentId, name: asset.name, mime_type: mime,
-          size: result.size ?? bytes.byteLength, sha256: result.sha256,
-          workspace_path: result.workspace_path,
-        });
+        const attachment: MobileChatAttachment = { kind, attachment_id: attachmentId, name: asset.name, mime_type: mime,
+          size: result.size ?? bytes.byteLength, sha256: result.sha256, workspace_path: result.workspace_path };
+        // Keep each successful file even if a later upload fails.
+        setAttachments((current) => [...current, attachment]);
+        count += 1;
       }
-      setAttachments((current) => [...current, ...uploaded]);
-      setAttachmentStatus(`${uploaded.length}개 파일 첨부됨`);
+      setAttachmentStatus(`${count}개 파일 첨부됨`);
     } catch (error) {
-      setAttachmentStatus(friendlyError(error, '파일을 첨부하지 못했습니다.'));
+      if (isCurrent()) setAttachmentStatus(friendlyError(error, '파일을 첨부하지 못했습니다.'));
+    } finally {
+      uploadBusy.current = false;
+      setUploadingAttachments(false);
     }
   };
 
@@ -1346,7 +1359,7 @@ function ChatSection({
     );
   }
 
-  const canSend = wsState === 'connected' && (!!input.trim() || attachments.length > 0);
+  const canSend = !uploadingAttachments && wsState === 'connected' && (!!input.trim() || attachments.length > 0);
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -1403,7 +1416,7 @@ function ChatSection({
         )}
         {!!attachmentStatus && <Text style={[st.mutedText, { marginBottom: 5 }]}>{attachmentStatus}</Text>}
         <View style={st.composerBox}>
-          <Pressable style={st.attachBtn} disabled={running} onPress={() => void attachFiles()}>
+          <Pressable style={st.attachBtn} disabled={running || uploadingAttachments} onPress={() => void attachFiles()}>
             <Text style={{ color: p.text, fontSize: 18 }}>📎</Text>
           </Pressable>
           <TextInput

@@ -74,6 +74,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private messages: ChatMessage[] = [];
   private interactionId: string | undefined;
   private attachments: ChatAttachmentDescriptor[] = [];
+  private uploadingAttachments = false;
   private streamId: string | undefined;
   /**
    * 이 확장이 아니라 **다른 곳**(웹·앱·CLI)에서 시작한 턴이 이 대화에서 돌고
@@ -312,6 +313,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       await this.clearConversation();
       this.selectedAgent = this.agents.find((agent) => agent.workflowId === conversation.workflowId) ?? agentFromConversation(conversation);
       this.interactionId = conversation.interactionId;
+      this.attachments = [];
       this.syncConversationWatch();
       this.messages = turns.flatMap((turn) => [
         message('user', '나', turn.input),
@@ -354,7 +356,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private async send(input: string): Promise<void> {
     const text = input.trim();
-    if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId) return;
+    if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId || this.uploadingAttachments) return;
     const agent = this.selectedAgent;
     const streamId = randomUUID();
     this.streamId = streamId;
@@ -397,25 +399,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private async attachFiles(): Promise<void> {
     const agent = this.selectedAgent;
-    if (!agent || this.streamId) return;
-    const picked = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: true, canSelectFolders: false });
-    if (!picked?.length) return;
+    if (!agent || this.streamId || this.uploadingAttachments) return;
+    this.uploadingAttachments = true;
     this.interactionId ??= randomUUID();
-    this.status = '파일을 Agent workspace에 업로드하는 중...';
-    this.postState();
+    const interactionId = this.interactionId;
+    const profile = this.activeProfileParams();
+    const isCurrent = () => this.selectedAgent?.workflowId === agent.workflowId && this.interactionId === interactionId;
     try {
+      const picked = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: true, canSelectFolders: false });
+      if (!picked?.length || !isCurrent()) return;
+      this.status = '파일을 업로드하는 중...';
+      this.postState();
       for (const uri of picked) {
+        if (!isCurrent()) return;
         const uploaded = await this.service.request<ChatAttachmentDescriptor>('chat/attachment/upload', {
-          ...this.activeProfileParams(), workflowId: agent.workflowId,
-          interactionId: this.interactionId, path: uri.fsPath,
+          ...profile, workflowId: agent.workflowId, interactionId, path: uri.fsPath,
         });
+        if (!isCurrent()) return;
         this.attachments.push(uploaded);
+        this.postState();
       }
       this.status = undefined;
     } catch (error) {
-      this.status = `파일을 첨부하지 못했습니다: ${errorMessage(error)}`;
+      if (isCurrent()) this.status = `파일을 첨부하지 못했습니다: ${errorMessage(error)}`;
+    } finally {
+      this.uploadingAttachments = false;
+      this.postState();
     }
-    this.postState();
   }
 
   /** 대화 소켓 감시 — 현재 대화의 서버 주입 턴(트리거 반응)을 실시간 수신. */

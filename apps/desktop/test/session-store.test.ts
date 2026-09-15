@@ -221,7 +221,7 @@ test('이미지만 있는 메시지도 전송하고 허용하지 않은 data URL
 
 test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행한다', async () => {
   const streams: FakeStream[] = []
-  const uploads: Array<{ workflowId: string; interactionId: string; name: string; bytes: Uint8Array }> = []
+  const uploads: Array<{ attachmentId: string; workflowId: string; interactionId: string; name: string; bytes: Uint8Array }> = []
   const transport: SessionTransport = {
     stream(req, onEvent) {
       const stream: FakeStream = {
@@ -261,7 +261,7 @@ test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행�
     input_str: '이미지를 설명해줘',
     attachments: [{
       kind: 'image',
-      attachment_id: `conn-${key}-1`,
+      attachment_id: uploads[0].attachmentId,
       name: 'a.png',
       mime_type: 'image/png',
       size: 3,
@@ -273,6 +273,7 @@ test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행�
 
 test('XGeny 일반 파일은 이미지로 변환하지 않고 workspace 참조로 실행한다', async () => {
   const streams: FakeStream[] = []
+  let uploadedId = ''
   const transport: SessionTransport = {
     stream(req, onEvent) {
       const stream: FakeStream = { interactionId: req.interactionId, input: req.input, onEvent, cancelled: false, stopped: false }
@@ -280,6 +281,7 @@ test('XGeny 일반 파일은 이미지로 변환하지 않고 workspace 참조�
       return { cancel: () => { stream.cancelled = true } }
     },
     async uploadWorkspaceAttachment(request) {
+      uploadedId = request.attachmentId;
       return { workspace_path: `uploads/${request.interactionId}/${request.name}`, size: request.bytes.byteLength }
     },
     async historyTurns() { return [] },
@@ -295,7 +297,7 @@ test('XGeny 일반 파일은 이미지로 변환하지 않고 workspace 참조�
   assert.deepEqual(streams[0].input, {
     input_str: '이 파일을 읽어줘',
     attachments: [{
-      kind: 'file', attachment_id: `conn-${key}-1`, name: 'data.json',
+      kind: 'file', attachment_id: uploadedId, name: 'data.json',
       mime_type: 'application/json', size: 2, sha256: undefined,
       workspace_path: `uploads/${key}/data.json`,
     }],
@@ -931,4 +933,29 @@ test('정상 종료는 그대로 종료다 — 분리와 섞이지 않는다', a
   const s = store.get(key)!
   assert.equal(s.streaming, false)
   assert.equal(s.remote, false, '끝난 턴을 진행 중으로 두면 작성기가 영영 잠긴다')
+})
+
+
+test('workspace upload failure restores the composer without starting a turn', async () => {
+  let started = false
+  let restored = false
+  const store = new SessionStore({
+    stream() { started = true; return { cancel() {} } },
+    async uploadWorkspaceAttachment() { throw new Error('upload unavailable') },
+    async historyTurns() { return [] },
+  }, () => 1234)
+  const key = store.openNew({ ...agent('geny'), hasAgentGeny: true })
+  store.send(key, 'read this', null, [{ dataUrl: 'data:application/json;base64,e30=', name: 'data.json', mime: 'application/json', size: 2, kind: 'file' }], [], () => { restored = true })
+  await flush()
+  assert.equal(started, false)
+  assert.equal(restored, true)
+  assert.equal(store.get(key)!.streaming, false)
+})
+
+test('missing workspace uploader reports an error instead of dropping a file', () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew({ ...agent('geny'), hasAgentGeny: true })
+  store.send(key, 'read this', null, [{ dataUrl: 'data:application/json;base64,e30=', name: 'data.json', mime: 'application/json', size: 2, kind: 'file' }])
+  assert.equal(streams.length, 0)
+  assert.equal(store.get(key)!.messages.at(-1)!.error, true)
 })

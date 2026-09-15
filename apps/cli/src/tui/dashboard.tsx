@@ -248,6 +248,7 @@ export function Dashboard(props: {
   const viewport = useRef({ lineCount: 0, height: 0 });
   const [starting, setStarting] = useState(false);
   const controller = useRef<AbortController | null>(null);
+  const stopping = useRef(false);
 
   useEffect(() => () => controller.current?.abort(), []);
 
@@ -423,14 +424,21 @@ export function Dashboard(props: {
    * 버려진 턴은 끝까지 돌아 대화에 답을 적는다.
    */
   const stopTurn = (): void => {
+    if (stopping.current) return;
     const interactionId = chat.interactionId;
-    controller.current?.abort();
-    dispatch({ type: 'turn_cancelled' });
-    if (interactionId) {
-      // 정지가 서버에 닿지 못해도 화면은 멈춘 것으로 둔다 — 되돌리면 사용자가
-      // 누른 버튼이 되살아나는 것처럼 보인다. 실패는 조용히 넘긴다.
-      void props.engine.stopChat(interactionId, props.session.profile).catch(() => undefined);
-    }
+    const active = controller.current;
+    if (!interactionId) return;
+    stopping.current = true;
+    void props.engine.stopChat(interactionId, props.session.profile).then((result) => {
+      if (result.stopped || result.reason === 'not_running') {
+        active?.abort();
+        dispatch({ type: 'turn_cancelled' });
+      } else {
+        setAttachmentNotice('중단을 확인하지 못했습니다. 실행 상태를 확인한 뒤 다시 시도해 주세요.');
+      }
+    }).catch(() => {
+      setAttachmentNotice('중단 요청을 보내지 못했습니다. 연결 상태를 확인해 주세요.');
+    }).finally(() => { stopping.current = false; });
   };
 
   /** 이 대화를 **그만 본다** — 서버 실행은 계속된다(다른 화면으로 옮길 때). */
@@ -454,7 +462,7 @@ export function Dashboard(props: {
 
   const send = async (value: string): Promise<void> => {
     const text = value.trim();
-    if (!selected || chat.running || uploadBusy.current) return;
+    if (!selected || chat.running || stopping.current || uploadBusy.current) return;
     if (text.startsWith('/attach ')) {
       const path = text.slice('/attach '.length).trim().replace(/^['"]|['"]$/g, '');
       if (!path) return;

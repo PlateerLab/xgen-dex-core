@@ -103,6 +103,7 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: '세요' } } });
   ws.recv({ type: 'exec', data: { event: 'tool', data: { event_type: 'tool_start', tool_name: 'mcp_mobile_Notify' } } });
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'end' } } });
+  ws.recv({ type: 'exec_done' });
   await done;
 
   assert.deepEqual(got.data, ['안녕하', '세요']);
@@ -205,6 +206,7 @@ test('스트리밍 청크가 마커를 반으로 갈라도 — 누적 후 렌더
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: '결과[AGENT_ST' } } });
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'data', content: 'ATUS]x[/AGENT_STATUS]끝' } } });
   ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'end' } } });
+  ws.recv({ type: 'exec_done' });
   await done;
   const accumulated = got.data.join('');
   assert.equal(accumulated, '결과[AGENT_STATUS]x[/AGENT_STATUS]끝'); // 원문 보존
@@ -386,4 +388,26 @@ test('번호가 건너뛰면 알린다', () => {
   assert.equal(peer.filter((e) => e.kind === 'gap').length, 0, '이어지는 번호는 구멍이 아니다');
   ws.recv({ type: 'exec', seq: 14, data: { event: 'message', data: {} } });
   assert.equal(peer.filter((e) => e.kind === 'gap').length, 1, '11 다음에 14 — 12·13 이 사라졌다');
+});
+
+test('stop acknowledgement settles the turn and permits another turn on the same socket', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  for (let i = 0; i < 3; i++) {
+    let settled = false;
+    const done = chat.execute('question').then(() => { settled = true; });
+    chat.stop();
+    ws.recv({ type: 'exec_stopped', data: { note: '[중단됨]' } });
+    await Promise.resolve();
+    assert.equal(settled, true, 'exec_stopped must release pending execution');
+    await done;
+  }
+  const next = chat.execute('continue');
+  ws.recv({ type: 'exec_done' });
+  await next;
+  assert.deepEqual(got.errors, []);
+  chat.close();
 });

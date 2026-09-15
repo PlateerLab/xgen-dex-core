@@ -195,6 +195,7 @@ test('restore: 서버에서 아직 도는 턴이면 [정지] 를 되살릴 상�
   // 그리고 그 버튼이 실제로 서버에 닿는다 — 이 창은 스트림 핸들이 없으므로
   // 정지는 transport.stopChat(대화를 향한 정지)로 나가야 한다.
   store.stop('int-1');
+  await flush();
   assert.deepEqual(stopped, ['int-1']);
   assert.equal(store.get('int-1')!.remote, false);
 });

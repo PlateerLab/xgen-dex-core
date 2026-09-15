@@ -33,9 +33,13 @@
   background: var(--panel-2);
   color: var(--text);
 }
-.chat-hbtn.end-chat:hover:not(:disabled) {
-  background: var(--error-bg);
-  color: var(--error);
+/* [작업 과정] 토글 — 켜져 있으면 브랜드 색, 꺼져 있으면 다른 헤더 버튼과 같은 회색 */
+.chat-hbtn.process-toggle.on {
+  color: var(--primary);
+}
+.chat-hbtn.process-toggle.on:hover:not(:disabled) {
+  background: var(--primary-soft-bg);
+  color: var(--primary);
 }
 
 /* ── 머리 줄 ───────────────────────────────────────────────────────────── */
@@ -702,137 +706,6 @@
 }
 .turn-file-chip.minor .turn-file-open svg {
   color: var(--muted);
-}
-
-/* ─── 채팅 입력창: 글 한 줄 위, 도구 줄 아래(왼쪽 첨부 · 오른쪽 모드·음성·전송) ───
-   Teams 방 입력창도 .composer 를 쓰므로 채팅 쪽은 .composer-stacked 로만 바꾼다. */
-.composer.composer-stacked {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-  padding: 8px 8px 8px 10px;
-}
-.composer-stacked .composer-input {
-  padding: 4px 6px 2px;
-}
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.composer-toolbar-spacer {
-  flex: 1;
-}
-.composer-stacked .composer-attach,
-.composer-stacked .composer-mic {
-  width: 32px;
-  height: 32px;
-  border-color: transparent;
-  background: transparent;
-  border-radius: 999px;
-}
-.composer-stacked .composer-attach:hover:not(:disabled),
-.composer-stacked .composer-mic:hover:not(:disabled) {
-  background: var(--panel-2);
-}
-.composer-stacked .composer-mic.recording {
-  border-color: var(--error-border);
-}
-.composer-stacked .composer-send {
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
-  margin-left: 2px;
-}
-
-.composer-mode-wrap {
-  position: relative;
-}
-.composer-mode {
-  all: unset;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 30px;
-  padding: 0 9px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.composer-mode:hover,
-.composer-mode[aria-expanded='true'] {
-  background: var(--panel-2);
-}
-.composer-mode:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
-.composer-mode-value {
-  color: var(--muted);
-}
-.composer-mode-chevron {
-  display: inline-flex;
-  color: var(--muted);
-  transition: transform 0.15s ease;
-}
-.composer-mode[aria-expanded='true'] .composer-mode-chevron {
-  transform: rotate(180deg);
-}
-.composer-mode-menu {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 40;
-  width: 300px;
-  padding: 6px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow:
-    0 14px 34px rgba(15, 23, 42, 0.16),
-    0 2px 6px rgba(15, 23, 42, 0.08);
-}
-.composer-mode-menu-title {
-  padding: 6px 10px 4px;
-  font-size: 11px;
-  color: var(--muted);
-}
-.composer-mode-option {
-  all: unset;
-  box-sizing: border-box;
-  width: 100%;
-  display: grid;
-  grid-template-columns: 1fr 18px;
-  column-gap: 10px;
-  row-gap: 2px;
-  align-items: center;
-  padding: 8px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-.composer-mode-option:hover,
-.composer-mode-option:focus-visible {
-  background: var(--panel-2);
-}
-.composer-mode-option-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-.composer-mode-option-desc {
-  grid-column: 1;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--muted);
-  word-break: keep-all; /* 한글이 글자 중간("보/여")에서 줄바꿈되지 않게 */
-}
-.composer-mode-option-check {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  display: inline-flex;
-  color: var(--primary);
 }
 
 @media (prefers-reduced-motion: reduce) {

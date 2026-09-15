@@ -35,7 +35,6 @@ import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeli
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
 import { requestBefore } from './turn-files-model';
-import { ProcessModeSelect } from './ProcessModeSelect';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -47,6 +46,8 @@ import {
   CloseIcon,
   CopyIcon,
   DocIcon,
+  EyeIcon,
+  EyeOffIcon,
   MicIcon,
   MonitorIcon,
   PlusIcon,
@@ -536,11 +537,6 @@ export const Chat: React.FC<{
     return () => clearTimeout(timer);
   }, [imageNotice]);
 
-  const endChat = useCallback(() => {
-    browserSelectionStore.forgetSession(session.key);
-    sessionStore.endChat(session.key);
-  }, [session.key]);
-
   // ── TTS playback: serial queue over WebAudio (Geny 방식) ──
   // HTMLAudioElement + blob URL 은 CSP media-src 의 지배를 받고(누락 시
   // "no supported source" 로 조용히 죽는다) 재생 오류 이벤트가 이중 콜백
@@ -976,8 +972,8 @@ export const Chat: React.FC<{
   useEffect(() => xgen.quickChat.onQuickSend((t) => send(t)), [send]);
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
-  // 작업 과정 표시는 대화마다가 아니라 **모드** — 입력창 오른쪽 [작업 과정 ⌄] 에서 바꾼다(ProcessModeSelect)
-  const [processView] = useProcessView();
+  // 작업 과정 표시는 답마다가 아니라 채팅 헤더의 [작업 과정] 한 곳에서 켜고 끈다(모든 대화에 적용)
+  const [processView, toggleProcessView] = useProcessView();
   // 타임라인 카드 이름표에 쓸 도구 설명 — 이 에이전트에 연결된 도구 목록(상세보기 [도구] 탭과 같은 출처)
   const [toolDescriptions, setToolDescriptions] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -1107,9 +1103,10 @@ export const Chat: React.FC<{
               {muted ? <SpeakerOffIcon size={15} /> : <SpeakerIcon size={15} />}
             </button>
           )}
-          {/* 상단 탭은 [상세보기] [대화 종료] 둘만. 상세보기는 이 에이전트의 메모리·작업·
+          {/* 상단 탭은 [상세보기] [작업 과정] 둘만. 상세보기는 이 에이전트의 메모리·작업·
               도구·스토리지·전체로그를 새 탭으로 연다(에이전트 관측 뷰어). '새 대화'는
-              에이전트를 다시 선택해 여는 흐름과 중복이라 제거. */}
+              에이전트를 다시 선택해 여는 흐름과 중복이라 제거. '대화 종료'는 탭 닫기와
+              겹쳐 필요 없다는 사용자 판단으로 [작업 과정] 토글로 바꿨다(2026-09-16). */}
           {onOpenViewer && (
             <button
               className="chat-hbtn"
@@ -1119,12 +1116,14 @@ export const Chat: React.FC<{
               상세보기
             </button>
           )}
+          {/* 작업 과정 타임라인 켜기/끄기 — 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}
           <button
-            className="chat-hbtn end-chat"
-            onClick={endChat}
-            title="이 대화를 종료하고 목록으로 돌아갑니다"
+            className={`chat-hbtn process-toggle${processView ? ' on' : ''}`}
+            onClick={toggleProcessView}
+            aria-pressed={processView}
+            title={processView ? '작업 과정 타임라인 켜짐 — 눌러서 답만 보기' : '작업 과정 타임라인 꺼짐 — 눌러서 켜기'}
           >
-            <CloseIcon size={14} /> 대화 종료
+            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업 과정
           </button>
         </div>
       </div>
@@ -1544,8 +1543,7 @@ export const Chat: React.FC<{
             })}
           </div>
         )}
-        {/* 글은 위 한 줄, 도구는 아래 줄 — 왼쪽 첨부, 오른쪽 모드·음성·전송 */}
-        <div className="composer composer-stacked">
+        <div className="composer">
           <textarea
             ref={taRef}
             className="composer-input"
@@ -1582,64 +1580,60 @@ export const Chat: React.FC<{
             <MonitorIcon size={16} />
           </button>
           */}
-          <div className="composer-toolbar">
+          <button
+            type="button"
+            className="composer-attach"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={
+              busy ||
+              preparingImages > 0 ||
+              stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
+            }
+            title={
+              stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
+                ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
+                : preparingImages > 0
+                  ? '파일을 준비하는 중…'
+                  : '파일 첨부'
+            }
+            aria-label="파일 첨부"
+          >
+            <PlusIcon size={17} />
+          </button>
+          {sttOn && (
             <button
-              type="button"
-              className="composer-attach"
-              onClick={() => imageInputRef.current?.click()}
-              disabled={
-                busy ||
-                preparingImages > 0 ||
-                stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
-              }
-              title={
-                stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
-                  ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
-                  : preparingImages > 0
-                    ? '파일을 준비하는 중…'
-                    : '파일 첨부'
-              }
-              aria-label="파일 첨부"
+              className={`composer-mic${recording ? ' recording' : ''}`}
+              onClick={toggleMic}
+              disabled={transcribing || busy}
+              title={transcribing ? '변환 중…' : recording ? '녹음 중지' : '음성 입력'}
+              aria-label="음성 입력"
             >
-              <PlusIcon size={17} />
+              {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
             </button>
-            <span className="composer-toolbar-spacer" />
-            <ProcessModeSelect />
-            {sttOn && (
-              <button
-                className={`composer-mic${recording ? ' recording' : ''}`}
-                onClick={toggleMic}
-                disabled={transcribing || busy}
-                title={transcribing ? '변환 중…' : recording ? '녹음 중지' : '음성 입력'}
-                aria-label="음성 입력"
-              >
-                {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
-              </button>
-            )}
-            {busy ? (
-              <button
-                className="composer-send stop"
-                onClick={stop}
-                title={remote ? '다른 곳에서 진행 중인 응답 중지' : '중지'}
-                aria-label="중지"
-              >
-                <StopIcon size={15} />
-              </button>
-            ) : (
-              <button
-                className="composer-send"
-                onClick={() => void send()}
-                disabled={
-                  (!input.trim() && stagedImages.length === 0 && browserSelections.length === 0) ||
-                  preparingImages > 0
-                }
-                title="전송"
-                aria-label="전송"
-              >
-                <SendIcon size={17} />
-              </button>
-            )}
-          </div>
+          )}
+          {busy ? (
+            <button
+              className="composer-send stop"
+              onClick={stop}
+              title={remote ? '다른 곳에서 진행 중인 응답 중지' : '중지'}
+              aria-label="중지"
+            >
+              <StopIcon size={15} />
+            </button>
+          ) : (
+            <button
+              className="composer-send"
+              onClick={() => void send()}
+              disabled={
+                (!input.trim() && stagedImages.length === 0 && browserSelections.length === 0) ||
+                preparingImages > 0
+              }
+              title="전송"
+              aria-label="전송"
+            >
+              <SendIcon size={17} />
+            </button>
+          )}
         </div>
         <div className="composer-foot">
           <span className="kbd-hint">

@@ -2715,6 +2715,17 @@ button {
   cursor: default;
   overflow-wrap: anywhere;
 }
+/* 사용자 말풍선 안의 첨부 파일 — 말풍선 글자색(흰색)을 물려받는데 카드 바탕이 밝아
+   파일 이름이 보이지 않았다. 말풍선 위에 반투명 카드로 얹어 글자색을 그대로 쓴다. */
+.bubble.user .chat-message-file {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--user-bubble-text);
+}
+/* 파일 카드는 눌러도 확대 미리보기가 없다 — 돋보기 커서를 보이지 않는다. */
+.chat-message-image-button:has(.chat-message-file) {
+  cursor: default;
+}
 .chat-message-images img {
   display: block;
   width: 100%;

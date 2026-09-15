@@ -31,6 +31,7 @@ import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
+import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -968,6 +969,7 @@ export const Chat: React.FC<{
   useEffect(() => xgen.quickChat.onQuickSend((t) => send(t)), [send]);
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
+  const [processView, toggleProcessView] = useProcessView();
   const agentNotificationMuted = !!notificationSnapshot.profile.mutedAgents[agent.workflowId];
   const chatNotificationMuted =
     !!notificationSnapshot.profile.mutedChats[
@@ -1065,6 +1067,16 @@ export const Chat: React.FC<{
               {mcpIndicator.label}
             </button>
           )}
+          <button
+            type="button"
+            className={`secondary process-view-toggle${processView ? ' on' : ''}`}
+            onClick={toggleProcessView}
+            title={processView ? '작업 과정 타임라인 끄기 (도구 칩으로 보기)' : '작업 과정 타임라인 켜기'}
+            aria-pressed={processView}
+          >
+            <span className="process-view-dot" />
+            작업 과정
+          </button>
           {ttsOn && (
             <button
               className="secondary"
@@ -1189,7 +1201,7 @@ export const Chat: React.FC<{
                         : `서버에서 실행${m.surfaceNote ? ` — ${m.surfaceNote}` : ''}`}
                   </div>
                 )}
-                {m.tools && m.tools.length > 0 && (
+                {!(processView && hasProcessFlow(m)) && m.tools && m.tools.length > 0 && (
                   <ToolActivity
                     events={m.tools}
                     streaming={!!m.streaming}
@@ -1212,7 +1224,12 @@ export const Chat: React.FC<{
                       // 실패는 **구조**로 보여준다: 무슨 일인지 한 줄, 이제 뭘
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
-                      <ErrorBlock info={m.errorInfo} />
+                      <>
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} />}
+                        <ErrorBlock info={m.errorInfo} />
+                      </>
+                    ) : processView && hasProcessFlow(m) ? (
+                      <ProcessTimeline msg={m} />
                     ) : m.text ? (
                       <Markdown text={m.text} />
                     ) : (
@@ -1253,7 +1270,9 @@ export const Chat: React.FC<{
                       {m.text && <span className="bubble-plain">{m.text}</span>}
                     </>
                   )}
-                  {m.role === 'assistant' && m.text && m.streaming && <span className="cursor" />}
+                  {m.role === 'assistant' && m.text && m.streaming && !(processView && hasProcessFlow(m)) && (
+                    <span className="cursor" />
+                  )}
                 </div>
                 {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.
                     (한 글자도 못 받았으면 본문 자리에 이미 같은 문구가 서 있다.) */}

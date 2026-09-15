@@ -165,15 +165,18 @@ export interface OutgoingShot {
   height?: number;
 }
 
-/** 작성기 또는 이력에 속한 그림 한 장. dataUrl은 data: 또는 renderer blob: URL이다. */
-export interface ChatImageAttachment {
+/** 작성기 또는 이력에 속한 첨부 파일. dataUrl은 전송 전 data: 또는 이력용 blob: URL이다. */
+export interface ChatAttachment {
   dataUrl: string;
   name: string;
   mime: string;
   size: number;
+  kind?: 'file' | 'image';
   width?: number;
   height?: number;
 }
+
+export type ChatImageAttachment = ChatAttachment;
 
 /** Injected transport — the renderer passes the real xgen bridge. */
 export interface SessionTransport {
@@ -187,7 +190,7 @@ export interface SessionTransport {
     /** 사람이 누른 [정지] — 서버 실행도 멈춘다. */
     stop?: (interactionId: string) => Promise<unknown>;
   };
-  uploadWorkspaceImage?: (request: {
+  uploadWorkspaceAttachment?: (request: {
     workflowId: string;
     interactionId: string;
     attachmentId: string;
@@ -200,6 +203,8 @@ export interface SessionTransport {
     sha256?: string;
     status?: 'pending_approval';
   }>;
+  /** @deprecated compatibility with older preload/test transports. */
+  uploadWorkspaceImage?: SessionTransport['uploadWorkspaceAttachment'];
   historyTurns(
     workflowId: string,
     interactionId: string,
@@ -235,9 +240,11 @@ export interface SessionTransport {
   unwatchConversation?: (interactionId: string) => void;
 }
 
-function imageBytes(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
-  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(dataUrl);
-  if (!match) throw new Error('지원하지 않는 이미지 형식입니다.');
+const CHAT_IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,/i;
+
+function attachmentBytes(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(dataUrl);
+  if (!match) throw new Error('첨부 파일을 읽을 수 없습니다.');
   const binary = atob(match[2].replace(/\s/g, ''));
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
@@ -627,8 +634,10 @@ export class SessionStore {
     const rt = this.rt.get(key);
     // 작성기 경계에서도 검사하지만 스토어는 외부 주입/오래된 렌더러를 믿지 않는다.
     // SVG·임의 data URL 은 모델 입력과 <img> 미리보기에 싣지 않는다.
-    const attached = images.filter((image) =>
-      /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(image.dataUrl),
+    const attached = images.filter((item) =>
+      s?.agent.hasAgentGeny
+        ? /^data:[^;,]+;base64,/i.test(item.dataUrl)
+        : CHAT_IMAGE_DATA_URL_RE.test(item.dataUrl),
     );
     // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
     // 두 실행이 겹치고, 두 답이 서로를 덮어쓴다. 멈추려면 [정지] 를 눌러야 한다.
@@ -673,9 +682,13 @@ export class SessionStore {
       updatedAt: this.now(),
     }));
     this.emit();
-    const multimodal = attached.length > 0 || !!shot?.dataUrl;
+    const visual = attached.filter(
+      (item) =>
+        item.kind === 'image' || /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(item.dataUrl),
+    );
+    const multimodal = visual.length > 0 || !!shot?.dataUrl;
     const content: unknown[] = [{ type: 'text', text }];
-    for (const image of attached) {
+    for (const image of visual) {
       content.push({ type: 'image_url', image_url: { url: image.dataUrl } });
     }
     if (shot?.dataUrl) {
@@ -701,7 +714,9 @@ export class SessionStore {
       rt.stopServer = handle.stop ?? null;
     };
 
-    if (multimodal && s.agent.hasAgentGeny && this.transport.uploadWorkspaceImage) {
+    const workspaceUploader =
+      this.transport.uploadWorkspaceAttachment ?? this.transport.uploadWorkspaceImage;
+    if ((attached.length > 0 || !!shot?.dataUrl) && s.agent.hasAgentGeny && workspaceUploader) {
       let cancelled = false;
       rt.cancel = () => {
         cancelled = true;
@@ -712,19 +727,20 @@ export class SessionStore {
         ...attached.map((image) => ({
           dataUrl: image.dataUrl,
           name: image.name,
+          kind: image.kind ?? (CHAT_IMAGE_DATA_URL_RE.test(image.dataUrl) ? 'image' : 'file'),
         })),
         ...(shot?.dataUrl
-          ? [{ dataUrl: shot.dataUrl, name: `${shot.sourceName || 'screen'}.png` }]
+          ? [{ dataUrl: shot.dataUrl, name: `${shot.sourceName || 'screen'}.png`, kind: 'image' as const }]
           : []),
       ];
       void Promise.all(
         pending.map(async (image, index) => {
-          const decoded = imageBytes(image.dataUrl);
-          if (decoded.bytes.byteLength > 20 * 1024 * 1024) {
-            throw new Error('XGeny 이미지 한 장은 20MiB를 넘을 수 없습니다.');
+          const decoded = attachmentBytes(image.dataUrl);
+          if (decoded.bytes.byteLength > 100 * 1024 * 1024) {
+            throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
           }
           const attachmentId = `conn-${s.interactionId}-${index + 1}`;
-          const result = await this.transport.uploadWorkspaceImage!({
+          const result = await workspaceUploader({
             workflowId: s.agent.workflowId,
             interactionId: s.interactionId,
             attachmentId,
@@ -733,11 +749,11 @@ export class SessionStore {
             bytes: decoded.bytes,
           });
           if (result.status === 'pending_approval') {
-            throw new Error('이미지 업로드가 승인 대기 중입니다. 승인 후 다시 시도해 주세요.');
+            throw new Error('파일 업로드가 승인 대기 중입니다. 승인 후 다시 시도해 주세요.');
           }
           if (!result.workspace_path) throw new Error('Workspace 업로드 경로가 없습니다.');
           return {
-            kind: 'image',
+            kind: image.kind,
             attachment_id: attachmentId,
             name: image.name,
             mime_type: decoded.mimeType,

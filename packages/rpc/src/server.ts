@@ -335,6 +335,13 @@ export class DexRpcServer {
         );
       case 'chat/start':
         return this.startChat(params);
+      case 'chat/attachment/upload':
+        return this.engine.uploadChatAttachment({
+          profile: optionalString(params, 'profile'),
+          workflowId: requiredString(params, 'workflowId'),
+          interactionId: requiredString(params, 'interactionId'),
+          path: requiredString(params, 'path'),
+        });
       case 'chat/watch': {
         // 대화 소켓 감시 — 서버 주입 턴(트리거 반응)이 chat/serverTurn
         // notification 으로 실시간 흐른다 (새로고침 불필요).
@@ -411,6 +418,10 @@ export class DexRpcServer {
       workflowName: optionalString(params, 'workflowName'),
       interactionId: optionalString(params, 'interactionId'),
       input: rawInput as ChatInput['input'],
+      attachments: Array.isArray(params.attachments)
+        ? params.attachments.filter((item): item is NonNullable<ChatInput['attachments']>[number] =>
+            !!item && typeof item === 'object' && !Array.isArray(item)) as NonNullable<ChatInput['attachments']>
+        : [],
     };
     const resolved = await this.engine.resolveChatInput(input);
     const streamId = optionalString(params, 'streamId') ?? randomUUID();

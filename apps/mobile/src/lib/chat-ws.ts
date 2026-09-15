@@ -82,10 +82,20 @@ export type PeerTurnEvent =
   | { kind: 'gap' };
 
 export interface ChatWsHandle {
-  execute(input: string): Promise<void>;
+  execute(input: string, attachments?: MobileChatAttachment[]): Promise<void>;
   stop(): void;
   close(): void;
   state(): ChatWsState;
+}
+
+export interface MobileChatAttachment {
+  kind: 'image' | 'file';
+  attachment_id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  sha256?: string;
+  workspace_path: string;
 }
 
 export interface ChatWsOptions {
@@ -432,7 +442,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
   connect();
 
   return {
-    execute(input: string): Promise<void> {
+    execute(input: string, attachments: MobileChatAttachment[] = []): Promise<void> {
       return new Promise<void>((resolve, reject) => {
         if (!(state === 'connected' && subscribed && ws?.readyState === WebSocket.OPEN)) {
           reject(new Error('서버 세션에 연결되지 않았습니다.'));
@@ -447,7 +457,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
           JSON.stringify({
             type: 'execute',
             data: {
-              input_data: input,
+              input_data: attachments.length ? { input_str: input, attachments } : input,
               selected_files: [],
               additional_params: {},
               // 모바일 도구 주입 게이트 — connector 표면이어야 커넥터-호스팅

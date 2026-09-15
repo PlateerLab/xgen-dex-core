@@ -57,6 +57,17 @@ export interface ChatInput {
   workflowName?: string;
   input: string | Record<string, unknown> | unknown[];
   interactionId?: string;
+  attachments?: ChatAttachmentDescriptor[];
+}
+
+export interface ChatAttachmentDescriptor {
+  kind: 'image' | 'file';
+  attachment_id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  sha256?: string;
+  workspace_path: string;
 }
 
 export interface ResolvedChatInput {
@@ -65,6 +76,7 @@ export interface ResolvedChatInput {
   workflowName: string;
   input: ChatInput['input'];
   interactionId: string;
+  attachments: ChatAttachmentDescriptor[];
 }
 
 export type {

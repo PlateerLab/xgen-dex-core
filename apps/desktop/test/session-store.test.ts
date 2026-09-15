@@ -271,6 +271,37 @@ test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행�
   })
 })
 
+test('XGeny 일반 파일은 이미지로 변환하지 않고 workspace 참조로 실행한다', async () => {
+  const streams: FakeStream[] = []
+  const transport: SessionTransport = {
+    stream(req, onEvent) {
+      const stream: FakeStream = { interactionId: req.interactionId, input: req.input, onEvent, cancelled: false, stopped: false }
+      streams.push(stream)
+      return { cancel: () => { stream.cancelled = true } }
+    },
+    async uploadWorkspaceAttachment(request) {
+      return { workspace_path: `uploads/${request.interactionId}/${request.name}`, size: request.bytes.byteLength }
+    },
+    async historyTurns() { return [] },
+  }
+  const store = new SessionStore(transport, () => 1234)
+  const key = store.openNew({ ...agent('geny'), hasAgentGeny: true })
+
+  store.send(key, '이 파일을 읽어줘', null, [
+    { dataUrl: 'data:application/json;base64,e30=', name: 'data.json', mime: 'application/json', size: 2, kind: 'file' },
+  ])
+  await flush()
+
+  assert.deepEqual(streams[0].input, {
+    input_str: '이 파일을 읽어줘',
+    attachments: [{
+      kind: 'file', attachment_id: `conn-${key}-1`, name: 'data.json',
+      mime_type: 'application/json', size: 2, sha256: undefined,
+      workspace_path: `uploads/${key}/data.json`,
+    }],
+  })
+})
+
 test('스트림 이벤트가 텍스트·도구·출처를 누적하고 end 에서 멈춘다', () => {
   const { store, streams } = makeStore()
   const k = store.openNew(agent('A'))

@@ -85,7 +85,7 @@ export const sessionStore = new SessionStore({
     };
   },
   releaseHistoryImage: (previewUrl) => URL.revokeObjectURL(previewUrl),
-  uploadWorkspaceImage: async ({
+  uploadWorkspaceAttachment: async ({
     workflowId,
     interactionId,
     attachmentId,

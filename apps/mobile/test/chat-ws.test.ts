@@ -85,10 +85,14 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   ws.recv({ type: 'subscribed' });
   assert.equal(chat.state(), 'connected');
 
-  const done = chat.execute('안녕');
+  const attachment = {
+    kind: 'file' as const, attachment_id: 'att-1', name: 'data.json',
+    mime_type: 'application/json', size: 2, workspace_path: 'attachments/mob-wf-1-1/att-1/data.json',
+  };
+  const done = chat.execute('안녕', [attachment]);
   const exec = ws.sent[1] as { type: string; data: Record<string, unknown> };
   assert.equal(exec.type, 'execute');
-  assert.equal(exec.data.input_data, '안녕');
+  assert.deepEqual(exec.data.input_data, { input_str: '안녕', attachments: [attachment] });
   // 모바일 도구 주입 게이트 + 서버 sandbox 강제 — 이 두 값이 제품 정의다.
   assert.equal(exec.data.client_surface, 'connector');
   assert.equal(exec.data.execution_target, 'sandbox');
@@ -383,4 +387,3 @@ test('번호가 건너뛰면 알린다', () => {
   ws.recv({ type: 'exec', seq: 14, data: { event: 'message', data: {} } });
   assert.equal(peer.filter((e) => e.kind === 'gap').length, 1, '11 다음에 14 — 12·13 이 사라졌다');
 });
-

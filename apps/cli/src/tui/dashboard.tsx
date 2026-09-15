@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { publicError } from '@dex/engine';
-import type { Agent, Conversation, ConversationSnapshot } from '@dex/engine';
+import type { Agent, ChatAttachmentDescriptor, Conversation, ConversationSnapshot } from '@dex/engine';
 import { chatReducer, initialChatState, type ChatMessage } from './chat-state';
 import { useMeasured } from './measure';
 import { maximumScroll, renderTranscript, viewportOf } from './transcript';
@@ -175,6 +175,9 @@ export function Dashboard(props: {
     return first ? { workflowId: first.workflowId, workflowName: first.workflowName } : undefined;
   });
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<ChatAttachmentDescriptor[]>([]);
+  const [attachmentInteractionId, setAttachmentInteractionId] = useState<string>();
+  const [attachmentNotice, setAttachmentNotice] = useState('');
   const [chat, dispatch] = useReducer(chatReducer, initialChatState);
   // 대화 소켓 push — 서버 주입 턴(트리거 반응)을 열린 대화에 실시간 반영.
   const chatInteractionRef = useRef<string | undefined>(undefined);
@@ -317,6 +320,9 @@ export function Dashboard(props: {
     setSelected(ref);
     dispatch({ type: 'reset' });
     setInput('');
+    setAttachments([]);
+    setAttachmentInteractionId(undefined);
+    setAttachmentNotice('');
     setScrollUp(0);
     setStart(undefined);
     setFocus('composer');
@@ -324,6 +330,9 @@ export function Dashboard(props: {
 
   const openHistory = (conversation: Conversation, snapshot: ConversationSnapshot): void => {
     setSelected({ workflowId: conversation.workflowId, workflowName: conversation.workflowName });
+    setAttachments([]);
+    setAttachmentInteractionId(undefined);
+    setAttachmentNotice('');
     // running 을 그대로 싣는다 — 웹·앱·VSCode 에서 시작한 턴이 아직 돌고 있으면
     // 여기서도 [진행 중] 이어야 하고, 그 위에 새 턴을 얹어서는 안 된다.
     dispatch({
@@ -433,22 +442,64 @@ export function Dashboard(props: {
     setScrollUp(0);
     setPalette(false);
     setFocus('composer');
+    setAttachments([]);
+    setAttachmentInteractionId(undefined);
+    setAttachmentNotice('');
   };
 
   const send = async (value: string): Promise<void> => {
     const text = value.trim();
-    if (!text || !selected || chat.running) return;
+    if (!selected || chat.running) return;
+    if (text.startsWith('/attach ')) {
+      const path = text.slice('/attach '.length).trim().replace(/^['"]|['"]$/g, '');
+      if (!path) return;
+      try {
+        const seed = await props.engine.resolveChatInput({
+          profile: props.session.profile, workflowId: selected.workflowId,
+          workflowName: selected.workflowName, interactionId: chat.interactionId ?? attachmentInteractionId,
+          input: '',
+        });
+        const uploaded = await props.engine.uploadChatAttachment({
+          profile: props.session.profile, workflowId: selected.workflowId,
+          interactionId: seed.interactionId, path,
+        });
+        setAttachmentInteractionId(seed.interactionId);
+        setAttachments((current) => [...current, uploaded]);
+        setAttachmentNotice(`첨부됨: ${uploaded.name} · 총 ${attachments.length + 1}개`);
+        setInput('');
+      } catch (error) {
+        setAttachmentNotice(`첨부 실패: ${publicError(error).message}`);
+      }
+      return;
+    }
+    if (text === '/attachments') {
+      setAttachmentNotice(attachments.length ? attachments.map((a) => a.name).join(', ') : '첨부된 파일이 없습니다.');
+      setInput('');
+      return;
+    }
+    if (text === '/detach') {
+      setAttachments([]);
+      setAttachmentInteractionId(undefined);
+      setAttachmentNotice('첨부를 모두 제거했습니다.');
+      setInput('');
+      return;
+    }
+    if (!text && attachments.length === 0) return;
     try {
       const resolved = await props.engine.resolveChatInput({
         profile: props.session.profile,
         workflowId: selected.workflowId,
         workflowName: selected.workflowName,
-        interactionId: chat.interactionId,
+        interactionId: chat.interactionId ?? attachmentInteractionId,
         input: text,
+        attachments,
       });
       setInput('');
       setScrollUp(0);
       dispatch({ type: 'turn_started', interactionId: resolved.interactionId, input: text });
+      setAttachments([]);
+      setAttachmentInteractionId(undefined);
+      setAttachmentNotice('');
       void props.engine.watchConversation?.(
         resolved.workflowId,
         resolved.workflowName,
@@ -469,7 +520,14 @@ export function Dashboard(props: {
       else if (!detached) dispatch({ type: 'turn_completed' });
     } catch (error) {
       if (controller.current?.signal.aborted) dispatch({ type: 'turn_cancelled' });
-      else dispatch({ type: 'turn_failed', message: publicError(error).message });
+      else {
+        if (attachments.length > 0) {
+          setAttachments(attachments);
+          setAttachmentInteractionId(chat.interactionId ?? attachmentInteractionId);
+          setAttachmentNotice(`${attachments.length}개 파일을 다시 보낼 수 있습니다.`);
+        }
+        dispatch({ type: 'turn_failed', message: publicError(error).message });
+      }
     } finally {
       controller.current = null;
     }
@@ -609,6 +667,7 @@ export function Dashboard(props: {
             viewport.current = { lineCount, height };
           }}
         />
+        {attachmentNotice ? <Text color="cyan">📎 {attachmentNotice}</Text> : null}
         <Composer
           value={input}
           onChange={setInput}
@@ -640,7 +699,7 @@ export function Dashboard(props: {
       {body}
       <Footer
         mode={nativeIme ? undefined : hangulMode ? '한' : 'EN'}
-        text={`${imeShortcut} 한/영 · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`}
+        text={`${imeShortcut} 한/영 · /attach 경로 · /attachments · /detach · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`}
       />
     </Box>
   );

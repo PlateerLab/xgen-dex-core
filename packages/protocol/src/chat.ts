@@ -57,6 +57,7 @@ function mapToolEvent(d: Record<string, unknown>): ToolEvent {
     resultLength: d.result_length as number | undefined,
     error: d.error as string | undefined,
     citations: d.citations as ToolEvent['citations'],
+    toolUseId: d.tool_use_id as string | undefined,
     runId: d.run_id as string | undefined,
     indicator: d.indicator,
     durationMs: d.duration_ms as number | undefined,

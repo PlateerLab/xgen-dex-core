@@ -27,7 +27,7 @@ import type { ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/proto
 import { INTERRUPTED_NOTE, INTERRUPTED_TEXT } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
-import { collapseToolSteps, nextToolIndex } from './tool-activity-model';
+import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';

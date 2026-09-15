@@ -246,6 +246,8 @@ export * from './filestore';
 export * from './agent-trigger';
 export * from './connector-devices';
 export * from './notifications';
+// 도구 과정 표시 규칙(칩 단계 · 호출 한 건 한 행 · 건수) — 앱과 웹이 같은 답을 내도록.
+export * from './tool-activity';
 export { ApiError } from './client';
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';

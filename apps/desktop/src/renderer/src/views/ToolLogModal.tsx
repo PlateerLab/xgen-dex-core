@@ -10,10 +10,19 @@
  * 복사를 1급으로 둔다. 이 화면을 여는 사람은 대개 그 내용을 다른 곳(이슈,
  * 동료, 다른 대화)으로 옮기려는 참이다. 스크롤해서 드래그하게 만들면 그
  * 순간 이 기능이 없는 것과 같아진다.
+ *
+ * 이름 줄이기 · 상태 · 복사용 텍스트 규칙은 `@dex/protocol/tool-activity` 가
+ * 정본이다 — 웹도 같은 규칙으로 그린다. 여기에는 화면만 있다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { copyText } from '../bridge';
 import type { ToolEvent } from '@dex/protocol/types';
+import {
+  formatToolLog,
+  shortToolName,
+  toolPhase,
+  toolValueText,
+} from '@dex/protocol/tool-activity';
 import { CloseIcon, CopyIcon, DocIcon } from '../brand/icons';
 
 interface Props {
@@ -22,60 +31,6 @@ interface Props {
   /** 이 인덱스의 항목을 펼친 채 연다 — 흐름의 도구 칩을 눌러 "그 시점"으로
    *  바로 들어오는 경로 (칩은 하나씩 빠르게 지나가므로). */
   initialOpen?: number;
-}
-
-/**
- * 목록에 쓸 짧은 이름 — 브릿지 접두사를 걷어낸다.
- *
- * `mcp__connector__mcp_mcp-atlassian_jira_search` 를 그대로 두면 목록이
- * 접두사로만 채워져 무엇이 무엇인지 구분되지 않는다 (실제로 화면에서
- * `mcp__connector__mcp_mcp-atlassi…` 로 잘려 보였다). 원본은 상세에 남긴다.
- */
-export function shortToolName(raw: string | undefined): string {
-  const name = String(raw ?? '').trim();
-  if (!name) return '(이름 없음)';
-  return name.replace(/^mcp__connector__/, '').replace(/^mcp_(mcp-)?/, '');
-}
-
-function pretty(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function phaseOf(e: ToolEvent): { label: string; tone: 'run' | 'ok' | 'err' } {
-  if (e.eventType === 'tool_error' || e.error) return { label: '실패', tone: 'err' };
-  if (e.eventType === 'tool_result') return { label: '완료', tone: 'ok' };
-  return { label: '실행', tone: 'run' };
-}
-
-/**
- * 전체 기록을 사람이 읽을 수 있는 텍스트로.
- *
- * JSON 덩어리 하나로 주지 않는다 — 붙여넣는 곳이 이슈든 채팅이든 그대로
- * 읽혀야 하고, 그러려면 섹션이 있어야 한다.
- */
-export function formatToolLog(events: ToolEvent[]): string {
-  const lines: string[] = [`# 도구 실행 기록 (${events.length}건)`, ''];
-  events.forEach((e, i) => {
-    lines.push(`## ${i + 1}. ${shortToolName(e.toolName)} — ${phaseOf(e).label}`);
-    if (e.toolName && shortToolName(e.toolName) !== e.toolName) {
-      lines.push(`- 전체 이름: ${e.toolName}`);
-    }
-    if (typeof e.durationMs === 'number') lines.push(`- 소요: ${e.durationMs}ms`);
-    if (e.timestamp) lines.push(`- 시각: ${e.timestamp}`);
-    const input = pretty(e.toolInput);
-    if (input) lines.push('', '### 입력', '```json', input, '```');
-    if (e.error) lines.push('', '### 오류', '```', String(e.error), '```');
-    const result = pretty(e.result);
-    if (result) lines.push('', '### 결과', '```', result, '```');
-    lines.push('');
-  });
-  return lines.join('\n');
 }
 
 export const ToolLogModal: React.FC<Props> = ({ events, onClose, initialOpen }) => {
@@ -158,10 +113,10 @@ export const ToolLogModal: React.FC<Props> = ({ events, onClose, initialOpen }) 
             <div className="toollog-empty">이 답변에서는 도구를 쓰지 않았습니다.</div>
           ) : (
             events.map((e, i) => {
-              const { label, tone } = phaseOf(e);
+              const { label, tone } = toolPhase(e);
               const isOpen = open.has(i);
-              const input = pretty(e.toolInput);
-              const result = pretty(e.result);
+              const input = toolValueText(e.toolInput);
+              const result = toolValueText(e.result);
               return (
                 <div
                   className={`toollog-item ${tone}${i === initialOpen ? ' focused' : ''}`}

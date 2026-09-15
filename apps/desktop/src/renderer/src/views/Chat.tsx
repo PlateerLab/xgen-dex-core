@@ -32,6 +32,7 @@ import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
+import { connectedToolGroups } from './agent-inspector-model';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -970,6 +971,28 @@ export const Chat: React.FC<{
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
   const [processView, toggleProcessView] = useProcessView();
+  // 타임라인 카드 이름표에 쓸 도구 설명 — 이 에이전트에 연결된 도구 목록(상세보기 [도구] 탭과 같은 출처)
+  const [toolDescriptions, setToolDescriptions] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!processView) return;
+    let alive = true;
+    xgen.agentData
+      .basicInfo(agent.workflowId)
+      .then((info) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const group of connectedToolGroups(info.surfaces?.connector)) {
+          for (const tool of group.tools) if (tool.name && tool.description) map[tool.name] = tool.description;
+        }
+        setToolDescriptions(map);
+      })
+      .catch(() => {
+        // 설명을 못 받아도 카드는 도구 이름과 인자로 그린다
+      });
+    return () => {
+      alive = false;
+    };
+  }, [agent.workflowId, processView]);
   const agentNotificationMuted = !!notificationSnapshot.profile.mutedAgents[agent.workflowId];
   const chatNotificationMuted =
     !!notificationSnapshot.profile.mutedChats[
@@ -1225,11 +1248,11 @@ export const Chat: React.FC<{
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
                       <>
-                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} />}
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />}
                         <ErrorBlock info={m.errorInfo} />
                       </>
                     ) : processView && hasProcessFlow(m) ? (
-                      <ProcessTimeline msg={m} />
+                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
                     ) : m.text ? (
                       <Markdown text={m.text} />
                     ) : (

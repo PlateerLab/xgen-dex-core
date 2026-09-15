@@ -693,6 +693,9 @@ export const Workspace: React.FC<{
     sessionStore.openNew({
       workflowId: agent.workflowId,
       workflowName: agent.workflowName,
+      // [+] 새 에이전트 화면은 Agent XGeny 하나만 만든다. 이 표시가 없으면 스토어가 첨부를 그림만 남기고
+      // 걸러, 만들자마자 올린 PDF·문서가 조용히 빠졌다(2026-09-16 대화로 에이전트 만들기 시험).
+      hasAgentGeny: true,
     } as Agent);
   }, []);
 

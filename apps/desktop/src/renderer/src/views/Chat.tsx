@@ -1301,6 +1301,18 @@ export const Chat: React.FC<{
                     onOpenFile={onOpenFile}
                   />
                 )}
+                {/* 실행 중에 [간단히] 로 껐으면 끝나기 전에도 되돌릴 수 있어야 한다 — 끝난 답의 푸터와 같은 자리. */}
+                {m.role === 'assistant' && m.streaming && !processView && hasProcessFlow(m) && (
+                  <div className="msg-footer">
+                    <button
+                      className="toollog-open process-view-on"
+                      onClick={toggleProcessView}
+                      title="진행 중인 작업을 타임라인으로 봅니다"
+                    >
+                      과정 보기
+                    </button>
+                  </div>
+                )}
                 {m.interrupted && m.text !== INTERRUPTED_NOTE && (
                   <div className="shot-note" role="status">
                     <span>{INTERRUPTED_TEXT}</span>

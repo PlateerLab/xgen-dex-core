@@ -35,6 +35,7 @@ import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeli
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
 import { requestBefore } from './turn-files-model';
+import { ProcessModeSelect } from './ProcessModeSelect';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -975,7 +976,8 @@ export const Chat: React.FC<{
   useEffect(() => xgen.quickChat.onQuickSend((t) => send(t)), [send]);
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
-  const [processView, toggleProcessView] = useProcessView();
+  // 작업 과정 표시는 대화마다가 아니라 **모드** — 입력창 오른쪽 [작업 과정 ⌄] 에서 바꾼다(ProcessModeSelect)
+  const [processView] = useProcessView();
   // 타임라인 카드 이름표에 쓸 도구 설명 — 이 에이전트에 연결된 도구 목록(상세보기 [도구] 탭과 같은 출처)
   const [toolDescriptions, setToolDescriptions] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -1243,11 +1245,11 @@ export const Chat: React.FC<{
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
                       <>
-                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} onHide={toggleProcessView} />}
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />}
                         <ErrorBlock info={m.errorInfo} />
                       </>
                     ) : processView && hasProcessFlow(m) ? (
-                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} onHide={toggleProcessView} />
+                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
                     ) : m.text ? (
                       <Markdown text={m.text} />
                     ) : (
@@ -1302,18 +1304,6 @@ export const Chat: React.FC<{
                     onOpenFile={onOpenFile}
                     latest={i === lastAssistantIndex}
                   />
-                )}
-                {/* 실행 중에 [간단히] 로 껐으면 끝나기 전에도 되돌릴 수 있어야 한다 — 끝난 답의 푸터와 같은 자리. */}
-                {m.role === 'assistant' && m.streaming && !processView && hasProcessFlow(m) && (
-                  <div className="msg-footer">
-                    <button
-                      className="toollog-open process-view-on"
-                      onClick={toggleProcessView}
-                      title="진행 중인 작업을 타임라인으로 봅니다"
-                    >
-                      과정 보기
-                    </button>
-                  </div>
                 )}
                 {m.interrupted && m.text !== INTERRUPTED_NOTE && (
                   <div className="shot-note" role="status">
@@ -1379,15 +1369,6 @@ export const Chat: React.FC<{
                       )}
                       {/* 전체 도구 로그 — 흐름의 도구 칩은 하나씩 지나가므로,
                           무엇이 있었는지 되짚으려면 펼칠 곳이 필요하다. */}
-                      {!processView && hasProcessFlow(m) && (
-                        <button
-                          className="toollog-open process-view-on"
-                          onClick={toggleProcessView}
-                          title="답변을 작업 과정 타임라인과 함께 봅니다"
-                        >
-                          과정 보기
-                        </button>
-                      )}
                       {m.tools && m.tools.length > 0 && (
                         <button
                           className="toollog-open"
@@ -1563,7 +1544,8 @@ export const Chat: React.FC<{
             })}
           </div>
         )}
-        <div className="composer">
+        {/* 글은 위 한 줄, 도구는 아래 줄 — 왼쪽 첨부, 오른쪽 모드·음성·전송 */}
+        <div className="composer composer-stacked">
           <textarea
             ref={taRef}
             className="composer-input"
@@ -1600,60 +1582,64 @@ export const Chat: React.FC<{
             <MonitorIcon size={16} />
           </button>
           */}
-          <button
-            type="button"
-            className="composer-attach"
-            onClick={() => imageInputRef.current?.click()}
-            disabled={
-              busy ||
-              preparingImages > 0 ||
-              stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
-            }
-            title={
-              stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
-                ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
-                : preparingImages > 0
-                  ? '파일을 준비하는 중…'
-                  : '파일 첨부'
-            }
-            aria-label="파일 첨부"
-          >
-            <PlusIcon size={17} />
-          </button>
-          {sttOn && (
+          <div className="composer-toolbar">
             <button
-              className={`composer-mic${recording ? ' recording' : ''}`}
-              onClick={toggleMic}
-              disabled={transcribing || busy}
-              title={transcribing ? '변환 중…' : recording ? '녹음 중지' : '음성 입력'}
-              aria-label="음성 입력"
-            >
-              {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
-            </button>
-          )}
-          {busy ? (
-            <button
-              className="composer-send stop"
-              onClick={stop}
-              title={remote ? '다른 곳에서 진행 중인 응답 중지' : '중지'}
-              aria-label="중지"
-            >
-              <StopIcon size={15} />
-            </button>
-          ) : (
-            <button
-              className="composer-send"
-              onClick={() => void send()}
+              type="button"
+              className="composer-attach"
+              onClick={() => imageInputRef.current?.click()}
               disabled={
-                (!input.trim() && stagedImages.length === 0 && browserSelections.length === 0) ||
-                preparingImages > 0
+                busy ||
+                preparingImages > 0 ||
+                stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
               }
-              title="전송"
-              aria-label="전송"
+              title={
+                stagedImages.length + browserSelections.length >= CHAT_IMAGE_MAX_COUNT
+                  ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
+                  : preparingImages > 0
+                    ? '파일을 준비하는 중…'
+                    : '파일 첨부'
+              }
+              aria-label="파일 첨부"
             >
-              <SendIcon size={17} />
+              <PlusIcon size={17} />
             </button>
-          )}
+            <span className="composer-toolbar-spacer" />
+            <ProcessModeSelect />
+            {sttOn && (
+              <button
+                className={`composer-mic${recording ? ' recording' : ''}`}
+                onClick={toggleMic}
+                disabled={transcribing || busy}
+                title={transcribing ? '변환 중…' : recording ? '녹음 중지' : '음성 입력'}
+                aria-label="음성 입력"
+              >
+                {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
+              </button>
+            )}
+            {busy ? (
+              <button
+                className="composer-send stop"
+                onClick={stop}
+                title={remote ? '다른 곳에서 진행 중인 응답 중지' : '중지'}
+                aria-label="중지"
+              >
+                <StopIcon size={15} />
+              </button>
+            ) : (
+              <button
+                className="composer-send"
+                onClick={() => void send()}
+                disabled={
+                  (!input.trim() && stagedImages.length === 0 && browserSelections.length === 0) ||
+                  preparingImages > 0
+                }
+                title="전송"
+                aria-label="전송"
+              >
+                <SendIcon size={17} />
+              </button>
+            )}
+          </div>
         </div>
         <div className="composer-foot">
           <span className="kbd-hint">

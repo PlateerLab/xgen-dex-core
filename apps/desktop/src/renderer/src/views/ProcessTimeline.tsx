@@ -232,9 +232,7 @@ export const ProcessTimeline: React.FC<{
   msg: ChatMsg;
   /** 에이전트에 등록된 도구 설명(도구 이름 → 설명). 있으면 도구 행 이름표에 쓴다. */
   toolDescriptions?: Readonly<Record<string, string>>;
-  /** 타임라인 없이 답만 보기로 바꾼다(전역 설정). */
-  onHide?: () => void;
-}> = ({ msg, toolDescriptions, onHide }) => {
+}> = ({ msg, toolDescriptions }) => {
   const streaming = !!msg.streaming;
   const now = useNow(streaming);
   // 펼침: 사용자가 누르기 전에는 실행 중이면 펼치고, 끝나면 접는다.
@@ -330,16 +328,6 @@ export const ProcessTimeline: React.FC<{
             {expanded ? '▾' : '▸'}
           </span>
         </button>
-        {onHide && (
-          <button
-            type="button"
-            className="ptl-link"
-            onClick={onHide}
-            title="작업 과정 없이 답만 보기 — 다시 켜려면 답변 아래 [과정 보기]"
-          >
-            간단히
-          </button>
-        )}
       </div>
       {streaming && <div className="ptl-progress" aria-hidden />}
       {expanded && (
@@ -391,7 +379,7 @@ const readProcessView = (): boolean => {
  * 타임라인 켜기/끄기 — 이 PC 에만 기억한다(기본 켜짐). 끄면 예전처럼 도구 칩 한 칸으로 돌아간다.
  * 여러 채팅 탭이 같은 값을 보도록 창 이벤트로 알린다.
  */
-export function useProcessView(): [boolean, () => void] {
+export function useProcessView(): [boolean, () => void, (next: boolean) => void] {
   const [on, setOn] = useState(readProcessView);
   useEffect(() => {
     const sync = () => setOn(readProcessView());
@@ -402,8 +390,7 @@ export function useProcessView(): [boolean, () => void] {
       window.removeEventListener('storage', sync);
     };
   }, []);
-  const toggle = useCallback(() => {
-    const next = !readProcessView();
+  const set = useCallback((next: boolean) => {
     try {
       window.localStorage.setItem(PROCESS_VIEW_KEY, next ? 'on' : 'off');
     } catch {
@@ -412,5 +399,6 @@ export function useProcessView(): [boolean, () => void] {
     setOn(next);
     window.dispatchEvent(new Event(PROCESS_VIEW_EVENT));
   }, []);
-  return [on, toggle];
+  const toggle = useCallback(() => set(!readProcessView()), [set]);
+  return [on, toggle, set];
 }

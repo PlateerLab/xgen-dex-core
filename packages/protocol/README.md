@@ -8,6 +8,8 @@ Node 에서도, 터미널에서도 같은 코드가 돈다.
 - 있다 — HTTP 클라이언트, 인증·토큰 회전, SSE 파싱, 채팅/이력/에이전트/SSH/Teams/
   음성/알림의 요청·응답 타입, 그리고 그 응답을 다루는 **순수 함수**
   (`stripBrowserContext`, `toHistoryAttachments` 처럼 서버 응답의 형태를 아는 것).
+  도구 과정 표시 규칙(`tool-activity`: `collapseToolSteps` · `pairToolCalls` ·
+  `countToolCalls`)도 여기다 — 도구 이벤트의 모양을 알고, 앱과 웹이 같은 건수를 말해야 한다.
 - 없다 — 파일을 읽거나, 프로세스를 띄우거나, 창을 열거나, 디스크에 무언가를
   쓰는 것. 그건 `@dex/engine` 이나 앱의 일이다.
 

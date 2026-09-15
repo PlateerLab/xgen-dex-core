@@ -91,6 +91,8 @@ export interface ToolEvent {
   resultLength?: number;
   error?: string;
   citations?: Citation[];
+  /** 호출 한 건의 id (서버 `tool_use_id`). 같은 호출의 시작과 끝을 잇는다. 옛 서버는 싣지 않는다. */
+  toolUseId?: string;
   runId?: string;
   indicator?: unknown;
   durationMs?: number;

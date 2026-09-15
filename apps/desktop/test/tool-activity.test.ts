@@ -1,49 +1,31 @@
-/** 도구 활동 표시 로직 — 한 번에 하나, 연속 상태는 제자리, 몰리면 건너뛰기. */
+/** 도구 활동 표시 — 한 번에 하나, 연속 상태는 제자리, 몰리면 건너뛰기.
+ *
+ * 규칙 자체는 `@dex/protocol/tool-activity` 가 정본이고 테스트도 그쪽에 있다
+ * (packages/protocol/test/tool-activity.test.ts). 여기서는 데스크톱이 **그 규칙을
+ * 쓰는지**, 그리고 사본을 다시 두지 않았는지만 본다. */
 import assert from 'assert'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { collapseToolSteps, nextToolIndex } from '../src/renderer/src/views/tool-activity-model'
+import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity'
+
+const VIEWS = join(__dirname, '..', 'src/renderer/src/views')
+const CHAT = readFileSync(join(VIEWS, 'Chat.tsx'), 'utf8')
 
 const ev = (toolName: string, eventType: string) => ({ toolName, eventType })
 
-test('연속된 같은 도구 이벤트는 한 단계로 접힌다 (마지막 상태 유지)', () => {
+test('칩 규칙은 protocol 에서 가져온다 (앱 안에 사본이 없다)', () => {
+  assert.match(CHAT, /import \{ collapseToolSteps, nextToolIndex \} from '@dex\/protocol\/tool-activity'/)
+  assert.equal(existsSync(join(VIEWS, 'tool-activity-model.ts')), false, '옛 사본이 되살아나면 웹과 규칙이 갈라진다')
+})
+
+test('데스크톱 경로로 불러도 id 없는 이벤트는 예전처럼 접힌다', () => {
   const steps = collapseToolSteps([
     ev('Bash', 'tool_call'), ev('Bash', 'tool_start'), ev('Bash', 'tool_error'),
     ev('DocAnalyze', 'tool_call'), ev('DocAnalyze', 'tool_result'),
   ])
-  assert.equal(steps.length, 2, '도구 2종 → 단계 2개')
-  assert.deepEqual(steps[0], ev('Bash', 'tool_error'))
-  assert.deepEqual(steps[1], ev('DocAnalyze', 'tool_result'))
-})
-
-test('스크린샷 시나리오(30 이벤트)가 도구 수만큼으로 접힌다', () => {
-  const names = ['Bash', 'mcp__connector__Bash', 'mcp__connector__DocAnalyze',
-    'mcp__connector__DocGuide', 'mcp__connector__DocBuild', 'mcp__connector__DocAnalyze',
-    'mcp__connector__DocGuide', 'mcp__connector__DocXmlRead', 'mcp__connector__Bash', 'Write']
-  const events = names.flatMap((n) => [ev(n, 'tool_call'), ev(n, 'tool_start'), ev(n, 'tool_result')])
-  assert.equal(events.length, 30)
-  assert.equal(collapseToolSteps(events).length, names.length, '30칩 벽 → 도구 단계 10개')
-})
-
-test('같은 도구가 떨어져서 다시 쓰이면 별도 단계다', () => {
-  const steps = collapseToolSteps([ev('Bash', 'tool_result'), ev('Write', 'tool_result'), ev('Bash', 'tool_call')])
-  assert.equal(steps.length, 3)
-})
-
-test('전진 규칙: 최신이면 대기, 조금 밀리면 한 칸, 많이 밀리면 최신으로 점프', () => {
-  assert.equal(nextToolIndex(4, 5), 4, '최신 표시 중이면 그대로')
-  assert.equal(nextToolIndex(0, 2), 1, '한 단계 밀림 → +1 (교체가 보이게)')
-  assert.equal(nextToolIndex(0, 4), 1, '3단계 밀림(경계) → +1')
-  assert.equal(nextToolIndex(0, 12), 11, '많이 밀리면 최신으로 점프 (슥 지나감)')
-  assert.equal(nextToolIndex(9, 12), 10, '2단계 밀림 → +1')
-  assert.equal(nextToolIndex(0, 5), 4, '4단계 밀림 → 점프')
-})
-
-test('빈 목록/범위 밖 인덱스에서도 안전하다', () => {
-  assert.equal(nextToolIndex(0, 0), 0)
-  assert.equal(nextToolIndex(99, 3), 2)
-  assert.deepEqual(collapseToolSteps([]), [])
+  assert.deepEqual(steps, [ev('Bash', 'tool_error'), ev('DocAnalyze', 'tool_result')])
+  assert.equal(nextToolIndex(0, 12), 11)
 })
 
 // 회귀: 탭 전환으로 이미 끝난 메시지에 ToolActivity 가 새로 마운트될 때, "표시 대상 갱신"
@@ -52,7 +34,6 @@ test('빈 목록/범위 밖 인덱스에서도 안전하다', () => {
 // 실제 렌더 테스트는 이 저장소에 React 테스트 하네스가 없어 대신 소스 계약으로 고정한다
 // (tool-log.test.ts 가 이미 쓰는 패턴).
 test('회귀: 표시 대상 갱신 이펙트는 streaming 이 아니면 아무것도 켜지 않는다(탭 전환 시 옛 칩 번쩍임 방지)', () => {
-  const chat = readFileSync(join(__dirname, '..', 'src/renderer/src/views/Chat.tsx'), 'utf8')
   const effect = /useEffect\(\(\) => \{\s*if \(!streaming\) return;\s*const target = steps\[/
-  assert.match(chat, effect, 'streaming 가드가 target 계산보다 먼저 와야 마운트 시 번쩍임이 없다')
+  assert.match(CHAT, effect, 'streaming 가드가 target 계산보다 먼저 와야 마운트 시 번쩍임이 없다')
 })

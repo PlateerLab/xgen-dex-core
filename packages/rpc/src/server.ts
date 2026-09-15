@@ -378,13 +378,13 @@ export class DexRpcServer {
         const active = streamId ? this.activeChats.get(streamId) : undefined;
         // 이 프로세스가 안 도는 대화도 멈출 수 있다 — 다른 기기에서 시작한 턴.
         const interactionId = optionalString(params, 'interactionId') ?? active?.interactionId;
-        active?.controller.abort();
         if (!interactionId) return { cancelled: !!active, stopped: false, reason: 'not_running' };
         const result = await this.engine.stopChat(
           interactionId,
           optionalString(params, 'profile') ?? active?.profile,
         );
-        return { cancelled: !!active, ...result };
+        if (result.stopped || result.reason === 'not_running') active?.controller.abort();
+        return { cancelled: !!active && active.controller.signal.aborted, ...result };
       }
       case 'history/snapshot':
         return this.engine.historySnapshot(

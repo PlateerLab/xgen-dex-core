@@ -732,6 +732,7 @@ test('[정지] 는 스트림을 끊는 것으로 그치지 않고 서버 실행�
 
   store.stop(key)
   assert.equal(streams[0].cancelled, true)
+  await flush()
   // abort 만 하면 버려진 턴이 끝까지 돌아 이 대화에 답을 적는다.
   assert.equal(streams[0].stopped, true)
   assert.deepEqual(stopCalls, [key])
@@ -757,6 +758,8 @@ test('다른 곳에서 도는 턴은 이어보기로 열 때 [진행 중] 으로
 
   // 이 창이 스트림을 쥐고 있지 않아도 [정지] 는 대화를 향해 닿는다.
   store.stop('int-live')
+  assert.equal(store.get('int-live')?.remote, true)
+  await flush()
   assert.equal(store.get('int-live')?.remote, false)
 })
 
@@ -958,4 +961,22 @@ test('missing workspace uploader reports an error instead of dropping a file', (
   store.send(key, 'read this', null, [{ dataUrl: 'data:application/json;base64,e30=', name: 'data.json', mime: 'application/json', size: 2, kind: 'file' }])
   assert.equal(streams.length, 0)
   assert.equal(store.get(key)!.messages.at(-1)!.error, true)
+})
+
+
+test('stop ignores late callbacks from the previous stream after continuing', async () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, 'first')
+  store.stop(key)
+  store.send(key, 'too early')
+  assert.equal(streams.length, 1)
+  await flush()
+  store.send(key, 'continue')
+  assert.equal(streams.length, 2)
+  streams[1].onEvent({ kind: 'text', content: 'new answer' })
+  streams[0].onEvent({ kind: 'text', content: 'stale answer' })
+  streams[0].onEvent({ kind: 'end' })
+  assert.equal(store.get(key)!.messages.at(-1)!.text, 'new answer')
+  assert.equal(store.get(key)!.streaming, true)
 })

@@ -238,7 +238,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
   let closedByUser = false;
   let attempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let pending: { cb: ExecCallbacks; resolve: () => void; reject: (e: Error) => void } | null = null;
+  let pending: { error?: Error; cb: ExecCallbacks; resolve: () => void; reject: (e: Error) => void } | null = null;
 
   const setState = (s: ChatWsState): void => {
     if (state === s) return;
@@ -290,7 +290,9 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       scheduleReconnect();
       return;
     }
+    const socket = ws;
     ws.onopen = () => {
+      if (ws !== socket || closedByUser) return;
       opts.log?.(`채팅 WS 연결 (${opts.workflowId})`);
       attempts = 0;
       subscribed = false;
@@ -310,6 +312,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       );
     };
     ws.onmessage = (evt: MessageEvent) => {
+      if (ws !== socket || closedByUser) return;
       let frame: { type?: string; data?: Record<string, unknown> };
       try {
         frame = JSON.parse(String(evt.data));
@@ -399,7 +402,26 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         frame.type === 'exec_error' ||
         frame.type === 'exec_stopped'
       ) {
-        if (!pending) opts.onRunning?.(false);
+        const p = pending;
+        pending = null;
+        opts.onRunning?.(false);
+        if (p) {
+          if (frame.type === 'exec_error' || p.error) {
+            const message = p.error?.message || String(frame.data?.detail || frame.data?.error || '실행 오류');
+            if (!p.error) p.cb.onError?.(message);
+            p.reject(new Error(message));
+          } else {
+            if (frame.type === 'exec_stopped' && typeof frame.data?.note === 'string') {
+              p.cb.onData?.(`\n\n${frame.data.note}`);
+            }
+            p.cb.onEnd?.();
+            p.resolve();
+          }
+        }
+        return;
+      }
+      if (frame.type === 'error') {
+        failPending(String(frame.data?.detail || frame.data?.error || '실행 오류'));
         return;
       }
       if (frame.type === 'exec' && frame.data) {
@@ -409,22 +431,16 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
           (frame.data as { data?: Record<string, unknown> }).data,
           pending.cb,
         );
-        if (terminal === 'end') {
-          const p = pending;
-          pending = null;
-          p.cb.onEnd?.();
-          p.resolve();
-        } else if (terminal === 'error') {
-          const p = pending;
-          pending = null;
-          p.reject(new Error('execution error'));
-        }
+        // The envelope acknowledgement follows persistence/teardown. An
+        // inner end/error is still part of this execution, not admission for another.
+        if (terminal === 'error') pending.error = new Error('execution error');
       }
     };
     ws.onerror = () => {
       /* onclose 가 뒤따른다 */
     };
     ws.onclose = (evt: CloseEvent) => {
+      if (ws !== socket) return;
       opts.log?.(`채팅 WS 종료 code=${evt?.code ?? '?'} (${opts.workflowId})`);
       // 소켓이 끊겼다고 **턴이 실패한 것이 아니다.** 서버 실행은 연결이 아니라
       // 대화에 매여 있어서 그 턴은 계속 돈다 — 사용자가 [정지] 를 누르지 않는 한.
@@ -453,24 +469,28 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
           return;
         }
         pending = { cb: this._cb ?? {}, resolve, reject };
-        ws.send(
-          JSON.stringify({
-            type: 'execute',
-            data: {
-              input_data: attachments.length ? { input_str: input, attachments } : input,
-              selected_files: [],
-              additional_params: {},
-              // 모바일 도구 주입 게이트 — connector 표면이어야 커넥터-호스팅
-              // MCP 카탈로그(모바일 도구)가 에이전트에 노출된다.
-              client_surface: 'connector',
-              // 이 화면의 표식 — 서버가 이 턴의 전파를 여기로 되돌리지 않는다.
-              origin_id: originId,
-              ...(opts.clientDeviceId ? { client_device_id: opts.clientDeviceId } : {}),
-              // 실행은 항상 서버 sandbox — 모바일에는 로컬 실행이 없다.
-              execution_target: 'sandbox',
-            },
-          }),
-        );
+        try {
+          ws.send(
+            JSON.stringify({
+              type: 'execute',
+              data: {
+                input_data: attachments.length ? { input_str: input, attachments } : input,
+                selected_files: [],
+                additional_params: {},
+                // 모바일 도구 주입 게이트 — connector 표면이어야 커넥터-호스팅
+                // MCP 카탈로그(모바일 도구)가 에이전트에 노출된다.
+                client_surface: 'connector',
+                // 이 화면의 표식 — 서버가 이 턴의 전파를 여기로 되돌리지 않는다.
+                origin_id: originId,
+                ...(opts.clientDeviceId ? { client_device_id: opts.clientDeviceId } : {}),
+                // 실행은 항상 서버 sandbox — 모바일에는 로컬 실행이 없다.
+                execution_target: 'sandbox',
+              },
+            }),
+          );
+        } catch (error) {
+          failPending(error instanceof Error ? error.message : '메시지를 보내지 못했습니다.');
+        }
       });
     },
     stop() {

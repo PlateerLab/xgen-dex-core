@@ -264,11 +264,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.status = '응답을 중지하는 중...';
     this.postState();
     try {
-      await this.service.request('chat/stop', {
+      const result = await this.service.request<{ stopped: boolean; reason?: string }>('chat/stop', {
         ...this.activeProfileParams(),
         ...(this.streamId ? { streamId: this.streamId } : {}),
         ...(this.interactionId ? { interactionId: this.interactionId } : {}),
       });
+      if (!result.stopped && result.reason !== 'not_running') {
+        this.status = '중단을 확인하지 못했습니다. 실행 상태를 확인한 뒤 다시 시도해 주세요.';
+        this.postState();
+        return;
+      }
     } catch (error) {
       this.status = `중지하지 못했습니다: ${errorMessage(error)}`;
       this.postState();

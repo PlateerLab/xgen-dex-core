@@ -253,6 +253,8 @@ function attachmentBytes(dataUrl: string): { mimeType: string; bytes: Uint8Array
 
 /** Per-session mutable runtime kept out of the public snapshot. */
 interface Runtime {
+  turnToken?: object;
+  stopping?: boolean;
   cancel: (() => void) | null;
   /** 사람이 누른 [정지] 를 서버에 전하는 길 (stream 핸들이 준다). */
   stopServer: ((interactionId: string) => Promise<unknown>) | null;
@@ -645,7 +647,9 @@ export class SessionStore {
     );
     // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
     // 두 실행이 겹치고, 두 답이 서로를 덮어쓴다. 멈추려면 [정지] 를 눌러야 한다.
-    if (!s || !rt || s.streaming || s.remote || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
+    if (!s || !rt || rt.stopping || s.streaming || s.remote || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
+    const turnToken = {};
+    rt.turnToken = turnToken;
     rt.tools = [];
     rt.citations = [];
     const userMsg: ChatMsg = {
@@ -709,7 +713,7 @@ export class SessionStore {
           input: preparedInput,
           interactionId: s.interactionId,
         },
-        (ev) => this.onEvent(key, ev),
+        (ev) => { if (rt.turnToken === turnToken) this.onEvent(key, ev); },
         { browserSelections },
       );
       rt.cancel = handle.cancel;
@@ -869,6 +873,9 @@ export class SessionStore {
    */
   stop(key: string): void {
     const rt = this.rt.get(key);
+    if (!rt || rt.stopping) return;
+    const token = {};
+    rt.turnToken = token; // discard queued callbacks from the stopped stream
     const interactionId = this.map.get(key)?.interactionId ?? key;
     const stopServer = rt?.stopServer ?? this.transport.stopChat ?? null;
     rt?.cancel?.();
@@ -878,7 +885,24 @@ export class SessionStore {
     }
     // 서버에 닿지 못해도 화면은 멈춘 것으로 둔다 — 되돌리면 사용자가 누른
     // 버튼이 되살아나는 것처럼 보인다.
-    if (stopServer) void Promise.resolve(stopServer(interactionId)).catch(() => undefined);
+    rt.stopping = !!stopServer;
+    if (stopServer) {
+      void Promise.resolve().then(() => stopServer(interactionId)).then((result) => {
+        if (rt.turnToken !== token || this.rt.get(key) !== rt) return;
+        const outcome = result as { stopped?: boolean; reason?: string } | undefined;
+        const stopped = outcome?.stopped !== false || outcome.reason === 'not_running';
+        rt.stopping = false;
+        this.patch(key, (s) => ({ ...s, remote: !stopped,
+          error: stopped ? null : '중단을 확인하지 못했습니다. 실행 상태를 확인한 뒤 다시 시도해 주세요.' }));
+        this.emit();
+      }).catch(() => {
+        if (rt.turnToken !== token || this.rt.get(key) !== rt) return;
+        rt.stopping = false;
+        this.patch(key, (s) => ({ ...s, remote: true,
+          error: '중단 요청을 보내지 못했습니다. 연결 상태를 확인해 주세요.' }));
+        this.emit();
+      });
+    }
     this.patch(key, (s) => {
       const messages = s.messages.slice();
       const last = messages[messages.length - 1];
@@ -896,7 +920,7 @@ export class SessionStore {
           text: last.text || INTERRUPTED_NOTE,
         };
       }
-      return { ...s, messages, streaming: false, remote: false, updatedAt: this.now() };
+      return { ...s, messages, streaming: false, remote: !!stopServer, updatedAt: this.now() };
     });
     this.emit();
   }

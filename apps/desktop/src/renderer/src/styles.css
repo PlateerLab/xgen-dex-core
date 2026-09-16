@@ -7861,42 +7861,55 @@ button.sm {
   border-color: var(--accent, #4f8cff);
 }
 
-/* 새 에이전트 만들기 화면 */
+/* 새 에이전트 만들기 화면 — 넓은 탭 한가운데 카드 하나. 정할 것은 이름과 모델뿐이므로
+   나머지는 눈에 덜 띄게 두고, 만들 수 있는 상태인지 버튼 아래 한 줄로 알려 준다. */
 .agent-create {
-  max-width: 620px;
+  width: 100%;
+  max-width: 600px;
   margin: 0 auto;
-  padding: 28px 24px 40px;
+  padding: 56px 24px 48px;
   overflow-y: auto;
+}
+.agent-create-card {
+  padding: 28px 28px 22px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.07);
 }
 .agent-create header h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 .agent-create header p {
-  margin: 6px 0 22px;
-  font-size: 12px;
-  line-height: 1.6;
+  margin: 8px 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
 }
 .agent-create .field {
   display: block;
-  margin-bottom: 14px;
+  margin: 0 0 16px;
 }
 .agent-create .field > span {
   display: block;
-  margin-bottom: 5px;
-  font-size: 12px;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
   font-weight: 600;
 }
 .agent-create .field input,
 .agent-create .field select,
 .agent-create .field textarea {
   width: 100%;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: 10px;
+  background: var(--input-bg);
   color: var(--text);
-  font-size: 13px;
+  font-size: 13.5px;
   font-family: inherit;
 }
 .agent-create .field small,
@@ -7904,27 +7917,50 @@ button.sm {
   display: block;
   margin-top: 4px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 .agent-create .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+  padding: 0;
+  border: 0;
 }
 .agent-create .link {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 10px 0 0;
   border: 0;
+  border-top: 1px solid var(--border-soft);
   background: none;
-  color: var(--accent, #4f8cff);
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 12px;
-  padding: 4px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.agent-create .link:hover {
+  color: var(--text);
+}
+.agent-create .link-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+.agent-create .link-note {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
 }
 .agent-create .advanced {
-  margin-top: 10px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  margin-top: 12px;
+  padding: 16px 16px 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--panel-2);
 }
 .agent-create .switch-field {
   display: flex;
@@ -7934,7 +7970,7 @@ button.sm {
 }
 .agent-create .switch-field b {
   display: block;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 .agent-create .actions {
   display: flex;
@@ -7943,25 +7979,46 @@ button.sm {
   margin-top: 22px;
 }
 .agent-create .actions .primary {
-  padding: 8px 18px;
+  flex: 1;
+  padding: 11px 18px;
   border: 0;
-  border-radius: 8px;
-  background: var(--accent, #4f8cff);
+  border-radius: 10px;
+  background: var(--primary-grad);
   color: #fff;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
+  box-shadow: 0 6px 16px rgba(48, 94, 235, 0.24);
+  transition:
+    filter 0.15s ease,
+    opacity 0.15s ease;
+}
+.agent-create .actions .primary:hover:not(:disabled) {
+  filter: brightness(1.06);
 }
 .agent-create .actions .primary:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
+  box-shadow: none;
   cursor: default;
 }
 .agent-create .actions .secondary {
+  padding: 11px 14px;
   border: 0;
+  border-radius: 10px;
   background: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 13.5px;
+}
+.agent-create .actions .secondary:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.agent-create-hint {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .agent-create .error {
   margin-top: 14px;

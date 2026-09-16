@@ -31,6 +31,26 @@ const ADVANCED_ORDER = [
   'base_url',
 ];
 
+/** 마지막에 고른 제공사·모델 — 매번 다시 고르지 않게 이 PC 에 기억한다(없으면 서버 기본값). */
+const PICK_KEY = 'dex.agentCreate.lastPick';
+
+function readPick(): { provider?: string; model?: string } {
+  try {
+    const raw = window.localStorage.getItem(PICK_KEY);
+    return raw ? (JSON.parse(raw) as { provider?: string; model?: string }) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePick(provider: string, model: string): void {
+  try {
+    window.localStorage.setItem(PICK_KEY, JSON.stringify({ provider, model }));
+  } catch {
+    // 기억만 못 할 뿐 만드는 데는 지장이 없다
+  }
+}
+
 function ordered(settings: AgentCreateSetting[]): AgentCreateSetting[] {
   const rank = (id: string) => {
     const i = ADVANCED_ORDER.indexOf(id);
@@ -63,11 +83,18 @@ export function AgentCreate({ onCreated, onClose }: AgentCreateProps) {
       .then((data) => {
         if (cancelled) return;
         setOptions(data);
+        const saved = readPick();
         const first =
-          data.providers.find((p) => p.value === data.defaultProvider) ?? data.providers[0];
+          data.providers.find((p) => p.value === saved.provider) ??
+          data.providers.find((p) => p.value === data.defaultProvider) ??
+          data.providers[0];
         if (first) {
           setProvider(first.value);
-          setModel(first.defaultModel || first.models[0]?.value || '');
+          const savedModel =
+            saved.provider === first.value && first.models.some((m) => m.value === saved.model)
+              ? saved.model
+              : '';
+          setModel(savedModel || first.defaultModel || first.models[0]?.value || '');
         }
       })
       .catch((err: unknown) => {
@@ -104,6 +131,7 @@ export function AgentCreate({ onCreated, onClose }: AgentCreateProps) {
     setError(null);
     try {
       const created = await xgen.agents.create({ name: trimmed, provider, model, settings });
+      writePick(provider, model);
       onCreated(created);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -120,83 +148,100 @@ export function AgentCreate({ onCreated, onClose }: AgentCreateProps) {
   if (loadError) {
     return (
       <div className="agent-create">
-        <p className="error">{loadError}</p>
-        <button className="secondary" onClick={onClose}>
-          닫기
-        </button>
+        <div className="agent-create-card">
+          <p className="error">{loadError}</p>
+          <div className="actions">
+            <button className="secondary" onClick={onClose}>
+              닫기
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="agent-create">
-      <header>
-        <h1>새 에이전트</h1>
-        <p className="muted">
-          이름과 모델만 정하면 됩니다. 도구·기억·자기진화는 이미 안에 있고, 나머지는 만든 뒤
-          에이전트와 대화하며 채워 나갑니다.
-        </p>
-      </header>
+      <div className="agent-create-card">
+        <header>
+          <h1>새 에이전트</h1>
+          <p className="muted">
+            이름과 모델만 정하면 됩니다. 도구·기억·자기진화는 이미 안에 있고, 나머지는 만든 뒤
+            에이전트와 대화하며 채워 나갑니다.
+          </p>
+        </header>
 
-      <label className="field">
-        <span>에이전트 이름</span>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="예: 영업 리서치 도우미"
-          autoFocus
-        />
-      </label>
-
-      <div className="field-row">
         <label className="field">
-          <span>AI 제공사</span>
-          <select value={provider} onChange={(e) => changeProvider(e.target.value)} disabled={!options}>
-            {(options?.providers ?? []).map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+          <span>에이전트 이름</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="예: 영업 리서치 도우미"
+            autoFocus
+          />
         </label>
-        <label className="field">
-          <span>모델</span>
-          <select value={model} onChange={(e) => setModel(e.target.value)} disabled={!current}>
-            {(current?.models ?? []).map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
 
-      <button className="link" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>
-        {advanced ? '▾' : '▸'} 세부설정
-      </button>
-
-      {advanced && options && (
-        <div className="advanced">
-          {ordered(options.settings).map((setting) => (
-            <SettingField
-              key={setting.id}
-              setting={setting}
-              value={valueOf(setting)}
-              onChange={(v) => setSettings((prev) => ({ ...prev, [setting.id]: v }))}
-            />
-          ))}
+        <div className="field-row">
+          <label className="field">
+            <span>AI 제공사</span>
+            <select value={provider} onChange={(e) => changeProvider(e.target.value)} disabled={!options}>
+              {(options?.providers ?? []).map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>모델</span>
+            <select value={model} onChange={(e) => setModel(e.target.value)} disabled={!current}>
+              {(current?.models ?? []).map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
-      )}
 
-      {error && <p className="error">{error}</p>}
+        <button className="link" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>
+          <span className="link-caret" aria-hidden>
+            {advanced ? '▾' : '▸'}
+          </span>
+          세부설정
+          <span className="link-note">프롬프트·반복 한도·기억 같은 값을 미리 정할 때만</span>
+        </button>
 
-      <div className="actions">
-        <button className="primary" onClick={() => void submit()} disabled={busy || !options || !name.trim()}>
-          {busy ? '만드는 중…' : '다음'}
-        </button>
-        <button className="secondary" onClick={onClose}>
-          취소
-        </button>
+        {advanced && options && (
+          <div className="advanced">
+            {ordered(options.settings).map((setting) => (
+              <SettingField
+                key={setting.id}
+                setting={setting}
+                value={valueOf(setting)}
+                onChange={(v) => setSettings((prev) => ({ ...prev, [setting.id]: v }))}
+              />
+            ))}
+          </div>
+        )}
+
+        {error && <p className="error">{error}</p>}
+
+        <div className="actions">
+          <button className="primary" onClick={() => void submit()} disabled={busy || !options || !name.trim()}>
+            {busy ? '만드는 중…' : '만들고 대화 시작'}
+          </button>
+          <button className="secondary" onClick={onClose}>
+            취소
+          </button>
+        </div>
+        <p className="agent-create-hint">
+          {!options
+            ? '모델 목록을 불러오는 중입니다.'
+            : !name.trim()
+              ? '이름을 입력하면 만들 수 있습니다.'
+              : '만들면 바로 이 에이전트와의 대화가 열립니다.'}
+        </p>
       </div>
     </div>
   );

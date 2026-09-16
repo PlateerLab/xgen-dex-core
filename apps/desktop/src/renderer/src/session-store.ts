@@ -35,7 +35,7 @@ import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
 import { attachTurnProcesses, browserStorage, rememberTurnProcess, type KeyValueStorage } from './turn-process-memory';
-import { workspacePathOf } from './views/attachment-model';
+import { workspaceFileName, workspacePathOf } from './views/attachment-model';
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -792,7 +792,8 @@ export class SessionStore {
             workflowId: s.agent.workflowId,
             interactionId: s.interactionId,
             attachmentId,
-            name: image.name || `image-${index + 1}.png`,
+            // 맥이 준 NFD 이름 그대로 올리면 에이전트가 같은 이름을 다시 적었을 때 못 찾는다
+            name: workspaceFileName(image.name || `image-${index + 1}.png`),
             mimeType: decoded.mimeType,
             bytes: decoded.bytes,
           });

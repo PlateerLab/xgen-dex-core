@@ -30,6 +30,18 @@ const TONES: Array<[FileTone, RegExp]> = [
   ['code', /^(json|ya?ml|xml|html?|js|ts|py|sql|sh)$/],
 ];
 
+/**
+ * 작업 공간에 올릴 파일 이름 — 한글은 **NFC** 로 맞춘다.
+ *
+ * 맥은 파일 이름을 NFD(자모 분리)로 준다. 그대로 올리면 작업 공간에도 NFD 로 남는데, 모델이 답이나
+ * 다음 도구 호출에서 같은 이름을 다시 적으면 NFC 가 되어 리눅스 파일 시스템에서는 **다른 파일**이 된다.
+ * 에이전트가 첨부한 PDF 를 "이전 세션 종료로 사라졌다" 며 재첨부를 요구하던 자리다(2026-09-16 실측:
+ * 같은 경로를 NFD 로 읽으면 6,309,402 바이트, NFC 로 읽으면 실패).
+ */
+export function workspaceFileName(name: string): string {
+  return name.normalize('NFC');
+}
+
 /** 대화창에 바로 그려 줄 그림인가 — 받아서 여는 게 아니라 보이는 게 맞는 파일. */
 export function isImageFile(name: string, mime = ''): boolean {
   return fileBadge(name, mime).tone === 'image';

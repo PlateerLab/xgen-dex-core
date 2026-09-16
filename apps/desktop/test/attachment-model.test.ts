@@ -3,7 +3,12 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileBadge, isImageFile, workspacePathOf } from '../src/renderer/src/views/attachment-model';
+import {
+  fileBadge,
+  isImageFile,
+  workspaceFileName,
+  workspacePathOf,
+} from '../src/renderer/src/views/attachment-model';
 
 test('서버 이력의 버킷 접두사와 workspace/ 를 걷어 작업 공간 기준 경로로', () => {
   assert.equal(
@@ -20,6 +25,16 @@ test('비었거나 상위 폴더로 나가는 경로는 쓰지 않는다', () =>
   assert.equal(workspacePathOf(undefined), undefined);
   assert.equal(workspacePathOf('bucket:'), undefined);
   assert.equal(workspacePathOf('uploads/../../etc/passwd'), undefined);
+});
+
+test('작업 공간에 올릴 한글 이름은 NFC 로 맞춘다', () => {
+  // 맥이 주는 이름(NFD)과 모델이 다시 적는 이름(NFC)은 바이트가 다르다 — 리눅스에선 다른 파일이다
+  const macName = '위해상품_공표문_85개.pdf'.normalize('NFD');
+  const modelName = '위해상품_공표문_85개.pdf'.normalize('NFC');
+  assert.notEqual(macName, modelName);
+  assert.equal(workspaceFileName(macName), modelName);
+  assert.equal(workspaceFileName(modelName), modelName);
+  assert.equal(workspaceFileName('report.pdf'), 'report.pdf');
 });
 
 test('그림 파일은 대화창에 바로 그린다', () => {

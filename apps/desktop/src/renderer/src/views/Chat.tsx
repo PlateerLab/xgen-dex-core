@@ -36,6 +36,7 @@ import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
 import { requestBefore } from './turn-files-model';
 import { MessageFiles } from './MessageFiles';
+import { useStickToBottom } from './chat-scroll';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -44,6 +45,7 @@ import {
   BellIcon,
   BellOffIcon,
   ChatIcon,
+  ChevronDownIcon,
   CloseIcon,
   CopyIcon,
   DocIcon,
@@ -453,9 +455,8 @@ export const Chat: React.FC<{
     };
   }, [mcpDebug]);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+  // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll)
+  const { showJump, jumpToBottom } = useStickToBottom(scrollRef, messages, session.key);
 
   useEffect(() => {
     const ta = taRef.current;
@@ -684,6 +685,8 @@ export const Chat: React.FC<{
         width: selection.image.width,
         height: selection.image.height,
       }));
+      // 보낼 때는 항상 맨 아래로 내려가 답이 나오는 것을 보여 준다(위를 읽던 중이었어도).
+      jumpToBottom(false);
       // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
       // 답변은 백그라운드에서 계속 도착한다.
       sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections, () => {
@@ -693,7 +696,7 @@ export const Chat: React.FC<{
         replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
       });
     },
-    [session.key, screenCaptureOn],
+    [session.key, screenCaptureOn, jumpToBottom],
   );
 
   const send = useCallback(
@@ -1400,6 +1403,17 @@ export const Chat: React.FC<{
               );
             })()
           ))
+        )}
+        {showJump && (
+          <button
+            type="button"
+            className="chat-jump"
+            onClick={() => jumpToBottom(true)}
+            title="맨 아래로"
+            aria-label="맨 아래로 내려가 답을 따라갑니다"
+          >
+            <ChevronDownIcon size={18} />
+          </button>
         )}
       </div>
 

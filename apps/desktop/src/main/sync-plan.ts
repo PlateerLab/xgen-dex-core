@@ -44,11 +44,21 @@ export interface RemoteFile {
 }
 export type RemoteState = Map<string, RemoteFile>;
 
+/**
+ * 로컬 파일 시스템 워처가 실제 unlink 사건을 관찰해 남긴 삭제 의도다.
+ * 단순 스캔 누락은 이 값이 없으므로 서버 삭제로 승격되지 않는다.
+ */
+export interface DeleteIntent {
+  id: string;
+  baseSha: string;
+  observedAt: number;
+}
+
 export type SyncAction =
   | { kind: 'download'; path: string; sha: string }
   | { kind: 'delete-local'; path: string }
   | { kind: 'upload'; path: string; baseSha: string }
-  | { kind: 'delete-remote'; path: string; baseSha: string }
+  | { kind: 'delete-remote'; path: string; baseSha: string; intentId: string }
   | {
       /** 양쪽이 다르게 변했다 — 서버를 채택하고 로컬을 충돌 사본으로 남긴다. */
       kind: 'conflict';
@@ -69,7 +79,12 @@ export type SyncAction =
  * 3-way 판정. remote 는 **전체 상태**여야 한다 (델타는 호출 전에 base 위에
  * 얹어 전체로 만든다 — 엔진의 몫).
  */
-export function planSync(base: BaseState, local: LocalState, remote: RemoteState): SyncAction[] {
+export function planSync(
+  base: BaseState,
+  local: LocalState,
+  remote: RemoteState,
+  deleteIntents: ReadonlyMap<string, DeleteIntent> = new Map(),
+): SyncAction[] {
   const out: SyncAction[] = [];
   const paths = new Set<string>([...base.keys(), ...local.keys(), ...remote.keys()]);
   for (const path of paths) {
@@ -81,6 +96,19 @@ export function planSync(base: BaseState, local: LocalState, remote: RemoteState
     const localDeleted = !l && !!b;
     const remoteChanged = !!r && (!b || r.sha !== b.sha);
     const remoteDeleted = !r && !!b;
+
+    const intent = deleteIntents.get(path);
+    const explicitDelete = !!(
+      b && r && intent && intent.baseSha === b.sha && r.sha === b.sha
+      && (!l || (l.sha === b.sha && l.mtimeMs <= intent.observedAt))
+    );
+    if (explicitDelete) {
+      // 삭제 직후 현재 사이클이 서버 원본을 다시 내려받은 경합도 intent가
+      // 이긴다. 자동 다운로드는 서버 mtime을 유지하므로 사용자 재작성과
+      // 구분되며, 실행기는 복원된 로컬 사본도 함께 걷는다.
+      out.push({ kind: 'delete-remote', path, baseSha: b!.sha, intentId: intent!.id });
+      continue;
+    }
 
     if (l && r && l.sha === r.sha) {
       // 내용 합의 — base 가 뒤처졌으면 맞춘다.
@@ -118,7 +146,11 @@ export function planSync(base: BaseState, local: LocalState, remote: RemoteState
       continue;
     }
     if (localDeleted) {
-      if (r) out.push({ kind: 'delete-remote', path, baseSha: b!.sha });
+      if (r) {
+        // 스캔에서 안 보였다는 사실은 삭제 명령이 아니다. 마운트 이탈, 권한
+        // 오류, 스캔 중 경합도 모두 여기로 온다. 서버 원본으로 복구한다.
+        out.push({ kind: 'download', path, sha: r.sha });
+      }
       else out.push({ kind: 'forget', path });
       continue;
     }

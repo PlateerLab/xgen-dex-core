@@ -30,7 +30,7 @@
  */
 import { watch, type FSWatcher } from 'chokidar';
 import { existsSync, readdirSync, rmSync } from 'fs';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { diag } from './diag-log';
 import { SyncPair, type SyncProgress, type SyncRemote, type SyncReport } from './local-sync';
 import { pickFolderName, safeName } from './local-sync-folder';
@@ -345,7 +345,20 @@ export class LocalSyncManager {
           ignored: /(^|[/\\])(\.git|node_modules|__pycache__|\.venv|\.xgeny-session)([/\\]|$)/,
           awaitWriteFinish: { stabilityThreshold: 700, pollInterval: 150 },
         });
-        l.watcher.on('all', () => this.schedule(id, WATCH_DEBOUNCE_MS));
+        l.watcher.on('all', (event, changedPath) => {
+          if (event !== 'unlink') {
+            this.schedule(id, WATCH_DEBOUNCE_MS);
+            return;
+          }
+          const rel = relative(l.dir, changedPath).split('\\').join('/');
+          // 삭제 의도 장부가 디스크에 확정된 뒤에만 사이클을 예약한다.
+          void l.pair
+            .recordLocalDelete(rel)
+            .catch((e) =>
+              diag('local-sync', `삭제 의도 기록 실패 ${l.target.label}/${rel}: ${(e as Error).message}`),
+            )
+            .finally(() => this.schedule(id, WATCH_DEBOUNCE_MS));
+        });
         l.watcher.on('error', (e) =>
           diag('local-sync', `워처 오류 ${l.target.label}: ${(e as Error).message}`),
         );

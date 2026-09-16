@@ -47,7 +47,11 @@ export interface Transport {
   download(path: string, toAbs: string): Promise<void>
   /** 정확한 경로에 PUT. 새 sha 반환, 409 면 SyncConflictError. */
   put(path: string, fromAbs: string, baseSha: string): Promise<{ sha256: string }>
-  del(path: string, baseSha?: string, opts?: { force?: boolean }): Promise<void>
+  del(
+    path: string,
+    baseSha?: string,
+    opts?: { force?: boolean; intentId?: string },
+  ): Promise<void>
   mkdir(path: string): Promise<void>
 }
 

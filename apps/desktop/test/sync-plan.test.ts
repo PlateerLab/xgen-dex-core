@@ -16,11 +16,19 @@ import {
 const sig = (sha: string) => ({ sha, size: 1, mtimeMs: 1000 });
 const rf = (sha: string) => ({ sha, size: 1, mtimeMs: 1000 });
 
-function plan(b: Record<string, string>, l: Record<string, string>, r: Record<string, string>) {
+function plan(
+  b: Record<string, string>,
+  l: Record<string, string>,
+  r: Record<string, string>,
+  deleted: string[] = [],
+) {
   const base: BaseState = new Map(Object.entries(b).map(([p, s]) => [p, sig(s)]));
   const local: LocalState = new Map(Object.entries(l).map(([p, s]) => [p, sig(s)]));
   const remote: RemoteState = new Map(Object.entries(r).map(([p, s]) => [p, rf(s)]));
-  return planSync(base, local, remote).sort((x, y) => x.path.localeCompare(y.path));
+  const intents = new Map(
+    deleted.map((path) => [path, { id: `intent-${path}`, baseSha: b[path], observedAt: 1 }]),
+  );
+  return planSync(base, local, remote, intents).sort((x, y) => x.path.localeCompare(y.path));
 }
 
 test('삼자 일치는 아무 것도 하지 않는다', () => {
@@ -58,9 +66,32 @@ test('무한 부활 방지 — 서버가 지운 파일은 로컬을 지우지, �
   ]);
 });
 
-test('로컬이 지운 파일은 서버에서도 지운다 (base_sha 로 안전하게)', () => {
+test('명시적 unlink 의도가 있는 로컬 삭제만 서버에서도 지운다', () => {
+  assert.deepEqual(plan({ 'a.md': 'x' }, {}, { 'a.md': 'x' }, ['a.md']), [
+    { kind: 'delete-remote', path: 'a.md', baseSha: 'x', intentId: 'intent-a.md' },
+  ]);
+});
+
+test('삭제 직후 자동 복구된 같은 파일보다 명시적 unlink 의도가 우선한다', () => {
+  const base: BaseState = new Map([['a.md', sig('x')]]);
+  const local: LocalState = new Map([['a.md', sig('x')]]);
+  const remote: RemoteState = new Map([['a.md', rf('x')]]);
+  assert.deepEqual(planSync(base, local, remote, new Map([
+    ['a.md', { id: 'intent-race', baseSha: 'x', observedAt: 2000 }],
+  ])), [
+    { kind: 'delete-remote', path: 'a.md', baseSha: 'x', intentId: 'intent-race' },
+  ]);
+});
+
+test('스캔 누락은 삭제가 아니다 — 서버 원본을 다시 내려받는다', () => {
   assert.deepEqual(plan({ 'a.md': 'x' }, {}, { 'a.md': 'x' }), [
-    { kind: 'delete-remote', path: 'a.md', baseSha: 'x' },
+    { kind: 'download', path: 'a.md', sha: 'x' },
+  ]);
+});
+
+test('낡은 삭제 의도는 서버의 새 버전을 삭제하지 않는다', () => {
+  assert.deepEqual(plan({ 'a.md': 'x' }, {}, { 'a.md': 'y' }, ['a.md']), [
+    { kind: 'download', path: 'a.md', sha: 'y' },
   ]);
 });
 

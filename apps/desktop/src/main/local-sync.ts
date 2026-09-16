@@ -22,7 +22,7 @@
  *   · 내려받은 파일은 서버 mtime 으로 맞춘다 — 다음 스캔이 "방금 바뀐 파일"로
  *     오판해 재해시·재업로드하지 않게.
  */
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { createReadStream } from 'fs';
 import {
   chmod,
@@ -57,7 +57,11 @@ export interface SyncRemote {
   changes(since: number): Promise<ChangesResponse>;
   download(path: string, toAbs: string): Promise<void>;
   put(path: string, fromAbs: string, baseSha: string): Promise<{ sha256: string }>;
-  del(path: string, baseSha?: string, opts?: { force?: boolean }): Promise<void>;
+  del(
+    path: string,
+    baseSha?: string,
+    opts?: { force?: boolean; intentId?: string },
+  ): Promise<void>;
   mkdir(path: string): Promise<void>;
   /**
    * 빈 원격 폴더 정리 (best-effort, 선택 구현) — 로컬에서 폴더째 지워
@@ -142,6 +146,7 @@ export interface SyncReport {
 interface PersistedState {
   cursor: number;
   base: Record<string, FileSig>;
+  deleteIntents?: Record<string, { id: string; baseSha: string; observedAt: number }>;
 }
 
 const EMPTY_REPORT = (): SyncReport => ({
@@ -205,17 +210,14 @@ function sha256File(absPath: string): Promise<string> {
   });
 }
 
-/** 대량 삭제 보류 기준 — 이 개수 이상이면서 base 의 90% 이상이면 잡는다. */
-const MASS_DELETE_MIN = 10;
-
 export class SyncPair {
   private running: Promise<SyncReport> | null = null;
   private rerun = false;
   private disposed = false;
-  /** 다음 사이클 한 번에 한해 대량 삭제를 허용한다 (사용자 명시 동기화). */
-  private allowMassDeleteOnce = false;
   /** 마지막으로 저장한 서버 커서 — 이 프로세스에서 사이클이 돈 뒤에만 안다. */
   private lastCursor: number | null = null;
+  /** 상태 파일 read-modify-write 직렬화. 워처와 동기화 사이클의 덮어쓰기를 막는다. */
+  private stateQueue: Promise<void> = Promise.resolve();
 
   constructor(private deps: SyncPairDeps) {}
 
@@ -233,7 +235,9 @@ export class SyncPair {
    * 알림(WS·파일 워처)이 몰려도 사이클은 항상 한 줄이다.
    */
   sync(opts?: { allowMassDelete?: boolean }): Promise<SyncReport> {
-    if (opts?.allowMassDelete) this.allowMassDeleteOnce = true;
+    // allowMassDelete는 구 UI 호출 호환용이다. 삭제는 이제 개수 대신 파일별
+    // 명시 intent로만 허용되므로 이 플래그가 권한을 넓히지 않는다.
+    void opts;
     if (this.running) {
       this.rerun = true;
       return this.running;
@@ -258,6 +262,28 @@ export class SyncPair {
     this.disposed = true;
   }
 
+  /**
+   * chokidar 가 관찰한 실제 unlink 만 삭제 의도로 기록한다. 파일이 base 에
+   * 없으면 서버가 방금 내려 지운 파일이거나 아직 합의되지 않은 로컬 파일이므로
+   * 서버 삭제 명령을 만들지 않는다. 기록을 먼저 디스크에 확정한 뒤 동기화한다.
+   */
+  recordLocalDelete(path: string): Promise<boolean> {
+    if (!isSafeRelPath(path) || this.disposed) return Promise.resolve(false);
+    return this.updateState((state) => {
+      const base = state.base[path];
+      if (!base) return { state, result: false };
+      const intents = { ...(state.deleteIntents ?? {}) };
+      if (!intents[path] || intents[path].baseSha !== base.sha) {
+        intents[path] = {
+          id: randomUUID(),
+          baseSha: base.sha,
+          observedAt: this.deps.now?.() ?? Date.now(),
+        };
+      }
+      return { state: { ...state, deleteIntents: intents }, result: true };
+    });
+  }
+
   // ── 상태 파일 ────────────────────────────────────────────────────
   private async loadState(): Promise<PersistedState> {
     try {
@@ -266,7 +292,7 @@ export class SyncPair {
     } catch {
       /* 첫 실행 또는 깨진 상태 — 스냅숏부터 다시 */
     }
-    return { cursor: 0, base: {} };
+    return { cursor: 0, base: {}, deleteIntents: {} };
   }
 
   private async saveState(state: PersistedState): Promise<void> {
@@ -274,6 +300,29 @@ export class SyncPair {
     const tmp = `${this.deps.statePath}.tmp`;
     await writeFile(tmp, JSON.stringify(state), 'utf8');
     await rename(tmp, this.deps.statePath);
+  }
+
+
+  private updateState<T>(
+    fn: (state: PersistedState) => { state: PersistedState; result: T },
+  ): Promise<T> {
+    let resolveResult!: (value: T) => void;
+    let rejectResult!: (reason?: unknown) => void;
+    const result = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    this.stateQueue = this.stateQueue.then(async () => {
+      try {
+        const current = await this.loadState();
+        const next = fn(current);
+        if (next.state !== current) await this.saveState(next.state);
+        resolveResult(next.result);
+      } catch (error) {
+        rejectResult(error);
+      }
+    });
+    return result;
   }
 
   // ── 로컬 스캔 ────────────────────────────────────────────────────
@@ -354,8 +403,9 @@ export class SyncPair {
   private async cycle(): Promise<SyncReport> {
     const report = EMPTY_REPORT();
     await mkdir(this.deps.dir, { recursive: true });
-    const state = await this.loadState();
+    const state = await this.updateState((current) => ({ state: current, result: current }));
     const base: BaseState = new Map(Object.entries(state.base));
+    let deleteIntents = new Map(Object.entries(state.deleteIntents ?? {}));
 
     // 1. 서버 상태.
     this.progress('check', 0, 0);
@@ -386,35 +436,15 @@ export class SyncPair {
     this.progress('scan', 0, 0);
     const local = await this.scanLocal(base, ignores);
 
+    // 서버 조회·로컬 스캔 중 발생한 unlink도 이번 판정에 포함한다. 상태 파일
+    // 직렬화만으로는 긴 IO 구간의 사건을 놓칠 수 있으므로 계획 직전에 재조회한다.
+    const planningState = await this.updateState((current) => ({ state: current, result: current }));
+    deleteIntents = new Map(Object.entries(planningState.deleteIntents ?? {}));
+
     // 3. 실행 — plan 은 경로당 액션 하나라 순서 의존이 없다. 장부 갱신만
     // 하는 액션(adopt/forget)은 즉시, IO 액션은 **제한 병렬**로 돈다.
     // 직렬이면 파일 2000개 = 왕복 2000번이 그대로 벽시계가 된다 (실기).
-    let actions = planSync(base, local, remote);
-
-    // ── 대량 삭제 서킷브레이커 (서버 방향만) ────────────────────────
-    // **원본은 서버다** — 로컬 폴더는 저장소로 통하는 통로(미러)일 뿐이다.
-    // 그래서 서버→로컬 삭제는 항상 그대로 흐른다(서버가 비면 로컬도 빈다 —
-    // 그것이 미러다). 반대로 로컬이 "통째로 비어 보이는" 상태(마운트 이탈·
-    // 스캔 오류·실수 삭제)가 서버 원본을 쓸어버리는 것은 사고다: 파일 10개
-    // 이상이면서 base 의 90% 이상을 지우는 delete-remote 계획은 **보류**하고
-    // 사유를 남긴다 — 정말 의도한 전체 삭제라면 사용자의 [지금 동기화]
-    // (force)가 통과시킨다.
-    const allowMass = this.allowMassDeleteOnce;
-    this.allowMassDeleteOnce = false;
-    let massHeld = false;
-    if (!allowMass && base.size >= MASS_DELETE_MIN) {
-      const threshold = Math.max(MASS_DELETE_MIN, Math.floor(base.size * 0.9));
-      const planned = actions.filter((a) => a.kind === 'delete-remote').length;
-      if (planned >= threshold) {
-        actions = actions.filter((a) => a.kind !== 'delete-remote');
-        massHeld = true;
-        report.deferred += planned;
-        report.errors.push(
-          `대량 서버 삭제 보류: 로컬에서 파일 ${planned}개가 사라졌습니다 — 의도한 것이면 [지금 동기화]를 누르세요`,
-        );
-        diag('local-sync', `대량 delete-remote ${planned}건 보류 (base ${base.size})`);
-      }
-    }
+    const actions = planSync(base, local, remote, deleteIntents);
 
     this.progress('apply', 0, actions.length);
     let applied = 0;
@@ -443,15 +473,24 @@ export class SyncPair {
     });
 
     // 4. 커서·base 저장. (커서는 이번에 **본** 서버 상태까지만 전진한다)
-    // ⚠ 대량 삭제를 보류했으면 커서를 전진시키지 않는다 — 전진하면 다음
-    // 사이클이 같은 서버 상태를 "변경 없음"으로 읽어 보류분을 영원히 다시
-    // 못 본다 (force 사이클이 재계획할 근거가 사라진다).
-    const nextState: PersistedState = {
-      cursor: massHeld ? state.cursor : (res.latest_seq ?? state.cursor),
-      base: {},
-    };
-    for (const [p, s] of base) nextState.base[p] = s;
-    await this.saveState(nextState);
+    const nextCursor = res.latest_seq ?? state.cursor;
+    const nextState = await this.updateState((current) => {
+      const next: PersistedState = { cursor: nextCursor, base: {}, deleteIntents: {} };
+      for (const [p, s] of base) next.base[p] = s;
+      // 사이클 중 새로 기록된 의도는 보존한다. 이번 사이클에서 처리됐거나
+      // 로컬이 다시 생긴 의도만 제거한다. 실패한 삭제는 다음 사이클에 재시도한다.
+      for (const [p, intent] of Object.entries(current.deleteIntents ?? {})) {
+        const seenIntent = deleteIntents.get(p);
+        if (!seenIntent || seenIntent.id !== intent.id) {
+          next.deleteIntents![p] = intent;
+          continue;
+        }
+        const stillMissing = !local.has(p);
+        const stillBased = base.get(p)?.sha === intent.baseSha;
+        if (stillMissing && stillBased) next.deleteIntents![p] = intent;
+      }
+      return { state: next, result: next };
+    });
     this.lastCursor = nextState.cursor;
 
     if (
@@ -518,7 +557,23 @@ export class SyncPair {
         return;
       }
       case 'delete-remote': {
-        await this.meta(`delete ${a.path}`, this.deps.remote.del(a.path, a.baseSha));
+        // 계획 뒤 사용자가 같은 경로에 새 내용을 만들었으면 그 데이터를 먼저
+        // 보존한다. 존재하는 파일이 기준 SHA와 다르면 이번 삭제를 보류한다.
+        try {
+          const currentSha = await sha256File(this.abs(a.path));
+          if (currentSha !== a.baseSha) {
+            throw Object.assign(new Error('삭제 뒤 로컬 파일이 다시 변경되었습니다'), { status: 409 });
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        await this.meta(
+          `delete ${a.path}`,
+          this.deps.remote.del(a.path, a.baseSha, { intentId: a.intentId }),
+        );
+        // 삭제 직후 다른 사이클이 서버 원본을 다시 내려놓은 경합에서도 명시적
+        // unlink가 최종 상태다. 존재하지 않으면 no-op이다.
+        await removeLocalFile(this.abs(a.path));
         base.delete(a.path);
         report.deletedRemote++;
         // 로컬에서 폴더째 지운 경우 — 파일 삭제만으로는 서버(파일 저장소)에

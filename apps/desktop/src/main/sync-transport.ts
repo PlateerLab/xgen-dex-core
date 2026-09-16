@@ -203,10 +203,21 @@ export class FilestoreSyncTransport implements Transport {
     return (await res.json()) as { sha256: string }
   }
 
-  async del(path: string, baseSha?: string, opts?: { force?: boolean }): Promise<void> {
+  async del(
+    path: string,
+    baseSha?: string,
+    opts?: { force?: boolean; intentId?: string },
+  ): Promise<void> {
     const res = await transportFetch(
       this.auth,
-      this.url('/entry', { path, base_sha: baseSha ?? '', force: opts?.force ? 'true' : undefined }),
+      this.url('/entry', {
+        path,
+        base_sha: baseSha ?? '',
+        device: this.auth.deviceId,
+        device_name: this.auth.deviceName,
+        intent_id: opts?.intentId,
+        force: opts?.force ? 'true' : undefined,
+      }),
       { method: 'DELETE', headers: await authHeaders(this.auth) },
     )
     if (res.status === 409) {
@@ -471,7 +482,11 @@ export class HttpSyncTransport implements Transport {
    * dir_not_empty)를 돌려주었고, 그게 그대로 실패로 올라가 **드라이브에서
    * 지워도 파일이 그대로 남았다** (폴더 삭제는 항상 실패했다).
    */
-  async del(path: string, baseSha?: string, opts: { force?: boolean } = {}): Promise<void> {
+  async del(
+    path: string,
+    baseSha?: string,
+    opts: { force?: boolean; intentId?: string } = {},
+  ): Promise<void> {
     const res = await transportFetch(
       this.auth,
       this.url('/storage/entry', {
@@ -479,6 +494,7 @@ export class HttpSyncTransport implements Transport {
         base_sha: baseSha,
         device: this.auth.deviceId,
         device_name: this.auth.deviceName,
+        intent_id: opts.intentId,
         ...(opts.force ? { force: 'true' } : {}),
       }),
       { method: 'DELETE', headers: await authHeaders(this.auth) },

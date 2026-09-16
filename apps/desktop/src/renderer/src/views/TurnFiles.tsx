@@ -80,7 +80,7 @@ export const TurnFiles: React.FC<{
 
   useEffect(() => {
     if (!workflowId || previews.length === 0) {
-      setImageUrls({});
+      setImageUrls((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       return;
     }
     let alive = true;

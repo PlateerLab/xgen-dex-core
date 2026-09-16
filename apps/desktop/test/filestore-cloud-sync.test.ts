@@ -59,9 +59,13 @@ test('transport — changes/put/del/rmdir 이 /api/filestore/sync/* 를 부른�
   assert.equal(putCall.url.searchParams.get('path'), '폴더/f.txt');
   assert.equal(putCall.url.searchParams.get('base_sha'), 'base123');
 
-  await transport.del('폴더/f.txt', 'base123');
+  await transport.del('폴더/f.txt', 'base123', {
+    intentId: '11111111-1111-4111-8111-111111111111',
+  });
   const delCall = calls.find((c) => c.url.pathname.endsWith('/entry'))!;
   assert.equal(delCall.init?.method, 'DELETE');
+  assert.equal(delCall.url.searchParams.get('device'), 'dev');
+  assert.equal(delCall.url.searchParams.get('intent_id'), '11111111-1111-4111-8111-111111111111');
 
   await transport.rmdir('폴더');
   const rmCall = calls.find((c) => c.url.pathname.endsWith('/folder'))!;
@@ -149,6 +153,8 @@ test('로컬에서 폴더째 삭제 — 파일 삭제 후 사라진 조상 폴�
     assert.ok(existsSync(join(root, 'ws', '보고서', '2026', 'a.txt')));
 
     rmSync(join(root, 'ws', '보고서'), { recursive: true, force: true }); // 폴더째 삭제
+    await p.recordLocalDelete('보고서/2026/a.txt');
+    await p.recordLocalDelete('보고서/2026/b.txt');
     await p.sync();
 
     assert.equal(remote.files.size, 0); // 파일은 서버에서도 삭제
@@ -170,6 +176,7 @@ test('파일 하나만 지우면 — 로컬에 남은 폴더는 원격에서도 
   try {
     await p.sync();
     rmSync(join(root, 'ws', '보고서', 'a.txt')); // 파일 하나만
+    await p.recordLocalDelete('보고서/a.txt');
     await p.sync();
     assert.equal(remote.files.size, 1);
     assert.deepEqual(remote.rmdirs, []); // 폴더는 로컬에 살아 있다 — 정리 없음
@@ -188,6 +195,7 @@ test('rmdir 미구현 원격(geny) — 폴더째 삭제여도 조용히 건너�
   try {
     await p.sync();
     rmSync(join(root, 'ws', '폴더'), { recursive: true, force: true });
+    await p.recordLocalDelete('폴더/x.txt');
     const r = await p.sync(); // rmdir 없음 — 오류 없이 파일 삭제만
     assert.equal(r.deletedRemote, 1);
     assert.equal(r.errors.length, 0);
@@ -237,7 +245,7 @@ test('stateTag — 태그가 다르면 base 상태 파일도 다르다 (옛 base
 
 // ── 대량 삭제 서킷브레이커 ─────────────────────────────────────────
 
-test('대량 서버 삭제 보류 — 로컬이 통째로 비면 지우지 않고 보류한다', async () => {
+test('로컬이 통째로 비어도 명시적 unlink 사건이 없으면 서버 원본으로 복구한다', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mass-'));
   const remote = new PruneRemote();
   for (let i = 0; i < 12; i++) remote.files.set(`d/f${i}.txt`, Buffer.from(`v${i}`));
@@ -249,13 +257,9 @@ test('대량 서버 삭제 보류 — 로컬이 통째로 비면 지우지 않�
     const r = await p.sync();
     assert.equal(remote.files.size, 12); // 서버는 그대로 — 보류
     assert.equal(r.deletedRemote, 0);
-    assert.equal(r.deferred, 12);
-    assert.match(r.errors[0], /대량 서버 삭제 보류/);
-
-    // 사용자가 의도를 확인([지금 동기화] = force)하면 통과한다.
-    const r2 = await p.sync({ allowMassDelete: true });
-    assert.equal(r2.deletedRemote, 12);
-    assert.equal(remote.files.size, 0);
+    assert.equal(r.deferred, 0);
+    assert.equal(r.downloaded, 12);
+    assert.equal(r.errors.length, 0);
   } finally {
     p.dispose();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -293,6 +297,8 @@ test('소규모 삭제는 보류 없이 그대로 전파된다 (폴더 삭제 UX
   try {
     await p.sync();
     rmSync(join(root, 'ws', 'del'), { recursive: true, force: true }); // 일부 폴더만
+    await p.recordLocalDelete('del/a.txt');
+    await p.recordLocalDelete('del/b.txt');
     const r = await p.sync();
     assert.equal(r.deletedRemote, 2); // 임계(10개·90%) 미만 — 즉시 전파
     assert.equal(r.errors.length, 0);

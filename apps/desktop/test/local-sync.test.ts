@@ -156,9 +156,23 @@ test('로컬 삭제가 서버 tombstone 으로 전파된다', async () => {
   remote.serverWrite('a.md', 'x');
   await pair.sync();
   rmSync(join(dir, 'a.md'));
+  await pair.recordLocalDelete('a.md');
   const r = await pair.sync();
   assert.equal(r.deletedRemote, 1);
   assert.equal(remote.files.has('a.md'), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('로컬 스캔에서 파일이 누락돼도 명시적 unlink 사건이 없으면 서버 원본을 복구한다', async () => {
+  const { dir, remote, pair, root } = setup();
+  remote.serverWrite('safe.md', 'source');
+  await pair.sync();
+  rmSync(join(dir, 'safe.md'));
+  const r = await pair.sync();
+  assert.equal(r.deletedRemote, 0);
+  assert.equal(r.downloaded, 1);
+  assert.equal(remote.files.has('safe.md'), true);
+  assert.equal(readFileSync(join(dir, 'safe.md'), 'utf8'), 'source');
   rmSync(root, { recursive: true, force: true });
 });
 

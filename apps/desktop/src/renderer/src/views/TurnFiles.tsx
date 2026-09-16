@@ -12,6 +12,15 @@ import type { ChatMsg } from '../session-store';
 import { DocIcon, DownloadIcon } from '../brand/icons';
 import { filesChangedDuringTurn, filesNamedInAnswer, formatFileSize, splitRequestedFiles } from './turn-files-model';
 import { saveBytes } from './file-save';
+import { isImageFile } from './attachment-model';
+
+/** 미리보기로 그릴 그림의 크기 상한 — 이보다 크면 칩으로만 둔다(대화창이 무거워지지 않게). */
+const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
+
+function blobOf(bytes: Uint8Array, contentType: string): Blob {
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Blob([buffer], { type: contentType || 'application/octet-stream' });
+}
 
 export const TurnFiles: React.FC<{
   workflowId: string;
@@ -27,6 +36,8 @@ export const TurnFiles: React.FC<{
   latest?: boolean;
 }> = ({ workflowId, msg, request = '', onOpenFile, latest = false }) => {
   const [files, setFiles] = useState<WsNode[]>([]);
+  /** 대화창에 바로 그린 그림: 작업 공간 경로 → blob URL. */
+  const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [showOthers, setShowOthers] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -60,7 +71,50 @@ export const TurnFiles: React.FC<{
 
   const { requested, others } = useMemo(() => splitRequestedFiles(files, request, answer), [files, request, answer]);
 
+  // 그림은 받아서 여는 게 아니라 그냥 보이는 게 맞다 — 요청한 결과물 중 그림만 골라 실물을 읽어 온다.
+  const previews = useMemo(
+    () => requested.filter((node) => isImageFile(node.name) && (node.size ?? 0) <= IMAGE_PREVIEW_MAX_BYTES),
+    [requested],
+  );
+  const previewKey = previews.map((node) => node.path).join('\n');
+
+  useEffect(() => {
+    if (!workflowId || previews.length === 0) {
+      setImageUrls({});
+      return;
+    }
+    let alive = true;
+    const made: string[] = [];
+    void Promise.all(
+      previews.map(async (node) => {
+        try {
+          const bin = await xgen.agentData.workspaceBinary(workflowId, node.path);
+          const url = URL.createObjectURL(blobOf(bin.bytes, bin.contentType));
+          made.push(url);
+          return [node.path, url] as const;
+        } catch {
+          return null; // 못 읽은 그림은 예전처럼 칩으로 남는다
+        }
+      }),
+    ).then((pairs) => {
+      if (!alive) {
+        made.forEach((url) => URL.revokeObjectURL(url));
+        return;
+      }
+      setImageUrls(Object.fromEntries(pairs.filter((pair): pair is readonly [string, string] => pair !== null)));
+    });
+    return () => {
+      alive = false;
+      made.forEach((url) => URL.revokeObjectURL(url));
+    };
+    // previews 는 매번 새 배열이라 경로 목록(previewKey)으로 같은 그림인지 본다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId, previewKey]);
+
   if (!finished || files.length === 0) return null;
+
+  const shown = previews.filter((node) => imageUrls[node.path]);
+  const chips = requested.filter((node) => !imageUrls[node.path]);
 
   const download = async (node: WsNode) => {
     setBusy(node.path);
@@ -107,8 +161,41 @@ export const TurnFiles: React.FC<{
 
   return (
     <div className="turn-files" aria-label="이 답변에서 만든 파일">
-      {requested.length > 0 && <span className="turn-files-label">만든 파일</span>}
-      {requested.map((node) => chip(node, false))}
+      {shown.length > 0 && (
+        <div className={`turn-images count-${Math.min(shown.length, 3)}`} aria-label="이 답변에서 만든 그림">
+          {shown.map((node) => (
+            <figure key={node.path} className={`turn-image${failed === node.path ? ' failed' : ''}`}>
+              <button
+                type="button"
+                className="turn-image-open"
+                onClick={() => onOpenFile?.(workflowId, node.path, node.name)}
+                disabled={!onOpenFile}
+                title={`${node.path} — 눌러서 크게 보기`}
+              >
+                <img src={imageUrls[node.path]} alt={node.name} />
+              </button>
+              <figcaption className="turn-image-foot">
+                <span className="turn-file-name" title={node.path}>
+                  {node.name}
+                </span>
+                <span className="turn-file-size">{formatFileSize(node.size)}</span>
+                <button
+                  type="button"
+                  className="turn-image-dl"
+                  onClick={() => void download(node)}
+                  disabled={busy === node.path}
+                  title={failed === node.path ? '받기 실패 — 다시 시도' : '이 PC 에 저장'}
+                  aria-label={`${node.name} 받기`}
+                >
+                  {busy === node.path ? <span className="ptl-spin" /> : <DownloadIcon size={13} />}
+                </button>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+      {chips.length > 0 && <span className="turn-files-label">만든 파일</span>}
+      {chips.map((node) => chip(node, false))}
       {others.length > 0 && (
         <button
           type="button"

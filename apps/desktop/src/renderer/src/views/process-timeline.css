@@ -614,6 +614,93 @@
   color: var(--muted);
   margin-right: 2px;
 }
+/* 그림은 받아서 여는 것이 아니라 대화 안에서 그냥 보이는 것 — 답변 아래 실물, 누르면 뷰어에서 크게. */
+.turn-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  width: 100%;
+  max-width: 620px;
+}
+.turn-images.count-1 {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 420px;
+}
+.turn-image {
+  margin: 0;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.turn-image:hover {
+  border-color: var(--primary-soft-border);
+  box-shadow: var(--shadow-md);
+}
+.turn-image.failed {
+  border-color: var(--error-border);
+}
+.turn-image-open {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  cursor: zoom-in;
+}
+.turn-image-open:disabled {
+  cursor: default;
+}
+.turn-image-open:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: -3px;
+}
+.turn-image-open img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 340px;
+  object-fit: contain;
+  background: var(--panel-2);
+}
+.turn-images:not(.count-1) .turn-image-open img {
+  height: 148px;
+  object-fit: cover;
+}
+.turn-image-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.turn-image-foot .turn-file-name {
+  flex: 1;
+  min-width: 0;
+}
+.turn-image-dl {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.turn-image-dl:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.turn-image.failed .turn-image-dl {
+  color: var(--error);
+}
+
 .turn-file-chip {
   display: inline-flex;
   align-items: stretch;

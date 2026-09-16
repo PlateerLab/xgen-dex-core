@@ -30,6 +30,11 @@ const TONES: Array<[FileTone, RegExp]> = [
   ['code', /^(json|ya?ml|xml|html?|js|ts|py|sql|sh)$/],
 ];
 
+/** 대화창에 바로 그려 줄 그림인가 — 받아서 여는 게 아니라 보이는 게 맞는 파일. */
+export function isImageFile(name: string, mime = ''): boolean {
+  return fileBadge(name, mime).tone === 'image';
+}
+
 /** 파일 카드 왼쪽 배지 — 확장자 글자(최대 4자)와 색 계열. 확장자가 없으면 MIME 으로. */
 export function fileBadge(name: string, mime = ''): { label: string; tone: FileTone } {
   const dot = name.lastIndexOf('.');

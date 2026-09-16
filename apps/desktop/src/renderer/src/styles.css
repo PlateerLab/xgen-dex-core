@@ -2528,6 +2528,38 @@ button {
   flex-direction: column;
   gap: 18px;
   min-height: 0;
+  scroll-behavior: auto;
+}
+/* 위로 올려 읽는 동안에만 뜨는 [맨 아래로] 화살표 — 로그 안에 sticky 로 떠 있어 작성기 높이를
+   몰라도 늘 같은 자리에 보인다. 자리를 차지하지 않게 음수 여백을 준다. */
+.chat-jump {
+  position: sticky;
+  bottom: 6px;
+  z-index: 6;
+  align-self: center;
+  margin: -40px 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--text-secondary);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.12s ease;
+}
+.chat-jump:hover {
+  background: var(--panel);
+  color: var(--text);
+  transform: translateY(-1px);
 }
 .msg-row {
   display: flex;
@@ -7864,18 +7896,72 @@ button.sm {
 /* 새 에이전트 만들기 화면 — 넓은 탭 한가운데 카드 하나. 정할 것은 이름과 모델뿐이므로
    나머지는 눈에 덜 띄게 두고, 만들 수 있는 상태인지 버튼 아래 한 줄로 알려 준다. */
 .agent-create {
+  flex: 1;
   width: 100%;
-  max-width: 600px;
-  margin: 0 auto;
-  padding: 56px 24px 48px;
+  min-height: 0;
   overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  /* 세로 가운데 — safe 를 붙여야 내용이 화면보다 길어질 때 위가 잘리지 않는다 */
+  align-items: safe center;
+  padding: 40px 32px;
+}
+/* 넓으면 왼쪽 입력 + 오른쪽 설명 2단, 좁으면 한 줄로 접힌다 */
+.agent-create-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 480px);
+  gap: 26px;
+  width: 100%;
+  max-width: 480px;
+}
+@media (min-width: 1180px) {
+  .agent-create-inner {
+    grid-template-columns: minmax(0, 480px) minmax(0, 300px);
+    gap: 44px;
+    max-width: 824px;
+  }
 }
 .agent-create-card {
-  padding: 28px 28px 22px;
+  padding: 30px 30px 24px;
   border: 1px solid var(--border);
   border-radius: 18px;
   background: var(--panel);
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.07);
+}
+.agent-create-aside {
+  padding-top: 6px;
+}
+.agent-create-aside h2 {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+}
+.agent-create-aside ul {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agent-create-aside li {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.agent-create-aside li b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-size: 13px;
+}
+.agent-create-aside-note {
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .agent-create header h1 {
   margin: 0;

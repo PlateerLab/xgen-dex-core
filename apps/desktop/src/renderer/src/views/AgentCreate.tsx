@@ -162,12 +162,12 @@ export function AgentCreate({ onCreated, onClose }: AgentCreateProps) {
 
   return (
     <div className="agent-create">
+      <div className="agent-create-inner">
       <div className="agent-create-card">
         <header>
           <h1>새 에이전트</h1>
           <p className="muted">
-            이름과 모델만 정하면 됩니다. 도구·기억·자기진화는 이미 안에 있고, 나머지는 만든 뒤
-            에이전트와 대화하며 채워 나갑니다.
+            이름과 모델만 정하면 됩니다. 나머지는 만든 뒤 에이전트와 대화하며 채워 나갑니다.
           </p>
         </header>
 
@@ -242,6 +242,27 @@ export function AgentCreate({ onCreated, onClose }: AgentCreateProps) {
               ? '이름을 입력하면 만들 수 있습니다.'
               : '만들면 바로 이 에이전트와의 대화가 열립니다.'}
         </p>
+      </div>
+
+      <aside className="agent-create-aside">
+        <h2>이미 들어 있는 것</h2>
+        <ul>
+          <li>
+            <b>도구</b>웹·파일·셸 같은 기본 도구를 바로 씁니다. 연결된 도구는 필요할 때 찾아서
+            불러옵니다.
+          </li>
+          <li>
+            <b>기억</b>대화를 넘어 기억합니다. 무엇을 기억했는지는 에이전트 목록의 [메모리]에서 볼 수
+            있습니다.
+          </li>
+          <li>
+            <b>자기진화</b>대화로 부탁하면 도구를 붙이고 자기 설정을 바꿉니다.
+          </li>
+        </ul>
+        <p className="agent-create-aside-note">
+          세부설정은 지금 정해도 되고, 만든 뒤 대화로 바꿔도 됩니다.
+        </p>
+      </aside>
       </div>
     </div>
   );

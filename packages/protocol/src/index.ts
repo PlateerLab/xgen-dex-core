@@ -256,6 +256,8 @@ export * from './notifications';
 export * from './tool-activity';
 // 작업 과정 타임라인 규칙 — 데스크톱·웹이 같은 단계와 같은 도구 이름표를 그린다.
 export * from './process-timeline';
+// 끝난 턴의 작업 과정을 기기에 남겨 두고 되붙이는 규칙 — 데스크톱·웹이 같은 대화를 같게 본다.
+export * from './turn-process-memory';
 // 답변 피드백(별점·문제 유형) — 웹 채팅과 같은 서버 계약.
 export * from './feedback';
 // 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사(둘 다 서버가 정한다).

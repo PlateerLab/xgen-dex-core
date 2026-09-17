@@ -23,8 +23,8 @@ import { ShareToTeamsModal } from './ShareToTeams';
 import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
-import type { ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
-import { INTERRUPTED_NOTE, INTERRUPTED_TEXT } from '@dex/protocol';
+import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
+import { CHAT_AI_DISCLAIMER_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, describeError } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
@@ -32,6 +32,7 @@ import { DropTracker, dragHasFiles } from './chat-drop';
 import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
+import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
 import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
@@ -59,6 +60,7 @@ import {
   ShareIcon,
   SpeakerIcon,
   SpeakerOffIcon,
+  StarIcon,
   StopIcon,
   TeamsIcon,
 } from '../brand/icons';
@@ -385,6 +387,20 @@ export const Chat: React.FC<{
   // Teams 대화를 문맥으로 붙일 방을 고르는 중.
   const [ctxPicker, setCtxPicker] = useState(false);
   const [copiedAt, setCopiedAt] = useState(-1);
+  /**
+   * 이 대화에 내가 남긴 평가 — 실행 id 로 찾는다.
+   *
+   * 답변마다 물어보면 대화 하나를 열 때 수십 번을 부르게 되므로, 대화가 열릴 때 한 번에 읽고
+   * 새 답변이 끝날 때 그 하나만 더한다.
+   */
+  /** 답변 아래 면책 문구를 보일까 — 서버 설정(웹 채팅과 같은 칸). 기본은 보인다. */
+  const [disclaimer, setDisclaimer] = useState(true);
+  /** 지금 작성기에 민감정보가 보이는가 — 보내기 전 경고(막지는 않는다). */
+  const [sensitive, setSensitive] = useState(false);
+  const [feedbackByIo, setFeedbackByIo] = useState<Record<number, ChatFeedback>>({});
+  const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpBridgeStatusLike | null>(null);
   const [mcpLogs, setMcpLogs] = useState<McpRuntimeLogEntryLike[]>([]);
   const [mcpLogsOpen, setMcpLogsOpen] = useState(false);
@@ -465,6 +481,112 @@ export const Chat: React.FC<{
       off();
     };
   }, [mcpDebug]);
+
+  useEffect(() => {
+    let alive = true;
+    void xgen.guardrails
+      .disclaimerEnabled()
+      .then((on) => alive && setDisclaimer(on))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 작성기에 민감정보가 있는지 **서버 검사기**에 묻는다 — 타이핑이 멎은 뒤에.
+   *
+   * 앱이 스스로 정규식으로 판단하면 같은 문장이 웹에서는 걸리고 앱에서는 안 걸린다.
+   * 경고만 하고 보내는 것은 막지 않는다(웹과 같다).
+   */
+  useEffect(() => {
+    const text = input.trim();
+    if (!text) {
+      setSensitive(false);
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      void xgen.guardrails
+        .checkContent(text)
+        .then((res) => alive && setSensitive(res.flagged))
+        .catch(() => undefined);
+    }, 400);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [input]);
+
+  // 이 대화의 답변들에 내가 남긴 평가 — 열 때 한 번, 그리고 새 답변이 끝날 때마다 맞춘다.
+  // (실패는 조용히 지나간다: 평가는 대화의 곁가지라 못 읽었다고 대화를 막을 이유가 없다.)
+  const ioIdsKey = messages
+    .map((m) => m.executionIoId)
+    .filter((id): id is number => typeof id === 'number')
+    .join(',');
+  useEffect(() => {
+    const ids = ioIdsKey ? ioIdsKey.split(',').map(Number) : [];
+    if (ids.length === 0) {
+      setFeedbackByIo({});
+      return;
+    }
+    let alive = true;
+    void xgen.feedback
+      .mine(ids)
+      .then((items) => {
+        if (!alive) return;
+        const next: Record<number, ChatFeedback> = {};
+        for (const item of items) next[item.executionIoId] = item;
+        setFeedbackByIo(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [ioIdsKey]);
+
+  const saveFeedback = useCallback(
+    async (executionIoId: number, draft: FeedbackDraft) => {
+      setFeedbackBusy(true);
+      setFeedbackError(null);
+      try {
+        const existing = feedbackByIo[executionIoId];
+        const saved = existing
+          ? await xgen.feedback.update(existing.id, draft)
+          : await xgen.feedback.submit({ executionIoId, ...draft });
+        setFeedbackByIo((prev) => ({ ...prev, [executionIoId]: saved }));
+        setFeedbackFor(null);
+      } catch (error) {
+        setFeedbackError(describeError(error).title);
+      } finally {
+        setFeedbackBusy(false);
+      }
+    },
+    [feedbackByIo],
+  );
+
+  const removeFeedback = useCallback(
+    async (executionIoId: number) => {
+      const existing = feedbackByIo[executionIoId];
+      if (!existing) return;
+      setFeedbackBusy(true);
+      setFeedbackError(null);
+      try {
+        await xgen.feedback.remove(existing.id);
+        setFeedbackByIo((prev) => {
+          const next = { ...prev };
+          delete next[executionIoId];
+          return next;
+        });
+        setFeedbackFor(null);
+      } catch (error) {
+        setFeedbackError(describeError(error).title);
+      } finally {
+        setFeedbackBusy(false);
+      }
+    },
+    [feedbackByIo],
+  );
 
   // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll)
   const { showJump, jumpToBottom } = useStickToBottom(scrollRef, messages, session.key);
@@ -1407,6 +1529,11 @@ export const Chat: React.FC<{
                     공유하면 잘린 글이 방에 남고, 방에는 삭제가 없다.
                     복사는 main 의 clipboard 를 쓴다: 렌더러 navigator.clipboard 는
                     Electron 에서 권한/보안 컨텍스트 때문에 조용히 실패할 수 있다. */}
+                {/* AI 면책 문구 — 끝난 **실제 답변**에만. 도는 중·실패·빈 턴에는 붙이지 않는다.
+                    켜고 끄는 것은 서버 설정이고 문구는 정본(@dex/protocol)이 갖는다. */}
+                {disclaimer && m.role === 'assistant' && !m.streaming && !!m.text && !m.error && (
+                  <p className="ai-disclaimer">{CHAT_AI_DISCLAIMER_TEXT}</p>
+                )}
                 {/* 푸터 한 줄 — 좌: 복사/공유(호버에만), 우: 전체 로그(상시).
                     한 row 로 붙어야 답변 하단이 두 줄로 널뛰지 않는다. */}
                 {m.role === 'assistant' &&
@@ -1436,6 +1563,26 @@ export const Chat: React.FC<{
                           >
                             <ShareIcon size={13} /> Teams로 공유
                           </button>
+                          {/* 답변 평가 — 웹 채팅과 같은 별점·문제 유형이 같은 곳(관리자 [사용자 피드백])으로 간다.
+                              이미 남겼으면 별점이 보이고 누르면 고칠 수 있다. */}
+                          {m.executionIoId !== undefined && (
+                            <button
+                              onClick={() => {
+                                setFeedbackError(null);
+                                setFeedbackFor(m.executionIoId ?? null);
+                              }}
+                              title={
+                                feedbackByIo[m.executionIoId]
+                                  ? '남긴 평가 고치기'
+                                  : '이 답변을 평가합니다'
+                              }
+                            >
+                              <StarIcon size={13} />{' '}
+                              {feedbackByIo[m.executionIoId]
+                                ? `평가 ${feedbackByIo[m.executionIoId].starRating}점`
+                                : '평가'}
+                            </button>
+                          )}
                         </div>
                       )}
                       {/* 전체 도구 로그 — 흐름의 도구 칩은 하나씩 지나가므로,
@@ -1496,9 +1643,26 @@ export const Chat: React.FC<{
             onClose={() => setLogFor(null)}
           />
         )}
+        {feedbackFor !== null && (
+          <FeedbackModal
+            initial={feedbackByIo[feedbackFor]}
+            busy={feedbackBusy}
+            error={feedbackError}
+            onSubmit={(draft) => void saveFeedback(feedbackFor, draft)}
+            onDelete={feedbackByIo[feedbackFor] ? () => void removeFeedback(feedbackFor) : undefined}
+            onClose={() => setFeedbackFor(null)}
+          />
+        )}
         {captureNotice && (
           <div className="voice-error small" title={captureNotice}>
             화면을 첨부하지 못했습니다: {captureNotice}
+          </div>
+        )}
+        {sensitive && (
+          <div className="sensitive-warn" role="alert">
+            <strong>🔒 민감정보 입력 안내</strong>
+            <span>입력하신 내용에 민감정보가 감지되었습니다. 보내기 전에 다시 한 번 확인해 주세요.</span>
+            <em>주민등록번호·여권번호 같은 고유식별정보, 계좌·카드번호·비밀번호 같은 금융정보</em>
           </div>
         )}
         {imageNotice && (

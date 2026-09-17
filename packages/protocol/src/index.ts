@@ -26,6 +26,8 @@ import { AgentsApi } from './agents';
 import { AuthApi } from './auth';
 import { AvatarsApi } from './avatars';
 import { ChatApi } from './chat';
+import { ChatGuardrailsApi } from './chat-guardrails';
+import { FeedbackApi } from './feedback';
 import { HistoryApi } from './history';
 import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
@@ -54,6 +56,8 @@ export class XgenClient {
   readonly auth: AuthApi;
   readonly agents: AgentsApi;
   readonly chat: ChatApi;
+  readonly guardrails: ChatGuardrailsApi;
+  readonly feedback: FeedbackApi;
   readonly history: HistoryApi;
   readonly preferences: PreferencesApi;
   readonly ssh: SshApi;
@@ -82,6 +86,8 @@ export class XgenClient {
     this.auth = new AuthApi(this.http);
     this.agents = new AgentsApi(this.http);
     this.chat = new ChatApi(this.http);
+    this.guardrails = new ChatGuardrailsApi(this.http);
+    this.feedback = new FeedbackApi(this.http);
     this.history = new HistoryApi(this.http);
     this.preferences = new PreferencesApi(this.http);
     this.ssh = new SshApi(this.http);
@@ -250,6 +256,10 @@ export * from './notifications';
 export * from './tool-activity';
 // 작업 과정 타임라인 규칙 — 데스크톱·웹이 같은 단계와 같은 도구 이름표를 그린다.
 export * from './process-timeline';
+// 답변 피드백(별점·문제 유형) — 웹 채팅과 같은 서버 계약.
+export * from './feedback';
+// 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사(둘 다 서버가 정한다).
+export * from './chat-guardrails';
 export { ApiError } from './client';
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';

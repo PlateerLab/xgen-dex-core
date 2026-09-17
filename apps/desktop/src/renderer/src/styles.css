@@ -5557,6 +5557,171 @@ button {
   color: var(--text);
 }
 
+/* 답변 아래 AI 면책 문구 — 읽는 것을 방해하지 않을 만큼 작게, 그러나 보이게. */
+.ai-disclaimer {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+/* 보내기 전 민감정보 경고 — 막지 않고 알린다. */
+.sensitive-warn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border: 1px solid #f0c36d;
+  background: color-mix(in srgb, #f0c36d 16%, transparent);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--text);
+}
+.sensitive-warn strong {
+  font-size: 12.5px;
+}
+.sensitive-warn em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── 답변 평가 ────────────────────────────────────────────────
+   도구 로그 창과 같은 결의 작은 창. 웹 채팅의 평가와 같은 값(별점·문제 유형)을 받는다. */
+.fb-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 62;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.42);
+  padding: 24px;
+}
+.fb {
+  width: min(460px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+.fb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.fb-head strong {
+  font-size: 14px;
+}
+.fb-x {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.fb-x:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.fb-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.fb-optional {
+  font-weight: 400;
+}
+.fb-stars {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.fb-star {
+  font-size: 22px;
+  line-height: 1;
+  padding: 2px 3px;
+  color: var(--border);
+  background: none;
+}
+.fb-star.on {
+  color: #f5b544;
+}
+.fb-star:hover {
+  transform: translateY(-1px);
+}
+.fb-star-num {
+  margin-left: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.fb-select,
+.fb-comment {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.fb-comment {
+  min-height: 84px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+.fb-count {
+  align-self: flex-end;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.fb-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.fb-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.fb-spacer {
+  flex: 1;
+}
+.fb-btn {
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.fb-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.fb-btn:disabled {
+  opacity: 0.5;
+}
+.fb-btn.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.fb-btn.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: transparent;
+}
 .toollog-backdrop {
   position: fixed;
   inset: 0;

@@ -92,6 +92,14 @@ export interface ChatMsg {
   /** 마지막으로 텍스트·도구 이벤트를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 표시. */
   lastEventAt?: number;
   citations?: Citation[];
+  /**
+   * 이 답변이 서버에 남은 실행 한 건의 id.
+   *
+   * 답변 평가(별점·문제 유형)는 이 값을 키로 쓴다. 웹 채팅은 진작 받고 있었는데 앱은 흘려보내고
+   * 있었다 — 그래서 앱에서는 답을 평가할 길이 아예 없었고, 관리자 화면의 사용자 피드백은
+   * "웹에서 쓴 사람" 만 보고 있었다.
+   */
+  executionIoId?: number;
   streaming?: boolean;
   error?: boolean;
   /** 실패의 사용자용 형태(코드·제목·안내·원문). 화면은 이것을 그린다. */
@@ -240,7 +248,8 @@ export interface SessionTransport {
     workflowId: string,
     interactionId: string,
     name?: string,
-  ): Promise<Array<{ input: string; output: string; attachments?: HistoryAttachment[] }>>;
+    // ioId — 그 답변이 서버에 남은 실행 한 건. 답변 평가가 이 값을 키로 쓴다(옛 preload 는 안 준다).
+  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[] }>>;
   /**
    * 지난 턴 + **지금 도는 턴이 있는가** — 창을 연 첫 순간의 상태.
    *
@@ -253,7 +262,7 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
   ) => Promise<{
-    turns: Array<{ input: string; output: string; attachments?: HistoryAttachment[] }>;
+    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[] }>;
     running: boolean;
   }>;
   /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
@@ -587,7 +596,8 @@ export class SessionStore {
         if (input || images.length > 0) {
           msgs.push({ role: 'user', text: input, images: images.length > 0 ? images : undefined });
         }
-        if (output) msgs.push({ role: 'assistant', text: output });
+        // 지난 대화의 답변에도 실행 id 를 실어 둔다 — 다시 열어도 평가하거나 고칠 수 있다.
+        if (output) msgs.push({ role: 'assistant', text: output, executionIoId: tn.ioId });
       }
       // Only overwrite the transcript if a live turn hasn't started meanwhile.
       const current = this.map.get(key);
@@ -873,6 +883,9 @@ export class SessionStore {
             : ev.surface === 'blocked'
               ? (ev.detail ?? ev.reason)
               : ev.detail;
+      } else if (ev.kind === 'execution_io') {
+        // 이 턴이 서버에 남은 자리 — 답변 평가가 이 id 로 붙는다.
+        nl.executionIoId = ev.executionIoId;
       } else if (ev.kind === 'summary' && !nl.text) nl.text = ev.text;
       else if (ev.kind === 'tool') {
         rt.tools = [...rt.tools, ev.event];
@@ -1208,7 +1221,7 @@ export class SessionStore {
     s.messages = [
       ...s.messages,
       { role: 'user', text: turn.input },
-      { role: 'assistant', text: turn.output },
+      { role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined },
     ];
     s.updatedAt = this.now();
     // 다른 곳에서 돌던 턴이 끝났다 — 답이 여기 도착했으니 [진행 중] 을 내린다.

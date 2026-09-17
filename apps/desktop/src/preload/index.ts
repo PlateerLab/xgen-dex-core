@@ -56,6 +56,8 @@ import type {
   AgentCreateOptions,
   CreateAgentInput,
 } from '@dex/protocol';
+import type { ChatFeedback } from '@dex/protocol/feedback';
+import type { ContentFilterResult } from '@dex/protocol/chat-guardrails';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
@@ -359,6 +361,30 @@ const api = {
     ): Promise<ConversationSnapshot> =>
       ipcRenderer.invoke(CHANNELS.historySnapshot, workflowId, interactionId, name),
     conversations: (): Promise<Conversation[]> => ipcRenderer.invoke(CHANNELS.historyConversations),
+  },
+
+  /** 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 판정은 서버가 한다(웹과 같은 자리). */
+  guardrails: {
+    disclaimerEnabled: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.guardDisclaimer),
+    checkContent: (text: string): Promise<ContentFilterResult> =>
+      ipcRenderer.invoke(CHANNELS.guardCheckContent, text),
+  },
+
+  /** 답변 평가 — 별점·문제 유형. 웹 채팅과 같은 서버 계약(execution_io 한 건에 하나). */
+  feedback: {
+    submit: (input: {
+      executionIoId: number;
+      starRating: number;
+      issueType: string;
+      comment?: string;
+    }): Promise<ChatFeedback> => ipcRenderer.invoke(CHANNELS.feedbackSubmit, input),
+    update: (
+      id: number,
+      input: { starRating?: number; issueType?: string; comment?: string },
+    ): Promise<ChatFeedback> => ipcRenderer.invoke(CHANNELS.feedbackUpdate, id, input),
+    remove: (id: number): Promise<void> => ipcRenderer.invoke(CHANNELS.feedbackDelete, id),
+    mine: (executionIoIds: number[]): Promise<ChatFeedback[]> =>
+      ipcRenderer.invoke(CHANNELS.feedbackMine, executionIoIds),
   },
 
   // 에이전트 뷰어 — 읽기 전용 관측 데이터. 전부 GET, 변경 경로 없음.

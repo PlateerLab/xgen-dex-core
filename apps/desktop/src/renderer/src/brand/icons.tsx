@@ -344,6 +344,13 @@ export const ShareIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
+/** 답변 평가 — 별 하나. */
+export const StarIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" />
+  </svg>
+);
+
 /** 더 보기 — 가로 점 셋. */
 export const MoreIcon: React.FC<P> = ({ size = 16, className }) => (
   <svg {...base(size)} className={className}>

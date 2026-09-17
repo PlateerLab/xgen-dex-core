@@ -1,16 +1,15 @@
 /**
- * 사이트 아티팩트를 앱에서 여는 자리 — **서버가 서빙하는 사이트를 그대로 띄운다.**
+ * 사이트·앱 아티팩트를 앱에서 여는 자리 — **서버가 내주는 주소를 그대로 띄운다.**
  *
- * 한 파일짜리 아티팩트(ArtifactFrame)는 소스를 받아 프레임 안에서 변환해 돌리지만,
- * 사이트는 파일이 여럿이라 그럴 수 없다. 웹에서는 브라우저가 쿠키를 싣고 같은
- * 오리진으로 열어 끝나는데, 앱에는 쿠키가 없고 토큰은 main 이 들고 있다. 그래서
- * 전용 스킴(xgensite://)으로 열고, main 이 자격을 붙여 서버에서 받아 온다.
+ * 웹에서는 브라우저가 쿠키를 싣고 같은 오리진으로 열어 끝난다. 앱에는 쿠키가
+ * 없고 토큰은 main 이 들고 있으므로, main 이 이 주소로 나가는 요청에 자격을
+ * 실어 준다(webRequest). 그래서 **문서·자산·fetch·WebSocket 이 모두 같은 길**을
+ * 쓴다 — 전용 스킴으로 중계하던 예전 방식은 WebSocket 을 이을 수 없어서, 실시간
+ * 으로 도는 앱이 앱에서만 죽었다.
  *
- * 그 오리진은 렌더러와 **다르다** — 사이트는 window.xgen(이 PC 의 셸·파일·키체인
- * 으로 이어지는 다리)에 닿지 못한다.
+ * 서버 주소를 아직 모르면(설정 전) 열지 않는다 — 빈 프레임보다 낫다.
  */
-import React from 'react';
-import { artifactSiteUrl } from '../../../main/ipc';
+import React, { useEffect, useState } from 'react';
 
 export interface ArtifactSiteFrameProps {
   workflowId: string;
@@ -26,9 +25,38 @@ export const ArtifactSiteFrame: React.FC<ArtifactSiteFrameProps> = ({
   title,
   reloadKey,
 }) => {
-  const base = artifactSiteUrl(workflowId, slug);
+  const [serverUrl, setServerUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const cfg = await window.xgen?.config?.get?.();
+        if (alive) setServerUrl(String(cfg?.serverUrl ?? '').replace(/\/+$/, ''));
+      } catch {
+        if (alive) setServerUrl('');
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (serverUrl === null) return <div className="artifact-frame-host" />;
+  if (!serverUrl) {
+    return (
+      <div className="artifact-frame-host" role="alert">
+        서버 주소가 설정되지 않았습니다.
+      </div>
+    );
+  }
+
+  const base =
+    `${serverUrl}/api/agentflow/agent-artifacts/` +
+    `${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/app/`;
   const mark = reloadKey === undefined || reloadKey === '' ? '' : String(reloadKey);
   const src = mark ? `${base}?v=${encodeURIComponent(mark)}` : base;
+
   // 한 파일 프레임과 **같은 상자**를 쓴다 — 높이는 바깥이 주고 iframe 은 흐름
   // 밖(absolute inset)에 둔다. 두 모양이 다른 상자를 쓰면 한쪽만 주저앉는다.
   return (

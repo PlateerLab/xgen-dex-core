@@ -54,8 +54,11 @@ for (const app of ['apps/desktop/src', 'apps/cli/src', 'apps/vscode/src']) {
       if (api) add('no-direct-api', file, i + 1, api[1]);
       // 로컬 devtools(크롬 디버깅 포트)는 XGEN 서버가 아니다 — 브릿지의 대상이
       // 아니고, 이 앱이 띄운 브라우저와 말하는 자기 일이다.
+      // webRequest 필터는 **소켓을 여는 것이 아니라** 나가는 요청의 헤더를
+      // 손대는 자리다(아티팩트 앱의 업그레이드 요청에도 자격이 붙어야 한다).
+      // 이 규칙이 막으려는 것은 앱이 자기 소켓을 직접 여는 일이다.
       const ws = text.match(/['"`]wss?:\/\//);
-      if (ws && !/devtools|127\.0\.0\.1|localhost/.test(text)) {
+      if (ws && !/devtools|127\.0\.0\.1|localhost|WEBREQUEST_URL_FILTER/.test(text)) {
         add('no-direct-ws', file, i + 1, text.trim().slice(0, 70));
       }
     });

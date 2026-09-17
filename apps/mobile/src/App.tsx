@@ -6,6 +6,10 @@
  * 채팅 WS/스크롤이 이동 중에도 살아 있다. 순수 로직(chat-ws/tool-bridge/
  * mobile-tools)은 WebView 세대와 같은 파일 — 전송로만 RN 네이티브다
  * (fetch/WS 에 CORS 없음, WS 는 Bearer 헤더 인증).
+ *
+ * 이 파일은 **껍데기**다: 로그인·드로어·에이전트 목록·설정. 채팅 화면은
+ * `src/chat/` 에 따로 있다 — 한 파일에 두면 말풍선 하나를 고칠 때마다 로그인과
+ * 설정까지 다시 읽어야 하고, 실제로 그 무게 때문에 채팅이 오래 방치됐다.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,6 +21,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StatusBar as RnStatusBar,
   StyleSheet,
@@ -27,13 +32,10 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
-import * as Linking from 'expo-linking';
-import MarkdownDisplay from 'react-native-markdown-display';
 import type { Agent, Conversation } from '@dex/protocol';
-import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
-import { createChat, stripAgentMarkers, type ChatWsHandle, type ChatWsState, type MobileChatAttachment } from './lib/chat-ws';
+import { type ChatWsState } from './lib/chat-ws';
+import { ChatView, formatWhen } from './chat/chat-view';
+import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
   advertiseMobileTools,
@@ -64,40 +66,6 @@ type Section = 'chat' | 'agents' | 'settings';
 /** 앱을 껐다 켠 뒤 되찾을 대화가 적히는 자리. */
 const LAST_CHAT_KEY = 'last-chat';
 
-function base64Bytes(value: string): Uint8Array {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const clean = value.replace(/[^A-Za-z0-9+/]/g, '');
-  const out = new Uint8Array(Math.floor((clean.length * 6) / 8));
-  let buffer = 0;
-  let bits = 0;
-  let offset = 0;
-  for (const char of clean) {
-    const n = alphabet.indexOf(char);
-    if (n < 0) continue;
-    buffer = (buffer << 6) | n;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out[offset++] = (buffer >> bits) & 0xff;
-    }
-  }
-  return offset === out.length ? out : out.slice(0, offset);
-}
-
-function imageMime(bytes: Uint8Array): string | undefined {
-  const png = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length >= 8 && png.every((value, index) => bytes[index] === value)) return 'image/png';
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
-  if (
-    bytes.length >= 12 &&
-    String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
-    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
-  ) return 'image/webp';
-  const gif = String.fromCharCode(...bytes.slice(0, 6));
-  if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
-  return undefined;
-}
-
 /**
  * 복원한 대화의 자리표시 에이전트.
  *
@@ -125,40 +93,6 @@ const SECTION_TITLE: Record<Section, string> = {
   agents: '에이전트',
   settings: '설정',
 };
-
-interface Message {
-  role: 'user' | 'assistant' | 'tool' | 'error';
-  text: string;
-  streaming?: boolean;
-  /**
-   * 다른 곳에서 도는 턴의 **진행분** — 우리가 받은 스트림이 아니라 서버
-   * 버퍼의 스냅샷이다. 재연결마다 처음부터 다시 오므로 이어붙이지 않고
-   * 이 말풍선 하나를 덮어쓴다. 턴이 끝나면 완결 턴이 이 자리를 대신한다.
-   */
-  remotePartial?: boolean;
-}
-
-// ── 팔레트 (라이트/다크) ─────────────────────────────────────────
-
-interface Palette {
-  bg: string; panel: string; panel2: string; text: string; muted: string;
-  border: string; primary: string; onPrimary: string; danger: string; ok: string;
-  assistantBubble: string;
-}
-const PALETTES: Record<'light' | 'dark', Palette> = {
-  light: {
-    bg: '#F5F6F8', panel: '#FFFFFF', panel2: '#EEF0F4', text: '#16181D',
-    muted: '#667085', border: '#E3E6EC', primary: '#5B5BD6', onPrimary: '#FFFFFF',
-    danger: '#D92D20', ok: '#12B76A', assistantBubble: '#FFFFFF',
-  },
-  dark: {
-    bg: '#0E1015', panel: '#171A21', panel2: '#1F232C', text: '#E9ECF2',
-    muted: '#8B93A3', border: '#262B35', primary: '#5B5BD6', onPrimary: '#FFFFFF',
-    danger: '#F97066', ok: '#32D583', assistantBubble: '#1C202A',
-  },
-};
-const PaletteCtx = React.createContext<Palette>(PALETTES.dark);
-const useP = () => React.useContext(PaletteCtx);
 
 export default function App(): React.ReactElement {
   const scheme = useColorScheme();
@@ -420,12 +354,13 @@ export default function App(): React.ReactElement {
 
         <View style={st.content}>
           <View style={[st.section, section !== 'chat' && st.off]}>
-            <ChatSection
+            <ChatView
               client={client}
               agent={activeAgent}
               interactionId={activeInteraction}
               onWsState={setChatWsState}
               onPickAgent={() => go('agents')}
+              onOpenChat={openChat}
             />
           </View>
           <View style={[st.section, section !== 'agents' && st.off]}>
@@ -645,16 +580,6 @@ function Field({
 
 // ── 에이전트 목록 ────────────────────────────────────────────────
 
-function formatWhen(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const now = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
-}
-
 function AgentsSection({
   client,
   onOpenChat,
@@ -696,11 +621,34 @@ function AgentsSection({
     void load();
   }, [load]);
 
+  /** 그 에이전트와 마지막으로 말한 때 — 없으면 빈 문자열(맨 아래). */
+  const lastUsed = useMemo(() => {
+    const at = new Map<string, string>();
+    for (const c of conversations) {
+      const prev = at.get(c.workflowId) ?? '';
+      if (c.updatedAt > prev) at.set(c.workflowId, c.updatedAt);
+    }
+    return at;
+  }, [conversations]);
+
+  /**
+   * 검색 + **최근 순**.
+   *
+   * 폰에서 목록이 서버 순서대로 놓이면 늘 쓰는 에이전트가 스무 번째에 있다 —
+   * 매번 검색해서 찾아야 했다. 지금 쓴 것이 위에 온다.
+   */
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return agents;
-    return agents.filter((a) => `${a.workflowName ?? ''} ${a.workflowId ?? ''}`.toLowerCase().includes(q));
-  }, [agents, search]);
+    const base = q
+      ? agents.filter((a) => `${a.workflowName ?? ''} ${a.workflowId ?? ''}`.toLowerCase().includes(q))
+      : agents.slice();
+    return base.sort((a, b) => {
+      const av = lastUsed.get(a.workflowId) ?? '';
+      const bv = lastUsed.get(b.workflowId) ?? '';
+      if (av === bv) return (a.workflowName || '').localeCompare(b.workflowName || '');
+      return av > bv ? -1 : 1;
+    });
+  }, [agents, search, lastUsed]);
 
   const convsFor = useCallback(
     (workflowId: string) =>
@@ -733,7 +681,9 @@ function AgentsSection({
           </Pressable>
         </View>
       ) : null}
-      {loading ? <ActivityIndicator style={{ marginTop: 20 }} color={p.primary} /> : null}
+      {loading && agents.length === 0 ? (
+        <ActivityIndicator style={{ marginTop: 20 }} color={p.primary} />
+      ) : null}
       {!loading && !error && filtered.length === 0 ? (
         <Text style={st.notice}>에이전트가 없습니다.</Text>
       ) : null}
@@ -742,11 +692,19 @@ function AgentsSection({
         data={filtered}
         keyExtractor={(a) => a.workflowId || String(a.id)}
         contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+        keyboardDismissMode="on-drag"
+        // 당겨서 새로고침 — 폰에서 목록을 다시 받는 가장 익숙한 손짓이다.
+        refreshControl={
+          <RefreshControl refreshing={loading} onRefresh={() => void load()} tintColor={p.muted} />
+        }
         renderItem={({ item: a }) => {
           const name = a.workflowName || a.workflowId || '(이름 없음)';
           const count = convsFor(a.workflowId).length;
+          const when = formatWhen(lastUsed.get(a.workflowId) ?? '');
           return (
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${name} 열기`}
               style={({ pressed }) => [st.agentRow, pressed && { backgroundColor: p.panel2 }]}
               onPress={() => setPicked(a)}
             >
@@ -756,9 +714,21 @@ function AgentsSection({
                 </Text>
                 <Text style={st.mutedSmall} numberOfLines={1}>
                   {count > 0 ? `대화 ${count}개` : '대화 없음'}
+                  {when ? ` · ${when}` : ''}
                   {a.description ? ` · ${a.description}` : ''}
                 </Text>
               </View>
+              {count > 0 ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${name} 최근 대화 이어서`}
+                  hitSlop={8}
+                  onPress={() => onOpenChat(a, convsFor(a.workflowId)[0]?.interactionId)}
+                  style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: p.panel2 }}
+                >
+                  <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>이어서</Text>
+                </Pressable>
+              ) : null}
               <Text style={{ color: p.muted, fontSize: 18, fontWeight: '700' }}>›</Text>
             </Pressable>
           );
@@ -955,500 +925,6 @@ function CreateAgentSheet({
       </Pressable>
       </ScrollView>
     </View>
-  );
-}
-
-// ── [Trigger] 행 — Job/sub-agent 가 세션을 깨운 턴 ────────────────
-
-/** 사용자 말풍선 대신 한 줄 [Trigger · 종류 · 출처] + 탭하면 원문 상세.
- *  전 앱(CLI/VSCode/데스크톱/웹) 공통 계약 — @dex/protocol parseAgentTrigger. */
-const TriggerRow: React.FC<{ trigger: AgentTrigger }> = ({ trigger }) => {
-  const p = useP();
-  const [open, setOpen] = useState(false);
-  return (
-    <View style={{ alignSelf: 'center', maxWidth: '92%' }}>
-      <Pressable
-        onPress={() => setOpen((v) => !v)}
-        style={{
-          flexDirection: 'row', alignItems: 'center', gap: 6,
-          borderWidth: 1, borderStyle: 'dashed', borderColor: p.border,
-          borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5,
-          backgroundColor: p.panel,
-        }}
-      >
-        <Text numberOfLines={1} style={{ color: p.muted, fontSize: 11.5, flexShrink: 1 }}>
-          {triggerRowLabel(trigger)}
-        </Text>
-        <Text style={{ color: p.muted, fontSize: 12 }}>{open ? '−' : '+'}</Text>
-      </Pressable>
-      {open && (
-        <View
-          style={{
-            marginTop: 6, borderWidth: 1, borderColor: p.border, borderRadius: 10,
-            backgroundColor: p.panel, padding: 10, maxHeight: 280,
-          }}
-        >
-          <ScrollView nestedScrollEnabled>
-            <Text style={{ color: p.muted, fontSize: 11.5 }}>{trigger.body || '(내용 없음)'}</Text>
-          </ScrollView>
-        </View>
-      )}
-    </View>
-  );
-};
-
-// ── 어시스턴트 마크다운 ──────────────────────────────────────────
-
-/** 채팅 답변 마크다운 렌더 — 웹/데스크톱과 동일하게 볼드·리스트·표·코드블록·
- *  링크가 실제로 그려진다 (이전엔 평문이라 마크업 기호가 그대로 보였다). */
-const AssistantMarkdown: React.FC<{ text: string }> = React.memo(({ text }) => {
-  const p = useP();
-  const styles = useMemo(
-    () => ({
-      body: { color: p.text, fontSize: 15, lineHeight: 22 },
-      paragraph: { marginTop: 0, marginBottom: 8 },
-      heading1: { fontSize: 20, fontWeight: '800' as const, marginBottom: 8, color: p.text },
-      heading2: { fontSize: 18, fontWeight: '800' as const, marginBottom: 6, color: p.text },
-      heading3: { fontSize: 16, fontWeight: '700' as const, marginBottom: 6, color: p.text },
-      heading4: { fontSize: 15, fontWeight: '700' as const, color: p.text },
-      strong: { fontWeight: '700' as const },
-      link: { color: p.primary, textDecorationLine: 'underline' as const },
-      bullet_list: { marginBottom: 8 },
-      ordered_list: { marginBottom: 8 },
-      list_item: { flexDirection: 'row' as const, marginBottom: 3 },
-      blockquote: {
-        backgroundColor: p.panel2, borderLeftWidth: 3, borderLeftColor: p.primary,
-        paddingHorizontal: 10, paddingVertical: 4, marginBottom: 8, borderRadius: 4,
-      },
-      code_inline: {
-        backgroundColor: p.panel2, color: p.text, borderRadius: 4,
-        paddingHorizontal: 4, fontSize: 13,
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-      },
-      code_block: {
-        backgroundColor: p.panel2, color: p.text, borderRadius: 8, padding: 10,
-        fontSize: 12.5, borderWidth: 0,
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-      },
-      fence: {
-        backgroundColor: p.panel2, color: p.text, borderRadius: 8, padding: 10,
-        fontSize: 12.5, borderWidth: 0, marginBottom: 8,
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-      },
-      table: { borderWidth: 1, borderColor: p.border, borderRadius: 6, marginBottom: 8 },
-      th: { padding: 6, fontWeight: '700' as const },
-      td: { padding: 6, borderTopWidth: 1, borderColor: p.border },
-      hr: { backgroundColor: p.border, height: 1, marginVertical: 10 },
-    }),
-    [p],
-  );
-  return (
-    <MarkdownDisplay
-      style={styles}
-      onLinkPress={(url) => {
-        void Linking.openURL(url).catch(() => undefined);
-        return false; // 기본 핸들러 중복 방지
-      }}
-    >
-      {text}
-    </MarkdownDisplay>
-  );
-});
-AssistantMarkdown.displayName = 'AssistantMarkdown';
-
-// ── 현재 채팅 ────────────────────────────────────────────────────
-
-function ChatSection({
-  client,
-  agent,
-  interactionId,
-  onWsState,
-  onPickAgent,
-}: {
-  client: XgenMobileClient;
-  agent: Agent | null;
-  interactionId: string;
-  onWsState: (s: ChatWsState) => void;
-  onPickAgent: () => void;
-}): React.ReactElement {
-  const p = useP();
-  const st = useMemo(() => makeStyles(p), [p]);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [attachments, setAttachments] = useState<MobileChatAttachment[]>([]);
-  const [attachmentStatus, setAttachmentStatus] = useState('');
-  const [uploadingAttachments, setUploadingAttachments] = useState(false);
-  const uploadBusy = useRef(false);
-  const attachmentContext = `${agent?.workflowId ?? ''}:${interactionId}`;
-  const attachmentContextRef = useRef(attachmentContext);
-  attachmentContextRef.current = attachmentContext;
-  const [wsState, setWsState] = useState<ChatWsState>('closed');
-  const [running, setRunningState] = useState(false);
-  /**
-   * `running` 의 ref 사본. 소켓 콜백은 렌더 사이에도 오는데, 그때 state 는 아직
-   * 옛 값이라 "내 턴인가" 를 state 로 물으면 틀린 답을 얻는다.
-   */
-  const runningRef = useRef(false);
-  const setRunning = useCallback((v: boolean): void => {
-    runningRef.current = v;
-    setRunningState(v);
-  }, []);
-  /**
-   * 지금 도는 턴이 **다른 기기**의 것인가.
-   *
-   * `running` 하나로는 두 경우를 구분하지 못한다: 내가 방금 보낸 턴과, 웹·앱에서
-   * 시작해 아직 도는 턴. 구분이 필요한 곳은 완결 push 다 — 내 턴의 답은 스트림이
-   * 이미 그렸지만, 다른 기기의 턴은 이 폰이 그린 적이 없어서 push 를 받아 그려야 한다.
-   */
-  const runningElsewhereRef = useRef(false);
-  const chatRef = useRef<ChatWsHandle | null>(null);
-  const listRef = useRef<FlatList<Message>>(null);
-
-  useEffect(() => {
-    onWsState(wsState);
-  }, [wsState, onWsState]);
-
-  useEffect(() => {
-    if (!agent) return;
-    let cancelled = false;
-    setMessages([]);
-    setAttachments([]);
-    setAttachmentStatus('');
-    void client.api.history
-      .turns(agent.workflowId, interactionId, agent.workflowName)
-      .then((turns) => {
-        if (cancelled) return;
-        const past: Message[] = [];
-        for (const t of turns) {
-          if (t.input) past.push({ role: 'user', text: t.input });
-          if (t.output) past.push({ role: 'assistant', text: t.output });
-        }
-        setMessages(past);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [client, agent, interactionId]);
-
-  useEffect(() => {
-    if (!agent) return;
-    const seenExternalIo = new Set<number>();
-    const handle = createChat({
-      wsBase: wsBaseOf(client.session.serverUrl),
-      workflowId: agent.workflowId,
-      workflowName: agent.workflowName || agent.workflowId,
-      interactionId,
-      clientDeviceId: cachedDeviceId() || undefined,
-      onState: setWsState,
-      wsFactory: client.wsFactory,
-      log: diagLog,
-      // 서버 주입 턴(트리거 반응) 실시간 반영 — 새로고침 없이 흐른다.
-      // 자기 실행 턴 push(source=user)는 스트림이 이미 그렸으므로 거른다.
-      // 다른 기기에서 시작한 턴이 도는가 — 그동안 작성기를 잠그고 [중지] 를 연다.
-      // 내가 돌리는 턴이면 running 은 이미 켜져 있으므로 덮어써도 같은 값이다.
-      onRunning: (isRunning) => {
-        // 내 턴이 도는 중이면 그대로 둔다 — 그건 '다른 곳' 이 아니다.
-        // 내 턴이 도는 중이면 그건 '다른 곳' 이 아니다 — 그대로 둔다.
-        if (isRunning && !runningRef.current) runningElsewhereRef.current = true;
-        if (!isRunning) runningElsewhereRef.current = false;
-        if (isRunning !== runningRef.current) setRunning(isRunning || runningRef.current);
-      },
-      // 다른 곳에서 도는 턴이 어디까지 왔는가 — 구독 확립 때 서버가 준다.
-      // 이게 없으면 폰을 다시 켠 화면은 "진행 중" 표시와 **빈 말풍선**을 함께
-      // 보여 준다: 서버는 열심히 돌고 있는데 폰에는 아무것도 없는 상태다.
-      onLiveTurn: (live) => {
-        if (!live.text) return; // 돌고 있지만 아직 한 글자도 안 나왔다.
-        if (runningRef.current) return; // 내 턴이면 스트림이 이미 그리고 있다.
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.remotePartial) {
-            if (last.text === live.text) return prev;
-            return [...prev.slice(0, -1), { ...last, text: live.text }];
-          }
-          return [...prev, { role: 'assistant', text: live.text, remotePartial: true }];
-        });
-      },
-      // ── 다른 화면이 **지금** 돌리는 턴 ────────────────────────────
-      //
-      // onLiveTurn 과 자리를 나눈다: 그쪽은 폰을 다시 켰을 때 이미 돌던 턴의
-      // 스냅샷(매번 통째로 덮어쓴다)이고, 이쪽은 지금 일어나는 일의 흐름
-      // (토큰마다 이어붙인다)이다. 둘 다 같은 말풍선(remotePartial)을 쓰므로
-      // 어느 쪽이 먼저 와도 화면은 하나로 보인다.
-      //
-      // 이것이 없던 동안, 웹에서 던진 질문은 폰에 **턴이 끝날 때까지** 나타나지
-      // 않았다 — 상대가 무엇을 물었는지조차 완결 뒤에야 알 수 있었다.
-      onPeerTurn: (event) => {
-        // 내가 돌리는 턴이면 손대지 않는다. 서버도 표식으로 걸러 주지만, 화면이
-        // 그 사실에만 기대면 표식이 빠진 날 조용히 글이 두 번 그려진다.
-        if (runningRef.current) return;
-        // 구멍(gap)은 따로 메우지 않는다 — 종료 프레임이 완결 본문을 통째로
-        // 싣고 오므로 마지막에는 반드시 맞는다.
-        if (event.kind === 'gap') return;
-        if (event.kind === 'started') {
-          runningElsewhereRef.current = true;
-          setRunning(true);
-          setMessages((prev) => [
-            ...prev.filter((m) => !m.remotePartial),
-            { role: 'user', text: event.input },
-            { role: 'assistant', text: '', remotePartial: true },
-          ]);
-          return;
-        }
-        if (event.kind === 'exec') {
-          const d = event.data as { type?: string; content?: unknown } | undefined;
-          if (event.event !== 'message' || d?.type !== 'data') return;
-          const text = typeof d.content === 'string' ? d.content : '';
-          if (!text) return;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (!last?.remotePartial) return prev;
-            return [...prev.slice(0, -1), { ...last, text: (last.text || '') + text }];
-          });
-          return;
-        }
-        // 종료 — 완결 본문으로 덮어쓴다(중간에 몇 조각을 놓쳤어도 마지막이 맞는다).
-        // 뒤이어 오는 완결 push(onServerTurn)가 같은 답을 또 세우지 않도록
-        // io_id 를 미리 본 것으로 기록한다.
-        if (event.ioId) seenExternalIo.add(event.ioId);
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last?.remotePartial) return prev;
-          return [...prev.slice(0, -1), { role: 'assistant', text: event.output }];
-        });
-        runningElsewhereRef.current = false;
-        setRunning(false);
-      },
-      onServerTurn: (turn) => {
-        // 다른 기기에서 시작한 턴은 이 폰이 그린 적이 없다 — 완결 push 로 받는다.
-        // (자기 실행 턴은 스트림이 이미 그렸으므로 거른다.)
-        const mine = !runningElsewhereRef.current;
-        if (turn.source !== 'subagent_report' && mine) return;
-        if (!turn.output) return;
-        if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
-        if (turn.ioId) seenExternalIo.add(turn.ioId);
-        setMessages((prev) => [
-          // 완결 턴이 왔으니 진행분 말풍선은 걷어낸다 — 안 그러면 같은 답이
-          // 진행분과 완결본으로 두 번 선다.
-          ...prev.filter((m) => !m.remotePartial),
-          { role: 'user', text: turn.input },
-          { role: 'assistant', text: turn.output },
-        ]);
-        // 다른 곳에서 돌던 턴이 끝났다 — 답이 도착했으니 [진행 중] 을 내린다.
-        runningElsewhereRef.current = false;
-        setRunning(false);
-      },
-      callbacks: {
-        onData: (text) => {
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.role === 'assistant' && last.streaming) {
-              return [...prev.slice(0, -1), { ...last, text: last.text + text }];
-            }
-            return [...prev, { role: 'assistant', text, streaming: true }];
-          });
-        },
-        onTool: (ev) => {
-          if (ev.eventType === 'tool_start' || ev.eventType === 'tool_use') {
-            setMessages((prev) => [...prev, { role: 'tool', text: `도구 실행: ${ev.toolName ?? ''}` }]);
-          }
-        },
-        onEnd: () => {
-          setRunning(false);
-          setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
-        },
-        onError: (message) => {
-          setRunning(false);
-          setMessages((prev) => [...prev, { role: 'error', text: message }]);
-        },
-        // 끊김은 실패가 아니다 — 폰이 잠기거나 지하철에 들어가거나 게이트웨이가
-        // 시간 제한으로 자른 것이고, 서버의 턴은 계속 돈다. 오류를 그리지 않고
-        // [진행 중] 을 유지한 채 재연결에 맡긴다.
-        onDetached: () => {
-          runningElsewhereRef.current = true;
-          setRunning(true);
-          setMessages((prev) =>
-            prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
-          );
-        },
-      },
-    });
-    chatRef.current = handle;
-    return () => handle.close();
-  }, [client, agent, interactionId]);
-
-  useEffect(() => {
-    const t = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
-    return () => clearTimeout(t);
-  }, [messages.length]);
-
-  const send = async (): Promise<void> => {
-    const text = input.trim();
-    if ((!text && attachments.length === 0) || running || uploadBusy.current || !chatRef.current) return;
-    const sendingAttachments = [...attachments];
-    setInput('');
-    setAttachments([]);
-    setAttachmentStatus('');
-    setRunning(true);
-    setMessages((prev) => [...prev, { role: 'user', text: text || `첨부 파일 ${sendingAttachments.length}개` }]);
-    try {
-      await chatRef.current.execute(text, sendingAttachments);
-    } catch (e) {
-      setRunning(false);
-      setAttachments((current) => [...sendingAttachments, ...current]);
-      const msg = friendlyError(e, '실행에 실패했습니다.');
-      setMessages((prev) =>
-        prev[prev.length - 1]?.role === 'error' ? prev : [...prev, { role: 'error', text: msg }],
-      );
-    }
-  };
-
-  const attachFiles = async (): Promise<void> => {
-    if (running || !agent || uploadBusy.current) return;
-    uploadBusy.current = true;
-    setUploadingAttachments(true);
-    const context = attachmentContextRef.current;
-    const isCurrent = () => attachmentContextRef.current === context;
-    let count = 0;
-    try {
-      const picked = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
-      if (picked.canceled || !isCurrent()) return;
-      setAttachmentStatus('파일을 업로드하는 중…');
-      for (const asset of picked.assets) {
-        if (!isCurrent()) return;
-        if ((asset.size ?? 0) > 100 * 1024 * 1024) throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
-        const b64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
-        const bytes = base64Bytes(b64);
-        if (bytes.byteLength > 100 * 1024 * 1024) throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
-        const detectedImageMime = imageMime(bytes);
-        const mime = detectedImageMime || (asset.mimeType || 'application/octet-stream').toLowerCase();
-        const kind: 'image' | 'file' = detectedImageMime ? 'image' : 'file';
-        const attachmentId = `mob-att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const result = await client.api.agentData.workspaceUpload(agent.workflowId, bytes, asset.name, mime, interactionId, attachmentId);
-        if (!isCurrent()) return;
-        if (result.status === 'pending_approval') throw new Error('파일 업로드가 승인 대기 중입니다.');
-        if (!result.workspace_path) throw new Error('Workspace 업로드 경로가 없습니다.');
-        const attachment: MobileChatAttachment = { kind, attachment_id: attachmentId, name: asset.name, mime_type: mime,
-          size: result.size ?? bytes.byteLength, sha256: result.sha256, workspace_path: result.workspace_path };
-        // Keep each successful file even if a later upload fails.
-        setAttachments((current) => [...current, attachment]);
-        count += 1;
-      }
-      setAttachmentStatus(`${count}개 파일 첨부됨`);
-    } catch (error) {
-      if (isCurrent()) setAttachmentStatus(friendlyError(error, '파일을 첨부하지 못했습니다.'));
-    } finally {
-      uploadBusy.current = false;
-      setUploadingAttachments(false);
-    }
-  };
-
-  if (!agent) {
-    return (
-      <View style={[st.notice, { flex: 1, justifyContent: 'center' }]}>
-        <Text style={{ color: p.text, fontSize: 17, fontWeight: '800', textAlign: 'center' }}>
-          진행 중인 대화가 없습니다
-        </Text>
-        <Text style={[st.mutedText, { textAlign: 'center', marginVertical: 8 }]}>
-          에이전트를 선택해 대화를 시작하세요.
-        </Text>
-        <Pressable style={[st.btnPrimary, { alignSelf: 'center' }]} onPress={onPickAgent}>
-          <Text style={st.btnPrimaryText}>에이전트 목록 열기</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  const canSend = !uploadingAttachments && wsState === 'connected' && (!!input.trim() || attachments.length > 0);
-
-  return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <FlatList
-        ref={listRef}
-        data={messages}
-        keyExtractor={(_, i) => String(i)}
-        contentContainerStyle={{ padding: 12, gap: 8 }}
-        renderItem={({ item: m }) => {
-          const text = m.role === 'assistant' ? stripAgentMarkers(m.text) : m.text;
-          if (!text && !m.streaming) return null;
-          if (m.role === 'user') {
-            const trig = parseAgentTrigger(text);
-            if (trig) return <TriggerRow trigger={trig} />;
-          }
-          return (
-            <View
-              style={[
-                st.msg,
-                m.role === 'user' && st.msgUser,
-                m.role === 'assistant' && st.msgAssistant,
-                m.role === 'tool' && st.msgTool,
-                m.role === 'error' && st.msgError,
-              ]}
-            >
-              {m.role === 'assistant' ? (
-                <AssistantMarkdown text={m.streaming ? `${text} ▍` : text} />
-              ) : (
-                <Text
-                  style={{
-                    color: m.role === 'user' ? '#fff' : m.role === 'error' ? p.danger : p.muted,
-                    fontSize: m.role === 'tool' || m.role === 'error' ? 12 : 15,
-                  }}
-                >
-                  {text}
-                </Text>
-              )}
-            </View>
-          );
-        }}
-        ListEmptyComponent={<Text style={st.notice}>메시지를 보내 대화를 시작하세요.</Text>}
-      />
-
-      <View style={st.composer}>
-        {attachments.length > 0 && (
-          <ScrollView horizontal contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
-            {attachments.map((item) => (
-              <Pressable key={item.attachment_id} style={st.attachmentChip}
-                onPress={() => setAttachments((current) => current.filter((a) => a.attachment_id !== item.attachment_id))}>
-                <Text style={{ color: p.text, fontSize: 12 }}>📎 {item.name} ×</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        )}
-        {!!attachmentStatus && <Text style={[st.mutedText, { marginBottom: 5 }]}>{attachmentStatus}</Text>}
-        <View style={st.composerBox}>
-          <Pressable style={st.attachBtn} disabled={running || uploadingAttachments} onPress={() => void attachFiles()}>
-            <Text style={{ color: p.text, fontSize: 18 }}>📎</Text>
-          </Pressable>
-          <TextInput
-            style={st.composerInput}
-            value={input}
-            onChangeText={setInput}
-            placeholder={
-              wsState === 'connected'
-                ? '메시지를 입력하세요'
-                : wsState === 'unsupported'
-                  ? '이 에이전트는 모바일 채팅을 지원하지 않습니다'
-                  : '연결 중…'
-            }
-            placeholderTextColor={p.muted}
-            multiline
-          />
-          {running ? (
-            <Pressable style={[st.sendBtn, { backgroundColor: p.danger }]} onPress={() => chatRef.current?.stop()}>
-              <View style={{ width: 12, height: 12, borderRadius: 2, backgroundColor: '#fff' }} />
-            </Pressable>
-          ) : (
-            <Pressable
-              style={[st.sendBtn, !canSend && { opacity: 0.35 }]}
-              disabled={!canSend}
-              onPress={() => void send()}
-            >
-              <Text style={{ color: p.onPrimary, fontSize: 16, fontWeight: '900', marginLeft: 2 }}>➤</Text>
-            </Pressable>
-          )}
-        </View>
-      </View>
-    </KeyboardAvoidingView>
   );
 }
 
@@ -1689,28 +1165,6 @@ function makeStyles(p: Palette) {
     chip: {
       backgroundColor: p.panel2, borderRadius: 16, paddingVertical: 8, paddingHorizontal: 14,
       borderWidth: 1, borderColor: p.border,
-    },
-
-    msg: { maxWidth: '86%', paddingHorizontal: 14, paddingVertical: 11, borderRadius: 16 },
-    msgUser: { alignSelf: 'flex-end', backgroundColor: p.primary, borderBottomRightRadius: 5 },
-    msgAssistant: {
-      alignSelf: 'flex-start', backgroundColor: p.assistantBubble,
-      borderWidth: 1, borderColor: p.border, borderBottomLeftRadius: 5,
-    },
-    msgTool: { alignSelf: 'flex-start', paddingVertical: 2, paddingHorizontal: 6 },
-    msgError: { alignSelf: 'center' },
-    composer: { backgroundColor: p.panel, borderTopWidth: 1, borderTopColor: p.border, padding: 8, paddingBottom: 14 },
-    composerBox: {
-      flexDirection: 'row', alignItems: 'flex-end', gap: 8,
-      backgroundColor: p.panel2, borderWidth: 1, borderColor: p.border,
-      borderRadius: 22, paddingLeft: 16, paddingRight: 6, paddingVertical: 6,
-    },
-    composerInput: { flex: 1, color: p.text, fontSize: 15, maxHeight: 132, paddingVertical: 6 },
-    attachBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-    attachmentChip: { borderWidth: 1, borderColor: p.border, borderRadius: 14, paddingHorizontal: 9, paddingVertical: 5 },
-    sendBtn: {
-      width: 38, height: 38, borderRadius: 19, backgroundColor: p.primary,
-      alignItems: 'center', justifyContent: 'center',
     },
 
     card: {

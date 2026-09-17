@@ -330,7 +330,9 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
     );
     return t;
   }, [loaded, kind]);
-  const textTruncated = !!loaded && loaded.bytes.byteLength > TEXT_RENDER_LIMIT;
+  // 글로 보여 주는 형식만 앞부분을 자른다 — PDF·그림 같은 파일에 "앞 2MB만 표시"가 붙으면 안 된다
+  const textTruncated =
+    !!loaded && ['code', 'markdown', 'csv', 'binary'].includes(kind) && loaded.bytes.byteLength > TEXT_RENDER_LIMIT;
   // 미지의 확장자가 텍스트면 code 로 승격.
   const effKind: ViewerKind = kind === 'binary' && text ? 'code' : kind;
 

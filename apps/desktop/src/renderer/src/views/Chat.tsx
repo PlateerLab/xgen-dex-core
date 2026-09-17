@@ -31,6 +31,12 @@ import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
+import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
+import { connectedToolGroups } from './agent-inspector-model';
+import { TurnFiles } from './TurnFiles';
+import { requestBefore } from './turn-files-model';
+import { MessageFiles } from './MessageFiles';
+import { useStickToBottom } from './chat-scroll';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { AvatarState } from '../avatar/AvatarSlot';
 import { XgenMark } from '../brand/Logo';
@@ -39,9 +45,12 @@ import {
   BellIcon,
   BellOffIcon,
   ChatIcon,
+  ChevronDownIcon,
   CloseIcon,
   CopyIcon,
   DocIcon,
+  EyeIcon,
+  EyeOffIcon,
   MicIcon,
   MonitorIcon,
   PlusIcon,
@@ -309,9 +318,12 @@ export const Chat: React.FC<{
   mcpDebug?: boolean;
   /** 헤더 [...] 메뉴 → 에이전트 뷰어 탭을 연다 (메모리/작업/도구/스토리지/전체로그). */
   onOpenViewer?: (sub: AgentViewerSub) => void;
-}> = ({ session, myName, mcpDebug = false, onOpenViewer }) => {
+  /** 에이전트 작업 공간 파일을 파일 뷰어 탭으로 연다 (답변 아래 "이 답변에서 만든 파일"). */
+  onOpenFile?: (workflowId: string, rel: string, name: string) => void;
+}> = ({ session, myName, mcpDebug = false, onOpenViewer, onOpenFile }) => {
   const { agent } = session;
   const messages = session.messages;
+  const lastAssistantIndex = messages.reduce((at, msg, idx) => (msg.role === 'assistant' ? idx : at), -1);
   const streaming = session.streaming;
   /**
    * 다른 곳(웹·모바일·VSCode·CLI)에서 시작한 턴이 이 대화에서 돌고 있다.
@@ -443,9 +455,8 @@ export const Chat: React.FC<{
     };
   }, [mcpDebug]);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+  // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll)
+  const { showJump, jumpToBottom } = useStickToBottom(scrollRef, messages, session.key);
 
   useEffect(() => {
     const ta = taRef.current;
@@ -527,11 +538,6 @@ export const Chat: React.FC<{
     const timer = setTimeout(() => setImageNotice(''), 7000);
     return () => clearTimeout(timer);
   }, [imageNotice]);
-
-  const endChat = useCallback(() => {
-    browserSelectionStore.forgetSession(session.key);
-    sessionStore.endChat(session.key);
-  }, [session.key]);
 
   // ── TTS playback: serial queue over WebAudio (Geny 방식) ──
   // HTMLAudioElement + blob URL 은 CSP media-src 의 지배를 받고(누락 시
@@ -679,6 +685,8 @@ export const Chat: React.FC<{
         width: selection.image.width,
         height: selection.image.height,
       }));
+      // 보낼 때는 항상 맨 아래로 내려가 답이 나오는 것을 보여 준다(위를 읽던 중이었어도).
+      jumpToBottom(false);
       // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
       // 답변은 백그라운드에서 계속 도착한다.
       sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections, () => {
@@ -688,7 +696,7 @@ export const Chat: React.FC<{
         replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
       });
     },
-    [session.key, screenCaptureOn],
+    [session.key, screenCaptureOn, jumpToBottom],
   );
 
   const send = useCallback(
@@ -968,6 +976,30 @@ export const Chat: React.FC<{
   useEffect(() => xgen.quickChat.onQuickSend((t) => send(t)), [send]);
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
+  // 작업 과정 표시는 답마다가 아니라 채팅 헤더의 [작업 과정] 한 곳에서 켜고 끈다(모든 대화에 적용)
+  const [processView, toggleProcessView] = useProcessView();
+  // 타임라인 카드 이름표에 쓸 도구 설명 — 이 에이전트에 연결된 도구 목록(상세보기 [도구] 탭과 같은 출처)
+  const [toolDescriptions, setToolDescriptions] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!processView) return;
+    let alive = true;
+    xgen.agentData
+      .basicInfo(agent.workflowId)
+      .then((info) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const group of connectedToolGroups(info.surfaces?.connector)) {
+          for (const tool of group.tools) if (tool.name && tool.description) map[tool.name] = tool.description;
+        }
+        setToolDescriptions(map);
+      })
+      .catch(() => {
+        // 설명을 못 받아도 카드는 도구 이름과 인자로 그린다
+      });
+    return () => {
+      alive = false;
+    };
+  }, [agent.workflowId, processView]);
   const agentNotificationMuted = !!notificationSnapshot.profile.mutedAgents[agent.workflowId];
   const chatNotificationMuted =
     !!notificationSnapshot.profile.mutedChats[
@@ -1001,7 +1033,7 @@ export const Chat: React.FC<{
         <div className="chat-header-actions">
           <div className="teams-menu-wrap">
             <button
-              className="secondary"
+              className="chat-hbtn icon"
               onClick={() => setNotificationMenuOpen((open) => !open)}
               title="이 에이전트와 대화의 알림 설정"
               aria-label="알림 설정"
@@ -1067,7 +1099,7 @@ export const Chat: React.FC<{
           )}
           {ttsOn && (
             <button
-              className="secondary"
+              className="chat-hbtn icon"
               onClick={() => setMuted((v) => !v)}
               title={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
               aria-label={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
@@ -1075,24 +1107,27 @@ export const Chat: React.FC<{
               {muted ? <SpeakerOffIcon size={15} /> : <SpeakerIcon size={15} />}
             </button>
           )}
-          {/* 상단 탭은 [상세보기] [대화 종료] 둘만. 상세보기는 이 에이전트의 메모리·작업·
+          {/* 상단 탭은 [상세보기] [작업 과정] 둘만. 상세보기는 이 에이전트의 메모리·작업·
               도구·스토리지·전체로그를 새 탭으로 연다(에이전트 관측 뷰어). '새 대화'는
-              에이전트를 다시 선택해 여는 흐름과 중복이라 제거. */}
+              에이전트를 다시 선택해 여는 흐름과 중복이라 제거. '대화 종료'는 탭 닫기와
+              겹쳐 필요 없다는 사용자 판단으로 [작업 과정] 토글로 바꿨다(2026-09-16). */}
           {onOpenViewer && (
             <button
-              className="secondary"
+              className="chat-hbtn"
               onClick={() => onOpenViewer('basic')}
               title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
               상세보기
             </button>
           )}
+          {/* 작업 과정 타임라인 켜기/끄기 — 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}
           <button
-            className="secondary end-chat"
-            onClick={endChat}
-            title="이 대화를 종료하고 목록으로 돌아갑니다"
+            className={`chat-hbtn process-toggle${processView ? ' on' : ''}`}
+            onClick={toggleProcessView}
+            aria-pressed={processView}
+            title={processView ? '작업 과정 타임라인 켜짐 — 눌러서 답만 보기' : '작업 과정 타임라인 꺼짐 — 눌러서 켜기'}
           >
-            <CloseIcon size={14} /> 대화 종료
+            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업 과정
           </button>
         </div>
       </div>
@@ -1163,6 +1198,9 @@ export const Chat: React.FC<{
                   </div>
                 );
               }
+              // 사용자 메시지의 첨부: 파일은 말풍선 위 카드(열기·저장), 그림은 말풍선 안 미리보기
+              const files = m.role === 'user' ? (m.images ?? []).filter((image) => image.kind === 'file') : [];
+              const pictures = (m.images ?? []).filter((image) => image.kind !== 'file');
               return (
             <div key={i} className={`msg-row ${m.role}`}>
               {m.role === 'assistant' && (
@@ -1189,7 +1227,7 @@ export const Chat: React.FC<{
                         : `서버에서 실행${m.surfaceNote ? ` — ${m.surfaceNote}` : ''}`}
                   </div>
                 )}
-                {m.tools && m.tools.length > 0 && (
+                {!(processView && hasProcessFlow(m)) && m.tools && m.tools.length > 0 && (
                   <ToolActivity
                     events={m.tools}
                     streaming={!!m.streaming}
@@ -1201,8 +1239,11 @@ export const Chat: React.FC<{
                     }}
                   />
                 )}
+                {files.length > 0 && (
+                  <MessageFiles files={files} workflowId={agent.workflowId} onOpenFile={onOpenFile} />
+                )}
                 <div
-                  className={`bubble ${m.role} ${m.error ? 'error' : ''}${m.images?.length ? ' has-images' : ''}`}
+                  className={`bubble ${m.role} ${m.error ? 'error' : ''}${pictures.length ? ' has-images' : ''}${m.role === 'user' && !m.text && pictures.length === 0 ? ' empty' : ''}`}
                 >
                   {/* 어시스턴트 답변은 웹 채팅과 동일하게 마크다운 렌더 —
                       볼드/리스트/표/코드블록/링크. 사용자가 입력한 메시지는
@@ -1212,7 +1253,12 @@ export const Chat: React.FC<{
                       // 실패는 **구조**로 보여준다: 무슨 일인지 한 줄, 이제 뭘
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
-                      <ErrorBlock info={m.errorInfo} />
+                      <>
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />}
+                        <ErrorBlock info={m.errorInfo} />
+                      </>
+                    ) : processView && hasProcessFlow(m) ? (
+                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
                     ) : m.text ? (
                       <Markdown text={m.text} />
                     ) : (
@@ -1220,32 +1266,28 @@ export const Chat: React.FC<{
                     )
                   ) : (
                     <>
-                      {m.images && m.images.length > 0 && (
+                      {pictures.length > 0 && (
                         <div
-                          className={`chat-message-images count-${Math.min(m.images.length, 4)}`}
-                          aria-label={`첨부 파일 ${m.images.length}개`}
+                          className={`chat-message-images count-${Math.min(pictures.length, 4)}`}
+                          aria-label={`첨부 이미지 ${pictures.length}개`}
                         >
-                          {m.images.map((image, imageIndex) => (
+                          {pictures.map((image, imageIndex) => (
                             <button
                               key={`${image.name}-${imageIndex}`}
                               type="button"
                               className="chat-message-image-button"
-                              onClick={() => image.kind !== 'file' && setPreviewImage(image)}
-                              aria-label={`${image.name || `첨부 파일 ${imageIndex + 1}`}${image.kind === 'file' ? '' : ' 확대 보기'}`}
+                              onClick={() => setPreviewImage(image)}
+                              aria-label={`${image.name || `첨부 이미지 ${imageIndex + 1}`} 확대 보기`}
                               title={
                                 image.width && image.height
                                   ? `${image.name} · ${image.width}×${image.height} · 클릭하여 확대`
                                   : `${image.name} · 클릭하여 확대`
                               }
                             >
-                              {image.kind === 'file' ? (
-                                <span className="chat-message-file"><DocIcon size={20} /> {image.name}</span>
-                              ) : (
-                                <img
-                                  src={image.dataUrl}
-                                  alt={image.name || `첨부 이미지 ${imageIndex + 1}`}
-                                />
-                              )}
+                              <img
+                                src={image.dataUrl}
+                                alt={image.name || `첨부 이미지 ${imageIndex + 1}`}
+                              />
                             </button>
                           ))}
                         </div>
@@ -1253,10 +1295,21 @@ export const Chat: React.FC<{
                       {m.text && <span className="bubble-plain">{m.text}</span>}
                     </>
                   )}
-                  {m.role === 'assistant' && m.text && m.streaming && <span className="cursor" />}
+                  {m.role === 'assistant' && m.text && m.streaming && !(processView && hasProcessFlow(m)) && (
+                    <span className="cursor" />
+                  )}
                 </div>
                 {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.
                     (한 글자도 못 받았으면 본문 자리에 이미 같은 문구가 서 있다.) */}
+                {m.role === 'assistant' && (
+                  <TurnFiles
+                    workflowId={agent.workflowId}
+                    msg={m}
+                    request={requestBefore(messages, i)}
+                    onOpenFile={onOpenFile}
+                    latest={i === lastAssistantIndex}
+                  />
+                )}
                 {m.interrupted && m.text !== INTERRUPTED_NOTE && (
                   <div className="shot-note" role="status">
                     <span>{INTERRUPTED_TEXT}</span>
@@ -1350,6 +1403,17 @@ export const Chat: React.FC<{
               );
             })()
           ))
+        )}
+        {showJump && (
+          <button
+            type="button"
+            className="chat-jump"
+            onClick={() => jumpToBottom(true)}
+            title="맨 아래로"
+            aria-label="맨 아래로 내려가 답을 따라갑니다"
+          >
+            <ChevronDownIcon size={18} />
+          </button>
         )}
       </div>
 

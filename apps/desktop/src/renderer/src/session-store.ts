@@ -34,6 +34,8 @@ import { INTERRUPTED_NOTE, describeStreamError } from '@dex/protocol';
 import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
+import { attachTurnProcesses, browserStorage, rememberTurnProcess, type KeyValueStorage } from './turn-process-memory';
+import { workspaceFileName, workspacePathOf } from './views/attachment-model';
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -57,11 +59,38 @@ const EMPTY_AGENT: Agent = {
   updatedAt: '',
 };
 
+/** 답변 안에서 텍스트와 도구 이벤트가 도착한 순서의 한 칸 — `at` 은 받은 시각(ms). */
+export type FlowItem =
+  | { kind: 'text'; text: string; at: number }
+  | { kind: 'tool'; event: ToolEvent; at: number };
+
+/** flow 에 한 칸 붙인다 — 연달아 온 텍스트 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다. */
+function appendFlow(flow: readonly FlowItem[] | undefined, item: FlowItem): FlowItem[] {
+  const out = flow ? flow.slice() : [];
+  const tail = out[out.length - 1];
+  if (item.kind === 'text' && tail?.kind === 'text') {
+    out[out.length - 1] = { ...tail, text: tail.text + item.text };
+    return out;
+  }
+  out.push(item);
+  return out;
+}
+
 /** One rendered chat message (mirrors the old Chat.Msg shape). */
 export interface ChatMsg {
   role: 'user' | 'assistant';
   text: string;
   tools?: ToolEvent[];
+  /**
+   * 텍스트와 도구 이벤트를 **받은 순서대로** 담는다 — 작업 과정 타임라인(ProcessTimeline)이
+   * "이 문장 다음에 이 도구" 를 그리는 근거. `text`·`tools` 는 그대로 두므로 기존 화면·이력에는 영향이 없다.
+   * 이 창이 스트림으로 받은 턴에만 있다(이력 복원·다른 화면에서 도는 턴은 순서를 모른다).
+   */
+  flow?: FlowItem[];
+  /** 이 턴을 보낸(없으면 첫 이벤트를 받은) 시각(ms) — 경과 시간 표시. */
+  startedAt?: number;
+  /** 마지막으로 텍스트·도구 이벤트를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 표시. */
+  lastEventAt?: number;
   citations?: Citation[];
   streaming?: boolean;
   error?: boolean;
@@ -174,6 +203,8 @@ export interface ChatAttachment {
   kind?: 'file' | 'image';
   width?: number;
   height?: number;
+  /** 에이전트 작업 공간에 올라간 자리(작업 공간 기준 경로) — 대화에서 이 파일을 다시 열고 받는 근거. */
+  workspacePath?: string;
 }
 
 export type ChatImageAttachment = ChatAttachment;
@@ -322,6 +353,8 @@ export class SessionStore {
   constructor(
     private transport: SessionTransport,
     private now: () => number = () => Date.now(),
+    /** 끝난 턴의 작업 과정을 남겨 두는 곳 — 대화를 다시 열 때 되붙인다(turn-process-memory). */
+    private processMemory: KeyValueStorage | null = browserStorage(),
   ) {}
 
   // ── useSyncExternalStore contract (stable arrow refs) ──────────────
@@ -529,7 +562,7 @@ export class SessionStore {
           typeof tn.output === 'string' ? tn.output : tn.output == null ? '' : String(tn.output);
         const images: ChatImageAttachment[] = [];
         for (const attachment of tn.attachments ?? []) {
-          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '' });
+          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '', workspacePath: workspacePathOf(attachment.path) });
         }
         if (this.transport.historyImage) {
           for (const attachment of tn.attachments ?? []) {
@@ -564,7 +597,8 @@ export class SessionStore {
       } else {
         this.patch(key, (s) => ({
           ...s,
-          messages: msgs,
+          // 서버 이력은 글만 준다 — 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙인다
+          messages: attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs),
           loadingHistory: false,
           historyLoaded: true,
           remote: snapshot.running,
@@ -680,6 +714,7 @@ export class SessionStore {
       tools: [],
       citations: [],
       streaming: true,
+      startedAt: this.now(),
     };
     this.patch(key, (st) => ({
       ...st,
@@ -757,7 +792,8 @@ export class SessionStore {
             workflowId: s.agent.workflowId,
             interactionId: s.interactionId,
             attachmentId,
-            name: image.name || `image-${index + 1}.png`,
+            // 맥이 준 NFD 이름 그대로 올리면 에이전트가 같은 이름을 다시 적었을 때 못 찾는다
+            name: workspaceFileName(image.name || `image-${index + 1}.png`),
             mimeType: decoded.mimeType,
             bytes: decoded.bytes,
           });
@@ -778,6 +814,24 @@ export class SessionStore {
       )
         .then((attachments) => {
           if (cancelled) return;
+          // 올라간 자리를 말풍선의 첨부에 적어 둔다 — 대화에서 바로 열고 받을 수 있게.
+          // (첨부 순서 = 업로드 순서, 화면 캡처는 맨 뒤라 앞쪽 인덱스가 그대로 맞는다)
+          if (userMsg.images?.length) {
+            this.patch(key, (st) => {
+              const at = st.messages.indexOf(userMsg);
+              if (at < 0) return st;
+              const messages = st.messages.slice();
+              messages[at] = {
+                ...userMsg,
+                images: userMsg.images?.map((image, index) => ({
+                  ...image,
+                  workspacePath: workspacePathOf(attachments[index]?.workspace_path) ?? image.workspacePath,
+                })),
+              };
+              return { ...st, messages };
+            });
+            this.emit();
+          }
           startStream({ input_str: text, attachments });
         })
         .catch((error: unknown) => {
@@ -801,8 +855,15 @@ export class SessionStore {
       const last = messages[messages.length - 1];
       if (!last || last.role !== 'assistant') return s;
       const nl: ChatMsg = { ...last };
-      if (ev.kind === 'text') nl.text = nl.text + ev.content;
-      else if (ev.kind === 'status') {
+      const at = this.now();
+      if (ev.kind === 'text' || ev.kind === 'tool') {
+        if (nl.startedAt === undefined) nl.startedAt = at;
+        nl.lastEventAt = at;
+      }
+      if (ev.kind === 'text') {
+        nl.text = nl.text + ev.content;
+        nl.flow = appendFlow(last.flow, { kind: 'text', text: ev.content, at });
+      } else if (ev.kind === 'status') {
         nl.surface = ev.surface;
         // server_sandbox: 폴백 사유(reason 이 사람이 읽는 문장). blocked: 차단 메시지(detail).
         // connector_local: 로컬 안내(detail — 동기화 미완료 등)만.
@@ -816,6 +877,7 @@ export class SessionStore {
       else if (ev.kind === 'tool') {
         rt.tools = [...rt.tools, ev.event];
         nl.tools = rt.tools;
+        nl.flow = appendFlow(last.flow, { kind: 'tool', event: ev.event, at });
         rt.citations = mergeCitations(rt.citations, ev.event.citations);
         nl.citations = rt.citations;
       } else if (ev.kind === 'error') {
@@ -853,6 +915,10 @@ export class SessionStore {
       messages[messages.length - 1] = nl;
       return { ...s, messages, streaming, remote, error, unseen, updatedAt: this.now() };
     });
+    if (ev.kind === 'end' && this.processMemory) {
+      const done = this.map.get(key);
+      rememberTurnProcess(this.processMemory, done?.interactionId ?? key, done?.messages[done.messages.length - 1], this.now());
+    }
     if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
       rt.cancel = null;
       // 분리된 턴을 멈추는 길은 남겨 둔다 — [정지] 는 스트림이 아니라 대화를 향한다.

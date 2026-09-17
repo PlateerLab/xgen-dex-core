@@ -3728,10 +3728,18 @@ if (!gotLock) {
         const headers: Record<string, string> = {};
         const accept = request.headers.get('accept');
         if (accept) headers.Accept = accept;
+        const contentType = request.headers.get('content-type');
+        if (contentType) headers['Content-Type'] = contentType;
         if (token) headers.Authorization = `Bearer ${token}`;
+        // **메서드와 본문을 그대로 넘긴다.** 사이트는 문서만 받아 가는 것이
+        // 아니라 앱 API 를 부른다(도구 실행·외부 요청은 POST 다). GET 으로
+        // 고정해 두면 웹에서는 되는 화면이 앱에서만 조용히 죽는다.
+        const method = request.method || 'GET';
+        const hasBody = method !== 'GET' && method !== 'HEAD';
         const upstream = await net.fetch(`${serverUrl}${u.pathname}${u.search}`, {
-          method: 'GET',
+          method,
           headers,
+          ...(hasBody ? { body: await request.arrayBuffer(), duplex: 'half' } : {}),
         });
         const out = new Headers(upstream.headers);
         const csp = out.get('content-security-policy');

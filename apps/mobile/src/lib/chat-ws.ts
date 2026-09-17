@@ -22,7 +22,12 @@
  *   - `execution_target: 'sandbox'` — 실행은 항상 서버 sandbox. 모바일은 로컬
  *     워크스페이스 실행이 없다 (도구만 모바일에서 돈다).
  */
-import { parseSubscribed, turnEventToChatEvent, type LiveTurnSnapshot } from '@dex/protocol';
+import {
+  parseSubscribed,
+  turnEventToChatEvent,
+  type LiveTurnSnapshot,
+  type ToolEvent,
+} from '@dex/protocol';
 
 export type ChatWsState =
   | 'connecting'
@@ -35,7 +40,15 @@ export type ChatWsState =
 /** 화면이 소비하는 실행 이벤트 — SSE/WS 공통 의미의 부분집합. */
 export interface ExecCallbacks {
   onData?: (text: string) => void;
-  onTool?: (ev: { eventType: string; toolName?: string; error?: string }) => void;
+  /**
+   * 도구 이벤트 **원본 그대로**.
+   *
+   * 예전에는 여기서 이름과 상태만 꺼내 넘겼다 — 호출 id·인자·결과·소요 시간이
+   * 전송로에서 버려졌으므로, 화면은 같은 이름의 호출 둘을 가르지 못했고
+   * [도구 실행 기록] 에 보여 줄 내용 자체가 없었다. 정본이 이미 만들어 주는
+   * 값을 좁혀서 넘길 이유가 없다.
+   */
+  onTool?: (ev: ToolEvent) => void;
   onEnd?: () => void;
   onError?: (message: string) => void;
   /**
@@ -166,15 +179,9 @@ export function dispatchExec(
   const ev = turnEventToChatEvent(eventName, parsed ?? null);
   if (!ev) return null;
   switch (ev.kind) {
-    case 'tool': {
-      const p = parsed ?? {};
-      cb.onTool?.({
-        eventType: String(p.event_type ?? p.type ?? 'tool'),
-        toolName: p.tool_name as string | undefined,
-        error: p.error as string | undefined,
-      });
+    case 'tool':
+      cb.onTool?.(ev.event);
       return null;
-    }
     case 'text':
       // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면 절반이
       // 화면에 샌다. 원문을 그대로 넘기고, 표시는 누적본에 stripAgentMarkers 를

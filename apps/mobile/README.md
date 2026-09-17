@@ -17,7 +17,25 @@ Expo(React Native) 위에 WebView 세대(apps/android, Capacitor)의 구조를
 | 도구 정의/게이트 | `src/lib/mobile-tools.ts` | 7그룹 × 12도구, 그룹별 on/off + 승인 |
 | 기기 어댑터 | `src/lib/rn-port.ts` | DevicePort 의 Expo 구현 (파일/알림/카메라/위치/…) |
 | 클라이언트 조립 | `src/lib/xgen.ts` | REST=fetch(네이티브, CORS 없음), **WS 인증=Bearer 헤더** (쿠키/SameSite 핵 폐기 — RN WebSocket 은 헤더를 지원) |
-| UI | `src/App.tsx` | [☰] 드로어 → 현재 채팅 / 에이전트 목록 / 설정 |
+| 껍데기 UI | `src/App.tsx` | [☰] 드로어 → 현재 채팅 / 에이전트 목록 / 설정 |
+| 채팅 화면 | `src/chat/*` | 아래 표 참고 |
+| 색·간격 | `src/theme.ts` | 팔레트 한 자리 (라이트/다크) |
+
+### 채팅 화면 (`src/chat/`)
+
+| 파일 | 하는 일 |
+|---|---|
+| `chat-view.tsx` | 화면 전체 — 소켓 배선, 스크롤 규칙, 작성기, 첨부, 대화 이동 |
+| `message-model.ts` | 대화 한 줄의 모양과 그것을 고치는 **순수 규칙** (테스트가 지킨다) |
+| `message-item.tsx` | 말풍선 한 개 — 답변 본문·오류 블록·출처·복사 |
+| `markdown.tsx` | 답변 본문 렌더 (코드 블록 가로 스크롤 + [복사], 표 가로 스크롤) |
+| `tool-activity.tsx` | 도구 과정 칩 — 한 번에 하나, 다음 것으로 크로스페이드 |
+| `tool-log-sheet.tsx` | [전체 로그 보기] — 호출별 인자·결과·소요 시간, 항목별 복사 |
+| `trigger-row.tsx` | Job/sub-agent 가 깨운 턴의 한 줄 표시 |
+| `answer-notice.ts` | 앱이 뒤에 있을 때 답변 도착 알림 |
+
+도구 칩·전체 로그의 **규칙**(짝 맞추기·건수 세기·이름 줄이기)은 앱마다 두지 않는다 —
+`@dex/protocol` 의 `tool-activity` 가 정본이고 데스크톱·웹도 같은 것을 쓴다.
 
 `@dex/protocol` 은 metro alias 로 소스 그대로 번들된다. RN 에 없는
 WebCrypto(`crypto.subtle.digest`)는 `src/shims/crypto.ts` 가 순수 JS 로 채운다.

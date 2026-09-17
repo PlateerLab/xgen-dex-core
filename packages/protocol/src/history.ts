@@ -68,10 +68,11 @@ export function xgenyHistoryWorkspacePath(attachment: HistoryAttachment): string
   path = path.replace(/^\/+/, '');
   if (path.startsWith('workspace/')) path = path.slice('workspace/'.length);
   const parts = path.split('/');
-  if (
-    !path.startsWith('uploads/users/') ||
-    parts.some((part) => !part || part === '.' || part === '..')
-  ) {
+  // 첨부가 놓이는 자리: uploads/users_<번호>/<대화>/<파일>. 그 앞에 올라간
+  // 파일은 uploads/users/<번호>/<대화>/<첨부>/<파일> 에 그대로 있어 함께 받는다.
+  const inAttachmentTree =
+    /^uploads\/users_[^/]+\//.test(path) || path.startsWith('uploads/users/');
+  if (!inAttachmentTree || parts.some((part) => !part || part === '.' || part === '..')) {
     return null;
   }
   return path;

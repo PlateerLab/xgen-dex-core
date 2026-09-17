@@ -89,4 +89,27 @@ test('XGeny 사용자 업로드 경로가 아닌 이력 첨부는 workspace 원�
   assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:../private/x.png' }), null)
   assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:workspace/memory/x.png' }), null)
   assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'legacy-minio-object', bucket: 'chat' }), null)
+  assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:uploads/users_/x.png' }), null)
+})
+
+test('첨부는 대화 폴더 하나에 놓인다 — 그 앞에 올린 것도 함께 연다', () => {
+  const base = {
+    id: 18,
+    name: 'red drop.png',
+    size: 1234,
+    contentType: 'image/png',
+    type: 'picture' as const,
+    bucket: 'geny-workspace',
+  }
+  assert.equal(
+    xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:uploads/users_42/iid-1/red drop.png' }),
+    'uploads/users_42/iid-1/red drop.png',
+  )
+  assert.equal(
+    xgenyHistoryWorkspacePath({
+      ...base,
+      path: 'geny-workspace:workspace/uploads/users_42/iid-1/red drop.png',
+    }),
+    'uploads/users_42/iid-1/red drop.png',
+  )
 })

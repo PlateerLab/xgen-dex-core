@@ -2385,6 +2385,46 @@ button {
   min-height: 0;
   position: relative;
 }
+/* ── 끌어다 놓기 ──────────────────────────────────────────────
+   채팅 어디에 놓아도 첨부된다. 덮개는 클릭을 가로채지 않는다(pointer-events:none)
+   — 가로채면 놓는 순간 드롭이 덮개에 떨어져 아무 일도 일어나지 않는다. */
+.chat.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+  border-radius: 12px;
+}
+.chat-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  backdrop-filter: blur(1px);
+}
+.chat-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 26px;
+  border-radius: 14px;
+  border: 2px dashed var(--accent);
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  color: var(--accent);
+}
+.chat-drop-card span {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.chat-drop-card em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--muted);
+}
 .chat-header {
   height: var(--header-h);
   display: flex;

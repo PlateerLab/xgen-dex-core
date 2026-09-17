@@ -4,12 +4,15 @@
  * 이 화면은 어떤 에이전트의 어떤 도구에도 같은 규칙으로 동작해야 한다 — 특정 시연·고객·서비스 이름을
  * 알아보는 분기가 끼어들면 그 에이전트에서만 그럴듯하고 나머지에서는 거짓 이름표가 붙는다.
  * 그래서 규칙 테스트와 함께 "이름으로 특수 처리하지 않는다" 를 소스 수준에서 지킨다.
+ *
+ * 이 규칙은 데스크톱 화면에서 태어나 여기(정본)로 올라왔다 — 웹 채팅이 같은 타임라인을 그린다.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import type { ToolEvent } from '@dex/protocol';
+import type { ToolEvent } from '../src/types';
 import {
   buildSteps,
   describeTool,
@@ -18,9 +21,9 @@ import {
   summarizeCommand,
   trimAnswer,
   type TimelineFlowItem,
-} from '../src/renderer/src/views/process-timeline-model';
+} from '../src/process-timeline';
 
-const ROOT = join(__dirname, '..');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const text = (t: string, at: number): TimelineFlowItem => ({ kind: 'text', text: t, at });
 const tool = (e: Partial<ToolEvent>, at: number): TimelineFlowItem => ({
@@ -117,15 +120,7 @@ test('JSON 이 아니거나 잘렸으면 첫 줄과 줄 수', () => {
 test('특정 시연·서비스·도구 이름으로 분기하지 않는다', () => {
   // 화면에 새 규칙이 붙을 때마다 여기에 그 파일을 추가한다 — 한 곳이라도 빠지면
   // 그 파일에서만 특정 고객·시연 이름을 알아보는 분기가 조용히 살아남는다.
-  const sources = [
-    'src/renderer/src/views/ProcessTimeline.tsx',
-    'src/renderer/src/views/turn-files-model.ts',
-    'src/renderer/src/views/TurnFiles.tsx',
-    'src/renderer/src/views/attachment-model.ts',
-    'src/renderer/src/views/MessageFiles.tsx',
-    'src/renderer/src/views/chat-scroll.ts',
-    'src/renderer/src/turn-process-memory.ts',
-  ];
+  const sources = ['src/process-timeline.ts', 'src/tool-activity.ts'];
   for (const rel of sources) {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     assert.doesNotMatch(src, /롯데|lotte|check_goods|search_products|goods_no|위해상품/i, rel);

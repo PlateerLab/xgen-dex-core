@@ -248,6 +248,8 @@ export * from './connector-devices';
 export * from './notifications';
 // 도구 과정 표시 규칙(칩 단계 · 호출 한 건 한 행 · 건수) — 앱과 웹이 같은 답을 내도록.
 export * from './tool-activity';
+// 작업 과정 타임라인 규칙 — 데스크톱·웹이 같은 단계와 같은 도구 이름표를 그린다.
+export * from './process-timeline';
 export { ApiError } from './client';
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';

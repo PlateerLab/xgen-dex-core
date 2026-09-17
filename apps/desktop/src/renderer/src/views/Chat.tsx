@@ -28,6 +28,7 @@ import { INTERRUPTED_NOTE, INTERRUPTED_TEXT } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
+import { DropTracker, dragHasFiles } from './chat-drop';
 import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
@@ -349,6 +350,16 @@ export const Chat: React.FC<{
   browserSelectionsRef.current = browserSelections;
   const [preparingImages, setPreparingImages] = useState(0);
   const [imageNotice, setImageNotice] = useState('');
+  /**
+   * 파일을 끌어다 놓는 중인가.
+   *
+   * 폰·웹 채팅에는 있는데 데스크톱 앱에만 없었다 — 파일을 끌어와도 아무 일도 일어나지
+   * 않고, 심하면 창이 그 파일을 열어 채팅이 통째로 사라졌다(브라우저 기본 동작).
+   * 자식 요소를 지날 때마다 dragleave 가 오므로 **들어온 횟수를 센다**: 단순히
+   * 켜고 끄면 말풍선 하나를 지날 때마다 안내가 깜빡인다.
+   */
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(new DropTracker());
   // 화면 캡처 — 기본 꺼짐. 화면에는 다른 사람의 메시지·비밀번호·미공개 문서가
   // 있을 수 있어서, 서버로 보내는 것은 사용자가 명시적으로 골라야 한다.
   const [screenCaptureOn, setScreenCaptureOn] = useState(false);
@@ -518,6 +529,46 @@ export const Chat: React.FC<{
       replaceStagedImages(stagedImagesRef.current.filter((image) => image.id !== id));
     },
     [replaceStagedImages],
+  );
+
+  // ── 끌어다 놓기 ────────────────────────────────────────────────
+  //
+  // 받는 것은 붙여넣기·[첨부] 와 **같은 길**이다(addImageFiles): 크기·형식·개수
+  // 검사가 한 곳에만 있어야 한 쪽만 통과하는 일이 없다.
+  const handleDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (busy || !dragHasFiles(event.dataTransfer?.types)) return;
+    event.preventDefault();
+    if (dragDepth.current.enter()) setDragOver(true);
+  }, [busy]);
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (busy || !dragHasFiles(event.dataTransfer?.types)) return;
+    // preventDefault 가 없으면 창이 그 파일을 열어 버린다 — 채팅이 사라지는 그 사고.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, [busy]);
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!dragHasFiles(event.dataTransfer?.types)) return;
+    event.preventDefault();
+    if (dragDepth.current.leave()) setDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!dragHasFiles(event.dataTransfer?.types)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragDepth.current.reset();
+      setDragOver(false);
+      if (busy) {
+        setImageNotice('답변이 끝난 뒤에 첨부할 수 있습니다.');
+        return;
+      }
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length > 0) void addImageFiles(files);
+    },
+    [addImageFiles, busy],
   );
 
   const handleImagePaste = useCallback(
@@ -1008,7 +1059,22 @@ export const Chat: React.FC<{
   const effectiveNotificationMuted = agentNotificationMuted || chatNotificationMuted;
 
   return (
-    <div className="chat">
+    <div
+      className={`chat${dragOver ? ' dropping' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragOver && (
+        <div className="chat-drop" role="status">
+          <div className="chat-drop-card">
+            <PlusIcon size={22} />
+            <span>여기에 놓으면 첨부합니다</span>
+            <em>이미지 · 문서 · 표 · 압축 파일</em>
+          </div>
+        </div>
+      )}
       <div className="chat-header">
         <div className="chat-title">
           <span className="agent-mark">

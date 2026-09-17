@@ -834,6 +834,12 @@ const api = {
       alias: string,
       params?: Record<string, string | number | boolean | undefined> | null,
     ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.artifactCallApi, apis, alias, params ?? null),
+    /** 프레임의 fetch 를 대신 부른다 — 아티팩트 주소 아래와 /api/ 만. */
+    http: (
+      workflowId: string, slug: string,
+      req: { url: string; method: string; headers: Record<string, string>; body: string | null },
+    ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> =>
+      ipcRenderer.invoke(CHANNELS.artifactHttp, workflowId, slug, req),
     setServing: (workflowId: string, slug: string, serving: boolean): Promise<ArtifactServingState> =>
       ipcRenderer.invoke(CHANNELS.artifactSetServing, workflowId, slug, serving),
     /** 절대 주소(`url`)까지 붙여 돌아온다 — 렌더러는 서버 주소를 모른다. */

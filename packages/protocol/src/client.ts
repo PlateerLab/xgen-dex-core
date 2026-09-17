@@ -216,6 +216,45 @@ export class HttpClient {
     return { bytes: new Uint8Array(ab), contentType: res.headers.get('content-type') ?? '' };
   }
 
+  /**
+   * 원시 요청 — 상태·헤더·본문을 그대로 돌려준다(JSON 으로 풀지 않는다).
+   *
+   * 아티팩트 프레임의 fetch 를 대신 부르는 자리다: 그 응답이 JSON 일지 텍스트일지
+   * 바이너리일지는 아티팩트의 스크립트가 정한다. 우리가 미리 해석하면 틀린다.
+   */
+  async raw(
+    method: string,
+    path: string,
+    opts?: { headers?: Record<string, string>; body?: string | null; timeoutMs?: number },
+  ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 120_000);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.url(path), {
+        method,
+        headers: this.headers({ Accept: '*/*', ...(opts?.headers ?? {}) }),
+        body: opts?.body ?? undefined,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 401) this.onAuthFailure?.();
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => { headers[k] = v; });
+    const type = res.headers.get('content-type') ?? '';
+    const textual = !type || /^(text\/|application\/(json|javascript|xml|x-www-form-urlencoded)|image\/svg)/i.test(type);
+    if (textual) {
+      return { status: res.status, statusText: res.statusText, headers, body: await res.text() };
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return {
+      status: res.status, statusText: res.statusText, headers, body: null,
+      bodyB64: Buffer.from(bytes).toString('base64'),
+    };
+  }
+
   put<T>(path: string, body?: unknown, opts?: { auth?: boolean; timeoutMs?: number }): Promise<T> {
     return this.json<T>('PUT', path, body, opts);
   }

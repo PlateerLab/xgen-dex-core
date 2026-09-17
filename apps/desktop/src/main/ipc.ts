@@ -138,6 +138,7 @@ export const CHANNELS = {
   artifactGallery: 'artifact:gallery',
   /** 프레임이 부탁한 alias 를 사용자 권한으로 대신 호출한다. */
   artifactCallApi: 'artifact:callApi',
+  artifactHttp: 'artifact:http',
   artifactSetServing: 'artifact:setServing',
   artifactSetShare: 'artifact:setShare',
   artifactDelete: 'artifact:delete',

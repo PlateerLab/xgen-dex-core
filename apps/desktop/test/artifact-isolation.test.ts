@@ -141,6 +141,18 @@ test('사이트 요청에는 main 이 자격을 붙인다 — 렌더러에 토�
   )
 })
 
+test('사이트가 부르는 앱 API 는 앱에서도 간다 — 메서드와 본문을 그대로 넘긴다', () => {
+  const main = read('src/main/index.ts')
+  const handler = /protocol\.handle\('xgensite'[\s\S]*?protocol\.handle\('xgenartifact'/.exec(main)
+  assert.ok(handler, 'xgensite 핸들러를 찾지 못했다')
+  assert.ok(
+    !/method: 'GET',/.test(handler[0]),
+    'GET 으로 고정하면 도구 실행·외부 요청(POST)이 앱에서만 죽는다',
+  )
+  assert.match(handler[0], /request\.method/)
+  assert.match(handler[0], /arrayBuffer\(\)/, '본문을 넘기지 않으면 입력 없는 호출이 된다')
+})
+
 test('앱은 사이트를 서버 경로 그대로 연다 — 웹과 같은 base·같은 상대 경로', () => {
   const ipc = read('src/main/ipc.ts')
   assert.match(ipc, /xgensite:\/\/artifact\/api\/agentflow\/agent-artifacts\//)

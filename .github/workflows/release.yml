@@ -325,10 +325,24 @@ jobs:
         run: |
           # 레지스트리 전파에 잠깐 걸린다. 올라간 것을 **정말로 깔아서** 실행해 본다 —
           # publish 성공만으로는 bin 이 붙었는지, 의존이 빠지지 않았는지 알 수 없다.
-          for i in 1 2 3 4 5 6; do
-            npm view "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}" version && break
-            sleep 10
+          # 레지스트리 전파는 분 단위로 걸릴 수 있다. 짧게 기다리고 그냥 설치로
+          # 넘어가면, publish 는 멀쩡한데 ETARGET 으로 릴리스가 빨개진다
+          # (2026-09-17 v1.47.0: 60초로는 모자랐고 배포 자체는 정상이었다).
+          # 그래서 (1) 캐시를 타지 않게 --prefer-online 으로 묻고, (2) 보일 때까지
+          # 최대 5분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다.
+          seen=""
+          for i in $(seq 1 20); do
+            if npm view --prefer-online "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}" version >/dev/null 2>&1; then
+              seen=1
+              echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
+              break
+            fi
+            sleep 15
           done
+          if [ -z "$seen" ]; then
+            echo "::error::${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            exit 1
+          fi
           npm i -g "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}"
           dex --version
           xgen-dex --version
@@ -373,10 +387,24 @@ jobs:
         run: |
           # publish 성공은 "올라갔다" 일 뿐이다. 소비자는 루트와 서브경로를 둘 다
           # import 하므로, 그 둘이 실제로 해석되는지 여기서 확인한다.
-          for i in 1 2 3 4 5 6; do
-            npm view "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}" version && break
-            sleep 10
+          # 레지스트리 전파는 분 단위로 걸릴 수 있다. 짧게 기다리고 그냥 설치로
+          # 넘어가면, publish 는 멀쩡한데 ETARGET 으로 릴리스가 빨개진다
+          # (2026-09-17 v1.47.0: 60초로는 모자랐고 배포 자체는 정상이었다).
+          # 그래서 (1) 캐시를 타지 않게 --prefer-online 으로 묻고, (2) 보일 때까지
+          # 최대 5분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다.
+          seen=""
+          for i in $(seq 1 20); do
+            if npm view --prefer-online "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}" version >/dev/null 2>&1; then
+              seen=1
+              echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
+              break
+            fi
+            sleep 15
           done
+          if [ -z "$seen" ]; then
+            echo "::error::${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            exit 1
+          fi
           TMP=$(mktemp -d); cd "$TMP"
           npm init -y >/dev/null
           npm i "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}"

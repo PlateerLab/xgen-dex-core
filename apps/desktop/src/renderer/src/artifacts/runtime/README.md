@@ -8,6 +8,7 @@
 |---|---|
 | `react-runtime.js.txt` | React + ReactDOM(client) IIFE. `globalThis.__ARTIFACT_REACT__` 를 세운다 |
 | `babel.min.js.txt` | `@babel/standalone` — 프레임 안에서 JSX/TS 를 변환한다 (7.28.4) |
+| `libs/<이름>.js.txt` | 아티팩트가 import 할 수 있는 라이브러리(recharts·lucide-react·d3·date-fns·clsx). 자기를 `globalThis.__ARTIFACT_LIBS__` 에 등록한다 |
 
 ## 어디서 왔나 — 그리고 왜 여기 또 있나
 

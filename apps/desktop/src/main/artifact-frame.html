@@ -134,13 +134,19 @@
       'react-dom': { createRoot: R.createRoot, version: React.version },
       'react-dom/client': { createRoot: R.createRoot },
     };
+    // 플랫폼이 미리 만들어 둔 라이브러리 — 호스트가 이 화면에 필요한 것만 실어
+    // 보냈고, 각 번들이 자기를 여기에 등록해 두었다. 폐쇄망이라 CDN 이 없으므로
+    // **여기 있는 것이 전부**다(없는 것은 이름을 대고 분명히 거절한다).
+    var LIBS = globalThis.__ARTIFACT_LIBS__ || {};
     function requireShim(name) {
       var key = String(name);
       if (Object.prototype.hasOwnProperty.call(MODULES, key)) return MODULES[key];
+      if (Object.prototype.hasOwnProperty.call(LIBS, key)) return LIBS[key];
+      var available = ['react', 'react-dom'].concat(Object.keys(LIBS)).join(', ');
       throw new Error(
-        "'" + key + "' 은(는) 아티팩트에서 쓸 수 없습니다. 이 화면에는 번들러도 패키지 설치도 " +
-        "없습니다 — react 와 react-dom 만 쓸 수 있고, 데이터는 artifact.json 의 data 에 " +
-        "선언해 xgen.file()/xgen.fetch() 로 읽으세요."
+        "'" + key + "' 은(는) 이 화면에서 쓸 수 없습니다. 쓸 수 있는 것: " + available + ". " +
+        "다른 라이브러리가 필요하면 아티팩트를 **폴더**로 만드세요 — index.html 을 두면 " +
+        "서버가 그 폴더를 사이트로 서빙하고, 그때는 파일도 라이브러리도 자유입니다."
       );
     }
 
@@ -252,6 +258,10 @@
         // eslint-disable-next-line no-new-func
         new Function(msg.runtimeJs)();
         new Function(msg.babelJs)();
+        // 아티팩트가 import 한 라이브러리 — 호스트가 필요한 것만 골라 보낸다.
+        // 각 번들은 스스로 globalThis.__ARTIFACT_LIBS__ 에 등록한다.
+        var libs = msg.libs || {};
+        Object.keys(libs).forEach(function (name) { new Function(libs[name])(); });
       } catch (e) {
         fail('런타임을 세우지 못했습니다', (e && e.stack) || (e && e.message));
         return;

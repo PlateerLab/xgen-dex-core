@@ -162,3 +162,31 @@ test('실어 보낸다고 적어 놓은 번들이 실제로 있다', () => {
     assert.ok(readFileSync(file, 'utf8').length > 100, `${name} 번들이 비었다`)
   }
 })
+
+// ── 4. fetch 가 된다 — 프레임의 요청을 호스트가 대신 부른다 ─────────────
+//
+// 사용자가 본 화면: "⚠️ 오류 발생: Failed to fetch". 프레임에는 네트워크가
+// 없어서 fetch 한 줄이 곧 그 오류였다. 네트워크를 열지 않고(그 격리가 토큰을
+// 지킨다) 호스트가 대신 부른다. 웹과 같은 성질을 여기서도 못박는다.
+
+test('프레임이 fetch 를 호스트로 넘긴다', () => {
+  const doc = read(FRAME_DOC)
+  assert.match(doc, /globalThis\.fetch = bridgedFetch/, 'fetch 를 바꿔치지 않으면 아티팩트의 fetch 는 그대로 죽는다')
+  assert.match(doc, /type: 'artifact:http'/)
+  assert.match(doc, /artifact:http-result/)
+  assert.match(doc, /__xgen\/fetch/, '바깥으로 나가려는 요청은 무엇을 쓰면 되는지 말해야 한다')
+})
+
+test('호스트가 그 요청을 우리 자격으로 대신 부른다', () => {
+  const host = read(FRAME_COMPONENT)
+  assert.match(host, /msg\.type === 'artifact:http'/)
+  assert.match(host, /xgen\?\.artifacts\?\.http/)
+  assert.match(host, /artifact:http-result/)
+})
+
+test('대신 부르는 범위는 아티팩트 주소 아래와 /api/ 뿐이다', () => {
+  const data = readFileSync(join(root, '../../packages/protocol/src/agent-data.ts'), 'utf8')
+  assert.match(data, /artifactHttp\(/)
+  assert.match(data, /target\.pathname\.startsWith\('\/api\/'\)/, '다른 오리진으로 자격이 나가면 안 된다')
+  assert.match(data, /delete headers\.cookie/, '프레임이 준 헤더에 쿠키가 있어도 넘기지 않는다')
+})

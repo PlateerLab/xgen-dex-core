@@ -157,6 +157,28 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
         // 읽는다. 이 배너는 **호스트만 아는 실패**(런타임을 못 받아온 경우) 자리다.
         return;
       }
+      if (msg.type === 'artifact:http') {
+        // 프레임의 fetch — main 이 우리 자격으로 대신 부른다. 상대 주소는 이
+        // 아티팩트의 주소 아래에서 풀리므로 api/ 스크립트·도구·프록시가 그냥 닿는다.
+        const id = msg.id;
+        const send = (payload: Record<string, unknown>): void => {
+          frame.contentWindow?.postMessage({ type: 'artifact:http-result', id, ...payload }, '*');
+        };
+        const http = xgen?.artifacts?.http;
+        if (!http) {
+          send({ ok: false, error: '이 창에서는 아티팩트가 요청을 보낼 수 없습니다.' });
+          return;
+        }
+        void http(artifact.workflow_id, artifact.slug, {
+          url: String(msg.url ?? ''),
+          method: String(msg.method ?? 'GET'),
+          headers: (msg.headers as Record<string, string>) ?? {},
+          body: (msg.body as string | null) ?? null,
+        })
+          .then((r) => send({ ok: true, ...r }))
+          .catch((e: unknown) => send({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+        return;
+      }
       if (msg.type === 'artifact:fetch') {
         const id = msg.id;
         const reply = (payload: Record<string, unknown>): void => {

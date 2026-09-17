@@ -2402,6 +2402,11 @@ ipcMain.handle(
   (_e, apis: ArtifactApiDeclaration[], alias: string, params?: Record<string, string>) =>
     getClient().agentData.artifactCallApi(apis, alias, params ?? null),
 );
+ipcMain.handle(
+  CHANNELS.artifactHttp,
+  (_e, workflowId: string, slug: string, req: { url: string; method: string; headers: Record<string, string>; body: string | null }) =>
+    getClient().agentData.artifactHttp(workflowId, slug, req),
+);
 
 /**
  * [아티팩트 모음] — 모든 에이전트가 만든 것 중 **지금 열리는 것**만.

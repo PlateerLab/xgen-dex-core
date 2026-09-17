@@ -99,6 +99,63 @@
     },
   };
 
+  // ── fetch 가 된다 ──────────────────────────────────────────────────
+  //
+  // 이 문서에는 네트워크가 없다(connect-src 'none'). 그래서 아티팩트가 평범하게
+  // `fetch('__xgen/api/prices')` 라고 쓰면 "Failed to fetch" 로 죽었다 — 사용자가
+  // 실제로 본 화면이다. 네트워크를 프레임에 여는 대신 **호스트에게 대신 부탁**
+  // 한다: 호스트는 같은 오리진에서 우리 자격으로 요청하고 결과를 돌려준다.
+  // 그러면 아티팩트의 API(api/ 스크립트)·도구·프록시·우리 API 가 전부 그냥 된다.
+  //
+  // 아티팩트 밖(다른 사이트)으로 나가는 주소는 여기서도 안 된다 — 그건 호스트도
+  // 못 한다(CORS). 그때는 __xgen/fetch 로 서버가 대신 나간다.
+  var nativeFetch = globalThis.fetch;
+  function bridgedFetch(input, init) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    var isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
+    if (isAbsolute && !/^https?:\/\/[^/]+\/api\//i.test(url)) {
+      return Promise.reject(new TypeError(
+        "'" + url + "' 은(는) 이 화면에서 직접 부를 수 없습니다(CORS). " +
+        "폴더에 api/<이름>.py 를 두고 fetch('__xgen/api/<이름>') 로 부르거나, " +
+        "artifact.json 의 allow 에 그 호스트를 적고 fetch('__xgen/fetch', {method:'POST', body: JSON.stringify({url})}) 를 쓰세요."
+      ));
+    }
+    var opts = init || {};
+    var body = opts.body;
+    var headers = {};
+    if (opts.headers) {
+      if (typeof opts.headers.forEach === 'function') opts.headers.forEach(function (v, k) { headers[k] = v; });
+      else Object.keys(opts.headers).forEach(function (k) { headers[k] = String(opts.headers[k]); });
+    }
+    var send = function (text) {
+      var id = ++seq;
+      return new Promise(function (resolve, reject) {
+        pending[id] = { resolve: resolve, reject: reject };
+        HOST.postMessage({
+          type: 'artifact:http', id: id, url: url,
+          method: String(opts.method || 'GET').toUpperCase(),
+          headers: headers, body: text,
+        }, ORIGIN);
+      }).then(function (r) {
+        var bytes = r.bodyB64 ? Uint8Array.from(atob(r.bodyB64), function (c) { return c.charCodeAt(0); }) : null;
+        return new Response(bytes || (r.body == null ? null : String(r.body)), {
+          status: r.status, statusText: r.statusText || '', headers: r.headers || {},
+        });
+      });
+    };
+    if (body == null) return send(null);
+    if (typeof body === 'string') return send(body);
+    if (body instanceof URLSearchParams) { headers['content-type'] = headers['content-type'] || 'application/x-www-form-urlencoded;charset=UTF-8'; return send(body.toString()); }
+    if (body instanceof Blob) return body.text().then(send);
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return new Blob([body]).text().then(send);
+    if (body instanceof FormData) {
+      return Promise.reject(new TypeError('이 화면에서는 FormData 업로드를 보낼 수 없습니다 — JSON 으로 보내세요.'));
+    }
+    return send(String(body));
+  }
+  globalThis.fetch = bridgedFetch;
+  void nativeFetch;
+
   function run(payload) {
     var R = globalThis.__ARTIFACT_REACT__;
     if (!R) { fail('런타임을 세우지 못했습니다', 'react-runtime.js 가 실행되지 않았습니다'); return; }
@@ -278,6 +335,14 @@
       delete pending[msg.id];
       if (msg.ok) p.resolve(msg.data);
       else p.reject(new Error(msg.error || '요청이 실패했습니다'));
+      return;
+    }
+    if (msg.type === 'artifact:http-result') {
+      var q = pending[msg.id];
+      if (!q) return;
+      delete pending[msg.id];
+      if (msg.ok) q.resolve(msg);
+      else q.reject(new TypeError(msg.error || 'Failed to fetch'));
       return;
     }
   });

@@ -532,6 +532,33 @@ export class AgentDataApi {
 
   // ── 아티팩트 ──────────────────────────────────────────────────
   /** 이 에이전트의 아티팩트 목록 (열 수 없는 것도 이유와 함께 온다). */
+  /**
+   * 격리 프레임(한 파일 아티팩트)의 fetch 를 **대신** 부른다.
+   *
+   * 프레임에는 네트워크가 없다 — 그래서 아티팩트가 fetch('__xgen/api/prices') 라고
+   * 쓰면 "Failed to fetch" 로 죽었다. 여기서는 우리 자격으로 서버에 요청한다.
+   * 상대 주소는 그 아티팩트의 주소(…/{slug}/app/) 아래에서 풀리므로 폴더의
+   * api/*.py·도구·프록시가 그대로 닿고, /api/… 는 우리 API 다. 그 밖으로는
+   * 나가지 않는다(그건 서버의 __xgen/fetch 몫이다).
+   */
+  artifactHttp(
+    workflowId: string,
+    slug: string,
+    req: { url: string; method: string; headers: Record<string, string>; body: string | null },
+  ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> {
+    const base = `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/app/`;
+    const target = new URL(req.url, `http://artifact.local${base}`);
+    if (target.host !== 'artifact.local' || !target.pathname.startsWith('/api/')) {
+      return Promise.reject(new Error(`'${req.url}' 은(는) 이 화면에서 부를 수 없습니다 — __xgen/fetch 를 쓰세요`));
+    }
+    const headers = { ...req.headers };
+    delete headers.cookie;
+    delete headers.Cookie;
+    delete headers.authorization;
+    delete headers.Authorization;
+    return this.http.raw(req.method, target.pathname + target.search, { headers, body: req.body });
+  }
+
   artifactList(workflowId: string): Promise<ArtifactListResult> {
     return this.http.get<ArtifactListResult>(
       `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/list`,

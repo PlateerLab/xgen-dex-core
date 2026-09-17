@@ -11,7 +11,7 @@ import {
   type SessionState,
   type SessionTransport,
 } from '../src/renderer/src/session-store'
-import type { Agent, ChatEvent, HistoryAttachment } from '@dex/protocol'
+import type { Agent, ChatEvent, HistoryAttachment, HistoryFlowItem } from '@dex/protocol'
 import { INTERRUPTED_NOTE } from '@dex/protocol'
 import type { BrowserSelectionResult } from '@dex/protocol/browser'
 
@@ -43,7 +43,7 @@ interface FakeStream {
 }
 
 function makeStore(
-  history: Record<string, Array<{ input: string; output: string; attachments?: HistoryAttachment[] }>> = {},
+  history: Record<string, Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>> = {},
   running: Record<string, boolean> = {},
 ) {
   const streams: FakeStream[] = []
@@ -446,6 +446,24 @@ test('openResume 는 히스토리를 불러오고, 이미 열려 있으면 다�
   store.openResume(agent('A'), 'iid-1')
   await flush()
   assert.equal(historyCalls(), 1, '히스토리는 한 번만 로드')
+})
+
+test('openResume 는 서버가 되살린 작업 과정을 답에 붙인다 — 이 PC 기록이 없어도', async () => {
+  const process: HistoryFlowItem[] = [
+    { kind: 'text', text: '읽습니다.\n', at: 1000 },
+    { kind: 'tool', at: 1500, event: { eventType: 'tool_call', toolName: 'Read', toolInput: { file_path: 'a.txt' }, toolUseId: 'u1' } },
+    { kind: 'tool', at: 1620, event: { eventType: 'tool_result', toolName: 'Read', result: 'ok', durationMs: 120, toolUseId: 'u1' } },
+    { kind: 'text', text: '\n\n끝.', at: 1620 },
+  ]
+  const { store } = makeStore({ 'iid-p': [{ input: 'u', output: '읽습니다.\n\n끝.', ioId: 9, process }] })
+  store.openResume(agent('A'), 'iid-p')
+  await flush()
+  const answer = store.get('iid-p')!.messages[1]
+  assert.equal(answer.executionIoId, 9)
+  assert.equal(answer.flow?.length, 4, '서버 과정이 순서로 붙는다')
+  assert.equal(answer.tools?.length, 2, '도구 사건도 함께')
+  assert.equal(answer.startedAt, 1000)
+  assert.equal(answer.lastEventAt, 1620)
 })
 
 test('openResume 는 XGeny 이력 이미지를 복원하고 세션 종료 때 미리보기 URL을 해제한다', async () => {

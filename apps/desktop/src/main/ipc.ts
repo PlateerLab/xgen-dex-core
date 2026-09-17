@@ -116,6 +116,14 @@ export const CHANNELS = {
   agentTaskRuns: 'agent:taskRuns',
   agentTaskOutput: 'agent:taskOutput',
   agentBasicInfo: 'agent:basicInfo',
+  /** 채팅 안전 장치 — 면책 문구 설정 · 민감정보 검사. */
+  guardDisclaimer: 'guard:disclaimer',
+  guardCheckContent: 'guard:checkContent',
+  /** 답변 평가(별점·문제 유형) — 웹 채팅과 같은 서버 계약. */
+  feedbackSubmit: 'feedback:submit',
+  feedbackUpdate: 'feedback:update',
+  feedbackDelete: 'feedback:delete',
+  feedbackMine: 'feedback:mine',
   agentToolsList: 'agent:toolsList',
   agentToolGet: 'agent:toolGet',
   agentWsTree: 'agent:wsTree',

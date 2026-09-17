@@ -2318,6 +2318,24 @@ ipcMain.handle(CHANNELS.agentTaskOutput, (_e, wf: string, runId: string) =>
   getClient().agentData.taskOutput(wf, runId),
 );
 ipcMain.handle(CHANNELS.agentBasicInfo, (_e, wf: string) => getClient().agentData.basicInfo(wf));
+// 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
+ipcMain.handle(CHANNELS.guardDisclaimer, () => getClient().guardrails.disclaimerEnabled());
+ipcMain.handle(CHANNELS.guardCheckContent, (_e, text: string) =>
+  getClient().guardrails.checkContent(text),
+);
+// 답변 평가 — 화면은 값만 넘기고, 서버와 말하는 일은 여기 한 곳에서 한다(웹과 같은 엔드포인트).
+ipcMain.handle(
+  CHANNELS.feedbackSubmit,
+  (_e, input: { executionIoId: number; starRating: number; issueType: string; comment?: string }) =>
+    getClient().feedback.submit(input),
+);
+ipcMain.handle(
+  CHANNELS.feedbackUpdate,
+  (_e, id: number, input: { starRating?: number; issueType?: string; comment?: string }) =>
+    getClient().feedback.update(id, input),
+);
+ipcMain.handle(CHANNELS.feedbackDelete, (_e, id: number) => getClient().feedback.remove(id));
+ipcMain.handle(CHANNELS.feedbackMine, (_e, ids: number[]) => getClient().feedback.mine(ids));
 ipcMain.handle(CHANNELS.agentToolsList, (_e, wf: string) => getClient().agentData.toolsList(wf));
 ipcMain.handle(CHANNELS.agentToolGet, (_e, wf: string, functionId: string) =>
   getClient().agentData.toolGet(wf, functionId),

@@ -29,8 +29,8 @@ test('비었거나 상위 폴더로 나가는 경로는 쓰지 않는다', () =>
 
 test('작업 공간에 올릴 한글 이름은 NFC 로 맞춘다', () => {
   // 맥이 주는 이름(NFD)과 모델이 다시 적는 이름(NFC)은 바이트가 다르다 — 리눅스에선 다른 파일이다
-  const macName = '위해상품_공표문_85개.pdf'.normalize('NFD');
-  const modelName = '위해상품_공표문_85개.pdf'.normalize('NFC');
+  const macName = '분기보고서_최종본.pdf'.normalize('NFD');
+  const modelName = '분기보고서_최종본.pdf'.normalize('NFC');
   assert.notEqual(macName, modelName);
   assert.equal(workspaceFileName(macName), modelName);
   assert.equal(workspaceFileName(modelName), modelName);
@@ -48,7 +48,7 @@ test('그림 파일은 대화창에 바로 그린다', () => {
 });
 
 test('확장자로 배지 글자와 색 계열을 정한다', () => {
-  assert.deepEqual(fileBadge('위해상품_공표문_85개.pdf'), { label: 'PDF', tone: 'pdf' });
+  assert.deepEqual(fileBadge('분기보고서_최종본.pdf'), { label: 'PDF', tone: 'pdf' });
   assert.deepEqual(fileBadge('결과.XLSX'), { label: 'XLSX', tone: 'sheet' });
   assert.deepEqual(fileBadge('data.csv'), { label: 'CSV', tone: 'sheet' });
   assert.deepEqual(fileBadge('제안서.pptx'), { label: 'PPTX', tone: 'slide' });

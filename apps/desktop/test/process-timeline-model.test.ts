@@ -21,8 +21,6 @@ import {
 } from '../src/renderer/src/views/process-timeline-model';
 
 const ROOT = join(__dirname, '..');
-const MODEL = readFileSync(join(ROOT, 'src/renderer/src/views/process-timeline-model.ts'), 'utf8');
-const VIEW = readFileSync(join(ROOT, 'src/renderer/src/views/ProcessTimeline.tsx'), 'utf8');
 
 const text = (t: string, at: number): TimelineFlowItem => ({ kind: 'text', text: t, at });
 const tool = (e: Partial<ToolEvent>, at: number): TimelineFlowItem => ({
@@ -117,7 +115,20 @@ test('JSON 이 아니거나 잘렸으면 첫 줄과 줄 수', () => {
 // ── 범용성 ────────────────────────────────────────────────────────────
 
 test('특정 시연·서비스·도구 이름으로 분기하지 않는다', () => {
-  for (const src of [MODEL, VIEW]) {
-    assert.doesNotMatch(src, /롯데|lotte|check_goods|search_products|goods_no|위해상품/i);
+  // 화면에 새 규칙이 붙을 때마다 여기에 그 파일을 추가한다 — 한 곳이라도 빠지면
+  // 그 파일에서만 특정 고객·시연 이름을 알아보는 분기가 조용히 살아남는다.
+  const sources = [
+    'src/renderer/src/views/process-timeline-model.ts',
+    'src/renderer/src/views/ProcessTimeline.tsx',
+    'src/renderer/src/views/turn-files-model.ts',
+    'src/renderer/src/views/TurnFiles.tsx',
+    'src/renderer/src/views/attachment-model.ts',
+    'src/renderer/src/views/MessageFiles.tsx',
+    'src/renderer/src/views/chat-scroll.ts',
+    'src/renderer/src/turn-process-memory.ts',
+  ];
+  for (const rel of sources) {
+    const src = readFileSync(join(ROOT, rel), 'utf8');
+    assert.doesNotMatch(src, /롯데|lotte|check_goods|search_products|goods_no|위해상품/i, rel);
   }
 });

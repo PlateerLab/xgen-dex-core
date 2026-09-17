@@ -304,11 +304,22 @@ export interface ArtifactApiDeclaration {
   method: 'GET';
 }
 
+/**
+ * 아티팩트의 모양.
+ *
+ *   project   폴더가 곧 웹사이트다(index.html). 서버가 그대로 서빙한다.
+ *   component 예전 모양 — React 한 파일을 프레임이 변환해 돌린다.
+ */
+export type ArtifactKind = 'project' | 'component';
+
 export interface ArtifactSummary {
   slug: string;
+  kind: ArtifactKind;
+  /** 사이트의 문서 루트 (폴더 자신이면 빈 문자열). project 에만 있다. */
+  root: string;
   title: string;
   description: string;
-  /** 엔트리 파일. 비어 있으면 열 수 없다(그 이유는 issues 에). */
+  /** 엔트리 파일. component 에서만 쓴다(사이트는 index.html 이 엔트리다). */
   entry: string;
   /**
    * 지금 **열리는가**. 매니페스트가 멀쩡해도 사람이 서빙을 내렸으면 false 다 —
@@ -337,7 +348,9 @@ export interface ArtifactSummary {
 
 export interface ArtifactDetail extends ArtifactSummary {
   workflow_id: string;
-  /** 엔트리 파일 원문 (프레임이 변환해 실행한다). */
+  /** 사이트 주소 (kind='project' 일 때만, 서버 경로). */
+  app_url: string;
+  /** 엔트리 파일 원문 (kind='component' 에서 프레임이 변환해 실행한다). */
   source: string;
   /** 선언된 데이터 파일 (경로 → 텍스트). */
   files: Record<string, string>;

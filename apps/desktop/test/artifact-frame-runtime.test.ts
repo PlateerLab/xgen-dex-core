@@ -123,3 +123,42 @@ test('프레임 문서는 100% 를 받을 수 있다', () => {
   assert.match(css, /html, body \{[^}]*height: 100%/)
   assert.match(css, /#root \{[^}]*min-height: 100%/)
 })
+
+// ── 3. 라이브러리 — 앱에서도 차트가 그려져야 한다 ─────────────────────
+//
+// "'recharts' 은(는) 아티팩트에서 쓸 수 없습니다" 로 화면이 통째로 죽던 자리다.
+// 폐쇄망이라 CDN 이 없으니 플랫폼이 미리 만들어 두고, 호스트가 소스에서 필요한
+// 것만 골라 프레임에 실어 준다. **웹과 같은 번들·같은 목록**이어야 한다 —
+// 갈라지면 "웹에서는 되는데 앱에서는 안 되는" 아티팩트가 생긴다.
+
+const SHIPPED_LIBS = ['recharts', 'lucide-react', 'd3', 'date-fns', 'clsx']
+
+test('프레임이 실어 준 라이브러리를 해석한다', () => {
+  const doc = read(FRAME_DOC)
+  assert.match(doc, /__ARTIFACT_LIBS__/, '프레임이 라이브러리 레지스트리를 보지 않는다')
+  assert.match(doc, /Object\.keys\(libs\)\.forEach/, '프레임이 전달받은 번들을 세우지 않는다')
+  assert.match(
+    doc,
+    /hasOwnProperty\.call\(LIBS, key\)/,
+    'requireShim 이 라이브러리를 찾지 않는다 — import 한 순간 죽는다',
+  )
+})
+
+test('호스트가 소스에 있는 라이브러리만 실어 보낸다', () => {
+  const host = read(FRAME_COMPONENT)
+  for (const name of SHIPPED_LIBS) {
+    assert.ok(host.includes(`'${name}'`), `${name} 로더가 없다`)
+    assert.ok(
+      host.includes(`runtime/libs/${name}.js.txt?raw`),
+      `${name} 번들을 동적 import 하지 않는다 — 앱 시작에 전부 실린다`,
+    )
+  }
+  assert.match(host, /libs,/, 'init 메시지에 libs 를 싣지 않는다')
+})
+
+test('실어 보낸다고 적어 놓은 번들이 실제로 있다', () => {
+  for (const name of SHIPPED_LIBS) {
+    const file = join(root, 'src/renderer/src/artifacts/runtime/libs', `${name}.js.txt`)
+    assert.ok(readFileSync(file, 'utf8').length > 100, `${name} 번들이 비었다`)
+  }
+})

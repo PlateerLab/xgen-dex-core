@@ -25,6 +25,7 @@ import { xgen } from '../bridge';
 import { RefreshIcon } from '../brand/icons';
 import { Selector } from '../views/Selector';
 import { ArtifactFrame } from './ArtifactFrame';
+import { ArtifactSiteFrame } from './ArtifactSiteFrame';
 import { ViewerEmpty } from '../views/agent-viewer-shared';
 
 function errText(e: unknown): string {
@@ -286,7 +287,17 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
 
       {detail?.ready ? (
         <div className="artifacts-stage">
-          <ArtifactFrame artifact={detail} reloadKey={revision} />
+          {detail.kind === 'project' ? (
+            // 사이트는 서버가 서빙한다 — main 이 자격을 붙여 받아 오고 여기서는 띄운다.
+            <ArtifactSiteFrame
+              workflowId={detail.workflow_id || workflowId}
+              slug={detail.slug}
+              title={detail.title}
+              reloadKey={revision}
+            />
+          ) : (
+            <ArtifactFrame artifact={detail} reloadKey={revision} />
+          )}
         </div>
       ) : null}
     </div>

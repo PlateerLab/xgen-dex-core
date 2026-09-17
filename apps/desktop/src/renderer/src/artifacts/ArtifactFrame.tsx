@@ -57,6 +57,52 @@ import { xgen } from '../bridge';
  * 않는다. 확장자가 `.txt` 인 것은 실수가 아니다: 브라우저가 스크립트로 불러오는
  * 파일이 아니라 우리가 텍스트로 읽어 프레임에 넘기는 payload 다.
  */
+/**
+ * 아티팩트가 쓸 수 있는 라이브러리 — 웹과 **같은 번들, 같은 목록**이다.
+ *
+ * 폐쇄망이라 CDN 이 없고 프레임에는 네트워크가 없다. 호스트가 소스에서 무엇을
+ * import 했는지 보고 필요한 것만 텍스트로 건네준다(recharts 하나가 530KB 라
+ * 전부 싣지 않는다). 목록이 웹과 어긋나면 "웹에서는 되는데 앱에서는 안 되는"
+ * 아티팩트가 생긴다 — 그 원인은 아티팩트 소스 어디에도 없다.
+ */
+const LIB_LOADERS: Record<string, () => Promise<{ default: string }>> = {
+  'recharts': () => import('./runtime/libs/recharts.js.txt?raw'),
+  'lucide-react': () => import('./runtime/libs/lucide-react.js.txt?raw'),
+  'd3': () => import('./runtime/libs/d3.js.txt?raw'),
+  'date-fns': () => import('./runtime/libs/date-fns.js.txt?raw'),
+  'clsx': () => import('./runtime/libs/clsx.js.txt?raw'),
+};
+
+/** 소스가 실제로 부르는 라이브러리만 고른다. */
+export function neededLibs(source: string): string[] {
+  const text = String(source || '');
+  return Object.keys(LIB_LOADERS).filter((name) => {
+    const escaped = name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    return new RegExp(`(from|import|require\\s*\\()\\s*['"\`]${escaped}(/[^'"\`]*)?['"\`]`).test(text);
+  });
+}
+
+const libCache = new Map<string, Promise<string>>();
+
+function loadLibs(source: string): Promise<Record<string, string>> {
+  return Promise.all(
+    neededLibs(source).map((name) => {
+      if (!libCache.has(name)) {
+        libCache.set(
+          name,
+          LIB_LOADERS[name]()
+            .then((m) => m.default)
+            .catch((e: unknown) => {
+              libCache.delete(name);
+              throw e;
+            }),
+        );
+      }
+      return libCache.get(name)!.then((code) => [name, code] as const);
+    }),
+  ).then((pairs) => Object.fromEntries(pairs));
+}
+
 let runtimePromise: Promise<{ runtimeJs: string; babelJs: string }> | null = null;
 
 function loadRuntime(): Promise<{ runtimeJs: string; babelJs: string }> {
@@ -142,13 +188,14 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
     const frame = frameRef.current;
     if (!frame?.contentWindow) return;
     setError('');
-    loadRuntime()
-      .then(({ runtimeJs, babelJs }) => {
+    Promise.all([loadRuntime(), loadLibs(artifact.source)])
+      .then(([{ runtimeJs, babelJs }, libs]) => {
         frame.contentWindow?.postMessage(
           {
             type: 'artifact:init',
             runtimeJs,
             babelJs,
+            libs,
             entry: artifact.entry,
             source: artifact.source,
             files: artifact.files,

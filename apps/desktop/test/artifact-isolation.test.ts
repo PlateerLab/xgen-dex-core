@@ -120,9 +120,9 @@ test('아티팩트 요청에만 자격을 싣는다 — 다른 호스트로는 �
   // 주석을 걷어낸 사본으로 보면 안 된다: URL 필터의 `//*` 가 블록 주석 시작으로
   // 읽혀 이 구간이 통째로 지워진다(같은 함정을 Accept 헤더에서 한 번 겪었다).
   const main = raw('src/main/index.ts')
-  const at = main.indexOf('onBeforeSendHeaders(')
-  assert.ok(at > 0, 'webRequest 훅을 찾지 못했다')
-  const hook = [main.slice(at, at + 900)]
+  const at = main.indexOf('WEBREQUEST_URL_FILTER = {')
+  assert.ok(at > 0, 'webRequest 필터를 찾지 못했다')
+  const hook = [main.slice(at, at + 1400)]
   assert.match(hook[0], /details\.url\.startsWith\(`\$\{server\}\/api\//, '설정된 서버로만 붙여야 한다')
   assert.match(hook[0], /Authorization/)
   assert.match(hook[0], /wss:\/\/\*\/api\/\*/, 'WebSocket 업그레이드에도 붙어야 실시간 앱이 산다')

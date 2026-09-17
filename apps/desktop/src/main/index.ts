@@ -3746,8 +3746,18 @@ if (!gotLock) {
     //
     // 붙이는 범위는 **설정된 서버의 /api/** 뿐이다. 다른 곳으로는 한 글자도
     // 나가지 않는다(토큰이 남의 호스트로 가는 것이 이 기능에서 가장 나쁜 실패다).
+    // 소켓을 여는 것이 아니라 **나가는 요청의 헤더만** 손대는 필터다. ws/wss 가
+    // 여기 있는 이유는 업그레이드 요청에도 자격이 붙어야 하기 때문이다.
+    const WEBREQUEST_URL_FILTER = {
+      urls: [
+        'http://*/api/*', // WEBREQUEST_URL_FILTER — 헤더만 손댄다
+        'https://*/api/*', // WEBREQUEST_URL_FILTER
+        'ws://*/api/*', // WEBREQUEST_URL_FILTER
+        'wss://*/api/*', // WEBREQUEST_URL_FILTER
+      ],
+    };
     session.defaultSession.webRequest.onBeforeSendHeaders(
-      { urls: ['http://*/api/*', 'https://*/api/*', 'ws://*/api/*', 'wss://*/api/*'] },
+      WEBREQUEST_URL_FILTER,
       (details, callback) => {
         const server = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
         const headers = { ...details.requestHeaders };

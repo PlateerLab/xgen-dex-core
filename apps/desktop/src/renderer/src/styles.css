@@ -5586,6 +5586,67 @@ button {
   color: var(--muted);
 }
 
+/* ── 출처 근거 ────────────────────────────────────────────────
+   이름표를 누르면 답변이 실제로 읽은 대목이 열린다. */
+.cite-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 61;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.42);
+  padding: 24px;
+}
+.cite-panel {
+  width: min(680px, 100%);
+  max-height: min(70vh, 720px);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+.cite-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.cite-head strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.cite-page,
+.cite-score {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.cite-text {
+  margin: 12px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.cite-empty {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 /* ── 답변 평가 ────────────────────────────────────────────────
    도구 로그 창과 같은 결의 작은 창. 웹 채팅의 평가와 같은 값(별점·문제 유형)을 받는다. */
 .fb-backdrop {

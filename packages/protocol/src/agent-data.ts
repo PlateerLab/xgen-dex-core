@@ -310,11 +310,21 @@ export interface ArtifactApiDeclaration {
  *   project   폴더가 곧 웹사이트다(index.html). 서버가 그대로 서빙한다.
  *   component 예전 모양 — React 한 파일을 프레임이 변환해 돌린다.
  */
-export type ArtifactKind = 'project' | 'component';
+export type ArtifactKind = 'service' | 'project' | 'component';
+
+/** service 아티팩트의 선언 — 에이전트가 자기 sandbox 에서 무엇을 어느 포트로 띄우는가. */
+export interface ArtifactService {
+  command: string
+  port: number
+  cwd: string
+  health: string
+}
 
 export interface ArtifactSummary {
   slug: string;
   kind: ArtifactKind;
+  /** service 일 때의 선언 (아니면 null). */
+  service?: ArtifactService | null;
   /** 사이트의 문서 루트 (폴더 자신이면 빈 문자열). project 에만 있다. */
   root: string;
   title: string;

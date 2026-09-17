@@ -287,8 +287,9 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
 
       {detail?.ready ? (
         <div className="artifacts-stage">
-          {detail.kind === 'project' ? (
-            // 사이트는 서버가 서빙한다 — main 이 자격을 붙여 받아 오고 여기서는 띄운다.
+          {detail.kind === 'project' || detail.kind === 'service' ? (
+            // 사이트(파일)든 에이전트가 띄운 앱이든 서버가 주소를 낸다 — main 이
+            // 자격을 붙여 받아 오고 여기서는 띄우기만 한다.
             <ArtifactSiteFrame
               workflowId={detail.workflow_id || workflowId}
               slug={detail.slug}

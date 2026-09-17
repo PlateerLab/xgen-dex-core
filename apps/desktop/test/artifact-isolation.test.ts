@@ -116,47 +116,28 @@ test('프레임은 호스트가 준 것만 실행한다 — alias 는 고르지 
 // 진짜 웹사이트라 둘 다 필요하다. 그래서 스킴을 따로 판다 — 같은 스킴에 두
 // 성질을 섞으면 한쪽의 자물쇠가 다른 쪽에서 풀린다.
 
-test('사이트 스킴은 렌더러와 다른 오리진이고 CSP 를 우회하지 않는다', () => {
-  const main = read('src/main/index.ts')
-  const block = /scheme: 'xgensite',[\s\S]*?\},\s*\n\s*\}/.exec(main)
-  assert.ok(block, 'xgensite 스킴 등록을 찾지 못했다')
-  assert.match(block[0], /standard: true/, '상대 경로가 풀리려면 standard 가 필요하다')
-  assert.match(block[0], /secure: true/)
-  assert.ok(
-    !/bypassCSP/.test(block[0]),
-    'bypassCSP 를 주면 공개 사이트에 서버가 씌운 sandbox 가 무력해진다',
-  )
+test('아티팩트 요청에만 자격을 싣는다 — 다른 호스트로는 한 글자도 나가지 않는다', () => {
+  // 주석을 걷어낸 사본으로 보면 안 된다: URL 필터의 `//*` 가 블록 주석 시작으로
+  // 읽혀 이 구간이 통째로 지워진다(같은 함정을 Accept 헤더에서 한 번 겪었다).
+  const main = raw('src/main/index.ts')
+  const at = main.indexOf('onBeforeSendHeaders(')
+  assert.ok(at > 0, 'webRequest 훅을 찾지 못했다')
+  const hook = [main.slice(at, at + 900)]
+  assert.match(hook[0], /details\.url\.startsWith\(`\$\{server\}\/api\//, '설정된 서버로만 붙여야 한다')
+  assert.match(hook[0], /Authorization/)
+  assert.match(hook[0], /wss:\/\/\*\/api\/\*/, 'WebSocket 업그레이드에도 붙어야 실시간 앱이 산다')
 })
 
-test('사이트 요청에는 main 이 자격을 붙인다 — 렌더러에 토큰을 주지 않는다', () => {
+test('회전한 토큰이 아티팩트 요청에도 반영된다', () => {
   const main = read('src/main/index.ts')
-  const handler = /protocol\.handle\('xgensite'[\s\S]*?protocol\.handle\('xgenartifact'/.exec(main)
-  assert.ok(handler, 'xgensite 핸들러를 찾지 못했다')
-  assert.match(handler[0], /liveAccessToken\(\)/, '자격 없이 서버를 부르면 401 이다')
-  assert.match(handler[0], /Authorization/)
-  assert.match(
-    handler[0],
-    /frame-ancestors/,
-    'frame-ancestors 를 떼지 않으면 앱에서는 부모 오리진이 달라 화면이 통째로 막힌다',
-  )
+  assert.match(main, /onTokensRotated:[\s\S]*?lastAccessToken = access/, '옛 토큰을 붙이면 그 화면만 403 에 갇힌다')
 })
 
-test('사이트가 부르는 앱 API 는 앱에서도 간다 — 메서드와 본문을 그대로 넘긴다', () => {
-  const main = read('src/main/index.ts')
-  const handler = /protocol\.handle\('xgensite'[\s\S]*?protocol\.handle\('xgenartifact'/.exec(main)
-  assert.ok(handler, 'xgensite 핸들러를 찾지 못했다')
-  assert.ok(
-    !/method: 'GET',/.test(handler[0]),
-    'GET 으로 고정하면 도구 실행·외부 요청(POST)이 앱에서만 죽는다',
-  )
-  assert.match(handler[0], /request\.method/)
-  assert.match(handler[0], /arrayBuffer\(\)/, '본문을 넘기지 않으면 입력 없는 호출이 된다')
-})
-
-test('앱은 사이트를 서버 경로 그대로 연다 — 웹과 같은 base·같은 상대 경로', () => {
-  const ipc = read('src/main/ipc.ts')
-  assert.match(ipc, /xgensite:\/\/artifact\/api\/agentflow\/agent-artifacts\//)
+test('앱은 아티팩트를 서버 주소 그대로 연다 — 웹과 같은 base·같은 상대 경로', () => {
+  const frame = read('src/renderer/src/artifacts/ArtifactSiteFrame.tsx')
+  assert.match(frame, /\/api\/agentflow\/agent-artifacts\//)
+  assert.match(frame, /serverUrl/, '서버 주소를 모르면 열지 않는다')
   const view = read('src/renderer/src/artifacts/ArtifactsView.tsx')
-  assert.match(view, /kind === 'project'/, '사이트를 한 파일 프레임으로 열면 빈 화면이 된다')
+  assert.match(view, /kind === 'service'/, '에이전트가 띄운 앱을 열지 못하면 빈 화면이 된다')
   assert.match(view, /ArtifactSiteFrame/)
 })

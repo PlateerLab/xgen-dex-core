@@ -306,6 +306,9 @@ function getClient(): XgenClient {
       onTokensRotated: (access, refresh) => {
         void tokenStore.setAccess(access);
         if (refresh) void tokenStore.setRefresh(refresh);
+        // 아티팩트 요청에 붙일 토큰도 여기서 갱신한다 — 회전 뒤에도 옛 토큰을
+        // 붙이면 그 화면만 403 에 갇힌다(다른 소비자들이 겪었던 그 실패다).
+        lastAccessToken = access;
       },
     });
   } else {
@@ -1473,10 +1476,15 @@ getLocalToolProvider().configureNotificationHandler(async (title, body, context)
  * WS 브릿지·워크스페이스 동기화가 keychain 만 읽으면, 세션 중 회전 시점과
  * keychain 기록 사이의 틈에서 폐기된 토큰을 집는다. 단일 소스로 그 틈을 없앤다.
  */
+//: webRequest 콜백은 **동기**라 그 자리에서 keychain 을 기다릴 수 없다. 마지막
+//: 으로 확인된 토큰을 들고 있다가 그때 붙인다(회전하면 아래에서 갱신된다).
+let lastAccessToken = '';
+
 async function liveAccessToken(): Promise<string> {
   const live = client?.getAccessTokenAfterRotation();
-  if (live) return live;
-  return (await tokenStore.getAccess()) ?? '';
+  const token = live || (await tokenStore.getAccess()) || '';
+  lastAccessToken = token;
+  return token;
 }
 /**
  * 인증 실패(401/403)를 맞은 소비자의 자가치유 — refresh 토큰으로 액세스 토큰을
@@ -3728,6 +3736,27 @@ if (!gotLock) {
         });
       }
     });
+    // 아티팩트(사이트·앱)를 **서버 주소 그대로** 여는 길.
+    //
+    // 웹에서는 브라우저가 쿠키를 싣는다. 앱에는 쿠키가 없고 토큰은 여기(main)에
+    // 있으므로, 이 세션이 서버의 /api/ 로 보내는 요청에 자격을 실어 준다.
+    // 문서·자산·fetch 뿐 아니라 **WebSocket 업스트림에도 같은 헤더가 붙는다** —
+    // 전용 스킴으로 중계하던 예전 방식이 못 하던 일이고, 그래서 실시간으로 도는
+    // 아티팩트가 앱에서만 죽었다.
+    //
+    // 붙이는 범위는 **설정된 서버의 /api/** 뿐이다. 다른 곳으로는 한 글자도
+    // 나가지 않는다(토큰이 남의 호스트로 가는 것이 이 기능에서 가장 나쁜 실패다).
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+      { urls: ['http://*/api/*', 'https://*/api/*', 'ws://*/api/*', 'wss://*/api/*'] },
+      (details, callback) => {
+        const server = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
+        const headers = { ...details.requestHeaders };
+        if (server && details.url.startsWith(`${server}/api/`) && lastAccessToken) {
+          headers.Authorization = `Bearer ${lastAccessToken}`;
+        }
+        callback({ requestHeaders: headers });
+      },
+    );
     // 아티팩트 사이트 — xgensite://artifact/<서버 경로> 를 그대로 서버로 넘긴다.
     //
     // 웹에서는 브라우저가 쿠키를 싣고 같은 오리진으로 열어 끝나는 일인데, 앱에는

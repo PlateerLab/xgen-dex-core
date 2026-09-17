@@ -33,6 +33,7 @@ import { mcpChatStatus } from './mcp-status-model';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
+import { CitationPanel } from './CitationPanel';
 import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
@@ -399,6 +400,8 @@ export const Chat: React.FC<{
   const [sensitive, setSensitive] = useState(false);
   const [feedbackByIo, setFeedbackByIo] = useState<Record<number, ChatFeedback>>({});
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
+  /** 눌러서 펼친 출처 — 답변이 실제로 읽은 대목을 보여 준다. */
+  const [citationFor, setCitationFor] = useState<Citation | null>(null);
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpBridgeStatusLike | null>(null);
@@ -1601,13 +1604,19 @@ export const Chat: React.FC<{
                   <div className="citations">
                     <span className="label">출처</span>
                     {m.citations.map((c: Citation, j: number) => (
-                      <span className="cite-pill" key={j} title={c.fileName}>
+                      <button
+                        type="button"
+                        className="cite-pill"
+                        key={j}
+                        title={`${c.fileName ?? '문서'} — 눌러서 읽은 대목 보기`}
+                        onClick={() => setCitationFor(c)}
+                      >
                         <DocIcon size={11} />
                         <span className="fname">
                           {c.fileName ?? '문서'}
                           {c.pageNumber ? ` p.${c.pageNumber}` : ''}
                         </span>
-                      </span>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -1643,6 +1652,7 @@ export const Chat: React.FC<{
             onClose={() => setLogFor(null)}
           />
         )}
+        {citationFor && <CitationPanel citation={citationFor} onClose={() => setCitationFor(null)} />}
         {feedbackFor !== null && (
           <FeedbackModal
             initial={feedbackByIo[feedbackFor]}

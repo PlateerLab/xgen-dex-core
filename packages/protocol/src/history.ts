@@ -5,7 +5,7 @@
  * - interactions: the list of past conversations for a sidebar.
  */
 import { HttpClient } from './client';
-import type { Conversation, ConversationSnapshot, HistoryAttachment, HistoryTurn } from './types';
+import type { Conversation, ConversationSnapshot, HistoryAttachment, HistoryFlowItem, HistoryTurn, ToolEvent } from './types';
 import { stripBrowserContext } from './browser';
 
 interface RawIoLog {
@@ -23,6 +23,40 @@ interface RawIoLog {
   output_data: unknown;
   attachments?: unknown;
   updated_at: string;
+  /** 서버가 실행 기록에서 되살린 작업 과정 — 도구를 쓴 턴에만. */
+  process?: unknown;
+}
+
+/**
+ * 서버 작업 과정 → 화면 순서. 사건 이름은 스트림(turn_events)과 같은 snake_case 라
+ * 같은 규칙으로 옮긴다. 모양이 어긋난 칸은 버린다 — 한 칸 때문에 턴 전체를 잃지 않는다.
+ */
+export function toHistoryProcess(value: unknown): HistoryFlowItem[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: HistoryFlowItem[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const at = typeof item.at === 'number' ? item.at : 0;
+    if (item.kind === 'text' && typeof item.text === 'string') {
+      out.push({ kind: 'text', text: item.text, at });
+      continue;
+    }
+    if (item.kind === 'tool' && item.event && typeof item.event === 'object') {
+      const e = item.event as Record<string, unknown>;
+      const event: ToolEvent = {
+        eventType: String(e.event_type ?? 'tool'),
+        toolName: typeof e.tool_name === 'string' ? e.tool_name : undefined,
+        toolInput: e.tool_input,
+        result: typeof e.result === 'string' ? e.result : undefined,
+        error: typeof e.error === 'string' ? e.error : undefined,
+        toolUseId: typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
+        durationMs: typeof e.duration_ms === 'number' ? e.duration_ms : undefined,
+      };
+      out.push({ kind: 'tool', event, at });
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Keep the history boundary tolerant of both the current camelCase response
@@ -160,6 +194,7 @@ export class HistoryApi {
       output: toDisplayText(r.output_data),
       attachments: toHistoryAttachments(r.attachments),
       updatedAt: r.updated_at,
+      process: toHistoryProcess(r.process),
     }));
     // 구버전 서버(필드 없음)에서는 false — "모른다" 를 "돌고 있다" 로 읽으면
     // 작성기가 영원히 잠긴다. 모르면 평소처럼 쓸 수 있어야 한다.

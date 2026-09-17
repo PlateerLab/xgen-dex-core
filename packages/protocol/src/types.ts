@@ -266,7 +266,19 @@ export interface HistoryTurn {
   output: string;
   attachments: HistoryAttachment[];
   updatedAt: string;
+  /**
+   * 이 턴의 작업 과정 — 글과 도구가 온 순서(서버 실행 기록에서 되살린 것).
+   *
+   * 도구를 쓴 턴에만 있다. 구버전 서버는 싣지 않는다(undefined) — 그때 화면은 예전처럼
+   * 본문만 그린다. 스트림으로 받은 순서와 같은 모양이라 타임라인이 그대로 그린다.
+   */
+  process?: HistoryFlowItem[];
 }
+
+/** 작업 과정 한 칸 — 글 한 조각 또는 도구 사건 하나(시각은 epoch ms). */
+export type HistoryFlowItem =
+  | { kind: 'text'; text: string; at: number }
+  | { kind: 'tool'; event: ToolEvent; at: number };
 
 /**
  * 한 대화의 지금 상태 — 지난 턴들과 **지금 도는 턴이 있는가**.

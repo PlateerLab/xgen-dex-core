@@ -26,7 +26,7 @@ import type {
   ChatEvent,
   ChatRequest,
   Citation,
-  HistoryAttachment,
+  HistoryAttachment, HistoryFlowItem,
   ToolEvent,
   XgenErrorInfo,
 } from '@dex/protocol';
@@ -249,7 +249,7 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
     // ioId — 그 답변이 서버에 남은 실행 한 건. 답변 평가가 이 값을 키로 쓴다(옛 preload 는 안 준다).
-  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[] }>>;
+  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>>;
   /**
    * 지난 턴 + **지금 도는 턴이 있는가** — 창을 연 첫 순간의 상태.
    *
@@ -262,7 +262,7 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
   ) => Promise<{
-    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[] }>;
+    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>;
     running: boolean;
   }>;
   /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
@@ -557,6 +557,7 @@ export class SessionStore {
           };
       const turns = snapshot.turns;
       const msgs: ChatMsg[] = [];
+      const serverProcess = new Map<number, NonNullable<(typeof turns)[number]['process']>>();
       for (const tn of turns) {
         // 최종 방어: text 는 무조건 문자열이어야 렌더가 안전하다 (transport 가
         // 이미 문자열화하지만, 다른 주입 경로가 생겨도 여기서 못 뚫게 한다).
@@ -597,7 +598,10 @@ export class SessionStore {
           msgs.push({ role: 'user', text: input, images: images.length > 0 ? images : undefined });
         }
         // 지난 대화의 답변에도 실행 id 를 실어 둔다 — 다시 열어도 평가하거나 고칠 수 있다.
+        // 서버가 되살린 작업 과정(process)은 잠시 옆에 둔다 — 이 PC 가 남긴 기록이 있으면 그것이
+        // 우선이고(입력·결과가 잘리지 않았다), 없을 때 서버 것으로 채운다.
         if (output) msgs.push({ role: 'assistant', text: output, executionIoId: tn.ioId });
+        if (output && tn.process) serverProcess.set(msgs.length - 1, tn.process);
       }
       // Only overwrite the transcript if a live turn hasn't started meanwhile.
       const current = this.map.get(key);
@@ -607,8 +611,19 @@ export class SessionStore {
       } else {
         this.patch(key, (s) => ({
           ...s,
-          // 서버 이력은 글만 준다 — 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙인다
-          messages: attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs),
+          // 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙이고, 없으면 서버가 실행 기록에서
+          // 되살린 과정을 쓴다 — 어느 기기에서 열어도 타임라인이 산다.
+          messages: attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs).map((m, i) => {
+            const process = serverProcess.get(i);
+            if (m.flow || !process) return m;
+            return {
+              ...m,
+              flow: process as FlowItem[],
+              tools: m.tools ?? process.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
+              startedAt: process[0]?.at,
+              lastEventAt: process[process.length - 1]?.at,
+            };
+          }),
           loadingHistory: false,
           historyLoaded: true,
           remote: snapshot.running,

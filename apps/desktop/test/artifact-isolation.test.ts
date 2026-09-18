@@ -91,11 +91,28 @@ test('프레임 문서는 외부 리소스를 한 줄도 부르지 않는다', (
   assert.ok(!/<link[^>]+\bhref=/.test(doc), '프레임 문서가 외부 스타일시트를 부른다')
 })
 
-test('렌더러 CSP 는 아티팩트 프레임만 허용한다', () => {
+test('렌더러 CSP 는 띄우는 것만 연다 — 프레임은 되고, 네트워크는 안 된다', () => {
   const html = read(RENDERER_HTML)
-  assert.ok(html.includes('frame-src xgenartifact:'), '렌더러 CSP 에서 frame-src 가 사라졌다')
-  // 다른 것을 프레임으로 띄울 길을 열어 두지 않는다.
-  assert.ok(!/frame-src[^"]*\*/.test(html), '렌더러 frame-src 에 와일드카드가 들어왔다')
+  const frameSrc = /frame-src([^"]*)/.exec(html)?.[1] ?? ''
+  assert.ok(frameSrc.includes('xgenartifact:'), '격리 프레임 스킴이 사라졌다')
+  // 에이전트가 띄운 앱은 **설정된 서버 주소 그대로** 연다. 정적 문서인 CSP 는 그
+  // 오리진을 미리 적을 수 없어 스킴으로 연다. 이 줄이 없으면 요청조차 나가지 않고
+  // 탭이 빈 화면이 된다(2026-09-18 실증).
+  assert.ok(frameSrc.includes('https:'), 'frame-src 에서 https 가 빠지면 [아티팩트] 탭이 빈다')
+  assert.ok(frameSrc.includes('http:'), '사내망·IP·localhost 서버는 http 다')
+  assert.ok(!frameSrc.includes('*'), '렌더러 frame-src 에 와일드카드가 들어왔다')
+
+  // 문서를 **띄우는 것**과 이 창이 네트워크로 **말하는 것**은 다른 일이다.
+  // 프레임은 서버 오리진이라 교차 출처이고 window.xgen 에 닿지 못한다. 그러나
+  // connect-src 가 열리면 이 창(그 다리가 있는 곳)이 직접 말하게 된다.
+  const connectSrc = /connect-src([^;"]*)/.exec(html)?.[1] ?? ''
+  assert.ok(connectSrc.length > 0, 'connect-src 가 사라졌다 — default-src 로 흘러가면 안 된다')
+  for (const scheme of ['https:', 'http:', '*']) {
+    assert.ok(
+      !connectSrc.includes(scheme),
+      `렌더러 connect-src 에 ${scheme} 가 들어왔다 — 이 창은 네트워크로 직접 말하지 않는다`,
+    )
+  }
 })
 
 test('프레임은 호스트가 준 것만 실행한다 — alias 는 고르지 못한다', () => {

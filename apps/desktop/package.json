@@ -26,6 +26,7 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "check": "tsc --noEmit -p tsconfig.json",
     "verify:artifact": "electron -r tsx/cjs verify/artifact-frame-smoke.cjs",
+    "verify:artifact-site": "electron verify/artifact-site-frame-smoke.cjs",
     "verify:agent-viewer": "electron verify/agent-viewer-smoke.cjs"
   },
   "dependencies": {

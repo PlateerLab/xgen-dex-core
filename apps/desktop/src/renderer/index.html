@@ -13,10 +13,20 @@
     <!-- 아바타 설정 뷰가 메인 창에서 모델/사진을 렌더한다: 에셋은 전부
          main-process 프록시 스킴(xgenavatar:)으로만 로드하고(연결 목적지는
          커넥터가 아는 서버뿐), 크롭 편집기는 blob: 오브젝트 URL 을 쓴다.
-         네트워크 직접 연결(https:/http:)은 여전히 차단 — 오버레이보다 좁다. -->
+         **connect-src 는 계속 닫혀 있다** — 이 창은 네트워크로 직접 말하지 않는다. -->
+    <!-- frame-src https: http: — 에이전트가 띄운 아티팩트 앱을 [아티팩트] 탭에서
+         연다. 그 주소는 사용자가 설정한 XGEN 서버뿐이고(ArtifactSiteFrame 이
+         serverUrl 에서 만든다), 서버 주소는 http 일 수도 있다(사내망·IP·localhost →
+         normalizeServerUrl). 정적 문서인 이 CSP 는 그 오리진을 미리 적을 수 없어
+         스킴으로 연다.
+         여는 것은 **문서를 띄우는 것**뿐이다: 프레임은 서버 오리진이라 이 창과
+         교차 출처이고, window.xgen 에 닿지 못한다. connect-src 는 그대로 닫혀
+         있으므로 이 창 자신이 네트워크로 나가는 길은 열리지 않는다.
+         이 한 줄이 없으면 요청조차 나가지 않고 탭이 빈 화면이 된다(2026-09-18 실증,
+         verify/artifact-site-frame-smoke.cjs 가 진짜 Chromium 으로 지킨다). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: xgenavatar:; media-src 'self' blob: data:; connect-src 'self' blob: data: xgenavatar:; worker-src 'self' blob:; frame-src xgenartifact: blob:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: xgenavatar:; media-src 'self' blob: data:; connect-src 'self' blob: data: xgenavatar:; worker-src 'self' blob:; frame-src xgenartifact: blob: https: http:"
     />
     <title>XGen Dex</title>
   </head>

@@ -84,6 +84,7 @@ import {
 } from './updater';
 import { CHANNELS } from './ipc';
 import { ARTIFACT_FRAME_CSP, ARTIFACT_FRAME_HTML } from './artifact-frame';
+import { stripFrameAncestors, stripFrameAncestorsFromHeaders } from './artifact-csp';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
@@ -3772,6 +3773,30 @@ if (!gotLock) {
         callback({ requestHeaders: headers });
       },
     );
+    // 그리고 서버가 붙인 **frame-ancestors 는 떼어 낸다.**
+    //
+    // 웹에서는 아티팩트와 그것을 감싸는 화면이 같은 오리진이라 `frame-ancestors
+    // 'self'` 로 충분하다. 앱에서는 부모가 렌더러(file://·개발 서버)라 오리진이
+    // 다르므로, 그대로 두면 브라우저가 프레임을 **통째로 거부한다** — 새 창으로는
+    // 열리는데 [아티팩트] 탭만 빈 화면인 그 모양이다(실증 2026-09-18).
+    //
+    // 전용 스킴으로 중계하던 시절에는 그 핸들러가 떼고 있었다. 서버 주소를 그대로
+    // 여는 길(WebSocket 때문에)로 옮기면서 이 한 줄이 같이 오지 않았다.
+    //
+    // 나머지 CSP 는 손대지 않는다 — 공개 링크로 열린 앱에 서버가 씌우는 sandbox 는
+    // 그대로 살아 있어야 한다. 격리를 정하는 쪽은 언제나 서버다.
+    session.defaultSession.webRequest.onHeadersReceived(
+      WEBREQUEST_URL_FILTER,
+      (details, callback) => {
+        const server = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
+        const received = details.responseHeaders ?? {};
+        if (!server || !details.url.startsWith(`${server}/api/`)) {
+          callback({ responseHeaders: details.responseHeaders });
+          return;
+        }
+        callback({ responseHeaders: stripFrameAncestorsFromHeaders(received) });
+      },
+    );
     // 아티팩트 사이트 — xgensite://artifact/<서버 경로> 를 그대로 서버로 넘긴다.
     //
     // 웹에서는 브라우저가 쿠키를 싣고 같은 오리진으로 열어 끝나는 일인데, 앱에는
@@ -3806,11 +3831,7 @@ if (!gotLock) {
         const out = new Headers(upstream.headers);
         const csp = out.get('content-security-policy');
         if (csp) {
-          const kept = csp
-            .split(';')
-            .map((part) => part.trim())
-            .filter((part) => part && !/^frame-ancestors\b/i.test(part))
-            .join('; ');
+          const kept = stripFrameAncestors(csp);
           if (kept) out.set('content-security-policy', kept);
           else out.delete('content-security-policy');
         }

@@ -21,6 +21,8 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { test } from 'node:test'
 
+import { stripFrameAncestors, stripFrameAncestorsFromHeaders } from '../src/main/artifact-csp'
+
 const root = join(__dirname, '..')
 const raw = (p: string): string => readFileSync(join(root, p), 'utf8')
 
@@ -140,4 +142,54 @@ test('앱은 아티팩트를 서버 주소 그대로 연다 — 웹과 같은 ba
   const view = read('src/renderer/src/artifacts/ArtifactsView.tsx')
   assert.match(view, /kind === 'service'/, '에이전트가 띄운 앱을 열지 못하면 빈 화면이 된다')
   assert.match(view, /ArtifactSiteFrame/)
+})
+
+// ── 부모가 렌더러라서 생기는 한 줄 (2026-09-18) ──────────────────────
+//
+// 앱의 [아티팩트] 탭이 **빈 화면**이었다. 새 창으로는 멀쩡히 열렸다. 서버는 사설
+// 앱에 `frame-ancestors 'self'` 를 붙이는데, 웹에서는 부모(웹 앱)와 오리진이 같아
+// 통과하고 앱에서는 부모가 렌더러라 오리진이 달라 브라우저가 프레임을 거부한다.
+// 전용 스킴으로 중계하던 시절에는 그 핸들러가 떼고 있었는데, WebSocket 때문에
+// 서버 주소를 그대로 여는 길로 옮기면서 이 한 줄이 같이 오지 않았다.
+
+test('frame-ancestors 만 걷어낸다 — 나머지 CSP 는 그대로', () => {
+  assert.equal(stripFrameAncestors("frame-ancestors 'self'"), '')
+  assert.equal(
+    stripFrameAncestors("sandbox allow-scripts; frame-ancestors 'self'"),
+    'sandbox allow-scripts',
+    '공개 앱의 sandbox 는 살아 있어야 한다 — 격리를 정하는 쪽은 서버다',
+  )
+  assert.equal(
+    stripFrameAncestors("default-src 'none'; Frame-Ancestors https://x; img-src data:"),
+    "default-src 'none'; img-src data:",
+    '대소문자가 달라도 같은 지시자다',
+  )
+  assert.equal(
+    stripFrameAncestors("frame-src 'self'"),
+    "frame-src 'self'",
+    'frame-src 는 이름이 비슷할 뿐 다른 지시자다 — 지우면 안 된다',
+  )
+})
+
+test('응답 헤더에서도 같은 일을 한다 — 헤더 이름 대소문자와 무관하게', () => {
+  const out = stripFrameAncestorsFromHeaders({
+    'Content-Security-Policy': ["sandbox allow-scripts; frame-ancestors 'self'"],
+    'content-type': ['text/html'],
+  })
+  assert.deepEqual(out['Content-Security-Policy'], ['sandbox allow-scripts'])
+  assert.deepEqual(out['content-type'], ['text/html'], '남의 헤더는 건드리지 않는다')
+
+  // 남길 것이 없으면 헤더 자체를 지운다 — 빈 CSP 를 남기면 브라우저마다 해석이 다르다.
+  const gone = stripFrameAncestorsFromHeaders({ 'content-security-policy': ["frame-ancestors 'self'"] })
+  assert.ok(!('content-security-policy' in gone), '빈 CSP 헤더가 남았다')
+})
+
+test('앱이 여는 아티팩트 응답에서 frame-ancestors 를 뗀다 — 안 떼면 빈 화면이다', () => {
+  const main = raw('src/main/index.ts')
+  const at = main.indexOf('onHeadersReceived')
+  assert.ok(at > 0, 'onHeadersReceived 가 사라졌다 — 서버의 frame-ancestors 가 그대로 오면 탭이 빈다')
+  const hook = main.slice(at, at + 900)
+  assert.match(hook, /WEBREQUEST_URL_FILTER/, '자격을 싣는 곳과 같은 범위여야 한다')
+  assert.match(hook, /details\.url\.startsWith\(`\$\{server\}\/api\//, '설정된 서버의 응답에만 손댄다')
+  assert.match(hook, /stripFrameAncestorsFromHeaders/)
 })

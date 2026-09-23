@@ -110,6 +110,7 @@ export const TURN_EVENT_NAMES = [
   'quota_exceeded',
   'quota_warning',
   'execution_suspended',
+  'turn_queued',
 ] as const;
 
 /**
@@ -229,6 +230,9 @@ export function turnEventToChatEvent(
       return d ? { kind: 'quota', level: 'warning', data: d } : null;
     case 'quota_exceeded':
       return d ? { kind: 'quota', level: 'exceeded', data: d } : null;
+    case 'turn_queued':
+      // 실행 자리가 모두 차 이 턴이 차례를 기다린다 — 실패가 아니다.
+      return { kind: 'queued', reason: String(d?.reason ?? 'busy') };
     case 'execution_suspended':
       return {
         kind: 'error',

@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/errors.test.ts test/chat-messages.test.ts",
+    "test": "tsx --test test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/errors.test.ts test/chat-messages.test.ts test/session-storage.test.ts",
     "start": "expo start",
     "prebuild": "expo prebuild",
     "apk": "cd android && ./gradlew assembleRelease",

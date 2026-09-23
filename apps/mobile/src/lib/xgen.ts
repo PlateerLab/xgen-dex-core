@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { XgenClient } from '@dex/protocol';
 import { diagLog, loggingFetch } from './diag';
+import { createSessionStorage } from './session-storage';
 
 export interface MobileSession {
   serverUrl: string;
@@ -22,8 +23,9 @@ export interface MobileSession {
   username: string;
 }
 
-const PREF_KEY = 'xgen-session';
 const CRED_KEY = 'xgen-credentials';
+const sessionStorage = createSessionStorage(SecureStore, AsyncStorage);
+let sessionGeneration = 0;
 
 export interface SavedCredentials {
   serverUrl: string;
@@ -72,6 +74,7 @@ type RnWebSocketCtor = new (
 ) => WebSocket;
 
 export function buildClient(session: MobileSession, onAuthFailure?: () => void): XgenMobileClient {
+  const generation = sessionGeneration;
   const api = new XgenClient({
     baseUrl: session.serverUrl,
     accessToken: session.accessToken,
@@ -80,9 +83,13 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
     onAuthFailure,
     // 토큰 회전 시 저장분 갱신 — 다음 WS 연결이 새 토큰 헤더를 집는다.
     onTokensRotated: (accessToken, refreshToken) => {
+      if (generation !== sessionGeneration) return;
       session.accessToken = accessToken;
       if (refreshToken !== undefined) session.refreshToken = refreshToken;
-      void AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
+      void sessionStorage.save(session).catch(() => {
+        diagLog('회전된 세션 토큰의 보안 저장에 실패');
+        onAuthFailure?.();
+      });
     },
   });
   const wsFactory = (url: string): WebSocket => {
@@ -110,24 +117,21 @@ export async function login(
     userId: String(r.userId),
     username: r.username,
   };
-  await AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
+  await sessionStorage.save(session);
   return session;
 }
 
 export async function restoreSession(): Promise<MobileSession | null> {
-  const v = await AsyncStorage.getItem(PREF_KEY).catch(() => null);
-  if (!v) return null;
   try {
-    const session = JSON.parse(v) as MobileSession;
-    if (!session.serverUrl || !session.accessToken) return null;
-    return session;
+    return await sessionStorage.restore();
   } catch {
     return null;
   }
 }
 
 export async function clearSession(): Promise<void> {
-  await AsyncStorage.removeItem(PREF_KEY);
+  sessionGeneration += 1;
+  await sessionStorage.clear();
 }
 
 export function newInteractionId(workflowId: string): string {

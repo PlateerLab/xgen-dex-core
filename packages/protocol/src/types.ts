@@ -135,6 +135,12 @@ export type ChatEvent =
    */
   | { kind: 'llm_contract'; phase: 'progress' | 'end' | 'error'; data: Record<string, unknown> }
   | { kind: 'summary'; text: string; data: Record<string, unknown> }
+  /**
+   * 이 턴이 **차례를 기다린다** — 서버의 실행 자리가 모두 차 있다(xgen-workflow 2026-09-23
+   * 감사 F1). 실패가 아니다: 자리가 나면 바로 시작한다. 화면은 답이 오기 전까지 "요청이 많아
+   * 순서를 기다리고 있습니다" 같은 한 줄을 보여 줄 수 있다. 모르는 화면은 무시해도 된다.
+   */
+  | { kind: 'queued'; reason: string }
   // detail 은 **원문 그대로** 유지한다(로그·디버깅). info 는 사용자에게 보여줄
   // 형태(코드·제목·안내) — 화면은 info 를, 로그는 detail 을 본다.
   | { kind: 'error'; detail: string; info?: XgenErrorInfo }

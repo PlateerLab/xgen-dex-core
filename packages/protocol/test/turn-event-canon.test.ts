@@ -108,3 +108,9 @@ test('payload 가 없으면 터지지 않는다', () => {
     turnEventToChatEvent(name, null);
   }
 });
+
+test('차례를 기다리는 턴(turn_queued)은 실패가 아니라 대기다', () => {
+  // 서버 실행 자리가 모두 찼다 — 자리가 나면 바로 시작한다(xgen-workflow 감사 F1).
+  assert.deepEqual(turnEventToChatEvent('turn_queued', { reason: 'busy' }), { kind: 'queued', reason: 'busy' });
+  assert.deepEqual(turnEventToChatEvent('turn_queued', null), { kind: 'queued', reason: 'busy' });
+});

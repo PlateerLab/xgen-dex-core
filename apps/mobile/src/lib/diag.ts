@@ -1,7 +1,8 @@
 /**
  * 온스크린 진단 — 실기기에서 "왜 안 되는가"를 스크린샷 한 장으로 확정하기
  * 위한 최근 API/이벤트 기록. HttpClient 에 로깅 fetch 를 주입해 모든 REST
- * 호출의 (메서드·경로·상태·소요·본문 미리보기)를 남긴다.
+ * 호출의 (메서드·경로·상태·소요)만 남긴다. 응답 본문과 오류 문자열에는
+ * 토큰이나 개인 데이터가 포함될 수 있으므로 기록하지 않는다.
  */
 
 export interface DiagEntry {
@@ -40,19 +41,12 @@ export function loggingFetch(input: string, init?: RequestInit): Promise<Respons
   })();
   const started = Date.now();
   return (globalThis.fetch as typeof fetch)(input, init).then(
-    async (res) => {
-      let preview = '';
-      try {
-        // 본문 미리보기 — clone 이 안 되는 구현(네이티브 패치)도 있어 방어.
-        preview = (await res.clone().text()).slice(0, 200);
-      } catch {
-        preview = '(본문 미리보기 불가)';
-      }
-      diagLog(`${method} ${path} → ${res.status} (${Date.now() - started}ms) ${preview}`);
+    (res) => {
+      diagLog(`${method} ${path} → ${res.status} (${Date.now() - started}ms)`);
       return res;
     },
     (e) => {
-      diagLog(`${method} ${path} → 실패 (${Date.now() - started}ms) ${e instanceof Error ? e.message : String(e)}`);
+      diagLog(`${method} ${path} → 실패 (${Date.now() - started}ms)`);
       throw e;
     },
   );

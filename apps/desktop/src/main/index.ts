@@ -30,6 +30,8 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { isSafeExternalUrl } from './external-url';
 import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
@@ -235,6 +237,27 @@ const aborters = new Map<string, AbortController>();
 /** The last avatar/chat state pushed from the main window, replayed to a
  * freshly-opened overlay so it isn't blank until the next stream event. */
 let lastOverlayState: unknown = null;
+
+/** 창 안의 웹 콘텐츠가 고른 주소를 바깥으로 연다 — 웹 주소만(external-url). */
+function openExternalSafe(url: string): void {
+  if (isSafeExternalUrl(url)) void shell.openExternal(url);
+}
+
+/**
+ * 앱 창이 머물러도 되는 주소인가 — 우리 렌더러(file:// 번들 또는 개발 서버)뿐.
+ *
+ * 앱 창 안의 아티팩트는 에이전트가 쓴 코드다. 클릭 한 번 뒤 그 코드가 top 을 다른 페이지로
+ * 옮기면, 옮겨 간 페이지가 preload 다리(window.xgen — 셸·파일·키체인)를 얻는다.
+ */
+function isRendererUrl(url: string): boolean {
+  const dev = process.env['ELECTRON_RENDERER_URL'];
+  if (dev && String(url).startsWith(dev)) return true;
+  try {
+    return String(url).startsWith(pathToFileURL(join(__dirname, '../renderer')).href + '/');
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 격리된 문서가 낸 요청인가 — 그런 요청에는 사용자 자격을 붙이지 않는다.
@@ -455,8 +478,15 @@ function createWindow(): void {
     }
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
+  });
+  // 앱 창은 우리 렌더러만 띄운다 — 그 밖으로 가려는 이동(창 안 아티팩트가 top 을 옮기는 것
+  // 포함)은 막고, 웹 주소면 기본 브라우저로 넘긴다.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isRendererUrl(url)) return;
+    event.preventDefault();
+    openExternalSafe(url);
   });
 
   attachContentResilience(mainWindow, () => {
@@ -769,7 +799,7 @@ function createOverlay(): void {
   createOverlayChip();
 
   overlayWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
   // Per-monitor geometry: restore this display's remembered bounds, then on every
@@ -914,7 +944,7 @@ function createOverlayChip(): void {
     overlayChip = null;
   });
   overlayChip.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
   // 페이지가 그려진 뒤에 띄운다 — 그 전에 show 하면 투명한 빈 사각형이
@@ -1081,7 +1111,7 @@ function createQuickChat(): void {
     if (quickChatWindow) loadRendererPage(quickChatWindow, 'quickchat.html');
   });
   quickChatWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
   quickChatWindow.on('blur', () => {
@@ -2899,6 +2929,8 @@ ipcMain.handle(CHANNELS.updaterSetEnabled, (_e, enabled: boolean) => {
   saveConfig({ autoUpdate: enabled });
   return enabled;
 });
+// 렌더러(우리 코드 — will-navigate 가 앱 창을 우리 렌더러에 묶는다)가 여는 주소는 스킴을 거르지
+// 않는다: macOS 알림 설정(x-apple.systempreferences:) 같은 OS 주소를 연다.
 ipcMain.handle(CHANNELS.openExternal, (_e, url: string) => shell.openExternal(url));
 ipcMain.handle(CHANNELS.appVersion, () => app.getVersion());
 ipcMain.handle(CHANNELS.systemMetrics, () =>

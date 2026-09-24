@@ -249,3 +249,32 @@ test('프레임의 fetch 다리는 그 아티팩트의 주소 아래만 부른�
   assert.ok(body.includes('target.pathname.startsWith(base)'), '아티팩트 주소 밖(/api/…)까지 부른다')
   assert.ok(!body.includes("startsWith('/api/')"), "'/api/' 전부를 부르던 조건이 남았다")
 })
+
+test('앱 창 안의 아티팩트는 앱 창을 다른 페이지로 옮기지 못한다', () => {
+  // 에이전트가 쓴 앱이 클릭 한 번 뒤 top 을 옮기면, 옮겨 간 페이지가 preload 다리(window.xgen —
+  // 셸·파일·키체인)를 얻는다. 막는 자물쇠 둘: iframe sandbox 에 allow-top-navigation 없음 +
+  // 앱 창의 will-navigate 가 우리 렌더러 밖을 거절.
+  const frame = read('src/renderer/src/artifacts/ArtifactSiteFrame.tsx')
+  const m = frame.match(/sandbox="([^"]+)"/)
+  assert.ok(m, '아티팩트 사이트 iframe 에 sandbox 가 없다')
+  assert.ok(!/allow-top-navigation/.test(m![1]), 'allow-top-navigation 이 들어왔다')
+  assert.ok(m![1].includes('allow-same-origin'), '주인의 앱은 자기 오리진이 있어야 자격이 실린다')
+  const src = raw(MAIN)
+  const at = src.indexOf("mainWindow.webContents.on('will-navigate'")
+  assert.ok(at > 0, '앱 창에 will-navigate 가드가 없다')
+  const guard = src.slice(at, at + 300)
+  assert.ok(guard.includes('isRendererUrl(url)') && guard.includes('event.preventDefault()'))
+})
+
+test('창 안의 웹 콘텐츠가 여는 주소는 웹 주소만 바깥으로 나간다', () => {
+  // shell.openExternal 은 file:// · smb:// · 앱 프로토콜도 OS 에 넘긴다(윈도에서 file:///…exe 는 실행된다).
+  const src = raw(MAIN)
+  for (const w of ['mainWindow', 'overlayWindow', 'overlayChip', 'quickChatWindow']) {
+    const at = src.indexOf(`${w}.webContents.setWindowOpenHandler(`)
+    assert.ok(at > 0, `${w} 의 창 열기 핸들러가 사라졌다`)
+    const body = src.slice(at, at + 160)
+    assert.ok(body.includes('openExternalSafe(url)'), `${w} 가 스킴을 거르지 않고 연다`)
+  }
+  const ext = readFileSync(join(root, 'src/main/external-url.ts'), 'utf8')
+  assert.ok(ext.includes("['http:', 'https:', 'mailto:']"))
+})

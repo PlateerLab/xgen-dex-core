@@ -62,7 +62,18 @@ export const ArtifactSiteFrame: React.FC<ArtifactSiteFrameProps> = ({
   return (
     <div className="artifact-frame-host">
       <div className="artifact-frame-box">
-        <iframe key={src} title={title || '아티팩트'} src={src} />
+        {/*
+          sandbox: 최상위 이동(allow-top-navigation)을 주지 않는다 — 에이전트가 쓴 앱이 클릭 한 번 뒤
+          앱 창을 다른 페이지로 옮기면 그 페이지가 preload 다리를 얻는다. allow-same-origin 은 준다:
+          이 프레임의 오리진은 서버이고 앱 창(file://)과 달라 부모에는 닿지 못하며, 빼면 주인의 앱도
+          오리진이 null 이 되어 자격이 실리지 않는다(주인이 아닌 사람에게는 서버가 따로 격리한다).
+        */}
+        <iframe
+          key={src}
+          title={title || '아티팩트'}
+          src={src}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+        />
       </div>
     </div>
   );

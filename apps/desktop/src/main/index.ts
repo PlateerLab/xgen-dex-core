@@ -29,8 +29,8 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isSafeExternalUrl } from './external-url';
 import {
   XgenClient,
@@ -253,7 +253,13 @@ function isRendererUrl(url: string): boolean {
   const dev = process.env['ELECTRON_RENDERER_URL'];
   if (dev && String(url).startsWith(dev)) return true;
   try {
-    return String(url).startsWith(pathToFileURL(join(__dirname, '../renderer')).href + '/');
+    const u = new URL(String(url));
+    if (u.protocol !== 'file:') return false;
+    // 문자열이 아니라 **경로**로 비교한다 — 윈도의 드라이브 대소문자·짧은 경로·퍼센트 인코딩이
+    // 어긋나면 앱 자신의 새로고침(오류 화면의 [다시 시도])까지 막힌다. path.relative 는 윈도에서
+    // 대소문자를 가리지 않는다.
+    const rel = relative(join(__dirname, '../renderer'), fileURLToPath(u));
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
   } catch {
     return false;
   }

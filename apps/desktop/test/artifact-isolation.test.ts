@@ -264,6 +264,11 @@ test('앱 창 안의 아티팩트는 앱 창을 다른 페이지로 옮기지 �
   assert.ok(at > 0, '앱 창에 will-navigate 가드가 없다')
   const guard = src.slice(at, at + 300)
   assert.ok(guard.includes('isRendererUrl(url)') && guard.includes('event.preventDefault()'))
+  // 앱 자신의 새로고침도 will-navigate 를 지난다(Electron 43 실측) — 문자열 접두 비교는 윈도 경로
+  // 표기 차이에 깨지므로 경로로 비교한다.
+  const fn = src.slice(src.indexOf('function isRendererUrl'))
+  const body = fn.slice(0, fn.indexOf('\n}\n'))
+  assert.ok(body.includes('fileURLToPath(u)') && body.includes('relative('), '렌더러 판정이 문자열 접두 비교다')
 })
 
 test('창 안의 웹 콘텐츠가 여는 주소는 웹 주소만 바깥으로 나간다', () => {

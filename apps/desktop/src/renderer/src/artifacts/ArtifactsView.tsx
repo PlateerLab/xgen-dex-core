@@ -155,7 +155,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
     // 아니다. 나머지 사실은 공개 중 내내 떠 있는 배너가 말한다.
     const ok = window.confirm(
       next
-        ? '공개 링크를 만들까요?\n아티팩트의 API는 동작하지 않습니다.'
+        ? '공개 링크를 만들까요?\n링크를 아는 사람은 누구나 로그인 없이 이 화면을 쓸 수 있습니다.'
         : '공개 링크를 닫을까요?\n이미 나간 링크는 되살아나지 않습니다.',
     );
     if (!ok) return;

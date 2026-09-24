@@ -536,10 +536,10 @@ export class AgentDataApi {
    * 격리 프레임(한 파일 아티팩트)의 fetch 를 **대신** 부른다.
    *
    * 프레임에는 네트워크가 없다 — 그래서 아티팩트가 fetch('__xgen/api/prices') 라고
-   * 쓰면 "Failed to fetch" 로 죽었다. 여기서는 우리 자격으로 서버에 요청한다.
-   * 상대 주소는 그 아티팩트의 주소(…/{slug}/app/) 아래에서 풀리므로 폴더의
-   * api/*.py·도구·프록시가 그대로 닿고, /api/… 는 우리 API 다. 그 밖으로는
-   * 나가지 않는다(그건 서버의 __xgen/fetch 몫이다).
+   * 쓰면 "Failed to fetch" 로 죽었다. 여기서 우리 자격으로 대신 부르되 **그 아티팩트의
+   * 주소(…/{slug}/app/) 아래만** 부른다. 폴더의 api/*.py·도구·바깥 요청(__xgen/fetch)이
+   * 전부 그 아래에 있고 서버가 각각 권한을 따진다. 예전에는 /api/… 전부를 불렀다 —
+   * 에이전트가 쓴 코드가 보는 사람의 권한으로 플랫폼 API 에 닿았다.
    */
   artifactHttp(
     workflowId: string,
@@ -548,8 +548,10 @@ export class AgentDataApi {
   ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> {
     const base = `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/app/`;
     const target = new URL(req.url, `http://artifact.local${base}`);
-    if (target.host !== 'artifact.local' || !target.pathname.startsWith('/api/')) {
-      return Promise.reject(new Error(`'${req.url}' 은(는) 이 화면에서 부를 수 없습니다 — __xgen/fetch 를 쓰세요`));
+    if (target.host !== 'artifact.local' || !target.pathname.startsWith(base)) {
+      return Promise.reject(
+        new Error(`'${req.url}' 은(는) 이 화면에서 부를 수 없습니다. 아티팩트 안의 주소(__xgen/api/…)나 __xgen/fetch 를 쓰세요`),
+      );
     }
     const headers = { ...req.headers };
     delete headers.cookie;

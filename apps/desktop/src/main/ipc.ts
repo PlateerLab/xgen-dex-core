@@ -307,15 +307,3 @@ export const CHANNELS = {
  */
 export const ARTIFACT_FRAME_URL = 'xgenartifact://frame/';
 
-/**
- * 아티팩트 **사이트**(폴더가 곧 웹사이트인 것)의 주소.
- *
- * 경로는 서버의 경로를 그대로 쓴다 — main 의 핸들러가 그 경로에 자격만 붙여
- * 넘기므로, 서버가 문서에 넣어 준 base·상대 경로·API 호출이 웹과 **같은 모양**
- * 으로 동작한다. 호스트 이름(artifact)에는 뜻이 없다(오리진을 만들 뿐).
- */
-export function artifactSiteUrl(workflowId: string, slug: string): string {
-  const wf = encodeURIComponent(String(workflowId || ''));
-  const s = encodeURIComponent(String(slug || ''));
-  return `xgensite://artifact/api/agentflow/agent-artifacts/${wf}/${s}/app/`;
-}

@@ -184,9 +184,11 @@ test('호스트가 그 요청을 우리 자격으로 대신 부른다', () => {
   assert.match(host, /artifact:http-result/)
 })
 
-test('대신 부르는 범위는 아티팩트 주소 아래와 /api/ 뿐이다', () => {
+test('대신 부르는 범위는 그 아티팩트의 주소 아래뿐이다', () => {
+  // 예전에는 '/api/' 전부였다 — 에이전트가 쓴 코드가 보는 사람의 권한으로 플랫폼 API 에 닿았다.
   const data = readFileSync(join(root, '../../packages/protocol/src/agent-data.ts'), 'utf8')
   assert.match(data, /artifactHttp\(/)
-  assert.match(data, /target\.pathname\.startsWith\('\/api\/'\)/, '다른 오리진으로 자격이 나가면 안 된다')
+  assert.match(data, /target\.pathname\.startsWith\(base\)/, '아티팩트 주소 밖으로 자격이 나가면 안 된다')
+  assert.doesNotMatch(data, /target\.pathname\.startsWith\('\/api\/'\)/)
   assert.match(data, /delete headers\.cookie/, '프레임이 준 헤더에 쿠키가 있어도 넘기지 않는다')
 })

@@ -84,7 +84,7 @@ import {
 } from './updater';
 import { CHANNELS } from './ipc';
 import { ARTIFACT_FRAME_CSP, ARTIFACT_FRAME_HTML } from './artifact-frame';
-import { stripFrameAncestors, stripFrameAncestorsFromHeaders } from './artifact-csp';
+import { stripFrameAncestorsFromHeaders } from './artifact-csp';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
@@ -211,26 +211,6 @@ protocol.registerSchemesAsPrivileged([
     scheme: 'xgenartifact',
     privileges: { secure: true },
   },
-  // 아티팩트 **사이트**(폴더가 곧 웹사이트인 것)를 앱 안에서 여는 스킴.
-  //
-  // 프레임 스킴과 성질이 반대다. 프레임은 문서 하나를 인라인으로 돌리는 자리라
-  // 오리진도 네트워크도 없어야 하지만, 사이트는 진짜 웹사이트다 — 자기 자산을
-  // 상대 경로로 끌어오고 서버 API 를 부른다. 그래서 standard(진짜 오리진 →
-  // 상대 경로가 풀린다)와 fetch 를 연다.
-  //
-  // 이 오리진은 렌더러(window.xgen 이 사는 곳)와 **다르다**. 그래서 사이트는
-  // 여전히 이 PC 의 셸·파일·키체인으로 이어지는 다리에 닿지 못한다. bypassCSP 는
-  // 주지 않는다 — 서버가 보낸 CSP(공개 사이트의 sandbox 등)를 그대로 받아야 한다.
-  {
-    scheme: 'xgensite',
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      stream: true,
-    },
-  },
   {
     scheme: 'xgenavatar',
     privileges: {
@@ -255,6 +235,45 @@ const aborters = new Map<string, AbortController>();
 /** The last avatar/chat state pushed from the main window, replayed to a
  * freshly-opened overlay so it isn't blank until the next stream event. */
 let lastOverlayState: unknown = null;
+
+/**
+ * 격리된 문서가 낸 요청인가 — 그런 요청에는 사용자 자격을 붙이지 않는다.
+ *
+ * 서버는 주인이 아닌 사람이 여는 아티팩트와 공개 링크에 CSP sandbox 를 씌운다. 그
+ * 문서의 오리진은 'null' 이고, 그 안의 코드는 남(에이전트)이 쓴 것이다. 예전에는 main
+ * 이 서버의 /api/ 로 가는 요청이면 누가 보냈든 토큰을 붙여서, 그 코드가 이 사용자의
+ * 권한으로 플랫폼 API 를 부르고 응답까지 읽을 수 있었다(서버 CORS 가 모든 오리진을
+ * 받는다). 그 문서가 자기 화면에 필요한 자격은 서버가 주소(보기·공개 토큰)에 이미 실었다.
+ *
+ * 판정은 세 갈래다.
+ *   · 앱 창 자신(최상위 프레임)의 요청은 우리 코드다 — 예전처럼 싣는다.
+ *   · iframe 을 **여는** GET 이동은 싣는다. 누가 보는지는 서버가 판정해 주인에게는 그대로,
+ *     아니면 보기 주소로 보낸다. 앱 창은 file:// 이라 새 iframe 은 서버 문서가 뜨기 전까지
+ *     'null' 오리진을 물려받는다 — 여기서 끊으면 주인의 앱도 열리지 않는다.
+ *   · 그 밖에 오리진이 'null' 인 iframe 이 낸 요청(fetch·스크립트·이미지·폼 POST·소켓)은
+ *     싣지 않는다.
+ */
+function fromIsolatedDocument(details: Electron.OnBeforeSendHeadersListenerDetails): boolean {
+  let frame: Electron.WebFrameMain | null = null
+  try {
+    frame = details.frame ?? null
+  } catch {
+    frame = null
+  }
+  if (!frame || !frame.parent) return false
+  const origin = Object.entries(details.requestHeaders || {}).find(
+    ([k]) => k.toLowerCase() === 'origin',
+  )?.[1]
+  if (origin === 'null') return true
+  if (details.resourceType === 'subFrame' && details.method === 'GET') return false
+  let frameOrigin = ''
+  try {
+    frameOrigin = frame.origin
+  } catch {
+    // 프레임이 이미 사라졌다 — 판정할 문서가 없다.
+  }
+  return frameOrigin === 'null'
+}
 
 /** Send to a window's renderer only if it (and its webContents) are still
  * alive. During app quit / auto-update restart the window can be torn down
@@ -3767,7 +3786,12 @@ if (!gotLock) {
       (details, callback) => {
         const server = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
         const headers = { ...details.requestHeaders };
-        if (server && details.url.startsWith(`${server}/api/`) && lastAccessToken) {
+        if (
+          server &&
+          details.url.startsWith(`${server}/api/`) &&
+          lastAccessToken &&
+          !fromIsolatedDocument(details)
+        ) {
           headers.Authorization = `Bearer ${lastAccessToken}`;
         }
         callback({ requestHeaders: headers });
@@ -3797,51 +3821,6 @@ if (!gotLock) {
         callback({ responseHeaders: stripFrameAncestorsFromHeaders(received) });
       },
     );
-    // 아티팩트 사이트 — xgensite://artifact/<서버 경로> 를 그대로 서버로 넘긴다.
-    //
-    // 웹에서는 브라우저가 쿠키를 싣고 같은 오리진으로 열어 끝나는 일인데, 앱에는
-    // 쿠키가 없고 토큰은 main 이 들고 있다. 그래서 main 이 자격을 붙여 대신
-    // 받아 온다 — 사이트가 자기 자산을 부르든 /api/… 를 부르든 같은 길이다.
-    //
-    // 서버가 붙인 frame-ancestors 는 떼어 낸다: 웹에서는 같은 오리진끼리의 규칙이
-    // 지만 앱에서는 부모(렌더러)와 오리진이 달라 그대로 두면 **화면이 통째로
-    // 막힌다.** 나머지 CSP(공개 사이트의 sandbox 등)는 손대지 않는다.
-    protocol.handle('xgensite', async (request) => {
-      try {
-        const u = new URL(request.url);
-        const serverUrl = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
-        if (!serverUrl) return new Response('artifact site: no server URL', { status: 502 });
-        const token = await liveAccessToken();
-        const headers: Record<string, string> = {};
-        const accept = request.headers.get('accept');
-        if (accept) headers.Accept = accept;
-        const contentType = request.headers.get('content-type');
-        if (contentType) headers['Content-Type'] = contentType;
-        if (token) headers.Authorization = `Bearer ${token}`;
-        // **메서드와 본문을 그대로 넘긴다.** 사이트는 문서만 받아 가는 것이
-        // 아니라 앱 API 를 부른다(도구 실행·외부 요청은 POST 다). GET 으로
-        // 고정해 두면 웹에서는 되는 화면이 앱에서만 조용히 죽는다.
-        const method = request.method || 'GET';
-        const hasBody = method !== 'GET' && method !== 'HEAD';
-        const upstream = await net.fetch(`${serverUrl}${u.pathname}${u.search}`, {
-          method,
-          headers,
-          ...(hasBody ? { body: await request.arrayBuffer(), duplex: 'half' } : {}),
-        });
-        const out = new Headers(upstream.headers);
-        const csp = out.get('content-security-policy');
-        if (csp) {
-          const kept = stripFrameAncestors(csp);
-          if (kept) out.set('content-security-policy', kept);
-          else out.delete('content-security-policy');
-        }
-        return new Response(upstream.body, { status: upstream.status, headers: out });
-      } catch (e) {
-        return new Response(`artifact site error: ${e instanceof Error ? e.message : String(e)}`, {
-          status: 502,
-        });
-      }
-    });
     // 아티팩트 실행 프레임 — 문서 하나. 응답 헤더로 CSP 를 붙여, 이 문서에는
     // 네트워크가 전혀 남지 않게 한다(웹의 미들웨어와 같은 값).
     protocol.handle('xgenartifact', (request) => {

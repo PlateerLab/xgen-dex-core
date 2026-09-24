@@ -210,3 +210,42 @@ test('앱이 여는 아티팩트 응답에서 frame-ancestors 를 뗀다 — 안
   assert.match(hook, /details\.url\.startsWith\(`\$\{server\}\/api\//, '설정된 서버의 응답에만 손댄다')
   assert.match(hook, /stripFrameAncestorsFromHeaders/)
 })
+
+test('격리된 문서가 낸 요청에는 사용자 자격을 붙이지 않는다', () => {
+  // 서버가 sandbox 를 씌운 아티팩트(주인이 아닌 열람자·공개 링크)의 코드는 에이전트가 쓴
+  // 것이다. main 이 그 요청에도 토큰을 붙이면 그 코드가 이 사용자의 권한으로 플랫폼 API 를
+  // 부르고 응답까지 읽는다(서버 CORS 는 모든 오리진을 받는다).
+  // 원문으로 본다 — read() 의 주석 걷기는 'http://*/api/*' 같은 필터 문자열의 '/*' 를
+  // 주석 시작으로 읽어 이 블록을 통째로 삼킨다.
+  const src = raw(MAIN)
+  const at = src.indexOf('onBeforeSendHeaders(')
+  assert.ok(at > 0, '헤더 주입 필터가 사라졌다')
+  const block = src.slice(at, at + 700)
+  assert.ok(block.includes('!fromIsolatedDocument(details)'), '격리 문서 판정 없이 토큰을 붙인다')
+  const fn = src.slice(src.indexOf('function fromIsolatedDocument'))
+  const body = fn.slice(0, fn.indexOf('\n}\n'))
+  assert.ok(body.includes("origin === 'null'"), 'Origin: null 을 보지 않는다')
+  assert.ok(body.includes("frameOrigin === 'null'"), '요청한 프레임의 오리진을 보지 않는다')
+  // 앱 창 자신(최상위, file://)의 요청과, iframe 을 여는 GET 이동은 예전처럼 싣는다 —
+  // 새 iframe 은 서버 문서가 뜨기 전까지 부모의 'null' 오리진을 물려받아, 오리진만 보면
+  // 주인의 앱도 열리지 않는다.
+  assert.ok(body.includes('!frame.parent'), '앱 창 자신의 요청까지 끊는다')
+  assert.ok(
+    body.includes("details.resourceType === 'subFrame' && details.method === 'GET'"),
+    'iframe 을 여는 이동까지 끊는다 — 주인의 앱이 안 열린다',
+  )
+})
+
+test('임의 경로를 사용자 토큰으로 중계하던 xgensite 스킴은 없다', () => {
+  const src = read(MAIN)
+  assert.ok(!src.includes("scheme: 'xgensite'"), 'xgensite 스킴이 다시 등록됐다')
+  assert.ok(!src.includes("protocol.handle('xgensite'"), 'xgensite 핸들러가 다시 생겼다')
+})
+
+test('프레임의 fetch 다리는 그 아티팩트의 주소 아래만 부른다', () => {
+  const proto = readFileSync(join(root, '..', '..', 'packages', 'protocol', 'src', 'agent-data.ts'), 'utf8')
+  const fn = proto.slice(proto.indexOf('artifactHttp('))
+  const body = fn.slice(0, fn.indexOf('artifactList('))
+  assert.ok(body.includes('target.pathname.startsWith(base)'), '아티팩트 주소 밖(/api/…)까지 부른다')
+  assert.ok(!body.includes("startsWith('/api/')"), "'/api/' 전부를 부르던 조건이 남았다")
+})

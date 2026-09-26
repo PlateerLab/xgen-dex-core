@@ -388,8 +388,13 @@ export function isDangerousShellCommand(command: string): boolean {
 // 세션 동안 위험 명령을 한 번 승인하면 이후 되묻지 않는다 (사용자 선택).
 let sessionApprovedDangerous = false;
 
-/** 위험 패턴이면 사용자에게 확인. false = 거부. dialog 는 main 프로세스에서만. */
-async function ensureDangerousApproval(command: string): Promise<boolean> {
+/** 위험 명령을 사용자가 거부했을 때 돌려주는 문구 — Shell 과 워크스페이스 브리지(_Exec)가 같이 쓴다.
+ *  서버 런타임은 이 문구를 사용자 거부로 인식한다(xgen-agent-runtime host/tools.py). 바꾸면 거기도 바꿀 것. */
+export const DANGEROUS_COMMAND_DENIED = '사용자가 이 명령의 실행을 거부했습니다 (위험할 수 있는 명령).';
+
+/** 위험 패턴이면 사용자에게 확인. false = 거부. dialog 는 main 프로세스에서만.
+ *  사용자 PC 에서 명령을 실행하는 모든 경로(Shell·_Exec)가 이 한 곳을 거친다. */
+export async function ensureDangerousApproval(command: string): Promise<boolean> {
   if (!isDangerousShellCommand(command)) return true;
   if (sessionApprovedDangerous) return true;
   const ask = interaction().confirmDangerous;
@@ -1452,7 +1457,7 @@ export class LocalToolProvider {
     if (!(await ensureDangerousApproval(command))) {
       return {
         content: [
-          { type: 'text', text: '사용자가 이 명령의 실행을 거부했습니다 (위험할 수 있는 명령).' },
+          { type: 'text', text: DANGEROUS_COMMAND_DENIED },
         ],
         isError: true,
       };

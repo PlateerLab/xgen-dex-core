@@ -24,6 +24,8 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { augmentedPath, buildChildEnv } from '@dex/engine/exec-resolve';
 import {
+  DANGEROUS_COMMAND_DENIED,
+  ensureDangerousApproval,
   resolveWithinRootsReal,
   type LocalToolResult,
   type LocalToolSchema,
@@ -219,6 +221,18 @@ export class WorkspaceBridge {
   ): Promise<LocalToolResult> {
     const argv = Array.isArray(a.argv) ? a.argv.map((x) => String(x)) : [];
     if (argv.length === 0) return jsonResult({ error: 'argv 가 비어 있습니다.' }, true);
+    // 서버 에이전트의 Bash 가 이 PC 에서 도는 길이다(커넥터 로컬 작업 공간). Shell 도구와
+    // **같은 위험 명령 확인**을 거친다 — 예전에는 이 길만 확인 없이 돌아서, 같은 `rm -rf` 가
+    // Shell 로 오면 창이 뜨고 _Exec 로 오면 그냥 실행됐다. 서버는 ['bash','-lc', 명령] 을
+    // 보내므로 argv 전체를 이어 붙여 본다.
+    if (!(await ensureDangerousApproval(argv.join(' ')))) {
+      return jsonResult({
+        code: 126,
+        stdoutB64: '',
+        stderrB64: Buffer.from(DANGEROUS_COMMAND_DENIED).toString('base64'),
+        denied: true,
+      });
+    }
     const cwdVirtual = String(a.cwd ?? '').trim() || VIRTUAL_WS;
     const cwd = await this.realPath(info, cwdVirtual);
     if (!cwd)

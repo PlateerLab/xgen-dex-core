@@ -13,6 +13,8 @@ import {
   WorkspaceBridge,
   splitVirtualPath,
 } from '../src/main/workspace-bridge-tools';
+import { bindHost, unbindHost } from '@dex/engine/host';
+import { memoryPorts } from '@dex/engine/ports';
 
 function parse(r: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(r.content[0].text) as Record<string, unknown>;
@@ -214,4 +216,77 @@ test('동기화 대상이 아닌 에이전트는 전부 거절된다', async () 
     argv: ['bash', '-lc', 'true'],
   });
   assert.equal(r.isError, true);
+});
+
+// ── 위험 명령 확인 — 서버 에이전트의 Bash 가 이 PC 에서 도는 길도 Shell 과 같은 확인을 거친다 ──
+// 예전에는 _Exec 만 확인 없이 돌았다: 같은 `rm -rf` 가 Shell 로 오면 창이 뜨고 _Exec 로 오면 그냥 실행됐다.
+async function withConfirm<T>(answer: 'once' | 'deny', fn: (asked: string[]) => Promise<T>): Promise<T> {
+  const asked: string[] = [];
+  const ports = memoryPorts();
+  bindHost({
+    ...ports,
+    interaction: {
+      ...(ports.interaction ?? {}),
+      confirmDangerous: async (command: string) => {
+        asked.push(command);
+        return answer;
+      },
+    },
+  } as Parameters<typeof bindHost>[0]);
+  try {
+    return await fn(asked);
+  } finally {
+    unbindHost();
+  }
+}
+
+test('_Exec — 위험 명령을 사용자가 거부하면 실행하지 않고 거부로 돌려준다', async () => {
+  const { dir, bridge, pokes } = setup();
+  writeFileSync(join(dir, '보존.txt'), '지우면 안 됨');
+  await withConfirm('deny', async (asked) => {
+    const r = parse(
+      await bridge.callTool(EXEC_TOOL, {
+        workflowId: 'wf-1',
+        argv: ['bash', '-lc', `rm -rf ${dir}/보존.txt`],
+        cwd: '/ws',
+      }),
+    );
+    assert.equal(asked.length, 1, '확인 창이 한 번 떴다');
+    assert.equal(r.code, 126);
+    assert.equal(r.denied, true);
+    assert.match(Buffer.from(String(r.stderrB64), 'base64').toString(), /사용자가 이 명령의 실행을 거부했습니다/);
+  });
+  assert.equal(existsSync(join(dir, '보존.txt')), true, '파일이 그대로 있다');
+  assert.deepEqual(pokes, [], '실행하지 않았으니 동기화도 건드리지 않는다');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('_Exec — 위험 명령을 사용자가 허용하면 실행한다', async () => {
+  const { dir, bridge } = setup();
+  writeFileSync(join(dir, '임시.txt'), 'x');
+  await withConfirm('once', async (asked) => {
+    const r = parse(
+      await bridge.callTool(EXEC_TOOL, {
+        workflowId: 'wf-1',
+        argv: ['bash', '-lc', `rm -rf ${dir}/임시.txt`],
+        cwd: '/ws',
+      }),
+    );
+    assert.equal(asked.length, 1);
+    assert.equal(r.code, 0);
+  });
+  assert.equal(existsSync(join(dir, '임시.txt')), false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('_Exec — 일반 명령은 확인 없이 돈다 (마찰 없음)', async () => {
+  const { bridge, dir } = setup();
+  await withConfirm('deny', async (asked) => {
+    const r = parse(
+      await bridge.callTool(EXEC_TOOL, { workflowId: 'wf-1', argv: ['bash', '-lc', 'echo ok'], cwd: '/ws' }),
+    );
+    assert.equal(asked.length, 0);
+    assert.equal(r.code, 0);
+  });
+  rmSync(dir, { recursive: true, force: true });
 });

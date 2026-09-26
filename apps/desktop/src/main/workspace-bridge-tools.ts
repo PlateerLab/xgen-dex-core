@@ -37,6 +37,22 @@ export const READ_BYTES_TOOL = '_ReadBytes';
 export const WRITE_BYTES_TOOL = '_WriteBytes';
 export const FLUSH_SYNC_TOOL = '_FlushSync';
 
+/** POSIX 셸 — 서버 런타임은 에이전트 Bash 를 이 중 하나의 `-c` 로 보낸다. */
+const POSIX_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+
+/**
+ * _Exec argv → 위험 명령 확인에 쓰는 **사람이 읽는 명령 한 줄**.
+ *
+ * 셸 `-c` 호출(`bash -c <스크립트>`, `bash -lc …`)이면 그 스크립트를, 아니면 argv 를 이어
+ * 붙인 명령 줄을 돌려준다. Shell 도구가 보는 것과 같은 문자열이어야 같은 명령에 같은 판정이
+ * 난다. 확인 창에도 이 문자열이 보인다(`bash -lc …` 가 아니라 실제 명령).
+ */
+export function execCommandText(argv: string[]): string {
+  const bin = (argv[0] ?? '').split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '') ?? '';
+  if (argv.length >= 3 && POSIX_SHELLS.has(bin) && /^-[a-z]*c$/i.test(argv[1])) return argv[2];
+  return argv.join(' ');
+}
+
 export const VIRTUAL_WS = '/ws';
 export const VIRTUAL_CLOUD = '/cloud';
 
@@ -223,9 +239,10 @@ export class WorkspaceBridge {
     if (argv.length === 0) return jsonResult({ error: 'argv 가 비어 있습니다.' }, true);
     // 서버 에이전트의 Bash 가 이 PC 에서 도는 길이다(커넥터 로컬 작업 공간). Shell 도구와
     // **같은 위험 명령 확인**을 거친다 — 예전에는 이 길만 확인 없이 돌아서, 같은 `rm -rf` 가
-    // Shell 로 오면 창이 뜨고 _Exec 로 오면 그냥 실행됐다. 서버는 ['bash','-lc', 명령] 을
-    // 보내므로 argv 전체를 이어 붙여 본다.
-    if (!(await ensureDangerousApproval(argv.join(' ')))) {
+    // Shell 로 오면 창이 뜨고 _Exec 로 오면 그냥 실행됐다. Shell 과 **같은 문자열**을 봐야
+    // 한다: 서버는 ['bash','-c', 명령] 으로 보내는데 argv 를 통째로 이어 붙이면 명령이 줄 맨
+    // 앞이 아니게 되어 `rm /절대경로` 처럼 앞자리에 걸리는 패턴이 빠진다(execCommandText).
+    if (!(await ensureDangerousApproval(execCommandText(argv)))) {
       return jsonResult({
         code: 126,
         stdoutB64: '',

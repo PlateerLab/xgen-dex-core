@@ -11,6 +11,7 @@ import {
   WRITE_BYTES_TOOL,
   WORKSPACE_INFO_TOOL,
   WorkspaceBridge,
+  execCommandText,
   splitVirtualPath,
 } from '../src/main/workspace-bridge-tools';
 import { bindHost, unbindHost } from '@dex/engine/host';
@@ -289,4 +290,31 @@ test('_Exec — 일반 명령은 확인 없이 돈다 (마찰 없음)', async ()
     assert.equal(r.code, 0);
   });
   rmSync(dir, { recursive: true, force: true });
+});
+
+
+test('_Exec — 플래그 없는 `rm /절대경로` 도 확인한다 (Shell 과 같은 문자열로 판정)', async () => {
+  // 서버는 ['bash','-c', 명령] 으로 보낸다. argv 를 통째로 이어 붙여 보면 명령이 줄 맨 앞이 아니게 되어
+  // 앞자리에 걸리는 패턴(rm /절대경로)이 빠졌다 — Shell 로 오면 창이 뜨는 명령이 _Exec 로는 그냥 돌았다.
+  const { dir, bridge } = setup();
+  writeFileSync(join(dir, '보존.txt'), '지우면 안 됨');
+  const script = `rm ${join(dir, '보존.txt')}`;
+  await withConfirm('deny', async (asked) => {
+    const r = parse(await bridge.callTool(EXEC_TOOL, { workflowId: 'wf-1', argv: ['bash', '-c', script], cwd: '/ws' }));
+    assert.deepEqual(asked, [script], '확인 창에는 bash -c 가 아니라 실제 명령이 보인다');
+    assert.equal(r.code, 126);
+  });
+  assert.equal(existsSync(join(dir, '보존.txt')), true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('execCommandText — 셸 -c 호출은 스크립트, 그 밖은 명령 줄', () => {
+  assert.equal(execCommandText(['bash', '-lc', 'rm /a']), 'rm /a');
+  assert.equal(execCommandText(['bash', '-c', 'ls', 'arg0']), 'ls');
+  assert.equal(execCommandText(['/bin/sh', '-c', 'echo x']), 'echo x');
+  assert.equal(execCommandText(['C:\\Program Files\\Git\\bin\\bash.exe', '-lc', 'pwd']), 'pwd');
+  assert.equal(execCommandText(['rm', '-rf', 'x']), 'rm -rf x');
+  assert.equal(execCommandText(['python3', '-c', 'print(1)', '{}']), 'python3 -c print(1) {}');
+  assert.equal(execCommandText(['bash', 'script.sh']), 'bash script.sh');
+  assert.equal(execCommandText([]), '');
 });

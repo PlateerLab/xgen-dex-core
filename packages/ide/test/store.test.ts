@@ -65,6 +65,11 @@ class FakeModel {
   getOptions() {
     return { insertSpaces: true, tabSize: 2 };
   }
+  decorations: { range: FakeRange; options: { linesDecorationsClassName?: string } }[] = [];
+  deltaDecorations(_old: string[], next: { range: FakeRange; options: { linesDecorationsClassName?: string } }[]) {
+    this.decorations = next;
+    return next.map((_d, i) => `d${i}`);
+  }
   dispose() {
     this.disposed = true;
     monacoModels.delete(this.uri.toString());
@@ -72,6 +77,10 @@ class FakeModel {
   private fire() {
     for (const f of this.listeners) f();
   }
+}
+
+class FakeRange {
+  constructor(readonly startLineNumber: number, readonly startColumn: number, readonly endLineNumber: number, readonly endColumn: number) {}
 }
 
 class FakeUri {
@@ -83,9 +92,11 @@ class FakeUri {
 
 const monacoModels = new Map<string, FakeModel>();
 const fakeMonaco = {
+  Range: FakeRange,
   Uri: { from: (c: { scheme: string; path: string; query?: string }) => new FakeUri(c.scheme, c.path, c.query) },
   editor: {
     EndOfLineSequence: { LF: 0, CRLF: 1 },
+    OverviewRulerLane: { Left: 1 },
     getModel: (u: FakeUri) => monacoModels.get(u.toString()) ?? null,
     createModel: (text: string, _lang: unknown, u: FakeUri) => {
       const m = new FakeModel(text, u);
@@ -161,7 +172,7 @@ class FakeHost implements IdeHost {
   async replace() {
     return { changed: [], skipped: [] };
   }
-  async git<T>(): Promise<T> {
+  async git<T>(_args?: Record<string, unknown>): Promise<T> {
     return { repos: [] } as T;
   }
   async terminals() {
@@ -488,4 +499,73 @@ test('[저장 안 함] 으로 닫거나 되돌려 깨끗해지면 보관본을 �
   const again = await reopened(host);
   assert.deepEqual(again.unsavedPaths(), []);
   assert.ok(!again.activeGroup().tabs.some((t) => t.path === 'b.txt'));
+});
+
+// ── 여백의 변경 표시(quick diff) ─────────────────────────────────────
+
+class RepoHost extends FakeHost {
+  /** git 의 스테이지(index) 판. */
+  index = new Map<string, string>();
+  async git<T>(args: Record<string, unknown>): Promise<T> {
+    if (args.op === 'repos') return { repos: [{ path: '' }] } as T;
+    if (args.op === 'status') {
+      return { repo: '', branch: { head: 'main', oid: '', upstream: '', ahead: 0, behind: 0 }, state: '', staged: [], changes: [], untracked: [], conflicts: [], stash_count: 0, remotes: [], identity: { name: '', email: '' }, last_commit: null } as T;
+    }
+    if (args.op === 'show') {
+      const v = this.index.get(String(args.path));
+      return (v == null ? { exists: false } : { exists: true, content_b64: Buffer.from(v).toString('base64') }) as T;
+    }
+    if (args.op === 'stage') {
+      for (const p of args.paths as string[]) this.index.set(p, this.files.get(p) ?? '');
+      return {} as T;
+    }
+    return {} as T;
+  }
+}
+
+async function until(fn: () => boolean): Promise<void> {
+  for (let i = 0; i < 100; i += 1) {
+    if (fn()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error('기다린 일이 일어나지 않았다');
+}
+
+test('여백 변경 표시 — 스테이지 판과 다른 줄을 그리고, 스테이지하면 사라진다', async () => {
+  const host = new RepoHost();
+  host.files.set('src/a.ts', 'one\ntwo\nthree');
+  host.index.set('src/a.ts', 'one\ntwo\nthree');
+  const { store } = await started(host);
+  await store.refreshGit();
+  await store.openFile('src/a.ts', { preview: false });
+  const model = modelOf(store, 'src/a.ts');
+  await until(() => store['qdBase'].has('src/a.ts'));
+  assert.deepEqual(store.quickDiffOf('src/a.ts'), []);
+
+  model.edit('one\nTWO\nthree\nfour');
+  await until(() => model.decorations.length === 2);
+  assert.deepEqual(
+    model.decorations.map((d) => [d.options.linesDecorationsClassName, d.range.startLineNumber, d.range.endLineNumber]),
+    [
+      ['xide-qd xide-qd-modified', 2, 2],
+      ['xide-qd xide-qd-added', 4, 4],
+    ],
+  );
+
+  // 저장하고 스테이지하면 기준(index)이 따라와 표시가 사라진다.
+  assert.equal(await store.save('src/a.ts'), true);
+  await store.gitRun({ op: 'stage', repo: '', paths: ['src/a.ts'] }, '스테이지');
+  await until(() => model.decorations.length === 0);
+});
+
+test('여백 변경 표시 — 저장소 밖이나 추적하지 않는 파일에는 그리지 않는다', async () => {
+  const host = new RepoHost();
+  host.files.set('new.ts', 'x');
+  const { store } = await started(host);
+  await store.refreshGit();
+  await store.openFile('new.ts', { preview: false });
+  await until(() => store['qdBase'].has('new.ts'));
+  modelOf(store, 'new.ts').edit('x\ny');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(modelOf(store, 'new.ts').decorations, []);
 });

@@ -21,7 +21,8 @@ import {
 } from './types';
 import { basename, dirname, isWithin, join, normalize, uniqueCopyName } from './paths';
 import { buildTree, ancestors, type TreeNode } from './tree';
-import { decodeText, encodeText, isImagePath, looksBinary, type Eol } from './text';
+import { base64ToBytes, decodeText, encodeText, isImagePath, looksBinary, type Eol } from './text';
+import { lineChanges, splitLines, type QuickDiffKind } from './quick-diff';
 import {
   gitErrorMessage,
   toWorkspacePath,
@@ -102,6 +103,16 @@ interface Backup {
   bom: boolean;
   at: number;
 }
+
+/** 여백 변경 표시의 개요 눈금자 색(캔버스에 그리므로 CSS 변수가 아닌 값). */
+const QUICK_DIFF_RULER: Record<QuickDiffKind, string> = {
+  added: 'rgba(88, 170, 96, 0.7)',
+  modified: 'rgba(32, 144, 211, 0.7)',
+  deleted: 'rgba(202, 75, 81, 0.7)',
+};
+
+/** 저장소 내용을 바꾸지 않는 git 동작 — 뒤에 여백 표시의 기준을 다시 읽지 않는다. */
+const READ_ONLY_GIT_OPS = new Set(['repos', 'status', 'show', 'branches', 'log', 'account', 'fetch']);
 
 /** 파일 하나·전체 보관 한도(글자 수) — 브라우저 저장 공간은 앱과 나눠 쓴다. */
 const BACKUP_FILE_MAX = 512 * 1024;
@@ -279,6 +290,12 @@ export class IdeStore {
   private readonly savedVersion = new Map<string, number>();
   private readonly modelSubs = new Map<string, Monaco.IDisposable>();
   private readonly autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 여백 변경 표시(quick diff) — 문서마다 index 판의 줄(null = 표시 안 함)과 그려 둔 장식. */
+  private readonly qdBase = new Map<string, string[] | null>();
+  private readonly qdDecos = new Map<string, string[]>();
+  private readonly qdTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly qdPending = new Set<string>();
+  private qdTimer: ReturnType<typeof setTimeout> | null = null;
   /** 저장하지 않은 버퍼를 보관해 두는 타이머(hot exit). */
   private readonly backupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly closedTabs: EditorTab[] = [];
@@ -543,6 +560,9 @@ export class IdeStore {
     for (const doc of Object.values(this.state.docs)) if (doc.dirty) this.writeBackup(doc.path);
     for (const t of this.backupTimers.values()) clearTimeout(t);
     this.backupTimers.clear();
+    for (const t of this.qdTimers.values()) clearTimeout(t);
+    this.qdTimers.clear();
+    if (this.qdTimer) clearTimeout(this.qdTimer);
     for (const rt of this.terminalRuntimes.values()) rt.dispose();
     this.terminalRuntimes.clear();
     for (const sub of this.modelSubs.values()) sub.dispose();
@@ -562,6 +582,7 @@ export class IdeStore {
       void this.refreshFiles();
       void this.checkDisk('all');
       this.scheduleGit();
+      this.refreshQuickDiff();
     }, 400);
   }
 
@@ -846,6 +867,7 @@ export class IdeStore {
     } else if (backup) {
       this.dropBackup(path);
     }
+    this.refreshQuickDiff([path]);
   }
 
   private onModelChange(path: string): void {
@@ -857,6 +879,7 @@ export class IdeStore {
     if (dirty) this.pinPreviewTabsOf(path);
     if (dirty) this.scheduleBackup(path);
     else this.dropBackup(path);
+    this.scheduleQuickDiff(path);
     if (dirty && this.state.layout.autoSave) {
       clearTimeout(this.autoSaveTimers.get(path));
       this.autoSaveTimers.set(
@@ -880,6 +903,10 @@ export class IdeStore {
     this.savedVersion.delete(path);
     clearTimeout(this.autoSaveTimers.get(path));
     this.autoSaveTimers.delete(path);
+    clearTimeout(this.qdTimers.get(path));
+    this.qdTimers.delete(path);
+    this.qdBase.delete(path);
+    this.qdDecos.delete(path);
     this.getModel(path)?.dispose();
     this.set((s) => {
       const docs = { ...s.docs };
@@ -1572,6 +1599,96 @@ export class IdeStore {
     }
   }
 
+  // ── 여백의 변경 표시(quick diff) ──────────────────────────────────
+  //
+  // VS Code 처럼 스테이지(index) 판과 견준 줄을 편집기 여백에 막대로 그린다(초록 = 더함,
+  // 파랑 = 바꿈, 빨간 삼각형 = 지움). 기준은 문서를 열 때·git 동작 뒤·바깥 변경 뒤에만 다시
+  // 읽고(샌드박스 호출), 타이핑할 때는 가진 기준으로 다시 계산만 한다.
+
+  /** 이 경로가 들어 있는 저장소(가장 깊은 것)와 저장소 안의 경로. */
+  private repoOf(path: string): { repo: string; rel: string } | null {
+    let best: string | null = null;
+    for (const r of this.state.git.repos) {
+      if (r === '' || path === r || path.startsWith(`${r}/`)) {
+        if (best === null || r.length > best.length) best = r;
+      }
+    }
+    if (best === null) return null;
+    return { repo: best, rel: best ? path.slice(best.length + 1) : path };
+  }
+
+  private refreshQuickDiff(paths?: string[]): void {
+    for (const p of paths ?? Object.keys(this.state.docs)) this.qdPending.add(p);
+    if (this.qdTimer || this.disposed) return;
+    this.qdTimer = setTimeout(() => {
+      this.qdTimer = null;
+      const todo = [...this.qdPending];
+      this.qdPending.clear();
+      for (const p of todo) void this.loadQuickDiffBase(p);
+    }, 300);
+    (this.qdTimer as { unref?: () => void }).unref?.();
+  }
+
+  private async loadQuickDiffBase(path: string): Promise<void> {
+    const doc = this.state.docs[path];
+    if (!doc || doc.status !== 'ready' || this.disposed) return;
+    const where = this.repoOf(path);
+    let base: string[] | null = null;
+    if (where) {
+      try {
+        const out = await this.host.git<{ exists: boolean; content_b64?: string; too_large?: boolean }>({
+          op: 'show',
+          repo: where.repo,
+          path: where.rel,
+          ref: 'index',
+        });
+        if (out.exists && out.content_b64 && !out.too_large) {
+          base = splitLines(decodeText(base64ToBytes(out.content_b64)).text);
+        }
+      } catch {
+        base = null; // 표시는 보조다 — 못 읽으면 그리지 않는다
+      }
+    }
+    if (this.disposed || this.state.docs[path]?.status !== 'ready') return;
+    this.qdBase.set(path, base);
+    this.applyQuickDiff(path);
+  }
+
+  private scheduleQuickDiff(path: string): void {
+    if (!this.qdBase.has(path)) return;
+    clearTimeout(this.qdTimers.get(path));
+    const timer = setTimeout(() => {
+      this.qdTimers.delete(path);
+      this.applyQuickDiff(path);
+    }, 250);
+    (timer as { unref?: () => void }).unref?.();
+    this.qdTimers.set(path, timer);
+  }
+
+  private applyQuickDiff(path: string): void {
+    const monaco = this.monaco;
+    const model = this.getModel(path);
+    if (!monaco || !model || typeof model.deltaDecorations !== 'function') return;
+    const base = this.qdBase.get(path);
+    const changes = base ? lineChanges(base, splitLines(model.getValue())) : [];
+    const decorations = changes.map((c) => ({
+      range: new monaco.Range(c.start, 1, c.end, 1),
+      options: {
+        isWholeLine: true,
+        linesDecorationsClassName: `xide-qd xide-qd-${c.kind}`,
+        overviewRuler: { color: QUICK_DIFF_RULER[c.kind], position: monaco.editor.OverviewRulerLane.Left },
+      },
+    }));
+    this.qdDecos.set(path, model.deltaDecorations(this.qdDecos.get(path) ?? [], decorations));
+  }
+
+  /** 지금 그려 둔 여백 표시(테스트·상태 표시용). */
+  quickDiffOf(path: string): { kind: QuickDiffKind; start: number; end: number }[] {
+    const base = this.qdBase.get(path);
+    const model = this.getModel(path);
+    return base && model ? lineChanges(base, splitLines(model.getValue())) : [];
+  }
+
   // ── 소스 제어 ─────────────────────────────────────────────────────
 
   private setGit(patch: Partial<GitState>): void {
@@ -1600,6 +1717,8 @@ export class IdeStore {
         }),
       );
       this.setGit({ repos, statuses, loading: false, loaded: true, error: null });
+      const missing = Object.keys(this.state.docs).filter((p) => !this.qdBase.has(p) || (this.qdBase.get(p) === null && this.repoOf(p)));
+      if (missing.length) this.refreshQuickDiff(missing);
     } catch (err) {
       const code = err instanceof IdeError ? err.code : 'error';
       this.setGit({ loading: false, loaded: true, error: { code, message: gitErrorMessage(code, errorMessage(err, '')) } });
@@ -1627,6 +1746,7 @@ export class IdeStore {
       const out = await this.host.git<T>(args);
       this.setGit({ busy: null });
       await this.refreshGit();
+      if (!READ_ONLY_GIT_OPS.has(String(args.op))) this.refreshQuickDiff();
       if (['checkout', 'pull', 'sync', 'merge', 'stash', 'discard', 'clone'].includes(String(args.op))) {
         await this.refreshFiles();
         await this.checkDisk('all');

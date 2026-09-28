@@ -43,6 +43,9 @@
   --xide-git-deleted: #c74e39;
   --xide-git-conflict: #e4676b;
   --xide-git-renamed: #73c991;
+  --xide-qd-added: #487e02;
+  --xide-qd-modified: #1b81a8;
+  --xide-qd-deleted: #f14c4c;
   --xide-hit: rgba(234, 92, 0, 0.33);
   --xide-ins: rgba(156, 204, 44, 0.3);
   --xide-del: rgba(255, 0, 0, 0.3);
@@ -91,6 +94,9 @@
   --xide-git-deleted: #ad0707;
   --xide-git-conflict: #ad0707;
   --xide-git-renamed: #007100;
+  --xide-qd-added: #48985d;
+  --xide-qd-modified: #2090d3;
+  --xide-qd-deleted: #e51400;
   --xide-hit: rgba(234, 92, 0, 0.25);
   --xide-shadow: rgba(0, 0, 0, 0.16);
 }
@@ -113,6 +119,28 @@
 .xide-root :focus-visible {
   outline: 1px solid var(--xide-focus);
   outline-offset: -1px;
+}
+
+/* 여백 변경 표시(quick diff) — 줄 번호와 코드 사이 좁은 칸에 막대(더함·바꿈)와 삼각형(지움). */
+.xide-root .monaco-editor .xide-qd-added,
+.xide-root .monaco-editor .xide-qd-modified {
+  width: 3px !important;
+  margin-left: 3px;
+  background: var(--xide-qd-added);
+}
+
+.xide-root .monaco-editor .xide-qd-modified {
+  background: var(--xide-qd-modified);
+}
+
+.xide-root .monaco-editor .xide-qd-deleted::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 3px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--xide-qd-deleted);
 }
 
 /* Monaco 단독판 CSS 는 선택자 목록 실수로 `.monaco-editor` 자체에 1px 윤곽선을 건다. diff 편집기의

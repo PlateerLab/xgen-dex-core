@@ -50,6 +50,9 @@ import { TAP, alpha, useP } from '../theme';
 import { notifyAnswer } from './answer-notice';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
+import { FolderPill, FolderSheet } from './folder-sheet';
+import { folderStore, useChatFolders } from '../lib/folder-store';
+import { toWire } from '../lib/mobile-folders';
 import {
   appendAssistantText,
   assistantPlaceholder,
@@ -138,6 +141,9 @@ export function ChatView({
   const [attachMenu, setAttachMenu] = useState(false);
   const [logFor, setLogFor] = useState<{ events: ToolEvent[]; initialOpen?: number } | null>(null);
   const [convSheet, setConvSheet] = useState(false);
+  // 이 대화에 연결된 휴대폰 폴더 — 에이전트의 파일 도구가 닿는 범위.
+  const folders = useChatFolders(interactionId);
+  const [folderSheet, setFolderSheet] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [wsState, setWsState] = useState<ChatWsState>('closed');
   const [running, setRunningState] = useState(false);
@@ -363,14 +369,15 @@ export function ChatView({
       assistantPlaceholder(),
     ]);
     try {
-      await chatRef.current.execute(text, sending);
+      // 보내는 순간의 폴더 — 빈 목록도 보낸다(서버가 파일 도구를 감춘다).
+      await chatRef.current.execute(text, sending, toWire(folderStore.list(interactionId)));
     } catch (e) {
       setRunning(false);
       // 올려둔 첨부는 돌려준다 — 다시 고르게 만들지 않는다.
       setAttachments((current) => [...sending, ...current]);
       setMessages((prev) => setError(prev, describeError(e)));
     }
-  }, [attachments, input, jumpToBottom, running, setRunning]);
+  }, [attachments, input, interactionId, jumpToBottom, running, setRunning]);
 
   const stop = useCallback(() => {
     stoppedRef.current = true;
@@ -561,6 +568,7 @@ export function ChatView({
           </Text>
           <Text style={{ color: p.muted, fontSize: 11 }}>▾</Text>
         </Pressable>
+        <FolderPill count={folders.length} onPress={() => setFolderSheet(true)} />
         <Pressable
           onPress={() => onOpenChat(agent)}
           hitSlop={8}
@@ -885,6 +893,8 @@ export function ChatView({
           </ScrollView>
         </View>
       </Modal>
+
+      <FolderSheet interactionId={interactionId} visible={folderSheet} onClose={() => setFolderSheet(false)} />
 
       {logFor && (
         <ToolLogSheet

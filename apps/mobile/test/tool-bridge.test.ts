@@ -42,13 +42,13 @@ const tick = () => new Promise((r) => setTimeout(r, 5));
 
 test('hello 광고 → ready ACK → mcp_call 실행 → mcp_result 응답', async () => {
   const statuses: string[] = [];
-  const calls: Array<{ tool: string; args: unknown }> = [];
+  const calls: Array<{ tool: string; args: unknown; context: unknown }> = [];
   const bridge = new MobileToolBridge({
     wsBase: 'wss://gw.example',
     userId: '7',
     catalog: () => CATALOG,
-    call: async (tool, args) => {
-      calls.push({ tool, args });
+    call: async (tool, args, context) => {
+      calls.push({ tool, args, context });
       return { content: [{ type: 'text', text: '완료' }] };
     },
     onStatus: (s) => statuses.push(`${s.state}:${s.toolCount}`),
@@ -77,9 +77,17 @@ test('hello 광고 → ready ACK → mcp_call 실행 → mcp_result 응답', asy
     server: 'mobile',
     tool: 'Notify',
     args: { title: '안녕', body: '테스트' },
+    // 서버가 보증하는 호출자 신원 — 도구가 어느 대화의 폴더를 쓸지 정한다.
+    context: { workflow_id: 'wf-1', interaction_id: 'chat-9' },
   });
   await tick();
-  assert.deepEqual(calls, [{ tool: 'Notify', args: { title: '안녕', body: '테스트' } }]);
+  assert.deepEqual(calls, [
+    {
+      tool: 'Notify',
+      args: { title: '안녕', body: '테스트' },
+      context: { workflowId: 'wf-1', interactionId: 'chat-9' },
+    },
+  ]);
   const result = ws.sent.find((f) => f.type === 'mcp_result');
   assert.deepEqual(result, {
     type: 'mcp_result',

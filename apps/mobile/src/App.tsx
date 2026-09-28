@@ -44,7 +44,8 @@ import {
   type PermissionState,
   type ToolGroup,
 } from './lib/mobile-tools';
-import { rnPort, ensureToolRoot } from './lib/rn-port';
+import { rnPort } from './lib/rn-port';
+import { folderFs, folderStore, useFolderAccount } from './lib/folder-store';
 import { ensureDeviceId, cachedDeviceId, deviceName, devicePlatform } from './lib/device';
 import { friendlyError } from './lib/errors';
 import { diagEntries, diagLog, onDiag } from './lib/diag';
@@ -104,12 +105,14 @@ export default function App(): React.ReactElement {
     void ensureDeviceId();
   }, []);
   const [client, setClient] = useState<XgenMobileClient | null>(null);
+  // 대화별 폴더 연결은 계정마다 따로 — 로그인한 계정의 장부를 연다.
+  useFolderAccount(client ? `${client.session.serverUrl}|${client.session.userId}` : null);
   const [section, setSection] = useState<Section>('agents');
   const [drawer, setDrawer] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ state: 'off', toolCount: 0 });
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const [toolGroups, setToolGroups] = useState<Record<ToolGroup, boolean>>({
-    files: true, notify: true, clipboard: true, device: true,
+    notify: true, clipboard: true, device: true,
     camera: true, location: false, actions: true,
   });
   const [permStates, setPermStates] = useState<Partial<Record<ToolGroup, PermissionState>>>({});
@@ -181,10 +184,12 @@ export default function App(): React.ReactElement {
     void AsyncStorage.getItem('tool-groups').then((v) => {
       if (!v) return;
       try {
-        const merged = { ...groupsRef.current, ...(JSON.parse(v) as object) } as Record<
-          ToolGroup,
-          boolean
-        >;
+        // 알려진 그룹만 받는다 — 옛 저장값의 'files'(이제 대화별 [폴더 연결])는 버린다.
+        const saved = JSON.parse(v) as Record<string, unknown>;
+        const merged = { ...groupsRef.current };
+        for (const g of TOOL_GROUPS) {
+          if (typeof saved[g.id] === 'boolean') merged[g.id] = saved[g.id] as boolean;
+        }
         groupsRef.current = merged;
         setToolGroups(merged);
         // 브리지가 저장값 로드 전에 기본 카탈로그로 hello 했을 수 있다 — 재광고.
@@ -226,7 +231,6 @@ export default function App(): React.ReactElement {
       setBridgeStatus({ state: 'off', toolCount: 0 });
       return;
     }
-    void ensureToolRoot();
     const bridge = new MobileToolBridge({
       wsBase: wsBaseOf(client.session.serverUrl),
       userId: client.session.userId,
@@ -234,7 +238,12 @@ export default function App(): React.ReactElement {
       deviceName: deviceName(),
       devicePlatform: devicePlatform(),
       catalog: () => advertiseMobileTools(groupsRef.current),
-      call: (tool, args) => callMobileTool(rnPort, tool, args, groupsRef.current),
+      // 파일 도구는 그 대화에 연결된 폴더 안에서만 — 호출마다 장부에서 찾는다.
+      call: async (tool, args, context) =>
+        callMobileTool(rnPort, tool, args, groupsRef.current, {
+          folders: await folderStore.listReady(context.interactionId),
+          fs: folderFs,
+        }),
       onStatus: setBridgeStatus,
       wsFactory: client.wsFactory,
       log: diagLog,
@@ -981,8 +990,11 @@ function SettingsSection({
           {bridgeLabel}
         </Text>
         <Text style={st.cardSub}>
-          그룹을 켜면 필요한 시스템 권한 승인을 먼저 요청합니다 — 승인해야 켜집니다. 꺼진 그룹의
-          도구는 에이전트에게 노출되지 않습니다.
+          그룹을 켜면 필요한 시스템 권한 승인을 먼저 요청하고, 꺼진 그룹의 도구는 에이전트에게
+          보이지 않습니다.
+        </Text>
+        <Text style={st.cardSub}>
+          파일은 대화마다 채팅 위 [폴더 연결]로 고른 폴더 안에서만 에이전트가 다룹니다.
         </Text>
 
         <View style={{ marginTop: 10, borderTopWidth: 1, borderTopColor: p.border }}>

@@ -651,6 +651,13 @@ export class IdeStore {
     return this.monacoLoading;
   }
 
+  /** 저장하지 않은 파일(호스트가 탭·창을 닫기 전에 묻는 데 쓴다). */
+  unsavedPaths(): string[] {
+    return Object.values(this.state.docs)
+      .filter((d) => d.dirty)
+      .map((d) => d.path);
+  }
+
   getMonaco(): MonacoApi | null {
     return this.monaco;
   }

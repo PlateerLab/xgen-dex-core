@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { xgen, copyText } from '../bridge';
 import { BotIcon, CopyIcon, FolderIcon, FolderOpenIcon, DocIcon } from '../brand/icons';
 import type { AgentViewerSub } from './workspace-layout';
-import { ArtifactsView } from '../artifacts/ArtifactsView';
+import { AppsView } from '../apps/AppsView';
 import { AgentOverview } from './AgentOverview';
 import { AgentExecutionView } from './AgentExecutionView';
 import { AgentToolsView } from './AgentToolsView';
@@ -33,7 +33,7 @@ const SUBS: [AgentViewerSub, string][] = [
   ['memory', '메모리'],
   ['tasks', '작업'],
   ['tools', '도구'],
-  ['artifacts', '아티팩트'],
+  ['apps', '앱'],
   ['storage', '스토리지'],
   ['fulllog', '실행 기록'],
 ];
@@ -521,8 +521,8 @@ export const AgentViewer: React.FC<Props> = ({
           {sub === 'memory' && <AgentMemoryView workflowId={workflowId} />}
           {sub === 'tasks' && <TasksView workflowId={workflowId} />}
           {sub === 'tools' && <AgentToolsView workflowId={workflowId} />}
-          {sub === 'artifacts' && (
-            <ArtifactsView workflowId={workflowId} workflowName={workflowName} />
+          {sub === 'apps' && (
+            <AppsView workflowId={workflowId} workflowName={workflowName} />
           )}
           {sub === 'storage' && <StorageView workflowId={workflowId} />}
         </div>

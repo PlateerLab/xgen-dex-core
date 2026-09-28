@@ -1,5 +1,5 @@
 /**
- * 아티팩트 동작 버튼의 **소스 계약** — [새 창으로 열기]·[서빙 중지]·[공유]·[삭제].
+ * 앱 동작 버튼의 **소스 계약** — [새 창으로 열기]·[서빙 중지]·[공유]·[삭제].
  *
  * 이 중 하나는 성격이 다르다. [공유]는 **회사 밖에 문을 내는 일**이라, 잘못
  * 눌리면 되돌릴 수 없다(이미 본 사람이 있다). 그래서 여기서 지키는 것은
@@ -22,7 +22,7 @@ const code = (p: string): string =>
     .replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ')
     .replace(/^[ \t]*\/\/.*$/gm, ' ')
 
-const VIEW = 'src/renderer/src/artifacts/ArtifactsView.tsx'
+const VIEW = 'src/renderer/src/apps/AppsView.tsx'
 const MAIN = 'src/main/index.ts'
 const PRELOAD = 'src/preload/index.ts'
 
@@ -78,16 +78,16 @@ test('렌더러는 공개 주소를 **직접 조립하지 않는다**', () => {
 
 test('절대 주소는 main 이 만든다 — 서버 주소를 아는 유일한 자리', () => {
   const m = code(MAIN)
-  const share = m.slice(m.indexOf('CHANNELS.artifactSetShare'))
+  const share = m.slice(m.indexOf('CHANNELS.appSetShare'))
   assert.match(share.slice(0, 800), /loadConfig\(\)\.serverUrl/)
-  const openWeb = m.slice(m.indexOf('CHANNELS.artifactOpenWeb'))
+  const openWeb = m.slice(m.indexOf('CHANNELS.appOpenWeb'))
   assert.match(openWeb.slice(0, 600), /shell\.openExternal/)
 })
 
 test('preload 가 네 동작을 모두 건넨다', () => {
   const p = code(PRELOAD)
   for (const fn of ['setServing', 'setShare', 'remove', 'openWeb']) {
-    assert.match(p, new RegExp(`\\b${fn}:`), `artifacts.${fn} 가 없다`)
+    assert.match(p, new RegExp(`\\b${fn}:`), `apps.${fn} 가 없다`)
   }
 })
 
@@ -100,7 +100,7 @@ test('목록은 "서빙 중지됨" 과 "열 수 없음" 을 구분한다', () =>
 
 test('공개 중이라는 사실이 화면에 계속 남는다', () => {
   const v = code(VIEW)
-  assert.match(v, /artifacts-share/,
+  assert.match(v, /apps-share/,
     '토스트만 띄우면 다음 방문 때는 밖에서 보이고 있다는 것을 알 길이 없다')
   assert.match(v, /공개 중/)
 })

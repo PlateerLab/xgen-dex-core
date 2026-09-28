@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>XGEN Artifact</title>
+<title>XGEN App</title>
 <!--
-  아티팩트 실행 프레임 — 에이전트가 쓴 코드가 도는 **유일한** 문서.
+  앱 실행 프레임 — 에이전트가 쓴 코드가 도는 **유일한** 문서.
 
   이 문서는 `sandbox="allow-scripts"` 로 열린다 (allow-same-origin **없이**). 그래서
   오리진이 불투명하고, 부모 창(렌더러)의 어떤 것에도 손이 닿지 않는다. 이게 전부의
@@ -14,7 +14,7 @@
   **allow-same-origin 은 어떤 이유로도 더하지 않는다** — 함께 주면 샌드박스가 풀린다.
 
   네트워크도 없다 (아래 CSP `default-src 'none'`, `connect-src 'none'`). 필요한 것은
-  전부 호스트가 postMessage 로 건네준다 — 런타임(React/Babel), 아티팩트 소스, 선언된
+  전부 호스트가 postMessage 로 건네준다 — 런타임(React/Babel), 앱 소스, 선언된
   파일, 그리고 선언된 API 호출의 **결과**. 프레임은 무엇을 부를지 고르지 못하고
   호스트에게 alias 로 부탁만 한다.
 
@@ -23,13 +23,13 @@
 
   ── 웹과의 관계 ──────────────────────────────────────────────────────
   정본은 xgen-frontend 의 `apps/web/public/artifact-frame.html` 이고 이것은 그
-  **복사본**이다(두 저장소가 갈라져 있어 공유 패키지로 둘 수 없다). 같은 아티팩트가
+  **복사본**이다(두 저장소가 갈라져 있어 공유 패키지로 둘 수 없다). 같은 앱이
   웹에서도 앱에서도 같은 방식으로 돌아야 하므로, 한쪽을 고치면 다른 쪽도 옮긴다.
 
   다른 점은 둘뿐이다:
    1. 웹은 `/artifact-frame.html` 경로에 미들웨어가 CSP **헤더**를 붙인다. 여기서는
       문서를 `srcdoc` 으로 심으므로 붙일 경로가 없어 `<meta>` 로 선언한다. 파싱
-      시점에 적용되므로, 나중에 주입되는 아티팩트 코드보다 항상 먼저다.
+      시점에 적용되므로, 나중에 주입되는 앱 코드보다 항상 먼저다.
    2. 개발 서버(http)와 배포(file://)에서 같게 동작해야 해서 `srcdoc` 을 쓴다 —
       file:// 하위 프레임의 로딩 규칙에 기대지 않기 위해서다.
 -->
@@ -40,14 +40,14 @@
     프레임은 **호스트가 준 크기 안에서 산다.** 스스로 높이를 정하지 않는다.
 
     예전에는 내용 높이를 재서 호스트에 알리고 호스트가 iframe 을 그만큼 키웠다.
-    그런데 아티팩트는 거의 언제나 100vh 를 쓴다(대시보드의 기본 뼈대다). 그러면
+    그런데 앱은 거의 언제나 100vh 를 쓴다(대시보드의 기본 뼈대다). 그러면
     내용 높이가 **프레임 높이에 의존**하는데 프레임 높이는 다시 내용 높이에서
     나온다 — 이득이 1 이상인 양의 되먹임이라, 재는 방법을 아무리 고쳐도 멈추지
     않는다. 실측(크로미움): minHeight:100vh + padding:32 짜리 대시보드가 4초에
     15,076px, 곧 20,000px 상한. padding 이 없어도 자식 margin 만큼 계속 자랐다.
 
     그래서 높이 협상을 **없앴다**. 호스트가 프레임에 확정 높이를 주고, 내용이
-    길면 프레임 안에서 스크롤된다. 이러면 아티팩트가 쓴 100vh 도 비로소 저자가
+    길면 프레임 안에서 스크롤된다. 이러면 앱이 쓴 100vh 도 비로소 저자가
     의도한 뜻("보이는 화면 한 장")이 된다.
   */
   html, body { margin: 0; padding: 0; height: 100%; }
@@ -80,12 +80,12 @@
     if (HOST) HOST.postMessage({ type: 'artifact:error', title: title, detail: String(detail || '') }, ORIGIN);
   }
 
-  // ── 아티팩트에 주는 API ────────────────────────────────────────────
+  // ── 앱에 주는 API ────────────────────────────────────────────
   // 선언한 것만 닿는다. 고르는 쪽은 호스트다 — 여기서는 alias 만 말할 수 있다.
   var xgen = {
     file: function (path) {
       if (!Object.prototype.hasOwnProperty.call(files, path)) {
-        throw new Error("artifact.json 의 data.files 에 '" + path + "' 를 선언하세요");
+        throw new Error("매니페스트(app.json)의 data.files 에 '" + path + "' 를 선언하세요");
       }
       return files[path];
     },
@@ -101,13 +101,13 @@
 
   // ── fetch 가 된다 ──────────────────────────────────────────────────
   //
-  // 이 문서에는 네트워크가 없다(connect-src 'none'). 그래서 아티팩트가 평범하게
+  // 이 문서에는 네트워크가 없다(connect-src 'none'). 그래서 앱이 평범하게
   // `fetch('__xgen/api/prices')` 라고 쓰면 "Failed to fetch" 로 죽었다 — 사용자가
   // 실제로 본 화면이다. 네트워크를 프레임에 여는 대신 **호스트에게 대신 부탁**
   // 한다: 호스트는 같은 오리진에서 우리 자격으로 요청하고 결과를 돌려준다.
-  // 그러면 아티팩트의 API(api/ 스크립트)·도구·프록시·우리 API 가 전부 그냥 된다.
+  // 그러면 앱의 API(api/ 스크립트)·도구·프록시·우리 API 가 전부 그냥 된다.
   //
-  // 아티팩트 밖(다른 사이트)으로 나가는 주소는 여기서도 안 된다 — 그건 호스트도
+  // 앱 밖(다른 사이트)으로 나가는 주소는 여기서도 안 된다 — 그건 호스트도
   // 못 한다(CORS). 그때는 __xgen/fetch 로 서버가 대신 나간다.
   var nativeFetch = globalThis.fetch;
   function bridgedFetch(input, init) {
@@ -117,7 +117,7 @@
       return Promise.reject(new TypeError(
         "'" + url + "' 은(는) 이 화면에서 직접 부를 수 없습니다(CORS). " +
         "폴더에 api/<이름>.py 를 두고 fetch('__xgen/api/<이름>') 로 부르거나, " +
-        "artifact.json 의 allow 에 그 호스트를 적고 fetch('__xgen/fetch', {method:'POST', body: JSON.stringify({url})}) 를 쓰세요."
+        "매니페스트(app.json)의 allow 에 그 호스트를 적고 fetch('__xgen/fetch', {method:'POST', body: JSON.stringify({url})}) 를 쓰세요."
       ));
     }
     var opts = init || {};
@@ -202,14 +202,14 @@
       var available = ['react', 'react-dom'].concat(Object.keys(LIBS)).join(', ');
       throw new Error(
         "'" + key + "' 은(는) 이 화면에서 쓸 수 없습니다. 쓸 수 있는 것: " + available + ". " +
-        "다른 라이브러리가 필요하면 아티팩트를 **폴더**로 만드세요 — index.html 을 두면 " +
+        "다른 라이브러리가 필요하면 앱을 **폴더**로 만드세요 — index.html 을 두면 " +
         "서버가 그 폴더를 사이트로 서빙하고, 그때는 파일도 라이브러리도 자유입니다."
       );
     }
 
     // React·훅·xgen 은 **전역에 둔다 — 인자로 주지 않는다.**
     //
-    // 실측 사고 (2026-09-11): 인자로 주면 아티팩트가
+    // 실측 사고 (2026-09-11): 인자로 주면 앱이
     //
     //     const { useState, useEffect } = React;
     //
@@ -246,7 +246,7 @@
         throw new Error('엔트리 파일이 React 컴포넌트를 export default 하지 않았습니다');
       }
     } catch (e) {
-      fail('아티팩트를 실행하지 못했습니다', (e && e.stack) || (e && e.message));
+      fail('앱을 실행하지 못했습니다', (e && e.stack) || (e && e.message));
       return;
     }
 
@@ -254,7 +254,7 @@
     //
     // 반드시 진짜 에러 경계(class + componentDidCatch)여야 한다. window 'error'
     // 리스너로는 React 의 렌더 예외를 못 잡아서, 예전에는 선언하지 않은 파일을
-    // 읽는 아티팩트가 아무 말 없이 빈 화면이 됐다 (실측). 조용히 안 되는 것이
+    // 읽는 앱이 아무 말 없이 빈 화면이 됐다 (실측). 조용히 안 되는 것이
     // 이 화면에서 가장 나쁜 실패다.
     function Boundary(props) { React.Component.call(this, props); this.state = { err: null }; }
     Boundary.prototype = Object.create(React.Component.prototype);
@@ -262,7 +262,7 @@
     Boundary.getDerivedStateFromError = function (err) { return { err: err }; };
     Boundary.prototype.componentDidCatch = function (err) {
       if (HOST) HOST.postMessage({
-        type: 'artifact:error', title: '아티팩트가 오류로 멈췄습니다',
+        type: 'artifact:error', title: '앱이 오류로 멈췄습니다',
         detail: String((err && err.stack) || err),
       }, ORIGIN);
     };
@@ -270,7 +270,7 @@
       if (this.state.err) {
         var e = this.state.err;
         return React.createElement('div', { className: 'xa-error' },
-          React.createElement('h2', null, '아티팩트가 오류로 멈췄습니다'),
+          React.createElement('h2', null, '앱이 오류로 멈췄습니다'),
           React.createElement('pre', null, String((e && e.stack) || e)));
       }
       return this.props.children;
@@ -279,13 +279,13 @@
     // 렌더 밖(비동기 콜백·타이머)에서 터진 것은 경계가 못 잡는다 — 그것도 말해 준다.
     window.addEventListener('error', function (ev) {
       if (HOST) HOST.postMessage({
-        type: 'artifact:error', title: '아티팩트에서 오류가 났습니다',
+        type: 'artifact:error', title: '앱에서 오류가 났습니다',
         detail: String((ev.error && ev.error.stack) || ev.message || ''),
       }, ORIGIN);
     });
     window.addEventListener('unhandledrejection', function (ev) {
       if (HOST) HOST.postMessage({
-        type: 'artifact:error', title: '아티팩트에서 처리되지 않은 오류가 났습니다',
+        type: 'artifact:error', title: '앱에서 처리되지 않은 오류가 났습니다',
         detail: String((ev.reason && ev.reason.stack) || ev.reason || ''),
       }, ORIGIN);
     });
@@ -294,7 +294,7 @@
       var root = R.createRoot(document.getElementById('root'));
       root.render(React.createElement(Boundary, null, React.createElement(Component, null)));
     } catch (e) {
-      fail('아티팩트를 그리지 못했습니다', (e && e.stack) || (e && e.message));
+      fail('앱을 그리지 못했습니다', (e && e.stack) || (e && e.message));
       return;
     }
     HOST.postMessage({ type: 'artifact:ready' }, ORIGIN);
@@ -315,7 +315,7 @@
         // eslint-disable-next-line no-new-func
         new Function(msg.runtimeJs)();
         new Function(msg.babelJs)();
-        // 아티팩트가 import 한 라이브러리 — 호스트가 필요한 것만 골라 보낸다.
+        // 앱이 import 한 라이브러리 — 호스트가 필요한 것만 골라 보낸다.
         // 각 번들은 스스로 globalThis.__ARTIFACT_LIBS__ 에 등록한다.
         var libs = msg.libs || {};
         Object.keys(libs).forEach(function (name) { new Function(libs[name])(); });
@@ -348,7 +348,7 @@
   });
 
   // 부모가 살아 있는데 init 이 오지 않으면 조용히 비어 있지 않게 말한다.
-  setTimeout(function () { if (!booted) show('<div class="xa-state">호스트가 아티팩트를 보내지 않았습니다.</div>'); }, 8000);
+  setTimeout(function () { if (!booted) show('<div class="xa-state">호스트가 앱을 보내지 않았습니다.</div>'); }, 8000);
 })();
 </script>
 </body>

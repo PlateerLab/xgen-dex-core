@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
 import { XgenClient } from '@dex/protocol';
-// 아티팩트 alias 실행 규칙은 AgentDataApi 안에 있다 — 클라이언트 전체를 세우지 않고
+// 앱 alias 실행 규칙은 AgentDataApi 안에 있다 — 클라이언트 전체를 세우지 않고
 // 그 계층만 직접 세워 본다(index 는 이 둘을 밖으로 내보내지 않는다).
 import { AgentDataApi } from '../src/agent-data';
 import { HttpClient } from '../src/client';
@@ -270,7 +270,7 @@ test('onAuthFailure fires on 401 for authed call', async () => {
   }
 });
 
-// ── 아티팩트 alias 호출 ────────────────────────────────────────────────
+// ── 앱 alias 호출 ────────────────────────────────────────────────
 //
 // 프레임에는 네트워크가 없다. 무엇을 부를지도 프레임이 고르지 못하고 alias 만
 // 말할 수 있으며, 그 alias 가 어떤 경로인지는 서버가 검증해 내려준 선언에만 있다.
@@ -279,7 +279,7 @@ test('onAuthFailure fires on 401 for authed call', async () => {
 test('선언되지 않은 alias 는 거절한다', async () => {
   const api = new AgentDataApi(new HttpClient({ baseUrl: 'https://x.example' }));
   await assert.rejects(
-    () => api.artifactCallApi([{ alias: 'rows', path: '/api/a', method: 'GET' }], 'other'),
+    () => api.appCallApi([{ alias: 'rows', path: '/api/a', method: 'GET' }], 'other'),
     /선언되지 않은 alias/,
   );
 });
@@ -288,14 +288,14 @@ test('GET 이 아니거나 /api/ 밖이면 거절한다', async () => {
   const api = new AgentDataApi(new HttpClient({ baseUrl: 'https://x.example' }));
   await assert.rejects(
     () =>
-      api.artifactCallApi(
+      api.appCallApi(
         [{ alias: 'w', path: '/api/a', method: 'POST' as 'GET' }],
         'w',
       ),
     /읽기\(GET\)만/,
   );
   await assert.rejects(
-    () => api.artifactCallApi([{ alias: 'x', path: '/etc/passwd', method: 'GET' }], 'x'),
+    () => api.appCallApi([{ alias: 'x', path: '/etc/passwd', method: 'GET' }], 'x'),
     /허용되지 않은 경로/,
   );
 });
@@ -310,19 +310,19 @@ test('선언된 path 에 이미 쿼리가 있으면 & 로 잇는다', async () =
     },
   });
   const api = new AgentDataApi(http);
-  await api.artifactCallApi(
+  await api.appCallApi(
     [{ alias: 'a', path: '/api/list?page_size=5', method: 'GET' }],
     'a',
     { limit: 3 },
   );
-  // '?' 를 한 번 더 붙이면 주소가 깨지고, 아티팩트는 이유 모를 실패를 본다.
+  // '?' 를 한 번 더 붙이면 주소가 깨지고, 앱은 이유 모를 실패를 본다.
   assert.ok(seen[0].endsWith('/api/list?page_size=5&limit=3'), seen[0]);
 
-  await api.artifactCallApi([{ alias: 'b', path: '/api/list', method: 'GET' }], 'b', { limit: 3 });
+  await api.appCallApi([{ alias: 'b', path: '/api/list', method: 'GET' }], 'b', { limit: 3 });
   assert.ok(seen[1].endsWith('/api/list?limit=3'), seen[1]);
 
   // 파라미터가 없으면 물음표도 붙이지 않는다.
-  await api.artifactCallApi([{ alias: 'c', path: '/api/list', method: 'GET' }], 'c');
+  await api.appCallApi([{ alias: 'c', path: '/api/list', method: 'GET' }], 'c');
   assert.ok(seen[2].endsWith('/api/list'), seen[2]);
 });
 
@@ -396,3 +396,54 @@ test('complete() 는 분리를 결과에 싣는다 — text 는 답이 아니라
   assert.equal(out.error, undefined, '끊김은 오류가 아니다');
   assert.equal(out.text, '조각');
 })
+
+// ── 앱 API 접두 — 이름을 앱으로 바꾸기 전(2026-09-28)의 서버에도 붙는다 ─────────
+//
+// 데스크톱 앱은 여러 버전의 서버에 붙는다. 새 서버는 /agent-apps 와 옛 /agent-artifacts 를 둘 다 알고,
+// 옛 서버는 옛 것만 안다. 새 주소로 먼저 묻고, 404 인데 옛 주소로는 되면 그 서버는 옛 서버다.
+
+function appsServer(opts: { legacyOnly: boolean }) {
+  const seen: string[] = [];
+  const api = new AgentDataApi(new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async (url: string) => {
+      const path = new URL(String(url)).pathname;
+      seen.push(path);
+      const legacy = path.startsWith('/api/agentflow/agent-artifacts/');
+      if (opts.legacyOnly && !legacy) return new Response('{"detail":"Not Found"}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+      if (path.endsWith('/missing')) return new Response('{"detail":"없음"}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+      const body = path.endsWith('/list')
+        ? (opts.legacyOnly
+            ? { workflow_id: 'wf', artifacts: [{ slug: 'old' }], total: 1, ready: 1 }
+            : { workflow_id: 'wf', apps: [{ slug: 'new' }], artifacts: [{ slug: 'new' }], total: 1, ready: 1 })
+        : { slug: 'x', app_url: '/x' };
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    },
+  }));
+  return { api, seen };
+}
+
+test('새 서버에는 새 주소로 묻고, 목록은 apps 로 읽는다', async () => {
+  const { api, seen } = appsServer({ legacyOnly: false });
+  const res = await api.appList('wf');
+  assert.deepEqual(res.apps.map((a) => a.slug), ['new']);
+  assert.equal(seen[0], '/api/agentflow/agent-apps/wf/list');
+  assert.equal(api.appWebPath('wf', 'new'), '/app/wf/new');
+});
+
+test('옛 서버면 옛 주소로 한 번 되묻고, 그 뒤로는 옛 주소를 쓴다', async () => {
+  const { api, seen } = appsServer({ legacyOnly: true });
+  const res = await api.appList('wf');
+  assert.deepEqual(res.apps.map((a) => a.slug), ['old'], '옛 키 artifacts 도 apps 로 읽는다');
+  assert.deepEqual(seen.splice(0), ['/api/agentflow/agent-apps/wf/list', '/api/agentflow/agent-artifacts/wf/list']);
+  await api.appGet('wf', 'old');
+  assert.deepEqual(seen, ['/api/agentflow/agent-artifacts/wf/old'], '한 번 정해지면 새 주소를 다시 두드리지 않는다');
+  assert.equal(api.appWebPath('wf', 'old'), '/artifact/wf/old', '옛 서버의 웹에는 /app/… 화면이 없다');
+});
+
+test('없는 앱 하나로 옛 서버라고 단정하지 않는다', async () => {
+  const { api, seen } = appsServer({ legacyOnly: false });
+  await assert.rejects(() => api.appGet('wf', 'missing'));
+  await api.appList('wf');
+  assert.equal(seen.at(-1), '/api/agentflow/agent-apps/wf/list');
+});

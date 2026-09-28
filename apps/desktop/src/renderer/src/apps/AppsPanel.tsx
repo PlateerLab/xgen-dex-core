@@ -1,23 +1,23 @@
 /**
- * ArtifactsPanel — 사이드바 [아티팩트]. 에이전트들이 만든 화면을 한자리에 모은다.
+ * AppsPanel — 사이드바 [앱]. 에이전트들이 만든 화면을 한자리에 모은다.
  *
  * 무엇을 보여 주나: **지금 열리는 것만.** 매니페스트가 틀렸거나 엔트리가 없는
- * 아티팩트는 여기 오지 않는다 — 그것들은 만든 에이전트의 [아티팩트] 탭에서 이유와
+ * 앱은 여기 오지 않는다 — 그것들은 만든 에이전트의 [앱] 탭에서 이유와
  * 함께 본다. 이 패널은 진단하는 자리가 아니라 **여는 자리**다.
  *
- * 어디서 오나: 서버에 "전부 다오" 엔드포인트는 없다(아티팩트는 에이전트 workspace
+ * 어디서 오나: 서버에 "전부 다오" 엔드포인트는 없다(앱은 에이전트 workspace
  * 안의 폴더라 소유자별로만 물어볼 수 있다). 그래서 main 이 Geny 에이전트들을 훑어
  * 한 번에 돌려준다 — 왕복이 에이전트 수만큼 생기는 일을 렌더러에 두지 않는다.
  *
- * 못 읽은 에이전트가 있으면 숨기지 않고 말한다. 조용히 빠진 목록은 "내 아티팩트가
+ * 못 읽은 에이전트가 있으면 숨기지 않고 말한다. 조용히 빠진 목록은 "내 앱이
  * 사라졌다" 로 보이고, 그때 원인은 아무 데도 남지 않는다.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ArtifactSummary } from '@dex/protocol';
+import type { AppSummary } from '@dex/protocol';
 import { xgen } from '../bridge';
-import { ArtifactIcon, RefreshIcon } from '../brand/icons';
+import { AppIcon, RefreshIcon } from '../brand/icons';
 
-type GalleryItem = ArtifactSummary & { workflowId: string; workflowName: string };
+type GalleryItem = AppSummary & { workflowId: string; workflowName: string };
 
 function when(updatedAt: number | null): string {
   if (!updatedAt) return '';
@@ -30,8 +30,8 @@ function when(updatedAt: number | null): string {
   return d.toLocaleDateString();
 }
 
-export const ArtifactsPanel: React.FC<{
-  /** 아티팩트를 눌렀을 때 — 그 에이전트의 [아티팩트] 탭을 연다. */
+export const AppsPanel: React.FC<{
+  /** 앱을 눌렀을 때 — 그 에이전트의 [앱] 탭을 연다. */
   onOpen: (workflowId: string, workflowName: string) => void;
 }> = ({ onOpen }) => {
   const [items, setItems] = useState<GalleryItem[]>([]);
@@ -44,7 +44,7 @@ export const ArtifactsPanel: React.FC<{
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await xgen.artifacts.gallery();
+      const res = await xgen.apps.gallery();
       setItems(res.items);
       setFailed(res.failed);
       setScanned(res.scanned);
@@ -74,7 +74,7 @@ export const ArtifactsPanel: React.FC<{
   return (
     <>
       <div className="sidebar-title">
-        <span className="sidebar-title-text">아티팩트</span>
+        <span className="sidebar-title-text">앱</span>
         <div className="sidebar-title-actions">
           <button
             className="icon-btn sm"
@@ -91,7 +91,7 @@ export const ArtifactsPanel: React.FC<{
         <input
           className="input"
           value={query}
-          placeholder="아티팩트 · 에이전트 검색"
+          placeholder="앱 · 에이전트 검색"
           onChange={(e) => setQuery(e.target.value)}
         />
       </div>
@@ -102,8 +102,8 @@ export const ArtifactsPanel: React.FC<{
 
         {!loading && !error && items.length === 0 && (
           <div className="teams-empty">
-            <ArtifactIcon size={30} />
-            <p>지금 열리는 아티팩트가 없습니다.</p>
+            <AppIcon size={30} />
+            <p>지금 열리는 앱이 없습니다.</p>
             <p className="sub">
               에이전트에게 화면을 만들어 달라고 하면 여기 모입니다 — 만드는 자리는 대화이고,
               이 목록은 여는 자리입니다.
@@ -119,7 +119,7 @@ export const ArtifactsPanel: React.FC<{
             title={a.description || a.title}
           >
             <span className="conv-icon">
-              <ArtifactIcon size={16} />
+              <AppIcon size={16} />
             </span>
             <span className="agent-body">
               <span className="agent-name">{a.title}</span>
@@ -133,19 +133,19 @@ export const ArtifactsPanel: React.FC<{
 
         {!loading && items.length > 0 && shown.length === 0 && (
           <div className="teams-empty">
-            <p>검색과 맞는 아티팩트가 없습니다.</p>
+            <p>검색과 맞는 앱이 없습니다.</p>
           </div>
         )}
 
         {failed.length > 0 && (
           <div className="teams-error">
             {failed.length}개 에이전트의 목록을 읽지 못했습니다 ({failed.slice(0, 3).join(', ')}
-            {failed.length > 3 ? ' 외' : ''}). 그 에이전트의 아티팩트는 여기 없을 수 있습니다.
+            {failed.length > 3 ? ' 외' : ''}). 그 에이전트의 앱은 여기 없을 수 있습니다.
           </div>
         )}
 
         {!loading && !error && scanned > 0 && (
-          <div className="artifact-gallery-foot">
+          <div className="app-gallery-foot">
             에이전트 {scanned}개에서 {items.length}개 — 지금 열리는 것만 보입니다.
           </div>
         )}
@@ -154,4 +154,4 @@ export const ArtifactsPanel: React.FC<{
   );
 };
 
-export default ArtifactsPanel;
+export default AppsPanel;

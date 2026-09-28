@@ -1,10 +1,10 @@
 /**
- * ArtifactsView — 한 에이전트의 [아티팩트] 탭. 만든 화면을 고르고 연다.
+ * AppsView — 한 에이전트의 [앱] 탭. 만든 화면을 고르고 연다.
  *
  * 웹의 같은 이름 화면과 **같은 계약**을 쓴다(같은 API, 같은 상태, 같은 문구) —
  * 같은 에이전트를 두 곳에서 보므로 한쪽만 다른 말을 하면 안 된다.
  *
- * 아티팩트는 새 저장소가 아니라 에이전트 workspace 의 약속된 폴더
+ * 앱은 새 저장소가 아니라 에이전트 workspace 의 약속된 폴더
  * (`workspace/artifacts/<slug>/`)다. **만드는 것은 에이전트**고, 파일을 손보는
  * 자리는 [스토리지] 탭이다. 이 화면이 하는 일은 고르고, 열고, 왜 안 열리는지
  * 말해 주는 것 — 그리고 **내리고, 공유하고, 지우는 것**이다.
@@ -16,23 +16,23 @@
  *   [공유]            **로그인 없이 열리는 주소**를 하나 낸다
  *   [삭제]            폴더를 지운다 — 되돌릴 수 없다
  *
- * 실행은 이 컴포넌트가 하지 않는다. 격리 프레임(ArtifactFrame)이 한다 — 이유는
+ * 실행은 이 컴포넌트가 하지 않는다. 격리 프레임(AppFrame)이 한다 — 이유는
  * 그 파일에 적혀 있다(이 창에는 window.xgen 이 있다).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ArtifactDetail, ArtifactSummary } from '@dex/protocol';
+import type { AppDetail, AppSummary } from '@dex/protocol';
 import { xgen } from '../bridge';
 import { RefreshIcon } from '../brand/icons';
 import { Selector } from '../views/Selector';
-import { ArtifactFrame } from './ArtifactFrame';
-import { ArtifactSiteFrame } from './ArtifactSiteFrame';
+import { AppFrame } from './AppFrame';
+import { AppSiteFrame } from './AppSiteFrame';
 import { ViewerEmpty } from '../views/agent-viewer-shared';
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string }> = ({
+export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> = ({
   workflowId,
 }) => {
   /** 내리기/공유/삭제가 도는 동안 버튼을 막는다 — 두 번 눌러 두 번 나가지 않게. */
@@ -43,9 +43,9 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
    * 보여 준다 — 클립보드가 막혔을 때의 유일한 통로다.
    */
   const [shareUrl, setShareUrl] = useState('');
-  const [items, setItems] = useState<ArtifactSummary[]>([]);
+  const [items, setItems] = useState<AppSummary[]>([]);
   const [slug, setSlug] = useState('');
-  const [detail, setDetail] = useState<ArtifactDetail | null>(null);
+  const [detail, setDetail] = useState<AppDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   /** 소스가 바뀔 때마다 올라가 프레임을 새로 세운다. */
@@ -59,12 +59,12 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await xgen.artifacts.list(workflowId);
-      setItems(res.artifacts);
+      const res = await xgen.apps.list(workflowId);
+      setItems(res.apps);
       const want =
-        slugRef.current && res.artifacts.some((a) => a.slug === slugRef.current)
+        slugRef.current && res.apps.some((a) => a.slug === slugRef.current)
           ? slugRef.current
-          : (res.artifacts.find((a) => a.ready)?.slug ?? res.artifacts[0]?.slug ?? '');
+          : (res.apps.find((a) => a.ready)?.slug ?? res.apps[0]?.slug ?? '');
       setSlug(want);
       setError('');
     } catch (e) {
@@ -84,7 +84,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
       return;
     }
     let alive = true;
-    void xgen.artifacts
+    void xgen.apps
       .get(workflowId, slug)
       .then((d) => {
         if (!alive) return;
@@ -112,7 +112,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   const serving = detail?.serving ?? current?.serving ?? true;
   const shared = detail?.shared ?? current?.shared ?? false;
 
-  // 다른 아티팩트로 옮기면 방금 만든 링크는 이 화면의 것이 아니다.
+  // 다른 앱으로 옮기면 방금 만든 링크는 이 화면의 것이 아니다.
   useEffect(() => { setShareUrl(''); }, [slug]);
 
   const act = useCallback(
@@ -137,7 +137,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
     const next = !serving;
     if (!next && !window.confirm('서빙을 중지할까요?\n내용은 그대로 두고 닫습니다.')) return;
     void act(async () => {
-      await xgen.artifacts.setServing(workflowId, slug, next);
+      await xgen.apps.setServing(workflowId, slug, next);
       return 'ok';
     });
   }, [slug, serving, workflowId, act]);
@@ -160,7 +160,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
     );
     if (!ok) return;
     void act(async () => {
-      const res = await xgen.artifacts.setShare(workflowId, slug, next);
+      const res = await xgen.apps.setShare(workflowId, slug, next);
       if (res.shared && res.url) {
         // 링크는 이 응답에만 들어 있다 — 지금 손에 쥐여 주지 않으면 다시 켜야 받는다.
         try { await navigator.clipboard.writeText(res.url); } catch { /* 막힌 환경 */ }
@@ -177,9 +177,9 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
     const name = current?.title || slug;
     // 이름 뒤에 조사를 바로 붙이면 받침에 따라 을/를 이 갈린다. 명사 하나를
     // 사이에 두면 이름이 무엇이든 문장이 맞는다.
-    if (!window.confirm(`'${name}' 아티팩트를 삭제할까요?\n되돌릴 수 없습니다.`)) return;
+    if (!window.confirm(`'${name}' 앱을 삭제할까요?\n되돌릴 수 없습니다.`)) return;
     void act(async () => {
-      await xgen.artifacts.remove(workflowId, slug);
+      await xgen.apps.remove(workflowId, slug);
       // 지운 것을 계속 고르고 있으면 안 된다.
       setSlug('');
       setDetail(null);
@@ -189,19 +189,19 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   }, [slug, current, workflowId, act]);
 
   return (
-    <div className="artifacts-view">
-      <div className="artifacts-bar">
+    <div className="apps-view">
+      <div className="apps-bar">
         {items.length > 0 ? (
           // 앱 공용 Selector — 네이티브 <select> 는 이 창의 다른 컨트롤과 생김새가
           // 달라 혼자 튄다(플랫폼 기본 위젯이라 테마도 안 따른다).
           <Selector
-            className="artifacts-picker"
+            className="apps-picker"
             value={slug}
             onChange={setSlug}
             size="sm"
-            ariaLabel="아티팩트 선택"
+            ariaLabel="앱 선택"
             searchable={items.length > 8}
-            searchPlaceholder="아티팩트 검색"
+            searchPlaceholder="앱 검색"
             options={items.map((a) => ({
               value: a.slug,
               // 왜 못 여는지를 **구분해서** 말한다 — 사람이 내린 것은 버튼 한 번이고
@@ -214,32 +214,32 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
             }))}
           />
         ) : null}
-        <span className="artifacts-count">
-          {loading ? '불러오는 중…' : `아티팩트 ${items.length}개`}
+        <span className="apps-count">
+          {loading ? '불러오는 중…' : `앱 ${items.length}개`}
         </span>
         {slug && serving ? (
-          <button type="button" className="artifacts-action" onClick={() => void xgen.artifacts.openWeb(workflowId, slug)}>
+          <button type="button" className="apps-action" onClick={() => void xgen.apps.openWeb(workflowId, slug)}>
             새 창으로 열기
           </button>
         ) : null}
         {slug ? (
-          <button type="button" className="artifacts-action" disabled={busy} onClick={onToggleServing}>
+          <button type="button" className="apps-action" disabled={busy} onClick={onToggleServing}>
             {serving ? '서빙 중지' : '서빙 시작'}
           </button>
         ) : null}
         {slug ? (
-          <button type="button" className="artifacts-action" disabled={busy} onClick={onToggleShare}>
+          <button type="button" className="apps-action" disabled={busy} onClick={onToggleShare}>
             {shared ? '공유 중지' : '공유'}
           </button>
         ) : null}
         {slug ? (
-          <button type="button" className="artifacts-action danger" disabled={busy} onClick={onDelete}>
+          <button type="button" className="apps-action danger" disabled={busy} onClick={onDelete}>
             삭제
           </button>
         ) : null}
         <button
           type="button"
-          className="artifacts-refresh"
+          className="apps-refresh"
           onClick={() => void refresh()}
           title="새로고침"
           aria-label="새로고침"
@@ -251,7 +251,7 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
       {error ? <div className="viewer-note err">불러오지 못했습니다: {error}</div> : null}
 
       {shared ? (
-        <div className="artifacts-share">
+        <div className="apps-share">
           <strong>공개 중</strong>
           <p>링크를 아는 사람은 로그인 없이 이 화면을 봅니다. [공유 중지]로 닫을 수 있습니다.</p>
           {shareUrl ? (
@@ -262,17 +262,17 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
       ) : null}
 
       {!loading && slug && !serving ? (
-        <div className="artifacts-issues">
+        <div className="apps-issues">
           <strong>서빙 중지됨</strong>
           <p style={{ margin: '4px 0 0' }}>
-            이 아티팩트는 지금 아무에게도 열리지 않습니다. 파일은 그대로 있으니 [서빙 시작]을 누르면 돌아옵니다.
+            이 앱은 지금 아무에게도 열리지 않습니다. 파일은 그대로 있으니 [서빙 시작]을 누르면 돌아옵니다.
           </p>
         </div>
       ) : null}
 
       {issues.length > 0 ? (
-        <div className="artifacts-issues">
-          <strong>아티팩트 진단</strong>
+        <div className="apps-issues">
+          <strong>앱 진단</strong>
           <ul>
             {issues.map((i) => (
               <li key={i}>{i}</li>
@@ -282,22 +282,21 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
       ) : null}
 
       {!loading && items.length === 0 && !error ? (
-        <ViewerEmpty title="아직 아티팩트가 없습니다" description="에이전트가 만든 화면이나 결과물을 이곳에서 열어볼 수 있습니다." />
+        <ViewerEmpty title="아직 앱이 없습니다" description="에이전트가 만든 화면이나 결과물을 이곳에서 열어볼 수 있습니다." />
       ) : null}
 
       {detail?.ready ? (
-        <div className="artifacts-stage">
+        <div className="apps-stage">
           {detail.kind === 'project' || detail.kind === 'service' ? (
             // 사이트(파일)든 에이전트가 띄운 앱이든 서버가 주소를 낸다 — main 이
             // 자격을 붙여 받아 오고 여기서는 띄우기만 한다.
-            <ArtifactSiteFrame
-              workflowId={detail.workflow_id || workflowId}
-              slug={detail.slug}
+            <AppSiteFrame
+              url={detail.app_url}
               title={detail.title}
               reloadKey={revision}
             />
           ) : (
-            <ArtifactFrame artifact={detail} reloadKey={revision} />
+            <AppFrame app={detail} reloadKey={revision} />
           )}
         </div>
       ) : null}
@@ -305,4 +304,4 @@ export const ArtifactsView: React.FC<{ workflowId: string; workflowName?: string
   );
 };
 
-export default ArtifactsView;
+export default AppsView;

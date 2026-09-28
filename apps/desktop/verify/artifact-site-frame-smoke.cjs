@@ -1,5 +1,5 @@
 /**
- * 앱이 **아티팩트 앱을 프레임에 띄울 수 있는가** — 진짜 Chromium 으로 확인한다.
+ * 데스크톱이 **앱을 프레임에 띄울 수 있는가** — 진짜 Chromium 으로 확인한다.
  *
  * 소스 문자열 검사로는 못 잡는 회귀가 여기 있었다(2026-09-18): 렌더러의 CSP 가
  * `frame-src xgenartifact: blob:` 이라, 서버 주소를 그대로 여는 iframe 은 **요청조차
@@ -13,7 +13,7 @@
  * 검사는 **실제로 배포되는 CSP**(src/renderer/index.html)로 한다. 그 파일이 곧
  * 계약이므로, 거기서 스킴이 빠지면 여기서 바로 빨개진다.
  *
- *   npm --prefix apps/desktop run verify:artifact-site
+ *   npm --prefix apps/desktop run verify:app-site
  */
 const { app, BrowserWindow } = require('electron');
 const http = require('http');
@@ -67,23 +67,23 @@ app.whenReady().then(async () => {
   const server = http.createServer((req, res) => {
     hits.n += 1;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end('<!doctype html><h1>artifact app</h1>');
+    res.end('<!doctype html><h1>app app</h1>');
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const appUrl = `http://127.0.0.1:${server.address().port}/api/agentflow/agent-artifacts/wfA/ops/app/`;
+  const appUrl = `http://127.0.0.1:${server.address().port}/api/agentflow/agent-apps/wfA/ops/app/`;
 
   const shipped = shippedCsp();
   const opens = await framesReach(shipped, appUrl, hits);
   const blocked = await framesReach(withoutNetworkSchemes(shipped), appUrl, hits);
 
   const lines = [
-    `배포되는 CSP → 아티팩트 앱 프레임: ${opens ? '열린다' : '막힌다'}`,
+    `배포되는 CSP → 앱 프레임: ${opens ? '열린다' : '막힌다'}`,
     `frame-src 에서 스킴을 뺀 사본 → 프레임: ${blocked ? '열린다' : '막힌다'}`,
   ];
   const ok = opens === true && blocked === false;
   const verdict = ok
     ? 'PASS — 배포되는 CSP 가 앱을 열고, 그 스킴이 사라지면 다시 막힌다'
-    : 'FAIL — [아티팩트] 탭이 빈 화면이 된다';
+    : 'FAIL — [앱] 탭이 빈 화면이 된다';
   const report = [...lines, verdict].join('\n');
   if (process.env.XGEN_SMOKE_OUT) writeFileSync(process.env.XGEN_SMOKE_OUT, report + '\n', 'utf8');
   console.log(report);

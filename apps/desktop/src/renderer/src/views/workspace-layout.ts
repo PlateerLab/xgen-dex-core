@@ -64,6 +64,12 @@ export function clampSplitRatio(ratio: number): number {
   return Math.max(MIN_SPLIT_RATIO, Math.min(MAX_SPLIT_RATIO, ratio));
 }
 
+
+/** 저장된 뷰어 탭 → 지금의 탭. 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 'artifacts' 는 'apps' 다. */
+function restoredSub(value: unknown): AgentViewerSub {
+  return (value === 'artifacts' ? 'apps' : value) as AgentViewerSub;
+}
+
 function cleanTab(raw: unknown): WorkspaceTab | null {
   if (!raw || typeof raw !== 'object') return null;
   const tab = raw as Partial<WorkspaceTab>;
@@ -82,7 +88,7 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
     'memory',
     'tasks',
     'tools',
-    'artifacts',
+    'apps',
     'storage',
     'fulllog',
   ];
@@ -97,9 +103,8 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
     fileRel: typeof tab.fileRel === 'string' ? tab.fileRel : undefined,
     fileName: typeof tab.fileName === 'string' ? tab.fileName : undefined,
     fileSection: tab.fileSection === 'cloud' || tab.fileSection === 'agent' ? tab.fileSection : undefined,
-    viewerSub: viewerSubs.includes(tab.viewerSub as AgentViewerSub)
-      ? (tab.viewerSub as AgentViewerSub)
-      : undefined,
+    // 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 탭은 'artifacts' 다 — 같은 탭으로 연다.
+    viewerSub: viewerSubs.includes(restoredSub(tab.viewerSub)) ? restoredSub(tab.viewerSub) : undefined,
   };
 }
 

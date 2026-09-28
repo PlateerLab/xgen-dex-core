@@ -21,7 +21,7 @@ export type AgentViewerSub =
   | 'memory'
   | 'tasks'
   | 'tools'
-  | 'artifacts'
+  | 'apps'
   | 'storage'
   | 'fulllog';
 
@@ -287,7 +287,7 @@ export interface ToolsResult {
   unverified?: number;
 }
 
-// ── 아티팩트(agent-artifacts) ─────────────────────────────────────
+// ── 앱(agent-apps, 옛 서버는 agent-artifacts) ─────────────────────────────────────
 //
 // 에이전트가 만든 React 화면. 새 저장소가 아니라 workspace 의 약속된 폴더
 // (`workspace/artifacts/<slug>/`)라, 여기서 만들거나 지우지 않는다 — 만드는 것은
@@ -297,34 +297,36 @@ export interface ToolsResult {
 // 와이어 포맷(snake_case)은 그대로 둔다 — 웹과 같은 응답을 같은 이름으로 읽어야
 // 두 화면이 갈라지지 않는다.
 
-/** 아티팩트가 선언한 읽기 전용 API 한 개 — 서버가 이미 검증했다(GET + 허용 접두). */
-export interface ArtifactApiDeclaration {
+/** 앱이 선언한 읽기 전용 API 한 개 — 서버가 이미 검증했다(GET + 허용 접두). */
+export interface AppApiDeclaration {
   alias: string;
   path: string;
   method: 'GET';
 }
 
 /**
- * 아티팩트의 모양.
+ * 앱의 모양.
  *
  *   project   폴더가 곧 웹사이트다(index.html). 서버가 그대로 서빙한다.
  *   component 예전 모양 — React 한 파일을 프레임이 변환해 돌린다.
  */
-export type ArtifactKind = 'service' | 'project' | 'component';
+export type AppKind = 'service' | 'project' | 'component';
 
-/** service 아티팩트의 선언 — 에이전트가 자기 sandbox 에서 무엇을 어느 포트로 띄우는가. */
-export interface ArtifactService {
+/** service 앱의 선언 — 에이전트가 자기 sandbox 에서 무엇을 어느 포트로 띄우는가. */
+export interface AppService {
   command: string
   port: number
   cwd: string
   health: string
 }
 
-export interface ArtifactSummary {
+export interface AppSummary {
   slug: string;
-  kind: ArtifactKind;
+  kind: AppKind;
+  /** 여는 주소(서버 기준 경로). 서버가 정한다 — 이름을 앱으로 바꾼 뒤의 서버만 준다(옛 서버는 없음). */
+  app_url?: string;
   /** service 일 때의 선언 (아니면 null). */
-  service?: ArtifactService | null;
+  service?: AppService | null;
   /** 사이트의 문서 루트 (폴더 자신이면 빈 문자열). project 에만 있다. */
   root: string;
   title: string;
@@ -356,7 +358,7 @@ export interface ArtifactSummary {
   issues: string[];
 }
 
-export interface ArtifactDetail extends ArtifactSummary {
+export interface AppDetail extends AppSummary {
   workflow_id: string;
   /** 사이트 주소 (kind='project' 일 때만, 서버 경로). */
   app_url: string;
@@ -364,10 +366,10 @@ export interface ArtifactDetail extends ArtifactSummary {
   source: string;
   /** 선언된 데이터 파일 (경로 → 텍스트). */
   files: Record<string, string>;
-  apis: ArtifactApiDeclaration[];
+  apis: AppApiDeclaration[];
 }
 
-export interface ArtifactServingState {
+export interface AppServingState {
   ok: boolean;
   slug: string;
   serving: boolean;
@@ -375,7 +377,7 @@ export interface ArtifactServingState {
   stopped_at: number | null;
 }
 
-export interface ArtifactShareState {
+export interface AppShareState {
   ok: boolean;
   slug: string;
   shared: boolean;
@@ -387,15 +389,15 @@ export interface ArtifactShareState {
   path: string;
 }
 
-export interface ArtifactListResult {
+export interface AppListResult {
   workflow_id: string;
-  artifacts: ArtifactSummary[];
+  apps: AppSummary[];
   total: number;
   ready: number;
 }
 
-/** 아티팩트 하나 + 그것을 만든 에이전트 — [아티팩트 모음] 의 한 줄. */
-export interface ArtifactGalleryItem extends ArtifactSummary {
+/** 앱 하나 + 그것을 만든 에이전트 — [앱 모음] 의 한 줄. */
+export interface AppGalleryItem extends AppSummary {
   workflowId: string;
   workflowName: string;
 }
@@ -441,8 +443,50 @@ export function workspaceStoragePath(path: string): string {
   return clean === 'workspace' || clean.startsWith('workspace/') ? clean : `workspace/${clean}`;
 }
 
+/** 앱 API 의 접두. 이름을 앱으로 바꾸기 전(2026-09-28)의 서버는 옛 접두만 안다. */
+export const APPS_API_BASE = '/api/agentflow/agent-apps';
+export const LEGACY_APPS_API_BASE = '/api/agentflow/agent-artifacts';
+
+function isNotFound(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404;
+}
+
 export class AgentDataApi {
   constructor(private http: HttpClient) {}
+
+  /**
+   * 이 서버의 앱 API 접두 — 한 번 정해지면 기억한다.
+   *
+   * 데스크톱 앱은 여러 버전의 서버에 붙는다. 새 접두로 먼저 부르고, 404 인데 옛 접두로는 되면
+   * 옛 서버다. 둘 다 404 면(없는 앱) 아무것도 정하지 않는다 — 없는 앱 하나로 옛 서버라고
+   * 단정하면 새 서버에서 영영 옛 주소를 쓴다(그래도 동작은 하지만 이름이 어긋난다).
+   */
+  private appsBase: string | null = null;
+
+  private async viaAppsApi<T>(run: (base: string) => Promise<T>): Promise<T> {
+    if (this.appsBase) return run(this.appsBase);
+    try {
+      const out = await run(APPS_API_BASE);
+      this.appsBase = APPS_API_BASE;
+      return out;
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+      let out: T;
+      try {
+        out = await run(LEGACY_APPS_API_BASE);
+      } catch {
+        throw e;
+      }
+      this.appsBase = LEGACY_APPS_API_BASE;
+      return out;
+    }
+  }
+
+  /** 웹에서 같은 앱을 여는 화면 경로 — 옛 서버의 웹에는 새 경로(/app/…)가 없다. */
+  appWebPath(workflowId: string, slug: string): string {
+    const page = this.appsBase === LEGACY_APPS_API_BASE ? 'artifact' : 'app';
+    return `/${page}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`;
+  }
 
   // ── 전체로그 ──────────────────────────────────────────────────
   /** Paginated execution summaries; existing callers still receive the most recent 50. */
@@ -530,27 +574,27 @@ export class AgentDataApi {
     );
   }
 
-  // ── 아티팩트 ──────────────────────────────────────────────────
-  /** 이 에이전트의 아티팩트 목록 (열 수 없는 것도 이유와 함께 온다). */
+  // ── 앱 ──────────────────────────────────────────────────
+  /** 이 에이전트의 앱 목록 (열 수 없는 것도 이유와 함께 온다). */
   /**
-   * 격리 프레임(한 파일 아티팩트)의 fetch 를 **대신** 부른다.
+   * 격리 프레임(한 파일 앱)의 fetch 를 **대신** 부른다.
    *
-   * 프레임에는 네트워크가 없다 — 그래서 아티팩트가 fetch('__xgen/api/prices') 라고
-   * 쓰면 "Failed to fetch" 로 죽었다. 여기서 우리 자격으로 대신 부르되 **그 아티팩트의
+   * 프레임에는 네트워크가 없다 — 그래서 앱이 fetch('__xgen/api/prices') 라고
+   * 쓰면 "Failed to fetch" 로 죽었다. 여기서 우리 자격으로 대신 부르되 **그 앱의
    * 주소(…/{slug}/app/) 아래만** 부른다. 폴더의 api/*.py·도구·바깥 요청(__xgen/fetch)이
    * 전부 그 아래에 있고 서버가 각각 권한을 따진다. 예전에는 /api/… 전부를 불렀다 —
    * 에이전트가 쓴 코드가 보는 사람의 권한으로 플랫폼 API 에 닿았다.
    */
-  artifactHttp(
+  appHttp(
     workflowId: string,
     slug: string,
     req: { url: string; method: string; headers: Record<string, string>; body: string | null },
   ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> {
-    const base = `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/app/`;
-    const target = new URL(req.url, `http://artifact.local${base}`);
-    if (target.host !== 'artifact.local' || !target.pathname.startsWith(base)) {
+    const base = `${this.appsBase ?? APPS_API_BASE}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/app/`;
+    const target = new URL(req.url, `http://app.local${base}`);
+    if (target.host !== 'app.local' || !target.pathname.startsWith(base)) {
       return Promise.reject(
-        new Error(`'${req.url}' 은(는) 이 화면에서 부를 수 없습니다. 아티팩트 안의 주소(__xgen/api/…)나 __xgen/fetch 를 쓰세요`),
+        new Error(`'${req.url}' 은(는) 이 화면에서 부를 수 없습니다. 앱 안의 주소(__xgen/api/…)나 __xgen/fetch 를 쓰세요`),
       );
     }
     const headers = { ...req.headers };
@@ -561,16 +605,21 @@ export class AgentDataApi {
     return this.http.raw(req.method, target.pathname + target.search, { headers, body: req.body });
   }
 
-  artifactList(workflowId: string): Promise<ArtifactListResult> {
-    return this.http.get<ArtifactListResult>(
-      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/list`,
+  async appList(workflowId: string): Promise<AppListResult> {
+    const res = await this.viaAppsApi((base) =>
+      this.http.get<Partial<AppListResult> & { workflow_id: string; total: number; ready: number; artifacts?: AppSummary[] }>(
+        `${base}/${encodeURIComponent(workflowId)}/list`,
+      ),
     );
+    // 이름을 앱으로 바꾸기 전의 서버는 목록을 artifacts 로만 준다.
+    const { artifacts, ...rest } = res;
+    return { ...rest, apps: rest.apps ?? artifacts ?? [] };
   }
 
-  /** 아티팩트 하나 — 소스·선언된 파일·선언된 API 까지. */
-  artifactGet(workflowId: string, slug: string): Promise<ArtifactDetail> {
-    return this.http.get<ArtifactDetail>(
-      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`,
+  /** 앱 하나 — 소스·선언된 파일·선언된 API 까지. */
+  appGet(workflowId: string, slug: string): Promise<AppDetail> {
+    return this.viaAppsApi((base) =>
+      this.http.get<AppDetail>(`${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`),
     );
   }
 
@@ -578,13 +627,15 @@ export class AgentDataApi {
    * 서빙을 내리거나 올린다 — **지우지 않는다.**
    *
    * 파일은 그대로 있고 에이전트도 계속 고칠 수 있다. 달라지는 것은 하나다:
-   * 서버가 이 아티팩트의 소스를 아무에게도 주지 않는다. 그래서 앱·웹·공유 링크가
+   * 서버가 이 앱의 소스를 아무에게도 주지 않는다. 그래서 앱·웹·공유 링크가
    * 함께 닫힌다 — 판정이 한 군데라 한쪽만 열려 있는 상태가 없다.
    */
-  artifactSetServing(workflowId: string, slug: string, serving: boolean): Promise<ArtifactServingState> {
-    return this.http.post<ArtifactServingState>(
-      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/serving`,
-      { serving },
+  appSetServing(workflowId: string, slug: string, serving: boolean): Promise<AppServingState> {
+    return this.viaAppsApi((base) =>
+      this.http.post<AppServingState>(
+        `${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/serving`,
+        { serving },
+      ),
     );
   }
 
@@ -592,36 +643,38 @@ export class AgentDataApi {
    * 공개 링크를 만들거나 없앤다 — **로그인 없이 열리는 주소**가 생긴다.
    *
    * 부르기 전에 반드시 사람에게 확인을 받아야 한다. 화면과 그 안의 데이터 파일은
-   * 링크를 아는 누구나 보지만, 아티팩트가 선언한 API 는 공개 화면에서 동작하지
+   * 링크를 아는 누구나 보지만, 앱이 선언한 API 는 공개 화면에서 동작하지
    * **않는다** — 그 호출은 보는 사람의 권한으로 나가는데 익명에게는 권한이 없다.
    * 공유는 화면을 보여 주는 것이지 권한을 빌려주는 것이 아니다.
    *
    * 다시 켜면 새 토큰이라 이미 나간 링크는 되살아나지 않는다.
    */
-  artifactSetShare(workflowId: string, slug: string, shared: boolean): Promise<ArtifactShareState> {
-    return this.http.post<ArtifactShareState>(
-      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/share`,
-      { shared },
+  appSetShare(workflowId: string, slug: string, shared: boolean): Promise<AppShareState> {
+    return this.viaAppsApi((base) =>
+      this.http.post<AppShareState>(
+        `${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/share`,
+        { shared },
+      ),
     );
   }
 
-  /** 아티팩트 폴더를 지운다 — **되돌릴 수 없다**(원본까지 함께 지워진다). */
-  artifactDelete(workflowId: string, slug: string): Promise<{ ok: boolean }> {
-    return this.http.del<{ ok: boolean }>(
-      `/api/agentflow/agent-artifacts/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`,
+  /** 앱 폴더를 지운다 — **되돌릴 수 없다**(원본까지 함께 지워진다). */
+  appDelete(workflowId: string, slug: string): Promise<{ ok: boolean }> {
+    return this.viaAppsApi((base) =>
+      this.http.del<{ ok: boolean }>(`${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}`),
     );
   }
 
   /**
-   * 아티팩트가 선언한 alias 를 **사용자 권한으로** 대신 호출한다.
+   * 앱이 선언한 alias 를 **사용자 권한으로** 대신 호출한다.
    *
    * 프레임에는 네트워크가 없다. 무엇을 부를지도 프레임이 고르지 못하고 alias 만
    * 말할 수 있으며, 그 alias 가 어떤 경로인지는 서버가 검증해 내려준 선언에만
    * 있다. 여기서 한 번 더 확인하는 이유는 이 함수가 **실제로 호출을 실행하는
    * 곳**이기 때문이다 — 판정과 실행이 같은 자리에 있어야 한쪽만 느슨해지지 않는다.
    */
-  async artifactCallApi(
-    apis: ArtifactApiDeclaration[],
+  async appCallApi(
+    apis: AppApiDeclaration[],
     alias: string,
     params?: Record<string, string | number | boolean | undefined> | null,
   ): Promise<unknown> {
@@ -640,7 +693,7 @@ export class AgentDataApi {
     if (!qs) return this.http.get<unknown>(decl.path);
     // 선언된 path 에 이미 쿼리가 붙어 있을 수 있다 — 서버는 접두만 보고 통과시키므로
     // `/api/...?page_size=5` 같은 선언이 그대로 온다. 무조건 '?' 를 붙이면 그때
-    // 주소가 깨지고, 아티팩트는 이유를 알 수 없는 실패를 본다.
+    // 주소가 깨지고, 앱은 이유를 알 수 없는 실패를 본다.
     const sep = decl.path.includes('?') ? '&' : '?';
     return this.http.get<unknown>(`${decl.path}${sep}${qs}`);
   }

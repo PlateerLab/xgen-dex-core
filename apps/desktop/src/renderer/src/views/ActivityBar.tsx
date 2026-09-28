@@ -13,7 +13,7 @@
 import React, { useState } from 'react';
 import { XgenMark } from '../brand/Logo';
 import {
-  ArtifactIcon,
+  AppIcon,
   BotIcon,
   ChatIcon,
   FilesIcon,
@@ -23,14 +23,23 @@ import {
   TeamsIcon,
 } from '../brand/icons';
 
-export type SideView = 'agent' | 'explorer' | 'teams' | 'artifacts';
+export type SideView = 'agent' | 'explorer' | 'teams' | 'apps';
 
 const VIEWS: Array<{ id: SideView; title: string; icon: React.FC<{ size?: number }> }> = [
   { id: 'agent', title: 'Agent', icon: ChatIcon },
   { id: 'explorer', title: '탐색기', icon: FilesIcon },
   { id: 'teams', title: 'Teams', icon: TeamsIcon },
-  { id: 'artifacts', title: '아티팩트', icon: ArtifactIcon },
+  { id: 'apps', title: '앱', icon: AppIcon },
 ];
+
+/**
+ * 저장된 사이드바 보기 → 지금의 보기. 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 'artifacts' 는 'apps' 다.
+ * 모르는 값(다른 버전이 쓴 것)은 기본 보기로 — 아무 패널도 안 보이는 사이드바가 되지 않게.
+ */
+export function restoreSideView(value: unknown): SideView {
+  const v = value === 'artifacts' ? 'apps' : value;
+  return VIEWS.some((view) => view.id === v) ? (v as SideView) : 'agent';
+}
 
 export const ActivityBar: React.FC<{
   view: SideView;

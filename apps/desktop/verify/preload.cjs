@@ -118,9 +118,9 @@ const api = {
       return { items, pagination: { page: 1, pageSize: 24, totalCount: items.length, totalPages: 1 } };
     },
   },
-  // 아티팩트 — 사이드바 [아티팩트] 모음과 에이전트 상세 [아티팩트] 탭이 쓴다.
+  // 앱 — 사이드바 [앱] 모음과 에이전트 상세 [앱] 탭이 쓴다.
   // 실행 프레임(xgenartifact://)은 main 이 내므로 여기서 흉내 내지 않는다.
-  artifacts: {
+  apps: {
     gallery: async () => ({
       items: [
         { slug: 'sales-board', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 240, issues: [], workflowId: 'wf1', workflowName: '한국마사회 RAG 상담' },
@@ -134,7 +134,7 @@ const api = {
       workflow_id: 'wf1',
       total: 2,
       ready: 1,
-      artifacts: [
+      apps: [
         { slug: 'sales-board', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 240, issues: [] },
         { slug: 'broken-one', title: '만들다 만 화면', description: '', entry: '', ready: false, updated_at: null, issues: ['artifact.json 에 entry 가 없습니다'] },
       ],

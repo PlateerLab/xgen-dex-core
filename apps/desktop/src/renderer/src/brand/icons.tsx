@@ -378,8 +378,8 @@ export const BellOffIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
-/** 아티팩트 — 에이전트가 만든 화면. 창틀 안에 무언가 그려진 모양. */
-export const ArtifactIcon: React.FC<P> = ({ size = 18, className }) => (
+/** 앱 — 에이전트가 만든 화면. 창틀 안에 무언가 그려진 모양. */
+export const AppIcon: React.FC<P> = ({ size = 18, className }) => (
   <svg {...base(size)} className={className}>
     <rect x="3" y="4" width="18" height="16" rx="2" />
     <path d="M3 9h18" />

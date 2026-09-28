@@ -131,20 +131,20 @@ export const CHANNELS = {
   agentWsBinary: 'agent:wsBinary',
   agentWsUpload: 'agent:wsUpload',
 
-  // 아티팩트 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
+  // 앱 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
   // gallery 는 **모든 에이전트**를 훑어 지금 열리는 것만 모아 준다(사이드바).
-  artifactList: 'artifact:list',
-  artifactGet: 'artifact:get',
-  artifactGallery: 'artifact:gallery',
+  appList: 'apps:list',
+  appGet: 'apps:get',
+  appGallery: 'apps:gallery',
   /** 프레임이 부탁한 alias 를 사용자 권한으로 대신 호출한다. */
-  artifactCallApi: 'artifact:callApi',
-  artifactHttp: 'artifact:http',
-  artifactSetServing: 'artifact:setServing',
-  artifactSetShare: 'artifact:setShare',
-  artifactDelete: 'artifact:delete',
+  appCallApi: 'apps:callApi',
+  appHttp: 'apps:http',
+  appSetServing: 'apps:setServing',
+  appSetShare: 'apps:setShare',
+  appDelete: 'apps:delete',
   // 웹의 같은 화면을 기본 브라우저로 연다. 주소를 렌더러가 조립하지 않는 이유는
   // 렌더러가 서버 주소를 모르기 때문이다 — 그건 main 의 설정이다.
-  artifactOpenWeb: 'artifact:openWeb',
+  appOpenWeb: 'apps:openWeb',
 
   chatStart: 'chat:start',
   //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).
@@ -300,7 +300,7 @@ export const CHANNELS = {
 } as const;
 
 /**
- * 아티팩트가 도는 문서의 주소 — main 이 `protocol.handle('xgenartifact')` 로 낸다.
+ * 앱이 도는 문서의 주소 — main 이 `protocol.handle('xgenartifact')` 로 낸다.
  *
  * 렌더러는 이 URL 을 `sandbox="allow-scripts"` iframe 의 src 로만 쓴다. 상수를
  * 여기 두는 이유는 이것이 main ↔ 렌더러의 약속이기 때문이다 — 채널 이름과 같은 종류.

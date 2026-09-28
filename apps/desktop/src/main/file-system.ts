@@ -109,6 +109,8 @@ export interface FileSystemDeps {
   indexSeqs?: LocalSyncDeps['indexSeqs'];
   /** 테스트용 — 보험 타이머 간격. */
   intervalMs?: number;
+  /** 테스트용 — 빠른 probe 간격. */
+  pollMs?: number;
   /** 테스트용 — 느린 전체 사이클 스윕 간격. */
   fullSweepMs?: number;
 }
@@ -162,6 +164,7 @@ export class FileSystemController {
       deviceName: deps.deviceName,
       indexSeqs: deps.indexSeqs,
       intervalMs: deps.intervalMs,
+      pollMs: deps.pollMs,
       fullSweepMs: deps.fullSweepMs,
     };
     this.cloud = new LocalSyncManager({

@@ -63,7 +63,11 @@ export interface LocalSyncDeps {
   config: () => LocalSyncConfig;
   loggedIn: () => boolean;
   remoteFor: (workflowId: string) => SyncRemote;
-  /** 서버 변경 알림 (드라이브의 presence 와 같은 WS). */
+  /**
+   * 서버 변경 알림 (드라이브의 presence 와 같은 WS). **방금 바뀐 에이전트에만**
+   * 잠시 붙인다(MAX_PRESENCE 개, HOT_MS 동안) — 소켓 하나가 게이트웨이 연결
+   * 하나를 쥐므로 에이전트 전부에 붙이면 사이트 전체의 연결 상한을 다 쓴다.
+   */
   presenceFor?: (owner: string, onChanged: () => void) => { start(): Promise<void>; stop(): void };
   /** base 스냅숏 보관 폴더 (계정별 — 계정 전환을 따라가도록 호출 시점에 묻는다). */
   stateDir: () => string;
@@ -85,6 +89,13 @@ export interface LocalSyncDeps {
    * 폴링 → 게이트웨이 504 폭주 방지). 실패/미지원(구서버)이면 전수 폴백.
    */
   indexSeqs?: (owners: string[]) => Promise<Record<string, number>>;
+  /**
+   * 빠른 probe 간격(ms) — 서버 쪽 변경을 알아채는 주 경로. 요청 한 번이 전
+   * 페어를 본다. 기본 15초. 0 = 끔(테스트).
+   */
+  pollMs?: number;
+  /** 변경 알림 소켓을 붙여 두는 시간(ms). 기본 10분 (테스트용으로 줄인다). */
+  hotMs?: number;
   /**
    * 느린 전체 사이클 스윕 간격(ms). probe 는 원본 인덱스만 보므로(파드
    * 로컬 미발행 산출물 안 보임) 이 주기마다는 probe 결과와 무관하게 정식
@@ -131,6 +142,8 @@ interface Live {
   pair: SyncPair;
   watcher: FSWatcher | null;
   presence: { start(): Promise<void>; stop(): void } | null;
+  /** 이 시각까지 변경 알림(presence)을 붙여 둔다 — 서버 쪽 변경이 보일 때마다 늘어난다. */
+  hotUntil: number;
   debounce: ReturnType<typeof setTimeout> | null;
   state: SyncQueueState;
   /** 실행 중에 새 요청이 오면 표시만 해 두고, 끝난 뒤 큐에 다시 선다. */
@@ -151,6 +164,12 @@ interface Live {
 
 const WATCH_DEBOUNCE_MS = 1200;
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+/** 빠른 probe 기본 간격 — 소켓 없이 서버 변경을 알아채는 주기. */
+const DEFAULT_POLL_MS = 15 * 1000;
+/** 변경이 보인 에이전트에 알림 소켓을 붙여 두는 시간 — 에이전트 턴 하나는 여러 번 쓴다. */
+const HOT_MS = 10 * 60 * 1000;
+/** 알림 소켓을 동시에 붙일 수 있는 에이전트 수. */
+export const MAX_PRESENCE = 4;
 const DEFAULT_CONCURRENCY = 1;
 /** probe 와 무관하게 정식 사이클을 강제하는 스윕 주기 — 기본 1시간. */
 const DEFAULT_FULL_SWEEP_MS = 60 * 60 * 1000;
@@ -170,6 +189,11 @@ export class LocalSyncManager {
   /** 매니저 전역 보험 타이머 — 페어별 타이머는 없다 (전원이 같은 시각에
    *  발사되는 thundering herd 가 5분 정각 504 폭주의 절반이었다). */
   private insuranceTimer: ReturnType<typeof setInterval> | null = null;
+  /** 빠른 probe 타이머 (매니저 전역 하나) + 겹침 방지 표시. */
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private polling = false;
+  /** probe 연속 실패 — 로그는 줄이 바뀔 때만(15초마다 같은 줄을 쌓지 않는다). */
+  private pollFailing = false;
   /**
    * 온디맨드 페어 — 서버가 커넥터 세션에서 **어느 에이전트든** 로컬로 실행하려
    * 할 때(ensurePair) 여기 쌓인다. config.targets(클라우드 연결 목록)와 달리
@@ -278,6 +302,7 @@ export class LocalSyncManager {
       pair,
       watcher: null,
       presence: null,
+      hotUntil: 0,
       debounce: null,
       state: 'idle',
       rerun: false,
@@ -288,13 +313,12 @@ export class LocalSyncManager {
     };
     this.live.set(target.workflowId, live);
 
-    // ⚠ 워처/변경 알림은 여기서 켜지 않는다 — 첫 사이클이 끝난 뒤
-    // attachSignals 가 붙인다. 페어 100+ 개의 워처(디스크 스캔)와 WS 연결을
-    // 시작 시각에 전부 기동하면 그 자체가 storm 이다. 큐가 사이클을 하나씩
-    // 돌리므로 신호 기동도 자연히 시차를 갖는다. (워처가 없는 동안의 로컬
-    // 변경은 어차피 첫 사이클의 스캔이 잡는다.)
+    // ⚠ 워처는 여기서 켜지 않는다 — 첫 사이클이 끝난 뒤 attachSignals 가
+    // 붙인다. 페어 100+ 개의 워처(디스크 스캔)를 시작 시각에 전부 기동하면
+    // 그 자체가 storm 이다. 큐가 사이클을 하나씩 돌리므로 기동도 자연히
+    // 시차를 갖는다. (워처가 없는 동안의 로컬 변경은 첫 사이클의 스캔이 잡는다.)
 
-    this.ensureInsuranceTimer();
+    this.ensureTimers();
     this.schedule(target.workflowId, 0);
   }
 
@@ -329,7 +353,7 @@ export class LocalSyncManager {
     }
   }
 
-  /** 첫 사이클 완료 후 — 로컬 워처와 서버 변경 알림(WS)을 붙인다. */
+  /** 첫 사이클 완료 후 — 로컬 워처를 붙인다. 서버 변경은 probe(pollTick)가 본다. */
   private attachSignals(l: Live): void {
     if (this.stopped || !this.live.has(l.target.workflowId)) return;
     const id = l.target.workflowId;
@@ -363,20 +387,75 @@ export class LocalSyncManager {
         diag('local-sync', `워처 시작 실패 ${l.target.label}: ${(e as Error).message}`);
       }
     }
-    if (!l.presence && this.deps.presenceFor) {
-      // 서버 변경 알림 — 에이전트 턴이 publish 하면 즉시 내려받는다.
-      l.presence = this.deps.presenceFor(id, () => this.schedule(id, 300));
-      void l.presence.start().catch((e) => {
-        diag('local-sync', `변경 알림 연결 실패 ${l.target.label}: ${(e as Error).message}`);
-      });
+  }
+
+  /**
+   * 방금 바뀐 에이전트 — 변경 알림 소켓을 HOT_MS 동안 붙여 둔다. 에이전트가 턴을
+   * 도는 동안 이어지는 쓰기는 probe 주기를 기다리지 않고 바로 내려받는다.
+   *
+   * 소켓은 MAX_PRESENCE 개까지. 넘치면 가장 먼저 식을 것을 뗀다. 에이전트
+   * 전부에 붙이던 예전 방식은 한 사람의 PC 가 게이트웨이 연결 100개를 다 써서
+   * 사이트 전체(로그인 포함)를 멈췄다(2026-09-28).
+   */
+  private warm(l: Live): void {
+    if (this.stopped || !this.deps.presenceFor || !this.live.has(l.target.workflowId)) return;
+    l.hotUntil = Date.now() + (this.deps.hotMs ?? HOT_MS);
+    if (l.presence) return;
+    const attached = [...this.live.values()].filter((x) => x.presence && x !== l);
+    if (attached.length >= MAX_PRESENCE) {
+      attached.sort((a, b) => a.hotUntil - b.hotUntil);
+      for (const x of attached.slice(0, attached.length - MAX_PRESENCE + 1)) this.detachPresence(x);
+    }
+    const id = l.target.workflowId;
+    l.presence = this.deps.presenceFor(id, () => {
+      const cur = this.live.get(id);
+      if (cur) cur.hotUntil = Date.now() + (this.deps.hotMs ?? HOT_MS);
+      this.schedule(id, 300);
+    });
+    void l.presence.start().catch((e) => {
+      diag('local-sync', `변경 알림 연결 실패 ${l.target.label}: ${(e as Error).message}`);
+    });
+  }
+
+  private detachPresence(l: Live): void {
+    l.presence?.stop();
+    l.presence = null;
+  }
+
+  /** 식은 에이전트의 알림 소켓을 뗀다 — 다음 변경은 다시 probe 가 알아챈다. */
+  private coolDown(now: number): void {
+    for (const l of this.live.values()) if (l.presence && now >= l.hotUntil) this.detachPresence(l);
+  }
+
+  /** 지금 붙어 있는 변경 알림 소켓 수 (상태·테스트용). */
+  presenceCount(): number {
+    let n = 0;
+    for (const l of this.live.values()) if (l.presence) n += 1;
+    return n;
+  }
+
+  private ensureTimers(): void {
+    const interval = this.deps.intervalMs ?? DEFAULT_INTERVAL_MS;
+    if (interval > 0 && !this.insuranceTimer) {
+      this.insuranceTimer = setInterval(() => void this.insuranceTick(), interval);
+      this.insuranceTimer.unref?.();
+    }
+    const poll = this.deps.pollMs ?? DEFAULT_POLL_MS;
+    if (poll > 0 && this.deps.indexSeqs && !this.pollTimer) {
+      this.pollTimer = setInterval(() => void this.pollTick(), poll);
+      this.pollTimer.unref?.();
     }
   }
 
-  private ensureInsuranceTimer(): void {
-    const interval = this.deps.intervalMs ?? DEFAULT_INTERVAL_MS;
-    if (interval <= 0 || this.insuranceTimer) return;
-    this.insuranceTimer = setInterval(() => void this.insuranceTick(), interval);
-    this.insuranceTimer.unref?.();
+  private clearTimers(): void {
+    if (this.insuranceTimer) {
+      clearInterval(this.insuranceTimer);
+      this.insuranceTimer = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
   }
 
   private teardown(id: string): void {
@@ -387,11 +466,8 @@ export class LocalSyncManager {
     // 기다리는 쪽을 매달아 두지 않는다 — 페어가 사라졌으면 실패로 정리.
     for (const w of l.waiters.splice(0)) w(false);
     if (l.debounce) clearTimeout(l.debounce);
-    l.presence?.stop();
-    if (this.live.size === 0 && this.insuranceTimer) {
-      clearInterval(this.insuranceTimer);
-      this.insuranceTimer = null;
-    }
+    this.detachPresence(l);
+    if (this.live.size === 0) this.clearTimers();
     void l.watcher?.close().catch(() => undefined);
     l.pair.dispose();
   }
@@ -498,6 +574,44 @@ export class LocalSyncManager {
   }
 
   /**
+   * 빠른 probe — 서버 쪽 변경을 알아채는 **주 경로**. 요청 한 번으로 전 페어의
+   * 원본 seq 를 읽고, 커서와 다른 페어만 큐에 세우고 알림 소켓을 잠시 붙인다(warm).
+   *
+   * 커서가 아직 없는 페어(첫 사이클 전)와 백오프·실행 중인 페어는 묻지 않는다.
+   * 실패하면 아무것도 세우지 않는다 — 전수 폴백은 느린 보험 주기의 몫이다
+   * (15초마다 전수를 돌면 그게 곧 게이트웨이 폭주다).
+   */
+  async pollTick(): Promise<void> {
+    if (this.stopped || this.polling || this.live.size === 0 || !this.deps.indexSeqs) return;
+    const now = Date.now();
+    this.coolDown(now);
+    const probe = [...this.live.values()].filter(
+      (l) => l.state === 'idle' && l.pair.cursor !== null && now >= l.nextRetryAt,
+    );
+    if (probe.length === 0) return;
+    this.polling = true;
+    let seqs: Record<string, number>;
+    try {
+      seqs = await this.deps.indexSeqs(probe.map((l) => l.target.workflowId));
+      if (this.pollFailing) diag('local-sync', '인덱스 probe 회복');
+      this.pollFailing = false;
+    } catch (e) {
+      if (!this.pollFailing) diag('local-sync', `인덱스 probe 실패 (보험 주기가 덮는다): ${(e as Error).message}`);
+      this.pollFailing = true;
+      return;
+    } finally {
+      this.polling = false;
+    }
+    for (const l of probe) {
+      const id = l.target.workflowId;
+      const seq = seqs[id];
+      if (seq === undefined || seq === l.pair.cursor || this.live.get(id) !== l) continue;
+      this.warm(l);
+      void this.enqueue(id);
+    }
+  }
+
+  /**
    * 보험 주기 — 놓친 알림(WS 드롭 등)의 안전망. **파일 인덱스 기반**이다:
    *
    *   1. 벌크 probe 한 번으로 전 페어의 원본 seq 를 읽고,
@@ -555,10 +669,10 @@ export class LocalSyncManager {
    */
   async syncNow(workflowId?: string, opts?: { force?: boolean }): Promise<void> {
     if (workflowId) {
-      if (opts?.force) {
-        const l = this.live.get(workflowId);
-        if (l) l.forceNext = true; // 대량 삭제 보류를 이번 한 번 통과시킨다
-      }
+      const l = this.live.get(workflowId);
+      if (l && opts?.force) l.forceNext = true; // 대량 삭제 보류를 이번 한 번 통과시킨다
+      // 사용자가 지금 이 에이전트를 만진다 — 이어지는 서버 변경도 바로 받는다.
+      if (l && l.pair.cursor !== null) this.warm(l);
       const ok = await this.enqueue(workflowId, { front: true });
       if (!ok) {
         const err = this.live.get(workflowId)?.lastError;
@@ -659,10 +773,7 @@ export class LocalSyncManager {
     this.stopped = true;
     this.unsubscribeScheduler?.();
     this.unsubscribeScheduler = null;
-    if (this.insuranceTimer) {
-      clearInterval(this.insuranceTimer);
-      this.insuranceTimer = null;
-    }
+    this.clearTimers();
     for (const id of [...this.live.keys()]) this.teardown(id);
     this.emit();
   }

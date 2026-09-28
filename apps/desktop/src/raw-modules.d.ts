@@ -17,3 +17,12 @@ declare module '*.html?raw' {
   const content: string;
   export default content;
 }
+
+/**
+ * vite 의 `?worker` — 모듈을 **Web Worker 생성자**로 가져온다(IDE 의 Monaco worker).
+ * 같은 이유로 `vite/client` 대신 쓰는 것만 선언한다.
+ */
+declare module '*?worker' {
+  const WorkerFactory: new () => Worker;
+  export default WorkerFactory;
+}

@@ -131,6 +131,15 @@ export const CHANNELS = {
   agentWsBinary: 'agent:wsBinary',
   agentWsUpload: 'agent:wsUpload',
 
+  // IDE — 채팅의 [IDE] 보기. 호출은 한 채널(허용된 메서드만)로 받아 결과를 봉투로 돌려준다
+  // (409 의 지금 sha 같은 상세가 IPC 오류 문자열로 뭉개지지 않게). 터미널은 main 이 소켓을 연다.
+  ideCall: 'ide:call',
+  ideDownload: 'ide:download',
+  ideTermOpen: 'ide:termOpen',
+  ideTermSend: 'ide:termSend', // renderer → main (fire-and-forget)
+  ideTermClose: 'ide:termClose', // renderer → main (fire-and-forget)
+  ideTermEvent: 'ide:termEvent', // main → renderer (프레임·닫힘)
+
   // 앱 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
   // gallery 는 **모든 에이전트**를 훑어 지금 열리는 것만 모아 준다(사이드바).
   appList: 'apps:list',

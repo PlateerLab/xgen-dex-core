@@ -55,6 +55,7 @@ import type {
   NotificationSystemStatus,
   AgentCreateOptions,
   CreateAgentInput,
+  IdeFailure,
 } from '@dex/protocol';
 import type { ChatFeedback } from '@dex/protocol/feedback';
 import type { ContentFilterResult } from '@dex/protocol/chat-guardrails';
@@ -436,6 +437,41 @@ const api = {
         interactionId,
         attachmentId,
       ),
+  },
+
+  /**
+   * 채팅의 [IDE] 보기. `call` 은 @dex/protocol 의 IdeApi 메서드를 main 이 대신 부른다 —
+   * 실패는 던지지 않고 `{ok:false, …}` 로 온다(저장 충돌의 상세가 살아 있게).
+   * 터미널 소켓은 main 이 열고, 프레임은 `onTerminalEvent` 로 밀려온다.
+   */
+  ide: {
+    call: (
+      method: string,
+      workflowId: string,
+      ...args: unknown[]
+    ): Promise<{ ok: true; value: unknown } | ({ ok: false } & IdeFailure)> =>
+      ipcRenderer.invoke(CHANNELS.ideCall, method, workflowId, ...args),
+    download: (workflowId: string, path: string): Promise<string | null> =>
+      ipcRenderer.invoke(CHANNELS.ideDownload, workflowId, path),
+    terminalOpen: (
+      socket: string,
+      workflowId: string,
+      termId: string,
+      opts: { rows: number; cols: number; cwd?: string },
+    ): Promise<boolean> => ipcRenderer.invoke(CHANNELS.ideTermOpen, socket, workflowId, termId, opts),
+    terminalSend: (socket: string, frame: unknown): void => ipcRenderer.send(CHANNELS.ideTermSend, socket, frame),
+    terminalClose: (socket: string): void => ipcRenderer.send(CHANNELS.ideTermClose, socket),
+    onTerminalEvent: (
+      cb: (
+        event:
+          | { socket: string; type: 'frame'; frame: Record<string, unknown> }
+          | { socket: string; type: 'close'; code: number; reason: string },
+      ) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
+      ipcRenderer.on(CHANNELS.ideTermEvent, h);
+      return () => ipcRenderer.removeListener(CHANNELS.ideTermEvent, h);
+    },
   },
 
   browser: {

@@ -50,6 +50,7 @@ import {
   BellOffIcon,
   ChatIcon,
   ChevronDownIcon,
+  CodeIcon,
   CloseIcon,
   CopyIcon,
   DocIcon,
@@ -67,6 +68,8 @@ import {
   TeamsIcon,
 } from '../brand/icons';
 import type { AgentViewerSub } from './workspace-layout';
+import { IdeView } from '@dex/ide';
+import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
 
 /** [Trigger] 행 — Job/sub-agent 결과가 세션을 깨운 턴.
  *
@@ -341,6 +344,11 @@ export const Chat: React.FC<{
   const busy = streaming || remote;
   const loadingHistory = session.loadingHistory;
   const notificationSnapshot = useNotifications();
+  useEffect(() => {
+    // 턴이 끝났다 — 에이전트가 만든 것이 방금 발행됐다. IDE 가 열려 있으면 탐색기·열린 파일·
+    // 소스 제어를 다시 본다(닫혀 있으면 다음에 열 때 읽는다).
+    if (!busy) peekIdeStore(session.key)?.notifyRemoteChange();
+  }, [busy, session.key]);
 
   const [input, setInput] = useState('');
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
@@ -411,6 +419,11 @@ export const Chat: React.FC<{
   const [notificationMenuOpen, setNotificationMenuOpen] = useState(false);
   // 이 대화에 연결된 이 PC 의 폴더 — 에이전트의 파일·터미널 도구가 닿는 범위.
   const chatFolders = useChatFolders(session.interactionId);
+  // [채팅 | IDE] — 같은 에이전트의 workspace·샌드박스를 편집기로 본다. 선택과 편집기 상태는
+  // 탭을 바꿔도 남도록 화면 밖(ide-sessions)에 둔다.
+  const [ideMode, setIdeMode] = useIdeMode(session.key);
+  const ideTheme = useResolvedTheme();
+  const ideStore = ideMode ? ideStoreFor(session.key, agent) : null;
   const [foldersOpen, setFoldersOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -595,8 +608,13 @@ export const Chat: React.FC<{
     [feedbackByIo],
   );
 
-  // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll)
-  const { showJump, jumpToBottom } = useStickToBottom(scrollRef, messages, session.key);
+  // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll).
+  // 채팅 ↔ IDE 를 바꾸면 기록이 새 자리에 다시 그려진다 — 그때도 맨 아래에서 시작한다.
+  const { showJump, jumpToBottom } = useStickToBottom(
+    scrollRef,
+    messages,
+    `${session.key}:${ideMode ? 'ide' : 'chat'}`,
+  );
 
   useEffect(() => {
     const ta = taRef.current;
@@ -1187,14 +1205,14 @@ export const Chat: React.FC<{
     ];
   const effectiveNotificationMuted = agentNotificationMuted || chatNotificationMuted;
 
-  return (
-    <div
-      className={`chat${dragOver ? ' dropping' : ''}`}
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+  const dragProps = {
+    onDragEnter: handleDragEnter,
+    onDragOver: handleDragOver,
+    onDragLeave: handleDragLeave,
+    onDrop: handleDrop,
+  };
+  const dropOverlay = (
+    <>
       {dragOver && (
         <div className="chat-drop" role="status">
           <div className="chat-drop-card">
@@ -1204,6 +1222,10 @@ export const Chat: React.FC<{
           </div>
         </div>
       )}
+    </>
+  );
+  const header = (
+    <>
       <div className="chat-header">
         <div className="chat-title">
           <span className="agent-mark">
@@ -1226,6 +1248,28 @@ export const Chat: React.FC<{
           </div>
         </div>
         <div className="chat-header-actions">
+          <div className="chat-view-switch" role="tablist" aria-label="보기">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!ideMode}
+              className={!ideMode ? 'on' : ''}
+              onClick={() => setIdeMode(false)}
+              title="채팅만 봅니다"
+            >
+              <ChatIcon size={13} /> 채팅
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={ideMode}
+              className={ideMode ? 'on' : ''}
+              onClick={() => setIdeMode(true)}
+              title="이 에이전트의 작업 공간을 편집기와 터미널로 봅니다"
+            >
+              <CodeIcon size={13} /> IDE
+            </button>
+          </div>
           <FolderConnectButton
             count={chatFolders.folders.length}
             onClick={() => setFoldersOpen(true)}
@@ -1330,7 +1374,10 @@ export const Chat: React.FC<{
           </button>
         </div>
       </div>
-
+    </>
+  );
+  const body = (
+    <>
       {foldersOpen && (
         <FolderConnectModal state={chatFolders} onClose={() => setFoldersOpen(false)} />
       )}
@@ -2006,6 +2053,36 @@ export const Chat: React.FC<{
           onClose={() => setShareBody(null)}
         />
       )}
+    </>
+  );
+
+  if (ideMode && ideStore) {
+    // IDE — 헤더는 그대로 위에, 그 아래를 편집기로. 대화(기록·작성기)는 오른쪽 칸이다.
+    // 파일을 끌어다 놓아 첨부하는 것은 대화 칸에서만 받는다(탐색기에 놓으면 올리기다).
+    return (
+      <div className="chat chat-ide">
+        {header}
+        <div className="chat-ide-body">
+          <IdeView
+            store={ideStore}
+            theme={ideTheme}
+            chat={
+              <div className={`chat chat-ide-column${dragOver ? ' dropping' : ''}`} {...dragProps}>
+                {dropOverlay}
+                {body}
+              </div>
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`chat${dragOver ? ' dropping' : ''}`} {...dragProps}>
+      {dropOverlay}
+      {header}
+      {body}
     </div>
   );
 };

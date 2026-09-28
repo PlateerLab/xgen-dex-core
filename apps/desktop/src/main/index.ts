@@ -47,6 +47,7 @@ import {
   type AppGalleryItem,
   describeError,
   applyNotificationPreferenceUpdate,
+  ideFailureOf,
   notificationProfileForAccount,
   shareBodyOf,
   withNotificationProfile,
@@ -146,6 +147,7 @@ import type {
 } from '@dex/protocol/browser';
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
+import { IdeTerminalHub, type IdeTerminalDeps } from './ide-terminal';
 import { ConversationWatchHub } from '@dex/engine/conversation-watch';
 import { ConversationsWatch } from '@dex/engine/conversations-watch';
 import { NotificationCenter } from './notification-center';
@@ -1579,6 +1581,25 @@ async function refreshAuthToken(): Promise<string | null> {
  * 브릿지·워크스페이스 동기화가 같은 이유로 같은 규칙을 쓴다.
  */
 const teamsHub = new TeamsSocketHub();
+/** 채팅 [IDE] 의 터미널 소켓 — 렌더러 대신 main 이 연다(ide-terminal.ts). */
+const ideTerminals = new IdeTerminalHub(
+  (): IdeTerminalDeps | null =>
+    currentUserId()
+      ? {
+          baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+          token: async () => (await liveAccessToken()) || '',
+          refreshAuth: refreshAuthToken,
+          allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+        }
+      : null,
+  (sender, event) => {
+    try {
+      if (!sender.isDestroyed()) sender.send(CHANNELS.ideTermEvent, event);
+    } catch {
+      /* 창이 닫히는 중 */
+    }
+  },
+);
 // 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)을 열린 채팅에 실시간 반영.
 const conversationWatchHub = new ConversationWatchHub(
   (turn) => {
@@ -1724,6 +1745,7 @@ function syncTeams(): void {
     // 로그아웃/서버 미설정 — 방 소켓까지 전부 접는다. 다른 계정의 방을
     // 물고 있는 상태가 남으면 안 된다.
     teamsHub.stopAll();
+    ideTerminals.closeAll();
   }
 }
 
@@ -1988,6 +2010,7 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     // 폐기된 토큰으로 최대 60초 백오프까지 영원히 재시도한다 (로그아웃 경로에는
     // 있는데 여기만 없어서 생기던 누수).
     teamsHub.stopAll();
+    ideTerminals.closeAll();
     await getBrowserRuntime().closeAll();
     getBrowserRuntime().configure({ enabled: false });
     void client?.logout().catch(() => undefined); // 구 서버 세션 무효화 (rebind 전 호출)
@@ -2254,6 +2277,7 @@ ipcMain.handle(CHANNELS.authRestore, async () => {
 ipcMain.handle(CHANNELS.authLogout, async () => {
   getMcpBridge().stop();
   teamsHub.stopAll();
+  ideTerminals.closeAll();
   await getBrowserRuntime().closeAll();
   getBrowserRuntime().configure({ enabled: false });
   if (client) await client.logout();
@@ -2531,6 +2555,43 @@ ipcMain.handle(CHANNELS.appGallery, async (): Promise<AppGalleryResult> => {
   items.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
   return { items, scanned: targets.length, failed };
 });
+// ── IDE (채팅의 [IDE] 보기) ─────────────────────────────────────
+// 서버 경로는 @dex/protocol 의 IdeApi 에 있다. 여기서는 허용된 메서드만 부르고, 실패를
+// 봉투({ok:false, status, code, message, detail})로 돌려준다 — IPC 가 오류를 문자열로만
+// 넘겨서, 그대로 던지면 저장 충돌(409)의 지금 sha 가 사라진다.
+const IDE_METHODS = new Set([
+  'session', 'files', 'read', 'save', 'stat', 'raw', 'fs',
+  'search', 'replace', 'git', 'terminals', 'closeTerminal',
+]);
+ipcMain.handle(CHANNELS.ideCall, async (_e, method: string, workflowId: string, ...args: unknown[]) => {
+  if (!IDE_METHODS.has(String(method)) || typeof workflowId !== 'string' || !workflowId) {
+    return { ok: false, status: 400, code: 'bad_request', message: '알 수 없는 요청입니다', detail: {} };
+  }
+  try {
+    const api = getClient().ide as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    return { ok: true, value: await api[method](workflowId, ...args) };
+  } catch (err) {
+    return { ok: false, ...ideFailureOf(err) };
+  }
+});
+ipcMain.handle(CHANNELS.ideDownload, async (_e, workflowId: string, path: string) => {
+  const bytes = await getClient().ide.raw(workflowId, path);
+  return saveAttachmentAs(mainWindow, String(path).split('/').pop() || 'file', bytes);
+});
+ipcMain.handle(
+  CHANNELS.ideTermOpen,
+  (e, socket: string, workflowId: string, termId: string, opts: { rows: number; cols: number; cwd?: string }) => {
+    ideTerminals.open(e.sender, String(socket), String(workflowId), String(termId), {
+      rows: Number(opts?.rows) || 24,
+      cols: Number(opts?.cols) || 80,
+      cwd: typeof opts?.cwd === 'string' ? opts.cwd : undefined,
+    });
+    return true;
+  },
+);
+ipcMain.on(CHANNELS.ideTermSend, (_e, socket: string, frame: unknown) => ideTerminals.send(String(socket), frame));
+ipcMain.on(CHANNELS.ideTermClose, (_e, socket: string) => ideTerminals.close(String(socket)));
+
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),
 );

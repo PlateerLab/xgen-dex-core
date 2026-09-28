@@ -2465,6 +2465,76 @@ button {
   gap: 6px;
   flex-shrink: 0;
 }
+/* [채팅 | IDE] — 같은 대화를 두 가지로 본다. 옆의 가벼운 헤더 버튼들과 구분되게 한 덩어리로. */
+.chat-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  margin-right: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+.chat-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.chat-view-switch button:hover {
+  color: var(--text);
+}
+.chat-view-switch button.on {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.chat-view-switch button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+/* IDE — 헤더 아래 전부가 편집기다. 대화는 오른쪽 칸이라 여백을 줄인다.
+   편집기의 강조색(상태 표시줄·선택)은 앱의 브랜드 색을 따른다. */
+.chat-ide-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.chat-ide-body > .xide-root {
+  flex: 1;
+  --xide-bg-status: var(--primary);
+  --xide-accent: var(--primary);
+}
+.chat.chat-ide-column {
+  background: var(--app-bg);
+}
+.chat-ide-column .chat-log {
+  padding: 16px 14px;
+  gap: 14px;
+}
+.chat-ide-column .chat-input {
+  padding: 8px 12px;
+}
+.chat-ide-column .chat-empty {
+  padding: 24px 16px;
+}
+.chat-ide-column.dropping {
+  border-radius: 0;
+  outline-offset: -4px;
+}
 .mcp-chat-status {
   display: inline-flex;
   align-items: center;

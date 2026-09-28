@@ -19,9 +19,13 @@ import {
 import {
   dangerousApprovalFromConfig,
   normalizeLocalToolsConfig,
-  toShellConfig,
   type LocalToolsConfig,
 } from './local-tools-config';
+import {
+  ConversationFolderBook,
+  localFoldersForRequest,
+  type LocalFolder,
+} from './local-folders';
 import { hostPorts, bindHost, isHostBound } from './host';
 import type {
   Agent,
@@ -63,13 +67,21 @@ export interface ProfileSummary extends DexProfile {
 
 export interface LocalToolsStatus {
   config: LocalToolsConfig;
-  /** 지금 **에이전트에게 노출되는** 도구. 꺼져 있으면 비어 있다. */
+  /** 이 기기가 서버에 광고하는 도구 전부(폴더 도구 + MCP 등). */
   tools: LocalToolSchema[];
-  /** 이 기기가 제공할 수 있는 전체 목록 — 켜짐 여부와 무관. 사용자가
+  /** 폴더 도구 목록 — 대화에 폴더가 연결돼 있을 때 쓸 수 있는 것. 사용자가
    *  "뭘 할 수 있지"를 물을 때의 답이다. */
   catalog: LocalToolSchema[];
   bridge: McpBridgeStatus;
 }
+
+/** CLI·VSCode 대화에서 폴더 도구를 불렀는데 연결된 폴더가 없을 때 에이전트가 받는 문장. */
+export const NO_FOLDER_MESSAGE_TERMINAL =
+  '[NO_FOLDER] 이 대화에는 연결된 폴더가 없어 이 PC의 파일과 터미널을 쓸 수 없습니다. ' +
+  '사용자에게 작업할 폴더에서 대화를 시작해 달라고 요청하세요.';
+
+/** `dex tools run` 처럼 대화 없이 도구를 직접 부를 때 쓰는 대화 id. */
+const DIRECT_RUN_INTERACTION = 'dex-direct-run';
 
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
@@ -104,6 +116,11 @@ export class DexEngine {
   private clients = new Map<string, ClientRecord>();
   private readonly localTools: LocalToolProvider;
   private readonly localToolBridge: McpBridge;
+  /**
+   * 대화별 폴더 장부 — 이 프로세스가 사는 동안만. CLI 와 VSCode 는 대화를 시작할
+   * 때마다 지금 폴더를 다시 붙이므로 저장할 이유가 없다.
+   */
+  private readonly folders = new ConversationFolderBook();
 
   constructor(
     private readonly configs: ConfigStore,
@@ -112,6 +129,15 @@ export class DexEngine {
   ) {
     this.localTools = options.localToolProvider ?? getLocalToolProvider();
     this.localToolBridge = options.localToolBridge ?? getMcpBridge();
+    this.localTools.configureFolders((context) => this.folders.list(context?.interactionId), {
+      missingMessage: NO_FOLDER_MESSAGE_TERMINAL,
+    });
+    this.folders.onChange((interactionId) => this.localTools.foldersChanged(interactionId));
+  }
+
+  /** 이 대화에 연결된 폴더. */
+  conversationFolders(interactionId: string): LocalFolder[] {
+    return this.folders.list(interactionId);
   }
 
   async listProfiles(): Promise<ProfileSummary[]> {
@@ -135,7 +161,6 @@ export class DexEngine {
    * 설정 하나로 잃지 않게).
    */
   private applyToolConfig(config: LocalToolsConfig): void {
-    this.localTools.configure(toShellConfig(config));
     const preApproved = dangerousApprovalFromConfig(config);
     if (!preApproved) return;
     const current = isHostBound() ? hostPorts() : null;
@@ -160,32 +185,30 @@ export class DexEngine {
   async configureLocalTools(patch: Partial<LocalToolsConfig>): Promise<LocalToolsStatus> {
     const config = await this.configs.read();
     const current = normalizeLocalToolsConfig(config.localTools);
-    config.localTools = normalizeLocalToolsConfig({
-      ...current,
-      ...patch,
-      allowedRoots: patch.allowedRoots ?? current.allowedRoots,
-      blockedCommands: patch.blockedCommands ?? current.blockedCommands,
-    });
+    config.localTools = normalizeLocalToolsConfig({ ...current, ...patch });
     await this.configs.write(config);
     this.applyToolConfig(config.localTools);
-    if (!config.localTools.enabled) this.localToolBridge.stop();
-    else this.localToolBridge.refreshCatalog();
     return this.localToolsStatus();
   }
 
-  async runLocalTool(tool: string, args: unknown): Promise<LocalToolResult> {
+  /**
+   * 대화 없이 도구 하나를 직접 부른다(`dex tools run`). 대화처럼 폴더가 있어야
+   * 하므로 넘겨받은 폴더를 이 호출 동안만 붙였다가 뗀다.
+   */
+  async runLocalTool(tool: string, args: unknown, folders: string[] = []): Promise<LocalToolResult> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
     this.applyToolConfig(config);
-    return this.localTools.callTool(tool, args);
+    this.folders.set(DIRECT_RUN_INTERACTION, folders);
+    try {
+      return await this.localTools.callTool(tool, args, { interactionId: DIRECT_RUN_INTERACTION });
+    } finally {
+      this.folders.forget(DIRECT_RUN_INTERACTION);
+    }
   }
 
   async startLocalTools(requestedProfile?: string, waitMs = 0): Promise<LocalToolsStatus> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
     this.applyToolConfig(config);
-    if (!config.enabled) {
-      this.localToolBridge.stop();
-      return this.localToolsStatus();
-    }
     const record = await this.authenticatedRecord(requestedProfile);
     const userId = record.client.user?.userId?.trim();
     if (!userId) throw new DexError('auth_invalid', '로컬 도구 연결에 필요한 사용자 ID가 없습니다.');
@@ -525,6 +548,7 @@ export class DexEngine {
       input: input.input,
       interactionId: input.interactionId?.trim() || randomUUID(),
       attachments: input.attachments ?? [],
+      localFolders: input.localFolders ?? [],
     };
   }
 
@@ -573,20 +597,23 @@ export class DexEngine {
     const resolved = await this.resolveChatInput(input);
     let record = await this.authenticatedRecord(resolved.profile);
     let emitted = false;
+    // 이번 턴의 폴더를 이 대화에 붙인다 — 지난 턴과 다르면 빠진 폴더의 작업은 멈춘다.
+    const folders = this.folders.set(resolved.interactionId, resolved.localFolders);
 
     try {
       const local = await this.startLocalTools(resolved.profile, 3_000);
-      if (local.config.enabled) {
+      if (folders.length) {
+        const names = folders.map((folder) => folder.name).join(', ');
         yield local.bridge.catalogSynced
           ? {
               kind: 'status',
               surface: 'connector_local',
-              detail: `로컬 도구 ${local.bridge.serverToolCount || local.tools.length}개 연결됨`,
+              detail: `연결된 폴더: ${names}`,
             }
           : {
               kind: 'status',
               surface: 'connector_local',
-              detail: local.bridge.error || '로컬 도구 카탈로그 연결 대기 중',
+              detail: local.bridge.error || '이 PC 도구 연결 대기 중',
               reason: 'bridge_not_ready',
             };
       }
@@ -594,7 +621,7 @@ export class DexEngine {
       yield {
         kind: 'status',
         surface: 'connector_local',
-        detail: `로컬 도구 연결 실패: ${error instanceof Error ? error.message : String(error)}`,
+        detail: `이 PC 도구 연결 실패: ${error instanceof Error ? error.message : String(error)}`,
         reason: 'bridge_error',
       };
     }
@@ -613,6 +640,8 @@ export class DexEngine {
             interactionId: resolved.interactionId,
             // 이 표면(CLI/VSCode)의 기기 — 멀티 디바이스에서 내 도구가 주입되게.
             clientDeviceId: await this.ensureDeviceId(),
+            // 이 대화에 연결된 폴더 — 없으면 빈 목록(서버가 폴더 도구를 감춘다).
+            localFolders: localFoldersForRequest(folders),
             // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같다. 서버는 이 표식으로
             // 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다.
             originId: DEX_ORIGIN_ID,

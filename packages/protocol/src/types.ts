@@ -173,6 +173,14 @@ export type ChatEvent =
    */
   | { kind: 'detached'; reason: 'stream_closed' | 'network' };
 
+/** 대화에 연결된 폴더 하나 — 서버 요청의 `local_folders` 항목. */
+export interface ChatLocalFolder {
+  id: string;
+  name: string;
+  /** 그 기기의 경로. 데스크톱은 절대 경로, 모바일은 `/<이름>` 가상 경로. */
+  path: string;
+}
+
 export interface ChatRequest {
   workflowId: string;
   workflowName: string;
@@ -193,6 +201,12 @@ export interface ChatRequest {
    * 되돌려 보내지 않는다(자기 스트림으로 이미 받고 있으므로).
    */
   originId?: string;
+  /**
+   * 이 대화에 연결된 이 기기의 폴더. 앱(데스크톱·모바일·CLI·VSCode)은 **늘**
+   * 보낸다 — 빈 목록은 "연결된 폴더 없음"이라 서버가 폴더 도구를 감추고, 필드가
+   * 없으면 옛 앱으로 읽혀 예전 규칙을 따른다.
+   */
+  localFolders?: ChatLocalFolder[];
   includeLogs?: boolean;
   includeNodeStatus?: boolean;
   includeToolEvents?: boolean;

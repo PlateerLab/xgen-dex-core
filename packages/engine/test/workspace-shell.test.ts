@@ -12,16 +12,21 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { LocalToolProvider, shellConfig } from '../src/local-tools';
-import { prepareWorkspaceShell } from '../src/workspace-shell';
+import { spawnSync } from 'node:child_process';
+import { LocalToolProvider, shellToolSchema } from '../src/local-tools';
+import { normalizeLocalFolders } from '../src/local-folders';
+import {
+  prepareWorkspaceShell,
+  userToolchains,
+  workspaceShellSupported,
+} from '../src/workspace-shell';
 import { bindTestHost } from './_host';
 
 bindTestHost();
-const supported =
-  process.platform === 'darwin' ||
-  (process.platform === 'linux' && spawnSync('bwrap', ['--version']).status === 0);
+// 가두기를 실제로 쓸 수 있는 OS 에서만 가두기 테스트를 돈다. bubblewrap 이 있어도
+// 네임스페이스를 못 만드는 Linux(Ubuntu 24.04 기본 AppArmor)는 여기서 걸러진다.
+const supported = await workspaceShellSupported();
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 async function fixture(t: { after(fn: () => Promise<unknown>): void }) {
@@ -33,29 +38,52 @@ async function fixture(t: { after(fn: () => Promise<unknown>): void }) {
   await writeFile(join(outside, 'private.txt'), 'outside marker');
   t.after(() => rm(base, { recursive: true, force: true }));
   const provider = new LocalToolProvider();
-  provider.configure({
-    enabled: true,
-    cwd: workspace,
-    allowedRoots: [workspace],
-    timeoutMs: 2_000,
-  });
+  // 이 테스트들의 호출은 모두 같은 대화 — 연결 폴더는 workspace 하나.
+  provider.configureFolders(() => normalizeLocalFolders([workspace]));
   return { provider, workspace, outside };
 }
 
-test('설정은 셸 사용 여부와 범위를 구분하고, 기본 작업 폴더에 홈을 추가하지 않는다', () => {
-  assert.deepEqual(shellConfig({ cwd: '/project' }).allowedRoots, ['/project']);
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true });
-  const workspace = p.advertise().find((tool) => tool.name === 'Shell');
-  assert.match(workspace?.description || '', /ACCESS MODE: workspace shell/);
-  assert.doesNotMatch(workspace?.description || '', /PREFER working there/);
-  p.configure({ enabled: true, shellEnabled: true });
-  assert.match(
-    p.advertise().find((tool) => tool.name === 'Shell')?.description || '',
-    /ACCESS MODE: full PC shell access/,
-  );
-  p.configure({ enabled: false, shellEnabled: true });
-  assert.deepEqual(p.advertise(), []);
+test('Shell 설명은 범위가 이 대화의 연결 폴더라고 말한다', () => {
+  const description = shellToolSchema().description || '';
+  assert.match(description, /folders the user connected to THIS conversation/);
+  assert.match(description, /NOT your server sandbox/);
+  assert.doesNotMatch(description, /full PC shell access/);
+});
+
+test('가두기 지원 여부는 OS 가 정한다 — Windows 는 지원하지 않는다', async () => {
+  const value = await workspaceShellSupported();
+  assert.equal(typeof value, 'boolean');
+  if (process.platform === 'win32') assert.equal(value, false);
+});
+
+test('홈의 개발 도구(nvm·pyenv·cargo)는 읽기 전용으로 보이고 PATH 에 오른다', async (t) => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'dex-home-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  for (const dir of [
+    '.nvm/versions/node/v18.20.0/bin',
+    '.nvm/versions/node/v20.11.1/bin',
+    '.nvm/versions/node/v9.0.0/bin',
+    '.pyenv/shims',
+    '.cargo/bin',
+  ]) {
+    await mkdir(join(home, dir), { recursive: true });
+  }
+  const saved = process.env.NVM_BIN;
+  delete process.env.NVM_BIN;
+  t.after(() => {
+    if (saved !== undefined) process.env.NVM_BIN = saved;
+  });
+  const found = await userToolchains(home);
+  // 가장 새 node 가 맨 앞 — 숫자 비교(v9 < v18 < v20), 글자 비교가 아니다.
+  assert.equal(found.bins[0], join(home, '.nvm/versions/node/v20.11.1/bin'));
+  assert.ok(found.bins.includes(join(home, '.pyenv/shims')));
+  assert.ok(found.bins.includes(join(home, '.cargo/bin')));
+  assert.ok(found.mounts.includes(join(home, '.nvm/versions')));
+  assert.ok(found.mounts.includes(join(home, '.pyenv')));
+  assert.equal(found.env.PYENV_ROOT, join(home, '.pyenv'));
+  // 없는 도구는 싣지 않는다.
+  assert.ok(!found.mounts.some((dir) => dir.includes('.rbenv')));
+  assert.equal(found.env.RBENV_ROOT, undefined);
 });
 
 test(
@@ -124,32 +152,19 @@ test(
   },
 );
 
-test('전체 셸 접근은 작업 공간 밖의 cwd와 파일을 허용한다', { skip: !supported }, async (t) => {
-  const { provider, workspace, outside } = await fixture(t);
-  provider.configure({
-    enabled: true,
-    shellEnabled: true,
-    cwd: workspace,
-    allowedRoots: [workspace],
-    timeoutMs: 2_000,
-  });
-  const result = await provider.callTool('Shell', {
-    command: 'cat private.txt; printf full > full.txt',
-    cwd: outside,
-  });
-  assert.equal(result.isError, false, result.content[0].text);
-  assert.match(result.content[0].text, /outside marker/);
-  assert.equal(await readFile(join(outside, 'full.txt'), 'utf8'), 'full');
-  await assert.rejects(
-    provider.callTool('ReadFile', { path: join(outside, 'private.txt') }),
-    /PATH_DOMAIN_MISMATCH/,
-  );
-  await provider.callTool('WriteFile', {
-    path: 'relative.txt',
-    content: 'workspace file',
-  });
-  assert.equal(await readFile(join(workspace, 'relative.txt'), 'utf8'), 'workspace file');
-});
+test(
+  '가둔 셸에서도 Git 커밋은 사용자 이름으로 된다',
+  { skip: !supported || !spawnSync('git', ['config', '--global', '--get', 'user.name']).stdout?.toString().trim() },
+  async (t) => {
+    const { provider } = await fixture(t);
+    const name = spawnSync('git', ['config', '--global', '--get', 'user.name']).stdout.toString().trim();
+    const result = await provider.callTool('Shell', {
+      command: 'git init -q && printf x > a.txt && git add a.txt && git commit -qm first && git log -1 --format=%an',
+    });
+    assert.equal(result.isError, false, result.content[0].text);
+    assert.equal(result.content[0].text.trim(), name);
+  },
+);
 
 test(
   '백그라운드와 자동 전환 작업도 같은 작업 공간 제한을 유지한다',
@@ -224,7 +239,7 @@ test(
     const workspace = await realpath(await mkdtemp('/tmp/dex-ipc-'));
     t.after(() => rm(workspace, { recursive: true, force: true }));
     const provider = new LocalToolProvider();
-    provider.configure({ enabled: true, cwd: workspace, timeoutMs: 2000 });
+    provider.configureFolders(() => normalizeLocalFolders([workspace]));
     const socketPath = join(workspace, 'ipc.sock');
     let connected = false;
     const server = createServer((socket) => {

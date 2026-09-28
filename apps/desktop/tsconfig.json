@@ -35,6 +35,12 @@
       "@dex/rpc": [
         "../../packages/rpc/src/index.ts"
       ],
+      "@dex/ide": [
+        "../../packages/ide/src/index.ts"
+      ],
+      "@dex/ide/*": [
+        "../../packages/ide/src/*"
+      ],
       "@dex/rpc/*": [
         "../../packages/rpc/src/*"
       ]

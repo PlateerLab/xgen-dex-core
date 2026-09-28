@@ -8,6 +8,7 @@ name: CI
 #   - main 푸시에는 돌지 않는다. PR 에서 검증된 코드가 그대로 들어간다.
 #   - 버전 숫자·문서만 바꾼 변경은 무거운 잡을 돌리지 않는다(scripts/ci/changes.mjs).
 #   - 버전 일치(version.mjs check)는 모든 PR 에서 본다 — 몇 초면 끝난다.
+#   - 이 파일을 고친 PR 은 **고친 잡만** 한 번 더 돈다(공통 부분을 고쳤을 때만 전부).
 #   - 같은 PR 에 새로 푸시하면 이전 실행은 취소된다.
 # 릴리스 빌드는 release.yml 한 곳에서 한 번만 만든다.
 
@@ -59,6 +60,7 @@ jobs:
           npm --prefix apps/cli run build
           npm --prefix apps/vscode run build
           npm --prefix apps/desktop run build
+          npm --prefix packages/ide run build
 
       - name: 계약 검사
         run: npm run contracts
@@ -68,13 +70,16 @@ jobs:
           npx tsc --noEmit -p packages/protocol/tsconfig.json
           npx tsc --noEmit -p packages/engine/tsconfig.json
           npx tsc --noEmit -p packages/rpc/tsconfig.json
+          npx tsc --noEmit -p packages/ide/tsconfig.json
           npx tsc --noEmit -p apps/cli/tsconfig.json
           npx tsc --noEmit -p apps/vscode/tsconfig.json
+          npx tsc --noEmit -p apps/desktop/tsconfig.json
 
       - name: 테스트
         run: |
           npm --prefix packages/protocol test
           npm --prefix packages/engine test
+          npm --prefix packages/ide test
           npm --prefix apps/cli test
           npm --prefix apps/vscode test
           npm --prefix apps/desktop test

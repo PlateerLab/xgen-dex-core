@@ -41,6 +41,7 @@ import { BrowserSurface } from './BrowserSurface';
 import { SystemMonitorFooter } from './SystemMonitorFooter';
 import { XgenMark } from '../brand/Logo';
 import { chatTabs } from './tab-model';
+import { peekIdeStore } from '../ide/ide-sessions';
 import {
   addWorkspaceTab,
   dropWorkspaceTab,
@@ -711,6 +712,13 @@ export const Workspace: React.FC<{
   }, []);
 
   const closeTab = useCallback((tab: WorkspaceTab) => {
+    // IDE 에서 고치고 저장하지 않은 파일이 있으면 묻는다(닫으면 그 편집기도 사라진다).
+    const unsaved = tab.kind === 'chat' && tab.sessionKey ? (peekIdeStore(tab.sessionKey)?.unsavedPaths() ?? []) : [];
+    if (
+      unsaved.length &&
+      !window.confirm(`IDE 에 저장하지 않은 파일이 ${unsaved.length}개 있습니다.\n닫으면 바뀐 내용이 사라집니다. 닫을까요?`)
+    )
+      return;
     setLayout((current) => removeWorkspaceTab(current, tab.id));
     if (tab.kind === 'chat' && tab.sessionKey) {
       // 사용자가 닫은 탭은 되살릴 대상이 아니다 — 대기표를 먼저 거둔다.

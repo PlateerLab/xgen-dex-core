@@ -14,11 +14,19 @@ const dexAliases = {
   '@dex/protocol': resolve(__dirname, '../../packages/protocol/src/index.ts'),
   '@dex/engine': resolve(__dirname, '../../packages/engine/src/index.ts'),
   '@dex/rpc': resolve(__dirname, '../../packages/rpc/src/index.ts'),
+  // 채팅의 [IDE] 보기(React). 렌더러만 쓴다.
+  '@dex/ide': resolve(__dirname, '../../packages/ide/src/index.ts'),
+};
+
+/** IDE 의 스타일시트 — 서브경로 정규식보다 먼저 와야 한다(그쪽은 `.ts` 를 붙인다). */
+const dexIdeCss = {
+  find: '@dex/ide/ide.css',
+  replacement: resolve(__dirname, '../../packages/ide/src/ide.css'),
 };
 
 /** `@dex/protocol/browser` 같은 서브경로. 별칭은 정확 일치라 정규식으로 받는다. */
 const dexSubpathAlias = {
-  find: /^@dex\/(protocol|engine|rpc)\/(.*)$/,
+  find: /^@dex\/(protocol|engine|rpc|ide)\/(.*)$/,
   replacement: resolve(__dirname, '../../packages/$1/src/$2.ts'),
 };
 
@@ -82,7 +90,12 @@ export default defineConfig({
   },
   renderer: {
     root: resolve('src/renderer'),
-    resolve: { alias: [dexSubpathAlias, ...aliasEntries()] },
+    resolve: {
+      alias: [dexIdeCss, dexSubpathAlias, ...aliasEntries()],
+      // packages/ide 는 루트 워크스페이스에서 react 를 찾는다 — 이 앱의 react 와 두 벌이 되면
+      // 훅이 깨진다("Invalid hook call"). 한 벌로 묶는다.
+      dedupe: ['react', 'react-dom'],
+    },
     build: {
       rollupOptions: {
         input: {

@@ -228,6 +228,13 @@ export const FilesIcon: React.FC<P> = ({ size = 18, className }) => (
     <path d="M5 8H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-1" />
   </svg>
 );
+/** 채팅 헤더의 [IDE] — 꺾쇠 한 쌍. */
+export const CodeIcon: React.FC<P> = ({ size = 15, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="m16 18 6-6-6-6" />
+    <path d="m8 6-6 6 6 6" />
+  </svg>
+);
 export const FolderIcon: React.FC<P> = ({ size = 15, className }) => (
   <svg {...base(size)} className={className}>
     <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />

@@ -1,0 +1,36 @@
+{
+  "name": "@dex/ide",
+  "version": "1.59.0",
+  "private": true,
+  "type": "module",
+  "description": "채팅 안의 IDE 보기 — 탐색기·편집기·터미널·찾기·소스 제어 (React, 호스트 주입)",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ide.css": "./src/ide.css",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts test/*.test.tsx",
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "monaco-editor": "^0.52.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

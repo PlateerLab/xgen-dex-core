@@ -209,6 +209,8 @@ export class DexRpcServer {
             chatCancellation: true,
             history: true,
             localTools: true,
+            // chat/start 의 localFolders — 대화에 이 기기의 폴더를 연결한다.
+            localFolders: true,
             ssh: true,
           },
         };
@@ -280,31 +282,19 @@ export class DexRpcServer {
       case 'localTools/list':
         return (await this.engine.localToolsStatus()).tools;
       case 'localTools/configure': {
+        // 남은 설정은 위험 명령 사전 승인 하나다. 옛 확장이 보내는 켜기·허용 폴더
+        // 같은 키는 받기만 하고 버린다 — 범위는 대화에 연결한 폴더가 정한다.
         const patch: Partial<LocalToolsConfig> = {};
-        const enabled = optionalBoolean(params, 'enabled');
-        const shellEnabled = optionalBoolean(params, 'shellEnabled');
-        const cwd = optionalString(params, 'cwd');
-        const timeoutMs = optionalInteger(params, 'timeoutMs');
-        const allowedRoots = optionalStringArray(params, 'allowedRoots');
-        const blockedCommands = optionalStringArray(params, 'blockedCommands');
         const allowDangerous = optionalBoolean(params, 'allowDangerous');
-        if (enabled !== undefined) patch.enabled = enabled;
-        if (shellEnabled !== undefined) patch.shellEnabled = shellEnabled;
-        if (cwd !== undefined) patch.cwd = cwd;
-        if (timeoutMs !== undefined) patch.timeoutMs = timeoutMs;
-        if (allowedRoots !== undefined) patch.allowedRoots = allowedRoots;
-        if (blockedCommands !== undefined) patch.blockedCommands = blockedCommands;
         if (allowDangerous !== undefined) patch.allowDangerous = allowDangerous;
-        const status = await this.engine.configureLocalTools(patch);
-        if (status.config.enabled) {
-          void this.engine.startLocalTools(optionalString(params, 'profile')).catch((error: unknown) =>
-            this.log(`local tools: ${publicError(error).message}`),
-          );
-        }
-        return status;
+        return this.engine.configureLocalTools(patch);
       }
       case 'localTools/run':
-        return this.engine.runLocalTool(requiredString(params, 'tool'), params.args ?? {});
+        return this.engine.runLocalTool(
+          requiredString(params, 'tool'),
+          params.args ?? {},
+          optionalStringArray(params, 'folders') ?? [],
+        );
       case 'localTools/start':
         return this.engine.startLocalTools(optionalString(params, 'profile'), optionalInteger(params, 'waitMs') ?? 0);
       case 'localTools/stop':
@@ -422,6 +412,8 @@ export class DexRpcServer {
         ? params.attachments.filter((item): item is NonNullable<ChatInput['attachments']>[number] =>
             !!item && typeof item === 'object' && !Array.isArray(item)) as NonNullable<ChatInput['attachments']>
         : [],
+      // 이 대화에 연결할 폴더 — VSCode 는 열린 작업 영역 폴더를 보낸다. 없으면 폴더 없음.
+      localFolders: optionalStringArray(params, 'localFolders') ?? [],
     };
     const resolved = await this.engine.resolveChatInput(input);
     const streamId = optionalString(params, 'streamId') ?? randomUUID();

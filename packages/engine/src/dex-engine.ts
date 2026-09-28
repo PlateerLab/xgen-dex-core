@@ -601,7 +601,9 @@ export class DexEngine {
     const folders = this.folders.set(resolved.interactionId, resolved.localFolders);
 
     try {
-      const local = await this.startLocalTools(resolved.profile, 3_000);
+      // 폴더가 연결된 대화만 브리지가 서버에 도구를 올릴 때까지 잠깐 기다린다 — 첫
+      // 턴부터 그 폴더를 쓸 수 있게. 폴더가 없으면 기다릴 이유가 없다.
+      const local = await this.startLocalTools(resolved.profile, folders.length ? 3_000 : 0);
       if (folders.length) {
         const names = folders.map((folder) => folder.name).join(', ');
         yield local.bridge.catalogSynced

@@ -86,9 +86,8 @@ export function App({
           agents: agents.items,
         });
         setRoute('dashboard');
-        // 로컬 컨트롤 — 켜져 있으면 TUI 세션과 함께 브리지를 올린다. 예전에는
-        // `dex local-tools serve` 를 따로 돌려야 채팅에 이 PC 도구가 광고됐다
-        // (VSCode rpc 경로만 자동 기동이던 갭). 실패는 채팅을 막지 않는다.
+        // 이 PC 브리지 — TUI 세션과 함께 올린다. 에이전트가 쓸 수 있는 범위는
+        // 대화를 시작한 폴더다. 실패는 채팅을 막지 않는다.
         void engine.startLocalTools?.(current.name, 0).catch(() => undefined);
       } catch (reason) {
         setError(publicError(reason).message);

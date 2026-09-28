@@ -77,48 +77,43 @@ echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc
 echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc --jsonl
 ```
 
-## 로컬 도구
+## 이 PC의 파일과 터미널
 
-로컬 도구는 기본적으로 꺼져 있습니다. 작업 폴더와 허용 경로를 명시해 켜면 `dex chat`, TUI,
-`dex serve --stdio`가 로그인 사용자의 XGEN 도구 bridge에 카탈로그를 광고합니다.
+**대화를 시작한 폴더가 그 대화의 작업 공간입니다.** 에이전트는 그 폴더 안에서만 파일을
+읽고 쓰고 명령을 실행합니다. 켜고 끄는 설정은 없습니다 — 폴더가 곧 범위입니다.
 
 ```bash
-dex tools enable --cwd . --allow . --block sudo
+cd ~/work/my-repo && dex chat --agent wf_abc     # my-repo 가 작업 공간
+dex chat --agent wf_abc --folder ~/work/a,~/work/b   # 폴더를 직접 고른다
+dex chat --agent wf_abc --no-folder              # 이 PC의 파일·터미널 없이
 dex tools list
 dex tools status
 ```
 
-기본 지원 도구는 `Shell`, `ShellJob`, `ReadFile`, `WriteFile`, `ListDir`, `Search`,
-`Open`입니다. 기본 셸은 허용 작업 공간의 파일만 읽고 쓰며, 명령의 자식 프로세스에도
-같은 범위를 적용합니다. 작업 폴더가 설정돼 있으면 허용 범위에 포함됩니다.
-`LocalControl`은 현재 사용 가능한 PC 도구와 접근 범위를 조회합니다.
+홈이나 드라이브 루트에서 시작하면 폴더를 연결하지 않습니다(홈 전체를 여는 것은 고른
+일이 아니므로). TUI 도 연 폴더를 같은 규칙으로 연결합니다.
 
-`dex tools configure --shell`은 **작업 공간 밖까지 셸 접근을 허용**합니다.
-`--no-shell`은 기본 작업 공간 제한으로 돌아갑니다. 셸 자체를 끄는 옵션이 아닙니다.
-파일 전용 도구는 전체 셸 접근과 무관하게 허용 폴더를 지킵니다.
+도구는 `Shell`, `ShellJob`, `ReadFile`, `WriteFile`, `ListDir`, `Search`, `Open`,
+`Clipboard`, `Notify`입니다. 상대 경로와 셸의 기본 작업 폴더는 첫 번째 연결 폴더이고,
+셸 작업 폴더는 연결 폴더 밖으로 나갈 수 없습니다. 백그라운드 작업(`ShellJob`)은 시작한
+대화에만 보입니다.
 
-작업 공간 제한 셸은 macOS 및 Linux(bubblewrap 설치 필요)에서 지원합니다.
-Windows에서는 아직 지원하지 않으며, 제한 없는 실행으로 자동 전환하지 않습니다.
-시스템 런타임은 읽기 전용으로 제공하고, 홈·임시 파일은 작업 공간 안의 명령별 임시
-폴더를 사용합니다. 해당 폴더는 명령 종료 시 정리됩니다.
+macOS와 Linux(bubblewrap 이 사용자 네임스페이스를 만들 수 있을 때)에서는 명령과 자식
+프로세스가 연결 폴더에만 쓸 수 있도록 가둡니다. 홈·임시 파일은 명령별 임시 폴더를 쓰고
+명령이 끝나면 지웁니다. 홈에 설치한 개발 도구(nvm·pyenv·cargo·uv 등)는 읽기 전용으로
+보이고, Git 커밋은 사용자 이름으로 됩니다. 가둘 수 없는 OS(Windows, 네임스페이스를 막은
+Linux)에서는 사용자 권한으로 돌되 작업 폴더를 연결 폴더 안으로 고정합니다.
 
-기본 작업 공간에서 실행을 검증하려면 다음과 같이 호출합니다.
+대화 없이 도구를 직접 확인하려면 `--folder`(기본은 현재 폴더)를 붙여 호출합니다.
 
 ```bash
 dex tools run ListDir --args '{"path":"."}'
-dex tools run Shell --args '{"command":"npm test","timeoutMs":120000}'
+dex tools run Shell --args '{"command":"npm test","timeout_ms":120000}'
 ```
 
-CLI 채팅이나 VS Code 엔진이 실행 중이면 bridge도 함께 유지됩니다. 다른 XGEN 클라이언트에서
-Agent를 사용하면서 로컬 도구 host만 계속 실행하려면 아래 명령을 사용합니다.
-
-```bash
-dex tools serve --profile corp
-```
-
-구조화된 파일 도구와 `Open`의 파일 경로는 `--allow` 범위로 제한됩니다. `Shell`은 로그인한 OS
-사용자 권한 전체로 실행되는 별도 opt-in 기능이며, `--block`의 명령과 파괴적 명령 패턴은 거부됩니다.
-파괴적 명령이 꼭 필요할 때만 `dex tools configure --allow-dangerous`를 명시적으로 실행하세요.
+되돌리기 어려운 명령(`rm -rf` 등)은 실행 전에 묻습니다. 물을 사람이 없는 파이프·스크립트
+실행에서는 거부되니, 꼭 필요할 때만 `dex tools configure --allow-dangerous`로 미리
+승인하세요.
 
 대화를 이어가려면 같은 interaction ID를 전달합니다.
 

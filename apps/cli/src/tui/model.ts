@@ -21,9 +21,9 @@ export interface TuiEngine {
   useProfile(name: string): Promise<ProfileSummary>;
   login(email: string, password: string, profile?: string): Promise<AuthStatus>;
   authStatus(profile?: string): Promise<AuthStatus>;
-  /** 로컬 컨트롤 — 로그인 완료 시 켜져 있으면 자동 기동한다 (선택 구현). */
+  /** 이 PC 브리지 — 로그인 완료 시 자동 기동한다 (선택 구현). 쓸 수 있는 범위는
+   *  대화를 시작한 폴더가 정한다. */
   startLocalTools?(profile?: string, waitMs?: number): Promise<{
-    config: { enabled: boolean };
     bridge: { connected: boolean; catalogSynced: boolean; serverToolCount: number; error?: string };
     tools: unknown[];
   }>;

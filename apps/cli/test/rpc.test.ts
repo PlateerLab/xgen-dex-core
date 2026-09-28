@@ -20,7 +20,7 @@ interface RpcMessage {
 
 function collectLines(stream: PassThrough): {
   messages: RpcMessage[];
-  waitFor(predicate: (message: RpcMessage) => boolean): Promise<RpcMessage>;
+  waitFor(predicate: (message: RpcMessage) => boolean, timeoutMs?: number): Promise<RpcMessage>;
 } {
   const messages: RpcMessage[] = [];
   const waiters: Array<{
@@ -47,13 +47,13 @@ function collectLines(stream: PassThrough): {
   });
   return {
     messages,
-    waitFor(predicate) {
+    waitFor(predicate, timeoutMs = 3000) {
       const existing = messages.find(predicate);
       if (existing) return Promise.resolve(existing);
       return Promise.race([
         new Promise<RpcMessage>((resolve) => waiters.push({ predicate, resolve })),
         new Promise<RpcMessage>((_resolve, reject) =>
-          setTimeout(() => reject(new Error('timed out waiting for RPC message')), 3000),
+          setTimeout(() => reject(new Error('timed out waiting for RPC message')), timeoutMs),
         ),
       ]);
     },
@@ -83,17 +83,19 @@ test('stdio RPC initializes, lists agents, and streams chat notifications', asyn
     const initialized = await collector.waitFor((message) => message.id === 2);
     assert.equal(initialized.result?.protocolVersion, 1);
     assert.equal((initialized.result?.capabilities as Record<string, unknown>).localTools, true);
+    assert.equal((initialized.result?.capabilities as Record<string, unknown>).localFolders, true);
 
+    // 옛 확장이 보내는 켜기·허용 폴더는 버리고, 남은 설정(위험 명령 사전 승인)만 받는다.
     input.write(
       `${JSON.stringify({
         jsonrpc: '2.0',
         id: 20,
         method: 'localTools/configure',
-        params: { enabled: true, cwd: localRoot, allowedRoots: [localRoot] },
+        params: { enabled: true, cwd: localRoot, allowedRoots: [localRoot], allowDangerous: false },
       })}\n`,
     );
     const configured = await collector.waitFor((message) => message.id === 20);
-    assert.equal((configured.result?.config as Record<string, unknown>).enabled, true);
+    assert.deepEqual(configured.result?.config, { allowDangerous: false });
 
     input.write('{"jsonrpc":"2.0","id":21,"method":"localTools/list","params":{}}\n');
     const toolList = (await collector.waitFor((message) => message.id === 21)).result as unknown as Array<Record<string, unknown>>;
@@ -104,14 +106,23 @@ test('stdio RPC initializes, lists agents, and streams chat notifications', asyn
         jsonrpc: '2.0',
         id: 22,
         method: 'localTools/run',
-        params: { tool: 'ListDir', args: { path: localRoot } },
+        params: { tool: 'ListDir', args: { path: localRoot }, folders: [localRoot] },
       })}\n`,
     );
     const localResult = await collector.waitFor((message) => message.id === 22);
     assert.ok(localResult.result?.content);
 
-    input.write('{"jsonrpc":"2.0","id":23,"method":"localTools/configure","params":{"enabled":false}}\n');
-    await collector.waitFor((message) => message.id === 23);
+    // 폴더 없이 부르면 파일 도구는 거부한다.
+    input.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'localTools/run',
+        params: { tool: 'ListDir', args: { path: localRoot } },
+      })}\n`,
+    );
+    const refused = await collector.waitFor((message) => message.id === 23);
+    assert.match(String(refused.error?.message ?? ''), /NO_FOLDER/);
 
     input.write('{"jsonrpc":"2.0","id":3,"method":"agents/list","params":{}}\n');
     const listed = await collector.waitFor((message) => message.id === 3);
@@ -119,13 +130,21 @@ test('stdio RPC initializes, lists agents, and streams chat notifications', asyn
     assert.equal(items[0]?.workflowId, 'wf_abc');
 
     input.write(
-      '{"jsonrpc":"2.0","id":4,"method":"chat/start","params":{"workflowId":"wf_abc","input":"rpc hello"}}\n',
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'chat/start',
+        params: { workflowId: 'wf_abc', input: 'rpc hello', localFolders: [localRoot] },
+      })}\n`,
     );
     const started = await collector.waitFor((message) => message.id === 4);
     const streamId = String(started.result?.streamId);
     assert.ok(streamId);
+    // 폴더가 연결된 대화는 첫 턴 전에 이 PC 브리지를 최대 3초 기다린다(이 가짜
+    // 서버에는 브리지 소켓이 없으므로 그만큼 기다린 뒤 턴이 시작된다).
     const event = await collector.waitFor(
       (message) => message.method === 'chat/event' && message.params?.streamId === streamId,
+      8000,
     );
     assert.ok(event.params?.event);
     const completed = await collector.waitFor(
@@ -133,6 +152,9 @@ test('stdio RPC initializes, lists agents, and streams chat notifications', asyn
     );
     assert.equal(completed.params?.interactionId, started.result?.interactionId);
     assert.ok(collector.messages.indexOf(started) < collector.messages.indexOf(event));
+    // 작업 영역 폴더가 이 대화의 폴더로 서버에 실린다.
+    const sent = mock.requests.chatFolders.at(-1) as Array<Record<string, unknown>>;
+    assert.deepEqual(sent.map((folder) => folder.path), [localRoot]);
   } finally {
     rpc.close();
     input.destroy();

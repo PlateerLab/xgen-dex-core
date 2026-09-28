@@ -56,7 +56,8 @@ interface ChatViewState {
   status?: string;
   error?: string;
   initialSearch?: string;
-  workspaceRoot?: string;
+  /** 열린 작업 영역 폴더 — 대화를 시작하면 그 대화의 작업 공간으로 연결된다. */
+  workspaceFolders: string[];
   localTools?: LocalToolsStatus;
   localToolsSaving: boolean;
   localToolsMessage?: string;
@@ -116,6 +117,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     };
     webviewView.webview.html = this.html(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message: unknown) => this.onWebviewMessage(message), undefined, this.context.subscriptions);
+    // 작업 영역 폴더를 더하거나 빼면 화면의 폴더 표시도 바로 따라간다. 다음 요청부터
+    // 그 목록이 대화의 폴더로 실린다.
+    vscode.workspace.onDidChangeWorkspaceFolders(() => this.postState(), undefined, this.context.subscriptions);
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) this.view = undefined;
     });
@@ -385,6 +389,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         ...(this.interactionId ? { interactionId: this.interactionId } : {}),
         input: text,
         attachments,
+        // 열린 작업 영역 폴더가 이 대화의 작업 공간이다. 에이전트의 파일·터미널
+        // 도구는 이 폴더 안에서만 돈다(폴더를 열지 않았으면 쓰지 않는다).
+        localFolders: this.workspaceFolders(),
       });
       if (this.streamId !== streamId) return;
       this.interactionId = started.interactionId;
@@ -736,10 +743,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private async configureLocalTools(raw: unknown): Promise<void> {
     if (this.localToolsSaving) return;
     try {
-      const patch = localToolsConfigInput(raw, this.localTools?.config, this.workspaceRoot());
+      const patch = localToolsConfigInput(raw, this.localTools?.config);
       if (patch.allowDangerous && !this.localTools?.config.allowDangerous) {
         const approved = await vscode.window.showWarningMessage(
-          '위험 명령 패턴 차단을 해제하면 Agent가 되돌리기 어려운 로컬 명령을 실행할 수 있습니다.',
+          '위험 명령을 미리 승인하면 Agent가 연결된 폴더에서 되돌리기 어려운 명령을 확인 없이 실행할 수 있습니다.',
           { modal: true },
           '위험 명령 허용',
         );
@@ -756,7 +763,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         ...this.activeProfileParams(),
         ...patch,
       });
-      if (status.config.enabled && this.auth?.authenticated) {
+      if (this.auth?.authenticated) {
         status = await this.service.request<LocalToolsStatus>('localTools/start', {
           ...this.activeProfileParams(),
           waitMs: 3_000,
@@ -773,8 +780,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private workspaceRoot(): string | undefined {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  /** 디스크에 있는 작업 영역 폴더(원격·가상 파일 시스템은 이 PC 의 폴더가 아니다). */
+  private workspaceFolders(): string[] {
+    return (vscode.workspace.workspaceFolders ?? [])
+      .filter((folder) => folder.uri.scheme === 'file')
+      .map((folder) => folder.uri.fsPath);
   }
 
   /**
@@ -855,7 +865,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       status: this.status,
       error: this.error,
       initialSearch: this.initialSearch,
-      workspaceRoot: this.workspaceRoot(),
+      workspaceFolders: this.workspaceFolders(),
       localTools: this.localTools,
       localToolsSaving: this.localToolsSaving,
       localToolsMessage: this.localToolsMessage,
@@ -931,6 +941,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <div id="agent-name" class="agent-name"></div>
           <span id="agent-scope" class="meta-badge"></span>
           <span id="agent-status" class="meta-badge subtle"></span>
+          <span id="agent-folders" class="meta-badge subtle"></span>
         </div>
         <div class="agent-meta"><span id="agent-id" class="agent-id"></span><span id="agent-description" class="agent-description"></span></div>
       </div>
@@ -982,22 +993,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div id="profiles-list" class="profiles-list"></div>
       </section>
       <section class="settings-section">
-        <div class="section-heading"><div><span>로컬 컨트롤</span><small>서버에서 실행되는 Agent가 이 컴퓨터의 프로젝트 파일과 명령을 도구로 사용할 수 있게 합니다.</small></div><span id="local-tools-state" class="state-pill">꺼짐</span></div>
+        <div class="section-heading"><div><span>이 PC의 파일과 터미널</span><small>대화를 시작하면 열린 작업 영역 폴더가 그 대화의 작업 공간이 되고, Agent는 그 안에서만 파일과 터미널을 사용합니다.</small></div><span id="local-tools-state" class="state-pill">확인 필요</span></div>
         <div class="settings-card local-tools-card">
           <div class="local-tools-summary">
             <div class="local-tools-icon" aria-hidden="true">⌘</div>
-            <div><b>로컬 컨트롤 브리지</b><span id="local-tools-description">허용 작업 공간의 셸·파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.</span></div>
-            <label class="switch-control"><input id="local-tools-enabled" type="checkbox"><span aria-hidden="true"></span><em>사용</em></label>
+            <div><b>연결되는 폴더</b><span id="local-tools-description">작업 영역에 폴더를 열면 여기 표시됩니다.</span></div>
           </div>
+          <ul id="local-tools-folders" class="local-tools-folders"></ul>
           <div class="local-tools-form">
-            <label class="dangerous-setting field-wide"><input id="local-tools-shell" type="checkbox"><span><b>전체 셸 접근 — 작업 공간 밖까지 허용</b><small>꺼짐: 허용 작업 공간의 기본 셸. 켜짐: 작업 공간 밖에서도 로그인 사용자 권한으로 실행. 작업 공간 제한 셸은 macOS·Linux에서 지원하며, 시스템 파일 읽기와 작업 공간 안의 임시 홈을 사용합니다.</small></span></label>
-            <label class="settings-field field-wide"><span>작업 폴더</span><div class="field-with-action"><input id="local-tools-cwd" class="settings-input" type="text" spellcheck="false" placeholder="/path/to/project"><button id="use-workspace-root" class="secondary-button" type="button">현재 Workspace</button></div><small>Shell 명령의 기본 실행 위치입니다.</small></label>
-            <label class="settings-field field-wide"><span>허용 작업 공간</span><textarea id="local-tools-roots" class="settings-textarea" rows="2" spellcheck="false" placeholder="한 줄에 하나씩 입력"></textarea><small>기본 셸·파일 도구·Open의 접근 범위입니다. 비우면 작업 폴더, 작업 폴더도 없으면 홈을 사용합니다.</small></label>
-            <label class="settings-field"><span>명령 제한 시간</span><div class="input-suffix"><input id="local-tools-timeout" class="settings-input" type="number" min="1000" max="3600000" step="1000"><span>ms</span></div></label>
-            <label class="settings-field"><span>차단 명령</span><input id="local-tools-blocked" class="settings-input" type="text" spellcheck="false" placeholder="sudo, rm"><small>쉼표 또는 줄바꿈으로 구분합니다.</small></label>
-            <label class="dangerous-setting field-wide"><input id="local-tools-dangerous" type="checkbox"><span><b>위험 명령 패턴 허용</b><small>파괴적 명령 차단을 해제합니다. 필요한 경우에만 사용하세요.</small></span></label>
+            <label class="dangerous-setting field-wide"><input id="local-tools-dangerous" type="checkbox"><span><b>위험 명령 미리 승인</b><small>되돌리기 어려운 명령도 확인 없이 실행합니다. 필요한 경우에만 켜세요.</small></span></label>
           </div>
-          <div class="local-tools-footer"><span id="local-tools-message">로컬 도구는 기본적으로 꺼져 있습니다.</span><button id="save-local-tools" type="button">설정 저장</button></div>
+          <div class="local-tools-footer"><span id="local-tools-message">이 PC 연결 상태를 확인하고 있습니다.</span><button id="save-local-tools" type="button">설정 저장</button></div>
         </div>
       </section>
       <section class="settings-section">
@@ -1053,32 +1059,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function localToolsConfigInput(
-  raw: unknown,
-  current: LocalToolsConfig | undefined,
-  workspaceRoot: string | undefined,
-): LocalToolsConfig {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('로컬 도구 설정이 올바르지 않습니다.');
+function localToolsConfigInput(raw: unknown, current: LocalToolsConfig | undefined): LocalToolsConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('설정 값이 올바르지 않습니다.');
   const value = raw as Record<string, unknown>;
-  const cwd = typeof value.cwd === 'string' ? value.cwd.trim() : current?.cwd || workspaceRoot || '';
-  if (!cwd) throw new Error('작업 폴더를 입력하세요.');
-  const timeoutMs = Number(value.timeoutMs ?? current?.timeoutMs ?? 120_000);
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {
-    throw new Error('명령 제한 시간은 1,000~3,600,000ms 사이여야 합니다.');
-  }
-  const stringList = (input: unknown, fallback: string[]): string[] => {
-    if (!Array.isArray(input)) return fallback;
-    return [...new Set(input.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))];
-  };
-  const allowedRoots = stringList(value.allowedRoots, current?.allowedRoots ?? []);
   return {
-    enabled: typeof value.enabled === 'boolean' ? value.enabled : current?.enabled === true,
-    shellEnabled:
-      typeof value.shellEnabled === 'boolean' ? value.shellEnabled : current?.shellEnabled === true,
-    cwd,
-    timeoutMs,
-    allowedRoots: allowedRoots.length ? allowedRoots : [cwd],
-    blockedCommands: stringList(value.blockedCommands, current?.blockedCommands ?? []),
     allowDangerous: typeof value.allowDangerous === 'boolean' ? value.allowDangerous : current?.allowDangerous === true,
   };
 }
@@ -1096,7 +1080,6 @@ function isLocalToolBridgeStatus(value: unknown): value is LocalToolBridgeStatus
 }
 
 function localToolsBridgeLabel(status: LocalToolsStatus): string {
-  if (!status.config.enabled) return '로컬 도구가 꺼져 있습니다.';
   if (status.bridge.catalogSynced) return `연결됨 · ${status.bridge.serverToolCount || status.tools.length}개 도구 사용 가능`;
   if (status.bridge.error) return `연결 확인 필요 · ${status.bridge.error}`;
   if (status.bridge.connected) return '서버와 도구 목록을 동기화하는 중입니다.';

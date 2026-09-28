@@ -1415,6 +1415,39 @@ kbd {
   white-space: nowrap;
 }
 
+/* 대화에 연결되는 작업 영역 폴더 — 이름과 전체 경로 */
+.local-tools-folders {
+  display: flex;
+  margin: 0;
+  padding: 0 12px 10px;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.local-tools-folders > li {
+  display: flex;
+  min-width: 0;
+  padding: 6px 8px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 6px;
+}
+
+.local-tools-folders b {
+  font-size: 11px;
+}
+
+.local-tools-folders code {
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .switch-control {
   display: inline-flex;
   flex: 0 0 auto;

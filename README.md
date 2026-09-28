@@ -110,12 +110,14 @@ dex agents list
 dex chat --agent <workflow-id>
 ```
 
-에이전트에게 이 컴퓨터의 셸과 파일을 열어 주려면 로컬 도구를 켭니다. 기본은 꺼져
-있습니다.
+에이전트는 **대화에 연결한 폴더 안에서만** 이 컴퓨터의 파일과 터미널을 씁니다. 데스크톱
+앱은 채팅 헤더의 [폴더 연결]로, CLI 는 대화를 시작한 폴더로, VS Code 는 열린 작업 영역
+폴더로 연결합니다. 연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않습니다.
 
 ```bash
-dex tools enable --cwd ~/work --allow ~/work
-dex tools list                                   # 무엇이 노출되는지
+cd ~/work/my-repo && dex chat --agent <workflow-id>     # 이 폴더가 대화의 작업 공간
+dex chat --agent <workflow-id> --folder ~/work/a,~/work/b
+dex tools list                                   # 연결된 폴더에서 쓸 수 있는 도구
 ```
 
 새 버전이 나왔는지 확인하고 올립니다.

@@ -143,6 +143,7 @@ function fakeEngine(
         interactionId: input.interactionId ?? 'interaction-1',
         input: input.input,
         attachments: input.attachments ?? [],
+        localFolders: input.localFolders ?? [],
       };
     },
     async uploadChatAttachment() {

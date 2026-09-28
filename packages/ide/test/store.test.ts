@@ -383,3 +383,109 @@ test('열어 둔 탭은 다시 열 때 되살린다(없어진 파일은 빼고)'
   await second.start();
   assert.deepEqual(second.activeGroup().tabs.map((t) => t.path), ['b.ts']);
 });
+
+// ── 저장하지 않은 변경 지키기(hot exit) ──────────────────────────────
+
+/** 다시 연 저장소가 문서를 다 읽을 때까지 기다린다. */
+async function settled(store: IdeStore, path: string): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    if (store.getState().docs[path]?.status === 'ready') return;
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  throw new Error(`${path} 가 열리지 않았다`);
+}
+
+async function reopened(host: FakeHost): Promise<IdeStore> {
+  monacoModels.clear();
+  const store = new IdeStore(host);
+  live.push(store);
+  await store.start();
+  return store;
+}
+
+test('저장하지 않고 닫은 변경은 다시 열면 저장 안 됨 상태로 돌아온다', async () => {
+  const host = new FakeHost();
+  host.files.set('a.txt', 'one');
+  const { store } = await started(host);
+  await store.openFile('a.txt', { preview: false });
+  modelOf(store, 'a.txt').edit('one two');
+  store.dispose(); // 닫히는 순간 보관한다
+
+  const again = await reopened(host);
+  await settled(again, 'a.txt');
+  assert.equal(modelOf(again, 'a.txt').getValue(), 'one two');
+  assert.equal(again.getState().docs['a.txt'].dirty, true);
+  assert.equal(again.getState().docs['a.txt'].diskChanged, false);
+  assert.deepEqual(again.unsavedPaths(), ['a.txt']);
+
+  // 저장하면 보관본이 사라져, 다음에 열 때는 되살릴 것이 없다.
+  assert.equal(await again.save('a.txt'), true);
+  assert.equal(host.files.get('a.txt'), 'one two');
+  again.dispose();
+  const third = await reopened(host);
+  await settled(third, 'a.txt');
+  assert.equal(third.getState().docs['a.txt'].dirty, false);
+});
+
+test('탭을 닫지 않았어도 보관본만 있으면 그 파일을 연다', async () => {
+  const host = new FakeHost();
+  host.files.set('a.txt', 'one');
+  host.files.set('b.txt', 'b');
+  const { store } = await started(host);
+  await store.openFile('a.txt', { preview: false });
+  modelOf(store, 'a.txt').edit('changed');
+  store.dispose();
+  // 탭 기억만 지워진 경우(다른 기기에서 탭을 정리 등)
+  host.storageMap.delete('xide:wf1:tabs');
+
+  const again = await reopened(host);
+  await settled(again, 'a.txt');
+  assert.deepEqual(again.activeGroup().tabs.map((t) => t.path), ['a.txt']);
+  assert.equal(modelOf(again, 'a.txt').getValue(), 'changed');
+});
+
+test('되살린 사이 디스크가 바뀌었으면 저장이 조용히 덮지 않고 충돌로 잡힌다', async () => {
+  const host = new FakeHost();
+  host.files.set('a.txt', 'one');
+  const { store } = await started(host);
+  await store.openFile('a.txt', { preview: false });
+  modelOf(store, 'a.txt').edit('mine');
+  store.dispose();
+  host.files.set('a.txt', 'agent'); // 그사이 에이전트가 고쳤다
+
+  const again = await reopened(host);
+  await settled(again, 'a.txt');
+  assert.equal(modelOf(again, 'a.txt').getValue(), 'mine');
+  assert.equal(again.getState().docs['a.txt'].diskChanged, true);
+  const stop = answer(again, 'cancel');
+  assert.equal(await again.save('a.txt'), false);
+  stop();
+  assert.equal(host.files.get('a.txt'), 'agent', '에이전트의 판이 그대로다');
+  assert.equal(host.saves.length, 0);
+});
+
+test('[저장 안 함] 으로 닫거나 되돌려 깨끗해지면 보관본을 버린다', async () => {
+  const host = new FakeHost();
+  host.files.set('a.txt', 'one');
+  host.files.set('b.txt', 'b');
+  const { store } = await started(host);
+  await store.openFile('a.txt', { preview: false });
+  const model = modelOf(store, 'a.txt');
+  const clean = model.getAlternativeVersionId();
+  model.edit('x');
+  await new Promise((r) => setTimeout(r, 900)); // 보관 타이머
+  assert.ok(host.storageMap.get('xide:wf1:backup:a.txt'), '고치는 동안 보관한다');
+  model.undoTo(clean, 'one'); // 되돌리기로 저장 판에 돌아왔다
+  assert.equal(host.storageMap.get('xide:wf1:backup:a.txt'), '');
+
+  await store.openFile('b.txt', { preview: false });
+  modelOf(store, 'b.txt').edit('bb');
+  const stop = answer(store, 'discard');
+  const g = store.activeGroup();
+  await store.closeTab(g.id, g.activeId!);
+  stop();
+  store.dispose();
+  const again = await reopened(host);
+  assert.deepEqual(again.unsavedPaths(), []);
+  assert.ok(!again.activeGroup().tabs.some((t) => t.path === 'b.txt'));
+});

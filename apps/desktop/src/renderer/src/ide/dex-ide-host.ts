@@ -70,6 +70,26 @@ function listen(): void {
 
 let socketSeq = 0;
 
+// ── 스토리지 변경 알림 — main 이 소켓을 열고, 바뀌면 구독 key 로 알려 준다 ───────
+const watchers = new Map<string, () => void>();
+let watching = false;
+let watchSeq = 0;
+
+function subscribeWorkspace(workflowId: string, onChange: () => void): () => void {
+  if (!watching) {
+    watching = true;
+    xgen.ide.onChanged((key) => watchers.get(key)?.());
+  }
+  watchSeq += 1;
+  const key = `${workflowId}:${watchSeq}`;
+  watchers.set(key, onChange);
+  xgen.ide.watch(key, workflowId);
+  return () => {
+    watchers.delete(key);
+    xgen.ide.unwatch(key);
+  };
+}
+
 export function createDexIdeHost(agent: { workflowId: string; workflowName: string }): IdeHost {
   const wf = agent.workflowId;
   return {
@@ -88,6 +108,9 @@ export function createDexIdeHost(agent: { workflowId: string; workflowName: stri
         },
       };
     },
+
+    // 터미널·다른 기기·웹이 바꾼 것을 곧바로 따라간다(없으면 IDE 가 30초마다 목록을 다시 읽는다).
+    subscribeChanges: (onChange) => subscribeWorkspace(wf, onChange),
 
     async listFiles(): Promise<IdeFileEntry[]> {
       const out = await call<{ files: IdeStorageEntry[] }>('files', wf);

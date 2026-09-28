@@ -93,6 +93,20 @@ export interface EditorGroup {
 
 export type DocStatus = 'loading' | 'ready' | 'binary' | 'too_large' | 'missing' | 'error';
 
+/** 저장하지 않은 버퍼의 보관본(hot exit). */
+interface Backup {
+  text: string;
+  /** 고치기 시작한 디스크 판 — 저장할 때 이 판을 조건으로 건다. */
+  baseSha: string;
+  eol: Eol;
+  bom: boolean;
+  at: number;
+}
+
+/** 파일 하나·전체 보관 한도(글자 수) — 브라우저 저장 공간은 앱과 나눠 쓴다. */
+const BACKUP_FILE_MAX = 512 * 1024;
+const BACKUP_TOTAL_MAX = 2 * 1024 * 1024;
+
 export interface DocState {
   path: string;
   status: DocStatus;
@@ -265,6 +279,8 @@ export class IdeStore {
   private readonly savedVersion = new Map<string, number>();
   private readonly modelSubs = new Map<string, Monaco.IDisposable>();
   private readonly autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 저장하지 않은 버퍼를 보관해 두는 타이머(hot exit). */
+  private readonly backupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly closedTabs: EditorTab[] = [];
   private unsubscribeChanges: (() => void) | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -385,6 +401,74 @@ export class IdeStore {
     }
   }
 
+  // ── 저장하지 않은 변경 지키기(hot exit) ──────────────────────────────
+  //
+  // 고치고 저장하지 않은 버퍼는 호스트의 저장 공간에 보관해 둔다. 탭·창을 닫았다가(또는 앱이
+  // 꺼졌다가) 다시 열면 그 파일이 저장 안 됨 상태로 돌아온다(VS Code 의 hot exit).
+  // 보관본은 **고치기 시작한 디스크 판(sha)** 을 함께 적는다 — 그사이 에이전트나 터미널이 파일을
+  // 바꿨으면 되살린 버퍼를 저장할 때 충돌로 잡혀 비교·덮어쓰기를 고르게 된다(조용히 덮지 않는다).
+  // 저장 공간(브라우저 localStorage)은 앱과 나눠 쓰므로 크기를 제한한다.
+
+  private backupIndex(): Record<string, number> {
+    const index = this.readJson<Record<string, number> | null>('backups', null);
+    return index && typeof index === 'object' ? index : {};
+  }
+
+  private readBackup(path: string): Backup | null {
+    const b = this.readJson<Backup | null>(`backup:${path}`, null);
+    return b && typeof b.text === 'string' && typeof b.baseSha === 'string' ? b : null;
+  }
+
+  private writeBackup(path: string): void {
+    clearTimeout(this.backupTimers.get(path));
+    this.backupTimers.delete(path);
+    const doc = this.state.docs[path];
+    const model = this.getModel(path);
+    if (!doc || !model || doc.status !== 'ready' || this.state.readonly) return;
+    if (!doc.dirty) return this.dropBackup(path);
+    const text = model.getValue();
+    const index = this.backupIndex();
+    delete index[path];
+    const others = Object.values(index).reduce((n, v) => n + v, 0);
+    if (text.length > BACKUP_FILE_MAX || others + text.length > BACKUP_TOTAL_MAX) return this.dropBackup(path);
+    const backup: Backup = { text, baseSha: doc.sha, eol: doc.eol, bom: doc.bom, at: Date.now() };
+    this.writeJson(`backup:${path}`, backup);
+    this.writeJson('backups', { ...index, [path]: text.length });
+  }
+
+  private dropBackup(path: string): void {
+    clearTimeout(this.backupTimers.get(path));
+    this.backupTimers.delete(path);
+    const index = this.backupIndex();
+    if (!(path in index)) return;
+    delete index[path];
+    this.writeJson('backups', index);
+    try {
+      this.host.storage?.set(this.key(`backup:${path}`), '');
+    } catch {
+      /* 기억 실패는 기능을 막지 않는다 */
+    }
+  }
+
+  private scheduleBackup(path: string): void {
+    clearTimeout(this.backupTimers.get(path));
+    this.backupTimers.set(
+      path,
+      setTimeout(() => this.writeBackup(path), 800),
+    );
+  }
+
+  /** 보관본이 있는데 탭으로 열려 있지 않은 파일을 연다(되살린 것을 사용자가 보게). */
+  private reopenBackups(): void {
+    if (this.state.readonly) return;
+    const open = new Set(this.state.groups.flatMap((g) => g.tabs.filter((t) => t.kind === 'file').map((t) => t.path)));
+    for (const path of Object.keys(this.backupIndex())) {
+      if (open.has(path)) continue;
+      if (this.exists(path)) void this.openFile(path, { preview: false });
+      else this.dropBackup(path);
+    }
+  }
+
   private persistTabs(): void {
     const s = this.state;
     this.writeJson('tabs', {
@@ -431,6 +515,7 @@ export class IdeStore {
     }
     await this.refreshFiles();
     this.restoreTabs();
+    this.reopenBackups();
     void this.refreshGit();
     if (this.host.subscribeChanges) {
       this.unsubscribeChanges = this.host.subscribeChanges(() => this.notifyRemoteChange());
@@ -454,6 +539,10 @@ export class IdeStore {
     if (this.gitTimer) clearTimeout(this.gitTimer);
     if (this.filesTimer) clearTimeout(this.filesTimer);
     for (const t of this.autoSaveTimers.values()) clearTimeout(t);
+    // 닫히는 순간 저장하지 않은 것을 보관한다(모델을 버리기 전에).
+    for (const doc of Object.values(this.state.docs)) if (doc.dirty) this.writeBackup(doc.path);
+    for (const t of this.backupTimers.values()) clearTimeout(t);
+    this.backupTimers.clear();
     for (const rt of this.terminalRuntimes.values()) rt.dispose();
     this.terminalRuntimes.clear();
     for (const sub of this.modelSubs.values()) sub.dispose();
@@ -738,6 +827,25 @@ export class IdeStore {
       diskChanged: false,
       message: undefined,
     });
+    // 저장하지 않고 닫았던 변경이 있으면 되살린다 — 되돌리기로 디스크 판에 돌아갈 수 있게 편집으로 얹는다.
+    const backup = this.state.readonly ? null : this.readBackup(path);
+    if (backup && backup.text !== decoded.text) {
+      model.pushStackElement();
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: backup.text }], () => null);
+      model.pushStackElement();
+      this.patchDoc(path, {
+        // 고치기 시작한 판을 기준으로 둔다 — 그사이 디스크가 바뀌었으면 저장이 충돌로 잡힌다.
+        sha: backup.baseSha,
+        eol: backup.eol,
+        bom: backup.bom,
+        dirty: true,
+        diskChanged: backup.baseSha !== read.sha,
+      });
+      this.pinPreviewTabsOf(path);
+      this.set({ notice: { kind: 'info', message: `${basename(path)} 의 저장하지 않은 변경을 되살렸습니다`, at: Date.now() } });
+    } else if (backup) {
+      this.dropBackup(path);
+    }
   }
 
   private onModelChange(path: string): void {
@@ -747,6 +855,8 @@ export class IdeStore {
     const dirty = model.getAlternativeVersionId() !== this.savedVersion.get(path);
     if (dirty !== doc.dirty) this.patchDoc(path, { dirty });
     if (dirty) this.pinPreviewTabsOf(path);
+    if (dirty) this.scheduleBackup(path);
+    else this.dropBackup(path);
     if (dirty && this.state.layout.autoSave) {
       clearTimeout(this.autoSaveTimers.get(path));
       this.autoSaveTimers.set(
@@ -796,6 +906,9 @@ export class IdeStore {
         dirty: model.getAlternativeVersionId() !== version,
         diskChanged: false,
       });
+      // 저장한 뒤에도 고친 것이 남아 있으면(저장 중에 타이핑) 그 판을 다시 보관한다.
+      if (this.state.docs[path]?.dirty) this.scheduleBackup(path);
+      else this.dropBackup(path);
       if (!this.exists(path)) void this.refreshFiles();
       this.scheduleGit();
       if (out.conflicts?.length) {
@@ -898,6 +1011,7 @@ export class IdeStore {
       diskChanged: false,
       message: undefined,
     });
+    this.dropBackup(path);
   }
 
   /** 열어 둔 파일의 디스크 판을 본다 — 바뀌었으면 깨끗한 버퍼는 조용히 다시 읽는다. */
@@ -1057,6 +1171,7 @@ export class IdeStore {
       });
       if (r.button === 'cancel') return false;
       if (r.button === 'save' && !(await this.save(tab.path))) return false;
+      if (r.button === 'discard') this.dropBackup(tab.path);
     }
     this.set((s) => {
       let groups = s.groups.map((g) => {

@@ -5,7 +5,7 @@ import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LocalSyncManager } from '../src/main/local-sync-manager';
+import { LocalSyncManager, MAX_PRESENCE } from '../src/main/local-sync-manager';
 import { SyncScheduler } from '../src/main/sync-scheduler';
 import { SyncPair, type SyncRemote } from '../src/main/local-sync';
 import type { ChangesResponse } from '../src/main/sync-protocol';
@@ -69,6 +69,8 @@ function makeManager(
   extra: {
     indexSeqs?: (owners: string[]) => Promise<Record<string, number>>;
     fullSweepMs?: number;
+    presenceFor?: (owner: string, onChanged: () => void) => { start(): Promise<void>; stop(): void };
+    hotMs?: number;
   } = {},
 ) {
   for (const id of ids) remotes.set(id, new GatedRemote());
@@ -83,6 +85,7 @@ function makeManager(
     stateDir: () => join(root, '.state'),
     deviceName: 'test-pc',
     intervalMs: 0,
+    pollMs: 0,
     fullSweepMs: 0,
     ...extra,
   });
@@ -482,44 +485,156 @@ test('공유 스케줄러 — 클라우드와 에이전트 매니저가 하나�
   }
 });
 
-test('지연 신호 기동 — 변경 알림(WS)은 첫 사이클이 끝난 뒤에야 붙는다', async () => {
+// ── 변경 알림 소켓은 바뀐 에이전트에만 ─────────────────────────────
+// 2026-09-28: 에이전트 82개 전부에 소켓을 붙이던 PC 하나가 게이트웨이 연결 100개를 다 써서
+// 사이트 전체(로그인 포함)가 멈췄다. 서버 변경은 요청 한 번짜리 probe 가 보고, 소켓은
+// 방금 바뀐 몇 개에만 잠시 붙인다.
+
+function presenceProbe() {
+  const started: string[] = [];
+  const stopped: string[] = [];
+  const onChanged = new Map<string, () => void>();
+  return {
+    started,
+    stopped,
+    onChanged,
+    presenceFor: (owner: string, changed: () => void) => {
+      onChanged.set(owner, changed);
+      return {
+        start: async () => {
+          started.push(owner);
+        },
+        stop: () => {
+          stopped.push(owner);
+        },
+      };
+    },
+  };
+}
+
+test('변경 알림 — 첫 사이클이 끝나도 소켓을 붙이지 않는다 (에이전트 수만큼 열지 않는다)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'q-'));
   const remotes = new Map<string, GatedRemote>();
-  const presenceStarts: string[] = [];
-  const m = new LocalSyncManager({
-    config: () => ({
-      enabled: true,
-      root,
-      targets: ['a', 'b'].map((id) => ({ workflowId: id, label: id, folder: id })),
-    }),
-    loggedIn: () => true,
-    remoteFor: (id) => {
-      if (!remotes.has(id)) remotes.set(id, new GatedRemote());
-      return remotes.get(id) as unknown as SyncRemote;
-    },
-    presenceFor: (owner) => ({
-      start: async () => {
-        presenceStarts.push(owner);
-      },
-      stop: () => undefined,
-    }),
-    stateDir: () => join(root, '.state'),
-    deviceName: 'test-pc',
-    intervalMs: 0,
-    fullSweepMs: 0,
+  const ids = Array.from({ length: 12 }, (_, i) => `w${i}`);
+  const p = presenceProbe();
+  const m = makeManager(root, remotes, ids, {
+    presenceFor: p.presenceFor,
+    indexSeqs: async (owners) => Object.fromEntries(owners.map((o) => [o, 0])),
   });
   try {
-    m.reconcile();
-    await waitFor(() => m.status().agents.some((x) => x.state === 'syncing'));
-    // a 가 게이트에 잡혀 있는 동안 — 어떤 WS 도 아직 안 붙었다 (기동 storm 방지).
-    assert.equal(presenceStarts.length, 0);
+    await settle(m, remotes);
+    await m.pollTick();
+    assert.equal(p.started.length, 0);
+    assert.equal(m.presenceCount(), 0);
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
 
-    remotes.get('a')!.releaseAll();
-    await waitFor(() => presenceStarts.includes('a'));
-    // b 는 아직 자기 첫 사이클 전이면 미기동 — 큐가 시차를 만든다.
-    remotes.get('b')?.releaseAll();
-    await waitFor(() => presenceStarts.includes('b'));
-    assert.deepEqual(presenceStarts, ['a', 'b']); // 사이클 완료 순서대로
+test('변경 알림 — probe 가 바뀐 것을 보면 그 에이전트만 동기화하고 소켓을 잠시 붙인다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const p = presenceProbe();
+  let seqs: Record<string, number> = { a: 0, b: 0, c: 0 };
+  let probes = 0;
+  const m = makeManager(root, remotes, ['a', 'b', 'c'], {
+    presenceFor: p.presenceFor,
+    indexSeqs: async () => {
+      probes += 1;
+      return seqs;
+    },
+  });
+  try {
+    await settle(m, remotes);
+    const before = { a: remotes.get('a')!.calls, b: remotes.get('b')!.calls };
+    seqs = { a: 0, b: 5, c: 0 };
+    await m.pollTick();
+    await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+    assert.equal(probes, 1); // 에이전트가 몇이든 요청 한 번
+    assert.equal(remotes.get('a')!.calls, before.a);
+    assert.equal(remotes.get('b')!.calls, before.b + 1);
+    assert.deepEqual(p.started, ['b']);
+
+    // 붙어 있는 동안 서버가 알리면 곧바로 다시 돈다.
+    p.onChanged.get('b')!();
+    await waitFor(() => remotes.get('b')!.calls === before.b + 2);
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+  assert.deepEqual(p.stopped, ['b']); // 멈추면 뗀다
+});
+
+test('변경 알림 — 소켓은 상한까지만, 넘치면 가장 먼저 식을 것을 뗀다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const ids = Array.from({ length: MAX_PRESENCE + 2 }, (_, i) => `w${i}`);
+  const p = presenceProbe();
+  let changed: string[] = [];
+  const m = makeManager(root, remotes, ids, {
+    presenceFor: p.presenceFor,
+    indexSeqs: async (owners) => Object.fromEntries(owners.map((o) => [o, changed.includes(o) ? 9 : 0])),
+  });
+  try {
+    await settle(m, remotes);
+    for (const id of ids) {
+      changed = [id];
+      await m.pollTick();
+      await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+      await tick(2); // 식는 시각이 겹치지 않게
+    }
+    assert.equal(p.started.length, ids.length);
+    assert.equal(m.presenceCount(), MAX_PRESENCE);
+    assert.deepEqual(p.stopped, ids.slice(0, 2)); // 먼저 데워진 것부터 뗀다
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('변경 알림 — 조용해지면 소켓을 뗀다', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const p = presenceProbe();
+  let seq = 0;
+  const m = makeManager(root, remotes, ['a'], {
+    presenceFor: p.presenceFor,
+    hotMs: 40,
+    indexSeqs: async () => ({ a: seq }),
+  });
+  try {
+    await settle(m, remotes);
+    seq = 3;
+    await m.pollTick();
+    await waitFor(() => m.status().agents.every((x) => x.state === 'idle'));
+    assert.equal(m.presenceCount(), 1);
+    seq = 0; // 사이클이 따라잡았다 (GatedRemote 의 latest_seq 는 늘 0)
+    await tick(60);
+    await m.pollTick(); // 다음 probe 가 식은 것을 걷는다
+    assert.equal(m.presenceCount(), 0);
+    assert.deepEqual(p.stopped, ['a']);
+  } finally {
+    m.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('빠른 probe 실패 — 전수로 돌지 않는다 (전수 폴백은 느린 보험 주기의 몫)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'q-'));
+  const remotes = new Map<string, GatedRemote>();
+  const m = makeManager(root, remotes, ['a', 'b'], {
+    indexSeqs: async () => {
+      throw new Error('HTTP 504');
+    },
+  });
+  try {
+    await settle(m, remotes);
+    const before = { a: remotes.get('a')!.calls, b: remotes.get('b')!.calls };
+    await m.pollTick();
+    await tick(50);
+    assert.equal(remotes.get('a')!.calls, before.a);
+    assert.equal(remotes.get('b')!.calls, before.b);
   } finally {
     m.stop();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

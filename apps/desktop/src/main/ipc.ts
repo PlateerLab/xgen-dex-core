@@ -155,6 +155,13 @@ export const CHANNELS = {
   chatEvent: 'chat:event',
   //: '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). 이력은 보존.
   chatEndSession: 'chat:end-session',
+  //: 대화별 폴더 연결 — 목록·추가(네이티브 선택 창)·해제·파일 관리자로 열기.
+  chatFoldersList: 'chat-folders:list',
+  chatFoldersAdd: 'chat-folders:add',
+  chatFoldersRemove: 'chat-folders:remove',
+  chatFoldersReveal: 'chat-folders:reveal',
+  //: main → 창: 한 대화의 폴더 목록이 바뀌었다 (interactionId, folders).
+  chatFoldersChanged: 'chat-folders:changed',
 
   // Sandboxed browser pages + stable main-process runtime.
   browserState: 'browser:state',
@@ -212,8 +219,6 @@ export const CHANNELS = {
 
   // Window / app management (tray, autostart, reset, restart)
   openSettingsModal: 'app:openSettingsModal', // main → main-window (open settings modal)
-  /** 네이티브 폴더 선택 다이얼로그 — 고른 절대 경로 또는 null(취소). */
-  pickFolder: 'app:pickFolder',
   autostartGet: 'app:autostartGet',
   autostartSet: 'app:autostartSet',
   resetPositions: 'app:resetPositions',

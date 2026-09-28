@@ -229,7 +229,8 @@ const ExposedToolsPanel: React.FC<{
   const [showCalls, setShowCalls] = useState(false);
   // 이 패널은 **내가 등록한 외부 MCP 서버**의 도구만 보여준다. 커넥터 내장 도구(Shell·파일·
   // 클립보드·브라우저)는 MCP 서버가 아니고, 기본 로컬 실행 경로에서는 에이전트가 런타임 자체
-  // 도구를 쓰므로 여기에 뜨는 것은 오해를 부른다 — 그 도구들은 PC 컨트롤/브라우저 탭에서 관리한다.
+  // 도구를 쓰므로 여기에 뜨는 것은 오해를 부른다 — 파일·터미널은 채팅의 [폴더 연결]이,
+  // 브라우저는 브라우저 탭이 정한다.
   // 'local'(내장) 서버와 내부 도구(`_` 접두)는 목록에서 제외한다.
   const isExposed = (name: string): boolean => !String(name || '').startsWith('_');
   const externals = (status?.servers ?? [])
@@ -252,8 +253,8 @@ const ExposedToolsPanel: React.FC<{
       {externals.filter((s) => s.tools.length > 0 || !s.connected).length === 0 ? (
         <div className="small muted pad">
           등록된 MCP 서버가 노출하는 도구가 여기 표시됩니다. 아직 없습니다 — 아래에서 "+ MCP 서버
-          추가" 로 등록하거나, 에이전트에게 <code>McpAddServer</code> 로 요청하세요. (Shell·파일
-          같은 커넥터 내장 도구는 MCP 서버가 아니라 PC 컨트롤·브라우저 탭에서 관리합니다.)
+          추가" 로 등록하거나, 에이전트에게 <code>McpAddServer</code> 로 요청하세요. (이 PC의 파일과
+          터미널은 MCP 서버가 아니라 채팅 위 [폴더 연결]로 대화마다 연결합니다.)
         </div>
       ) : (
         externals

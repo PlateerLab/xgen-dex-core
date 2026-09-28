@@ -22,7 +22,8 @@ async function confirmDangerous(command: string): Promise<'once' | 'session' | '
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
   const options = {
     type: 'warning' as const,
-    buttons: ['거부', '이번만 허용', '이 세션 동안 허용'],
+    // 세 번째 버튼의 승인은 이 대화에만 남는다(다른 대화에서는 다시 묻는다).
+    buttons: ['거부', '이번만 허용', '이 대화에서 계속 허용'],
     defaultId: 0,
     cancelId: 0,
     noLink: true,

@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // 배포물은 선언과 JS 를 실제로 낸다 — 워크스페이스 tsconfig 는 noEmit 이다.
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "jsx": "react-jsx",
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"],
+    // 배포물의 소비자는 우리 paths 를 모른다 — 이 패키지는 다른 @dex 를 쓰지 않는다.
+    "paths": {}
+  },
+  "include": ["src/**/*"],
+  "exclude": ["test/**/*"]
+}

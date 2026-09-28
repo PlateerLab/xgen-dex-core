@@ -1,0 +1,40 @@
+/**
+ * xgen-dex-ide — 채팅 안의 IDE 보기.
+ *
+ * 쓰는 법(호스트):
+ *
+ * ```tsx
+ * import { IdeStore, IdeView } from 'xgen-dex-ide';
+ * import 'xgen-dex-ide/ide.css';
+ *
+ * const store = new IdeStore(host);          // 에이전트마다 하나 — 탭이 닫힐 때 store.dispose()
+ * <IdeView store={store} chat={<Chat />} theme="dark" />
+ * ```
+ *
+ * `host` 는 {@link IdeHost} 를 구현한다: 스토리지 목록·샌드박스 파일·터미널 소켓·git·Monaco.
+ */
+export { IdeView, type IdeViewProps } from './components/IdeView';
+export type { SideView } from './components/ActivityBar';
+export { IdeStore, DEFAULT_LAYOUT, type IdeState, type Layout, type IdeCommand, type EditorTab, type EditorGroup, type DocState } from './store';
+export { IdeError } from './types';
+export type {
+  IdeHost,
+  IdeFileEntry,
+  IdeSessionInfo,
+  IdeReadResult,
+  IdeSaveResult,
+  IdeStat,
+  IdeFsOp,
+  IdeSearchQuery,
+  IdeSearchMatch,
+  IdeSearchResult,
+  IdeReplaceResult,
+  IdeTerminalInfo,
+  TerminalServerFrame,
+  TerminalClientFrame,
+  TerminalConnection,
+  TerminalHandlers,
+  MonacoApi,
+  ThemeKind,
+} from './types';
+export type { GitStatus, GitChange, GitRemote, GitAccount, GitBranches } from './git-model';

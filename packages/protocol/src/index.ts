@@ -29,6 +29,7 @@ import { ChatApi } from './chat';
 import { ChatGuardrailsApi } from './chat-guardrails';
 import { FeedbackApi } from './feedback';
 import { HistoryApi } from './history';
+import { IdeApi } from './ide';
 import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
 import { TeamsApi } from './teams';
@@ -67,6 +68,8 @@ export class XgenClient {
   readonly agentData: AgentDataApi;
   readonly filestore: FilestoreApi;
   readonly connectorDevices: ConnectorDevicesApi;
+  /** 채팅의 [IDE] 보기 — 편집기·터미널·찾기·소스 제어. */
+  readonly ide: IdeApi;
 
   private refreshToken?: string;
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
@@ -97,6 +100,7 @@ export class XgenClient {
     this.agentData = new AgentDataApi(this.http);
     this.filestore = new FilestoreApi(this.http);
     this.connectorDevices = new ConnectorDevicesApi(this.http);
+    this.ide = new IdeApi(this.http);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -308,6 +312,15 @@ export { InstallersApi, installerListPath, installerDownloadPath } from './insta
 export type { InstallerPackage, InstallerListResponse } from './installers';
 export { CloudLinksApi, CLOUD_LINKS_PATH, cloudLinkPath } from './cloud-links';
 export type { CloudLink, CloudLinksResponse } from './cloud-links';
+export { IdeApi, ideTerminalSocketPath, ideFailureOf } from './ide';
+export type {
+  IdeSessionResponse,
+  IdeFileResponse,
+  IdeSaveRequest,
+  IdeSaveResponse,
+  IdeStorageEntry,
+  IdeFailure,
+} from './ide';
 export {
   teamsUserSocketUrl,
   teamsRoomSocketUrl,

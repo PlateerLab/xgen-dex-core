@@ -23,6 +23,7 @@ const SEMVER = /^\d+\.\d+\.\d+$/;
 const PACKAGES = [
   'package.json',
   'packages/engine/package.json',
+  'packages/ide/package.json',
   'packages/protocol/package.json',
   'packages/rpc/package.json',
   'apps/cli/package.json',

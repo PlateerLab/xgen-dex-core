@@ -73,11 +73,80 @@ const areas = {
   ]),
 };
 
-// CI 정의 자체가 바뀌면 모든 잡이 한 번 돌아야 그 정의가 검증된다.
-const ciChanged = meaningful.includes('.github/workflows/ci.yml') || meaningful.includes('scripts/ci/changes.mjs');
+/**
+ * CI 정의(ci.yml)가 바뀌면 — **정의가 바뀐 잡만** 한 번 돌아 그 정의를 검증한다.
+ *
+ * 예전에는 ci.yml 을 조금만 고쳐도 모든 잡이 돌았다. verify 잡에 검사 한 줄을 넣었을 뿐인데
+ * iOS·안드로이드 네이티브 빌드까지 다시 돌았다. 이제는 바뀐 줄이 어느 잡에 속하는지 보고 그 잡만
+ * 켠다. 잡 밖(트리거·동시성 같은 공통 부분)이 바뀌면 전부 돈다. 주석·빈 줄은 동작이 아니라 뺀다.
+ *
+ * 이 파일(changes.mjs)이 바뀐 것은 무거운 잡으로 검증되지 않는다 — 판정 결과는 이 잡의 출력에
+ * 그대로 찍힌다(아래 `core: …` 줄).
+ */
+const JOB_AREA = { verify: 'core', mobile: 'mobile', android: 'native', ios: 'native' };
+
+function ciDefinitionAreas() {
+  const CI = '.github/workflows/ci.yml';
+  if (!files.includes(CI)) return [];
+  let text;
+  try {
+    text = git('show', `${head}:${CI}`);
+  } catch {
+    return 'all'; // 파일이 지워졌거나 읽을 수 없다 — 전부 돌려 드러낸다
+  }
+  // 줄 번호(1부터) → 그 줄이 속한 잡 이름. 잡 밖이면 null.
+  const owner = [null];
+  let inJobs = false;
+  let job = null;
+  for (const line of text.split('\n')) {
+    if (/^jobs:\s*$/.test(line)) {
+      inJobs = true;
+      job = null;
+    } else if (/^[^\s#]/.test(line)) {
+      inJobs = false;
+      job = null;
+    } else if (inJobs) {
+      const m = /^  ([A-Za-z0-9_-]+):\s*$/.exec(line);
+      if (m) job = m[1];
+    }
+    owner.push(inJobs ? job : null);
+  }
+  const trivial = (line) => /^\s*(#.*)?$/.test(line);
+  const out = new Set();
+  let next = 0; // 새 파일에서 다음 줄 번호
+  for (const line of git('diff', '-U0', `${base}...${head}`, '--', CI).split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      next = Number(hunk[1]);
+      // 지우기만 한 덩어리는 "그 줄 뒤" 를 가리킨다 — 다음에 올 줄은 그 다음이다.
+      if (/ \+\d+,0 @@/.test(line)) next += 1;
+      continue;
+    }
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    let at;
+    if (line.startsWith('+')) {
+      at = next;
+      next += 1;
+    } else if (line.startsWith('-')) {
+      at = next - 1; // 지운 자리 바로 앞 줄이 속한 잡(맨 앞이면 머리줄 = 그 잡)
+    } else continue;
+    if (trivial(line.slice(1))) continue;
+    const j = owner[at];
+    if (!j) return 'all';
+    if (JOB_AREA[j]) out.add(JOB_AREA[j]);
+  }
+  return [...out];
+}
+
+const forced = ciDefinitionAreas();
+if (forced === 'all') console.log('CI 정의의 공통 부분이 바뀜 — 모든 잡이 돈다');
+else if (forced.length) console.log(`CI 정의가 바뀐 잡: ${forced.join(', ')}`);
 
 const result = Object.fromEntries(
-  Object.entries(areas).map(([name, match]) => [name, ciChanged || meaningful.some(match)]),
+  Object.entries(areas).map(([name, match]) => [
+    name,
+    forced === 'all' || forced.includes(name) || meaningful.some(match),
+  ]),
 );
 
 const ignored = files.filter((file) => !meaningful.includes(file));

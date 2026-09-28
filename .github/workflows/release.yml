@@ -491,6 +491,63 @@ jobs:
             console.log('root', Object.keys(root).length, '· browser', Object.keys(browser).length);
           "
 
+      # ── IDE 보기 (xgen-dex-ide) ─────────────────────────────────────
+      #
+      # 채팅 [IDE] 의 화면·상태를 웹(xgen-frontend)도 같은 코드로 쓴다. 데스크톱은 모노레포 안에서
+      # `@dex/ide` 소스를 그대로 번들하고, 웹은 이 배포물(JS + .d.ts + CSS 한 벌)을 받는다.
+      - name: IDE 빌드
+        run: npm --prefix packages/ide run build
+
+      - name: IDE — 이미 올라간 버전인지 확인
+        id: ide
+        run: |
+          NAME=$(node -p "require('./packages/ide/dist-pkg/package.json').name")
+          VER=$(node -p "require('./packages/ide/dist-pkg/package.json').version")
+          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VER 는 이미 npm 에 있습니다 — 배포를 건너뜁니다."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: IDE 배포
+        if: steps.ide.outputs.exists == 'false'
+        working-directory: packages/ide/dist-pkg
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: IDE — 설치해서 실제로 불러 본다
+        if: steps.ide.outputs.exists == 'false'
+        run: |
+          # 프로토콜과 같은 이유로 보일 때까지 기다린 뒤, 깨끗한 곳에 깔아 루트와 CSS 가 풀리는지 본다.
+          seen=""
+          for i in $(seq 1 20); do
+            if npm view --prefer-online "${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }}" version >/dev/null 2>&1; then
+              seen=1
+              echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
+              break
+            fi
+            sleep 15
+          done
+          if [ -z "$seen" ]; then
+            echo "::error::${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            exit 1
+          fi
+          TMP=$(mktemp -d); cd "$TMP"
+          npm init -y >/dev/null
+          npm i "${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }}" react@18 react-dom@18
+          node --input-type=module -e "
+            import * as ide from '${{ steps.ide.outputs.name }}';
+            import { createRequire } from 'node:module';
+            const require = createRequire(import.meta.url);
+            for (const k of ['IdeView', 'IdeStore', 'IdeError']) if (!(k in ide)) throw new Error(k + ' export 가 없다');
+            if (!require.resolve('${{ steps.ide.outputs.name }}/ide.css')) throw new Error('ide.css 가 없다');
+            console.log('exports', Object.keys(ide).length, '· css ok');
+          "
+
   publish:
     name: 릴리스 발행
     # ios 를 needs 에 넣되 결과는 보지 않는다 — ipa 가 나왔으면 릴리스에 싣고,

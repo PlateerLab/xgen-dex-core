@@ -90,9 +90,9 @@ export function toHistoryAttachments(value: unknown): HistoryAttachment[] {
   return result;
 }
 
-/** Resolve only the server-issued XGeny chat-workspace reference. The server
+/** Resolve only the server-issued Geny chat-workspace reference. The server
  * still performs the authoritative current-user path/access check. */
-export function xgenyHistoryWorkspacePath(attachment: HistoryAttachment): string | null {
+export function genyHistoryWorkspacePath(attachment: HistoryAttachment): string | null {
   const marker = 'geny-workspace:';
   const rawPath = String(attachment.path ?? '')
     .replace(/\\/g, '/')

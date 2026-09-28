@@ -9,7 +9,7 @@
  */
 import assert from 'assert'
 import { test } from 'node:test'
-import { toDisplayText, toHistoryAttachments, xgenyHistoryWorkspacePath } from '@dex/protocol/history'
+import { toDisplayText, toHistoryAttachments, genyHistoryWorkspacePath } from '@dex/protocol/history'
 
 test('문자열은 그대로', () => {
   assert.equal(toDisplayText('안녕하세요'), '안녕하세요')
@@ -75,10 +75,10 @@ test('채팅 이력 첨부를 표시용 메타데이터로 정규화한다', () 
     path: 'geny-workspace:uploads/users/42/iid-1/att-1/red drop.png',
     bucket: 'geny-workspace',
   })
-  assert.equal(xgenyHistoryWorkspacePath(attachment), 'uploads/users/42/iid-1/att-1/red drop.png')
+  assert.equal(genyHistoryWorkspacePath(attachment), 'uploads/users/42/iid-1/att-1/red drop.png')
 })
 
-test('XGeny 사용자 업로드 경로가 아닌 이력 첨부는 workspace 원본으로 열지 않는다', () => {
+test('Geny 사용자 업로드 경로가 아닌 이력 첨부는 workspace 원본으로 열지 않는다', () => {
   const base = {
     name: 'x.png',
     size: 1,
@@ -86,10 +86,10 @@ test('XGeny 사용자 업로드 경로가 아닌 이력 첨부는 workspace 원�
     type: 'picture' as const,
     bucket: 'geny-workspace',
   }
-  assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:../private/x.png' }), null)
-  assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:workspace/memory/x.png' }), null)
-  assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'legacy-minio-object', bucket: 'chat' }), null)
-  assert.equal(xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:uploads/users_/x.png' }), null)
+  assert.equal(genyHistoryWorkspacePath({ ...base, path: 'geny-workspace:../private/x.png' }), null)
+  assert.equal(genyHistoryWorkspacePath({ ...base, path: 'geny-workspace:workspace/memory/x.png' }), null)
+  assert.equal(genyHistoryWorkspacePath({ ...base, path: 'legacy-minio-object', bucket: 'chat' }), null)
+  assert.equal(genyHistoryWorkspacePath({ ...base, path: 'geny-workspace:uploads/users_/x.png' }), null)
 })
 
 test('첨부는 대화 폴더 하나에 놓인다 — 그 앞에 올린 것도 함께 연다', () => {
@@ -102,11 +102,11 @@ test('첨부는 대화 폴더 하나에 놓인다 — 그 앞에 올린 것도 �
     bucket: 'geny-workspace',
   }
   assert.equal(
-    xgenyHistoryWorkspacePath({ ...base, path: 'geny-workspace:uploads/users_42/iid-1/red drop.png' }),
+    genyHistoryWorkspacePath({ ...base, path: 'geny-workspace:uploads/users_42/iid-1/red drop.png' }),
     'uploads/users_42/iid-1/red drop.png',
   )
   assert.equal(
-    xgenyHistoryWorkspacePath({
+    genyHistoryWorkspacePath({
       ...base,
       path: 'geny-workspace:workspace/uploads/users_42/iid-1/red drop.png',
     }),

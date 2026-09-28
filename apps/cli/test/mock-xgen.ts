@@ -32,7 +32,7 @@ export async function startMockXgen(): Promise<MockXgen> {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://mock');
       const bearer = String(request.headers.authorization ?? '').replace(/^Bearer\s+/, '');
-      // 에이전트 만들기 — 이름·모델만으로 XGeny 노드 하나짜리 워크플로우.
+      // 에이전트 만들기 — 이름·모델만으로 Geny 노드 하나짜리 워크플로우.
       if (url.pathname === '/api/agentflow/create/options' && request.method === 'GET') {
         json(response, 200, {
           providers: [

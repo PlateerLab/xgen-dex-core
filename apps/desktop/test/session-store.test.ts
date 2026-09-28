@@ -219,7 +219,7 @@ test('이미지만 있는 메시지도 전송하고 허용하지 않은 data URL
   ])
 })
 
-test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행한다', async () => {
+test('Geny 이미지는 에이전트 workspace 업로드 후 참조로 실행한다', async () => {
   const streams: FakeStream[] = []
   const uploads: Array<{ attachmentId: string; workflowId: string; interactionId: string; name: string; bytes: Uint8Array }> = []
   const transport: SessionTransport = {
@@ -245,8 +245,8 @@ test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행�
     async historyTurns() { return [] },
   }
   const store = new SessionStore(transport, () => 1234)
-  const xgeny = { ...agent('geny'), hasAgentGeny: true }
-  const key = store.openNew(xgeny)
+  const geny = { ...agent('geny'), hasAgentGeny: true }
+  const key = store.openNew(geny)
 
   store.send(key, '이미지를 설명해줘', null, [
     { dataUrl: 'data:image/png;base64,AAAA', name: 'a.png', mime: 'image/png', size: 3 },
@@ -271,7 +271,7 @@ test('XGeny 이미지는 에이전트 workspace 업로드 후 참조로 실행�
   })
 })
 
-test('XGeny 일반 파일은 이미지로 변환하지 않고 workspace 참조로 실행한다', async () => {
+test('Geny 일반 파일은 이미지로 변환하지 않고 workspace 참조로 실행한다', async () => {
   const streams: FakeStream[] = []
   let uploadedId = ''
   const transport: SessionTransport = {
@@ -466,7 +466,7 @@ test('openResume 는 서버가 되살린 작업 과정을 답에 붙인다 — �
   assert.equal(answer.lastEventAt, 1620)
 })
 
-test('openResume 는 XGeny 이력 이미지를 복원하고 세션 종료 때 미리보기 URL을 해제한다', async () => {
+test('openResume 는 Geny 이력 이미지를 복원하고 세션 종료 때 미리보기 URL을 해제한다', async () => {
   const restored: HistoryAttachment[] = []
   const released: string[] = []
   const attachment: HistoryAttachment = {

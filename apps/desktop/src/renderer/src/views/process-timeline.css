@@ -812,7 +812,7 @@
   color: var(--primary);
 }
 .chat-hbtn.folder-connect.on:hover:not(:disabled) {
-  background: var(--primary-soft-bg);
+  background: var(--primary-soft);
   color: var(--primary);
 }
 .folder-connect-count {
@@ -820,7 +820,7 @@
   height: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--primary-soft-bg);
+  background: var(--primary-soft);
   color: var(--primary);
   font-size: 11.5px;
   font-weight: 700;

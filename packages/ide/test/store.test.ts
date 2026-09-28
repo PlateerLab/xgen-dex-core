@@ -569,3 +569,91 @@ test('여백 변경 표시 — 저장소 밖이나 추적하지 않는 파일에
   await new Promise((r) => setTimeout(r, 300));
   assert.deepEqual(modelOf(store, 'new.ts').decorations, []);
 });
+
+// ── 연결 — 배포·재시작 사이에도 스스로 돌아온다 ─────────────────────────
+
+class FlakyHost extends FakeHost {
+  /** 앞으로 실패할 session() 횟수와 그 이유. */
+  sessionFails = 0;
+  sessionCode = 'unavailable';
+  listFails = 0;
+  sessions = 0;
+  async session() {
+    this.sessions += 1;
+    if (this.sessionFails > 0) {
+      this.sessionFails -= 1;
+      throw new IdeError(this.sessionCode, '실패', this.sessionCode === 'unavailable' ? 502 : 403);
+    }
+    return super.session();
+  }
+  async listFiles() {
+    if (this.listFails > 0) {
+      this.listFails -= 1;
+      throw new IdeError('unavailable', '실패', 502);
+    }
+    return super.listFiles();
+  }
+}
+
+test('연결 — 닿지 않으면 다시 붙어 온라인이 되고, 그 뒤에 탭을 되살린다', async () => {
+  IdeStore.retryBaseMs = 5;
+  const host = new FlakyHost();
+  host.files.set('a.ts', 'a');
+  host.sessionFails = 2;
+  host.listFails = 1;
+  const { store } = await started(host);
+  assert.equal(store.getState().connection, 'online');
+  assert.equal(host.sessions, 3);
+  assert.equal(store.getState().sessionError, null);
+  await until(() => store.getState().files.length === 1);
+  assert.equal(store.getState().filesError, null, '파일 목록도 스스로 다시 읽었다');
+});
+
+test('연결 — 권한이 없으면 되풀이하지 않고 이유를 보인다', async () => {
+  IdeStore.retryBaseMs = 5;
+  const host = new FlakyHost();
+  host.sessionFails = 5;
+  host.sessionCode = 'forbidden';
+  const { store } = await started(host);
+  assert.equal(store.getState().connection, 'blocked');
+  assert.equal(host.sessions, 1);
+  assert.match(store.getState().sessionError ?? '', /권한/);
+});
+
+test('연결 — 쓰는 도중 서버에 닿지 않으면 다시 연결하는 중이 되었다가 돌아온다', async () => {
+  IdeStore.retryBaseMs = 5;
+  const host = new FlakyHost();
+  host.files.set('a.ts', 'a');
+  const { store } = await started(host);
+  assert.equal(store.getState().connection, 'online');
+  // 배포 중 파드 교체 — 읽기가 한 번 502 로 떨어지고, 세션도 한 번 더 실패한다.
+  const read = host.readFile.bind(host);
+  let once = true;
+  host.readFile = async (p: string) => {
+    if (once) {
+      once = false;
+      throw new IdeError('unavailable', '실패', 502);
+    }
+    return read(p);
+  };
+  host.sessionFails = 1;
+  await store.openFile('a.ts', { preview: false });
+  assert.equal(store.getState().docs['a.ts'].status, 'error');
+  await until(() => store.getState().connection === 'online' && host.sessions >= 3);
+  // 다시 붙으면 열지 못했던 파일을 다시 연다.
+  await until(() => store.getState().docs['a.ts']?.status === 'ready');
+});
+
+test('연결 — [다시 연결] 은 기다리지 않고 바로 시도한다', async () => {
+  IdeStore.retryBaseMs = 60_000; // 스스로는 한참 뒤에야 다시 한다
+  const host = new FlakyHost();
+  host.sessionFails = 1;
+  const store = new IdeStore(host);
+  live.push(store);
+  const starting = store.start();
+  await until(() => store.getState().connection === 'retrying');
+  store.reconnect();
+  await starting;
+  assert.equal(store.getState().connection, 'online');
+  IdeStore.retryBaseMs = 5;
+});

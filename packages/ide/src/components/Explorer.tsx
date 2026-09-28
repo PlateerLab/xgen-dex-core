@@ -341,8 +341,19 @@ export function Explorer() {
         }}
         onDrop={(e) => void onDrop(null, e)}
       >
-        {!filesLoaded ? <div className="xide-tree-note">불러오는 중</div> : null}
-        {filesError ? <div className="xide-tree-note xide--error">{filesError}</div> : null}
+        {!filesLoaded ? (
+          <div className="xide-tree-note">
+            <span className="xide-spinner" aria-hidden /> 불러오는 중
+          </div>
+        ) : null}
+        {filesError ? (
+          <div className="xide-tree-note xide--error" role="alert">
+            <span>{filesError}</span>
+            <button type="button" className="xide-link" onClick={() => store.reconnect()}>
+              지금 다시 시도
+            </button>
+          </div>
+        ) : null}
         {filesLoaded && !filesError && rows.length === 0 && !creating ? (
           <div className="xide-tree-note">
             아직 파일이 없습니다.

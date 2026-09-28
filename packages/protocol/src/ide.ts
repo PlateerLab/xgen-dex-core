@@ -63,9 +63,17 @@ const STATUS_CODE: Record<number, string> = {
   404: 'not_found',
   409: 'conflict',
   413: 'too_large',
+  // 게이트웨이·파드 교체 중의 실패 — 곧 돌아온다(IDE 는 스스로 다시 붙는다).
+  500: 'server_error',
+  502: 'unavailable',
   503: 'sandbox_unavailable',
   504: 'timeout',
 };
+
+/** 서버가 이유를 말하지 못한 실패의 사용자 문구. */
+function fallbackMessage(status: number): string {
+  return status >= 500 ? '서버에 잠시 닿지 않습니다' : '요청을 처리하지 못했습니다';
+}
 
 export function ideFailureOf(err: unknown): IdeFailure {
   if (err instanceof ApiError) {
@@ -76,14 +84,14 @@ export function ideFailureOf(err: unknown): IdeFailure {
       return {
         status: err.status,
         code: String(d.code ?? STATUS_CODE[err.status] ?? 'error'),
-        message: String(d.message ?? d.detail ?? '요청을 처리하지 못했습니다'),
+        message: String(d.message ?? d.detail ?? fallbackMessage(err.status)),
         detail: d,
       };
     }
     return {
       status: err.status,
       code: STATUS_CODE[err.status] ?? 'error',
-      message: typeof detail === 'string' && detail ? detail : '요청을 처리하지 못했습니다',
+      message: typeof detail === 'string' && detail && err.status < 500 ? detail : fallbackMessage(err.status),
       detail: {},
     };
   }

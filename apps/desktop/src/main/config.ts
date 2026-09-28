@@ -143,7 +143,8 @@ export interface ConnectorConfig {
   linuxClickThrough?: boolean;
   /** 메인 창 크롬 상태와 두 패널 탭 배치. */
   ui?: {
-    sideView?: 'agent' | 'explorer' | 'teams' | 'artifacts';
+    /** 'artifacts' 는 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 값 — 읽을 때 'apps' 로 본다. */
+    sideView?: 'agent' | 'explorer' | 'teams' | 'apps' | 'artifacts';
     sidebarCollapsed?: boolean;
     sidebarWidth?: number;
     workspaceLayout?: WorkspaceLayoutPersistConfig;

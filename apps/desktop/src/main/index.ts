@@ -43,8 +43,8 @@ import {
   type SshServerInput,
   type ChatStopResult,
   type Agent,
-  type ArtifactApiDeclaration,
-  type ArtifactGalleryItem,
+  type AppApiDeclaration,
+  type AppGalleryItem,
   describeError,
   applyNotificationPreferenceUpdate,
   notificationProfileForAccount,
@@ -246,7 +246,7 @@ function openExternalSafe(url: string): void {
 /**
  * 앱 창이 머물러도 되는 주소인가 — 우리 렌더러(file:// 번들 또는 개발 서버)뿐.
  *
- * 앱 창 안의 아티팩트는 에이전트가 쓴 코드다. 클릭 한 번 뒤 그 코드가 top 을 다른 페이지로
+ * 데스크톱 창 안의 앱은 에이전트가 쓴 코드다. 클릭 한 번 뒤 그 코드가 top 을 다른 페이지로
  * 옮기면, 옮겨 간 페이지가 preload 다리(window.xgen — 셸·파일·키체인)를 얻는다.
  */
 function isRendererUrl(url: string): boolean {
@@ -268,7 +268,7 @@ function isRendererUrl(url: string): boolean {
 /**
  * 격리된 문서가 낸 요청인가 — 그런 요청에는 사용자 자격을 붙이지 않는다.
  *
- * 서버는 주인이 아닌 사람이 여는 아티팩트와 공개 링크에 CSP sandbox 를 씌운다. 그
+ * 서버는 주인이 아닌 사람이 여는 앱과 공개 링크에 CSP sandbox 를 씌운다. 그
  * 문서의 오리진은 'null' 이고, 그 안의 코드는 남(에이전트)이 쓴 것이다. 예전에는 main
  * 이 서버의 /api/ 로 가는 요청이면 누가 보냈든 토큰을 붙여서, 그 코드가 이 사용자의
  * 권한으로 플랫폼 API 를 부르고 응답까지 읽을 수 있었다(서버 CORS 가 모든 오리진을
@@ -355,7 +355,7 @@ function getClient(): XgenClient {
       onTokensRotated: (access, refresh) => {
         void tokenStore.setAccess(access);
         if (refresh) void tokenStore.setRefresh(refresh);
-        // 아티팩트 요청에 붙일 토큰도 여기서 갱신한다 — 회전 뒤에도 옛 토큰을
+        // 앱 요청에 붙일 토큰도 여기서 갱신한다 — 회전 뒤에도 옛 토큰을
         // 붙이면 그 화면만 403 에 갇힌다(다른 소비자들이 겪었던 그 실패다).
         lastAccessToken = access;
       },
@@ -487,7 +487,7 @@ function createWindow(): void {
     openExternalSafe(url);
     return { action: 'deny' };
   });
-  // 앱 창은 우리 렌더러만 띄운다 — 그 밖으로 가려는 이동(창 안 아티팩트가 top 을 옮기는 것
+  // 데스크톱 창은 우리 렌더러만 띄운다 — 그 밖으로 가려는 이동(창 안 앱이 top 을 옮기는 것
   // 포함)은 막고, 웹 주소면 기본 브라우저로 넘긴다.
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (isRendererUrl(url)) return;
@@ -2408,9 +2408,9 @@ ipcMain.handle(CHANNELS.agentWsTree, (_e, wf: string, path?: string) =>
   getClient().agentData.workspaceTree(wf, path),
 );
 
-/** [아티팩트 모음] 의 응답 — 못 읽은 에이전트도 숨기지 않고 함께 돌려준다. */
-interface ArtifactGalleryResult {
-  items: ArtifactGalleryItem[];
+/** [앱 모음] 의 응답 — 못 읽은 에이전트도 숨기지 않고 함께 돌려준다. */
+interface AppGalleryResult {
+  items: AppGalleryItem[];
   /** 훑어본 에이전트 수 (Geny 만). */
   scanned: number;
   /** 목록을 못 읽은 에이전트 이름들 — 조용히 빠뜨리지 않는다. */
@@ -2418,16 +2418,16 @@ interface ArtifactGalleryResult {
   error?: string;
 }
 
-// ── 아티팩트 ──────────────────────────────────────────────────────
-ipcMain.handle(CHANNELS.artifactList, (_e, wf: string) => getClient().agentData.artifactList(wf));
-ipcMain.handle(CHANNELS.artifactGet, (_e, wf: string, slug: string) =>
-  getClient().agentData.artifactGet(wf, slug),
+// ── 앱 ──────────────────────────────────────────────────────
+ipcMain.handle(CHANNELS.appList, (_e, wf: string) => getClient().agentData.appList(wf));
+ipcMain.handle(CHANNELS.appGet, (_e, wf: string, slug: string) =>
+  getClient().agentData.appGet(wf, slug),
 );
-ipcMain.handle(CHANNELS.artifactSetServing, (_e, wf: string, slug: string, serving: boolean) =>
-  getClient().agentData.artifactSetServing(wf, slug, serving),
+ipcMain.handle(CHANNELS.appSetServing, (_e, wf: string, slug: string, serving: boolean) =>
+  getClient().agentData.appSetServing(wf, slug, serving),
 );
-ipcMain.handle(CHANNELS.artifactDelete, (_e, wf: string, slug: string) =>
-  getClient().agentData.artifactDelete(wf, slug),
+ipcMain.handle(CHANNELS.appDelete, (_e, wf: string, slug: string) =>
+  getClient().agentData.appDelete(wf, slug),
 );
 
 /**
@@ -2437,44 +2437,45 @@ ipcMain.handle(CHANNELS.artifactDelete, (_e, wf: string, slug: string) =>
  * 호스트로 보이는지 모른다. 둘을 아는 자리는 여기뿐이다.
  */
 ipcMain.handle(
-  CHANNELS.artifactSetShare,
+  CHANNELS.appSetShare,
   async (_e, wf: string, slug: string, shared: boolean) => {
-    const res = await getClient().agentData.artifactSetShare(wf, slug, shared);
+    const res = await getClient().agentData.appSetShare(wf, slug, shared);
     const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
     return { ...res, url: res.shared && res.path ? `${base}${res.path}` : '' };
   },
 );
 
-/** 웹의 같은 아티팩트 화면을 기본 브라우저로 연다(사내 링크 — 로그인이 필요하다). */
-ipcMain.handle(CHANNELS.artifactOpenWeb, (_e, wf: string, slug: string) => {
+/** 웹의 같은 앱 화면을 기본 브라우저로 연다(사내 링크 — 로그인이 필요하다). */
+ipcMain.handle(CHANNELS.appOpenWeb, (_e, wf: string, slug: string) => {
   const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
-  const url = `${base}/artifact/${encodeURIComponent(wf)}/${encodeURIComponent(slug)}`;
+  // 경로는 서버 세대를 아는 쪽이 정한다 — 옛 서버의 웹에는 /app/… 화면이 없다.
+  const url = `${base}${getClient().agentData.appWebPath(wf, slug)}`;
   void shell.openExternal(url);
   return url;
 });
 
 ipcMain.handle(
-  CHANNELS.artifactCallApi,
-  (_e, apis: ArtifactApiDeclaration[], alias: string, params?: Record<string, string>) =>
-    getClient().agentData.artifactCallApi(apis, alias, params ?? null),
+  CHANNELS.appCallApi,
+  (_e, apis: AppApiDeclaration[], alias: string, params?: Record<string, string>) =>
+    getClient().agentData.appCallApi(apis, alias, params ?? null),
 );
 ipcMain.handle(
-  CHANNELS.artifactHttp,
+  CHANNELS.appHttp,
   (_e, workflowId: string, slug: string, req: { url: string; method: string; headers: Record<string, string>; body: string | null }) =>
-    getClient().agentData.artifactHttp(workflowId, slug, req),
+    getClient().agentData.appHttp(workflowId, slug, req),
 );
 
 /**
- * [아티팩트 모음] — 모든 에이전트가 만든 것 중 **지금 열리는 것**만.
+ * [앱 모음] — 모든 에이전트가 만든 것 중 **지금 열리는 것**만.
  *
- * 서버에 "전부 다오" 엔드포인트는 없다(아티팩트는 에이전트 workspace 안의
+ * 서버에 "전부 다오" 엔드포인트는 없다(앱은 에이전트 workspace 안의
  * 폴더라, 소유자별로만 물어볼 수 있다). 그래서 여기서 훑는다 — 렌더러가 아니라
  * main 인 이유는 왕복이 에이전트 수만큼 생기기 때문이다. IPC 한 번으로 끝난다.
  *
  * Geny 에이전트만 묻는다: workspace 가 있는 것이 그것뿐이라, 나머지에 물으면
  * 확실히 빈 목록을 받으려고 요청을 낭비하는 셈이다.
  */
-ipcMain.handle(CHANNELS.artifactGallery, async (): Promise<ArtifactGalleryResult> => {
+ipcMain.handle(CHANNELS.appGallery, async (): Promise<AppGalleryResult> => {
   const client = getClient();
   let agents: Agent[];
   try {
@@ -2485,7 +2486,7 @@ ipcMain.handle(CHANNELS.artifactGallery, async (): Promise<ArtifactGalleryResult
     return { items: [], scanned: 0, failed: [], error: (e as Error).message };
   }
   const targets = agents.filter((a) => a.hasAgentGeny);
-  const items: ArtifactGalleryItem[] = [];
+  const items: AppGalleryItem[] = [];
   const failed: string[] = [];
   // 동시 요청은 묶어서 — 에이전트가 수십 개여도 서버를 한꺼번에 때리지 않는다.
   const LANES = 6;
@@ -2496,10 +2497,10 @@ ipcMain.handle(CHANNELS.artifactGallery, async (): Promise<ArtifactGalleryResult
         const agent = targets[cursor++];
         if (!agent) return;
         try {
-          const res = await client.agentData.artifactList(agent.workflowId);
-          for (const a of res.artifacts) {
+          const res = await client.agentData.appList(agent.workflowId);
+          for (const a of res.apps) {
             // "현재 serving 되고 있는 것만" — 열 수 없는 것은 그 에이전트의
-            // [아티팩트] 탭에서 이유와 함께 본다. 모음은 **여는 자리**다.
+            // [앱] 탭에서 이유와 함께 본다. 모음은 **여는 자리**다.
             if (!a.ready) continue;
             items.push({ ...a, workflowId: agent.workflowId, workflowName: agent.workflowName });
           }
@@ -3799,13 +3800,13 @@ if (!gotLock) {
         });
       }
     });
-    // 아티팩트(사이트·앱)를 **서버 주소 그대로** 여는 길.
+    // 앱(정적 사이트든 에이전트가 띄운 서버든)을 **서버 주소 그대로** 여는 길.
     //
     // 웹에서는 브라우저가 쿠키를 싣는다. 앱에는 쿠키가 없고 토큰은 여기(main)에
     // 있으므로, 이 세션이 서버의 /api/ 로 보내는 요청에 자격을 실어 준다.
     // 문서·자산·fetch 뿐 아니라 **WebSocket 업스트림에도 같은 헤더가 붙는다** —
     // 전용 스킴으로 중계하던 예전 방식이 못 하던 일이고, 그래서 실시간으로 도는
-    // 아티팩트가 앱에서만 죽었다.
+    // 앱이 데스크톱에서만 죽었다.
     //
     // 붙이는 범위는 **설정된 서버의 /api/** 뿐이다. 다른 곳으로는 한 글자도
     // 나가지 않는다(토큰이 남의 호스트로 가는 것이 이 기능에서 가장 나쁜 실패다).
@@ -3837,10 +3838,10 @@ if (!gotLock) {
     );
     // 그리고 서버가 붙인 **frame-ancestors 는 떼어 낸다.**
     //
-    // 웹에서는 아티팩트와 그것을 감싸는 화면이 같은 오리진이라 `frame-ancestors
+    // 웹에서는 앱과 그것을 감싸는 화면이 같은 오리진이라 `frame-ancestors
     // 'self'` 로 충분하다. 앱에서는 부모가 렌더러(file://·개발 서버)라 오리진이
     // 다르므로, 그대로 두면 브라우저가 프레임을 **통째로 거부한다** — 새 창으로는
-    // 열리는데 [아티팩트] 탭만 빈 화면인 그 모양이다(실증 2026-09-18).
+    // 열리는데 [앱] 탭만 빈 화면인 그 모양이다(실증 2026-09-18).
     //
     // 전용 스킴으로 중계하던 시절에는 그 핸들러가 떼고 있었다. 서버 주소를 그대로
     // 여는 길(WebSocket 때문에)로 옮기면서 이 한 줄이 같이 오지 않았다.
@@ -3859,7 +3860,7 @@ if (!gotLock) {
         callback({ responseHeaders: stripFrameAncestorsFromHeaders(received) });
       },
     );
-    // 아티팩트 실행 프레임 — 문서 하나. 응답 헤더로 CSP 를 붙여, 이 문서에는
+    // 앱 실행 프레임 — 문서 하나. 응답 헤더로 CSP 를 붙여, 이 문서에는
     // 네트워크가 전혀 남지 않게 한다(웹의 미들웨어와 같은 값).
     protocol.handle('xgenartifact', (request) => {
       const u = new URL(request.url);

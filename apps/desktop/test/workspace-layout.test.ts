@@ -151,3 +151,23 @@ test('file-viewer 탭은 파일 필드와 함께 영속을 통과한다', () => 
   // 알 수 없는 fileSection 은 버려지되 탭 자체는 살아남는다.
   assert.equal(tabs[1].fileSection, undefined);
 });
+
+test('이름을 앱으로 바꾸기 전에 저장된 뷰어 탭(artifacts)은 [앱] 탭으로 열린다', () => {
+  const restored = normalizeWorkspaceLayout({
+    groups: [
+      {
+        id: 'g1',
+        tabs: [
+          { id: 'viewer:wf1', kind: 'agent-viewer', workflowId: 'wf1', workflowName: 'wf1', viewerSub: 'artifacts' },
+          { id: 'viewer:wf2', kind: 'agent-viewer', workflowId: 'wf2', workflowName: 'wf2', viewerSub: 'apps' },
+          { id: 'viewer:wf3', kind: 'agent-viewer', workflowId: 'wf3', workflowName: 'wf3', viewerSub: 'nope' },
+        ],
+        activeTabId: 'viewer:wf1',
+      },
+    ],
+    direction: 'horizontal',
+    ratio: 0.5,
+    focusedGroupId: 'g1',
+  });
+  assert.deepEqual(restored.groups[0].tabs.map((t) => t.viewerSub), ['apps', 'apps', undefined]);
+});

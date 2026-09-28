@@ -10,12 +10,12 @@ import { CHANNELS } from '../main/ipc';
 import type {
   ChatEvent,
   ChatRequest,
-  ArtifactApiDeclaration,
-  ArtifactDetail,
-  ArtifactListResult,
-  ArtifactServingState,
-  ArtifactShareState,
-  ArtifactSummary,
+  AppApiDeclaration,
+  AppDetail,
+  AppListResult,
+  AppServingState,
+  AppShareState,
+  AppSummary,
   ChatStopResult,
   ConversationSnapshot,
   CurrentUser,
@@ -811,47 +811,47 @@ const api = {
   }> => ipcRenderer.invoke(CHANNELS.connectorDevices),
 
   /**
-   * 아티팩트 — 에이전트가 만든 화면.
+   * 앱 — 에이전트가 만든 화면.
    *
    * 읽기만 한다. 만드는 것은 에이전트고(workspace 의 약속된 폴더), 파일을 손보는
    * 자리는 스토리지다. `callApi` 는 격리 프레임이 부탁한 alias 를 **사용자
    * 권한으로** 대신 호출하는 통로다 — 프레임 자신에게는 네트워크가 없다.
    */
-  artifacts: {
-    list: (workflowId: string): Promise<ArtifactListResult> =>
-      ipcRenderer.invoke(CHANNELS.artifactList, workflowId),
-    get: (workflowId: string, slug: string): Promise<ArtifactDetail> =>
-      ipcRenderer.invoke(CHANNELS.artifactGet, workflowId, slug),
-    /** 모든 에이전트의 **지금 열리는** 아티팩트 — 사이드바 [아티팩트 모음]. */
+  apps: {
+    list: (workflowId: string): Promise<AppListResult> =>
+      ipcRenderer.invoke(CHANNELS.appList, workflowId),
+    get: (workflowId: string, slug: string): Promise<AppDetail> =>
+      ipcRenderer.invoke(CHANNELS.appGet, workflowId, slug),
+    /** 모든 에이전트의 **지금 열리는** 앱 — 사이드바 [앱 모음]. */
     gallery: (): Promise<{
-      items: Array<ArtifactSummary & { workflowId: string; workflowName: string }>;
+      items: Array<AppSummary & { workflowId: string; workflowName: string }>;
       scanned: number;
       failed: string[];
       error?: string;
-    }> => ipcRenderer.invoke(CHANNELS.artifactGallery),
+    }> => ipcRenderer.invoke(CHANNELS.appGallery),
     callApi: (
-      apis: ArtifactApiDeclaration[],
+      apis: AppApiDeclaration[],
       alias: string,
       params?: Record<string, string | number | boolean | undefined> | null,
-    ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.artifactCallApi, apis, alias, params ?? null),
-    /** 프레임의 fetch 를 대신 부른다 — 아티팩트 주소 아래와 /api/ 만. */
+    ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.appCallApi, apis, alias, params ?? null),
+    /** 프레임의 fetch 를 대신 부른다 — 앱 주소 아래와 /api/ 만. */
     http: (
       workflowId: string, slug: string,
       req: { url: string; method: string; headers: Record<string, string>; body: string | null },
     ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> =>
-      ipcRenderer.invoke(CHANNELS.artifactHttp, workflowId, slug, req),
-    setServing: (workflowId: string, slug: string, serving: boolean): Promise<ArtifactServingState> =>
-      ipcRenderer.invoke(CHANNELS.artifactSetServing, workflowId, slug, serving),
+      ipcRenderer.invoke(CHANNELS.appHttp, workflowId, slug, req),
+    setServing: (workflowId: string, slug: string, serving: boolean): Promise<AppServingState> =>
+      ipcRenderer.invoke(CHANNELS.appSetServing, workflowId, slug, serving),
     /** 절대 주소(`url`)까지 붙여 돌아온다 — 렌더러는 서버 주소를 모른다. */
     setShare: (
       workflowId: string, slug: string, shared: boolean,
-    ): Promise<ArtifactShareState & { url: string }> =>
-      ipcRenderer.invoke(CHANNELS.artifactSetShare, workflowId, slug, shared),
+    ): Promise<AppShareState & { url: string }> =>
+      ipcRenderer.invoke(CHANNELS.appSetShare, workflowId, slug, shared),
     remove: (workflowId: string, slug: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke(CHANNELS.artifactDelete, workflowId, slug),
+      ipcRenderer.invoke(CHANNELS.appDelete, workflowId, slug),
     /** 웹의 같은 화면을 기본 브라우저로 연다. 만들어진 주소를 돌려준다. */
     openWeb: (workflowId: string, slug: string): Promise<string> =>
-      ipcRenderer.invoke(CHANNELS.artifactOpenWeb, workflowId, slug),
+      ipcRenderer.invoke(CHANNELS.appOpenWeb, workflowId, slug),
   },
 
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */

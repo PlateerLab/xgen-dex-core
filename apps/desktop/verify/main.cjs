@@ -145,7 +145,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // 아티팩트 — 사이드바 모음과 에이전트 상세 탭.
+  // 앱 — 사이드바 모음과 에이전트 상세 탭.
   //
   // ⚠ 이 하네스는 지금 **어느 스테이지도 못 뜬다.** 모의 preload 가 앱보다 뒤처져
   //   있어서(agentData·browser·teams·notifications·ssh·system 등 12개 남짓 없음)
@@ -155,24 +155,24 @@ app.whenReady().then(async () => {
   //
   //   그동안 이 두 화면은 컴포넌트만 따로 마운트해 눈으로 확인했고(라이트·다크),
   //   실행 프레임은 verify/artifact-frame-smoke.cjs 가 진짜 Electron 에서 검증한다.
-  if (STAGE === 'artifacts') {
-    // ActivityBar 의 [아티팩트] 로 사이드바를 바꾼다.
+  if (STAGE === 'apps') {
+    // ActivityBar 의 [앱] 으로 사이드바를 바꾼다.
     await win.webContents.executeJavaScript(`(() => {
-      const b = [...document.querySelectorAll('.activity-bar .ab-btn')].find((x) => x.title === '아티팩트');
+      const b = [...document.querySelectorAll('.activity-bar .ab-btn')].find((x) => x.title === '앱');
       if (b) b.click();
       return !!b;
     })()`);
     await sleep(700);
-    await snap(win, 'artifacts-panel.png');
+    await snap(win, 'apps-panel.png');
 
-    // 모음에서 하나 고르면 그 에이전트의 [아티팩트] 탭이 열린다.
+    // 모음에서 하나 고르면 그 에이전트의 [앱] 탭이 열린다.
     await win.webContents.executeJavaScript(`(() => {
       const it = document.querySelector('.agent-list .agent-item');
       if (it) it.click();
       return !!it;
     })()`);
     await sleep(1200);
-    await snap(win, 'artifacts-tab.png');
+    await snap(win, 'apps-tab.png');
     app.quit();
     return;
   }

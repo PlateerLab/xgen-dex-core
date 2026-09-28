@@ -1,5 +1,5 @@
 /**
- * ArtifactFrame — 에이전트가 만든 React 아티팩트를 **격리해서** 실행한다.
+ * AppFrame — 에이전트가 만든 React 앱을 **격리해서** 실행한다.
  *
  * 무엇이 이 코드를 가두고 있나 (실측)
  * ------------------------------------
@@ -26,7 +26,7 @@
  *
  *   런타임   React + Babel 을 **텍스트로** 넘긴다. 프레임이 직접 불러올 수 없는
  *            이유는 불투명 오리진에서 CSP `'self'` 가 아무 것도 가리키지 않기
- *            때문이다. 앱 번들의 별도 청크라 첫 아티팩트를 열 때 한 번만 받는다.
+ *            때문이다. 데스크톱 번들의 별도 청크라 첫 앱을 열 때 한 번만 받는다.
  *   데이터   선언된 파일은 처음에 함께, 선언된 API 는 프레임이 alias 로 부탁하면
  *            main 이 **사용자 권한으로** 대신 호출해 결과만 돌려준다. 프레임은
  *            무엇을 부를지 고르지 못한다.
@@ -37,7 +37,7 @@
  * 크기 — 프레임은 **스스로 높이를 정하지 않는다**
  * ------------------------------------------------
  * 예전에는 프레임이 내용 높이를 재서 알리고 여기서 iframe 을 그만큼 키웠다. 그런데
- * 아티팩트는 거의 언제나 `100vh` 를 쓴다(대시보드의 기본 뼈대다). 그러면 내용
+ * 앱은 거의 언제나 `100vh` 를 쓴다(대시보드의 기본 뼈대다). 그러면 내용
  * 높이가 프레임 높이에 의존하는데 프레임 높이는 다시 내용 높이에서 나온다 —
  * **이득이 1 이상인 양의 되먹임**이라 재는 방법을 고쳐도 멈추지 않는다(실측:
  * minHeight:100vh + padding:32 인 대시보드가 4초에 15,076px, 곧 상한 20,000px).
@@ -46,24 +46,24 @@
  * 상자 높이에 영향을 줄 수 없고, 되먹임이 생길 구조 자체가 없다.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ArtifactDetail } from '@dex/protocol';
+import type { AppDetail } from '@dex/protocol';
 import { ARTIFACT_FRAME_URL } from '../../../main/ipc';
 import { xgen } from '../bridge';
 
 /**
  * 런타임 두 조각은 앱 수명 동안 한 번만 받는다 (3MB 짜리 Babel 포함).
  *
- * 동적 import + `?raw` — 아티팩트를 한 번도 열지 않으면 이 3MB 는 앱에 실리지
+ * 동적 import + `?raw` — 앱을 한 번도 열지 않으면 이 3MB 는 앱에 실리지
  * 않는다. 확장자가 `.txt` 인 것은 실수가 아니다: 브라우저가 스크립트로 불러오는
  * 파일이 아니라 우리가 텍스트로 읽어 프레임에 넘기는 payload 다.
  */
 /**
- * 아티팩트가 쓸 수 있는 라이브러리 — 웹과 **같은 번들, 같은 목록**이다.
+ * 앱이 쓸 수 있는 라이브러리 — 웹과 **같은 번들, 같은 목록**이다.
  *
  * 폐쇄망이라 CDN 이 없고 프레임에는 네트워크가 없다. 호스트가 소스에서 무엇을
  * import 했는지 보고 필요한 것만 텍스트로 건네준다(recharts 하나가 530KB 라
- * 전부 싣지 않는다). 목록이 웹과 어긋나면 "웹에서는 되는데 앱에서는 안 되는"
- * 아티팩트가 생긴다 — 그 원인은 아티팩트 소스 어디에도 없다.
+ * 전부 싣지 않는다). 목록이 웹과 어긋나면 "웹에서는 되는데 데스크톱에서는 안 되는"
+ * 앱이 생긴다 — 그 원인은 앱 소스 어디에도 없다.
  */
 const LIB_LOADERS: Record<string, () => Promise<{ default: string }>> = {
   'recharts': () => import('./runtime/libs/recharts.js.txt?raw'),
@@ -120,8 +120,8 @@ function loadRuntime(): Promise<{ runtimeJs: string; babelJs: string }> {
   return runtimePromise;
 }
 
-export interface ArtifactFrameProps {
-  artifact: ArtifactDetail;
+export interface AppFrameProps {
+  app: AppDetail;
   /** 이 값이 바뀌면 프레임을 새로 세운다 (에이전트가 소스를 고쳤을 때). */
   reloadKey?: string | number;
   /**
@@ -131,8 +131,8 @@ export interface ArtifactFrameProps {
   minHeight?: number;
 }
 
-export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
-  artifact,
+export const AppFrame: React.FC<AppFrameProps> = ({
+  app,
   reloadKey,
   minHeight = 420,
 }) => {
@@ -159,17 +159,17 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
       }
       if (msg.type === 'artifact:http') {
         // 프레임의 fetch — main 이 우리 자격으로 대신 부른다. 상대 주소는 이
-        // 아티팩트의 주소 아래에서 풀리므로 api/ 스크립트·도구·프록시가 그냥 닿는다.
+        // 앱의 주소 아래에서 풀리므로 api/ 스크립트·도구·프록시가 그냥 닿는다.
         const id = msg.id;
         const send = (payload: Record<string, unknown>): void => {
           frame.contentWindow?.postMessage({ type: 'artifact:http-result', id, ...payload }, '*');
         };
-        const http = xgen?.artifacts?.http;
+        const http = xgen?.apps?.http;
         if (!http) {
-          send({ ok: false, error: '이 창에서는 아티팩트가 요청을 보낼 수 없습니다.' });
+          send({ ok: false, error: '이 창에서는 앱이 요청을 보낼 수 없습니다.' });
           return;
         }
-        void http(artifact.workflow_id, artifact.slug, {
+        void http(app.workflow_id, app.slug, {
           url: String(msg.url ?? ''),
           method: String(msg.method ?? 'GET'),
           headers: (msg.headers as Record<string, string>) ?? {},
@@ -184,15 +184,15 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
         const reply = (payload: Record<string, unknown>): void => {
           frame.contentWindow?.postMessage({ type: 'artifact:fetch-result', id, ...payload }, '*');
         };
-        const call = xgen?.artifacts?.callApi;
+        const call = xgen?.apps?.callApi;
         if (!call) {
           // 다리가 없으면 **반드시 답을 준다.** 조용히 넘기면 프레임의 promise 가
-          // 영원히 안 풀려, 아티팩트는 '불러오는 중' 에서 멈춘 채 이유를 못 밝힌다.
-          reply({ ok: false, error: '이 창에서는 아티팩트 데이터를 불러올 수 없습니다.' });
+          // 영원히 안 풀려, 앱은 '불러오는 중' 에서 멈춘 채 이유를 못 밝힌다.
+          reply({ ok: false, error: '이 창에서는 앱 데이터를 불러올 수 없습니다.' });
           return;
         }
         void call(
-          artifact.apis,
+          app.apis,
           String(msg.alias ?? ''),
           (msg.params as Record<string, string | number | boolean | undefined> | null) ?? null,
         )
@@ -202,7 +202,7 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [artifact.apis, minHeight]);
+  }, [app.apis, minHeight]);
 
   // 프레임이 뜨면 런타임과 소스를 건넨다. 목적지 오리진은 '*' 일 수밖에 없다
   // (샌드박스 문서라 오리진이 없다) — 대신 보내는 내용에 비밀이 없다.
@@ -210,7 +210,7 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
     const frame = frameRef.current;
     if (!frame?.contentWindow) return;
     setError('');
-    Promise.all([loadRuntime(), loadLibs(artifact.source)])
+    Promise.all([loadRuntime(), loadLibs(app.source)])
       .then(([{ runtimeJs, babelJs }, libs]) => {
         frame.contentWindow?.postMessage(
           {
@@ -218,9 +218,9 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
             runtimeJs,
             babelJs,
             libs,
-            entry: artifact.entry,
-            source: artifact.source,
-            files: artifact.files,
+            entry: app.entry,
+            source: app.source,
+            files: app.files,
           },
           '*',
         );
@@ -228,20 +228,20 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
       .catch((e: unknown) => {
         setError(`실행 런타임을 불러오지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
       });
-  }, [artifact.entry, artifact.source, artifact.files]);
+  }, [app.entry, app.source, app.files]);
 
   return (
-    <div className="artifact-frame-host">
-      {error ? <pre className="artifact-run-error">{error}</pre> : null}
+    <div className="app-frame-host">
+      {error ? <pre className="app-run-error">{error}</pre> : null}
       {/*
         프레임을 **절대 위치**로 띄운다. 흐름 밖이라 이 상자의 높이에 영향을 줄 수
         없다 — 되먹임이 생길 구조 자체가 없다. 상자 높이는 바깥과 minHeight 에서만.
       */}
-      <div className="artifact-frame-box" style={{ minHeight }}>
+      <div className="app-frame-box" style={{ minHeight }}>
         <iframe
-          key={`${artifact.slug}:${reloadKey ?? ''}`}
+          key={`${app.slug}:${reloadKey ?? ''}`}
           ref={frameRef}
-          title={artifact.title}
+          title={app.title}
           src={ARTIFACT_FRAME_URL}
           onLoad={onLoad}
           /* allow-same-origin 을 **절대** 더하지 않는다 (위 2번 자물쇠). */
@@ -254,4 +254,4 @@ export const ArtifactFrame: React.FC<ArtifactFrameProps> = ({
   );
 };
 
-export default ArtifactFrame;
+export default AppFrame;

@@ -1,14 +1,14 @@
 /**
- * 아티팩트 격리 프레임 — 실제 Electron 에서 확인한다.
+ * 앱 격리 프레임 — 실제 Electron 에서 확인한다.
  *
  * 왜 단위 테스트로 안 되나: 확인해야 하는 것이 전부 **브라우저 엔진의 규칙**이다.
  * CSP 가 응답 헤더로 정말 붙는지, 그 아래에서 인라인 스크립트와 eval 이 정말
  * 도는지, 프레임이 정말 오리진 없이 뜨는지 — 어느 것도 jsdom 이나 타입체커가
- * 답해 주지 않는다. 하나라도 틀리면 아티팩트가 아무 말 없이 빈 화면이 되거나,
+ * 답해 주지 않는다. 하나라도 틀리면 앱이 아무 말 없이 빈 화면이 되거나,
  * 에이전트가 쓴 코드가 이 앱의 다리(window.xgen)에 닿는다.
  *
  * 확인하는 것:
- *   1. 프레임이 뜨고 아티팩트가 **실제로 렌더된다** (JSX 변환 → React 마운트).
+ *   1. 프레임이 뜨고 앱이 **실제로 렌더된다** (JSX 변환 → React 마운트).
  *   2. 프레임에 **오리진이 없다**(`window.origin === 'null'`).
  *   3. 프레임이 부모 창에 **닿지 못한다**.
  *   4. 프레임에 **네트워크가 없다** (CSP connect-src 'none').
@@ -27,7 +27,7 @@
  * **소스 계약 테스트**(test/artifact-isolation.test.ts)가 따로 지킨다. 여기서
  * 잡히지 않는 회귀라는 것을 알기 때문이다.
  *
- * 실행: npm --prefix apps/desktop run verify:artifact
+ * 실행: npm --prefix apps/desktop run verify:app
  *   (리눅스에서 SUID 샌드박스가 없으면 `--no-sandbox` 를 함께 준다)
  */
 const assert = require('node:assert/strict');
@@ -55,11 +55,11 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('no-sandbox');
 app.commandLine.appendSwitch('disable-gpu');
 
-const RUNTIME_DIR = path.join(__dirname, '../src/renderer/src/artifacts/runtime');
+const RUNTIME_DIR = path.join(__dirname, '../src/renderer/src/apps/runtime');
 const runtimeJs = fs.readFileSync(path.join(RUNTIME_DIR, 'react-runtime.js.txt'), 'utf8');
 const babelJs = fs.readFileSync(path.join(RUNTIME_DIR, 'babel.min.js.txt'), 'utf8');
 
-/** 에이전트가 썼다고 치는 아티팩트 — JSX + import + 선언 파일 + 선언 API. */
+/** 에이전트가 썼다고 치는 앱 — JSX + import + 선언 파일 + 선언 API. */
 const ARTIFACT_SOURCE = `
 import React, { useEffect, useState } from 'react';
 export default function App() {
@@ -80,7 +80,7 @@ export default function App() {
   }, []);
   return (
     <div>
-      <h1 id="title">아티팩트가 떴다</h1>
+      <h1 id="title">앱이 떴다</h1>
       <p id="rows">{rows}</p>
       <p id="reach">{reach}</p>
     </div>
@@ -169,17 +169,17 @@ async function main() {
       text = await inner
         .executeJavaScript(`document.body.innerText`)
         .catch(() => '');
-      if (text.includes('아티팩트가 떴다') && text.includes('받음:42')) break;
+      if (text.includes('앱이 떴다') && text.includes('받음:42')) break;
     }
     if (Date.now() > deadline) break;
     await new Promise((r) => setTimeout(r, 250));
   }
 
   const inner = win.webContents.mainFrame.frames[0];
-  assert.ok(inner, '아티팩트 프레임이 붙지 않았다');
+  assert.ok(inner, '앱 프레임이 붙지 않았다');
 
   // 1) 실제로 렌더됐다 — JSX 변환도 React 마운트도 됐다는 뜻.
-  assert.match(text, /아티팩트가 떴다/, `아티팩트가 렌더되지 않았다. 본문: ${JSON.stringify(text)}`);
+  assert.match(text, /앱이 떴다/, `앱이 렌더되지 않았다. 본문: ${JSON.stringify(text)}`);
 
   // 5) 선언된 alias 는 호스트를 거쳐 돌아왔다.
   assert.match(text, /받음:42/, `xgen.fetch 왕복이 실패했다. 본문: ${JSON.stringify(text)}`);
@@ -217,7 +217,7 @@ async function main() {
   );
   assert.equal(cspMeta, true, '프레임 문서에 meta CSP 가 없다(이중 잠금이 빠졌다)');
 
-  console.log('아티팩트 격리 프레임 확인 통과 — 렌더 · 격리 · 무네트워크 · alias 왕복');
+  console.log('앱 격리 프레임 확인 통과 — 렌더 · 격리 · 무네트워크 · alias 왕복');
   win.destroy();
   app.exit(0);
 }

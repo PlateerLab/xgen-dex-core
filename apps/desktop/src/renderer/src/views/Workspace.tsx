@@ -27,13 +27,13 @@ import { AvatarSettings } from './AvatarSettings';
 import { AgentViewer } from './AgentViewer';
 import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
 import { AgentCreate } from './AgentCreate';
-import { ActivityBar, type SideView } from './ActivityBar';
+import { ActivityBar, restoreSideView, type SideView } from './ActivityBar';
 import { AgentPanel } from './AgentPanel';
 import { ExplorerPanel } from './ExplorerPanel';
 import { FileViewerPane } from './FileViewerPane';
 import { fileTabId } from './file-viewer-model';
 import { TeamsPanel } from './TeamsPanel';
-import { ArtifactsPanel } from '../artifacts/ArtifactsPanel';
+import { AppsPanel } from '../apps/AppsPanel';
 import { TeamsRoom } from './TeamsRoom';
 import { TabBar } from './TabBar';
 import { BrowserPane, type BrowserSurfaceRect } from './BrowserPane';
@@ -199,7 +199,7 @@ export const Workspace: React.FC<{
   onLogout: () => void;
   onConfigChange: () => Promise<ConnectorConfig>;
 }> = ({ user, config, onLogout, onConfigChange }) => {
-  const [sideView, setSideView] = useState<SideView>(config.ui?.sideView ?? 'agent');
+  const [sideView, setSideView] = useState<SideView>(restoreSideView(config.ui?.sideView));
   const [collapsed, setCollapsed] = useState(config.ui?.sidebarCollapsed ?? false);
   const [sidebarWidth, setSidebarWidth] = useState(clampWidth(config.ui?.sidebarWidth ?? 300));
   const [layout, setLayout] = useState<WorkspaceLayout>(() =>
@@ -1215,13 +1215,13 @@ export const Workspace: React.FC<{
         </div>
         <div
           className="panel-host"
-          style={{ display: sideView === 'artifacts' ? undefined : 'none' }}
+          style={{ display: sideView === 'apps' ? undefined : 'none' }}
         >
-          {/* 모음에서 고른 아티팩트는 **그 에이전트의 [아티팩트] 탭**으로 연다 —
+          {/* 모음에서 고른 앱은 **그 에이전트의 [앱] 탭**으로 연다 —
               같은 화면을 두 벌 만들지 않고, 고른 것이 어디 사는지도 함께 보인다. */}
-          <ArtifactsPanel
+          <AppsPanel
             onOpen={(workflowId, workflowName) =>
-              openAgentViewer(workflowId, workflowName, 'artifacts')
+              openAgentViewer(workflowId, workflowName, 'apps')
             }
           />
         </div>

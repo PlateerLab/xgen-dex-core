@@ -42,7 +42,7 @@ window.xgen = {
    const result = {trace: traces.find(t => t.trace_id === id), spans: [{span_order: 2, span_type: 'tool_call', tool_name: 'read_file', input_data: 'path'}, {span_order: 1, span_type: 'llm_call'}, {span_order: 3, span_type: 'error', error_message: 'step failed'}]};
    return window.fixture.detailFail === id ? Promise.reject(Error('fixture detail error')) : window.fixture.slowTrace === id ? new Promise(resolve => {window.fixture.pending[id] = () => resolve(result);}) : Promise.resolve(result);
   },
- }, artifacts: {list: async () => ({artifacts: []})}
+ }, apps: {list: async () => ({apps: []})}
 };
 import('./src/renderer/src/views/AgentViewer').then(({AgentViewer}) => {
  const nav = {a: createAgentViewerState(), b: createAgentViewerState()};

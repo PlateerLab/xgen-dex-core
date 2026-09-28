@@ -279,5 +279,20 @@ npm --prefix apps/desktop test
 
 ### 빌드와 배포
 
-[GitHub Actions](.github/workflows) 가 합니다. PR 마다 검사를 돌리고, 태그를 밀면 세
-산출물을 만들어 하나의 Release 에 올리고 CLI 를 npm 에 배포합니다.
+[GitHub Actions](.github/workflows) 가 합니다.
+
+- **PR** — 바뀐 영역의 잡만 돕니다(데스크톱·CLI·확장 / 모바일 JS / 모바일 네이티브).
+  문서와 버전 숫자만 바꾼 변경은 무거운 잡을 돌리지 않고, 새로 푸시하면 이전 실행은
+  취소됩니다. main 에 들어간 뒤에는 다시 돌지 않습니다.
+- **릴리스** — Actions → **Release** → Run workflow(main)에 `patch`·`minor`·`major` 또는
+  `x.y.z` 를 넣습니다. 모든 앱·패키지의 버전을 한 값으로 올려 main 에 커밋하고 태그를
+  단 뒤, 데스크톱(3 OS)·CLI·확장·안드로이드·iOS 를 한 번씩 만들어 하나의 Release 에
+  올리고 CLI 를 npm 에 배포합니다. 버전업 PR 은 만들지 않습니다.
+
+**버전은 하나입니다.** 데스크톱·CLI·확장·패키지·모바일(package.json·app.json·iOS
+Info.plist·빌드 번호)이 모두 루트 `package.json` 과 같아야 하고, PR 마다 확인합니다.
+
+```bash
+node scripts/version.mjs check        # 전부 같은지
+node scripts/version.mjs set 1.60.0   # 전부 바꾸기 (릴리스 워크플로가 부른다)
+```

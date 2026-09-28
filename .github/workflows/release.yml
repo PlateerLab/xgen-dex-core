@@ -6,20 +6,82 @@ name: Release
 # 되는데 확장은 안 된다"가 되고, 그때 어느 조합이 검증된 것인지 아무도 모른다.
 # 태그 하나 = 검증된 조합 하나다.
 #
-# 트리거: v* 태그 push, 또는 수동.
+# 릴리스는 **이 워크플로 한 번**이다: Actions → Release → Run workflow(main) 에서
+# 버전(patch · minor · major 또는 x.y.z)을 넣으면
+#   1) prepare 가 모든 앱·패키지의 버전을 한 값으로 올려 main 에 커밋하고 태그를 단다
+#   2) 그 태그로 데스크톱·CLI·확장·안드로이드·iOS 를 **한 번씩** 만들어 발행한다.
+# 버전업 PR 도, main 푸시 CI 도 없다 — 같은 빌드를 여러 번 만들던 길을 없앴다.
+# (GITHUB_TOKEN 으로 푸시한 커밋·태그는 다른 워크플로를 깨우지 않는다.)
+#
+# main 에서 돌기 때문에 여기서 만든 캐시(gradle·ccache·Pods)는 다음 릴리스와
+# PR 의 네이티브 컴파일이 그대로 읽는다 — 캐시만 데우려는 별도 빌드가 필요 없다.
+#
+# 사람이 태그를 직접 올린 경우(v*)에도 돈다. 그때는 버전을 올리지 않고 태그의
+# 버전이 모든 앱·패키지에서 같은지만 확인한다.
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '새 버전 — patch · minor · major 또는 x.y.z'
+        required: true
+        default: minor
   push:
     tags: ['v*']
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # ── 버전 올리기 · 태그 (수동 실행) / 태그 확인 (태그 푸시) ──
+  prepare:
+    name: 버전 · 태그
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 버전 올리기 · 커밋 · 태그
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BUMP: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::릴리스는 main 에서만 실행합니다 (지금: $GITHUB_REF)"; exit 1
+          fi
+          VER=$(node scripts/version.mjs set "$BUMP")
+          node scripts/version.mjs check
+          if git rev-parse -q --verify "refs/tags/v$VER" >/dev/null; then
+            echo "::error::v$VER 태그가 이미 있습니다"; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "chore(release): $VER"
+          git tag -a "v$VER" -m "v$VER"
+          git push origin HEAD:main "v$VER"
+          echo "TAG=v$VER" >> "$GITHUB_ENV"
+      - name: 태그의 버전 확인
+        if: github.event_name == 'push'
+        run: |
+          node scripts/version.mjs check
+          VER=$(node -p "require('./package.json').version")
+          if [ "v$VER" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::태그($GITHUB_REF_NAME)와 버전(v$VER)이 다릅니다"; exit 1
+          fi
+          echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+      - id: tag
+        run: echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   # ── 데스크톱 설치본 (OS 별로 그 OS 에서 빌드해야 한다) ──
   desktop:
     name: 데스크톱 (${{ matrix.os }})
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +109,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
 
@@ -74,9 +138,12 @@ jobs:
   # ── CLI · VSCode 확장 (플랫폼 무관) ──
   packages:
     name: CLI + 확장
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: npm ci --no-audit --no-fund
@@ -112,10 +179,13 @@ jobs:
   # 프로젝트(android/, ios/)는 prebuild 결과물을 커밋해 두었다 — CI 는 재생성
   # 없이 그대로 빌드한다(결정적).
   android:
+    needs: prepare
     name: 모바일 — 안드로이드 APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -185,6 +255,7 @@ jobs:
   # 자산으로 남긴다(사내 재서명/TestFlight 파이프라인의 입력). Apple 툴체인
   # 변동으로 릴리스 전체가 막히지 않도록 실패는 릴리스를 막지 않는다.
   ios:
+    needs: prepare
     name: 모바일 — iOS (무서명)
     # macos-latest(=Xcode 26)의 새 clang 은 RN 0.79 가 쓰는 fmt 의 consteval
     # 코드와 비호환(빌드 실패 실측). Xcode 16 이 실려 있는 macos-15 로 고정한다.
@@ -192,6 +263,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -279,7 +352,7 @@ jobs:
   # 확장은 VS Marketplace 가 자기 자리다.
   npm:
     name: npm 배포
-    needs: [packages]
+    needs: [prepare, packages]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -288,6 +361,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -421,13 +496,15 @@ jobs:
     # ios 를 needs 에 넣되 결과는 보지 않는다 — ipa 가 나왔으면 릴리스에 싣고,
     # iOS 가 실패했어도(비차단 설계) 나머지 자산으로 릴리스는 발행한다.
     # ios 를 기다리지 않으면 ipa 아티팩트가 릴리스에 못 붙는다(v1.25.1 실측).
-    needs: [desktop, packages, android, ios]
+    needs: [prepare, desktop, packages, android, ios]
     if: >-
       always() && needs.desktop.result == 'success' &&
       needs.packages.result == 'success' && needs.android.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
 
@@ -463,9 +540,9 @@ jobs:
             ### 모바일 (React Native — 안드로이드 / iOS)
 
             모바일 앱은 **서버 세션 채팅 + 모바일 도구** 전용입니다 — 에이전트가
-            휴대폰의 파일·알림·클립보드·카메라·위치 등을 (설정에서 그룹별 승인 후)
-            도구로 사용할 수 있습니다. 데스크톱의 클라우드/브라우저 기능은
-            포함되지 않습니다.
+            대화에 연결한 휴대폰 폴더의 파일, 알림·클립보드·카메라·위치 등(설정에서
+            그룹별 승인 후)을 도구로 사용할 수 있습니다. 데스크톱의 클라우드/브라우저
+            기능은 포함되지 않습니다. 버전은 데스크톱·CLI·확장과 같습니다.
 
             - **안드로이드**: `XGen-Dex-*.apk` 를 받아 설치합니다 (알 수 없는 앱
               설치 허용 필요). 같은 서명 키로 릴리스되므로 **기존 설치 위에 바로

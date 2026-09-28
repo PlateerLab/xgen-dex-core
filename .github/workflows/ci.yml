@@ -1,126 +1,46 @@
 name: CI
 
-# 모든 PR 과 main push. 세 앱과 세 패키지를 **한 번에** 검사한다 — 코어를 고치면
-# 그 자리에서 세 표면이 같이 돌아야, 한쪽만 깨진 채로 머지되는 일이 없다.
+# PR 에서만 돈다. 그리고 **바뀐 영역의 잡만** 돈다.
+#
+# 예전에는 PR·main 푸시·태그마다 전부 돌았다. 기능 PR → 버전업 PR → main 푸시
+# (캐시 워밍 빌드) → 태그 릴리스로, 같은 데스크톱·안드로이드·iOS 빌드가 한
+# 릴리스에 네다섯 번 만들어졌다. 이제는:
+#   - main 푸시에는 돌지 않는다. PR 에서 검증된 코드가 그대로 들어간다.
+#   - 버전 숫자·문서만 바꾼 변경은 무거운 잡을 돌리지 않는다(scripts/ci/changes.mjs).
+#   - 버전 일치(version.mjs check)는 모든 PR 에서 본다 — 몇 초면 끝난다.
+#   - 같은 PR 에 새로 푸시하면 이전 실행은 취소된다.
+# 릴리스 빌드는 release.yml 한 곳에서 한 번만 만든다.
 
 on:
   pull_request:
-  push:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  # 모바일(React Native)은 별도 npm 프로젝트 — 다른 표면과 완전히 독립이라 잡도
-  # 분리한다 (여기 실패해도 verify 산출과 무관, verify 실패와도 무관).
-  mobile:
-    name: 모바일 (타입 · 테스트)
+  changes:
+    name: 바뀐 영역 · 버전 일치
     runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.areas.outputs.core }}
+      mobile: ${{ steps.areas.outputs.mobile }}
+      native: ${{ steps.areas.outputs.native }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - run: npm --prefix apps/mobile ci --no-audit --no-fund
-      - run: npm --prefix apps/mobile test
-      - run: npm --prefix apps/mobile run typecheck
+          fetch-depth: 0
+      - name: 모든 앱·패키지의 버전이 같은지
+        run: node scripts/version.mjs check
+      - name: 바뀐 영역
+        id: areas
+        run: node scripts/ci/changes.mjs ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
 
-  # ── 캐시 워밍 (main 푸시에서만) ──
-  #
-  # 태그(릴리스) 런은 **main 에 저장된 캐시만** 복원할 수 있다 — 태그 런이
-  # 스스로 저장한 캐시는 다음 태그가 못 쓴다. 그래서 릴리스가 빨라지려면
-  # main 푸시 시점에 gradle 의존성과 iOS 컴파일 캐시(ccache)를 미리 만들어
-  # 둬야 한다. PR 검증과 무관하게 병렬로 돌고, 실패해도 아무것도 막지 않는다.
-  warm-android:
-    name: 캐시 워밍 — 안드로이드
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: false
-      - run: npm --prefix apps/mobile ci --no-audit --no-fund
-      - name: APK 빌드 (debug 폴백 키 — 캐시 생성용)
-        working-directory: apps/mobile/android
-        run: ./gradlew assembleRelease
-
-  warm-ios:
-    name: 캐시 워밍 — iOS
-    if: github.event_name == 'push'
-    runs-on: macos-15
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - name: Xcode 16 선택
-        run: |
-          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$XC" ] && sudo xcode-select -s "$XC"
-          xcodebuild -version
-      - run: npm --prefix apps/mobile ci --no-audit --no-fund
-      - name: ccache 설치
-        run: brew install ccache || true
-      # ⚠ CCACHE_DIR env 는 쓰지 않는다 — xcodebuild 의 컴파일은 별도 빌드 서비스
-      # 프로세스에서 돌아 CLI env 를 물려받지 않는다(실측: 커스텀 디렉터리 0.0GiB).
-      # macOS 기본 캐시 디렉터리를 그대로 쓰고 그 경로를 저장한다.
-      - uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/ccache
-          key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
-          restore-keys: ios-ccache-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            apps/mobile/ios/Pods
-            ~/Library/Caches/CocoaPods
-          key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json', 'apps/mobile/ios/Podfile', 'apps/mobile/ios/Podfile.properties.json') }}
-          restore-keys: ios-pods-
-      - name: Pod install
-        working-directory: apps/mobile/ios
-        run: pod install
-      - name: ccache 구성 (절대경로 래퍼)
-        run: |
-          # RN 의 ccache 래퍼는 CCACHE_BINARY '빌드 설정'에 의존하는데, Xcode 가
-          # 컴파일러 프로세스에 이를 env 로 넘기지 않아 조용히 순정 clang 으로
-          # 폴백한다(실측: 캐시 활동 0). 절대경로를 박은 래퍼를 만들어
-          # xcodebuild CLI 인자(CC/CXX)로 전 타깃에 강제한다 — env 의존 0.
-          CCACHE=$(brew --prefix)/bin/ccache
-          CLANG=$(xcrun -f clang); CLANGXX=$(xcrun -f clang++)
-          printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANG"   > /tmp/ccache-clang.sh
-          printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANGXX" > /tmp/ccache-clang++.sh
-          chmod +x /tmp/ccache-clang.sh /tmp/ccache-clang++.sh
-          # RN 권장 sloppiness — 전역 설정에 기록해 래퍼/통계가 같은 구성을 본다.
-          $CCACHE --set-config sloppiness=clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
-          $CCACHE --set-config file_clone=true
-          $CCACHE --set-config depend_mode=true
-          $CCACHE --set-config inode_cache=true
-      - name: Xcode 빌드 (캐시 생성용)
-        working-directory: apps/mobile/ios
-        run: |
-          xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
-            -configuration Release -sdk iphoneos -derivedDataPath build \
-            CC=/tmp/ccache-clang.sh CXX=/tmp/ccache-clang++.sh \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
-      - name: ccache 통계
-        run: ccache -s || true
-
+  # ── 데스크톱 · CLI · VS Code · 패키지 ──
   verify:
     name: 계약 · 타입 · 테스트
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -158,3 +78,107 @@ jobs:
           npm --prefix apps/cli test
           npm --prefix apps/vscode test
           npm --prefix apps/desktop test
+
+  # ── 모바일 JS (별도 npm 프로젝트) ──
+  mobile:
+    name: 모바일 (타입 · 테스트)
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - run: npm --prefix apps/mobile test
+      - run: npm --prefix apps/mobile run typecheck
+
+  # ── 모바일 네이티브 컴파일 — 로컬 모듈·android·ios·의존성이 바뀐 PR 만 ──
+  #
+  # 네이티브 코드의 컴파일 오류가 릴리스 태그에서야 드러나지 않게 머지 전에 본다.
+  # 캐시는 릴리스(main 에서 실행)가 만든 것을 읽기만 한다.
+  android:
+    name: 안드로이드 컴파일
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      # 서명 시크릿이 없으면 build.gradle 이 디버그 키로 폴백한다 — 컴파일 확인에는 충분하다.
+      - name: APK 빌드
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleRelease
+
+  ios:
+    name: iOS 컴파일
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    # Xcode 26(macos-latest)의 clang 은 RN 0.79 의 fmt 와 비호환 — Xcode 16 이 있는 macos-15.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - name: Xcode 16 선택
+        run: |
+          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XC" ] && sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - name: ccache 설치
+        run: brew install ccache || true
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
+          restore-keys: ios-ccache-
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/mobile/ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json', 'apps/mobile/ios/Podfile', 'apps/mobile/ios/Podfile.properties.json') }}
+          restore-keys: ios-pods-
+      # 로컬 모듈(modules/)은 여기서 Pods 에 잡힌다.
+      - name: Pod install
+        working-directory: apps/mobile/ios
+        run: pod install
+      - name: ccache 구성 (절대경로 래퍼)
+        run: |
+          # RN 의 ccache 래퍼는 Xcode 가 컴파일러 프로세스에 CCACHE_BINARY 를 넘기지
+          # 않아 조용히 순정 clang 으로 폴백한다 — 절대경로 래퍼를 CC/CXX 로 강제한다.
+          CCACHE=$(brew --prefix)/bin/ccache
+          CLANG=$(xcrun -f clang); CLANGXX=$(xcrun -f clang++)
+          printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANG"   > /tmp/ccache-clang.sh
+          printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANGXX" > /tmp/ccache-clang++.sh
+          chmod +x /tmp/ccache-clang.sh /tmp/ccache-clang++.sh
+          $CCACHE --set-config sloppiness=clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
+          $CCACHE --set-config file_clone=true
+          $CCACHE --set-config depend_mode=true
+          $CCACHE --set-config inode_cache=true
+      - name: Xcode 빌드
+        working-directory: apps/mobile/ios
+        run: |
+          xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CC=/tmp/ccache-clang.sh CXX=/tmp/ccache-clang++.sh \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build

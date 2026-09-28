@@ -45,6 +45,17 @@ function toRequestBody(req: ChatRequest): Record<string, unknown> {
     // 모든 글자를 두 번 본다. 기기(client_device_id)가 아니라 화면 단위다:
     // 같은 PC 에서 앱과 웹을 나란히 열면 기기는 하나지만 화면은 둘이다.
     ...(req.originId ? { origin_id: req.originId } : {}),
+    // 이 대화에 연결된 기기 폴더 — 빈 목록도 보낸다(= 폴더 없음). 서버는 이것으로
+    // 이번 턴의 폴더 도구를 정하고, 기기는 호출마다 자기 장부로 다시 확인한다.
+    ...(req.localFolders
+      ? {
+          local_folders: req.localFolders.map((folder) => ({
+            id: folder.id,
+            name: folder.name,
+            path: folder.path,
+          })),
+        }
+      : {}),
   };
 }
 

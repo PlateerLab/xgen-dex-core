@@ -447,3 +447,34 @@ test('없는 앱 하나로 옛 서버라고 단정하지 않는다', async () =>
   await api.appList('wf');
   assert.equal(seen.at(-1), '/api/agentflow/agent-apps/wf/list');
 });
+
+// ── 대화에 연결된 폴더(local_folders) ────────────────────────────────
+//
+// 앱은 늘 보낸다: 빈 목록은 "연결된 폴더 없음"(서버가 폴더 도구를 감춘다)이고,
+// 필드가 없으면 옛 앱으로 읽혀 예전 규칙을 따른다. 둘을 섞으면 폴더를 끊은
+// 대화에 서버가 옛 규칙으로 기기 도구를 보여 준다.
+async function sentBody(req: Parameters<ChatApi['stream']>[0]): Promise<Record<string, unknown>> {
+  let body = '';
+  const http = new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async (_url: string, init?: RequestInit) => {
+      body = String(init?.body ?? '');
+      return sseStream(['data: {"type":"end"}\n\n']);
+    },
+  });
+  for await (const _ of new ChatApi(http).stream(req)) {
+    /* drain */
+  }
+  return JSON.parse(body);
+}
+
+test('연결된 폴더는 local_folders 로 실리고, 빈 목록도 그대로 간다', async () => {
+  const base = { workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' };
+  const withFolders = await sentBody({
+    ...base,
+    localFolders: [{ id: 'f1', name: 'proj', path: '/Users/me/proj', extra: 'x' } as never],
+  });
+  assert.deepEqual(withFolders.local_folders, [{ id: 'f1', name: 'proj', path: '/Users/me/proj' }]);
+  assert.deepEqual((await sentBody({ ...base, localFolders: [] })).local_folders, []);
+  assert.equal('local_folders' in (await sentBody(base)), false);
+});

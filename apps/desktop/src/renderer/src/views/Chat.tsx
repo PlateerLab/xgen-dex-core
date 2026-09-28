@@ -30,6 +30,7 @@ import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../prelo
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { DropTracker, dragHasFiles } from './chat-drop';
 import { mcpChatStatus } from './mcp-status-model';
+import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
@@ -408,6 +409,9 @@ export const Chat: React.FC<{
   const [mcpLogs, setMcpLogs] = useState<McpRuntimeLogEntryLike[]>([]);
   const [mcpLogsOpen, setMcpLogsOpen] = useState(false);
   const [notificationMenuOpen, setNotificationMenuOpen] = useState(false);
+  // 이 대화에 연결된 이 PC 의 폴더 — 에이전트의 파일·터미널 도구가 닿는 범위.
+  const chatFolders = useChatFolders(session.interactionId);
+  const [foldersOpen, setFoldersOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -1222,6 +1226,10 @@ export const Chat: React.FC<{
           </div>
         </div>
         <div className="chat-header-actions">
+          <FolderConnectButton
+            count={chatFolders.folders.length}
+            onClick={() => setFoldersOpen(true)}
+          />
           <div className="teams-menu-wrap">
             <button
               className="chat-hbtn icon"
@@ -1322,6 +1330,10 @@ export const Chat: React.FC<{
           </button>
         </div>
       </div>
+
+      {foldersOpen && (
+        <FolderConnectModal state={chatFolders} onClose={() => setFoldersOpen(false)} />
+      )}
 
       {mcpDebug && mcpLogsOpen && (
         <div className="mcp-runtime-log" role="log" aria-label="로컬 MCP 실행 로그">

@@ -1,6 +1,11 @@
 (function () {
   const vscode = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
+  /** 경로의 마지막 이름 — Windows·POSIX 구분자 모두. */
+  const folderName = (path) => {
+    const parts = String(path || '').split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(path || '');
+  };
   const elements = {
     screens: {
       loading: byId('loading-screen'),
@@ -28,6 +33,7 @@
     agentDescription: byId('agent-description'),
     agentScope: byId('agent-scope'),
     agentStatus: byId('agent-status'),
+    agentFolders: byId('agent-folders'),
     agentId: byId('agent-id'),
     changeAgent: byId('change-agent'),
     chatSettings: byId('chat-settings'),
@@ -55,15 +61,9 @@
     profilesList: byId('profiles-list'),
     localToolsState: byId('local-tools-state'),
     localToolsDescription: byId('local-tools-description'),
-    localToolsEnabled: byId('local-tools-enabled'),
-    localToolsShell: byId('local-tools-shell'),
-    localToolsCwd: byId('local-tools-cwd'),
-    localToolsRoots: byId('local-tools-roots'),
-    localToolsTimeout: byId('local-tools-timeout'),
-    localToolsBlocked: byId('local-tools-blocked'),
+    localToolsFolders: byId('local-tools-folders'),
     localToolsDangerous: byId('local-tools-dangerous'),
     localToolsMessage: byId('local-tools-message'),
-    useWorkspaceRoot: byId('use-workspace-root'),
     saveLocalTools: byId('save-local-tools'),
     engineDescription: byId('engine-description'),
     showOutput: byId('show-output'),
@@ -691,6 +691,14 @@
     elements.agentScope.textContent = agent.isShared ? '공유 Agent' : '개인 Agent';
     elements.agentStatus.textContent = agent.isDeployed ? '배포됨' : '초안';
     elements.agentStatus.classList.toggle('deployed', !!agent.isDeployed);
+    // 이 대화의 작업 공간 — 열린 작업 영역 폴더. 이름만 보이고 전체 경로는 툴팁으로.
+    const folders = state.workspaceFolders || [];
+    elements.agentFolders.textContent = folders.length
+      ? `폴더 ${folders.map(folderName).join(', ')}`
+      : '폴더 없음';
+    elements.agentFolders.title = folders.length
+      ? `Agent가 이 폴더 안에서 파일과 터미널을 사용합니다.\n${folders.join('\n')}`
+      : '작업 영역에 폴더를 열면 그 폴더에서 파일과 터미널을 사용합니다.';
     elements.agentId.textContent = agent.workflowId;
     elements.agentId.title = agent.workflowId;
     elements.messages.replaceChildren();
@@ -794,52 +802,42 @@
     const localConfig = localTools?.config;
     const bridge = localTools?.bridge;
     if (!localToolsDirty) {
-      elements.localToolsEnabled.checked = !!localConfig?.enabled;
-      elements.localToolsShell.checked = !!localConfig?.shellEnabled;
-      elements.localToolsCwd.value = localConfig?.cwd || state.workspaceRoot || '';
-      elements.localToolsRoots.value = (localConfig?.allowedRoots?.length
-        ? localConfig.allowedRoots
-        : state.workspaceRoot
-          ? [state.workspaceRoot]
-          : []
-      ).join('\n');
-      elements.localToolsTimeout.value = String(localConfig?.timeoutMs || 120000);
-      elements.localToolsBlocked.value = (localConfig?.blockedCommands || []).join(', ');
       elements.localToolsDangerous.checked = !!localConfig?.allowDangerous;
     }
+    const folders = state.workspaceFolders || [];
+    elements.localToolsFolders.replaceChildren();
+    for (const folder of folders) {
+      const item = document.createElement('li');
+      const name = document.createElement('b');
+      name.textContent = folderName(folder);
+      const path = document.createElement('code');
+      path.textContent = folder;
+      item.append(name, path);
+      elements.localToolsFolders.append(item);
+    }
+    elements.localToolsFolders.classList.toggle('hidden', !folders.length);
+    elements.localToolsDescription.textContent = folders.length
+      ? `대화를 시작하면 이 ${folders.length}개 폴더가 그 대화의 작업 공간이 됩니다.`
+      : '작업 영역에 폴더를 열면 여기 표시됩니다.';
     const localStateLabel = !localTools
       ? '확인 필요'
-      : !localConfig.enabled
-        ? '꺼짐'
-        : bridge.catalogSynced
-          ? '연결됨'
-          : bridge.error
-            ? '확인 필요'
-            : '연결 중';
+      : bridge.catalogSynced
+        ? '연결됨'
+        : bridge.error
+          ? '확인 필요'
+          : '연결 중';
     elements.localToolsState.textContent = localStateLabel;
-    elements.localToolsState.classList.toggle('connected', !!localConfig?.enabled && !!bridge?.catalogSynced);
-    elements.localToolsState.classList.toggle('warning', !!localConfig?.enabled && !!bridge?.error);
-    elements.localToolsDescription.textContent = localConfig?.enabled
-      ? `Shell (${localConfig.shellEnabled ? '전체 PC' : '허용 작업 공간'}), ReadFile, WriteFile, ListDir, Search, Open · ${bridge?.advertisedTools || localTools.tools.length}개 광고`
-      : '허용 작업 공간의 셸·파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.';
-    elements.localToolsMessage.textContent = state.localToolsMessage || (!localConfig?.enabled
-      ? '로컬 도구는 기본적으로 꺼져 있습니다.'
+    elements.localToolsState.classList.toggle('connected', !!bridge?.catalogSynced);
+    elements.localToolsState.classList.toggle('warning', !!bridge?.error);
+    elements.localToolsMessage.textContent = state.localToolsMessage || (!localTools
+      ? '이 PC 연결 상태를 확인하고 있습니다.'
       : bridge?.catalogSynced
-        ? `${bridge.serverTools || localTools.tools.length}개 도구가 XGEN 서버에 연결되었습니다.`
+        ? '이 PC가 XGEN 서버에 연결되었습니다.'
         : bridge?.error
           ? `연결 확인 필요 · ${bridge.error}`
-        : '저장된 설정으로 브리지 연결을 준비하고 있습니다.');
+          : '이 PC를 XGEN 서버에 연결하는 중입니다.');
     const localToolsUnavailable = !localTools || !!state.localToolsSaving;
-    for (const control of [
-      elements.localToolsEnabled,
-      elements.localToolsShell,
-      elements.localToolsCwd,
-      elements.localToolsRoots,
-      elements.localToolsTimeout,
-      elements.localToolsBlocked,
-      elements.localToolsDangerous,
-    ]) control.disabled = localToolsUnavailable;
-    elements.useWorkspaceRoot.disabled = localToolsUnavailable || !state.workspaceRoot;
+    elements.localToolsDangerous.disabled = localToolsUnavailable;
     elements.saveLocalTools.disabled = localToolsUnavailable || !localToolsDirty;
     elements.saveLocalTools.textContent = state.localToolsSaving ? '저장 중...' : '설정 저장';
     elements.engineDescription.textContent = state.error
@@ -906,39 +904,13 @@
     if (profile) post('editProfile', { profile: profile.name });
   });
   elements.addProfile.addEventListener('click', () => post('setupProfile'));
-  for (const control of [
-    elements.localToolsEnabled,
-    elements.localToolsShell,
-    elements.localToolsCwd,
-    elements.localToolsRoots,
-    elements.localToolsTimeout,
-    elements.localToolsBlocked,
-    elements.localToolsDangerous,
-  ]) {
-    control.addEventListener('input', () => {
-      localToolsDirty = true;
-      elements.saveLocalTools.disabled = false;
-    });
-  }
-  elements.useWorkspaceRoot.addEventListener('click', () => {
-    if (!state.workspaceRoot) return;
-    elements.localToolsCwd.value = state.workspaceRoot;
-    elements.localToolsRoots.value = state.workspaceRoot;
+  elements.localToolsDangerous.addEventListener('input', () => {
     localToolsDirty = true;
     elements.saveLocalTools.disabled = false;
   });
   elements.saveLocalTools.addEventListener('click', () => {
-    const splitList = (value) => [...new Set(value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean))];
     post('configureLocalTools', {
-      config: {
-        enabled: elements.localToolsEnabled.checked,
-        shellEnabled: elements.localToolsShell.checked,
-        cwd: elements.localToolsCwd.value.trim(),
-        timeoutMs: Number(elements.localToolsTimeout.value),
-        allowedRoots: splitList(elements.localToolsRoots.value),
-        blockedCommands: splitList(elements.localToolsBlocked.value),
-        allowDangerous: elements.localToolsDangerous.checked,
-      },
+      config: { allowDangerous: elements.localToolsDangerous.checked },
     });
   });
   elements.showOutput.addEventListener('click', () => post('showOutput'));

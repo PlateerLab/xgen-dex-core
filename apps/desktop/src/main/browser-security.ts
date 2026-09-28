@@ -23,12 +23,13 @@ function expandHome(path: string): string {
   return path;
 }
 
-/** Upload/download paths share the structured local-tool allowedRoots scope. */
+/** Upload/download paths share the file tools' scope: the conversation's folders.
+ *  No folder → nothing is allowed. Relative paths start from the first folder. */
 export function browserPathWithinRoots(path: unknown, roots: string[]): string | null {
   const raw = String(path ?? '').trim();
-  if (!raw) return null;
-  const absolute = resolve(isAbsolute(expandHome(raw)) ? expandHome(raw) : resolve(homedir(), raw));
-  const allowed = (roots.length ? roots : [homedir()]).map((root) => resolve(expandHome(root)));
+  if (!raw || !roots.length) return null;
+  const allowed = roots.map((root) => resolve(expandHome(root)));
+  const absolute = resolve(isAbsolute(expandHome(raw)) ? expandHome(raw) : resolve(allowed[0], raw));
   return allowed.some((root) => {
     const rel = relative(root, absolute);
     return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));

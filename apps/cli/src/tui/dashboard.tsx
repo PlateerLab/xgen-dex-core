@@ -14,6 +14,7 @@ import { ImeTextInput } from './ime-text-input';
 import type { TuiEngine, TuiSession } from './model';
 import type { LastChat } from './preferences';
 import { useTerminalSize } from './use-terminal-size';
+import { defaultWorkingFolders } from '../folders';
 
 interface AgentRef {
   workflowId: string;
@@ -513,6 +514,8 @@ export function Dashboard(props: {
         interactionId: chat.interactionId ?? attachmentInteractionId,
         input: text,
         attachments,
+        // TUI 를 연 폴더가 이 대화의 작업 공간이다(홈·루트에서 열었으면 없음).
+        localFolders: defaultWorkingFolders(),
       });
       setInput('');
       setScrollUp(0);

@@ -245,10 +245,14 @@ test('account partition is stable per server/user without exposing account ids',
   assert.ok(!one.includes('user-secret'));
 });
 
-test('upload/download paths stay inside allowedRoots', async () => {
+test('upload/download paths stay inside the conversation folders', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xgen-browser-'));
   assert.equal(browserPathWithinRoots(join(root, 'a.txt'), [root]), join(root, 'a.txt'));
   assert.equal(browserPathWithinRoots(join(root, '..', 'escape.txt'), [root]), null);
+  // 상대 경로는 첫 번째 폴더에서 시작한다(예전처럼 홈이 아니다).
+  assert.equal(browserPathWithinRoots('shot.png', [root]), join(root, 'shot.png'));
+  // 폴더가 없는 대화에서는 어떤 경로도 허락하지 않는다.
+  assert.equal(browserPathWithinRoots(join(root, 'a.txt'), []), null);
 });
 
 test('an agent-created shared page requests visible browser UI', async () => {
@@ -277,7 +281,7 @@ test('an agent-created shared page requests visible browser UI', async () => {
   } as unknown as BrowserRuntime;
   const provider = new BrowserToolProvider(fakeRuntime);
   const revealed: string[] = [];
-  provider.configure(true, [], (page) => revealed.push(page.pageId));
+  provider.configure(true, () => [], (page) => revealed.push(page.pageId));
 
   await provider.callTool(
     BROWSER_TABS_TOOL,

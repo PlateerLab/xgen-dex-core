@@ -4124,6 +4124,65 @@ button {
   border-color: var(--primary-soft-border);
 }
 
+/* 대화별 폴더 연결 창 — 설정의 폴더 목록과 같은 행 모양에 이름 줄을 더한다. */
+.chat-folders-modal {
+  width: 560px;
+}
+.chat-folders-desc {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.chat-folders-hint {
+  margin: 10px 0 0;
+  line-height: 1.5;
+}
+.chat-folder-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-folder-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-folder-missing {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--error);
+  background: var(--error-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.chat-folder-text .root-path {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.chat-folder.missing .root-path {
+  color: var(--muted);
+}
+.root-remove.chat-folder-open:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.root-remove:disabled,
+.root-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .settings-hint {
   margin: 8px 0 2px;
   font-size: 12px;

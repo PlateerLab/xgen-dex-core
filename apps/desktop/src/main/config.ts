@@ -124,12 +124,6 @@ export interface ConnectorConfig {
   mcpDebug?: boolean;
   /** Configured local MCP servers. */
   mcpServers?: McpServerConfig[];
-  /**
-   * 로컬 셸 접근 — 이 PC 의 네이티브 셸(PowerShell/bash)을 에이전트가 조작할 수
-   * 있게 한다. 내장 `Shell` 도구로 로컬 MCP 카탈로그에 실린다. 기본 ON(opt-out):
-   * 켜져 있으면 로컬 MCP 서버가 하나도 없어도 브릿지가 떠서 이 도구를 광고한다.
-   */
-  localShell?: LocalShellPersistConfig;
   /** 통합 데이터 루트(기본 ~/xgen-dex) — workspace/·cloud/ 의 부모.
    *  인스톨러 선택 또는 설정에서 변경. 개별 경로 명시가 항상 우선. */
   dataRoot?: string;
@@ -217,24 +211,6 @@ export interface WorkspaceLayoutPersistConfig {
   direction: 'horizontal' | 'vertical';
   ratio: number;
   focusedGroupId: string;
-}
-
-/** 로컬 셸 접근 설정 (영속). local-tools.LocalShellConfig 와 구조 동일 —
- *  config 는 leaf 라 그 모듈을 import 하지 않고 형태만 미러한다. */
-export interface LocalShellPersistConfig {
-  /** 로컬 셸·PC·파일 도구 마스터 스위치. 기본 OFF. */
-  enabled?: boolean;
-  /** 허용 작업 공간 밖에서도 셸 실행을 허용. false면 작업 공간 제한 셸을 제공한다. */
-  shellEnabled?: boolean;
-  /** 명령 기본 작업 디렉터리. 비우면 홈. */
-  cwd?: string;
-  /** 명령당 시간 상한(ms). 기본 120s. */
-  timeoutMs?: number;
-  /** 첫 토큰이 일치하면 거절할 명령 이름들 (편의용 가드, 보안 경계 아님). */
-  blocked?: string[];
-  /** 파일 도구(ReadFile/WriteFile/ListDir/Search)가 접근 가능한 폴더 루트.
-   *  비우면 홈으로 제한. `~` 는 홈으로 확장된다. */
-  allowedRoots?: string[];
 }
 
 /** XGEN 워크스페이스(가상 드라이브) 영속 형태 — workspace.WorkspaceConfig 미러. */

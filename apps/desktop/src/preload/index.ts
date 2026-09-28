@@ -62,6 +62,7 @@ import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/p
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
+import type { ChatFolderView } from '../main/chat-folders';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
   BrowserConnectionEvent,
@@ -535,6 +536,29 @@ const api = {
       ipcRenderer.invoke(CHANNELS.chatEndSession, workflowId, interactionId),
   },
 
+  /**
+   * 대화별 폴더 연결 — 그 대화에서 에이전트가 이 PC 의 파일과 터미널을 쓸 수 있는
+   * 범위. 폴더는 네이티브 선택 창으로만 더해진다(경로 문자열을 받지 않는다).
+   */
+  chatFolders: {
+    list: (interactionId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersList, interactionId),
+    /** 선택 창을 열어 고른 폴더를 더한다. 취소하면 목록이 그대로 돌아온다. */
+    add: (interactionId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersAdd, interactionId),
+    remove: (interactionId: string, folderId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersRemove, interactionId, folderId),
+    /** 폴더를 파일 관리자로 연다. */
+    reveal: (interactionId: string, folderId: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersReveal, interactionId, folderId),
+    onChanged: (cb: (interactionId: string, folders: ChatFolderView[]) => void): (() => void) => {
+      const h = (_e: unknown, interactionId: string, folders: ChatFolderView[]) =>
+        cb(interactionId, folders);
+      ipcRenderer.on(CHANNELS.chatFoldersChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersChanged, h);
+    },
+  },
+
   /** 클립보드 — main 경유. 렌더러 navigator.clipboard 는 조용히 실패할 수 있다. */
   clipboard: {
     write: (text: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.clipboardWrite, text),
@@ -783,8 +807,6 @@ const api = {
       ipcRenderer.on(CHANNELS.openSettingsModal, h);
       return () => ipcRenderer.removeListener(CHANNELS.openSettingsModal, h);
     },
-    /** 네이티브 폴더 선택 다이얼로그 — 절대 경로 또는 null(취소). */
-    pickFolder: (): Promise<string | null> => ipcRenderer.invoke(CHANNELS.pickFolder),
     /** 설치 폴더(생략 시) 또는 지정 폴더를 파일 관리자로 연다. */
     openFolder: (path?: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke(CHANNELS.appOpenFolder, path),
@@ -798,7 +820,7 @@ const api = {
   },
 
   /** 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스)를 로컬 폴더로. */
-  /** 같은 계정에 연결된 커넥터 기기 목록 (로컬 컨트롤 상태 패널). */
+  /** 같은 계정에 연결된 커넥터 기기 목록 (설정 > 일반 > 연결된 기기). */
   connectorDevices: (): Promise<{
     devices: Array<{
       deviceId: string;

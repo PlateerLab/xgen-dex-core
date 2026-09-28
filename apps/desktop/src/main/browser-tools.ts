@@ -148,7 +148,9 @@ export function browserToolSchemas(): LocalToolSchema[] {
           },
           path: {
             type: 'string',
-            description: 'Local output path. Must be within configured allowedRoots.',
+            description:
+              'Output file on the user\'s computer, inside a folder connected to this conversation ' +
+              '(relative paths start from the first connected folder).',
           },
           clear: { type: 'boolean' },
           timeout_ms: { type: 'integer' },
@@ -306,20 +308,28 @@ function appendValue(command: string[], value: unknown): void {
   command.push(typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+/** 대화 → 파일을 읽고 쓸 수 있는 폴더(그 대화에 연결된 폴더). */
+export type BrowserFileRoots = (context?: LocalToolCallContext) => string[];
+
 export class BrowserToolProvider {
   private enabled = false;
-  private allowedRoots: string[] = [];
+  private fileRoots: BrowserFileRoots = () => [];
   private revealSharedPage: (page: BrowserPageInfo) => void = () => {};
 
   constructor(private runtime: BrowserRuntime) {}
 
+  /**
+   * 브라우저 도구 자체는 자기 설정(`enabled`)이 켠다. 다만 스크린샷·PDF·업로드·
+   * 다운로드처럼 **이 PC 의 파일**을 만지는 동작은 파일 도구와 같은 범위 — 그
+   * 대화에 연결된 폴더 — 안에서만 된다.
+   */
   configure(
     enabled: boolean,
-    allowedRoots: string[] = [],
+    fileRoots: BrowserFileRoots = () => [],
     revealSharedPage: (page: BrowserPageInfo) => void = () => {},
   ): void {
     this.enabled = enabled;
-    this.allowedRoots = allowedRoots;
+    this.fileRoots = fileRoots;
     this.revealSharedPage = revealSharedPage;
   }
 
@@ -472,10 +482,17 @@ export class BrowserToolProvider {
     return result(run.page, run.result);
   }
 
-  private scopedPath(raw: unknown): string {
-    const path = browserPathWithinRoots(raw, this.allowedRoots);
+  private scopedPath(raw: unknown, context?: LocalToolCallContext): string {
+    const roots = this.fileRoots(context);
+    if (!roots.length) {
+      throw new BrowserRuntimeError(
+        'browser_denied',
+        '이 대화에 연결된 폴더가 없어 이 PC 에 파일을 저장하거나 올릴 수 없습니다.',
+      );
+    }
+    const path = browserPathWithinRoots(raw, roots);
     if (!path)
-      throw new BrowserRuntimeError('browser_denied', '파일 경로가 allowedRoots 범위 밖입니다.');
+      throw new BrowserRuntimeError('browser_denied', '파일 경로가 이 대화에 연결된 폴더 밖입니다.');
     return path;
   }
 
@@ -487,7 +504,7 @@ export class BrowserToolProvider {
     let command: string[];
     if (action === 'screenshot' || action === 'full_screenshot' || action === 'pdf') {
       const fallback = action === 'pdf' ? 'browser.pdf' : 'browser.png';
-      const path = this.scopedPath(args.path ?? fallback);
+      const path = this.scopedPath(args.path ?? fallback, context);
       command = [action === 'full_screenshot' ? 'screenshot' : action, path];
       if (action === 'full_screenshot') command.push('--full');
     } else if (action === 'console' || action === 'errors') {
@@ -523,9 +540,9 @@ export class BrowserToolProvider {
     if (action === 'upload') {
       const paths = Array.isArray(args.paths) ? args.paths : [args.path];
       command = ['upload', String(args.ref ?? '')];
-      for (const path of paths) command.push(this.scopedPath(path));
+      for (const path of paths) command.push(this.scopedPath(path, context));
     } else if (action === 'download') {
-      const path = this.scopedPath(args.path);
+      const path = this.scopedPath(args.path, context);
       const page = await this.runtime.resolvePage(workflow(args, context), pageId(args), true);
       this.runtime.allowNextDownload(page.info.pageId, path);
       command = ['download', String(args.ref ?? ''), path];
@@ -580,7 +597,7 @@ export class BrowserToolProvider {
       command = ['set', 'media', String(args.value ?? operation ?? '')];
     } else if (action === 'har') {
       command = ['network', operation || 'har'];
-      if (args.path !== undefined) command.push(this.scopedPath(args.path));
+      if (args.path !== undefined) command.push(this.scopedPath(args.path, context));
     } else if (action === 'intercept') {
       command = ['network', 'route'];
       appendValue(command, args.value ?? args.options);

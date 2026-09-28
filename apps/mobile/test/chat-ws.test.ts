@@ -89,8 +89,10 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
     kind: 'file' as const, attachment_id: 'att-1', name: 'data.json',
     mime_type: 'application/json', size: 2, workspace_path: 'attachments/mob-wf-1-1/att-1/data.json',
   };
-  const done = chat.execute('안녕', [attachment]);
+  const done = chat.execute('안녕', [attachment], [{ id: 'f1', name: 'Notes', path: '/Notes' }]);
   const exec = ws.sent[1] as { type: string; data: Record<string, unknown> };
+  // 이 대화에 연결된 휴대폰 폴더 — 파일 도구는 이 안에서만 돈다.
+  assert.deepEqual(exec.data.local_folders, [{ id: 'f1', name: 'Notes', path: '/Notes' }]);
   assert.equal(exec.type, 'execute');
   assert.deepEqual(exec.data.input_data, { input_str: '안녕', attachments: [attachment] });
   // 모바일 도구 주입 게이트 + 서버 sandbox 강제 — 이 두 값이 제품 정의다.
@@ -109,6 +111,22 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   assert.deepEqual(got.data, ['안녕하', '세요']);
   assert.deepEqual(got.tools, ['mcp_mobile_Notify']);
   assert.deepEqual(got.errors, []);
+  chat.close();
+});
+
+test('폴더를 넘기지 않아도 local_folders 는 빈 목록으로 간다 — 앱은 늘 보낸다', async () => {
+  // 필드가 없으면 서버는 옛 앱으로 읽어 예전 규칙을 따른다. 빈 목록은 "폴더 없음"이다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  const done = chat.execute('폴더 없이');
+  const exec = ws.sent[1] as { type: string; data: Record<string, unknown> };
+  assert.deepEqual(exec.data.local_folders, []);
+  ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'end' } } });
+  ws.recv({ type: 'exec_done' });
+  await done;
   chat.close();
 });
 

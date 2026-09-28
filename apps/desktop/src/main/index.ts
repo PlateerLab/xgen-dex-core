@@ -92,7 +92,8 @@ import { stripFrameAncestorsFromHeaders } from './artifact-csp';
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
 import { FilestoreSyncTransport, HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient, authHeaders as syncAuthHeaders, transportFetch as syncTransportFetch, type TransportAuth } from './sync-transport';
 import { FileSystemController } from './file-system';
-import { WorkspaceBridge } from './workspace-bridge-tools';
+import { ChatFolderStore } from './chat-folders';
+import { localFoldersForRequest } from '@dex/engine/local-folders';
 import {
   consumeInstallOptions,
   resolveDataRoot,
@@ -1527,6 +1528,23 @@ getLocalToolProvider().configureNotificationHandler(async (title, body, context)
     target,
   }).shown;
 });
+
+// ── 대화별 폴더 연결 ──────────────────────────────────────────────
+// 채팅 헤더의 [폴더 연결]로 고른 폴더가 그 대화의 작업 공간이다. 이 PC 의 파일·
+// 터미널 도구는 호출마다 그 대화의 폴더를 여기서 찾고, 없으면 거부한다.
+// 채팅 요청에도 같은 목록을 실어 서버가 이번 턴의 도구와 안내를 정한다.
+const chatFolders = new ChatFolderStore(
+  join(app.getPath('userData'), 'chat-folders'),
+  () => currentAccountKey(),
+);
+getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
+chatFolders.onChange((interactionId) => {
+  // 빠진 폴더에서 돌던 백그라운드 작업을 멈추고, 열린 창들이 목록을 다시 그린다.
+  getLocalToolProvider().foldersChanged(interactionId);
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersChanged, interactionId, chatFolders.view(interactionId));
+  }
+});
 /**
  * 현재 유효한 액세스 토큰 — **라이브 클라이언트(회전 반영) 우선**, 없으면 keychain.
  * WS 브릿지·워크스페이스 동기화가 keychain 만 읽으면, 세션 중 회전 시점과
@@ -1621,7 +1639,7 @@ ipcMain.handle(
     return { ok: true };
   },
 );
-/** 같은 계정에 연결된 커넥터 기기 목록 — 로컬 컨트롤 상태 패널. */
+/** 같은 계정에 연결된 커넥터 기기 목록 — 설정 > 일반 > 연결된 기기. */
 ipcMain.handle(CHANNELS.connectorDevices, async () => {
   if (!client) return { devices: [] };
   try {
@@ -1849,13 +1867,14 @@ function syncMcp(): void {
   const browserTools = getBrowserToolProvider(getBrowserRuntime());
   browserTools.configure(
     cfg.browser?.enabled === true,
-    cfg.localShell?.allowedRoots ?? [],
+    // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
+    (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
     (page) => {
       showMain();
       safeSend(mainWindow, CHANNELS.browserRevealEvent, page);
     },
   );
-  getLocalToolProvider().configure(cfg.localShell, browserTools);
+  getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
@@ -1868,12 +1887,11 @@ function syncMcp(): void {
     onMcpRuntimeLog((entry) => safeSend(mainWindow, CHANNELS.mcpRuntimeLogEvent, entry));
   }
   const userId = currentUserId();
-  // The bridge is the single conduit for BOTH external MCP servers and the
-  // connector's built-in local tools. Start it when EITHER is on — the local
-  // shell capability must reach the agent even if the user configured no MCP
-  // servers (it is the out-of-the-box default).
-  const builtinOn = getLocalToolProvider().advertise().length > 0;
-  if ((cfg.mcp || builtinOn) && userId) {
+  // The bridge is the single conduit for BOTH external MCP servers and this PC's
+  // folder tools. It runs whenever someone is logged in: which conversation may
+  // use the folder tools is decided per call by that conversation's folders,
+  // not by whether the bridge is up.
+  if (userId) {
     // start() is idempotent for the same target: it refreshes the catalog on a
     // live socket instead of tearing it down, so repeated syncMcp() (e.g. on
     // token refresh / restore) never flaps the connection status.
@@ -2000,9 +2018,8 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
   // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.localShell !== undefined || patch.browser !== undefined) syncMcp();
+  if (patch.browser !== undefined) syncMcp();
   // 기본 작업 폴더/토글 변경 → 에이전트 workspace 로컬 동기화도 따라간다.
-  if (patch.localShell !== undefined) fileSystem?.reconcile();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -2732,7 +2749,12 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
   aborters.set(streamId, controller);
   const sender = e.sender;
   (async () => {
-    const serverReq: ChatRequest = { ...(req as ChatRequest) };
+    const serverReq: ChatRequest = {
+      ...(req as ChatRequest),
+      // 이 대화에 연결된 폴더 — 렌더러가 보낸 값이 아니라 main 의 장부가 정본이다.
+      // 빈 목록도 보낸다: 서버는 그것으로 "이 대화엔 폴더가 없다"를 안다.
+      localFolders: localFoldersForRequest(chatFolders.list((req as ChatRequest).interactionId)),
+    };
     let preview = '';
     let terminal = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
@@ -2841,6 +2863,8 @@ ipcMain.handle(
 // best-effort — 서버 미도달/미인증이어도 로컬 삭제 UX 는 막지 않는다.
 ipcMain.handle(CHANNELS.chatEndSession, async (_e, workflowId: string, interactionId: string) => {
   if (!workflowId || !interactionId) return false;
+  // 대화를 지우면 그 대화의 폴더 연결도 없앤다(돌던 작업도 함께 멈춘다).
+  chatFolders.forget(interactionId);
   try {
     await getClient().agentData.endSession(workflowId, interactionId);
     return true;
@@ -3077,16 +3101,41 @@ ipcMain.on(CHANNELS.overlayFocusMain, () => showMain());
 ipcMain.on(CHANNELS.overlayOpenSettings, () => openMainSettings());
 ipcMain.on(CHANNELS.overlayHide, () => setOverlayEnabled(false));
 
-// ── IPC: app / window management ─────────────────────────────────
-/** 네이티브 폴더 선택 — 설정 화면(기본 작업 폴더·허용 폴더)이 쓴다. 경로를
- *  타이핑하게 두면 오타 하나로 도구 스코프가 조용히 빗나간다 — 고르게 한다. */
-ipcMain.handle(CHANNELS.pickFolder, async () => {
-  const win = mainWindow;
-  const r = win
-    ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
-    : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] });
-  return r.canceled ? null : (r.filePaths[0] ?? null);
+// ── IPC: 대화별 폴더 연결 ────────────────────────────────────────
+ipcMain.handle(CHANNELS.chatFoldersList, (_e, interactionId: string) =>
+  chatFolders.view(String(interactionId ?? '')),
+);
+/** 네이티브 선택 창으로만 폴더가 들어온다 — 렌더러는 경로 문자열을 보낼 수 없다.
+ *  경로를 타이핑하게 두면 오타 하나로 범위가 조용히 빗나간다. */
+ipcMain.handle(CHANNELS.chatFoldersAdd, async (e, interactionId: string) => {
+  const id = String(interactionId ?? '').trim();
+  if (!id) throw new Error('대화를 찾지 못했습니다.');
+  const win = BrowserWindow.fromWebContents(e.sender) ?? mainWindow;
+  const options = {
+    title: '이 대화에 연결할 폴더',
+    buttonLabel: '연결',
+    properties: ['openDirectory', 'multiSelections', 'createDirectory'] as Array<
+      'openDirectory' | 'multiSelections' | 'createDirectory'
+    >,
+  };
+  const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  if (!r.canceled && r.filePaths.length) chatFolders.add(id, r.filePaths);
+  return chatFolders.view(id);
 });
+ipcMain.handle(CHANNELS.chatFoldersRemove, (_e, interactionId: string, folderId: string) => {
+  const id = String(interactionId ?? '').trim();
+  if (id && folderId) chatFolders.remove(id, String(folderId));
+  return chatFolders.view(id);
+});
+ipcMain.handle(CHANNELS.chatFoldersReveal, async (_e, interactionId: string, folderId: string) => {
+  const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === folderId);
+  if (!folder) return { ok: false, error: '연결된 폴더가 아닙니다.' };
+  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (마운트 동기 확인 데드락).
+  const err = await openWithDefaultApp(folder.path);
+  return { ok: !err, error: err || undefined };
+});
+
+// ── IPC: app / window management ─────────────────────────────────
 ipcMain.handle(CHANNELS.appOpenFolder, async (_e, p: unknown) => {
   const dir = typeof p === 'string' && p.trim() ? p : resolveDataRoot(loadConfig());
   try {
@@ -3403,40 +3452,6 @@ function wireFileSystem(): void {
     onStatus: (s) => safeSend(mainWindow, CHANNELS.fsStatusEvent, s),
   });
   fileSystem.reconcile();
-
-  // 워크스페이스 브리지 — 서버의 ConnectorLocalSandbox 가 이 PC 를 실행
-  // 환경으로 쓰는 내부 도구(_Exec 등). 토글과 무관하게 동작한다 — 커넥터
-  // 세션 실행의 전제는 로그인뿐이다. /cloud 가상 경로는 클라우드 동기화가
-  // 켜져 있을 때만 열린다.
-  getLocalToolProvider().configureWorkspaceBridge(
-    new WorkspaceBridge({
-      infoFor: (workflowId: string, workflowName?: string) => {
-        const dir = fileSystem?.ensurePair(workflowId, workflowName || workflowId) ?? null;
-        if (!dir) return null;
-        const agent = fileSystem
-          ?.status()
-          .agents.list.find((a) => a.workflowId === workflowId);
-        return { dir, label: agent?.label ?? workflowName ?? workflowId };
-      },
-      ensureSynced: async (workflowId: string, workflowName?: string) => {
-        const r = (await fileSystem?.ensureSynced(workflowId, workflowName || workflowId)) ?? {
-          dir: null,
-          synced: false,
-        };
-        if (!r.dir) return { info: null, synced: false };
-        const agent = fileSystem
-          ?.status()
-          .agents.list.find((a) => a.workflowId === workflowId);
-        return {
-          info: { dir: r.dir, label: agent?.label ?? workflowName ?? workflowId },
-          synced: r.synced,
-        };
-      },
-      flushSync: async (workflowId: string) => (await fileSystem?.flushSync(workflowId)) ?? false,
-      cloudDir: () => fileSystem?.cloudDir() ?? null,
-      poke: (workflowId: string) => fileSystem?.poke(workflowId),
-    }),
-  );
 }
 
 // ── 로컬 실행 v2: 사이드카 데몬 + 서버 버전 수렴 ──────────────────────

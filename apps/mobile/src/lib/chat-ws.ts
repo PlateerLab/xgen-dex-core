@@ -94,8 +94,23 @@ export type PeerTurnEvent =
   /** 전파에 구멍이 났다 — 이때만 다시 맞추면 된다. */
   | { kind: 'gap' };
 
+/** 이 대화에 연결된 폴더 — 서버 요청의 local_folders 항목(path 는 가상 경로). */
+export interface ChatWsLocalFolder {
+  id: string;
+  name: string;
+  path: string;
+}
+
 export interface ChatWsHandle {
-  execute(input: string, attachments?: MobileChatAttachment[]): Promise<void>;
+  /**
+   * 한 턴을 보낸다. `localFolders` 는 이 대화에 연결된 휴대폰 폴더 — 빈 목록도
+   * 보낸다(= 폴더 없음, 서버가 파일 도구를 감춘다). 앱은 늘 보낸다.
+   */
+  execute(
+    input: string,
+    attachments?: MobileChatAttachment[],
+    localFolders?: ChatWsLocalFolder[],
+  ): Promise<void>;
   stop(): void;
   close(): void;
   state(): ChatWsState;
@@ -465,7 +480,11 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
   connect();
 
   return {
-    execute(input: string, attachments: MobileChatAttachment[] = []): Promise<void> {
+    execute(
+      input: string,
+      attachments: MobileChatAttachment[] = [],
+      localFolders: ChatWsLocalFolder[] = [],
+    ): Promise<void> {
       return new Promise<void>((resolve, reject) => {
         if (!(state === 'connected' && subscribed && ws?.readyState === WebSocket.OPEN)) {
           reject(new Error('서버 세션에 연결되지 않았습니다.'));
@@ -492,6 +511,12 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
                 ...(opts.clientDeviceId ? { client_device_id: opts.clientDeviceId } : {}),
                 // 실행은 항상 서버 sandbox — 모바일에는 로컬 실행이 없다.
                 execution_target: 'sandbox',
+                // 이 대화에 연결된 휴대폰 폴더(가상 경로). 파일 도구는 이 안에서만 돈다.
+                local_folders: localFolders.map((folder) => ({
+                  id: folder.id,
+                  name: folder.name,
+                  path: folder.path,
+                })),
               },
             }),
           );

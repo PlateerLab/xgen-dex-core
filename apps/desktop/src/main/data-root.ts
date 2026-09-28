@@ -8,12 +8,12 @@
  * 커넥터가 만드는 모든 작업 자산이 한 지붕 아래 모인다:
  *
  *   <dataRoot>/                ← 기본 ~/xgen-dex (인스톨러/설정에서 변경 가능)
- *     workspace/               ← PC 컨트롤 작업 폴더 + 에이전트 로컬 동기화 루트
+ *     workspace/               ← 에이전트 로컬 동기화 루트
  *     cloud/                   ← 스토리지(가상 드라이브) 마운트 루트
  *     local-runtime/           ← 에이전트 로컬 실행 런타임(Python) + bin/(codex·claude CLI)
  *
  * 결정 규칙(체크 해제 = 수정 가능):
- *   · 사용자가 명시한 경로(localShell.cwd / workspace.root / dataRoot)는 항상 존중.
+ *   · 사용자가 명시한 경로(workspace.root / dataRoot)는 항상 존중.
  *   · 미설정이면 dataRoot 파생 기본을 **첫 부팅에 config 에 채워** 이후에도
  *     안정적으로 같은 곳을 가리키게 한다(레이아웃이 조용히 이사하지 않게).
  *
@@ -155,10 +155,6 @@ export function settleDataRoot(
     }
   }
   if (!(cfg.dataRoot ?? '').trim()) patch.dataRoot = root;
-  // PC 컨트롤 작업 폴더(=에이전트 로컬 동기화 루트) 기본.
-  if (!(cfg.localShell?.cwd ?? '').trim()) {
-    patch.localShell = { ...(cfg.localShell ?? {}), cwd: workspaceDirOf(root) };
-  }
   return { root, patch };
 }
 

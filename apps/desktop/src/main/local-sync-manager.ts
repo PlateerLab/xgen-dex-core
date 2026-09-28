@@ -4,10 +4,9 @@
  *
  * 켜지는 조건 (전부 만족):
  *   · 로그인됨
- *   · 로컬 도구 접근 켜짐 (localShell.enabled)
- *   · **기본 작업 폴더가 지정됨** — 비우면 홈이 기본이지만, 홈 전체에 에이전트
- *     폴더를 흩뿌리는 것은 사용자가 고른 일이 아니므로 동기화는 명시된 폴더가
- *     있을 때만 돈다.
+ *   · 동기화 설정이 켜짐 (파일 시스템 설정 — config.enabled)
+ *   · **동기화 루트가 정해짐** — 홈 전체에 에이전트 폴더를 흩뿌리는 것은 사용자가
+ *     고른 일이 아니므로 동기화는 정해진 루트가 있을 때만 돈다.
  *
  * 대상 에이전트 = 서버 연결 목록(cloud links)의 사본 — 드라이브가 쓰던 것과
  * 같은 목록이다. 폴더는 `<기본 작업 폴더>/<링크 폴더명>`.
@@ -53,9 +52,9 @@ export interface SyncTarget {
 }
 
 export interface LocalSyncConfig {
-  /** 로컬 도구 접근 + 기본 작업 폴더가 갖춰졌는가. */
+  /** 동기화 설정이 켜져 있는가. */
   enabled: boolean;
-  /** 기본 작업 폴더 (절대 경로). enabled 일 때만 의미 있다. */
+  /** 동기화 루트 (절대 경로). enabled 일 때만 의미 있다. */
   root: string;
   targets: SyncTarget[];
 }
@@ -187,10 +186,8 @@ export class LocalSyncManager {
   }
 
   /**
-   * 이 에이전트를 로컬로 실행할 폴더를 확보한다 (없으면 만든다). 서버의
-   * ConnectorLocalSandbox 프로브가 부른다. 로컬 도구가 켜져 있고 기본 작업
-   * 폴더가 지정돼 있을 때만 폴더를 준다 — 그 두 가지가 로컬 실행의 전제다.
-   * 연결(attach) 여부와 무관하다.
+   * 이 에이전트의 동기화 폴더를 확보한다 (없으면 만든다). 동기화가 켜져 있고
+   * 루트가 정해져 있을 때만 폴더를 준다. 연결(attach) 여부와 무관하다.
    */
   ensurePair(workflowId: string, label: string): string | null {
     if (this.stopped) return null;

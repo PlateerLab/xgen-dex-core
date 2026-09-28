@@ -21,13 +21,7 @@ test('FileConfigStore atomically persists a versioned config with private permis
       currentProfile: 'corp',
       profiles: { corp: { serverUrl: 'https://xgen.example.com' } },
       localTools: {
-        enabled: true,
-        shellEnabled: false,
-        cwd: directory,
-        timeoutMs: 30_000,
-        allowedRoots: [directory],
-        blockedCommands: ['sudo'],
-        allowDangerous: false,
+        allowDangerous: true,
       },
     };
     await store.write(config);
@@ -47,7 +41,7 @@ test('profile names and server URLs are constrained at the config boundary', () 
   assert.throws(() => validateServerUrl('https://user:pw@xgen.example.com'), /자격 증명/);
 });
 
-test('existing version 1 config files receive safe local tool defaults', async () => {
+test('existing config files keep only the dangerous-command setting', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dex-cli-config-migrate-'));
   try {
     const path = join(directory, 'config.json');
@@ -57,14 +51,13 @@ test('existing version 1 config files receive safe local tool defaults', async (
         version: 1,
         currentProfile: 'corp',
         profiles: { corp: { serverUrl: 'https://xgen.example.com' } },
+        // 옛 로컬 컨트롤 설정 — 범위는 이제 대화를 시작한 폴더가 정하므로 버린다.
+        localTools: { enabled: true, shellEnabled: true, allowedRoots: ['/'], allowDangerous: true },
       }),
       'utf8',
     );
     const config = await new FileConfigStore(path).read();
-    assert.equal(config.localTools.enabled, false);
-    assert.equal(config.localTools.shellEnabled, false);
-    assert.equal(config.localTools.allowDangerous, false);
-    assert.deepEqual(config.localTools.allowedRoots, []);
+    assert.deepEqual(config.localTools, { allowDangerous: true });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

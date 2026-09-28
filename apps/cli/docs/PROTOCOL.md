@@ -91,8 +91,8 @@ Response:
 
 - `localTools/status()`
 - `localTools/list()`
-- `localTools/configure({profile?, enabled?, cwd?, timeoutMs?, allowedRoots?, blockedCommands?, allowDangerous?})`
-- `localTools/run({tool, args})`
+- `localTools/configure({profile?, allowDangerous?})` — 옛 키(`enabled`·`cwd`·`allowedRoots` 등)는 받고 버린다.
+- `localTools/run({tool, args, folders?})` — `folders` 가 없으면 폴더 도구는 `[NO_FOLDER]` 로 거부된다.
 - `localTools/start({profile?, waitMs?})`
 - `localTools/stop()`
 
@@ -130,10 +130,16 @@ Start request:
     "workflowId": "wf_abc",
     "workflowName": "Sales Agent",
     "interactionId": "optional-conversation-id",
-    "input": "hello"
+    "input": "hello",
+    "localFolders": ["/Users/me/work/my-repo"]
   }
 }
 ```
+
+`localFolders` 는 이 대화에 연결할 이 기기의 폴더(절대 경로)다. 에이전트의 파일·터미널
+도구는 이 폴더 안에서만 돈다. 없거나 빈 목록이면 폴더 도구를 쓸 수 없다. VS Code 확장은
+열린 작업 영역 폴더를 보낸다. `initialize` 의 `capabilities.localFolders` 가 `true` 인
+엔진만 이 필드를 안다.
 
 Start response:
 

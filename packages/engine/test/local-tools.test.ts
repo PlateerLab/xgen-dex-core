@@ -1,9 +1,11 @@
-/** 로컬 셸 도구 — 카탈로그 광고·게이트·셸 선택·결과 정형·실행·강건성. */
+/** 로컬 도구 — 카탈로그 광고·대화별 폴더 범위·셸 선택·결과 정형·실행·강건성. */
 import assert from 'assert';
 import { test } from 'node:test';
 import { platform, homedir, tmpdir } from 'os';
-import { mkdtemp, symlink, writeFile } from 'fs/promises';
+import { mkdtemp, realpath, symlink, writeFile } from 'fs/promises';
 import { join, resolve } from 'path';
+import { normalizeLocalFolders } from '@dex/engine/local-folders';
+import { setWorkspaceShellSupportForTest } from '@dex/engine/workspace-shell';
 import {
   LOCAL_SERVER,
   LOCAL_CONTROL_TOOL,
@@ -14,16 +16,12 @@ import {
   LocalToolProvider,
   coerceOpenArgs,
   coerceShellArgs,
-  firstToken,
-  isBlocked,
   openerInvocation,
   openWithDefaultApp,
   openToolSchema,
   paginate,
   classifyOpenTarget,
   shapeResult,
-  shellConfig,
-  shellEnabled,
   isDangerousShellCommand,
   localToolCallContext,
   shellInvocation,
@@ -35,13 +33,32 @@ import {
   mcpAddServerToolSchema,
   mcpRemoveServerToolSchema,
   mcpListServersToolSchema,
+  NO_FOLDER_MESSAGE,
+  FOLDER_TOOL_NAMES,
 } from '@dex/engine/local-tools';
 import { bindTestHost, recordingInteraction } from './_host';
 
 // 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
-bindTestHost({ interaction: recordingInteraction('session').port });
+const host = recordingInteraction('session');
+bindTestHost({ interaction: host.port });
+// 셸 실행 테스트는 OS 가두기 여부와 무관하게 같은 것을 본다 — 가두기 자체는
+// workspace-shell.test.ts 가 지원하는 OS 에서 따로 검증한다.
+setWorkspaceShellSupportForTest(false);
 
 const isWin = platform() === 'win32';
+
+/** 대화 id → 연결된 폴더 경로. 테스트가 장부를 직접 바꾼다. */
+function provider(book: Record<string, string[]> = {}) {
+  const p = new LocalToolProvider();
+  p.configureFolders((context) => normalizeLocalFolders(book[context?.interactionId ?? ''] ?? []));
+  return { p, book };
+}
+
+async function folder(prefix = 'xgen-lt-'): Promise<string> {
+  return realpath(await mkdtemp(join(tmpdir(), prefix)));
+}
+
+const inChat = (interactionId: string) => ({ interactionId });
 
 test('MCP 호출 컨텍스트는 도구 호출 시점의 workflow 식별자를 정규화한다', () => {
   assert.deepEqual(
@@ -63,20 +80,15 @@ test('MCP 호출 컨텍스트는 도구 호출 시점의 workflow 식별자를 �
   })
 })
 
-test('기본은 꺼짐(opt-in) — enabled 미지정이면 셸 접근 OFF', () => {
-  assert.equal(shellEnabled(undefined), false);
-  assert.equal(shellEnabled({}), false);
-  assert.equal(shellEnabled({ enabled: false }), false);
-  assert.equal(shellEnabled({ enabled: true }), true);
-  assert.equal(shellEnabled({ enabled: true, shellEnabled: true }), true);
-});
-
 test('isDangerousShellCommand: 파괴적 패턴만 승인 대상', () => {
   for (const c of [
     'rm -rf /',
     'rm -rf node_modules',
     'sudo rm -rf .',
     'mkfs.ext4 /dev/sda',
+    'sudo fdisk -l',
+    'format C: /q',
+    'echo y | format D:',
     'dd if=/dev/zero of=/dev/sda',
     'shutdown -h now',
     'git push --force origin main',
@@ -93,22 +105,15 @@ test('isDangerousShellCommand: 파괴적 패턴만 승인 대상', () => {
     'echo hello',
     'python script.py',
     'rm file.txt',
+    'git log -1 --format=%an',
+    'docker ps --format "{{.Names}}"',
   ]) {
     assert.equal(isDangerousShellCommand(c), false, c);
   }
 });
 
-test('shellConfig 는 timeout 을 [1s, 1h] 로 clamp 한다', () => {
-  assert.equal(shellConfig({ timeoutMs: 10 }).timeoutMs, 1_000);
-  assert.equal(shellConfig({ timeoutMs: 99_999_999 }).timeoutMs, 3_600_000);
-  assert.equal(shellConfig({}).timeoutMs, 600_000); // 기본 10분
-});
-
-test('기본 셸과 전체 접근 셸은 모두 로컬 컨트롤을 켜면 노출된다', () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: false });
-  assert.deepEqual(p.advertise(), []);
-  p.configure({ enabled: true });
+test('폴더 도구는 늘 광고된다 — 쓸 수 있는지는 호출마다 대화의 폴더가 정한다', () => {
+  const { p } = provider();
   const names = p.advertise().map((t) => t.name);
   assert.deepEqual(names, [
     LOCAL_CONTROL_TOOL,
@@ -122,57 +127,80 @@ test('기본 셸과 전체 접근 셸은 모두 로컬 컨트롤을 켜면 노�
     'Clipboard',
     'Notify',
   ]);
-  p.configure({ enabled: true, shellEnabled: true });
-  assert.deepEqual(
-    p
-      .advertise()
-      .map((t) => t.name)
-      .slice(0, 3),
-    [LOCAL_CONTROL_TOOL, SHELL_TOOL, SHELL_JOB_TOOL],
-  );
+  assert.deepEqual(new Set(names.slice(1)), FOLDER_TOOL_NAMES);
 });
 
-test('LocalControl은 실행 지시 없이 현재 도구 목록과 접근 범위를 반환한다', async () => {
-  const p = new LocalToolProvider();
-  await assert.rejects(p.callTool(LOCAL_CONTROL_TOOL, {}), /로컬 도구가 없습니다/);
-  p.configure({ enabled: true, cwd: '/project' });
-  const result = await p.callTool(LOCAL_CONTROL_TOOL, {});
+test('LocalControl 은 이 대화의 폴더와 쓸 수 있는 도구를 알려 준다', async () => {
+  const dir = await folder();
+  const { p } = provider({ 'chat-a': [dir] });
+  const result = await p.callTool(LOCAL_CONTROL_TOOL, {}, inChat('chat-a'));
   const inventory = JSON.parse(result.content[0].text);
   assert.deepEqual(inventory, result.structuredContent);
   assert.equal(inventory.execution_surface, 'connector_local');
-  assert.equal(inventory.working_directory, '/project');
-  assert.equal(inventory.shell_access, 'workspace');
-  assert.equal(inventory.file_access, 'workspace');
-  assert.deepEqual(inventory.tools.map((tool: { name: string }) => tool.name),
-    p.advertise().filter((tool) => tool.name !== LOCAL_CONTROL_TOOL).map((tool) => `mcp_local_${tool.name}`));
-  p.configure({ enabled: true, shellEnabled: true, cwd: '/project' });
-  const full = (await p.callTool(LOCAL_CONTROL_TOOL, {})).structuredContent;
-  assert.equal(full?.shell_access, 'full_user');
-  assert.equal(full?.file_access, 'workspace');
-  assert.equal(full?.execution_surface, inventory.execution_surface);
+  assert.equal(inventory.working_directory, dir);
+  assert.deepEqual(inventory.connected_folders.map((f: { path: string }) => f.path), [dir]);
+  assert.ok(inventory.tools.some((tool: { name: string }) => tool.name === 'mcp_local_Shell'));
 
-  p.configure({ enabled: false }, {
+  // 폴더 없는 대화 — 폴더 도구는 목록에 없고, 왜 없는지 말한다.
+  const none = (await p.callTool(LOCAL_CONTROL_TOOL, {}, inChat('chat-b'))).structuredContent;
+  assert.deepEqual(none?.connected_folders, []);
+  assert.match(String(none?.note), /No folder is connected/);
+  assert.deepEqual(none?.tools, []);
+
+  // 폴더와 무관한 도구(브라우저)는 폴더 없이도 보인다.
+  p.configureDelegate({
     advertise: () => [{ name: 'BrowserTabs' }],
     owns: (tool) => tool === 'BrowserTabs',
     callTool: async () => { throw new Error('guide must not operate the browser'); },
   });
-  const browserOnly = (await p.callTool(LOCAL_CONTROL_TOOL, {})).structuredContent;
+  const browserOnly = (await p.callTool(LOCAL_CONTROL_TOOL, {}, inChat('chat-b'))).structuredContent;
   assert.deepEqual(browserOnly?.tools, [{ name: 'mcp_local_BrowserTabs', description: '' }]);
-  assert.equal(browserOnly?.shell_access, undefined);
-  p.configure({ enabled: false });
-  assert.deepEqual(p.advertise(), []);
+});
+
+test('폴더가 없는 대화에서는 파일·터미널·클립보드·알림 모두 거부한다', async () => {
+  const { p } = provider();
+  for (const tool of FOLDER_TOOL_NAMES) {
+    await assert.rejects(() => p.callTool(tool, { command: 'echo hi', path: '.', target: '.', query: 'x', title: 't' }, inChat('chat-x')), (error: Error) => error.message === NO_FOLDER_MESSAGE, tool);
+  }
+  // 대화 id 가 없는 호출(옛 서버·직접 호출)도 폴더가 없으니 거부한다.
+  await assert.rejects(() => p.callTool('ReadFile', { path: '/etc/hostname' }), /NO_FOLDER/);
+  // 호스트는 폴더를 붙이는 방법에 맞춰 문장을 바꿀 수 있다.
+  p.configureFolders(() => [], { missingMessage: '[NO_FOLDER] 폴더에서 다시 시작하세요.' });
+  await assert.rejects(() => p.callTool('ListDir', {}, inChat('chat-x')), /폴더에서 다시 시작/);
+});
+
+test('폴더는 대화마다 따로다 — 다른 대화의 폴더에는 닿지 않는다', async () => {
+  const a = await folder('xgen-a-');
+  const b = await folder('xgen-b-');
+  await writeFile(join(a, 'a.txt'), 'from a');
+  const { p } = provider({ 'chat-a': [a], 'chat-b': [b] });
+  const ok = await p.callTool('ReadFile', { path: join(a, 'a.txt') }, inChat('chat-a'));
+  assert.match(ok.content[0].text, /from a/);
+  await assert.rejects(
+    () => p.callTool('ReadFile', { path: join(a, 'a.txt') }, inChat('chat-b')),
+    /PATH_DOMAIN_MISMATCH/,
+  );
+});
+
+test('연결을 해제하면 다음 호출부터 거부한다', async () => {
+  const dir = await folder();
+  await writeFile(join(dir, 'n.txt'), 'note');
+  const { p, book } = provider({ 'chat-a': [dir] });
+  assert.match((await p.callTool('ReadFile', { path: 'n.txt' }, inChat('chat-a'))).content[0].text, /note/);
+  book['chat-a'] = [];
+  await assert.rejects(() => p.callTool('ReadFile', { path: 'n.txt' }, inChat('chat-a')), /NO_FOLDER/);
 });
 
 test('Notify 는 공통 알림 처리기에 에이전트/채팅 범위를 전달한다', async () => {
-  const provider = new LocalToolProvider();
-  provider.configure({ enabled: true });
+  const dir = await folder();
+  const { p: provider7 } = provider({ 'chat-7': [dir] });
   let received: unknown;
-  provider.configureNotificationHandler((title, body, context) => {
+  provider7.configureNotificationHandler((title, body, context) => {
     received = { title, body, context };
     return false;
   });
 
-  const result = await provider.callTool(
+  const result = await provider7.callTool(
     NOTIFY_TOOL,
     { title: '확인 필요', body: '작업을 검토해 주세요.' },
     { workflowId: 'wf-1', workflowName: 'Agent 1', interactionId: 'chat-7' },
@@ -200,22 +228,25 @@ test('resolveWithinRoots: 스코프 안은 허용, 밖은 거부', () => {
   assert.equal(resolveWithinRoots('/tmp/x', ['/tmp/x']), rootX);
 });
 
-test('파일 도구 end-to-end: write→read→list→search + 스코프 밖 거부', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'xgen-lt-'));
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, allowedRoots: [dir] });
+test('파일 도구 end-to-end: write→read→list→search + 폴더 밖 거부', async () => {
+  const dir = await folder();
+  const { p } = provider({ c: [dir] });
   const w = await p.callTool('WriteFile', {
     path: join(dir, 'a.txt'),
     content: 'hello\nNEEDLE here\n',
-  });
+  }, inChat('c'));
   assert.equal(w.isError, undefined);
-  const r = await p.callTool('ReadFile', { path: join(dir, 'a.txt') });
+  const r = await p.callTool('ReadFile', { path: join(dir, 'a.txt') }, inChat('c'));
   assert.ok(r.content[0].text.includes('NEEDLE'));
-  const l = await p.callTool('ListDir', { path: dir });
+  // 상대 경로와 기본 경로는 첫 번째 연결 폴더에서 시작한다.
+  const rel = await p.callTool('ReadFile', { path: 'a.txt' }, inChat('c'));
+  assert.ok(rel.content[0].text.includes('NEEDLE'));
+  const l = await p.callTool('ListDir', {}, inChat('c'));
   assert.ok(l.content[0].text.includes('a.txt'));
-  const sr = await p.callTool('Search', { query: 'NEEDLE', path: dir });
+  const sr = await p.callTool('Search', { query: 'NEEDLE', path: dir }, inChat('c'));
   assert.ok(sr.content[0].text.includes('a.txt:2'));
-  await assert.rejects(() => p.callTool('ReadFile', { path: '/etc/hostname' }));
+  await assert.rejects(() => p.callTool('ReadFile', { path: '/etc/hostname' }, inChat('c')), /PATH_DOMAIN_MISMATCH/);
+  await assert.rejects(() => p.callTool('ReadFile', { path: '~/.bashrc' }, inChat('c')), /PATH_DOMAIN_MISMATCH/);
 });
 
 test('Shell 스키마에 background, Open 스키마에 target', () => {
@@ -279,20 +310,6 @@ test('shellInvocation: default 는 OS 네이티브, 명시 셸은 강제', () =>
   assert.equal(shellInvocation('x', null, 'sh').file, 'sh');
 });
 
-test('firstToken 은 경로·확장자·따옴표를 벗겨 프로그램 이름만 남긴다', () => {
-  assert.equal(firstToken('rm -rf /'), 'rm');
-  assert.equal(firstToken('"C:\\\\Windows\\\\System32\\\\rm.exe" x'), 'rm');
-  assert.equal(firstToken('/usr/bin/git status'), 'git');
-  assert.equal(firstToken("'my prog' arg"), 'my prog');
-});
-
-test('blocklist 는 첫 토큰 기준으로 차단한다 (경로 우회 불가)', () => {
-  assert.equal(isBlocked('rm -rf /', ['rm']), true);
-  assert.equal(isBlocked('/usr/bin/rm x', ['rm']), true);
-  assert.equal(isBlocked('ls', ['rm']), false);
-  assert.equal(isBlocked('anything', []), false);
-});
-
 test('coerceShellArgs 는 느슨한 입력을 정규화한다', () => {
   assert.deepEqual(
     coerceShellArgs({ command: 'ls', cwd: '/tmp', shell: 'bash', timeout_ms: 5000 }),
@@ -327,77 +344,70 @@ test('shapeResult 는 stdout/stderr 합치고 실패를 표시한다', () => {
   assert.match(shapeResult('', '', 0, null).content[0].text, /no output/);
 });
 
-test('꺼진 상태에서 callTool 은 명확한 오류를 던진다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: false });
-  await assert.rejects(() => p.callTool(SHELL_TOOL, { command: 'ls' }), /꺼져 있습니다/);
+test('셸 작업 폴더는 연결된 폴더 안이어야 한다', async () => {
+  const dir = await folder();
+  const outside = await folder('xgen-outside-');
+  const { p } = provider({ c: [dir] });
+  await assert.rejects(
+    () => p.callTool(SHELL_TOOL, { command: 'echo hi', cwd: outside }, inChat('c')),
+    /PATH_DOMAIN_MISMATCH/,
+  );
+  const cmd = isWin ? '(Get-Location).Path' : 'pwd';
+  const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
+  assert.equal(res.isError, false, JSON.stringify(res));
+  assert.ok(res.content[0].text.includes(dir), res.content[0].text);
 });
 
 test('빈 command / 알 수 없는 도구는 거절한다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true });
-  await assert.rejects(() => p.callTool(SHELL_TOOL, { command: '   ' }), /empty/);
-  await assert.rejects(() => p.callTool('Nope', {}), /unknown local tool/);
+  const dir = await folder();
+  const { p } = provider({ c: [dir] });
+  await assert.rejects(() => p.callTool(SHELL_TOOL, { command: '   ' }, inChat('c')), /empty/);
+  await assert.rejects(() => p.callTool('Nope', {}, inChat('c')), /unknown local tool/);
+  // 옛 워크스페이스 브리지 도구는 없다.
+  await assert.rejects(() => p.callTool('_Exec', {}, inChat('c')), /unknown local tool/);
 });
 
-test('원시 내부 _Exec은 기본 셸의 작업 공간 제한을 우회하지 않는다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true });
-  assert.ok(p.advertise().some((t) => t.name === SHELL_TOOL));
-  await assert.rejects(() => p.callTool('_Exec', {}), /전체 셸 접근/);
-});
-
-test('파일 도구는 허용 루트 안의 심볼릭 링크 탈출을 거절한다', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'xgen-root-'));
-  const outside = await mkdtemp(join(tmpdir(), 'xgen-outside-'));
+test('파일 도구는 연결 폴더 안의 심볼릭 링크 탈출을 거절한다', async () => {
+  const root = await folder('xgen-root-');
+  const outside = await folder('xgen-outside-');
   await writeFile(join(outside, 'secret.txt'), 'secret');
   await symlink(outside, join(root, 'escape'), isWin ? 'junction' : 'dir');
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, allowedRoots: [root] });
+  const { p } = provider({ c: [root] });
   await assert.rejects(
-    () => p.callTool('ReadFile', { path: join(root, 'escape', 'secret.txt') }),
+    () => p.callTool('ReadFile', { path: join(root, 'escape', 'secret.txt') }, inChat('c')),
     /PATH_DOMAIN_MISMATCH/,
   );
 });
 
 test('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true, timeoutMs: 5_000 });
+  const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Start-Sleep -Seconds 2' : 'sleep 2';
   const started = Date.now();
   const res = await p.callTool(SHELL_TOOL, {
     command: cmd,
     background_after_ms: 200,
-  });
+  }, inChat('c'));
   assert.ok(Date.now() - started < 1_500, '자동 백그라운드 전환이 늦다');
   assert.equal(res.structuredContent?.status, 'running');
   assert.equal(res.structuredContent?.execution_surface, 'connector_local');
   assert.match(res.content[0].text, /자동으로 백그라운드/);
   const jobId = String(res.structuredContent?.job_id ?? '');
   assert.ok(jobId);
-  await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId });
-});
-
-test('차단된 명령은 실행 전에 거절한다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true, blocked: ['rm'] });
-  await assert.rejects(() => p.callTool(SHELL_TOOL, { command: 'rm -rf /' }), /차단 목록/);
+  await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId }, inChat('c'));
 });
 
 test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true });
+  const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Write-Output hello-xgen' : 'echo hello-xgen';
-  const res = await p.callTool(SHELL_TOOL, { command: cmd });
+  const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
   assert.equal(res.isError, false, JSON.stringify(res));
   assert.match(res.content[0].text, /hello-xgen/);
 });
 
 test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true });
+  const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'exit 3' : 'exit 3';
-  const res = await p.callTool(SHELL_TOOL, { command: cmd });
+  const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
   assert.equal(res.isError, true);
 });
 
@@ -406,22 +416,20 @@ test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
 test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝난다 (EOF)', async () => {
   // stdin 이 열려 있으면 이 명령은 영원히 매달린다 — stdio ignore 로 EOF 를 받아
   // 곧바로 끝나야 한다. 넉넉한 timeout(8s)을 줘도 훨씬 빨리 반환되면 통과.
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true });
+  const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? '$input | Out-String' : 'cat';
   const started = Date.now();
-  const res = await p.callTool(SHELL_TOOL, { command: cmd, timeout_ms: 8000 });
+  const res = await p.callTool(SHELL_TOOL, { command: cmd, timeout_ms: 8000 }, inChat('c'));
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 5000, `대화형 명령이 EOF 로 끝나지 않고 ${elapsed}ms 걸렸다`);
   assert.notEqual(res.isError, true, JSON.stringify(res));
 });
 
 test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 안내가 붙는다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true });
+  const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Start-Sleep -Seconds 5' : 'sleep 5';
   const started = Date.now();
-  const res = await p.callTool(SHELL_TOOL, { command: cmd, timeout_ms: 1200 });
+  const res = await p.callTool(SHELL_TOOL, { command: cmd, timeout_ms: 1200 }, inChat('c'));
   const elapsed = Date.now() - started;
   assert.equal(res.isError, true);
   assert.ok(elapsed < 4000, `timeout 후에도 ${elapsed}ms 매달렸다`);
@@ -429,12 +437,11 @@ test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 �
 });
 
 test('E2E: background 는 즉시 반환하고, 그 프로세스는 타임아웃에 죽지 않는다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true, timeoutMs: 1000 }); // 짧은 기본 타임아웃
+  const { p } = provider({ c: [await folder()] });
   // 3초 자는 프로세스를 백그라운드로 — 1초 타임아웃보다 오래 살아야 한다.
   const cmd = isWin ? 'Start-Sleep -Seconds 3' : 'sleep 3';
   const started = Date.now();
-  const res = await p.callTool(SHELL_TOOL, { command: cmd, background: true });
+  const res = await p.callTool(SHELL_TOOL, { command: cmd, background: true }, inChat('c'));
   const elapsed = Date.now() - started;
   assert.notEqual(res.isError, true, JSON.stringify(res));
   assert.ok(elapsed < 2000, `background 가 즉시 반환하지 않고 ${elapsed}ms 걸렸다`);
@@ -479,65 +486,98 @@ test('classifyOpenTarget: 안전 URL 허용 / 위험 스킴 차단 / 경로 통�
 });
 
 test('Open 은 위험 스킴을 throw 없이 거절한다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true });
-  const res = await p.callTool(OPEN_TOOL, { target: 'javascript:alert(1)' });
+  const { p } = provider({ c: [await folder()] });
+  const res = await p.callTool(OPEN_TOOL, { target: 'javascript:alert(1)' }, inChat('c'));
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /스킴|열 수 없습니다/);
 });
 
 test('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true, timeoutMs: 1000 });
+  const { p } = provider({ c: [await folder()] });
   const cmd = isWin
     ? 'Write-Output started-xgen; Start-Sleep -Seconds 3'
     : 'echo started-xgen; sleep 3';
-  const res = await p.callTool(SHELL_TOOL, { command: cmd, background: true });
+  const res = await p.callTool(SHELL_TOOL, { command: cmd, background: true }, inChat('c'));
   const m = res.content[0].text.match(/job_id:\s*(\S+)/);
   assert.ok(m, 'job_id 미반환: ' + res.content[0].text);
   const jobId = m![1];
-  const list = await p.callTool(SHELL_JOB_TOOL, { action: 'list' });
+  const list = await p.callTool(SHELL_JOB_TOOL, { action: 'list' }, inChat('c'));
   assert.match(list.content[0].text, new RegExp(jobId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   // 셸 기동은 부하에 따라 수백 ms 씩 흔들린다(윈도 PowerShell 이 특히). 고정 대기
   // 뒤 한 번만 들여다보면 느린 날에는 stdout 이 아직 비어 실패한다 — 여기서 지키려는
   // 것은 "언제" 가 아니라 "백그라운드 job 의 출력이 쌓이는가" 이므로, 준비될 때까지
   // 짧게 되묻는다. 명령의 sleep 은 3초라 그 안에는 여전히 running 이다.
-  let poll = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId });
+  let poll = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId }, inChat('c'));
   const deadline = Date.now() + 2500;
   while (!/started-xgen/.test(poll.content[0].text) && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 100));
-    poll = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId });
+    poll = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId }, inChat('c'));
   }
   assert.match(poll.content[0].text, /started-xgen/);
   assert.match(poll.content[0].text, /running/);
-  const kill = await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId });
+  const kill = await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId }, inChat('c'));
   assert.match(kill.content[0].text, /종료/);
-  const poll2 = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId });
+  const poll2 = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId }, inChat('c'));
   assert.match(poll2.content[0].text, /killed|exited/);
 });
 
 test('ShellJob: 없는 job_id 는 오류', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true, shellEnabled: true });
-  const r = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: 'does-not-exist' });
+  const { p } = provider({ c: [await folder()] });
+  const r = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: 'does-not-exist' }, inChat('c'));
   assert.equal(r.isError, true);
+});
+
+test('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 해제하면 멈춘다', async () => {
+  const a = await folder('xgen-job-a-');
+  const b = await folder('xgen-job-b-');
+  const { p, book } = provider({ 'chat-a': [a, b], 'chat-b': [b] });
+  const cmd = isWin ? 'Start-Sleep -Seconds 30' : 'sleep 30';
+  const res = await p.callTool(SHELL_TOOL, { command: cmd, background: true }, inChat('chat-a'));
+  const jobId = String(res.structuredContent?.job_id ?? '');
+  assert.ok(jobId, res.content[0].text);
+
+  // 다른 대화는 이 작업을 보지도, 끄지도 못한다.
+  const other = await p.callTool(SHELL_JOB_TOOL, { action: 'list' }, inChat('chat-b'));
+  assert.doesNotMatch(other.content[0].text, new RegExp(jobId));
+  const foreignKill = await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId }, inChat('chat-b'));
+  assert.equal(foreignKill.isError, true);
+
+  // 목록이 그대로면 아무것도 멈추지 않는다.
+  assert.equal(p.foldersChanged('chat-a'), 0);
+  // 작업이 시작될 때 있던 폴더 하나가 빠지면 멈춘다.
+  book['chat-a'] = [a];
+  assert.equal(p.foldersChanged('chat-a'), 1);
+  const poll = await p.callTool(SHELL_JOB_TOOL, { action: 'poll', job_id: jobId }, inChat('chat-a'));
+  assert.match(poll.content[0].text, /killed/);
+  assert.match(poll.content[0].text, /연결이 해제된 폴더/);
+});
+
+test('위험 명령 승인은 대화 단위다 — "계속 허용"이 다른 대화로 번지지 않는다', async () => {
+  const dir = await folder('xgen-danger-');
+  const { p } = provider({ 'chat-a': [dir], 'chat-b': [dir] });
+  const before = host.asked.length;
+  const cmd = 'rm -rf ./not-there-xgen';
+  await p.callTool(SHELL_TOOL, { command: cmd }, inChat('chat-a'));
+  await p.callTool(SHELL_TOOL, { command: cmd }, inChat('chat-a'));
+  assert.equal(host.asked.length - before, 1, '같은 대화에서 두 번 물었다');
+  await p.callTool(SHELL_TOOL, { command: cmd }, inChat('chat-b'));
+  assert.equal(host.asked.length - before, 2, '다른 대화에서 묻지 않았다');
 });
 
 test('E2E: Open 은 존재하지 않는 opener 여도 앱 실행 실패를 보고한다 (throw 안 함)', async () => {
   // 실제 GUI 를 띄우지 않기 위해, Open 이 아니라 Shell 로 opener 부재 상황을 검증하기는
   // 어렵다 — 대신 Open 이 빈 target 을 거절하는지, 그리고 정상 target(디렉터리)에서
   // throw 없이 결과를 돌려주는지만 본다 (headless 에서 xdg-open 은 실패할 수 있다).
-  const p = new LocalToolProvider();
-  p.configure({ enabled: true });
-  await assert.rejects(() => p.callTool(OPEN_TOOL, { target: '  ' }), /empty/);
-  const res = await p.callTool(OPEN_TOOL, { target: '.' });
+  const { p } = provider({ c: [await folder()] });
+  await assert.rejects(() => p.callTool(OPEN_TOOL, { target: '  ' }, inChat('c')), /empty/);
+  const res = await p.callTool(OPEN_TOOL, { target: '.' }, inChat('c'));
   assert.ok(Array.isArray(res.content) && typeof res.content[0].text === 'string');
 });
 
-test('MCP 자기관리 delegate — 로컬 셸과 무관하게 노출·라우팅되고, 미배선이면 안 뜬다', async () => {
-  const p = new LocalToolProvider();
-  p.configure({ enabled: false }); // 로컬 셸 OFF 여도 MCP 관리 도구는 별도 게이트
-  assert.deepEqual(p.advertise(), []);
+test('MCP 자기관리 delegate — 폴더와 무관하게 노출·라우팅되고, 미배선이면 안 뜬다', async () => {
+  const { p } = provider();
+  const base = p.advertise().map((t) => t.name);
+  assert.ok(!base.includes(MCP_ADD_TOOL));
 
   const seen: Array<[string, unknown]> = [];
   const admin = {
@@ -559,13 +599,13 @@ test('MCP 자기관리 delegate — 로컬 셸과 무관하게 노출·라우팅
       names.includes(MCP_REMOVE_TOOL) &&
       names.includes(MCP_LIST_TOOL),
   );
-  // 로컬 셸이 꺼져 있어도(cfg.enabled=false) MCP 관리 도구는 호출된다 — 게이트 이전에 라우팅.
-  const r = await p.callTool(MCP_ADD_TOOL, { name: 'x' });
+  // 연결된 폴더가 없는 대화에서도 MCP 관리 도구는 호출된다 — 폴더 게이트 이전에 라우팅.
+  const r = await p.callTool(MCP_ADD_TOOL, { name: 'x' }, inChat('no-folder'));
   assert.equal(r.content[0].text, 'ok');
   assert.deepEqual(seen, [[MCP_ADD_TOOL, { name: 'x' }]]);
 
   p.configureMcpAdmin(null);
-  assert.deepEqual(p.advertise(), []);
+  assert.deepEqual(p.advertise().map((t) => t.name), base);
 });
 
 test('MCP 관리 도구 스키마 — 이름/필수필드', () => {

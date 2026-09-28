@@ -16,24 +16,17 @@ import { VoiceSettings } from './VoiceSettings';
 import { Selector } from './Selector';
 import { notificationStore, useNotifications } from '../notifications';
 import type { NotificationEventType, NotificationPrivacy } from '@dex/protocol/notifications';
-import {
-  BrowserIcon,
-  BellIcon,
-  CloseIcon,
-  FolderIcon,
-  MonitorIcon,
-  PlusIcon,
-  SpeakerIcon,
-} from '../brand/icons';
+import { BrowserIcon, BellIcon, MonitorIcon, SpeakerIcon } from '../brand/icons';
 
 type Theme = NonNullable<ConnectorConfig['theme']>;
 
 // 비슷한 기능끼리 탭으로 묶는다 — 세로로만 길어지던 설정을 폭을 넓혀 분류한다.
-// 업데이트는 일반의 한 섹션이고(따로 탭일 만큼 크지 않다), 옛 [로컬 도구]는
-// 성격이 다른 두 기능이 섞여 있어 [PC 컨트롤](셸·파일)과 [MCP]로 가른다.
+// 업데이트는 일반의 한 섹션이다(따로 탭일 만큼 크지 않다). 옛 [로컬 컨트롤] 탭은
+// 없다: 이 PC 의 파일과 터미널을 쓸 범위는 설정이 아니라 대화마다 채팅 헤더의
+// [폴더 연결]로 정한다.
 type Tab =
   | 'general' | 'notifications' | 'avatar'
-  | 'browser' | 'pc' | 'mcp' | 'ssh' | 'filesystem';
+  | 'browser' | 'mcp' | 'ssh' | 'filesystem';
 /** [연결된 기기] — 같은 계정의 커넥터(이 PC·폰·CLI/VSCode) 현황. 멀티 디바이스
  *  커넥터의 상태 대시보드: 어느 기기의 어떤 도구가 몇 개 광고 중인지 한눈에. */
 const ConnectorDevicesCard: React.FC = () => {
@@ -73,8 +66,7 @@ const ConnectorDevicesCard: React.FC = () => {
         <div className="tool-card-text">
           <div className="tool-card-title">연결된 기기</div>
           <div className="tool-card-desc">
-            같은 계정으로 붙어 있는 커넥터들입니다. 대화를 시작한 표면의 기기 도구가 그 대화에
-            주입됩니다 — 이 PC 와 휴대폰이 동시에 연결되어 있어도 서로를 밀어내지 않습니다.
+            같은 계정으로 연결된 앱들이며, 대화를 시작한 기기의 도구가 그 대화에서 쓰입니다.
           </div>
         </div>
         <button className="secondary" onClick={() => void load()} disabled={busy}>
@@ -84,7 +76,7 @@ const ConnectorDevicesCard: React.FC = () => {
       <div className="tool-card-body">
         {error && <p className="settings-hint warn">기기 목록 조회 실패: {error}</p>}
         {!error && devices.length === 0 && (
-          <p className="small muted">연결된 커넥터가 없습니다. (이 PC 의 도구 접근을 켜면 여기 나타납니다)</p>
+          <p className="small muted">연결된 기기가 없습니다.</p>
         )}
         {devices.map((d) => (
           <div key={d.deviceId} className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -104,7 +96,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'notifications', label: '알림' },
   { id: 'avatar', label: '아바타' },
   { id: 'browser', label: '브라우저' },
-  { id: 'pc', label: '로컬 컨트롤' },
   { id: 'mcp', label: 'MCP' },
   // SSH 는 이 PC 의 기능이 아니라 **XGEN 계정의 설정**이다 (접속은 서버가 연다).
   // 그래도 여기 두는 이유: 사용자는 "Agent 가 뭘 할 수 있나"를 이 창에서 찾는다.
@@ -133,15 +124,6 @@ const NOTIFICATION_EVENTS: Array<{
   { id: 'teams.invited', label: 'Teams 초대', hint: '대화방에 초대됐을 때(서버 이벤트 지원 시)' },
   { id: 'teams.removed', label: 'Teams 제외', hint: '대화방에서 제외됐을 때(서버 이벤트 지원 시)' },
   { id: 'system.update_ready', label: '업데이트 준비 완료', hint: '새 버전을 설치할 수 있을 때' },
-];
-
-/** 차단 명령 프리셋 — 누르면 그 묶음이 목록에 추가된다 (첫 단어 기준 매칭). */
-const BLOCK_PRESETS: { label: string; cmds: string[] }[] = [
-  { label: '삭제', cmds: ['rm', 'rmdir', 'del'] },
-  { label: '전원·재부팅', cmds: ['shutdown', 'reboot', 'poweroff', 'halt'] },
-  { label: '디스크·포맷', cmds: ['format', 'mkfs', 'diskpart', 'fdisk', 'dd'] },
-  { label: '권한 상승', cmds: ['sudo', 'su', 'runas'] },
-  { label: '프로세스 종료', cmds: ['kill', 'killall', 'pkill', 'taskkill'] },
 ];
 
 export const Settings: React.FC<{
@@ -176,23 +158,6 @@ export const Settings: React.FC<{
   const [linuxClickThrough, setLinuxClickThrough] = useState(config.linuxClickThrough ?? false);
   const isLinux = /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent);
 
-  // ── 로컬 셸 접근 (기본 OFF, opt-in) ──
-  const ls = config.localShell ?? {};
-  const [shellOn, setShellOn] = useState(ls.enabled === true);
-  const [fullShellOn, setFullShellOn] = useState(ls.shellEnabled === true);
-  const [shellCwd, setShellCwd] = useState(ls.cwd ?? '');
-  const [shellTimeoutS, setShellTimeoutS] = useState(Math.round((ls.timeoutMs ?? 600_000) / 1000));
-  // 차단 명령 — 칩 목록 + 프리셋(누르면 추가) + 직접 입력. 첫 단어 기준 매칭.
-  const [shellBlocked, setShellBlocked] = useState<string[]>(
-    (ls.blocked ?? []).map((b) => String(b).trim()).filter(Boolean),
-  );
-  const [blockedDraft, setBlockedDraft] = useState('');
-  // 기본 셸과 파일 도구가 접근할 수 있는 폴더 목록.
-  // 비우면 기본 작업 폴더(미설정 시 홈)로 제한된다. [+ 폴더 추가]의 네이티브
-  // 선택기로만 늘어난다 — 오타 하나로 스코프가 빗나가는 일을 없앤다.
-  const [shellRoots, setShellRoots] = useState<string[]>(
-    (ls.allowedRoots ?? []).map((r) => String(r).trim()).filter(Boolean),
-  );
   const [browserOn, setBrowserOn] = useState(config.browser?.enabled === true);
   const [browserNewTabUrl, setBrowserNewTabUrl] = useState(config.browser?.newTabUrl ?? '');
   const savedBrowserNewTabUrl = useRef(config.browser?.newTabUrl ?? '');
@@ -258,87 +223,8 @@ export const Settings: React.FC<{
     await onChanged();
   };
 
-  // 셸 설정은 여러 필드가 하나의 localShell 객체를 이룬다 — 저장 시점의 상태를
-  // 통째로 쓰되, 방금 바꾼 필드는 override 로 즉시 반영한다.
-  const commitShell = (
-    over: Partial<{
-      enabled: boolean;
-      shellEnabled: boolean;
-      cwd: string;
-      timeoutS: number;
-      blocked: string[];
-      roots: string[];
-    }> = {},
-  ) => {
-    const enabled = over.enabled ?? shellOn;
-    const shellEnabled = over.shellEnabled ?? fullShellOn;
-    const cwd = (over.cwd ?? shellCwd).trim();
-    const timeoutS = Math.max(1, Math.round(over.timeoutS ?? shellTimeoutS));
-    const blocked = (over.blocked ?? shellBlocked).map((s) => s.trim()).filter(Boolean);
-    const allowedRoots = (over.roots ?? shellRoots).map((s) => s.trim()).filter(Boolean);
-    void apply({
-      localShell: {
-        enabled,
-        shellEnabled,
-        cwd: cwd || undefined,
-        timeoutMs: timeoutS * 1000,
-        blocked,
-        allowedRoots,
-      },
-    });
-  };
-
-  /** 차단 목록에 명령들을 얹는다 (중복 무시, 소문자 정규화). */
-  const addBlocked = (cmds: string[]) => {
-    const clean = cmds.map((c) => c.trim().toLowerCase()).filter(Boolean);
-    const next = [...shellBlocked];
-    for (const c of clean) if (!next.includes(c)) next.push(c);
-    if (next.length === shellBlocked.length) return;
-    setShellBlocked(next);
-    commitShell({ blocked: next });
-  };
-  const removeBlocked = (idx: number) => {
-    const next = shellBlocked.filter((_, i) => i !== idx);
-    setShellBlocked(next);
-    commitShell({ blocked: next });
-  };
-  const addBlockedDraft = () => {
-    // 쉼표/공백으로 여러 개를 한 번에 받아도 흡수한다.
-    addBlocked(blockedDraft.split(/[\s,]+/));
-    setBlockedDraft('');
-  };
-  const presetAdded = (p: { cmds: string[] }) => p.cmds.every((c) => shellBlocked.includes(c));
-
-  /** 기본 작업 폴더 — 네이티브 선택기로 고른다 (타이핑 금지). */
-  const pickShellCwd = async () => {
-    const p = await xgen.appctl.pickFolder();
-    if (!p) return;
-    setShellCwd(p);
-    commitShell({ cwd: p });
-  };
-  // 설치 폴더(통합 루트) 파생 기본 — PC 컨트롤/스토리지의 기본은 이 하위다.
+  // 설치 폴더(통합 루트) — 일반 탭의 [설치] 가 보여 준다.
   const installRoot = (config.dataRoot ?? '').trim() || '~/xgen-dex';
-  const sep = installRoot.includes('\\') ? '\\' : '/';
-  const defaultShellCwd = `${installRoot}${sep}workspace`;
-  const clearShellCwd = () => {
-    // "기본값" = 설치 폴더\workspace — 홈이 아니라 통합 루트 하위다.
-    setShellCwd(defaultShellCwd);
-    commitShell({ cwd: defaultShellCwd });
-  };
-
-  /** 허용 폴더 — [+]로 하나씩 추가, 행의 ✕로 제거. */
-  const addShellRoot = async () => {
-    const p = await xgen.appctl.pickFolder();
-    if (!p || shellRoots.includes(p)) return;
-    const next = [...shellRoots, p];
-    setShellRoots(next);
-    commitShell({ roots: next });
-  };
-  const removeShellRoot = (idx: number) => {
-    const next = shellRoots.filter((_, i) => i !== idx);
-    setShellRoots(next);
-    commitShell({ roots: next });
-  };
 
   const commitBrowser = (
     over: Partial<{
@@ -649,10 +535,13 @@ export const Settings: React.FC<{
                 </div>
               </div>
               <p className="small muted" style={{ marginTop: 8 }}>
-                에이전트는 서버에서 실행됩니다 — 이 PC 에는 실행 런타임이 설치되지
-                않습니다. 이 앱은 서버 실행을 호출하고, 필요할 때 이 PC 의 도구
-                (브라우저·셸·로컬 MCP)를 에이전트에게 빌려 줍니다.
+                에이전트는 서버에서 실행되고, 이 PC의 파일과 터미널은 채팅에서 연결한 폴더 안에서만 사용합니다.
               </p>
+            </SettingsSection>
+
+            {/* ─── 연결된 기기 — 같은 계정의 앱들(이 PC·휴대폰·CLI) 현황 ─── */}
+            <SettingsSection plain title="연결된 기기">
+              <ConnectorDevicesCard />
             </SettingsSection>
 
           <SettingsSection title="서버">
@@ -1111,245 +1000,6 @@ export const Settings: React.FC<{
                 </div>
               )}
             </div>
-          </SettingsSection>
-        )}
-
-        {/* ─── 로컬 컨트롤 (이 PC 를 에이전트가 조작한다) ─────────────────────
-             이름에 대하여: 예전 이름은 "Local PC MCP" 였다. MCP 는 이 기능이 서버에
-             도구를 전하는 **수단**일 뿐인데 이름이 그 수단을 앞세워, 사용자에게는
-             무슨 기능인지 읽히지 않았다. 사람이 읽어야 하는 것은 "이 컴퓨터를
-             에이전트가 조작한다" 이다. */}
-        {tab === 'pc' && (
-          <SettingsSection plain title="로컬 컨트롤">
-            <div className="tool-card">
-              <div className="tool-card-main">
-                <span className="tool-card-icon">
-                  <MonitorIcon size={18} />
-                </span>
-                <div className="tool-card-text">
-                  <div className="tool-card-title">
-                    로컬 컨트롤 — 이 PC 를 에이전트가 조작합니다
-                  </div>
-                  <div className="tool-card-desc">
-                    켜면 에이전트가 이 컴퓨터의 셸·파일 읽기/쓰기·목록·검색·클립보드·알림으로
-                    "내 컴퓨터"를 직접 조작할 수 있습니다 — 커넥터가 자동으로 프록시가 됩니다
-                    (MCP 설정과 무관, 이 스위치만으로 동작). 기본 셸과 파일 도구는 아래
-                    허용 작업 공간의 파일을 다룹니다. 전체 셸 접근을 켜면 셸의 접근 범위가
-                    작업 공간 밖으로 넓어집니다.
-                    <br />
-                    <b>에이전트의 기본 작업 공간은 여전히 서버의 sandbox 입니다.</b> 이 PC 의
-                    도구는 <b>이 PC의 작업</b>을 요청할 때 사용합니다. 일반 코드·빌드 작업은
-                    서버 작업 공간의 도구를 사용합니다.
-                  </div>
-                </div>
-                <label className="switch">
-                  <input
-                    type="checkbox"
-                    checked={shellOn}
-                    onChange={(e) => {
-                      setShellOn(e.target.checked);
-                      commitShell({ enabled: e.target.checked });
-                    }}
-                  />
-                  <span className="track" />
-                </label>
-              </div>
-
-              {shellOn && (
-                <div className="tool-card-body">
-                  <div className="field">
-                    <div className="tool-card-main">
-                      <div className="tool-card-text">
-                        <div className="tool-card-title">전체 셸 접근 — 작업 공간 밖까지 허용</div>
-                        <div className="tool-card-desc">
-                          꺼짐: 기본 셸을 허용 작업 공간 안에서 사용합니다. 켜짐: 로그인 사용자
-                          권한으로 작업 공간 밖의 파일과 명령에도 접근합니다. 파일 읽기·쓰기
-                          전용 도구의 허용 폴더는 그대로 적용됩니다.
-                        </div>
-                      </div>
-                      <label className="switch">
-                        <input
-                          type="checkbox"
-                          checked={fullShellOn}
-                          onChange={(e) => {
-                            setFullShellOn(e.target.checked);
-                            commitShell({ shellEnabled: e.target.checked });
-                          }}
-                        />
-                        <span className="track" />
-                      </label>
-                    </div>
-                  </div>
-                  <div className="field">
-                    <span>
-                      허용 작업 공간 <span className="small muted">(기본 셸·파일 도구 접근 범위)</span>
-                    </span>
-                    <div className="roots-list">
-                      {shellRoots.length === 0 && (
-                        <div className="roots-empty small muted">
-                          {shellCwd ? '기본 작업 폴더만 허용' : '홈 디렉터리만 허용 (기본값)'}
-                        </div>
-                      )}
-                      {shellRoots.map((r, i) => (
-                        <div className="root-item" key={r}>
-                          <span className="root-icon">
-                            <FolderIcon size={14} />
-                          </span>
-                          <span className="root-path" title={r}>
-                            {r}
-                          </span>
-                          <button
-                            className="root-remove"
-                            title="허용 목록에서 제거"
-                            onClick={() => removeShellRoot(i)}
-                          >
-                            <CloseIcon size={13} />
-                          </button>
-                        </div>
-                      ))}
-                      <button className="root-add" onClick={() => void addShellRoot()}>
-                        <PlusIcon size={14} /> 폴더 추가…
-                      </button>
-                    </div>
-                    {shellRoots.length > 0 && shellCwd && (
-                      <span className="small muted" style={{ marginTop: 4 }}>
-                        기본 작업 폴더는 목록과 무관하게 항상 허용에 포함됩니다.
-                      </span>
-                    )}
-                    <span className="small muted" style={{ marginTop: 4 }}>
-                      기본 셸은 macOS와 Linux에서 작업 공간의 파일 접근을 제한합니다.
-                      실행에 필요한 시스템 파일은 읽을 수 있으며, 셸의 홈·임시 파일은 작업
-                      공간 안에 생성됩니다. Windows의 작업 공간 제한 셸은 아직 지원하지 않습니다.
-                    </span>
-                  </div>
-                  <div className="field">
-                    <span>
-                      차단할 명령 <span className="small muted">(첫 단어 기준 — 편의용 가드)</span>
-                    </span>
-                    {/* 프리셋 — 누르면 그 묶음이 아래 목록에 추가된다. 전부
-                          이미 있으면 ✓ 로 표시하고 다시 눌러도 변화 없다. */}
-                    <div className="preset-row">
-                      {BLOCK_PRESETS.map((p) => {
-                        const added = presetAdded(p);
-                        return (
-                          <button
-                            key={p.label}
-                            className={`chip ${added ? 'active' : ''}`}
-                            title={p.cmds.join(', ')}
-                            onClick={() => addBlocked(p.cmds)}
-                          >
-                            {added ? '✓ ' : '+ '}
-                            {p.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="cmd-chips">
-                      {shellBlocked.length === 0 && (
-                        <span className="small muted">차단하는 명령이 없습니다.</span>
-                      )}
-                      {shellBlocked.map((c, i) => (
-                        <span className="cmd-chip" key={c}>
-                          {c}
-                          <button
-                            className="cmd-chip-x"
-                            title="차단 해제"
-                            onClick={() => removeBlocked(i)}
-                          >
-                            <CloseIcon size={11} />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="cmd-add-row">
-                      <input
-                        value={blockedDraft}
-                        placeholder="직접 입력 (쉼표/공백으로 여러 개)"
-                        onChange={(e) => setBlockedDraft(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && addBlockedDraft()}
-                      />
-                      <button
-                        className="secondary"
-                        disabled={!blockedDraft.trim()}
-                        onClick={addBlockedDraft}
-                      >
-                        추가
-                      </button>
-                    </div>
-                  </div>
-                  <div className="field">
-                    <span>명령 시간 제한</span>
-                    <div className="unit-row">
-                      <input
-                        type="number"
-                        min={1}
-                        max={3600}
-                        className="num-input"
-                        value={shellTimeoutS}
-                        onChange={(e) => setShellTimeoutS(Number(e.target.value) || 120)}
-                        onBlur={() => commitShell()}
-                      />
-                      <span className="unit">초</span>
-                    </div>
-                    <span className="small muted" style={{ marginTop: 4 }}>
-                      한 명령이 이 시간을 넘으면 중단됩니다. background 실행(ShellJob)은 제한을 받지
-                      않습니다.
-                    </span>
-                  </div>
-                  <p className="settings-hint warn">
-                    ⚠ 파일 도구는 위 허용 폴더로 제한되며 심볼릭 링크로 범위를 벗어날 수 없습니다.
-                    전체 셸 접근을 별도로 켜면 셸은 로그인 사용자 권한 전체로 실행되고, 되돌리기
-                    어려운 명령(rm -rf 등)은 직전 확인을 요청합니다. 실행 내역은 항상 도구 로그에
-                    기록됩니다.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* ─── 작업 공간 위치 — 도구 접근과는 다른 축: 에이전트 워크스페이스가
-                어디에 사는가 (서버 sandbox ↔ 이 PC 의 sync 폴더) ─── */}
-            <div className="tool-card">
-              <div className="tool-card-main">
-                <span className="tool-card-icon">
-                  <FolderIcon size={18} />
-                </span>
-                <div className="tool-card-text">
-                  <div className="tool-card-title">작업 공간 위치</div>
-                  <div className="tool-card-desc">
-                    에이전트의 기본 작업 공간은 <b>서버의 자기 워크스페이스(sandbox)</b>입니다.
-                    아래 폴더는 이 PC의 셸 명령을 실행하는 기본 위치이며 허용 작업 공간에
-                    포함됩니다. 파일 동기화 설정은 에이전트의 서버 실행 위치를 바꾸지 않습니다.
-                  </div>
-                </div>
-              </div>
-              <div className="tool-card-body">
-                <div className="field">
-                  <span>기본 작업 폴더</span>
-                  <div className="picker-row">
-                    <span
-                      className={`picker-path ${shellCwd ? '' : 'muted'}`}
-                      title={shellCwd || undefined}
-                    >
-                      {shellCwd || `${defaultShellCwd} (기본값)`}
-                    </span>
-                    <button className="secondary" onClick={() => void pickShellCwd()}>
-                      폴더 선택…
-                    </button>
-                    {shellCwd && (
-                      <button className="link" onClick={clearShellCwd}>
-                        기본값으로
-                      </button>
-                    )}
-                  </div>
-                  <span className="small muted" style={{ marginTop: 4 }}>
-                    Shell 도구와 상대경로 파일 도구의 기준 폴더이기도 합니다.
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* ─── 연결된 기기 — 같은 계정의 커넥터들(이 PC·폰·CLI) 현황 ─── */}
-            <ConnectorDevicesCard />
           </SettingsSection>
         )}
 

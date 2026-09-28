@@ -9,6 +9,8 @@ const BOOLEAN_OPTIONS = new Set([
   'json',
   'jsonl',
   'no-allow-dangerous',
+  'no-folder',
+  // 옛 로컬 도구 설정 스위치 — 예전 스크립트가 멈추지 않게 받기만 하고 버린다.
   'no-shell',
   'password-stdin',
   'stdin',

@@ -66,6 +66,8 @@ export interface InitializeResult {
     chatCancellation: boolean;
     history: boolean;
     localTools: boolean;
+    /** chat/start 가 localFolders(이 대화에 연결할 이 기기의 폴더)를 받는다. */
+    localFolders?: boolean;
     /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
     ssh?: boolean;
   };

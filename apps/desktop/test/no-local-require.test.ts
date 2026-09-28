@@ -65,9 +65,11 @@ test('가드 자체: 주석 속 문구는 통과, 실제 호출은 잡힌다(따
   );
 });
 
-test('index.ts 의 WorkspaceBridge 는 정적 import 다(부팅 오류 원인 고정)', () => {
+test('index.ts 의 대화 폴더 저장소는 정적 import 다(부팅 오류 원인 고정)', () => {
+  // v1.68~1.70 의 워크스페이스 브리지와 같은 함정 — 부팅 배선이 쓰는 로컬 모듈은
+  // 정적 import 여야 패키징본에 들어간다.
   const src = readSrc(join(MAIN, 'index.ts'));
-  assert.match(src, /^import \{ WorkspaceBridge \} from '\.\/workspace-bridge-tools';/m);
+  assert.match(src, /^import \{ ChatFolderStore \} from '\.\/chat-folders';/m);
 });
 
 test('로컬 실행 런타임은 이 앱에 없다 — 에이전트는 서버에서 돈다', () => {

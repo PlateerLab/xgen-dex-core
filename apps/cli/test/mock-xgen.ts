@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 export interface MockXgen {
   server: Server;
   baseUrl: string;
-  requests: { chatInputs: unknown[]; createdAgents: unknown[] };
+  requests: { chatInputs: unknown[]; chatFolders: unknown[]; createdAgents: unknown[] };
   /** 이 대화들은 "지금 도는 턴이 있다" 고 답한다 — io-logs 의 `running`. */
   running: Set<string>;
   /** POST /execute/stop/{id} 로 실제로 닿은 대화들. */
@@ -25,7 +25,12 @@ function json(response: import('node:http').ServerResponse, status: number, valu
 
 export async function startMockXgen(): Promise<MockXgen> {
   const passwordHash = createHash('sha256').update('pw123').digest('hex');
-  const requests = { chatInputs: [] as unknown[], createdAgents: [] as unknown[] };
+  const requests = {
+    chatInputs: [] as unknown[],
+    // 요청의 local_folders — 필드가 없으면 undefined 로 남겨 "보내지 않음"과 구분한다.
+    chatFolders: [] as unknown[],
+    createdAgents: [] as unknown[],
+  };
   const running = new Set<string>();
   const stopped: string[] = [];
   const server = createServer((request, response) => {
@@ -143,6 +148,7 @@ export async function startMockXgen(): Promise<MockXgen> {
       if (url.pathname === '/api/agentflow/execute/based-id/stream' && request.method === 'POST') {
         const body = await bodyOf(request);
         requests.chatInputs.push(body.input_data);
+        requests.chatFolders.push(body.local_folders);
         response.writeHead(200, { 'Content-Type': 'text/event-stream' });
         response.write('event: tool\ndata: {"event_type":"tool_call","tool_name":"echo"}\n\n');
         response.write('data: {"type":"data","content":"You said: "}\n\n');

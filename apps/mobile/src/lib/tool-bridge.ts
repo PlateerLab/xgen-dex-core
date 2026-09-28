@@ -13,6 +13,25 @@ import type { ToolAdvert, ToolResult } from './mobile-tools';
 
 export type BridgeState = 'off' | 'connecting' | 'connected' | 'error';
 
+/** 서버가 보증하는 호출자 신원 — 도구가 어느 대화의 폴더를 쓸지 정한다. */
+export interface ToolCallContext {
+  workflowId?: string;
+  interactionId?: string;
+}
+
+/** mcp_call 의 context(snake/camel 모두) → 정규화. 값이 없으면 undefined. */
+export function toolCallContext(raw: unknown): ToolCallContext {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const text = (input: unknown): string | undefined => {
+    const normalized = String(input ?? '').trim();
+    return normalized || undefined;
+  };
+  return {
+    workflowId: text(value.workflow_id ?? value.workflowId),
+    interactionId: text(value.interaction_id ?? value.interactionId),
+  };
+}
+
 export interface BridgeStatus {
   state: BridgeState;
   /** 서버가 ACK 한 카탈로그의 도구 수. */
@@ -24,7 +43,8 @@ export interface ToolBridgeOptions {
   wsBase: string;
   userId: string;
   catalog: () => ToolAdvert[];
-  call: (tool: string, args: unknown) => Promise<ToolResult>;
+  /** 도구 실행. context 는 서버가 실어 준 호출자 신원(어느 대화인지). */
+  call: (tool: string, args: unknown, context: ToolCallContext) => Promise<ToolResult>;
   onStatus?: (s: BridgeStatus) => void;
   wsFactory?: (url: string) => WebSocket;
   heartbeatMs?: number;
@@ -234,6 +254,7 @@ export class MobileToolBridge {
       server?: string;
       tool?: string;
       args?: unknown;
+      context?: unknown;
       catalog_id?: string;
       tool_count?: number;
     };
@@ -255,7 +276,7 @@ export class MobileToolBridge {
       const { request_id, tool } = msg;
       let payload: Record<string, unknown>;
       try {
-        const result = await this.opts.call(String(tool), msg.args ?? {});
+        const result = await this.opts.call(String(tool), msg.args ?? {}, toolCallContext(msg.context));
         payload = { request_id, ok: true, result };
       } catch (e) {
         payload = { request_id, ok: false, error: e instanceof Error ? e.message : String(e) };

@@ -334,7 +334,7 @@ function editorOptions(layout: { fontSize: number; minimap: boolean; wordWrap: b
   return {
     automaticLayout: true,
     fontSize: layout.fontSize,
-    fontFamily: "'JetBrains Mono', 'D2Coding', 'Fira Code', Menlo, Consolas, 'Liberation Mono', monospace",
+    fontFamily: "'Fira Code', 'D2Coding', 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
     minimap: { enabled: layout.minimap },
     wordWrap: layout.wordWrap ? 'on' : 'off',
     readOnly,
@@ -354,7 +354,7 @@ function editorOptions(layout: { fontSize: number; minimap: boolean; wordWrap: b
 }
 
 function monacoTheme(theme: ThemeKind): string {
-  return theme === 'light' ? 'vs' : 'vs-dark';
+  return theme === 'light' ? 'xgen-light' : 'xgen-dark';
 }
 
 function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; theme: ThemeKind }) {

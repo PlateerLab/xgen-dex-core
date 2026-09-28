@@ -2507,7 +2507,7 @@ button {
   outline-offset: 1px;
 }
 /* IDE — 헤더 아래 전부가 편집기다. 대화는 오른쪽 칸이라 여백을 줄인다.
-   편집기의 강조색(상태 표시줄·선택)은 앱의 브랜드 색을 따른다. */
+   IDE 의 색·글꼴은 앱 토큰을 그대로 쓴다(밝게·어둡게가 앱과 함께 바뀐다). */
 .chat-ide-body {
   flex: 1;
   min-height: 0;
@@ -2515,8 +2515,20 @@ button {
 }
 .chat-ide-body > .xide-root {
   flex: 1;
-  --xide-bg-status: var(--primary);
-  --xide-accent: var(--primary);
+  --xide-app: var(--app-bg);
+  --xide-panel: var(--panel);
+  --xide-panel-2: var(--panel-2);
+  --xide-input: var(--input-bg);
+  --xide-border: var(--border);
+  --xide-border-soft: var(--border-soft);
+  --xide-text: var(--text);
+  --xide-text-2: var(--text-secondary);
+  --xide-muted: var(--muted);
+  --xide-primary: var(--primary);
+  --xide-primary-end: var(--primary-end);
+  --xide-primary-grad: var(--primary-grad);
+  --xide-font: var(--font-sans);
+  --xide-mono: var(--font-mono);
 }
 .chat.chat-ide-column {
   background: var(--app-bg);

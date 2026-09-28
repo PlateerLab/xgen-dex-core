@@ -3,11 +3,13 @@ import { useEffect, useState } from 'react';
 import { Icon } from './icons';
 import { useIde, useStore } from './hooks';
 import { basename } from '../paths';
+import type { Connection } from '../store';
 
 export function StatusBar() {
   const store = useStore();
   const readonly = useIde((s) => s.readonly);
   const sessionError = useIde((s) => s.sessionError);
+  const connection = useIde((s) => s.connection);
   const cursor = useIde((s) => s.cursor);
   const notice = useIde((s) => s.notice);
   const busy = useIde((s) => s.git.busy);
@@ -36,6 +38,20 @@ export function StatusBar() {
   return (
     <footer className={`xide-status${readonly ? ' xide--readonly' : ''}`} role="status">
       <div className="xide-status-left">
+        {/* 원격 표시(VS Code 의 왼쪽 끝) — 에이전트의 샌드박스에 붙어 있는가. 누르면 바로 다시 붙는다. */}
+        <button
+          type="button"
+          className={`xide-status-item xide-status-remote xide--${connection}`}
+          title={REMOTE_TITLE[connection](sessionError)}
+          onClick={() => store.reconnect()}
+        >
+          {connection === 'connecting' || connection === 'retrying' ? (
+            <span className="xide-spinner" aria-hidden />
+          ) : (
+            <span className="xide-status-dot" aria-hidden />
+          )}
+          {REMOTE_LABEL[connection]}
+        </button>
         {st ? (
           <button
             type="button"
@@ -66,11 +82,6 @@ export function StatusBar() {
         {readonly ? (
           <span className="xide-status-item" title="고정된 에이전트는 보기만 합니다">
             <Icon name="lock" size={14} /> 읽기 전용
-          </span>
-        ) : null}
-        {sessionError ? (
-          <span className="xide-status-item xide--error" title={sessionError}>
-            <Icon name="error" size={14} /> 샌드박스 연결 안 됨
           </span>
         ) : null}
         {visibleNotice ? (
@@ -116,6 +127,20 @@ export function StatusBar() {
     </footer>
   );
 }
+
+const REMOTE_LABEL: Record<Connection, string> = {
+  connecting: '샌드박스 연결 중',
+  online: '샌드박스',
+  retrying: '다시 연결하는 중',
+  blocked: '샌드박스를 열 수 없음',
+};
+
+const REMOTE_TITLE: Record<Connection, (reason: string | null) => string> = {
+  connecting: () => '에이전트의 샌드박스에 연결하고 있습니다',
+  online: () => '에이전트의 샌드박스에 연결되어 있습니다. 누르면 다시 연결합니다',
+  retrying: (reason) => `${reason ?? '서버에 잠시 닿지 않습니다'}. 스스로 다시 연결하며, 누르면 바로 시도합니다`,
+  blocked: (reason) => reason ?? '샌드박스를 열 수 없습니다',
+};
 
 const LANGUAGE_LABEL: Record<string, string> = {
   typescript: 'TypeScript',

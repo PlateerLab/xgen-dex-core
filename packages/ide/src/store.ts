@@ -23,6 +23,7 @@ import { basename, dirname, isWithin, join, normalize, uniqueCopyName } from './
 import { buildTree, ancestors, type TreeNode } from './tree';
 import { base64ToBytes, decodeText, encodeText, isImagePath, looksBinary, type Eol } from './text';
 import { lineChanges, splitLines, type QuickDiffKind } from './quick-diff';
+import { defineXgenThemes } from './monaco-theme';
 import {
   gitErrorMessage,
   toWorkspacePath,
@@ -199,9 +200,17 @@ export interface DialogRequest {
   resolve: (result: { button: string; value: string; fields: Record<string, string> }) => void;
 }
 
+/**
+ * 샌드박스 연결 — `connecting` 처음 붙는 중, `online` 붙음, `retrying` 닿지 않아 다시 붙는 중(배포·
+ * 재시작 사이에도 스스로 돌아온다), `blocked` 열 수 없음(권한·에이전트 없음 — 다시 해도 같다).
+ */
+export type Connection = 'connecting' | 'online' | 'retrying' | 'blocked';
+
 export interface IdeState {
   ready: boolean;
   readonly: boolean;
+  connection: Connection;
+  /** 마지막 연결 실패의 이유(사용자 문구). 붙으면 비운다. */
   sessionError: string | null;
   files: IdeFileEntry[];
   tree: TreeNode;
@@ -281,6 +290,8 @@ export interface TerminalRuntime {
 }
 
 export class IdeStore {
+  /** 다시 연결 간격의 바탕(ms) — 1.5초에서 두 배씩, 30초까지. 테스트가 줄인다. */
+  static retryBaseMs = 1500;
   private state: IdeState;
   private readonly listeners = new Set<Listener>();
   private monaco: MonacoApi | null = null;
@@ -305,6 +316,13 @@ export class IdeStore {
   private filesTimer: ReturnType<typeof setTimeout> | null = null;
   private searchSeq = 0;
   private disposed = false;
+  /** 연결 고리 — 하나만 돈다. 기다리는 동안 [다시 연결] 로 깨운다. */
+  private connecting: Promise<void> | null = null;
+  private connectWake: (() => void) | null = null;
+  private filesRetry: ReturnType<typeof setTimeout> | null = null;
+  private filesAttempt = 0;
+  /** 서버 호출 — 실패를 지켜보다 연결이 끊긴 것이면 다시 붙는다(observeHost). */
+  readonly host: IdeHost;
   /** 터미널 런타임(xterm·소켓)은 화면이 바뀌어도 산다 — terminal.ts 가 채운다. */
   readonly terminalRuntimes = new Map<string, TerminalRuntime>();
   /** 편집기 묶음마다 탭별 화면 상태(스크롤·커서). */
@@ -314,11 +332,13 @@ export class IdeStore {
   /** 편집기 묶음 id → 그 묶음의 Monaco 편집기(찾기·줄 이동 같은 편집기 명령용). */
   readonly editors = new Map<string, Monaco.editor.IStandaloneCodeEditor>();
 
-  constructor(readonly host: IdeHost) {
+  constructor(host: IdeHost) {
+    this.host = observeHost(host, (err) => this.onHostError(err));
     const firstGroup = newGroupId();
     this.state = {
       ready: false,
       readonly: false,
+      connection: 'connecting',
       sessionError: null,
       files: [],
       tree: EMPTY_TREE,
@@ -502,6 +522,96 @@ export class IdeStore {
   private started = false;
 
   /** 화면이 여러 번 붙어도 시작은 한 번이다. */
+  /** 샌드박스에 붙는다. 닿지 않으면 간격을 늘려 가며(최대 30초) 다시 한다. */
+  private connect(): Promise<void> {
+    if (!this.connecting) {
+      this.connecting = this.connectLoop().finally(() => {
+        this.connecting = null;
+      });
+    }
+    return this.connecting;
+  }
+
+  private async connectLoop(): Promise<void> {
+    for (let attempt = 0; !this.disposed; attempt += 1) {
+      try {
+        const info = await this.host.session();
+        if (this.disposed) return;
+        this.set({
+          ready: true,
+          readonly: info.readonly,
+          connection: 'online',
+          sessionError: null,
+          terminals: this.state.terminals.length
+            ? this.state.terminals
+            : info.terminals.map((t, i) => ({
+                id: t.id,
+                title: terminalTitle(t, i + 1),
+                status: 'idle' as TerminalStatus,
+                cwd: t.cwd,
+              })),
+        });
+        if (!this.state.activeTerminal && this.state.terminals.length) {
+          this.set({ activeTerminal: this.state.terminals[0].id });
+        }
+        // 끊겨 있는 동안 열지 못한 파일은 다시 연다.
+        for (const doc of Object.values(this.state.docs)) {
+          if (doc.status === 'error') void this.ensureDoc(doc.path);
+        }
+        return;
+      } catch (err) {
+        if (this.disposed) return;
+        const code = err instanceof IdeError ? err.code : 'error';
+        if (BLOCKING_CODES.has(code)) {
+          this.set({ connection: 'blocked', sessionError: connectionMessage(code, err) });
+          return;
+        }
+        this.set({ connection: 'retrying', sessionError: connectionMessage(code, err) });
+        await this.pause(Math.min(30_000, IdeStore.retryBaseMs * 2 ** Math.min(attempt, 4)));
+      }
+    }
+  }
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        if (this.connectWake === done) this.connectWake = null;
+        resolve();
+      };
+      // unref 하지 않는다 — 기다리는 동안 프로세스(테스트)가 끝나면 안 된다. dispose 가 깨운다.
+      const timer = setTimeout(done, ms);
+      this.connectWake = done;
+    });
+  }
+
+  /** 지금 다시 연결한다(상태 표시줄·탐색기의 [다시 연결]). */
+  reconnect(): void {
+    if (this.disposed) return;
+    if (this.connecting) this.connectWake?.();
+    else {
+      if (this.state.connection !== 'online') this.set({ connection: 'connecting' });
+      void this.connect().then(() => this.afterReconnect());
+    }
+    this.filesAttempt = 0;
+    void this.refreshFiles();
+  }
+
+  /** 서버 호출이 실패했다 — 닿지 않은 것이면(배포·재시작·망) 다시 붙는다. */
+  private onHostError(err: unknown): void {
+    if (this.disposed || !isTransient(err) || this.state.connection !== 'online') return;
+    const code = err instanceof IdeError ? err.code : 'error';
+    this.set({ connection: 'retrying', sessionError: connectionMessage(code, err) });
+    void this.connect().then(() => this.afterReconnect());
+  }
+
+  private afterReconnect(): void {
+    if (this.disposed || this.state.connection !== 'online') return;
+    void this.refreshFiles();
+    void this.checkDisk('all');
+    this.scheduleGit(200);
+  }
+
   startOnce(): void {
     if (this.started) return;
     this.started = true;
@@ -509,28 +619,11 @@ export class IdeStore {
   }
 
   async start(): Promise<void> {
-    try {
-      const info = await this.host.session();
-      this.set({
-        ready: true,
-        readonly: info.readonly,
-        sessionError: null,
-        terminals: this.state.terminals.length
-          ? this.state.terminals
-          : info.terminals.map((t, i) => ({
-              id: t.id,
-              title: terminalTitle(t, i + 1),
-              status: 'idle' as TerminalStatus,
-              cwd: t.cwd,
-            })),
-      });
-      if (!this.state.activeTerminal && this.state.terminals.length) {
-        this.set({ activeTerminal: this.state.terminals[0].id });
-      }
-    } catch (err) {
-      this.set({ sessionError: errorMessage(err, '샌드박스에 연결하지 못했습니다') });
-    }
-    await this.refreshFiles();
+    // 탐색기(스토리지 목록)는 샌드박스 없이도 보인다 — 연결을 기다리지 않고 함께 읽는다.
+    const files = this.refreshFiles();
+    await this.connect();
+    await files;
+    if (this.disposed) return;
     this.restoreTabs();
     this.reopenBackups();
     void this.refreshGit();
@@ -551,6 +644,8 @@ export class IdeStore {
 
   dispose(): void {
     this.disposed = true;
+    this.connectWake?.();
+    if (this.filesRetry) clearTimeout(this.filesRetry);
     this.unsubscribeChanges?.();
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.gitTimer) clearTimeout(this.gitTimer);
@@ -676,9 +771,29 @@ export class IdeStore {
   async refreshFiles(): Promise<void> {
     try {
       const files = await this.host.listFiles();
+      if (this.disposed) return;
+      if (this.filesRetry) clearTimeout(this.filesRetry);
+      this.filesRetry = null;
+      this.filesAttempt = 0;
       this.set({ files, tree: buildTree(files), filesLoaded: true, filesError: null });
     } catch (err) {
-      this.set({ filesLoaded: true, filesError: errorMessage(err, '파일 목록을 불러오지 못했습니다') });
+      if (this.disposed) return;
+      // 닿지 않은 것이면 스스로 다시 읽는다 — 배포 중에 연 IDE 가 빈 탐색기로 굳지 않게.
+      const transient = isTransient(err);
+      this.set({
+        filesLoaded: true,
+        filesError: transient
+          ? '파일 목록을 불러오지 못해 다시 시도하고 있습니다'
+          : errorMessage(err, '파일 목록을 불러오지 못했습니다'),
+      });
+      if (transient && !this.filesRetry) {
+        const delay = Math.min(30_000, IdeStore.retryBaseMs * 2 ** Math.min(this.filesAttempt, 4));
+        this.filesAttempt += 1;
+        this.filesRetry = setTimeout(() => {
+          this.filesRetry = null;
+          void this.refreshFiles();
+        }, delay);
+      }
     }
   }
 
@@ -748,6 +863,7 @@ export class IdeStore {
         (m) => {
           this.monaco = m;
           ignoreMonacoCancellation();
+          if (typeof m.editor?.defineTheme === 'function') defineXgenThemes(m);
           this.set({ monacoReady: true, monacoError: null });
           return m;
         },
@@ -1891,6 +2007,50 @@ export interface IdeCommand {
 
 export function terminalTitle(t: IdeTerminalInfo, n: number): string {
   return `${t.shell || 'bash'} ${n}`;
+}
+
+/** 다시 해도 같은 실패 — 연결을 되풀이하지 않는다. */
+const BLOCKING_CODES = new Set(['forbidden', 'unauthorized', 'not_found']);
+
+/** 닿지 않은 실패(망·배포·재시작·시간 초과) — 곧 돌아온다. */
+const TRANSIENT_CODES = new Set(['network', 'timeout', 'unavailable', 'sandbox_unavailable', 'server_error', 'unreachable']);
+
+export function isTransient(err: unknown): boolean {
+  if (err instanceof IdeError) return TRANSIENT_CODES.has(err.code) || err.status >= 500;
+  return false;
+}
+
+function connectionMessage(code: string, err: unknown): string {
+  if (code === 'forbidden') return '이 에이전트의 작업 공간을 열 권한이 없습니다';
+  if (code === 'not_found') return '에이전트를 찾지 못했습니다';
+  if (code === 'unauthorized') return '다시 로그인해야 합니다';
+  if (isTransient(err)) return '서버에 잠시 닿지 않습니다';
+  return errorMessage(err, '샌드박스에 연결하지 못했습니다');
+}
+
+/**
+ * 호스트의 모든 비동기 호출의 실패를 지켜본다 — 편집·저장·찾기 도중 연결이 끊기면(배포 중 파드 교체
+ * 등) 연결 상태가 그것을 알고 스스로 다시 붙는다. 실패 자체는 그대로 던진다.
+ */
+function observeHost(host: IdeHost, onError: (err: unknown) => void): IdeHost {
+  return new Proxy(host, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || prop === 'openTerminal' || prop === 'subscribeChanges' || prop === 'loadMonaco') {
+        return value;
+      }
+      return (...args: unknown[]) => {
+        const out = (value as (...a: unknown[]) => unknown).apply(target, args);
+        if (out && typeof (out as Promise<unknown>).then === 'function') {
+          return (out as Promise<unknown>).catch((err: unknown) => {
+            onError(err);
+            throw err;
+          });
+        }
+        return out;
+      };
+    },
+  });
 }
 
 export function errorMessage(err: unknown, fallback: string): string {

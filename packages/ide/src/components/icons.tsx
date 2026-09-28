@@ -62,7 +62,7 @@ export type IconName =
   | 'layout-panel'
   | 'settings';
 
-const P = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.25, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
+const P = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
 const SHAPES: Record<IconName, ReactElement> = {
   files: (
@@ -352,11 +352,11 @@ export function Icon({
 const FILE_KIND: Record<string, { label: string; color: string }> = {
   ts: { label: 'TS', color: '#3178c6' },
   tsx: { label: 'TSX', color: '#3178c6' },
-  js: { label: 'JS', color: '#e8c33b' },
-  jsx: { label: 'JSX', color: '#e8c33b' },
-  mjs: { label: 'JS', color: '#e8c33b' },
-  cjs: { label: 'JS', color: '#e8c33b' },
-  json: { label: '{}', color: '#cbcb41' },
+  js: { label: 'JS', color: '#c99a06' },
+  jsx: { label: 'JSX', color: '#c99a06' },
+  mjs: { label: 'JS', color: '#c99a06' },
+  cjs: { label: 'JS', color: '#c99a06' },
+  json: { label: '{}', color: '#b8950b' },
   py: { label: 'PY', color: '#3d8fd1' },
   ipynb: { label: 'NB', color: '#f37626' },
   md: { label: 'MD', color: '#519aba' },
@@ -374,21 +374,21 @@ const FILE_KIND: Record<string, { label: string; color: string }> = {
   cs: { label: 'C#', color: '#68217a' },
   rb: { label: 'RB', color: '#cc342d' },
   php: { label: 'PHP', color: '#8993be' },
-  sh: { label: '$', color: '#89e051' },
-  bash: { label: '$', color: '#89e051' },
+  sh: { label: '$', color: '#4d9a2a' },
+  bash: { label: '$', color: '#4d9a2a' },
   yml: { label: 'YML', color: '#cb171e' },
   yaml: { label: 'YML', color: '#cb171e' },
   toml: { label: 'TOML', color: '#9c4221' },
   sql: { label: 'SQL', color: '#e38c00' },
   txt: { label: 'TXT', color: '#8a8a8a' },
-  csv: { label: 'CSV', color: '#89e051' },
+  csv: { label: 'CSV', color: '#4d9a2a' },
   xml: { label: 'XML', color: '#e37933' },
-  svg: { label: 'SVG', color: '#ffb13b' },
+  svg: { label: 'SVG', color: '#e08a00' },
   vue: { label: 'VUE', color: '#41b883' },
   svelte: { label: 'SV', color: '#ff3e00' },
   dockerfile: { label: 'DKR', color: '#384d54' },
   lock: { label: 'LCK', color: '#8a8a8a' },
-  env: { label: 'ENV', color: '#faf743' },
+  env: { label: 'ENV', color: '#b89a00' },
 };
 
 export function fileKind(name: string): { label: string; color: string } | null {

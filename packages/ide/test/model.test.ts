@@ -8,6 +8,7 @@ import { decodeText, encodeText, isImagePath, looksBinary } from '../src/text';
 import { changeCount, decorations, gitErrorMessage, relativeTime, toWorkspacePath, type GitStatus } from '../src/git-model';
 import { ChordMatcher, eventKey, formatBinding, matchesStroke, parseStroke } from '../src/keys';
 import { shallowEqual } from '../src/components/hooks';
+import { lineChanges, splitLines } from '../src/quick-diff';
 
 test('경로 — 정규화·부모·이름·확장자·포함', () => {
   assert.equal(normalize('/a//b/./c/'), 'a/b/c');
@@ -157,4 +158,32 @@ test('선택자 비교 — Set·Map 은 같은 것일 때만 같다(펼친 폴�
   assert.equal(shallowEqual({ a: 1, b: 'x' }, { a: 1, b: 'x' }), true);
   assert.equal(shallowEqual([1, 2], [1, 2]), true);
   assert.equal(shallowEqual([1, 2], [1, 3]), false);
+});
+
+test('여백 변경 표시 — 더함·바꿈·지움을 지금 버퍼의 줄 번호로', () => {
+  const L = (t: string) => splitLines(t);
+  assert.deepEqual(lineChanges(L('a\nb\nc'), L('a\nb\nc')), []);
+  assert.deepEqual(lineChanges(L('a\nb\nc'), L('a\nx\ny\nb\nc')), [{ kind: 'added', start: 2, end: 3 }]);
+  assert.deepEqual(lineChanges(L('a\nb\nc'), L('a\nB\nc')), [{ kind: 'modified', start: 2, end: 2 }]);
+  // 지운 자리는 그 바로 아래 줄에 표시한다
+  assert.deepEqual(lineChanges(L('a\nb\nc\nd'), L('a\nd')), [{ kind: 'deleted', start: 2, end: 2 }]);
+  // 끝을 지우면 마지막 줄에
+  assert.deepEqual(lineChanges(L('a\nb\nc'), L('a')), [{ kind: 'deleted', start: 1, end: 1 }]);
+  // 여러 덩어리
+  assert.deepEqual(lineChanges(L('1\n2\n3\n4\n5\n6'), L('1\nX\n3\n4\n5\n6\n7')), [
+    { kind: 'modified', start: 2, end: 2 },
+    { kind: 'added', start: 7, end: 7 },
+  ]);
+  // CRLF 도 같은 줄로 본다
+  assert.deepEqual(lineChanges(L('a\r\nb'), L('a\nb')), []);
+});
+
+test('여백 변경 표시 — 통째로 바꾼 큰 파일은 가운데를 한 덩어리로(계산을 묶어 둔다)', () => {
+  const base = Array.from({ length: 1500 }, (_, i) => `old ${i}`);
+  const cur = Array.from({ length: 1500 }, (_, i) => `new ${i}`);
+  const out = lineChanges(base, cur);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, 'modified');
+  assert.equal(out[0].start, 1);
+  assert.equal(out[0].end, 1500);
 });

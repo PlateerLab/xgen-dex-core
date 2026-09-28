@@ -404,9 +404,10 @@ jobs:
           # 넘어가면, publish 는 멀쩡한데 ETARGET 으로 릴리스가 빨개진다
           # (2026-09-17 v1.47.0: 60초로는 모자랐고 배포 자체는 정상이었다).
           # 그래서 (1) 캐시를 타지 않게 --prefer-online 으로 묻고, (2) 보일 때까지
-          # 최대 5분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다.
+          # 최대 10분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다
+          # (2026-09-28 v1.61.0: 프로토콜이 5분 넘게 안 보여 IDE 배포까지 멈췄다).
           seen=""
-          for i in $(seq 1 20); do
+          for i in $(seq 1 40); do
             if npm view --prefer-online "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}" version >/dev/null 2>&1; then
               seen=1
               echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
@@ -415,7 +416,7 @@ jobs:
             sleep 15
           done
           if [ -z "$seen" ]; then
-            echo "::error::${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            echo "::error::${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }} 가 10분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
             exit 1
           fi
           npm i -g "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}"
@@ -466,9 +467,10 @@ jobs:
           # 넘어가면, publish 는 멀쩡한데 ETARGET 으로 릴리스가 빨개진다
           # (2026-09-17 v1.47.0: 60초로는 모자랐고 배포 자체는 정상이었다).
           # 그래서 (1) 캐시를 타지 않게 --prefer-online 으로 묻고, (2) 보일 때까지
-          # 최대 5분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다.
+          # 최대 10분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다
+          # (2026-09-28 v1.61.0: 프로토콜이 5분 넘게 안 보여 IDE 배포까지 멈췄다).
           seen=""
-          for i in $(seq 1 20); do
+          for i in $(seq 1 40); do
             if npm view --prefer-online "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}" version >/dev/null 2>&1; then
               seen=1
               echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
@@ -477,7 +479,7 @@ jobs:
             sleep 15
           done
           if [ -z "$seen" ]; then
-            echo "::error::${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            echo "::error::${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }} 가 10분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
             exit 1
           fi
           TMP=$(mktemp -d); cd "$TMP"
@@ -524,7 +526,7 @@ jobs:
         run: |
           # 프로토콜과 같은 이유로 보일 때까지 기다린 뒤, 깨끗한 곳에 깔아 루트와 CSS 가 풀리는지 본다.
           seen=""
-          for i in $(seq 1 20); do
+          for i in $(seq 1 40); do
             if npm view --prefer-online "${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }}" version >/dev/null 2>&1; then
               seen=1
               echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
@@ -533,7 +535,7 @@ jobs:
             sleep 15
           done
           if [ -z "$seen" ]; then
-            echo "::error::${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            echo "::error::${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }} 가 10분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
             exit 1
           fi
           TMP=$(mktemp -d); cd "$TMP"

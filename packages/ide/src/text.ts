@@ -81,3 +81,11 @@ export function imageMime(path: string): string {
 export function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path);
 }
+
+/** base64 → 바이트(서버가 파일 내용을 base64 로 준다). */
+export function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64 || '');
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}

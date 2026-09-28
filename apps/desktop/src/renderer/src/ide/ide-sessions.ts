@@ -16,8 +16,31 @@ interface Entry {
 }
 
 const stores = new Map<string, Entry>();
-const modes = new Map<string, boolean>();
 const modeListeners = new Set<() => void>();
+
+// [채팅 | IDE] 선택은 앱을 다시 켜도 남는다(VS Code 가 배치를 기억하듯). 대화 탭의 key 는
+// 대화 id 라 다시 켜도 같다. 앱 저장 공간만 쓰고, 닫힌 대화의 것은 지운다(아래 구독).
+const MODES_KEY = 'xgen.ide.modes';
+const MODES_MAX = 200;
+
+function loadModes(): Set<string> {
+  try {
+    const raw: unknown = JSON.parse(window.localStorage.getItem(MODES_KEY) ?? '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === 'string').slice(-MODES_MAX) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveModes(): void {
+  try {
+    window.localStorage.setItem(MODES_KEY, JSON.stringify([...modes].slice(-MODES_MAX)));
+  } catch {
+    /* 기억 못 해도 동작엔 지장 없다 */
+  }
+}
+
+const modes = loadModes();
 
 /** 이 채팅 탭의 IDE 저장소(없으면 만든다). 에이전트가 바뀌면 새로 만든다. */
 export function ideStoreFor(
@@ -37,12 +60,14 @@ export function peekIdeStore(sessionKey: string): IdeStore | null {
 }
 
 export function isIdeMode(sessionKey: string): boolean {
-  return modes.get(sessionKey) ?? false;
+  return modes.has(sessionKey);
 }
 
 export function setIdeMode(sessionKey: string, on: boolean): void {
-  if (on) modes.set(sessionKey, true);
+  if (on === modes.has(sessionKey)) return;
+  if (on) modes.add(sessionKey);
   else modes.delete(sessionKey);
+  saveModes();
   for (const fn of modeListeners) fn();
 }
 
@@ -57,15 +82,26 @@ export function useIdeMode(sessionKey: string): [boolean, (on: boolean) => void]
   return [on, (v: boolean) => setIdeMode(sessionKey, v)];
 }
 
-// 채팅 탭이 닫히면(대화 종료·로그아웃) 그 IDE 도 정리한다.
+// 채팅 탭이 닫히면(대화 종료·로그아웃) 그 IDE 도 정리한다. IDE 선택은 **이번에 살아 있는 것을
+// 본 대화만** 지운다 — 앱을 켠 직후에는 대화가 아직 복원되지 않아 목록이 비어 있다.
+const seen = new Set<string>();
 sessionStore.subscribe(() => {
   const live = new Set(sessionStore.getSnapshot().sessions.map((s) => s.key));
+  for (const key of live) seen.add(key);
   for (const [key, entry] of stores) {
     if (live.has(key)) continue;
     entry.store.dispose();
     stores.delete(key);
-    modes.delete(key);
   }
+  let changed = false;
+  for (const key of [...modes]) {
+    if (seen.has(key) && !live.has(key)) {
+      modes.delete(key);
+      seen.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) saveModes();
 });
 
 /** 앱의 테마 — `<html data-theme>` 가 있으면 그것, 없으면(시스템) 운영체제 설정. */

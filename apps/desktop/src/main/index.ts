@@ -2411,7 +2411,7 @@ ipcMain.handle(CHANNELS.agentWsTree, (_e, wf: string, path?: string) =>
 /** [아티팩트 모음] 의 응답 — 못 읽은 에이전트도 숨기지 않고 함께 돌려준다. */
 interface ArtifactGalleryResult {
   items: ArtifactGalleryItem[];
-  /** 훑어본 에이전트 수 (XGeny 만). */
+  /** 훑어본 에이전트 수 (Geny 만). */
   scanned: number;
   /** 목록을 못 읽은 에이전트 이름들 — 조용히 빠뜨리지 않는다. */
   failed: string[];
@@ -2471,7 +2471,7 @@ ipcMain.handle(
  * 폴더라, 소유자별로만 물어볼 수 있다). 그래서 여기서 훑는다 — 렌더러가 아니라
  * main 인 이유는 왕복이 에이전트 수만큼 생기기 때문이다. IPC 한 번으로 끝난다.
  *
- * XGeny 에이전트만 묻는다: workspace 가 있는 것이 그것뿐이라, 나머지에 물으면
+ * Geny 에이전트만 묻는다: workspace 가 있는 것이 그것뿐이라, 나머지에 물으면
  * 확실히 빈 목록을 받으려고 요청을 낭비하는 셈이다.
  */
 ipcMain.handle(CHANNELS.artifactGallery, async (): Promise<ArtifactGalleryResult> => {

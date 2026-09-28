@@ -287,7 +287,7 @@ const api = {
   agents: {
     list: (query?: AgentListQuery): Promise<AgentListResult> =>
       ipcRenderer.invoke(CHANNELS.agentsList, query),
-    /** 만들기 화면이 그릴 것 — 서버가 Agent XGeny 노드에서 읽어 내려 준다. */
+    /** 만들기 화면이 그릴 것 — 서버가 Agent Geny 노드에서 읽어 내려 준다. */
     createOptions: (): Promise<AgentCreateOptions> =>
       ipcRenderer.invoke(CHANNELS.agentsCreateOptions),
     /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
@@ -297,7 +297,7 @@ const api = {
 
   /**
    * 로컬 실행 환경 — 설치 폴더의 Python 런타임(사이드카) + Claude Code / Codex CLI.
-   * 커넥터에서 시작한 Agent-XGeny 턴은 자동으로 이 환경에서 돈다(chatStart). 여기는
+   * 커넥터에서 시작한 Agent-Geny 턴은 자동으로 이 환경에서 돈다(chatStart). 여기는
    * 상태 표시·설치·서버 버전 수렴([설정 → 일반]).
    */
 

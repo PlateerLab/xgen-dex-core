@@ -443,7 +443,7 @@ export class DexEngine {
   /**
    * 만들기 화면이 그릴 것 — 프로바이더·모델과 손댈 수 있는 설정.
    *
-   * 목록은 서버가 Agent XGeny 노드에서 읽어 내려 준다. 커넥터와 CLI 가 각자 적어
+   * 목록은 서버가 Agent Geny 노드에서 읽어 내려 준다. 커넥터와 CLI 가 각자 적어
    * 두면 노드가 바뀔 때마다 조용히 낡는다.
    */
   async agentCreateOptions(requestedProfile?: string): Promise<AgentCreateOptions> {
@@ -451,7 +451,7 @@ export class DexEngine {
   }
 
   /**
-   * 에이전트 하나를 세운다 — Agent XGeny 노드 하나짜리 워크플로우.
+   * 에이전트 하나를 세운다 — Agent Geny 노드 하나짜리 워크플로우.
    *
    * 엣지가 없는 것이 이 노드의 성질이다. 도구도 기억도 위임도 자기진화도 그 안에
    * 있어서 연결 없이 그대로 대화가 된다.

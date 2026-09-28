@@ -267,7 +267,7 @@ export interface SessionTransport {
   }>;
   /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
   stopChat?: (interactionId: string) => Promise<unknown>;
-  /** Download one server-issued XGeny history reference into a renderer preview URL. */
+  /** Download one server-issued Geny history reference into a renderer preview URL. */
   historyImage?: (
     workflowId: string,
     attachment: HistoryAttachment,

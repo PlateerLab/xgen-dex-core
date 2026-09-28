@@ -10,7 +10,7 @@ import { xgen } from './bridge';
 import { SessionStore, type StoreSnapshot } from './session-store';
 import { browserStateStore } from './browser-state';
 import { teamsContextStore } from './teams-context';
-import { xgenyHistoryWorkspacePath } from '@dex/protocol/history';
+import { genyHistoryWorkspacePath } from '@dex/protocol/history';
 
 import { DEX_ORIGIN_ID } from '@dex/engine/conversation-watch';
 
@@ -58,7 +58,7 @@ export const sessionStore = new SessionStore({
     void xgen?.chatWatch?.start(workflowId, workflowName, interactionId),
   unwatchConversation: (interactionId) => void xgen?.chatWatch?.stop(interactionId),
   historyImage: async (workflowId, attachment) => {
-    const path = xgenyHistoryWorkspacePath(attachment);
+    const path = genyHistoryWorkspacePath(attachment);
     if (!path) return null;
     const file = await xgen.agentData.workspaceBinary(workflowId, path, 'chat_attachment');
     const responseMime = String(file.contentType || '')

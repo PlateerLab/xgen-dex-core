@@ -29,7 +29,7 @@ export interface TuiEngine {
   }>;
   logout(profile?: string): Promise<void>;
   listAgents(query?: AgentListQuery, profile?: string): Promise<AgentListResult>;
-  /** 만들기 화면이 그릴 것 — 서버가 Agent XGeny 노드에서 읽어 내려 준다. */
+  /** 만들기 화면이 그릴 것 — 서버가 Agent Geny 노드에서 읽어 내려 준다. */
   agentCreateOptions(profile?: string): Promise<AgentCreateOptions>;
   /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
   createAgent(

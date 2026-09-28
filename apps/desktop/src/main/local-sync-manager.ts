@@ -175,7 +175,7 @@ export class LocalSyncManager {
    * 온디맨드 페어 — 서버가 커넥터 세션에서 **어느 에이전트든** 로컬로 실행하려
    * 할 때(ensurePair) 여기 쌓인다. config.targets(클라우드 연결 목록)와 달리
    * 연결(attach) 없이도 그 에이전트의 자기 워크스페이스를 로컬 폴더로 연다 —
-   * 모든 Agent-XGeny 는 자기 워크스페이스를 항상 갖기 때문이다.
+   * 모든 Agent-Geny 는 자기 워크스페이스를 항상 갖기 때문이다.
    */
   private extra = new Map<string, SyncTarget>();
 

@@ -14,7 +14,6 @@ import {
 import type { WorkspaceGroup, WorkspaceTab } from './workspace-layout';
 
 function label(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
-  if (tab.kind === 'avatar') return '아바타 설정';
   if (tab.kind === 'teams') return tab.roomName || '대화';
   if (tab.kind === 'settings') return '설정';
   if (tab.kind === 'agent-create') return '새 에이전트';

@@ -2066,6 +2066,8 @@ export const Chat: React.FC<{
           <IdeView
             store={ideStore}
             theme={ideTheme}
+            // IDE 단추는 앱 사이드바가 그린다(ActivityBar 의 IDE 묶음).
+            activityBar={false}
             chat={
               <div className={`chat chat-ide-column${dragOver ? ' dropping' : ''}`} {...dragProps}>
                 {dropOverlay}

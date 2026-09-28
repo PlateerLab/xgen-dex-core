@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { IdeState, IdeStore } from '../store';
+import { ideActivityItems, sameActivity, type IdeActivityItem, type IdeActivityOptions } from '../activity';
 
 export const StoreContext = createContext<IdeStore | null>(null);
 
@@ -101,4 +102,33 @@ export function useFocusReturn(open: boolean): void {
       }, 0);
     };
   }, [open, store]);
+}
+
+// ── 활동 막대 단추 (IDE 밖에서도) ─────────────────────────────────────
+
+const NO_ACTIVITY: IdeActivityItem[] = [];
+const noSubscribe = () => () => undefined;
+
+/**
+ * 활동 막대 단추 목록을 구독한다. IdeView 밖(호스트의 앱 사이드바)에서도 쓸 수 있게 저장소를
+ * 인자로 받는다. 저장소가 없으면 빈 목록.
+ */
+export function useIdeActivity(store: IdeStore | null, opts: IdeActivityOptions = {}): IdeActivityItem[] {
+  const last = useRef<{ state: IdeState; value: IdeActivityItem[] } | null>(null);
+  const optsRef = useRef(opts);
+  optsRef.current = opts;
+  const get = () => {
+    if (!store) return NO_ACTIVITY;
+    const state = store.getState();
+    const prev = last.current;
+    if (prev && prev.state === state) return prev.value;
+    const value = ideActivityItems(state, optsRef.current);
+    if (prev && sameActivity(prev.value, value)) {
+      last.current = { state, value: prev.value };
+      return prev.value;
+    }
+    last.current = { state, value };
+    return value;
+  };
+  return useSyncExternalStore(store ? store.subscribe : noSubscribe, get, get);
 }

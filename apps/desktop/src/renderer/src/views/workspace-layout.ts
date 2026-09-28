@@ -3,7 +3,6 @@
 export type WorkspaceTabKind =
   | 'chat'
   | 'browser'
-  | 'avatar'
   | 'teams'
   | 'settings'
   | 'agent-viewer'
@@ -75,7 +74,8 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   const tab = raw as Partial<WorkspaceTab>;
   if (
     typeof tab.id !== 'string' ||
-    !['chat', 'browser', 'avatar', 'teams', 'settings', 'agent-viewer', 'file-viewer'].includes(
+    // 옛 [아바타 설정] 탭('avatar')은 설정의 [아바타 설정] 탭으로 들어갔다(2026-09-29) — 버린다.
+    !['chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer'].includes(
       String(tab.kind),
     )
   ) {

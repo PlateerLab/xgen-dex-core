@@ -15,6 +15,16 @@
  */
 export { IdeView, type IdeViewProps } from './components/IdeView';
 export type { SideView } from './components/ActivityBar';
+export {
+  ideActivityItems,
+  pressIdeActivity,
+  BASE_VIEW_META,
+  type IdeActivityItem,
+  type IdeActivityOptions,
+  type IdeViewMeta,
+} from './activity';
+export { useIdeActivity } from './components/hooks';
+export { Icon, type IconName } from './components/icons';
 export { IdeStore, DEFAULT_LAYOUT, type IdeState, type Layout, type IdeCommand, type EditorTab, type EditorGroup, type DocState } from './store';
 export { IdeError } from './types';
 export type {

@@ -23,7 +23,6 @@ import type {
 import type { ConnectorConfig } from '../../../main/config';
 import { Chat } from './Chat';
 import { Settings } from './Settings';
-import { AvatarSettings } from './AvatarSettings';
 import { AgentViewer } from './AgentViewer';
 import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
 import { AgentCreate } from './AgentCreate';
@@ -41,7 +40,7 @@ import { BrowserSurface } from './BrowserSurface';
 import { SystemMonitorFooter } from './SystemMonitorFooter';
 import { XgenMark } from '../brand/Logo';
 import { chatTabs } from './tab-model';
-import { peekIdeStore } from '../ide/ide-sessions';
+import { peekIdeStore, useIdeStore, useIsIdeMode } from '../ide/ide-sessions';
 import {
   addWorkspaceTab,
   dropWorkspaceTab,
@@ -210,7 +209,6 @@ export const Workspace: React.FC<{
       user.userId,
     ),
   );
-  const [overlayOn, setOverlayOn] = useState(config.avatarOverlay ?? false);
   const [notice, setNotice] = useState('');
   const [browserConnection, setBrowserConnection] = useState<BrowserConnectionEvent | null>(null);
   const [openingBrowserAgent, setOpeningBrowserAgent] = useState(false);
@@ -543,29 +541,6 @@ export const Workspace: React.FC<{
     const timer = setTimeout(() => setNotice(''), 5000);
     return () => clearTimeout(timer);
   }, [notice]);
-
-  const toggleOverlay = useCallback(async () => {
-    const next = !overlayOn;
-    setOverlayOn(next);
-    await xgen.overlay.setEnabled(next);
-    void onConfigChange();
-  }, [overlayOn, onConfigChange]);
-
-  useEffect(() => xgen.config.onChange((next) => setOverlayOn(!!next.avatarOverlay)), []);
-  const pressAvatar = useCallback(() => {
-    setLayout((current) => {
-      const existing = findTab(current, 'avatar');
-      if (
-        existing &&
-        current.focusedGroupId === existing.group.id &&
-        existing.group.activeTabId === 'avatar'
-      ) {
-        return removeWorkspaceTab(current, 'avatar');
-      }
-      if (existing) return selectWorkspaceTab(current, existing.group.id, 'avatar');
-      return addWorkspaceTab(current, current.focusedGroupId, { id: 'avatar', kind: 'avatar' });
-    });
-  }, []);
 
   // 설정은 모달이 아니라 **메인 영역 탭**이다 — 전체 영역을 쓰고, 다른 탭과
   // 같은 규칙(선택·닫기·분할 이동)을 따른다. 열려 있으면 포커스, 활성 상태에서
@@ -1035,12 +1010,18 @@ export const Workspace: React.FC<{
   }, [browserSelection, browserState.activeByWorkflow, browserState.pages]);
 
   const displayName = user.username || '사용자';
-  const avatarActive = layout.groups.some(
-    (group) => group.id === layout.focusedGroupId && group.activeTabId === 'avatar',
-  );
   const settingsActive = layout.groups.some(
     (group) => group.id === layout.focusedGroupId && group.activeTabId === 'settings',
   );
+  // 지금 보는 탭(초점 묶음의 활성 탭)이 IDE 로 보이는 채팅이면 그 IDE — 앱 사이드바가 IDE 단추를 그린다.
+  const focusedTab = (() => {
+    const group = layout.groups.find((g) => g.id === layout.focusedGroupId);
+    return group?.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
+  })();
+  const viewKey = focusedTab?.kind === 'chat' && focusedTab.sessionKey ? focusedTab.sessionKey : null;
+  const viewIsIde = useIsIdeMode(viewKey);
+  const viewIde = useIdeStore(viewKey);
+  const ideInView = viewIsIde ? viewIde : null;
 
   const renderGroupContent = (group: WorkspaceGroup) => {
     const active = group.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
@@ -1095,20 +1076,10 @@ export const Workspace: React.FC<{
         <div className="pane-fill">
           <Settings
             embedded
+            user={user}
             config={config}
             onClose={() => closeTab(active)}
             onChanged={onConfigChange}
-          />
-        </div>
-      );
-    }
-    if (active?.kind === 'avatar') {
-      return (
-        <div className="pane-fill">
-          <AvatarSettings
-            user={user}
-            serverUrl={config.serverUrl}
-            onBack={() => closeTab(active)}
           />
         </div>
       );
@@ -1186,10 +1157,7 @@ export const Workspace: React.FC<{
         collapsed={collapsed}
         onPressView={pressView}
         teamsUnread={teamsUnread}
-        overlayOn={overlayOn}
-        onToggleOverlay={() => void toggleOverlay()}
-        avatarActive={avatarActive}
-        onOpenAvatar={pressAvatar}
+        ide={ideInView}
         settingsActive={settingsActive}
         onOpenSettings={pressSettings}
         userName={displayName}

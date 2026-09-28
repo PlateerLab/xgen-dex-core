@@ -7,12 +7,14 @@ import {
   type BrowserSearchProvider,
 } from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
+import type { CurrentUser } from '@dex/protocol';
 import { HotkeyCapture } from './HotkeyCapture';
 import { SettingsSection } from './SettingsSection';
 import { SshSettings } from './SshSettings';
 import { McpSettings } from './McpSettings';
 import { FileSystemSettings } from './FileSystemSettings';
 import { VoiceSettings } from './VoiceSettings';
+import { AvatarSettings } from './AvatarSettings';
 import { Selector } from './Selector';
 import { notificationStore, useNotifications } from '../notifications';
 import type { NotificationEventType, NotificationPrivacy } from '@dex/protocol/notifications';
@@ -94,7 +96,7 @@ const ConnectorDevicesCard: React.FC = () => {
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: '일반' },
   { id: 'notifications', label: '알림' },
-  { id: 'avatar', label: '아바타' },
+  { id: 'avatar', label: '아바타 설정' },
   { id: 'browser', label: '브라우저' },
   { id: 'mcp', label: 'MCP' },
   // SSH 는 이 PC 의 기능이 아니라 **XGEN 계정의 설정**이다 (접속은 서버가 연다).
@@ -127,12 +129,14 @@ const NOTIFICATION_EVENTS: Array<{
 ];
 
 export const Settings: React.FC<{
+  /** 로그인한 사람 — [아바타 설정]의 내 아바타·스토어가 쓴다. */
+  user: CurrentUser;
   config: ConnectorConfig;
   onClose: () => void;
   onChanged: () => Promise<ConnectorConfig>;
   /** true 면 모달이 아니라 메인 영역의 [설정] 탭 본문으로 렌더링된다. */
   embedded?: boolean;
-}> = ({ config, onClose, onChanged, embedded }) => {
+}> = ({ user, config, onClose, onChanged, embedded }) => {
   // 탭으로 박혀 있을 때(embedded)는 Esc 로 닫을 대상이 아니다.
   useModalDismiss(onClose, !embedded);
   const [tab, setTab] = useState<Tab>('general');
@@ -148,6 +152,8 @@ export const Settings: React.FC<{
     config.updateServer ?? 'github',
   );
   const [overlay, setOverlay] = useState(config.avatarOverlay ?? false);
+  // 오버레이 창의 닫기·트레이에서 바뀌어도 따라간다.
+  useEffect(() => xgen.config.onChange((next) => setOverlay(!!next.avatarOverlay)), []);
   const [subtitles, setSubtitles] = useState(config.subtitles !== false);
   const [charMs, setCharMs] = useState(config.subtitleCharMs ?? 50);
   const [subtitleSize, setSubtitleSize] = useState<'sm' | 'md' | 'lg'>(config.subtitleSize ?? 'sm');
@@ -782,12 +788,17 @@ export const Settings: React.FC<{
           </>
         )}
 
-        {/* ─── 아바타·자막 ─── */}
+        {/* ─── 아바타 설정 — 사이드바에 있던 [아바타 표시]·[아바타 설정]을 한곳에(2026-09-29) ─── */}
         {tab === 'avatar' && (
           <>
-            <SettingsSection title="아바타">
+            <SettingsSection title="아바타 표시">
               <div className="field-row">
-                <span>아바타 오버레이 (플로팅)</span>
+                <span>
+                  아바타 표시
+                  <span className="small muted" style={{ marginLeft: 8 }}>
+                    화면 위에 떠 있는 아바타 창
+                  </span>
+                </span>
                 <label className="switch">
                   <input
                     type="checkbox"
@@ -874,6 +885,9 @@ export const Settings: React.FC<{
                   ))}
                 </div>
               </div>
+            </SettingsSection>
+            <SettingsSection plain title="아바타">
+              <AvatarSettings embedded user={user} serverUrl={config.serverUrl} />
             </SettingsSection>
             <SettingsSection plain title="음성">
               {/* 음성 — 아바타가 말하고 듣는 통로라 아바타 탭에 둔다. */}

@@ -7,21 +7,21 @@
  * 단축키는 편집기의 것을 따른다. 다만 입력하는 자리(터미널·입력 칸)에서는 셸과 입력이 쓰는
  * 키를 빼앗지 않는다 — 터미널에서 Ctrl+W 는 단어 지우기지 탭 닫기가 아니다.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { ActivityBar, type SideView } from './ActivityBar';
 import { Explorer } from './Explorer';
 import { SearchView } from './SearchView';
 import { ScmView, createBranch } from './ScmView';
 import { EditorArea } from './EditorArea';
 import { TerminalPanel } from './TerminalPanel';
-import { StatusBar } from './StatusBar';
+import { ConnectionBar, IdeToast } from './Notices';
 import { QuickOpen } from './QuickOpen';
 import { DialogHost, MenuHost, SplitHandle } from './primitives';
 import { StoreContext, focusHome, rememberFocus, useIde, useStore } from './hooks';
 import type { IdeCommand, IdeStore } from '../store';
 import type { ThemeKind } from '../types';
 import { ChordMatcher } from '../keys';
-import { changeCount } from '../git-model';
+import { BASE_VIEW_META } from '../activity';
 
 export interface IdeViewProps {
   store: IdeStore;
@@ -30,32 +30,32 @@ export interface IdeViewProps {
   theme?: ThemeKind;
   /** 사이드바에 보기를 더한다(확장 자리). */
   extraViews?: SideView[];
+  /**
+   * IDE 안의 활동 막대를 그리는가(기본 true). 호스트가 자기 앱 사이드바에 IDE 단추를 그리면
+   * (`useIdeActivity`·`pressIdeActivity`) 끈다 — 데스크톱 앱이 그렇다.
+   */
+  activityBar?: boolean;
   className?: string;
 }
 
-export function IdeView({ store, chat, theme = 'dark', extraViews, className }: IdeViewProps) {
+export function IdeView({ store, chat, theme = 'dark', extraViews, activityBar = true, className }: IdeViewProps) {
   useEffect(() => {
     store.startOnce();
   }, [store]);
   return (
     <StoreContext.Provider value={store}>
-      <IdeLayout chat={chat} theme={theme} extraViews={extraViews} className={className} />
+      <IdeLayout chat={chat} theme={theme} extraViews={extraViews} activityBar={activityBar} className={className} />
     </StoreContext.Provider>
   );
 }
 
-const BASE_VIEWS: SideView[] = [
-  { id: 'explorer', title: '탐색기', icon: 'files', keybinding: 'Mod+Shift+E', render: () => <Explorer /> },
-  { id: 'search', title: '찾기', icon: 'search', keybinding: 'Mod+Shift+F', render: () => <SearchView /> },
-  {
-    id: 'scm',
-    title: '소스 제어',
-    icon: 'scm',
-    keybinding: 'Mod+Shift+G',
-    badge: (s) => Object.values(s.git.statuses).reduce((n, st) => n + changeCount(st), 0),
-    render: () => <ScmView />,
-  },
-];
+const RENDER: Record<string, () => ReactElement> = {
+  explorer: () => <Explorer />,
+  search: () => <SearchView />,
+  scm: () => <ScmView />,
+};
+
+const BASE_VIEWS: SideView[] = BASE_VIEW_META.map((v) => ({ ...v, render: RENDER[v.id] }));
 
 /** 입력하는 자리에서도 IDE 가 받는 명령 — 셸·입력 칸이 쓰지 않는 조합만. */
 const ALWAYS = new Set([
@@ -85,11 +85,13 @@ function IdeLayout({
   chat,
   theme,
   extraViews,
+  activityBar,
   className,
 }: {
   chat?: ReactNode;
   theme: ThemeKind;
   extraViews?: SideView[];
+  activityBar: boolean;
   className?: string;
 }) {
   const store = useStore();
@@ -168,7 +170,7 @@ function IdeLayout({
       }}
     >
       <div className="xide-main">
-        <ActivityBar views={views} />
+        {activityBar ? <ActivityBar extraViews={extraViews} chat={!!chat} /> : null}
         {side ? (
           <>
             <aside className="xide-sidebar" style={{ width: layout.sideWidth }} aria-label={side.title}>
@@ -186,6 +188,7 @@ function IdeLayout({
           </>
         ) : null}
         <div className="xide-center">
+          <ConnectionBar />
           {!(panelShown && layout.panelMaximized) ? <EditorArea theme={theme} /> : null}
           {panelShown ? (
             <>
@@ -209,6 +212,8 @@ function IdeLayout({
               </div>
             </>
           ) : null}
+          {/* 알림은 편집 영역 오른쪽 아래 — 채팅 칸의 입력창을 가리지 않는다. */}
+          <IdeToast />
         </div>
         {chat ? (
           <>
@@ -236,7 +241,6 @@ function IdeLayout({
           </>
         ) : null}
       </div>
-      <StatusBar />
       <QuickOpen />
       <DialogHost />
       <MenuHost />
@@ -399,6 +403,24 @@ function buildCommands(store: IdeStore, focusTerminal: () => void): IdeCommand[]
       run: () => store.setLayout({ chatOpen: !store.getState().layout.chatOpen }),
     },
     { id: 'gotoLine', title: '줄로 이동', category: '이동', keybinding: 'Mod+G', run: () => store.openQuickOpen('line') },
+    {
+      id: 'changeEol',
+      title: '줄 끝 바꾸기 (LF ↔ CRLF)',
+      category: '파일',
+      when: writable,
+      run: () => {
+        const p = activePath();
+        const doc = p ? store.getState().docs[p] : undefined;
+        const model = p ? store.getModel(p) : null;
+        const monaco = store.getMonaco();
+        if (!p || !doc || doc.status !== 'ready' || !model || !monaco) return;
+        const next = doc.eol === 'LF' ? 'CRLF' : 'LF';
+        model.pushEOL(next === 'CRLF' ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+        store.setDocEol(p, next);
+        store.notify('info', `줄 끝을 ${next} 로 바꿨습니다`);
+      },
+    },
+    { id: 'reconnect', title: '샌드박스에 다시 연결', category: '보기', run: () => store.reconnect() },
     {
       id: 'reveal',
       title: '탐색기에서 지금 파일 보기',

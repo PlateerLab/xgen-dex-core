@@ -105,8 +105,8 @@ test('agent browser reuses the group opposite its chat', () => {
     'group-a',
     workflowChat('chat:a', 'workflow-a'),
   );
-  layout = addWorkspaceTab(layout, 'group-a', { id: 'avatar', kind: 'avatar' });
-  layout = dropWorkspaceTab(layout, 'avatar', 'group-a', 'bottom');
+  layout = addWorkspaceTab(layout, 'group-a', { id: 'settings', kind: 'settings' });
+  layout = dropWorkspaceTab(layout, 'settings', 'group-a', 'bottom');
   layout = placeBrowserBesideChat(layout, browser('workflow-a'));
 
   assert.equal(layout.groups.length, 2);
@@ -170,4 +170,25 @@ test('이름을 앱으로 바꾸기 전에 저장된 뷰어 탭(artifacts)은 [�
     focusedGroupId: 'g1',
   });
   assert.deepEqual(restored.groups[0].tabs.map((t) => t.viewerSub), ['apps', 'apps', undefined]);
+});
+
+test('옛 [아바타 설정] 탭은 되살리지 않는다 (설정의 [아바타 설정] 탭으로 들어갔다)', () => {
+  const restored = normalizeWorkspaceLayout({
+    groups: [
+      {
+        id: 'group-a',
+        tabs: [
+          { id: 'avatar', kind: 'avatar' },
+          { id: 'settings', kind: 'settings' },
+        ],
+        activeTabId: 'avatar',
+      },
+    ],
+    focusedGroupId: 'group-a',
+  });
+  assert.deepEqual(
+    restored.groups[0].tabs.map((tab) => tab.id),
+    ['settings'],
+  );
+  assert.equal(restored.groups[0].activeTabId, 'settings');
 });

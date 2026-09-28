@@ -394,3 +394,41 @@ export const AppIcon: React.FC<P> = ({ size = 18, className }) => (
     <path d="M8 16.5h7" />
   </svg>
 );
+
+// ── IDE 묶음 (앱 사이드바의 IDE 단추) ──────────────────────────────
+/** IDE 탐색기 — 코드가 든 폴더. 앱의 [탐색기](FilesIcon)와 구별한다. */
+export const FolderCodeIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M10 10.5 8 13l2 2.5" />
+    <path d="m14 10.5 2 2.5-2 2.5" />
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+  </svg>
+);
+export const SearchIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.3-4.3" />
+  </svg>
+);
+export const GitBranchIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <line x1="6" x2="6" y1="3" y2="15" />
+    <circle cx="18" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M18 9a9 9 0 0 1-9 9" />
+  </svg>
+);
+export const TerminalIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="m7 11 2-2-2-2" />
+    <path d="M11 13h4" />
+    <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+  </svg>
+);
+/** 오른쪽 칸(에이전트 채팅) 보이기·숨기기. */
+export const PanelRightIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M15 3v18" />
+  </svg>
+);

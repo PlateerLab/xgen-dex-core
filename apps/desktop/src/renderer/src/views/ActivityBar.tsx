@@ -6,21 +6,34 @@
  * 어떤 아이콘을 눌러도 그 뷰로 펼쳐진다. 이 토글 판정은 Workspace 가 한다
  * (여기는 "눌렸다"만 알린다).
  *
- * 아래쪽: 사이드바와 무관한 전역 동작들 — 아바타 오버레이 토글, 아바타 설정
- * 탭 열기, 설정 모달, 계정(로그아웃). 예전 사이드바 헤더의 아이콘 줄과
- * 푸터가 여기로 옮겨 왔다.
+ * 그 아래(구분선 뒤): **IDE 묶음** — 지금 보는 탭이 IDE 로 보일 때만 뜬다. IDE 의
+ * 탐색기·찾기·소스 제어와 터미널·채팅 칸 토글이다. 옅은 바탕의 상자로 묶어 "지금 쓸 수
+ * 있는 IDE 단추"임을 알린다. 다른 탭으로 가면 사라진다.
+ *
+ * 아래쪽: 사이드바와 무관한 전역 동작 — 설정, 계정(로그아웃). 아바타 표시·아바타 설정은
+ * 설정의 [아바타 설정] 탭으로 들어갔다(2026-09-29).
  */
 import React, { useState } from 'react';
+import {
+  Icon as IdeIcon,
+  pressIdeActivity,
+  useIdeActivity,
+  type IdeActivityItem,
+  type IdeStore,
+} from '@dex/ide';
 import { XgenMark } from '../brand/Logo';
 import {
   AppIcon,
-  BotIcon,
   ChatIcon,
   FilesIcon,
+  FolderCodeIcon,
+  GitBranchIcon,
   LogoutIcon,
+  PanelRightIcon,
+  SearchIcon,
   SettingsIcon,
-  AvatarIcon,
   TeamsIcon,
+  TerminalIcon,
 } from '../brand/icons';
 
 export type SideView = 'agent' | 'explorer' | 'teams' | 'apps';
@@ -41,16 +54,62 @@ export function restoreSideView(value: unknown): SideView {
   return VIEWS.some((view) => view.id === v) ? (v as SideView) : 'agent';
 }
 
+/** IDE 단추의 아이콘 — 앱 사이드바의 선 아이콘으로 맞춘다. 모르는 보기(확장)는 IDE 의 것. */
+const IDE_ICONS: Record<string, React.FC<{ size?: number }>> = {
+  explorer: FolderCodeIcon,
+  search: SearchIcon,
+  scm: GitBranchIcon,
+  terminal: TerminalIcon,
+  chat: PanelRightIcon,
+};
+
+const IdeGroup: React.FC<{ store: IdeStore }> = ({ store }) => {
+  const items = useIdeActivity(store);
+  const button = (item: IdeActivityItem) => {
+    const Glyph = IDE_ICONS[item.id];
+    return (
+      <button
+        key={item.id}
+        className={`ab-btn ab-ide-btn ${item.active ? 'active' : ''}`}
+        title={item.title}
+        aria-label={item.label}
+        aria-pressed={item.active}
+        onClick={() => pressIdeActivity(store, item)}
+      >
+        {Glyph ? <Glyph size={19} /> : <IdeIcon name={item.icon} size={19} />}
+        {item.badge > 0 && (
+          <span className="ab-badge-dot" aria-label={`변경 ${item.badge}개`}>
+            {item.badge > 99 ? '99+' : item.badge}
+          </span>
+        )}
+      </button>
+    );
+  };
+  const views = items.filter((i) => i.kind === 'view');
+  const toggles = items.filter((i) => i.kind === 'toggle');
+  return (
+    <>
+      <div className="ab-sep" aria-hidden />
+      <div className="ab-ide" role="group" aria-label="IDE">
+        <span className="ab-ide-label" aria-hidden>
+          IDE
+        </span>
+        {views.map(button)}
+        {toggles.length > 0 && <span className="ab-ide-rule" aria-hidden />}
+        {toggles.map(button)}
+      </div>
+    </>
+  );
+};
+
 export const ActivityBar: React.FC<{
   view: SideView;
   collapsed: boolean;
   onPressView: (v: SideView) => void;
   /** Teams 안 읽음 총합 — 0 이면 배지를 그리지 않는다. */
   teamsUnread: number;
-  overlayOn: boolean;
-  onToggleOverlay: () => void;
-  avatarActive: boolean;
-  onOpenAvatar: () => void;
+  /** 지금 보는 탭이 IDE 로 보이면 그 IDE — 있을 때만 IDE 묶음을 그린다. */
+  ide: IdeStore | null;
   /** 설정 탭이 지금 보이는가 — 아이콘에 활성 표시. */
   settingsActive: boolean;
   onOpenSettings: () => void;
@@ -61,10 +120,7 @@ export const ActivityBar: React.FC<{
   collapsed,
   onPressView,
   teamsUnread,
-  overlayOn,
-  onToggleOverlay,
-  avatarActive,
-  onOpenAvatar,
+  ide,
   settingsActive,
   onOpenSettings,
   userName,
@@ -100,24 +156,10 @@ export const ActivityBar: React.FC<{
             </button>
           );
         })}
+        {ide && <IdeGroup store={ide} />}
       </div>
 
       <div className="ab-bottom">
-        <button
-          className={`ab-btn ${overlayOn ? 'on' : ''}`}
-          title={overlayOn ? '아바타 오버레이 끄기' : '아바타 오버레이 켜기'}
-          onClick={onToggleOverlay}
-        >
-          <BotIcon size={21} />
-        </button>
-        <button
-          className={`ab-btn ${avatarActive ? 'active' : ''}`}
-          title="아바타 설정"
-          onClick={onOpenAvatar}
-        >
-          {avatarActive && <span className="ab-ind" />}
-          <AvatarIcon size={21} />
-        </button>
         <button
           className={`ab-btn ${settingsActive ? 'active' : ''}`}
           title="설정"

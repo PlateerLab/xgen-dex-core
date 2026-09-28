@@ -803,6 +803,70 @@ button {
   background: var(--primary-grad);
   border-radius: 0 2px 2px 0;
 }
+/* IDE 묶음 — 지금 보는 탭이 IDE 일 때만 뜬다. 옅은 바탕의 상자가 "지금 쓸 수 있는
+   IDE 단추"임을 알린다(다른 탭으로 가면 통째로 사라진다). */
+.ab-sep {
+  flex: none;
+  width: 22px;
+  height: 1px;
+  margin: 8px 0;
+  background: var(--border);
+}
+.ab-ide {
+  flex: none;
+  width: 38px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 0 5px;
+  border: 1px solid var(--primary-soft-border);
+  border-radius: 12px;
+  background: var(--primary-soft);
+  animation: ab-ide-in 0.16s ease-out;
+}
+.ab-ide-label {
+  margin: 1px 0 3px;
+  color: var(--primary);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+.ab-ide-rule {
+  width: 16px;
+  height: 1px;
+  margin: 3px 0;
+  background: var(--primary-soft-border);
+}
+.ab-btn.ab-ide-btn {
+  width: 32px;
+  height: 34px;
+  border-radius: 8px;
+}
+.ab-btn.ab-ide-btn:hover {
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+.ab-btn.ab-ide-btn.active {
+  background: var(--panel);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+}
+.ab-ide-btn .ab-badge-dot {
+  top: 1px;
+  right: -3px;
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+@keyframes ab-ide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ab-ide {
+    animation: none;
+  }
+}
 .ab-account {
   position: relative;
   margin-top: 8px;
@@ -5266,6 +5330,28 @@ button {
   overscroll-behavior: contain;
   padding: 20px 24px 32px;
   position: relative;
+}
+/* 설정의 [아바타 설정] 탭 안 — 스크롤·여백은 설정 화면이 한다. */
+.avset.embedded {
+  flex: none;
+  height: auto;
+}
+.avset-subnav {
+  display: flex;
+  margin-bottom: 12px;
+}
+.avset.embedded .avset-body {
+  flex: none;
+  overflow: visible;
+  padding: 0;
+}
+.avset.embedded .avset-notice {
+  position: sticky;
+  top: 56px;
+  left: auto;
+  transform: none;
+  align-self: flex-start;
+  margin-bottom: 10px;
 }
 .avset-card {
   background: var(--panel);

@@ -683,9 +683,16 @@ export class IdeStore {
 
   // ── 알림·대화 상자 ────────────────────────────────────────────────
 
+  /**
+   * 알린다. 호스트가 알림(토스트)을 가지면 그쪽으로만 — 앱의 다른 알림과 같은 자리에 뜬다.
+   * 없으면 IDE 가 스스로 띄운다(`notice` → IdeToast).
+   */
   notify(kind: Notice['kind'], message: string): void {
+    if (this.host.notify) {
+      this.host.notify(kind, message);
+      return;
+    }
     this.set({ notice: { kind, message, at: Date.now() } });
-    this.host.notify?.(kind, message);
   }
 
   clearNotice(): void {
@@ -979,7 +986,7 @@ export class IdeStore {
         diskChanged: backup.baseSha !== read.sha,
       });
       this.pinPreviewTabsOf(path);
-      this.set({ notice: { kind: 'info', message: `${basename(path)} 의 저장하지 않은 변경을 되살렸습니다`, at: Date.now() } });
+      this.notify('info', `${basename(path)} 의 저장하지 않은 변경을 되살렸습니다`);
     } else if (backup) {
       this.dropBackup(path);
     }
@@ -1054,10 +1061,9 @@ export class IdeStore {
       else this.dropBackup(path);
       if (!this.exists(path)) void this.refreshFiles();
       this.scheduleGit();
+      // 저장은 따로 알리지 않는다 — 탭의 고친 표시가 사라지는 것이 곧 알림이다(VS Code 와 같다).
       if (out.conflicts?.length) {
         this.notify('warning', '다른 곳에서 같은 파일을 고쳐 두 판을 모두 남겼습니다. 탐색기에서 .conflict 파일을 확인하세요.');
-      } else if (!opts.quiet) {
-        this.set({ notice: { kind: 'success', message: `${basename(path)} 저장됨`, at: Date.now() } });
       }
       return true;
     } catch (err) {
@@ -1476,12 +1482,12 @@ export class IdeStore {
 
   // ── 파일 작업 ─────────────────────────────────────────────────────
 
-  private async runFs(op: IdeFsOp, done: string): Promise<boolean> {
+  /** 파일 조작 — 결과는 탐색기에 바로 보이므로 따로 알리지 않는다. 실패만 알린다. */
+  private async runFs(op: IdeFsOp): Promise<boolean> {
     try {
       await this.host.fs(op);
       await this.refreshFiles();
       this.scheduleGit();
-      this.set({ notice: { kind: 'success', message: done, at: Date.now() } });
       return true;
     } catch (err) {
       this.notify('error', errorMessage(err, '작업을 마치지 못했습니다'));
@@ -1496,7 +1502,7 @@ export class IdeStore {
       this.notify('warning', `${name} 은(는) 이미 있습니다`);
       return false;
     }
-    if (kind === 'dir') return this.runFs({ op: 'mkdir', path }, `${name} 폴더를 만들었습니다`);
+    if (kind === 'dir') return this.runFs({ op: 'mkdir', path });
     try {
       await this.host.saveFile(path, new Uint8Array(), '');
     } catch (err) {
@@ -1532,7 +1538,7 @@ export class IdeStore {
       if (!ok) return false;
       for (const d of dirtyInside) if (!(await this.save(d.path, { quiet: true }))) return false;
     }
-    const ok = await this.runFs({ op: 'rename', src, dst }, `${basename(dst)}(으)로 옮겼습니다`);
+    const ok = await this.runFs({ op: 'rename', src, dst });
     if (!ok) return false;
     // 열린 탭을 새 경로로 옮긴다(문서는 새로 읽는다 — sha 는 같다).
     const moved = new Set<string>();
@@ -1571,7 +1577,7 @@ export class IdeStore {
       true,
     );
     if (!ok) return false;
-    const done = await this.runFs({ op: 'delete', paths }, `${label} 을(를) 지웠습니다`);
+    const done = await this.runFs({ op: 'delete', paths });
     if (!done) return false;
     for (const g of [...this.state.groups]) {
       for (const t of g.tabs) {
@@ -1599,7 +1605,7 @@ export class IdeStore {
       } else {
         const dstName = uniqueCopyName(name, taken);
         taken.add(dstName);
-        await this.runFs({ op: 'copy', src, dst: join(targetDir, dstName) }, `${dstName}(으)로 복사했습니다`);
+        await this.runFs({ op: 'copy', src, dst: join(targetDir, dstName) });
       }
     }
     if (clip.mode === 'cut') this.set({ clipboard: null });
@@ -1643,7 +1649,7 @@ export class IdeStore {
     if (done) {
       await this.refreshFiles();
       this.scheduleGit();
-      this.set({ notice: { kind: 'success', message: `${done}개 파일을 올렸습니다`, at: Date.now() } });
+      this.notify('success', `${done}개 파일을 올렸습니다`);
     }
   }
 
@@ -1706,7 +1712,7 @@ export class IdeStore {
         files: targets,
       });
       const n = out.changed.reduce((a, c) => a + c.count, 0);
-      this.set({ notice: { kind: 'success', message: `${out.changed.length}개 파일에서 ${n}개를 바꿨습니다`, at: Date.now() } });
+      this.notify('success', `${out.changed.length}개 파일에서 ${n}개를 바꿨습니다`);
       for (const c of out.changed) if (this.state.docs[c.path]) await this.reloadFromDisk(c.path);
       await this.runSearch();
       this.scheduleGit();
@@ -1867,6 +1873,8 @@ export class IdeStore {
         await this.refreshFiles();
         await this.checkDisk('all');
       }
+      // 원격을 오가는 일은 끝났다고 알린다 — 소스 제어 보기를 닫아 두었으면 달리 알 길이 없다.
+      if (['push', 'pull', 'sync', 'fetch', 'clone'].includes(String(args.op))) this.notify('success', `${label} 완료`);
       return out;
     } catch (err) {
       this.setGit({ busy: null });
@@ -1932,7 +1940,7 @@ export class IdeStore {
     );
     if (out) {
       await this.refreshAccount();
-      this.set({ notice: { kind: 'success', message: '토큰을 등록했습니다', at: Date.now() } });
+      this.notify('success', '토큰을 등록했습니다');
     }
   }
 

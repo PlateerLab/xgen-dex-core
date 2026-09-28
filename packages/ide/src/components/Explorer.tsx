@@ -310,6 +310,11 @@ export function Explorer() {
     <div className="xide-side-view xide-explorer">
       <div className="xide-side-header">
         <span className="xide-side-title">탐색기</span>
+        {readonly ? (
+          <span className="xide-chip" title="고정된 에이전트는 보기만 합니다">
+            <Icon name="lock" size={12} /> 읽기 전용
+          </span>
+        ) : null}
       </div>
       <div className="xide-section-header" title={agentName}>
         <span className="xide-section-title">{agentName || 'WORKSPACE'}</span>

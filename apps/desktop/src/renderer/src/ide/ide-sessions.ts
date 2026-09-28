@@ -17,6 +17,11 @@ interface Entry {
 
 const stores = new Map<string, Entry>();
 const modeListeners = new Set<() => void>();
+/** 저장소가 생기거나 없어질 때 — 앱 사이드바의 IDE 단추가 따라간다. */
+const storeListeners = new Set<() => void>();
+const emitStores = () => {
+  for (const fn of storeListeners) fn();
+};
 
 // [채팅 | IDE] 선택은 앱을 다시 켜도 남는다(VS Code 가 배치를 기억하듯). 대화 탭의 key 는
 // 대화 id 라 다시 켜도 같다. 앱 저장 공간만 쓰고, 닫힌 대화의 것은 지운다(아래 구독).
@@ -52,11 +57,35 @@ export function ideStoreFor(
   hit?.store.dispose();
   const store = new IdeStore(createDexIdeHost(agent));
   stores.set(sessionKey, { store, workflowId: agent.workflowId });
+  // 그리는 도중(채팅 화면이 저장소를 만들 때)에 다른 부품을 다시 그리게 하지 않는다.
+  queueMicrotask(emitStores);
   return store;
 }
 
 export function peekIdeStore(sessionKey: string): IdeStore | null {
   return stores.get(sessionKey)?.store ?? null;
+}
+
+/** 이 채팅 탭의 IDE 저장소를 구독한다 — 아직 없으면 null, 생기면 다시 그린다. */
+export function useIdeStore(sessionKey: string | null): IdeStore | null {
+  return useSyncExternalStore(
+    (cb) => {
+      storeListeners.add(cb);
+      return () => storeListeners.delete(cb);
+    },
+    () => (sessionKey ? peekIdeStore(sessionKey) : null),
+  );
+}
+
+/** 이 채팅 탭이 지금 IDE 로 보이는가 — 키가 없으면 false. */
+export function useIsIdeMode(sessionKey: string | null): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      modeListeners.add(cb);
+      return () => modeListeners.delete(cb);
+    },
+    () => (sessionKey ? modes.has(sessionKey) : false),
+  );
 }
 
 export function isIdeMode(sessionKey: string): boolean {
@@ -88,11 +117,14 @@ const seen = new Set<string>();
 sessionStore.subscribe(() => {
   const live = new Set(sessionStore.getSnapshot().sessions.map((s) => s.key));
   for (const key of live) seen.add(key);
+  let dropped = false;
   for (const [key, entry] of stores) {
     if (live.has(key)) continue;
     entry.store.dispose();
     stores.delete(key);
+    dropped = true;
   }
+  if (dropped) emitStores();
   let changed = false;
   for (const key of [...modes]) {
     if (seen.has(key) && !live.has(key)) {

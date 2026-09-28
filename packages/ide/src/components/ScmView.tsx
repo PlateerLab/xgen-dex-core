@@ -213,7 +213,11 @@ function RepoPanel({ status, readonly }: { status: GitStatus; readonly: boolean 
         >
           <Icon name="branch" /> {b.head || (b.oid ? b.oid.slice(0, 8) : '(아직 커밋 없음)')}
         </button>
-        {b.upstream ? <span className="xide-dim">⇄ {b.upstream}</span> : null}
+        {b.upstream ? (
+          <span className="xide-dim xide-scm-upstream" title={`추적: ${b.upstream}`}>
+            ⇄ {b.upstream}
+          </span>
+        ) : null}
         {status.state ? <span className="xide-warn-chip">{STATE_LABEL[status.state]}</span> : null}
       </div>
       {!readonly ? (
@@ -223,7 +227,7 @@ function RepoPanel({ status, readonly }: { status: GitStatus; readonly: boolean 
             className="xide-input"
             rows={Math.min(8, Math.max(1, message.split('\n').length))}
             value={message}
-            placeholder={`메시지 (${formatBinding('Mod+Enter')} 로 ${b.head || '이 브랜치'} 에 커밋)`}
+            placeholder={`커밋 메시지 (${formatBinding('Mod+Enter')})`}
             aria-label="커밋 메시지"
             onChange={(e) => store.setCommitMessage(repo, e.target.value)}
             onKeyDown={(e) => {

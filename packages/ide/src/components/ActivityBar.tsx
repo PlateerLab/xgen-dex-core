@@ -39,7 +39,7 @@ export function ActivityBar({ views }: { views: SideView[] }) {
             aria-pressed={side === v.id}
             onClick={() => store.toggleSideView(v.id)}
           >
-            <Icon name={v.icon} size={22} />
+            <Icon name={v.icon} size={21} />
             {badges[i] ? <span className="xide-activity-badge">{badges[i] > 999 ? '999+' : badges[i]}</span> : null}
           </button>
         ))}
@@ -54,7 +54,7 @@ export function ActivityBar({ views }: { views: SideView[] }) {
             aria-pressed={panelOpen}
             onClick={() => (panelOpen ? store.togglePanel() : store.showTerminal())}
           >
-            <Icon name="terminal" size={22} />
+            <Icon name="terminal" size={21} />
           </button>
         ) : null}
         <button
@@ -65,7 +65,7 @@ export function ActivityBar({ views }: { views: SideView[] }) {
           aria-pressed={chatOpen}
           onClick={() => store.setLayout({ chatOpen: !chatOpen })}
         >
-          <Icon name="chat" size={22} />
+          <Icon name="chat" size={21} />
         </button>
       </div>
     </nav>

@@ -1,57 +1,79 @@
 /*
- * IDE 보기 — 모든 규칙은 .xide-root 아래로 가둔다(호스트 화면을 건드리지 않는다).
- * 색은 --xide-* 변수로만 쓴다. 호스트는 이 변수만 덮어 자기 색에 맞출 수 있다.
- * 클래스 이름: 블록·요소는 xide-, 상태는 xide--(active·danger·dot …). 호스트 화면의 전역 규칙
- * (.danger·.primary·.dot 같은 이름)이 IDE 안으로 새어 들지 않게 상태도 이름공간에 넣는다.
+ * IDE 보기 — 배치는 VS Code(활동 막대·사이드바·편집기 탭·패널·상태 표시줄), 모양은 XGEN.
+ *
+ * 색·글꼴·모서리는 데스크톱 앱(dex)과 웹이 쓰는 XGEN 디자인 그대로다(흰 판·옅은 회색 바탕·
+ * #e4e7ec 선·파랑→보라 그라데이션 강조·Pretendard). VS Code 의 색을 가져오지 않는다.
+ *
+ * 모든 규칙은 .xide-root 아래로 가둔다(호스트 화면을 건드리지 않는다). 색은 --xide-* 변수로만
+ * 쓰고, 호스트는 이 변수만 덮어 자기 토큰에 맞춘다. 클래스 이름: 블록·요소는 xide-, 상태는
+ * xide--(active·danger·dot …) — 호스트 화면의 전역 규칙(.danger·.primary·.dot 같은 이름)이 IDE
+ * 안으로 새어 들지 않게 상태도 이름공간에 넣는다.
  * 배포물(xgen-dex-ide)은 빌드가 아래 @import 를 펼쳐 한 파일로 낸다.
  */
 @import '@xterm/xterm/css/xterm.css';
 
+/* ── 토큰 ────────────────────────────────────────────────────── */
+
 .xide-root {
-  --xide-bg: #1e1e1e;
-  --xide-bg-side: #252526;
-  --xide-bg-activity: #333333;
-  --xide-bg-tabs: #252526;
-  --xide-bg-tab: #2d2d2d;
-  --xide-bg-tab-active: #1e1e1e;
-  --xide-bg-input: #3c3c3c;
-  --xide-bg-hover: #2a2d2e;
-  --xide-bg-selected: #37373d;
-  --xide-bg-focus: #04395e;
-  --xide-bg-menu: #252526;
-  --xide-bg-status: #007acc;
-  --xide-bg-status-readonly: #6c6c6c;
-  --xide-bg-panel: #1e1e1e;
-  --xide-bg-banner: #4d3a0f;
-  --xide-fg: #cccccc;
-  --xide-fg-strong: #e7e7e7;
-  --xide-fg-dim: #8b8b8b;
-  --xide-fg-status: #ffffff;
-  --xide-fg-activity: #858585;
-  --xide-fg-activity-active: #ffffff;
-  --xide-border: #3c3c3c;
-  --xide-border-soft: #2b2b2b;
-  --xide-accent: #007acc;
-  --xide-accent-fg: #ffffff;
-  --xide-focus: #007fd4;
-  --xide-danger: #f14c4c;
-  --xide-warning: #cca700;
-  --xide-success: #89d185;
-  --xide-git-modified: #e2c08d;
-  --xide-git-added: #81b88b;
-  --xide-git-untracked: #73c991;
-  --xide-git-deleted: #c74e39;
-  --xide-git-conflict: #e4676b;
-  --xide-git-renamed: #73c991;
-  --xide-qd-added: #487e02;
-  --xide-qd-modified: #1b81a8;
-  --xide-qd-deleted: #f14c4c;
-  --xide-hit: rgba(234, 92, 0, 0.33);
-  --xide-ins: rgba(156, 204, 44, 0.3);
-  --xide-del: rgba(255, 0, 0, 0.3);
-  --xide-shadow: rgba(0, 0, 0, 0.36);
-  --xide-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Pretendard', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
-  --xide-mono: 'JetBrains Mono', 'D2Coding', 'Fira Code', Menlo, Consolas, 'Liberation Mono', monospace;
+  /* 판·바탕 — dex --app-bg / --panel / --panel-2 */
+  --xide-app: #f7f8fa;
+  --xide-panel: #ffffff;
+  --xide-panel-2: #f8f9fa;
+  --xide-hover: #f2f4f7;
+  --xide-input: #f8f9fa;
+  /* 선 */
+  --xide-border: #e4e7ec;
+  --xide-border-strong: #d0d5dd;
+  --xide-border-soft: rgba(0, 0, 0, 0.06);
+  /* 글자 */
+  --xide-text: #1d1f23;
+  --xide-text-2: #40444d;
+  --xide-muted: #6b7280;
+  --xide-faint: #abb1ba;
+  /* 강조 — 브랜드 파랑→보라 */
+  --xide-primary: #305eeb;
+  --xide-primary-text: #305eeb;
+  --xide-primary-end: #783ced;
+  --xide-primary-grad: linear-gradient(90deg, #305eeb 0%, #783ced 100%);
+  --xide-primary-soft: rgba(48, 94, 235, 0.1);
+  --xide-primary-soft-2: rgba(48, 94, 235, 0.16);
+  --xide-primary-soft-border: rgba(48, 94, 235, 0.28);
+  --xide-ring: rgba(120, 60, 237, 0.14);
+  /* 상태 */
+  --xide-danger: #e03131;
+  --xide-danger-bg: #fdf3f3;
+  --xide-danger-border: #f6c1c1;
+  --xide-warning: #b77900;
+  --xide-warning-bg: #fff8e6;
+  --xide-warning-border: #f3dca2;
+  --xide-success: #2eb146;
+  /* 소스 제어 */
+  --xide-git-modified: #b7791f;
+  --xide-git-added: #23923a;
+  --xide-git-untracked: #23923a;
+  --xide-git-deleted: #e03131;
+  --xide-git-conflict: #d6336c;
+  --xide-git-renamed: #0c8599;
+  --xide-qd-added: #2eb146;
+  --xide-qd-modified: #305eeb;
+  --xide-qd-deleted: #e03131;
+  /* 찾기 */
+  --xide-hit: rgba(245, 159, 0, 0.26);
+  --xide-ins: rgba(46, 177, 70, 0.2);
+  --xide-del: rgba(224, 49, 49, 0.16);
+  /* 그림자·모서리 */
+  --xide-shadow-md: 0 2px 8px rgba(15, 23, 42, 0.08);
+  --xide-shadow-lg: 0 8px 28px rgba(15, 23, 42, 0.14);
+  --xide-scrim: rgba(15, 23, 42, 0.32);
+  --xide-radius-sm: 6px;
+  --xide-radius: 8px;
+  --xide-radius-lg: 12px;
+  /* 글꼴 — 앱과 같은 Pretendard, 코드는 앱의 고정폭 */
+  --xide-font: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo',
+    'Noto Sans KR', 'Malgun Gothic', sans-serif;
+  --xide-mono: 'Fira Code', 'D2Coding', 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  /* 폴더 */
+  --xide-folder: #e2a33b;
 
   position: relative;
   display: flex;
@@ -60,45 +82,55 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--xide-bg);
-  color: var(--xide-fg);
+  background: var(--xide-panel);
+  color: var(--xide-text);
   font-family: var(--xide-font);
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  color-scheme: light;
 }
 
-.xide-root.xide-theme-light {
-  --xide-bg: #ffffff;
-  --xide-bg-side: #f3f3f3;
-  --xide-bg-activity: #2c2c2c;
-  --xide-bg-tabs: #f3f3f3;
-  --xide-bg-tab: #ececec;
-  --xide-bg-tab-active: #ffffff;
-  --xide-bg-input: #ffffff;
-  --xide-bg-hover: #e8e8e8;
-  --xide-bg-selected: #e4e6f1;
-  --xide-bg-focus: #d6ebff;
-  --xide-bg-menu: #ffffff;
-  --xide-bg-panel: #ffffff;
-  --xide-bg-banner: #fff4d6;
-  --xide-fg: #333333;
-  --xide-fg-strong: #1f1f1f;
-  --xide-fg-dim: #717171;
-  --xide-fg-activity: #8e8e8e;
-  --xide-border: #d4d4d4;
-  --xide-border-soft: #e5e5e5;
-  --xide-git-modified: #895503;
-  --xide-git-added: #587c0c;
-  --xide-git-untracked: #007100;
-  --xide-git-deleted: #ad0707;
-  --xide-git-conflict: #ad0707;
-  --xide-git-renamed: #007100;
-  --xide-qd-added: #48985d;
-  --xide-qd-modified: #2090d3;
-  --xide-qd-deleted: #e51400;
-  --xide-hit: rgba(234, 92, 0, 0.25);
-  --xide-shadow: rgba(0, 0, 0, 0.16);
+/* 어두운 테마 — dex 의 어두운 팔레트 그대로 */
+.xide-root.xide-theme-dark {
+  --xide-app: #16181d;
+  --xide-panel: #1d1f23;
+  --xide-panel-2: #22252b;
+  --xide-hover: #272a31;
+  --xide-input: #22252b;
+  --xide-border: #2b2f37;
+  --xide-border-strong: #3a3f49;
+  --xide-border-soft: rgba(255, 255, 255, 0.06);
+  --xide-text: #e7e9ee;
+  --xide-text-2: #b6bcc6;
+  --xide-muted: #9aa1ac;
+  --xide-faint: #6b7280;
+  --xide-primary-text: #7d9cff;
+  --xide-primary-soft: rgba(91, 130, 255, 0.14);
+  --xide-primary-soft-2: rgba(91, 130, 255, 0.22);
+  --xide-primary-soft-border: rgba(125, 156, 255, 0.36);
+  --xide-ring: rgba(150, 110, 255, 0.24);
+  --xide-danger: #ff6b6b;
+  --xide-danger-bg: #2a1c1c;
+  --xide-danger-border: #5a2b2b;
+  --xide-warning: #f2b441;
+  --xide-warning-bg: #2c2415;
+  --xide-warning-border: #5a4722;
+  --xide-git-modified: #e2b33c;
+  --xide-git-added: #5fcf73;
+  --xide-git-untracked: #5fcf73;
+  --xide-git-deleted: #ff6b6b;
+  --xide-git-conflict: #f06595;
+  --xide-git-renamed: #3bc9db;
+  --xide-qd-added: #3fb950;
+  --xide-qd-modified: #5b82ff;
+  --xide-qd-deleted: #ff6b6b;
+  --xide-hit: rgba(245, 159, 0, 0.3);
+  --xide-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --xide-shadow-lg: 0 10px 32px rgba(0, 0, 0, 0.5);
+  --xide-scrim: rgba(0, 0, 0, 0.5);
+  --xide-folder: #e8b04b;
+  color-scheme: dark;
 }
 
 .xide-root *,
@@ -117,15 +149,40 @@
 }
 
 .xide-root :focus-visible {
-  outline: 1px solid var(--xide-focus);
-  outline-offset: -1px;
+  outline: 2px solid var(--xide-primary-soft-border);
+  outline-offset: -2px;
 }
+
+/* 스크롤 막대 — 앱과 같은 가늘고 둥근 막대 */
+.xide-root ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.xide-root ::-webkit-scrollbar-thumb {
+  background: var(--xide-border);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.xide-root ::-webkit-scrollbar-thumb:hover {
+  background: var(--xide-faint);
+  background-clip: padding-box;
+}
+
+.xide-root ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── 편집기(Monaco) 안 ───────────────────────────────────────── */
 
 /* 여백 변경 표시(quick diff) — 줄 번호와 코드 사이 좁은 칸에 막대(더함·바꿈)와 삼각형(지움). */
 .xide-root .monaco-editor .xide-qd-added,
 .xide-root .monaco-editor .xide-qd-modified {
   width: 3px !important;
   margin-left: 3px;
+  border-radius: 2px;
   background: var(--xide-qd-added);
 }
 
@@ -148,6 +205,8 @@
 .xide-root .monaco-diff-editor .gutter.monaco-editor {
   outline: none;
 }
+
+/* ── 공통 부품 ───────────────────────────────────────────────── */
 
 .xide-icon {
   flex: none;
@@ -173,209 +232,32 @@
   }
 }
 
-/* ── 틀 ─────────────────────────────────────────────────────── */
-
-.xide-main {
-  flex: 1 1 auto;
-  display: flex;
-  min-height: 0;
-}
-
-.xide-activity {
-  flex: none;
-  width: 48px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  background: var(--xide-bg-activity);
-}
-
-.xide-activity-top,
-.xide-activity-bottom {
-  display: flex;
-  flex-direction: column;
-}
-
-.xide-activity-btn {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border: 0;
-  border-left: 2px solid transparent;
-  background: transparent;
-  color: var(--xide-fg-activity) !important;
-  cursor: pointer;
-}
-
-.xide-activity-btn:hover {
-  color: var(--xide-fg-activity-active) !important;
-}
-
-.xide-activity-btn.xide--active {
-  color: var(--xide-fg-activity-active) !important;
-  border-left-color: var(--xide-fg-activity-active);
-}
-
-.xide-activity-badge {
-  position: absolute;
-  right: 6px;
-  bottom: 8px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--xide-accent);
-  color: var(--xide-accent-fg);
-  font-size: 10px;
-  line-height: 16px;
-  text-align: center;
-}
-
-.xide-sidebar {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  background: var(--xide-bg-side);
-  border-right: 1px solid var(--xide-border-soft);
-}
-
-.xide-center {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.xide-chat {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border-left: 1px solid var(--xide-border-soft);
-  background: var(--xide-bg-side);
-}
-
-.xide-chat > * {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.xide-split {
-  flex: none;
-  position: relative;
-  z-index: 3;
-  background: transparent;
-  touch-action: none;
-}
-
-.xide-split-x {
-  width: 4px;
-  margin: 0 -2px;
-  cursor: col-resize;
-}
-
-.xide-split-y {
-  height: 4px;
-  margin: -2px 0;
-  cursor: row-resize;
-}
-
-.xide-split:hover,
-.xide-split.xide--dragging,
-.xide-split:focus-visible {
-  background: var(--xide-focus);
-  transition: background 0.1s 0.2s;
-}
-
-/* ── 사이드바 공통 ──────────────────────────────────────────── */
-
-.xide-side-view {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-}
-
-.xide-side-header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 35px;
-  padding: 0 8px 0 20px;
-}
-
-.xide-side-title {
-  flex: 1 1 auto;
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.xide-section-header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px 0 12px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-
-.xide-section-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.xide-section-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  opacity: 0;
-}
-
-.xide-side-view:hover .xide-section-actions,
-.xide-side-view:focus-within .xide-section-actions,
-.xide-side-header .xide-section-actions {
-  opacity: 1;
-}
-
 .xide-ibtn {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--xide-radius-sm);
   background: transparent;
-  color: var(--xide-fg) !important;
+  color: var(--xide-muted) !important;
   cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .xide-ibtn:hover:not(:disabled) {
-  background: rgba(90, 93, 94, 0.31);
+  background: var(--xide-hover);
+  color: var(--xide-text) !important;
 }
 
 .xide-ibtn.xide--active {
-  background: rgba(90, 93, 94, 0.45);
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text) !important;
 }
 
 .xide-ibtn:disabled {
@@ -387,13 +269,14 @@
   position: absolute;
   top: -3px;
   right: -4px;
-  min-width: 14px;
-  padding: 0 3px;
-  border-radius: 7px;
-  background: var(--xide-accent);
-  color: var(--xide-accent-fg);
-  font-size: 9px;
-  line-height: 14px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--xide-primary-grad);
+  color: #ffffff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
 }
 
 .xide-btn {
@@ -401,35 +284,52 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 26px;
+  height: 30px;
   padding: 0 12px;
   border: 1px solid var(--xide-border);
-  border-radius: 2px;
-  background: transparent;
-  color: var(--xide-fg) !important;
-  font-size: 12px;
+  border-radius: var(--xide-radius);
+  background: var(--xide-panel);
+  color: var(--xide-text) !important;
+  font-size: 12.5px;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    filter 0.12s ease;
 }
 
 .xide-btn:hover:not(:disabled) {
-  background: var(--xide-bg-hover);
+  background: var(--xide-panel-2);
+  border-color: var(--xide-border-strong);
 }
 
 .xide-btn.xide--primary {
-  border-color: var(--xide-accent);
-  background: var(--xide-accent);
-  color: var(--xide-accent-fg) !important;
+  border-color: transparent;
+  background: var(--xide-primary-grad);
+  color: #ffffff !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(48, 94, 235, 0.25);
 }
 
 .xide-btn.xide--primary:hover:not(:disabled) {
-  filter: brightness(1.12);
-  background: var(--xide-accent);
+  border-color: transparent;
+  background: var(--xide-primary-grad);
+  filter: brightness(1.06);
 }
 
 .xide-btn.xide--danger {
-  border-color: var(--xide-danger);
+  border-color: var(--xide-danger-border);
+  background: var(--xide-danger-bg);
   color: var(--xide-danger) !important;
+  font-weight: 600;
+}
+
+.xide-btn.xide--danger:hover:not(:disabled) {
+  border-color: var(--xide-danger-border);
+  background: var(--xide-danger-bg);
+  filter: brightness(0.97);
 }
 
 .xide-btn.xide--full {
@@ -448,7 +348,8 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--xide-focus) !important;
+  color: var(--xide-primary-text) !important;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -464,38 +365,51 @@
 .xide-input {
   width: 100%;
   min-width: 0;
-  height: 26px;
-  padding: 3px 6px;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  background: var(--xide-bg-input);
-  color: var(--xide-fg-strong);
+  height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius);
+  background: var(--xide-input);
+  color: var(--xide-text);
   font: inherit;
   font-size: 13px;
   outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
 }
 
 textarea.xide-input {
   height: auto;
-  min-height: 26px;
+  min-height: 30px;
+  padding: 7px 10px;
   resize: none;
   line-height: 18px;
 }
 
 .xide-input:focus {
-  border-color: var(--xide-focus);
+  border-color: var(--xide-primary-end);
+  background: var(--xide-panel);
+  box-shadow: 0 0 0 3px var(--xide-ring);
 }
 
-.xide-input.xide--invalid {
+.xide-input.xide--invalid,
+.xide-input.xide--invalid:focus {
   border-color: var(--xide-danger);
+  box-shadow: 0 0 0 3px var(--xide-danger-bg);
 }
 
 .xide-input::placeholder {
-  color: var(--xide-fg-dim);
+  color: var(--xide-faint);
+}
+
+.xide-root select.xide-input {
+  padding-right: 6px;
 }
 
 .xide-dim {
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
 }
 
 .xide-small {
@@ -507,13 +421,16 @@ textarea.xide-input {
 }
 
 .xide-count {
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: rgba(128, 128, 128, 0.35);
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
   font-size: 11px;
+  font-weight: 600;
   line-height: 18px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .xide-row-actions {
@@ -530,7 +447,7 @@ textarea.xide-input {
   justify-content: center;
   gap: 10px;
   padding: 24px 16px;
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
   text-align: center;
 }
 
@@ -558,7 +475,7 @@ textarea.xide-input {
   top: 0;
   width: 30%;
   height: 2px;
-  background: var(--xide-focus);
+  background: var(--xide-primary-grad);
   animation: xide-progress 1.2s ease-in-out infinite;
 }
 
@@ -572,12 +489,243 @@ textarea.xide-input {
 }
 
 .xide-spinner {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid currentColor;
+  display: inline-block;
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1.6px solid currentColor;
   border-right-color: transparent;
   border-radius: 50%;
   animation: xide-spin 0.8s linear infinite;
+}
+
+.xide-warn-chip {
+  padding: 0 7px;
+  border: 1px solid var(--xide-warning-border);
+  border-radius: 999px;
+  background: var(--xide-warning-bg);
+  color: var(--xide-warning);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.xide-root kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--xide-border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--xide-panel);
+  color: var(--xide-text-2);
+  font-family: var(--xide-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── 틀 ─────────────────────────────────────────────────────── */
+
+.xide-main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* 활동 막대 — 앱 왼쪽 끝의 활동 막대와 같은 모양(흰 판·옅은 아이콘·활성은 브랜드 색과 2px 바). */
+.xide-activity {
+  flex: none;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 6px 0 8px;
+  background: var(--xide-panel);
+  border-right: 1px solid var(--xide-border);
+}
+
+.xide-activity-top,
+.xide-activity-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xide-activity-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--xide-muted) !important;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.xide-activity-btn:hover {
+  color: var(--xide-text) !important;
+}
+
+.xide-activity-btn.xide--active {
+  color: var(--xide-primary-text) !important;
+}
+
+.xide-activity-btn.xide--active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--xide-primary-grad);
+}
+
+/* 아이콘을 가리지 않게 오른쪽 위 모서리에 작게 */
+.xide-activity-badge {
+  position: absolute;
+  top: 6px;
+  left: 26px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border: 1.5px solid var(--xide-panel);
+  border-radius: 999px;
+  background: var(--xide-primary-grad);
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.xide-sidebar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--xide-panel);
+  border-right: 1px solid var(--xide-border);
+}
+
+.xide-center {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--xide-panel);
+}
+
+.xide-chat {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--xide-border);
+  background: var(--xide-panel);
+}
+
+.xide-chat > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.xide-split {
+  flex: none;
+  position: relative;
+  z-index: 3;
+  background: transparent;
+  touch-action: none;
+  transition: background-color 0.12s ease 0.15s;
+}
+
+.xide-split-x {
+  width: 6px;
+  margin: 0 -3px;
+  cursor: col-resize;
+}
+
+.xide-split-y {
+  height: 6px;
+  margin: -3px 0;
+  cursor: row-resize;
+}
+
+.xide-split:hover,
+.xide-split.xide--dragging,
+.xide-split:focus-visible {
+  background: var(--xide-primary-soft-border);
+}
+
+/* ── 사이드바 공통 ──────────────────────────────────────────── */
+
+.xide-side-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* 패널 제목 — 앱 사이드바 제목과 같은 작은 굵은 글자 */
+.xide-side-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 8px 0 16px;
+}
+
+.xide-side-title {
+  flex: 1 1 auto;
+  color: var(--xide-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-section-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin: 0 8px 2px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--xide-radius-sm);
+  color: var(--xide-text);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.xide-section-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xide-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.xide-side-view:hover .xide-section-actions,
+.xide-side-view:focus-within .xide-section-actions,
+.xide-side-header .xide-section-actions {
+  opacity: 1;
 }
 
 /* ── 탐색기 ─────────────────────────────────────────────────── */
@@ -586,60 +734,77 @@ textarea.xide-input {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding-bottom: 12px;
+  padding: 0 8px 12px;
   outline: none;
 }
 
 .xide-tree.xide--drop-root {
-  background: rgba(83, 89, 93, 0.3);
+  background: var(--xide-primary-soft);
+  box-shadow: inset 0 0 0 2px var(--xide-primary-soft-border);
 }
 
 .xide-tree-note {
-  padding: 8px 20px;
-  color: var(--xide-fg-dim);
-  font-size: 12px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--xide-radius);
+  background: var(--xide-panel-2);
+  color: var(--xide-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.xide-tree-note:has(> .xide-spinner) {
+  flex-direction: row;
+  align-items: center;
 }
 
 .xide-tree-note.xide--error {
-  color: var(--xide-danger);
+  border: 1px solid var(--xide-warning-border);
+  background: var(--xide-warning-bg);
+  color: var(--xide-warning);
 }
 
 .xide-tree-row {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
+  gap: 5px;
+  height: 26px;
   padding-right: 8px;
+  border-radius: var(--xide-radius-sm);
+  color: var(--xide-text);
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
 }
 
 .xide-tree-row:hover {
-  background: var(--xide-bg-hover);
+  background: var(--xide-hover);
 }
 
 .xide-tree-row.xide--selected {
-  background: var(--xide-bg-selected);
+  background: var(--xide-primary-soft);
+}
+
+.xide-tree-row.xide--active .xide-tree-name {
+  font-weight: 600;
 }
 
 .xide-tree:focus .xide-tree-row.xide--focused {
-  outline: 1px solid var(--xide-focus);
-  outline-offset: -1px;
-  background: var(--xide-bg-focus);
+  box-shadow: inset 0 0 0 1px var(--xide-primary-soft-border);
 }
 
 .xide-tree-row.xide--cut {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .xide-tree-row.xide--drop-target {
-  background: rgba(83, 89, 93, 0.5);
+  background: var(--xide-primary-soft-2);
+  box-shadow: inset 0 0 0 1px var(--xide-primary-soft-border);
 }
 
 .xide-tree-guides {
@@ -655,6 +820,7 @@ textarea.xide-input {
   width: 16px;
   display: inline-flex;
   justify-content: center;
+  color: var(--xide-muted);
 }
 
 .xide-tree-name {
@@ -669,6 +835,7 @@ textarea.xide-input {
   min-width: 12px;
   margin-left: 6px;
   font-size: 11px;
+  font-weight: 700;
   text-align: right;
 }
 
@@ -688,12 +855,12 @@ textarea.xide-input {
 }
 
 .xide-folder-icon {
-  color: #dcb67a;
+  color: var(--xide-folder);
 }
 
 .xide-file-generic,
 .xide-file-image {
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
 }
 
 .xide-file-badge {
@@ -701,10 +868,10 @@ textarea.xide-input {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 16px;
+  min-width: 18px;
   height: 16px;
   font-family: var(--xide-mono);
-  font-size: 8px;
+  font-size: 8.5px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -758,23 +925,28 @@ textarea.xide-input {
 }
 
 .xide-inline-input .xide-input {
-  height: 20px;
-  padding: 0 4px;
-  border-color: var(--xide-focus);
+  height: 22px;
+  padding: 0 6px;
+  border-color: var(--xide-primary-end);
+  border-radius: 5px;
+  background: var(--xide-panel);
+  box-shadow: 0 0 0 2px var(--xide-ring);
 }
 
 .xide-inline-error {
   position: absolute;
   left: 0;
   right: 0;
-  top: 21px;
+  top: 25px;
   z-index: 5;
-  padding: 4px 6px;
-  border: 1px solid var(--xide-danger);
-  background: var(--xide-bg-menu);
-  color: var(--xide-fg-strong);
+  padding: 6px 8px;
+  border: 1px solid var(--xide-danger-border);
+  border-radius: var(--xide-radius-sm);
+  background: var(--xide-danger-bg);
+  color: var(--xide-danger);
   font-size: 12px;
   white-space: normal;
+  box-shadow: var(--xide-shadow-md);
 }
 
 /* ── 찾기 ───────────────────────────────────────────────────── */
@@ -782,7 +954,7 @@ textarea.xide-input {
 .xide-search-form {
   flex: none;
   position: relative;
-  padding: 0 12px 6px 8px;
+  padding: 0 12px 8px 8px;
 }
 
 .xide-search-row {
@@ -796,19 +968,26 @@ textarea.xide-input {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 26px;
+  width: 18px;
+  height: 30px;
   padding: 0;
   border: 0;
+  border-radius: 5px;
   background: transparent;
+  color: var(--xide-muted);
   cursor: pointer;
+}
+
+.xide-search-toggle-replace:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
 }
 
 .xide-search-fields {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -817,13 +996,13 @@ textarea.xide-input {
 }
 
 .xide-search-box .xide-input {
-  padding-right: 72px;
+  padding-right: 80px;
 }
 
 .xide-search-flags {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: 4px;
+  right: 4px;
   display: flex;
   gap: 1px;
 }
@@ -836,18 +1015,21 @@ textarea.xide-input {
   height: 22px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: 5px;
   background: transparent;
+  color: var(--xide-muted);
   cursor: pointer;
 }
 
 .xide-flag:hover:not(:disabled) {
-  background: rgba(90, 93, 94, 0.31);
+  background: var(--xide-hover);
+  color: var(--xide-text);
 }
 
 .xide-flag.xide--on {
-  border-color: var(--xide-focus);
-  background: rgba(36, 137, 219, 0.35);
+  border-color: var(--xide-primary-soft-border);
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text);
 }
 
 .xide-flag:disabled {
@@ -864,21 +1046,23 @@ textarea.xide-input {
 .xide-search-details {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-left: 18px;
+  gap: 8px;
+  padding-left: 20px;
 }
 
 .xide-search-details label {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
+  gap: 4px;
+  color: var(--xide-muted);
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 .xide-search-summary {
   flex: none;
-  padding: 4px 20px 6px;
-  color: var(--xide-fg-dim);
+  padding: 2px 20px 8px;
+  color: var(--xide-muted);
   font-size: 12px;
 }
 
@@ -894,22 +1078,23 @@ textarea.xide-input {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding-bottom: 12px;
+  padding: 0 8px 12px;
 }
 
 .xide-search-file-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 8px 0 10px;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--xide-radius-sm);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .xide-search-file-row:hover,
 .xide-search-match:hover {
-  background: var(--xide-bg-hover);
+  background: var(--xide-hover);
 }
 
 .xide-search-file-row:hover .xide-row-actions {
@@ -922,6 +1107,7 @@ textarea.xide-input {
 
 .xide-search-file-name {
   flex: none;
+  font-weight: 500;
 }
 
 .xide-search-file-dir {
@@ -929,25 +1115,29 @@ textarea.xide-input {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
   font-size: 12px;
 }
 
 .xide-search-count {
   margin-left: auto;
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: rgba(128, 128, 128, 0.35);
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
   font-size: 11px;
+  font-weight: 600;
   line-height: 18px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .xide-search-match {
-  height: 22px;
-  padding: 0 8px 0 42px;
-  line-height: 22px;
+  height: 24px;
+  padding: 0 8px 0 36px;
+  border-radius: var(--xide-radius-sm);
+  line-height: 24px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -955,13 +1145,14 @@ textarea.xide-input {
 }
 
 .xide-search-preview {
-  font-size: 13px;
+  color: var(--xide-text-2);
+  font-size: 12.5px;
 }
 
 .xide-search-hit {
   background: var(--xide-hit);
-  color: inherit;
-  border-radius: 2px;
+  color: var(--xide-text);
+  border-radius: 3px;
 }
 
 del.xide-search-hit {
@@ -971,6 +1162,7 @@ del.xide-search-hit {
 
 .xide-search-ins {
   background: var(--xide-ins);
+  border-radius: 3px;
   text-decoration: none;
 }
 
@@ -987,7 +1179,7 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 12px 6px 20px;
+  padding: 0 16px 8px;
   font-size: 12px;
 }
 
@@ -995,10 +1187,28 @@ del.xide-search-hit {
 .xide-scm-branch {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
-  padding: 2px 12px 2px 20px;
+  min-width: 0;
+  white-space: nowrap;
+  min-height: 24px;
+  padding: 2px 16px;
+  color: var(--xide-text-2);
   font-size: 12px;
-  min-height: 22px;
+}
+
+.xide-scm-branch .xide-link {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-scm-upstream {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .xide-scm-remote-path {
@@ -1010,17 +1220,18 @@ del.xide-search-hit {
 }
 
 .xide-scm-remote-none {
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
 }
 
 .xide-provider {
   flex: none;
-  padding: 0 6px;
-  border-radius: 3px;
-  background: rgba(128, 128, 128, 0.3);
-  font-size: 11px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
+  font-size: 10.5px;
+  font-weight: 700;
   line-height: 18px;
-  font-weight: 600;
 }
 
 .xide-provider.xide--github {
@@ -1043,19 +1254,16 @@ del.xide-search-hit {
   color: #ffffff;
 }
 
-.xide-warn-chip {
-  padding: 0 6px;
-  border-radius: 3px;
-  background: var(--xide-warning);
-  color: #1e1e1e;
-  font-size: 11px;
+.xide-theme-dark .xide-provider.xide--github {
+  background: #e7e9ee;
+  color: #1d1f23;
 }
 
 .xide-scm-commit {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 12px 8px 20px;
+  gap: 8px;
+  padding: 8px 16px 12px;
 }
 
 .xide-split-button {
@@ -1064,27 +1272,33 @@ del.xide-search-hit {
 
 .xide-split-button .xide-btn:first-child {
   flex: 1 1 auto;
-  border-radius: 2px 0 0 2px;
+  border-radius: var(--xide-radius) 0 0 var(--xide-radius);
 }
 
 .xide-split-more {
-  width: 28px;
+  width: 32px;
   padding: 0 !important;
-  border-left: 1px solid rgba(255, 255, 255, 0.4) !important;
-  border-radius: 0 2px 2px 0 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.35) !important;
+  border-radius: 0 var(--xide-radius) var(--xide-radius) 0 !important;
 }
 
 .xide-scm-section-head {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 12px 0 8px;
-  font-size: 11px;
+  height: 28px;
+  margin: 0 8px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--xide-radius-sm);
+  color: var(--xide-text);
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
   cursor: pointer;
   user-select: none;
+}
+
+.xide-scm-section-head:hover {
+  background: var(--xide-hover);
 }
 
 .xide-scm-section-head:hover .xide-row-actions {
@@ -1098,15 +1312,17 @@ del.xide-search-hit {
 .xide-scm-change {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 12px 0 28px;
+  gap: 5px;
+  height: 26px;
+  margin: 0 8px;
+  padding: 0 6px 0 22px;
+  border-radius: var(--xide-radius-sm);
   white-space: nowrap;
   cursor: pointer;
 }
 
 .xide-scm-change:hover {
-  background: var(--xide-bg-hover);
+  background: var(--xide-hover);
 }
 
 .xide-scm-change:hover .xide-row-actions {
@@ -1129,16 +1345,16 @@ del.xide-search-hit {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
   font-size: 12px;
 }
 
 .xide-scm-letter {
   flex: none;
-  width: 14px;
+  width: 16px;
   margin-left: 4px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
   text-align: center;
 }
 
@@ -1146,7 +1362,11 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px 4px 20px;
+  margin: 8px 16px 4px;
+  padding: 8px 10px;
+  border-radius: var(--xide-radius);
+  background: var(--xide-panel-2);
+  color: var(--xide-text-2);
   font-size: 12px;
   overflow: hidden;
   white-space: nowrap;
@@ -1154,15 +1374,17 @@ del.xide-search-hit {
 }
 
 .xide-scm-account {
-  margin-top: 10px;
-  border-top: 1px solid var(--xide-border-soft);
+  margin-top: 12px;
+  padding-top: 6px;
+  border-top: 1px solid var(--xide-border);
 }
 
 .xide-scm-account-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 12px 8px 20px;
+  padding: 6px 16px 10px;
+  color: var(--xide-text-2);
   font-size: 12px;
 }
 
@@ -1170,7 +1392,7 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 22px;
+  min-height: 24px;
 }
 
 .xide-kv > span:nth-child(2) {
@@ -1202,19 +1424,21 @@ del.xide-search-hit {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--xide-border-soft);
+  border-left: 1px solid var(--xide-border);
 }
 
 .xide-editor-group-wrap:first-child .xide-editor-group {
   border-left: 0;
 }
 
+/* 탭 줄 — 앱의 탭 줄과 같다(옅은 바탕, 활성 탭은 흰 판 + 위쪽 2px 그라데이션). */
 .xide-tabbar {
   flex: none;
   display: flex;
   align-items: stretch;
-  height: 35px;
-  background: var(--xide-bg-tabs);
+  height: 38px;
+  background: var(--xide-app);
+  border-bottom: 1px solid var(--xide-border);
 }
 
 .xide-tabs {
@@ -1223,15 +1447,11 @@ del.xide-search-hit {
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
 
 .xide-tabs::-webkit-scrollbar {
-  height: 3px;
-}
-
-.xide-tabs::-webkit-scrollbar-thumb {
-  background: rgba(121, 121, 121, 0.4);
+  display: none;
 }
 
 .xide-tab {
@@ -1241,39 +1461,59 @@ del.xide-search-hit {
   align-items: center;
   gap: 6px;
   max-width: 240px;
-  padding: 0 4px 0 10px;
-  border-right: 1px solid var(--xide-border-soft);
-  background: var(--xide-bg-tab);
-  color: var(--xide-fg-dim);
+  margin-bottom: -1px;
+  padding: 0 6px 0 12px;
+  border-right: 1px solid var(--xide-border);
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--xide-muted);
+  font-size: 12.5px;
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
+  transition: color 0.12s ease;
+}
+
+.xide-tab:hover {
+  color: var(--xide-text);
 }
 
 .xide-tab.xide--active {
-  background: var(--xide-bg-tab-active);
-  color: var(--xide-fg-strong);
+  background: var(--xide-panel);
+  border-bottom-color: var(--xide-panel);
+  color: var(--xide-text);
 }
 
-.xide-editor-group.xide--focused .xide-tab.xide--active {
-  box-shadow: inset 0 1px 0 var(--xide-focus);
+.xide-tab.xide--active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--xide-border-strong);
+}
+
+.xide-editor-group.xide--focused .xide-tab.xide--active::before {
+  background: var(--xide-primary-grad);
 }
 
 .xide-tab.xide--preview .xide-tab-label {
   font-style: italic;
 }
 
-.xide-tab.xide--drop-before::before,
+.xide-tab.xide--drop-before::after,
 .xide-tab.xide--drop-after::after {
   content: '';
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 6px;
+  bottom: 6px;
   width: 2px;
-  background: var(--xide-focus);
+  border-radius: 1px;
+  background: var(--xide-primary);
 }
 
-.xide-tab.xide--drop-before::before {
+.xide-tab.xide--drop-before::after {
   left: -1px;
 }
 
@@ -1287,7 +1527,7 @@ del.xide-search-hit {
 }
 
 .xide-tab-dir {
-  color: var(--xide-fg-dim);
+  color: var(--xide-faint);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1306,8 +1546,9 @@ del.xide-search-hit {
   height: 20px;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: 5px;
   background: transparent;
+  color: var(--xide-muted);
   opacity: 0;
   cursor: pointer;
 }
@@ -1319,7 +1560,8 @@ del.xide-search-hit {
 }
 
 .xide-tab-close:hover {
-  background: rgba(90, 93, 94, 0.4);
+  background: var(--xide-hover);
+  color: var(--xide-text);
 }
 
 .xide-tab-close-hover {
@@ -1349,13 +1591,13 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 22px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 14px;
   overflow: hidden;
   white-space: nowrap;
+  color: var(--xide-muted);
   font-size: 12px;
-  color: var(--xide-fg-dim);
-  background: var(--xide-bg);
+  background: var(--xide-panel);
 }
 
 .xide-crumb {
@@ -1367,19 +1609,22 @@ del.xide-search-hit {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 2px;
+  padding: 1px 4px;
   border: 0;
+  border-radius: 5px;
   background: transparent;
   color: inherit !important;
   cursor: pointer;
 }
 
 .xide-crumb button:hover {
-  color: var(--xide-fg-strong) !important;
+  background: var(--xide-hover);
+  color: var(--xide-text) !important;
 }
 
 .xide-crumb-note {
   margin-left: 12px;
+  color: var(--xide-faint);
   font-style: italic;
 }
 
@@ -1387,7 +1632,7 @@ del.xide-search-hit {
   flex: 1 1 auto;
   position: relative;
   min-height: 0;
-  background: var(--xide-bg);
+  background: var(--xide-panel);
 }
 
 .xide-code-pane {
@@ -1408,7 +1653,8 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--xide-fg-dim);
+  gap: 8px;
+  color: var(--xide-muted);
   pointer-events: none;
 }
 
@@ -1418,14 +1664,23 @@ del.xide-search-hit {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 6px 12px;
-  background: var(--xide-bg-banner);
-  color: var(--xide-fg-strong);
-  font-size: 12px;
+  margin: 8px 12px 4px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--xide-warning-border);
+  border-radius: var(--xide-radius);
+  background: var(--xide-warning-bg);
+  color: var(--xide-text);
+  font-size: 12.5px;
 }
 
 .xide-banner > span {
   flex: 1 1 200px;
+}
+
+.xide-banner .xide-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .xide-diff-toolbar {
@@ -1433,12 +1688,20 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--xide-border-soft);
+  height: 36px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--xide-border);
+  color: var(--xide-text-2);
   font-size: 12px;
 }
 
+.xide-diff-toolbar .xide-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* 빈 편집기 — 앱의 빈 화면(채팅의 빈 상태)과 같은 가운데 정렬·옅은 글자 */
 .xide-welcome {
   position: absolute;
   inset: 0;
@@ -1448,51 +1711,53 @@ del.xide-search-hit {
   justify-content: center;
   gap: 8px;
   padding: 24px;
-  color: var(--xide-fg-dim);
+  background: var(--xide-app);
+  color: var(--xide-muted);
   text-align: center;
 }
 
 .xide-welcome-title {
-  color: var(--xide-fg-strong);
-  font-size: 18px;
+  color: var(--xide-text-2);
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .xide-welcome-text {
   max-width: 34em;
+  font-size: 13px;
 }
 
 .xide-welcome-keys {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
-  margin-top: 14px;
-  min-width: 260px;
+  gap: 2px;
+  margin-top: 16px;
+  min-width: 280px;
+  padding: 6px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-md);
 }
 
 .xide-welcome-keys button {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 2px 4px;
+  height: 32px;
+  padding: 0 10px;
   border: 0;
+  border-radius: var(--xide-radius-sm);
   background: transparent;
-  color: var(--xide-fg-dim) !important;
+  color: var(--xide-text-2) !important;
+  font-size: 12.5px;
   cursor: pointer;
 }
 
 .xide-welcome-keys button:hover {
-  color: var(--xide-fg-strong) !important;
-}
-
-.xide-root kbd {
-  padding: 1px 5px;
-  border: 1px solid var(--xide-border);
-  border-bottom-width: 2px;
-  border-radius: 3px;
-  background: rgba(128, 128, 128, 0.17);
-  font-family: var(--xide-font);
-  font-size: 11px;
-  color: var(--xide-fg);
+  background: var(--xide-hover);
+  color: var(--xide-text) !important;
 }
 
 .xide-image-pane {
@@ -1510,11 +1775,11 @@ del.xide-search-hit {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background-color: var(--xide-bg);
-  background-image: linear-gradient(45deg, rgba(128, 128, 128, 0.12) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(128, 128, 128, 0.12) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(128, 128, 128, 0.12) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(128, 128, 128, 0.12) 75%);
+  background-color: var(--xide-app);
+  background-image: linear-gradient(45deg, var(--xide-hover) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--xide-hover) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--xide-hover) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--xide-hover) 75%);
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   cursor: zoom-in;
@@ -1524,6 +1789,8 @@ del.xide-search-hit {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  border-radius: 4px;
+  box-shadow: var(--xide-shadow-md);
 }
 
 .xide-image-pane:not(.xide--fit) .xide-image-scroll {
@@ -1534,10 +1801,10 @@ del.xide-search-hit {
 
 .xide-image-info {
   flex: none;
-  padding: 4px 12px;
-  color: var(--xide-fg-dim);
+  padding: 6px 14px;
+  color: var(--xide-muted);
   font-size: 12px;
-  border-top: 1px solid var(--xide-border-soft);
+  border-top: 1px solid var(--xide-border);
 }
 
 /* ── 패널(터미널) ───────────────────────────────────────────── */
@@ -1555,7 +1822,7 @@ del.xide-search-hit {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--xide-bg-panel);
+  background: var(--xide-panel);
 }
 
 .xide-panel-header {
@@ -1563,27 +1830,39 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 35px;
+  height: 38px;
   padding: 0 8px 0 12px;
 }
 
 .xide-panel-tab {
-  padding: 4px 6px;
+  position: relative;
+  padding: 6px 4px;
+  color: var(--xide-muted);
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-bottom: 1px solid transparent;
 }
 
 .xide-panel-tab.xide--active {
-  color: var(--xide-fg-strong);
-  border-bottom-color: var(--xide-fg-strong);
+  color: var(--xide-text);
+}
+
+.xide-panel-tab.xide--active::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--xide-primary-grad);
 }
 
 .xide-terms {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-left: 12px;
   min-width: 0;
   overflow-x: auto;
@@ -1592,28 +1871,31 @@ del.xide-search-hit {
 .xide-term-tab {
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 4px 0 8px;
-  border-radius: 4px;
-  color: var(--xide-fg-dim);
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--xide-muted);
   font-size: 12px;
   white-space: nowrap;
   cursor: pointer;
 }
 
 .xide-term-tab:hover {
-  background: var(--xide-bg-hover);
+  background: var(--xide-hover);
+  color: var(--xide-text);
 }
 
 .xide-term-tab.xide--active {
-  background: var(--xide-bg-selected);
-  color: var(--xide-fg-strong);
+  border-color: var(--xide-primary-soft-border);
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text);
 }
 
 .xide-term-tab.xide--error,
 .xide-term-tab.xide--exited {
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
   font-style: italic;
 }
 
@@ -1625,7 +1907,7 @@ del.xide-search-hit {
   height: 18px;
   padding: 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: 999px;
   background: transparent;
   opacity: 0;
   cursor: pointer;
@@ -1637,7 +1919,7 @@ del.xide-search-hit {
 }
 
 .xide-term-close:hover {
-  background: rgba(90, 93, 94, 0.4);
+  background: var(--xide-primary-soft-2);
 }
 
 .xide-panel-body {
@@ -1648,13 +1930,13 @@ del.xide-search-hit {
 
 .xide-term-body {
   position: absolute;
-  inset: 0 0 0 12px;
+  inset: 0 0 0 14px;
 }
 
 .xide-term-host {
   width: 100%;
   height: 100%;
-  background: var(--xide-bg-panel);
+  background: var(--xide-panel);
 }
 
 .xide-term-host .xterm {
@@ -1675,31 +1957,30 @@ del.xide-search-hit {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--xide-border);
-  border-radius: 4px;
-  background: var(--xide-bg-menu);
-  box-shadow: 0 2px 8px var(--xide-shadow);
-  font-size: 12px;
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
+  color: var(--xide-text-2);
+  font-size: 12.5px;
 }
 
-/* ── 상태 표시줄 ────────────────────────────────────────────── */
+/* ── 상태 표시줄 — 앱 맨 아래 줄과 같은 옅은 띠(색 막대가 아니다) ─────── */
 
 .xide-status {
   flex: none;
   display: flex;
   justify-content: space-between;
   align-items: stretch;
-  height: 22px;
-  padding: 0 6px;
-  background: var(--xide-bg-status);
-  color: var(--xide-fg-status);
-  font-size: 12px;
+  height: 26px;
+  padding: 0 4px;
+  border-top: 1px solid var(--xide-border);
+  background: var(--xide-app);
+  color: var(--xide-text-2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
-}
-
-.xide-status.xide--readonly {
-  background: var(--xide-bg-status-readonly);
 }
 
 .xide-status-left,
@@ -1717,25 +1998,58 @@ del.xide-search-hit {
 .xide-status-item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 7px;
+  gap: 5px;
+  padding: 0 8px;
   border: 0;
   background: transparent;
-  color: var(--xide-fg-status) !important;
-  font-size: 12px;
+  color: inherit !important;
+  font-size: 11.5px;
   white-space: nowrap;
 }
 
 button.xide-status-item {
   cursor: pointer;
+  transition: background-color 0.12s ease;
 }
 
 button.xide-status-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--xide-hover);
 }
 
 button.xide-status-item:disabled {
   cursor: default;
+}
+
+/* 원격(샌드박스) 표시 — 왼쪽 끝. 앱 맨 아래 줄의 연결 점과 같은 점 */
+.xide-status-remote {
+  margin-right: 4px;
+  font-weight: 600;
+}
+
+.xide-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--xide-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--xide-success) 16%, transparent);
+}
+
+.xide-status-remote.xide--online {
+  color: var(--xide-text-2) !important;
+}
+
+.xide-status-remote.xide--connecting,
+.xide-status-remote.xide--retrying {
+  color: var(--xide-warning) !important;
+}
+
+.xide-status-remote.xide--blocked {
+  color: var(--xide-danger) !important;
+}
+
+.xide-status-remote.xide--blocked .xide-status-dot {
+  background: var(--xide-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--xide-danger) 16%, transparent);
 }
 
 .xide-status-item.xide--notice {
@@ -1743,7 +2057,7 @@ button.xide-status-item:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   display: inline-block;
-  line-height: 22px;
+  line-height: 25px;
 }
 
 .xide-status-item.xide--notice .xide-icon {
@@ -1751,19 +2065,35 @@ button.xide-status-item:disabled {
   margin-top: -2px;
 }
 
+.xide-status-item.xide--success .xide-icon {
+  color: var(--xide-success);
+}
+
+.xide-status-item.xide--warning .xide-icon {
+  color: var(--xide-warning);
+}
+
+.xide-status-item.xide--error {
+  color: var(--xide-danger) !important;
+}
+
+.xide-status-item.xide--info .xide-icon {
+  color: var(--xide-primary-text);
+}
+
 /* ── 떠 있는 것: 메뉴·대화 상자·빠른 열기 ─────────────────────── */
 
 .xide-menu {
   position: fixed;
   z-index: 1000;
-  min-width: 200px;
+  min-width: 210px;
   max-width: 360px;
-  padding: 4px 0;
+  padding: 5px;
   border: 1px solid var(--xide-border);
-  border-radius: 5px;
-  background: var(--xide-bg-menu);
-  color: var(--xide-fg);
-  box-shadow: 0 2px 8px var(--xide-shadow);
+  border-radius: 10px;
+  background: var(--xide-panel);
+  color: var(--xide-text);
+  box-shadow: var(--xide-shadow-lg);
   font-family: var(--xide-font);
   font-size: 13px;
   outline: none;
@@ -1775,9 +2105,10 @@ button.xide-status-item:disabled {
   justify-content: space-between;
   gap: 24px;
   width: 100%;
-  height: 26px;
-  padding: 0 14px;
+  height: 30px;
+  padding: 0 10px;
   border: 0;
+  border-radius: var(--xide-radius-sm);
   background: transparent;
   color: inherit;
   text-align: left;
@@ -1785,27 +2116,30 @@ button.xide-status-item:disabled {
 }
 
 .xide-menu-item.xide--active:not(:disabled) {
-  background: var(--xide-accent);
-  color: var(--xide-accent-fg);
+  background: var(--xide-hover);
 }
 
-.xide-menu-item.xide--danger:not(.xide--active) {
+.xide-menu-item.xide--danger {
   color: var(--xide-danger);
 }
 
+.xide-menu-item.xide--danger.xide--active:not(:disabled) {
+  background: var(--xide-danger-bg);
+}
+
 .xide-menu-item:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 
 .xide-menu-key {
-  opacity: 0.75;
-  font-size: 12px;
+  color: var(--xide-faint);
+  font-size: 11.5px;
 }
 
 .xide-menu-sep {
   height: 1px;
-  margin: 4px 0;
+  margin: 5px 6px;
   background: var(--xide-border);
 }
 
@@ -1821,45 +2155,49 @@ button.xide-status-item:disabled {
 
 .xide-dialog-scrim {
   align-items: center;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--xide-scrim);
+  backdrop-filter: blur(2px);
 }
 
 .xide-dialog {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: min(440px, calc(100% - 32px));
-  padding: 16px 18px;
+  width: min(460px, calc(100% - 32px));
+  padding: 20px 22px 18px;
   border: 1px solid var(--xide-border);
-  border-radius: 6px;
-  background: var(--xide-bg-menu);
-  box-shadow: 0 4px 20px var(--xide-shadow);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
 }
 
 .xide-dialog-title {
-  color: var(--xide-fg-strong);
-  font-size: 14px;
-  font-weight: 600;
+  color: var(--xide-text);
+  font-size: 15px;
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
 
 .xide-dialog-message,
 .xide-dialog-detail {
-  color: var(--xide-fg);
+  color: var(--xide-text-2);
   font-size: 13px;
+  line-height: 1.55;
   overflow-wrap: anywhere;
 }
 
 .xide-dialog-detail {
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
   font-size: 12px;
 }
 
 .xide-dialog-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
+  color: var(--xide-muted);
   font-size: 12px;
+  font-weight: 500;
 }
 
 .xide-dialog-error {
@@ -1872,21 +2210,27 @@ button.xide-status-item:disabled {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 8px;
 }
 
+/* 빠른 열기·명령 보기 — 위에 뜨는 판 */
 .xide-qo {
-  width: min(600px, calc(100% - 32px));
-  margin-top: 8px;
-  padding: 6px;
+  width: min(620px, calc(100% - 32px));
+  margin-top: 12px;
+  padding: 8px;
   border: 1px solid var(--xide-border);
-  border-radius: 6px;
-  background: var(--xide-bg-menu);
-  box-shadow: 0 4px 20px var(--xide-shadow);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
+}
+
+.xide-qo .xide-input {
+  height: 36px;
+  font-size: 14px;
 }
 
 .xide-qo-list {
-  max-height: 360px;
+  max-height: 380px;
   margin-top: 6px;
   overflow: auto;
 }
@@ -1894,26 +2238,22 @@ button.xide-status-item:disabled {
 .xide-qo-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: 3px;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--xide-radius-sm);
   white-space: nowrap;
   cursor: pointer;
 }
 
 .xide-qo-row.xide--active {
-  background: var(--xide-bg-focus);
-  color: var(--xide-fg-strong);
+  background: var(--xide-primary-soft);
+  color: var(--xide-text);
 }
 
 .xide-qo-label b {
-  color: var(--xide-focus);
+  color: var(--xide-primary-text);
   font-weight: 700;
-}
-
-.xide-theme-dark .xide-qo-label b {
-  color: #2aaaff;
 }
 
 .xide-qo-detail {
@@ -1921,7 +2261,7 @@ button.xide-status-item:disabled {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--xide-fg-dim);
+  color: var(--xide-muted);
   font-size: 12px;
 }
 
@@ -1930,8 +2270,8 @@ button.xide-status-item:disabled {
 }
 
 .xide-qo-empty {
-  padding: 6px 8px;
-  color: var(--xide-fg-dim);
+  padding: 10px;
+  color: var(--xide-muted);
 }
 
 /* ── 좁은 화면 ──────────────────────────────────────────────── */

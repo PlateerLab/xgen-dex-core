@@ -17,11 +17,13 @@ const FATAL_CLOSE = new Set([4400, 4401, 4403, 4404, 4410, 4429]);
 const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000, 15000, 30000];
 const PING_MS = 25_000;
 
+// 바탕·글자·커서·선택은 앱(XGEN) 색, 16색(ANSI)은 흔한 터미널 색 그대로 — 명령 출력의 색을 바꾸지 않는다.
 const DARK: ITheme = {
-  background: '#1e1e1e',
-  foreground: '#cccccc',
-  cursor: '#aeafad',
-  selectionBackground: '#264f78',
+  background: '#1d1f23',
+  foreground: '#e7e9ee',
+  cursor: '#7d9cff',
+  cursorAccent: '#1d1f23',
+  selectionBackground: 'rgba(91, 130, 255, 0.32)',
   black: '#000000',
   red: '#cd3131',
   green: '#0dbc79',
@@ -42,9 +44,10 @@ const DARK: ITheme = {
 
 const LIGHT: ITheme = {
   background: '#ffffff',
-  foreground: '#333333',
-  cursor: '#333333',
-  selectionBackground: '#add6ff',
+  foreground: '#1d1f23',
+  cursor: '#305eeb',
+  cursorAccent: '#ffffff',
+  selectionBackground: 'rgba(48, 94, 235, 0.2)',
   black: '#000000',
   red: '#cd3131',
   green: '#00bc00',
@@ -120,7 +123,7 @@ export class TerminalView implements TerminalRuntime {
     this.element = document.createElement('div');
     this.element.className = 'xide-term-host';
     this.term = new x.Terminal({
-      fontFamily: "'JetBrains Mono', 'D2Coding', Menlo, Consolas, 'Liberation Mono', monospace",
+      fontFamily: "'Fira Code', 'D2Coding', 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
       fontSize: Math.max(11, store.getState().layout.fontSize - 1),
       cursorBlink: true,
       scrollback: 5000,

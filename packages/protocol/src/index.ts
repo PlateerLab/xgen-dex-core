@@ -312,7 +312,7 @@ export { InstallersApi, installerListPath, installerDownloadPath } from './insta
 export type { InstallerPackage, InstallerListResponse } from './installers';
 export { CloudLinksApi, CLOUD_LINKS_PATH, cloudLinkPath } from './cloud-links';
 export type { CloudLink, CloudLinksResponse } from './cloud-links';
-export { IdeApi, ideTerminalSocketPath, ideFailureOf } from './ide';
+export { IdeApi, ideTerminalSocketPath, ideFailureOf, workspaceChangeSocketPath } from './ide';
 export type {
   IdeSessionResponse,
   IdeFileResponse,

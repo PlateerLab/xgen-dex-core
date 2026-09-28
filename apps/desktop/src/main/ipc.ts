@@ -139,6 +139,9 @@ export const CHANNELS = {
   ideTermSend: 'ide:termSend', // renderer → main (fire-and-forget)
   ideTermClose: 'ide:termClose', // renderer → main (fire-and-forget)
   ideTermEvent: 'ide:termEvent', // main → renderer (프레임·닫힘)
+  ideWatch: 'ide:watch', // renderer → main — 스토리지 변경 알림 구독
+  ideUnwatch: 'ide:unwatch',
+  ideChanged: 'ide:changed', // main → renderer — 그 구독의 스토리지가 바뀌었다
 
   // 앱 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
   // gallery 는 **모든 에이전트**를 훑어 지금 열리는 것만 모아 준다(사이드바).

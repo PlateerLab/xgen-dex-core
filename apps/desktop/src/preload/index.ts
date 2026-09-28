@@ -472,6 +472,14 @@ const api = {
       ipcRenderer.on(CHANNELS.ideTermEvent, h);
       return () => ipcRenderer.removeListener(CHANNELS.ideTermEvent, h);
     },
+    /** 스토리지 변경 알림 — main 이 workspace 소켓을 열고 바뀔 때마다 `onChanged(key)` 를 부른다. */
+    watch: (key: string, workflowId: string): void => ipcRenderer.send(CHANNELS.ideWatch, key, workflowId),
+    unwatch: (key: string): void => ipcRenderer.send(CHANNELS.ideUnwatch, key),
+    onChanged: (cb: (key: string) => void): (() => void) => {
+      const h = (_e: unknown, key: string) => cb(key);
+      ipcRenderer.on(CHANNELS.ideChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.ideChanged, h);
+    },
   },
 
   browser: {

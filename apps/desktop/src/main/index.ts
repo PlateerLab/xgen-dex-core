@@ -148,6 +148,7 @@ import type {
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
 import { IdeTerminalHub, type IdeTerminalDeps } from './ide-terminal';
+import { IdeWatchHub } from './ide-watch';
 import { ConversationWatchHub } from '@dex/engine/conversation-watch';
 import { ConversationsWatch } from '@dex/engine/conversations-watch';
 import { NotificationCenter } from './notification-center';
@@ -1581,25 +1582,32 @@ async function refreshAuthToken(): Promise<string | null> {
  * 브릿지·워크스페이스 동기화가 같은 이유로 같은 규칙을 쓴다.
  */
 const teamsHub = new TeamsSocketHub();
+/** IDE 가 쓰는 서버 연결 — 로그인하지 않았으면 없다. */
+const ideDeps = (): IdeTerminalDeps | null =>
+  currentUserId()
+    ? {
+        baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+        token: async () => (await liveAccessToken()) || '',
+        refreshAuth: refreshAuthToken,
+        allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+      }
+    : null;
 /** 채팅 [IDE] 의 터미널 소켓 — 렌더러 대신 main 이 연다(ide-terminal.ts). */
-const ideTerminals = new IdeTerminalHub(
-  (): IdeTerminalDeps | null =>
-    currentUserId()
-      ? {
-          baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
-          token: async () => (await liveAccessToken()) || '',
-          refreshAuth: refreshAuthToken,
-          allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
-        }
-      : null,
-  (sender, event) => {
-    try {
-      if (!sender.isDestroyed()) sender.send(CHANNELS.ideTermEvent, event);
-    } catch {
-      /* 창이 닫히는 중 */
-    }
-  },
-);
+const ideTerminals = new IdeTerminalHub(ideDeps, (sender, event) => {
+  try {
+    if (!sender.isDestroyed()) sender.send(CHANNELS.ideTermEvent, event);
+  } catch {
+    /* 창이 닫히는 중 */
+  }
+});
+/** 채팅 [IDE] 의 스토리지 변경 알림 — 터미널에서 만든 파일이 곧바로 탐색기에 보이게(ide-watch.ts). */
+const ideWatches = new IdeWatchHub(ideDeps, (sender, key) => {
+  try {
+    if (!sender.isDestroyed()) sender.send(CHANNELS.ideChanged, key);
+  } catch {
+    /* 창이 닫히는 중 */
+  }
+});
 // 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)을 열린 채팅에 실시간 반영.
 const conversationWatchHub = new ConversationWatchHub(
   (turn) => {
@@ -1746,6 +1754,7 @@ function syncTeams(): void {
     // 물고 있는 상태가 남으면 안 된다.
     teamsHub.stopAll();
     ideTerminals.closeAll();
+    ideWatches.closeAll();
   }
 }
 
@@ -2011,6 +2020,7 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     // 있는데 여기만 없어서 생기던 누수).
     teamsHub.stopAll();
     ideTerminals.closeAll();
+    ideWatches.closeAll();
     await getBrowserRuntime().closeAll();
     getBrowserRuntime().configure({ enabled: false });
     void client?.logout().catch(() => undefined); // 구 서버 세션 무효화 (rebind 전 호출)
@@ -2278,6 +2288,7 @@ ipcMain.handle(CHANNELS.authLogout, async () => {
   getMcpBridge().stop();
   teamsHub.stopAll();
   ideTerminals.closeAll();
+  ideWatches.closeAll();
   await getBrowserRuntime().closeAll();
   getBrowserRuntime().configure({ enabled: false });
   if (client) await client.logout();
@@ -2591,6 +2602,12 @@ ipcMain.handle(
 );
 ipcMain.on(CHANNELS.ideTermSend, (_e, socket: string, frame: unknown) => ideTerminals.send(String(socket), frame));
 ipcMain.on(CHANNELS.ideTermClose, (_e, socket: string) => ideTerminals.close(String(socket)));
+ipcMain.on(CHANNELS.ideWatch, (e, key: string, workflowId: string) => {
+  if (typeof key === 'string' && key && typeof workflowId === 'string' && workflowId) {
+    ideWatches.watch(e.sender, key, workflowId);
+  }
+});
+ipcMain.on(CHANNELS.ideUnwatch, (_e, key: string) => ideWatches.unwatch(String(key)));
 
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),

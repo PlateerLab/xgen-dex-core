@@ -102,7 +102,7 @@ export const FOLDER_TOOL_NAMES: ReadonlySet<string> = new Set([
 /** A folder tool was called from a conversation with no connected folder. */
 export const NO_FOLDER_MESSAGE =
   '[NO_FOLDER] 이 대화에는 연결된 폴더가 없어 이 PC의 파일과 터미널을 쓸 수 없습니다. ' +
-  '사용자에게 채팅 위 [폴더 연결]로 작업할 폴더를 연결해 달라고 요청하세요.';
+  '사용자에게 채팅 위 [폴더]로 작업할 폴더를 연결해 달라고 요청하세요.';
 
 export interface LocalToolSchema {
   name: string;

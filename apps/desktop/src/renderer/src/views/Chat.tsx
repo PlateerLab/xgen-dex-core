@@ -56,6 +56,7 @@ import {
   DocIcon,
   EyeIcon,
   EyeOffIcon,
+  InfoIcon,
   MicIcon,
   MonitorIcon,
   PlusIcon,
@@ -1247,20 +1248,41 @@ export const Chat: React.FC<{
             </div>
           </div>
         </div>
+        {/* 헤더 단추는 아이콘 + 두 글자: [알림] [폴더] [작업] [상세] [채팅 | IDE].
+            음성 출력·MCP 진단처럼 켜 둔 때만 보이는 단추는 그 앞에 둔다. */}
         <div className="chat-header-actions">
-          <FolderConnectButton
-            count={chatFolders.folders.length}
-            onClick={() => setFoldersOpen(true)}
-          />
-          <div className="teams-menu-wrap">
+          {mcpDebug && (
+            <button
+              type="button"
+              className={`mcp-chat-status ${mcpIndicator.tone}`}
+              title={mcpIndicator.title}
+              aria-label={mcpIndicator.title}
+              aria-expanded={mcpLogsOpen}
+              onClick={() => setMcpLogsOpen((open) => !open)}
+            >
+              <span className="mcp-chat-status-dot" />
+              {mcpIndicator.label}
+            </button>
+          )}
+          {ttsOn && (
             <button
               className="chat-hbtn icon"
+              onClick={() => setMuted((v) => !v)}
+              title={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
+              aria-label={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
+            >
+              {muted ? <SpeakerOffIcon size={15} /> : <SpeakerIcon size={15} />}
+            </button>
+          )}
+          <div className="teams-menu-wrap">
+            <button
+              className="chat-hbtn"
               onClick={() => setNotificationMenuOpen((open) => !open)}
               title="이 에이전트와 대화의 알림 설정"
               aria-label="알림 설정"
               aria-expanded={notificationMenuOpen}
             >
-              {effectiveNotificationMuted ? <BellOffIcon size={15} /> : <BellIcon size={15} />}
+              {effectiveNotificationMuted ? <BellOffIcon size={14} /> : <BellIcon size={14} />} 알림
             </button>
             {notificationMenuOpen && (
               <>
@@ -1305,51 +1327,30 @@ export const Chat: React.FC<{
               </>
             )}
           </div>
-          {mcpDebug && (
-            <button
-              type="button"
-              className={`mcp-chat-status ${mcpIndicator.tone}`}
-              title={mcpIndicator.title}
-              aria-label={mcpIndicator.title}
-              aria-expanded={mcpLogsOpen}
-              onClick={() => setMcpLogsOpen((open) => !open)}
-            >
-              <span className="mcp-chat-status-dot" />
-              {mcpIndicator.label}
-            </button>
-          )}
-          {ttsOn && (
-            <button
-              className="chat-hbtn icon"
-              onClick={() => setMuted((v) => !v)}
-              title={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
-              aria-label={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
-            >
-              {muted ? <SpeakerOffIcon size={15} /> : <SpeakerIcon size={15} />}
-            </button>
-          )}
-          {/* 상단 탭은 [상세보기] [작업 과정] 둘만. 상세보기는 이 에이전트의 메모리·작업·
-              도구·스토리지·전체로그를 새 탭으로 연다(에이전트 관측 뷰어). '새 대화'는
-              에이전트를 다시 선택해 여는 흐름과 중복이라 제거. '대화 종료'는 탭 닫기와
-              겹쳐 필요 없다는 사용자 판단으로 [작업 과정] 토글로 바꿨다(2026-09-16). */}
+          <FolderConnectButton
+            count={chatFolders.folders.length}
+            onClick={() => setFoldersOpen(true)}
+          />
+          {/* [작업] — 작업 과정 타임라인 켜기/끄기. 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}
+          <button
+            className={`chat-hbtn process-toggle${processView ? ' on' : ''}`}
+            onClick={toggleProcessView}
+            aria-pressed={processView}
+            title={processView ? '작업 과정을 숨기고 답만 봅니다' : '답마다 작업 과정을 함께 봅니다'}
+          >
+            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업
+          </button>
+          {/* [상세] — 이 에이전트의 개요·메모리·작업·도구·스토리지·전체로그를 새 탭으로 연다
+              (에이전트 관측 뷰어). */}
           {onOpenViewer && (
             <button
               className="chat-hbtn"
               onClick={() => onOpenViewer('basic')}
               title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
-              상세보기
+              <InfoIcon size={14} /> 상세
             </button>
           )}
-          {/* 작업 과정 타임라인 켜기/끄기 — 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}
-          <button
-            className={`chat-hbtn process-toggle${processView ? ' on' : ''}`}
-            onClick={toggleProcessView}
-            aria-pressed={processView}
-            title={processView ? '작업 과정 타임라인 켜짐 — 눌러서 답만 보기' : '작업 과정 타임라인 꺼짐 — 눌러서 켜기'}
-          >
-            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업 과정
-          </button>
           {/* [채팅 | IDE] — 헤더 맨 오른쪽. 같은 대화를 두 가지로 본다. */}
           <div className="chat-view-switch" role="tablist" aria-label="보기">
             <button

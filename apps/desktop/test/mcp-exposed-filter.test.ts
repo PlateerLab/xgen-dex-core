@@ -34,5 +34,5 @@ test('MCP 탭 패널은 외부 MCP 서버만 — 내장(local) 도구는 제외'
   assert.doesNotMatch(SRC, /const builtin = /);
   assert.doesNotMatch(SRC, /builtinOpen/);
   assert.match(SRC, /MCP 서버 도구/); // 헤더
-  assert.match(SRC, /\[폴더 연결\]로 대화마다 연결/); // 내장은 MCP 서버 아님 안내
+  assert.match(SRC, /\[폴더\]로 대화마다 연결/); // 내장은 MCP 서버 아님 안내
 });

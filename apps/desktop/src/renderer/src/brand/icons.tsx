@@ -385,6 +385,15 @@ export const BellOffIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
+/** 상세 — 원 안의 i. 채팅 헤더 [상세](에이전트 상세 보기). */
+export const InfoIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v5" />
+    <path d="M12 7.5h.01" />
+  </svg>
+);
+
 /** 앱 — 에이전트가 만든 화면. 창틀 안에 무언가 그려진 모양. */
 export const AppIcon: React.FC<P> = ({ size = 18, className }) => (
   <svg {...base(size)} className={className}>

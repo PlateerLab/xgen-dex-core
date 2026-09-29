@@ -57,11 +57,13 @@ import {
   appendAssistantText,
   assistantPlaceholder,
   attachTool,
+  completeRemoteTurn,
   dropRemotePartials,
   finishStreaming,
   historyMessages,
   setError,
   setRemotePartial,
+  startRemoteTurn,
   userMessage,
   type ChatMessage,
 } from './message-model';
@@ -164,6 +166,8 @@ export function ChatView({
   }, []);
   /** 지금 도는 턴이 **다른 기기**의 것인가 (완결 push 를 그릴지 가른다). */
   const runningElsewhereRef = useRef(false);
+  /** 다른 곳에서 도는 턴의 임시 말풍선(질문·진행분)을 그려 두었다 — 완결 행이 그 자리를 대신한다. */
+  const remoteTurnRef = useRef(false);
   /** 사용자가 [정지] 를 눌렀다 — 끝난 뒤 그 사실을 답변에 남긴다. */
   const stoppedRef = useRef(false);
   const chatRef = useRef<ChatWsHandle | null>(null);
@@ -232,6 +236,7 @@ export function ChatView({
       onLiveTurn: (live) => {
         if (!live.text) return;
         if (runningRef.current) return; // 내 턴이면 스트림이 이미 그리고 있다.
+        remoteTurnRef.current = true;
         setMessages((prev) => setRemotePartial(prev, live.text));
       },
       // 다른 화면이 **지금** 돌리는 턴 — 시작·토큰·종료.
@@ -240,12 +245,9 @@ export function ChatView({
         if (event.kind === 'gap') return; // 종료 프레임이 완결 본문을 싣고 온다.
         if (event.kind === 'started') {
           runningElsewhereRef.current = true;
+          remoteTurnRef.current = true;
           setRunning(true);
-          setMessages((prev) => [
-            ...dropRemotePartials(prev),
-            userMessage(event.input),
-            assistantPlaceholder({ streaming: false, remotePartial: true }),
-          ]);
+          setMessages((prev) => startRemoteTurn(prev, event.input));
           return;
         }
         if (event.kind === 'exec') {
@@ -256,29 +258,35 @@ export function ChatView({
           setMessages((prev) => appendAssistantText(prev, text));
           return;
         }
+        // 종료 — 완결 행이 먼저 와서 이미 그렸으면 그대로 둔다(같은 실행 id).
         if (event.ioId) seenExternalIo.add(event.ioId);
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last?.remotePartial) return prev;
-          const next = prev.slice();
-          next[next.length - 1] = { ...last, text: event.output, remotePartial: false, streaming: false };
-          return next;
-        });
+        setMessages((prev) => completeRemoteTurn(prev, event) ?? prev);
+        remoteTurnRef.current = false;
         runningElsewhereRef.current = false;
         setRunning(false);
       },
       onServerTurn: (turn) => {
         // 다른 기기에서 시작한 턴은 이 폰이 그린 적이 없다 — 완결 push 로 받는다.
-        const mine = !runningElsewhereRef.current;
-        if (turn.source !== 'subagent_report' && mine) return;
+        // 이 폰의 스트림이 그리는 턴이면 스트림이 끝낸다. 하트비트가 [끝남] 을 먼저 말했어도
+        // 그 턴의 임시 말풍선이 남아 있으면 이 행이 그 자리를 대신한다.
+        const report = turn.source === 'subagent_report';
+        const mine = runningRef.current || (!runningElsewhereRef.current && !remoteTurnRef.current);
+        if (!report && mine) return;
         if (!turn.output) return;
         if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
         if (turn.ioId) seenExternalIo.add(turn.ioId);
-        setMessages((prev) => [
-          ...dropRemotePartials(prev),
-          userMessage(turn.input),
-          { ...assistantPlaceholder({ streaming: false }), text: turn.output },
-        ]);
+        if (report) {
+          setMessages((prev) => [
+            ...dropRemotePartials(prev),
+            userMessage(turn.input),
+            { ...assistantPlaceholder({ streaming: false }), text: turn.output },
+          ]);
+        } else {
+          // 서버는 완결 행을 turn_ended 보다 먼저 민다 — 진행분과 질문을 이 턴으로 바꿔 끼운다
+          // (예전에는 덧붙여 질문이 두 번 보였다).
+          setMessages((prev) => completeRemoteTurn(prev, turn) ?? prev);
+          remoteTurnRef.current = false;
+        }
         void notifyAnswer(agent.workflowName || agent.workflowId, stripAgentMarkers(turn.output));
         runningElsewhereRef.current = false;
         setRunning(false);

@@ -17,6 +17,33 @@ const FATAL_CLOSE = new Set([4400, 4401, 4403, 4404, 4410, 4429]);
 const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000, 15000, 30000];
 const PING_MS = 25_000;
 
+/**
+ * 터미널의 복사·붙여넣기 키. 셸에 보낼 키(Ctrl+C 중단 등)와 겹치는 것을 가른다.
+ *
+ *   맥       ⌘C(고른 글자가 있을 때) 복사 · ⌘V 붙여넣기. Ctrl 키는 모두 셸의 것이다.
+ *   그 밖    Ctrl+C 는 고른 글자가 있을 때만 복사(없으면 셸에 중단), Ctrl+Shift+C·Ctrl+Insert 복사,
+ *            Ctrl+V·Ctrl+Shift+V·Shift+Insert 붙여넣기(윈도 터미널과 같다).
+ */
+export function terminalClipboardKey(
+  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>,
+  mac: boolean,
+  hasSelection: boolean,
+): 'copy' | 'paste' | null {
+  if (e.altKey) return null;
+  if (mac) {
+    if (!e.metaKey || e.ctrlKey) return null;
+    if (e.code === 'KeyC') return hasSelection ? 'copy' : null;
+    if (e.code === 'KeyV') return 'paste';
+    return null;
+  }
+  if (e.metaKey) return null;
+  if (e.ctrlKey && e.code === 'KeyC') return e.shiftKey || hasSelection ? 'copy' : null;
+  if (e.ctrlKey && !e.shiftKey && e.code === 'Insert') return 'copy';
+  if (e.ctrlKey && e.code === 'KeyV') return 'paste';
+  if (e.shiftKey && !e.ctrlKey && e.code === 'Insert') return 'paste';
+  return null;
+}
+
 // 바탕·글자·커서·선택은 앱(XGEN) 색, 16색(ANSI)은 흔한 터미널 색 그대로 — 명령 출력의 색을 바꾸지 않는다.
 const DARK: ITheme = {
   background: '#1d1f23',
@@ -145,22 +172,69 @@ export class TerminalView implements TerminalRuntime {
     this.term.onResize(({ rows, cols }) => this.sendResize(rows, cols));
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      // 고른 글자가 있을 때의 복사 — 셸에 Ctrl+C(중단)를 보내지 않는다(편집기와 같다).
-      if ((mod && !e.shiftKey && e.code === 'KeyC' && this.term.hasSelection()) || (e.ctrlKey && e.shiftKey && e.code === 'KeyC')) {
+      const action = terminalClipboardKey(e, isMac, this.term.hasSelection());
+      if (action === 'copy') {
+        // 셸에 Ctrl+C(중단)를 보내지 않고 고른 글자를 복사한다. 복사한 뒤에는 고른 것을 풀어
+        // 다음 Ctrl+C 가 다시 중단이 되게 한다(윈도 터미널과 같다).
+        e.preventDefault();
         const text = this.term.getSelection();
         if (text) void this.copy(text);
+        if (!isMac && !e.shiftKey) this.term.clearSelection();
         return false;
       }
-      // 붙여넣기는 브라우저의 paste 사건이 처리한다(xterm 이 받는다).
-      if ((e.ctrlKey && e.shiftKey && e.code === 'KeyV') || (isMac && e.metaKey && e.code === 'KeyV')) return false;
+      if (action === 'paste') {
+        // 호스트가 클립보드를 읽을 수 있으면(데스크톱) 직접 붙인다. 아니면 xterm 이 셸에 ^V 를
+        // 보내지 않게만 막고, 브라우저의 붙여넣기 사건이 xterm 으로 가게 둔다(권한을 묻지 않는 길).
+        if (this.store.host.readText) {
+          e.preventDefault();
+          void this.pasteFromClipboard();
+        }
+        return false;
+      }
       return true;
     });
   }
 
-  private async copy(text: string): Promise<void> {
+  private async copy(text: string): Promise<boolean> {
     const ok = (await this.store.host.copyText?.(text)) ?? (await navigator.clipboard?.writeText(text).then(() => true, () => false));
     if (!ok) this.store.notify('error', '복사하지 못했습니다');
+    return !!ok;
+  }
+
+  /** 고른 글자를 복사한다(메뉴). 고른 것이 없으면 아무것도 하지 않는다. */
+  async copySelection(): Promise<void> {
+    const text = this.term.getSelection();
+    if (text) await this.copy(text);
+    this.term.focus();
+  }
+
+  hasSelection(): boolean {
+    return this.term.hasSelection();
+  }
+
+  selectAll(): void {
+    this.term.selectAll();
+  }
+
+  private async readClipboard(): Promise<string | null> {
+    try {
+      if (this.store.host.readText) return (await this.store.host.readText()) ?? null;
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) return await navigator.clipboard.readText();
+    } catch {
+      /* 권한이 없거나 브라우저가 막았다 */
+    }
+    return null;
+  }
+
+  /** 클립보드의 글을 셸에 붙인다 — 여러 줄은 한 번에(괄호 붙여넣기를 켠 셸이면 그대로 둔다). */
+  async pasteFromClipboard(): Promise<void> {
+    const text = await this.readClipboard();
+    if (text === null) {
+      this.store.notify('warning', isMac ? '⌘V 로 붙여 넣으세요' : 'Ctrl+V 로 붙여 넣으세요');
+    } else if (text) {
+      this.term.paste(text);
+    }
+    this.term.focus();
   }
 
   /** 화면에 붙인다(처음이면 xterm 을 연다). 연결이 없으면 연다. */

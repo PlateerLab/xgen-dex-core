@@ -145,9 +145,13 @@ function IdeLayout({
     return () => el.removeEventListener('keydown', onKey, true);
   }, [store, matcher, commands]);
 
-  // 창을 다시 보면 열어 둔 파일이 바깥에서 바뀌었는지 본다.
+  // 창을 다시 보면 열어 둔 파일이 바깥에서 바뀌었는지 본다. 연결된 폴더는 다른 프로그램이 바꿨을
+  // 수 있으니 펼쳐 둔 목록도 다시 읽는다.
   useEffect(() => {
-    const onFocus = () => void store.checkDisk('all');
+    const onFocus = () => {
+      void store.checkDisk('all');
+      if (store.getState().folders.roots.length) void store.refreshFolders();
+    };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [store]);

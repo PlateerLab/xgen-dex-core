@@ -203,6 +203,18 @@ test('다른 화면에서 온 요청은 표식을 읽고, 이 PC 앞에 있어�
   off();
 });
 
+test('폴더를 바꾸는 도구가 끝나면 그 대화에 알린다 — IDE 탐색기가 다시 읽는다', async () => {
+  const dir = await folder();
+  const { p } = provider({ 'chat-a': [dir] });
+  const changed: string[] = [];
+  const off = p.onFolderChange((id) => changed.push(id));
+  await p.callTool('WriteFile', { path: 'w.txt', content: 'x' }, inChat('chat-a'));
+  await p.callTool('ReadFile', { path: 'w.txt' }, inChat('chat-a'));
+  await p.callTool('ListDir', { path: '.' }, inChat('chat-a'));
+  assert.deepEqual(changed, ['chat-a'], '읽기·목록은 폴더를 바꾸지 않는다');
+  off();
+});
+
 test('연결을 해제하면 다음 호출부터 거부한다', async () => {
   const dir = await folder();
   await writeFile(join(dir, 'n.txt'), 'note');

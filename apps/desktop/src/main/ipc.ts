@@ -93,6 +93,8 @@ export const CHANNELS = {
   /** 임의 텍스트를 **main 의 clipboard 로** 복사. 렌더러의 navigator.clipboard 는
    *  Electron 에서 권한/보안 컨텍스트 때문에 조용히 실패할 수 있다. */
   clipboardWrite: 'clipboard:write',
+  /** main 의 clipboard 에서 글을 읽는다 — IDE 터미널 붙여넣기. */
+  clipboardRead: 'clipboard:read',
   teamsUploadAttachment: 'teams:uploadAttachment',
   teamsSaveAttachment: 'teams:saveAttachment',
   teamsOpenAttachment: 'teams:openAttachment',
@@ -182,6 +184,10 @@ export const CHANNELS = {
   chatFoldersRemoteChanged: 'chat-folders:remote-changed',
   //: main → 창: 다른 화면에서 온 요청으로 이 PC 의 폴더를 조작했다.
   chatFoldersRemoteUse: 'chat-folders:remote-use',
+  /** IDE 탐색기 [연결된 폴더] — 폴더 안 파일 읽기·쓰기·목록(main 이 디스크를 만진다). */
+  chatFoldersFs: 'chat-folders:fs',
+  /** 에이전트의 폴더 도구가 폴더를 바꿨다(셸·파일 쓰기) — main → renderer. 인자는 대화 id. */
+  chatFoldersTouched: 'chat-folders:touched',
 
   // Sandboxed browser pages + stable main-process runtime.
   browserState: 'browser:state',

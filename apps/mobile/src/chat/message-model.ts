@@ -39,6 +39,10 @@ export interface ChatMessage {
    * 스냅샷이다. 재연결마다 처음부터 다시 오므로 이어붙이지 않고 덮어쓴다.
    */
   remotePartial?: boolean;
+  /** 다른 곳에서 도는 턴의 질문 — 완결 턴이 오면 그 턴으로 바뀐다(그대로 두면 두 번 보인다). */
+  remoteQuestion?: boolean;
+  /** 이 답이 서버에 남은 실행 한 건 — 같은 턴이 두 길(완결 행·종료 프레임)로 와도 한 번만 그린다. */
+  ioId?: number;
   /** 표시용 시각(ms). */
   at: number;
 }
@@ -135,6 +139,56 @@ export function setRemotePartial(list: readonly ChatMessage[], text: string): Ch
 /** 진행분 말풍선을 걷어낸다 — 완결 턴이 도착했을 때. */
 export function dropRemotePartials(list: readonly ChatMessage[]): ChatMessage[] {
   return list.filter((m) => !m.remotePartial);
+}
+
+function isTemporary(m: ChatMessage): boolean {
+  return m.remotePartial === true || m.remoteQuestion === true;
+}
+
+/** 다른 곳에서 도는 턴의 시작 — 질문과 빈 진행분을 세운다. 앞 턴의 임시 말풍선은 받은 만큼으로 굳힌다. */
+export function startRemoteTurn(list: readonly ChatMessage[], input: string): ChatMessage[] {
+  const settled = list.flatMap((m): ChatMessage[] => {
+    if (!isTemporary(m)) return [m];
+    if (m.remotePartial && !m.text) return [];
+    return [{ ...m, remotePartial: false, remoteQuestion: false, streaming: false }];
+  });
+  return [
+    ...settled,
+    make('user', input, { remoteQuestion: true }),
+    make('assistant', '', { streaming: false, remotePartial: true, tools: [] }),
+  ];
+}
+
+/**
+ * 다른 곳에서 돈 턴이 **끝났다** — 완결 본문(완결 행 또는 종료 프레임)을 한 번만 넣는다.
+ * 서버는 완결 행을 먼저, 종료를 나중에 보낸다. 어느 쪽이 먼저 와도 결과는 같다:
+ * 진행분과 그 턴의 질문을 지우고 그 자리에 완결 턴을 넣는다. 이력이 이미 질문을 그렸으면
+ * (도는 중에 연 대화) 답만 붙인다. 이미 그린 턴이면 null.
+ */
+export function completeRemoteTurn(
+  list: readonly ChatMessage[],
+  turn: { ioId?: number | null; input: string; output: string },
+): ChatMessage[] | null {
+  const ioId = turn.ioId || undefined;
+  if (ioId && list.some((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial)) return null;
+  const out = list.filter((m) => !isTemporary(m));
+  const last = out[out.length - 1];
+  const prev = out[out.length - 2];
+  if (
+    last?.role === 'assistant' && last.text === turn.output && prev?.role === 'user' && prev.text === turn.input &&
+    out.length === list.length
+  ) {
+    if (!ioId || last.ioId) return null;
+    return patchAt(out, out.length - 1, { ioId });
+  }
+  const answer = make('assistant', turn.output, ioId ? { ioId } : {});
+  if (last?.role === 'user' && last.text === turn.input) return [...out, answer];
+  return [...out, make('user', turn.input), answer];
+}
+
+/** 다른 곳의 턴을 그리는 중인가(임시 말풍선이 있다). */
+export function hasRemoteTurn(list: readonly ChatMessage[]): boolean {
+  return list.some(isTemporary);
 }
 
 /** 스트림이 끝났다. 중단이면 그 사실도 남긴다. */

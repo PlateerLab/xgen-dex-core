@@ -96,6 +96,7 @@ import { ChatFolderStore } from './chat-folders';
 import { localFoldersForRequest, normalizeLocalFolders } from '@dex/engine/local-folders';
 import { parseConversationFolders } from '@dex/protocol/conversation-folders';
 import { ChatFolderSync } from './chat-folder-sync';
+import { FolderFsError, folderFsCall } from './folder-fs';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import {
   consumeInstallOptions,
@@ -1560,6 +1561,12 @@ function notifyFolderRemote(interactionId: string): void {
     safeSend(w, CHANNELS.chatFoldersRemoteChanged, interactionId);
   }
 }
+// 에이전트가 이 PC 의 폴더를 바꿨다 — 그 대화의 IDE 탐색기 [연결된 폴더] 가 다시 읽는다.
+getLocalToolProvider().onFolderChange((interactionId) => {
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersTouched, interactionId);
+  }
+});
 getLocalToolProvider().onRemoteUse((use) => {
   lastRemoteUse.set(use.interactionId, use);
   for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
@@ -2769,6 +2776,12 @@ ipcMain.handle(CHANNELS.clipboardWrite, (_e, text: unknown) => {
   return true;
 });
 
+// 우리 렌더러만 읽는다 — 창 안의 앱(에이전트가 쓴 코드)은 이 다리를 받지 못한다.
+ipcMain.handle(CHANNELS.clipboardRead, (e) => {
+  if (!isRendererUrl(e.senderFrame?.url ?? '')) return '';
+  return clipboard.readText();
+});
+
 // ── IPC: Teams 첨부 ──────────────────────────────────────────────
 // 파일 경로는 **메인에만** 존재한다. 렌더러는 "고르기 → 올리기" 를 시킬 수만
 // 있고, 어떤 경로를 읽고 쓸지는 정하지 못한다.
@@ -3265,6 +3278,34 @@ ipcMain.handle(CHANNELS.chatFoldersReveal, async (_e, interactionId: string, fol
   return { ok: !err, error: err || undefined };
 });
 
+/**
+ * IDE 탐색기 [연결된 폴더] — 이 대화에 연결한 폴더 안에서만 읽고 쓴다(폴더 밖·링크로 빠져나가는
+ * 경로는 folder-fs 가 거부한다). 실패는 봉투로 돌려 렌더러가 IdeError 로 되살린다.
+ */
+ipcMain.handle(
+  CHANNELS.chatFoldersFs,
+  async (_e, interactionId: unknown, rootId: unknown, op: unknown, args: unknown) => {
+    const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === String(rootId ?? ''));
+    if (!folder) return { ok: false, code: 'not_found', message: '연결된 폴더를 찾을 수 없습니다', detail: {} };
+    try {
+      const value = await folderFsCall(folder.path, String(op ?? ''), (args ?? {}) as Record<string, unknown>, {
+        trash: (abs) => shell.trashItem(abs),
+        reveal: (abs) => shell.showItemInFolder(abs),
+      });
+      return { ok: true, value };
+    } catch (err) {
+      if (err instanceof FolderFsError) return { ok: false, code: err.code, message: err.message, detail: err.detail };
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return {
+        ok: false,
+        code: code === 'EACCES' || code === 'EPERM' ? 'forbidden' : 'error',
+        message: code === 'EACCES' || code === 'EPERM' ? '이 파일에 접근할 권한이 없습니다' : String((err as Error)?.message ?? err),
+        detail: {},
+      };
+    }
+  },
+);
+
 // ── IPC: app / window management ─────────────────────────────────
 ipcMain.handle(CHANNELS.appOpenFolder, async (_e, p: unknown) => {
   const dir = typeof p === 'string' && p.trim() ? p : resolveDataRoot(loadConfig());
@@ -3668,10 +3709,25 @@ if (!gotLock) {
     // Voice input: the renderer calls navigator.mediaDevices.getUserMedia for the
     // push-to-talk mic. Electron denies media by default unless we approve it —
     // grant ONLY 'media', deny every other permission request.
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-      cb(permission === 'media');
+    //
+    // Clipboard: our own renderer frame (not the apps an agent wrote, shown in iframes) may read
+    // and write the clipboard — the IDE editor's context-menu paste goes through
+    // navigator.clipboard.readText, which Electron otherwise denies.
+    const clipboardPermission = (permission: string, url: string, mainFrame: boolean): boolean =>
+      (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') &&
+      mainFrame &&
+      isRendererUrl(url);
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => {
+      cb(
+        permission === 'media' ||
+          clipboardPermission(permission, details?.requestingUrl ?? '', details?.isMainFrame !== false),
+      );
     });
-    session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
+    session.defaultSession.setPermissionCheckHandler(
+      (_wc, permission, _origin, details) =>
+        permission === 'media' ||
+        clipboardPermission(permission, details?.requestingUrl ?? '', details?.isMainFrame !== false),
+    );
 
     // Avatar asset proxy: xgenavatar://a/<path> → <serverUrl>/<path>, fetched in
     // the main process (no CORS/CSP). The renderer points the Live2D/Spine loader

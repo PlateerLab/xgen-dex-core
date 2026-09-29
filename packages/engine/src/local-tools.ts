@@ -1118,6 +1118,16 @@ export class LocalToolProvider {
   /** main 의 공통 NotificationCenter. 주입해 Node 단위 테스트는 Electron 을 요구하지 않는다. */
   private notificationHandler: LocalNotificationHandler | null = null;
   private remoteUseListeners = new Set<(use: RemoteFolderUse) => void>();
+  private folderChangeListeners = new Set<(interactionId: string) => void>();
+
+  /**
+   * 폴더를 바꿀 수 있는 도구(셸·파일 쓰기)가 끝날 때마다 부른다 — 그 대화의 IDE 탐색기가
+   * [연결된 폴더] 를 다시 읽는다. 해지 함수를 돌려준다.
+   */
+  onFolderChange(listener: (interactionId: string) => void): () => void {
+    this.folderChangeListeners.add(listener);
+    return () => this.folderChangeListeners.delete(listener);
+  }
 
   /** 다른 화면에서 온 요청으로 폴더를 조작할 때마다 부른다. 해지 함수를 돌려준다. */
   onRemoteUse(listener: (use: RemoteFolderUse) => void): () => void {
@@ -1226,15 +1236,29 @@ export class LocalToolProvider {
         }
       }
     }
-    if (tool === SHELL_TOOL) return this.shell(args, scope);
-    if (tool === SHELL_JOB_TOOL) return this.shellJob(args, scope);
-    if (tool === OPEN_TOOL) return this.open(args, scope);
-    if (tool === READ_FILE_TOOL) return this.readFile(args, scope);
-    if (tool === WRITE_FILE_TOOL) return this.writeFile(args, scope);
-    if (tool === LIST_DIR_TOOL) return this.listDir(args, scope);
-    if (tool === SEARCH_TOOL) return this.search(args, scope);
-    if (tool === CLIPBOARD_TOOL) return this.clipboard(args);
-    return this.notify(args, context);
+    const changes = tool === SHELL_TOOL || tool === SHELL_JOB_TOOL || tool === WRITE_FILE_TOOL;
+    try {
+      if (tool === SHELL_TOOL) return await this.shell(args, scope);
+      if (tool === SHELL_JOB_TOOL) return await this.shellJob(args, scope);
+      if (tool === OPEN_TOOL) return await this.open(args, scope);
+      if (tool === READ_FILE_TOOL) return await this.readFile(args, scope);
+      if (tool === WRITE_FILE_TOOL) return await this.writeFile(args, scope);
+      if (tool === LIST_DIR_TOOL) return await this.listDir(args, scope);
+      if (tool === SEARCH_TOOL) return await this.search(args, scope);
+      if (tool === CLIPBOARD_TOOL) return await this.clipboard(args);
+      return await this.notify(args, context);
+    } finally {
+      // 실패한 명령도 폴더를 바꿨을 수 있다(절반쯤 쓰고 끊긴 경우).
+      if (changes && context?.interactionId) {
+        for (const listener of this.folderChangeListeners) {
+          try {
+            listener(context.interactionId);
+          } catch {
+            /* 표시 실패가 도구를 막지 않는다 */
+          }
+        }
+      }
+    }
   }
 
   /** 이 호출의 대화에 연결된 폴더. 없으면 던진다 — 폴더 밖의 기본값은 없다. */

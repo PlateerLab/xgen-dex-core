@@ -25,7 +25,8 @@ export {
 } from './activity';
 export { useIdeActivity } from './components/hooks';
 export { Icon, type IconName } from './components/icons';
-export { IdeStore, DEFAULT_LAYOUT, type IdeState, type Layout, type IdeCommand, type EditorTab, type EditorGroup, type DocState } from './store';
+export { IdeStore, DEFAULT_LAYOUT, type IdeState, type Layout, type IdeCommand, type EditorTab, type EditorGroup, type DocState, type FoldersState } from './store';
+export { folderPath, parseFolderPath, isFolderPath } from './folders';
 export { IdeError } from './types';
 export type {
   IdeHost,
@@ -40,6 +41,9 @@ export type {
   IdeSearchResult,
   IdeReplaceResult,
   IdeTerminalInfo,
+  IdeFolderRoot,
+  IdeFoldersState,
+  IdeFolderSource,
   TerminalServerFrame,
   TerminalClientFrame,
   TerminalConnection,

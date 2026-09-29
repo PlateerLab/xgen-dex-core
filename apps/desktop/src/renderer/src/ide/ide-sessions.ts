@@ -55,7 +55,8 @@ export function ideStoreFor(
   const hit = stores.get(sessionKey);
   if (hit && hit.workflowId === agent.workflowId) return hit.store;
   hit?.store.dispose();
-  const store = new IdeStore(createDexIdeHost(agent));
+  // 채팅 탭의 key 는 대화 id 다 — 그 대화에 연결한 폴더가 탐색기 아래 보인다.
+  const store = new IdeStore(createDexIdeHost(agent, sessionKey));
   stores.set(sessionKey, { store, workflowId: agent.workflowId });
   // 그리는 도중(채팅 화면이 저장소를 만들 때)에 다른 부품을 다시 그리게 하지 않는다.
   queueMicrotask(emitStores);

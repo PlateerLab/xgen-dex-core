@@ -8,6 +8,8 @@
  *   터미널     = 에이전트 샌드박스 안의 셸(`openTerminal`) — 연결이 끊겨도 셸은 산다
  *   찾기       = 샌드박스 안에서 찾는다(`search`/`replace`)
  *   소스 제어  = 샌드박스 안의 git(`git`)
+ *   연결된 폴더 = 이 대화에 연결한 기기의 폴더(`folders`) — 탐색기 아래 따로 보이고, 편집기로
+ *                연다. 이 기기에 있는 폴더만 펼쳐지고, 다른 기기에 있으면 이름만 보인다.
  *
  * 서버 주소·인증·소켓은 호스트의 일이다. 데스크톱은 렌더러에서 직접 소켓을 못 열어
  * 메인 프로세스가 대신 열고, 웹은 쿠키로 바로 연다 — 그 차이가 이 경계 밖에 있다.
@@ -138,6 +140,53 @@ export class IdeError extends Error {
   }
 }
 
+/** 이 대화에 연결된 폴더 한 개 — 탐색기 [연결된 폴더] 칸의 뿌리. */
+export interface IdeFolderRoot {
+  id: string;
+  name: string;
+  /** 툴팁에 쓰는 이 기기의 경로(데스크톱). */
+  detail?: string;
+  /** 폴더를 찾을 수 없다(지웠거나 옮겼다). */
+  missing?: boolean;
+  /** 이 창에서 폴더 접근을 다시 허용해야 쓸 수 있다(웹). */
+  needsGrant?: boolean;
+}
+
+export interface IdeFoldersState {
+  /** 이 기기에 있는 폴더 — 펼쳐 보고 편집기로 연다. */
+  roots: IdeFolderRoot[];
+  /** 이 대화의 폴더가 다른 기기에 있다 — 그 기기와 폴더 이름만 보인다. */
+  elsewhere?: { deviceName: string; online: boolean; folders: string[] } | null;
+}
+
+/**
+ * 연결된 폴더 — 호스트가 이 기기의 파일을 다룬다(데스크톱은 디스크, 웹은 브라우저가 허용한 폴더).
+ * 경로는 모두 **폴더 안** 기준이다(`''` = 폴더 자체). 실패는 IdeError(code: not_found·changed·…).
+ */
+export interface IdeFolderSource {
+  state(): Promise<IdeFoldersState>;
+  /** 폴더가 바뀌면 부른다 — 연결·해제·옮김(`rootId` 없음) 또는 그 폴더 안의 파일(`rootId`). */
+  subscribe(onChange: (rootId?: string) => void): () => void;
+  /** 폴더 안 한 단계. 항목의 `path` 는 폴더 안 경로다. */
+  list(rootId: string, dir: string): Promise<IdeFileEntry[]>;
+  read(rootId: string, path: string): Promise<IdeReadResult>;
+  /** `baseSha` 규칙은 `saveFile` 과 같다(`''` = 새 파일, `null` = 조건 없이). */
+  save(rootId: string, path: string, bytes: Uint8Array, baseSha: string | null): Promise<IdeSaveResult>;
+  stat(rootId: string, paths: string[]): Promise<Record<string, IdeStat>>;
+  readRaw(rootId: string, path: string): Promise<Uint8Array>;
+  fs(rootId: string, op: IdeFsOp): Promise<void>;
+  /** 이 창에서 폴더 접근을 허용받는다(웹 — 사용자의 클릭 안에서 불러야 한다). */
+  grant?(rootId: string): Promise<void>;
+  /** 운영체제의 파일 관리자로 연다(데스크톱). */
+  reveal?(rootId: string, path: string): void;
+  /** 복사할 경로 — 이 기기의 절대 경로. 없으면 `<폴더 이름>/<경로>`. */
+  pathOf?(rootId: string, path: string): string;
+  /** [폴더 연결] 창을 연다. */
+  manage?(): void;
+  /** 지우면 운영체제의 휴지통으로 간다(데스크톱). 아니면 바로 지워진다. */
+  trashes?: boolean;
+}
+
 export interface IdeHost {
   /** 에이전트 id — 편집기 모델의 주소와 저장 키에 들어간다. */
   readonly workflowId: string;
@@ -184,6 +233,13 @@ export interface IdeHost {
   download?(path: string): Promise<void> | void;
   /** 클립보드 쓰기(경로 복사). 없으면 navigator.clipboard. */
   copyText?(text: string): Promise<boolean> | boolean;
+  /**
+   * 클립보드 읽기(터미널 붙여넣기). 읽지 못하면 null. 없으면 터미널은 키보드 붙여넣기를
+   * 브라우저의 붙여넣기 사건에 맡기고, 메뉴의 [붙여넣기] 는 navigator.clipboard 로 읽는다.
+   */
+  readText?(): Promise<string | null> | string | null;
+  /** 이 대화에 연결된 폴더. 없으면 탐색기에 [연결된 폴더] 칸이 없다. */
+  folders?: IdeFolderSource;
 }
 
 export type ThemeKind = 'dark' | 'light';

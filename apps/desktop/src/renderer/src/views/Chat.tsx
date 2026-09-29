@@ -1248,28 +1248,6 @@ export const Chat: React.FC<{
           </div>
         </div>
         <div className="chat-header-actions">
-          <div className="chat-view-switch" role="tablist" aria-label="보기">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={!ideMode}
-              className={!ideMode ? 'on' : ''}
-              onClick={() => setIdeMode(false)}
-              title="채팅만 봅니다"
-            >
-              <ChatIcon size={13} /> 채팅
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={ideMode}
-              className={ideMode ? 'on' : ''}
-              onClick={() => setIdeMode(true)}
-              title="이 에이전트의 작업 공간을 편집기와 터미널로 봅니다"
-            >
-              <CodeIcon size={13} /> IDE
-            </button>
-          </div>
           <FolderConnectButton
             count={chatFolders.folders.length}
             onClick={() => setFoldersOpen(true)}
@@ -1372,6 +1350,29 @@ export const Chat: React.FC<{
           >
             {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업 과정
           </button>
+          {/* [채팅 | IDE] — 헤더 맨 오른쪽. 같은 대화를 두 가지로 본다. */}
+          <div className="chat-view-switch" role="tablist" aria-label="보기">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!ideMode}
+              className={!ideMode ? 'on' : ''}
+              onClick={() => setIdeMode(false)}
+              title="채팅만 봅니다"
+            >
+              <ChatIcon size={13} /> 채팅
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={ideMode}
+              className={ideMode ? 'on' : ''}
+              onClick={() => setIdeMode(true)}
+              title="이 에이전트의 작업 공간을 편집기와 터미널로 봅니다"
+            >
+              <CodeIcon size={13} /> IDE
+            </button>
+          </div>
         </div>
       </div>
     </>

@@ -74,7 +74,7 @@ export function useChatFolders(interactionId: string): ChatFoldersState {
   };
 }
 
-/** 채팅 헤더의 [폴더 연결] 버튼 — 연결된 폴더 수를 함께 보인다. */
+/** 채팅 헤더의 [폴더] 버튼 — 연결된 폴더 수를 함께 보인다. */
 export const FolderConnectButton: React.FC<{ count: number; onClick: () => void }> = ({
   count,
   onClick,
@@ -90,7 +90,7 @@ export const FolderConnectButton: React.FC<{ count: number; onClick: () => void 
     }
     aria-haspopup="dialog"
   >
-    <FolderIcon size={14} /> 폴더 연결
+    <FolderIcon size={14} /> 폴더
     {count > 0 && <span className="folder-connect-count">{count}</span>}
   </button>
 );

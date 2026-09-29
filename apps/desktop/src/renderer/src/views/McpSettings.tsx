@@ -254,7 +254,7 @@ const ExposedToolsPanel: React.FC<{
         <div className="small muted pad">
           등록된 MCP 서버가 노출하는 도구가 여기 표시됩니다. 아직 없습니다 — 아래에서 "+ MCP 서버
           추가" 로 등록하거나, 에이전트에게 <code>McpAddServer</code> 로 요청하세요. (이 PC의 파일과
-          터미널은 MCP 서버가 아니라 채팅 위 [폴더 연결]로 대화마다 연결합니다.)
+          터미널은 MCP 서버가 아니라 채팅 위 [폴더]로 대화마다 연결합니다.)
         </div>
       ) : (
         externals

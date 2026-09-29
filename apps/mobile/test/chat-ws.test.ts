@@ -429,3 +429,31 @@ test('stop acknowledgement settles the turn and permits another turn on the same
   assert.deepEqual(got.errors, []);
   chat.close();
 });
+
+test('folders 소식은 턴 번호 없이 폴더 알림으로만 간다 — 간격 감지를 건드리지 않는다', () => {
+  const folders: Array<Record<string, unknown>> = [];
+  const peer: PeerTurnEvent[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-1',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onFolders: (data) => folders.push(data),
+    onPeerTurn: (event) => peer.push(event),
+    callbacks: {},
+  });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { cursor: 0, seq: 4 } });
+  const data = {
+    interaction_id: 'mob-wf-1-1',
+    device: { device_id: 'pc-1', name: '사무실 PC', platform: 'win32', online: true },
+    folders: [{ id: 'f1', name: 'docs' }],
+  };
+  ws.recv({ type: 'folders', data, seq: null });
+  ws.recv({ type: 'turn_started', data: { input: 'x' }, seq: 5 });
+  assert.deepEqual(folders, [data]);
+  assert.equal(peer.filter((event) => event.kind === 'gap').length, 0, 'folders 소식이 유실로 오판됐다');
+  chat.close();
+});

@@ -174,6 +174,14 @@ export const CHANNELS = {
   chatFoldersReveal: 'chat-folders:reveal',
   //: main → 창: 한 대화의 폴더 목록이 바뀌었다 (interactionId, folders).
   chatFoldersChanged: 'chat-folders:changed',
+  //: 이 대화의 서버 사본 — 다른 기기에 있는 폴더·켜짐 여부·최근 원격 조작.
+  chatFoldersRemote: 'chat-folders:remote',
+  //: [이 기기로 옮기기] — 다른 기기에 있는 이 대화의 폴더를 이 PC 폴더로 바꾼다.
+  chatFoldersMoveHere: 'chat-folders:move-here',
+  //: main → 창: 이 대화의 서버 사본이 바뀌었다(다른 기기가 연결·해제·옮김, 기기 켜짐/꺼짐).
+  chatFoldersRemoteChanged: 'chat-folders:remote-changed',
+  //: main → 창: 다른 화면에서 온 요청으로 이 PC 의 폴더를 조작했다.
+  chatFoldersRemoteUse: 'chat-folders:remote-use',
 
   // Sandboxed browser pages + stable main-process runtime.
   browserState: 'browser:state',

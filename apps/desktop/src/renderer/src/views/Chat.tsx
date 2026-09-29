@@ -1328,7 +1328,15 @@ export const Chat: React.FC<{
             )}
           </div>
           <FolderConnectButton
-            count={chatFolders.folders.length}
+            count={
+              chatFolders.elsewhere
+                ? (chatFolders.remote?.state?.folders.length ?? 0)
+                : chatFolders.folders.length
+            }
+            elsewhereName={
+              chatFolders.elsewhere ? chatFolders.remote?.state?.device?.name : undefined
+            }
+            remoteNow={chatFolders.remoteNow}
             onClick={() => setFoldersOpen(true)}
           />
           {/* [작업] — 작업 과정 타임라인 켜기/끄기. 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}

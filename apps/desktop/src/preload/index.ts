@@ -63,7 +63,8 @@ import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/p
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
-import type { ChatFolderView } from '../main/chat-folders';
+import type { ChatFolderRemote, ChatFolderView } from '../main/chat-folders';
+import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
   BrowserConnectionEvent,
@@ -556,6 +557,22 @@ const api = {
         cb(interactionId, folders);
       ipcRenderer.on(CHANNELS.chatFoldersChanged, h);
       return () => ipcRenderer.removeListener(CHANNELS.chatFoldersChanged, h);
+    },
+    /** 이 대화의 서버 사본 — 다른 기기에 있는 폴더·켜짐 여부, 이 PC 의 기기 id, 최근 원격 조작. */
+    remote: (interactionId: string): Promise<ChatFolderRemote> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersRemote, interactionId),
+    /** 선택 창을 열어 고른 폴더로 이 대화의 폴더를 옮겨 온다(다른 기기의 연결은 해제된다). */
+    moveHere: (interactionId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersMoveHere, interactionId),
+    onRemoteChanged: (cb: (interactionId: string) => void): (() => void) => {
+      const h = (_e: unknown, interactionId: string) => cb(interactionId);
+      ipcRenderer.on(CHANNELS.chatFoldersRemoteChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersRemoteChanged, h);
+    },
+    onRemoteUse: (cb: (use: RemoteFolderUse) => void): (() => void) => {
+      const h = (_e: unknown, use: RemoteFolderUse) => cb(use);
+      ipcRenderer.on(CHANNELS.chatFoldersRemoteUse, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersRemoteUse, h);
     },
   },
 

@@ -259,3 +259,17 @@ test('OpenUrl — http(s) 만, 모르는 도구는 오류', async () => {
   const unknown = await callMobileTool(port, 'NoSuchTool', {});
   assert.equal(unknown.isError, true);
 });
+
+test('다른 화면에서 온 요청은 휴대폰 앞에 사람이 있어야 하는 도구를 쓰지 않는다', async () => {
+  const port = fakePort();
+  const s = { ...scope(), remoteFrom: '사무실 PC' };
+  await callMobileTool(port, 'WriteFile', { path: 'doc.txt', content: 'x' }, undefined, s);
+  for (const tool of ['OpenFile', 'TakePhoto']) {
+    const r = await callMobileTool(port, tool, { path: '/Notes/doc.txt' }, undefined, s);
+    assert.equal(r.isError, true, tool);
+    assert.match(r.content[0].text, /사무실 PC에서 왔습니다/);
+  }
+  assert.deepEqual(port.opened, []);
+  const read = await callMobileTool(port, 'ReadFile', { path: '/Notes/doc.txt' }, undefined, s);
+  assert.equal(read.isError, undefined);
+});

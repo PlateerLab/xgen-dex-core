@@ -17,6 +17,10 @@ export type BridgeState = 'off' | 'connecting' | 'connected' | 'error';
 export interface ToolCallContext {
   workflowId?: string;
   interactionId?: string;
+  /** 다른 화면(웹·PC)에서 보낸 턴의 호출인가 — 이 대화의 폴더가 이 폰에 있으면 그렇다. */
+  remote?: boolean;
+  /** 그 요청을 보낸 화면의 이름. */
+  originName?: string;
 }
 
 /** mcp_call 의 context(snake/camel 모두) → 정규화. 값이 없으면 undefined. */
@@ -26,9 +30,13 @@ export function toolCallContext(raw: unknown): ToolCallContext {
     const normalized = String(input ?? '').trim();
     return normalized || undefined;
   };
+  const remote = String(value.remote ?? '').trim();
   return {
     workflowId: text(value.workflow_id ?? value.workflowId),
     interactionId: text(value.interaction_id ?? value.interactionId),
+    ...(remote === '1' || remote === 'true'
+      ? { remote: true, originName: text(value.origin_device_name ?? value.originName) ?? '다른 기기' }
+      : {}),
   };
 }
 

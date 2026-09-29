@@ -2,7 +2,7 @@
 // McpBridge 와 동일 프레임 — 서버 무변경으로 모바일 도구가 실린다).
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MobileToolBridge } from '../src/lib/tool-bridge';
+import { MobileToolBridge, toolCallContext } from '../src/lib/tool-bridge';
 import type { ToolAdvert } from '../src/lib/mobile-tools';
 
 class FakeWs {
@@ -288,4 +288,15 @@ test('hello 에 기기 식별이 실린다 — 멀티 디바이스 슬롯 키', 
   assert.equal(ws.sent[0].device_name, 'Galaxy · 모바일');
   assert.equal(ws.sent[0].device_platform, 'android');
   bridge.stop();
+});
+
+test('다른 화면에서 온 호출이면 그 화면의 이름이 실린다 — 휴대폰이 알리고, 자리 도구는 막는다', () => {
+  assert.deepEqual(toolCallContext({ interaction_id: 'c1', remote: '1', origin_device_name: '사무실 PC' }), {
+    workflowId: undefined,
+    interactionId: 'c1',
+    remote: true,
+    originName: '사무실 PC',
+  });
+  assert.equal(toolCallContext({ interaction_id: 'c1', remote: '1' }).originName, '다른 기기');
+  assert.equal(toolCallContext({ interaction_id: 'c1' }).remote, undefined);
 });

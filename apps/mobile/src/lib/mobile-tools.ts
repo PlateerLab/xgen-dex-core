@@ -133,7 +133,12 @@ export interface FolderFs {
 export interface FolderScope {
   folders: MobileFolder[];
   fs: FolderFs;
+  /** 다른 화면(웹·PC)에서 보낸 턴의 호출 — 그 화면의 이름. */
+  remoteFrom?: string;
 }
+
+/** 휴대폰 앞에 사람이 있어야 뜻이 있는 폴더 도구 — 다른 화면에서 온 요청에서는 쓰지 않는다. */
+export const PRESENCE_TOOLS: ReadonlySet<string> = new Set(['OpenFile', 'TakePhoto']);
 
 const READ_CAP = 200_000;
 const SEARCH_FILE_CAP = 1_000_000;
@@ -363,6 +368,11 @@ export async function callMobileTool(
     if (FOLDER_TOOLS.has(tool)) {
       // 폴더 도구는 그 대화에 연결된 폴더 안에서만 — 없으면 이유와 방법을 알린다.
       if (!scope || !scope.folders.length) return err(NO_FOLDER_MESSAGE);
+      if (scope.remoteFrom !== undefined && PRESENCE_TOOLS.has(tool)) {
+        return err(
+          `${tool} 은(는) 이 휴대폰에서 보낸 요청에서만 쓸 수 있습니다 — 이 요청은 ${scope.remoteFrom || '다른 기기'}에서 왔습니다.`,
+        );
+      }
       return await callFolderTool(port, tool, args, scope);
     }
     switch (tool) {

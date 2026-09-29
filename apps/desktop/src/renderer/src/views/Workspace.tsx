@@ -22,6 +22,7 @@ import type {
 } from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
 import { Chat } from './Chat';
+import { onIdeViewChange, onSidebarToggle } from './ide-sidebar';
 import { Settings } from './Settings';
 import { AgentViewer } from './AgentViewer';
 import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
@@ -1022,6 +1023,33 @@ export const Workspace: React.FC<{
   const viewIsIde = useIsIdeMode(viewKey);
   const viewIde = useIdeStore(viewKey);
   const ideInView = viewIsIde ? viewIde : null;
+
+  // [IDE] 로 보는 동안 앱 사이드바(대화·탐색기·Teams…)를 접는다 — IDE 가 자기 사이드바를 갖는다.
+  // 채팅으로 돌아오면 우리가 접은 것만 다시 편다. 규칙은 ide-sidebar.ts.
+  const autoCollapsedRef = useRef(false);
+  const wasIdeRef = useRef(viewIsIde);
+  const prevCollapsedRef = useRef(collapsed);
+  useEffect(() => {
+    const wasIde = wasIdeRef.current;
+    wasIdeRef.current = viewIsIde;
+    if (wasIde === viewIsIde) return;
+    const next = onIdeViewChange(wasIde, viewIsIde, {
+      collapsed,
+      autoCollapsed: autoCollapsedRef.current,
+    });
+    autoCollapsedRef.current = next.autoCollapsed;
+    if (next.collapsed !== collapsed) setCollapsed(next.collapsed);
+  }, [viewIsIde, collapsed]);
+  useEffect(() => {
+    // IDE 안에서 사용자가 사이드바를 직접 열었다 — 그 뒤로는 사용자의 선택이다.
+    const changed = prevCollapsedRef.current !== collapsed;
+    prevCollapsedRef.current = collapsed;
+    if (!changed || !viewIsIde) return;
+    autoCollapsedRef.current = onSidebarToggle(true, collapsed, {
+      collapsed,
+      autoCollapsed: autoCollapsedRef.current,
+    }).autoCollapsed;
+  }, [collapsed, viewIsIde]);
 
   const renderGroupContent = (group: WorkspaceGroup) => {
     const active = group.tabs.find((tab) => tab.id === group.activeTabId) ?? null;

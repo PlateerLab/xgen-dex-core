@@ -1,27 +1,24 @@
 /**
  * ExplorerPanel — 사이드바 [탐색기] 뷰.
  *
- *     [XgenCloud]            ← 사용자의 클라우드 저장소
- *     [<에이전트 이름>]        ← 각 에이전트의 자기 워크스페이스 (**전부 보인다**)
+ *     [파일 저장소]            ← 사용자의 파일 저장소
+ *     [<에이전트 이름>]        ← 각 에이전트의 워크스페이스 (**전부** 보인다)
  *
- * 에이전트는 연결 여부와 무관하게 항상 나열된다 — 동기화가 꺼져 있으면
- * 서버 트리를 읽기 전용으로 보여주고(agentData.workspaceTree), [설정 >
- * 파일 시스템]에서 연결을 켜면 로컬 실파일(fileSystem.list)로 바뀐다.
- * 디렉터리는 펼칠 때 지연 로드하고, 다시 읽는 동안 **이전 목록을 그대로
- * 보여준다**.
+ * 서버에 있는 것을 그대로 보여 준다 — 이 PC 에 내려받아 두지 않는다. 파일을
+ * 누르면 콘텐츠 영역의 뷰어 탭으로 연다. 디렉터리는 펼칠 때 지연 로드하고,
+ * 다시 읽는 동안 **이전 목록을 그대로 보여준다**.
  */
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { xgen } from '../bridge';
 import { teamsAttachmentRejectReason } from '@dex/protocol';
 import { ShareToTeamsModal } from './ShareToTeams';
-import type { FileSystemStatusLike } from '../../../preload/index';
 import {
   childPath,
   entriesAt,
   formatSize,
   sectionsFor,
   sortEntries,
-  syncedAgo,
+  type ExplorerAgent,
   type ExplorerEntry,
   type ExplorerSection,
   type RemoteNodeLike,
@@ -41,22 +38,28 @@ interface DirState {
   /** null = 아직 한 번도 못 읽음. 로드 중에도 이전 목록을 유지한다. */
   entries: ExplorerEntry[] | null;
   loading: boolean;
+  /** 마지막 읽기가 실패했으면 그 이유 — 이전 목록이 있으면 그대로 둔다. */
+  error?: string;
 }
 
 const dirKey = (workflowId: string, rel: string) => `${workflowId}:${rel}`;
 
 export const ExplorerPanel: React.FC<{
-  onOpenSettings: () => void;
   /** 로그인 사용자 표시 이름 — 파일을 Teams 로 공유할 때 낙관적 렌더에 쓴다. */
   myName: string;
   /** 파일 클릭 → 콘텐츠 영역 뷰어 탭. */
-  onOpenFile?: (sectionKind: 'cloud' | 'agent', workflowId: string, rel: string, name: string) => void;
-}> = ({ onOpenSettings, myName, onOpenFile }) => {
-  /** Teams 로 공유하려고 고른 파일의 클라우드 경로. null 이면 모달이 닫혀 있다. */
+  onOpenFile?: (
+    sectionKind: 'cloud' | 'agent',
+    workflowId: string,
+    rel: string,
+    name: string,
+  ) => void;
+}> = ({ myName, onOpenFile }) => {
+  /** Teams 로 공유하려고 고른 파일의 저장소 경로. null 이면 모달이 닫혀 있다. */
   const [sharePath, setSharePath] = useState<{ path: string; name: string; size: number } | null>(
     null,
   );
-  const [status, setStatus] = useState<FileSystemStatusLike | null>(null);
+  const [agents, setAgents] = useState<ExplorerAgent[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
@@ -65,33 +68,35 @@ export const ExplorerPanel: React.FC<{
   // 디렉터리 캐시는 ref + 수동 리렌더 — 로드가 겹칠 때 상태 업데이트 함수 안에서
   // IO 를 시작하는 꼴(불순한 updater)을 피하는 가장 단순한 구조다.
   const cacheRef = useRef(new Map<string, DirState>());
-  // 비동기화 섹션의 서버 평면 트리 캐시 — 한 번 받아 모든 하위 디렉터리를 썬다.
+  // 에이전트 섹션의 서버 평면 트리 캐시 — 한 번 받아 모든 하위 디렉터리를 썬다.
   const remoteRef = useRef(new Map<string, RemoteNodeLike[]>());
   const seqRef = useRef(new Map<string, number>());
   const [, bump] = useReducer((x: number) => x + 1, 0);
 
-  useEffect(() => {
-    void xgen.fileSystem
-      .status()
-      .then(setStatus)
-      .catch(() => undefined);
-    return xgen.fileSystem.onStatus(setStatus);
+  const loadAgents = useCallback(async () => {
+    try {
+      setAgents(await xgen.storage.agents());
+    } catch {
+      /* 목록을 못 읽으면 이전 목록을 둔다 — 새로고침으로 다시 시도한다 */
+    }
   }, []);
 
-  /** 섹션+상대경로 → 직계 자식. 동기화 여부에 따라 로컬/서버를 읽는다. */
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
+
+  /** 섹션+상대경로 → 직계 자식. 파일 저장소는 폴더 단위로, 에이전트는 평면 목록에서. */
   const fetchDir = useCallback(
     async (section: ExplorerSection, rel: string, force = false): Promise<ExplorerEntry[]> => {
-      if (section.synced) return xgen.fileSystem.list(section.workflowId, rel);
+      if (section.kind === 'cloud') {
+        const r = await xgen.storage.cloudList(rel);
+        if (!r.ok) throw new Error(r.error || '목록을 불러오지 못했습니다');
+        return r.entries;
+      }
       let nodes = remoteRef.current.get(section.workflowId);
       if (!nodes || force) {
-        if (section.kind === 'cloud') {
-          // 클라우드 = **파일 저장소** — geny(agentData.workspaceTree)를 읽으면
-          // 구 xgen-cloud 를 비추게 된다 (실사고).
-          nodes = (await xgen.fileSystem.cloudServerTree()) as RemoteNodeLike[];
-        } else {
-          const r = await xgen.agentData.workspaceTree(section.workflowId);
-          nodes = (r?.files ?? []) as RemoteNodeLike[];
-        }
+        const r = await xgen.agentData.workspaceTree(section.workflowId);
+        nodes = (r?.files ?? []) as RemoteNodeLike[];
         remoteRef.current.set(section.workflowId, nodes);
       }
       return entriesAt(nodes, rel);
@@ -110,29 +115,29 @@ export const ExplorerPanel: React.FC<{
       seqRef.current.set(key, seq);
       cacheRef.current.set(key, { entries: cur?.entries ?? null, loading: true });
       bump();
-      let next: ExplorerEntry[] | null = null;
+      let next: DirState;
       try {
-        next = sortEntries(await fetchDir(section, rel, force));
-      } catch {
-        next = cur?.entries ?? [];
+        next = { entries: sortEntries(await fetchDir(section, rel, force)), loading: false };
+      } catch (e) {
+        next = { entries: cur?.entries ?? [], loading: false, error: (e as Error).message };
       }
       if (seqRef.current.get(key) !== seq) return;
-      cacheRef.current.set(key, { entries: next, loading: false });
+      cacheRef.current.set(key, next);
       bump();
     },
     [fetchDir],
   );
 
-  const sections = sectionsFor(status);
+  const sections = sectionsFor(agents);
 
-  // 펼쳐져 있는 섹션 루트는 항상 읽혀 있어야 한다 — 상태 변화(동기화 토글,
-  // 에이전트 목록 갱신)로 섹션이 생기면 여기서 따라 읽는다.
+  // 펼쳐져 있는 섹션 루트는 항상 읽혀 있어야 한다 — 에이전트 목록이 갱신돼
+  // 섹션이 생기면 여기서 따라 읽는다.
   useEffect(() => {
     for (const s of sections) {
       if (!collapsed.has(s.id)) void loadDir(s, '');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, collapsed]);
+  }, [agents, collapsed]);
 
   const toggleSection = (s: ExplorerSection) => {
     setCollapsed((prev) => {
@@ -157,14 +162,10 @@ export const ExplorerPanel: React.FC<{
     });
   };
 
-  /** 동기화·에이전트 목록을 갱신하고, 열어 둔 모든 폴더를 다시 읽는다. */
+  /** 에이전트 목록을 갱신하고, 열어 둔 모든 폴더를 서버에서 다시 읽는다. */
   const refreshAll = useCallback(async () => {
     setBusy(true);
-    try {
-      await Promise.allSettled([xgen.fileSystem.refreshAgents(), xgen.fileSystem.syncNow()]);
-    } catch {
-      /* 실패해도 다시 읽기는 진행한다 */
-    }
+    await loadAgents();
     remoteRef.current.clear();
     await Promise.all(
       sections.map(async (s) => {
@@ -175,11 +176,7 @@ export const ExplorerPanel: React.FC<{
     );
     setBusy(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadDir, status]);
-
-  const openInOs = (section: ExplorerSection, rel: string) => {
-    if (section.synced) void xgen.fileSystem.openPath(section.workflowId, rel);
-  };
+  }, [loadAgents, loadDir, agents]);
 
   const renderDir = (section: ExplorerSection, rel: string, depth: number): React.ReactNode => {
     const st = cacheRef.current.get(dirKey(section.workflowId, rel));
@@ -193,8 +190,8 @@ export const ExplorerPanel: React.FC<{
     if (!st.entries) return null;
     if (st.entries.length === 0) {
       return (
-        <div className="tree-row muted" style={{ paddingLeft: depth * 14 + 26 }}>
-          비어 있음
+        <div className="tree-row muted" style={{ paddingLeft: depth * 14 + 26 }} title={st.error}>
+          {st.error ? '불러오지 못했습니다' : '비어 있음'}
         </div>
       );
     }
@@ -212,7 +209,6 @@ export const ExplorerPanel: React.FC<{
               tabIndex={0}
               onClick={() => toggleDir(section, p)}
               onKeyDown={(ev) => ev.key === 'Enter' && toggleDir(section, p)}
-              onDoubleClick={() => openInOs(section, p)}
               title={e.name}
             >
               <span className={`tree-chevron ${open ? 'open' : ''}`}>
@@ -238,8 +234,12 @@ export const ExplorerPanel: React.FC<{
             setSelected(key);
             onOpenFile?.(section.kind, section.workflowId, p, e.name);
           }}
-          onDoubleClick={() => openInOs(section, p)}
-          title={section.synced ? `${e.name} — 두 번 누르면 OS로 열기` : e.name}
+          onKeyDown={(ev) => {
+            if (ev.key !== 'Enter') return;
+            setSelected(key);
+            onOpenFile?.(section.kind, section.workflowId, p, e.name);
+          }}
+          title={e.name}
         >
           <span className="tree-chevron" />
           <span className="tree-icon">
@@ -247,29 +247,24 @@ export const ExplorerPanel: React.FC<{
           </span>
           <span className="tree-name">{e.name}</span>
           {e.size > 0 && <span className="tree-size">{formatSize(e.size)}</span>}
-          {/* 파일을 Teams 방으로 — 클라우드가 **로컬 동기화 중일 때만**
-              (공유 IPC 가 클라우드 동기화 폴더의 실파일을 읽는다). */}
-          {section.kind === 'cloud' &&
-            section.synced &&
-            teamsAttachmentRejectReason(e.name, e.size) === null && (
-              <button
-                className="tree-share"
-                title="이 파일을 Teams 대화방에 공유"
-                aria-label="Teams로 공유"
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  setSharePath({ path: `/${p}`, name: e.name, size: e.size });
-                }}
-              >
-                <ShareIcon size={12} />
-              </button>
-            )}
+          {/* 파일 저장소의 파일을 Teams 방으로 — 바이트는 메인이 서버에서 받는다. */}
+          {section.kind === 'cloud' && teamsAttachmentRejectReason(e.name, e.size) === null && (
+            <button
+              className="tree-share"
+              title="이 파일을 Teams 대화방에 공유"
+              aria-label="Teams로 공유"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                setSharePath({ path: `/${p}`, name: e.name, size: e.size });
+              }}
+            >
+              <ShareIcon size={12} />
+            </button>
+          )}
         </div>
       );
     });
   };
-
-  const anySyncOff = status && (!status.cloud.enabled || !status.agents.enabled);
 
   return (
     <div className="side-panel">
@@ -278,7 +273,7 @@ export const ExplorerPanel: React.FC<{
         <span className="sidebar-title-actions">
           <button
             className={`icon-btn sm ${busy ? 'spin' : ''}`}
-            title="새로고침 (에이전트 목록 + 동기화)"
+            title="새로고침"
             onClick={() => void refreshAll()}
             disabled={busy}
           >
@@ -288,23 +283,12 @@ export const ExplorerPanel: React.FC<{
       </div>
 
       <div className="explorer-body">
-        {!status?.loggedIn && (
-          <div className="explorer-notice">
-            <p>로그인하면 클라우드와 에이전트 워크스페이스가 여기에 보입니다.</p>
-          </div>
-        )}
         {sections.map((s) => {
           const isCollapsed = collapsed.has(s.id);
           const st = cacheRef.current.get(dirKey(s.workflowId, ''));
-          const loadingDot = s.syncing || st?.loading;
           return (
             <div key={s.id} className="explorer-section">
-              <button
-                className="section-head"
-                onClick={() => toggleSection(s)}
-                onDoubleClick={() => s.synced && openInOs(s, '')}
-                title={s.synced && s.dir ? s.dir : `${s.title} (서버 보기 — 동기화 꺼짐)`}
-              >
+              <button className="section-head" onClick={() => toggleSection(s)} title={s.title}>
                 <span className={`tree-chevron ${isCollapsed ? '' : 'open'}`}>
                   <ChevronRightIcon size={13} />
                 </span>
@@ -312,34 +296,17 @@ export const ExplorerPanel: React.FC<{
                   {s.kind === 'cloud' ? <CloudIcon size={14} /> : <BotIcon size={14} />}
                 </span>
                 <span className="section-name">{s.title}</span>
-                {!s.synced && (
-                  <span className="section-badge muted" title="서버 보기 — 로컬 동기화 꺼짐">
-                    서버
-                  </span>
-                )}
-                {s.lastError && (
-                  <span className="section-err" title={s.lastError}>
+                {st?.error && (
+                  <span className="section-err" title={st.error}>
                     !
                   </span>
                 )}
-                {loadingDot && <span className="section-loading" />}
+                {st?.loading && <span className="section-loading" />}
               </button>
               {!isCollapsed && <div className="section-body">{renderDir(s, '', 1)}</div>}
             </div>
           );
         })}
-
-        {status?.loggedIn && anySyncOff && (
-          <div className="explorer-notice">
-            <p>
-              [설정 &gt; 파일 시스템]에서 파일 저장소 / Agent Workspace 연결을 켜면
-              해당 저장소가 이 PC 의 폴더로 동기화됩니다.
-            </p>
-            <button className="primary-sm" onClick={onOpenSettings}>
-              설정 열기
-            </button>
-          </div>
-        )}
       </div>
 
       {sharePath && (
@@ -352,27 +319,6 @@ export const ExplorerPanel: React.FC<{
           onClose={() => setSharePath(null)}
         />
       )}
-
-      <div className="explorer-foot">
-        <span
-          className={`mount-dot ${status && (status.cloud.enabled || status.agents.enabled) ? 'on' : ''}`}
-        />
-        {status ? (
-          <span className="path-ellipsis" title={`데이터 루트: ${status.dataRoot}`}>
-            {status.dataRoot}
-            {(() => {
-              const times = [
-                status.cloud.lastSyncAt ?? 0,
-                ...status.agents.list.map((a) => a.lastSyncAt ?? 0),
-              ];
-              const latest = Math.max(...times);
-              return latest ? ` · ${syncedAgo(latest, Date.now())}` : '';
-            })()}
-          </span>
-        ) : (
-          <span className="muted">상태 확인 중…</span>
-        )}
-      </div>
     </div>
   );
 };

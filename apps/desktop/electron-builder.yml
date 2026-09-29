@@ -127,9 +127,7 @@ nsis:
   # 지정한다. 미지정 시 기본값은 sanitizedProductName(=productName 그대로,
   # 하이픈 포함)이라 바로가기가 "XGen-Dex"로 보인다.
   shortcutName: XGen Dex
-  # 설치 시 WebDAV 파일 크기 상한 해제 + WebClient 자동 시작 (관리자 단계).
-  # 기본 50MiB 상한에 걸리면 탐색기가 조용히 거부해 "파일이 안 열린다"로만
-  # 보인다 — 설치 때 한 번 올려 두는 것이 유일하게 깨끗한 지점이다.
+  # 설치 화면 로그·데이터 폴더 선택 (NSIS 사용자 정의 단계).
   include: build/installer.nsh
 mac:
   target:

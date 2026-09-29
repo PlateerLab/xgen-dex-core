@@ -12,7 +12,6 @@ import { HotkeyCapture } from './HotkeyCapture';
 import { SettingsSection } from './SettingsSection';
 import { SshSettings } from './SshSettings';
 import { McpSettings } from './McpSettings';
-import { FileSystemSettings } from './FileSystemSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { AvatarSettings } from './AvatarSettings';
 import { Selector } from './Selector';
@@ -28,7 +27,7 @@ type Theme = NonNullable<ConnectorConfig['theme']>;
 // [폴더 연결]로 정한다.
 type Tab =
   | 'general' | 'notifications' | 'avatar'
-  | 'browser' | 'mcp' | 'ssh' | 'filesystem';
+  | 'browser' | 'mcp' | 'ssh';
 /** [연결된 기기] — 같은 계정의 커넥터(이 PC·폰·CLI/VSCode) 현황. 멀티 디바이스
  *  커넥터의 상태 대시보드: 어느 기기의 어떤 도구가 몇 개 광고 중인지 한눈에. */
 const ConnectorDevicesCard: React.FC = () => {
@@ -102,7 +101,6 @@ const TABS: { id: Tab; label: string }[] = [
   // SSH 는 이 PC 의 기능이 아니라 **XGEN 계정의 설정**이다 (접속은 서버가 연다).
   // 그래도 여기 두는 이유: 사용자는 "Agent 가 뭘 할 수 있나"를 이 창에서 찾는다.
   { id: 'ssh', label: 'SSH' },
-  { id: 'filesystem', label: '파일 시스템' },
 ];
 
 const NOTIFICATION_EVENTS: Array<{
@@ -140,6 +138,7 @@ export const Settings: React.FC<{
   // 탭으로 박혀 있을 때(embedded)는 Esc 로 닫을 대상이 아니다.
   useModalDismiss(onClose, !embedded);
   const [tab, setTab] = useState<Tab>('general');
+  const [diagCopied, setDiagCopied] = useState(false);
   const [serverUrl, setServerUrl] = useState(config.serverUrl);
   const [allowPrivateCertificate, setAllowPrivateCertificate] = useState(
     config.allowPrivateCertificate ?? false,
@@ -537,6 +536,19 @@ export const Settings: React.FC<{
                 <div className="row">
                   <button className="secondary" onClick={() => void xgen.appctl.openFolder()}>
                     설치 폴더 열기
+                  </button>
+                  <button
+                    className="secondary"
+                    title="문제를 알릴 때 붙여 넣을 최근 기록을 복사합니다"
+                    onClick={() =>
+                      void xgen.diag.copy().then((r) => {
+                        if (!r.ok) return;
+                        setDiagCopied(true);
+                        setTimeout(() => setDiagCopied(false), 1600);
+                      })
+                    }
+                  >
+                    {diagCopied ? '복사됨' : '진단 로그 복사'}
                   </button>
                 </div>
               </div>
@@ -1021,13 +1033,6 @@ export const Settings: React.FC<{
         {tab === 'mcp' && (
           <SettingsSection plain title="MCP 서버">
             <McpSettings embedded onClose={() => undefined} />
-          </SettingsSection>
-        )}
-
-        {/* ─── 파일 시스템 ─── */}
-        {tab === 'filesystem' && (
-          <SettingsSection plain title="파일 시스템">
-            <FileSystemSettings embedded />
           </SettingsSection>
         )}
       </div>

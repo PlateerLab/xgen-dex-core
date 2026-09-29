@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
-  cloudDirOf,
   consumeInstallOptions,
   decodeInstallerLogLine,
   INSTALL_OPTIONS_FILE,
@@ -13,7 +12,6 @@ import {
   resolveDataRoot,
   runtimeDirOf,
   settleDataRoot,
-  agentWorkspaceDirOf,
   workspaceDirOf,
 } from '../src/main/data-root';
 import type { ConnectorConfig } from '../src/main/config';
@@ -33,14 +31,10 @@ test('settleDataRoot: 트리 생성 + 미설정 기본 채움, 명시 설정은 
     const { root, patch } = settleDataRoot(cfg, home);
     assert.equal(root, join(home, 'xgen-dex'));
     // 트리가 실제로 만들어졌다.
-    for (const d of [
-      root,
-      workspaceDirOf(root),
-      cloudDirOf(root),
-      agentWorkspaceDirOf(root),
-      runtimeDirOf(root),
-    ])
-      assert.ok(existsSync(d), d);
+    for (const d of [root, workspaceDirOf(root), runtimeDirOf(root)]) assert.ok(existsSync(d), d);
+    // 로컬 동기화 폴더(cloud/·agent_workspace/)는 더 이상 만들지 않는다.
+    assert.equal(existsSync(join(root, 'cloud')), false);
+    assert.equal(existsSync(join(root, 'agent_workspace')), false);
     // 미설정 → dataRoot 파생 기본이 패치로.
     assert.equal(patch.dataRoot, root);
     // 이 PC 도구의 작업 폴더는 설정이 아니라 대화에 연결한 폴더가 정한다 —

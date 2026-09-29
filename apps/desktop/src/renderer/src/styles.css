@@ -2462,13 +2462,14 @@ button {
   gap: 6px;
   flex-shrink: 0;
 }
-/* [채팅 | IDE] — 같은 대화를 두 가지로 본다. 옆의 가벼운 헤더 버튼들과 구분되게 한 덩어리로. */
+/* [채팅 | IDE] — 같은 대화를 두 가지로 본다. 헤더 맨 오른쪽에서, 옆의 가벼운 헤더
+   버튼들과 구분되게 한 덩어리로. */
 .chat-view-switch {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 2px;
-  margin-right: 6px;
+  margin-left: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel-2);

@@ -3391,6 +3391,8 @@ button {
 /* Composer — the docked chat input, Geny quick-chat-bar quality. Its resting
    height matches --footer-h so its top border lines up with the sidebar footer. */
 .chat-input {
+  /* 입력 칸의 너비로 아래 안내 줄을 가른다(IDE 의 좁은 대화 칸). */
+  container: chat-input / inline-size;
   min-height: var(--footer-h);
   box-sizing: border-box;
   flex-shrink: 0;
@@ -3658,9 +3660,14 @@ button {
   gap: 12px;
 }
 .kbd-hint {
+  min-width: 0;
   font-size: 11px;
   color: var(--muted);
   line-height: 1.4;
+  /* 좁아져도 글자·키 표시가 줄마다 흩어지지 않는다 — 한 줄로 두고 넘치면 자른다. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .kbd-hint kbd {
   display: inline-block;
@@ -3674,11 +3681,11 @@ button {
   line-height: 1.5;
   margin: 0 1px;
 }
-.composer-image-hint {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.4;
-  white-space: nowrap;
+/* 안내 한 줄이 다 들어가지 않을 만큼 좁으면 줄을 감춘다(키 표시가 반쯤 잘린 채 남지 않게). */
+@container chat-input (max-width: 260px) {
+  .composer-foot {
+    display: none;
+  }
 }
 
 /* ─── Settings modal ─── */

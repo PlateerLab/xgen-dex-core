@@ -715,18 +715,12 @@ textarea.xide-input {
   white-space: nowrap;
 }
 
+/* 칸 머리의 단추(새 파일·새로 고침·모두 접기 …)는 늘 보인다 — 마우스를 올려야 나타나면 있는 줄 모른다. */
 .xide-section-actions {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 1px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.xide-side-view:hover .xide-section-actions,
-.xide-side-view:focus-within .xide-section-actions,
-.xide-side-header .xide-section-actions {
-  opacity: 1;
 }
 
 /* ── 탐색기 ─────────────────────────────────────────────────── */

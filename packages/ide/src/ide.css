@@ -731,6 +731,100 @@ textarea.xide-input {
 
 /* ── 탐색기 ─────────────────────────────────────────────────── */
 
+/* 연결된 폴더 — 스토리지 아래 구분선으로 나뉜 칸. 자기 목록만 따로 굴린다. */
+.xide-folders {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 45%;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--xide-border);
+}
+
+.xide-folders.xide--collapsed {
+  flex: none;
+}
+
+.xide-folders-header {
+  padding-left: 0;
+}
+
+.xide-folders-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xide-folders-toggle .xide-icon {
+  flex: none;
+  color: var(--xide-muted);
+}
+
+.xide-folders-tree {
+  flex: 0 1 auto;
+}
+
+.xide-folders-root .xide-tree-name {
+  font-weight: 600;
+}
+
+.xide-tree-row.xide--blocked .xide-tree-name {
+  color: var(--xide-muted);
+}
+
+.xide-folders-note {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  color: var(--xide-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-folders-note.xide--error {
+  color: var(--xide-warning);
+}
+
+.xide-folders-grant {
+  flex: none;
+  font-size: 12px;
+}
+
+.xide-folders-elsewhere strong {
+  color: var(--xide-text);
+  font-weight: 600;
+}
+
+.xide-folders-remote-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--xide-text);
+}
+
+.xide-chip.xide--on {
+  color: var(--xide-primary);
+  background: var(--xide-primary-soft);
+}
+
+.xide-chip.xide--warn {
+  color: var(--xide-warning);
+  background: var(--xide-warning-bg);
+}
+
 .xide-tree {
   flex: 1 1 auto;
   min-height: 0;

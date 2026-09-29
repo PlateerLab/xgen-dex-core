@@ -31,6 +31,7 @@ import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { DropTracker, dragHasFiles } from './chat-drop';
 import { mcpChatStatus } from './mcp-status-model';
 import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
+import { OPEN_CHAT_FOLDERS_EVENT } from '../ide/dex-ide-host';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
@@ -426,6 +427,14 @@ export const Chat: React.FC<{
   const ideTheme = useResolvedTheme();
   const ideStore = ideMode ? ideStoreFor(session.key, agent) : null;
   const [foldersOpen, setFoldersOpen] = useState(false);
+  // IDE 탐색기의 [폴더 연결 관리] — 이 대화의 [폴더] 창을 연다.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === session.interactionId) setFoldersOpen(true);
+    };
+    window.addEventListener(OPEN_CHAT_FOLDERS_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_CHAT_FOLDERS_EVENT, onOpen);
+  }, [session.interactionId]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);

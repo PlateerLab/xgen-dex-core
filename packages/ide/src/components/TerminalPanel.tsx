@@ -138,7 +138,23 @@ export function TerminalPanel({ theme, onFocusRequest }: { theme: ThemeKind; onF
         <IconButton icon="close" label="패널 닫기" keybinding="Mod+J" onClick={() => store.setLayout({ panelOpen: false, panelMaximized: false })} />
       </div>
       <div className="xide-panel-body">
-        <div className="xide-term-body" ref={body} onClick={() => view?.focus()} />
+        <div
+          className="xide-term-body"
+          ref={body}
+          onClick={() => view?.focus()}
+          onContextMenu={(e) => {
+            // 셸 화면의 오른쪽 클릭 — 복사·붙여넣기(데스크톱 앱에는 브라우저 기본 메뉴가 없다).
+            e.preventDefault();
+            if (!view) return;
+            showMenu(e, [
+              { id: 'copy', label: '복사', keybinding: 'Mod+C', disabled: !view.hasSelection(), run: () => void view.copySelection() },
+              { id: 'paste', label: '붙여넣기', keybinding: 'Mod+V', disabled: readonly, run: () => void view.pasteFromClipboard() },
+              { id: 'select-all', label: '모두 선택', run: () => view.selectAll() },
+              'separator',
+              { id: 'clear', label: '화면 지우기', run: () => view.clear() },
+            ]);
+          }}
+        />
         {current && (current.status === 'error' || current.status === 'exited') ? (
           <div className="xide-term-overlay">
             <span>{current.status === 'exited' ? '셸이 끝났습니다.' : current.message ?? '연결이 끊겼습니다.'}</span>

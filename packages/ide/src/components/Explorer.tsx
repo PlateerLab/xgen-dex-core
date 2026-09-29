@@ -4,6 +4,8 @@
  * 한 번 누르면 미리보기(기울임 탭), 두 번 누르면 고정해서 연다. 여러 개는 Ctrl(맥 Cmd)·Shift
  * 로 고른다. 오른쪽 클릭 메뉴와 단축키(F2·Delete·복사·잘라내기·붙여넣기)는 편집기와 같다.
  * 운영체제의 파일을 끌어다 놓으면 그 폴더로 올리고, 안에서 끌면 옮긴다.
+ *
+ * 이 대화에 폴더를 연결했으면 구분선 아래 [연결된 폴더] 가 따로 보인다(FolderSection).
  */
 import {
   memo,
@@ -18,6 +20,7 @@ import {
   type ReactElement,
 } from 'react';
 import { FileIcon, Icon } from './icons';
+import { FolderSection } from './FolderSection';
 import { useIde, useStore } from './hooks';
 import { IconButton, InlineInput, showMenu, type MenuEntry } from './primitives';
 import { visibleRows, type TreeNode } from '../tree';
@@ -408,6 +411,7 @@ export function Explorer() {
           />
         ))}
       </div>
+      <FolderSection />
     </div>
   );
 }

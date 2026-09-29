@@ -657,3 +657,166 @@ test('연결 — [다시 연결] 은 기다리지 않고 바로 시도한다', a
   assert.equal(store.getState().connection, 'online');
   IdeStore.retryBaseMs = 5;
 });
+
+// ── 연결된 폴더 (2026-09-29 사용자 지시) ─────────────────────────────
+//
+// 폴더를 연결하면 IDE 탐색기에서도 그 폴더가 보여야 한다 — 스토리지와 구분선으로 나뉜 칸에.
+// 이 기기의 폴더는 펼쳐 보고 편집기로 연다. 다른 기기에 있으면 이름만 보인다.
+
+import { folderPath, folderRows, parseFolderPath } from '../src/folders';
+import type { IdeFolderSource, IdeFoldersState } from '../src/types';
+
+class FakeFolders implements IdeFolderSource {
+  files = new Map<string, string>([
+    ['src/main.py', 'print(1)'],
+    ['README.md', '# hi'],
+  ]);
+  dirs = new Set<string>(['src']);
+  state_: IdeFoldersState = { roots: [{ id: 'r1', name: 'project', detail: 'C:\\work\\project' }] };
+  listeners: ((rootId?: string) => void)[] = [];
+  saves: { path: string; base: string | null; text: string }[] = [];
+  ops: IdeFsOp[] = [];
+  async state() {
+    return this.state_;
+  }
+  subscribe(fn: (rootId?: string) => void) {
+    this.listeners.push(fn);
+    return () => (this.listeners = this.listeners.filter((f) => f !== fn));
+  }
+  async list(_root: string, dir: string) {
+    const prefix = dir ? `${dir}/` : '';
+    const names = new Map<string, boolean>();
+    for (const d of this.dirs) if (d.startsWith(prefix) && !d.slice(prefix.length).includes('/')) names.set(d, true);
+    for (const f of this.files.keys()) if (f.startsWith(prefix) && !f.slice(prefix.length).includes('/')) names.set(f, false);
+    return [...names].map(([path, isDir]) => ({ path, isDir }));
+  }
+  async read(_root: string, path: string) {
+    const v = this.files.get(path);
+    if (v == null) throw new IdeError('not_found', '없음', 404);
+    return { bytes: enc(v), sha: shaOf(v), size: v.length };
+  }
+  async save(_root: string, path: string, bytes: Uint8Array, base: string | null) {
+    const text = new TextDecoder().decode(bytes);
+    const cur = this.files.get(path);
+    if (base !== null && base !== (cur == null ? '' : shaOf(cur))) throw new IdeError('changed', '바뀜', 409);
+    this.saves.push({ path, base, text });
+    this.files.set(path, text);
+    return { sha: shaOf(text) };
+  }
+  async stat(_root: string, paths: string[]) {
+    const out: Record<string, IdeStat> = {};
+    for (const p of paths) {
+      const v = this.files.get(p);
+      out[p] = v == null ? { kind: 'missing' } : { kind: 'file', sha: shaOf(v) };
+    }
+    return out;
+  }
+  async readRaw() {
+    return new Uint8Array([1, 2]);
+  }
+  async fs(_root: string, op: IdeFsOp) {
+    this.ops.push(op);
+    if (op.op === 'mkdir') this.dirs.add(op.path);
+    if (op.op === 'rename') {
+      for (const [p, v] of [...this.files]) {
+        if (p === op.src || p.startsWith(op.src + '/')) {
+          this.files.delete(p);
+          this.files.set(op.dst + p.slice(op.src.length), v);
+        }
+      }
+    }
+    if (op.op === 'delete') for (const p of [...this.files.keys()]) if (op.paths.some((d) => p === d || p.startsWith(d + '/'))) this.files.delete(p);
+  }
+  pathOf(_root: string, path: string) {
+    return `C:\\work\\project\\${path.replace(/\//g, '\\')}`;
+  }
+}
+
+async function withFolders(): Promise<{ host: FakeHost; store: IdeStore; folders: FakeFolders }> {
+  const host = new FakeHost();
+  const folders = new FakeFolders();
+  (host as FakeHost & { folders: IdeFolderSource }).folders = folders;
+  const out = await started(host);
+  await new Promise((r) => setTimeout(r, 0));
+  return { ...out, folders };
+}
+
+test('연결된 폴더의 주소는 스토리지 경로와 겹치지 않는다', () => {
+  const p = folderPath('r1', 'src/main.py');
+  assert.deepEqual(parseFolderPath(p), { rootId: 'r1', rel: 'src/main.py' });
+  assert.equal(parseFolderPath('src/main.py'), null, '스토리지 경로는 연결된 폴더가 아니다');
+  assert.deepEqual(parseFolderPath(folderPath('r1')), { rootId: 'r1', rel: '' });
+});
+
+test('연결된 폴더는 탐색기 아래 따로 보이고, 펼치면 한 단계씩 읽는다', async () => {
+  const { store } = await withFolders();
+  const f = store.getState().folders;
+  assert.equal(f.available, true);
+  assert.deepEqual(f.roots.map((r) => r.name), ['project']);
+  store.toggleFolderDir(folderPath('r1'));
+  await new Promise((r) => setTimeout(r, 0));
+  const rows = folderRows(store.getState().folders).map((r) => (r.kind === 'note' ? `#${r.text}` : `${r.depth}:${r.kind === 'root' ? r.root.name : r.entry.path.split('/').pop()}`));
+  assert.deepEqual(rows, ['0:project', '1:src', '1:README.md'], '폴더 먼저, 이름 순');
+});
+
+test('연결된 폴더의 파일을 열고 고쳐 저장한다 — 연 판을 조건으로 건다', async () => {
+  const { store, folders } = await withFolders();
+  const path = folderPath('r1', 'src/main.py');
+  await store.openFile(path, { preview: false });
+  assert.equal(store.getState().docs[path].status, 'ready');
+  assert.equal(store.displayPath(path), 'project/src/main.py', '내부 주소를 보이지 않는다');
+  assert.equal(store.copyablePath(path), 'C:\\work\\project\\src\\main.py');
+  modelOf(store, path).edit('print(2)');
+  assert.equal(await store.save(path), true);
+  assert.deepEqual(folders.saves.at(-1), { path: 'src/main.py', base: shaOf('print(1)'), text: 'print(2)' });
+});
+
+test('에이전트가 연결된 폴더의 파일을 바꾸면 깨끗한 버퍼는 다시 읽는다', async () => {
+  const { store, folders } = await withFolders();
+  const path = folderPath('r1', 'README.md');
+  await store.openFile(path, { preview: false });
+  folders.files.set('README.md', '# changed');
+  for (const fn of folders.listeners) fn('r1');
+  await new Promise((r) => setTimeout(r, 400));
+  await store.checkDisk('all');
+  assert.equal(modelOf(store, path).getValue(), '# changed');
+});
+
+test('연결된 폴더 안에서 만들고 이름 바꾸고 지운다 — 열린 탭도 따라간다', async () => {
+  const { store, folders } = await withFolders();
+  const root = folderPath('r1');
+  assert.equal(await store.createFolderEntry(root, 'notes.txt', 'file'), true);
+  assert.ok(folders.files.has('notes.txt'));
+  const old = folderPath('r1', 'notes.txt');
+  assert.ok(store.activeGroup().tabs.some((t) => t.path === old), '새 파일은 곧바로 열린다');
+  assert.equal(await store.renameFolderEntry(old, 'todo.txt'), true);
+  assert.ok(folders.files.has('todo.txt'));
+  assert.ok(store.activeGroup().tabs.some((t) => t.path === folderPath('r1', 'todo.txt')));
+  const off = answer(store, 'ok');
+  assert.equal(await store.deleteFolderEntries([folderPath('r1', 'todo.txt')], () => false), true);
+  off();
+  assert.ok(!folders.files.has('todo.txt'));
+  assert.ok(!store.activeGroup().tabs.some((t) => t.path === folderPath('r1', 'todo.txt')), '지운 파일의 탭은 닫는다');
+});
+
+test('다른 기기에 있는 폴더는 이름만 보인다', async () => {
+  const { store, folders } = await withFolders();
+  folders.state_ = { roots: [], elsewhere: { deviceName: 'OFFICE-PC', online: true, folders: ['alpha'] } };
+  await store.refreshFolders();
+  const f = store.getState().folders;
+  assert.deepEqual(f.roots, []);
+  assert.deepEqual(f.elsewhere, { deviceName: 'OFFICE-PC', online: true, folders: ['alpha'] });
+  assert.deepEqual(folderRows(f), []);
+});
+
+test('연결을 해제한 폴더의 펼침·목록은 잊는다', async () => {
+  const { store, folders } = await withFolders();
+  store.toggleFolderDir(folderPath('r1'));
+  await new Promise((r) => setTimeout(r, 0));
+  folders.state_ = { roots: [] };
+  for (const fn of folders.listeners) fn();
+  await new Promise((r) => setTimeout(r, 400));
+  const f = store.getState().folders;
+  assert.equal(f.expanded.size, 0);
+  assert.deepEqual(Object.keys(f.dirs), []);
+});

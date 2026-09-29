@@ -862,7 +862,7 @@ test('다른 화면의 턴이 끝나면 완결 본문으로 덮어쓴다', () =>
   store.applyPeerEvent({ kind: 'ended', interactionId: key, output: '완전한 답' })
   const s = store.get(key)
   assert.equal(s?.messages[1].text, '완전한 답')
-  assert.equal(s?.messages[1].streaming, false)
+  assert.ok(!s?.messages[1].streaming, '커서가 남으면 안 된다')
   assert.equal(s?.remote, false)
 })
 
@@ -889,6 +889,95 @@ test('전파에 구멍이 나도 마지막은 맞는다', () => {
   store.applyPeerEvent({ kind: 'gap', interactionId: key })
   store.applyPeerEvent({ kind: 'ended', interactionId: key, output: '완결' })
   assert.equal(store.get(key)?.messages[1].text, '완결')
+})
+
+// ── 다른 곳의 턴은 한 번만 그린다 (2026-09-29 사용자 보고) ─────────────
+//
+// 서버는 완결 행(message)을 **먼저**, turn_ended 를 **나중에** 보낸다. 예전에는 행이 오면
+// 질문과 답을 새로 덧붙이고, 종료는 진행분이 마지막일 때만 바꿨다 — 그래서 지켜보던 창에는
+// 질문과 답이 두 번, 그중 하나는 커서가 깜박이는 채로 남았다(새로고침해야 사라졌다).
+
+const texts = (store: SessionStore, key: string) =>
+  store.get(key)!.messages.map((m) => `${m.role}:${m.text}${m.streaming ? '|' : ''}`)
+
+function peerTurn(store: SessionStore, key: string, input: string, tokens: string[]) {
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input })
+  for (const t of tokens) {
+    store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'message', data: { type: 'data', content: t } })
+  }
+}
+
+test('완결 행이 종료보다 먼저 와도 질문과 답은 한 번이고 커서가 남지 않는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  peerTurn(store, key, '안녕하세요', ['안녕', '하세요!'])
+  store.applyExternalTurn({ interactionId: key, ioId: 21, input: '안녕하세요', output: '안녕하세요! 무엇을 도와드릴까요?', source: 'user' })
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, ioId: 21, input: '안녕하세요', output: '안녕하세요! 무엇을 도와드릴까요?' })
+  assert.deepEqual(texts(store, key), ['user:안녕하세요', 'assistant:안녕하세요! 무엇을 도와드릴까요?'])
+  assert.equal(store.get(key)!.messages[1].executionIoId, 21, '평가는 이 실행 id 로 붙는다')
+  assert.equal(store.get(key)!.remote, false)
+})
+
+test('종료가 먼저 와도 뒤에 온 완결 행이 덧붙지 않는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  peerTurn(store, key, '질문', ['조각'])
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, ioId: 22, input: '질문', output: '완결' })
+  store.applyExternalTurn({ interactionId: key, ioId: 22, input: '질문', output: '완결', source: 'user' })
+  assert.deepEqual(texts(store, key), ['user:질문', 'assistant:완결'])
+})
+
+test('실행 id 없이 온 종료(옛 서버) 뒤의 완결 행도 한 번만 그린다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  peerTurn(store, key, '질문', [])
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, input: '질문', output: '완결' })
+  store.applyExternalTurn({ interactionId: key, ioId: 23, input: '질문', output: '완결', source: 'user' })
+  assert.deepEqual(texts(store, key), ['user:질문', 'assistant:완결'])
+  assert.equal(store.get(key)!.messages[1].executionIoId, 23)
+})
+
+test('다른 파드의 하트비트가 종료보다 먼저 [끝남] 을 말해도 답이 사라지지 않는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  peerTurn(store, key, '질문', ['받던 답'])
+  store.setRemoteRunning(key, false)
+  assert.deepEqual(texts(store, key), ['user:질문', 'assistant:받던 답'], '커서만 멈추고 글은 둔다')
+  store.applyExternalTurn({ interactionId: key, ioId: 24, input: '질문', output: '최종 답', source: 'user' })
+  assert.deepEqual(texts(store, key), ['user:질문', 'assistant:최종 답'])
+})
+
+test('도는 중에 연 대화 — 이력의 질문 위에 답만 붙는다', async () => {
+  const { store } = makeStore(
+    { 'int-mid': [{ input: '앞선 질문', output: '앞선 답', ioId: 1 }, { input: '지금 질문', output: '', ioId: 2 }] },
+    { 'int-mid': true },
+  )
+  store.openResume(agent('A'), 'int-mid')
+  await flush()
+  store.setRemoteRunning('int-mid', true, { text: '진행' })
+  assert.deepEqual(texts(store, 'int-mid'), ['user:앞선 질문', 'assistant:앞선 답', 'user:지금 질문', 'assistant:진행|'])
+  store.applyExternalTurn({ interactionId: 'int-mid', ioId: 2, input: '지금 질문', output: '지금 답', source: 'user' })
+  assert.deepEqual(texts(store, 'int-mid'), ['user:앞선 질문', 'assistant:앞선 답', 'user:지금 질문', 'assistant:지금 답'])
+})
+
+test('진행분이 이력보다 먼저 와도 지난 대화가 사라지지 않는다', async () => {
+  const { store } = makeStore(
+    { 'int-race': [{ input: '앞선 질문', output: '앞선 답', ioId: 1 }, { input: '지금 질문', output: '', ioId: 2 }] },
+    { 'int-race': true },
+  )
+  store.openResume(agent('A'), 'int-race')
+  store.setRemoteRunning('int-race', true, { text: '진행' })   // 이력 응답보다 빠른 구독 확립
+  await flush()
+  assert.deepEqual(texts(store, 'int-race'), ['user:앞선 질문', 'assistant:앞선 답', 'user:지금 질문', 'assistant:진행|'])
+})
+
+test('다음 턴이 시작되면 완결을 놓친 앞 턴의 진행분은 받은 만큼으로 굳는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  peerTurn(store, key, '첫 질문', ['첫 답 일부'])
+  peerTurn(store, key, '둘째 질문', [])
+  store.applyExternalTurn({ interactionId: key, ioId: 31, input: '둘째 질문', output: '둘째 답', source: 'user' })
+  assert.deepEqual(texts(store, key), ['user:첫 질문', 'assistant:첫 답 일부', 'user:둘째 질문', 'assistant:둘째 답'])
 })
 
 test('내 스트림이 도는 동안의 소켓 running 은 [다른 곳] 이 아니다', async () => {
@@ -942,6 +1031,7 @@ test('스트림이 끊기면 실패가 아니라 [다른 곳에서 진행 중] �
   const after = store.get(key)!
   assert.equal(after.remote, false)
   assert.equal(after.messages[after.messages.length - 1].text, '진짜 최종 답')
+  assert.deepEqual(after.messages.map((m) => m.text), ['오래 걸리는 일', '진짜 최종 답'], '받다 만 조각이 최종 답으로 바뀐다 — 질문이 두 번 보이지 않는다')
 })
 
 test('정상 종료는 그대로 종료다 — 분리와 섞이지 않는다', async () => {

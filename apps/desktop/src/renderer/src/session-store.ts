@@ -128,6 +128,74 @@ export interface ChatMsg {
    * 턴이 끝나면 완결 턴이 이 자리를 대신한다.
    */
   remotePartial?: boolean;
+  /**
+   * 이 질문은 **다른 곳에서 도는 턴**의 것이다(대화 소켓의 turn_started 로 그렸다). 완결 턴이
+   * 도착하면 진행분 말풍선과 함께 그 턴으로 바뀐다 — 그대로 두면 질문이 두 번 보인다.
+   */
+  remoteQuestion?: boolean;
+}
+
+/** 다른 곳에서 도는 턴을 그리려고 세운 임시 말풍선(질문·진행분). */
+function isTemporary(m: ChatMsg): boolean {
+  return m.remotePartial === true || m.remoteQuestion === true;
+}
+
+/** 봉투(브라우저·Teams 컨텍스트)를 벗긴 질문 — 이력이 그리는 모양과 같게. */
+function plainInput(input: unknown): string {
+  return stripTeamsContext(stripBrowserContext(typeof input === 'string' ? input : input == null ? '' : String(input)));
+}
+
+/**
+ * 다른 곳에서 돈 턴이 **끝났다** — 완결 본문(대화 소켓의 message 행 또는 turn_ended)을 대화에
+ * 한 번만 넣는다. 어느 것이 먼저 와도, 둘 다 와도 결과는 같다.
+ *
+ *   이미 있다      같은 실행 id 의 답이 있으면 아무것도 하지 않는다(뒤에 온 쪽).
+ *   임시를 바꾼다  진행분 말풍선과 그 턴의 임시 질문을 지우고 그 자리에 완결 턴을 넣는다.
+ *   질문은 있다    이력이 이미 질문을 그렸으면(도는 중에 연 대화) 답만 붙인다.
+ *
+ * 바뀐 것이 없으면 null.
+ */
+export function mergeCompletedTurn(
+  messages: readonly ChatMsg[],
+  turn: { ioId?: number | null; input: string; output: string },
+): ChatMsg[] | null {
+  const ioId = turn.ioId || undefined;
+  const input = plainInput(turn.input);
+  const output = String(turn.output ?? '');
+  if (ioId && messages.some((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial)) {
+    return null;
+  }
+  const out = messages.filter((m) => !isTemporary(m));
+  const last = out[out.length - 1];
+  const prev = out[out.length - 2];
+  // 실행 id 없이 먼저 온 종료가 이미 같은 턴을 그렸다 — 뒤에 온 행은 id 만 채운다.
+  if (
+    last?.role === 'assistant' && last.text === output && prev?.role === 'user' && prev.text === input &&
+    out.length === messages.length
+  ) {
+    if (!ioId || last.executionIoId) return null;
+    out[out.length - 1] = { ...last, executionIoId: ioId };
+    return out;
+  }
+  const answer: ChatMsg = { role: 'assistant', text: output, executionIoId: ioId };
+  if (last?.role === 'user' && last.text === input) out.push(answer);
+  else out.push({ role: 'user', text: input }, answer);
+  return out;
+}
+
+/** 마지막 턴이 이 행과 같은데 답에 실행 id 가 없으면 채운다. 아니면 null. */
+function fillExecutionIoId(
+  messages: readonly ChatMsg[],
+  turn: { ioId?: number | null; input: string; output: string },
+): ChatMsg[] | null {
+  if (!turn.ioId) return null;
+  const last = messages[messages.length - 1];
+  const prev = messages[messages.length - 2];
+  if (last?.role !== 'assistant' || last.executionIoId || last.text !== turn.output) return null;
+  if (prev?.role !== 'user' || prev.text !== plainInput(turn.input)) return null;
+  const out = messages.slice();
+  out[out.length - 1] = { ...last, executionIoId: turn.ioId };
+  return out;
 }
 
 /** Public, immutable-per-change snapshot of one open session. */
@@ -605,7 +673,27 @@ export class SessionStore {
       }
       // Only overwrite the transcript if a live turn hasn't started meanwhile.
       const current = this.map.get(key);
-      if (!current || current.streaming || current.messages.length > 0) {
+      // 이력보다 먼저 온 것이 **다른 곳에서 도는 턴의 임시 말풍선뿐**이면(도는 중에 연 대화 —
+      // 구독 확립의 진행분이 이력 응답보다 빨랐다) 이력을 버리지 않고 그 앞에 깐다. 예전에는
+      // 여기서 이력을 통째로 버려 지난 대화가 사라지고 진행분 하나만 남았다.
+      const onlyTemporary = !!current && !current.streaming && current.messages.length > 0 &&
+        current.messages.every(isTemporary);
+      if (onlyTemporary) {
+        const temps = current.messages.filter((m) => {
+          if (!m.remoteQuestion) return true;
+          // 이력이 이미 그 질문(아직 답이 없는 행)을 그렸다.
+          const tail = msgs[msgs.length - 1];
+          return !(tail?.role === 'user' && tail.text === m.text);
+        });
+        this.patch(key, (s) => ({
+          ...s,
+          messages: [...attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs), ...temps],
+          loadingHistory: false,
+          historyLoaded: true,
+          remote: s.remote || snapshot.running,
+          updatedAt: this.now(),
+        }));
+      } else if (!current || current.streaming || current.messages.length > 0) {
         this.releaseLoadedHistoryUrls(key, loadedUrls);
         this.patch(key, (s) => ({ ...s, loadingHistory: false, historyLoaded: true }));
       } else {
@@ -930,6 +1018,9 @@ export class SessionStore {
         streaming = false;
         remote = true;
         nl.streaming = false;
+        // 이제 이 말풍선은 다른 곳에서 도는 턴의 진행분이다 — 완결 턴이 도착하면 그 답으로
+        // 바뀐다(덧붙이면 같은 질문이 두 번 보인다).
+        nl.remotePartial = true;
         nl.surfaceNote = '연결이 끊겼습니다 — 서버에서 계속 진행 중입니다.';
       }
       if (ev.kind === 'end' || ev.kind === 'error') {
@@ -1049,15 +1140,16 @@ export class SessionStore {
     // 우리 스트림이 이미 그리고 있으므로 덮어쓰면 안 된다.
     const next = running && !s.streaming;
     const partial = next && typeof live?.text === 'string' ? live.text : '';
-    const hadPartial = s.messages[s.messages.length - 1]?.remotePartial === true;
+    const tail = s.messages[s.messages.length - 1];
+    const hadPartial = tail?.remotePartial === true && (tail.streaming === true || !tail.text);
     if (s.remote === next && !partial && !hadPartial) return;
     this.patch(key, (cur) => {
       const messages = [...cur.messages];
       const last = messages[messages.length - 1];
       if (partial) {
         if (last?.remotePartial) {
-          if (last.text === partial) return { ...cur, remote: next };
-          messages[messages.length - 1] = { ...last, text: partial };
+          if (last.text === partial && last.streaming) return { ...cur, remote: next };
+          messages[messages.length - 1] = { ...last, text: partial, streaming: true };
         } else {
           messages.push({
             role: 'assistant', text: partial, streaming: true, remotePartial: true,
@@ -1065,8 +1157,11 @@ export class SessionStore {
           });
         }
       } else if (!next && last?.remotePartial) {
-        // 턴이 끝났다 — 완결 턴이 곧 온다. 진행분 말풍선은 놓는다.
-        messages.pop();
+        // 턴이 끝났다 — 완결 턴(message 행·turn_ended)이 곧 이 자리를 대신한다. 받은 글이 있으면
+        // 그때까지 멈춘 채로 둔다: 여기서 지우면 다른 파드의 하트비트가 종료 프레임보다 먼저
+        // 온 날 답이 사라진다. 빈 말풍선만 놓는다.
+        if (last.text) messages[messages.length - 1] = { ...last, streaming: false };
+        else messages.pop();
       }
       return { ...cur, messages, remote: next, updatedAt: this.now() };
     });
@@ -1095,6 +1190,7 @@ export class SessionStore {
     interactionId: string;
     input?: string;
     output?: string;
+    ioId?: number | null;
     event?: string;
     data?: unknown;
   }): void {
@@ -1109,8 +1205,14 @@ export class SessionStore {
       this.patch(key, (cur) => ({
         ...cur,
         messages: [
-          ...cur.messages,
-          { role: 'user', text: String(event.input ?? '') },
+          // 앞선 턴의 임시 말풍선이 아직 남았다(그 턴의 완결을 놓쳤다) — 받은 만큼으로 굳힌다.
+          // 임시로 두면 이번 턴의 완결이 그것까지 지운다. 빈 진행분은 놓는다.
+          ...cur.messages.flatMap((m): ChatMsg[] => {
+            if (!isTemporary(m)) return [m];
+            if (m.remotePartial && !m.text) return [];
+            return [{ ...m, remotePartial: undefined, remoteQuestion: undefined, streaming: false, surfaceNote: undefined }];
+          }),
+          { role: 'user', text: plainInput(event.input), remoteQuestion: true },
           {
             role: 'assistant', text: '', streaming: true, remotePartial: true,
             surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
@@ -1132,29 +1234,26 @@ export class SessionStore {
       if (!text) return;
       this.patch(key, (cur) => {
         const messages = [...cur.messages];
-        const last = messages[messages.length - 1];
-        if (!last?.remotePartial) return cur;
-        messages[messages.length - 1] = { ...last, text: (last.text || '') + text };
+        const at = findLastIndex(messages, (m) => m.remotePartial === true);
+        if (at < 0) return cur;
+        const partial = messages[at];
+        messages[at] = { ...partial, text: (partial.text || '') + text, streaming: true };
         return { ...cur, messages, updatedAt: this.now() };
       });
       this.emit();
       return;
     }
 
-    // 종료 — 완결 본문으로 덮어쓴다. 중간에 한두 조각을 놓쳤어도 마지막이 맞는다.
+    // 종료 — 완결 본문으로 바꿔 끼운다. 중간에 한두 조각을 놓쳤어도 마지막이 맞는다. 완결 행
+    // (message)이 먼저 와서 이미 그렸으면 아무것도 하지 않는다 — 같은 실행 id 다.
     this.patch(key, (cur) => {
-      const messages = [...cur.messages];
-      const last = messages[messages.length - 1];
-      if (last?.remotePartial) {
-        messages[messages.length - 1] = {
-          ...last,
-          text: String(event.output ?? last.text ?? ''),
-          streaming: false,
-          remotePartial: false,
-          surfaceNote: undefined,
-        };
-      }
-      return { ...cur, messages, remote: false, updatedAt: this.now() };
+      const partial = cur.messages.find((m) => m.remotePartial);
+      const merged = mergeCompletedTurn(cur.messages, {
+        ioId: event.ioId,
+        input: String(event.input ?? cur.messages.find((m) => m.remoteQuestion)?.text ?? ''),
+        output: String(event.output ?? partial?.text ?? ''),
+      });
+      return { ...cur, messages: merged ?? cur.messages, remote: false, updatedAt: this.now() };
     });
     this.emit();
   }
@@ -1227,21 +1326,46 @@ export class SessionStore {
      *   기기에서 시작한 턴(`remote`)은 이 창이 그린 적이 없다 — 그것까지 버리면
      *   웹에서 보낸 질문이 앱에서는 영영 안 보인다.
      */
-    const mine = !s.remote;
-    if (turn.source !== 'subagent_report' && mine) return;
+    const report = turn.source === 'subagent_report';
+    // 이 창의 스트림이 그리는 턴이면 스트림이 끝낸다. 다른 곳의 턴을 그리는 중(remote)이거나
+    // 그 턴의 임시 말풍선이 남아 있으면 이 행이 그 자리를 대신한다.
+    const mine = s.streaming || (!s.remote && !s.messages.some(isTemporary));
+    if (!report && mine) {
+      // 이미 그린 턴이다. 답에 실행 id 가 없으면(옛 서버의 종료·스트림이 id 를 못 받은 턴) 채운다 —
+      // 답변 평가가 이 id 로 붙는다.
+      const filled = s.streaming ? null : fillExecutionIoId(s.messages, turn);
+      if (filled) {
+        s.messages = filled;
+        this.emit();
+      }
+      return;
+    }
     if (!turn.output) return; // 미완결 — 완결 push 를 기다린다
     rt.externalIoSeen = rt.externalIoSeen ?? new Set<number>();
     if (turn.ioId && rt.externalIoSeen.has(turn.ioId)) return;
     if (turn.ioId) rt.externalIoSeen.add(turn.ioId);
-    s.messages = [
-      ...s.messages,
-      { role: 'user', text: turn.input },
-      { role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined },
-    ];
+    if (report) {
+      s.messages = [
+        ...s.messages,
+        { role: 'user', text: turn.input },
+        { role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined },
+      ];
+    } else {
+      // 다른 곳에서 돈 턴 — 진행분 말풍선과 임시 질문을 이 행으로 바꿔 끼운다. 이 행은 늘
+      // turn_ended 보다 먼저 온다(서버가 행을 먼저 민다) — 예전에는 여기서 새로 덧붙여
+      // 질문과 답이 두 번, 그중 하나는 커서가 깜박이는 채로 남았다.
+      const merged = mergeCompletedTurn(s.messages, turn);
+      if (merged) s.messages = merged;
+    }
     s.updatedAt = this.now();
     // 다른 곳에서 돌던 턴이 끝났다 — 답이 여기 도착했으니 [진행 중] 을 내린다.
     if (s.remote) s.remote = false;
     if (this._active !== turn.interactionId) s.unseen = true;
     this.emit();
   }
+}
+
+function findLastIndex<T>(items: readonly T[], match: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) if (match(items[i])) return i;
+  return -1;
 }

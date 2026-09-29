@@ -12,14 +12,19 @@ import type * as Monaco from 'monaco-editor';
 import {
   IdeError,
   type IdeFileEntry,
+  type IdeFolderRoot,
   type IdeFsOp,
   type IdeHost,
+  type IdeReadResult,
+  type IdeSaveResult,
+  type IdeStat,
   type IdeSearchQuery,
   type IdeSearchResult,
   type IdeTerminalInfo,
   type MonacoApi,
 } from './types';
-import { basename, dirname, isWithin, join, normalize, uniqueCopyName } from './paths';
+import { basename, dirname, invalidName, isWithin, join, normalize, uniqueCopyName } from './paths';
+import { folderPath, isFolderPath, parseFolderPath, sortEntries } from './folders';
 import { buildTree, ancestors, type TreeNode } from './tree';
 import { base64ToBytes, decodeText, encodeText, isImagePath, looksBinary, type Eol } from './text';
 import { lineChanges, splitLines, type QuickDiffKind } from './quick-diff';
@@ -236,6 +241,23 @@ export interface IdeState {
   quickOpen: { mode: QuickOpenMode; initial: string } | null;
   monacoReady: boolean;
   monacoError: string | null;
+  /** 탐색기 아래 [연결된 폴더] 칸 — 이 대화에 연결한 기기의 폴더. */
+  folders: FoldersState;
+}
+
+export interface FoldersState {
+  /** 호스트가 연결된 폴더를 다룬다(없으면 칸이 없다). */
+  available: boolean;
+  loaded: boolean;
+  roots: IdeFolderRoot[];
+  /** 이 대화의 폴더가 다른 기기에 있다 — 이름만 보인다. */
+  elsewhere: { deviceName: string; online: boolean; folders: string[] } | null;
+  /** 펼쳐 둔 폴더(연결된 폴더 주소). 뿌리도 여기 든다. */
+  expanded: ReadonlySet<string>;
+  /** 읽어 둔 폴더의 한 단계 — 항목의 path 도 연결된 폴더 주소다. null = 읽는 중. */
+  dirs: Readonly<Record<string, IdeFileEntry[] | null>>;
+  /** 읽지 못한 폴더 → 사유. */
+  errors: Readonly<Record<string, string>>;
 }
 
 type Listener = () => void;
@@ -386,6 +408,15 @@ export class IdeStore {
       quickOpen: null,
       monacoReady: false,
       monacoError: null,
+      folders: {
+        available: !!host.folders,
+        loaded: false,
+        roots: [],
+        elsewhere: null,
+        expanded: new Set<string>(),
+        dirs: {},
+        errors: {},
+      },
     };
     const expanded = this.readJson<string[]>('expanded', []);
     if (Array.isArray(expanded)) this.state.expanded = new Set(expanded);
@@ -621,6 +652,8 @@ export class IdeStore {
   async start(): Promise<void> {
     // 탐색기(스토리지 목록)는 샌드박스 없이도 보인다 — 연결을 기다리지 않고 함께 읽는다.
     const files = this.refreshFiles();
+    // 연결된 폴더는 이 기기의 것이다 — 샌드박스 연결을 기다리지 않는다.
+    this.startFolders();
     await this.connect();
     await files;
     if (this.disposed) return;
@@ -647,6 +680,8 @@ export class IdeStore {
     this.connectWake?.();
     if (this.filesRetry) clearTimeout(this.filesRetry);
     this.unsubscribeChanges?.();
+    this.unsubscribeFolders?.();
+    if (this.foldersTimer) clearTimeout(this.foldersTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.gitTimer) clearTimeout(this.gitTimer);
     if (this.filesTimer) clearTimeout(this.filesTimer);
@@ -831,6 +866,10 @@ export class IdeStore {
   }
 
   reveal(path: string): void {
+    if (isFolderPath(path)) {
+      this.revealFolderPath(path);
+      return;
+    }
     const want = ancestors(path);
     if (want.every((d) => this.state.expanded.has(d)) && this.state.selected === path) return;
     this.set((s) => ({ expanded: new Set([...s.expanded, ...want]), selected: path }));
@@ -859,6 +898,345 @@ export class IdeStore {
 
   cancelRename(): void {
     this.set({ renaming: null });
+  }
+
+  // ── 연결된 폴더 ──────────────────────────────────────────────────
+  //
+  // 이 대화에 연결한 기기의 폴더. 스토리지와 섞이지 않게 따로 된 주소(folders.ts)를 쓰고,
+  // 목록은 펼칠 때 한 단계씩 읽는다(연결한 폴더는 저장소 하나만큼 클 수 있다).
+
+  private unsubscribeFolders: (() => void) | null = null;
+  private foldersTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly pendingFolderRoots = new Set<string>();
+  private foldersWhole = false;
+
+  private startFolders(): void {
+    const src = this.host.folders;
+    if (!src || this.unsubscribeFolders) return;
+    this.unsubscribeFolders = src.subscribe((rootId) => this.notifyFolderChange(rootId));
+    void this.refreshFolders();
+  }
+
+  private setFolders(patch: Partial<FoldersState> | ((cur: FoldersState) => Partial<FoldersState>)): void {
+    this.set((s) => ({ folders: { ...s.folders, ...(typeof patch === 'function' ? patch(s.folders) : patch) } }));
+  }
+
+  /** 폴더가 바뀌었다 — 잠깐 모아 다시 읽는다(에이전트가 파일을 잇달아 쓰는 동안 한 번만). */
+  notifyFolderChange(rootId?: string): void {
+    if (rootId) this.pendingFolderRoots.add(rootId);
+    else this.foldersWhole = true;
+    if (this.foldersTimer) clearTimeout(this.foldersTimer);
+    this.foldersTimer = setTimeout(() => {
+      this.foldersTimer = null;
+      const whole = this.foldersWhole;
+      const roots = [...this.pendingFolderRoots];
+      this.foldersWhole = false;
+      this.pendingFolderRoots.clear();
+      if (whole) void this.refreshFolders();
+      else for (const r of roots) this.reloadFolderRoot(r);
+      void this.checkDisk('all');
+    }, 300);
+    (this.foldersTimer as { unref?: () => void }).unref?.();
+  }
+
+  /** 연결된 폴더(와 펼쳐 둔 폴더의 목록)를 다시 읽는다. */
+  async refreshFolders(): Promise<void> {
+    const src = this.host.folders;
+    if (!src) return;
+    let next;
+    try {
+      next = await src.state();
+    } catch {
+      if (!this.disposed) this.setFolders({ loaded: true });
+      return;
+    }
+    if (this.disposed) return;
+    const ids = new Set(next.roots.map((r) => r.id));
+    const keep = (p: string) => {
+      const f = parseFolderPath(p);
+      return !!f && ids.has(f.rootId);
+    };
+    this.setFolders((cur) => ({
+      loaded: true,
+      roots: next.roots,
+      elsewhere: next.elsewhere ?? null,
+      expanded: new Set([...cur.expanded].filter(keep)),
+      dirs: Object.fromEntries(Object.entries(cur.dirs).filter(([k]) => keep(k))),
+      errors: Object.fromEntries(Object.entries(cur.errors).filter(([k]) => keep(k))),
+    }));
+    for (const dir of this.state.folders.expanded) void this.loadFolderDir(dir);
+  }
+
+  private reloadFolderRoot(rootId: string): void {
+    for (const dir of this.state.folders.expanded) {
+      if (parseFolderPath(dir)?.rootId === rootId) void this.loadFolderDir(dir);
+    }
+  }
+
+  folderRoot(rootId: string): IdeFolderRoot | undefined {
+    return this.state.folders.roots.find((r) => r.id === rootId);
+  }
+
+  /** 화면에 보이는 경로 — 연결된 폴더의 파일은 `<폴더 이름>/<경로>`. */
+  displayPath(path: string): string {
+    const f = parseFolderPath(path);
+    if (!f) return path;
+    const name = this.folderRoot(f.rootId)?.name ?? '연결된 폴더';
+    return f.rel ? `${name}/${f.rel}` : name;
+  }
+
+  /** 복사할 경로 — 연결된 폴더의 파일은 이 기기의 경로(데스크톱) 또는 `<폴더 이름>/<경로>`. */
+  copyablePath(path: string): string {
+    const f = parseFolderPath(path);
+    if (!f) return path;
+    return this.host.folders?.pathOf?.(f.rootId, f.rel) ?? this.displayPath(path);
+  }
+
+  /** 폴더 한 단계를 읽는다(주소는 연결된 폴더 주소). */
+  async loadFolderDir(dir: string): Promise<void> {
+    const src = this.host.folders;
+    const f = parseFolderPath(dir);
+    if (!src || !f) return;
+    if (this.state.folders.dirs[dir] === undefined) this.setFolders((cur) => ({ dirs: { ...cur.dirs, [dir]: null } }));
+    try {
+      const entries = await src.list(f.rootId, f.rel);
+      if (this.disposed) return;
+      const mapped = sortEntries(entries.map((e) => ({ ...e, path: folderPath(f.rootId, e.path) })));
+      this.setFolders((cur) => {
+        const errors = { ...cur.errors };
+        delete errors[dir];
+        return { dirs: { ...cur.dirs, [dir]: mapped }, errors };
+      });
+    } catch (err) {
+      if (this.disposed) return;
+      this.setFolders((cur) => ({
+        dirs: { ...cur.dirs, [dir]: cur.dirs[dir] ?? [] },
+        errors: { ...cur.errors, [dir]: errorMessage(err, '폴더를 읽지 못했습니다') },
+      }));
+    }
+  }
+
+  /** 폴더를 펼치거나 접는다. 펼칠 때 목록을 읽는다. */
+  toggleFolderDir(dir: string, open?: boolean): void {
+    const isOpen = this.state.folders.expanded.has(dir);
+    const want = open ?? !isOpen;
+    if (want === isOpen) return;
+    this.setFolders((cur) => {
+      const expanded = new Set(cur.expanded);
+      if (want) expanded.add(dir);
+      else expanded.delete(dir);
+      return { expanded };
+    });
+    if (want) void this.loadFolderDir(dir);
+  }
+
+  /** 연결된 폴더 칸을 모두 접는다. */
+  collapseFolders(): void {
+    this.setFolders({ expanded: new Set() });
+  }
+
+  private revealFolderPath(path: string): void {
+    const f = parseFolderPath(path);
+    if (!f) return;
+    const parts = f.rel.split('/').slice(0, -1);
+    this.toggleFolderDir(folderPath(f.rootId), true);
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      this.toggleFolderDir(folderPath(f.rootId, acc), true);
+    }
+    this.set({ selected: path });
+  }
+
+  /** 이 창에서 폴더 접근을 허용받는다(웹). */
+  async grantFolder(rootId: string): Promise<void> {
+    const src = this.host.folders;
+    if (!src?.grant) return;
+    try {
+      await src.grant(rootId);
+    } catch (err) {
+      this.notify('error', errorMessage(err, '폴더 접근을 허용하지 못했습니다'));
+    }
+    await this.refreshFolders();
+  }
+
+  private folderTarget(path: string): { src: NonNullable<IdeHost['folders']>; rootId: string; rel: string } {
+    const f = parseFolderPath(path);
+    const src = this.host.folders;
+    if (!f || !src) throw new IdeError('not_found', '연결된 폴더를 찾을 수 없습니다');
+    return { src, rootId: f.rootId, rel: f.rel };
+  }
+
+  private readDocBytes(path: string): Promise<IdeReadResult> {
+    if (!isFolderPath(path)) return this.host.readFile(path);
+    try {
+      const t = this.folderTarget(path);
+      return t.src.read(t.rootId, t.rel);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  private writeDocBytes(path: string, bytes: Uint8Array, baseSha: string | null): Promise<IdeSaveResult> {
+    if (!isFolderPath(path)) return this.host.saveFile(path, bytes, baseSha);
+    try {
+      const t = this.folderTarget(path);
+      return t.src.save(t.rootId, t.rel, bytes, baseSha);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /** 그림 미리보기의 원바이트 — 스토리지든 연결된 폴더든. */
+  readRaw(path: string): Promise<Uint8Array> {
+    if (!isFolderPath(path)) return this.host.readRaw(path);
+    try {
+      const t = this.folderTarget(path);
+      return t.src.readRaw(t.rootId, t.rel);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /** 열어 둔 문서들의 디스크 판 — 스토리지와 연결된 폴더를 나눠 묻는다. 못 물은 것은 뺀다. */
+  private async statDocs(paths: string[]): Promise<Record<string, IdeStat>> {
+    const out: Record<string, IdeStat> = {};
+    const storage = paths.filter((p) => !isFolderPath(p));
+    const byRoot = new Map<string, { path: string; rel: string }[]>();
+    for (const p of paths) {
+      const f = parseFolderPath(p);
+      if (!f) continue;
+      const list = byRoot.get(f.rootId) ?? [];
+      list.push({ path: p, rel: f.rel });
+      byRoot.set(f.rootId, list);
+    }
+    if (storage.length) {
+      try {
+        Object.assign(out, await this.host.stat(storage));
+      } catch {
+        /* 닿지 않았다 — 다음에 다시 본다 */
+      }
+    }
+    const src = this.host.folders;
+    if (src) {
+      for (const [rootId, items] of byRoot) {
+        try {
+          const st = await src.stat(rootId, items.map((i) => i.rel));
+          for (const i of items) if (st[i.rel]) out[i.path] = st[i.rel];
+        } catch {
+          /* 폴더가 잠시 닿지 않는다(웹: 허용 전) — 다음에 다시 본다 */
+        }
+      }
+    }
+    return out;
+  }
+
+  /** 연결된 폴더에 새 파일·폴더를 만든다. */
+  async createFolderEntry(dir: string, name: string, kind: 'file' | 'dir'): Promise<boolean> {
+    if (this.state.readonly) return false;
+    const bad = invalidName(name);
+    if (bad) {
+      this.notify('warning', bad);
+      return false;
+    }
+    let t;
+    try {
+      t = this.folderTarget(dir);
+    } catch {
+      return false;
+    }
+    const rel = join(t.rel, name.trim());
+    const taken = (this.state.folders.dirs[dir] ?? []).some((e) => basename(e.path) === basename(rel));
+    if (taken) {
+      this.notify('warning', `${basename(rel)} 은(는) 이미 있습니다`);
+      return false;
+    }
+    try {
+      if (kind === 'dir') await t.src.fs(t.rootId, { op: 'mkdir', path: rel });
+      else await t.src.save(t.rootId, rel, new Uint8Array(), '');
+    } catch (err) {
+      this.notify('error', errorMessage(err, `${basename(rel)} 을(를) 만들지 못했습니다`));
+      return false;
+    }
+    this.toggleFolderDir(dir, true);
+    await this.loadFolderDir(dir);
+    if (kind === 'file') await this.openFile(folderPath(t.rootId, rel), { preview: false });
+    return true;
+  }
+
+  /** 연결된 폴더 안의 이름 바꾸기 — 열린 탭과 고친 버퍼도 따라간다. 폴더 자체는 바꾸지 않는다. */
+  async renameFolderEntry(path: string, newName: string): Promise<boolean> {
+    if (this.state.readonly) return false;
+    const bad = invalidName(newName);
+    if (bad) {
+      this.notify('warning', bad);
+      return false;
+    }
+    let t;
+    try {
+      t = this.folderTarget(path);
+    } catch {
+      return false;
+    }
+    if (!t.rel) return false;
+    const dstRel = join(dirname(t.rel), newName.trim());
+    if (dstRel === t.rel) return true;
+    const dst = folderPath(t.rootId, dstRel);
+    const dirtyInside = Object.values(this.state.docs).filter((d) => d.dirty && isWithin(d.path, path));
+    if (dirtyInside.length) {
+      const ok = await this.confirm('저장하지 않은 파일이 있습니다', '이름을 바꾸기 전에 저장합니다.', '저장하고 바꾸기');
+      if (!ok) return false;
+      for (const d of dirtyInside) if (!(await this.save(d.path, { quiet: true }))) return false;
+    }
+    try {
+      await t.src.fs(t.rootId, { op: 'rename', src: t.rel, dst: dstRel });
+    } catch (err) {
+      this.notify('error', errorMessage(err, '이름을 바꾸지 못했습니다'));
+      return false;
+    }
+    this.retargetTabs(path, dst);
+    this.setFolders((cur) => ({
+      expanded: new Set([...cur.expanded].map((d) => (isWithin(d, path) ? dst + d.slice(path.length) : d))),
+      dirs: Object.fromEntries(Object.entries(cur.dirs).filter(([k]) => !isWithin(k, path))),
+    }));
+    await this.loadFolderDir(dirname(path));
+    return true;
+  }
+
+  /** 연결된 폴더 안에서 지운다(되돌릴 수 없다). 폴더 자체는 지우지 않는다 — 연결 해제는 [폴더] 창에서. */
+  async deleteFolderEntries(paths: string[], isDir: (path: string) => boolean): Promise<boolean> {
+    if (this.state.readonly) return false;
+    const targets = paths.map((p) => ({ path: p, f: parseFolderPath(p) })).filter((x) => x.f && x.f.rel);
+    if (!targets.length || !this.host.folders) return false;
+    const label = targets.length === 1 ? basename(targets[0].path) : `${targets.length}개 항목`;
+    const ok = await this.confirm(
+      `${label} 을(를) 지울까요?`,
+      this.host.folders.trashes
+        ? '이 기기의 휴지통으로 옮깁니다.'
+        : targets.some((x) => isDir(x.path))
+          ? '이 기기의 폴더에서 폴더와 그 안의 모든 파일을 지우며 되돌릴 수 없습니다.'
+          : '이 기기의 폴더에서 지우며 되돌릴 수 없습니다.',
+      '지우기',
+      true,
+    );
+    if (!ok) return false;
+    const byRoot = new Map<string, string[]>();
+    for (const x of targets) byRoot.set(x.f!.rootId, [...(byRoot.get(x.f!.rootId) ?? []), x.f!.rel]);
+    for (const [rootId, rels] of byRoot) {
+      try {
+        await this.host.folders.fs(rootId, { op: 'delete', paths: rels });
+      } catch (err) {
+        this.notify('error', errorMessage(err, '지우지 못했습니다'));
+        return false;
+      }
+    }
+    for (const g of [...this.state.groups]) {
+      for (const tab of g.tabs) {
+        if (tab.kind !== 'diff' && targets.some((x) => isWithin(tab.path, x.path))) await this.closeTab(g.id, tab.id, { force: true });
+      }
+    }
+    for (const dir of new Set(targets.map((x) => dirname(x.path)))) await this.loadFolderDir(dir);
+    return true;
   }
 
   // ── Monaco ────────────────────────────────────────────────────────
@@ -933,7 +1311,7 @@ export class IdeStore {
     }));
     let read;
     try {
-      [read] = await Promise.all([this.host.readFile(path), this.loadMonaco()]);
+      [read] = await Promise.all([this.readDocBytes(path), this.loadMonaco()]);
     } catch (err) {
       if (err instanceof IdeError && err.code === 'too_large') {
         this.patchDoc(path, { status: 'too_large', message: err.message, size: Number(err.detail?.size ?? 0) });
@@ -1047,7 +1425,7 @@ export class IdeStore {
     const bytes = encodeText(model.getValue(), doc.eol, doc.bom);
     this.patchDoc(path, { saving: true });
     try {
-      const out = await this.host.saveFile(path, bytes, opts.force ? null : doc.sha);
+      const out = await this.writeDocBytes(path, bytes, opts.force ? null : doc.sha);
       this.savedVersion.set(path, version);
       this.patchDoc(path, {
         saving: false,
@@ -1059,8 +1437,12 @@ export class IdeStore {
       // 저장한 뒤에도 고친 것이 남아 있으면(저장 중에 타이핑) 그 판을 다시 보관한다.
       if (this.state.docs[path]?.dirty) this.scheduleBackup(path);
       else this.dropBackup(path);
-      if (!this.exists(path)) void this.refreshFiles();
-      this.scheduleGit();
+      if (isFolderPath(path)) {
+        if (this.state.folders.dirs[dirname(path)] !== undefined) void this.loadFolderDir(dirname(path));
+      } else {
+        if (!this.exists(path)) void this.refreshFiles();
+        this.scheduleGit();
+      }
       // 저장은 따로 알리지 않는다 — 탭의 고친 표시가 사라지는 것이 곧 알림이다(VS Code 와 같다).
       if (out.conflicts?.length) {
         this.notify('warning', '다른 곳에서 같은 파일을 고쳐 두 판을 모두 남겼습니다. 탐색기에서 .conflict 파일을 확인하세요.');
@@ -1103,7 +1485,7 @@ export class IdeStore {
     const monaco = await this.loadMonaco();
     let read;
     try {
-      read = await this.host.readFile(path);
+      read = await this.readDocBytes(path);
     } catch (err) {
       this.notify('error', errorMessage(err, '디스크 판을 읽지 못했습니다'));
       return;
@@ -1137,7 +1519,7 @@ export class IdeStore {
     if (doc.dirty && !opts.discard) return;
     let read;
     try {
-      read = await this.host.readFile(path);
+      read = await this.readDocBytes(path);
     } catch (err) {
       if (err instanceof IdeError && err.code === 'not_found') {
         this.patchDoc(path, { diskChanged: true, message: '디스크에서 지워졌습니다' });
@@ -1171,12 +1553,7 @@ export class IdeStore {
     );
     const paths = docs.map((d) => d.path).filter((p) => which === 'all' || visible.has(p));
     if (!paths.length) return;
-    let stats;
-    try {
-      stats = await this.host.stat(paths);
-    } catch {
-      return;
-    }
+    const stats = await this.statDocs(paths);
     for (const path of paths) {
       const st = stats[path];
       const doc = this.state.docs[path];
@@ -1540,7 +1917,12 @@ export class IdeStore {
     }
     const ok = await this.runFs({ op: 'rename', src, dst });
     if (!ok) return false;
-    // 열린 탭을 새 경로로 옮긴다(문서는 새로 읽는다 — sha 는 같다).
+    this.retargetTabs(src, dst);
+    return true;
+  }
+
+  /** 옮긴 경로의 열린 탭을 새 경로로 옮긴다(문서는 새로 읽는다 — sha 는 같다). */
+  private retargetTabs(src: string, dst: string): void {
     const moved = new Set<string>();
     this.set((s) => ({
       groups: s.groups.map((g) => {
@@ -1563,7 +1945,6 @@ export class IdeStore {
     }
     if (this.state.selected && isWithin(this.state.selected, src)) this.select(dst + this.state.selected.slice(src.length));
     this.persistTabs();
-    return true;
   }
 
   async deleteEntries(paths: string[]): Promise<boolean> {
@@ -1729,6 +2110,8 @@ export class IdeStore {
 
   /** 이 경로가 들어 있는 저장소(가장 깊은 것)와 저장소 안의 경로. */
   private repoOf(path: string): { repo: string; rel: string } | null {
+    // 연결된 폴더는 샌드박스의 git 밖이다.
+    if (isFolderPath(path)) return null;
     let best: string | null = null;
     for (const r of this.state.git.repos) {
       if (r === '' || path === r || path.startsWith(`${r}/`)) {

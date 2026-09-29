@@ -8,6 +8,10 @@
  */
 import {
   IdeError,
+  type IdeFolderSource,
+  type IdeFoldersState,
+  type IdeReadResult,
+  type IdeSaveResult,
   type IdeFileEntry,
   type IdeFsOp,
   type IdeHost,
@@ -90,11 +94,84 @@ function subscribeWorkspace(workflowId: string, onChange: () => void): () => voi
   };
 }
 
-export function createDexIdeHost(agent: { workflowId: string; workflowName: string }): IdeHost {
+/** [폴더] 창을 열어 달라는 부탁 — 이 대화의 채팅 화면이 듣는다(IDE 탐색기의 [폴더 연결 관리]). */
+export const OPEN_CHAT_FOLDERS_EVENT = 'xgen:chat-folders-open';
+
+/**
+ * 이 대화에 연결한 이 PC 의 폴더 — IDE 탐색기 [연결된 폴더]. 디스크는 main 이 만진다(폴더 밖은
+ * 거부). 이 대화의 폴더가 다른 기기에 있으면 그 기기와 이름만 준다.
+ */
+export function createDexFolderSource(interactionId: string): IdeFolderSource {
+  const roots = new Map<string, string>();
+  async function fsCall<T>(rootId: string, op: string, args: Record<string, unknown>): Promise<T> {
+    const out = await xgen.chatFolders.fs(interactionId, rootId, op, args);
+    if (out.ok) return out.value as T;
+    throw new IdeError(out.code, out.message, 0, out.detail);
+  }
+  return {
+    trashes: true,
+    async state(): Promise<IdeFoldersState> {
+      const [views, remote] = await Promise.all([
+        xgen.chatFolders.list(interactionId),
+        xgen.chatFolders.remote(interactionId).catch(() => null),
+      ]);
+      roots.clear();
+      for (const v of views) roots.set(v.id, v.path);
+      const device = remote?.state?.device;
+      const elsewhere =
+        !views.length && device && device.deviceId !== remote?.deviceId && remote?.state?.folders.length
+          ? { deviceName: device.name, online: device.online, folders: remote.state.folders.map((f) => f.name) }
+          : null;
+      return {
+        roots: views.map((v) => ({ id: v.id, name: v.name, detail: v.path, missing: v.missing })),
+        elsewhere,
+      };
+    },
+    subscribe(onChange) {
+      const offs = [
+        xgen.chatFolders.onChanged((id) => {
+          if (id === interactionId) onChange();
+        }),
+        xgen.chatFolders.onRemoteChanged((id) => {
+          if (!id || id === interactionId) onChange();
+        }),
+        // 에이전트가 이 대화의 폴더를 바꿨다(셸·파일 쓰기) — 펼쳐 둔 목록과 열린 파일을 다시 본다.
+        xgen.chatFolders.onTouched((id) => {
+          if (id !== interactionId) return;
+          for (const rootId of roots.keys()) onChange(rootId);
+        }),
+      ];
+      return () => {
+        for (const off of offs) off();
+      };
+    },
+    list: (rootId, dir) => fsCall<IdeFileEntry[]>(rootId, 'list', { dir }),
+    read: (rootId, path) => fsCall<IdeReadResult>(rootId, 'read', { path }),
+    save: (rootId, path, bytes, baseSha) => fsCall<IdeSaveResult>(rootId, 'save', { path, bytes, baseSha }),
+    stat: (rootId, paths) => fsCall<Record<string, IdeStat>>(rootId, 'stat', { paths }),
+    readRaw: (rootId, path) => fsCall<Uint8Array>(rootId, 'raw', { path }),
+    fs: (rootId, op) => fsCall<void>(rootId, 'fs', { op }),
+    reveal: (rootId, path) => void fsCall(rootId, 'reveal', { path }).catch(() => undefined),
+    pathOf(rootId, path) {
+      const base = roots.get(rootId);
+      if (!base) return path;
+      const sep = base.includes('\\') ? '\\' : '/';
+      return path ? `${base.replace(/[\\/]+$/, '')}${sep}${path.split('/').join(sep)}` : base;
+    },
+    manage: () => window.dispatchEvent(new CustomEvent(OPEN_CHAT_FOLDERS_EVENT, { detail: interactionId })),
+  };
+}
+
+export function createDexIdeHost(
+  agent: { workflowId: string; workflowName: string },
+  interactionId?: string,
+): IdeHost {
   const wf = agent.workflowId;
   return {
     workflowId: wf,
     agentName: agent.workflowName,
+    // 이 대화에 연결한 이 PC 의 폴더 — 탐색기 아래 [연결된 폴더].
+    folders: interactionId ? createDexFolderSource(interactionId) : undefined,
 
     async session() {
       const s = await call<IdeSessionResponse>('session', wf);
@@ -214,5 +291,14 @@ export function createDexIdeHost(agent: { workflowId: string; workflowName: stri
     },
 
     copyText,
+
+    // 터미널 붙여넣기 — 렌더러의 navigator.clipboard 는 권한에 막힐 수 있어 main 이 읽는다.
+    async readText() {
+      try {
+        return await xgen.clipboard.read();
+      } catch {
+        return null;
+      }
+    },
   };
 }

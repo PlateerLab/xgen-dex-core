@@ -12,6 +12,7 @@ import { useIde, useStore } from './hooks';
 import { Empty, IconButton, SplitHandle, showMenu, type MenuEntry } from './primitives';
 import { diskUri, modelUri, originalUri, stagedUri, type DiffSpec, type EditorGroup, type EditorTab } from '../store';
 import { basename, dirname } from '../paths';
+import { folderPath, isFolderPath, parseFolderPath } from '../folders';
 import { decodeText, formatBytes, imageMime } from '../text';
 import { formatBinding } from '../keys';
 import { STATUS_LABEL } from '../git-model';
@@ -174,7 +175,7 @@ function TabBar({ group }: { group: EditorGroup }) {
               ]
                 .filter(Boolean)
                 .join(' ')}
-              title={`${t.path}${t.kind === 'diff' && t.diff?.status ? ` · ${STATUS_LABEL[t.diff.status]}` : ''}`}
+              title={`${store.displayPath(t.path)}${t.kind === 'diff' && t.diff?.status ? ` · ${STATUS_LABEL[t.diff.status]}` : ''}`}
               draggable
               onDragStart={(e) => onDragStart(t, e)}
               onDragOver={(e) => {
@@ -193,7 +194,7 @@ function TabBar({ group }: { group: EditorGroup }) {
             >
               {t.kind === 'diff' ? <Icon name="split" className="xide-icon xide-tab-diff" /> : <FileIcon name={name} />}
               <span className="xide-tab-label">{label}</span>
-              {dup ? <span className="xide-tab-dir">{dirname(t.path) || '/'}</span> : null}
+              {dup ? <span className="xide-tab-dir">{store.displayPath(dirname(t.path)) || '/'}</span> : null}
               <button
                 type="button"
                 className="xide-tab-close"
@@ -249,18 +250,28 @@ function TabBar({ group }: { group: EditorGroup }) {
 }
 
 async function copyPath(store: ReturnType<typeof useStore>, path: string) {
-  const ok = (await store.host.copyText?.(path)) ?? (await navigator.clipboard?.writeText(path).then(() => true, () => false));
+  const text = store.copyablePath(path);
+  const ok = (await store.host.copyText?.(text)) ?? (await navigator.clipboard?.writeText(text).then(() => true, () => false));
   store.notify(ok ? 'success' : 'error', ok ? '경로를 복사했습니다' : '복사하지 못했습니다');
 }
 
 function Breadcrumbs({ tab }: { tab: EditorTab }) {
   const store = useStore();
-  const parts = tab.path.split('/');
+  // 연결된 폴더의 파일은 `<폴더 이름> › 경로` 로 — 내부 주소를 보이지 않는다.
+  const folder = parseFolderPath(tab.path);
+  const crumbs: { label: string; path: string }[] = folder
+    ? [
+        { label: store.folderRoot(folder.rootId)?.name ?? '연결된 폴더', path: folderPath(folder.rootId) },
+        ...folder.rel
+          .split('/')
+          .filter(Boolean)
+          .map((seg, i, all) => ({ label: seg, path: folderPath(folder.rootId, all.slice(0, i + 1).join('/')) })),
+      ]
+    : tab.path.split('/').map((seg, i, all) => ({ label: seg, path: all.slice(0, i + 1).join('/') }));
   return (
     <div className="xide-breadcrumbs" aria-label="경로">
-      {parts.map((p, i) => {
-        const path = parts.slice(0, i + 1).join('/');
-        const last = i === parts.length - 1;
+      {crumbs.map(({ label: p, path }, i) => {
+        const last = i === crumbs.length - 1;
         return (
           <span key={path} className="xide-crumb">
             <button
@@ -445,7 +456,7 @@ function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; t
             <button type="button" className="xide-btn" onClick={() => void store.openFile(tab.path, { forceText: true, preview: false })}>
               그래도 열기
             </button>
-            {store.host.download ? (
+            {store.host.download && !isFolderPath(tab.path) ? (
               <button type="button" className="xide-btn" onClick={() => void store.host.download?.(tab.path)}>
                 내려받기
               </button>
@@ -456,7 +467,7 @@ function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; t
       {doc?.status === 'too_large' ? (
         <Empty icon="warning">
           <p>파일이 너무 커서({formatBytes(doc.size)}) 편집기로 열 수 없습니다.</p>
-          {store.host.download ? (
+          {store.host.download && !isFolderPath(tab.path) ? (
             <button type="button" className="xide-btn" onClick={() => void store.host.download?.(tab.path)}>
               내려받기
             </button>
@@ -676,7 +687,7 @@ function ImagePane({ path }: { path: string }) {
   useEffect(() => {
     let alive = true;
     let objectUrl: string | null = null;
-    store.host.readRaw(path).then(
+    store.readRaw(path).then(
       (bytes) => {
         if (!alive) return;
         objectUrl = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: imageMime(path) }));

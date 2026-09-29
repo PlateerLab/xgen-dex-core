@@ -574,11 +574,27 @@ const api = {
       ipcRenderer.on(CHANNELS.chatFoldersRemoteUse, h);
       return () => ipcRenderer.removeListener(CHANNELS.chatFoldersRemoteUse, h);
     },
+    /** IDE [연결된 폴더] — 폴더 안 파일 작업(list·read·save·stat·raw·fs·reveal). 실패는 봉투로 온다. */
+    fs: (
+      interactionId: string,
+      rootId: string,
+      op: string,
+      args: Record<string, unknown>,
+    ): Promise<{ ok: true; value: unknown } | { ok: false; code: string; message: string; detail: Record<string, unknown> }> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersFs, interactionId, rootId, op, args),
+    /** 에이전트의 폴더 도구가 폴더를 바꿨다(인자는 대화 id). */
+    onTouched: (cb: (interactionId: string) => void): (() => void) => {
+      const h = (_e: unknown, interactionId: string) => cb(interactionId);
+      ipcRenderer.on(CHANNELS.chatFoldersTouched, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersTouched, h);
+    },
   },
 
   /** 클립보드 — main 경유. 렌더러 navigator.clipboard 는 조용히 실패할 수 있다. */
   clipboard: {
     write: (text: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.clipboardWrite, text),
+    /** 글만 읽는다(그림·파일은 빈 글). */
+    read: (): Promise<string> => ipcRenderer.invoke(CHANNELS.clipboardRead),
   },
 
   /**

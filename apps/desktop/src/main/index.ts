@@ -93,7 +93,10 @@ import { stripFrameAncestorsFromHeaders } from './artifact-csp';
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
 import { ChatFolderStore } from './chat-folders';
-import { localFoldersForRequest } from '@dex/engine/local-folders';
+import { localFoldersForRequest, normalizeLocalFolders } from '@dex/engine/local-folders';
+import { parseConversationFolders } from '@dex/protocol/conversation-folders';
+import { ChatFolderSync } from './chat-folder-sync';
+import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import {
   consumeInstallOptions,
   resolveDataRoot,
@@ -1532,12 +1535,50 @@ const chatFolders = new ChatFolderStore(
   () => currentAccountKey(),
 );
 getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
+/** 이 PC 의 기기 — 서버의 대화 폴더 사본에 "이 폴더는 이 PC 에 있다" 로 적힌다. */
+function thisDevice() {
+  return {
+    deviceId: ensureDeviceId(),
+    deviceName: `${hostname()} · 데스크톱`,
+    devicePlatform: process.platform,
+  };
+}
+/**
+ * 대화 폴더의 서버 사본 — 폴더는 대화에 붙고 이 PC 에 있다. 연결·해제를 올려 두면 웹·휴대폰·
+ * 다른 PC 에서도 보이고, 그 화면에서 보낸 턴도 이 PC 의 폴더 도구를 쓴다(이 PC 가 켜져 있는 동안).
+ */
+const chatFolderSync = new ChatFolderSync({
+  api: () => (client ? client.conversationFolders : null),
+  ledger: chatFolders,
+  device: thisDevice,
+  log: (message) => console.warn(message),
+});
+/** 다른 화면에서 온 요청으로 조작한 마지막 것 — 대화마다. [폴더] 창이 보여 준다. */
+const lastRemoteUse = new Map<string, RemoteFolderUse>();
+function notifyFolderRemote(interactionId: string): void {
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersRemoteChanged, interactionId);
+  }
+}
+getLocalToolProvider().onRemoteUse((use) => {
+  lastRemoteUse.set(use.interactionId, use);
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersRemoteUse, use);
+  }
+});
 chatFolders.onChange((interactionId) => {
   // 빠진 폴더에서 돌던 백그라운드 작업을 멈추고, 열린 창들이 목록을 다시 그린다.
   getLocalToolProvider().foldersChanged(interactionId);
   for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
     safeSend(w, CHANNELS.chatFoldersChanged, interactionId, chatFolders.view(interactionId));
   }
+  // 이 PC 에서 바꾼 것만 서버에 올린다(서버가 시켜서 잊은 것은 메아리가 된다).
+  if (chatFolderSync.isQuiet(interactionId)) return;
+  void chatFolderSync.publish(interactionId).then((result) => {
+    // 그 사이 다른 기기가 이 대화를 옮겨 갔다 — 이 PC 는 잊는다.
+    if (result && !result.ok && result.code === 'other_device') chatFolderSync.onServerFolders(result.state);
+    notifyFolderRemote(interactionId);
+  });
 });
 /**
  * 현재 유효한 액세스 토큰 — **라이브 클라이언트(회전 반영) 우선**, 없으면 keychain.
@@ -1631,6 +1672,17 @@ const conversationWatchHub = new ConversationWatchHub(
  * **바뀌었다는 말을 들었을 때만** 다시 읽는다.
  */
 const conversationsWatch = new ConversationsWatch((event) => {
+  if (event.kind === 'folders') {
+    // 어느 기기가 이 대화의 폴더를 가졌는가 — 다른 기기가 옮겨 갔으면 이 PC 는 잊는다.
+    chatFolderSync.onServerFolders(parseConversationFolders(event.data ?? {}, event.interactionId));
+    notifyFolderRemote(event.interactionId);
+    return;
+  }
+  if (event.kind === 'devices') {
+    // 기기가 켜지고 꺼졌다 — 열린 [폴더] 창이 "켜짐/꺼짐" 을 다시 읽는다.
+    notifyFolderRemote('');
+    return;
+  }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(CHANNELS.conversationsChanged, event);
   }
@@ -1909,6 +1961,9 @@ function syncMcp(): void {
     onMcpRuntimeLog((entry) => safeSend(mainWindow, CHANNELS.mcpRuntimeLogEvent, entry));
   }
   const userId = currentUserId();
+  // 로그인한 계정의 폴더 장부를 서버 사본과 맞춘다(계정마다 한 번) — 꺼져 있는 동안 다른
+  // 기기로 옮겨 간 대화는 잊고, 이 기능 이전에 붙인 폴더는 올린다.
+  if (userId) void chatFolderSync.reconcile();
   // The bridge is the single conduit for BOTH external MCP servers and this PC's
   // folder tools. It runs whenever someone is logged in: which conversation may
   // use the folder tools is decided per call by that conversation's folders,
@@ -3157,7 +3212,44 @@ ipcMain.handle(CHANNELS.chatFoldersAdd, async (e, interactionId: string) => {
     >,
   };
   const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-  if (!r.canceled && r.filePaths.length) chatFolders.add(id, r.filePaths);
+  if (!r.canceled && r.filePaths.length) {
+    // 다른 기기에 이 대화의 폴더가 있으면 더하지 않는다 — 창이 [이 기기로 옮기기] 를 묻는다.
+    const next = normalizeLocalFolders([
+      ...chatFolders.list(id),
+      ...r.filePaths.map((path) => ({ path })),
+    ]);
+    const out = await chatFolderSync.add(id, next);
+    if (!out.ok) notifyFolderRemote(id);
+  }
+  return chatFolders.view(id);
+});
+/** 이 대화의 서버 사본 — 다른 기기에 있는 폴더와 그 기기가 켜져 있는지. */
+ipcMain.handle(CHANNELS.chatFoldersRemote, async (_e, interactionId: string) => {
+  const id = String(interactionId ?? '').trim();
+  return {
+    state: id ? await chatFolderSync.state(id) : null,
+    deviceId: ensureDeviceId(),
+    lastRemoteUse: lastRemoteUse.get(id) ?? null,
+  };
+});
+/** [이 기기로 옮기기] — 고른 폴더가 이 대화의 폴더가 되고, 다른 기기의 연결은 해제된다. */
+ipcMain.handle(CHANNELS.chatFoldersMoveHere, async (e, interactionId: string) => {
+  const id = String(interactionId ?? '').trim();
+  if (!id) throw new Error('대화를 찾지 못했습니다.');
+  const win = BrowserWindow.fromWebContents(e.sender) ?? mainWindow;
+  const options = {
+    title: '이 대화에서 쓸 이 PC 의 폴더',
+    buttonLabel: '옮기기',
+    properties: ['openDirectory', 'multiSelections', 'createDirectory'] as Array<
+      'openDirectory' | 'multiSelections' | 'createDirectory'
+    >,
+  };
+  const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  if (!r.canceled && r.filePaths.length) {
+    const next = normalizeLocalFolders(r.filePaths.map((path) => ({ path })));
+    await chatFolderSync.add(id, next, { takeOver: true });
+    notifyFolderRemote(id);
+  }
   return chatFolders.view(id);
 });
 ipcMain.handle(CHANNELS.chatFoldersRemove, (_e, interactionId: string, folderId: string) => {

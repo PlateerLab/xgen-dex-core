@@ -815,6 +815,19 @@
   background: var(--primary-soft);
   color: var(--primary);
 }
+/* 이 대화의 폴더가 다른 기기에 있다 — 개수만 옅게 */
+.chat-hbtn.folder-connect.elsewhere .folder-connect-count {
+  background: var(--panel-2);
+  color: var(--text-secondary);
+}
+/* 다른 화면에서 온 요청으로 방금 이 PC 폴더를 썼다 — 작은 점 */
+.folder-connect-remote {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
 .folder-connect-count {
   min-width: 18px;
   height: 18px;

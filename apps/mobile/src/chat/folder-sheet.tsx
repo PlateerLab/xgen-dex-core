@@ -3,23 +3,47 @@
  *
  * 폴더는 대화에 붙는다. 연결한 폴더 안에서만 파일 도구가 돌고, 연결을 해제하면
  * 다음 요청부터 그 폴더를 쓰지 않는다. 폴더는 시스템 폴더 선택기로만 더해진다.
+ *
+ * 한 대화의 폴더는 기기 하나에 있다. 다른 기기(PC 등)에 있으면 그 기기와 켜짐 여부를
+ * 보이고 [이 기기로 옮기기] 를 준다. 웹·PC 에서 보낸 턴이 이 휴대폰의 폴더를 쓰면 알린다.
  */
 import React, { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'react-native';
-import { folderStore, useChatFolders } from '../lib/folder-store';
+import { folderStore, useChatFolderRemote, useChatFolders } from '../lib/folder-store';
 import { friendlyError } from '../lib/errors';
 import { TAP, alpha, useP } from '../theme';
 
-/** 대화 머리의 [폴더 연결] — 연결된 폴더 수를 함께 보인다. */
-export function FolderPill({ count, onPress }: { count: number; onPress: () => void }): React.ReactElement {
+export function sinceLabel(at: number, now = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - at) / 1000));
+  if (s < 60) return '방금';
+  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
+  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
+  return `${Math.floor(s / 86400)}일 전`;
+}
+
+/**
+ * 대화 머리의 [폴더 연결] — 연결된 폴더 수를 함께 보인다.
+ * 폴더가 다른 기기에 있으면(`elsewhereName`) 그 수를 흐리게 보인다.
+ */
+export function FolderPill({
+  count,
+  onPress,
+  elsewhereName,
+}: {
+  count: number;
+  onPress: () => void;
+  elsewhereName?: string;
+}): React.ReactElement {
   const p = useP();
-  const on = count > 0;
+  const on = count > 0 && !elsewhereName;
   return (
     <Pressable
       onPress={onPress}
       hitSlop={8}
       accessibilityRole="button"
-      accessibilityLabel={on ? `연결된 폴더 ${count}개` : '폴더 연결'}
+      accessibilityLabel={
+        elsewhereName ? `이 대화의 폴더 ${count}개는 ${elsewhereName}에 있습니다` : on ? `연결된 폴더 ${count}개` : '폴더 연결'
+      }
       style={{
         flexDirection: 'row',
         alignItems: 'center',
@@ -31,6 +55,21 @@ export function FolderPill({ count, onPress }: { count: number; onPress: () => v
       }}
     >
       <Text style={{ color: on ? p.primary : p.text, fontSize: 12, fontWeight: '700' }}>폴더 연결</Text>
+      {elsewhereName && count > 0 ? (
+        <View
+          style={{
+            minWidth: 18,
+            height: 18,
+            borderRadius: 9,
+            paddingHorizontal: 5,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: p.border,
+          }}
+        >
+          <Text style={{ color: p.muted, fontSize: 11, fontWeight: '800' }}>{count}</Text>
+        </View>
+      ) : null}
       {on ? (
         <View
           style={{
@@ -61,6 +100,8 @@ export function FolderSheet({
 }): React.ReactElement {
   const p = useP();
   const folders = useChatFolders(interactionId);
+  const remote = useChatFolderRemote(interactionId, visible);
+  const device = remote.state?.device ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const supported = folderStore.supported();
@@ -102,8 +143,40 @@ export function FolderSheet({
           연결한 폴더 안에서만 에이전트가 이 휴대폰의 파일을 다룹니다.
         </Text>
 
+        {remote.elsewhere && device ? (
+          <View style={{ backgroundColor: p.panel2, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ flex: 1, color: p.text, fontSize: 14, lineHeight: 20 }}>
+                이 대화의 폴더는 <Text style={{ fontWeight: '800' }}>{device.name}</Text>에 있습니다
+              </Text>
+              <View
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 999,
+                  backgroundColor: device.online ? alpha(p.primary, 14) : p.panel,
+                }}
+              >
+                <Text style={{ color: device.online ? p.primary : p.muted, fontSize: 11.5, fontWeight: '700' }}>
+                  {device.online ? '켜짐' : '꺼짐'}
+                </Text>
+              </View>
+            </View>
+            {(remote.state?.folders ?? []).map((folder) => (
+              <Text key={folder.id || folder.name} numberOfLines={1} style={{ color: p.text, fontSize: 13, marginTop: 6 }}>
+                {folder.name}
+              </Text>
+            ))}
+            <Text style={{ color: p.muted, fontSize: 12.5, marginTop: 8, lineHeight: 18 }}>
+              {device.online
+                ? '이 휴대폰에서 보낸 요청도 그 기기의 폴더를 사용합니다.'
+                : '그 기기가 켜지면 다시 사용할 수 있습니다.'}
+            </Text>
+          </View>
+        ) : null}
+
         <ScrollView style={{ flexGrow: 0 }}>
-          {folders.length === 0 ? (
+          {remote.elsewhere ? null : folders.length === 0 ? (
             <Text style={{ color: p.muted, fontSize: 13, paddingVertical: 16, textAlign: 'center' }}>
               연결된 폴더가 없습니다.
             </Text>
@@ -151,6 +224,12 @@ export function FolderSheet({
           )}
         </ScrollView>
 
+        {remote.lastRemoteUse && folders.length > 0 ? (
+          <Text style={{ color: p.muted, fontSize: 12.5, marginTop: 10, lineHeight: 18 }}>
+            {remote.lastRemoteUse.originName}에서 온 요청으로 이 휴대폰의 폴더를 사용했습니다 ·{' '}
+            {sinceLabel(remote.lastRemoteUse.at)}
+          </Text>
+        ) : null}
         {error ? <Text style={{ color: p.danger, fontSize: 12.5, marginTop: 10 }}>{error}</Text> : null}
         {!supported ? (
           <Text style={{ color: p.muted, fontSize: 12.5, marginTop: 10 }}>
@@ -159,10 +238,10 @@ export function FolderSheet({
         ) : null}
 
         <Pressable
-          onPress={() => void run(() => folderStore.add(interactionId))}
+          onPress={() => void run(() => folderStore.add(interactionId, { takeOver: remote.elsewhere }))}
           disabled={busy || !supported}
           accessibilityRole="button"
-          accessibilityLabel="폴더 추가"
+          accessibilityLabel={remote.elsewhere ? '이 기기로 옮기기' : '폴더 추가'}
           style={{
             marginTop: 14,
             minHeight: TAP,
@@ -176,10 +255,14 @@ export function FolderSheet({
           }}
         >
           {busy ? <ActivityIndicator color={p.onPrimary} /> : null}
-          <Text style={{ color: p.onPrimary, fontSize: 15, fontWeight: '800' }}>폴더 추가</Text>
+          <Text style={{ color: p.onPrimary, fontSize: 15, fontWeight: '800' }}>
+            {remote.elsewhere ? '이 기기로 옮기기' : '폴더 추가'}
+          </Text>
         </Pressable>
         <Text style={{ color: p.muted, fontSize: 12, marginTop: 10, lineHeight: 17 }}>
-          연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않습니다.
+          {remote.elsewhere
+            ? '옮기면 이 휴대폰에서 고른 폴더가 이 대화의 폴더가 되고 다른 기기의 연결은 해제됩니다.'
+            : '연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않습니다.'}
         </Text>
       </View>
     </Modal>

@@ -23,6 +23,16 @@ export interface ChatFolderView extends LocalFolder {
   missing: boolean;
 }
 
+/** 이 대화의 서버 사본을 이 PC 에서 본 것 — [폴더] 창과 헤더가 쓴다. */
+export interface ChatFolderRemote {
+  /** 서버 사본. 옛 서버·오프라인이면 null(이 PC 장부만 보인다). */
+  state: import('@dex/protocol/conversation-folders').ConversationFoldersState | null;
+  /** 이 PC 의 기기 id — 사본의 기기와 비교해 "다른 기기" 를 가른다. */
+  deviceId: string;
+  /** 이 대화에서 마지막으로 다른 화면에서 온 요청으로 조작한 것. */
+  lastRemoteUse: import('@dex/engine/local-tools').RemoteFolderUse | null;
+}
+
 export type ChatFolderListener = (interactionId: string, folders: LocalFolder[]) => void;
 
 function writeAtomic(file: string, snapshot: ConversationFolderSnapshot): void {
@@ -79,6 +89,28 @@ export class ChatFolderStore {
   /** 대화가 지워졌을 때 그 대화의 폴더 연결도 없앤다. */
   forget(interactionId: string): void {
     this.current()?.forget(interactionId);
+  }
+
+  /** 목록을 통째로 바꾼다(되돌리기·옮기기). 폴더가 아닌 경로는 버린다. */
+  set(interactionId: string, folders: LocalFolder[]): LocalFolder[] {
+    return this.requireBook().set(
+      interactionId,
+      folders.filter((folder) => isDirectory(folder.path)),
+    );
+  }
+
+  /** 지금 계정의 장부 전체 — 서버 사본과 맞출 때. 로그인 전이면 빈 목록. */
+  entries(): { interactionId: string; folders: LocalFolder[] }[] {
+    const snapshot = this.current()?.snapshot() ?? {};
+    return Object.entries(snapshot).map(([interactionId, entry]) => ({
+      interactionId,
+      folders: entry.folders,
+    }));
+  }
+
+  /** 지금 계정 — 맞추기를 계정마다 한 번씩 하려고. */
+  accountId(): string | null {
+    return this.accountKey();
   }
 
   onChange(listener: ChatFolderListener): () => void {

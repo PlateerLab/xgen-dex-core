@@ -4,9 +4,15 @@
  * 폴더는 대화에 붙는다. 연결한 폴더 안에서만 파일 도구와 터미널이 돌고, 연결을
  * 해제하면 다음 요청부터 그 폴더를 쓰지 않는다(그 폴더에서 돌던 작업도 멈춘다).
  * 폴더는 네이티브 선택 창으로만 더해진다 — 이 화면은 경로를 입력받지 않는다.
+ *
+ * 한 대화의 폴더는 기기 하나에 모인다. 다른 기기(다른 PC·휴대폰·웹 브라우저)에 폴더가 있는
+ * 대화면 그 기기와 폴더 이름을 보여 주고, [이 기기로 옮기기] 로 이 PC 폴더로 바꿀 수 있다.
+ * 이 PC 의 폴더는 웹·휴대폰에서 보낸 요청으로도 쓰인다 — 그때 여기에 알린다.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import type { ChatFolderView } from '../../../main/chat-folders';
+import type { ChatFolderRemote, ChatFolderView } from '../../../main/chat-folders';
+import type { RemoteFolderUse } from '@dex/engine/local-tools';
+import { folderOwnership } from '@dex/protocol/conversation-folders';
 import { xgen } from '../bridge';
 import { CloseIcon, FolderIcon, FolderOpenIcon, PlusIcon } from '../brand/icons';
 import { useModalDismiss } from './use-modal-dismiss';
@@ -15,9 +21,30 @@ export interface ChatFoldersState {
   folders: ChatFolderView[];
   busy: boolean;
   error: string;
+  /** 서버 사본(다른 기기의 폴더·켜짐 여부). 옛 서버면 state 가 null. */
+  remote: ChatFolderRemote | null;
+  /** 이 대화의 폴더가 다른 기기에 있는가. */
+  elsewhere: boolean;
+  /** 마지막으로 다른 화면에서 온 요청으로 조작한 것. */
+  remoteUse: RemoteFolderUse | null;
+  /** 방금(2분 안) 다른 화면에서 온 요청으로 조작했다 — 헤더 단추에 표시한다. */
+  remoteNow: boolean;
   add: () => Promise<void>;
   remove: (folderId: string) => Promise<void>;
   reveal: (folderId: string) => Promise<void>;
+  moveHere: () => Promise<void>;
+}
+
+/** 헤더 단추의 "다른 화면에서 사용 중" 표시가 남는 시간. */
+const REMOTE_NOW_MS = 2 * 60_000;
+
+/** "방금" · "3분 전" · "2시간 전". */
+export function sinceLabel(at: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 60) return '방금';
+  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
+  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
+  return `${Math.floor(s / 86400)}일 전`;
 }
 
 function message(error: unknown): string {
@@ -29,21 +56,53 @@ export function useChatFolders(interactionId: string): ChatFoldersState {
   const [folders, setFolders] = useState<ChatFolderView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [remote, setRemote] = useState<ChatFolderRemote | null>(null);
+  const [remoteUse, setRemoteUse] = useState<RemoteFolderUse | null>(null);
+  const [remoteNow, setRemoteNow] = useState(false);
+  useEffect(() => {
+    if (!remoteUse) return setRemoteNow(false);
+    const left = REMOTE_NOW_MS - (Date.now() - remoteUse.at);
+    setRemoteNow(left > 0);
+    if (left <= 0) return;
+    const timer = setTimeout(() => setRemoteNow(false), left);
+    return () => clearTimeout(timer);
+  }, [remoteUse]);
 
   useEffect(() => {
     let alive = true;
     setFolders([]);
     setError('');
+    setRemote(null);
+    setRemoteUse(null);
     void xgen.chatFolders
       .list(interactionId)
       .then((next) => alive && setFolders(next))
       .catch(() => undefined);
+    const readRemote = () =>
+      void xgen.chatFolders
+        .remote(interactionId)
+        .then((next) => {
+          if (!alive) return;
+          setRemote(next);
+          if (next.lastRemoteUse) setRemoteUse(next.lastRemoteUse);
+        })
+        .catch(() => undefined);
+    readRemote();
     const off = xgen.chatFolders.onChanged((id, next) => {
       if (id === interactionId) setFolders(next);
+    });
+    // 다른 기기가 연결·해제·옮기거나 기기가 켜지고 꺼지면(빈 id) 사본을 다시 읽는다.
+    const offRemote = xgen.chatFolders.onRemoteChanged((id) => {
+      if (!id || id === interactionId) readRemote();
+    });
+    const offUse = xgen.chatFolders.onRemoteUse((use) => {
+      if (use.interactionId === interactionId) setRemoteUse(use);
     });
     return () => {
       alive = false;
       off();
+      offRemote();
+      offUse();
     };
   }, [interactionId]);
 
@@ -60,11 +119,18 @@ export function useChatFolders(interactionId: string): ChatFoldersState {
     }
   }, []);
 
+  const elsewhere =
+    !folders.length && folderOwnership(remote?.state, remote?.deviceId ?? '') === 'other';
   return {
     folders,
     busy,
     error,
+    remote,
+    elsewhere,
+    remoteUse,
+    remoteNow,
     add: () => run(() => xgen.chatFolders.add(interactionId)),
+    moveHere: () => run(() => xgen.chatFolders.moveHere(interactionId)),
     remove: (folderId) => run(() => xgen.chatFolders.remove(interactionId, folderId)),
     reveal: (folderId) =>
       run(async () => {
@@ -74,24 +140,33 @@ export function useChatFolders(interactionId: string): ChatFoldersState {
   };
 }
 
-/** 채팅 헤더의 [폴더] 버튼 — 연결된 폴더 수를 함께 보인다. */
-export const FolderConnectButton: React.FC<{ count: number; onClick: () => void }> = ({
-  count,
-  onClick,
-}) => (
+/** 채팅 헤더의 [폴더] 버튼 — 연결된 폴더 수를 함께 보인다(다른 기기에 있으면 그 수와 기기). */
+export const FolderConnectButton: React.FC<{
+  count: number;
+  onClick: () => void;
+  /** 폴더가 다른 기기에 있으면 그 기기 이름. */
+  elsewhereName?: string;
+  /** 방금 다른 화면에서 온 요청으로 이 PC 폴더를 조작했다. */
+  remoteNow?: boolean;
+}> = ({ count, onClick, elsewhereName, remoteNow }) => (
   <button
     type="button"
-    className={`chat-hbtn folder-connect${count ? ' on' : ''}`}
+    className={`chat-hbtn folder-connect${count ? ' on' : ''}${elsewhereName ? ' elsewhere' : ''}`}
     onClick={onClick}
     title={
-      count
-        ? `이 대화에 연결된 폴더 ${count}개를 관리합니다`
-        : '이 대화에서 작업할 이 PC의 폴더를 연결합니다'
+      elsewhereName
+        ? `이 대화의 폴더 ${count}개는 ${elsewhereName}에 있습니다`
+        : remoteNow
+          ? '다른 화면에서 온 요청으로 방금 이 PC의 폴더를 사용했습니다'
+          : count
+            ? `이 대화에 연결된 폴더 ${count}개를 관리합니다`
+            : '이 대화에서 작업할 이 PC의 폴더를 연결합니다'
     }
     aria-haspopup="dialog"
   >
     <FolderIcon size={14} /> 폴더
     {count > 0 && <span className="folder-connect-count">{count}</span>}
+    {remoteNow && <span className="folder-connect-remote" aria-label="다른 화면에서 사용 중" />}
   </button>
 );
 
@@ -101,6 +176,7 @@ export const FolderConnectModal: React.FC<{
 }> = ({ state, onClose }) => {
   useModalDismiss(onClose);
   const { folders, busy, error } = state;
+  const device = state.remote?.state?.device ?? null;
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
@@ -118,6 +194,41 @@ export const FolderConnectModal: React.FC<{
         <p className="chat-folders-desc">
           연결한 폴더 안에서만 에이전트가 이 PC의 파일과 터미널을 사용합니다.
         </p>
+        {state.elsewhere && device ? (
+          <div className="chat-folders-elsewhere">
+            <p className="chat-folders-elsewhere-head">
+              <span>
+                이 대화의 폴더는 <strong>{device.name}</strong>에 있습니다
+              </span>
+              <span className={`chat-folders-device-state${device.online ? ' on' : ''}`}>
+                {device.online ? '켜짐' : '꺼짐'}
+              </span>
+            </p>
+            <div className="roots-list">
+              {(state.remote?.state?.folders ?? []).map((folder) => (
+                <div className="root-item chat-folder" key={folder.id}>
+                  <span className="root-icon">
+                    <FolderIcon size={15} />
+                  </span>
+                  <span className="chat-folder-text">
+                    <span className="chat-folder-name">{folder.name}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="small muted chat-folders-hint">
+              {device.online
+                ? '다른 화면에서 보낸 요청도 그 기기의 폴더를 사용합니다.'
+                : '그 기기가 켜지면 다시 사용할 수 있습니다.'}
+            </p>
+            <button className="root-add" disabled={busy} onClick={() => void state.moveHere()}>
+              <PlusIcon size={14} /> 이 기기로 옮기기
+            </button>
+            <p className="small muted chat-folders-hint">
+              옮기면 {device.name}의 연결은 해제되고 이 PC에서 고른 폴더를 사용합니다.
+            </p>
+          </div>
+        ) : (
         <div className="roots-list">
           {folders.length === 0 && (
             <div className="roots-empty small muted">연결된 폴더가 없습니다.</div>
@@ -160,10 +271,24 @@ export const FolderConnectModal: React.FC<{
             <PlusIcon size={14} /> 폴더 추가
           </button>
         </div>
+        )}
         {error && <p className="settings-hint warn">{error}</p>}
-        <p className="small muted chat-folders-hint">
-          연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않고, 그 폴더에서 실행 중이던 작업도 멈춥니다.
-        </p>
+        {state.remoteUse && folders.length > 0 && (
+          <p className="chat-folders-remote-use">
+            {state.remoteUse.originName}에서 온 요청으로 이 PC의 폴더를 사용했습니다 ·{' '}
+            {sinceLabel(state.remoteUse.at)}
+          </p>
+        )}
+        {!state.elsewhere && folders.length > 0 && (
+          <p className="small muted chat-folders-hint">
+            웹이나 휴대폰에서 보낸 요청도 이 PC가 켜져 있는 동안 이 폴더를 사용합니다.
+          </p>
+        )}
+        {!state.elsewhere && (
+          <p className="small muted chat-folders-hint">
+            연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않고, 그 폴더에서 실행 중이던 작업도 멈춥니다.
+          </p>
+        )}
       </div>
     </div>
   );

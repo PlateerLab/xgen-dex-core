@@ -122,7 +122,25 @@ export interface LocalToolCallContext {
   workflowId?: string;
   workflowName?: string;
   interactionId?: string;
+  /**
+   * 이 호출이 **다른 화면**(웹·휴대폰·다른 PC)에서 보낸 턴의 것인가. 대화의 폴더가 이 PC 에
+   * 있으면 어느 화면에서 보낸 턴이든 이 PC 의 폴더 도구를 쓴다 — 그때 서버가 알려 준다.
+   */
+  remote?: boolean;
+  /** 그 요청을 보낸 화면의 이름("웹", "집 PC · 데스크톱"…). */
+  originName?: string;
 }
+
+/** 다른 화면에서 온 요청으로 이 PC 의 폴더를 조작했다 — 앱이 사용자에게 보여 준다. */
+export interface RemoteFolderUse {
+  interactionId: string;
+  tool: string;
+  originName: string;
+  at: number;
+}
+
+/** 원격 턴이 부르면 안 되는 도구 — 이 PC 앞에 사람이 있어야 뜻이 있다(서버도 빼고, 여기서도 막는다). */
+export const PRESENCE_TOOLS: ReadonlySet<string> = new Set(['Open', 'Clipboard', 'Notify']);
 
 /** Normalize snake/camel-case caller identity from an authenticated bridge frame. */
 export function localToolCallContext(raw: unknown): LocalToolCallContext {
@@ -131,10 +149,14 @@ export function localToolCallContext(raw: unknown): LocalToolCallContext {
     const normalized = String(input ?? '').trim();
     return normalized || undefined;
   };
+  const remote = String(value.remote ?? '').trim();
   return {
     workflowId: text(value.workflow_id ?? value.workflowId),
     workflowName: text(value.workflow_name ?? value.workflowName),
     interactionId: text(value.interaction_id ?? value.interactionId),
+    ...(remote === '1' || remote === 'true'
+      ? { remote: true, originName: text(value.origin_device_name ?? value.originName) ?? '다른 기기' }
+      : {}),
   };
 }
 
@@ -1095,6 +1117,13 @@ export class LocalToolProvider {
   private delegate: LocalToolDelegate | null = null;
   /** main 의 공통 NotificationCenter. 주입해 Node 단위 테스트는 Electron 을 요구하지 않는다. */
   private notificationHandler: LocalNotificationHandler | null = null;
+  private remoteUseListeners = new Set<(use: RemoteFolderUse) => void>();
+
+  /** 다른 화면에서 온 요청으로 폴더를 조작할 때마다 부른다. 해지 함수를 돌려준다. */
+  onRemoteUse(listener: (use: RemoteFolderUse) => void): () => void {
+    this.remoteUseListeners.add(listener);
+    return () => this.remoteUseListeners.delete(listener);
+  }
   /** 로컬 MCP 자기관리(McpAddServer/McpRemoveServer/McpListServers). 로컬 MCP 가 켜져
    *  있을 때만 도구를 광고한다 — 이 delegate 자신이 게이트를 판단한다. */
   private mcpAdmin: LocalToolDelegate | null = null;
@@ -1176,7 +1205,27 @@ export class LocalToolProvider {
     if (this.delegate?.owns(tool)) return this.delegate.callTool(tool, args, context);
     if (this.mcpAdmin?.owns(tool)) return this.mcpAdmin.callTool(tool, args);
     if (!FOLDER_TOOL_NAMES.has(tool)) throw new Error(`unknown local tool: ${tool}`);
+    if (context?.remote && PRESENCE_TOOLS.has(tool)) {
+      throw new Error(
+        `${tool} 은(는) 이 PC 앞에서 보낸 요청에서만 쓸 수 있습니다 — 이 요청은 ${context.originName || '다른 기기'}에서 왔습니다.`,
+      );
+    }
     const scope = this.scopeFor(context);
+    if (context?.remote && context.interactionId) {
+      const use: RemoteFolderUse = {
+        interactionId: context.interactionId,
+        tool,
+        originName: context.originName || '다른 기기',
+        at: Date.now(),
+      };
+      for (const listener of this.remoteUseListeners) {
+        try {
+          listener(use);
+        } catch {
+          /* 표시 실패가 도구를 막지 않는다 */
+        }
+      }
+    }
     if (tool === SHELL_TOOL) return this.shell(args, scope);
     if (tool === SHELL_JOB_TOOL) return this.shellJob(args, scope);
     if (tool === OPEN_TOOL) return this.open(args, scope);

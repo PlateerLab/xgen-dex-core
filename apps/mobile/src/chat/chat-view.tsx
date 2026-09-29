@@ -51,7 +51,7 @@ import { notifyAnswer } from './answer-notice';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
 import { FolderPill, FolderSheet } from './folder-sheet';
-import { folderStore, useChatFolders } from '../lib/folder-store';
+import { folderStore, useChatFolderRemote, useChatFolders } from '../lib/folder-store';
 import { toWire } from '../lib/mobile-folders';
 import {
   appendAssistantText,
@@ -143,6 +143,7 @@ export function ChatView({
   const [convSheet, setConvSheet] = useState(false);
   // 이 대화에 연결된 휴대폰 폴더 — 에이전트의 파일 도구가 닿는 범위.
   const folders = useChatFolders(interactionId);
+  const folderRemote = useChatFolderRemote(interactionId);
   const [folderSheet, setFolderSheet] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [wsState, setWsState] = useState<ChatWsState>('closed');
@@ -219,6 +220,8 @@ export function ChatView({
       onState: setWsState,
       wsFactory: client.wsFactory,
       log: diagLog,
+      // 이 대화의 폴더가 다른 기기로 옮겨 가거나 그 기기가 바뀌었다.
+      onFolders: (data) => folderStore.serverFolders(interactionId, data),
       // 다른 기기에서 시작한 턴이 도는가 — 그동안 작성기를 잠그고 [정지] 를 연다.
       onRunning: (isRunning) => {
         if (isRunning && !runningRef.current) runningElsewhereRef.current = true;
@@ -568,7 +571,11 @@ export function ChatView({
           </Text>
           <Text style={{ color: p.muted, fontSize: 11 }}>▾</Text>
         </Pressable>
-        <FolderPill count={folders.length} onPress={() => setFolderSheet(true)} />
+        <FolderPill
+          count={folderRemote.elsewhere ? (folderRemote.state?.folders.length ?? 0) : folders.length}
+          elsewhereName={folderRemote.elsewhere ? folderRemote.state?.device?.name : undefined}
+          onPress={() => setFolderSheet(true)}
+        />
         <Pressable
           onPress={() => onOpenChat(agent)}
           hitSlop={8}

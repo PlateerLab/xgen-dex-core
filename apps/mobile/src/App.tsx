@@ -40,12 +40,14 @@ import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
   advertiseMobileTools,
   callMobileTool,
+  FOLDER_TOOLS,
+  PRESENCE_TOOLS,
   TOOL_GROUPS,
   type PermissionState,
   type ToolGroup,
 } from './lib/mobile-tools';
 import { rnPort } from './lib/rn-port';
-import { folderFs, folderStore, useFolderAccount } from './lib/folder-store';
+import { folderFs, folderStore, setFolderServer, useFolderAccount } from './lib/folder-store';
 import { ensureDeviceId, cachedDeviceId, deviceName, devicePlatform } from './lib/device';
 import { friendlyError } from './lib/errors';
 import { diagEntries, diagLog, onDiag } from './lib/diag';
@@ -107,6 +109,10 @@ export default function App(): React.ReactElement {
   const [client, setClient] = useState<XgenMobileClient | null>(null);
   // 대화별 폴더 연결은 계정마다 따로 — 로그인한 계정의 장부를 연다.
   useFolderAccount(client ? `${client.session.serverUrl}|${client.session.userId}` : null);
+  // 폴더 연결을 서버에도 올린다 — 웹·PC 에서 이 대화를 열어도 이 휴대폰의 폴더가 보이고 쓰인다.
+  useEffect(() => {
+    setFolderServer(client ? client.api.conversationFolders : null);
+  }, [client]);
   const [section, setSection] = useState<Section>('agents');
   const [drawer, setDrawer] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ state: 'off', toolCount: 0 });
@@ -239,11 +245,29 @@ export default function App(): React.ReactElement {
       devicePlatform: devicePlatform(),
       catalog: () => advertiseMobileTools(groupsRef.current),
       // 파일 도구는 그 대화에 연결된 폴더 안에서만 — 호출마다 장부에서 찾는다.
-      call: async (tool, args, context) =>
-        callMobileTool(rnPort, tool, args, groupsRef.current, {
-          folders: await folderStore.listReady(context.interactionId),
+      call: async (tool, args, context) => {
+        const folders = await folderStore.listReady(context.interactionId);
+        // 다른 화면에서 보낸 턴이 이 휴대폰의 폴더를 쓴다 — 시트가 "다른 기기에서 온 요청" 을 보여 준다.
+        if (
+          context.remote &&
+          context.interactionId &&
+          FOLDER_TOOLS.has(tool) &&
+          !PRESENCE_TOOLS.has(tool) &&
+          folders.length
+        ) {
+          folderStore.remoteUsed({
+            interactionId: context.interactionId,
+            toolName: tool,
+            originName: context.originName || '다른 기기',
+            at: Date.now(),
+          });
+        }
+        return callMobileTool(rnPort, tool, args, groupsRef.current, {
+          folders,
           fs: folderFs,
-        }),
+          ...(context.remote ? { remoteFrom: context.originName ?? '' } : {}),
+        });
+      },
       onStatus: setBridgeStatus,
       wsFactory: client.wsFactory,
       log: diagLog,

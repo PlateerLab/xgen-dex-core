@@ -182,6 +182,27 @@ test('폴더는 대화마다 따로다 — 다른 대화의 폴더에는 닿지 
   );
 });
 
+test('다른 화면에서 온 요청은 표식을 읽고, 이 PC 앞에 있어야 하는 도구는 거부하고, 조작을 알린다', async () => {
+  assert.deepEqual(
+    localToolCallContext({ interaction_id: 'chat-a', remote: '1', origin_device_name: '웹' }),
+    { workflowId: undefined, workflowName: undefined, interactionId: 'chat-a', remote: true, originName: '웹' },
+  );
+  const dir = await folder();
+  await writeFile(join(dir, 'r.txt'), 'remote read');
+  const { p } = provider({ 'chat-a': [dir] });
+  const uses: { tool: string; originName: string }[] = [];
+  const off = p.onRemoteUse((use) => uses.push({ tool: use.tool, originName: use.originName }));
+  const remote = { interactionId: 'chat-a', remote: true, originName: '웹' };
+  const read = await p.callTool('ReadFile', { path: 'r.txt' }, remote);
+  assert.match(read.content[0].text, /remote read/);
+  await assert.rejects(() => p.callTool('Open', { target: 'r.txt' }, remote), /이 PC 앞에서/);
+  await assert.rejects(() => p.callTool('Clipboard', { action: 'read' }, remote), /이 PC 앞에서/);
+  assert.deepEqual(uses, [{ tool: 'ReadFile', originName: '웹' }]);
+  await p.callTool('ReadFile', { path: 'r.txt' }, inChat('chat-a'));
+  assert.equal(uses.length, 1, '이 PC 에서 보낸 요청은 알리지 않는다');
+  off();
+});
+
 test('연결을 해제하면 다음 호출부터 거부한다', async () => {
   const dir = await folder();
   await writeFile(join(dir, 'n.txt'), 'note');

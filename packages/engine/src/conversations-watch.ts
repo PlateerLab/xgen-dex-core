@@ -28,6 +28,8 @@ export interface ConversationListEvent {
   interactionId: string;
   workflowId: string;
   running?: boolean;
+  /** 프레임 원문 — 목록 밖의 소식(대화 폴더 `folders`, 기기 `devices`)이 모양을 싣는다. */
+  data?: Record<string, unknown>;
 }
 
 export class ConversationsWatch {
@@ -115,6 +117,7 @@ export class ConversationsWatch {
         interactionId: String(d.interaction_id ?? ''),
         workflowId: String(d.workflow_id ?? ''),
         ...(typeof d.running === 'boolean' ? { running: d.running } : {}),
+        ...(kind === 'folders' || kind === 'devices' ? { data: d } : {}),
       });
     });
 

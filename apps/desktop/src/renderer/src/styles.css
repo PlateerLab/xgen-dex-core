@@ -4218,6 +4218,39 @@ button {
   margin: 10px 0 0;
   line-height: 1.5;
 }
+/* 이 대화의 폴더가 다른 기기에 있을 때 — 그 기기와 폴더 이름, [이 기기로 옮기기] */
+.chat-folders-elsewhere-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.chat-folders-device-state {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.chat-folders-device-state.on {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.chat-folders-elsewhere .root-add {
+  margin-top: 10px;
+}
+/* 다른 화면에서 온 요청으로 이 PC 폴더를 썼다는 한 줄 */
+.chat-folders-remote-use {
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
 .chat-folder-text {
   flex: 1;
   min-width: 0;

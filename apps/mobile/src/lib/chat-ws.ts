@@ -166,6 +166,8 @@ export interface ChatWsOptions {
    * 아직 한 글자도 안 나왔다".
    */
   onLiveTurn?: (live: LiveTurnSnapshot) => void;
+  /** 이 대화의 폴더가 바뀌었다(어느 기기에 있는가·폴더 이름) — 서버 사본의 알림 원문. */
+  onFolders?: (data: Record<string, unknown>) => void;
   /** 이 기기의 커넥터 슬롯 키 — 실행에 client_device_id 로 실린다. */
   clientDeviceId?: string;
 }
@@ -339,6 +341,11 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       try {
         frame = JSON.parse(String(evt.data));
       } catch {
+        return;
+      }
+      if (frame.type === 'folders') {
+        // 이 대화의 폴더가 바뀌었다(다른 기기가 연결·해제·옮김). 턴 번호가 없는 소식이다.
+        opts.onFolders?.(frame.data ?? {});
         return;
       }
       if (frame.type === 'heartbeat') {

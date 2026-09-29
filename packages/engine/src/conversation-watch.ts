@@ -92,6 +92,11 @@ export class ConversationWatchHub {
     ) => void,
     /** 다른 화면이 돌리는 턴 — 시작·진행·종료·구멍. */
     private onPeer?: (event: PeerTurnEvent) => void,
+    /**
+     * 이 대화의 모델이 바뀌었다(어느 화면에서든). `data.current` 가 새 지금 모델이다
+     * (@dex/protocol applyModelNotice). 턴 번호가 없는 소식이라 간격 감지와 섞지 않는다.
+     */
+    private onModel?: (interactionId: string, data: Record<string, unknown>) => void,
   ) {}
 
   setDeps(deps: WatchDeps): void {
@@ -235,6 +240,10 @@ export class ConversationWatchHub {
             data: (d as { data?: unknown }).data,
           });
         }
+        return;
+      }
+      if (frame?.type === 'model') {
+        this.onModel?.(interactionId, frame.data ?? {});
         return;
       }
       if (frame?.type === 'unsupported') {

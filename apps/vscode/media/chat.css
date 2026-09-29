@@ -801,21 +801,15 @@ button:disabled {
 }
 
 .copy-button {
-  width: 23px;
-  height: 20px;
+  display: inline-grid;
+  width: 24px;
+  height: 22px;
   padding: 0;
+  place-items: center;
+  border-radius: 5px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
-  font-family: var(--vscode-editor-font-family);
-  font-size: 11px;
-  opacity: 0;
-  transition: opacity 120ms ease, background-color 120ms ease;
-}
-
-.message-body:hover .copy-button,
-.message-body:focus-within .copy-button,
-.code-block .copy-button {
-  opacity: 1;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
 .copy-button:hover {
@@ -1138,8 +1132,97 @@ textarea:disabled {
 
 .hint {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--vscode-descriptionForeground);
   font-size: 9px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 모델 칩 — "제공자: 모델". 누르면 VS Code 빠른 선택이 뜬다. 좁으면 이름이 말줄임된다. */
+.model-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 62%;
+  margin-right: auto;
+  height: 24px;
+  padding: 0 7px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.model-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+}
+.model-chip:disabled {
+  cursor: default;
+}
+.model-chip.locked,
+.model-chip.saving {
+  color: var(--vscode-descriptionForeground);
+}
+.model-chip-icon,
+.model-chip-chevron {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  color: var(--vscode-descriptionForeground);
+}
+.model-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 말풍선(data-tip) — 아이콘만 있는 버튼의 이름. 브라우저 기본 title 말풍선 대신
+ * VS Code 호버 위젯 색을 쓴다. 잠깐 머물러야 뜨고, 키보드 초점에도 뜬다.
+ */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 6px);
+  left: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--vscode-editorHoverWidget-border, var(--dex-border));
+  border-radius: 4px;
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 22%, transparent);
+  content: attr(data-tip);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 90ms ease 0ms, visibility 0ms linear 90ms;
+}
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 90ms ease 350ms, visibility 0ms linear 350ms;
+}
+/* 오른쪽 끝·위가 잘리는 자리(말풍선 머리줄, 코드 블록 머리줄)는 아래로, 오른쪽 맞춤. */
+.message-header [data-tip]::after,
+.code-header [data-tip]::after {
+  top: calc(100% + 4px);
+  right: 0;
+  bottom: auto;
+  left: auto;
 }
 
 kbd {
@@ -1777,7 +1860,7 @@ kbd {
   }
 }
 
-/* ── 답변 푸터 한 줄 — 좌: 복사(호버), 우: 전체 로그(상시). 데스크톱과 동일 배치 ── */
+/* ── 답변 푸터 한 줄 — 좌: 복사(아이콘, 상시), 우: 전체 로그(상시). 데스크톱과 동일 배치 ── */
 .msg-footer {
   display: flex;
   align-items: center;
@@ -1787,16 +1870,6 @@ kbd {
 .msg-footer .msg-actions {
   display: flex;
   gap: 4px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.message:hover .msg-footer .msg-actions,
-.msg-footer .msg-actions:focus-within {
-  opacity: 1;
-}
-.msg-footer .copy-button.inline {
-  position: static;
-  opacity: 1;
 }
 .msg-footer .toollog-open {
   margin-left: auto;

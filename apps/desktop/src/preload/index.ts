@@ -58,6 +58,7 @@ import type {
   IdeFailure,
 } from '@dex/protocol';
 import type { ChatFeedback } from '@dex/protocol/feedback';
+import type { ConversationModelState } from '@dex/protocol/conversation-model';
 import type { ContentFilterResult } from '@dex/protocol/chat-guardrails';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
@@ -362,6 +363,26 @@ const api = {
       ipcRenderer.invoke(CHANNELS.agentTaskRuns, wf, sessionId),
     taskOutput: (wf: string, runId: string): Promise<TaskOutput> =>
       ipcRenderer.invoke(CHANNELS.agentTaskOutput, wf, runId),
+    /** 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것·잠금 여부. */
+    conversationModel: (iid: string, wf: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationModelGet, iid, wf),
+    /** 이 대화의 모델을 바꾼다 — 다음 답변부터. */
+    setConversationModel: (
+      iid: string,
+      wf: string,
+      choice: { provider: string; model: string },
+    ): Promise<ConversationModelState> => ipcRenderer.invoke(CHANNELS.conversationModelSet, iid, wf, choice),
+    /** 에이전트의 모델로 되돌린다. */
+    resetConversationModel: (iid: string, wf: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationModelReset, iid, wf),
+    /** 다른 화면이 이 대화의 모델을 바꿨다. */
+    onConversationModelChanged: (
+      cb: (interactionId: string, notice: Record<string, unknown>) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, interactionId: string, notice: Record<string, unknown>) => cb(interactionId, notice);
+      ipcRenderer.on(CHANNELS.conversationModelChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.conversationModelChanged, h);
+    },
     basicInfo: (wf: string): Promise<AgentBasicInfo> =>
       ipcRenderer.invoke(CHANNELS.agentBasicInfo, wf),
     toolsList: (wf: string): Promise<ToolsResult> =>

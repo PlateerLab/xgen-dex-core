@@ -1,4 +1,5 @@
 import type { ProfileSummary } from '@dex/engine';
+import type { ConversationModelState } from '@dex/protocol';
 import type {
   AgentCreateOptions,
   AgentListQuery,
@@ -92,6 +93,19 @@ export interface TuiEngine {
         running: boolean;
         live?: { text: string; events: unknown[] } | null;
       }) => void)
+    | null;
+  /** 이 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것 (선택 구현, Ctrl+O). */
+  conversationModel?(workflowId: string, interactionId: string, profile?: string): Promise<ConversationModelState>;
+  /** 이 대화의 모델을 바꾼다 — 다음 답변부터, 세션 재시작 없음. */
+  setConversationModel?(
+    workflowId: string,
+    interactionId: string,
+    choice: { provider: string; model: string },
+    profile?: string,
+  ): Promise<ConversationModelState>;
+  /** 다른 화면(웹·앱·VS Code)에서 이 대화의 모델을 바꿨다. */
+  onConversationModel?:
+    | ((event: { interactionId: string; notice: Record<string, unknown> }) => void)
     | null;
 }
 

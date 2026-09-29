@@ -23,6 +23,12 @@ function json(response: import('node:http').ServerResponse, status: number, valu
   response.end(JSON.stringify(value));
 }
 
+const MODEL_CHOICES = [
+  { provider: 'anthropic', model: 'claude-sonnet-4-5', name: 'Sonnet 4.5', label: 'Anthropic: Sonnet 4.5', group: 'Anthropic' },
+  { provider: 'anthropic', model: 'claude-haiku-4-5', name: 'Haiku 4.5', label: 'Anthropic: Haiku 4.5', group: 'Anthropic' },
+  { provider: 'openai', model: 'gpt-4o', name: 'GPT-4o', label: 'OpenAI: GPT-4o', group: 'OpenAI' },
+];
+
 export async function startMockXgen(): Promise<MockXgen> {
   const passwordHash = createHash('sha256').update('pw123').digest('hex');
   const requests = {
@@ -33,6 +39,7 @@ export async function startMockXgen(): Promise<MockXgen> {
   };
   const running = new Set<string>();
   const stopped: string[] = [];
+  const conversationModels = new Map<string, (typeof MODEL_CHOICES)[number]>();
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://mock');
@@ -177,6 +184,28 @@ export async function startMockXgen(): Promise<MockXgen> {
         stopped.push(id);
         running.delete(id);
         json(response, 200, { stopped: true, interaction_id: id });
+        return;
+      }
+      // 대화의 모델 — 서버가 이름("제공자: 모델")과 순서(지금 모델이 맨 앞)를 정한다.
+      const modelPath = /^\/api\/agentflow\/conversations\/([^/]+)\/model$/.exec(url.pathname);
+      if (modelPath) {
+        const id = decodeURIComponent(modelPath[1]!);
+        if (request.method === 'PUT') {
+          const body = await bodyOf(request);
+          const picked = MODEL_CHOICES.find((c) => c.provider === body.provider && c.model === body.model);
+          if (!picked) return json(response, 400, { detail: '고를 수 없는 모델입니다' });
+          conversationModels.set(id, picked);
+        } else if (request.method === 'DELETE') {
+          conversationModels.delete(id);
+        }
+        const current = conversationModels.get(id) ?? MODEL_CHOICES[0]!;
+        json(response, 200, {
+          supported: true,
+          locked: false,
+          current: { ...current, source: conversationModels.has(id) ? 'conversation' : 'agent' },
+          agent: { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Anthropic: Sonnet 4.5' },
+          choices: [current, ...MODEL_CHOICES.filter((c) => c !== current)],
+        });
         return;
       }
       if (url.pathname === '/api/chat/io-logs' && request.method === 'GET') {

@@ -358,6 +358,28 @@ export const StarIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
+/** 채운 별 — 평가를 남긴 답변. */
+export const StarFilledIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className} fill="currentColor">
+    <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" />
+  </svg>
+);
+
+/** 확인 — 복사됨 등 끝난 일. */
+export const CheckIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M5 12.5l4.5 4.5L19 7.5" />
+  </svg>
+);
+
+/** 모델 — 칩(반도체) 모양. */
+export const ModelIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <rect x="7" y="7" width="10" height="10" rx="2" />
+    <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
+  </svg>
+);
+
 /** 더 보기 — 가로 점 셋. */
 export const MoreIcon: React.FC<P> = ({ size = 16, className }) => (
   <svg {...base(size)} className={className}>

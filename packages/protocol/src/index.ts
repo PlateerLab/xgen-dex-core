@@ -23,6 +23,7 @@ import { AgentDataApi } from './agent-data';
 import { FilestoreApi } from './filestore';
 import { ConnectorDevicesApi } from './connector-devices';
 import { ConversationFoldersApi } from './conversation-folders';
+import { ConversationModelApi } from './conversation-model';
 import { AgentsApi } from './agents';
 import { AuthApi } from './auth';
 import { AvatarsApi } from './avatars';
@@ -71,6 +72,8 @@ export class XgenClient {
   readonly connectorDevices: ConnectorDevicesApi;
   /** 대화의 폴더 — 서버 사본(어느 화면에서든 보이고 쓰인다). */
   readonly conversationFolders: ConversationFoldersApi;
+  /** 대화의 모델 — 채팅 입력창 옆 선택기(다음 답변부터, 세션 재시작 없음). */
+  readonly conversationModel: ConversationModelApi;
   /** 채팅의 [IDE] 보기 — 편집기·터미널·찾기·소스 제어. */
   readonly ide: IdeApi;
 
@@ -104,6 +107,7 @@ export class XgenClient {
     this.filestore = new FilestoreApi(this.http);
     this.connectorDevices = new ConnectorDevicesApi(this.http);
     this.conversationFolders = new ConversationFoldersApi(this.http);
+    this.conversationModel = new ConversationModelApi(this.http);
     this.ide = new IdeApi(this.http);
   }
 
@@ -261,6 +265,7 @@ export * from './agent-trigger';
 export * from './connector-devices';
 export * from './conversation-folders';
 export * from './conversation-folder-sync';
+export * from './conversation-model';
 export * from './notifications';
 // 도구 과정 표시 규칙(칩 단계 · 호출 한 건 한 행 · 건수) — 앱과 웹이 같은 답을 내도록.
 export * from './tool-activity';

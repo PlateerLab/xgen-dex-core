@@ -6603,42 +6603,77 @@ button.sm {
 /* ── 답변에 딸린 행동 (복사 / Teams로 공유) ────────────────────── */
 .msg-actions {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 2px;
   margin-top: 4px;
-  /* 평소에는 물러나 있다가 그 답변에 다가가면 드러난다 — 흐름을 읽는 동안
-     버튼이 시선을 끌면 안 된다. */
-  opacity: 0;
-  transition: opacity 0.12s ease;
 }
-.msg-row:hover .msg-actions,
-.msg-actions:focus-within {
-  opacity: 1;
-}
+/* 답변 아래 단추 — 늘 보이는 아이콘. 이름은 마우스를 올리면 툴팁으로(Tooltip.tsx). */
 .msg-actions button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-md);
-  background: var(--panel);
+  background: none;
   color: var(--muted);
-  font-size: 11px;
   cursor: pointer;
 }
-.msg-actions button:hover {
+.msg-actions button:hover,
+.msg-actions button:focus-visible {
   color: var(--text);
-  border-color: var(--primary-soft-border);
-  background: var(--primary-soft);
+  background: var(--panel-2);
+}
+.msg-actions button.rated {
+  color: var(--primary-end);
+}
+
+/* ── 툴팁 — 아이콘 단추의 이름 ─────────────────────────────────── */
+.dex-tip-anchor {
+  display: inline-flex;
+}
+.dex-tip {
+  position: fixed;
+  z-index: 10000;
+  max-width: 280px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #1d1f23;
+  color: #f4f5f7;
+  font-size: 11.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  animation: dex-tip-in 0.1s ease-out;
+}
+:root[data-theme='dark'] .dex-tip {
+  background: #f4f5f7;
+  color: #1d1f23;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .dex-tip {
+    background: #f4f5f7;
+    color: #1d1f23;
+  }
+}
+@keyframes dex-tip-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /* ── 컨텍스트 칩 (composer 위) ────────────────────────────────────
    켜져 있다는 사실이 항상 보여야 한다 — 화면 캡처 토글과 같은 원칙. */
 .teams-ctx {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 6px;
+  margin: 0;
   padding: 5px 8px;
   border: 1px solid var(--primary-soft-border);
   border-radius: var(--radius-md);
@@ -6699,7 +6734,9 @@ button.sm {
   align-items: center;
   gap: 4px;
   align-self: flex-start;
-  margin: 0 0 6px;
+  flex: none;
+  white-space: nowrap;
+  margin: 0;
   padding: 3px 8px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
@@ -8868,4 +8905,162 @@ button.sm {
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.5;
+}
+
+/* ── 입력창 위 도구 줄 — [Teams 대화 붙이기] · 모델 선택기 ───────── */
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 6px;
+}
+
+/* ── 모델 선택기 — "제공자: 모델", 위로 펼친다 ─────────────────── */
+.model-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 260px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.model-chip:hover:not(:disabled),
+.model-chip.open {
+  color: var(--text);
+  border-color: var(--primary-soft-border);
+  background: var(--primary-soft);
+}
+.model-chip:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.model-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-picker-error {
+  color: var(--error);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.model-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  max-height: 360px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+.model-menu-search {
+  margin: 8px 8px 4px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.model-menu-search:focus {
+  border-color: var(--primary-end);
+}
+.model-menu-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+.model-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.model-opt:hover,
+.model-opt:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.model-opt.current {
+  font-weight: 600;
+}
+.model-opt-check {
+  display: inline-flex;
+  width: 14px;
+  flex: none;
+  color: var(--primary-end);
+}
+.model-opt-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-opt-tag {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-end);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.model-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.model-menu-empty {
+  padding: 12px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-menu-note {
+  flex: none;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+}
+/* 좁은 대화 칸(IDE 오른쪽)에서는 칩이 줄을 넘지 않게 줄인다. */
+@container chat-input (max-width: 360px) {
+  .model-chip {
+    max-width: 170px;
+  }
 }

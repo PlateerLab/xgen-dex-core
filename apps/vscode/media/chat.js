@@ -1,6 +1,32 @@
 (function () {
   const vscode = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
+  // 아이콘은 SVG 로 그린다(글자 기호는 글꼴마다 모양이 달라진다). 문자열 HTML 없이 노드로 만든다.
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const ICON_PATHS = {
+    copy: ['M5.5 5.5h7v7h-7z', 'M3.5 10.5v-7h7'],
+    check: ['M3.5 8.5l3 3 6-7'],
+    chevron: ['M4.5 6.5l3.5 3.5 3.5-3.5'],
+    model: ['M5 5h6v6H5z', 'M6.5 2.5v2M9.5 2.5v2M6.5 11.5v2M9.5 11.5v2M2.5 6.5h2M2.5 9.5h2M11.5 6.5h2M11.5 9.5h2'],
+  };
+  const icon = (name, size = 14) => {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.5');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    for (const d of ICON_PATHS[name] || []) {
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', d);
+      svg.append(path);
+    }
+    return svg;
+  };
   /** 경로의 마지막 이름 — Windows·POSIX 구분자 모두. */
   const folderName = (path) => {
     const parts = String(path || '').split(/[\\/]+/).filter(Boolean);
@@ -43,6 +69,10 @@
     input: byId('input'),
     attachments: byId('attachments'),
     attach: byId('attach'),
+    modelChip: byId('model-chip'),
+    modelIcon: byId('model-icon'),
+    modelLabel: byId('model-label'),
+    modelChevron: byId('model-chevron'),
     send: byId('send'),
     cancel: byId('cancel'),
     settingsBack: byId('settings-back'),
@@ -138,22 +168,28 @@
     elements.attachments.classList.toggle('hidden', !(state.attachments || []).length);
   }
 
+  /**
+   * 복사 버튼 — 아이콘만, 늘 보인다. 이름은 마우스를 올리면 뜨는 말풍선(data-tip)으로.
+   * 브라우저 기본 title 말풍선은 VS Code 테마를 따르지 않아 쓰지 않는다.
+   */
   function copyButton(text, label) {
     const button = document.createElement('button');
     button.className = 'copy-button';
     button.type = 'button';
-    button.title = label;
+    button.dataset.tip = label;
     button.setAttribute('aria-label', label);
-    button.textContent = '⧉';
+    button.append(icon('copy', 13));
     button.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(text);
-        button.textContent = '✓';
+        button.replaceChildren(icon('check', 13));
+        button.dataset.tip = '복사했습니다';
       } catch {
-        button.textContent = '!';
+        button.dataset.tip = '복사하지 못했습니다';
       }
       window.setTimeout(() => {
-        button.textContent = '⧉';
+        button.replaceChildren(icon('copy', 13));
+        button.dataset.tip = label;
       }, 1200);
     });
     return button;
@@ -473,7 +509,7 @@
     else if (item.role === 'assistant') renderRichText(content, item.text);
     else content.textContent = item.text;
     body.append(header, content);
-    // 답변 푸터 한 줄 — 좌: 복사(호버에만 드러남), 우: 전체 로그(상시).
+    // 답변 푸터 한 줄 — 좌: 복사(아이콘, 상시), 우: 전체 로그(상시).
     // 데스크톱 앱과 같은 배치 계약이다.
     if (item.role === 'assistant' && (item.text || (item.tools && item.tools.length))) {
       const footer = document.createElement('div');
@@ -716,11 +752,29 @@
     elements.input.placeholder = `${agent.workflowName}에게 메시지 보내기`;
     elements.send.disabled = !!state.running;
     elements.attach.disabled = !!state.running;
+    renderModel();
     renderAttachments();
     elements.changeAgent.disabled = !!state.running;
     elements.cancel.classList.toggle('hidden', !state.running);
     if (wasNearBottom) elements.messages.scrollTop = elements.messages.scrollHeight;
     if (agentChanged && !state.running) window.setTimeout(() => elements.input.focus(), 0);
+  }
+
+  /** 입력창 아래 모델 칩 — "제공자: 모델". 누르면 VS Code 빠른 선택으로 고른다. */
+  function renderModel() {
+    const model = state.model;
+    elements.modelChip.classList.toggle('hidden', !model);
+    if (!model) return;
+    if (!elements.modelIcon.firstChild) elements.modelIcon.append(icon('model', 12));
+    elements.modelLabel.textContent = model.label;
+    elements.modelChevron.replaceChildren(...(model.locked ? [] : [icon('chevron', 11)]));
+    elements.modelChip.disabled = !!model.locked || !!model.saving;
+    elements.modelChip.classList.toggle('locked', !!model.locked);
+    elements.modelChip.classList.toggle('saving', !!model.saving);
+    elements.modelChip.setAttribute('aria-label', `모델: ${model.label}`);
+    elements.modelChip.dataset.tip = model.locked
+      ? '고정된 에이전트는 모델을 바꿀 수 없습니다'
+      : '이 대화의 모델, 다음 답변부터 적용됩니다';
   }
 
   function roleChip(label) {
@@ -882,6 +936,7 @@
   elements.chatSettings.addEventListener('click', () => post('showSettings'));
   elements.send.addEventListener('click', send);
   elements.attach.addEventListener('click', () => post('attach'));
+  elements.modelChip.addEventListener('click', () => post('pickModel'));
   elements.cancel.addEventListener('click', () => post('cancel'));
   elements.input.addEventListener('compositionstart', () => {
     composing = true;

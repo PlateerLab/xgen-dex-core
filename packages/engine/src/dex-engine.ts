@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import type { ConnectorDevice } from '@dex/protocol';
+import type { ConnectorDevice, ConversationModelState } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
@@ -272,6 +272,13 @@ export class DexEngine {
   onConversationRunning:
     | ((event: { interactionId: string; running: boolean; live?: LiveTurnSnapshot | null }) => void)
     | null = null;
+  /**
+   * 호스트가 설정 — 감시 중인 대화의 모델이 바뀌었다(다른 화면에서 골랐다).
+   * `notice.current` 가 새 지금 모델이다(@dex/protocol applyModelNotice).
+   */
+  onConversationModel:
+    | ((event: { interactionId: string; notice: Record<string, unknown> }) => void)
+    | null = null;
   private conversationHub: ConversationWatchHub | null = null;
 
   /** 대화 소켓 감시 시작 — Job/sub-agent 트리거의 반응 턴이 실시간으로
@@ -290,6 +297,10 @@ export class DexEngine {
         },
         (id, running, live) => {
           this.onConversationRunning?.({ interactionId: id, running, live });
+        },
+        undefined,
+        (id, notice) => {
+          this.onConversationModel?.({ interactionId: id, notice });
         },
       );
     }
@@ -471,6 +482,28 @@ export class DexEngine {
    */
   async agentCreateOptions(requestedProfile?: string): Promise<AgentCreateOptions> {
     return this.withAuthRetry(requestedProfile, (client) => client.agents.createOptions());
+  }
+
+  /** 이 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것·잠금 여부(@dex/protocol conversation-model). */
+  async conversationModel(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.get(interactionId, workflowId));
+  }
+
+  /** 이 대화의 모델을 바꾼다 — 다음 답변부터(세션 재시작 없음). */
+  async setConversationModel(
+    workflowId: string,
+    interactionId: string,
+    choice: { provider: string; model: string },
+    requestedProfile?: string,
+  ): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.conversationModel.set(interactionId, workflowId, choice),
+    );
+  }
+
+  /** 에이전트의 모델로 되돌린다. */
+  async resetConversationModel(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.reset(interactionId, workflowId));
   }
 
   /**

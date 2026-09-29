@@ -1690,6 +1690,13 @@ const conversationsWatch = new ConversationsWatch((event) => {
     notifyFolderRemote('');
     return;
   }
+  if (event.kind === 'model') {
+    // 다른 화면(웹·휴대폰·다른 PC)이 이 대화의 모델을 바꿨다 — 선택기가 따라간다.
+    for (const win of BrowserWindow.getAllWindows()) {
+      safeSend(win, CHANNELS.conversationModelChanged, event.interactionId, event.data ?? {});
+    }
+    return;
+  }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(CHANNELS.conversationsChanged, event);
   }
@@ -2456,6 +2463,21 @@ ipcMain.handle(CHANNELS.agentTaskOutput, (_e, wf: string, runId: string) =>
   getClient().agentData.taskOutput(wf, runId),
 );
 ipcMain.handle(CHANNELS.agentBasicInfo, (_e, wf: string) => getClient().agentData.basicInfo(wf));
+// 대화의 모델 — 채팅 입력창 옆 선택기. 서버가 들고 있다가 다음 턴 시작에 바꿔 끼운다.
+ipcMain.handle(CHANNELS.conversationModelGet, (_e, iid: string, wf: string) =>
+  getClient().conversationModel.get(String(iid ?? ''), String(wf ?? '')),
+);
+ipcMain.handle(
+  CHANNELS.conversationModelSet,
+  (_e, iid: string, wf: string, choice: { provider: string; model: string }) =>
+    getClient().conversationModel.set(String(iid ?? ''), String(wf ?? ''), {
+      provider: String(choice?.provider ?? ''),
+      model: String(choice?.model ?? ''),
+    }),
+);
+ipcMain.handle(CHANNELS.conversationModelReset, (_e, iid: string, wf: string) =>
+  getClient().conversationModel.reset(String(iid ?? ''), String(wf ?? '')),
+);
 // 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
 ipcMain.handle(CHANNELS.guardDisclaimer, () => getClient().guardrails.disclaimerEnabled());
 ipcMain.handle(CHANNELS.guardCheckContent, (_e, text: string) =>

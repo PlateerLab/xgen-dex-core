@@ -8,7 +8,6 @@ import {
   shouldIgnorePrivateCertificateError,
   xgenWebSocketTlsOptions,
 } from '@dex/engine/connection-security';
-import { HttpSyncTransport, type NetworkFetch } from '../src/main/sync-transport';
 import { MCPManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import type { McpServerConfig } from '@dex/engine';
 import { bindHost, memoryPorts } from '@dex/engine';
@@ -123,31 +122,6 @@ test('HTTP MCP는 주입 fetch를 사용하고 인증서 옵션 변경 시 연�
   assert.equal(second[0]?.connected, true, second[0]?.error);
   assert.ok(privateCalls > 0, '인증서 옵션 변경 후 새 HTTP fetch로 다시 연결해야 한다');
   await manager.closeAll();
-});
-
-test('워크스페이스 HTTP 통신은 주입된 Electron fetch를 사용한다', async () => {
-  let calledUrl = '';
-  const injectedFetch: NetworkFetch = async (input) => {
-    calledUrl = String(input);
-    return new Response(JSON.stringify({ latest_seq: 0, changes: [] }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-  const transport = new HttpSyncTransport(
-    {
-      baseUrl: 'https://xgen.internal:8443',
-      token: () => 'token',
-      workflowId: 'workflow-1',
-      deviceId: 'device-1',
-      fetch: injectedFetch,
-      allowPrivateCertificate: true,
-    },
-    '/tmp/xgen-dex-test',
-  );
-
-  assert.deepEqual(await transport.changes(0), { latest_seq: 0, changes: [] });
-  assert.match(calledUrl, /^https:\/\/xgen\.internal:8443\/api\/agentflow\/geny-workspace\//);
 });
 
 test('SSO URL은 같은 origin 상대 PATH에 완료 콜백을 추가한다', () => {

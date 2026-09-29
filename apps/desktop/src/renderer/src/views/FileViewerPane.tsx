@@ -5,16 +5,14 @@
  * 웹 [파일 저장소]와 같은 렌더(이미지/PDF/오디오/비디오 네이티브, 오피스는
  * 서버 렌더 페이지 이미지)로 보여준다. 읽기 전용 — 편집은 하지 않는다.
  *
- * 데이터 경로 (탐색기와 동일한 이원화):
- *   · 동기화 ON  → fileSystem.readFile (로컬 실파일)
- *   · 클라우드 OFF → fileSystem.cloudReadRaw (파일 저장소 /sync/raw)
- *   · 에이전트 OFF → agentData.workspaceBinary (서버 워크스페이스)
+ * 데이터 경로 — 전부 서버에서 받는다(탐색기와 같다):
+ *   · 파일 저장소 → storage.cloudReadRaw (파일 저장소 항목 다운로드)
+ *   · 에이전트    → agentData.workspaceBinary (서버 워크스페이스)
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import hljs from 'highlight.js/lib/core';
 import { xgen, copyText } from '../bridge';
 import { Markdown } from './Markdown';
-import type { FileSystemStatusLike } from '../../../preload/index';
 import {
   decodeText,
   escapeHtml,
@@ -92,19 +90,13 @@ export interface FileViewerProps {
 
 interface Loaded {
   bytes: Uint8Array;
-  source: 'local' | 'cloud' | 'agent';
+  source: 'cloud' | 'agent';
 }
 
 /** IPC 로 온 Uint8Array 는 더 큰 버퍼 위 뷰일 수 있다 — 정확한 조각으로 Blob 을 만든다. */
 function toBlob(bytes: Uint8Array, type: string): Blob {
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   return new Blob([buffer as ArrayBuffer], { type });
-}
-
-function isSynced(status: FileSystemStatusLike | null, workflowId: string): boolean {
-  if (!status) return false;
-  if (status.cloud.owner === workflowId) return status.cloud.enabled && status.cloud.synced;
-  return status.agents.list.some((a) => a.workflowId === workflowId && a.synced);
 }
 
 // ── 코드 뷰 (줄 번호 + 구문 강조) ────────────────────────────────
@@ -184,7 +176,7 @@ const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName
     setPageUrls([]);
     void (async () => {
       try {
-        const meta = await xgen.fileSystem.cloudOfficePreview(rel);
+        const meta = await xgen.storage.cloudOfficePreview(rel);
         if (cancelled) return;
         if (!meta.ok || meta.itemId == null || !meta.pages?.length) {
           setError(meta.error || '이 문서의 미리보기를 만들지 못했습니다.');
@@ -193,7 +185,7 @@ const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName
         }
         const urls: string[] = [];
         for (const page of meta.pages) {
-          const res = await xgen.fileSystem.cloudOfficePreviewPage(meta.itemId, page);
+          const res = await xgen.storage.cloudOfficePreviewPage(meta.itemId, page);
           if (cancelled) return;
           if (res.ok && res.bytes) {
             const type =
@@ -244,7 +236,6 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
   rel,
   fileName,
 }) => {
-  const [status, setStatus] = useState<FileSystemStatusLike | null>(null);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -252,13 +243,6 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
   const [wrap, setWrap] = useState(false);
   const [blobUrl, setBlobUrl] = useState('');
   const loadSeq = useRef(0);
-
-  useEffect(() => {
-    void xgen.fileSystem
-      .status()
-      .then(setStatus)
-      .catch(() => undefined);
-  }, []);
 
   const declared: ViewerKind = kindForFile(fileName);
   // 오피스 렌더는 파일 저장소 항목에만 있다 — 에이전트 워크스페이스는 정보 패널로.
@@ -275,14 +259,9 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
         if (seq === loadSeq.current) setLoading(false);
         return;
       }
-      const st = status ?? (await xgen.fileSystem.status().catch(() => null));
       let result: Loaded;
-      if (isSynced(st, workflowId)) {
-        const r = await xgen.fileSystem.readFile(workflowId, rel);
-        if (!r.ok || !r.bytes) throw new Error(r.error || '읽기 실패');
-        result = { bytes: r.bytes, source: 'local' };
-      } else if (sectionKind === 'cloud') {
-        const r = await xgen.fileSystem.cloudReadRaw(rel);
+      if (sectionKind === 'cloud') {
+        const r = await xgen.storage.cloudReadRaw(rel);
         if (!r.ok || !r.bytes) throw new Error(r.error || '다운로드 실패');
         result = { bytes: r.bytes, source: 'cloud' };
       } else {
@@ -346,10 +325,9 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }, [loaded, fileName]);
 
-  const synced = isSynced(status, workflowId);
   const sizeLabel = loaded ? formatBytes(loaded.bytes.byteLength) : '';
   const sourceLabel =
-    loaded?.source === 'local' ? '로컬 동기화본' : loaded?.source === 'cloud' ? '파일 저장소' : loaded?.source === 'agent' ? '에이전트 워크스페이스' : '';
+    loaded?.source === 'cloud' ? '파일 저장소' : loaded?.source === 'agent' ? '에이전트 워크스페이스' : '';
 
   let body: React.ReactNode = null;
   if (loading) body = <div className="fv-note">불러오는 중…</div>;
@@ -413,14 +391,6 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
           <button className="viewer-btn" onClick={download} disabled={!loaded}>
             다운로드
           </button>
-          {synced && (
-            <button
-              className="viewer-btn"
-              onClick={() => void xgen.fileSystem.openPath(workflowId, rel)}
-            >
-              OS로 열기
-            </button>
-          )}
         </div>
       </div>
     );
@@ -459,15 +429,6 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
           <button className="viewer-btn sm" onClick={download} disabled={!loaded}>
             다운로드
           </button>
-          {synced && (
-            <button
-              className="viewer-btn sm"
-              onClick={() => void xgen.fileSystem.openPath(workflowId, rel)}
-              title="OS 기본 앱으로 열기"
-            >
-              OS로 열기
-            </button>
-          )}
           <button className="viewer-btn sm" onClick={() => void load()} title="다시 읽기">
             <RefreshIcon size={12} />
           </button>

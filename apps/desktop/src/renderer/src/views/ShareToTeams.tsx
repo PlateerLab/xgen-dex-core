@@ -31,9 +31,9 @@ import { teamsStore, useTeams } from '../teams';
 import { formatBytes } from './teams-store';
 import { TeamsRoomList } from './TeamsRoomPicker';
 
-/** 워크스페이스(가상 드라이브) 파일을 함께 올릴 때. */
+/** 파일 저장소의 파일을 함께 올릴 때. */
 export interface ShareFile {
-  /** 드라이브 상대 경로 (`/에이전트/…`). 실제 경로는 메인 프로세스만 안다. */
+  /** 저장소 상대 경로 (`/폴더/파일`). 바이트는 메인 프로세스가 서버에서 받는다. */
   drivePath: string;
   name: string;
   size: number;

@@ -64,6 +64,7 @@ import {
   saveConfig,
   resetConfig,
   normalizeServerUrl,
+  accountKey,
   type ConnectorConfig,
   type McpServerConfig,
 } from './config';
@@ -91,8 +92,6 @@ import { stripFrameAncestorsFromHeaders } from './artifact-csp';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
-import { FilestoreSyncTransport, HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient, authHeaders as syncAuthHeaders, transportFetch as syncTransportFetch, type TransportAuth } from './sync-transport';
-import { FileSystemController } from './file-system';
 import { ChatFolderStore } from './chat-folders';
 import { localFoldersForRequest } from '@dex/engine/local-folders';
 import {
@@ -101,11 +100,7 @@ import {
   settleDataRoot,
   writeDataRootMarker,
 } from './data-root';
-import type { SyncRemote } from './local-sync';
-import { isSafeRelPath } from './sync-plan';
-import { hostname, userInfo } from 'os';
-import { defaultDeviceName } from './device-name';
-import { accountKey } from './file-system';
+import { hostname } from 'os';
 import { TRAY_ICON_B64 } from './tray-icon';
 import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
@@ -1354,11 +1349,7 @@ async function resetStoredSettings(): Promise<void> {
   getMcpBridge().stop();
   void client?.logout().catch(() => undefined);
   client = null;
-  await Promise.allSettled([
-    tokenStore.clear(),
-    credentialStore.clear(),
-    Promise.resolve(fileSystem?.stop()),
-  ]);
+  await Promise.allSettled([tokenStore.clear(), credentialStore.clear()]);
   applyAutoLaunch(false);
   resetConfig();
   relaunchSelf();
@@ -1947,22 +1938,7 @@ function setMcpEnabled(enabled: boolean): void {
   broadcastConfig(next);
 }
 
-// ── Workspace 동기화 (에이전트 workflow ↔ 로컬 폴더, Drive형) ─────
 /** 이 설치본의 안정 디바이스 id — 최초 1회 생성 후 config 에 영속. */
-/**
- * 이 PC 의 표시 이름.
- *
- * 로컬 로그인 이름은 클라우드 트리에서 아무것도 구분하지 않는다 — 클라우드는
- * 이미 XGEN 계정으로 갈린다. 그래서 호스트명 앞의 로그인 이름을 걷어낸다.
- *
- * **바꿀 수 있게 두지 않는다.** 이 이름은 서버가 이 기기를 **처음** 볼 때
- * 폴더 이름이 되고, 그 폴더는 이후 어떤 이름 변경에도 움직이지 않는다. 바꿀
- * 수 있게 하면 사용자는 주소를 옮기려 하고, 파일은 예전 자리에 남는다.
- */
-function deviceNameOf(): string {
-  return defaultDeviceName(hostname(), userInfo().username);
-}
-
 function ensureDeviceId(): string {
   const cfg = loadConfig();
   if (cfg.deviceId) return cfg.deviceId;
@@ -2025,10 +2001,6 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     getBrowserRuntime().configure({ enabled: false });
     void client?.logout().catch(() => undefined); // 구 서버 세션 무효화 (rebind 전 호출)
     client = null; // in-memory user/token 을 남기지 않도록 새 인스턴스로
-    // ⚠ **client 를 비운 뒤에** 걷는다. 앞에서 부르면 아직 살아 있는
-    // `client.user` 때문에 리컨사일이 "로그인 중" 으로 판단해 구 서버의
-    // 마운트를 그대로 남긴다 (로그아웃 경로와 같은 함정).
-    fileSystem?.reconcile();
     await tokenStore.clear();
     await credentialStore.clear();
     patch = { ...patch, autoLogin: false }; // 저장된 자동 로그인은 구 서버 계정
@@ -2045,14 +2017,12 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     applyMcpHttpCertificatePolicy();
     await mcpHttpSession().closeAllConnections();
     syncMcp();
-    fileSystem?.reconcile();
   }
   if (patch.autoUpdate !== undefined) setAutoUpdate(!!patch.autoUpdate);
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
   // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
   if (patch.browser !== undefined) syncMcp();
-  // 기본 작업 폴더/토글 변경 → 에이전트 workspace 로컬 동기화도 따라간다.
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -2088,9 +2058,6 @@ async function afterAuthSuccess(refreshToken?: string): Promise<boolean> {
   syncMcp();
   syncTeams();
   safeSend(overlayWindow, CHANNELS.avatarRefresh); // client is now authed → overlay can load the avatar
-  // 파일 시스템 동기화는 로그인 상태에서만 대상이 생긴다 — 로그인이 끝난
-  // 지금 에이전트 목록을 읽고 리컨사일한다.
-  void fileSystem?.refreshAgents();
   checkForUpdatesAfterLogin();
   return persisted;
 }
@@ -2266,14 +2233,11 @@ ipcMain.handle(CHANNELS.authRestore, async () => {
     if (rotated && rotated !== access) await tokenStore.setAccess(rotated);
     const rotatedRefresh = c.getRefreshToken();
     if (rotatedRefresh && rotatedRefresh !== refresh) await tokenStore.setRefresh(rotatedRefresh);
-    // 세션 복원도 **로그인 성공과 같은 뒷정리**가 필요하다. 예전엔 여기서
-    // 같은 일을 손으로 되풀이했는데, 그러다 보니 afterAuthSuccess 에만 있는
-    // 워크스페이스 리컨사일이 빠져 **재시작할 때마다 드라이브가 안 붙었다**.
-    // 갈래가 둘이면 한쪽만 갱신되는 날이 온다 — 한 곳으로 모은다.
+    // 세션 복원도 **로그인 성공과 같은 뒷정리**가 필요하다(afterAuthSuccess 와
+    // 같은 목록) — 갈래가 둘이면 한쪽만 갱신되는 날이 온다.
     syncMcp();
     syncTeams();
     safeSend(overlayWindow, CHANNELS.avatarRefresh); // session restored → overlay can load the avatar
-    void fileSystem?.refreshAgents();
     return { user: c.user };
   }
   if (verdict === 'invalid') {
@@ -2293,10 +2257,6 @@ ipcMain.handle(CHANNELS.authLogout, async () => {
   getBrowserRuntime().configure({ enabled: false });
   if (client) await client.logout();
   await tokenStore.clear();
-  // 동기화 페어는 로그인 상태에서만 존재한다 — 로그아웃하면 걷어낸다.
-  // ⚠ **반드시 logout 뒤에.** 앞에서 부르면 그 시점의 `client.user` 가 아직
-  // 살아 있어 리컨사일이 "로그인 중" 으로 판단하고 페어를 그대로 둔다.
-  fileSystem?.reconcile();
   // An explicit logout also disables auto-login (else next launch signs right back in).
   await credentialStore.clear();
   saveConfig({ autoLogin: false });
@@ -2779,22 +2739,22 @@ ipcMain.handle(CHANNELS.teamsUploadAttachment, async (_e, roomId: string) => {
 });
 
 /**
- * 워크스페이스(가상 드라이브)의 파일을 그대로 방에 올린다 — 에이전트 산출물 공유.
+ * 파일 저장소의 파일을 그대로 방에 올린다 — 탐색기에서 고른 파일 공유.
  *
- * 렌더러는 **드라이브 상대 경로**(`/에이전트/…`)만 넘긴다. 절대 경로를 받아
- * "안에 있는지" 검사하는 방식은 심볼릭 링크·대소문자·UNC 로 뚫린다. 탐색기의
- * `workspaceOpenPath` 와 같은 규칙을 그대로 쓴다: 검증된 상대 경로를 마운트
- * 루트에 붙이는 것만 허용한다.
+ * 렌더러는 **저장소 상대 경로**(`/폴더/파일`)만 넘긴다. 바이트는 서버의 파일
+ * 저장소에서 받아 그대로 올린다.
  */
 ipcMain.handle(CHANNELS.teamsShareWorkspaceFile, async (_e, roomId: string, path: unknown) => {
-  const root = fileSystem?.cloudDir();
   const rel = safeDrivePath(path);
-  if (!root || !rel) throw new Error('클라우드 동기화 폴더 안의 파일만 공유할 수 있습니다.');
-  const target = join(root, ...rel.split('/').filter(Boolean));
-  const file = await readFileForUpload(target);
-  const reason = teamsAttachmentRejectReason(file.filename, file.bytes.byteLength);
+  if (!rel) throw new Error('파일 저장소 안의 파일만 공유할 수 있습니다.');
+  const c = getClient();
+  const item = await c.filestore.resolveItemByPath(rel);
+  if (!item) throw new Error('파일 저장소에서 파일을 찾지 못했습니다.');
+  const filename = item.file_name;
+  const reason = teamsAttachmentRejectReason(filename, Number(item.file_size) || 0);
   if (reason) throw new Error(reason);
-  return getClient().teams.uploadAttachment(roomId, file.bytes, file.filename);
+  const { bytes } = await c.filestore.download(item.id);
+  return c.teams.uploadAttachment(roomId, bytes, filename);
 });
 
 ipcMain.handle(CHANNELS.teamsSaveAttachment, async (_e, roomId: string, att: TeamsAttachment) => {
@@ -3375,33 +3335,10 @@ ipcMain.handle(CHANNELS.mcpClearRuntimeLogs, () => {
   return true;
 });
 
-/**
- * 파일 관리자로 경로 열기 — **shell.openPath 를 쓰면 안 된다.**
- *
- * 우리 마운트는 이 프로세스의 이벤트 루프가 서빙한다. `shell.openPath` 는
- * 경로를 **동기적으로 확인**하므로, 그 대상이 우리 마운트면 루프가 막히고
- * FUSE 콜백이 응답하지 못해 **서로를 기다리는 데드락**이 된다 (실기: "폴더
- * 열기"를 누르는 순간 앱이 응답 없음).
- *
- * 자식 프로세스로 분리하면 우리 루프는 계속 돌고 마운트도 계속 응답한다.
- */
-function openInFileManager(target: string): void {
-  const cmd =
-    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-  try {
-    const child = spawn(cmd, [target], { detached: true, stdio: 'ignore' });
-    child.on('error', (e) => console.log(`[workspace] 폴더 열기 실패: ${e.message}`));
-    child.unref();
-  } catch (e) {
-    console.log(`[workspace] 폴더 열기 실패: ${(e as Error).message}`);
-  }
-}
-
-// ── 계정별 워크스페이스 ────────────────────────────────────────────
+// ── 계정 키 ──────────────────────────────────────────────────────
 //
-// 워크스페이스는 **로그인한 계정에 속한다**. 예전에는 전역 설정 하나여서,
-// 계정을 바꿔 로그인해도 이전 계정의 루트·부착 에이전트를 그대로 물었다.
-// 두 계정이 같은 폴더를 클라우드로 가리키면 서로의 파일을 덮어썼다.
+// 대화별 폴더 연결처럼 이 PC 에 남기는 설정은 **로그인한 계정에 속한다** —
+// 계정을 바꿔 로그인해도 이전 계정의 것을 물지 않게 키를 나눈다.
 
 /** 지금 로그인한 계정의 키. 로그아웃 상태면 null. */
 function currentAccountKey(): string | null {
@@ -3410,133 +3347,11 @@ function currentAccountKey(): string | null {
   return accountKey(normalizeServerUrl(loadConfig().serverUrl), String(uid));
 }
 
-// ── 파일 시스템 — XGen 저장소를 이 PC 의 실제 폴더로 (계정별 토글) ────
-//
-// [XGen 클라우드 연결]    <dataRoot>/cloud            ↔ user:<id> 저장소
-// [Agent Workspace 연결] <dataRoot>/agent_workspace/  ↔ 모든 에이전트 워크스페이스
-// 기본은 둘 다 OFF — 서버에서는 어차피 항상 실행되고, 이 토글은 그것을
-// 로컬 폴더로 보느냐만 정한다. 자세한 철학은 file-system.ts 참조.
-let fileSystem: FileSystemController | null = null;
-
-/** 동기화 엔진용 전송 — latest_seq 포함 타입. */
-function syncRemoteFor(workflowId: string): SyncRemote {
-  const auth = () => ({
-    baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-    token: liveAccessToken,
-    refreshAuth: refreshAuthToken,
-    workflowId,
-    deviceId: ensureDeviceId(),
-    fetch: (input: Parameters<typeof net.fetch>[0], init?: Parameters<typeof net.fetch>[1]) =>
-      net.fetch(input, init),
-    allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-  });
-  const staging = () => join(app.getPath('userData'), 'sync-staging');
-  if (workflowId.startsWith('user:')) {
-    // 사용자 클라우드 = **파일 저장소** — geny-workspace 가 아니라
-    // /api/filestore/sync/* 표면과 말한다 (rmdir: 빈 원격 폴더 정리 포함).
-    const transport = () => new FilestoreSyncTransport(auth(), staging());
-    return {
-      changes: (since) => transport().changes(since),
-      download: (path, toAbs) => transport().download(path, toAbs),
-      put: (path, fromAbs, baseSha) => transport().put(path, fromAbs, baseSha),
-      del: (path, baseSha, opts) => transport().del(path, baseSha, opts),
-      mkdir: (path) => transport().mkdir(path),
-      rmdir: (path) => transport().rmdir(path),
-    };
-  }
-  const transport = () => new HttpSyncTransport(auth(), staging());
-  return {
-    changes: (since) => transport().changes(since),
-    download: (path, toAbs) => transport().download(path, toAbs),
-    put: (path, fromAbs, baseSha) => transport().put(path, fromAbs, baseSha),
-    del: (path, baseSha, opts) => transport().del(path, baseSha, opts),
-    mkdir: (path) => transport().mkdir(path),
-  };
-}
-
-function wireFileSystem(): void {
-  fileSystem = new FileSystemController({
-    dataRoot: () => resolveDataRoot(loadConfig()),
-    loggedIn: () => !!client?.user,
-    userId: () => (client?.user?.userId != null ? String(client.user.userId) : null),
-    config: () => {
-      const key = currentAccountKey();
-      return key ? (loadConfig().fileSystems?.[key] ?? {}) : {};
-    },
-    persist: (next) => {
-      const key = currentAccountKey();
-      if (!key) return;
-      const cfg = loadConfig();
-      saveConfig({ fileSystems: { ...(cfg.fileSystems ?? {}), [key]: next } });
-    },
-    // "실행 세션" 에이전트 = 이 계정의 에이전트 전부 — 서버 목록이 원본이다.
-    listAgents: async () => {
-      const agents = await getClient().agents.listAll({ owner: 'personal' });
-      return agents.map((a) => ({
-        workflowId: a.workflowId,
-        label: a.workflowName || a.workflowId,
-      }));
-    },
-    remoteFor: syncRemoteFor,
-    // 벌크 인덱스 probe — 보험 주기가 저장소마다 changes 를 돌지 않고 요청
-    // 한 번으로 "변한 저장소"만 고른다 (구서버는 404 → 매니저가 전수 폴백).
-    indexSeqs: (owners: string[]) =>
-      fetchIndexSeqs(
-        {
-          baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-          token: liveAccessToken,
-          refreshAuth: refreshAuthToken,
-          workflowId: '',
-          deviceId: ensureDeviceId(),
-          fetch: (input, init) => net.fetch(input, init),
-          allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-        },
-        owners,
-      ),
-    presenceFor: (owner: string, onChanged: () => void) => {
-      if (owner.startsWith('user:')) {
-        // 파일 저장소에는 변경 WS 가 없다 — 인덱스 probe(5분)와 스윕이 담당.
-        // geny WS 를 붙이면 **다른 저장소**의 알림으로 엉뚱한 사이클만 돈다.
-        return { start: async () => undefined, stop: () => undefined };
-      }
-      return new WorkspaceWsClient(
-        {
-          baseUrl: normalizeServerUrl(loadConfig().serverUrl).replace(/\/$/, ''),
-          token: liveAccessToken,
-          refreshAuth: refreshAuthToken,
-          workflowId: owner,
-          deviceId: ensureDeviceId(),
-          deviceName: deviceNameOf(),
-          fetch: (input, init) => net.fetch(input, init),
-          allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-        },
-        deviceNameOf(),
-        () => onChanged(),
-        () => undefined,
-      );
-    },
-    // ⚠ 'fs' 하위로 **새 네임스페이스** — 옛 로컬 동기화(기본 작업 폴더 시절)의
-    // base 스냅숏을 새(빈) agent_workspace 루트에 재사용하면 3-way 가 "로컬
-    // 전체 삭제"로 오판해 서버 파일을 지운다. 루트가 바뀌었으니 base 도
-    // 처음부터다 (첫 사이클은 전부 다운로드 — 안전).
-    stateDir: () =>
-      join(
-        app.getPath('userData'),
-        'local-sync',
-        (currentAccountKey() ?? 'anon').replace(/[^A-Za-z0-9._-]/g, '_'),
-        'fs',
-      ),
-    deviceName: deviceNameOf(),
-    onStatus: (s) => safeSend(mainWindow, CHANNELS.fsStatusEvent, s),
-  });
-  fileSystem.reconcile();
-}
-
 // ── 로컬 실행 v2: 사이드카 데몬 + 서버 버전 수렴 ──────────────────────
 /** 사이드카 데몬(상주) — 첫 턴에 기동, 유휴 15분 뒤 자가 종료, 앱 종료 시 내림. */
 /**
  * 통합 데이터 루트 정착(부팅 1회) — 인스톨러 선택(install-options.json)을 삼키고,
- * dataRoot 트리(workspace/·cloud/·local-runtime/)를 만들고, 미설정 경로 기본을
+ * dataRoot 트리(workspace/·local-runtime/)를 만들고, 미설정 경로 기본을
  * config 에 채운다. 명시 설정은 절대 덮지 않는다.
  */
 function settleDataRootOnBoot(): void {
@@ -3571,166 +3386,66 @@ function appendInstallLog(line: string): void {
 }
 
 /** CLI 바이너리 자동 보장 — 도구별 single-flight(연타 턴이 중복 설치하지 않게). */
-ipcMain.handle(CHANNELS.fsStatus, () => fileSystem?.status() ?? null);
-ipcMain.handle(CHANNELS.fsSetCloud, async (_e, on: unknown) => {
-  await fileSystem?.setCloudSync(on === true);
-  return fileSystem?.status();
-});
-ipcMain.handle(CHANNELS.fsSetAgents, async (_e, on: unknown) => {
-  await fileSystem?.setAgentSync(on === true);
-  return fileSystem?.status();
-});
-ipcMain.handle(CHANNELS.fsSyncNow, async (_e, workflowId?: unknown) => {
-  await fileSystem?.syncNow(typeof workflowId === 'string' ? workflowId : undefined);
-  return fileSystem?.status();
-});
-ipcMain.handle(CHANNELS.fsRefreshAgents, async () => {
-  await fileSystem?.refreshAgents();
-  return fileSystem?.status();
-});
-/** [미러 재구성] — 로컬 클라우드 폴더를 앱이 비우고 저장소에서 새로 내려받는다. */
-ipcMain.handle(CHANNELS.fsCloudReset, async () => {
-  return (await fileSystem?.resetCloudMirror()) ?? null;
-});
-/** 탐색기의 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료 상태의
- *  읽기 전용 관측. ⚠ geny(agentData.workspaceTree)가 아니라 **파일 저장소**
- *  스냅숏을 읽는다 — 클라우드 섹션이 구 xgen-cloud 를 비추면 안 된다. */
-ipcMain.handle(CHANNELS.fsCloudServerTree, async () => {
-  const uid = client?.user?.userId != null ? String(client.user.userId) : null;
-  if (!uid) return [];
-  const transport = new FilestoreSyncTransport(
-    {
-      baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-      token: liveAccessToken,
-      refreshAuth: refreshAuthToken,
-      workflowId: `user:${uid}`,
-      deviceId: ensureDeviceId(),
-      fetch: (input, init) => net.fetch(input, init),
-      allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-    },
-    join(app.getPath('userData'), 'sync-staging'),
-  );
-  try {
-    const res = await transport.changes(0);
-    return (res.changes ?? [])
-      .filter((c) => !c.deleted)
-      .map((c) => ({
-        name: c.path.split('/').pop() ?? c.path,
-        path: c.path,
-        is_dir: !!c.is_dir,
-        size: c.size ?? 0,
-        modified_at: c.mtime_ns ? new Date(c.mtime_ns / 1e6).toISOString() : undefined,
-      }));
-  } catch (e) {
-    void import('./diag-log').then(({ diag }) =>
-      diag('file-system', `파일 저장소 서버 트리 조회 실패: ${(e as Error).message}`),
-    );
-    return [];
-  }
-});
-
-/** 동기화 폴더 나열 — 탐색기가 로컬 실파일을 그대로 본다.
- *  workflowId 'user:<id>' 는 클라우드 폴더다. */
-ipcMain.handle(CHANNELS.fsList, async (_e, workflowId: unknown, rel: unknown) => {
-  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
-  if (!dir) return [];
-  const relPath = typeof rel === 'string' ? rel : '';
-  if (relPath && !isSafeRelPath(relPath)) return [];
-  const abs = join(dir, ...relPath.split('/').filter(Boolean));
-  try {
-    const { readdir, stat } = await import('fs/promises');
-    const entries = await readdir(abs, { withFileTypes: true });
-    const out: Array<{ name: string; isDir: boolean; size: number; mtime: number }> = [];
-    for (const e of entries) {
-      if (e.name === '.xgeny-session') continue;
-      try {
-        const st = await stat(join(abs, e.name));
-        out.push({
-          name: e.name,
-          isDir: e.isDirectory(),
-          size: e.isFile() ? st.size : 0,
-          mtime: Math.floor(st.mtimeMs),
-        });
-      } catch {
-        /* 나열 도중 사라진 항목 */
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-});
-ipcMain.handle(CHANNELS.fsOpenPath, (_e, workflowId: unknown, rel: unknown) => {
-  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
-  if (!dir) return { ok: false };
-  const relPath = typeof rel === 'string' ? rel : '';
-  if (relPath && !isSafeRelPath(relPath)) return { ok: false };
-  openInFileManager(join(dir, ...relPath.split('/').filter(Boolean)));
-  return { ok: true };
-});
-/* ── 파일 뷰어 읽기 표면 ─────────────────────────────────────────
+/* ── 탐색기 · 파일 뷰어 — 파일 저장소 읽기 표면 ─────────────────────
  *
- * 탐색기에서 파일을 클릭하면 콘텐츠 영역 탭으로 여는 뷰어의 데이터 경로.
- *   · 동기화 ON  → fsReadFile  (로컬 실파일 바이트)
- *   · 클라우드 OFF → fsCloudReadRaw (파일 저장소 /sync/raw)
- *   · 에이전트 OFF → 기존 agentData.workspaceBinary 를 그대로 쓴다.
+ * 탐색기는 서버의 파일 저장소를 그대로 보여 준다(이 PC 에 내려받아 두지 않는다).
+ * 폴더는 펼칠 때 한 단계씩 읽고, 파일을 누르면 뷰어가 원바이트를 받는다.
  * 오피스 문서(docx/xlsx/pptx/hwp…)는 웹 [파일 저장소]와 같은 서버 렌더
  * (filestore-preview 페이지 이미지)를 쓴다 — 경로→항목 id 해석 포함.
+ * 경로 해석과 서버 호출은 전부 프로토콜(FilestoreApi) — 앱은 서버 경로를
+ * 직접 부르지 않는다 (계약 검사 no-direct-api).
  */
 
 /** 뷰어가 통으로 IPC 로 나를 수 있는 상한 — 이보다 크면 열지 않는다. */
 const VIEWER_MAX_BYTES = 64 * 1024 * 1024;
 
-function viewerCloudAuth(): TransportAuth | null {
-  const uid = client?.user?.userId != null ? String(client.user.userId) : null;
-  if (!uid) return null;
-  return {
-    baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-    token: liveAccessToken,
-    refreshAuth: refreshAuthToken,
-    workflowId: `user:${uid}`,
-    deviceId: ensureDeviceId(),
-    fetch: (input, init) => net.fetch(input, init),
-    allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-  };
-}
+/** 탐색기의 에이전트 섹션 — 이 계정의 개인 에이전트 전부(서버 목록 그대로). */
+ipcMain.handle(CHANNELS.fsAgents, async () => {
+  if (!client?.user) return [];
+  const agents = await getClient().agents.listAll({ owner: 'personal' });
+  return agents.map((a) => ({ workflowId: a.workflowId, label: a.workflowName || a.workflowId }));
+});
 
-ipcMain.handle(CHANNELS.fsReadFile, async (_e, workflowId: unknown, rel: unknown) => {
-  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
+/** 파일 저장소 한 폴더의 직계 자식 — 'a/b' 는 저장소 상대 경로, '' 는 루트. */
+ipcMain.handle(CHANNELS.fsCloudList, async (_e, rel: unknown) => {
+  if (!client?.user) return { ok: false, error: '로그인이 필요합니다', entries: [] };
   const relPath = typeof rel === 'string' ? rel : '';
-  if (!dir || !relPath || !isSafeRelPath(relPath)) return { ok: false, error: '잘못된 경로' };
-  const abs = join(dir, ...relPath.split('/').filter(Boolean));
   try {
-    const { stat, readFile } = await import('fs/promises');
-    const st = await stat(abs);
-    if (!st.isFile()) return { ok: false, error: '파일이 아닙니다' };
-    if (st.size > VIEWER_MAX_BYTES)
-      return { ok: false, error: `파일이 너무 큽니다 (${Math.round(st.size / 1024 / 1024)}MB)` };
-    const buf = await readFile(abs);
-    return { ok: true, bytes: new Uint8Array(buf), size: st.size, mtime: st.mtimeMs };
+    const folder = await client.filestore.folderByPath(relPath);
+    if (folder === undefined) return { ok: true, entries: [] };
+    const { folders, items } = await client.filestore.list(folder?.id ?? null);
+    const mtimeOf = (v: string | null | undefined) => (v ? Date.parse(v) || 0 : 0);
+    return {
+      ok: true,
+      entries: [
+        ...folders.map((f) => ({ name: f.folder_name, isDir: true, size: 0, mtime: 0 })),
+        ...items.map((it) => ({
+          name: it.file_name,
+          isDir: false,
+          size: Number(it.file_size) || 0,
+          mtime: mtimeOf(it.updated_at ?? it.created_at),
+        })),
+      ],
+    };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return { ok: false, error: (e as Error).message, entries: [] };
   }
 });
 
 ipcMain.handle(CHANNELS.fsCloudReadRaw, async (_e, path: unknown) => {
-  const auth = viewerCloudAuth();
-  if (!auth || typeof path !== 'string' || !path) return { ok: false, error: '연결되지 않음' };
+  if (!client?.user || typeof path !== 'string' || !path)
+    return { ok: false, error: '연결되지 않음' };
   try {
-    const u = new URL(`${auth.baseUrl}/api/filestore/sync/raw`);
-    u.searchParams.set('path', path);
-    const res = await syncTransportFetch(auth, u.toString(), {
-      headers: await syncAuthHeaders(auth),
-    });
-    if (!res.ok) return { ok: false, error: `다운로드 실패 (${res.status})` };
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.byteLength > VIEWER_MAX_BYTES) return { ok: false, error: '파일이 너무 큽니다' };
-    return {
-      ok: true,
-      bytes: buf,
-      size: buf.byteLength,
-      contentType: res.headers.get('content-type') ?? '',
-    };
+    const item = await client.filestore.resolveItemByPath(path);
+    if (!item) return { ok: false, error: '파일 저장소에서 파일을 찾지 못했습니다' };
+    if (Number(item.file_size) > VIEWER_MAX_BYTES)
+      return {
+        ok: false,
+        error: `파일이 너무 큽니다 (${Math.round(Number(item.file_size) / 1024 / 1024)}MB)`,
+      };
+    const { bytes, contentType } = await client.filestore.download(item.id);
+    if (bytes.byteLength > VIEWER_MAX_BYTES) return { ok: false, error: '파일이 너무 큽니다' };
+    return { ok: true, bytes, size: bytes.byteLength, contentType };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -3761,16 +3476,6 @@ ipcMain.handle(CHANNELS.fsCloudOfficePreviewPage, async (_e, itemId: unknown, pa
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
-});
-
-/** 루트 폴더 열기 — 'cloud' | 'agents' | 'data'. 동기화 여부와 무관하게
- *  폴더 자체는 dataRoot 트리에 존재한다. */
-ipcMain.handle(CHANNELS.fsOpenRoot, (_e, kind: unknown) => {
-  const st = fileSystem?.status();
-  if (!st) return { ok: false };
-  const p = kind === 'cloud' ? st.cloud.dir : kind === 'agents' ? st.agents.root : st.dataRoot;
-  openInFileManager(p);
-  return { ok: true };
 });
 
 /** 탐색기/공유 경로 검증 — `/` 시작, `..` 세그먼트 금지. */
@@ -4019,7 +3724,6 @@ if (!gotLock) {
       }
     };
     bootStep('settleDataRoot', () => settleDataRootOnBoot()); // 통합 루트 정착 — 아래 배선들이 새 기본을 읽는다.
-    bootStep('wireFileSystem', () => wireFileSystem());
     if (cfg.avatarOverlay) createOverlay();
     if (cfg.quickChat) {
       createQuickChat();
@@ -4057,6 +3761,5 @@ if (!gotLock) {
     getMcpBridge().stop();
     void getBrowserRuntime().closeAll();
     void getMcpManager().closeAll();
-    fileSystem?.stop();
   });
 }

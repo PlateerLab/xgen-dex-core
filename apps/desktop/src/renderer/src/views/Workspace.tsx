@@ -1177,7 +1177,6 @@ export const Workspace: React.FC<{
           style={{ display: sideView === 'explorer' ? undefined : 'none' }}
         >
           <ExplorerPanel
-            onOpenSettings={openSettings}
             myName={user.username || '나'}
             onOpenFile={openFileViewer}
           />

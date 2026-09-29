@@ -8,9 +8,11 @@
  * 커넥터가 만드는 모든 작업 자산이 한 지붕 아래 모인다:
  *
  *   <dataRoot>/                ← 기본 ~/xgen-dex (인스톨러/설정에서 변경 가능)
- *     workspace/               ← 에이전트 로컬 동기화 루트
- *     cloud/                   ← 스토리지(가상 드라이브) 마운트 루트
+ *     workspace/               ← 로컬 작업 루트(예전 설정 호환)
  *     local-runtime/           ← 에이전트 로컬 실행 런타임(Python) + bin/(codex·claude CLI)
+ *
+ * 예전의 cloud/·agent_workspace/(파일 저장소·에이전트 로컬 동기화 폴더)는 더
+ * 이상 만들지 않는다. 이미 있는 폴더와 그 안의 파일은 건드리지 않는다.
  *
  * 결정 규칙(체크 해제 = 수정 가능):
  *   · 사용자가 명시한 경로(workspace.root / dataRoot)는 항상 존중.
@@ -119,16 +121,8 @@ export function resolveDataRoot(cfg: Pick<ConnectorConfig, 'dataRoot'>, home = h
 export function workspaceDirOf(root: string): string {
   return join(root, 'workspace');
 }
-/** 클라우드 동기화 폴더 — [XGen 클라우드 연결] 토글의 대상. */
-export function cloudDirOf(root: string): string {
-  return join(root, 'cloud');
-}
 export function runtimeDirOf(root: string): string {
   return join(root, 'local-runtime');
-}
-/** 에이전트 워크스페이스 동기화 폴더 — [Agent Workspace 연결] 토글의 대상. */
-export function agentWorkspaceDirOf(root: string): string {
-  return join(root, 'agent_workspace');
 }
 
 /**
@@ -144,8 +138,6 @@ export function settleDataRoot(
   for (const d of [
     root,
     workspaceDirOf(root),
-    cloudDirOf(root),
-    agentWorkspaceDirOf(root),
     runtimeDirOf(root),
   ]) {
     try {

@@ -260,16 +260,10 @@ export const CHANNELS = {
   mcpRenameSecrets: 'mcp:renameSecrets',
   diagText: 'diag:text',
   diagCopy: 'diag:copy',
-  // 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스) 로컬 동기화
-  fsStatus: 'fs:status',
-  fsStatusEvent: 'fs:statusEvent',
-  fsSetCloud: 'fs:setCloud',
-  fsSetAgents: 'fs:setAgents',
-  fsSyncNow: 'fs:syncNow',
-  fsRefreshAgents: 'fs:refreshAgents',
-  /** 동기화 폴더의 직계 자식 목록 — 인앱 탐색기용 (로컬 실파일). */
-  fsList: 'fs:list',
-  fsReadFile: 'fs:read-file',
+  /** 탐색기의 에이전트 섹션 — 이 계정의 개인 에이전트 (서버 목록). */
+  fsAgents: 'fs:agents',
+  /** 파일 저장소 한 폴더의 직계 자식 — 인앱 탐색기용 (서버 목록). */
+  fsCloudList: 'fs:cloud-list',
   chatWatchStart: 'chat:watch-start',
   connectorDevices: 'connector:devices',
   chatWatchStop: 'chat:watch-stop',
@@ -284,12 +278,6 @@ export const CHANNELS = {
   fsCloudReadRaw: 'fs:cloud-read-raw',
   fsCloudOfficePreview: 'fs:cloud-office-preview',
   fsCloudOfficePreviewPage: 'fs:cloud-office-preview-page',
-  fsCloudServerTree: 'fs:cloud-server-tree',
-  fsCloudReset: 'fs:cloud-reset',
-  /** 동기화 폴더 안 경로를 OS 파일 관리자/기본 앱으로 연다. */
-  fsOpenPath: 'fs:openPath',
-  /** 루트 폴더('cloud'|'agents'|'data')를 OS 로 연다. */
-  fsOpenRoot: 'fs:openRoot',
   mcpStatus: 'mcp:status',
   mcpStatusEvent: 'mcp:statusEvent',
 

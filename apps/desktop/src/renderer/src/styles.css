@@ -1437,19 +1437,7 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 서버 보기 배지 — 로컬 동기화가 꺼진 섹션 표시 (파일 시스템 토글 OFF). */
-.section-badge {
-  flex-shrink: 0;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: 4px;
-  border: 1px solid var(--gray-300);
-  color: var(--gray-500);
-  margin-left: 4px;
-}
-
-/* 동기화 오류 배지 — 섹션 헤더 우측의 작은 경고. */
+/* 읽기 오류 배지 — 섹션 헤더 우측의 작은 경고. */
 .section-err {
   flex-shrink: 0;
   width: 14px;
@@ -1537,61 +1525,6 @@ button {
   font-size: 11px;
   color: var(--muted);
   flex-shrink: 0;
-}
-/* 드라이브가 안 서는 사유 + 조치 버튼. */
-.explorer-notice {
-  margin: 10px 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel-2);
-  font-size: 12.5px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.explorer-notice p {
-  margin: 0;
-}
-.explorer-notice.error-tone {
-  border-color: var(--error-border);
-  background: var(--error-bg);
-}
-.primary-sm {
-  align-self: flex-start;
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.primary-sm:hover {
-  filter: brightness(1.06);
-}
-/* 마운트 상태 푸터 — 경로는 뒤가 중요하니 앞을 …로 줄인다. */
-.explorer-foot {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-secondary);
-  min-width: 0;
-}
-.mount-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--gray-400);
-  flex-shrink: 0;
-}
-.mount-dot.on {
-  background: var(--success);
 }
 /* 앞부분 말줄임 — rtl 방향 + plaintext 로 표시 순서는 그대로 둔다.
    (나중에 "연결된 폴더" 경로 헤더에도 그대로 쓴다.) */

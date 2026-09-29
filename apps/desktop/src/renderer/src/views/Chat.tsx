@@ -1929,7 +1929,7 @@ export const Chat: React.FC<{
                 ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
                 : preparingImages > 0
                   ? '파일을 준비하는 중…'
-                  : '파일 첨부'
+                  : `파일 첨부 · 이미지는 붙여 넣어도 됩니다 (최대 ${CHAT_IMAGE_MAX_COUNT}개)`
             }
             aria-label="파일 첨부"
           >
@@ -1970,11 +1970,11 @@ export const Chat: React.FC<{
             </button>
           )}
         </div>
+        {/* 좁은 칸(IDE 오른쪽 대화)에서는 줄을 접지 않고 통째로 감춘다 — styles.css 의 컨테이너 조건. */}
         <div className="composer-foot">
           <span className="kbd-hint">
             <kbd>Enter</kbd> 전송 · <kbd>Shift + Enter</kbd> 줄바꿈
           </span>
-          <span className="composer-image-hint">파일은 +로 첨부 · 이미지는 붙여넣기 가능 · 최대 10개</span>
         </div>
       </div>
 

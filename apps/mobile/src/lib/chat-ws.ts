@@ -168,6 +168,8 @@ export interface ChatWsOptions {
   onLiveTurn?: (live: LiveTurnSnapshot) => void;
   /** 이 대화의 폴더가 바뀌었다(어느 기기에 있는가·폴더 이름) — 서버 사본의 알림 원문. */
   onFolders?: (data: Record<string, unknown>) => void;
+  /** 다른 화면이 이 대화의 모델을 바꿨다 — 서버 소식의 원문(`current`). */
+  onModel?: (data: Record<string, unknown>) => void;
   /** 이 기기의 커넥터 슬롯 키 — 실행에 client_device_id 로 실린다. */
   clientDeviceId?: string;
 }
@@ -346,6 +348,11 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       if (frame.type === 'folders') {
         // 이 대화의 폴더가 바뀌었다(다른 기기가 연결·해제·옮김). 턴 번호가 없는 소식이다.
         opts.onFolders?.(frame.data ?? {});
+        return;
+      }
+      if (frame.type === 'model') {
+        // 이 대화의 모델이 바뀌었다(다른 화면에서 골랐다). 턴 번호가 없는 소식이다.
+        opts.onModel?.(frame.data ?? {});
         return;
       }
       if (frame.type === 'heartbeat') {

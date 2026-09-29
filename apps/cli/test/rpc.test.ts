@@ -84,6 +84,7 @@ test('stdio RPC initializes, lists agents, and streams chat notifications', asyn
     assert.equal(initialized.result?.protocolVersion, 1);
     assert.equal((initialized.result?.capabilities as Record<string, unknown>).localTools, true);
     assert.equal((initialized.result?.capabilities as Record<string, unknown>).localFolders, true);
+    assert.equal((initialized.result?.capabilities as Record<string, unknown>).conversationModel, true);
 
     // 옛 확장이 보내는 켜기·허용 폴더는 버리고, 남은 설정(위험 명령 사전 승인)만 받는다.
     input.write(
@@ -243,6 +244,53 @@ test('history/snapshot 은 지금 도는 턴을 함께 알려 준다', async () 
     );
     const done = await collector.waitFor((message) => message.id === 3);
     assert.equal(done.result?.running, false);
+  } finally {
+    rpc.close();
+    input.destroy();
+    output.destroy();
+    await new Promise<void>((resolve, reject) =>
+      mock.server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+/** 대화 도중 모델 바꾸기 — 세션은 그대로, 다음 답변부터. 지금 모델이 늘 맨 앞이다. */
+test('conversation/model 은 지금 모델을 맨 앞에 두고 바꾸고 되돌린다', async () => {
+  const mock = await startMockXgen();
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const engine = new DexEngine(new MemoryConfigStore(), new MemoryCredentialStore());
+  const rpc = new DexRpcServer(engine, { input, output, log: () => {} });
+  try {
+    await engine.setProfile('corp', mock.baseUrl);
+    await engine.useProfile('corp');
+    await engine.login('me@corp.com', 'pw123');
+    const collector = collectLines(output);
+    rpc.start();
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n');
+    await collector.waitFor((message) => message.id === 1);
+
+    input.write('{"jsonrpc":"2.0","id":2,"method":"conversation/model","params":{"workflowId":"wf_abc","interactionId":"int-1"}}\n');
+    const first = await collector.waitFor((message) => message.id === 2);
+    assert.equal((first.result?.current as { label: string }).label, 'Anthropic: Sonnet 4.5');
+    assert.equal((first.result?.current as { source: string }).source, 'agent');
+
+    input.write(
+      '{"jsonrpc":"2.0","id":3,"method":"conversation/model/set","params":{"workflowId":"wf_abc","interactionId":"int-1","provider":"anthropic","model":"claude-haiku-4-5"}}\n',
+    );
+    const set = await collector.waitFor((message) => message.id === 3);
+    assert.equal((set.result?.current as { label: string }).label, 'Anthropic: Haiku 4.5');
+    assert.equal((set.result?.choices as Array<{ label: string }>)[0]!.label, 'Anthropic: Haiku 4.5', '지금 모델이 맨 앞');
+
+    input.write('{"jsonrpc":"2.0","id":4,"method":"conversation/model/reset","params":{"workflowId":"wf_abc","interactionId":"int-1"}}\n');
+    const reset = await collector.waitFor((message) => message.id === 4);
+    assert.equal((reset.result?.current as { source: string }).source, 'agent');
+
+    input.write(
+      '{"jsonrpc":"2.0","id":5,"method":"conversation/model/set","params":{"workflowId":"wf_abc","interactionId":"int-1","provider":"openai","model":"gpt-9"}}\n',
+    );
+    const refused = await collector.waitFor((message) => message.id === 5);
+    assert.ok(refused.error, '고를 수 없는 모델은 거절된다');
   } finally {
     rpc.close();
     input.destroy();

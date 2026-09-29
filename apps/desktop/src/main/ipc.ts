@@ -118,6 +118,12 @@ export const CHANNELS = {
   agentTaskRuns: 'agent:taskRuns',
   agentTaskOutput: 'agent:taskOutput',
   agentBasicInfo: 'agent:basicInfo',
+  /** 대화의 모델 — 채팅 입력창 옆 선택기(다음 답변부터, 세션 재시작 없음). */
+  conversationModelGet: 'conversation-model:get',
+  conversationModelSet: 'conversation-model:set',
+  conversationModelReset: 'conversation-model:reset',
+  /** 다른 화면이 이 대화의 모델을 바꿨다 — main → renderer (대화 id, 소식 원문). */
+  conversationModelChanged: 'conversation-model:changed',
   /** 채팅 안전 장치 — 면책 문구 설정 · 민감정보 검사. */
   guardDisclaimer: 'guard:disclaimer',
   guardCheckContent: 'guard:checkContent',

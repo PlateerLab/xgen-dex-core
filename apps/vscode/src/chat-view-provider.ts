@@ -22,6 +22,14 @@ import type {
   ToolEvent,
 } from '@dex/rpc';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
+import {
+  MODEL_PICKER_TEXT,
+  applyModelNotice,
+  orderedChoices,
+  sameModel,
+  type ConversationModelState,
+  type ModelChoice,
+} from '@dex/protocol';
 
 /** 창을 껐다 켠 뒤 되찾을 대화가 적히는 자리(globalState). */
 const LAST_CONVERSATION_KEY = 'xgenDex.lastConversation';
@@ -62,6 +70,8 @@ interface ChatViewState {
   localToolsSaving: boolean;
   localToolsMessage?: string;
   attachments: ChatAttachmentDescriptor[];
+  /** 이 대화의 지금 모델 — 입력창 아래 칩. 없으면(옛 서버·Geny 아닌 에이전트) 칩도 없다. */
+  model?: { label: string; locked: boolean; saving: boolean };
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -74,6 +84,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private selectedAgent: Agent | undefined;
   private messages: ChatMessage[] = [];
   private interactionId: string | undefined;
+  /**
+   * 첫 말을 보내기 전의 새 대화가 쓸 번호. 모델을 먼저 고를 수 있어야 하고, 그 선택은
+   * 대화 번호에 붙으므로 번호를 미리 정해 두고 첫 턴도 이 번호로 보낸다.
+   */
+  private draftInteractionId: string | undefined;
+  /** 이 대화의 모델 — `modelKey`(에이전트:대화) 가 바뀔 때만 다시 읽는다. */
+  private model: ConversationModelState | undefined;
+  private modelKey = '';
+  private modelSaving = false;
   private attachments: ChatAttachmentDescriptor[] = [];
   private uploadingAttachments = false;
   private streamId: string | undefined;
@@ -190,6 +209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.selectedAgent = undefined;
           this.messages = [];
           this.interactionId = undefined;
+          this.draftInteractionId = undefined;
         }
       }
       // 에이전트 목록까지 온 뒤에 되살린다 — 목록이 있어야 자리표시가 아닌
@@ -352,6 +372,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.streamId = undefined;
     this.assistantMessageId = undefined;
     this.interactionId = undefined;
+    this.draftInteractionId = undefined;
     this.attachments = [];
     this.messages = [];
     this.toolMessages.clear();
@@ -386,7 +407,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         streamId,
         workflowId: agent.workflowId,
         workflowName: agent.workflowName,
-        ...(this.interactionId ? { interactionId: this.interactionId } : {}),
+        // 새 대화면 미리 정해 둔 번호 — 먼저 고른 모델이 첫 턴부터 붙는다.
+        ...(this.modelTarget() ? { interactionId: this.modelTarget() } : {}),
         input: text,
         attachments,
         // 열린 작업 영역 폴더가 이 대화의 작업 공간이다. 에이전트의 파일·터미널
@@ -413,7 +435,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const agent = this.selectedAgent;
     if (!agent || this.streamId || this.uploadingAttachments) return;
     this.uploadingAttachments = true;
-    this.interactionId ??= randomUUID();
+    this.interactionId ??= this.modelTarget() ?? randomUUID();
     const interactionId = this.interactionId;
     const profile = this.activeProfileParams();
     const isCurrent = () => this.selectedAgent?.workflowId === agent.workflowId && this.interactionId === interactionId;
@@ -581,6 +603,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (text) this.showRemotePartial(text);
       return;
     }
+    if (notification.method === 'conversation/modelChanged') {
+      // 다른 화면(웹·앱·CLI)에서 이 대화의 모델을 바꿨다 — 칩이 곧바로 따라간다.
+      const p = notification.params as { interactionId?: string; notice?: Record<string, unknown> } | undefined;
+      if (!p || !this.model || p.interactionId !== this.modelTarget()) return;
+      this.model = applyModelNotice(this.model, p.notice);
+      this.postState();
+      return;
+    }
     if (notification.method === 'localTools/status') {
       if (this.localTools && isLocalToolBridgeStatus(notification.params)) {
         this.localTools = { ...this.localTools, bridge: notification.params };
@@ -697,6 +727,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (data.type === 'ready') this.postState();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
     else if (data.type === 'attach') void this.attachFiles();
+    else if (data.type === 'pickModel') void this.pickModel();
     else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
       this.attachments = this.attachments.filter((item) => item.attachment_id !== data.id);
       this.postState();
@@ -852,6 +883,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private postState(): void {
+    this.syncModel();
     const state: ChatViewState = {
       screen: this.screen,
       profiles: this.profiles,
@@ -870,8 +902,104 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       localToolsSaving: this.localToolsSaving,
       localToolsMessage: this.localToolsMessage,
       attachments: this.attachments,
+      model:
+        this.model?.supported && this.model.current
+          ? { label: this.model.current.label, locked: this.model.locked, saving: this.modelSaving }
+          : undefined,
     };
     void this.view?.webview.postMessage({ type: 'state', state });
+  }
+
+  // ── 이 대화의 모델 ────────────────────────────────────────────────
+  //
+  // 세션은 그대로다 — 서버가 다음 턴 시작에 바꿔 끼운다. 이름("제공자: 모델")과 순서
+  // (지금 모델이 맨 앞)는 서버가 정하고, 여기서는 VS Code 의 빠른 선택으로 보여 준다.
+
+  /** 모델이 붙는 대화 번호 — 진행 중인 대화, 없으면 새 대화용으로 미리 정한 번호. */
+  private modelTarget(): string | undefined {
+    if (!this.selectedAgent) return undefined;
+    return this.interactionId ?? (this.draftInteractionId ??= randomUUID());
+  }
+
+  private syncModel(): void {
+    const agent = this.screen === 'chat' ? this.selectedAgent : undefined;
+    const target = agent ? this.modelTarget() : undefined;
+    const key = agent && target ? `${agent.workflowId}:${target}` : '';
+    if (key === this.modelKey) return;
+    // 같은 에이전트의 다른 대화로 넘어갈 때는 새 값이 올 때까지 칩을 그대로 둔다(깜빡임 방지).
+    if (!key || !this.modelKey.startsWith(`${agent?.workflowId}:`)) this.model = undefined;
+    this.modelKey = key;
+    if (!agent || !target) return;
+    void this.service
+      .request<ConversationModelState>('conversation/model', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        interactionId: target,
+      })
+      .then((next) => {
+        if (this.modelKey !== key) return;
+        this.model = next;
+        this.postState();
+      })
+      // 옛 엔진(메서드 없음)·옛 서버 — 칩 없이 예전처럼 쓴다.
+      .catch(() => {
+        if (this.modelKey === key) this.model = undefined;
+      });
+  }
+
+  private async pickModel(): Promise<void> {
+    const agent = this.selectedAgent;
+    const state = this.model;
+    const target = this.modelTarget();
+    if (!agent || !target || !state?.supported || !state.current || this.modelSaving) return;
+    if (state.locked) {
+      void vscode.window.showInformationMessage(MODEL_PICKER_TEXT.locked);
+      return;
+    }
+    type Item = vscode.QuickPickItem & { choice?: ModelChoice };
+    const current = state.current;
+    const choices = orderedChoices(state);
+    const items: Item[] = [];
+    choices.forEach((choice, index) => {
+      const isCurrent = sameModel(choice, current);
+      const prev = choices[index - 1];
+      // 지금 모델이 맨 위, 그 아래로 제공자 묶음마다 구분선.
+      if (index === 0 && isCurrent) items.push({ label: MODEL_PICKER_TEXT.current, kind: vscode.QuickPickItemKind.Separator });
+      else if (!prev || sameModel(prev, current) || prev.group !== choice.group) {
+        items.push({ label: choice.group, kind: vscode.QuickPickItemKind.Separator });
+      }
+      items.push({
+        label: isCurrent ? `$(check) ${choice.label}` : choice.label,
+        description: isCurrent ? MODEL_PICKER_TEXT.current : undefined,
+        choice,
+      });
+    });
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `${MODEL_PICKER_TEXT.title} · ${agent.workflowName}`,
+      placeHolder: MODEL_PICKER_TEXT.nextTurn,
+      matchOnDescription: true,
+    });
+    const choice = picked?.choice;
+    if (!choice || sameModel(choice, current)) return;
+    // 고르는 사이 다른 대화로 옮겼으면 그 대화에 붙이지 않는다.
+    if (this.selectedAgent?.workflowId !== agent.workflowId || this.modelTarget() !== target) return;
+    this.modelSaving = true;
+    this.postState();
+    try {
+      const next = await this.service.request<ConversationModelState>('conversation/model/set', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        interactionId: target,
+        provider: choice.provider,
+        model: choice.model,
+      });
+      if (this.modelKey === `${agent.workflowId}:${target}`) this.model = next;
+    } catch (error) {
+      void vscode.window.showErrorMessage(`${MODEL_PICKER_TEXT.failed}: ${errorMessage(error)}`);
+    } finally {
+      this.modelSaving = false;
+      this.postState();
+    }
   }
 
   private html(webview: vscode.Webview): string {
@@ -957,6 +1085,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div id="attachments" class="chat-attachments" aria-live="polite"></div>
         <textarea id="input" rows="2" placeholder="Agent에게 메시지 보내기" aria-label="메시지"></textarea>
         <div class="composer-actions">
+          <button id="model-chip" class="model-chip hidden" type="button" aria-haspopup="listbox"><span id="model-icon" class="model-chip-icon" aria-hidden="true"></span><span id="model-label" class="model-chip-label"></span><span id="model-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>
           <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
           <button id="attach" class="secondary-button compact" type="button" title="파일 첨부">📎 첨부</button>
           <button id="cancel" class="secondary-button hidden" type="button">응답 중지</button>

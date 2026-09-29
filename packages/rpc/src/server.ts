@@ -212,6 +212,8 @@ export class DexRpcServer {
             // chat/start 의 localFolders — 대화에 이 기기의 폴더를 연결한다.
             localFolders: true,
             ssh: true,
+            // conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기.
+            conversationModel: true,
           },
         };
       }
@@ -341,6 +343,8 @@ export class DexRpcServer {
         // 히스토리를 부르는 순간의 running 만 알았고, 그 뒤 다른 기기에서
         // 시작된 턴은 완결까지 못 봤다.
         this.engine.onConversationRunning = (event) => this.notify('chat/running', event);
+        // 이 대화의 모델이 다른 화면에서 바뀌었다 — 선택기가 곧바로 따라간다.
+        this.engine.onConversationModel = (event) => this.notify('conversation/modelChanged', event);
         await this.engine.watchConversation(
           requiredString(params, 'workflowId'),
           optionalString(params, 'workflowName') ?? requiredString(params, 'workflowId'),
@@ -376,6 +380,26 @@ export class DexRpcServer {
         if (result.stopped || result.reason === 'not_running') active?.controller.abort();
         return { cancelled: !!active && active.controller.signal.aborted, ...result };
       }
+      // 대화의 모델 — 채팅 입력창 옆 선택기(VS Code)·Ctrl+O(CLI). 다음 답변부터, 세션 재시작 없음.
+      case 'conversation/model':
+        return this.engine.conversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
+      case 'conversation/model/set':
+        return this.engine.setConversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          { provider: requiredString(params, 'provider'), model: requiredString(params, 'model') },
+          optionalString(params, 'profile'),
+        );
+      case 'conversation/model/reset':
+        return this.engine.resetConversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
       case 'history/snapshot':
         return this.engine.historySnapshot(
           requiredString(params, 'workflowId'),

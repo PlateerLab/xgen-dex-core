@@ -443,3 +443,111 @@ test('처음 설정 화면은 https 를 생략해도 된다고 말한다', async
     view.cleanup();
   }
 });
+
+// ── 대화 도중 모델 바꾸기 (Ctrl+O · /model) ─────────────────────────
+//
+// 세션은 그대로다 — 다음 답변부터 고른 모델이 답한다. 지금 모델이 늘 맨 위이고,
+// 다른 화면에서 바꾸면 제목 줄이 곧바로 따라간다.
+
+function withModels(engine: TuiEngine): { engine: TuiEngine; picks: Array<{ interactionId: string; provider: string; model: string }> } {
+  const choices = [
+    { provider: 'anthropic', model: 'claude-sonnet-4-5', name: 'Sonnet 4.5', label: 'Anthropic: Sonnet 4.5', group: 'Anthropic' },
+    { provider: 'anthropic', model: 'claude-haiku-4-5', name: 'Haiku 4.5', label: 'Anthropic: Haiku 4.5', group: 'Anthropic' },
+    { provider: 'openai', model: 'gpt-4o', name: 'GPT-4o', label: 'OpenAI: GPT-4o', group: 'OpenAI' },
+  ];
+  const chosen = new Map<string, (typeof choices)[number]>();
+  const picks: Array<{ interactionId: string; provider: string; model: string }> = [];
+  const view = (id: string) => {
+    const current = chosen.get(id) ?? choices[0]!;
+    return {
+      supported: true,
+      locked: false,
+      current: { ...current, source: chosen.has(id) ? ('conversation' as const) : ('agent' as const) },
+      agent: { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Anthropic: Sonnet 4.5' },
+      choices: [current, ...choices.filter((c) => c !== current)],
+    };
+  };
+  engine.conversationModel = async (_wf, id) => view(id);
+  engine.setConversationModel = async (_wf, id, choice) => {
+    picks.push({ interactionId: id, ...choice });
+    chosen.set(id, choices.find((c) => c.provider === choice.provider && c.model === choice.model)!);
+    return view(id);
+  };
+  return { engine, picks };
+}
+
+test('Ctrl+O 로 지금 모델이 맨 위인 목록을 열고, 고르면 첫 턴이 그 대화 번호로 나간다', async () => {
+  const { engine, picks } = withModels(fakeEngine());
+  const sent: Array<string | undefined> = [];
+  const resolve = engine.resolveChatInput.bind(engine);
+  engine.resolveChatInput = async (input) => {
+    sent.push(input.interactionId);
+    return resolve(input);
+  };
+  const view = render(<App engine={engine} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Anthropic: Sonnet 4.5'));
+    assert.match(frame, /Ctrl\+O 모델/);
+
+    view.stdin.write('\u000f'); // Ctrl+O
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('다음 답변부터'));
+    const lines = frame.split('\n');
+    const at = (label: string) => lines.findIndex((line) => line.includes(label));
+    assert.ok(at('Anthropic: Sonnet 4.5') < at('Anthropic: Haiku 4.5'), '지금 모델이 맨 위');
+    assert.match(lines[at('Anthropic: Sonnet 4.5')]!, /✓.*\(현재\)/);
+
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B[B'); // ↓ Haiku
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('· Anthropic: Haiku 4.5'));
+    assert.equal(picks.length, 1);
+
+    // 첫 말이 모델을 고른 그 대화 번호로 나가야 고른 모델이 첫 턴부터 붙는다.
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    assert.equal(sent.at(-1), picks[0]!.interactionId);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('다른 화면에서 모델을 바꾸면 제목 줄이 곧바로 따라간다', async () => {
+  const { engine } = withModels(fakeEngine());
+  const sent: Array<string | undefined> = [];
+  const resolve = engine.resolveChatInput.bind(engine);
+  engine.resolveChatInput = async (input) => {
+    sent.push(input.interactionId);
+    return resolve(input);
+  };
+  const view = render(<App engine={engine} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('· Anthropic: Sonnet 4.5'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    await waitForSettled(view.lastFrame);
+    // 다른 대화의 소식은 이 화면과 상관없다.
+    engine.onConversationModel?.({
+      interactionId: 'someone-else',
+      notice: { current: { provider: 'anthropic', model: 'claude-haiku-4-5', label: 'Anthropic: Haiku 4.5', source: 'conversation' } },
+    });
+    engine.onConversationModel?.({
+      interactionId: sent.at(-1)!,
+      notice: { current: { provider: 'openai', model: 'gpt-4o', name: 'GPT-4o', label: 'OpenAI: GPT-4o', group: 'OpenAI', source: 'conversation' } },
+    });
+    await waitForFrame(view.lastFrame, (value) => value.includes('· OpenAI: GPT-4o'));
+  } finally {
+    view.cleanup();
+  }
+});

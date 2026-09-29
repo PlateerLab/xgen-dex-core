@@ -85,3 +85,38 @@ test('Agent 목록과 헤더는 한 화면에 많이 들어와야 한다', async
   assert.doesNotMatch(code(provider), /agent-avatar/, '채팅 헤더의 장식 아바타는 대화창을 밀어낸다');
   assert.doesNotMatch(code(provider), /ACTIVE AGENT/, '이름 위의 머리글은 한 줄을 더 먹는다');
 });
+
+test('답변 아래 버튼은 늘 보이는 아이콘이고, 이름은 테마 말풍선으로 뜬다', async () => {
+  const [styles, script] = await Promise.all([
+    readFile(path.join(extensionRoot, 'media', 'chat.css'), 'utf8'),
+    readFile(path.join(extensionRoot, 'media', 'chat.js'), 'utf8'),
+  ]);
+  const rule = (selector: string): string => {
+    const at = styles.indexOf(`${selector} {`);
+    assert.ok(at >= 0, `missing rule: ${selector}`);
+    return styles.slice(at, styles.indexOf('}', at));
+  };
+  // 마우스를 올려야 드러나던 버튼 — 있는 줄도 모르고 지나친다.
+  assert.doesNotMatch(rule('.copy-button'), /opacity:\s*0/);
+  assert.doesNotMatch(rule('.msg-footer .msg-actions'), /opacity:\s*0/);
+  assert.doesNotMatch(styles, /:hover \.msg-footer \.msg-actions|\.message-body:hover \.copy-button/);
+  // 이름은 브라우저 기본 title 이 아니라 VS Code 호버 위젯 색의 말풍선.
+  assert.match(styles, /\[data-tip\]::after/);
+  assert.match(styles, /--vscode-editorHoverWidget-background/);
+  assert.match(script, /dataset\.tip = label/);
+  assert.doesNotMatch(script.slice(script.indexOf('function copyButton'), script.indexOf('function appendInlineText')), /\.title =/);
+});
+
+test('입력창 아래 모델 칩 — 누르면 VS Code 빠른 선택, 다른 화면의 변경을 따라간다', async () => {
+  const [script, provider] = await Promise.all([
+    readFile(path.join(extensionRoot, 'media', 'chat.js'), 'utf8'),
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+  ]);
+  assert.match(script, /post\('pickModel'\)/);
+  assert.match(provider, /'conversation\/model'/);
+  assert.match(provider, /'conversation\/model\/set'/);
+  assert.match(provider, /'conversation\/modelChanged'/);
+  assert.match(provider, /showQuickPick/);
+  // 새 대화도 첫 말 전에 고를 수 있고, 첫 턴이 그 번호로 나가야 고른 모델이 붙는다.
+  assert.match(provider, /interactionId: this\.modelTarget\(\)/);
+});

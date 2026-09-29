@@ -1,11 +1,21 @@
+import { randomUUID } from 'node:crypto';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { publicError } from '@dex/engine';
+import {
+  MODEL_PICKER_TEXT,
+  UNSUPPORTED_MODEL_STATE,
+  applyModelNotice,
+  sameModel,
+  type ConversationModelState,
+  type ModelChoice,
+} from '@dex/protocol';
 import type { Agent, ChatAttachmentDescriptor, Conversation, ConversationSnapshot } from '@dex/engine';
 import { chatReducer, initialChatState, type ChatMessage } from './chat-state';
 import { useMeasured } from './measure';
 import { maximumScroll, renderTranscript, viewportOf } from './transcript';
 import { CommandPalette, type PaletteAction } from './command-palette';
+import { ModelPicker } from './model-picker';
 import { Footer, Header } from './components';
 import { HistoryScreen } from './history-screen';
 import { StartPanel } from './start-panel';
@@ -56,6 +66,8 @@ function AgentSidebar(props: {
 
 function ChatPane(props: {
   agent?: AgentRef;
+  /** 이 대화의 지금 모델 — "제공자: 모델". Ctrl+O 로 바꾼다. */
+  model?: string;
   messages: ChatMessage[];
   status?: string;
   scrollUp: number;
@@ -79,6 +91,12 @@ function ChatPane(props: {
         <Text bold wrap="truncate-end">
           {props.agent?.workflowName ?? 'Agent를 선택하세요'}
         </Text>
+        {props.model ? (
+          <Text wrap="truncate-end">
+            <Text color="magenta"> · {props.model}</Text>
+            <Text dimColor> Ctrl+O</Text>
+          </Text>
+        ) : null}
         {view.below > 0 ? <Text dimColor> · ↓{view.below}줄</Text> : null}
       </Box>
       {/* 잰 높이 안에서만 그린다. 넘치면 ink 이 지우는 자리와 그리는 자리가
@@ -201,14 +219,31 @@ export function Dashboard(props: {
         text: typeof event.live?.text === 'string' ? event.live.text : undefined,
       });
     };
+    // 다른 화면(웹·앱·VS Code)에서 이 대화의 모델을 바꿨다 — 제목 줄이 곧바로 따라간다.
+    props.engine.onConversationModel = (event) => {
+      if (event.interactionId !== modelTargetRef.current) return;
+      setModel((current) => applyModelNotice(current, event.notice));
+    };
     return () => {
       props.engine.onConversationTurn = null;
       props.engine.onConversationRunning = null;
+      props.engine.onConversationModel = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [palette, setPalette] = useState(false);
   const [history, setHistory] = useState(false);
+  /**
+   * 이 대화의 모델(Ctrl+O · /model). 아직 첫 말을 보내지 않은 새 대화도 고를 수 있게
+   * 그 대화가 쓸 번호를 미리 정해 둔다(draft) — 첫 턴이 이 번호로 나가므로 고른 모델이
+   * 그대로 붙는다.
+   */
+  const [model, setModel] = useState<ConversationModelState>(UNSUPPORTED_MODEL_STATE);
+  const [modelPicker, setModelPicker] = useState(false);
+  const draftInteractionId = useRef(randomUUID());
+  const modelTarget = chat.interactionId ?? attachmentInteractionId ?? draftInteractionId.current;
+  const modelTargetRef = useRef(modelTarget);
+  modelTargetRef.current = modelTarget;
   /** 에이전트를 고른 직후의 갈림길. 이력이 있을 때만 채워진다. */
   const [start, setStart] = useState<{ agent: AgentRef; conversations: Conversation[] }>();
   /**
@@ -252,6 +287,52 @@ export function Dashboard(props: {
   const stopping = useRef(false);
 
   useEffect(() => () => controller.current?.abort(), []);
+
+  // 에이전트나 대화가 바뀌면 그 대화의 모델을 다시 읽는다. 옛 서버·Geny 가 아닌
+  // 에이전트는 supported:false — 제목 줄에 모델이 없고 Ctrl+O 도 조용하다.
+  useEffect(() => {
+    setModel(UNSUPPORTED_MODEL_STATE);
+    if (!selected || !props.engine.conversationModel) return;
+    let alive = true;
+    void props.engine
+      .conversationModel(selected.workflowId, modelTarget, props.session.profile)
+      .then((next) => alive && setModel(next))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [selected?.workflowId, modelTarget, props.engine, props.session.profile]);
+
+  const openModelPicker = (): void => {
+    if (!selected) return;
+    if (!model.supported || !model.current) {
+      setAttachmentNotice('이 Agent는 모델을 고를 수 없습니다.');
+      return;
+    }
+    if (model.locked) {
+      setAttachmentNotice(MODEL_PICKER_TEXT.locked);
+      return;
+    }
+    setPalette(false);
+    setModelPicker(true);
+  };
+
+  const chooseModel = async (choice: ModelChoice): Promise<void> => {
+    setModelPicker(false);
+    if (!selected || !props.engine.setConversationModel || sameModel(choice, model.current)) return;
+    try {
+      const next = await props.engine.setConversationModel(
+        selected.workflowId,
+        modelTarget,
+        { provider: choice.provider, model: choice.model },
+        props.session.profile,
+      );
+      setModel(next);
+      setAttachmentNotice(`모델: ${next.current?.label ?? choice.label} · ${MODEL_PICKER_TEXT.nextTurn}`);
+    } catch (error) {
+      setAttachmentNotice(`${MODEL_PICKER_TEXT.failed}: ${publicError(error).message}`);
+    }
+  };
 
   /**
    * 다른 곳에서 도는 턴을 지켜본다 — 끝나면 그 답을 히스토리에서 받아 그린다.
@@ -322,6 +403,7 @@ export function Dashboard(props: {
   /** 빈 대화를 연다 — 갈림길에서 [새 대화] 를 고른 것과 같은 자리. */
   const openNewChat = (ref: AgentRef): void => {
     setSelected(ref);
+    draftInteractionId.current = randomUUID();
     dispatch({ type: 'reset' });
     setInput('');
     attachmentEpoch.current += 1;
@@ -450,6 +532,7 @@ export function Dashboard(props: {
 
   const newConversation = (): void => {
     if (chat.running) return;
+    draftInteractionId.current = randomUUID();
     dispatch({ type: 'reset' });
     setInput('');
     setScrollUp(0);
@@ -473,7 +556,7 @@ export function Dashboard(props: {
       try {
         const seed = await props.engine.resolveChatInput({
           profile: props.session.profile, workflowId: selected.workflowId,
-          workflowName: selected.workflowName, interactionId: chat.interactionId ?? attachmentInteractionId,
+          workflowName: selected.workflowName, interactionId: modelTarget,
           input: '',
         });
         const uploaded = await props.engine.uploadChatAttachment({
@@ -490,6 +573,11 @@ export function Dashboard(props: {
       } finally {
         uploadBusy.current = false;
       }
+      return;
+    }
+    if (text === '/model') {
+      setInput('');
+      openModelPicker();
       return;
     }
     if (text === '/attachments') {
@@ -511,7 +599,8 @@ export function Dashboard(props: {
         profile: props.session.profile,
         workflowId: selected.workflowId,
         workflowName: selected.workflowName,
-        interactionId: chat.interactionId ?? attachmentInteractionId,
+        // 새 대화면 미리 정해 둔 번호 — Ctrl+O 로 먼저 고른 모델이 첫 턴부터 붙는다.
+        interactionId: modelTarget,
         input: text,
         attachments,
         // TUI 를 연 폴더가 이 대화의 작업 공간이다(홈·루트에서 열었으면 없음).
@@ -572,6 +661,7 @@ export function Dashboard(props: {
   useInput(
     (keyInput, key) => {
       if (key.ctrl && keyInput === 'k') setPalette(true);
+      else if (key.ctrl && keyInput === 'o') openModelPicker();
       else if (key.ctrl && keyInput === 'p') {
         controller.current?.abort();
         props.onProfiles();
@@ -592,11 +682,14 @@ export function Dashboard(props: {
     },
     // 갈림길·팔레트·이력 화면이 떠 있으면 그 화면이 키를 갖는다 — 여기서도 받으면
     // 방향키 하나가 두 곳에서 움직인다.
-    { isActive: !palette && !history && !start && !creatingAgent },
+    { isActive: !palette && !history && !start && !creatingAgent && !modelPicker },
   );
 
   const paletteActions: PaletteAction[] = [
     { id: 'new', label: '새 대화', run: newConversation },
+    ...(model.supported && model.current && !model.locked
+      ? [{ id: 'model', label: `모델 바꾸기 (${model.current.label})`, run: openModelPicker }]
+      : []),
       {
         id: 'history',
         label: '대화 기록',
@@ -644,6 +737,15 @@ export function Dashboard(props: {
         }}
       />
     );
+  } else if (modelPicker) {
+    body = (
+      <ModelPicker
+        state={model}
+        height={bodyHeight}
+        onPick={(choice) => void chooseModel(choice)}
+        onCancel={() => setModelPicker(false)}
+      />
+    );
   } else if (palette) {
     body = <CommandPalette actions={paletteActions} onCancel={() => setPalette(false)} />;
   } else if (history) {
@@ -684,6 +786,7 @@ export function Dashboard(props: {
       <Box flexDirection="column" flexGrow={1}>
         <ChatPane
           agent={selected}
+          model={model.supported ? model.current?.label : undefined}
           messages={chat.messages}
           status={chat.status}
           scrollUp={scrollUp}
@@ -723,7 +826,7 @@ export function Dashboard(props: {
       {body}
       <Footer
         mode={nativeIme ? undefined : hangulMode ? '한' : 'EN'}
-        text={`${imeShortcut} 한/영 · /attach 경로 · /attachments · /detach · Tab 패널 · PgUp/PgDn 스크롤 · Ctrl+K 명령 · Ctrl+H 기록 · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`}
+        text={`${imeShortcut} 한/영 · Ctrl+O 모델 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 패널 · PgUp/PgDn 스크롤 · /attach 경로 · /attachments · /detach · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`}
       />
     </Box>
   );

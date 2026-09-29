@@ -10,6 +10,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { parseAgentTrigger, INTERRUPTED_TEXT, type ToolEvent } from '@dex/protocol';
@@ -72,6 +73,57 @@ const ErrorBlock: React.FC<{ info: NonNullable<ChatMessage['errorInfo']> }> = ({
           {info.detail}
         </Text>
       ) : null}
+    </View>
+  );
+};
+
+/**
+ * 답변 아래 아이콘 단추 — 늘 보인다. 손가락에는 마우스 올리기가 없으므로 길게 누르면 이름이
+ * 잠깐 뜬다(스크린 리더는 accessibilityLabel 을 읽는다).
+ */
+const IconAction: React.FC<{ icon: React.ComponentProps<typeof Ionicons>['name']; label: string; onPress: () => void; active?: boolean }> = ({
+  icon,
+  label,
+  onPress,
+  active,
+}) => {
+  const p = useP();
+  const [tip, setTip] = useState(false);
+  useEffect(() => {
+    if (!tip) return;
+    const t = setTimeout(() => setTip(false), 1400);
+    return () => clearTimeout(t);
+  }, [tip]);
+  return (
+    <View>
+      {tip ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            bottom: 30,
+            left: -8,
+            paddingHorizontal: 8,
+            paddingVertical: 4,
+            borderRadius: 6,
+            backgroundColor: p.text,
+          }}
+        >
+          <Text numberOfLines={1} style={{ color: p.bg, fontSize: 11.5, fontWeight: '600' }}>
+            {label}
+          </Text>
+        </View>
+      ) : null}
+      <Pressable
+        onPress={onPress}
+        onLongPress={() => setTip(true)}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        style={{ padding: 4 }}
+      >
+        <Ionicons name={icon} size={17} color={active ? p.primary : p.muted} />
+      </Pressable>
     </View>
   );
 };
@@ -225,7 +277,14 @@ export const MessageItem: React.FC<{
 
       {showFooter ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6, paddingLeft: 2 }}>
-          {!!text && <FooterButton label={copied ? '복사됨' : '복사'} onPress={() => void copy()} />}
+          {!!text && (
+            <IconAction
+              icon={copied ? 'checkmark' : 'copy-outline'}
+              label={copied ? '복사됨' : '답변 복사'}
+              active={copied}
+              onPress={() => void copy()}
+            />
+          )}
           {tools.length > 0 && (
             <FooterButton
               tone="primary"

@@ -457,3 +457,22 @@ test('folders 소식은 턴 번호 없이 폴더 알림으로만 간다 — 간�
   assert.equal(peer.filter((event) => event.kind === 'gap').length, 0, 'folders 소식이 유실로 오판됐다');
   chat.close();
 });
+
+test('모델 소식은 턴 번호 없이 모델 알림으로만 간다', () => {
+  const models: Array<Record<string, unknown>> = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-1',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onModel: (data) => models.push(data),
+    callbacks: {},
+  });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  const data = { interaction_id: 'mob-wf-1-1', current: { provider: 'openai', model: 'gpt-4o', label: 'OpenAI: GPT-4o' } };
+  ws.recv({ type: 'model', data, seq: null });
+  assert.deepEqual(models, [data]);
+  chat.close();
+});

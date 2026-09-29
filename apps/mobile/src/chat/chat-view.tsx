@@ -51,6 +51,7 @@ import { notifyAnswer } from './answer-notice';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
 import { FolderPill, FolderSheet } from './folder-sheet';
+import { ModelChip, ModelSheet, useConversationModel } from './model-picker';
 import { folderStore, useChatFolderRemote, useChatFolders } from '../lib/folder-store';
 import { toWire } from '../lib/mobile-folders';
 import {
@@ -146,6 +147,9 @@ export function ChatView({
   // 이 대화에 연결된 휴대폰 폴더 — 에이전트의 파일 도구가 닿는 범위.
   const folders = useChatFolders(interactionId);
   const folderRemote = useChatFolderRemote(interactionId);
+  // 이 대화의 모델 — 입력창 위 칩과 아래에서 올라오는 목록(다음 답변부터, 세션 재시작 없음).
+  const model = useConversationModel(client, agent?.workflowId ?? '', interactionId);
+  const [modelSheet, setModelSheet] = useState(false);
   const [folderSheet, setFolderSheet] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [wsState, setWsState] = useState<ChatWsState>('closed');
@@ -226,6 +230,8 @@ export function ChatView({
       log: diagLog,
       // 이 대화의 폴더가 다른 기기로 옮겨 가거나 그 기기가 바뀌었다.
       onFolders: (data) => folderStore.serverFolders(interactionId, data),
+      // 다른 화면에서 이 대화의 모델을 바꿨다.
+      onModel: (data) => model.notice(data),
       // 다른 기기에서 시작한 턴이 도는가 — 그동안 작성기를 잠그고 [정지] 를 연다.
       onRunning: (isRunning) => {
         if (isRunning && !runningRef.current) runningElsewhereRef.current = true;
@@ -682,6 +688,7 @@ export function ChatView({
           paddingBottom: 14,
         }}
       >
+        <ModelChip state={model.state} saving={model.saving} onPress={() => setModelSheet(true)} />
         {attachments.length > 0 && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
             {attachments.map((item) => (
@@ -910,6 +917,16 @@ export function ChatView({
       </Modal>
 
       <FolderSheet interactionId={interactionId} visible={folderSheet} onClose={() => setFolderSheet(false)} />
+      <ModelSheet
+        state={model.state}
+        visible={modelSheet}
+        error={model.error}
+        onPick={(choice) => {
+          setModelSheet(false);
+          void model.choose(choice);
+        }}
+        onClose={() => setModelSheet(false)}
+      />
 
       {logFor && (
         <ToolLogSheet

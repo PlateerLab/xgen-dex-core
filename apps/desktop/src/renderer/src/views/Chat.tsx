@@ -31,6 +31,8 @@ import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { DropTracker, dragHasFiles } from './chat-drop';
 import { mcpChatStatus } from './mcp-status-model';
 import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
+import { ModelPicker } from './ModelPicker';
+import { Tooltip } from './Tooltip';
 import { OPEN_CHAT_FOLDERS_EVENT } from '../ide/dex-ide-host';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
@@ -68,6 +70,8 @@ import {
   StarIcon,
   StopIcon,
   TeamsIcon,
+  CheckIcon,
+  StarFilledIcon,
 } from '../brand/icons';
 import type { AgentViewerSub } from './workspace-layout';
 import { IdeView } from '@dex/ide';
@@ -1623,6 +1627,7 @@ export const Chat: React.FC<{
                     <div className="msg-footer">
                       {!!m.text && !m.error && (
                         <div className="msg-actions">
+                          <Tooltip label={copiedAt === i ? '복사됨' : '답변 복사'}>
                           <button
                             onClick={() => {
                               void copyText(m.text).then((ok) => {
@@ -1634,35 +1639,44 @@ export const Chat: React.FC<{
                                 );
                               });
                             }}
-                            title="답변 복사"
+                            aria-label={copiedAt === i ? '복사됨' : '답변 복사'}
                           >
-                            <CopyIcon size={13} /> {copiedAt === i ? '복사됨' : '복사'}
+                            {copiedAt === i ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
                           </button>
+                          </Tooltip>
+                          <Tooltip label="Teams 방에 공유">
                           <button
                             onClick={() => setShareBody(m.text)}
-                            title="이 답변을 Teams 방에 공유"
+                            aria-label="이 답변을 Teams 방에 공유"
                           >
-                            <ShareIcon size={13} /> Teams로 공유
+                            <ShareIcon size={14} />
                           </button>
+                          </Tooltip>
                           {/* 답변 평가 — 웹 채팅과 같은 별점·문제 유형이 같은 곳(관리자 [사용자 피드백])으로 간다.
                               이미 남겼으면 별점이 보이고 누르면 고칠 수 있다. */}
                           {m.executionIoId !== undefined && (
+                            <Tooltip
+                              label={
+                                feedbackByIo[m.executionIoId]
+                                  ? `평가 ${feedbackByIo[m.executionIoId].starRating}점 · 눌러서 고치기`
+                                  : '답변 평가'
+                              }
+                            >
                             <button
+                              className={feedbackByIo[m.executionIoId] ? 'rated' : undefined}
                               onClick={() => {
                                 setFeedbackError(null);
                                 setFeedbackFor(m.executionIoId ?? null);
                               }}
-                              title={
+                              aria-label={
                                 feedbackByIo[m.executionIoId]
-                                  ? '남긴 평가 고치기'
+                                  ? `평가 ${feedbackByIo[m.executionIoId].starRating}점, 고치기`
                                   : '이 답변을 평가합니다'
                               }
                             >
-                              <StarIcon size={13} />{' '}
-                              {feedbackByIo[m.executionIoId]
-                                ? `평가 ${feedbackByIo[m.executionIoId].starRating}점`
-                                : '평가'}
+                              {feedbackByIo[m.executionIoId] ? <StarFilledIcon size={14} /> : <StarIcon size={14} />}
                             </button>
+                            </Tooltip>
                           )}
                         </div>
                       )}
@@ -1761,6 +1775,8 @@ export const Chat: React.FC<{
         {/* Teams 문맥 칩 — 켜져 있다는 사실이 **항상** 보여야 한다. 화면 캡처
             토글과 같은 원칙이다: 켜 둔 것을 잊고 남의 대화를 흘려보내는 것이
             이 기능의 유일한 위험이다. */}
+        {/* 입력창 위 도구 줄 — [Teams 대화 붙이기] 와 그 오른쪽의 모델 선택기. */}
+        <div className="composer-tools">
         {chip ? (
           <div className="teams-ctx" role="status">
             <TeamsIcon size={13} />
@@ -1811,6 +1827,8 @@ export const Chat: React.FC<{
             <TeamsIcon size={12} /> Teams 대화 붙이기
           </button>
         )}
+        <ModelPicker interactionId={session.interactionId} workflowId={agent.workflowId} />
+        </div>
         <input
           ref={imageInputRef}
           className="composer-image-input"

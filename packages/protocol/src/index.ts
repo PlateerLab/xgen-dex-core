@@ -36,6 +36,8 @@ import { VoiceApi } from './voice';
 import { HttpClient, type FetchLike } from './client';
 import type { CurrentUser, LoginResult } from './types';
 
+export * from './agent-session';
+
 export interface XgenClientOptions {
   baseUrl: string;
   fetch?: FetchLike;

@@ -10,6 +10,7 @@ import {
   removeWorkspaceTab,
   setWorkspaceRatio,
 } from '../src/renderer/src/views/workspace-layout';
+import { restoreSideView } from '../src/renderer/src/views/side-view';
 
 const chat = (id: string) => ({ id, kind: 'chat' as const, sessionKey: id.slice(5) });
 const workflowChat = (id: string, workflowId: string) => ({
@@ -191,4 +192,59 @@ test('옛 [아바타 설정] 탭은 되살리지 않는다 (설정의 [아바타
     ['settings'],
   );
   assert.equal(restored.groups[0].activeTabId, 'settings');
+});
+
+test('[앱] 탭은 재시작 뒤에도 그 자리에 되살아난다', () => {
+  const restored = normalizeWorkspaceLayout({
+    groups: [
+      {
+        id: 'group-a',
+        tabs: [
+          { id: 'settings', kind: 'settings' },
+          { id: 'apps', kind: 'apps' },
+        ],
+        activeTabId: 'apps',
+      },
+    ],
+    focusedGroupId: 'group-a',
+  });
+  assert.deepEqual(
+    restored.groups[0].tabs.map((tab) => [tab.id, tab.kind]),
+    [
+      ['settings', 'settings'],
+      ['apps', 'apps'],
+    ],
+  );
+  assert.equal(restored.groups[0].activeTabId, 'apps');
+});
+
+test('뷰어 탭이 고르던 앱(viewerApp)은 영속을 통과하고, 잘못된 값은 버려진다', () => {
+  const restored = normalizeWorkspaceLayout({
+    groups: [
+      {
+        id: 'g1',
+        tabs: [
+          { id: 'viewer:wf1', kind: 'agent-viewer', workflowId: 'wf1', viewerSub: 'apps', viewerApp: 'sales-board' },
+          { id: 'viewer:wf2', kind: 'agent-viewer', workflowId: 'wf2', viewerSub: 'apps', viewerApp: 42 },
+          { id: 'viewer:wf3', kind: 'agent-viewer', workflowId: 'wf3', viewerSub: 'apps', viewerApp: '' },
+        ],
+        activeTabId: 'viewer:wf1',
+      },
+    ],
+    focusedGroupId: 'g1',
+  });
+  assert.deepEqual(
+    restored.groups[0].tabs.map((t) => t.viewerApp),
+    ['sales-board', undefined, undefined],
+  );
+});
+
+test('사이드바 [앱] 으로 저장된 보기는 기본 보기(Agent)로 연다', () => {
+  // [앱] 은 사이드바였다가 탭이 되었다 — 옛 값이면 빈 사이드바가 되지 않게 기본 보기로.
+  assert.equal(restoreSideView('apps'), 'agent');
+  assert.equal(restoreSideView('artifacts'), 'agent');
+  assert.equal(restoreSideView('teams'), 'teams');
+  assert.equal(restoreSideView('explorer'), 'explorer');
+  assert.equal(restoreSideView(undefined), 'agent');
+  assert.equal(restoreSideView('nope'), 'agent');
 });

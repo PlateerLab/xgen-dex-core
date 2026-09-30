@@ -7,7 +7,9 @@ export type WorkspaceTabKind =
   | 'settings'
   | 'agent-viewer'
   | 'agent-create'
-  | 'file-viewer';
+  | 'file-viewer'
+  /** [앱] — 내 앱·앱 스토어. 설정처럼 하나뿐인 탭이다(id 'apps'). */
+  | 'apps';
 
 /** 에이전트 뷰어가 처음 열 하위 탭 — 정의는 core(main 의 영속 스키마와 공유). */
 import type { AgentViewerSub } from '@dex/protocol';
@@ -27,6 +29,11 @@ export interface WorkspaceTab {
   roomName?: string;
   /** kind==='agent-viewer' 일 때 처음 열 하위 탭. */
   viewerSub?: AgentViewerSub;
+  /**
+   * kind==='agent-viewer' 의 [앱] 하위 탭에서 고른 앱(폴더 이름). [앱] 탭의 [열기] 가 이 값으로
+   * 그 앱을 골라 연다. 고른 것이 바뀌면 뷰어가 다시 적어 두므로 재시작 뒤에도 같은 앱이 열린다.
+   */
+  viewerApp?: string;
   /** kind==='file-viewer' — 탐색기에서 연 파일. */
   fileRel?: string;
   fileName?: string;
@@ -75,7 +82,7 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   if (
     typeof tab.id !== 'string' ||
     // 옛 [아바타 설정] 탭('avatar')은 설정의 [아바타 설정] 탭으로 들어갔다(2026-09-29) — 버린다.
-    !['chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer'].includes(
+    !['chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer', 'apps'].includes(
       String(tab.kind),
     )
   ) {
@@ -105,6 +112,7 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
     fileSection: tab.fileSection === 'cloud' || tab.fileSection === 'agent' ? tab.fileSection : undefined,
     // 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 탭은 'artifacts' 다 — 같은 탭으로 연다.
     viewerSub: viewerSubs.includes(restoredSub(tab.viewerSub)) ? restoredSub(tab.viewerSub) : undefined,
+    viewerApp: typeof tab.viewerApp === 'string' && tab.viewerApp ? tab.viewerApp : undefined,
   };
 }
 

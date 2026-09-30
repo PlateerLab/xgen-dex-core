@@ -121,7 +121,10 @@ export interface ConnectorConfig {
   linuxClickThrough?: boolean;
   /** 메인 창 크롬 상태와 두 패널 탭 배치. */
   ui?: {
-    /** 'artifacts' 는 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 값 — 읽을 때 'apps' 로 본다. */
+    /**
+     * 'apps'·'artifacts' 는 [앱] 이 사이드바였을 때 저장된 값이다 — [앱] 은 이제 탭이라 읽을 때
+     * 'agent' 로 본다('artifacts' 는 이름을 앱으로 바꾸기 전, 2026-09-28 의 이름).
+     */
     sideView?: 'agent' | 'explorer' | 'teams' | 'apps' | 'artifacts';
     sidebarCollapsed?: boolean;
     sidebarWidth?: number;
@@ -179,13 +182,15 @@ export interface WorkspaceLayoutPersistConfig {
         | 'settings'
         | 'agent-viewer'
         | 'agent-create'
-        | 'file-viewer';
+        | 'file-viewer'
+        | 'apps';
       sessionKey?: string;
       workflowId?: string;
       workflowName?: string;
       roomId?: string;
       roomName?: string;
       viewerSub?: AgentViewerSub;
+      viewerApp?: string;
       fileRel?: string;
       fileName?: string;
       fileSection?: 'cloud' | 'agent';

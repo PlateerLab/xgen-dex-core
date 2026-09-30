@@ -30,6 +30,7 @@ import type {
   IdeStorageEntry,
 } from '@dex/protocol';
 import { xgen, copyText } from '../bridge';
+import { subscribeWorkspace } from '../workspace-watch';
 import { loadMonaco } from './monaco';
 
 async function call<T>(method: string, workflowId: string, ...args: unknown[]): Promise<T> {
@@ -74,25 +75,8 @@ function listen(): void {
 
 let socketSeq = 0;
 
-// ── 스토리지 변경 알림 — main 이 소켓을 열고, 바뀌면 구독 key 로 알려 준다 ───────
-const watchers = new Map<string, () => void>();
-let watching = false;
-let watchSeq = 0;
-
-function subscribeWorkspace(workflowId: string, onChange: () => void): () => void {
-  if (!watching) {
-    watching = true;
-    xgen.ide.onChanged((key) => watchers.get(key)?.());
-  }
-  watchSeq += 1;
-  const key = `${workflowId}:${watchSeq}`;
-  watchers.set(key, onChange);
-  xgen.ide.watch(key, workflowId);
-  return () => {
-    watchers.delete(key);
-    xgen.ide.unwatch(key);
-  };
-}
+// ── 스토리지 변경 알림 — main 이 소켓을 열고, 바뀌면 알려 준다 ───────
+// 앱 화면도 같은 알림을 들어서 구독 창구는 한 곳(workspace-watch.ts)에 있다.
 
 /** [폴더] 창을 열어 달라는 부탁 — 이 대화의 채팅 화면이 듣는다(IDE 탐색기의 [폴더 연결 관리]). */
 export const OPEN_CHAT_FOLDERS_EVENT = 'xgen:chat-folders-open';

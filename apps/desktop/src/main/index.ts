@@ -32,6 +32,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeExternalUrl } from './external-url';
+import { publicAppUrl } from './app-links';
 import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
@@ -42,9 +43,8 @@ import {
   type TtsSpeakOptions,
   type SshServerInput,
   type ChatStopResult,
-  type Agent,
   type AppApiDeclaration,
-  type AppGalleryItem,
+  type AppStoreListParams,
   describeError,
   applyNotificationPreferenceUpdate,
   ideFailureOf,
@@ -2504,16 +2504,6 @@ ipcMain.handle(CHANNELS.agentWsTree, (_e, wf: string, path?: string) =>
   getClient().agentData.workspaceTree(wf, path),
 );
 
-/** [앱 모음] 의 응답 — 못 읽은 에이전트도 숨기지 않고 함께 돌려준다. */
-interface AppGalleryResult {
-  items: AppGalleryItem[];
-  /** 훑어본 에이전트 수 (Geny 만). */
-  scanned: number;
-  /** 목록을 못 읽은 에이전트 이름들 — 조용히 빠뜨리지 않는다. */
-  failed: string[];
-  error?: string;
-}
-
 // ── 앱 ──────────────────────────────────────────────────────
 ipcMain.handle(CHANNELS.appList, (_e, wf: string) => getClient().agentData.appList(wf));
 ipcMain.handle(CHANNELS.appGet, (_e, wf: string, slug: string) =>
@@ -2550,6 +2540,31 @@ ipcMain.handle(CHANNELS.appOpenWeb, (_e, wf: string, slug: string) => {
   return url;
 });
 
+/**
+ * [앱 스토어] 의 앱을 공개 링크로 연다 — 로그인 없이 열리는 주소다.
+ *
+ * 렌더러는 서버가 준 경로만 넘긴다. 절대 주소는 appOpenWeb 과 같은 방식으로 여기서
+ * 만들고, 서버와 다른 곳을 가리키면 열지 않는다(app-links.ts).
+ */
+ipcMain.handle(CHANNELS.appOpenPublic, (_e, path: string) => {
+  const url = publicAppUrl(normalizeServerUrl(loadConfig().serverUrl), path);
+  if (!url) throw new Error('열 수 없는 주소입니다');
+  void shell.openExternal(url);
+  return url;
+});
+
+// [앱] 탭 — [내 앱]·[앱 스토어]. 서버가 에이전트를 훑어 모아 주므로 여기서는 통과만 한다.
+ipcMain.handle(CHANNELS.appStoreMine, () => getClient().agentData.appStoreMine());
+ipcMain.handle(CHANNELS.appStoreList, (_e, params?: AppStoreListParams) => {
+  const p = params && typeof params === 'object' ? params : {};
+  return getClient().agentData.appStoreList({
+    search: typeof p.search === 'string' ? p.search : undefined,
+    scope: p.scope === 'mine' ? 'mine' : 'all',
+    page: typeof p.page === 'number' ? p.page : undefined,
+    pageSize: typeof p.pageSize === 'number' ? p.pageSize : undefined,
+  });
+});
+
 ipcMain.handle(
   CHANNELS.appCallApi,
   (_e, apis: AppApiDeclaration[], alias: string, params?: Record<string, string>) =>
@@ -2561,55 +2576,6 @@ ipcMain.handle(
     getClient().agentData.appHttp(workflowId, slug, req),
 );
 
-/**
- * [앱 모음] — 모든 에이전트가 만든 것 중 **지금 열리는 것**만.
- *
- * 서버에 "전부 다오" 엔드포인트는 없다(앱은 에이전트 workspace 안의
- * 폴더라, 소유자별로만 물어볼 수 있다). 그래서 여기서 훑는다 — 렌더러가 아니라
- * main 인 이유는 왕복이 에이전트 수만큼 생기기 때문이다. IPC 한 번으로 끝난다.
- *
- * Geny 에이전트만 묻는다: workspace 가 있는 것이 그것뿐이라, 나머지에 물으면
- * 확실히 빈 목록을 받으려고 요청을 낭비하는 셈이다.
- */
-ipcMain.handle(CHANNELS.appGallery, async (): Promise<AppGalleryResult> => {
-  const client = getClient();
-  let agents: Agent[];
-  try {
-    // listAll — 한 페이지만 읽으면 에이전트가 많은 계정에서 **조용히** 잘린다.
-    // 그건 이 화면이 가장 하지 말아야 할 실패다(빠진 줄을 아무도 모른다).
-    agents = await client.agents.listAll();
-  } catch (e) {
-    return { items: [], scanned: 0, failed: [], error: (e as Error).message };
-  }
-  const targets = agents.filter((a) => a.hasAgentGeny);
-  const items: AppGalleryItem[] = [];
-  const failed: string[] = [];
-  // 동시 요청은 묶어서 — 에이전트가 수십 개여도 서버를 한꺼번에 때리지 않는다.
-  const LANES = 6;
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(LANES, targets.length) }, async () => {
-      for (;;) {
-        const agent = targets[cursor++];
-        if (!agent) return;
-        try {
-          const res = await client.agentData.appList(agent.workflowId);
-          for (const a of res.apps) {
-            // "현재 serving 되고 있는 것만" — 열 수 없는 것은 그 에이전트의
-            // [앱] 탭에서 이유와 함께 본다. 모음은 **여는 자리**다.
-            if (!a.ready) continue;
-            items.push({ ...a, workflowId: agent.workflowId, workflowName: agent.workflowName });
-          }
-        } catch {
-          // 한 에이전트를 못 읽는 것과 모음을 못 여는 것은 다른 일이다.
-          failed.push(agent.workflowName || agent.workflowId);
-        }
-      }
-    }),
-  );
-  items.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
-  return { items, scanned: targets.length, failed };
-});
 // ── IDE (채팅의 [IDE] 보기) ─────────────────────────────────────
 // 서버 경로는 @dex/protocol 의 IdeApi 에 있다. 여기서는 허용된 메서드만 부르고, 실패를
 // 봉투({ok:false, status, code, message, detail})로 돌려준다 — IPC 가 오류를 문자열로만

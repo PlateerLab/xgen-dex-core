@@ -1,6 +1,7 @@
 import React from 'react';
 import type { SessionState } from '../session-store';
 import {
+  AppIcon,
   AvatarIcon,
   BotIcon,
   BrowserIcon,
@@ -16,6 +17,7 @@ import type { WorkspaceGroup, WorkspaceTab } from './workspace-layout';
 function label(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
   if (tab.kind === 'teams') return tab.roomName || '대화';
   if (tab.kind === 'settings') return '설정';
+  if (tab.kind === 'apps') return '앱';
   if (tab.kind === 'agent-create') return '새 에이전트';
   if (tab.kind === 'file-viewer') return tab.fileName || '파일';
   if (tab.kind === 'agent-viewer') return `${tab.workflowName || '에이전트'} 뷰어`;
@@ -63,6 +65,8 @@ export const TabBar: React.FC<{
                 <BotIcon size={13} />
               ) : tab.kind === 'file-viewer' ? (
                 <DocIcon size={13} />
+              ) : tab.kind === 'apps' ? (
+                <AppIcon size={13} />
               ) : (
                 <AvatarIcon size={13} />
               )}

@@ -110,6 +110,20 @@ test('VSCode/Desktop hosts use platform-specific keys, registration routes and a
   }
 });
 
+test('host-bound sessions reject other account credentials and local reads before key access', async () => {
+  const f = await fixture('desktop');
+  try {
+    const session = new NativeHostSession(ORIGIN, 'desktop', f.keys(), (async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/api/auth/login') return Response.json({ success: true, user_id: '7', access_token: ACCOUNT });
+      assert.equal(path, '/api/auth/logout'); return Response.json({ success: true });
+    }) as typeof fetch, '8');
+    await assert.rejects(session.login('a', 'p'), DexError);
+    await assert.rejects(session.status('7'), DexError);
+    assert.equal(f.stored(), null);
+  } finally { await f.cleanup(); }
+});
+
 test('refresh persists a token-free journal before requests and saves rotated credentials before future reads', async () => {
   const f = await fixture();
   try {

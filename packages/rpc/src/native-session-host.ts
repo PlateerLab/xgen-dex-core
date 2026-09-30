@@ -15,17 +15,16 @@ function fields(p: Record<string, unknown>, allowed: string[]): void {
 interface Watch {
   id: string; controller: AbortController; done: Promise<void>;
 }
-export interface NativeSessionHostOptions { keys?: NativeDeviceKeyStore; fetch?: typeof fetch }
+export interface NativeSessionHostOptions { keys?: NativeDeviceKeyStore; fetch?: typeof fetch; expectedUserId?: string }
 
-/** VSCode's stdio engine owns all credentials. RPC bodies cannot change this platform. */
+/** Host owns all credentials. Request bodies cannot change the constructor's platform. */
 export class NativeSessionRpcHost {
-  readonly platform = 'vscode' as const;
   private readonly keys: NativeDeviceKeyStore;
   private active: AbortController | null = null;
   private watch: Watch | null = null;
   private closed = false;
   constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeFocusNotification) => void,
-    private readonly options: NativeSessionHostOptions = {}) { this.keys = options.keys ?? new NativeDeviceKeyStore(); }
+    private readonly options: NativeSessionHostOptions = {}, readonly platform: 'vscode' | 'desktop' = 'vscode') { this.keys = options.keys ?? new NativeDeviceKeyStore(); }
   cancel(): void { this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort(); }
   close(): void { this.closed = true; this.cancel(); }
   private async stopWatch(): Promise<void> {
@@ -52,20 +51,23 @@ export class NativeSessionRpcHost {
         ...(passwordAction ? ['password'] : []), ...(device && action === 'register' ? ['device_name'] : []),
         ...(device && action === 'request-approval' ? ['approver_device_id'] : [])]);
       const account = text(p, accountField)!; const password = passwordAction ? text(p, 'password')! : '';
+      if (accountField === 'user_id' && this.options.expectedUserId !== undefined && account !== this.options.expectedUserId) {
+        throw new DexError('auth_required', '현재 앱에 로그인한 계정만 사용할 수 있습니다.');
+      }
       const config = await this.configs.read(); signal.throwIfAborted();
       const profile = text(p, 'profile', false) ?? config.currentProfile;
       const configured = config.profiles[profile]; if (!configured) throw new DexError('not_found', 'HTTPS 서버 프로필을 먼저 설정하세요.');
       const scope = nativeKeyScope({ origin: configured.serverUrl, platform: this.platform, userId: accountField === 'email' ? '1' : account });
       const envelope = { platform_type: this.platform, profile, server_url: scope.origin };
-      const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch);
+      const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch, this.options.expectedUserId);
       if (device) {
         let operation: NativeEnrollmentAction;
-        if (action === 'register') operation = { action, deviceName: text(p, 'device_name', false) ?? 'VSCode' };
+        if (action === 'register') operation = { action, deviceName: text(p, 'device_name', false) ?? (this.platform === 'vscode' ? 'VSCode' : 'Desktop') };
         else if (action === 'status' || action === 'approvers') operation = { action };
         else if (action === 'request-approval') operation = { action, approverDeviceId: text(p, 'approver_device_id')! };
         else throw new DexError('usage_error', '지원하지 않는 기기 작업입니다.');
         const result = await nativeAccountDeviceEnrollment({ origin: scope.origin, platform: this.platform, email: account, password,
-          operation, keys: this.keys, fetch: this.options.fetch, signal });
+          operation, keys: this.keys, fetch: this.options.fetch, signal, expectedUserId: this.options.expectedUserId });
         signal.throwIfAborted(); return { ...envelope, ...result };
       }
       if (action === 'watch') {
@@ -73,7 +75,7 @@ export class NativeSessionRpcHost {
         if (interval !== undefined && (typeof interval !== 'number' || !Number.isSafeInteger(interval))) throw new DexError('usage_error', '구독 간격은 정수 ms여야 합니다.');
         const watcher = new NativeAgentFocusWatcher(session, account, { intervalMs: interval as number | undefined });
         const status = await session.status(account, signal);
-        if (status.state !== 'active') throw new DexError('auth_required', '사용 가능한 VSCode access가 없습니다. 로그인 또는 갱신을 먼저 실행하세요.');
+        if (status.state !== 'active') throw new DexError('auth_required', '사용 가능한 플랫폼 access가 없습니다. 로그인 또는 갱신을 먼저 실행하세요.');
         const watch: Watch = { id: randomUUID(), controller: new AbortController(), done: Promise.resolve() }; this.watch = watch;
         // Acknowledgment precedes notifications, as with chat/start.
         setImmediate(() => {

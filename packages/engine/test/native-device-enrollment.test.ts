@@ -80,6 +80,15 @@ test('HTTP profiles are rejected before authentication; account mismatch never r
   assert.equal(f.scope(), undefined); assert.equal(f.calls.at(-1)?.path, '/api/auth/logout');
 });
 
+test('host account binding rejects another valid account before key/device access and revokes the temporary login', async () => {
+  const f = fixture([]);
+  await assert.rejects(nativeDeviceEnrollment({ origin: 'https://app.example.test', platform: 'desktop', expectedUserId: '8',
+    email: 'a', password: 'p', operation: { action: 'register' }, keys: f.keys, fetch: f.fetchImpl }),
+    (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+  assert.equal(f.scope(), undefined);
+  assert.deepEqual(f.calls.map((call) => call.path), ['/api/auth/login', '/api/auth/logout']);
+});
+
 test('successful device work reports failed logout without exposing its token or server body', async () => {
   const f = fixture([{ device_id: DEVICE, state: 'trusted' }]);
   const fetchImpl = (async (input, init) => new URL(String(input)).pathname === '/api/auth/logout'

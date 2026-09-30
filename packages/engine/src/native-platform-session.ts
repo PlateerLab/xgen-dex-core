@@ -39,13 +39,17 @@ function requireAccess(record: NativeSessionRecord): string {
 export class NativeHostSession {
   private readonly origin: string;
   private readonly fetchImpl: typeof fetch;
-  constructor(origin: string, readonly platform: NativeKeyScope['platform'], private readonly keys = new NativeDeviceKeyStore(), fetchImpl?: typeof fetch) {
+  constructor(origin: string, readonly platform: NativeKeyScope['platform'], private readonly keys = new NativeDeviceKeyStore(), fetchImpl?: typeof fetch,
+    private readonly expectedUserId?: string) {
     this.origin = nativeKeyScope({ origin, platform, userId: '1' }).origin;
     this.fetchImpl = fetchImpl ?? globalThis.fetch;
   }
-  private scope(userId: string): NativeKeyScope { return nativeKeyScope({ origin: this.origin, platform: this.platform, userId }); }
+  private scope(userId: string): NativeKeyScope {
+    if (this.expectedUserId !== undefined && userId !== this.expectedUserId) throw new DexError('auth_required', '현재 앱에 로그인한 계정만 사용할 수 있습니다.');
+    return nativeKeyScope({ origin: this.origin, platform: this.platform, userId });
+  }
   async login(email: string, password: string, signal?: AbortSignal): Promise<NativeSessionSummary> {
-    return withNativeAccount({ origin: this.origin, email, password, fetch: this.fetchImpl, signal }, async (userId, current) => {
+    return withNativeAccount({ origin: this.origin, email, password, fetch: this.fetchImpl, signal, expectedUserId: this.expectedUserId }, async (userId, current) => {
       const scope = this.scope(userId);
       return this.keys.withSession(scope, async (identity, _sign, vault) => {
         signal?.throwIfAborted();

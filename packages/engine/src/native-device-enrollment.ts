@@ -10,6 +10,7 @@ export interface NativeEnrollmentOptions {
   origin: string;
   /** Fixed by the owning host, never selected from an RPC operation body. */
   platform?: NativeKeyScope['platform'];
+  expectedUserId?: string;
   email: string;
   password: string;
   operation: NativeEnrollmentAction;

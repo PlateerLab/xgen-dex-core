@@ -10,11 +10,14 @@ export interface NativeAccountOptions {
   password: string;
   fetch?: typeof fetch;
   signal?: AbortSignal;
+  /** Optional host account binding, checked before key access or device/session mutation. */
+  expectedUserId?: string;
 }
 /** Temporary password login, isolated from the legacy CLI credential file. */
 export async function withNativeAccount<T>(options: NativeAccountOptions,
   work: (userId: string, current: () => NativeAccountCredential | null) => Promise<T>): Promise<T> {
   const origin = nativeKeyScope({ origin: options.origin, platform: 'cli', userId: '1' }).origin;
+  if (options.expectedUserId !== undefined) nativeKeyScope({ origin, platform: 'cli', userId: options.expectedUserId });
   if (!options.email.trim() || !options.password || new TextEncoder().encode(options.password).length > 1024) {
     throw new DexError('usage_error', '이메일과 비밀번호가 필요합니다.');
   }
@@ -41,6 +44,7 @@ export async function withNativeAccount<T>(options: NativeAccountOptions,
     if (typeof login.access_token === 'string' && login.access_token.length <= 8192 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(login.access_token)) token = login.access_token;
     if (login.success !== true || !token || typeof login.user_id !== 'string') throw new NativePlatformProtocolError('Invalid native account response');
     const scope = nativeKeyScope({ origin, platform: 'cli', userId: login.user_id });
+    if (options.expectedUserId !== undefined && scope.userId !== options.expectedUserId) throw new DexError('auth_required', '현재 앱에 로그인한 계정의 이메일과 비밀번호를 사용하세요.');
     credential = { authScope: `${scope.userId}/${randomUUID()}`, accessToken: token };
     const result = await work(scope.userId, () => credential);
     completed = true;

@@ -78,13 +78,13 @@ export interface InitializeResult {
 }
 
 export interface NativeRpcResult {
-  platform_type: 'vscode'; profile: string; server_url: string; user_id: string;
+  platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; user_id: string;
   result?: NativeSessionSummary | NativeEnrollmentResult;
   watch_id?: string;
   server_revoked?: false;
 }
 export interface NativeFocusNotification {
-  platform_type: 'vscode'; profile: string; server_url: string; watch_id: string;
+  platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; watch_id: string;
   update: NativeAgentFocusUpdate;
 }
 

@@ -13,6 +13,7 @@ import { SshSettings } from './SshSettings';
 import { McpSettings } from './McpSettings';
 import { FileSystemSettings } from './FileSystemSettings';
 import { VoiceSettings } from './VoiceSettings';
+import { NativeSessionSettings } from './NativeSessionSettings';
 import { Selector } from './Selector';
 import { notificationStore, useNotifications } from '../notifications';
 import type { NotificationEventType, NotificationPrivacy } from '@dex/protocol/notifications';
@@ -33,7 +34,7 @@ type Theme = NonNullable<ConnectorConfig['theme']>;
 // 성격이 다른 두 기능이 섞여 있어 [PC 컨트롤](셸·파일)과 [MCP]로 가른다.
 type Tab =
   | 'general' | 'notifications' | 'avatar'
-  | 'browser' | 'pc' | 'mcp' | 'ssh' | 'filesystem';
+  | 'browser' | 'pc' | 'mcp' | 'ssh' | 'filesystem' | 'sessions';
 /** [연결된 기기] — 같은 계정의 커넥터(이 PC·폰·CLI/VSCode) 현황. 멀티 디바이스
  *  커넥터의 상태 대시보드: 어느 기기의 어떤 도구가 몇 개 광고 중인지 한눈에. */
 const ConnectorDevicesCard: React.FC = () => {
@@ -101,6 +102,7 @@ const ConnectorDevicesCard: React.FC = () => {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: '일반' },
+  { id: 'sessions', label: '기기·세션' },
   { id: 'notifications', label: '알림' },
   { id: 'avatar', label: '아바타' },
   { id: 'browser', label: '브라우저' },
@@ -430,6 +432,7 @@ export const Settings: React.FC<{
       </div>
 
       <div className="settings-panel">
+        {tab === 'sessions' && <NativeSessionSettings origin={config.serverUrl} />}
         {/* ─── 연결 ─── */}
         {/* ─── 일반 — [일반][업데이트][설치][서버] 네 분류(공통 SettingsSection).
              서버(연결)를 맨 아래 두는 이유: 한 번 정하면 거의 안 건드리는 값인데

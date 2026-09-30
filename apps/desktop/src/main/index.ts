@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
@@ -56,6 +57,7 @@ import {
   type TeamsEvent,
 } from '@dex/protocol';
 import { bindDesktopHost } from './dex-host';
+import { bindDesktopNativeSessions } from './native-session-ipc';
 import {
   loadConfig,
   saveConfig,
@@ -287,6 +289,7 @@ function loadRendererPage(win: BrowserWindow, page: string): void {
 }
 
 function handleAuthFailure(): void {
+  desktopNativeSessions.reset();
   getMcpBridge().stop();
   getBrowserRuntime().configure({ enabled: false });
   safeSend(mainWindow, CHANNELS.authFailed);
@@ -386,6 +389,10 @@ function createWindow(): void {
     webPreferences.sandbox = true;
     webPreferences.webSecurity = true;
     webPreferences.allowRunningInsecureContent = false;
+  });
+  mainWindow.webContents.on('render-process-gone', () => desktopNativeSessions.reset());
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) desktopNativeSessions.reset();
   });
   mainWindow.webContents.on('did-attach-webview', (_event, guest) => {
     guest.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -1292,6 +1299,7 @@ function resetPositions(): void {
 
 /** 로컬 설정과 로그인 정보를 지운 뒤 배포 기본값으로 다시 시작한다. */
 async function resetStoredSettings(): Promise<void> {
+  desktopNativeSessions.reset();
   getMcpBridge().stop();
   void client?.logout().catch(() => undefined);
   client = null;
@@ -1868,6 +1876,10 @@ function ensureDeviceId(): string {
 }
 
 // ── IPC: config ──────────────────────────────────────────────────
+const desktopNativeSessions = bindDesktopNativeSessions(() => mainWindow?.webContents ?? null,
+  () => ({ origin: normalizeServerUrl(loadConfig().serverUrl), userId: currentUserId() }),
+  process.env['ELECTRON_RENDERER_URL'] ? `${process.env['ELECTRON_RENDERER_URL']}/index.html`
+    : pathToFileURL(join(__dirname, '../renderer/index.html')).href);
 ipcMain.handle(CHANNELS.configGet, () => loadConfig());
 /** 서버 주소 확정 — 스킴이 없으면 https → http 순으로 실제로 두드려 정한다. */
 ipcMain.handle(CHANNELS.configProbeServer, async (_e, input: string) => {
@@ -1882,6 +1894,7 @@ ipcMain.handle(CHANNELS.configProbeServer, async (_e, input: string) => {
   });
 });
 ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) => {
+  if (patch.serverUrl !== undefined) desktopNativeSessions.reset();
   // Browser popup permissions are main-owned security state. Renderer settings
   // may update the other browser fields, but must neither grant permissions nor
   // erase existing rules when replacing the nested browser object.
@@ -2003,6 +2016,7 @@ function settleSsoWindow(): void {
 }
 
 ipcMain.handle(CHANNELS.authSsoLogin, async () => {
+  desktopNativeSessions.reset();
   const cfg = loadConfig();
   if (!cfg.ssoEnabled) throw new Error('SSO 로그인이 활성화되지 않았습니다.');
   const url = buildSsoUrl(
@@ -2092,6 +2106,7 @@ ipcMain.on(CHANNELS.authSsoComplete, (event, payload: unknown) => {
 ipcMain.handle(
   CHANNELS.authLogin,
   async (_e, email: string, password: string, remember?: boolean) => {
+    desktopNativeSessions.reset();
     const c = getClient();
     let res;
     try {
@@ -2119,6 +2134,7 @@ ipcMain.handle(
 
 // Launch: sign in with the remembered credentials (only when 자동 로그인 is on).
 ipcMain.handle(CHANNELS.authAutoLogin, async () => {
+  desktopNativeSessions.reset();
   if (!loadConfig().autoLogin) return { user: null };
   const creds = await credentialStore.get();
   if (!creds) return { user: null };
@@ -2149,6 +2165,7 @@ ipcMain.handle(CHANNELS.authLoginPrefill, async () => {
 });
 
 ipcMain.handle(CHANNELS.authRestore, async () => {
+  desktopNativeSessions.reset();
   const c = getClient();
   const access = await tokenStore.getAccess();
   const refresh = await tokenStore.getRefresh();
@@ -2180,6 +2197,7 @@ ipcMain.handle(CHANNELS.authRestore, async () => {
 });
 
 ipcMain.handle(CHANNELS.authLogout, async () => {
+  desktopNativeSessions.reset();
   getMcpBridge().stop();
   teamsHub.stopAll();
   await getBrowserRuntime().closeAll();
@@ -3936,6 +3954,7 @@ if (!gotLock) {
     /* stay resident in the tray */
   });
   app.on('before-quit', () => {
+    desktopNativeSessions.reset();
     appQuitting = true;
     saveOverlayGeometry(true); // don't drop a pending move/resize on quit
     void browserHistoryStore?.flushAll().catch(() => undefined);

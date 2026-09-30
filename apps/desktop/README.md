@@ -233,3 +233,45 @@ is © Kil Hyung-jin, licensed under the SIL Open Font License 1.1.
 The pinned `agent-browser` 0.27.3 native helper is bundled under its Apache-2.0
 license. Packaging retains only the binaries required by the target OS/arch
 (Linux retains glibc and musl variants).
+
+
+## Native device and platform session (integration branch)
+
+In **Settings → 기기·세션**, register this PC, choose a trusted browser for approval,
+compare the six-digit code there, then sign in to the Desktop platform session.
+State/refresh/logout and the current Canonical conversation subscription are
+available in the same panel. The configured HTTPS origin and currently signed-in
+app account are fixed by the main process; entering another valid account is rejected.
+Passwords are cleared after each request. Device keys and session credentials use
+separate OS-keychain `desktop` slots with no file fallback. Only the main window's
+top-level frame at the pinned application page URL can call the native IPC surface.
+
+The native transport verifies default/OS CAs, sends no browser cookies or Origin,
+and never retries a request transparently. Chromium proxy settings and private
+certificate exceptions do not apply to this transport. Confirm proxy requirements
+before deployment. A server in `enrollment` mode returns 503 for platform login;
+this panel does not enable ACTIVE mode. Existing Workspace chat uses its current
+connection. Clear interrupted local records only after revoking the server session
+on the browser My Page; local clearing does not revoke a server session.
+
+For an opt-in real Electron UI/keychain test, build the app and run
+`node --import tsx scripts/cli-platform-session-fixture.mts --desktop` from the
+repository root. Against local HTTPS Compose, run
+`node --import tsx scripts/native-platform-session-compose.mts --desktop`.
+Both require a trusted localhost CA and use disposable accounts/key slots.
+
+### 기기·세션 설정
+
+**설정 → 기기·세션**에서 PC 등록, 신뢰 브라우저 선택 승인과 6자리 비교 코드,
+플랫폼 로그인·상태·갱신·로그아웃, 현재 Canonical 대화 구독을 사용할 수 있다.
+서버는 현재 설정의 HTTPS origin, 계정은 앱의 실제 로그인 계정으로 고정한다.
+다른 계정의 유효한 비밀번호를 입력해도 키 접근 전에 거절한다. 비밀번호 입력은
+요청 후 지우고 키·토큰은 별도 `desktop` OS 키체인 슬롯에만 보관한다.
+키체인 장애 시 파일로 저장하지 않으며 고정된 앱 주소의 기본 창 최상위 frame만 native IPC를 호출한다.
+
+인증 요청은 기본/OS CA를 검증하며 쿠키·Origin·투명 재시도·사설 인증서 예외를
+사용하지 않는다. Chromium 프록시 설정은 연결하지 않으므로 배포 환경에서 별도
+확인이 필요하다. `enrollment` 서버의 플랫폼 로그인 503은 현재 발급 차단 상태를
+뜻한다. 기존 Workspace 채팅은 현재 연결을 사용한다. 중단된 로컬 기록은 브라우저
+내 페이지에서 서버 세션을 먼저 폐기한 뒤 정리해야 하며 로컬 삭제만으로 서버가
+폐기되지는 않는다. 위 Electron/Compose 검증 스크립트는 임시 계정·키만 사용한다.

@@ -85,7 +85,7 @@ export class DexService implements vscode.Disposable {
     const configured = this.configuredCliPath();
     let cliPath = configured || this.located?.command || 'dex';
     if (cliPath === 'dex' && this.context.extensionMode === vscode.ExtensionMode.Development) {
-      const developmentCli = path.resolve(this.context.extensionPath, '..', 'dist', 'cli.js');
+      const developmentCli = path.resolve(this.context.extensionPath, '..', 'cli', 'dist', 'cli.js');
       if (fs.existsSync(developmentCli)) cliPath = developmentCli;
     }
     if (cliPath.startsWith('.')) {
@@ -96,13 +96,13 @@ export class DexService implements vscode.Disposable {
     if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
       return {
         command: 'node',
-        args: [cliPath, 'serve', '--stdio'],
+        args: [cliPath, 'serve', '--stdio', '--native-platform', 'vscode'],
         env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
       };
     }
     return {
       command: cliPath,
-      args: ['serve', '--stdio'],
+      args: ['serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
     };
   }

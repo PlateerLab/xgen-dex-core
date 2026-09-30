@@ -1,0 +1,98 @@
+import { randomUUID } from 'node:crypto';
+import { DexError, NativeAgentFocusWatcher, NativeDeviceKeyStore, NativeHostSession, nativeAccountDeviceEnrollment, nativeKeyScope,
+  type ConfigStore, type NativeEnrollmentAction } from '@dex/engine';
+import type { NativeFocusNotification, NativeRpcResult } from './wire';
+
+function text(p: Record<string, unknown>, key: string, required = true): string | undefined {
+  const value = p[key];
+  if (value === undefined && !required) return undefined;
+  if (typeof value !== 'string' || !value || value.length > 1024) throw new DexError('usage_error', '네이티브 요청의 필수 문자열을 확인하세요.');
+  return value;
+}
+function fields(p: Record<string, unknown>, allowed: string[]): void {
+  if (Object.keys(p).some((key) => !allowed.includes(key))) throw new DexError('usage_error', '지원하지 않는 네이티브 요청 항목입니다.');
+}
+interface Watch {
+  id: string; controller: AbortController; done: Promise<void>;
+}
+export interface NativeSessionHostOptions { keys?: NativeDeviceKeyStore; fetch?: typeof fetch }
+
+/** VSCode's stdio engine owns all credentials. RPC bodies cannot change this platform. */
+export class NativeSessionRpcHost {
+  readonly platform = 'vscode' as const;
+  private readonly keys: NativeDeviceKeyStore;
+  private active: AbortController | null = null;
+  private watch: Watch | null = null;
+  private closed = false;
+  constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeFocusNotification) => void,
+    private readonly options: NativeSessionHostOptions = {}) { this.keys = options.keys ?? new NativeDeviceKeyStore(); }
+  cancel(): void { this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort(); }
+  close(): void { this.closed = true; this.cancel(); }
+  private async stopWatch(): Promise<void> {
+    const watch = this.watch; this.watch = null; watch?.controller.abort(); await watch?.done;
+  }
+  async request(method: string, p: Record<string, unknown>): Promise<NativeRpcResult | { watching: false }> {
+    if (this.closed) throw new DexError('auth_required', '네이티브 호스트가 종료되었습니다.');
+    if (method === 'native/unwatch') {
+      fields(p, ['watch_id']); const id = text(p, 'watch_id');
+      if (this.watch?.id === id) await this.stopWatch(); return { watching: false };
+    }
+    if (method === 'native/cancel') { fields(p, []); this.cancel(); return { watching: false }; }
+    if (!['native/device', 'native/session', 'native/watch'].includes(method)) throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
+    if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
+    const controller = new AbortController(); this.active = controller;
+    const signal = controller.signal;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      await this.stopWatch(); signal.throwIfAborted();
+      const action = method === 'native/watch' ? 'watch' : text(p, 'action')!;
+      const device = method === 'native/device'; const passwordAction = device || ['login', 'logout'].includes(action);
+      const accountField = device || action === 'login' ? 'email' : 'user_id';
+      fields(p, ['profile', ...(action === 'watch' ? ['user_id', 'interval_ms'] : ['action', accountField]),
+        ...(passwordAction ? ['password'] : []), ...(device && action === 'register' ? ['device_name'] : []),
+        ...(device && action === 'request-approval' ? ['approver_device_id'] : [])]);
+      const account = text(p, accountField)!; const password = passwordAction ? text(p, 'password')! : '';
+      const config = await this.configs.read(); signal.throwIfAborted();
+      const profile = text(p, 'profile', false) ?? config.currentProfile;
+      const configured = config.profiles[profile]; if (!configured) throw new DexError('not_found', 'HTTPS 서버 프로필을 먼저 설정하세요.');
+      const scope = nativeKeyScope({ origin: configured.serverUrl, platform: this.platform, userId: accountField === 'email' ? '1' : account });
+      const envelope = { platform_type: this.platform, profile, server_url: scope.origin };
+      const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch);
+      if (device) {
+        let operation: NativeEnrollmentAction;
+        if (action === 'register') operation = { action, deviceName: text(p, 'device_name', false) ?? 'VSCode' };
+        else if (action === 'status' || action === 'approvers') operation = { action };
+        else if (action === 'request-approval') operation = { action, approverDeviceId: text(p, 'approver_device_id')! };
+        else throw new DexError('usage_error', '지원하지 않는 기기 작업입니다.');
+        const result = await nativeAccountDeviceEnrollment({ origin: scope.origin, platform: this.platform, email: account, password,
+          operation, keys: this.keys, fetch: this.options.fetch, signal });
+        signal.throwIfAborted(); return { ...envelope, ...result };
+      }
+      if (action === 'watch') {
+        const interval = p.interval_ms;
+        if (interval !== undefined && (typeof interval !== 'number' || !Number.isSafeInteger(interval))) throw new DexError('usage_error', '구독 간격은 정수 ms여야 합니다.');
+        const watcher = new NativeAgentFocusWatcher(session, account, { intervalMs: interval as number | undefined });
+        const status = await session.status(account, signal);
+        if (status.state !== 'active') throw new DexError('auth_required', '사용 가능한 VSCode access가 없습니다. 로그인 또는 갱신을 먼저 실행하세요.');
+        const watch: Watch = { id: randomUUID(), controller: new AbortController(), done: Promise.resolve() }; this.watch = watch;
+        // Acknowledgment precedes notifications, as with chat/start.
+        setImmediate(() => {
+          watch.done = watcher.run((update) => {
+            if (!this.closed && this.watch === watch && !watch.controller.signal.aborted) this.notify({ ...envelope, watch_id: watch.id, update });
+          }, watch.controller.signal).catch(() => {
+            // The watcher has emitted its safe stopped reason. Never log raw transport/keychain data.
+          }).finally(() => { if (this.watch === watch) this.watch = null; });
+        });
+        signal.throwIfAborted(); return { ...envelope, user_id: account, watch_id: watch.id };
+      }
+      const result = action === 'login' ? await session.login(account, password, signal)
+        : action === 'status' ? await session.status(account, signal)
+        : action === 'refresh' ? await session.refresh(account, signal)
+        : action === 'logout' ? await session.logout(account, password, signal)
+        : action === 'forget-local' ? await session.forgetLocal(account, signal) : null;
+      if (!result) throw new DexError('usage_error', '지원하지 않는 세션 작업입니다.');
+      signal.throwIfAborted(); return { ...envelope, user_id: result.user_id, result,
+        ...(action === 'forget-local' ? { server_revoked: false as const } : {}) };
+    } finally { clearTimeout(timeout); this.active = null; }
+  }
+}

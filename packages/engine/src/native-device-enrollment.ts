@@ -36,7 +36,7 @@ export async function nativeAccountDeviceEnrollment(options: NativeEnrollmentOpt
       if (options.operation.action === 'approvers') return client.trustOverview(options.signal);
       const status = await client.registrationStatus(options.signal);
       if (options.operation.action === 'status') return status;
-      if (options.operation.action === 'register') return status ?? client.register(options.operation.deviceName ?? platform, options.signal);
+      if (options.operation.action === 'register') return status ?? client.register(options.operation.deviceName ?? (platform === 'cli' ? 'CLI' : platform), options.signal);
       if (!status || status.state !== 'pending') throw new DexError('usage_error', '해당 플랫폼의 승인 대기 기기가 필요합니다.');
       return client.requestApproval(status.device_id, options.operation.approverDeviceId, options.signal);
     });

@@ -203,6 +203,11 @@ VS Code 1.95 이상이 필요합니다.
 | `xgenDex.cliPath` | `dex` 실행 파일 경로. 비우면 `PATH` 와 npm 전역 폴더에서 찾습니다 |
 | `xgenDex.profile` | 쓸 서버 프로필. 비우면 CLI 의 현재 프로필 |
 
+HTTPS 기기 등록·승인 요청·플랫폼 세션은 **XGEN Dex: 기기 및 플랫폼 세션** 명령에서 관리합니다.
+개발 중에는 빌드한 `apps/cli/dist/cli.js`의 절대 경로를 `xgenDex.cliPath`로 지정하면 배포 없이 검증할 수 있습니다.
+VSCode 키와 토큰은 OS 키체인의 별도 플랫폼 슬롯에 저장하며, 현재 Compose `enrollment` 모드에서는 기기 승인까지만 가능합니다.
+자세한 순서는 [VSCode 안내](apps/vscode/README.md#기기-및-플랫폼-세션)를 참고하세요.
+
 ---
 
 ## 업데이트

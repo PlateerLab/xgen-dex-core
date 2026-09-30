@@ -8,6 +8,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
 import { nativeKeyThumbprint } from '../packages/engine/src/native-dpop';
+import { DexRpcClient } from '../packages/rpc/src/client';
+
+const platform = process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
 const certificates = resolve('../xgen-infra/compose/full-stack/.local-certs');
@@ -77,7 +80,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       if (isRefresh && loseCompletion) { loseCompletion = false; req.socket.destroy(); return; }
       const exp = Math.floor(Date.now() / 1000) + 600;
       const input = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'platform-access+jwt' })).toString('base64url')}.${Buffer.from(JSON.stringify({
-        sub: userId, sid, device_id: deviceId, platform_type: 'cli', token_use: 'platform_access', exp, jti: randomUUID(),
+        sub: userId, sid, device_id: deviceId, platform_type: platform, token_use: 'platform_access', exp, jti: randomUUID(),
         cnf: { jkt: nativeKeyThumbprint(publicKey as any) } })).toString('base64url')}`;
       const access = `${input}.${createHmac('sha256', signingSecret).update(input).digest('base64url')}`;
       secrets.add(access);
@@ -180,13 +183,61 @@ function watch(expectedExit: number) {
   void done.catch(() => {});
   return { updates, done, until, stop: () => { child.kill('SIGINT'); }, kill: () => { child.kill('SIGKILL'); } };
 }
+async function vscodeFixture() {
+  const logs: string[] = []; const replies: unknown[] = []; const clients: DexRpcClient[] = [];
+  const client = () => {
+    const c = new DexRpcClient({ process: { command: process.execPath, args: ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
+      env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
+    clients.push(c); return c;
+  };
+  const session = async (c: DexRpcClient, action: string) => {
+    const r = await c.request<any>('native/session', { action, ...(action === 'login' ? { email } : { user_id: userId }),
+      ...(['login', 'logout'].includes(action) ? { password } : {}) }); replies.push(r); return r;
+  };
+  const notifications: any[] = []; const listeners = new Set<() => void>();
+  const until = (predicate: (v: any) => boolean) => new Promise<void>((resolveUpdate, reject) => {
+    const timer = setTimeout(() => { listeners.delete(check); reject(new Error('VSCode fixture progress deadline')); }, 10000);
+    const check = () => { if (notifications.some(predicate)) { clearTimeout(timer); listeners.delete(check); resolveUpdate(); } };
+    listeners.add(check); check();
+  });
+  try {
+    const first = client(); assert.equal((await first.start()).capabilities.nativePlatformSession?.platform, 'vscode');
+    assert.equal((await session(first, 'login')).result.state, 'active'); await first.stop();
+    const restored = client(); assert.equal((await session(restored, 'status')).result.state, 'active');
+    await session(restored, 'refresh');
+    restored.onNotification((n) => { if (n.method === 'native/focus') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
+    watching = true;
+    const started = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 }); replies.push(started);
+    await until((n) => n.watch_id === started.watch_id && n.update.type === 'focus' && n.update.focus.version === 3);
+    const rotation = client(); await session(rotation, 'refresh'); rotatedDuringWatch = true; await rotation.stop();
+    await until((n) => n.watch_id === started.watch_id && n.update.type === 'stopped');
+    assert.deepEqual(notifications.filter((n) => n.watch_id === started.watch_id && n.update.type === 'focus').map((n) => [n.update.focus.version, n.update.source]),
+      [[0, 'snapshot'], [1, 'replay'], [3, 'recovered'], [4, 'replay']]);
+    assert.equal(notifications.at(-1).update.reason, 'authentication');
+    const second = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 });
+    await until((n) => n.watch_id === second.watch_id && n.update.type === 'focus');
+    replies.push(await restored.request('native/unwatch', { watch_id: second.watch_id }));
+    const count = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, count);
+    assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
+    const restarted = client(); await session(restarted, 'login'); loseCompletion = true;
+    await assert.rejects(session(restarted, 'refresh')); assert.equal((await session(restarted, 'status')).result.state, 'refreshing');
+    const before = requests; await assert.rejects(session(restarted, 'refresh')); assert.equal(requests, before);
+    assert.equal((await session(restarted, 'forget-local')).server_revoked, false);
+    assert.equal(requests, before); assert.equal(contexts.size, 0); assert.equal(errors, 0);
+    const visible = JSON.stringify([replies, logs]);
+    for (const secret of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken', 'authScope']) assert.equal(visible.includes(secret), false);
+    console.log('VSCode stdio HTTPS / OS-keychain restore / platform isolation / cursor replay and reconnect / 409 recovery / another process rotation / 401 stop / unwatch / lost rotation journal PASS');
+  } finally { for (const c of clients) await c.stop(); }
+}
 try {
   await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
   const address = server.address(); assert.ok(address && typeof address !== 'string'); origin = `https://localhost:${address.port}`;
-  const scope = { origin, platform: 'cli' as const, userId };
+  const scope = { origin, platform, userId };
   keyCreated = true;
   await keys.withIdentity(scope, true, async (identity) => { publicKey = identity.publicKey; });
   writeFileSync(join(directory, 'config.json'), JSON.stringify({ version: 1, currentProfile: 'fixture', profiles: { fixture: { serverUrl: origin } } }), { mode: 0o600 });
+  if (platform === 'vscode') await vscodeFixture();
+  else {
   const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
   assert.deepEqual(await cli('status'), loggedIn);
   await cli('focus'); await cli('refresh'); await cli('focus');
@@ -214,12 +265,13 @@ try {
   assert.equal((await cli('forget-local')).state, 'signed_out'); assert.equal(requests, count);
   assert.equal(contexts.size, 0); assert.equal(errors, 0);
   console.log('Lost refresh completion: restart refuses reuse/retry; explicit local-only recovery PASS. ACTIVE Gateway remains untested.');
+  }
 } finally {
   server.closeAllConnections();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   try {
     if (keyCreated) {
-      const scope = { origin, platform: 'cli' as const, userId };
+      const scope = { origin, platform, userId };
       await keys.withSession(scope, async (_identity, _sign, vault) => { await vault.clear(); });
       await keys.remove(scope);
     }

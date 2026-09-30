@@ -20,7 +20,9 @@ test('invalid actions, account IDs, HTTP origins and credential flags fail befor
   const dependencies = { readPassword: async () => { read = true; return 'secret'; }, fetch: (async () => assert.fail()) as typeof fetch };
   for (const argv of [['session', 'retry'], ['session', 'login', '--email', 'a', '--password', 'secret'],
     ['session', 'refresh', '--user-id', '7', '--token', 'secret'], ['session', 'status', '--user-id', '01'],
-    ['session', 'focus', '--user-id', '7', '--password-stdin']]) {
+    ['session', 'focus', '--user-id', '7', '--password-stdin'], ['session', 'watch-focus', '--user-id', '7', '--json'],
+    ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '199'], ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '1e3'],
+    ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '60001'], ['session', 'status', '--user-id', '7', '--jsonl']]) {
     await assert.rejects(runSessionCommand(parseArgs(argv), configs(), dependencies), DexError);
   }
   await assert.rejects(runSessionCommand(parseArgs(['session', 'login', '--email', 'a']), configs('http://localhost'), dependencies), DexError);
@@ -46,6 +48,7 @@ test('JSON login/status/local forgetting expose no credential and do not ask for
       requests++; const path = new URL(String(input)).pathname;
       if (path === '/api/auth/login') return Response.json({ success: true, user_id: '7', access_token: 'e30.e30.c2ln' });
       if (path === '/api/auth/logout') return Response.json({ success: true });
+      if (path === '/api/agentflow/me/agent-state') return Response.json({ active_agent_session_id: null, version: 0, event_id: null });
       if (path.includes('/status/')) return Response.json({ device_id: DEVICE, state: 'trusted' });
       if (path.endsWith('/begin')) return Response.json({ flow_id: SID, device_id: DEVICE, challenge: CHALLENGE, expires_in_seconds: 300 });
       return Response.json({ session_id: SID, state: 'active', token_type: 'DPoP', access_token: access, access_expires_at: new Date(exp * 1000).toISOString(), refresh_token: refresh });
@@ -54,8 +57,16 @@ test('JSON login/status/local forgetting expose no credential and do not ask for
     await runSessionCommand(parseArgs(['session', 'login', '--email', 'a', '--json']), configs(), dependencies);
     const before = requests;
     await runSessionCommand(parseArgs(['session', 'status', '--user-id', '7', '--json']), configs(), dependencies);
+    const controller = new AbortController();
+    await runSessionCommand(parseArgs(['session', 'watch-focus', '--user-id', '7', '--jsonl']), configs(), {
+      ...dependencies, signal: controller.signal, write: (raw) => { output.push(raw); if (JSON.parse(raw).type === 'focus') controller.abort(); },
+    });
+    const updates = output.slice(2).map((raw) => JSON.parse(raw));
+    assert.deepEqual(updates.map((e) => e.type), ['reset', 'focus', 'stopped']);
+    assert.equal(updates[1].source, 'snapshot'); assert.equal(updates[2].reason, 'cancelled');
+    assert.equal(updates[1].authScope, undefined);
     await runSessionCommand(parseArgs(['session', 'forget-local', '--user-id', '7', '--json']), configs(), dependencies);
-    assert.equal(requests, before); assert.equal(reads, 1);
+    assert.equal(requests, before + 1); assert.equal(reads, 1);
     for (const raw of output) {
       for (const forbidden of ['private-password', 'privateKeyPkcs8', access, refresh, 'e30.e30.c2ln', 'accessToken', 'refreshToken']) assert.equal(raw.includes(forbidden), false);
     }

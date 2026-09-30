@@ -31,6 +31,11 @@ let loseCompletion = false;
 let requests = 0;
 let errors = 0;
 let keyCreated = false;
+const agentId = randomUUID(); const recoveredId = randomUUID();
+const event1 = randomUUID(); const event3 = randomUUID(); const event4 = randomUUID();
+let focus = { active_agent_session_id: null as string | null, version: 0, event_id: null as string | null };
+let watching = false; let disconnected = false; let rotatedDuringWatch = false;
+const watchCursors: number[] = [];
 const server = createServer({ cert: readFileSync(join(certificates, 'localhost.pem')), key: readFileSync(join(certificates, 'localhost-key.pem')) }, (req, res) => {
   void (async () => {
     requests++;
@@ -72,7 +77,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       if (isRefresh && loseCompletion) { loseCompletion = false; req.socket.destroy(); return; }
       const exp = Math.floor(Date.now() / 1000) + 600;
       const input = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'platform-access+jwt' })).toString('base64url')}.${Buffer.from(JSON.stringify({
-        sub: userId, sid, device_id: deviceId, platform_type: 'cli', token_use: 'platform_access', exp,
+        sub: userId, sid, device_id: deviceId, platform_type: 'cli', token_use: 'platform_access', exp, jti: randomUUID(),
         cnf: { jkt: nativeKeyThumbprint(publicKey as any) } })).toString('base64url')}`;
       const access = `${input}.${createHmac('sha256', signingSecret).update(input).digest('base64url')}`;
       secrets.add(access);
@@ -87,11 +92,28 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     const header = JSON.parse(Buffer.from(h, 'base64url').toString()); const proof = JSON.parse(Buffer.from(p, 'base64url').toString());
     assert.equal(header.typ, 'dpop+jwt'); assert.equal(header.alg, 'ES256');
     assert.equal(nativeKeyThumbprint(header.jwk), nativeKeyThumbprint(publicKey as any));
-    assert.equal(proof.htm, req.method); assert.equal(proof.htu, `${origin}${path}`);
+    assert.equal(proof.htm, req.method); assert.equal(proof.htu, `${origin}${path.split('?')[0]}`);
     assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url')); assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
     const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
     assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s, 'base64url'), Buffer.from(`${h}.${p}`)), true);
-    if (path === '/api/agentflow/me/agent-state') { reply({ active_agent_session_id: null, version: 0, event_id: null }); return; }
+    if (path === '/api/agentflow/me/agent-state') { reply(focus); return; }
+    if (path.startsWith('/api/agentflow/me/agent-events?')) {
+      const query = new URL(path, origin).searchParams; assert.equal(query.get('limit'), '100');
+      const cursor = Number(query.get('after_sequence')); watchCursors.push(cursor);
+      if (watching && !disconnected) { assert.equal(cursor, 0); disconnected = true; req.socket.destroy(); return; }
+      if (watching && cursor === 1) {
+        focus = { active_agent_session_id: recoveredId, version: 3, event_id: event3 };
+        res.writeHead(409); res.end('private-server-secret'); return;
+      }
+      if (watching && cursor === 4) { watching = false; res.writeHead(401); res.end('private-server-secret'); return; }
+      const next = watching && cursor === 0 ? { active_agent_session_id: agentId, version: 1, event_id: event1 }
+        : watching && cursor === 3 && rotatedDuringWatch ? { active_agent_session_id: agentId, version: 4, event_id: event4 } : null;
+      const events = next ? [{ event_id: next.event_id, sequence: next.version, event_type: 'agent_session.focus_changed',
+        previous_agent_session_id: focus.active_agent_session_id, active_agent_session_id: next.active_agent_session_id,
+        origin_id: 'fixture-peer', created_at: new Date().toISOString() }] : [];
+      if (next) focus = next;
+      reply({ events, next_cursor: focus.version, snapshot_version: focus.version, has_more: false }); return;
+    }
     assert.equal(path, `/api/me/platform-sessions/${sid}`); assert.equal(req.method, 'DELETE'); assert.equal(body.password, password);
     sid = null; refresh = null; res.writeHead(204); res.end();
   })().catch(() => { errors++; res.writeHead(500); res.end(); });
@@ -117,6 +139,47 @@ async function cli(action: string, expectedExit = 0) {
     child.stdin.end(secret ? password : '');
   });
 }
+function watch(expectedExit: number) {
+  const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', 'watch-focus', '--user-id', userId, '--jsonl', '--interval-ms', '200'],
+    { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const updates: any[] = []; let output = ''; let pending = ''; let stderr = ''; let failed = false;
+  const listeners = new Set<() => void>(); let finished = false;
+  const timeout = setTimeout(() => { failed = true; child.kill('SIGKILL'); }, 15000);
+  child.stdout.on('data', (chunk) => {
+    output += chunk; pending += chunk;
+    while (pending.includes('\n')) {
+      const index = pending.indexOf('\n');
+      try { updates.push(JSON.parse(pending.slice(0, index))); } catch { failed = true; }
+      pending = pending.slice(index + 1);
+    }
+    for (const listener of listeners) listener();
+  });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const done = new Promise<void>((resolveDone, reject) => {
+    child.on('error', () => { clearTimeout(timeout); finished = true; reject(new Error('Fixture watcher failed to start')); for (const listener of listeners) listener(); });
+    child.on('close', (code) => {
+      clearTimeout(timeout); finished = true;
+      try {
+        assert.equal(failed, false); assert.equal(code, expectedExit); assert.equal(pending, '');
+        for (const forbidden of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken', 'authScope']) {
+          assert.equal(output.includes(forbidden), false); assert.equal(stderr.includes(forbidden), false);
+        }
+        resolveDone();
+      } catch { reject(new Error('Fixture watcher validation failed; output withheld')); }
+      for (const listener of listeners) listener();
+    });
+  });
+  const until = (matches: (e: any) => boolean) => new Promise<void>((resolveUpdate, reject) => {
+    const check = () => {
+      if (updates.some(matches)) { listeners.delete(check); resolveUpdate(); }
+      else if (finished) { listeners.delete(check); reject(new Error('Fixture watcher ended before expected progress')); }
+    };
+    listeners.add(check); check();
+  });
+  // Attach immediately so an early child failure is never an unhandled rejection.
+  void done.catch(() => {});
+  return { updates, done, until, stop: () => { child.kill('SIGINT'); }, kill: () => { child.kill('SIGKILL'); } };
+}
 try {
   await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
   const address = server.address(); assert.ok(address && typeof address !== 'string'); origin = `https://localhost:${address.port}`;
@@ -127,6 +190,22 @@ try {
   const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
   assert.deepEqual(await cli('status'), loggedIn);
   await cli('focus'); await cli('refresh'); await cli('focus');
+  watching = true;
+  const subscriber = watch(3);
+  try {
+    await subscriber.until((e) => e.type === 'focus' && e.focus.version === 3);
+    await cli('refresh'); rotatedDuringWatch = true;
+    await subscriber.done;
+    assert.deepEqual(subscriber.updates.filter((e) => e.type === 'focus').map((e) => [e.focus.version, e.source]),
+      [[0, 'snapshot'], [1, 'replay'], [3, 'recovered'], [4, 'replay']]);
+    assert.equal(subscriber.updates.at(-1).reason, 'authentication');
+    assert.deepEqual(watchCursors.slice(0, 3), [0, 0, 1]);
+    assert.ok(watchCursors.includes(3)); assert.equal(watchCursors.at(-1), 4);
+  } finally { subscriber.kill(); await subscriber.done.catch(() => {}); }
+  const cancelled = watch(0);
+  try { await cancelled.until((e) => e.type === 'focus'); cancelled.stop(); await cancelled.done; assert.equal(cancelled.updates.at(-1).reason, 'cancelled'); }
+  finally { cancelled.kill(); await cancelled.done.catch(() => {}); }
+  console.log('HTTPS watcher: cursor replay / disconnect reconnect / 409 snapshot / concurrent process rotation / permission stop / Ctrl+C PASS');
   assert.equal((await cli('logout')).state, 'signed_out'); assert.equal((await cli('status')).state, 'signed_out');
   console.log('HTTPS fixture: separate built CLI processes / OS-keychain restore / rotation / Canonical DPoP / password logout PASS');
   await cli('login'); loseCompletion = true; await cli('refresh', 1);

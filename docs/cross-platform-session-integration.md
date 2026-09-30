@@ -13,11 +13,11 @@ Platform Session의 sid, trust 및 revoke 계약이 준비되면 Desktop·Mobile
 
 `@dex/protocol/agent-session`에는 공통 Canonical Agent Session 읽기 클라이언트와 이벤트 cursor 검사를 추가했다. 계정 포커스, 본인 세션 목록, snapshot, 이벤트 페이지를 Gateway 경로에서 읽으며, 매 요청에 **ACTIVE Platform Session** access token과 해당 기기 키의 새 DPoP 증명을 요구한다. 서명할 `htu`에서는 query를 제외하고 HTTP 요청에는 cursor query를 포함한다. 기존 `XgenClient`의 Bearer 토큰을 재사용하거나 인증 실패 시 fallback하지 않는다. 연속되지 않은 sequence, 충돌한 중복 이벤트 또는 잘못된 cursor는 적용하지 않고 snapshot 재조정을 호출자에게 맡긴다.
 
-`GET /api/agentflow/me/agent-events`도 같은 DPoP 경계로 읽고, `applyAccountEventPage`로 계정 포커스 변경을 순서대로 적용한다. 재연결 시 마지막으로 적용한 계정 version을 `after_sequence`에 전달한다. 이벤트의 이전 포인터가 로컬 포커스와 다르거나 이벤트가 누락·충돌하면 적용을 중단하고 `GET /api/agentflow/me/agent-state`로 포커스를 다시 읽는다. 이 공통 계약은 Desktop·CLI·VSCode의 인증된 watcher가 사용할 기반이며, 아직 해당 앱에 실제 연결되지는 않았다.
+`GET /api/agentflow/me/agent-events`도 같은 DPoP 경계로 읽고, `applyAccountEventPage`로 계정 포커스 변경을 순서대로 적용한다. 재연결 시 마지막으로 적용한 계정 version을 `after_sequence`에 전달한다. 이벤트의 이전 포인터가 로컬 포커스와 다르거나 이벤트가 누락·충돌하면 적용을 중단하고 `GET /api/agentflow/me/agent-state`로 포커스를 다시 읽는다. 이 공통 계약은 Desktop·CLI·VSCode의 인증된 watcher가 사용할 기반이다. CLI의 OS 키체인 공급자와 폴링 watcher에는 아래와 같이 연결했고 Desktop·VSCode 앱 연결은 남아 있다.
 
 공통 `reconcileAgentFocus`는 watcher의 한 번의 동기화 작업이다. 호출자는 검증된 계정·Platform Session이 바뀔 때 달라지는 비밀이 아닌 `authScope`를 제공하고, 이전 결과를 다음 호출에 전달한다. 범위가 바뀌면 이전 cursor를 버리고 포커스 스냅샷부터 읽는다. 같은 범위에서는 계정 이벤트를 최대 10페이지씩 재생해 남은 페이지가 있으면 `hasMore`를 반환한다. 409나 잘못된 이벤트 페이지는 스냅샷으로 복구하고, 인증·네트워크·취소 오류는 호출자에게 그대로 전달한다. 호출자는 폴링과 취소를 관리하며 계정 전환 시 이전 요청을 취소해야 한다.
 
-이 공통 패키지는 자격증명을 발급·보관하지 않는다. CLI는 아래 OS 키체인 공급자로 일회성 Canonical 읽기를 연결했다. Desktop·VSCode·Mobile의 공급자 및 앱 watcher 연결은 남아 있다. 현재 Compose는 `enrollment` 모드이므로 실제 Canonical API의 양성 경로는 HTTPS `active` 환경에서 검증한다.
+이 공통 패키지는 자격증명을 발급·보관하지 않는다. CLI는 아래 OS 키체인 공급자로 일회성 Canonical 읽기와 폴링 구독을 연결했다. Desktop·VSCode·Mobile의 공급자 및 앱 watcher 연결은 남아 있다. 현재 Compose는 `enrollment` 모드이므로 실제 Canonical API의 양성 경로는 HTTPS `active` 환경에서 검증한다.
 
 ## Native Platform Session 공통 클라이언트
 
@@ -63,7 +63,7 @@ dex device status --email me@example.com --profile corp
 - 키체인 부재·잠김·읽기/쓰기 실패·2초 timeout 또는 `DEX_NO_KEYCHAIN=1`은 기기 작업을 차단한다. 기존 plain-file fallback은 사용하지 않는다.
 - OS 키체인 서비스는 `xgen-dex-native-device`. 사용자 홈 `.xgen-dex-native-device-locks`에는 PID·작업 시작 시각만 저장한다. CLI 설정 폴더와 무관한 동일 계정 잠금으로 프로세스 간 생성·등록을 직렬화한다. timeout은 OS 작업을 취소하지 않으므로 실제 완료까지 잠금을 유지한다. 강제 종료로 남은 `.lock`은 기록된 프로세스의 종료를 확인한 뒤 해당 파일만 제거한다. 개인키가 지워진 경우 새 키가 기존 승인 기기를 대신한다고 취급하지 않고 기기 폐기·복구 절차를 따른다.
 - `register` 재실행은 같은 설치 ID의 기존 상태를 반환한다. 승인 요청은 pending 기기만 만들 수 있고, 선택한 브라우저가 현재 신뢰 상태인지 서버에서 다시 확인한다. 출력하는 6자리 코드는 양쪽 화면 대조용이며 승인 인증 수단이 아니다.
-- 등록 명령은 Platform Session을 발급하지 않는다. 별도의 CLI 세션 명령을 아래에 연결했으며 실제 ACTIVE 발급·Canonical watcher 연결은 후속 관문이다.
+- 등록 명령은 Platform Session을 발급하지 않는다. 별도의 CLI 세션 명령을 아래에 연결했으며 실제 ACTIVE 발급·Canonical watcher 양성 검증은 후속 관문이다.
 
 로컬 실사용 검증은 CLI 빌드 뒤 `node --import tsx scripts/native-platform-session-compose.mts --cli`로 실행한다. `--cli`는 CLI 플랫폼 테스트를 빌드한 CLI의 별도 프로세스로 바꾸고 실제 OS 키체인 저장·재실행 복원·중복 등록 방지·브라우저 승인·trusted 조회를 검증한다. 공개 mkcert root CA만 자식 Node의 `NODE_EXTRA_CA_CERTS`로 전달하며 TLS 검증은 유지한다. 임시 계정·서버 자료·OS 키체인 키·CLI 프로필 폴더는 종료 시 정리한다.
 
@@ -87,7 +87,7 @@ dex session forget-local --user-id <id> --profile corp
 - login은 임시 계정 인증과 trusted 설치 상태를 확인한 뒤 비밀번호·키 증명 ceremony를 진행한다. `pending_takeover`에는 토큰을 저장하지 않는다. access 발급 실패로 refresh만 받은 경우 보관 후 명시적인 `refresh`를 요구한다.
 - login·refresh·logout은 OS 키체인에 각각 `login_pending`·`refreshing`·`logout_pending`을 저장·재조회한 뒤 서버를 호출한다. 작업 중 기록에는 토큰이 없다. 완료 응답의 새 자격증명이 저장·재조회되기 전에는 사용하지 않는다. 등록과 같은 계정 잠금을 사용하여 여러 CLI 프로세스의 등록·갱신·읽기·삭제를 직렬화한다.
 - 통신 중단·취소·잘못된 완료 응답·결과 저장 실패에는 이전 refresh/access를 복원하거나 자동 재시도하지 않는다. 다음 프로세스도 남은 작업 상태에서 회전·읽기를 거절한다. 서버 세션을 내 페이지에서 폐기하고 `forget-local` 후 다시 로그인한다. 현재 Compose의 503 차단에서도 보수적으로 `login_pending`을 남긴다.
-- `status`는 **로컬 보관 상태**다. `active` 출력은 access를 사용할 수 있다는 뜻이며 서버의 현재 sid·기기 신뢰를 확인한 결과가 아니다. `focus`는 고정된 HTTPS origin의 Canonical 읽기에만 새 ES256 DPoP를 보낸다. method·query 없는 `htu`·access `ath`·매회 새 `jti`를 묶으며 공급자는 현재 계정 잠금 callback 안에서만 사용할 수 있다. 만료·취소·다른 토큰/경로·callback 종료 이후에는 서명을 거절한다. 폴링·watcher 및 WebSocket 연결은 남아 있다.
+- `status`는 **로컬 보관 상태**다. `active` 출력은 access를 사용할 수 있다는 뜻이며 서버의 현재 sid·기기 신뢰를 확인한 결과가 아니다. `focus`는 고정된 HTTPS origin의 Canonical 읽기에만 새 ES256 DPoP를 보낸다. method·query 없는 `htu`·access `ath`·매회 새 `jti`를 묶으며 공급자는 현재 계정 잠금 callback 안에서만 사용할 수 있다. 만료·취소·다른 토큰/경로·callback 종료 이후에는 서명을 거절한다. 폴링 watcher는 아래 명령으로 연결했고 WebSocket과 기존 TUI 채팅의 이행은 남아 있다.
 - `logout`은 유효한 access의 기기 DPoP와 현재 계정 비밀번호로 자기 sid의 `DELETE /api/me/platform-sessions/{sid}`를 호출하고 204 이후 세션 키체인 기록만 삭제한다. 설치 키는 보존한다. access가 만료되면 먼저 명시적인 refresh가 필요하다. 실패 시 토큰 없는 `logout_pending`이 남으며 서버 폐기를 완료한 것으로 보고하지 않는다. `forget-local`은 네트워크 호출 없이 로컬 기록만 지우고 JSON에 `server_revoked=false`를 표시한다.
 - 키체인 부재·잠김·오류·timeout·`DEX_NO_KEYCHAIN=1`에서는 세션 작업도 차단한다. plain-file fallback을 사용하지 않는다. 키 공급자의 기존 timeout과 프로세스 잠금 경계가 세션 읽기·쓰기·삭제에도 적용된다.
 
@@ -97,4 +97,28 @@ dex session forget-local --user-id <id> --profile corp
 
 `npm --prefix apps/cli run build` 후 `node --import tsx scripts/cli-platform-session-fixture.mts`는 통제된 HTTPS 서버와 실제 OS 키체인에서 별도 CLI 프로세스의 로그인·복원·회전·Canonical DPoP 서명·비밀번호 로그아웃을 검증했다. 서버가 회전 완료 후 연결을 끊으면 다음 CLI 프로세스는 옛 토큰을 재전송하지 않고 로컬 복구만 가능했다. fixture의 TLS는 기존 localhost 인증서와 공개 mkcert CA로 검증하며 임시 키체인 슬롯과 프로필을 정리했다. **이 검증은 실제 ACTIVE Gateway·Workflow 성공 검증이 아니다.**
 
-실제 `scripts/native-platform-session-compose.mts --cli`도 같은 Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`와 Core `c9125cfd2302d28a44512b836b9340439142685e`, `feat/cross-platform-session`, `workflow`·`frontend` 프로필, HTTPS 3443, `enrollment`에서 등록·선택 브라우저 승인과 CLI ACTIVE 로그인 503·안전한 작업 기록·명시적 로컬 복구를 통과했다. ACTIVE 모드 관문, 다른 앱의 키 공급자, takeover 완료 자격증명 수령과 Canonical watcher·실제 서버 양성 검증은 남아 있다. SDK/runtime 패키지는 배포하지 않는다.
+실제 `scripts/native-platform-session-compose.mts --cli`도 같은 Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`와 Core `c9125cfd2302d28a44512b836b9340439142685e`, `feat/cross-platform-session`, `workflow`·`frontend` 프로필, HTTPS 3443, `enrollment`에서 등록·선택 브라우저 승인과 CLI ACTIVE 로그인 503·안전한 작업 기록·명시적 로컬 복구를 통과했다. ACTIVE 모드 관문, 다른 앱의 키 공급자, takeover 완료 자격증명 수령과 Canonical watcher의 실제 서버 양성 검증은 남아 있다. SDK/runtime 패키지는 배포하지 않는다.
+
+
+## CLI Canonical focus watcher
+
+```sh
+dex session watch-focus --user-id <id> --profile corp --jsonl
+# interval-ms: 정수 200~60000, 기본 2000. 환경변수를 추가하지 않는다.
+dex session watch-focus --user-id <id> --profile corp --interval-ms 1000
+```
+
+`NativeCliSession.reconcileFocus`는 매 작업마다 OS 키체인에서 현재 자격증명을 복원하고 같은 계정 잠금 안에서 최대 10페이지를 재조정한다. origin·실제 사용자·플랫폼·install·device·sid 해시를 비밀이 아닌 cursor 범위로 쓰며 token/write generation은 포함하지 않는다. 따라서 정상 refresh 회전은 cursor를 유지하고 새 sid·기기·서버는 snapshot부터 읽는다. 로컬 저장/claim 확인을 서버 검증으로 취급하지 않고, 인증된 HTTP가 성공한 결과만 구독에 적용한다. 이전 범위는 출력하지 않는다.
+
+`NativeAgentFocusWatcher`는 한 번에 한 작업만 진행한다. 요청 제한 시간은 전체 작업 10초이고 대기 시 계정 잠금을 해제한다. 네트워크·408·429·5xx·timeout에는 최대 30초 backoff로 GET만 재시도한다. busy 잠금은 최대 3회 대기하며 키체인 장애·손상·인증 만료·401·403·잘못된 snapshot에는 중단한다. refresh·logout·legacy Bearer fallback을 자동 호출하지 않는다. 같은 범위의 409·잘못된 JSON/sequence 페이지는 새 snapshot으로 복구하며 backlog는 작업 사이 이벤트 루프를 양보해 계속 읽는다.
+
+엔진의 `select(source, userId)`는 계정·origin 교체와 같은 계정 재선택 시 즉시 reset을 출력하고 기존 요청·대기를 취소한다. 취소를 무시한 이전 응답도 새 범위에 적용하지 않는다. CLI 프로세스는 시작 시 선택한 계정·프로필을 고정하므로 다른 계정이나 서버를 보려면 해당 옵션으로 재실행한다. `--jsonl` 소비자는 reset·stopped에서 이전 대화 표시를 비워야 한다. 변경 없는 폴링은 출력하지 않으며 연결 복구 시에는 최신 focus를 다시 출력한다. Ctrl+C는 취소 후 정상 종료한다. 토큰·키·DPoP·오류 응답 원문은 출력하지 않고, CLI TUI 채팅·WebSocket·원격 도구를 이 명령에 연결한 것은 아니다.
+
+### 이번 검증
+
+- 신규 엔진 회귀 14개: cursor 보존/범위 초기화, 재연결/backoff, 계정 전환 중 늦은 응답, 즉시 reset, 요청 취소/timeout, bounded backlog, 인증 중단, busy 잠금 최대 재시도/잠금 폴더 장애 분류, 실제 공급자 refresh/logout 직렬화 및 JSON/409 snapshot 복구.
+- `scripts/cli-platform-session-fixture.mts`: 실제 OS 키체인과 빌드된 별도 CLI 프로세스에서 HTTPS/새 DPoP, 연결 단절 후 같은 cursor 재생, 409 후 snapshot, 다른 CLI 프로세스의 refresh, 401 중단 및 Ctrl+C 정상 종료를 통과했다. 임시 키체인 슬롯·프로필은 정리했다. 통제된 fixture이며 실제 ACTIVE Gateway 성공 검증이 아니다.
+- 실제 Compose의 `scripts/native-platform-session-compose.mts --cli`: login 503 뒤 남은 token-free login_pending에서 watch-focus가 auth_required/exit 3으로 종료하고 로컬 복구하는 검증을 통과했다. Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`의 실제 소스/실행 브랜치를 확인했다. 모든 서비스는 `feat/cross-platform-session`, 기본 인프라·Core·Gateway에 workflow/frontend 프로필과 HTTPS 3443을 사용했고 ACTIVE 발급 관문은 열지 않았다. Workflow overlay의 SDK/runtime import 위치도 확인했다. 다른 서비스의 최신 로컬 Head를 검증한 것으로 취급하지 않는다.
+- 환경변수는 추가하지 않았고 기존 키체인/프로필/공개 CA 변수의 watcher 사용 범위는 Infra 참조 문서에 반영한다. SDK·agent-runtime은 Workflow 로컬 overlay로 사용하고 배포하지 않는다.
+
+2026-09-30 전체 로컬 검사: 엔진 147 통과·플랫폼 조건 제외 2, CLI 146 통과, 엔진/CLI 타입 검사·계약 검사·CLI 빌드·두 opt-in 스크립트 타입 검사 통과. CLI 첫 실행의 기존 TUI `이전 대화를 고르면 그 내용이 대화창에 올라온다`는 답변이 먼저 렌더된 중간 frame에서 질문을 확인하여 실패했다. 해당 파일의 변경 없이 동일 코드 전체 테스트 한 번 재실행은 통과했으며 첫 실패와 재실행을 PR #129에 기록한다. 브라우저 화면과 실제 ACTIVE Gateway 양성 검증은 이번 검증 범위에 포함되지 않는다.

@@ -100,6 +100,11 @@ async function create(scope: NativeKeyScope): Promise<string> {
   } finally { der.fill(0); }
 }
 
+/** Contention is distinct from an unavailable vault; readers may wait without bypassing this lock. */
+export class NativeDeviceOperationBusy extends DexError {
+  constructor() { super('credential_store_unavailable', '이 계정의 CLI 기기 작업이 이미 진행 중이거나 중단된 작업의 잠금이 남아 있습니다.'); }
+}
+
 /** Keychain-only software keys, isolated by origin/account/platform. No silent regeneration or file fallback. */
 export class NativeDeviceKeyStore {
   private readonly options: NativeDeviceKeyStoreOptions;
@@ -122,14 +127,15 @@ export class NativeDeviceKeyStore {
     if (this.quarantined || (this.options.env ?? process.env).DEX_NO_KEYCHAIN === '1') throw unavailable();
     // OS keychain scope does not depend on a CLI config folder; neither may its process lock.
     const directory = this.options.lockDirectory ?? join(homedir(), '.xgen-dex-native-device-locks');
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    try { await mkdir(directory, { recursive: true, mode: 0o700 }); }
+    catch { throw unavailable(); }
     const name = account(scope);
     const path = join(directory, `${name}.lock`);
     let handle;
     try { handle = await open(path, 'wx', 0o600); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new DexError('credential_store_unavailable', '이 계정의 CLI 기기 작업이 이미 진행 중이거나 중단된 작업의 잠금이 남아 있습니다.');
+        throw new NativeDeviceOperationBusy();
       }
       throw unavailable();
     }

@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { NativePlatformSessionClient, NativePlatformHttpError, NativePlatformProtocolError, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
-import { AgentSessionReadClient, AgentSessionHttpError, type AgentSessionProofSource, type AgentFocus } from '@dex/protocol/agent-session';
+import { AgentSessionReadClient, AgentSessionHttpError, AgentSessionProtocolError, type AgentSessionProofSource, type AgentFocus } from '@dex/protocol/agent-session';
+import { reconcileAgentFocus, type ScopedAgentFocus, type AgentFocusRecoveryResult } from '@dex/protocol/agent-session-focus-recovery';
 import { withNativeAccount } from './native-account';
 import { NativeDeviceKeyStore, nativeKeyScope, type NativeKeyScope } from './native-device-key-store';
 import type { NativeSessionRecord, NativeSessionPhase } from './native-session-record';
@@ -87,7 +88,7 @@ export class NativeCliSession {
     });
   }
   /** The provider is usable only inside the account/install lock and cannot sign for another origin or token. */
-  async withProofSource<T>(userId: string, work: (proof: AgentSessionProofSource) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  async withProofSource<T>(userId: string, work: (proof: AgentSessionProofSource, authScope: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
     return this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
       const record = requireReady(await vault.read()); const token = requireAccess(record); let live = true;
       const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', 'CLI 세션 사용 범위가 종료되었습니다.'); };
@@ -103,9 +104,39 @@ export class NativeCliSession {
           const result = await sign('GET', htu, token, signal); check(); return result;
         },
       };
-      try { const result = await work(proof); check(); return result; }
+      // Rotation keeps the sid, so its token/write generation must not reset an account cursor.
+      const authScope = createHash('sha256').update(JSON.stringify([record.origin, record.platform, record.userId,
+        record.installId, record.deviceId, record.sessionId])).digest('hex');
+      try { const result = await work(proof, authScope); check(); return result; }
       finally { live = false; }
     });
+  }
+  /** Fresh vault read for each bounded step. The caller waits only after this lock is released. */
+  async reconcileFocus(userId: string, previous: ScopedAgentFocus | null, signal?: AbortSignal): Promise<AgentFocusRecoveryResult> {
+    try {
+      return await this.withProofSource(userId, async (proof, authScope) => {
+        const transport = (async (input, init) => {
+          try { return await this.fetchImpl(input, init); }
+          catch { signal?.throwIfAborted(); throw new NativePlatformTransportError(); }
+        }) as typeof fetch;
+        const client = new AgentSessionReadClient(this.origin, proof, transport);
+        const read = async <T>(work: () => Promise<T>): Promise<T> => {
+          try { return await work(); }
+          catch (error) {
+            signal?.throwIfAborted();
+            if (error instanceof SyntaxError) throw new AgentSessionProtocolError('Invalid Canonical JSON response');
+            throw error;
+          }
+        };
+        return reconcileAgentFocus({ focus: (s) => read(() => client.focus(s)),
+          accountEvents: (after, limit, s) => read(() => client.accountEvents(after, limit, s)) }, authScope, previous, signal);
+      }, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof DexError || error instanceof AgentSessionHttpError || error instanceof NativePlatformTransportError) throw error;
+      if (error instanceof AgentSessionProtocolError) throw new DexError('protocol_mismatch', 'Canonical 포커스 응답을 확인할 수 없습니다.');
+      throw new NativePlatformTransportError();
+    }
   }
   async focus(userId: string, signal?: AbortSignal): Promise<AgentFocus> {
     try {

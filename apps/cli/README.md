@@ -12,6 +12,18 @@ HTTPS 서버 프로필을 설정한 뒤 `dex device register --email <email>`로
 
 `dex session logout --user-id <id>`는 현재 비밀번호와 기기 DPoP로 서버 세션을 폐기한 뒤 로컬 자격증명을 지운다. 중단된 작업은 내 페이지에서 서버 세션을 폐기한 뒤 `dex session forget-local --user-id <id>`로 정리한다. `forget-local` 자체는 서버 세션을 폐기하지 않는다. 현재 Compose는 enrollment 모드이므로 세션 로그인은 503으로 닫혀 있으며, 기존 `dex login`·TUI·채팅은 유지한다.
 
+### 현재 대화 구독
+
+```sh
+dex session watch-focus --user-id <id> --profile corp --jsonl
+# 기본 2초, 선택 가능한 폴링 간격 200~60000ms
+dex session watch-focus --user-id <id> --profile corp --interval-ms 1000
+```
+
+snapshot 이후 계정 이벤트 cursor로 현재 대화 변경을 따라간다. 연결 단절·408·429·5xx에는 1~30초 backoff로 읽기만 재시도하며 이벤트 누락·409에는 snapshot으로 복구한다. 인증 만료·폐기·키체인 장애는 구독을 중단한다. access를 자동 갱신하지 않으므로 필요하면 다른 터미널에서 `dex session refresh`를 실행한 뒤 구독을 다시 시작한다. 같은 sid의 정상 갱신 중에는 cursor를 유지한다. 다른 프로세스의 키체인 작업과 겹치면 최대 3회 대기 후 중단하며 남은 잠금을 임의로 제거하지 않는다.
+
+`--jsonl`은 줄마다 `reset`, `focus`, `reconnecting`, `stopped`를 출력한다. 소비자는 `reset`·`stopped`에서 이전 대화 표시를 비우고, 재연결 중에는 새 상태를 확정하지 않는다. 토큰·서명·키는 출력하지 않는다. Ctrl+C는 진행 중 요청과 대기를 취소하고 정상 종료한다. 실행 중 프로필 파일 변경을 자동으로 따르지 않으므로 계정·서버 변경 시 해당 옵션으로 다시 실행한다. 엔진 API의 `select(source, userId)`는 같은 계정 재선택을 포함해 즉시 reset을 내보내고 이전 응답을 폐기한다. 이 명령은 Canonical focus 조회용이며 기존 TUI 채팅이나 WebSocket을 전환하지 않는다.
+
 XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.
 

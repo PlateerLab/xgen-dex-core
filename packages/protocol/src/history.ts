@@ -148,6 +148,110 @@ export function toDisplayText(v: unknown): string {
   }
 }
 
+/** 채팅 화면이 보내는 봉투의 키 전부 — JSON 문자열을 봉투로 읽는 기준(서버 turn_input 과 같다). */
+const ENVELOPE_KEYS = new Set(['input_str', 'attachments']);
+
+/**
+ * 첨부를 함께 보낸 턴의 입력 봉투 `{input_str, attachments}` — 아니면 null.
+ *
+ * dict 는 본문 키(`input_str`·`input`)만 있으면 봉투다. JSON 문자열은 봉투의 키만 가진 것만 본다 —
+ * 그 밖의 키가 있으면 사람이 붙여 넣은 JSON 일 수 있다.
+ */
+function inputEnvelope(v: unknown): Record<string, unknown> | null {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const o = v as Record<string, unknown>;
+    return 'input_str' in o || 'input' in o ? o : null;
+  }
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s.startsWith('{') || !s.includes('"input_str"')) return null;
+  try {
+    const d = JSON.parse(s) as unknown;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+    const keys = Object.keys(d);
+    return keys.includes('input_str') && keys.every((k) => ENVELOPE_KEYS.has(k)) ? (d as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 턴의 질문 → **사람이 보낸 본문**.
+ *
+ * 첨부를 함께 보낸 턴의 입력은 `{input_str, attachments}` 다. 옛 서버는 이 모양을 도는 턴의 기록과
+ * 턴 시작·종료 프레임에 그대로 실었고, 받은 화면은 질문 말풍선에 JSON 을 통째로 그렸다(2026-10-01
+ * 모바일 실측). 서버가 고쳐져도 이미 남은 기록이 있으므로 읽는 쪽도 같은 규칙으로 벗긴다.
+ */
+export function turnInputText(v: unknown): string {
+  const envelope = inputEnvelope(v);
+  if (envelope) return toDisplayText(envelope.input_str ?? envelope.input ?? '');
+  return toDisplayText(v);
+}
+
+/** 질문에 붙은 파일 — 말풍선에 이름표로 그린다. 내용은 서버 워크스페이스에 있다. */
+export interface TurnAttachment {
+  name: string;
+  kind: 'image' | 'file';
+  mimeType?: string;
+  size?: number;
+  /** 서버 워크스페이스 안의 자리(uploads/…). 없으면 옛 웹 첨부다. */
+  workspacePath?: string;
+}
+
+/**
+ * 첨부 목록 → {@link TurnAttachment}. 턴 프레임의 `attachments` 도, 입력 봉투도 받는다 —
+ * 둘은 같은 모양(snake_case)이다. 모양이 어긋난 칸은 버린다.
+ */
+export function turnAttachments(value: unknown): TurnAttachment[] {
+  const list = Array.isArray(value) ? value : inputEnvelope(value)?.attachments;
+  if (!Array.isArray(list)) return [];
+  const out: TurnAttachment[] = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const path = String(item.workspace_path ?? item.workspacePath ?? '').trim();
+    const name = String(item.name ?? '').trim() || path.split('/').pop() || '';
+    if (!name) continue;
+    const mimeType = String(item.mime_type ?? item.mimeType ?? item.content_type ?? '').trim();
+    const kind =
+      item.kind === 'image' || item.kind === 'file'
+        ? item.kind
+        : mimeType.startsWith('image/')
+          ? 'image'
+          : 'file';
+    const size = Number(item.size ?? 0);
+    out.push({
+      name,
+      kind,
+      ...(mimeType ? { mimeType } : {}),
+      ...(Number.isFinite(size) && size > 0 ? { size } : {}),
+      ...(path ? { workspacePath: path } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * 한 행의 첨부 — 서버가 이어 둔 것이 없으면 입력 봉투에서 되살린다.
+ *
+ * 옛 서버는 도는 턴의 첨부를 완결 때만 이었다. 그동안 대화를 연 화면에서도 질문의 첨부가 보이도록,
+ * 서버가 이을 때와 같은 자리(`geny-workspace:` 참조)로 만든다.
+ */
+function rowAttachments(r: RawIoLog): HistoryAttachment[] {
+  const linked = toHistoryAttachments(r.attachments);
+  if (linked.length > 0) return linked;
+  return turnAttachments(r.input_data)
+    .filter((a) => a.workspacePath)
+    .map((a) => ({
+      name: a.name,
+      size: a.size ?? 0,
+      contentType: a.mimeType ?? (a.kind === 'image' ? 'image/png' : 'application/octet-stream'),
+      type: a.kind === 'image' ? ('picture' as const) : ('file' as const),
+      path: `geny-workspace:${(a.workspacePath ?? '').replace(/^workspace\//, '')}`,
+      bucket: 'geny-workspace',
+    }));
+}
+
 interface RawInteraction {
   id: number;
   interaction_id: string;
@@ -190,9 +294,9 @@ export class HistoryApi {
       interactionId: r.interaction_id,
       workflowId: r.workflow_id,
       workflowName: r.workflow_name,
-      input: toDisplayText(r.input_data),
+      input: turnInputText(r.input_data),
       output: toDisplayText(r.output_data),
-      attachments: toHistoryAttachments(r.attachments),
+      attachments: rowAttachments(r),
       updatedAt: r.updated_at,
       process: toHistoryProcess(r.process),
     }));

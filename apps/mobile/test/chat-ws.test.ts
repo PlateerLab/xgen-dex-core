@@ -6,6 +6,7 @@ import {
   dispatchExec,
   stripAgentMarkers,
   type PeerTurnEvent,
+  type ServerTurn,
 } from '../src/lib/chat-ws';
 
 class FakeWs {
@@ -45,7 +46,7 @@ class FakeWs {
 
 function makeChat(
   collect: { data: string[]; tools: string[]; errors: string[] },
-  extra: { onPeerTurn?: (event: PeerTurnEvent) => void } = {},
+  extra: { onPeerTurn?: (event: PeerTurnEvent) => void; onServerTurn?: (turn: ServerTurn) => void } = {},
 ) {
   return createChat({
     ...extra,
@@ -376,6 +377,38 @@ test('다른 화면의 질문이 곧바로 오고, 답이 토큰마다 자라고
   assert.equal((peer[0] as { input: string }).input, '주가 알려줘');
   assert.equal((peer[3] as { output: string }).output, '삼성전자입니다');
   assert.equal((peer[3] as { ioId: number | null }).ioId, 42);
+});
+
+test('첨부를 함께 보낸 다른 화면의 질문 — 본문만 말풍선으로, 첨부는 따로 (2026-10-01)', () => {
+  // 옛 서버는 {input_str, attachments} 를 JSON 문자열로 실어 보냈다 — 폰은 그 JSON 을 통째로 그렸다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const turns: { input: string }[] = [];
+  makeChat(got, { onPeerTurn: (e) => peer.push(e), onServerTurn: (t) => turns.push(t) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 1 } });
+  const envelope = {
+    input_str: 'LLM 이 안 돼',
+    attachments: [{ kind: 'image', name: 'image.png', mime_type: 'image/png', size: 5, workspace_path: 'uploads/u/x.png' }],
+  };
+  ws.recv({ type: 'turn_started', seq: 2, data: { input: JSON.stringify(envelope, null, 2) } });
+  ws.recv({
+    type: 'turn_ended',
+    seq: 3,
+    data: { io_id: 9, input: 'LLM 이 안 돼', output: '답', attachments: [{ name: 'image.png', kind: 'image' }] },
+  });
+  ws.recv({ type: 'message', data: { io_id: 9, input_data: envelope, output_data: '답', source: 'user' } });
+
+  const started = peer[0] as Extract<PeerTurnEvent, { kind: 'started' }>;
+  assert.equal(started.input, 'LLM 이 안 돼');
+  assert.deepEqual(started.attachments, [
+    { name: 'image.png', kind: 'image', mimeType: 'image/png', size: 5, workspacePath: 'uploads/u/x.png' },
+  ]);
+  const ended = peer[1] as Extract<PeerTurnEvent, { kind: 'ended' }>;
+  assert.equal(ended.input, 'LLM 이 안 돼');
+  assert.deepEqual(ended.attachments, [{ name: 'image.png', kind: 'image' }]);
+  assert.equal(turns[0]?.input, 'LLM 이 안 돼', '완결 행의 dict 질문이 [object Object] 가 되지 않는다');
 });
 
 test('내 실행 스트림은 전파 경로로 새지 않는다', () => {

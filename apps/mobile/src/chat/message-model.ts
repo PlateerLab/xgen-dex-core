@@ -8,7 +8,17 @@
  * 규칙은 데스크톱 SessionStore 와 같다 — 도구·출처·오류는 **그 답변의 것**이고,
  * 말풍선 사이에 따로 떠다니는 줄이 아니다.
  */
-import type { Citation, ToolEvent, XgenErrorInfo } from '@dex/protocol';
+import { appendFlowItem, liveTurnFlow } from '@dex/protocol';
+import type {
+  Citation,
+  HistoryAttachment,
+  HistoryFlowItem,
+  LiveTurnSnapshot,
+  TimelineFlowItem,
+  ToolEvent,
+  TurnAttachment,
+  XgenErrorInfo,
+} from '@dex/protocol';
 
 export type ChatRole = 'user' | 'assistant';
 
@@ -22,12 +32,19 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
-  /** 함께 보낸 파일. */
+  /** 함께 보낸 파일 — 이 폰에서 보낸 것도, 다른 화면·지난 대화의 것도 같은 이름표로 그린다. */
   attachments?: ChatAttachmentMark[];
-  /** 지난 대화에서 온 첨부 개수 — 원본은 서버에 있고 여기서는 사실만 남긴다. */
-  attachmentCount?: number;
   /** 이 답변이 쓴 도구. 흐름에는 한 칸씩, 펼치면 전부. */
   tools?: ToolEvent[];
+  /**
+   * 글과 도구 사건이 **온 순서** — 작업 과정 타임라인이 "이 문장 다음에 이 도구" 를 그리는 근거.
+   * 내 스트림, 다른 화면의 턴(전파·진행분), 지난 대화(서버가 되살린 과정)가 모두 여기로 모인다.
+   */
+  flow?: TimelineFlowItem[];
+  /** 이 턴이 시작된 시각(ms) — 경과 시간. */
+  startedAt?: number;
+  /** 마지막으로 글·도구를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 와 끝난 턴의 걸린 시간. */
+  lastEventAt?: number;
   citations?: Citation[];
   /** 실패한 답변 — 본문 대신 구조로 보여준다. */
   errorInfo?: XgenErrorInfo;
@@ -62,7 +79,79 @@ export function userMessage(text: string, attachments?: ChatAttachmentMark[]): C
 }
 
 export function assistantPlaceholder(extra: Partial<ChatMessage> = {}): ChatMessage {
-  return make('assistant', '', { streaming: true, tools: [], ...extra });
+  return make('assistant', '', { streaming: true, tools: [], startedAt: Date.now(), ...extra });
+}
+
+/** 질문에 붙은 파일 → 말풍선 이름표. 전파 프레임(TurnAttachment)도 지난 대화(HistoryAttachment)도 받는다. */
+export function attachmentMarks(
+  items: readonly (TurnAttachment | HistoryAttachment)[] | undefined,
+): ChatAttachmentMark[] | undefined {
+  if (!items || items.length === 0) return undefined;
+  return items.map((a) => ({
+    name: a.name,
+    kind: 'kind' in a ? a.kind : a.type === 'picture' ? 'image' : 'file',
+  }));
+}
+
+/**
+ * 도구 사건을 호출 목록에 합친다 — 같은 호출(tool_call→tool_start→tool_result)은 한 줄.
+ * 합치지 않으면 [전체 로그 · N건] 이 호출 수가 아니라 이벤트 수를 센다. 기준은 정본과 같다:
+ * 호출 id 우선, 없으면 아직 안 끝난 같은 이름.
+ */
+function mergeTool(tools: readonly ToolEvent[], ev: ToolEvent): ToolEvent[] {
+  const out = tools.slice();
+  const id = ev.toolUseId || ev.runId;
+  const at = id
+    ? out.findIndex((t) => (t.toolUseId || t.runId) === id)
+    : out.findIndex((t) => t.toolName === ev.toolName && t.eventType !== 'tool_result' && t.eventType !== 'tool_error');
+  if (at >= 0) out[at] = { ...out[at], ...ev };
+  else out.push(ev);
+  return out;
+}
+
+/** 작업 과정 → 호출 목록(합친 것). 과정만 받은 턴(진행분·지난 대화)의 [전체 로그] 가 여기서 나온다. */
+export function toolsFromFlow(flow: readonly TimelineFlowItem[]): ToolEvent[] {
+  let tools: ToolEvent[] = [];
+  for (const item of flow) if (item.kind === 'tool') tools = mergeTool(tools, item.event);
+  return tools;
+}
+
+/**
+ * 완결 본문에 작업 과정의 글을 맞춘다.
+ *
+ * 다른 화면의 턴은 전파로 받은 조각을 쌓은 것이라, 재연결 사이에 조각을 놓쳤거나 스냅샷이 늦었으면
+ * 과정의 글이 완결 본문보다 짧다. 타임라인은 마지막 단계의 글을 답으로 그리므로, 그대로 두면 끝난 답이
+ * 잘려 보인다. 마지막 도구까지의 글이 본문의 앞부분과 같으면 그 뒤를 본문으로 채운다. 맞출 수 없으면
+ * (본문이 과정과 다르게 시작한다) 과정을 그대로 둔다.
+ */
+export function reconcileFlow(flow: readonly TimelineFlowItem[], output: string): TimelineFlowItem[] {
+  const textOf = (items: readonly TimelineFlowItem[]): string =>
+    items.map((f) => (f.kind === 'text' ? f.text : '')).join('');
+  const all = textOf(flow);
+  if (all === output) return flow.slice();
+  const at = flow[flow.length - 1]?.at ?? 0;
+  if (output.startsWith(all)) return appendFlowItem(flow, { kind: 'text', text: output.slice(all.length), at });
+  let lastTool = -1;
+  for (let i = flow.length - 1; i >= 0; i--) {
+    if (flow[i].kind === 'tool') {
+      lastTool = i;
+      break;
+    }
+  }
+  const head = flow.slice(0, lastTool + 1);
+  const before = textOf(head);
+  if (!output.startsWith(before)) return flow.slice();
+  const rest = output.slice(before.length);
+  return rest ? [...head, { kind: 'text', text: rest, at }] : head;
+}
+
+/** 글·도구 한 칸을 답변의 작업 과정에 붙이고 시각을 적는다. */
+function withFlow(m: ChatMessage, item: TimelineFlowItem): Partial<ChatMessage> {
+  return {
+    flow: appendFlowItem(m.flow, item),
+    startedAt: m.startedAt ?? item.at,
+    lastEventAt: item.at,
+  };
 }
 
 /** 지금 글자를 받고 있는 답변 — 없으면 -1. */
@@ -82,11 +171,15 @@ function patchAt(list: readonly ChatMessage[], i: number, patch: Partial<ChatMes
 }
 
 /** 스트림 조각을 이어 붙인다. 받을 자리가 없으면 새 답변을 세운다. */
-export function appendAssistantText(list: readonly ChatMessage[], chunk: string): ChatMessage[] {
+export function appendAssistantText(list: readonly ChatMessage[], chunk: string, now = Date.now()): ChatMessage[] {
   if (!chunk) return list as ChatMessage[];
+  const item: TimelineFlowItem = { kind: 'text', text: chunk, at: now };
   const i = streamingIndex(list);
-  if (i < 0) return [...list, make('assistant', chunk, { streaming: true, tools: [] })];
-  return patchAt(list, i, { text: list[i].text + chunk });
+  if (i < 0) {
+    const fresh = make('assistant', chunk, { streaming: true, tools: [] });
+    return [...list, { ...fresh, ...withFlow(fresh, item) }];
+  }
+  return patchAt(list, i, { text: list[i].text + chunk, ...withFlow(list[i], item) });
 }
 
 /**
@@ -97,24 +190,18 @@ export function appendAssistantText(list: readonly ChatMessage[], chunk: string)
  * 3건이라고 말한다. 짝 맞추기 기준은 정본(@dex/protocol)과 같다: 호출 id 우선,
  * 없으면 이름.
  */
-export function attachTool(list: readonly ChatMessage[], ev: ToolEvent): ChatMessage[] {
+export function attachTool(list: readonly ChatMessage[], ev: ToolEvent, now = Date.now()): ChatMessage[] {
   let i = streamingIndex(list);
   let base = list as ChatMessage[];
   if (i < 0) {
     base = [...list, assistantPlaceholder()];
     i = base.length - 1;
   }
-  const tools = base[i].tools ? base[i].tools!.slice() : [];
-  const id = ev.toolUseId || ev.runId;
-  const at = id
-    ? tools.findIndex((t) => (t.toolUseId || t.runId) === id)
-    : tools.findIndex((t) => t.toolName === ev.toolName && t.eventType !== 'tool_result' && t.eventType !== 'tool_error');
-  if (at >= 0) tools[at] = { ...tools[at], ...ev };
-  else tools.push(ev);
+  const tools = mergeTool(base[i].tools ?? [], ev);
   const citations = ev.citations?.length
     ? mergeCitations(base[i].citations, ev.citations)
     : base[i].citations;
-  return patchAt(base, i, { tools, citations });
+  return patchAt(base, i, { tools, citations, ...withFlow(base[i], { kind: 'tool', event: ev, at: now }) });
 }
 
 function mergeCitations(prev: Citation[] | undefined, next: Citation[]): Citation[] {
@@ -126,14 +213,41 @@ function mergeCitations(prev: Citation[] | undefined, next: Citation[]): Citatio
   return out;
 }
 
-/** 다른 곳에서 도는 턴의 진행분 — 한 말풍선을 통째로 덮어쓴다. */
-export function setRemotePartial(list: readonly ChatMessage[], text: string): ChatMessage[] {
-  const last = list[list.length - 1];
-  if (last?.remotePartial) {
-    if (last.text === text) return list as ChatMessage[];
-    return patchAt(list, list.length - 1, { text });
-  }
-  return [...list, make('assistant', text, { remotePartial: true, tools: [] })];
+/**
+ * 다른 곳에서 도는 턴의 진행분 — 한 말풍선을 통째로 덮어쓴다(글·작업 과정·도구 모두).
+ *
+ * 스냅샷은 재연결마다 처음부터 다시 온다. 이어붙이면 같은 글이 여러 번 쌓이므로 덮어쓴다.
+ * 예전에는 글만 넣고 도구는 버렸다 — 웹에서 도구를 24번 부르며 도는 턴이 폰에서는 글 몇 줄로만 보였다.
+ */
+export function setRemoteLive(list: readonly ChatMessage[], live: LiveTurnSnapshot): ChatMessage[] {
+  const flow = liveTurnFlow(live);
+  const patch: Partial<ChatMessage> = {
+    text: live.text,
+    flow,
+    tools: toolsFromFlow(flow),
+    startedAt: live.startedAt ?? flow[0]?.at,
+    lastEventAt: flow[flow.length - 1]?.at ?? live.startedAt,
+  };
+  const i = remotePartialIndex(list);
+  if (i >= 0) return patchAt(list, i, patch);
+  return [...list, make('assistant', '', { remotePartial: true, ...patch })];
+}
+
+/** 다른 곳에서 도는 턴의 진행분 말풍선 자리 — 없으면 -1. */
+function remotePartialIndex(list: readonly ChatMessage[]): number {
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].remotePartial) return i;
+  return -1;
+}
+
+/**
+ * 다른 화면의 턴이 보낸 글·도구를 받을 자리를 마련한다.
+ *
+ * 받을 자리(진행분 말풍선)가 없는데 그냥 이어붙이면 **임시가 아닌** 답변이 새로 서고, 완결 턴이 와도
+ * 그 답이 지워지지 않아 같은 답이 두 번 보인다. 도는 중에 대화를 열어 시작 프레임을 못 받은 경우다.
+ */
+export function ensureRemotePartial(list: readonly ChatMessage[]): ChatMessage[] {
+  if (streamingIndex(list) >= 0) return list as ChatMessage[];
+  return [...list, make('assistant', '', { remotePartial: true, tools: [] })];
 }
 
 /** 진행분 말풍선을 걷어낸다 — 완결 턴이 도착했을 때. */
@@ -146,16 +260,22 @@ function isTemporary(m: ChatMessage): boolean {
 }
 
 /** 다른 곳에서 도는 턴의 시작 — 질문과 빈 진행분을 세운다. 앞 턴의 임시 말풍선은 받은 만큼으로 굳힌다. */
-export function startRemoteTurn(list: readonly ChatMessage[], input: string): ChatMessage[] {
+export function startRemoteTurn(
+  list: readonly ChatMessage[],
+  input: string,
+  attachments?: readonly TurnAttachment[],
+  now = Date.now(),
+): ChatMessage[] {
   const settled = list.flatMap((m): ChatMessage[] => {
     if (!isTemporary(m)) return [m];
-    if (m.remotePartial && !m.text) return [];
+    if (m.remotePartial && !m.text && !m.flow?.length) return [];
     return [{ ...m, remotePartial: false, remoteQuestion: false, streaming: false }];
   });
+  const marks = attachmentMarks(attachments);
   return [
     ...settled,
-    make('user', input, { remoteQuestion: true }),
-    make('assistant', '', { streaming: false, remotePartial: true, tools: [] }),
+    make('user', input, { remoteQuestion: true, ...(marks ? { attachments: marks } : {}) }),
+    make('assistant', '', { streaming: false, remotePartial: true, tools: [], startedAt: now }),
   ];
 }
 
@@ -167,7 +287,7 @@ export function startRemoteTurn(list: readonly ChatMessage[], input: string): Ch
  */
 export function completeRemoteTurn(
   list: readonly ChatMessage[],
-  turn: { ioId?: number | null; input: string; output: string },
+  turn: { ioId?: number | null; input: string; output: string; attachments?: readonly TurnAttachment[] },
 ): ChatMessage[] | null {
   const ioId = turn.ioId || undefined;
   if (ioId && list.some((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial)) return null;
@@ -181,9 +301,22 @@ export function completeRemoteTurn(
     if (!ioId || last.ioId) return null;
     return patchAt(out, out.length - 1, { ioId });
   }
-  const answer = make('assistant', turn.output, ioId ? { ioId } : {});
+  // 진행분이 쌓아 온 작업 과정은 답에 그대로 남긴다 — 끝난 뒤에도 무엇을 했는지 펼쳐 본다(데스크톱과 같다).
+  const partial = list[remotePartialIndex(list)];
+  const question = list.find((m) => m.remoteQuestion && m.text === turn.input);
+  const process: Partial<ChatMessage> = partial?.flow?.length
+    ? {
+        flow: reconcileFlow(partial.flow, turn.output),
+        tools: partial.tools?.length ? partial.tools : toolsFromFlow(partial.flow),
+        citations: partial.citations,
+        startedAt: partial.startedAt,
+        lastEventAt: partial.lastEventAt,
+      }
+    : {};
+  const answer = make('assistant', turn.output, { ...process, ...(ioId ? { ioId } : {}) });
   if (last?.role === 'user' && last.text === turn.input) return [...out, answer];
-  return [...out, make('user', turn.input), answer];
+  const marks = question?.attachments ?? attachmentMarks(turn.attachments);
+  return [...out, make('user', turn.input, marks ? { attachments: marks } : {}), answer];
 }
 
 /** 다른 곳의 턴을 그리는 중인가(임시 말풍선이 있다). */
@@ -217,20 +350,54 @@ export function setError(list: readonly ChatMessage[], info: XgenErrorInfo): Cha
   return [...finishStreaming(list), make('assistant', '', { errorInfo: info })];
 }
 
-/** 지난 대화 한 턴 → 말풍선 둘. 빈 쪽은 만들지 않는다. */
+/**
+ * 지난 대화 한 턴 → 말풍선 둘. 빈 쪽은 만들지 않는다.
+ *
+ * 서버가 되살린 작업 과정(process)이 있으면 답에 붙인다 — 다른 기기에서 돈 턴도 타임라인으로 펼친다.
+ * 첨부는 개수가 아니라 이름표로 그린다(이 폰에서 보낸 질문과 같은 모양).
+ */
 export function historyMessages(
-  turns: readonly { input: string; output: string; attachments?: readonly unknown[] }[],
+  turns: readonly {
+    ioId?: number;
+    input: string;
+    output: string;
+    attachments?: readonly HistoryAttachment[];
+    process?: readonly HistoryFlowItem[];
+  }[],
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const t of turns) {
-    if (t.input) {
-      out.push(
-        make('user', t.input, t.attachments?.length ? { attachmentCount: t.attachments.length } : {}),
-      );
-    }
-    if (t.output) out.push(make('assistant', t.output));
+    const marks = attachmentMarks(t.attachments);
+    if (t.input || marks) out.push(make('user', t.input, marks ? { attachments: marks } : {}));
+    if (!t.output) continue;
+    const flow = t.process?.length ? (t.process as TimelineFlowItem[]) : undefined;
+    out.push(
+      make('assistant', t.output, {
+        ...(t.ioId ? { ioId: t.ioId } : {}),
+        ...(flow
+          ? { flow, tools: toolsFromFlow(flow), startedAt: flow[0].at, lastEventAt: flow[flow.length - 1].at }
+          : {}),
+      }),
+    );
   }
   return out;
+}
+
+/**
+ * 이력이 도착했다 — 그 사이 먼저 그려 둔 것과 합친다.
+ *
+ * 구독 확립의 진행분(또는 다른 화면의 턴 시작)이 이력 응답보다 먼저 올 수 있다. 예전에는 이력이
+ * 통째로 덮어써서 도는 턴의 진행분이 사라졌다. 먼저 그린 것이 **다른 곳의 턴을 그린 임시 말풍선뿐**이면
+ * 이력 뒤에 붙인다(이력이 이미 그린 질문은 빼고). 이 폰에서 보낸 턴이 이미 있으면 그대로 둔다.
+ */
+export function mergeHistory(history: readonly ChatMessage[], current: readonly ChatMessage[]): ChatMessage[] {
+  if (current.length === 0) return history.slice();
+  if (!current.every(isTemporary)) return current.slice();
+  const tail = history[history.length - 1];
+  const temps = current.filter(
+    (m) => !(m.remoteQuestion && tail?.role === 'user' && tail.text === m.text),
+  );
+  return [...history, ...temps];
 }
 
 /** 이 답변에서 쓴 도구가 몇 건인가 — 합쳐진 호출 수. */

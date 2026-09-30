@@ -41,6 +41,21 @@ export interface TimelineStep {
 }
 
 /** flow → 단계들. 텍스트는 도구가 한 번이라도 끼어든 뒤에 오면 새 단계를 연다. 호출은 id(없으면 이름)로 짝을 맞춘다. */
+/**
+ * 작업 과정에 한 칸 붙인다 — 연달아 온 글 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다.
+ * 스트림을 받는 모든 화면(데스크톱·모바일·웹, 내 턴과 다른 화면의 턴)이 같은 규칙으로 쌓는다.
+ */
+export function appendFlowItem(flow: readonly TimelineFlowItem[] | undefined, item: TimelineFlowItem): TimelineFlowItem[] {
+  const out = flow ? flow.slice() : [];
+  const tail = out[out.length - 1];
+  if (item.kind === 'text' && tail?.kind === 'text') {
+    out[out.length - 1] = { ...tail, text: tail.text + item.text };
+    return out;
+  }
+  out.push(item);
+  return out;
+}
+
 export function buildSteps(flow: readonly TimelineFlowItem[]): TimelineStep[] {
   const steps: TimelineStep[] = [];
   const rows: TimelineRow[] = [];

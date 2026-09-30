@@ -34,7 +34,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import type { Agent, Conversation, ToolEvent } from '@dex/protocol';
-import { describeError, describeStreamError } from '@dex/protocol';
+import { describeError, describeStreamError, turnEventToChatEvent } from '@dex/protocol';
 import {
   createChat,
   stripAgentMarkers,
@@ -60,10 +60,12 @@ import {
   attachTool,
   completeRemoteTurn,
   dropRemotePartials,
+  ensureRemotePartial,
   finishStreaming,
   historyMessages,
+  mergeHistory,
   setError,
-  setRemotePartial,
+  setRemoteLive,
   startRemoteTurn,
   userMessage,
   type ChatMessage,
@@ -170,6 +172,12 @@ export function ChatView({
   }, []);
   /** 지금 도는 턴이 **다른 기기**의 것인가 (완결 push 를 그릴지 가른다). */
   const runningElsewhereRef = useRef(false);
+  /**
+   * 지금 도는 턴이 **이 폰의 스트림**인가. `running` 만 보면 안 된다 — 다른 화면의 턴도 작성기를 잠그려고
+   * `running` 을 켠다. 예전에는 그 둘을 가르지 않아, 다른 화면의 턴이 시작되는 순간부터 그 턴의 글·도구·
+   * 완결 행·종료가 전부 "내 턴" 으로 읽혀 버려졌다(진행분도, 끝난 답도 다시 열 때까지 안 보였다).
+   */
+  const ownTurn = (): boolean => runningRef.current && !runningElsewhereRef.current;
   /** 다른 곳에서 도는 턴의 임시 말풍선(질문·진행분)을 그려 두었다 — 완결 행이 그 자리를 대신한다. */
   const remoteTurnRef = useRef(false);
   /** 사용자가 [정지] 를 눌렀다 — 끝난 뒤 그 사실을 답변에 남긴다. */
@@ -197,7 +205,8 @@ export function ChatView({
       .snapshot(agent.workflowId, interactionId, agent.workflowName)
       .then((snap) => {
         if (cancelled) return;
-        setMessages(historyMessages(snap.turns));
+        // 구독의 진행분·다른 화면의 턴 시작이 이력보다 먼저 왔을 수 있다 — 덮어쓰지 않고 합친다.
+        setMessages((prev) => mergeHistory(historyMessages(snap.turns), prev));
         // 서버는 실행을 연결이 아니라 대화에 매어 둔다 — 웹에서 시작한 턴이
         // 이 화면을 여는 순간에도 돌 수 있다. 모르고 새 턴을 얹으면 같은
         // 대화에서 둘이 겹친다.
@@ -238,30 +247,45 @@ export function ChatView({
         if (!isRunning) runningElsewhereRef.current = false;
         if (isRunning !== runningRef.current) setRunning(isRunning || runningRef.current);
       },
-      // 구독 시점에 이미 돌던 턴의 진행분 — 없으면 "진행 중" 옆이 빈 말풍선이다.
+      // 구독 시점에 이미 돌던 턴의 진행분 — 글만이 아니라 작업 과정(도구)까지. 아직 한 글자도 없어도
+      // 받을 자리를 세운다: 그래야 이어서 오는 도구·글이 임시 말풍선에 쌓이고 완결 턴이 그 자리를 대신한다.
       onLiveTurn: (live) => {
-        if (!live.text) return;
-        if (runningRef.current) return; // 내 턴이면 스트림이 이미 그리고 있다.
+        if (ownTurn()) return; // 내 턴이면 스트림이 이미 그리고 있다.
         remoteTurnRef.current = true;
-        setMessages((prev) => setRemotePartial(prev, live.text));
+        setMessages((prev) => setRemoteLive(prev, live));
       },
       // 다른 화면이 **지금** 돌리는 턴 — 시작·토큰·종료.
       onPeerTurn: (event) => {
-        if (runningRef.current) return;
+        if (ownTurn()) return;
         if (event.kind === 'gap') return; // 종료 프레임이 완결 본문을 싣고 온다.
         if (event.kind === 'started') {
           runningElsewhereRef.current = true;
           remoteTurnRef.current = true;
           setRunning(true);
-          setMessages((prev) => startRemoteTurn(prev, event.input));
+          setMessages((prev) => startRemoteTurn(prev, event.input, event.attachments));
           return;
         }
         if (event.kind === 'exec') {
-          const d = event.data as { type?: string; content?: unknown } | undefined;
-          if (event.event !== 'message' || d?.type !== 'data') return;
-          const text = typeof d.content === 'string' ? d.content : '';
-          if (!text) return;
-          setMessages((prev) => appendAssistantText(prev, text));
+          // 글과 **도구**를 같은 규칙(정본 해석기)으로 — 예전에는 글만 받고 도구는 버려서, 다른 화면이
+          // 도구를 부르는 동안 이 폰에는 아무 일도 없어 보였다.
+          const ev = turnEventToChatEvent(
+            event.event,
+            event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null,
+          );
+          if ((ev?.kind === 'text' && ev.content) || ev?.kind === 'tool') {
+            // 시작 프레임을 못 받은 채 연 대화 — 이 턴이 도는 동안 작성기를 잠근다.
+            if (!runningRef.current) {
+              runningElsewhereRef.current = true;
+              setRunning(true);
+            }
+          }
+          if (ev?.kind === 'text' && ev.content) {
+            remoteTurnRef.current = true;
+            setMessages((prev) => appendAssistantText(ensureRemotePartial(prev), ev.content));
+          } else if (ev?.kind === 'tool') {
+            remoteTurnRef.current = true;
+            setMessages((prev) => attachTool(ensureRemotePartial(prev), ev.event));
+          }
           return;
         }
         // 종료 — 완결 행이 먼저 와서 이미 그렸으면 그대로 둔다(같은 실행 id).
@@ -276,7 +300,7 @@ export function ChatView({
         // 이 폰의 스트림이 그리는 턴이면 스트림이 끝낸다. 하트비트가 [끝남] 을 먼저 말했어도
         // 그 턴의 임시 말풍선이 남아 있으면 이 행이 그 자리를 대신한다.
         const report = turn.source === 'subagent_report';
-        const mine = runningRef.current || (!runningElsewhereRef.current && !remoteTurnRef.current);
+        const mine = ownTurn() || (!runningElsewhereRef.current && !remoteTurnRef.current);
         if (!report && mine) return;
         if (!turn.output) return;
         if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
@@ -623,8 +647,7 @@ export function ChatView({
               !m.remotePartial &&
               !m.errorInfo &&
               !m.tools?.length &&
-              !m.attachments?.length &&
-              !m.attachmentCount
+              !m.attachments?.length
             ) {
               return null;
             }
@@ -632,6 +655,7 @@ export function ChatView({
               <MessageItem
                 message={m}
                 text={text}
+                clean={stripAgentMarkers}
                 onOpenLog={(events, initialOpen) => setLogFor({ events, initialOpen })}
               />
             );

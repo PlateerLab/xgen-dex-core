@@ -1,5 +1,11 @@
 # Dex CLI
 
+## CLI 기기 등록
+
+HTTPS 서버 프로필을 설정한 뒤 `dex device register --email <email>`로 등록하고, `dex device approvers --email <email>`로 승인 가능한 브라우저를 조회한다. `dex device request-approval --email <email> --approver <browser-device-id>`의 비교 코드를 선택한 브라우저의 내 페이지에서 대조해 승인한다. `dex device status --email <email>`로 결과를 확인한다. 각 명령은 비밀번호를 숨겨 입력하며 자동화에서는 `--password-stdin`을 쓴다.
+
+기기 키는 OS 키체인으로 보호하는 소프트웨어 키이며 키체인 장애 시 등록을 차단한다. 파일 저장이나 하드웨어 키 고정을 제공하지 않는다. 이 명령은 기기 등록·승인만 처리하며 기존 `dex login`·채팅과 native ACTIVE 세션 연결은 별도 단계다. 저장·복구 경계와 실제 Compose 검증 방법은 저장소의 `docs/cross-platform-session-integration.md`를 참고한다.
+
 XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.
 

@@ -285,8 +285,7 @@ function boundedOpen(p: Promise<string>, timeoutMs = OPEN_HOST_TIMEOUT_MS): Prom
  * Open a file/folder with the OS default app via a DETACHED child, resolving
  * '' on success or an error message — never waiting for the launched app to
  * exit, and never doing a synchronous path check on this process's event loop
- * (Electron's shell.openPath does, which deadlocks against our own workspace
- * mount served by the same loop). Shared by the desktop and CLI hosts.
+ * (Electron's shell.openPath does). Shared by the desktop and CLI hosts.
  */
 export function openWithDefaultApp(
   target: string,

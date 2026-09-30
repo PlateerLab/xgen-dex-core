@@ -368,7 +368,7 @@ async function installXgenPackage(pkg: XgenInstallerPackage): Promise<void> {
         notify('XGen Dex 종료 후 설치 진행 창을 표시합니다.');
         appWillInstall();
         app.quit();
-        // MCP·동기화 자식 프로세스가 종료를 늦춰 설치 파일 잠금이 남는 경우를
+        // MCP·브라우저 자식 프로세스가 종료를 늦춰 설치 파일 잠금이 남는 경우를
         // 막는다. electron-updater의 GitHub 경로와 같은 안전 종료 방식이다.
         setTimeout(() => {
           try {

@@ -6,12 +6,10 @@
  * 임의 경로 읽기/쓰기의 통로가 된다.
  *
  * ⚠ 이 파일에는 **동기 파일 I/O 를 쓰면 안 된다.**
- *   가상 드라이브(워크스페이스) 마운트는 이 프로세스의 이벤트 루프가 서빙한다.
- *   대상이 그 마운트일 때 `readFileSync` 로 읽으면 루프가 막히고, FUSE 콜백이
- *   응답하지 못해 서로를 기다리는 데드락이 된다 — `shell.openPath` 를 금지한
- *   것과 정확히 같은 함정이다(index.ts `openInFileManager` 주석 참고).
- *   그래서 읽기/쓰기는 전부 `node:fs/promises` 이고, 파일을 여는 것도
- *   자식 프로세스로 분리한다.
+ *   첨부는 수십 MB 일 수 있고, 메인 프로세스의 이벤트 루프가 막히면 창·소켓·
+ *   로컬 도구가 함께 멈춘다. 그래서 읽기/쓰기는 전부 `node:fs/promises` 이고,
+ *   파일을 여는 것도 자식 프로세스로 분리한다(`shell.openPath` 금지 —
+ *   dex-host.ts openPath 주석 참고).
  */
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -83,8 +81,8 @@ export async function openAttachmentTemp(
 
 /**
  * OS 기본 앱으로 열기. **`shell.openPath` 를 쓰지 않는다** — 그 함수는 경로를
- * 동기적으로 확인하므로 대상이 우리 마운트면 이벤트 루프가 막혀 데드락이 된다.
- * 자식 프로세스로 분리하면 우리 루프는 계속 돌고 마운트도 계속 응답한다.
+ * 메인 루프에서 동기적으로 확인하고, 리눅스에선 연 앱이 끝날 때까지 기다린다.
+ * 자식 프로세스로 분리하면 우리 루프는 계속 돈다.
  */
 function openWithDefaultApp(target: string): void {
   const cmd =
@@ -124,10 +122,9 @@ export interface LocalFileBytes {
 }
 
 /**
- * 로컬 경로(가상 드라이브 포함)를 읽어 업로드용 바이트로 만든다.
+ * 로컬 경로를 읽어 업로드용 바이트로 만든다.
  *
- * 비동기 `readFile` 인 것이 중요하다 — 이 경로는 에이전트 워크스페이스, 즉
- * **우리가 서빙하는 FUSE 마운트일 수 있다**. 파일 맨 위 주석의 데드락 참고.
+ * 비동기 `readFile` 인 것이 중요하다 — 파일 맨 위 주석 참고.
  */
 export async function readFileForUpload(path: string): Promise<LocalFileBytes> {
   const bytes = await readFile(path);

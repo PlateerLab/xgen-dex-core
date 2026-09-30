@@ -294,42 +294,10 @@ const api = {
     close: async () => true,
     navigate: async () => true,
   },
-  workspace: {
-    status: async () => ({ supported: true, enabled: false, mounted: false, agents: [] }),
-    onStatus: off,
-    list: async () => [],
-    root: async () => '',
-    open: async () => ({ ok: true }),
-    openPath: async () => ({ ok: true }),
-    refresh: async () => true,
-    refreshAgents: async () => true,
-    remount: async () => ({}),
-    setEnabled: async () => ({}),
-    setRoot: async () => ({}),
-    attach: async () => ({}),
-    detach: async () => ({}),
-    diagText: async () => '',
-    diagCopy: async () => ({ ok: true, chars: 0 }),
-  },
   /**
    * main 이 나중에 추가한 표면들. 없으면 마운트 시점에 컴포넌트가 죽어 **아무것도
    * 렌더되지 않는다** — 목이 뒤처지면 제품 버그처럼 보이므로 함께 채운다.
    */
-  sync: {
-    status: async () => ({ enabled: false, root: '', agents: [] }),
-    now: async () => ({ enabled: false, root: '', agents: [] }),
-    list: async () => [],
-    openPath: async () => ({ ok: true }),
-    onStatus: off,
-  },
-  localRuntime: {
-    status: async () => ({ installed: false, agents: [] }),
-    install: async () => ({ ok: true }),
-    cliInstall: async () => ({ ok: true }),
-    sync: async () => ({ ok: true }),
-    openLog: async () => ({ ok: true }),
-    onProgress: off,
-  },
   system: { metrics: off },
   capture: { screen: async () => ({ ok: false }), listSources: async () => [] },
   voice: {

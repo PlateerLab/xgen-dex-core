@@ -100,7 +100,7 @@ export const CHANNELS = {
   teamsOpenAttachment: 'teams:openAttachment',
   /** 첨부 원본 바이트 — 그림 미리보기용. 디스크를 거치지 않는다. */
   teamsReadAttachment: 'teams:readAttachment',
-  /** 워크스페이스(가상 드라이브)의 파일을 그대로 방에 올린다 — 에이전트 산출물 공유. */
+  /** 파일 저장소의 파일을 그대로 방에 올린다 — 탐색기에서 고른 파일 공유. */
   teamsShareWorkspaceFile: 'teams:shareWorkspaceFile',
 
   historyTurns: 'history:turns',
@@ -316,10 +316,6 @@ export const CHANNELS = {
   // 로그인 시크릿 저장 상태 (키체인/암호화 저장 불가 표면화)
   secureStorageStatus: 'secure:storageStatus',
 
-  // 로컬 실행 환경(설치 폴더의 Python 런타임 + CLI) — 상태 조회 / 설치 / 진행 push /
-  // 서버 버전으로 수렴(sync). 커넥터-세션 턴은 chatStart 가 자동으로 이 환경(사이드카
-  // 데몬)에서 돌린다 — 별도 렌더러 IPC 없음.
-  // CLI 바이너리(codex / Claude Code) 프로비저닝 — 공식 배포처에서 로컬 설치.
   /** 설치 폴더 등 로컬 폴더를 OS 파일 관리자로 연다. */
   appOpenFolder: 'app:openFolder',
 } as const;

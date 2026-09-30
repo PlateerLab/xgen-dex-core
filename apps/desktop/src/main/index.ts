@@ -161,7 +161,7 @@ import {
 // ⚠ 표시 이름(제품명/설치 파일/창 제목)은 "XGen Dex"로 바뀌었지만, Electron 은
 // app.getPath('userData') 등 기본 데이터 경로를 **app.name**(기본값 = package.json
 // productName)에서 파생시킨다 — 아무 조치 없이 productName 만 바꾸면 기존
-// 사용자의 로그인 세션·로컬 런타임·동기화 상태가 들어있는 데이터 폴더
+// 사용자의 로그인 세션·설정이 들어있는 데이터 폴더
 // (%APPDATA%\XGEN-Connector 등)를 잃어버리고 새 폴더로 조용히 갈라진다.
 // 여기서 옛 이름으로 고정해 데이터 연속성을 지킨다(keytar 서비스 이름도
 // keychain.ts 에서 별도로 'xgen-connector' 로 고정돼 있어 이 값과 무관하다).
@@ -353,7 +353,7 @@ function getClient(): XgenClient {
       onAuthFailure: handleAuthFailure,
       // 토큰이 회전되는 **모든** 지점에서 keychain 을 즉시 갱신한다. 게이트웨이는
       // 회전 시 이전 토큰의 세션 키를 지우므로, 여기서 놓치면 keychain 을 읽는
-      // 장수명 소비자(WS 브릿지·워크스페이스 동기화)가 폐기된 토큰으로 접속하다
+      // 장수명 소비자(WS 브릿지·대화 소켓)가 폐기된 토큰으로 접속하다
       // 403(session revoked)에 갇힌다 — 실기에서 채팅은 되는데 WS 만 죽던 원인.
       onTokensRotated: (access, refresh) => {
         void tokenStore.setAccess(access);
@@ -1589,7 +1589,7 @@ chatFolders.onChange((interactionId) => {
 });
 /**
  * 현재 유효한 액세스 토큰 — **라이브 클라이언트(회전 반영) 우선**, 없으면 keychain.
- * WS 브릿지·워크스페이스 동기화가 keychain 만 읽으면, 세션 중 회전 시점과
+ * WS 브릿지·대화 소켓이 keychain 만 읽으면, 세션 중 회전 시점과
  * keychain 기록 사이의 틈에서 폐기된 토큰을 집는다. 단일 소스로 그 틈을 없앤다.
  */
 //: webRequest 콜백은 **동기**라 그 자리에서 keychain 을 기다릴 수 없다. 마지막
@@ -1618,7 +1618,7 @@ async function refreshAuthToken(): Promise<string | null> {
  *
  * 토큰은 항상 **라이브 값**을 집는다(liveAccessToken). keychain 만 읽으면 세션
  * 중 회전 시점과 기록 사이의 틈에서 폐기된 토큰을 잡아 403 에 갇힌다 — MCP
- * 브릿지·워크스페이스 동기화가 같은 이유로 같은 규칙을 쓴다.
+ * 브릿지·대화 소켓이 같은 이유로 같은 규칙을 쓴다.
  */
 const teamsHub = new TeamsSocketHub();
 /** IDE 가 쓰는 서버 연결 — 로그인하지 않았으면 없다. */
@@ -3295,7 +3295,7 @@ ipcMain.handle(CHANNELS.chatFoldersRemove, (_e, interactionId: string, folderId:
 ipcMain.handle(CHANNELS.chatFoldersReveal, async (_e, interactionId: string, folderId: string) => {
   const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === folderId);
   if (!folder) return { ok: false, error: '연결된 폴더가 아닙니다.' };
-  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (마운트 동기 확인 데드락).
+  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (동기 확인·앱 종료 대기).
   const err = await openWithDefaultApp(folder.path);
   return { ok: !err, error: err || undefined };
 });
@@ -3337,7 +3337,7 @@ ipcMain.handle(CHANNELS.appOpenFolder, async (_e, p: unknown) => {
   } catch {
     /* 열기에서 드러남 */
   }
-  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (마운트 동기 확인 데드락).
+  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (동기 확인·앱 종료 대기).
   const err = await openWithDefaultApp(dir);
   return { ok: !err, error: err || undefined };
 });
@@ -3502,12 +3502,11 @@ function currentAccountKey(): string | null {
   return accountKey(normalizeServerUrl(loadConfig().serverUrl), String(uid));
 }
 
-// ── 로컬 실행 v2: 사이드카 데몬 + 서버 버전 수렴 ──────────────────────
-/** 사이드카 데몬(상주) — 첫 턴에 기동, 유휴 15분 뒤 자가 종료, 앱 종료 시 내림. */
+// ── 설치 폴더 · 설치 로그 ─────────────────────────────────────────────
 /**
- * 통합 데이터 루트 정착(부팅 1회) — 인스톨러 선택(install-options.json)을 삼키고,
- * dataRoot 트리(workspace/·local-runtime/)를 만들고, 미설정 경로 기본을
- * config 에 채운다. 명시 설정은 절대 덮지 않는다.
+ * 설치 폴더 정착(부팅 1회) — 인스톨러 선택(install-options.json)을 삼키고,
+ * 설치 폴더를 만들고, 미설정이면 기본 경로를 config 에 채운다.
+ * 명시 설정은 절대 덮지 않는다.
  */
 function settleDataRootOnBoot(): void {
   try {
@@ -3521,12 +3520,6 @@ function settleDataRootOnBoot(): void {
     console.error('[data-root] 정착 실패(무시):', e);
   }
 }
-/**
- * 런타임 자가치유 사다리(설치 폴더 → 내장 번들 복사 → 네트워크 설치) — 서버와 무관하게
- * "항상 쓸 수 있는 런타임"을 보장하고, 상태/원인을 설정 화면에 그대로 드러낸다.
- * 진행은 메인 창으로 push(localRuntimeProgress).
- */
-/** 부팅 배선 단계 실패(있으면) — 설정 화면에 그대로 드러낸다. */
 /** 설치 폴더의 install.log — 인스톨러(NSIS)와 앱이 **같은 파일**에 이어 쓴다. */
 function installLogPath(): string {
   return join(resolveDataRoot(loadConfig()), 'install.log');
@@ -3540,7 +3533,6 @@ function appendInstallLog(line: string): void {
   }
 }
 
-/** CLI 바이너리 자동 보장 — 도구별 single-flight(연타 턴이 중복 설치하지 않게). */
 /* ── 탐색기 · 파일 뷰어 — 파일 저장소 읽기 표면 ─────────────────────
  *
  * 탐색기는 서버의 파일 저장소를 그대로 보여 준다(이 PC 에 내려받아 두지 않는다).
@@ -3878,7 +3870,7 @@ if (!gotLock) {
     const startHidden = process.argv.includes('--hidden') && trayOk;
     createWindow();
     if (startHidden) mainWindow?.removeAllListeners('ready-to-show');
-    // 부팅 배선 — 한 단계가 던져도 다음 단계(특히 로컬 실행 런타임 보장)가 멈추지 않게,
+    // 부팅 배선 — 한 단계가 던져도 다음 단계가 멈추지 않게,
     // 각 단계를 격리하고 실패를 install.log 에 남긴다.
     const bootErrors: string[] = [];
     const bootStep = (name: string, fn: () => void) => {
@@ -3893,7 +3885,7 @@ if (!gotLock) {
         console.error(`[boot] ${name} failed`, e);
       }
     };
-    bootStep('settleDataRoot', () => settleDataRootOnBoot()); // 통합 루트 정착 — 아래 배선들이 새 기본을 읽는다.
+    bootStep('settleDataRoot', () => settleDataRootOnBoot()); // 설치 폴더 정착 — install.log 가 이 경로를 쓴다.
     if (cfg.avatarOverlay) createOverlay();
     if (cfg.quickChat) {
       createQuickChat();

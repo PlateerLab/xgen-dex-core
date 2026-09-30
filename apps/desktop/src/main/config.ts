@@ -38,18 +38,6 @@ export interface McpServerConfig {
 }
 
 export interface ConnectorConfig {
-  /**
-   * 가상 드라이브 워크스페이스 — **계정별로 따로 둔다** (키: `<serverUrl>|<userId>`).
-   *
-   * 예전에는 전역 `workspace` 하나였다. 그러면 계정을 바꿔 로그인해도 이전 계정의
-   * 루트·부착 에이전트를 그대로 물고, 두 계정이 같은 폴더를 클라우드로 가리켜
-   * 서로의 파일을 덮어쓴다 (실기 신고).
-   */
-  /** @deprecated 가상 드라이브 시절 설정 — 더 이상 읽지 않는다.
-   *  기존 파일과의 호환을 위해 타입만 남긴다. */
-  workspaces?: Record<string, WorkspacePersistConfig>;
-  /** @deprecated 전역 단일 워크스페이스 (가상 드라이브 시절). */
-  workspace?: WorkspacePersistConfig;
   /** Gateway origin, e.g. "https://xgen.example.com". Empty on first run. */
   serverUrl: string;
   /** 설정된 서버에서 사설 CA 신뢰 실패만 예외로 허용한다. 기본 false. */
@@ -124,12 +112,9 @@ export interface ConnectorConfig {
   mcpDebug?: boolean;
   /** Configured local MCP servers. */
   mcpServers?: McpServerConfig[];
-  /** 통합 데이터 루트(기본 ~/xgen-dex) — workspace/·cloud/ 의 부모.
-   *  인스톨러 선택 또는 설정에서 변경. 개별 경로 명시가 항상 우선. */
+  /** 설치 폴더(기본 ~/xgen-dex) — 설치 로그(install.log)가 쌓이는 곳.
+   *  인스톨러에서 고르고, 첫 부팅이 config 에 못박는다(data-root.ts). */
   dataRoot?: string;
-  /** @deprecated XGen 저장소 로컬 동기화 토글(1.64 까지) — 더 이상 읽지 않는다.
-   *  기존 파일과의 호환을 위해 타입만 남긴다. */
-  fileSystems?: Record<string, { cloudSync?: boolean; agentSync?: boolean }>;
   /** 이 설치본의 안정 디바이스 id (최초 1회 생성) — 기기 식별(연결된 기기 목록 등). */
   deviceId?: string;
   /** Linux 전용: 오버레이 클릭 통과 옵트인 ({forward:true} 미지원 플랫폼 안전장치). */
@@ -212,19 +197,6 @@ export interface WorkspaceLayoutPersistConfig {
   focusedGroupId: string;
 }
 
-/** XGEN 워크스페이스(가상 드라이브) 영속 형태 — workspace.WorkspaceConfig 미러. */
-export interface WorkspacePersistConfig {
-  root?: string;
-  agents: Array<{
-    id: string;
-    workflowId: string;
-    label: string;
-    folder: string;
-    paused?: boolean;
-    pausedReason?: string;
-  }>;
-}
-
 const DEFAULTS: ConnectorConfig = {
   serverUrl: '',
   allowPrivateCertificate: false,
@@ -247,9 +219,16 @@ function configPath(): string {
   return join(dir, 'connector.json');
 }
 
+/**
+ * 이제 아무도 읽지 않는 옛 키 — 읽을 때 걷어 내서 다음 저장에 파일에서도 사라지게 한다.
+ * (가상 드라이브 워크스페이스 `workspace`·`workspaces`, 저장소 로컬 동기화 토글 `fileSystems`)
+ */
+const RETIRED_KEYS = ['workspace', 'workspaces', 'fileSystems'];
+
 export function loadConfig(): ConnectorConfig {
   try {
     const raw = JSON.parse(readFileSync(configPath(), 'utf-8'));
+    if (raw && typeof raw === 'object') for (const k of RETIRED_KEYS) delete raw[k];
     return { ...DEFAULTS, ...raw };
   } catch {
     return { ...DEFAULTS, serverUrl: process.env.XGEN_SERVER_URL || DEFAULTS.serverUrl };

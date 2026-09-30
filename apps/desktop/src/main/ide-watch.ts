@@ -5,8 +5,8 @@
  * `changed` 를 민다. IDE 는 그것을 받아 탐색기·열린 파일·소스 제어를 다시 읽는다 — 없으면
  * 30초마다 목록을 다시 읽는 수밖에 없어, 터미널에서 만든 파일이 한참 뒤에야 보였다.
  *
- * 이 연결은 **구경꾼**이다: 첫 프레임으로 `{type:'hello', data:{observer:true}}` 를 보내야 서버가
- * 알림을 보내고, 기기 목록(클라우드 [연결])에도 남지 않는다(웹의 openAppChangeSocket 과 같다).
+ * 이 연결은 **듣기만** 한다: 첫 프레임으로 `{type:'hello', data:{observer:true}}` 를 보내야 서버가
+ * 알림을 보낸다(웹의 openAppChangeSocket 과 같다).
  * 렌더러는 CSP 로 소켓을 못 열어 main 이 Bearer 로 연다(ide-terminal 과 같은 이유).
  */
 import WebSocket from 'ws';

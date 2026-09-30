@@ -87,65 +87,6 @@ import type {
   BrowserState,
 } from '@dex/protocol/browser';
 
-/** 로컬 실행 환경 상태(설정 화면) — 메인의 localRuntimeStatus 응답. */
-export interface LocalExecStatus {
-  enabled: boolean;
-  installed: boolean;
-  pythonPath: string;
-  version?: string;
-  sidecarOk?: boolean;
-  runtimeDir: string;
-  daemon: {
-    running: boolean;
-    pid?: number;
-    protocol?: number;
-    runtimeVersion?: string;
-    activeTurns: number;
-    lastError?: string;
-  };
-  cli: {
-    codex: { installed: boolean; path: string; version?: string };
-    claude: { installed: boolean; path: string; version?: string };
-  };
-  /** 서버가 알려준 목표 버전(없으면 서버 v1/미로그인). */
-  server: {
-    runtime?: string;
-    claude?: string | null;
-    codex?: string | null;
-    claudeEnabled?: boolean;
-    codexEnabled?: boolean;
-    /** 서버가 커넥터에 줄 수 있는 CLI 인증(서버 일원화): 'api_key' | 'setup_token' | 'credentials' | null(없음→서버 실행) */
-    claudeAuth?: { mode?: string; ready?: boolean; source?: string | null } | null;
-    codexAuth?: { mode?: string; ready?: boolean; source?: string | null } | null;
-    manifestAt?: number;
-  } | null;
-  converge: { running: boolean; lastRunAt?: number; lastError?: string; summary?: string };
-  /** 부팅 배선 단계 실패(있으면). */
-  bootErrors?: string[];
-  /** 앱 내장 번들 경로(<resources>/python) — 진단 표시용. */
-  bundlePath?: string | null;
-  isPackaged?: boolean;
-  /** 설치 로그 꼬리(인스톨러 + 앱) — 왜 실패했는지 화면에서 바로 본다. */
-  logs?: { path: string; lines: string[] }[];
-  /** 런타임 자가치유 사다리 상태 — 지금 어떤 런타임을 쓰는지(active) + 후보별 진단. */
-  ensure: {
-    phase: 'idle' | 'checking' | 'copying' | 'downloading' | 'ready' | 'failed';
-    message?: string;
-    lastError?: string;
-    lastRunAt?: number;
-    active?: { source: 'install' | 'bundle' | 'legacy'; python: string; version?: string };
-    candidates: {
-      source: 'install' | 'bundle' | 'legacy';
-      runtimeDir: string;
-      python: string;
-      exists: boolean;
-      healthy?: boolean;
-      version?: string;
-      error?: string;
-    }[];
-  };
-}
-
 /** 인앱 탐색기 — 파일 저장소 폴더의 직계 자식 하나. */
 export interface WorkspaceEntryLike {
   name: string;
@@ -254,12 +195,6 @@ const api = {
     create: (input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> =>
       ipcRenderer.invoke(CHANNELS.agentsCreate, input),
   },
-
-  /**
-   * 로컬 실행 환경 — 설치 폴더의 Python 런타임(사이드카) + Claude Code / Codex CLI.
-   * 커넥터에서 시작한 Agent-Geny 턴은 자동으로 이 환경에서 돈다(chatStart). 여기는
-   * 상태 표시·설치·서버 버전 수렴([설정 → 일반]).
-   */
 
   user: {
     /** The logged-in user's avatar config (preferences.avatar). Global default. */
@@ -873,7 +808,6 @@ const api = {
     quit: (): void => ipcRenderer.send(CHANNELS.appQuit),
   },
 
-  /** 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스)를 로컬 폴더로. */
   /** 같은 계정에 연결된 커넥터 기기 목록 (설정 > 일반 > 연결된 기기). */
   connectorDevices: (): Promise<{
     devices: Array<{

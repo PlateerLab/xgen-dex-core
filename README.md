@@ -29,7 +29,7 @@ XGEN 에이전트를 쓰는 세 가지 방법.
 
 | | 무엇 | 받는 것 |
 |---|---|---|
-| **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 워크스페이스 동기화 | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
+| **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 파일 탐색기 · IDE | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
 | **CLI** | 터미널. 대화형 UI 와 일회성 명령, 스크립트에서 쓰는 JSON 출력 | npm — [`xgen-dex-cli`](https://www.npmjs.com/package/xgen-dex-cli) |
 | **VSCode 확장** | 편집기 안에서 대화. 사이드바 + 명령 팔레트 | `.vsix` |
 
@@ -243,13 +243,7 @@ Node.js 20 이상.
 
 ```bash
 npm install                        # packages/* + apps/cli + apps/vscode
-npm --prefix apps/desktop install  # 데스크톱은 따로 (electron + 네이티브 FUSE)
-```
-
-리눅스에서 데스크톱을 빌드하려면 FUSE 헤더가 필요합니다(워크스페이스 가상 드라이브):
-
-```bash
-sudo apt-get install libfuse-dev fuse3 pkg-config
+npm --prefix apps/desktop install  # 데스크톱은 따로 (electron)
 ```
 
 `apps/desktop` 이 npm workspace 밖인 이유는 electron 과 네이티브 바인딩이 루트로

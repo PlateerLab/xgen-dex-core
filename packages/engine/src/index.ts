@@ -8,7 +8,7 @@
  * 쓰는 법: 앱이 시작할 때 포트를 한 번 붙이고, 그 뒤로는 그냥 부른다.
  *
  * ```ts
- * bindHost({ secrets, config, paths });
+ * bindHost({ secrets, config });
  * const bridge = getMcpBridge();
  * ```
  */

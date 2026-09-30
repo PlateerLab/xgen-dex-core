@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveTurnFlow, parseSubscribed } from '../src/chat';
+import { liveTurnFlow, liveTurnProcess, parseSubscribed } from '../src/chat';
 import { HistoryApi, turnAttachments, turnInputText } from '../src/history';
 import { appendFlowItem, buildSteps } from '../src/process-timeline';
 import type { HttpClient } from '../src/client';
@@ -162,4 +162,14 @@ test('글 조각은 한 칸으로 합친다', () => {
     flow.map((f) => (f.kind === 'text' ? f.text : 'tool')),
     ['가나', 'tool', '다'],
   );
+});
+
+test('웹이 쓰는 서버 모양 — 도구 원문 그대로, 같은 순서', () => {
+  const data = { event_type: 'tool_call', tool_name: 'Bash', run_id: 'r1', indicator: { render_hint: 'chip' } };
+  const items = liveTurnProcess({ text: '가나다', textTotal: 3, events: [{ event: 'tool', data, text_at: 2, at: 9 }, { event: 'node_status', data: {} }] });
+  assert.deepEqual(items, [
+    { kind: 'text', text: '가나', at: 9 },
+    { kind: 'tool', event: data, at: 9 },
+    { kind: 'text', text: '다', at: 9 },
+  ]);
 });

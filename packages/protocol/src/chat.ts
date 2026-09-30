@@ -197,8 +197,13 @@ export function parseSubscribed(data: unknown): SubscribedState {
   };
 }
 
+/** 진행분 한 칸 — 서버 작업 과정(`process`)과 같은 모양. 도구 사건은 서버가 보낸 원문(snake_case) 그대로다. */
+export type LiveProcessItem =
+  | { kind: 'text'; text: string; at: number }
+  | { kind: 'tool'; event: Record<string, unknown>; at: number };
+
 /**
- * 진행분 스냅샷 → 작업 과정(글·도구가 온 순서).
+ * 진행분 스냅샷 → 글·도구가 온 순서(서버 작업 과정과 같은 모양).
  *
  * 다시 접속한 화면이 **실행한 화면과 같은 타임라인**을 그리게 하는 자리다. 예전에는 스냅샷의 글만
  * 말풍선에 넣고 도구(`events`)는 버렸다 — 웹에서 도구 24번을 부르며 7분째 도는 턴이 폰에서는
@@ -206,34 +211,46 @@ export function parseSubscribed(data: unknown): SubscribedState {
  *
  * 순서는 각 사건의 `text_at`(그때까지의 본문 글자 수)으로 되살린다. 그 값이 없는 옛 서버는
  * 도구를 먼저, 글을 뒤에 둔다 — 순서를 모르면 지금 쓰고 있는 글이 가장 최근 것이다.
+ * 도구 사건의 원문을 그대로 두므로 웹(서버 모양을 쓰는 화면)도 이것을 그대로 받는다.
  */
-export function liveTurnFlow(live: LiveTurnSnapshot): TimelineFlowItem[] {
+export function liveTurnProcess(live: LiveTurnSnapshot): LiveProcessItem[] {
   // 서버(Python)의 글자 수는 코드 포인트다 — JS 문자열 길이(UTF-16)로 자르면 이모지 뒤에서 어긋난다.
   const chars = Array.from(live.text ?? '');
-  const text = { length: chars.length, slice: (a: number, b?: number) => chars.slice(a, b).join('') };
-  const base = Math.max(0, (live.textTotal ?? text.length) - text.length);
-  const fallbackAt = live.startedAt ?? 0;
-  const out: TimelineFlowItem[] = [];
+  const slice = (a: number, b?: number): string => chars.slice(a, b).join('');
+  const base = Math.max(0, (live.textTotal ?? chars.length) - chars.length);
+  const out: LiveProcessItem[] = [];
   let cursor = 0;
-  let lastAt = fallbackAt;
+  let lastAt = live.startedAt ?? 0;
   for (const raw of live.events ?? []) {
     if (!raw || typeof raw !== 'object') continue;
     const item = raw as Record<string, unknown>;
-    const data = item.data && typeof item.data === 'object' ? (item.data as Record<string, unknown>) : null;
-    const ev = turnEventToChatEvent(typeof item.event === 'string' ? item.event : undefined, data);
-    if (!ev || ev.kind !== 'tool') continue;
+    if (item.event !== 'tool' || !item.data || typeof item.data !== 'object') continue;
     const at = typeof item.at === 'number' ? item.at : lastAt;
     lastAt = at;
     if (typeof item.text_at === 'number') {
-      const offset = Math.min(text.length, Math.max(0, item.text_at - base));
+      const offset = Math.min(chars.length, Math.max(0, item.text_at - base));
       if (offset > cursor) {
-        out.push({ kind: 'text', text: text.slice(cursor, offset), at });
+        out.push({ kind: 'text', text: slice(cursor, offset), at });
         cursor = offset;
       }
     }
-    out.push({ kind: 'tool', event: ev.event, at });
+    out.push({ kind: 'tool', event: item.data as Record<string, unknown>, at });
   }
-  if (cursor < text.length) out.push({ kind: 'text', text: text.slice(cursor), at: lastAt });
+  if (cursor < chars.length) out.push({ kind: 'text', text: slice(cursor), at: lastAt });
+  return out;
+}
+
+/** 진행분 스냅샷 → 작업 과정(화면 모양의 도구 사건). 순서 규칙은 {@link liveTurnProcess} 하나다. */
+export function liveTurnFlow(live: LiveTurnSnapshot): TimelineFlowItem[] {
+  const out: TimelineFlowItem[] = [];
+  for (const item of liveTurnProcess(live)) {
+    if (item.kind === 'text') {
+      out.push(item);
+      continue;
+    }
+    const ev = turnEventToChatEvent('tool', item.event);
+    if (ev?.kind === 'tool') out.push({ kind: 'tool', event: ev.event, at: item.at });
+  }
   return out;
 }
 

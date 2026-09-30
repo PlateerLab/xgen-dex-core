@@ -66,6 +66,13 @@ export class DesktopNativeSessions {
 }
 
 /** Only the main renderer's top-level frame may invoke the new native credential boundary. */
-export function isNativeSessionSender(sender: unknown, frame: unknown, main: { mainFrame: unknown } | null): boolean {
-  return main !== null && sender === main && frame !== null && frame === main.mainFrame;
+export function isNativeSessionSender(sender: unknown, frame: unknown, main: { mainFrame: unknown } | null, trustedRendererUrl: string): boolean {
+  if (main === null || sender !== main || frame === null || frame !== main.mainFrame) return false;
+  try {
+    const actualUrl = (frame as { url?: unknown }).url;
+    if (typeof actualUrl !== 'string') return false;
+    const actual = new URL(actualUrl); const trusted = new URL(trustedRendererUrl);
+    actual.hash = ''; trusted.hash = '';
+    return actual.href === trusted.href;
+  } catch { return false; }
 }

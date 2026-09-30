@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
@@ -1876,7 +1877,9 @@ function ensureDeviceId(): string {
 
 // ── IPC: config ──────────────────────────────────────────────────
 const desktopNativeSessions = bindDesktopNativeSessions(() => mainWindow?.webContents ?? null,
-  () => ({ origin: normalizeServerUrl(loadConfig().serverUrl), userId: currentUserId() }));
+  () => ({ origin: normalizeServerUrl(loadConfig().serverUrl), userId: currentUserId() }),
+  process.env['ELECTRON_RENDERER_URL'] ? `${process.env['ELECTRON_RENDERER_URL']}/index.html`
+    : pathToFileURL(join(__dirname, '../renderer/index.html')).href);
 ipcMain.handle(CHANNELS.configGet, () => loadConfig());
 /** 서버 주소 확정 — 스킴이 없으면 https → http 순으로 실제로 두드려 정한다. */
 ipcMain.handle(CHANNELS.configProbeServer, async (_e, input: string) => {

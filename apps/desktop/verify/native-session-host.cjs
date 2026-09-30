@@ -3,6 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { createInterface } = require('node:readline');
 const { buildSync } = require('esbuild');
 const { bindDesktopNativeSessions } = require('../src/main/native-session-ipc.ts');
@@ -29,7 +30,9 @@ app.whenReady().then(async () => {
   buildSync({ entryPoints: [path.join(__dirname, 'native-session-renderer.tsx')], bundle: true, outfile: path.join(directory, 'ui.js'), platform: 'browser', format: 'iife', loader: { '.woff2': 'file' }, tsconfig: path.join(__dirname, '../tsconfig.json') });
   writeFileSync(path.join(directory, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="ui.css"></head><body><main id="root" class="settings-panel"></main><script src="ui.js"></script></body></html>');
   win = new BrowserWindow({ width: 1050, height: 1000, show: false, webPreferences: { contextIsolation: true, sandbox: false, preload: path.join(__dirname, '../out/preload/index.js') } });
-  host = bindDesktopNativeSessions(() => win?.webContents ?? null, () => ({ origin, userId }));
+  const rendererUrl = new URL(pathToFileURL(path.join(directory, 'index.html')));
+  rendererUrl.searchParams.set('origin', origin);
+  host = bindDesktopNativeSessions(() => win?.webContents ?? null, () => ({ origin, userId }), rendererUrl.href);
   // Notifications go through the production channel and renderer, then to this test driver's stdout.
   const originalSend = win.webContents.send.bind(win.webContents);
   win.webContents.send = (channel, notice) => {
@@ -43,6 +46,12 @@ app.whenReady().then(async () => {
   await guest.loadURL('about:blank');
   const denied = await guest.webContents.executeJavaScript(`window.xgen.nativeSession.request('session', {action:'status'})`);
   guest.destroy(); if (denied.ok || denied.code !== 'auth_required') throw new Error('Desktop fixture IPC sender isolation failed');
+  // Even the designated main frame loses native access after navigating away.
+  await win.loadURL('about:blank');
+  const navigated = await win.webContents.executeJavaScript(`window.xgen.nativeSession.request('session', {action:'status'})`);
+  if (navigated.ok || navigated.code !== 'auth_required') throw new Error('Desktop fixture renderer URL isolation failed');
+  await win.loadFile(path.join(directory, 'index.html'), { query: { origin } });
+  await until(`document.querySelectorAll('button').length >= 10 && !!window.xgen.nativeSession`);
   const lines = createInterface({ input: process.stdin });
   lines.on('line', (line) => { void (async () => {
     let request;

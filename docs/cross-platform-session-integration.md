@@ -149,7 +149,7 @@ VSCode 명령 **XGEN Dex: 기기 및 플랫폼 세션**은 등록, 등록 상태
 
 **설정 → 기기·세션**에서 현재 Desktop 계정의 기기 등록·상태, 승인할 신뢰 브라우저 선택과 비교 코드, PlatformSession 로그인·상태·갱신·로그아웃 및 Canonical 포커스 구독을 제공한다. 정상 active 상태 조회/갱신 뒤 구독을 자동 시작하며 연결·재연결·인증 중단을 표시한다. 중단된 로컬 기록 삭제는 별도 확인을 받고 `server_revoked=false`로 처리한다. 서버 세션 폐기는 브라우저 내 페이지에서 먼저 수행한다. 기존 Workspace 채팅·WebSocket 경로의 전환과 takeover 완료 자격증명 수령은 남아 있다.
 
-- `native-session-ipc.ts`가 현재 메인 창의 최상위 frame만 허용한다. 추가 창·webview·하위 frame은 native 자격증명 경계에 접근하지 못한다. Renderer는 서버·사용자 ID·프로필·플랫폼·토큰·키를 재정의할 수 없다.
+- `native-session-ipc.ts`가 현재 메인 창의 최상위 frame만 허용한다. 추가 창·webview·하위 frame 및 다른 주소로 이동한 메인 창은 native 자격증명 경계에 접근하지 못한다. 빌드된 index.html 또는 개발 Vite의 고정 index.html 주소를 대조한다. Renderer는 서버·사용자 ID·프로필·플랫폼·토큰·키를 재정의할 수 없다.
 - `DesktopNativeSessions`가 현재 설정의 HTTPS origin과 메인 프로세스의 실제 로그인 사용자에 작업을 고정한다. 일회성 비밀번호 로그인 결과가 현재 계정과 다르면 **키 접근 전** 중단하고 임시 인증을 로그아웃한다. CLI 프로필과 legacy 파일 fallback을 사용하지 않는다.
 - P-256 소프트웨어 키와 refresh/access는 OS 키체인의 `desktop` 슬롯에만 보관한다. 기존 CLI·VSCode 슬롯과 분리하며 공통 잠금·토큰 없는 회전 journal·새 DPoP·결과 저장 확인 규칙을 적용한다. 키체인 장애와 `DEX_NO_KEYCHAIN=1`은 native 작업을 차단한다.
 - 계정/서버 변경·로그아웃·인증 실패·메인 navigation·renderer 종료·앱 종료에서 진행 중 작업과 watcher를 취소한다. 세대 및 계정·origin·watch ID 검사가 늦은 결과를 버린다. 화면을 떠날 때 listener와 구독을 정리하며 비밀번호 입력은 요청 직후 지운다. Renderer에는 공개 상태/포커스만 반환한다.
@@ -169,11 +169,11 @@ node --import tsx scripts/native-platform-session-compose.mts --cli --vscode --d
 ```
 
 - Desktop 전체 회귀 **527 통과**, 새 main/renderer/TLS 회귀 **11개**. 계정 오입력, scope 재정의 거절, IPC sender, 취소 후 journal 보존, ACK 앞 알림, 늦은 계정 응답, 잘못된 포커스, 구독 정리, DELETE 본문 및 전송 자동 재시도/redirect/쿠키/미신뢰 TLS/응답 크기 제한을 검증했다. Desktop 타입·빌드, 공통 계약 검사와 두 opt-in 스크립트 타입 검사도 통과했다.
-- `--desktop` HTTPS fixture는 **실제 Electron 메인 factory·빌드 preload·production 설정 컴포넌트**를 사용한다. 다른 창의 IPC 거절, 실제 버튼으로 상태 조회·자동 구독·중단, 빈 비밀번호 입력과 화면 캡처를 확인했다. 별도 Electron 재실행으로 키체인 복원·플랫폼 분리, cursor 재생/재연결, 409 복구, 다른 프로세스 회전, 401 중단, 정확한 unwatch, 회전 완료 유실 뒤 옛 refresh 재사용 거절을 통과했다. **통제된 ACTIVE fixture이며 실제 ACTIVE Gateway 양성 검증은 아니다.** 임시 키는 Electron이 생성·삭제한다.
+- `--desktop` HTTPS fixture는 **실제 Electron 메인 factory·빌드 preload·production 설정 컴포넌트**를 사용한다. 다른 창 및 다른 주소로 이동한 메인 창의 IPC 거절, 실제 버튼으로 상태 조회·자동 구독·중단, 빈 비밀번호 입력과 화면 캡처를 확인했다. 별도 Electron 재실행으로 키체인 복원·플랫폼 분리, cursor 재생/재연결, 409 복구, 다른 프로세스 회전, 401 중단, 정확한 unwatch, 회전 완료 유실 뒤 옛 refresh 재사용 거절을 통과했다. **통제된 ACTIVE fixture이며 실제 ACTIVE Gateway 양성 검증은 아니다.** 임시 키는 Electron이 생성·삭제한다.
 - 실제 Compose `--cli --vscode --desktop`에서 Desktop·CLI·VSCode의 별도 호스트 재실행, 멱등 등록, 선택 브라우저 키/비밀번호 승인, trusted 조회, 실제 ACTIVE login 503, token-free login_pending, Canonical 구독 거절과 로컬 복구를 통과했다. Mobile은 공통 프로토콜만 검증했다. 임시 계정·기기·승인 요청·DB 이벤트·키체인·프로필을 정리했다.
 - 실행 소스: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`; 네 서비스 모두 `feat/cross-platform-session`, `PLATFORM_SESSION_MODE=enrollment`. 컨테이너 Git/소스 마운트, `.env` 서비스별 브랜치와 실제 실행 모드를 확인했다. Workflow의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`·runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` 로컬 overlay import 경로도 확인했으며 패키지는 배포하지 않았다.
 - 공통 엔진 150 통과·플랫폼 조건 제외 2, protocol 201 통과, VSCode 23 통과. CLI 전체는 150 통과·기존 TUI 중간 frame 타이밍 테스트 1개 실패했고, 동일 코드 한 번의 재실행에서도 같은 실패가 발생했다. 테스트/화면 코드를 이번 기능 변경에 섞지 않았으며 첫 실패와 재실행을 PR에 기록한다. 최신 Head CI에서 필수 검사를 확인한 뒤 통합한다.
-- 새 환경변수는 없다. 기존 Desktop `XGEN_SERVER_URL` 및 native 키체인/CA 사용 범위를 Infra 환경변수 참조 문서에 반영했다.
+- 새 환경변수는 없다. 기존 Desktop `XGEN_SERVER_URL`·개발용 `ELECTRON_RENDERER_URL` 및 native 키체인/CA 사용 범위를 Infra 환경변수 참조 문서에 반영했다.
 
 ### 남은 작업 추정
 

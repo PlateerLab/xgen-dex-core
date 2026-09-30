@@ -244,7 +244,7 @@ available in the same panel. The configured HTTPS origin and currently signed-in
 app account are fixed by the main process; entering another valid account is rejected.
 Passwords are cleared after each request. Device keys and session credentials use
 separate OS-keychain `desktop` slots with no file fallback. Only the main window's
-top-level frame can call the native IPC surface.
+top-level frame at the pinned application page URL can call the native IPC surface.
 
 The native transport verifies default/OS CAs, sends no browser cookies or Origin,
 and never retries a request transparently. Chromium proxy settings and private
@@ -267,7 +267,7 @@ Both require a trusted localhost CA and use disposable accounts/key slots.
 서버는 현재 설정의 HTTPS origin, 계정은 앱의 실제 로그인 계정으로 고정한다.
 다른 계정의 유효한 비밀번호를 입력해도 키 접근 전에 거절한다. 비밀번호 입력은
 요청 후 지우고 키·토큰은 별도 `desktop` OS 키체인 슬롯에만 보관한다.
-키체인 장애 시 파일로 저장하지 않으며 기본 창 최상위 frame만 native IPC를 호출한다.
+키체인 장애 시 파일로 저장하지 않으며 고정된 앱 주소의 기본 창 최상위 frame만 native IPC를 호출한다.
 
 인증 요청은 기본/OS CA를 검증하며 쿠키·Origin·투명 재시도·사설 인증서 예외를
 사용하지 않는다. Chromium 프록시 설정은 연결하지 않으므로 배포 환경에서 별도

@@ -49,9 +49,13 @@ async function fixture() {
     cleanup: async () => { host.reset(); await rm(dir, { recursive: true, force: true }); } };
 }
 test('only the designated main top frame can enter the native IPC credential boundary', () => {
-  const main = { mainFrame: {} };
-  assert.equal(isNativeSessionSender(main, main.mainFrame, main), true);
-  for (const [sender, frame, owner] of [[{}, main.mainFrame, main], [main, {}, main], [main, null, main], [main, main.mainFrame, null]]) assert.equal(isNativeSessionSender(sender, frame, owner as typeof main | null), false);
+  const url = 'file:///application/renderer/index.html'; const main = { mainFrame: { url } };
+  assert.equal(isNativeSessionSender(main, main.mainFrame, main, url), true);
+  for (const [sender, frame, owner] of [[{}, main.mainFrame, main], [main, {}, main], [main, null, main], [main, main.mainFrame, null]]) assert.equal(isNativeSessionSender(sender, frame, owner as typeof main | null, url), false);
+  main.mainFrame.url = `${url}#settings`; assert.equal(isNativeSessionSender(main, main.mainFrame, main, url), true);
+  for (const outside of ['https://other.test/index.html', 'about:blank', 'file:///application/renderer/overlay.html', `${url}?override=1`]) {
+    main.mainFrame.url = outside; assert.equal(isNativeSessionSender(main, main.mainFrame, main, url), false);
+  }
 });
 test('Desktop rejects renderer account/origin/platform overrides, signed-out and HTTP contexts before network/key access', async () => {
   const f = await fixture();

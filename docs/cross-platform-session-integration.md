@@ -30,7 +30,7 @@ Platform Session의 sid, trust 및 revoke 계약이 준비되면 Desktop·Mobile
 - refresh에는 Authorization·Origin·쿠키를 보내지 않는다. 계정 Bearer 없이도 현재 `authScope`로 실행할 수 있다. 응답의 sid, 회전된 refresh 및 access 준비 상태를 검사한다. 새 refresh는 다음 사용 전 저장해야 한다. 완료 결과를 모르는 네트워크 실패에서 옛 refresh를 다시 사용하면 서버가 전체 family를 폐기할 수 있으므로 자동 재시도하지 않는다.
 - HTTP 응답 본문과 transport·키 공급자의 오류 원문은 오류 객체에 넣지 않는다. 비밀번호는 로그인 완료 본문에만 보내고 디스크에 쓰지 않는다. 동일 인스턴스의 쓰기 ceremony를 겹쳐 실행하지 않으며, 여러 프로세스·인스턴스의 회전 직렬화는 호스트 책임이다.
 
-다음 앱 연결 작업에는 **파일 fallback 없는 개인키 공급자**, 계정·origin·install별 보안 저장, 회전 결과 저장, 계정 전환·로그아웃 시 취소/삭제 및 ACTIVE access의 DPoP 공급자가 필요하다. 기존 `SystemCredentialStore`의 평문 파일 fallback을 이 자격증명 저장소로 재사용하지 않는다. 공통 클라이언트 추가로 `active` 모드 관문이 열리지는 않는다.
+다음 앱 연결 작업에는 **파일 fallback 없는 기기 키 공급자**, 계정·origin·install별 보안 저장, 회전 결과 저장, 계정 전환·로그아웃 시 취소/삭제 및 ACTIVE access의 DPoP 공급자가 필요하다. 브라우저는 비추출 키, Mobile은 OS의 secure hardware key 저장을 사용하며 CLI 소프트웨어 키의 보관 방식은 아래에 설명한다. 기존 `SystemCredentialStore`의 평문 파일 fallback을 이 자격증명 저장소로 재사용하지 않는다. 공통 클라이언트 추가로 `active` 모드 관문이 열리지는 않는다.
 
 ### 로컬 Compose 실사용 계약 검증
 
@@ -41,6 +41,30 @@ node --import tsx scripts/native-platform-session-compose.mts
 
 이 스크립트는 `https://localhost:3443`을 사용하고 mkcert root CA로 인증서를 검증한다. `full-stack-postgresql-1`에 임시 일반 계정과 사전 신뢰 브라우저 fixture를 만든 뒤, 네 플랫폼 각각의 등록 → 상태 조회 → 승인 브라우저 선택 → 실제 브라우저 키·비밀번호 승인 → trusted 상태 조회를 검증한다. 실제 기존 사용자와 기기는 변경하지 않는다. 종료 시 임시 계정의 legacy 세션을 로그아웃하고 계정·기기·승인 요청·DB 보안 이벤트·outbox·로그인 로그를 제거한다. 계정별 횟수 제한 Redis 키는 짧은 TTL로 만료된다. fixture의 사전 신뢰 브라우저는 최초 기기 bootstrap 검증을 대체하지 않는다.
 
-현재 `enrollment` 환경에서는 세션이 발급되지 않고 native login/refresh가 503으로 차단되는지 확인한다. ACTIVE 로그인·takeover·refresh 성공 응답, 오류·계정 전환·취소·서명 경계는 `packages/protocol/test/native-platform-session.test.ts`에서 검증한다. 실제 ACTIVE 발급과 앱의 영속 키 저장은 후속 검증으로 남는다. SDK와 agent-runtime은 기존 Workflow 로컬 overlay 연결을 유지하며 이 작업에서 패키지를 배포하지 않는다.
+현재 `enrollment` 환경에서는 세션이 발급되지 않고 native login/refresh가 503으로 차단되는지 확인한다. ACTIVE 로그인·takeover·refresh 성공 응답, 오류·계정 전환·취소·서명 경계는 `packages/protocol/test/native-platform-session.test.ts`에서 검증한다. 실제 ACTIVE 발급과 CLI 외 앱의 영속 키 저장은 후속 검증으로 남는다. SDK와 agent-runtime은 기존 Workflow 로컬 overlay 연결을 유지하며 이 작업에서 패키지를 배포하지 않는다.
 
 2026-09-30 검증: Gateway 통합 브랜치 `ea1290464dc9f827661e44029c3e68a1db368254`, `PLATFORM_SESSION_MODE=enrollment`, 기본 Compose 서비스와 `workflow`·`frontend` 프로필 및 localhost HTTPS 프록시에서 네 플랫폼의 실서버 계약 검증을 통과했다. 이 검증은 변경한 DEX 소스에서 실행하며 Gateway·Core·Workflow 소스를 변경하지 않는다. ACTIVE 발급 또는 Workflow의 후속 변경을 검증한 것으로 취급하지 않는다.
+
+## CLI 기기 등록·승인 연결
+
+```sh
+dex profile set corp --server https://xgen.example.com
+dex device register --email me@example.com --profile corp --name "PC CLI"
+dex device approvers --email me@example.com --profile corp
+dex device request-approval --email me@example.com --profile corp --approver <browser-device-id>
+dex device status --email me@example.com --profile corp
+```
+
+각 명령은 터미널 비밀 입력 또는 `--password-stdin`으로 현재 비밀번호를 확인한다. 비밀번호·Bearer·refresh를 명령 인자로 받지 않는다. 임시 legacy account login으로 받은 실제 사용자 ID에 CLI 키를 바인딩하고, native 요청에만 해당 Bearer를 사용한 뒤 account context를 logout한다. 이 임시 로그인은 기존 CLI credential 파일에서 읽거나 쓰지 않는다. logout 실패가 성공한 기기 작업 뒤에 발생하면 그 상태를 오류로 알리며, 기기 등록 자체는 이미 완료됐을 수 있으므로 상태를 조회한다. 기존 CLI/TUI `dex login`, 채팅 및 도구 브릿지의 인증 경로는 이 단계에서 바뀌지 않는다.
+
+`NativeDeviceKeyStore`는 **OS 키체인으로 보호하는 소프트웨어 P-256 키**다. 최초 생성 시 PKCS#8 개인키를 OS 키체인에 한번 저장하고, 프로세스마다 비추출 WebCrypto 서명 handle로 import한다. 저장·복원 과정에는 메모리에 개인키 인코딩이 존재하며 OS 키체인 접근자는 이를 읽을 수 있다. 하드웨어 고정 키 또는 OS 저장소에서의 추출 불가를 주장하지 않는다. 서버에는 공개키와 서명만 보낸다. 키체인 계정은 HTTPS origin·플랫폼·서버의 실제 사용자 ID의 해시로 구분하고 같은 계정의 별도 CLI 프로필은 같은 설치 키를 복원한다. private PKCS#8을 callback이나 CLI 결과에 반환하지 않는다.
+
+- 새 키가 저장된 내용을 다시 읽어 검증하고, 개인키와 공개키의 서명을 대조한 뒤에만 서버 등록을 시작한다. 기록이 손상되거나 범위·키가 맞지 않으면 새 키로 덮어쓰지 않는다.
+- 키체인 부재·잠김·읽기/쓰기 실패·2초 timeout 또는 `DEX_NO_KEYCHAIN=1`은 기기 작업을 차단한다. 기존 plain-file fallback은 사용하지 않는다.
+- OS 키체인 서비스는 `xgen-dex-native-device`. 사용자 홈 `.xgen-dex-native-device-locks`에는 PID·작업 시작 시각만 저장한다. CLI 설정 폴더와 무관한 동일 계정 잠금으로 프로세스 간 생성·등록을 직렬화한다. timeout은 OS 작업을 취소하지 않으므로 실제 완료까지 잠금을 유지한다. 강제 종료로 남은 `.lock`은 기록된 프로세스의 종료를 확인한 뒤 해당 파일만 제거한다. 개인키가 지워진 경우 새 키가 기존 승인 기기를 대신한다고 취급하지 않고 기기 폐기·복구 절차를 따른다.
+- `register` 재실행은 같은 설치 ID의 기존 상태를 반환한다. 승인 요청은 pending 기기만 만들 수 있고, 선택한 브라우저가 현재 신뢰 상태인지 서버에서 다시 확인한다. 출력하는 6자리 코드는 양쪽 화면 대조용이며 승인 인증 수단이 아니다.
+- native ACTIVE 로그인·회전 토큰 저장·DPoP 공급자·Canonical watcher 연결은 후속 작업이다. 이 CLI 등록은 Platform Session을 발급하지 않는다.
+
+로컬 실사용 검증은 CLI 빌드 뒤 `node --import tsx scripts/native-platform-session-compose.mts --cli`로 실행한다. `--cli`는 CLI 플랫폼 테스트를 빌드한 CLI의 별도 프로세스로 바꾸고 실제 OS 키체인 저장·재실행 복원·중복 등록 방지·브라우저 승인·trusted 조회를 검증한다. 공개 mkcert root CA만 자식 Node의 `NODE_EXTRA_CA_CERTS`로 전달하며 TLS 검증은 유지한다. 임시 계정·서버 자료·OS 키체인 키·CLI 프로필 폴더는 종료 시 정리한다.
+
+2026-09-30 CLI 검증: Gateway 통합 브랜치 `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, `PLATFORM_SESSION_MODE=enrollment`, `workflow`·`frontend` 프로필과 HTTPS 프록시에서 위 흐름을 통과했다. 임시 CLI 로그인·로그아웃 이후에도 기존 승인 브라우저의 Bearer가 유효했고 CLI 기기·승인 요청이 각 1개인 것을 DB로 확인했다. 이 검증에는 같은 초의 legacy 토큰 충돌을 막는 Gateway `jti` 수정이 필요하다. SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`와 agent-runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`은 Workflow 로컬 overlay로 연결한 상태였으며 패키지 배포나 실제 ACTIVE 세션 사용은 수행하지 않았다.

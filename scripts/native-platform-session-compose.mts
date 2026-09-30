@@ -2,11 +2,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomInt, randomUUID, webcrypto } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { Agent, request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { NativePlatformHttpError, NativePlatformSessionClient, type NativePublicKey } from '../packages/protocol/src/native-platform-session';
 import { createNativeDeviceSigner } from '../packages/protocol/src/native-device-proof';
+import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
 
 const origin = 'https://localhost:3443';
 const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
@@ -54,16 +56,37 @@ const userId = randomInt(1_000_000_000, 2_000_000_000);
 const tag = `dex-native-${randomUUID()}`;
 const password = randomBytes(32).toString('base64url');
 const browserId = randomUUID();
+const cliDirectory = process.argv.includes('--cli') ? mkdtempSync(join(tmpdir(), 'dex-native-cli-compose-')) : null;
+const cliKeys = new NativeDeviceKeyStore();
+let cliKeyCreated = false;
+function cli(action: string, extra: string[] = []) {
+  assert.ok(cliDirectory);
+  const output = execFileSync(process.execPath, ['apps/cli/dist/cli.js', 'device', action,
+    '--email', `${tag}@example.invalid`, '--password-stdin', '--json', ...extra], {
+    input: password, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.storage, 'os-keychain-software');
+  for (const secret of [password, accessToken!, 'privateKeyPkcs8', 'access_token', 'refresh_token']) assert.equal(output.includes(secret), false);
+  return result.result;
+}
 let created = false;
 let accessToken: string | null = null;
 try {
   sql(`INSERT INTO users(id,username,email,password_hash,is_active,is_superuser,status)
     VALUES (${userId},${literal(tag)},${literal(`${tag}@example.invalid`)},${literal(hash(password))},TRUE,FALSE,'1');`);
   created = true;
+  if (cliDirectory) writeFileSync(join(cliDirectory, 'config.json'), JSON.stringify({ version: 1,
+    currentProfile: 'compose', profiles: { compose: { serverUrl: origin } } }), { mode: 0o600 });
   const login = await json('/api/auth/login', { email: `${tag}@example.invalid`, password: hash(password) });
   assert.equal(login.success, true);
   assert.equal(login.user_id, String(userId));
   assert.equal(typeof login.access_token, 'string'); accessToken = login.access_token;
+  if (cliDirectory) {
+    const claims = JSON.parse(Buffer.from(accessToken!.split('.')[1], 'base64url').toString());
+    assert.equal(typeof claims.jti, 'string', 'Gateway must run the legacy token uniqueness fix before temporary CLI login/logout testing');
+  }
   const browser = await key();
   const thumbprint = createHash('sha256').update(JSON.stringify({ crv: 'P-256', kty: 'EC', x: browser.publicKey.x, y: browser.publicKey.y })).digest('base64url');
   // Fixture precondition: an existing trusted browser. This does not test first-device bootstrap.
@@ -73,6 +96,31 @@ try {
     INSERT INTO device_bootstrap_state(tenant_id,user_id,first_device_id,platform_type,trust_method)
     VALUES ('system',${userId},${literal(browserId)},'web','password_device_proof'); COMMIT;`);
   for (const platform of ['desktop', 'mobile', 'cli', 'vscode'] as const) {
+    if (platform === 'cli' && cliDirectory) {
+      // Separate real CLI processes must restore the same OS-keychain key and install ID.
+      cliKeyCreated = true;
+      const pending = cli('register', ['--name', 'Disposable CLI']);
+      assert.equal(pending.state, 'pending');
+      assert.deepEqual(cli('register'), pending);
+      assert.deepEqual(cli('status'), pending);
+      const overview = cli('approvers');
+      assert.ok(overview.trusted_devices.some((device: any) => device.device_id === browserId));
+      const approval = cli('request-approval', ['--approver', browserId]);
+      const path = `/api/me/device-approval-requests/${approval.request_id}/approve-key`;
+      const begun = await json(`${path}/begin`, { approver_device_id: browserId }, accessToken!);
+      const header = Buffer.from(JSON.stringify({ alg: 'ES256', typ: 'platform-device-proof+jwt' })).toString('base64url');
+      const claims = Buffer.from(JSON.stringify({ challenge: begun.device_challenge, purpose: 'device_approval', iat: Math.floor(Date.now() / 1000) })).toString('base64url');
+      const signature = await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, browser.pair.privateKey, new TextEncoder().encode(`${header}.${claims}`));
+      const approved = await json(path, { flow_id: begun.flow_id, device_challenge: begun.device_challenge,
+        device_proof_jwt: `${header}.${claims}.${Buffer.from(signature).toString('base64url')}`,
+        confirmation_code: approval.confirmation_code, password }, accessToken!);
+      assert.equal(approved.state, 'trusted'); assert.equal(cli('status').state, 'trusted');
+      assert.equal(sql(`SELECT COUNT(*) FROM trusted_devices WHERE user_id=${userId} AND platform_type='cli';`), '1');
+      assert.equal(sql(`SELECT COUNT(*) FROM device_approval_requests WHERE user_id=${userId} AND target_platform_type='cli';`), '1');
+      assert.equal(readFileSync(join(cliDirectory, 'config.json'), 'utf8').includes('privateKey'), false);
+      console.log('cli: built CLI processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS');
+      continue;
+    }
     const device = await key();
     const client = new NativePlatformSessionClient({ origin, platform, fetch: fetchImpl,
       account: { current: () => ({ authScope: tag, accessToken }) },
@@ -106,21 +154,29 @@ try {
   assert.equal(sql(`SELECT COUNT(*) FROM security_events WHERE user_id=${userId} AND event_type='device_approval_requested';`), '4');
   console.log('No Platform Session issued by enrollment/approval. HTTPS certificate verification enabled.');
 } finally {
-  if (created) {
-    try {
-      if (accessToken) {
-        const result = await json('/api/auth/logout', { token: accessToken });
-        assert.equal(result.success, true);
+  try {
+    if (created) {
+      try {
+        if (accessToken) {
+          const result = await json('/api/auth/logout', { token: accessToken });
+          assert.equal(result.success, true);
+        }
+      } finally {
+        sql(`BEGIN;
+          DELETE FROM security_outbox WHERE payload->>'user_id'=${literal(String(userId))};
+          DELETE FROM security_events WHERE user_id=${userId};
+          DELETE FROM user_login_logs WHERE user_id=${userId};
+          DELETE FROM users WHERE id=${userId}; COMMIT;`);
+        assert.equal(sql(`SELECT COUNT(*) FROM users WHERE id=${userId};`), '0');
+        console.log('Disposable account, devices, approval requests and database events removed.');
       }
+    }
+  } finally {
+    try {
+      if (cliKeyCreated) await cliKeys.remove({ origin, platform: 'cli', userId: String(userId) });
     } finally {
-      sql(`BEGIN;
-        DELETE FROM security_outbox WHERE payload->>'user_id'=${literal(String(userId))};
-        DELETE FROM security_events WHERE user_id=${userId};
-        DELETE FROM user_login_logs WHERE user_id=${userId};
-        DELETE FROM users WHERE id=${userId}; COMMIT;`);
-      assert.equal(sql(`SELECT COUNT(*) FROM users WHERE id=${userId};`), '0');
-      console.log('Disposable account, devices, approval requests and database events removed.');
+      if (cliDirectory) rmSync(cliDirectory, { recursive: true, force: true });
+      agent.destroy();
     }
   }
-  agent.destroy();
 }

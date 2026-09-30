@@ -9,6 +9,23 @@ export interface AgentFocus {
   event_id: string | null;
 }
 
+export interface AccountFocusEvent {
+  event_id: string;
+  sequence: number;
+  event_type: 'agent_session.focus_changed';
+  previous_agent_session_id: string | null;
+  active_agent_session_id: string | null;
+  origin_id: string | null;
+  created_at: string;
+}
+
+export interface AccountEventPage {
+  events: AccountFocusEvent[];
+  next_cursor: number;
+  snapshot_version: number;
+  has_more: boolean;
+}
+
 export interface OwnedAgentSession {
   id: string;
   workflow_id: string;
@@ -69,15 +86,19 @@ function uuid(value: unknown): value is string {
   return typeof value === 'string' && UUID.test(value);
 }
 
+function nullableUuid(value: unknown): value is string | null {
+  return value === null || uuid(value);
+}
+
 function sequence(value: unknown, min = 0): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= min;
 }
 
 export function parseAgentFocus(value: unknown): AgentFocus {
   const raw = object(value);
-  if ((raw.active_agent_session_id !== null && !uuid(raw.active_agent_session_id))
+  if (!nullableUuid(raw.active_agent_session_id)
     || !sequence(raw.version)
-    || (raw.event_id !== null && !uuid(raw.event_id))) {
+    || !nullableUuid(raw.event_id)) {
     throw new AgentSessionProtocolError('Invalid account Agent Session focus');
   }
   return {
@@ -85,6 +106,79 @@ export function parseAgentFocus(value: unknown): AgentFocus {
     version: raw.version as number,
     event_id: raw.event_id as string | null,
   };
+}
+
+export function parseAccountEventPage(value: unknown): AccountEventPage {
+  const raw = object(value);
+  if (!Array.isArray(raw.events) || raw.events.length > 200
+    || !sequence(raw.next_cursor) || !sequence(raw.snapshot_version)
+    || typeof raw.has_more !== 'boolean') {
+    throw new AgentSessionProtocolError('Invalid account Agent Session event page');
+  }
+  const events = raw.events.map((value: unknown): AccountFocusEvent => {
+    const event = object(value);
+    if (!uuid(event.event_id) || !sequence(event.sequence, 1)
+      || event.event_type !== 'agent_session.focus_changed'
+      || !nullableUuid(event.previous_agent_session_id)
+      || !nullableUuid(event.active_agent_session_id)
+      || (event.origin_id !== null && typeof event.origin_id !== 'string')
+      || typeof event.created_at !== 'string' || !Number.isFinite(Date.parse(event.created_at))) {
+      throw new AgentSessionProtocolError('Invalid account Agent Session event');
+    }
+    return {
+      event_id: event.event_id, sequence: event.sequence,
+      event_type: 'agent_session.focus_changed',
+      previous_agent_session_id: event.previous_agent_session_id,
+      active_agent_session_id: event.active_agent_session_id,
+      origin_id: event.origin_id, created_at: event.created_at,
+    };
+  });
+  return {
+    events, next_cursor: raw.next_cursor, snapshot_version: raw.snapshot_version,
+    has_more: raw.has_more,
+  };
+}
+
+/** Reject a gap or a different prior pointer; the caller must refetch focus on failure. */
+export function applyAccountEventPage(
+  current: AgentFocus, value: unknown, afterSequence: number,
+): AgentFocus {
+  const page = parseAccountEventPage(value);
+  if (!nullableUuid(current.active_agent_session_id) || !nullableUuid(current.event_id)
+    || !sequence(current.version) || !sequence(afterSequence)
+    || afterSequence > current.version) {
+    throw new AgentSessionProtocolError('Invalid account Agent Session replay cursor');
+  }
+  let expected = afterSequence;
+  for (const event of page.events) {
+    if (event.sequence !== ++expected) throw new AgentSessionProtocolError('Account Agent Session event gap');
+  }
+  if (page.next_cursor !== expected || page.snapshot_version < expected
+    || page.has_more !== (page.next_cursor < page.snapshot_version)
+    || (page.has_more && page.events.length === 0)) {
+    throw new AgentSessionProtocolError('Inconsistent account Agent Session event cursor');
+  }
+  let focus = current;
+  for (const event of page.events) {
+    if (event.sequence < focus.version) continue;
+    if (event.sequence === focus.version) {
+      if ((focus.event_id !== null && focus.event_id !== event.event_id)
+        || focus.active_agent_session_id !== event.active_agent_session_id) {
+        throw new AgentSessionProtocolError('Conflicting account Agent Session event');
+      }
+      continue;
+    }
+    if (event.sequence !== focus.version + 1
+      || event.previous_agent_session_id !== focus.active_agent_session_id) {
+      throw new AgentSessionProtocolError('Account Agent Session focus diverged');
+    }
+    focus = {
+      active_agent_session_id: event.active_agent_session_id,
+      version: event.sequence,
+      event_id: event.event_id,
+    };
+  }
+  return focus;
 }
 
 export function parseAgentSessionList(value: unknown): {
@@ -235,6 +329,14 @@ export class AgentSessionReadClient {
 
   async focus(signal?: AbortSignal): Promise<AgentFocus> {
     return parseAgentFocus(await this.read('/api/agentflow/me/agent-state', undefined, signal));
+  }
+
+  async accountEvents(afterSequence: number, limit = 100, signal?: AbortSignal): Promise<AccountEventPage> {
+    if (!sequence(afterSequence) || !sequence(limit, 1) || limit > 200) {
+      throw new TypeError('Invalid account Agent Session event cursor');
+    }
+    const query = new URLSearchParams({ after_sequence: String(afterSequence), limit: String(limit) });
+    return parseAccountEventPage(await this.read('/api/agentflow/me/agent-events', query, signal));
   }
 
   async sessions(limit = 50, beforeId?: string, signal?: AbortSignal): Promise<ReturnType<typeof parseAgentSessionList>> {

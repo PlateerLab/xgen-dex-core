@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   AgentSessionHttpError, AgentSessionProtocolError, AgentSessionReadClient,
-  PlatformCredentialUnavailable, applyAgentSessionEventPage,
-  parseAgentSessionEventPage,
+  PlatformCredentialUnavailable, applyAccountEventPage, applyAgentSessionEventPage,
+  parseAccountEventPage, parseAgentSessionEventPage,
 } from '../src/agent-session';
 
 const SESSION = '018f1240-0000-7000-8000-000000000001';
@@ -27,6 +27,18 @@ function page(events: ReturnType<typeof event>[], cursor: number, snapshot: numb
   };
 }
 
+function focusEvent(sequence: number, eventId: string, previous: string | null, active: string | null) {
+  return {
+    event_id: eventId, sequence, event_type: 'agent_session.focus_changed',
+    previous_agent_session_id: previous, active_agent_session_id: active,
+    origin_id: 'desktop-1', created_at: '2026-09-29T04:00:00Z',
+  };
+}
+
+function accountPage(events: ReturnType<typeof focusEvent>[], cursor: number, snapshot: number, more = false) {
+  return { events, next_cursor: cursor, snapshot_version: snapshot, has_more: more };
+}
+
 test('canonical reads use fresh DPoP and never inherit the legacy Bearer token', async () => {
   const signed: Array<[string, string, string]> = [];
   const calls: Array<{ url: URL; init: RequestInit }> = [];
@@ -39,6 +51,7 @@ test('canonical reads use fresh DPoP and never inherit the legacy Bearer token',
   };
   const responses = [
     { active_agent_session_id: SESSION, version: 1, event_id: EVENT1 },
+    accountPage([focusEvent(1, EVENT1, null, SESSION)], 1, 1),
     { items: [{ id: SESSION, workflow_id: 'wf', title: 'Shared', status: 'active',
       current_sequence: 1, state_version: 2 }], next_cursor: null, has_more: false },
     { id: SESSION, workflow_id: 'wf', title: 'Shared', current_sequence: 1,
@@ -51,16 +64,20 @@ test('canonical reads use fresh DPoP and never inherit the legacy Bearer token',
   }) as typeof fetch;
   const client = new AgentSessionReadClient('https://app.example.test', proof, fetchImpl);
   assert.equal((await client.focus()).active_agent_session_id, SESSION);
+  assert.equal((await client.accountEvents(0)).events[0].active_agent_session_id, SESSION);
   assert.equal((await client.sessions()).items[0].id, SESSION);
   assert.equal((await client.snapshot(SESSION)).current_sequence, 1);
   assert.equal((await client.events(SESSION, 0)).events[0].sequence, 1);
   assert.deepEqual(calls.map(({ url }) => url.pathname), [
-    '/api/agentflow/me/agent-state', '/api/agentflow/me/agent-sessions',
+    '/api/agentflow/me/agent-state', '/api/agentflow/me/agent-events',
+    '/api/agentflow/me/agent-sessions',
     `/api/agentflow/agent-sessions/${SESSION}/snapshot`,
     `/api/agentflow/agent-sessions/${SESSION}/events`,
   ]);
-  assert.equal(calls[3].url.search, '?after_sequence=0&limit=100');
-  assert.equal(signed[3][1], `https://app.example.test/api/agentflow/agent-sessions/${SESSION}/events`);
+  assert.equal(calls[1].url.search, '?after_sequence=0&limit=100');
+  assert.equal(calls[4].url.search, '?after_sequence=0&limit=100');
+  assert.equal(signed[1][1], 'https://app.example.test/api/agentflow/me/agent-events');
+  assert.equal(signed[4][1], `https://app.example.test/api/agentflow/agent-sessions/${SESSION}/events`);
   for (const [index, { init }] of calls.entries()) {
     assert.equal((init.headers as Record<string, string>).Authorization, 'DPoP platform.access.jwt');
     assert.equal((init.headers as Record<string, string>).DPoP, `proof.${index + 1}.jwt`);
@@ -78,6 +95,8 @@ test('missing platform credentials and malformed identifiers fail before a reque
     signProof: async () => { throw new Error('unexpected proof'); },
   }, fetchImpl);
   await assert.rejects(client.focus(), PlatformCredentialUnavailable);
+  await assert.rejects(client.accountEvents(-1), TypeError);
+  await assert.rejects(client.accountEvents(0, 201), TypeError);
   await assert.rejects(client.events('../other', 0), TypeError);
   assert.equal(fetches, 0);
   assert.throws(() => new AgentSessionReadClient('http://app.example.test', {
@@ -147,4 +166,45 @@ test('list pagination and event payloads reject inconsistent server responses', 
     ...page([event(1, EVENT1)], 1, 1),
     events: [{ ...event(1, EVENT1), sequence: true }],
   }), AgentSessionProtocolError);
+});
+
+test('account focus replay advances through continuous pages and ignores identical retry', () => {
+  const initial = { active_agent_session_id: null, version: 0, event_id: null };
+  const first = accountPage([focusEvent(1, EVENT1, null, SESSION)], 1, 2, true);
+  const focused = applyAccountEventPage(initial, first, 0);
+  assert.deepEqual(focused, { active_agent_session_id: SESSION, version: 1, event_id: EVENT1 });
+  assert.deepEqual(applyAccountEventPage(focused, first, 0), focused);
+  const cleared = applyAccountEventPage(focused,
+    accountPage([focusEvent(2, EVENT2, SESSION, null)], 2, 2), 1);
+  assert.deepEqual(cleared, { active_agent_session_id: null, version: 2, event_id: EVENT2 });
+  assert.deepEqual(applyAccountEventPage(cleared, accountPage([], 2, 2), 2), cleared);
+});
+
+test('account focus replay rejects gaps, changed pointers, conflicting duplicates, and invalid cursors', () => {
+  const initial = { active_agent_session_id: null, version: 0, event_id: null };
+  for (const broken of [
+    accountPage([focusEvent(2, EVENT1, null, SESSION)], 2, 2),
+    accountPage([focusEvent(1, EVENT1, SESSION, SESSION)], 1, 1),
+    accountPage([focusEvent(1, EVENT1, null, SESSION)], 0, 1),
+    accountPage([focusEvent(1, EVENT1, null, SESSION)], 1, 1, true),
+    accountPage([], 0, 1, true),
+  ]) assert.throws(() => applyAccountEventPage(initial, broken, 0), AgentSessionProtocolError);
+  assert.throws(() => applyAccountEventPage(initial, accountPage([], 0, 0), 1), AgentSessionProtocolError);
+  const focused = { active_agent_session_id: SESSION, version: 1, event_id: EVENT1 };
+  assert.throws(() => applyAccountEventPage(focused,
+    accountPage([focusEvent(1, EVENT2, null, SESSION)], 1, 1), 0), AgentSessionProtocolError);
+  assert.throws(() => applyAccountEventPage(focused,
+    accountPage([focusEvent(2, EVENT2, null, null)], 2, 2), 1), AgentSessionProtocolError);
+});
+
+test('account focus event parser rejects malformed server payloads', () => {
+  const valid = focusEvent(1, EVENT1, null, SESSION);
+  for (const broken of [
+    { ...valid, event_type: 'turn.started' },
+    { ...valid, previous_agent_session_id: undefined },
+    { ...valid, active_agent_session_id: 'not-uuid' },
+    { ...valid, sequence: true },
+    { ...valid, origin_id: undefined },
+  ]) assert.throws(() => parseAccountEventPage({ ...accountPage([valid], 1, 1), events: [broken] }),
+    AgentSessionProtocolError);
 });

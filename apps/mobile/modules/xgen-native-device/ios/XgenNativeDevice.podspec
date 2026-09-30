@@ -13,7 +13,7 @@ Pod::Spec.new do |s|
   s.source = { git: package['homepage'] }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'Security', 'CryptoKit'
+  s.frameworks = 'Security', 'CryptoKit', 'LocalAuthentication'
   s.source_files = '**/*.swift'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
 end

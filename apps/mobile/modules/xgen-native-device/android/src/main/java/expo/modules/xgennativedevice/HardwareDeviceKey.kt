@@ -28,6 +28,7 @@ internal class HardwareDeviceKey(private val context: Context) {
   }
   private fun hardware(entry: KeyStore.PrivateKeyEntry): String {
     val info = KeyFactory.getInstance(entry.privateKey.algorithm, "AndroidKeyStore").getKeySpec(entry.privateKey, KeyInfo::class.java)
+    if (info.keySize != 256) throw DeviceKeyFailure("mobile_key_invalid")
     if (Build.VERSION.SDK_INT >= 31) return when (info.securityLevel) {
       KeyProperties.SECURITY_LEVEL_STRONGBOX -> "android-strongbox"
       KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "android-tee"
@@ -60,7 +61,7 @@ internal class HardwareDeviceKey(private val context: Context) {
           store.deleteEntry(alias); generate(alias, false)
         }
         key = entry(alias) ?: throw DeviceKeyFailure("mobile_key_unavailable")
-        hardware(key!!)
+        hardware(key)
         installId = UUID.randomUUID().toString()
         if (!metadata.edit().putString(scope, installId).commit() || metadata.getString(scope, null) != installId) throw DeviceKeyFailure("mobile_key_unavailable")
       } catch (error: Exception) {
@@ -69,7 +70,7 @@ internal class HardwareDeviceKey(private val context: Context) {
       }
     }
     val id = installId ?: throw DeviceKeyFailure("mobile_key_invalid")
-    if (!id.matches(Regex("[0-9a-f-]{36}"))) throw DeviceKeyFailure("mobile_key_invalid")
+    if (!id.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))) throw DeviceKeyFailure("mobile_key_invalid")
     val actual = key ?: throw DeviceKeyFailure("mobile_key_invalid")
     val public = actual.certificate.publicKey as? ECPublicKey ?: throw DeviceKeyFailure("mobile_key_invalid")
     fun coordinate(bytes: ByteArray): String {

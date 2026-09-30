@@ -1,17 +1,19 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 final class HardwareDeviceKey {
   private static let lock = NSLock()
   private let service = "com.plateerlab.xgendex.native.identity.v1"
+  private func noInteraction() -> LAContext { let context = LAContext(); context.interactionNotAllowed = true; return context }
   private func keyQuery(_ scope: String) -> [String: Any] {
     [kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: Data("xgen-mobile-v1-\(scope)".utf8),
      kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
-     kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+     kSecUseAuthenticationContext as String: noInteraction()]
   }
   private func metadataQuery(_ scope: String) -> [String: Any] {
     [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: scope,
-     kSecAttrSynchronizable as String: false, kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+     kSecAttrSynchronizable as String: false, kSecUseAuthenticationContext as String: noInteraction()]
   }
   private func checked(_ status: OSStatus) throws {
     if status == errSecInteractionNotAllowed { throw DeviceKeyFailure.locked }
@@ -21,7 +23,7 @@ final class HardwareDeviceKey {
     var query = keyQuery(scope); query[kSecReturnRef as String] = true
     var result: CFTypeRef?; let status = SecItemCopyMatching(query as CFDictionary, &result)
     if status == errSecItemNotFound { return nil }; try checked(status)
-    guard let found = result else { throw DeviceKeyFailure.invalid }
+    guard let found = result, CFGetTypeID(found) == SecKeyGetTypeID() else { throw DeviceKeyFailure.invalid }
     return (found as! SecKey)
   }
   private func loadId(_ scope: String) throws -> String? {
@@ -56,7 +58,7 @@ final class HardwareDeviceKey {
       do {
         try hardware(generated)
         let id = UUID().uuidString.lowercased()
-        var metadata = metadataQuery(scope); metadata.removeValue(forKey: kSecUseAuthenticationUI as String)
+        var metadata = metadataQuery(scope); metadata.removeValue(forKey: kSecUseAuthenticationContext as String)
         metadata[kSecAttrAccessible as String] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
         metadata[kSecValueData as String] = Data(id.utf8)
         try checked(SecItemAdd(metadata as CFDictionary, nil))

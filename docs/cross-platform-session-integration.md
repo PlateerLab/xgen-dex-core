@@ -5,7 +5,7 @@
 
 ## 현재 변경 묶음
 
-Phase 0에서 Mobile의 access/refresh token을 AsyncStorage에서 SecureStore로 옮긴다. 기존 저장 데이터는 일회성으로 안전 저장소에 이관하고 평문 사본을 제거한다. 복원·회전·로그아웃 경로를 검증하고 진단 로그의 응답 본문 기록을 제거한다.
+Mobile의 access/refresh 안전 저장 이행에 이어, native 기기 등록·Platform Session 연결에 필요한 하드웨어 P-256 키 공급자를 추가했다. 이번 묶음은 로컬 키 준비·조회·고정 challenge 서명까지이며 서버 등록, 세션 발급 및 Canonical 구독은 후속 연결이다. 아래 Mobile 절에 검증 범위와 실제 기기 관문을 기록한다.
 
 ## 이후 통합 관문
 
@@ -188,3 +188,40 @@ node --import tsx scripts/native-platform-session-compose.mts --cli --vscode --d
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 비율은 남은 설계 항목에 대한 추정이며 테스트 통과율이나 일정 보장이 아니다.
+
+## Mobile 하드웨어 기기 키 기반 (2026-09-30)
+
+설정 → **기기 보안**에서 `기기 키 상태 확인` 또는 `인증 키 준비`를 실행한다. HTTPS 서버에 로그인한 실제 사용자별로 키와 설치 ID를 준비한다. 로컬 준비 성공은 서버 등록·신뢰 승인·Platform Session 발급을 의미하지 않는다. 기존 로그인·채팅은 현재 인증 경로를 사용한다.
+
+`apps/mobile/modules/xgen-native-device`는 로컬 Expo 모듈이다. iOS는 Secure Enclave의 P-256 `SecKey`로 서명하며 키와 설치 ID를 `WhenPasscodeSetThisDeviceOnly`로 보관한다. Android 28 이상은 화면 잠금이 설정되고 해제된 상태에서 AndroidKeyStore 키를 사용한다. StrongBox를 우선 요청하고 StrongBox를 사용할 수 없는 경우 TEE로 생성하며, `KeyInfo`의 실제 하드웨어 보호 및 256비트 키를 확인한다. 소프트웨어 키, SecureStore에 개인키 인코딩 저장, 개인키 export/import API는 제공하지 않는다. Expo Go·웹·iOS 시뮬레이터·지원하지 않는 기기는 키 작업을 거절한다. 공급자 설계는 [Apple Secure Enclave](https://developer.apple.com/documentation/security/protecting-keys-with-the-secure-enclave), [Android Keystore](https://developer.android.com/privacy-and-security/keystore), [Expo Modules](https://docs.expo.dev/modules/module-api/) API를 따른다.
+
+- 키와 공개 설치 ID는 `mobile + HTTPS origin + 실제 사용자 ID`의 SHA-256 범위로 구분한다. 한쪽 기록이 없거나 손상되면 새 키로 자동 교체하지 않는다. 기존 승인 기기에 대한 관리자 복구·폐기 절차를 요구하며 아직 앱에 그 절차를 연결하지 않았다.
+- JS에는 공개 JWK·설치 ID·저장소 분류와 서명만 반환한다. 네이티브는 `register`·`approval_request`·`login`·`native_refresh`와 32바이트 canonical base64url challenge만 서명한다. 현재 설치 ID와 공개키 thumbprint를 대조하고 ES256 JWT를 네이티브에서 조립하며 DER 서명을 P1363으로 엄격하게 변환한다. 하드웨어 분류는 앱의 로컬 검증 결과이며 서버에 대한 원격 attestation이 아니다.
+- `native-device-key.ts`는 비밀키 없는 공급자다. HTTPS origin·실제 사용자 ID·로그인 수명에 묶이고 응답의 공개키·설치 ID·JWT 형식과 목적·challenge·발급 시각을 확인한다. 계정/서버 변경·같은 계정 재로그인·화면 이탈·백그라운드·취소 이후 결과를 적용하지 않는다. 이미 시작한 OS 키 생성을 취소할 수 없는 경우 생성된 키는 원래 계정 범위에만 남으며 서버 신뢰를 부여하지 않는다.
+- 앱 오류에는 정해진 오류 코드의 메시지만 표시하고 OS 예외·응답 원문을 노출하지 않는다. Face ID/Touch ID/passkey ceremony나 비밀번호·Bearer·refresh 저장을 이번 공급자에 추가하지 않았다.
+
+### 검증 범위와 다음 관문
+
+검증 브랜치 `feat/cross-platform-mobile-native-key`, 기준 통합 SHA `b2b285642e878b88446d71ab059bad452d32a867`. 최신 PR Head의 CI도 통합 전 확인한다.
+
+- Mobile TypeScript **57/57** 및 typecheck, 저장소 계약 검사 통과. 신규 8개는 실제 테스트 P-256 서명, 안전하지 않은 네이티브 응답/소프트웨어 저장소 거절, 손상 복원, 계정·서버·재로그인, 취소와 늦은 결과, 잘못된 proof 경계를 검증한다.
+- Android 로컬 Expo 모듈 `compileDebugKotlin`과 JUnit **4/4** 통과. Swift 실제 iOS SDK typecheck 및 CryptoKit codec 통과. 두 codec은 각 400개의 실제 테스트 P-256 서명, 공통 scope·공개키 지문, 잘못된 DER·서명 목적·challenge를 검증한다. 테스트의 소프트웨어 키는 생산 공급자로 연결되지 않는다.
+- Expo apple/android autolinking, iOS 앱 전체 Simulator Debug 빌드, iOS/Android Metro export 통과. CocoaPods가 생성한 프로젝트 변경은 검증 산출물로 보관하며 변경 묶음에 포함하지 않는다.
+- 별도 Simulator 검증 앱에서 **생성·조회·서명 3개 모두 거절**을 직접 실행하고 결과 JSON `passed=true, rejected=3, software_fallback=false`와 화면을 확인했다. 임시 앱을 제거하고 이번에 시작한 시뮬레이터를 종료했다. 이 검증은 생산 앱 설정 화면이나 실제 Secure Enclave/TEE/StrongBox 키 성공 검증을 대체하지 않는다.
+- CI에 Android 모듈 컴파일·JUnit과 Apple iOS SDK·codec 검사를 추가했다. 실제 iPhone/Android 기기가 연결되어 있지 않아 키 생성·앱 재실행 복원·잠금·백그라운드·서명 성공의 실기기 검증은 남는다.
+- 다음은 Mobile의 HTTPS native 전송 경계, 기기 등록·선택한 승인 브라우저 연결, 계정별 세션 vault/journal·DPoP와 Canonical watcher다. 현재 범위에는 HTTP 호출이 없으며 기존 React Native fetch를 검증된 native 인증 전송으로 취급하지 않는다. 이번에는 Compose 서비스를 변경하거나 서버 통합 검증을 실행하지 않았다. SDK/runtime Workflow 로컬 overlay와 패키지 배포 상태도 변경하지 않았다.
+- 환경변수 추가·변경·삭제가 없으므로 Infra 환경변수 참조 문서는 변경하지 않는다. 기존 Mobile 서버 URL의 HTTPS 요구는 새 키 준비 기능의 입력 검증이다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 7% | Mobile 서버 연결·실기기, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These percentages estimate remaining design work, not test coverage or a delivery schedule. This increment adds a local hardware-key provider and readiness controls. It does not grant device trust or issue a server session. iOS Secure Enclave and Android hardware-backed P-256 keys remain inside their native providers; JavaScript receives public metadata and fixed ceremony proofs only. Missing or inconsistent key/identity records require explicit recovery. Simulator creation, lookup and signing are verified to fail closed. Physical-device success, Mobile HTTPS enrollment/session storage/DPoP, and Canonical subscriptions remain integration gates. The SDK/runtime Workflow overlay stays unchanged; no package release or Compose server validation was performed in this increment.

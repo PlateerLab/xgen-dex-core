@@ -31,6 +31,10 @@ class DeviceProofTest {
     assertNotEquals(DeviceProof.scope("https://xgen.example.test", "7"), DeviceProof.scope("https://other.test", "7"))
     assertNotEquals(DeviceProof.scope("https://xgen.example.test", "7"), DeviceProof.scope("https://xgen.example.test", "8"))
   }
+  @Test fun publicKeyThumbprintMatchesSwiftAndProtocol() {
+    assertEquals("xx0BcA-wMohw8atYDJOe6peGModklG2wRHBlXHMvl0M", DeviceProof.thumbprint(
+      "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY", "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"))
+  }
   @Test fun rejectsMalformedDerAndCeremonies() {
     for (der in listOf(byteArrayOf(), byteArrayOf(0x30, 0x06, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01), byteArrayOf(0x30, 0x06, 0x02, 0x01, 0xff.toByte(), 0x02, 0x01, 0x01))) assertThrows(IllegalArgumentException::class.java) { DeviceProof.rawSignature(der) }
     assertThrows(IllegalArgumentException::class.java) { DeviceProof.signingInput("unknown", DeviceProof.encode(ByteArray(32)), 1) }

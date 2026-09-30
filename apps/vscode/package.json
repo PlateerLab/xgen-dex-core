@@ -24,7 +24,8 @@
     "onView:xgenDex.chat",
     "onCommand:xgenDex.setupProfile",
     "onCommand:xgenDex.login",
-    "onCommand:xgenDex.switchProfile"
+    "onCommand:xgenDex.switchProfile",
+    "onCommand:xgenDex.nativeSession"
   ],
   "scripts": {
     "build": "node build.mjs",
@@ -101,6 +102,11 @@
         "command": "xgenDex.installCli",
         "title": "CLI 설치 / 복구",
         "category": "XGEN Dex"
+      },
+      {
+        "command": "xgenDex.nativeSession",
+        "title": "XGEN Dex: 기기 및 플랫폼 세션",
+        "icon": "$(shield)"
       }
     ],
     "configuration": {

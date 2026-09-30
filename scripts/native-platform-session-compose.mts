@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { NativePlatformHttpError, NativePlatformSessionClient, type NativePublicKey } from '../packages/protocol/src/native-platform-session';
 import { createNativeDeviceSigner } from '../packages/protocol/src/native-device-proof';
 import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
+import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
+import type { NativeRpcResult } from '../packages/rpc/src/wire';
 
 const origin = 'https://localhost:3443';
 const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
@@ -56,9 +58,26 @@ const userId = randomInt(1_000_000_000, 2_000_000_000);
 const tag = `dex-native-${randomUUID()}`;
 const password = randomBytes(32).toString('base64url');
 const browserId = randomUUID();
-const cliDirectory = process.argv.includes('--cli') ? mkdtempSync(join(tmpdir(), 'dex-native-cli-compose-')) : null;
+const testCli = process.argv.includes('--cli');
+const testVscode = process.argv.includes('--vscode');
+const cliDirectory = testCli || testVscode ? mkdtempSync(join(tmpdir(), 'dex-native-compose-')) : null;
 const cliKeys = new NativeDeviceKeyStore();
-let cliKeyCreated = false;
+const nativeKeysCreated = new Set<'cli' | 'vscode'>();
+let rpc: DexRpcClient | null = null;
+async function stopVscode() { const current = rpc; rpc = null; await current?.stop(); }
+async function vscode(category: 'device' | 'session' | 'watch', action?: string, extra: object = {}) {
+  assert.ok(cliDirectory);
+  rpc ??= new DexRpcClient({ process: { command: process.execPath, args: ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
+    env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'compose-fixture' });
+  const initialized = await rpc.start(); assert.equal(initialized.capabilities.nativePlatformSession?.platform, 'vscode');
+  const result = await rpc.request<NativeRpcResult>(`native/${category}`, { profile: 'compose',
+    ...(category === 'watch' ? { user_id: String(userId) } : { action,
+      ...(category === 'device' || action === 'login' ? { email: `${tag}@example.invalid`, password } : { user_id: String(userId) }) }), ...extra });
+  assert.equal(result.platform_type, 'vscode'); assert.equal(result.user_id, String(userId));
+  const output = JSON.stringify(result);
+  for (const secret of [password, accessToken!, 'privateKeyPkcs8', 'access_token', 'refresh_token']) assert.equal(output.includes(secret), false);
+  return result.result;
+}
 function cli(action: string, extra: string[] = [], category = 'device') {
   assert.ok(cliDirectory);
   const output = execFileSync(process.execPath, ['apps/cli/dist/cli.js', category, action,
@@ -97,16 +116,20 @@ try {
     INSERT INTO device_bootstrap_state(tenant_id,user_id,first_device_id,platform_type,trust_method)
     VALUES ('system',${userId},${literal(browserId)},'web','password_device_proof'); COMMIT;`);
   for (const platform of ['desktop', 'mobile', 'cli', 'vscode'] as const) {
-    if (platform === 'cli' && cliDirectory) {
+    if ((platform === 'cli' && testCli) || (platform === 'vscode' && testVscode)) {
       // Separate real CLI processes must restore the same OS-keychain key and install ID.
-      cliKeyCreated = true;
-      const pending = cli('register', ['--name', 'Disposable CLI']);
+      nativeKeysCreated.add(platform);
+      const run = async (action: string, extra: string[] = [], category = 'device'): Promise<any> => platform === 'cli' ? cli(action, extra, category)
+        : vscode(category as 'device' | 'session', action, action === 'register' ? { device_name: 'Disposable VSCode' }
+          : action === 'request-approval' ? { approver_device_id: browserId } : {});
+      const pending = await run('register', ['--name', 'Disposable CLI']);
       assert.equal(pending.state, 'pending');
-      assert.deepEqual(cli('register'), pending);
-      assert.deepEqual(cli('status'), pending);
-      const overview = cli('approvers');
+      await stopVscode(); // Restart the VSCode engine; no key/token travels over RPC.
+      assert.deepEqual(await run('register'), pending);
+      assert.deepEqual(await run('status'), pending);
+      const overview = await run('approvers');
       assert.ok(overview.trusted_devices.some((device: any) => device.device_id === browserId));
-      const approval = cli('request-approval', ['--approver', browserId]);
+      const approval = await run('request-approval', ['--approver', browserId]);
       const path = `/api/me/device-approval-requests/${approval.request_id}/approve-key`;
       const begun = await json(`${path}/begin`, { approver_device_id: browserId }, accessToken!);
       const header = Buffer.from(JSON.stringify({ alg: 'ES256', typ: 'platform-device-proof+jwt' })).toString('base64url');
@@ -115,18 +138,18 @@ try {
       const approved = await json(path, { flow_id: begun.flow_id, device_challenge: begun.device_challenge,
         device_proof_jwt: `${header}.${claims}.${Buffer.from(signature).toString('base64url')}`,
         confirmation_code: approval.confirmation_code, password }, accessToken!);
-      assert.equal(approved.state, 'trusted'); assert.equal(cli('status').state, 'trusted');
-      assert.equal(sql(`SELECT COUNT(*) FROM trusted_devices WHERE user_id=${userId} AND platform_type='cli';`), '1');
-      assert.equal(sql(`SELECT COUNT(*) FROM device_approval_requests WHERE user_id=${userId} AND target_platform_type='cli';`), '1');
-      assert.equal(readFileSync(join(cliDirectory, 'config.json'), 'utf8').includes('privateKey'), false);
-      assert.throws(() => cli('login', [], 'session'), (error: unknown) =>
-        error instanceof Error && 'stderr' in error && String(error.stderr).includes('503'));
-      assert.equal(cli('status', [], 'session').state, 'login_pending');
-      assert.throws(() => cli('watch-focus', [], 'session'), (error: unknown) =>
-        error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
-      assert.equal(cli('forget-local', [], 'session').state, 'signed_out');
-      console.log('cli: built CLI processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS');
-      console.log('cli: real Gateway ACTIVE login closed (503), safe local journal, blocked Canonical watcher and explicit recovery PASS');
+      assert.equal(approved.state, 'trusted'); assert.equal((await run('status')).state, 'trusted');
+      assert.equal(sql(`SELECT COUNT(*) FROM trusted_devices WHERE user_id=${userId} AND platform_type=${literal(platform)};`), '1');
+      assert.equal(sql(`SELECT COUNT(*) FROM device_approval_requests WHERE user_id=${userId} AND target_platform_type=${literal(platform)};`), '1');
+      assert.equal(readFileSync(join(cliDirectory!, 'config.json'), 'utf8').includes('privateKey'), false);
+      await assert.rejects(run('login', [], 'session'), (error: unknown) =>
+        error instanceof Error && (error.message.includes('503') || ('stderr' in error && String(error.stderr).includes('503'))));
+      assert.equal((await run('status', [], 'session')).state, 'login_pending');
+      await assert.rejects(platform === 'cli' ? run('watch-focus', [], 'session') : vscode('watch'), (error: unknown) =>
+        error instanceof DexRpcError ? error.engineCode === 'auth_required' : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
+      assert.equal((await run('forget-local', [], 'session')).state, 'signed_out');
+      console.log(`${platform}: built engine processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS`);
+      console.log(`${platform}: real Gateway ACTIVE login closed (503), safe local journal, blocked Canonical watcher and explicit recovery PASS`);
       continue;
     }
     const device = await key();
@@ -181,8 +204,9 @@ try {
     }
   } finally {
     try {
-      if (cliKeyCreated) {
-        const scope = { origin, platform: 'cli' as const, userId: String(userId) };
+      await stopVscode();
+      for (const platform of nativeKeysCreated) {
+        const scope = { origin, platform, userId: String(userId) };
         await cliKeys.withSession(scope, async (_identity, _sign, vault) => { await vault.clear(); });
         await cliKeys.remove(scope);
       }

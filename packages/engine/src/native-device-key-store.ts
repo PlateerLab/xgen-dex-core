@@ -40,7 +40,7 @@ export interface NativeSessionVault {
 }
 interface RestoredIdentity { identity: NativeDeviceIdentity; signProof: NativeDpopSigner }
 function unavailable(): DexError {
-  return new DexError('credential_store_unavailable', 'CLI 기기 키에는 사용 가능한 OS 키체인이 필요합니다. 파일 저장으로 전환하지 않습니다.');
+  return new DexError('credential_store_unavailable', '네이티브 기기 키에는 사용 가능한 OS 키체인이 필요합니다. 파일 저장으로 전환하지 않습니다.');
 }
 export function nativeKeyScope(value: NativeKeyScope): NativeKeyScope {
   const url = new URL(value.origin);
@@ -102,7 +102,7 @@ async function create(scope: NativeKeyScope): Promise<string> {
 
 /** Contention is distinct from an unavailable vault; readers may wait without bypassing this lock. */
 export class NativeDeviceOperationBusy extends DexError {
-  constructor() { super('credential_store_unavailable', '이 계정의 CLI 기기 작업이 이미 진행 중이거나 중단된 작업의 잠금이 남아 있습니다.'); }
+  constructor() { super('credential_store_unavailable', '이 계정·플랫폼의 기기 작업이 이미 진행 중이거나 중단된 작업의 잠금이 남아 있습니다.'); }
 }
 
 /** Keychain-only software keys, isolated by origin/account/platform. No silent regeneration or file fallback. */
@@ -155,7 +155,7 @@ export class NativeDeviceKeyStore {
     return this.locked(scope, async (normalized, vault, name) => {
       let raw = await this.call(vault.getPassword(SERVICE, name));
       if (raw === null) {
-        if (!createIfMissing) throw new DexError('not_found', 'CLI 기기 키가 없습니다. 먼저 dex device register를 실행하세요.');
+        if (!createIfMissing) throw new DexError('not_found', '해당 플랫폼의 기기 키가 없습니다. 먼저 기기를 등록하세요.');
         raw = await create(normalized);
         await this.call(vault.setPassword(SERVICE, name, raw));
         const persisted = await this.call(vault.getPassword(SERVICE, name));
@@ -169,7 +169,7 @@ export class NativeDeviceKeyStore {
     work: (identity: NativeDeviceIdentity, signProof: NativeDpopSigner, session: NativeSessionVault) => Promise<T>): Promise<T> {
     return this.locked(scope, async (normalized, vault, name) => {
       const raw = await this.call(vault.getPassword(SERVICE, name));
-      if (raw === null) throw new DexError('not_found', 'CLI 기기 키가 없습니다. 먼저 기기 등록과 승인을 완료하세요.');
+      if (raw === null) throw new DexError('not_found', '해당 플랫폼의 기기 키가 없습니다. 먼저 기기 등록과 승인을 완료하세요.');
       const { identity, signProof } = await restore(raw, normalized);
       let open = true;
       const check = () => { if (!open || this.quarantined) throw unavailable(); };

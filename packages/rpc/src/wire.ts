@@ -25,6 +25,9 @@ import type {
   McpBridgeStatus,
   ProfileSummary,
   ToolEvent,
+  NativeSessionSummary,
+  NativeEnrollmentResult,
+  NativeAgentFocusUpdate,
 } from '@dex/engine';
 
 export type {
@@ -43,6 +46,8 @@ export type {
   McpBridgeStatus,
   ProfileSummary,
   ToolEvent,
+  NativeSessionSummary,
+  NativeEnrollmentResult,
 };
 
 /** RPC 배선의 버전. 서버와 클라이언트가 initialize 에서 맞춰 본다. */
@@ -68,7 +73,19 @@ export interface InitializeResult {
     localTools: boolean;
     /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
     ssh?: boolean;
+    nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software' };
   };
+}
+
+export interface NativeRpcResult {
+  platform_type: 'vscode'; profile: string; server_url: string; user_id: string;
+  result?: NativeSessionSummary | NativeEnrollmentResult;
+  watch_id?: string;
+  server_revoked?: false;
+}
+export interface NativeFocusNotification {
+  platform_type: 'vscode'; profile: string; server_url: string; watch_id: string;
+  update: NativeAgentFocusUpdate;
 }
 
 export interface ChatStartResult {

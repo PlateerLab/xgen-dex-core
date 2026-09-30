@@ -27,32 +27,32 @@ function blocked(record: NativeSessionRecord, phase: Exclude<NativeSessionPhase,
   return { ...record, phase, generation: randomUUID(), refreshToken: null, accessToken: null, accessExpiresAt: null };
 }
 function requireReady(record: NativeSessionRecord | null): NativeSessionRecord {
-  if (!record || record.phase !== 'ready') throw new DexError('auth_required', '사용 가능한 CLI 세션이 없습니다. 중단된 세션은 내 페이지에서 폐기한 뒤 로컬 기록을 지우고 다시 로그인하세요.');
+  if (!record || record.phase !== 'ready') throw new DexError('auth_required', '사용 가능한 네이티브 세션이 없습니다. 중단된 세션은 내 페이지에서 폐기한 뒤 로컬 기록을 지우고 다시 로그인하세요.');
   return record;
 }
 function requireAccess(record: NativeSessionRecord): string {
-  if (!accessReady(record)) throw new DexError('auth_required', 'CLI access 자격증명이 없습니다. 먼저 dex session refresh를 실행하세요.');
+  if (!accessReady(record)) throw new DexError('auth_required', '네이티브 access 자격증명이 없습니다. 먼저 세션 갱신을 실행하세요.');
   return record.accessToken!;
 }
 
-/** Native CLI sessions only. No automatic refresh/retry, legacy credential fallback or account cache. */
-export class NativeCliSession {
+/** Host fixes the platform at construction. No automatic refresh/retry or legacy credential fallback. */
+export class NativeHostSession {
   private readonly origin: string;
   private readonly fetchImpl: typeof fetch;
-  constructor(origin: string, private readonly keys = new NativeDeviceKeyStore(), fetchImpl?: typeof fetch) {
-    this.origin = nativeKeyScope({ origin, platform: 'cli', userId: '1' }).origin;
+  constructor(origin: string, readonly platform: NativeKeyScope['platform'], private readonly keys = new NativeDeviceKeyStore(), fetchImpl?: typeof fetch) {
+    this.origin = nativeKeyScope({ origin, platform, userId: '1' }).origin;
     this.fetchImpl = fetchImpl ?? globalThis.fetch;
   }
-  private scope(userId: string): NativeKeyScope { return nativeKeyScope({ origin: this.origin, platform: 'cli', userId }); }
+  private scope(userId: string): NativeKeyScope { return nativeKeyScope({ origin: this.origin, platform: this.platform, userId }); }
   async login(email: string, password: string, signal?: AbortSignal): Promise<NativeSessionSummary> {
     return withNativeAccount({ origin: this.origin, email, password, fetch: this.fetchImpl, signal }, async (userId, current) => {
       const scope = this.scope(userId);
       return this.keys.withSession(scope, async (identity, _sign, vault) => {
         signal?.throwIfAborted();
-        if (await vault.read()) throw new DexError('usage_error', '기존 CLI 세션 기록이 있습니다. 상태 확인·갱신 또는 서버 세션 폐기를 먼저 진행하세요.');
-        const client = new NativePlatformSessionClient({ origin: this.origin, platform: 'cli', identity, fetch: this.fetchImpl, account: { current } });
+        if (await vault.read()) throw new DexError('usage_error', '기존 네이티브 세션 기록이 있습니다. 상태 확인·갱신 또는 서버 세션 폐기를 먼저 진행하세요.');
+        const client = new NativePlatformSessionClient({ origin: this.origin, platform: this.platform, identity, fetch: this.fetchImpl, account: { current } });
         const device = await client.registrationStatus(signal);
-        if (!device || device.state !== 'trusted') throw new DexError('auth_required', 'CLI 기기 등록과 브라우저 승인을 먼저 완료하세요.');
+        if (!device || device.state !== 'trusted') throw new DexError('auth_required', '해당 플랫폼의 기기 등록과 브라우저 승인을 먼저 완료하세요.');
         const pending: NativeSessionRecord = { version: 1, ...scope, installId: identity.installId, deviceId: device.device_id,
           sessionId: null, generation: randomUUID(), phase: 'login_pending', refreshToken: null, accessToken: null, accessExpiresAt: null };
         signal?.throwIfAborted();
@@ -79,7 +79,7 @@ export class NativeCliSession {
       const old = requireReady(await vault.read()); signal?.throwIfAborted();
       const marker = blocked(old, 'refreshing');
       await vault.write(marker);
-      const client = new NativePlatformSessionClient({ origin: this.origin, platform: 'cli', identity, fetch: this.fetchImpl,
+      const client = new NativePlatformSessionClient({ origin: this.origin, platform: this.platform, identity, fetch: this.fetchImpl,
         account: { current: () => ({ authScope: `${userId}/${marker.generation}`, accessToken: null }) } });
       const result = await client.refresh(old.deviceId, old.sessionId!, old.refreshToken!, signal);
       const record: NativeSessionRecord = { ...old, generation: randomUUID(), refreshToken: result.refresh_token,
@@ -91,7 +91,7 @@ export class NativeCliSession {
   async withProofSource<T>(userId: string, work: (proof: AgentSessionProofSource, authScope: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
     return this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
       const record = requireReady(await vault.read()); const token = requireAccess(record); let live = true;
-      const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', 'CLI 세션 사용 범위가 종료되었습니다.'); };
+      const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', '네이티브 세션 사용 범위가 종료되었습니다.'); };
       const proof: AgentSessionProofSource = {
         accessToken: async () => { check(); return token; },
         signProof: async (method, htu, expected) => {
@@ -173,4 +173,9 @@ export class NativeCliSession {
       signal?.throwIfAborted(); await vault.clear(); return summary(userId, null);
     });
   }
+}
+
+/** Existing CLI commands always use their own platform slot. */
+export class NativeCliSession extends NativeHostSession {
+  constructor(origin: string, keys?: NativeDeviceKeyStore, fetchImpl?: typeof fetch) { super(origin, 'cli', keys, fetchImpl); }
 }

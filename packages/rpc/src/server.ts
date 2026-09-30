@@ -9,6 +9,8 @@ import type {
   ResolvedChatInput,
 } from '@dex/engine';
 import { DEX_PROTOCOL_VERSION } from './wire';
+import { NativeSessionRpcHost, type NativeSessionHostOptions } from './native-session-host';
+import type { ConfigStore } from '@dex/engine';
 
 type RpcId = string | number | null;
 
@@ -86,6 +88,7 @@ export interface RpcServerOptions {
   output?: Writable;
   log?: (message: string) => void;
   version?: string;
+  nativeSessions?: NativeSessionHostOptions & { configs: ConfigStore };
 }
 
 interface ActiveChat {
@@ -108,6 +111,7 @@ export class DexRpcServer {
   private readline: ReadlineInterface | null = null;
   private initialized = false;
   private closed = false;
+  private readonly nativeSessions?: NativeSessionRpcHost;
   private readonly removeLocalToolsListener: () => void;
 
   constructor(
@@ -118,6 +122,8 @@ export class DexRpcServer {
     this.output = options.output ?? process.stdout;
     this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.version = options.version ?? '0.1.0';
+    if (options.nativeSessions) this.nativeSessions = new NativeSessionRpcHost(options.nativeSessions.configs,
+      (value) => this.notify('native/focus', value), options.nativeSessions);
     this.removeLocalToolsListener = engine.onLocalToolsStatus((status) => {
       if (this.initialized && !this.closed) this.notify('localTools/status', status);
     });
@@ -133,6 +139,7 @@ export class DexRpcServer {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.nativeSessions?.close();
     for (const active of this.activeChats.values()) active.controller.abort();
     this.activeChats.clear();
     this.engine.stopLocalTools();
@@ -182,6 +189,10 @@ export class DexRpcServer {
 
   private async dispatch(method: string, rawParams: unknown): Promise<unknown> {
     const params = objectParams(rawParams);
+    if (method.startsWith('native/')) {
+      if (!this.nativeSessions) throw new DexError('protocol_mismatch', 'VSCode 네이티브 세션을 지원하는 엔진이 필요합니다.');
+      return this.nativeSessions.request(method, params);
+    }
     switch (method) {
       case 'initialize': {
         const requested = params.protocolVersion;
@@ -210,11 +221,13 @@ export class DexRpcServer {
             history: true,
             localTools: true,
             ssh: true,
+            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software' } } : {}),
           },
         };
       }
       case 'shutdown':
       case 'exit':
+        this.nativeSessions?.close();
         this.engine.stopLocalTools();
         return null;
       case 'health':
@@ -222,13 +235,16 @@ export class DexRpcServer {
       case 'profile/list':
         return this.engine.listProfiles();
       case 'profile/set':
+        this.nativeSessions?.cancel();
         return this.engine.setProfile(requiredString(params, 'name'), requiredString(params, 'serverUrl'));
       case 'profile/use': {
+        this.nativeSessions?.cancel();
         const profile = await this.engine.useProfile(requiredString(params, 'name'));
         void this.engine.startLocalTools(profile.name).catch((error: unknown) => this.log(`local tools: ${publicError(error).message}`));
         return profile;
       }
       case 'auth/login': {
+        this.nativeSessions?.cancel();
         const auth = await this.engine.login(
           requiredString(params, 'email'),
           requiredString(params, 'password'),
@@ -240,6 +256,7 @@ export class DexRpcServer {
       case 'auth/status':
         return this.engine.authStatus(optionalString(params, 'profile'));
       case 'auth/logout':
+        this.nativeSessions?.cancel();
         await this.engine.logout(optionalString(params, 'profile'));
         return { ok: true };
       // ── SSH ──

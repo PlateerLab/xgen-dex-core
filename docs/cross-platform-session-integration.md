@@ -13,15 +13,15 @@ Platform Session의 sid, trust 및 revoke 계약이 준비되면 Desktop·Mobile
 
 `@dex/protocol/agent-session`에는 공통 Canonical Agent Session 읽기 클라이언트와 이벤트 cursor 검사를 추가했다. 계정 포커스, 본인 세션 목록, snapshot, 이벤트 페이지를 Gateway 경로에서 읽으며, 매 요청에 **ACTIVE Platform Session** access token과 해당 기기 키의 새 DPoP 증명을 요구한다. 서명할 `htu`에서는 query를 제외하고 HTTP 요청에는 cursor query를 포함한다. 기존 `XgenClient`의 Bearer 토큰을 재사용하거나 인증 실패 시 fallback하지 않는다. 연속되지 않은 sequence, 충돌한 중복 이벤트 또는 잘못된 cursor는 적용하지 않고 snapshot 재조정을 호출자에게 맡긴다.
 
-`GET /api/agentflow/me/agent-events`도 같은 DPoP 경계로 읽고, `applyAccountEventPage`로 계정 포커스 변경을 순서대로 적용한다. 재연결 시 마지막으로 적용한 계정 version을 `after_sequence`에 전달한다. 이벤트의 이전 포인터가 로컬 포커스와 다르거나 이벤트가 누락·충돌하면 적용을 중단하고 `GET /api/agentflow/me/agent-state`로 포커스를 다시 읽는다. 이 공통 계약은 Desktop·CLI·VSCode의 인증된 watcher가 사용할 기반이다. CLI의 OS 키체인 공급자와 폴링 watcher에는 아래와 같이 연결했고 Desktop·VSCode 앱 연결은 남아 있다.
+`GET /api/agentflow/me/agent-events`도 같은 DPoP 경계로 읽고, `applyAccountEventPage`로 계정 포커스 변경을 순서대로 적용한다. 재연결 시 마지막으로 적용한 계정 version을 `after_sequence`에 전달한다. 이벤트의 이전 포인터가 로컬 포커스와 다르거나 이벤트가 누락·충돌하면 적용을 중단하고 `GET /api/agentflow/me/agent-state`로 포커스를 다시 읽는다. 이 공통 계약은 Desktop·CLI·VSCode의 인증된 watcher가 사용할 기반이다. CLI의 OS 키체인 공급자와 폴링 watcher에는 아래와 같이 연결했고 VSCode의 stdio 호스트와 명령 메뉴에도 연결했고 Desktop 앱 연결은 남아 있다.
 
 공통 `reconcileAgentFocus`는 watcher의 한 번의 동기화 작업이다. 호출자는 검증된 계정·Platform Session이 바뀔 때 달라지는 비밀이 아닌 `authScope`를 제공하고, 이전 결과를 다음 호출에 전달한다. 범위가 바뀌면 이전 cursor를 버리고 포커스 스냅샷부터 읽는다. 같은 범위에서는 계정 이벤트를 최대 10페이지씩 재생해 남은 페이지가 있으면 `hasMore`를 반환한다. 409나 잘못된 이벤트 페이지는 스냅샷으로 복구하고, 인증·네트워크·취소 오류는 호출자에게 그대로 전달한다. 호출자는 폴링과 취소를 관리하며 계정 전환 시 이전 요청을 취소해야 한다.
 
-이 공통 패키지는 자격증명을 발급·보관하지 않는다. CLI는 아래 OS 키체인 공급자로 일회성 Canonical 읽기와 폴링 구독을 연결했다. Desktop·VSCode·Mobile의 공급자 및 앱 watcher 연결은 남아 있다. 현재 Compose는 `enrollment` 모드이므로 실제 Canonical API의 양성 경로는 HTTPS `active` 환경에서 검증한다.
+이 공통 패키지는 자격증명을 발급·보관하지 않는다. CLI는 아래 OS 키체인 공급자로 일회성 Canonical 읽기와 폴링 구독을 연결했다. VSCode는 아래 stdio 호스트에 연결했고 Desktop·Mobile의 공급자 및 앱 watcher 연결은 남아 있다. 현재 Compose는 `enrollment` 모드이므로 실제 Canonical API의 양성 경로는 HTTPS `active` 환경에서 검증한다.
 
 ## Native Platform Session 공통 클라이언트
 
-`@dex/protocol/native-platform-session`의 `NativePlatformSessionClient`는 Desktop·Mobile·CLI·VSCode에서 사용할 등록, 등록 상태, 신뢰 기기 목록, 선택한 브라우저에 대한 승인 요청, 비밀번호·기기 키 로그인 및 refresh 회전 API를 제공한다. CLI 등록과 세션 명령은 아래 OS 키체인 경로를 사용하고, 다른 앱의 로그인 화면·키 공급자 연결은 남아 있다. `@dex/protocol/native-device-proof`는 호스트가 보유한 비추출 WebCrypto P-256 개인키로 Gateway의 ES256 challenge JWT를 서명하는 선택적 도우미다. 네이티브 OS 키 공급자도 동일한 `signChallenge` 인터페이스를 구현할 수 있다.
+`@dex/protocol/native-platform-session`의 `NativePlatformSessionClient`는 Desktop·Mobile·CLI·VSCode에서 사용할 등록, 등록 상태, 신뢰 기기 목록, 선택한 브라우저에 대한 승인 요청, 비밀번호·기기 키 로그인 및 refresh 회전 API를 제공한다. CLI 등록·세션 명령과 VSCode 기기·세션 메뉴는 아래 OS 키체인 경로를 사용하고 Desktop·Mobile 앱 연결은 남아 있다. `@dex/protocol/native-device-proof`는 호스트가 보유한 비추출 WebCrypto P-256 개인키로 Gateway의 ES256 challenge JWT를 서명하는 선택적 도우미다. 네이티브 OS 키 공급자도 동일한 `signChallenge` 인터페이스를 구현할 수 있다.
 
 - 클라이언트 인스턴스는 HTTPS origin·플랫폼·설치 ID·공개키를 고정한다. URL 경로·query·userinfo, `web` 플랫폼 및 개인키가 포함된 JWK는 받지 않는다. 네이티브 호스트의 HTTP transport에서 실행해야 하며 브라우저가 자동으로 보내는 Origin은 Gateway에서 거절한다.
 - 등록과 승인 요청은 현재 계정 Bearer를 사용한다. 등록은 `pending`만 반환하고, 승인 요청은 선택한 웹 기기와 일치하는 응답 및 6자리 비교 코드만 반환한다. 조회 결과나 기본 승인 기기 표시만으로 신뢰를 결정하지 않는다.
@@ -122,3 +122,24 @@ dex session watch-focus --user-id <id> --profile corp --interval-ms 1000
 - 환경변수는 추가하지 않았고 기존 키체인/프로필/공개 CA 변수의 watcher 사용 범위는 Infra 참조 문서에 반영한다. SDK·agent-runtime은 Workflow 로컬 overlay로 사용하고 배포하지 않는다.
 
 2026-09-30 전체 로컬 검사: 엔진 147 통과·플랫폼 조건 제외 2, CLI 146 통과, 엔진/CLI 타입 검사·계약 검사·CLI 빌드·두 opt-in 스크립트 타입 검사 통과. CLI 첫 실행의 기존 TUI `이전 대화를 고르면 그 내용이 대화창에 올라온다`는 답변이 먼저 렌더된 중간 frame에서 질문을 확인하여 실패했다. 해당 파일의 변경 없이 동일 코드 전체 테스트 한 번 재실행은 통과했으며 첫 실패와 재실행을 PR #129에 기록한다. 브라우저 화면과 실제 ACTIVE Gateway 양성 검증은 이번 검증 범위에 포함되지 않는다.
+
+
+## VSCode native 호스트와 Canonical focus
+
+`NativeHostSession`은 생성 시 플랫폼을 고정하며 `NativeCliSession`은 CLI 호환 래퍼다. VSCode는 `dex serve --stdio --native-platform vscode`를 실행한다. `initialize.capabilities.nativePlatformSession`으로 지원 여부를 확인하고, 구 엔진에는 native 요청을 보내지 않는다. 기본 `serve --stdio`는 기존 계약을 유지한다. Desktop은 공통 공급자에서 플랫폼 분리가 검증됐지만 앱 연결은 아직 남아 있다.
+
+RPC의 `native/device`, `native/session`, `native/watch`, `native/unwatch`, `native/cancel`은 엄격한 입력 필드를 받는다. 플랫폼·토큰·키 재정의는 허용하지 않는다. 자식 엔진이 고정된 HTTPS origin·실제 계정 ID·`vscode`로 OS 키체인 키/세션을 분리한다. 공개 상태 및 scope 정보만 응답하며 비밀번호는 비밀 입력에서 RPC 요청으로만 전달한다. CLI의 기존 sid를 VSCode에서 사용하지 않는다. 기존 키체인·회전 journal·DPoP 경계를 그대로 사용한다.
+
+VSCode 명령 **XGEN Dex: 기기 및 플랫폼 세션**은 등록, 등록 상태, 신뢰 브라우저 선택 승인, 로그인, 세션 상태·갱신, 포커스 구독, 서버 로그아웃과 명시적 로컬 정리를 제공한다. 엔진 재시작 이후 계정 식별자는 현재 비밀번호 확인으로 다시 조회한다. 정상 active 상태에서 구독을 자동 시작하며 상태 표시줄은 연결된 포커스, 재연결, 인증 중단을 표시한다. 프로필/계정 변경·취소·엔진 종료에서는 즉시 이전 포커스를 지우고 늦은 결과를 버린다. 구독 ACK와 같은 stdout chunk에 온 notification은 ACK 이후 scope를 확인한 뒤 적용한다. 잘못된 focus는 표시하지 않고 해당 watch ID만 종료한다.
+
+호스트는 한 번에 한 native 작업만 허용한다. 기기/세션 작업 전에 기존 watcher를 취소하고 완료를 기다린다. 구독 중 다른 프로세스의 정상 refresh는 현재 키체인을 다시 읽어 같은 cursor를 유지한다. 같은 호스트의 세션 갱신 후에는 새 watcher가 snapshot부터 시작한다. 정확한 watch ID로 unwatch하여 이전 UI 작업이 새 구독을 종료하지 않는다. 종료·취소는 서버 logout이나 자동 자격증명 삭제로 취급하지 않으며 미완료 회전은 journal을 보존한다. 기존 Workspace 채팅은 아직 이 PlatformSession/Canonical 경로로 이행하지 않았다.
+
+### 검증 및 제한 (2026-09-30)
+
+- 신규 회귀 11개: 엔진 플랫폼 분리 1개, stdio RPC 5개, VSCode controller 5개. 기존 built-CLI RPC 테스트도 올바른 `apps/cli/dist/cli.js` 경로로 실제 실행한다.
+- 엔진 148 통과·플랫폼 조건 제외 2, protocol 201 통과, VSCode 23 통과. CLI 전체 첫 실행은 이전 PR에서도 확인한 기존 TUI 중간 렌더 frame 검사에서 1개 실패했다. 동일 코드 전체 한 번 재실행에서 151개 모두 통과했으며 첫 실패 로그와 재실행을 PR에 함께 기록한다. 타입/계약 검사와 CLI/VSCode 빌드 및 두 opt-in 스크립트 타입 검사를 실행한다.
+- `scripts/cli-platform-session-fixture.mts --vscode`: 실제 빌드된 stdio 엔진·HTTPS 인증서·OS 키체인으로 로그인/재시작 복원/refresh, 다른 프로세스 회전 중 cursor 유지, 연결 단절 replay, 409 snapshot, 401 중단, unwatch, 회전 결과 분실 journal/로컬 복구와 비밀 미노출을 통과했다. 통제된 fixture이며 실제 ACTIVE 서버 검증은 아니다. CLI 기본 모드도 공통 공급자 회귀로 실행한다.
+- `scripts/native-platform-session-compose.mts --cli --vscode`: 실제 HTTPS 3443의 등록·엔진 재시작 후 키 복원·중복 방지·선택 브라우저 승인·trusted 조회, 로그인 503·안전한 login_pending·구독 거절·로컬 복구를 통과했다. 임시 계정·기기·요청·보안 이벤트와 키체인 슬롯을 정리했다. fixture는 기존 신뢰 브라우저를 준비하므로 최초 기기 bootstrap UI 검증으로 취급하지 않는다.
+- Compose 기본 인프라·Core·Gateway, workflow/frontend 프로필과 HTTPS 프록시를 사용했다. `.env`의 서비스별 브랜치와 실제 깨끗한 소스/컨테이너 SHA: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway mode는 `enrollment`. 다른 저장소 최신 로컬 Head의 검증으로 보고하지 않는다.
+- Workflow는 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` 로컬 overlay를 사용했고 실제 import 경로를 확인했다. 패키지 배포는 하지 않았다. 새 환경변수 없이 기존 세 변수의 VSCode 자식 엔진 사용 범위를 Infra 환경변수 참조에 갱신한다.
+- VSCode 직접 화면 검증은 Orca 제어 런타임이 `runtime_unavailable`로 시작되지 않아 완료하지 못했다. 명령 등록·상태 제어·실제 엔진 검증과 구분한다. 실제 ACTIVE 서버와 Desktop·Mobile 앱, takeover 결과 수령, Workspace 채팅 이행은 후속 관문이다.

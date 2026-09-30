@@ -17,7 +17,7 @@ export interface NativeSessionRecord extends NativeKeyScope {
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BYTES32 = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
-function invalid(): never { throw new DexError('credential_store_unavailable', '저장된 CLI 세션 범위 또는 자격증명을 확인할 수 없습니다.'); }
+function invalid(): never { throw new DexError('credential_store_unavailable', '저장된 네이티브 세션 범위 또는 자격증명을 확인할 수 없습니다.'); }
 /** Structural/binding checks only. The server still verifies signature, trust, scopes and live sid state. */
 export function validateNativeSession(value: unknown, scope: NativeKeyScope, identity: NativeDeviceIdentity): NativeSessionRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid();

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createHmac, webcrypto } from 'node:crypto';
 import { test } from 'node:test';
 import { NativeDeviceKeyStore } from '../src/native-device-key-store';
-import { NativeCliSession } from '../src/native-platform-session';
+import { NativeCliSession, NativeHostSession } from '../src/native-platform-session';
 import { nativeKeyThumbprint } from '../src/native-dpop';
 import type { NativeSessionRecord } from '../src/native-session-record';
 import { AgentSessionHttpError, type AgentSessionProofSource } from '@dex/protocol/agent-session';
@@ -23,7 +23,8 @@ const REFRESH2 = Buffer.alloc(32, 2).toString('base64url');
 const ACCOUNT = 'e30.e30.c2ln';
 const scope = { origin: ORIGIN, platform: 'cli' as const, userId: '7' };
 const unavailable = (e: unknown) => e instanceof DexError && ['auth_required', 'credential_store_unavailable'].includes(e.code);
-async function fixture() {
+async function fixture(platform: 'cli' | 'desktop' | 'vscode' = 'cli') {
+  const accountScope = { ...scope, platform };
   const directory = await mkdtemp(join(tmpdir(), 'dex-native-session-'));
   const records = new Map<string, string>(); const phases: string[] = [];
   const keychain = { getPassword: async (service: string, name: string) => records.get(`${service}:${name}`) ?? null,
@@ -31,14 +32,14 @@ async function fixture() {
     deletePassword: async (service: string, name: string) => records.delete(`${service}:${name}`) };
   const options = { lockDirectory: directory, keychain: async () => keychain, env: {} };
   let identity!: NativeDeviceIdentity;
-  await new NativeDeviceKeyStore(options).withIdentity(scope, true, async (value) => { identity = value; });
+  await new NativeDeviceKeyStore(options).withIdentity(accountScope, true, async (value) => { identity = value; });
   const stored = () => {
     const raw = [...records].find(([key]) => key.startsWith('xgen-dex-native-session:'))?.[1];
     return raw ? JSON.parse(raw) as NativeSessionRecord : null;
   };
   const access = (changes: Record<string, unknown> = {}) => {
     const exp = Math.floor(Date.now() / 1000) + 600;
-    const claims = { sub: '7', sid: SID, device_id: DEVICE, platform_type: 'cli', token_use: 'platform_access',
+    const claims = { sub: '7', sid: SID, device_id: DEVICE, platform_type: platform, token_use: 'platform_access',
       cnf: { jkt: nativeKeyThumbprint(identity.publicKey) }, exp, ...changes };
     const input = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'platform-access+jwt' })).toString('base64url')}.${Buffer.from(JSON.stringify(claims)).toString('base64url')}`;
     return { token_type: 'DPoP', access_token: `${input}.${createHmac('sha256', 'fixture-only-signing-key').update(input).digest('base64url')}`,
@@ -64,7 +65,7 @@ async function fixture() {
     assert.fail(`unexpected request: ${path}`);
   }) as typeof fetch;
   const keys = () => new NativeDeviceKeyStore(options);
-  const client = () => new NativeCliSession(ORIGIN, keys(), fetchImpl);
+  const client = () => platform === 'cli' ? new NativeCliSession(ORIGIN, keys(), fetchImpl) : new NativeHostSession(ORIGIN, platform, keys(), fetchImpl);
   return { directory, records, phases, keychain, keys, client, stored, access, calls, identity,
     custom: (value: typeof custom) => { custom = value; }, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
@@ -91,6 +92,22 @@ test('login stores only scoped native credentials; process restart restores the 
     assert.equal(read.init.credentials, 'omit'); assert.equal(read.init.redirect, 'error');
     assert.deepEqual(await readdir(f.directory), []);
   } finally { await f.cleanup(); }
+});
+
+test('VSCode/Desktop hosts use platform-specific keys, registration routes and access bindings; CLI cannot borrow them', async () => {
+  for (const platform of ['vscode', 'desktop'] as const) {
+    const f = await fixture(platform);
+    try {
+      await f.client().login('a', 'p'); await f.client().reconcileFocus('7', null); await f.client().refresh('7');
+      assert.equal(f.stored()!.platform, platform);
+      assert.ok(f.calls.some((e) => e.path.includes(`/native/${platform}/registration/`)));
+      for (const call of f.calls.filter((e) => e.path.includes('/platform-sessions/native/'))) assert.equal(call.body.device_id, DEVICE);
+      const count = f.calls.length;
+      await assert.rejects(new NativeCliSession(ORIGIN, f.keys(), (async () => assert.fail()) as typeof fetch).status('7'), DexError);
+      assert.equal(f.calls.length, count);
+      assert.equal((await f.client().logout('7', 'p')).state, 'signed_out');
+    } finally { await f.cleanup(); }
+  }
 });
 
 test('refresh persists a token-free journal before requests and saves rotated credentials before future reads', async () => {

@@ -63,7 +63,7 @@ Usage:
   dex ssh test <name> [--json]
   dex tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
   dex tool ...                         dex tools ...의 단수형 별칭
-  dex serve --stdio
+  dex serve --stdio [--native-platform vscode]
   dex update [--check]    새 버전 확인 · 설치
 
 Global options:
@@ -580,7 +580,10 @@ async function run(): Promise<void> {
   }
   if (command === 'serve') {
     if (!flag(args, 'stdio')) throw new DexError('usage_error', '현재는 serve --stdio만 지원합니다.');
-    const server = new DexRpcServer(engine, { version: VERSION });
+    const nativePlatform = option(args, 'native-platform');
+    if (nativePlatform !== undefined && nativePlatform !== 'vscode') throw new DexError('usage_error', 'stdio 네이티브 플랫폼은 vscode만 지원합니다.');
+    const server = new DexRpcServer(engine, { version: VERSION,
+      ...(nativePlatform ? { nativeSessions: { configs: configStore } } : {}) });
     server.start();
     return;
   }

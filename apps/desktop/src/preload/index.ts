@@ -7,6 +7,7 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 import { CHANNELS } from '../main/ipc';
+import type { DesktopNativeMethod, DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
 import type {
   ChatEvent,
   ChatRequest,
@@ -236,6 +237,15 @@ export interface OverlayState {
 let streamSeq = 0;
 
 const api = {
+  nativeSession: {
+    request: (method: DesktopNativeMethod, params: Record<string, unknown> = {}): Promise<DesktopNativeReply> =>
+      ipcRenderer.invoke(CHANNELS.nativeSessionRequest, method, params),
+    onUpdate: (listener: (notice: DesktopNativeNotice) => void): (() => void) => {
+      const handler = (_event: unknown, notice: DesktopNativeNotice) => listener(notice);
+      ipcRenderer.on(CHANNELS.nativeSessionUpdate, handler);
+      return () => ipcRenderer.removeListener(CHANNELS.nativeSessionUpdate, handler);
+    },
+  },
   config: {
     get: (): Promise<ConnectorConfig> => ipcRenderer.invoke(CHANNELS.configGet),
     set: (patch: Partial<ConnectorConfig>): Promise<ConnectorConfig> =>

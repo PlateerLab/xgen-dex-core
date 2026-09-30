@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Agent, request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import { NativePlatformHttpError, NativePlatformSessionClient, type NativePublicKey } from '../packages/protocol/src/native-platform-session';
 import { createNativeDeviceSigner } from '../packages/protocol/src/native-device-proof';
 import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
@@ -60,20 +61,24 @@ const password = randomBytes(32).toString('base64url');
 const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
-const cliDirectory = testCli || testVscode ? mkdtempSync(join(tmpdir(), 'dex-native-compose-')) : null;
+const testDesktop = process.argv.includes('--desktop');
+const desktopElectron: string | null = testDesktop ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
+const cliDirectory = testCli || testVscode || testDesktop ? mkdtempSync(join(tmpdir(), 'dex-native-compose-')) : null;
 const cliKeys = new NativeDeviceKeyStore();
-const nativeKeysCreated = new Set<'cli' | 'vscode'>();
+const nativeKeysCreated = new Set<'cli' | 'vscode' | 'desktop'>();
 let rpc: DexRpcClient | null = null;
-async function stopVscode() { const current = rpc; rpc = null; await current?.stop(); }
-async function vscode(category: 'device' | 'session' | 'watch', action?: string, extra: object = {}) {
+async function stopNativeRpc() { const current = rpc; rpc = null; await current?.stop(); }
+async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch', action?: string, extra: object = {}) {
   assert.ok(cliDirectory);
-  rpc ??= new DexRpcClient({ process: { command: process.execPath, args: ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
+  rpc ??= new DexRpcClient({ process: { command: platform === 'desktop' ? desktopElectron! : process.execPath, args: platform === 'desktop'
+    ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`]
+    : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
     env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'compose-fixture' });
-  const initialized = await rpc.start(); assert.equal(initialized.capabilities.nativePlatformSession?.platform, 'vscode');
+  const initialized = await rpc.start(); assert.equal(initialized.capabilities.nativePlatformSession?.platform, platform);
   const result = await rpc.request<NativeRpcResult>(`native/${category}`, { profile: 'compose',
     ...(category === 'watch' ? { user_id: String(userId) } : { action,
       ...(category === 'device' || action === 'login' ? { email: `${tag}@example.invalid`, password } : { user_id: String(userId) }) }), ...extra });
-  assert.equal(result.platform_type, 'vscode'); assert.equal(result.user_id, String(userId));
+  assert.equal(result.platform_type, platform); assert.equal(result.user_id, String(userId));
   const output = JSON.stringify(result);
   for (const secret of [password, accessToken!, 'privateKeyPkcs8', 'access_token', 'refresh_token']) assert.equal(output.includes(secret), false);
   return result.result;
@@ -116,15 +121,15 @@ try {
     INSERT INTO device_bootstrap_state(tenant_id,user_id,first_device_id,platform_type,trust_method)
     VALUES ('system',${userId},${literal(browserId)},'web','password_device_proof'); COMMIT;`);
   for (const platform of ['desktop', 'mobile', 'cli', 'vscode'] as const) {
-    if ((platform === 'cli' && testCli) || (platform === 'vscode' && testVscode)) {
+    if ((platform === 'cli' && testCli) || (platform === 'vscode' && testVscode) || (platform === 'desktop' && testDesktop)) {
       // Separate real CLI processes must restore the same OS-keychain key and install ID.
       nativeKeysCreated.add(platform);
       const run = async (action: string, extra: string[] = [], category = 'device'): Promise<any> => platform === 'cli' ? cli(action, extra, category)
-        : vscode(category as 'device' | 'session', action, action === 'register' ? { device_name: 'Disposable VSCode' }
+        : nativeRpc(platform, category as 'device' | 'session', action, action === 'register' ? { device_name: `Disposable ${platform}` }
           : action === 'request-approval' ? { approver_device_id: browserId } : {});
       const pending = await run('register', ['--name', 'Disposable CLI']);
       assert.equal(pending.state, 'pending');
-      await stopVscode(); // Restart the VSCode engine; no key/token travels over RPC.
+      await stopNativeRpc(); // Restart the native host; no key/token travels over RPC.
       assert.deepEqual(await run('register'), pending);
       assert.deepEqual(await run('status'), pending);
       const overview = await run('approvers');
@@ -145,9 +150,10 @@ try {
       await assert.rejects(run('login', [], 'session'), (error: unknown) =>
         error instanceof Error && (error.message.includes('503') || ('stderr' in error && String(error.stderr).includes('503'))));
       assert.equal((await run('status', [], 'session')).state, 'login_pending');
-      await assert.rejects(platform === 'cli' ? run('watch-focus', [], 'session') : vscode('watch'), (error: unknown) =>
+      await assert.rejects(platform === 'cli' ? run('watch-focus', [], 'session') : nativeRpc(platform, 'watch'), (error: unknown) =>
         error instanceof DexRpcError ? error.engineCode === 'auth_required' : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
       assert.equal((await run('forget-local', [], 'session')).state, 'signed_out');
+      await stopNativeRpc();
       console.log(`${platform}: built engine processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS`);
       console.log(`${platform}: real Gateway ACTIVE login closed (503), safe local journal, blocked Canonical watcher and explicit recovery PASS`);
       continue;
@@ -204,8 +210,14 @@ try {
     }
   } finally {
     try {
-      await stopVscode();
+      await stopNativeRpc();
       for (const platform of nativeKeysCreated) {
+        if (platform === 'desktop') {
+          const cleanup = new DexRpcClient({ process: { command: desktopElectron!,
+            args: ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`] }, clientVersion: 'compose-fixture' });
+          try { await cleanup.start(); await cleanup.request('verify/cleanup-key'); } finally { await cleanup.stop(); }
+          continue;
+        }
         const scope = { origin, platform, userId: String(userId) };
         await cliKeys.withSession(scope, async (_identity, _sign, vault) => { await vault.clear(); });
         await cliKeys.remove(scope);

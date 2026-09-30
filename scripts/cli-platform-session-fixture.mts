@@ -6,11 +6,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
 import { nativeKeyThumbprint } from '../packages/engine/src/native-dpop';
 import { DexRpcClient } from '../packages/rpc/src/client';
 
-const platform = process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
+const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
+const desktopElectron: string | null = platform === 'desktop' ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
 const certificates = resolve('../xgen-infra/compose/full-stack/.local-certs');
@@ -33,7 +35,12 @@ let refresh: string | null = null;
 let loseCompletion = false;
 let requests = 0;
 let errors = 0;
+const rejectedPaths: string[] = [];
 let keyCreated = false;
+let desktopRegistered = false;
+const enrollmentChallenge = randomBytes(32).toString('base64url');
+let cleanupDesktop: (() => Promise<void>) | null = null;
+async function cleanDesktop() { if (cleanupDesktop) await cleanupDesktop(); }
 const agentId = randomUUID(); const recoveredId = randomUUID();
 const event1 = randomUUID(); const event3 = randomUUID(); const event4 = randomUUID();
 let focus = { active_agent_session_id: null as string | null, version: 0, event_id: null as string | null };
@@ -54,7 +61,9 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     }
     if (path === '/api/auth/logout') { assert.equal(contexts.delete(body.token), true); reply({ success: true }); return; }
     const account = req.headers.authorization?.replace(/^Bearer /, '');
-    if (path.includes('/registration/status/')) { assert.ok(account && contexts.has(account)); reply({ device_id: deviceId, state: 'trusted' }); return; }
+    if (path.includes('/registration/status/')) { assert.ok(account && contexts.has(account)); reply(platform !== 'desktop' || desktopRegistered ? { device_id: deviceId, state: 'trusted' } : null); return; }
+    if (path.endsWith('/registration/challenge')) { assert.ok(account && contexts.has(account)); publicKey = body.public_key_jwk; reply({ challenge: enrollmentChallenge, expires_in_seconds: 300 }); return; }
+    if (path.endsWith('/registration/complete')) { assert.ok(account && contexts.has(account)); desktopRegistered = true; reply({ device_id: deviceId, state: 'pending' }); return; }
     if (path.endsWith('/begin')) {
       const isRefresh = path.includes('/native/refresh/');
       if (isRefresh) { assert.equal(req.headers.authorization, undefined); assert.equal(body.refresh_token, refresh); }
@@ -119,7 +128,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     }
     assert.equal(path, `/api/me/platform-sessions/${sid}`); assert.equal(req.method, 'DELETE'); assert.equal(body.password, password);
     sid = null; refresh = null; res.writeHead(204); res.end();
-  })().catch(() => { errors++; res.writeHead(500); res.end(); });
+  })().catch(() => { errors++; rejectedPaths.push(`${req.method} ${req.url}`); res.writeHead(500); res.end(); });
 });
 async function cli(action: string, expectedExit = 0) {
   const secret = action === 'login' || action === 'logout';
@@ -186,9 +195,16 @@ function watch(expectedExit: number) {
 async function vscodeFixture() {
   const logs: string[] = []; const replies: unknown[] = []; const clients: DexRpcClient[] = [];
   const client = () => {
-    const c = new DexRpcClient({ process: { command: process.execPath, args: ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
+    const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
+      ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`, '--screenshot=/tmp/cross-sync-desktop-native-ui.png']
+      : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
     clients.push(c); return c;
+  };
+  if (platform === 'desktop') cleanupDesktop = async () => {
+    const cleanup = client();
+    try { await cleanup.start(); await cleanup.request('verify/cleanup-key'); }
+    finally { await cleanup.stop(); }
   };
   const session = async (c: DexRpcClient, action: string) => {
     const r = await c.request<any>('native/session', { action, ...(action === 'login' ? { email } : { user_id: userId }),
@@ -201,8 +217,11 @@ async function vscodeFixture() {
     listeners.add(check); check();
   });
   try {
-    const first = client(); assert.equal((await first.start()).capabilities.nativePlatformSession?.platform, 'vscode');
-    assert.equal((await session(first, 'login')).result.state, 'active'); await first.stop();
+    const first = client(); assert.equal((await first.start()).capabilities.nativePlatformSession?.platform, platform);
+    if (platform === 'desktop') await first.request('native/device', { action: 'register', email, password });
+    assert.equal((await session(first, 'login')).result.state, 'active');
+    if (platform === 'desktop') { assert.equal((await first.request<any>('verify/ui')).ui, 'passed'); console.log('Desktop production component / preload / IPC sender isolation / native-only TLS / UI subscription and cancellation PASS'); }
+    await first.stop();
     const restored = client(); assert.equal((await session(restored, 'status')).result.state, 'active');
     await session(restored, 'refresh');
     restored.onNotification((n) => { if (n.method === 'native/focus') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
@@ -223,20 +242,21 @@ async function vscodeFixture() {
     await assert.rejects(session(restarted, 'refresh')); assert.equal((await session(restarted, 'status')).result.state, 'refreshing');
     const before = requests; await assert.rejects(session(restarted, 'refresh')); assert.equal(requests, before);
     assert.equal((await session(restarted, 'forget-local')).server_revoked, false);
-    assert.equal(requests, before); assert.equal(contexts.size, 0); assert.equal(errors, 0);
+    assert.equal(requests, before); assert.equal(contexts.size, 0);
+    if (errors) console.error('Rejected fixture request paths (no credential data):', rejectedPaths);
+    assert.equal(errors, 0);
     const visible = JSON.stringify([replies, logs]);
     for (const secret of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken', 'authScope']) assert.equal(visible.includes(secret), false);
-    console.log('VSCode stdio HTTPS / OS-keychain restore / platform isolation / cursor replay and reconnect / 409 recovery / another process rotation / 401 stop / unwatch / lost rotation journal PASS');
+    console.log(`${platform} host HTTPS / OS-keychain restore / platform isolation / cursor replay and reconnect / 409 recovery / another process rotation / 401 stop / unwatch / lost rotation journal PASS`);
   } finally { for (const c of clients) await c.stop(); }
 }
 try {
   await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
   const address = server.address(); assert.ok(address && typeof address !== 'string'); origin = `https://localhost:${address.port}`;
   const scope = { origin, platform, userId };
-  keyCreated = true;
-  await keys.withIdentity(scope, true, async (identity) => { publicKey = identity.publicKey; });
+  if (platform !== 'desktop') { keyCreated = true; await keys.withIdentity(scope, true, async (identity) => { publicKey = identity.publicKey; }); }
   writeFileSync(join(directory, 'config.json'), JSON.stringify({ version: 1, currentProfile: 'fixture', profiles: { fixture: { serverUrl: origin } } }), { mode: 0o600 });
-  if (platform === 'vscode') await vscodeFixture();
+  if (platform !== 'cli') await vscodeFixture();
   else {
   const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
   assert.deepEqual(await cli('status'), loggedIn);
@@ -266,10 +286,14 @@ try {
   assert.equal(contexts.size, 0); assert.equal(errors, 0);
   console.log('Lost refresh completion: restart refuses reuse/retry; explicit local-only recovery PASS. ACTIVE Gateway remains untested.');
   }
+} catch (error) {
+  if (platform === 'desktop') console.error('Desktop fixture failed:', error instanceof Error ? error.message : 'Unknown fixture error');
+  throw error;
 } finally {
   server.closeAllConnections();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   try {
+    await cleanDesktop();
     if (keyCreated) {
       const scope = { origin, platform, userId };
       await keys.withSession(scope, async (_identity, _sign, vault) => { await vault.clear(); });

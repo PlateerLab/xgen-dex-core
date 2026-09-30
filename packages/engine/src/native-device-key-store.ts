@@ -5,8 +5,11 @@ import { homedir } from 'node:os';
 import type { NativeDeviceIdentity, NativePublicKey } from '@dex/protocol/native-platform-session';
 import { createNativeDeviceSigner } from '@dex/protocol/native-device-proof';
 import { DexError } from './errors';
+import { createNativeDpopSigner, type NativeDpopSigner } from './native-dpop';
+import { validateNativeSession, type NativeSessionRecord } from './native-session-record';
 
 const SERVICE = 'xgen-dex-native-device';
+const SESSION_SERVICE = 'xgen-dex-native-session';
 const subtle = webcrypto.subtle as unknown as SubtleCrypto;
 export interface NativeKeyScope { origin: string; userId: string; platform: 'cli' | 'desktop' | 'vscode' }
 export interface NativeKeychain {
@@ -30,6 +33,12 @@ interface RecordV1 {
   publicKey: NativePublicKey;
   privateKeyPkcs8: string;
 }
+export interface NativeSessionVault {
+  read(): Promise<NativeSessionRecord | null>;
+  write(value: NativeSessionRecord): Promise<void>;
+  clear(): Promise<void>;
+}
+interface RestoredIdentity { identity: NativeDeviceIdentity; signProof: NativeDpopSigner }
 function unavailable(): DexError {
   return new DexError('credential_store_unavailable', 'CLI 기기 키에는 사용 가능한 OS 키체인이 필요합니다. 파일 저장으로 전환하지 않습니다.');
 }
@@ -53,7 +62,7 @@ async function loadKeychain(): Promise<NativeKeychain> {
     return keychain;
   } catch { throw unavailable(); }
 }
-async function restore(raw: string, scope: NativeKeyScope): Promise<NativeDeviceIdentity> {
+async function restore(raw: string, scope: NativeKeyScope): Promise<RestoredIdentity> {
   try {
     if (raw.length > 8192) throw unavailable();
     const value = JSON.parse(raw) as RecordV1;
@@ -75,7 +84,8 @@ async function restore(raw: string, scope: NativeKeyScope): Promise<NativeDevice
     const probe = randomBytes(32);
     const signature = await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, probe);
     if (!await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, publicKey, signature, probe)) throw unavailable();
-    return { installId: value.installId, publicKey: Object.freeze({ ...key }), signChallenge: createNativeDeviceSigner(privateKey, subtle) };
+    return { identity: { installId: value.installId, publicKey: Object.freeze({ ...key }), signChallenge: createNativeDeviceSigner(privateKey, subtle) },
+      signProof: createNativeDpopSigner(privateKey, key, scope.origin) };
   } catch { throw unavailable(); }
 }
 async function create(scope: NativeKeyScope): Promise<string> {
@@ -145,7 +155,43 @@ export class NativeDeviceKeyStore {
         const persisted = await this.call(vault.getPassword(SERVICE, name));
         if (persisted !== raw) throw unavailable();
       }
-      return work(await restore(raw, normalized));
+      return work((await restore(raw, normalized)).identity);
+    });
+  }
+  /** Same account/install lock as enrollment. Session credentials never use the legacy file store. */
+  async withSession<T>(scope: NativeKeyScope,
+    work: (identity: NativeDeviceIdentity, signProof: NativeDpopSigner, session: NativeSessionVault) => Promise<T>): Promise<T> {
+    return this.locked(scope, async (normalized, vault, name) => {
+      const raw = await this.call(vault.getPassword(SERVICE, name));
+      if (raw === null) throw new DexError('not_found', 'CLI 기기 키가 없습니다. 먼저 기기 등록과 승인을 완료하세요.');
+      const { identity, signProof } = await restore(raw, normalized);
+      let open = true;
+      const check = () => { if (!open || this.quarantined) throw unavailable(); };
+      const session: NativeSessionVault = {
+        read: async () => {
+          check();
+          const value = await this.call(vault.getPassword(SESSION_SERVICE, name));
+          if (value === null) return null;
+          try {
+            if (value.length > 12000) throw unavailable();
+            return validateNativeSession(JSON.parse(value), normalized, identity);
+          } catch { throw unavailable(); }
+        },
+        write: async (value) => {
+          check();
+          const encoded = JSON.stringify(validateNativeSession(value, normalized, identity));
+          await this.call(vault.setPassword(SESSION_SERVICE, name, encoded));
+          if (await this.call(vault.getPassword(SESSION_SERVICE, name)) !== encoded) throw unavailable();
+        },
+        clear: async () => {
+          check();
+          await this.call(vault.deletePassword(SESSION_SERVICE, name));
+          if (await this.call(vault.getPassword(SESSION_SERVICE, name)) !== null) throw unavailable();
+        },
+      };
+      try {
+        return await work(identity, async (...args) => { check(); return signProof(...args); }, session);
+      } finally { open = false; }
     });
   }
   /** Local key deletion only. Call after server-side device revocation; it does not revoke a server device. */

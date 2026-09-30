@@ -6,6 +6,12 @@ HTTPS 서버 프로필을 설정한 뒤 `dex device register --email <email>`로
 
 기기 키는 OS 키체인으로 보호하는 소프트웨어 키이며 키체인 장애 시 등록을 차단한다. 파일 저장이나 하드웨어 키 고정을 제공하지 않는다. 이 명령은 기기 등록·승인만 처리하며 기존 `dex login`·채팅과 native ACTIVE 세션 연결은 별도 단계다. 저장·복구 경계와 실제 Compose 검증 방법은 저장소의 `docs/cross-platform-session-integration.md`를 참고한다.
 
+## CLI Platform Session
+
+승인된 기기와 ACTIVE 발급을 지원하는 HTTPS 서버에서 `dex session login --email <email>`을 사용한다. 로그인 결과의 계정 ID로 `dex session status|refresh|focus --user-id <id>`를 실행한다. `status`는 로컬 보관 상태이며 `focus`는 기기 DPoP로 Canonical 포커스를 한 번 읽는다. 세션 토큰은 OS 키체인에만 보관하고 회전·통신 실패를 자동 재시도하지 않는다.
+
+`dex session logout --user-id <id>`는 현재 비밀번호와 기기 DPoP로 서버 세션을 폐기한 뒤 로컬 자격증명을 지운다. 중단된 작업은 내 페이지에서 서버 세션을 폐기한 뒤 `dex session forget-local --user-id <id>`로 정리한다. `forget-local` 자체는 서버 세션을 폐기하지 않는다. 현재 Compose는 enrollment 모드이므로 세션 로그인은 503으로 닫혀 있으며, 기존 `dex login`·TUI·채팅은 유지한다.
+
 XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.
 

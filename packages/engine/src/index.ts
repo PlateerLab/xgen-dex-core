@@ -48,6 +48,7 @@ export * from './config-store';
 export * from './credential-store';
 export * from './native-device-key-store';
 export * from './native-device-enrollment';
+export * from './native-platform-session';
 export * from './errors';
 export * from './local-tools-config';
 

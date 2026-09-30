@@ -10,9 +10,7 @@ import {
   INSTALL_OPTIONS_FILE,
   readInstallLogText,
   resolveDataRoot,
-  runtimeDirOf,
   settleDataRoot,
-  workspaceDirOf,
 } from '../src/main/data-root';
 import type { ConnectorConfig } from '../src/main/config';
 
@@ -24,17 +22,16 @@ test('resolveDataRoot: 기본 ~/xgen-dex, 명시값 존중', () => {
   assert.equal(resolveDataRoot({ dataRoot: '/custom/place' }, HOME), resolve('/custom/place'));
 });
 
-test('settleDataRoot: 트리 생성 + 미설정 기본 채움, 명시 설정은 안 덮음', () => {
+test('settleDataRoot: 설치 폴더 생성 + 미설정 기본 채움, 명시 설정은 안 덮음', () => {
   const home = mkdtempSync(join(tmpdir(), 'dr-'));
   try {
     const cfg = { serverUrl: '' } as unknown as ConnectorConfig;
     const { root, patch } = settleDataRoot(cfg, home);
     assert.equal(root, join(home, 'xgen-dex'));
-    // 트리가 실제로 만들어졌다.
-    for (const d of [root, workspaceDirOf(root), runtimeDirOf(root)]) assert.ok(existsSync(d), d);
-    // 로컬 동기화 폴더(cloud/·agent_workspace/)는 더 이상 만들지 않는다.
-    assert.equal(existsSync(join(root, 'cloud')), false);
-    assert.equal(existsSync(join(root, 'agent_workspace')), false);
+    assert.ok(existsSync(root), root);
+    // 설치 폴더 아래에 작업 폴더를 만들지 않는다 — 이 PC 의 파일은 채팅에서 연결한 폴더로만 다룬다.
+    for (const d of ['workspace', 'local-runtime', 'cloud', 'agent_workspace'])
+      assert.equal(existsSync(join(root, d)), false, d);
     // 미설정 → dataRoot 파생 기본이 패치로.
     assert.equal(patch.dataRoot, root);
     // 이 PC 도구의 작업 폴더는 설정이 아니라 대화에 연결한 폴더가 정한다 —

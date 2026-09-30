@@ -17,7 +17,7 @@ import {
   type InteractionPort,
   type DexConfig,
 } from '@dex/engine';
-import { FileConfigStore, dataDirectory } from '@dex/engine';
+import { FileConfigStore } from '@dex/engine';
 import { SystemCredentialStore } from '@dex/engine';
 
 /** 한 줄 실행하고 (성공, 표준출력) 을 돌려준다. 없는 명령은 조용히 실패한다. */
@@ -150,7 +150,6 @@ export function bindCliHost(configStore: FileConfigStore): void {
         return next;
       },
     },
-    paths: { dataRoot: () => dataDirectory() },
     interaction: terminalInteraction,
   };
   bindHost(ports);

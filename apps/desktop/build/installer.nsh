@@ -2,18 +2,16 @@
 ;
 ; ⚠ %APPDATA%\XGEN-Connector\... 경로들은 브랜드명이 아니라 Electron 의
 ; userData 폴더 이름이다 — src/main/index.ts 최상단의 app.setName('XGEN-Connector')
-; 로 리브랜딩 이후에도 고정해 뒀다(기존 사용자의 로그인 세션·로컬 런타임·동기화
-; 상태를 보존하기 위해). 표시 문구가 아닌 실제 경로이므로 여기서는 바꾸지 않는다.
+; 로 리브랜딩 이후에도 고정해 뒀다(기존 사용자의 로그인 세션·설정을 보존하기
+; 위해). 표시 문구가 아닌 실제 경로이므로 여기서는 바꾸지 않는다.
 ;
 ; ── 데이터 폴더 선택 페이지 ─────────────────────────────────────────────
-; 커넥터의 작업 자산(workspace/ · cloud/)
-; 은 **통합 루트**(기본 %USERPROFILE%\xgen-dex — 새 설치만, 기존 사용자는 마커에
-; 저장된 실제 경로를 그대로 씀) 아래에 모인다. 이 페이지가
-; 루트 경로와 구성요소 체크(기본 전부 체크)를 받아
+; 앱의 설치 로그(install.log)는 **데이터 폴더**(기본 %USERPROFILE%\xgen-dex — 새
+; 설치만, 기존 사용자는 마커에 저장된 실제 경로를 그대로 씀)에 쌓인다. 이 페이지가
+; 폴더 경로를 받아
 ;   %APPDATA%\XGEN-Connector\install-options.json
 ; 으로 남기면, 앱 첫 부팅(data-root.consumeInstallOptions)이 한 번 삼켜 config 에
-; 반영하고 체크된 것들을 자동 설치한다(인스톨러는 다운로드하지 않는다 — 오프라인
-; 설치를 깨지 않기 위해; 실제 설치는 앱의 부팅 프로비저닝이 수행).
+; 반영한다.
 ; 페이지·함수 정의 전체를 이 매크로 안에 둔다 — electron-builder 는 이 파일을
 ; 스크립트 최상단(MUI2/LogicLib 로드 전)에 !include 하므로, 밖에 두면
 ; MUI_HEADER_TEXT/${If}/NSD_* 가 미정의다. 이 매크로는 페이지 나열 시점
@@ -63,14 +61,14 @@
   FunctionEnd
 
   Function XgenDataPageCreate
-    ; 업데이트 설치(앱이 띄운 인스톨러)는 이 페이지를 건너뛴다 — 사용자가 정한 데이터 폴더/
-    ; 구성요소 선택을 기본값으로 덮어쓰지 않는다. 런타임 복사 대상은 마커에서 읽는다.
+    ; 업데이트 설치(앱이 띄운 인스톨러)는 이 페이지를 건너뛴다 — 사용자가 정한 데이터 폴더를
+    ; 기본값으로 덮어쓰지 않는다. 폴더 위치는 마커에서 읽는다.
     ${If} ${isUpdated}
       Call XgenReadDataRootMarker
       Pop $XgenDataRoot
       Abort
     ${EndIf}
-    !insertmacro MUI_HEADER_TEXT "데이터 폴더" "에이전트 작업 폴더(동기화)와 스토리지가 만들어질 위치입니다."
+    !insertmacro MUI_HEADER_TEXT "데이터 폴더" "설치 로그가 저장될 위치입니다."
     nsDialogs::Create 1018
     Pop $XgenDlg
     ${If} $XgenDlg == error
@@ -84,7 +82,7 @@
     StrCmp $XgenDataRoot "" 0 +2
       StrCpy $XgenDataRoot "$PROFILE\xgen-dex"
 
-    ${NSD_CreateLabel} 0 0 100% 24u "이 폴더 아래에 workspace\(작업·동기화)와 cloud\(스토리지)가 만들어집니다. 에이전트는 서버에서 실행되므로 이 PC 에는 실행 런타임이 설치되지 않습니다."
+    ${NSD_CreateLabel} 0 0 100% 24u "이 폴더에 설치 로그가 저장됩니다. 에이전트는 서버에서 실행되고, 이 PC의 파일은 채팅에서 연결한 폴더 안에서만 사용합니다."
     Pop $0
 
     ${NSD_CreateDirRequest} 0 28u 82% 13u "$XgenDataRoot"
@@ -247,7 +245,7 @@
   ; 설치 화면에 상세 로그를 **보이게** 한다(템플릿은 nevershow+DetailsPrint none — 여기서부터 켠다).
   SetDetailsPrint both
   SetDetailsView show
-  DetailPrint "2/3 앱 파일 설치 완료 — 로컬 실행 환경을 구성합니다."
+  DetailPrint "2/3 앱 파일 설치 완료 — 데이터 폴더 설정을 기록합니다."
   DetailPrint "설치 로그: $APPDATA\XGEN-Connector\install.log"
   ; 우리 파일(로그/옵션/마커)은 Electron 의 userData(%APPDATA%) 와 같은 곳 — per-machine 설치여도
   ; 현재 사용자 컨텍스트로 쓴다(electron-builder 자신도 $LOCALAPPDATA 쓸 때 같은 방식).
@@ -256,7 +254,7 @@
   ${EndIf}
   !insertmacro XgenLog "==== XGen Dex ${VERSION} install start ===="
   !insertmacro XgenLog "INSTDIR=$INSTDIR installMode=$installMode"
-  ; ── 데이터 폴더/구성요소 선택을 앱에 전달 ──────────────────────────────
+  ; ── 데이터 폴더 선택을 앱에 전달 ──────────────────────────────────────
   ; 첫 부팅(consumeInstallOptions)이 한 번 읽고 지운다. 페이지를 안 거친 경우
   ; (조용한 설치 /S)엔 기본값으로 남긴다.
   DetailPrint "데이터 폴더 설정을 기록하는 중..."
@@ -303,7 +301,7 @@
 !macro customUnInstall
   ; **구버전이 남긴** 로컬 실행 런타임(<데이터 폴더>\local-runtime: Python 1GB+, CLI, 격리 홈).
   ; 지금은 설치하지 않지만(에이전트는 서버에서 돈다) 예전 설치본에는 남아 있다 — 진짜 제거
-  ; (업데이트가 아닌)일 때 물어보고 지운다. workspace/·cloud/ 는 건드리지 않는다.
+  ; (업데이트가 아닌)일 때 물어보고 지운다. 그 밖의 폴더와 파일은 건드리지 않는다.
   ${IfNot} ${isUpdated}
   ${AndIfNot} ${Silent}
     ${If} $installMode == "all"
@@ -327,7 +325,7 @@
     StrCmp $1 "" 0 +2
       StrCpy $1 "$PROFILE\xgen-connector"
     ${If} ${FileExists} "$1\local-runtime\*.*"
-      MessageBox MB_YESNO|MB_ICONQUESTION "예전 버전이 남긴 실행 런타임 폴더도 삭제할까요?$\r$\n$1\local-runtime$\r$\n(작업 폴더 workspace\ 와 cloud\ 는 남습니다)" IDNO +2
+      MessageBox MB_YESNO|MB_ICONQUESTION "예전 버전이 남긴 실행 런타임 폴더도 삭제할까요?$\r$\n$1\local-runtime$\r$\n(데이터 폴더의 다른 파일은 남습니다)" IDNO +2
         RMDir /r "$1\local-runtime"
     ${EndIf}
     ${If} $installMode == "all"

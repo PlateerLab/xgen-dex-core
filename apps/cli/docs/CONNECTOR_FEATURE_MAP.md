@@ -169,7 +169,6 @@ credential store가 소유하도록 한다.
 | `Clipboard` | `local-tools.ts`의 clipboard schema·handler | OS별 명령 또는 검증된 clipboard package |
 | `Notify` | `local-tools.ts`, `notification-center.ts` | VS Code `showInformationMessage` 또는 OS notifier |
 | Browser tools | `browser-tools.ts` | 별도 browser runtime이 먼저 필요 |
-| Workspace bridge tools | `workspace-bridge-tools.ts` | local workspace sync가 먼저 필요 |
 
 Electron의 `clipboard`, `Notification` import는 CLI에 가져오지 않는다.
 
@@ -211,25 +210,6 @@ CLI credential store 또는 별도 keychain service에 저장한다.
 정책 코드는 이관할 수 있지만 표시 코드는 Electron `Notification`을 사용한다. VS Code 확장에서는
 `showInformationMessage/showWarningMessage`와 command callback으로 대체한다. CLI 단독 실행에서는
 OS별 notifier adapter가 필요하다.
-
-### 로컬 Workspace 동기화
-
-서버 Agent workspace를 로컬 폴더와 양방향 동기화하는 기능이다. 관련 범위가 넓으므로 파일 하나만
-이관해서는 동작하지 않는다.
-
-- 동기화 계약: `xgen-connector/src/main/sync-protocol.ts`
-- 변경 계획·충돌 판단: `xgen-connector/src/main/sync-plan.ts`
-- 원격 transport와 WebSocket: `xgen-connector/src/main/sync-transport.ts`
-- 한 sync pair 실행: `xgen-connector/src/main/local-sync.ts`
-- 여러 Agent lifecycle: `xgen-connector/src/main/local-sync-manager.ts`
-- 로컬 폴더 명명: `xgen-connector/src/main/local-sync-folder.ts`
-- 서버 workspace API: `xgen-connector/src/main/workspace-api.ts`
-- workspace 모델·관리: `workspace.ts`, `workspace-manager.ts`, `workspace-backend.ts`
-- Agent 내부 도구: `xgen-connector/src/main/workspace-bridge-tools.ts`
-
-CLI에 추가할 때는 먼저 단방향 pull/push와 dry-run 계획부터 분리해 구현한다. 파일 watcher,
-충돌 정책, 심볼릭 링크, 허용 root, 삭제 전파, reconnect를 모두 테스트하기 전에는 자동 양방향
-동기화를 활성화하지 않는다.
 
 ### 화면 캡처와 시스템 상태
 

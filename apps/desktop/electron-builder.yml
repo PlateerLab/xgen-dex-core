@@ -3,7 +3,7 @@
 # electron-builder 소스로 직접 확인: guid = options.guid || UUID.v5(appId, ...) —
 # productName 과는 무관하다. 브랜드명(표시 이름)만 "XGen Dex"로 바뀌어도 이 값이
 # 그대로면 기존 사용자는 같은 앱으로 인식되어 제자리 업데이트되고, userData
-# 데이터 폴더(로그인 세션·로컬 런타임·동기화 상태)도 그대로 보존된다
+# 데이터 폴더(로그인 세션·설정)도 그대로 보존된다
 # (src/main/index.ts 최상단의 app.setName('XGEN-Connector') 참고 — Electron 은
 # userData 경로를 productName 이 아니라 app.name 에서 파생시키므로 별도로 고정해뒀다).
 appId: com.plateerlab.xgen.connector

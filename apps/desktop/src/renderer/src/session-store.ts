@@ -120,7 +120,7 @@ export interface ChatMsg {
   }>;
   /** 이 턴의 실행 환경(커넥터 전용 status 이벤트) — 이 PC / 서버 sandbox / 차단(blocked). */
   surface?: 'connector_local' | 'server_sandbox' | 'blocked';
-  /** 서버 폴백 사유·차단 사유·로컬 안내(동기화 미완료 등) — 있으면 배지 옆에 표시. */
+  /** 서버 폴백 사유·차단 사유·이 PC 도구 안내(연결된 폴더 등) — 있으면 배지 옆에 표시. */
   surfaceNote?: string;
   /**
    * 이 말풍선은 **다른 곳에서 도는 턴의 진행분**이다 — 우리가 받은 스트림이
@@ -979,7 +979,7 @@ export class SessionStore {
       } else if (ev.kind === 'status') {
         nl.surface = ev.surface;
         // server_sandbox: 폴백 사유(reason 이 사람이 읽는 문장). blocked: 차단 메시지(detail).
-        // connector_local: 로컬 안내(detail — 동기화 미완료 등)만.
+        // connector_local: 이 PC 도구 안내(detail — 연결된 폴더·연결 대기 등)만.
         nl.surfaceNote =
           ev.surface === 'server_sandbox'
             ? (ev.reason ?? ev.detail)

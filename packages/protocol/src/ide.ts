@@ -123,8 +123,7 @@ export function ideTerminalSocketPath(
 
 /**
  * 스토리지가 바뀌었다는 알림 소켓(서버 상대 경로). 연결한 뒤 첫 프레임으로
- * `{type:'hello', data:{observer:true}}` 를 보내야 알림(`{type:'changed'}`)이 온다 — 구경꾼이라
- * 동기화 기기 목록에 남지 않는다.
+ * `{type:'hello', data:{observer:true}}` 를 보내야 알림(`{type:'changed'}`)이 온다.
  */
 export function workspaceChangeSocketPath(workflowId: string): string {
   return `/api/agentflow/ws/geny-workspace/${encodeURIComponent(workflowId)}`;

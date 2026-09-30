@@ -52,8 +52,8 @@ enter your **XGEN server URL** and **account**, then pick an agent and chat.
     per room+range asks for confirmation stating exactly how many messages go out.
   - **Agent → Teams**: any finished answer can be shared into a room, carrying a
     provenance header so the room can jump back to the source conversation.
-  - **탐색기 → Teams**: agent output on the virtual drive can be attached to a
-    room directly from the file tree.
+  - **탐색기 → Teams**: a file in the file storage can be attached to a room
+    directly from the explorer tree.
 - **Two-panel tabs** — drag chat, browser and avatar tabs between groups or onto
   a left/right/top/bottom edge. At most two groups stay live; the divider,
   direction, tab order and group focus are restored after restart.

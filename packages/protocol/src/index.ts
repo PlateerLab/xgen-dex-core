@@ -38,6 +38,8 @@ import type { CurrentUser, LoginResult } from './types';
 
 export * from './agent-session';
 export * from './agent-session-focus-recovery';
+export * from './native-platform-session';
+export * from './native-device-proof';
 
 export interface XgenClientOptions {
   baseUrl: string;

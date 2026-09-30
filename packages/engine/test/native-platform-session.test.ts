@@ -8,7 +8,8 @@ import { NativeDeviceKeyStore } from '../src/native-device-key-store';
 import { NativeCliSession } from '../src/native-platform-session';
 import { nativeKeyThumbprint } from '../src/native-dpop';
 import type { NativeSessionRecord } from '../src/native-session-record';
-import type { AgentSessionProofSource } from '@dex/protocol/agent-session';
+import { AgentSessionHttpError, type AgentSessionProofSource } from '@dex/protocol/agent-session';
+import { NativeAgentFocusWatcher } from '../src/native-agent-focus-watch';
 import type { NativeDeviceIdentity } from '@dex/protocol/native-platform-session';
 import { DexError } from '../src/errors';
 
@@ -269,5 +270,68 @@ test('Canonical transport/body errors never expose server data or reuse a legacy
     const requests = f.calls.filter(({ path }) => path === '/api/agentflow/me/agent-state');
     assert.equal(requests.length, 2);
     for (const { init } of requests) assert.equal((init.headers as Record<string, string>).Authorization?.startsWith('DPoP '), true);
+  } finally { await f.cleanup(); }
+});
+
+test('bounded focus replay restores fresh credentials but preserves its cursor on rotation; a new sid snapshots', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p');
+    const initial = await f.client().reconcileFocus('7', null); assert.equal(initial.source, 'snapshot');
+    assert.equal(initial.state.authScope.includes(f.stored()!.accessToken!), false);
+    await f.client().refresh('7');
+    f.custom((path) => path.endsWith('/agent-events') ? Response.json({ events: [], next_cursor: 0, snapshot_version: 0, has_more: false }) : undefined);
+    const replay = await f.client().reconcileFocus('7', initial.state);
+    assert.equal(replay.source, 'replay'); assert.equal(replay.state.authScope, initial.state.authScope);
+    assert.equal((f.calls.at(-1)!.init.headers as Record<string, string>).Authorization, `DPoP ${f.stored()!.accessToken}`);
+    await f.keys().withSession(scope, async (_identity, _sign, vault) => {
+      const old = (await vault.read())!; const access = f.access({ sid: FLOW });
+      await vault.write({ ...old, sessionId: FLOW, accessToken: access.access_token, accessExpiresAt: access.access_expires_at });
+    });
+    const changed = await f.client().reconcileFocus('7', replay.state);
+    assert.equal(changed.source, 'snapshot'); assert.notEqual(changed.state.authScope, initial.state.authScope);
+    assert.equal(f.calls.at(-1)!.path, '/api/agentflow/me/agent-state');
+  } finally { await f.cleanup(); }
+});
+
+test('409, invalid replay JSON and event gaps recover through authenticated snapshot; invalid snapshot fails safely', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p'); const initial = await f.client().reconcileFocus('7', null);
+    for (const broken of [new Response('private-server-secret', { status: 409 }), new Response('private-server-secret'),
+      Response.json({ events: [], next_cursor: 2, snapshot_version: 2, has_more: false })]) {
+      f.custom((path) => path.endsWith('/agent-events') ? broken : undefined);
+      assert.equal((await f.client().reconcileFocus('7', initial.state)).source, 'recovered');
+      assert.equal(f.calls.at(-1)!.path, '/api/agentflow/me/agent-state');
+    }
+    f.custom(() => new Response('private-server-secret'));
+    await assert.rejects(f.client().reconcileFocus('7', initial.state), (e: unknown) => e instanceof DexError && e.code === 'protocol_mismatch' && !e.message.includes('private-server-secret'));
+  } finally { await f.cleanup(); }
+});
+
+test('watch delay releases keychain lock for another process refresh and logout; no credential fallback after deletion', async () => {
+  const f = await fixture(); let waits = 0; const sources: string[] = [];
+  try {
+    await f.client().login('a', 'p');
+    f.custom((path) => path.endsWith('/agent-events') ? Response.json({ events: [], next_cursor: 0, snapshot_version: 0, has_more: false }) : undefined);
+    const watcher = new NativeAgentFocusWatcher(f.client(), '7', { wait: async () => {
+      waits++; if (waits === 1) await f.client().refresh('7'); else await f.client().logout('7', 'p');
+    } });
+    await assert.rejects(watcher.run((e) => { if (e.type === 'focus') sources.push(e.source); }), unavailable);
+    assert.deepEqual(sources, ['snapshot']); assert.equal(waits, 2); assert.equal(f.stored(), null);
+    assert.equal(f.calls.filter((e) => e.path.endsWith('/agent-state')).length, 1);
+    assert.equal(f.calls.filter((e) => e.path.endsWith('/agent-events')).length, 1);
+    const count = f.calls.length; await assert.rejects(f.client().reconcileFocus('7', null), unavailable); assert.equal(f.calls.length, count);
+  } finally { await f.cleanup(); }
+});
+
+test('focus reconciliation preserves HTTP permission errors for fatal watcher handling', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p');
+    for (const status of [401, 403]) {
+      f.custom(() => new Response('private-server-secret', { status }));
+      await assert.rejects(f.client().reconcileFocus('7', null), (e: unknown) => e instanceof AgentSessionHttpError && e.status === status);
+    }
   } finally { await f.cleanup(); }
 });

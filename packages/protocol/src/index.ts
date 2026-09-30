@@ -37,6 +37,7 @@ import { HttpClient, type FetchLike } from './client';
 import type { CurrentUser, LoginResult } from './types';
 
 export * from './agent-session';
+export * from './agent-session-focus-recovery';
 
 export interface XgenClientOptions {
   baseUrl: string;

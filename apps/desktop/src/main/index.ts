@@ -1697,9 +1697,31 @@ const conversationsWatch = new ConversationsWatch((event) => {
     }
     return;
   }
+  if (event.kind === 'apps') {
+    // 이 에이전트의 앱이 생기거나 지워지거나 배포·공유가 바뀌었다 — [앱] 탭과 에이전트 [앱] 하위 탭이
+    // 다시 읽는다. 대화 목록 소식이 아니므로 그쪽으로는 보내지 않는다(목록을 괜히 다시 읽는다).
+    for (const win of BrowserWindow.getAllWindows()) {
+      safeSend(win, CHANNELS.appsChanged, event.workflowId);
+    }
+    return;
+  }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(CHANNELS.conversationsChanged, event);
   }
+});
+
+/** 목록 소켓을 연다 — 대화를 열 때와 앱 화면을 열 때. 이미 붙어 있으면 아무것도 하지 않는다. */
+function ensureConversationsWatch(): void {
+  conversationsWatch.setDeps({
+    baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+    token: async () => liveAccessToken(),
+    allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+  });
+  conversationsWatch.start();
+}
+ipcMain.handle(CHANNELS.appsWatch, () => {
+  ensureConversationsWatch();
+  return { ok: true };
 });
 ipcMain.handle(
   CHANNELS.chatWatchStart,
@@ -1716,12 +1738,7 @@ ipcMain.handle(
       interactionId,
     );
     // 목록 소켓은 대화와 무관하게 하나면 된다 — 이미 붙어 있으면 no-op 이다.
-    conversationsWatch.setDeps({
-      baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
-      token: async () => liveAccessToken(),
-      allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
-    });
-    conversationsWatch.start();
+    ensureConversationsWatch();
     return { ok: true };
   },
 );

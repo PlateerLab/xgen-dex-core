@@ -168,6 +168,9 @@ export const CHANNELS = {
   appOpenWeb: 'apps:openWeb',
   // [앱 스토어] 의 앱을 공개 링크로 연다 — 경로만 받고 절대 주소는 main 이 만든다.
   appOpenPublic: 'apps:openPublic',
+  // 앱 소식 — 서버가 주인의 목록 소켓으로 "이 에이전트의 앱이 바뀌었다" 를 알린다(생김·지움·배포·공유).
+  appsWatch: 'apps:watch', // 렌더러 → main: 목록 소켓을 열어 달라(이미 열려 있으면 그대로)
+  appsChanged: 'apps:changed', // main → 렌더러: 바뀐 에이전트(workflowId)
 
   chatStart: 'chat:start',
   //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, webcrypto } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -78,6 +78,17 @@ test('missing/disabled/locked keychain never writes a fallback file or reaches t
     f.keychain.getPassword = async () => { throw new Error('private-key-secret'); };
     await assert.rejects(f.store().withIdentity(scope, true, callback), failed);
     assert.equal(used, false); assert.equal(f.records.size, 0); assert.deepEqual(await readdir(f.directory), []);
+  } finally { await f.cleanup(); }
+});
+
+test('an unavailable process lock directory is a credential error, not a retryable transport error', async () => {
+  const f = await fixture(); let opened = false;
+  try {
+    const path = join(f.directory, 'private-key-secret'); await writeFile(path, 'occupied');
+    const keys = new NativeDeviceKeyStore({ ...f.options, lockDirectory: path,
+      keychain: async () => { opened = true; return f.keychain; } });
+    await assert.rejects(keys.withSession(scope, async () => assert.fail()), failed);
+    assert.equal(opened, false); assert.equal(f.records.size, 0);
   } finally { await f.cleanup(); }
 });
 

@@ -5,6 +5,7 @@ import type { AgentFocusRecoveryResult, ScopedAgentFocus } from '@dex/protocol/a
 import { NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import { NativeAgentFocusWatcher, type NativeAgentFocusSource, type NativeAgentFocusUpdate } from '../src/native-agent-focus-watch';
 import { DexError } from '../src/errors';
+import { NativeDeviceOperationBusy } from '../src/native-device-key-store';
 
 const focus = { active_agent_session_id: null, version: 0, event_id: null };
 function result(scope = 'verified-a', version = 0, source: AgentFocusRecoveryResult['source'] = 'replay', hasMore = false): AgentFocusRecoveryResult {
@@ -51,6 +52,7 @@ test('account switch cancels an in-flight source and suppresses even an abort-ig
   const watcher = new NativeAgentFocusWatcher(a, '7');
   const running = watcher.run((e) => { updates.push(e); if (e.type === 'focus') stop.abort(); }, stop.signal);
   const signal = await started.promise; watcher.select(b, '8'); assert.equal(signal.aborted, true);
+  assert.deepEqual(updates.at(-1), { type: 'reset', user_id: '8' });
   old.resolve(result('verified-a', 91)); await running;
   assert.deepEqual(updates, [{ type: 'reset', user_id: '7' }, { type: 'reset', user_id: '8' },
     { type: 'focus', user_id: '8', focus: { ...focus, version: 22 }, source: 'snapshot' },
@@ -128,4 +130,19 @@ test('options, pre-cancellation and duplicate run do not open a second source', 
   const watcher = new NativeAgentFocusWatcher({ reconcileFocus: async (_id, _old, signal) => { started.resolve(signal!); return untilAborted(signal!); } }, '7');
   const run = watcher.run(() => {}, stop.signal); await started.promise;
   await assert.rejects(watcher.run(() => {}), DexError); stop.abort(); await run;
+});
+
+test('temporary account lock contention waits without fallback; a persistent stale lock stops after three retries', async () => {
+  const stop = new AbortController(); let calls = 0; const pauses: number[] = [];
+  const watcher = new NativeAgentFocusWatcher({ reconcileFocus: async () => {
+    if (++calls < 3) throw new NativeDeviceOperationBusy(); return result('a', 0, 'snapshot');
+  } }, '7', { wait: async (ms) => { pauses.push(ms); } });
+  await watcher.run((e) => { if (e.type === 'focus') stop.abort(); }, stop.signal);
+  assert.deepEqual(pauses, [1000, 2000]); assert.equal(calls, 3);
+  calls = 0; pauses.length = 0;
+  const stuck = new NativeAgentFocusWatcher({ reconcileFocus: async () => { calls++; throw new NativeDeviceOperationBusy(); } }, '7', {
+    wait: async (ms) => { pauses.push(ms); },
+  });
+  await assert.rejects(stuck.run(() => {}), (e: unknown) => e instanceof NativeDeviceOperationBusy);
+  assert.equal(calls, 4); assert.deepEqual(pauses, [1000, 2000, 4000]);
 });

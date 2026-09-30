@@ -63,7 +63,7 @@ function cli(action: string, extra: string[] = [], category = 'device') {
   assert.ok(cliDirectory);
   const output = execFileSync(process.execPath, ['apps/cli/dist/cli.js', category, action,
     ...(category === 'session' && action !== 'login' ? ['--user-id', String(userId)] : ['--email', `${tag}@example.invalid`]),
-    ...(category === 'device' || action === 'login' ? ['--password-stdin'] : []), '--json', ...extra], {
+    ...(category === 'device' || action === 'login' ? ['--password-stdin'] : []), action === 'watch-focus' ? '--jsonl' : '--json', ...extra], {
     input: password, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
   });
@@ -122,9 +122,11 @@ try {
       assert.throws(() => cli('login', [], 'session'), (error: unknown) =>
         error instanceof Error && 'stderr' in error && String(error.stderr).includes('503'));
       assert.equal(cli('status', [], 'session').state, 'login_pending');
+      assert.throws(() => cli('watch-focus', [], 'session'), (error: unknown) =>
+        error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
       assert.equal(cli('forget-local', [], 'session').state, 'signed_out');
       console.log('cli: built CLI processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS');
-      console.log('cli: real Gateway ACTIVE login closed (503), safe local journal and explicit recovery PASS');
+      console.log('cli: real Gateway ACTIVE login closed (503), safe local journal, blocked Canonical watcher and explicit recovery PASS');
       continue;
     }
     const device = await key();

@@ -3,6 +3,7 @@ import { AgentSessionHttpError, type AgentFocus } from '@dex/protocol/agent-sess
 import type { AgentFocusRecoveryResult, ScopedAgentFocus } from '@dex/protocol/agent-session-focus-recovery';
 import { NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import { DexError } from './errors';
+import { NativeDeviceOperationBusy } from './native-device-key-store';
 
 export interface NativeAgentFocusSource {
   reconcileFocus(userId: string, previous: ScopedAgentFocus | null, signal?: AbortSignal): Promise<AgentFocusRecoveryResult>;
@@ -10,7 +11,7 @@ export interface NativeAgentFocusSource {
 export type NativeAgentFocusUpdate =
   | { type: 'reset'; user_id: string }
   | { type: 'focus'; user_id: string; focus: AgentFocus; source: AgentFocusRecoveryResult['source'] }
-  | { type: 'reconnecting'; user_id: string; retry_in_ms: number; reason: 'transport' | 'server' | 'timeout' }
+  | { type: 'reconnecting'; user_id: string; retry_in_ms: number; reason: 'transport' | 'server' | 'timeout' | 'busy' }
   | { type: 'stopped'; user_id: string; reason: 'cancelled' | 'authentication' | 'failed' };
 export interface NativeAgentFocusWatchOptions {
   intervalMs?: number;
@@ -35,6 +36,8 @@ export class NativeAgentFocusWatcher {
   private target: { source: NativeAgentFocusSource; userId: string; epoch: number };
   private interrupt: AbortController | null = null;
   private running = false;
+  private notify: ((update: NativeAgentFocusUpdate) => void) | null = null;
+  private announcedEpoch = -1;
   private readonly interval: number;
   private readonly timeout: number;
   private readonly wait: NonNullable<NativeAgentFocusWatchOptions['wait']>;
@@ -52,13 +55,19 @@ export class NativeAgentFocusWatcher {
   select(source: NativeAgentFocusSource, userId: string): void {
     this.target = { source, userId: this.account(userId), epoch: this.target.epoch + 1 };
     this.interrupt?.abort();
+    if (this.notify) {
+      this.announcedEpoch = this.target.epoch;
+      this.notify({ type: 'reset', user_id: userId });
+    }
   }
   async run(onUpdate: (update: NativeAgentFocusUpdate) => void, signal?: AbortSignal): Promise<void> {
     if (this.running) throw new DexError('usage_error', '이미 실행 중인 포커스 구독입니다.');
     this.running = true;
+    this.notify = onUpdate; this.announcedEpoch = -1;
     let previous: ScopedAgentFocus | null = null;
     let epoch = -1;
     let failures = 0;
+    let busyAttempts = 0;
     let reconnecting = false;
     const stop = () => this.interrupt?.abort();
     signal?.addEventListener('abort', stop, { once: true });
@@ -67,8 +76,8 @@ export class NativeAgentFocusWatcher {
         const target = this.target;
         const control = new AbortController(); this.interrupt = control;
         if (epoch !== target.epoch) {
-          epoch = target.epoch; previous = null; failures = 0; reconnecting = false;
-          onUpdate({ type: 'reset', user_id: target.userId });
+          epoch = target.epoch; previous = null; failures = 0; busyAttempts = 0; reconnecting = false;
+          if (this.announcedEpoch !== epoch) { this.announcedEpoch = epoch; onUpdate({ type: 'reset', user_id: target.userId }); }
         }
         if (signal?.aborted || control.signal.aborted) continue;
         let pause = this.interval;
@@ -83,13 +92,15 @@ export class NativeAgentFocusWatcher {
             || JSON.stringify(previous.focus) !== JSON.stringify(result.state.focus)) {
             onUpdate({ type: 'focus', user_id: target.userId, focus: { ...result.state.focus }, source: result.source });
           }
-          previous = result.state; failures = 0; reconnecting = false;
+          previous = result.state; failures = 0; busyAttempts = 0; reconnecting = false;
           // Yield without an interval delay when a bounded page batch has more work.
           pause = result.hasMore ? 0 : this.interval;
         } catch (error) {
           if (target !== this.target || signal?.aborted) continue;
           const server = error instanceof AgentSessionHttpError && (error.status === 408 || error.status === 429 || error.status >= 500);
-          if (!timedOut && !server && !(error instanceof NativePlatformTransportError)) {
+          const busy = error instanceof NativeDeviceOperationBusy;
+          busyAttempts = busy ? busyAttempts + 1 : 0;
+          if ((busy && busyAttempts > 3) || (!timedOut && !server && !busy && !(error instanceof NativePlatformTransportError))) {
             previous = null;
             const exposed = fatal(error);
             onUpdate({ type: 'stopped', user_id: target.userId, reason: exposed.code === 'auth_required' ? 'authentication' : 'failed' });
@@ -97,7 +108,7 @@ export class NativeAgentFocusWatcher {
           }
           pause = Math.min(30000, 1000 * 2 ** Math.min(failures++, 5));
           if (!reconnecting) onUpdate({ type: 'reconnecting', user_id: target.userId, retry_in_ms: pause,
-            reason: timedOut ? 'timeout' : server ? 'server' : 'transport' });
+            reason: timedOut ? 'timeout' : busy ? 'busy' : server ? 'server' : 'transport' });
           reconnecting = true;
         } finally { clearTimeout(timer); }
         if (target !== this.target || signal?.aborted) continue;
@@ -109,7 +120,7 @@ export class NativeAgentFocusWatcher {
       onUpdate({ type: 'stopped', user_id: this.target.userId, reason: 'cancelled' });
     } finally {
       signal?.removeEventListener('abort', stop);
-      this.interrupt?.abort(); this.interrupt = null; previous = null; this.running = false;
+      this.interrupt?.abort(); this.interrupt = null; previous = null; this.notify = null; this.running = false;
     }
   }
 }

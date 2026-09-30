@@ -13,6 +13,7 @@ import type { LocalToolsStatus } from '@dex/engine';
 import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
 import { bindCliHost } from './dex-host';
 import { runDeviceCommand } from './device-command';
+import { runSessionCommand } from './session-command';
 
 /**
  * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
@@ -41,6 +42,10 @@ Usage:
   dex device status --email <email> [--profile <name>] [--password-stdin]
   dex device approvers --email <email> [--profile <name>] [--password-stdin]
   dex device request-approval --email <email> --approver <device-id> [--profile <name>] [--password-stdin]
+  dex session login --email <email> [--profile <name>] [--password-stdin]
+  dex session status|refresh|focus --user-id <id> [--profile <name>] [--json]
+  dex session logout --user-id <id> [--profile <name>] [--password-stdin]
+  dex session forget-local --user-id <id> [--profile <name>] [--json]
   dex agents list [--search <text>] [--owner personal|shared] [--json]
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
   dex history list [--json]
@@ -374,11 +379,14 @@ async function run(): Promise<void> {
     }
     return;
   }
-  if (command === 'device') {
+  if (command === 'device' || command === 'session') {
     const controller = new AbortController();
     const interrupt = () => controller.abort();
     process.on('SIGINT', interrupt);
-    try { await runDeviceCommand(args, configStore, { signal: controller.signal }); }
+    try {
+      if (command === 'device') await runDeviceCommand(args, configStore, { signal: controller.signal });
+      else await runSessionCommand(args, configStore, { signal: controller.signal });
+    }
     finally { process.off('SIGINT', interrupt); }
     return;
   }

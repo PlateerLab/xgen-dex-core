@@ -59,10 +59,11 @@ const browserId = randomUUID();
 const cliDirectory = process.argv.includes('--cli') ? mkdtempSync(join(tmpdir(), 'dex-native-cli-compose-')) : null;
 const cliKeys = new NativeDeviceKeyStore();
 let cliKeyCreated = false;
-function cli(action: string, extra: string[] = []) {
+function cli(action: string, extra: string[] = [], category = 'device') {
   assert.ok(cliDirectory);
-  const output = execFileSync(process.execPath, ['apps/cli/dist/cli.js', 'device', action,
-    '--email', `${tag}@example.invalid`, '--password-stdin', '--json', ...extra], {
+  const output = execFileSync(process.execPath, ['apps/cli/dist/cli.js', category, action,
+    ...(category === 'session' && action !== 'login' ? ['--user-id', String(userId)] : ['--email', `${tag}@example.invalid`]),
+    ...(category === 'device' || action === 'login' ? ['--password-stdin'] : []), '--json', ...extra], {
     input: password, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
   });
@@ -118,7 +119,12 @@ try {
       assert.equal(sql(`SELECT COUNT(*) FROM trusted_devices WHERE user_id=${userId} AND platform_type='cli';`), '1');
       assert.equal(sql(`SELECT COUNT(*) FROM device_approval_requests WHERE user_id=${userId} AND target_platform_type='cli';`), '1');
       assert.equal(readFileSync(join(cliDirectory, 'config.json'), 'utf8').includes('privateKey'), false);
+      assert.throws(() => cli('login', [], 'session'), (error: unknown) =>
+        error instanceof Error && 'stderr' in error && String(error.stderr).includes('503'));
+      assert.equal(cli('status', [], 'session').state, 'login_pending');
+      assert.equal(cli('forget-local', [], 'session').state, 'signed_out');
       console.log('cli: built CLI processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS');
+      console.log('cli: real Gateway ACTIVE login closed (503), safe local journal and explicit recovery PASS');
       continue;
     }
     const device = await key();
@@ -173,7 +179,11 @@ try {
     }
   } finally {
     try {
-      if (cliKeyCreated) await cliKeys.remove({ origin, platform: 'cli', userId: String(userId) });
+      if (cliKeyCreated) {
+        const scope = { origin, platform: 'cli' as const, userId: String(userId) };
+        await cliKeys.withSession(scope, async (_identity, _sign, vault) => { await vault.clear(); });
+        await cliKeys.remove(scope);
+      }
     } finally {
       if (cliDirectory) rmSync(cliDirectory, { recursive: true, force: true });
       agent.destroy();

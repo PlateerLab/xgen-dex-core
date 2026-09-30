@@ -25,6 +25,38 @@ jobs:
       - run: npm --prefix apps/mobile test
       - run: npm --prefix apps/mobile run typecheck
 
+  mobile-native-key-android:
+    name: 모바일 기기 키 (Android 컴파일 · 서명)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
+      - name: 네이티브 모듈 및 실제 P-256 서명 검증
+        working-directory: apps/mobile/android
+        run: ./gradlew :xgen-native-device:compileDebugKotlin :xgen-native-device:testDebugUnitTest --console=plain
+
+  mobile-native-key-apple:
+    name: 모바일 기기 키 (iOS 타입 · 서명)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 실제 iOS SDK 및 P-256 서명 검증
+        working-directory: apps/mobile
+        run: |
+          xcrun swiftc -typecheck -target arm64-apple-ios15.1 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" modules/xgen-native-device/ios/DeviceProof.swift modules/xgen-native-device/ios/HardwareDeviceKey.swift
+          xcrun swiftc modules/xgen-native-device/ios/DeviceProof.swift verify/native-device-key-codec.swift -o "$RUNNER_TEMP/xgen-native-key-codec"
+          "$RUNNER_TEMP/xgen-native-key-codec"
+
   # ── 캐시 워밍 (main 푸시에서만) ──
   #
   # 태그(릴리스) 런은 **main 에 저장된 캐시만** 복원할 수 있다 — 태그 런이

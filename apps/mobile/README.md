@@ -62,3 +62,32 @@ npm start         # expo dev server
 ```
 
 APK 로컬 빌드: `npm run apk` (debug 키 서명 — 배포 키는 CI 시크릿에만 있다).
+
+## 기기 보안 키 / Native device security key
+
+HTTPS 서버 로그인 후 **설정 → 기기 보안**에서 `기기 키 상태 확인`과 `인증 키 준비`를 사용할 수 있다. 준비 성공은 로컬 키의 존재만 의미한다. 서버 기기 등록·브라우저 승인·Platform Session과 Canonical 구독은 후속 연결이다.
+
+- `modules/xgen-native-device`: Expo 로컬 모듈. iOS Secure Enclave, Android 28 이상 TEE/StrongBox P-256 키. 화면 잠금이 필요하다. 개인키를 JS로 반환하거나 소프트웨어 저장소로 대체하지 않는다.
+- 서버 HTTPS origin·실제 사용자별 설치 ID/공개키를 복원한다. 기록 불일치에는 자동 생성·덮어쓰기하지 않고 복구를 요구한다. 기기 키 준비는 신뢰 승인 없이 HTTP 호출도 하지 않는다.
+- Expo Go·웹·iOS Simulator 및 지원하지 않는 하드웨어에서는 안전한 오류가 표시된다. 로컬 모듈을 포함한 development build 또는 native build를 사용해야 한다. [Expo 개발 빌드](https://docs.expo.dev/workflow/customizing/).
+- 계정·서버·재로그인·설정 화면 이탈·백그라운드·취소 이후 늦게 도착한 결과를 폐기한다. 이미 시작된 OS 키 생성은 취소되지 않을 수 있으나 원래 계정에만 묶이고 서버 신뢰를 얻지 않는다.
+
+빌드·검증 (아래 명령은 `apps/mobile`에서 실행):
+
+```sh
+npm test
+npm run typecheck
+cd android
+# JDK 21 및 설치된 Android SDK가 필요하다.
+./gradlew :xgen-native-device:compileDebugKotlin :xgen-native-device:testDebugUnitTest
+cd ../ios
+pod install
+xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
+  -configuration Debug -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+```
+
+실제 iPhone/Android 기기에서 키 생성 → 앱 종료/재실행 → 같은 공개키·설치 ID 복원 → challenge 서명, 잠금/화면 잠금 해제 및 계정 전환을 검증해야 한다. `verify/native-device-key-codec.swift`는 생산 codec의 서명 변환 검증이고 `verify/native-device-key-simulator.swift`는 생산 공급자의 시뮬레이터 거절 검증 앱이다. Simulator 성공 빌드와 테스트의 소프트웨어 키는 실제 하드웨어 성공 증거가 아니다. 자세한 증거·제한은 [통합 문서](../../docs/cross-platform-session-integration.md#mobile-하드웨어-기기-키-기반-2026-09-30)에 있다.
+
+After signing in to an HTTPS server, **Settings → Device security** can inspect or prepare a local hardware key. This does not enroll a trusted device or issue a Platform Session. A native build is required: Expo Go, web, iOS Simulator and unsupported hardware fail closed. Private key material stays in Secure Enclave or Android hardware-backed Keystore; JavaScript receives public metadata and fixed challenge proofs only. Lost or inconsistent records require recovery rather than silent key replacement. Physical-device generation, persistence, lock behavior and signing still need validation before the server enrollment/session and Canonical subscription steps.

@@ -1,0 +1,9 @@
+{
+  "name": "xgen-native-device",
+  "version": "0.1.0",
+  "private": true,
+  "description": "XGEN Mobile hardware-bound device proof keys",
+  "license": "Apache-2.0",
+  "author": "PlateerLab",
+  "homepage": "https://github.com/PlateerLab/xgen-dex-core"
+}

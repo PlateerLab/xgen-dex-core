@@ -24,7 +24,12 @@ import {
   withServing,
   withShare,
 } from '../src/renderer/src/apps/app-gallery-model';
-import { announceAppChange, watchAppChanges } from '../src/renderer/src/apps/app-sync';
+import {
+  announceAppChange,
+  bindServerFeed,
+  resetServerFeed,
+  watchAppChanges,
+} from '../src/renderer/src/apps/app-sync';
 import { createWorkspaceWatch, type WorkspaceWatchBridge } from '../src/renderer/src/workspace-watch';
 
 function app(over: Partial<MyApp> = {}): MyApp {
@@ -267,4 +272,37 @@ test('창 안의 소식 — 자기 소식은 듣지 않고, 남의 에이전트 
   assert.deepEqual([view, page], [1, 3], '다른 에이전트의 소식은 그 에이전트를 보는 화면만');
   offView();
   offPage();
+});
+
+test('서버의 apps 소식 — 앱이 없던 에이전트의 첫 앱도 [앱] 탭이 곧바로 다시 읽는다', async () => {
+  resetServerFeed();
+  let push: ((workflowId: string) => void) | undefined;
+  let watched = 0;
+  const feed = {
+    watch: async () => {
+      watched += 1;
+      return { ok: true };
+    },
+    onChanged: (cb: (workflowId: string) => void) => {
+      push = cb;
+      return () => {};
+    },
+  };
+  assert.equal(bindServerFeed(feed), true);
+  assert.equal(bindServerFeed(feed), true, '두 번째는 다시 걸지 않는다');
+  assert.equal(watched, 1, '목록 소켓은 한 번만 열어 달라고 한다');
+
+  const { bridge } = fakeBridge();
+  const subscribe = createWorkspaceWatch(() => bridge);
+  let page = 0;
+  let view = 0;
+  // [앱] 탭은 앱이 있는 에이전트만 소켓으로 듣는다(여기서는 하나도 없다).
+  const offPage = watchAppChanges([], () => (page += 1), { subscribe, anyAgent: true, delayMs: 10 });
+  const offView = watchAppChanges(['wf-other'], () => (view += 1), { subscribe, delayMs: 10 });
+  push?.('wf-new');
+  await tick(30);
+  assert.deepEqual([page, view], [1, 0], '새 에이전트의 소식 — [앱] 탭만, 다른 에이전트 화면은 그대로');
+  offPage();
+  offView();
+  resetServerFeed();
 });

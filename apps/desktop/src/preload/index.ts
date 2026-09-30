@@ -865,6 +865,14 @@ const api = {
     /** 공개 링크(서버가 준 경로)를 기본 브라우저로 연다 — 절대 주소는 main 이 붙인다. */
     openPublic: (path: string): Promise<string> =>
       ipcRenderer.invoke(CHANNELS.appOpenPublic, path),
+    /** 앱 소식을 받기 시작한다(서버의 목록 소켓). 여러 번 불러도 소켓은 하나다. */
+    watch: (): Promise<{ ok: boolean }> => ipcRenderer.invoke(CHANNELS.appsWatch),
+    /** 어느 에이전트의 앱이 바뀌었다(생김·지움·배포·공유) — 다른 기기·웹·에이전트가 바꾼 것도. */
+    onChanged: (cb: (workflowId: string) => void): (() => void) => {
+      const h = (_e: unknown, workflowId: string) => cb(String(workflowId ?? ''));
+      ipcRenderer.on(CHANNELS.appsChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.appsChanged, h);
+    },
   },
 
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */

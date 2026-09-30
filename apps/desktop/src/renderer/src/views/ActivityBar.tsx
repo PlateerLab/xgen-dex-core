@@ -1,10 +1,13 @@
 /**
  * ActivityBar — VS Code 식 왼쪽 아이콘 스트립.
  *
- * 위쪽: 사이드바 **뷰**를 고르는 탭들 (Agent / 탐색기). 활성 뷰의 아이콘을
+ * 위쪽: 사이드바 **뷰**를 고르는 탭들 (Agent / 탐색기 / Teams). 활성 뷰의 아이콘을
  * 다시 누르면 사이드바가 접힌다 — VS Code 와 같은 규칙이고, 접힌 상태에서는
  * 어떤 아이콘을 눌러도 그 뷰로 펼쳐진다. 이 토글 판정은 Workspace 가 한다
  * (여기는 "눌렸다"만 알린다).
+ *
+ * 그 바로 아래 [앱] 은 사이드바가 아니라 **메인 영역 탭**을 연다(설정과 같은 토글 규칙).
+ * 내 앱을 카드로 넓게 보여 주는 화면이라 좁은 사이드바 목록으로는 모자랐다(2026-09-30).
  *
  * 그 아래(구분선 뒤): **IDE 묶음** — 지금 보는 탭이 IDE 로 보일 때만 뜬다. IDE 의
  * 탐색기·찾기·소스 제어와 터미널·채팅 칸 토글이다. 옅은 바탕의 상자로 묶어 "지금 쓸 수
@@ -35,24 +38,15 @@ import {
   TeamsIcon,
   TerminalIcon,
 } from '../brand/icons';
+import { restoreSideView, type SideView } from './side-view';
 
-export type SideView = 'agent' | 'explorer' | 'teams' | 'apps';
+export { restoreSideView, type SideView };
 
 const VIEWS: Array<{ id: SideView; title: string; icon: React.FC<{ size?: number }> }> = [
   { id: 'agent', title: 'Agent', icon: ChatIcon },
   { id: 'explorer', title: '탐색기', icon: FilesIcon },
   { id: 'teams', title: 'Teams', icon: TeamsIcon },
-  { id: 'apps', title: '앱', icon: AppIcon },
 ];
-
-/**
- * 저장된 사이드바 보기 → 지금의 보기. 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 'artifacts' 는 'apps' 다.
- * 모르는 값(다른 버전이 쓴 것)은 기본 보기로 — 아무 패널도 안 보이는 사이드바가 되지 않게.
- */
-export function restoreSideView(value: unknown): SideView {
-  const v = value === 'artifacts' ? 'apps' : value;
-  return VIEWS.some((view) => view.id === v) ? (v as SideView) : 'agent';
-}
 
 /** IDE 단추의 아이콘 — 앱 사이드바의 선 아이콘으로 맞춘다. 모르는 보기(확장)는 IDE 의 것. */
 const IDE_ICONS: Record<string, React.FC<{ size?: number }>> = {
@@ -110,6 +104,10 @@ export const ActivityBar: React.FC<{
   teamsUnread: number;
   /** 지금 보는 탭이 IDE 로 보이면 그 IDE — 있을 때만 IDE 묶음을 그린다. */
   ide: IdeStore | null;
+  /** [앱] 탭이 지금 보이는가 — 아이콘에 활성 표시. */
+  appsActive: boolean;
+  /** [앱] 탭을 열거나(없으면), 보고 있으면 닫는다 — 설정과 같은 토글. */
+  onOpenApps: () => void;
   /** 설정 탭이 지금 보이는가 — 아이콘에 활성 표시. */
   settingsActive: boolean;
   onOpenSettings: () => void;
@@ -121,6 +119,8 @@ export const ActivityBar: React.FC<{
   onPressView,
   teamsUnread,
   ide,
+  appsActive,
+  onOpenApps,
   settingsActive,
   onOpenSettings,
   userName,
@@ -156,6 +156,15 @@ export const ActivityBar: React.FC<{
             </button>
           );
         })}
+        <button
+          className={`ab-btn ${appsActive ? 'active' : ''}`}
+          title="앱"
+          aria-pressed={appsActive}
+          onClick={onOpenApps}
+        >
+          {appsActive && <span className="ab-ind" />}
+          <AppIcon size={22} />
+        </button>
         {ide && <IdeGroup store={ide} />}
       </div>
 

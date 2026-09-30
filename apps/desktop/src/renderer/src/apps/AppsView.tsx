@@ -12,29 +12,45 @@
  * 네 버튼이 하는 일이 서로 다르다
  * --------------------------------
  *   [새 창으로 열기]  웹의 같은 화면을 기본 브라우저로 (사내 링크, 로그인 필요)
- *   [서빙 중지]       내용을 그대로 두고 닫는다 — 다시 올리면 그대로 돌아온다
+ *   [배포 중지]       내용을 그대로 두고 닫는다 — [배포]를 누르면 그대로 돌아온다
  *   [공유]            **로그인 없이 열리는 주소**를 하나 낸다
  *   [삭제]            폴더를 지운다 — 되돌릴 수 없다
+ *
+ * 상태는 누르는 즉시 바뀌어 보여야 한다
+ * --------------------------------------
+ * 예전에는 토글 뒤 목록만 다시 읽고 상세는 그대로 두었다. 상태를 상세에서 먼저 읽었으므로
+ * 버튼 이름·공개 배너·프레임이 옛 상세에 묶여 [배포 중지]를 눌러도 화면이 그대로였다.
+ * 이제는 토글 응답(서버의 답)을 목록과 상세에 **곧바로** 입히고, `pull` 을 올려 상세를 다시
+ * 읽는다. 배포를 멈춘 앱은 상세를 읽지 않고 프레임을 걷는다(서버가 404 를 주는데, 그건
+ * 오류가 아니라 멈춘 상태다). 다른 화면(웹, [앱] 탭)에서 바꾼 것은 workspace 소켓과 창 안의
+ * 소식으로 듣는다(app-sync.ts).
  *
  * 실행은 이 컴포넌트가 하지 않는다. 격리 프레임(AppFrame)이 한다 — 이유는
  * 그 파일에 적혀 있다(이 창에는 window.xgen 이 있다).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppDetail, AppSummary } from '@dex/protocol';
-import { xgen } from '../bridge';
+import { copyText, xgen } from '../bridge';
 import { RefreshIcon } from '../brand/icons';
 import { Selector } from '../views/Selector';
 import { AppFrame } from './AppFrame';
 import { AppSiteFrame } from './AppSiteFrame';
 import { ViewerEmpty } from '../views/agent-viewer-shared';
+import { APP_CONFIRM, withServing, withShare } from './app-gallery-model';
+import { announceAppChange, useAppChanges } from './app-sync';
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> = ({
-  workflowId,
-}) => {
+export const AppsView: React.FC<{
+  workflowId: string;
+  workflowName?: string;
+  /** 고를 앱(폴더 이름) — [앱] 탭의 [열기] 가 넘긴다. 값이 바뀌면 그 앱으로 옮긴다. */
+  focusSlug?: string;
+  /** 고른 앱이 바뀌었다 — 뷰어 탭이 적어 두었다가 다시 열 때 같은 앱을 연다. */
+  onSlugChange?: (slug: string) => void;
+}> = ({ workflowId, focusSlug, onSlugChange }) => {
   /** 내리기/공유/삭제가 도는 동안 버튼을 막는다 — 두 번 눌러 두 번 나가지 않게. */
   const [busy, setBusy] = useState(false);
   /**
@@ -44,43 +60,82 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
    */
   const [shareUrl, setShareUrl] = useState('');
   const [items, setItems] = useState<AppSummary[]>([]);
-  const [slug, setSlug] = useState('');
-  const [detail, setDetail] = useState<AppDetail | null>(null);
+  const [slug, setSlug] = useState(focusSlug ?? '');
+  /** 마지막으로 읽은 상세 — 화면은 아래의 `detail`(고른 앱의 것만)을 쓴다. */
+  const [loaded, setLoaded] = useState<AppDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   /** 소스가 바뀔 때마다 올라가 프레임을 새로 세운다. */
   const [revision, setRevision] = useState(0);
-  const slugRef = useRef('');
+  /**
+   * 상세를 다시 읽으라는 신호(값에는 뜻이 없다). 상세를 읽는 곳은 아래 effect 하나뿐이고,
+   * 목록을 다시 읽었거나 상태를 바꾼 쪽은 이것만 올린다 — 여러 곳이 상세를 읽으면 늦게 온
+   * 응답이 이긴다.
+   */
+  const [pull, setPull] = useState(0);
+  const slugRef = useRef(slug);
   slugRef.current = slug;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  /** 이 화면 자신 — 자기가 알린 소식은 다시 듣지 않는다. */
+  const self = useRef({}).current;
+  /** 목록 읽기 차례 — 겹쳐 읽으면 마지막에 **보낸** 것만 반영한다. */
+  const listSeq = useRef(0);
 
   /** 마지막으로 프레임에 실어 보낸 바이트 — 같으면 다시 세우지 않는다. */
   const shippedRef = useRef('');
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await xgen.apps.list(workflowId);
-      setItems(res.apps);
-      const want =
-        slugRef.current && res.apps.some((a) => a.slug === slugRef.current)
-          ? slugRef.current
-          : (res.apps.find((a) => a.ready)?.slug ?? res.apps[0]?.slug ?? '');
-      setSlug(want);
-      setError('');
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [workflowId]);
+  // [앱] 탭의 [열기] 가 다른 앱을 가리키면 그리로 옮긴다.
+  useEffect(() => {
+    if (focusSlug) setSlug(focusSlug);
+  }, [focusSlug]);
+
+  // 고른 것을 뷰어 탭에 적어 둔다.
+  const reportRef = useRef(onSlugChange);
+  reportRef.current = onSlugChange;
+  useEffect(() => {
+    if (slug) reportRef.current?.(slug);
+  }, [slug]);
+
+  const refresh = useCallback(
+    async (silent = false) => {
+      const seq = ++listSeq.current;
+      if (!silent) setLoading(true);
+      try {
+        const res = await xgen.apps.list(workflowId);
+        if (seq !== listSeq.current) return;
+        itemsRef.current = res.apps;
+        setItems(res.apps);
+        const want =
+          slugRef.current && res.apps.some((a) => a.slug === slugRef.current)
+            ? slugRef.current
+            : (res.apps.find((a) => a.ready)?.slug ?? res.apps[0]?.slug ?? '');
+        setSlug(want);
+        setPull((n) => n + 1);
+        setError('');
+      } catch (e) {
+        if (seq === listSeq.current) setError(errText(e));
+      } finally {
+        if (seq === listSeq.current) setLoading(false);
+      }
+    },
+    [workflowId],
+  );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  // 다른 곳(웹, [앱] 탭, 에이전트)이 바꾸면 조용히 다시 읽는다.
+  useAppChanges([workflowId], () => void refresh(true), { self });
+
   useEffect(() => {
-    if (!slug) {
-      setDetail(null);
+    const target = itemsRef.current.find((a) => a.slug === slug);
+    if (!target || !target.serving) {
+      // 목록에 없거나(아직 안 읽었거나 지워졌다) 배포를 멈춘 앱 — 서버가 소스를 주지 않는다.
+      // 읽으면 404 가 오는데 그건 오류가 아니라 멈춘 상태다. 프레임을 걷는다.
+      setLoaded(null);
+      shippedRef.current = '';
       return;
     }
     let alive = true;
@@ -91,7 +146,7 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
         // 바이트가 그대로면 프레임을 다시 세우지 않는다 — 열려 있던 화면의 상태
         // (스크롤·입력)를 이유 없이 날리지 않기 위해서다.
         const stamp = `${d.slug} ${d.source} ${JSON.stringify(d.files)}`;
-        setDetail(d);
+        setLoaded(d);
         if (stamp !== shippedRef.current) {
           shippedRef.current = stamp;
           setRevision((r) => r + 1);
@@ -103,42 +158,55 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
     return () => {
       alive = false;
     };
-  }, [workflowId, slug]);
+  }, [workflowId, slug, pull]);
 
   const current = items.find((a) => a.slug === slug) ?? null;
+  // 다른 앱으로 옮긴 직후에는 앞 앱의 상세가 남아 있다 — 고른 앱의 것만 쓴다.
+  const detail = loaded && loaded.slug === slug ? loaded : null;
   const issues = detail?.issues ?? current?.issues ?? [];
   // 상태의 정본은 **서버 응답**이다. 낙관적 로컬 상태를 두지 않는 이유는, 화면만
   // '중지' 로 보이고 서버는 계속 열어 주는 어긋남이 가장 나쁜 실패이기 때문이다.
-  const serving = detail?.serving ?? current?.serving ?? true;
-  const shared = detail?.shared ?? current?.shared ?? false;
+  // 목록 항목을 먼저 본다 — 토글 응답을 곧바로 입히는 곳이고, 배포를 멈춘 앱은 상세를
+  // 읽지 않으므로 상세 쪽은 옛 값을 들고 있을 수 있다.
+  const serving = current?.serving ?? detail?.serving ?? true;
+  const shared = current?.shared ?? detail?.shared ?? false;
 
   // 다른 앱으로 옮기면 방금 만든 링크는 이 화면의 것이 아니다.
-  useEffect(() => { setShareUrl(''); }, [slug]);
+  useEffect(() => {
+    setShareUrl('');
+  }, [slug]);
 
   const act = useCallback(
-    async (run: () => Promise<string>) => {
+    async (run: () => Promise<void>) => {
       if (busy) return;
       setBusy(true);
       try {
-        const note = await run();
-        if (note) setError('');
-        await refresh();
+        await run();
+        setError('');
+        // 나란히 떠 있는 [앱] 탭에 알리고, 목록도 서버에서 다시 읽는다.
+        announceAppChange(workflowId, self);
+        await refresh(true);
       } catch (e) {
         setError(errText(e));
       } finally {
         setBusy(false);
       }
     },
-    [busy, refresh],
+    [busy, refresh, workflowId, self],
   );
 
   const onToggleServing = useCallback(() => {
     if (!slug) return;
     const next = !serving;
-    if (!next && !window.confirm('서빙을 중지할까요?\n내용은 그대로 두고 닫습니다.')) return;
+    if (!next && !window.confirm(APP_CONFIRM.undeploy)) return;
+    const target = slug;
     void act(async () => {
-      await xgen.apps.setServing(workflowId, slug, next);
-      return 'ok';
+      const res = await xgen.apps.setServing(workflowId, target, next);
+      // 서버의 답을 곧바로 입힌다 — 버튼·배너·프레임이 다음 목록을 기다리지 않는다.
+      setItems((list) => list.map((a) => (a.slug === target ? withServing(a, res) : a)));
+      setLoaded((d) => (d && d.slug === target ? withServing(d, res) : d));
+      if (!res.serving) setShareUrl('');
+      setPull((n) => n + 1);
     });
   }, [slug, serving, workflowId, act]);
 
@@ -150,25 +218,21 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
   const onToggleShare = useCallback(() => {
     if (!slug) return;
     const next = !shared;
-    // 웹과 **같은 문장**이다 — 같은 에이전트를 두 곳에서 보므로 한쪽만 다른 말을
-    // 하면 안 된다. 길게 적어 봤더니 아무도 안 읽었고, 안 읽히는 확인은 확인이
-    // 아니다. 나머지 사실은 공개 중 내내 떠 있는 배너가 말한다.
-    const ok = window.confirm(
-      next
-        ? '공개 링크를 만들까요?\n링크를 아는 사람은 누구나 로그인 없이 이 화면을 쓸 수 있습니다.'
-        : '공개 링크를 닫을까요?\n이미 나간 링크는 되살아나지 않습니다.',
-    );
+    // 웹·[앱] 탭과 **같은 문장**이다(APP_CONFIRM). 나머지 사실은 공개 중 내내 떠 있는 배너가 말한다.
+    const ok = window.confirm(next ? APP_CONFIRM.share : APP_CONFIRM.unshare);
     if (!ok) return;
+    const target = slug;
     void act(async () => {
-      const res = await xgen.apps.setShare(workflowId, slug, next);
+      const res = await xgen.apps.setShare(workflowId, target, next);
+      setItems((list) => list.map((a) => (a.slug === target ? withShare(a, res) : a)));
+      setLoaded((d) => (d && d.slug === target ? withShare(d, res) : d));
       if (res.shared && res.url) {
         // 링크는 이 응답에만 들어 있다 — 지금 손에 쥐여 주지 않으면 다시 켜야 받는다.
-        try { await navigator.clipboard.writeText(res.url); } catch { /* 막힌 환경 */ }
+        await copyText(res.url);
         setShareUrl(res.url);
       } else {
         setShareUrl('');
       }
-      return 'ok';
     });
   }, [slug, shared, workflowId, act]);
 
@@ -178,13 +242,13 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
     // 이름 뒤에 조사를 바로 붙이면 받침에 따라 을/를 이 갈린다. 명사 하나를
     // 사이에 두면 이름이 무엇이든 문장이 맞는다.
     if (!window.confirm(`'${name}' 앱을 삭제할까요?\n되돌릴 수 없습니다.`)) return;
+    const target = slug;
     void act(async () => {
-      await xgen.apps.remove(workflowId, slug);
+      await xgen.apps.remove(workflowId, target);
       // 지운 것을 계속 고르고 있으면 안 된다.
       setSlug('');
-      setDetail(null);
+      setLoaded(null);
       shippedRef.current = '';
-      return 'ok';
     });
   }, [slug, current, workflowId, act]);
 
@@ -207,7 +271,7 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
               // 왜 못 여는지를 **구분해서** 말한다 — 사람이 내린 것은 버튼 한 번이고
               // 코드가 깨진 것은 에이전트가 고칠 일이다.
               label: !a.serving
-                ? `${a.title} (서빙 중지됨)`
+                ? `${a.title} (배포 중지됨)`
                 : a.ready
                   ? a.title
                   : `${a.title} (열 수 없음)`,
@@ -224,7 +288,7 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
         ) : null}
         {slug ? (
           <button type="button" className="apps-action" disabled={busy} onClick={onToggleServing}>
-            {serving ? '서빙 중지' : '서빙 시작'}
+            {serving ? '배포 중지' : '배포'}
           </button>
         ) : null}
         {slug ? (
@@ -250,7 +314,8 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
 
       {error ? <div className="viewer-note err">불러오지 못했습니다: {error}</div> : null}
 
-      {shared ? (
+      {/* 배포를 멈춘 앱은 공개 링크도 닫혀 있다 — 그때 "공개 중" 이라고 말하면 거짓이다. */}
+      {shared && serving ? (
         <div className="apps-share">
           <strong>공개 중</strong>
           <p>링크를 아는 사람은 로그인 없이 이 화면을 봅니다. [공유 중지]로 닫을 수 있습니다.</p>
@@ -263,9 +328,9 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
 
       {!loading && slug && !serving ? (
         <div className="apps-issues">
-          <strong>서빙 중지됨</strong>
+          <strong>배포 중지됨</strong>
           <p style={{ margin: '4px 0 0' }}>
-            이 앱은 지금 아무에게도 열리지 않습니다. 파일은 그대로 있으니 [서빙 시작]을 누르면 돌아옵니다.
+            이 앱은 지금 아무에게도 열리지 않습니다. 파일은 그대로 있으니 [배포]를 누르면 돌아옵니다.
           </p>
         </div>
       ) : null}
@@ -285,7 +350,7 @@ export const AppsView: React.FC<{ workflowId: string; workflowName?: string }> =
         <ViewerEmpty title="아직 앱이 없습니다" description="에이전트가 만든 화면이나 결과물을 이곳에서 열어볼 수 있습니다." />
       ) : null}
 
-      {detail?.ready ? (
+      {detail?.ready && serving ? (
         <div className="apps-stage">
           {detail.kind === 'project' || detail.kind === 'service' ? (
             // 사이트(파일)든 에이전트가 띄운 앱이든 서버가 주소를 낸다 — main 이

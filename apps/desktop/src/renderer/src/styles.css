@@ -8720,7 +8720,7 @@ button.sm {
 .apps-refresh:hover {
   color: inherit;
 }
-/* 바 안의 동작 버튼들 — [새 창으로 열기]·[서빙 중지]·[공유]·[삭제]. */
+/* 바 안의 동작 버튼들 — [새 창으로 열기]·[배포 중지]·[공유]·[삭제]. */
 .apps-action {
   display: inline-flex;
   align-items: center;
@@ -8827,11 +8827,212 @@ button.sm {
   white-space: pre-wrap;
   word-break: break-all;
 }
-.app-gallery-foot {
-  padding: 10px 12px 14px;
+/* 카드의 첫 버튼([열기]) — 주된 동작 하나만 채운다. */
+.apps-action.strong {
+  border-color: var(--primary-soft-border);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+.apps-action.strong:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+}
+.apps-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── [앱] 탭 — 내 앱·앱 스토어 ────────────────────────────────────
+   머리줄은 에이전트 뷰어와 같은 모양(.viewer-header)을 쓰고, 거름 줄은 에이전트 [앱]
+   하위 탭의 줄(.apps-bar)을 쓴다. 여기서 더하는 것은 카드 격자뿐이다.            */
+.app-gallery {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--bg, var(--panel));
+}
+.app-gallery .apps-bar {
+  flex-wrap: wrap;
+}
+.app-gallery-filter {
+  width: 200px;
+}
+.app-gallery-search.input {
+  width: 220px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.app-gallery-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.app-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+.app-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+.app-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+/* 미리보기 대신 모양 아이콘 — 카드마다 살아 있는 프레임을 띄우지 않는다. */
+.app-card-glyph {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.app-card-names {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.app-card-title {
+  overflow: hidden;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-card-agent {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-card-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.app-card-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.app-card-more:hover,
+.app-card-more[aria-expanded='true'] {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.app-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+.app-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+.app-badge.ready {
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--success);
+}
+.app-badge.broken {
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: #b45309;
+}
+.app-badge.shared {
+  border-color: var(--primary-soft-border);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.app-card-when {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* 설명은 한 줄 — 넘치면 말줄임, 전체는 마우스를 올려 본다. 비어도 줄 높이는 지킨다. */
+.app-card-desc {
+  min-height: 18px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+.app-card-menu {
+  min-width: 150px;
+}
+.app-gallery-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 0 4px;
+}
+.app-detail-desc {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.app-detail-grid {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.app-detail-grid dt {
+  color: var(--muted);
+}
+.app-detail-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.app-detail-issues {
+  margin: 12px 0 0;
 }
 
 /* ── 입력창 위 도구 줄 — [Teams 대화 붙이기] · 모델 선택기 ───────── */

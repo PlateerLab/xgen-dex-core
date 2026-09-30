@@ -334,13 +334,13 @@ export interface AppSummary {
   /** 엔트리 파일. component 에서만 쓴다(사이트는 index.html 이 엔트리다). */
   entry: string;
   /**
-   * 지금 **열리는가**. 매니페스트가 멀쩡해도 사람이 서빙을 내렸으면 false 다 —
+   * 지금 **열리는가**. 매니페스트가 멀쩡해도 사람이 배포를 중지했으면 false 다 —
    * 목록의 불빛과 실제로 열리는지가 어긋나면 안 된다.
    */
   ready: boolean;
   /** 사람이 내려놓지 않았는가. false 면 서버가 소스를 주지 않는다. */
   serving: boolean;
-  /** 누가 내렸는지(사용자 id). 서빙 중이면 빈 문자열. */
+  /** 누가 배포를 중지했는지(사용자 id). 배포 중이면 빈 문자열. */
   stopped_by: string;
   stopped_at: number | null;
   /**
@@ -396,11 +396,70 @@ export interface AppListResult {
   ready: number;
 }
 
-/** 앱 하나 + 그것을 만든 에이전트 — [앱 모음] 의 한 줄. */
-export interface AppGalleryItem extends AppSummary {
-  workflowId: string;
-  workflowName: string;
+// ── 앱 모음(agent-app-store) ─────────────────────────────────────
+//
+// [앱] 탭의 두 화면이 쓴다: [내 앱](내 에이전트 전부가 만든 앱)과 [앱 스토어](공개 링크로
+// 공유된 앱, 누가 만들었든). 웹의 [Agent APP] 화면과 같은 엔드포인트·같은 필드명이다 —
+// 두 화면이 같은 것을 다른 말로 보여 주지 않게.
+//
+// 예전에는 모음 엔드포인트가 없어 데스크톱 main 이 에이전트마다 목록을 물어 모았다.
+// 서버가 한 번에 모아 주므로 그 훑기는 없어졌다(못 읽은 에이전트도 서버가 `failed` 로 말한다).
+
+/** [내 앱] 의 한 장 — 에이전트 한 곳의 앱 요약에 그 에이전트를 붙인 것. */
+export interface MyApp extends AppSummary {
+  workflow_id: string;
+  workflow_name: string;
 }
+
+export interface MyAppsResult {
+  apps: MyApp[];
+  /** 앱이 있는 에이전트와 그 수 — 에이전트 고르개의 목록이다. */
+  agents: Array<{ workflow_id: string; workflow_name: string; count: number }>;
+  total: number;
+  /** 공개 중인 앱 수. */
+  shared: number;
+  /** 목록을 읽지 못한 에이전트 이름 — 조용히 빠뜨리지 않는다. */
+  failed: string[];
+}
+
+/** [앱 스토어] 의 한 장 — 공개 링크로 공유된 앱. */
+export interface StoreApp {
+  workflow_id: string;
+  slug: string;
+  title: string;
+  description: string;
+  /** AppKind 이지만 서버가 모르는 값을 줄 수도 있어 문자열로 받는다. */
+  kind: string;
+  workflow_name: string;
+  owner_id: number | null;
+  owner_name: string;
+  /** 공유한 시각 (epoch 초). */
+  shared_at: number | null;
+  /** 공개 링크의 경로(서버 기준, /share/app/…). 절대 주소는 서버 주소를 아는 쪽이 붙인다. */
+  path: string;
+  /** 내가 공유한 앱인가. */
+  mine: boolean;
+}
+
+export interface AppStoreListResult {
+  items: StoreApp[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export type AppStoreScope = 'all' | 'mine';
+
+export interface AppStoreListParams {
+  search?: string;
+  scope?: AppStoreScope;
+  page?: number;
+  pageSize?: number;
+}
+
+export const APP_STORE_API_BASE = '/api/agentflow/agent-app-store';
+/** 스토어 한 쪽의 기본 크기 — 웹과 같다. */
+export const APP_STORE_PAGE_SIZE = 24;
 
 // ── 스토리지(geny-workspace) ──────────────────────────────────────
 export interface WsNode {
@@ -624,7 +683,7 @@ export class AgentDataApi {
   }
 
   /**
-   * 서빙을 내리거나 올린다 — **지우지 않는다.**
+   * 배포를 중지하거나 다시 한다(화면 이름 [배포]/[배포 중지], API 필드는 serving) — **지우지 않는다.**
    *
    * 파일은 그대로 있고 에이전트도 계속 고칠 수 있다. 달라지는 것은 하나다:
    * 서버가 이 앱의 소스를 아무에게도 주지 않는다. 그래서 앱·웹·공유 링크가
@@ -656,6 +715,46 @@ export class AgentDataApi {
         { shared },
       ),
     );
+  }
+
+  /**
+   * [내 앱] — 내 에이전트 전부가 만든 앱(열 수 없는 것도 이유와 함께).
+   *
+   * 빠진 칸은 비운 값으로 채운다. 화면이 `undefined.length` 로 넘어지는 것보다 "없음" 을
+   * 말하는 편이 낫다.
+   */
+  async appStoreMine(): Promise<MyAppsResult> {
+    const res = await this.http.get<Partial<MyAppsResult>>(`${APP_STORE_API_BASE}/mine`);
+    const apps = Array.isArray(res?.apps) ? res.apps : [];
+    return {
+      apps,
+      agents: Array.isArray(res?.agents) ? res.agents : [],
+      total: typeof res?.total === 'number' ? res.total : apps.length,
+      shared: typeof res?.shared === 'number' ? res.shared : apps.filter((a) => a.shared).length,
+      failed: Array.isArray(res?.failed) ? res.failed : [],
+    };
+  }
+
+  /** [앱 스토어] — 공개 링크로 공유된 앱. 배포를 멈췄거나 공유를 끈 앱은 서버가 뺀다. */
+  async appStoreList(params: AppStoreListParams = {}): Promise<AppStoreListResult> {
+    const positiveInt = (value: unknown, fallback: number) =>
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.floor(value)) : fallback;
+    const page = positiveInt(params.page, 1);
+    const pageSize = positiveInt(params.pageSize, APP_STORE_PAGE_SIZE);
+    const query = new URLSearchParams();
+    const search = (params.search ?? '').trim();
+    if (search) query.set('search', search);
+    query.set('scope', params.scope === 'mine' ? 'mine' : 'all');
+    query.set('page', String(page));
+    query.set('page_size', String(pageSize));
+    const res = await this.http.get<Partial<AppStoreListResult>>(`${APP_STORE_API_BASE}/list?${query}`);
+    const items = Array.isArray(res?.items) ? res.items : [];
+    return {
+      items,
+      total: typeof res?.total === 'number' ? res.total : items.length,
+      page: typeof res?.page === 'number' ? res.page : page,
+      page_size: typeof res?.page_size === 'number' ? res.page_size : pageSize,
+    };
   }
 
   /** 앱 폴더를 지운다 — **되돌릴 수 없다**(원본까지 함께 지워진다). */

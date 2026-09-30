@@ -27,13 +27,14 @@ import { Settings } from './Settings';
 import { AgentViewer } from './AgentViewer';
 import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
 import { AgentCreate } from './AgentCreate';
-import { ActivityBar, restoreSideView, type SideView } from './ActivityBar';
+import { ActivityBar } from './ActivityBar';
+import { restoreSideView, type SideView } from './side-view';
 import { AgentPanel } from './AgentPanel';
 import { ExplorerPanel } from './ExplorerPanel';
 import { FileViewerPane } from './FileViewerPane';
 import { fileTabId } from './file-viewer-model';
 import { TeamsPanel } from './TeamsPanel';
-import { AppsPanel } from '../apps/AppsPanel';
+import { AgentAppsPage } from '../apps/AgentAppsPage';
 import { TeamsRoom } from './TeamsRoom';
 import { TabBar } from './TabBar';
 import { BrowserPane, type BrowserSurfaceRect } from './BrowserPane';
@@ -561,6 +562,26 @@ export const Workspace: React.FC<{
     });
   }, []);
 
+  /**
+   * [앱] 탭 — 설정과 같은 토글 규칙이다. 열려 있으면 포커스, 보고 있을 때 다시 누르면 닫힌다.
+   * 예전에는 사이드바 목록이었는데, 내 앱 전부를 카드로 넓게 보여 주고 웹 [Agent APP] 과 같은
+   * 두 칸(내 앱·앱 스토어)을 두려면 메인 영역이 맞다.
+   */
+  const pressApps = useCallback(() => {
+    setLayout((current) => {
+      const existing = findTab(current, 'apps');
+      if (
+        existing &&
+        current.focusedGroupId === existing.group.id &&
+        existing.group.activeTabId === 'apps'
+      ) {
+        return removeWorkspaceTab(current, 'apps');
+      }
+      if (existing) return selectWorkspaceTab(current, existing.group.id, 'apps');
+      return addWorkspaceTab(current, current.focusedGroupId, { id: 'apps', kind: 'apps' });
+    });
+  }, []);
+
   /** 설정 탭을 연다 (토글 아님 — 안내 배너·탐색기 버튼·트레이용). */
   const openSettings = useCallback(() => {
     setLayout((current) => {
@@ -633,8 +654,12 @@ export const Workspace: React.FC<{
     [setLayout],
   );
 
+  /**
+   * 에이전트 뷰어 탭을 연다(에이전트당 하나, 하위 탭만 바뀐다). `app` 을 주면 [앱] 하위 탭에서
+   * 그 앱을 고른다 — [앱] 탭의 [열기]. 주지 않으면 전에 고르던 앱을 그대로 둔다.
+   */
   const openAgentViewer = useCallback(
-    (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub) => {
+    (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub, app?: string) => {
       setLayout((current) => {
         const opened = addWorkspaceTab(current, current.focusedGroupId, {
           id: `viewer:${workflowId}`,
@@ -642,6 +667,7 @@ export const Workspace: React.FC<{
           workflowId,
           workflowName,
           viewerSub: sub,
+          viewerApp: app,
         });
         // Explicit links choose their destination even when the viewer is already open.
         return {
@@ -649,7 +675,9 @@ export const Workspace: React.FC<{
           groups: opened.groups.map((group) => ({
             ...group,
             tabs: group.tabs.map((tab) =>
-              tab.id === `viewer:${workflowId}` ? { ...tab, viewerSub: sub } : tab,
+              tab.id === `viewer:${workflowId}`
+                ? { ...tab, viewerSub: sub, viewerApp: app ?? tab.viewerApp }
+                : tab,
             ),
           })),
         };
@@ -1014,6 +1042,9 @@ export const Workspace: React.FC<{
   const settingsActive = layout.groups.some(
     (group) => group.id === layout.focusedGroupId && group.activeTabId === 'settings',
   );
+  const appsActive = layout.groups.some(
+    (group) => group.id === layout.focusedGroupId && group.activeTabId === 'apps',
+  );
   // 지금 보는 탭(초점 묶음의 활성 탭)이 IDE 로 보이는 채팅이면 그 IDE — 앱 사이드바가 IDE 단추를 그린다.
   const focusedTab = (() => {
     const group = layout.groups.find((g) => g.id === layout.focusedGroupId);
@@ -1112,6 +1143,17 @@ export const Workspace: React.FC<{
         </div>
       );
     }
+    if (active?.kind === 'apps') {
+      return (
+        <div className="pane-fill">
+          <AgentAppsPage
+            onOpenApp={(workflowId, workflowName, slug) =>
+              openAgentViewer(workflowId, workflowName, 'apps', slug)
+            }
+          />
+        </div>
+      );
+    }
     if (active?.kind === 'agent-create') {
       return (
         <div className="pane-fill">
@@ -1151,6 +1193,7 @@ export const Workspace: React.FC<{
           workflowId={active.workflowId}
           workflowName={active.workflowName}
           initialSub={active.viewerSub}
+          initialApp={active.viewerApp}
           navigation={navigation}
           onSubChange={(viewerSub) =>
             setLayout((current) => ({
@@ -1160,6 +1203,19 @@ export const Workspace: React.FC<{
                 tabs: item.tabs.map((tab) => tab.id === active.id ? { ...tab, viewerSub } : tab),
               })),
             }))
+          }
+          onAppChange={(viewerApp) =>
+            setLayout((current) => {
+              // 같은 값이면 배치를 새로 만들지 않는다 — 고를 때마다 저장이 돌지 않게.
+              if (findTab(current, active.id)?.tab.viewerApp === viewerApp) return current;
+              return {
+                ...current,
+                groups: current.groups.map((item) => ({
+                  ...item,
+                  tabs: item.tabs.map((tab) => (tab.id === active.id ? { ...tab, viewerApp } : tab)),
+                })),
+              };
+            })
           }
           onClose={() => closeTab(active)}
         />
@@ -1186,6 +1242,8 @@ export const Workspace: React.FC<{
         onPressView={pressView}
         teamsUnread={teamsUnread}
         ide={ideInView}
+        appsActive={appsActive}
+        onOpenApps={pressApps}
         settingsActive={settingsActive}
         onOpenSettings={pressSettings}
         userName={displayName}
@@ -1214,18 +1272,6 @@ export const Workspace: React.FC<{
             activeRoomId={activeRoomId}
             onOpenRoom={openRoomTab}
             onRoomRemoved={closeRoomTabs}
-          />
-        </div>
-        <div
-          className="panel-host"
-          style={{ display: sideView === 'apps' ? undefined : 'none' }}
-        >
-          {/* 모음에서 고른 앱은 **그 에이전트의 [앱] 탭**으로 연다 —
-              같은 화면을 두 벌 만들지 않고, 고른 것이 어디 사는지도 함께 보인다. */}
-          <AppsPanel
-            onOpen={(workflowId, workflowName) =>
-              openAgentViewer(workflowId, workflowName, 'apps')
-            }
           />
         </div>
         <div className="sidebar-resize" onMouseDown={startSidebarResize} />

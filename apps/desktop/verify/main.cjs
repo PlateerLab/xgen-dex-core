@@ -145,7 +145,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // 앱 — 사이드바 모음과 에이전트 상세 탭.
+  // 앱 — [앱] 탭(내 앱·앱 스토어)과 에이전트 상세 탭.
   //
   // ⚠ 이 하네스는 지금 **어느 스테이지도 못 뜬다.** 모의 preload 가 앱보다 뒤처져
   //   있어서(agentData·browser·teams·notifications·ssh·system 등 12개 남짓 없음)
@@ -156,20 +156,35 @@ app.whenReady().then(async () => {
   //   그동안 이 두 화면은 컴포넌트만 따로 마운트해 눈으로 확인했고(라이트·다크),
   //   실행 프레임은 verify/artifact-frame-smoke.cjs 가 진짜 Electron 에서 검증한다.
   if (STAGE === 'apps') {
-    // ActivityBar 의 [앱] 으로 사이드바를 바꾼다.
+    // ActivityBar 의 [앱] 은 메인 영역에 [앱] 탭을 연다.
     await win.webContents.executeJavaScript(`(() => {
       const b = [...document.querySelectorAll('.activity-bar .ab-btn')].find((x) => x.title === '앱');
       if (b) b.click();
       return !!b;
     })()`);
     await sleep(700);
-    await snap(win, 'apps-panel.png');
+    await snap(win, 'apps-mine.png');
 
-    // 모음에서 하나 고르면 그 에이전트의 [앱] 탭이 열린다.
+    // [앱 스토어] 칸.
     await win.webContents.executeJavaScript(`(() => {
-      const it = document.querySelector('.agent-list .agent-item');
-      if (it) it.click();
-      return !!it;
+      const t = [...document.querySelectorAll('.app-gallery .viewer-subtab')].find((x) => x.textContent === '앱 스토어');
+      if (t) t.click();
+      return !!t;
+    })()`);
+    await sleep(700);
+    await snap(win, 'apps-store.png');
+
+    // [내 앱] 으로 돌아가 카드의 [열기] — 그 에이전트 뷰어의 [앱] 하위 탭이 그 앱으로 열린다.
+    await win.webContents.executeJavaScript(`(() => {
+      const t = [...document.querySelectorAll('.app-gallery .viewer-subtab')].find((x) => x.textContent === '내 앱');
+      if (t) t.click();
+      return !!t;
+    })()`);
+    await sleep(700);
+    await win.webContents.executeJavaScript(`(() => {
+      const b = document.querySelector('.app-card .apps-action.strong:not(:disabled)');
+      if (b) b.click();
+      return !!b;
     })()`);
     await sleep(1200);
     await snap(win, 'apps-tab.png');

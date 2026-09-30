@@ -15,7 +15,9 @@ import type {
   AppListResult,
   AppServingState,
   AppShareState,
-  AppSummary,
+  AppStoreListParams,
+  AppStoreListResult,
+  MyAppsResult,
   ChatStopResult,
   ConversationSnapshot,
   CurrentUser,
@@ -832,13 +834,11 @@ const api = {
       ipcRenderer.invoke(CHANNELS.appList, workflowId),
     get: (workflowId: string, slug: string): Promise<AppDetail> =>
       ipcRenderer.invoke(CHANNELS.appGet, workflowId, slug),
-    /** 모든 에이전트의 **지금 열리는** 앱 — 사이드바 [앱 모음]. */
-    gallery: (): Promise<{
-      items: Array<AppSummary & { workflowId: string; workflowName: string }>;
-      scanned: number;
-      failed: string[];
-      error?: string;
-    }> => ipcRenderer.invoke(CHANNELS.appGallery),
+    /** [앱] 탭의 [내 앱] — 내 에이전트 전부가 만든 앱(서버가 모아 준다). */
+    mine: (): Promise<MyAppsResult> => ipcRenderer.invoke(CHANNELS.appStoreMine),
+    /** [앱] 탭의 [앱 스토어] — 공개 링크로 공유된 앱. */
+    store: (params: AppStoreListParams): Promise<AppStoreListResult> =>
+      ipcRenderer.invoke(CHANNELS.appStoreList, params),
     callApi: (
       apis: AppApiDeclaration[],
       alias: string,
@@ -862,6 +862,9 @@ const api = {
     /** 웹의 같은 화면을 기본 브라우저로 연다. 만들어진 주소를 돌려준다. */
     openWeb: (workflowId: string, slug: string): Promise<string> =>
       ipcRenderer.invoke(CHANNELS.appOpenWeb, workflowId, slug),
+    /** 공개 링크(서버가 준 경로)를 기본 브라우저로 연다 — 절대 주소는 main 이 붙인다. */
+    openPublic: (path: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.appOpenPublic, path),
   },
 
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */

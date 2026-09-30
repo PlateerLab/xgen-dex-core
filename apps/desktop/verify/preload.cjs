@@ -118,18 +118,40 @@ const api = {
       return { items, pagination: { page: 1, pageSize: 24, totalCount: items.length, totalPages: 1 } };
     },
   },
-  // 앱 — 사이드바 [앱] 모음과 에이전트 상세 [앱] 탭이 쓴다.
+  // 앱 — [앱] 탭(내 앱·앱 스토어)과 에이전트 상세 [앱] 하위 탭이 쓴다.
   // 실행 프레임(xgenartifact://)은 main 이 내므로 여기서 흉내 내지 않는다.
   apps: {
-    gallery: async () => ({
+    mine: async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const base = { root: '', entry: 'App.jsx', stopped_by: '', stopped_at: null, shared_by: '', shared_at: null, issues: [] };
+      const apps = [
+        { ...base, slug: 'sales-board', kind: 'component', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', ready: true, serving: true, shared: true, shared_at: now - 3600, updated_at: now - 240, workflow_id: 'wf1', workflow_name: '한국마사회 RAG 상담' },
+        { ...base, slug: 'race-calendar', kind: 'project', title: '경주 일정표', description: '이번 달 경주 일정', ready: false, serving: false, shared: false, updated_at: now - 5400, workflow_id: 'wf2', workflow_name: '경마 데이터 분석가' },
+        { ...base, slug: 'broken-one', kind: 'service', title: '만들다 만 화면', description: '', ready: false, serving: true, shared: false, updated_at: null, issues: ['app.json 에 entry 가 없습니다'], workflow_id: 'wf1', workflow_name: '한국마사회 RAG 상담' },
+      ];
+      return {
+        apps,
+        agents: [
+          { workflow_id: 'wf1', workflow_name: '한국마사회 RAG 상담', count: 2 },
+          { workflow_id: 'wf2', workflow_name: '경마 데이터 분석가', count: 1 },
+        ],
+        total: apps.length,
+        shared: 1,
+        failed: [],
+      };
+    },
+    store: async () => ({
       items: [
-        { slug: 'sales-board', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 240, issues: [], workflowId: 'wf1', workflowName: '한국마사회 RAG 상담' },
-        { slug: 'race-calendar', title: '경주 일정표', description: '이번 달 경주 일정', entry: 'App.tsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 5400, issues: [], workflowId: 'wf2', workflowName: '경마 데이터 분석가' },
-        { slug: 'doc-index', title: '사내 문서 색인', description: '수집한 문서 목록과 최신 갱신일', entry: 'App.jsx', ready: true, updated_at: Math.floor(Date.now() / 1000) - 2 * 86400, issues: [], workflowId: 'wf4', workflowName: '사내 문서 도우미' },
+        { workflow_id: 'wf1', slug: 'sales-board', title: '분기 매출 보드', description: '분기별 발매액과 채널 비중', kind: 'component', workflow_name: '한국마사회 RAG 상담', owner_id: 1, owner_name: '나', shared_at: Math.floor(Date.now() / 1000) - 3600, path: '/share/app/wf1/sales-board/t', mine: true },
+        { workflow_id: 'wf9', slug: 'doc-index', title: '사내 문서 색인', description: '수집한 문서 목록과 최신 갱신일', kind: 'project', workflow_name: '사내 문서 도우미', owner_id: 2, owner_name: '김하늘', shared_at: Math.floor(Date.now() / 1000) - 2 * 86400, path: '/share/app/wf9/doc-index/t', mine: false },
       ],
-      scanned: 4,
-      failed: [],
+      total: 2,
+      page: 1,
+      page_size: 24,
     }),
+    openPublic: async (path) => `https://xgen.example${path}`,
+    setServing: async (_wf, slug, serving) => ({ ok: true, slug, serving, stopped_by: serving ? '' : '1', stopped_at: serving ? null : Math.floor(Date.now() / 1000) }),
+    setShare: async (_wf, slug, shared) => ({ ok: true, slug, shared, shared_by: shared ? '1' : '', shared_at: shared ? Math.floor(Date.now() / 1000) : null, token: '', path: '', url: shared ? `https://xgen.example/share/app/${slug}/t` : '' }),
     list: async () => ({
       workflow_id: 'wf1',
       total: 2,

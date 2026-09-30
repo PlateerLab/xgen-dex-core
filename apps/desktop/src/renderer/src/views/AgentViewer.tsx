@@ -22,8 +22,12 @@ interface Props {
   workflowId: string;
   workflowName?: string;
   initialSub?: AgentViewerSub;
+  /** [앱] 하위 탭에서 고를 앱(폴더 이름) — [앱] 탭의 [열기] 가 넘긴다. */
+  initialApp?: string;
   navigation?: AgentViewerState;
   onSubChange?: (sub: AgentViewerSub) => void;
+  /** [앱] 하위 탭에서 고른 앱이 바뀌었다 — 탭이 적어 두었다가 다시 열 때 쓴다. */
+  onAppChange?: (slug: string) => void;
   /** 닫기 — 지금은 탭 X 가 담당하므로 미사용(호환용 optional). */
   onClose?: () => void;
 }
@@ -460,8 +464,10 @@ export const AgentViewer: React.FC<Props> = ({
   workflowId,
   workflowName,
   initialSub,
+  initialApp,
   navigation,
   onSubChange,
+  onAppChange,
 }) => {
   const [fallbackNavigation] = useState(createAgentViewerState);
   const [sub, setSub] = useState<AgentViewerSub>(initialSub ?? 'basic');
@@ -522,7 +528,12 @@ export const AgentViewer: React.FC<Props> = ({
           {sub === 'tasks' && <TasksView workflowId={workflowId} />}
           {sub === 'tools' && <AgentToolsView workflowId={workflowId} />}
           {sub === 'apps' && (
-            <AppsView workflowId={workflowId} workflowName={workflowName} />
+            <AppsView
+              workflowId={workflowId}
+              workflowName={workflowName}
+              focusSlug={initialApp}
+              onSlugChange={onAppChange}
+            />
           )}
           {sub === 'storage' && <StorageView workflowId={workflowId} />}
         </div>

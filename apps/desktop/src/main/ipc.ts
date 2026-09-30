@@ -152,10 +152,11 @@ export const CHANNELS = {
   ideChanged: 'ide:changed', // main → renderer — 그 구독의 스토리지가 바뀌었다
 
   // 앱 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
-  // gallery 는 **모든 에이전트**를 훑어 지금 열리는 것만 모아 준다(사이드바).
+  // storeMine·storeList 는 [앱] 탭의 [내 앱]·[앱 스토어] 다(서버가 모아 준다).
   appList: 'apps:list',
   appGet: 'apps:get',
-  appGallery: 'apps:gallery',
+  appStoreMine: 'apps:storeMine',
+  appStoreList: 'apps:storeList',
   /** 프레임이 부탁한 alias 를 사용자 권한으로 대신 호출한다. */
   appCallApi: 'apps:callApi',
   appHttp: 'apps:http',
@@ -165,6 +166,8 @@ export const CHANNELS = {
   // 웹의 같은 화면을 기본 브라우저로 연다. 주소를 렌더러가 조립하지 않는 이유는
   // 렌더러가 서버 주소를 모르기 때문이다 — 그건 main 의 설정이다.
   appOpenWeb: 'apps:openWeb',
+  // [앱 스토어] 의 앱을 공개 링크로 연다 — 경로만 받고 절대 주소는 main 이 만든다.
+  appOpenPublic: 'apps:openPublic',
 
   chatStart: 'chat:start',
   //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).

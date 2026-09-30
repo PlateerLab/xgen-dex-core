@@ -24,7 +24,6 @@ const ADVANCED_ORDER = [
   'tool_exposure',
   'enable_builtin_tools',
   'enable_self_evolution',
-  'enable_delegation',
   'enable_memory',
   'enable_compaction',
   'streaming',

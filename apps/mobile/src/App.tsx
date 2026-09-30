@@ -35,6 +35,7 @@ import { StatusBar } from 'expo-status-bar';
 import type { Agent, Conversation } from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
 import { ChatView, formatWhen } from './chat/chat-view';
+import { NativeDeviceKeyCard } from './NativeDeviceKeyCard';
 import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -368,6 +369,7 @@ export default function App(): React.ReactElement {
           </View>
           <View style={[st.section, section !== 'settings' && st.off]}>
             <SettingsSection
+              visible={section === 'settings'}
               client={client}
               bridgeStatus={bridgeStatus}
               toolsEnabled={toolsEnabled}
@@ -931,6 +933,7 @@ function CreateAgentSheet({
 // ── 설정 ────────────────────────────────────────────────────────
 
 function SettingsSection({
+  visible,
   client,
   bridgeStatus,
   toolsEnabled,
@@ -940,6 +943,7 @@ function SettingsSection({
   onToggleGroup,
   onLogout,
 }: {
+  visible: boolean;
   client: XgenMobileClient;
   bridgeStatus: BridgeStatus;
   toolsEnabled: boolean;
@@ -962,6 +966,7 @@ function SettingsSection({
 
   return (
     <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 28 }}>
+      <NativeDeviceKeyCard client={client} visible={visible} />
       <View style={st.card}>
         <Text style={st.cardTitle}>모바일 도구</Text>
         <Pressable style={st.checkRow} onPress={() => onToggleTools(!toolsEnabled)}>

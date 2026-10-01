@@ -7,7 +7,14 @@ const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const invalid = () => new DexError('protocol_mismatch', '네이티브 대화 송신 경계를 확인할 수 없습니다.');
 /** Exact native turn routes only. The caller owns the scoped vault and never retries a mutation. */
 export function nativeAgentMutationFetch(origin: string, fetchImpl: typeof fetch, check: () => Promise<void>): typeof fetch {
+  try {
+    const configured = new URL(origin);
+    if (configured.protocol !== 'https:' || origin !== configured.origin) throw invalid();
+  } catch { throw invalid(); }
   return (async (input, init) => {
+    // Capture the exact validated request before an asynchronous vault check can yield.
+    if (init) init = { method: init.method, headers: new Headers(init.headers), body: init.body,
+      credentials: init.credentials, redirect: init.redirect, cache: init.cache, signal: init.signal };
     init?.signal?.throwIfAborted();
     if (typeof input !== 'string' || !init || init.method !== 'POST' || typeof init.body !== 'string'
       || init.credentials !== 'omit' || init.redirect !== 'error' || init.cache !== 'no-store') throw invalid();

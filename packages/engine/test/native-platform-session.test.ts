@@ -770,7 +770,7 @@ test('Canonical turn mutations use one fresh POST proof per call and return only
       { input_text: 'hello', expected_state_version: 1, idempotency_key: 'request-1', origin_id: 'vscode-1' },
       { turn_id: TURN1, expected_state_version: 2 },
     ]);
-    const proofs = writes.map(({ init }) => (init.headers as Record<string, string>).DPoP);
+    const proofs = writes.map(({ init }) => new Headers(init.headers).get('dpop')!);
     const claims = proofs.map((proof) => JSON.parse(Buffer.from(proof.split('.')[1]!, 'base64url').toString()));
     assert.deepEqual(claims.map(({ htm }) => htm), ['POST', 'POST']);
     assert.deepEqual(claims.map(({ htu }) => htu), writes.map(({ url }) => url.toString()));

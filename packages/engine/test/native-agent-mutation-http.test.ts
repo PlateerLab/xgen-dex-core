@@ -21,6 +21,26 @@ function request(path: string, body: unknown, changes: RequestInit = {}): [strin
 const submitBody = { input_text: 'hello', expected_state_version: 3, idempotency_key: 'request-1', origin_id: 'vscode-1' };
 const stopBody = { turn_id: TURN, expected_state_version: 4 };
 
+test('mutation adapter requires an exact HTTPS origin and copies request fields before an async check', async () => {
+  for (const origin of ['http://app.example.test', `${ORIGIN}/`, `${ORIGIN}/path`, 'https://user@app.example.test']) {
+    assert.throws(() => nativeAgentMutationFetch(origin, globalThis.fetch, async () => {}),
+      (error: unknown) => error instanceof DexError && error.code === 'protocol_mismatch');
+  }
+  let release!: () => void; let enter!: () => void; let checks = 0;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const original = request(`/api/agentflow/agent-sessions/${SESSION}/turns`, submitBody);
+  const transport = nativeAgentMutationFetch(ORIGIN, (async (_input, init) => {
+    assert.equal(init!.method, 'POST'); assert.deepEqual(JSON.parse(String(init!.body)), submitBody);
+    assert.equal(new Headers(init!.headers).has('cookie'), false); assert.equal(init!.credentials, 'omit');
+    return Response.json({});
+  }) as typeof fetch, async () => { if (++checks === 1) { enter(); await waiting; } });
+  const pending = transport(...original); await entered;
+  original[1].method = 'DELETE'; original[1].body = '{}'; original[1].credentials = 'include';
+  (original[1].headers as Record<string, string>).Cookie = 'private=1'; release();
+  await (await pending).json();
+});
+
 test('mutation adapter forwards only exact Canonical POST routes, JSON and DPoP credentials', async () => {
   const calls: Array<{ input: string; init: RequestInit }> = []; let checks = 0;
   const fetchImpl = (async (input, init = {}) => {

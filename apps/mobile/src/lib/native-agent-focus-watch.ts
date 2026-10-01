@@ -7,6 +7,14 @@ import { MobileAgentTransportBusy } from './native-agent-http';
 export interface MobileAgentFocusSource {
   reconcileFocus(previous: ScopedAgentFocus | null, signal?: AbortSignal): Promise<AgentFocusRecoveryResult>;
 }
+export type MobileCanonicalUpdate<Value> =
+  | { type: 'reset' }
+  | { type: 'value'; value: Value; source: AgentFocusRecoveryResult['source']; hasMore: boolean }
+  | { type: 'reconnecting'; retryInMs: number }
+  | { type: 'stopped'; reason: 'cancelled' | 'authentication' | 'failed' };
+export interface MobileCanonicalWatchOptions {
+  intervalMs?: number; requestTimeoutMs?: number; maxReadSteps?: number; wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
 export type MobileAgentFocusUpdate =
   | { type: 'reset' }
   | { type: 'focus'; focus: AgentFocus; source: AgentFocusRecoveryResult['source'] }
@@ -36,16 +44,17 @@ function bounded(value: number, min: number, max: number): number {
   if (!Number.isSafeInteger(value) || value < min || value > max) throw new TypeError('Invalid Mobile watch interval'); return value;
 }
 /** Explicit foreground read-only polling. Each step reloads the vault and signs fresh proofs. */
-export function createMobileAgentFocusWatcher(source: MobileAgentFocusSource, options: {
-  intervalMs?: number; requestTimeoutMs?: number; wait?: (ms: number, signal: AbortSignal) => Promise<void>;
-} = {}) {
+export function createMobileCanonicalWatcher<State extends { authScope: string }, Value>(source: {
+  reconcile(previous: State | null, signal?: AbortSignal): Promise<{ state: State; source: AgentFocusRecoveryResult['source']; hasMore: boolean }>;
+}, publish: (state: State) => Value, signature: (state: State) => string, options: MobileCanonicalWatchOptions = {}) {
   const interval = bounded(options.intervalMs ?? 2000, 200, 60000);
   const timeout = bounded(options.requestTimeoutMs ?? 10000, 100, 60000);
+  const maxReadSteps = bounded(options.maxReadSteps ?? 1, 1, 10);
   const wait = options.wait ?? mobileFocusWait; let running = false;
   return {
-    async run(onUpdate: (update: MobileAgentFocusUpdate) => void, signal: AbortSignal, once = false): Promise<void> {
+    async run(onUpdate: (update: MobileCanonicalUpdate<Value>) => void, signal: AbortSignal, once = false): Promise<void> {
       if (running) throw new MobileFocusWatchError('busy'); running = true;
-      let previous: ScopedAgentFocus | null = null; let failures = 0; let busyAttempts = 0; let reconnecting = false;
+      let previous: State | null = null; let failures = 0; let busyAttempts = 0; let reconnecting = false; let readSteps = 0;
       let step: AbortController | null = null; const abort = () => step?.abort(signal.reason);
       signal.addEventListener('abort', abort, { once: true });
       try {
@@ -55,14 +64,14 @@ export function createMobileAgentFocusWatcher(source: MobileAgentFocusSource, op
           let timedOut = false; let pause = interval;
           const timer = setTimeout(() => { timedOut = true; control.abort(); }, timeout);
           try {
-            const result: AgentFocusRecoveryResult = await cancellable(source.reconcileFocus(previous, control.signal), control.signal);
+            const result: { state: State; source: AgentFocusRecoveryResult['source']; hasMore: boolean } = await cancellable(source.reconcile(previous, control.signal), control.signal);
             if (signal.aborted) break; control.signal.throwIfAborted();
             if (!previous || previous.authScope !== result.state.authScope || result.source === 'recovered' || reconnecting
-              || JSON.stringify(previous.focus) !== JSON.stringify(result.state.focus)) {
-              onUpdate({ type: 'focus', focus: { ...result.state.focus }, source: result.source });
+              || signature(previous) !== signature(result.state)) {
+              onUpdate({ type: 'value', value: publish(result.state), source: result.source, hasMore: result.hasMore });
             }
             previous = result.state; failures = 0; busyAttempts = 0; reconnecting = false;
-            if (once) return;
+            if (once && (!result.hasMore || ++readSteps >= maxReadSteps)) return;
             pause = result.hasMore ? 0 : interval;
           } catch (error) {
             if (signal.aborted) break;
@@ -88,4 +97,12 @@ export function createMobileAgentFocusWatcher(source: MobileAgentFocusSource, op
       } finally { signal.removeEventListener('abort', abort); step?.abort(); previous = null; running = false; }
     },
   };
+}
+
+export function createMobileAgentFocusWatcher(source: MobileAgentFocusSource, options: MobileCanonicalWatchOptions = {}) {
+  const watcher = createMobileCanonicalWatcher<ScopedAgentFocus, AgentFocus>({ reconcile: source.reconcileFocus.bind(source) },
+    (state) => ({ ...state.focus }), (state) => JSON.stringify(state.focus), options);
+  return { run: (onUpdate: (update: MobileAgentFocusUpdate) => void, signal: AbortSignal, once = false) => watcher.run((update) => {
+    if (update.type === 'value') onUpdate({ type: 'focus', focus: update.value, source: update.source }); else onUpdate(update);
+  }, signal, once) };
 }

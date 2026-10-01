@@ -6,9 +6,10 @@ import type { AgentFocusRecoveryResult, ScopedAgentFocus } from '@dex/protocol/a
 import { NativeAccountChanged, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import { createMobileDeviceKeys, mobileKeyThumbprint } from '../src/lib/native-device-key';
 import { createMobileSessionVault, mobileVaultScope, MobileVaultError, type MobilePlatformRecord } from '../src/lib/native-session-vault';
-import { createMobileAgentFetch, MobileAgentTransportUnavailable } from '../src/lib/native-agent-http';
+import { createMobileAgentFetch, MobileAgentTransportUnavailable, MobileAgentResponseInvalid } from '../src/lib/native-agent-http';
 import { createMobileAgentFocusSource, MobileFocusBusy } from '../src/lib/native-agent-focus';
 import { createMobileAgentFocusWatcher, mobileFocusMessage, mobileFocusWait, MobileFocusWatchError, type MobileAgentFocusUpdate } from '../src/lib/native-agent-focus-watch';
+import { createMobileAgentConversationWatcher } from '../src/lib/native-agent-conversation-watch';
 
 const origin = 'https://mobile.example.test'; const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const key = pair.publicKey.export({ format: 'jwk' }); const publicKey = { kty: 'EC', crv: 'P-256', x: key.x!, y: key.y! } as const;
@@ -204,4 +205,86 @@ test('concurrent run/source are refused; restarting after stop discards cursor, 
 test('real timer wait supports already aborted signal and active cancellation without waiting for interval', async () => {
   const first = new AbortController(); first.abort(); await assert.rejects(mobileFocusWait(30000, first.signal));
   const second = new AbortController(); const wait = mobileFocusWait(30000, second.signal); second.abort(); await assert.rejects(wait);
+});
+
+function conversationFixture() {
+  const f = fixture(); const agentSid = randomUUID(); const turnId = randomUUID(); const focusEventId = randomUUID(); let sequence = 3; let version = 2;
+  let message = { turn_id: turnId, sequence: 2, status: 'completed', input_text: 'question', output_text: 'answer', source: 'user', content_complete: true };
+  let messageRead: (() => Promise<void>) | null = null;
+  f.handle(async (path) => {
+    let value: unknown;
+    if (path.includes('agent-state')) value = { active_agent_session_id: agentSid, version: 1, event_id: focusEventId };
+    else if (path.includes('agent-events')) value = { events: [], next_cursor: 1, snapshot_version: 1, has_more: false };
+    else if (path.endsWith('/snapshot')) value = { id: agentSid, workflow_id: 'workflow', title: 'Shared', current_sequence: sequence, state_version: version,
+      message_history_complete: false, latest_turn: { id: turnId, status: sequence === 3 ? 'completed' : 'running', accepted_sequence: 1 } };
+    else if (path.includes('/messages?')) {
+      await messageRead?.(); const after = Number(new URL(`${origin}${path}`).searchParams.get('after_sequence')); const selected = message.sequence > after ? [message] : [];
+      value = { messages: selected.map((m) => ({ ...m, execution_io: 'private-IO' })), next_cursor: selected.at(-1)?.sequence ?? after,
+        snapshot_sequence: sequence, state_version: version, has_more: false };
+    } else { const after = Number(new URL(`${origin}${path}`).searchParams.get('after_sequence'));
+      value = { events: Array.from({ length: sequence - after }, (_, i) => ({ event_id: randomUUID(), sequence: after + i + 1,
+        event_type: 'turn.accepted', created_at: new Date().toISOString() })), next_cursor: sequence, snapshot_sequence: sequence, state_version: version, has_more: false }; }
+    return { status: 200, body: JSON.stringify(value) };
+  });
+  return { ...f, agentSid, turnId, advance() { sequence = 4; version = 3; }, nextMessage() { sequence = 6; version = 4; message = { ...message, turn_id: randomUUID(), sequence: 5 }; },
+    beforeMessage(read: () => Promise<void>) { messageRead = read; } };
+}
+test('production conversation source signs messages/snapshot/events and retains independent cursors across rotation', async () => {
+  const f = conversationFixture(); const first = await f.source.reconcileConversation(null);
+  assert.equal(first.state.messageCursor, 2); assert.equal(first.state.eventCursor?.sequence, 3); assert.equal(first.state.messages.length, 1);
+  assert.equal(JSON.stringify(first).includes('private-IO'), false); const oldToken = f.record().accessToken; f.put(f.makeRecord()); f.advance();
+  const replay = await f.source.reconcileConversation(first.state); assert.equal(replay.state.authScope, first.state.authScope);
+  assert.equal(replay.state.snapshot?.latest_turn?.status, 'running'); assert.equal(replay.state.eventCursor?.sequence, 4); assert.equal(replay.state.messageCursor, 2);
+  assert.notEqual(f.calls.at(-1)?.token, oldToken); f.nextMessage(); const next = await f.source.reconcileConversation(replay.state);
+  assert.deepEqual(next.state.messages.map((m) => m.sequence), [2, 5]);
+  for (const call of f.calls) { const claims = JSON.parse(Buffer.from(call.dpop.split('.')[1]!, 'base64url').toString());
+    assert.equal(claims.htu, `${origin}${call.path.split('?')[0]}`); assert.equal(claims.ath, createHash('sha256').update(call.token).digest('base64url')); }
+});
+test('conversation watcher projects no credentials/cursors and callback mutation cannot alter internal replay', async () => {
+  const f = conversationFixture(); const stop = new AbortController(); let waits = 0; const emitted: unknown[] = [];
+  const watcher = createMobileAgentConversationWatcher(f.source, { wait: async () => { if (++waits === 1) f.advance(); else stop.abort(); } });
+  await watcher.run((update) => { emitted.push(JSON.parse(JSON.stringify(update))); if (update.type === 'value') {
+    update.value.messages[0]!.output_text = 'callback-mutation'; update.value.snapshot!.latest_turn!.status = 'failed';
+  } }, stop.signal);
+  const publicText = JSON.stringify(emitted); assert.equal(publicText.includes('authScope'), false); assert.equal(publicText.includes('messageCursor'), false);
+  assert.equal(publicText.includes('callback-mutation'), false); assert.equal(publicText.includes(f.record().accessToken!), false); assert.equal(publicText.includes('private-IO'), false);
+  assert.equal(emitted.filter((u: any) => u.type === 'value').length, 2);
+});
+test('late message pages after account/background/cancel never reach UI or leave a reusable cursor', async () => {
+  for (const change of ['account', 'background', 'cancel']) {
+    const f = conversationFixture(); const entered = deferred<void>(); const late = deferred<void>(); const stop = new AbortController();
+    f.beforeMessage(async () => { entered.resolve(); await late.promise; }); const updates: any[] = [];
+    const running = createMobileAgentConversationWatcher(f.source).run((u) => updates.push(u), stop.signal, true); await entered.promise;
+    if (change === 'account') f.change({ ...f.initial, userId: '999' }); else if (change === 'background') f.source.dispose(); else stop.abort();
+    late.resolve(); if (change === 'cancel') await running; else await assert.rejects(running, MobileFocusWatchError);
+    assert.equal(updates.some((u) => u.type === 'value'), false); assert.equal(updates.at(-1)?.type, 'stopped');
+  }
+});
+test('durable pending rotation stops conversation polling before using any cached credentials', async () => {
+  const f = conversationFixture(); let reads = 0; const updates: any[] = [];
+  const watcher = createMobileAgentConversationWatcher(f.source, { wait: async () => {
+    reads = f.calls.length; f.values.set(`${f.scopeKey}-journal`, JSON.stringify({ ...f.record(), generation: randomUUID(), phase: 'refreshing', accessToken: null, refreshToken: null, accessExpiresAt: null }));
+  } });
+  await assert.rejects(watcher.run((u) => updates.push(u), new AbortController().signal), MobileFocusWatchError);
+  assert.equal(f.calls.length, reads); assert.deepEqual(updates.at(-1), { type: 'stopped', reason: 'authentication' });
+});
+test('native invalid responses stop replay without snapshot retry or hiding the permanent failure', async () => {
+  const f = conversationFixture(); const first = await f.source.reconcileConversation(null); const before = f.calls.length;
+  f.native.readRequest = async () => { throw { code: 'mobile_transport_response_invalid', message: 'private' }; };
+  await assert.rejects(f.source.reconcileConversation(first.state), MobileAgentResponseInvalid); assert.equal(f.calls.length, before);
+  let calls = 0; const updates: unknown[] = []; const watcher = createMobileAgentConversationWatcher({ reconcileConversation: async () => { calls++; throw new MobileAgentResponseInvalid(); } },
+    { wait: async () => assert.fail('permanent error must not retry') });
+  await assert.rejects(watcher.run((u) => updates.push(u), new AbortController().signal), MobileFocusWatchError); assert.equal(calls, 1);
+  assert.deepEqual(updates, [{ type: 'reset' }, { type: 'stopped', reason: 'failed' }]);
+});
+test('manual conversation read resumes backlog within ten bounded steps and stops at the limit', async () => {
+  const f = conversationFixture(); const initial = await f.source.reconcileConversation(null);
+  for (const backlog of [3, 20]) {
+    let calls = 0; const pauses: number[] = []; const cursors: number[] = [];
+    const watcher = createMobileAgentConversationWatcher({ reconcileConversation: async (old) => {
+      calls++; cursors.push(old?.messageCursor ?? 0); return { state: { ...initial.state, messageCursor: calls }, source: 'replay', hasMore: calls < backlog };
+    } }, { wait: async (ms) => { pauses.push(ms); } });
+    await watcher.run(() => undefined, new AbortController().signal, true);
+    assert.equal(calls, Math.min(backlog, 10)); assert.deepEqual(cursors, Array.from({ length: calls }, (_, i) => i)); assert.ok(pauses.every((ms) => ms === 0));
+  }
 });

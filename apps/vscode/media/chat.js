@@ -8,6 +8,7 @@
     check: ['M3.5 8.5l3 3 6-7'],
     chevron: ['M4.5 6.5l3.5 3.5 3.5-3.5'],
     model: ['M5 5h6v6H5z', 'M6.5 2.5v2M9.5 2.5v2M6.5 11.5v2M9.5 11.5v2M2.5 6.5h2M2.5 9.5h2M11.5 6.5h2M11.5 9.5h2'],
+    thinking: ['M6 12h4M6.7 14h2.6', 'M8 2a4 4 0 0 0-2.4 7.2c.3.2.4.5.4.8v.5h4V10c0-.3.1-.6.4-.8A4 4 0 0 0 8 2z'],
   };
   const icon = (name, size = 14) => {
     const svg = document.createElementNS(SVG_NS, 'svg');
@@ -73,6 +74,10 @@
     modelIcon: byId('model-icon'),
     modelLabel: byId('model-label'),
     modelChevron: byId('model-chevron'),
+    thinkingChip: byId('thinking-chip'),
+    thinkingIcon: byId('thinking-icon'),
+    thinkingLabel: byId('thinking-label'),
+    thinkingChevron: byId('thinking-chevron'),
     send: byId('send'),
     cancel: byId('cancel'),
     settingsBack: byId('settings-back'),
@@ -753,6 +758,7 @@
     elements.send.disabled = !!state.running;
     elements.attach.disabled = !!state.running;
     renderModel();
+    renderThinking();
     renderAttachments();
     elements.changeAgent.disabled = !!state.running;
     elements.cancel.classList.toggle('hidden', !state.running);
@@ -775,6 +781,27 @@
     elements.modelChip.dataset.tip = model.locked
       ? '고정된 에이전트는 모델을 바꿀 수 없습니다'
       : '이 대화의 모델, 다음 답변부터 적용됩니다';
+  }
+
+  /** 모델 칩 오른쪽 생각 칩 — "생각: 높게". 조절할 수 없는 모델은 눌리지 않는 "생각 조절 불가". */
+  function renderThinking() {
+    const thinking = state.thinking;
+    elements.thinkingChip.classList.toggle('hidden', !thinking);
+    if (!thinking) return;
+    if (!elements.thinkingIcon.firstChild) elements.thinkingIcon.append(icon('thinking', 12));
+    elements.thinkingLabel.textContent = thinking.label;
+    const fixed = !thinking.supported || !!thinking.locked;
+    elements.thinkingChevron.replaceChildren(...(fixed ? [] : [icon('chevron', 11)]));
+    elements.thinkingChip.disabled = fixed || !!thinking.saving;
+    elements.thinkingChip.classList.toggle('locked', !!thinking.locked);
+    elements.thinkingChip.classList.toggle('unsupported', !thinking.supported);
+    elements.thinkingChip.classList.toggle('saving', !!thinking.saving);
+    elements.thinkingChip.setAttribute('aria-label', thinking.label);
+    elements.thinkingChip.dataset.tip = !thinking.supported
+      ? '이 모델은 생각을 조절할 수 없습니다'
+      : thinking.locked
+        ? '고정된 에이전트는 생각 설정을 바꿀 수 없습니다'
+        : '이 대화의 생각 정도, 다음 답변부터 적용됩니다';
   }
 
   function roleChip(label) {
@@ -937,6 +964,7 @@
   elements.send.addEventListener('click', send);
   elements.attach.addEventListener('click', () => post('attach'));
   elements.modelChip.addEventListener('click', () => post('pickModel'));
+  elements.thinkingChip.addEventListener('click', () => post('pickThinking'));
   elements.cancel.addEventListener('click', () => post('cancel'));
   elements.input.addEventListener('compositionstart', () => {
     composing = true;

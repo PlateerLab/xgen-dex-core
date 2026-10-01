@@ -72,6 +72,8 @@ export interface InitializeResult {
     ssh?: boolean;
     /** conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기(다음 답변부터). */
     conversationModel?: boolean;
+    /** conversation/thinking/set(·/reset) — 대화 도중 생각(추론) 값 바꾸기(지금 모델이 받는 값만). */
+    conversationThinking?: boolean;
   };
 }
 

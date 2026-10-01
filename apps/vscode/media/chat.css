@@ -1181,6 +1181,19 @@ textarea:disabled {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* 생각 칩 — 모델 칩 오른쪽. 함께 있으면 둘이 줄을 나눠 쓴다. */
+.model-chip:has(+ .thinking-chip:not(.hidden)) {
+  max-width: 42%;
+  margin-right: 0;
+}
+.thinking-chip {
+  max-width: 30%;
+  margin-right: auto;
+}
+.thinking-chip.unsupported {
+  border-style: dashed;
+  color: var(--vscode-descriptionForeground);
+}
 
 /*
  * 말풍선(data-tip) — 아이콘만 있는 버튼의 이름. 브라우저 기본 title 말풍선 대신

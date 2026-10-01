@@ -51,7 +51,7 @@ import { notifyAnswer } from './answer-notice';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
 import { FolderPill, FolderSheet } from './folder-sheet';
-import { ModelChip, ModelSheet, useConversationModel } from './model-picker';
+import { ModelChip, ModelSheet, ThinkingChip, ThinkingSheet, useConversationModel } from './model-picker';
 import { folderStore, useChatFolderRemote, useChatFolders } from '../lib/folder-store';
 import { toWire } from '../lib/mobile-folders';
 import {
@@ -152,6 +152,7 @@ export function ChatView({
   // 이 대화의 모델 — 입력창 위 칩과 아래에서 올라오는 목록(다음 답변부터, 세션 재시작 없음).
   const model = useConversationModel(client, agent?.workflowId ?? '', interactionId);
   const [modelSheet, setModelSheet] = useState(false);
+  const [thinkingSheet, setThinkingSheet] = useState(false);
   const [folderSheet, setFolderSheet] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [wsState, setWsState] = useState<ChatWsState>('closed');
@@ -712,7 +713,11 @@ export function ChatView({
           paddingBottom: 14,
         }}
       >
-        <ModelChip state={model.state} saving={model.saving} onPress={() => setModelSheet(true)} />
+        {/* 모델 칩, 그 오른쪽이 생각 칩 — 둘 다 이 대화에만 붙는다. */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: model.state.supported ? 6 : 0, maxWidth: '100%' }}>
+          <ModelChip state={model.state} saving={model.saving} onPress={() => setModelSheet(true)} />
+          <ThinkingChip state={model.state} saving={model.saving} onPress={() => setThinkingSheet(true)} />
+        </View>
         {attachments.length > 0 && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
             {attachments.map((item) => (
@@ -950,6 +955,16 @@ export function ChatView({
           void model.choose(choice);
         }}
         onClose={() => setModelSheet(false)}
+      />
+      <ThinkingSheet
+        state={model.state}
+        visible={thinkingSheet}
+        error={model.error}
+        onPick={(value) => {
+          setThinkingSheet(false);
+          void model.chooseThinking(value);
+        }}
+        onClose={() => setThinkingSheet(false)}
       />
 
       {logFor && (

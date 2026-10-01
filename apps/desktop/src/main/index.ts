@@ -95,6 +95,7 @@ import { stripFrameAncestorsFromHeaders } from './artifact-csp';
 import { ChatFolderStore } from './chat-folders';
 import { localFoldersForRequest, normalizeLocalFolders } from '@dex/engine/local-folders';
 import { parseConversationFolders } from '@dex/protocol/conversation-folders';
+import type { ThinkingValue } from '@dex/protocol/conversation-model';
 import { ChatFolderSync } from './chat-folder-sync';
 import { FolderFsError, folderFsCall } from './folder-fs';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
@@ -2494,6 +2495,13 @@ ipcMain.handle(
 );
 ipcMain.handle(CHANNELS.conversationModelReset, (_e, iid: string, wf: string) =>
   getClient().conversationModel.reset(String(iid ?? ''), String(wf ?? '')),
+);
+// 대화의 생각(추론) 값 — 모델 칩 오른쪽 선택기. 고를 수 있는 값은 지금 모델이 받는 것만(서버가 준다).
+ipcMain.handle(CHANNELS.conversationThinkingSet, (_e, iid: string, wf: string, thinking: string) =>
+  getClient().conversationModel.setThinking(String(iid ?? ''), String(wf ?? ''), String(thinking ?? 'auto') as ThinkingValue),
+);
+ipcMain.handle(CHANNELS.conversationThinkingReset, (_e, iid: string, wf: string) =>
+  getClient().conversationModel.resetThinking(String(iid ?? ''), String(wf ?? '')),
 );
 // 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
 ipcMain.handle(CHANNELS.guardDisclaimer, () => getClient().guardrails.disclaimerEnabled());

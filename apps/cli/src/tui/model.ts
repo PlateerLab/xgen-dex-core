@@ -1,5 +1,5 @@
 import type { ProfileSummary } from '@dex/engine';
-import type { ConversationModelState } from '@dex/protocol';
+import type { ConversationModelState, ThinkingValue } from '@dex/protocol';
 import type {
   AgentCreateOptions,
   AgentListQuery,
@@ -101,6 +101,13 @@ export interface TuiEngine {
     workflowId: string,
     interactionId: string,
     choice: { provider: string; model: string },
+    profile?: string,
+  ): Promise<ConversationModelState>;
+  /** 이 대화의 생각(추론) 값을 바꾼다 — 지금 모델이 받는 값만(/thinking), 다음 답변부터. */
+  setConversationThinking?(
+    workflowId: string,
+    interactionId: string,
+    thinking: ThinkingValue,
     profile?: string,
   ): Promise<ConversationModelState>;
   /** 다른 화면(웹·앱·VS Code)에서 이 대화의 모델을 바꿨다. */

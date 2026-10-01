@@ -122,6 +122,8 @@ export const CHANNELS = {
   conversationModelGet: 'conversation-model:get',
   conversationModelSet: 'conversation-model:set',
   conversationModelReset: 'conversation-model:reset',
+  conversationThinkingSet: 'conversation-model:thinking-set',
+  conversationThinkingReset: 'conversation-model:thinking-reset',
   /** 다른 화면이 이 대화의 모델을 바꿨다 — main → renderer (대화 id, 소식 원문). */
   conversationModelChanged: 'conversation-model:changed',
   /** 채팅 안전 장치 — 면책 문구 설정 · 민감정보 검사. */

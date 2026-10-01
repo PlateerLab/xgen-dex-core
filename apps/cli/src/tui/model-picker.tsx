@@ -2,10 +2,14 @@ import { useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import {
   MODEL_PICKER_TEXT,
+  THINKING_PICKER_TEXT,
   orderedChoices,
   sameModel,
+  selectedThinking,
+  thinkingValueLabel,
   type ConversationModelState,
   type ModelChoice,
+  type ThinkingValue,
 } from '@dex/protocol';
 import { Footer } from './components';
 
@@ -58,6 +62,50 @@ export function ModelPicker(props: {
                 {isCurrent ? `  (${MODEL_PICKER_TEXT.current})` : ''}
               </Text>
             </Box>
+          );
+        })}
+      </Box>
+      <Footer text="↑↓ 이동 · Enter 선택 · Esc 닫기" />
+    </Box>
+  );
+}
+
+/**
+ * 생각(추론) 고르기 (/thinking) — 지금 모델이 받는 값만(서버가 준 선택지). 맨 위 "기본" 은 에이전트 설정을 따른다.
+ */
+export function ThinkingPicker(props: {
+  state: ConversationModelState;
+  height: number;
+  onPick: (value: ThinkingValue) => void;
+  onCancel: () => void;
+}): React.ReactNode {
+  const thinking = props.state.thinking;
+  const options = thinking?.options ?? [];
+  const pressed = thinking ? selectedThinking(thinking) : 'auto';
+  const [cursor, setCursor] = useState(Math.max(0, options.indexOf(pressed)));
+
+  useInput((_input, key) => {
+    if (key.escape) props.onCancel();
+    else if (key.upArrow) setCursor((current) => Math.max(0, current - 1));
+    else if (key.downArrow) setCursor((current) => Math.min(options.length - 1, current + 1));
+    else if (key.return && options[cursor]) props.onPick(options[cursor]);
+  });
+
+  return (
+    <Box flexDirection="column" flexGrow={1} height={props.height} borderStyle="double" borderColor="magenta" paddingX={1}>
+      <Text bold>{THINKING_PICKER_TEXT.title}</Text>
+      <Text dimColor>
+        {thinking && !thinking.canDisable ? `${THINKING_PICKER_TEXT.alwaysOn}. ` : ''}
+        {THINKING_PICKER_TEXT.nextTurn}
+      </Text>
+      <Box flexDirection="column" marginTop={1} flexGrow={1} overflow="hidden">
+        {options.map((value, index) => {
+          const isOn = value === pressed;
+          return (
+            <Text key={value} color={index === cursor ? 'magentaBright' : isOn ? 'green' : undefined} bold={isOn} wrap="truncate-end">
+              {index === cursor ? '›' : ' '} {isOn ? '✓' : ' '} {thinkingValueLabel(value)}
+              {value === 'auto' ? `  (${THINKING_PICKER_TEXT.autoHint})` : ''}
+            </Text>
           );
         })}
       </Box>

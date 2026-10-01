@@ -9,13 +9,17 @@ import {
   sameModel,
   type ConversationModelState,
   type ModelChoice,
+  THINKING_PICKER_TEXT,
+  selectedThinking,
+  thinkingChipLabel,
+  type ThinkingValue,
 } from '@dex/protocol';
 import type { Agent, ChatAttachmentDescriptor, Conversation, ConversationSnapshot } from '@dex/engine';
 import { chatReducer, initialChatState, type ChatMessage } from './chat-state';
 import { useMeasured } from './measure';
 import { maximumScroll, renderTranscript, viewportOf } from './transcript';
 import { CommandPalette, type PaletteAction } from './command-palette';
-import { ModelPicker } from './model-picker';
+import { ModelPicker, ThinkingPicker } from './model-picker';
 import { Footer, Header } from './components';
 import { HistoryScreen } from './history-screen';
 import { StartPanel } from './start-panel';
@@ -68,6 +72,8 @@ function ChatPane(props: {
   agent?: AgentRef;
   /** 이 대화의 지금 모델 — "제공자: 모델". Ctrl+O 로 바꾼다. */
   model?: string;
+  /** 모델 오른쪽 — `생각: 높게` 또는 `생각 조절 불가`. */
+  thinking?: string;
   messages: ChatMessage[];
   status?: string;
   scrollUp: number;
@@ -95,6 +101,12 @@ function ChatPane(props: {
           <Text wrap="truncate-end">
             <Text color="magenta"> · {props.model}</Text>
             <Text dimColor> Ctrl+O</Text>
+          </Text>
+        ) : null}
+        {props.thinking ? (
+          <Text wrap="truncate-end">
+            <Text color="magenta"> · {props.thinking}</Text>
+            <Text dimColor> /thinking</Text>
           </Text>
         ) : null}
         {view.below > 0 ? <Text dimColor> · ↓{view.below}줄</Text> : null}
@@ -240,6 +252,7 @@ export function Dashboard(props: {
    */
   const [model, setModel] = useState<ConversationModelState>(UNSUPPORTED_MODEL_STATE);
   const [modelPicker, setModelPicker] = useState(false);
+  const [thinkingPicker, setThinkingPicker] = useState(false);
   const draftInteractionId = useRef(randomUUID());
   const modelTarget = chat.interactionId ?? attachmentInteractionId ?? draftInteractionId.current;
   const modelTargetRef = useRef(modelTarget);
@@ -315,6 +328,38 @@ export function Dashboard(props: {
     }
     setPalette(false);
     setModelPicker(true);
+  };
+
+  const openThinkingPicker = (): void => {
+    if (!selected) return;
+    const thinking = model.supported ? model.thinking : null;
+    if (!thinking) {
+      setAttachmentNotice('이 Agent는 생각 정도를 고를 수 없습니다.');
+      return;
+    }
+    if (!thinking.supported) {
+      setAttachmentNotice(THINKING_PICKER_TEXT.unsupportedHint);
+      return;
+    }
+    if (model.locked) {
+      setAttachmentNotice(THINKING_PICKER_TEXT.locked);
+      return;
+    }
+    setPalette(false);
+    setThinkingPicker(true);
+  };
+
+  const chooseThinking = async (value: ThinkingValue): Promise<void> => {
+    setThinkingPicker(false);
+    const thinking = model.thinking;
+    if (!selected || !thinking || !props.engine.setConversationThinking || value === selectedThinking(thinking)) return;
+    try {
+      const next = await props.engine.setConversationThinking(selected.workflowId, modelTarget, value, props.session.profile);
+      setModel(next);
+      setAttachmentNotice(`${thinkingChipLabel(next.thinking)} · ${THINKING_PICKER_TEXT.nextTurn}`);
+    } catch (error) {
+      setAttachmentNotice(`${THINKING_PICKER_TEXT.failed}: ${publicError(error).message}`);
+    }
   };
 
   const chooseModel = async (choice: ModelChoice): Promise<void> => {
@@ -580,6 +625,11 @@ export function Dashboard(props: {
       openModelPicker();
       return;
     }
+    if (text === '/thinking') {
+      setInput('');
+      openThinkingPicker();
+      return;
+    }
     if (text === '/attachments') {
       setAttachmentNotice(attachments.length ? attachments.map((a) => a.name).join(', ') : '첨부된 파일이 없습니다.');
       setInput('');
@@ -682,13 +732,16 @@ export function Dashboard(props: {
     },
     // 갈림길·팔레트·이력 화면이 떠 있으면 그 화면이 키를 갖는다 — 여기서도 받으면
     // 방향키 하나가 두 곳에서 움직인다.
-    { isActive: !palette && !history && !start && !creatingAgent && !modelPicker },
+    { isActive: !palette && !history && !start && !creatingAgent && !modelPicker && !thinkingPicker },
   );
 
   const paletteActions: PaletteAction[] = [
     { id: 'new', label: '새 대화', run: newConversation },
     ...(model.supported && model.current && !model.locked
       ? [{ id: 'model', label: `모델 바꾸기 (${model.current.label})`, run: openModelPicker }]
+      : []),
+    ...(model.supported && model.thinking?.supported && !model.locked
+      ? [{ id: 'thinking', label: `생각 바꾸기 (${thinkingChipLabel(model.thinking)})`, run: openThinkingPicker }]
       : []),
       {
         id: 'history',
@@ -735,6 +788,15 @@ export function Dashboard(props: {
           setCreatingAgent(false);
           openNewChat(agent);
         }}
+      />
+    );
+  } else if (thinkingPicker) {
+    body = (
+      <ThinkingPicker
+        state={model}
+        height={bodyHeight}
+        onPick={(value) => void chooseThinking(value)}
+        onCancel={() => setThinkingPicker(false)}
       />
     );
   } else if (modelPicker) {
@@ -787,6 +849,7 @@ export function Dashboard(props: {
         <ChatPane
           agent={selected}
           model={model.supported ? model.current?.label : undefined}
+          thinking={model.supported && model.thinking ? thinkingChipLabel(model.thinking) : undefined}
           messages={chat.messages}
           status={chat.status}
           scrollUp={scrollUp}

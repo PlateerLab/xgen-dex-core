@@ -5,18 +5,26 @@
  * 모델로 돈다 — 다음 답변부터, 세션을 다시 시작하지 않는다. 다른 화면(웹·PC)에서 바꿔도 곧바로
  * 따라간다(대화 소켓의 `model` 소식). 고정된 에이전트는 보이기만 한다. 규칙은 데스크톱과 같다
  * (@dex/protocol conversation-model).
+ *
+ * 모델 칩 오른쪽은 생각(추론) 칩이다. 고를 수 있는 값은 **지금 모델이 받는 것만** 서버가 준다 —
+ * 강도·켜기/끄기, 조절할 수 없는 모델은 눌리지 않는 "생각 조절 불가" 칩.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   MODEL_PICKER_TEXT,
+  THINKING_PICKER_TEXT,
   UNSUPPORTED_MODEL_STATE,
   applyModelNotice,
   orderedChoices,
   sameModel,
+  selectedThinking,
+  thinkingChipLabel,
+  thinkingValueLabel,
   type ConversationModelState,
   type ModelChoice,
+  type ThinkingValue,
 } from '@dex/protocol';
 import type { XgenMobileClient } from '../lib/xgen';
 import { friendlyError } from '../lib/errors';
@@ -60,7 +68,155 @@ export function useConversationModel(client: XgenMobileClient, workflowId: strin
     [client, interactionId, workflowId, state.current],
   );
 
-  return { state, saving, error, choose, notice };
+  const chooseThinking = useCallback(
+    async (value: ThinkingValue) => {
+      const thinking = state.thinking;
+      if (!thinking || value === selectedThinking(thinking)) return;
+      setSaving(true);
+      setError('');
+      try {
+        setState(await client.api.conversationModel.setThinking(interactionId, workflowId, value));
+      } catch (e) {
+        setError(friendlyError(e, THINKING_PICKER_TEXT.failed));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [client, interactionId, workflowId, state.thinking],
+  );
+
+  return { state, saving, error, choose, chooseThinking, notice };
+}
+
+/** 모델 칩 오른쪽 — 지금 생각 값. 조절할 수 없는 모델은 눌리지 않는 "생각 조절 불가". */
+export function ThinkingChip({
+  state,
+  saving,
+  onPress,
+}: {
+  state: ConversationModelState;
+  saving: boolean;
+  onPress: () => void;
+}): React.ReactElement | null {
+  const p = useP();
+  const thinking = state.thinking;
+  if (!state.supported || !thinking) return null;
+  const label = thinkingChipLabel(thinking);
+  const disabled = !thinking.supported || state.locked || saving;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={
+        !thinking.supported
+          ? THINKING_PICKER_TEXT.unsupportedHint
+          : state.locked
+            ? THINKING_PICKER_TEXT.locked
+            : '눌러서 이 대화의 생각 정도를 고릅니다'
+      }
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        flexShrink: 1,
+        paddingHorizontal: 9,
+        paddingVertical: 4,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderStyle: thinking.supported ? 'solid' : 'dashed',
+        borderColor: p.border,
+        backgroundColor: p.panel,
+        opacity: state.locked ? 0.7 : 1,
+      }}
+    >
+      <Ionicons name="bulb-outline" size={13} color={p.muted} />
+      <Text numberOfLines={1} style={{ color: thinking.supported ? p.text : p.muted, fontSize: 12, fontWeight: '600', flexShrink: 1 }}>
+        {label}
+      </Text>
+      {thinking.supported && !state.locked ? <Ionicons name="chevron-down" size={12} color={p.muted} /> : null}
+    </Pressable>
+  );
+}
+
+/** 아래에서 올라오는 생각 값 목록 — 지금 모델이 받는 값만. */
+export function ThinkingSheet({
+  state,
+  visible,
+  error,
+  onPick,
+  onClose,
+}: {
+  state: ConversationModelState;
+  visible: boolean;
+  error: string;
+  onPick: (value: ThinkingValue) => void;
+  onClose: () => void;
+}): React.ReactElement | null {
+  const p = useP();
+  const thinking = state.thinking;
+  if (!thinking || !thinking.supported) return null;
+  const pressed = selectedThinking(thinking);
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }} accessibilityLabel="닫기" onPress={onClose} />
+      <View
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: p.panel,
+          borderTopLeftRadius: 18,
+          borderTopRightRadius: 18,
+          borderWidth: 1,
+          borderColor: p.border,
+          padding: 16,
+          paddingBottom: 28,
+        }}
+      >
+        <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: p.border, alignSelf: 'center', marginBottom: 10 }} />
+        <Text style={{ color: p.text, fontSize: 16, fontWeight: '800' }}>{THINKING_PICKER_TEXT.title}</Text>
+        <Text style={{ color: p.muted, fontSize: 13, marginTop: 4, marginBottom: 8 }}>
+          {thinking.canDisable ? THINKING_PICKER_TEXT.nextTurn : `${THINKING_PICKER_TEXT.alwaysOn}. ${THINKING_PICKER_TEXT.nextTurn}`}
+        </Text>
+        {thinking.options.map((value, i) => {
+          const isOn = value === pressed;
+          return (
+            <View key={value}>
+              {i === 1 ? <View style={{ height: 1, backgroundColor: p.border, marginVertical: 4 }} /> : null}
+              <Pressable
+                onPress={() => onPick(value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isOn }}
+                accessibilityLabel={thinkingValueLabel(value)}
+                style={{
+                  minHeight: TAP,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                  paddingHorizontal: 8,
+                  borderRadius: 10,
+                  backgroundColor: isOn ? alpha(p.primary, 10) : 'transparent',
+                }}
+              >
+                <View style={{ width: 18 }}>{isOn ? <Ionicons name="checkmark" size={17} color={p.primary} /> : null}</View>
+                <Text style={{ flex: 1, color: p.text, fontSize: 14, fontWeight: isOn ? '800' : '500' }}>
+                  {thinkingValueLabel(value)}
+                </Text>
+                {value === 'auto' ? (
+                  <Text style={{ color: p.muted, fontSize: 11.5 }}>{THINKING_PICKER_TEXT.autoHint}</Text>
+                ) : null}
+              </Pressable>
+            </View>
+          );
+        })}
+        {error ? <Text style={{ color: p.danger, fontSize: 12.5, marginTop: 10 }}>{error}</Text> : null}
+      </View>
+    </Modal>
+  );
 }
 
 /** 입력창 위의 칩 — 지금 모델. 누르면 목록. */
@@ -86,12 +242,10 @@ export function ModelChip({
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        alignSelf: 'flex-start',
         gap: 5,
-        maxWidth: '100%',
+        flexShrink: 1,
         paddingHorizontal: 9,
         paddingVertical: 4,
-        marginBottom: 6,
         borderRadius: 8,
         borderWidth: 1,
         borderColor: p.border,

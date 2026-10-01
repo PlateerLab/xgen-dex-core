@@ -7,6 +7,15 @@ const expectedAuthorization = "Bearer fixture-token_123~safe";
 const expectedDpopAuthorization = "DPoP fixture.access.token";
 const expectedDpop = "fixture.header.signature";
 const statusBase = "/api/auth/platform-devices/native/mobile/registration/status/";
+const canonicalSession = "00000000-0000-4000-8000-000000000001";
+const canonicalReads = new Set([
+  "/api/agentflow/me/agent-state",
+  "/api/agentflow/me/agent-events?after_sequence=9007199254740991&limit=200",
+  "/api/agentflow/me/agent-sessions?limit=100",
+  `/api/agentflow/me/agent-sessions?limit=20&before_id=${canonicalSession}`,
+  `/api/agentflow/agent-sessions/${canonicalSession}/snapshot`,
+  `/api/agentflow/agent-sessions/${canonicalSession}/events?after_sequence=0&limit=1`,
+]);
 
 const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }, (request, response) => {
   const chunks = [];
@@ -90,6 +99,22 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         request.headers.dpop !== expectedDpop || request.headers["content-type"] !== "application/json" ||
         body !== '{"password":"fixture-password"}') { response.writeHead(400); response.end("bad delete"); return; }
       response.writeHead(204); response.end(); return;
+    }
+    if (request.url === "/api/agentflow/me/agent-events?after_sequence=7&limit=1") {
+      if (request.method !== "GET" || request.headers.authorization !== expectedDpopAuthorization ||
+        request.headers.dpop !== expectedDpop || request.headers["content-type"] !== undefined || body !== "") {
+        response.writeHead(400); response.end("bad delayed read"); return;
+      }
+      setTimeout(() => { if (!response.destroyed) { response.writeHead(200); response.end("late"); } }, 5000); return;
+    }
+    if (canonicalReads.has(request.url)) {
+      if (request.method !== "GET" || request.headers.authorization !== expectedDpopAuthorization ||
+        request.headers.dpop !== expectedDpop || request.headers["content-type"] !== undefined ||
+        request.headers.cookie !== undefined || body !== "") {
+        response.writeHead(400); response.end("bad canonical read"); return;
+      }
+      response.writeHead(200, { "Set-Cookie": "canonical-secret=must-not-return", "Content-Type": "application/json" });
+      response.end('{"read":true}'); return;
     }
     response.writeHead(404); response.end("missing");
   });

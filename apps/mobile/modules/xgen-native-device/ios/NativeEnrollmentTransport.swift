@@ -33,6 +33,12 @@ final class NativeEnrollmentTransport {
   private static let approvalBeginPath = try! NSRegularExpression(pattern: "^/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests/begin$")
   private static let approvalPath = try! NSRegularExpression(pattern: "^/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests$")
   private static let sessionPath = try! NSRegularExpression(pattern: "^/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+  private static let maximumSafeSequence = "9007199254740991"
+  private static let canonicalUUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+  private static let agentEventsPath = try! NSRegularExpression(pattern: "^/api/agentflow/me/agent-events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$")
+  private static let agentSessionsPath = try! NSRegularExpression(pattern: "^/api/agentflow/me/agent-sessions\\?limit=([1-9][0-9]*)(?:&before_id=(\(canonicalUUID)))?$")
+  private static let sessionSnapshotPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/snapshot$")
+  private static let sessionEventsPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$")
 
   private let lock = NSLock()
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
@@ -162,6 +168,54 @@ final class NativeEnrollmentTransport {
     return request
   }
 
+  private static func capture(_ match: NSTextCheckingResult, _ index: Int, in value: String) -> String? {
+    let range = match.range(at: index)
+    guard range.location != NSNotFound, let swiftRange = Range(range, in: value) else { return nil }
+    return String(value[swiftRange])
+  }
+
+  private static func decimalAtMost(_ value: String, _ maximum: String) -> Bool {
+    value.count < maximum.count || (value.count == maximum.count && value <= maximum)
+  }
+
+  private static func fullMatch(_ expression: NSRegularExpression, _ value: String) -> NSTextCheckingResult? {
+    let fullRange = NSRange(value.startIndex..., in: value)
+    guard let match = expression.firstMatch(in: value, range: fullRange), match.range == fullRange else { return nil }
+    return match
+  }
+
+  private static func allowedReadPath(_ pathWithQuery: String) -> Bool {
+    if pathWithQuery == "/api/agentflow/me/agent-state" || matches(sessionSnapshotPath, pathWithQuery) { return true }
+    if let match = fullMatch(agentEventsPath, pathWithQuery), let sequence = capture(match, 1, in: pathWithQuery),
+      let limitText = capture(match, 2, in: pathWithQuery), let limit = Int(limitText) {
+      return decimalAtMost(sequence, maximumSafeSequence) && (1...200).contains(limit)
+    }
+    if let match = fullMatch(agentSessionsPath, pathWithQuery), let limitText = capture(match, 1, in: pathWithQuery),
+      let limit = Int(limitText) { return (1...100).contains(limit) }
+    if let match = fullMatch(sessionEventsPath, pathWithQuery), let sequence = capture(match, 1, in: pathWithQuery),
+      let limitText = capture(match, 2, in: pathWithQuery), let limit = Int(limitText) {
+      return decimalAtMost(sequence, maximumSafeSequence) && (1...200).contains(limit)
+    }
+    return false
+  }
+
+  private static func buildReadRequest(origin: String, pathWithQuery: String, accessToken: String, dpop: String) throws -> URLRequest {
+    guard let components = URLComponents(string: origin), components.scheme == "https", let host = components.host,
+      host == host.lowercased(), components.port != 443,
+      components.user == nil, components.password == nil, components.path.isEmpty, components.query == nil,
+      components.fragment == nil, components.url?.absoluteString == origin,
+      !pathWithQuery.contains("%"), !pathWithQuery.contains("#"), !pathWithQuery.contains("\\"), allowedReadPath(pathWithQuery),
+      accessToken.utf8.count <= 8_192, matches(dpopPattern, accessToken),
+      dpop.utf8.count <= 8_192, matches(dpopPattern, dpop),
+      let url = URL(string: origin + pathWithQuery), url.absoluteString == origin + pathWithQuery else { throw MobileTransportFailure.invalid }
+    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+    request.httpMethod = "GET"
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("DPoP \(accessToken)", forHTTPHeaderField: "Authorization")
+    request.setValue(dpop, forHTTPHeaderField: "DPoP")
+    return request
+  }
+
   func request(requestId: String, origin: String, path: String, method: String, accessToken: String, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     // Validate the complete request before a URLSession or URLSessionTask is created.
@@ -172,6 +226,12 @@ final class NativeEnrollmentTransport {
   func sessionRequest(requestId: String, origin: String, path: String, method: String, authorization: String?, dpop: String?, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     let request = try Self.buildSessionRequest(origin: origin, path: path, method: method, authorization: authorization, dpop: dpop, body: body)
+    try execute(requestId: requestId, request: request, completion: completion)
+  }
+
+  func readRequest(requestId: String, origin: String, pathWithQuery: String, accessToken: String, dpop: String, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
+    guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
+    let request = try Self.buildReadRequest(origin: origin, pathWithQuery: pathWithQuery, accessToken: accessToken, dpop: dpop)
     try execute(requestId: requestId, request: request, completion: completion)
   }
 

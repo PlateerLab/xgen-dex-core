@@ -37,7 +37,9 @@ export class DesktopNativeSessions {
   }
   async request(rawMethod: unknown, rawParams: unknown = {}): Promise<DesktopNativeReply> {
     try {
-      if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'unwatch', 'cancel'].includes(rawMethod)) throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
+      if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'unwatch', 'cancel'].includes(rawMethod)) {
+        throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
+      }
       const params = object(rawParams);
       // Renderer cannot select another origin/profile/account or make a host platform override.
       if (['profile', 'user_id', 'platform', 'platform_type', 'server_url', 'origin'].some((key) => key in params)) throw new DexError('usage_error', '기기·세션 계정과 서버는 앱이 지정합니다.');

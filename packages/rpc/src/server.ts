@@ -123,7 +123,7 @@ export class DexRpcServer {
     this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.version = options.version ?? '0.1.0';
     if (options.nativeSessions) this.nativeSessions = new NativeSessionRpcHost(options.nativeSessions.configs,
-      (value) => this.notify('native/focus', value), options.nativeSessions);
+      (value) => this.notify('view' in value ? 'native/conversation' : 'native/focus', value), options.nativeSessions);
     this.removeLocalToolsListener = engine.onLocalToolsStatus((status) => {
       if (this.initialized && !this.closed) this.notify('localTools/status', status);
     });
@@ -221,7 +221,7 @@ export class DexRpcServer {
             history: true,
             localTools: true,
             ssh: true,
-            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software' } } : {}),
+            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true } } : {}),
           },
         };
       }

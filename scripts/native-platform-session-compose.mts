@@ -74,6 +74,7 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
+const testNativeMessages = process.argv.includes('--native-messages');
 const testMobileWs = process.argv.includes('--mobile-ws');
 const testMobileMessages = process.argv.includes('--mobile-messages') || testMobileWs;
 const testMobileFocus = process.argv.includes('--mobile-focus') || testMobileMessages;
@@ -86,15 +87,16 @@ const cliKeys = new NativeDeviceKeyStore();
 const nativeKeysCreated = new Set<'cli' | 'vscode' | 'desktop'>();
 let rpc: DexRpcClient | null = null;
 async function stopNativeRpc() { const current = rpc; rpc = null; await current?.stop(); }
-async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch', action?: string, extra: object = {}) {
+async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation', action?: string, extra: object = {}) {
   assert.ok(cliDirectory);
   rpc ??= new DexRpcClient({ process: { command: platform === 'desktop' ? desktopElectron! : process.execPath, args: platform === 'desktop'
     ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`]
     : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
     env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'compose-fixture' });
   const initialized = await rpc.start(); assert.equal(initialized.capabilities.nativePlatformSession?.platform, platform);
+  if (testNativeMessages) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalConversation, true);
   const result = await rpc.request<NativeRpcResult>(`native/${category}`, { profile: 'compose',
-    ...(category === 'watch' ? { user_id: String(userId) } : { action,
+    ...(category === 'watch' || category === 'conversation' || category === 'watch-conversation' ? { user_id: String(userId) } : { action,
       ...(category === 'device' || action === 'login' ? { email: `${tag}@example.invalid`, password } : { user_id: String(userId) }) }), ...extra });
   assert.equal(result.platform_type, platform); assert.equal(result.user_id, String(userId));
   const output = JSON.stringify(result);
@@ -105,7 +107,7 @@ function cli(action: string, extra: string[] = [], category = 'device') {
   assert.ok(cliDirectory);
   const output = execFileSync(process.execPath, ['apps/cli/dist/cli.js', category, action,
     ...(category === 'session' && action !== 'login' ? ['--user-id', String(userId)] : ['--email', `${tag}@example.invalid`]),
-    ...(category === 'device' || action === 'login' ? ['--password-stdin'] : []), action === 'watch-focus' ? '--jsonl' : '--json', ...extra], {
+    ...(category === 'device' || action === 'login' ? ['--password-stdin'] : []), action.startsWith('watch-') ? '--jsonl' : '--json', ...extra], {
     input: password, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
   });
@@ -170,6 +172,13 @@ try {
       assert.equal((await run('status', [], 'session')).state, 'login_pending');
       await assert.rejects(platform === 'cli' ? run('watch-focus', [], 'session') : nativeRpc(platform, 'watch'), (error: unknown) =>
         error instanceof DexRpcError ? error.engineCode === 'auth_required' : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
+      if (testNativeMessages) {
+        for (const action of ['conversation', 'watch-conversation'] as const) {
+          await assert.rejects(platform === 'cli' ? run(action, [], 'session') : nativeRpc(platform, action), (error: unknown) =>
+            error instanceof DexRpcError ? error.engineCode === 'auth_required' : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
+        }
+        console.log(`${platform}: conversation read/poll fail closed with login_pending; no automatic refresh or legacy fallback PASS`);
+      }
       assert.equal((await run('forget-local', [], 'session')).state, 'signed_out');
       await stopNativeRpc();
       console.log(`${platform}: built engine processes / OS-keychain restore / idempotent registration / selected browser approval / trusted status PASS`);

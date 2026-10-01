@@ -50,6 +50,7 @@ export * from './native-device-key-store';
 export * from './native-device-enrollment';
 export * from './native-platform-session';
 export * from './native-agent-focus-watch';
+export * from './native-agent-conversation-watch';
 export * from './errors';
 export * from './local-tools-config';
 

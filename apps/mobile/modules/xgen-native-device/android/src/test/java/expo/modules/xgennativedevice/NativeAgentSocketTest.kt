@@ -298,9 +298,14 @@ class NativeAgentSocketTest {
       1000 to "mobile_socket_unavailable"
     ).forEachIndexed { index, (closeCode, expected) ->
       val peer = AtomicReference<WebSocket>()
-      server.enqueue(MockResponse().withWebSocketUpgrade(echoingListener { peer.set(it) }))
+      val peerOpen = CountDownLatch(1)
+      server.enqueue(MockResponse().withWebSocketUpgrade(echoingListener {
+        peer.set(it)
+        peerOpen.countDown()
+      }))
       val (id, opened) = open()
       assertTrue(opened.isSuccess)
+      assertTrue("peer open did not complete", peerOpen.await(4, TimeUnit.SECONDS))
       val first = AtomicReference<Result<Map<String, String>>>()
       val firstLatch = CountDownLatch(1)
       sockets.next(id) { first.set(it); firstLatch.countDown() }

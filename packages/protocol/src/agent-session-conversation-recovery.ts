@@ -1,4 +1,5 @@
 import { AgentSessionHttpError, AgentSessionProtocolError, applyAgentSessionEventPage,
+  parseAgentSessionMessagePage, parseAgentSessionSnapshot,
   type AgentEventCursor, type AgentSessionMessage, type AgentSessionReadClient, type AgentSessionSnapshot } from './agent-session';
 import { reconcileAgentFocus, type ScopedAgentFocus } from './agent-session-focus-recovery';
 
@@ -13,6 +14,29 @@ export interface AgentConversationRecoveryResult {
   state: ScopedAgentConversation;
   source: 'snapshot' | 'replay' | 'recovered';
   hasMore: boolean;
+}
+export type AgentConversationView = Pick<ScopedAgentConversation, 'snapshot' | 'messages' | 'omittedMessages'>;
+/** Display-only RPC boundary. Cursors, auth scope and raw tool/execution values are projected out. */
+export function parseAgentConversationView(value: unknown): AgentConversationView {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid();
+  const raw = value as Record<string, unknown>;
+  if (!Array.isArray(raw.messages) || raw.messages.length > MAX_MESSAGES || !Number.isSafeInteger(raw.omittedMessages)
+    || (raw.omittedMessages as number) < 0) invalid();
+  const snapshot = raw.snapshot === null ? null : parseAgentSessionSnapshot(raw.snapshot);
+  if (!snapshot && (raw.messages.length !== 0 || raw.omittedMessages !== 0)) invalid();
+  const messages: AgentSessionMessage[] = []; const seen = new Set<string>(); let cursor = 0; let bytes = 0;
+  for (let i = 0; i < raw.messages.length; i += 20) {
+    const batch = raw.messages.slice(i, i + 20); const last = batch.at(-1) as Record<string, unknown>;
+    const page = parseAgentSessionMessagePage({ messages: batch, next_cursor: last?.sequence,
+      snapshot_sequence: snapshot!.current_sequence, state_version: snapshot!.state_version, has_more: false }, cursor, 20);
+    for (const message of page.messages) {
+      if (seen.has(message.turn_id)) invalid(); seen.add(message.turn_id);
+      bytes += new TextEncoder().encode(message.input_text ?? '').length + new TextEncoder().encode(message.output_text ?? '').length;
+      if (bytes > MAX_TEXT_BYTES) invalid(); messages.push(message);
+    }
+    cursor = page.next_cursor;
+  }
+  return { snapshot, messages, omittedMessages: raw.omittedMessages as number };
 }
 export type AgentConversationReader = Pick<AgentSessionReadClient, 'focus' | 'accountEvents' | 'snapshot' | 'events' | 'messages'>;
 const MAX_MESSAGES = 100;

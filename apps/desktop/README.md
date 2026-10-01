@@ -262,6 +262,10 @@ Both require a trusted localhost CA and use disposable accounts/key slots.
 
 ### 기기·세션 설정
 
+**Settings → 기기·세션 → 공유 대화 읽기 / 공유 대화 폴링 / 폴링 중단** displays validated canonical snapshots, latest turn status and complete linked terminal messages. Omitted, incomplete and pending-history flags remain visible. The main process supplies the account/origin and reloads the OS vault for each bounded step. Read and watch ACKs are projected before rendering; cancellation, account changes and stopped/reconnecting states clear old conversation text. This increment uses explicit HTTP polling; native WebSocket and existing chat sends follow separately.
+
+**설정 → 기기·세션**의 공유 대화 읽기·폴링·중단 버튼으로 최신 턴과 검증된 완결 메시지를 볼 수 있다. 생략·불완전 이력·추가 조회 상태를 표시한다. 계정/origin은 main 프로세스가 지정하고 응답은 표시 필드만 렌더러에 전달한다. 계정 변경·중단·재연결 시 이전 본문을 비운다. 현재 단계는 명시적 HTTP 폴링이며 native WS와 기존 채팅 송신 이행은 후속 작업이다.
+
 **설정 → 기기·세션**에서 PC 등록, 신뢰 브라우저 선택 승인과 6자리 비교 코드,
 플랫폼 로그인·상태·갱신·로그아웃, 현재 Canonical 대화 구독을 사용할 수 있다.
 서버는 현재 설정의 HTTPS origin, 계정은 앱의 실제 로그인 계정으로 고정한다.

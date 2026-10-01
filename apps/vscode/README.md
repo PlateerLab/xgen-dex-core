@@ -73,7 +73,9 @@ HTTPS origin으로 등록된 서버 프로필을 선택하고 다음 순서로 �
 계정 식별자는 비밀번호 확인 응답의 실제 사용자 ID를 사용합니다. 플랫폼 세션 상태·갱신은 선택한 계정을 사용하고,
 엔진 재시작 뒤에는 계정 확인을 다시 받습니다. 프로필 전환·기존 로그인 변경·엔진 종료 시 구독과 포커스를 지웁니다.
 현재 Compose의 `enrollment` 모드에서는 기기 승인까지만 동작하고 플랫폼 로그인은 503으로 차단됩니다.
-기존 Workspace 채팅은 기존 인증 경로를 사용하며, 이번 구독은 Canonical 포커스 표시 단계입니다.
+**현재 공유 대화 읽기 / 현재 공유 대화 폴링 / 대화 폴링 중단**은 별도 Canonical 조회 기능이다. 읽기 전용 가상 문서에 최신 턴 상태·완전한 메시지·생략·불완전·추가 조회 상태를 표시하고 폴링 결과를 갱신한다. 계정·서버 전환, 재연결 또는 중단 시 이전 본문을 비운다. 본문을 파일이나 로그에 저장하지 않는다. `canonicalConversation` capability가 있는 빌드된 CLI를 사용해야 한다.
+
+The read-only virtual document follows explicit canonical conversation reads/polling through the CLI RPC host. Scoped envelopes and display projections are validated; stale watch acknowledgements are stopped by their exact IDs. Existing Workspace chat transport remains separately managed. Native WebSocket and chat-send migration are subsequent work.
 Desktop·Mobile 연결과 실제 ACTIVE 서버 검증은 후속 작업입니다.
 
 ## 패키징

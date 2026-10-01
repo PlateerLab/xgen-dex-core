@@ -1,4 +1,4 @@
-import { DexError, NativeCliSession, NativeDeviceKeyStore, NativeAgentFocusWatcher, nativeKeyScope, type ConfigStore } from '@dex/engine';
+import { DexError, NativeCliSession, NativeDeviceKeyStore, NativeAgentFocusWatcher, NativeAgentConversationWatcher, nativeKeyScope, type ConfigStore } from '@dex/engine';
 import type { ParsedArgs } from './args';
 import { flag, option, requiredOption } from './args';
 import { promptSecret, readStdin } from './io';
@@ -13,13 +13,13 @@ export interface SessionCommandDependencies {
 }
 export async function runSessionCommand(args: ParsedArgs, configs: ConfigStore, dependencies: SessionCommandDependencies = {}): Promise<void> {
   const action = args.positionals[1];
-  const actions = ['login', 'status', 'refresh', 'focus', 'watch-focus', 'logout', 'forget-local'];
-  const watching = action === 'watch-focus';
+  const actions = ['login', 'status', 'refresh', 'focus', 'watch-focus', 'conversation', 'watch-conversation', 'logout', 'forget-local'];
+  const watching = action === 'watch-focus' || action === 'watch-conversation';
   const needsPassword = action === 'login' || action === 'logout';
   const allowed = new Set(['profile', ...(watching ? ['jsonl', 'interval-ms'] : ['json']), ...(action === 'login' ? ['email'] : ['user-id']),
     ...(needsPassword ? ['password-stdin'] : [])]);
   if (!actions.includes(action) || args.positionals.length !== 2 || [...args.options.keys()].some((key) => !allowed.has(key))) {
-    throw new DexError('usage_error', 'dex session login|status|refresh|focus|watch-focus|logout|forget-local 명령과 지원하는 옵션을 사용하세요.');
+    throw new DexError('usage_error', 'dex session login|status|refresh|focus|watch-focus|conversation|watch-conversation|logout|forget-local 명령과 지원하는 옵션을 사용하세요.');
   }
   const account = requiredOption(args, action === 'login' ? 'email' : 'user-id');
   const config = await configs.read();
@@ -32,11 +32,16 @@ export async function runSessionCommand(args: ParsedArgs, configs: ConfigStore, 
   if (watching) {
     const rawInterval = option(args, 'interval-ms');
     if (rawInterval !== undefined && !/^[0-9]+$/.test(rawInterval)) throw new DexError('usage_error', '--interval-ms는 200~60000 사이의 정수여야 합니다.');
-    const watcher = new NativeAgentFocusWatcher(session, account, { intervalMs: rawInterval === undefined ? undefined : Number(rawInterval) });
+    const options = { intervalMs: rawInterval === undefined ? undefined : Number(rawInterval) };
+    const watcher = action === 'watch-conversation' ? new NativeAgentConversationWatcher(session, account, options) : new NativeAgentFocusWatcher(session, account, options);
     await watcher.run((update) => {
       if (flag(args, 'jsonl')) write(`${JSON.stringify({ action, profile: profileName, serverUrl: scope.origin, ...update })}\n`);
       else if (update.type === 'reset') write(`계정 ${update.user_id}의 현재 대화를 확인합니다.\n`);
       else if (update.type === 'focus') write(`현재 대화: ${update.focus.active_agent_session_id ?? '-'} (version ${update.focus.version}, ${update.source})\n`);
+      else if (update.type === 'conversation') {
+        write(`${JSON.stringify(update.conversation, null, 2)}\n`);
+        if (update.has_more) write('남은 대화 기록을 이어서 조회합니다.\n');
+      }
       else if (update.type === 'reconnecting') write(`연결을 복구합니다. 재시도는 1~30초 간격으로 진행합니다.\n`);
       else write(`포커스 구독 종료: ${update.reason}\n`);
     }, dependencies.signal);
@@ -48,6 +53,7 @@ export async function runSessionCommand(args: ParsedArgs, configs: ConfigStore, 
     : action === 'status' ? await session.status(account, signal)
     : action === 'refresh' ? await session.refresh(account, signal)
     : action === 'focus' ? await session.focus(account, signal)
+    : action === 'conversation' ? await session.conversation(account, signal)
     : action === 'logout' ? await session.logout(account, password, signal) : await session.forgetLocal(account, signal);
   if (flag(args, 'json')) {
     write(`${JSON.stringify({ action, profile: profileName, serverUrl: scope.origin, storage: 'os-keychain-software',

@@ -10,7 +10,7 @@ export interface MobileNativeKeyModule {
 }
 export interface MobileDeviceIdentity extends NativeDeviceIdentity {
   storage: MobileKeyStorage;
-  signDpop?(method: 'GET' | 'DELETE', htu: string, token: string, signal?: AbortSignal): Promise<string>;
+  signDpop?(method: 'GET' | 'POST' | 'DELETE', htu: string, token: string, signal?: AbortSignal): Promise<string>;
 }
 export class MobileDeviceKeyError extends Error {
   constructor(readonly code: 'unavailable' | 'missing' | 'invalid' | 'locked' | 'account_changed') {
@@ -71,6 +71,7 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
         check(); if (!module) throw new MobileDeviceKeyError('unavailable');
         const identity = publicIdentity(await module.prepare(selected.origin, selected.userId, create)); check();
         const thumbprint = mobileKeyThumbprint(identity.publicKey);
+        const dpopJtis = new Set<string>();
         return Object.freeze({ ...identity,
           async signChallenge(purpose: NativeDeviceProofPurpose, challenge: string, operationSignal?: AbortSignal): Promise<string> {
             const signingCheck = () => { check(); operationSignal?.throwIfAborted(); };
@@ -85,13 +86,14 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
               return proof;
             } catch (error) { if (signal?.aborted || operationSignal?.aborted) { signal?.throwIfAborted(); operationSignal?.throwIfAborted(); } throw safeError(error); }
           },
-          async signDpop(method: 'GET' | 'DELETE', htu: string, token: string, operationSignal?: AbortSignal): Promise<string> {
+          async signDpop(method: 'GET' | 'POST' | 'DELETE', htu: string, token: string, operationSignal?: AbortSignal): Promise<string> {
             const signingCheck = () => { check(); operationSignal?.throwIfAborted(); };
             try {
               signingCheck(); if (!module.signDpop) throw new MobileDeviceKeyError('unavailable');
               const url = new URL(htu);
               const allowed = method === 'DELETE' ? new RegExp(`^/api/me/platform-sessions/${SESSION_UUID}$`).test(url.pathname)
-                : method === 'GET' && new RegExp(`^/api/agentflow/(?:me/(?:agent-state|agent-events|agent-sessions)|agent-sessions/${SESSION_UUID}/(?:snapshot|events|messages))$`).test(url.pathname);
+                : method === 'POST' ? new RegExp(`^/api/agentflow/agent-sessions/${SESSION_UUID}/(?:turns|stop)$`).test(url.pathname)
+                  : method === 'GET' && new RegExp(`^/api/agentflow/(?:me/(?:agent-state|agent-events|agent-sessions)|agent-sessions/${SESSION_UUID}/(?:snapshot|events|messages))$`).test(url.pathname);
               if (!allowed || url.origin !== selected.origin || url.username || url.password || url.search || url.hash || url.href !== htu
                 || token.trim() !== token || token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new MobileDeviceKeyError('invalid');
               const proof = await module.signDpop(selected.origin, selected.userId, identity.installId, thumbprint, method, htu, token); signingCheck();
@@ -103,7 +105,9 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
               if (header.alg !== 'ES256' || header.typ !== 'dpop+jwt' || key.kty !== 'EC' || key.crv !== 'P-256'
                 || key.x !== identity.publicKey.x || key.y !== identity.publicKey.y || claims.htm !== method || claims.htu !== htu
                 || claims.ath !== mobileBase64url(sha256.array(token)) || typeof claims.jti !== 'string' || claims.jti.length !== 36 || !UUID.test(claims.jti)
-                || !Number.isSafeInteger(claims.iat) || Math.abs(Math.floor(Date.now() / 1000) - (claims.iat as number)) > 30) throw new MobileDeviceKeyError('invalid');
+                || dpopJtis.has(claims.jti) || !Number.isSafeInteger(claims.iat)
+                || Math.abs(Math.floor(Date.now() / 1000) - (claims.iat as number)) > 30) throw new MobileDeviceKeyError('invalid');
+              dpopJtis.add(claims.jti);
               return proof;
             } catch (error) { if (signal?.aborted || operationSignal?.aborted) { signal?.throwIfAborted(); operationSignal?.throwIfAborted(); } throw safeError(error); }
           },

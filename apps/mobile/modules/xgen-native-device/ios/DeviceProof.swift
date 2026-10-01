@@ -54,6 +54,7 @@ enum DpopProof {
   private static let coordinate = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{43}$")
   private static let sessionIdPath = try! NSRegularExpression(pattern: "^/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
   private static let agentSessionPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events|messages)$")
+  private static let agentSessionTurnPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(turns|stop)$")
 
   private static func matches(_ expression: NSRegularExpression, _ value: String) -> Bool {
     let fullRange = NSRange(value.startIndex..., in: value)
@@ -69,6 +70,7 @@ enum DpopProof {
   private static func allowed(_ method: String, _ path: String) -> Bool {
     switch method {
     case "DELETE": return matches(sessionIdPath, path)
+    case "POST": return matches(agentSessionTurnPath, path)
     case "GET":
       return path == "/api/agentflow/me/agent-state" || path == "/api/agentflow/me/agent-events" ||
         path == "/api/agentflow/me/agent-sessions" || matches(agentSessionPath, path)

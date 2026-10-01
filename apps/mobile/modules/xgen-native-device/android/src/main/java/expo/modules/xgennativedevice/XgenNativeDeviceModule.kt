@@ -21,6 +21,7 @@ class XgenNativeDeviceModule : Module() {
       catch (_: Exception) { throw CodedException("mobile_transport_unavailable", "Mobile transport unavailable", null) }
     }
     Function("newGeneration") { UUID.randomUUID().toString() }
+    Function("newTurnKey") { UUID.randomUUID().toString() }
     Function("newSocketId") {
       try { agentSockets.newSocketId() }
       catch (error: MobileSocketFailure) { throw CodedException(error.code, "Mobile socket unavailable", null) }
@@ -64,6 +65,20 @@ class XgenNativeDeviceModule : Module() {
     AsyncFunction("readRequest") { requestId: String, origin: String, pathWithQuery: String, accessToken: String, dpop: String, promise: Promise ->
       try {
         transport.readRequest(requestId, origin, pathWithQuery, accessToken, dpop) { result ->
+          result.fold(
+            onSuccess = { promise.resolve(mapOf("status" to it.status, "body" to it.body)) },
+            onFailure = { promise.reject((it as? MobileTransportFailure)?.code ?: "mobile_transport_unavailable", "Mobile transport unavailable", null) }
+          )
+        }
+      } catch (error: MobileTransportFailure) {
+        promise.reject(error.code, "Mobile transport unavailable", null)
+      } catch (_: Exception) {
+        promise.reject("mobile_transport_unavailable", "Mobile transport unavailable", null)
+      }
+    }
+    AsyncFunction("turnRequest") { requestId: String, origin: String, path: String, accessToken: String, dpop: String, body: String, promise: Promise ->
+      try {
+        transport.turnRequest(requestId, origin, path, accessToken, dpop, body) { result ->
           result.fold(
             onSuccess = { promise.resolve(mapOf("status" to it.status, "body" to it.body)) },
             onFailure = { promise.reject((it as? MobileTransportFailure)?.code ?: "mobile_transport_unavailable", "Mobile transport unavailable", null) }

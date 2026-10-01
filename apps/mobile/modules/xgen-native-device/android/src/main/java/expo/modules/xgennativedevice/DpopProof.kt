@@ -11,6 +11,7 @@ internal object DpopProof {
   private val coordinate = Regex("[A-Za-z0-9_-]{43}")
   private val sessionIdPath = Regex("/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
   private val agentSessionPath = Regex("/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events|messages)")
+  private val agentSessionTurnPath = Regex("/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(turns|stop)")
 
   private fun canonicalOrigin(origin: String): Boolean = try {
     val uri = URI(origin)
@@ -22,6 +23,7 @@ internal object DpopProof {
 
   private fun allowed(method: String, path: String): Boolean = when (method) {
     "DELETE" -> sessionIdPath.matches(path)
+    "POST" -> agentSessionTurnPath.matches(path)
     "GET" -> path == "/api/agentflow/me/agent-state" ||
       path == "/api/agentflow/me/agent-events" ||
       path == "/api/agentflow/me/agent-sessions" || agentSessionPath.matches(path)

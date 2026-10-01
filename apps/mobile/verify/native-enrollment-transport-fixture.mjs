@@ -3,6 +3,7 @@ import fs from "node:fs";
 
 const [portText, certPath, keyPath] = process.argv.slice(2);
 let disconnectedPosts = 0;
+let disconnectedTurnPosts = 0;
 const expectedAuthorization = "Bearer fixture-token_123~safe";
 const expectedDpopAuthorization = "DPoP fixture.access.token";
 const expectedDpop = "fixture.header.signature";
@@ -100,6 +101,33 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         request.headers.dpop !== expectedDpop || request.headers["content-type"] !== "application/json" ||
         body !== '{"password":"fixture-password"}') { response.writeHead(400); response.end("bad delete"); return; }
       response.writeHead(204); response.end(); return;
+    }
+    if (request.url === `/api/agentflow/agent-sessions/${canonicalSession}/turns`) {
+      if (request.method !== "POST" || request.headers.authorization !== expectedDpopAuthorization ||
+        request.headers.dpop !== expectedDpop || request.headers["content-type"] !== "application/json" ||
+        request.headers.origin !== undefined || request.headers.cookie !== undefined) {
+        response.writeHead(400); response.end("bad turn headers"); return;
+      }
+      const parsed = JSON.parse(body);
+      if (parsed.input_text === "lost") { disconnectedTurnPosts += 1; request.socket.destroy(); return; }
+      if (parsed.input_text === "delayed") {
+        setTimeout(() => { if (!response.destroyed) { response.writeHead(202); response.end("late"); } }, 5000); return;
+      }
+      if (parsed.input_text === "large-ack") { response.writeHead(202); response.end("x".repeat(65537)); return; }
+      if (parsed.input_text === "invalid-ack") { response.writeHead(202); response.end(Buffer.from([0xc3, 0x28])); return; }
+      if (parsed.input_text === "redirect") { response.writeHead(302, { Location: "/escaped" }); response.end(); return; }
+      response.writeHead(202, { "Set-Cookie": "turn-secret=must-not-return", "Content-Type": "application/json" });
+      response.end('{"accepted":true}'); return;
+    }
+    if (request.url === `/api/agentflow/agent-sessions/${canonicalSession}/stop`) {
+      if (request.method !== "POST" || request.headers.authorization !== expectedDpopAuthorization ||
+        request.headers.dpop !== expectedDpop || request.headers["content-type"] !== "application/json" ||
+        request.headers.origin !== undefined || request.headers.cookie !== undefined ||
+        body !== '{"turn_id":"00000000-0000-4000-8000-000000000002","expected_state_version":2}') {
+        response.writeHead(400); response.end("bad stop"); return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ requested: true, disconnectedTurnPosts })); return;
     }
     if (request.url === "/api/agentflow/me/agent-events?after_sequence=7&limit=1") {
       if (request.method !== "GET" || request.headers.authorization !== expectedDpopAuthorization ||

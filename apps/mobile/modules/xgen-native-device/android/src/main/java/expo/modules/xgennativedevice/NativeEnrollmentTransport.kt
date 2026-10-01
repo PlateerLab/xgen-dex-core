@@ -12,6 +12,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
+import java.math.BigDecimal
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
@@ -33,6 +34,7 @@ internal data class MobileTransportResponse(val status: Int, val body: String)
 internal class NativeEnrollmentTransport internal constructor(private val client: OkHttpClient) {
   companion object {
     private const val MAX_REQUEST_BODY_BYTES = 32_768
+    private const val MAX_TURN_REQUEST_BODY_BYTES = 2_097_152
     private const val MAX_RESPONSE_BODY_BYTES = 65_536
     private const val MAX_MESSAGES_RESPONSE_BODY_BYTES = 1_048_576
     private const val MAX_TRACKED_REQUESTS = 1_024
@@ -51,6 +53,10 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     private val sessionSnapshotPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/snapshot")
     private val sessionEventsPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)")
     private val sessionMessagesPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/messages\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)")
+    private val sessionTurnPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/(turns|stop)")
+    private val canonicalUuidPattern = Regex(CANONICAL_UUID)
+    private val stableAscii = Regex("[!-~]{1,128}")
+    private val maximumSafeVersion = BigDecimal("9007199254740991")
 
     fun production(): NativeEnrollmentTransport = NativeEnrollmentTransport(
       OkHttpClient.Builder()
@@ -222,6 +228,55 @@ internal class NativeEnrollmentTransport internal constructor(private val client
         .build()
     }
 
+    private fun safeVersion(value: StrictJsonValue?, allowMaximum: Boolean): Boolean {
+      val number = (value as? StrictJsonValue.NumberValue)?.raw?.toBigDecimalOrNull() ?: return false
+      return number >= BigDecimal.ONE && number.stripTrailingZeros().scale() <= 0 &&
+        (if (allowMaximum) number <= maximumSafeVersion else number < maximumSafeVersion)
+    }
+
+    private fun validTurnBody(body: String, path: String, bytes: ByteArray): Boolean {
+      if (bytes.size > MAX_TURN_REQUEST_BODY_BYTES) return false
+      val fields = StrictJsonObject.parse(body) ?: return false
+      if (path.endsWith("/turns")) {
+        val required = setOf("input_text", "expected_state_version", "idempotency_key")
+        if (fields.keys != required && fields.keys != required + "origin_id") return false
+        val input = (fields["input_text"] as? StrictJsonValue.StringValue)?.value ?: return false
+        val inputBytes = try { strictUtf8(input) } catch (_: MobileTransportFailure) { return false }
+        val key = (fields["idempotency_key"] as? StrictJsonValue.StringValue)?.value ?: return false
+        if (input.isEmpty() || inputBytes.size > 262_144 || !safeVersion(fields["expected_state_version"], false) || !stableAscii.matches(key)) return false
+        val originId = fields["origin_id"]
+        if (originId != null) {
+          val value = (originId as? StrictJsonValue.StringValue)?.value ?: return false
+          val count = value.codePointCount(0, value.length)
+          if (count !in 1..128) return false
+        }
+        return true
+      }
+      if (!path.endsWith("/stop") || fields.keys != setOf("turn_id", "expected_state_version")) return false
+      val turnId = (fields["turn_id"] as? StrictJsonValue.StringValue)?.value ?: return false
+      return canonicalUuidPattern.matches(turnId) && safeVersion(fields["expected_state_version"], true)
+    }
+
+    private fun buildTurnRequest(origin: String, path: String, accessToken: String, dpop: String, body: String): Request {
+      validatedOrigin(origin)
+      if (!sessionTurnPath.matches(path) || '%' in path || '?' in path || '#' in path || '\\' in path ||
+        accessToken.length > 8_192 || !dpopPattern.matches(accessToken) || dpop.length > 8_192 || !dpopPattern.matches(dpop)
+      ) throw MobileTransportFailure("mobile_transport_invalid")
+      val bytes = strictUtf8(body)
+      if (!validTurnBody(body, path, bytes)) throw MobileTransportFailure("mobile_transport_invalid")
+      val expected = origin + path
+      val url = expected.toHttpUrlOrNull()
+      if (url == null || url.toString() != expected) throw MobileTransportFailure("mobile_transport_invalid")
+      return Request.Builder()
+        .url(url)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "DPoP $accessToken")
+        .header("DPoP", dpop)
+        .post(bytes.toRequestBody(JSON))
+        .build()
+    }
+
     private fun readResponse(response: Response, maximumBodyBytes: Int, invalidResponseCode: String): MobileTransportResponse {
       val status = response.code
       if (status !in 200..599 || status in 300..399) throw MobileTransportFailure(invalidResponseCode)
@@ -315,6 +370,20 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     execute(requestId, client.newCall(buildReadRequest(origin, pathWithQuery, accessToken, dpop)), maximumBodyBytes, "mobile_transport_response_invalid", completion)
   }
 
+  fun turnRequest(
+    requestId: String,
+    origin: String,
+    path: String,
+    accessToken: String,
+    dpop: String,
+    body: String,
+    completion: (Result<MobileTransportResponse>) -> Unit
+  ) {
+    if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
+    execute(requestId, client.newCall(buildTurnRequest(origin, path, accessToken, dpop, body)),
+      MAX_RESPONSE_BODY_BYTES, "mobile_transport_response_invalid", completion)
+  }
+
   private fun execute(
     requestId: String,
     call: Call,
@@ -382,49 +451,61 @@ internal class NativeEnrollmentTransport internal constructor(private val client
   }
 }
 
-/** Small strict JSON recognizer that accepts exactly one top-level object. */
+private sealed class StrictJsonValue {
+  data class ObjectValue(val fields: Map<String, StrictJsonValue>) : StrictJsonValue()
+  data class StringValue(val value: String) : StrictJsonValue()
+  data class NumberValue(val raw: String) : StrictJsonValue()
+  object Other : StrictJsonValue()
+}
+
+/** Strict RFC 8259 parser that accepts one object and rejects duplicate decoded keys. */
 private object StrictJsonObject {
-  fun isValid(value: String): Boolean = try {
+  fun isValid(value: String): Boolean = parse(value) != null
+
+  fun parse(value: String): Map<String, StrictJsonValue>? = try {
     Parser(value).parse()
   } catch (_: IllegalArgumentException) {
-    false
+    null
   }
 
   private class Parser(private val source: String) {
     private var index = 0
 
-    fun parse(): Boolean {
+    fun parse(): Map<String, StrictJsonValue>? {
       whitespace()
-      if (peek() != '{') return false
-      jsonObject(0)
+      if (peek() != '{') return null
+      val result = jsonObject(0).fields
       whitespace()
-      return index == source.length
+      return if (index == source.length) result else null
     }
 
-    private fun value(depth: Int) {
+    private fun value(depth: Int): StrictJsonValue {
       if (depth > 64) fail()
       whitespace()
-      when (peek()) {
+      return when (peek()) {
         '{' -> jsonObject(depth + 1)
-        '[' -> array(depth + 1)
-        '"' -> string()
-        't' -> literal("true")
-        'f' -> literal("false")
-        'n' -> literal("null")
-        '-', in '0'..'9' -> number()
+        '[' -> { array(depth + 1); StrictJsonValue.Other }
+        '"' -> StrictJsonValue.StringValue(string())
+        't' -> { literal("true"); StrictJsonValue.Other }
+        'f' -> { literal("false"); StrictJsonValue.Other }
+        'n' -> { literal("null"); StrictJsonValue.Other }
+        '-', in '0'..'9' -> StrictJsonValue.NumberValue(number())
         else -> fail()
       }
     }
 
-    private fun jsonObject(depth: Int) {
+    private fun jsonObject(depth: Int): StrictJsonValue.ObjectValue {
       take('{'); whitespace()
-      if (peek() == '}') { index++; return }
+      val fields = LinkedHashMap<String, StrictJsonValue>()
+      if (peek() == '}') { index++; return StrictJsonValue.ObjectValue(fields) }
       while (true) {
         if (peek() != '"') fail()
-        string(); whitespace(); take(':'); value(depth); whitespace()
+        val key = string()
+        if (fields.containsKey(key)) fail()
+        whitespace(); take(':'); fields[key] = value(depth); whitespace()
         when (peek()) {
           ',' -> { index++; whitespace() }
-          '}' -> { index++; return }
+          '}' -> { index++; return StrictJsonValue.ObjectValue(fields) }
           else -> fail()
         }
       }
@@ -443,33 +524,48 @@ private object StrictJsonObject {
       }
     }
 
-    private fun string() {
+    private fun string(): String {
       take('"')
+      val result = StringBuilder()
       while (index < source.length) {
         val char = source[index++]
         when {
-          char == '"' -> return
-          char == '\\' -> escape()
+          char == '"' -> return result.toString()
+          char == '\\' -> appendEscape(result)
           char.code < 0x20 -> fail()
           char.isHighSurrogate() -> {
-            if (index >= source.length || !source[index++].isLowSurrogate()) fail()
+            if (index >= source.length || !source[index].isLowSurrogate()) fail()
+            result.append(char).append(source[index++])
           }
           char.isLowSurrogate() -> fail()
+          else -> result.append(char)
         }
       }
       fail()
     }
 
-    private fun escape() {
+    private fun appendEscape(result: StringBuilder) {
       if (index >= source.length) fail()
       when (source[index++]) {
-        '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> Unit
+        '"' -> result.append('"')
+        '\\' -> result.append('\\')
+        '/' -> result.append('/')
+        'b' -> result.append('\b')
+        'f' -> result.append('\u000c')
+        'n' -> result.append('\n')
+        'r' -> result.append('\r')
+        't' -> result.append('\t')
         'u' -> {
           val scalar = hexQuad()
           if (scalar in 0xd800..0xdbff) {
             if (index + 1 >= source.length || source[index++] != '\\' || source[index++] != 'u') fail()
-            if (hexQuad() !in 0xdc00..0xdfff) fail()
-          } else if (scalar in 0xdc00..0xdfff) fail()
+            val low = hexQuad()
+            if (low !in 0xdc00..0xdfff) fail()
+            result.append(scalar.toChar()).append(low.toChar())
+          } else {
+            if (scalar in 0xdc00..0xdfff) fail()
+            result.append(scalar.toChar())
+          }
         }
         else -> fail()
       }
@@ -485,7 +581,8 @@ private object StrictJsonObject {
       return result
     }
 
-    private fun number() {
+    private fun number(): String {
+      val start = index
       if (peek() == '-') index++
       when (peek()) {
         '0' -> index++
@@ -503,6 +600,7 @@ private object StrictJsonObject {
         if (peek() !in '0'..'9') fail()
         while (peek() in '0'..'9') index++
       }
+      return source.substring(start, index)
     }
 
     private fun literal(expected: String) {

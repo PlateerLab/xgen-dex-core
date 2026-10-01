@@ -1,5 +1,6 @@
 import { AgentSessionProtocolError } from '@dex/protocol/agent-session';
 import { NativePlatformTransportError } from '@dex/protocol/native-platform-session';
+import { mobileAgentHttpPending } from './native-agent-http-latch';
 
 export interface MobileAgentHttpModule {
   newRequestId(): string;
@@ -14,7 +15,6 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const ids = new Set<string>();
 // Account/screen owners share the native module. Store only a public request ID, never credentials.
-const pending = new WeakMap<MobileAgentHttpModule, Map<string, string>>();
 function fail(): never { throw new NativePlatformTransportError(); }
 function nativeFailure(error: unknown): never {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
@@ -43,7 +43,7 @@ export function createMobileAgentFetch(module: MobileAgentHttpModule | null, ori
   let selected: URL; try { selected = new URL(origin); } catch { fail(); }
   if (selected.protocol !== 'https:' || selected.origin !== origin || selected.username || selected.password || selected.search || selected.hash) fail();
   if (!module || typeof module.newRequestId !== 'function' || typeof module.readRequest !== 'function' || typeof module.cancelRequest !== 'function') throw new MobileAgentTransportUnavailable();
-  let requests = pending.get(module); if (!requests) { requests = new Map(); pending.set(module, requests); }
+  const requests = mobileAgentHttpPending(module);
   const assertAvailable = () => { if (requests.has(origin)) throw new MobileAgentTransportBusy(); };
   const nativeFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     init?.signal?.throwIfAborted();

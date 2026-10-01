@@ -282,6 +282,11 @@ export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';
 export { TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';
 export type { LiveTurnSnapshot, SubscribedState } from './chat';
+// 다른 화면에서 도는 턴 — 질문 본문·첨부, 진행분의 작업 과정. 앱·웹이 같은 모양으로 그린다.
+export { liveTurnFlow, liveTurnProcess } from './chat';
+export type { LiveProcessItem } from './chat';
+export { turnInputText, turnAttachments } from './history';
+export type { TurnAttachment } from './history';
 export { sha256Hex } from './hash';
 export type { StoreAvatar } from './avatars';
 // Agent ↔ Teams 다리 — 컨텍스트 봉투와 공유 출처 표식. 렌더러와 메인이 같은

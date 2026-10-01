@@ -12,7 +12,13 @@
  * 다시 붙지 않는다.
  */
 
-import { parseSubscribed, type LiveTurnSnapshot } from '@dex/protocol';
+import {
+  parseSubscribed,
+  turnAttachments,
+  turnInputText,
+  type LiveTurnSnapshot,
+  type TurnAttachment,
+} from '@dex/protocol';
 import WebSocket from 'ws';
 import { xgenWebSocketTlsOptions } from './connection-security';
 
@@ -34,9 +40,16 @@ export interface WatchDeps {
  * 나타났다(서버가 하트비트마다 DB 를 다시 읽었다).
  */
 export type PeerTurnEvent =
-  | { kind: 'started'; interactionId: string; input: string }
+  | { kind: 'started'; interactionId: string; input: string; attachments: TurnAttachment[] }
   | { kind: 'exec'; interactionId: string; event: string; data: unknown }
-  | { kind: 'ended'; interactionId: string; ioId: number | null; input: string; output: string }
+  | {
+      kind: 'ended';
+      interactionId: string;
+      ioId: number | null;
+      input: string;
+      output: string;
+      attachments: TurnAttachment[];
+    }
   /** 전파에 구멍이 났다 — 이때만 히스토리를 다시 읽으면 된다. */
   | { kind: 'gap'; interactionId: string };
 
@@ -222,15 +235,18 @@ export class ConversationWatchHub {
       ) {
         this.checkSeq(interactionId, entry, frame.seq);
         const d = frame.data ?? {};
+        // 질문은 본문만, 첨부는 따로 — 옛 서버는 `{input_str, attachments}` 를 JSON 으로 실어 보냈다.
+        const attachments = turnAttachments(Array.isArray(d.attachments) ? d.attachments : d.input);
         if (frame.type === 'turn_started') {
-          this.onPeer?.({ kind: 'started', interactionId, input: String(d.input ?? '') });
+          this.onPeer?.({ kind: 'started', interactionId, input: turnInputText(d.input), attachments });
         } else if (frame.type === 'turn_ended') {
           this.onPeer?.({
             kind: 'ended',
             interactionId,
             ioId: typeof d.io_id === 'number' ? d.io_id : null,
-            input: String(d.input ?? ''),
+            input: turnInputText(d.input),
             output: String(d.output ?? ''),
+            attachments,
           });
         } else {
           this.onPeer?.({
@@ -282,7 +298,7 @@ export class ConversationWatchHub {
       this.onTurn({
         interactionId,
         ioId: Number(d.io_id ?? 0),
-        input: String(d.input_data ?? ''),
+        input: turnInputText(d.input_data),
         output: String(d.output_data ?? ''),
         source: String(d.source ?? 'user'),
         updatedAt: String(d.updated_at ?? ''),

@@ -15,6 +15,7 @@ import { describeStreamError } from './errors';
 import { ApiError, HttpClient } from './client';
 import { SseParser } from './sse';
 import type { ChatEvent, ChatRequest, ChatStopResult, ToolEvent } from './types';
+import type { TimelineFlowItem } from './process-timeline';
 
 function toRequestBody(req: ChatRequest): Record<string, unknown> {
   return {
@@ -141,8 +142,16 @@ export const TURN_MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
 export interface LiveTurnSnapshot {
   /** 지금까지의 답변 본문. 빈 문자열일 수 있다 — 아직 한 글자도 안 나온 턴이다. */
   text: string;
-  /** 본문이 아닌 진행(도구·노드 상태 등). 서버가 아직 안 실으면 빈 배열. */
+  /**
+   * 본문이 아닌 진행(도구·노드 상태 등). 서버가 아직 안 실으면 빈 배열.
+   * 한 칸은 `{event, data, text_at?, at?}` — `text_at` 은 그 사건이 났을 때까지 쌓인 본문 글자 수(누적),
+   * `at` 은 받은 시각(ms)이다. 둘로 "이 문장 다음에 이 도구" 순서를 되살린다({@link liveTurnFlow}).
+   */
   events: unknown[];
+  /** 턴이 시작된 시각(ms) — 경과 시간. 옛 서버는 싣지 않는다. */
+  startedAt?: number;
+  /** 지금까지 쌓인 본문 글자 수(누적) — `text` 가 상한으로 앞이 잘렸을 때 `text_at` 과 눈금을 맞춘다. */
+  textTotal?: number;
 }
 
 /** `subscribed` 프레임이 말하는 것 — 커서, 지금 도는 턴이 있는가, 그 진행분. */
@@ -177,6 +186,8 @@ export function parseSubscribed(data: unknown): SubscribedState {
     live = {
       text: typeof l.text === 'string' ? l.text : '',
       events: Array.isArray(l.events) ? l.events : [],
+      ...(typeof l.started_at === 'number' ? { startedAt: l.started_at } : {}),
+      ...(typeof l.text_total === 'number' ? { textTotal: l.text_total } : {}),
     };
   }
   return {
@@ -184,6 +195,63 @@ export function parseSubscribed(data: unknown): SubscribedState {
     running,
     live,
   };
+}
+
+/** 진행분 한 칸 — 서버 작업 과정(`process`)과 같은 모양. 도구 사건은 서버가 보낸 원문(snake_case) 그대로다. */
+export type LiveProcessItem =
+  | { kind: 'text'; text: string; at: number }
+  | { kind: 'tool'; event: Record<string, unknown>; at: number };
+
+/**
+ * 진행분 스냅샷 → 글·도구가 온 순서(서버 작업 과정과 같은 모양).
+ *
+ * 다시 접속한 화면이 **실행한 화면과 같은 타임라인**을 그리게 하는 자리다. 예전에는 스냅샷의 글만
+ * 말풍선에 넣고 도구(`events`)는 버렸다 — 웹에서 도구 24번을 부르며 7분째 도는 턴이 폰에서는
+ * 글 몇 줄로만 보였다(2026-10-01 사용자 지적).
+ *
+ * 순서는 각 사건의 `text_at`(그때까지의 본문 글자 수)으로 되살린다. 그 값이 없는 옛 서버는
+ * 도구를 먼저, 글을 뒤에 둔다 — 순서를 모르면 지금 쓰고 있는 글이 가장 최근 것이다.
+ * 도구 사건의 원문을 그대로 두므로 웹(서버 모양을 쓰는 화면)도 이것을 그대로 받는다.
+ */
+export function liveTurnProcess(live: LiveTurnSnapshot): LiveProcessItem[] {
+  // 서버(Python)의 글자 수는 코드 포인트다 — JS 문자열 길이(UTF-16)로 자르면 이모지 뒤에서 어긋난다.
+  const chars = Array.from(live.text ?? '');
+  const slice = (a: number, b?: number): string => chars.slice(a, b).join('');
+  const base = Math.max(0, (live.textTotal ?? chars.length) - chars.length);
+  const out: LiveProcessItem[] = [];
+  let cursor = 0;
+  let lastAt = live.startedAt ?? 0;
+  for (const raw of live.events ?? []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    if (item.event !== 'tool' || !item.data || typeof item.data !== 'object') continue;
+    const at = typeof item.at === 'number' ? item.at : lastAt;
+    lastAt = at;
+    if (typeof item.text_at === 'number') {
+      const offset = Math.min(chars.length, Math.max(0, item.text_at - base));
+      if (offset > cursor) {
+        out.push({ kind: 'text', text: slice(cursor, offset), at });
+        cursor = offset;
+      }
+    }
+    out.push({ kind: 'tool', event: item.data as Record<string, unknown>, at });
+  }
+  if (cursor < chars.length) out.push({ kind: 'text', text: slice(cursor), at: lastAt });
+  return out;
+}
+
+/** 진행분 스냅샷 → 작업 과정(화면 모양의 도구 사건). 순서 규칙은 {@link liveTurnProcess} 하나다. */
+export function liveTurnFlow(live: LiveTurnSnapshot): TimelineFlowItem[] {
+  const out: TimelineFlowItem[] = [];
+  for (const item of liveTurnProcess(live)) {
+    if (item.kind === 'text') {
+      out.push(item);
+      continue;
+    }
+    const ev = turnEventToChatEvent('tool', item.event);
+    if (ev?.kind === 'tool') out.push({ kind: 'tool', event: ev.event, at: item.at });
+  }
+  return out;
 }
 
 /**

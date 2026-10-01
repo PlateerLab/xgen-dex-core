@@ -866,6 +866,85 @@ test('다른 화면의 턴이 끝나면 완결 본문으로 덮어쓴다', () =>
   assert.equal(s?.remote, false)
 })
 
+// ── 어디서 열어도 같은 작업 과정 (2026-10-01 사용자 보고) ───────────────
+//
+// 다른 화면의 턴은 글만 받고 도구는 흘렸다 — 웹이 도구를 24번 부르며 도는 동안 이 창에는
+// 글 몇 줄만 보였고, 끝난 뒤에는 작업 과정이 통째로 없었다. 첨부를 함께 보낸 질문은 JSON 으로 보였다.
+
+test('다른 화면의 도구도 작업 과정에 쌓이고, 끝난 뒤에도 남는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({
+    kind: 'started', interactionId: key, input: 'LLM 이 안 돼',
+    attachments: [{ name: 'image.png', kind: 'image', mimeType: 'image/png', size: 5, workspacePath: 'uploads/u/x.png' }],
+  })
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'message', data: { type: 'data', content: '로그를 봅니다.' } })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key, event: 'tool',
+    data: { event_type: 'tool_call', tool_name: 'Bash', tool_use_id: 'u1', tool_input: { command: 'ls' } },
+  })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key, event: 'tool',
+    data: { event_type: 'tool_result', tool_name: 'Bash', tool_use_id: 'u1', result: 'ok', duration_ms: 30 },
+  })
+  let s = store.get(key)!
+  assert.equal(s.messages[0].images?.[0]?.name, 'image.png', '질문의 첨부가 보인다')
+  assert.equal(s.messages[0].images?.[0]?.workspacePath, 'uploads/u/x.png')
+  assert.deepEqual(s.messages[1].flow?.map((f) => f.kind), ['text', 'tool', 'tool'])
+  assert.equal(s.messages[1].tools?.length, 1, '한 호출은 한 건')
+
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, ioId: 3, input: 'LLM 이 안 돼', output: '로그를 봅니다. 원인은 X' })
+  s = store.get(key)!
+  assert.deepEqual(s.messages.map((m) => m.text), ['LLM 이 안 돼', '로그를 봅니다. 원인은 X'])
+  assert.equal(s.messages[0].images?.[0]?.name, 'image.png', '완결 뒤에도 첨부가 남는다')
+  assert.deepEqual(
+    s.messages[1].flow?.map((f) => (f.kind === 'text' ? f.text : f.event.eventType)),
+    ['로그를 봅니다.', 'tool_call', 'tool_result', ' 원인은 X'],
+    '작업 과정이 남고, 받지 못한 끝은 완결 본문으로 채운다',
+  )
+})
+
+test('도는 중에 연 대화 — 진행분의 도구까지 되살린다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.setRemoteRunning(key, true, {
+    text: '확인중다음',
+    textTotal: 5,
+    startedAt: 100,
+    events: [
+      { event: 'tool', data: { event_type: 'tool_call', tool_name: 'Read', tool_use_id: 'r' }, text_at: 3, at: 150 },
+      { event: 'tool', data: { event_type: 'tool_result', tool_name: 'Read', tool_use_id: 'r', result: 'x' }, text_at: 3, at: 160 },
+    ],
+  })
+  const m = store.get(key)!.messages[0]
+  assert.equal(m.remotePartial, true)
+  assert.deepEqual(m.flow?.map((f) => (f.kind === 'text' ? f.text : 'T')), ['확인중', 'T', 'T', '다음'])
+  assert.equal(m.tools?.length, 1)
+  assert.equal(m.startedAt, 100)
+})
+
+test('시작을 못 받은 다른 화면의 턴 — 받을 자리를 세워 답이 두 번 서지 않는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key, event: 'tool',
+    data: { event_type: 'tool_call', tool_name: 'Bash', tool_use_id: 'u' },
+  })
+  assert.equal(store.get(key)?.messages[0].remotePartial, true)
+  store.applyExternalTurn({ interactionId: key, ioId: 4, input: '질문', output: '답', source: 'user' })
+  assert.deepEqual(store.get(key)!.messages.map((m) => m.text), ['질문', '답'])
+})
+
+test('옛 서버가 JSON 으로 실어 보낸 질문도 본문만 보인다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({
+    kind: 'started', interactionId: key,
+    input: JSON.stringify({ input_str: '이거 봐 줘', attachments: [{ name: 'a.png' }] }, null, 2),
+  })
+  assert.equal(store.get(key)?.messages[0].text, '이거 봐 줘')
+})
+
 test('내가 돌리는 턴에는 전파가 끼어들지 않는다', async () => {
   const { store } = makeStore()
   const key = store.openNew(agent('A'))

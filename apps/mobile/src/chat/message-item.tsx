@@ -4,7 +4,8 @@
  * 데스크톱과 같은 것을 담되 자리는 폰에 맞춘다:
  *   · 사용자 = 오른쪽 말풍선, 답변 = 폭을 다 쓰는 글 (좁은 화면에서 말풍선에
  *     가둔 답변은 표·코드가 전부 접혀 읽을 수 없다)
- *   · 답변 위에 지금 쓰는 도구 한 칸, 아래에 [복사]·[전체 로그 · N건]·출처
+ *   · 도구를 쓴 답변은 작업 과정 타임라인(데스크톱·웹과 같은 단계·도구·소요 시간)으로,
+ *     아래에 [복사]·[전체 로그 · N건]·출처
  *   · 실패는 본문 대신 구조로 — 무슨 일인지 · 이제 뭘 하면 되는지 · 문의 코드
  *   · 길게 누르면 그 줄을 복사한다 (폰에는 마우스 우클릭이 없다)
  */
@@ -18,6 +19,7 @@ import { alpha, useP } from '../theme';
 import { AssistantMarkdown } from './markdown';
 import { ToolActivity } from './tool-activity';
 import { TriggerRow } from './trigger-row';
+import { ProcessTimeline, hasProcessFlow } from './process-timeline';
 import type { ChatMessage } from './message-model';
 
 /** 답변이 도는 동안 깜빡이는 자리 — 본문 문자열에 ▍를 섞으면 마크다운이 깨진다. */
@@ -147,8 +149,10 @@ export const MessageItem: React.FC<{
   message: ChatMessage;
   /** 본문 표시용 정리(마커 제거)를 마친 글. */
   text: string;
+  /** 글 조각 하나를 같은 규칙으로 정리한다 — 작업 과정의 단계 글에 쓴다. */
+  clean: (text: string) => string;
   onOpenLog: (events: ToolEvent[], initialOpen?: number) => void;
-}> = React.memo(({ message: m, text, onOpenLog }) => {
+}> = React.memo(({ message: m, text, clean, onOpenLog }) => {
   const p = useP();
   const [copied, setCopied] = useState(false);
 
@@ -204,19 +208,22 @@ export const MessageItem: React.FC<{
           </View>
         ) : null}
         {text ? <Text style={{ color: '#FFFFFF', fontSize: 15.5, lineHeight: 22 }}>{text}</Text> : null}
-        {m.attachmentCount ? (
-          <Text style={{ color: alpha('#FFFFFF', 75), fontSize: 11 }}>첨부 {m.attachmentCount}개</Text>
-        ) : null}
         {copied ? <Text style={{ color: alpha('#FFFFFF', 75), fontSize: 11 }}>복사됨</Text> : null}
       </Pressable>
     );
   }
 
   const tools = m.tools ?? [];
-  const showFooter = !m.streaming && !m.remotePartial && (!!text || tools.length > 0);
+  const live = !!m.streaming || !!m.remotePartial;
+  const showFooter = !live && (!!text || tools.length > 0);
+  // 순서를 아는 답(내 스트림·다른 화면의 턴·서버가 되살린 지난 턴)은 타임라인으로 — 칩 한 칸은 순서를 모를 때만.
+  const timeline = hasProcessFlow(m);
+  const timelineView = timeline ? (
+    <ProcessTimeline message={m} clean={clean} onOpenLog={onOpenLog} caret={<Caret />} />
+  ) : null;
   return (
     <View style={{ alignSelf: 'stretch', gap: 2 }}>
-      {tools.length > 0 && (
+      {!timeline && tools.length > 0 && (
         <ToolActivity
           events={tools}
           streaming={!!m.streaming || !!m.remotePartial}
@@ -238,13 +245,18 @@ export const MessageItem: React.FC<{
         }}
       >
         {m.errorInfo ? (
-          <ErrorBlock info={m.errorInfo} />
+          <View style={{ gap: 10 }}>
+            {timelineView}
+            <ErrorBlock info={m.errorInfo} />
+          </View>
+        ) : timeline ? (
+          timelineView
         ) : text ? (
           <AssistantMarkdown text={text} />
         ) : (
           <Caret />
         )}
-        {!!text && (m.streaming || m.remotePartial) ? <Caret /> : null}
+        {!!text && live && !timeline ? <Caret /> : null}
       </Pressable>
 
       {m.interrupted ? (

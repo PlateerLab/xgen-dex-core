@@ -27,10 +27,19 @@ import type {
   ChatRequest,
   Citation,
   HistoryAttachment, HistoryFlowItem,
+  LiveTurnSnapshot,
   ToolEvent,
+  TurnAttachment,
   XgenErrorInfo,
 } from '@dex/protocol';
-import { INTERRUPTED_NOTE, describeStreamError } from '@dex/protocol';
+import {
+  INTERRUPTED_NOTE,
+  appendFlowItem,
+  describeStreamError,
+  liveTurnFlow,
+  turnEventToChatEvent,
+  turnInputText,
+} from '@dex/protocol';
 import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
@@ -64,16 +73,68 @@ export type FlowItem =
   | { kind: 'text'; text: string; at: number }
   | { kind: 'tool'; event: ToolEvent; at: number };
 
-/** flow 에 한 칸 붙인다 — 연달아 온 텍스트 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다. */
+/** flow 에 한 칸 붙인다 — 연달아 온 텍스트 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다(정본 규칙). */
 function appendFlow(flow: readonly FlowItem[] | undefined, item: FlowItem): FlowItem[] {
-  const out = flow ? flow.slice() : [];
-  const tail = out[out.length - 1];
-  if (item.kind === 'text' && tail?.kind === 'text') {
-    out[out.length - 1] = { ...tail, text: tail.text + item.text };
-    return out;
-  }
-  out.push(item);
+  return appendFlowItem(flow, item) as FlowItem[];
+}
+
+/**
+ * 도구 사건을 호출 목록에 합친다 — 같은 호출(tool_call→tool_result)은 한 줄. 기준은 정본과 같다:
+ * 호출 id 우선, 없으면 아직 안 끝난 같은 이름. 순서만 받은 턴(다른 화면의 진행분)의 [도구 기록] 이 여기서 나온다.
+ */
+function mergeToolEvent(tools: readonly ToolEvent[], ev: ToolEvent): ToolEvent[] {
+  const out = tools.slice();
+  const id = ev.toolUseId || ev.runId;
+  const at = id
+    ? out.findIndex((t) => (t.toolUseId || t.runId) === id)
+    : out.findIndex((t) => t.toolName === ev.toolName && t.eventType !== 'tool_result' && t.eventType !== 'tool_error');
+  if (at >= 0) out[at] = { ...out[at], ...ev };
+  else out.push(ev);
   return out;
+}
+
+function toolsOfFlow(flow: readonly FlowItem[]): ToolEvent[] {
+  let tools: ToolEvent[] = [];
+  for (const item of flow) if (item.kind === 'tool') tools = mergeToolEvent(tools, item.event);
+  return tools;
+}
+
+/**
+ * 완결 본문에 작업 과정의 글을 맞춘다 — 다른 화면의 턴은 받은 조각을 쌓은 것이라 조각을 놓쳤으면 과정의
+ * 글이 본문보다 짧고, 타임라인은 마지막 단계의 글을 답으로 그린다. 마지막 도구까지의 글이 본문의 앞부분과
+ * 같으면 그 뒤를 본문으로 채운다. 맞출 수 없으면 그대로 둔다.
+ */
+export function reconcileFlow(flow: readonly FlowItem[], output: string): FlowItem[] {
+  const textOf = (items: readonly FlowItem[]): string => items.map((f) => (f.kind === 'text' ? f.text : '')).join('');
+  const all = textOf(flow);
+  if (all === output) return flow.slice();
+  const at = flow[flow.length - 1]?.at ?? 0;
+  if (output.startsWith(all)) return appendFlow(flow, { kind: 'text', text: output.slice(all.length), at });
+  let lastTool = -1;
+  for (let i = flow.length - 1; i >= 0; i -= 1) {
+    if (flow[i].kind === 'tool') {
+      lastTool = i;
+      break;
+    }
+  }
+  const head = flow.slice(0, lastTool + 1);
+  const before = textOf(head);
+  if (!output.startsWith(before)) return flow.slice();
+  const rest = output.slice(before.length);
+  return rest ? [...head, { kind: 'text', text: rest, at }] : head;
+}
+
+/** 다른 화면의 턴 질문에 붙은 파일 → 말풍선 위 파일 카드(작업 공간 자리로 열고 받는다). */
+function peerAttachments(items: readonly TurnAttachment[] | undefined): ChatImageAttachment[] | undefined {
+  if (!items || items.length === 0) return undefined;
+  return items.map((a) => ({
+    kind: 'file' as const,
+    name: a.name,
+    mime: a.mimeType ?? '',
+    size: a.size ?? 0,
+    dataUrl: '',
+    workspacePath: workspacePathOf(a.workspacePath),
+  }));
 }
 
 /** One rendered chat message (mirrors the old Chat.Msg shape). */
@@ -140,9 +201,12 @@ function isTemporary(m: ChatMsg): boolean {
   return m.remotePartial === true || m.remoteQuestion === true;
 }
 
-/** 봉투(브라우저·Teams 컨텍스트)를 벗긴 질문 — 이력이 그리는 모양과 같게. */
+/**
+ * 봉투를 벗긴 질문 — 이력이 그리는 모양과 같게. 첨부를 함께 보낸 턴의 `{input_str, attachments}` 는
+ * 본문만(정본 규칙), 그 위에 브라우저·Teams 컨텍스트를 벗긴다.
+ */
 function plainInput(input: unknown): string {
-  return stripTeamsContext(stripBrowserContext(typeof input === 'string' ? input : input == null ? '' : String(input)));
+  return stripTeamsContext(stripBrowserContext(turnInputText(input)));
 }
 
 /**
@@ -157,7 +221,7 @@ function plainInput(input: unknown): string {
  */
 export function mergeCompletedTurn(
   messages: readonly ChatMsg[],
-  turn: { ioId?: number | null; input: string; output: string },
+  turn: { ioId?: number | null; input: string; output: string; attachments?: readonly TurnAttachment[] },
 ): ChatMsg[] | null {
   const ioId = turn.ioId || undefined;
   const input = plainInput(turn.input);
@@ -177,9 +241,22 @@ export function mergeCompletedTurn(
     out[out.length - 1] = { ...last, executionIoId: ioId };
     return out;
   }
+  // 진행분이 쌓아 온 작업 과정은 답에 그대로 남긴다 — 끝난 뒤에도 다른 화면의 턴을 타임라인으로 펼쳐 본다.
+  const partial = messages.find((m) => m.remotePartial);
   const answer: ChatMsg = { role: 'assistant', text: output, executionIoId: ioId };
+  if (partial?.flow?.length) {
+    answer.flow = reconcileFlow(partial.flow, output);
+    answer.tools = partial.tools?.length ? partial.tools : toolsOfFlow(partial.flow);
+    answer.citations = partial.citations;
+    answer.startedAt = partial.startedAt;
+    answer.lastEventAt = partial.lastEventAt;
+  }
   if (last?.role === 'user' && last.text === input) out.push(answer);
-  else out.push({ role: 'user', text: input }, answer);
+  else {
+    const question = messages.find((m) => m.remoteQuestion && m.text === input);
+    const images = question?.images ?? peerAttachments(turn.attachments);
+    out.push({ role: 'user', text: input, ...(images ? { images } : {}) }, answer);
+  }
   return out;
 }
 
@@ -1132,7 +1209,7 @@ export class SessionStore {
   setRemoteRunning(
     key: string,
     running: boolean,
-    live?: { text?: string } | null,
+    live?: Partial<LiveTurnSnapshot> | null,
   ): void {
     const s = this.map.get(key);
     if (!s) return;
@@ -1140,20 +1217,40 @@ export class SessionStore {
     // 우리 스트림이 이미 그리고 있으므로 덮어쓰면 안 된다.
     const next = running && !s.streaming;
     const partial = next && typeof live?.text === 'string' ? live.text : '';
+    // 글만이 아니라 **작업 과정**(도구)까지 — 예전에는 스냅샷의 도구를 버려, 다른 화면이 도구를 부르며 도는
+    // 턴이 이 창에는 글 몇 줄로만 보였다.
+    const flow: FlowItem[] = next && live
+      ? (liveTurnFlow({
+          text: partial,
+          events: Array.isArray(live.events) ? live.events : [],
+          startedAt: live.startedAt,
+          textTotal: live.textTotal,
+        }) as FlowItem[])
+      : [];
+    const hasLive = !!partial || flow.length > 0;
     const tail = s.messages[s.messages.length - 1];
     const hadPartial = tail?.remotePartial === true && (tail.streaming === true || !tail.text);
-    if (s.remote === next && !partial && !hadPartial) return;
+    if (s.remote === next && !hasLive && !hadPartial) return;
     this.patch(key, (cur) => {
       const messages = [...cur.messages];
       const last = messages[messages.length - 1];
-      if (partial) {
+      if (hasLive) {
+        const process: Partial<ChatMsg> = flow.some((f) => f.kind === 'tool')
+          ? {
+              flow,
+              tools: toolsOfFlow(flow),
+              startedAt: live?.startedAt ?? flow[0]?.at,
+              lastEventAt: flow[flow.length - 1]?.at,
+            }
+          : {};
         if (last?.remotePartial) {
-          if (last.text === partial && last.streaming) return { ...cur, remote: next };
-          messages[messages.length - 1] = { ...last, text: partial, streaming: true };
+          if (last.text === partial && last.streaming && !process.flow) return { ...cur, remote: next };
+          messages[messages.length - 1] = { ...last, text: partial, streaming: true, ...process };
         } else {
           messages.push({
             role: 'assistant', text: partial, streaming: true, remotePartial: true,
             surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+            ...process,
           });
         }
       } else if (!next && last?.remotePartial) {
@@ -1193,6 +1290,7 @@ export class SessionStore {
     ioId?: number | null;
     event?: string;
     data?: unknown;
+    attachments?: TurnAttachment[];
   }): void {
     const key = event.interactionId;
     const s = this.map.get(key);
@@ -1212,10 +1310,14 @@ export class SessionStore {
             if (m.remotePartial && !m.text) return [];
             return [{ ...m, remotePartial: undefined, remoteQuestion: undefined, streaming: false, surfaceNote: undefined }];
           }),
-          { role: 'user', text: plainInput(event.input), remoteQuestion: true },
+          (() => {
+            const images = peerAttachments(event.attachments);
+            return { role: 'user' as const, text: plainInput(event.input), remoteQuestion: true, ...(images ? { images } : {}) };
+          })(),
           {
             role: 'assistant', text: '', streaming: true, remotePartial: true,
             surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+            startedAt: this.now(),
           },
         ],
         remote: true,
@@ -1226,19 +1328,38 @@ export class SessionStore {
     }
 
     if (event.kind === 'exec') {
-      // 본문 토큰만 이어붙인다. 진행 이벤트(도구·노드)는 이 창의 활동 표시가
-      // 자기 턴에서만 의미가 있으므로 여기서는 흘리지 않는다.
-      const d = event.data as { type?: string; content?: unknown } | undefined;
-      if (event.event !== 'message' || d?.type !== 'data') return;
-      const text = typeof d.content === 'string' ? d.content : '';
-      if (!text) return;
+      // 본문 토큰과 **도구**를 같은 규칙(정본 해석기)으로 — 예전에는 토큰만 받고 도구는 흘려서, 다른 화면이
+      // 도구를 부르는 동안 이 창에는 아무 일도 없어 보였다. 어디서 열어도 같은 작업 과정을 봐야 한다.
+      const ev = turnEventToChatEvent(
+        event.event,
+        event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null,
+      );
+      if (!ev || (ev.kind !== 'text' && ev.kind !== 'tool') || (ev.kind === 'text' && !ev.content)) return;
       this.patch(key, (cur) => {
         const messages = [...cur.messages];
-        const at = findLastIndex(messages, (m) => m.remotePartial === true);
-        if (at < 0) return cur;
+        let at = findLastIndex(messages, (m) => m.remotePartial === true);
+        if (at < 0) {
+          // 시작 프레임을 못 받은 채 연 대화 — 받을 자리를 임시로 세운다(완결 턴이 그 자리를 대신한다).
+          messages.push({
+            role: 'assistant', text: '', streaming: true, remotePartial: true,
+            surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+          });
+          at = messages.length - 1;
+        }
         const partial = messages[at];
-        messages[at] = { ...partial, text: (partial.text || '') + text, streaming: true };
-        return { ...cur, messages, updatedAt: this.now() };
+        const now = this.now();
+        const base = { startedAt: partial.startedAt ?? now, lastEventAt: now, streaming: true };
+        messages[at] =
+          ev.kind === 'text'
+            ? { ...partial, ...base, text: (partial.text || '') + ev.content, flow: appendFlow(partial.flow, { kind: 'text', text: ev.content, at: now }) }
+            : {
+                ...partial,
+                ...base,
+                tools: mergeToolEvent(partial.tools ?? [], ev.event),
+                flow: appendFlow(partial.flow, { kind: 'tool', event: ev.event, at: now }),
+                citations: ev.event.citations?.length ? mergeCitations(partial.citations ?? [], ev.event.citations) : partial.citations,
+              };
+        return { ...cur, messages, remote: true, updatedAt: this.now() };
       });
       this.emit();
       return;
@@ -1252,6 +1373,7 @@ export class SessionStore {
         ioId: event.ioId,
         input: String(event.input ?? cur.messages.find((m) => m.remoteQuestion)?.text ?? ''),
         output: String(event.output ?? partial?.text ?? ''),
+        attachments: event.attachments,
       });
       return { ...cur, messages: merged ?? cur.messages, remote: false, updatedAt: this.now() };
     });

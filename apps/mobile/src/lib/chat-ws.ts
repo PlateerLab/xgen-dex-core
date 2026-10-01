@@ -24,9 +24,12 @@
  */
 import {
   parseSubscribed,
+  turnAttachments,
   turnEventToChatEvent,
+  turnInputText,
   type LiveTurnSnapshot,
   type ToolEvent,
+  type TurnAttachment,
 } from '@dex/protocol';
 
 export type ChatWsState =
@@ -88,9 +91,9 @@ export function newOriginId(): string {
  * 기다려야 했다.
  */
 export type PeerTurnEvent =
-  | { kind: 'started'; input: string }
+  | { kind: 'started'; input: string; attachments: TurnAttachment[] }
   | { kind: 'exec'; event: string; data: unknown }
-  | { kind: 'ended'; ioId: number | null; input: string; output: string }
+  | { kind: 'ended'; ioId: number | null; input: string; output: string; attachments: TurnAttachment[] }
   /** 전파에 구멍이 났다 — 이때만 다시 맞추면 된다. */
   | { kind: 'gap' };
 
@@ -379,14 +382,18 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
           lastSeq = seq;
         }
         const d = (frame.data ?? {}) as Record<string, unknown>;
+        // 질문은 본문만, 첨부는 따로 — 옛 서버는 `{input_str, attachments}` 를 JSON 으로 실어 보냈다
+        // (질문 말풍선에 JSON 이 통째로 보이던 자리). 해석은 정본이 한다.
+        const attachments = turnAttachments(Array.isArray(d.attachments) ? d.attachments : d.input);
         if (frame.type === 'turn_started') {
-          opts.onPeerTurn?.({ kind: 'started', input: String(d.input ?? '') });
+          opts.onPeerTurn?.({ kind: 'started', input: turnInputText(d.input), attachments });
         } else if (frame.type === 'turn_ended') {
           opts.onPeerTurn?.({
             kind: 'ended',
             ioId: typeof d.io_id === 'number' ? d.io_id : null,
-            input: String(d.input ?? ''),
+            input: turnInputText(d.input),
             output: String(d.output ?? ''),
+            attachments,
           });
         } else {
           opts.onPeerTurn?.({
@@ -426,7 +433,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         const d = frame.data as Record<string, unknown>;
         opts.onServerTurn?.({
           ioId: Number(d.io_id ?? 0),
-          input: String(d.input_data ?? ''),
+          input: turnInputText(d.input_data),
           output: String(d.output_data ?? ''),
           source: String(d.source ?? 'user'),
         });

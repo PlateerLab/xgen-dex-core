@@ -901,7 +901,7 @@ const api = {
       cb: (state: {
         interactionId: string;
         running: boolean;
-        live?: { text: string; events: unknown[] } | null;
+        live?: { text: string; events: unknown[]; startedAt?: number; textTotal?: number } | null;
       }) => void,
     ): (() => void) => {
       const h = (_e: unknown, state: Parameters<typeof cb>[0]) => cb(state);
@@ -921,6 +921,7 @@ const api = {
         ioId?: number | null;
         event?: string;
         data?: unknown;
+        attachments?: Array<{ name: string; kind: 'image' | 'file'; mimeType?: string; size?: number; workspacePath?: string }>;
       }) => void,
     ): (() => void) => {
       const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);

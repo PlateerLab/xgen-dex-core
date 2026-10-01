@@ -10,6 +10,7 @@ import { createMobileAgentFetch, MobileAgentTransportUnavailable, MobileAgentRes
 import { createMobileAgentFocusSource, MobileFocusBusy } from '../src/lib/native-agent-focus';
 import { createMobileAgentFocusWatcher, mobileFocusMessage, mobileFocusWait, MobileFocusWatchError, type MobileAgentFocusUpdate } from '../src/lib/native-agent-focus-watch';
 import { createMobileAgentConversationWatcher } from '../src/lib/native-agent-conversation-watch';
+import { createMobileAgentSocketTransport, MobileSocketBusy, type MobileAgentSocketModule } from '../src/lib/native-agent-socket';
 
 const origin = 'https://mobile.example.test'; const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const key = pair.publicKey.export({ format: 'jwk' }); const publicKey = { kty: 'EC', crv: 'P-256', x: key.x!, y: key.y! } as const;
@@ -287,4 +288,33 @@ test('manual conversation read resumes backlog within ten bounded steps and stop
     await watcher.run(() => undefined, new AbortController().signal, true);
     assert.equal(calls, Math.min(backlog, 10)); assert.deepEqual(cursors, Array.from({ length: calls }, (_, i) => i)); assert.ok(pauses.every((ms) => ms === 0));
   }
+});
+test('production socket source signs fresh query-free GET/ath and releases vault lock throughout the connection', async () => {
+  const f = conversationFixture(); const calls: unknown[][] = []; let closes = 0;
+  const native: MobileAgentSocketModule = { newSocketId: randomUUID, openAgentSocket: async (...args) => { calls.push(args); },
+    nextAgentSocket: async () => ({ type: 'events', text: '{}' }), closeAgentSocket: async () => { closes++; } };
+  const source = createMobileAgentFocusSource({ current: f.current, keys: f.keys, vault: f.vault, fetch: createMobileAgentFetch(f.native, origin),
+    socket: createMobileAgentSocketTransport(native, origin) });
+  const first = await source.reconcileConversation(null); const lifetime = new AbortController(); const socket = await source.openConversationSocket(first.state, lifetime.signal);
+  const [_, selected, id, after, token, proof] = calls[0]!; assert.equal(selected, origin); assert.equal(id, f.agentSid); assert.equal(after, '3'); assert.equal(token, f.record().accessToken);
+  const parts = String(proof).split('.'); const claims = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString());
+  assert.equal(claims.htm, 'GET'); assert.equal(claims.htu, `${origin}/api/agentflow/agent-sessions/${f.agentSid}/events`);
+  assert.equal(claims.ath, createHash('sha256').update(String(token)).digest('base64url'));
+  assert.equal(verify('sha256', Buffer.from(parts.slice(0, 2).join('.')), { key: pair.publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(parts[2]!, 'base64url')), true);
+  await f.vault.withIdentity(f.initial, await f.keys.identity(), () => undefined, async () => { f.put(f.makeRecord()); });
+  const next = await source.reconcileConversation(first.state); assert.equal(next.state.authScope, first.state.authScope); assert.equal(socket.closed, true);
+  await socket.close(); assert.equal(closes, 1); const reopened = await source.openConversationSocket(next.state, lifetime.signal);
+  assert.notEqual(calls[1]![4], token); lifetime.abort(); await reopened.close(); assert.equal(reopened.closed, true); source.dispose();
+});
+test('pending journal blocks socket authentication before wire; native closing prevents new key/proof creation', async () => {
+  const f = conversationFixture(); const closing = deferred<void>(); let opens = 0; let prepares = 0;
+  const oldPrepare = f.native.prepare; f.native.prepare = async () => { prepares++; return oldPrepare(); };
+  const native: MobileAgentSocketModule = { newSocketId: randomUUID, openAgentSocket: async () => { opens++; },
+    nextAgentSocket: async () => ({ type: 'events', text: '{}' }), closeAgentSocket: async () => closing.promise };
+  const source = createMobileAgentFocusSource({ current: f.current, keys: f.keys, vault: f.vault, fetch: createMobileAgentFetch(f.native, origin), socket: createMobileAgentSocketTransport(native, origin) });
+  const first = await source.reconcileConversation(null); const socket = await source.openConversationSocket(first.state, new AbortController().signal); const count = prepares;
+  void socket.close(); await assert.rejects(source.openConversationSocket(first.state, new AbortController().signal), MobileSocketBusy); assert.equal(prepares, count);
+  closing.resolve(); await socket.close();
+  f.values.set(`${f.scopeKey}-journal`, JSON.stringify({ ...f.record(), phase: 'refreshing', accessToken: null, refreshToken: null, accessExpiresAt: null }));
+  await assert.rejects(source.openConversationSocket(first.state, new AbortController().signal), PlatformCredentialUnavailable); assert.equal(opens, 1); source.dispose();
 });

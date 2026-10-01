@@ -14,6 +14,7 @@ import * as SecureStore from 'expo-secure-store';
 import { XgenClient } from '@dex/protocol';
 import { diagLog, loggingFetch } from './diag';
 import { createSessionStorage } from './session-storage';
+import type { MobileEnrollmentAccount } from './native-device-enrollment';
 
 export interface MobileSession {
   serverUrl: string;
@@ -26,6 +27,7 @@ export interface MobileSession {
 const CRED_KEY = 'xgen-credentials';
 const sessionStorage = createSessionStorage(SecureStore, AsyncStorage);
 let sessionGeneration = 0;
+let nativeAccountGeneration = 0;
 
 export interface SavedCredentials {
   serverUrl: string;
@@ -46,6 +48,8 @@ export function wsBaseOf(serverUrl: string): string {
 export interface XgenMobileClient {
   api: XgenClient;
   session: MobileSession;
+  /** Read-only account authority for native enrollment; invalidated synchronously on logout. */
+  nativeAccount(): MobileEnrollmentAccount | null;
   /** 인증 헤더를 실은 WebSocket 팩토리 — chat-ws/tool-bridge 에 주입한다.
    *  토큰 회전을 따라가도록 매 연결 시점의 세션 토큰을 읽는다. */
   wsFactory: (url: string) => WebSocket;
@@ -75,6 +79,7 @@ type RnWebSocketCtor = new (
 
 export function buildClient(session: MobileSession, onAuthFailure?: () => void): XgenMobileClient {
   const generation = sessionGeneration;
+  const authScope = `mobile-account-${++nativeAccountGeneration}`;
   const api = new XgenClient({
     baseUrl: session.serverUrl,
     accessToken: session.accessToken,
@@ -98,7 +103,8 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
   };
-  return { api, session, wsFactory };
+  return { api, session, wsFactory, nativeAccount: () => generation === sessionGeneration
+    ? { origin: session.serverUrl, userId: session.userId, authScope, accessToken: session.accessToken } : null };
 }
 
 export async function login(

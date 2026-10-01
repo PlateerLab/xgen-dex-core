@@ -11,8 +11,7 @@ export function NativeDeviceKeyCard({ client, visible }: { client: XgenMobileCli
   const [run, setRun] = useState<((create: boolean) => void) | null>(null);
   useEffect(() => {
     let live = true; let active: AbortController | null = null;
-    const context = { origin: client.session.serverUrl, userId: client.session.userId, authScope: 'selected-mobile-account' };
-    const keys = mobileDeviceKeys(() => live && visible && AppState.currentState === 'active' ? context : null);
+    const keys = mobileDeviceKeys(() => live && visible && AppState.currentState === 'active' ? client.nativeAccount() : null);
     const cancel = () => { active?.abort(); active = null; setBusy(false); setStorage(null); setError(''); };
     const listener = AppState.addEventListener('change', (state) => { if (state !== 'active') cancel(); });
     setRun(() => (create: boolean) => {

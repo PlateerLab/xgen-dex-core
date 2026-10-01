@@ -15,8 +15,10 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 const testLive = process.argv.includes('--live');
-const testTurnUi = process.argv.includes('--turn-ui');
-const testSessionUi = process.argv.includes('--session-ui');
+const testWorkspaceUi = process.argv.includes('--workspace-ui');
+if (testWorkspaceUi && platform !== 'desktop') throw new Error('Workspace UI verification requires --desktop.');
+const testTurnUi = process.argv.includes('--turn-ui') || testWorkspaceUi;
+const testSessionUi = process.argv.includes('--session-ui') || testWorkspaceUi;
 const testSessions = process.argv.includes('--sessions') || testSessionUi;
 const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi || testSessionUi;
 const testTurns = process.argv.includes('--turns') || testTurnUi;
@@ -487,7 +489,8 @@ async function vscodeFixture() {
   const client = () => {
     const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
       ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
-        `--screenshot=${testSessionUi ? '/tmp/cross-sync-native-session-ui-desktop.png' : testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+        ...(testWorkspaceUi ? ['--workspace-ui=1'] : []),
+        `--screenshot=${testWorkspaceUi ? '/tmp/cross-sync-desktop-shared-chat.png' : testSessionUi ? '/tmp/cross-sync-native-session-ui-desktop.png' : testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
       : testTurnUi || testSessionUi ? ['-r', 'tsx/cjs', 'apps/vscode/verify/native-turn-webview.cjs', `--origin=${origin}`, `--user-id=${userId}`, `--node=${process.execPath}`,
         `--screenshot=/tmp/cross-sync-native-${testSessionUi ? 'session' : 'turn'}-ui-vscode.png`]
       : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
@@ -552,9 +555,9 @@ async function vscodeFixture() {
       const before = messageAccesses.size; const rotation = client(); await session(rotation, 'refresh'); await rotation.stop();
       await untilMessageRotation(before); await restored.request('native/unwatch', { watch_id: live.watch_id });
       const stoppedAt = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, stoppedAt);
-      if (platform === 'desktop') assert.equal((await restored.request<any>('verify/conversation-ui')).ui, 'passed');
+      if (platform === 'desktop' && !testWorkspaceUi) assert.equal((await restored.request<any>('verify/conversation-ui')).ui, 'passed');
       console.log(`${platform}: actual TLS / >64KiB messages / sparse cursors / conversation RPC projection / cross-process rotation / unwatch PASS`);
-      if (testTurnUi) {
+      if (testTurnUi && !testWorkspaceUi) {
         const verified = await restored.request<any>('verify/turn-ui');
         assert.equal(verified.ui, 'passed'); assert.equal(executions, 1); assert.equal(turnRequests, 3);
         const body = JSON.parse([...turnBodies.values()][0]!.serialized);
@@ -575,13 +578,24 @@ async function vscodeFixture() {
         console.log(`${platform}: native WSS DPoP / events wake verified HTTP / cross-process token rotation / actual close / live UI PASS`);
       }
     }
-    if (testSessionUi) {
+    if (testSessionUi && !testWorkspaceUi) {
       focus = { active_agent_session_id: null, version: 0, event_id: null };
       const verified = await restored.request<any>('verify/session-ui');
       assert.equal(verified.ui, 'passed'); assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 3);
       assert.equal(focus.active_agent_session_id, null); assert.equal(focus.version, 3);
       assert.equal((sessionWriteBodies[0] as { title: string }).title, 'Native created conversation');
       console.log(`${platform}: production session controls / empty initial focus / server UUID / lost create ACK once / explicit catalog recovery / owned switch / clear focus PASS`);
+    }
+    if (testWorkspaceUi) {
+      focus = { active_agent_session_id: null, version: 0, event_id: null };
+      const verified = await restored.request<any>('verify/workspace-ui');
+      assert.equal(verified.ui, 'passed'); assert.equal(verified.legacy_dispatches, 0);
+      assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 3);
+      assert.equal(executions, 1); assert.equal(turnRequests, 3);
+      assert.equal(focus.active_agent_session_id, null); assert.equal(focus.version, 3);
+      assert.equal(JSON.parse([...turnBodies.values()][0]!.serialized).input_text, 'native-ui-question\nexact tail\n');
+      assert.equal(uiTurn?.status, 'cancelled'); assert.equal(turnVersion, 6);
+      console.log('Desktop production Workspace / shared Settings model / tab close and reopen / uncertain create and turn preservation / exact retry and stop / focus clear / no legacy dispatch or private persistence PASS');
     }
     assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
     const restarted = client(); await session(restarted, 'login'); loseCompletion = true;

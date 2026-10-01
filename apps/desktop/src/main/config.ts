@@ -194,6 +194,7 @@ export interface WorkspaceLayoutPersistConfig {
       id: string;
       kind:
         | 'chat'
+        | 'canonical-chat'
         | 'browser'
         | 'avatar'
         | 'teams'

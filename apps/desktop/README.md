@@ -250,8 +250,7 @@ The native transport verifies default/OS CAs, sends no browser cookies or Origin
 and never retries a request transparently. Chromium proxy settings and private
 certificate exceptions do not apply to this transport. Confirm proxy requirements
 before deployment. A server in `enrollment` mode returns 503 for platform login;
-this panel does not enable ACTIVE mode. Existing Workspace chat uses its current
-connection. Clear interrupted local records only after revoking the server session
+this panel does not enable ACTIVE mode. Workspace now has an explicit **Shared conversation** pane using the same native model; existing Agent-list chats retain their current connection. Clear interrupted local records only after revoking the server session
 on the browser My Page; local clearing does not revoke a server session.
 
 For an opt-in real Electron UI/keychain test, build the app and run
@@ -264,11 +263,11 @@ Both require a trusted localhost CA and use disposable accounts/key slots.
 
 **Settings → 기기·세션 → 공유 대화 읽기 / 공유 대화 폴링 / 공유 대화 실시간 연결 / 대화 연결·폴링 중단** displays validated canonical snapshots, latest turn status and complete linked terminal messages. Omitted, incomplete and pending-history flags remain visible. The shared-conversation composer submits text exactly as entered, including newlines, up to 262,144 UTF-8 bytes. An unknown write can only be retried explicitly with its original body, state version and idempotency key; stop targets only the latest verified running turn. Submit and stop receipts are shown separately from authoritative completion or cancellation. After each write the panel performs an authoritative read and restores its prior conversation watch without issuing another write.
 
-Live mode uses receive-only GET DPoP WSS with main-owned default/system CAs to wake authoritative HTTP recovery; quiet connections still check the OS vault and focus periodically. Same-session rotation preserves cursors and replaces the socket. The main process selects the account, exact HTTPS origin and Desktop platform and projects only safe mutation outcome/status/conflict fields across IPC. The composer has no attachment or local-tool input and does not persist private prompts in browser storage. The same panel lists the current account's verified Canonical sessions, creates a session from a manually entered owned Workflow ID, switches only to an active listed session, and explicitly clears focus. Lifecycle writes use the verified focus version and are never retried. An unknown create or switch blocks another lifecycle write until the user refreshes the catalog; a CAS conflict displays only the validated current focus. Existing Workspace chat-send migration and ACTIVE server validation remain pending.
+Live mode uses receive-only GET DPoP WSS with main-owned default/system CAs to wake authoritative HTTP recovery; quiet connections still check the OS vault and focus periodically. Same-session rotation preserves cursors and replaces the socket. The main process selects the account, exact HTTPS origin and Desktop platform and projects only safe mutation outcome/status/conflict fields across IPC. The composer has no attachment or local-tool input and does not persist private prompts in browser storage. The same panel lists the current account's verified Canonical sessions, creates a session from a manually entered owned Workflow ID, switches only to an active listed session, and explicitly clears focus. Lifecycle writes use the verified focus version and are never retried. An unknown create or switch blocks another lifecycle write until the user refreshes the catalog; a CAS conflict displays only the validated current focus. The Workspace Shared conversation pane uses this same native model; ACTIVE server validation remains pending.
 
 **설정 → 기기·세션**의 공유 대화 읽기·폴링·실시간 연결·중단 버튼으로 최신 턴과 검증된 완결 메시지를 볼 수 있다. 같은 영역의 입력창은 줄바꿈을 포함한 텍스트를 그대로 최대 UTF-8 262,144바이트까지 전송한다. 결과가 불명확할 때만 사용자가 명시적으로 누른 재시도가 최초 본문·상태 버전·중복 방지 키를 그대로 사용하며, 중단은 마지막으로 검증한 실행 중 턴만 대상으로 한다. 송신 접수와 중단 요청 접수는 AI 응답 완료·실제 중단 완료와 구분해 표시하고, 각 쓰기 뒤에는 새 쓰기 없이 authoritative read와 기존 대화 구독을 다시 수행한다.
 
-실시간 연결은 main 전용 DPoP WSS 알림 뒤 HTTP로 검증하고 조용한 연결도 포커스·vault를 확인한다. 계정·정확한 HTTPS origin·Desktop 플랫폼은 main 프로세스가 지정하고 IPC에는 검증된 mutation outcome/status/conflict만 전달한다. 같은 패널에서 현재 계정이 소유한 Canonical 세션 목록을 새로 확인하고, 직접 입력한 Workflow ID로 세션을 만들며, 목록에 있는 활성 세션으로만 포커스를 바꾸거나 해제할 수 있다. 생성·전환은 검증된 포커스 버전을 사용하고 자동 재시도하지 않는다. 결과가 불명확하면 사용자가 목록을 명시적으로 새로 고칠 때까지 다음 세션 쓰기를 막고, CAS 충돌에서는 검증한 현재 포커스만 표시한다. 입력은 브라우저 저장소에 보관하지 않으며 첨부와 로컬 도구는 지원하지 않는다. 기존 Workspace 채팅 송신 이행과 실제 ACTIVE 서버 검증은 후속 작업이다.
+실시간 연결은 main 전용 DPoP WSS 알림 뒤 HTTP로 검증하고 조용한 연결도 포커스·vault를 확인한다. 계정·정확한 HTTPS origin·Desktop 플랫폼은 main 프로세스가 지정하고 IPC에는 검증된 mutation outcome/status/conflict만 전달한다. 같은 패널에서 현재 계정이 소유한 Canonical 세션 목록을 새로 확인하고, 직접 입력한 Workflow ID로 세션을 만들며, 목록에 있는 활성 세션으로만 포커스를 바꾸거나 해제할 수 있다. 생성·전환은 검증된 포커스 버전을 사용하고 자동 재시도하지 않는다. 결과가 불명확하면 사용자가 목록을 명시적으로 새로 고칠 때까지 다음 세션 쓰기를 막고, CAS 충돌에서는 검증한 현재 포커스만 표시한다. 입력은 브라우저 저장소에 보관하지 않으며 첨부와 로컬 도구는 지원하지 않는다. Workspace의 공유 대화 탭도 같은 native 모델을 사용한다. 실제 ACTIVE 서버 검증은 후속 작업이다.
 
 실시간 연결을 포함한 Electron 검증은 저장소 루트에서 `node --import tsx scripts/cli-platform-session-fixture.mts --desktop --live`, Compose 인증 차단 검증은 `node --import tsx scripts/native-platform-session-compose.mts --desktop --native-ws`로 실행한다. / For live Electron verification add `--live` to the HTTPS fixture; add `--native-ws` to the Compose harness for enrollment-mode authentication rejection.
 
@@ -285,3 +284,18 @@ Live mode uses receive-only GET DPoP WSS with main-owned default/system CAs to w
 뜻한다. 기존 Workspace 채팅은 현재 연결을 사용한다. 중단된 로컬 기록은 브라우저
 내 페이지에서 서버 세션을 먼저 폐기한 뒤 정리해야 하며 로컬 삭제만으로 서버가
 폐기되지는 않는다. 위 Electron/Compose 검증 스크립트는 임시 계정·키만 사용한다.
+
+### Workspace shared conversation / 작업 공간 공유 대화
+
+Open **Shared conversation** from the left activity bar or the welcome screen. The primary pane reads the current account's verified session catalog, creates sessions from an owned Workflow ID, selects or clears account focus, displays validated complete messages and sends plain text through the native submit/stop path. The **Device/session settings** button opens that settings section directly. Workspace and settings share one model per account/origin: moving between tabs or closing and reopening the pane preserves uncertain requests and catalog write locks. Only an explicit retry reuses the original turn body/key/version; session creation is never replayed. Account or focus changes clear the prior draft/transcript. Local layout stores only a static pane marker, with no server IDs, titles, prompts or credentials. Re-reading restores live subscription. Attachments, local tools and legacy Agent-list chat migration remain later work.
+
+왼쪽 활동 표시줄 또는 시작 화면의 **공유 대화**에서 주 채팅 영역을 연다. 현재 계정의 검증된 세션을 조회·생성·선택하거나 포커스를 해제하고, 완전한 메시지만 표시하며 텍스트 전송·명시적 재확인·최신 실행 턴 중단을 제공한다. **기기·세션 설정** 버튼은 해당 설정 항목을 바로 연다. 작업 공간과 설정은 계정·origin별 같은 모델을 사용하므로 탭 이동·닫기·재열기에도 미확정 턴과 세션 쓰기 잠금을 유지한다. 계정·대화 변경은 이전 입력과 본문을 비우며, 로컬 배치에는 고정 탭 표시만 저장한다. 대화 다시 읽기는 실시간 구독을 재개한다. 첨부·로컬 도구·기존 Agent 목록 채팅의 이행과 실제 ACTIVE 서비스 간 검증은 남아 있다.
+
+Repository-root verification / 저장소 루트 검증:
+
+```sh
+node --import tsx scripts/cli-platform-session-fixture.mts --desktop --workspace-ui
+node --import tsx scripts/native-platform-session-compose.mts --desktop --desktop-workspace --native-turns --native-sessions
+```
+
+The HTTPS fixture uses the production Workspace, native main/preload IPC and disposable OS-keychain credentials; inactive legacy chrome APIs are test stubs. Compose verifies enrollment-mode rejection, not ACTIVE Gateway success. / HTTPS fixture는 실제 제품 Workspace·native main/preload IPC·일회용 OS 키체인을 사용하고 비활성 기존 부가기능 API만 테스트 대체값을 사용한다. Compose 검증은 enrollment 인증 차단이며 실제 ACTIVE Gateway 성공 검증은 아니다.

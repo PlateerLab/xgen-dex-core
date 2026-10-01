@@ -74,6 +74,8 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
+const testDesktopWorkspace = process.argv.includes('--desktop-workspace');
+if (testDesktopWorkspace && !testDesktop) throw new Error('--desktop-workspace requires --desktop');
 const testNativeWs = process.argv.includes('--native-ws');
 const testNativeTurns = process.argv.includes('--native-turns');
 const testNativeSessions = process.argv.includes('--native-sessions');
@@ -93,7 +95,8 @@ async function stopNativeRpc() { const current = rpc; rpc = null; await current?
 async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live' | 'submit-turn' | 'stop-turn' | 'agent-sessions' | 'create-agent-session' | 'switch-agent-focus', action?: string, extra: object = {}) {
   assert.ok(cliDirectory);
   rpc ??= new DexRpcClient({ process: { command: platform === 'desktop' ? desktopElectron! : process.execPath, args: platform === 'desktop'
-    ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`]
+    ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
+      ...(testDesktopWorkspace ? ['--workspace-ui=1'] : [])]
     : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
     env: { ...process.env, DEX_CLI_HOME: cliDirectory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'compose-fixture' });
   const initialized = await rpc.start(); assert.equal(initialized.capabilities.nativePlatformSession?.platform, platform);
@@ -176,6 +179,12 @@ try {
       await assert.rejects(run('login', [], 'session'), (error: unknown) =>
         error instanceof Error && (error.message.includes('503') || ('stderr' in error && String(error.stderr).includes('503'))));
       assert.equal((await run('status', [], 'session')).state, 'login_pending');
+      if (platform === 'desktop' && testDesktopWorkspace) {
+        const checked: { ui: string; legacy_dispatches: number } = await rpc!.request('verify/workspace-enrollment');
+        assert.equal(checked.ui, 'passed'); assert.equal(checked.legacy_dispatches, 0);
+        assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
+        console.log('Desktop production Workspace: enrollment login_pending disables session creation and composer; no legacy dispatch PASS');
+      }
       await assert.rejects(platform === 'cli' ? run('watch-focus', [], 'session') : nativeRpc(platform, 'watch'), (error: unknown) =>
         error instanceof DexRpcError ? error.engineCode === 'auth_required' : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
       if (testNativeMessages) {

@@ -1,5 +1,5 @@
 /** Opt-in stdio driver for real production Electron IPC/preload/renderer against a supplied HTTPS fixture. */
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -12,14 +12,16 @@ const { NativeDeviceKeyStore } = require('@dex/engine/native-device-key-store');
 
 const option = (name) => process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const origin = option('origin'); const userId = option('user-id');
+const workspaceUi = option('workspace-ui') === '1';
 if (!origin || !userId) throw new Error('Disposable fixture origin and user ID are required');
 const directory = mkdtempSync(path.join(tmpdir(), 'dex-desktop-native-ui-'));
 mkdirSync(path.join(directory, 'profile'));
 app.setPath('userData', path.join(directory, 'profile'));
 app.disableHardwareAcceleration();
 let win; let host; let initialized = false; let closing = false; let suppressNotifications = false;
+let legacyDispatches = 0; const savedConfig = [];
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const deadline = setTimeout(() => app.exit(1), 60000);
+const deadline = setTimeout(() => app.exit(1), workspaceUi ? 90000 : 60000);
 const close = () => { if (closing) return; closing = true; host?.reset(); clearTimeout(deadline); win?.destroy(); app.quit(); };
 app.on('will-quit', () => rmSync(directory, { recursive: true, force: true }));
 async function until(predicate) {
@@ -27,11 +29,32 @@ async function until(predicate) {
   throw new Error('Desktop fixture UI deadline');
 }
 app.whenReady().then(async () => {
-  buildSync({ entryPoints: [path.join(__dirname, 'native-session-renderer.tsx')], bundle: true, outfile: path.join(directory, 'ui.js'), platform: 'browser', format: 'iife', loader: { '.woff2': 'file' }, tsconfig: path.join(__dirname, '../tsconfig.json') });
+  if (workspaceUi) {
+    // Only unrelated legacy chrome APIs are inert. Native IPC, OS vault,
+    // proof signing, HTTPS and conversation transport remain production code.
+    const values = new Map([
+      [CHANNELS.agentsList, { items: [], pagination: { page: 1, totalPages: 1 } }],
+      [CHANNELS.historyConversations, []], [CHANNELS.teamsRooms, []],
+      [CHANNELS.browserState, { enabled: false, pages: [], activeByWorkflow: {}, popupRequests: [] }],
+      [CHANNELS.notificationStatus, { supported: false, platform: 'fixture', developmentMode: true }],
+      [CHANNELS.notificationPreferences, require('@dex/protocol/notifications').defaultNotificationProfile()],
+      [CHANNELS.notificationContext, null], [CHANNELS.notificationConsumeTarget, null],
+      [CHANNELS.artifactGallery, { items: [], failed: 0, scanned: 0 }], [CHANNELS.fsStatus, null],
+      [CHANNELS.quickChatGetHotkey, ''], [CHANNELS.autostartGet, false], [CHANNELS.appVersion, 'fixture'],
+    ]);
+    for (const [channel, value] of values) ipcMain.handle(channel, () => value);
+    ipcMain.handle(CHANNELS.configSet, (_event, patch) => { savedConfig.push(patch); return { serverUrl: origin }; });
+    ipcMain.handle(CHANNELS.systemMetrics, () => { throw new Error('Fixture metrics unavailable'); });
+    for (const channel of [CHANNELS.chatStart, CHANNELS.chatStop, CHANNELS.chatEndSession]) {
+      ipcMain.handle(channel, () => { legacyDispatches++; throw new Error('Canonical UI cannot dispatch legacy chat'); });
+    }
+  }
+  buildSync({ entryPoints: [path.join(__dirname, 'native-session-renderer.tsx')], bundle: true, outfile: path.join(directory, 'ui.js'), platform: 'browser', format: 'iife', external: ['node:crypto'], loader: { '.woff2': 'file' }, tsconfig: path.join(__dirname, '../tsconfig.json') });
   writeFileSync(path.join(directory, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="ui.css"></head><body><main id="root" class="settings-panel"></main><script src="ui.js"></script></body></html>');
   win = new BrowserWindow({ width: 1050, height: 1000, show: false, webPreferences: { contextIsolation: true, sandbox: false, preload: path.join(__dirname, '../out/preload/index.js') } });
   const rendererUrl = new URL(pathToFileURL(path.join(directory, 'index.html')));
   rendererUrl.searchParams.set('origin', origin);
+  if (workspaceUi) { rendererUrl.searchParams.set('workspace', '1'); rendererUrl.searchParams.set('userId', userId); }
   host = bindDesktopNativeSessions(() => win?.webContents ?? null, () => ({ origin, userId }), rendererUrl.href);
   // Notifications go through the production channel and renderer, then to this test driver's stdout.
   const originalSend = win.webContents.send.bind(win.webContents);
@@ -41,8 +64,11 @@ app.whenReady().then(async () => {
       send({ jsonrpc: '2.0', method: notice.value.view === 'conversation' ? 'native/conversation' : 'native/focus', params: notice.value });
     }
   };
-  await win.loadFile(path.join(directory, 'index.html'), { query: { origin } });
-  await until(`document.querySelectorAll('button').length >= 10 && !!window.xgen.nativeSession`);
+  const rendererQuery = { origin, ...(workspaceUi ? { workspace: '1', userId } : {}) };
+  const rendererReady = workspaceUi ? `!!document.getElementById('canonical-chat-open') && !!window.xgen.nativeSession`
+    : `document.querySelectorAll('button').length >= 10 && !!window.xgen.nativeSession`;
+  await win.loadFile(path.join(directory, 'index.html'), { query: rendererQuery });
+  await until(rendererReady);
   // Another first-party window still cannot manage this main renderer's native account.
   const guest = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: false, preload: path.join(__dirname, '../out/preload/index.js') } });
   await guest.loadURL('about:blank');
@@ -52,8 +78,8 @@ app.whenReady().then(async () => {
   await win.loadURL('about:blank');
   const navigated = await win.webContents.executeJavaScript(`window.xgen.nativeSession.request('session', {action:'status'})`);
   if (navigated.ok || navigated.code !== 'auth_required') throw new Error('Desktop fixture renderer URL isolation failed');
-  await win.loadFile(path.join(directory, 'index.html'), { query: { origin } });
-  await until(`document.querySelectorAll('button').length >= 10 && !!window.xgen.nativeSession`);
+  await win.loadFile(path.join(directory, 'index.html'), { query: rendererQuery });
+  await until(rendererReady);
   const lines = createInterface({ input: process.stdin });
   lines.on('line', (line) => { void (async () => {
     let request;
@@ -69,6 +95,12 @@ app.whenReady().then(async () => {
         await keys.remove(scope); result = { removed: true };
       }
       else if (method === 'verify/ui') {
+        if (workspaceUi) {
+          await win.webContents.executeJavaScript(`document.querySelector('button[title="설정"]').click()`, true);
+          await until(`Array.from(document.querySelectorAll('button')).some(button=>button.textContent==='기기·세션')`);
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='기기·세션').click()`, true);
+          await until(`!!document.getElementById('native-session-refresh')`);
+        }
         await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='세션 상태').click()`, true);
         await until(`document.body.textContent.includes('세션: 사용 가능') && document.body.textContent.includes('연결됨')`);
         const safe = await win.webContents.executeJavaScript(`({password:document.querySelector('input[type=password]').value, labels:Array.from(document.querySelectorAll('button')).map(b=>b.textContent)})`);
@@ -121,6 +153,65 @@ app.whenReady().then(async () => {
           await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='대화 연결·폴링 중단').click()`, true);
           await until(`!document.body.textContent.includes('native-ui-answer')`);
           result = { ui: 'passed', sender_isolation: 'passed' };
+        } finally { suppressNotifications = false; }
+      } else if (method === 'verify/workspace-enrollment') {
+        await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-open').click()`, true);
+        await until(`document.body.textContent.includes('로그인 확인 필요') && !!document.getElementById('canonical-chat-input')`);
+        const disabled = await win.webContents.executeJavaScript(`['canonical-chat-input','canonical-chat-submit','canonical-chat-create','canonical-chat-switch','canonical-chat-stop'].every(id=>document.getElementById(id).disabled)`, true);
+        if (!disabled || legacyDispatches) throw new Error('Workspace enrollment boundary failed');
+        result = { ui: 'passed', legacy_dispatches: legacyDispatches };
+      } else if (method === 'verify/workspace-ui') {
+        suppressNotifications = true;
+        try {
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-open').click()`, true);
+          await until(`!!document.getElementById('canonical-chat-workflow') && !document.getElementById('canonical-chat-workflow').disabled`);
+          await win.webContents.executeJavaScript(`document.querySelector('.canonical-chat__sessions').open=true`, true);
+          await win.webContents.executeJavaScript(`(()=>{const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;for(const [id,value] of [['canonical-chat-workflow','native-fixture'],['canonical-chat-title','Native created conversation']]){const input=document.getElementById(id);setter.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));}})()`, true);
+          await until(`!document.getElementById('canonical-chat-create').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-create').click();document.getElementById('canonical-chat-create').click()`, true);
+          await until(`document.body.textContent.includes('작업 완료 여부를 확인할 수 없습니다') && document.getElementById('canonical-chat-create').disabled`);
+          // Switching to settings must not dispose the shared model or unlock an uncertain create.
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-settings').click()`, true);
+          await until(`!!document.getElementById('native-session-create') && document.getElementById('native-session-create').disabled && document.body.textContent.includes('작업 완료 여부를 확인')`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-open').click()`, true);
+          await until(`!!document.getElementById('canonical-chat-refresh') && document.getElementById('canonical-chat-create').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-refresh').click()`, true);
+          await until(`Array.from(document.getElementById('canonical-chat-select').options).some(option=>option.textContent.includes('Native created conversation')) && !document.getElementById('canonical-chat-refresh').disabled`);
+          await until(`!!document.getElementById('canonical-chat-input') && !document.getElementById('canonical-chat-input').disabled && !document.body.textContent.includes('native-message-answer')`);
+          await win.webContents.executeJavaScript(`(()=>{const select=document.getElementById('canonical-chat-select');const option=Array.from(select.options).find(item=>item.textContent.includes('Native shared conversation'));const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,option.value);select.dispatchEvent(new Event('change',{bubbles:true}));})()`, true);
+          await until(`!document.getElementById('canonical-chat-switch').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-switch').click()`, true);
+          await until(`document.body.textContent.includes('native-message-answer') && !document.getElementById('canonical-chat-input').disabled`);
+          await win.webContents.executeJavaScript(`(()=>{const input=document.getElementById('canonical-chat-input');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'native-ui-question\\nexact tail\\n');input.dispatchEvent(new Event('input',{bubbles:true}));})()`, true);
+          await until(`!document.getElementById('canonical-chat-submit').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-read').click()`, true);
+          await until(`document.getElementById('canonical-chat-input').value==='native-ui-question\\nexact tail\\n' && !document.getElementById('canonical-chat-submit').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-submit').click();document.getElementById('canonical-chat-submit').click()`, true);
+          await until(`!document.getElementById('canonical-chat-retry').disabled`);
+          // Close/reopen and visit settings while the original turn's receipt is unknown.
+          await win.webContents.executeJavaScript(`document.querySelector('[data-tab-id="canonical-chat"] .tab-close').click()`, true);
+          await until(`!document.getElementById('canonical-chat-input')`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-open').click()`, true);
+          await until(`!!document.getElementById('canonical-chat-retry') && !document.getElementById('canonical-chat-retry').disabled && document.getElementById('canonical-chat-input').disabled`);
+          await win.webContents.executeJavaScript(`document.querySelector('[data-tab-id="settings"]').click()`, true);
+          await until(`Array.from(document.querySelectorAll('button')).some(button=>button.textContent==='기기·세션')`);
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='기기·세션').click()`, true);
+          await until(`!!document.getElementById('native-turn-retry') && !document.getElementById('native-turn-retry').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-open').click()`, true);
+          await until(`!!document.getElementById('canonical-chat-retry') && !document.getElementById('canonical-chat-retry').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-retry').click()`, true);
+          await until(`!document.getElementById('canonical-chat-stop').disabled && document.getElementById('canonical-chat-input').value===''`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-stop').click()`, true);
+          await until(`document.body.textContent.includes('native-ui-answer') && !document.getElementById('canonical-chat-input').disabled`);
+          if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-clear').click()`, true);
+          await until(`!document.body.textContent.includes('native-ui-answer') && document.getElementById('canonical-chat-input').value==='' && document.getElementById('canonical-chat-input').disabled`);
+          const serialized = JSON.stringify(savedConfig);
+          for (const forbidden of ['native-ui-question', 'Native created conversation', 'private-server-secret', 'accessToken', 'refreshToken', 'privateKeyPkcs8']) {
+            if (serialized.includes(forbidden)) throw new Error('Canonical data persisted into legacy configuration');
+          }
+          if (legacyDispatches) throw new Error('Legacy chat dispatched from Canonical pane');
+          result = { ui: 'passed', sender_isolation: 'passed', legacy_dispatches: legacyDispatches };
         } finally { suppressNotifications = false; }
       } else if (method === 'verify/session-ui') {
         suppressNotifications = true;

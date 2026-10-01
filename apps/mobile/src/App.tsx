@@ -36,6 +36,7 @@ import type { Agent, Conversation } from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
 import { ChatView, formatWhen } from './chat/chat-view';
 import { NativeDeviceKeyCard } from './NativeDeviceKeyCard';
+import { NativeDeviceEnrollmentCard } from './NativeDeviceEnrollmentCard';
 import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -967,6 +968,7 @@ function SettingsSection({
   return (
     <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 28 }}>
       <NativeDeviceKeyCard client={client} visible={visible} />
+      <NativeDeviceEnrollmentCard client={client} visible={visible} />
       <View style={st.card}>
         <Text style={st.cardTitle}>모바일 도구</Text>
         <Pressable style={st.checkRow} onPress={() => onToggleTools(!toolsEnabled)}>

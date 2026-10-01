@@ -1,15 +1,45 @@
 import { DexError, MemoryConfigStore, defaultConfig, nativeKeyScope } from '@dex/engine';
 import { NativePlatformHttpError, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
+import type { AgentSessionMutationConflict, AgentSessionMutationConflictCode } from '@dex/protocol/agent-session-mutation';
 import { NativeSessionRpcHost, type NativeSessionHostOptions } from '@dex/rpc/native-session-host';
-import type { DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
+import type { DesktopNativeMutationFailure, DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
 
 export interface DesktopNativeContext { origin: string; userId: string | null }
 export interface DesktopNativeOptions extends NativeSessionHostOptions {
   current: () => DesktopNativeContext;
   notify: (notice: DesktopNativeNotice) => void;
 }
+const mutationConflictCodes = new Set<AgentSessionMutationConflictCode>([
+  'STATE_VERSION_CONFLICT', 'IDEMPOTENCY_KEY_REUSED', 'TURN_IN_PROGRESS', 'TURN_NOT_RUNNING',
+  'TURN_ID_CONFLICT', 'TURN_NOT_STARTED', 'TURN_STOP_UNAVAILABLE',
+]);
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+function safeConflict(value: unknown): AgentSessionMutationConflict | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.code !== 'string' || !mutationConflictCodes.has(raw.code as AgentSessionMutationConflictCode)) return undefined;
+  if (raw.current_state_version !== undefined && (typeof raw.current_state_version !== 'number'
+    || !Number.isSafeInteger(raw.current_state_version) || raw.current_state_version < 1)) return undefined;
+  if (raw.current_turn_id !== undefined && (typeof raw.current_turn_id !== 'string' || !uuid.test(raw.current_turn_id))) return undefined;
+  return { code: raw.code as AgentSessionMutationConflictCode,
+    ...(raw.current_state_version === undefined ? {} : { current_state_version: raw.current_state_version as number }),
+    ...(raw.current_turn_id === undefined ? {} : { current_turn_id: raw.current_turn_id as string }) };
+}
+function safeMutationFailure(value: unknown, code: DexError['code']): DesktopNativeMutationFailure | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.outcome === 'unknown' && code === 'network_error') return { outcome: 'unknown' };
+  if (raw.outcome !== 'rejected' || (code !== 'auth_required' && code !== 'usage_error')
+    || typeof raw.status !== 'number' || !Number.isSafeInteger(raw.status)
+    || raw.status < 400 || raw.status > 499 || raw.status === 408) return undefined;
+  const conflict = safeConflict(raw.conflict);
+  return { outcome: 'rejected', status: raw.status, ...(conflict ? { conflict } : {}) };
+}
 function safeError(error: unknown): Extract<DesktopNativeReply, { ok: false }> {
-  if (error instanceof DexError) return { ok: false, code: error.code, message: error.message };
+  if (error instanceof DexError) {
+    const mutation = safeMutationFailure(error.details, error.code);
+    return { ok: false, code: error.code, message: error.message, ...mutation };
+  }
   if (error instanceof NativePlatformHttpError) return { ok: false, code: `http_${error.status}`, message: `서버가 기기·세션 요청을 거절했습니다 (${error.status}).` };
   if (error instanceof NativePlatformTransportError) return { ok: false, code: 'network_error', message: 'HTTPS 서버 연결을 확인하세요.' };
   if (error instanceof Error && error.name === 'AbortError') return { ok: false, code: 'cancelled', message: '기기·세션 작업이 취소되었습니다.' };
@@ -37,7 +67,8 @@ export class DesktopNativeSessions {
   }
   async request(rawMethod: unknown, rawParams: unknown = {}): Promise<DesktopNativeReply> {
     try {
-      if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'watch-live', 'unwatch', 'cancel'].includes(rawMethod)) {
+      if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'watch-live',
+        'submit-turn', 'stop-turn', 'unwatch', 'cancel'].includes(rawMethod)) {
         throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
       }
       const params = object(rawParams);
@@ -45,7 +76,9 @@ export class DesktopNativeSessions {
       if (['profile', 'user_id', 'platform', 'platform_type', 'server_url', 'origin'].some((key) => key in params)) throw new DexError('usage_error', '기기·세션 계정과 서버는 앱이 지정합니다.');
       if (rawMethod === 'cancel') {
         if (Object.keys(params).length) throw new DexError('usage_error', '취소 요청에는 추가 항목을 넣을 수 없습니다.');
-        this.reset(); return { ok: true, value: { watching: false } };
+        this.generation++;
+        const value = this.host ? await this.host.request('native/cancel', {}) : { watching: false as const };
+        return { ok: true, value };
       }
       const scope = this.current();
       if (this.scope !== scope.key) {
@@ -61,7 +94,13 @@ export class DesktopNativeSessions {
       const scoped = rawMethod === 'unwatch' ? params : { ...params, profile: 'desktop',
         ...(rawMethod === 'device' || (rawMethod === 'session' && params.action === 'login') ? {} : { user_id: scope.userId }) };
       const value = await this.host!.request(`native/${rawMethod}`, scoped);
-      if (generation !== this.generation || this.current().key !== scope.key) throw new DOMException('Cancelled', 'AbortError');
+      if (generation !== this.generation || this.current().key !== scope.key) {
+        if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn') {
+          throw new DexError('network_error', '송신 완료 여부를 확인할 수 없습니다. 대화 상태를 확인하고 같은 요청으로 재확인하세요.',
+            { outcome: 'unknown' });
+        }
+        throw new DOMException('Cancelled', 'AbortError');
+      }
       return { ok: true, value };
     } catch (error) { return safeError(error); }
   }

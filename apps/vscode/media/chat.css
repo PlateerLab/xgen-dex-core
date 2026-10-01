@@ -67,6 +67,27 @@ button:disabled {
   height: 100%;
 }
 
+.canonical-mode-entry {
+  position: fixed;
+  z-index: 50;
+  top: 7px;
+  left: 50%;
+  min-height: 27px;
+  padding: 3px 9px;
+  translate: -50% 0;
+  color: var(--vscode-foreground);
+  border-color: var(--dex-border);
+  background: var(--vscode-sideBar-background);
+  font-size: 10px;
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 18%, transparent);
+}
+
+.canonical-mode-entry.active {
+  color: var(--vscode-button-foreground);
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-button-background);
+}
+
 .eyebrow {
   color: var(--vscode-descriptionForeground);
   font-size: 9px;

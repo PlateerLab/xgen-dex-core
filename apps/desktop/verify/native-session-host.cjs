@@ -60,7 +60,7 @@ app.whenReady().then(async () => {
     try {
       request = JSON.parse(line); const { method, params = {} } = request;
       let result;
-      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true } } }; }
+      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true } } }; }
       else if (method === 'shutdown' || method === 'exit') { result = null; }
       else if (method === 'verify/cleanup-key') {
         host.reset();
@@ -99,11 +99,35 @@ app.whenReady().then(async () => {
           await until(`document.body.textContent.includes('구독 안 함') && !document.body.textContent.includes('native-message-answer')`);
           result = { ui: 'passed', live: 'passed' };
         } finally { suppressNotifications = false; }
+      } else if (method === 'verify/turn-ui') {
+        suppressNotifications = true;
+        try {
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='공유 대화 읽기').click()`, true);
+          await until(`!!document.getElementById('native-turn-input') && !document.getElementById('native-turn-input').disabled`);
+          await win.webContents.executeJavaScript(`const input=document.getElementById('native-turn-input');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'native-ui-question\\nexact tail\\n');input.dispatchEvent(new Event('input',{bubbles:true}));`, true);
+          await until(`document.getElementById('native-turn-input').value.length>0 && !document.getElementById('native-turn-submit').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-turn-submit').click();document.getElementById('native-turn-submit').click()`, true);
+          await until(`!!document.getElementById('native-turn-retry') && !document.getElementById('native-turn-retry').disabled`);
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='작업·구독 중단').click()`, true);
+          await until(`document.body.textContent.includes('구독 안 함') && document.getElementById('native-turn-input').disabled`);
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='공유 대화 읽기').click()`, true);
+          await until(`!document.getElementById('native-turn-retry').disabled && document.getElementById('native-turn-input').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-turn-retry').click()`, true);
+          await until(`!!document.getElementById('native-turn-stop') && !document.getElementById('native-turn-stop').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-turn-stop').click()`, true);
+          await until(`document.body.textContent.includes('native-ui-answer') && !document.getElementById('native-turn-input').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-turn-input').scrollIntoView({block:'center'})`, true);
+          if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='대화 연결·폴링 중단').click()`, true);
+          await until(`!document.body.textContent.includes('native-ui-answer')`);
+          result = { ui: 'passed', sender_isolation: 'passed' };
+        } finally { suppressNotifications = false; }
       } else if (method.startsWith('native/')) {
         const { user_id, profile, ...body } = params;
         if (user_id && user_id !== userId) throw new Error('Fixture account mismatch');
         const reply = await win.webContents.executeJavaScript(`window.xgen.nativeSession.request(${JSON.stringify(method.slice(7))},${JSON.stringify(body)})`, true);
-        if (!reply.ok) { send({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: reply.message, data: { code: reply.code } } }); return; }
+        if (!reply.ok) { send({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: reply.message, data: { code: reply.code,
+          ...(reply.outcome ? { details: { outcome: reply.outcome, ...(reply.status ? { status: reply.status } : {}), ...(reply.conflict ? { conflict: reply.conflict } : {}) } } : {}) } } }); return; }
         result = reply.value;
       } else throw new Error('Unsupported fixture method');
       send({ jsonrpc: '2.0', id: request.id, result });

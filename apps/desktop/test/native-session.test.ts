@@ -9,6 +9,7 @@ import { DesktopNativeSessions, isNativeSessionSender } from '../src/main/native
 import type { DesktopNativeNotice, DesktopNativeReply } from '../src/native-session-types';
 
 const origin = 'https://app.example.test'; const device = '018f1240-0000-7000-8000-000000000001'; const sid = '018f1240-0000-7000-8000-000000000002';
+const agentSid = '018f1240-0000-7000-8000-000000000003'; const turn = '018f1240-0000-7000-8000-000000000004';
 const challenge = Buffer.alloc(32, 5).toString('base64url');
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'desktop-native-')); const values = new Map<string, string>();
@@ -105,6 +106,91 @@ test('Desktop binds conversation reads and polling to the main-process account s
     assert.ok(f.notices.some((n) => n.type === 'update' && 'view' in n.value
       && n.value.watch_id === live.watch_id && n.value.update.type === 'conversation'));
     await f.value('unwatch', { watch_id: live.watch_id });
+  } finally { await f.cleanup(); }
+});
+test('Desktop binds Canonical turn writes to the main account and projects only safe acknowledgements', async () => {
+  const f = await fixture();
+  try {
+    await f.login();
+    for (const method of ['native/submit-turn', 'submit', 'unknown-turn']) {
+      const invalid = await f.request(method, {}); assert.equal(invalid.ok, false);
+      if (!invalid.ok) assert.equal('outcome' in invalid, false);
+    }
+    const invalidBody = await f.request('submit-turn', { agent_session_id: agentSid, input_text: '',
+      expected_state_version: 1, idempotency_key: 'desktop-request-invalid' });
+    assert.equal(invalidBody.ok, false);
+    if (!invalidBody.ok) assert.equal('outcome' in invalidBody, false);
+    f.custom((path, init) => {
+      if (path.endsWith('/turns')) {
+        assert.deepEqual(JSON.parse(String(init.body)), { input_text: 'first\nsecond', expected_state_version: 1,
+          idempotency_key: 'desktop-request-1' });
+        return Promise.resolve(Response.json({ turn_id: turn, status: 'accepted', accepted_sequence: 2, state_version: 2,
+          replayed: false, private_server_field: 'private-server-secret' }, { status: 202 }));
+      }
+      if (path.endsWith('/stop')) {
+        assert.deepEqual(JSON.parse(String(init.body)), { turn_id: turn, expected_state_version: 2 });
+        return Promise.resolve(Response.json({ turn_id: turn, state_version: 2, requested: true,
+          private_server_field: 'private-server-secret' }, { status: 202 }));
+      }
+      return undefined;
+    });
+    assert.equal((await f.request('submit-turn', { user_id: '8', agent_session_id: agentSid, input_text: 'x',
+      expected_state_version: 1, idempotency_key: 'desktop-request-override' })).ok, false);
+    const submitted = await f.value('submit-turn', { agent_session_id: agentSid, input_text: 'first\nsecond',
+      expected_state_version: 1, idempotency_key: 'desktop-request-1' });
+    assert.deepEqual(submitted, { platform_type: 'desktop', profile: 'desktop', server_url: origin, user_id: '7',
+      agent_session_id: agentSid,
+      mutation: { turn_id: turn, status: 'accepted', accepted_sequence: 2, state_version: 2, replayed: false } });
+    const stopped = await f.value('stop-turn', { agent_session_id: agentSid, turn_id: turn, expected_state_version: 2 });
+    assert.deepEqual(stopped.mutation, { turn_id: turn, state_version: 2, requested: true });
+    assert.equal(JSON.stringify([submitted, stopped, f.replies]).includes('private-server-secret'), false);
+  } finally { await f.cleanup(); }
+});
+test('Desktop mutation failures expose only closed outcome, status and validated conflict metadata', async () => {
+  const f = await fixture();
+  try {
+    await f.login();
+    f.custom((path) => path.endsWith('/turns') ? Promise.resolve(Response.json({ detail: { code: 'TURN_IN_PROGRESS',
+      current_state_version: 4, current_turn_id: turn, private_conflict: 'private-conflict' },
+      input_text: 'private-user-input', access_token: 'private-token' }, { status: 409 })) : undefined);
+    const reply = await f.request('submit-turn', { agent_session_id: agentSid, input_text: 'private-user-input',
+      expected_state_version: 1, idempotency_key: 'desktop-request-conflict' });
+    assert.equal(reply.ok, false);
+    if (!reply.ok) {
+      assert.equal(reply.outcome, 'rejected');
+      if (reply.outcome === 'rejected') assert.deepEqual({ outcome: reply.outcome, status: reply.status, conflict: reply.conflict },
+        { outcome: 'rejected', status: 409,
+          conflict: { code: 'TURN_IN_PROGRESS', current_state_version: 4, current_turn_id: turn } });
+    }
+    assert.equal(JSON.stringify(reply).includes('private-user-input'), false);
+    assert.equal(JSON.stringify(reply).includes('private-token'), false);
+    assert.equal(JSON.stringify(reply).includes('private-conflict'), false);
+    f.custom((path) => path.endsWith('/turns') ? Promise.resolve(new Response(null, { status: 408 })) : undefined);
+    const timeout = await f.request('submit-turn', { agent_session_id: agentSid, input_text: 'timeout input',
+      expected_state_version: 1, idempotency_key: 'desktop-request-timeout' });
+    assert.equal(timeout.ok, false);
+    if (!timeout.ok) { assert.equal(timeout.outcome, 'unknown'); assert.equal('status' in timeout, false); }
+  } finally { await f.cleanup(); }
+});
+test('Desktop cancel marks an in-flight dispatched turn unknown and ignores its late acknowledgement', async () => {
+  const f = await fixture(); let entered!: () => void; let finish!: (response: Response) => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  try {
+    await f.login();
+    f.custom((path) => path.endsWith('/turns') ? new Promise<Response>((resolve) => { finish = resolve; entered(); }) : undefined);
+    const mutation = f.request('submit-turn', { agent_session_id: agentSid, input_text: 'private-user-input',
+      expected_state_version: 1, idempotency_key: 'desktop-request-cancel' });
+    await started;
+    assert.equal((await f.request('cancel')).ok, true);
+    const reply = await mutation;
+    assert.equal(reply.ok, false);
+    if (!reply.ok) assert.equal(reply.outcome, 'unknown');
+    finish(Response.json({ turn_id: turn, status: 'accepted', accepted_sequence: 2, state_version: 2,
+      replayed: false, private_server_field: 'private-server-secret' }, { status: 202 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.replies.filter((item) => item.ok && 'agent_session_id' in item.value).length, 0);
+    assert.equal(JSON.stringify([f.replies, f.notices]).includes('private-user-input'), false);
+    assert.equal(JSON.stringify([f.replies, f.notices]).includes('private-server-secret'), false);
   } finally { await f.cleanup(); }
 });
 test('account reset aborts an active read and suppresses old-scope notifications and successful replies', async () => {

@@ -90,7 +90,9 @@ test('event gap/409 resumes with one rehydration; persistent corruption fails cl
   }
   const f = fixture(); const first = await reconcileAgentConversation(f.reader, 'A', null); let attempts = 0;
   f.reader.messages = async () => { attempts++; throw new AgentSessionProtocolError('corruption'); };
-  await assert.rejects(reconcileAgentConversation(f.reader, 'A', first.state), AgentSessionProtocolError); assert.equal(attempts, 2);
+  await assert.rejects(reconcileAgentConversation(f.reader, 'A', first.state), AgentSessionProtocolError); assert.equal(attempts, 1);
+  f.reader.messages = async () => { attempts++; throw new AgentSessionHttpError(409); };
+  await assert.rejects(reconcileAgentConversation(f.reader, 'A', first.state), AgentSessionHttpError); assert.equal(attempts, 2);
 });
 test('bounded message pages retain at most 100 turns and 4MiB without mutating the prior state', async () => {
   for (const [count, text, expected] of [[104, 'answer', 100], [20, 'x'.repeat(262144), 15]] as const) {
@@ -107,6 +109,16 @@ test('final snapshot regression and cancellation never apply partial messages', 
   await assert.rejects(reconcileAgentConversation(f.reader, 'A', null), AgentSessionProtocolError);
   const control = new AbortController(); const c = fixture(); c.reader.messages = async () => { control.abort(); return page([message()]); };
   await assert.rejects(reconcileAgentConversation(c.reader, 'A', null, control.signal));
+});
+test('later message metadata corruption and snapshot 409 never rehydrate earlier valid pages', async () => {
+  const f = fixture(3); const first = await reconcileAgentConversation(f.reader, 'A', null); assert.equal(first.state.messageCursor, 5);
+  const original = f.reader.messages; f.calls.length = 0;
+  f.reader.messages = async (id, after, limit, signal) => { const value = await original(id, after, limit, signal); return { ...value, snapshot_sequence: 99 }; };
+  await assert.rejects(reconcileAgentConversation(f.reader, 'A', first.state), AgentSessionProtocolError);
+  assert.deepEqual(f.calls.filter((c) => c.startsWith('messages:')), ['messages:5']);
+  f.calls.length = 0; f.reader.snapshot = async () => { throw new AgentSessionHttpError(409); };
+  await assert.rejects(reconcileAgentConversation(f.reader, 'A', first.state), AgentSessionHttpError);
+  assert.equal(f.calls.some((c) => c.startsWith('messages:')), false);
 });
 test('a focus switch during hydration clears the old transcript and resumes at the new owner pointer', async () => {
   const f = fixture(); const other = randomUUID(); let reads = 0; const newEvent = randomUUID();

@@ -19,6 +19,7 @@ const MAX_MESSAGES = 100;
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_EVENT_PAGES = 2;
 const MAX_MESSAGE_PAGES = 2;
+class EventReplayNeedsSnapshot extends Error {}
 function invalid(): never { throw new AgentSessionProtocolError('Canonical conversation state diverged'); }
 function trim(messages: AgentSessionMessage[], omitted: number) {
   let bytes = messages.reduce((n, m) => n + new TextEncoder().encode(m.input_text ?? '').length + new TextEncoder().encode(m.output_text ?? '').length, 0);
@@ -45,10 +46,17 @@ export async function reconcileAgentConversation(
       : { sequence: snapshot.current_sequence, stateVersion: snapshot.state_version, eventId: null };
     let eventMore = false;
     if (resume) {
-      for (let i = 0; i < MAX_EVENT_PAGES; i++) {
-        const after = eventCursor.sequence; const page = await reader.events(sid, after, 100, signal); signal?.throwIfAborted();
-        eventCursor = applyAgentSessionEventPage(eventCursor, page, after).cursor;
-        eventMore = page.has_more; if (!eventMore) break;
+      try {
+        for (let i = 0; i < MAX_EVENT_PAGES; i++) {
+          const after = eventCursor.sequence; const page = await reader.events(sid, after, 100, signal); signal?.throwIfAborted();
+          if (page.has_more && page.events.length === 0) invalid();
+          eventCursor = applyAgentSessionEventPage(eventCursor, page, after).cursor;
+          eventMore = page.has_more; if (!eventMore) break;
+        }
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error instanceof AgentSessionProtocolError || (error instanceof AgentSessionHttpError && error.status === 409)) throw new EventReplayNeedsSnapshot();
+        throw error;
       }
     }
     const messages = resume ? [...resume.messages] : []; let cursor = resume?.messageCursor ?? 0; let omitted = resume?.omittedMessages ?? 0;
@@ -81,7 +89,9 @@ export async function reconcileAgentConversation(
   try { return await load(old, old ? 'replay' : focus.source); }
   catch (error) {
     signal?.throwIfAborted();
-    if (!old || (!(error instanceof AgentSessionProtocolError) && !(error instanceof AgentSessionHttpError && error.status === 409))) throw error;
+    // Only execution-event replay can recover through a fresh snapshot. Messages and
+    // their snapshot metadata must fail closed instead of cycling through earlier valid pages.
+    if (!old || !(error instanceof EventReplayNeedsSnapshot)) throw error;
     // One rehydration attempt. Persistently corrupt responses fail closed, without a retry loop.
     return load(null, 'recovered');
   }

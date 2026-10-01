@@ -14,6 +14,7 @@ import { NativeAgentConversationWatcher } from '../src/native-agent-conversation
 import { nativeConversationFetch } from '../src/native-agent-conversation-http';
 import type { NativeDeviceIdentity } from '@dex/protocol/native-platform-session';
 import { DexError } from '../src/errors';
+import type { NativeAgentSocket, NativeAgentSocketTransport } from '../src/native-agent-socket';
 
 const ORIGIN = 'https://app.example.test';
 const DEVICE = '018f1240-0000-7000-8000-000000000001';
@@ -70,9 +71,26 @@ async function fixture(platform: 'cli' | 'desktop' | 'vscode' = 'cli') {
     assert.fail(`unexpected request: ${path}`);
   }) as typeof fetch;
   const keys = () => new NativeDeviceKeyStore(options);
-  const client = () => platform === 'cli' ? new NativeCliSession(ORIGIN, keys(), fetchImpl) : new NativeHostSession(ORIGIN, platform, keys(), fetchImpl);
+  const client = (socketTransport?: NativeAgentSocketTransport) => platform === 'cli'
+    ? new NativeCliSession(ORIGIN, keys(), fetchImpl, socketTransport)
+    : new NativeHostSession(ORIGIN, platform, keys(), fetchImpl, undefined, socketTransport);
   return { directory, records, phases, keychain, keys, client, stored, access, calls, identity,
     custom: (value: typeof custom) => { custom = value; }, cleanup: () => rm(directory, { recursive: true, force: true }) };
+}
+
+function serveConversation(f: Awaited<ReturnType<typeof fixture>>, title = 'live') {
+  f.custom((path) => {
+    if (path === '/api/agentflow/me/agent-state') return Response.json({ active_agent_session_id: SID, version: 1, event_id: EVENT });
+    if (path.endsWith('/agent-events')) return Response.json({ events: [], next_cursor: 1, snapshot_version: 1, has_more: false });
+    if (path.endsWith('/events')) return Response.json({ events: [], next_cursor: 2, snapshot_sequence: 2, state_version: 1, has_more: false });
+    if (path.endsWith('/snapshot')) return Response.json({ id: SID, workflow_id: FLOW, title, current_sequence: 2,
+      state_version: 1, message_history_complete: true });
+    if (path.endsWith('/messages')) {
+      const after = Number(f.calls.at(-1)!.url.searchParams.get('after_sequence'));
+      return Response.json({ messages: [], next_cursor: after, snapshot_sequence: 2, state_version: 1, has_more: false });
+    }
+    return undefined;
+  });
 }
 
 test('login stores only scoped native credentials; process restart restores the same sid and signs Canonical DPoP', async () => {
@@ -486,6 +504,137 @@ test('conversation keeps its independent cursor across token rotation and resets
     assert.notEqual(moved.state.authScope, first.state.authScope);
     assert.equal(moved.state.snapshot?.id, FLOW); assert.equal(moved.state.messages[0]?.turn_id, TURN2);
     assert.deepEqual(seen, [0, 2, 0]);
+  } finally { await f.cleanup(); }
+});
+
+test('native conversation socket uses scoped query-free P-256 proof, releases the vault lock and retains the same-sid cursor across rotation', async () => {
+  const f = await fixture('desktop');
+  const opened: Array<{ sid: string; after: number; token: string; proof: string; signal: AbortSignal }> = [];
+  const sockets: Array<NativeAgentSocket & { closeCalls: number }> = [];
+  let assertions = 0;
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => { assertions++; },
+    open: async (sid, after, token, proof, signal) => {
+      opened.push({ sid, after, token, proof, signal });
+      let closed = false;
+      const socket: NativeAgentSocket & { closeCalls: number } = {
+        get closed() { return closed; }, closeCalls: 0,
+        next: async () => new Promise<unknown>(() => {}),
+        async close() { this.closeCalls++; closed = true; },
+      };
+      sockets.push(socket); return socket;
+    },
+  };
+  try {
+    const session = f.client(transport);
+    await session.login('a', 'p');
+    serveConversation(f);
+    const first = await session.reconcileConversation('7', null);
+    const socket = await session.openConversationSocket('7', first.state, new AbortController().signal);
+    assert.equal(socket.closed, false); assert.equal(assertions, 1);
+    assert.equal(opened[0]!.sid, SID); assert.equal(opened[0]!.after, 2); assert.equal(opened[0]!.signal.aborted, false);
+    assert.equal(opened[0]!.token, f.stored()!.accessToken);
+    const [head, payload, signature] = opened[0]!.proof.split('.');
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString()) as Record<string, string>;
+    assert.equal(claims.htm, 'GET');
+    assert.equal(claims.htu, `${ORIGIN}/api/agentflow/agent-sessions/${SID}/events`);
+    assert.equal(new URL(claims.htu).search, '');
+    assert.equal(claims.ath, createHash('sha256').update(opened[0]!.token).digest('base64url'));
+    const key = await (webcrypto.subtle as unknown as SubtleCrypto).importKey(
+      'jwk', f.identity.publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    assert.equal(await (webcrypto.subtle as unknown as SubtleCrypto).verify({ name: 'ECDSA', hash: 'SHA-256' }, key,
+      Buffer.from(signature, 'base64url'), Buffer.from(`${head}.${payload}`)), true);
+
+    // An open socket holds no vault lock; explicit rotation closes its old generation without resetting the sid cursor.
+    await session.refresh('7');
+    assert.equal(sockets[0]!.closeCalls, 1);
+    const rotated = await session.reconcileConversation('7', first.state);
+    assert.equal(sockets[0]!.closeCalls, 1); assert.equal(sockets[0]!.closed, true);
+    assert.equal(rotated.state.authScope, first.state.authScope);
+    assert.equal(rotated.state.eventCursor?.sequence, 2);
+    const rotatedSocket = await session.openConversationSocket('7', rotated.state, new AbortController().signal);
+    assert.equal(opened[1]!.after, 2); assert.equal(opened[1]!.token, f.stored()!.accessToken);
+    await rotatedSocket.close();
+  } finally { await f.cleanup(); }
+});
+
+test('logout and local forgetting close an active conversation socket before the session mutation completes', async () => {
+  for (const operation of ['logout', 'forgetLocal'] as const) {
+    const f = await fixture(); let closeCalls = 0; let closed = false;
+    let release!: () => void; const closeGate = new Promise<void>((resolve) => { release = resolve; });
+    let closing!: () => void; const closeStarted = new Promise<void>((resolve) => { closing = resolve; });
+    const transport: NativeAgentSocketTransport = {
+      assertAvailable: () => {},
+      open: async () => ({
+        get closed() { return closed; },
+        next: async () => new Promise<unknown>(() => {}),
+        close: async () => { closeCalls++; closing(); await closeGate; closed = true; },
+      }),
+    };
+    try {
+      const session = f.client(transport); await session.login('a', 'p'); serveConversation(f, operation);
+      const state = await session.reconcileConversation('7', null);
+      await session.openConversationSocket('7', state.state, new AbortController().signal);
+      const changing = operation === 'logout' ? session.logout('7', 'p') : session.forgetLocal('7');
+      await closeStarted;
+      assert.equal(closeCalls, 1, operation);
+      release();
+      assert.equal((await changing).state, 'signed_out'); assert.equal(closed, true); assert.equal(closeCalls, 1);
+    } finally { release(); await f.cleanup(); }
+  }
+});
+
+test('socket binding rejects foreign internal state, account, expiry and token-free journals before transport use', async () => {
+  const f = await fixture(); let assertions = 0; let opens = 0;
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => { assertions++; },
+    open: async () => { opens++; throw new Error('must not reach native transport'); },
+  };
+  const failures: unknown[] = [];
+  try {
+    const session = f.client(transport); await session.login('a', 'p');
+    const record = f.stored()!;
+    const authScope = createHash('sha256').update(JSON.stringify([record.origin, record.platform, record.userId,
+      record.installId, record.deviceId, record.sessionId])).digest('hex');
+    const valid = {
+      authScope, focus: { active_agent_session_id: SID, version: 1, event_id: EVENT },
+      snapshot: { id: SID, workflow_id: FLOW, title: 'internal', current_sequence: 2,
+        state_version: 1, message_history_complete: true },
+      eventCursor: { sequence: 2, stateVersion: 1, eventId: EVENT }, messageCursor: 0, messages: [], omittedMessages: 0,
+    };
+    const invalid = [
+      { ...valid, authScope: 'foreign-private-scope' },
+      { ...valid, snapshot: null, eventCursor: null },
+      { ...valid, focus: { ...valid.focus, active_agent_session_id: FLOW } },
+      { ...valid, eventCursor: { ...valid.eventCursor, sequence: 3 } },
+    ];
+    for (const state of invalid) {
+      try { await session.openConversationSocket('7', state, new AbortController().signal); }
+      catch (error) { failures.push(error); }
+    }
+    const wrongAccount = new NativeHostSession(ORIGIN, 'cli', f.keys(), (async () => assert.fail()) as typeof fetch, '8', transport);
+    try { await wrongAccount.openConversationSocket('7', valid, new AbortController().signal); }
+    catch (error) { failures.push(error); }
+
+    await f.keys().withSession(scope, async (_identity, _sign, vault) => {
+      const current = (await vault.read())!;
+      const expired = f.access({ exp: Math.floor(Date.now() / 1000) - 5 });
+      await vault.write({ ...current, accessToken: expired.access_token, accessExpiresAt: expired.access_expires_at });
+    });
+    try { await session.openConversationSocket('7', valid, new AbortController().signal); }
+    catch (error) { failures.push(error); }
+    await f.keys().withSession(scope, async (_identity, _sign, vault) => {
+      await vault.write({ ...record, phase: 'refreshing',
+        refreshToken: null, accessToken: null, accessExpiresAt: null });
+    });
+    try { await session.openConversationSocket('7', valid, new AbortController().signal); }
+    catch (error) { failures.push(error); }
+
+    assert.equal(failures.length, invalid.length + 3);
+    for (const error of failures) assert.equal(error instanceof DexError && error.code === 'auth_required', true);
+    assert.equal(assertions, 0); assert.equal(opens, 0);
+    const exposed = JSON.stringify(failures.map((error) => error instanceof Error ? error.message : error));
+    assert.equal(exposed.includes(record.accessToken!), false); assert.equal(exposed.includes(record.refreshToken!), false);
   } finally { await f.cleanup(); }
 });
 

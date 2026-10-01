@@ -7,12 +7,15 @@ import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
+import type { IncomingMessage } from 'node:http';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { NativeDeviceKeyStore, NativeDeviceOperationBusy } from '../packages/engine/src/native-device-key-store';
 import { nativeKeyThumbprint } from '../packages/engine/src/native-dpop';
 import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
-const testConversation = process.argv.includes('--conversation');
+const testLive = process.argv.includes('--live');
+const testConversation = process.argv.includes('--conversation') || testLive;
 const desktopElectron: string | null = platform === 'desktop' ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
@@ -49,6 +52,36 @@ let watching = false; let disconnected = false; let rotatedDuringWatch = false;
 const watchCursors: number[] = [];
 const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), randomUUID()];
 const messageText = `native-message-answer ${'가'.repeat(24000)}`;
+let liveSequence = 4; const liveEvent = randomUUID();
+const liveSockets = new Set<WebSocket>(); const liveAccesses = new Set<string>();
+async function verifyProof(req: IncomingMessage): Promise<string> {
+  assert.equal(req.headers.cookie, undefined); assert.equal(req.headers.origin, undefined);
+  assert.ok(req.headers.authorization?.startsWith('DPoP '));
+  const access = req.headers.authorization!.slice(5); const [ah, ap, signature] = access.split('.');
+  assert.equal(signature, createHmac('sha256', signingSecret).update(`${ah}.${ap}`).digest('base64url'));
+  const claims = JSON.parse(Buffer.from(ap!, 'base64url').toString());
+  assert.equal(claims.sid, sid); assert.equal(claims.sub, userId); assert.equal(claims.platform_type, platform);
+  const [h, p, s] = String(req.headers.dpop).split('.');
+  const header = JSON.parse(Buffer.from(h!, 'base64url').toString()); const proof = JSON.parse(Buffer.from(p!, 'base64url').toString());
+  assert.equal(header.typ, 'dpop+jwt'); assert.equal(header.alg, 'ES256');
+  assert.equal(nativeKeyThumbprint(header.jwk), nativeKeyThumbprint(publicKey as any));
+  assert.equal(proof.htm, 'GET'); assert.equal(proof.htu, `${origin}${req.url!.split('?')[0]}`);
+  assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url'));
+  assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
+  const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s!, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+  return access;
+}
+function eventPage(after: number) {
+  return { type: 'agent_session.events', events: after < liveSequence ? [{ event_id: liveEvent, sequence: 5,
+    event_type: 'agent_session.turn_completed', created_at: new Date().toISOString() }] : [],
+    next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: liveSequence, has_more: false };
+}
+function wakeLive() { liveSequence = 5; for (const peer of liveSockets) peer.send(JSON.stringify(eventPage(4))); }
+async function untilLive(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 300 && !predicate(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(predicate(), 'Native WSS fixture did not reach the expected connection state');
+}
 const server = createServer({ cert: readFileSync(join(certificates, 'localhost.pem')), key: readFileSync(join(certificates, 'localhost-key.pem')) }, (req, res) => {
   void (async () => {
     requests++;
@@ -116,19 +149,19 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       assert.equal(conversationRoute[1], focus.active_agent_session_id); messageAccesses.add(access);
       if (conversationRoute[2] === 'snapshot') {
         reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: 'Native shared conversation',
-          current_sequence: 4, state_version: 4, message_history_complete: false,
+          current_sequence: liveSequence, state_version: liveSequence, message_history_complete: false,
           latest_turn: { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
       }
       const query = new URLSearchParams(conversationRoute[3]); const after = Number(query.get('after_sequence'));
       if (conversationRoute[2] === 'events') {
-        assert.equal(query.get('limit'), '100'); assert.equal(after, 4);
-        reply({ events: [], next_cursor: 4, snapshot_version: 4, has_more: false }); return;
+        assert.equal(query.get('limit'), '100'); assert.ok(after === 4 || after === 5);
+        reply(eventPage(after)); return;
       }
       assert.equal(query.get('limit'), '1'); assert.ok([0, 2, 4].includes(after));
       const index = after === 0 ? 0 : 1;
       reply({ messages: after === 4 ? [] : [{ turn_id: messageTurns[index], sequence: index === 0 ? 2 : 4, status: 'completed',
         input_text: 'native-message-question', output_text: messageText, content_complete: true, source: 'user', raw_execution: 'private-server-secret' }],
-        next_cursor: after === 0 ? 2 : 4, snapshot_sequence: 4, state_version: 4, has_more: after === 0 }); return;
+        next_cursor: after === 0 ? 2 : 4, snapshot_sequence: liveSequence, state_version: liveSequence, has_more: after === 0 }); return;
     }
     if (path === '/api/agentflow/me/agent-state') { reply(focus); return; }
     if (path.startsWith('/api/agentflow/me/agent-events?')) {
@@ -152,6 +185,18 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     sid = null; refresh = null; res.writeHead(204); res.end();
   })().catch(() => { errors++; rejectedPaths.push(`${req.method} ${req.url}`); res.writeHead(500); res.end(); });
 });
+const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+server.on('upgrade', (req, socket, head) => { void (async () => {
+  assert.equal(testLive, true);
+  assert.equal(req.url, `/api/agentflow/agent-sessions/${focus.active_agent_session_id}/events?after_seq=${liveSequence}`);
+  assert.equal(req.headers['sec-websocket-protocol'], undefined); assert.equal(req.headers['sec-websocket-extensions'], undefined);
+  const token = await verifyProof(req);
+  wss.handleUpgrade(req, socket, head, (peer) => {
+    liveSockets.add(peer); liveAccesses.add(token);
+    peer.on('error', () => {}); peer.on('close', () => liveSockets.delete(peer));
+    peer.send(JSON.stringify(eventPage(liveSequence)));
+  });
+})().catch(() => { errors++; rejectedPaths.push('GET native event upgrade'); socket.destroy(); }); });
 async function cli(action: string, expectedExit = 0) {
   const secret = action === 'login' || action === 'logout';
   const args = ['apps/cli/dist/cli.js', 'session', action, '--json',
@@ -229,7 +274,7 @@ async function vscodeFixture() {
   const client = () => {
     const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
       ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
-        `--screenshot=${testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+        `--screenshot=${testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
       : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
     clients.push(c); return c;
@@ -293,6 +338,18 @@ async function vscodeFixture() {
       const stoppedAt = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, stoppedAt);
       if (platform === 'desktop') assert.equal((await restored.request<any>('verify/conversation-ui')).ui, 'passed');
       console.log(`${platform}: actual TLS / >64KiB messages / sparse cursors / conversation RPC projection / cross-process rotation / unwatch PASS`);
+      if (testLive) {
+        const live = await restored.request<any>('native/watch-live', { user_id: userId, interval_ms: 200 }); replies.push(live);
+        await until((n) => n.watch_id === live.watch_id && n.update.type === 'conversation');
+        await untilLive(() => liveSockets.size === 1); wakeLive();
+        await until((n) => n.watch_id === live.watch_id && n.update.conversation?.snapshot?.current_sequence === 5);
+        const before = liveAccesses.size; const rotation = client(); await session(rotation, 'refresh'); await rotation.stop();
+        await untilLive(() => liveAccesses.size > before); await restored.request('native/unwatch', { watch_id: live.watch_id });
+        await untilLive(() => liveSockets.size === 0);
+        if (platform === 'desktop') assert.equal((await restored.request<any>('verify/live-ui')).ui, 'passed');
+        await session(restored, 'status');
+        console.log(`${platform}: native WSS DPoP / events wake verified HTTP / cross-process token rotation / actual close / live UI PASS`);
+      }
     }
     assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
     const restarted = client(); await session(restarted, 'login'); loseCompletion = true;
@@ -343,6 +400,16 @@ try {
       live.stop(); await live.done; assert.equal(live.updates.at(-1).reason, 'cancelled');
     } finally { live.kill(); await live.done.catch(() => {}); }
     console.log('CLI: actual TLS / >64KiB messages / sparse cursors / display-only JSONL / cross-process rotation / Ctrl+C PASS');
+    if (testLive) {
+      const live = watch(0, 'watch-live');
+      try {
+        await live.until((e) => e.type === 'conversation'); await untilLive(() => liveSockets.size === 1); wakeLive();
+        await live.until((e) => e.conversation?.snapshot?.current_sequence === 5);
+        const before = liveAccesses.size; await cli('refresh'); await untilLive(() => liveAccesses.size > before);
+        live.stop(); await live.done; await untilLive(() => liveSockets.size === 0);
+      } finally { live.kill(); await live.done.catch(() => {}); }
+      console.log('CLI: native WSS DPoP / verified HTTP wakeup / cross-process rotation / Ctrl+C actual close PASS');
+    }
   }
   assert.equal((await cli('logout')).state, 'signed_out'); assert.equal((await cli('status')).state, 'signed_out');
   console.log('HTTPS fixture: separate built CLI processes / OS-keychain restore / rotation / Canonical DPoP / password logout PASS');
@@ -357,6 +424,8 @@ try {
   if (platform === 'desktop') console.error('Desktop fixture failed:', error instanceof Error ? error.message : 'Unknown fixture error');
   throw error;
 } finally {
+  for (const peer of liveSockets) peer.terminate();
+  await new Promise<void>((resolveClose) => wss.close(() => resolveClose()));
   server.closeAllConnections();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   try {

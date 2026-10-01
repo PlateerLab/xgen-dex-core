@@ -497,3 +497,51 @@ Desktop 공유 대화 읽기·폴링·중단 → main 전용 계정/origin → O
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode and Desktop now read and explicitly poll bounded canonical conversation snapshots, execution events and sparse linked terminal messages. The common OS-vault engine validates exact read routes, scoped DPoP and bounded UTF8 streams; cancellation and credential loss cancel unread bodies. RPC/UI boundaries project display fields, stop stale watch acknowledgements by exact ID, and clear transcripts on scope/connection changes. Actual HTTPS/software-key OS-keychain fixtures and Electron UI verify positive client contracts; enrollment-mode Compose verifies rejection and recovery on the actual integration branches. The CLI suite passes 153/153 after its existing history assertion waits for both question and answer instead of an intermediate frame. Final Head CI remains a gate. ACTIVE Gateway, physical Mobile, other native WebSocket and chat-send integration remain pending. SDK/runtime stay as unreleased Workflow overlays and PR90 remains Draft.
+
+## CLI·VSCode·Desktop 네이티브 실시간 연결 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-ws`, 기준 통합 SHA `ec516b8d655add02f83754ffa122fbce58438832`, 하위 [PR145](https://github.com/PlateerLab/xgen-dex-core/pull/145) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+CLI session watch-live
+VSCode native/watch-live → 읽기 전용 대화 문서
+Desktop 공유 대화 실시간 연결 → main의 계정/origin·OS CA
+  → ready OS vault/journal/access 확인 → GET DPoP (query-free HTTPS htu)
+  → WSS /api/agentflow/agent-sessions/{id}/events?after_seq=N
+  → 연속 이벤트 검증 → bounded HTTP 대화 복구 → 표시 projection
+  → 조용한 연결도 vault/focus 재확인 → 새 generation이면 소켓 교체
+  → 취소·인증 상실·기기/계정 변경 → 실제 close 확인 후 종료
+```
+
+### 구현과 경계
+
+- 공통 엔진에 receive-only native WSS 전송과 `NativeAgentLiveWatcher`를 추가했다. browser ticket을 사용하지 않고 OS vault의 Platform access와 실제 P-256 GET DPoP로 인증한다. 전송은 canonical HTTPS origin/lowercase UUID/safe cursor/JWT·query-free proof 경로를 확인하며 Cookie/Origin/subprotocol/redirect/compression/앱 데이터 송신을 제공하지 않는다. 인증서/hostname 검증은 항상 활성화하며 기본 Node 신뢰와 Desktop main의 시스템 CA를 사용한다.
+- 프레임 1MiB, 대기 큐 8프레임/2MiB, 단일 pending receive, handshake 10초로 제한한다. 신뢰된 호스트 CA provider는 최대 2048개·각128KiB·전체16MiB이며 renderer/RPC로 전달하지 않는다. 정상 OS 인증서 목록이 64개를 넘는 실제 Electron 실패를 발견해 수정하고 TLS 회귀로 검증했다.
+- 이벤트는 HTTP 복구를 깨우는 용도이며 메시지/화면의 권위는 기존 bounded HTTP parser/recovery에 둔다. 빈·중복 프레임은 HTTP 주기를 앞당기지 않고 backlog를 HTTP로 비운 뒤 연결한다. quiet timer는 기본2초, CLI interval은200..60000ms다. 매 단계 새 vault를 읽고 대기 중 키체인 잠금을 보유하지 않는다.
+- 같은 sid의 token generation 변경은 두 커서를 보존하고 이전 소켓을 닫는다. 동일 host의 로그인 journal·refresh·logout·로컬 삭제는 자격증명 변경 전에 소켓을 즉시 닫으며 다른 프로세스의 변경은 다음 주기에서 재확인한다. account/sid 전환과 HTTP recovered 결과는 이전 연결을 폐기하고 새 after_seq로 연결한다. 취소된 늦은 open/frame은 표시하지 않는다.
+- upgrade/peer cursor conflict는 snapshot으로 한 번 복구하고, 이전 소켓 인증 실패는 새 자격증명 발급 없이 vault를 한 번 재확인한다. 같은 scope/sid/sequence에서 반복하면 중단한다. WSS 전송 실패도 진행 없는 세 번 재시도 뒤 중단해 HTTP 성공마다 실패 예산이 초기화되는 반복 연결을 막았다. 정상 이벤트·HTTP cursor 진행 또는 범위 변경 때 예산을 초기화한다.
+- 같은 프로세스의 factory 간 origin latch를 공유하며 실제 underlying close 전에는 해제하지 않는다. 명시적 close는 큐를 즉시 비우고 ACK 없는 peer를1초 뒤 terminate하되 실제 close event까지 기다린다. 실패/취소된 handshake도 실제 close 뒤 거절하며 watcher 종료는 진행 중 close를 기다린다.
+- RPC `canonicalLive:true`와 별도 `native/watch-live`를 추가했다. CLI JSONL/SIGINT, VSCode capability gate·가상 문서, Desktop main-only TLS와 실시간 연결·중단 UI를 연결했다. 기존 HTTP 읽기/폴링은 선택할 수 있다. ACK 전 account/interval 검증, pending 취소, exact watch ID의 stale ACK 정리, 표시 필드 projection과 stopped/reset 본문 삭제를 유지했다.
+
+### 검증과 실행 환경
+
+- 제품 코드 검증 SHA `29987932779c9633dc3f64065ce565b940fe35de`. 최종 엔진 전체 **191 pass / 2 OS 조건 skip**, CLI **153/153**, VSCode **31/31**, Desktop **531/531** 통과. native transport 실제 TLS 대상 **13/13**, live/session 후속 회귀 **42/42** 통과. engine/RPC/CLI/VSCode/Desktop 타입 검사, 계약 검사와 CLI/VSCode/Desktop 빌드, 두 opt-in harness strict 타입 검사 통과. 최종 Head CI 결과는 PR145에서 확인한 뒤 병합한다.
+- 실제 HTTPS fixture `scripts/cli-platform-session-fixture.mts --live` 및 `--vscode --live`/`--desktop --live`: 빌드된 CLI/RPC/Electron, 일회용 OS keychain, 실제 P-256 proof/ath와 query-free htu, 이벤트로 HTTP 갱신, >64KiB 메시지와 sparse 커서, 다른 프로세스 rotation 후 새 WSS 인증, Ctrl+C/unwatch·actual close 통과. 실제 Electron 컴포넌트의 실시간 연결/메시지 표시/중단 후 본문 제거와 screenshot을 확인했다. **실제 ACTIVE Gateway 성공 증거는 아니다.**
+- 실제 Compose `--cli --vscode --desktop --native-ws`: 일회용 계정/기기 등록 → 신뢰 브라우저 승인 → enrollment login503과 login_pending journal → HTTP read/poll 및 native live auth_required → 명시적 로컬 복구·DB/키체인 정리 통과. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용하며 enrollment를 유지했다.
+- `.env`의 서비스별 override와 clean source/container branch/HEAD·`/app` mount 확인: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment`을 읽어 확인했다. DEX는 이 하위 브랜치의 제품 코드 빌드를 사용한다.
+- Workflow overlay의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`/runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` marker 및 실제 `/opt/xgen-local-sdk`/`/opt/xgen-local-runtime` import를 재확인했다. 패키지 배포·환경변수 추가/변경/삭제는 없다.
+- 증거: `/tmp/cross-sync-native-ws-{engine-tests,cli-tests,vscode-tests,desktop-tests,cli-fixture,vscode-fixture,desktop-fixture,compose,environment,overlay}.log`, `/tmp/cross-sync-native-ws-desktop-ui.png`. 실제 ACTIVE/takeover, Mobile 실기기와 기존 채팅 송신 이행은 후속 관문이다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 16% | 기존 채팅 송신 이행·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode and Desktop now use receive-only native GET DPoP WSS to wake authoritative HTTP conversation recovery, with periodic scoped vault/focus checks. Same-session token rotation preserves cursors and replaces the socket; local credential mutations immediately stop existing sockets. Recovered HTTP snapshots replace old streams, no-progress socket failures have finite budgets, and cancellation awaits actual teardown. Frame/queue/CA bounds, default/system TLS and a shared origin latch constrain the transport. Real HTTPS/software-key OS-keychain and Electron UI fixtures pass, while integration-branch enrollment-mode Compose verifies rejection and recovery. Actual ACTIVE/takeover, physical Mobile and migration of existing chat sends remain gates. SDK/runtime remain unreleased Workflow overlays; PR90 stays Draft.

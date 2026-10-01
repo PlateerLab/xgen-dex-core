@@ -18,7 +18,7 @@ async function fixture(enabled = true) {
     getPassword: async (s, n) => values.get(`${s}:${n}`) ?? null, setPassword: async (s, n, v) => { values.set(`${s}:${n}`, v); }, deletePassword: async (s, n) => values.delete(`${s}:${n}`),
   }) });
   const configs = new MemoryConfigStore({ ...defaultConfig(), currentProfile: 'corp', profiles: { corp: { serverUrl: origin } } });
-  let registered = false; let trusted = false; let publicKey: any; let refreshCount = 0;
+  let registered = false; let trusted = false; let publicKey: any; let refreshCount = 0; let socketFactories = 0;
   const calls: Array<{ path: string; init: RequestInit }> = []; const secrets = [account, 'private-password'];
   let custom: ((path: string, init: RequestInit) => Promise<Response> | Response | undefined) | undefined;
   const fetchImpl = (async (input, init: RequestInit = {}) => {
@@ -52,12 +52,19 @@ async function fixture(enabled = true) {
     }
   });
   const rpc = new DexRpcServer(new DexEngine(configs, new MemoryCredentialStore()), { input, output, log: (v) => logs.push(v),
-    ...(enabled ? { nativeSessions: { configs, keys, fetch: fetchImpl } } : {}) }); rpc.start();
+    ...(enabled ? { nativeSessions: { configs, keys, fetch: fetchImpl, socket: () => {
+      socketFactories++;
+      return { assertAvailable() {}, open: async () => {
+        let closed = false;
+        return { get closed() { return closed; }, next: () => new Promise(() => {}), close: async () => { closed = true; } };
+      } };
+    } } } : {}) }); rpc.start();
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<any>((resolve, reject) => {
     const current = ++id; const timer = setTimeout(() => reject(new Error('RPC fixture deadline')), 3000);
     pending.set(current, (m) => { clearTimeout(timer); resolve(m); }); input.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
   });
   return { send, keys, configs, calls, values, secrets, logs, messages, rpc, trusted: () => { trusted = true; }, custom: (f: typeof custom) => { custom = f; },
+    socketFactories: () => socketFactories,
     cleanup: async () => { rpc.close(); input.destroy(); output.destroy(); await rm(directory, { recursive: true, force: true }); } };
 }
 const initialize = (f: Awaited<ReturnType<typeof fixture>>) => f.send('initialize', { protocolVersion: 1 });
@@ -74,10 +81,12 @@ test('RPC capability is opt-in and platform override/secret flags are rejected b
     assert.equal((await old.send('native/session', { action: 'status', user_id: user })).error.data.code, 'protocol_mismatch');
     assert.equal((await f.send('native/session', { action: 'status', user_id: user })).error.code, -32002);
     const capability = (await initialize(f)).result.capabilities.nativePlatformSession;
-    assert.equal(capability.platform, 'vscode'); assert.equal(capability.canonicalConversation, true);
+    assert.equal(capability.platform, 'vscode'); assert.equal(capability.canonicalConversation, true); assert.equal(capability.canonicalLive, true);
     for (const params of [{ action: 'status', user_id: user, platform: 'cli' }, { action: 'login', email: 'a', password: 'p', access_token: account }]) {
       assert.equal((await f.send('native/session', params)).error.data.code, 'usage_error');
     }
+    assert.equal((await f.send('native/watch-live', { user_id: user, interval_ms: 200, access_token: account })).error.data.code, 'usage_error');
+    assert.equal(f.socketFactories(), 0);
     assert.equal(f.calls.length, 0);
   } finally { await old.cleanup(); await f.cleanup(); }
 });
@@ -86,13 +95,14 @@ test('invalid focus and conversation watch intervals fail before HTTP and leave 
   const f = await fixture();
   try {
     await initialize(f); const before = f.calls.length;
-    for (const method of ['native/watch', 'native/watch-conversation']) {
+    for (const method of ['native/watch', 'native/watch-conversation', 'native/watch-live']) {
       for (const interval_ms of [199, 60001]) {
         const response = await f.send(method, { user_id: user, interval_ms });
         assert.equal(response.error.data.code, 'usage_error'); assert.equal(f.calls.length, before);
       }
     }
     assert.deepEqual((await f.send('health')).result, { ok: true, activeChats: 0 }); assert.equal(f.calls.length, before);
+    assert.equal(f.socketFactories(), 0);
   } finally { await f.cleanup(); }
 });
 
@@ -122,6 +132,15 @@ test('manual and watched conversations use separate RPC methods and project disp
     assert.equal(f.messages.some((m) => m.method === 'native/focus' && m.params?.watch_id === watching.result.watch_id), false);
     assert.equal(JSON.stringify(update).includes('authScope'), false); assert.equal(JSON.stringify(update).includes('server-secret'), false);
     await f.send('native/unwatch', { watch_id: watching.result.watch_id });
+    const live = await f.send('native/watch-live', { user_id: user, interval_ms: 200 });
+    assert.equal(live.result.view, 'conversation');
+    for (let i = 0; i < 40 && !f.messages.some((m) => m.method === 'native/conversation' && m.params?.watch_id === live.result.watch_id
+      && m.params.update.type === 'conversation'); i++) await new Promise((r) => setTimeout(r, 5));
+    const liveUpdate = f.messages.find((m) => m.method === 'native/conversation' && m.params?.watch_id === live.result.watch_id
+      && m.params.update.type === 'conversation');
+    assert.ok(liveUpdate); assert.equal(f.messages.some((m) => m.method === 'native/focus' && m.params?.watch_id === live.result.watch_id), false);
+    assert.ok(f.messages.indexOf(live) < f.messages.indexOf(liveUpdate));
+    await f.send('native/unwatch', { watch_id: live.result.watch_id });
   } finally { await f.cleanup(); }
 });
 

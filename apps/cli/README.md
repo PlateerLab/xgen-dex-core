@@ -24,18 +24,21 @@ snapshot 이후 계정 이벤트 cursor로 현재 대화 변경을 따라간다.
 
 `--jsonl`은 줄마다 `reset`, `focus`, `reconnecting`, `stopped`를 출력한다. 소비자는 `reset`·`stopped`에서 이전 대화 표시를 비우고, 재연결 중에는 새 상태를 확정하지 않는다. 토큰·서명·키는 출력하지 않는다. Ctrl+C는 진행 중 요청과 대기를 취소하고 정상 종료한다. 실행 중 프로필 파일 변경을 자동으로 따르지 않으므로 계정·서버 변경 시 해당 옵션으로 다시 실행한다. 엔진 API의 `select(source, userId)`는 같은 계정 재선택을 포함해 즉시 reset을 내보내고 이전 응답을 폐기한다. 이 명령은 Canonical focus 조회용이며 기존 TUI 채팅이나 WebSocket을 전환하지 않는다.
 
-### 공유 대화 조회와 폴링
+### 공유 대화 조회·폴링·실시간 연결
 
 ```sh
 dex session conversation --user-id <id> --profile corp --json
 dex session watch-conversation --user-id <id> --profile corp --jsonl --interval-ms 2000
+dex session watch-live --user-id <id> --profile corp --jsonl --interval-ms 2000
 ```
 
 선택된 Canonical 대화의 snapshot·실행 이벤트·완결 메시지를 조회한다. 단발 조회는 최대 10단계, 각 단계는 이벤트 2×100개와 메시지 2×1개로 제한한다. 최대 100턴/본문 UTF8 4MiB를 메모리에 보관하고 생략·불완전 이력·`has_more`를 표시한다. 이벤트와 메시지는 별도 커서를 사용하며 마지막에 account focus를 다시 확인한다.
 
 JSONL은 `reset`, `conversation`, `reconnecting`, `stopped`를 출력한다. `conversation`은 snapshot/messages/omittedMessages 표시 필드와 `has_more`만 제공하며 자격증명·내부 커서·raw 도구 결과를 포함하지 않는다. Ctrl+C로 중단한다. 인증 실패는 중단하고 읽기 전용 임시 오류만 재시도한다. 같은 sid의 갱신은 다음 단계에서 새 vault를 읽고 커서를 유지한다.
 
-The explicit `conversation` and `watch-conversation` actions read bounded canonical snapshots, execution events and linked terminal messages. JSONL contains display projections and partial-history flags. Polling reloads the scoped OS vault at each step, preserves same-session cursors across rotation, and stops on authentication or integrity failure. These commands do not send chat messages; native WebSocket integration is a following increment.
+`watch-live`는 ready OS vault의 토큰과 GET DPoP로 receive-only WSS에 연결한다. 이벤트 알림은 HTTP 조회를 깨우며 표시 내용은 HTTP로 검증한다. 조용한 연결도 `--interval-ms` 간격으로 포커스·vault를 확인한다. 같은 sid의 토큰 갱신은 커서를 보존하고 소켓을 교체한다. cursor conflict는 snapshot으로 복구하고, 새 자격증명 발급 없이 기존 vault만 재확인한다. 진행 없는 인증·cursor 실패는 한 번 복구 후 중단하며 WSS 전송 실패는 세 번 재시도한다. 프로필·계정 변경은 명시적으로 중단 후 다시 실행한다.
+
+The explicit `conversation`, `watch-conversation` and `watch-live` actions read bounded canonical snapshots, execution events and linked terminal messages. Live mode uses scoped GET DPoP over receive-only WSS to wake authoritative HTTP recovery, with periodic vault/focus checks. Same-session token rotation replaces the socket without resetting cursors. Display projections exclude credentials; authentication, integrity and repeated no-progress socket failures stop. Ctrl+C waits for actual socket teardown. These commands do not send chat messages; migration of existing chat sends remains subsequent work.
 
 XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.

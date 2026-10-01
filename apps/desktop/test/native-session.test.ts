@@ -99,6 +99,12 @@ test('Desktop binds conversation reads and polling to the main-process account s
     assert.ok(notice && notice.type === 'update' && 'view' in notice.value); assert.equal(notice.value.view, 'conversation');
     assert.equal(JSON.stringify([read, notice]).includes('authScope'), false);
     await f.value('unwatch', { watch_id: watched.watch_id });
+    const live = await f.value('watch-live'); assert.equal(live.view, 'conversation');
+    for (let i = 0; i < 40 && !f.notices.some((n) => n.type === 'update' && 'view' in n.value
+      && n.value.watch_id === live.watch_id && n.value.update.type === 'conversation'); i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(f.notices.some((n) => n.type === 'update' && 'view' in n.value
+      && n.value.watch_id === live.watch_id && n.value.update.type === 'conversation'));
+    await f.value('unwatch', { watch_id: live.watch_id });
   } finally { await f.cleanup(); }
 });
 test('account reset aborts an active read and suppresses old-scope notifications and successful replies', async () => {

@@ -69,7 +69,10 @@ export class NativeSessionController {
     }
   }
   async watchConversation(profile: string, userId: string): Promise<void> {
-    return this.startWatch('conversation', profile, userId);
+    return this.startWatch('conversation', profile, userId, 'native/watch-conversation');
+  }
+  async watchLive(profile: string, userId: string): Promise<void> {
+    return this.startWatch('conversation', profile, userId, 'native/watch-live');
   }
   async stopWatch(): Promise<void> {
     const generation = ++this.generation; const watchId = this.watchId; const pendingWatch = this.pendingWatch;
@@ -80,13 +83,15 @@ export class NativeSessionController {
     }
     catch (error) { if (generation === this.generation) { this.render(empty('stopped')); throw error; } }
   }
-  private async startWatch(view: 'focus' | 'conversation', profile: string, userId: string): Promise<void> {
+  private async startWatch(view: 'focus' | 'conversation', profile: string, userId: string,
+    method: 'native/watch' | 'native/watch-conversation' | 'native/watch-live' = 'native/watch'): Promise<void> {
     const generation = ++this.generation; this.clear(); this.render(empty('waiting'));
     try {
-      if (view === 'conversation') await this.requireConversationHost(); else await this.requireHost();
+      if (method === 'native/watch-live') await this.requireLiveHost();
+      else if (view === 'conversation') await this.requireConversationHost(); else await this.requireHost();
       if (generation !== this.generation) return;
       this.pendingWatch = true;
-      const result = await this.rpc.request<NativeRpcResult>(view === 'conversation' ? 'native/watch-conversation' : 'native/watch', { profile, user_id: userId });
+      const result = await this.rpc.request<NativeRpcResult>(method, { profile, user_id: userId });
       if (generation !== this.generation) {
         if (this.rpc.state === 'ready' && this.validWatchId(result.watch_id)) {
           void this.rpc.request('native/unwatch', { watch_id: result.watch_id }).catch(() => {});
@@ -113,6 +118,13 @@ export class NativeSessionController {
     if (initialized.capabilities.nativePlatformSession?.platform !== 'vscode'
       || initialized.capabilities.nativePlatformSession.canonicalConversation !== true) {
       throw new Error('현재 공유 대화 조회를 지원하는 CLI가 필요합니다.');
+    }
+  }
+  private async requireLiveHost(): Promise<void> {
+    const initialized = await this.rpc.start();
+    if (initialized.capabilities.nativePlatformSession?.platform !== 'vscode'
+      || initialized.capabilities.nativePlatformSession.canonicalLive !== true) {
+      throw new Error('현재 공유 대화 실시간 연결을 지원하는 CLI가 필요합니다.');
     }
   }
   private validWatchId(value: unknown): value is string {

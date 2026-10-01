@@ -1,10 +1,10 @@
 import { ipcMain, type WebContents } from 'electron';
 import { DesktopNativeSessions, isNativeSessionSender, type DesktopNativeContext } from './native-session';
-import { desktopNativeFetch } from './native-session-network';
+import { createDesktopNativeSocket, desktopNativeFetch } from './native-session-network';
 import { CHANNELS } from './ipc';
 
 export function bindDesktopNativeSessions(main: () => WebContents | null, current: () => DesktopNativeContext, trustedRendererUrl: string): DesktopNativeSessions {
-  const host = new DesktopNativeSessions({ current, fetch: desktopNativeFetch, notify: (notice) => {
+  const host = new DesktopNativeSessions({ current, fetch: desktopNativeFetch, socket: createDesktopNativeSocket, notify: (notice) => {
     const contents = main(); if (contents && !contents.isDestroyed()) contents.send(CHANNELS.nativeSessionUpdate, notice);
   } });
   ipcMain.handle(CHANNELS.nativeSessionRequest, (event, method: unknown, params: unknown) => {

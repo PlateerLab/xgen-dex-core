@@ -2,6 +2,7 @@ import { AgentSessionHttpError, PlatformCredentialUnavailable, type AgentFocus }
 import type { AgentFocusRecoveryResult, ScopedAgentFocus } from '@dex/protocol/agent-session-focus-recovery';
 import { NativeAccountChanged, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import { MobileFocusBusy } from './native-agent-focus';
+import { MobileAgentTransportBusy } from './native-agent-http';
 
 export interface MobileAgentFocusSource {
   reconcileFocus(previous: ScopedAgentFocus | null, signal?: AbortSignal): Promise<AgentFocusRecoveryResult>;
@@ -66,7 +67,7 @@ export function createMobileAgentFocusWatcher(source: MobileAgentFocusSource, op
           } catch (error) {
             if (signal.aborted) break;
             const server = error instanceof AgentSessionHttpError && (error.status === 408 || error.status === 429 || error.status >= 500);
-            const busy = error instanceof MobileFocusBusy; busyAttempts = busy ? busyAttempts + 1 : 0;
+            const busy = error instanceof MobileFocusBusy || error instanceof MobileAgentTransportBusy; busyAttempts = busy ? busyAttempts + 1 : 0;
             const authentication = error instanceof NativeAccountChanged || error instanceof PlatformCredentialUnavailable
               || (error instanceof AgentSessionHttpError && [401, 403].includes(error.status));
             if (once || authentication || (busy && busyAttempts > 3) || (!timedOut && !server && !busy && !(error instanceof NativePlatformTransportError))) {

@@ -5,13 +5,14 @@ import { NativeAccountChanged, NativePlatformTransportError } from '@dex/protoco
 import type { MobileEnrollmentAccount } from './native-device-enrollment';
 import type { MobileDeviceIdentity } from './native-device-key';
 import type { createMobileSessionVault } from './native-session-vault';
+import type { MobileAgentFetch } from './native-agent-http';
 
 export class MobileFocusBusy extends Error { constructor() { super('Mobile focus read is still settling'); } }
 /** A source owns one login lifetime. Its callback-scoped credentials cannot escape the vault lock. */
 export function createMobileAgentFocusSource(options: {
   current(): MobileEnrollmentAccount | null;
   keys: { identity(create?: boolean, signal?: AbortSignal): Promise<MobileDeviceIdentity> };
-  vault: ReturnType<typeof createMobileSessionVault>; fetch: typeof fetch;
+  vault: ReturnType<typeof createMobileSessionVault>; fetch: typeof fetch & Partial<Pick<MobileAgentFetch, 'assertAvailable'>>;
 }) {
   const initial = options.current(); if (!initial) throw new NativeAccountChanged();
   const authority = { origin: initial.origin, userId: initial.userId, authScope: initial.authScope };
@@ -27,7 +28,8 @@ export function createMobileAgentFocusSource(options: {
         if (closed || !actual || actual.origin !== authority.origin || actual.userId !== authority.userId || actual.authScope !== authority.authScope) throw new NativeAccountChanged();
       };
       try {
-        check(); const identity = await options.keys.identity(false, controller.signal); check();
+        check(); options.fetch.assertAvailable?.();
+        const identity = await options.keys.identity(false, controller.signal); check();
         return await options.vault.withIdentity(authority, identity, check, async (vault) => {
           let record = await vault.read(); check(); let live = true;
           const credential = () => {

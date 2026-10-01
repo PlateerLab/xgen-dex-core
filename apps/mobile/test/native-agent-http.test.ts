@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { AgentSessionProtocolError } from '@dex/protocol/agent-session';
 import { NativePlatformTransportError } from '@dex/protocol/native-platform-session';
-import { createMobileAgentFetch, mobileAgentReadPath, type MobileAgentHttpModule } from '../src/lib/native-agent-http';
+import { createMobileAgentFetch, MobileAgentTransportBusy, MobileAgentTransportUnavailable, mobileAgentReadPath, type MobileAgentHttpModule } from '../src/lib/native-agent-http';
 
 const origin = 'https://mobile.example.test'; const sid = '11111111-1111-4111-8111-111111111111';
 const init: RequestInit = { method: 'GET', headers: { Accept: 'application/json', Authorization: 'DPoP access.jwt.signature', DPoP: 'proof.jwt.signature' },
@@ -47,7 +47,7 @@ test('GET never accepts Bearer, blank/newline tokens, arbitrary headers/body, in
     { headers: { ...init.headers, Authorization: 'DPoP access.jwt.signature\n' } }, { headers: { ...init.headers, DPoP: 'proof.jwt.signature\n' } },
     { headers: { ...init.headers, DPoP: 'invalid' } }]) await assert.rejects(f.fetch(url, { ...init, ...patch } as RequestInit), NativePlatformTransportError);
   await assert.rejects(f.fetch(url.replace(origin, 'https://other.test'), init), NativePlatformTransportError);
-  await assert.rejects(createMobileAgentFetch(null, origin)(url, init), NativePlatformTransportError);
+  assert.throws(() => createMobileAgentFetch(null, origin), MobileAgentTransportUnavailable);
   for (const bad of ['http://mobile.example.test', `${origin}/`, `${origin}?q=1`, 'bad']) assert.throws(() => createMobileAgentFetch(f.native, bad), NativePlatformTransportError);
   assert.equal(f.calls.length, 0);
 });
@@ -55,8 +55,33 @@ test('native cancel settles promptly and late results are discarded; concurrent 
   const f = fixture(); const control = new AbortController(); const id = randomUUID(); f.native.newRequestId = () => id;
   let resolve!: (value: unknown) => void; f.native.readRequest = () => new Promise((r) => { resolve = r; });
   const pending = f.fetch(`${origin}/api/agentflow/me/agent-state`, { ...init, signal: control.signal });
-  await assert.rejects(f.fetch(`${origin}/api/agentflow/me/agent-state`, init), NativePlatformTransportError);
+  await assert.rejects(f.fetch(`${origin}/api/agentflow/me/agent-state`, init), MobileAgentTransportBusy);
   control.abort(); await assert.rejects(pending); assert.deepEqual(f.cancelled, [id]); resolve({ status: 200, body: '{}' });
+});
+test('cancelled native read remains busy across adapter owners until actual OS completion, without blocking local recovery', async () => {
+  const f = fixture(); const control = new AbortController(); let resolve!: (value: unknown) => void; let calls = 0;
+  f.native.readRequest = async () => { calls++; return new Promise((r) => { resolve = r; }); };
+  const url = `${origin}/api/agentflow/me/agent-state`; const read = f.fetch(url, { ...init, signal: control.signal }); control.abort(); await assert.rejects(read);
+  const second = createMobileAgentFetch(f.native, origin);
+  assert.throws(() => second.assertAvailable(), MobileAgentTransportBusy); await assert.rejects(second(url, init), MobileAgentTransportBusy); assert.equal(calls, 1);
+  resolve({ status: 200, body: '{}' }); await new Promise((r) => setImmediate(r)); second.assertAvailable();
+  f.native.readRequest = async () => ({ status: 200, body: '{}' }); await second(url, init);
+});
+test('partial native modules and permanent native contract errors never become retryable transport failures', async () => {
+  for (const missing of ['newRequestId', 'readRequest', 'cancelRequest']) {
+    const f = fixture(); const partial = { ...f.native, [missing]: undefined } as unknown as MobileAgentHttpModule;
+    assert.throws(() => createMobileAgentFetch(partial, origin), MobileAgentTransportUnavailable);
+  }
+  const f = fixture(); f.native.readRequest = async () => { throw { code: 'mobile_transport_invalid', message: 'private-native' }; };
+  await assert.rejects(f.fetch(`${origin}/api/agentflow/me/agent-state`, init), MobileAgentTransportUnavailable); f.fetch.assertAvailable();
+});
+test('native request reservation busy/invalid errors retain their bounded or permanent classification before wire', async () => {
+  const f = fixture();
+  for (const [code, expected] of [['mobile_transport_busy', MobileAgentTransportBusy], ['mobile_transport_invalid', MobileAgentTransportUnavailable]] as const) {
+    f.native.newRequestId = () => { throw { code, message: 'private-native' }; };
+    await assert.rejects(f.fetch(`${origin}/api/agentflow/me/agent-state`, init), expected);
+  }
+  assert.equal(f.calls.length, 0);
 });
 test('redirect/oversize/invalid native responses and exception details are contained; invalid JSON is a protocol error', async () => {
   const f = fixture(); const url = `${origin}/api/agentflow/me/agent-state`;

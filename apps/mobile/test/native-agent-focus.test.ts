@@ -6,7 +6,7 @@ import type { AgentFocusRecoveryResult, ScopedAgentFocus } from '@dex/protocol/a
 import { NativeAccountChanged, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import { createMobileDeviceKeys, mobileKeyThumbprint } from '../src/lib/native-device-key';
 import { createMobileSessionVault, mobileVaultScope, MobileVaultError, type MobilePlatformRecord } from '../src/lib/native-session-vault';
-import { createMobileAgentFetch } from '../src/lib/native-agent-http';
+import { createMobileAgentFetch, MobileAgentTransportUnavailable } from '../src/lib/native-agent-http';
 import { createMobileAgentFocusSource, MobileFocusBusy } from '../src/lib/native-agent-focus';
 import { createMobileAgentFocusWatcher, mobileFocusMessage, mobileFocusWait, MobileFocusWatchError, type MobileAgentFocusUpdate } from '../src/lib/native-agent-focus-watch';
 
@@ -41,7 +41,7 @@ function fixture() {
     }, cancelRequest: () => undefined,
   };
   const current = () => account ? { ...account } : null; const keys = createMobileDeviceKeys(native, current); const vault = createMobileSessionVault(storage);
-  const make = (fetch = createMobileAgentFetch(native, origin)) => createMobileAgentFocusSource({ current, keys, vault, fetch });
+  const make = (fetchImpl: typeof fetch = createMobileAgentFetch(native, origin)) => createMobileAgentFocusSource({ current, keys, vault, fetch: fetchImpl });
   return { source: make(), make, native, keys, vault, initial, current, sid, calls, scopeKey, values, storage, makeRecord,
     record: () => record, put(r: MobilePlatformRecord) { record = r; values.set(scopeKey, JSON.stringify(r)); },
     change(v: typeof account) { account = v; }, handle(v: typeof handle) { handle = v; } };
@@ -147,7 +147,7 @@ test('transient failures retain cursor, exponential delay is bounded, unchanged 
 });
 test('authentication, key/vault and protocol failures stop once with safe errors; manual read never retries', async () => {
   for (const error of [new AgentSessionHttpError(401), new AgentSessionHttpError(403), new PlatformCredentialUnavailable(), new NativeAccountChanged(),
-    new MobileVaultError(), new AgentSessionProtocolError('private-body'), new Error('private-native-secret')]) {
+    new MobileVaultError(), new MobileAgentTransportUnavailable(), new AgentSessionProtocolError('private-body'), new Error('private-native-secret')]) {
     let calls = 0; const updates: MobileAgentFocusUpdate[] = [];
     const watcher = createMobileAgentFocusWatcher({ reconcileFocus: async () => { calls++; throw error; } }, { wait: async () => assert.fail('must not wait') });
     await assert.rejects(watcher.run((u) => updates.push(u), new AbortController().signal), MobileFocusWatchError);
@@ -169,6 +169,27 @@ test('whole-step timeout/cancel settle despite an unresponsive host; late result
   const waiting = createMobileAgentFocusWatcher({ reconcileFocus: async () => gate.promise });
   const cancelled = waiting.run((u) => cancelUpdates.push(u), stop.signal); stop.abort(); await cancelled; gate.resolve(result(999));
   assert.deepEqual(cancelUpdates, [{ type: 'reset' }, { type: 'stopped', reason: 'cancelled' }]);
+});
+test('production adapter timeout blocks new owners and repeated GET/proof creation until native cancellation settles', async () => {
+  const f = fixture(); const late = deferred<{ status: number; body: string }>(); let keyReads = 0; const prepare = f.native.prepare;
+  f.native.prepare = async () => { keyReads++; return prepare(); }; f.handle(async () => late.promise);
+  const updates: MobileAgentFocusUpdate[] = []; const watcher = createMobileAgentFocusWatcher(f.source, { requestTimeoutMs: 100, wait: async () => undefined });
+  await assert.rejects(watcher.run((u) => updates.push(u), new AbortController().signal), MobileFocusWatchError);
+  assert.equal(f.calls.length, 1); assert.equal(keyReads, 1); assert.deepEqual(updates.at(-1), { type: 'stopped', reason: 'failed' });
+  const replacement = createMobileAgentFocusWatcher(f.make(), { wait: async () => undefined });
+  await assert.rejects(replacement.run(() => undefined, new AbortController().signal)); assert.equal(f.calls.length, 1); assert.equal(keyReads, 1);
+  // Cancel waits do not pin an OS credential lock indefinitely. Explicit local recovery stays possible.
+  await f.vault.forget(f.initial, () => undefined); assert.equal(f.values.size, 0);
+  late.resolve({ status: 200, body: JSON.stringify({ ...focus, version: 999 }) }); await new Promise((r) => setImmediate(r));
+  assert.equal(updates.filter((u) => u.type === 'focus').length, 0);
+  f.put(f.makeRecord()); f.handle(async () => ({ status: 200, body: JSON.stringify(focus) }));
+  assert.equal((await f.make().reconcileFocus(null)).state.focus.version, 0);
+});
+test('native reservation cap busy stops after four attempts without a Canonical request', async () => {
+  const f = fixture(); let attempts = 0; f.native.newRequestId = () => { attempts++; throw { code: 'mobile_transport_busy' }; };
+  const watcher = createMobileAgentFocusWatcher(f.source, { wait: async () => undefined });
+  await assert.rejects(watcher.run(() => undefined, new AbortController().signal), MobileFocusWatchError);
+  assert.equal(attempts, 4); assert.equal(f.calls.length, 0);
 });
 test('concurrent run/source are refused; restarting after stop discards cursor, backlog yields without delay', async () => {
   const f = fixture(); const gate = deferred<{ status: number; body: string }>(); const begun = deferred<void>();

@@ -247,7 +247,10 @@ test('conversation watcher projects no credentials/cursors and callback mutation
   await watcher.run((update) => { emitted.push(JSON.parse(JSON.stringify(update))); if (update.type === 'value') {
     update.value.messages[0]!.output_text = 'callback-mutation'; update.value.snapshot!.latest_turn!.status = 'failed';
   } }, stop.signal);
-  const publicText = JSON.stringify(emitted); assert.equal(publicText.includes('authScope'), false); assert.equal(publicText.includes('messageCursor'), false);
+  const publicText = JSON.stringify(emitted); assert.equal(publicText.includes('messageCursor'), false);
+  for (const update of emitted as { type: string; value?: { authScope: string } }[]) {
+    if (update.type === 'value') assert.match(update.value!.authScope, /^[a-f0-9]{64}$/); // Public write binding only.
+  }
   assert.equal(publicText.includes('callback-mutation'), false); assert.equal(publicText.includes(f.record().accessToken!), false); assert.equal(publicText.includes('private-IO'), false);
   assert.equal(emitted.filter((u: any) => u.type === 'value').length, 2);
 });

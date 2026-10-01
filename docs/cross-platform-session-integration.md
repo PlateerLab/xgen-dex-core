@@ -737,3 +737,52 @@ Desktop 왼쪽 활동 표시줄 / 시작 화면 → 공유 대화 탭
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. Desktop's primary Workspace now provides an explicit Canonical Shared conversation pane with owned-session creation/selection/clear, verified complete messages and plain-text submit/retry/stop. Workspace and device settings share one account/origin-scoped model; tab switches, closing and reopening preserve unknown turn intent and lifecycle locks. Cross-scope replies are rejected, dispatched writes with invalid scope remain unknown, and actual focus/account changes clear old drafts. Local layout persists a static pane marker only. Production Electron/OS-keychain HTTPS fixtures verify one creation/execution despite lost receipts, exact retry/stop binding, draft recovery, no legacy dispatch and no private configuration persistence; unrelated inactive legacy APIs are test stubs. Integration-branch enrollment Compose verifies closed login_pending UI and native rejection/cleanup, not ACTIVE Gateway success. Mobile sending, full catalog UI pagination, attachments/TUI and legacy migration remain gates. SDK/runtime remain unreleased Workflow source overlays; PR90 remains Draft.
+
+## Mobile Canonical 턴 전송·재확인·중단 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-turns`, 기준 통합 SHA `1a0105c735fe76201b74525f420aa750d519d75c`, 제품 코드 SHA `ca74a1f063306b7dd57cf3be292e2b6e31b3229d`. 하위 [PR150](https://github.com/PlateerLab/xgen-dex-core/pull/150) → `feat/cross-platform-session`, 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지한다.
+
+```text
+Mobile 설정 → 공유 대화 → 현재 focus/snapshot 조회
+  → 로그인 수명 모델 + 공통 AgentTurnComposer
+  → ready vault + origin/account/login/install/device/key/Platform sid 공개 binding
+  → native POST DPoP → exact turns / stop → bounded 검증 ACK
+  → ACK 유실/dispatch 후 취소/잘못된 ACK: unknown → 새 전송 차단
+  → 명시적 조회 → 원래 본문/key/CAS 재확인 (fresh token/proof, 같은 logical request)
+  → verified latest turn stop → 접수와 terminal HTTP 상태 구분
+화면 이탈/백그라운드 → 대기·표시 취소, 메모리 intent 유지 → 복귀 후 직접 조회
+계정/실제 focus/Platform sid 변경 → 이전 draft·intent 폐기
+```
+
+### 구현과 경계
+
+- 기존 Mobile 공유 대화 읽기 화면에 multiline 텍스트 전송, 원래 요청 재확인, 최신 실행 중단을 연결했다. 다른 표면에서 생성·선택한 Canonical focus를 사용한다. 공백·끝 줄바꿈을 그대로 유지하고 UTF8 262144바이트까지 허용한다. 첨부/로컬 도구·모바일 생성/선택과 전체 catalog UI는 후속 단계다. 과거 로컬 chat 경로는 남아 있으며 Canonical 오류가 legacy dispatch를 발생시키지 않는다.
+- `AgentTurnComposer`의 platform scope에 mobile을 추가하고 모바일 전용 token-free hash를 read/writer가 공유한다. hash에는 origin/user/login lifetime/install/key/device/Platform sid만 포함하고 access/refresh token·token generation은 제외한다. 같은 sid의 토큰 회전은 intent를 유지한다. ready vault·expiry·journal·hardware key를 각 요청 직전에 다시 검사하며 외부 read callback은 쓰기 인증을 제공하지 않는다. 계정 vault lock 안에서 POST proof와 응답 scope를 검사하며 async await 전 primitive body를 복사한다.
+- unknown submit/stop은 새로운 logical request와 stop을 막고 직접 조회 후 원래 body/version/key로만 재확인한다. 409는 allowlisted conflict만 전달하며 새 snapshot version으로 원래 요청을 재작성하지 않는다. ACK는 접수/중단 요청일 뿐 완료로 표시하지 않는다. 성공 ACK 뒤에도 authoritative terminal 상태가 필요하다. POST timeout은10초이며 자동 전송 재시도·session refresh·Bearer fallback이 없다.
+- 로그인 수명의 모델은 화면 숨김/백그라운드 동안 private 표시와 네트워크를 취소하면서 draft/unknown intent를 메모리로 유지한다. 복귀는 직접 조회해야 하며 빠른 background→foreground 경쟁도 자동 재시작하지 않는다. 조회 reset/reconnect·partial empty snapshot은 실제 focus 해제와 구분한다. 실제 focus/scope 변경은 이전 draft/intent를 폐기하고 늦은 응답은 원래 generation에만 반영한다. 로그아웃/앱 종료 후 메모리 intent는 복원하지 않으므로 이전 전송 결과는 서버 기록에서 확인해야 한다. 본문/intent를 디스크·진단에 저장하지 않는다.
+- 전용 Expo `turnRequest`는 exact HTTPS origin·lowercase UUID의 POST turns/stop만 허용한다. `newTurnKey`는 request 예약을 만들지 않는 OS UUID다. JS·두 OS가 fixed header·JWT·strict RFC8259/decoded 중복 key·safe version·Unicode/본문/key/origin bound·2MiB serialized body·64KiB fatal UTF8 ACK를 검사한다. 기존 native GET와 login/refresh/logout 경로를 generic write로 확장하지 않는다. 시스템 TLS·Cookie/Origin/redirect·one-shot/no replay 경계를 유지한다. native module이 없는 Expo Go/웹 또는 구형 앱은 fail closed하므로 새 앱 빌드가 필요하다.
+- 추가 리뷰의3건을 수정했다. 알려진 native pre-enqueue busy/invalid는 unavailable로 분류한다. GET/POST는 module/origin의 실제 native Promise latch를 공유하여 취소된 GET이 정리되기 전에 새 proof/POST를 만들지 않는다. iOS 취소와 invalid status/size/redirect는 `didCompleteWithError`까지 예약/Promise를 유지하며 원래 responseInvalid 분류를 보존한다. Android는 기존 OkHttp onFailure 완료까지 유지한다. JS watcher의 취소 완료 자체가 OS drain 또는 서버 turn stop을 의미하지 않는다.
+
+### 검증과 실행 환경
+
+- Mobile 전체 회귀163/163 후 최종 writer/model/adapter 대상20/20 통과. 공통 composer14/14, Mobile/workspace 타입 검사·workspace 빌드·계약 검사·세 opt-in harness strict 타입 검사 통과. 샌드박스의 `npm test`는 tsx IPC listen EPERM이므로 같은 전체 테스트를 `node --import tsx --test apps/mobile/test/*.test.ts`로 실행했다. 최종 Head 필수 CI·리뷰를 확인하고 하위 PR만 통합한다.
+- Android transport22 + 실제 P-256 DPoP2 테스트(0 failure/error/skip)와 Swift native 타입/TLS fixture 통과. iOS fixture는 enrollment/session/read/turn 취소 및 oversize/invalid UTF8/redirect ACK가 각 요청 ID의 실제 URLSession didComplete 뒤에 종료되는지 확인한다. 실제 hardware key/기기 UI를 소프트웨어 fixture로 대체해 성공했다고 판단하지 않는다.
+- `node --import tsx scripts/mobile-agent-turn-fixture.mts`: production Mobile read source·scoped writer·JS native adapters·composer/model, trusted localhost TLS·실제 P-256 POST/GET DPoP를 사용한다. software key·memory vault·Node native bridge·HTTP watcher는 명시적 test seams다. ACK 유실 후 screen hide/resume, 직접 snapshot 재조회와 원래 body/key/version 재확인, 정확한 최신 turn stop, terminal 복구를 검증했다. 실행1회/명시적 POST3회/fresh ES256 proof28개, raw Cookie/Origin/legacy 경로 없음, vault 불변과 자격증명 UI 미노출·자료 정리를 확인했다. RN 화면 또는 실제 ACTIVE Gateway 양성 성공 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --mobile-turns --mobile-ws`: 실제 Gateway enrollment·일회용 계정/신뢰 브라우저 승인·Mobile 등록을 사용한다. 로그인503/login_pending journal이 Mobile read/WSS와 submit/stop을 proof/wire 이전에 막고 model의 전송·중단·재확인도 비활성화함을 검증했다. Canonical session0개, token-free journal 유지·명시적 local recovery·일회용 DB 자료 정리를 확인했다. memory vault/software key/Node TLS bridge seams가 있으며 실제 ACTIVE 실행 성공은 별도 관문이다.
+- 기본 infra/core/gateway 및 workflow/frontend 프로필, HTTPS3443 환경이다. `.env` 서비스별 override와 clean source/container HEAD/ref 및 실제 `/app` mount를 재확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX는 이 하위 브랜치 제품 코드로 검증했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` Workflow overlay marker와 실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 확인했다. 패키지 배포와 환경변수 추가/변경/삭제가 없다.
+- 증거: `/tmp/cross-sync-mobile-turns-{all-tests,final-target-tests,protocol-tests,check,workspace-check,workspace-build,contracts,harness-check,tls-fixture,compose,environment,overlay}.log`. Android JUnit: `apps/mobile/modules/xgen-native-device/android/build/test-results/testDebugUnitTest/TEST-expo.modules.xgennativedevice.{NativeEnrollmentTransportTest,DpopProofTest}.xml`. Swift TLS runner의 임시 산출물은 정리된다. physical RN UI/SecureStore/hardware와 실제 ACTIVE Gateway 양성 결합 검증은 남아 있다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 7% | Mobile 생성/선택·TUI/첨부·catalog pagination·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Mobile's existing shared conversation now uses the shared scoped composer for plain-text submit, explicit original-request retry and exact verified latest-turn stop. Unknown intent and drafts survive same-login screen/background suspension in memory; returning requires a read, and actual scope/focus changes discard stale data. Dedicated native POST DPoP is tied to the ready vault and public read binding, with bounded strict transport and no automatic refresh/replay/rebase or legacy fallback. Review exposed three settling/classification gaps: known pre-enqueue failures are unavailable, GET/POST share the actual native completion latch, and iOS cancellation/rejected responses wait for didComplete while retaining responseInvalid. JS/native regressions and production trusted-HTTPS seams verify one execution despite lost receipt and three explicit writes; enrollment-mode integration Compose verifies pre-wire rejection and cleanup. Physical RN UI/hardware/SecureStore and ACTIVE Gateway success remain gates. Mobile session creation/selection, TUI/attachments and full catalog pagination follow. SDK/runtime remain unreleased Workflow overlays and PR90 stays Draft.

@@ -26,6 +26,7 @@ struct MobileTransportResponse {
 
 final class NativeEnrollmentTransport {
   private static let maximumRequestBodyBytes = 32_768
+  private static let maximumTurnRequestBodyBytes = 2_097_152
   private static let maximumResponseBodyBytes = 65_536
   private static let maximumMessagesResponseBodyBytes = 1_048_576
   private static let maximumTrackedRequests = 1_024
@@ -43,11 +44,18 @@ final class NativeEnrollmentTransport {
   private static let sessionSnapshotPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/snapshot$")
   private static let sessionEventsPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$")
   private static let sessionMessagesPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/messages\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$")
+  private static let sessionTurnPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/(turns|stop)$")
+  private static let canonicalUUIDPattern = try! NSRegularExpression(pattern: "^\(canonicalUUID)$")
+  private static let stableASCII = try! NSRegularExpression(pattern: "^[!-~]{1,128}$")
 
   private let lock = NSLock()
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
   private let fixtureCertificate: Data?
-  init(fixtureCertificate: Data? = nil) { self.fixtureCertificate = fixtureCertificate }
+  private let taskDidComplete: ((String) -> Void)?
+  init(fixtureCertificate: Data? = nil, taskDidComplete: ((String) -> Void)? = nil) {
+    self.fixtureCertificate = fixtureCertificate
+    self.taskDidComplete = taskDidComplete
+  }
 #else
   init() {}
 #endif
@@ -224,6 +232,54 @@ final class NativeEnrollmentTransport {
     return request
   }
 
+  private static func safeVersion(_ value: Any?, allowMaximum: Bool) -> Bool {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+    let version = number.doubleValue
+    return version.isFinite && version.rounded(.towardZero) == version && version >= 1 &&
+      (allowMaximum ? version <= 9_007_199_254_740_991 : version < 9_007_199_254_740_991)
+  }
+
+  private static func validTurnBody(_ body: String, path: String, data: Data) -> Bool {
+    guard data.count <= maximumTurnRequestBodyBytes, StrictJSONObject.isValid(body),
+      let object = try? JSONSerialization.jsonObject(with: data), let fields = object as? [String: Any] else { return false }
+    let keys = Set(fields.keys)
+    if path.hasSuffix("/turns") {
+      guard keys == Set(["input_text", "expected_state_version", "idempotency_key"]) ||
+        keys == Set(["input_text", "expected_state_version", "idempotency_key", "origin_id"]),
+        let input = fields["input_text"] as? String, !input.isEmpty, input.utf8.count <= 262_144,
+        safeVersion(fields["expected_state_version"], allowMaximum: false),
+        let key = fields["idempotency_key"] as? String, matches(stableASCII, key) else { return false }
+      if let originId = fields["origin_id"] {
+        guard let value = originId as? String, (1...128).contains(value.unicodeScalars.count) else { return false }
+      }
+      return true
+    }
+    guard path.hasSuffix("/stop"), keys == Set(["turn_id", "expected_state_version"]),
+      let turnId = fields["turn_id"] as? String, matches(canonicalUUIDPattern, turnId),
+      safeVersion(fields["expected_state_version"], allowMaximum: true) else { return false }
+    return true
+  }
+
+  private static func buildTurnRequest(origin: String, path: String, accessToken: String, dpop: String, body: String) throws -> URLRequest {
+    guard let components = URLComponents(string: origin), components.scheme == "https", let host = components.host,
+      host == host.lowercased(), components.port != 443,
+      components.user == nil, components.password == nil, components.path.isEmpty, components.query == nil,
+      components.fragment == nil, components.url?.absoluteString == origin,
+      matches(sessionTurnPath, path), !path.contains("%"), !path.contains("?"), !path.contains("#"), !path.contains("\\"),
+      accessToken.utf8.count <= 8_192, matches(dpopPattern, accessToken),
+      dpop.utf8.count <= 8_192, matches(dpopPattern, dpop),
+      let data = body.data(using: .utf8), validTurnBody(body, path: path, data: data),
+      let url = URL(string: origin + path), url.absoluteString == origin + path else { throw MobileTransportFailure.invalid }
+    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("DPoP \(accessToken)", forHTTPHeaderField: "Authorization")
+    request.setValue(dpop, forHTTPHeaderField: "DPoP")
+    request.httpBodyStream = InputStream(data: data)
+    return request
+  }
+
   func request(requestId: String, origin: String, path: String, method: String, accessToken: String, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     // Validate the complete request before a URLSession or URLSessionTask is created.
@@ -248,6 +304,14 @@ final class NativeEnrollmentTransport {
       invalidResponseFailure: .responseInvalid, completion: completion)
   }
 
+  func turnRequest(requestId: String, origin: String, path: String, accessToken: String, dpop: String, body: String,
+    completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
+    guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
+    let request = try Self.buildTurnRequest(origin: origin, path: path, accessToken: accessToken, dpop: dpop, body: body)
+    try execute(requestId: requestId, request: request, maximumResponseBodyBytes: Self.maximumResponseBodyBytes,
+      invalidResponseFailure: .responseInvalid, completion: completion)
+  }
+
   private func execute(requestId: String, request: URLRequest, maximumResponseBodyBytes: Int,
     invalidResponseFailure: MobileTransportFailure,
     completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
@@ -261,7 +325,8 @@ final class NativeEnrollmentTransport {
     }
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
     let operation = NativeEnrollmentRequest(request: request, maximumResponseBodyBytes: maximumResponseBodyBytes,
-      invalidResponseFailure: invalidResponseFailure, fixtureCertificate: fixtureCertificate, completion: handler)
+      invalidResponseFailure: invalidResponseFailure, fixtureCertificate: fixtureCertificate,
+      taskDidComplete: { [taskDidComplete] in taskDidComplete?(requestId) }, completion: handler)
 #else
     let operation = NativeEnrollmentRequest(request: request, maximumResponseBodyBytes: maximumResponseBodyBytes,
       invalidResponseFailure: invalidResponseFailure, completion: handler)
@@ -325,18 +390,22 @@ final class NativeEnrollmentTransport {
     private var data = Data()
     private var finished = false
     private var cancelled = false
+    private var pendingFailure: MobileTransportFailure?
     private let stateLock = NSLock()
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
     private let fixtureCertificate: Data?
+    private let taskDidComplete: (() -> Void)?
 #endif
 
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
     init(request: URLRequest, maximumResponseBodyBytes: Int, invalidResponseFailure: MobileTransportFailure,
-      fixtureCertificate: Data?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) {
+      fixtureCertificate: Data?, taskDidComplete: (() -> Void)?,
+      completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) {
       self.request = request
       self.maximumResponseBodyBytes = maximumResponseBodyBytes
       self.invalidResponseFailure = invalidResponseFailure
       self.fixtureCertificate = fixtureCertificate
+      self.taskDidComplete = taskDidComplete
       self.completion = completion
     }
 #else
@@ -382,8 +451,15 @@ final class NativeEnrollmentTransport {
       cancelled = true
       let task = self.task
       stateLock.unlock()
-      task?.cancel()
-      finish(.failure(.unavailable))
+      if let task {
+        // Keep the reservation and promise latched until URLSession confirms that the
+        // started task has actually completed cancellation on its delegate queue.
+        task.cancel()
+      } else {
+        // A request cancelled before task creation can settle immediately. start() will
+        // observe `cancelled` while holding the same lock and will never create or resume it.
+        finish(.failure(.unavailable))
+      }
     }
 
     private func finish(_ result: Result<MobileTransportResponse, MobileTransportFailure>) {
@@ -395,12 +471,19 @@ final class NativeEnrollmentTransport {
       completion(result)
     }
 
+    private func latchFailure(_ failure: MobileTransportFailure) {
+      stateLock.lock()
+      if !cancelled && pendingFailure == nil { pendingFailure = failure }
+      stateLock.unlock()
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
       guard let http = response as? HTTPURLResponse, (200...599).contains(http.statusCode), !(300...399).contains(http.statusCode),
         (response.expectedContentLength >= 0 && response.expectedContentLength <= Int64(maximumResponseBodyBytes)) ||
           response.expectedContentLength == NSURLSessionTransferSizeUnknown else {
+        latchFailure(invalidResponseFailure)
         completionHandler(.cancel)
-        finish(.failure(invalidResponseFailure))
+        dataTask.cancel()
         return
       }
       status = http.statusCode
@@ -410,14 +493,24 @@ final class NativeEnrollmentTransport {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive incoming: Data) {
       guard incoming.count <= maximumResponseBodyBytes,
         data.count <= maximumResponseBodyBytes - incoming.count else {
+        latchFailure(invalidResponseFailure)
         dataTask.cancel()
-        finish(.failure(invalidResponseFailure))
         return
       }
       data.append(incoming)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+#if NATIVE_ENROLLMENT_TRANSPORT_TESTING
+      taskDidComplete?()
+#endif
+      stateLock.lock()
+      let pendingFailure = self.pendingFailure
+      stateLock.unlock()
+      if let pendingFailure {
+        finish(.failure(pendingFailure))
+        return
+      }
       guard error == nil else {
         finish(.failure(.unavailable))
         return
@@ -430,7 +523,9 @@ final class NativeEnrollmentTransport {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+      latchFailure(invalidResponseFailure)
       completionHandler(nil)
+      task.cancel()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -497,8 +592,9 @@ private enum StrictJSONObject {
       guard take(0x7b) else { return false }
       whitespace()
       if take(0x7d) { return true }
+      var keys = Set<String>()
       while true {
-        guard peek() == 0x22, string() else { return false }
+        guard peek() == 0x22, let key = stringValue(), keys.insert(key).inserted else { return false }
         whitespace()
         guard take(0x3a), value(depth: depth) else { return false }
         whitespace()
@@ -522,15 +618,23 @@ private enum StrictJSONObject {
     }
 
     mutating func string() -> Bool {
-      guard take(0x22) else { return false }
+      stringValue() != nil
+    }
+
+    mutating func stringValue() -> String? {
+      let start = index
+      guard take(0x22) else { return nil }
       while index < bytes.count {
         let byte = bytes[index]
         index += 1
-        if byte == 0x22 { return true }
-        if byte < 0x20 { return false }
-        if byte == 0x5c, !escape() { return false }
+        if byte == 0x22 {
+          let encoded = Data(bytes[start..<index])
+          return (try? JSONSerialization.jsonObject(with: encoded, options: [.fragmentsAllowed])) as? String
+        }
+        if byte < 0x20 { return nil }
+        if byte == 0x5c, !escape() { return nil }
       }
-      return false
+      return nil
     }
 
     mutating func escape() -> Bool {

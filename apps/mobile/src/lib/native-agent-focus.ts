@@ -1,4 +1,3 @@
-import { sha256 } from 'js-sha256';
 import { AgentSessionReadClient, PlatformCredentialUnavailable } from '@dex/protocol/agent-session';
 import { reconcileAgentFocus, type ScopedAgentFocus } from '@dex/protocol/agent-session-focus-recovery';
 import { reconcileAgentConversation, type ScopedAgentConversation } from '@dex/protocol/agent-session-conversation-recovery';
@@ -9,6 +8,7 @@ import type { createMobileSessionVault } from './native-session-vault';
 import type { MobileAgentFetch } from './native-agent-http';
 import type { MobileAgentSocket } from './native-agent-socket';
 import { MobileSocketInvalid, type createMobileAgentSocketTransport } from './native-agent-socket';
+import { mobileAgentScope } from './native-agent-scope';
 
 export class MobileFocusBusy extends Error { constructor() { super('Mobile Canonical read is still settling'); } }
 /** A source owns one login lifetime. Its callback-scoped credentials cannot escape the vault lock. */
@@ -48,8 +48,7 @@ export function createMobileAgentFocusSource(options: {
         try {
           credential();
           // Refresh generation/token is intentionally absent; a rotated token on the same sid retains the cursor.
-          const scope = sha256(JSON.stringify(['mobile-focus-v1', authority.origin, authority.userId, authority.authScope,
-            identity.installId, record!.deviceId, record!.sessionId, record!.keyThumbprint]));
+          const scope = mobileAgentScope(authority, identity, record!);
           for (const [socket, binding] of sockets) {
             if (socket.closed || binding.scope !== scope || binding.generation !== record!.generation) {
               void socket.close().catch(() => undefined); sockets.delete(socket);

@@ -8,10 +8,24 @@ struct NativeEnrollmentTransportVerification {
   static func main() throws {
     guard CommandLine.arguments.count == 3 else { throw VerificationFailure.failed("expected HTTPS origin and fixture certificate") }
     let origin = CommandLine.arguments[1]
-    let transport = NativeEnrollmentTransport(fixtureCertificate: try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
+    let nativeCompletionLock = NSLock()
+    var completedNativeTaskIds = Set<String>()
+    let transport = NativeEnrollmentTransport(
+      fixtureCertificate: try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])),
+      taskDidComplete: { requestId in
+        nativeCompletionLock.lock()
+        completedNativeTaskIds.insert(requestId)
+        nativeCompletionLock.unlock()
+      })
+    func nativeTaskCompleted(_ requestId: String) -> Bool {
+      nativeCompletionLock.lock(); defer { nativeCompletionLock.unlock() }
+      return completedNativeTaskIds.contains(requestId)
+    }
 
-    func perform(_ path: String, method: String = "GET", accessToken: String = "fixture-token_123~safe", body: String? = nil, cancelAfter: TimeInterval? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
+    func perform(_ path: String, method: String = "GET", accessToken: String = "fixture-token_123~safe", body: String? = nil,
+      cancelAfter: TimeInterval? = nil, onReserved: ((String) -> Void)? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
       let id = try transport.newRequestId()
+      onReserved?(id)
       let semaphore = DispatchSemaphore(value: 0)
       var result: Result<MobileTransportResponse, MobileTransportFailure>?
       try transport.request(requestId: id, origin: origin, path: path, method: method, accessToken: accessToken, body: body) {
@@ -25,8 +39,10 @@ struct NativeEnrollmentTransportVerification {
       return result
     }
 
-    func performSession(_ path: String, method: String = "POST", authorization: String? = nil, dpop: String? = nil, body: String? = "{}", cancelAfter: TimeInterval? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
+    func performSession(_ path: String, method: String = "POST", authorization: String? = nil, dpop: String? = nil, body: String? = "{}",
+      cancelAfter: TimeInterval? = nil, onReserved: ((String) -> Void)? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
       let id = try transport.newRequestId()
+      onReserved?(id)
       let semaphore = DispatchSemaphore(value: 0)
       var result: Result<MobileTransportResponse, MobileTransportFailure>?
       try transport.sessionRequest(requestId: id, origin: origin, path: path, method: method, authorization: authorization, dpop: dpop, body: body) {
@@ -38,8 +54,10 @@ struct NativeEnrollmentTransportVerification {
       return result
     }
 
-    func performRead(_ pathWithQuery: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature", cancelAfter: TimeInterval? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
+    func performRead(_ pathWithQuery: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature",
+      cancelAfter: TimeInterval? = nil, onReserved: ((String) -> Void)? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
       let id = try transport.newRequestId()
+      onReserved?(id)
       let semaphore = DispatchSemaphore(value: 0)
       var result: Result<MobileTransportResponse, MobileTransportFailure>?
       try transport.readRequest(requestId: id, origin: origin, pathWithQuery: pathWithQuery, accessToken: accessToken, dpop: dpop) {
@@ -48,6 +66,21 @@ struct NativeEnrollmentTransportVerification {
       }
       if let cancelAfter { DispatchQueue.global().asyncAfter(deadline: .now() + cancelAfter) { try? transport.cancelRequest(id) } }
       guard semaphore.wait(timeout: .now() + 12) == .success, let result else { throw VerificationFailure.failed("read request timeout") }
+      return result
+    }
+
+    func performTurn(_ path: String, body: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature",
+      cancelAfter: TimeInterval? = nil, onReserved: ((String) -> Void)? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
+      let id = try transport.newRequestId()
+      onReserved?(id)
+      let semaphore = DispatchSemaphore(value: 0)
+      var result: Result<MobileTransportResponse, MobileTransportFailure>?
+      try transport.turnRequest(requestId: id, origin: origin, path: path, accessToken: accessToken, dpop: dpop, body: body) {
+        result = $0
+        semaphore.signal()
+      }
+      if let cancelAfter { DispatchQueue.global().asyncAfter(deadline: .now() + cancelAfter) { try? transport.cancelRequest(id) } }
+      guard semaphore.wait(timeout: .now() + 12) == .success, let result else { throw VerificationFailure.failed("turn request timeout") }
       return result
     }
 
@@ -62,8 +95,13 @@ struct NativeEnrollmentTransportVerification {
     guard case .failure = try perform("/api/auth/platform-devices/native/mobile/registration/status/00000000-0000-0000-0000-000000000002") else { throw VerificationFailure.failed("invalid UTF-8 accepted") }
 
     let cancelStarted = Date()
-    guard case .failure = try perform("/api/auth/platform-devices/native/mobile/registration/status/00000000-0000-0000-0000-000000000003", cancelAfter: 0.1),
-      Date().timeIntervalSince(cancelStarted) < 2 else { throw VerificationFailure.failed("cancel did not interrupt") }
+    var enrollmentCancelId = ""
+    guard case .failure = try perform("/api/auth/platform-devices/native/mobile/registration/status/00000000-0000-0000-0000-000000000003",
+      cancelAfter: 0.1, onReserved: { enrollmentCancelId = $0 }),
+      Date().timeIntervalSince(cancelStarted) < 2,
+      nativeTaskCompleted(enrollmentCancelId) else {
+      throw VerificationFailure.failed("cancel completed before URLSession settled")
+    }
 
     guard case .failure = try perform("/api/me/devices/native/mobile/00000000-0000-0000-0000-000000000001/approval-requests/begin", method: "POST", body: "{\"case\":\"disconnect\"}") else {
       throw VerificationFailure.failed("disconnected POST succeeded")
@@ -87,8 +125,13 @@ struct NativeEnrollmentTransportVerification {
     guard sessionCount.body == "{\"disconnectedPosts\":2}" else { throw VerificationFailure.failed("session POST body was replayed") }
 
     let sessionCancelStarted = Date()
-    guard case .failure = try performSession("/api/auth/platform-sessions/native/refresh/complete", body: "{\"case\":\"delay\"}", cancelAfter: 0.1),
-      Date().timeIntervalSince(sessionCancelStarted) < 2 else { throw VerificationFailure.failed("session cancel did not interrupt") }
+    var sessionCancelId = ""
+    guard case .failure = try performSession("/api/auth/platform-sessions/native/refresh/complete", body: "{\"case\":\"delay\"}",
+      cancelAfter: 0.1, onReserved: { sessionCancelId = $0 }),
+      Date().timeIntervalSince(sessionCancelStarted) < 2,
+      nativeTaskCompleted(sessionCancelId) else {
+      throw VerificationFailure.failed("session cancel completed before URLSession settled")
+    }
 
     let canonicalSession = "00000000-0000-4000-8000-000000000001"
     let canonicalReads = [
@@ -106,8 +149,13 @@ struct NativeEnrollmentTransportVerification {
     }
     let messagesBase = "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence="
     let readCancelStarted = Date()
-    guard case .failure(.unavailable) = try performRead(messagesBase + "6&limit=1", cancelAfter: 0.1),
-      Date().timeIntervalSince(readCancelStarted) < 2 else { throw VerificationFailure.failed("read cancel did not interrupt") }
+    var readCancelId = ""
+    guard case .failure(.unavailable) = try performRead(messagesBase + "6&limit=1", cancelAfter: 0.1,
+      onReserved: { readCancelId = $0 }),
+      Date().timeIntervalSince(readCancelStarted) < 2,
+      nativeTaskCompleted(readCancelId) else {
+      throw VerificationFailure.failed("read cancel completed before URLSession settled")
+    }
 
     let largeMessages = try performRead(messagesBase + "1&limit=20").get()
     guard largeMessages.body.utf8.count == 70_000 else { throw VerificationFailure.failed("messages response cap") }
@@ -121,6 +169,75 @@ struct NativeEnrollmentTransportVerification {
     try expectInvalidResponse(messagesBase + "3&limit=20")
     try expectInvalidResponse(messagesBase + "4&limit=20")
     try expectInvalidResponse(messagesBase + "5&limit=20")
+
+    let turnPath = "/api/agentflow/agent-sessions/\(canonicalSession)/turns"
+    let stopPath = "/api/agentflow/agent-sessions/\(canonicalSession)/stop"
+    let turnBody = "{\"input_text\":\"hello\\nworld\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\",\"origin_id\":\"mobile-1\"}"
+    let turnAck = try performTurn(turnPath, body: turnBody).get()
+    guard turnAck.status == 202, turnAck.body == "{\"accepted\":true}" else { throw VerificationFailure.failed("turn headers/body") }
+    let stopBody = "{\"turn_id\":\"00000000-0000-4000-8000-000000000002\",\"expected_state_version\":2}"
+    let stopAck = try performTurn(stopPath, body: stopBody).get()
+    guard stopAck.status == 200, stopAck.body == "{\"requested\":true,\"disconnectedTurnPosts\":0}" else {
+      throw VerificationFailure.failed("turn cookie/header isolation")
+    }
+    func expectInvalidTurn(_ path: String = turnPath, body: String = turnBody,
+      accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature") throws {
+      do {
+        _ = try performTurn(path, body: body, accessToken: accessToken, dpop: dpop)
+        throw VerificationFailure.failed("invalid turn request accepted")
+      } catch MobileTransportFailure.invalid {}
+    }
+    try expectInvalidTurn("/api/agentflow/agent-sessions/\(canonicalSession)/messages")
+    try expectInvalidTurn(turnPath + "?x=1")
+    try expectInvalidTurn(body: "{\"input_text\":\"x\",\"input_text\":\"y\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    try expectInvalidTurn(body: "{\"input_text\":\"x\",\"\\u0069nput_text\":\"y\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    try expectInvalidTurn(body: "{\"input_text\":\"x\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\",\"private\":true}")
+    try expectInvalidTurn(body: "{\"input_text\":\"\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    try expectInvalidTurn(body: "{\"input_text\":\"x\",\"expected_state_version\":0,\"idempotency_key\":\"request-1\"}")
+    try expectInvalidTurn(body: "{\"input_text\":\"x\",\"expected_state_version\":1,\"idempotency_key\":\"bad key\"}")
+    try expectInvalidTurn(body: "{\"input_text\":\"\(String(repeating: "x", count: 262_145))\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    try expectInvalidTurn(stopPath, body: "{\"turn_id\":\"not-a-turn\",\"expected_state_version\":1}")
+    try expectInvalidTurn(stopPath, body: "{\"turn_id\":\"00000000-0000-0000-0000-000000000002\",\"expected_state_version\":1}")
+    try expectInvalidTurn(stopPath, body: "{\"turn_id\":\"00000000-0000-4000-8000-000000000002\",\"expected_state_version\":9007199254740992}")
+    try expectInvalidTurn(accessToken: "opaque-token")
+    try expectInvalidTurn(dpop: "opaque-proof")
+    let uppercaseTurnOriginId = try transport.newRequestId()
+    do {
+      try transport.turnRequest(requestId: uppercaseTurnOriginId, origin: origin.replacingOccurrences(of: "localhost", with: "LOCALHOST"),
+        path: turnPath, accessToken: "fixture.access.token", dpop: "fixture.header.signature", body: turnBody) { _ in }
+      throw VerificationFailure.failed("noncanonical turn origin accepted")
+    } catch MobileTransportFailure.invalid {}
+
+    let escapedBody = "{\"input_text\":\"\(String(repeating: "\\u0000", count: 262_144))\",\"expected_state_version\":1,\"idempotency_key\":\"request-escaped\"}"
+    guard escapedBody.utf8.count < 2_097_152, try performTurn(turnPath, body: escapedBody).get().status == 202 else {
+      throw VerificationFailure.failed("worst-case escaped turn input")
+    }
+    for value in ["large-ack", "invalid-ack", "redirect"] {
+      let body = "{\"input_text\":\"\(value)\",\"expected_state_version\":1,\"idempotency_key\":\"request-\(value)\"}"
+      var rejectedTurnId = ""
+      guard case .failure(.responseInvalid) = try performTurn(turnPath, body: body, onReserved: { rejectedTurnId = $0 }),
+        nativeTaskCompleted(rejectedTurnId) else {
+        throw VerificationFailure.failed("invalid turn ACK completed before URLSession settled")
+      }
+    }
+    let turnCancelStarted = Date()
+    var turnCancelId = ""
+    guard case .failure(.unavailable) = try performTurn(turnPath,
+      body: "{\"input_text\":\"delayed\",\"expected_state_version\":1,\"idempotency_key\":\"request-delayed\"}", cancelAfter: 0.1,
+      onReserved: { turnCancelId = $0 }),
+      Date().timeIntervalSince(turnCancelStarted) < 2,
+      nativeTaskCompleted(turnCancelId) else {
+      throw VerificationFailure.failed("turn cancel completed before URLSession settled")
+    }
+    guard case .failure = try performTurn(turnPath,
+      body: "{\"input_text\":\"lost\",\"expected_state_version\":1,\"idempotency_key\":\"request-lost\"}") else {
+      throw VerificationFailure.failed("lost turn ACK succeeded")
+    }
+    Thread.sleep(forTimeInterval: 0.5)
+    let afterLost = try performTurn(stopPath, body: stopBody).get()
+    guard afterLost.body == "{\"requested\":true,\"disconnectedTurnPosts\":1}" else {
+      throw VerificationFailure.failed("lost turn body was replayed")
+    }
 
     func expectInvalidRead(_ path: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature") throws {
       do {
@@ -241,6 +358,14 @@ struct NativeEnrollmentTransportVerification {
       messagesClaims["htu"] as? String == messagesHtu, messagesClaims["htm"] as? String == "GET" else {
       throw VerificationFailure.failed("messages DPoP claims")
     }
+    let turnHtu = dpopOrigin + "/api/agentflow/agent-sessions/\(canonicalSession)/turns"
+    let turnInput = try DpopProof.signingInput(origin: dpopOrigin, method: "POST", htu: turnHtu,
+      accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
+    guard let turnClaimsData = decode(String(turnInput.split(separator: ".")[1])),
+      let turnClaims = try JSONSerialization.jsonObject(with: turnClaimsData) as? [String: Any],
+      turnClaims["htu"] as? String == turnHtu, turnClaims["htm"] as? String == "POST" else {
+      throw VerificationFailure.failed("turn DPoP claims")
+    }
     do {
       _ = try DpopProof.signingInput(origin: dpopOrigin, method: "GET",
         htu: messagesHtu + "?after_sequence=0&limit=20", accessToken: "access.safe.jwt", x: x, y: y,
@@ -254,6 +379,10 @@ struct NativeEnrollmentTransportVerification {
     do {
       _ = try DpopProof.signingInput(origin: dpopOrigin, method: "POST", htu: dpopHtu, accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
       throw VerificationFailure.failed("unlisted DPoP method accepted")
+    } catch DeviceKeyFailure.invalid {}
+    do {
+      _ = try DpopProof.signingInput(origin: dpopOrigin, method: "POST", htu: messagesHtu, accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
+      throw VerificationFailure.failed("POST proof for read path accepted")
     } catch DeviceKeyFailure.invalid {}
     do {
       _ = try DpopProof.signingInput(origin: dpopOrigin, method: "DELETE", htu: dpopHtu, accessToken: "opaque-safe-token", x: x, y: y, nowSeconds: 1, jti: dpopJti)

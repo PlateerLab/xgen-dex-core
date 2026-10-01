@@ -82,7 +82,9 @@ test('socket frames wake HTTP reconciliation, while quiet connections keep perio
     } else if (waits === 3) stop.abort();
   } });
   await watcher.run((u) => updates.push(u), stop.signal); assert.equal(opens, 1); assert.equal(calls, 3); assert.equal(f.reads(), 2); assert.equal(f.socket.closed, true);
-  assert.equal(updates.at(-1).reason, 'cancelled'); assert.equal(JSON.stringify(updates).includes('authScope'), false);
+  assert.equal(updates.at(-1).reason, 'cancelled');
+  assert.equal(updates.find((u) => u.type === 'value').value.authScope, 'verified-account');
+  assert.equal(JSON.stringify(updates).includes('eventCursor'), false);
 });
 test('manual reads do not open sockets and permanent/authentication socket failures clear the view once', async () => {
   const source = { reconcileConversation: async () => ({ state: state(), source: 'snapshot' as const, hasMore: false }), openConversationSocket: async () => assert.fail('manual must not open') };

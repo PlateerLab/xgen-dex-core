@@ -82,6 +82,17 @@ class NativeEnrollmentTransportTest {
     return result.get()
   }
 
+  private fun executeTurn(path: String, body: String, accessToken: String = "access.safe.jwt", dpop: String = "proof.safe.jwt"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.turnRequest(transport.newRequestId(), origin, path, accessToken, dpop, body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("turn request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
   @Test fun sendsOnlyFixedHeadersAndJsonOverFixtureTls() {
     server.enqueue(MockResponse().setResponseCode(201).setBody("{\"ok\":true}"))
     val result = execute("/api/auth/platform-devices/native/mobile/registration/challenge", "POST", "{\"nested\":[true,1,null,\"ok\"]}").getOrThrow()
@@ -391,5 +402,102 @@ class NativeEnrollmentTransportTest {
     assertEquals("mobile_transport_unavailable", assertThrows(MobileTransportFailure::class.java) {
       transport.readRequest(cancelled, origin, "/api/agentflow/me/agent-state", "access.safe.jwt", "proof.safe.jwt") {}
     }.code)
+  }
+
+  @Test fun canonicalTurnsPostExactBodiesWithOnlyDpopHeaders() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val turn = "00000000-0000-4000-8000-000000000002"
+    val submit = "{\"input_text\":\"hello\\nworld\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\",\"origin_id\":\"mobile-1\"}"
+    val stop = "{\"turn_id\":\"$turn\",\"expected_state_version\":2}"
+    server.enqueue(MockResponse().setResponseCode(202).setBody("{\"accepted\":true}"))
+    server.enqueue(MockResponse().setResponseCode(200).setBody("{\"requested\":true}"))
+    assertEquals(202, executeTurn("/api/agentflow/agent-sessions/$session/turns", submit).getOrThrow().status)
+    assertEquals(200, executeTurn("/api/agentflow/agent-sessions/$session/stop", stop).getOrThrow().status)
+    listOf(submit, stop).forEach { expectedBody ->
+      val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+      assertEquals("POST", request.method)
+      assertEquals("application/json", request.getHeader("Accept"))
+      assertEquals("application/json", request.getHeader("Content-Type"))
+      assertEquals("DPoP access.safe.jwt", request.getHeader("Authorization"))
+      assertEquals("proof.safe.jwt", request.getHeader("DPoP"))
+      assertNull(request.getHeader("Origin")); assertNull(request.getHeader("Cookie"))
+      assertEquals(expectedBody, request.body.readUtf8())
+    }
+  }
+
+  @Test fun canonicalTurnsRejectInvalidRouteCredentialsAndBodiesBeforeWire() {
+    val transport = NativeEnrollmentTransport(client)
+    val session = "00000000-0000-4000-8000-000000000001"
+    val turns = "/api/agentflow/agent-sessions/$session/turns"
+    val stop = "/api/agentflow/agent-sessions/$session/stop"
+    val validSubmit = "{\"input_text\":\"hello\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}"
+    fun invalid(path: String = turns, body: String = validSubmit, token: String = "access.safe.jwt", proof: String = "proof.safe.jwt", originValue: String = origin) {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.turnRequest(transport.newRequestId(), originValue, path, token, proof, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid(path = "/api/agentflow/agent-sessions/$session/messages")
+    invalid(path = turns + "?x=1")
+    invalid(path = "/api/agentflow/agent-sessions/ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF/turns")
+    invalid(token = "opaque-token")
+    invalid(proof = "opaque-proof")
+    invalid(originValue = origin.replace("localhost", "LOCALHOST"))
+    invalid(body = "{\"input_text\":\"x\",\"input_text\":\"y\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"\\u0069nput_text\":\"y\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\",\"private\":true}")
+    invalid(body = "{\"input_text\":\"\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"expected_state_version\":0,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"expected_state_version\":1,\"idempotency_key\":\"bad key\"}")
+    invalid(body = "{\"input_text\":\"${"x".repeat(262_145)}\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(path = stop, body = "{\"turn_id\":\"not-a-turn\",\"expected_state_version\":1}")
+    invalid(path = stop, body = "{\"turn_id\":\"00000000-0000-0000-0000-000000000002\",\"expected_state_version\":1}")
+    invalid(path = stop, body = "{\"turn_id\":\"00000000-0000-4000-8000-000000000002\",\"expected_state_version\":9007199254740992}")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun canonicalTurnAcceptsWorstCaseEscapedInputWithinTwoMiBEnvelope() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val body = "{\"input_text\":\"${"\\u0000".repeat(262_144)}\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}"
+    assertTrue(body.toByteArray().size < 2_097_152)
+    server.enqueue(MockResponse().setResponseCode(202).setBody("{}"))
+    assertEquals(202, executeTurn("/api/agentflow/agent-sessions/$session/turns", body).getOrThrow().status)
+  }
+
+  @Test fun canonicalTurnAckFailuresArePermanentAndLostAckIsNeverReplayed() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val path = "/api/agentflow/agent-sessions/$session/turns"
+    val body = "{\"input_text\":\"hello\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}"
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(65_537), 1024))
+    assertEquals("mobile_transport_response_invalid", (executeTurn(path, body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertEquals("mobile_transport_response_invalid", (executeTurn(path, body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/escaped"))
+    assertEquals("mobile_transport_response_invalid", (executeTurn(path, body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+    assertTrue(executeTurn(path, body).isFailure)
+    assertEquals(4, server.requestCount)
+  }
+
+  @Test fun canonicalTurnCancellationSettlesBeforeItsReservationCannotBeReused() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val path = "/api/agentflow/agent-sessions/$session/turns"
+    val body = "{\"input_text\":\"hello\",\"expected_state_version\":1,\"idempotency_key\":\"request-cancel\"}"
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.turnRequest(id, origin, path, "access.safe.jwt", "proof.safe.jwt", body) {
+      result.set(it); latch.countDown()
+    }
+    assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+    assertEquals("mobile_transport_invalid", assertThrows(MobileTransportFailure::class.java) {
+      transport.turnRequest(id, origin, path, "access.safe.jwt", "proof.safe.jwt", body) {}
+    }.code)
+    assertEquals(1, server.requestCount)
   }
 }

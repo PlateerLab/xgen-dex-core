@@ -1,6 +1,7 @@
 import { DexError } from '@dex/engine';
 
 const BOOLEAN_OPTIONS = new Set([
+  'clear',
   'allow-dangerous',
   'canonical',
   'check',

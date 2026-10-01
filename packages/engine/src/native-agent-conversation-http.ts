@@ -9,11 +9,17 @@ function decimal(value: string, min: number, max: number): boolean {
 }
 function route(path: string): boolean {
   if (path === '/api/agentflow/me/agent-state' || new RegExp(`^/api/agentflow/agent-sessions/${UUID}/snapshot$`).test(path)) return true;
+  const catalog = new RegExp(`^/api/agentflow/me/agent-sessions\\?limit=([0-9]+)(?:&before_id=(${UUID}))?$`).exec(path);
+  if (catalog) return decimal(catalog[1]!, 1, 100);
   const query = new RegExp(`^(?:/api/agentflow/me/agent-events|/api/agentflow/agent-sessions/${UUID}/(events|messages))\\?after_sequence=([0-9]+)&limit=([0-9]+)$`).exec(path);
   return !!query && decimal(query[2]!, 0, Number.MAX_SAFE_INTEGER) && decimal(query[3]!, 1, query[1] === 'messages' ? 20 : 200);
 }
 /** A scoped read adapter for a host-provided system TLS fetch. No arbitrary routes or credentials. */
 export function nativeConversationFetch(origin: string, fetchImpl: typeof fetch, check: () => Promise<void>): typeof fetch {
+  try {
+    const configured = new URL(origin);
+    if (configured.protocol !== 'https:' || origin !== configured.origin) throw invalid();
+  } catch { throw invalid(); }
   return (async (input, init) => {
     init?.signal?.throwIfAborted();
     if (typeof input !== 'string' || !init || init.method !== 'GET' || init.body !== undefined || init.credentials !== 'omit'

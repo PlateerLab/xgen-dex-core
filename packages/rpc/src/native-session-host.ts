@@ -28,13 +28,23 @@ export class NativeSessionRpcHost {
   private readonly keys: NativeDeviceKeyStore;
   private active: AbortController | null = null;
   private watch: Watch | null = null;
+  private draining: Promise<void> = Promise.resolve();
   private closed = false;
   constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeSessionNotification) => void,
     private readonly options: NativeSessionHostOptions = {}, readonly platform: 'vscode' | 'desktop' = 'vscode') { this.keys = options.keys ?? new NativeDeviceKeyStore(); }
   cancel(): void { this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort(); }
   close(): void { this.closed = true; this.cancel(); }
-  private async stopWatch(): Promise<void> {
-    const watch = this.watch; this.watch = null; watch?.controller.abort(); await watch?.done;
+  private async stopWatch(signal: AbortSignal = AbortSignal.timeout(15000)): Promise<void> {
+    const watch = this.watch; this.watch = null; watch?.controller.abort();
+    signal.throwIfAborted();
+    // Watcher cancellation can finish before the underlying native vault operation.
+    // Keep the drain barrier even when cancel/close already removed this.watch.
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      signal.addEventListener('abort', abort, { once: true });
+      this.draining.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
+    });
   }
   async request(method: string, p: Record<string, unknown>): Promise<NativeRpcResult | { watching: false }> {
     p = { ...p };
@@ -44,24 +54,30 @@ export class NativeSessionRpcHost {
       if (this.watch?.id === id) await this.stopWatch(); return { watching: false };
     }
     if (method === 'native/cancel') { fields(p, []); this.cancel(); return { watching: false }; }
-    if (!['native/device', 'native/session', 'native/watch', 'native/conversation', 'native/watch-conversation', 'native/watch-live', 'native/submit-turn', 'native/stop-turn'].includes(method)) {
+    if (!['native/device', 'native/session', 'native/watch', 'native/conversation', 'native/watch-conversation', 'native/watch-live', 'native/submit-turn', 'native/stop-turn',
+      'native/agent-sessions', 'native/create-agent-session', 'native/switch-agent-focus'].includes(method)) {
       throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
     }
     if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
     const controller = new AbortController(); this.active = controller;
     const signal = controller.signal;
     const timeout = setTimeout(() => controller.abort(), 15000);
+    let sessionForDrain: NativeHostSession | null = null;
     try {
-      await this.stopWatch(); signal.throwIfAborted();
+      await this.stopWatch(signal); signal.throwIfAborted();
       const conversation = method === 'native/conversation' || method === 'native/watch-conversation' || method === 'native/watch-live';
       const watching = method === 'native/watch' || method === 'native/watch-conversation' || method === 'native/watch-live';
       const live = method === 'native/watch-live';
       const mutation = method === 'native/submit-turn' || method === 'native/stop-turn';
-      const action = mutation ? method.slice(7) : watching ? 'watch' : conversation ? 'conversation' : text(p, 'action')!;
+      const catalog = method === 'native/agent-sessions';
+      const lifecycle = method === 'native/create-agent-session' || method === 'native/switch-agent-focus';
+      const action = mutation || catalog || lifecycle ? method.slice(7) : watching ? 'watch' : conversation ? 'conversation' : text(p, 'action')!;
       const device = method === 'native/device'; const passwordAction = device || ['login', 'logout'].includes(action);
       const accountField = device || action === 'login' ? 'email' : 'user_id';
       fields(p, ['profile', ...(mutation ? ['user_id', 'agent_session_id', 'expected_state_version',
         ...(method === 'native/submit-turn' ? ['input_text', 'idempotency_key', 'origin_id'] : ['turn_id'])]
+        : catalog ? ['user_id', 'limit', 'before_id']
+        : lifecycle ? ['user_id', 'expected_version', 'origin_id', ...(method === 'native/create-agent-session' ? ['workflow_id', 'title'] : ['active_agent_session_id'])]
         : watching ? ['user_id', 'interval_ms'] : conversation ? ['user_id'] : ['action', accountField]),
         ...(passwordAction ? ['password'] : []), ...(device && action === 'register' ? ['device_name'] : []),
         ...(device && action === 'request-approval' ? ['approver_device_id'] : [])]);
@@ -80,6 +96,30 @@ export class NativeSessionRpcHost {
       const envelope = { platform_type: this.platform, profile, server_url: scope.origin };
       const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch, this.options.expectedUserId,
         live ? this.options.socket?.(scope.origin) : undefined);
+      sessionForDrain = session;
+      if (catalog) {
+        if (p.limit !== undefined && (typeof p.limit !== 'number' || !Number.isSafeInteger(p.limit) || p.limit < 1 || p.limit > 100)) {
+          throw new DexError('usage_error', '대화 목록 개수는 1~100 사이의 정수여야 합니다.');
+        }
+        if (p.before_id !== undefined && (typeof p.before_id !== 'string'
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(p.before_id))) {
+          throw new DexError('usage_error', '대화 목록 커서를 확인하세요.');
+        }
+        const focus = await session.focus(account, signal);
+        const sessions = await session.agentSessions(account, p.limit as number | undefined, p.before_id as string | undefined, signal);
+        signal.throwIfAborted();
+        return { ...envelope, user_id: account, focus, sessions };
+      }
+      if (lifecycle) {
+        if (method === 'native/create-agent-session') {
+          const created = await session.createAgentSession(account, { workflow_id: p.workflow_id as string, expected_version: p.expected_version as number,
+            ...(p.title !== undefined ? { title: p.title as string } : {}), ...(p.origin_id !== undefined ? { origin_id: p.origin_id as string } : {}) }, signal);
+          return { ...envelope, user_id: account, created };
+        }
+        const focus = await session.switchAgentFocus(account, { active_agent_session_id: p.active_agent_session_id as string | null,
+          expected_version: p.expected_version as number, ...(p.origin_id !== undefined ? { origin_id: p.origin_id as string } : {}) }, signal);
+        return { ...envelope, user_id: account, focus };
+      }
       if (mutation) {
         const agentSessionId = text(p, 'agent_session_id')!;
         const result = method === 'native/submit-turn'
@@ -111,7 +151,10 @@ export class NativeSessionRpcHost {
         if (status.state !== 'active') throw new DexError('auth_required', '사용 가능한 플랫폼 access가 없습니다. 로그인 또는 갱신을 먼저 실행하세요.');
         const watch: Watch = { id: randomUUID(), controller: new AbortController(), done: Promise.resolve() }; this.watch = watch;
         // Acknowledgment precedes notifications, as with chat/start.
-        setImmediate(() => {
+        // Track the scheduled launch before ACK: replacement must also wait for a watcher
+        // that has not entered run() yet, otherwise both owners can enter the OS vault.
+        watch.done = new Promise<void>((resolve) => { setImmediate(() => {
+          if (this.closed || this.watch !== watch || watch.controller.signal.aborted) { resolve(); return; }
           const done = conversation
             ? conversationWatcher!.run((update) => {
               if (!this.closed && this.watch === watch && !watch.controller.signal.aborted) {
@@ -123,10 +166,11 @@ export class NativeSessionRpcHost {
                 this.notify({ ...envelope, watch_id: watch.id, update });
               }
             }, watch.controller.signal);
-          watch.done = done.catch(() => {
+          void done.catch(() => {
             // The watcher has emitted its safe stopped reason. Never log raw transport/keychain data.
-          }).finally(() => { if (this.watch === watch) this.watch = null; });
-        });
+          }).finally(() => { if (this.watch === watch) this.watch = null; resolve(); });
+        }); });
+        this.draining = Promise.all([this.draining, watch.done.then(() => session.settleProofOperations())]).then(() => undefined);
         signal.throwIfAborted(); return { ...envelope, user_id: account, watch_id: watch.id,
           ...(conversation ? { view: 'conversation' as const } : {}) };
       }
@@ -143,6 +187,9 @@ export class NativeSessionRpcHost {
       if (!result) throw new DexError('usage_error', '지원하지 않는 세션 작업입니다.');
       signal.throwIfAborted(); return { ...envelope, user_id: result.user_id, result,
         ...(action === 'forget-local' ? { server_revoked: false as const } : {}) };
-    } finally { clearTimeout(timeout); this.active = null; }
+    } finally {
+      if (sessionForDrain) this.draining = Promise.all([this.draining, sessionForDrain.settleProofOperations()]).then(() => undefined);
+      clearTimeout(timeout); this.active = null;
+    }
   }
 }

@@ -39,6 +39,7 @@ import { NativeDeviceKeyCard } from './NativeDeviceKeyCard';
 import { NativeDeviceEnrollmentCard } from './NativeDeviceEnrollmentCard';
 import { NativePlatformSessionCard } from './NativePlatformSessionCard';
 import { NativeAgentFocusCard } from './NativeAgentFocusCard';
+import { NativeAgentConversationCard } from './NativeAgentConversationCard';
 import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -973,6 +974,7 @@ function SettingsSection({
       <NativeDeviceEnrollmentCard client={client} visible={visible} />
       <NativePlatformSessionCard client={client} visible={visible} />
       <NativeAgentFocusCard client={client} visible={visible} />
+      <NativeAgentConversationCard client={client} visible={visible} />
       <View style={st.card}>
         <Text style={st.cardTitle}>모바일 도구</Text>
         <Pressable style={st.checkRow} onPress={() => onToggleTools(!toolsEnabled)}>

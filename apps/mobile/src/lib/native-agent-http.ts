@@ -8,6 +8,7 @@ export interface MobileAgentHttpModule {
 }
 export class MobileAgentTransportBusy extends Error { constructor() { super('Mobile native read is still settling'); } }
 export class MobileAgentTransportUnavailable extends Error { constructor() { super('Mobile Canonical bridge is unavailable'); } }
+export class MobileAgentResponseInvalid extends Error { constructor() { super('Invalid Mobile Canonical response'); } }
 export type MobileAgentFetch = typeof fetch & { assertAvailable(): void };
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
@@ -19,7 +20,8 @@ function nativeFailure(error: unknown): never {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
   if (code === 'mobile_transport_invalid') throw new MobileAgentTransportUnavailable();
   if (code === 'mobile_transport_busy') throw new MobileAgentTransportBusy();
-  if (error instanceof AgentSessionProtocolError) throw error; fail();
+  if (code === 'mobile_transport_response_invalid') throw new MobileAgentResponseInvalid();
+  if (error instanceof AgentSessionProtocolError || error instanceof MobileAgentResponseInvalid) throw error; fail();
 }
 function jwt(value: unknown): value is string { return typeof value === 'string' && value.trim() === value && value.length <= 8192 && JWT.test(value); }
 function decimal(value: string, min: number, max: number): boolean {
@@ -32,7 +34,9 @@ export function mobileAgentReadPath(value: string): boolean {
   const events = new RegExp(`^(?:/api/agentflow/me/agent-events|/api/agentflow/agent-sessions/${UUID}/events)\\?after_sequence=([0-9]+)&limit=([0-9]+)$`).exec(value);
   if (events) return decimal(events[1]!, 0, Number.MAX_SAFE_INTEGER) && decimal(events[2]!, 1, 200);
   const list = new RegExp(`^/api/agentflow/me/agent-sessions\\?limit=([0-9]+)(?:&before_id=${UUID})?$`).exec(value);
-  return !!list && decimal(list[1]!, 1, 100);
+  if (list) return decimal(list[1]!, 1, 100);
+  const messages = new RegExp(`^/api/agentflow/agent-sessions/${UUID}/messages\\?after_sequence=([0-9]+)&limit=([0-9]+)$`).exec(value);
+  return !!messages && decimal(messages[1]!, 0, Number.MAX_SAFE_INTEGER) && decimal(messages[2]!, 1, 20);
 }
 /** System TLS native bridge only. No cookies, redirects, body, Bearer or fetch fallback. */
 export function createMobileAgentFetch(module: MobileAgentHttpModule | null, origin: string): MobileAgentFetch {
@@ -70,10 +74,10 @@ export function createMobileAgentFetch(module: MobileAgentHttpModule | null, ori
       void wire.then(settled, settled);
       const raw = await Promise.race([wire, aborted]);
       signal?.throwIfAborted();
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(); const r = raw as Record<string, unknown>;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new MobileAgentResponseInvalid(); const r = raw as Record<string, unknown>;
       if (Object.keys(r).some((k) => !['status', 'body'].includes(k)) || typeof r.status !== 'number' || !Number.isInteger(r.status)
         || r.status < 200 || r.status > 599 || (r.status >= 300 && r.status < 400) || typeof r.body !== 'string'
-        || new TextEncoder().encode(r.body).length > 65536) fail();
+        || new TextEncoder().encode(r.body).length > (url.pathname.endsWith('/messages') ? 1048576 : 65536)) throw new MobileAgentResponseInvalid();
       return { status: r.status, ok: r.status >= 200 && r.status < 300,
         json: async () => { signal?.throwIfAborted(); try { return JSON.parse(r.body as string) as unknown; }
           catch { throw new AgentSessionProtocolError('Invalid Mobile Canonical JSON'); } } } as Response;

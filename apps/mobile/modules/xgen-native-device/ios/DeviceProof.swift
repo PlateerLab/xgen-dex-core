@@ -53,7 +53,7 @@ enum DpopProof {
   private static let jwt = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$")
   private static let coordinate = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{43}$")
   private static let sessionIdPath = try! NSRegularExpression(pattern: "^/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-  private static let agentSessionPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events)$")
+  private static let agentSessionPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events|messages)$")
 
   private static func matches(_ expression: NSRegularExpression, _ value: String) -> Bool {
     let fullRange = NSRange(value.startIndex..., in: value)

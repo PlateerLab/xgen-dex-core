@@ -91,7 +91,7 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
               signingCheck(); if (!module.signDpop) throw new MobileDeviceKeyError('unavailable');
               const url = new URL(htu);
               const allowed = method === 'DELETE' ? new RegExp(`^/api/me/platform-sessions/${SESSION_UUID}$`).test(url.pathname)
-                : method === 'GET' && new RegExp(`^/api/agentflow/(?:me/(?:agent-state|agent-events|agent-sessions)|agent-sessions/${SESSION_UUID}/(?:snapshot|events))$`).test(url.pathname);
+                : method === 'GET' && new RegExp(`^/api/agentflow/(?:me/(?:agent-state|agent-events|agent-sessions)|agent-sessions/${SESSION_UUID}/(?:snapshot|events|messages))$`).test(url.pathname);
               if (!allowed || url.origin !== selected.origin || url.username || url.password || url.search || url.hash || url.href !== htu
                 || token.trim() !== token || token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new MobileDeviceKeyError('invalid');
               const proof = await module.signDpop(selected.origin, selected.userId, identity.installId, thumbprint, method, htu, token); signingCheck();

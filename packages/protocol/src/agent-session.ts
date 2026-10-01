@@ -57,6 +57,16 @@ export interface AgentSessionSnapshot {
   current_sequence: number;
   state_version: number;
   message_history_complete: boolean;
+  latest_turn?: { id: string; status: 'accepted' | 'running' | 'completed' | 'failed' | 'cancelled'; accepted_sequence: number } | null;
+}
+
+export interface AgentSessionMessage {
+  turn_id: string; sequence: number; status: 'completed' | 'failed' | 'cancelled';
+  input_text: string | null; output_text: string | null; content_complete: boolean;
+  source: 'unknown' | 'user' | 'subagent_report';
+}
+export interface AgentSessionMessagePage {
+  messages: AgentSessionMessage[]; next_cursor: number; snapshot_sequence: number; state_version: number; has_more: boolean;
 }
 
 export interface AgentEventCursor {
@@ -216,11 +226,53 @@ export function parseAgentSessionSnapshot(value: unknown): AgentSessionSnapshot 
     || !sequence(raw.state_version, 1) || typeof raw.message_history_complete !== 'boolean') {
     throw new AgentSessionProtocolError('Invalid Agent Session snapshot');
   }
+  let latest: AgentSessionSnapshot['latest_turn'];
+  if ('latest_turn' in raw) {
+    if (raw.latest_turn === null) latest = null;
+    else {
+      const turn = object(raw.latest_turn);
+      if (!uuid(turn.id) || turn.id.length !== 36 || typeof turn.status !== 'string' || !['accepted', 'running', 'completed', 'failed', 'cancelled'].includes(turn.status)
+        || !sequence(turn.accepted_sequence, 1) || Number(turn.accepted_sequence) > Number(raw.current_sequence)) {
+        throw new AgentSessionProtocolError('Invalid latest Agent Session turn');
+      }
+      latest = { id: turn.id, status: turn.status as NonNullable<AgentSessionSnapshot['latest_turn']>['status'], accepted_sequence: turn.accepted_sequence as number };
+    }
+  }
   return {
     id: raw.id, workflow_id: raw.workflow_id, title: raw.title,
     current_sequence: raw.current_sequence, state_version: raw.state_version,
     message_history_complete: raw.message_history_complete,
+    ...('latest_turn' in raw ? { latest_turn: latest } : {}),
   };
+}
+
+/** Sparse message.created sequences are independent from the contiguous execution event cursor. */
+export function parseAgentSessionMessagePage(value: unknown, afterSequence: number, limit = 20): AgentSessionMessagePage {
+  const raw = object(value);
+  if (!sequence(afterSequence) || !sequence(limit, 1) || limit > 20 || !Array.isArray(raw.messages) || raw.messages.length > limit
+    || !sequence(raw.next_cursor) || Number(raw.next_cursor) < afterSequence || !sequence(raw.snapshot_sequence)
+    || Number(raw.snapshot_sequence) < Number(raw.next_cursor) || !sequence(raw.state_version, 1) || typeof raw.has_more !== 'boolean') {
+    throw new AgentSessionProtocolError('Invalid Agent Session message page');
+  }
+  const text = (value: unknown): value is string | null => value === null || (typeof value === 'string' && new TextEncoder().encode(value).length <= 262144);
+  const seen = new Set<string>(); let cursor = afterSequence;
+  const messages = raw.messages.map((value: unknown): AgentSessionMessage => {
+    const message = object(value);
+    if (!uuid(message.turn_id) || message.turn_id.length !== 36 || seen.has(message.turn_id) || !sequence(message.sequence, 1)
+      || Number(message.sequence) <= cursor || Number(message.sequence) > Number(raw.snapshot_sequence)
+      || typeof message.status !== 'string' || !['completed', 'failed', 'cancelled'].includes(message.status) || !text(message.input_text) || !text(message.output_text)
+      || typeof message.content_complete !== 'boolean' || message.content_complete !== (message.input_text !== null && message.output_text !== null)
+      || typeof message.source !== 'string' || !['unknown', 'user', 'subagent_report'].includes(message.source) || (message.input_text === null && message.source !== 'unknown')) {
+      throw new AgentSessionProtocolError('Invalid linked Agent Session message');
+    }
+    seen.add(message.turn_id); cursor = message.sequence as number;
+    // Project display fields only. Raw ExecutionIO/tool envelopes never enter client state.
+    return { turn_id: message.turn_id, sequence: cursor, status: message.status as AgentSessionMessage['status'],
+      input_text: message.input_text, output_text: message.output_text, content_complete: message.content_complete,
+      source: message.source as AgentSessionMessage['source'] };
+  });
+  if (raw.next_cursor !== cursor || (raw.has_more && messages.length === 0)) throw new AgentSessionProtocolError('Invalid sparse message cursor');
+  return { messages, next_cursor: cursor, snapshot_sequence: raw.snapshot_sequence as number, state_version: raw.state_version as number, has_more: raw.has_more };
 }
 
 /** Accepts both the HTTP page and Workflow's `agent_session.events` WS frame. */
@@ -359,5 +411,13 @@ export class AgentSessionReadClient {
     }
     const query = new URLSearchParams({ after_sequence: String(afterSequence), limit: String(limit) });
     return parseAgentSessionEventPage(await this.read(`/api/agentflow/agent-sessions/${sessionId}/events`, query, signal));
+  }
+
+  async messages(sessionId: string, afterSequence: number, limit = 1, signal?: AbortSignal): Promise<AgentSessionMessagePage> {
+    if (!uuid(sessionId) || sessionId.length !== 36 || !sequence(afterSequence) || !sequence(limit, 1) || limit > 20) {
+      throw new TypeError('Invalid linked Agent Session message cursor');
+    }
+    const query = new URLSearchParams({ after_sequence: String(afterSequence), limit: String(limit) });
+    return parseAgentSessionMessagePage(await this.read(`/api/agentflow/agent-sessions/${sessionId}/messages`, query, signal), afterSequence, limit);
   }
 }

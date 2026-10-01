@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { AgentSessionProtocolError } from '@dex/protocol/agent-session';
 import { NativePlatformTransportError } from '@dex/protocol/native-platform-session';
-import { createMobileAgentFetch, MobileAgentTransportBusy, MobileAgentTransportUnavailable, mobileAgentReadPath, type MobileAgentHttpModule } from '../src/lib/native-agent-http';
+import { createMobileAgentFetch, MobileAgentTransportBusy, MobileAgentTransportUnavailable, MobileAgentResponseInvalid, mobileAgentReadPath, type MobileAgentHttpModule } from '../src/lib/native-agent-http';
 
 const origin = 'https://mobile.example.test'; const sid = '11111111-1111-4111-8111-111111111111';
 const init: RequestInit = { method: 'GET', headers: { Accept: 'application/json', Authorization: 'DPoP access.jwt.signature', DPoP: 'proof.jwt.signature' },
@@ -19,7 +19,8 @@ test('only exact Canonical GET routes/ordered canonical query bounds enter the n
   for (const path of ['/api/agentflow/me/agent-state', '/api/agentflow/me/agent-events?after_sequence=0&limit=200',
     '/api/agentflow/me/agent-events?after_sequence=9007199254740991&limit=1', `/api/agentflow/agent-sessions/${sid}/snapshot`,
     `/api/agentflow/agent-sessions/${sid}/events?after_sequence=42&limit=100`, '/api/agentflow/me/agent-sessions?limit=100',
-    `/api/agentflow/me/agent-sessions?limit=1&before_id=${sid}`]) {
+    `/api/agentflow/me/agent-sessions?limit=1&before_id=${sid}`, `/api/agentflow/agent-sessions/${sid}/messages?after_sequence=0&limit=20`,
+    `/api/agentflow/agent-sessions/${sid}/messages?after_sequence=9007199254740991&limit=1`]) {
     assert.equal(mobileAgentReadPath(path), true); const response = await f.fetch(`${origin}${path}`, init); assert.deepEqual(await response.json(), { ok: true });
     assert.deepEqual(f.calls.at(-1)!.slice(1), [origin, path, 'access.jwt.signature', 'proof.jwt.signature']);
   }
@@ -35,6 +36,8 @@ test('unknown/duplicate/encoded parameters, query reorder, fractions, overflows 
     '/api/agentflow/me/agent-sessions?limit=101', '/api/agentflow/me/agent-sessions?limit=1&extra=1',
     `/api/agentflow/agent-sessions/${sid.replace('4111', '0111')}/snapshot`, `/api/agentflow/agent-sessions/${sid}/snapshot#fragment`,
     '/api/agentflow/agent-sessions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/snapshot'.toUpperCase(),
+    `/api/agentflow/agent-sessions/${sid}/messages?after_sequence=0&limit=21`, `/api/agentflow/agent-sessions/${sid}/messages?after_sequence=00&limit=1`,
+    `/api/agentflow/agent-sessions/${sid}/messages?limit=1&after_sequence=0`, `/api/agentflow/agent-sessions/${sid}/messages?after_sequence=0&limit=1&extra=1`,
     '/api/agentflow/me/../me/agent-state', '/api/agentflow/me%2fagent-state', '/api/agentflow/me\\agent-state']) {
     await assert.rejects(f.fetch(`${origin}${path}`, init), NativePlatformTransportError);
   }
@@ -87,10 +90,18 @@ test('redirect/oversize/invalid native responses and exception details are conta
   const f = fixture(); const url = `${origin}/api/agentflow/me/agent-state`;
   for (const raw of [{ status: 302, body: '' }, { status: 200.5, body: '{}' }, { status: 200, body: '가'.repeat(22000) },
     { status: 200, body: '{}', cookie: 'secret' }, { status: 200, body: null }, null]) {
-    f.native.readRequest = async () => raw; await assert.rejects(f.fetch(url, init), NativePlatformTransportError);
+    f.native.readRequest = async () => raw; await assert.rejects(f.fetch(url, init), MobileAgentResponseInvalid);
   }
   f.native.readRequest = async () => { throw new Error('private-native-error'); };
   await assert.rejects(f.fetch(url, init), (e: Error) => e instanceof NativePlatformTransportError && !e.message.includes('private'));
   f.native.readRequest = async () => ({ status: 200, body: 'private-not-json' });
   await assert.rejects((await f.fetch(url, init)).json(), AgentSessionProtocolError);
+});
+test('only messages accepts up to 1MiB; native invalid UTF8/size/redirect errors are permanent without private details', async () => {
+  const f = fixture(); const url = `${origin}/api/agentflow/agent-sessions/${sid}/messages?after_sequence=0&limit=1`;
+  f.native.readRequest = async () => ({ status: 200, body: 'x'.repeat(1048576) }); await f.fetch(url, init);
+  await assert.rejects(f.fetch(`${origin}/api/agentflow/agent-sessions/${sid}/snapshot`, init), MobileAgentResponseInvalid);
+  f.native.readRequest = async () => ({ status: 200, body: 'x'.repeat(1048577) }); await assert.rejects(f.fetch(url, init), MobileAgentResponseInvalid);
+  f.native.readRequest = async () => { throw { code: 'mobile_transport_response_invalid', message: 'private-native' }; };
+  await assert.rejects(f.fetch(url, init), (e: Error) => e instanceof MobileAgentResponseInvalid && !e.message.includes('private'));
 });

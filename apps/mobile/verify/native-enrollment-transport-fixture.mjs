@@ -15,6 +15,7 @@ const canonicalReads = new Set([
   `/api/agentflow/me/agent-sessions?limit=20&before_id=${canonicalSession}`,
   `/api/agentflow/agent-sessions/${canonicalSession}/snapshot`,
   `/api/agentflow/agent-sessions/${canonicalSession}/events?after_sequence=0&limit=1`,
+  `/api/agentflow/agent-sessions/${canonicalSession}/messages?after_sequence=9007199254740991&limit=20`,
 ]);
 
 const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }, (request, response) => {
@@ -105,6 +106,29 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         request.headers.dpop !== expectedDpop || request.headers["content-type"] !== undefined || body !== "") {
         response.writeHead(400); response.end("bad delayed read"); return;
       }
+      setTimeout(() => { if (!response.destroyed) { response.writeHead(200); response.end("late"); } }, 5000); return;
+    }
+    const messagesBase = `/api/agentflow/agent-sessions/${canonicalSession}/messages?after_sequence=`;
+    if (request.url === messagesBase + "1&limit=20") {
+      response.writeHead(200, { "Content-Type": "application/json" }); response.end("x".repeat(70000)); return;
+    }
+    if (request.url === "/api/agentflow/me/agent-events?after_sequence=8&limit=1") {
+      response.writeHead(200, { "Content-Type": "application/json" }); response.end("x".repeat(65537)); return;
+    }
+    if (request.url === messagesBase + "2&limit=20") {
+      response.writeHead(200, { "Content-Type": "application/json" }); response.end("x".repeat(1048577)); return;
+    }
+    if (request.url === messagesBase + "3&limit=20") {
+      response.writeHead(200, { "Content-Type": "application/json", "Transfer-Encoding": "chunked" });
+      response.write("x".repeat(524288)); response.write("x".repeat(524288)); response.end("x"); return;
+    }
+    if (request.url === messagesBase + "4&limit=20") {
+      response.writeHead(200, { "Content-Type": "application/json" }); response.end(Buffer.from([0xc3, 0x28])); return;
+    }
+    if (request.url === messagesBase + "5&limit=20") {
+      response.writeHead(302, { Location: "/escaped" }); response.end("redirect"); return;
+    }
+    if (request.url === messagesBase + "6&limit=1") {
       setTimeout(() => { if (!response.destroyed) { response.writeHead(200); response.end("late"); } }, 5000); return;
     }
     if (canonicalReads.has(request.url)) {

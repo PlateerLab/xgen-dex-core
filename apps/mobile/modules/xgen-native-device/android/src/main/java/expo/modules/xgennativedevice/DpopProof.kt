@@ -10,7 +10,7 @@ internal object DpopProof {
   private val jwt = Regex("[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+")
   private val coordinate = Regex("[A-Za-z0-9_-]{43}")
   private val sessionIdPath = Regex("/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
-  private val agentSessionPath = Regex("/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events)")
+  private val agentSessionPath = Regex("/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events|messages)")
 
   private fun canonicalOrigin(origin: String): Boolean = try {
     val uri = URI(origin)

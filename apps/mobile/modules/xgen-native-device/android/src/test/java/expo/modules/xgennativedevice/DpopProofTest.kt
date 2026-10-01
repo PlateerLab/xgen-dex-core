@@ -47,7 +47,8 @@ class DpopProofTest {
     val paths = listOf(
       "/api/agentflow/me/agent-state", "/api/agentflow/me/agent-events", "/api/agentflow/me/agent-sessions",
       "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/snapshot",
-      "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/events"
+      "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/events",
+      "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/messages"
     )
     paths.forEach { assertTrue(DpopProof.signingInput(origin, "GET", origin + it, "safe.jwt.token", x, y, 1, jti).contains('.')) }
     fun invalid(originValue: String = origin, method: String = "GET", htu: String = "$origin/api/agentflow/me/agent-state", token: String = "safe.jwt.token", id: String = jti) {
@@ -56,6 +57,7 @@ class DpopProofTest {
     invalid(originValue = "http://xgen.example.test", htu = "http://xgen.example.test/api/agentflow/me/agent-state")
     invalid(method = "POST")
     invalid(htu = "$origin/api/agentflow/me/agent-state?x=1")
+    invalid(htu = "$origin/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/messages?after_sequence=0&limit=20")
     invalid(htu = "${origin}evil/api/agentflow/me/agent-state")
     invalid(token = "opaque-safe-token")
     invalid(id = jti.uppercase())

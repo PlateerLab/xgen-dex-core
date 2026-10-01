@@ -38,6 +38,19 @@ struct NativeEnrollmentTransportVerification {
       return result
     }
 
+    func performRead(_ pathWithQuery: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature", cancelAfter: TimeInterval? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
+      let id = try transport.newRequestId()
+      let semaphore = DispatchSemaphore(value: 0)
+      var result: Result<MobileTransportResponse, MobileTransportFailure>?
+      try transport.readRequest(requestId: id, origin: origin, pathWithQuery: pathWithQuery, accessToken: accessToken, dpop: dpop) {
+        result = $0
+        semaphore.signal()
+      }
+      if let cancelAfter { DispatchQueue.global().asyncAfter(deadline: .now() + cancelAfter) { try? transport.cancelRequest(id) } }
+      guard semaphore.wait(timeout: .now() + 12) == .success, let result else { throw VerificationFailure.failed("read request timeout") }
+      return result
+    }
+
     let headers = try perform("/api/auth/platform-devices/native/mobile/registration/challenge", method: "POST", body: "{\"case\":\"headers\"}").get()
     guard headers.status == 201, headers.body == "{\"ok\":true}" else { throw VerificationFailure.failed("headers/body") }
 
@@ -76,6 +89,66 @@ struct NativeEnrollmentTransportVerification {
     let sessionCancelStarted = Date()
     guard case .failure = try performSession("/api/auth/platform-sessions/native/refresh/complete", body: "{\"case\":\"delay\"}", cancelAfter: 0.1),
       Date().timeIntervalSince(sessionCancelStarted) < 2 else { throw VerificationFailure.failed("session cancel did not interrupt") }
+
+    let canonicalSession = "00000000-0000-4000-8000-000000000001"
+    let canonicalReads = [
+      "/api/agentflow/me/agent-state",
+      "/api/agentflow/me/agent-events?after_sequence=9007199254740991&limit=200",
+      "/api/agentflow/me/agent-sessions?limit=100",
+      "/api/agentflow/me/agent-sessions?limit=20&before_id=\(canonicalSession)",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/snapshot",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/events?after_sequence=0&limit=1",
+    ]
+    for path in canonicalReads {
+      let read = try performRead(path).get()
+      guard read.status == 200, read.body == "{\"read\":true}" else { throw VerificationFailure.failed("canonical read policy") }
+    }
+    let readCancelStarted = Date()
+    guard case .failure = try performRead("/api/agentflow/me/agent-events?after_sequence=7&limit=1", cancelAfter: 0.1),
+      Date().timeIntervalSince(readCancelStarted) < 2 else { throw VerificationFailure.failed("read cancel did not interrupt") }
+
+    func expectInvalidRead(_ path: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature") throws {
+      do {
+        _ = try performRead(path, accessToken: accessToken, dpop: dpop)
+        throw VerificationFailure.failed("invalid canonical read accepted")
+      } catch MobileTransportFailure.invalid {}
+    }
+    for path in [
+      "/api/agentflow/me/agent-state?x=1",
+      "/api/agentflow/me/agent-events",
+      "/api/agentflow/me/agent-events?limit=1&after_sequence=0",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=1&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=01&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=9007199254740992&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=0",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=201",
+      "/api/agentflow/me/agent-sessions?limit=101",
+      "/api/agentflow/me/agent-sessions?before_id=\(canonicalSession)&limit=1",
+      "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-0000-0000-000000000001",
+      "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-4000-8000-00000000000A",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/events?after_sequence=0&limit=01",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/snapshot?x=1",
+      "/api/agentflow/me/agent-events?after_sequence=0%26limit=1&limit=1",
+      "/api/agentflow/me/agent-state#fragment",
+      "/api/agentflow/me\\agent-state",
+    ] { try expectInvalidRead(path) }
+    try expectInvalidRead("/api/agentflow/me/agent-state", accessToken: "fixture.access.token\n")
+    try expectInvalidRead("/api/agentflow/me/agent-state", dpop: "fixture.header.signature\n")
+    try expectInvalidRead("/api/agentflow/me/agent-state", accessToken: "opaque-token")
+    try expectInvalidRead("/api/agentflow/me/agent-state", dpop: "opaque-proof")
+    try expectInvalidRead("/api/agentflow/me/agent-state", accessToken: String(repeating: "a", count: 8_189) + ".b.c")
+    let uppercaseOriginId = try transport.newRequestId()
+    do {
+      try transport.readRequest(requestId: uppercaseOriginId, origin: origin.replacingOccurrences(of: "localhost", with: "LOCALHOST"),
+        pathWithQuery: "/api/agentflow/me/agent-state", accessToken: "fixture.access.token", dpop: "fixture.header.signature") { _ in }
+      throw VerificationFailure.failed("noncanonical read origin accepted")
+    } catch MobileTransportFailure.invalid {}
+    let defaultPortOriginId = try transport.newRequestId()
+    do {
+      try transport.readRequest(requestId: defaultPortOriginId, origin: "https://localhost:443",
+        pathWithQuery: "/api/agentflow/me/agent-state", accessToken: "fixture.access.token", dpop: "fixture.header.signature") { _ in }
+      throw VerificationFailure.failed("default-port read origin accepted")
+    } catch MobileTransportFailure.invalid {}
 
     do {
       _ = try performSession("/api/auth/platform-sessions/native/login-key/begin", authorization: nil)
@@ -156,6 +229,6 @@ struct NativeEnrollmentTransportVerification {
       throw VerificationFailure.failed("newline-suffixed DPoP signer token accepted")
     } catch DeviceKeyFailure.invalid {}
 
-    print("native enrollment/session URLSession and DPoP verification passed")
+    print("native enrollment/session/canonical URLSession and DPoP verification passed")
   }
 }

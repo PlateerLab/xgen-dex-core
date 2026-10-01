@@ -71,6 +71,17 @@ class NativeEnrollmentTransportTest {
     return result.get()
   }
 
+  private fun executeRead(pathWithQuery: String, accessToken: String = "access.safe.jwt", dpop: String = "proof.safe.jwt"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.readRequest(transport.newRequestId(), origin, pathWithQuery, accessToken, dpop) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("read request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
   @Test fun sendsOnlyFixedHeadersAndJsonOverFixtureTls() {
     server.enqueue(MockResponse().setResponseCode(201).setBody("{\"ok\":true}"))
     val result = execute("/api/auth/platform-devices/native/mobile/registration/challenge", "POST", "{\"nested\":[true,1,null,\"ok\"]}").getOrThrow()
@@ -265,5 +276,90 @@ class NativeEnrollmentTransportTest {
     server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
     assertTrue(executeSession("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", "{\"password\":\"pw\"}").isFailure)
     assertEquals(2, server.requestCount)
+  }
+
+  @Test fun canonicalReadsPreserveExactQueriesAndSendOnlyDpopHeaders() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val routes = listOf(
+      "/api/agentflow/me/agent-state",
+      "/api/agentflow/me/agent-events?after_sequence=9007199254740991&limit=200",
+      "/api/agentflow/me/agent-sessions?limit=100",
+      "/api/agentflow/me/agent-sessions?limit=20&before_id=$session",
+      "/api/agentflow/agent-sessions/$session/snapshot",
+      "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=1"
+    )
+    routes.forEach { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+    routes.forEach { assertTrue(executeRead(it).isSuccess) }
+    routes.forEach { expected ->
+      val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+      assertEquals("GET", request.method)
+      assertEquals(expected, request.path)
+      assertEquals("application/json", request.getHeader("Accept"))
+      assertEquals("DPoP access.safe.jwt", request.getHeader("Authorization"))
+      assertEquals("proof.safe.jwt", request.getHeader("DPoP"))
+      assertNull(request.getHeader("Content-Type"))
+      assertEquals(0L, request.bodySize)
+    }
+  }
+
+  @Test fun canonicalReadsRejectRewrittenQueriesBoundsAndCredentialsBeforeNetwork() {
+    val transport = NativeEnrollmentTransport(client)
+    val session = "00000000-0000-4000-8000-000000000001"
+    fun invalid(path: String, token: String = "access.safe.jwt", proof: String = "proof.safe.jwt", originValue: String = origin) {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.readRequest(transport.newRequestId(), originValue, path, token, proof) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    listOf(
+      "/api/agentflow/me/agent-state?x=1",
+      "/api/agentflow/me/agent-events",
+      "/api/agentflow/me/agent-events?limit=1&after_sequence=0",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=1&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=01&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=9007199254740992&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=0",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=201",
+      "/api/agentflow/me/agent-sessions?limit=101",
+      "/api/agentflow/me/agent-sessions?before_id=$session&limit=1",
+      "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-0000-0000-000000000001",
+      "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-4000-8000-00000000000A",
+      "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=01",
+      "/api/agentflow/agent-sessions/$session/snapshot?x=1",
+      "/api/agentflow/me/agent-events?after_sequence=0%26limit=1&limit=1",
+      "/api/agentflow/me/agent-state#fragment",
+      "/api/agentflow/me\\agent-state"
+    ).forEach(::invalid)
+    invalid("/api/agentflow/me/agent-state", token = "access.safe.jwt\n")
+    invalid("/api/agentflow/me/agent-state", proof = "proof.safe.jwt\n")
+    invalid("/api/agentflow/me/agent-state", token = "opaque-token")
+    invalid("/api/agentflow/me/agent-state", proof = "opaque-proof")
+    invalid("/api/agentflow/me/agent-state", token = "a".repeat(8_189) + ".b.c")
+    invalid("/api/agentflow/me/agent-state", originValue = origin.replace("localhost", "LOCALHOST"))
+    invalid("/api/agentflow/me/agent-state", originValue = "https://localhost:443")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun canonicalReadSharesReservationAndCancellationWithMutationTransports() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.readRequest(id, origin, "/api/agentflow/me/agent-state", "access.safe.jwt", "proof.safe.jwt") {
+      result.set(it); latch.countDown()
+    }
+    assertEquals("mobile_transport_busy", assertThrows(MobileTransportFailure::class.java) {
+      transport.sessionRequest(id, origin, "/api/auth/platform-sessions/native/refresh/begin", "POST", null, null, "{}") {}
+    }.code)
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+
+    val cancelled = transport.newRequestId()
+    transport.cancelRequest(cancelled)
+    assertEquals("mobile_transport_unavailable", assertThrows(MobileTransportFailure::class.java) {
+      transport.readRequest(cancelled, origin, "/api/agentflow/me/agent-state", "access.safe.jwt", "proof.safe.jwt") {}
+    }.code)
   }
 }

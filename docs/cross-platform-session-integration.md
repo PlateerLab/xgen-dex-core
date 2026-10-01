@@ -310,3 +310,52 @@ enrollment의 `request`는 이전 allowlist를 유지하고, 별도 `sessionRequ
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 Percentages estimate remaining design work, not test coverage or delivery dates. Mobile Settings now supports explicit session issuance, local inspection, rotation, password/DPoP server revocation and local recovery through a separate SecureStore vault. A durable token-free journal gates every credential read; new verified records precede journal removal. Existing chat remains unchanged. Dedicated native session transport enforces Bearer-only login, authorization-free refresh and DPoP/password DELETE while sharing reservation/cancellation/TLS boundaries with enrollment. Native DPoP stays within the hardware key provider. URLSession does not guarantee exactly-once delivery; server flow consumption and local interruption markers prevent old credential fallback. Tests/typechecks, Android release AAR/native TLS, iOS full Simulator build/real iPhoneOS SDK, Metro and enrollment-mode Compose rejection/recovery pass. Compose uses memory storage/software key/Node TLS seams, so physical SecureStore/hardware/UI and real ACTIVE/takeover positive verification remain gates. Canonical watcher is next. SDK/runtime continues as an unreleased Workflow source overlay and parent PR90 remains Draft.
+
+## Mobile Canonical 포커스 조회·foreground 구독 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-canonical`, 기준 통합 SHA `4a5befc07851f247f9311421c266d3c8f35e0676`, 하위 PR138 → `feat/cross-platform-session`. main 대상 상위 PR90은 Draft로 유지한다. 환경변수·SDK/runtime 배포 변경은 없다.
+
+### 구현과 동작
+
+- `NativeAgentFocusCard`는 설정에서 현재 Agent 포커스의 ID/version 조회와 명시적 구독 시작·중단을 제공한다. 화면 이탈/계정 변경/백그라운드에서 owner를 폐기하고 요청·대기·포커스를 지우며 자동 재시작하지 않는다. 기존 메시지/WS는 후속 이행 작업이다.
+- `native-agent-focus.ts`는 공통 `AgentSessionReadClient`/`reconcileAgentFocus`를 사용한다. bounded step마다 하드웨어 identity 및 vault record/journal을 새로 확인하고 현재 계정별 공통 lock 안에서 서명·요청·응답을 검사한다. callback 종료 후 proof source를 무효화하고 로컬 record 참조를 버린다. JWT 서명/현재 권한/trust/sid는 서버가 검증한다.
+- cursor scope는 mobile/HTTPS origin/실제 user/로그인 수명/install/key/device/Platform sid의 hash다. access/refresh token과 회전 generation은 포함하지 않으므로 같은 sid의 명시적 갱신 뒤 새 access로 replay를 계속한다. sid 교체/재로그인은 snapshot부터 다시 조회한다. scope/cursor는 실행 동안만 유지하고 UI/진단에는 자격증명 없이 focus/source만 공개한다.
+- `native-agent-focus-watch.ts`는 RN timer 기반 2초 polling, step 전체 10초 deadline, 최대 10페이지 후 yield, 갭/409 snapshot 복구를 연결한다. 정상 step은 lock을 놓은 뒤 대기한다. transport/408/429/5xx/timeout 읽기만 1·2·4·8·16·30초 backoff하고 unchanged poll은 반복 표시하지 않는다. 인증/만료/journal/키/저장소/protocol 오류는 중단한다. 모든 재연결·중단 표시에서 오래된 focus를 지우며 자동 refresh/변경 작업 retry/legacy Bearer fallback은 없다.
+- 전송 취소가 OS 완료 확인은 아니다. 실제 native Promise가 settle될 때까지 module/origin별 public request ID latch를 남겨 새 GET과 기기 proof 준비를 거절한다. UI owner/adapter를 바꿔도 같은 module latch를 사용한다. source settling 또는 native reservation cap busy가 연속 4회면 구독을 중단한다. vault lock을 무한히 유지하지 않아 명시적 갱신·폐기/로컬 복구를 허용하며, 취소된 OS 요청 내부의 기존 헤더는 완료까지 남을 수 있다. late response는 cursor/UI에 적용하지 않는다. 새 bridge 함수가 없는 구형 native 앱과 native contract-invalid는 permanent failure로 처리한다.
+
+### 고정 Canonical GET 전송
+
+별도 `readRequest(id, origin, pathWithQuery, accessToken, dpop)`가 GET/body 없음/JSON Accept/DPoP Authorization/DPoP만 구성한다. JS와 양 OS에서 같은 경로·query 순서를 검사하며 서명 `htu`는 query를 제외한다. 허용 경로는 아래 다섯 가지다.
+
+| 경로 | 허용 query |
+|---|---|
+| `/api/agentflow/me/agent-state` | 없음 |
+| `/api/agentflow/me/agent-events` | `after_sequence=N&limit=N` |
+| `/api/agentflow/me/agent-sessions` | `limit=N` 뒤 선택적 `&before_id=UUID` |
+| `/api/agentflow/agent-sessions/UUID/snapshot` | 없음 |
+| `/api/agentflow/agent-sessions/UUID/events` | `after_sequence=N&limit=N` |
+
+seq는 0..9007199254740991, limit은 1..200(list는 1..100), decimal의 leading zero 없음, UUID는 lowercase version1..8/variant다. duplicate/unknown/reordered/encoded query, hash/backslash/URL rewrite/foreign 또는 noncanonical origin, JWT newline/oversize를 거절한다. list/session snapshot/event 경계는 공통 read client용으로 준비했으며 Mobile UI는 이번에 account focus만 연결했다. 기존 enrollment/session mutation allowlist는 유지하고 shared 예약·취소·기본 시스템 TLS·Cookie/redirect/cache 거절·64 KiB UTF-8 응답을 재사용한다. 앱 retry와 URLSession exactly-once는 별개이며 내부 OS 재전송의 완전 차단을 보장하지 않는다.
+
+### 검증과 제한
+
+- Mobile **118/118** tests 및 typecheck, 공통 계약 검사와 strict/bundler Compose harness 타입 검사 통과. 실제 ES256/ath/GET htu·fresh jti, snapshot/replay/gap·409/invalid JSON 복구, token rotation/sid·로그인 수명 변경, journal/expiry/corruption, lock을 놓은 대기 중 rotation, background/dispose/cancel·late 결과, whole-step deadline, capped backoff/unchanged suppression, 실제 adapter의 미정 OS call·새 owner·명시적 복구, 구형 bridge/permanent invalid와 native reservation cap busy를 검증했다. ACTIVE record/read 양성 테스트는 software-key/HTTP fixture이며 생산 서버 성공으로 취급하지 않는다.
+- Android release AAR와 native JUnit **22/22**(device4/DPoP2/TLS16), 실제 iPhoneOS SDK/deployment15.1 typecheck, 새 5인자 Expo GET bridge를 포함한 전체 iOS Simulator Debug 앱 빌드 및 iOS/Android Metro 번들 통과. macOS 실제 URLSession `::1` TLS fixture는 고정 GET/query/DPoP headers/body 없음/Cookie 미재사용/취소/invalid 경계를 확인했다. verifier의 임시 인증서는 production/system trust에 추가하지 않는다.
+- 실제 Compose `node --import tsx scripts/native-platform-session-compose.mts --mobile-focus`: 임시 일반 계정 등록·선택 브라우저 승인/trusted → login **503** → token-free `login_pending` → 생산 source와 watcher의 wire 이전 인증 중단(Canonical GET 0회) → owner 복원/중복 발급·refresh 차단/명시적 로컬 복구·trusted 유지 및 임시 DB 자료 정리를 통과했다. memory vault/software key/Node TLS seams이므로 실제 SecureStore/hardware/production Mobile UI 성공 증거는 아니다.
+- Compose 기본 인프라/core/gateway, workflow/frontend 및 local HTTPS3443, `PLATFORM_SESSION_MODE=enrollment`을 유지했다. clean source와 실행 container branch/ref/SHA 및 /app mounts를 직접 대조했다. 모두 `feat/cross-platform-session`: Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`. Mobile 자체는 Compose 서비스가 아니며 이 하위 브랜치의 실제 native/JS 빌드로 별도 검증했다. ACTIVE parser gate를 우회하지 않았다.
+- Workflow snapshot mounts와 실제 import는 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`(`/opt/xgen-local-sdk/src/xgen_sdk/__init__.py`), runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`(`/opt/xgen-local-runtime/src/xgen_agent_runtime/__init__.py`)이며 임시 overlay를 유지한다. 환경변수 변경이 없어 Infra 참조 문서는 변경하지 않는다.
+- 증거 로그: `/tmp/cross-sync-mobile-canonical-tests.log`, `-types.log`, `-android.log`, `-swift-fixture.log`, `-iphoneos.log`, `-ios-build.log`, `-metro.log`, `-contracts.log`, `-compose-types.log`, `-compose.log`. Pod/Metro 생성물은 커밋에서 제외한다. 최종 PR Head CI와 diff/review를 통합 직전에 확인한다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 5% | Mobile 실기기 보관/서명/UI, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 23% | Mobile 메시지 snapshot/event·기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Mobile Settings now explicitly reads and polls the canonical account focus through ready, scoped Platform credentials and native GET DPoP. Shared reconciliation preserves same-sid cursors across token rotation and recovers gaps/409 with a snapshot. Every bounded step reloads the vault; waits release the lock. Authentication, interrupted journals, key/vault/protocol failures stop, while read-only transient failures use capped backoff. Account/screen/background changes discard the cursor and require explicit restart. Cancelled native reads remain busy across owners until OS completion; persistent source/reservation busy stops, while local recovery remains available. Exact routes/ordered queries use the existing system TLS/cookie/redirect/UTF-8/cancel boundaries. Tests/native builds/Metro and enrollment-mode Compose rejection pass. Real ACTIVE/takeover, physical SecureStore/hardware/UI and message/WS integration remain gates. Parent PR90 stays Draft and SDK/runtime stays on the unreleased Workflow overlay.

@@ -43,6 +43,12 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     private val approvalBeginPath = Regex("/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests/begin")
     private val approvalPath = Regex("/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests")
     private val sessionPath = Regex("/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+    private const val CANONICAL_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    private const val MAX_SAFE_SEQUENCE = "9007199254740991"
+    private val agentEventsPath = Regex("/api/agentflow/me/agent-events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)")
+    private val agentSessionsPath = Regex("/api/agentflow/me/agent-sessions\\?limit=([1-9][0-9]*)(?:&before_id=($CANONICAL_UUID))?")
+    private val sessionSnapshotPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/snapshot")
+    private val sessionEventsPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)")
 
     fun production(): NativeEnrollmentTransport = NativeEnrollmentTransport(
       OkHttpClient.Builder()
@@ -177,6 +183,40 @@ internal class NativeEnrollmentTransport internal constructor(private val client
       return request.method(method, requestBody).build()
     }
 
+    private fun decimalAtMost(value: String, maximum: String): Boolean =
+      value.length < maximum.length || (value.length == maximum.length && value <= maximum)
+
+    private fun allowedReadPath(pathWithQuery: String): Boolean {
+      if (pathWithQuery == "/api/agentflow/me/agent-state" || sessionSnapshotPath.matches(pathWithQuery)) return true
+      agentEventsPath.matchEntire(pathWithQuery)?.let {
+        return decimalAtMost(it.groupValues[1], MAX_SAFE_SEQUENCE) && it.groupValues[2].toIntOrNull()?.let { limit -> limit in 1..200 } == true
+      }
+      agentSessionsPath.matchEntire(pathWithQuery)?.let {
+        return it.groupValues[1].toIntOrNull()?.let { limit -> limit in 1..100 } == true
+      }
+      sessionEventsPath.matchEntire(pathWithQuery)?.let {
+        return decimalAtMost(it.groupValues[1], MAX_SAFE_SEQUENCE) && it.groupValues[2].toIntOrNull()?.let { limit -> limit in 1..200 } == true
+      }
+      return false
+    }
+
+    private fun buildReadRequest(origin: String, pathWithQuery: String, accessToken: String, dpop: String): Request {
+      validatedOrigin(origin)
+      if ('%' in pathWithQuery || '#' in pathWithQuery || '\\' in pathWithQuery || !allowedReadPath(pathWithQuery) ||
+        accessToken.length > 8_192 || !dpopPattern.matches(accessToken) || dpop.length > 8_192 || !dpopPattern.matches(dpop)
+      ) throw MobileTransportFailure("mobile_transport_invalid")
+      val expected = origin + pathWithQuery
+      val url = expected.toHttpUrlOrNull()
+      if (url == null || url.toString() != expected) throw MobileTransportFailure("mobile_transport_invalid")
+      return Request.Builder()
+        .url(url)
+        .header("Accept", "application/json")
+        .header("Authorization", "DPoP $accessToken")
+        .header("DPoP", dpop)
+        .get()
+        .build()
+    }
+
     private fun readResponse(response: Response): MobileTransportResponse {
       val status = response.code
       if (status !in 200..599 || status in 300..399) throw MobileTransportFailure("mobile_transport_unavailable")
@@ -255,6 +295,18 @@ internal class NativeEnrollmentTransport internal constructor(private val client
   ) {
     if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
     execute(requestId, client.newCall(buildSessionRequest(origin, path, method, authorization, dpop, body)), completion)
+  }
+
+  fun readRequest(
+    requestId: String,
+    origin: String,
+    pathWithQuery: String,
+    accessToken: String,
+    dpop: String,
+    completion: (Result<MobileTransportResponse>) -> Unit
+  ) {
+    if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
+    execute(requestId, client.newCall(buildReadRequest(origin, pathWithQuery, accessToken, dpop)), completion)
   }
 
   private fun execute(requestId: String, call: Call, completion: (Result<MobileTransportResponse>) -> Unit) {

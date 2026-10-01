@@ -109,6 +109,7 @@ function scope(value: AgentTurnScope): AgentTurnScope {
       || !['platform_type', 'profile', 'server_url', 'user_id'].includes(key))
     || (value.platform_type !== 'vscode' && value.platform_type !== 'desktop')
     || typeof value.profile !== 'string' || value.profile.length < 1 || value.profile.length > 1024
+    || typeof value.user_id !== 'string'
     || !/^[1-9][0-9]{0,9}$/.test(value.user_id) || Number(value.user_id) > 2147483647) {
     throw new TypeError('Invalid Agent Turn scope');
   }

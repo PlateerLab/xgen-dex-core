@@ -260,6 +260,7 @@ test('invalid scope, input Unicode and generated keys fail before dispatch', asy
   assert.equal(f.composer.view.status, 'unavailable');
   assert.equal(f.composer.view.canSubmit, false);
   assert.throws(() => f.composer.context({ ...SCOPE, user_id: '07' }, snapshot(), true), TypeError);
+  assert.throws(() => f.composer.context({ ...SCOPE, user_id: 7 as unknown as string }, snapshot(), true), TypeError);
 });
 
 test('reset invalidates late results and immutable public views never expose input text', async () => {

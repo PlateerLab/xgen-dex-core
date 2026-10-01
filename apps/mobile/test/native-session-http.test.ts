@@ -16,8 +16,9 @@ test('session-only adapter sends Bearer login, no refresh auth and DPoP logout w
 test('foreign/enrollment/Canonical/queries/rewritten paths and wrong auth policies stop before the native call', async () => {
   const f = fixture(); for (const url of [login.replace(origin, 'https://other.test'), `${login}?x=1`, `${login}#hash`, `${origin}/api/auth/platform-devices/trust-overview`,
     `${origin}/api/agentflow/me/agent-state`, login.replace('/api/', '/x/../api/'), `${origin}/api/me/platform-sessions/not-uuid`]) await assert.rejects(f.fetch(url, init('Bearer account')));
-  for (const [url, input] of [[login, init()], [login, init('DPoP e30.e30.aaa')], [refresh, init('Bearer account')], [refresh, init(undefined, 'e30.e30.aaa')],
-    [logout, { ...init('Bearer account'), method: 'DELETE' }], [logout, { ...init('DPoP e30.e30.aaa'), method: 'DELETE' }]] as const) await assert.rejects(f.fetch(url, input));
+  for (const [url, input] of [[login, init()], [login, init('Bearer account\n')], [login, init('DPoP e30.e30.aaa')], [refresh, init('Bearer account')], [refresh, init(undefined, 'e30.e30.aaa')],
+    [logout, { ...init('Bearer account'), method: 'DELETE' }], [logout, { ...init('DPoP e30.e30.aaa'), method: 'DELETE' }],
+    [logout, { ...init('DPoP e30.e30.aaa\n', 'e30.e30.aaa'), method: 'DELETE' }], [logout, { ...init('DPoP e30.e30.aaa', 'e30.e30.aaa\n'), method: 'DELETE' }]] as const) await assert.rejects(f.fetch(url, input));
   assert.equal(f.calls.length, 0);
 });
 test('arbitrary headers/body/fetch defaults and missing native module have no RN fetch fallback', async () => {

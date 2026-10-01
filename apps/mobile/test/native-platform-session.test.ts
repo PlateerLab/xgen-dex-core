@@ -104,7 +104,7 @@ test('new credential write/readback failures keep the verified blocker; retained
     let wrote = false;
     f.storage.setItemAsync = async (key, value) => { if (key === f.key && failed === 'write') throw new Error('secret'); await put(key, value); if (key === f.key) wrote = true; };
     f.storage.getItemAsync = async (key) => key === f.key && failed === 'readback' && wrote ? '{wrong' : get(key);
-    await assert.rejects(f.controller.refresh(), MobileVaultError); assert.equal(f.controller.snapshot().state, 'refreshing');
+    await assert.rejects(f.controller.refresh(), MobileVaultError); assert.equal(f.controller.snapshot().state, 'unchecked');
     f.storage.getItemAsync = get; f.values.set(f.key, JSON.stringify(old));
     assert.equal((await f.make().inspect()).state, 'refreshing');
   }
@@ -178,4 +178,43 @@ test('normal account Bearer rotation is independent of native refresh, but login
   assert.equal(f.calls.slice(-2).every((c) => c.auth === null), true);
   const g = fixture(); const previous = g.rawHandle(); g.handle(async (path) => { const response = await previous(path); g.change({ ...g.authority, accessToken: 'rotated-account-bearer' }); return response; });
   await assert.rejects(g.controller.login('password')); assert.equal(g.calls.length, 1); assert.equal(g.values.has(g.key), false);
+});
+test('failure to erase an old credential record keeps the blocker and stops before refresh begins', async () => {
+  const f = fixture(); await f.controller.login('password'); const count = f.calls.length;
+  f.storage.deleteItemAsync = async () => {}; await assert.rejects(f.controller.refresh(), MobileVaultError); assert.equal(f.calls.length, count);
+  assert.equal((await f.make().inspect()).state, 'refreshing');
+});
+test('failed journal removal cannot use a newly stored token until explicit recovery clears the blocker', async () => {
+  const f = fixture(); await f.controller.login('password'); const remove = f.storage.deleteItemAsync;
+  f.storage.deleteItemAsync = async (key) => { if (key.endsWith('-journal')) throw new Error('secret-os'); await remove(key); };
+  await assert.rejects(f.controller.refresh(), MobileVaultError); assert.equal((await f.make().inspect()).state, 'refreshing');
+  const count = f.calls.length; await assert.rejects(f.make().refresh(), MobilePlatformError); assert.equal(f.calls.length, count);
+});
+test('after journal deletion succeeds but its readback fails, explicit inspection can recover only the verified new token', async () => {
+  const f = fixture(); await f.controller.login('password'); const old = f.record().refreshToken;
+  const remove = f.storage.deleteItemAsync; const get = f.storage.getItemAsync; let deleted = false;
+  f.storage.deleteItemAsync = async (key) => { await remove(key); if (key.endsWith('-journal')) deleted = true; };
+  f.storage.getItemAsync = async (key) => { if (deleted && key.endsWith('-journal')) throw new Error('unavailable'); return get(key); };
+  await assert.rejects(f.controller.refresh(), MobileVaultError); assert.notEqual(f.record().refreshToken, old);
+  f.storage.getItemAsync = get; assert.equal((await f.make().inspect()).state, 'active');
+});
+test('storage failures invalidate cached active UI state even when a durable blocker was only partially applied', async () => {
+  const f = fixture(); await f.controller.login('password'); f.storage.deleteItemAsync = async () => {};
+  await assert.rejects(f.controller.refresh(), MobileVaultError); assert.equal(f.controller.snapshot().state, 'unchecked');
+  assert.equal(f.controller.snapshot().sessionId, null); assert.equal((await f.make().inspect()).state, 'refreshing');
+});
+test('cancellation during irreversible journal deletion discards old UI result but preserves only verified new same-account credentials', async () => {
+  for (const mode of ['dispose', 'relogin']) {
+    const f = fixture(); await f.controller.login('password'); const old = f.record().refreshToken; const remove = f.storage.deleteItemAsync;
+    let release!: () => void; let begun!: () => void; const entered = new Promise<void>((r) => { begun = r; });
+    const held = new Promise<void>((r) => { release = r; });
+    f.storage.deleteItemAsync = async (key) => { if (key.endsWith('-journal')) { begun(); await held; } await remove(key); };
+    const refresh = f.controller.refresh(); await entered;
+    assert.notEqual(f.record().refreshToken, old); // server response, validation and credential readback already passed
+    if (mode === 'dispose') f.controller.dispose(); else f.change({ ...f.authority, authScope: 'new-same-account-login' });
+    release(); await assert.rejects(refresh); assert.equal(f.controller.snapshot().state, 'unchecked');
+    assert.equal((await f.make().inspect()).state, 'active'); assert.notEqual(f.record().refreshToken, old);
+    f.change({ ...f.authority, origin: 'https://other.test' }); assert.equal((await f.make().inspect()).state, 'signed_out');
+    f.change({ ...f.authority, userId: '999' }); assert.equal((await f.make().inspect()).state, 'signed_out');
+  }
 });

@@ -65,7 +65,7 @@ APK 로컬 빌드: `npm run apk` (debug 키 서명 — 배포 키는 CI 시크�
 
 ## 기기 보안 키 / Native device security key
 
-HTTPS 서버 로그인 후 **설정 → 기기 보안**에서 `기기 키 상태 확인`과 `인증 키 준비`를 사용할 수 있다. 준비 성공은 로컬 키의 존재만 의미한다. 서버 기기 등록·브라우저 승인·Platform Session과 Canonical 구독은 후속 연결이다.
+HTTPS 서버 로그인 후 **설정 → 기기 보안**에서 `기기 키 상태 확인`과 `인증 키 준비`를 사용할 수 있다. 준비 성공은 로컬 키의 존재만 의미한다. 아래의 등록·승인·휴대폰 세션 절차를 별도로 완료해야 하며 Canonical 구독은 후속 연결이다.
 
 - `modules/xgen-native-device`: Expo 로컬 모듈. iOS Secure Enclave, Android 28 이상 TEE/StrongBox P-256 키. 화면 잠금이 필요하다. 개인키를 JS로 반환하거나 소프트웨어 저장소로 대체하지 않는다.
 - 서버 HTTPS origin·실제 사용자별 설치 ID/공개키를 복원한다. 기록 불일치에는 자동 생성·덮어쓰기하지 않고 복구를 요구한다. 기기 키 준비는 신뢰 승인 없이 HTTP 호출도 하지 않는다.
@@ -116,7 +116,7 @@ On macOS, run `bash verify/run-native-enrollment-transport.sh` from `apps/mobile
 HTTPS 서버 로그인 → 기기 키 준비 → 휴대폰 등록 → PC 브라우저 승인을 완료한 뒤 **설정 → 휴대폰 세션**에서 현재 계정 비밀번호로 발급한다. 서버가 ACTIVE 발급을 허용해야 한다. `저장된 세션 상태 확인`은 로컬 보관 상태만 조회하며 서버 신뢰·세션 유효성을 대신하지 않는다. 자동 발급·갱신·재시도는 없다. 기존 로그인·채팅 자격증명과 별도이며 Canonical 구독은 후속 단계다.
 
 - 별도 SecureStore service에 `mobile + HTTPS origin + 실제 사용자`별 record/journal을 저장한다. iOS 접근은 `WHEN_PASSCODE_SET_THIS_DEVICE_ONLY`이며 개인키를 저장하지 않는다. 공개 설치 ID/키 지문·device/sid·JWT sub/platform/cnf/expiry가 일치해야 복원한다. AsyncStorage·legacy 세션·Bearer로 대체하지 않는다. 서버가 JWT 서명과 현재 신뢰·권한·sid를 검증한다.
-- 발급·회전·폐기 전에 token-free journal을 저장하고 읽어 확인한 뒤 기존 credential record를 삭제한다. 완료 결과는 새 credential 저장·readback을 마친 뒤 journal을 지운다. 충돌·저장 실패·취소·응답 유실·앱 종료에는 처리 중 기록이 다음 토큰 사용을 막는다. 여러 화면 owner도 계정별 공통 lock을 사용한다.
+- 발급·회전·폐기 전에 token-free journal을 저장하고 읽어 확인한 뒤 기존 credential record를 삭제한다. 완료 결과는 새 credential 저장·readback을 마친 뒤 journal을 지운다. journal이 남은 충돌·저장 실패·취소·응답 유실·앱 종료에는 처리 중 기록이 다음 토큰 사용을 막는다. OS journal 삭제 시작 이후는 취소할 수 없는 commit으로 취급한다. 그때 계정/화면이 바뀌면 옛 화면 결과는 버리고, 원래 계정의 검증된 새 record만 다음 명시적 조회로 복원할 수 있다. 여러 화면 owner도 계정별 공통 lock을 사용한다.
 - refresh에는 계정 Bearer를 보내지 않는다. 서버 세션 폐기는 현재 계정 비밀번호와 같은 하드웨어 키의 DPoP를 사용한다. DPoP는 네이티브에서 UUID jti·현재 iat·access hash·고정 method/HTTPS resource·공개 JWK를 조립하고 ES256으로 서명한다. 임의 body/route/원본 바이트 서명 API는 없다.
 - 발급/폐기 버튼을 누르면 비밀번호 입력을 즉시 비우고, 백그라운드·계정/서버 변경·화면 이탈 때 요청을 취소하고 늦은 결과를 버린다. JS 문자열의 메모리 삭제를 보장하지는 않으며 토큰·비밀번호를 화면 상태나 진단에 기록하지 않는다.
 - `pending_takeover`에는 토큰이 없다. 처리 중·인계 대기 결과는 PC 내 페이지에서 서버 세션을 확인·폐기한 후 `로컬 세션 기록만 삭제`로 복구한다. 로컬 삭제는 서버 폐기가 아니며 기기 키와 등록은 유지한다. 키가 없거나 손상돼도 현재 계정의 로컬 기록 삭제는 가능하다.

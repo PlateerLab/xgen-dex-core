@@ -12,6 +12,6 @@ export const mobileSessionVault = createMobileSessionVault({
 const module = requireOptionalNativeModule<{ newGeneration(): string }>('XgenNativeDevice');
 export function mobileSessionGeneration(): string {
   const value = module?.newGeneration();
-  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) throw new MobileVaultError();
+  if (typeof value !== 'string' || value.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) throw new MobileVaultError();
   return value;
 }

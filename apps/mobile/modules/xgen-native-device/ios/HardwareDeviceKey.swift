@@ -91,4 +91,18 @@ final class HardwareDeviceKey {
       let signature = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, Data(input.utf8) as CFData, nil) as Data? else { throw DeviceKeyFailure.unavailable }
     return "\(input).\(DeviceProof.encode(try DeviceProof.rawSignature(signature)))"
   }
+  func signDpop(_ origin: String, _ userId: String, _ installId: String, _ thumbprint: String, _ method: String, _ htu: String, _ accessToken: String) throws -> String {
+    Self.lock.lock(); defer { Self.lock.unlock() }
+    let (key, metadata) = try identity(origin, userId, false)
+    guard metadata["installId"] as? String == installId, let publicKey = metadata["publicKey"] as? [String: String],
+      let x = publicKey["x"], let y = publicKey["y"], DeviceProof.thumbprint(x, y) == thumbprint else { throw DeviceKeyFailure.invalid }
+    guard SecKeyIsAlgorithmSupported(key, .sign, .ecdsaSignatureMessageX962SHA256) else { throw DeviceKeyFailure.unavailable }
+    return try DpopProof.create(origin: origin, method: method, htu: htu, accessToken: accessToken, x: x, y: y,
+      nowSeconds: Int64(Date().timeIntervalSince1970), jti: UUID().uuidString.lowercased()) { input in
+      guard let signature = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, input as CFData, nil) as Data? else {
+        throw DeviceKeyFailure.unavailable
+      }
+      return try DeviceProof.rawSignature(signature)
+    }
+  }
 }

@@ -42,7 +42,7 @@ export function createMobilePlatformSession(options: {
   enrollmentFetch: typeof fetch; sessionFetch: typeof fetch;
 }) {
   const initial = options.current(); if (!initial) throw new NativeAccountChanged();
-  const authority = { ...initial }; let closed = false; let active: AbortController | null = null;
+  const authority = { origin: initial.origin, userId: initial.userId, authScope: initial.authScope }; let closed = false; let active: AbortController | null = null;
   let state: MobilePlatformSummary = { userId: initial.userId, deviceId: null, sessionId: null, accessExpiresAt: null, state: 'unchecked' };
   const snapshot = () => ({ ...state });
   async function run(action: 'inspect' | 'login' | 'refresh' | 'logout' | 'forget', password = ''): Promise<MobilePlatformSummary> {
@@ -54,7 +54,7 @@ export function createMobilePlatformSession(options: {
       if (closed || !account || !actual || actual.origin !== authority.origin || actual.userId !== authority.userId || actual.authScope !== authority.authScope
         || (action === 'login' && actual.accessToken !== account.accessToken)) throw new NativeAccountChanged();
     };
-    const generation = () => { const value = options.generation(); if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) throw new MobileVaultError(); return value; };
+    const generation = () => { const value = options.generation(); if (typeof value !== 'string' || value.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) throw new MobileVaultError(); return value; };
     try {
       check(); if (action === 'login' || action === 'logout') passwordRequired(password);
       if (action === 'forget') { await options.vault.forget(authority, check); state = summary(authority.userId, null); return snapshot(); }
@@ -98,6 +98,7 @@ export function createMobilePlatformSession(options: {
         await vault.clear(); check(); state = summary(authority.userId, null); return snapshot();
       });
     } catch (e) {
+      if (e instanceof MobileVaultError) state = { userId: authority.userId, deviceId: null, sessionId: null, accessExpiresAt: null, state: 'unchecked' };
       if (e instanceof NativeAccountChanged) { state = { userId: authority.userId, deviceId: null, sessionId: null, accessExpiresAt: null, state: 'unchecked' };
         const now = options.current(); closed = !now || now.origin !== authority.origin || now.userId !== authority.userId || now.authScope !== authority.authScope; }
       throw e;

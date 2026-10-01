@@ -92,4 +92,31 @@ internal class HardwareDeviceKey(private val context: Context) {
     unlocked()
     return "$input.${DeviceProof.encode(DeviceProof.rawSignature(signature))}"
   }
+  fun signDpop(origin: String, userId: String, installId: String, thumbprint: String, method: String, htu: String, accessToken: String): String = synchronized(lock) {
+    val identity = prepare(origin, userId, false)
+    val publicKey = identity["publicKey"] as Map<*, *>
+    val x = publicKey["x"] as? String ?: throw DeviceKeyFailure("mobile_key_invalid")
+    val y = publicKey["y"] as? String ?: throw DeviceKeyFailure("mobile_key_invalid")
+    if (identity["installId"] != installId || DeviceProof.thumbprint(x, y) != thumbprint) throw DeviceKeyFailure("mobile_key_invalid")
+    val key = entry("xgen-mobile-v1-${DeviceProof.scope(origin, userId)}") ?: throw DeviceKeyFailure("mobile_key_invalid")
+    hardware(key); unlocked()
+    val now = System.currentTimeMillis() / 1000
+    val jti = UUID.randomUUID().toString()
+    try {
+      DpopProof.signingInput(origin, method, htu, accessToken, x, y, now, jti)
+    } catch (_: IllegalArgumentException) {
+      throw DeviceKeyFailure("mobile_key_invalid")
+    }
+    return try {
+      DpopProof.create(origin, method, htu, accessToken, x, y, now, jti) { input ->
+        val signature = Signature.getInstance("SHA256withECDSA").run { initSign(key.privateKey); update(input); sign() }
+        unlocked()
+        DeviceProof.rawSignature(signature)
+      }
+    } catch (error: DeviceKeyFailure) {
+      throw error
+    } catch (_: Exception) {
+      throw DeviceKeyFailure("mobile_key_unavailable")
+    }
+  }
 }

@@ -31,6 +31,7 @@ for attempt in {1..50}; do
   sleep 0.1
 done
 /usr/bin/grep -q '^ready$' "$taskFixtureDir/server.log"
-xcrun swiftc -D NATIVE_ENROLLMENT_TRANSPORT_TESTING modules/xgen-native-device/ios/NativeEnrollmentTransport.swift \
+xcrun swiftc -D NATIVE_ENROLLMENT_TRANSPORT_TESTING modules/xgen-native-device/ios/DeviceProof.swift \
+  modules/xgen-native-device/ios/NativeEnrollmentTransport.swift \
   verify/native-enrollment-transport.swift -o "$taskFixtureDir/verify"
 "$taskFixtureDir/verify" https://localhost:39443 "$taskFixtureDir/cert.der"

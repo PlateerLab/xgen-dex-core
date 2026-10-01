@@ -13,6 +13,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.net.URI
@@ -37,9 +38,11 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     private const val RESERVATION_TTL_MILLIS = 60_000L
     private val JSON = "application/json".toMediaType()
     private val accessTokenPattern = Regex("[A-Za-z0-9._~-]{1,8192}")
+    private val dpopPattern = Regex("[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+")
     private val statusPath = Regex("/api/auth/platform-devices/native/mobile/registration/status/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     private val approvalBeginPath = Regex("/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests/begin")
     private val approvalPath = Regex("/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests")
+    private val sessionPath = Regex("/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
     fun production(): NativeEnrollmentTransport = NativeEnrollmentTransport(
       OkHttpClient.Builder()
@@ -98,7 +101,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
         }
         "POST" -> {
           val value = body ?: throw MobileTransportFailure("mobile_transport_invalid")
-          val bytes = value.toByteArray(StandardCharsets.UTF_8)
+          val bytes = strictUtf8(value)
           if (bytes.size > MAX_REQUEST_BODY_BYTES || !StrictJsonObject.isValid(value)) {
             throw MobileTransportFailure("mobile_transport_invalid")
           }
@@ -113,6 +116,65 @@ internal class NativeEnrollmentTransport internal constructor(private val client
         .header("Authorization", "Bearer $accessToken")
         .method(method, requestBody)
         .build()
+    }
+
+    private fun jsonRequestBody(body: String?): okhttp3.RequestBody {
+      val value = body ?: throw MobileTransportFailure("mobile_transport_invalid")
+      val bytes = strictUtf8(value)
+      if (bytes.size > MAX_REQUEST_BODY_BYTES || !StrictJsonObject.isValid(value)) {
+        throw MobileTransportFailure("mobile_transport_invalid")
+      }
+      return bytes.toRequestBody(JSON)
+    }
+
+    private fun strictUtf8(value: String): ByteArray = try {
+      val buffer = StandardCharsets.UTF_8.newEncoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .encode(CharBuffer.wrap(value))
+      ByteArray(buffer.remaining()).also { buffer.get(it) }
+    } catch (_: Exception) {
+      throw MobileTransportFailure("mobile_transport_invalid")
+    }
+
+    private fun buildSessionRequest(
+      origin: String,
+      path: String,
+      method: String,
+      authorization: String?,
+      dpop: String?,
+      body: String?
+    ): Request {
+      val base = validatedOrigin(origin)
+      if ('%' in path || '?' in path || '#' in path || '\\' in path) throw MobileTransportFailure("mobile_transport_invalid")
+      val requestBody: okhttp3.RequestBody?
+      when {
+        method == "POST" && (path == "/api/auth/platform-sessions/native/login-key/begin" || path == "/api/auth/platform-sessions/native/login-key/complete") -> {
+          val token = authorization?.removePrefix("Bearer ")
+          if (token == authorization || token == null || !accessTokenPattern.matches(token) || dpop != null) {
+            throw MobileTransportFailure("mobile_transport_invalid")
+          }
+          requestBody = jsonRequestBody(body)
+        }
+        method == "POST" && (path == "/api/auth/platform-sessions/native/refresh/begin" || path == "/api/auth/platform-sessions/native/refresh/complete") -> {
+          if (authorization != null || dpop != null) throw MobileTransportFailure("mobile_transport_invalid")
+          requestBody = jsonRequestBody(body)
+        }
+        method == "DELETE" && sessionPath.matches(path) -> {
+          val token = authorization?.removePrefix("DPoP ")
+          if (token == authorization || token == null || token.length > 8_192 || !dpopPattern.matches(token) || dpop == null ||
+            dpop.length > 8_192 || !dpopPattern.matches(dpop)
+          ) throw MobileTransportFailure("mobile_transport_invalid")
+          requestBody = jsonRequestBody(body)
+        }
+        else -> throw MobileTransportFailure("mobile_transport_invalid")
+      }
+      val request = Request.Builder()
+        .url(base.newBuilder().encodedPath(path).build())
+        .header("Accept", "application/json")
+      if (authorization != null) request.header("Authorization", authorization)
+      if (dpop != null) request.header("DPoP", dpop)
+      return request.method(method, requestBody).build()
     }
 
     private fun readResponse(response: Response): MobileTransportResponse {
@@ -178,7 +240,24 @@ internal class NativeEnrollmentTransport internal constructor(private val client
   ) {
     if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
     // All validation and request construction happens before a Call is registered or enqueued.
-    val call = client.newCall(buildRequest(origin, path, method, accessToken, body))
+    execute(requestId, client.newCall(buildRequest(origin, path, method, accessToken, body)), completion)
+  }
+
+  fun sessionRequest(
+    requestId: String,
+    origin: String,
+    path: String,
+    method: String,
+    authorization: String?,
+    dpop: String?,
+    body: String?,
+    completion: (Result<MobileTransportResponse>) -> Unit
+  ) {
+    if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
+    execute(requestId, client.newCall(buildSessionRequest(origin, path, method, authorization, dpop, body)), completion)
+  }
+
+  private fun execute(requestId: String, call: Call, completion: (Result<MobileTransportResponse>) -> Unit) {
     synchronized(trackingLock) {
       val now = System.currentTimeMillis()
       pruneLocked(now)

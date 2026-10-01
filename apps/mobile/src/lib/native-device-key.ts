@@ -23,7 +23,7 @@ const BYTES32 = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SESSION_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 function scope(value: MobileNativeContext | null): MobileNativeContext {
-  if (!value || !value.authScope || !/^[1-9][0-9]{0,18}$/.test(value.userId)) throw new MobileDeviceKeyError('account_changed');
+  if (!value || !value.authScope || value.userId.trim() !== value.userId || !/^[1-9][0-9]{0,18}$/.test(value.userId)) throw new MobileDeviceKeyError('account_changed');
   try {
     const url = new URL(value.origin);
     if (url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash || url.username || url.password) throw new Error();
@@ -93,7 +93,7 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
               const allowed = method === 'DELETE' ? new RegExp(`^/api/me/platform-sessions/${SESSION_UUID}$`).test(url.pathname)
                 : method === 'GET' && new RegExp(`^/api/agentflow/(?:me/(?:agent-state|agent-events|agent-sessions)|agent-sessions/${SESSION_UUID}/(?:snapshot|events))$`).test(url.pathname);
               if (!allowed || url.origin !== selected.origin || url.username || url.password || url.search || url.hash || url.href !== htu
-                || token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new MobileDeviceKeyError('invalid');
+                || token.trim() !== token || token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new MobileDeviceKeyError('invalid');
               const proof = await module.signDpop(selected.origin, selected.userId, identity.installId, thumbprint, method, htu, token); signingCheck();
               if (typeof proof !== 'string' || proof.length > 8192) throw new MobileDeviceKeyError('invalid');
               const parts = proof.split('.'); if (parts.length !== 3 || !/^[A-Za-z0-9_-]{85}[AQgw]$/.test(parts[2]!)) throw new MobileDeviceKeyError('invalid');
@@ -102,7 +102,7 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
               const claims = object(mobileJwtPart(parts[1]!), ['jti', 'htm', 'htu', 'iat', 'ath']);
               if (header.alg !== 'ES256' || header.typ !== 'dpop+jwt' || key.kty !== 'EC' || key.crv !== 'P-256'
                 || key.x !== identity.publicKey.x || key.y !== identity.publicKey.y || claims.htm !== method || claims.htu !== htu
-                || claims.ath !== mobileBase64url(sha256.array(token)) || typeof claims.jti !== 'string' || !UUID.test(claims.jti)
+                || claims.ath !== mobileBase64url(sha256.array(token)) || typeof claims.jti !== 'string' || claims.jti.length !== 36 || !UUID.test(claims.jti)
                 || !Number.isSafeInteger(claims.iat) || Math.abs(Math.floor(Date.now() / 1000) - (claims.iat as number)) > 30) throw new MobileDeviceKeyError('invalid');
               return proof;
             } catch (error) { if (signal?.aborted || operationSignal?.aborted) { signal?.throwIfAborted(); operationSignal?.throwIfAborted(); } throw safeError(error); }

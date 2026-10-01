@@ -60,6 +60,17 @@ class NativeEnrollmentTransportTest {
     return result.get()
   }
 
+  private fun executeSession(path: String, method: String = "POST", authorization: String? = null, dpop: String? = null, body: String? = "{}"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.sessionRequest(transport.newRequestId(), origin, path, method, authorization, dpop, body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("session request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
   @Test fun sendsOnlyFixedHeadersAndJsonOverFixtureTls() {
     server.enqueue(MockResponse().setResponseCode(201).setBody("{\"ok\":true}"))
     val result = execute("/api/auth/platform-devices/native/mobile/registration/challenge", "POST", "{\"nested\":[true,1,null,\"ok\"]}").getOrThrow()
@@ -185,5 +196,74 @@ class NativeEnrollmentTransportTest {
     server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
     assertTrue(execute("/api/auth/platform-devices/native/mobile/registration/complete", "POST", "{}").isFailure)
     assertEquals(1, server.requestCount)
+  }
+
+  @Test fun sessionRoutesUseExactAuthenticationPolicies() {
+    repeat(3) { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+    assertTrue(executeSession("/api/auth/platform-sessions/native/login-key/begin", authorization = "Bearer login.safe").isSuccess)
+    assertTrue(executeSession("/api/auth/platform-sessions/native/refresh/complete").isSuccess)
+    val proof = "a.b.c"
+    assertTrue(executeSession("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP access.safe.jwt", proof, "{\"password\":\"pw\"}").isSuccess)
+
+    val login = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertEquals("Bearer login.safe", login.getHeader("Authorization")); assertNull(login.getHeader("DPoP"))
+    assertEquals("application/json", login.getHeader("Content-Type"))
+    val refresh = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertNull(refresh.getHeader("Authorization")); assertNull(refresh.getHeader("DPoP"))
+    val delete = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertEquals("DELETE", delete.method); assertEquals("DPoP access.safe.jwt", delete.getHeader("Authorization"))
+    assertEquals(proof, delete.getHeader("DPoP")); assertEquals("application/json", delete.getHeader("Content-Type")); assertEquals("{\"password\":\"pw\"}", delete.body.readUtf8())
+  }
+
+  @Test fun sessionRequestRejectsWrongRouteAuthenticationAndBodyBeforeNetwork() {
+    val transport = NativeEnrollmentTransport(client)
+    fun invalid(path: String, method: String = "POST", authorization: String? = null, dpop: String? = null, body: String? = "{}") {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.sessionRequest(transport.newRequestId(), origin, path, method, authorization, dpop, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid("/api/auth/platform-sessions/native/login-key/begin")
+    invalid("/api/auth/platform-sessions/native/login-key/complete", authorization = "Bearer unsafe+")
+    invalid("/api/auth/platform-sessions/native/login-key/begin", authorization = "Bearer safe", dpop = "a.b.c")
+    invalid("/api/auth/platform-sessions/native/refresh/begin", authorization = "Bearer safe")
+    invalid("/api/auth/platform-sessions/native/refresh/complete", dpop = "a.b.c")
+    invalid("/api/auth/platform-sessions/native/refresh/begin", body = "{\"x\":\"\uD800\"}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "Bearer safe.jwt", "a.b.c", "{}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "bad", "{}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP opaque-safe", "a.b.c", "{}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", null)
+    invalid("/api/me/platform-sessions/00000000-0000-0000-0000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", "{}")
+    invalid("/api/agentflow/me/agent-state", "GET", "DPoP safe", "a.b.c", null)
+    invalid("/api/auth/platform-sessions/native/refresh/begin?x=1")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun enrollmentAndSessionRequestsShareReservationsAndCancellation() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val latch = CountDownLatch(1)
+    transport.request(id, origin, "/api/auth/platform-devices/trust-overview", "GET", "safe", null) { latch.countDown() }
+    val duplicate = assertThrows(MobileTransportFailure::class.java) {
+      transport.sessionRequest(id, origin, "/api/auth/platform-sessions/native/refresh/begin", "POST", null, null, "{}") {}
+    }
+    assertEquals("mobile_transport_busy", duplicate.code)
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+
+    val cancelled = transport.newRequestId()
+    transport.cancelRequest(cancelled)
+    assertEquals("mobile_transport_unavailable", assertThrows(MobileTransportFailure::class.java) {
+      transport.sessionRequest(cancelled, origin, "/api/auth/platform-sessions/native/refresh/begin", "POST", null, null, "{}") {}
+    }.code)
+  }
+
+  @Test fun sessionPostAndDeleteDroppedConnectionsAreNotRetried() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    assertTrue(executeSession("/api/auth/platform-sessions/native/login-key/complete", authorization = "Bearer safe").isFailure)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    assertTrue(executeSession("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", "{\"password\":\"pw\"}").isFailure)
+    assertEquals(2, server.requestCount)
   }
 }

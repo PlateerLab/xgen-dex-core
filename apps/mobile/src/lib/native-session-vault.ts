@@ -21,7 +21,7 @@ function invalid(): never { throw new MobileVaultError(); }
 export function mobileVaultScope(context: Pick<MobileNativeContext, 'origin' | 'userId'>): string {
   const url = new URL(context.origin);
   if (url.protocol !== 'https:' || url.origin !== context.origin || url.username || url.password || url.search || url.hash
-    || !/^[1-9][0-9]{0,18}$/.test(context.userId)) invalid();
+    || context.userId.trim() !== context.userId || !/^[1-9][0-9]{0,18}$/.test(context.userId)) invalid();
   return `xgen-mobile-platform-v1-${sha256(JSON.stringify(['mobile', context.origin, context.userId]))}`;
 }
 /** Local structural/binding validation; live trust, JWT signature and sid are enforced by the server. */
@@ -31,17 +31,17 @@ export function validateMobileRecord(value: unknown, context: Pick<MobileNativeC
   if (Object.keys(r).sort().join(',') !== 'accessExpiresAt,accessToken,deviceId,generation,installId,keyThumbprint,origin,phase,platform,refreshToken,sessionId,userId,version'
     || r.version !== 1 || r.platform !== 'mobile' || r.origin !== context.origin || r.userId !== context.userId
     || r.installId !== identity.installId || r.keyThumbprint !== mobileKeyThumbprint(identity.publicKey)
-    || typeof r.deviceId !== 'string' || !UUID.test(r.deviceId) || typeof r.generation !== 'string' || !UUID.test(r.generation)
-    || (r.sessionId !== null && (typeof r.sessionId !== 'string' || !UUID.test(r.sessionId)))
+    || typeof r.deviceId !== 'string' || r.deviceId.length !== 36 || !UUID.test(r.deviceId) || typeof r.generation !== 'string' || r.generation.length !== 36 || !UUID.test(r.generation)
+    || (r.sessionId !== null && (typeof r.sessionId !== 'string' || r.sessionId.length !== 36 || !UUID.test(r.sessionId)))
     || !['ready', 'login_pending', 'refreshing', 'logout_pending', 'pending_takeover'].includes(r.phase)) invalid();
   if (r.phase !== 'ready') {
     if (r.refreshToken !== null || r.accessToken !== null || r.accessExpiresAt !== null
       || (r.phase === 'login_pending' ? r.sessionId !== null : r.sessionId === null)) invalid();
   } else {
-    if (r.sessionId === null || typeof r.refreshToken !== 'string' || !BYTES32.test(r.refreshToken)
+    if (r.sessionId === null || typeof r.refreshToken !== 'string' || r.refreshToken.length !== 43 || !BYTES32.test(r.refreshToken)
       || (r.accessToken === null) !== (r.accessExpiresAt === null)) invalid();
     if (r.accessToken !== null) {
-      if (typeof r.accessToken !== 'string' || r.accessToken.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(r.accessToken)
+      if (typeof r.accessToken !== 'string' || r.accessToken.trim() !== r.accessToken || r.accessToken.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(r.accessToken)
         || typeof r.accessExpiresAt !== 'string' || r.accessExpiresAt.length > 64 || !/^\d{4}-\d\d-\d\dT/.test(r.accessExpiresAt) || !Number.isFinite(Date.parse(r.accessExpiresAt))) invalid();
       try {
         const c = mobileJwtPart(r.accessToken.split('.')[1]!);
@@ -99,6 +99,9 @@ export function createMobileSessionVault(secure: MobileSecureStorage) {
               || (marker.sessionId !== null && marker.sessionId !== record.sessionId)) invalid();
             validateMobileRecord(record, context, identity);
             await put(key, record); check(); // cancellation/crash here keeps the journal; no old credential fallback
+            // Starting OS journal deletion commits the verified new record. Deletion cannot be cancelled;
+            // an account/screen change still rejects the old owner result, but explicit same-account inspection
+            // may restore this record. Foreign accounts/origins use different vault keys.
             await remove(journal); check();
           }),
           clear: () => guard(async () => { check(); await remove(key); check(); await remove(journal); check(); }),

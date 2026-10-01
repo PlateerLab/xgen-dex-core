@@ -10,7 +10,7 @@ const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const TOKEN = /^[A-Za-z0-9._~-]{1,8192}$/;
 const ids = new Set<string>();
 function fail(): never { throw new NativePlatformTransportError(); }
-function jwt(value: unknown): value is string { return typeof value === 'string' && value.length <= 8192 && JWT.test(value); }
+function jwt(value: unknown): value is string { return typeof value === 'string' && value.trim() === value && value.length <= 8192 && JWT.test(value); }
 /** Separate from enrollment. Refresh has no Authorization; logout requires its own DPoP credential. */
 export function createMobileSessionFetch(module: MobileSessionHttpModule | null, origin: string): typeof fetch {
   const selected = new URL(origin);
@@ -27,7 +27,7 @@ export function createMobileSessionFetch(module: MobileSessionHttpModule | null,
     const h = init.headers as Record<string, unknown>;
     if (!h || typeof h !== 'object' || Array.isArray(h) || Object.keys(h).some((k) => !['Accept', 'Content-Type', 'Authorization', 'DPoP'].includes(k))
       || h.Accept !== 'application/json' || h['Content-Type'] !== 'application/json') fail();
-    if (login ? typeof h.Authorization !== 'string' || !h.Authorization.startsWith('Bearer ') || !TOKEN.test(h.Authorization.slice(7)) || h.DPoP !== undefined
+    if (login ? typeof h.Authorization !== 'string' || h.Authorization.trim() !== h.Authorization || !h.Authorization.startsWith('Bearer ') || !TOKEN.test(h.Authorization.slice(7)) || h.DPoP !== undefined
       : refresh ? h.Authorization !== undefined || h.DPoP !== undefined
         : typeof h.Authorization !== 'string' || !h.Authorization.startsWith('DPoP ') || !jwt(h.Authorization.slice(5)) || !jwt(h.DPoP)) fail();
     if (typeof init.body !== 'string' || new TextEncoder().encode(init.body).length > 32768) fail();

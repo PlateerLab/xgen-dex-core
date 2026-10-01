@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHmac, webcrypto } from 'node:crypto';
+import { createHash, createHmac, webcrypto } from 'node:crypto';
 import { test } from 'node:test';
 import { NativeDeviceKeyStore } from '../src/native-device-key-store';
 import { NativeCliSession, NativeHostSession } from '../src/native-platform-session';
@@ -10,6 +10,8 @@ import { nativeKeyThumbprint } from '../src/native-dpop';
 import type { NativeSessionRecord } from '../src/native-session-record';
 import { AgentSessionHttpError, type AgentSessionProofSource } from '@dex/protocol/agent-session';
 import { NativeAgentFocusWatcher } from '../src/native-agent-focus-watch';
+import { NativeAgentConversationWatcher } from '../src/native-agent-conversation-watch';
+import { nativeConversationFetch } from '../src/native-agent-conversation-http';
 import type { NativeDeviceIdentity } from '@dex/protocol/native-platform-session';
 import { DexError } from '../src/errors';
 
@@ -17,6 +19,9 @@ const ORIGIN = 'https://app.example.test';
 const DEVICE = '018f1240-0000-7000-8000-000000000001';
 const SID = '018f1240-0000-7000-8000-000000000002';
 const FLOW = '018f1240-0000-7000-8000-000000000003';
+const EVENT = '018f1240-0000-7000-8000-000000000004';
+const TURN1 = '018f1240-0000-7000-8000-000000000005';
+const TURN2 = '018f1240-0000-7000-8000-000000000006';
 const CHALLENGE = Buffer.alloc(32, 5).toString('base64url');
 const REFRESH1 = Buffer.alloc(32, 1).toString('base64url');
 const REFRESH2 = Buffer.alloc(32, 2).toString('base64url');
@@ -46,10 +51,10 @@ async function fixture(platform: 'cli' | 'desktop' | 'vscode' = 'cli') {
       // Gateway DateTime contains fractional seconds while JWT exp has whole seconds.
       access_expires_at: new Date((claims.exp as number) * 1000 + 123).toISOString() };
   };
-  const calls: Array<{ path: string; init: RequestInit; body: any }> = [];
+  const calls: Array<{ url: URL; path: string; init: RequestInit; body: any }> = [];
   let custom: ((path: string, init: RequestInit) => Response | Promise<Response> | undefined) | undefined;
   const fetchImpl = (async (input, init: RequestInit = {}) => {
-    const path = new URL(String(input)).pathname; calls.push({ path, init, body: JSON.parse(String(init.body ?? '{}')) });
+    const url = new URL(String(input)); const path = url.pathname; calls.push({ url, path, init, body: JSON.parse(String(init.body ?? '{}')) });
     const response = await custom?.(path, init); if (response) return response;
     if (path === '/api/auth/login') return Response.json({ success: true, user_id: '7', access_token: ACCOUNT });
     if (path === '/api/auth/logout') return Response.json({ success: true });
@@ -120,6 +125,7 @@ test('host-bound sessions reject other account credentials and local reads befor
     }) as typeof fetch, '8');
     await assert.rejects(session.login('a', 'p'), DexError);
     await assert.rejects(session.status('7'), DexError);
+    await assert.rejects(session.conversation('7'), DexError);
     assert.equal(f.stored(), null);
   } finally { await f.cleanup(); }
 });
@@ -149,6 +155,7 @@ test('lost refresh completion blocks all old credentials after restart and never
     assert.equal(f.stored()?.phase, 'refreshing'); assert.equal(f.stored()?.refreshToken, null); assert.equal(f.stored()?.accessToken, null);
     const count = f.calls.length;
     await assert.rejects(f.client().refresh('7'), unavailable); await assert.rejects(f.client().focus('7'), unavailable);
+    await assert.rejects(f.client().reconcileConversation('7', null), unavailable);
     assert.equal(f.calls.length, count); assert.equal((await f.client().status('7')).state, 'refreshing');
   } finally { await f.cleanup(); }
 });
@@ -194,6 +201,7 @@ test('pending takeover stores no access or refresh credential and cannot refresh
     assert.equal((await f.client().login('a', 'p')).state, 'pending_takeover');
     assert.equal(f.stored()?.refreshToken, null);
     await assert.rejects(f.client().refresh('7'), unavailable); await assert.rejects(f.client().focus('7'), unavailable);
+    await assert.rejects(f.client().conversation('7'), unavailable);
   } finally { await f.cleanup(); }
 });
 
@@ -214,7 +222,8 @@ test('expired access does not silently refresh; account/origin switches cannot u
     f.custom((path) => path.endsWith('/login-key/complete') ? Response.json({ session_id: SID, state: 'active', refresh_token: REFRESH1,
       ...f.access({ exp: Math.floor(Date.now() / 1000) - 5 }) }) : undefined);
     assert.equal((await f.client().login('a', 'p')).state, 'access_expired'); const count = f.calls.length;
-    await assert.rejects(f.client().focus('7'), unavailable); assert.equal(f.calls.length, count);
+    await assert.rejects(f.client().focus('7'), unavailable); await assert.rejects(f.client().conversation('7'), unavailable);
+    assert.equal(f.calls.length, count);
     await assert.rejects(f.client().status('8'), DexError);
     await assert.rejects(new NativeCliSession('https://other.test', f.keys(), (async () => assert.fail()) as typeof fetch).status('7'), DexError);
   } finally { await f.cleanup(); }
@@ -356,6 +365,23 @@ test('watch delay releases keychain lock for another process refresh and logout;
   } finally { await f.cleanup(); }
 });
 
+test('conversation watch releases the vault lock between bounded reads and cannot continue after logout', async () => {
+  const f = await fixture(); let waits = 0; const updates: string[] = [];
+  try {
+    await f.client().login('a', 'p');
+    f.custom((path) => path.endsWith('/agent-events')
+      ? Response.json({ events: [], next_cursor: 0, snapshot_version: 0, has_more: false }) : undefined);
+    const watcher = new NativeAgentConversationWatcher(f.client(), '7', { wait: async () => {
+      waits++; if (waits === 1) await f.client().refresh('7'); else await f.client().logout('7', 'p');
+    } });
+    await assert.rejects(watcher.run((update) => updates.push(update.type)), unavailable);
+    assert.deepEqual(updates, ['reset', 'conversation', 'stopped']);
+    assert.equal(waits, 2); assert.equal(f.stored(), null);
+    assert.equal(f.calls.filter(({ path }) => path === '/api/agentflow/me/agent-state').length, 1);
+    assert.equal(f.calls.filter(({ path }) => path === '/api/agentflow/me/agent-events').length, 1);
+  } finally { await f.cleanup(); }
+});
+
 test('focus reconciliation preserves HTTP permission errors for fatal watcher handling', async () => {
   const f = await fixture();
   try {
@@ -364,5 +390,206 @@ test('focus reconciliation preserves HTTP permission errors for fatal watcher ha
       f.custom(() => new Response('private-server-secret', { status }));
       await assert.rejects(f.client().reconcileFocus('7', null), (e: unknown) => e instanceof AgentSessionHttpError && e.status === status);
     }
+  } finally { await f.cleanup(); }
+});
+
+test('native conversation reads exact Canonical routes with query-free P-256 DPoP and projects display data only', async () => {
+  const f = await fixture('desktop');
+  try {
+    await f.client().login('a', 'p');
+    const messages = [
+      { turn_id: TURN1, sequence: 2, status: 'completed', input_text: 'question', output_text: 'answer', content_complete: true, source: 'user' },
+      { turn_id: TURN2, sequence: 5, status: 'failed', input_text: null, output_text: 'failure', content_complete: false, source: 'unknown' },
+    ];
+    const snapshot = { id: SID, workflow_id: FLOW, title: 'Native conversation', current_sequence: 5,
+      state_version: 2, message_history_complete: false, latest_turn: { id: TURN2, status: 'failed', accepted_sequence: 4 } };
+    f.custom((path) => {
+      if (path === '/api/agentflow/me/agent-state') return Response.json({ active_agent_session_id: SID, version: 1, event_id: EVENT });
+      if (path.endsWith('/snapshot')) return Response.json(snapshot);
+      if (path.endsWith('/messages')) {
+        const after = Number(f.calls.at(-1)!.url.searchParams.get('after_sequence'));
+        const message = messages.find((value) => value.sequence > after);
+        return Response.json({ messages: message ? [{ ...message, execution_io: 'private', tools: ['private'] }] : [],
+          next_cursor: message?.sequence ?? after, snapshot_sequence: 5, state_version: 2,
+          has_more: Boolean(message && message.sequence < 5) });
+      }
+      return undefined;
+    });
+    const result = await f.client().reconcileConversation('7', null);
+    assert.equal(result.source, 'snapshot'); assert.equal(result.hasMore, false);
+    assert.deepEqual(result.state.messages, messages);
+    assert.equal(JSON.stringify(result.state).includes('private'), false);
+
+    const reads = f.calls.filter(({ path }) => path.startsWith('/api/agentflow/'));
+    assert.deepEqual(reads.map(({ url }) => `${url.pathname}${url.search}`), [
+      '/api/agentflow/me/agent-state',
+      `/api/agentflow/agent-sessions/${SID}/snapshot`,
+      `/api/agentflow/agent-sessions/${SID}/messages?after_sequence=0&limit=1`,
+      `/api/agentflow/agent-sessions/${SID}/messages?after_sequence=2&limit=1`,
+      `/api/agentflow/agent-sessions/${SID}/snapshot`,
+      '/api/agentflow/me/agent-state',
+    ]);
+    const subtle = webcrypto.subtle as unknown as SubtleCrypto;
+    const key = await subtle.importKey('jwk', f.identity.publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    for (const { url, init } of reads) {
+      assert.equal(init.method, 'GET'); assert.equal(init.body, undefined);
+      assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error'); assert.equal(init.cache, 'no-store');
+      const headers = init.headers as Record<string, string>; const token = f.stored()!.accessToken!;
+      assert.equal(headers.Authorization, `DPoP ${token}`);
+      const [head, payload, signature] = headers.DPoP.split('.');
+      const claims = JSON.parse(Buffer.from(payload, 'base64url').toString()) as Record<string, string>;
+      assert.equal(claims.htm, 'GET'); assert.equal(claims.htu, `${ORIGIN}${url.pathname}`);
+      assert.equal(claims.ath, createHash('sha256').update(token).digest('base64url'));
+      assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key,
+        Buffer.from(signature, 'base64url'), Buffer.from(`${head}.${payload}`)), true);
+    }
+    const current = await f.client().conversation('7');
+    assert.deepEqual(Object.keys(current).sort(), ['conversation', 'has_more']);
+    assert.deepEqual(Object.keys(current.conversation).sort(), ['messages', 'omittedMessages', 'snapshot']);
+    assert.equal(JSON.stringify(current).includes('authScope'), false);
+    assert.equal(JSON.stringify(current).includes('eventCursor'), false);
+    assert.equal(JSON.stringify(current).includes(f.stored()!.accessToken!), false);
+  } finally { await f.cleanup(); }
+});
+
+test('conversation keeps its independent cursor across token rotation and resets it for a different sid', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p');
+    let active = SID; const seen: number[] = [];
+    f.custom((path) => {
+      if (path === '/api/agentflow/me/agent-state') return Response.json({ active_agent_session_id: active, version: active === SID ? 1 : 2, event_id: EVENT });
+      if (path.endsWith('/agent-events')) return Response.json({ events: [], next_cursor: 1, snapshot_version: 1, has_more: false });
+      if (path.endsWith('/events')) return Response.json({ events: [], next_cursor: 2, snapshot_sequence: 2, state_version: 1, has_more: false });
+      if (path.endsWith('/snapshot')) return Response.json({ id: active, workflow_id: FLOW, title: active,
+        current_sequence: 2, state_version: 1, message_history_complete: false });
+      if (path.endsWith('/messages')) {
+        const after = Number(f.calls.at(-1)!.url.searchParams.get('after_sequence')); seen.push(after);
+        return Response.json({ messages: after === 0 ? [{ turn_id: active === SID ? TURN1 : TURN2, sequence: 2,
+          status: 'completed', input_text: 'in', output_text: active, content_complete: true, source: 'user' }] : [],
+        next_cursor: after === 0 ? 2 : after, snapshot_sequence: 2, state_version: 1, has_more: false });
+      }
+      return undefined;
+    });
+    const first = await f.client().reconcileConversation('7', null);
+    await f.client().refresh('7');
+    const rotated = await f.client().reconcileConversation('7', first.state);
+    assert.equal(rotated.state.authScope, first.state.authScope);
+    assert.equal(rotated.state.messageCursor, 2); assert.deepEqual(seen, [0, 2]);
+
+    await f.keys().withSession(scope, async (_identity, _sign, vault) => {
+      const old = (await vault.read())!; const access = f.access({ sid: FLOW });
+      await vault.write({ ...old, sessionId: FLOW, accessToken: access.access_token, accessExpiresAt: access.access_expires_at });
+    });
+    active = FLOW;
+    const moved = await f.client().reconcileConversation('7', rotated.state);
+    assert.notEqual(moved.state.authScope, first.state.authScope);
+    assert.equal(moved.state.snapshot?.id, FLOW); assert.equal(moved.state.messages[0]?.turn_id, TURN2);
+    assert.deepEqual(seen, [0, 2, 0]);
+  } finally { await f.cleanup(); }
+});
+
+test('native conversation rejects malformed, invalid UTF-8 and oversized response bodies without replay fallback', async () => {
+  const cases: Array<{ name: string; response: () => Response }> = [
+    { name: 'malformed JSON', response: () => new Response('{') },
+    { name: 'invalid UTF-8', response: () => new Response(Uint8Array.from([0xc3, 0x28])) },
+    { name: 'oversized metadata', response: () => new Response('x'.repeat(64 * 1024 + 1)) },
+  ];
+  for (const item of cases) {
+    const f = await fixture();
+    try {
+      await f.client().login('a', 'p'); let attempts = 0;
+      f.custom((path) => path === '/api/agentflow/me/agent-state' ? (attempts++, item.response()) : undefined);
+      await assert.rejects(f.client().reconcileConversation('7', null), (error: unknown) =>
+        error instanceof DexError && error.code === 'protocol_mismatch' && !error.message.includes('private'));
+      assert.equal(attempts, 1, item.name);
+    } finally { await f.cleanup(); }
+  }
+
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p'); let messages = 0; let snapshots = 0;
+    f.custom((path) => {
+      if (path === '/api/agentflow/me/agent-state') return Response.json({ active_agent_session_id: SID, version: 1, event_id: EVENT });
+      if (path.endsWith('/snapshot')) { snapshots++; return Response.json({ id: SID, workflow_id: FLOW, title: 'x', current_sequence: 1,
+        state_version: 1, message_history_complete: false }); }
+      if (path.endsWith('/messages')) { messages++; return new Response('x'.repeat(1024 * 1024 + 1)); }
+      return undefined;
+    });
+    await assert.rejects(f.client().reconcileConversation('7', null), (error: unknown) => error instanceof DexError && error.code === 'protocol_mismatch');
+    assert.equal(messages, 1); assert.equal(snapshots, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('conversation preserves HTTP classification and aborts late response bodies without publishing partial state', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p');
+    for (const status of [401, 403, 408, 429, 500]) {
+      f.custom((path) => path === '/api/agentflow/me/agent-state' ? new Response('private', { status }) : undefined);
+      await assert.rejects(f.client().reconcileConversation('7', null),
+        (error: unknown) => error instanceof AgentSessionHttpError && error.status === status);
+    }
+    let release!: () => void; let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const late = new Promise<void>((resolve) => { release = resolve; });
+    f.custom((path) => path === '/api/agentflow/me/agent-state' ? new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        started(); await late;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ active_agent_session_id: null, version: 0, event_id: null })));
+        controller.close();
+      },
+    })) : undefined);
+    const control = new AbortController(); const reading = f.client().reconcileConversation('7', null, control.signal);
+    await entered; control.abort(); release();
+    await assert.rejects(reading, (error: unknown) => error instanceof Error && error.name === 'AbortError');
+  } finally { await f.cleanup(); }
+});
+
+test('native conversation transport cancels an unread body when credentials fail after headers or at JSON entry', async () => {
+  for (const failAt of [2, 3]) {
+    let checks = 0; let cancellations = 0;
+    const failure = new DexError('auth_required', `expired-${failAt}`);
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel: () => { cancellations++; } }));
+    const transport = nativeConversationFetch(ORIGIN, (async () => response) as typeof fetch, async () => {
+      if (++checks === failAt) throw failure;
+    });
+    const request = transport(`${ORIGIN}/api/agentflow/me/agent-state`, { method: 'GET',
+      headers: { Accept: 'application/json', Authorization: 'DPoP a.b.c', DPoP: 'd.e.f' },
+      credentials: 'omit', redirect: 'error', cache: 'no-store' });
+    if (failAt === 2) await assert.rejects(request, (error: unknown) => error === failure);
+    else {
+      const guarded = await request;
+      await assert.rejects(guarded.json(), (error: unknown) => error === failure);
+    }
+    await Promise.resolve();
+    assert.equal(checks, failAt); assert.equal(cancellations, 1);
+  }
+});
+
+test('manual conversation read performs at most ten bounded steps and reports an incomplete backlog', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p'); let reads = 0;
+    f.custom((path) => {
+      if (path === '/api/agentflow/me/agent-state') return Response.json({ active_agent_session_id: SID, version: 1, event_id: EVENT });
+      if (path.endsWith('/agent-events')) {
+        const after = Number(f.calls.at(-1)!.url.searchParams.get('after_sequence'));
+        return Response.json({ events: [], next_cursor: after, snapshot_version: after, has_more: false });
+      }
+      if (path.endsWith('/snapshot')) return Response.json({ id: SID, workflow_id: FLOW, title: 'bounded', current_sequence: 45,
+        state_version: 1, message_history_complete: false });
+      if (path.endsWith('/events')) return Response.json({ events: [], next_cursor: 45, snapshot_sequence: 45, state_version: 1, has_more: false });
+      if (path.endsWith('/messages')) {
+        const after = Number(f.calls.at(-1)!.url.searchParams.get('after_sequence')); reads++;
+        const sequence = after + 2;
+        return Response.json({ messages: [{ turn_id: `018f1240-0000-7000-8000-${String(sequence).padStart(12, '0')}`, sequence,
+          status: 'completed', input_text: 'q', output_text: 'a', content_complete: true, source: 'user' }],
+        next_cursor: sequence, snapshot_sequence: 45, state_version: 1, has_more: sequence < 45 });
+      }
+      return undefined;
+    });
+    const result = await f.client().conversation('7');
+    assert.equal(reads, 20); assert.equal(result.has_more, true); assert.equal(result.conversation.messages.length, 20);
   } finally { await f.cleanup(); }
 });

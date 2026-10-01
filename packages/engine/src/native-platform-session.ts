@@ -2,6 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { NativePlatformSessionClient, NativePlatformHttpError, NativePlatformProtocolError, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import { AgentSessionReadClient, AgentSessionHttpError, AgentSessionProtocolError, type AgentSessionProofSource, type AgentFocus } from '@dex/protocol/agent-session';
 import { reconcileAgentFocus, type ScopedAgentFocus, type AgentFocusRecoveryResult } from '@dex/protocol/agent-session-focus-recovery';
+import { reconcileAgentConversation, type ScopedAgentConversation, type AgentConversationRecoveryResult } from '@dex/protocol/agent-session-conversation-recovery';
+import { readNativeAgentConversation } from './native-agent-conversation-watch';
+import { nativeConversationFetch } from './native-agent-conversation-http';
 import { withNativeAccount } from './native-account';
 import { NativeDeviceKeyStore, nativeKeyScope, type NativeKeyScope } from './native-device-key-store';
 import type { NativeSessionRecord, NativeSessionPhase } from './native-session-record';
@@ -102,7 +105,7 @@ export class NativeHostSession {
           check();
           const url = new URL(htu);
           if (method !== 'GET' || url.origin !== this.origin || url.search || url.hash || expected !== token
-            || !/^\/api\/agentflow\/(?:me\/(?:agent-state|agent-events|agent-sessions)|agent-sessions\/[0-9a-f-]{36}\/(?:snapshot|events))$/.test(url.pathname)) {
+            || !/^\/api\/agentflow\/(?:me\/(?:agent-state|agent-events|agent-sessions)|agent-sessions\/[0-9a-f-]{36}\/(?:snapshot|events|messages))$/.test(url.pathname)) {
             throw new DexError('usage_error', 'Canonical 읽기 경로와 현재 CLI 토큰에만 서명할 수 있습니다.');
           }
           const result = await sign('GET', htu, token, signal); check(); return result;
@@ -150,6 +153,23 @@ export class NativeHostSession {
       if (error instanceof DexError || error instanceof AgentSessionHttpError) throw error;
       throw new NativePlatformTransportError();
     }
+  }
+  async reconcileConversation(userId: string, previous: ScopedAgentConversation | null, signal?: AbortSignal): Promise<AgentConversationRecoveryResult> {
+    try {
+      return await this.withProofSource(userId, async (proof, authScope) => {
+        const check = async () => { signal?.throwIfAborted(); await proof.accessToken(); };
+        const client = new AgentSessionReadClient(this.origin, proof, nativeConversationFetch(this.origin, this.fetchImpl, check));
+        return reconcileAgentConversation(client, authScope, previous, signal);
+      }, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof DexError || error instanceof AgentSessionHttpError || error instanceof NativePlatformTransportError) throw error;
+      if (error instanceof AgentSessionProtocolError) throw new DexError('protocol_mismatch', '공유 대화의 실행·메시지 기록을 확인할 수 없습니다.');
+      throw new NativePlatformTransportError();
+    }
+  }
+  async conversation(userId: string, signal?: AbortSignal) {
+    return readNativeAgentConversation(this, userId, signal);
   }
   /** Password step-up and device DPoP revoke the current server sid before local credential deletion. */
   async logout(userId: string, password: string, signal?: AbortSignal): Promise<NativeSessionSummary> {

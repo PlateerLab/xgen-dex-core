@@ -60,7 +60,7 @@ app.whenReady().then(async () => {
     try {
       request = JSON.parse(line); const { method, params = {} } = request;
       let result;
-      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true } } }; }
+      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true } } }; }
       else if (method === 'shutdown' || method === 'exit') { result = null; }
       else if (method === 'verify/cleanup-key') {
         host.reset();
@@ -85,9 +85,19 @@ app.whenReady().then(async () => {
           await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='공유 대화 폴링').click()`, true);
           await until(`document.body.textContent.includes('연결됨') && document.body.textContent.includes('Native shared conversation') && document.body.textContent.includes('native-message-answer')`);
           if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
-          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='폴링 중단').click()`, true);
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='대화 연결·폴링 중단').click()`, true);
           await until(`document.body.textContent.includes('구독 안 함') && !document.body.textContent.includes('native-message-answer')`);
           result = { ui: 'passed', conversation: 'passed' };
+        } finally { suppressNotifications = false; }
+      } else if (method === 'verify/live-ui') {
+        suppressNotifications = true;
+        try {
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='공유 대화 실시간 연결').click()`, true);
+          await until(`document.body.textContent.includes('실시간 연결') && document.body.textContent.includes('연결됨') && document.body.textContent.includes('Native shared conversation') && document.body.textContent.includes('native-message-answer')`);
+          if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='대화 연결·폴링 중단').click()`, true);
+          await until(`document.body.textContent.includes('구독 안 함') && !document.body.textContent.includes('native-message-answer')`);
+          result = { ui: 'passed', live: 'passed' };
         } finally { suppressNotifications = false; }
       } else if (method.startsWith('native/')) {
         const { user_id, profile, ...body } = params;

@@ -35,22 +35,26 @@ export function historyTurnMessages(turns: ConversationSnapshot['turns'], agentN
     const tools = (turn.process ?? []).flatMap((item) => (item.kind === 'tool' ? [item.event] : []));
     if (tools.length === 0) return [user, assistant];
     assistant.tools = tools;
-    const rows: ChatMessage[] = [];
-    const byCall = new Map<string, ChatMessage>();
+    // 호출 하나에 한 줄 — 짝은 호출 id 로, id 가 없으면 아직 끝나지 않은 같은 이름의 호출로(정본 규칙과 같다).
+    const rows: Array<{ row: ChatMessage; id?: string; name: string; done: boolean }> = [];
     tools.forEach((event, index) => {
-      const key = event.toolUseId || event.runId || `${event.toolName ?? 'tool'}#${index}`;
-      const existing = byCall.get(key);
-      if (existing) {
-        existing.text = describeTool(event);
-        existing.toolRef = { assistantId: assistant.id, index };
+      const id = event.toolUseId || event.runId || undefined;
+      const name = event.toolName ?? 'tool';
+      const done = event.eventType === 'tool_result' || event.eventType === 'tool_error';
+      const found = id
+        ? rows.find((r) => r.id === id)
+        : [...rows].reverse().find((r) => !r.id && r.name === name && !r.done);
+      if (found) {
+        found.row.text = describeTool(event);
+        found.row.toolRef = { assistantId: assistant.id, index };
+        found.done = done;
         return;
       }
       const row = message('activity', 'Tool', describeTool(event));
       row.toolRef = { assistantId: assistant.id, index };
-      rows.push(row);
-      byCall.set(key, row);
+      rows.push({ row, id, name, done });
     });
-    return [user, assistant, ...rows];
+    return [user, assistant, ...rows.map((r) => r.row)];
   });
 }
 

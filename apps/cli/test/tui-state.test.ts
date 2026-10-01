@@ -84,3 +84,22 @@ test('다른 곳에서 돈 도구 턴이 끝나면 도구 줄까지 그린다', 
     ],
   );
 });
+
+test('호출 id 가 없는 도구도 호출 하나에 한 줄 — 같은 이름의 두 호출이 합쳐지지 않는다', () => {
+  const state = chatReducer(initialChatState, {
+    type: 'history_loaded',
+    interactionId: 'c',
+    turns: [
+      {
+        logId: 1, ioId: 1, interactionId: 'c', workflowId: 'wf', workflowName: 'gitlab',
+        input: 'q', output: 'a', attachments: [], updatedAt: '',
+        process: [
+          { kind: 'tool', at: 1, event: { eventType: 'tool_call', toolName: 'Read' } },
+          { kind: 'tool', at: 2, event: { eventType: 'tool_result', toolName: 'Read' } },
+          { kind: 'tool', at: 3, event: { eventType: 'tool_call', toolName: 'Read' } },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(state.messages.filter((m) => m.role === 'activity').map((m) => m.text), ['Read · 완료', 'Read · 실행 중']);
+});

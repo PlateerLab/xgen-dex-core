@@ -174,13 +174,25 @@ function historyMessages(turns: HistoryTurn[]): ChatMessage[] {
       { id: `history-user-${index}`, role: 'user', text: turn.input },
       { id: `history-assistant-${index}`, role: 'assistant', text: turn.output },
     ];
+    // 호출 하나에 한 줄 — 짝은 호출 id 로, id 가 없으면 아직 끝나지 않은 같은 이름의 호출로.
+    const calls: Array<{ at: number; id?: string; name: string; done: boolean }> = [];
     for (const item of turn.process ?? []) {
       if (item.kind !== 'tool') continue;
-      const key = `history-${index}-${item.event.toolUseId || item.event.runId || item.event.toolName || 'tool'}`;
-      const at = rows.findIndex((row) => row.activityKey === key);
-      const row: ChatMessage = { id: key, role: 'activity', activityKey: key, text: toolActivityText(item.event) };
-      if (at >= 0) rows[at] = row;
-      else rows.push(row);
+      const event = item.event;
+      const id = event.toolUseId || event.runId || undefined;
+      const name = event.toolName ?? 'tool';
+      const done = event.eventType.includes('result') || event.eventType.includes('error');
+      const found = id
+        ? calls.find((c) => c.id === id)
+        : [...calls].reverse().find((c) => !c.id && c.name === name && !c.done);
+      if (found) {
+        rows[found.at] = { ...rows[found.at], text: toolActivityText(event) };
+        found.done = done;
+        continue;
+      }
+      const key = `history-${index}-tool-${calls.length}`;
+      calls.push({ at: rows.length, id, name, done });
+      rows.push({ id: key, role: 'activity', activityKey: key, text: toolActivityText(event) });
     }
     return rows;
   });

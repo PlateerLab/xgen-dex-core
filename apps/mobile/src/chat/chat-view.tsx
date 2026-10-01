@@ -64,6 +64,7 @@ import {
   ensureRemotePartial,
   finishStreaming,
   historyMessages,
+  markExecutionIo,
   mergeHistory,
   mergeMissedTurns,
   setError,
@@ -352,6 +353,8 @@ export function ChatView({
       callbacks: {
         onData: (text) => setMessages((prev) => appendAssistantText(prev, text)),
         onTool: (ev) => setMessages((prev) => attachTool(prev, ev)),
+        // 이 턴의 실행 id — 같은 턴이 완결 행·이력으로 다시 와도 한 번만, 소켓 구멍도 이것으로 메운다.
+        onExecutionIo: (ioId) => setMessages((prev) => markExecutionIo(prev, ioId) ?? prev),
         onEnd: () => {
           const interrupted = stoppedRef.current;
           stoppedRef.current = false;

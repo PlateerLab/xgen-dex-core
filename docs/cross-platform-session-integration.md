@@ -689,3 +689,51 @@ Desktop 설정 → 기기·세션 → Canonical Agent 세션
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode shared chat and Desktop native settings now create server-issued Canonical sessions, select owned active sessions and explicitly clear account focus with verified CAS versions. There is no creation idempotency key: uncertain writes are never replayed or rebased, and the UI requires an explicit catalog recheck after unknown outcomes or version conflicts. Results, scopes and bounded acknowledgements are validated before display. Credential changes discard catalogs; changed focus clears stale transcripts. The actual Electron fixture exposed a native vault race: RPC now tracks scheduled watchers before ACK and waits for underlying scoped proof operations to release the vault even after watcher or standalone-read cancellation. Focused deferred-transport regressions and real HTTPS/OS-keychain product UI fixtures pass. Enrollment-mode integration-branch Compose verifies rejection and cleanup; installed VSCode, ACTIVE Gateway cross-surface success, Mobile sending and Desktop primary chat migration remain gates. SDK/runtime stay as unreleased Workflow overlays and PR90 stays Draft.
+
+## Desktop 작업 공간 Canonical 공유 채팅 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-desktop-shared-chat`, 기준 통합 SHA `6390c2f1ea94c53f4bf5df59b6589260afa53f19`, 제품 코드 SHA `4b9bafcf925d912520478fe04353a43d70638d1c`. 하위 [PR149](https://github.com/PlateerLab/xgen-dex-core/pull/149) → `feat/cross-platform-session`, 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+Desktop 왼쪽 활동 표시줄 / 시작 화면 → 공유 대화 탭
+  → 계정·HTTPS origin별 Workspace 수명의 native 모델
+  ↔ 기기·세션 설정 (같은 모델, 독립 owner/취소 없음)
+  → verified session status → owned catalog/focus → authoritative snapshot + live watch
+  → 세션 생성·선택·해제 / 텍스트 submit·명시적 retry·최신 turn stop
+  → 탭 닫기·재열기 / 설정 이동: 미확정 intent·catalog 쓰기 잠금 유지
+  → 계정·origin·실제 focus 변경: 이전 draft·본문 폐기
+```
+
+### 구현과 경계
+
+- 작업 공간의 공유 대화는 두 pane 사이에서 옮길 수 있는 singleton 탭이다. 기존 로컬 interactionId 복원·레거시 SessionStore의 갱신 대상에 포함하지 않는다. 로컬 배치는 고정된 `canonical-chat` 표시와 위치만 저장하며 서버 ID·제목·본문·prompt·토큰을 복원하지 않는다. 계정 변경 시 탭과 bound 모델·draft를 폐기한다.
+- Workspace 수명으로 모델을 올려 공유 채팅과 설정이 동일한 composer/catalog/watch를 사용한다. 탭 닫기는 서버 focus 해제나 턴 중단이 아니며, 미확정 요청을 없애거나 새 요청을 허용하지 않는다. 앱/계정 수명이 끝날 때 모델을 dispose한다. `기기·세션 설정` 버튼은 해당 설정 항목으로 바로 이동한다.
+- binding은 main/preload의 성공 envelope와 notice를 실제 Workspace의 origin·user·desktop scope로 다시 검사한다. 다른 범위의 읽기는 표시하지 않고, 이미 dispatch된 쓰기의 잘못된 범위 응답은 unknown으로 유지한다. authoritative conversation/focus를 이전 catalog보다 우선해 draft identity를 갱신하고 transient read/watch에서는 이전 intent와 입력을 유지한다.
+- 주 채팅은 완전한 메시지만 표시하며 생략·미완전·부분 이력 표시를 유지한다. 현재 owned catalog focus와 authoritative snapshot이 일치해야 새 전송·재확인·중단이 가능하다. 다른 표면에서 focus가 바뀌면 목록 재확인을 안내한다. 생성·선택·해제와 turn mutation은 기존 공통 CAS/중복 방지/unknown 경계를 사용하며 legacy 경로로 전환하지 않는다.
+- UTF-8 262144바이트까지 공백과 끝 줄바꿈을 그대로 보낸다. 미확정 submit은 원래 본문·version·idempotency key로 명시적 재확인만 제공하며, 생성은 재전송하지 않는다. ACK 접수와 실제 terminal 상태를 구분하고 최신 verified running turn만 중단한다. 새 쓰기 없이 HTTP 재조회와 live 구독을 복구한다. 같은 대화 다시 읽기도 live 구독을 재개한다.
+- 실제 화면 검토에서 성공 ACK 뒤 live watch의 첫 snapshot이 오기 전 입력 정리를 놓치는 상태를 확인했다. 입력 정리는 현재 계정/모델·확인된 대화 identity·원래 draft 일치로 보호하고 transient snapshot 부재와 실제 focus 변경을 구분했다. 탭/계정 변경 뒤의 늦은 ACK는 새 draft를 지우지 않는다.
+- 기존 Agent 목록의 로컬 채팅·첨부·로컬 도구는 별도 경로로 남아 있다. 전체 Legacy 제거, UI catalog 전체 pagination, Mobile 송신 및 실제 ACTIVE Gateway 서비스 간 실행 성공은 후속 관문이다. 환경변수 추가·변경·삭제와 SDK/runtime 패키지 배포는 없다.
+
+### 검증과 실행 환경
+
+- Desktop 전체 회귀 **549/549**(실제 로컬 HTTPS network 포함), 최종 binding/Workspace 대상 **10/10**, 별도 Desktop 타입 검사·빌드, 계약 검사, 두 opt-in harness strict 타입 검사 통과. 최종 Head 필수 CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --desktop --workspace-ui`: 실제 제품 Workspace·설정·renderer, production main/preload/native IPC, OS keychain, TLS/P-256 proof를 사용한다. 비활성 기존 부가기능(Agent 목록/Teams/browser/알림/config) API만 테스트 대체값으로 제공하며 Canonical 네트워크·키·인증은 대체하지 않는다. 처음 발생한 browser harness의 Node crypto fallback 번들 실패를 수정했다.
+- 해당 fixture는 empty focus에서 서버 생성 후 ACK 유실, 이중 클릭 한 번 dispatch, 설정 이동 후 생성 쓰기 잠금, 명시적 catalog 복구, 소유 세션 전환, 같은 대화 재조회 동안 draft 보존, turn 실행 후 ACK 유실, 탭 닫기·재열기/설정 이동 뒤 원래 요청 재확인, exact verified stop, terminal HTTP 복구, 성공 ACK 뒤 draft 정리 및 focus 해제를 검증한다. 생성1회·실행1회, lifecycle write3회·turn write3회, legacy chat dispatch0회를 확인했다. 개인 데이터의 config 영속 저장 없음·sender/frame 격리·키체인/임시 profile 정리를 확인하고 화면을 직접 검토했다. 통제된 HTTPS 서버의 양성 fixture이며 실제 ACTIVE Gateway 성공 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --desktop --desktop-workspace --native-turns --native-sessions`: 실제 Gateway enrollment에서 일회용 계정·Desktop 등록·신뢰 브라우저 승인을 사용했다. login503/login_pending의 주 공유 채팅 입력·생성·선택·중단 차단, native catalog/create/switch/submit/stop auth_required, Canonical session0개, journal 유지·명시적 로컬 복구, DB/키체인 정리를 검증했다. 기본 infra/core/gateway 및 workflow/frontend 프로필, HTTPS3443 환경이다.
+- `.env`의 서비스별 통합 브랜치 override, clean source/container HEAD/ref·실제 `/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX 제품은 이 하위 브랜치를 빌드·검증했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 Workflow overlay marker와 실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 재확인했다. 미배포 overlay 환경을 유지했다.
+- 증거: `/tmp/cross-sync-desktop-shared-chat-{all-tests,final-target-tests,check,build,contracts,harness-check,fixture,compose,environment,overlay}.log`, `/tmp/cross-sync-desktop-shared-chat.png`.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 9% | Mobile 송신·TUI/첨부·catalog pagination·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Desktop's primary Workspace now provides an explicit Canonical Shared conversation pane with owned-session creation/selection/clear, verified complete messages and plain-text submit/retry/stop. Workspace and device settings share one account/origin-scoped model; tab switches, closing and reopening preserve unknown turn intent and lifecycle locks. Cross-scope replies are rejected, dispatched writes with invalid scope remain unknown, and actual focus/account changes clear old drafts. Local layout persists a static pane marker only. Production Electron/OS-keychain HTTPS fixtures verify one creation/execution despite lost receipts, exact retry/stop binding, draft recovery, no legacy dispatch and no private configuration persistence; unrelated inactive legacy APIs are test stubs. Integration-branch enrollment Compose verifies closed login_pending UI and native rejection/cleanup, not ACTIVE Gateway success. Mobile sending, full catalog UI pagination, attachments/TUI and legacy migration remain gates. SDK/runtime remain unreleased Workflow source overlays; PR90 remains Draft.

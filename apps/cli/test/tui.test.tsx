@@ -366,7 +366,7 @@ test('이전 대화를 고르면 그 내용이 대화창에 올라온다', async
     view.stdin.write('\u001B[B'); // ↓ — [새 대화] 아래가 이전 대화다
     await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     view.stdin.write('\r');
-    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답') && value.includes('지난 질문'));
     assert.match(frame, /지난 질문/);
   } finally {
     view.cleanup();

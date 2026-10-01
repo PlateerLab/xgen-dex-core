@@ -17,7 +17,7 @@ const directory = mkdtempSync(path.join(tmpdir(), 'dex-desktop-native-ui-'));
 mkdirSync(path.join(directory, 'profile'));
 app.setPath('userData', path.join(directory, 'profile'));
 app.disableHardwareAcceleration();
-let win; let host; let initialized = false; let closing = false;
+let win; let host; let initialized = false; let closing = false; let suppressNotifications = false;
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const deadline = setTimeout(() => app.exit(1), 60000);
 const close = () => { if (closing) return; closing = true; host?.reset(); clearTimeout(deadline); win?.destroy(); app.quit(); };
@@ -37,7 +37,9 @@ app.whenReady().then(async () => {
   const originalSend = win.webContents.send.bind(win.webContents);
   win.webContents.send = (channel, notice) => {
     originalSend(channel, notice);
-    if (channel === CHANNELS.nativeSessionUpdate && notice.type === 'update' && initialized && !closing) send({ jsonrpc: '2.0', method: 'native/focus', params: notice.value });
+    if (channel === CHANNELS.nativeSessionUpdate && notice.type === 'update' && initialized && !closing && !suppressNotifications) {
+      send({ jsonrpc: '2.0', method: notice.value.view === 'conversation' ? 'native/conversation' : 'native/focus', params: notice.value });
+    }
   };
   await win.loadFile(path.join(directory, 'index.html'), { query: { origin } });
   await until(`document.querySelectorAll('button').length >= 10 && !!window.xgen.nativeSession`);
@@ -58,7 +60,7 @@ app.whenReady().then(async () => {
     try {
       request = JSON.parse(line); const { method, params = {} } = request;
       let result;
-      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software' } } }; }
+      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true } } }; }
       else if (method === 'shutdown' || method === 'exit') { result = null; }
       else if (method === 'verify/cleanup-key') {
         host.reset();
@@ -75,6 +77,18 @@ app.whenReady().then(async () => {
         await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='작업·구독 중단').click()`, true);
         await until(`document.body.textContent.includes('구독 안 함')`);
         result = { ui: 'passed', sender_isolation: 'passed', password_input: 'empty' };
+      } else if (method === 'verify/conversation-ui') {
+        suppressNotifications = true;
+        try {
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='공유 대화 읽기').click()`, true);
+          await until(`document.body.textContent.includes('Native shared conversation') && document.body.textContent.includes('native-message-answer')`);
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='공유 대화 폴링').click()`, true);
+          await until(`document.body.textContent.includes('연결됨') && document.body.textContent.includes('Native shared conversation') && document.body.textContent.includes('native-message-answer')`);
+          if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='폴링 중단').click()`, true);
+          await until(`document.body.textContent.includes('구독 안 함') && !document.body.textContent.includes('native-message-answer')`);
+          result = { ui: 'passed', conversation: 'passed' };
+        } finally { suppressNotifications = false; }
       } else if (method.startsWith('native/')) {
         const { user_id, profile, ...body } = params;
         if (user_id && user_id !== userId) throw new Error('Fixture account mismatch');

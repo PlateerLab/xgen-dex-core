@@ -7,11 +7,12 @@ import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
-import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
+import { NativeDeviceKeyStore, NativeDeviceOperationBusy } from '../packages/engine/src/native-device-key-store';
 import { nativeKeyThumbprint } from '../packages/engine/src/native-dpop';
-import { DexRpcClient } from '../packages/rpc/src/client';
+import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
+const testConversation = process.argv.includes('--conversation');
 const desktopElectron: string | null = platform === 'desktop' ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
@@ -46,6 +47,8 @@ const event1 = randomUUID(); const event3 = randomUUID(); const event4 = randomU
 let focus = { active_agent_session_id: null as string | null, version: 0, event_id: null as string | null };
 let watching = false; let disconnected = false; let rotatedDuringWatch = false;
 const watchCursors: number[] = [];
+const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), randomUUID()];
+const messageText = `native-message-answer ${'가'.repeat(24000)}`;
 const server = createServer({ cert: readFileSync(join(certificates, 'localhost.pem')), key: readFileSync(join(certificates, 'localhost-key.pem')) }, (req, res) => {
   void (async () => {
     requests++;
@@ -108,6 +111,25 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url')); assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
     const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
     assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+    const conversationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(snapshot|events|messages)(?:\?(.*))?$/.exec(path);
+    if (testConversation && conversationRoute) {
+      assert.equal(conversationRoute[1], focus.active_agent_session_id); messageAccesses.add(access);
+      if (conversationRoute[2] === 'snapshot') {
+        reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: 'Native shared conversation',
+          current_sequence: 4, state_version: 4, message_history_complete: false,
+          latest_turn: { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
+      }
+      const query = new URLSearchParams(conversationRoute[3]); const after = Number(query.get('after_sequence'));
+      if (conversationRoute[2] === 'events') {
+        assert.equal(query.get('limit'), '100'); assert.equal(after, 4);
+        reply({ events: [], next_cursor: 4, snapshot_version: 4, has_more: false }); return;
+      }
+      assert.equal(query.get('limit'), '1'); assert.ok([0, 2, 4].includes(after));
+      const index = after === 0 ? 0 : 1;
+      reply({ messages: after === 4 ? [] : [{ turn_id: messageTurns[index], sequence: index === 0 ? 2 : 4, status: 'completed',
+        input_text: 'native-message-question', output_text: messageText, content_complete: true, source: 'user', raw_execution: 'private-server-secret' }],
+        next_cursor: after === 0 ? 2 : 4, snapshot_sequence: 4, state_version: 4, has_more: after === 0 }); return;
+    }
     if (path === '/api/agentflow/me/agent-state') { reply(focus); return; }
     if (path.startsWith('/api/agentflow/me/agent-events?')) {
       const query = new URL(path, origin).searchParams; assert.equal(query.get('limit'), '100');
@@ -151,8 +173,8 @@ async function cli(action: string, expectedExit = 0) {
     child.stdin.end(secret ? password : '');
   });
 }
-function watch(expectedExit: number) {
-  const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', 'watch-focus', '--user-id', userId, '--jsonl', '--interval-ms', '200'],
+function watch(expectedExit: number, action = 'watch-focus') {
+  const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', action, '--user-id', userId, '--jsonl', '--interval-ms', '200'],
     { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['ignore', 'pipe', 'pipe'] });
   const updates: any[] = []; let output = ''; let pending = ''; let stderr = ''; let failed = false;
   const listeners = new Set<() => void>(); let finished = false;
@@ -192,11 +214,22 @@ function watch(expectedExit: number) {
   void done.catch(() => {});
   return { updates, done, until, stop: () => { child.kill('SIGINT'); }, kill: () => { child.kill('SIGKILL'); } };
 }
+function assertConversation(value: any): void {
+  assert.equal(value.has_more, false); assert.equal(value.conversation.snapshot.title, 'Native shared conversation');
+  assert.deepEqual(value.conversation.messages.map((m: any) => m.sequence), [2, 4]);
+  assert.equal(value.conversation.messages[0].output_text, messageText);
+  assert.equal(JSON.stringify(value).includes('private-server-secret'), false);
+}
+async function untilMessageRotation(before: number): Promise<void> {
+  for (let i = 0; i < 200 && messageAccesses.size <= before; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(messageAccesses.size > before, 'The next bounded conversation read must use the rotated vault token');
+}
 async function vscodeFixture() {
   const logs: string[] = []; const replies: unknown[] = []; const clients: DexRpcClient[] = [];
   const client = () => {
     const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
-      ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`, '--screenshot=/tmp/cross-sync-desktop-native-ui.png']
+      ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
+        `--screenshot=${testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
       : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
     clients.push(c); return c;
@@ -207,8 +240,17 @@ async function vscodeFixture() {
     finally { await cleanup.stop(); }
   };
   const session = async (c: DexRpcClient, action: string) => {
-    const r = await c.request<any>('native/session', { action, ...(action === 'login' ? { email } : { user_id: userId }),
-      ...(['login', 'logout'].includes(action) ? { password } : {}) }); replies.push(r); return r;
+    // Only local pre-wire lock contention may be retried; journals/HTTP/transport failures remain final.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await c.request<any>('native/session', { action, ...(action === 'login' ? { email } : { user_id: userId }),
+          ...(['login', 'logout'].includes(action) ? { password } : {}) }); replies.push(r); return r;
+      } catch (error) {
+        if (!(error instanceof DexRpcError) || error.engineCode !== 'credential_store_unavailable'
+          || error.message !== new NativeDeviceOperationBusy().message || attempt === 9) throw error;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
   };
   const notifications: any[] = []; const listeners = new Set<() => void>();
   const until = (predicate: (v: any) => boolean) => new Promise<void>((resolveUpdate, reject) => {
@@ -220,11 +262,15 @@ async function vscodeFixture() {
     const first = client(); assert.equal((await first.start()).capabilities.nativePlatformSession?.platform, platform);
     if (platform === 'desktop') await first.request('native/device', { action: 'register', email, password });
     assert.equal((await session(first, 'login')).result.state, 'active');
-    if (platform === 'desktop') { assert.equal((await first.request<any>('verify/ui')).ui, 'passed'); console.log('Desktop production component / preload / IPC sender isolation / native-only TLS / UI subscription and cancellation PASS'); }
+    if (platform === 'desktop') {
+      assert.equal((await first.request<any>('verify/ui')).ui, 'passed');
+      await session(first, 'status'); // Observe that cancelled native work released its OS lock before process exit.
+      console.log('Desktop production component / preload / IPC sender isolation / native-only TLS / UI subscription and cancellation PASS');
+    }
     await first.stop();
     const restored = client(); assert.equal((await session(restored, 'status')).result.state, 'active');
     await session(restored, 'refresh');
-    restored.onNotification((n) => { if (n.method === 'native/focus') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
+    restored.onNotification((n) => { if (n.method === 'native/focus' || n.method === 'native/conversation') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
     watching = true;
     const started = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 }); replies.push(started);
     await until((n) => n.watch_id === started.watch_id && n.update.type === 'focus' && n.update.focus.version === 3);
@@ -237,6 +283,17 @@ async function vscodeFixture() {
     await until((n) => n.watch_id === second.watch_id && n.update.type === 'focus');
     replies.push(await restored.request('native/unwatch', { watch_id: second.watch_id }));
     const count = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, count);
+    if (testConversation) {
+      const read = await restored.request<any>('native/conversation', { user_id: userId }); replies.push(read); assertConversation(read);
+      const live = await restored.request<any>('native/watch-conversation', { user_id: userId, interval_ms: 200 }); replies.push(live);
+      await until((n) => n.watch_id === live.watch_id && n.update.type === 'conversation');
+      assertConversation(notifications.find((n) => n.watch_id === live.watch_id && n.update.type === 'conversation').update);
+      const before = messageAccesses.size; const rotation = client(); await session(rotation, 'refresh'); await rotation.stop();
+      await untilMessageRotation(before); await restored.request('native/unwatch', { watch_id: live.watch_id });
+      const stoppedAt = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, stoppedAt);
+      if (platform === 'desktop') assert.equal((await restored.request<any>('verify/conversation-ui')).ui, 'passed');
+      console.log(`${platform}: actual TLS / >64KiB messages / sparse cursors / conversation RPC projection / cross-process rotation / unwatch PASS`);
+    }
     assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
     const restarted = client(); await session(restarted, 'login'); loseCompletion = true;
     await assert.rejects(session(restarted, 'refresh')); assert.equal((await session(restarted, 'status')).result.state, 'refreshing');
@@ -277,6 +334,16 @@ try {
   try { await cancelled.until((e) => e.type === 'focus'); cancelled.stop(); await cancelled.done; assert.equal(cancelled.updates.at(-1).reason, 'cancelled'); }
   finally { cancelled.kill(); await cancelled.done.catch(() => {}); }
   console.log('HTTPS watcher: cursor replay / disconnect reconnect / 409 snapshot / concurrent process rotation / permission stop / Ctrl+C PASS');
+  if (testConversation) {
+    assertConversation(await cli('conversation'));
+    const live = watch(0, 'watch-conversation');
+    try {
+      await live.until((e) => e.type === 'conversation'); assertConversation(live.updates.find((e) => e.type === 'conversation'));
+      const before = messageAccesses.size; await cli('refresh'); await untilMessageRotation(before);
+      live.stop(); await live.done; assert.equal(live.updates.at(-1).reason, 'cancelled');
+    } finally { live.kill(); await live.done.catch(() => {}); }
+    console.log('CLI: actual TLS / >64KiB messages / sparse cursors / display-only JSONL / cross-process rotation / Ctrl+C PASS');
+  }
   assert.equal((await cli('logout')).state, 'signed_out'); assert.equal((await cli('status')).state, 'signed_out');
   console.log('HTTPS fixture: separate built CLI processes / OS-keychain restore / rotation / Canonical DPoP / password logout PASS');
   await cli('login'); loseCompletion = true; await cli('refresh', 1);

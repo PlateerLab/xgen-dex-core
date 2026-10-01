@@ -451,3 +451,49 @@ Mobile Settings 대화 변경 구독 시작
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These estimates describe remaining design work, not test coverage or delivery dates. Mobile now receives DPoP-authenticated native WSS notifications and wakes bounded HTTP conversation recovery, with periodic focus/vault checks. Reserved IDs, bounded native state, exact routes, system TLS, receive-only APIs and actual terminal acknowledgements constrain the transport. Snapshot recovery covers upgrade and live cursor conflicts; an old socket authentication close rechecks existing credentials once to handle rotation without automatic session issuance. JS/native fixtures, iOS full build and enrollment-mode Compose rejection validate their seams. Real ACTIVE/takeover, physical SecureStore/hardware/UI, other native WS surfaces and existing chat send migration remain gates. Parent PR90 stays Draft; SDK/runtime remain unreleased Workflow overlays. Phase names follow design section11.
+
+## CLI·VSCode·Desktop 공유 대화 조회 기반 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-messages`, 기준 통합 SHA `5cbabb5f93e4f1e227eb1d75a3ce71eca03b5d21`, 하위 [PR144](https://github.com/PlateerLab/xgen-dex-core/pull/144) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+CLI conversation/watch-conversation
+VSCode native/conversation · native/watch-conversation → 읽기 전용 가상 문서
+Desktop 공유 대화 읽기·폴링·중단 → main 전용 계정/origin → OS keychain
+  → ready vault/journal/account/access 확인
+  → GET DPoP /me/agent-state · /me/agent-events
+  → 선택된 /snapshot · /events · /messages → 최종 focus 재확인
+  → 표시 projection만 전달 → bounded HTTP polling
+```
+
+### 구현과 경계
+
+- 다른 native 표면은 포커스만 조회하고 있어, WS 연결에 앞서 대화 조회 선행 조건을 보완했다. Mobile의 공통 protocol recovery를 사용하며 snapshot/latest_turn, 연속 실행 이벤트, sparse 완결 메시지의 두 커서를 유지한다. 단계당 이벤트 2×100/메시지 2×1, deadline 10초, 단발 최대 10단계, retention 최대 100턴/본문 UTF8 4MiB다. 같은 sid의 rotation은 커서를 유지하고 다음 단계에서 새 vault/proof를 사용한다.
+- native HTTP read adapter는 canonical HTTPS origin/exact GET route/ordered query를 제한하며 query-free htu·ath를 서명한다. Cookie/ambient credentials/redirect를 사용하지 않는다. messages 1MiB, 그 외 64KiB, fatal UTF8과 stream 크기를 제한한다. 응답 헤더 이후·본문 진입·chunk마다 인증/취소를 확인하며 실패 시 unread body를 취소한다. 이벤트 gap/409 복구는 기존 bounded snapshot 경로를 사용하고 메시지 무결성 실패는 중단한다.
+- RPC는 `canonicalConversation:true` capability와 별도 conversation 알림을 추가했다. 표시 snapshot/messages/omittedMessages와 has_more만 전달하며 credential/authScope/cursor/raw tool 값은 제외한다. watch 간격 오류는 ACK 전에 거절한다. VSCode/Desktop은 malformed projection을 중단하고 pending 취소·late ACK의 정확한 watch ID 정리로 새 watch를 보존한다. Desktop renderer는 raw ACK를 먼저 게시하지 않는다.
+- VSCode의 가상 plain-text 문서는 명시적으로 열고 폴링 결과를 갱신한다. 파일/로그 저장은 없으며 표시 문자열은 5×1024×1024자 상한을 둔다. Desktop 버튼은 완결 메시지·최신 턴·생략/불완전/추가 조회 상태를 표시한다. 계정/서버 변경, 취소, 중단·재연결은 이전 본문을 비운다. 기존 채팅 송신 이행과 다른 native WS는 다음 작업이다.
+
+### 검증과 실행 환경
+
+- Protocol **212/212**, engine 초기 전체 **161 pass / 2 skip**와 후속 응답 취소·has_more 회귀를 포함한 대상 **33/33**, VSCode 전체 **30/30**, Desktop 초기 전체 **530/530**와 후속 renderer 대상 **7/7** 통과. 관련 타입 검사·계약 검사·CLI/VSCode/Desktop 빌드와 두 opt-in harness strict 타입 검사 통과. Engine 두 skip은 OS별 지원 조건이다.
+- 로컬 Node24 CLI 전체는 최종 **153/153** 통과했다. 기존 TUI 이력 표시 테스트가 답변만 먼저 그려진 중간 frame을 읽어 실패하던 조건을 질문·답변이 함께 그려진 실제 frame을 기다리도록 좁혔다. 임의 sleep이나 TUI 구현 변경은 없다. 최종 Head CI 전체 테스트 결과도 별도 확인한다.
+- 초기 Head CI에서 Android WS test의 client onOpen 완료와 MockWebServer peer onOpen 완료 사이 경쟁 조건으로 null peer close가 발견됐다. peer의 실제 onOpen을 latch로 확인한 뒤 close하도록 테스트만 수정했고 대상 Gradle test 통과. native 제품 코드는 변경하지 않았다.
+- 실제 HTTPS fixture `scripts/cli-platform-session-fixture.mts --conversation` 및 `--vscode`/`--desktop`: 별도 빌드 CLI/RPC/Electron main·preload·renderer, 일회용 OS keychain, 실제 P-256 proof 검증, >64KiB 메시지 두 개의 sparse 커서(2/4), 표시 projection, 다른 프로세스 rotation과 다음 GET의 새 token, Ctrl+C/unwatch·요청 중단 통과. Desktop 실제 컴포넌트의 읽기·폴링·본문 표시·중단 후 제거와 screenshot을 확인했다. 하네스는 local pre-wire busy만 최대 10회×100ms 대기하며 HTTP/journal/transport 실패는 재시도하지 않는다. **ACTIVE Gateway 성공 증거는 아니다.**
+- 실제 Compose `--cli --vscode --desktop --native-messages`: 임시 계정·기기 등록/신뢰 브라우저 승인 → login503 → durable login_pending → 각 conversation read/poll auth_required → 명시적 로컬 복구·DB/키체인 정리 통과. enrollment 모드를 유지했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env`의 서비스별 override, clean source/container HEAD/ref와 `/app` mount 확인: 모두 `feat/cross-platform-session`. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment`을 확인했다. DEX 클라이언트 검증은 이 하위 브랜치의 빌드/소스를 사용한다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`/runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` snapshot marker와 실제 `/opt/xgen-local-sdk`/`/opt/xgen-local-runtime` import 확인. 배포 및 환경변수 변경은 없다.
+- 증거: `/tmp/cross-sync-native-messages-*.log`, `/tmp/cross-sync-native-conversation-desktop-ui.png`. 최종 Head CI/review를 확인한 뒤 하위 PR만 통합한다. 실제 ACTIVE/takeover·Mobile 물리 기기·전 표면 송수신 검증은 후속 관문으로 유지한다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 18% | CLI/VSCode/Desktop native WS·기존 채팅 송신 이행·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode and Desktop now read and explicitly poll bounded canonical conversation snapshots, execution events and sparse linked terminal messages. The common OS-vault engine validates exact read routes, scoped DPoP and bounded UTF8 streams; cancellation and credential loss cancel unread bodies. RPC/UI boundaries project display fields, stop stale watch acknowledgements by exact ID, and clear transcripts on scope/connection changes. Actual HTTPS/software-key OS-keychain fixtures and Electron UI verify positive client contracts; enrollment-mode Compose verifies rejection and recovery on the actual integration branches. The CLI suite passes 153/153 after its existing history assertion waits for both question and answer instead of an intermediate frame. Final Head CI remains a gate. ACTIVE Gateway, physical Mobile, other native WebSocket and chat-send integration remain pending. SDK/runtime stay as unreleased Workflow overlays and PR90 remains Draft.

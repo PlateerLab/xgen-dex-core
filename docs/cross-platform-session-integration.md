@@ -545,3 +545,51 @@ Desktop 공유 대화 실시간 연결 → main의 계정/origin·OS CA
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode and Desktop now use receive-only native GET DPoP WSS to wake authoritative HTTP conversation recovery, with periodic scoped vault/focus checks. Same-session token rotation preserves cursors and replaces the socket; local credential mutations immediately stop existing sockets. Recovered HTTP snapshots replace old streams, no-progress socket failures have finite budgets, and cancellation awaits actual teardown. Frame/queue/CA bounds, default/system TLS and a shared origin latch constrain the transport. Real HTTPS/software-key OS-keychain and Electron UI fixtures pass, while integration-branch enrollment-mode Compose verifies rejection and recovery. Actual ACTIVE/takeover, physical Mobile and migration of existing chat sends remain gates. SDK/runtime remain unreleased Workflow overlays; PR90 stays Draft.
+
+## CLI Canonical 턴 송신·공통 RPC 기반 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-cli-canonical-turns`, 기준 통합 SHA `52a6efc5f7b81b9ea9ab8fc54581f9cc36617f4a`, 하위 [PR146](https://github.com/PlateerLab/xgen-dex-core/pull/146) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+dex chat --canonical (기존 server-issued session ID + snapshot version + stable key)
+  → UTF-8 메시지 그대로 검증·복사 → scoped ready OS vault
+  → POST DPoP /api/agentflow/agent-sessions/{id}/turns
+  → bounded 202 접수 ACK (AI 완료 아님) → 별도 conversation/watch-live에서 확인
+  → 응답 유실/dispatch 후 취소: unknown + 안전한 요청 식별 정보
+  → 사용자가 동일 메시지·원래 버전·key로 다시 실행 → 서버 replay ACK
+
+native/submit-turn, native/stop-turn → 공통 native host (VSCode/Desktop 기반)
+  → stop ACK는 requested:true → 실제 종료는 대화 이벤트/메시지로 확인
+```
+
+### 구현과 경계
+
+- `AgentSessionMutationClient`는 정확한 HTTPS origin과 lowercase UUID, safe version, printable ASCII idempotency key 1..128, 선택적 origin ID 1..128 codepoint를 검증한다. 메시지는 정상 Unicode·UTF-8 최대262144바이트이며, async credential 조회 전에 primitive body를 복사·직렬화한다. `--stdin`은 BOM·개행·끝 공백까지 보존한다. 임의의 origin ID를 실행마다 생성하지 않아 명시적 재시도의 요청 해시가 바뀌지 않는다.
+- OS vault의 ready/현재 계정/access 만료를 확인하고 현재 token·정확한 `/turns` 또는 `/stop` 경로에만 POST proof를 허용한다. 외부 read-only proof callback은 POST를 서명할 수 없다. 네이티브 전송은 정확한 네 헤더, query-free URL, no Cookie/Origin/redirect를 확인하고 async vault check 전에 init/header/body를 복사한다. 키·토큰·비밀번호·메시지는 ACK/오류에 포함하지 않는다.
+- ACK는64KiB, fatal UTF-8 및 필드 불변식으로 제한한다. 접수 state version은 원래 expected+1이고 replay에서도 유지한다. fresh ACK는 accepted만 허용하며 stop ACK는 요청한 turn ID·version·requested:true와 일치해야 한다. 추가 서버 필드는 제거한다. redirect/URL 변경은 4xx 판정보다 먼저 확인한다.
+- 수신된4xx(408 제외)는 명시적 거절로 처리하며409의 code/current version/turn ID만 allowlist로 노출한다. fetch loss·408·5xx·잘못된 ACK·dispatch 후 취소/timeout은 unknown이다. 자동 재전송·갱신·새 key 생성·legacy fallback을 하지 않는다. abort를 무시하는 fetch와 멈춘 reader도 취소 시 unknown으로 끝내고 늦은 본문/reader를 정리한다. 호스트 요청 제한은10초다.
+- `dex chat --canonical`은 기존 chat entry에서 legacy engine 생성 전에 분기한다. `--user-id`, `--session-id`, `--expected-state-version`, `--idempotency-key`와 `--message`/`--stdin` 중 하나가 필수다. `--json`은 안전한 요청 식별 정보와 접수 결과만 출력한다. SIGINT/SIGTERM은 진행 중 HTTP만 취소하며 서버 턴 stop을 의미하지 않는다.
+- RPC는 flat `native/submit-turn`/`native/stop-turn`과 `canonicalTurns:true` capability를 추가했다. `mutation` envelope를 사용해 기존 `result`의 session/enrollment 타입을 유지한다. 계정/origin/platform은 기존 host 경계를 따른다. 새 작업은 기존 watch를 중단하므로 소비자는 접수 뒤 별도 watch를 다시 시작해야 한다. VSCode/Desktop 채팅 입력 UI·Mobile 송신 이행, 새 Canonical session 생성, 첨부/로컬 도구/TUI 전환은 후속 작업이다.
+
+### 검증과 실행 환경
+
+- 제품 코드 SHA `b791cbc8d4fbbae5e49067d780615986c24956b7`. 엔진 전체 **201 pass / 2 OS 조건 skip**, protocol **228/228**, CLI **161/161**(RPC 회귀 포함), VSCode **31/31**, Desktop **531/531** 통과. 전체 workspace와 Desktop 타입 검사, 계약 검사, CLI/VSCode/Desktop 빌드 및 opt-in harness strict 타입 검사 통과. 최종 Head CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `scripts/cli-platform-session-fixture.mts --turns` / `--vscode --turns`: 빌드된 별도 CLI/stdio 프로세스와 일회용 OS keychain, 실제 TLS/P-256 POST DPoP·ath, >64KiB 다국어 stdin과 끝 개행 보존, 동일 key 한 번 실행/replay, 다른 메시지 동일 key·stale version409, 서버 접수 후 응답 유실·명시적 원래 body/key/version 복구,401 자동 갱신 없음, RPC stop 요청 바인딩·안전한 ACK/오류를 검증했다. **실제 ACTIVE Gateway 성공 검증은 아니다.**
+- `scripts/native-platform-session-compose.mts --cli --vscode --native-turns`: 실제 Gateway enrollment 모드의 일회용 계정·기기 등록/브라우저 승인, login503·login_pending journal, CLI submit/VSCode submit·stop auth_required, Canonical session 미생성·journal 유지·명시적 로컬 복구 및 DB/키체인 정리를 확인했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env` 서비스별 override·clean source/container HEAD/ref·`/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX는 이 하위 브랜치의 제품 코드를 빌드했다.
+- Workflow overlay SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` / runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` marker 및 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` 실제 import를 확인했다. 패키지 배포와 환경변수 추가·변경·삭제는 없다.
+- 증거: `/tmp/cross-sync-canonical-turns-{tests,engine-tests,desktop-tests,check,desktop-check,build,desktop-build,contracts,harness-check,cli-fixture,vscode-fixture,compose,environment,overlay}.log`. 실제 ACTIVE/takeover와 Web↔native 실행 성공, UI 송신 및 Mobile 물리 기기 검증은 후속 관문이다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 15% | UI 송신·session 생성 연결·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. The existing CLI chat entry now supports explicit Canonical turn submission for an existing server-issued session. Native OS-vault POST DPoP and shared submit/stop RPC validate copied inputs and bounded acknowledgements without retries, refresh or legacy fallback. Lost acknowledgements and post-dispatch cancellation expose an unknown outcome with safe explicit-retry identifiers; stop acknowledgements only confirm a request. Actual HTTPS/software-key OS-keychain CLI/VSCode fixtures verify replay, CAS and loss recovery. Integration-branch enrollment-mode Compose verifies rejection and recovery. ACTIVE Gateway success, session creation and UI/Mobile chat migration remain gates. SDK/runtime stay as unreleased Workflow overlays and PR90 stays Draft.

@@ -4,6 +4,7 @@ import type { AgentTurnComposerView } from '@dex/protocol/agent-turn-composer';
 import type { NativeSessionSummary } from '@dex/rpc';
 import { xgen } from '../bridge';
 import { DesktopNativeSessionModel, type DesktopNativeView } from '../native-session-model';
+import { observedDesktopAgentSession, type DesktopNativeSessionBinding } from '../native-session-binding';
 import { SettingsSection } from './SettingsSection';
 
 const states: Record<string, string> = { pending: '승인 대기', trusted: '승인됨', revoked: '폐기됨', signed_out: '로그아웃', active: '사용 가능',
@@ -13,22 +14,35 @@ const transports = { none: '연결 없음', 'focus-http': '포커스 확인', 'r
 const initialTurn: AgentTurnComposerView = { status: 'unavailable', canSubmit: false, canRetry: false, canStop: false,
   notice: '현재 연결에서는 요청을 보낼 수 없습니다.' };
 
-export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) => {
-  const [view, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
+export const NativeSessionSettings: React.FC<{ origin: string; binding?: DesktopNativeSessionBinding }> = ({ origin, binding }) => {
+  const [localView, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
     connection: 'idle', transport: 'none', error: '', turn: initialTurn,
     catalog: { focus: null, items: [], nextCursor: null, hasMore: false, busy: false, writeBlocked: false, notice: '' } });
   const model = useRef<DesktopNativeSessionModel | null>(null);
+  const currentBinding = useRef(binding);
+  currentBinding.current = binding;
   const turnSession = useRef<string | null>(null);
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [approver, setApprover] = useState(''); const [overview, setOverview] = useState<NativeTrustOverview | null>(null);
   const [message, setMessage] = useState(''); const [forget, setForget] = useState(false);
-  const [turnInput, setTurnInput] = useState('');
+  const view = binding?.view ?? localView;
+  const [localTurnInput, setLocalTurnInput] = useState('');
+  const turnInput = binding?.draft ?? localTurnInput;
+  const setTurnInput = binding?.setDraft ?? setLocalTurnInput;
   const [workflowId, setWorkflowId] = useState(''); const [sessionTitle, setSessionTitle] = useState('');
   const [sessionSelect, setSessionSelect] = useState('');
   useEffect(() => {
-    turnSession.current = null; setTurnInput('');
-    const controller = new DesktopNativeSessionModel(xgen.nativeSession, (next) => {
-      setView(next);
+    turnSession.current = null;
+    setWorkflowId(''); setSessionTitle(''); setSessionSelect('');
+    setOverview(null); setApprover(''); setMessage(''); setForget(false); setPassword('');
+    if (binding) { model.current = binding.model; return () => { model.current = null; }; }
+    setLocalTurnInput('');
+    const controller = new DesktopNativeSessionModel(xgen.nativeSession, setView);
+    model.current = controller;
+    return () => { model.current = null; controller.dispose(); };
+  }, [origin, binding?.model, Boolean(binding)]);
+  useEffect(() => {
+      const next = view;
       const nextSession = next.conversation?.snapshot?.id ?? null;
       if (nextSession && turnSession.current && nextSession !== turnSession.current) setTurnInput('');
       if (nextSession) turnSession.current = nextSession;
@@ -38,10 +52,7 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
       }
       if (!next.result && !next.busy) { setTurnInput(''); setWorkflowId(''); setSessionTitle(''); setSessionSelect('');
         setOverview(null); setApprover(''); setMessage(''); setForget(false); setPassword(''); }
-    });
-    model.current = controller;
-    return () => { model.current = null; controller.dispose(); };
-  }, [origin]);
+  }, [view]);
   useEffect(() => {
     const active = view.catalog.focus?.active_agent_session_id ?? '';
     setSessionSelect(view.catalog.items.some((item) => item.id === active && item.status === 'active') ? active : '');
@@ -81,7 +92,10 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
     const controller = model.current; const sessionId = turnSession.current;
     if (!controller || !sessionId) return;
     const accepted = retry ? await controller.retryTurn() : await controller.submitTurn(turnInput);
-    if (accepted && model.current === controller && turnSession.current === sessionId) setTurnInput('');
+    if (accepted && model.current === controller && turnSession.current === sessionId
+      && (!binding || observedDesktopAgentSession(controller.state) === sessionId)) {
+      if (!binding || (currentBinding.current?.model === controller && currentBinding.current.draft === turnInput)) setTurnInput('');
+    }
   };
   return <>
     <SettingsSection title="이 PC의 기기 인증">

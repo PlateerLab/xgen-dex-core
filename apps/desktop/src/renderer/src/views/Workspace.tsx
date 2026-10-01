@@ -22,6 +22,8 @@ import type {
 } from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
 import { Chat } from './Chat';
+import { CanonicalChat } from './CanonicalChat';
+import { useDesktopNativeSessionBinding } from '../native-session-binding';
 import { Settings } from './Settings';
 import { AvatarSettings } from './AvatarSettings';
 import { AgentViewer } from './AgentViewer';
@@ -47,6 +49,7 @@ import {
   findTab,
   newWorkspaceLayout,
   normalizeWorkspaceLayout,
+  openCanonicalChat,
   placeBrowserBesideChat,
   removeWorkspaceTab,
   selectWorkspaceTab,
@@ -150,7 +153,7 @@ export function layoutForOwner(
   let next = layout;
   for (const group of layout.groups) {
     for (const tab of group.tabs) {
-      if (tab.kind === 'chat') next = removeWorkspaceTab(next, tab.id);
+      if (tab.kind === 'chat' || tab.kind === 'canonical-chat') next = removeWorkspaceTab(next, tab.id);
     }
   }
   return next;
@@ -199,6 +202,8 @@ export const Workspace: React.FC<{
   onLogout: () => void;
   onConfigChange: () => Promise<ConnectorConfig>;
 }> = ({ user, config, onLogout, onConfigChange }) => {
+  const nativeBinding = useDesktopNativeSessionBinding(config.serverUrl, user.userId);
+  const [nativeSettingsRequest, setNativeSettingsRequest] = useState(0);
   const [sideView, setSideView] = useState<SideView>(config.ui?.sideView ?? 'agent');
   const [collapsed, setCollapsed] = useState(config.ui?.sidebarCollapsed ?? false);
   const [sidebarWidth, setSidebarWidth] = useState(clampWidth(config.ui?.sidebarWidth ?? 300));
@@ -592,6 +597,11 @@ export const Workspace: React.FC<{
       return addWorkspaceTab(current, current.focusedGroupId, { id: 'settings', kind: 'settings' });
     });
   }, []);
+  const openSharedChat = useCallback(() => setLayout(openCanonicalChat), []);
+  const openNativeSettings = useCallback(() => {
+    setNativeSettingsRequest((value) => value + 1);
+    openSettings();
+  }, [openSettings]);
 
   // 트레이/오버레이의 "설정 열기"도 이제 탭을 연다.
   useEffect(() => xgen.appctl.onOpenSettings(openSettings), [openSettings]);
@@ -1036,6 +1046,9 @@ export const Workspace: React.FC<{
 
   const renderGroupContent = (group: WorkspaceGroup) => {
     const active = group.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
+    if (active?.kind === 'canonical-chat') {
+      return <CanonicalChat binding={nativeBinding} onOpenSettings={openNativeSettings} />;
+    }
     if (active?.kind === 'chat' && active.sessionKey) {
       const chat = sessionMap.get(active.sessionKey);
       if (chat)
@@ -1087,6 +1100,8 @@ export const Workspace: React.FC<{
         <div className="pane-fill">
           <Settings
             embedded
+            nativeBinding={nativeBinding}
+            nativeSessionPageRequest={nativeSettingsRequest}
             config={config}
             onClose={() => closeTab(active)}
             onChanged={onConfigChange}
@@ -1167,6 +1182,7 @@ export const Workspace: React.FC<{
           <span className="xgen-gradient-text">어떤 Agent와 대화를 시작할까요?</span>
         </h1>
         <p>왼쪽 Agent 목록에서 에이전트를 선택하면 바로 대화를 시작할 수 있습니다.</p>
+        <button className="primary" onClick={openSharedChat}>공유 대화 열기</button>
       </div>
     );
   };
@@ -1174,6 +1190,8 @@ export const Workspace: React.FC<{
   return (
     <div className="workspace">
       <ActivityBar
+        onOpenSharedChat={openSharedChat}
+        sharedChatActive={layout.groups.some((group) => group.activeTabId === 'canonical-chat')}
         view={sideView}
         collapsed={collapsed}
         onPressView={pressView}

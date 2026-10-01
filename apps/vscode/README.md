@@ -16,6 +16,7 @@ XGEN Dex Agent를 Visual Studio Code 사이드바에서 사용하는 확장입�
 - 로컬 도구 활성화, 작업 폴더·허용 경로·차단 명령·타임아웃 설정과 브리지 상태 확인
 - 비밀번호 로그인, 상태 표시, 로그아웃
 - HTTPS 서버의 VSCode 기기 등록·선택 브라우저 승인 요청·플랫폼 세션·현재 대화 구독
+- 기존 채팅 입력창에서 명시적으로 켜는 Canonical **공유 대화** 송신·중단·동일 요청 재시도
 - dex-cli 엔진 재시작과 전용 Output 로그
 - 한글 IME 조합을 지원하는 네이티브 Webview 입력창
 
@@ -75,7 +76,32 @@ HTTPS origin으로 등록된 서버 프로필을 선택하고 다음 순서로 �
 현재 Compose의 `enrollment` 모드에서는 기기 승인까지만 동작하고 플랫폼 로그인은 503으로 차단됩니다.
 **현재 공유 대화 읽기 / 현재 공유 대화 HTTP 폴링 / 현재 공유 대화 실시간 연결 / 대화 연결·폴링 중단**은 별도 Canonical 조회 기능이다. 읽기 전용 가상 문서에 최신 턴 상태·완전한 메시지·생략·불완전·추가 조회 상태를 표시한다. 실시간 연결은 CLI RPC 호스트의 receive-only DPoP WSS 알림 후 HTTP로 메시지를 검증하며 주기적으로 vault·포커스를 확인한다. 계정·서버 전환, 재연결 또는 중단 시 이전 본문을 비운다. 본문을 파일이나 로그에 저장하지 않는다. 읽기·폴링은 `canonicalConversation`, 실시간 연결은 `canonicalLive` capability가 있는 빌드된 CLI를 사용해야 한다.
 
-The read-only virtual document follows explicit canonical reads, HTTP polling or native WSS notifications through the CLI RPC host. Live mode requires `canonicalLive`, preserves cursors across same-session rotation and uses HTTP as the display authority. Scoped envelopes and display projections are validated; stale watch acknowledgements are stopped by their exact IDs. Actual ACTIVE server validation and migration of existing Workspace chat sends remain subsequent work.
+### 기존 채팅의 공유 대화 모드
+
+기기 및 플랫폼 세션에서 현재 공유 대화를 확인하면 Workspace 위쪽에 **공유 대화** 버튼이 나타납니다.
+이 버튼을 눌러야만 기존 입력창이 Canonical 공유 대화 모드로 바뀝니다. 이 모드에서는 CLI가 검증한
+VSCode 계정·프로필·HTTPS origin과 최신 대화 snapshot만 사용하며, 입력한 공백과 줄바꿈을 그대로
+보냅니다. 접수 응답 뒤에는 HTTP 읽기와 네이티브 실시간 구독으로 실제 대화 상태를 다시 확인합니다.
+결과가 불명확하면 입력 내용은 확장 호스트 메모리에만 남고 **같은 요청 다시 시도** 버튼이 나타납니다.
+이 버튼은 같은 중복 방지 키와 버전을 다시 사용합니다. **응답 중지**는 최신 snapshot에서 검증된 실행 중
+turn만 대상으로 합니다.
+
+공유 대화 모드에서는 첨부 파일과 로컬 도구를 사용할 수 없습니다. 현재 활성 Canonical 대화가 있어야 하며,
+이 화면에서 새 Canonical 대화를 만들거나 대화를 선택할 수는 없습니다. 쓰기에는 `canonicalTurns`, 실시간
+동기화에는 `canonicalLive`, 읽기에는 `canonicalConversation` capability가 있는 같은 CLI 프로세스가 필요합니다.
+
+The **Shared conversation** button explicitly switches the existing composer into Canonical mode after the native
+session has verified a current conversation. Sends use only the CLI-verified VSCode account, profile, exact HTTPS
+origin and authoritative snapshot, and preserve the input text byte-for-byte at the UI boundary. A receipt is followed
+by an authoritative HTTP read and native live watch. If the outcome is unknown, **Retry same request** reuses the
+host-memory request, including its idempotency key and version. **Stop response** targets only the exact running turn
+from the latest verified snapshot.
+
+Attachments and local tools are unavailable in Shared conversation mode. The mode requires an already active
+Canonical conversation and cannot create or choose one. The same CLI process must advertise `canonicalConversation`,
+`canonicalLive`, and `canonicalTurns`; there is no legacy chat fallback for Canonical writes.
+
+The read-only virtual document follows explicit canonical reads, HTTP polling or native WSS notifications through the CLI RPC host. Live mode requires `canonicalLive`, preserves cursors across same-session rotation and uses HTTP as the display authority. Scoped envelopes and display projections are validated; stale watch acknowledgements are stopped by their exact IDs.
 실제 ACTIVE 서버·전 표면 송수신 검증은 후속 작업입니다.
 
 ## 패키징

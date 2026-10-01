@@ -15,10 +15,11 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 const testLive = process.argv.includes('--live');
-const testConversation = process.argv.includes('--conversation') || testLive;
-const testTurns = process.argv.includes('--turns');
-if (testTurns && platform === 'desktop') throw new Error('Canonical turn fixture currently covers CLI and VSCode RPC, not Desktop UI.');
-const desktopElectron: string | null = platform === 'desktop' ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
+const testTurnUi = process.argv.includes('--turn-ui');
+const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi;
+const testTurns = process.argv.includes('--turns') || testTurnUi;
+if (testTurnUi && platform === 'cli') throw new Error('Turn UI verification requires --vscode or --desktop.');
+const desktopElectron: string | null = platform === 'desktop' || testTurnUi ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
 const certificates = resolve('../xgen-infra/compose/full-stack/.local-certs');
@@ -56,7 +57,9 @@ const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), r
 const messageText = `native-message-answer ${'가'.repeat(24000)}`;
 let liveSequence = 4; const liveEvent = randomUUID();
 const liveSockets = new Set<WebSocket>(); const liveAccesses = new Set<string>();
-let turnVersion = 1; let executions = 0; let turnRequests = 0;
+let turnVersion = testTurnUi ? 4 : 1; let executions = 0; let turnRequests = 0; let loseUiAck = testTurnUi;
+let uiTurn: { id: string; status: 'running' | 'cancelled'; sequence: number; input: string } | null = null;
+const uiEvents: Array<{ event_id: string; sequence: number; event_type: string; created_at: string }> = [];
 const turnBodies = new Map<string, { serialized: string; ack: { turn_id: string; status: string; accepted_sequence: number; state_version: number; replayed: boolean } }>();
 async function verifyProof(req: IncomingMessage): Promise<string> {
   assert.equal(req.headers.cookie, undefined); assert.equal(req.headers.origin, undefined);
@@ -77,6 +80,8 @@ async function verifyProof(req: IncomingMessage): Promise<string> {
   return access;
 }
 function eventPage(after: number) {
+  if (testTurnUi) return { type: 'agent_session.events', events: uiEvents.filter((e) => e.sequence > after),
+    next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: turnVersion, has_more: false };
   return { type: 'agent_session.events', events: after < liveSequence ? [{ event_id: liveEvent, sequence: 5,
     event_type: 'agent_session.turn_completed', created_at: new Date().toISOString() }] : [],
     next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: liveSequence, has_more: false };
@@ -157,19 +162,29 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
         const last = [...turnBodies.values()].at(-1)!.ack;
         if (body.turn_id !== last.turn_id) { conflict('TURN_ID_CONFLICT'); return; }
         if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
-        send(202, { turn_id: body.turn_id, state_version: turnVersion, requested: true, raw: 'private-server-secret' }); return;
+        const requestedVersion = turnVersion;
+        if (testTurnUi && uiTurn) {
+          uiTurn.status = 'cancelled'; uiTurn.sequence = ++liveSequence; turnVersion++;
+          uiEvents.push({ event_id: randomUUID(), sequence: liveSequence, event_type: 'agent_session.turn_cancelled', created_at: new Date().toISOString() });
+        }
+        send(202, { turn_id: body.turn_id, state_version: requestedVersion, requested: true, raw: 'private-server-secret' }); return;
       }
       assert.equal(body.origin_id, undefined); // A process restart must not silently change the retry hash.
       const previous = turnBodies.get(body.idempotency_key); const serialized = JSON.stringify(body);
       if (previous) {
         if (previous.serialized !== serialized) { conflict('IDEMPOTENCY_KEY_REUSED'); return; }
-        send(202, { ...previous.ack, replayed: true }); return;
+        send(202, { ...previous.ack, ...(testTurnUi ? { status: uiTurn?.status ?? 'running' } : {}), replayed: true }); return;
       }
       if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
       if (body.idempotency_key === 'unauthorized') { send(401, { raw: 'private-server-secret' }); return; }
       executions++; turnVersion++;
-      const ack = { turn_id: randomUUID(), status: 'accepted', accepted_sequence: executions, state_version: turnVersion, replayed: false };
+      const ack = { turn_id: randomUUID(), status: 'accepted', accepted_sequence: testTurnUi ? ++liveSequence : executions, state_version: turnVersion, replayed: false };
       turnBodies.set(body.idempotency_key, { serialized, ack });
+      if (testTurnUi) {
+        uiTurn = { id: ack.turn_id, status: 'running', sequence: ack.accepted_sequence, input: body.input_text };
+        uiEvents.push({ event_id: randomUUID(), sequence: liveSequence, event_type: 'agent_session.turn_accepted', created_at: new Date().toISOString() });
+        if (loseUiAck) { loseUiAck = false; req.socket.destroy(); return; }
+      }
       if (body.idempotency_key === 'lost-ack') { req.socket.destroy(); return; }
       send(202, { ...ack, raw: 'private-server-secret' }); return;
     }
@@ -178,15 +193,26 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       assert.equal(conversationRoute[1], focus.active_agent_session_id); messageAccesses.add(access);
       if (conversationRoute[2] === 'snapshot') {
         reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: 'Native shared conversation',
-          current_sequence: liveSequence, state_version: liveSequence, message_history_complete: false,
-          latest_turn: { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
+          current_sequence: liveSequence, state_version: testTurnUi ? turnVersion : liveSequence, message_history_complete: false,
+          latest_turn: uiTurn ? { id: uiTurn.id, status: uiTurn.status, accepted_sequence: turnBodies.values().next().value!.ack.accepted_sequence }
+            : { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
       }
       const query = new URLSearchParams(conversationRoute[3]); const after = Number(query.get('after_sequence'));
       if (conversationRoute[2] === 'events') {
-        assert.equal(query.get('limit'), '100'); assert.ok(after === 4 || after === 5);
+        assert.equal(query.get('limit'), '100'); assert.ok(after >= 4 && after <= liveSequence);
         reply(eventPage(after)); return;
       }
-      assert.equal(query.get('limit'), '1'); assert.ok([0, 2, 4].includes(after));
+      assert.equal(query.get('limit'), '1'); assert.ok(testTurnUi ? [0, 2, 4, 6].includes(after) : [0, 2, 4].includes(after));
+      if (testTurnUi) {
+        const messages = [
+          ...messageTurns.map((id, index) => ({ turn_id: id, sequence: index === 0 ? 2 : 4, status: 'completed', input_text: 'native-message-question',
+            output_text: messageText, content_complete: true, source: 'user' })),
+          ...(uiTurn?.status === 'cancelled' ? [{ turn_id: uiTurn.id, sequence: uiTurn.sequence, status: 'cancelled', input_text: uiTurn.input,
+            output_text: 'native-ui-answer', content_complete: true, source: 'user' }] : []),
+        ].filter((message) => message.sequence > after);
+        reply({ messages: messages.slice(0, 1), next_cursor: messages[0]?.sequence ?? after, snapshot_sequence: liveSequence,
+          state_version: turnVersion, has_more: messages.length > 1 }); return;
+      }
       const index = after === 0 ? 0 : 1;
       reply({ messages: after === 4 ? [] : [{ turn_id: messageTurns[index], sequence: index === 0 ? 2 : 4, status: 'completed',
         input_text: 'native-message-question', output_text: messageText, content_complete: true, source: 'user', raw_execution: 'private-server-secret' }],
@@ -216,7 +242,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
 });
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 server.on('upgrade', (req, socket, head) => { void (async () => {
-  assert.equal(testLive, true);
+  assert.equal(testLive || testTurnUi, true);
   assert.equal(req.url, `/api/agentflow/agent-sessions/${focus.active_agent_session_id}/events?after_seq=${liveSequence}`);
   assert.equal(req.headers['sec-websocket-protocol'], undefined); assert.equal(req.headers['sec-websocket-extensions'], undefined);
   const token = await verifyProof(req);
@@ -277,7 +303,7 @@ async function turnFixture(client?: DexRpcClient): Promise<void> {
       const value = await client.request<any>('native/submit-turn', { user_id: userId, agent_session_id: agentId,
         input_text: text, expected_state_version: version, idempotency_key: key });
       for (const secret of [...secrets, 'private-server-secret']) assert.equal(JSON.stringify(value).includes(secret), false);
-      assert.equal(exit, 0); assert.equal(value.platform_type, 'vscode'); return { result: value.mutation };
+      assert.equal(exit, 0); assert.equal(value.platform_type, platform); return { result: value.mutation };
     } catch (error) {
       assert.notEqual(exit, 0); assert.ok(error instanceof DexRpcError);
       for (const secret of [...secrets, 'private-server-secret']) assert.equal(JSON.stringify(error.data).includes(secret), false);
@@ -361,7 +387,9 @@ async function vscodeFixture() {
   const client = () => {
     const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
       ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
-        `--screenshot=${testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+        `--screenshot=${testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+      : testTurnUi ? ['-r', 'tsx/cjs', 'apps/vscode/verify/native-turn-webview.cjs', `--origin=${origin}`, `--user-id=${userId}`, `--node=${process.execPath}`,
+        '--screenshot=/tmp/cross-sync-native-turn-ui-vscode.png']
       : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
     clients.push(c); return c;
@@ -402,7 +430,7 @@ async function vscodeFixture() {
     await first.stop();
     const restored = client(); assert.equal((await session(restored, 'status')).result.state, 'active');
     await session(restored, 'refresh');
-    if (testTurns) await turnFixture(restored);
+    if (testTurns && !testTurnUi) await turnFixture(restored);
     restored.onNotification((n) => { if (n.method === 'native/focus' || n.method === 'native/conversation') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
     watching = true;
     const started = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 }); replies.push(started);
@@ -426,6 +454,14 @@ async function vscodeFixture() {
       const stoppedAt = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, stoppedAt);
       if (platform === 'desktop') assert.equal((await restored.request<any>('verify/conversation-ui')).ui, 'passed');
       console.log(`${platform}: actual TLS / >64KiB messages / sparse cursors / conversation RPC projection / cross-process rotation / unwatch PASS`);
+      if (testTurnUi) {
+        const verified = await restored.request<any>('verify/turn-ui');
+        assert.equal(verified.ui, 'passed'); assert.equal(executions, 1); assert.equal(turnRequests, 3);
+        const body = JSON.parse([...turnBodies.values()][0]!.serialized);
+        assert.equal(body.input_text, 'native-ui-question\nexact tail\n'); assert.equal(body.expected_state_version, 4);
+        assert.equal(uiTurn?.status, 'cancelled'); assert.equal(turnVersion, 6);
+        console.log(`${platform}: production composer / one dispatch / lost ack explicit same-body retry / exact verified stop / terminal HTTP recovery PASS`);
+      }
       if (testLive) {
         const live = await restored.request<any>('native/watch-live', { user_id: userId, interval_ms: 200 }); replies.push(live);
         await until((n) => n.watch_id === live.watch_id && n.update.type === 'conversation');

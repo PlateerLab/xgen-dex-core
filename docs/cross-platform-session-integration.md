@@ -593,3 +593,48 @@ native/submit-turn, native/stop-turn → 공통 native host (VSCode/Desktop 기�
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. The existing CLI chat entry now supports explicit Canonical turn submission for an existing server-issued session. Native OS-vault POST DPoP and shared submit/stop RPC validate copied inputs and bounded acknowledgements without retries, refresh or legacy fallback. Lost acknowledgements and post-dispatch cancellation expose an unknown outcome with safe explicit-retry identifiers; stop acknowledgements only confirm a request. Actual HTTPS/software-key OS-keychain CLI/VSCode fixtures verify replay, CAS and loss recovery. Integration-branch enrollment-mode Compose verifies rejection and recovery. ACTIVE Gateway success, session creation and UI/Mobile chat migration remain gates. SDK/runtime stay as unreleased Workflow overlays and PR90 stays Draft.
+
+## VSCode·Desktop Canonical 턴 입력 UI (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-turn-ui`, 기준 통합 SHA `dcdac7b86267ea410f6104f450f53287fa1a2912`, 하위 [PR147](https://github.com/PlateerLab/xgen-dex-core/pull/147) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+VSCode 현재 공유 대화 읽기 → Workspace '공유 대화' → 기존 입력창
+Desktop 설정 → 기기·세션 → 공유 대화 읽기 → 턴 입력창
+  → 검증된 native scope + server-issued snapshot ID/version
+  → 공통 AgentTurnComposer → native submit/stop RPC → OS vault + POST DPoP
+  → 접수 ACK → authoritative HTTP 읽기 → 기존 구독 재개
+  → 응답 유실: unknown → 동일 본문·원래 version/key로 사용자 재확인
+  → stop requested ACK → 최신 snapshot의 실제 terminal 상태 확인
+```
+
+### 구현과 경계
+
+- UI 공통 상태 모델은 한 번에 하나의 쓰기만 허용하며 원래 입력·scope·버전·중복 방지 키를 메모리에 보존한다. 표시 상태에는 입력·키 소재·토큰을 넣지 않는다. 결과가 불명확하면 새 요청을 막고 명시적 재시도만 허용한다. 일시적 연결 실패·구독 중단·동일 범위 재조회는 원래 요청을 유지한다. 실제 계정/프로필/대화 변경과 disposal은 이전 요청 및 늦은 ACK를 폐기한다.
+- submit/stop 결과는 정확한 native envelope와 기존 bounded ACK parser로 검증한다. stop ACK는 중단 요청 접수이며 AI 완료/실제 취소로 표시하지 않는다. 최신 authoritative snapshot의 terminal 또는 엄격히 더 최신인 다른 턴이 이전 접수 상태를 해제한다. 같은 버전의 다른 턴·역행 버전은 새 송신을 허용하지 않는다.
+- VSCode는 CLI native controller가 읽은 대화에 명시적 공유 모드로 진입한다. 레거시 로그인/Agent 선택과 별개로 진입할 수 있으며 원래 textarea의 공백·줄바꿈을 그대로 전송한다. 대화가 없거나 재연결 중이면 Canonical 본문에 레거시 기록을 섞지 않는다. 계정/대화 변경 시 draft를 비우고 새 대화 버튼은 현재 구현이 새 Canonical 대화를 만들지 못함을 안내한다.
+- Desktop은 기존 기기·세션 설정의 공유 대화 영역에 입력/재확인/최신 턴 중단을 연결했다. 계정·origin·플랫폼은 main이 지정하며 sender/frame 검증과 시스템 CA를 유지한다. IPC 오류는 closed outcome/status/allowlisted conflict만 추가로 노출한다. 진행 중 작업 취소는 unknown으로 남겨 늦은 성공 ACK가 새 화면을 덮지 않게 한다.
+- 두 UI는 UTF-8 최대262144바이트, 첨부/로컬 도구 없음, 입력 로컬 영속 저장 없음의 공통 계약을 따른다. 쓰기 후 자동 처리는 읽기·구독 복구이며 새 쓰기/새 키 발급 재전송을 하지 않는다. 기존 server-issued 활성 대화가 필요하다. Desktop Workspace 주 채팅 이행, 새 세션 생성/선택, Mobile 송신과 실제 ACTIVE 서버의 표면 간 실행 성공은 남아 있다.
+
+### 검증과 실행 환경
+
+- 제품 코드 SHA `f36fdda315c17ad7cb6d11b511a0b6f99518f53a`. 공통 composer focused 테스트14/14, protocol242/242, engine201 pass/2 OS 조건 skip, CLI161/161, VSCode38/38, Desktop541/541을 통과했다. workspace/별도 Desktop 타입 검사·빌드, 계약 검사, opt-in harness strict 타입 검사도 통과했다.
+- `scripts/cli-platform-session-fixture.mts --vscode --turn-ui` 및 `--desktop --turn-ui`: 실제 TLS/P-256 POST DPoP, 별도 CLI/OS keychain 또는 Electron main/preload/IPC, 제품 UI 입력을 사용한다. 이중 클릭 한 번 실행, 접수 후 ACK 유실, 구독 중단/재조회 후 원래 body/key/version 명시적 재확인, 정확한 최신 턴 중단, terminal HTTP 복구와 입력 원문/끝 개행 보존을 검증한다. Desktop은 실제 제품 component이고 VSCode는 제품 provider/controller/webview를 Electron의 최소 VSCode API 어댑터로 띄운다. **설치된 VSCode extension host 검증이나 실제 ACTIVE Gateway 성공 검증은 아니다.**
+- `scripts/native-platform-session-compose.mts --cli --vscode --desktop --native-turns`: 실제 Gateway enrollment 모드에서 일회용 계정·신뢰 기기 승인·login503/login_pending, 세 플랫폼의 submit 및 native stop 차단, Canonical session 미생성·journal 유지·명시적 복구, DB/OS keychain 정리를 검증했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env`의 서비스별 통합 브랜치 override와 clean source/container HEAD/ref·실제 `/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX는 하위 브랜치 제품 코드를 빌드했다.
+- Workflow overlay SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` / runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` marker와 실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 확인했다. 패키지 배포와 환경변수 추가·변경·삭제는 없다.
+- 증거: `/tmp/cross-sync-native-turn-ui-{tests,composer-tests,desktop-tests,check,desktop-check,build,desktop-build,contracts,harness-check,vscode,desktop,compose,environment,overlay}.log`, `/tmp/cross-sync-native-turn-ui-{vscode,desktop}.png`. CI는 최종 Head에서 확인한 뒤 하위 PR만 통합한다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 13% | session 생성/선택·Desktop 주 채팅/Mobile 송신·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. VSCode has explicit Shared conversation mode in its existing chat composer; Desktop has a composer in native session settings. Both use verified server snapshots and a shared scoped state machine, preserve uncertain requests through same-scope reconnection, and retry only the original body/key/version on explicit user action. Submit and stop receipts are separate from authoritative completion. Real HTTPS/software-key OS-keychain and product Electron component fixtures verify loss recovery and exact stop binding; VSCode uses a minimal Electron shell adapter, not an installed extension host. Enrollment-mode integration-branch Compose verifies rejection and recovery. ACTIVE Gateway success, new session creation/selection, Desktop primary chat migration and Mobile sends remain gates. SDK/runtime remain unreleased Workflow overlays and PR90 stays Draft.

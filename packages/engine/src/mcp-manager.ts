@@ -52,6 +52,8 @@ export interface AdvertisedTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** 서버가 광고한 MCP 도구 주석(readOnlyHint 등) - 사용자 MCP 서버의 것도 그대로 싣는다. */
+  annotations?: McpToolAnnotations;
 }
 
 /** MCP SDK의 Streamable HTTP 전송에 주입하는 fetch 형태. */
@@ -388,6 +390,7 @@ export class MCPManager {
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
+        annotations: t.annotations,
       }));
       st.error = undefined;
 
@@ -406,6 +409,7 @@ export class MCPManager {
                   name: t.name,
                   description: t.description,
                   inputSchema: t.inputSchema,
+                  annotations: t.annotations,
                 }));
                 this.onCatalogChange?.();
               } catch {
@@ -479,7 +483,7 @@ export class MCPManager {
     for (const a of adverts) {
       if (!a.connected) continue;
       for (const t of a.tools) {
-        flat.push({ server: a.name, name: t.name, description: t.description, inputSchema: t.inputSchema });
+        flat.push({ server: a.name, name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations });
       }
     }
     return flat;

@@ -408,7 +408,7 @@ These percentages estimate remaining work, not coverage or delivery dates. Mobil
 
 ## Mobile 인증 WebSocket 수신 및 HTTP 재조회 (2026-10-01)
 
-작업 브랜치 `feat/cross-platform-mobile-ws`, 기준 통합 SHA `37e25740b47ad6de5ed8981a925351a5b4b26b`, 하위 [PR143](https://github.com/PlateerLab/xgen-dex-core/pull/143) → `feat/cross-platform-session`. 상위 PR90은 Draft 유지.
+작업 브랜치 `feat/cross-platform-mobile-ws`, 기준 통합 SHA `37e25740b47ad6debe5ed8981a925351a5b4b26b`, 하위 [PR143](https://github.com/PlateerLab/xgen-dex-core/pull/143) → `feat/cross-platform-session`. 상위 PR90은 Draft 유지.
 
 ```text
 Mobile Settings 대화 변경 구독 시작

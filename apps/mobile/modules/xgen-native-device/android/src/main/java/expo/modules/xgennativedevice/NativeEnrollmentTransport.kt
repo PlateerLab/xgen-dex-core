@@ -34,6 +34,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
   companion object {
     private const val MAX_REQUEST_BODY_BYTES = 32_768
     private const val MAX_RESPONSE_BODY_BYTES = 65_536
+    private const val MAX_MESSAGES_RESPONSE_BODY_BYTES = 1_048_576
     private const val MAX_TRACKED_REQUESTS = 1_024
     private const val RESERVATION_TTL_MILLIS = 60_000L
     private val JSON = "application/json".toMediaType()
@@ -49,6 +50,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     private val agentSessionsPath = Regex("/api/agentflow/me/agent-sessions\\?limit=([1-9][0-9]*)(?:&before_id=($CANONICAL_UUID))?")
     private val sessionSnapshotPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/snapshot")
     private val sessionEventsPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)")
+    private val sessionMessagesPath = Regex("/api/agentflow/agent-sessions/$CANONICAL_UUID/messages\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)")
 
     fun production(): NativeEnrollmentTransport = NativeEnrollmentTransport(
       OkHttpClient.Builder()
@@ -197,6 +199,9 @@ internal class NativeEnrollmentTransport internal constructor(private val client
       sessionEventsPath.matchEntire(pathWithQuery)?.let {
         return decimalAtMost(it.groupValues[1], MAX_SAFE_SEQUENCE) && it.groupValues[2].toIntOrNull()?.let { limit -> limit in 1..200 } == true
       }
+      sessionMessagesPath.matchEntire(pathWithQuery)?.let {
+        return decimalAtMost(it.groupValues[1], MAX_SAFE_SEQUENCE) && it.groupValues[2].toIntOrNull()?.let { limit -> limit in 1..20 } == true
+      }
       return false
     }
 
@@ -217,20 +222,20 @@ internal class NativeEnrollmentTransport internal constructor(private val client
         .build()
     }
 
-    private fun readResponse(response: Response): MobileTransportResponse {
+    private fun readResponse(response: Response, maximumBodyBytes: Int, invalidResponseCode: String): MobileTransportResponse {
       val status = response.code
-      if (status !in 200..599 || status in 300..399) throw MobileTransportFailure("mobile_transport_unavailable")
+      if (status !in 200..599 || status in 300..399) throw MobileTransportFailure(invalidResponseCode)
       val responseBody = response.body
       if (responseBody == null) return MobileTransportResponse(status, "")
-      if (responseBody.contentLength() > MAX_RESPONSE_BODY_BYTES) throw MobileTransportFailure("mobile_transport_unavailable")
+      if (responseBody.contentLength() > maximumBodyBytes) throw MobileTransportFailure(invalidResponseCode)
       val input = responseBody.byteStream()
-      val output = ByteArray(MAX_RESPONSE_BODY_BYTES + 1)
+      val output = ByteArray(maximumBodyBytes + 1)
       var total = 0
       while (true) {
         val count = input.read(output, total, output.size - total)
         if (count < 0) break
         total += count
-        if (total > MAX_RESPONSE_BODY_BYTES) throw MobileTransportFailure("mobile_transport_unavailable")
+        if (total > maximumBodyBytes) throw MobileTransportFailure(invalidResponseCode)
       }
       return try {
         val decoder = StandardCharsets.UTF_8.newDecoder()
@@ -238,7 +243,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
           .onUnmappableCharacter(CodingErrorAction.REPORT)
         MobileTransportResponse(status, decoder.decode(ByteBuffer.wrap(output, 0, total)).toString())
       } catch (_: Exception) {
-        throw MobileTransportFailure("mobile_transport_unavailable")
+        throw MobileTransportFailure(invalidResponseCode)
       }
     }
   }
@@ -280,7 +285,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
   ) {
     if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
     // All validation and request construction happens before a Call is registered or enqueued.
-    execute(requestId, client.newCall(buildRequest(origin, path, method, accessToken, body)), completion)
+    execute(requestId, client.newCall(buildRequest(origin, path, method, accessToken, body)), MAX_RESPONSE_BODY_BYTES, "mobile_transport_unavailable", completion)
   }
 
   fun sessionRequest(
@@ -294,7 +299,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     completion: (Result<MobileTransportResponse>) -> Unit
   ) {
     if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
-    execute(requestId, client.newCall(buildSessionRequest(origin, path, method, authorization, dpop, body)), completion)
+    execute(requestId, client.newCall(buildSessionRequest(origin, path, method, authorization, dpop, body)), MAX_RESPONSE_BODY_BYTES, "mobile_transport_unavailable", completion)
   }
 
   fun readRequest(
@@ -306,10 +311,17 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     completion: (Result<MobileTransportResponse>) -> Unit
   ) {
     if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
-    execute(requestId, client.newCall(buildReadRequest(origin, pathWithQuery, accessToken, dpop)), completion)
+    val maximumBodyBytes = if (sessionMessagesPath.matches(pathWithQuery)) MAX_MESSAGES_RESPONSE_BODY_BYTES else MAX_RESPONSE_BODY_BYTES
+    execute(requestId, client.newCall(buildReadRequest(origin, pathWithQuery, accessToken, dpop)), maximumBodyBytes, "mobile_transport_response_invalid", completion)
   }
 
-  private fun execute(requestId: String, call: Call, completion: (Result<MobileTransportResponse>) -> Unit) {
+  private fun execute(
+    requestId: String,
+    call: Call,
+    maximumResponseBodyBytes: Int,
+    invalidResponseCode: String,
+    completion: (Result<MobileTransportResponse>) -> Unit
+  ) {
     synchronized(trackingLock) {
       val now = System.currentTimeMillis()
       pruneLocked(now)
@@ -331,7 +343,7 @@ internal class NativeEnrollmentTransport internal constructor(private val client
 
         override fun onResponse(call: Call, response: Response) {
           val result = try {
-            response.use { Result.success(readResponse(it)) }
+            response.use { Result.success(readResponse(it, maximumResponseBodyBytes, invalidResponseCode)) }
           } catch (error: MobileTransportFailure) {
             Result.failure(error)
           } catch (_: Exception) {

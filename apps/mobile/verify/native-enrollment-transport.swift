@@ -98,14 +98,29 @@ struct NativeEnrollmentTransportVerification {
       "/api/agentflow/me/agent-sessions?limit=20&before_id=\(canonicalSession)",
       "/api/agentflow/agent-sessions/\(canonicalSession)/snapshot",
       "/api/agentflow/agent-sessions/\(canonicalSession)/events?after_sequence=0&limit=1",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence=9007199254740991&limit=20",
     ]
     for path in canonicalReads {
       let read = try performRead(path).get()
       guard read.status == 200, read.body == "{\"read\":true}" else { throw VerificationFailure.failed("canonical read policy") }
     }
+    let messagesBase = "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence="
     let readCancelStarted = Date()
-    guard case .failure = try performRead("/api/agentflow/me/agent-events?after_sequence=7&limit=1", cancelAfter: 0.1),
+    guard case .failure(.unavailable) = try performRead(messagesBase + "6&limit=1", cancelAfter: 0.1),
       Date().timeIntervalSince(readCancelStarted) < 2 else { throw VerificationFailure.failed("read cancel did not interrupt") }
+
+    let largeMessages = try performRead(messagesBase + "1&limit=20").get()
+    guard largeMessages.body.utf8.count == 70_000 else { throw VerificationFailure.failed("messages response cap") }
+    func expectInvalidResponse(_ path: String) throws {
+      guard case .failure(.responseInvalid) = try performRead(path) else {
+        throw VerificationFailure.failed("malformed canonical response was retryable")
+      }
+    }
+    try expectInvalidResponse("/api/agentflow/me/agent-events?after_sequence=8&limit=1")
+    try expectInvalidResponse(messagesBase + "2&limit=20")
+    try expectInvalidResponse(messagesBase + "3&limit=20")
+    try expectInvalidResponse(messagesBase + "4&limit=20")
+    try expectInvalidResponse(messagesBase + "5&limit=20")
 
     func expectInvalidRead(_ path: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature") throws {
       do {
@@ -127,6 +142,12 @@ struct NativeEnrollmentTransportVerification {
       "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-0000-0000-000000000001",
       "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-4000-8000-00000000000A",
       "/api/agentflow/agent-sessions/\(canonicalSession)/events?after_sequence=0&limit=01",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages?limit=1&after_sequence=0",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence=0&limit=1&limit=1",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence=01&limit=1",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence=9007199254740992&limit=1",
+      "/api/agentflow/agent-sessions/\(canonicalSession)/messages?after_sequence=0&limit=21",
       "/api/agentflow/agent-sessions/\(canonicalSession)/snapshot?x=1",
       "/api/agentflow/me/agent-events?after_sequence=0%26limit=1&limit=1",
       "/api/agentflow/me/agent-state#fragment",
@@ -212,6 +233,20 @@ struct NativeEnrollmentTransportVerification {
     }
     let expectedAth = DeviceProof.encode(Data(SHA256.hash(data: Data("access.safe.jwt".utf8))))
     guard claims["ath"] as? String == expectedAth else { throw VerificationFailure.failed("DPoP ath") }
+    let messagesHtu = dpopOrigin + "/api/agentflow/agent-sessions/\(canonicalSession)/messages"
+    let messagesInput = try DpopProof.signingInput(origin: dpopOrigin, method: "GET", htu: messagesHtu,
+      accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
+    guard let messagesClaimsData = decode(String(messagesInput.split(separator: ".")[1])),
+      let messagesClaims = try JSONSerialization.jsonObject(with: messagesClaimsData) as? [String: Any],
+      messagesClaims["htu"] as? String == messagesHtu, messagesClaims["htm"] as? String == "GET" else {
+      throw VerificationFailure.failed("messages DPoP claims")
+    }
+    do {
+      _ = try DpopProof.signingInput(origin: dpopOrigin, method: "GET",
+        htu: messagesHtu + "?after_sequence=0&limit=20", accessToken: "access.safe.jwt", x: x, y: y,
+        nowSeconds: 1, jti: dpopJti)
+      throw VerificationFailure.failed("messages DPoP query accepted")
+    } catch DeviceKeyFailure.invalid {}
     do {
       _ = try DpopProof.signingInput(origin: dpopOrigin, method: "GET", htu: dpopHtu + "?x=1", accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
       throw VerificationFailure.failed("unsafe DPoP htu accepted")

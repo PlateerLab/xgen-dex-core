@@ -286,7 +286,8 @@ class NativeEnrollmentTransportTest {
       "/api/agentflow/me/agent-sessions?limit=100",
       "/api/agentflow/me/agent-sessions?limit=20&before_id=$session",
       "/api/agentflow/agent-sessions/$session/snapshot",
-      "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=1"
+      "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=9007199254740991&limit=20"
     )
     routes.forEach { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
     routes.forEach { assertTrue(executeRead(it).isSuccess) }
@@ -325,6 +326,12 @@ class NativeEnrollmentTransportTest {
       "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-0000-0000-000000000001",
       "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-4000-8000-00000000000A",
       "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=01",
+      "/api/agentflow/agent-sessions/$session/messages",
+      "/api/agentflow/agent-sessions/$session/messages?limit=1&after_sequence=0",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=0&limit=1&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=01&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=9007199254740992&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=0&limit=21",
       "/api/agentflow/agent-sessions/$session/snapshot?x=1",
       "/api/agentflow/me/agent-events?after_sequence=0%26limit=1&limit=1",
       "/api/agentflow/me/agent-state#fragment",
@@ -340,13 +347,36 @@ class NativeEnrollmentTransportTest {
     assertEquals(0, server.requestCount)
   }
 
+  @Test fun canonicalReadUsesRouteSpecificCapsAndPermanentMalformedResponseCode() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val messages = "/api/agentflow/agent-sessions/$session/messages?after_sequence=0&limit=20"
+    server.enqueue(MockResponse().setBody("x".repeat(70_000)))
+    assertEquals(70_000, executeRead(messages).getOrThrow().body.length)
+
+    fun assertResponseInvalid(result: Result<MobileTransportResponse>) {
+      assertEquals("mobile_transport_response_invalid", (result.exceptionOrNull() as MobileTransportFailure).code)
+    }
+    server.enqueue(MockResponse().setBody("x".repeat(65_537)))
+    assertResponseInvalid(executeRead("/api/agentflow/me/agent-state"))
+    server.enqueue(MockResponse().setBody("x".repeat(1_048_577)))
+    assertResponseInvalid(executeRead(messages))
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(1_048_577), 16_384))
+    assertResponseInvalid(executeRead(messages))
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertResponseInvalid(executeRead(messages))
+    server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/escaped"))
+    assertResponseInvalid(executeRead(messages))
+  }
+
   @Test fun canonicalReadSharesReservationAndCancellationWithMutationTransports() {
     server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
     val transport = NativeEnrollmentTransport(client)
     val id = transport.newRequestId()
     val result = AtomicReference<Result<MobileTransportResponse>>()
     val latch = CountDownLatch(1)
-    transport.readRequest(id, origin, "/api/agentflow/me/agent-state", "access.safe.jwt", "proof.safe.jwt") {
+    transport.readRequest(id, origin,
+      "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/messages?after_sequence=0&limit=1",
+      "access.safe.jwt", "proof.safe.jwt") {
       result.set(it); latch.countDown()
     }
     assertEquals("mobile_transport_busy", assertThrows(MobileTransportFailure::class.java) {

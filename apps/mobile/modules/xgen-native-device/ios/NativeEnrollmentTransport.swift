@@ -7,12 +7,14 @@ enum MobileTransportFailure: Error {
   case invalid
   case unavailable
   case busy
+  case responseInvalid
 
   var code: String {
     switch self {
     case .invalid: return "mobile_transport_invalid"
     case .unavailable: return "mobile_transport_unavailable"
     case .busy: return "mobile_transport_busy"
+    case .responseInvalid: return "mobile_transport_response_invalid"
     }
   }
 }
@@ -25,6 +27,7 @@ struct MobileTransportResponse {
 final class NativeEnrollmentTransport {
   private static let maximumRequestBodyBytes = 32_768
   private static let maximumResponseBodyBytes = 65_536
+  private static let maximumMessagesResponseBodyBytes = 1_048_576
   private static let maximumTrackedRequests = 1_024
   private static let reservationTTL: TimeInterval = 60
   private static let accessTokenPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9._~-]{1,8192}$")
@@ -39,6 +42,7 @@ final class NativeEnrollmentTransport {
   private static let agentSessionsPath = try! NSRegularExpression(pattern: "^/api/agentflow/me/agent-sessions\\?limit=([1-9][0-9]*)(?:&before_id=(\(canonicalUUID)))?$")
   private static let sessionSnapshotPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/snapshot$")
   private static let sessionEventsPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/events\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$")
+  private static let sessionMessagesPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/messages\\?after_sequence=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$")
 
   private let lock = NSLock()
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
@@ -196,6 +200,10 @@ final class NativeEnrollmentTransport {
       let limitText = capture(match, 2, in: pathWithQuery), let limit = Int(limitText) {
       return decimalAtMost(sequence, maximumSafeSequence) && (1...200).contains(limit)
     }
+    if let match = fullMatch(sessionMessagesPath, pathWithQuery), let sequence = capture(match, 1, in: pathWithQuery),
+      let limitText = capture(match, 2, in: pathWithQuery), let limit = Int(limitText) {
+      return decimalAtMost(sequence, maximumSafeSequence) && (1...20).contains(limit)
+    }
     return false
   }
 
@@ -220,22 +228,29 @@ final class NativeEnrollmentTransport {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     // Validate the complete request before a URLSession or URLSessionTask is created.
     let request = try Self.buildRequest(origin: origin, path: path, method: method, accessToken: accessToken, body: body)
-    try execute(requestId: requestId, request: request, completion: completion)
+    try execute(requestId: requestId, request: request, maximumResponseBodyBytes: Self.maximumResponseBodyBytes,
+      invalidResponseFailure: .unavailable, completion: completion)
   }
 
   func sessionRequest(requestId: String, origin: String, path: String, method: String, authorization: String?, dpop: String?, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     let request = try Self.buildSessionRequest(origin: origin, path: path, method: method, authorization: authorization, dpop: dpop, body: body)
-    try execute(requestId: requestId, request: request, completion: completion)
+    try execute(requestId: requestId, request: request, maximumResponseBodyBytes: Self.maximumResponseBodyBytes,
+      invalidResponseFailure: .unavailable, completion: completion)
   }
 
   func readRequest(requestId: String, origin: String, pathWithQuery: String, accessToken: String, dpop: String, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     let request = try Self.buildReadRequest(origin: origin, pathWithQuery: pathWithQuery, accessToken: accessToken, dpop: dpop)
-    try execute(requestId: requestId, request: request, completion: completion)
+    let maximumResponseBodyBytes = Self.matches(Self.sessionMessagesPath, pathWithQuery)
+      ? Self.maximumMessagesResponseBodyBytes : Self.maximumResponseBodyBytes
+    try execute(requestId: requestId, request: request, maximumResponseBodyBytes: maximumResponseBodyBytes,
+      invalidResponseFailure: .responseInvalid, completion: completion)
   }
 
-  private func execute(requestId: String, request: URLRequest, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
+  private func execute(requestId: String, request: URLRequest, maximumResponseBodyBytes: Int,
+    invalidResponseFailure: MobileTransportFailure,
+    completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     let handler: (Result<MobileTransportResponse, MobileTransportFailure>) -> Void = { [weak self] result in
       if let self {
         self.lock.lock()
@@ -245,9 +260,11 @@ final class NativeEnrollmentTransport {
       completion(result)
     }
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
-    let operation = NativeEnrollmentRequest(request: request, fixtureCertificate: fixtureCertificate, completion: handler)
+    let operation = NativeEnrollmentRequest(request: request, maximumResponseBodyBytes: maximumResponseBodyBytes,
+      invalidResponseFailure: invalidResponseFailure, fixtureCertificate: fixtureCertificate, completion: handler)
 #else
-    let operation = NativeEnrollmentRequest(request: request, completion: handler)
+    let operation = NativeEnrollmentRequest(request: request, maximumResponseBodyBytes: maximumResponseBodyBytes,
+      invalidResponseFailure: invalidResponseFailure, completion: handler)
 #endif
     lock.lock()
     let now = Date()
@@ -300,6 +317,8 @@ final class NativeEnrollmentTransport {
   private final class NativeEnrollmentRequest: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate {
     private let request: URLRequest
     private let completion: (Result<MobileTransportResponse, MobileTransportFailure>) -> Void
+    private let maximumResponseBodyBytes: Int
+    private let invalidResponseFailure: MobileTransportFailure
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var status: Int?
@@ -312,14 +331,20 @@ final class NativeEnrollmentTransport {
 #endif
 
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
-    init(request: URLRequest, fixtureCertificate: Data?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) {
+    init(request: URLRequest, maximumResponseBodyBytes: Int, invalidResponseFailure: MobileTransportFailure,
+      fixtureCertificate: Data?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) {
       self.request = request
+      self.maximumResponseBodyBytes = maximumResponseBodyBytes
+      self.invalidResponseFailure = invalidResponseFailure
       self.fixtureCertificate = fixtureCertificate
       self.completion = completion
     }
 #else
-    init(request: URLRequest, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) {
+    init(request: URLRequest, maximumResponseBodyBytes: Int, invalidResponseFailure: MobileTransportFailure,
+      completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) {
       self.request = request
+      self.maximumResponseBodyBytes = maximumResponseBodyBytes
+      self.invalidResponseFailure = invalidResponseFailure
       self.completion = completion
     }
 #endif
@@ -372,9 +397,10 @@ final class NativeEnrollmentTransport {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
       guard let http = response as? HTTPURLResponse, (200...599).contains(http.statusCode), !(300...399).contains(http.statusCode),
-        response.expectedContentLength <= NativeEnrollmentTransport.maximumResponseBodyBytes || response.expectedContentLength == NSURLSessionTransferSizeUnknown else {
+        (response.expectedContentLength >= 0 && response.expectedContentLength <= Int64(maximumResponseBodyBytes)) ||
+          response.expectedContentLength == NSURLSessionTransferSizeUnknown else {
         completionHandler(.cancel)
-        finish(.failure(.unavailable))
+        finish(.failure(invalidResponseFailure))
         return
       }
       status = http.statusCode
@@ -382,18 +408,22 @@ final class NativeEnrollmentTransport {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive incoming: Data) {
-      guard incoming.count <= NativeEnrollmentTransport.maximumResponseBodyBytes,
-        data.count <= NativeEnrollmentTransport.maximumResponseBodyBytes - incoming.count else {
+      guard incoming.count <= maximumResponseBodyBytes,
+        data.count <= maximumResponseBodyBytes - incoming.count else {
         dataTask.cancel()
-        finish(.failure(.unavailable))
+        finish(.failure(invalidResponseFailure))
         return
       }
       data.append(incoming)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-      guard error == nil, let status, let body = String(data: data, encoding: .utf8) else {
+      guard error == nil else {
         finish(.failure(.unavailable))
+        return
+      }
+      guard let status, let body = String(data: data, encoding: .utf8) else {
+        finish(.failure(invalidResponseFailure))
         return
       }
       finish(.success(MobileTransportResponse(status: status, body: body)))

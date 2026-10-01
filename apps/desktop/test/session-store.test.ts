@@ -3,11 +3,13 @@ import assert from 'assert'
 import { test } from 'node:test'
 import {
   SessionStore,
+  mergeMissedTurns,
   isKeepable,
   openSessions,
   agentSessions,
   sessionDotState,
   CONNECTOR_SESSION_IDLE_MS,
+  type ChatMsg,
   type SessionState,
   type SessionTransport,
 } from '../src/renderer/src/session-store'
@@ -1166,4 +1168,154 @@ test('stop ignores late callbacks from the previous stream after continuing', as
   streams[0].onEvent({ kind: 'end' })
   assert.equal(store.get(key)!.messages.at(-1)!.text, 'new answer')
   assert.equal(store.get(key)!.streaming, true)
+})
+
+// ── 다른 기기의 도구 턴이 결과만 남던 문제 (2026-10-01 사용자 보고) ──────────────
+//
+// 모바일에서 도구를 쓰는 질문을 보내면 이 창에는 답 글만 남았다. 진행 프레임(도구)을 못 받은 창 — 진행 중에
+// 소켓이 끊겼다 붙었거나, 진행 프레임을 버리던 옛 판 — 에는 완결 행의 글뿐이었다. 이제 서버가 완결 행에
+// 그 턴의 작업 과정(process)을 싣고, 소켓이 다시 붙으면 끊긴 사이의 턴을 이력으로 메운다.
+
+const SERVER_PROCESS: HistoryFlowItem[] = [
+  { kind: 'tool', at: 10, event: { eventType: 'tool_call', toolName: 'AppList', toolUseId: 'a1' } },
+  { kind: 'tool', at: 20, event: { eventType: 'tool_result', toolName: 'AppList', toolUseId: 'a1', result: '- app' } },
+  { kind: 'text', at: 30, text: '두 앱 모두 정상입니다.' },
+]
+
+test('진행 프레임의 도구를 못 받았으면 완결 행이 실어 온 과정으로 채운다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '내 앱 괜찮아?' })
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'message', data: { type: 'data', content: '두 앱' } })
+  store.applyExternalTurn({
+    interactionId: key, ioId: 9, input: '내 앱 괜찮아?', output: '두 앱 모두 정상입니다.', source: 'user', process: SERVER_PROCESS,
+  })
+  const answer = store.get(key)!.messages[1]
+  assert.equal(answer.executionIoId, 9)
+  assert.deepEqual(answer.flow?.map((f) => (f.kind === 'text' ? f.text : f.event.eventType)), ['tool_call', 'tool_result', '두 앱 모두 정상입니다.'])
+  assert.equal(answer.tools?.length, 2, '전체 로그의 원천도 채운다')
+  // 그 뒤 종료 프레임(과정 없음)이 와도 지우지 않는다
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, ioId: 9, input: '내 앱 괜찮아?', output: '두 앱 모두 정상입니다.' })
+  assert.equal(store.get(key)!.messages[1].flow?.length, 3)
+})
+
+test('진행 프레임으로 도구를 받았으면 그것이 이긴다 — 보던 그대로', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: 'q' })
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'tool', data: { event_type: 'tool_call', tool_name: 'Bash', tool_use_id: 'b' } })
+  store.applyExternalTurn({ interactionId: key, ioId: 2, input: 'q', output: '답', source: 'user', process: SERVER_PROCESS })
+  const answer = store.get(key)!.messages[1]
+  assert.equal(answer.flow?.[0]?.kind === 'tool' && answer.flow[0].event.toolName, 'Bash')
+})
+
+test('종료가 먼저 그린 답에 나중에 온 행의 과정을 붙인다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: 'q' })
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, ioId: 5, input: 'q', output: '답' })
+  assert.equal(store.get(key)!.messages[1].flow, undefined)
+  store.setRemoteRunning(key, false)
+  store.applyExternalTurn({ interactionId: key, ioId: 5, input: 'q', output: '답', source: 'user', process: SERVER_PROCESS })
+  const s = store.get(key)!
+  assert.equal(s.messages.length, 2, '두 번 그리지 않는다')
+  assert.equal(s.messages[1].flow?.length, 3)
+})
+
+test('다시 붙으면(구멍) 끊긴 사이에 시작해 끝난 턴을 이력으로 메운다 — 도구 과정까지', async () => {
+  const history: Record<string, Array<{ input: string; output: string; ioId?: number; process?: HistoryFlowItem[] }>> = {
+    R: [{ input: '첫 질문', output: '첫 답', ioId: 1 }],
+  }
+  const { store } = makeStore(history)
+  store.openResume(agent('A'), 'R', 'A')
+  await flush()
+  assert.deepEqual(store.get('R')!.messages.map((m) => m.text), ['첫 질문', '첫 답'])
+  // 끊긴 사이에 휴대폰에서 도구를 쓴 턴이 시작해 끝났다
+  history.R = [...history.R, { input: '앱 상태?', output: '두 앱 모두 정상입니다.', ioId: 2, process: SERVER_PROCESS }]
+  store.applyPeerEvent({ kind: 'gap', interactionId: 'R' })
+  await flush()
+  await flush()
+  const s = store.get('R')!
+  assert.deepEqual(s.messages.map((m) => m.text), ['첫 질문', '첫 답', '앱 상태?', '두 앱 모두 정상입니다.'])
+  assert.equal(s.messages[3].executionIoId, 2)
+  assert.equal(s.messages[3].flow?.length, 3)
+  // 같은 구멍이 또 와도 두 번 넣지 않는다
+  store.applyPeerEvent({ kind: 'gap', interactionId: 'R' })
+  await flush()
+  await flush()
+  assert.equal(store.get('R')!.messages.length, 4)
+})
+
+test('끊긴 사이에 끝난 턴의 멈춘 진행분은 완결 턴으로 바뀐다', async () => {
+  const history: Record<string, Array<{ input: string; output: string; ioId?: number; process?: HistoryFlowItem[] }>> = { R: [] }
+  const { store } = makeStore(history)
+  store.openResume(agent('A'), 'R', 'A')
+  await flush()
+  store.applyPeerEvent({ kind: 'started', interactionId: 'R', input: '앱 상태?' })
+  store.applyPeerEvent({ kind: 'exec', interactionId: 'R', event: 'message', data: { type: 'data', content: '두 앱' } })
+  // 소켓이 끊긴 사이에 턴이 끝났다 — 다시 붙은 구독은 "도는 턴 없음" 을 말한다
+  store.setRemoteRunning('R', false)
+  history.R = [{ input: '앱 상태?', output: '두 앱 모두 정상입니다.', ioId: 7, process: SERVER_PROCESS }]
+  store.applyPeerEvent({ kind: 'gap', interactionId: 'R' })
+  await flush()
+  await flush()
+  const s = store.get('R')!
+  assert.deepEqual(s.messages.map((m) => m.text), ['앱 상태?', '두 앱 모두 정상입니다.'])
+  assert.ok(!s.messages.some((m) => m.remotePartial || m.remoteQuestion), '임시 말풍선이 남지 않는다')
+  assert.equal(s.messages[1].flow?.length, 3)
+})
+
+test('구멍을 메울 때 지금 도는 다른 턴의 진행분은 건드리지 않는다', () => {
+  const merged = mergeMissedTurns(
+    [
+      { role: 'user', text: 'a' },
+      { role: 'assistant', text: 'A', executionIoId: 1 },
+      { role: 'assistant', text: '도는 중', streaming: true, remotePartial: true },
+    ],
+    [
+      { input: 'a', output: 'A', ioId: 1 },
+      { input: 'b', output: 'B', ioId: 2, process: SERVER_PROCESS },
+      { input: 'c', output: '', ioId: 3 },
+    ],
+    true,
+  )!
+  assert.deepEqual(merged.map((m) => m.text), ['a', 'A', 'b', 'B', '도는 중'])
+  assert.equal(merged[4].remotePartial, true)
+})
+
+test('마지막 답에 실행 id 가 없으면 어느 행이 그것인지 모르므로 덧붙이지 않는다', () => {
+  const messages: ChatMsg[] = [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'A(내 스트림)' }]
+  assert.equal(mergeMissedTurns(messages, [{ input: 'a', output: 'A', ioId: 1 }], false), null)
+})
+
+test('이력보다 진행분이 먼저 온 대화도 지난 턴의 도구 과정을 되살린다', async () => {
+  let release: () => void = () => {}
+  const gate = new Promise<void>((r) => { release = r })
+  const { store } = makeStore()
+  const transport = (store as unknown as { transport: SessionTransport }).transport
+  transport.historySnapshot = async () => {
+    await gate
+    return { turns: [{ input: '지난 질문', output: '지난 답', ioId: 1, attachments: [], process: SERVER_PROCESS }], running: true }
+  }
+  store.openResume(agent('A'), 'R', 'A')
+  // 구독의 진행분이 이력 응답보다 먼저 왔다
+  store.setRemoteRunning('R', true, { text: '진행 중', events: [] })
+  release()
+  await flush()
+  await flush()
+  const s = store.get('R')!
+  assert.deepEqual(s.messages.map((m) => m.text), ['지난 질문', '지난 답', '진행 중'])
+  assert.equal(s.messages[1].flow?.length, 3, '예전에는 이 갈래에서 서버 과정을 버렸다')
+})
+
+test('시작·진행 프레임을 모두 놓쳐도 — 행이 실어 온 과정을 종료 프레임이 세운 답에 붙인다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  // 행이 먼저 온다 — 이 창은 아직 그 턴을 다른 곳의 턴으로 모른다
+  store.applyExternalTurn({ interactionId: key, ioId: 11, input: '앱 상태?', output: '두 앱 모두 정상입니다.', source: 'user', process: SERVER_PROCESS })
+  assert.equal(store.get(key)!.messages.length, 0)
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, ioId: 11, input: '앱 상태?', output: '두 앱 모두 정상입니다.' })
+  const s = store.get(key)!
+  assert.deepEqual(s.messages.map((m) => m.text), ['앱 상태?', '두 앱 모두 정상입니다.'])
+  assert.equal(s.messages[1].flow?.length, 3, '결과만 남지 않는다')
 })

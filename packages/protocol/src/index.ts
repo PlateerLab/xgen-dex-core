@@ -285,7 +285,8 @@ export type { LiveTurnSnapshot, SubscribedState } from './chat';
 // 다른 화면에서 도는 턴 — 질문 본문·첨부, 진행분의 작업 과정. 앱·웹이 같은 모양으로 그린다.
 export { liveTurnFlow, liveTurnProcess } from './chat';
 export type { LiveProcessItem } from './chat';
-export { turnInputText, turnAttachments } from './history';
+// 서버가 실행 기록에서 되살린 작업 과정 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
+export { turnInputText, turnAttachments, toHistoryProcess } from './history';
 export type { TurnAttachment } from './history';
 export { sha256Hex } from './hash';
 export type { StoreAvatar } from './avatars';

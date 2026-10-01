@@ -279,18 +279,67 @@ export function startRemoteTurn(
   ];
 }
 
+/** 작업 과정에 도구가 있는가 — 글 조각만 있는 과정으로는 타임라인을 그리지 않는다. */
+function hasToolFlow(m: Pick<ChatMessage, 'flow'> | undefined): boolean {
+  return !!m?.flow?.some((f) => f.kind === 'tool');
+}
+
+/**
+ * 서버가 실행 기록에서 되살린 작업 과정을 답에 붙인다 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
+ * 이미 도구 과정이 있으면(이 폰이 진행 프레임으로 받았다) 그대로 둔다. 붙일 것이 없으면 같은 객체를 돌려준다.
+ */
+function withServerProcess(m: ChatMessage, process: readonly HistoryFlowItem[] | undefined): ChatMessage {
+  if (!process?.length || hasToolFlow(m)) return m;
+  const flow = process as TimelineFlowItem[];
+  return {
+    ...m,
+    flow: flow.slice(),
+    tools: m.tools?.length ? m.tools : toolsFromFlow(flow),
+    startedAt: m.startedAt ?? flow[0].at,
+    lastEventAt: m.lastEventAt ?? flow[flow.length - 1].at,
+  };
+}
+
+/** 이 실행 id 의 답에 도구 과정이 없으면 서버의 과정을 붙인다. 바뀐 것이 없으면 null. */
+export function attachProcessById(
+  list: readonly ChatMessage[],
+  ioId: number | null | undefined,
+  process: readonly HistoryFlowItem[] | undefined,
+): ChatMessage[] | null {
+  if (!ioId || !process?.length) return null;
+  const at = list.findIndex((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial);
+  if (at < 0) return null;
+  const patched = withServerProcess(list[at], process);
+  if (patched === list[at]) return null;
+  const out = list.slice();
+  out[at] = patched;
+  return out;
+}
+
 /**
  * 다른 곳에서 돈 턴이 **끝났다** — 완결 본문(완결 행 또는 종료 프레임)을 한 번만 넣는다.
  * 서버는 완결 행을 먼저, 종료를 나중에 보낸다. 어느 쪽이 먼저 와도 결과는 같다:
  * 진행분과 그 턴의 질문을 지우고 그 자리에 완결 턴을 넣는다. 이력이 이미 질문을 그렸으면
- * (도는 중에 연 대화) 답만 붙인다. 이미 그린 턴이면 null.
+ * (도는 중에 연 대화) 답만 붙인다. 이미 그린 턴이면 null — 단 그 답에 도구 과정이 없고 이 행이 서버의
+ * 과정을 실어 왔으면 그것만 붙인다.
+ *
+ * 작업 과정: 이 폰이 진행 프레임으로 도구를 받았으면 그것을, 못 받았으면(진행 중에 소켓이 끊겼다 붙었다)
+ * 서버가 완결 행에 실어 온 과정(`process`)을 쓴다 — 결과만 남지 않는다(데스크톱과 같다, 2026-10-01).
  */
 export function completeRemoteTurn(
   list: readonly ChatMessage[],
-  turn: { ioId?: number | null; input: string; output: string; attachments?: readonly TurnAttachment[] },
+  turn: {
+    ioId?: number | null;
+    input: string;
+    output: string;
+    attachments?: readonly TurnAttachment[];
+    process?: readonly HistoryFlowItem[];
+  },
 ): ChatMessage[] | null {
   const ioId = turn.ioId || undefined;
-  if (ioId && list.some((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial)) return null;
+  if (ioId && list.some((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial)) {
+    return attachProcessById(list, ioId, turn.process);
+  }
   const out = list.filter((m) => !isTemporary(m));
   const last = out[out.length - 1];
   const prev = out[out.length - 2];
@@ -298,13 +347,16 @@ export function completeRemoteTurn(
     last?.role === 'assistant' && last.text === turn.output && prev?.role === 'user' && prev.text === turn.input &&
     out.length === list.length
   ) {
-    if (!ioId || last.ioId) return null;
-    return patchAt(out, out.length - 1, { ioId });
+    const filled = withServerProcess(ioId && !last.ioId ? { ...last, ioId } : last, turn.process);
+    if (filled === last) return null;
+    return patchAt(out, out.length - 1, filled);
   }
   // 진행분이 쌓아 온 작업 과정은 답에 그대로 남긴다 — 끝난 뒤에도 무엇을 했는지 펼쳐 본다(데스크톱과 같다).
+  // 진행분에 도구가 없으면(놓쳤다) 서버가 실어 온 과정으로 채운다.
   const partial = list[remotePartialIndex(list)];
   const question = list.find((m) => m.remoteQuestion && m.text === turn.input);
-  const process: Partial<ChatMessage> = partial?.flow?.length
+  const live = !!partial?.flow?.length && (hasToolFlow(partial) || !turn.process?.length);
+  const process: Partial<ChatMessage> = live && partial?.flow
     ? {
         flow: reconcileFlow(partial.flow, turn.output),
         tools: partial.tools?.length ? partial.tools : toolsFromFlow(partial.flow),
@@ -312,11 +364,63 @@ export function completeRemoteTurn(
         startedAt: partial.startedAt,
         lastEventAt: partial.lastEventAt,
       }
-    : {};
-  const answer = make('assistant', turn.output, { ...process, ...(ioId ? { ioId } : {}) });
+    : { citations: partial?.citations };
+  let answer = make('assistant', turn.output, { ...process, ...(ioId ? { ioId } : {}) });
+  if (!live) answer = withServerProcess(answer, turn.process);
   if (last?.role === 'user' && last.text === turn.input) return [...out, answer];
   const marks = question?.attachments ?? attachmentMarks(turn.attachments);
   return [...out, make('user', turn.input, marks ? { attachments: marks } : {}), answer];
+}
+
+/**
+ * 대화 소켓에 **구멍**이 났다(끊겼다 다시 붙었거나 번호가 건너뛰었다) — 이력으로 메운다(데스크톱 mergeMissedTurns 와 같다).
+ *
+ * 끊긴 사이에 시작해 끝난 다른 화면의 턴은 어떤 프레임으로도 오지 않는다. 휴대폰은 화면을 끄고 켤 때마다
+ * 소켓이 끊기므로 이 자리가 특히 잦다.
+ *
+ *   이미 그린 답   도구 과정이 없으면 서버의 과정을 붙인다.
+ *   놓친 턴        알고 있는 가장 새 턴보다 뒤의 끝난 턴을 넣는다. 지금 다른 곳에서 도는 턴이 있으면(`remote`)
+ *                  임시 말풍선은 그 턴의 것이라 그 앞에 끼우고, 없으면 임시는 놓친 턴의 남은 자리라
+ *                  완결 규칙(completeRemoteTurn)으로 바꿔 끼운다.
+ *   덧붙이지 않음  마지막 답에 실행 id 가 없으면 어느 행이 그것인지 모른다 — 두 번 그리느니 다음 열기에 맡긴다.
+ *
+ * 바뀐 것이 없으면 null.
+ */
+export function mergeMissedTurns(
+  list: readonly ChatMessage[],
+  turns: readonly {
+    ioId?: number;
+    input: string;
+    output: string;
+    attachments?: readonly HistoryAttachment[];
+    process?: readonly HistoryFlowItem[];
+  }[],
+  remote: boolean,
+): ChatMessage[] | null {
+  let changed = false;
+  const byIo = new Map<number, (typeof turns)[number]>();
+  for (const t of turns) if (t.ioId) byIo.set(t.ioId, t);
+  let out = list.map((m) => {
+    if (m.role !== 'assistant' || !m.ioId || isTemporary(m)) return m;
+    const next = withServerProcess(m, byIo.get(m.ioId)?.process);
+    if (next !== m) changed = true;
+    return next;
+  });
+  const answered = out.filter((m) => m.role === 'assistant' && !isTemporary(m));
+  const lastAnswer = answered[answered.length - 1];
+  if (lastAnswer && !lastAnswer.ioId) return changed ? out : null;
+  const newest = answered.reduce((max, m) => Math.max(max, m.ioId ?? 0), 0);
+  const missed = turns.filter((t) => (t.ioId ?? 0) > newest && t.output);
+  if (missed.length === 0) return changed ? out : null;
+  if (remote) {
+    const at = out.findIndex(isTemporary);
+    const rows = historyMessages(missed);
+    return at >= 0 ? [...out.slice(0, at), ...rows, ...out.slice(at)] : [...out, ...rows];
+  }
+  for (const t of missed) {
+    out = completeRemoteTurn(out, { ioId: t.ioId, input: t.input, output: t.output, process: t.process }) ?? out;
+  }
+  return out;
 }
 
 /** 다른 곳의 턴을 그리는 중인가(임시 말풍선이 있다). */

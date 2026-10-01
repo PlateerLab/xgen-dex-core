@@ -24,9 +24,11 @@
  */
 import {
   parseSubscribed,
+  toHistoryProcess,
   turnAttachments,
   turnEventToChatEvent,
   turnInputText,
+  type HistoryFlowItem,
   type LiveTurnSnapshot,
   type ToolEvent,
   type TurnAttachment,
@@ -70,6 +72,11 @@ export interface ServerTurn {
   input: string;
   output: string;
   source: string;
+  /**
+   * 이 턴의 작업 과정(글·도구 순서) — 도구를 쓴 턴에만, 서버가 실행 기록에서 되살린 것. 진행 프레임을
+   * 놓친 화면도 이것으로 같은 타임라인을 그린다. 옛 서버는 싣지 않는다.
+   */
+  process?: HistoryFlowItem[];
 }
 
 /**
@@ -264,6 +271,8 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
   const originId = newOriginId();
   /** 마지막으로 받은 전파 번호 — 간격이 곧 유실 신호다. */
   let lastSeq = 0;
+  /** 한 번이라도 구독이 확립됐는가 — 그 뒤의 구독 확립은 끊겼다 다시 붙은 것이다. */
+  let subscribedOnce = false;
   let closedByUser = false;
   let attempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -419,6 +428,10 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         const state = parseSubscribed(frame.data);
         opts.onRunning?.(state.running);
         if (state.live) opts.onLiveTurn?.(state.live);
+        // 다시 붙었다 — 끊긴 사이에 시작해 끝난 턴은 어떤 프레임으로도 오지 않는다. 화면이 이력으로
+        // 메우도록 구멍을 알린다(휴대폰은 화면을 끄고 켤 때마다 끊긴다). 첫 구독은 화면이 막 이력을 읽었다.
+        if (subscribedOnce) opts.onPeerTurn?.({ kind: 'gap' });
+        subscribedOnce = true;
         return;
       }
       if (frame.type === 'unsupported') {
@@ -436,6 +449,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
           input: turnInputText(d.input_data),
           output: String(d.output_data ?? ''),
           source: String(d.source ?? 'user'),
+          process: toHistoryProcess(d.process),
         });
         return;
       }

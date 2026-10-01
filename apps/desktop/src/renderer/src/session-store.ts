@@ -99,6 +99,28 @@ function toolsOfFlow(flow: readonly FlowItem[]): ToolEvent[] {
   return tools;
 }
 
+/** 작업 과정에 도구가 있는가 — 글 조각만 있는 과정으로는 타임라인을 그리지 않는다. */
+function hasToolFlow(m: Pick<ChatMsg, 'flow'> | undefined): boolean {
+  return !!m?.flow?.some((f) => f.kind === 'tool');
+}
+
+/**
+ * 서버가 실행 기록에서 되살린 작업 과정을 답에 붙인다 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
+ * 이미 도구 과정이 있으면(이 창이 진행 프레임으로 받았다) 그대로 둔다: 보던 그대로가 낫다. 붙일 것이
+ * 없으면 같은 객체를 돌려준다(바뀐 것이 없다는 표시).
+ */
+function withServerProcess(m: ChatMsg, process: readonly HistoryFlowItem[] | undefined): ChatMsg {
+  if (!process?.length || hasToolFlow(m)) return m;
+  const flow = process as FlowItem[];
+  return {
+    ...m,
+    flow: flow.slice(),
+    tools: m.tools?.length ? m.tools : flow.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
+    startedAt: m.startedAt ?? flow[0]?.at,
+    lastEventAt: m.lastEventAt ?? flow[flow.length - 1]?.at,
+  };
+}
+
 /**
  * 완결 본문에 작업 과정의 글을 맞춘다 — 다른 화면의 턴은 받은 조각을 쌓은 것이라 조각을 놓쳤으면 과정의
  * 글이 본문보다 짧고, 타임라인은 마지막 단계의 글을 답으로 그린다. 마지막 도구까지의 글이 본문의 앞부분과
@@ -213,21 +235,31 @@ function plainInput(input: unknown): string {
  * 다른 곳에서 돈 턴이 **끝났다** — 완결 본문(대화 소켓의 message 행 또는 turn_ended)을 대화에
  * 한 번만 넣는다. 어느 것이 먼저 와도, 둘 다 와도 결과는 같다.
  *
- *   이미 있다      같은 실행 id 의 답이 있으면 아무것도 하지 않는다(뒤에 온 쪽).
+ *   이미 있다      같은 실행 id 의 답이 있으면 손대지 않는다(뒤에 온 쪽). 단 그 답에 도구 과정이 없고
+ *                  이 행이 서버의 과정을 실어 왔으면 그것만 붙인다.
  *   임시를 바꾼다  진행분 말풍선과 그 턴의 임시 질문을 지우고 그 자리에 완결 턴을 넣는다.
  *   질문은 있다    이력이 이미 질문을 그렸으면(도는 중에 연 대화) 답만 붙인다.
+ *
+ * 작업 과정: 이 창이 진행 프레임으로 도구를 받았으면 그것을, 못 받았으면(진행 중에 소켓이 끊겼다 붙었다)
+ * 서버가 완결 행에 실어 온 과정(`process`)을 쓴다 — 어느 쪽이든 결과만 남지 않는다(2026-10-01 사용자 보고).
  *
  * 바뀐 것이 없으면 null.
  */
 export function mergeCompletedTurn(
   messages: readonly ChatMsg[],
-  turn: { ioId?: number | null; input: string; output: string; attachments?: readonly TurnAttachment[] },
+  turn: {
+    ioId?: number | null;
+    input: string;
+    output: string;
+    attachments?: readonly TurnAttachment[];
+    process?: readonly HistoryFlowItem[];
+  },
 ): ChatMsg[] | null {
   const ioId = turn.ioId || undefined;
   const input = plainInput(turn.input);
   const output = String(turn.output ?? '');
   if (ioId && messages.some((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial)) {
-    return null;
+    return attachProcessById(messages, ioId, turn.process);
   }
   const out = messages.filter((m) => !isTemporary(m));
   const last = out[out.length - 1];
@@ -237,19 +269,23 @@ export function mergeCompletedTurn(
     last?.role === 'assistant' && last.text === output && prev?.role === 'user' && prev.text === input &&
     out.length === messages.length
   ) {
-    if (!ioId || last.executionIoId) return null;
-    out[out.length - 1] = { ...last, executionIoId: ioId };
+    const filled = withServerProcess(ioId && !last.executionIoId ? { ...last, executionIoId: ioId } : last, turn.process);
+    if (filled === last) return null;
+    out[out.length - 1] = filled;
     return out;
   }
   // 진행분이 쌓아 온 작업 과정은 답에 그대로 남긴다 — 끝난 뒤에도 다른 화면의 턴을 타임라인으로 펼쳐 본다.
+  // 진행분에 도구가 없으면(놓쳤다) 서버가 실어 온 과정으로 채운다.
   const partial = messages.find((m) => m.remotePartial);
-  const answer: ChatMsg = { role: 'assistant', text: output, executionIoId: ioId };
-  if (partial?.flow?.length) {
+  let answer: ChatMsg = { role: 'assistant', text: output, executionIoId: ioId };
+  if (partial?.flow?.length && (hasToolFlow(partial) || !turn.process?.length)) {
     answer.flow = reconcileFlow(partial.flow, output);
     answer.tools = partial.tools?.length ? partial.tools : toolsOfFlow(partial.flow);
     answer.citations = partial.citations;
     answer.startedAt = partial.startedAt;
     answer.lastEventAt = partial.lastEventAt;
+  } else {
+    answer = withServerProcess({ ...answer, citations: partial?.citations }, turn.process);
   }
   if (last?.role === 'user' && last.text === input) out.push(answer);
   else {
@@ -257,6 +293,22 @@ export function mergeCompletedTurn(
     const images = question?.images ?? peerAttachments(turn.attachments);
     out.push({ role: 'user', text: input, ...(images ? { images } : {}) }, answer);
   }
+  return out;
+}
+
+/** 이 실행 id 의 답에 도구 과정이 없으면 서버의 과정을 붙인다. 바뀐 것이 없으면 null. */
+function attachProcessById(
+  messages: readonly ChatMsg[],
+  ioId: number | null | undefined,
+  process: readonly HistoryFlowItem[] | undefined,
+): ChatMsg[] | null {
+  if (!ioId || !process?.length) return null;
+  const at = messages.findIndex((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial);
+  if (at < 0) return null;
+  const patched = withServerProcess(messages[at], process);
+  if (patched === messages[at]) return null;
+  const out = messages.slice();
+  out[at] = patched;
   return out;
 }
 
@@ -272,6 +324,55 @@ function fillExecutionIoId(
   if (prev?.role !== 'user' || prev.text !== plainInput(turn.input)) return null;
   const out = messages.slice();
   out[out.length - 1] = { ...last, executionIoId: turn.ioId };
+  return out;
+}
+
+/**
+ * 대화 소켓에 **구멍**이 났다(끊겼다 다시 붙었거나 번호가 건너뛰었다) — 히스토리로 메운다.
+ *
+ * 끊긴 사이에 시작해 끝난 다른 화면의 턴은 어떤 프레임으로도 오지 않는다. 그대로 두면 이 창에는 그 턴이
+ * 없거나(질문·답 모두), 진행분 몇 줄만 멈춘 채 남는다. 히스토리가 정답이다:
+ *
+ *   이미 그린 답   도구 과정이 없으면 서버의 과정을 붙인다.
+ *   놓친 턴        알고 있는 가장 새 턴보다 뒤의 끝난 턴을 넣는다. 지금 다른 곳에서 도는 턴이 있으면(`remote`)
+ *                  임시 말풍선은 그 턴의 것이라 그 앞에 끼우고, 없으면 임시는 놓친 턴의 남은 자리라
+ *                  완결 규칙(mergeCompletedTurn)으로 바꿔 끼운다.
+ *   덧붙이지 않음  마지막 답에 실행 id 가 없으면 어느 행이 그것인지 모른다 — 두 번 그리느니 다음 열기에 맡긴다.
+ *
+ * 바뀐 것이 없으면 null.
+ */
+export function mergeMissedTurns(
+  messages: readonly ChatMsg[],
+  turns: ReadonlyArray<{ input: string; output: string; ioId?: number; attachments?: readonly unknown[]; process?: readonly HistoryFlowItem[] }>,
+  remote: boolean,
+): ChatMsg[] | null {
+  let changed = false;
+  const byIo = new Map<number, (typeof turns)[number]>();
+  for (const t of turns) if (t.ioId) byIo.set(t.ioId, t);
+  let out = messages.map((m) => {
+    if (m.role !== 'assistant' || !m.executionIoId || isTemporary(m)) return m;
+    const next = withServerProcess(m, byIo.get(m.executionIoId)?.process);
+    if (next !== m) changed = true;
+    return next;
+  });
+  const answered = out.filter((m) => m.role === 'assistant' && !isTemporary(m));
+  const lastAnswer = answered[answered.length - 1];
+  if (lastAnswer && !lastAnswer.executionIoId) return changed ? out : null;
+  const newest = answered.reduce((max, m) => Math.max(max, m.executionIoId ?? 0), 0);
+  const missed = turns.filter((t) => (t.ioId ?? 0) > newest && t.output);
+  if (missed.length === 0) return changed ? out : null;
+  if (remote) {
+    const at = out.findIndex(isTemporary);
+    const rows = missed.flatMap((t): ChatMsg[] => [
+      { role: 'user', text: plainInput(t.input) },
+      withServerProcess({ role: 'assistant', text: t.output, executionIoId: t.ioId }, t.process),
+    ]);
+    out = at >= 0 ? [...out.slice(0, at), ...rows, ...out.slice(at)] : [...out, ...rows];
+    return out;
+  }
+  for (const t of missed) {
+    out = mergeCompletedTurn(out, { ioId: t.ioId, input: t.input, output: t.output, process: t.process }) ?? out;
+  }
   return out;
 }
 
@@ -446,6 +547,12 @@ interface Runtime {
   tools: ToolEvent[];
   /** 대화 소켓으로 이미 반영한 외부 턴의 io_id — push 중복 방지. */
   externalIoSeen?: Set<number>;
+  /**
+   * 완결 행이 실어 온 작업 과정 — 실행 id 별. 행이 종료 프레임보다 먼저 오는데, 그 순간 이 창이 그 턴을 다른
+   * 곳의 턴으로 모르고 있으면(시작·진행 프레임을 놓쳤다) 과정을 붙일 답이 아직 없다. 그때 종료 프레임이 답을
+   * 세우면서 여기서 과정을 꺼내 붙인다.
+   */
+  serverProcess?: Map<number, HistoryFlowItem[]>;
   citations: Citation[];
   historyImageUrls: Set<string>;
 }
@@ -755,6 +862,10 @@ export class SessionStore {
       // 여기서 이력을 통째로 버려 지난 대화가 사라지고 진행분 하나만 남았다.
       const onlyTemporary = !!current && !current.streaming && current.messages.length > 0 &&
         current.messages.every(isTemporary);
+      // 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙이고, 없으면 서버가 실행 기록에서 되살린 과정을
+      // 쓴다 — 어느 기기에서 열어도 타임라인이 산다. 도는 중에 연 대화(아래 첫 갈래)도 같다.
+      const withProcesses = (interactionId: string): ChatMsg[] =>
+        attachTurnProcesses(this.processMemory, interactionId, msgs).map((m, i) => withServerProcess(m, serverProcess.get(i)));
       if (onlyTemporary) {
         const temps = current.messages.filter((m) => {
           if (!m.remoteQuestion) return true;
@@ -764,7 +875,7 @@ export class SessionStore {
         });
         this.patch(key, (s) => ({
           ...s,
-          messages: [...attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs), ...temps],
+          messages: [...withProcesses(s.interactionId ?? key), ...temps],
           loadingHistory: false,
           historyLoaded: true,
           remote: s.remote || snapshot.running,
@@ -776,19 +887,7 @@ export class SessionStore {
       } else {
         this.patch(key, (s) => ({
           ...s,
-          // 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙이고, 없으면 서버가 실행 기록에서
-          // 되살린 과정을 쓴다 — 어느 기기에서 열어도 타임라인이 산다.
-          messages: attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs).map((m, i) => {
-            const process = serverProcess.get(i);
-            if (m.flow || !process) return m;
-            return {
-              ...m,
-              flow: process as FlowItem[],
-              tools: m.tools ?? process.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
-              startedAt: process[0]?.at,
-              lastEventAt: process[process.length - 1]?.at,
-            };
-          }),
+          messages: withProcesses(s.interactionId ?? key),
           loadingHistory: false,
           historyLoaded: true,
           remote: snapshot.running,
@@ -1294,10 +1393,14 @@ export class SessionStore {
   }): void {
     const key = event.interactionId;
     const s = this.map.get(key);
-    if (!s || s.streaming) return;
-    // 구멍(gap)은 여기서 따로 메우지 않는다 — 종료 프레임이 **완결 본문**을
-    // 통째로 싣고 오므로 마지막에는 반드시 맞는다.
-    if (event.kind === 'gap') return;
+    if (!s) return;
+    // 구멍(gap) — 번호가 건너뛰었거나 소켓이 끊겼다 다시 붙었다. 진행 중인 턴은 종료 프레임이 완결 본문을
+    // 싣고 오지만, **끊긴 사이에 시작해 끝난 턴**은 어떤 프레임으로도 오지 않는다. 히스토리로 메운다.
+    if (event.kind === 'gap') {
+      void this.resync(key);
+      return;
+    }
+    if (s.streaming) return;
 
     if (event.kind === 'started') {
       this.patch(key, (cur) => ({
@@ -1367,6 +1470,7 @@ export class SessionStore {
 
     // 종료 — 완결 본문으로 바꿔 끼운다. 중간에 한두 조각을 놓쳤어도 마지막이 맞는다. 완결 행
     // (message)이 먼저 와서 이미 그렸으면 아무것도 하지 않는다 — 같은 실행 id 다.
+    const process = event.ioId ? this.rt.get(key)?.serverProcess?.get(event.ioId) : undefined;
     this.patch(key, (cur) => {
       const partial = cur.messages.find((m) => m.remotePartial);
       const merged = mergeCompletedTurn(cur.messages, {
@@ -1374,6 +1478,7 @@ export class SessionStore {
         input: String(event.input ?? cur.messages.find((m) => m.remoteQuestion)?.text ?? ''),
         output: String(event.output ?? partial?.text ?? ''),
         attachments: event.attachments,
+        process,
       });
       return { ...cur, messages: merged ?? cur.messages, remote: false, updatedAt: this.now() };
     });
@@ -1422,6 +1527,30 @@ export class SessionStore {
   }
 
   /**
+   * 대화 소켓의 구멍을 히스토리로 메운다(규칙은 mergeMissedTurns). 이 창의 스트림이 도는 중이면 건너뛴다 —
+   * 그 턴은 스트림이 끝내고, 그 사이의 다른 턴은 다음 구멍이나 다음 열기가 맞춘다.
+   */
+  async resync(key: string): Promise<void> {
+    const s = this.map.get(key);
+    if (!s || s.loadingHistory || s.streaming || !this.transport.historySnapshot) return;
+    let turns: Awaited<ReturnType<NonNullable<SessionTransport['historySnapshot']>>>['turns'];
+    try {
+      turns = (await this.transport.historySnapshot(s.agent.workflowId, key, s.agent.workflowName)).turns;
+    } catch {
+      return; // 서버에 못 닿았다 — 다음 구멍이나 다음 열기가 맞춘다.
+    }
+    let changed = false;
+    this.patch(key, (cur) => {
+      if (cur.streaming || cur.loadingHistory) return cur;
+      const merged = mergeMissedTurns(cur.messages, turns, cur.remote);
+      if (!merged) return cur;
+      changed = true;
+      return { ...cur, messages: merged, updatedAt: this.now() };
+    });
+    if (changed) this.emit();
+  }
+
+  /**
    * 대화 소켓이 push 한 **서버 주입 턴**(Job/sub-agent 트리거의 반응)을 열린
    * 세션에 실시간 반영한다 — 이게 없으면 새로고침해야 보였다.
    *
@@ -1435,10 +1564,18 @@ export class SessionStore {
     input: string;
     output: string;
     source: string;
+    /** 서버가 실행 기록에서 되살린 이 턴의 작업 과정(도구를 쓴 턴만). */
+    process?: HistoryFlowItem[];
   }): void {
     const s = this.map.get(turn.interactionId);
     const rt = this.rt.get(turn.interactionId);
     if (!s || !rt) return;
+    if (turn.ioId && turn.process?.length) {
+      rt.serverProcess = rt.serverProcess ?? new Map();
+      rt.serverProcess.set(turn.ioId, turn.process);
+      // 최근 몇 턴만 — 종료 프레임은 행 바로 뒤에 온다.
+      if (rt.serverProcess.size > 8) rt.serverProcess.delete(rt.serverProcess.keys().next().value as number);
+    }
     /**
      * 어떤 턴을 받아 그리는가.
      *
@@ -1455,9 +1592,12 @@ export class SessionStore {
     if (!report && mine) {
       // 이미 그린 턴이다. 답에 실행 id 가 없으면(옛 서버의 종료·스트림이 id 를 못 받은 턴) 채운다 —
       // 답변 평가가 이 id 로 붙는다.
+      // 그 답에 도구 과정이 없으면(스트림이 도구를 못 받은 채 끝났다) 서버의 과정도 붙인다.
       const filled = s.streaming ? null : fillExecutionIoId(s.messages, turn);
-      if (filled) {
-        s.messages = filled;
+      const withProcess = s.streaming ? null : attachProcessById(filled ?? s.messages, turn.ioId, turn.process);
+      const next = withProcess ?? filled;
+      if (next) {
+        s.messages = next;
         this.emit();
       }
       return;

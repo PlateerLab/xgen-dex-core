@@ -509,3 +509,45 @@ test('모델 소식은 턴 번호 없이 모델 알림으로만 간다', () => {
   assert.deepEqual(models, [data]);
   chat.close();
 });
+
+// ── 다른 기기의 도구 턴이 결과만 남던 문제 (2026-10-01 사용자 보고) ──────────────
+
+test('완결 행이 실어 온 작업 과정을 화면에 넘긴다', () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const turns: ServerTurn[] = [];
+  makeChat(got, { onServerTurn: (t) => turns.push(t), onPeerTurn: () => {} });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 0 } });
+  ws.recv({
+    type: 'message',
+    data: {
+      io_id: 5, input_data: '앱 상태?', output_data: '정상입니다.', source: 'user',
+      process: [
+        { kind: 'tool', at: 1, event: { event_type: 'tool_call', tool_name: 'AppList', tool_use_id: 'a' } },
+        { kind: 'text', at: 2, text: '정상입니다.' },
+      ],
+    },
+  });
+  ws.recv({ type: 'message', data: { io_id: 6, input_data: 'q', output_data: 'a', source: 'user' } });
+  assert.deepEqual(turns[0].process?.map((p) => p.kind), ['tool', 'text']);
+  assert.equal(turns[1].process, undefined, '도구를 안 쓴 턴은 예전 모양 그대로');
+});
+
+test('끊겼다 다시 붙으면 구멍을 알린다 — 첫 구독은 알리지 않는다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const chat = makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 3 } });
+  assert.equal(peer.length, 0, '첫 구독은 화면이 막 이력을 읽었다');
+  first.close(); // 화면을 껐다 켰다
+  await new Promise((r) => setTimeout(r, 1600));
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first, '다시 붙었다');
+  second.open();
+  second.recv({ type: 'subscribed', data: { seq: 7 } });
+  assert.deepEqual(peer, [{ kind: 'gap' }]);
+  chat.close();
+});

@@ -21,7 +21,7 @@ import type {
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
-import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
+import { describeTool, historyTurnMessages, message, type ChatMessage } from './chat-messages';
 import {
   MODEL_PICKER_TEXT,
   THINKING_PICKER_TEXT,
@@ -39,22 +39,8 @@ import {
 /** 창을 껐다 켠 뒤 되찾을 대화가 적히는 자리(globalState). */
 const LAST_CONVERSATION_KEY = 'xgenDex.lastConversation';
 
-type MessageRole = 'user' | 'assistant' | 'activity' | 'system';
 type ViewScreen = 'loading' | 'setup' | 'login' | 'offline' | 'agents' | 'chat' | 'settings' | 'error';
 
-interface ChatMessage {
-  id: string;
-  role: MessageRole;
-  label: string;
-  text: string;
-  /** user — 이 턴이 Job/sub-agent 트리거 주입이면 렌더용 파싱 결과.
-   *  webview 는 이 필드가 있으면 말풍선 대신 [Trigger] 행을 그린다. */
-  trigger?: AgentTrigger & { rowLabel: string };
-  /** assistant — 이 답변에서 쓴 도구 이벤트 전부 (전체 로그의 원천, 수신 순). */
-  tools?: ToolEvent[];
-  /** activity — 클릭하면 열 전체 로그의 위치 (assistant 메시지 id + tools 인덱스). */
-  toolRef?: { assistantId: string; index: number };
-}
 
 interface ChatViewState {
   screen: ViewScreen;
@@ -351,10 +337,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.interactionId = conversation.interactionId;
       this.attachments = [];
       this.syncConversationWatch();
-      this.messages = turns.flatMap((turn) => [
-        message('user', '나', turn.input),
-        message('assistant', conversation.workflowName, turn.output),
-      ]);
+      this.messages = historyTurnMessages(turns, conversation.workflowName);
       this.status = snapshot.running
         ? '다른 곳에서 시작한 응답이 진행 중입니다.'
         : `${turns.length}개의 이전 대화를 불러왔습니다.`;
@@ -558,10 +541,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       } as Conversation);
     this.interactionId = saved.interactionId;
     this.syncConversationWatch();
-    this.messages = turns.flatMap((turn) => [
-      message('user', '나', turn.input),
-      message('assistant', name, turn.output),
-    ]);
+    this.messages = historyTurnMessages(turns, name);
     this.screen = 'chat';
     if (snapshot.running) {
       this.status = '다른 곳에서 시작한 응답이 진행 중입니다.';
@@ -867,10 +847,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // 끝났다 — 이 대화가 화면에서 바뀌지 않았을 때만 다시 그린다.
       if (this.interactionId !== interactionId) return this.stopWatchingRemoteRun();
       this.stopWatchingRemoteRun();
-      this.messages = (snapshot.turns ?? []).flatMap((turn) => [
-        message('user', '나', turn.input),
-        message('assistant', agent.workflowName, turn.output),
-      ]);
+      this.messages = historyTurnMessages(snapshot.turns ?? [], agent.workflowName);
       this.status = undefined;
       this.postState();
     } catch {
@@ -1216,15 +1193,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 }
 
-function message(role: MessageRole, label: string, text: string): ChatMessage {
-  const item: ChatMessage = { id: randomUUID(), role, label, text };
-  if (role === 'user') {
-    // Job/sub-agent 트리거 주입 턴 — 사용자 발화가 아니므로 렌더가 다르다.
-    const trig = parseAgentTrigger(text);
-    if (trig) item.trigger = { ...trig, rowLabel: triggerRowLabel(trig) };
-  }
-  return item;
-}
 
 function agentFromConversation(conversation: Conversation): Agent {
   return {
@@ -1243,12 +1211,6 @@ function agentFromConversation(conversation: Conversation): Agent {
   };
 }
 
-function describeTool(event: ToolEvent): string {
-  const name = event.toolName || 'tool';
-  if (event.eventType === 'tool_result') return `${name} · 완료${event.durationMs ? ` · ${event.durationMs}ms` : ''}`;
-  if (event.eventType === 'tool_error') return `${name} · 실패${event.error ? ` · ${event.error}` : ''}`;
-  return `${name} · 실행 중`;
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

@@ -55,6 +55,7 @@ export function NativeDeviceEnrollmentCard({ client, visible }: { client: XgenMo
     <Pressable accessibilityRole="button" style={button} disabled={!controller || busy} onPress={() => run('register')}><Text style={{ color: p.text }}>이 휴대폰 등록</Text></Pressable>
     <Pressable accessibilityRole="button" style={button} disabled={!controller || busy} onPress={() => run('inspect')}><Text style={{ color: p.text }}>등록·승인 상태 확인</Text></Pressable>
     {state.registration && <Text style={{ color: p.text }}>현재 상태: {TRUST[state.registration.state]}</Text>}
+    {state.overview && !state.registration && <Text style={{ color: p.muted }}>현재 상태: 서버 미등록</Text>}
     {state.overview && !!ENROLLMENT[state.overview.enrollment_state] && <Text style={{ color: p.muted }}>{ENROLLMENT[state.overview.enrollment_state]}</Text>}
     {state.overview && browsers.length === 0 && <Text style={{ color: p.muted }}>승인 가능한 신뢰 브라우저가 없습니다.</Text>}
     {browsers.map((browser) => <Pressable key={browser.device_id} accessibilityRole="radio" accessibilityState={{ selected: browser.device_id === state.selectedApproverId }}

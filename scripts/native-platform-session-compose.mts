@@ -12,6 +12,8 @@ import { createNativeDeviceSigner } from '../packages/protocol/src/native-device
 import { NativeDeviceKeyStore } from '../packages/engine/src/native-device-key-store';
 import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 import type { NativeRpcResult } from '../packages/rpc/src/wire';
+import { createMobileEnrollment } from '../apps/mobile/src/lib/native-device-enrollment';
+import { createMobileEnrollmentFetch } from '../apps/mobile/src/lib/native-enrollment-http';
 
 const origin = 'https://localhost:3443';
 const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
@@ -62,6 +64,8 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
+const testMobileController = process.argv.includes('--mobile-controller');
+const platforms = testMobileController ? ['mobile'] as const : ['desktop', 'mobile', 'cli', 'vscode'] as const;
 const desktopElectron: string | null = testDesktop ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 const cliDirectory = testCli || testVscode || testDesktop ? mkdtempSync(join(tmpdir(), 'dex-native-compose-')) : null;
 const cliKeys = new NativeDeviceKeyStore();
@@ -120,7 +124,7 @@ try {
       ${literal(thumbprint)},'web','trusted','Disposable approval browser');
     INSERT INTO device_bootstrap_state(tenant_id,user_id,first_device_id,platform_type,trust_method)
     VALUES ('system',${userId},${literal(browserId)},'web','password_device_proof'); COMMIT;`);
-  for (const platform of ['desktop', 'mobile', 'cli', 'vscode'] as const) {
+  for (const platform of platforms) {
     if ((platform === 'cli' && testCli) || (platform === 'vscode' && testVscode) || (platform === 'desktop' && testDesktop)) {
       // Separate real CLI processes must restore the same OS-keychain key and install ID.
       nativeKeysCreated.add(platform);
@@ -159,16 +163,40 @@ try {
       continue;
     }
     const device = await key();
+    const installId = testMobileController ? randomUUID() : `${tag}-${platform}`;
     const client = new NativePlatformSessionClient({ origin, platform, fetch: fetchImpl,
       account: { current: () => ({ authScope: tag, accessToken }) },
-      identity: { installId: `${tag}-${platform}`, publicKey: device.publicKey,
+      identity: { installId, publicKey: device.publicKey,
         signChallenge: createNativeDeviceSigner(device.pair.privateKey, subtle) } });
+    // This is a software test key and Node TLS bridge, not a physical Mobile hardware/OS test.
+    const activeHttp = new Map<string, AbortController>();
+    const enrollment = testMobileController ? createMobileEnrollment({
+      current: () => ({ origin, userId: String(userId), authScope: tag, accessToken: accessToken! }),
+      keys: { identity: async () => ({ installId, publicKey: device.publicKey, storage: 'android-tee',
+        signChallenge: createNativeDeviceSigner(device.pair.privateKey, subtle) }) },
+      fetch: createMobileEnrollmentFetch({ newRequestId: randomUUID,
+        async request(id, requestedOrigin, path, method, token, body) {
+          assert.equal(requestedOrigin, origin); const controller = new AbortController(); activeHttp.set(id, controller);
+          try {
+            const response = await fetchImpl(`${requestedOrigin}${path}`, { method, headers: { Accept: 'application/json', Authorization: `Bearer ${token}`,
+              ...(body === null ? {} : { 'Content-Type': 'application/json' }) }, body: body ?? undefined,
+              credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal });
+            return { status: response.status, body: await response.text() };
+          } finally { activeHttp.delete(id); }
+        },
+        cancelRequest(id) { activeHttp.get(id)?.abort(); },
+      }, origin),
+    }) : null;
     assert.equal(await client.registrationStatus(), null);
-    const pending = await client.register(`Disposable ${platform}`);
+    const pending = enrollment ? (await enrollment.register('Disposable Mobile')).registration! : await client.register(`Disposable ${platform}`);
     assert.equal(pending.state, 'pending');
     assert.deepEqual(await client.registrationStatus(), pending);
     assert.ok((await client.trustOverview()).trusted_devices.some((item) => item.device_id === browserId && item.platform === 'web'));
-    const approval = await client.requestApproval(pending.device_id, browserId);
+    if (enrollment) {
+      assert.deepEqual((await enrollment.register('Disposable Mobile')).registration, pending);
+      enrollment.selectApprover(browserId);
+    }
+    const approval = enrollment ? (await enrollment.requestApproval()).approval! : await client.requestApproval(pending.device_id, browserId);
     const path = `/api/me/device-approval-requests/${approval.request_id}/approve-key`;
     const begun = await json(`${path}/begin`, { approver_device_id: browserId }, accessToken!);
     const header = Buffer.from(JSON.stringify({ alg: 'ES256', typ: 'platform-device-proof+jwt' })).toString('base64url');
@@ -180,6 +208,13 @@ try {
       confirmation_code: approval.confirmation_code, password }, accessToken!);
     assert.equal(approved.state, 'trusted');
     assert.equal((await client.registrationStatus())?.state, 'trusted');
+    if (enrollment) {
+      const state = await enrollment.inspect(); assert.equal(state.registration?.state, 'trusted'); assert.equal(state.approval, null);
+      assert.equal(sql(`SELECT COUNT(*) FROM trusted_devices WHERE user_id=${userId} AND platform_type='mobile';`), '1');
+      assert.equal(sql(`SELECT COUNT(*) FROM device_approval_requests WHERE user_id=${userId} AND target_platform_type='mobile';`), '1');
+      assert.equal(JSON.stringify(state).includes(accessToken!), false); assert.equal(activeHttp.size, 0); enrollment.dispose();
+      console.log('Mobile production controller + JS native adapter: selected browser / idempotent registration / trusted reconciliation PASS (software fixture key, Node TLS bridge)');
+    }
     // Production parser intentionally keeps active closed. Do not change modes to make this test pass.
     await assert.rejects(client.login(pending.device_id, password), (error: unknown) => error instanceof NativePlatformHttpError && error.status === 503);
     await assert.rejects(client.refresh(pending.device_id, randomUUID(), randomBytes(32).toString('base64url')),
@@ -187,8 +222,8 @@ try {
     console.log(`${platform}: enrollment / selected browser approval / trusted status PASS; active login & refresh closed (503)`);
   }
   assert.equal(sql(`SELECT COUNT(*) FROM platform_sessions WHERE user_id=${userId};`), '0');
-  assert.equal(sql(`SELECT COUNT(*) FROM security_events WHERE user_id=${userId} AND event_type='device_registration_requested';`), '4');
-  assert.equal(sql(`SELECT COUNT(*) FROM security_events WHERE user_id=${userId} AND event_type='device_approval_requested';`), '4');
+  assert.equal(sql(`SELECT COUNT(*) FROM security_events WHERE user_id=${userId} AND event_type='device_registration_requested';`), String(platforms.length));
+  assert.equal(sql(`SELECT COUNT(*) FROM security_events WHERE user_id=${userId} AND event_type='device_approval_requested';`), String(platforms.length));
   console.log('No Platform Session issued by enrollment/approval. HTTPS certificate verification enabled.');
 } finally {
   try {

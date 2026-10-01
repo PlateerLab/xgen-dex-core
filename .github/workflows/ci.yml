@@ -46,16 +46,22 @@ jobs:
         run: ./gradlew :xgen-native-device:compileDebugKotlin :xgen-native-device:testDebugUnitTest --console=plain
 
   mobile-native-key-apple:
-    name: 모바일 기기 키 (iOS 타입 · 서명)
+    name: 모바일 기기 키 (iOS 타입 · 서명 · TLS)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: 실제 iOS SDK 및 P-256 서명 검증
         working-directory: apps/mobile
         run: |
-          xcrun swiftc -typecheck -target arm64-apple-ios15.1 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" modules/xgen-native-device/ios/DeviceProof.swift modules/xgen-native-device/ios/HardwareDeviceKey.swift
+          xcrun swiftc -typecheck -target arm64-apple-ios15.1 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" modules/xgen-native-device/ios/DeviceProof.swift modules/xgen-native-device/ios/HardwareDeviceKey.swift modules/xgen-native-device/ios/NativeEnrollmentTransport.swift
           xcrun swiftc modules/xgen-native-device/ios/DeviceProof.swift verify/native-device-key-codec.swift -o "$RUNNER_TEMP/xgen-native-key-codec"
           "$RUNNER_TEMP/xgen-native-key-codec"
+      - name: URLSession TLS 경계 검증 (테스트 인증서)
+        working-directory: apps/mobile
+        run: bash verify/run-native-enrollment-transport.sh
 
   # ── 캐시 워밍 (main 푸시에서만) ──
   #

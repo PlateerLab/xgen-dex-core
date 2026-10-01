@@ -91,3 +91,22 @@ xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
 실제 iPhone/Android 기기에서 키 생성 → 앱 종료/재실행 → 같은 공개키·설치 ID 복원 → challenge 서명, 잠금/화면 잠금 해제 및 계정 전환을 검증해야 한다. `verify/native-device-key-codec.swift`는 생산 codec의 서명 변환 검증이고 `verify/native-device-key-simulator.swift`는 생산 공급자의 시뮬레이터 거절 검증 앱이다. Simulator 성공 빌드와 테스트의 소프트웨어 키는 실제 하드웨어 성공 증거가 아니다. 자세한 증거·제한은 [통합 문서](../../docs/cross-platform-session-integration.md#mobile-하드웨어-기기-키-기반-2026-09-30)에 있다.
 
 After signing in to an HTTPS server, **Settings → Device security** can inspect or prepare a local hardware key. This does not enroll a trusted device or issue a Platform Session. A native build is required: Expo Go, web, iOS Simulator and unsupported hardware fail closed. Private key material stays in Secure Enclave or Android hardware-backed Keystore; JavaScript receives public metadata and fixed challenge proofs only. Lost or inconsistent records require recovery rather than silent key replacement. Physical-device generation, persistence, lock behavior and signing still need validation before the server enrollment/session and Canonical subscription steps.
+
+## 서버 기기 등록 / Server device enrollment
+
+HTTPS 서버 로그인 후 **설정 → 기기 보안**에서 키를 준비하고 **휴대폰 기기 등록**에서 `이 휴대폰 등록`을 누른다. 이름과 기존 등록 상태는 실제 계정·서버·설치 키에 묶인다. `등록·승인 상태 확인`으로 pending/trusted/정지/폐기를 확인한다.
+
+1. 승인할 신뢰 PC 브라우저를 선택한다. 기본 승인 브라우저가 하나면 최초 조회 시 선택되며, 없는 경우 직접 선택한다. 선택한 기기가 폐기되면 다른 기기로 자동 전환하지 않는다.
+2. `선택한 브라우저에 승인 요청`을 누른다. 새 요청은 이전 pending 요청을 대체한다.
+3. 6자리 코드를 양쪽에서 대조하고 선택한 브라우저의 내 페이지 → 세션에서 비밀번호·브라우저 키로 승인한다. 이 코드는 인증 수단이 아니다.
+4. Mobile에서 상태를 다시 조회해 trusted를 확인한다. 이 단계는 Platform Session을 발급하지 않는다.
+
+별도 native TLS 공급자는 enrollment API만 허용하고 Cookie/redirect/cache/credential storage를 사용하지 않는다. Android는 implicit connection retry를 끈다. iOS는 POST body stream 재공급과 앱 재시도를 거절하지만 URLSession 내부 재시도 전체의 차단 또는 exactly-once 전달을 보장하지 않는다. 서버의 일회 challenge 소비·설치 ID별 상태 조회와 결과 불확실 처리가 필요하다. login/refresh/Canonical 경로는 이 전송의 허용 범위에 없다.
+
+계정/서버/로그인 수명 변경·로그아웃·화면 이탈·백그라운드·취소 이후 결과를 버리고 OS 요청도 취소한다. 등록/승인 실패는 자동 반복하지 않으며 상태와 브라우저의 요청을 확인한 뒤 직접 다시 요청한다. 실제 휴대폰 테스트가 필요하다. 로컬 Compose 계약 검증은 저장소 루트에서 `node --import tsx scripts/native-platform-session-compose.mts --mobile-controller`로 실행하며 소프트웨어 테스트 키와 Node TLS bridge를 쓰고 임시 자료를 정리한다.
+
+After preparing a local hardware key, Mobile Settings can register this phone, reconcile its server trust status and request approval from a selected trusted PC browser. Compare the six-digit display code, approve using password/browser key on that browser, then explicitly refresh Mobile status. A unique default approver is preselected once; missing or revoked selections require a deliberate new choice. Enrollment does not issue a session. Dedicated native TLS enforces a narrow enrollment allowlist and rejects cookie/redirect reuse. Android disables implicit connection retries. iOS refuses replacement POST streams and app retries, but URLSession provides no exactly-once delivery guarantee. Cancellations and account/screen changes discard late results. Physical-device/UI success and session/Canonical wiring remain follow-up gates.
+
+macOS에서 `apps/mobile` 기준 `bash verify/run-native-enrollment-transport.sh`는 임시 TLS leaf 인증서와 실제 URLSession으로 헤더·Cookie·redirect·stream cap·UTF-8·취소·POST 연결 분실을 검증한다. `NATIVE_ENROLLMENT_TRANSPORT_TESTING`은 이 임시 verifier에만 사용하고 앱 빌드에는 설정하지 않는다. 임시 인증서는 production 신뢰 저장소에 등록하지 않으며 종료 시 서버와 키를 정리한다.
+
+On macOS, run `bash verify/run-native-enrollment-transport.sh` from `apps/mobile` for a real URLSession TLS fixture. Its temporary leaf certificate is injected only into a verifier built with `NATIVE_ENROLLMENT_TRANSPORT_TESTING`, never into a production app or system trust store. The fixture server and key are removed on exit.

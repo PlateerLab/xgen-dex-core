@@ -5,7 +5,7 @@
 
 ## 현재 변경 묶음
 
-Mobile의 access/refresh 안전 저장 이행에 이어, native 기기 등록·Platform Session 연결에 필요한 하드웨어 P-256 키 공급자를 추가했다. 이번 묶음은 로컬 키 준비·조회·고정 challenge 서명까지이며 서버 등록, 세션 발급 및 Canonical 구독은 후속 연결이다. 아래 Mobile 절에 검증 범위와 실제 기기 관문을 기록한다.
+Mobile 하드웨어 P-256 키 공급자에 이어 설정 화면에 서버 기기 등록·조회·선택 브라우저 승인 요청을 연결했다. 세션 발급·보관·DPoP 및 Canonical 구독은 후속 연결이다. 아래 Mobile 절에 검증 범위와 실제 기기 관문을 기록한다.
 
 ## 이후 통합 관문
 
@@ -225,3 +225,44 @@ node --import tsx scripts/native-platform-session-compose.mts --cli --vscode --d
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These percentages estimate remaining design work, not test coverage or a delivery schedule. This increment adds a local hardware-key provider and readiness controls. It does not grant device trust or issue a server session. iOS Secure Enclave and Android hardware-backed P-256 keys remain inside their native providers; JavaScript receives public metadata and fixed ceremony proofs only. Missing or inconsistent key/identity records require explicit recovery. Simulator creation, lookup and signing are verified to fail closed. Physical-device success, Mobile HTTPS enrollment/session storage/DPoP, and Canonical subscriptions remain integration gates. The SDK/runtime Workflow overlay stays unchanged; no package release or Compose server validation was performed in this increment.
+
+## Mobile 서버 기기 등록과 선택 브라우저 승인 (2026-10-01)
+
+Mobile 설정 → **기기 보안**에서 로컬 키를 준비한 뒤 **휴대폰 기기 등록**에서 이름을 입력하고 등록한다. `등록·승인 상태 확인`은 자신의 설치 키에 바인딩된 서버 상태와 승인 가능한 신뢰 브라우저를 조회한다. 기본 승인 브라우저가 하나면 최초 조회에 선택해 표시하고, 기본값이 없으면 사용자가 직접 고른다. 선택한 브라우저가 현재 신뢰 목록에서 사라지면 다른 기기로 자동 전환하지 않는다. 신뢰 browser가 없거나 최초 등록·복구·이관이 필요한 경우 PC 브라우저에서 그 절차를 완료하도록 표시한다.
+
+- 기존 Mobile 로그인 결과의 실제 사용자 ID·HTTPS origin·로그인 수명에 공급자를 바인딩한다. `buildClient.nativeAccount`는 logout 시작 시 동기적으로 무효화되며 같은 계정 재로그인도 별도 수명이다. 각 작업은 시작할 때의 Bearer를 고정하고, 중간 회전이나 계정 변경은 완료를 중단한다. 같은 로그인에서 토큰이 정상 회전한 뒤에는 새 토큰으로 명시적 상태 조회가 가능하다. 새 비밀번호 입력·자동 임시 로그인·legacy refresh fallback·자격증명 저장을 이 등록 기능에 추가하지 않았다.
+- `native-device-enrollment.ts`는 공통 `NativePlatformSessionClient`를 사용한다. 기존 등록 상태가 있으면 등록 complete를 반복하지 않는다. pending 상태에서만 승인 요청을 만들고, 직전 신뢰 목록에서 선택한 web browser를 다시 확인한다. 서버는 별도로 현재 trust·기기 키·challenge를 검증한다. 새 요청은 이전 pending 선택을 대체할 수 있으므로 UI에 안내하고 6자리 대조 코드·만료 시각을 표시한다. 이 코드는 양쪽 화면 대조용이며 인증 수단이 아니다.
+- 등록·승인·조회는 서버 session을 발급하거나 Canonical history를 읽지 않는다. 승인 브라우저에서 비밀번호·브라우저 키 검증을 완료한 뒤 Mobile에서 다시 조회해야 trusted로 표시된다. 응답 분실·잘못된 응답·timeout에는 이전 승인 코드를 지우고 결과 불확실 상태를 표시하며 자동 재시도하지 않는다. 사용자가 상태와 브라우저의 요청을 확인한 뒤 새 요청을 명시적으로 보낼 수 있다.
+- 작업은 동시에 하나만 실행하고 전체 10초 제한을 둔다. 화면 이탈·백그라운드·로그아웃·계정/서버 변경 시 controller와 OS 요청을 취소하며 늦은 결과로 이전 화면 상태를 복원하지 않는다. foreground 복귀는 새 owner를 준비할 뿐 HTTP 요청을 자동 실행하지 않는다. snapshot에는 공개 등록/신뢰/승인 상태만 포함하고 Bearer·refresh·개인키·OS 오류 원문을 표시하지 않는다.
+
+### Native TLS 전송과 재전송 경계
+
+`native-enrollment-http.ts`는 enrollment 경로만 허용하는 fetch 어댑터이며 RN/global fetch를 호출하지 않는다. 로컬 Expo 모듈의 별도 전송은 HTTPS origin, GET/POST별 경로, 안전한 Bearer, JSON object와 요청 32 KiB/응답 64 KiB 제한을 OS 계층에서도 다시 확인한다. 잘못된 UTF-8과 3xx를 거절한다. Cookie/Origin/임의 사용자 헤더를 받지 않고, Cookie·캐시·기존 credential storage를 사용하지 않는다. 각 요청 ID는 OS가 예약한 UUID이며 만료/없는 예약·중복 실행·시작 전 취소는 socket 전에 거절한다. 시스템 TLS 신뢰·호스트 검증을 유지한다. 테스트 CA는 fixture에서만 사용한다.
+
+- Android는 별도 OkHttp client의 connection retry/redirect/SSL redirect를 끄고 CookieJar·authenticator·proxy authenticator·cache를 비운다. 실제 TLS fixture에서 연결 분실 시 요청 1회, redirect·Set-Cookie·HTTP 인증·stream cap·취소 경계를 확인한다. 버전 4.9.2는 현재 React Native 0.79의 기존 OkHttp 계약과 동일하며 [OkHttp 공식 설정](https://github.com/square/okhttp/blob/parent-4.9.2/okhttp/src/main/kotlin/okhttp3/OkHttpClient.kt)을 사용한다.
+- iOS는 요청마다 [ephemeral URLSession](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/ephemeral)을 만들고 Cookie/credential/cache를 비운다. redirect를 거절하고 기본 server trust 처리만 허용한다. POST는 one-shot body stream이며 [새 body stream 요청](https://developer.apple.com/documentation/foundation/urlsessiontaskdelegate/urlsession(_:task:neednewbodystream:))을 거절하고 앱 코드에서 자동 반복하지 않는다. **URLSession 공개 API는 OS 내부 재시도 전체를 끄는 보장을 제공하지 않으므로 exactly-once 네트워크 전달을 주장하지 않는다.** 서버의 1회 challenge/flow 소비와 설치 ID별 등록 상태 조회가 중복 부작용을 제한하고, 완료 결과 분실은 성공으로 처리하지 않는다. 이 공급자의 allowlist에는 login/refresh/logout/session/Canonical API가 없으며 세션 회전에 확장하기 전에 해당 전송 경계를 별도 검토해야 한다.
+
+### 검증 증거와 남은 관문
+
+작업 브랜치 `feat/cross-platform-mobile-enrollment`, 기준 통합 SHA `3dff400be278910f41855cc6e06cacf780254838`. 최신 Head CI 통과 후 하위 PR을 통합한다.
+
+- Android production release AAR 빌드와 native JUnit **13/13**(키 codec 4 + TLS 전송 9), iPhoneOS 실제 SDK/deployment target 15.1 production typecheck, 새 HTTP Promise bridge를 포함한 iOS 앱 전체 Simulator Debug 빌드가 통과했다. 별도 실제 macOS URLSession TLS fixture는 고정 헤더·POST body, Cookie 미재사용, 302·chunked 65537·잘못된 UTF-8 거절, 활성 취소와 시작 전 취소, 연결 절단 POST 수신 1회를 확인했다. 테스트 TLS leaf anchor는 `NATIVE_ENROLLMENT_TRANSPORT_TESTING`으로 컴파일한 임시 verifier에만 주입하며 production 앱의 기본 TLS 신뢰를 변경하지 않는다. 검증 스크립트는 **apps/mobile에서** `bash verify/run-native-enrollment-transport.sh`로 실행하고 CI에서도 같은 TLS 경계를 검사한다.
+- Mobile **70/70**, typecheck, 전체 계약 검사, iOS/Android Metro 번들 통과. 신규 13개는 멱등 등록·브라우저 선택·default 부재·신뢰 변경·작업 사이/진행 중 계정 변경·토큰 회전·취소·중복 실행·늦은 응답·크기/헤더/경로 경계와 비밀 미노출을 검증한다.
+- 실제 Compose `scripts/native-platform-session-compose.mts --mobile-controller`에서 생산 Mobile controller와 JS 어댑터의 등록 → 같은 설치 재등록 조회 → 선택 브라우저 키/비밀번호 승인 → trusted 재조회 및 옛 대조 코드 삭제가 통과했다. Mobile 기기·승인 요청 각 1개, Platform Session 0개, ACTIVE login/refresh 503을 확인했다. 임시 일반 계정·기기·승인 요청·보안 이벤트/outbox·로그인 로그를 정리했다. **키는 소프트웨어 fixture이고 HTTP bridge는 검증된 Node TLS이므로 실기기 하드웨어·OS 전송·생산 Mobile UI의 성공 검증으로 취급하지 않는다.**
+- 서비스별 `.env` override와 소스/실행 컨테이너의 통합 브랜치를 확인했다. Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`; 기본 인프라·core/gateway와 `workflow`·`frontend` 프로필, `xgen-local-https` 3443, `PLATFORM_SESSION_MODE=enrollment`. Frontend는 git 실행 파일이 없어 실제 `/app/.git/HEAD`와 branch ref 및 소스 bind mount로 확인했다. 이번 변경은 DEX Mobile 소스이며 서버 코드/브랜치를 새로 바꾸지 않았다.
+- Workflow의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`·runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` 임시 source snapshot mount와 실제 import 경로(`/opt/xgen-local-sdk/src/xgen_sdk`, `/opt/xgen-local-runtime/src/xgen_agent_runtime`)를 확인했다. 패키지/앱 배포는 수행하지 않았다.
+- 환경변수 추가·변경·삭제가 없어 Infra 참조 문서는 변경하지 않는다. 로컬 native 모듈이 없는 Expo Go/web와 Secure Enclave 없는 Simulator는 이전과 같이 키 작업을 차단한다. 실제 iPhone/Android 등록·복원·잠금·브라우저 승인과 Mobile UI 검증, ACTIVE/takeover 수령, Mobile vault/journal·DPoP·Canonical watcher가 남는다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 6% | Mobile 실기기·세션 보관/DPoP, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These percentages estimate remaining design work rather than coverage or a delivery schedule. Mobile Settings now connects native enrollment, status reconciliation and an explicitly selected trusted browser through the common protocol. Account lifetime and cancellation boundaries discard stale results; enrollment neither issues a Platform Session nor grants trust automatically. The actual Compose test uses a software fixture key and a Node TLS bridge, so it does not prove physical-device hardware, native OS transport or production UI success. Android disables implicit connection retries; iOS refuses replacement POST streams and app retries, but URLSession does not guarantee exactly-once delivery. The narrow enrollment allowlist does not permit session rotation or Canonical access. Physical-device verification and Mobile session vault/DPoP/subscription wiring remain gates. Workflow SDK/runtime stays on its temporary local overlay without release.

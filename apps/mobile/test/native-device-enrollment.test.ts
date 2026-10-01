@@ -106,8 +106,16 @@ test('account/server/logout/relogin/token changes discard late results and never
     while (!done) await new Promise((r) => setImmediate(r));
     f.change(changed); done(null); await assert.rejects(pending);
     assert.equal(f.calls.length, 1); assert.equal(f.enrollment.snapshot().registration, null);
-    await assert.rejects(f.enrollment.inspect());
+    if (changed?.accessToken !== 'rotated-token') await assert.rejects(f.enrollment.inspect());
   }
+});
+test('account changes between operations clear old state before HTTP; same-login token rotation allows a fresh explicit read', async () => {
+  const f = fixture(); await f.enrollment.register(); const before = f.calls.length;
+  f.change({ origin, userId: '8', authScope: 'login-2', accessToken: 'other-account' });
+  await assert.rejects(f.enrollment.inspect()); assert.equal(f.calls.length, before); assert.equal(f.enrollment.snapshot().overview, null);
+  const g = fixture(); await g.enrollment.register();
+  g.change({ origin, userId: '7', authScope: 'login-1', accessToken: 'rotated-token' });
+  await g.enrollment.inspect(); assert.equal(g.calls.at(-1)!.token, 'rotated-token');
 });
 test('one operation at a time; disposing stops native HTTP and late results cannot restore a screen', async () => {
   const f = fixture(); let done!: (v: unknown) => void; f.request(() => new Promise((r) => { done = r; }));

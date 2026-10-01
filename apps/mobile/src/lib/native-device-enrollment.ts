@@ -36,6 +36,8 @@ export function createMobileEnrollment(options: {
   keys: { identity(create?: boolean, signal?: AbortSignal): Promise<MobileDeviceIdentity> };
   fetch: typeof fetch;
 }) {
+  const initial = options.current(); if (!initial) throw new NativeAccountChanged();
+  const authority = { origin: initial.origin, userId: initial.userId, authScope: initial.authScope };
   let state: MobileEnrollmentState = { registration: null, overview: null, selectedApproverId: null, approval: null, outcomeUncertain: false };
   let selectedOnce = false; let closed = false; let active: AbortController | null = null;
   const snapshot = (): MobileEnrollmentState => structuredSnapshot(state);
@@ -52,7 +54,11 @@ export function createMobileEnrollment(options: {
   };
   async function run(action: 'inspect' | 'register' | 'request', deviceName?: string): Promise<MobileEnrollmentState> {
     if (closed) throw new MobileEnrollmentError('closed'); if (active) throw new MobileEnrollmentError('busy');
-    const current = options.current(); if (!current) throw new NativeAccountChanged();
+    const current = options.current();
+    if (!current || current.origin !== authority.origin || current.userId !== authority.userId || current.authScope !== authority.authScope) {
+      state = { registration: null, overview: null, selectedApproverId: null, approval: null, outcomeUncertain: false }; closed = true;
+      throw new NativeAccountChanged();
+    }
     const account = { ...current };
     // Context validation is also performed by the key provider before touching OS storage.
     const controller = new AbortController(); active = controller; const signal = controller.signal;
@@ -80,7 +86,8 @@ export function createMobileEnrollment(options: {
     } catch (error) {
       if (error instanceof NativeAccountChanged) {
         state = { registration: null, overview: null, selectedApproverId: null, approval: null, outcomeUncertain: false };
-        closed = true;
+        const now = options.current();
+        closed = !now || now.origin !== authority.origin || now.userId !== authority.userId || now.authScope !== authority.authScope;
       }
       if (mutationStarted && !closed) state = { ...state, approval: null, outcomeUncertain: true };
       // If the selected approver disappeared, do not silently choose another trusted device.

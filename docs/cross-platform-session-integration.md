@@ -399,9 +399,55 @@ Mobile Settings 공유 대화 보기
 | 0 기반/계약 | 22% | 운영 계약·보안 관문·통합 검증 |
 | 1 PlatformSession | 5% | Mobile 실기기·UI, 실제 ACTIVE/takeover 수령 |
 | 2 CanonicalSession | 21% | Native WS ticket/socket·기존 채팅 송신 이행·실서버 양성 검증 |
-| 3 개인 설정 | 95% | 대부분의 기능 구현 |
-| 4 전 플랫폼 UI | 95% | 통합 사용 흐름과 UX |
-| 5 보안/운영 | 90% | 운영 관측·복구·배포 검증 |
-| 6 검증/릴리스 | 100% | 전체 실사용·보호 브랜치 승인·배포 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 검증 후 단계적 제거 |
 
 These percentages estimate remaining work, not coverage or delivery dates. Mobile now explicitly reads and polls session snapshots, contiguous execution events and sparse linked terminal messages using scoped native DPoP. Bounded paging/retention, final focus checks, callback isolation, journal/expiry/cancellation and permanent native response failures protect the display. Invalid message links stop instead of replaying earlier pages repeatedly. JS/protocol tests, Android native release tests/AAR, real iPhoneOS typecheck, full iOS Simulator build, Metro exports and enrollment-mode Compose rejection/cleanup pass. All actual server branches/mounts were verified; Workflow advanced to ee007d09 while preserving unreleased SDK/runtime source overlays. Real ACTIVE/takeover, physical SecureStore/hardware/UI, native WS and existing chat send migration remain gates. Parent PR90 stays Draft.
+
+## Mobile 인증 WebSocket 수신 및 HTTP 재조회 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-ws`, 기준 통합 SHA `37e25740b47ad6de5ed8981a925351a5b4b26b`, 하위 [PR143](https://github.com/PlateerLab/xgen-dex-core/pull/143) → `feat/cross-platform-session`. 상위 PR90은 Draft 유지.
+
+```text
+Mobile Settings 대화 변경 구독 시작
+  → 계정/hardware identity/SecureStore journal 확인
+  → bounded HTTP snapshot/events/messages 및 최종 focus 확인
+  → native WSS /agent-sessions/{UUID}/events?after_seq=N
+      Authorization: DPoP + 새 GET proof (HTTPS/query-free htu)
+  → 연속 프레임 검증 → HTTP 재조회 → 검증된 대화 표시
+  → 조용할 때도 기본 2초 HTTP 확인
+  → focus/vault 세대 변경은 종료 확인 후 최신 연결
+```
+
+### 구현과 복구 경계
+
+- iOS URLSessionWebSocketTask/Android OkHttp + Expo 6인자 open/pull next/close를 추가했다. canonical HTTPS origin/lowercase UUID/safe decimal cursor/JWT 형식을 검증하고 native가 exact WSS route를 구성한다. 브라우저 전용 WS ticket을 Mobile에 사용하지 않는다. Cookie/Origin/subprotocol/cache/ambient authenticator/redirect/app retry 및 앱 데이터 송신은 제공하지 않는다. OS TLS/hostname 검증은 유지한다.
+- JS와 native가 같은 서버의 연결 종료를 확인할 때까지 새 연결을 차단한다. 예약/active/closing은 OS별 최대 64개다. 예약 TTL60초, 확인된 종료 tombstone도 제한/정리한다. native close 실패에는 JS latch를 해제하지 않으며 OS 완료 대신 timeout을 종료 증거로 취급하지 않는다. Android graceful close는 peer 무응답 시 약 60초 취소 대기가 가능하고 watcher의 반복 busy는 bounded 중단한다.
+- text UTF8 1MiB, iOS 단일 pending receive/maximumMessageSize, Android 8프레임/2MiB 전달 queue를 적용했다. Android frame 검사는 OkHttp 디코딩 후 적용되므로 OS 내부 할당 전 상한을 보장하지 않는다. U+FFFD도 보수적으로 거절한다. binary/잘못된 UTF8/queue overflow/protocol close는 영구 오류로 중단한다.
+- WS는 receive-only wakeup이며 화면 본문/상태는 기존 HTTP 검증 projection을 사용한다. 한 번의 pending next를 quiet timer 이후에도 유지해 중복 pull을 막는다. 단발 조회는 WS를 열지 않는다. HTTP backlog는 먼저 읽고 focus/account 변경, 화면 이탈/백그라운드, 취소, 늦은 프레임은 이전 연결과 표시를 폐기한다. vault lock은 연결 수명 동안 보유하지 않는다.
+- HTTP마다 vault를 다시 읽고 token generation이 바뀌면 연결을 교체한다. 기존 WS의 인증 종료가 회전과 겹치면 기존 vault/HTTP를 한 번 확인하며 자동 발급/refresh는 하지 않는다. 인증 실패/진전 없는 반복 종료는 중단한다. handshake와 live cursor 충돌 모두 한 번 snapshot 복구를 거치고 반복 no-progress 충돌은 중단한다. HTTP/WS 커서 진전 또는 scope/session 변경은 복구 예산을 갱신한다. HTTP408/429/5xx·네트워크는 기존 capped backoff를 사용한다.
+
+### 검증과 실제 환경
+
+- Mobile **144/144** 및 타입 검사, strict/bundler Compose harness 타입 검사 통과. 실제 소프트웨어 P-256 DPoP의 HTTPS query-free htu/ath 서명, 연결 중 vault lock 해제, generation rotation, journal pre-wire 차단, 중복/늦은 결과와 실제 close ack, WS wakeup/quiet checks, transient reconnect, handshake/live conflict 복구, close 지연 중 snapshot 의도 유지, HTTP 진전·focus 해제/재연결, 인증 회전 경쟁·반복 실패를 검증했다.
+- Android release native **36/36**(device4/DPoP2/HTTP17/WS13) 및 AAR, 실제 iPhoneOS SDK typecheck(deployment target15.1), 전체 iOS Simulator Debug 앱 빌드 통과. iOS/Android Metro export도 확인한다. iOS TLS fixture는 실제 `::1`에서 canonical URL/header, cookie/origin/protocol 부재, 101/redirect·401/403/408/409/429/5xx, close codes/terminal 오류 보존, network disconnect, binary/oversize/invalid UTF8/정확1MiB, cap/예약/취소·late callback/origin latch/idempotent close/teardown을 검증한다. 인증서 주입은 테스트 컴파일에만 존재한다.
+- 실제 Compose `--mobile-ws`: 임시 계정 등록·선택 브라우저 승인/trusted → login503 → durable token-free login_pending → 생산 source/live watcher의 인증 중단과 Canonical GET **0회**, native socket 예약/handshake **0회** → 명시적 로컬 복구·trusted 유지 및 임시 DB 자료 정리 통과. **memory vault/software key/Node TLS seams**이며 ACTIVE 서버의 WSS 성공이나 물리 기기 결합 검증으로 보고하지 않는다.
+- `.env` branch overrides, clean source/container HEAD/ref와 `/app` mount를 직접 확인했다. 모두 `feat/cross-platform-session`: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`. 기본 인프라/core/gateway + workflow/frontend 프로필, HTTPS3443, enrollment mode를 사용했고 이 작업은 서비스 소스를 변경하지 않는다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`/runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` snapshot과 실제 `/opt/xgen-local-sdk`/`/opt/xgen-local-runtime` import를 재확인했다. 패키지 배포 및 환경변수 변경은 없다.
+- 증거: `/tmp/cross-sync-mobile-ws-{tests,types,android,iphoneos,swift-fixture,ios-build,metro,compose-types,compose,environment,overlay}.log`. Pod/Metro 생성물 제외. 최종 Head CI와 diff/review 확인 후 하위 PR만 통합한다.
+
+### 잔여 추정치 (설계 11절의 Phase 기준)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover 수령·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 19% | 기존 채팅 송신 이행·다른 native WS·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These estimates describe remaining design work, not test coverage or delivery dates. Mobile now receives DPoP-authenticated native WSS notifications and wakes bounded HTTP conversation recovery, with periodic focus/vault checks. Reserved IDs, bounded native state, exact routes, system TLS, receive-only APIs and actual terminal acknowledgements constrain the transport. Snapshot recovery covers upgrade and live cursor conflicts; an old socket authentication close rechecks existing credentials once to handle rotation without automatic session issuance. JS/native fixtures, iOS full build and enrollment-mode Compose rejection validate their seams. Real ACTIVE/takeover, physical SecureStore/hardware/UI, other native WS surfaces and existing chat send migration remain gates. Parent PR90 stays Draft; SDK/runtime remain unreleased Workflow overlays. Phase names follow design section11.

@@ -21,6 +21,8 @@ import { createMobileAgentFetch } from '../apps/mobile/src/lib/native-agent-http
 import { createMobileAgentFocusSource } from '../apps/mobile/src/lib/native-agent-focus';
 import { createMobileAgentFocusWatcher } from '../apps/mobile/src/lib/native-agent-focus-watch';
 import { createMobileAgentConversationWatcher } from '../apps/mobile/src/lib/native-agent-conversation-watch';
+import { createMobileAgentLiveWatcher } from '../apps/mobile/src/lib/native-agent-live-watch';
+import { createMobileAgentSocketTransport } from '../apps/mobile/src/lib/native-agent-socket';
 import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
 
 const origin = 'https://localhost:3443';
@@ -72,7 +74,8 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
-const testMobileMessages = process.argv.includes('--mobile-messages');
+const testMobileWs = process.argv.includes('--mobile-ws');
+const testMobileMessages = process.argv.includes('--mobile-messages') || testMobileWs;
 const testMobileFocus = process.argv.includes('--mobile-focus') || testMobileMessages;
 const testMobileSession = process.argv.includes('--mobile-session') || testMobileFocus;
 const testMobileController = process.argv.includes('--mobile-controller') || testMobileSession;
@@ -264,7 +267,14 @@ try {
             } finally { activeHttp.delete(id); }
           }, cancelRequest(id) { activeHttp.get(id)?.abort(); },
         }, origin);
-        const source = createMobileAgentFocusSource({ current: mobileCurrent, keys: mobileKeys, vault, fetch: canonicalFetch });
+        let socketReservations = 0; let socketOpens = 0;
+        const socket = testMobileWs ? createMobileAgentSocketTransport({
+          newSocketId() { socketReservations++; return randomUUID(); },
+          async openAgentSocket() { socketOpens++; assert.fail('Pending journal must block WebSocket before wire'); },
+          async nextAgentSocket() { assert.fail('Pending journal must block WebSocket receive'); },
+          async closeAgentSocket() {},
+        }, origin) : undefined;
+        const source = createMobileAgentFocusSource({ current: mobileCurrent, keys: mobileKeys, vault, fetch: canonicalFetch, socket });
         await assert.rejects(source.reconcileFocus(null));
         const updates: unknown[] = [];
         await assert.rejects(createMobileAgentFocusWatcher(source).run((u) => updates.push(u), new AbortController().signal));
@@ -274,6 +284,13 @@ try {
           await assert.rejects(createMobileAgentConversationWatcher(source).run((u) => conversationUpdates.push(u), new AbortController().signal, true));
           assert.deepEqual(conversationUpdates, [{ type: 'reset' }, { type: 'stopped', reason: 'authentication' }]);
           console.log('Mobile production conversation source/watcher: pending journal blocks snapshots/events/messages before wire; safe updates PASS');
+        }
+        if (testMobileWs) {
+          const liveUpdates: unknown[] = [];
+          await assert.rejects(createMobileAgentLiveWatcher(source).run((u) => liveUpdates.push(u), new AbortController().signal));
+          assert.deepEqual(liveUpdates, [{ type: 'reset' }, { type: 'stopped', reason: 'authentication' }]);
+          assert.equal(socketReservations, 0); assert.equal(socketOpens, 0);
+          console.log('Mobile production live watcher + JS socket adapter: pending journal stops before native socket reservation/handshake; safe authentication stop PASS (no ACTIVE WSS success claimed)');
         }
         assert.equal(canonicalCalls, 0); assert.equal(calls, 1); assert.equal(records.size, 1); source.dispose();
         console.log('Mobile production Canonical source/watcher: enrollment-mode login_pending blocks focus/read/poll before wire; no refresh/Bearer fallback PASS');

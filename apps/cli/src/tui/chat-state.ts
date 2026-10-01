@@ -1,5 +1,5 @@
 import { INTERRUPTED_NOTE, describeStreamError, formatErrorLine } from '@dex/protocol';
-import type { ChatEvent, HistoryTurn } from '@dex/engine';
+import type { ChatEvent, HistoryTurn, ToolEvent } from '@dex/engine';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'activity' | 'system';
 
@@ -107,14 +107,8 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
     return assistant?.text ? state : { ...state, messages: appendAssistant(state.messages, event.text) };
   }
   if (event.kind === 'tool') {
-    const tool = event.event.toolName ?? 'tool';
-    const key = event.event.runId ?? tool;
-    const suffix = event.event.error
-      ? `실패: ${event.event.error}`
-      : event.event.eventType.includes('result')
-        ? '완료'
-        : '실행 중';
-    return { ...state, messages: upsertActivity(state.messages, key, `${tool} · ${suffix}`) };
+    const key = event.event.runId ?? event.event.toolName ?? 'tool';
+    return { ...state, messages: upsertActivity(state.messages, key, toolActivityText(event.event)) };
   }
   if (event.kind === 'node_status') {
     return { ...state, status: `${event.event.nodeId} · ${event.event.status}` };
@@ -162,11 +156,34 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
   return state;
 }
 
+/** 도구 한 줄 — 이 CLI 가 스트림으로 받은 턴과 지난 턴이 같은 문구를 쓴다. */
+function toolActivityText(event: ToolEvent): string {
+  const tool = event.toolName ?? 'tool';
+  const suffix = event.error ? `실패: ${event.error}` : event.eventType.includes('result') ? '완료' : '실행 중';
+  return `${tool} · ${suffix}`;
+}
+
+/**
+ * 지난 턴 → 줄. 서버가 실행 기록에서 되살린 작업 과정(`process`)이 있으면 답 아래 도구 줄(호출 하나에 한 줄,
+ * 마지막 상태)을 함께 그린다 — 스트림으로 받은 턴과 같은 모양. 다른 기기(휴대폰·웹)가 돌린 턴이 끝나면 이
+ * 화면은 이력으로 다시 그리므로, 이것이 없으면 도구 없이 결과만 남는다(2026-10-01 사용자 보고).
+ */
 function historyMessages(turns: HistoryTurn[]): ChatMessage[] {
-  return turns.flatMap((turn, index) => [
-    { id: `history-user-${index}`, role: 'user' as const, text: turn.input },
-    { id: `history-assistant-${index}`, role: 'assistant' as const, text: turn.output },
-  ]);
+  return turns.flatMap((turn, index) => {
+    const rows: ChatMessage[] = [
+      { id: `history-user-${index}`, role: 'user', text: turn.input },
+      { id: `history-assistant-${index}`, role: 'assistant', text: turn.output },
+    ];
+    for (const item of turn.process ?? []) {
+      if (item.kind !== 'tool') continue;
+      const key = `history-${index}-${item.event.toolUseId || item.event.runId || item.event.toolName || 'tool'}`;
+      const at = rows.findIndex((row) => row.activityKey === key);
+      const row: ChatMessage = { id: key, role: 'activity', activityKey: key, text: toolActivityText(item.event) };
+      if (at >= 0) rows[at] = row;
+      else rows.push(row);
+    }
+    return rows;
+  });
 }
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {

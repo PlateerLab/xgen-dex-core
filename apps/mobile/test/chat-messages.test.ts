@@ -21,6 +21,7 @@ import {
   userMessage,
   type ChatMessage,
   completeRemoteTurn,
+  mergeMissedTurns,
   startRemoteTurn,
 } from '../src/chat/message-model';
 
@@ -289,4 +290,68 @@ test('놓친 조각이 있어도 끝난 답은 완결 본문으로 채운다', (
   );
   // 맞출 수 없으면 그대로
   assert.deepEqual(reconcileFlow(flow, '전혀 다른 글'), flow);
+});
+
+// ── 다른 기기의 도구 턴이 결과만 남던 문제 (2026-10-01 사용자 보고) ──────────────
+//
+// 진행 프레임(도구)을 못 받은 화면에는 완결 행의 글만 남았다. 서버가 완결 행에 그 턴의 작업 과정을 싣고,
+// 소켓이 다시 붙으면 끊긴 사이의 턴을 이력으로 메운다 — 데스크톱과 같은 규칙.
+
+const SERVER_PROCESS = [
+  { kind: 'tool' as const, at: 10, event: { eventType: 'tool_call', toolName: 'AppList', toolUseId: 'a1' } },
+  { kind: 'tool' as const, at: 20, event: { eventType: 'tool_result', toolName: 'AppList', toolUseId: 'a1', result: '- app' } },
+  { kind: 'text' as const, at: 30, text: '두 앱 모두 정상입니다.' },
+];
+
+test('진행 프레임의 도구를 못 받았으면 완결 행이 실어 온 과정으로 채운다', () => {
+  let list = startRemoteTurn([], '앱 상태?');
+  list = appendAssistantText(ensureRemotePartial(list), '두 앱');
+  const done = completeRemoteTurn(list, { ioId: 9, input: '앱 상태?', output: '두 앱 모두 정상입니다.', process: SERVER_PROCESS })!;
+  const answer = done[1];
+  assert.equal(answer.ioId, 9);
+  assert.deepEqual(answer.flow?.map((f) => f.kind), ['tool', 'tool', 'text']);
+  assert.equal(answer.tools?.length, 1, '한 호출은 한 건');
+});
+
+test('이미 그린 답에 나중에 온 행의 과정을 붙인다 — 두 번 그리지 않는다', () => {
+  let list = startRemoteTurn([], 'q');
+  list = completeRemoteTurn(list, { ioId: 5, input: 'q', output: '답' })!;
+  assert.equal(list[1].flow, undefined);
+  const patched = completeRemoteTurn(list, { ioId: 5, input: 'q', output: '답', process: SERVER_PROCESS })!;
+  assert.equal(patched.length, 2);
+  assert.equal(patched[1].flow?.length, 3);
+  assert.equal(completeRemoteTurn(patched, { ioId: 5, input: 'q', output: '답', process: SERVER_PROCESS }), null);
+});
+
+test('구멍을 이력으로 메운다 — 놓친 턴과 그 도구 과정까지, 같은 구멍이 또 와도 한 번', () => {
+  const list = historyMessages([{ ioId: 1, input: '첫 질문', output: '첫 답' }]);
+  const turns = [
+    { ioId: 1, input: '첫 질문', output: '첫 답' },
+    { ioId: 2, input: '앱 상태?', output: '두 앱 모두 정상입니다.', process: SERVER_PROCESS },
+  ];
+  const merged = mergeMissedTurns(list, turns, false)!;
+  assert.deepEqual(merged.map((m) => m.text), ['첫 질문', '첫 답', '앱 상태?', '두 앱 모두 정상입니다.']);
+  assert.equal(merged[3].flow?.length, 3);
+  assert.equal(mergeMissedTurns(merged, turns, false), null);
+});
+
+test('끊긴 사이에 끝난 턴의 멈춘 진행분은 완결 턴으로 바뀐다', () => {
+  let list = startRemoteTurn([], '앱 상태?');
+  list = appendAssistantText(ensureRemotePartial(list), '두 앱');
+  const merged = mergeMissedTurns(list, [{ ioId: 7, input: '앱 상태?', output: '두 앱 모두 정상입니다.', process: SERVER_PROCESS }], false)!;
+  assert.deepEqual(merged.map((m) => m.text), ['앱 상태?', '두 앱 모두 정상입니다.']);
+  assert.ok(!merged.some((m) => m.remotePartial || m.remoteQuestion));
+});
+
+test('지금 도는 다른 턴의 진행분은 건드리지 않고 그 앞에 끼운다', () => {
+  let list = historyMessages([{ ioId: 1, input: 'a', output: 'A' }]);
+  list = setRemoteLive(list, live('도는 중'));
+  const merged = mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }, { ioId: 2, input: 'b', output: 'B' }, { ioId: 3, input: 'c', output: '' }], true)!;
+  assert.deepEqual(merged.map((m) => m.text), ['a', 'A', 'b', 'B', '도는 중']);
+  assert.equal(merged[4].remotePartial, true);
+});
+
+test('마지막 답에 실행 id 가 없으면 덧붙이지 않는다', () => {
+  const list = [userMessage('a'), { ...assistantPlaceholder({ streaming: false }), text: 'A(내 스트림)' }];
+  assert.equal(mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }], false), null);
 });

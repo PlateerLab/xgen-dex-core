@@ -5,7 +5,8 @@
  * 턴 — Job/sub-agent 트리거의 반응 턴 — 은 어느 스트림에도 실리지 않아
  * "새로고침해야 보이는" 상태였다. 이 허브가 대화마다
  * `/api/agentflow/ws/geny-chat/{interaction}` 을 구독해 서버 push('message')
- * 를 렌더러로 흘린다. 완결 턴만 온다(진행 중 반응 턴은 서버가 보류).
+ * 를 렌더러로 흘린다. 완결 턴만 온다(진행 중 반응 턴은 서버가 보류). 도구를 쓴 턴의 완결 행에는
+ * 서버가 실행 기록에서 되살린 작업 과정(`process`)이 함께 온다.
  *
  * 소켓 관리는 TeamsSocketHub 와 같은 원칙: main 에서 ws(node) + Bearer,
  * 백오프 재연결, 하트비트. 'unsupported'(geny 에이전트 아님)면 그 대화는
@@ -14,8 +15,10 @@
 
 import {
   parseSubscribed,
+  toHistoryProcess,
   turnAttachments,
   turnInputText,
+  type HistoryFlowItem,
   type LiveTurnSnapshot,
   type TurnAttachment,
 } from '@dex/protocol';
@@ -50,7 +53,10 @@ export type PeerTurnEvent =
       output: string;
       attachments: TurnAttachment[];
     }
-  /** 전파에 구멍이 났다 — 이때만 히스토리를 다시 읽으면 된다. */
+  /**
+   * 전파에 구멍이 났다 — 이때만 히스토리를 다시 읽으면 된다. 번호가 건너뛰었을 때와, 소켓이 끊겼다 다시
+   * 붙었을 때(그 사이에 시작해 끝난 턴은 어떤 프레임으로도 오지 않는다) 온다.
+   */
   | { kind: 'gap'; interactionId: string };
 
 export interface ConversationTurn {
@@ -60,6 +66,11 @@ export interface ConversationTurn {
   output: string;
   source: string;
   updatedAt: string;
+  /**
+   * 이 턴의 작업 과정(글·도구 순서) — 도구를 쓴 턴에만, 서버가 실행 기록에서 되살린 것. 진행 프레임을
+   * 놓친 화면도 이것으로 같은 타임라인을 그린다. 옛 서버는 싣지 않는다.
+   */
+  process?: HistoryFlowItem[];
 }
 
 interface WatchEntry {
@@ -72,6 +83,8 @@ interface WatchEntry {
   closed: boolean;
   /** 마지막으로 받은 전파 번호 — 간격이 곧 유실 신호다. */
   lastSeq: number;
+  /** 한 번이라도 구독이 확립됐는가 — 그 뒤의 구독 확립은 끊겼다 다시 붙은 것이다. */
+  subscribedOnce: boolean;
 }
 
 /**
@@ -127,6 +140,7 @@ export class ConversationWatchHub {
       heartbeat: null,
       closed: false,
       lastSeq: 0,
+      subscribedOnce: false,
     };
     this.entries.set(interactionId, entry);
     this.connect(interactionId, entry);
@@ -286,6 +300,10 @@ export class ConversationWatchHub {
         // 조용히 지나간다 — 그 구간은 히스토리 재조회가 메운다.
         entry.lastSeq = typeof frame.data?.seq === 'number' ? (frame.data.seq as number) : 0;
         this.onRunning?.(interactionId, state.running, state.live);
+        // 다시 붙었다 — 끊긴 사이에 시작해 끝난 턴은 어떤 프레임으로도 오지 않는다(완결 행도 구독 시점의
+        // 기준선에 묻힌다). 화면이 히스토리로 메우도록 구멍을 알린다. 첫 구독은 화면이 막 히스토리를 읽었다.
+        if (entry.subscribedOnce) this.onPeer?.({ kind: 'gap', interactionId });
+        entry.subscribedOnce = true;
         return;
       }
       if (frame?.type === 'exec_done' || frame?.type === 'exec_error' || frame?.type === 'exec_stopped') {
@@ -302,6 +320,7 @@ export class ConversationWatchHub {
         output: String(d.output_data ?? ''),
         source: String(d.source ?? 'user'),
         updatedAt: String(d.updated_at ?? ''),
+        process: toHistoryProcess(d.process),
       });
     });
 

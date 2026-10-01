@@ -31,6 +31,7 @@ import type {
   AgentListQuery,
   AgentListResult,
   HistoryTurn,
+  HistoryFlowItem,
   Conversation,
   VoiceConfig,
   TtsSpeakOptions,
@@ -895,6 +896,8 @@ const api = {
         output: string;
         source: string;
         updatedAt: string;
+        /** 이 턴의 작업 과정(도구를 쓴 턴만) — 서버가 실행 기록에서 되살린 것. */
+        process?: HistoryFlowItem[];
       }) => void,
     ): (() => void) => {
       const h = (_e: unknown, turn: Parameters<typeof cb>[0]) => cb(turn);

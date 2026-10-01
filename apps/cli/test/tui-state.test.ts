@@ -46,3 +46,41 @@ test('history is converted into reusable chat state', () => {
   assert.equal(state.interactionId, 'history-1');
   assert.deepEqual(state.messages.map((message) => message.text), ['question', 'answer']);
 });
+
+// 다른 기기(휴대폰·웹)가 도구를 쓰며 돌린 턴이 끝나면 이 화면은 이력으로 다시 그린다. 이력에는 서버가 실행
+// 기록에서 되살린 작업 과정(process)이 있다 — 스트림으로 받은 턴과 같은 도구 줄로 그린다(2026-10-01 사용자 보고).
+test('다른 곳에서 돈 도구 턴이 끝나면 도구 줄까지 그린다', () => {
+  let state = chatReducer(initialChatState, { type: 'history_loaded', interactionId: 'c', turns: [], running: true });
+  state = chatReducer(state, {
+    type: 'remote_finished',
+    interactionId: 'c',
+    turns: [
+      {
+        logId: 1,
+        ioId: 9,
+        interactionId: 'c',
+        workflowId: 'wf',
+        workflowName: 'gitlab',
+        input: '내 앱 괜찮아?',
+        output: '두 앱 모두 정상입니다.',
+        attachments: [],
+        updatedAt: '',
+        process: [
+          { kind: 'tool', at: 1, event: { eventType: 'tool_call', toolName: 'AppList', toolUseId: 'a' } },
+          { kind: 'tool', at: 2, event: { eventType: 'tool_result', toolName: 'AppList', toolUseId: 'a' } },
+          { kind: 'tool', at: 3, event: { eventType: 'tool_error', toolName: 'AppStatus', toolUseId: 'b', error: '중지됨' } },
+          { kind: 'text', at: 4, text: '두 앱 모두 정상입니다.' },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(
+    state.messages.map((m) => [m.role, m.text]),
+    [
+      ['user', '내 앱 괜찮아?'],
+      ['assistant', '두 앱 모두 정상입니다.'],
+      ['activity', 'AppList · 완료'],
+      ['activity', 'AppStatus · 실패: 중지됨'],
+    ],
+  );
+});

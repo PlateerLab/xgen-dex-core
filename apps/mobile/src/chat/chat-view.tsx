@@ -33,7 +33,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import type { Agent, Conversation, ToolEvent } from '@dex/protocol';
+import type { Agent, Conversation, HistoryFlowItem, ToolEvent } from '@dex/protocol';
 import { describeError, describeStreamError, turnEventToChatEvent } from '@dex/protocol';
 import {
   createChat,
@@ -57,6 +57,7 @@ import { toWire } from '../lib/mobile-folders';
 import {
   appendAssistantText,
   assistantPlaceholder,
+  attachProcessById,
   attachTool,
   completeRemoteTurn,
   dropRemotePartials,
@@ -64,6 +65,7 @@ import {
   finishStreaming,
   historyMessages,
   mergeHistory,
+  mergeMissedTurns,
   setError,
   setRemoteLive,
   startRemoteTurn,
@@ -229,6 +231,11 @@ export function ChatView({
   useEffect(() => {
     if (!agent) return;
     const seenExternalIo = new Set<number>();
+    /**
+     * 완결 행이 실어 온 작업 과정(실행 id 별). 행이 종료 프레임보다 먼저 오는데, 그 순간 이 폰이 그 턴을 다른
+     * 곳의 턴으로 모르면(시작·진행 프레임을 놓쳤다) 붙일 답이 아직 없다 — 종료 프레임이 답을 세울 때 꺼내 쓴다.
+     */
+    const serverProcess = new Map<number, HistoryFlowItem[]>();
     const handle = createChat({
       wsBase: wsBaseOf(client.session.serverUrl),
       workflowId: agent.workflowId,
@@ -258,7 +265,18 @@ export function ChatView({
       // 다른 화면이 **지금** 돌리는 턴 — 시작·토큰·종료.
       onPeerTurn: (event) => {
         if (ownTurn()) return;
-        if (event.kind === 'gap') return; // 종료 프레임이 완결 본문을 싣고 온다.
+        if (event.kind === 'gap') {
+          // 구멍 — 번호가 건너뛰었거나 소켓이 끊겼다 다시 붙었다(화면을 끄고 켰다). 끊긴 사이에 시작해 끝난
+          // 턴은 어떤 프레임으로도 오지 않는다. 이력으로 메운다 — 놓친 턴과 그 도구 과정까지.
+          void client.api.history
+            .snapshot(agent.workflowId, interactionId, agent.workflowName)
+            .then((snap) => {
+              if (ownTurn()) return;
+              setMessages((prev) => mergeMissedTurns(prev, snap.turns, runningElsewhereRef.current) ?? prev);
+            })
+            .catch(() => undefined);
+          return;
+        }
         if (event.kind === 'started') {
           runningElsewhereRef.current = true;
           remoteTurnRef.current = true;
@@ -291,7 +309,8 @@ export function ChatView({
         }
         // 종료 — 완결 행이 먼저 와서 이미 그렸으면 그대로 둔다(같은 실행 id).
         if (event.ioId) seenExternalIo.add(event.ioId);
-        setMessages((prev) => completeRemoteTurn(prev, event) ?? prev);
+        const process = event.ioId ? serverProcess.get(event.ioId) : undefined;
+        setMessages((prev) => completeRemoteTurn(prev, { ...event, process }) ?? prev);
         remoteTurnRef.current = false;
         runningElsewhereRef.current = false;
         setRunning(false);
@@ -300,9 +319,17 @@ export function ChatView({
         // 다른 기기에서 시작한 턴은 이 폰이 그린 적이 없다 — 완결 push 로 받는다.
         // 이 폰의 스트림이 그리는 턴이면 스트림이 끝낸다. 하트비트가 [끝남] 을 먼저 말했어도
         // 그 턴의 임시 말풍선이 남아 있으면 이 행이 그 자리를 대신한다.
+        if (turn.ioId && turn.process?.length) {
+          serverProcess.set(turn.ioId, turn.process);
+          if (serverProcess.size > 8) serverProcess.delete(serverProcess.keys().next().value as number);
+        }
         const report = turn.source === 'subagent_report';
         const mine = ownTurn() || (!runningElsewhereRef.current && !remoteTurnRef.current);
-        if (!report && mine) return;
+        if (!report && mine) {
+          // 이미 그린 턴이다 — 그 답에 도구 과정이 없으면(진행 프레임을 놓쳤다) 서버가 실어 온 과정만 붙인다.
+          if (!ownTurn()) setMessages((prev) => attachProcessById(prev, turn.ioId, turn.process) ?? prev);
+          return;
+        }
         if (!turn.output) return;
         if (turn.ioId && seenExternalIo.has(turn.ioId)) return;
         if (turn.ioId) seenExternalIo.add(turn.ioId);

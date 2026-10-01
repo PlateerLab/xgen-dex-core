@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import type { ConnectorDevice, ConversationModelState } from '@dex/protocol';
+import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
@@ -504,6 +504,23 @@ export class DexEngine {
   /** 에이전트의 모델로 되돌린다. */
   async resetConversationModel(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
     return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.reset(interactionId, workflowId));
+  }
+
+  /** 이 대화의 생각(추론) 값을 바꾼다 — 지금 모델이 받는 값만(상태의 `thinking.options`), 다음 답변부터. */
+  async setConversationThinking(
+    workflowId: string,
+    interactionId: string,
+    thinking: ThinkingValue,
+    requestedProfile?: string,
+  ): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.conversationModel.setThinking(interactionId, workflowId, thinking),
+    );
+  }
+
+  /** 에이전트의 생각 값으로 되돌린다. */
+  async resetConversationThinking(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.resetThinking(interactionId, workflowId));
   }
 
   /**

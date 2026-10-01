@@ -9192,3 +9192,19 @@ button.sm {
     max-width: 170px;
   }
 }
+
+/* ── 생각(추론) 선택기 — 모델 칩 오른쪽, 같은 모양 ─────────────────── */
+.thinking-chip.unsupported {
+  border-style: dashed;
+  color: var(--muted);
+}
+.thinking-menu {
+  width: 250px;
+}
+.thinking-opt-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}

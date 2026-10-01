@@ -312,6 +312,12 @@ const api = {
     /** 에이전트의 모델로 되돌린다. */
     resetConversationModel: (iid: string, wf: string): Promise<ConversationModelState> =>
       ipcRenderer.invoke(CHANNELS.conversationModelReset, iid, wf),
+    /** 이 대화의 생각(추론) 값을 바꾼다 — 다음 답변부터. */
+    setConversationThinking: (iid: string, wf: string, thinking: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationThinkingSet, iid, wf, thinking),
+    /** 에이전트의 생각 값으로 되돌린다. */
+    resetConversationThinking: (iid: string, wf: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationThinkingReset, iid, wf),
     /** 다른 화면이 이 대화의 모델을 바꿨다. */
     onConversationModelChanged: (
       cb: (interactionId: string, notice: Record<string, unknown>) => void,

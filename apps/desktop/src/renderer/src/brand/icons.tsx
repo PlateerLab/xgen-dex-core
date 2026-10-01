@@ -380,6 +380,14 @@ export const ModelIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
+/** 생각(추론) — 전구. 모델 칩 오른쪽 생각 선택기. */
+export const ThinkingIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M9 18h6M10 21h4" />
+    <path d="M12 3a6 6 0 0 0-3.6 10.8c.4.3.6.8.6 1.2v1h6v-1c0-.4.2-.9.6-1.2A6 6 0 0 0 12 3z" />
+  </svg>
+);
+
 /** 더 보기 — 가로 점 셋. */
 export const MoreIcon: React.FC<P> = ({ size = 16, className }) => (
   <svg {...base(size)} className={className}>

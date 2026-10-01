@@ -1,5 +1,5 @@
 /**
- * 모델 선택기 — 채팅 입력창 위, [Teams 대화 붙이기] 오른쪽.
+ * 모델 선택기 — 채팅 입력창 위, [Teams 대화 붙이기] 오른쪽. 그 오른쪽이 생각(추론) 선택기다.
  *
  * 지금 모델을 "제공자: 모델"(예 `Anthropic: Haiku 4.5`)로 보이고, 누르면 고를 수 있는 모델이
  * 위로 펼쳐진다(지금 모델이 맨 위). 고르면 **이 대화만** 그 모델로 돈다 — 다음 답변부터, 세션을
@@ -9,15 +9,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   MODEL_PICKER_TEXT,
+  THINKING_PICKER_TEXT,
   UNSUPPORTED_MODEL_STATE,
   applyModelNotice,
   orderedChoices,
   sameModel,
+  selectedThinking,
+  thinkingChipLabel,
+  thinkingValueLabel,
   type ConversationModelState,
   type ModelChoice,
+  type ThinkingState,
+  type ThinkingValue,
 } from '@dex/protocol/conversation-model';
 import { xgen } from '../bridge';
-import { CheckIcon, ChevronDownIcon, ModelIcon } from '../brand/icons';
+import { CheckIcon, ChevronDownIcon, ModelIcon, ThinkingIcon } from '../brand/icons';
 import { Tooltip } from './Tooltip';
 
 /** 이 대화의 모델 — 읽기·고르기·다른 화면의 변경 따라가기. */
@@ -60,11 +66,134 @@ export function useConversationModel(interactionId: string, workflowId: string) 
     [interactionId, workflowId, state.current],
   );
 
-  return { state, saving, error, choose };
+  const chooseThinking = useCallback(
+    async (value: ThinkingValue) => {
+      const thinking = state.thinking;
+      if (!thinking || value === selectedThinking(thinking)) return;
+      setSaving(true);
+      setError('');
+      try {
+        setState(await xgen.agentData.setConversationThinking(interactionId, workflowId, value));
+      } catch {
+        setError(THINKING_PICKER_TEXT.failed);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [interactionId, workflowId, state.thinking],
+  );
+
+  return { state, saving, error, choose, chooseThinking };
 }
 
+/**
+ * 생각(추론) 선택기 — 모델 칩 오른쪽. 고를 수 있는 값은 **지금 모델이 받는 것만** 서버가 준다:
+ * 강도(낮게·보통·높게…), 켜기/끄기, 또는 조절 불가. 조절할 수 없는 모델은 눌리지 않는 칩으로
+ * "생각 조절 불가" 라고 말한다. 모델을 바꾸면 선택지가 따라 바뀐다(같은 상태 묶음).
+ */
+const ThinkingChip: React.FC<{
+  thinking: ThinkingState;
+  locked: boolean;
+  saving: boolean;
+  onPick: (value: ThinkingValue) => void;
+}> = ({ thinking, locked, saving, onPick }) => {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const pressed = selectedThinking(thinking);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) requestAnimationFrame(() => list.current?.querySelector<HTMLButtonElement>('.model-opt.current, .model-opt')?.focus());
+  }, [open]);
+
+  const label = thinkingChipLabel(thinking);
+  if (!thinking.supported) {
+    return (
+      <Tooltip label={THINKING_PICKER_TEXT.unsupportedHint}>
+        <button type="button" className="model-chip thinking-chip unsupported" disabled aria-label={label}>
+          <ThinkingIcon size={12} />
+          <span className="model-chip-label">{label}</span>
+        </button>
+      </Tooltip>
+    );
+  }
+
+  const onListKey = (e: React.KeyboardEvent) => {
+    const items = Array.from(list.current?.querySelectorAll<HTMLButtonElement>('.model-opt') ?? []);
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = e.key === 'ArrowDown' ? Math.min(items.length - 1, at + 1) : Math.max(0, at - 1);
+      items[next]?.focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setOpen(false);
+      wrap.current?.querySelector<HTMLButtonElement>('.thinking-chip')?.focus();
+    }
+  };
+
+  return (
+    <div className="model-picker thinking-picker" ref={wrap}>
+      <Tooltip label={locked ? THINKING_PICKER_TEXT.locked : open ? '' : '이 대화의 생각 정도'}>
+        <button
+          type="button"
+          className={`model-chip thinking-chip${open ? ' open' : ''}${locked ? ' locked' : ''}`}
+          onClick={() => setOpen((v) => !v)}
+          disabled={locked || saving}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={label}
+        >
+          <ThinkingIcon size={12} />
+          <span className="model-chip-label">{label}</span>
+          {!locked && <ChevronDownIcon size={11} />}
+        </button>
+      </Tooltip>
+      {open && (
+        <div className="model-menu thinking-menu" role="dialog" aria-label="생각 정도 고르기" onKeyDown={onListKey}>
+          <div className="model-menu-list" role="listbox" ref={list} aria-label="생각">
+            {thinking.options.map((value, i) => {
+              const isOn = value === pressed;
+              return (
+                <React.Fragment key={value}>
+                  {i === 1 && <div className="model-menu-sep" role="separator" />}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isOn}
+                    className={`model-opt${isOn ? ' current' : ''}`}
+                    onClick={() => {
+                      setOpen(false);
+                      onPick(value);
+                    }}
+                  >
+                    <span className="model-opt-check">{isOn ? <CheckIcon size={13} /> : null}</span>
+                    <span className="model-opt-label">{thinkingValueLabel(value)}</span>
+                    {value === 'auto' && <span className="thinking-opt-hint">{THINKING_PICKER_TEXT.autoHint}</span>}
+                  </button>
+                </React.Fragment>
+              );
+            })}
+          </div>
+          {!thinking.canDisable && <div className="model-menu-note">{THINKING_PICKER_TEXT.alwaysOn}</div>}
+          <div className="model-menu-note">{THINKING_PICKER_TEXT.nextTurn}</div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const ModelPicker: React.FC<{ interactionId: string; workflowId: string }> = ({ interactionId, workflowId }) => {
-  const { state, saving, error, choose } = useConversationModel(interactionId, workflowId);
+  const { state, saving, error, choose, chooseThinking } = useConversationModel(interactionId, workflowId);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const wrap = useRef<HTMLDivElement>(null);
@@ -118,6 +247,7 @@ export const ModelPicker: React.FC<{ interactionId: string; workflowId: string }
   };
 
   return (
+    <>
     <div className="model-picker" ref={wrap}>
       <Tooltip label={state.locked ? MODEL_PICKER_TEXT.locked : open ? '' : '이 대화의 모델'}>
         <button
@@ -180,5 +310,14 @@ export const ModelPicker: React.FC<{ interactionId: string; workflowId: string }
         </div>
       )}
     </div>
+    {state.thinking && (
+      <ThinkingChip
+        thinking={state.thinking}
+        locked={state.locked}
+        saving={saving}
+        onPick={(value) => void chooseThinking(value)}
+      />
+    )}
+    </>
   );
 };

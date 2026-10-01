@@ -214,6 +214,7 @@ export class DexRpcServer {
             ssh: true,
             // conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기.
             conversationModel: true,
+            conversationThinking: true,
           },
         };
       }
@@ -396,6 +397,20 @@ export class DexRpcServer {
         );
       case 'conversation/model/reset':
         return this.engine.resetConversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
+      // 대화의 생각(추론) 값 — 모델 칩 오른쪽. 고를 수 있는 값은 지금 모델이 받는 것만(서버가 검사한다).
+      case 'conversation/thinking/set':
+        return this.engine.setConversationThinking(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          requiredString(params, 'thinking') as Parameters<DexEngine['setConversationThinking']>[2],
+          optionalString(params, 'profile'),
+        );
+      case 'conversation/thinking/reset':
+        return this.engine.resetConversationThinking(
           requiredString(params, 'workflowId'),
           requiredString(params, 'interactionId'),
           optionalString(params, 'profile'),

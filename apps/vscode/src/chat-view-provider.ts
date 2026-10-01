@@ -24,11 +24,16 @@ import type {
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import {
   MODEL_PICKER_TEXT,
+  THINKING_PICKER_TEXT,
   applyModelNotice,
   orderedChoices,
   sameModel,
+  selectedThinking,
+  thinkingChipLabel,
+  thinkingValueLabel,
   type ConversationModelState,
   type ModelChoice,
+  type ThinkingValue,
 } from '@dex/protocol';
 
 /** 창을 껐다 켠 뒤 되찾을 대화가 적히는 자리(globalState). */
@@ -72,6 +77,8 @@ interface ChatViewState {
   attachments: ChatAttachmentDescriptor[];
   /** 이 대화의 지금 모델 — 입력창 아래 칩. 없으면(옛 서버·Geny 아닌 에이전트) 칩도 없다. */
   model?: { label: string; locked: boolean; saving: boolean };
+  /** 모델 칩 오른쪽 생각 칩 — 이름표·조절 가능 여부. */
+  thinking?: { label: string; supported: boolean; locked: boolean; saving: boolean };
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -728,6 +735,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
     else if (data.type === 'attach') void this.attachFiles();
     else if (data.type === 'pickModel') void this.pickModel();
+    else if (data.type === 'pickThinking') void this.pickThinking();
     else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
       this.attachments = this.attachments.filter((item) => item.attachment_id !== data.id);
       this.postState();
@@ -906,6 +914,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.model?.supported && this.model.current
           ? { label: this.model.current.label, locked: this.model.locked, saving: this.modelSaving }
           : undefined,
+      // 모델 칩 오른쪽 생각 칩 — 조절할 수 없는 모델은 눌리지 않는 "생각 조절 불가".
+      thinking:
+        this.model?.supported && this.model.current && this.model.thinking
+          ? {
+              label: thinkingChipLabel(this.model.thinking),
+              supported: this.model.thinking.supported,
+              locked: this.model.locked,
+              saving: this.modelSaving,
+            }
+          : undefined,
     };
     void this.view?.webview.postMessage({ type: 'state', state });
   }
@@ -1002,6 +1020,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  /** 생각(추론) 값 고르기 — 지금 모델이 받는 값만(서버가 준 선택지), VS Code 빠른 선택. */
+  private async pickThinking(): Promise<void> {
+    const agent = this.selectedAgent;
+    const state = this.model;
+    const target = this.modelTarget();
+    const thinking = state?.thinking;
+    if (!agent || !target || !state?.supported || !thinking || this.modelSaving) return;
+    if (!thinking.supported) {
+      void vscode.window.showInformationMessage(THINKING_PICKER_TEXT.unsupportedHint);
+      return;
+    }
+    if (state.locked) {
+      void vscode.window.showInformationMessage(THINKING_PICKER_TEXT.locked);
+      return;
+    }
+    type Item = vscode.QuickPickItem & { value?: ThinkingValue };
+    const pressed = selectedThinking(thinking);
+    const items: Item[] = thinking.options.map((value) => ({
+      label: value === pressed ? `$(check) ${thinkingValueLabel(value)}` : thinkingValueLabel(value),
+      description: value === 'auto' ? THINKING_PICKER_TEXT.autoHint : undefined,
+      value,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `${THINKING_PICKER_TEXT.title} · ${agent.workflowName}`,
+      placeHolder: thinking.canDisable ? THINKING_PICKER_TEXT.nextTurn : `${THINKING_PICKER_TEXT.alwaysOn}. ${THINKING_PICKER_TEXT.nextTurn}`,
+    });
+    const value = picked?.value;
+    if (!value || value === pressed) return;
+    if (this.selectedAgent?.workflowId !== agent.workflowId || this.modelTarget() !== target) return;
+    this.modelSaving = true;
+    this.postState();
+    try {
+      const next = await this.service.request<ConversationModelState>('conversation/thinking/set', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        interactionId: target,
+        thinking: value,
+      });
+      if (this.modelKey === `${agent.workflowId}:${target}`) this.model = next;
+    } catch (error) {
+      void vscode.window.showErrorMessage(`${THINKING_PICKER_TEXT.failed}: ${errorMessage(error)}`);
+    } finally {
+      this.modelSaving = false;
+      this.postState();
+    }
+  }
+
   private html(webview: vscode.Webview): string {
     const nonce = randomBytes(16).toString('base64');
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'chat.js'));
@@ -1086,6 +1151,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <textarea id="input" rows="2" placeholder="Agent에게 메시지 보내기" aria-label="메시지"></textarea>
         <div class="composer-actions">
           <button id="model-chip" class="model-chip hidden" type="button" aria-haspopup="listbox"><span id="model-icon" class="model-chip-icon" aria-hidden="true"></span><span id="model-label" class="model-chip-label"></span><span id="model-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>
+          <button id="thinking-chip" class="model-chip thinking-chip hidden" type="button" aria-haspopup="listbox"><span id="thinking-icon" class="model-chip-icon" aria-hidden="true"></span><span id="thinking-label" class="model-chip-label"></span><span id="thinking-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>
           <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
           <button id="attach" class="secondary-button compact" type="button" title="파일 첨부">📎 첨부</button>
           <button id="cancel" class="secondary-button hidden" type="button">응답 중지</button>

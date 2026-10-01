@@ -14,6 +14,7 @@ import {
 import type { WorkspaceGroup, WorkspaceTab } from './workspace-layout';
 
 function label(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
+  if (tab.kind === 'canonical-chat') return '공유 대화';
   if (tab.kind === 'avatar') return '아바타 설정';
   if (tab.kind === 'teams') return tab.roomName || '대화';
   if (tab.kind === 'settings') return '설정';
@@ -52,7 +53,7 @@ export const TabBar: React.FC<{
             title={label(tab, sessions)}
           >
             <span className="tab-icon">
-              {tab.kind === 'chat' ? (
+              {tab.kind === 'chat' || tab.kind === 'canonical-chat' ? (
                 <ChatIcon size={13} />
               ) : tab.kind === 'teams' ? (
                 <TeamsIcon size={13} />

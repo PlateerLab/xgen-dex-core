@@ -6,6 +6,7 @@ import {
   findTab,
   newWorkspaceLayout,
   normalizeWorkspaceLayout,
+  openCanonicalChat,
   placeBrowserBesideChat,
   removeWorkspaceTab,
   setWorkspaceRatio,
@@ -22,6 +23,21 @@ const browser = (workflowId: string) => ({
   kind: 'browser' as const,
   workflowId,
   workflowName: workflowId,
+});
+
+test('Canonical pane stays singleton after moving groups and restores no server or private data', () => {
+  let layout = openCanonicalChat(newWorkspaceLayout());
+  layout = addWorkspaceTab(layout, 'group-a', { id: 'settings', kind: 'settings' });
+  layout = dropWorkspaceTab(layout, 'canonical-chat', 'group-a', 'right');
+  layout = openCanonicalChat(layout);
+  assert.equal(layout.groups.flatMap((group) => group.tabs).filter((tab) => tab.kind === 'canonical-chat').length, 1);
+  assert.equal(findTab(layout, 'canonical-chat')?.group.activeTabId, 'canonical-chat');
+  const restored = normalizeWorkspaceLayout({ ...layout, groups: layout.groups.map((group) => ({ ...group,
+    tabs: group.tabs.map((tab) => tab.kind === 'canonical-chat' ? { ...tab,
+      sessionKey: 'private-session', workflowId: 'private-workflow', workflowName: 'private-title', input: 'private-input' } : tab),
+  })) });
+  assert.deepEqual(findTab(restored, 'canonical-chat')?.tab, { id: 'canonical-chat', kind: 'canonical-chat' });
+  assert.equal(JSON.stringify(restored).includes('private-'), false);
 });
 
 test('edge drop creates one horizontal/vertical split and never a third group', () => {

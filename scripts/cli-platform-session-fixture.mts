@@ -16,6 +16,8 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 const testLive = process.argv.includes('--live');
 const testConversation = process.argv.includes('--conversation') || testLive;
+const testTurns = process.argv.includes('--turns');
+if (testTurns && platform === 'desktop') throw new Error('Canonical turn fixture currently covers CLI and VSCode RPC, not Desktop UI.');
 const desktopElectron: string | null = platform === 'desktop' ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
@@ -54,6 +56,8 @@ const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), r
 const messageText = `native-message-answer ${'가'.repeat(24000)}`;
 let liveSequence = 4; const liveEvent = randomUUID();
 const liveSockets = new Set<WebSocket>(); const liveAccesses = new Set<string>();
+let turnVersion = 1; let executions = 0; let turnRequests = 0;
+const turnBodies = new Map<string, { serialized: string; ack: { turn_id: string; status: string; accepted_sequence: number; state_version: number; replayed: boolean } }>();
 async function verifyProof(req: IncomingMessage): Promise<string> {
   assert.equal(req.headers.cookie, undefined); assert.equal(req.headers.origin, undefined);
   assert.ok(req.headers.authorization?.startsWith('DPoP '));
@@ -144,6 +148,31 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url')); assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
     const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
     assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+    const mutationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(turns|stop)$/.exec(path);
+    if (testTurns && mutationRoute) {
+      turnRequests++; assert.equal(req.method, 'POST'); assert.equal(mutationRoute[1], agentId);
+      const send = (status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+      const conflict = (code: string) => send(409, { detail: { code, current_state_version: turnVersion, raw: 'private-server-secret' } });
+      if (mutationRoute[2] === 'stop') {
+        const last = [...turnBodies.values()].at(-1)!.ack;
+        if (body.turn_id !== last.turn_id) { conflict('TURN_ID_CONFLICT'); return; }
+        if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
+        send(202, { turn_id: body.turn_id, state_version: turnVersion, requested: true, raw: 'private-server-secret' }); return;
+      }
+      assert.equal(body.origin_id, undefined); // A process restart must not silently change the retry hash.
+      const previous = turnBodies.get(body.idempotency_key); const serialized = JSON.stringify(body);
+      if (previous) {
+        if (previous.serialized !== serialized) { conflict('IDEMPOTENCY_KEY_REUSED'); return; }
+        send(202, { ...previous.ack, replayed: true }); return;
+      }
+      if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
+      if (body.idempotency_key === 'unauthorized') { send(401, { raw: 'private-server-secret' }); return; }
+      executions++; turnVersion++;
+      const ack = { turn_id: randomUUID(), status: 'accepted', accepted_sequence: executions, state_version: turnVersion, replayed: false };
+      turnBodies.set(body.idempotency_key, { serialized, ack });
+      if (body.idempotency_key === 'lost-ack') { req.socket.destroy(); return; }
+      send(202, { ...ack, raw: 'private-server-secret' }); return;
+    }
     const conversationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(snapshot|events|messages)(?:\?(.*))?$/.exec(path);
     if (testConversation && conversationRoute) {
       assert.equal(conversationRoute[1], focus.active_agent_session_id); messageAccesses.add(access);
@@ -217,6 +246,64 @@ async function cli(action: string, expectedExit = 0) {
     });
     child.stdin.end(secret ? password : '');
   });
+}
+async function canonicalCli(input: string, version: number, key: string, expectedExit = 0): Promise<any> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'chat', '--canonical', '--user-id', userId,
+      '--session-id', agentId, '--expected-state-version', String(version), '--idempotency-key', key, '--stdin', '--json'],
+      { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = ''; let stderr = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', () => { clearTimeout(timer); reject(new Error('Canonical fixture CLI failed to start')); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      try {
+        assert.equal(code, expectedExit);
+        for (const forbidden of [...secrets, input, 'private-server-secret', 'accessToken', 'refreshToken', 'privateKeyPkcs8']) {
+          assert.equal(output.includes(forbidden), false); assert.equal(stderr.includes(forbidden), false);
+        }
+        resolveResult(JSON.parse(expectedExit ? stderr : output));
+      } catch { reject(new Error('Canonical fixture CLI validation failed; output withheld')); }
+    });
+    child.stdin.end(input);
+  });
+}
+async function turnFixture(client?: DexRpcClient): Promise<void> {
+  const prompt = `${'한'.repeat(24000)}\nintentional trailing newline\n`; secrets.add(prompt);
+  const submit = async (text: string, version: number, key: string, exit = 0) => {
+    if (!client) return canonicalCli(text, version, key, exit);
+    try {
+      const value = await client.request<any>('native/submit-turn', { user_id: userId, agent_session_id: agentId,
+        input_text: text, expected_state_version: version, idempotency_key: key });
+      for (const secret of [...secrets, 'private-server-secret']) assert.equal(JSON.stringify(value).includes(secret), false);
+      assert.equal(exit, 0); assert.equal(value.platform_type, 'vscode'); return { result: value.mutation };
+    } catch (error) {
+      assert.notEqual(exit, 0); assert.ok(error instanceof DexRpcError);
+      for (const secret of [...secrets, 'private-server-secret']) assert.equal(JSON.stringify(error.data).includes(secret), false);
+      assert.equal(error.engineCode, exit === 2 ? 'usage_error' : exit === 3 ? 'auth_required' : 'network_error');
+      return { error: { details: (error.data as { details?: unknown })?.details } };
+    }
+  };
+  const first = await submit(prompt, 1, 'first'); assert.equal(first.result.replayed, false);
+  assert.equal(JSON.parse(turnBodies.get('first')!.serialized).input_text, prompt);
+  const replay = await submit(prompt, 1, 'first'); assert.equal(replay.result.replayed, true);
+  assert.equal(replay.result.turn_id, first.result.turn_id); assert.equal(executions, 1);
+  await submit(`${prompt}changed`, 1, 'first', 2); await submit(prompt, 1, 'stale', 2); assert.equal(executions, 1);
+  const before = turnRequests;
+  const uncertain = await submit(prompt, 2, 'lost-ack', 4);
+  assert.equal(uncertain.error.details.outcome, 'unknown'); assert.equal(turnRequests, before + 1); assert.equal(executions, 2);
+  const recovered = await submit(prompt, 2, 'lost-ack'); assert.equal(recovered.result.replayed, true); assert.equal(executions, 2);
+  const authorization = await submit(prompt, 3, 'unauthorized', 3);
+  assert.equal(authorization.error.details.outcome, 'rejected'); assert.equal(turnRequests, before + 3);
+  if (client) {
+    const stopped = await client.request<any>('native/stop-turn', { user_id: userId, agent_session_id: agentId,
+      turn_id: recovered.result.turn_id, expected_state_version: 3 });
+    assert.deepEqual(stopped.mutation, { turn_id: recovered.result.turn_id, state_version: 3, requested: true });
+    await assert.rejects(client.request('native/stop-turn', { user_id: userId, agent_session_id: agentId,
+      turn_id: randomUUID(), expected_state_version: 3 }), (e: unknown) => e instanceof DexRpcError && e.engineCode === 'usage_error');
+  }
+  console.log(`${platform}: built CLI/RPC / real HTTPS P-256 DPoP / exact multiline >64KiB input / replay once / CAS conflict / lost ack explicit retry / 401 no refresh${client ? ' / stop request binding' : ''} PASS`);
 }
 function watch(expectedExit: number, action = 'watch-focus') {
   const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', action, '--user-id', userId, '--jsonl', '--interval-ms', '200'],
@@ -315,6 +402,7 @@ async function vscodeFixture() {
     await first.stop();
     const restored = client(); assert.equal((await session(restored, 'status')).result.state, 'active');
     await session(restored, 'refresh');
+    if (testTurns) await turnFixture(restored);
     restored.onNotification((n) => { if (n.method === 'native/focus' || n.method === 'native/conversation') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
     watching = true;
     const started = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 }); replies.push(started);
@@ -375,6 +463,7 @@ try {
   const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
   assert.deepEqual(await cli('status'), loggedIn);
   await cli('focus'); await cli('refresh'); await cli('focus');
+  if (testTurns) await turnFixture();
   watching = true;
   const subscriber = watch(3);
   try {

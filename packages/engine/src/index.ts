@@ -53,6 +53,7 @@ export * from './native-agent-focus-watch';
 export * from './native-agent-conversation-watch';
 export * from './native-agent-live-watch';
 export * from './native-agent-socket';
+export * from './native-agent-mutation-http';
 export * from './errors';
 export * from './local-tools-config';
 

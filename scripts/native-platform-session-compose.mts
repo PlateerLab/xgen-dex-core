@@ -75,6 +75,7 @@ const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
 const testNativeWs = process.argv.includes('--native-ws');
+const testNativeTurns = process.argv.includes('--native-turns');
 const testNativeMessages = process.argv.includes('--native-messages') || testNativeWs;
 const testMobileWs = process.argv.includes('--mobile-ws');
 const testMobileMessages = process.argv.includes('--mobile-messages') || testMobileWs;
@@ -88,7 +89,7 @@ const cliKeys = new NativeDeviceKeyStore();
 const nativeKeysCreated = new Set<'cli' | 'vscode' | 'desktop'>();
 let rpc: DexRpcClient | null = null;
 async function stopNativeRpc() { const current = rpc; rpc = null; await current?.stop(); }
-async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live', action?: string, extra: object = {}) {
+async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live' | 'submit-turn' | 'stop-turn', action?: string, extra: object = {}) {
   assert.ok(cliDirectory);
   rpc ??= new DexRpcClient({ process: { command: platform === 'desktop' ? desktopElectron! : process.execPath, args: platform === 'desktop'
     ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`]
@@ -97,8 +98,9 @@ async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 's
   const initialized = await rpc.start(); assert.equal(initialized.capabilities.nativePlatformSession?.platform, platform);
   if (testNativeMessages) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalConversation, true);
   if (testNativeWs) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalLive, true);
+  if (testNativeTurns && platform === 'vscode') assert.equal(initialized.capabilities.nativePlatformSession?.canonicalTurns, true);
   const result = await rpc.request<NativeRpcResult>(`native/${category}`, { profile: 'compose',
-    ...(category === 'watch' || category === 'conversation' || category === 'watch-conversation' || category === 'watch-live' ? { user_id: String(userId) } : { action,
+    ...(category === 'watch' || category === 'conversation' || category === 'watch-conversation' || category === 'watch-live' || category === 'submit-turn' || category === 'stop-turn' ? { user_id: String(userId) } : { action,
       ...(category === 'device' || action === 'login' ? { email: `${tag}@example.invalid`, password } : { user_id: String(userId) }) }), ...extra });
   assert.equal(result.platform_type, platform); assert.equal(result.user_id, String(userId));
   const output = JSON.stringify(result);
@@ -185,6 +187,24 @@ try {
         await assert.rejects(platform === 'cli' ? run('watch-live', [], 'session') : nativeRpc(platform, 'watch-live'), (error: unknown) =>
           error instanceof DexRpcError ? error.engineCode === 'auth_required' : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required'));
         console.log(`${platform}: enrollment-mode login_pending blocks native WSS live subscription PASS`);
+      }
+      if (testNativeTurns && platform !== 'desktop') {
+        const sessionId = randomUUID();
+        const submit = () => platform === 'vscode'
+          ? nativeRpc(platform, 'submit-turn', undefined, { agent_session_id: sessionId, input_text: 'Disposable turn', expected_state_version: 1, idempotency_key: 'compose-test' })
+          : Promise.resolve().then(() => execFileSync(process.execPath, ['apps/cli/dist/cli.js', 'chat', '--canonical', '--user-id', String(userId),
+            '--session-id', sessionId, '--expected-state-version', '1', '--idempotency-key', 'compose-test', '--stdin', '--json'], {
+            input: 'Disposable turn', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env, DEX_CLI_HOME: cliDirectory!, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
+          }));
+        const denied = (error: unknown) => error instanceof DexRpcError ? error.engineCode === 'auth_required'
+          : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required');
+        await assert.rejects(submit(), denied);
+        if (platform === 'vscode') await assert.rejects(nativeRpc(platform, 'stop-turn', undefined,
+          { agent_session_id: sessionId, turn_id: randomUUID(), expected_state_version: 1 }), denied);
+        assert.equal((await run('status', [], 'session')).state, 'login_pending');
+        assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
+        console.log(`${platform}: Canonical ${platform === 'vscode' ? 'submit/stop' : 'submit'} refuses login_pending; no legacy fallback, auto refresh or Canonical session creation PASS`);
       }
       assert.equal((await run('forget-local', [], 'session')).state, 'signed_out');
       await stopNativeRpc();

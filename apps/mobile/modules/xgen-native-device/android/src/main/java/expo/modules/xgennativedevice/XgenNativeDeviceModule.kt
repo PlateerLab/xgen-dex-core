@@ -8,6 +8,7 @@ import java.util.UUID
 
 class XgenNativeDeviceModule : Module() {
   private val transport = NativeEnrollmentTransport.production()
+  private val agentSockets = NativeAgentSocket.production()
   private fun <T> safe(work: (HardwareDeviceKey) -> T): T = try {
     work(HardwareDeviceKey(appContext.reactContext ?: throw DeviceKeyFailure("mobile_key_unavailable")))
   } catch (error: DeviceKeyFailure) { throw CodedException(error.code, "Mobile device key unavailable", null) }
@@ -20,6 +21,11 @@ class XgenNativeDeviceModule : Module() {
       catch (_: Exception) { throw CodedException("mobile_transport_unavailable", "Mobile transport unavailable", null) }
     }
     Function("newGeneration") { UUID.randomUUID().toString() }
+    Function("newSocketId") {
+      try { agentSockets.newSocketId() }
+      catch (error: MobileSocketFailure) { throw CodedException(error.code, "Mobile socket unavailable", null) }
+      catch (_: Exception) { throw CodedException("mobile_socket_unavailable", "Mobile socket unavailable", null) }
+    }
     AsyncFunction("prepare") { origin: String, userId: String, create: Boolean -> safe { it.prepare(origin, userId, create) } }
     AsyncFunction("signChallenge") { origin: String, userId: String, installId: String, thumbprint: String, purpose: String, challenge: String ->
       safe { it.sign(origin, userId, installId, thumbprint, purpose, challenge) }
@@ -74,6 +80,51 @@ class XgenNativeDeviceModule : Module() {
       catch (error: MobileTransportFailure) { throw CodedException(error.code, "Mobile transport unavailable", null) }
       catch (_: Exception) { throw CodedException("mobile_transport_unavailable", "Mobile transport unavailable", null) }
     }
-    OnDestroy { transport.cancelAll() }
+    AsyncFunction("openAgentSocket") { socketId: String, origin: String, sessionId: String, afterSequence: String, accessToken: String, dpop: String, promise: Promise ->
+      try {
+        agentSockets.open(socketId, origin, sessionId, afterSequence, accessToken, dpop) { result ->
+          result.fold(
+            onSuccess = { promise.resolve(null) },
+            onFailure = { promise.reject((it as? MobileSocketFailure)?.code ?: "mobile_socket_unavailable", "Mobile socket unavailable", null) }
+          )
+        }
+      } catch (error: MobileSocketFailure) {
+        promise.reject(error.code, "Mobile socket unavailable", null)
+      } catch (_: Exception) {
+        promise.reject("mobile_socket_unavailable", "Mobile socket unavailable", null)
+      }
+    }
+    AsyncFunction("nextAgentSocket") { socketId: String, promise: Promise ->
+      try {
+        agentSockets.next(socketId) { result ->
+          result.fold(
+            onSuccess = { promise.resolve(it) },
+            onFailure = { promise.reject((it as? MobileSocketFailure)?.code ?: "mobile_socket_unavailable", "Mobile socket unavailable", null) }
+          )
+        }
+      } catch (error: MobileSocketFailure) {
+        promise.reject(error.code, "Mobile socket unavailable", null)
+      } catch (_: Exception) {
+        promise.reject("mobile_socket_unavailable", "Mobile socket unavailable", null)
+      }
+    }
+    AsyncFunction("closeAgentSocket") { socketId: String, promise: Promise ->
+      try {
+        agentSockets.close(socketId) { result ->
+          result.fold(
+            onSuccess = { promise.resolve(null) },
+            onFailure = { promise.reject((it as? MobileSocketFailure)?.code ?: "mobile_socket_unavailable", "Mobile socket unavailable", null) }
+          )
+        }
+      } catch (error: MobileSocketFailure) {
+        promise.reject(error.code, "Mobile socket unavailable", null)
+      } catch (_: Exception) {
+        promise.reject("mobile_socket_unavailable", "Mobile socket unavailable", null)
+      }
+    }
+    OnDestroy {
+      transport.cancelAll()
+      agentSockets.closeAll()
+    }
   }
 }

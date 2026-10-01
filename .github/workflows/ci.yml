@@ -53,15 +53,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm --prefix apps/mobile ci --no-audit --no-fund
       - name: 실제 iOS SDK 및 P-256 서명 검증
         working-directory: apps/mobile
         run: |
-          xcrun swiftc -typecheck -target arm64-apple-ios15.1 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" modules/xgen-native-device/ios/DeviceProof.swift modules/xgen-native-device/ios/HardwareDeviceKey.swift modules/xgen-native-device/ios/NativeEnrollmentTransport.swift
+          xcrun swiftc -typecheck -target arm64-apple-ios15.1 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" modules/xgen-native-device/ios/DeviceProof.swift modules/xgen-native-device/ios/HardwareDeviceKey.swift modules/xgen-native-device/ios/NativeEnrollmentTransport.swift modules/xgen-native-device/ios/NativeAgentSocket.swift
           xcrun swiftc modules/xgen-native-device/ios/DeviceProof.swift verify/native-device-key-codec.swift -o "$RUNNER_TEMP/xgen-native-key-codec"
           "$RUNNER_TEMP/xgen-native-key-codec"
       - name: URLSession TLS 경계 검증 (테스트 인증서)
         working-directory: apps/mobile
         run: bash verify/run-native-enrollment-transport.sh
+      - name: URLSession 인증 WebSocket 수신 경계 검증 (테스트 인증서)
+        working-directory: apps/mobile
+        run: bash verify/run-native-agent-socket.sh
 
   # ── 캐시 워밍 (main 푸시에서만) ──
   #

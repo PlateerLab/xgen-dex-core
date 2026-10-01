@@ -3,14 +3,16 @@ import { AppState, Pressable, Text, View } from 'react-native';
 import type { XgenMobileClient } from './lib/xgen';
 import { useP } from './theme';
 import { createMobileAgentFocusSource } from './lib/native-agent-focus';
-import { createMobileAgentConversationWatcher, type MobileConversationView } from './lib/native-agent-conversation-watch';
+import type { MobileConversationView } from './lib/native-agent-conversation-watch';
+import { createMobileAgentLiveWatcher } from './lib/native-agent-live-watch';
 import { MobileFocusWatchError } from './lib/native-agent-focus-watch';
 import { mobileAgentFetch } from './lib/native-agent-http-expo';
+import { mobileAgentSocketTransport } from './lib/native-agent-socket-expo';
 import { mobileDeviceKeys } from './lib/native-device-key-expo';
 import { mobileSessionVault } from './lib/native-session-vault-expo';
 import { stripAgentMarkers } from './lib/chat-ws';
 
-type Owner = { source: ReturnType<typeof createMobileAgentFocusSource>; watcher: ReturnType<typeof createMobileAgentConversationWatcher> };
+type Owner = { source: ReturnType<typeof createMobileAgentFocusSource>; watcher: ReturnType<typeof createMobileAgentLiveWatcher> };
 const TURN_STATUS = { accepted: '대기', running: '실행 중', completed: '완료', failed: '실패', cancelled: '취소' };
 export function NativeAgentConversationCard({ client, visible }: { client: XgenMobileClient; visible: boolean }): React.ReactElement {
   const p = useP(); const owner = useRef<Owner | null>(null); const running = useRef<AbortController | null>(null);
@@ -25,8 +27,9 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
       const account = client.nativeAccount(); if (!account) return;
       try {
         const current = () => live && visible && AppState.currentState === 'active' ? client.nativeAccount() : null;
-        const source = createMobileAgentFocusSource({ current, keys: mobileDeviceKeys(current), vault: mobileSessionVault, fetch: mobileAgentFetch(account.origin) });
-        owner.current = { source, watcher: createMobileAgentConversationWatcher(source) }; setAvailable(true);
+        const source = createMobileAgentFocusSource({ current, keys: mobileDeviceKeys(current), vault: mobileSessionVault,
+          fetch: mobileAgentFetch(account.origin), socket: mobileAgentSocketTransport(account.origin) });
+        owner.current = { source, watcher: createMobileAgentLiveWatcher(source) }; setAvailable(true);
       } catch { setError('공유 대화는 HTTPS 서버와 지원되는 네이티브 앱에서 사용할 수 있습니다.'); }
     };
     activate(); const listener = AppState.addEventListener('change', (next) => next === 'active' ? activate() : reset());
@@ -49,7 +52,7 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
     style={{ padding: 12, borderWidth: 1, borderColor: p.border, borderRadius: 8, opacity: disabled ? 0.5 : 1 }}><Text style={{ color: p.text }}>{label}</Text></Pressable>;
   return <View style={{ padding: 14, marginBottom: 12, borderRadius: 12, backgroundColor: p.panel, gap: 10 }}>
     <Text style={{ color: p.text, fontSize: 16, fontWeight: '700' }}>공유 대화 보기</Text>
-    <Text style={{ color: p.muted }}>현재 계정의 Agent 대화와 확인된 완결 메시지를 조회합니다. 전체 과거 이력은 추가 확인이 필요합니다.</Text>
+    <Text style={{ color: p.muted }}>현재 계정의 Agent 대화와 확인된 완결 메시지를 조회합니다. 구독은 실시간 변경을 받고 주기적으로 상태를 확인합니다. 전체 과거 이력은 추가 확인이 필요합니다.</Text>
     <Text style={{ color: p.text }}>상태: {status}</Text>
     {button('현재 공유 대화 조회', !available || busy, () => start(true))}
     {button('대화 변경 구독 시작', !available || busy, () => start(false))}

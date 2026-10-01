@@ -4,6 +4,7 @@ import Foundation
 public final class XgenNativeDeviceModule: Module {
   private let keys = HardwareDeviceKey()
   private let transport = NativeEnrollmentTransport()
+  private let agentSocket = NativeAgentSocket()
   private func safe<T>(_ work: () throws -> T) throws -> T {
     do { return try work() }
     catch {
@@ -27,6 +28,13 @@ public final class XgenNativeDeviceModule: Module {
       catch { throw Exception(name: "MobileTransport", description: "Mobile transport unavailable", code: "mobile_transport_unavailable") }
     }
     Function("newGeneration") { UUID().uuidString.lowercased() }
+    Function("newSocketId") {
+      do { return try self.agentSocket.newSocketId() }
+      catch let error as NativeSocketFailure {
+        throw Exception(name: "MobileSocket", description: "Mobile socket unavailable", code: error.code)
+      }
+      catch { throw Exception(name: "MobileSocket", description: "Mobile socket unavailable", code: "mobile_socket_unavailable") }
+    }
     AsyncFunction("prepare") { (origin: String, userId: String, create: Bool) in
       try self.safe { try self.keys.prepare(origin, userId, create) }
     }
@@ -85,6 +93,52 @@ public final class XgenNativeDeviceModule: Module {
       }
       catch { throw Exception(name: "MobileTransport", description: "Mobile transport unavailable", code: "mobile_transport_unavailable") }
     }
-    OnDestroy { self.transport.cancelAll() }
+    AsyncFunction("openAgentSocket") { (socketId: String, origin: String, sessionId: String, afterSequence: String, accessToken: String, dpop: String, promise: Promise) in
+      do {
+        try self.agentSocket.openAgentSocket(socketId: socketId, origin: origin, sessionId: sessionId,
+          afterSequence: afterSequence, accessToken: accessToken, dpop: dpop) { result in
+          switch result {
+          case .success: promise.resolve(nil)
+          case .failure(let error): promise.reject(error.code, "Mobile socket unavailable")
+          }
+        }
+      } catch let error as NativeSocketFailure {
+        promise.reject(error.code, "Mobile socket unavailable")
+      } catch {
+        promise.reject("mobile_socket_unavailable", "Mobile socket unavailable")
+      }
+    }
+    AsyncFunction("nextAgentSocket") { (socketId: String, promise: Promise) in
+      do {
+        try self.agentSocket.nextAgentSocket(socketId: socketId) { result in
+          switch result {
+          case .success(let event): promise.resolve(["type": event.type, "text": event.text])
+          case .failure(let error): promise.reject(error.code, "Mobile socket unavailable")
+          }
+        }
+      } catch let error as NativeSocketFailure {
+        promise.reject(error.code, "Mobile socket unavailable")
+      } catch {
+        promise.reject("mobile_socket_unavailable", "Mobile socket unavailable")
+      }
+    }
+    AsyncFunction("closeAgentSocket") { (socketId: String, promise: Promise) in
+      do {
+        try self.agentSocket.closeAgentSocket(socketId: socketId) { result in
+          switch result {
+          case .success: promise.resolve(nil)
+          case .failure(let error): promise.reject(error.code, "Mobile socket unavailable")
+          }
+        }
+      } catch let error as NativeSocketFailure {
+        promise.reject(error.code, "Mobile socket unavailable")
+      } catch {
+        promise.reject("mobile_socket_unavailable", "Mobile socket unavailable")
+      }
+    }
+    OnDestroy {
+      self.transport.cancelAll()
+      self.agentSocket.closeAll()
+    }
   }
 }

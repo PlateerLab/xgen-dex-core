@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { InitializeResult, RpcNotification, NativeRpcResult } from '@dex/rpc';
+import { DexRpcError } from '@dex/rpc/client';
 import { NativeSessionController, type NativeSessionViewState } from '../src/native-session-controller';
 
 const focus = { active_agent_session_id: null, version: 0, event_id: null };
@@ -8,11 +9,15 @@ const context: NativeRpcResult = { platform_type: 'vscode', profile: 'corp', ser
 const conversation = { snapshot: { id: '00000000-0000-4000-8000-000000000001', workflow_id: 'flow', title: 'Shared', current_sequence: 1,
   state_version: 1, message_history_complete: false, latest_turn: { id: '00000000-0000-4000-8000-000000000002', status: 'completed' as const, accepted_sequence: 1 } },
 messages: [{ turn_id: '00000000-0000-4000-8000-000000000002', sequence: 1, status: 'completed' as const, input_text: 'hello', output_text: 'world', content_complete: true, source: 'user' as const }], omittedMessages: 2 };
-function fixture(capable = true, canonical = true, live = true) {
+const session = (value: NativeSessionViewState) => {
+  const { turn: _turn, scope: _scope, connectionVersion: _connectionVersion, ...state } = value;
+  return state;
+};
+function fixture(capable = true, canonical = true, live = true, turns = true) {
   let notify!: (n: RpcNotification) => void; let change!: (s: any) => void;
   let respond: (m: string, p: Record<string, unknown>) => Promise<any> = async () => context;
   const calls: string[] = []; const requests: Array<{ method: string; params: Record<string, unknown> }> = []; const states: NativeSessionViewState[] = [];
-  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}) } } : {} }) as InitializeResult,
+  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}), ...(turns ? { canonicalTurns: true as const } : {}) } } : {} }) as InitializeResult,
     request: async <T>(m: string, p: Record<string, unknown> = {}) => { calls.push(m); requests.push({ method: m, params: p }); return respond(m, p) as Promise<T>; },
     onNotification: (f: typeof notify) => { notify = f; return () => {}; }, onStateChange: (f: typeof change) => { change = f; return () => {}; } };
   const controller = new NativeSessionController(rpc, (v) => states.push(v));
@@ -28,12 +33,12 @@ test('old engines are rejected without sending native requests', async () => {
 test('notifications buffered in the response chunk are applied only after matching the acknowledged scope', async () => {
   const f = fixture();
   f.respond(async () => { f.update({ ...context, update: { type: 'focus', user_id: '7', focus } }); return context; });
-  await f.controller.watch('corp', '7'); assert.deepEqual(f.states.at(-1), { status: 'connected', focus, conversation: null, hasMore: false });
+  await f.controller.watch('corp', '7'); assert.deepEqual(session(f.states.at(-1)!), { status: 'connected', focus, conversation: null, hasMore: false });
   for (const changed of [{ watch_id: 'old' }, { profile: 'elsewhere' }, { server_url: 'https://other.test' }, { platform_type: 'cli' }, { update: { type: 'focus', user_id: '8', focus } }]) {
     const count = f.states.length; f.update({ ...context, update: { type: 'focus', user_id: '7', focus }, ...changed }); assert.equal(f.states.length, count);
   }
-  f.update({ ...context, update: { type: 'reconnecting', user_id: '7' } }); assert.deepEqual(f.states.at(-1), { status: 'reconnecting', focus: null, conversation: null, hasMore: false });
-  f.update({ ...context, update: { type: 'stopped', user_id: '7' } }); assert.deepEqual(f.states.at(-1), { status: 'stopped', focus: null, conversation: null, hasMore: false });
+  f.update({ ...context, update: { type: 'reconnecting', user_id: '7' } }); assert.deepEqual(session(f.states.at(-1)!), { status: 'reconnecting', focus: null, conversation: null, hasMore: false });
+  f.update({ ...context, update: { type: 'stopped', user_id: '7' } }); assert.deepEqual(session(f.states.at(-1)!), { status: 'stopped', focus: null, conversation: null, hasMore: false });
 });
 test('profile/account reset suppresses delayed results and clears focus immediately', async () => {
   const f = fixture(); let resolve!: (v: NativeRpcResult) => void; let entered!: () => void;
@@ -42,7 +47,7 @@ test('profile/account reset suppresses delayed results and clears focus immediat
   const pending = f.controller.perform('native/session', { action: 'login' }); await ready;
   const before = f.controller.connectionVersion; f.controller.reset(); assert.equal(f.controller.connectionVersion, before + 1);
   resolve(context); assert.equal(await pending, null); assert.equal(f.controller.account('corp', context.server_url), null);
-  assert.deepEqual(f.states.at(-1), { status: 'idle', focus: null, conversation: null, hasMore: false });
+  assert.deepEqual(session(f.states.at(-1)!), { status: 'idle', focus: null, conversation: null, hasMore: false });
 });
 test('account metadata is scoped by both profile and origin; engine shutdown clears it', async () => {
   const f = fixture(); await f.controller.perform('native/device', { action: 'status' });
@@ -53,7 +58,7 @@ test('account metadata is scoped by both profile and origin; engine shutdown cle
 test('an invalid focus frame never renders unvalidated server data', async () => {
   const f = fixture(); await f.controller.watch('corp', '7');
   f.update({ ...context, update: { type: 'focus', user_id: '7', focus: { active_agent_session_id: 'private-server-secret', version: -1 } } });
-  assert.deepEqual(f.states.at(-1), { status: 'stopped', focus: null, conversation: null, hasMore: false }); assert.equal(JSON.stringify(f.states).includes('private-server-secret'), false);
+  assert.deepEqual(session(f.states.at(-1)!), { status: 'stopped', focus: null, conversation: null, hasMore: false }); assert.equal(JSON.stringify(f.states).includes('private-server-secret'), false);
   assert.equal(f.calls.at(-1), 'native/unwatch');
   f.update({ ...context, update: { type: 'focus', user_id: '7', focus } });
   assert.equal(f.states.at(-1)!.status, 'stopped');
@@ -82,9 +87,9 @@ test('conversation read and buffered polling publish only validated display fiel
     return { ...context, view: 'conversation' };
   });
   await f.controller.watchConversation('corp', '7');
-  assert.deepEqual(f.states.at(-1), { status: 'connected', focus: null, conversation, hasMore: false });
+  assert.deepEqual(session(f.states.at(-1)!), { status: 'connected', focus: null, conversation, hasMore: false });
   await f.controller.stopWatch(); assert.equal(f.calls.at(-1), 'native/unwatch');
-  assert.deepEqual(f.states.at(-1), { status: 'idle', focus: null, conversation: null, hasMore: false });
+  assert.deepEqual(session(f.states.at(-1)!), { status: 'idle', focus: null, conversation: null, hasMore: false });
 });
 test('stopping a pending live watch cancels it and exact stale ACK cleanup leaves a newer live watch active', async () => {
   const f = fixture(); let resolveOld!: (value: NativeRpcResult) => void; let entered!: () => void; let first = true;
@@ -104,10 +109,10 @@ test('stopping a pending live watch cancels it and exact stale ACK cleanup leave
   await f.controller.stopWatch();
   assert.deepEqual(f.requests.at(-1), { method: 'native/cancel', params: {} });
   await f.controller.watchLive('corp', '7');
-  assert.deepEqual(f.states.at(-1), { status: 'connected', focus: null, conversation, hasMore: false });
+  assert.deepEqual(session(f.states.at(-1)!), { status: 'connected', focus: null, conversation, hasMore: false });
   resolveOld({ ...context, watch_id: 'stale-watch', view: 'conversation' }); await stale;
   assert.deepEqual(f.requests.at(-1), { method: 'native/unwatch', params: { watch_id: 'stale-watch' } });
-  assert.deepEqual(f.states.at(-1), { status: 'connected', focus: null, conversation, hasMore: false });
+  assert.deepEqual(session(f.states.at(-1)!), { status: 'connected', focus: null, conversation, hasMore: false });
 });
 test('malformed conversation stops its watch without exposing rejected data', async () => {
   const f = fixture(); f.respond(async () => ({ ...context, view: 'conversation' }));
@@ -116,4 +121,253 @@ test('malformed conversation stops its watch without exposing rejected data', as
     conversation: { ...conversation, omittedMessages: -1, secret: 'private-conversation-secret' }, source: 'snapshot', has_more: false } });
   assert.equal(f.states.at(-1)!.status, 'stopped'); assert.equal(f.calls.at(-1), 'native/unwatch');
   assert.equal(JSON.stringify(f.states).includes('private-conversation-secret'), false);
+});
+
+test('canonical turn capability and verified host metadata gate writes while preserving exact input', async () => {
+  const unavailable = fixture(true, true, true, false);
+  unavailable.respond(async (method) => method === 'native/conversation'
+    ? { ...context, view: 'conversation', conversation, has_more: false }
+    : { ...context, view: 'conversation' });
+  await unavailable.controller.conversation('corp', '7');
+  await unavailable.controller.submitTurn('must stay local');
+  assert.equal(unavailable.calls.includes('native/submit-turn'), false);
+  assert.equal(unavailable.states.at(-1)?.turn?.status, 'unavailable');
+
+  const f = fixture();
+  const submittedTurn = '00000000-0000-4000-8000-000000000003';
+  let resolveMutation!: (value: NativeRpcResult) => void;
+  let submitEntered!: () => void;
+  const entered = new Promise<void>((resolve) => { submitEntered = resolve; });
+  let watch = 0;
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/submit-turn') {
+      submitEntered();
+      return new Promise<NativeRpcResult>((resolve) => { resolveMutation = resolve; });
+    }
+    if (method === 'native/watch-live') {
+      const watchId = `turn-watch-${++watch}`;
+      f.conversationUpdate({ ...context, watch_id: watchId, view: 'conversation',
+        update: { type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false } });
+      return { ...context, watch_id: watchId, view: 'conversation' };
+    }
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  await assert.rejects(f.controller.submitTurn('😀'.repeat(65_537)), TypeError);
+  assert.equal(f.requests.some((request) => request.method === 'native/submit-turn'), false);
+  const raw = '  first line\nsecond line  ';
+  const first = f.controller.submitTurn(raw);
+  await entered;
+  const duplicate = f.controller.submitTurn('must not dispatch');
+  resolveMutation({ ...context, agent_session_id: conversation.snapshot!.id, mutation: {
+    turn_id: submittedTurn, status: 'accepted', accepted_sequence: 2, state_version: 2, replayed: false,
+  } });
+  await Promise.all([first, duplicate]);
+  const writes = f.requests.filter((request) => request.method === 'native/submit-turn');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0]!.params.input_text, raw);
+  assert.equal(writes[0]!.params.profile, 'corp');
+  assert.equal(writes[0]!.params.user_id, '7');
+  assert.equal(writes[0]!.params.agent_session_id, conversation.snapshot!.id);
+  assert.equal(typeof writes[0]!.params.idempotency_key, 'string');
+  assert.equal(f.states.at(-1)?.turn?.status, 'accepted');
+});
+
+test('unknown mutation keeps one host-owned request for explicit same-request retry and reset clears it', async () => {
+  const f = fixture();
+  const submittedTurn = '00000000-0000-4000-8000-000000000003';
+  let attempts = 0;
+  let watch = 0;
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/watch-live') {
+      const watchId = `retry-watch-${++watch}`;
+      f.conversationUpdate({ ...context, watch_id: watchId, view: 'conversation',
+        update: { type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false } });
+      return { ...context, watch_id: watchId, view: 'conversation' };
+    }
+    if (method === 'native/watch') {
+      f.update({ ...context, update: { type: 'focus', user_id: '7', focus: {
+        active_agent_session_id: conversation.snapshot!.id, version: 1, event_id: null,
+      } } });
+      return context;
+    }
+    if (method === 'native/submit-turn') {
+      attempts++;
+      if (attempts === 1) throw new DexRpcError('private transport detail', -32603, {
+        code: 'network_error', details: { outcome: 'unknown', private: 'must not render' },
+      });
+      return { ...context, agent_session_id: conversation.snapshot!.id, mutation: {
+        turn_id: submittedTurn, status: 'running', accepted_sequence: 2, state_version: 2, replayed: true,
+      } };
+    }
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  await f.controller.submitTurn('same request');
+  assert.equal(f.states.at(-1)?.turn?.status, 'unknown');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, true);
+  assert.equal(JSON.stringify(f.states).includes('private transport detail'), false);
+  assert.equal(JSON.stringify(f.states).includes('must not render'), false);
+  const first = f.requests.find((request) => request.method === 'native/submit-turn')!;
+  f.conversationUpdate({ ...context, watch_id: 'retry-watch-1', view: 'conversation',
+    update: { type: 'conversation', user_id: '7', conversation: { ...conversation, omittedMessages: -1 }, source: 'snapshot', has_more: false } });
+  assert.equal(f.states.at(-1)?.conversation, null);
+  assert.equal(f.states.at(-1)?.turn?.status, 'unknown');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, false);
+  assert.deepEqual(f.states.at(-1)?.turn?.request, first.params.idempotency_key ? {
+    operation: 'submit', agent_session_id: conversation.snapshot!.id, expected_state_version: 1,
+    idempotency_key: first.params.idempotency_key,
+  } : undefined);
+  await f.controller.conversation('corp', '7');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, true);
+  await f.controller.stopWatch();
+  assert.equal(f.states.at(-1)?.conversation, null);
+  assert.equal(f.states.at(-1)?.turn?.status, 'unknown');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, false);
+  await f.controller.watchLive('corp', '7');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, true);
+  await f.controller.perform('native/session', { profile: 'corp', user_id: '7', action: 'status' });
+  assert.equal(f.states.at(-1)?.conversation, null);
+  assert.equal(f.states.at(-1)?.turn?.status, 'unknown');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, false);
+  assert.equal(f.states.at(-1)?.turn?.request?.idempotency_key, first.params.idempotency_key);
+  await f.controller.watch('corp', '7');
+  assert.equal(f.states.at(-1)?.focus?.active_agent_session_id, conversation.snapshot!.id);
+  assert.equal(f.states.at(-1)?.turn?.status, 'unknown');
+  assert.equal(f.states.at(-1)?.turn?.request?.idempotency_key, first.params.idempotency_key);
+  await f.controller.conversation('corp', '7');
+  assert.equal(f.states.at(-1)?.turn?.canRetry, true);
+  await f.controller.retryTurn();
+  const writes = f.requests.filter((request) => request.method === 'native/submit-turn');
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[1]!.params, first.params);
+  f.controller.reset(false);
+  assert.equal(f.states.at(-1)?.turn?.canRetry, false);
+  assert.equal(f.states.at(-1)?.turn?.request, undefined);
+});
+
+test('explicit conversation refresh waits for a dispatched mutation and its authoritative recovery', async () => {
+  const f = fixture();
+  const submittedTurn = '00000000-0000-4000-8000-000000000003';
+  const running = { ...conversation, snapshot: { ...conversation.snapshot!, current_sequence: 2, state_version: 2,
+    latest_turn: { id: submittedTurn, status: 'running' as const, accepted_sequence: 2 } } };
+  let resolveMutation!: (value: NativeRpcResult) => void;
+  let entered!: () => void;
+  const sending = new Promise<void>((resolve) => { entered = resolve; });
+  let reads = 0;
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation',
+      conversation: reads++ === 0 ? conversation : running, has_more: false };
+    if (method === 'native/submit-turn') {
+      entered();
+      return new Promise<NativeRpcResult>((resolve) => { resolveMutation = resolve; });
+    }
+    if (method === 'native/watch-live') {
+      f.conversationUpdate({ ...context, watch_id: 'serialized-watch', view: 'conversation',
+        update: { type: 'conversation', user_id: '7', conversation: running, source: 'snapshot', has_more: false } });
+      return { ...context, watch_id: 'serialized-watch', view: 'conversation' };
+    }
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  const mutation = f.controller.submitTurn('serialized');
+  await sending;
+  const refresh = f.controller.conversation('corp', '7');
+  assert.equal(f.requests.filter((request) => request.method === 'native/conversation').length, 1);
+  resolveMutation({ ...context, agent_session_id: conversation.snapshot!.id, mutation: {
+    turn_id: submittedTurn, status: 'accepted', accepted_sequence: 2, state_version: 2, replayed: false,
+  } });
+  await Promise.all([mutation, refresh]);
+  assert.deepEqual(f.requests.map((request) => request.method).slice(-3),
+    ['native/conversation', 'native/watch-live', 'native/conversation']);
+  assert.equal(f.states.at(-1)?.turn?.status, 'accepted');
+  assert.equal(f.states.at(-1)?.turn?.canStop, true);
+});
+
+test('an authoritative null focus clears a preserved unknown request for the old session', async () => {
+  const f = fixture();
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/submit-turn') throw new DexRpcError('lost', -32603, {
+      code: 'network_error', details: { outcome: 'unknown' },
+    });
+    if (method === 'native/watch-live') {
+      f.conversationUpdate({ ...context, view: 'conversation', update: { type: 'conversation', user_id: '7',
+        conversation, source: 'snapshot', has_more: false } });
+      return { ...context, view: 'conversation' };
+    }
+    if (method === 'native/watch') {
+      f.update({ ...context, update: { type: 'focus', user_id: '7', focus: {
+        active_agent_session_id: null, version: 2, event_id: null,
+      } } });
+      return context;
+    }
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  await f.controller.submitTurn('old session');
+  assert.equal(f.states.at(-1)?.turn?.status, 'unknown');
+  await f.controller.watch('corp', '7');
+  assert.equal(f.states.at(-1)?.focus?.active_agent_session_id, null);
+  assert.equal(f.states.at(-1)?.turn?.request, undefined);
+  assert.equal(f.states.at(-1)?.turn?.canRetry, false);
+});
+
+test('stop targets the exact latest verified running turn and authoritative terminal state re-enables submit', async () => {
+  const f = fixture();
+  const runningTurn = '00000000-0000-4000-8000-000000000003';
+  const running = { ...conversation, snapshot: { ...conversation.snapshot!, current_sequence: 2, state_version: 2,
+    latest_turn: { id: runningTurn, status: 'running' as const, accepted_sequence: 2 } } };
+  const terminal = { ...running, snapshot: { ...running.snapshot, state_version: 3,
+    latest_turn: { id: runningTurn, status: 'cancelled' as const, accepted_sequence: 2 } } };
+  let reads = 0;
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation',
+      conversation: reads++ === 0 ? running : terminal, has_more: false };
+    if (method === 'native/stop-turn') return { ...context, agent_session_id: running.snapshot.id, mutation: {
+      turn_id: runningTurn, state_version: 2, requested: true,
+    } };
+    if (method === 'native/watch-live') {
+      f.conversationUpdate({ ...context, watch_id: 'stop-watch', view: 'conversation',
+        update: { type: 'conversation', user_id: '7', conversation: terminal, source: 'snapshot', has_more: false } });
+      return { ...context, watch_id: 'stop-watch', view: 'conversation' };
+    }
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  assert.equal(f.states.at(-1)?.turn?.canStop, true);
+  await f.controller.stopTurn();
+  const stop = f.requests.find((request) => request.method === 'native/stop-turn')!;
+  assert.equal(stop.params.agent_session_id, running.snapshot.id);
+  assert.equal(stop.params.turn_id, runningTurn);
+  assert.equal(stop.params.expected_state_version, 2);
+  assert.equal(f.states.at(-1)?.turn?.status, 'idle');
+  assert.equal(f.states.at(-1)?.turn?.canSubmit, true);
+  assert.equal(f.states.at(-1)?.turn?.canStop, false);
+});
+
+test('switching verified account clears an unknown request before a stale result can render', async () => {
+  const f = fixture();
+  let reject!: (error: unknown) => void;
+  let entered!: () => void;
+  const sending = new Promise<void>((resolve) => { entered = resolve; });
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/submit-turn') {
+      entered();
+      return new Promise((_resolve, fail) => { reject = fail; });
+    }
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  const pending = f.controller.submitTurn('old account request');
+  await sending;
+  const switched = f.controller.conversation('corp', '8');
+  reject(new DexRpcError('lost', -32603, { code: 'network_error', details: { outcome: 'unknown' } }));
+  await pending;
+  await assert.rejects(switched, /범위를 확인/);
+  assert.equal(f.states.at(-1)?.turn?.canRetry, false);
+  assert.equal(f.states.at(-1)?.turn?.request, undefined);
 });

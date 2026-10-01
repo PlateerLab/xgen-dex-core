@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { NativeTrustOverview } from '@dex/protocol/native-platform-session';
+import type { AgentTurnComposerView } from '@dex/protocol/agent-turn-composer';
 import type { NativeSessionSummary } from '@dex/rpc';
 import { xgen } from '../bridge';
 import { DesktopNativeSessionModel, type DesktopNativeView } from '../native-session-model';
@@ -9,18 +10,30 @@ const states: Record<string, string> = { pending: '승인 대기', trusted: '승
   access_expired: '갱신 필요', access_unavailable: 'access 발급 대기', login_pending: '로그인 중단', refreshing: '갱신 중단', logout_pending: '로그아웃 중단', pending_takeover: '기존 세션 전환 승인 대기' };
 const connections = { idle: '구독 안 함', waiting: '현재 대화 확인 중', connected: '연결됨', reconnecting: '재연결 중', stopped: '인증·연결 확인 필요' };
 const transports = { none: '연결 없음', 'focus-http': '포커스 확인', 'read-http': '대화 읽기', 'poll-http': '자동 확인', 'live-wss': '실시간 연결' };
+const initialTurn: AgentTurnComposerView = { status: 'unavailable', canSubmit: false, canRetry: false, canStop: false,
+  notice: '현재 연결에서는 요청을 보낼 수 없습니다.' };
 
 export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) => {
   const [view, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
-    connection: 'idle', transport: 'none', error: '' });
+    connection: 'idle', transport: 'none', error: '', turn: initialTurn });
   const model = useRef<DesktopNativeSessionModel | null>(null);
+  const turnSession = useRef<string | null>(null);
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [approver, setApprover] = useState(''); const [overview, setOverview] = useState<NativeTrustOverview | null>(null);
   const [message, setMessage] = useState(''); const [forget, setForget] = useState(false);
+  const [turnInput, setTurnInput] = useState('');
   useEffect(() => {
+    turnSession.current = null; setTurnInput('');
     const controller = new DesktopNativeSessionModel(xgen.nativeSession, (next) => {
       setView(next);
-      if (!next.result && !next.busy) { setOverview(null); setApprover(''); setMessage(''); setForget(false); setPassword(''); }
+      const nextSession = next.conversation?.snapshot?.id ?? null;
+      if (nextSession && turnSession.current && nextSession !== turnSession.current) setTurnInput('');
+      if (nextSession) turnSession.current = nextSession;
+      else if (next.conversation || !next.result) {
+        if (next.conversation) setTurnInput('');
+        turnSession.current = null;
+      }
+      if (!next.result && !next.busy) { setTurnInput(''); setOverview(null); setApprover(''); setMessage(''); setForget(false); setPassword(''); }
     });
     model.current = controller;
     return () => { model.current = null; controller.dispose(); };
@@ -30,6 +43,7 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
   const run = async (kind: 'device' | 'session', action: string) => {
     const controller = model.current; if (!controller) return;
     setMessage(''); const params: Record<string, unknown> = { action };
+    if (kind === 'session' && ['login', 'logout', 'forget-local'].includes(action)) setTurnInput('');
     if (kind === 'device' || action === 'login') Object.assign(params, { email: email.trim(), password });
     if (action === 'logout') params.password = password;
     if (action === 'request-approval') params.approver_device_id = approver;
@@ -52,6 +66,13 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
   const summary = view.result?.result && 'session_id' in view.result.result ? view.result.result as NativeSessionSummary : null;
   const completeMessages = view.conversation?.messages.filter((item) => item.content_complete) ?? [];
   const incompleteMessages = (view.conversation?.messages.length ?? 0) - completeMessages.length;
+  const turnInputBytes = new TextEncoder().encode(turnInput).length;
+  const submitTurn = async (retry: boolean) => {
+    const controller = model.current; const sessionId = turnSession.current;
+    if (!controller || !sessionId) return;
+    const accepted = retry ? await controller.retryTurn() : await controller.submitTurn(turnInput);
+    if (accepted && model.current === controller && turnSession.current === sessionId) setTurnInput('');
+  };
   return <>
     <SettingsSection title="이 PC의 기기 인증">
       <p className="settings-hint">현재 앱에 로그인한 계정으로 이 Desktop 기기를 등록하고 신뢰 브라우저에서 승인받으세요.</p>
@@ -91,6 +112,33 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
       </div>
       {forget && <div className="field"><p className="settings-hint warn">먼저 브라우저 내 페이지에서 서버 세션을 폐기하세요. 이 작업은 서버 폐기 없이 로컬 기록만 삭제합니다.</p>
         <button disabled={disabled} onClick={() => void run('session', 'forget-local')}>확인하고 로컬 기록 삭제</button><button className="secondary" onClick={() => setForget(false)}>취소</button></div>}
+      {view.result && <div className="field">
+        <label className="field" htmlFor="native-turn-input"><span>새 Canonical 턴</span>
+          <textarea id="native-turn-input" rows={5} maxLength={262144} value={turnInput}
+            disabled={!view.turn.canSubmit || view.busy}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (new TextEncoder().encode(next).length <= 262144) setTurnInput(next);
+            }} />
+        </label>
+        <p className="small muted">UTF-8 {turnInputBytes.toLocaleString()} / 262,144 bytes · 줄바꿈을 포함한 입력 그대로 전송합니다.</p>
+        <div className="field-row">
+          <button id="native-turn-submit" disabled={disabled || !view.turn.canSubmit || turnInputBytes === 0 || turnInputBytes > 262144}
+            onClick={() => void submitTurn(false)}>턴 보내기</button>
+          <button id="native-turn-retry" className="secondary" disabled={disabled || !view.turn.canRetry}
+            onClick={() => void submitTurn(true)}>같은 요청 다시 확인</button>
+          <button id="native-turn-stop" className="secondary" disabled={disabled || !view.turn.canStop}
+            onClick={() => void model.current?.stopTurn()}>최신 실행 턴 중단</button>
+        </div>
+        {view.turn.notice && <p className={view.turn.status === 'rejected' || view.turn.status === 'unknown' || view.turn.status === 'unavailable'
+          ? 'settings-hint warn' : 'settings-hint'} role="status">{view.turn.notice}</p>}
+        {view.turn.request && <p className="small muted">요청: {view.turn.request.operation} · 상태 버전 {view.turn.request.expected_state_version}
+          {view.turn.request.turn_id ? ` · 턴 ${view.turn.request.turn_id}` : ''}
+          {view.turn.request.idempotency_key ? ` · 중복 방지 키 ${view.turn.request.idempotency_key}` : ''}</p>}
+        {(view.turn.status === 'accepted' || view.turn.status === 'stop-requested') && <p className="settings-hint">
+          이 표시는 서버 접수 확인이며 AI 응답 완료나 중단 완료를 뜻하지 않습니다. 최신 턴 상태가 완료 상태로 바뀌는지 확인하세요.
+        </p>}
+      </div>}
       {view.conversation?.snapshot && <div className="field">
         <p><strong>{view.conversation.snapshot.title}</strong></p>
         <p className="small muted">턴: {view.conversation.snapshot.latest_turn?.status ?? '없음'} · 메시지 {completeMessages.length}개</p>

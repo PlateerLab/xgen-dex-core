@@ -17,11 +17,13 @@ import type {
   LocalToolBridgeStatus,
   LocalToolsConfig,
   LocalToolsStatus,
+  NativeConversationView,
   ProfileSummary,
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
 import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
+import type { NativeSessionController, NativeSessionViewState } from './native-session-controller';
 
 /** 창을 껐다 켠 뒤 되찾을 대화가 적히는 자리(globalState). */
 const LAST_CONVERSATION_KEY = 'xgenDex.lastConversation';
@@ -61,6 +63,18 @@ interface ChatViewState {
   localToolsSaving: boolean;
   localToolsMessage?: string;
   attachments: ChatAttachmentDescriptor[];
+  canonical: {
+    active: boolean;
+    available: boolean;
+    title?: string;
+    workflowId?: string;
+    omittedMessages: number;
+    hasMore: boolean;
+    sessionStatus: NativeSessionViewState['status'];
+    turn?: NativeSessionViewState['turn'];
+    identity?: string;
+    connectionVersion: number;
+  };
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -99,12 +113,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private renderTimer: NodeJS.Timeout | undefined;
   private readonly toolMessages = new Map<string, string>();
   private readonly removeNotificationListener: () => void;
+  private native: NativeSessionController | undefined;
+  private nativeState: NativeSessionViewState | undefined;
+  private canonicalMode = false;
+  private canonicalNotice: string | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly service: DexService,
   ) {
     this.removeNotificationListener = service.rpc.onNotification((notification) => this.onNotification(notification));
+  }
+
+  attachNative(controller: NativeSessionController): void { this.native = controller; }
+
+  updateNative(state: NativeSessionViewState): void {
+    this.nativeState = state;
+    if (this.canonicalMode) {
+      this.screen = 'chat';
+      this.canonicalNotice = state.turn?.notice || canonicalSessionNotice(state);
+      void this.setRunning(!!state.turn?.canStop);
+    }
+    this.postState();
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -236,6 +266,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   async connectionChanged(): Promise<void> {
+    this.leaveCanonical(false);
     await this.clearConversation();
     this.selectedAgent = undefined;
     this.auth = undefined;
@@ -246,6 +277,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   async newChat(): Promise<void> {
+    if (this.canonicalMode) {
+      const operation = this.nativeState?.turn?.notice;
+      this.canonicalNotice = `${operation ? `${operation} ` : ''}공유 대화 모드에서는 새 대화를 만들 수 없습니다. 현재 공유 대화를 계속 사용해 주세요.`;
+      this.postState();
+      return;
+    }
     await this.clearConversation();
     this.screen = this.selectedAgent ? 'chat' : this.auth?.authenticated ? 'agents' : this.screen;
     this.postState();
@@ -260,6 +297,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * 그래서 다른 기기에서 시작한 턴(remoteRunning)도 여기서 멈출 수 있다.
    */
   async cancel(): Promise<void> {
+    if (this.canonicalMode) {
+      await this.native?.stopTurn();
+      return;
+    }
     if (!this.streamId && !this.remoteRunning) return;
     this.status = '응답을 중지하는 중...';
     this.postState();
@@ -337,6 +378,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   dispose(): void {
+    this.leaveCanonical(false);
     this.stopWatchingRemoteRun();
     this.removeNotificationListener();
     if (this.renderTimer) clearTimeout(this.renderTimer);
@@ -360,6 +402,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private async send(input: string): Promise<void> {
+    if (this.canonicalMode) {
+      try { await this.native?.submitTurn(input); }
+      catch {
+        this.canonicalNotice = '메시지를 보내지 못했습니다. 입력 크기와 현재 공유 대화 연결을 확인해 주세요.';
+        this.postState();
+      }
+      return;
+    }
     const text = input.trim();
     if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId || this.uploadingAttachments) return;
     const agent = this.selectedAgent;
@@ -403,6 +453,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private async attachFiles(): Promise<void> {
+    if (this.canonicalMode) return;
     const agent = this.selectedAgent;
     if (!agent || this.streamId || this.uploadingAttachments) return;
     this.uploadingAttachments = true;
@@ -688,6 +739,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
     const data = raw as Record<string, unknown>;
     if (data.type === 'ready') this.postState();
+    else if (data.type === 'canonicalMode') void this.toggleCanonical();
+    else if (data.type === 'canonicalRetry') void this.native?.retryTurn();
+    else if (data.type === 'canonicalInputRejected') {
+      this.canonicalNotice = '메시지는 UTF-8 기준 262,144바이트 이하로 입력해 주세요.';
+      this.postState();
+    }
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
     else if (data.type === 'attach') void this.attachFiles();
     else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
@@ -842,6 +899,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private postState(): void {
+    const canonicalConversation = this.canonicalMode ? this.nativeState?.conversation : null;
     const state: ChatViewState = {
       screen: this.screen,
       profiles: this.profiles,
@@ -849,19 +907,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       agents: this.agents,
       agentTotal: this.agentTotal,
       agent: this.selectedAgent,
-      messages: this.messages,
-      running: !!this.streamId || this.remoteRunning,
+      messages: this.canonicalMode ? (canonicalConversation ? canonicalMessages(canonicalConversation) : []) : this.messages,
+      running: this.canonicalMode ? !!this.nativeState?.turn?.canStop : !!this.streamId || this.remoteRunning,
       refreshing: this.refreshing,
-      status: this.status,
+      status: this.canonicalMode ? this.canonicalNotice : this.status,
       error: this.error,
       initialSearch: this.initialSearch,
       workspaceRoot: this.workspaceRoot(),
       localTools: this.localTools,
       localToolsSaving: this.localToolsSaving,
       localToolsMessage: this.localToolsMessage,
-      attachments: this.attachments,
+      attachments: this.canonicalMode ? [] : this.attachments,
+      canonical: {
+        active: this.canonicalMode,
+        available: !!this.nativeState?.scope && !!this.nativeState.conversation?.snapshot,
+        title: canonicalConversation?.snapshot?.title,
+        workflowId: canonicalConversation?.snapshot?.workflow_id,
+        omittedMessages: canonicalConversation?.omittedMessages ?? 0,
+        hasMore: this.nativeState?.hasMore ?? false,
+        sessionStatus: this.nativeState?.status ?? 'idle',
+        turn: this.nativeState?.turn,
+        identity: canonicalIdentity(this.nativeState),
+        connectionVersion: this.nativeState?.connectionVersion ?? 0,
+      },
     };
     void this.view?.webview.postMessage({ type: 'state', state });
+  }
+
+  private async toggleCanonical(): Promise<void> {
+    if (this.canonicalMode) {
+      this.leaveCanonical(false);
+      return;
+    }
+    const scope = this.nativeState?.scope;
+    if (!this.native || !scope || !this.nativeState?.conversation?.snapshot) {
+      this.canonicalNotice = '기기 및 플랫폼 세션에서 현재 공유 대화를 먼저 확인해 주세요.';
+      this.postState();
+      return;
+    }
+    this.refreshVersion++;
+    this.canonicalMode = true;
+    this.screen = 'chat';
+    this.canonicalNotice = this.nativeState.turn?.notice || canonicalSessionNotice(this.nativeState);
+    void this.setRunning(!!this.nativeState.turn?.canStop);
+    this.postState();
+    try { await this.native.watchLive(scope.profile, scope.user_id); }
+    catch { this.canonicalNotice = '현재 공유 대화 연결을 시작하지 못했습니다. 기기 및 플랫폼 세션을 확인해 주세요.'; this.postState(); }
+  }
+
+  private leaveCanonical(stopWatch: boolean): void {
+    if (!this.canonicalMode && !this.canonicalNotice) return;
+    this.canonicalMode = false;
+    this.canonicalNotice = undefined;
+    if (stopWatch) void this.native?.stopWatch().catch(() => undefined);
+    this.screen = this.selectedAgent ? 'chat' : this.auth?.authenticated ? 'agents' : this.screen;
+    void this.setRunning(!!this.streamId || this.remoteRunning);
+    this.postState();
   }
 
   private html(webview: vscode.Webview): string {
@@ -878,6 +979,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <title>XGEN Dex</title>
 </head>
 <body>
+  <button id="canonical-mode" class="canonical-mode-entry hidden" type="button">공유 대화</button>
   <section id="loading-screen" class="screen loading-screen">
     <div class="brand-mark large" aria-hidden="true">✦</div>
     <strong>XGEN Dex를 준비하는 중</strong>
@@ -948,6 +1050,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div class="composer-actions">
           <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
           <button id="attach" class="secondary-button compact" type="button" title="파일 첨부">📎 첨부</button>
+          <button id="canonical-retry" class="secondary-button hidden" type="button">같은 요청 다시 시도</button>
           <button id="cancel" class="secondary-button hidden" type="button">응답 중지</button>
           <button id="send" class="send-button" type="button"><span>전송</span><span class="send-icon" aria-hidden="true">↑</span></button>
         </div>
@@ -1023,6 +1126,34 @@ function message(role: MessageRole, label: string, text: string): ChatMessage {
     if (trig) item.trigger = { ...trig, rowLabel: triggerRowLabel(trig) };
   }
   return item;
+}
+
+function canonicalMessages(conversation: NativeConversationView): ChatMessage[] {
+  const title = conversation.snapshot?.title || '공유 Agent';
+  const items: ChatMessage[] = [];
+  for (const turn of conversation.messages) {
+    if (turn.input_text !== null) items.push(message('user', turn.source === 'subagent_report' ? 'Agent 보고' : '나', turn.input_text));
+    if (turn.output_text !== null) items.push(message('assistant', title, turn.output_text));
+    if (!turn.content_complete) items.push(message('system', '공유 대화', `턴 ${turn.sequence}의 내용이 아직 완전하지 않습니다.`));
+  }
+  if (conversation.omittedMessages > 0) items.unshift(message('system', '공유 대화', `이전 메시지 ${conversation.omittedMessages}개가 생략되었습니다.`));
+  return items;
+}
+
+function canonicalSessionNotice(state: NativeSessionViewState): string | undefined {
+  if (state.hasMore) return '현재 공유 대화를 더 확인하는 중입니다.';
+  if (state.status === 'waiting') return '현재 공유 대화를 확인하는 중입니다.';
+  if (state.status === 'reconnecting') return '현재 공유 대화에 다시 연결하는 중입니다.';
+  if (state.status === 'stopped') return '현재 공유 대화 연결이 중단되었습니다.';
+  return state.conversation?.snapshot ? '현재 공유 대화와 동기화되었습니다.' : '활성 공유 대화가 없습니다.';
+}
+
+function canonicalIdentity(state: NativeSessionViewState | undefined): string | undefined {
+  const scope = state?.scope;
+  const sessionId = state?.conversation?.snapshot?.id;
+  return scope && sessionId
+    ? JSON.stringify([scope.platform_type, scope.profile, scope.server_url, scope.user_id, sessionId])
+    : undefined;
 }
 
 function agentFromConversation(conversation: Conversation): Agent {

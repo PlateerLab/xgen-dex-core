@@ -18,6 +18,13 @@ test('chat webview script is valid, IME-aware, and avoids HTML injection', async
   assert.match(script, /useProfile/);
   assert.match(script, /configureLocalTools/);
   assert.match(script, /useWorkspaceRoot/);
+  assert.match(script, /canonicalMode/);
+  assert.match(script, /canonicalRetry/);
+  assert.match(script, /post\('send', \{ text: raw \}\)/, 'Canonical send must preserve the textarea value exactly');
+  assert.match(script, /new TextEncoder\(\)\.encode\(raw\)\.byteLength > CANONICAL_INPUT_MAX_BYTES/);
+  assert.match(script, /post\('canonicalInputRejected'\)/);
+  assert.ok(script.indexOf("post('canonicalInputRejected')") < script.indexOf("post('send', { text: raw })"),
+    'oversized Canonical input must be rejected before send or textarea clearing');
 });
 
 test('chat styles use VS Code theme tokens and reduced-motion fallback', async () => {
@@ -49,6 +56,35 @@ test('workspace provider loads authentication, profiles, agents, and local tools
   assert.match(provider, /'localTools\/configure'/);
   assert.match(provider, /'localTools\/start'/);
   assert.match(provider, /screen: this\.screen/);
+});
+
+test('Canonical mode is an explicit native-only composer path with stable controls', async () => {
+  const [provider, script] = await Promise.all([
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'media', 'chat.js'), 'utf8'),
+  ]);
+  for (const id of ['canonical-mode', 'canonical-retry', 'input', 'send', 'cancel']) {
+    assert.match(provider, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(provider, /attachNative\(controller: NativeSessionController\)/);
+  assert.match(provider, /updateNative\(state: NativeSessionViewState\)/);
+  assert.match(provider, /this\.native\?\.submitTurn\(input\)/);
+  assert.match(provider, /catch \{\s*this\.canonicalNotice = '메시지를 보내지 못했습니다\./,
+    'the extension host must handle synchronous Canonical input failures with a static notice');
+  assert.match(provider, /data\.type === 'canonicalInputRejected'/);
+  assert.match(provider, /this\.native\?\.retryTurn\(\)/);
+  assert.match(provider, /this\.native\?\.stopTurn\(\)/);
+  assert.match(provider, /if \(this\.canonicalMode\) return;/, 'attachments must be unavailable in Canonical mode');
+  assert.match(provider,
+    /messages: this\.canonicalMode \? \(canonicalConversation \? canonicalMessages\(canonicalConversation\) : \[\]\) : this\.messages/,
+    'a missing Canonical snapshot must never reveal the legacy transcript');
+  assert.match(script, /if \(state\.canonical\?\.active\)/);
+  assert.match(script, /elements\.attach\.disabled = canonical/);
+  assert.match(script, /canonical\.identity && canonicalIdentity && canonical\.identity !== canonicalIdentity/);
+  assert.match(script, /canonical\.connectionVersion/);
+  assert.match(script, /legacyDraft = elements\.input\.value/);
+  assert.match(script, /elements\.input\.value = ''/,
+    'scope/session/reset transitions must clear the Canonical textarea');
 });
 
 test('every webview element referenced by the client script exists in the provider markup', async () => {

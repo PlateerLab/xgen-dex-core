@@ -54,24 +54,26 @@ test('Desktop reads and polls only validated canonical conversation display fiel
   assert.equal(JSON.stringify(f.rendered).includes('arbitrary'), false);
   await f.model.stopWatch(); assert.equal(f.calls.at(-1), 'unwatch'); assert.equal(f.model.state.conversation, null);
 });
-test('Desktop cancels a pending watch and exact stale ACK cleanup does not clear its replacement', async () => {
+test('Desktop cancels a pending live watch and exact stale ACK cleanup does not clear its replacement', async () => {
   const f = fixture(); let resolveOld!: (reply: DesktopNativeReply) => void; let entered!: () => void; let first = true;
   const started = new Promise<void>((resolve) => { entered = resolve; });
   f.respond(async (method) => {
-    if (method === 'watch-conversation' && first) {
+    if (method === 'watch-live' && first) {
       first = false; entered(); return new Promise<DesktopNativeReply>((resolve) => { resolveOld = resolve; });
     }
-    if (method === 'watch-conversation') return { ok: true, value: { ...context, watch_id: 'new-watch', view: 'conversation' } };
+    if (method === 'watch-live') {
+      f.notify({ type: 'update', value: { ...context, watch_id: 'new-watch', view: 'conversation',
+        update: { type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false } } });
+      return { ok: true, value: { ...context, watch_id: 'new-watch', view: 'conversation' } };
+    }
     if (method === 'cancel' || method === 'unwatch') return { ok: true, value: { watching: false } };
     return { ok: true, value: context };
   });
-  const stale = f.model.execute('watch-conversation'); await started;
+  const stale = f.model.execute('watch-live'); await started;
   await f.model.stopWatch(); assert.deepEqual(f.requests.at(-1), { method: 'cancel', params: {} });
-  await f.model.execute('watch-conversation');
+  await f.model.execute('watch-live'); assert.equal(f.model.state.transport, 'live-wss'); assert.deepEqual(f.model.state.conversation, conversation);
   resolveOld({ ok: true, value: { ...context, watch_id: 'stale-watch', view: 'conversation' } }); await stale;
   assert.deepEqual(f.requests.at(-1), { method: 'unwatch', params: { watch_id: 'stale-watch' } });
-  f.notify({ type: 'update', value: { ...context, watch_id: 'new-watch', view: 'conversation',
-    update: { type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false } } });
   assert.deepEqual(f.model.state.conversation, conversation); assert.equal(f.model.state.connection, 'connected');
 });
 test('Desktop rejects malformed conversation notifications and clears data on errors', async () => {

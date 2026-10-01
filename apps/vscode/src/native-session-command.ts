@@ -11,8 +11,9 @@ const actions = [
   { label: '플랫폼 세션 상태', action: 'status', device: false }, { label: '플랫폼 세션 갱신', action: 'refresh', device: false },
   { label: '현재 대화 포커스 구독', action: 'watch', device: false },
   { label: '현재 공유 대화 읽기', action: 'conversation', device: false },
-  { label: '현재 공유 대화 폴링', action: 'watch-conversation', device: false },
-  { label: '대화 폴링 중단', action: 'stop-conversation', device: false },
+  { label: '현재 공유 대화 HTTP 폴링', action: 'watch-conversation', device: false },
+  { label: '현재 공유 대화 실시간 연결', action: 'watch-live', device: false },
+  { label: '대화 연결·폴링 중단', action: 'stop-conversation', device: false },
   { label: '플랫폼 로그아웃', action: 'logout', device: false },
   { label: '중단된 로컬 세션 기록 삭제', action: 'forget-local', device: false },
 ];
@@ -66,6 +67,11 @@ export async function nativeSessionCommand(service: DexService, controller: Nati
       if (choice.action === 'watch-conversation') {
         await conversationDocument.show();
         if (current()) await controller.watchConversation(profile.name, userId);
+        return;
+      }
+      if (choice.action === 'watch-live') {
+        await conversationDocument.show();
+        if (current()) await controller.watchLive(profile.name, userId);
         return;
       }
       if (choice.action === 'logout') { const secret = await credentials(false); if (!secret) return; params.password = secret.password; }

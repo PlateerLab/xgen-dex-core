@@ -8,9 +8,11 @@ import { SettingsSection } from './SettingsSection';
 const states: Record<string, string> = { pending: '승인 대기', trusted: '승인됨', revoked: '폐기됨', signed_out: '로그아웃', active: '사용 가능',
   access_expired: '갱신 필요', access_unavailable: 'access 발급 대기', login_pending: '로그인 중단', refreshing: '갱신 중단', logout_pending: '로그아웃 중단', pending_takeover: '기존 세션 전환 승인 대기' };
 const connections = { idle: '구독 안 함', waiting: '현재 대화 확인 중', connected: '연결됨', reconnecting: '재연결 중', stopped: '인증·연결 확인 필요' };
+const transports = { none: '연결 없음', 'focus-http': '포커스 확인', 'read-http': '대화 읽기', 'poll-http': '자동 확인', 'live-wss': '실시간 연결' };
 
 export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) => {
-  const [view, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false, connection: 'idle', error: '' });
+  const [view, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
+    connection: 'idle', transport: 'none', error: '' });
   const model = useRef<DesktopNativeSessionModel | null>(null);
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [approver, setApprover] = useState(''); const [overview, setOverview] = useState<NativeTrustOverview | null>(null);
@@ -77,12 +79,13 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
       </div>
       <p>세션: {summary ? states[summary.state] ?? summary.state : '상태를 확인하세요'}</p>
       {summary?.session_id && <p className="small muted">세션 ID: {summary.session_id}</p>}
-      <p>현재 대화: {view.focus?.active_agent_session_id ?? view.conversation?.snapshot?.id ?? '없음'} · {connections[view.connection]}</p>
+      <p>현재 대화: {view.focus?.active_agent_session_id ?? view.conversation?.snapshot?.id ?? '없음'} · {transports[view.transport]} · {connections[view.connection]}</p>
       <div className="field-row">
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('watch')}>현재 대화 포커스 구독</button>
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('conversation')}>공유 대화 읽기</button>
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('watch-conversation')}>공유 대화 폴링</button>
-        <button className="secondary" disabled={view.busy || view.connection === 'idle'} onClick={() => void model.current?.stopWatch()}>폴링 중단</button>
+        <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('watch-live')}>공유 대화 실시간 연결</button>
+        <button className="secondary" disabled={view.busy || view.connection === 'idle'} onClick={() => void model.current?.stopWatch()}>대화 연결·폴링 중단</button>
         <button className="secondary" onClick={() => void model.current?.execute('cancel')}>작업·구독 중단</button>
         <button className="secondary" disabled={disabled} onClick={() => setForget(true)}>중단된 로컬 기록 삭제</button>
       </div>
@@ -106,7 +109,7 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
         {!completeMessages.length && <p className="settings-hint">표시할 완전한 메시지가 없습니다.</p>}
       </div>}
       {view.conversation && !view.conversation.snapshot && <p className="settings-hint">현재 공유 대화가 없습니다.</p>}
-      <p className="settings-hint">포커스 구독은 현재 대화 ID만, 공유 대화 읽기·폴링은 검증된 메시지와 턴 상태를 표시합니다. 서버가 세션 발급을 준비 중이면 로그인에 503이 반환됩니다.</p>
+      <p className="settings-hint">포커스 확인과 공유 대화 읽기·자동 확인은 주기적으로 검증된 상태를 가져옵니다. 실시간 연결은 새 알림을 받은 뒤 검증한 메시지와 턴 상태를 표시합니다. 서버가 세션 발급을 준비 중이면 로그인이 잠시 지연될 수 있습니다.</p>
       {view.busy && <p role="status">기기·세션 확인 중…</p>}
       {view.error && <p className="settings-hint warn" role="alert">{view.error}</p>}
       {message && <p role="status">{message}</p>}

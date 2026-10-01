@@ -8,11 +8,11 @@ const context: NativeRpcResult = { platform_type: 'vscode', profile: 'corp', ser
 const conversation = { snapshot: { id: '00000000-0000-4000-8000-000000000001', workflow_id: 'flow', title: 'Shared', current_sequence: 1,
   state_version: 1, message_history_complete: false, latest_turn: { id: '00000000-0000-4000-8000-000000000002', status: 'completed' as const, accepted_sequence: 1 } },
 messages: [{ turn_id: '00000000-0000-4000-8000-000000000002', sequence: 1, status: 'completed' as const, input_text: 'hello', output_text: 'world', content_complete: true, source: 'user' as const }], omittedMessages: 2 };
-function fixture(capable = true, canonical = true) {
+function fixture(capable = true, canonical = true, live = true) {
   let notify!: (n: RpcNotification) => void; let change!: (s: any) => void;
   let respond: (m: string, p: Record<string, unknown>) => Promise<any> = async () => context;
   const calls: string[] = []; const requests: Array<{ method: string; params: Record<string, unknown> }> = []; const states: NativeSessionViewState[] = [];
-  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', ...(canonical ? { canonicalConversation: true as const } : {}) } } : {} }) as InitializeResult,
+  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}) } } : {} }) as InitializeResult,
     request: async <T>(m: string, p: Record<string, unknown> = {}) => { calls.push(m); requests.push({ method: m, params: p }); return respond(m, p) as Promise<T>; },
     onNotification: (f: typeof notify) => { notify = f; return () => {}; }, onStateChange: (f: typeof change) => { change = f; return () => {}; } };
   const controller = new NativeSessionController(rpc, (v) => states.push(v));
@@ -64,6 +64,11 @@ test('canonical conversation capability gates read and polling without a focus f
   await assert.rejects(f.controller.watchConversation('corp', '7'), /공유 대화/);
   assert.deepEqual(f.calls, []);
 });
+test('canonical live capability gates WSS setup before an RPC request', async () => {
+  const f = fixture(true, true, false);
+  await assert.rejects(f.controller.watchLive('corp', '7'), /실시간 연결/);
+  assert.deepEqual(f.calls, []);
+});
 test('conversation read and buffered polling publish only validated display fields', async () => {
   const f = fixture();
   f.respond(async (method) => method === 'native/conversation'
@@ -81,24 +86,27 @@ test('conversation read and buffered polling publish only validated display fiel
   await f.controller.stopWatch(); assert.equal(f.calls.at(-1), 'native/unwatch');
   assert.deepEqual(f.states.at(-1), { status: 'idle', focus: null, conversation: null, hasMore: false });
 });
-test('stopping a pending conversation watch cancels it and an exact stale ACK cleanup leaves a newer watch active', async () => {
+test('stopping a pending live watch cancels it and exact stale ACK cleanup leaves a newer live watch active', async () => {
   const f = fixture(); let resolveOld!: (value: NativeRpcResult) => void; let entered!: () => void; let first = true;
   const started = new Promise<void>((resolve) => { entered = resolve; });
   f.respond(async (method) => {
-    if (method === 'native/watch-conversation' && first) {
+    if (method === 'native/watch-live' && first) {
       first = false; entered(); return new Promise<NativeRpcResult>((resolve) => { resolveOld = resolve; });
     }
-    if (method === 'native/watch-conversation') return { ...context, watch_id: 'new-watch', view: 'conversation' };
+    if (method === 'native/watch-live') {
+      f.conversationUpdate({ ...context, watch_id: 'new-watch', view: 'conversation',
+        update: { type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false } });
+      return { ...context, watch_id: 'new-watch', view: 'conversation' };
+    }
     return context;
   });
-  const stale = f.controller.watchConversation('corp', '7'); await started;
+  const stale = f.controller.watchLive('corp', '7'); await started;
   await f.controller.stopWatch();
   assert.deepEqual(f.requests.at(-1), { method: 'native/cancel', params: {} });
-  await f.controller.watchConversation('corp', '7');
+  await f.controller.watchLive('corp', '7');
+  assert.deepEqual(f.states.at(-1), { status: 'connected', focus: null, conversation, hasMore: false });
   resolveOld({ ...context, watch_id: 'stale-watch', view: 'conversation' }); await stale;
   assert.deepEqual(f.requests.at(-1), { method: 'native/unwatch', params: { watch_id: 'stale-watch' } });
-  f.conversationUpdate({ ...context, watch_id: 'new-watch', view: 'conversation',
-    update: { type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false } });
   assert.deepEqual(f.states.at(-1), { status: 'connected', focus: null, conversation, hasMore: false });
 });
 test('malformed conversation stops its watch without exposing rejected data', async () => {

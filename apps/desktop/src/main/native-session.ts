@@ -37,7 +37,7 @@ export class DesktopNativeSessions {
   }
   async request(rawMethod: unknown, rawParams: unknown = {}): Promise<DesktopNativeReply> {
     try {
-      if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'unwatch', 'cancel'].includes(rawMethod)) {
+      if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'watch-live', 'unwatch', 'cancel'].includes(rawMethod)) {
         throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
       }
       const params = object(rawParams);

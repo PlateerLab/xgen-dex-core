@@ -1,6 +1,6 @@
 import { Agent, request } from 'node:https';
 import * as tls from 'node:tls';
-import { DexError } from '@dex/engine';
+import { createNativeAgentSocketTransport, DexError, type NativeAgentSocketTransport } from '@dex/engine';
 import { NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 
 /** Native proofs/rotation must never be transparently replayed by Chromium's connection retry. */
@@ -53,3 +53,8 @@ export function createDesktopNativeFetch(certificates: () => readonly string[]):
 }
 
 export const desktopNativeFetch = createDesktopNativeFetch(systemCertificates);
+
+/** The renderer can select only the operation; main owns the OS trust roots and WSS transport. */
+export function createDesktopNativeSocket(origin: string): NativeAgentSocketTransport {
+  return createNativeAgentSocketTransport(origin, { certificates: systemCertificates });
+}

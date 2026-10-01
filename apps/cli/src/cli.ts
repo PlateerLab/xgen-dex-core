@@ -44,7 +44,7 @@ Usage:
   dex device request-approval --email <email> --approver <device-id> [--profile <name>] [--password-stdin]
   dex session login --email <email> [--profile <name>] [--password-stdin]
   dex session status|refresh|focus|conversation --user-id <id> [--profile <name>] [--json]
-  dex session watch-focus|watch-conversation --user-id <id> [--profile <name>] [--interval-ms <200..60000>] [--jsonl]
+  dex session watch-focus|watch-conversation|watch-live --user-id <id> [--profile <name>] [--interval-ms <200..60000>] [--jsonl]
   dex session logout --user-id <id> [--profile <name>] [--password-stdin]
   dex session forget-local --user-id <id> [--profile <name>] [--json]
   dex agents list [--search <text>] [--owner personal|shared] [--json]

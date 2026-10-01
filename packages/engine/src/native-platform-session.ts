@@ -9,6 +9,7 @@ import { withNativeAccount } from './native-account';
 import { NativeDeviceKeyStore, nativeKeyScope, type NativeKeyScope } from './native-device-key-store';
 import type { NativeSessionRecord, NativeSessionPhase } from './native-session-record';
 import { DexError } from './errors';
+import { createNativeAgentSocketTransport, type NativeAgentSocket, type NativeAgentSocketTransport } from './native-agent-socket';
 
 export interface NativeSessionSummary {
   user_id: string;
@@ -42,14 +43,21 @@ function requireAccess(record: NativeSessionRecord): string {
 export class NativeHostSession {
   private readonly origin: string;
   private readonly fetchImpl: typeof fetch;
+  private socketTransport: NativeAgentSocketTransport | undefined;
+  private readonly sockets = new Map<NativeAgentSocket, { scope: string; generation: string }>();
   constructor(origin: string, readonly platform: NativeKeyScope['platform'], private readonly keys = new NativeDeviceKeyStore(), fetchImpl?: typeof fetch,
-    private readonly expectedUserId?: string) {
+    private readonly expectedUserId?: string, socketTransport?: NativeAgentSocketTransport) {
     this.origin = nativeKeyScope({ origin, platform, userId: '1' }).origin;
     this.fetchImpl = fetchImpl ?? globalThis.fetch;
+    this.socketTransport = socketTransport;
   }
   private scope(userId: string): NativeKeyScope {
     if (this.expectedUserId !== undefined && userId !== this.expectedUserId) throw new DexError('auth_required', '현재 앱에 로그인한 계정만 사용할 수 있습니다.');
     return nativeKeyScope({ origin: this.origin, platform: this.platform, userId });
+  }
+  private closeSockets(): void {
+    const sockets = [...this.sockets.keys()]; this.sockets.clear();
+    for (const socket of sockets) void socket.close().catch(() => undefined);
   }
   async login(email: string, password: string, signal?: AbortSignal): Promise<NativeSessionSummary> {
     return withNativeAccount({ origin: this.origin, email, password, fetch: this.fetchImpl, signal, expectedUserId: this.expectedUserId }, async (userId, current) => {
@@ -63,7 +71,7 @@ export class NativeHostSession {
         const pending: NativeSessionRecord = { version: 1, ...scope, installId: identity.installId, deviceId: device.device_id,
           sessionId: null, generation: randomUUID(), phase: 'login_pending', refreshToken: null, accessToken: null, accessExpiresAt: null };
         signal?.throwIfAborted();
-        await vault.write(pending);
+        this.closeSockets(); await vault.write(pending);
         const result = await client.login(device.device_id, password, signal);
         const record: NativeSessionRecord = { ...pending, sessionId: result.session_id, generation: randomUUID(),
           phase: result.state === 'active' ? 'ready' : 'pending_takeover', refreshToken: result.refresh_token,
@@ -85,7 +93,7 @@ export class NativeHostSession {
     return this.keys.withSession(scope, async (identity, _sign, vault) => {
       const old = requireReady(await vault.read()); signal?.throwIfAborted();
       const marker = blocked(old, 'refreshing');
-      await vault.write(marker);
+      this.closeSockets(); await vault.write(marker);
       const client = new NativePlatformSessionClient({ origin: this.origin, platform: this.platform, identity, fetch: this.fetchImpl,
         account: { current: () => ({ authScope: `${userId}/${marker.generation}`, accessToken: null }) } });
       const result = await client.refresh(old.deviceId, old.sessionId!, old.refreshToken!, signal);
@@ -95,8 +103,8 @@ export class NativeHostSession {
     });
   }
   /** The provider is usable only inside the account/install lock and cannot sign for another origin or token. */
-  async withProofSource<T>(userId: string, work: (proof: AgentSessionProofSource, authScope: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    return this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
+  async withProofSource<T>(userId: string, work: (proof: AgentSessionProofSource, authScope: string, generation: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    try { return await this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
       const record = requireReady(await vault.read()); const token = requireAccess(record); let live = true;
       const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', '네이티브 세션 사용 범위가 종료되었습니다.'); };
       const proof: AgentSessionProofSource = {
@@ -114,9 +122,16 @@ export class NativeHostSession {
       // Rotation keeps the sid, so its token/write generation must not reset an account cursor.
       const authScope = createHash('sha256').update(JSON.stringify([record.origin, record.platform, record.userId,
         record.installId, record.deviceId, record.sessionId])).digest('hex');
-      try { const result = await work(proof, authScope); check(); return result; }
+      for (const [socket, binding] of this.sockets) {
+        if (socket.closed || binding.scope !== authScope || binding.generation !== record.generation) {
+          void socket.close().catch(() => undefined); this.sockets.delete(socket);
+        }
+      }
+      try { const result = await work(proof, authScope, record.generation); check(); return result; }
       finally { live = false; }
-    });
+    }); } catch (error) {
+      this.closeSockets(); throw error;
+    }
   }
   /** Fresh vault read for each bounded step. The caller waits only after this lock is released. */
   async reconcileFocus(userId: string, previous: ScopedAgentFocus | null, signal?: AbortSignal): Promise<AgentFocusRecoveryResult> {
@@ -171,13 +186,32 @@ export class NativeHostSession {
   async conversation(userId: string, signal?: AbortSignal) {
     return readNativeAgentConversation(this, userId, signal);
   }
+  /** Only an internal, verified conversation may select the scoped native event socket. */
+  async openConversationSocket(userId: string, state: ScopedAgentConversation, signal: AbortSignal): Promise<NativeAgentSocket> {
+    this.socketTransport ??= createNativeAgentSocketTransport(this.origin);
+    // Recheck the vault first so journal/rotation/account errors also close old sockets.
+    return this.withProofSource(userId, async (proof, scope, generation) => {
+      if (scope !== state.authScope || !state.snapshot || !state.eventCursor || state.focus.active_agent_session_id !== state.snapshot.id
+        || state.eventCursor.sequence > state.snapshot.current_sequence) throw new DexError('auth_required', '현재 계정의 공유 대화만 구독할 수 있습니다.');
+      this.socketTransport!.assertAvailable();
+      const token = await proof.accessToken();
+      if (!token) throw new DexError('auth_required', '네이티브 세션 인증이 필요합니다.');
+      const dpop = await proof.signProof('GET', `${this.origin}/api/agentflow/agent-sessions/${state.snapshot.id}/events`, token);
+      const socket = await this.socketTransport!.open(state.snapshot.id, state.eventCursor.sequence, token, dpop, signal);
+      try { signal.throwIfAborted(); await proof.accessToken(); }
+      catch (error) { void socket.close().catch(() => undefined); throw error; }
+      const wrapped: NativeAgentSocket = { get closed() { return socket.closed; }, next: () => socket.next(),
+        close: () => socket.close().finally(() => this.sockets.delete(wrapped)) };
+      this.sockets.set(wrapped, { scope, generation }); return wrapped;
+    }, signal);
+  }
   /** Password step-up and device DPoP revoke the current server sid before local credential deletion. */
   async logout(userId: string, password: string, signal?: AbortSignal): Promise<NativeSessionSummary> {
     if (!password || new TextEncoder().encode(password).length > 1024) throw new DexError('usage_error', '현재 계정 비밀번호가 필요합니다.');
     return this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
       const record = requireReady(await vault.read()); const token = requireAccess(record); signal?.throwIfAborted();
       const htu = `${this.origin}/api/me/platform-sessions/${record.sessionId}`;
-      await vault.write(blocked(record, 'logout_pending'));
+      this.closeSockets(); await vault.write(blocked(record, 'logout_pending'));
       const dpop = await sign('DELETE', htu, token, signal);
       let response: Response;
       try { response = await this.fetchImpl(htu, { method: 'DELETE', headers: { Authorization: `DPoP ${token}`, DPoP: dpop,
@@ -194,12 +228,14 @@ export class NativeHostSession {
   /** Explicit local-only recovery. Does not revoke a server session and preserves the enrollment key. */
   async forgetLocal(userId: string, signal?: AbortSignal): Promise<NativeSessionSummary> {
     return this.keys.withSession(this.scope(userId), async (_identity, _sign, vault) => {
-      signal?.throwIfAborted(); await vault.clear(); return summary(userId, null);
+      signal?.throwIfAborted(); this.closeSockets(); await vault.clear(); return summary(userId, null);
     });
   }
 }
 
 /** Existing CLI commands always use their own platform slot. */
 export class NativeCliSession extends NativeHostSession {
-  constructor(origin: string, keys?: NativeDeviceKeyStore, fetchImpl?: typeof fetch) { super(origin, 'cli', keys, fetchImpl); }
+  constructor(origin: string, keys?: NativeDeviceKeyStore, fetchImpl?: typeof fetch, socketTransport?: NativeAgentSocketTransport) {
+    super(origin, 'cli', keys, fetchImpl, undefined, socketTransport);
+  }
 }

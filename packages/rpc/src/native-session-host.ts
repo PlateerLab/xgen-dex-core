@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { DexError, NativeAgentConversationWatcher, NativeAgentFocusWatcher, NativeDeviceKeyStore, NativeHostSession, nativeAccountDeviceEnrollment, nativeKeyScope,
-  type ConfigStore, type NativeEnrollmentAction } from '@dex/engine';
+import { DexError, NativeAgentConversationWatcher, NativeAgentFocusWatcher, NativeAgentLiveWatcher, NativeDeviceKeyStore, NativeHostSession, nativeAccountDeviceEnrollment, nativeKeyScope,
+  type ConfigStore, type NativeAgentSocketTransport, type NativeEnrollmentAction } from '@dex/engine';
 import type { NativeRpcResult, NativeSessionNotification } from './wire';
 
 function text(p: Record<string, unknown>, key: string, required = true): string | undefined {
@@ -15,7 +15,13 @@ function fields(p: Record<string, unknown>, allowed: string[]): void {
 interface Watch {
   id: string; controller: AbortController; done: Promise<void>;
 }
-export interface NativeSessionHostOptions { keys?: NativeDeviceKeyStore; fetch?: typeof fetch; expectedUserId?: string }
+export interface NativeSessionHostOptions {
+  keys?: NativeDeviceKeyStore;
+  fetch?: typeof fetch;
+  expectedUserId?: string;
+  /** Trusted host dependency. Request parameters can never select or configure the socket transport. */
+  socket?: (origin: string) => NativeAgentSocketTransport;
+}
 
 /** Host owns all credentials. Request bodies cannot change the constructor's platform. */
 export class NativeSessionRpcHost {
@@ -37,7 +43,7 @@ export class NativeSessionRpcHost {
       if (this.watch?.id === id) await this.stopWatch(); return { watching: false };
     }
     if (method === 'native/cancel') { fields(p, []); this.cancel(); return { watching: false }; }
-    if (!['native/device', 'native/session', 'native/watch', 'native/conversation', 'native/watch-conversation'].includes(method)) {
+    if (!['native/device', 'native/session', 'native/watch', 'native/conversation', 'native/watch-conversation', 'native/watch-live'].includes(method)) {
       throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
     }
     if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
@@ -46,8 +52,9 @@ export class NativeSessionRpcHost {
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       await this.stopWatch(); signal.throwIfAborted();
-      const conversation = method === 'native/conversation' || method === 'native/watch-conversation';
-      const watching = method === 'native/watch' || method === 'native/watch-conversation';
+      const conversation = method === 'native/conversation' || method === 'native/watch-conversation' || method === 'native/watch-live';
+      const watching = method === 'native/watch' || method === 'native/watch-conversation' || method === 'native/watch-live';
+      const live = method === 'native/watch-live';
       const action = watching ? 'watch' : conversation ? 'conversation' : text(p, 'action')!;
       const device = method === 'native/device'; const passwordAction = device || ['login', 'logout'].includes(action);
       const accountField = device || action === 'login' ? 'email' : 'user_id';
@@ -55,6 +62,10 @@ export class NativeSessionRpcHost {
         ...(passwordAction ? ['password'] : []), ...(device && action === 'register' ? ['device_name'] : []),
         ...(device && action === 'request-approval' ? ['approver_device_id'] : [])]);
       const account = text(p, accountField)!; const password = passwordAction ? text(p, 'password')! : '';
+      const interval = watching ? p.interval_ms : undefined;
+      if (interval !== undefined && (typeof interval !== 'number' || !Number.isSafeInteger(interval) || interval < 200 || interval > 60000)) {
+        throw new DexError('usage_error', '구독 간격은 200~60000 사이의 정수 ms여야 합니다.');
+      }
       if (accountField === 'user_id' && this.options.expectedUserId !== undefined && account !== this.options.expectedUserId) {
         throw new DexError('auth_required', '현재 앱에 로그인한 계정만 사용할 수 있습니다.');
       }
@@ -63,7 +74,8 @@ export class NativeSessionRpcHost {
       const configured = config.profiles[profile]; if (!configured) throw new DexError('not_found', 'HTTPS 서버 프로필을 먼저 설정하세요.');
       const scope = nativeKeyScope({ origin: configured.serverUrl, platform: this.platform, userId: accountField === 'email' ? '1' : account });
       const envelope = { platform_type: this.platform, profile, server_url: scope.origin };
-      const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch, this.options.expectedUserId);
+      const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch, this.options.expectedUserId,
+        live ? this.options.socket?.(scope.origin) : undefined);
       if (device) {
         let operation: NativeEnrollmentAction;
         if (action === 'register') operation = { action, deviceName: text(p, 'device_name', false) ?? (this.platform === 'vscode' ? 'VSCode' : 'Desktop') };
@@ -75,9 +87,11 @@ export class NativeSessionRpcHost {
         signal.throwIfAborted(); return { ...envelope, ...result };
       }
       if (watching) {
-        const interval = p.interval_ms;
-        if (interval !== undefined && (typeof interval !== 'number' || !Number.isSafeInteger(interval))) throw new DexError('usage_error', '구독 간격은 정수 ms여야 합니다.');
-        const conversationWatcher = conversation ? new NativeAgentConversationWatcher(session, account, { intervalMs: interval as number | undefined }) : null;
+        const conversationWatcher = conversation
+          ? live
+            ? new NativeAgentLiveWatcher(session, account, { intervalMs: interval as number | undefined })
+            : new NativeAgentConversationWatcher(session, account, { intervalMs: interval as number | undefined })
+          : null;
         const focusWatcher = conversation ? null : new NativeAgentFocusWatcher(session, account, { intervalMs: interval as number | undefined });
         const status = await session.status(account, signal);
         if (status.state !== 'active') throw new DexError('auth_required', '사용 가능한 플랫폼 access가 없습니다. 로그인 또는 갱신을 먼저 실행하세요.');

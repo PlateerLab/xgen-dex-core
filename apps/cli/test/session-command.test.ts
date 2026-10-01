@@ -22,7 +22,8 @@ test('invalid actions, account IDs, HTTP origins and credential flags fail befor
     ['session', 'refresh', '--user-id', '7', '--token', 'secret'], ['session', 'status', '--user-id', '01'],
     ['session', 'focus', '--user-id', '7', '--password-stdin'], ['session', 'watch-focus', '--user-id', '7', '--json'],
     ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '199'], ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '1e3'],
-    ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '60001'], ['session', 'status', '--user-id', '7', '--jsonl']]) {
+    ['session', 'watch-focus', '--user-id', '7', '--interval-ms', '60001'], ['session', 'watch-live', '--user-id', '7', '--interval-ms', '199'],
+    ['session', 'watch-live', '--user-id', '7', '--token', 'private'], ['session', 'status', '--user-id', '7', '--jsonl']]) {
     await assert.rejects(runSessionCommand(parseArgs(argv), configs(), dependencies), DexError);
   }
   await assert.rejects(runSessionCommand(parseArgs(['session', 'login', '--email', 'a']), configs('http://localhost'), dependencies), DexError);
@@ -73,8 +74,14 @@ test('JSON login/status/local forgetting expose no credential and do not ask for
     });
     assert.deepEqual(conversationUpdates.map((u) => u.type), ['reset', 'conversation', 'stopped']);
     assert.deepEqual(conversationUpdates[1].conversation, { snapshot: null, messages: [], omittedMessages: 0 });
+    const liveStop = new AbortController(); const liveUpdates: any[] = [];
+    await runSessionCommand(parseArgs(['session', 'watch-live', '--user-id', '7', '--jsonl']), configs(), {
+      ...dependencies, signal: liveStop.signal, write: (raw) => { output.push(raw); liveUpdates.push(JSON.parse(raw)); if (JSON.parse(raw).type === 'conversation') liveStop.abort(); },
+    });
+    assert.deepEqual(liveUpdates.map((u) => u.type), ['reset', 'conversation', 'stopped']);
+    assert.equal(liveUpdates[1].action, 'watch-live');
     await runSessionCommand(parseArgs(['session', 'forget-local', '--user-id', '7', '--json']), configs(), dependencies);
-    assert.equal(requests, before + 3); assert.equal(reads, 1);
+    assert.equal(requests, before + 4); assert.equal(reads, 1);
     for (const raw of output) {
       for (const forbidden of ['private-password', 'privateKeyPkcs8', access, refresh, 'e30.e30.c2ln', 'accessToken', 'refreshToken']) assert.equal(raw.includes(forbidden), false);
     }

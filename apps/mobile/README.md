@@ -110,3 +110,17 @@ After preparing a local hardware key, Mobile Settings can register this phone, r
 macOS에서 `apps/mobile` 기준 `bash verify/run-native-enrollment-transport.sh`는 임시 TLS leaf 인증서와 실제 URLSession으로 헤더·Cookie·redirect·stream cap·UTF-8·취소·POST 연결 분실을 검증한다. `NATIVE_ENROLLMENT_TRANSPORT_TESTING`은 이 임시 verifier에만 사용하고 앱 빌드에는 설정하지 않는다. 임시 인증서는 production 신뢰 저장소에 등록하지 않으며 종료 시 서버와 키를 정리한다.
 
 On macOS, run `bash verify/run-native-enrollment-transport.sh` from `apps/mobile` for a real URLSession TLS fixture. Its temporary leaf certificate is injected only into a verifier built with `NATIVE_ENROLLMENT_TRANSPORT_TESTING`, never into a production app or system trust store. The fixture server and key are removed on exit.
+
+## 휴대폰 세션 / Mobile Platform Session
+
+HTTPS 서버 로그인 → 기기 키 준비 → 휴대폰 등록 → PC 브라우저 승인을 완료한 뒤 **설정 → 휴대폰 세션**에서 현재 계정 비밀번호로 발급한다. 서버가 ACTIVE 발급을 허용해야 한다. `저장된 세션 상태 확인`은 로컬 보관 상태만 조회하며 서버 신뢰·세션 유효성을 대신하지 않는다. 자동 발급·갱신·재시도는 없다. 기존 로그인·채팅 자격증명과 별도이며 Canonical 구독은 후속 단계다.
+
+- 별도 SecureStore service에 `mobile + HTTPS origin + 실제 사용자`별 record/journal을 저장한다. iOS 접근은 `WHEN_PASSCODE_SET_THIS_DEVICE_ONLY`이며 개인키를 저장하지 않는다. 공개 설치 ID/키 지문·device/sid·JWT sub/platform/cnf/expiry가 일치해야 복원한다. AsyncStorage·legacy 세션·Bearer로 대체하지 않는다. 서버가 JWT 서명과 현재 신뢰·권한·sid를 검증한다.
+- 발급·회전·폐기 전에 token-free journal을 저장하고 읽어 확인한 뒤 기존 credential record를 삭제한다. 완료 결과는 새 credential 저장·readback을 마친 뒤 journal을 지운다. 충돌·저장 실패·취소·응답 유실·앱 종료에는 처리 중 기록이 다음 토큰 사용을 막는다. 여러 화면 owner도 계정별 공통 lock을 사용한다.
+- refresh에는 계정 Bearer를 보내지 않는다. 서버 세션 폐기는 현재 계정 비밀번호와 같은 하드웨어 키의 DPoP를 사용한다. DPoP는 네이티브에서 UUID jti·현재 iat·access hash·고정 method/HTTPS resource·공개 JWK를 조립하고 ES256으로 서명한다. 임의 body/route/원본 바이트 서명 API는 없다.
+- 발급/폐기 버튼을 누르면 비밀번호 입력을 즉시 비우고, 백그라운드·계정/서버 변경·화면 이탈 때 요청을 취소하고 늦은 결과를 버린다. JS 문자열의 메모리 삭제를 보장하지는 않으며 토큰·비밀번호를 화면 상태나 진단에 기록하지 않는다.
+- `pending_takeover`에는 토큰이 없다. 처리 중·인계 대기 결과는 PC 내 페이지에서 서버 세션을 확인·폐기한 후 `로컬 세션 기록만 삭제`로 복구한다. 로컬 삭제는 서버 폐기가 아니며 기기 키와 등록은 유지한다. 키가 없거나 손상돼도 현재 계정의 로컬 기록 삭제는 가능하다.
+
+enrollment 전송과 별도 `sessionRequest` allowlist는 native login-key/refresh POST 및 현재 세션 폐기 DELETE만 허용한다. 같은 예약 ID·취소·TLS·Cookie/redirect/크기 경계를 공유한다. 서버 login/refresh complete는 Redis flow/challenge를 먼저 일회 소비하며, refresh DB 회전은 소비된 토큰 재사용을 거절한다. iOS URLSession의 내부 재전송은 exactly-once로 보장할 수 없다. 전송 결과를 받지 못하면 journal을 유지하고 이전 refresh로 다시 시도하지 않는다. Canonical GET 전송은 아직 허용하지 않는다.
+
+After enrollment and browser approval, **Settings → Mobile session** explicitly issues, inspects, rotates or revokes a separate Mobile Platform Session. SecureStore records are bound to the HTTPS account, installation/hardware key and server sid. A verified token-free journal is written before credentials are removed and any mutation starts; new credentials are written and read back before the journal is cleared. Interrupted or uncertain operations block reuse across owners/restarts. Refresh carries no account Bearer. Logout requires password and native ES256 DPoP for the stored access/sid. Local erasure preserves the hardware key and does not revoke the server session. Account/screen/background changes cancel and discard stale results. Existing chat remains on its current credential path. Physical-device storage/signing/UI validation and ACTIVE/takeover positive verification remain required; URLSession still provides no exactly-once delivery guarantee.

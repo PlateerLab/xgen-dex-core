@@ -6,8 +6,12 @@ export interface MobileNativeContext { origin: string; userId: string; authScope
 export interface MobileNativeKeyModule {
   prepare(origin: string, userId: string, create: boolean): Promise<unknown>;
   signChallenge(origin: string, userId: string, installId: string, thumbprint: string, purpose: string, challenge: string): Promise<unknown>;
+  signDpop?(origin: string, userId: string, installId: string, thumbprint: string, method: string, htu: string, token: string): Promise<unknown>;
 }
-export interface MobileDeviceIdentity extends NativeDeviceIdentity { storage: MobileKeyStorage }
+export interface MobileDeviceIdentity extends NativeDeviceIdentity {
+  storage: MobileKeyStorage;
+  signDpop?(method: 'GET' | 'DELETE', htu: string, token: string, signal?: AbortSignal): Promise<string>;
+}
 export class MobileDeviceKeyError extends Error {
   constructor(readonly code: 'unavailable' | 'missing' | 'invalid' | 'locked' | 'account_changed') {
     super({ unavailable: '이 환경에서는 안전한 기기 키를 사용할 수 없습니다. 네이티브 앱과 지원 기기를 확인하세요.',
@@ -17,6 +21,7 @@ export class MobileDeviceKeyError extends Error {
 }
 const BYTES32 = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SESSION_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 function scope(value: MobileNativeContext | null): MobileNativeContext {
   if (!value || !value.authScope || !/^[1-9][0-9]{0,18}$/.test(value.userId)) throw new MobileDeviceKeyError('account_changed');
   try {
@@ -36,16 +41,19 @@ function publicIdentity(raw: unknown): { installId: string; publicKey: NativePub
   return { installId: value.installId, storage: value.storage as MobileKeyStorage,
     publicKey: Object.freeze({ kty: 'EC', crv: 'P-256', x: key.x, y: key.y }) };
 }
-function encode(bytes: number[]): string {
+export function mobileBase64url(bytes: number[]): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'; let output = ''; let bits = 0; let held = 0;
   for (const byte of bytes) { held = (held << 8) | byte; bits += 8; while (bits >= 6) { bits -= 6; output += alphabet[(held >>> bits) & 63]; } }
   if (bits) output += alphabet[(held << (6 - bits)) & 63]; return output;
 }
-function jsonPart(part: string): Record<string, unknown> {
+export function mobileJwtPart(part: string): Record<string, unknown> {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'; let text = ''; let held = 0; let bits = 0;
   for (const char of part) { const value = alphabet.indexOf(char); if (value < 0) throw new MobileDeviceKeyError('invalid');
     held = (held << 6) | value; bits += 6; if (bits >= 8) { bits -= 8; text += String.fromCharCode((held >>> bits) & 255); } }
   try { return JSON.parse(text) as Record<string, unknown>; } catch { throw new MobileDeviceKeyError('invalid'); }
+}
+export function mobileKeyThumbprint(key: NativePublicKey): string {
+  return mobileBase64url(sha256.array(JSON.stringify({ crv: key.crv, kty: key.kty, x: key.x, y: key.y })));
 }
 function safeError(error: unknown): MobileDeviceKeyError {
   if (error instanceof MobileDeviceKeyError) return error;
@@ -62,8 +70,7 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
       try {
         check(); if (!module) throw new MobileDeviceKeyError('unavailable');
         const identity = publicIdentity(await module.prepare(selected.origin, selected.userId, create)); check();
-        const { x, y } = identity.publicKey;
-        const thumbprint = encode(sha256.array(`{"crv":"P-256","kty":"EC","x":"${x}","y":"${y}"}`));
+        const thumbprint = mobileKeyThumbprint(identity.publicKey);
         return Object.freeze({ ...identity,
           async signChallenge(purpose: NativeDeviceProofPurpose, challenge: string, operationSignal?: AbortSignal): Promise<string> {
             const signingCheck = () => { check(); operationSignal?.throwIfAborted(); };
@@ -72,9 +79,31 @@ export function createMobileDeviceKeys(module: MobileNativeKeyModule | null, cur
               const proof = await module.signChallenge(selected.origin, selected.userId, identity.installId, thumbprint, purpose, challenge); signingCheck();
               if (typeof proof !== 'string' || proof.length > 8192) throw new MobileDeviceKeyError('invalid');
               const parts = proof.split('.'); if (parts.length !== 3 || !/^[A-Za-z0-9_-]{85}[AQgw]$/.test(parts[2]!)) throw new MobileDeviceKeyError('invalid');
-              const header = object(jsonPart(parts[0]!), ['alg', 'typ']); const claims = object(jsonPart(parts[1]!), ['challenge', 'purpose', 'iat']);
+              const header = object(mobileJwtPart(parts[0]!), ['alg', 'typ']); const claims = object(mobileJwtPart(parts[1]!), ['challenge', 'purpose', 'iat']);
               if (header.alg !== 'ES256' || header.typ !== 'platform-device-proof+jwt' || claims.challenge !== challenge || claims.purpose !== purpose
                 || typeof claims.iat !== 'number' || !Number.isSafeInteger(claims.iat) || Math.abs(Math.floor(Date.now() / 1000) - claims.iat) > 30) throw new MobileDeviceKeyError('invalid');
+              return proof;
+            } catch (error) { if (signal?.aborted || operationSignal?.aborted) { signal?.throwIfAborted(); operationSignal?.throwIfAborted(); } throw safeError(error); }
+          },
+          async signDpop(method: 'GET' | 'DELETE', htu: string, token: string, operationSignal?: AbortSignal): Promise<string> {
+            const signingCheck = () => { check(); operationSignal?.throwIfAborted(); };
+            try {
+              signingCheck(); if (!module.signDpop) throw new MobileDeviceKeyError('unavailable');
+              const url = new URL(htu);
+              const allowed = method === 'DELETE' ? new RegExp(`^/api/me/platform-sessions/${SESSION_UUID}$`).test(url.pathname)
+                : method === 'GET' && new RegExp(`^/api/agentflow/(?:me/(?:agent-state|agent-events|agent-sessions)|agent-sessions/${SESSION_UUID}/(?:snapshot|events))$`).test(url.pathname);
+              if (!allowed || url.origin !== selected.origin || url.username || url.password || url.search || url.hash || url.href !== htu
+                || token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new MobileDeviceKeyError('invalid');
+              const proof = await module.signDpop(selected.origin, selected.userId, identity.installId, thumbprint, method, htu, token); signingCheck();
+              if (typeof proof !== 'string' || proof.length > 8192) throw new MobileDeviceKeyError('invalid');
+              const parts = proof.split('.'); if (parts.length !== 3 || !/^[A-Za-z0-9_-]{85}[AQgw]$/.test(parts[2]!)) throw new MobileDeviceKeyError('invalid');
+              const header = object(mobileJwtPart(parts[0]!), ['alg', 'typ', 'jwk']);
+              const key = object(header.jwk, ['kty', 'crv', 'x', 'y']);
+              const claims = object(mobileJwtPart(parts[1]!), ['jti', 'htm', 'htu', 'iat', 'ath']);
+              if (header.alg !== 'ES256' || header.typ !== 'dpop+jwt' || key.kty !== 'EC' || key.crv !== 'P-256'
+                || key.x !== identity.publicKey.x || key.y !== identity.publicKey.y || claims.htm !== method || claims.htu !== htu
+                || claims.ath !== mobileBase64url(sha256.array(token)) || typeof claims.jti !== 'string' || !UUID.test(claims.jti)
+                || !Number.isSafeInteger(claims.iat) || Math.abs(Math.floor(Date.now() / 1000) - (claims.iat as number)) > 30) throw new MobileDeviceKeyError('invalid');
               return proof;
             } catch (error) { if (signal?.aborted || operationSignal?.aborted) { signal?.throwIfAborted(); operationSignal?.throwIfAborted(); } throw safeError(error); }
           },

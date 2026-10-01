@@ -23,10 +23,19 @@ import {
   resolveExecutable,
 } from './exec-resolve';
 
+/** MCP 도구 주석(spec `ToolAnnotations`) — 읽기 전용 · 파괴 · 멱등 · 바깥 여부. 서버가 능력으로 옮긴다. */
+export interface McpToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface McpToolSchema {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  annotations?: McpToolAnnotations;
 }
 
 /** What we advertise to the backend (per configured, enabled server). */

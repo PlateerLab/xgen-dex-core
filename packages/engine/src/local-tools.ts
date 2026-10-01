@@ -108,6 +108,8 @@ export interface LocalToolSchema {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** MCP 도구 주석 — 이 도구가 읽기만 하는지(ReadFile · ListDir · Search), 되돌릴 수 없는지. 서버가 능력으로 옮긴다. */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
 }
 
 export interface LocalToolResult {
@@ -448,6 +450,7 @@ export const SYNCED_WORKSPACE_NOTE =
 export function localControlToolSchema(): LocalToolSchema {
   return {
     name: LOCAL_CONTROL_TOOL,
+    annotations: { readOnlyHint: true, idempotentHint: true },
     description:
       `List the tools the user's own computer provides to this conversation and the ` +
       `folders the user connected to it. This is a read-only capability inventory; it ` +
@@ -462,6 +465,7 @@ export function localControlToolSchema(): LocalToolSchema {
 export function mcpAddServerToolSchema(): LocalToolSchema {
   return {
     name: MCP_ADD_TOOL,
+    annotations: { readOnlyHint: false },
     description:
       "Register (or update) a local MCP server ON THE USER'S OWN COMPUTER (this connector) and attach " +
       'its tools to the current session agents. Same fields as a standard mcp.json server entry. ' +
@@ -514,6 +518,7 @@ export function mcpAddServerToolSchema(): LocalToolSchema {
 export function mcpRemoveServerToolSchema(): LocalToolSchema {
   return {
     name: MCP_REMOVE_TOOL,
+    annotations: { readOnlyHint: false, destructiveHint: true },
     description:
       'Remove a local MCP server (by name) from this connector: stop its process/connection and detach ' +
       'its tools from the session agents. Also clears its stored secrets. No-op if it does not exist.',
@@ -529,6 +534,7 @@ export function mcpRemoveServerToolSchema(): LocalToolSchema {
 export function mcpListServersToolSchema(): LocalToolSchema {
   return {
     name: MCP_LIST_TOOL,
+    annotations: { readOnlyHint: true, idempotentHint: true },
     description:
       'List the local MCP servers registered on this connector with their transport, enabled/connected ' +
       'state, and the tools each exposes. Secret values are never returned. Use before add/remove.',
@@ -539,6 +545,7 @@ export function mcpListServersToolSchema(): LocalToolSchema {
 export function shellToolSchema(): LocalToolSchema {
   return {
     name: SHELL_TOOL,
+    annotations: { readOnlyHint: false, destructiveHint: true },
     description:
       `Run ONE command in a terminal on the USER'S OWN COMPUTER (the device running this app), ` +
       `through its native shell (${nativeShellLabel()}), as the logged-in user. It works only ` +
@@ -612,6 +619,7 @@ export function shellToolSchema(): LocalToolSchema {
 export function shellJobToolSchema(): LocalToolSchema {
   return {
     name: SHELL_JOB_TOOL,
+    annotations: { readOnlyHint: false },
     description:
       `Manage long-running background jobs started with Shell(background:true) on the USER'S OWN ` +
       `COMPUTER. This is how you run work that outlives a single tool call: start it in the ` +
@@ -640,6 +648,7 @@ export function shellJobToolSchema(): LocalToolSchema {
 export function openToolSchema(): LocalToolSchema {
   return {
     name: OPEN_TOOL,
+    annotations: { readOnlyHint: false },
     description:
       `Open a file, folder, or URL on the USER'S OWN COMPUTER with its default application. ` +
       `Non-blocking — the app launches and this returns immediately. Use this for "open <file>", ` +
@@ -969,6 +978,7 @@ export async function resolveWithinRootsReal(
 export function readFileToolSchema(): LocalToolSchema {
   return {
     name: READ_FILE_TOOL,
+    annotations: { readOnlyHint: true, idempotentHint: true },
     description:
       "Read a text file on the USER'S OWN COMPUTER, inside the folders connected to this " +
       'conversation. Prefer this over `Shell cat` — it distinguishes “not found” ' +
@@ -995,6 +1005,7 @@ export function readFileToolSchema(): LocalToolSchema {
 export function writeFileToolSchema(): LocalToolSchema {
   return {
     name: WRITE_FILE_TOOL,
+    annotations: { readOnlyHint: false, destructiveHint: true },
     description:
       "Write (or append to) a text file on the USER'S OWN COMPUTER, inside the folders " +
       'connected to this conversation. Creates parent directories as needed. Prefer this over ' +
@@ -1018,6 +1029,7 @@ export function writeFileToolSchema(): LocalToolSchema {
 export function listDirToolSchema(): LocalToolSchema {
   return {
     name: LIST_DIR_TOOL,
+    annotations: { readOnlyHint: true, idempotentHint: true },
     description:
       "List a directory on the USER'S OWN COMPUTER (inside the folders connected to this " +
       'conversation). Shows type/size/name.' +
@@ -1034,6 +1046,7 @@ export function listDirToolSchema(): LocalToolSchema {
 export function searchToolSchema(): LocalToolSchema {
   return {
     name: SEARCH_TOOL,
+    annotations: { readOnlyHint: true, idempotentHint: true },
     description:
       "Recursively search text files under a folder on the USER'S OWN COMPUTER (inside the " +
       'folders connected to this conversation) for a literal substring. Skips ' +
@@ -1053,6 +1066,7 @@ export function searchToolSchema(): LocalToolSchema {
 export function clipboardToolSchema(): LocalToolSchema {
   return {
     name: CLIPBOARD_TOOL,
+    annotations: { readOnlyHint: false },
     description:
       "Read or write the USER'S system clipboard (plain text). Available while a folder is " +
       'connected to this conversation.',
@@ -1073,6 +1087,7 @@ export function clipboardToolSchema(): LocalToolSchema {
 export function notifyToolSchema(): LocalToolSchema {
   return {
     name: NOTIFY_TOOL,
+    annotations: { readOnlyHint: false },
     description:
       "Show a desktop notification on the USER'S OWN COMPUTER. Available while a folder is " +
       'connected to this conversation.',

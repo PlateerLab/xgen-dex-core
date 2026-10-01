@@ -46,11 +46,16 @@ function parseConfig(raw: unknown): DexConfig {
   // 정규화는 한 곳(local-tools-config)에만 있다 — 예전엔 여기와 도구 쪽에 각각
   // 있었고, 상한값이 서로 달랐다.
   const localTools = normalizeLocalToolsConfig(value.localTools);
+  // 기기 id 는 설정에 영속한다(ensureDeviceId). 여기서 떨어뜨리면 읽을 때마다 새 id 가 생겨 한 프로세스 안에서도
+  // 대화가 보낸 client_device_id 와 브리지가 등록한 device_id 가 달라진다 — 서버는 그 대화의 폴더 기기가 꺼져 있다고
+  // 보고 PC 도구를 주지 않는다(2026-10-01 실측: `dex chat --folder` 뒤 "PC 파일 접근 도구가 연결되어 있지 않아서").
+  const deviceId = typeof value.deviceId === 'string' && value.deviceId.trim() ? value.deviceId.trim() : undefined;
   return {
     version: 1,
     currentProfile: String(value.currentProfile || DEFAULT_PROFILE),
     profiles,
     localTools,
+    ...(deviceId ? { deviceId } : {}),
   };
 }
 

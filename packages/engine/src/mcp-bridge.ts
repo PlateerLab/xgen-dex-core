@@ -397,6 +397,7 @@ export class McpBridge {
             name: t.name,
             description: t.description,
             inputSchema: t.inputSchema,
+            annotations: t.annotations,
           })),
         );
       // Connector-hosted built-ins (local shell, …) ride the SAME catalog as
@@ -410,6 +411,7 @@ export class McpBridge {
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
+          annotations: t.annotations,
         }));
       tools.unshift(...builtins);
       if (this.ws?.readyState === WebSocket.OPEN) {

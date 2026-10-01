@@ -17,6 +17,9 @@ import { createMobileEnrollmentFetch } from '../apps/mobile/src/lib/native-enrol
 import { createMobilePlatformSession } from '../apps/mobile/src/lib/native-platform-session';
 import { createMobileSessionFetch } from '../apps/mobile/src/lib/native-session-http';
 import { createMobileSessionVault } from '../apps/mobile/src/lib/native-session-vault';
+import { createMobileAgentFetch } from '../apps/mobile/src/lib/native-agent-http';
+import { createMobileAgentFocusSource } from '../apps/mobile/src/lib/native-agent-focus';
+import { createMobileAgentFocusWatcher } from '../apps/mobile/src/lib/native-agent-focus-watch';
 import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
 
 const origin = 'https://localhost:3443';
@@ -68,7 +71,8 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
-const testMobileSession = process.argv.includes('--mobile-session');
+const testMobileFocus = process.argv.includes('--mobile-focus');
+const testMobileSession = process.argv.includes('--mobile-session') || testMobileFocus;
 const testMobileController = process.argv.includes('--mobile-controller') || testMobileSession;
 const platforms = testMobileController ? ['mobile'] as const : ['desktop', 'mobile', 'cli', 'vscode'] as const;
 const desktopElectron: string | null = testDesktop ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
@@ -246,6 +250,26 @@ try {
       assert.equal(retained.refreshToken, null); assert.equal(retained.accessToken, null); session.dispose();
       const restored = make(); assert.equal((await restored.inspect()).state, 'login_pending');
       await assert.rejects(restored.refresh()); await assert.rejects(restored.login(password)); assert.equal(calls, 1);
+      if (testMobileFocus) {
+        let canonicalCalls = 0;
+        const canonicalFetch = createMobileAgentFetch({ newRequestId: randomUUID,
+          async readRequest(id, selected, path, token, dpop) {
+            canonicalCalls++; assert.equal(selected, origin); const controller = new AbortController(); activeHttp.set(id, controller);
+            try {
+              const response = await fetchImpl(`${origin}${path}`, { method: 'GET', headers: { Accept: 'application/json', Authorization: `DPoP ${token}`, DPoP: dpop },
+                credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal });
+              return { status: response.status, body: await response.text() };
+            } finally { activeHttp.delete(id); }
+          }, cancelRequest(id) { activeHttp.get(id)?.abort(); },
+        }, origin);
+        const source = createMobileAgentFocusSource({ current: mobileCurrent, keys: mobileKeys, vault, fetch: canonicalFetch });
+        await assert.rejects(source.reconcileFocus(null));
+        const updates: unknown[] = [];
+        await assert.rejects(createMobileAgentFocusWatcher(source).run((u) => updates.push(u), new AbortController().signal));
+        assert.deepEqual(updates, [{ type: 'reset' }, { type: 'stopped', reason: 'authentication' }]);
+        assert.equal(canonicalCalls, 0); assert.equal(calls, 1); assert.equal(records.size, 1); source.dispose();
+        console.log('Mobile production Canonical source/watcher: enrollment-mode login_pending blocks focus/read/poll before wire; no refresh/Bearer fallback PASS');
+      }
       assert.equal((await restored.forgetLocal()).state, 'signed_out'); assert.equal(records.size, 0); assert.equal(calls, 1);
       assert.equal((await client.registrationStatus())?.state, 'trusted'); restored.dispose(); assert.equal(activeHttp.size, 0);
       console.log('Mobile production session controller/vault + JS session transport: ACTIVE 503, durable token-free login_pending, owner restart, reuse blocked, explicit local recovery PASS (memory vault/software key/Node TLS test seams)');

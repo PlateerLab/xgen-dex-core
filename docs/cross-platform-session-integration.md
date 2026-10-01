@@ -359,3 +359,49 @@ seq는 0..9007199254740991, limit은 1..200(list는 1..100), decimal의 leading 
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. Mobile Settings now explicitly reads and polls the canonical account focus through ready, scoped Platform credentials and native GET DPoP. Shared reconciliation preserves same-sid cursors across token rotation and recovers gaps/409 with a snapshot. Every bounded step reloads the vault; waits release the lock. Authentication, interrupted journals, key/vault/protocol failures stop, while read-only transient failures use capped backoff. Account/screen/background changes discard the cursor and require explicit restart. Cancelled native reads remain busy across owners until OS completion; persistent source/reservation busy stops, while local recovery remains available. Exact routes/ordered queries use the existing system TLS/cookie/redirect/UTF-8/cancel boundaries. Tests/native builds/Metro and enrollment-mode Compose rejection pass. Real ACTIVE/takeover, physical SecureStore/hardware/UI and message/WS integration remain gates. Parent PR90 stays Draft and SDK/runtime stays on the unreleased Workflow overlay.
+
+
+## Mobile 공유 대화 snapshot·event·완결 메시지 조회 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-messages`, 기준 통합 SHA `1bef897b0f9f73441a88358b3608e8acc7c5fd56`, 하위 [PR140](https://github.com/PlateerLab/xgen-dex-core/pull/140) → `feat/cross-platform-session`. main 대상 상위 PR90은 Draft로 유지한다.
+
+### 범위와 통신
+
+```text
+Mobile Settings 공유 대화 보기
+  → 계정 수명 + hardware identity + SecureStore vault/journal 확인
+  → native GET /me/agent-state · /me/agent-events (query-free DPoP)
+  → 선택된 Agent /snapshot (latest_turn)
+  → /events (연속 실행 커서) + /messages (독립 sparse 커서)
+  → 최신 snapshot + account focus 재확인
+  → 완료 메시지/실행 상태 메모리 표시
+```
+
+- 공통 protocol에 메시지 display projection과 latest_turn parser, bounded conversation recovery를 추가했다. raw ExecutionIO/tool 값은 전달하지 않는다. snapshot의 `message_history_complete=false`를 유지하며 전체 과거 이력 완성을 주장하지 않는다. 진행 중 출력은 완료 후 journal-linked 메시지로 확인한다.
+- 단계당 이벤트 최대 2페이지×100, 메시지 최대 2페이지×1, 단계 deadline 10초다. 단발 조회는 최대 10단계 뒤 남은 기록을 일부 조회로 표시한다. 명시적 polling은 backlog를 이어 읽고 안정화 후 2초 간격으로 확인한다. 최대 100턴/본문 UTF8 4MiB를 보관하며 오래된 턴 생략 개수를 표시한다.
+- 같은 sid의 token rotation은 두 커서를 유지하고 다음 단계에서 vault를 다시 읽어 새 proof를 만든다. focus/auth scope 변경은 이전 본문을 폐기한다. 본문 요청 뒤 final focus를 확인하고 concurrent 변경 시 빈 화면 상태와 새 pointer를 반환하여 다음 단계에서 재조회한다.
+- 이벤트 gap/409는 한 번 재수화한다. 메시지 무결성 실패/409는 중단하여 첫 정상 페이지와 잘못된 후속 페이지의 반복 재조회를 막는다. native redirect/UTF8/응답 크기 실패는 protocol recovery와 구분하는 영구 오류다. 네트워크/서버 임시 실패만 기존 capped backoff를 사용한다. 계정/화면/백그라운드/취소·늦은 결과 폐기와 실제 OS completion 이전 새 GET 차단은 기존 경계를 유지한다.
+- 두 OS/JS에 `/messages?after_sequence=N&limit=N` exact route를 추가했다. limit 1..20, sequence 0..9007199254740991, canonical decimal/lowercase UUID를 대조한다. query는 DPoP htu에서 제외한다. 해당 응답만 1MiB, 나머지 GET와 enrollment/session mutation은 기존 64KiB로 제한한다. 인증·Cookie·TLS·redirect·예약/취소 경계는 유지한다.
+
+### 검증과 실제 실행 환경
+
+- Mobile **125/125**, protocol **210/210**, 각 타입 검사·계약 검사·strict/bundler Compose harness 타입 검사 통과. sparse/빈 페이지/중복·잘못된 본문·UTF8 제한, event/message 독립 커서, bounded paging·100턴/4MiB retention, focus 변경, rotation, callback mutation isolation, journal 차단, account/background/cancel·late 결과, 메시지 무결성 실패 중단을 검증했다.
+- Android release AAR와 native tests **23/23**(device4/DPoP2/TLS17), 실제 iPhoneOS SDK typecheck(deployment target15.1), 전체 iOS Simulator Debug 앱 빌드, iOS/Android Metro export 통과. 실제 URLSession `::1` TLS fixture에서 messages >64KiB 성공, 다른 경로 64KiB 거절, 1MiB 초과 fixed/chunked 응답·invalid UTF8·redirect 거절과 취소를 검증했다. 임시 인증서는 테스트 verifier에만 주입한다.
+- 실제 Compose opt-in `--mobile-messages`: 임시 계정 등록·선택 브라우저 승인·trusted, login **503**과 durable token-free login_pending, 생산 focus/conversation source와 watcher의 인증 중단(Canonical GET **0회**), 재시작 후 중복 발급/refresh 차단, 명시적 로컬 복구와 임시 DB 자료 정리 통과. **memory vault/software key/Node TLS seams**이며 실제 ACTIVE 양성·SecureStore/hardware/production Mobile UI 결합 성공 증거는 아니다.
+- `.env` 서비스별 branch override와 clean source/container HEAD/ref·`/app` mount를 확인했다. 전부 `feat/cross-platform-session`: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`. Workflow는 기존 `02bb512b`에서 최신 integration으로 fast-forward하고 기존 Compose container/overlay 설정을 유지하여 재시작했다. 기본 인프라/core/gateway, workflow/frontend 프로필과 local HTTPS3443, enrollment mode를 사용했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`와 runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 snapshot marker·실제 `/opt/xgen-local-sdk` 및 `/opt/xgen-local-runtime` import를 확인했다. 배포는 하지 않았다. 환경변수 추가·변경·삭제가 없어 Infra 참조 문서 변경은 없다.
+- 증거: `/tmp/cross-sync-mobile-messages-{mobile,protocol,types,protocol-types,android,iphoneos,swift-fixture,ios-build,metro,compose-types,compose}.log`. Pod/Metro 생성물은 커밋에서 제외한다. 통합 전 최종 Head CI와 diff/review를 확인한다.
+
+### 잔여 추정치
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 기반/계약 | 22% | 운영 계약·보안 관문·통합 검증 |
+| 1 PlatformSession | 5% | Mobile 실기기·UI, 실제 ACTIVE/takeover 수령 |
+| 2 CanonicalSession | 21% | Native WS ticket/socket·기존 채팅 송신 이행·실서버 양성 검증 |
+| 3 개인 설정 | 95% | 대부분의 기능 구현 |
+| 4 전 플랫폼 UI | 95% | 통합 사용 흐름과 UX |
+| 5 보안/운영 | 90% | 운영 관측·복구·배포 검증 |
+| 6 검증/릴리스 | 100% | 전체 실사용·보호 브랜치 승인·배포 |
+
+These percentages estimate remaining work, not coverage or delivery dates. Mobile now explicitly reads and polls session snapshots, contiguous execution events and sparse linked terminal messages using scoped native DPoP. Bounded paging/retention, final focus checks, callback isolation, journal/expiry/cancellation and permanent native response failures protect the display. Invalid message links stop instead of replaying earlier pages repeatedly. JS/protocol tests, Android native release tests/AAR, real iPhoneOS typecheck, full iOS Simulator build, Metro exports and enrollment-mode Compose rejection/cleanup pass. All actual server branches/mounts were verified; Workflow advanced to ee007d09 while preserving unreleased SDK/runtime source overlays. Real ACTIVE/takeover, physical SecureStore/hardware/UI, native WS and existing chat send migration remain gates. Parent PR90 stays Draft.

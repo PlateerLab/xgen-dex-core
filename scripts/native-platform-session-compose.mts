@@ -20,6 +20,7 @@ import { createMobileSessionVault } from '../apps/mobile/src/lib/native-session-
 import { createMobileAgentFetch } from '../apps/mobile/src/lib/native-agent-http';
 import { createMobileAgentFocusSource } from '../apps/mobile/src/lib/native-agent-focus';
 import { createMobileAgentFocusWatcher } from '../apps/mobile/src/lib/native-agent-focus-watch';
+import { createMobileAgentConversationWatcher } from '../apps/mobile/src/lib/native-agent-conversation-watch';
 import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
 
 const origin = 'https://localhost:3443';
@@ -71,7 +72,8 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
-const testMobileFocus = process.argv.includes('--mobile-focus');
+const testMobileMessages = process.argv.includes('--mobile-messages');
+const testMobileFocus = process.argv.includes('--mobile-focus') || testMobileMessages;
 const testMobileSession = process.argv.includes('--mobile-session') || testMobileFocus;
 const testMobileController = process.argv.includes('--mobile-controller') || testMobileSession;
 const platforms = testMobileController ? ['mobile'] as const : ['desktop', 'mobile', 'cli', 'vscode'] as const;
@@ -267,6 +269,12 @@ try {
         const updates: unknown[] = [];
         await assert.rejects(createMobileAgentFocusWatcher(source).run((u) => updates.push(u), new AbortController().signal));
         assert.deepEqual(updates, [{ type: 'reset' }, { type: 'stopped', reason: 'authentication' }]);
+        if (testMobileMessages) {
+          await assert.rejects(source.reconcileConversation(null)); const conversationUpdates: unknown[] = [];
+          await assert.rejects(createMobileAgentConversationWatcher(source).run((u) => conversationUpdates.push(u), new AbortController().signal, true));
+          assert.deepEqual(conversationUpdates, [{ type: 'reset' }, { type: 'stopped', reason: 'authentication' }]);
+          console.log('Mobile production conversation source/watcher: pending journal blocks snapshots/events/messages before wire; safe updates PASS');
+        }
         assert.equal(canonicalCalls, 0); assert.equal(calls, 1); assert.equal(records.size, 1); source.dispose();
         console.log('Mobile production Canonical source/watcher: enrollment-mode login_pending blocks focus/read/poll before wire; no refresh/Bearer fallback PASS');
       }

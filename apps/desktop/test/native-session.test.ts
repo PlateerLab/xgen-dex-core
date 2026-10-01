@@ -84,6 +84,23 @@ test('Desktop owns isolated OS-keychain scopes and exposes no credentials throug
     for (const secret of [...f.secrets, 'privateKeyPkcs8', 'access_token', 'refresh_token']) assert.equal(JSON.stringify([f.replies, f.notices]).includes(secret), false);
   } finally { await f.cleanup(); }
 });
+test('Desktop binds conversation reads and polling to the main-process account scope', async () => {
+  const f = await fixture();
+  try {
+    await f.login();
+    assert.equal((await f.request('conversation', { user_id: '8' })).ok, false);
+    const read = await f.value('conversation');
+    assert.equal(read.view, 'conversation'); assert.deepEqual(read.conversation, { snapshot: null, messages: [], omittedMessages: 0 });
+    const watched = await f.value('watch-conversation'); assert.equal(watched.view, 'conversation');
+    for (let i = 0; i < 40 && !f.notices.some((n) => n.type === 'update' && 'view' in n.value
+      && n.value.watch_id === watched.watch_id && n.value.update.type === 'conversation'); i++) await new Promise((r) => setTimeout(r, 5));
+    const notice = f.notices.find((n) => n.type === 'update' && 'view' in n.value
+      && n.value.watch_id === watched.watch_id && n.value.update.type === 'conversation');
+    assert.ok(notice && notice.type === 'update' && 'view' in notice.value); assert.equal(notice.value.view, 'conversation');
+    assert.equal(JSON.stringify([read, notice]).includes('authScope'), false);
+    await f.value('unwatch', { watch_id: watched.watch_id });
+  } finally { await f.cleanup(); }
+});
 test('account reset aborts an active read and suppresses old-scope notifications and successful replies', async () => {
   const f = await fixture(); let start!: (signal: AbortSignal) => void; const ready = new Promise<AbortSignal>((r) => { start = r; });
   try {

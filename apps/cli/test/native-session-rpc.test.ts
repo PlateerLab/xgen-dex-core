@@ -10,6 +10,7 @@ import { nativeKeyThumbprint } from '@dex/engine/native-dpop';
 
 const origin = 'https://app.example.test'; const user = '7';
 const device = '018f1240-0000-7000-8000-000000000001'; const sid = '018f1240-0000-7000-8000-000000000002';
+const agentSid = '018f1240-0000-7000-8000-000000000003'; const turn = '018f1240-0000-7000-8000-000000000004';
 const challenge = Buffer.alloc(32, 5).toString('base64url'); const account = 'e30.e30.c2ln';
 async function fixture(enabled = true) {
   const directory = await mkdtemp(join(tmpdir(), 'dex-native-rpc-')); const values = new Map<string, string>();
@@ -72,12 +73,56 @@ test('RPC capability is opt-in and platform override/secret flags are rejected b
     assert.equal((await initialize(old)).result.capabilities.nativePlatformSession, undefined);
     assert.equal((await old.send('native/session', { action: 'status', user_id: user })).error.data.code, 'protocol_mismatch');
     assert.equal((await f.send('native/session', { action: 'status', user_id: user })).error.code, -32002);
-    assert.equal((await initialize(f)).result.capabilities.nativePlatformSession.platform, 'vscode');
+    const capability = (await initialize(f)).result.capabilities.nativePlatformSession;
+    assert.equal(capability.platform, 'vscode'); assert.equal(capability.canonicalConversation, true);
     for (const params of [{ action: 'status', user_id: user, platform: 'cli' }, { action: 'login', email: 'a', password: 'p', access_token: account }]) {
       assert.equal((await f.send('native/session', params)).error.data.code, 'usage_error');
     }
     assert.equal(f.calls.length, 0);
   } finally { await old.cleanup(); await f.cleanup(); }
+});
+
+test('invalid focus and conversation watch intervals fail before HTTP and leave the RPC process usable', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); const before = f.calls.length;
+    for (const method of ['native/watch', 'native/watch-conversation']) {
+      for (const interval_ms of [199, 60001]) {
+        const response = await f.send(method, { user_id: user, interval_ms });
+        assert.equal(response.error.data.code, 'usage_error'); assert.equal(f.calls.length, before);
+      }
+    }
+    assert.deepEqual((await f.send('health')).result, { ok: true, activeChats: 0 }); assert.equal(f.calls.length, before);
+  } finally { await f.cleanup(); }
+});
+
+test('manual and watched conversations use separate RPC methods and project display-only canonical state', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path) => {
+      if (path.endsWith('/agent-state')) return Response.json({ active_agent_session_id: agentSid, version: 1, event_id: turn });
+      if (path.endsWith('/snapshot')) return Response.json({ id: agentSid, workflow_id: 'flow', title: 'Shared', current_sequence: 1,
+        state_version: 1, message_history_complete: false, latest_turn: { id: turn, status: 'completed', accepted_sequence: 1 }, authScope: 'server-secret' });
+      if (path.endsWith('/messages')) return Response.json({ messages: [{ turn_id: turn, sequence: 1, status: 'completed', input_text: 'hello', output_text: 'world',
+        content_complete: true, source: 'user', raw_execution: 'server-secret' }], next_cursor: 1, snapshot_sequence: 1, state_version: 1, has_more: false });
+      return undefined;
+    });
+    const read = await f.send('native/conversation', { user_id: user });
+    assert.equal(read.result.view, 'conversation'); assert.equal(read.result.has_more, false);
+    assert.equal(read.result.conversation.snapshot.id, agentSid); assert.equal(read.result.conversation.messages[0].output_text, 'world');
+    assert.equal(JSON.stringify(read.result).includes('server-secret'), false);
+    const watching = await f.send('native/watch-conversation', { user_id: user, interval_ms: 200 });
+    assert.equal(watching.result.view, 'conversation');
+    for (let i = 0; i < 40 && !f.messages.some((m) => m.method === 'native/conversation' && m.params?.watch_id === watching.result.watch_id
+      && m.params.update.type === 'conversation'); i++) await new Promise((r) => setTimeout(r, 5));
+    const update = f.messages.find((m) => m.method === 'native/conversation' && m.params?.watch_id === watching.result.watch_id
+      && m.params.update.type === 'conversation');
+    assert.ok(update); assert.equal(update.params.view, 'conversation'); assert.equal(update.params.update.has_more, false);
+    assert.equal(f.messages.some((m) => m.method === 'native/focus' && m.params?.watch_id === watching.result.watch_id), false);
+    assert.equal(JSON.stringify(update).includes('authScope'), false); assert.equal(JSON.stringify(update).includes('server-secret'), false);
+    await f.send('native/unwatch', { watch_id: watching.result.watch_id });
+  } finally { await f.cleanup(); }
 });
 
 test('RPC enrollment/login/refresh/logout bind to VSCode and expose no credentials; CLI cannot use the slot', async () => {

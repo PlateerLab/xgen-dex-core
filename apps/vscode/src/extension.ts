@@ -5,6 +5,7 @@ import type { Agent, AuthStatus, ProfileSummary } from '@dex/rpc';
 import { DexRpcError } from '@dex/rpc/client';
 import { NativeSessionController } from './native-session-controller';
 import { nativeSessionCommand } from './native-session-command';
+import { NATIVE_CONVERSATION_SCHEME, NativeConversationDocument } from './native-conversation-document';
 
 let activeService: DexService | undefined;
 
@@ -14,8 +15,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const chat = new ChatViewProvider(context, service);
   const nativeStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   nativeStatus.name = 'XGEN Dex 기기·세션'; nativeStatus.command = 'xgenDex.nativeSession';
+  const conversationChanges = new vscode.EventEmitter<vscode.Uri>();
+  const conversationDocument = new NativeConversationDocument(vscode.Uri.parse(`${NATIVE_CONVERSATION_SCHEME}:/current-shared-conversation.txt`),
+    conversationChanges, async (uri) => {
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
+    });
+  const conversationProvider = vscode.workspace.registerTextDocumentContentProvider(NATIVE_CONVERSATION_SCHEME, conversationDocument);
   const native = new NativeSessionController(service.rpc, (state) => {
-    nativeStatus.text = state.status === 'connected' ? `$(sync) Dex 현재 대화 ${state.focus?.active_agent_session_id?.slice(0, 8) ?? '-'}`
+    conversationDocument.update(state);
+    nativeStatus.text = state.status === 'connected' ? `$(sync) Dex 현재 대화 ${state.focus?.active_agent_session_id?.slice(0, 8) ?? state.conversation?.snapshot?.id.slice(0, 8) ?? '-'}`
       : state.status === 'waiting' ? '$(loading~spin) Dex 세션 확인' : state.status === 'reconnecting' ? '$(cloud-off) Dex 세션 재연결'
       : state.status === 'stopped' ? '$(key) Dex 세션 확인 필요' : '$(shield) Dex 기기·세션';
     nativeStatus.tooltip = 'VSCode 기기 등록·승인 요청·플랫폼 세션과 현재 대화 구독'; nativeStatus.show();
@@ -80,8 +89,10 @@ export function activate(context: vscode.ExtensionContext): void {
     chat,
     status,
     nativeStatus,
+    conversationDocument,
+    conversationProvider,
     native,
-    vscode.commands.registerCommand('xgenDex.nativeSession', () => nativeSessionCommand(service, native)),
+    vscode.commands.registerCommand('xgenDex.nativeSession', () => nativeSessionCommand(service, native, conversationDocument)),
     vscode.window.registerWebviewViewProvider('xgenDex.chat', chat, {
       webviewOptions: { retainContextWhenHidden: true },
     }),

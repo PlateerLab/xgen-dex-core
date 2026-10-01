@@ -65,8 +65,16 @@ test('JSON login/status/local forgetting expose no credential and do not ask for
     assert.deepEqual(updates.map((e) => e.type), ['reset', 'focus', 'stopped']);
     assert.equal(updates[1].source, 'snapshot'); assert.equal(updates[2].reason, 'cancelled');
     assert.equal(updates[1].authScope, undefined);
+    await runSessionCommand(parseArgs(['session', 'conversation', '--user-id', '7', '--json']), configs(), dependencies);
+    assert.deepEqual(JSON.parse(output.at(-1)!).result, { conversation: { snapshot: null, messages: [], omittedMessages: 0 }, has_more: false });
+    const conversationStop = new AbortController(); const conversationUpdates: any[] = [];
+    await runSessionCommand(parseArgs(['session', 'watch-conversation', '--user-id', '7', '--jsonl']), configs(), {
+      ...dependencies, signal: conversationStop.signal, write: (raw) => { output.push(raw); conversationUpdates.push(JSON.parse(raw)); if (JSON.parse(raw).type === 'conversation') conversationStop.abort(); },
+    });
+    assert.deepEqual(conversationUpdates.map((u) => u.type), ['reset', 'conversation', 'stopped']);
+    assert.deepEqual(conversationUpdates[1].conversation, { snapshot: null, messages: [], omittedMessages: 0 });
     await runSessionCommand(parseArgs(['session', 'forget-local', '--user-id', '7', '--json']), configs(), dependencies);
-    assert.equal(requests, before + 1); assert.equal(reads, 1);
+    assert.equal(requests, before + 3); assert.equal(reads, 1);
     for (const raw of output) {
       for (const forbidden of ['private-password', 'privateKeyPkcs8', access, refresh, 'e30.e30.c2ln', 'accessToken', 'refreshToken']) assert.equal(raw.includes(forbidden), false);
     }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { DexError, NativeAgentFocusWatcher, NativeDeviceKeyStore, NativeHostSession, nativeAccountDeviceEnrollment, nativeKeyScope,
+import { DexError, NativeAgentConversationWatcher, NativeAgentFocusWatcher, NativeDeviceKeyStore, NativeHostSession, nativeAccountDeviceEnrollment, nativeKeyScope,
   type ConfigStore, type NativeEnrollmentAction } from '@dex/engine';
-import type { NativeFocusNotification, NativeRpcResult } from './wire';
+import type { NativeRpcResult, NativeSessionNotification } from './wire';
 
 function text(p: Record<string, unknown>, key: string, required = true): string | undefined {
   const value = p[key];
@@ -23,7 +23,7 @@ export class NativeSessionRpcHost {
   private active: AbortController | null = null;
   private watch: Watch | null = null;
   private closed = false;
-  constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeFocusNotification) => void,
+  constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeSessionNotification) => void,
     private readonly options: NativeSessionHostOptions = {}, readonly platform: 'vscode' | 'desktop' = 'vscode') { this.keys = options.keys ?? new NativeDeviceKeyStore(); }
   cancel(): void { this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort(); }
   close(): void { this.closed = true; this.cancel(); }
@@ -37,17 +37,21 @@ export class NativeSessionRpcHost {
       if (this.watch?.id === id) await this.stopWatch(); return { watching: false };
     }
     if (method === 'native/cancel') { fields(p, []); this.cancel(); return { watching: false }; }
-    if (!['native/device', 'native/session', 'native/watch'].includes(method)) throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
+    if (!['native/device', 'native/session', 'native/watch', 'native/conversation', 'native/watch-conversation'].includes(method)) {
+      throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
+    }
     if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
     const controller = new AbortController(); this.active = controller;
     const signal = controller.signal;
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       await this.stopWatch(); signal.throwIfAborted();
-      const action = method === 'native/watch' ? 'watch' : text(p, 'action')!;
+      const conversation = method === 'native/conversation' || method === 'native/watch-conversation';
+      const watching = method === 'native/watch' || method === 'native/watch-conversation';
+      const action = watching ? 'watch' : conversation ? 'conversation' : text(p, 'action')!;
       const device = method === 'native/device'; const passwordAction = device || ['login', 'logout'].includes(action);
       const accountField = device || action === 'login' ? 'email' : 'user_id';
-      fields(p, ['profile', ...(action === 'watch' ? ['user_id', 'interval_ms'] : ['action', accountField]),
+      fields(p, ['profile', ...(watching ? ['user_id', 'interval_ms'] : conversation ? ['user_id'] : ['action', accountField]),
         ...(passwordAction ? ['password'] : []), ...(device && action === 'register' ? ['device_name'] : []),
         ...(device && action === 'request-approval' ? ['approver_device_id'] : [])]);
       const account = text(p, accountField)!; const password = passwordAction ? text(p, 'password')! : '';
@@ -70,22 +74,38 @@ export class NativeSessionRpcHost {
           operation, keys: this.keys, fetch: this.options.fetch, signal, expectedUserId: this.options.expectedUserId });
         signal.throwIfAborted(); return { ...envelope, ...result };
       }
-      if (action === 'watch') {
+      if (watching) {
         const interval = p.interval_ms;
         if (interval !== undefined && (typeof interval !== 'number' || !Number.isSafeInteger(interval))) throw new DexError('usage_error', '구독 간격은 정수 ms여야 합니다.');
-        const watcher = new NativeAgentFocusWatcher(session, account, { intervalMs: interval as number | undefined });
+        const conversationWatcher = conversation ? new NativeAgentConversationWatcher(session, account, { intervalMs: interval as number | undefined }) : null;
+        const focusWatcher = conversation ? null : new NativeAgentFocusWatcher(session, account, { intervalMs: interval as number | undefined });
         const status = await session.status(account, signal);
         if (status.state !== 'active') throw new DexError('auth_required', '사용 가능한 플랫폼 access가 없습니다. 로그인 또는 갱신을 먼저 실행하세요.');
         const watch: Watch = { id: randomUUID(), controller: new AbortController(), done: Promise.resolve() }; this.watch = watch;
         // Acknowledgment precedes notifications, as with chat/start.
         setImmediate(() => {
-          watch.done = watcher.run((update) => {
-            if (!this.closed && this.watch === watch && !watch.controller.signal.aborted) this.notify({ ...envelope, watch_id: watch.id, update });
-          }, watch.controller.signal).catch(() => {
+          const done = conversation
+            ? conversationWatcher!.run((update) => {
+              if (!this.closed && this.watch === watch && !watch.controller.signal.aborted) {
+                this.notify({ ...envelope, watch_id: watch.id, view: 'conversation', update });
+              }
+            }, watch.controller.signal)
+            : focusWatcher!.run((update) => {
+              if (!this.closed && this.watch === watch && !watch.controller.signal.aborted) {
+                this.notify({ ...envelope, watch_id: watch.id, update });
+              }
+            }, watch.controller.signal);
+          watch.done = done.catch(() => {
             // The watcher has emitted its safe stopped reason. Never log raw transport/keychain data.
           }).finally(() => { if (this.watch === watch) this.watch = null; });
         });
-        signal.throwIfAborted(); return { ...envelope, user_id: account, watch_id: watch.id };
+        signal.throwIfAborted(); return { ...envelope, user_id: account, watch_id: watch.id,
+          ...(conversation ? { view: 'conversation' as const } : {}) };
+      }
+      if (conversation) {
+        const result = await session.conversation(account, signal);
+        signal.throwIfAborted();
+        return { ...envelope, user_id: account, view: 'conversation', conversation: result.conversation, has_more: result.has_more };
       }
       const result = action === 'login' ? await session.login(account, password, signal)
         : action === 'status' ? await session.status(account, signal)

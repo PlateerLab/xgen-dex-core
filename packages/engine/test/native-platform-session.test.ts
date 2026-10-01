@@ -12,7 +12,7 @@ import { AgentSessionHttpError, type AgentSessionProofSource } from '@dex/protoc
 import { NativeAgentFocusWatcher } from '../src/native-agent-focus-watch';
 import { NativeAgentConversationWatcher } from '../src/native-agent-conversation-watch';
 import { nativeConversationFetch } from '../src/native-agent-conversation-http';
-import type { NativeDeviceIdentity } from '@dex/protocol/native-platform-session';
+import { NativePlatformTransportError, type NativeDeviceIdentity } from '@dex/protocol/native-platform-session';
 import { DexError } from '../src/errors';
 import type { NativeAgentSocket, NativeAgentSocketTransport } from '../src/native-agent-socket';
 
@@ -695,6 +695,43 @@ test('conversation preserves HTTP classification and aborts late response bodies
   } finally { await f.cleanup(); }
 });
 
+test('proof operation drain waits for an aborted read to settle and release its account lock', async () => {
+  const f = await fixture('vscode');
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const response = new Promise<Response>((resolve) => {
+      release = () => resolve(Response.json({ active_agent_session_id: null, version: 0, event_id: null }));
+    });
+    f.custom((path) => {
+      if (path !== '/api/agentflow/me/agent-state') return undefined;
+      entered(); return response;
+    });
+    const control = new AbortController();
+    const reading = session.reconcileConversation('7', null, control.signal);
+    await started;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      control.signal.addEventListener('abort', () => reject(control.signal.reason), { once: true });
+    });
+    const caller = Promise.race([reading, cancelled]);
+    control.abort();
+    await assert.rejects(caller, (error: unknown) => error instanceof Error && error.name === 'AbortError');
+
+    let drained = false;
+    const drain = session.settleProofOperations().then(() => { drained = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(drained, false);
+    await assert.rejects(session.status('7'), (error: unknown) =>
+      error instanceof DexError && error.code === 'credential_store_unavailable');
+
+    release();
+    await assert.rejects(reading, (error: unknown) => error instanceof Error && error.name === 'AbortError');
+    await drain; assert.equal(drained, true);
+    assert.equal((await session.status('7')).state, 'active');
+  } finally { await f.cleanup(); }
+});
+
 test('native conversation transport cancels an unread body when credentials fail after headers or at JSON entry', async () => {
   for (const failAt of [2, 3]) {
     let checks = 0; let cancellations = 0;
@@ -740,6 +777,147 @@ test('manual conversation read performs at most ten bounded steps and reports an
     });
     const result = await f.client().conversation('7');
     assert.equal(reads, 20); assert.equal(result.has_more, true); assert.equal(result.conversation.messages.length, 20);
+  } finally { await f.cleanup(); }
+});
+
+test('Agent Session catalog uses bounded exact queries and query-free GET proofs', async () => {
+  const f = await fixture('desktop');
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    f.custom((path) => path === '/api/agentflow/me/agent-sessions' ? Response.json({ items: [{ id: SID, workflow_id: 'workflow-1',
+      title: 'Session', status: 'active', current_sequence: 2, state_version: 3 }], next_cursor: SID, has_more: true }) : undefined);
+    const page = await session.agentSessions('7', 17, SID);
+    assert.equal(page.items[0]?.id, SID); assert.equal(page.next_cursor, SID);
+    const call = f.calls.at(-1)!;
+    assert.equal(call.url.toString(), `${ORIGIN}/api/agentflow/me/agent-sessions?limit=17&before_id=${SID}`);
+    const proof = new Headers(call.init.headers).get('dpop')!;
+    const claims = JSON.parse(Buffer.from(proof.split('.')[1]!, 'base64url').toString());
+    assert.equal(claims.htm, 'GET'); assert.equal(claims.htu, `${ORIGIN}/api/agentflow/me/agent-sessions`);
+
+    f.custom((path) => path === '/api/agentflow/me/agent-sessions' ? (() => { throw new Error('private-fetch-error'); })() : undefined);
+    await assert.rejects(session.agentSessions('7'), (error: unknown) => error instanceof NativePlatformTransportError
+      && !error.message.includes('private-fetch-error'));
+
+    const before = f.calls.length;
+    for (const args of [[0], [101], [1, 'not-a-uuid']] as const) {
+      await assert.rejects(session.agentSessions('7', args[0], args[1]),
+        (error: unknown) => error instanceof DexError && error.code === 'usage_error');
+    }
+    assert.equal(f.calls.length, before);
+  } finally { await f.cleanup(); }
+});
+
+test('Canonical lifecycle writes return validated receipts with exact POST and PUT DPoP', async () => {
+  const f = await fixture('desktop');
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    f.custom((path, init) => {
+      if (path === '/api/agentflow/agent-sessions' && init.method === 'POST') return Response.json({ id: SID, workflow_id: 'workflow-1',
+        focus: { active_agent_session_id: SID, version: 1, event_id: EVENT }, private_server_field: 'private' }, { status: 201 });
+      if (path === '/api/agentflow/me/agent-state' && init.method === 'PUT') return Response.json({ active_agent_session_id: null,
+        version: 2, event_id: TURN1, private_server_field: 'private' });
+      return undefined;
+    });
+    const created = await session.createAgentSession('7', { workflow_id: 'workflow-1', title: 'Session', expected_version: 0,
+      origin_id: 'desktop-1' });
+    const switched = await session.switchAgentFocus('7', { active_agent_session_id: null, expected_version: 1,
+      origin_id: 'desktop-1' });
+    assert.deepEqual(created, { id: SID, workflow_id: 'workflow-1',
+      focus: { active_agent_session_id: SID, version: 1, event_id: EVENT } });
+    assert.deepEqual(switched, { active_agent_session_id: null, version: 2, event_id: TURN1 });
+    assert.equal(JSON.stringify([created, switched]).includes('private'), false);
+
+    const writes = f.calls.filter(({ init }) => init.method === 'POST' || init.method === 'PUT');
+    const lifecycle = writes.filter(({ path }) => path === '/api/agentflow/agent-sessions' || path === '/api/agentflow/me/agent-state');
+    assert.deepEqual(lifecycle.map(({ path, init }) => [init.method, path]), [
+      ['POST', '/api/agentflow/agent-sessions'], ['PUT', '/api/agentflow/me/agent-state'],
+    ]);
+    assert.deepEqual(lifecycle.map(({ body }) => body), [
+      { workflow_id: 'workflow-1', expected_version: 0, title: 'Session', origin_id: 'desktop-1' },
+      { active_agent_session_id: null, expected_version: 1, origin_id: 'desktop-1' },
+    ]);
+    const claims = lifecycle.map(({ init }) => JSON.parse(Buffer.from(new Headers(init.headers).get('dpop')!.split('.')[1]!, 'base64url').toString()));
+    assert.deepEqual(claims.map(({ htm }) => htm), ['POST', 'PUT']);
+    assert.deepEqual(claims.map(({ htu }) => htu), lifecycle.map(({ url }) => url.toString()));
+    await session.withProofSource('7', async (proof) => {
+      const token = (await proof.accessToken())!;
+      await assert.rejects(proof.signProof('POST' as 'GET', `${ORIGIN}/api/agentflow/agent-sessions`, token), DexError);
+      await assert.rejects(proof.signProof('PUT' as 'GET', `${ORIGIN}/api/agentflow/me/agent-state`, token), DexError);
+    });
+  } finally { await f.cleanup(); }
+});
+
+test('lifecycle writes validate before vault access and reject non-ready sessions without dispatch', async () => {
+  const f = await fixture('desktop');
+  try {
+    const session = f.client();
+    const before = f.calls.length;
+    await assert.rejects(session.createAgentSession('7', { workflow_id: '', expected_version: 0 }),
+      (error: unknown) => error instanceof DexError && error.code === 'usage_error');
+    await assert.rejects(session.switchAgentFocus('7', { active_agent_session_id: 'not-a-uuid', expected_version: 0 }),
+      (error: unknown) => error instanceof DexError && error.code === 'usage_error');
+    await assert.rejects(session.createAgentSession('7', { workflow_id: 'workflow-1', expected_version: 0 }),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    await assert.rejects(session.switchAgentFocus('7', { active_agent_session_id: null, expected_version: 0 }),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    await assert.rejects(session.agentSessions('7'),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    assert.equal(f.calls.length, before);
+  } finally { await f.cleanup(); }
+});
+
+test('lifecycle writes expose only safe conflicts and classify lost acknowledgements as unknown', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    const input = { active_agent_session_id: SID, expected_version: 2, origin_id: 'private-origin' };
+    f.custom((path, init) => path === '/api/agentflow/me/agent-state' && init.method === 'PUT'
+      ? Response.json({ detail: { code: 'FOCUS_VERSION_CONFLICT', current: { active_agent_session_id: null,
+        version: 3, event_id: EVENT }, private_server_field: 'private-server-secret' } }, { status: 409 }) : undefined);
+    await assert.rejects(session.switchAgentFocus('7', input), (error: unknown) => error instanceof DexError
+      && error.code === 'usage_error'
+      && JSON.stringify(error.details) === JSON.stringify({ outcome: 'rejected', status: 409, operation: 'switch_agent_focus',
+        expected_version: 2, target_agent_session_id: SID, conflict: { code: 'FOCUS_VERSION_CONFLICT',
+          current: { active_agent_session_id: null, version: 3, event_id: EVENT } } })
+      && !JSON.stringify(error).includes('private'));
+
+    f.custom((path, init) => path === '/api/agentflow/me/agent-state' && init.method === 'PUT'
+      ? new Response('private-server-secret', { status: 400 }) : undefined);
+    await assert.rejects(session.switchAgentFocus('7', input), (error: unknown) => error instanceof DexError
+      && error.code === 'usage_error' && JSON.stringify(error.details) === JSON.stringify({ outcome: 'rejected', status: 400,
+        operation: 'switch_agent_focus', expected_version: 2, target_agent_session_id: SID }) && !JSON.stringify(error).includes('private'));
+
+    for (const response of [
+      () => { throw new Error('private-lost-ack'); },
+      () => Response.json({ id: SID, workflow_id: 'wrong', focus: { active_agent_session_id: SID, version: 1, event_id: EVENT } }, { status: 201 }),
+      () => new Response('private-timeout', { status: 408 }),
+      () => new Response('private-server-secret', { status: 500 }),
+    ]) {
+      f.custom((path, init) => path === '/api/agentflow/agent-sessions' && init.method === 'POST' ? response() : undefined);
+      await assert.rejects(session.createAgentSession('7', { workflow_id: 'workflow-1', title: 'private-title', expected_version: 0 }),
+        (error: unknown) => error instanceof DexError && error.code === 'network_error'
+          && JSON.stringify(error.details) === JSON.stringify({ outcome: 'unknown', operation: 'create_agent_session', expected_version: 0 })
+          && !JSON.stringify(error).includes('private'));
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('cancelling a dispatched lifecycle write reports an unknown outcome', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.custom((path, init) => path === '/api/agentflow/me/agent-state' && init.method === 'PUT'
+      ? new Promise<Response>((_resolve, reject) => {
+        entered(); init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      }) : undefined);
+    const control = new AbortController();
+    const pending = session.switchAgentFocus('7', { active_agent_session_id: SID, expected_version: 2 }, control.signal);
+    await started; control.abort();
+    await assert.rejects(pending, (error: unknown) => error instanceof DexError && error.code === 'network_error'
+      && JSON.stringify(error.details) === JSON.stringify({ outcome: 'unknown', operation: 'switch_agent_focus',
+        expected_version: 2, target_agent_session_id: SID }));
   } finally { await f.cleanup(); }
 });
 

@@ -76,6 +76,7 @@ const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
 const testNativeWs = process.argv.includes('--native-ws');
 const testNativeTurns = process.argv.includes('--native-turns');
+const testNativeSessions = process.argv.includes('--native-sessions');
 const testNativeMessages = process.argv.includes('--native-messages') || testNativeWs;
 const testMobileWs = process.argv.includes('--mobile-ws');
 const testMobileMessages = process.argv.includes('--mobile-messages') || testMobileWs;
@@ -89,7 +90,7 @@ const cliKeys = new NativeDeviceKeyStore();
 const nativeKeysCreated = new Set<'cli' | 'vscode' | 'desktop'>();
 let rpc: DexRpcClient | null = null;
 async function stopNativeRpc() { const current = rpc; rpc = null; await current?.stop(); }
-async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live' | 'submit-turn' | 'stop-turn', action?: string, extra: object = {}) {
+async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live' | 'submit-turn' | 'stop-turn' | 'agent-sessions' | 'create-agent-session' | 'switch-agent-focus', action?: string, extra: object = {}) {
   assert.ok(cliDirectory);
   rpc ??= new DexRpcClient({ process: { command: platform === 'desktop' ? desktopElectron! : process.execPath, args: platform === 'desktop'
     ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`]
@@ -99,8 +100,9 @@ async function nativeRpc(platform: 'vscode' | 'desktop', category: 'device' | 's
   if (testNativeMessages) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalConversation, true);
   if (testNativeWs) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalLive, true);
   if (testNativeTurns) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalTurns, true);
+  if (testNativeSessions) assert.equal(initialized.capabilities.nativePlatformSession?.canonicalSessions, true);
   const result = await rpc.request<NativeRpcResult>(`native/${category}`, { profile: 'compose',
-    ...(category === 'watch' || category === 'conversation' || category === 'watch-conversation' || category === 'watch-live' || category === 'submit-turn' || category === 'stop-turn' ? { user_id: String(userId) } : { action,
+    ...(category === 'watch' || category === 'conversation' || category === 'watch-conversation' || category === 'watch-live' || category === 'submit-turn' || category === 'stop-turn' || category === 'agent-sessions' || category === 'create-agent-session' || category === 'switch-agent-focus' ? { user_id: String(userId) } : { action,
       ...(category === 'device' || action === 'login' ? { email: `${tag}@example.invalid`, password } : { user_id: String(userId) }) }), ...extra });
   assert.equal(result.platform_type, platform); assert.equal(result.user_id, String(userId));
   const output = JSON.stringify(result);
@@ -205,6 +207,20 @@ try {
         assert.equal((await run('status', [], 'session')).state, 'login_pending');
         assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
         console.log(`${platform}: Canonical ${platform !== 'cli' ? 'submit/stop' : 'submit'} refuses login_pending; no legacy fallback, auto refresh or Canonical session creation PASS`);
+      }
+      if (testNativeSessions) {
+        const denied = (error: unknown) => error instanceof DexRpcError ? error.engineCode === 'auth_required'
+          : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required');
+        await assert.rejects(platform === 'cli' ? run('agent-sessions', [], 'session') : nativeRpc(platform, 'agent-sessions'), denied);
+        await assert.rejects(platform === 'cli'
+          ? run('create-agent-session', ['--workflow-id', 'compose-fixture', '--expected-version', '0'], 'session')
+          : nativeRpc(platform, 'create-agent-session', undefined, { workflow_id: 'compose-fixture', expected_version: 0 }), denied);
+        await assert.rejects(platform === 'cli'
+          ? run('switch-agent-focus', ['--clear', '--expected-version', '0'], 'session')
+          : nativeRpc(platform, 'switch-agent-focus', undefined, { active_agent_session_id: null, expected_version: 0 }), denied);
+        assert.equal((await run('status', [], 'session')).state, 'login_pending');
+        assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
+        console.log(`${platform}: catalog/create/focus CAS reject login_pending before wire; no new Canonical session or automatic legacy fallback PASS`);
       }
       assert.equal((await run('forget-local', [], 'session')).state, 'signed_out');
       await stopNativeRpc();

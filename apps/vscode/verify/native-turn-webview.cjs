@@ -29,9 +29,12 @@ Module._load = function (name, ...args) { return name === 'vscode' ? shell : loa
 const { ChatViewProvider } = require('../src/chat-view-provider.ts');
 Module._load = load;
 let win; let initialized = false; let closing = false; let suppressNotifications = false; let receiver;
-let lastState; let persisted = null;
+let lastState; let persisted = null; let sessionStep = '';
 const rpc = new DexRpcClient({ process: { command: node, args: ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
   env: { ...process.env } }, clientVersion: 'vscode-ui-fixture' });
+let lastRpcFailure = '';
+const requestRpc = rpc.request.bind(rpc);
+rpc.request = async (method, params) => { try { return await requestRpc(method, params); } catch (error) { lastRpcFailure = `${method}:${error.engineCode ?? 'transport'}`; throw error; } };
 const context = { extensionUri: uri(path.resolve('apps/vscode')), subscriptions: [], globalState: { get: () => undefined, update: async () => undefined } };
 const service = { rpc, request: (method, params = {}) => rpc.request(method, params), profileParams: () => ({ profile: 'fixture' }) };
 const chat = new ChatViewProvider(context, service);
@@ -47,6 +50,10 @@ app.on('will-quit', () => rmSync(directory, { recursive: true, force: true }));
 async function until(predicate) {
   for (let i = 0; i < 400; i++) { if (await win.webContents.executeJavaScript(predicate, true)) return; await new Promise((r) => setTimeout(r, 25)); }
   throw new Error('VSCode production UI fixture deadline');
+}
+async function untilState(predicate) {
+  for (let i = 0; i < 400; i++) { if (predicate(lastState)) return; await new Promise((r) => setTimeout(r, 25)); }
+  throw new Error('VSCode production state fixture deadline');
 }
 rpc.onNotification((notice) => { if (initialized && !closing && !suppressNotifications) send(notice); });
 app.whenReady().then(async () => {
@@ -100,13 +107,61 @@ app.whenReady().then(async () => {
           await native.stopWatch();
           result = { ui: 'passed', shell: 'electron-adapter', persisted_draft: false };
         } finally { suppressNotifications = false; }
+      } else if (method === 'verify/session-ui') {
+        suppressNotifications = true;
+        try {
+          sessionStep = 'initial-read';
+          await native.conversation('fixture', userId);
+          sessionStep = 'enter-mode';
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-mode').click()`, true);
+          await untilState((state) => state?.canonical?.active && state.canonical.catalog?.focus?.version === 0
+            && !state.canonical.catalog.busy);
+          sessionStep = 'open-controls';
+          await win.webContents.executeJavaScript(`document.getElementById('change-agent').click()`, true);
+          await until(`!document.getElementById('canonical-session-controls').classList.contains('hidden') && !document.getElementById('canonical-session-refresh').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-session-refresh').click()`, true);
+          await untilState((state) => state?.canonical?.catalog?.focus?.version === 0 && !state.canonical.catalog.busy);
+          await win.webContents.executeJavaScript(`(()=>{const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;const workflow=document.getElementById('canonical-session-workflow');const title=document.getElementById('canonical-session-title');setter.call(workflow,'native-fixture');workflow.dispatchEvent(new Event('input',{bubbles:true}));setter.call(title,'Native created conversation');title.dispatchEvent(new Event('input',{bubbles:true}));})()`, true);
+          await until(`!document.getElementById('canonical-session-create').disabled`);
+          sessionStep = 'create-unknown';
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-session-create').click();document.getElementById('canonical-session-create').click()`, true);
+          await untilState((state) => state?.canonical?.catalog?.writeBlocked === true);
+          await until(`document.body.textContent.includes('작업 완료 여부를 확인할 수 없습니다') && document.getElementById('canonical-session-create').disabled && document.getElementById('canonical-session-switch').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-session-refresh').click()`, true);
+          await untilState((state) => {
+            const catalog = state?.canonical?.catalog;
+            const created = catalog?.items?.filter((item) => item.title === 'Native created conversation') ?? [];
+            return created.length === 1 && catalog.focus?.active_agent_session_id === created[0].id && !catalog.busy && !catalog.writeBlocked;
+          });
+          sessionStep = 'created-recovery';
+          const createdId = lastState.canonical.catalog.items.find((item) => item.title === 'Native created conversation').id;
+          await untilState((state) => state?.canonical?.title === 'Native created conversation'
+            && state.canonical.catalog?.focus?.active_agent_session_id === createdId);
+          sessionStep = 'select-owned';
+          const sharedId = await win.webContents.executeJavaScript(`(()=>{const select=document.getElementById('canonical-session-select');const option=Array.from(select.options).find(item=>item.textContent.includes('Native shared conversation'));if(!option) return '';const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,option.value);select.dispatchEvent(new Event('change',{bubbles:true}));return option.value;})()`, true);
+          if (!sharedId) throw new Error('VSCode shared Agent session option missing');
+          await until(`!document.getElementById('canonical-session-switch').disabled`);
+          sessionStep = 'switch-owned';
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-session-switch').click()`, true);
+          await untilState((state) => state?.canonical?.catalog?.focus?.active_agent_session_id === sharedId
+            && state.canonical.title === 'Native shared conversation');
+          sessionStep = 'clear-focus';
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-session-clear').click()`, true);
+          await untilState((state) => state?.canonical?.catalog?.focus?.active_agent_session_id === null
+            && state.canonical.catalog.notice === '현재 Agent 세션 포커스를 변경했습니다.');
+          await until(`document.getElementById('canonical-session-clear').disabled && document.body.textContent.includes('현재 Agent 세션 포커스를 변경했습니다.')`);
+          await win.webContents.executeJavaScript(`document.getElementById('canonical-session-controls').scrollIntoView({block:'center'})`, true);
+          if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
+          result = { ui: 'passed', shell: 'electron-adapter', session_lifecycle: 'passed' };
+        } finally { suppressNotifications = false; }
       } else if (method.startsWith('native/')) result = await rpc.request(method, params);
       else throw new Error('Unsupported fixture method');
       send({ jsonrpc: '2.0', id: request.id, result });
       if (method === 'shutdown' || method === 'exit') setImmediate(close);
     } catch (error) {
+      if (request?.method === 'verify/session-ui' && option('screenshot')) writeFileSync(option('screenshot').replace('.png', '-failed.png'), (await win.webContents.capturePage()).toPNG());
       if (request?.id !== undefined) send({ jsonrpc: '2.0', id: request.id, error: { code: error.rpcCode ?? -32000,
-        message: error.rpcCode ? error.message : 'VSCode fixture operation failed', ...(error.data ? { data: error.data } : {}) } });
+        message: error.rpcCode ? error.message : `VSCode fixture operation failed${request?.method === 'verify/session-ui' ? ` at ${sessionStep} (${lastRpcFailure || 'no-rpc-rejection'})` : ''}`, ...(error.data ? { data: error.data } : {}) } });
       else void close();
     }
   })(); });

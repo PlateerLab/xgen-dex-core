@@ -60,7 +60,7 @@ app.whenReady().then(async () => {
     try {
       request = JSON.parse(line); const { method, params = {} } = request;
       let result;
-      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true } } }; }
+      if (method === 'initialize') { initialized = true; result = { protocolVersion: 1, server: { name: 'desktop-native-fixture', version: 'fixture' }, capabilities: { nativePlatformSession: { platform: 'desktop', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true } } }; }
       else if (method === 'shutdown' || method === 'exit') { result = null; }
       else if (method === 'verify/cleanup-key') {
         host.reset();
@@ -121,6 +121,33 @@ app.whenReady().then(async () => {
           await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='대화 연결·폴링 중단').click()`, true);
           await until(`!document.body.textContent.includes('native-ui-answer')`);
           result = { ui: 'passed', sender_isolation: 'passed' };
+        } finally { suppressNotifications = false; }
+      } else if (method === 'verify/session-ui') {
+        suppressNotifications = true;
+        try {
+          await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='세션 상태').click()`, true);
+          await until(`document.body.textContent.includes('세션: 사용 가능') && !!document.getElementById('native-session-refresh') && !document.getElementById('native-session-refresh').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-session-refresh').click()`, true);
+          await until(`document.body.textContent.includes('Agent 세션 목록과 현재 포커스를 다시 확인했습니다.') && !document.getElementById('native-session-refresh').disabled`);
+          await win.webContents.executeJavaScript(`(()=>{const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;const workflow=document.getElementById('native-session-workflow');const title=document.getElementById('native-session-title');setter.call(workflow,'native-fixture');workflow.dispatchEvent(new Event('input',{bubbles:true}));setter.call(title,'Native created conversation');title.dispatchEvent(new Event('input',{bubbles:true}));})()`, true);
+          await until(`document.getElementById('native-session-workflow').value==='native-fixture' && document.getElementById('native-session-title').value==='Native created conversation' && !document.getElementById('native-session-create').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-session-create').click();document.getElementById('native-session-create').click()`, true);
+          await until(`document.body.textContent.includes('작업 완료 여부를 확인할 수 없습니다') && document.getElementById('native-session-create').disabled && document.getElementById('native-session-switch').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-session-refresh').click()`, true);
+          await until(`document.body.textContent.includes('Agent 세션 목록과 현재 포커스를 다시 확인했습니다.') && Array.from(document.getElementById('native-session-select').options).filter(option=>option.textContent.includes('Native created conversation')).length===1 && !document.getElementById('native-session-refresh').disabled`);
+          const createdId = await win.webContents.executeJavaScript(`(()=>{const select=document.getElementById('native-session-select');const options=Array.from(select.options).filter(option=>option.textContent.includes('Native created conversation'));return options.length===1&&select.value===options[0].value?options[0].value:'';})()`, true);
+          if (!createdId) throw new Error('Desktop recovered Agent session focus missing');
+          await until(`document.body.textContent.includes('Native created conversation') && document.body.textContent.includes('현재 대화: ${createdId}')`);
+          const sharedId = await win.webContents.executeJavaScript(`(()=>{const select=document.getElementById('native-session-select');const option=Array.from(select.options).find(item=>item.textContent.includes('Native shared conversation'));if(!option) return '';const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,option.value);select.dispatchEvent(new Event('change',{bubbles:true}));return option.value;})()`, true);
+          if (!sharedId) throw new Error('Desktop shared Agent session option missing');
+          await until(`!document.getElementById('native-session-switch').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-session-switch').click()`, true);
+          await until(`document.body.textContent.includes('Native shared conversation') && document.body.textContent.includes('현재 대화: ${sharedId}')`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-session-clear').click()`, true);
+          await until(`document.body.textContent.includes('현재 대화: 없음') && document.body.textContent.includes('현재 Agent 세션 포커스를 변경했습니다.') && document.getElementById('native-session-clear').disabled`);
+          await win.webContents.executeJavaScript(`document.getElementById('native-session-select').scrollIntoView({block:'center'})`, true);
+          if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
+          result = { ui: 'passed', sender_isolation: 'passed', session_lifecycle: 'passed' };
         } finally { suppressNotifications = false; }
       } else if (method.startsWith('native/')) {
         const { user_id, profile, ...body } = params;

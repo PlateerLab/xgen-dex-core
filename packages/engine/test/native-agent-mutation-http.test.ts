@@ -20,6 +20,8 @@ function request(path: string, body: unknown, changes: RequestInit = {}): [strin
 
 const submitBody = { input_text: 'hello', expected_state_version: 3, idempotency_key: 'request-1', origin_id: 'vscode-1' };
 const stopBody = { turn_id: TURN, expected_state_version: 4 };
+const createBody = { workflow_id: 'workflow-1', title: 'New session', expected_version: 3, origin_id: 'desktop-1' };
+const switchBody = { active_agent_session_id: SESSION, expected_version: 4, origin_id: 'desktop-1' };
 
 test('mutation adapter requires an exact HTTPS origin and copies request fields before an async check', async () => {
   for (const origin of ['http://app.example.test', `${ORIGIN}/`, `${ORIGIN}/path`, 'https://user@app.example.test']) {
@@ -67,6 +69,33 @@ test('mutation adapter forwards only exact Canonical POST routes, JSON and DPoP 
   assert.equal(calls.length, 2); assert.deepEqual(JSON.parse(String(calls[1]!.init.body)), stopBody);
 });
 
+test('mutation adapter copies and forwards exact lifecycle POST and PUT requests', async () => {
+  const calls: Array<{ input: string; init: RequestInit }> = [];
+  let release!: () => void; let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  let checks = 0;
+  const transport = nativeAgentMutationFetch(ORIGIN, (async (input, init = {}) => {
+    calls.push({ input: String(input), init }); return Response.json({});
+  }) as typeof fetch, async () => { if (++checks === 1) { entered(); await gate; } });
+  const create = request('/api/agentflow/agent-sessions', createBody);
+  const pending = transport(...create); await waiting;
+  create[1].method = 'PUT'; create[1].body = JSON.stringify({ private: 'mutated' });
+  (create[1].headers as Record<string, string>).Cookie = 'private=1'; release();
+  await (await pending).json();
+  const switched = request('/api/agentflow/me/agent-state', switchBody, { method: 'PUT' });
+  await (await transport(...switched)).json();
+  assert.deepEqual(calls.map(({ input, init }) => [input, init.method, JSON.parse(String(init.body))]), [
+    [`${ORIGIN}/api/agentflow/agent-sessions`, 'POST', createBody],
+    [`${ORIGIN}/api/agentflow/me/agent-state`, 'PUT', switchBody],
+  ]);
+  for (const { init } of calls) {
+    const headers = new Headers(init.headers);
+    assert.equal(headers.has('cookie'), false); assert.equal(init.credentials, 'omit');
+    assert.equal(init.redirect, 'error'); assert.equal(init.cache, 'no-store');
+  }
+});
+
 test('mutation adapter rejects route, URL, method, header and body expansion before wire I/O', async () => {
   let calls = 0;
   const transport = nativeAgentMutationFetch(ORIGIN, (async () => { calls++; return Response.json({}); }) as typeof fetch, async () => {});
@@ -77,6 +106,12 @@ test('mutation adapter rejects route, URL, method, header and body expansion bef
     request(`/api/agentflow/agent-sessions/${SESSION.toUpperCase()}/turns`, submitBody),
     request(`/api/agentflow/agent-sessions/not-a-uuid/turns`, submitBody),
     request(`/api/agentflow/agent-sessions/${SESSION}/turns`, submitBody, { method: 'GET' }),
+    request('/api/agentflow/agent-sessions', createBody, { method: 'PUT' }),
+    request('/api/agentflow/me/agent-state', switchBody),
+    request('/api/agentflow/me/agent-state?private=1', switchBody, { method: 'PUT' }),
+    request('/api/agentflow/agent-sessions/', createBody),
+    request('/api/agentflow/agent-sessions', { ...createBody, private_field: 'private' }),
+    request('/api/agentflow/me/agent-state', { ...switchBody, active_agent_session_id: 'not-a-uuid' }, { method: 'PUT' }),
     request(`/api/agentflow/agent-sessions/${SESSION}/turns`, submitBody, { credentials: 'include' }),
     request(`/api/agentflow/agent-sessions/${SESSION}/turns`, submitBody, { redirect: 'follow' }),
     request(`/api/agentflow/agent-sessions/${SESSION}/turns`, submitBody, { cache: 'default' }),

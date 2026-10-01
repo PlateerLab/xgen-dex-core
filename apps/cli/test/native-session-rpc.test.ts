@@ -19,10 +19,11 @@ async function fixture(enabled = true, expectedUserId?: string) {
   }) });
   const configs = new MemoryConfigStore({ ...defaultConfig(), currentProfile: 'corp', profiles: { corp: { serverUrl: origin } } });
   let registered = false; let trusted = false; let publicKey: any; let refreshCount = 0; let socketFactories = 0;
-  const calls: Array<{ path: string; init: RequestInit }> = []; const secrets = [account, 'private-password'];
+  const calls: Array<{ path: string; url: string; init: RequestInit }> = []; const secrets = [account, 'private-password'];
   let custom: ((path: string, init: RequestInit) => Promise<Response> | Response | undefined) | undefined;
   const fetchImpl = (async (input, init: RequestInit = {}) => {
-    const path = new URL(String(input)).pathname; calls.push({ path, init }); const response = await custom?.(path, init); if (response) return response;
+    const url = new URL(String(input)); const path = url.pathname; calls.push({ path, url: url.toString(), init });
+    const response = await custom?.(path, init); if (response) return response;
     const body = JSON.parse(String(init.body ?? '{}'));
     if (path === '/api/auth/login') return Response.json({ success: true, user_id: user, access_token: account });
     if (path === '/api/auth/logout') return Response.json({ success: true });
@@ -82,7 +83,7 @@ test('RPC capability is opt-in and platform override/secret flags are rejected b
     assert.equal((await f.send('native/session', { action: 'status', user_id: user })).error.code, -32002);
     const capability = (await initialize(f)).result.capabilities.nativePlatformSession;
     assert.equal(capability.platform, 'vscode'); assert.equal(capability.canonicalConversation, true); assert.equal(capability.canonicalLive, true);
-    assert.equal(capability.canonicalTurns, true);
+    assert.equal(capability.canonicalTurns, true); assert.equal(capability.canonicalSessions, true);
     for (const params of [{ action: 'status', user_id: user, platform: 'cli' }, { action: 'login', email: 'a', password: 'p', access_token: account }]) {
       assert.equal((await f.send('native/session', params)).error.data.code, 'usage_error');
     }
@@ -173,6 +174,131 @@ test('watch acknowledgment precedes scoped notifications; stale unwatch cannot s
   } finally { await f.cleanup(); }
 });
 
+test('an immediate catalog or create replaces a scheduled live watch before it can use wire or notify', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); await login(f); const before = f.calls.length;
+    f.custom((path, init) => {
+      if (path.endsWith('/agent-sessions') && init.method === 'GET') return Response.json({
+        items: [], next_cursor: null, has_more: false,
+      });
+      if (path === '/api/agentflow/agent-sessions' && init.method === 'POST') return Response.json({
+        id: agentSid, workflow_id: 'flow',
+        focus: { active_agent_session_id: agentSid, version: 1, event_id: turn },
+      }, { status: 201 });
+      return undefined;
+    });
+
+    const catalogWatch = await f.send('native/watch-live', { user_id: user, interval_ms: 200 });
+    const catalog = await f.send('native/agent-sessions', { user_id: user, limit: 17 });
+    assert.equal(catalog.error, undefined); assert.deepEqual(catalog.result.sessions, {
+      items: [], next_cursor: null, has_more: false,
+    });
+
+    const createWatch = await f.send('native/watch-live', { user_id: user, interval_ms: 200 });
+    const created = await f.send('native/create-agent-session', {
+      user_id: user, workflow_id: 'flow', expected_version: 0,
+    });
+    assert.equal(created.error, undefined); assert.equal(created.result.created.id, agentSid);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const wire = f.calls.slice(before).filter(({ path }) => path.startsWith('/api/agentflow/'));
+    assert.deepEqual(wire.map(({ path, init }) => [init.method, path]), [
+      ['GET', '/api/agentflow/me/agent-state'],
+      ['GET', '/api/agentflow/me/agent-sessions'],
+      ['POST', '/api/agentflow/agent-sessions'],
+    ]);
+    for (const watch of [catalogWatch, createWatch]) {
+      assert.equal(f.messages.some((message) => message.method === 'native/conversation'
+        && message.params?.watch_id === watch.result.watch_id), false);
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('replacement waits for an aborted live read to finish before opening the key scope', { timeout: 3000 }, async () => {
+  const f = await fixture();
+  let entered!: () => void; let aborted!: () => void; let release!: () => void;
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  const cancelled = new Promise<void>((resolve) => { aborted = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => {
+      if (path.endsWith('/agent-state') && init.method === 'GET') return new Promise<Response>((_resolve, reject) => {
+        entered();
+        init.signal!.addEventListener('abort', () => {
+          aborted(); void released.then(() => reject(init.signal!.reason));
+        }, { once: true });
+      });
+      if (path === '/api/agentflow/agent-sessions' && init.method === 'POST') return Response.json({
+        id: agentSid, workflow_id: 'flow',
+        focus: { active_agent_session_id: agentSid, version: 1, event_id: turn },
+      }, { status: 201 });
+      return undefined;
+    });
+    const watch = await f.send('native/watch-live', { user_id: user, interval_ms: 200 });
+    await reading;
+    let settled = false;
+    const creating = f.send('native/create-agent-session', {
+      user_id: user, workflow_id: 'flow', expected_version: 0,
+    }).finally(() => { settled = true; });
+    await cancelled;
+    const noticesAtCancel = f.messages.filter((message) => message.method === 'native/conversation'
+      && message.params?.watch_id === watch.result.watch_id).length;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(f.calls.filter(({ path, init }) => path === '/api/agentflow/agent-sessions'
+      && init.method === 'POST').length, 0);
+    release();
+    const created = await creating;
+    assert.equal(created.error, undefined); assert.equal(created.result.created.id, agentSid);
+    assert.equal(f.messages.filter((message) => message.method === 'native/conversation'
+      && message.params?.watch_id === watch.result.watch_id).length, noticesAtCancel);
+  } finally { release?.(); await f.cleanup(); }
+});
+
+test('a request after cancelling one conversation waits for its proof operation to settle', { timeout: 3000 }, async () => {
+  const f = await fixture();
+  let entered!: () => void; let aborted!: () => void; let release!: () => void;
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  const cancelled = new Promise<void>((resolve) => { aborted = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => {
+      if (path.endsWith('/agent-state') && init.method === 'GET') return new Promise<Response>((_resolve, reject) => {
+        entered();
+        init.signal!.addEventListener('abort', () => {
+          aborted(); void released.then(() => reject(init.signal!.reason));
+        }, { once: true });
+      });
+      if (path === '/api/agentflow/agent-sessions' && init.method === 'POST') return Response.json({
+        id: agentSid, workflow_id: 'flow',
+        focus: { active_agent_session_id: agentSid, version: 1, event_id: turn },
+      }, { status: 201 });
+      return undefined;
+    });
+    const conversation = f.send('native/conversation', { user_id: user });
+    await reading;
+    await f.send('native/cancel'); await cancelled;
+    const stopped = await conversation;
+    assert.equal(stopped.error.data.code, 'cancelled');
+
+    let settled = false;
+    const creating = f.send('native/create-agent-session', {
+      user_id: user, workflow_id: 'flow', expected_version: 0,
+    }).finally(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(f.calls.filter(({ path, init }) => path === '/api/agentflow/agent-sessions'
+      && init.method === 'POST').length, 0);
+    release();
+    const created = await creating;
+    assert.equal(created.error, undefined); assert.equal(created.result.created.id, agentSid);
+  } finally { release?.(); await f.cleanup(); }
+});
+
 test('profile change cancels an in-flight Canonical read and prevents old-scope notifications', async () => {
   const f = await fixture(); let started!: (s: AbortSignal) => void; const ready = new Promise<AbortSignal>((r) => { started = r; });
   try {
@@ -200,6 +326,172 @@ test('native cancellation/close abort writes, preserve journals and never return
     assert.equal(f.calls.length, count); assert.equal((await f.send('native/session', { action: 'forget-local', user_id: user })).result.server_revoked, false);
     await f.send('shutdown'); assert.equal(f.messages.some((m) => m.params?.update?.type === 'focus'), false);
   } finally { await f.cleanup(); }
+});
+
+test('Canonical session catalog uses an exact bounded query and projects owned schema only', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path) => {
+      if (path.endsWith('/agent-state')) return Response.json({ active_agent_session_id: agentSid,
+        version: 1, event_id: turn, private_server_field: 'private-server-secret' });
+      if (path.endsWith('/agent-sessions')) return Response.json({ items: [{ id: agentSid, workflow_id: 'flow',
+        title: 'Owned', status: 'active', current_sequence: 2, state_version: 3,
+        private_server_field: 'private-server-secret' }], next_cursor: agentSid, has_more: true,
+      private_server_field: 'private-server-secret' });
+      return undefined;
+    });
+    const response = await f.send('native/agent-sessions', {
+      profile: 'corp', user_id: user, limit: 17, before_id: agentSid,
+    });
+    assert.equal(response.error, undefined);
+    assert.deepEqual(response.result, {
+      platform_type: 'vscode', profile: 'corp', server_url: origin, user_id: user,
+      focus: { active_agent_session_id: agentSid, version: 1, event_id: turn },
+      sessions: { items: [{ id: agentSid, workflow_id: 'flow', title: 'Owned', status: 'active',
+        current_sequence: 2, state_version: 3 }], next_cursor: agentSid, has_more: true },
+    });
+    const reads = f.calls.filter(({ path }) => path.endsWith('/agent-state') || path.endsWith('/agent-sessions'));
+    assert.deepEqual(reads.map(({ url }) => url), [
+      `${origin}/api/agentflow/me/agent-state`,
+      `${origin}/api/agentflow/me/agent-sessions?limit=17&before_id=${agentSid}`,
+    ]);
+    for (const { init } of reads) {
+      const headers = new Headers(init.headers);
+      assert.equal(init.method, 'GET'); assert.equal(init.body, undefined);
+      assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error');
+      assert.equal(headers.get('authorization')?.startsWith('DPoP '), true); assert.ok(headers.get('dpop'));
+      assert.equal(headers.has('cookie'), false); assert.equal(headers.has('origin'), false);
+    }
+    assert.equal(JSON.stringify([response, f.logs]).includes('private-server-secret'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('Canonical lifecycle RPC creates and switches with exact flat bodies and accepts a same-target no-op', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => {
+      if (path === '/api/agentflow/agent-sessions' && init.method === 'POST') return Response.json({
+        id: agentSid, workflow_id: 'flow', focus: { active_agent_session_id: agentSid, version: 1, event_id: turn },
+        private_server_field: 'private-server-secret',
+      }, { status: 201 });
+      if (path === '/api/agentflow/me/agent-state' && init.method === 'PUT') return Response.json({
+        active_agent_session_id: agentSid, version: 1, event_id: turn,
+        private_server_field: 'private-server-secret',
+      });
+      return undefined;
+    });
+    const created = await f.send('native/create-agent-session', {
+      profile: 'corp', user_id: user, workflow_id: 'flow', expected_version: 0, origin_id: 'vscode-1',
+    });
+    assert.deepEqual(created.result, {
+      platform_type: 'vscode', profile: 'corp', server_url: origin, user_id: user,
+      created: { id: agentSid, workflow_id: 'flow',
+        focus: { active_agent_session_id: agentSid, version: 1, event_id: turn } },
+    });
+    const switched = await f.send('native/switch-agent-focus', {
+      profile: 'corp', user_id: user, active_agent_session_id: agentSid,
+      expected_version: 1, origin_id: 'vscode-1',
+    });
+    assert.deepEqual(switched.result, {
+      platform_type: 'vscode', profile: 'corp', server_url: origin, user_id: user,
+      focus: { active_agent_session_id: agentSid, version: 1, event_id: turn },
+    });
+
+    const writes = f.calls.filter(({ path, init }) => (path === '/api/agentflow/agent-sessions'
+      || path === '/api/agentflow/me/agent-state') && (init.method === 'POST' || init.method === 'PUT'));
+    assert.deepEqual(writes.map(({ path, init }) => [init.method, path]), [
+      ['POST', '/api/agentflow/agent-sessions'], ['PUT', '/api/agentflow/me/agent-state'],
+    ]);
+    assert.deepEqual(writes.map(({ init }) => JSON.parse(String(init.body))), [
+      { workflow_id: 'flow', expected_version: 0, title: '', origin_id: 'vscode-1' },
+      { active_agent_session_id: agentSid, expected_version: 1, origin_id: 'vscode-1' },
+    ]);
+    for (const { init } of writes) {
+      const headers = new Headers(init.headers);
+      assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error');
+      assert.equal(headers.get('authorization')?.startsWith('DPoP '), true); assert.ok(headers.get('dpop'));
+      assert.equal(headers.has('cookie'), false); assert.equal(headers.has('origin'), false);
+    }
+    assert.equal(JSON.stringify([created, switched, f.logs]).includes('private-server-secret'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('Canonical lifecycle RPC exposes only allowlisted 409 current focus fields', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path) => path === '/api/agentflow/agent-sessions' ? Response.json({ detail: {
+      code: 'FOCUS_VERSION_CONFLICT', current: { active_agent_session_id: agentSid,
+        version: 1, event_id: turn, private_server_field: 'private-server-secret' },
+      raw_request: 'private-user-input',
+    } }, { status: 409 }) : undefined);
+    const response = await f.send('native/create-agent-session', {
+      user_id: user, workflow_id: 'flow', expected_version: 0,
+    });
+    assert.equal(response.error.data.code, 'usage_error');
+    assert.deepEqual(response.error.data.details, {
+      outcome: 'rejected', status: 409, operation: 'create_agent_session', expected_version: 0,
+      conflict: { code: 'FOCUS_VERSION_CONFLICT',
+        current: { active_agent_session_id: agentSid, version: 1, event_id: turn } },
+    });
+    assert.equal(JSON.stringify([response, f.logs]).includes('private-server-secret'), false);
+    assert.equal(JSON.stringify([response, f.logs]).includes('private-user-input'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('lost lifecycle acknowledgement is unknown, safe and attempted once', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => path === '/api/agentflow/me/agent-state' && init.method === 'PUT'
+      ? (() => { throw new Error('private-server-secret'); })() : undefined);
+    const response = await f.send('native/switch-agent-focus', {
+      user_id: user, active_agent_session_id: null, expected_version: 1,
+    });
+    assert.equal(response.error.data.code, 'network_error');
+    assert.deepEqual(response.error.data.details, {
+      outcome: 'unknown', operation: 'switch_agent_focus', expected_version: 1,
+      target_agent_session_id: null,
+    });
+    assert.equal(f.calls.filter(({ path, init }) => path === '/api/agentflow/me/agent-state'
+      && init.method === 'PUT').length, 1);
+    assert.equal(JSON.stringify([response, f.logs]).includes('private-server-secret'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('Canonical session RPC rejects wrong account, profile and fields before wire access', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f); const before = f.calls.length;
+    const invalid: Array<[string, Record<string, unknown>]> = [
+      ['native/agent-sessions', { user_id: user, limit: 0 }],
+      ['native/agent-sessions', { user_id: user, limit: 1, before_id: agentSid.toUpperCase() }],
+      ['native/agent-sessions', { user_id: user, private_token: 'private-secret' }],
+      ['native/create-agent-session', { user_id: user, workflow_id: '', expected_version: 0 }],
+      ['native/create-agent-session', { user_id: user, workflow_id: 'flow', expected_version: -1 }],
+      ['native/create-agent-session', { user_id: user, workflow_id: 'flow', expected_version: 0, password: 'private-secret' }],
+      ['native/switch-agent-focus', { user_id: user, active_agent_session_id: agentSid.toUpperCase(), expected_version: 0 }],
+      ['native/switch-agent-focus', { user_id: user, active_agent_session_id: null, expected_version: 0, origin_id: '' }],
+      ['native/switch-agent-focus', { profile: 'missing', user_id: user, active_agent_session_id: null, expected_version: 0 }],
+    ];
+    for (const [method, params] of invalid) {
+      const response = await f.send(method, params);
+      assert.ok(['usage_error', 'not_found'].includes(response.error.data.code), method);
+      assert.equal(JSON.stringify(response).includes('private-secret'), false);
+      assert.equal(f.calls.length, before, method);
+    }
+  } finally { await f.cleanup(); }
+
+  const bound = await fixture(true, '8');
+  try {
+    await initialize(bound);
+    const response = await bound.send('native/create-agent-session', {
+      user_id: user, workflow_id: 'flow', expected_version: 0,
+    });
+    assert.equal(response.error.data.code, 'auth_required'); assert.equal(bound.calls.length, 0);
+  } finally { await bound.cleanup(); }
 });
 
 test('Canonical turn RPC methods pass flat named bodies and return safe scoped acknowledgements', async () => {

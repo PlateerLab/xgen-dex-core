@@ -221,7 +221,7 @@ export class DexRpcServer {
             history: true,
             localTools: true,
             ssh: true,
-            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true } } : {}),
+            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true } } : {}),
           },
         };
       }

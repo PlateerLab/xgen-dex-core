@@ -16,10 +16,13 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 const testLive = process.argv.includes('--live');
 const testTurnUi = process.argv.includes('--turn-ui');
-const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi;
+const testSessionUi = process.argv.includes('--session-ui');
+const testSessions = process.argv.includes('--sessions') || testSessionUi;
+const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi || testSessionUi;
 const testTurns = process.argv.includes('--turns') || testTurnUi;
 if (testTurnUi && platform === 'cli') throw new Error('Turn UI verification requires --vscode or --desktop.');
-const desktopElectron: string | null = platform === 'desktop' || testTurnUi ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
+if (testSessionUi && platform === 'cli') throw new Error('Session UI verification requires --vscode or --desktop.');
+const desktopElectron: string | null = platform === 'desktop' || testTurnUi || testSessionUi ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 
 const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
 const certificates = resolve('../xgen-infra/compose/full-stack/.local-certs');
@@ -51,6 +54,14 @@ async function cleanDesktop() { if (cleanupDesktop) await cleanupDesktop(); }
 const agentId = randomUUID(); const recoveredId = randomUUID();
 const event1 = randomUUID(); const event3 = randomUUID(); const event4 = randomUUID();
 let focus = { active_agent_session_id: null as string | null, version: 0, event_id: null as string | null };
+const ownedSessions = new Map<string, { title: string; status: 'active' | 'archived' }>([
+  [agentId, { title: 'Native shared conversation', status: 'active' }],
+  [recoveredId, { title: 'Archived conversation', status: 'archived' }],
+]);
+let sessionRequests = 0; let sessionCreations = 0; let loseSessionAck = testSessionUi;
+const sessionWriteBodies: unknown[] = [];
+const freshSession = () => testSessionUi && focus.active_agent_session_id !== null
+  && focus.active_agent_session_id !== agentId && focus.active_agent_session_id !== recoveredId;
 let watching = false; let disconnected = false; let rotatedDuringWatch = false;
 const watchCursors: number[] = [];
 const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), randomUUID()];
@@ -80,6 +91,8 @@ async function verifyProof(req: IncomingMessage): Promise<string> {
   return access;
 }
 function eventPage(after: number) {
+  if (freshSession()) return { type: 'agent_session.events', events: [], next_cursor: 0, snapshot_sequence: 0,
+    state_version: 1, has_more: false };
   if (testTurnUi) return { type: 'agent_session.events', events: uiEvents.filter((e) => e.sequence > after),
     next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: turnVersion, has_more: false };
   return { type: 'agent_session.events', events: after < liveSequence ? [{ event_id: liveEvent, sequence: 5,
@@ -153,6 +166,36 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url')); assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
     const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
     assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+    if (testSessions && ((path === '/api/agentflow/agent-sessions' && req.method === 'POST')
+      || (path === '/api/agentflow/me/agent-state' && req.method === 'PUT'))) {
+      sessionRequests++; sessionWriteBodies.push(body);
+      const send = (status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+      if (body.expected_version !== focus.version) { send(409, { detail: { code: 'FOCUS_VERSION_CONFLICT', current: focus, raw: 'private-server-secret' } }); return; }
+      assert.equal(body.origin_id, undefined); assert.equal(body.idempotency_key, undefined);
+      if (req.method === 'POST') {
+        assert.equal(body.workflow_id, 'native-fixture');
+        const id = randomUUID(); ownedSessions.set(id, { title: body.title, status: 'active' }); sessionCreations++;
+        focus = { active_agent_session_id: id, version: focus.version + 1, event_id: randomUUID() };
+        if (loseSessionAck) { loseSessionAck = false; req.socket.destroy(); return; }
+        send(201, { id, workflow_id: body.workflow_id, focus, raw: 'private-server-secret' }); return;
+      }
+      const target = body.active_agent_session_id;
+      if (target !== null && ownedSessions.get(target)?.status !== 'active') { send(404, { raw: 'private-server-secret' }); return; }
+      if (target !== focus.active_agent_session_id) focus = { active_agent_session_id: target, version: focus.version + 1, event_id: randomUUID() };
+      send(200, { ...focus, raw: 'private-server-secret' }); return;
+    }
+    if (testSessions && path.startsWith('/api/agentflow/me/agent-sessions?')) {
+      assert.equal(req.method, 'GET'); const query = new URL(path, origin).searchParams;
+      const limit = Number(query.get('limit')); assert.ok(limit >= 1 && limit <= 100);
+      const entries = [...ownedSessions]; const before = query.get('before_id');
+      const start = before ? entries.findIndex(([id]) => id === before) + 1 : 0;
+      assert.ok(before === null || start > 0);
+      const items = entries.slice(start, start + limit).map(([id, value]) => ({ id, workflow_id: 'native-fixture', ...value,
+        current_sequence: id === agentId || id === recoveredId ? 4 : 0, state_version: id === agentId || id === recoveredId ? 4 : 1,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), raw: 'private-server-secret' }));
+      const hasMore = start + items.length < entries.length;
+      reply({ items, has_more: hasMore, next_cursor: hasMore ? items.at(-1)!.id : null }); return;
+    }
     const mutationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(turns|stop)$/.exec(path);
     if (testTurns && mutationRoute) {
       turnRequests++; assert.equal(req.method, 'POST'); assert.equal(mutationRoute[1], agentId);
@@ -191,8 +234,19 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
     const conversationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(snapshot|events|messages)(?:\?(.*))?$/.exec(path);
     if (testConversation && conversationRoute) {
       assert.equal(conversationRoute[1], focus.active_agent_session_id); messageAccesses.add(access);
+      if (freshSession()) {
+        if (conversationRoute[2] === 'snapshot') reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture',
+          title: ownedSessions.get(focus.active_agent_session_id!)!.title, current_sequence: 0, state_version: 1,
+          message_history_complete: true, latest_turn: null });
+        else {
+          const query = new URLSearchParams(conversationRoute[3]); assert.equal(query.get('after_sequence'), '0');
+          if (conversationRoute[2] === 'events') reply(eventPage(0));
+          else reply({ messages: [], next_cursor: 0, snapshot_sequence: 0, state_version: 1, has_more: false });
+        }
+        return;
+      }
       if (conversationRoute[2] === 'snapshot') {
-        reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: 'Native shared conversation',
+        reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: testSessions ? ownedSessions.get(focus.active_agent_session_id!)?.title : 'Native shared conversation',
           current_sequence: liveSequence, state_version: testTurnUi ? turnVersion : liveSequence, message_history_complete: false,
           latest_turn: uiTurn ? { id: uiTurn.id, status: uiTurn.status, accepted_sequence: turnBodies.values().next().value!.ack.accepted_sequence }
             : { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
@@ -242,14 +296,15 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
 });
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 server.on('upgrade', (req, socket, head) => { void (async () => {
-  assert.equal(testLive || testTurnUi, true);
-  assert.equal(req.url, `/api/agentflow/agent-sessions/${focus.active_agent_session_id}/events?after_seq=${liveSequence}`);
+  assert.equal(testLive || testTurnUi || testSessionUi, true);
+  const sequence = freshSession() ? 0 : liveSequence;
+  assert.equal(req.url, `/api/agentflow/agent-sessions/${focus.active_agent_session_id}/events?after_seq=${sequence}`);
   assert.equal(req.headers['sec-websocket-protocol'], undefined); assert.equal(req.headers['sec-websocket-extensions'], undefined);
   const token = await verifyProof(req);
   wss.handleUpgrade(req, socket, head, (peer) => {
     liveSockets.add(peer); liveAccesses.add(token);
     peer.on('error', () => {}); peer.on('close', () => liveSockets.delete(peer));
-    peer.send(JSON.stringify(eventPage(liveSequence)));
+    peer.send(JSON.stringify(eventPage(sequence)));
   });
 })().catch(() => { errors++; rejectedPaths.push('GET native event upgrade'); socket.destroy(); }); });
 async function cli(action: string, expectedExit = 0) {
@@ -294,6 +349,51 @@ async function canonicalCli(input: string, version: number, key: string, expecte
     });
     child.stdin.end(input);
   });
+}
+async function sessionCli(action: string, extra: string[] = [], expectedExit = 0): Promise<any> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', action, '--user-id', userId, '--json', ...extra],
+      { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; let stderr = ''; const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', () => { clearTimeout(timer); reject(new Error('Session fixture CLI failed to start')); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      try {
+        assert.equal(code, expectedExit);
+        for (const secret of [...secrets, 'private-server-secret', 'accessToken', 'refreshToken', 'privateKeyPkcs8']) {
+          assert.equal(output.includes(secret), false); assert.equal(stderr.includes(secret), false);
+        }
+        resolveResult(expectedExit ? JSON.parse(stderr).error.details : JSON.parse(output).result);
+      } catch { reject(new Error(`Session fixture ${action} validation failed; output withheld`)); }
+    });
+  });
+}
+async function sessionFixture(): Promise<void> {
+  const catalog = await sessionCli('agent-sessions', ['--limit', '1']);
+  assert.equal(catalog.focus.version, 0); assert.equal(catalog.sessions.items.length, 1); assert.equal(catalog.sessions.has_more, true);
+  const page = await sessionCli('agent-sessions', ['--before-id', catalog.sessions.next_cursor]);
+  assert.equal(page.sessions.items[0].status, 'archived');
+  const created = await sessionCli('create-agent-session', ['--workflow-id', 'native-fixture', '--title', 'CLI created conversation', '--expected-version', '0']);
+  assert.equal(created.focus.active_agent_session_id, created.id); assert.equal(created.focus.version, 1); assert.equal(sessionCreations, 1);
+  const conflict = await sessionCli('switch-agent-focus', ['--session-id', agentId, '--expected-version', '0'], 2);
+  assert.equal(conflict.conflict.code, 'FOCUS_VERSION_CONFLICT'); assert.equal(conflict.conflict.current.version, 1);
+  assert.equal(sessionRequests, 2); assert.equal(sessionCreations, 1);
+  await sessionCli('switch-agent-focus', ['--session-id', recoveredId, '--expected-version', '1'], 2);
+  const switched = await sessionCli('switch-agent-focus', ['--session-id', agentId, '--expected-version', '1']);
+  assert.equal(switched.active_agent_session_id, agentId); assert.equal(switched.version, 2);
+  assert.deepEqual(await sessionCli('switch-agent-focus', ['--session-id', agentId, '--expected-version', '2']), switched);
+  const cleared = await sessionCli('switch-agent-focus', ['--clear', '--expected-version', '2']);
+  assert.equal(cleared.active_agent_session_id, null); assert.equal(cleared.version, 3);
+  loseSessionAck = true; const before = sessionRequests;
+  const unknown = await sessionCli('create-agent-session', ['--workflow-id', 'native-fixture', '--title', 'Unknown CLI conversation', '--expected-version', '3'], 4);
+  assert.equal(unknown.outcome, 'unknown'); assert.equal(sessionRequests, before + 1); assert.equal(sessionCreations, 2);
+  const recovered = await sessionCli('agent-sessions');
+  assert.equal(recovered.focus.version, 4); assert.equal(recovered.focus.active_agent_session_id, focus.active_agent_session_id);
+  assert.equal(recovered.sessions.items.some((item: { id: string }) => item.id === recovered.focus.active_agent_session_id), true);
+  assert.equal(sessionRequests, before + 1); assert.equal(sessionCreations, 2);
+  console.log('cli: built commands / HTTPS signed POST + PUT / server UUID / owned pagination / focus CAS / no-op / archived rejection / lost create ACK once / explicit catalog recovery PASS');
+  focus = { active_agent_session_id: null, version: 0, event_id: null };
 }
 async function turnFixture(client?: DexRpcClient): Promise<void> {
   const prompt = `${'한'.repeat(24000)}\nintentional trailing newline\n`; secrets.add(prompt);
@@ -387,9 +487,9 @@ async function vscodeFixture() {
   const client = () => {
     const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
       ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
-        `--screenshot=${testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
-      : testTurnUi ? ['-r', 'tsx/cjs', 'apps/vscode/verify/native-turn-webview.cjs', `--origin=${origin}`, `--user-id=${userId}`, `--node=${process.execPath}`,
-        '--screenshot=/tmp/cross-sync-native-turn-ui-vscode.png']
+        `--screenshot=${testSessionUi ? '/tmp/cross-sync-native-session-ui-desktop.png' : testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+      : testTurnUi || testSessionUi ? ['-r', 'tsx/cjs', 'apps/vscode/verify/native-turn-webview.cjs', `--origin=${origin}`, `--user-id=${userId}`, `--node=${process.execPath}`,
+        `--screenshot=/tmp/cross-sync-native-${testSessionUi ? 'session' : 'turn'}-ui-vscode.png`]
       : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
     clients.push(c); return c;
@@ -475,6 +575,14 @@ async function vscodeFixture() {
         console.log(`${platform}: native WSS DPoP / events wake verified HTTP / cross-process token rotation / actual close / live UI PASS`);
       }
     }
+    if (testSessionUi) {
+      focus = { active_agent_session_id: null, version: 0, event_id: null };
+      const verified = await restored.request<any>('verify/session-ui');
+      assert.equal(verified.ui, 'passed'); assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 3);
+      assert.equal(focus.active_agent_session_id, null); assert.equal(focus.version, 3);
+      assert.equal((sessionWriteBodies[0] as { title: string }).title, 'Native created conversation');
+      console.log(`${platform}: production session controls / empty initial focus / server UUID / lost create ACK once / explicit catalog recovery / owned switch / clear focus PASS`);
+    }
     assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
     const restarted = client(); await session(restarted, 'login'); loseCompletion = true;
     await assert.rejects(session(restarted, 'refresh')); assert.equal((await session(restarted, 'status')).result.state, 'refreshing');
@@ -499,6 +607,7 @@ try {
   const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
   assert.deepEqual(await cli('status'), loggedIn);
   await cli('focus'); await cli('refresh'); await cli('focus');
+  if (testSessions) await sessionFixture();
   if (testTurns) await turnFixture();
   watching = true;
   const subscriber = watch(3);

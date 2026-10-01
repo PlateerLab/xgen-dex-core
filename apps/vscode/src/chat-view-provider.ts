@@ -74,6 +74,8 @@ interface ChatViewState {
     turn?: NativeSessionViewState['turn'];
     identity?: string;
     connectionVersion: number;
+    createOpen: boolean;
+    catalog?: NativeSessionViewState['catalog'];
   };
 }
 
@@ -117,6 +119,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private nativeState: NativeSessionViewState | undefined;
   private canonicalMode = false;
   private canonicalNotice: string | undefined;
+  private canonicalCreateOpen = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -131,7 +134,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.nativeState = state;
     if (this.canonicalMode) {
       this.screen = 'chat';
-      this.canonicalNotice = state.turn?.notice || canonicalSessionNotice(state);
+      this.canonicalNotice = state.catalog?.notice || state.turn?.notice || canonicalSessionNotice(state);
       void this.setRunning(!!state.turn?.canStop);
     }
     this.postState();
@@ -278,9 +281,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   async newChat(): Promise<void> {
     if (this.canonicalMode) {
-      const operation = this.nativeState?.turn?.notice;
-      this.canonicalNotice = `${operation ? `${operation} ` : ''}공유 대화 모드에서는 새 대화를 만들 수 없습니다. 현재 공유 대화를 계속 사용해 주세요.`;
+      this.canonicalCreateOpen = true;
+      this.canonicalNotice = '새 Canonical 대화를 만들 Workflow ID와 선택 제목을 입력하세요. 생성은 버튼을 눌렀을 때만 요청됩니다.';
       this.postState();
+      void this.refreshCanonicalCatalog();
       return;
     }
     await this.clearConversation();
@@ -741,6 +745,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (data.type === 'ready') this.postState();
     else if (data.type === 'canonicalMode') void this.toggleCanonical();
     else if (data.type === 'canonicalRetry') void this.native?.retryTurn();
+    else if (data.type === 'canonicalControls') {
+      this.canonicalCreateOpen = true; this.postState(); void this.refreshCanonicalCatalog();
+    }
+    else if (data.type === 'canonicalCatalogRefresh') void this.refreshCanonicalCatalog();
+    else if (data.type === 'canonicalCreate' && typeof data.workflowId === 'string') {
+      void this.createCanonicalSession(data.workflowId, typeof data.title === 'string' ? data.title : '');
+    }
+    else if (data.type === 'canonicalSwitch' && typeof data.agentSessionId === 'string') {
+      void this.switchCanonicalSession(data.agentSessionId || null);
+    }
     else if (data.type === 'canonicalInputRejected') {
       this.canonicalNotice = '메시지는 UTF-8 기준 262,144바이트 이하로 입력해 주세요.';
       this.postState();
@@ -920,7 +934,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       attachments: this.canonicalMode ? [] : this.attachments,
       canonical: {
         active: this.canonicalMode,
-        available: !!this.nativeState?.scope && !!this.nativeState.conversation?.snapshot,
+        available: !!this.nativeState?.scope,
         title: canonicalConversation?.snapshot?.title,
         workflowId: canonicalConversation?.snapshot?.workflow_id,
         omittedMessages: canonicalConversation?.omittedMessages ?? 0,
@@ -929,6 +943,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         turn: this.nativeState?.turn,
         identity: canonicalIdentity(this.nativeState),
         connectionVersion: this.nativeState?.connectionVersion ?? 0,
+        createOpen: this.canonicalCreateOpen,
+        catalog: this.nativeState?.catalog,
       },
     };
     void this.view?.webview.postMessage({ type: 'state', state });
@@ -939,30 +955,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.leaveCanonical(false);
       return;
     }
-    const scope = this.nativeState?.scope;
-    if (!this.native || !scope || !this.nativeState?.conversation?.snapshot) {
-      this.canonicalNotice = '기기 및 플랫폼 세션에서 현재 공유 대화를 먼저 확인해 주세요.';
+    const nativeState = this.nativeState;
+    const scope = nativeState?.scope;
+    if (!this.native || !nativeState || !scope) {
+      this.canonicalNotice = '기기 및 플랫폼 세션에서 Canonical 대화 상태를 먼저 확인해 주세요.';
       this.postState();
       return;
     }
     this.refreshVersion++;
     this.canonicalMode = true;
+    this.canonicalCreateOpen = false;
     this.screen = 'chat';
-    this.canonicalNotice = this.nativeState.turn?.notice || canonicalSessionNotice(this.nativeState);
-    void this.setRunning(!!this.nativeState.turn?.canStop);
+    this.canonicalNotice = nativeState.turn?.notice || canonicalSessionNotice(nativeState);
+    void this.setRunning(!!nativeState.turn?.canStop);
     this.postState();
-    try { await this.native.watchLive(scope.profile, scope.user_id); }
+    try {
+      await this.native.watchLive(scope.profile, scope.user_id);
+      await this.native.refreshAgentSessions(scope.profile, scope.user_id);
+    }
     catch { this.canonicalNotice = '현재 공유 대화 연결을 시작하지 못했습니다. 기기 및 플랫폼 세션을 확인해 주세요.'; this.postState(); }
   }
 
   private leaveCanonical(stopWatch: boolean): void {
     if (!this.canonicalMode && !this.canonicalNotice) return;
     this.canonicalMode = false;
+    this.canonicalCreateOpen = false;
     this.canonicalNotice = undefined;
     if (stopWatch) void this.native?.stopWatch().catch(() => undefined);
     this.screen = this.selectedAgent ? 'chat' : this.auth?.authenticated ? 'agents' : this.screen;
     void this.setRunning(!!this.streamId || this.remoteRunning);
     this.postState();
+  }
+
+  private async refreshCanonicalCatalog(): Promise<void> {
+    const scope = this.nativeState?.catalog?.scope ?? this.nativeState?.scope;
+    if (!this.native || !scope) {
+      this.canonicalNotice = '기기 및 플랫폼 세션에서 현재 공유 대화를 먼저 확인해 주세요.';
+      this.postState(); return;
+    }
+    try { await this.native.refreshAgentSessions(scope.profile, scope.user_id); }
+    catch { this.canonicalNotice = this.nativeState?.catalog?.notice ?? 'Agent 세션 목록을 확인하지 못했습니다.'; this.postState(); }
+  }
+
+  private async createCanonicalSession(workflowId: string, title: string): Promise<void> {
+    if (!this.native) return;
+    try { await this.native.createAgentSession(workflowId, title); }
+    catch (error) { this.canonicalNotice = errorMessage(error); this.postState(); }
+  }
+
+  private async switchCanonicalSession(agentSessionId: string | null): Promise<void> {
+    if (!this.native) return;
+    try { await this.native.switchAgentFocus(agentSessionId); }
+    catch (error) { this.canonicalNotice = errorMessage(error); this.postState(); }
   }
 
   private html(webview: vscode.Webview): string {
@@ -1041,6 +1085,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <button id="chat-settings" class="icon-button" type="button" title="계정 및 연결 설정" aria-label="계정 및 연결 설정">⚙</button>
       </div>
     </header>
+    <section id="canonical-session-controls" class="canonical-session-controls hidden" aria-label="Canonical Agent 세션 선택">
+      <div class="canonical-session-row">
+        <label><span>내 Agent 세션</span><select id="canonical-session-select"><option value="">포커스 해제</option></select></label>
+        <button id="canonical-session-switch" class="secondary-button compact" type="button">선택</button>
+        <button id="canonical-session-clear" class="secondary-button compact" type="button">포커스 해제</button>
+        <button id="canonical-session-refresh" class="secondary-button compact" type="button">새로 고침</button>
+      </div>
+      <div class="canonical-session-row">
+        <label><span>Workflow ID</span><input id="canonical-session-workflow" type="text" maxlength="256" autocomplete="off"></label>
+        <label><span>제목 (선택)</span><input id="canonical-session-title" type="text" maxlength="256" autocomplete="off"></label>
+        <button id="canonical-session-create" type="button">새 세션 만들기</button>
+      </div>
+      <p>현재 계정이 소유한 Workflow만 만들 수 있습니다. 목록과 포커스는 서버에서 다시 확인한 값만 사용합니다.</p>
+    </section>
     <main id="messages" class="messages" aria-live="polite"></main>
     <div id="status" class="status hidden" role="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text"></span></div>
     <footer class="composer-shell">

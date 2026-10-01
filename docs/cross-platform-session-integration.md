@@ -638,3 +638,54 @@ Desktop 설정 → 기기·세션 → 공유 대화 읽기 → 턴 입력창
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. VSCode has explicit Shared conversation mode in its existing chat composer; Desktop has a composer in native session settings. Both use verified server snapshots and a shared scoped state machine, preserve uncertain requests through same-scope reconnection, and retry only the original body/key/version on explicit user action. Submit and stop receipts are separate from authoritative completion. Real HTTPS/software-key OS-keychain and product Electron component fixtures verify loss recovery and exact stop binding; VSCode uses a minimal Electron shell adapter, not an installed extension host. Enrollment-mode integration-branch Compose verifies rejection and recovery. ACTIVE Gateway success, new session creation/selection, Desktop primary chat migration and Mobile sends remain gates. SDK/runtime remain unreleased Workflow overlays and PR90 stays Draft.
+
+
+## CLI·VSCode·Desktop Canonical 세션 생성·선택 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-session-selection`, 기준 통합 SHA `6c0ed3ed9d0c78a5c5eba57619ef0393790e9c93`, 하위 [PR148](https://github.com/PlateerLab/xgen-dex-core/pull/148) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지. 제품 코드 SHA `1f5dc1572ca2eb47ed30534a48a305c9ae3285fb`.
+
+```text
+CLI session agent-sessions / create-agent-session / switch-agent-focus
+VSCode 공유 대화 → 새 대화 / 세션 선택
+Desktop 설정 → 기기·세션 → Canonical Agent 세션
+  → ready OS vault + 고정된 계정/프로필/HTTPS origin
+  → GET 현재 focus + 소유한 세션 목록 (독립 조회; CAS가 경쟁을 검사)
+  → POST 새 세션 생성 / PUT 활성 focus 선택 또는 해제
+  → expected_version CAS → 서버 발급 UUID·검증된 ACK
+  → authoritative conversation read → 기존 live 구독 재개
+  → 응답 유실·잘못된 ACK: unknown → 다음 쓰기 차단 → 명시적 목록 재확인
+```
+
+### 구현과 경계
+
+- Workflow의 기존 생성 API는 workflow 소유권 검사·세션 생성·계정 focus 변경을 한 트랜잭션에서 수행한다. 전환은 소유한 활성 세션 또는 null만 허용하고, 같은 target의 정상 CAS는 버전을 올리지 않는다. 생성 API에는 idempotency key가 없으므로 클라이언트는 유실된 생성 요청을 자동으로 다시 보내거나 새 버전으로 재작성하지 않는다. 목록 재확인은 현재 상태를 표시하며 이전 unknown 요청의 성공 판정으로 취급하지 않는다.
+- 공통 lifecycle protocol은 exact 입력 필드, 정상 Unicode/codepoint 길이, lowercase UUID, safe version을 검증하고 async 인증 조회 전에 body를 복사한다. HTTPS origin·정확한 POST/PUT 경로·현재 Platform token에 한 번만 서명하며 외부 read-only callback은 쓰기를 서명할 수 없다. ACK는64KiB/fatal UTF8와 요청 ID/workflow/버전 불변식으로 검증하고, 추가 서버 필드를 제거한다.
+- 수신된4xx(408 제외)는 거절,409는 allowlisted `FOCUS_VERSION_CONFLICT`의 current focus만 전달한다. dispatch 후 취소·응답 유실·잘못된 ACK·408·5xx는 unknown이다. HTTP 재전송·자동 갱신·legacy fallback이 없고 쓰기 deadline은10초다. Cookie/Origin/redirect와 임의 경로는 허용하지 않는다. focus/list GET도 bounded native adapter를 사용한다.
+- CLI의 생성/전환에는 사용자가 확인한 `--expected-version`이 필수다. `--clear`와 `--session-id`는 하나만 선택하며 boolean 옵션에 값을 붙이면 거절한다. 목록은 `--limit 1..100`과 `--before-id`로 조회한다. 생성·전환·목록 결과를 출력 전에 안전한 공유 parser로 다시 투영한다.
+- UI는 서버에서 확인한 목록의 focus version만 사용하며 계정 소유 활성 세션만 선택한다. Workflow ID·선택 제목으로 새 대화를 만들고, 포커스 해제도 명시적 버튼으로 수행한다. VSCode는 기존 New Chat을 생성 컨트롤에 연결한다. unknown/409는 직접 목록을 새로 확인하기 전까지 lifecycle 쓰기를 막으며, 미확정·진행 중인 turn도 세션 쓰기를 막는다. 최신 페이지는 최대100개이며 CLI는 이전 페이지 커서를 지원한다.
+- 계정/프로필/origin 변경은 이전 catalog와 turn intent를 폐기한다. 바뀐/null focus는 이전 본문을 즉시 비우고, non-null focus는 authoritative snapshot을 읽는다. lifecycle ACK는 원래 scope의 정확한 origin/account/platform과 일치해야 하며 늦은 이전 scope 결과는 표시하지 않는다. 입력·비밀키·토큰·원본 오류는 영속화하지 않는다. Desktop main/frame/TLS 경계를 유지한다.
+- 실제 VSCode 검증에서 watch ACK 직후 catalog 조회가 키체인 lock 해제보다 먼저 실행되는 경쟁을 발견했다. RPC는 예약된 watcher의 done을 ACK 전에 등록한다. 엔진은 scoped proof 작업을 실제 `keys.withSession` 완료까지 추적하고, RPC는 watcher 취소와 단발 conversation 취소 후에도 drain barrier를 보존한다. 후속 요청은 실제 lock 해제를 기다리며15초 요청 취소 시 fail closed한다. 원래 HTTP를 다시 보내거나 lock을 우회하지 않는다.
+
+### 검증과 실행 환경
+
+- Protocol lifecycle 대상8/8, 기존 mutation16/16 통과. 엔진 초기 전체208 pass/2 OS 조건 skip 및 후속 안전 오류 처리·실제 proof drain 회귀 통과. CLI 전체172/172 후 추가된 RPC 경쟁 회귀 포함 대상18/18, CLI lifecycle 대상6/6 통과. VSCode 전체43/43, Desktop 관련 model/main27/27와 실제 HTTPS network1/1 통과. Desktop network의 첫 샌드박스 실행은 listen EPERM이어서 해당 테스트만 소켓 권한으로 재실행했다. workspace/별도 Desktop 타입 검사와 빌드, 계약 검사, 두 opt-in harness strict 타입 검사 통과. 최신 Head의 필수 CI·리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `scripts/cli-platform-session-fixture.mts --sessions`: 별도 빌드 CLI·일회용 OS keychain·실제 TLS/P-256 POST/PUT DPoP, 서버 UUID, 소유 목록 pagination, stale focus409, same-target no-op, archived target 거절, clear, 서버 생성 후 ACK 유실1회와 명시적 catalog 복구를 검증했다.
+- 같은 fixture의 `--vscode --session-ui` / `--desktop --session-ui`: 제품 버튼을 눌러 최초 empty focus에서 생성, 이중 클릭1회 전송, ACK 유실 후 쓰기 잠금, 목록 새로 확인→새 UUID·빈 새 대화 snapshot, 기존 활성 세션 선택, focus 해제를 검증했다. Desktop은 실제 main/preload/IPC/renderer이며 VSCode는 제품 provider/controller/webview를 최소 Electron shell API 어댑터로 실행한다. 화면 screenshot도 검토했다. 설치된 VSCode extension host 및 실제 ACTIVE Gateway 성공 검증은 후속 관문이다.
+- `scripts/native-platform-session-compose.mts --cli --vscode --desktop --native-sessions`: 일회용 계정·기기 등록/신뢰 브라우저 승인 후 enrollment login503/login_pending에서 catalog/create/switch를 auth_required로 거절하고, Canonical session 미생성·journal 유지·명시적 로컬 복구와 DB/키체인 정리를 검증했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env` 서비스별 통합 브랜치 override, clean source/container HEAD/ref와 실제 `/app` mount를 재확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 확인. DEX는 하위 브랜치 제품 코드/빌드를 사용한다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` / runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` overlay marker와 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` 실제 import를 확인했다. 패키지 배포·환경변수 추가/변경/삭제는 없다.
+- 증거: `/tmp/cross-sync-session-selection-{cli-tests,vscode-tests,desktop-tests,desktop-network-tests,cli-fixture,vscode-fixture,desktop-fixture,compose,check,desktop-check,build,desktop-build,contracts,harness-check,environment,overlay}.log`, `/tmp/cross-sync-native-session-ui-{vscode,desktop}.png`. 세션 catalog 전체 페이지 UI, Desktop Workspace 주 채팅 이행·Mobile 송신, 첨부/로컬 도구·TUI 이행과 실제 ACTIVE 표면 간 실행 성공은 남아 있다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 11% | Desktop 주 채팅/Mobile 송신·TUI/첨부·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode shared chat and Desktop native settings now create server-issued Canonical sessions, select owned active sessions and explicitly clear account focus with verified CAS versions. There is no creation idempotency key: uncertain writes are never replayed or rebased, and the UI requires an explicit catalog recheck after unknown outcomes or version conflicts. Results, scopes and bounded acknowledgements are validated before display. Credential changes discard catalogs; changed focus clears stale transcripts. The actual Electron fixture exposed a native vault race: RPC now tracks scheduled watchers before ACK and waits for underlying scoped proof operations to release the vault even after watcher or standalone-read cancellation. Focused deferred-transport regressions and real HTTPS/OS-keychain product UI fixtures pass. Enrollment-mode integration-branch Compose verifies rejection and cleanup; installed VSCode, ACTIVE Gateway cross-surface success, Mobile sending and Desktop primary chat migration remain gates. SDK/runtime stay as unreleased Workflow overlays and PR90 stays Draft.

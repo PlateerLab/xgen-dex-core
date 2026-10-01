@@ -41,6 +41,22 @@ test('foreign origins, query, fragment, userinfo, invalid credentials and cancel
   const controller = new AbortController(); controller.abort();
   await assert.rejects(f.sign('GET', `${origin}/api`, token, controller.signal), (e: unknown) => e instanceof Error && e.name === 'AbortError');
 });
+test('DPoP signer allows only exact canonical lifecycle write routes and methods', async () => {
+  const f = await fixture();
+  const created = await f.sign('POST', `${origin}/api/agentflow/agent-sessions`, token);
+  const switched = await f.sign('PUT', `${origin}/api/agentflow/me/agent-state`, token);
+  assert.equal(JSON.parse(Buffer.from(created.split('.')[1]!, 'base64url').toString()).htm, 'POST');
+  assert.equal(JSON.parse(Buffer.from(switched.split('.')[1]!, 'base64url').toString()).htm, 'PUT');
+  for (const [method, path] of [
+    ['PUT', '/api/agentflow/agent-sessions'],
+    ['POST', '/api/agentflow/me/agent-state'],
+    ['PUT', '/api/agentflow/me/agent-state/'],
+    ['POST', '/api/agentflow/agent-sessions/'],
+    ['PUT', '/api/agentflow/me/agent-events'],
+  ] as const) {
+    await assert.rejects(f.sign(method, `${origin}${path}`, token), TypeError);
+  }
+});
 test('extractable private keys are rejected by the DPoP supplier', async () => {
   const pair = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
   const publicKey = await subtle.exportKey('jwk', pair.publicKey) as NativePublicKey;

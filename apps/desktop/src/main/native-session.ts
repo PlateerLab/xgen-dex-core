@@ -1,6 +1,8 @@
 import { DexError, MemoryConfigStore, defaultConfig, nativeKeyScope } from '@dex/engine';
 import { NativePlatformHttpError, NativePlatformTransportError } from '@dex/protocol/native-platform-session';
 import type { AgentSessionMutationConflict, AgentSessionMutationConflictCode } from '@dex/protocol/agent-session-mutation';
+import { parseAgentFocus } from '@dex/protocol/agent-session';
+import type { AgentSessionLifecycleConflict } from '@dex/protocol/agent-session-lifecycle';
 import { NativeSessionRpcHost, type NativeSessionHostOptions } from '@dex/rpc/native-session-host';
 import type { DesktopNativeMutationFailure, DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
 
@@ -25,6 +27,13 @@ function safeConflict(value: unknown): AgentSessionMutationConflict | undefined 
     ...(raw.current_state_version === undefined ? {} : { current_state_version: raw.current_state_version as number }),
     ...(raw.current_turn_id === undefined ? {} : { current_turn_id: raw.current_turn_id as string }) };
 }
+function safeLifecycleConflict(value: unknown): AgentSessionLifecycleConflict | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.code !== 'FOCUS_VERSION_CONFLICT') return undefined;
+  try { return { code: 'FOCUS_VERSION_CONFLICT', current: parseAgentFocus(raw.current) }; }
+  catch { return undefined; }
+}
 function safeMutationFailure(value: unknown, code: DexError['code']): DesktopNativeMutationFailure | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
@@ -32,7 +41,7 @@ function safeMutationFailure(value: unknown, code: DexError['code']): DesktopNat
   if (raw.outcome !== 'rejected' || (code !== 'auth_required' && code !== 'usage_error')
     || typeof raw.status !== 'number' || !Number.isSafeInteger(raw.status)
     || raw.status < 400 || raw.status > 499 || raw.status === 408) return undefined;
-  const conflict = safeConflict(raw.conflict);
+  const conflict = safeConflict(raw.conflict) ?? safeLifecycleConflict(raw.conflict);
   return { outcome: 'rejected', status: raw.status, ...(conflict ? { conflict } : {}) };
 }
 function safeError(error: unknown): Extract<DesktopNativeReply, { ok: false }> {
@@ -68,7 +77,7 @@ export class DesktopNativeSessions {
   async request(rawMethod: unknown, rawParams: unknown = {}): Promise<DesktopNativeReply> {
     try {
       if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'watch-live',
-        'submit-turn', 'stop-turn', 'unwatch', 'cancel'].includes(rawMethod)) {
+        'submit-turn', 'stop-turn', 'agent-sessions', 'create-agent-session', 'switch-agent-focus', 'unwatch', 'cancel'].includes(rawMethod)) {
         throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
       }
       const params = object(rawParams);
@@ -95,8 +104,10 @@ export class DesktopNativeSessions {
         ...(rawMethod === 'device' || (rawMethod === 'session' && params.action === 'login') ? {} : { user_id: scope.userId }) };
       const value = await this.host!.request(`native/${rawMethod}`, scoped);
       if (generation !== this.generation || this.current().key !== scope.key) {
-        if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn') {
-          throw new DexError('network_error', '송신 완료 여부를 확인할 수 없습니다. 대화 상태를 확인하고 같은 요청으로 재확인하세요.',
+        if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn' || rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus') {
+          throw new DexError('network_error', rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus'
+            ? '작업 완료 여부를 확인할 수 없습니다. 현재 포커스와 세션 목록을 다시 확인하세요.'
+            : '송신 완료 여부를 확인할 수 없습니다. 대화 상태를 확인하고 같은 요청으로 재확인하세요.',
             { outcome: 'unknown' });
         }
         throw new DOMException('Cancelled', 'AbortError');

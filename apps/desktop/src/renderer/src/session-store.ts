@@ -159,6 +159,16 @@ function peerAttachments(items: readonly TurnAttachment[] | undefined): ChatImag
   }));
 }
 
+/**
+ * 지난 턴 질문에 붙은 파일 → 말풍선 위 파일 카드(작업 공간 자리로 열고 받는다). 그림은 미리보기를 따로 받아야
+ * 하므로(historyImage) 여기서 만들지 않는다 — 이력 불러오기와 구멍 메우기가 같은 규칙을 쓴다.
+ */
+function historyFileCards(items: readonly HistoryAttachment[] | undefined): ChatImageAttachment[] {
+  return (items ?? [])
+    .filter((a) => a.type === 'file')
+    .map((a) => ({ kind: 'file' as const, name: a.name, size: a.size, mime: a.contentType, dataUrl: '', workspacePath: workspacePathOf(a.path) }));
+}
+
 /** One rendered chat message (mirrors the old Chat.Msg shape). */
 export interface ChatMsg {
   role: 'user' | 'assistant';
@@ -253,6 +263,8 @@ export function mergeCompletedTurn(
     output: string;
     attachments?: readonly TurnAttachment[];
     process?: readonly HistoryFlowItem[];
+    /** 질문 말풍선의 첨부를 이미 화면 모양으로 가진 경우(이력에서 메운 턴). */
+    images?: ChatImageAttachment[];
   },
 ): ChatMsg[] | null {
   const ioId = turn.ioId || undefined;
@@ -290,7 +302,7 @@ export function mergeCompletedTurn(
   if (last?.role === 'user' && last.text === input) out.push(answer);
   else {
     const question = messages.find((m) => m.remoteQuestion && m.text === input);
-    const images = question?.images ?? peerAttachments(turn.attachments);
+    const images = question?.images ?? (turn.images?.length ? turn.images : peerAttachments(turn.attachments));
     out.push({ role: 'user', text: input, ...(images ? { images } : {}) }, answer);
   }
   return out;
@@ -343,7 +355,7 @@ function fillExecutionIoId(
  */
 export function mergeMissedTurns(
   messages: readonly ChatMsg[],
-  turns: ReadonlyArray<{ input: string; output: string; ioId?: number; attachments?: readonly unknown[]; process?: readonly HistoryFlowItem[] }>,
+  turns: ReadonlyArray<{ input: string; output: string; ioId?: number; attachments?: readonly HistoryAttachment[]; process?: readonly HistoryFlowItem[] }>,
   remote: boolean,
 ): ChatMsg[] | null {
   let changed = false;
@@ -363,15 +375,20 @@ export function mergeMissedTurns(
   if (missed.length === 0) return changed ? out : null;
   if (remote) {
     const at = out.findIndex(isTemporary);
-    const rows = missed.flatMap((t): ChatMsg[] => [
-      { role: 'user', text: plainInput(t.input) },
-      withServerProcess({ role: 'assistant', text: t.output, executionIoId: t.ioId }, t.process),
-    ]);
+    const rows = missed.flatMap((t): ChatMsg[] => {
+      const images = historyFileCards(t.attachments);
+      return [
+        { role: 'user', text: plainInput(t.input), ...(images.length ? { images } : {}) },
+        withServerProcess({ role: 'assistant', text: t.output, executionIoId: t.ioId }, t.process),
+      ];
+    });
     out = at >= 0 ? [...out.slice(0, at), ...rows, ...out.slice(at)] : [...out, ...rows];
     return out;
   }
   for (const t of missed) {
-    out = mergeCompletedTurn(out, { ioId: t.ioId, input: t.input, output: t.output, process: t.process }) ?? out;
+    out = mergeCompletedTurn(out, {
+      ioId: t.ioId, input: t.input, output: t.output, process: t.process, images: historyFileCards(t.attachments),
+    }) ?? out;
   }
   return out;
 }
@@ -823,9 +840,7 @@ export class SessionStore {
         const output =
           typeof tn.output === 'string' ? tn.output : tn.output == null ? '' : String(tn.output);
         const images: ChatImageAttachment[] = [];
-        for (const attachment of tn.attachments ?? []) {
-          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '', workspacePath: workspacePathOf(attachment.path) });
-        }
+        images.push(...historyFileCards(tn.attachments));
         if (this.transport.historyImage) {
           for (const attachment of tn.attachments ?? []) {
             if (attachment.type !== 'picture') continue;

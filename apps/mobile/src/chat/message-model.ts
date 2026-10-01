@@ -279,6 +279,21 @@ export function startRemoteTurn(
   ];
 }
 
+/**
+ * 이 폰이 보낸 턴의 실행 id 를 답에 붙인다 — 스트림이 `execution_io` 를 알려 줄 때. 데스크톱은 진작 붙이고
+ * 있었는데 폰은 버려서, 내 턴 뒤에 생긴 소켓 구멍을 이력으로 메울 수 없었다(어디까지 그렸는지 모른다).
+ * 붙일 답은 마지막 질문 뒤의 답(도는 중이거나 끊겨 진행분이 된 것, 막 끝난 것)이다. 바뀐 것이 없으면 null.
+ */
+export function markExecutionIo(list: readonly ChatMessage[], ioId: number): ChatMessage[] | null {
+  if (!ioId || list.some((m) => m.ioId === ioId)) return null;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m.role === 'user') break;
+    if (m.role === 'assistant' && !m.ioId) return patchAt(list, i, { ioId });
+  }
+  return null;
+}
+
 /** 작업 과정에 도구가 있는가 — 글 조각만 있는 과정으로는 타임라인을 그리지 않는다. */
 function hasToolFlow(m: Pick<ChatMessage, 'flow'> | undefined): boolean {
   return !!m?.flow?.some((f) => f.kind === 'tool');
@@ -332,7 +347,7 @@ export function completeRemoteTurn(
     ioId?: number | null;
     input: string;
     output: string;
-    attachments?: readonly TurnAttachment[];
+    attachments?: readonly (TurnAttachment | HistoryAttachment)[];
     process?: readonly HistoryFlowItem[];
   },
 ): ChatMessage[] | null {
@@ -418,7 +433,9 @@ export function mergeMissedTurns(
     return at >= 0 ? [...out.slice(0, at), ...rows, ...out.slice(at)] : [...out, ...rows];
   }
   for (const t of missed) {
-    out = completeRemoteTurn(out, { ioId: t.ioId, input: t.input, output: t.output, process: t.process }) ?? out;
+    out = completeRemoteTurn(out, {
+      ioId: t.ioId, input: t.input, output: t.output, process: t.process, attachments: t.attachments,
+    }) ?? out;
   }
   return out;
 }

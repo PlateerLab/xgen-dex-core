@@ -21,6 +21,7 @@ import {
   userMessage,
   type ChatMessage,
   completeRemoteTurn,
+  markExecutionIo,
   mergeMissedTurns,
   startRemoteTurn,
 } from '../src/chat/message-model';
@@ -354,4 +355,29 @@ test('지금 도는 다른 턴의 진행분은 건드리지 않고 그 앞에 �
 test('마지막 답에 실행 id 가 없으면 덧붙이지 않는다', () => {
   const list = [userMessage('a'), { ...assistantPlaceholder({ streaming: false }), text: 'A(내 스트림)' }];
   assert.equal(mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }], false), null);
+});
+
+test('내 턴의 답에 실행 id 를 붙인다 — 그래야 내 턴 뒤의 구멍을 메운다', () => {
+  let list = [userMessage('내 질문'), assistantPlaceholder()];
+  list = appendAssistantText(list, '내 답');
+  list = markExecutionIo(list, 40)!;
+  assert.equal(list[1].ioId, 40);
+  assert.equal(markExecutionIo(list, 40), null, '같은 id 는 두 번 붙이지 않는다');
+  list = finishStreaming(list);
+  // 예전에는 내 답에 id 가 없어 아래가 null(덧붙이지 않음)이었다
+  const merged = mergeMissedTurns(list, [
+    { ioId: 40, input: '내 질문', output: '내 답' },
+    { ioId: 41, input: '데스크톱 질문', output: '데스크톱 답', process: SERVER_PROCESS },
+  ], false)!;
+  assert.deepEqual(merged.map((m) => m.text), ['내 질문', '내 답', '데스크톱 질문', '데스크톱 답']);
+  assert.equal(merged[3].flow?.length, 3);
+});
+
+test('이력으로 메운 놓친 턴의 질문에도 첨부 이름표가 붙는다', () => {
+  const list = historyMessages([{ ioId: 1, input: 'a', output: 'A' }]);
+  const attachments = [{ type: 'file' as const, name: '보고서.docx', size: 10, contentType: 'application/x', path: 'uploads/u/보고서.docx', bucket: 'b' }];
+  const quiet = mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }, { ioId: 2, input: 'b', output: 'B', attachments }], false)!;
+  assert.deepEqual(quiet[2].attachments, [{ name: '보고서.docx', kind: 'file' }]);
+  const busy = mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }, { ioId: 2, input: 'b', output: 'B', attachments }], true)!;
+  assert.deepEqual(busy[2].attachments, [{ name: '보고서.docx', kind: 'file' }]);
 });

@@ -551,3 +551,10 @@ test('끊겼다 다시 붙으면 구멍을 알린다 — 첫 구독은 알리지
   assert.deepEqual(peer, [{ kind: 'gap' }]);
   chat.close();
 });
+
+test('내 턴의 실행 id 를 알려 준다 — 같은 턴을 한 번만 그리고, 구멍을 메울 기준이 된다', () => {
+  const ids: number[] = [];
+  assert.equal(dispatchExec('execution_io', { execution_io_id: 49704 }, { onExecutionIo: (id) => ids.push(id) }), null);
+  assert.equal(dispatchExec('execution_io', { execution_io_id: 0 }, { onExecutionIo: (id) => ids.push(id) }), null);
+  assert.deepEqual(ids, [49704], '0 은 아직 행이 없다는 뜻이라 넘기지 않는다');
+});

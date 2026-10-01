@@ -43,3 +43,21 @@ test('도구를 안 쓴 턴과 옛 서버의 턴은 예전 모양 그대로다',
   assert.deepEqual(rows.map((r) => [r.role, r.text]), [['user', 'ㅎㅇ'], ['assistant', '안녕하세요']]);
   assert.equal(rows[1].tools, undefined);
 });
+
+test('호출 id 가 없는 도구도 호출 하나에 한 줄 — "실행 중" 이 남지 않는다', () => {
+  const rows = historyTurnMessages(
+    [
+      turn({
+        output: '끝',
+        process: [
+          { kind: 'tool', at: 1, event: { eventType: 'tool_call', toolName: 'Read' } },
+          { kind: 'tool', at: 2, event: { eventType: 'tool_result', toolName: 'Read' } },
+          { kind: 'tool', at: 3, event: { eventType: 'tool_call', toolName: 'Read' } },
+          { kind: 'tool', at: 4, event: { eventType: 'tool_error', toolName: 'Read', error: '없음' } },
+        ],
+      }),
+    ],
+    'gitlab',
+  );
+  assert.deepEqual(rows.filter((r) => r.role === 'activity').map((r) => r.text), ['Read · 완료', 'Read · 실패 · 없음']);
+});

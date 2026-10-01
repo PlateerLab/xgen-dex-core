@@ -54,6 +54,11 @@ export interface ExecCallbacks {
    * 값을 좁혀서 넘길 이유가 없다.
    */
   onTool?: (ev: ToolEvent) => void;
+  /**
+   * 이 턴이 서버에 남은 실행 한 건의 id — 답에 붙여 둔다. 같은 턴이 다른 길(완결 행·이력)로 다시 와도 한 번만
+   * 그리고, 소켓 구멍을 이력으로 메울 때 "어디까지 그렸나" 를 이 id 로 안다(없으면 메우지 못한다).
+   */
+  onExecutionIo?: (ioId: number) => void;
   onEnd?: () => void;
   onError?: (message: string) => void;
   /**
@@ -210,6 +215,9 @@ export function dispatchExec(
   switch (ev.kind) {
     case 'tool':
       cb.onTool?.(ev.event);
+      return null;
+    case 'execution_io':
+      if (ev.executionIoId > 0) cb.onExecutionIo?.(ev.executionIoId);
       return null;
     case 'text':
       // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면 절반이

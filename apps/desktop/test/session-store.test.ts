@@ -1319,3 +1319,16 @@ test('시작·진행 프레임을 모두 놓쳐도 — 행이 실어 온 과정�
   assert.deepEqual(s.messages.map((m) => m.text), ['앱 상태?', '두 앱 모두 정상입니다.'])
   assert.equal(s.messages[1].flow?.length, 3, '결과만 남지 않는다')
 })
+
+test('이력으로 메운 놓친 턴의 질문에도 파일 카드가 붙는다', () => {
+  const attachments: HistoryAttachment[] = [
+    { type: 'file', name: '보고서.docx', size: 10, contentType: 'application/x', path: 'uploads/u/보고서.docx', bucket: 'b' },
+  ]
+  const base: ChatMsg[] = [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'A', executionIoId: 1 }]
+  const turns = [{ input: 'a', output: 'A', ioId: 1 }, { input: 'b', output: 'B', ioId: 2, attachments }]
+  for (const remote of [false, true]) {
+    const merged = mergeMissedTurns(base, turns, remote)!
+    assert.equal(merged[2].images?.[0]?.name, '보고서.docx', `remote=${remote}`)
+    assert.equal(merged[2].images?.[0]?.kind, 'file')
+  }
+})

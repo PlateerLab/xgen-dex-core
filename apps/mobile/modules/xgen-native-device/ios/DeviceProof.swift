@@ -46,3 +46,56 @@ enum DeviceProof {
     return Data(r + s)
   }
 }
+
+/** Platform-independent codec. Production supplies only a hardware-backed signing closure. */
+enum DpopProof {
+  private static let maximumJWTLength = 8_192
+  private static let jwt = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$")
+  private static let coordinate = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{43}$")
+  private static let sessionIdPath = try! NSRegularExpression(pattern: "^/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+  private static let agentSessionPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(snapshot|events)$")
+
+  private static func matches(_ expression: NSRegularExpression, _ value: String) -> Bool {
+    let fullRange = NSRange(value.startIndex..., in: value)
+    return expression.firstMatch(in: value, range: fullRange)?.range == fullRange
+  }
+
+  private static func canonicalOrigin(_ origin: String) -> Bool {
+    guard let components = URLComponents(string: origin) else { return false }
+    return components.scheme == "https" && components.host != nil && components.user == nil && components.password == nil &&
+      components.path.isEmpty && components.query == nil && components.fragment == nil && components.url?.absoluteString == origin
+  }
+
+  private static func allowed(_ method: String, _ path: String) -> Bool {
+    switch method {
+    case "DELETE": return matches(sessionIdPath, path)
+    case "GET":
+      return path == "/api/agentflow/me/agent-state" || path == "/api/agentflow/me/agent-events" ||
+        path == "/api/agentflow/me/agent-sessions" || matches(agentSessionPath, path)
+    default: return false
+    }
+  }
+
+  static func signingInput(origin: String, method: String, htu: String, accessToken: String, x: String, y: String, nowSeconds: Int64, jti: String) throws -> String {
+    guard canonicalOrigin(origin), accessToken.utf8.count <= maximumJWTLength, matches(jwt, accessToken), matches(coordinate, x), matches(coordinate, y), nowSeconds > 0,
+      UUID(uuidString: jti)?.uuidString.lowercased() == jti, htu.hasPrefix(origin) else { throw DeviceKeyFailure.invalid }
+    let path = String(htu.dropFirst(origin.count))
+    guard htu == origin + path, allowed(method, path), !path.contains("%"), !path.contains("?"),
+      !path.contains("#"), !path.contains("\\") else { throw DeviceKeyFailure.invalid }
+    let ath = DeviceProof.encode(Data(SHA256.hash(data: Data(accessToken.utf8))))
+    let header = DeviceProof.encode(Data("{\"typ\":\"dpop+jwt\",\"alg\":\"ES256\",\"jwk\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"\(x)\",\"y\":\"\(y)\"}}".utf8))
+    let claims = DeviceProof.encode(Data("{\"htm\":\"\(method)\",\"htu\":\"\(htu)\",\"iat\":\(nowSeconds),\"jti\":\"\(jti)\",\"ath\":\"\(ath)\"}".utf8))
+    let input = "\(header).\(claims)"
+    guard input.utf8.count + 87 <= maximumJWTLength else { throw DeviceKeyFailure.invalid }
+    return input
+  }
+
+  static func create(origin: String, method: String, htu: String, accessToken: String, x: String, y: String, nowSeconds: Int64, jti: String, signer: (Data) throws -> Data) throws -> String {
+    let input = try signingInput(origin: origin, method: method, htu: htu, accessToken: accessToken, x: x, y: y, nowSeconds: nowSeconds, jti: jti)
+    let raw = try signer(Data(input.utf8))
+    guard raw.count == 64 else { throw DeviceKeyFailure.invalid }
+    let jwt = "\(input).\(DeviceProof.encode(raw))"
+    guard jwt.utf8.count <= maximumJWTLength else { throw DeviceKeyFailure.invalid }
+    return jwt
+  }
+}

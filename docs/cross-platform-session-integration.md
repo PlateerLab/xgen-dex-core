@@ -266,3 +266,47 @@ Mobile 설정 → **기기 보안**에서 로컬 키를 준비한 뒤 **휴대�
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These percentages estimate remaining design work rather than coverage or a delivery schedule. Mobile Settings now connects native enrollment, status reconciliation and an explicitly selected trusted browser through the common protocol. Account lifetime and cancellation boundaries discard stale results; enrollment neither issues a Platform Session nor grants trust automatically. The actual Compose test uses a software fixture key and a Node TLS bridge, so it does not prove physical-device hardware, native OS transport or production UI success. Android disables implicit connection retries; iOS refuses replacement POST streams and app retries, but URLSession does not guarantee exactly-once delivery. The narrow enrollment allowlist does not permit session rotation or Canonical access. Physical-device verification and Mobile session vault/DPoP/subscription wiring remain gates. Workflow SDK/runtime stays on its temporary local overlay without release.
+
+## Mobile 세션 보관·회전 journal과 하드웨어 DPoP (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-session`, 기준 통합 SHA `63b40a5aca4e124119a4cc613c9cd97fef11e312`. 하위 PR137을 통합 브랜치에 반영하며 main 대상 상위 PR90은 Draft로 유지한다. 새로운 환경변수·패키지/앱 배포는 없다.
+
+설정 → **휴대폰 세션**에서 등록·승인된 휴대폰을 현재 계정 비밀번호로 발급한다. 저장 상태 확인은 로컬 조회이며 서버의 현재 trust/sid 유효성 증거가 아니다. 수동 갱신과 비밀번호·기기 키를 사용한 서버 폐기, 경고 후 로컬 기록 삭제를 제공한다. 기존 로그인·채팅 자격증명과 분리했으며 자동 발급/갱신/재시도 및 Canonical watcher는 연결하지 않았다. 비밀번호 입력은 작업 시작·화면 이탈·백그라운드에서 지우고 오류/진단/저장소에 추가하지 않는다. JS 문자열 메모리 삭제를 보장하지 않는다.
+
+### 보관과 중단 복구
+
+- `native-session-vault-expo.ts`: 별도 `xgen-mobile-platform-v1` SecureStore service. iOS는 `WHEN_PASSCODE_SET_THIS_DEVICE_ONLY`, Android는 Expo SecureStore의 Keystore 암호화 저장을 사용한다. 하드웨어 서명 키는 이 저장소에 인코딩하지 않는다. 보관 키는 mobile/HTTPS origin/실제 사용자별 SHA-256이며 legacy SecureStore와 AsyncStorage를 읽거나 대체하지 않는다. 실기기 잠금·복원·OS 저장 장애는 최종 검증 관문이다.
+- 공개 설치 ID/키 thumbprint, mobile slot, device/sid, JWT의 sub/platform/token_use/cnf/expiry를 대조한다. 이는 로컬 구조 검사이며 JWT 서명·현재 신뢰·권한·sid는 서버가 검증한다. 손상·불일치·보안 저장 실패는 자동 삭제·재등록·기존 토큰 복원으로 처리하지 않는다.
+- 같은 앱의 모든 controller가 계정별 공통 JS lock을 사용한다. 발급/갱신/폐기 전 **토큰 없는 journal 저장 → readback → 기존 credential record 삭제·readback**을 완료해야 wire를 시작한다. 완료는 **새 record 저장 → readback → journal 삭제·readback** 순서다. 취소·응답 유실·완료 저장 실패·앱 종료로 journal이 남으면 다음 owner/앱 실행도 옛 토큰이나 미확정 새 토큰을 사용하지 않는다. 보안 저장 오류 시 cached active 화면을 미확인 상태로 지운다. 서버 성공 응답과 새 record 검증·저장·readback 및 현재 권한 확인이 끝난 뒤 **OS journal 삭제 시작을 취소 불가 commit 지점**으로 정의한다. 삭제 중 화면/로그인 수명이 변경되면 옛 owner/UI 결과는 폐기하지만 원래 계정의 검증된 새 record는 다음 명시적 조회에서 복원할 수 있다. 다른 origin/사용자는 별도 vault다. 삭제 성공 후 최종 readback만 실패한 경우에도 같은 정책이며 옛 refresh로 되돌아가지 않는다.
+- `pending_takeover`는 토큰 없이 저장한다. 중단/인계 대기 기록은 PC 내 페이지에서 서버 세션 확인·폐기 후 로컬 삭제로 복구한다. 로컬 삭제는 서버를 호출하지 않고 기기 등록/키를 유지하며, 현재 계정의 키가 없어도 기록 삭제는 가능하다. 계정/서버/같은 계정 재로그인·화면 이탈·백그라운드·timeout 이후 결과는 적용하지 않는다.
+
+### DPoP와 별도 세션 전송
+
+하드웨어 공급자는 현재 account/install/thumbprint를 다시 확인하고 네이티브에서 ES256 `dpop+jwt`를 조립한다. public JWK와 OS UUID jti/현재 iat, 고정 GET 또는 DELETE htm/동일 HTTPS htu, access SHA-256 ath를 포함한다. 임의 원본 바이트/개인키 반환 API는 없다. JS에서도 반환 claims/JWK/hash/시각/서명 크기를 대조한다. Canonical GET 서명 경계는 준비했지만 GET HTTP/watcher는 아직 연결하지 않았다.
+
+enrollment의 `request`는 이전 allowlist를 유지하고, 별도 `sessionRequest`는 native login-key/refresh POST 및 세션 폐기 DELETE만 허용한다. login에는 계정 Bearer, refresh에는 Authorization 없음, DELETE에는 현재 Platform access의 DPoP와 JSON password를 요구한다. OS와 JS에서 origin/path/method/header/body를 확인하며 native 예약 ID·취소·TLS·Cookie/redirect/cache·요청 32 KiB/응답 64 KiB 경계를 공유한다. trailing newline이 regex anchor로 통과하지 않도록 전체 문자열도 검사한다.
+
+서버 소스 `platform_native_login.rs`와 `platform_native_refresh.rs`에서 완료 flow/challenge를 Redis GETDEL로 소비한 뒤 proof/세션 발급·회전을 수행하는 것을 확인했다. DB 회전은 소비된 refresh 재사용을 거절하고 family를 폐기한다. Android는 connection retry를 끄고, iOS는 POST/DELETE one-shot stream과 replacement 거절을 유지한다. **URLSession 내부 재전송을 모두 끄거나 exactly-once 전달을 보장하지 않는다.** 결과 유실 시 journal을 유지하며 동일 completion/옛 refresh를 앱에서 재시도하지 않는다. 서버 DPoP replay 검증도 폐기 요청의 중복 수락을 제한한다.
+
+### 검증과 한계
+
+- Mobile **96/96** 및 typecheck, 계약 검사, strict/bundler Compose opt-in harness 타입 검사 통과. 발급·rotation·takeover 무토큰·DPoP 폐기·복원, 저장/삭제/readback 장애와 미확인 화면, 오래된 token 잔존 시 journal 우선, account/취소/늦은 응답·동시 owner·취소 불가 commit, JWT/key/sid binding과 경로/auth/헤더/크기 경계를 검증한다. 긍정 발급/회전/폐기는 통제된 software-key/HTTP fixture이며 실제 ACTIVE 서버 성공 증거가 아니다.
+- Android production release AAR와 native JUnit **19/19**(device codec4, DPoP2, TLS13), 실제 iPhoneOS SDK/iOS15.1 production typecheck, 새 8인자 Expo session bridge를 포함한 전체 iOS Simulator Debug 앱 빌드 및 iOS/Android Metro 번들 통과. 실제 macOS URLSession TLS fixture는 login Bearer·refresh 무인증·DELETE DPoP/password body, Cookie 미재사용·취소·부적절한 auth/UUID/Canonical 경로 거절과 실제 P-256 DPoP 서명을 확인한다. 테스트 인증서는 verifier에만 주입하며 시스템/production trust를 변경하지 않는다. 최신 PR Head CI도 머지 전 확인한다.
+- 실제 Compose `node --import tsx scripts/native-platform-session-compose.mts --mobile-session`: 임시 계정의 멱등 등록·선택 브라우저 승인·trusted → 생산 Mobile session controller login **503** → token-free `login_pending` → 새 owner의 조회/중복 발급·refresh 차단 → 명시적 로컬 복구를 통과했다. 로컬 삭제 후 trusted 기기는 유지되고 Platform Session 0개이며 임시 계정·기기·요청·DB 이벤트를 정리했다. **메모리 vault·소프트웨어 fixture 키·Node TLS bridge를 사용하므로 Expo SecureStore/물리 하드웨어/생산 Mobile UI의 결합 성공으로 보고하지 않는다.**
+- Compose는 기본 인프라/core/gateway 및 workflow/frontend 프로필, `xgen-local-https`3443, `PLATFORM_SESSION_MODE=enrollment`. `.env` per-service branch와 clean source/실행 container를 대조했다. 모두 `feat/cross-platform-session`: Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`(실제 /app/.git/HEAD/ref와 source bind mount). 서버 코드를 바꾸거나 ACTIVE gate를 우회하지 않았다.
+- Workflow의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`·runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` snapshot mounts/import 경로를 확인했다. 임시 overlay를 유지하고 패키지를 배포하지 않았다. 환경변수 변경이 없어 Infra 참조 문서도 변경하지 않는다.
+- 로그: `/tmp/cross-sync-mobile-session-tests.log`, `-types.log`, `-android-native-final.log`, `-native-transport-final.log`, `-iphoneos.log`, `-ios-build.log`, `-metro.log`, `-compose.log`. Android JUnit XML은 모듈의 `android/build/test-results/testDebugUnitTest/TEST-*.xml`에 있다. CocoaPods 생성물은 검증 산출물이며 커밋에서 제외한다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 5% | Mobile 실기기 보관/서명/UI, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+Percentages estimate remaining design work, not test coverage or delivery dates. Mobile Settings now supports explicit session issuance, local inspection, rotation, password/DPoP server revocation and local recovery through a separate SecureStore vault. A durable token-free journal gates every credential read; new verified records precede journal removal. Existing chat remains unchanged. Dedicated native session transport enforces Bearer-only login, authorization-free refresh and DPoP/password DELETE while sharing reservation/cancellation/TLS boundaries with enrollment. Native DPoP stays within the hardware key provider. URLSession does not guarantee exactly-once delivery; server flow consumption and local interruption markers prevent old credential fallback. Tests/typechecks, Android release AAR/native TLS, iOS full Simulator build/real iPhoneOS SDK, Metro and enrollment-mode Compose rejection/recovery pass. Compose uses memory storage/software key/Node TLS seams, so physical SecureStore/hardware/UI and real ACTIVE/takeover positive verification remain gates. Canonical watcher is next. SDK/runtime continues as an unreleased Workflow source overlay and parent PR90 remains Draft.

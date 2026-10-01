@@ -24,7 +24,7 @@ function fixture() {
 const code = (expected: MobileDeviceKeyError['code']) => (e: unknown) => e instanceof MobileDeviceKeyError && e.code === expected;
 test('mobile signer binds native calls to normalized HTTPS/current user/install/key and exposes only public identity', async () => {
   const f = fixture(); const identity = await f.keys.identity(true);
-  assert.deepEqual(Object.keys(identity).sort(), ['installId', 'publicKey', 'signChallenge', 'storage']);
+  assert.deepEqual(Object.keys(identity).sort(), ['installId', 'publicKey', 'signChallenge', 'signDpop', 'storage']);
   for (const purpose of ['register', 'approval_request', 'login', 'native_refresh'] as const) {
     const proof = await identity.signChallenge(purpose, challenge); const parts = proof.split('.');
     assert.equal(verify('sha256', Buffer.from(parts.slice(0, 2).join('.')), { key: pair.publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(parts[2]!, 'base64url')), true);
@@ -85,4 +85,32 @@ test('invalid purpose/challenge and a pre-aborted operation fail before invoking
   await assert.rejects(identity.signChallenge('unknown' as 'register', challenge), code('invalid'));
   const controller = new AbortController(); controller.abort(); await assert.rejects(identity.signChallenge('register', challenge, controller.signal));
   assert.equal(f.calls.length, 1);
+});
+test('native DPoP binds public hardware identity, method/resource/access hash with a real P-256 signature', async () => {
+  const f = fixture(); const token = 'e30.e30.aaa'; const htu = `${origin}/api/me/platform-sessions/${randomUUID()}`;
+  f.module.signDpop = async (...args) => {
+    f.calls.push(args); const input = `${Buffer.from(JSON.stringify({ typ: 'dpop+jwt', alg: 'ES256', jwk: metadata.publicKey })).toString('base64url')}.${Buffer.from(JSON.stringify({ jti: randomUUID(), htm: args[4], htu: args[5],
+      ath: createHash('sha256').update(args[6]).digest('base64url'), iat: Math.floor(Date.now() / 1000) })).toString('base64url')}`;
+    return `${input}.${sign('sha256', Buffer.from(input), { key: pair.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url')}`;
+  };
+  const identity = await f.keys.identity(); const proof = await identity.signDpop!('DELETE', htu, token); const parts = proof.split('.');
+  assert.equal(verify('sha256', Buffer.from(parts.slice(0, 2).join('.')), { key: pair.publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(parts[2]!, 'base64url')), true);
+  assert.deepEqual(f.calls.at(-1)?.slice(0, 3), [origin, '7', metadata.installId]);
+  for (const [method, uri, access] of [['POST', htu, token], ['DELETE', `${htu}?a=1`, token], ['DELETE', htu.replace(origin, 'https://other.test'), token],
+    ['DELETE', `${origin}/api/me/devices/${randomUUID()}`, token], ['GET', `${origin}/api/auth/platform-devices/trust-overview`, token], ['DELETE', htu, 'Bearer secret']] as const) {
+    await assert.rejects(identity.signDpop!(method as 'DELETE', uri, access));
+  }
+  assert.equal(f.calls.length, 2); f.change({ origin, userId: '7', authScope: 'new-login' }); await assert.rejects(identity.signDpop!('DELETE', htu, token), code('account_changed'));
+});
+test('DPoP cannot emit mismatched hash/JWK/claims or a stale native result', async () => {
+  const f = fixture(); const token = 'e30.e30.aaa'; const htu = `${origin}/api/me/platform-sessions/${randomUUID()}`;
+  const claims = { jti: randomUUID(), htm: 'DELETE', htu, ath: createHash('sha256').update(token).digest('base64url'), iat: Math.floor(Date.now() / 1000) };
+  const build = (header: object, c: object) => `${Buffer.from(JSON.stringify(header)).toString('base64url')}.${Buffer.from(JSON.stringify(c)).toString('base64url')}.${Buffer.alloc(64, 3).toString('base64url')}`;
+  const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: metadata.publicKey }; const identity = await f.keys.identity();
+  for (const proof of [build(header, { ...claims, ath: challenge }), build(header, { ...claims, htm: 'GET' }), build(header, { ...claims, jti: 'bad' }),
+    build(header, { ...claims, iat: 0 }), build({ ...header, jwk: { ...metadata.publicKey, d: 'private' } }, claims), build(header, { ...claims, token: 'secret' })]) {
+    f.module.signDpop = async () => proof; await assert.rejects(identity.signDpop!('DELETE', htu, token), code('invalid'));
+  }
+  let done!: (v: unknown) => void; f.module.signDpop = () => new Promise((r) => { done = r; }); const pending = identity.signDpop!('DELETE', htu, token);
+  f.change(null); done(build(header, claims)); await assert.rejects(pending, code('account_changed'));
 });

@@ -28,9 +28,11 @@ final class NativeEnrollmentTransport {
   private static let maximumTrackedRequests = 1_024
   private static let reservationTTL: TimeInterval = 60
   private static let accessTokenPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9._~-]{1,8192}$")
+  private static let dpopPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$")
   private static let statusPath = try! NSRegularExpression(pattern: "^/api/auth/platform-devices/native/mobile/registration/status/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
   private static let approvalBeginPath = try! NSRegularExpression(pattern: "^/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests/begin$")
   private static let approvalPath = try! NSRegularExpression(pattern: "^/api/me/devices/native/mobile/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/approval-requests$")
+  private static let sessionPath = try! NSRegularExpression(pattern: "^/api/me/platform-sessions/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
   private let lock = NSLock()
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
@@ -74,7 +76,8 @@ final class NativeEnrollmentTransport {
   }
 
   private static func matches(_ expression: NSRegularExpression, _ value: String) -> Bool {
-    expression.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil
+    let fullRange = NSRange(value.startIndex..., in: value)
+    return expression.firstMatch(in: value, range: fullRange)?.range == fullRange
   }
 
   private static func allowed(_ method: String, _ path: String) -> Bool {
@@ -118,10 +121,61 @@ final class NativeEnrollmentTransport {
     return request
   }
 
+  private static func setJSONBody(_ body: String?, on request: inout URLRequest) throws {
+    guard let body, let data = body.data(using: .utf8), data.count <= maximumRequestBodyBytes,
+      StrictJSONObject.isValid(body) else { throw MobileTransportFailure.invalid }
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBodyStream = InputStream(data: data)
+  }
+
+  private static func buildSessionRequest(origin: String, path: String, method: String, authorization: String?, dpop: String?, body: String?) throws -> URLRequest {
+    guard let components = URLComponents(string: origin), components.scheme == "https", components.host != nil,
+      components.user == nil, components.password == nil, components.path.isEmpty, components.query == nil,
+      components.fragment == nil, components.url?.absoluteString == origin,
+      !path.contains("%"), !path.contains("?"), !path.contains("#"), !path.contains("\\"),
+      let url = URL(string: origin + path), url.absoluteString == origin + path else { throw MobileTransportFailure.invalid }
+
+    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+    request.httpMethod = method
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    switch (method, path) {
+    case ("POST", "/api/auth/platform-sessions/native/login-key/begin"),
+      ("POST", "/api/auth/platform-sessions/native/login-key/complete"):
+      guard let authorization, authorization.hasPrefix("Bearer "),
+        matches(accessTokenPattern, String(authorization.dropFirst(7))), dpop == nil else { throw MobileTransportFailure.invalid }
+      request.setValue(authorization, forHTTPHeaderField: "Authorization")
+      try setJSONBody(body, on: &request)
+    case ("POST", "/api/auth/platform-sessions/native/refresh/begin"),
+      ("POST", "/api/auth/platform-sessions/native/refresh/complete"):
+      guard authorization == nil, dpop == nil else { throw MobileTransportFailure.invalid }
+      try setJSONBody(body, on: &request)
+    case ("DELETE", _):
+      guard matches(sessionPath, path), let authorization, authorization.hasPrefix("DPoP "),
+        authorization.dropFirst(5).utf8.count <= 8_192, matches(dpopPattern, String(authorization.dropFirst(5))), let dpop,
+        dpop.utf8.count <= 8_192, matches(dpopPattern, dpop) else { throw MobileTransportFailure.invalid }
+      request.setValue(authorization, forHTTPHeaderField: "Authorization")
+      request.setValue(dpop, forHTTPHeaderField: "DPoP")
+      try setJSONBody(body, on: &request)
+    default:
+      throw MobileTransportFailure.invalid
+    }
+    return request
+  }
+
   func request(requestId: String, origin: String, path: String, method: String, accessToken: String, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     // Validate the complete request before a URLSession or URLSessionTask is created.
     let request = try Self.buildRequest(origin: origin, path: path, method: method, accessToken: accessToken, body: body)
+    try execute(requestId: requestId, request: request, completion: completion)
+  }
+
+  func sessionRequest(requestId: String, origin: String, path: String, method: String, authorization: String?, dpop: String?, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
+    guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
+    let request = try Self.buildSessionRequest(origin: origin, path: path, method: method, authorization: authorization, dpop: dpop, body: body)
+    try execute(requestId: requestId, request: request, completion: completion)
+  }
+
+  private func execute(requestId: String, request: URLRequest, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     let handler: (Result<MobileTransportResponse, MobileTransportFailure>) -> Void = { [weak self] result in
       if let self {
         self.lock.lock()

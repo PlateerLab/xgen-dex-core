@@ -26,15 +26,33 @@ public final class XgenNativeDeviceModule: Module {
       }
       catch { throw Exception(name: "MobileTransport", description: "Mobile transport unavailable", code: "mobile_transport_unavailable") }
     }
+    Function("newGeneration") { UUID().uuidString.lowercased() }
     AsyncFunction("prepare") { (origin: String, userId: String, create: Bool) in
       try self.safe { try self.keys.prepare(origin, userId, create) }
     }
     AsyncFunction("signChallenge") { (origin: String, userId: String, installId: String, thumbprint: String, purpose: String, challenge: String) in
       try self.safe { try self.keys.sign(origin, userId, installId, thumbprint, purpose, challenge) }
     }
+    AsyncFunction("signDpop") { (origin: String, userId: String, installId: String, thumbprint: String, method: String, htu: String, accessToken: String) in
+      try self.safe { try self.keys.signDpop(origin, userId, installId, thumbprint, method, htu, accessToken) }
+    }
     AsyncFunction("request") { (requestId: String, origin: String, path: String, method: String, accessToken: String, body: String?, promise: Promise) in
       do {
         try self.transport.request(requestId: requestId, origin: origin, path: path, method: method, accessToken: accessToken, body: body) { result in
+          switch result {
+          case .success(let response): promise.resolve(["status": response.status, "body": response.body])
+          case .failure(let error): promise.reject(error.code, "Mobile transport unavailable")
+          }
+        }
+      } catch let error as MobileTransportFailure {
+        promise.reject(error.code, "Mobile transport unavailable")
+      } catch {
+        promise.reject("mobile_transport_unavailable", "Mobile transport unavailable")
+      }
+    }
+    AsyncFunction("sessionRequest") { (requestId: String, origin: String, path: String, method: String, authorization: String?, dpop: String?, body: String?, promise: Promise) in
+      do {
+        try self.transport.sessionRequest(requestId: requestId, origin: origin, path: path, method: method, authorization: authorization, dpop: dpop, body: body) { result in
           switch result {
           case .success(let response): promise.resolve(["status": response.status, "body": response.body])
           case .failure(let error): promise.reject(error.code, "Mobile transport unavailable")

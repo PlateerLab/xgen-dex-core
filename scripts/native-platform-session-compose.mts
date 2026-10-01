@@ -14,6 +14,10 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 import type { NativeRpcResult } from '../packages/rpc/src/wire';
 import { createMobileEnrollment } from '../apps/mobile/src/lib/native-device-enrollment';
 import { createMobileEnrollmentFetch } from '../apps/mobile/src/lib/native-enrollment-http';
+import { createMobilePlatformSession } from '../apps/mobile/src/lib/native-platform-session';
+import { createMobileSessionFetch } from '../apps/mobile/src/lib/native-session-http';
+import { createMobileSessionVault } from '../apps/mobile/src/lib/native-session-vault';
+import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
 
 const origin = 'https://localhost:3443';
 const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
@@ -64,7 +68,8 @@ const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
-const testMobileController = process.argv.includes('--mobile-controller');
+const testMobileSession = process.argv.includes('--mobile-session');
+const testMobileController = process.argv.includes('--mobile-controller') || testMobileSession;
 const platforms = testMobileController ? ['mobile'] as const : ['desktop', 'mobile', 'cli', 'vscode'] as const;
 const desktopElectron: string | null = testDesktop ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
 const cliDirectory = testCli || testVscode || testDesktop ? mkdtempSync(join(tmpdir(), 'dex-native-compose-')) : null;
@@ -170,11 +175,10 @@ try {
         signChallenge: createNativeDeviceSigner(device.pair.privateKey, subtle) } });
     // This is a software test key and Node TLS bridge, not a physical Mobile hardware/OS test.
     const activeHttp = new Map<string, AbortController>();
-    const enrollment = testMobileController ? createMobileEnrollment({
-      current: () => ({ origin, userId: String(userId), authScope: tag, accessToken: accessToken! }),
-      keys: { identity: async () => ({ installId, publicKey: device.publicKey, storage: 'android-tee',
-        signChallenge: createNativeDeviceSigner(device.pair.privateKey, subtle) }) },
-      fetch: createMobileEnrollmentFetch({ newRequestId: randomUUID,
+    const mobileCurrent = () => ({ origin, userId: String(userId), authScope: tag, accessToken: accessToken! });
+    const mobileKeys = { identity: async () => ({ installId, publicKey: device.publicKey, storage: 'android-tee' as const,
+      signChallenge: createNativeDeviceSigner(device.pair.privateKey, subtle), signDpop: createNativeDpopSigner(device.pair.privateKey, device.publicKey, origin) }) };
+    const mobileEnrollmentFetch = testMobileController ? createMobileEnrollmentFetch({ newRequestId: randomUUID,
         async request(id, requestedOrigin, path, method, token, body) {
           assert.equal(requestedOrigin, origin); const controller = new AbortController(); activeHttp.set(id, controller);
           try {
@@ -185,8 +189,8 @@ try {
           } finally { activeHttp.delete(id); }
         },
         cancelRequest(id) { activeHttp.get(id)?.abort(); },
-      }, origin),
-    }) : null;
+      }, origin) : null;
+    const enrollment = mobileEnrollmentFetch ? createMobileEnrollment({ current: mobileCurrent, keys: mobileKeys, fetch: mobileEnrollmentFetch }) : null;
     assert.equal(await client.registrationStatus(), null);
     const pending = enrollment ? (await enrollment.register('Disposable Mobile')).registration! : await client.register(`Disposable ${platform}`);
     assert.equal(pending.state, 'pending');
@@ -214,6 +218,37 @@ try {
       assert.equal(sql(`SELECT COUNT(*) FROM device_approval_requests WHERE user_id=${userId} AND target_platform_type='mobile';`), '1');
       assert.equal(JSON.stringify(state).includes(accessToken!), false); assert.equal(activeHttp.size, 0); enrollment.dispose();
       console.log('Mobile production controller + JS native adapter: selected browser / idempotent registration / trusted reconciliation PASS (software fixture key, Node TLS bridge)');
+    }
+    if (testMobileSession) {
+      // Memory storage is a test seam, NOT the real Expo SecureStore or native hardware/OS transport.
+      const records = new Map<string, string>(); let calls = 0;
+      const vault = createMobileSessionVault({ getItemAsync: async (k) => records.get(k) ?? null,
+        setItemAsync: async (k, v) => { records.set(k, v); }, deleteItemAsync: async (k) => { records.delete(k); } });
+      const sessionFetch = createMobileSessionFetch({ newRequestId: randomUUID,
+        async sessionRequest(id, selected, path, method, authorization, dpop, body) {
+          calls++; assert.equal(selected, origin); const controller = new AbortController(); activeHttp.set(id, controller);
+          try {
+            const response = await fetchImpl(`${origin}${path}`, { method, headers: { Accept: 'application/json', 'Content-Type': 'application/json',
+              ...(authorization === null ? {} : { Authorization: authorization }), ...(dpop === null ? {} : { DPoP: dpop }) },
+              body: body ?? undefined, credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal });
+            return { status: response.status, body: await response.text() };
+          } finally { activeHttp.delete(id); }
+        }, cancelRequest(id) { activeHttp.get(id)?.abort(); },
+      }, origin);
+      const make = () => createMobilePlatformSession({ current: mobileCurrent, keys: mobileKeys, vault, generation: randomUUID,
+        enrollmentFetch: mobileEnrollmentFetch!, sessionFetch });
+      const session = make(); assert.equal((await session.inspect()).state, 'signed_out');
+      // Mobile's CJS and this ESM harness can load distinct protocol class instances.
+      await assert.rejects(session.login(password), (e: unknown) => e instanceof Error && 'status' in e && e.status === 503);
+      assert.equal(calls, 1); assert.equal(session.snapshot().state, 'login_pending'); assert.equal(records.size, 1);
+      const retained = JSON.parse([...records.values()][0]!); assert.equal(retained.phase, 'login_pending');
+      for (const secret of [password, accessToken!]) assert.equal([...records.values()].join('').includes(secret), false);
+      assert.equal(retained.refreshToken, null); assert.equal(retained.accessToken, null); session.dispose();
+      const restored = make(); assert.equal((await restored.inspect()).state, 'login_pending');
+      await assert.rejects(restored.refresh()); await assert.rejects(restored.login(password)); assert.equal(calls, 1);
+      assert.equal((await restored.forgetLocal()).state, 'signed_out'); assert.equal(records.size, 0); assert.equal(calls, 1);
+      assert.equal((await client.registrationStatus())?.state, 'trusted'); restored.dispose(); assert.equal(activeHttp.size, 0);
+      console.log('Mobile production session controller/vault + JS session transport: ACTIVE 503, durable token-free login_pending, owner restart, reuse blocked, explicit local recovery PASS (memory vault/software key/Node TLS test seams)');
     }
     // Production parser intentionally keeps active closed. Do not change modes to make this test pass.
     await assert.rejects(client.login(pending.device_id, password), (error: unknown) => error instanceof NativePlatformHttpError && error.status === 503);

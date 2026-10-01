@@ -12,7 +12,7 @@ const origin = 'https://app.example.test'; const user = '7';
 const device = '018f1240-0000-7000-8000-000000000001'; const sid = '018f1240-0000-7000-8000-000000000002';
 const agentSid = '018f1240-0000-7000-8000-000000000003'; const turn = '018f1240-0000-7000-8000-000000000004';
 const challenge = Buffer.alloc(32, 5).toString('base64url'); const account = 'e30.e30.c2ln';
-async function fixture(enabled = true) {
+async function fixture(enabled = true, expectedUserId?: string) {
   const directory = await mkdtemp(join(tmpdir(), 'dex-native-rpc-')); const values = new Map<string, string>();
   const keys = new NativeDeviceKeyStore({ lockDirectory: directory, env: {}, keychain: async () => ({
     getPassword: async (s, n) => values.get(`${s}:${n}`) ?? null, setPassword: async (s, n, v) => { values.set(`${s}:${n}`, v); }, deletePassword: async (s, n) => values.delete(`${s}:${n}`),
@@ -58,7 +58,7 @@ async function fixture(enabled = true) {
         let closed = false;
         return { get closed() { return closed; }, next: () => new Promise(() => {}), close: async () => { closed = true; } };
       } };
-    } } } : {}) }); rpc.start();
+    }, ...(expectedUserId === undefined ? {} : { expectedUserId }) } } : {}) }); rpc.start();
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<any>((resolve, reject) => {
     const current = ++id; const timer = setTimeout(() => reject(new Error('RPC fixture deadline')), 3000);
     pending.set(current, (m) => { clearTimeout(timer); resolve(m); }); input.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
@@ -82,6 +82,7 @@ test('RPC capability is opt-in and platform override/secret flags are rejected b
     assert.equal((await f.send('native/session', { action: 'status', user_id: user })).error.code, -32002);
     const capability = (await initialize(f)).result.capabilities.nativePlatformSession;
     assert.equal(capability.platform, 'vscode'); assert.equal(capability.canonicalConversation, true); assert.equal(capability.canonicalLive, true);
+    assert.equal(capability.canonicalTurns, true);
     for (const params of [{ action: 'status', user_id: user, platform: 'cli' }, { action: 'login', email: 'a', password: 'p', access_token: account }]) {
       assert.equal((await f.send('native/session', params)).error.data.code, 'usage_error');
     }
@@ -198,5 +199,100 @@ test('native cancellation/close abort writes, preserve journals and never return
     const count = f.calls.length; assert.ok((await f.send('native/watch', { user_id: user })).error);
     assert.equal(f.calls.length, count); assert.equal((await f.send('native/session', { action: 'forget-local', user_id: user })).result.server_revoked, false);
     await f.send('shutdown'); assert.equal(f.messages.some((m) => m.params?.update?.type === 'focus'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('Canonical turn RPC methods pass flat named bodies and return safe scoped acknowledgements', async () => {
+  const f = await fixture(); const longInput = 'h'.repeat(1025);
+  try {
+    await initialize(f); await login(f);
+    f.custom((path) => {
+      if (path.endsWith('/turns')) return Response.json({ turn_id: turn, status: 'accepted', accepted_sequence: 3,
+        state_version: 2, replayed: false, private_server_field: 'private-server-secret' }, { status: 202 });
+      if (path.endsWith('/stop')) return Response.json({ turn_id: turn, state_version: 2, requested: true,
+        private_server_field: 'private-server-secret' }, { status: 202 });
+      return undefined;
+    });
+    const submitted = await f.send('native/submit-turn', { profile: 'corp', user_id: user, agent_session_id: agentSid,
+      input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1' });
+    assert.equal(submitted.error, undefined); assert.equal(submitted.result.platform_type, 'vscode');
+    assert.equal(submitted.result.profile, 'corp'); assert.equal(submitted.result.server_url, origin);
+    assert.equal(submitted.result.user_id, user); assert.equal(submitted.result.agent_session_id, agentSid);
+    assert.deepEqual(submitted.result.mutation, { turn_id: turn, status: 'accepted', accepted_sequence: 3, state_version: 2, replayed: false });
+
+    const stopped = await f.send('native/stop-turn', { profile: 'corp', user_id: user, agent_session_id: agentSid,
+      turn_id: turn, expected_state_version: 2 });
+    assert.equal(stopped.error, undefined); assert.equal(stopped.result.platform_type, 'vscode');
+    assert.equal(stopped.result.profile, 'corp'); assert.equal(stopped.result.server_url, origin);
+    assert.equal(stopped.result.user_id, user); assert.equal(stopped.result.agent_session_id, agentSid);
+    assert.deepEqual(stopped.result.mutation, { turn_id: turn, state_version: 2, requested: true });
+
+    const writes = f.calls.filter(({ path, init }) => init.method === 'POST' && (path.endsWith('/turns') || path.endsWith('/stop')));
+    assert.equal(writes.length, 2); assert.deepEqual(writes.map(({ path }) => path), [
+      `/api/agentflow/agent-sessions/${agentSid}/turns`, `/api/agentflow/agent-sessions/${agentSid}/stop`,
+    ]);
+    assert.deepEqual(writes.map(({ init }) => JSON.parse(String(init.body))), [
+      { input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1' },
+      { turn_id: turn, expected_state_version: 2 },
+    ]);
+    for (const write of writes) {
+      const headers = new Headers(write.init.headers);
+      assert.equal(headers.get('authorization')?.startsWith('DPoP '), true); assert.ok(headers.get('dpop'));
+      assert.equal(headers.has('cookie'), false); assert.equal(headers.has('origin'), false);
+    }
+    assert.equal(JSON.stringify([submitted, stopped, f.logs]).includes('private-server-secret'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('Canonical turn RPC validation, unknown fields and host account binding fail before HTTP', async () => {
+  const f = await fixture();
+  try {
+    await initialize(f);
+    const invalid: Array<[string, Record<string, unknown>]> = [
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: '', expected_state_version: 1, idempotency_key: 'request' }],
+      ['native/submit-turn', { user_id: user, agent_session_id: 'not-a-session', input_text: 'x', expected_state_version: 1, idempotency_key: 'request' }],
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 0, idempotency_key: 'request' }],
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: '', private_token: 'private-secret' }],
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: 'request', origin_id: '' }],
+      ['native/stop-turn', { user_id: user, agent_session_id: agentSid, turn_id: 'not-a-turn', expected_state_version: 1 }],
+      ['native/stop-turn', { user_id: user, agent_session_id: agentSid, turn_id: turn, expected_state_version: 0 }],
+      ['native/stop-turn', { user_id: user, agent_session_id: agentSid, turn_id: turn, expected_state_version: 1, password: 'private-secret' }],
+      ['native/unknown-turn', { user_id: user }],
+    ];
+    for (const [method, params] of invalid) {
+      const response = await f.send(method, params);
+      assert.equal(response.error.data.code, 'usage_error', method);
+      assert.equal(JSON.stringify(response).includes('private-secret'), false);
+    }
+    assert.equal(f.calls.length, 0);
+  } finally { await f.cleanup(); }
+
+  const bound = await fixture(true, '8');
+  try {
+    await initialize(bound);
+    const response = await bound.send('native/submit-turn', { user_id: user, agent_session_id: agentSid,
+      input_text: 'hello', expected_state_version: 1, idempotency_key: 'request' });
+    assert.equal(response.error.data.code, 'auth_required'); assert.equal(bound.calls.length, 0);
+  } finally { await bound.cleanup(); }
+});
+
+test('RPC cancel after turn dispatch reports an unknown outcome and never emits a late success or private input', async () => {
+  const f = await fixture(); let started!: (signal: AbortSignal) => void;
+  const entered = new Promise<AbortSignal>((resolve) => { started = resolve; });
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => path.endsWith('/turns') ? new Promise((_resolve, reject) => {
+      started(init.signal!); init.signal!.addEventListener('abort', () => reject(new Error('private-server-secret')), { once: true });
+    }) : undefined);
+    const mutation = f.send('native/submit-turn', { user_id: user, agent_session_id: agentSid,
+      input_text: 'private-user-input', expected_state_version: 1, idempotency_key: 'rpc-request-1' });
+    const signal = await entered; await f.send('native/cancel'); assert.equal(signal.aborted, true);
+    const response = await mutation;
+    assert.equal(response.error.data.code, 'network_error');
+    assert.deepEqual(response.error.data.details, { outcome: 'unknown', agent_session_id: agentSid,
+      idempotency_key: 'rpc-request-1', expected_state_version: 1 });
+    assert.equal(f.calls.filter(({ path }) => path.endsWith('/turns')).length, 1);
+    assert.equal(JSON.stringify([response, f.messages, f.logs]).includes('private-user-input'), false);
+    assert.equal(JSON.stringify([response, f.messages, f.logs]).includes('private-server-secret'), false);
   } finally { await f.cleanup(); }
 });

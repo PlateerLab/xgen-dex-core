@@ -742,3 +742,190 @@ test('manual conversation read performs at most ten bounded steps and reports an
     assert.equal(reads, 20); assert.equal(result.has_more, true); assert.equal(result.conversation.messages.length, 20);
   } finally { await f.cleanup(); }
 });
+
+test('Canonical turn mutations use one fresh POST proof per call and return only validated acknowledgements', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    f.custom((path) => {
+      if (path.endsWith('/turns')) return Response.json({ turn_id: TURN1, status: 'accepted', accepted_sequence: 3,
+        state_version: 2, replayed: false, private_server_field: 'private-server-secret' }, { status: 202 });
+      if (path.endsWith('/stop')) return Response.json({ turn_id: TURN1, state_version: 2, requested: true,
+        private_server_field: 'private-server-secret' }, { status: 202 });
+      return undefined;
+    });
+    const submitted = await session.submitTurn('7', SID, { input_text: 'hello', expected_state_version: 1,
+      idempotency_key: 'request-1', origin_id: 'vscode-1' });
+    const stopped = await session.stopTurn('7', SID, { turn_id: TURN1, expected_state_version: 2 });
+    assert.deepEqual(submitted, { turn_id: TURN1, status: 'accepted', accepted_sequence: 3, state_version: 2, replayed: false });
+    assert.deepEqual(stopped, { turn_id: TURN1, state_version: 2, requested: true });
+    assert.equal(JSON.stringify([submitted, stopped]).includes('private-server-secret'), false);
+
+    const writes = f.calls.filter(({ path, init }) => init.method === 'POST' && (path.endsWith('/turns') || path.endsWith('/stop')));
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes.map(({ path }) => path), [
+      `/api/agentflow/agent-sessions/${SID}/turns`, `/api/agentflow/agent-sessions/${SID}/stop`,
+    ]);
+    assert.deepEqual(writes.map(({ body }) => body), [
+      { input_text: 'hello', expected_state_version: 1, idempotency_key: 'request-1', origin_id: 'vscode-1' },
+      { turn_id: TURN1, expected_state_version: 2 },
+    ]);
+    const proofs = writes.map(({ init }) => (init.headers as Record<string, string>).DPoP);
+    const claims = proofs.map((proof) => JSON.parse(Buffer.from(proof.split('.')[1]!, 'base64url').toString()));
+    assert.deepEqual(claims.map(({ htm }) => htm), ['POST', 'POST']);
+    assert.deepEqual(claims.map(({ htu }) => htu), writes.map(({ url }) => url.toString()));
+    assert.deepEqual(claims.map(({ ath }) => ath), [0, 1].map(() => createHash('sha256').update(f.stored()!.accessToken!).digest('base64url')));
+    assert.notEqual(claims[0].jti, claims[1].jti);
+    const subtle = webcrypto.subtle as unknown as SubtleCrypto;
+    const publicKey = await subtle.importKey('jwk', f.identity.publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    for (const proof of proofs) {
+      const [header, payload, signature] = proof.split('.');
+      assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, publicKey, Buffer.from(signature!, 'base64url'),
+        Buffer.from(`${header}.${payload}`)), true);
+    }
+    for (const write of writes) {
+      const headers = new Headers(write.init.headers);
+      const names: string[] = []; headers.forEach((_value, name) => names.push(name));
+      assert.deepEqual(names.sort(), ['accept', 'authorization', 'content-type', 'dpop']);
+      assert.equal(headers.has('cookie'), false); assert.equal(headers.has('origin'), false);
+      assert.equal(write.init.credentials, 'omit'); assert.equal(write.init.redirect, 'error'); assert.equal(write.init.cache, 'no-store');
+    }
+    await session.withProofSource('7', async (proof) => {
+      const token = (await proof.accessToken())!;
+      await assert.rejects(proof.signProof('POST' as 'GET', `${ORIGIN}/api/agentflow/agent-sessions/${SID}/turns`, token),
+        (error: unknown) => error instanceof DexError && error.code === 'usage_error');
+    });
+  } finally { await f.cleanup(); }
+});
+
+test('turn mutation inputs are copied and validated before vault or network access', async () => {
+  const f = await fixture();
+  try {
+    const invalid: Array<() => Promise<unknown>> = [
+      () => f.client().submitTurn('7', SID, { input_text: '', expected_state_version: 1, idempotency_key: 'request-1' }),
+      () => f.client().submitTurn('7', SID, { input_text: 'x', expected_state_version: 0, idempotency_key: 'request-1' }),
+      () => f.client().submitTurn('7', SID, { input_text: 'x', expected_state_version: 1, idempotency_key: '' }),
+      () => f.client().submitTurn('7', SID, { input_text: 'x', expected_state_version: 1, idempotency_key: 'request-1', origin_id: '' }),
+      () => f.client().submitTurn('7', 'not-a-session', { input_text: 'x', expected_state_version: 1, idempotency_key: 'request-1' }),
+      () => f.client().stopTurn('7', SID, { turn_id: 'not-a-turn', expected_state_version: 1 }),
+      () => f.client().stopTurn('7', SID, { turn_id: TURN1, expected_state_version: 0 }),
+      () => f.client().submitTurn('7', SID, { input_text: 'x', expected_state_version: 1, idempotency_key: 'request-1', private: true } as any),
+    ];
+    f.keychain.getPassword = async () => { throw new Error('private-vault-secret'); };
+    for (const operation of invalid) await assert.rejects(operation(), (error: unknown) => error instanceof DexError && error.code === 'usage_error');
+    assert.equal(f.calls.length, 0);
+
+    const g = await fixture();
+    try {
+      const session = g.client(); await session.login('a', 'p');
+      let entered!: () => void; let release!: () => void;
+      const reading = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const getPassword = g.keychain.getPassword;
+      g.keychain.getPassword = async (...args) => { entered(); await gate; return getPassword(...args); };
+      const input = { input_text: 'original', expected_state_version: 1, idempotency_key: 'request-original', origin_id: 'origin-original' };
+      g.custom((path) => path.endsWith('/turns') ? Response.json({ turn_id: TURN1, status: 'accepted', accepted_sequence: 1,
+        state_version: 2, replayed: false }, { status: 202 }) : undefined);
+      const pending = session.submitTurn('7', SID, input);
+      await reading;
+      input.input_text = 'mutated-private'; input.expected_state_version = 9; input.idempotency_key = 'mutated'; input.origin_id = 'mutated';
+      release(); await pending;
+      const write = g.calls.find(({ path }) => path.endsWith('/turns'))!;
+      assert.deepEqual(write.body, { input_text: 'original', expected_state_version: 1,
+        idempotency_key: 'request-original', origin_id: 'origin-original' });
+    } finally { await g.cleanup(); }
+  } finally { await f.cleanup(); }
+});
+
+test('turn mutations recheck account and vault state before dispatch and never refresh or retry', async () => {
+  const preAborted = await fixture();
+  try {
+    const controller = new AbortController(); controller.abort(); const before = preAborted.calls.length;
+    await assert.rejects(preAborted.client().submitTurn('7', SID, { input_text: 'hello', expected_state_version: 1,
+      idempotency_key: 'request-1' }, controller.signal), (error: unknown) => error instanceof Error && error.name === 'AbortError');
+    assert.equal(preAborted.calls.length, before);
+  } finally { await preAborted.cleanup(); }
+  for (const state of ['refreshing', 'expired'] as const) {
+    const f = await fixture();
+    try {
+      const session = f.client(); await session.login('a', 'p');
+      await f.keys().withSession(scope, async (_identity, _sign, vault) => {
+        const record = (await vault.read())!;
+        if (state === 'refreshing') await vault.write({ ...record, phase: 'refreshing', generation: FLOW,
+          refreshToken: null, accessToken: null, accessExpiresAt: null });
+        else {
+          const expired = f.access({ exp: Math.floor(Date.now() / 1000) - 10 });
+          await vault.write({ ...record, accessToken: expired.access_token, accessExpiresAt: expired.access_expires_at });
+        }
+      });
+      const before = f.calls.length;
+      await assert.rejects(session.submitTurn('7', SID, { input_text: 'hello', expected_state_version: 1, idempotency_key: 'request-1' }),
+        (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+      assert.equal(f.calls.length, before, state);
+    } finally { await f.cleanup(); }
+  }
+  const f = await fixture('desktop');
+  try {
+    const session = new NativeHostSession(ORIGIN, 'desktop', f.keys(), (async () => assert.fail()) as typeof fetch, '8');
+    await assert.rejects(session.submitTurn('7', SID, { input_text: 'hello', expected_state_version: 1, idempotency_key: 'request-1' }),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    assert.equal(f.calls.length, 0);
+  } finally { await f.cleanup(); }
+});
+
+test('turn mutations classify authoritative rejection and all post-dispatch uncertainty without leaking input or server data', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    const submit = { input_text: 'private-user-input', expected_state_version: 1, idempotency_key: 'request-1' };
+    for (const status of [401, 403]) {
+      f.custom((path) => path.endsWith('/turns') ? new Response('private-server-secret', { status }) : undefined);
+      await assert.rejects(session.submitTurn('7', SID, submit), (error: unknown) => error instanceof DexError
+        && error.code === 'auth_required' && !JSON.stringify(error).includes('private'));
+    }
+    f.custom((path) => path.endsWith('/turns') ? Response.json({ detail: { code: 'TURN_IN_PROGRESS', current_state_version: 7,
+      current_turn_id: TURN2, private: 'private-server-secret' } }, { status: 409 }) : undefined);
+    await assert.rejects(session.submitTurn('7', SID, submit), (error: unknown) => error instanceof DexError && error.code === 'usage_error'
+      && JSON.stringify(error.details) === JSON.stringify({ outcome: 'rejected', status: 409, agent_session_id: SID,
+        expected_state_version: 1, idempotency_key: 'request-1',
+        conflict: { code: 'TURN_IN_PROGRESS', current_state_version: 7, current_turn_id: TURN2 } })
+      && !JSON.stringify(error).includes('private'));
+    for (const status of [400, 422]) {
+      f.custom((path) => path.endsWith('/turns') ? new Response('private-server-secret', { status }) : undefined);
+      await assert.rejects(session.submitTurn('7', SID, submit), (error: unknown) => error instanceof DexError
+        && error.code === 'usage_error' && !JSON.stringify(error).includes('private'));
+    }
+
+    const unknown = { outcome: 'unknown', agent_session_id: SID, idempotency_key: 'request-1', expected_state_version: 1 };
+    const failures: Array<(path: string, init: RequestInit) => Response | Promise<Response> | undefined> = [
+      (path) => path.endsWith('/turns') ? Promise.reject(new Error('private-transport-secret')) : undefined,
+      (path) => path.endsWith('/turns') ? new Response('private-server-secret', { status: 500 }) : undefined,
+      (path) => path.endsWith('/turns') ? new Response('{', { status: 202 }) : undefined,
+      (path) => path.endsWith('/turns') ? Response.json({ turn_id: 'not-a-turn', status: 'accepted', accepted_sequence: 1,
+        state_version: 2, replayed: false }, { status: 202 }) : undefined,
+      (path) => path.endsWith('/turns') ? Response.json({ turn_id: TURN1, status: 'accepted', accepted_sequence: 1,
+        state_version: 99, replayed: false }, { status: 202 }) : undefined,
+    ];
+    for (const failure of failures) {
+      const before = f.calls.filter(({ path }) => path.endsWith('/turns')).length; f.custom(failure);
+      await assert.rejects(session.submitTurn('7', SID, submit), (error: unknown) => {
+        if (!(error instanceof DexError) || error.code !== 'network_error' || JSON.stringify(error).includes('private')) return false;
+        assert.deepEqual(error.details, unknown); return true;
+      });
+      assert.equal(f.calls.filter(({ path }) => path.endsWith('/turns')).length, before + 1);
+    }
+
+    let started!: (signal: AbortSignal) => void; const entered = new Promise<AbortSignal>((resolve) => { started = resolve; });
+    f.custom((path, init) => path.endsWith('/stop') ? new Promise((_resolve, reject) => {
+      started(init.signal!); init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    }) : undefined);
+    const controller = new AbortController();
+    const stopping = session.stopTurn('7', SID, { turn_id: TURN1, expected_state_version: 2 }, controller.signal);
+    await entered; controller.abort();
+    await assert.rejects(stopping, (error: unknown) => {
+      if (!(error instanceof DexError) || error.code !== 'network_error') return false;
+      assert.deepEqual(error.details, { outcome: 'unknown', agent_session_id: SID, expected_state_version: 2, turn_id: TURN1 }); return true;
+    });
+    assert.equal(f.calls.filter(({ path }) => path.endsWith('/stop')).length, 1);
+  } finally { await f.cleanup(); }
+});

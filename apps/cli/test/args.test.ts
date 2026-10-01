@@ -10,12 +10,14 @@ test('CLI arguments support commands, values, equals, and boolean flags', () => 
     'corp',
     '--page=2',
     '--check',
+    '--canonical',
     '--json',
   ]);
   assert.deepEqual(args.positionals, ['agents', 'list']);
   assert.equal(option(args, 'profile'), 'corp');
   assert.equal(positiveIntegerOption(args, 'page'), 2);
   assert.equal(flag(args, 'check'), true);
+  assert.equal(flag(args, 'canonical'), true);
   assert.equal(flag(args, 'json'), true);
 });
 

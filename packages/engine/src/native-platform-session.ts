@@ -10,6 +10,10 @@ import { NativeDeviceKeyStore, nativeKeyScope, type NativeKeyScope } from './nat
 import type { NativeSessionRecord, NativeSessionPhase } from './native-session-record';
 import { DexError } from './errors';
 import { createNativeAgentSocketTransport, type NativeAgentSocket, type NativeAgentSocketTransport } from './native-agent-socket';
+import { AgentSessionMutationClient, AgentSessionMutationHttpError, AgentSessionMutationOutcomeUnknown,
+  validateSubmitAgentTurn, validateStopAgentTurn, type AgentSessionMutationProofSource,
+  type SubmitAgentTurnInput, type StopAgentTurnInput, type SubmittedAgentTurn, type StoppedAgentTurn } from '@dex/protocol/agent-session-mutation';
+import { nativeAgentMutationFetch } from './native-agent-mutation-http';
 
 export interface NativeSessionSummary {
   user_id: string;
@@ -104,19 +108,26 @@ export class NativeHostSession {
   }
   /** The provider is usable only inside the account/install lock and cannot sign for another origin or token. */
   async withProofSource<T>(userId: string, work: (proof: AgentSessionProofSource, authScope: string, generation: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.withScopedProofSource(userId, work, signal);
+  }
+  private async withScopedProofSource<T>(userId: string,
+    work: (proof: AgentSessionProofSource & AgentSessionMutationProofSource, authScope: string, generation: string) => Promise<T>,
+    signal?: AbortSignal, writePath?: string): Promise<T> {
     try { return await this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
       const record = requireReady(await vault.read()); const token = requireAccess(record); let live = true;
       const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', '네이티브 세션 사용 범위가 종료되었습니다.'); };
-      const proof: AgentSessionProofSource = {
+      const proof: AgentSessionProofSource & AgentSessionMutationProofSource = {
         accessToken: async () => { check(); return token; },
         signProof: async (method, htu, expected) => {
           check();
           const url = new URL(htu);
-          if (method !== 'GET' || url.origin !== this.origin || url.search || url.hash || expected !== token
-            || !/^\/api\/agentflow\/(?:me\/(?:agent-state|agent-events|agent-sessions)|agent-sessions\/[0-9a-f-]{36}\/(?:snapshot|events|messages))$/.test(url.pathname)) {
-            throw new DexError('usage_error', 'Canonical 읽기 경로와 현재 CLI 토큰에만 서명할 수 있습니다.');
+          const read = method === 'GET' && /^\/api\/agentflow\/(?:me\/(?:agent-state|agent-events|agent-sessions)|agent-sessions\/[0-9a-f-]{36}\/(?:snapshot|events|messages))$/.test(url.pathname);
+          const write = method === 'POST' && writePath !== undefined && url.pathname === writePath;
+          if ((!read && !write) || url.origin !== this.origin || url.username || url.password || url.search || url.hash
+            || htu !== `${this.origin}${url.pathname}` || expected !== token) {
+            throw new DexError('usage_error', '허용된 Canonical 경로와 현재 플랫폼 토큰에만 서명할 수 있습니다.');
           }
-          const result = await sign('GET', htu, token, signal); check(); return result;
+          const result = await sign(method, htu, token, signal); check(); return result;
         },
       };
       // Rotation keeps the sid, so its token/write generation must not reset an account cursor.
@@ -185,6 +196,50 @@ export class NativeHostSession {
   }
   async conversation(userId: string, signal?: AbortSignal) {
     return readNativeAgentConversation(this, userId, signal);
+  }
+  async submitTurn(userId: string, sessionId: string, input: SubmitAgentTurnInput, signal?: AbortSignal): Promise<SubmittedAgentTurn> {
+    let body: SubmitAgentTurnInput;
+    try { body = validateSubmitAgentTurn(sessionId, input); }
+    catch { throw new DexError('usage_error', '대화 ID·상태 버전·중복 방지 키와 입력을 확인하세요.'); }
+    return this.mutateTurn(userId, sessionId, 'turns', body, signal);
+  }
+  async stopTurn(userId: string, sessionId: string, input: StopAgentTurnInput, signal?: AbortSignal): Promise<StoppedAgentTurn> {
+    let body: StopAgentTurnInput;
+    try { body = validateStopAgentTurn(sessionId, input); }
+    catch { throw new DexError('usage_error', '중단할 대화 ID·실행 턴과 상태 버전을 확인하세요.'); }
+    return this.mutateTurn(userId, sessionId, 'stop', body, signal);
+  }
+  private async mutateTurn<A extends 'turns' | 'stop'>(userId: string, sessionId: string, action: A,
+    body: A extends 'turns' ? SubmitAgentTurnInput : StopAgentTurnInput, signal?: AbortSignal): Promise<A extends 'turns' ? SubmittedAgentTurn : StoppedAgentTurn> {
+    signal?.throwIfAborted(); const control = new AbortController(); const cancel = () => control.abort(signal?.reason);
+    signal?.addEventListener('abort', cancel, { once: true }); if (signal?.aborted) cancel();
+    const timer = setTimeout(() => control.abort(), 10000); let dispatched = false;
+    const metadata = { agent_session_id: sessionId, expected_state_version: body.expected_state_version,
+      ...(action === 'turns' ? { idempotency_key: (body as SubmitAgentTurnInput).idempotency_key } : { turn_id: (body as StopAgentTurnInput).turn_id }) };
+    try {
+      const result = await this.withScopedProofSource(userId, async (proof) => {
+        const check = async () => { control.signal.throwIfAborted(); await proof.accessToken(); };
+        const fetch = nativeAgentMutationFetch(this.origin, (async (input, init) => {
+          control.signal.throwIfAborted(); dispatched = true; return this.fetchImpl(input, init);
+        }) as typeof globalThis.fetch, check);
+        const client = new AgentSessionMutationClient(this.origin, proof, fetch);
+        return action === 'turns' ? client.submitTurn(sessionId, body as SubmitAgentTurnInput, control.signal)
+          : client.stopTurn(sessionId, body as StopAgentTurnInput, control.signal);
+      }, control.signal, `/api/agentflow/agent-sessions/${sessionId}/${action}`);
+      return result as A extends 'turns' ? SubmittedAgentTurn : StoppedAgentTurn;
+    } catch (error) {
+      if (error instanceof AgentSessionMutationHttpError) {
+        if ([401, 403].includes(error.status)) throw new DexError('auth_required', '플랫폼 인증을 확인한 뒤 다시 실행하세요.', { outcome: 'rejected', status: error.status, ...metadata });
+        throw new DexError('usage_error', '요청이 거절되었습니다. 현재 대화 상태와 입력을 확인하세요.', {
+          outcome: 'rejected', status: error.status, ...metadata, ...(error.conflict ? { conflict: error.conflict } : {}) });
+      }
+      if (dispatched || error instanceof AgentSessionMutationOutcomeUnknown) {
+        throw new DexError('network_error', '송신 완료 여부를 확인할 수 없습니다. 대화 상태를 확인하고 같은 입력·버전·중복 방지 키로 재확인하세요.', { outcome: 'unknown', ...metadata });
+      }
+      control.signal.throwIfAborted();
+      if (error instanceof DexError) throw error;
+      throw new DexError('network_error', '대화 송신 준비를 완료할 수 없습니다.');
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
   }
   /** Only an internal, verified conversation may select the scoped native event socket. */
   async openConversationSocket(userId: string, state: ScopedAgentConversation, signal: AbortSignal): Promise<NativeAgentSocket> {

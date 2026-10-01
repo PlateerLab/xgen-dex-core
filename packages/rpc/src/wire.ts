@@ -31,6 +31,7 @@ import type {
   NativeAgentConversationUpdate,
   NativeConversationView,
 } from '@dex/engine';
+import type { SubmittedAgentTurn, StoppedAgentTurn } from '@dex/protocol/agent-session-mutation';
 
 export type {
   Agent,
@@ -76,11 +77,13 @@ export interface InitializeResult {
     localTools: boolean;
     /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
     ssh?: boolean;
-    nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software'; canonicalConversation?: true; canonicalLive?: true };
+    nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software'; canonicalConversation?: true; canonicalLive?: true; canonicalTurns?: true };
   };
 }
 
 export interface NativeRpcResult {
+  agent_session_id?: string;
+  mutation?: SubmittedAgentTurn | StoppedAgentTurn;
   platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; user_id: string;
   result?: NativeSessionSummary | NativeEnrollmentResult;
   watch_id?: string;

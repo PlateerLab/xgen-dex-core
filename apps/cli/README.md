@@ -40,6 +40,25 @@ JSONL은 `reset`, `conversation`, `reconnecting`, `stopped`를 출력한다. `co
 
 The explicit `conversation`, `watch-conversation` and `watch-live` actions read bounded canonical snapshots, execution events and linked terminal messages. Live mode uses scoped GET DPoP over receive-only WSS to wake authoritative HTTP recovery, with periodic vault/focus checks. Same-session token rotation replaces the socket without resetting cursors. Display projections exclude credentials; authentication, integrity and repeated no-progress socket failures stop. Ctrl+C waits for actual socket teardown. These commands do not send chat messages; migration of existing chat sends remains subsequent work.
 
+### 기존 Canonical 대화에 턴 제출
+
+이미 Canonical 방식으로 생성된 대화에는 명시적으로 한 턴을 제출할 수 있다.
+
+```sh
+printf '%s' '계속 설명해줘' | dex chat --canonical \
+  --user-id 7 \
+  --session-id 018f1240-0000-7000-8000-000000000002 \
+  --expected-state-version 3 \
+  --idempotency-key terminal-request-1 \
+  --stdin --json
+```
+
+메시지는 `--message`와 `--stdin` 중 하나로만 전달하며 UTF-8 262144바이트가 상한이다. `--idempotency-key`는 자동 생성하지 않는다. 응답을 받지 못해 결과가 불명확하면 같은 메시지, session ID, expected state version, idempotency key를 명시해 다시 실행해야 한다. 다른 메시지에 같은 key를 재사용하면 서버가 거절한다. Ctrl+C와 SIGTERM은 현재 HTTP 요청만 취소하며 서버의 턴 중단 요청을 보내지 않는다.
+
+명령의 성공은 서버가 턴을 한 번 접수했다는 응답이다. AI 답변 완료를 뜻하지 않는다. 결과는 `dex session watch-live --user-id <id>` 또는 `watch-conversation`/`conversation`으로 확인한다. 이 단계에서는 새 Canonical 대화나 workflow를 만들지 않으므로 workflow와 Agent Session을 기존 Canonical 흐름에서 먼저 생성해야 한다. 첨부 파일, 로컬 도구 연결, TUI 채팅 이관은 지원하지 않는다. 기존 `dex chat --agent` 경로와 자격증명은 fallback으로 사용하지 않는다.
+
+`chat --canonical` explicitly submits one turn to an existing server-issued Canonical session through the CLI's OS-vault Platform access and scoped POST DPoP. Supply the session ID, snapshot state version and stable idempotency key yourself. UTF-8 stdin, including trailing newlines, is preserved exactly; the limit is 262144 bytes. A successful response acknowledges reservation, not AI completion. Read the conversation separately. A lost response or cancellation after dispatch reports an unknown outcome and never retries automatically; explicitly repeat the same message, session, original version and key to reconcile. SIGINT does not request server-side turn cancellation. Session creation, attachments, local tools and TUI migration remain pending.
+
 XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.
 

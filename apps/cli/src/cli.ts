@@ -14,6 +14,7 @@ import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from
 import { bindCliHost } from './dex-host';
 import { runDeviceCommand } from './device-command';
 import { runSessionCommand } from './session-command';
+import { runCanonicalChatCommand } from './canonical-chat-command';
 
 /**
  * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
@@ -49,6 +50,8 @@ Usage:
   dex session forget-local --user-id <id> [--profile <name>] [--json]
   dex agents list [--search <text>] [--owner personal|shared] [--json]
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
+  dex chat --canonical --user-id <id> --session-id <uuid> --expected-state-version <n>
+           --idempotency-key <stable-key> [--profile <name>] (--message <text>|--stdin) [--json]
   dex history list [--json]
   dex history turns --workflow <id> --interaction <id> [--json]
   dex tools list [--json]
@@ -79,6 +82,8 @@ Examples:
   dex agents list
   dex tools enable --cwd . --allow . --block sudo
   echo '이 저장소를 설명해줘' | dex chat --agent wf_abc
+  echo '계속 설명해줘' | dex chat --canonical --user-id 7 --session-id <uuid> \
+    --expected-state-version 3 --idempotency-key terminal-request-1 --stdin
 `;
 
 function writeJson(value: unknown): void {
@@ -321,6 +326,22 @@ async function run(): Promise<void> {
   }
   if (flag(args, 'help')) {
     stdout.write(HELP);
+    return;
+  }
+
+  // Canonical 제출은 기존 로그인·도구 bridge를 만들기 전에 완전히 분리한다.
+  // 값이 잘못된 --canonical=<value>도 legacy chat으로 떨어지지 않게 presence로 분기한다.
+  if (args.positionals[0] === 'chat' && args.options.has('canonical')) {
+    const controller = new AbortController();
+    const interrupt = () => controller.abort();
+    process.on('SIGINT', interrupt);
+    process.on('SIGTERM', interrupt);
+    try {
+      await runCanonicalChatCommand(args, new FileConfigStore(), { signal: controller.signal });
+    } finally {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+    }
     return;
   }
 

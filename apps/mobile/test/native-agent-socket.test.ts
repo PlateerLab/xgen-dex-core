@@ -89,9 +89,10 @@ test('manual reads do not open sockets and permanent/authentication socket failu
   await createMobileAgentLiveWatcher(source).run(() => undefined, new AbortController().signal, true);
   for (const error of [new PlatformCredentialUnavailable(), new MobileSocketInvalid()]) {
     const f = socketFixture(); const updates: any[] = []; let calls = 0;
-    const watcher = createMobileAgentLiveWatcher({ ...source, reconcileConversation: async () => { calls++; return source.reconcileConversation(); },
+    const watcher = createMobileAgentLiveWatcher({ ...source, reconcileConversation: async () => {
+      if (++calls > 1 && error instanceof PlatformCredentialUnavailable) throw error; return source.reconcileConversation(); },
       openConversationSocket: async () => f.socket }, { wait: async () => { f.fail(error); await new Promise((r) => setImmediate(r)); } });
-    await assert.rejects(watcher.run((u) => updates.push(u), new AbortController().signal), MobileFocusWatchError); assert.equal(calls, 1);
+    await assert.rejects(watcher.run((u) => updates.push(u), new AbortController().signal), MobileFocusWatchError); assert.equal(calls, error instanceof PlatformCredentialUnavailable ? 2 : 1);
     assert.equal(updates.at(-1).reason, error instanceof PlatformCredentialUnavailable ? 'authentication' : 'failed'); assert.equal(f.socket.closed, true);
   }
 });
@@ -145,4 +146,69 @@ test('a timed-out native handshake cannot overlap another socket; persistent clo
   await assert.rejects(watcher.run((u) => updates.push(u), stop.signal), MobileFocusWatchError);
   assert.equal(attempts, 1); assert.equal(updates.at(-1).reason, 'failed'); assert.throws(f.transport.assertAvailable, MobileSocketBusy);
   closed.resolve(); opened.resolve(); await new Promise((r) => setImmediate(r)); f.transport.assertAvailable();
+});
+
+test('upgrade cursor conflicts enter one-time snapshot recovery and repeated conflicts stop', async () => {
+  for (const persistent of [false, true]) {
+    const stop = new AbortController(); let opens = 0; const previous: Array<ScopedAgentConversation | null> = []; const f = socketFixture();
+    const watcher = createMobileAgentLiveWatcher({ reconcileConversation: async (old) => { previous.push(old); return { state: state(), source: 'snapshot', hasMore: false }; },
+      openConversationSocket: async () => { if (++opens === 1 || persistent) throw new MobileSocketCursorConflict(); return f.socket; }
+    }, { wait: async () => { if (!persistent && opens === 2) stop.abort(); } });
+    if (persistent) await assert.rejects(watcher.run(() => undefined, stop.signal), MobileFocusWatchError);
+    else await watcher.run(() => undefined, stop.signal);
+    assert.equal(opens, 2); assert.deepEqual(previous, [null, null]);
+  }
+});
+
+test('HTTP cursor progress permits recovery from a later independent socket conflict', async () => {
+  const stop = new AbortController(); let opens = 0; let calls = 0; let f = socketFixture();
+  const watcher = createMobileAgentLiveWatcher({ reconcileConversation: async () => ({ state: state(++calls === 1 ? 0 : 5), source: 'snapshot', hasMore: false }),
+    openConversationSocket: async () => { opens++; f = socketFixture(); return f.socket; }
+  }, { wait: async () => { if (opens < 3) { f.fail(new MobileSocketCursorConflict()); await new Promise((r) => setImmediate(r)); } else stop.abort(); } });
+  await watcher.run(() => undefined, stop.signal); assert.equal(opens, 3); assert.equal(calls, 3);
+});
+
+test('old socket authentication expiry rechecks the vault and reconnects after token generation rotation', async () => {
+  const stop = new AbortController(); const sockets = [socketFixture(), socketFixture()]; let generation = 1; let calls = 0; let waits = 0; const generations: number[] = [];
+  const watcher = createMobileAgentLiveWatcher({ reconcileConversation: async () => { calls++; return { state: state(), source: 'replay', hasMore: false }; },
+    openConversationSocket: async () => { generations.push(generation); return sockets[generations.length - 1]!.socket; }
+  }, { wait: async () => { if (++waits === 1) { generation = 2; sockets[0]!.fail(new PlatformCredentialUnavailable()); await new Promise((r) => setImmediate(r)); } else stop.abort(); } });
+  await watcher.run(() => undefined, stop.signal); assert.deepEqual(generations, [1, 2]); assert.equal(calls, 2); assert.equal(sockets.every((f) => f.socket.closed), true);
+});
+
+test('repeated socket authentication closure without a validated new stream stops after one vault check', async () => {
+  let opens = 0; let calls = 0; let f = socketFixture();
+  const watcher = createMobileAgentLiveWatcher({ reconcileConversation: async () => { calls++; return { state: state(), source: 'snapshot', hasMore: false }; },
+    openConversationSocket: async () => { opens++; f = socketFixture(); return f.socket; }
+  }, { wait: async () => { f.fail(new PlatformCredentialUnavailable()); await new Promise((r) => setImmediate(r)); } });
+  await assert.rejects(watcher.run(() => undefined, new AbortController().signal), MobileFocusWatchError); assert.equal(opens, 2); assert.equal(calls, 2);
+});
+
+test('snapshot recovery survives a delayed native close acknowledgement and busy upgrade', async () => {
+  const stop = new AbortController(); const closeAck = deferred<void>(); let acknowledged = false; let opens = 0; let waits = 0;
+  const first = socketFixture(); const second = socketFixture(); const previous: Array<ScopedAgentConversation | null> = [];
+  const finishClose = first.socket.close; first.socket.close = async () => { await closeAck.promise; await finishClose(); };
+  const watcher = createMobileAgentLiveWatcher({ reconcileConversation: async (old) => {
+    previous.push(old); return { state: state(previous.length === 1 ? 5 : 3), source: 'snapshot', hasMore: false };
+  }, openConversationSocket: async () => {
+    if (++opens === 1) return first.socket; if (!acknowledged) throw new MobileSocketBusy(); return second.socket;
+  } }, { wait: async () => {
+    if (++waits === 1) { first.fail(new MobileSocketCursorConflict()); await new Promise((r) => setImmediate(r)); }
+    else if (waits === 2) { acknowledged = true; closeAck.resolve(); }
+    else stop.abort();
+  } });
+  await watcher.run(() => undefined, stop.signal); assert.equal(opens, 3); assert.deepEqual(previous, [null, null, null]);
+});
+
+test('detaching the focus clears recovery budgets before the same session is reattached', async () => {
+  const stop = new AbortController(); let reads = 0; let opens = 0; let waits = 0; let socket = socketFixture();
+  const watcher = createMobileAgentLiveWatcher({ reconcileConversation: async () => {
+    const value = state(); if (++reads === 2) { value.focus.active_agent_session_id = null; value.snapshot = null; value.eventCursor = null; }
+    return { state: value, source: 'snapshot', hasMore: false };
+  }, openConversationSocket: async () => { opens++; socket = socketFixture(); return socket.socket; }
+  }, { wait: async () => {
+    if (++waits === 1 || waits === 3) { socket.fail(new MobileSocketCursorConflict()); await new Promise((r) => setImmediate(r)); }
+    if (waits === 4) stop.abort();
+  } });
+  await watcher.run(() => undefined, stop.signal); assert.equal(reads, 4); assert.equal(opens, 3);
 });

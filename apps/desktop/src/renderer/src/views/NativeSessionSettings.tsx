@@ -15,13 +15,16 @@ const initialTurn: AgentTurnComposerView = { status: 'unavailable', canSubmit: f
 
 export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) => {
   const [view, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
-    connection: 'idle', transport: 'none', error: '', turn: initialTurn });
+    connection: 'idle', transport: 'none', error: '', turn: initialTurn,
+    catalog: { focus: null, items: [], nextCursor: null, hasMore: false, busy: false, writeBlocked: false, notice: '' } });
   const model = useRef<DesktopNativeSessionModel | null>(null);
   const turnSession = useRef<string | null>(null);
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [approver, setApprover] = useState(''); const [overview, setOverview] = useState<NativeTrustOverview | null>(null);
   const [message, setMessage] = useState(''); const [forget, setForget] = useState(false);
   const [turnInput, setTurnInput] = useState('');
+  const [workflowId, setWorkflowId] = useState(''); const [sessionTitle, setSessionTitle] = useState('');
+  const [sessionSelect, setSessionSelect] = useState('');
   useEffect(() => {
     turnSession.current = null; setTurnInput('');
     const controller = new DesktopNativeSessionModel(xgen.nativeSession, (next) => {
@@ -33,11 +36,16 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
         if (next.conversation) setTurnInput('');
         turnSession.current = null;
       }
-      if (!next.result && !next.busy) { setTurnInput(''); setOverview(null); setApprover(''); setMessage(''); setForget(false); setPassword(''); }
+      if (!next.result && !next.busy) { setTurnInput(''); setWorkflowId(''); setSessionTitle(''); setSessionSelect('');
+        setOverview(null); setApprover(''); setMessage(''); setForget(false); setPassword(''); }
     });
     model.current = controller;
     return () => { model.current = null; controller.dispose(); };
   }, [origin]);
+  useEffect(() => {
+    const active = view.catalog.focus?.active_agent_session_id ?? '';
+    setSessionSelect(view.catalog.items.some((item) => item.id === active && item.status === 'active') ? active : '');
+  }, [view.catalog.focus?.active_agent_session_id, view.catalog.items]);
   let https = false;
   try { const url = new URL(origin); https = url.protocol === 'https:' && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password; } catch { /* shown below */ }
   const run = async (kind: 'device' | 'session', action: string) => {
@@ -59,7 +67,7 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
     else if (kind === 'device') setMessage(`Desktop 기기: ${result.result && 'state' in result.result ? states[result.result.state] ?? result.result.state : '미등록'}`);
     else if (action === 'forget-local') setMessage('로컬 기록을 삭제했습니다. 서버 세션 폐기는 별도로 확인하세요.');
     const summary = result.result && 'session_id' in result.result ? result.result as NativeSessionSummary : null;
-    if (summary?.state === 'active') await controller.execute('watch');
+    if (summary?.state === 'active') { await controller.refreshAgentSessions(); await controller.execute('watch'); }
   };
   const disabled = !https || view.busy;
   const credentials = !email.trim() || !password;
@@ -67,6 +75,8 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
   const completeMessages = view.conversation?.messages.filter((item) => item.content_complete) ?? [];
   const incompleteMessages = (view.conversation?.messages.length ?? 0) - completeMessages.length;
   const turnInputBytes = new TextEncoder().encode(turnInput).length;
+  const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(view.turn.status);
+  const sessionWriteDisabled = disabled || !view.catalog.focus || view.catalog.busy || view.catalog.writeBlocked || turnBlocksSessionWrite;
   const submitTurn = async (retry: boolean) => {
     const controller = model.current; const sessionId = turnSession.current;
     if (!controller || !sessionId) return;
@@ -101,6 +111,37 @@ export const NativeSessionSettings: React.FC<{ origin: string }> = ({ origin }) 
       <p>세션: {summary ? states[summary.state] ?? summary.state : '상태를 확인하세요'}</p>
       {summary?.session_id && <p className="small muted">세션 ID: {summary.session_id}</p>}
       <p>현재 대화: {view.focus?.active_agent_session_id ?? view.conversation?.snapshot?.id ?? '없음'} · {transports[view.transport]} · {connections[view.connection]}</p>
+      <div className="field">
+        <p><strong>Canonical Agent 세션</strong></p>
+        <p className="settings-hint">현재 계정이 소유한 Workflow ID로 새 세션을 만들거나, 서버에서 확인한 내 활성 세션만 선택할 수 있습니다.</p>
+        <label className="field" htmlFor="native-session-select"><span>내 Agent 세션</span>
+          <select id="native-session-select" value={sessionSelect} disabled={sessionWriteDisabled}
+            onChange={(event) => setSessionSelect(event.target.value)}>
+            <option value="">포커스 없음</option>
+            {view.catalog.items.filter((item) => item.status === 'active').map((item) =>
+              <option key={item.id} value={item.id}>{item.title || item.workflow_id} · {item.id.slice(0, 8)}</option>)}
+          </select>
+        </label>
+        <div className="field-row">
+          <button id="native-session-switch" disabled={sessionWriteDisabled || !sessionSelect}
+            onClick={() => void model.current?.switchAgentFocus(sessionSelect)}>선택</button>
+          <button id="native-session-clear" className="secondary" disabled={sessionWriteDisabled || !view.catalog.focus?.active_agent_session_id}
+            onClick={() => void model.current?.switchAgentFocus(null)}>포커스 해제</button>
+          <button id="native-session-refresh" className="secondary" disabled={disabled || view.catalog.busy || summary?.state !== 'active'}
+            onClick={() => void model.current?.refreshAgentSessions()}>목록 새로 고침</button>
+        </div>
+        <label className="field" htmlFor="native-session-workflow"><span>Workflow ID</span>
+          <input id="native-session-workflow" type="text" maxLength={256} autoComplete="off" value={workflowId}
+            disabled={sessionWriteDisabled} onChange={(event) => setWorkflowId(event.target.value)} />
+        </label>
+        <label className="field" htmlFor="native-session-title"><span>제목 (선택)</span>
+          <input id="native-session-title" type="text" maxLength={256} autoComplete="off" value={sessionTitle}
+            disabled={sessionWriteDisabled} onChange={(event) => setSessionTitle(event.target.value)} />
+        </label>
+        <button id="native-session-create" disabled={sessionWriteDisabled || !workflowId}
+          onClick={() => void model.current?.createAgentSession(workflowId, sessionTitle)}>새 세션 만들기</button>
+        {view.catalog.notice && <p className={view.catalog.writeBlocked ? 'settings-hint warn' : 'settings-hint'} role="status">{view.catalog.notice}</p>}
+      </div>
       <div className="field-row">
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('watch')}>현재 대화 포커스 구독</button>
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('conversation')}>공유 대화 읽기</button>

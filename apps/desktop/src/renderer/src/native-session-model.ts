@@ -1,5 +1,11 @@
-import { parseAgentFocus, type AgentFocus } from '@dex/protocol/agent-session';
+import { parseAgentFocus, parseAgentSessionList, type AgentFocus, type OwnedAgentSession } from '@dex/protocol/agent-session';
 import { parseAgentConversationView } from '@dex/protocol/agent-session-conversation-recovery';
+import {
+  parseCreatedAgentSession,
+  parseSwitchedAgentFocus,
+  validateCreateAgentSession,
+  validateSwitchAgentFocus,
+} from '@dex/protocol/agent-session-lifecycle';
 import {
   AgentTurnComposer,
   AgentTurnComposeFailure,
@@ -19,17 +25,28 @@ export interface DesktopNativeView {
   transport: 'none' | 'focus-http' | 'read-http' | 'poll-http' | 'live-wss';
   error: string;
   turn: AgentTurnComposerView;
+  catalog: {
+    focus: AgentFocus | null;
+    items: OwnedAgentSession[];
+    nextCursor: string | null;
+    hasMore: boolean;
+    busy: boolean;
+    writeBlocked: boolean;
+    notice: string;
+  };
 }
 type DesktopNativeSessionState = Omit<DesktopNativeView, 'turn'>;
-type DesktopReadMethod = Exclude<DesktopNativeMethod, 'submit-turn' | 'stop-turn'>;
+type DesktopReadMethod = Exclude<DesktopNativeMethod, 'submit-turn' | 'stop-turn' | 'agent-sessions' | 'create-agent-session' | 'switch-agent-focus'>;
 type DesktopWatchMethod = Extract<DesktopReadMethod, 'watch' | 'watch-conversation' | 'watch-live'>;
 const empty = (): DesktopNativeSessionState => ({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
-  connection: 'idle', transport: 'none', error: '' });
+  connection: 'idle', transport: 'none', error: '', catalog: { focus: null, items: [], nextCursor: null, hasMore: false,
+    busy: false, writeBlocked: false, notice: '' } });
 export class DesktopNativeSessionModel {
   private generation = 0;
   private watchId: string | null = null;
   private watchView: 'focus' | 'conversation' | null = null;
   private watchMethod: DesktopWatchMethod | null = null;
+  private restoreLiveAfterCatalog = false;
   private waiting = false;
   private mutating = false;
   private disposed = false;
@@ -56,7 +73,8 @@ export class DesktopNativeSessionModel {
       });
       if (reply.ok) return reply.value;
       if (reply.outcome === 'rejected') {
-        throw new AgentTurnComposeFailure('rejected', reply.conflict);
+        const conflict = reply.conflict && reply.conflict.code !== 'FOCUS_VERSION_CONFLICT' ? reply.conflict : undefined;
+        throw new AgentTurnComposeFailure('rejected', conflict);
       }
       if (reply.outcome === 'unknown') throw new AgentTurnComposeFailure('unknown');
       throw new AgentTurnComposeFailure('unavailable');
@@ -74,7 +92,7 @@ export class DesktopNativeSessionModel {
   }
   private resetTurn(): void { this.turnContextGeneration++; this.turnSessionId = null; this.composer.reset(); }
   clear(): void {
-    this.generation++; this.clearWatch(); this.resetTurn(); this.sessionState = empty(); this.publish();
+    this.generation++; this.restoreLiveAfterCatalog = false; this.clearWatch(); this.resetTurn(); this.sessionState = empty(); this.publish();
   }
   dispose(): void { this.disposed = true; this.clear(); this.remove(); void this.bridge.request('cancel').catch(() => {}); }
   async stopWatch(): Promise<void> {
@@ -101,6 +119,59 @@ export class DesktopNativeSessionModel {
       return null;
     }
     return this.run(method, params, false);
+  }
+  async refreshAgentSessions(): Promise<boolean> {
+    if (this.disposed || this.mutating || this.sessionState.busy || !this.scope()) return false;
+    const generation = ++this.generation;
+    const resume = this.watchMethod === 'watch-live' || this.restoreLiveAfterCatalog;
+    const previousId = this.sessionState.catalog.focus?.active_agent_session_id ?? this.turnSessionId;
+    this.mutating = true; this.clearWatch();
+    this.show({ busy: true, catalog: { ...this.sessionState.catalog, busy: true, notice: '' }, error: '' });
+    try {
+      const reply = await this.bridge.request('agent-sessions', { limit: 100 });
+      if (generation !== this.generation || !reply.ok) {
+        if (generation === this.generation && !reply.ok) throw new Error(reply.message);
+        return false;
+      }
+      if (!('user_id' in reply.value)) throw new Error('Desktop Agent 세션 응답을 확인할 수 없습니다.');
+      const result = this.validatedScope(reply.value);
+      const focus = parseAgentFocus(result.focus);
+      const sessions = parseAgentSessionList(result.sessions);
+      const changed = previousId !== focus.active_agent_session_id;
+      if (changed) this.resetTurn();
+      this.show({ result: { platform_type: 'desktop', profile: 'desktop', server_url: result.server_url, user_id: result.user_id,
+        result: this.sessionState.result?.result }, focus,
+        ...(changed ? { conversation: null, hasMore: false, connection: 'connected' as const, transport: 'none' as const } : {}),
+        catalog: { focus, items: sessions.items, nextCursor: sessions.next_cursor, hasMore: sessions.has_more,
+          busy: false, writeBlocked: false, notice: 'Agent 세션 목록과 현재 포커스를 다시 확인했습니다.' } });
+      if (focus.active_agent_session_id) await this.recoverConversation(this.scope()!, resume ? 'watch-live' : null);
+      this.restoreLiveAfterCatalog = false;
+      return true;
+    } catch (error) {
+      if (generation === this.generation) this.show({ catalog: { ...this.sessionState.catalog, busy: false,
+        notice: error instanceof Error ? error.message : 'Agent 세션 목록을 확인하지 못했습니다.' } });
+      return false;
+    } finally {
+      this.mutating = false;
+      if (generation === this.generation) this.show({ busy: false });
+    }
+  }
+  async createAgentSession(workflowId: string, title?: string): Promise<boolean> {
+    const catalog = this.writableCatalog(); if (!catalog) return false;
+    let input;
+    try { input = validateCreateAgentSession({ workflow_id: workflowId, title: title ?? '', expected_version: catalog.focus.version }); }
+    catch { this.show({ error: 'Agent 세션 입력 형식을 확인하세요.' }); return false; }
+    return this.lifecycleWrite('create-agent-session', input, (result) => parseCreatedAgentSession(result.created, input).focus);
+  }
+  async switchAgentFocus(agentSessionId: string | null): Promise<boolean> {
+    const catalog = this.writableCatalog(); if (!catalog) return false;
+    if (agentSessionId !== null && !catalog.items.some((item) => item.id === agentSessionId && item.status === 'active')) {
+      this.show({ error: '새로 확인한 내 활성 Agent 세션만 선택할 수 있습니다.' }); return false;
+    }
+    let input;
+    try { input = validateSwitchAgentFocus({ active_agent_session_id: agentSessionId, expected_version: catalog.focus.version }); }
+    catch { this.show({ error: 'Agent 세션 입력 형식을 확인하세요.' }); return false; }
+    return this.lifecycleWrite('switch-agent-focus', input, (result) => parseSwitchedAgentFocus(result.focus, input));
   }
   private async run(method: DesktopReadMethod, params: Record<string, unknown>, recovering: boolean): Promise<NativeRpcResult | null> {
     if (this.mutating && !recovering) return null;
@@ -130,11 +201,7 @@ export class DesktopNativeSessionModel {
         }
         this.clear(); return null;
       }
-      let result = reply.value;
-      let origin = false;
-      try { const url = new URL(result.server_url); origin = url.protocol === 'https:' && url.origin === result.server_url; } catch { /* rejected below */ }
-      if (!origin || !/^[1-9][0-9]{0,9}$/.test(result.user_id) || Number(result.user_id) > 2147483647
-        || result.platform_type !== 'desktop' || result.profile !== 'desktop') throw new Error('Desktop 세션 응답 범위를 확인할 수 없습니다.');
+      let result = this.validatedScope(reply.value);
       if (method === 'conversation') {
         if (result.view !== 'conversation' || typeof result.has_more !== 'boolean') throw new Error('현재 공유 대화 응답을 확인할 수 없습니다.');
         const conversation = parseAgentConversationView(result.conversation);
@@ -255,6 +322,85 @@ export class DesktopNativeSessionModel {
   private async recoverConversation(scope: AgentTurnScope, resume: DesktopWatchMethod | null): Promise<void> {
     const read = await this.run('conversation', {}, true);
     if (!read || !this.sameScope(scope) || this.sessionState.conversation?.snapshot?.id === undefined) return;
+    const snapshot = this.sessionState.conversation.snapshot;
+    if (snapshot && this.sessionState.catalog.focus?.active_agent_session_id === snapshot.id) {
+      const item: OwnedAgentSession = { id: snapshot.id, workflow_id: snapshot.workflow_id, title: snapshot.title,
+        status: 'active', current_sequence: snapshot.current_sequence, state_version: snapshot.state_version };
+      this.show({ catalog: { ...this.sessionState.catalog,
+        items: [item, ...this.sessionState.catalog.items.filter((candidate) => candidate.id !== item.id)] } });
+    }
     if (resume === 'watch-conversation' || resume === 'watch-live') await this.run(resume, {}, true);
+  }
+  private validatedScope(result: NativeRpcResult): NativeRpcResult {
+    let origin = false;
+    try { const url = new URL(result.server_url); origin = url.protocol === 'https:' && url.origin === result.server_url; } catch { /* rejected below */ }
+    if (!origin || !/^[1-9][0-9]{0,9}$/.test(result.user_id) || Number(result.user_id) > 2147483647
+      || result.platform_type !== 'desktop' || result.profile !== 'desktop') throw new Error('Desktop 세션 응답 범위를 확인할 수 없습니다.');
+    const selected = this.sessionState.result;
+    if (selected && (selected.server_url !== result.server_url || selected.user_id !== result.user_id)) {
+      throw new Error('Desktop 세션 응답 계정이 변경되었습니다.');
+    }
+    return result;
+  }
+  private writableCatalog(): { focus: AgentFocus; items: OwnedAgentSession[] } | null {
+    const catalog = this.sessionState.catalog;
+    if (!this.scope() || !catalog.focus || catalog.busy) { this.show({ error: 'Agent 세션 목록을 먼저 새로 고쳐 주세요.' }); return null; }
+    if (catalog.writeBlocked) { this.show({ error: '이전 작업 결과가 불명확합니다. Agent 세션 목록을 명시적으로 새로 고쳐 주세요.' }); return null; }
+    if (this.mutating || this.sessionState.busy || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(this.turnView.status)) {
+      this.show({ error: '현재 턴 요청 상태를 먼저 확인해 주세요.' }); return null;
+    }
+    return { focus: catalog.focus, items: catalog.items };
+  }
+  private async lifecycleWrite(method: 'create-agent-session' | 'switch-agent-focus', input: object,
+    parse: (result: NativeRpcResult) => AgentFocus): Promise<boolean> {
+    const catalog = this.writableCatalog(); const scope = this.scope();
+    if (!catalog || !scope) return false;
+    const generation = ++this.generation; const previous = catalog.focus.active_agent_session_id;
+    const resume = this.watchMethod === 'watch-live';
+    if (resume) this.restoreLiveAfterCatalog = true;
+    this.mutating = true; this.clearWatch();
+    this.show({ busy: true, catalog: { ...this.sessionState.catalog, busy: true, notice: '' }, error: '' });
+    try {
+      const reply = await this.bridge.request(method, { ...input });
+      if (generation !== this.generation) return false;
+      if (!reply.ok) {
+        if (reply.outcome === 'unknown') {
+          this.show({ catalog: { ...this.sessionState.catalog, busy: false, writeBlocked: true,
+            notice: '작업 완료 여부를 확인할 수 없습니다. 목록을 새로 고쳐 현재 포커스를 확인하기 전에는 다른 세션 작업을 보낼 수 없습니다.' } });
+          return false;
+        }
+        if (reply.outcome === 'rejected' && reply.conflict && reply.conflict.code === 'FOCUS_VERSION_CONFLICT') {
+          const focus = parseAgentFocus(reply.conflict.current);
+          const changed = focus.active_agent_session_id !== previous;
+          if (changed) this.resetTurn();
+          this.show({ focus, ...(changed ? { conversation: null, hasMore: false, connection: 'connected' as const, transport: 'none' as const } : {}),
+            catalog: { ...this.sessionState.catalog, focus, busy: false, writeBlocked: true,
+            notice: '다른 클라이언트에서 포커스가 바뀌었습니다. 새 상태를 확인하고 다시 선택해 주세요.' } });
+          return false;
+        }
+        this.show({ catalog: { ...this.sessionState.catalog, busy: false, notice: reply.message }, error: reply.message });
+        return false;
+      }
+      if (!('user_id' in reply.value)) throw new Error('Desktop Agent 세션 응답을 확인할 수 없습니다.');
+      const result = this.validatedScope(reply.value); const focus = parse(result);
+      const changed = focus.active_agent_session_id !== previous;
+      if (changed) this.resetTurn();
+      this.show({ result: { platform_type: 'desktop', profile: 'desktop', server_url: result.server_url, user_id: result.user_id,
+        result: this.sessionState.result?.result }, focus,
+        ...(changed ? { conversation: null, hasMore: false, connection: 'connected' as const, transport: 'none' as const } : {}),
+        catalog: { ...this.sessionState.catalog, focus, busy: false, writeBlocked: false,
+          notice: method === 'create-agent-session' ? '새 Agent 세션을 만들고 현재 세션으로 선택했습니다.' : '현재 Agent 세션 포커스를 변경했습니다.' } });
+      if (focus.active_agent_session_id) await this.recoverConversation(scope, resume ? 'watch-live' : null);
+      else this.show({ conversation: null, hasMore: false, connection: 'connected', transport: 'none' });
+      this.restoreLiveAfterCatalog = false;
+      return true;
+    } catch (error) {
+      if (generation === this.generation) this.show({ catalog: { ...this.sessionState.catalog, busy: false, writeBlocked: true,
+        notice: '작업 완료 여부를 확인할 수 없습니다. 목록을 새로 고쳐 현재 포커스를 확인하기 전에는 다른 세션 작업을 보낼 수 없습니다.' } });
+      return false;
+    } finally {
+      this.mutating = false;
+      if (generation === this.generation) this.show({ busy: false });
+    }
   }
 }

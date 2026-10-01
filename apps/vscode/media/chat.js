@@ -42,6 +42,14 @@
     cancel: byId('cancel'),
     canonicalMode: byId('canonical-mode'),
     canonicalRetry: byId('canonical-retry'),
+    canonicalControls: byId('canonical-session-controls'),
+    canonicalWorkflow: byId('canonical-session-workflow'),
+    canonicalTitle: byId('canonical-session-title'),
+    canonicalCreate: byId('canonical-session-create'),
+    canonicalRefresh: byId('canonical-session-refresh'),
+    canonicalSelect: byId('canonical-session-select'),
+    canonicalSwitch: byId('canonical-session-switch'),
+    canonicalClear: byId('canonical-session-clear'),
     settingsBack: byId('settings-back'),
     settingsRefresh: byId('settings-refresh'),
     accountState: byId('account-state'),
@@ -550,16 +558,18 @@
     mark.className = 'empty-mark';
     mark.textContent = '✦';
     const title = document.createElement('h2');
-    title.textContent = `${state.agent.workflowName}와 대화하기`;
+    const canonical = state.canonical?.active;
+    title.textContent = canonical ? 'Canonical Agent 세션을 선택하세요' : `${state.agent.workflowName}와 대화하기`;
     const description = document.createElement('p');
-    description.textContent = '질문을 입력하거나 아래 예시로 대화를 시작해 보세요.';
+    description.textContent = canonical ? '새 대화를 만들거나 현재 계정의 활성 세션을 선택할 수 있습니다.'
+      : '질문을 입력하거나 아래 예시로 대화를 시작해 보세요.';
     const suggestions = document.createElement('div');
     suggestions.className = 'suggestions';
-    suggestions.append(
-      suggestion('무엇을 할 수 있나요?', '이 Agent가 할 수 있는 일을 간단히 알려줘.'),
-      suggestion('작업 계획 만들기', '내가 하려는 작업을 위한 단계별 계획을 만들어줘.'),
-      suggestion('프로젝트 설명하기', '현재 프로젝트를 이해하기 쉽게 설명해줘.'),
-    );
+    if (!canonical) suggestions.append(
+        suggestion('무엇을 할 수 있나요?', '이 Agent가 할 수 있는 일을 간단히 알려줘.'),
+        suggestion('작업 계획 만들기', '내가 하려는 작업을 위한 단계별 계획을 만들어줘.'),
+        suggestion('프로젝트 설명하기', '현재 프로젝트를 이해하기 쉽게 설명해줘.'),
+      );
     empty.append(mark, title, description, suggestions);
     return empty;
   }
@@ -740,7 +750,31 @@
     elements.attach.classList.toggle('hidden', canonical);
     elements.canonicalRetry.classList.toggle('hidden', !canonical || !state.canonical.turn?.canRetry);
     renderAttachments();
-    elements.changeAgent.disabled = canonical || !!state.running;
+    elements.changeAgent.disabled = canonical ? false : !!state.running;
+    elements.changeAgent.textContent = canonical ? '세션 선택' : 'Agent 변경';
+    const catalog = state.canonical?.catalog;
+    const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
+    const catalogReady = !!catalog?.scope && !!catalog?.focus;
+    const sessionWriteDisabled = !canonical || !catalogReady || !!catalog?.busy || !!catalog?.writeBlocked || turnBlocksSessionWrite;
+    elements.canonicalControls.classList.toggle('hidden', !canonical || !state.canonical.createOpen);
+    const selectedValue = catalog?.focus?.active_agent_session_id || '';
+    elements.canonicalSelect.replaceChildren();
+    const clearOption = document.createElement('option');
+    clearOption.value = ''; clearOption.textContent = '포커스 없음'; elements.canonicalSelect.append(clearOption);
+    for (const session of catalog?.items || []) {
+      if (session.status !== 'active') continue;
+      const option = document.createElement('option'); option.value = session.id;
+      option.textContent = `${session.title || session.workflow_id} · ${session.id.slice(0, 8)}`;
+      elements.canonicalSelect.append(option);
+    }
+    elements.canonicalSelect.value = (catalog?.items || []).some((item) => item.id === selectedValue && item.status === 'active') ? selectedValue : '';
+    elements.canonicalSelect.disabled = sessionWriteDisabled;
+    elements.canonicalSwitch.disabled = sessionWriteDisabled || !elements.canonicalSelect.value;
+    elements.canonicalClear.disabled = sessionWriteDisabled || selectedValue === '';
+    elements.canonicalRefresh.disabled = !canonical || !!catalog?.busy;
+    elements.canonicalCreate.disabled = sessionWriteDisabled || !elements.canonicalWorkflow.value;
+    elements.canonicalWorkflow.disabled = sessionWriteDisabled;
+    elements.canonicalTitle.disabled = sessionWriteDisabled;
     elements.cancel.classList.toggle('hidden', canonical ? !state.canonical.turn?.canStop : !state.running);
     if (wasNearBottom) elements.messages.scrollTop = elements.messages.scrollHeight;
     if (agentChanged && !state.running) window.setTimeout(() => elements.input.focus(), 0);
@@ -936,11 +970,30 @@
     for (const item of elements.agentFilters.querySelectorAll('[data-filter]')) item.classList.toggle('active', item === button);
     renderAgentList();
   });
-  elements.changeAgent.addEventListener('click', () => post('showAgents'));
+  elements.changeAgent.addEventListener('click', () => post(state.canonical?.active ? 'canonicalControls' : 'showAgents'));
   elements.chatSettings.addEventListener('click', () => post('showSettings'));
   elements.send.addEventListener('click', send);
   elements.canonicalMode.addEventListener('click', () => post('canonicalMode'));
   elements.canonicalRetry.addEventListener('click', () => post('canonicalRetry'));
+  elements.canonicalRefresh.addEventListener('click', () => post('canonicalCatalogRefresh'));
+  elements.canonicalCreate.addEventListener('click', () => post('canonicalCreate', {
+    workflowId: elements.canonicalWorkflow.value,
+    title: elements.canonicalTitle.value,
+  }));
+  elements.canonicalSwitch.addEventListener('click', () => post('canonicalSwitch', { agentSessionId: elements.canonicalSelect.value }));
+  elements.canonicalClear.addEventListener('click', () => post('canonicalSwitch', { agentSessionId: '' }));
+  elements.canonicalSelect.addEventListener('change', () => {
+    const catalog = state.canonical?.catalog;
+    elements.canonicalSwitch.disabled = !elements.canonicalSelect.value || !catalog?.scope || !catalog?.focus
+      || catalog.busy || catalog.writeBlocked
+      || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
+  });
+  elements.canonicalWorkflow.addEventListener('input', () => {
+    const catalog = state.canonical?.catalog;
+    const blocked = !catalog?.scope || !catalog?.focus || catalog.busy || catalog.writeBlocked
+      || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
+    elements.canonicalCreate.disabled = blocked || !elements.canonicalWorkflow.value;
+  });
   elements.attach.addEventListener('click', () => post('attach'));
   elements.cancel.addEventListener('click', () => post('cancel'));
   elements.input.addEventListener('compositionstart', () => {

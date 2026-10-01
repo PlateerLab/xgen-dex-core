@@ -225,3 +225,62 @@ test('Desktop account clear suppresses a late successful mutation acknowledgemen
   assert.equal(f.model.state.result, null); assert.equal(f.model.state.turn.status, 'unavailable');
   assert.equal(f.model.state.turn.request, undefined);
 });
+
+test('Desktop session lifecycle blocks unknown follow-up writes until an explicit catalog recheck', async () => {
+  const f = fixture(); const event = '00000000-0000-4000-8000-000000000010'; let creates = 0; let catalogs = 0;
+  const catalog = { focus: { active_agent_session_id: conversation.snapshot.id, version: 3, event_id: event }, sessions: { items: [{
+    id: conversation.snapshot.id, workflow_id: 'flow', title: 'Shared', status: 'active' as const, current_sequence: 1, state_version: 1,
+  }], next_cursor: null, has_more: false } };
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'agent-sessions') { catalogs++; return { ok: true, value: { ...context, ...catalog } }; }
+    if (method === 'create-agent-session') { creates++; return { ok: false, code: 'network_error', message: 'unknown', outcome: 'unknown' }; }
+    if (method === 'switch-agent-focus') {
+      assert.deepEqual(params, { active_agent_session_id: conversation.snapshot.id, expected_version: 3 });
+      return { ok: true, value: { ...context, focus: catalog.focus } };
+    }
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); assert.equal(await f.model.refreshAgentSessions(), true);
+  assert.equal(await f.model.switchAgentFocus('00000000-0000-4000-8000-000000000099'), false);
+  assert.equal(await f.model.createAgentSession('flow', 'New'), false);
+  assert.equal(creates, 1); assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.equal(await f.model.switchAgentFocus(conversation.snapshot.id), false);
+  assert.equal(f.requests.filter((request) => request.method === 'switch-agent-focus').length, 0);
+  assert.equal(await f.model.refreshAgentSessions(), true); assert.equal(catalogs, 2);
+  assert.equal(await f.model.switchAgentFocus(conversation.snapshot.id), true);
+});
+
+test('Desktop applies only a validated lifecycle CAS conflict and does not retry', async () => {
+  const f = fixture(); const event = '00000000-0000-4000-8000-000000000010';
+  const current = { active_agent_session_id: null, version: 4, event_id: '00000000-0000-4000-8000-000000000011' };
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context,
+      focus: { active_agent_session_id: conversation.snapshot.id, version: 3, event_id: event },
+      sessions: { items: [{ id: conversation.snapshot.id, workflow_id: 'flow', title: 'Shared', status: 'active', current_sequence: 1, state_version: 1 }], next_cursor: null, has_more: false } } };
+    if (method === 'switch-agent-focus') return { ok: false, code: 'usage_error', message: 'conflict', outcome: 'rejected', status: 409,
+      conflict: { code: 'FOCUS_VERSION_CONFLICT', current } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions();
+  assert.equal(await f.model.switchAgentFocus(null), false); assert.deepEqual(f.model.state.catalog.focus, current);
+  assert.equal(f.model.state.catalog.writeBlocked, true); assert.equal(f.model.state.conversation, null);
+  assert.equal(await f.model.switchAgentFocus(null), false);
+  assert.equal(f.requests.filter((request) => request.method === 'switch-agent-focus').length, 1);
+});
+
+test('Desktop catalog refresh clears an old transcript when authoritative focus is null', async () => {
+  const f = fixture();
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus,
+      sessions: { items: [], next_cursor: null, has_more: false } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); assert.ok(f.model.state.conversation?.snapshot);
+  assert.equal(await f.model.refreshAgentSessions(), true);
+  assert.equal(f.model.state.catalog.focus?.active_agent_session_id, null);
+  assert.equal(f.model.state.conversation, null);
+  f.notify({ type: 'cleared' }); assert.equal(f.model.state.catalog.focus, null);
+});

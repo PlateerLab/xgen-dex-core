@@ -17,7 +17,7 @@ function fixture(capable = true, canonical = true, live = true, turns = true) {
   let notify!: (n: RpcNotification) => void; let change!: (s: any) => void;
   let respond: (m: string, p: Record<string, unknown>) => Promise<any> = async () => context;
   const calls: string[] = []; const requests: Array<{ method: string; params: Record<string, unknown> }> = []; const states: NativeSessionViewState[] = [];
-  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}), ...(turns ? { canonicalTurns: true as const } : {}) } } : {} }) as InitializeResult,
+  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalSessions: true as const, ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}), ...(turns ? { canonicalTurns: true as const } : {}) } } : {} }) as InitializeResult,
     request: async <T>(m: string, p: Record<string, unknown> = {}) => { calls.push(m); requests.push({ method: m, params: p }); return respond(m, p) as Promise<T>; },
     onNotification: (f: typeof notify) => { notify = f; return () => {}; }, onStateChange: (f: typeof change) => { change = f; return () => {}; } };
   const controller = new NativeSessionController(rpc, (v) => states.push(v));
@@ -370,4 +370,108 @@ test('switching verified account clears an unknown request before a stale result
   await assert.rejects(switched, /범위를 확인/);
   assert.equal(f.states.at(-1)?.turn?.canRetry, false);
   assert.equal(f.states.at(-1)?.turn?.request, undefined);
+});
+
+test('Canonical session lifecycle uses verified focus CAS, blocks arbitrary IDs, and never retries an unknown create', async () => {
+  const f = fixture(); const target = conversation.snapshot!.id;
+  const event = '00000000-0000-4000-8000-000000000010'; let creates = 0; let catalogs = 0;
+  const catalog = { focus: { active_agent_session_id: target, version: 3, event_id: event }, sessions: { items: [{
+    id: target, workflow_id: 'flow', title: 'Shared', status: 'active' as const, current_sequence: 1, state_version: 1,
+  }], next_cursor: null, has_more: false } };
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/agent-sessions') { catalogs++; return { ...context, ...catalog }; }
+    if (method === 'native/create-agent-session') {
+      creates++; throw new DexRpcError('lost', -32603, { code: 'network_error', details: { outcome: 'unknown' } });
+    }
+    if (method === 'native/switch-agent-focus') return { ...context, focus: catalog.focus };
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.refreshAgentSessions('corp', '7');
+  await assert.rejects(f.controller.switchAgentFocus('00000000-0000-4000-8000-000000000099'), /내 활성 Agent 세션/);
+  assert.equal(f.calls.includes('native/switch-agent-focus'), false);
+  await f.controller.createAgentSession('flow', 'New');
+  assert.equal(creates, 1); assert.equal(f.states.at(-1)?.catalog?.writeBlocked, true);
+  await assert.rejects(f.controller.switchAgentFocus(target), /명시적으로 새로 고쳐/);
+  assert.equal(creates, 1);
+  await f.controller.refreshAgentSessions('corp', '7');
+  assert.equal(catalogs, 2); assert.equal(f.states.at(-1)?.catalog?.writeBlocked, false);
+  await f.controller.switchAgentFocus(target);
+  const write = f.requests.find((request) => request.method === 'native/switch-agent-focus')!;
+  assert.deepEqual(write.params, { profile: 'corp', user_id: '7', active_agent_session_id: target, expected_version: 3 });
+});
+
+test('a safe focus CAS conflict updates only verified focus and does not retry', async () => {
+  const f = fixture(); const target = conversation.snapshot!.id;
+  const event = '00000000-0000-4000-8000-000000000010';
+  const current = { active_agent_session_id: null, version: 4, event_id: '00000000-0000-4000-8000-000000000011' };
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/agent-sessions') return { ...context, focus: { active_agent_session_id: target, version: 3, event_id: event },
+      sessions: { items: [{ id: target, workflow_id: 'flow', title: 'Shared', status: 'active', current_sequence: 1, state_version: 1 }], next_cursor: null, has_more: false } };
+    if (method === 'native/switch-agent-focus') throw new DexRpcError('conflict', -32603, { code: 'usage_error', details: {
+      outcome: 'rejected', status: 409, conflict: { code: 'FOCUS_VERSION_CONFLICT', current, private: 'hidden' },
+    } });
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.refreshAgentSessions('corp', '7');
+  await f.controller.switchAgentFocus(null);
+  assert.deepEqual(f.states.at(-1)?.catalog?.focus, current);
+  assert.equal(f.states.at(-1)?.catalog?.writeBlocked, true);
+  assert.equal(f.states.at(-1)?.conversation, null);
+  assert.equal(f.requests.filter((request) => request.method === 'native/switch-agent-focus').length, 1);
+  await assert.rejects(f.controller.switchAgentFocus(null), /명시적으로 새로 고쳐/);
+  assert.equal(JSON.stringify(f.states).includes('hidden'), false);
+});
+
+test('catalog refresh waits for an in-flight canonical read before issuing its request', async () => {
+  const f = fixture(); let finish!: (value: NativeRpcResult) => void; let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  f.respond(async (method) => {
+    if (method === 'native/conversation') {
+      entered(); return new Promise<NativeRpcResult>((resolve) => { finish = resolve; });
+    }
+    if (method === 'native/agent-sessions') return { ...context, focus,
+      sessions: { items: [], next_cursor: null, has_more: false } };
+    return context;
+  });
+  const read = f.controller.conversation('corp', '7'); await started;
+  const refresh = f.controller.refreshAgentSessions('corp', '7');
+  assert.deepEqual(f.calls, ['native/conversation']);
+  finish({ ...context, view: 'conversation', conversation, has_more: false });
+  await Promise.all([read, refresh]);
+  assert.deepEqual(f.calls, ['native/conversation', 'native/agent-sessions']);
+});
+
+test('catalog focus changes and credential operations clear stale conversation and catalog scope', async () => {
+  const f = fixture();
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/agent-sessions') return { ...context, focus,
+      sessions: { items: [], next_cursor: null, has_more: false } };
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); assert.ok(f.states.at(-1)?.conversation?.snapshot);
+  await f.controller.refreshAgentSessions('corp', '7');
+  assert.equal(f.states.at(-1)?.catalog?.focus?.active_agent_session_id, null);
+  assert.equal(f.states.at(-1)?.conversation, null);
+  await f.controller.perform('native/session', { profile: 'corp', user_id: '7', action: 'logout', password: 'x' });
+  assert.equal(f.states.at(-1)?.catalog, undefined);
+});
+
+test('lifecycle acknowledgements from a different HTTPS origin are rejected and lock further writes', async () => {
+  const f = fixture(); const target = conversation.snapshot!.id;
+  const event = '00000000-0000-4000-8000-000000000010';
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/agent-sessions') return { ...context, focus: { active_agent_session_id: target, version: 3, event_id: event },
+      sessions: { items: [{ id: target, workflow_id: 'flow', title: 'Shared', status: 'active', current_sequence: 1, state_version: 1 }], next_cursor: null, has_more: false } };
+    if (method === 'native/switch-agent-focus') return { ...context, server_url: 'https://other.example.test',
+      focus: { active_agent_session_id: null, version: 4, event_id: '00000000-0000-4000-8000-000000000011' } };
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.refreshAgentSessions('corp', '7');
+  await assert.rejects(f.controller.switchAgentFocus(null), /서버 범위/);
+  assert.equal(f.states.at(-1)?.catalog?.writeBlocked, true);
+  assert.equal(f.states.at(-1)?.catalog?.focus?.active_agent_session_id, target);
 });

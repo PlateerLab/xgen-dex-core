@@ -86,9 +86,14 @@ VSCode 계정·프로필·HTTPS origin과 최신 대화 snapshot만 사용하며
 이 버튼은 같은 중복 방지 키와 버전을 다시 사용합니다. **응답 중지**는 최신 snapshot에서 검증된 실행 중
 turn만 대상으로 합니다.
 
-공유 대화 모드에서는 첨부 파일과 로컬 도구를 사용할 수 없습니다. 현재 활성 Canonical 대화가 있어야 하며,
-이 화면에서 새 Canonical 대화를 만들거나 대화를 선택할 수는 없습니다. 쓰기에는 `canonicalTurns`, 실시간
-동기화에는 `canonicalLive`, 읽기에는 `canonicalConversation` capability가 있는 같은 CLI 프로세스가 필요합니다.
+공유 대화 모드에서는 첨부 파일과 로컬 도구를 사용할 수 없습니다. **새 대화** 또는 **세션 선택**을 누르면
+Canonical 세션 컨트롤이 열립니다. 목록에는 현재 계정이 소유한 서버 검증 세션만 표시되고, 새 세션은 사용자가
+직접 입력한 Workflow ID와 선택 제목으로 생성합니다. Workflow 소유권은 서버가 검사하며 legacy 로그인이나
+Agent 목록 조회로 우회하지 않습니다. 포커스 변경은 가장 최근 목록 응답의 버전만 사용합니다. 생성·전환 결과가
+불명확하면 자동 재시도하지 않고, 사용자가 **새로 고침**으로 목록과 포커스를 다시 확인할 때까지 다른 세션 쓰기를
+막습니다. 턴 요청이 불명확하거나 송신·중단 처리 중인 동안에도 세션 쓰기를 막습니다. 쓰기에는 `canonicalTurns`,
+세션 선택에는 `canonicalSessions`, 실시간 동기화에는 `canonicalLive`, 읽기에는 `canonicalConversation` capability가
+있는 같은 CLI 프로세스가 필요합니다.
 
 The **Shared conversation** button explicitly switches the existing composer into Canonical mode after the native
 session has verified a current conversation. Sends use only the CLI-verified VSCode account, profile, exact HTTPS
@@ -97,9 +102,12 @@ by an authoritative HTTP read and native live watch. If the outcome is unknown, 
 host-memory request, including its idempotency key and version. **Stop response** targets only the exact running turn
 from the latest verified snapshot.
 
-Attachments and local tools are unavailable in Shared conversation mode. The mode requires an already active
-Canonical conversation and cannot create or choose one. The same CLI process must advertise `canonicalConversation`,
-`canonicalLive`, and `canonicalTurns`; there is no legacy chat fallback for Canonical writes.
+Attachments and local tools are unavailable in Shared conversation mode. **New Chat** or **Select session** opens the
+Canonical session controls. The selector accepts only active sessions from the latest verified owned-session page; creation
+uses a manually entered workflow ID whose ownership is checked by the server. Focus writes use the verified focus version.
+An unknown create or switch is never retried and blocks another lifecycle write until an explicit catalog refresh. The same
+CLI process must advertise `canonicalConversation`, `canonicalLive`, `canonicalTurns`, and `canonicalSessions`; there is no
+legacy chat fallback for Canonical writes.
 
 The read-only virtual document follows explicit canonical reads, HTTP polling or native WSS notifications through the CLI RPC host. Live mode requires `canonicalLive`, preserves cursors across same-session rotation and uses HTTP as the display authority. Scoped envelopes and display projections are validated; stale watch acknowledgements are stopped by their exact IDs.
 실제 ACTIVE 서버·전 표면 송수신 검증은 후속 작업입니다.

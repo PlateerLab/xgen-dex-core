@@ -24,6 +24,7 @@ import {
   net,
   session,
   clipboard,
+  powerMonitor,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -477,6 +478,9 @@ function createWindow(): void {
   );
 
   mainWindow.on('ready-to-show', () => mainWindow?.show());
+  // 창이 다시 앞으로 왔다 — 숨어 있던 사이 끊긴 대화 소켓을 지금 확인한다(기다리면 백오프만큼 늦는다).
+  mainWindow.on('focus', () => conversationWatchHub.refresh());
+  mainWindow.on('show', () => conversationWatchHub.refresh());
   mainWindow.on('close', (e) => {
     if (!mainWindow) return;
     const b = mainWindow.getBounds();
@@ -1650,9 +1654,37 @@ const ideWatches = new IdeWatchHub(ideDeps, (sender, key) => {
     /* 창이 닫히는 중 */
   }
 });
+/**
+ * 스트림이 끊긴 채 서버에서 계속 도는 이 앱의 턴 — 대화 id → 알림에 쓸 이름.
+ *
+ * 끊긴 스트림은 "답변 완료" 를 말할 수 없다(아직 안 끝났다). 그 턴의 끝은 대화 소켓이 알려 주므로,
+ * 거기서 끝이 보이면 그때 완료를 알린다. 예전에는 끊기는 순간 완료 알림이 떴고, 정작 끝났을 때는
+ * 아무 알림도 없었다.
+ */
+const detachedChats = new Map<string, { workflowId: string; workflowName: string }>();
+
+function publishDetachedDone(interactionId: string, output: string): void {
+  const chat = detachedChats.get(interactionId);
+  if (!chat) return;
+  detachedChats.delete(interactionId);
+  notificationCenter.publish({
+    id: `chat-completed-${interactionId}-${Date.now()}`,
+    type: 'chat.completed',
+    title: `${chat.workflowName || '에이전트'} 답변 완료`,
+    body: output.trim().slice(-180) || '답변이 완료되었습니다.',
+    occurredAt: new Date().toISOString(),
+    workflowId: chat.workflowId,
+    workflowName: chat.workflowName,
+    interactionId,
+    groupKey: `chat:${chat.workflowId}:${interactionId}`,
+    target: { kind: 'chat', workflowId: chat.workflowId, workflowName: chat.workflowName, interactionId },
+  });
+}
+
 // 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)을 열린 채팅에 실시간 반영.
 const conversationWatchHub = new ConversationWatchHub(
   (turn) => {
+    if (turn.source !== 'subagent_report' && turn.output) publishDetachedDone(turn.interactionId, turn.output);
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.chatWatchTurn, turn);
     }
@@ -1669,6 +1701,7 @@ const conversationWatchHub = new ConversationWatchHub(
   // 다른 화면이 돌리는 턴을 그대로 흘린다. 이것이 없던 동안, 웹에서 던진 질문은
   // 이 앱 화면에 **턴이 끝날 때까지** 나타나지 않았다.
   (event) => {
+    if (event.kind === 'ended' && event.output) publishDetachedDone(event.interactionId, event.output);
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.chatWatchPeer, event);
     }
@@ -2898,6 +2931,8 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
     };
     let preview = '';
     let terminal = false;
+    /** 스트림이 끊겼다 — 턴은 서버에서 계속 돈다. 끝난 것이 아니므로 완료로 접지 않는다. */
+    let detached = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
       const event: NotificationEvent = {
         id: `chat-${kind}-${streamId}`,
@@ -2948,9 +2983,21 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
           publishTerminal('failed', ev.detail);
           break;
         }
+        if (ev.kind === 'detached') {
+          // 끝이 아니라 분리다. 완료 알림은 대화 소켓이 그 턴의 끝을 알려 줄 때 띄운다.
+          detached = true;
+          if (serverReq.interactionId) {
+            detachedChats.set(serverReq.interactionId, {
+              workflowId: serverReq.workflowId,
+              workflowName: serverReq.workflowName || '',
+            });
+          }
+          break;
+        }
       }
       // 일부 서버는 end 프레임 없이 정상 EOF 로 닫는다. 취소가 아니라면 같은 완료다.
-      if (!terminal && !controller.signal.aborted && !sender.isDestroyed()) {
+      // (프로토콜은 그런 닫힘을 분리로 알려 준다 — 그때는 완료가 아니다.)
+      if (!terminal && !detached && !controller.signal.aborted && !sender.isDestroyed()) {
         sender.send(CHANNELS.chatEvent, streamId, { kind: 'end' });
         publishTerminal('completed');
       }
@@ -3727,6 +3774,11 @@ if (!gotLock) {
     // 브릿지가 전부 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히
     // 던진다(조용히 메모리로 폴백해서 사용자의 MCP 인증을 매번 잃는 대신).
     bindDesktopHost();
+
+    // 절전에서 깨어났다 — 잠든 사이 서버가 놓은 대화 소켓은 이쪽에서 보기엔 아직 열려 있다.
+    // 지금 확인하고 다시 붙어야 그 사이 끝난 턴이 바로 보인다.
+    powerMonitor.on('resume', () => conversationWatchHub.refresh());
+    powerMonitor.on('unlock-screen', () => conversationWatchHub.refresh());
 
     const cfg = loadConfig();
     if (cfg.theme) nativeTheme.themeSource = cfg.theme;

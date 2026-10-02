@@ -397,6 +397,54 @@ test('complete() 는 분리를 결과에 싣는다 — text 는 답이 아니라
   assert.equal(out.text, '조각');
 })
 
+/** 열린 채 아무것도 오지 않는 스트림 — 반쯤 열린 연결(절전에서 깨어남·Wi-Fi 전환). */
+function silentStream(chunks: string[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const c of chunks) controller.enqueue(enc.encode(c));
+      // 닫지 않는다 — 읽기가 영영 돌아오지 않는다.
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+test('한동안 아무것도 오지 않으면 분리다 — 반쯤 열린 연결에서 [진행 중] 이 영영 남지 않게 (2026-10-02)', async () => {
+  const api = chatApi(silentStream(['data: {"type":"data","content":"절반"}\n\n']));
+  const seen: string[] = [];
+  for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' }, undefined, { idleMs: 60 })) {
+    seen.push(e.kind);
+  }
+  assert.deepEqual(seen, ['text', 'detached'])
+})
+
+test('keepalive 가 오는 동안은 조용해도 끊지 않는다', async () => {
+  let push: ((s: string) => void) | null = null;
+  let close: (() => void) | null = null;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      push = (s) => controller.enqueue(enc.encode(s));
+      close = () => controller.close();
+    },
+  });
+  const api = chatApi(new Response(body, { status: 200 }));
+  const seen: string[] = [];
+  const run = (async () => {
+    for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' }, undefined, { idleMs: 80 })) {
+      seen.push(e.kind);
+    }
+  })();
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((r) => setTimeout(r, 40));
+    push!(': keepalive\n\n');
+  }
+  push!('data: {"type":"end"}\n\n');
+  close!();
+  await run;
+  assert.deepEqual(seen, ['end'])
+})
+
 // ── 앱 API 접두 — 이름을 앱으로 바꾸기 전(2026-09-28)의 서버에도 붙는다 ─────────
 //
 // 데스크톱 앱은 여러 버전의 서버에 붙는다. 새 서버는 /agent-apps 와 옛 /agent-artifacts 를 둘 다 알고,

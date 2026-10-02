@@ -44,6 +44,9 @@ interface FakeStream {
   stopped: boolean
 }
 
+/** 이 창이 보내는 턴의 표식(시험용). */
+const ME = 'dex-me'
+
 function makeStore(
   history: Record<string, Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>> = {},
   running: Record<string, boolean> = {},
@@ -82,6 +85,7 @@ function makeStore(
     async stopChat(interactionId) {
       stopCalls.push(interactionId)
     },
+    originId: ME,
   }
   let clock = 1000
   const store = new SessionStore(transport, () => clock++)
@@ -1199,11 +1203,26 @@ test('진행 프레임의 도구를 못 받았으면 완결 행이 실어 온 �
   assert.equal(store.get(key)!.messages[1].flow?.length, 3)
 })
 
-test('진행 프레임으로 도구를 받았으면 그것이 이긴다 — 보던 그대로', () => {
+test('서버의 작업 과정이 정본이다 — 진행분이 끊긴 사이의 도구를 놓쳤어도 빠지지 않는다 (2026-10-02)', () => {
+  // 예전에는 진행분에 도구가 하나라도 있으면 그것이 이겨, 분리를 알아채기까지·재연결 사이에 돈 도구가
+  // 그 답의 작업 과정에서 영영 사라졌다.
   const { store } = makeStore()
   const key = store.openNew(agent('A'))
   store.applyPeerEvent({ kind: 'started', interactionId: key, input: 'q' })
   store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'tool', data: { event_type: 'tool_call', tool_name: 'Bash', tool_use_id: 'b' } })
+  store.applyExternalTurn({ interactionId: key, ioId: 2, input: 'q', output: '답', source: 'user', process: SERVER_PROCESS })
+  const answer = store.get(key)!.messages[1]
+  assert.equal(answer.flow?.[0]?.kind === 'tool' && answer.flow[0].event.toolName, 'AppList')
+  assert.equal(answer.flow?.length, 3)
+})
+
+test('서버의 과정이 아직 덜 쓰였으면(도구가 더 적다) 진행분이 이긴다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: 'q' })
+  for (const [type, id] of [['tool_call', 'b'], ['tool_result', 'b'], ['tool_call', 'c']] as const) {
+    store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'tool', data: { event_type: type, tool_name: 'Bash', tool_use_id: id } })
+  }
   store.applyExternalTurn({ interactionId: key, ioId: 2, input: 'q', output: '답', source: 'user', process: SERVER_PROCESS })
   const answer = store.get(key)!.messages[1]
   assert.equal(answer.flow?.[0]?.kind === 'tool' && answer.flow[0].event.toolName, 'Bash')
@@ -1331,4 +1350,85 @@ test('이력으로 메운 놓친 턴의 질문에도 파일 카드가 붙는다'
     assert.equal(merged[2].images?.[0]?.name, '보고서.docx', `remote=${remote}`)
     assert.equal(merged[2].images?.[0]?.kind, 'file')
   }
+})
+
+
+// ── 끊겼다 붙어도 "작업 완료" 를 놓치지 않는다 (2026-10-02) ─────────────────
+//
+// 대화 소켓은 이 창의 턴도 보낸다(감시 표식이 턴 표식과 다르다). 스트림이 살아 있는 동안은 메아리라 버리고,
+// 스트림이 끊긴 뒤에는 그 턴의 나머지로 받는다.
+
+test('끝까지 그린 내 턴의 늦은 메아리는 버린다 — 끝난 답 아래에 진행분이 다시 서지 않는다', async () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '질문')
+  await flush()
+  streams[0].onEvent({ kind: 'execution_io', executionIoId: 7 })
+  streams[0].onEvent({ kind: 'text', content: '답' })
+  streams[0].onEvent({ kind: 'end' })
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, originId: ME, event: 'message', data: { type: 'data', content: '답' } })
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, originId: ME, ioId: 7, input: '질문', output: '답' })
+  const s = store.get(key)!
+  assert.deepEqual(s.messages.map((m) => m.text), ['질문', '답'])
+  assert.equal(s.messages.some((m) => m.remotePartial), false)
+  assert.equal(s.remote, false)
+})
+
+test('끊긴 내 턴은 대화 소켓으로 이어 받고, 종료가 오면 끝난다', async () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '긴 작업')
+  await flush()
+  streams[0].onEvent({ kind: 'text', content: '앞부분' })
+  streams[0].onEvent({ kind: 'detached', reason: 'network' })
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, originId: ME, event: 'message', data: { type: 'data', content: ' 뒷부분' } })
+  assert.equal(store.get(key)!.messages.at(-1)!.text, '앞부분 뒷부분', '끊긴 뒤의 진행이 이어 붙는다')
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, originId: ME, ioId: 9, input: '긴 작업', output: '앞부분 뒷부분 끝' })
+  const s = store.get(key)!
+  assert.equal(s.remote, false, '[진행 중] 이 내려간다')
+  assert.deepEqual(s.messages.map((m) => m.text), ['긴 작업', '앞부분 뒷부분 끝'])
+  // 끝난 뒤의 같은 표식 프레임은 다시 메아리다.
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, originId: ME, event: 'message', data: { type: 'data', content: '늦은 조각' } })
+  assert.equal(store.get(key)!.messages.length, 2)
+})
+
+test('서버가 끝났다고 하는데 진행분이 남았으면 잠깐 뒤 기록으로 맞춘다 — 종료 프레임을 놓쳤다', async () => {
+  const history: Record<string, Array<{ input: string; output: string; ioId?: number }>> = {
+    R: [{ input: '이전', output: '이전 답', ioId: 1 }],
+  }
+  const { store, streams } = makeStore(history)
+  store.openResume(agent('A'), 'R', 'A')
+  await flush()
+  store.send('R', '긴 작업')
+  await flush()
+  streams[0].onEvent({ kind: 'text', content: '받다 만' })
+  streams[0].onEvent({ kind: 'detached', reason: 'network' })
+  // 잠든 사이 끝났다 — 완결 행도 종료 프레임도 받지 못했다. 서버의 기록에는 있다.
+  history.R = [
+    { input: '이전', output: '이전 답', ioId: 1 },
+    { input: '긴 작업', output: '최종 답', ioId: 2 },
+  ]
+  store.setRemoteRunning('R', false)
+  await new Promise((r) => setTimeout(r, 1_700))
+  const s = store.get('R')!
+  assert.equal(s.messages.some((m) => m.remotePartial), false, '받다 만 진행분이 남지 않는다')
+  assert.deepEqual(s.messages.map((m) => m.text), ['이전', '이전 답', '긴 작업', '최종 답'])
+})
+
+test('보이지 않는 대화에서 끝난 턴에만 점이 붙는다 — 앱 탭으로 옮겨도', async () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.setVisible([]) // 앱·뷰어 탭으로 옮겼다(포커스는 여전히 이 대화)
+  store.send(key, '질문')
+  await flush()
+  streams[0].onEvent({ kind: 'text', content: '답' })
+  streams[0].onEvent({ kind: 'end' })
+  assert.equal(store.get(key)!.unseen, true, '보이지 않는 동안 끝났다')
+  store.setVisible([key])
+  assert.equal(store.get(key)!.unseen, false, '다시 보이면 지운다')
+})
+
+test('끊긴 뒤에도 그 대화는 살아 있다 — 상태 점이 진행 중이다', () => {
+  const base = { error: null, streaming: false, remote: true, updatedAt: 0 } as unknown as SessionState
+  assert.equal(sessionDotState(base, CONNECTOR_SESSION_IDLE_MS * 2), 'active')
 })

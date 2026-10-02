@@ -281,7 +281,7 @@ export * from './chat-guardrails';
 export { ApiError } from './client';
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';
-export { TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';
+export { STREAM_IDLE_MS, TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';
 export type { LiveTurnSnapshot, SubscribedState } from './chat';
 // 다른 화면에서 도는 턴 — 질문 본문·첨부, 진행분의 작업 과정. 앱·웹이 같은 모양으로 그린다.
 export { liveTurnFlow, liveTurnProcess } from './chat';

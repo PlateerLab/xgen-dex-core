@@ -300,3 +300,24 @@ test('다른 화면에서 온 호출이면 그 화면의 이름이 실린다 —
   assert.equal(toolCallContext({ interaction_id: 'c1', remote: '1' }).originName, '다른 기기');
   assert.equal(toolCallContext({ interaction_id: 'c1' }).remote, undefined);
 });
+
+test('kick — 열려 있다고 믿는 소켓도 카탈로그를 다시 알려 살아 있는지 확인한다 (앱 복귀, 2026-10-02)', async () => {
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  const hellos = () => first.sent.filter((f) => (f as { type: string }).type === 'hello').length;
+  assert.equal(hellos(), 1);
+  bridge.kick(); // 뒤에 있던 사이 OS 가 소켓을 놓았을 수 있다 — 이쪽에서는 아직 열려 있다
+  assert.equal(hellos(), 2, '다시 알린다 — 서버의 확인(ready)이 살아 있음을 증명한다');
+  const bridgeAny = bridge as unknown as { ackWatchdog: ReturnType<typeof setTimeout> | null };
+  assert.ok(bridgeAny.ackWatchdog, '확인이 오지 않으면 워치독이 새로 붙는다');
+  bridge.stop();
+});

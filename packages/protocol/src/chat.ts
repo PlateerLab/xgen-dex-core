@@ -361,6 +361,32 @@ export function turnEventToChatEvent(
   }
 }
 
+/**
+ * 턴 스트림이 이만큼 조용하면 끊긴 것이다. 서버는 보낼 것이 없는 동안에도 10초마다 keepalive 주석을
+ * 흘린다(execution.py `with_sse_keepalive`) — 그 넷을 연달아 놓쳤다는 뜻이다.
+ */
+export const STREAM_IDLE_MS = 45_000;
+
+/** 한 번 읽기 — `idleMs` 안에 아무것도 오지 않으면 'idle'. 0 이하면 기다리기만 한다. */
+async function readWithin(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array> | 'idle'> {
+  const read = reader.read();
+  if (!(idleMs > 0)) return read;
+  // 진 쪽 읽기는 나중에 취소로 끝난다 — 그 거절이 처리되지 않은 채 떠돌지 않게 붙잡아 둔다.
+  read.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const idle = new Promise<'idle'>((resolve) => {
+    timer = setTimeout(() => resolve('idle'), idleMs);
+  });
+  try {
+    return await Promise.race([read, idle]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class ChatApi {
   constructor(private http: HttpClient) {}
 
@@ -398,8 +424,14 @@ export class ChatApi {
   /**
    * Stream a chat turn. Yields normalized ChatEvents until the terminal `end`
    * (or the stream closes). Pass an AbortSignal to cancel mid-stream.
+   *
+   * `idleMs` — 이만큼 한 바이트도 오지 않으면 끊긴 것으로 본다(기본 {@link STREAM_IDLE_MS}, 0 이면 끈다).
    */
-  async *stream(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatEvent, void, void> {
+  async *stream(
+    req: ChatRequest,
+    signal?: AbortSignal,
+    opts?: { idleMs?: number },
+  ): AsyncGenerator<ChatEvent, void, void> {
     const res = await this.http.stream(
       '/api/agentflow/execute/based-id/stream',
       toRequestBody(req),
@@ -418,9 +450,19 @@ export class ChatApi {
      * 그때 받다 만 텍스트가 최종 답이 되거나 멀쩡히 도는 턴이 실패로 표시된다.
      */
     let terminal = false;
+    const idleMs = opts?.idleMs ?? STREAM_IDLE_MS;
     try {
       for (;;) {
-        const { value, done } = await reader.read();
+        const step = await readWithin(reader, idleMs);
+        if (step === 'idle') {
+          // 반쯤 열린 연결(절전·Wi-Fi 전환·프록시가 조용히 놓은 소켓) — 읽기가 영영 돌아오지 않는다.
+          // 서버는 조용한 동안에도 keepalive 를 흘리므로, 이만큼 아무것도 없으면 이 스트림은 죽었다.
+          // 그 턴은 서버에서 계속 돈다 — 끝이 아니라 분리다.
+          void reader.cancel().catch(() => undefined);
+          yield { kind: 'detached', reason: 'network' };
+          return;
+        }
+        const { value, done } = step;
         if (done) break;
         const frames = parser.push(decoder.decode(value, { stream: true }));
         for (const f of frames) {

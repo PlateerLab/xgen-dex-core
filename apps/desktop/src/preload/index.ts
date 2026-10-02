@@ -472,7 +472,8 @@ const api = {
       const h = (_e: unknown, id: string, ev: ChatEvent) => {
         if (id !== streamId) return;
         onEvent(ev);
-        if (ev.kind === 'end' || ev.kind === 'error') {
+        // 분리(detached)도 이 스트림의 마지막 사건이다 — 그 턴의 나머지는 대화 소켓으로 온다.
+        if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
           ipcRenderer.removeListener(CHANNELS.chatEvent, h);
         }
       };
@@ -927,12 +928,14 @@ const api = {
     },
     /**
      * **다른 화면**(다른 기기·웹 탭)이 돌리는 턴. 시작(질문 본문)·진행(토큰)·
-     * 종료(완결 본문)가 온다. 자기 턴은 서버가 걸러 준다.
+     * 종료(완결 본문)가 온다. 이 창의 턴도 온다(`originId` 가 이 창의 표식) — 스트림이 끊긴 뒤
+     * 그 턴의 나머지를 받는 길이라 서버가 거르지 않는다. 메아리는 화면이 거른다.
      */
     onPeer: (
       cb: (event: {
         kind: 'started' | 'exec' | 'ended' | 'gap';
         interactionId: string;
+        originId?: string;
         input?: string;
         output?: string;
         ioId?: number | null;

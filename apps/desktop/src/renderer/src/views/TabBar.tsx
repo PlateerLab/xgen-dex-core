@@ -37,6 +37,8 @@ export const TabBar: React.FC<{
     <div className="tab-strip-scroll">
       {group.tabs.map((tab) => {
         const session = tab.kind === 'chat' ? sessions.get(tab.sessionKey ?? '') : undefined;
+        // 이 창의 스트림이 끊긴 뒤에도(remote) 그 턴은 서버에서 돈다 — 끝날 때까지 진행 중으로 보인다.
+        const live = !!session && (session.streaming || session.remote);
         const active = group.activeTabId === tab.id;
         return (
           <div
@@ -73,7 +75,7 @@ export const TabBar: React.FC<{
             </span>
             <span className="tab-label">{label(tab, sessions)}</span>
             <button
-              className={`tab-close ${session?.streaming ? 'live' : ''} ${session?.unseen ? 'unseen' : ''}`}
+              className={`tab-close ${live ? 'live' : ''} ${session?.unseen ? 'unseen' : ''}`}
               title={tab.kind === 'chat' ? '채팅 종료' : '닫기'}
               aria-label={tab.kind === 'chat' ? '채팅 종료' : '탭 닫기'}
               onPointerDown={(event) => event.stopPropagation()}
@@ -85,7 +87,7 @@ export const TabBar: React.FC<{
               <span className="tab-close-x">
                 <CloseIcon size={12} />
               </span>
-              {session?.streaming ? (
+              {live ? (
                 <span className="tab-live-dot" title="진행 중" />
               ) : session?.unseen ? (
                 <span

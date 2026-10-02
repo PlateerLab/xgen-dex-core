@@ -299,6 +299,26 @@ function hasToolFlow(m: Pick<ChatMessage, 'flow'> | undefined): boolean {
   return !!m?.flow?.some((f) => f.kind === 'tool');
 }
 
+/** 작업 과정의 도구 호출 수. */
+function toolSteps(flow: readonly { kind: string }[] | undefined): number {
+  return flow?.filter((f) => f.kind === 'tool').length ?? 0;
+}
+
+/**
+ * 진행분이 쌓은 과정과 서버가 실행 기록에서 되살린 과정 중 무엇으로 답을 그리는가(데스크톱과 같다).
+ *
+ * 서버의 것이 정본이다 — 진행분은 이 폰이 받은 프레임만 쌓았으므로 끊긴 사이의 도구가 빠질 수 있다. 예전에는
+ * 진행분에 도구가 하나라도 있으면 그것을 남겨, 빠진 단계가 그 답의 작업 과정에서 영영 사라졌다. 서버의 과정이
+ * 진행분보다 도구가 적을 때만(기록이 아직 덜 쓰였다) 진행분을 쓴다.
+ */
+export function preferServerProcess(
+  partialFlow: readonly { kind: string }[] | undefined,
+  process: readonly HistoryFlowItem[] | undefined,
+): boolean {
+  if (!process?.length || !process.some((f) => f.kind === 'tool')) return false;
+  return toolSteps(process) >= toolSteps(partialFlow);
+}
+
 /**
  * 서버가 실행 기록에서 되살린 작업 과정을 답에 붙인다 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
  * 이미 도구 과정이 있으면(이 폰이 진행 프레임으로 받았다) 그대로 둔다. 붙일 것이 없으면 같은 객체를 돌려준다.
@@ -338,8 +358,8 @@ export function attachProcessById(
  * (도는 중에 연 대화) 답만 붙인다. 이미 그린 턴이면 null — 단 그 답에 도구 과정이 없고 이 행이 서버의
  * 과정을 실어 왔으면 그것만 붙인다.
  *
- * 작업 과정: 이 폰이 진행 프레임으로 도구를 받았으면 그것을, 못 받았으면(진행 중에 소켓이 끊겼다 붙었다)
- * 서버가 완결 행에 실어 온 과정(`process`)을 쓴다 — 결과만 남지 않는다(데스크톱과 같다, 2026-10-01).
+ * 작업 과정: 서버가 완결 행에 실어 온 과정(`process`)이 정본이다(preferServerProcess). 그것이 없거나 아직 덜
+ * 쓰였으면 이 폰이 진행 프레임으로 쌓은 과정을 쓴다 — 결과만 남지 않는다(데스크톱과 같다, 2026-10-01).
  */
 export function completeRemoteTurn(
   list: readonly ChatMessage[],
@@ -370,7 +390,7 @@ export function completeRemoteTurn(
   // 진행분에 도구가 없으면(놓쳤다) 서버가 실어 온 과정으로 채운다.
   const partial = list[remotePartialIndex(list)];
   const question = list.find((m) => m.remoteQuestion && m.text === turn.input);
-  const live = !!partial?.flow?.length && (hasToolFlow(partial) || !turn.process?.length);
+  const live = !!partial?.flow?.length && !preferServerProcess(partial.flow, turn.process);
   const process: Partial<ChatMessage> = live && partial?.flow
     ? {
         flow: reconcileFlow(partial.flow, turn.output),

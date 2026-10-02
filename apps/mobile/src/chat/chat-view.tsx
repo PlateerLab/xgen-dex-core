@@ -17,6 +17,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -64,6 +65,7 @@ import {
   dropRemotePartials,
   ensureRemotePartial,
   finishStreaming,
+  hasRemoteTurn,
   historyMessages,
   markExecutionIo,
   mergeHistory,
@@ -172,6 +174,13 @@ export function ChatView({
   useEffect(() => {
     if (!agent) return;
     let cancelled = false;
+    // 대화가 바뀌었다 — 앞 대화의 [진행 중] 을 들고 오지 않는다. 이 화면은 대화를 옮겨도 그대로 떠 있어서,
+    // 예전에는 앞 대화에서 돌던 턴 때문에 새 대화의 작성기가 잠긴 채로 열렸다. 이 대화의 사실은 이력과
+    // 구독 응답이 곧 다시 알려 준다.
+    runningElsewhereRef.current = false;
+    remoteTurnRef.current = false;
+    stoppedRef.current = false;
+    setRunning(false);
     setMessages([]);
     setAttachments([]);
     setAttachmentStatus('');
@@ -211,6 +220,29 @@ export function ChatView({
      * 곳의 턴으로 모르면(시작·진행 프레임을 놓쳤다) 붙일 답이 아직 없다 — 종료 프레임이 답을 세울 때 꺼내 쓴다.
      */
     const serverProcess = new Map<number, HistoryFlowItem[]>();
+    let alive = true;
+    /**
+     * 이력으로 맞춘다 — 놓친 턴과 그 도구 과정까지(규칙은 mergeMissedTurns). 이 폰의 스트림이 살아 있으면
+     * 건너뛴다: 그 턴은 스트림이 끝내고, 그 사이 다른 턴은 다음 구멍이 맞춘다.
+     */
+    const resync = (): void => {
+      void client.api.history
+        .snapshot(agent.workflowId, interactionId, agent.workflowName)
+        .then((snap) => {
+          if (!alive || ownTurn()) return;
+          setMessages((prev) => {
+            const next = mergeMissedTurns(prev, snap.turns, runningElsewhereRef.current) ?? prev;
+            // 임시 말풍선이 모두 완결 턴으로 바뀌었다 — 다음 완결 행은 이미 그린 턴이다.
+            if (!hasRemoteTurn(next)) remoteTurnRef.current = false;
+            return next;
+          });
+          if (!snap.running && runningRef.current && !ownTurn()) {
+            runningElsewhereRef.current = false;
+            setRunning(false);
+          }
+        })
+        .catch(() => undefined);
+    };
     const handle = createChat({
       wsBase: wsBaseOf(client.session.serverUrl),
       workflowId: agent.workflowId,
@@ -226,9 +258,21 @@ export function ChatView({
       onModel: (data) => model.notice(data),
       // 다른 기기에서 시작한 턴이 도는가 — 그동안 작성기를 잠그고 [정지] 를 연다.
       onRunning: (isRunning) => {
-        if (isRunning && !runningRef.current) runningElsewhereRef.current = true;
-        if (!isRunning) runningElsewhereRef.current = false;
-        if (isRunning !== runningRef.current) setRunning(isRunning || runningRef.current);
+        if (isRunning) {
+          if (!runningRef.current) {
+            runningElsewhereRef.current = true;
+            setRunning(true);
+          }
+          return;
+        }
+        // 이 폰의 스트림이 살아 있으면 그 스트림이 끝을 알린다(막 보낸 턴을 서버가 아직 등록하기 전일 수도 있다).
+        if (!runningRef.current || ownTurn()) return;
+        // 서버에는 도는 턴이 없는데 화면은 아직 [진행 중] 이다 — 끝을 알리는 프레임을 놓쳤다(잠든 사이 끝났다).
+        // 예전에는 이 신호가 [진행 중] 을 끄지 못했다: 다시 켜는 줄이 함께 있어, 앱을 다시 시작하기 전까지
+        // 정지 단추와 받다 만 답이 그대로 남았다. 내리고, 이력으로 그 턴의 답을 채운다.
+        runningElsewhereRef.current = false;
+        setRunning(false);
+        resync();
       },
       // 구독 시점에 이미 돌던 턴의 진행분 — 글만이 아니라 작업 과정(도구)까지. 아직 한 글자도 없어도
       // 받을 자리를 세운다: 그래야 이어서 오는 도구·글이 임시 말풍선에 쌓이고 완결 턴이 그 자리를 대신한다.
@@ -243,13 +287,7 @@ export function ChatView({
         if (event.kind === 'gap') {
           // 구멍 — 번호가 건너뛰었거나 소켓이 끊겼다 다시 붙었다(화면을 끄고 켰다). 끊긴 사이에 시작해 끝난
           // 턴은 어떤 프레임으로도 오지 않는다. 이력으로 메운다 — 놓친 턴과 그 도구 과정까지.
-          void client.api.history
-            .snapshot(agent.workflowId, interactionId, agent.workflowName)
-            .then((snap) => {
-              if (ownTurn()) return;
-              setMessages((prev) => mergeMissedTurns(prev, snap.turns, runningElsewhereRef.current) ?? prev);
-            })
-            .catch(() => undefined);
+          resync();
           return;
         }
         if (event.kind === 'started') {
@@ -352,14 +390,26 @@ export function ChatView({
         },
         // 끊김은 실패가 아니다 — 서버의 턴은 계속 돈다. 재연결에 맡긴다.
         onDetached: () => {
+          // 끊긴 이 턴은 이제 다른 화면의 턴처럼 받는다(새 연결은 새 표식이라 서버가 진행·종료를 보내 준다) —
+          // 완결 행이 오면 이 진행분 자리를 대신한다.
           runningElsewhereRef.current = true;
+          remoteTurnRef.current = true;
           setRunning(true);
           setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false, remotePartial: true } : m)));
         },
       },
     });
     chatRef.current = handle;
-    return () => handle.close();
+    // 앱이 다시 앞으로 왔다 — 뒤에 있던 사이 OS 가 소켓을 놓았을 수 있다. 지금 확인하고, 죽었으면 새로 붙는다
+    // (새로 붙으면 지금 도는가·어디까지 왔나·놓친 턴이 함께 온다).
+    const appState = AppState.addEventListener('change', (next) => {
+      if (next === 'active') handle.resume();
+    });
+    return () => {
+      alive = false;
+      appState.remove();
+      handle.close();
+    };
   }, [client, agent, interactionId, setRunning]);
 
   // ── 스크롤 — 따라갈 때만 따라간다 ───────────────────────────

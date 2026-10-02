@@ -50,17 +50,17 @@ test('Ink input keeps navigation and pasted newline as text; explicit original r
   const f=fixture();const model=new CanonicalTuiChatModel(account,f.source,()=> 'one-intent');
   const ui=render(<CanonicalChatScreen account={account} model={model} onExit={()=>assert.fail('Input cannot exit')}/>);
   try{
-    await model.read();await frame(ui,()=>model.state.canEdit);
+    await model.read();await frame(ui,s=>s.includes('visible title')&&s.includes('턴 idle')&&model.state.canEdit);
     ui.stdin.write('i');await frame(ui,s=>s.includes('메시지:'));
     ui.stdin.write('rwysqnt');await frame(ui,s=>s.includes('rwysqnt'));
     ui.stdin.write('\u001b[200~');ui.stdin.write('first\nsecond');ui.stdin.write('\u001b[201~');
     await frame(ui,s=>s.includes('first second'));assert.equal(f.sends.length,0);
-    ui.stdin.write('\r');await frame(ui,()=>model.state.turn.status==='unknown');
+    ui.stdin.write('\r');await frame(ui,s=>s.includes('턴 unknown')&&model.state.turn.status==='unknown');
     assert.equal(f.sends.length,1);assert.equal(model.state.catalog.canWrite,false);
-    ui.stdin.write('r');await frame(ui,()=>model.state.turn.canRetry);
-    ui.stdin.write('y');await frame(ui,()=>model.state.turn.canStop&&!model.state.writing);
+    ui.stdin.write('r');await frame(ui,s=>s.includes('connected')&&s.includes('실행 running')&&s.includes('턴 unknown')&&model.state.turn.canRetry);
+    ui.stdin.write('y');await frame(ui,s=>s.includes('실행 running')&&s.includes('draft 0 bytes')&&model.state.turn.canStop&&!model.state.writing);
     assert.deepEqual(f.sends[1],f.sends[0]);assert.equal(model.state.draft,'');
-    ui.stdin.write('t');await frame(ui,()=>f.sends.length===3&&!model.state.writing);
+    ui.stdin.write('t');await frame(ui,s=>s.includes('버전 4')&&f.sends.length===3&&!model.state.writing);
     assert.deepEqual(f.sends[2],{operation:'stop',scope:f.sends[0]!.scope,agent_session_id:sid,input:{turn_id:turn,expected_state_version:3}});
   }finally{ui.unmount();await model.dispose();}
 });

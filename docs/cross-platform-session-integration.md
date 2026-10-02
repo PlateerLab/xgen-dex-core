@@ -932,7 +932,7 @@ These are remaining-work estimates, not coverage or delivery dates. The explicit
 
 - 기준 통합 브랜치: `feat/cross-platform-session` / `3c30ea6f1779b4db5898b0327ee3890a47dd8524`.
 - 하위 브랜치·PR: `feat/cross-platform-canonical-tui-chat` / [PR155](https://github.com/PlateerLab/xgen-dex-core/pull/155). 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90)은 `main` 대상 Draft를 유지한다.
-- 제품·실사용 검증 SHA: `159276a269bc75db831f9812090c0a0747006011`. 이 커밋과 같은 소스 트리에서 검증했으며 이후 증거 문서만 추가한다. 최종 Head CI와 리뷰를 확인한 뒤 하위 PR을 통합한다.
+- 제품·실사용 검증 SHA: `159276a269bc75db831f9812090c0a0747006011`. 동일 제품 코드에서 검증했으며 이후 증거 문서와 UI 테스트의 렌더 동기화만 보완한다. 최종 Head CI와 리뷰를 확인한 뒤 하위 PR을 통합한다.
 
 ```text
 dex ui --canonical --user-id <id> --profile <HTTPS profile>
@@ -950,7 +950,7 @@ dex ui --canonical --user-id <id> --profile <HTTPS profile>
 - 목록은 현재 소유 페이지를 최대100개로 교체한다. cursor 진행·중복·malformed 항목을 검증하고 보관/목록 밖 세션을 선택하지 않는다. 생성/선택/해제는 조회한 focus version CAS와 정확한 workflow/focus ACK를 검사한다. 생성 ACK 유실·focus 충돌은 명시적 **최신** L 조회 전까지 쓰기를 잠그며 R 또는 이전 P 페이지가 잠금을 풀지 않는다. 생성 요청을 자동 반복하거나 새 버전으로 재작성하지 않는다.
 - 메시지 편집은 시스템 IME를 사용하는 기존 한 줄 입력이다. 붙여넣은 개행은 공백으로 표시하며 그 보이는 본문만 Enter에서 보낸다. UTF-8 262144 bytes 상한을 적용하고 터미널 제어 문자를 제거한다. 입력 모드의 navigation 문자는 글자로 처리한다. 불명확한 턴은 같은 계정·대화에서 원래 본문/version/idempotency key로 Y 재시도만 허용한다. 검증된 현재 실행의 ID/version으로 T 중단하며 접수 ACK를 답변 완료로 표시하지 않는다.
 - 실제 focus/binding 변경은 draft·목록·private retry intent·늦은 응답을 폐기한다. 일시적 읽기 실패에는 같은 로그인 범위의 draft/unknown intent를 메모리에 보존하지만 authoritative read 전까지 쓰기를 막는다. native host는 ready vault를 읽는 같은 잠금 안에서 원래 `expectedAuthScope`를 비교하여 다른 로그인 sid로 이전 의도가 전송되지 않게 한다. 같은 sid의 정상 token rotation은 허용한다. 새 옵션은 TUI host-only 계약이며 기존 호출은 호환된다.
-- 직접 diff와 별도 보안·경합 검토를 수행했다. UI 검증에서 intent 없는 `unavailable`가 첫 대화 생성까지 막는 문제를 수정했다. 실제 PTY 검증에서 임시 empty read가 목록 화면을 닫는 문제를 수정하고 지연 HTTP 회귀를 추가했다. unknown 작업의 자동 재전송·scope를 벗어난 ACK 반영·비밀/원시 데이터 저장은 없다. 환경변수나 서버 정책은 변경하지 않았고 SDK/runtime을 배포하지 않았다.
+- 직접 diff와 별도 보안·경합 검토를 수행했다. UI 검증에서 intent 없는 `unavailable`가 첫 대화 생성까지 막는 문제를 수정했다. 실제 PTY 검증에서 임시 empty read가 목록 화면을 닫는 문제를 수정하고 지연 HTTP 회귀를 추가했다. 첫 CI에서는 모델 값만 기다리고 렌더 완료 전에 키를 입력한 UI 테스트가 실패했다. 화면의 확인 가능한 상태까지 기다린 뒤 입력하도록 테스트를 수정했으며 제품 코드는 바뀌지 않았다. unknown 작업의 자동 재전송·scope를 벗어난 ACK 반영·비밀/원시 데이터 저장은 없다. 환경변수나 서버 정책은 변경하지 않았고 SDK/runtime을 배포하지 않았다.
 
 ### 검증과 실행 환경
 

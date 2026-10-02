@@ -85,6 +85,14 @@ test('Canonical mode is an explicit native-only composer path with stable contro
   assert.match(script, /legacyDraft = elements\.input\.value/);
   assert.match(script, /elements\.input\.value = ''/,
     'scope/session/reset transitions must clear the Canonical textarea');
+  for (const id of ['canonical-session-older', 'canonical-session-refresh', 'canonical-session-page']) {
+    assert.match(provider, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(provider, /data\.type === 'canonicalCatalogOlder'/);
+  assert.match(provider, /loadOlderAgentSessions\(scope\.profile, scope\.user_id\)/);
+  assert.match(script, /post\('canonicalCatalogOlder'\)/);
+  assert.match(script, /catalog\.hasMore/);
+  assert.match(script, /catalog\?\.nextCursor/);
 });
 
 test('every webview element referenced by the client script exists in the provider markup', async () => {

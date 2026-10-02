@@ -48,7 +48,8 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
   const summary = sessionSummary(binding);
   const ready = summary?.state === 'active'
     && summary.user_id === view.result?.user_id;
-  const activeSessionId = view.catalog.focus?.active_agent_session_id ?? null;
+  const observedSession = observedDesktopAgentSession(view);
+  const activeSessionId = observedSession === undefined ? null : observedSession;
   const conversationSessionId = view.conversation?.snapshot?.id ?? null;
   const authoritativeConversation = ready
     && activeSessionId !== null
@@ -63,7 +64,6 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
     session: string | null;
     generation: number;
   }>({ model: null, account: '', session: null, generation: 0 });
-  const observedSession = observedDesktopAgentSession(view);
   const actionSession = observedSession === undefined ? actionContext.current.session : observedSession;
   if (
     actionContext.current.model !== binding.model
@@ -123,6 +123,11 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
     || view.catalog.busy
     || view.catalog.writeBlocked
     || turnBlocksSessionWrite;
+  const catalogPageStatus = view.catalog.pageKnown
+    ? `${view.catalog.olderPage ? '이전 세션 페이지' : '최신 세션 페이지'} · ${view.catalog.items.length}개 표시`
+      + `${view.catalog.olderPage || view.catalog.hasMore ? ' · 전체 목록의 일부' : ' · 전체 목록'}`
+      + `${view.catalog.hasMore ? ' · 더 이전 페이지 있음' : ''}`
+    : '세션 목록 상태 확인 필요 · 최신 목록을 새로 고쳐 주세요.';
 
   const refresh = async () => {
     const model = binding.model;
@@ -199,6 +204,10 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
     <details className="canonical-chat__sessions">
       <summary>Agent 세션 선택 및 만들기</summary>
       <p className="canonical-chat__hint">서버에서 확인한 현재 계정 소유 세션만 선택할 수 있습니다.</p>
+      <p className="canonical-chat__hint" id="canonical-chat-focus-status">
+        현재 포커스: {activeSessionId ? activeSessionId.slice(0, 8) : '없음'}
+      </p>
+      <p className="canonical-chat__hint" id="canonical-chat-page-status" aria-live="polite">{catalogPageStatus}</p>
       <label htmlFor="canonical-chat-select">내 활성 Agent 세션</label>
       <select
         id="canonical-chat-select"
@@ -206,7 +215,9 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
         disabled={sessionWriteDisabled}
         onChange={(event) => setSelectedSession(event.target.value)}
       >
-        <option value="">포커스 없음</option>
+        <option value="">{activeSessionId
+          ? `현재 포커스 ${activeSessionId.slice(0, 8)}${view.catalog.items.some((item) => item.id === activeSessionId) ? '' : ' · 현재 페이지에 없음'}`
+          : '현재 포커스 없음 · 세션 선택'}</option>
         {view.catalog.items.filter((item) => item.status === 'active').map((item) =>
           <option key={item.id} value={item.id}>{item.title || item.workflow_id} · {item.id.slice(0, 8)}</option>)}
       </select>
@@ -231,7 +242,21 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
           className="secondary"
           disabled={!binding.model || view.busy || view.catalog.busy}
           onClick={() => void refresh()}
-        >상태·목록 새로 고침</button>
+        >상태·최신 목록 새로 고침</button>
+        <button
+          id="canonical-chat-older"
+          type="button"
+          className="secondary"
+          disabled={!binding.model || !ready || view.busy || view.catalog.busy || !view.catalog.hasMore || !view.catalog.nextCursor}
+          onClick={() => void binding.model?.loadOlderAgentSessions()}
+        >이전 세션 페이지</button>
+        {view.catalog.olderPage && <button
+          id="canonical-chat-latest"
+          type="button"
+          className="secondary"
+          disabled={!binding.model || !ready || view.busy || view.catalog.busy}
+          onClick={() => void refresh()}
+        >최신 세션으로 돌아가기</button>}
       </div>
       <label htmlFor="canonical-chat-workflow">Workflow ID</label>
       <input

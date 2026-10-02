@@ -32,9 +32,12 @@ let win; let initialized = false; let closing = false; let suppressNotifications
 let lastState; let persisted = null; let sessionStep = '';
 const rpc = new DexRpcClient({ process: { command: node, args: ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
   env: { ...process.env } }, clientVersion: 'vscode-ui-fixture' });
-let lastRpcFailure = '';
+let lastRpcFailure = ''; let catalogReadCount = 0;
 const requestRpc = rpc.request.bind(rpc);
-rpc.request = async (method, params) => { try { return await requestRpc(method, params); } catch (error) { lastRpcFailure = `${method}:${error.engineCode ?? 'transport'}`; throw error; } };
+rpc.request = async (method, params) => {
+  if (method === 'native/agent-sessions') catalogReadCount++;
+  try { return await requestRpc(method, params); } catch (error) { lastRpcFailure = `${method}:${error.engineCode ?? 'transport'}`; throw error; }
+};
 const context = { extensionUri: uri(path.resolve('apps/vscode')), subscriptions: [], globalState: { get: () => undefined, update: async () => undefined } };
 const service = { rpc, request: (method, params = {}) => rpc.request(method, params), profileParams: () => ({ profile: 'fixture' }) };
 const chat = new ChatViewProvider(context, service);
@@ -137,6 +140,44 @@ app.whenReady().then(async () => {
           const createdId = lastState.canonical.catalog.items.find((item) => item.title === 'Native created conversation').id;
           await untilState((state) => state?.canonical?.title === 'Native created conversation'
             && state.canonical.catalog?.focus?.active_agent_session_id === createdId);
+          if (option('catalog-pages')) {
+            sessionStep = 'catalog-latest-page';
+            await untilState((state) => state?.canonical?.catalog?.page === 1 && state.canonical.catalog.hasMore
+              && state.canonical.catalog.items.length === 100 && !state.canonical.catalog.busy);
+            const beforeIdentity = lastState.canonical.identity;
+            await win.webContents.executeJavaScript(`document.getElementById('input').value='catalog draft stays local';document.getElementById('canonical-session-older').click();document.getElementById('canonical-session-older').click()`, true);
+            await untilState((state) => state?.canonical?.catalog?.page === 2 && state.canonical.catalog.items.length === 100
+              && state.canonical.catalog.hasMore && !state.canonical.catalog.busy);
+            if (lastState.canonical.identity !== beforeIdentity) {
+              throw new Error('VSCode catalog page changed the active conversation');
+            }
+            await until(`document.getElementById('input').value==='catalog draft stays local' && document.getElementById('canonical-session-page').textContent.includes('페이지 2')`);
+            sessionStep = 'catalog-terminal-page';
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-session-older').click()`, true);
+            await untilState((state) => state?.canonical?.catalog?.page === 3 && state.canonical.catalog.items.length === 8
+              && !state.canonical.catalog.hasMore && state.canonical.catalog.nextCursor === null && !state.canonical.catalog.busy);
+            if (lastState.canonical.identity !== beforeIdentity) {
+              throw new Error('VSCode terminal catalog page changed the active conversation');
+            }
+            await until(`document.getElementById('input').value==='catalog draft stays local' && document.getElementById('canonical-session-page').textContent.includes('페이지 3') && document.getElementById('canonical-session-older').disabled`);
+            const readsAtEnd = catalogReadCount;
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-session-older').click()`, true);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            if (catalogReadCount !== readsAtEnd || lastState.canonical.catalog.page !== 3) {
+              throw new Error('VSCode terminal catalog page issued another read');
+            }
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-session-page').scrollIntoView({block:'center'})`, true);
+            if (option('screenshot')) writeFileSync(option('screenshot').replace(/\.png$/, '-catalog.png'), (await win.webContents.capturePage()).toPNG());
+            sessionStep = 'catalog-return-latest';
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-session-refresh').click()`, true);
+            await untilState((state) => state?.canonical?.catalog?.page === 1 && state.canonical.catalog.items.length === 100
+              && state.canonical.catalog.hasMore && !state.canonical.catalog.busy);
+            if (lastState.canonical.identity !== beforeIdentity) {
+              throw new Error('VSCode latest catalog refresh changed the active conversation');
+            }
+            await until(`document.getElementById('input').value==='catalog draft stays local' && document.getElementById('canonical-session-page').textContent.includes('페이지 1')`);
+            await win.webContents.executeJavaScript(`document.getElementById('input').value=''`, true);
+          }
           sessionStep = 'select-owned';
           const sharedId = await win.webContents.executeJavaScript(`(()=>{const select=document.getElementById('canonical-session-select');const option=Array.from(select.options).find(item=>item.textContent.includes('Native shared conversation'));if(!option) return '';const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,option.value);select.dispatchEvent(new Event('change',{bubbles:true}));return option.value;})()`, true);
           if (!sharedId) throw new Error('VSCode shared Agent session option missing');
@@ -152,7 +193,9 @@ app.whenReady().then(async () => {
           await until(`document.getElementById('canonical-session-clear').disabled && document.body.textContent.includes('현재 Agent 세션 포커스를 변경했습니다.')`);
           await win.webContents.executeJavaScript(`document.getElementById('canonical-session-controls').scrollIntoView({block:'center'})`, true);
           if (option('screenshot')) writeFileSync(option('screenshot'), (await win.webContents.capturePage()).toPNG());
-          result = { ui: 'passed', shell: 'electron-adapter', session_lifecycle: 'passed' };
+          result = { ui: 'passed', shell: 'electron-adapter', session_lifecycle: 'passed',
+            ...(option('catalog-pages') ? { catalog_pages: 'passed', catalog_page_sizes: [100, 100, 8, 100],
+              catalog_terminal_guard: 'passed' } : {}) };
         } finally { suppressNotifications = false; }
       } else if (method.startsWith('native/')) result = await rpc.request(method, params);
       else throw new Error('Unsupported fixture method');

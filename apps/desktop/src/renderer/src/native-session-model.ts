@@ -1,4 +1,5 @@
-import { parseAgentFocus, parseAgentSessionList, type AgentFocus, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { parseAgentFocus, type AgentFocus, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { parseAgentSessionCatalogPage } from '@dex/protocol/agent-session-catalog';
 import { parseAgentConversationView } from '@dex/protocol/agent-session-conversation-recovery';
 import {
   parseCreatedAgentSession,
@@ -30,6 +31,8 @@ export interface DesktopNativeView {
     items: OwnedAgentSession[];
     nextCursor: string | null;
     hasMore: boolean;
+    olderPage: boolean;
+    pageKnown: boolean;
     busy: boolean;
     writeBlocked: boolean;
     notice: string;
@@ -40,7 +43,7 @@ type DesktopReadMethod = Exclude<DesktopNativeMethod, 'submit-turn' | 'stop-turn
 type DesktopWatchMethod = Extract<DesktopReadMethod, 'watch' | 'watch-conversation' | 'watch-live'>;
 const empty = (): DesktopNativeSessionState => ({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
   connection: 'idle', transport: 'none', error: '', catalog: { focus: null, items: [], nextCursor: null, hasMore: false,
-    busy: false, writeBlocked: false, notice: '' } });
+    olderPage: false, pageKnown: false, busy: false, writeBlocked: false, notice: '' } });
 export class DesktopNativeSessionModel {
   private generation = 0;
   private watchId: string | null = null;
@@ -52,6 +55,10 @@ export class DesktopNativeSessionModel {
   private disposed = false;
   private turnSessionId: string | null = null;
   private turnContextGeneration = 0;
+  private focusNoticeRevision = 0;
+  private noticedFocus: AgentFocus | null = null;
+  private selectionNoticeRevision = 0;
+  private noticedSessionId: string | null | undefined;
   private buffered: DesktopNativeNotice | null = null;
   private turnView!: AgentTurnComposerView;
   private sessionState = empty();
@@ -92,7 +99,9 @@ export class DesktopNativeSessionModel {
   }
   private resetTurn(): void { this.turnContextGeneration++; this.turnSessionId = null; this.composer.reset(); }
   clear(): void {
-    this.generation++; this.restoreLiveAfterCatalog = false; this.clearWatch(); this.resetTurn(); this.sessionState = empty(); this.publish();
+    this.generation++; this.focusNoticeRevision++; this.noticedFocus = null;
+    this.selectionNoticeRevision++; this.noticedSessionId = undefined; this.restoreLiveAfterCatalog = false;
+    this.clearWatch(); this.resetTurn(); this.sessionState = empty(); this.publish();
   }
   dispose(): void { this.disposed = true; this.clear(); this.remove(); void this.bridge.request('cancel').catch(() => {}); }
   async stopWatch(): Promise<void> {
@@ -136,20 +145,74 @@ export class DesktopNativeSessionModel {
       if (!('user_id' in reply.value)) throw new Error('Desktop Agent 세션 응답을 확인할 수 없습니다.');
       const result = this.validatedScope(reply.value);
       const focus = parseAgentFocus(result.focus);
-      const sessions = parseAgentSessionList(result.sessions);
+      const sessions = parseAgentSessionCatalogPage(result.sessions);
       const changed = previousId !== focus.active_agent_session_id;
       if (changed) this.resetTurn();
       this.show({ result: { platform_type: 'desktop', profile: 'desktop', server_url: result.server_url, user_id: result.user_id,
         result: this.sessionState.result?.result }, focus,
         ...(changed ? { conversation: null, hasMore: false, connection: 'connected' as const, transport: 'none' as const } : {}),
-        catalog: { focus, items: sessions.items, nextCursor: sessions.next_cursor, hasMore: sessions.has_more,
+        catalog: { focus, items: sessions.items, nextCursor: sessions.next_cursor, hasMore: sessions.has_more, olderPage: false, pageKnown: true,
           busy: false, writeBlocked: false, notice: 'Agent 세션 목록과 현재 포커스를 다시 확인했습니다.' } });
       if (focus.active_agent_session_id) await this.recoverConversation(this.scope()!, resume ? 'watch-live' : null);
       this.restoreLiveAfterCatalog = false;
       return true;
     } catch (error) {
       if (generation === this.generation) this.show({ catalog: { ...this.sessionState.catalog, busy: false,
-        notice: error instanceof Error ? error.message : 'Agent 세션 목록을 확인하지 못했습니다.' } });
+        notice: 'Agent 세션 목록을 확인하지 못했습니다. 현재 페이지를 유지합니다.' } });
+      return false;
+    } finally {
+      this.mutating = false;
+      if (generation === this.generation) this.show({ busy: false });
+    }
+  }
+  async loadOlderAgentSessions(): Promise<boolean> {
+    const catalog = this.sessionState.catalog; const scope = this.scope();
+    if (this.disposed || this.mutating || this.sessionState.busy || catalog.busy || !scope || !catalog.focus
+      || !catalog.hasMore || !catalog.nextCursor) return false;
+    const generation = ++this.generation; const beforeId = catalog.nextCursor;
+    const previousItems = catalog.items; const previousFocus = catalog.focus;
+    const focusNoticeRevision = this.focusNoticeRevision;
+    const selectionNoticeRevision = this.selectionNoticeRevision;
+    this.mutating = true;
+    this.show({ busy: true, catalog: { ...catalog, busy: true, notice: '' }, error: '' });
+    try {
+      const reply = await this.bridge.request('agent-sessions', { limit: 100, before_id: beforeId });
+      if (generation !== this.generation) return false;
+      if (!reply.ok) throw new Error();
+      if (!('user_id' in reply.value)) throw new Error();
+      const result = this.validatedScope(reply.value);
+      const responseFocus = parseAgentFocus(result.focus);
+      if (selectionNoticeRevision !== this.selectionNoticeRevision
+        && this.noticedSessionId !== undefined
+        && previousFocus.active_agent_session_id !== this.noticedSessionId) {
+        const observedFocus = responseFocus.active_agent_session_id === this.noticedSessionId ? responseFocus : null;
+        this.clearWatch();
+        this.show({ focus: observedFocus, connection: 'connected', transport: 'none',
+          catalog: { focus: observedFocus, items: [], nextCursor: null, hasMore: false, olderPage: false, pageKnown: false,
+            busy: false, writeBlocked: true,
+            notice: '다른 클라이언트에서 현재 대화가 바뀌었습니다. 최신 Agent 세션 목록을 다시 확인해 주세요.' } });
+        return false;
+      }
+      const focus = focusNoticeRevision !== this.focusNoticeRevision && this.noticedFocus
+        && !this.sameFocus(previousFocus, this.noticedFocus) ? this.noticedFocus : responseFocus;
+      if (!this.sameFocus(previousFocus, focus)) {
+        const changedSession = previousFocus.active_agent_session_id !== focus.active_agent_session_id;
+        if (changedSession) this.resetTurn();
+        else this.context(null, false);
+        this.clearWatch();
+        this.show({ focus, conversation: null, hasMore: false, connection: 'connected', transport: 'none',
+          catalog: { focus, items: [], nextCursor: null, hasMore: false, olderPage: false, pageKnown: false, busy: false, writeBlocked: true,
+            notice: '다른 클라이언트에서 포커스가 바뀌었습니다. 최신 Agent 세션 목록을 다시 확인해 주세요.' } });
+        return false;
+      }
+      const sessions = parseAgentSessionCatalogPage(result.sessions, beforeId, previousItems);
+      this.show({ catalog: { ...this.sessionState.catalog, focus, items: sessions.items, nextCursor: sessions.next_cursor,
+        hasMore: sessions.has_more, olderPage: true, pageKnown: true, busy: false,
+        notice: '이전 Agent 세션 페이지를 확인했습니다.' } });
+      return true;
+    } catch {
+      if (generation === this.generation) this.show({ catalog: { ...this.sessionState.catalog, busy: false,
+        notice: '이전 Agent 세션 페이지를 확인하지 못했습니다. 현재 페이지를 유지합니다.' } });
       return false;
     } finally {
       this.mutating = false;
@@ -246,15 +309,30 @@ export class DesktopNativeSessionModel {
       try {
         const conversation = parseAgentConversationView(update.conversation);
         if (typeof update.has_more !== 'boolean' || !['snapshot', 'replay', 'recovered'].includes(update.source)) throw new Error();
-        this.show({ connection: 'connected', focus: null, conversation, hasMore: update.has_more });
+        const noticedSessionId = conversation.snapshot?.id ?? null;
+        const changedSelection = this.sessionState.catalog.focus
+          && noticedSessionId !== this.sessionState.catalog.focus.active_agent_session_id;
+        if (changedSelection) {
+          this.selectionNoticeRevision++; this.noticedSessionId = noticedSessionId;
+        }
+        this.show({ connection: 'connected', focus: null, conversation, hasMore: update.has_more,
+          ...(changedSelection ? { catalog: { ...this.sessionState.catalog, focus: null, items: [], nextCursor: null,
+            hasMore: false, olderPage: false, pageKnown: false, writeBlocked: true,
+            notice: '다른 클라이언트에서 현재 대화가 바뀌었습니다. 최신 Agent 세션 목록을 다시 확인해 주세요.' } } : {}) });
         this.context(conversation, true);
       } catch { this.rejectWatch('현재 공유 대화 응답을 확인할 수 없습니다.'); }
     } else if (!('view' in value) && update.type === 'focus') {
       try {
         const focus = parseAgentFocus(update.focus);
+        const changedFocus = this.sessionState.catalog.focus
+          && !this.sameFocus(this.sessionState.catalog.focus, focus);
+        this.focusNoticeRevision++; this.noticedFocus = focus;
         if (focus.active_agent_session_id !== this.turnSessionId) this.resetTurn();
         else this.context(null, false);
-        this.show({ connection: 'connected', focus });
+        this.show({ connection: 'connected', focus,
+          ...(changedFocus ? { catalog: { ...this.sessionState.catalog, focus, items: [], nextCursor: null,
+            hasMore: false, olderPage: false, pageKnown: false, writeBlocked: true,
+            notice: '다른 클라이언트에서 포커스가 바뀌었습니다. 최신 Agent 세션 목록을 다시 확인해 주세요.' } } : {}) });
       }
       catch {
         this.rejectWatch('현재 대화 응답을 확인할 수 없습니다.');
@@ -319,6 +397,10 @@ export class DesktopNativeSessionModel {
     return selected?.platform_type === 'desktop' && selected.profile === scope.profile
       && selected.server_url === scope.server_url && selected.user_id === scope.user_id;
   }
+  private sameFocus(left: AgentFocus, right: AgentFocus): boolean {
+    return left.active_agent_session_id === right.active_agent_session_id
+      && left.version === right.version && left.event_id === right.event_id;
+  }
   private async recoverConversation(scope: AgentTurnScope, resume: DesktopWatchMethod | null): Promise<void> {
     const read = await this.run('conversation', {}, true);
     if (!read || !this.sameScope(scope) || this.sessionState.conversation?.snapshot?.id === undefined) return;
@@ -326,8 +408,12 @@ export class DesktopNativeSessionModel {
     if (snapshot && this.sessionState.catalog.focus?.active_agent_session_id === snapshot.id) {
       const item: OwnedAgentSession = { id: snapshot.id, workflow_id: snapshot.workflow_id, title: snapshot.title,
         status: 'active', current_sequence: snapshot.current_sequence, state_version: snapshot.state_version };
+      const present = this.sessionState.catalog.items.some((candidate) => candidate.id === item.id);
       this.show({ catalog: { ...this.sessionState.catalog,
-        items: [item, ...this.sessionState.catalog.items.filter((candidate) => candidate.id !== item.id)] } });
+        items: present
+          ? this.sessionState.catalog.items.map((candidate) => candidate.id === item.id ? item : candidate)
+          : !this.sessionState.catalog.pageKnown && this.sessionState.catalog.items.length < 100
+            ? [item, ...this.sessionState.catalog.items] : this.sessionState.catalog.items } });
     }
     if (resume === 'watch-conversation' || resume === 'watch-live') await this.run(resume, {}, true);
   }
@@ -389,6 +475,7 @@ export class DesktopNativeSessionModel {
         result: this.sessionState.result?.result }, focus,
         ...(changed ? { conversation: null, hasMore: false, connection: 'connected' as const, transport: 'none' as const } : {}),
         catalog: { ...this.sessionState.catalog, focus, busy: false, writeBlocked: false,
+          ...(method === 'create-agent-session' ? { nextCursor: null, hasMore: false, olderPage: false, pageKnown: false } : {}),
           notice: method === 'create-agent-session' ? '새 Agent 세션을 만들고 현재 세션으로 선택했습니다.' : '현재 Agent 세션 포커스를 변경했습니다.' } });
       if (focus.active_agent_session_id) await this.recoverConversation(scope, resume ? 'watch-live' : null);
       else this.show({ conversation: null, hasMore: false, connection: 'connected', transport: 'none' });

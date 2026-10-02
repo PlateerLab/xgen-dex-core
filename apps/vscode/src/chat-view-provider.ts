@@ -749,6 +749,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.canonicalCreateOpen = true; this.postState(); void this.refreshCanonicalCatalog();
     }
     else if (data.type === 'canonicalCatalogRefresh') void this.refreshCanonicalCatalog();
+    else if (data.type === 'canonicalCatalogOlder') void this.loadOlderCanonicalCatalog();
     else if (data.type === 'canonicalCreate' && typeof data.workflowId === 'string') {
       void this.createCanonicalSession(data.workflowId, typeof data.title === 'string' ? data.title : '');
     }
@@ -997,6 +998,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     catch { this.canonicalNotice = this.nativeState?.catalog?.notice ?? 'Agent 세션 목록을 확인하지 못했습니다.'; this.postState(); }
   }
 
+  private async loadOlderCanonicalCatalog(): Promise<void> {
+    const scope = this.nativeState?.catalog?.scope;
+    if (!this.native || !scope) {
+      this.canonicalNotice = '최신 Agent 세션 목록을 먼저 확인해 주세요.';
+      this.postState(); return;
+    }
+    try { await this.native.loadOlderAgentSessions(scope.profile, scope.user_id); }
+    catch { this.canonicalNotice = this.nativeState?.catalog?.notice ?? '이전 Agent 세션 페이지를 확인하지 못했습니다.'; this.postState(); }
+  }
+
   private async createCanonicalSession(workflowId: string, title: string): Promise<void> {
     if (!this.native) return;
     try { await this.native.createAgentSession(workflowId, title); }
@@ -1090,8 +1101,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <label><span>내 Agent 세션</span><select id="canonical-session-select"><option value="">포커스 해제</option></select></label>
         <button id="canonical-session-switch" class="secondary-button compact" type="button">선택</button>
         <button id="canonical-session-clear" class="secondary-button compact" type="button">포커스 해제</button>
-        <button id="canonical-session-refresh" class="secondary-button compact" type="button">새로 고침</button>
+        <button id="canonical-session-older" class="secondary-button compact" type="button">이전 페이지</button>
+        <button id="canonical-session-refresh" class="secondary-button compact" type="button">최신 목록</button>
       </div>
+      <div class="canonical-session-page-row"><span id="canonical-session-page" role="status">목록을 확인하지 않음</span></div>
       <div class="canonical-session-row">
         <label><span>Workflow ID</span><input id="canonical-session-workflow" type="text" maxlength="256" autocomplete="off"></label>
         <label><span>제목 (선택)</span><input id="canonical-session-title" type="text" maxlength="256" autocomplete="off"></label>

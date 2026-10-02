@@ -94,6 +94,8 @@ export class MobileAgentConversationModel {
       this.visibilityGeneration++;
       this.read?.control.abort(); this.write?.abort(); this.conversation = null; this.hasMore = false;
       this.catalogTask?.abort(); this.catalogReady = false;
+      this.catalogFocus = null; this.catalogItems = []; this.catalogHasMore = false;
+      this.catalogNextCursor = null; this.catalogOlderPage = false; this.catalogPageKnown = false; this.catalogNotice = '';
       this.status = '조회 중단'; this.error = ''; this.unavailable();
     }
     this.publish();
@@ -122,7 +124,8 @@ export class MobileAgentConversationModel {
         this.catalogScope = nextScope.profile;
       }
       if (this.catalogPort && identity && this.catalogFocus?.active_agent_session_id !== (value.snapshot?.id ?? null)) {
-        this.catalogReady = false; this.catalogNextCursor = null; this.catalogPageKnown = false;
+        this.catalogReady = false; this.catalogFocus = null; this.catalogItems = []; this.catalogHasMore = false;
+        this.catalogNextCursor = null; this.catalogOlderPage = false; this.catalogPageKnown = false;
         this.catalogNotice = '공유 대화 선택이 바뀌었습니다. 최신 세션 목록을 직접 다시 조회하세요.';
       }
       this.composer.context(nextScope, value.snapshot, !update.hasMore && this.turnAvailable());

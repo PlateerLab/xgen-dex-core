@@ -17,7 +17,7 @@ const initialTurn: AgentTurnComposerView = { status: 'unavailable', canSubmit: f
 export const NativeSessionSettings: React.FC<{ origin: string; binding?: DesktopNativeSessionBinding }> = ({ origin, binding }) => {
   const [localView, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
     connection: 'idle', transport: 'none', error: '', turn: initialTurn,
-    catalog: { focus: null, items: [], nextCursor: null, hasMore: false, busy: false, writeBlocked: false, notice: '' } });
+    catalog: { focus: null, items: [], nextCursor: null, hasMore: false, olderPage: false, pageKnown: false, busy: false, writeBlocked: false, notice: '' } });
   const model = useRef<DesktopNativeSessionModel | null>(null);
   const currentBinding = useRef(binding);
   currentBinding.current = binding;
@@ -26,6 +26,7 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
   const [approver, setApprover] = useState(''); const [overview, setOverview] = useState<NativeTrustOverview | null>(null);
   const [message, setMessage] = useState(''); const [forget, setForget] = useState(false);
   const view = binding?.view ?? localView;
+  const observedSession = observedDesktopAgentSession(view);
   const [localTurnInput, setLocalTurnInput] = useState('');
   const turnInput = binding?.draft ?? localTurnInput;
   const setTurnInput = binding?.setDraft ?? setLocalTurnInput;
@@ -88,6 +89,11 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
   const turnInputBytes = new TextEncoder().encode(turnInput).length;
   const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(view.turn.status);
   const sessionWriteDisabled = disabled || !view.catalog.focus || view.catalog.busy || view.catalog.writeBlocked || turnBlocksSessionWrite;
+  const catalogPageStatus = view.catalog.pageKnown
+    ? `${view.catalog.olderPage ? '이전 세션 페이지' : '최신 세션 페이지'} · ${view.catalog.items.length}개 표시`
+      + `${view.catalog.olderPage || view.catalog.hasMore ? ' · 전체 목록의 일부' : ' · 전체 목록'}`
+      + `${view.catalog.hasMore ? ' · 더 이전 페이지 있음' : ''}`
+    : '세션 목록 상태 확인 필요 · 최신 목록을 새로 고쳐 주세요.';
   const submitTurn = async (retry: boolean) => {
     const controller = model.current; const sessionId = turnSession.current;
     if (!controller || !sessionId) return;
@@ -128,10 +134,14 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
       <div className="field">
         <p><strong>Canonical Agent 세션</strong></p>
         <p className="settings-hint">현재 계정이 소유한 Workflow ID로 새 세션을 만들거나, 서버에서 확인한 내 활성 세션만 선택할 수 있습니다.</p>
+        <p className="settings-hint" id="native-session-focus-status">현재 포커스: {observedSession ? observedSession.slice(0, 8) : '없음'}</p>
+        <p className="settings-hint" id="native-session-page-status" aria-live="polite">{catalogPageStatus}</p>
         <label className="field" htmlFor="native-session-select"><span>내 Agent 세션</span>
           <select id="native-session-select" value={sessionSelect} disabled={sessionWriteDisabled}
             onChange={(event) => setSessionSelect(event.target.value)}>
-            <option value="">포커스 없음</option>
+            <option value="">{observedSession
+              ? `현재 포커스 ${observedSession.slice(0, 8)}${view.catalog.items.some((item) => item.id === observedSession) ? '' : ' · 현재 페이지에 없음'}`
+              : '현재 포커스 없음 · 세션 선택'}</option>
             {view.catalog.items.filter((item) => item.status === 'active').map((item) =>
               <option key={item.id} value={item.id}>{item.title || item.workflow_id} · {item.id.slice(0, 8)}</option>)}
           </select>
@@ -142,7 +152,13 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
           <button id="native-session-clear" className="secondary" disabled={sessionWriteDisabled || !view.catalog.focus?.active_agent_session_id}
             onClick={() => void model.current?.switchAgentFocus(null)}>포커스 해제</button>
           <button id="native-session-refresh" className="secondary" disabled={disabled || view.catalog.busy || summary?.state !== 'active'}
-            onClick={() => void model.current?.refreshAgentSessions()}>목록 새로 고침</button>
+            onClick={() => void model.current?.refreshAgentSessions()}>최신 목록 새로 고침</button>
+          <button id="native-session-older" className="secondary"
+            disabled={disabled || view.catalog.busy || summary?.state !== 'active' || !view.catalog.hasMore || !view.catalog.nextCursor}
+            onClick={() => void model.current?.loadOlderAgentSessions()}>이전 세션 페이지</button>
+          {view.catalog.olderPage && <button id="native-session-latest" className="secondary"
+            disabled={disabled || view.catalog.busy || summary?.state !== 'active'}
+            onClick={() => void model.current?.refreshAgentSessions()}>최신 세션으로 돌아가기</button>}
         </div>
         <label className="field" htmlFor="native-session-workflow"><span>Workflow ID</span>
           <input id="native-session-workflow" type="text" maxLength={256} autoComplete="off" value={workflowId}

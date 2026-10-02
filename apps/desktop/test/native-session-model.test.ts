@@ -10,6 +10,9 @@ const conversation = { snapshot: { id: '00000000-0000-4000-8000-000000000001', w
 messages: [{ turn_id: '00000000-0000-4000-8000-000000000002', sequence: 1, status: 'completed' as const, input_text: 'hello', output_text: 'world', content_complete: true, source: 'user' as const }], omittedMessages: 2 };
 const runningConversation = { ...conversation, snapshot: { ...conversation.snapshot, current_sequence: 2, state_version: 2,
   latest_turn: { id: '00000000-0000-4000-8000-000000000003', status: 'running' as const, accepted_sequence: 2 } } };
+const sessionId = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+const ownedSession = (value: number, title = `Session ${value}`) => ({ id: sessionId(value), workflow_id: `flow-${value}`, title,
+  status: 'active' as const, current_sequence: value, state_version: Math.max(1, value) });
 function fixture() {
   let listener!: (n: DesktopNativeNotice) => void; let respond: DesktopNativeBridge['request'] = async () => ({ ok: true, value: context });
   const calls: string[] = []; const requests: Array<{ method: string; params?: Record<string, unknown> }> = []; const rendered: unknown[] = [];
@@ -283,4 +286,268 @@ test('Desktop catalog refresh clears an old transcript when authoritative focus 
   assert.equal(f.model.state.catalog.focus?.active_agent_session_id, null);
   assert.equal(f.model.state.conversation, null);
   f.notify({ type: 'cleared' }); assert.equal(f.model.state.catalog.focus, null);
+});
+
+test('Desktop replaces bounded catalog pages, preserves same-focus turn intent, and returns to latest explicitly', async () => {
+  const f = fixture(); const active = conversation.snapshot.id; const event = sessionId(20);
+  const currentFocus = { active_agent_session_id: active, version: 3, event_id: event };
+  const latest = [{ ...ownedSession(1, 'Shared'), workflow_id: 'flow' }, ownedSession(2)];
+  const older = [ownedSession(3), ownedSession(4)];
+  let submitAttempts = 0;
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'submit-turn') {
+      submitAttempts++;
+      return { ok: false, code: 'network_error', message: 'unknown private transport detail', outcome: 'unknown' };
+    }
+    if (method === 'agent-sessions' && params?.before_id === latest.at(-1)!.id) return { ok: true, value: { ...context,
+      focus: currentFocus, sessions: { items: older, next_cursor: null, has_more: false } } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context,
+      focus: currentFocus, sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation');
+  assert.equal(await f.model.refreshAgentSessions(), true);
+  await f.model.submitTurn('private retry intent');
+  assert.equal(f.model.state.turn.status, 'unknown'); assert.equal(f.model.state.turn.canRetry, true);
+
+  assert.equal(await f.model.loadOlderAgentSessions(), true);
+  assert.deepEqual(f.requests.filter((request) => request.method === 'agent-sessions').at(-1), {
+    method: 'agent-sessions', params: { limit: 100, before_id: latest.at(-1)!.id },
+  });
+  assert.deepEqual(f.model.state.catalog.items, older); assert.equal(f.model.state.catalog.olderPage, true);
+  assert.equal(f.model.state.catalog.items.length, 2); assert.equal(f.model.state.catalog.hasMore, false);
+  assert.equal(f.model.state.catalog.focus?.active_agent_session_id, active);
+  assert.equal(f.model.state.conversation?.snapshot?.id, active);
+  assert.equal(f.model.state.turn.status, 'unknown'); assert.equal(f.model.state.turn.canRetry, true);
+  assert.equal(submitAttempts, 1);
+  const readsAtEnd = f.requests.filter((request) => request.method === 'agent-sessions').length;
+  assert.equal(await f.model.loadOlderAgentSessions(), false);
+  assert.equal(f.requests.filter((request) => request.method === 'agent-sessions').length, readsAtEnd);
+
+  assert.equal(await f.model.refreshAgentSessions(), true);
+  assert.deepEqual(f.model.state.catalog.items, latest); assert.equal(f.model.state.catalog.olderPage, false);
+  assert.equal(f.model.state.catalog.hasMore, true);
+});
+
+test('Desktop older reads retain lifecycle outcome locks until a valid explicit latest refresh', async () => {
+  const f = fixture(); const active = conversation.snapshot.id; const event = sessionId(30);
+  const currentFocus = { active_agent_session_id: active, version: 3, event_id: event };
+  const latest = [ownedSession(1), ownedSession(2)]; const older = [ownedSession(3)];
+  let creates = 0;
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'create-agent-session') { creates++; return { ok: false, code: 'network_error', message: 'secret', outcome: 'unknown' }; }
+    if (method === 'agent-sessions' && params?.before_id) return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: older, next_cursor: null, has_more: false } } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions();
+  assert.equal(await f.model.createAgentSession('flow-new'), false); assert.equal(creates, 1);
+  assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.equal(await f.model.loadOlderAgentSessions(), true);
+  assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.equal(await f.model.createAgentSession('flow-new'), false); assert.equal(creates, 1);
+  assert.equal(await f.model.refreshAgentSessions(), true);
+  assert.equal(f.model.state.catalog.writeBlocked, false); assert.equal(f.model.state.catalog.olderPage, false);
+});
+
+test('Desktop creation from an older page invalidates the pagination boundary until latest refresh', async () => {
+  const f = fixture(); const initialFocus = { active_agent_session_id: null, version: 0, event_id: null };
+  const createdId = sessionId(70); const createdFocus = { active_agent_session_id: createdId, version: 1, event_id: sessionId(71) };
+  const latest = [ownedSession(30), ownedSession(31)]; const older = [ownedSession(32)];
+  const createdConversation = { ...conversation, snapshot: { ...conversation.snapshot, id: createdId,
+    workflow_id: 'created-flow', title: 'Created', current_sequence: 0, state_version: 1, latest_turn: null },
+    messages: [], omittedMessages: 0 };
+  f.respond(async (method, params) => {
+    if (method === 'agent-sessions' && params?.before_id) return { ok: true, value: { ...context, focus: initialFocus,
+      sessions: { items: older, next_cursor: null, has_more: false } } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: initialFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    if (method === 'create-agent-session') return { ok: true, value: { ...context,
+      created: { id: createdId, workflow_id: 'created-flow', focus: createdFocus } } };
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation',
+      conversation: createdConversation, has_more: false } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('session', { action: 'status' }); await f.model.refreshAgentSessions();
+  assert.equal(await f.model.loadOlderAgentSessions(), true); assert.equal(f.model.state.catalog.olderPage, true);
+  assert.equal(await f.model.createAgentSession('created-flow', 'Created'), true);
+  assert.equal(f.model.state.catalog.pageKnown, false); assert.equal(f.model.state.catalog.olderPage, false);
+  assert.equal(f.model.state.catalog.nextCursor, null); assert.equal(f.model.state.catalog.hasMore, false);
+  assert.ok(f.model.state.catalog.items.some((item) => item.id === createdId));
+});
+
+test('Desktop rejects failed, foreign, repeated, and overlapping older pages without replacing the current page', async () => {
+  const f = fixture(); const currentFocus = { active_agent_session_id: null, version: 1, event_id: sessionId(40) };
+  const latest = [ownedSession(10), ownedSession(11)]; const before = latest.at(-1)!.id;
+  let mode: 'latest' | 'failed' | 'foreign' | 'repeat' | 'overlap' = 'latest';
+  f.respond(async (method) => {
+    if (method !== 'agent-sessions') return { ok: true, value: context };
+    if (mode === 'latest') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: before, has_more: true } } };
+    if (mode === 'failed') return { ok: false, code: 'network_error', message: 'raw private failure' };
+    if (mode === 'foreign') return { ok: true, value: { ...context, user_id: '8', focus: currentFocus,
+      sessions: { items: [ownedSession(12)], next_cursor: null, has_more: false }, private_value: 'foreign secret' } as any };
+    if (mode === 'repeat') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: [ownedSession(12), { ...ownedSession(13), id: before }], next_cursor: before, has_more: true } } };
+    return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: [latest[0]], next_cursor: null, has_more: false } } };
+  });
+  await f.model.execute('session', { action: 'status' }); await f.model.refreshAgentSessions();
+  for (const invalid of ['failed', 'foreign', 'repeat', 'overlap'] as const) {
+    mode = invalid;
+    assert.equal(await f.model.loadOlderAgentSessions(), false);
+    assert.deepEqual(f.model.state.catalog.items, latest);
+    assert.equal(f.model.state.catalog.nextCursor, before); assert.equal(f.model.state.catalog.olderPage, false);
+  }
+  assert.equal(JSON.stringify(f.model.state).includes('raw private failure'), false);
+  assert.equal(JSON.stringify(f.model.state).includes('foreign secret'), false);
+});
+
+test('Desktop discards an older page when focus changes and requires a latest catalog refresh', async () => {
+  const f = fixture(); const active = conversation.snapshot.id;
+  const initialFocus = { active_agent_session_id: active, version: 3, event_id: sessionId(50) };
+  const changedFocus = { active_agent_session_id: sessionId(99), version: 4, event_id: sessionId(51) };
+  const latest = [ownedSession(1), ownedSession(2)]; let changed = false;
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'agent-sessions' && params?.before_id) return { ok: true, value: { ...context,
+      focus: changedFocus, sessions: { items: [ownedSession(3)], next_cursor: null, has_more: false } } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: changed ? changedFocus : initialFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions();
+  const beforeReads = f.requests.filter((request) => request.method === 'agent-sessions').length;
+  assert.equal(await f.model.loadOlderAgentSessions(), false);
+  assert.equal(f.requests.filter((request) => request.method === 'agent-sessions').length, beforeReads + 1);
+  assert.deepEqual(f.model.state.catalog.items, []); assert.equal(f.model.state.catalog.nextCursor, null);
+  assert.equal(f.model.state.catalog.olderPage, false); assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.deepEqual(f.model.state.catalog.focus, changedFocus); assert.equal(f.model.state.conversation, null);
+  assert.equal(await f.model.loadOlderAgentSessions(), false);
+  assert.equal(f.requests.filter((request) => request.method === 'agent-sessions').length, beforeReads + 1);
+  changed = true; assert.equal(await f.model.refreshAgentSessions(), true);
+  assert.equal(f.model.state.catalog.writeBlocked, false); assert.equal(f.model.state.catalog.olderPage, false);
+});
+
+test('Desktop accepts an older page across same-session live turn updates', async () => {
+  const f = fixture(); const active = conversation.snapshot.id;
+  const currentFocus = { active_agent_session_id: active, version: 3, event_id: sessionId(80) };
+  const latest = [{ ...ownedSession(1), workflow_id: 'flow', title: 'Shared' }, ownedSession(2)];
+  let release!: (reply: DesktopNativeReply) => void;
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'watch-live') return { ok: true, value: { ...context, view: 'conversation' } };
+    if (method === 'agent-sessions' && params?.before_id) return new Promise<DesktopNativeReply>((resolve) => { release = resolve; });
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions(); await f.model.execute('watch-live');
+  const pending = f.model.loadOlderAgentSessions(); await Promise.resolve();
+  f.notify({ type: 'update', value: { ...context, view: 'conversation', update: { type: 'conversation', user_id: '7',
+    conversation: runningConversation, source: 'snapshot', has_more: false } } });
+  release({ ok: true, value: { ...context, focus: currentFocus,
+    sessions: { items: [ownedSession(3)], next_cursor: null, has_more: false } } });
+  assert.equal(await pending, true); assert.equal(f.model.state.catalog.pageKnown, true);
+  assert.equal(f.model.state.catalog.olderPage, true); assert.equal(f.model.state.catalog.writeBlocked, false);
+  assert.equal(f.model.state.conversation?.snapshot?.id, active);
+});
+
+test('Desktop invalidates a late older page when live conversation selects another session', async () => {
+  const f = fixture(); const active = conversation.snapshot.id; const replacementId = sessionId(90);
+  const currentFocus = { active_agent_session_id: active, version: 3, event_id: sessionId(81) };
+  const latest = [{ ...ownedSession(1), workflow_id: 'flow', title: 'Shared' }, ownedSession(2)];
+  const replacementConversation = { ...conversation, snapshot: { ...conversation.snapshot, id: replacementId,
+    workflow_id: 'replacement-flow', title: 'Replacement' } };
+  let release!: (reply: DesktopNativeReply) => void;
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'watch-live') return { ok: true, value: { ...context, view: 'conversation' } };
+    if (method === 'agent-sessions' && params?.before_id) return new Promise<DesktopNativeReply>((resolve) => { release = resolve; });
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions(); await f.model.execute('watch-live');
+  const pending = f.model.loadOlderAgentSessions(); await Promise.resolve();
+  f.notify({ type: 'update', value: { ...context, view: 'conversation', update: { type: 'conversation', user_id: '7',
+    conversation: replacementConversation, source: 'snapshot', has_more: false } } });
+  release({ ok: true, value: { ...context, focus: currentFocus,
+    sessions: { items: [ownedSession(3)], next_cursor: null, has_more: false } } });
+  assert.equal(await pending, false);
+  assert.equal(f.model.state.conversation?.snapshot?.id, replacementId);
+  assert.equal(f.model.state.catalog.focus, null); assert.deepEqual(f.model.state.catalog.items, []);
+  assert.equal(f.model.state.catalog.pageKnown, false); assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.equal(f.model.state.catalog.nextCursor, null); assert.equal(f.model.state.catalog.olderPage, false);
+});
+
+test('Desktop invalidates catalog immediately when live conversation changes before paging', async () => {
+  const f = fixture(); const active = conversation.snapshot.id; const replacementId = sessionId(91);
+  const currentFocus = { active_agent_session_id: active, version: 3, event_id: sessionId(82) };
+  const latest = [{ ...ownedSession(1), workflow_id: 'flow', title: 'Shared' }, ownedSession(2)];
+  const replacementConversation = { ...conversation, snapshot: { ...conversation.snapshot, id: replacementId,
+    workflow_id: 'replacement-flow', title: 'Replacement' } };
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'watch-live') return { ok: true, value: { ...context, view: 'conversation' } };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions(); await f.model.execute('watch-live');
+  const catalogReads = f.requests.filter((request) => request.method === 'agent-sessions').length;
+  f.notify({ type: 'update', value: { ...context, view: 'conversation', update: { type: 'conversation', user_id: '7',
+    conversation: replacementConversation, source: 'snapshot', has_more: false } } });
+  assert.equal(f.model.state.conversation?.snapshot?.id, replacementId);
+  assert.equal(f.model.state.catalog.focus, null); assert.deepEqual(f.model.state.catalog.items, []);
+  assert.equal(f.model.state.catalog.pageKnown, false); assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.equal(await f.model.loadOlderAgentSessions(), false);
+  assert.equal(f.requests.filter((request) => request.method === 'agent-sessions').length, catalogReads);
+});
+
+test('Desktop invalidates catalog immediately on a changed full focus notice', async () => {
+  const f = fixture(); const active = conversation.snapshot.id;
+  const currentFocus = { active_agent_session_id: active, version: 3, event_id: sessionId(83) };
+  const changedFocus = { active_agent_session_id: sessionId(92), version: 4, event_id: sessionId(84) };
+  const latest = [{ ...ownedSession(1), workflow_id: 'flow', title: 'Shared' }, ownedSession(2)];
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'watch') return { ok: true, value: context };
+    if (method === 'agent-sessions') return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.refreshAgentSessions(); await f.model.execute('watch');
+  f.notify({ type: 'update', value: { ...context, update: { type: 'focus', user_id: '7', focus: changedFocus, source: 'snapshot' } } });
+  assert.deepEqual(f.model.state.catalog.focus, changedFocus); assert.deepEqual(f.model.state.catalog.items, []);
+  assert.equal(f.model.state.catalog.pageKnown, false); assert.equal(f.model.state.catalog.writeBlocked, true);
+  assert.equal(f.model.state.catalog.nextCursor, null); assert.equal(f.model.state.catalog.olderPage, false);
+});
+
+test('Desktop older paging guards unavailable, terminal, repeated-click, cleared, and disposed state', async () => {
+  const f = fixture(); assert.equal(await f.model.loadOlderAgentSessions(), false); assert.equal(f.requests.length, 0);
+  const currentFocus = { active_agent_session_id: null, version: 1, event_id: sessionId(60) };
+  const latest = [ownedSession(20), ownedSession(21)]; let release!: (reply: DesktopNativeReply) => void;
+  let pending = false;
+  f.respond(async (method, params) => {
+    if (method !== 'agent-sessions') return { ok: true, value: context };
+    if (!params?.before_id) return { ok: true, value: { ...context, focus: currentFocus,
+      sessions: { items: latest, next_cursor: latest.at(-1)!.id, has_more: true } } };
+    pending = true;
+    return new Promise<DesktopNativeReply>((resolve) => { release = resolve; });
+  });
+  await f.model.execute('session', { action: 'status' }); await f.model.refreshAgentSessions();
+  const first = f.model.loadOlderAgentSessions();
+  while (!pending) await Promise.resolve();
+  assert.equal(await f.model.loadOlderAgentSessions(), false);
+  assert.equal(f.requests.filter((request) => request.params?.before_id).length, 1);
+  f.notify({ type: 'cleared' });
+  release({ ok: true, value: { ...context, focus: currentFocus,
+    sessions: { items: [ownedSession(22)], next_cursor: null, has_more: false } } });
+  assert.equal(await first, false); assert.equal(f.model.state.catalog.focus, null);
+  f.model.dispose(); assert.equal(await f.model.loadOlderAgentSessions(), false);
 });

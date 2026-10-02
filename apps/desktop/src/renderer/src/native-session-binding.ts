@@ -28,6 +28,8 @@ export function blankDesktopNativeView(): DesktopNativeView {
       items: [],
       nextCursor: null,
       hasMore: false,
+      olderPage: false,
+      pageKnown: false,
       busy: false,
       writeBlocked: false,
       notice: '',

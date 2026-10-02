@@ -13,6 +13,7 @@ const { NativeDeviceKeyStore } = require('@dex/engine/native-device-key-store');
 const option = (name) => process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const origin = option('origin'); const userId = option('user-id');
 const workspaceUi = option('workspace-ui') === '1';
+const catalogPages = option('catalog-pages') === '1';
 if (!origin || !userId) throw new Error('Disposable fixture origin and user ID are required');
 const directory = mkdtempSync(path.join(tmpdir(), 'dex-desktop-native-ui-'));
 mkdirSync(path.join(directory, 'profile'));
@@ -175,9 +176,34 @@ app.whenReady().then(async () => {
           await until(`!!document.getElementById('native-session-create') && document.getElementById('native-session-create').disabled && document.body.textContent.includes('작업 완료 여부를 확인')`);
           await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-open').click()`, true);
           await until(`!!document.getElementById('canonical-chat-refresh') && document.getElementById('canonical-chat-create').disabled`);
+          await win.webContents.executeJavaScript(`document.querySelector('.canonical-chat__sessions').open=true`, true);
           await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-refresh').click()`, true);
           await until(`Array.from(document.getElementById('canonical-chat-select').options).some(option=>option.textContent.includes('Native created conversation')) && !document.getElementById('canonical-chat-refresh').disabled`);
           await until(`!!document.getElementById('canonical-chat-input') && !document.getElementById('canonical-chat-input').disabled && !document.body.textContent.includes('native-message-answer')`);
+          if (catalogPages) {
+            await until(`document.getElementById('canonical-chat-page-status').textContent.includes('최신 세션 페이지 · 100개 표시') && !document.getElementById('canonical-chat-older').disabled`);
+            await win.webContents.executeJavaScript(`(()=>{const input=document.getElementById('canonical-chat-input');const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(input,'catalog-page-draft');input.dispatchEvent(new Event('input',{bubbles:true}));})()`, true);
+            await until(`document.getElementById('canonical-chat-input').value==='catalog-page-draft'`);
+            const initialFocus = await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-focus-status').textContent`, true);
+            // A same-tick double click must dispatch one bounded older-page read.
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-older').click();document.getElementById('canonical-chat-older').click()`, true);
+            await until(`document.getElementById('canonical-chat-page-status').textContent.includes('이전 세션 페이지 · 100개 표시') && !!document.getElementById('canonical-chat-latest') && !document.getElementById('canonical-chat-older').disabled`);
+            const middle = await win.webContents.executeJavaScript(`({rows:document.getElementById('canonical-chat-select').options.length-1,focus:document.getElementById('canonical-chat-focus-status').textContent,draft:document.getElementById('canonical-chat-input').value})`, true);
+            if (middle.rows !== 100 || middle.focus !== initialFocus || middle.draft !== 'catalog-page-draft') throw new Error('Desktop middle catalog page changed focus or draft');
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-older').click()`, true);
+            await until(`document.getElementById('canonical-chat-page-status').textContent.includes('이전 세션 페이지 · 8개 표시') && document.getElementById('canonical-chat-older').disabled`);
+            const terminal = await win.webContents.executeJavaScript(`({rows:document.getElementById('canonical-chat-select').options.length-1,focus:document.getElementById('canonical-chat-focus-status').textContent,draft:document.getElementById('canonical-chat-input').value})`, true);
+            if (terminal.rows !== 8 || terminal.focus !== initialFocus || terminal.draft !== 'catalog-page-draft') throw new Error('Desktop terminal catalog page changed focus or draft');
+            await win.webContents.executeJavaScript(`document.querySelector('.canonical-chat__sessions').open=true;document.getElementById('canonical-chat-page-status').scrollIntoView({block:'center'});document.getElementById('canonical-chat-older').click()`, true);
+            if (option('screenshot')) writeFileSync(option('screenshot').replace(/\.png$/, '-catalog.png'), (await win.webContents.capturePage()).toPNG());
+            await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-latest').click()`, true);
+            await until(`document.getElementById('canonical-chat-page-status').textContent.includes('최신 세션 페이지 · 100개 표시') && !document.getElementById('canonical-chat-older').disabled && !document.getElementById('canonical-chat-latest')`);
+            const latest = await win.webContents.executeJavaScript(`({rows:document.getElementById('canonical-chat-select').options.length-1,focus:document.getElementById('canonical-chat-focus-status').textContent,draft:document.getElementById('canonical-chat-input').value})`, true);
+            // The latest page has 100 owned rows; one archived row is intentionally not selectable.
+            if (latest.rows !== 99) throw new Error('Desktop latest catalog return selectable row count failed');
+            if (latest.focus !== initialFocus) throw new Error('Desktop latest catalog return changed focus');
+            if (latest.draft !== 'catalog-page-draft') throw new Error('Desktop latest catalog return changed draft');
+          }
           await win.webContents.executeJavaScript(`(()=>{const select=document.getElementById('canonical-chat-select');const option=Array.from(select.options).find(item=>item.textContent.includes('Native shared conversation'));const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,option.value);select.dispatchEvent(new Event('change',{bubbles:true}));})()`, true);
           await until(`!document.getElementById('canonical-chat-switch').disabled`);
           await win.webContents.executeJavaScript(`document.getElementById('canonical-chat-switch').click()`, true);
@@ -211,7 +237,8 @@ app.whenReady().then(async () => {
             if (serialized.includes(forbidden)) throw new Error('Canonical data persisted into legacy configuration');
           }
           if (legacyDispatches) throw new Error('Legacy chat dispatched from Canonical pane');
-          result = { ui: 'passed', sender_isolation: 'passed', legacy_dispatches: legacyDispatches };
+          result = { ui: 'passed', sender_isolation: 'passed', legacy_dispatches: legacyDispatches,
+            ...(catalogPages ? { catalog_pages: 'passed' } : {}) };
         } finally { suppressNotifications = false; }
       } else if (method === 'verify/session-ui') {
         suppressNotifications = true;
@@ -250,7 +277,8 @@ app.whenReady().then(async () => {
       } else throw new Error('Unsupported fixture method');
       send({ jsonrpc: '2.0', id: request.id, result });
       if (method === 'shutdown' || method === 'exit') setImmediate(close);
-    } catch { if (request?.id !== undefined) send({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: 'Desktop fixture operation failed' } }); else close(); }
+    } catch (error) { if (request?.id !== undefined) send({ jsonrpc: '2.0', id: request.id, error: { code: -32000,
+      message: error instanceof Error && error.message.startsWith('Desktop ') ? error.message : 'Desktop fixture operation failed' } }); else close(); }
   })(); });
   lines.on('close', close);
 }).catch(() => { process.stderr.write('Desktop native fixture startup failed\n'); close(); app.exit(1); });

@@ -4,13 +4,17 @@
  * 메시지 마크업·CSS 는 Dex 채팅과 같다(`chat-log`·`msg-row`·`bubble`·`chat-input`). 답은 도구를 쓴 턴이면 Dex 의 작업
  * 과정 타임라인, 아니면 Dex 의 마크다운으로 그린다.
  */
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { INTERRUPTED_TEXT } from '@dex/protocol';
 import type { XdAgent, XdTurn } from '../../../main/store';
 import { xd } from '../bridge';
 import { turnMessages, usedTools, type ChatMsg } from '../chat-model';
 import { errorText, useData, KIND_LABEL } from '../data';
-import { ChatIcon, CheckIcon, CopyIcon, FolderOpenIcon, Markdown, PencilIcon, ProcessTimeline, SendIcon, StopIcon, Tooltip } from '../dex';
+import { IdeView } from '@dex/ide';
+import { ChatIcon, CheckIcon, CopyIcon, FolderCodeIcon, FolderOpenIcon, Markdown, PencilIcon, ProcessTimeline, SendIcon, StopIcon, Tooltip } from '../dex';
+import { setVisibleIde } from '../ide/activity';
+import { ideStoreFor, setIdeMode, useIdeMode } from '../ide/ide-stores';
+import { useTheme } from '../theme';
 import { liveStore, useLive, type LiveTurn } from '../live-store';
 import { ErrorBlock } from './ErrorBlock';
 import { LinkedFolders } from './LinkedFolders';
@@ -89,7 +93,7 @@ export const ChatView: React.FC<{
   }, []);
   const currentConversation = useRef(conversationId);
   currentConversation.current = conversationId;
-  const logRef = useRef<HTMLDivElement>(null);
+  const logRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 입력창은 쓰는 만큼 늘어난다(CSS 의 최대 높이까지).
   useLayoutEffect(() => {
@@ -212,36 +216,65 @@ export const ChatView: React.FC<{
     }
   };
 
+  // [대화 | 작업 공간] — 에이전트마다 기억한다(앱을 다시 켜도). 저장소는 화면 밖에 있어 편집 중인 것이 남는다.
+  const ideMode = useIdeMode(agent.id);
+  const theme = useTheme();
+  const ideStore = ideMode ? ideStoreFor(agent) : null;
+  // 보이는 작업 공간만 바뀜을 따라 읽는다(ide/activity.ts).
+  useEffect(() => {
+    if (!ideMode) return;
+    setVisibleIde(agent.id);
+    return () => setVisibleIde(null);
+  }, [ideMode, agent.id]);
+  // 대화 기록 칸은 [작업 공간] 을 켜고 끌 때 새로 그려진다 — 새 칸도 맨 아래(따라가는 중이면)에서 시작한다.
+  const setLog = useCallback((el: HTMLDivElement | null) => {
+    logRef.current = el;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, []);
+
   const modelLabel = account ? `${KIND_LABEL[account.kind] ?? account.kind}${agent.model ? ` · ${agent.model}` : ''}` : '제공자 없음';
 
-  return (
-    <div className="chat xd-chat">
-      <div className="chat-header">
-        <div className="chat-title">
-          <XdMark size={26} />
-          <div className="chat-title-text">
-            <strong>{agent.name}</strong>
-            <span className="muted small">{modelLabel}</span>
-          </div>
-        </div>
-        <div className="chat-header-actions">
-          <LinkedFolders key={agent.id} agent={agent} status={folderStatus} />
-          <Tooltip label="작업 공간 폴더 열기">
-            <button type="button" className="chat-hbtn icon" aria-label="작업 공간 폴더 열기" onClick={() => void xd.openFolder('agent', agent.id)}>
-              <FolderOpenIcon size={16} />
-            </button>
-          </Tooltip>
-          <Tooltip label="에이전트 설정">
-            <button type="button" className="chat-hbtn icon" aria-label="에이전트 설정" onClick={onEditAgent}>
-              <PencilIcon size={15} />
-            </button>
-          </Tooltip>
+  const header = (
+    <div className="chat-header">
+      <div className="chat-title">
+        <XdMark size={26} />
+        <div className="chat-title-text">
+          <strong>{agent.name}</strong>
+          <span className="muted small">{modelLabel}</span>
         </div>
       </div>
+      <div className="chat-header-actions">
+        <LinkedFolders key={agent.id} agent={agent} status={folderStatus} />
+        <Tooltip label={ideMode ? '대화만 보기' : '작업 공간 보기'}>
+          <button
+            type="button"
+            className={`chat-hbtn icon xd-ide-toggle${ideMode ? ' on' : ''}`}
+            aria-label="작업 공간 보기"
+            aria-pressed={ideMode}
+            onClick={() => setIdeMode(agent.id, !ideMode)}
+          >
+            <FolderCodeIcon size={16} />
+          </button>
+        </Tooltip>
+        <Tooltip label="작업 공간 폴더 열기">
+          <button type="button" className="chat-hbtn icon" aria-label="작업 공간 폴더 열기" onClick={() => void xd.openFolder('agent', agent.id)}>
+            <FolderOpenIcon size={16} />
+          </button>
+        </Tooltip>
+        <Tooltip label="에이전트 설정">
+          <button type="button" className="chat-hbtn icon" aria-label="에이전트 설정" onClick={onEditAgent}>
+            <PencilIcon size={15} />
+          </button>
+        </Tooltip>
+      </div>
+    </div>
+  );
 
+  const body = (
+    <>
       <div
         className="chat-log"
-        ref={logRef}
+        ref={setLog}
         onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
@@ -351,6 +384,25 @@ export const ChatView: React.FC<{
           )}
         </div>
       </div>
+    </>
+  );
+
+  // 작업 공간 — Dex 와 같은 IDE 의 오른쪽 칸에 이 대화(기록·입력)가 들어간다.
+  if (ideStore) {
+    return (
+      <div className="chat chat-ide xd-chat">
+        {header}
+        <div className="chat-ide-body">
+          <IdeView store={ideStore} theme={theme} activityBar={false} chat={<div className="chat chat-ide-column">{body}</div>} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chat xd-chat">
+      {header}
+      {body}
     </div>
   );
 };

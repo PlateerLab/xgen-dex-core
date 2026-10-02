@@ -5,23 +5,21 @@
  * `window.xgen.clipboard` 한 칸뿐이다(아래).
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import { CHANNELS, type ApiResult, type XdInfo } from '../main/ipc';
+import { CHANNELS, type ApiResult, type IdeResult, type XdInfo } from '../main/ipc';
+import type { IdeFolderRootView } from '../main/ide-service';
 import type { XdApi } from '../main/xd-api';
 import type { XdTurnEvent } from '../main/turn-runner';
 import type { CliEvent } from '../main/cli/service';
 
 type Method = keyof XdApi;
-type Fn<M extends Method> = XdApi[M] extends (...a: infer A) => infer R ? (...a: A) => Promise<Awaited<R>> : never;
+type Raw<M extends Method> = XdApi[M] extends (...a: infer A) => infer R ? (...a: A) => Promise<ApiResult<Awaited<R>>> : never;
 
-/** main API 한 칸을 부른다 — 실패는 예외로 되돌린다(`code` 를 싣는다). */
-function call<M extends Method>(method: M): Fn<M> {
-  return (async (...args: unknown[]) => {
-    const res = (await ipcRenderer.invoke(CHANNELS.api, method, args)) as ApiResult<unknown>;
-    if (res.ok) return res.value;
-    const err = new Error(res.error) as Error & { code?: string };
-    if (res.code) err.code = res.code;
-    throw err;
-  }) as Fn<M>;
+/**
+ * main API 한 칸 — 대답은 **값으로**(`{ok, value}` 또는 `{ok: false, error, code}`). 여기서 예외로 던지면
+ * contextBridge 를 넘으며 메시지만 남고 `code` 를 잃는다(실측) — 예외로 바꾸는 것은 화면 쪽(`renderer/src/bridge.ts`)이다.
+ */
+function call<M extends Method>(method: M): Raw<M> {
+  return ((...args: unknown[]) => ipcRenderer.invoke(CHANNELS.api, method, args)) as Raw<M>;
 }
 
 const clipboard = {
@@ -46,6 +44,12 @@ const api = {
   },
   folders: {
     check: call('foldersCheck'),
+  },
+  /** 작업 공간 IDE — 이 에이전트의 작업 공간(`'workspace'`)이나 연결 폴더(그 경로)의 파일. 대답은 값으로. */
+  ide: {
+    call: <T = unknown>(agentId: string, root: 'workspace' | string, op: string, args: Record<string, unknown> = {}): Promise<IdeResult<T>> =>
+      ipcRenderer.invoke(CHANNELS.ide, agentId, root, op, args),
+    folders: (agentId: string): Promise<IdeFolderRootView[]> => ipcRenderer.invoke(CHANNELS.ideFolders, agentId),
   },
   conversations: {
     list: call('conversationsList'),

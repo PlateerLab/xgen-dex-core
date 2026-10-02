@@ -13,13 +13,15 @@ import {
   DANGEROUS_COMMAND_CHOICES,
   dangerousCommandPrompt,
 } from '@dex/engine/dangerous-commands';
-import { CHANNELS, type ApiResult, type XdInfo } from './ipc';
+import { CHANNELS, type ApiResult, type IdeResult, type XdInfo } from './ipc';
 import { canWrite, chooseDataRoot, ensureLayout, movedRootFile, readMovedRoot, rootLayout } from './data-root';
 import { EngineService, enginePythonPath } from './engine-service';
 import { Secrets } from './secrets';
 import { Store } from './store';
 import { augmentedPath } from '@dex/engine/exec-resolve';
 import { CliService, type CliEvent } from './cli/service';
+import { FolderFsError } from './dex';
+import { IdeService } from './ide-service';
 import { BusyError, TurnRunner, type XdTurnEvent } from './turn-runner';
 import { createXdApi, XdError, type XdApi } from './xd-api';
 
@@ -237,6 +239,31 @@ if (!app.requestSingleInstanceLock()) {
     await shell.openExternal(url);
     return true;
   });
+  // 작업 공간 IDE — 에이전트의 작업 공간·연결 폴더(몇 번째)만. 지우면 휴지통으로.
+  const ide = new IdeService({
+    store,
+    workspaceDir: layout.workspace,
+    stateDir: layout.state,
+    trash: (abs) => shell.trashItem(abs),
+    reveal: (abs) => shell.showItemInFolder(abs),
+  });
+  ipcMain.handle(CHANNELS.ide, async (_e, agentId: unknown, root: unknown, op: unknown, args: unknown): Promise<IdeResult<unknown>> => {
+    try {
+      if (typeof agentId !== 'string' || typeof op !== 'string' || typeof root !== 'string') throw new FolderFsError('bad_request', '잘못된 요청입니다');
+      const value = await ide.call(agentId, root, op, args && typeof args === 'object' ? (args as Record<string, unknown>) : {});
+      return { ok: true, value };
+    } catch (err) {
+      if (err instanceof FolderFsError) return { ok: false, code: err.code, message: err.message, detail: err.detail };
+      // 운영체제의 실패 — 영어 원문·절대 경로를 화면에 내지 않는다(원문은 로그에).
+      const code = (err as NodeJS.ErrnoException)?.code;
+      console.error('[xd] ide', op, err);
+      if (code === 'EACCES' || code === 'EPERM') return { ok: false, code: 'forbidden', message: '이 파일에 접근할 권한이 없습니다' };
+      if (code === 'ENOENT') return { ok: false, code: 'not_found', message: '파일이 없습니다' };
+      if (code === 'ENOSPC') return { ok: false, code: 'error', message: '디스크에 남은 공간이 없습니다' };
+      return { ok: false, code: 'error', message: '파일 작업을 마치지 못했습니다' };
+    }
+  });
+  ipcMain.handle(CHANNELS.ideFolders, (_e, agentId: unknown) => (typeof agentId === 'string' ? ide.folders(agentId) : []));
   ipcMain.handle(CHANNELS.clipboardWrite, (_e, text: unknown) => {
     clipboard.writeText(String(text ?? ''));
     return true;

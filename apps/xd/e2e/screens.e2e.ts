@@ -245,3 +245,105 @@ test('연결 폴더: 고를 때 바로 검사하고, 에이전트가 그 폴더�
   await shot(win, '14-linked-missing');
   assert.equal(existsSync(linked), false);
 });
+
+/** 시험용 제공자 하나 — 화면으로. */
+async function addFakeProvider(win: Page): Promise<void> {
+  await win.getByRole('button', { name: 'AI 제공자', exact: true }).click();
+  await win.getByRole('button', { name: '제공자 추가' }).click();
+  await win.getByRole('radio', { name: '시험용 모델' }).click();
+  await win.getByRole('button', { name: '추가', exact: true }).click();
+  await win.locator('.xd-account', { hasText: '시험용 모델' }).waitFor();
+}
+
+test('작업 공간 IDE: 에이전트가 쓴 파일을 열어 고쳐 저장하고, 찾고, 연결 폴더도 보이며, 대화는 오른쪽 칸에서 이어진다', { timeout: 240_000 }, async () => {
+  const linked = mkdtempSync(join(tmpdir(), 'xd-ide-linked-'));
+  writeFileSync(join(linked, 'shared.txt'), 'linked hello\n');
+  const { root, launch } = fixture([
+    // 턴마다 이름이 다른 파일도 하나 만든다 — IDE 가 열린 채로 턴이 돌면 탐색기가 스스로 다시 읽는지 본다.
+    {
+      text: '계획을 적을게요.',
+      tools: [
+        { name: 'Write', input: { file_path: 'notes/plan.md', content: '# 계획\n\nalpha beta\n' } },
+        { name: 'Bash', input: { command: 'touch "turn-$(date +%s%N).txt"' } },
+      ],
+    },
+    { text: '`notes/plan.md` 에 적었습니다.' },
+  ]);
+  let { app, win } = await launch();
+  await addFakeProvider(win);
+  await win.getByRole('button', { name: '새 에이전트' }).click();
+  await win.getByPlaceholder('예: 리서치 도우미').fill('편집 도우미');
+  await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
+  await app.evaluate(({ dialog }, p) => {
+    (dialog as any).showOpenDialog = async () => ({ canceled: false, filePaths: [p] });
+  }, linked);
+  await win.getByRole('button', { name: '폴더 연결' }).click();
+  await win.locator('.xd-folder-row', { hasText: linked }).waitFor();
+  await win.getByRole('button', { name: '만들기' }).click();
+  await say(win, '계획 적어 줘');
+  await win.getByText('notes/plan.md 에 적었습니다', { exact: false }).waitFor({ timeout: 60_000 });
+
+  // [작업 공간 보기] — IDE 가 열리고, 대화는 오른쪽 칸에 그대로 있다
+  await win.getByRole('button', { name: '작업 공간 보기' }).click();
+  const plan = win.locator('[role="treeitem"][data-path="notes/plan.md"]');
+  const notes = win.locator('[role="treeitem"][data-path="notes"]');
+  await notes.waitFor({ timeout: 30_000 });
+  if (!(await plan.count())) await notes.click();
+  await plan.click();
+  // 마크다운은 그린 쪽(미리보기 — Dex 의 뷰어)부터 보인다
+  await win.locator('.fv-root', { hasText: 'alpha beta' }).waitFor({ timeout: 30_000 });
+  await shot(win, '15-ide-preview');
+  await win.getByRole('button', { name: '편집', exact: true }).click();
+  const editor = win.locator('.monaco-editor').first();
+  await editor.waitFor({ timeout: 60_000 });
+  await win.locator('.monaco-editor .view-lines', { hasText: 'alpha beta' }).waitFor();
+  // XD 에 없는 소스 제어·터미널 단추는 없다
+  assert.equal(await win.getByRole('button', { name: '소스 제어' }).count(), 0);
+  assert.equal(await win.getByRole('button', { name: '터미널', exact: true }).count(), 0);
+  await shot(win, '16-ide-editor');
+
+  // 고쳐서 저장(Ctrl+S) → 디스크의 파일이 바뀐다
+  await win.locator('.monaco-editor .view-lines').first().click();
+  await win.keyboard.press('Control+End');
+  await win.keyboard.type('gamma\n');
+  await win.keyboard.press('Control+s');
+  const file = join(root, 'workspace', '편집 도우미', 'notes', 'plan.md');
+  for (let i = 0; i < 50 && !readFileSync(file, 'utf8').includes('gamma'); i += 1) await win.waitForTimeout(100);
+  assert.equal(readFileSync(file, 'utf8'), '# 계획\n\nalpha beta\ngamma\n');
+
+  // 오류의 까닭(코드·자세한 값)이 화면까지 온다 — 큰 파일은 "너무 크다" 와 그 크기를 보인다(코드를 잃으면 일반 실패 문구).
+  writeFileSync(join(root, 'workspace', '편집 도우미', 'big.log'), Buffer.alloc(11 * 1024 * 1024, 0x61));
+  await win.getByRole('complementary', { name: '탐색기' }).getByRole('button', { name: '새로 고침' }).first().click();
+  const big = win.locator('[role="treeitem"][data-path="big.log"]');
+  await big.click();
+  await win.getByText(/파일이 너무 커서\(11(\.0)? MB\) 편집기로 열 수 없습니다/).waitFor({ timeout: 30_000 });
+
+  // 연결 폴더 — 탐색기 아래 칸에서 펼쳐 본다
+  const folders = win.getByRole('region', { name: '연결된 폴더' });
+  await folders.getByText(linked.split(/[\\/]/).pop()!, { exact: true }).click();
+  await folders.getByText('shared.txt', { exact: true }).waitFor();
+
+  // 찾기 — 작업 공간 전체에서
+  await win.getByRole('button', { name: '찾기', exact: true }).click();
+  await win.getByRole('textbox', { name: '찾기' }).fill('alpha');
+  await win.locator('.xide-search-file-name', { hasText: 'plan.md' }).waitFor({ timeout: 30_000 });
+  await shot(win, '17-ide-search');
+
+  // 대화는 오른쪽 칸에서 이어지고, 그 턴이 만든 파일이 누르지 않아도 탐색기에 나타난다
+  await win.getByRole('button', { name: '탐색기', exact: true }).click();
+  assert.equal(await win.locator('[role="treeitem"][data-path^="turn-"]').count(), 1);
+  await say(win, '한 번 더');
+  await win.waitForFunction(() => document.querySelectorAll('.chat-ide-column .msg-row.assistant').length === 2, undefined, { timeout: 60_000 });
+  await win.waitForFunction(() => document.querySelectorAll('[role="treeitem"][data-path^="turn-"]').length === 2, undefined, { timeout: 15_000 });
+  await app.close();
+
+  // 다시 켜도 그 에이전트는 작업 공간으로, 열어 둔 탭·보기까지 그대로 열린다. 끄면 대화만 남는다.
+  ({ app, win } = await launch());
+  await win.getByText('편집 도우미').first().click();
+  await win.locator('.xide-tab', { hasText: 'plan.md' }).waitFor({ timeout: 30_000 });
+  await shot(win, '18-ide-restored');
+  await win.getByRole('button', { name: '작업 공간 보기' }).click();
+  await win.locator('.xide-tab').first().waitFor({ state: 'detached' });
+  await win.getByLabel('메시지').waitFor();
+  await app.close();
+});

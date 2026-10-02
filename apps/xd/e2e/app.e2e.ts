@@ -9,12 +9,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron, type ElectronApplication, type Page } from 'playwright-core';
 
 const APP = resolve(__dirname, '..');
-const ELECTRON = join(APP, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
+// Electron 43 은 설치 스크립트가 없다 — `require('electron')` 이 실행 파일 경로를 주고, 없으면 그때 내려받는다.
+const ELECTRON = createRequire(__filename)('electron') as string;
 
 interface Launched {
   app: ElectronApplication;

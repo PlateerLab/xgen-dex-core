@@ -35,7 +35,8 @@ apps/xd
 │     safety.py                 위험 명령 확인(규칙은 main 이 Dex 것을 넘긴다)·셸 도구 감싸기
 │     memory_llm.py             턴 끝 기억 증류용 LLM
 │     testing.py                시험용 가짜 LLM(xd_fake) — 환경 변수가 있을 때만
-│     (M3) mcp_bridge.py        CLI 제공자 턴의 도구 다리(TurnToolSurface → MCP)
+│     mcp_bridge.py             CLI 턴의 도구 다리 — 턴 표면을 루프백 MCP 로 (M3)
+│     mcp_shim.py               CLI 가 띄우는 stdio 중계 (M3)
 │   bundle/                     동봉 목록 — bundle.json · requirements.in/.lock · nodeps.lock · verify.py
 │   tests/                      pytest — 데몬은 실제 프로세스로 띄워 stdio 로 시험한다
 ├─ scripts/bundle-engine.mjs    동봉본 만들기 → engine/dist/<platform>-<arch>/python
@@ -47,7 +48,7 @@ apps/xd
 │     turn-runner.ts            턴: 이력·계정 → 엔진, 사건 → Dex ChatEvent, 끝나면 저장 (M2)
 │     xd-api.ts                 화면이 IPC 로 부르는 일들(Electron 모름) (M2)
 │     workspace-name.ts         에이전트 이름 → 작업 공간 폴더 이름 (M2)
-│     (M3~) providers/, cli/    제공자 계정·CLI 감지·설치·로그인
+│     cli/                      CLI 감지·설치·로그인·상태 (M3)
 ├─ src/preload/                 window.xd (XD 전용) + Dex 화면 공유용 window.xgen(부분)
 └─ src/renderer/                XD 셸 — Dex 화면 부품을 가져다 쓴다
 ```
@@ -106,8 +107,8 @@ Windows 설치본의 설치 폴더(쓸 수 있을 때) → `~/XD`.
 | `register_builtin_tools` | web·parsing·workflow(TodoWrite·ToolBatch)·filesystem·shell. Bash 는 감싸서 위험 명령 확인을 지나고 설명을 "이 PC" 로 바꾼다(`to_api_format` 까지). 끄기: `GENY_TOOLS_<묶음>_ENABLED` |
 | `build_run_tool_context` | `working_dir`=작업 공간, `allowed_paths`=작업 공간+연결 폴더, `extras[host_is_execution_target]` |
 | `resolve_*`·`setting` | 턴마다 main 이 넘기는 값만 — **환경 변수를 읽지 않는다**(사용자 셸 환경이 턴을 바꾸지 않게). 다른 제공자의 키를 물으면 빈 값 |
-| `build_turn_memory_llm` | 그 턴의 API 제공자 그대로(CLI 제공자는 M3) |
-| `build_cli_runtime` | (M3) `build_cli_client`·`build_codex_cli_client` + 격리 홈 + 도구 다리(MCP). 그 전에는 턴을 시작하지 않고 `bad_request` |
+| `build_turn_memory_llm` | 그 턴의 API 제공자 그대로(CLI 제공자는 증류를 건너뛴다 — 자동 기억 계층은 돈다) |
+| `build_cli_runtime` | `build_cli_client`·`build_codex_cli_client` + XD 전용 홈 + 도구 다리(MCP) — §6. 턴 설정에 `cli{binary, home, auth}` 가 없으면 `bad_request` |
 | `build_connector_mcp_tools`·`register_forged_tools`·`register_workflow_self_tools`·`build_job_tools`·`build_host_skill_tools`·`load_ssh_servers`·`rag_context_builder` | 없음 — 서버 소유이거나 sandbox 가 필요. 자기 워크플로 편집은 `enable_self_evolution=False` 로 끈다 |
 
 ### 데몬 프로토콜 v1 (stdio JSON 줄)
@@ -161,20 +162,59 @@ Windows 설치본의 설치 폴더(쓸 수 있을 때) → `~/XD`.
 
 ## 6. 제공자 (M3)
 
-- **API 키**: Anthropic·OpenAI·Gemini·OpenAI 호환(기본 주소 Ollama `http://localhost:11434/v1`·LM Studio·vLLM).
-  키는 safeStorage 로 암호화해 `.xd/secrets/` 에. 모델 목록 조회·연결 테스트는 XGEN 과 같은 엔드포인트.
-- **Claude Code·Codex**
-  - 감지: XD 가 설치한 것(`.xd/cli/…`) → PATH → 알려진 위치 → 로그인 셸(`$SHELL -lic`). `--version` 으로 확인.
-  - 설치·업데이트: 공식 배포처에서 직접 내려받고 sha256 검증(Claude: `downloads.claude.ai` manifest,
-    Codex: GitHub `rust-v` 릴리스). Windows 포함 — `install.sh` 는 Windows 를 못 덮는다.
-  - 로그인: `claude auth login --claudeai`·`codex login --device-auth` 를 **파이프로**(PTY 불필요). 홈은
-    XD 전용으로 격리(`CLAUDE_CONFIG_DIR`·`CODEX_HOME`, 미리 만들어 둔다).
-  - 상태: Claude 는 만료돼도 `loggedIn:true` 라 만료 시각을 직접 본다. Codex 토큰은 한 번 쓰면 바뀌므로
-    CLI 가 고친 `auth.json` 을 그대로 둔다(같은 홈을 로그인과 턴이 같이 쓴다).
-  - 섞지 않기: 구독 로그인에 API 키·`CLAUDE_CODE_SIMPLE`·`--bare` 를 섞지 않는다. 연결 테스트와 실제 턴은
-    같은 인증 해석 함수를 쓴다.
-  - 도구 다리: CLI 턴의 도구는 MCP 로만 닿는다 — 런타임의 `TurnToolSurface` 를 데몬이 루프백 MCP 서버
-    (`connector`)로 연다.
+계정 종류: `anthropic` · `openai` · `google` · `ollama` · `lmstudio` · `openai_compatible`(vLLM 등, 주소 필수) ·
+`claude_code` · `codex`. 런타임 제공자로는 그대로, OpenAI 호환은 `vllm`(=custom 프로필), Ollama·LM Studio 는 런타임의
+전용 프로필(도구 지원·기본 주소)이다.
+
+### API 키 제공자
+
+- 키는 safeStorage 로 `.xd/secrets/` 에(§7). Ollama·LM Studio·OpenAI 호환은 키 없이도 된다.
+- **모델 목록 = 연결 시험** — 엔진의 `models` 명령이 런타임의 `discover_models`(XGEN 과 같은 코드)로 묻는다
+  (Anthropic `/v1/models`, OpenAI·호환 `/models`, Gemini `/v1beta/models`, Ollama `/api/tags`). 실패는 예외가 아니라
+  `ok:false` 와 까닭. 저장 전에도 시험할 수 있다(`modelsProbe`, 키를 저장하지 않는다).
+
+### Claude Code·Codex
+
+- **감지**: XD 가 설치한 것(`.xd/cli/<이름>/bin`) → PATH(로그인 셸로 보강) → 알려진 자리. `--version` 이 판을 내야 쓴다.
+- **설치·업데이트**: 공식 배포처에서 실행 파일 하나를 직접 받고 sha256 을 확인한다(설치 스크립트를 돌리지 않는다 —
+  사용자 셸 설정을 고치지 않고, Windows 도 같은 길). 받은 파일이 이 PC 에서 `--version` 을 내야 바꿔 끼운다(실패하면
+  쓰던 판이 남는다).
+  - Claude Code: `downloads.claude.ai/claude-code-releases/{stable}` → 판 → `{판}/manifest.json` 의
+    `platforms[darwin-arm64|darwin-x64|linux-x64|win32-x64].checksum` → `{판}/<플랫폼>/claude(.exe)` (약 240MB).
+  - Codex: GitHub `openai/codex` 최신 릴리스(`rust-v<판>`) — 자산 sha256 은 API 의 `digest`. 맥·리눅스는
+    `codex-<삼중항>.tar.gz`, Windows 는 `codex-<삼중항>.exe` 그대로 (약 110MB).
+  - 실측(2026-10-02, 리눅스): Codex 0.160.0·Claude Code 2.1.285 를 받아 확인·설치.
+- **로그인**: XD 전용 홈(`CLAUDE_CONFIG_DIR`·`CODEX_HOME` = `.xd/cli/<이름>/home`)에서, **파이프로**(PTY 없음).
+  사용자의 `~/.claude`·`~/.codex` 는 쓰지 않는다 — 그쪽의 훅·플러그인·MCP·지시가 턴에 섞이고, 한 번 쓰면 바뀌는
+  토큰을 두 곳이 나눠 쓰면 한쪽이 끊긴다. 그래서 XD 에서 따로 한 번 로그인한다.
+  - Claude: `claude auth login --claudeai` → 주소 → 브라우저가 보여 준 코드를 stdin 으로(코드를 쓰고 잠시 뒤 Enter —
+    붙여넣기로 보고 Enter 를 버리는 판이 있다). 잘못된 코드는 기다리지 않고 실패로. 상태 `claude auth status --json`.
+  - Codex: `codex login --device-auth` → 주소·일회용 코드 → 사용자가 마치면 스스로 끝난다. 상태 `codex login status`
+    (로그인 안 됐어도 종료 0 — 글을 읽는다).
+  - 끝났다고 다 된 것이 아니다 — 그 홈에서 상태를 다시 물어 확인한다. 로그인·상태에는 키·`CLAUDE_CODE_SIMPLE`·
+    `CLAUDE_CODE_OAUTH_TOKEN` 을 넣지 않는다(2026-09-09 XGEN 사고).
+  - CLI 마다 홈이 하나 — 같은 CLI 계정을 여럿 만들어도 같은 로그인을 쓴다(v1).
+- **인증 방식**: 계정 설정 `auth` = `oauth`(구독 로그인, 키 없음) | `api_key`(이 계정의 키). 키 방식에서만 주소(base
+  URL)가 뜻이 있다 — Anthropic·OpenAI 호환 게이트웨이(사내 프록시·LiteLLM). Claude 는 `ANTHROPIC_BASE_URL`, Codex 는
+  사용자 지정 제공자(`-c model_provider=xd_gateway`).
+- **모델**: Claude Code 는 판에 상관없는 별칭(sonnet·opus·haiku). Codex 는 홈의 `models_cache.json`(보이는 것만) —
+  없으면 이름을 직접 쓴다.
+- **도구 다리** (엔진 `mcp_bridge.py` + `mcp_shim.py`): 런타임의 턴 도구 표면(`TurnToolSurface`)을 엔진 안 루프백
+  HTTP(토큰)로 열고, CLI 가 stdio 중계(표준 라이브러리만, 파일 경로로 실행)로 붙는다 — XGEN 서버 브릿지와 같은
+  메서드·응답·동작(요청마다 스레드, 알림 무응답, 목록이 바뀌면 `list_changed` 후 재조회까지 호출 응답을 붙듦 —
+  Claude 3초·Codex 0). Windows 는 중계를 창 없는 `pythonw.exe` 로.
+  - Claude: `--settings {"permissions":{"allow":["mcp__connector"]}}` + `--allowedTools mcp__connector`(`--print` 에서
+    도구마다 묻지 않게), `ENABLE_TOOL_SEARCH=false`(우리 표면이 이미 계층을 가진다), 네이티브는 런타임이 전부 끈다.
+  - Codex: 네이티브는 런타임이 끈다(`host_tools_only`), 남는 것은 끌 수 없는 MCP 리소스 조회 셋과
+    `request_user_input`(exec 에서 "지원 안 함")뿐 — 시험이 확인한다.
+- **실측(2026-10-02)**: 실제 claude 2.1.285·codex 0.160.0 + 가짜 모델(키 없음)로, 앱 전체 경로(main → 엔진 → CLI →
+  XD 도구 다리 → 작업 공간)에서 턴이 돈다. CI 는 앱 설치기로 두 CLI 를 받아 같은 E2E 를 돌리고, 엔진 잡도 실제 CLI 로
+  CLI 턴 시험을 돈다.
+- **Windows**: 런타임 4.83.3 — CLI 를 창 없이(`CREATE_NO_WINDOW`) 띄우고 `taskkill /T` 로 트리째 끝낸다.
+
+### 남은 확인 (실제 계정)
+
+키·구독 로그인으로 하는 실제 턴은 계정이 있어야 한다 — 사용자 확인을 받아 한다(M3 완료 기준).
 
 ## 7. 저장소 (M2)
 
@@ -260,6 +300,9 @@ Dex 화면 조사(2026-10-02)에서 알게 된 것 — M4 의 출발점:
 ### 진행
 
 - **M0** (2026-10-02, PR #160) — 설계·뼈대·정체성·버전/계약/CI.
+- **M3** (2026-10-02, 코드) — 제공자·CLI: 계정 종류 8개, 모델 목록=연결 시험(엔진), Claude Code·Codex 감지·설치(공식
+  배포처·sha256)·로그인(파이프)·상태·로그아웃, CLI 턴의 도구 다리. 실측: 실제 CLI 로 앱 전체 경로 턴(가짜 모델), 실제
+  배포처에서 설치. 찾아 고친 것: 런타임 4.83.3(Windows CLI 창·트리 종료). **실제 계정 턴은 확인 대기.**
 - **M2** (2026-10-02) — 저장소·에이전트·대화·턴·엔진 관리. 완료 기준 실측(E2E, 실제 Electron 43 + 동봉 엔진 +
   가짜 LLM): 턴이 작업 공간에 파일을 만들고, 앱을 껐다 켜도 에이전트·대화·턴(답·작업 과정)이 그대로이며, 다음 턴에
   앞 대화가 이력으로 엔진까지 간다(요청 메시지 수 1·3 → 3·5). 위험 명령은 Dex 와 같은 확인 창을 거치고 거부하면

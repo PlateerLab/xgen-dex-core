@@ -103,7 +103,9 @@ def test_runtime_failure_is_one_error_event_not_text(root, tmp_path):
         ({"workspace": "CON"}, {}, "workspace folder name"),
         ({"id": "../a1"}, {}, "agent id"),
         ({}, {"provider": "anthropic", "model": "claude-x"}, "no API key"),
-        ({}, {"provider": "claude_code", "model": "sonnet"}, "not available"),
+        ({}, {"provider": "claude_code", "model": "sonnet"}, "needs config.cli"),
+        ({}, {"provider": "codex", "model": "m", "cli": {"binary": "/x/codex", "home": "/x/h", "auth": "api_key"}}, "no API key"),
+        ({}, {"provider": "codex", "model": "m", "cli": {"binary": "/x/codex", "home": "/x/h", "auth": "sso"}}, "unknown CLI auth"),
         ({"folders": ["relative/path"]}, {}, "absolute"),
     ],
 )
@@ -315,3 +317,45 @@ def test_cancel_leaves_no_process_behind(root, tmp_path):
         time.sleep(0.05)
     assert not alive(child), "the cancelled command's child is still running"
     d.close()
+
+
+def test_models_lists_what_an_openai_compatible_server_serves(root, tmp_path):
+    """모델 목록 = 연결 시험 — 실제 HTTP 로 로컬 서버(/v1/models)에 묻는다(런타임 discover_models)."""
+    import http.server
+    import json as _json
+    import threading as _threading
+
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append((self.path, self.headers.get("Authorization")))
+            body = _json.dumps({"data": [{"id": "qwen3:8b"}, {"id": "llama3.1:8b"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    _threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        d = _daemon(root, tmp_path)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+        d.send({"type": "models", "id": "m1", "provider": "vllm", "base_url": base, "api_key": "k-local"})
+        ok = d.until(lambda e: e["type"] == "models_result" and e["id"] == "m1")
+        assert ok["ok"] is True
+        assert [m["id"] for m in ok["models"]] == ["qwen3:8b", "llama3.1:8b"]
+        assert seen[0] == ("/v1/models", "Bearer k-local")
+        # 꺼진 서버 — 예외가 아니라 ok:false 와 까닭
+        d.send({"type": "models", "id": "m2", "provider": "vllm", "base_url": "http://127.0.0.1:9/v1"})
+        bad = d.until(lambda e: e["type"] == "models_result" and e["id"] == "m2")
+        assert bad["ok"] is False and bad["error"]
+        d.send({"type": "ping", "id": "alive"})
+        assert d.until(lambda e: e["type"] == "pong")["id"] == "alive"
+        d.close()
+    finally:
+        httpd.shutdown()

@@ -123,7 +123,10 @@ jobs:
         run: node apps/xd/scripts/bundle-engine.mjs --skip-verify
       - name: 빌드
         run: npm --prefix apps/xd run build
+      # XD_E2E_INSTALL — 앱의 설치기가 claude·codex 를 공식 배포처에서 받아(sha256 확인) 그 CLI 로 턴을 돌린다.
       - name: E2E (실제 앱)
+        env:
+          XD_E2E_INSTALL: '1'
         run: |
           command -v xvfb-run >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb)
           xvfb-run -a npm --prefix apps/xd run e2e
@@ -159,6 +162,18 @@ jobs:
       - name: pytest 받기
         shell: bash
         run: python -m pip install --disable-pip-version-check --target "$RUNNER_TEMP/pytest-lib" pytest==9.1.1
+      # 실제 claude·codex — CLI 턴 시험(tests/test_cli_turns.py)이 건너뛰지 않게. 모델은 시험의 가짜 서버다.
+      - name: 실제 CLI (리눅스)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          V=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/openai/codex/releases/latest | sed -E 's#.*/rust-v##')
+          mkdir -p "$HOME/.local/codex-cli/bin"
+          curl -fsSL "https://github.com/openai/codex/releases/download/rust-v$V/codex-x86_64-unknown-linux-musl.tar.gz" | tar -xz -C "$HOME/.local/codex-cli/bin"
+          mv "$HOME/.local/codex-cli/bin/codex-x86_64-unknown-linux-musl" "$HOME/.local/codex-cli/bin/codex"
+          "$HOME/.local/bin/claude" --version
+          "$HOME/.local/codex-cli/bin/codex" --version
       - name: 엔진 시험 (동봉 인터프리터)
         shell: bash
         working-directory: apps/xd/engine

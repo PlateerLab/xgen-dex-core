@@ -7,6 +7,7 @@
     {"type": "turn", "id", "conversation", "text", "history"?, "agent": {...}, "config": {...}}
     {"type": "cancel", "id"}
     {"type": "approval_reply", "id", "request", "answer": "once" | "session" | "deny"}
+    {"type": "models", "id", "provider", "api_key"?, "base_url"?}   → models_result
     {"type": "shutdown"}
 
 사건(stdout)::
@@ -16,6 +17,7 @@
     approval_request{id, request, command}
     done{id} | error{id, code, message} | cancelled{id}      ← 턴마다 정확히 하나
     pong · configured · protocol_error{message}
+    models_result{id, ok, models: [{id, display_name}], error?}   ← 제공자가 실제로 내는 모델(=연결 시험)
 
 **턴마다 종결 사건은 정확히 하나다** (취소 > 실패 > 끝). 런타임은 실패를 예외가 아니라 ``[ERROR]`` 글로
 흘리므로 여기서 읽어 ``error`` 로 바꾼다 — 그 글은 ``chunk`` 로 내보내지 않는다.
@@ -33,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from xd_engine import PROTOCOL_VERSION
-from xd_engine.host import CLI_PROVIDERS, TurnSetup, XdHostServices
+from xd_engine.host import CLI_PROVIDERS, CliSetup, TurnSetup, XdHostServices
 from xd_engine.layout import Layout, LayoutError, check_folder_name, check_id
 from xd_engine.protocol import Channel, claim_stdout, read_commands
 from xd_engine.safety import ANSWERS, ApprovalGate, compile_patterns
@@ -163,6 +165,8 @@ class Daemon:
                 self._release_approvals(turn)
         elif kind == "approval_reply":
             self._approval_reply(cmd)
+        elif kind == "models":
+            threading.Thread(target=self._models, args=(cmd,), name="models", daemon=True).start()
         else:
             self.out.emit({"type": "protocol_error", "message": f"unknown command type: {kind!r}"})
 
@@ -271,10 +275,24 @@ class Daemon:
         model = str(config.get("model") or "").strip()
         if not provider or not model:
             raise BadRequest("config needs 'provider' and 'model'")
-        if provider in CLI_PROVIDERS:
-            raise BadRequest(f"{provider} is not available in this XD build yet")
         api_key = str(config.get("api_key") or "")
-        if provider in _KEY_REQUIRED and not api_key:
+        cli: Optional[CliSetup] = None
+        if provider in CLI_PROVIDERS:
+            spec = config.get("cli")
+            if not isinstance(spec, dict) or not spec.get("binary") or not spec.get("home"):
+                raise BadRequest(f"{provider} needs config.cli with binary and home")
+            auth = str(spec.get("auth") or "oauth")
+            if auth not in ("oauth", "api_key"):
+                raise BadRequest(f"unknown CLI auth {auth!r}")
+            if auth == "api_key" and not api_key:
+                raise BadRequest(f"no API key for {provider}")
+            cli = CliSetup(
+                binary=str(spec["binary"]),
+                home=str(spec["home"]),
+                auth=auth,
+                timeout_s=float(spec.get("timeout_s") or 3600.0),
+            )
+        elif provider in _KEY_REQUIRED and not api_key:
             raise BadRequest(f"no API key for {provider}")
         settings = config.get("settings") or {}
         if not isinstance(settings, dict):
@@ -293,6 +311,7 @@ class Daemon:
             credentials=config.get("credentials") if isinstance(config.get("credentials"), dict) else None,
             linked_folders=linked,
             settings={str(k): str(v) for k, v in settings.items() if v is not None},
+            cli=cli,
         )
         history = cmd.get("history")
         kwargs: Dict[str, Any] = {
@@ -320,6 +339,34 @@ class Daemon:
             if key in config and config[key] is not None:
                 kwargs[key] = config[key]
         return setup, kwargs
+
+    # ── 모델 목록 ────────────────────────────────────────────────────
+    def _models(self, cmd: Dict[str, Any]) -> None:
+        """제공자가 지금 내는 모델 — 런타임의 discover_models 그대로(XGEN 과 같은 코드). 키·주소가 맞는지도 이걸로 본다.
+
+        실패는 예외가 아니라 ``ok: false`` 와 짧은 까닭이다(키가 틀렸다·서버가 꺼졌다).
+        """
+        request_id = cmd.get("id")
+        try:
+            import asyncio
+
+            from xgen_agent_runtime.llm_client.model_discovery import discover_models
+
+            result = asyncio.run(
+                discover_models(
+                    str(cmd.get("provider") or ""),
+                    api_key=str(cmd.get("api_key") or "") or None,
+                    base_url=str(cmd.get("base_url") or "") or None,
+                )
+            )
+            models = [{"id": m.id, "display_name": m.display_name} for m in result.models]
+            event: Dict[str, Any] = {"type": "models_result", "id": request_id, "ok": bool(models), "models": models}
+            if not models:
+                event["error"] = result.error or "no models"
+        except Exception as exc:  # noqa: BLE001 — 목록 조회 실패가 데몬을 흔들지 않는다
+            logger.warning("model discovery failed", exc_info=True)
+            event = {"type": "models_result", "id": request_id, "ok": False, "models": [], "error": str(exc)}
+        self.out.emit(event)
 
     # ── 승인 ─────────────────────────────────────────────────────────
     def _ask(self, turn: Turn, command: str) -> str:

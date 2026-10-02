@@ -12,16 +12,26 @@ import type { ChatEvent, HistoryFlowItem, ToolEvent, XgenErrorInfo } from '@dex/
 import type { EngineEvent, TurnCommand, TurnTerminal } from './engine-service';
 import type { XdAccount, XdAgent, Store, XdTurn } from './store';
 
-/** 계정 종류 → 엔진(런타임) 제공자. OpenAI 호환(Ollama·LM Studio·vLLM)은 런타임의 vllm(=custom 프로필). */
-const PROVIDER_OF_KIND: Record<string, string> = {
+/**
+ * 계정 종류 → 엔진(런타임) 제공자. Ollama·LM Studio 는 런타임의 전용 프로필(도구 지원·기본 주소), 그 밖의 OpenAI
+ * 호환 서버(vLLM 등)는 vllm(=custom 프로필, 주소 필수). CLI 둘은 그 CLI 가 에이전트 루프를 돈다.
+ */
+export const PROVIDER_OF_KIND: Record<string, string> = {
   anthropic: 'anthropic',
   openai: 'openai',
   google: 'google',
+  ollama: 'ollama',
+  lmstudio: 'lmstudio',
   openai_compatible: 'vllm',
+  claude_code: 'claude_code',
+  codex: 'codex',
 };
 
-/** 키 없이 도는 제공자 — 그 밖의 API 제공자는 키가 있어야 턴을 시작한다. */
-const KEYLESS = new Set(['openai_compatible', 'xd_fake']);
+/** 계정 종류 → CLI 이름(main 의 cli/ 가 아는 이름). */
+const CLI_OF_KIND: Record<string, 'claude' | 'codex'> = { claude_code: 'claude', codex: 'codex' };
+
+/** 키 없이 도는 API 제공자(로컬 서버). CLI 는 인증 방식(구독 로그인이면 키 없음)에 따른다. */
+const KEYLESS = new Set(['openai_compatible', 'ollama', 'lmstudio', 'xd_fake']);
 
 /** 에이전트 옵션 중 엔진 config 로 그대로 가는 것. */
 const OPTION_KEYS = [
@@ -51,6 +61,8 @@ export interface TurnRunnerDeps {
   store: Store;
   engine: EnginePort;
   secret(accountId: string): string | null;
+  /** CLI 계정의 실행 파일·전용 홈 — 설치·감지 안 됐으면 null. */
+  cli?(name: 'claude' | 'codex'): { binary: string; home: string } | null;
   emit(event: XdTurnEvent): void;
   /** 위험 명령을 사용자에게 묻는다(main 의 확인 창). 없으면 거부한다. */
   confirmDangerous?(command: string, conversationId: string): Promise<'once' | 'session' | 'deny'>;
@@ -64,6 +76,8 @@ const XD_ERRORS: Record<string, Pick<XgenErrorInfo, 'title' | 'hint' | 'retryabl
   no_account: { title: '이 에이전트에 연결된 AI 제공자가 없습니다.', hint: '에이전트 설정에서 제공자를 고르세요.', retryable: false },
   no_key: { title: '이 제공자의 API 키가 없습니다.', hint: '제공자 설정에서 키를 입력하세요.', retryable: false },
   no_model: { title: '이 에이전트에 모델이 정해져 있지 않습니다.', hint: '에이전트 설정에서 모델을 고르세요.', retryable: false },
+  no_cli: { title: '이 PC 에 CLI 가 설치되어 있지 않습니다.', hint: '제공자 설정에서 설치하세요.', retryable: false },
+  no_base_url: { title: '서버 주소가 없습니다.', hint: '제공자 설정에서 주소를 입력하세요.', retryable: false },
   unsupported_provider: { title: '이 제공자는 아직 쓸 수 없습니다.', retryable: false },
   engine_unavailable: { title: '실행 엔진을 시작하지 못했습니다.', hint: '앱을 다시 시작해 보세요.', retryable: true },
   engine_exited: { title: '실행 엔진이 멈췄습니다.', hint: '다시 보내면 새로 시작합니다.', retryable: true },
@@ -82,18 +96,34 @@ export function engineConfig(
   agent: XdAgent,
   account: XdAccount | null,
   secret: string | null,
-  opts: { allowFakeProvider?: boolean } = {},
+  opts: { allowFakeProvider?: boolean; cli?: TurnRunnerDeps['cli'] } = {},
 ): { ok: true; config: Record<string, unknown> } | { ok: false; code: string; message: string } {
   if (!account) return { ok: false, code: 'no_account', message: 'agent has no provider account' };
   const provider =
     account.kind === 'xd_fake' && opts.allowFakeProvider ? 'xd_fake' : PROVIDER_OF_KIND[account.kind];
   if (!provider) return { ok: false, code: 'unsupported_provider', message: `account kind ${account.kind}` };
-  if (!KEYLESS.has(account.kind) && !secret) return { ok: false, code: 'no_key', message: `no API key for ${account.kind}` };
+  const cliName = CLI_OF_KIND[account.kind];
+  // CLI 의 인증: oauth(그 CLI 의 구독 로그인 — 키 없음) | api_key(이 계정의 키).
+  const cliAuth = cliName ? (account.settings.auth === 'api_key' ? 'api_key' : 'oauth') : null;
+  const needsKey = cliName ? cliAuth === 'api_key' : !KEYLESS.has(account.kind);
+  if (needsKey && !secret) return { ok: false, code: 'no_key', message: `no API key for ${account.kind}` };
+  if (account.kind === 'openai_compatible' && !account.baseUrl) {
+    return { ok: false, code: 'no_base_url', message: 'openai_compatible needs a base URL' };
+  }
   const model = agent.model || String(account.settings.defaultModel ?? '');
   if (!model) return { ok: false, code: 'no_model', message: 'agent has no model' };
   const config: Record<string, unknown> = { provider, model };
-  if (secret) config.api_key = secret;
-  if (account.baseUrl) config.base_url = account.baseUrl;
+  if (cliName) {
+    const found = opts.cli?.(cliName) ?? null;
+    if (!found) return { ok: false, code: 'no_cli', message: `${cliName} is not installed` };
+    config.cli = { binary: found.binary, home: found.home, auth: cliAuth };
+    // 구독 로그인에는 키를 싣지 않는다(엔진·런타임도 막지만 여기서부터 섞지 않는다).
+    if (cliAuth === 'api_key' && secret) config.api_key = secret;
+  } else if (secret) {
+    config.api_key = secret;
+  }
+  // CLI 의 주소는 키 방식의 게이트웨이에서만 뜻이 있다(구독 로그인은 그 회사로만 간다).
+  if (account.baseUrl && (!cliName || cliAuth === 'api_key')) config.base_url = account.baseUrl;
   for (const key of OPTION_KEYS) {
     if (agent.options[key] !== undefined && agent.options[key] !== null) config[key] = agent.options[key];
   }
@@ -188,6 +218,7 @@ export class TurnRunner {
     const account = agent.accountId ? store.getAccount(agent.accountId) : null;
     const prepared = engineConfig(agent, account, account ? this.deps.secret(account.id) : null, {
       allowFakeProvider: this.deps.allowFakeProvider,
+      cli: this.deps.cli,
     });
     if (!prepared.ok) {
       return { turnId: turn.id, conversationId, done: Promise.resolve(fail(prepared.code, prepared.message)) };

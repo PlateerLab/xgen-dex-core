@@ -4,22 +4,53 @@
  * 에이전트를 만들면 작업 공간 폴더(`<루트>/workspace/<이름>`)도 만든다. 지울 때 그 폴더는 남긴다(사용자 파일) —
  * 엔진 상태(`.xd/agents/<id>`: 기억·도구 결과)만 지운다. 대화를 지우면 그 대화의 대화 기록(STM)도 지운다.
  */
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import type { EngineService } from './engine-service';
+import type { CliName } from './cli/detect';
+import type { CliService, CliState } from './cli/service';
+import type { EngineService, ModelsResult } from './engine-service';
 import type { Secrets, SecretStatus } from './secrets';
 import type { XdAccount, XdAgent, XdConversation, Store, XdTurn } from './store';
 import type { TurnRunner } from './turn-runner';
 import { uniqueFolderName } from './workspace-name';
 
-/** 계정 종류 — v1 제공자(DESIGN §2-4). CLI 둘은 M3 에서 턴을 돌린다. */
-export const ACCOUNT_KINDS = ['anthropic', 'openai', 'google', 'openai_compatible', 'claude_code', 'codex'] as const;
+/** 계정 종류 — v1 제공자(DESIGN §2-4). OpenAI 호환은 Ollama·LM Studio(기본 주소가 있다)와 그 밖(vLLM 등, 주소 필수). */
+export const ACCOUNT_KINDS = ['anthropic', 'openai', 'google', 'ollama', 'lmstudio', 'openai_compatible', 'claude_code', 'codex'] as const;
+
+/** 계정 종류 → 모델 목록을 물을 런타임 제공자(model_discovery). */
+const DISCOVERY_PROVIDER: Record<string, string> = {
+  anthropic: 'anthropic',
+  openai: 'openai',
+  google: 'google',
+  ollama: 'ollama',
+  lmstudio: 'lmstudio',
+  openai_compatible: 'vllm',
+};
+
+/** Claude Code 는 모델 목록 명령이 없다 — 판에 상관없는 별칭을 쓴다. */
+const CLAUDE_CODE_MODELS = ['sonnet', 'opus', 'haiku'];
+
+/** Codex 가 로그인·실행 뒤 홈에 두는 모델 캐시에서 보이는 것만. 없으면 빈 목록(이름을 직접 쓴다). */
+export function codexCachedModels(home: string): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')) as {
+      models?: Array<{ slug?: string; visibility?: string }>;
+    };
+    return (parsed.models ?? []).filter((m) => m.slug && m.visibility !== 'hide').map((m) => String(m.slug));
+  } catch {
+    return [];
+  }
+}
+
+const CLI_OF_KIND: Record<string, CliName> = { claude_code: 'claude', codex: 'codex' };
+const isCliName = (name: unknown): name is CliName => name === 'claude' || name === 'codex';
 
 export interface XdApiDeps {
   store: Store;
   secrets: Secrets;
   runner: TurnRunner;
-  engine: Pick<EngineService, 'info' | 'running'>;
+  engine: Pick<EngineService, 'info' | 'running'> & { models?: EngineService['models'] };
+  cli?: CliService;
   /** `<루트>/workspace` */
   workspaceDir: string;
   /** `<루트>/.xd` */
@@ -60,6 +91,24 @@ export function createXdApi(deps: XdApiDeps) {
   const checkAccount = (id: string | null | undefined) => {
     if (id && !store.getAccount(id)) throw new Error(`no account ${id}`);
   };
+
+  const cli = (name: unknown): CliService => {
+    if (!deps.cli) throw new Error('CLI management is not available');
+    if (!isCliName(name)) throw new Error(`unknown CLI ${String(name)}`);
+    return deps.cli;
+  };
+
+  /** 이 종류·주소·키로 모델 목록을 묻는다 — 연결 시험도 겸한다. */
+  async function models(kind: string, baseUrl: string | null, secret: string | null): Promise<ModelsResult> {
+    if (kind === 'claude_code') return { ok: true, models: CLAUDE_CODE_MODELS.map((id) => ({ id })) };
+    if (kind === 'codex') {
+      const ids = deps.cli ? codexCachedModels(deps.cli.home('codex')) : [];
+      return ids.length ? { ok: true, models: ids.map((id) => ({ id })) } : { ok: false, models: [], error: 'not_cached' };
+    }
+    const provider = DISCOVERY_PROVIDER[kind];
+    if (!provider || !deps.engine.models) return { ok: false, models: [], error: `no model list for ${kind}` };
+    return deps.engine.models({ provider, apiKey: secret, baseUrl });
+  }
 
   return {
     // ── 에이전트 ──
@@ -112,7 +161,12 @@ export function createXdApi(deps: XdApiDeps) {
     turnsList: (conversationId: string): XdTurn[] => store.listTurns(conversationId),
 
     // ── 턴 ──
-    turnSend(input: { agentId: string; conversationId?: string; text: string }): { turnId: string; conversationId: string } {
+    async turnSend(input: { agentId: string; conversationId?: string; text: string }): Promise<{ turnId: string; conversationId: string }> {
+      const agent = store.getAgent(text(input?.agentId, 'agentId'));
+      const account = agent?.accountId ? store.getAccount(agent.accountId) : null;
+      const cliName = account ? CLI_OF_KIND[account.kind] : undefined;
+      // CLI 계정 — 실행 파일을 아직 찾지 않았으면 찾고 보낸다(턴 설정은 프로세스를 띄우지 않고 그 결과만 읽는다).
+      if (cliName && deps.cli && !deps.cli.binary(cliName)) await deps.cli.detect(cliName);
       const { turnId, conversationId } = runner.send({
         agentId: text(input?.agentId, 'agentId'),
         conversationId: input.conversationId,
@@ -151,6 +205,30 @@ export function createXdApi(deps: XdApiDeps) {
       secrets.set(id, null);
     },
     secretsStatus: (): SecretStatus => secrets.status(),
+
+    // ── 모델 ──
+    /** 저장된 계정으로 — 이 계정이 지금 쓸 수 있는 모델(=연결 시험). */
+    modelsList(accountId: string): Promise<ModelsResult> {
+      const account = store.getAccount(accountId);
+      if (!account) throw new Error(`no account ${accountId}`);
+      return models(account.kind, account.baseUrl, secrets.get(account.id));
+    },
+    /** 저장하기 전에 — 입력한 종류·주소·키로 시험한다. 키는 저장하지 않는다. */
+    modelsProbe(input: { kind: string; baseUrl?: string | null; secret?: string | null }): Promise<ModelsResult> {
+      if (!kinds.has(input?.kind)) throw new Error(`unknown account kind: ${String(input?.kind)}`);
+      return models(input.kind, input.baseUrl?.trim() || null, input.secret || null);
+    },
+
+    // ── CLI ──
+    cliState: (name: CliName): Promise<CliState> => cli(name).state(name),
+    cliDetect: (name: CliName) => cli(name).detect(name, true),
+    cliInstall: (name: CliName) => cli(name).install(name),
+    cliLogin: (name: CliName) => cli(name).login(name),
+    cliLoginCode(name: CliName, code: string): void {
+      cli(name).submitLoginCode(name, text(code, 'code', 4000));
+    },
+    cliLoginCancel: (name: CliName): void => cli(name).cancelLogin(name),
+    cliLogout: (name: CliName) => cli(name).logout(name),
 
     // ── 엔진 ──
     engineStatus: () => ({ running: deps.engine.running, info: deps.engine.info }),

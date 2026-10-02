@@ -8,6 +8,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { CHANNELS, type ApiResult, type XdInfo } from '../main/ipc';
 import type { XdApi } from '../main/xd-api';
 import type { XdTurnEvent } from '../main/turn-runner';
+import type { CliEvent } from '../main/cli/service';
 
 type Method = keyof XdApi;
 type Fn<M extends Method> = XdApi[M] extends (...a: infer A) => infer R ? (...a: A) => Promise<Awaited<R>> : never;
@@ -55,8 +56,27 @@ const api = {
     remove: call('accountsDelete'),
     secretsStatus: call('secretsStatus'),
   },
+  models: {
+    list: call('modelsList'),
+    probe: call('modelsProbe'),
+  },
+  cli: {
+    state: call('cliState'),
+    detect: call('cliDetect'),
+    install: call('cliInstall'),
+    login: call('cliLogin'),
+    loginCode: call('cliLoginCode'),
+    loginCancel: call('cliLoginCancel'),
+    logout: call('cliLogout'),
+  },
   engine: {
     status: call('engineStatus'),
+  },
+  /** CLI 설치 진행·로그인 사건 — 돌려받은 함수를 부르면 그만 듣는다. */
+  onCliEvent(cb: (event: CliEvent) => void): () => void {
+    const listener = (_e: unknown, event: CliEvent) => cb(event);
+    ipcRenderer.on(CHANNELS.cliEvent, listener);
+    return () => ipcRenderer.removeListener(CHANNELS.cliEvent, listener);
   },
   /** 턴 사건 — 돌려받은 함수를 부르면 그만 듣는다. */
   onTurnEvent(cb: (event: XdTurnEvent) => void): () => void {

@@ -77,8 +77,10 @@ def test_server_owned_families_are_empty(tmp_path):
     assert host.jobs_prompt_block() == ""
     assert host.rag_context_builder("q", {}) is None
     assert host.tool_result_filter() is None
-    assert host.cli_bridge_available("claude_code") is False
-    with pytest.raises(RuntimeError):
+    # CLI 턴의 도구는 XD 도구 다리로 닿는다. 계정에 CLI 설정이 없으면 클라이언트를 만들지 않는다.
+    assert host.cli_bridge_available("claude_code") is True
+    assert host.cli_bridge_available("openai") is False
+    with pytest.raises(RuntimeError, match="no CLI"):
         host.build_cli_runtime("claude_code", {})
 
 

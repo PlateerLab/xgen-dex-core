@@ -1,0 +1,6 @@
+# XD 엔진 — 앱에 동봉되는 파이썬 패키지(xd_engine). 따로 배포하지 않는다; 버전은 앱(apps/xd/package.json)을 따른다.
+# 의존성은 동봉 목록(bundle.json)이 정한다. 이 파일은 시험 설정만 든다.
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

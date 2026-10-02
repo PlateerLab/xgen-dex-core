@@ -1,0 +1,8 @@
+# 의존성을 따라가지 않고(--no-deps) 넣는 패키지 — 이들이 선언한 서버용 의존성은 XD 가 쓰지 않는다.
+# 필요한 의존성은 requirements.lock 이 판까지 고정한다. 판을 바꾸면 해시도 바꾼다.
+xgen-agent-runtime @ https://github.com/PlateerLab/xgen-agent-runtime/releases/download/v4.83.2/xgen_agent_runtime-4.83.2-py3-none-any.whl \
+    --hash=sha256:bed2ae5bfb8b4486356c48457bc3fb2887a1c7b0364a7697fdb8d5dd83da04fe
+xgen-doc2chunk==0.4.3 \
+    --hash=sha256:aed71cbb34b4e5006bfab8fd2577f41441ae96101afbe4bf7c71157f052ede5f
+xgen-pdf @ https://github.com/PlateerLab/xgen-pdf/releases/download/v0.1.2/xgen_pdf-0.1.2-py3-none-any.whl \
+    --hash=sha256:015c0b30082a047bb430470c448b8e8406637c45479d2bfa7b346f8454f3e2ac

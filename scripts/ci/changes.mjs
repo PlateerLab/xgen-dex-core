@@ -13,7 +13,7 @@
  *
  *   node scripts/ci/changes.mjs <base> <head>
  *
- * 결과는 $GITHUB_OUTPUT(있으면)과 표준 출력에 core · mobile · native = true|false.
+ * 결과는 $GITHUB_OUTPUT(있으면)과 표준 출력에 core · mobile · native · engine = true|false.
  */
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -63,6 +63,9 @@ const areas = {
   ]),
   // 모바일 JS(타입·테스트) — @dex/protocol 을 소스로 번들하므로 그것도 본다
   mobile: under(['apps/mobile/', 'packages/protocol/']),
+  // XD 엔진(동봉 Python) — 세 OS 에서 동봉본을 만들고 그 인터프리터로 시험한다. 위험 명령 규칙은 Dex 의 것을
+  // 그대로 넘기므로(엔진 시험이 두 언어의 판정을 맞춰 본다) 그 파일도 본다.
+  engine: under(['apps/xd/engine/', 'apps/xd/scripts/bundle-engine.mjs', 'packages/engine/src/local-tools.ts']),
   // 모바일 네이티브 컴파일 — 로컬 모듈·네이티브 프로젝트·의존성이 바뀔 때만
   native: under([
     'apps/mobile/modules/',
@@ -84,7 +87,7 @@ const areas = {
  * 이 파일(changes.mjs)이 바뀐 것은 무거운 잡으로 검증되지 않는다 — 판정 결과는 이 잡의 출력에
  * 그대로 찍힌다(아래 `core: …` 줄).
  */
-const JOB_AREA = { verify: 'core', mobile: 'mobile', android: 'native', ios: 'native' };
+const JOB_AREA = { verify: 'core', mobile: 'mobile', android: 'native', ios: 'native', 'xd-engine': 'engine' };
 
 function ciDefinitionAreas() {
   const CI = '.github/workflows/ci.yml';

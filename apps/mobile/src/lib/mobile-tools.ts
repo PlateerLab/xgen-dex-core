@@ -431,7 +431,8 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
       skipped.push({ source: show(folder, rel), reason: e instanceof Error ? e.message : String(e) });
       return;
     }
-    for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+    // 코드 단위 순서 — 로캘에 따라 순서가 달라지지 않게(엔진의 폴더 걷기와 같다).
+    for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       if (entry.name.startsWith('.')) continue;
       const child = joinRel(rel, entry.name);
       if (entry.isDir) {

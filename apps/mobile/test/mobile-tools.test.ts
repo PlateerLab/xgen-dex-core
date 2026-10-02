@@ -321,13 +321,13 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   assert.equal(r.isError, undefined);
   assert.deepEqual(transfer.uploads.map((u) => u.split('|').slice(0, 2).join('|')), [
     '|a.pdf',
-    'KakaoTalk|확인요청.docx',
     'KakaoTalk/sub|보고.hwp',
+    'KakaoTalk|확인요청.docx',
   ]);
   assert.equal(transfer.discarded.length, 3, '앱 캐시에 만든 사본은 올린 뒤 지운다');
   assert.deepEqual(
     (r.structuredContent?.workspaceFiles as Array<{ path: string }>).map((f) => f.path),
-    ['uploads/users_1/conv/a.pdf', 'uploads/users_1/conv/KakaoTalk/확인요청.docx', 'uploads/users_1/conv/KakaoTalk/sub/보고.hwp'],
+    ['uploads/users_1/conv/a.pdf', 'uploads/users_1/conv/KakaoTalk/sub/보고.hwp', 'uploads/users_1/conv/KakaoTalk/확인요청.docx'],
   );
   assert.match(r.content[0].text, /\/Notes\/없음\.txt: not found/);
   const noCtx = await callMobileTool(fakePort(), 'CopyToWorkspace', { paths: ['a.pdf'] }, undefined, s);

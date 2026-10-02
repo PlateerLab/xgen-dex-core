@@ -364,6 +364,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     channel = claim_stdout()
+    # 로그는 UTF-8 로 — Windows 의 stderr 는 시스템 코드 페이지(cp1252 등)라 런타임의 한국어 로그가
+    # "Logging error" 로 깨진다. `-I` 로 띄우므로 PYTHONIOENCODING 으로는 바꿀 수 없다.
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
     logging.basicConfig(
         level=logging.INFO,
         stream=sys.stderr,

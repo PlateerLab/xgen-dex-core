@@ -64,6 +64,17 @@ def test_tool_turn_runs_to_the_end_and_the_model_sees_the_result(root, tmp_path)
     assert d.close() == 0
 
 
+def test_engine_log_is_utf8_without_logging_errors(root, tmp_path):
+    """엔진 로그(stderr)는 UTF-8 — 런타임의 한국어 로그가 Windows 코드 페이지에서 깨지지 않는다."""
+    d = _daemon(root, tmp_path, [{"text": "ok"}])
+    d.send(turn("t1"))
+    assert d.terminal("t1")["type"] == "done"
+    d.close()
+    log = d.stderr_path.read_bytes().decode("utf-8")  # 엄격하게 — UTF-8 이 아니면 여기서 깨진다
+    assert "내장 메모리" in log
+    assert "Logging error" not in log and "UnicodeEncodeError" not in log
+
+
 def test_history_reaches_the_model(root, tmp_path):
     d = _daemon(root, tmp_path, [{"text": "ok"}])
     history = [{"role": "user", "content": "earlier question"}, {"role": "assistant", "content": "earlier answer"}]

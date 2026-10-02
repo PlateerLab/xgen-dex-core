@@ -31,6 +31,7 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
+import { attachmentName, base64Bytes, imageMime } from '../lib/attachment-file';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import type { Agent, Conversation, HistoryFlowItem, ToolEvent } from '@dex/protocol';
@@ -74,44 +75,17 @@ import {
   type ChatMessage,
 } from './message-model';
 
-/** base64 → 바이트. RN 에는 atob 가 없다. */
-function base64Bytes(value: string): Uint8Array {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const clean = value.replace(/[^A-Za-z0-9+/]/g, '');
-  const out = new Uint8Array(Math.floor((clean.length * 6) / 8));
-  let buffer = 0;
-  let bits = 0;
-  let offset = 0;
-  for (const char of clean) {
-    const n = alphabet.indexOf(char);
-    if (n < 0) continue;
-    buffer = (buffer << 6) | n;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out[offset++] = (buffer >> bits) & 0xff;
-    }
-  }
-  return offset === out.length ? out : out.slice(0, offset);
-}
-
-/** 내용으로 그림인지 본다 — 확장자·선언된 MIME 은 자주 틀린다. */
-function imageMime(bytes: Uint8Array): string | undefined {
-  const png = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length >= 8 && png.every((value, index) => bytes[index] === value)) return 'image/png';
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
-  if (
-    bytes.length >= 12 &&
-    String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
-    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
-  )
-    return 'image/webp';
-  const gif = String.fromCharCode(...bytes.slice(0, 6));
-  if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
-  return undefined;
-}
-
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+/** 파일 크기 — 고른 쪽이 알려 주지 않을 때. 알 수 없으면 undefined(서버가 상한을 다시 본다). */
+async function fileSize(uri: string): Promise<number | undefined> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists && typeof info.size === 'number' ? info.size : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 interface PickedFile {
   uri: string;
@@ -470,24 +444,26 @@ export function ChatView({
         setAttachmentStatus('파일을 올리는 중…');
         for (const file of files) {
           if (!isCurrent()) return;
-          if ((file.size ?? 0) > MAX_ATTACHMENT_BYTES) {
+          // 파일은 경로로 흘려보낸다 — RN 의 Blob 은 바이트로 만들 수 없어 예전 방식(전체를 base64 로
+          // 읽어 바이트로)은 모든 첨부가 업로드 직전에 실패했다. 크기·종류만 앞에서 확인한다.
+          const size = file.size ?? (await fileSize(file.uri));
+          if ((size ?? 0) > MAX_ATTACHMENT_BYTES) {
             throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
           }
-          const b64 = await FileSystem.readAsStringAsync(file.uri, {
+          const head = await FileSystem.readAsStringAsync(file.uri, {
             encoding: FileSystem.EncodingType.Base64,
-          });
-          const bytes = base64Bytes(b64);
-          if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
-            throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
-          }
-          const detected = imageMime(bytes);
+            position: 0,
+            length: 16,
+          }).catch(() => '');
+          const detected = imageMime(base64Bytes(head));
           const mime = detected || (file.mimeType || 'application/octet-stream').toLowerCase();
           const kind: 'image' | 'file' = detected ? 'image' : 'file';
+          const name = attachmentName(file.name, detected);
           const attachmentId = `mob-att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const result = await client.api.agentData.workspaceUpload(
             agent.workflowId,
-            bytes,
-            file.name,
+            { uri: file.uri },
+            name,
             mime,
             interactionId,
             attachmentId,
@@ -502,9 +478,9 @@ export function ChatView({
             {
               kind,
               attachment_id: attachmentId,
-              name: file.name,
+              name,
               mime_type: mime,
-              size: result.size ?? bytes.byteLength,
+              size: result.size ?? size ?? 0,
               sha256: result.sha256,
               workspace_path: workspacePath,
             },
@@ -541,7 +517,12 @@ export function ChatView({
       setAttachmentStatus('사진 접근 권한이 필요합니다.');
       return;
     }
-    const picked = await ImagePicker.launchImageLibraryAsync({ quality: 0.85, allowsMultipleSelection: true });
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      quality: 0.85,
+      allowsMultipleSelection: true,
+      // iOS 사진은 HEIC 로 올 수 있다 — 모델이 읽는 JPEG 로 받는다.
+      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+    });
     if (picked.canceled) return;
     await uploadPicked(
       picked.assets.map((a, i) => ({

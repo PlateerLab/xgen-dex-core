@@ -26,7 +26,8 @@ const code = (p: string): string =>
 
 const VIEW = 'src/renderer/src/apps/AppsView.tsx'
 const PAGE = 'src/renderer/src/apps/AgentAppsPage.tsx'
-const MODEL = 'src/renderer/src/apps/app-gallery-model.ts'
+// 확인 문구는 모바일과 함께 쓰려고 프로토콜의 한 곳에 있다(데스크톱 모델은 다시 내보낸다).
+const MODEL = '../../packages/protocol/src/app-card.ts'
 const MAIN = 'src/main/index.ts'
 const PRELOAD = 'src/preload/index.ts'
 const IPC = 'src/main/ipc.ts'

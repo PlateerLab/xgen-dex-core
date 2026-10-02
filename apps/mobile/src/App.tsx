@@ -2,7 +2,7 @@
  * XGEN Dex Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS).
  *
  * 구조는 WebView 세대와 동일(제품 지시): 좌상단 [☰] → 드로어로
- * [현재 채팅] / [에이전트 목록] / [설정]. 세 섹션은 상시 마운트(숨김 전환)라
+ * [현재 채팅] / [에이전트 목록] / [앱] / [설정]. 섹션은 상시 마운트(숨김 전환)라
  * 채팅 WS/스크롤이 이동 중에도 살아 있다. 순수 로직(chat-ws/tool-bridge/
  * mobile-tools)은 WebView 세대와 같은 파일 — 전송로만 RN 네이티브다
  * (fetch/WS 에 CORS 없음, WS 는 Bearer 헤더 인증).
@@ -35,6 +35,7 @@ import { StatusBar } from 'expo-status-bar';
 import type { Agent, Conversation } from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
 import { ChatView, formatWhen } from './chat/chat-view';
+import { AppsSection } from './apps/apps-section';
 import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -64,7 +65,7 @@ import {
 } from './lib/xgen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-type Section = 'chat' | 'agents' | 'settings';
+type Section = 'chat' | 'agents' | 'apps' | 'settings';
 
 /** 앱을 껐다 켠 뒤 되찾을 대화가 적히는 자리. */
 const LAST_CHAT_KEY = 'last-chat';
@@ -94,6 +95,7 @@ const EMPTY_AGENT = {
 const SECTION_TITLE: Record<Section, string> = {
   chat: '현재 채팅',
   agents: '에이전트',
+  apps: '앱',
   settings: '설정',
 };
 
@@ -399,6 +401,9 @@ export default function App(): React.ReactElement {
           <View style={[st.section, section !== 'agents' && st.off]}>
             <AgentsSection client={client} onOpenChat={openChat} />
           </View>
+          <View style={[st.section, section !== 'apps' && st.off]}>
+            <AppsSection client={client} visible={section === 'apps'} />
+          </View>
           <View style={[st.section, section !== 'settings' && st.off]}>
             <SettingsSection
               client={client}
@@ -429,6 +434,12 @@ export default function App(): React.ReactElement {
               onPress={() => go('chat')}
             />
             <DrawerItem label="에이전트 목록" active={section === 'agents'} onPress={() => go('agents')} />
+            <DrawerItem
+              label="앱"
+              hint="내가 만든 앱과 앱 스토어"
+              active={section === 'apps'}
+              onPress={() => go('apps')}
+            />
             <DrawerItem
               label="설정"
               hint={

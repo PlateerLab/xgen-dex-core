@@ -13,26 +13,34 @@
  * 않고, 고친 것이 어디 사는지도 함께 보인다. 스토어의 앱은 남의 에이전트일 수 있어 공개
  * 링크(로그인 없이 열리는 주소)로 기본 브라우저에서 연다.
  *
- * 미리보기는 그리지 않는다. 카드마다 살아 있는 프레임을 띄우면 앱 수만큼 서버 일이 생긴다.
+ * 카드는 웹·모바일과 같은 모양이다 — [이름][태그] / [설명] / [미리보기 그림] / [버튼](AppCard).
+ * 미리보기는 살아 있는 프레임이 아니라 **서버에 올라간 한 장**이다. 그 한 장은 이 앱이 찍는다:
+ * 목록을 받았을 때 그림이 없거나 낡은 내 앱을 main 이 하나씩 숨은 창에 띄워 찍어 올린다(app-preview).
+ * 그래서 웹·모바일의 카드도 같은 그림을 본다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppStoreListResult, AppStoreScope, MyApp, MyAppsResult, StoreApp } from '@dex/protocol';
 import { copyText, xgen } from '../bridge';
-import { AppIcon, BrowserIcon, CodeIcon, MoreIcon, RefreshIcon } from '../brand/icons';
+import { AppIcon, MoreIcon, RefreshIcon } from '../brand/icons';
+import { AppCard } from './AppCard';
 import { Selector } from '../views/Selector';
 import { ViewerEmpty } from '../views/agent-viewer-shared';
 import { useModalDismiss } from '../views/use-modal-dismiss';
 import {
   APP_CONFIRM,
   agentFilterOptions,
+  appDescription,
   appKey,
   appKindLabel,
   appStatus,
   filterMyApps,
   formatWhen,
+  myAppTags,
   myAppsSummary,
+  needsPreview,
   pageCount,
   patchMyApp,
+  storeAppTags,
   storeSummary,
   validAgentFilter,
   withServing,
@@ -62,8 +70,12 @@ const remembered = {
   page: 1,
 };
 
-const KindGlyph: React.FC<{ kind: string }> = ({ kind }) =>
-  kind === 'project' ? <BrowserIcon size={18} /> : kind === 'component' ? <CodeIcon size={18} /> : <AppIcon size={18} />;
+/** [미리보기 다시 찍기]가 못 찍은 이유 — 사람이 다음에 할 일을 말한다. */
+function captureFailure(reason: string | undefined, detail?: string): string {
+  if (reason === 'stopped') return '앱이 돌고 있을 때 찍을 수 있습니다. 앱을 한 번 연 뒤 다시 시도해 주세요.';
+  if (reason === 'kind') return '이 앱은 미리보기를 찍지 않습니다.';
+  return detail ? `미리보기를 찍지 못했습니다. ${detail}` : '미리보기를 찍지 못했습니다.';
+}
 
 export const AgentAppsPage: React.FC<{
   /** [열기]·[에이전트에서 보기] — 그 에이전트 뷰어의 [앱] 하위 탭을 그 앱으로 연다. */
@@ -235,6 +247,35 @@ export const AgentAppsPage: React.FC<{
     }
   };
 
+  // ── 미리보기 — 그림이 없거나 낡은 내 앱을 main 이 하나씩 찍어 올린다 ──
+  /** 이 화면이 이미 부탁한 앱 — 목록을 다시 읽을 때마다 또 부탁하지 않는다(main 도 쉬는 시간을 둔다). */
+  const asked = useRef(new Set<string>()).current;
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    for (const app of mine?.apps ?? []) {
+      const key = appKey(app);
+      if (!needsPreview(app) || asked.has(key)) continue;
+      asked.add(key);
+      void xgen.apps
+        .capturePreview({ workflow_id: app.workflow_id, slug: app.slug, kind: app.kind, app_url: app.app_url })
+        .then((res) => {
+          if (res.ok) void loadMine(true);
+        })
+        .catch(() => undefined);
+    }
+  }, [mine, asked, loadMine]);
+
+  const recapture = (app: MyApp) => {
+    setNotice('미리보기를 찍는 중…');
+    void xgen.apps
+      .capturePreview({ workflow_id: app.workflow_id, slug: app.slug, kind: app.kind, app_url: app.app_url, force: true })
+      .then((res) => {
+        setNotice(res.ok ? '미리보기를 새로 찍었습니다.' : captureFailure(res.reason, (res as { detail?: string }).detail));
+        if (res.ok) void loadMine(true);
+      })
+      .catch((e) => setNotice(captureFailure('error', errText(e))));
+  };
+
   // ── 그리기 ──
   const agentOptions = useMemo(() => agentFilterOptions(mine), [mine]);
   const rows = useMemo(() => filterMyApps(mine?.apps ?? [], agent, query), [mine, agent, query]);
@@ -259,22 +300,45 @@ export const AgentAppsPage: React.FC<{
         {rows.map((app) => {
           const key = appKey(app);
           const pending = busy === key;
-          const status = appStatus(app);
           return (
-            <div key={key} className="app-card">
-              <div className="app-card-head">
-                <span className="app-card-glyph" aria-hidden>
-                  <KindGlyph kind={app.kind} />
-                </span>
-                <div className="app-card-names">
-                  <strong className="app-card-title" title={app.title}>
-                    {app.title}
-                  </strong>
-                  <span className="app-card-agent" title={app.workflow_name}>
-                    {app.workflow_name}
-                  </span>
-                </div>
-                <div className="app-card-menu-wrap">
+            <AppCard
+              key={key}
+              title={app.title}
+              tags={myAppTags(app, { pending })}
+              description={appDescription(app)}
+              previewUrl={app.preview_url}
+              kind={app.kind}
+              onPreviewClick={app.ready ? () => onOpenApp(app.workflow_id, app.workflow_name, app.slug) : undefined}
+              actions={
+                <>
+                  <button
+                    type="button"
+                    className="apps-action strong"
+                    disabled={!app.ready}
+                    onClick={() => onOpenApp(app.workflow_id, app.workflow_name, app.slug)}
+                  >
+                    열기
+                  </button>
+                  <button
+                    type="button"
+                    className="apps-action"
+                    disabled={!!busy || (!app.shared && !app.ready)}
+                    onClick={() => toggleShare(app)}
+                  >
+                    {app.shared ? '공유 중지' : '공유'}
+                  </button>
+                  <button
+                    type="button"
+                    className="apps-action"
+                    disabled={!!busy}
+                    onClick={() => toggleServing(app)}
+                  >
+                    {app.serving ? '배포 중지' : '배포'}
+                  </button>
+                </>
+              }
+              menu={
+                <>
                   <button
                     type="button"
                     className="app-card-more"
@@ -307,47 +371,23 @@ export const AgentAppsPage: React.FC<{
                         >
                           에이전트에서 보기
                         </button>
+                        {app.ready && (app.kind === 'project' || app.kind === 'service') ? (
+                          <button
+                            role="menuitem"
+                            onClick={() => {
+                              setMenu('');
+                              recapture(app);
+                            }}
+                          >
+                            미리보기 다시 찍기
+                          </button>
+                        ) : null}
                       </div>
                     </>
                   ) : null}
-                </div>
-              </div>
-              <div className="app-card-badges">
-                <span className="app-badge">{appKindLabel(app.kind)}</span>
-                {/* 도는 동안에는 상태를 말하지 않는다 — 곧 다시 읽는 목록이 답한다. */}
-                {pending ? null : <span className={`app-badge ${status.key}`}>{status.label}</span>}
-                {app.shared && app.serving ? <span className="app-badge shared">공개 중</span> : null}
-              </div>
-              <p className="app-card-desc" title={app.description || undefined}>
-                {app.description}
-              </p>
-              <div className="app-card-actions">
-                <button
-                  type="button"
-                  className="apps-action strong"
-                  disabled={!app.ready}
-                  onClick={() => onOpenApp(app.workflow_id, app.workflow_name, app.slug)}
-                >
-                  열기
-                </button>
-                <button
-                  type="button"
-                  className="apps-action"
-                  disabled={!!busy || (!app.shared && !app.ready)}
-                  onClick={() => toggleShare(app)}
-                >
-                  {app.shared ? '공유 중지' : '공유'}
-                </button>
-                <button
-                  type="button"
-                  className="apps-action"
-                  disabled={!!busy}
-                  onClick={() => toggleServing(app)}
-                >
-                  {app.serving ? '배포 중지' : '배포'}
-                </button>
-              </div>
-            </div>
+                </>
+              }
+            />
           );
         })}
       </div>
@@ -372,35 +412,23 @@ export const AgentAppsPage: React.FC<{
           {store.items.map((app) => {
             const shared = formatWhen(app.shared_at);
             return (
-              <div key={appKey(app)} className="app-card">
-                <div className="app-card-head">
-                  <span className="app-card-glyph" aria-hidden>
-                    <KindGlyph kind={app.kind} />
-                  </span>
-                  <div className="app-card-names">
-                    <strong className="app-card-title" title={app.title}>
-                      {app.title}
-                    </strong>
-                    <span className="app-card-agent" title={app.workflow_name}>
-                      {app.owner_name || '알 수 없는 사용자'}
-                      {app.workflow_name ? ` · ${app.workflow_name}` : ''}
-                    </span>
-                  </div>
-                </div>
-                <div className="app-card-badges">
-                  <span className="app-badge">{appKindLabel(app.kind)}</span>
-                  {app.mine ? <span className="app-badge shared">내 앱</span> : null}
-                  {shared ? <span className="app-card-when">공유 {shared}</span> : null}
-                </div>
-                <p className="app-card-desc" title={app.description || undefined}>
-                  {app.description}
-                </p>
-                <div className="app-card-actions">
+              <AppCard
+                key={appKey(app)}
+                title={app.title}
+                tags={[
+                  ...storeAppTags(app),
+                  ...(shared ? [{ label: `공유 ${shared}`, tone: 'muted' as const }] : []),
+                ]}
+                description={appDescription(app)}
+                previewUrl={app.preview_url}
+                kind={app.kind}
+                onPreviewClick={() => void openStoreApp(app)}
+                actions={
                   <button type="button" className="apps-action strong" onClick={() => void openStoreApp(app)}>
                     열기
                   </button>
-                </div>
-              </div>
+                }
+              />
             );
           })}
         </div>
@@ -520,6 +548,11 @@ export const AgentAppsPage: React.FC<{
         </div>
       ) : null}
       {actionError ? <div className="viewer-note err">처리하지 못했습니다: {actionError}</div> : null}
+      {notice ? (
+        <div className="viewer-note" role="status" onClick={() => setNotice('')}>
+          {notice}
+        </div>
+      ) : null}
       {tab === 'mine' && mineError && mine ? (
         <div className="viewer-note err">다시 불러오지 못했습니다: {mineError}</div>
       ) : null}

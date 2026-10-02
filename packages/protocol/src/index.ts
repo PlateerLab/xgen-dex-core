@@ -260,6 +260,7 @@ export class XgenClient {
 export * from './errors';
 export * from './types';
 export * from './agent-data';
+export * from './app-card';
 export * from './filestore';
 export * from './agent-trigger';
 export * from './connector-devices';

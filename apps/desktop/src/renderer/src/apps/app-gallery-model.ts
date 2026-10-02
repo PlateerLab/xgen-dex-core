@@ -13,41 +13,17 @@ import type {
   MyAppsResult,
 } from '@dex/protocol';
 
-/**
- * 확인 문구. 켤 때는 **무엇이 열리는지**, 끌 때는 **무엇이 되돌아오지 않는지**를 한 줄로.
- * 길게 적어 봤더니 아무도 안 읽었고, 안 읽히는 확인은 확인이 아니다.
- */
-export const APP_CONFIRM = {
-  share: '공개 링크를 만들까요?\n링크를 아는 사람은 누구나 로그인 없이 이 화면을 쓸 수 있습니다.',
-  unshare: '공개 링크를 닫을까요?\n이미 나간 링크는 되살아나지 않습니다.',
-  undeploy: '배포를 중지할까요?\n내용은 그대로 두고 앱과 공개 링크를 닫습니다.',
-} as const;
-
-const KIND_LABELS: Record<string, string> = {
-  service: '앱',
-  project: '사이트',
-  component: '화면',
-};
-
-/** 앱의 모양 이름. 서버가 모르는 값을 주면 '앱' 으로 부른다(웹과 같다). */
-export function appKindLabel(kind: string | null | undefined): string {
-  return KIND_LABELS[String(kind ?? '')] ?? KIND_LABELS.service;
-}
-
-export type AppStatusKey = 'ready' | 'stopped' | 'broken';
-
-/**
- * 지금 열리는가. 사람이 내린 것(배포 중지)과 코드가 깨진 것(열 수 없음)을 **구분한다** —
- * 앞의 것은 버튼 한 번이면 되고 뒤의 것은 에이전트가 고칠 일이다.
- */
-export function appStatus(app: Pick<AppSummary, 'serving' | 'ready'>): {
-  key: AppStatusKey;
-  label: string;
-} {
-  if (!app.serving) return { key: 'stopped', label: '배포 중지' };
-  if (app.ready) return { key: 'ready', label: '열림' };
-  return { key: 'broken', label: '열 수 없음' };
-}
+// 이름표·상태·태그·확인 문구는 모바일과 함께 쓴다 — 한 곳(@dex/protocol/app-card)에 둔다.
+export {
+  APP_CONFIRM,
+  appDescription,
+  appKindLabel,
+  appStatus,
+  myAppTags,
+  needsPreview,
+  storeAppTags,
+} from '@dex/protocol/app-card';
+export type { AppStatusKey, AppTag, AppTagTone } from '@dex/protocol/app-card';
 
 /** 앱 한 개를 가리키는 키 — 폴더 이름은 에이전트 안에서만 유일하다. */
 export function appKey(app: { workflow_id: string; slug: string }): string {

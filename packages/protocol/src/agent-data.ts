@@ -25,6 +25,25 @@ export type AgentViewerSub =
   | 'storage'
   | 'fulllog';
 
+/** 올릴 파일 — 바이트, 또는 경로로 흘려보내는 플랫폼(React Native)의 파일 참조. */
+export type UploadSource = Uint8Array | { uri: string };
+
+/** `form` 에 파일 한 개를 싣는다 — 바이트면 Blob, 참조면 RN FormData 의 `{ uri, name, type }`. */
+export function appendUploadFile(
+  form: FormData,
+  field: string,
+  source: UploadSource,
+  filename: string,
+  mimeType: string,
+): void {
+  if (source instanceof Uint8Array) {
+    const owned = new Uint8Array(source);
+    form.append(field, new Blob([owned.buffer], { type: mimeType }), filename);
+    return;
+  }
+  form.append(field, { uri: source.uri, name: filename, type: mimeType } as unknown as Blob);
+}
+
 export interface WorkspaceUploadResult {
   ok: boolean;
   workflow_id?: string;
@@ -354,8 +373,51 @@ export interface AppSummary {
   shared_at: number | null;
   /** epoch 초. 폴더 안에서 가장 최근에 바뀐 파일 기준. */
   updated_at: number | null;
+  /**
+   * 카드의 미리보기 그림 주소(서버 기준 경로, 로그인 자격으로 받는다). 아직 찍은 적이 없으면 빈 문자열 —
+   * 화면은 요청 없이 기본 그림을 그린다. 옛 서버는 이 필드가 없다.
+   */
+  preview_url?: string;
+  /** 미리보기를 올린 시각(epoch 초). `updated_at` 보다 이르면 그림이 낡았다. */
+  preview_at?: number | null;
   /** 매니페스트 진단 — 비어 있으면 문제 없음. */
   issues: string[];
+}
+
+/** 앱(service)의 지금 상태 — 미리보기를 찍을지 정할 때 본다. */
+export interface AppServiceStatus {
+  kind: string;
+  running: boolean;
+  state?: string;
+}
+
+/**
+ * 서버가 준 미리보기 주소인가 — 앱 API(옛 이름 포함) 아래, `/preview` 로 끝나는 경로(뒤의 `?v=` 허용).
+ * 절대 주소·`//host`·`..` 는 받지 않는다.
+ */
+export function isAppPreviewPath(path: unknown): path is string {
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) return false;
+  const [pathname] = path.split('?');
+  if (pathname.split('/').includes('..')) return false;
+  const underApps = ['/api/agentflow/agent-apps/', '/api/agentflow/agent-artifacts/'].some((p) => pathname.startsWith(p));
+  return underApps && pathname.endsWith('/preview');
+}
+
+/** 서버가 준 앱의 여는 주소(`app_url`)인가 — 앱 API(옛 이름 포함) 아래 `…/app/` 로 끝나는 경로만. */
+export function isAppSitePath(path: unknown): path is string {
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) return false;
+  const [pathname] = path.split('?');
+  if (pathname.split('/').includes('..')) return false;
+  const underApps = ['/api/agentflow/agent-apps/', '/api/agentflow/agent-artifacts/'].some((p) => pathname.startsWith(p));
+  return underApps && /\/app\/?$/.test(pathname);
+}
+
+/** 미리보기 그림을 올린 결과. */
+export interface AppPreviewState {
+  ok: boolean;
+  slug: string;
+  preview_url: string;
+  preview_at: number | null;
 }
 
 export interface AppDetail extends AppSummary {
@@ -437,6 +499,11 @@ export interface StoreApp {
   shared_at: number | null;
   /** 공개 링크의 경로(서버 기준, /share/app/…). 절대 주소는 서버 주소를 아는 쪽이 붙인다. */
   path: string;
+  /**
+   * 미리보기 그림 주소(서버 기준 경로, 공개 링크의 토큰이 자물쇠라 로그인 없이 받는다). 그림이 없으면
+   * 빈 문자열, 옛 서버는 필드가 없다.
+   */
+  preview_url?: string;
   /** 내가 공유한 앱인가. */
   mine: boolean;
 }
@@ -735,6 +802,43 @@ export class AgentDataApi {
     };
   }
 
+  /**
+   * 카드의 미리보기 그림을 올린다 — 앱을 띄워 찍은 화면(JPEG·PNG·WebP, 1MB 상한).
+   *
+   * 서버는 앱을 그리지 못한다(샌드박스에 브라우저가 없다). 그래서 앱을 그릴 줄 아는 클라이언트가 찍어
+   * 올리고, 웹·데스크톱·모바일의 카드가 모두 이 한 장을 본다. 옛 서버는 404/405 다.
+   */
+  appPreviewUpload(
+    workflowId: string,
+    slug: string,
+    bytes: Uint8Array,
+    mimeType = 'image/jpeg',
+  ): Promise<AppPreviewState> {
+    return this.http.putBytes<AppPreviewState>(
+      `${APPS_API_BASE}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/preview`,
+      bytes,
+      mimeType,
+    );
+  }
+
+  /**
+   * 서버가 준 미리보기 주소(`preview_url`)의 그림을 받는다. 앱 API 아래의 `/preview` 경로만 받는다 —
+   * 화면이 넘긴 임의의 주소를 사용자 자격으로 부르지 않게.
+   */
+  appPreviewImage(previewUrl: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+    if (!isAppPreviewPath(previewUrl)) return Promise.reject(new Error('미리보기 주소가 아닙니다'));
+    return this.http.getBinary(previewUrl, { timeoutMs: 30_000 });
+  }
+
+  /** 앱(service)이 지금 도는가 — 미리보기를 찍으려고 멈춘 앱을 깨우지 않는다. 사이트·옛 서버는 running=false. */
+  appServiceState(workflowId: string, slug: string): Promise<AppServiceStatus> {
+    return this.viaAppsApi((base) =>
+      this.http.get<AppServiceStatus>(
+        `${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/service`,
+      ),
+    );
+  }
+
   /** [앱 스토어] — 공개 링크로 공유된 앱. 배포를 멈췄거나 공유를 끈 앱은 서버가 뺀다. */
   async appStoreList(params: AppStoreListParams = {}): Promise<AppStoreListResult> {
     const positiveInt = (value: unknown, fallback: number) =>
@@ -826,18 +930,24 @@ export class AgentDataApi {
     );
   }
 
-  /** Image bytes land in this agent's durable workspace before chat execution. */
+  /**
+   * 대화 첨부를 에이전트의 작업 공간에 올린다 — 실행 전에.
+   *
+   * `source` 는 바이트(데스크톱·CLI) 또는 **파일 참조 `{ uri }`**(React Native). RN 의 `Blob` 은
+   * 바이트로 만들 수 없다("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not
+   * supported") — 모바일의 사진·파일 첨부가 전부 여기서 실패했다(2026-10-02). RN 의 FormData 는
+   * `{ uri, name, type }` 을 받아 파일을 디스크에서 그대로 흘려보낸다(본문을 JS 메모리에 올리지 않음).
+   */
   workspaceUpload(
     workflowId: string,
-    bytes: Uint8Array,
+    source: UploadSource,
     filename: string,
     mimeType: string,
     interactionId: string,
     attachmentId: string,
   ): Promise<WorkspaceUploadResult> {
     const form = new FormData();
-    const owned = new Uint8Array(bytes);
-    form.append('file', new Blob([owned.buffer], { type: mimeType }), filename);
+    appendUploadFile(form, 'file', source, filename, mimeType);
     return this.http.upload<WorkspaceUploadResult>(
       `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage/upload?subdir=uploads&purpose=chat_attachment&interaction_id=${encodeURIComponent(interactionId)}&attachment_id=${encodeURIComponent(attachmentId)}`,
       form,

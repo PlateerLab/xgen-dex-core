@@ -558,3 +558,155 @@ test('내 턴의 실행 id 를 알려 준다 — 같은 턴을 한 번만 그리
   assert.equal(dispatchExec('execution_io', { execution_io_id: 0 }, { onExecutionIo: (id) => ids.push(id) }), null);
   assert.deepEqual(ids, [49704], '0 은 아직 행이 없다는 뜻이라 넘기지 않는다');
 });
+
+// ── 끊겼다 붙어도 "작업 완료" 를 놓치지 않는다 (2026-10-02) ─────────────────
+
+test('다시 붙을 때마다 새 표식으로 구독한다 — 끊긴 내 턴의 진행·종료를 서버가 거르지 않게', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got, { onPeerTurn: () => undefined });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  const firstOrigin = (first.sent[0] as { data: { origin_id: string } }).data.origin_id;
+  const turn = chat.execute('긴 작업');
+  const exec = first.sent[1] as { type: string; data: { origin_id: string } };
+  assert.equal(exec.type, 'execute');
+  assert.equal(exec.data.origin_id, firstOrigin, '같은 연결의 실행과 구독은 같은 표식이다');
+  first.close(); // 앱을 뒤로 보냈다
+  await turn;
+  chat.resume(); // 앱이 다시 앞으로 왔다 — 백오프를 기다리지 않는다
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first);
+  second.open();
+  const secondOrigin = (second.sent[0] as { data: { origin_id: string } }).data.origin_id;
+  assert.notEqual(secondOrigin, firstOrigin, '같은 표식이면 끊긴 턴의 진행이 메아리로 걸러진다');
+  chat.close();
+});
+
+test('끊긴 내 턴의 진행이 다시 붙은 소켓으로 다른 화면의 턴처럼 온다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const chat = makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 10 } });
+  const turn = chat.execute('질문');
+  first.close();
+  await turn;
+  chat.resume();
+  const second = FakeWs.last as FakeWs;
+  second.open();
+  second.recv({ type: 'subscribed', data: { seq: 20, running: true, live: { text: '여기까지', events: [] } } });
+  // 기준선 이하의 진행은 구독 응답의 진행분에 이미 들었다 — 다시 이어 붙이지 않는다.
+  second.recv({ type: 'exec', seq: 20, data: { event: 'message', data: { type: 'data', content: '중복' } } });
+  second.recv({ type: 'exec', seq: 21, data: { event: 'message', data: { type: 'data', content: ' 이어서' } } });
+  second.recv({ type: 'turn_ended', seq: 22, data: { io_id: 5, input: '질문', output: '여기까지 이어서' } });
+  const execs = peer.filter((e) => e.kind === 'exec');
+  assert.equal(execs.length, 1, '기준선 이하 진행은 버린다');
+  assert.ok(peer.some((e) => e.kind === 'ended'), '종료가 온다 — 서버가 거르지 않았다');
+  chat.close();
+});
+
+test('침묵이 길면 소켓을 버리고 새로 붙는다 — close 가 오지 않는 반쯤 열린 연결', async () => {
+  let clock = 1_000_000;
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const states: string[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-silent',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    now: () => clock,
+    onState: (s) => states.push(s),
+    callbacks: { onError: (m) => got.errors.push(m) },
+  });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  clock += 40_000; // 하트비트 넷을 놓쳤다
+  await new Promise((r) => setTimeout(r, 5_200)); // 감시 한 바퀴
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first, '죽은 소켓을 버리고 새로 붙었다');
+  assert.equal(first.onmessage, null, '버린 소켓의 늦은 프레임은 받지 않는다');
+  assert.deepEqual(got.errors, []);
+  assert.ok(states.includes('reconnecting'));
+  chat.close();
+});
+
+test('복귀 확인 — 열려 있다고 믿는 소켓이 ping 에 답하지 않으면 새로 붙는다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  chat.resume();
+  assert.deepEqual(first.sent.at(-1), { type: 'ping' }, '살아 있는지 묻는다');
+  await new Promise((r) => setTimeout(r, 4_200));
+  assert.notEqual(FakeWs.last, first, '답이 없어 새로 붙었다');
+  chat.close();
+});
+
+test('복귀 확인 — 답이 오면 그대로 둔다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  chat.resume();
+  first.recv({ type: 'pong', data: { ts: 1 } });
+  await new Promise((r) => setTimeout(r, 4_200));
+  assert.equal(FakeWs.last, first, '살아 있는 소켓은 바꾸지 않는다');
+  chat.close();
+});
+
+test('여러 번 실패해도 다시 붙기를 그만두지 않는다 — [연결 실패] 는 알리기만 한다', () => {
+  // 백오프를 실제로 기다리지 않는다 — 예약된 재시도를 손으로 하나씩 돌린다.
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const due: Array<() => void> = [];
+  globalThis.setTimeout = ((fn: () => void) => {
+    due.push(fn);
+    return due.length;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = (() => undefined) as typeof clearTimeout;
+  const states: string[] = [];
+  let tries = 0;
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-giveup',
+    wsFactory: () => {
+      tries += 1;
+      throw new Error('offline');
+    },
+    onState: (s) => states.push(s),
+    callbacks: {},
+  });
+  try {
+    for (let i = 0; i < 14 && due.length > 0; i += 1) due.shift()!();
+    assert.ok(states.includes('failed'), '여러 번 실패하면 알린다');
+    assert.ok(tries > 10, `예전에는 8번에서 멈췄다 (시도 ${tries}번)`);
+    assert.ok(due.length > 0, '다음 시도가 예약돼 있다');
+    const before = tries;
+    chat.resume(); // 복귀하면 대기 없이 지금 붙는다
+    assert.equal(tries, before + 1);
+  } finally {
+    chat.close();
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
+test('대화를 떠나는 것은 실패가 아니다 — 도는 턴에 오류를 세우지 않는다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  const turn = chat.execute('질문');
+  chat.close();
+  await turn;
+  assert.deepEqual(got.errors, [], '예전에는 "closed" 가 답 자리에 섰다');
+});

@@ -322,14 +322,18 @@ export const Workspace: React.FC<{
   useEffect(() => {
     const visibleChats: string[] = [];
     const visibleTeamsRooms: string[] = [];
+    const visibleSessions: string[] = [];
     for (const group of layout.groups) {
       const tab = group.tabs.find((item) => item.id === group.activeTabId);
       if (tab?.kind === 'chat' && tab.workflowId && tab.sessionKey) {
         visibleChats.push(notificationChatKey(tab.workflowId, tab.sessionKey));
+        visibleSessions.push(tab.sessionKey);
       } else if (tab?.kind === 'teams' && tab.roomId) {
         visibleTeamsRooms.push(tab.roomId);
       }
     }
+    // 같은 사실을 대화 상태에도 — 보이지 않는 대화에서 끝난 턴에 탭 점을 붙인다.
+    sessionStore.setVisible(visibleSessions);
     const context = {
       visibleChats,
       visibleTeamsRooms,

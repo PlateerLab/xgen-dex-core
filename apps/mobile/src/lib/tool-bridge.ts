@@ -123,10 +123,19 @@ export class MobileToolBridge {
     }
   }
 
-  /** 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다 (연결돼 있으면 no-op). */
+  /**
+   * 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다.
+   *
+   * 열려 있다고 믿는 소켓도 그냥 두지 않는다: 뒤에 있는 동안 OS 가 조용히 놓은 소켓은 이쪽에서 보기엔 아직
+   * 열려 있고, 그 사이 서버는 이 폰의 도구가 사라진 줄 안다. 카탈로그를 다시 알리면 서버의 확인(ready)이
+   * 살아 있음을 증명하고, 확인이 오지 않으면 워치독이 새로 붙는다.
+   */
   kick(): void {
     if (this.stopped) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendHello();
+      return;
+    }
     if (this.retry) {
       clearTimeout(this.retry);
       this.retry = null;
@@ -247,11 +256,15 @@ export class MobileToolBridge {
       this.ackWatchdog = null;
       if (this.stopped) return;
       this.opts.log?.('도구 카탈로그 ready 미수신 — 재연결로 재광고');
-      try {
-        this.ws?.close();
-      } catch {
-        /* onclose 가 재연결을 잡는다 */
+      // close() 에 맡기지 않는다 — 죽은 소켓은 close 가 오지 않아 재연결이 걸리지 않는다. 지금 새로 붙는다
+      // (connect 가 옛 소켓의 핸들러를 떼고 닫는다).
+      this.clearHeartbeat();
+      if (this.retry) {
+        clearTimeout(this.retry);
+        this.retry = null;
       }
+      this.backoff = RECONNECT_MIN_MS;
+      this.connect();
     }, READY_ACK_TIMEOUT_MS);
   }
 

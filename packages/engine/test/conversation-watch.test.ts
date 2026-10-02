@@ -7,7 +7,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws';
-import { ConversationWatchHub, type ConversationTurn, type PeerTurnEvent } from '../src/conversation-watch';
+import {
+  ConversationWatchHub,
+  DEX_ORIGIN_ID,
+  WATCH_ORIGIN_ID,
+  type ConversationTurn,
+  type PeerTurnEvent,
+} from '../src/conversation-watch';
 
 function until(check: () => boolean, ms = 4000): Promise<void> {
   const started = Date.now();
@@ -21,13 +27,17 @@ function until(check: () => boolean, ms = 4000): Promise<void> {
   });
 }
 
-async function server(onSubscribe: (ws: ServerSocket, count: number) => void) {
+async function server(
+  onSubscribe: (ws: ServerSocket, count: number, frame: { data?: Record<string, unknown> }) => void,
+  onFrame?: (ws: ServerSocket, frame: { type?: string }) => void,
+) {
   const wss = new WebSocketServer({ port: 0 });
   let subscribes = 0;
   wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
       const frame = JSON.parse(String(raw));
-      if (frame.type === 'subscribe') onSubscribe(ws, ++subscribes);
+      if (frame.type === 'subscribe') onSubscribe(ws, ++subscribes, frame);
+      else onFrame?.(ws, frame);
     });
   });
   await new Promise((r) => wss.once('listening', r));
@@ -100,6 +110,74 @@ test('끊겼다 다시 붙으면 구멍을 알린다 — 첫 구독은 알리지
     assert.deepEqual(peers, [], '첫 구독은 화면이 막 이력을 읽었다');
     await until(() => peers.length === 1, 8000);
     assert.deepEqual(peers[0], { kind: 'gap', interactionId: 'iid' });
+  } finally {
+    hub.stopAll();
+    srv.wss.close();
+  }
+});
+
+// ── 끊긴 이 앱의 턴도 이 소켓으로 끝까지 온다 (2026-10-02) ──────────────────
+
+test('감시는 턴과 다른 표식으로 구독한다 — 서버가 이 앱의 턴을 거르지 않게', async () => {
+  const subs: Array<Record<string, unknown> | undefined> = [];
+  const srv = await server((ws, _n, frame) => {
+    subs.push(frame.data);
+    ws.send(JSON.stringify({ type: 'subscribed', data: { seq: 0, running: false } }));
+  });
+  const hub = new ConversationWatchHub(() => undefined);
+  hub.setDeps({ baseUrl: () => srv.base, token: async () => 't', allowPrivateCertificate: () => false });
+  hub.watch('wf', 'wf', 'iid');
+  try {
+    await until(() => subs.length === 1);
+    assert.equal(subs[0]?.origin_id, WATCH_ORIGIN_ID);
+    assert.notEqual(WATCH_ORIGIN_ID, DEX_ORIGIN_ID, '같은 표식이면 스트림이 끊긴 순간 그 턴의 나머지가 걸러진다');
+  } finally {
+    hub.stopAll();
+    srv.wss.close();
+  }
+});
+
+test('전파 프레임의 표식을 화면에 넘긴다 — 화면이 자기 스트림의 메아리를 가른다', async () => {
+  const srv = await server((ws) => {
+    ws.send(JSON.stringify({ type: 'subscribed', data: { seq: 4, running: true } }));
+    ws.send(JSON.stringify({ type: 'exec', seq: 5, origin_id: DEX_ORIGIN_ID, data: { event: 'message', data: { type: 'data', content: '조각' } } }));
+    ws.send(JSON.stringify({ type: 'turn_ended', seq: 6, origin_id: 'web-x', data: { io_id: 3, input: 'q', output: 'a' } }));
+  });
+  const peer: PeerTurnEvent[] = [];
+  const hub = new ConversationWatchHub(() => undefined, undefined, (e) => peer.push(e));
+  hub.setDeps({ baseUrl: () => srv.base, token: async () => 't', allowPrivateCertificate: () => false });
+  hub.watch('wf', 'wf', 'iid');
+  try {
+    await until(() => peer.length === 2);
+    assert.equal(peer[0].kind === 'exec' && peer[0].originId, DEX_ORIGIN_ID);
+    assert.equal(peer[1].kind === 'ended' && peer[1].originId, 'web-x');
+  } finally {
+    hub.stopAll();
+    srv.wss.close();
+  }
+});
+
+test('깨어나 확인할 때 답이 없는 소켓은 버리고 새로 붙는다 — 그리고 구멍을 알린다', async () => {
+  let answerPings = true;
+  const srv = await server(
+    (ws) => ws.send(JSON.stringify({ type: 'subscribed', data: { seq: 0, running: false } })),
+    (ws, frame) => {
+      if (frame.type === 'ping' && answerPings) ws.send(JSON.stringify({ type: 'pong', data: {} }));
+    },
+  );
+  const peer: PeerTurnEvent[] = [];
+  const hub = new ConversationWatchHub(() => undefined, undefined, (e) => peer.push(e));
+  hub.setDeps({ baseUrl: () => srv.base, token: async () => 't', allowPrivateCertificate: () => false });
+  hub.watch('wf', 'wf', 'iid');
+  try {
+    await until(() => srv.subscribes() === 1);
+    hub.refresh(); // 살아 있다 — 답한다
+    await new Promise((r) => setTimeout(r, 5_300));
+    assert.equal(srv.subscribes(), 1, '살아 있는 소켓은 그대로 둔다');
+    answerPings = false; // 잠든 사이 서버가 놓았다(이쪽에서는 아직 열려 있다)
+    hub.refresh();
+    await until(() => srv.subscribes() === 2, 12_000);
+    await until(() => peer.some((e) => e.kind === 'gap'));
   } finally {
     hub.stopAll();
     srv.wss.close();

@@ -35,16 +35,17 @@ export const sessionStore = new SessionStore({
         teamsContextStore.contextualize({
           ...req,
           clientDeviceId: cachedDeviceId || undefined,
-          // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같아야 서버가 이 턴의
-          // 전파를 여기로 되돌리지 않는다(안 그러면 글자가 두 번 그려진다).
-          // 기기 id 와 다른 이유: 같은 PC 에서 앱과 웹을 나란히 열면 기기는
-          // 하나지만 화면은 둘이다.
+          // 이 **화면**이 보낸 턴의 표식. 대화 소켓으로 같은 표식의 프레임이 오면 이 창의 턴이다 —
+          // 스트림이 살아 있는 동안은 메아리라 버리고, 끊긴 뒤에는 그 턴의 나머지로 받는다
+          // (session-store applyPeerEvent). 기기 id 와 다른 이유: 같은 PC 에서 앱과 웹을 나란히
+          // 열면 기기는 하나지만 화면은 둘이다.
           originId: DEX_ORIGIN_ID,
         }),
         context?.browserSelections,
       ),
       onEvent,
     ),
+  originId: DEX_ORIGIN_ID,
   historyTurns: (workflowId, interactionId, name) =>
     xgen.history.turns(workflowId, interactionId, name),
   // 지난 턴 + **지금 도는 턴이 있는가** — 다른 기기에서 시작한 실행을 이 창이

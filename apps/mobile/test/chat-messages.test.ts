@@ -381,3 +381,33 @@ test('이력으로 메운 놓친 턴의 질문에도 첨부 이름표가 붙는�
   const busy = mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }, { ioId: 2, input: 'b', output: 'B', attachments }], true)!;
   assert.deepEqual(busy[2].attachments, [{ name: '보고서.docx', kind: 'file' }]);
 });
+
+// ── 끊긴 내 턴이 끝날 때 — 서버의 작업 과정이 정본이다 (2026-10-02) ─────────────
+
+test('끊긴 사이의 도구를 놓친 진행분보다 서버의 작업 과정이 이긴다', () => {
+  let list: ChatMessage[] = [userMessage('긴 작업'), assistantPlaceholder()];
+  list = attachTool(list, { eventType: 'tool_call', toolName: 'Read', toolUseId: 'r' });
+  // 스트림이 끊겼다 — 받던 말풍선은 진행분이 된다.
+  list = list.map((m) => (m.streaming ? { ...m, streaming: false, remotePartial: true } : m));
+  const process = [
+    { kind: 'tool' as const, at: 1, event: { eventType: 'tool_call', toolName: 'Read', toolUseId: 'r' } },
+    { kind: 'tool' as const, at: 2, event: { eventType: 'tool_result', toolName: 'Read', toolUseId: 'r', result: 'ok' } },
+    { kind: 'tool' as const, at: 3, event: { eventType: 'tool_call', toolName: 'Bash', toolUseId: 'b' } },
+    { kind: 'text' as const, at: 4, text: '끝' },
+  ];
+  const done = completeRemoteTurn(list, { ioId: 8, input: '긴 작업', output: '끝', process })!;
+  assert.deepEqual(done.map((m) => m.text), ['긴 작업', '끝'], '질문이 두 번 보이지 않는다');
+  const answer = done[1];
+  assert.equal(answer.flow?.filter((f) => f.kind === 'tool').length, 3, '끊긴 사이 돈 Bash 가 빠지지 않는다');
+  assert.equal(answer.remotePartial, undefined);
+});
+
+test('서버의 과정이 아직 덜 쓰였으면 진행분을 쓴다', () => {
+  let list: ChatMessage[] = [userMessage('q'), assistantPlaceholder()];
+  list = attachTool(list, { eventType: 'tool_call', toolName: 'Read', toolUseId: 'r' });
+  list = attachTool(list, { eventType: 'tool_result', toolName: 'Read', toolUseId: 'r', result: 'ok' });
+  list = list.map((m) => (m.streaming ? { ...m, streaming: false, remotePartial: true } : m));
+  const process = [{ kind: 'tool' as const, at: 1, event: { eventType: 'tool_call', toolName: 'Read', toolUseId: 'r' } }];
+  const done = completeRemoteTurn(list, { ioId: 9, input: 'q', output: 'a', process })!;
+  assert.equal(done[1].flow?.filter((f) => f.kind === 'tool').length, 2);
+});

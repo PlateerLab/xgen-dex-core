@@ -27,7 +27,14 @@ import { xgenWebSocketTlsOptions } from './connection-security';
 
 const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 60_000;
-const HEARTBEAT_MS = 25_000;
+const HEARTBEAT_MS = 15_000;
+/**
+ * 이만큼 아무 프레임도 없으면 소켓이 죽은 것이다. 서버는 10초마다 하트비트를 보내고 우리 ping 에도 답한다 —
+ * 반쯤 열린 연결(절전에서 깨어남·Wi-Fi 전환)은 close 가 영영 오지 않으므로 이 침묵이 유일한 신호다.
+ */
+const SILENT_MS = 45_000;
+/** 깨어났을 때 묻는 ping 의 답을 기다리는 시간. */
+const PROBE_MS = 5_000;
 
 export interface WatchDeps {
   baseUrl: () => string;
@@ -43,8 +50,8 @@ export interface WatchDeps {
  * 나타났다(서버가 하트비트마다 DB 를 다시 읽었다).
  */
 export type PeerTurnEvent =
-  | { kind: 'started'; interactionId: string; input: string; attachments: TurnAttachment[] }
-  | { kind: 'exec'; interactionId: string; event: string; data: unknown }
+  | { kind: 'started'; interactionId: string; input: string; attachments: TurnAttachment[]; originId?: string }
+  | { kind: 'exec'; interactionId: string; event: string; data: unknown; originId?: string }
   | {
       kind: 'ended';
       interactionId: string;
@@ -52,6 +59,7 @@ export type PeerTurnEvent =
       input: string;
       output: string;
       attachments: TurnAttachment[];
+      originId?: string;
     }
   /**
    * 전파에 구멍이 났다 — 이때만 히스토리를 다시 읽으면 된다. 번호가 건너뛰었을 때와, 소켓이 끊겼다 다시
@@ -80,6 +88,10 @@ interface WatchEntry {
   retryMs: number;
   retryTimer: NodeJS.Timeout | null;
   heartbeat: NodeJS.Timeout | null;
+  /** 깨어났을 때 보낸 ping 의 답을 기다리는 중. */
+  probe: NodeJS.Timeout | null;
+  /** 마지막으로 무엇이든 받은 시각 — 침묵이 길면 소켓이 죽은 것이다. */
+  lastFrameAt: number;
   closed: boolean;
   /** 마지막으로 받은 전파 번호 — 간격이 곧 유실 신호다. */
   lastSeq: number;
@@ -88,10 +100,21 @@ interface WatchEntry {
 }
 
 /**
- * 이 앱 화면의 표식. **프로세스마다 하나**다 — 같은 PC 에서 앱과 웹을 나란히
- * 열면 기기는 하나지만 화면은 둘이고, 각자 자기 스트림을 본다.
+ * 이 앱 화면이 보내는 턴의 표식(실행 요청의 `origin_id`). **프로세스마다 하나**다 — 같은 PC 에서 앱과 웹을
+ * 나란히 열면 기기는 하나지만 화면은 둘이고, 각자 자기 스트림을 본다.
  */
 export const DEX_ORIGIN_ID = `dex-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/**
+ * 감시 소켓이 구독할 때 쓰는 표식 — 턴의 표식(`DEX_ORIGIN_ID`)과 **일부러 다르다.**
+ *
+ * 서버는 구독 표식과 같은 표식의 턴을 이 소켓으로 보내지 않는다(메아리 거르기). 그런데 이 앱의 턴은 이
+ * 소켓이 아니라 SSE 로 흐르고, 그 SSE 가 끊기면(절전·네트워크 전환·게이트웨이 1시간 컷) 그 턴의 나머지를
+ * 볼 길이 이 소켓뿐이다. 같은 표식으로 구독하면 바로 그때 서버가 진행·종료를 걸러 버려, 화면은 끊긴
+ * 자리에서 멈춘다. 그래서 서버는 거르지 않게 하고, 거르기는 스트림의 처지를 아는 화면이 한다:
+ * 자기 표식의 프레임은 스트림이 살아 있는 동안 버리고, 분리된 뒤에는 남의 턴처럼 받는다(`originId`).
+ */
+export const WATCH_ORIGIN_ID = `${DEX_ORIGIN_ID}-watch`;
 
 export class ConversationWatchHub {
   private entries = new Map<string, WatchEntry>();
@@ -138,6 +161,8 @@ export class ConversationWatchHub {
       retryMs: RETRY_MIN_MS,
       retryTimer: null,
       heartbeat: null,
+      probe: null,
+      lastFrameAt: Date.now(),
       closed: false,
       lastSeq: 0,
       subscribedOnce: false,
@@ -152,6 +177,7 @@ export class ConversationWatchHub {
     entry.closed = true;
     if (entry.retryTimer) clearTimeout(entry.retryTimer);
     if (entry.heartbeat) clearInterval(entry.heartbeat);
+    if (entry.probe) clearTimeout(entry.probe);
     try {
       entry.ws?.close();
     } catch {
@@ -162,6 +188,49 @@ export class ConversationWatchHub {
 
   stopAll(): void {
     for (const id of [...this.entries.keys()]) this.unwatch(id);
+  }
+
+  /**
+   * 지금 살아 있는지 확인한다 — 절전에서 깨어났거나 창이 다시 앞으로 왔을 때.
+   *
+   * 붙어 있지 않으면 백오프를 기다리지 않고 지금 다시 붙는다. 붙어 있다고 믿는 소켓에는 ping 을 보내고,
+   * 잠깐 안에 아무 답도 없으면 끊고 새로 붙는다 — 잠든 사이 서버 쪽에서 놓친 소켓은 이쪽에서 보기엔
+   * 멀쩡히 열려 있다. 새로 붙으면 구독 확립이 "지금 도는가" 와 구멍을 알려 화면이 스스로 맞춘다.
+   */
+  refresh(): void {
+    for (const [interactionId, entry] of this.entries) {
+      if (entry.closed) continue;
+      const ws = entry.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (ws && ws.readyState === WebSocket.CONNECTING) continue;
+        if (entry.retryTimer) clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+        entry.retryMs = RETRY_MIN_MS;
+        void this.connect(interactionId, entry);
+        continue;
+      }
+      if (entry.probe) continue;
+      const askedAt = Date.now();
+      try {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      } catch {
+        /* 아래 확인이 끊는다 */
+      }
+      entry.probe = setTimeout(() => {
+        entry.probe = null;
+        if (entry.ws === ws && entry.lastFrameAt < askedAt) this.drop(entry, ws);
+      }, PROBE_MS);
+    }
+  }
+
+  /** 죽은 소켓을 버린다 — close 가 오지 않는 연결이라 terminate 로 끊고, 곧바로 다시 붙게 한다. */
+  private drop(entry: WatchEntry, ws: WebSocket): void {
+    entry.retryMs = RETRY_MIN_MS;
+    try {
+      ws.terminate();
+    } catch {
+      /* close 가 뒤따른다 */
+    }
   }
 
   /**
@@ -218,20 +287,29 @@ export class ConversationWatchHub {
             workflow_id: entry.workflowId,
             workflow_name: entry.workflowName,
             after: null,
-            origin_id: DEX_ORIGIN_ID,
+            // 턴의 표식과 다른 값이다(WATCH_ORIGIN_ID 설명) — 이 앱의 턴도 이 소켓으로 온다.
+            origin_id: WATCH_ORIGIN_ID,
             // **남의 턴도 실시간으로 보겠다**는 선언. 서버는 이 말을 한 화면에만
             // 전파 프레임을 보낸다 — 옛 화면과 새 화면이 같은 서버에 붙는다.
             live_exec: true,
           },
         }),
       );
+      entry.lastFrameAt = Date.now();
       if (entry.heartbeat) clearInterval(entry.heartbeat);
       entry.heartbeat = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (Date.now() - entry.lastFrameAt > SILENT_MS) {
+          // 서버 하트비트도, 우리 ping 의 답도 오지 않는다 — 반쯤 열린 연결이다.
+          this.drop(entry, ws);
+          return;
+        }
+        ws.send(JSON.stringify({ type: 'ping' }));
       }, HEARTBEAT_MS);
     });
 
     ws.on('message', (raw) => {
+      if (entry.ws === ws) entry.lastFrameAt = Date.now();
       let frame: { type?: string; seq?: number; origin_id?: string; data?: Record<string, unknown> };
       try {
         frame = JSON.parse(String(raw));
@@ -249,10 +327,12 @@ export class ConversationWatchHub {
       ) {
         this.checkSeq(interactionId, entry, frame.seq);
         const d = frame.data ?? {};
+        // 누가 시작한 턴인가 — 화면이 자기 스트림의 메아리를 가른다(WATCH_ORIGIN_ID 설명).
+        const originId = typeof frame.origin_id === 'string' && frame.origin_id ? frame.origin_id : undefined;
         // 질문은 본문만, 첨부는 따로 — 옛 서버는 `{input_str, attachments}` 를 JSON 으로 실어 보냈다.
         const attachments = turnAttachments(Array.isArray(d.attachments) ? d.attachments : d.input);
         if (frame.type === 'turn_started') {
-          this.onPeer?.({ kind: 'started', interactionId, input: turnInputText(d.input), attachments });
+          this.onPeer?.({ kind: 'started', interactionId, input: turnInputText(d.input), attachments, originId });
         } else if (frame.type === 'turn_ended') {
           this.onPeer?.({
             kind: 'ended',
@@ -261,6 +341,7 @@ export class ConversationWatchHub {
             input: turnInputText(d.input),
             output: String(d.output ?? ''),
             attachments,
+            originId,
           });
         } else {
           this.onPeer?.({
@@ -268,6 +349,7 @@ export class ConversationWatchHub {
             interactionId,
             event: String((d as { event?: unknown }).event ?? 'message'),
             data: (d as { data?: unknown }).data,
+            originId,
           });
         }
         return;
@@ -325,9 +407,12 @@ export class ConversationWatchHub {
     });
 
     ws.on('close', () => {
+      if (entry.ws !== ws) return; // 이미 새 소켓으로 갈아탔다
       if (entry.heartbeat) clearInterval(entry.heartbeat);
       entry.heartbeat = null;
-      if (entry.ws === ws) entry.ws = null;
+      if (entry.probe) clearTimeout(entry.probe);
+      entry.probe = null;
+      entry.ws = null;
       if (!entry.closed) this.scheduleRetry(interactionId, entry);
     });
     ws.on('error', () => {

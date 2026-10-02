@@ -21,7 +21,7 @@ import { Store } from './store';
 import { augmentedPath } from '@dex/engine/exec-resolve';
 import { CliService, type CliEvent } from './cli/service';
 import { BusyError, TurnRunner, type XdTurnEvent } from './turn-runner';
-import { createXdApi, type XdApi } from './xd-api';
+import { createXdApi, XdError, type XdApi } from './xd-api';
 
 app.setName('XD');
 if (process.platform === 'win32') app.setAppUserModelId('com.plateerlab.xd');
@@ -48,9 +48,14 @@ function isHttps(url: string): boolean {
   }
 }
 
-/** 위험 명령 확인 — Dex 데스크톱과 같은 문구·버튼(거부가 기본값·Esc). */
-async function confirmDangerous(command: string): Promise<'once' | 'session' | 'deny'> {
-  const prompt = dangerousCommandPrompt('XD');
+/**
+ * 위험 명령 확인 — Dex 데스크톱과 같은 문구·버튼(거부가 기본값·Esc). 에이전트가 여럿이라 누가 묻는지를 주어로
+ * 넣는다("XD 의 리서치 도우미 에이전트가 …").
+ */
+async function confirmDangerous(command: string, agentName: string): Promise<'once' | 'session' | 'deny'> {
+  // 문장이 "… 에이전트가" 로 이어진다 — 이름이 이미 "에이전트" 로 끝나면 겹치지 않게 뗀다.
+  const name = agentName.replace(/\s*에이전트$/, '').trim();
+  const prompt = dangerousCommandPrompt(name ? `XD 의 ${name}` : 'XD');
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
   const options = {
     type: 'warning' as const,
@@ -115,7 +120,7 @@ if (!app.requestSingleInstanceLock()) {
       return binary ? { binary, home: cli.home(name) } : null;
     },
     emit: broadcast,
-    confirmDangerous: (command) => confirmDangerous(command),
+    confirmDangerous: (command, context) => confirmDangerous(command, context.agentName),
     allowFakeProvider,
   });
   const api: XdApi = createXdApi({
@@ -135,7 +140,8 @@ if (!app.requestSingleInstanceLock()) {
     try {
       return { ok: true, value: await fn(...(Array.isArray(args) ? args : [])) };
     } catch (err) {
-      return { ok: false, error: (err as Error).message ?? String(err), code: err instanceof BusyError ? 'busy' : undefined };
+      const code = err instanceof BusyError ? 'busy' : err instanceof XdError ? err.code : undefined;
+      return { ok: false, error: (err as Error).message ?? String(err), code };
     }
   });
 
@@ -199,9 +205,15 @@ if (!app.requestSingleInstanceLock()) {
     rootSource: chosen.source,
     workspace: layout.workspace,
   }));
-  ipcMain.handle(CHANNELS.openFolder, async (_e, which: unknown, agentId?: unknown) => {
+  ipcMain.handle(CHANNELS.openFolder, async (_e, which: unknown, agentId?: unknown, index?: unknown) => {
     let target = which === 'root' ? layout.root : layout.workspace;
-    if (which === 'agent') {
+    if (which === 'linked') {
+      // 화면은 경로가 아니라 몇 번째 연결 폴더인지만 준다 — 아무 경로나 열게 하지 않는다.
+      const agent = typeof agentId === 'string' ? store.getAgent(agentId) : null;
+      const folder = agent && typeof index === 'number' ? agent.folders[index] : undefined;
+      if (!folder) return { ok: false, error: 'no linked folder' };
+      target = folder;
+    } else if (which === 'agent') {
       const agent = typeof agentId === 'string' ? store.getAgent(agentId) : null;
       if (!agent) return { ok: false, error: 'no agent' };
       target = join(layout.workspace, agent.workspace);

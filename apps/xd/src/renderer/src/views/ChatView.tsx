@@ -13,6 +13,7 @@ import { errorText, useData, KIND_LABEL } from '../data';
 import { ChatIcon, CheckIcon, CopyIcon, FolderOpenIcon, Markdown, PencilIcon, ProcessTimeline, SendIcon, StopIcon, Tooltip } from '../dex';
 import { liveStore, useLive, type LiveTurn } from '../live-store';
 import { ErrorBlock } from './ErrorBlock';
+import { LinkedFolders } from './LinkedFolders';
 import { XdMark } from './XdMark';
 
 interface Row {
@@ -98,6 +99,28 @@ export const ChatView: React.FC<{
     el.style.height = `${el.scrollHeight}px`;
   }, [draft]);
   const stick = useRef(true);
+
+  // 연결 폴더가 그대로 있는지 — 없어진 폴더는 엔진이 빼고 가므로 사용자에게 알린다. 턴이 끝날 때도 다시 본다.
+  const [folderStatus, setFolderStatus] = useState<Record<string, string>>({});
+  const foldersKey = agent.folders.join('\n');
+  useEffect(() => {
+    if (!agent.folders.length) {
+      setFolderStatus({});
+      return;
+    }
+    let alive = true;
+    xd.folders
+      .check(agent.folders)
+      // 돌아온 path 는 정리된 글자일 수 있다 — 저장된 글자로 찾도록 순서로 맞춘다.
+      .then((list) => alive && setFolderStatus(Object.fromEntries(agent.folders.map((f, i) => [f, list[i]?.status ?? 'ok']))))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [foldersKey, version]);
+  const missingFolders = agent.folders.some((f) => folderStatus[f] === 'missing');
+  const blockedFolders = agent.folders.some((f) => ['relative', 'inside_xd', 'contains_xd'].includes(folderStatus[f]));
 
   // 대화를 옮기면 다른 대화의 붙든 모습은 버린다. 새 대화의 첫 답은 보내는 중에 그 대화로 옮겨 오므로, 그 대화의
   // 도는 턴은 그대로 따라간다(그래야 끝난 뒤에도 붙들 수 있다).
@@ -202,6 +225,7 @@ export const ChatView: React.FC<{
           </div>
         </div>
         <div className="chat-header-actions">
+          <LinkedFolders key={agent.id} agent={agent} status={folderStatus} />
           <Tooltip label="작업 공간 폴더 열기">
             <button type="button" className="chat-hbtn icon" aria-label="작업 공간 폴더 열기" onClick={() => void xd.openFolder('agent', agent.id)}>
               <FolderOpenIcon size={16} />
@@ -274,6 +298,16 @@ export const ChatView: React.FC<{
         {sendError && (
           <div className="voice-error small" role="alert">
             {sendError}
+          </div>
+        )}
+        {blockedFolders && (
+          <div className="xd-notice" role="status">
+            연결할 수 없는 폴더가 있어 에이전트 설정에서 빼야 대화할 수 있습니다.
+          </div>
+        )}
+        {missingFolders && (
+          <div className="xd-notice" role="status">
+            연결 폴더 중 찾을 수 없는 것은 빼고 답합니다.
           </div>
         )}
         {!account && (

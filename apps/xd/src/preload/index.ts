@@ -31,9 +31,9 @@ const clipboard = {
 const api = {
   /** 이 앱의 판·루트 폴더. */
   info: (): Promise<XdInfo> => ipcRenderer.invoke(CHANNELS.info),
-  /** 루트·작업 공간·에이전트 작업 공간 폴더를 파일 관리자로 연다. */
-  openFolder: (which: 'root' | 'workspace' | 'agent', agentId?: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke(CHANNELS.openFolder, which, agentId),
+  /** 루트·작업 공간·에이전트 작업 공간·그 에이전트의 몇 번째 연결 폴더를 파일 관리자로 연다. */
+  openFolder: (which: 'root' | 'workspace' | 'agent' | 'linked', agentId?: string, index?: number): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(CHANNELS.openFolder, which, agentId, index),
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke(CHANNELS.pickFolder),
   openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.openExternal, url),
   clipboard,
@@ -43,6 +43,9 @@ const api = {
     create: call('agentsCreate'),
     update: call('agentsUpdate'),
     remove: call('agentsDelete'),
+  },
+  folders: {
+    check: call('foldersCheck'),
   },
   conversations: {
     list: call('conversationsList'),

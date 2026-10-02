@@ -7,7 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import type { XdAgent } from '../../../main/store';
 import { xd } from '../bridge';
-import { errorText, KIND_LABEL, useData } from '../data';
+import { errorText, FOLDER_BADGE, FOLDER_TEXT, KIND_LABEL, useData } from '../data';
 import { FolderIcon, PlusIcon, TrashIcon } from '../dex';
 
 /** 끌 수 있는 도구 묶음 — 엔진 설정 이름(GENY_TOOLS_<묶음>_ENABLED)과 화면 이름. */
@@ -35,6 +35,9 @@ export const AgentEditor: React.FC<{
   const [prompt, setPrompt] = useState(agent?.systemPrompt ?? '');
   const [memory, setMemory] = useState(agent?.memory ?? true);
   const [folders, setFolders] = useState<string[]>(agent?.folders ?? []);
+  /** 연결 폴더의 지금 상태(없어졌는지) — 경로 → 상태. */
+  const [folderStatus, setFolderStatus] = useState<Record<string, string>>({});
+  const [folderError, setFolderError] = useState('');
   const settings = (agent?.options.settings ?? {}) as Record<string, string>;
   const [tools, setTools] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(TOOL_FAMILIES.map((f) => [f.key, !['0', 'false', 'off'].includes(String(settings[flag(f.key)] ?? '').toLowerCase())])),
@@ -68,6 +71,32 @@ export const AgentEditor: React.FC<{
       alive = false;
     };
   }, [accountId]);
+
+  useEffect(() => {
+    if (!folders.length) return;
+    let alive = true;
+    xd.folders
+      .check(folders)
+      // 돌아온 path 는 정리된 글자일 수 있다 — 저장된 글자로 찾도록 순서로 맞춘다.
+      .then((list) => alive && setFolderStatus(Object.fromEntries(folders.map((f, i) => [f, list[i]?.status ?? 'ok']))))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [folders]);
+
+  const pickFolder = async () => {
+    setFolderError('');
+    const picked = await xd.pickFolder();
+    if (!picked) return;
+    const [check] = await xd.folders.check([picked]);
+    // 고르는 그 자리에서 알린다 — 저장할 때 가서야 거절당하지 않게.
+    if (check.status !== 'ok') {
+      setFolderError(FOLDER_TEXT[`folder_${check.status}`] ?? '이 폴더는 연결할 수 없습니다.');
+      return;
+    }
+    setFolders((list) => (list.includes(check.path) ? list : [...list, check.path]));
+  };
 
   const save = async () => {
     setBusy(true);
@@ -222,6 +251,7 @@ export const AgentEditor: React.FC<{
             <span className="xd-folder-path" title={f}>
               {f}
             </span>
+            {FOLDER_BADGE[folderStatus[f]] && <span className="xd-folder-missing">{FOLDER_BADGE[folderStatus[f]]}</span>}
             <button type="button" className="icon-btn sm" aria-label="연결 끊기" onClick={() => setFolders((list) => list.filter((x) => x !== f))}>
               <TrashIcon size={13} />
             </button>
@@ -230,14 +260,15 @@ export const AgentEditor: React.FC<{
         <button
           type="button"
           className="secondary xd-inline-btn"
-          onClick={() =>
-            void xd.pickFolder().then((p) => {
-              if (p) setFolders((list) => (list.includes(p) ? list : [...list, p]));
-            })
-          }
+          onClick={() => void pickFolder().catch((e) => setFolderError(errorText(e, '폴더를 고르지 못했습니다.')))}
         >
           <PlusIcon size={13} /> 폴더 연결
         </button>
+        {folderError && (
+          <p className="voice-error small" role="alert">
+            {folderError}
+          </p>
+        )}
       </section>
 
       {error && (

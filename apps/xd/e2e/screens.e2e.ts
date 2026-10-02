@@ -5,7 +5,7 @@
  */
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -187,4 +187,61 @@ test('Claude Code 로그인(가짜 CLI): 화면을 떠났다 와도 이어지고
   await win.getByRole('button', { name: '새 에이전트' }).click();
   const options = await win.locator('select option').allTextContents();
   assert.deepEqual(options, ['Claude Code']);
+});
+
+test('연결 폴더: 고를 때 바로 검사하고, 에이전트가 그 폴더에 쓰며, 폴더가 없어져도 대화는 이어진다', { timeout: 180_000 }, async () => {
+  const linked = mkdtempSync(join(tmpdir(), 'xd-linked-'));
+  // 가짜 LLM 은 턴마다 각본을 처음부터 읽는다 — 두 번째 턴도 같은 곳에 쓰려 한다.
+  const { root, launch } = fixture([
+    { text: '적어 둘게요.', tools: [{ name: 'Write', input: { file_path: join(linked, 'note.md'), content: '# 메모\n' } }] },
+    { text: '연결 폴더에 `note.md` 를 적었습니다.' },
+  ]);
+  const { app, win } = await launch();
+  // 폴더 고르기 창은 누를 수 없다 — 차례로 돌려줄 경로를 바꿔 끼운다.
+  const pickNext = (path: string) =>
+    app.evaluate(({ dialog }, p) => {
+      (dialog as any).showOpenDialog = async () => ({ canceled: false, filePaths: [p] });
+    }, path);
+
+  await win.getByText('이 PC 에서 에이전트와 일하세요').waitFor();
+  await win.getByRole('button', { name: /AI 제공자 연결/ }).click();
+  await win.getByRole('button', { name: '제공자 추가' }).click();
+  await win.getByRole('radio', { name: '시험용 모델' }).click();
+  await win.getByRole('button', { name: '추가', exact: true }).click();
+  await win.locator('.xd-account', { hasText: '시험용 모델' }).waitFor();
+  await win.getByRole('button', { name: '새 에이전트' }).click();
+  await win.getByPlaceholder('예: 리서치 도우미').fill('폴더 도우미');
+  await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
+
+  // XD 루트(.xd 를 품은 폴더)는 고르는 자리에서 거절된다
+  await pickNext(root);
+  await win.getByRole('button', { name: '폴더 연결' }).click();
+  await win.getByText('XD 의 데이터 폴더를 품은 폴더는 연결할 수 없으니 그 안의 폴더를 고르세요.').waitFor();
+  assert.equal(await win.locator('.xd-folder-row').count(), 0);
+  await pickNext(linked);
+  await win.getByRole('button', { name: '폴더 연결' }).click();
+  await win.locator('.xd-folder-row', { hasText: linked }).waitFor();
+  await shot(win, '13-linked-pick');
+  await win.getByRole('button', { name: '만들기' }).click();
+  await win.getByLabel('메시지').waitFor();
+
+  // 머리에 연결 폴더 1개, 에이전트가 그 폴더에 쓴다
+  await win.getByRole('button', { name: '연결 폴더 1개' }).waitFor();
+  await say(win, '메모 남겨 줘');
+  await win.getByText('note.md 를 적었습니다', { exact: false }).waitFor({ timeout: 60_000 });
+  assert.equal(readFileSync(join(linked, 'note.md'), 'utf8'), '# 메모\n');
+
+  // 폴더가 없어져도 다음 턴은 끝까지 돈다 — 그 폴더는 빠져서 쓰기가 거부되고(다시 만들지 않는다), 화면은
+  // 빼고 답한다고 알린다.
+  rmSync(linked, { recursive: true, force: true });
+  await win.locator('.composer-send:not(.stop)').waitFor();
+  await say(win, '또 해 줘');
+  await win.waitForFunction(() => document.querySelectorAll('.msg-row.assistant').length === 2, undefined, { timeout: 60_000 });
+  await win.locator('.composer-send:not(.stop)').waitFor({ timeout: 60_000 });
+  await win.locator('.msg-row.assistant').nth(1).getByText('실패 1', { exact: false }).waitFor();
+  await win.getByText('연결 폴더 중 찾을 수 없는 것은 빼고 답합니다.').waitFor();
+  await win.getByRole('button', { name: '연결 폴더 1개' }).click();
+  await win.locator('.xd-linked-pop .xd-folder-missing').waitFor();
+  await shot(win, '14-linked-missing');
+  assert.equal(existsSync(linked), false);
 });

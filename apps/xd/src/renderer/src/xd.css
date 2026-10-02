@@ -424,3 +424,45 @@ body {
   margin: 0;
   font-size: 13px;
 }
+
+/* ── 연결 폴더 ─────────────────────────────────────────── */
+.xd-folder-missing {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(245, 159, 0, 0.14);
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 600;
+}
+.xd-linked {
+  position: relative;
+}
+.xd-linked-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.xd-linked-btn.warn {
+  color: var(--warning);
+}
+.xd-linked-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: min(420px, 70vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+}
+.xd-linked-pop p {
+  margin: 0 0 4px;
+}

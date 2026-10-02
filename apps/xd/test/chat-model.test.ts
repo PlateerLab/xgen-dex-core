@@ -69,6 +69,12 @@ test('도는 턴 저장소: 사건을 그 턴에만, 끝나면 대화의 판이 
   assert.equal(store.get('c1')?.answer.text, '안녕');
   store.apply({ type: 'approval', turnId: 't1', conversationId: 'c1', request: 'r', command: 'rm -rf x' });
   assert.equal(store.get('c1')?.approval, 'rm -rf x');
+  // 확인 창이 둘 떠 있을 때 하나에 대답해도 다른 하나의 안내는 남는다
+  store.apply({ type: 'approval', turnId: 't1', conversationId: 'c1', request: 'r2', command: 'rm -rf y' });
+  store.apply({ type: 'approval_done', turnId: 't1', conversationId: 'c1', request: 'r2', answer: 'deny' });
+  assert.equal(store.get('c1')?.approval, 'rm -rf x');
+  store.apply({ type: 'approval_done', turnId: 't1', conversationId: 'c1', request: 'r', answer: 'deny' });
+  assert.equal(store.get('c1')?.approval, null);
   assert.deepEqual(store.running(), ['c1']);
   store.apply({ type: 'finished', turnId: 't1', conversationId: 'c1', turn: baseTurn() });
   assert.equal(store.get('c1'), null);

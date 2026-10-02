@@ -35,7 +35,7 @@ class FakeEngine implements EnginePort {
   }
 }
 
-function setup(opts: { kind?: string; secret?: string | null; confirm?: (c: string) => Promise<'once' | 'session' | 'deny'> } = {}) {
+function setup(opts: { kind?: string; secret?: string | null; confirm?: (c: string, agentName: string) => Promise<'once' | 'session' | 'deny'> } = {}) {
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'xd-runner-')), 'xd.db'));
   const engine = new FakeEngine();
   const events: XdTurnEvent[] = [];
@@ -46,7 +46,7 @@ function setup(opts: { kind?: string; secret?: string | null; confirm?: (c: stri
     engine,
     secret: () => (opts.secret === undefined ? 'sk-test' : opts.secret),
     emit: (e) => events.push(e),
-    confirmDangerous: opts.confirm ? (c) => opts.confirm!(c) : undefined,
+    confirmDangerous: opts.confirm ? (c, ctx) => opts.confirm!(c, ctx.agentName) : undefined,
   });
   return { store, engine, events, runner, agent, account };
 }
@@ -182,17 +182,19 @@ test('정지는 그 대화의 턴을 엔진에 취소로 보내고, cancelled �
 test('위험 명령은 확인 창의 대답을 엔진에 돌려주고, 물을 수 없으면 거부한다', async () => {
   const asked: string[] = [];
   const { store, engine, events, runner, agent } = setup({
-    confirm: async (c) => {
-      asked.push(c);
+    confirm: async (c, agentName) => {
+      asked.push(`${agentName}: ${c}`);
       return 'session';
     },
   });
   const t = runner.send({ agentId: agent.id, text: 'q' });
   engine.push(t.turnId, { type: 'approval_request', request: 'r1', command: 'rm -rf build' });
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(asked, ['rm -rf build']);
+  // 누가 묻는지(에이전트 이름)와 함께 묻고, 대답하면 화면의 "묻는 중" 을 걷는 사건이 나간다
+  assert.deepEqual(asked, ['리서치: rm -rf build']);
   assert.deepEqual(engine.replies, [[t.turnId, 'r1', 'session']]);
   assert.ok(events.some((e) => e.type === 'approval' && e.command === 'rm -rf build'));
+  assert.ok(events.some((e) => e.type === 'approval_done' && e.request === 'r1' && e.answer === 'session'));
   engine.end(t.turnId, { type: 'done' });
   await t.done;
   store.close();

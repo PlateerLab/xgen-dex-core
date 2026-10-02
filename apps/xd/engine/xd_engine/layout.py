@@ -15,7 +15,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 #: 에이전트·대화 id — main 이 만드는 값. 경로 한 칸으로 쓰이므로 글자를 좁힌다.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -63,6 +63,44 @@ def _is_within(path: Path, parent: Path) -> bool:
         return False
 
 
+def _strip_long_prefix(text: str) -> str:
+    """Windows 의 긴 경로 접두사(``\\\\?\\``)를 걷는다 — realpath 가 그대로 두어 글자 비교를 비껴간다."""
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    if text.startswith("\\\\?\\"):
+        return text[4:]
+    return text
+
+
+def _identity(path: Path) -> Optional[os.stat_result]:
+    """폴더의 실체(st_dev·st_ino). 파일 번호를 주지 않는 파일 시스템(FAT·일부 네트워크 공유는 0)에서는 모른다(None)
+    — 0 끼리 같다고 보면 그 볼륨의 모든 폴더가 ``.xd`` 와 "같은" 폴더가 된다."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st if st.st_ino else None
+
+
+def _under(path: Path, parent: Path) -> bool:
+    """``path`` 가 ``parent`` 안(같은 곳 포함)인가 — 글자(대소문자는 OS 규칙대로)와 실체(같은 폴더인지) 둘 다 본다.
+
+    글자만 보면 대소문자를 가리지 않는 파일 시스템(macOS 기본·Windows)에서 ``/Users/me/xd/.XD`` 같은 표기가
+    비껴간다. 그래서 ``path`` 와 그 위 폴더 가운데 있는 것을 ``parent`` 와 같은 폴더인지(st_dev·st_ino)로도 대조한다
+    (``parent`` 는 한 번만 본다).
+    """
+    if _is_within(Path(os.path.normcase(path)), Path(os.path.normcase(parent))):
+        return True
+    target = _identity(parent)
+    if target is None:
+        return False
+    for candidate in (path, *path.parents):
+        st = _identity(candidate)
+        if st is not None and os.path.samestat(st, target):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class Layout:
     root: Path
@@ -88,25 +126,34 @@ class Layout:
     def agent_state(self, agent_id: str) -> Path:
         return self.state / "agents" / check_id(agent_id, "agent id")
 
-    def linked_folders(self, paths: Iterable[object]) -> List[str]:
+    def linked_folders(self, paths: Iterable[object], missing: Optional[List[str]] = None) -> List[str]:
         """연결 폴더 — 있는 폴더의 실제 경로만, 순서대로, 겹친 것은 한 번.
 
-        XD 상태 폴더(``.xd``) 안은 받지 않는다. 그 안에는 데이터베이스와 암호문이 있다 — 에이전트
-        파일 도구가 그걸 고치면 앱이 깨진다.
+        XD 상태 폴더(``.xd``)는 안쪽도, 그것을 **품은** 폴더(루트·홈·``/`` …)도 받지 않는다. 그 안에는
+        데이터베이스와 암호문이 있다 — 에이전트 파일 도구가 그걸 고치면 앱이 깨진다(심볼릭 링크로 돌아와도).
+
+        지워졌거나 옮겨진 폴더는 턴을 막지 않는다 — 빼고 간다(``missing`` 을 주면 거기에 적는다). 폴더 하나가
+        없어졌다고 그 에이전트의 모든 대화가 멈추면 안 된다.
         """
         out: List[str] = []
+        state = Path(os.path.realpath(self.state))
         for raw in paths or ():
             text = str(raw or "").strip()
             if not text:
                 continue
-            path = Path(text).expanduser()
+            path = Path(_strip_long_prefix(text)).expanduser()
             if not path.is_absolute():
                 raise LayoutError(f"linked folder must be an absolute path: {text!r}")
-            real = Path(os.path.realpath(path))
-            if not real.is_dir():
-                raise LayoutError(f"linked folder does not exist: {text!r}")
-            if _is_within(real, self.state):
+            real = Path(_strip_long_prefix(os.path.realpath(path)))
+            if _under(real, state):
                 raise LayoutError(f"linked folder cannot be inside XD's own state folder: {text!r}")
+            if _under(state, real):
+                raise LayoutError(f"linked folder cannot contain XD's own state folder: {text!r}")
+            if not real.is_dir():
+                if missing is None:
+                    raise LayoutError(f"linked folder does not exist: {text!r}")
+                missing.append(text)
+                continue
             if str(real) not in out:
                 out.append(str(real))
         return out

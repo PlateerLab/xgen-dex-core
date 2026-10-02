@@ -158,7 +158,8 @@ test('위험 명령은 Dex 와 같은 확인 창을 거치고, 거부하면 실�
   assert.deepEqual(asked[0].buttons, ['거부', '이번만 허용', '이 대화에서 계속 허용']);
   assert.equal(asked[0].defaultId, 0);
   assert.equal(asked[0].cancelId, 0);
-  assert.equal(asked[0].message, 'XD 에이전트가 이 PC 에서 되돌리기 어려운 명령을 실행하려 합니다.');
+  // 누가 묻는지 — 에이전트 이름이 주어로 들어간다(문장은 Dex 와 같다).
+  assert.equal(asked[0].message, 'XD 의 Danger 에이전트가 이 PC 에서 되돌리기 어려운 명령을 실행하려 합니다.');
   assert.equal(asked[0].detail, 'rm -rf keep');
   const tools = result.turn.process.filter((p: any) => p.kind === 'tool').map((p: any) => p.event);
   assert.match(String(tools[1].result ?? tools[1].error), /user_denied/);

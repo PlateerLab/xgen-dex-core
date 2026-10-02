@@ -42,25 +42,46 @@ function setup(allowFakeProvider = false) {
   return { api, store, root, workspaceDir, stateDir, pending };
 }
 
-test('에이전트를 만들면 작업 공간 폴더가 생기고, 같은 이름은 (2) 가 된다', () => {
+test('에이전트를 만들면 작업 공간 폴더가 생기고, 같은 이름은 (2) 가 된다', async () => {
   const { api, workspaceDir, store } = setup();
-  const a = api.agentsCreate({ name: '리서치 도우미' });
-  const b = api.agentsCreate({ name: '리서치 도우미' });
+  const a = await api.agentsCreate({ name: '리서치 도우미' });
+  const b = await api.agentsCreate({ name: '리서치 도우미' });
   assert.equal(a.workspace, '리서치 도우미');
   assert.equal(b.workspace, '리서치 도우미 (2)');
   assert.ok(existsSync(join(workspaceDir, '리서치 도우미')));
   assert.ok(existsSync(join(workspaceDir, '리서치 도우미 (2)')));
   // 디스크에 같은 이름의 폴더가 이미 있으면(지난 에이전트가 남긴 것) 그 폴더를 가로채지 않는다
   mkdirSync(join(workspaceDir, 'Notes'));
-  assert.equal(api.agentsCreate({ name: 'Notes' }).workspace, 'Notes (2)');
-  assert.throws(() => api.agentsCreate({ name: '   ' }), /name is required/);
-  assert.throws(() => api.agentsCreate({ name: 'x', accountId: 'missing' }), /no account/);
+  assert.equal((await api.agentsCreate({ name: 'Notes' })).workspace, 'Notes (2)');
+  await assert.rejects(api.agentsCreate({ name: '   ' }), /name is required/);
+  await assert.rejects(api.agentsCreate({ name: 'x', accountId: 'missing' }), /no account/);
   store.close();
 });
 
-test('에이전트를 지우면 엔진 상태는 지우고 작업 공간(사용자 파일)은 남긴다', () => {
+test('연결 폴더: .xd 를 품은 곳·안쪽은 저장하지 않고(까닭 코드), 없어진 폴더는 막지 않는다', async () => {
+  const { api, store, root, stateDir } = setup();
+  const docs = join(root, 'docs');
+  mkdirSync(docs);
+  const agent = await api.agentsCreate({ name: '폴더', folders: [docs, docs] });
+  assert.deepEqual(agent.folders, [docs]);
+  for (const [path, code] of [
+    [root, 'folder_contains_xd'],
+    [stateDir, 'folder_inside_xd'],
+    ['relative', 'folder_relative'],
+  ] as const) {
+    await assert.rejects(api.agentsUpdate(agent.id, { folders: [path] }), (e: Error & { code?: string }) => e.code === code);
+  }
+  assert.deepEqual(store.getAgent(agent.id)?.folders, [docs]);
+  // 없어진 폴더는 남겨 둔다(화면이 알린다) — 다른 설정을 저장하는 데 걸리지 않게
+  const gone = join(root, 'gone');
+  assert.deepEqual((await api.agentsUpdate(agent.id, { folders: [docs, gone] })).folders, [docs, gone]);
+  assert.deepEqual((await api.foldersCheck([docs, gone, root])).map((c) => c.status), ['ok', 'missing', 'contains_xd']);
+  store.close();
+});
+
+test('에이전트를 지우면 엔진 상태는 지우고 작업 공간(사용자 파일)은 남긴다', async () => {
   const { api, workspaceDir, stateDir, store } = setup();
-  const a = api.agentsCreate({ name: 'Keep' });
+  const a = await api.agentsCreate({ name: 'Keep' });
   writeFileSync(join(workspaceDir, 'Keep', 'report.md'), '# mine');
   mkdirSync(join(stateDir, 'agents', a.id, 'memory'), { recursive: true });
   api.agentsDelete(a.id);
@@ -73,7 +94,7 @@ test('에이전트를 지우면 엔진 상태는 지우고 작업 공간(사용�
 test('대화를 지우면 그 대화의 기록(STM)만 지운다', async () => {
   const { api, stateDir, store, pending } = setup(true);
   const acc = api.accountsCreate({ kind: 'xd_fake', label: 'f' });
-  const a = api.agentsCreate({ name: 'A', accountId: acc.id, model: 'm' });
+  const a = await api.agentsCreate({ name: 'A', accountId: acc.id, model: 'm' });
   const { conversationId } = await api.turnSend({ agentId: a.id, text: 'q' });
   assert.throws(() => api.conversationsDelete(conversationId), /turn running/);
   pending.shift()?.();

@@ -11,8 +11,10 @@ export interface LiveTurn {
   conversationId: string;
   question: string;
   answer: ChatMsg;
-  /** 위험 명령 확인을 기다리는 중이면 그 명령. */
+  /** 위험 명령 확인을 기다리는 중이면 그 명령(여럿이면 마지막). */
   approval: string | null;
+  /** 대답을 기다리는 확인 — 요청 id 별로. 하나에 대답해도 다른 확인 창은 열려 있을 수 있다. */
+  approvals: Array<{ request: string; command: string }>;
 }
 
 type Listener = () => void;
@@ -57,7 +59,7 @@ export class LiveStore {
   /** 보냈다 — 첫 사건 전에도 질문과 빈 답이 보이게. */
   begin(turnId: string, conversationId: string, question: string): void {
     if (this.finished.has(turnId)) return;
-    this.turns.set(conversationId, { turnId, conversationId, question, answer: startLive(this.now()), approval: null });
+    this.turns.set(conversationId, { turnId, conversationId, question, answer: startLive(this.now()), approval: null, approvals: [] });
     this.bump();
   }
 
@@ -73,9 +75,13 @@ export class LiveStore {
     }
     if (!live || live.turnId !== event.turnId) return;
     if (event.type === 'chat') {
-      this.turns.set(event.conversationId, { ...live, answer: applyChatEvent(live.answer, event.event, this.now()), approval: null });
-    } else if (event.type === 'approval') {
-      this.turns.set(event.conversationId, { ...live, approval: event.command });
+      this.turns.set(event.conversationId, { ...live, answer: applyChatEvent(live.answer, event.event, this.now()) });
+    } else if (event.type === 'approval' || event.type === 'approval_done') {
+      const approvals =
+        event.type === 'approval'
+          ? [...live.approvals, { request: event.request, command: event.command }]
+          : live.approvals.filter((a) => a.request !== event.request);
+      this.turns.set(event.conversationId, { ...live, approvals, approval: approvals.at(-1)?.command ?? null });
     } else {
       return;
     }

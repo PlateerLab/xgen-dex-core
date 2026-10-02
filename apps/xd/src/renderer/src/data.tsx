@@ -92,6 +92,22 @@ export const BASE_URL_KINDS: Record<string, string> = {
   openai_compatible: '',
 };
 
+/** 연결 폴더를 받지 않는 까닭(main 의 `folder_<상태>` 코드·폴더 검사 상태). */
+export const FOLDER_TEXT: Record<string, string> = {
+  folder_inside_xd: 'XD 의 데이터 폴더 안은 연결할 수 없습니다.',
+  folder_contains_xd: 'XD 의 데이터 폴더를 품은 폴더는 연결할 수 없으니 그 안의 폴더를 고르세요.',
+  folder_relative: '폴더 경로가 올바르지 않습니다.',
+  folder_missing: '이 폴더를 찾을 수 없습니다.',
+};
+
+/** 연결 폴더 상태 → 목록에 붙는 짧은 표(ok 는 없음). */
+export const FOLDER_BADGE: Record<string, string> = {
+  missing: '찾을 수 없음',
+  relative: '연결할 수 없음',
+  inside_xd: '연결할 수 없음',
+  contains_xd: '연결할 수 없음',
+};
+
 /**
  * 실패 → 사람이 읽는 한 문장. main 이 보내는 글은 개발자용(영어)이라 그대로 보이지 않는다 — 아는 까닭만 풀어 쓰고
  * 나머지는 부르는 쪽이 준 문장으로. 원문은 개발자 도구 콘솔에 남긴다.
@@ -101,6 +117,7 @@ export function errorText(e: unknown, fallback: string): string {
   const code = (e as { code?: string } | null)?.code;
   console.warn('[xd]', message);
   if (code === 'busy') return '이 대화는 아직 답을 만드는 중입니다.';
+  if (code && code in FOLDER_TEXT) return FOLDER_TEXT[code];
   if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|fetch failed|getaddrinfo|network/i.test(message)) {
     return '인터넷에 닿지 않아 마치지 못했습니다.';
   }

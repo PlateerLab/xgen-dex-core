@@ -267,9 +267,13 @@ class Daemon:
             agent_id = check_id(agent.get("id"), "agent id")
             conversation = check_id(turn.conversation, "conversation id")
             workspace = check_folder_name(agent.get("workspace"))
-            linked = self.layout.linked_folders(agent.get("folders") or [])
+            missing: List[str] = []
+            linked = self.layout.linked_folders(agent.get("folders") or [], missing)
         except LayoutError as exc:
             raise BadRequest(str(exc)) from exc
+        if missing:
+            # 없어진 폴더는 빼고 간다 — 화면은 main 이 따로 알린다.
+            logger.warning("turn %s: skipping missing linked folders %s", turn.id, missing)
 
         provider = str(config.get("provider") or "").strip()
         model = str(config.get("model") or "").strip()

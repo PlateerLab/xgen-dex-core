@@ -61,6 +61,10 @@ def test_linked_folders_are_real_existing_directories(tmp_path):
     assert layout.linked_folders([str(a), str(a), "", None]) == [os.path.realpath(a)]
     with pytest.raises(LayoutError):
         layout.linked_folders([str(tmp_path / "missing")])
+    # 없어진 폴더는 missing 을 주면 빼고 간다
+    gone: list = []
+    assert layout.linked_folders([str(tmp_path / "missing"), str(a)], gone) == [os.path.realpath(a)]
+    assert gone == [str(tmp_path / "missing")]
     with pytest.raises(LayoutError):
         layout.linked_folders(["relative"])
     f = tmp_path / "file.txt"
@@ -73,6 +77,39 @@ def test_linked_folders_are_real_existing_directories(tmp_path):
     inner.mkdir()
     with pytest.raises(LayoutError):
         layout.linked_folders([str(inner)])
+
+
+def test_linked_folder_that_contains_state_is_refused(tmp_path):
+    """루트·그 위(홈 등)를 연결하면 파일 도구가 .xd(데이터베이스·암호문)에 닿는다 — 받지 않는다."""
+    layout = Layout.at(tmp_path / "XD")
+    layout.state.mkdir(parents=True)
+    for parent in (layout.root, tmp_path, Path(tmp_path.anchor)):
+        with pytest.raises(LayoutError, match="contain"):
+            layout.linked_folders([str(parent)], [])
+    # 작업 공간(.xd 의 형제)은 괜찮다
+    layout.workspace.mkdir()
+    assert layout.linked_folders([str(layout.workspace)]) == [os.path.realpath(layout.workspace)]
+
+
+def test_case_variant_of_state_is_caught_where_the_filesystem_ignores_case(tmp_path):
+    """대소문자를 가리지 않는 파일 시스템(macOS 기본·Windows)에서 ``.XD`` 는 ``.xd`` 와 같은 폴더다 — 실체로 대조한다."""
+    layout = Layout.at(tmp_path / "XD")
+    layout.state.mkdir(parents=True)
+    variant = layout.root / ".XD"
+    if variant.exists():  # 대소문자를 가리지 않는다
+        with pytest.raises(LayoutError, match="inside"):
+            layout.linked_folders([str(variant)], [])
+    else:  # 가리는 곳에서는 다른(없는) 폴더다
+        gone: list = []
+        assert layout.linked_folders([str(variant)], gone) == [] and gone == [str(variant)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows long-path prefix")
+def test_long_path_prefix_does_not_hide_state(tmp_path):
+    layout = Layout.at(tmp_path / "XD")
+    layout.state.mkdir(parents=True)
+    with pytest.raises(LayoutError, match="contain"):
+        layout.linked_folders(["\\\\?\\" + str(layout.root)], [])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")

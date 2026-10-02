@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CliName } from './cli/detect';
+import { checkLinkedFolder, UNSAFE_FOLDER, type LinkedFolderCheck } from './linked-folders';
 import type { CliService, CliState } from './cli/service';
 import type { EngineService, ModelsResult } from './engine-service';
 import type { Secrets, SecretStatus } from './secrets';
@@ -80,6 +81,16 @@ const text = (value: unknown, what: string, max = 200): string => {
   return s;
 };
 
+/** 화면이 까닭을 알아야 하는 실패 — `code` 가 IPC 로 그대로 간다. */
+export class XdError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 const stringList = (value: unknown, what: string): string[] => {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) throw new Error(`${what} must be a list of strings`);
@@ -92,6 +103,17 @@ export function createXdApi(deps: XdApiDeps) {
   const view = (a: XdAccount): AccountView => ({ ...a, hasSecret: secrets.has(a.id) });
   const checkAccount = (id: string | null | undefined) => {
     if (id && !store.getAccount(id)) throw new Error(`no account ${id}`);
+  };
+
+  /** 연결 폴더 — 위험한 것(.xd 안·.xd 를 품은 곳·상대 경로)은 저장하지 않는다. 겹친 것은 한 번. */
+  const linkedFolders = async (value: unknown): Promise<string[]> => {
+    const out: string[] = [];
+    for (const raw of stringList(value, 'folders')) {
+      const check = await checkLinkedFolder(raw, deps.stateDir);
+      if (UNSAFE_FOLDER.has(check.status)) throw new XdError(`folder_${check.status}`, `cannot link ${raw}: ${check.status}`);
+      if (!out.includes(check.path)) out.push(check.path);
+    }
+    return out;
   };
 
   const cli = (name: unknown): CliService => {
@@ -116,9 +138,10 @@ export function createXdApi(deps: XdApiDeps) {
     // ── 에이전트 ──
     agentsList: (): XdAgent[] => store.listAgents(),
     agentsGet: (id: string): XdAgent | null => store.getAgent(id),
-    agentsCreate(input: AgentInput): XdAgent {
+    async agentsCreate(input: AgentInput): Promise<XdAgent> {
       const name = text(input?.name, 'name', 100);
       checkAccount(input.accountId);
+      const folders = await linkedFolders(input.folders);
       const workspace = uniqueFolderName(
         name,
         (candidate) => store.workspaceTaken(candidate) || existsSync(join(deps.workspaceDir, candidate)),
@@ -131,17 +154,20 @@ export function createXdApi(deps: XdApiDeps) {
         systemPrompt: input.systemPrompt === undefined ? null : input.systemPrompt,
         accountId: input.accountId ?? null,
         model: typeof input.model === 'string' ? input.model : '',
-        folders: stringList(input.folders, 'folders'),
+        folders,
         memory: input.memory !== false,
         options: input.options && typeof input.options === 'object' ? input.options : {},
       });
     },
-    agentsUpdate(id: string, patch: Partial<AgentInput>): XdAgent {
+    async agentsUpdate(id: string, patch: Partial<AgentInput>): Promise<XdAgent> {
       if (patch.name !== undefined) patch.name = text(patch.name, 'name', 100);
-      if (patch.folders !== undefined) patch.folders = stringList(patch.folders, 'folders');
+      if (patch.folders !== undefined) patch.folders = await linkedFolders(patch.folders);
       checkAccount(patch.accountId);
       return store.updateAgent(id, patch as Partial<XdAgent>);
     },
+    /** 연결 폴더의 지금 상태 — 고를 때 바로, 그리고 채팅·편집 화면이 없어진 폴더를 알리려고. */
+    foldersCheck: (paths: string[]): Promise<LinkedFolderCheck[]> =>
+      Promise.all(stringList(paths, 'paths').map((p) => checkLinkedFolder(p, deps.stateDir))),
     agentsDelete(id: string): void {
       if (runner.isAgentRunning(id)) throw new Error('this agent has a turn running');
       store.deleteAgent(id);

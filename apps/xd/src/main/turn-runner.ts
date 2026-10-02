@@ -50,6 +50,8 @@ export type XdTurnEvent =
   | { type: 'chat'; turnId: string; conversationId: string; event: ChatEvent }
   | { type: 'usage'; turnId: string; conversationId: string; usage: Record<string, unknown> }
   | { type: 'approval'; turnId: string; conversationId: string; request: string; command: string }
+  /** 확인 창에 대답했다 — 화면은 "묻는 중" 안내를 걷는다. */
+  | { type: 'approval_done'; turnId: string; conversationId: string; request: string; answer: 'once' | 'session' | 'deny' }
   | { type: 'finished'; turnId: string; conversationId: string; turn: XdTurn };
 
 export interface EnginePort {
@@ -65,8 +67,8 @@ export interface TurnRunnerDeps {
   /** CLI 계정의 실행 파일·전용 홈 — 설치·감지 안 됐으면 null. */
   cli?(name: 'claude' | 'codex'): { binary: string; home: string } | null;
   emit(event: XdTurnEvent): void;
-  /** 위험 명령을 사용자에게 묻는다(main 의 확인 창). 없으면 거부한다. */
-  confirmDangerous?(command: string, conversationId: string): Promise<'once' | 'session' | 'deny'>;
+  /** 위험 명령을 사용자에게 묻는다(main 의 확인 창) — 어느 에이전트가 묻는지도 준다. 없으면 거부한다. */
+  confirmDangerous?(command: string, context: { conversationId: string; agentName: string }): Promise<'once' | 'session' | 'deny'>;
   /** 시험용 제공자(xd_fake)를 허용하는가 — 엔진이 가짜 LLM 을 등록했을 때만. */
   allowFakeProvider?: boolean;
   now?: () => number;
@@ -277,8 +279,13 @@ export class TurnRunner {
   private approve(turnId: string, conversationId: string, request: string, command: string): void {
     this.deps.emit({ type: 'approval', turnId, conversationId, request, command });
     const ask = this.deps.confirmDangerous;
+    const agentId = this.running.get(turnId)?.agentId;
+    const agentName = (agentId && this.deps.store.getAgent(agentId)?.name) || '';
     // 물을 방법이 없으면 거부한다 — "물을 필요가 없다" 가 아니라 "동의를 받을 수 없다" 다.
-    const answer = ask ? ask(command, conversationId).catch(() => 'deny' as const) : Promise.resolve('deny' as const);
-    void answer.then((a) => this.deps.engine.approvalReply(turnId, request, a));
+    const answer = ask ? ask(command, { conversationId, agentName }).catch(() => 'deny' as const) : Promise.resolve('deny' as const);
+    void answer.then((a) => {
+      this.deps.engine.approvalReply(turnId, request, a);
+      this.deps.emit({ type: 'approval_done', turnId, conversationId, request, answer: a });
+    });
   }
 }

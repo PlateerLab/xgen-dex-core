@@ -260,6 +260,41 @@ def test_linked_folder_inside_state_is_refused(root, tmp_path):
     d.close()
 
 
+def test_linked_folder_that_contains_state_is_refused(root, tmp_path):
+    d = _daemon(root, tmp_path)
+    d.until(lambda e: e["type"] == "ready")
+    d.send(turn("t1", agent={"folders": [str(root)]}))
+    end = d.terminal("t1")
+    assert end["type"] == "error" and end["code"] == "bad_request" and "contain" in end["message"]
+    d.close()
+
+
+def test_missing_linked_folder_does_not_stop_the_turn(root, tmp_path):
+    """없어진 폴더는 빼고, 남은 연결 폴더는 그대로 쓸 수 있다 — 없어진 폴더는 다시 만들지 않는다."""
+    linked = tmp_path / "still-here"
+    linked.mkdir()
+    gone = tmp_path / "gone"
+    d = _daemon(
+        root,
+        tmp_path,
+        [
+            {
+                "tools": [
+                    {"name": "Write", "input": {"file_path": str(linked / "kept.txt"), "content": "kept"}},
+                    {"name": "Write", "input": {"file_path": str(gone / "lost.txt"), "content": "lost"}},
+                ]
+            },
+            {"text": "ok"},
+        ],
+    )
+    d.until(lambda e: e["type"] == "ready")
+    d.send(turn("t1", agent={"folders": [str(gone), str(linked)]}))
+    assert d.terminal("t1")["type"] == "done"
+    assert (linked / "kept.txt").read_text(encoding="utf-8") == "kept"
+    assert not gone.exists()
+    d.close()
+
+
 def test_protocol_errors_do_not_kill_the_daemon(root, tmp_path):
     d = _daemon(root, tmp_path)
     d.send_raw(b"this is not json\n")

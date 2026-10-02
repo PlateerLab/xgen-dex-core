@@ -5,11 +5,12 @@
  */
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { _electron, type ElectronApplication, type Page } from 'playwright-core';
+import { DatabaseSync } from 'node:sqlite';
 
 const APP = resolve(__dirname, '..');
 const ELECTRON = createRequire(__filename)('electron') as string;
@@ -345,5 +346,63 @@ test('작업 공간 IDE: 에이전트가 쓴 파일을 열어 고쳐 저장하�
   await win.getByRole('button', { name: '작업 공간 보기' }).click();
   await win.locator('.xide-tab').first().waitFor({ state: 'detached' });
   await win.getByLabel('메시지').waitFor();
+  await app.close();
+});
+
+test('MCP 서버: 화면에서 붙이고(연결 확인), 턴이 그 도구를 쓰며, 비밀은 DB 에 남지 않고, 못 붙은 서버는 알린다', { timeout: 240_000 }, async () => {
+  const py = process.env.XD_ENGINE_PYTHON || join(APP, 'engine', 'dist', `${process.platform}-${process.arch}`, 'python', process.platform === 'win32' ? 'python.exe' : join('bin', 'python3'));
+  const demo = join(APP, 'engine', 'tests', 'fakes', 'mcp_demo.py');
+  const { root, launch } = fixture([
+    { text: '도구를 써 볼게요.', tools: [{ name: 'mcp_demo_where', input: {} }] },
+    { text: 'MCP 도구로 확인했습니다.' },
+  ]);
+  const { app, win } = await launch();
+  await addFakeProvider(win);
+  await win.getByRole('button', { name: '새 에이전트' }).click();
+  await win.getByPlaceholder('예: 리서치 도우미').fill('MCP 도우미');
+  await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
+
+  // 서버 더하기 → 연결 확인(저장 전 입력으로) → 더하기
+  await win.getByRole('button', { name: '서버 더하기' }).click();
+  await win.getByPlaceholder('예: GitHub').fill('Demo');
+  await win.getByPlaceholder(/server-github/).fill(`"${py}" "${demo}"`);
+  await win.getByPlaceholder('GITHUB_TOKEN=…').fill('DEMO_TOKEN=secret-xd-1');
+  await win.locator('.xd-mcp-form').getByRole('button', { name: '연결 확인' }).click();
+  await win.getByText('연결됨 · 도구 4개').waitFor({ timeout: 90_000 });
+  await shot(win, '19-mcp-form');
+  await win.getByRole('button', { name: '더하기', exact: true }).click();
+  await win.locator('.xd-mcp-row', { hasText: 'Demo' }).waitFor();
+  await win.getByRole('button', { name: '만들기' }).click();
+
+  // 턴이 MCP 도구를 쓴다 — 서버는 에이전트 작업 공간에서, 저장한 비밀(env)로 돈다
+  await say(win, 'MCP 써 줘');
+  await win.getByText('MCP 도구로 확인했습니다.').waitFor({ timeout: 120_000 });
+  const db = new DatabaseSync(join(root, '.xd', 'xd.db'), { readOnly: true });
+  const rows = db.prepare('SELECT process FROM turns').all() as Array<{ process: string }>;
+  const dump = JSON.stringify(db.prepare('SELECT options FROM agents').all());
+  db.close();
+  const process0 = JSON.parse(rows[0].process) as Array<{ kind: string; event?: { result?: string } }>;
+  const where = process0.find((p) => p.kind === 'tool' && String(p.event?.result ?? '').includes('|'))?.event?.result ?? '';
+  const [cwd, , token] = String(where).split('|');
+  assert.equal(token, 'secret-xd-1');
+  assert.equal(realpathSync(cwd), realpathSync(join(root, 'workspace', 'MCP 도우미')));
+  // 비밀은 DB 에 없다(키만)
+  assert.equal(dump.includes('secret-xd-1'), false);
+  assert.ok(dump.includes('DEMO_TOKEN'));
+
+  // 고치기 — 저장된 비밀 값은 다시 보이지 않는다(키만), 못 붙는 서버를 더하면 채팅이 알린다
+  await win.getByRole('button', { name: '에이전트 설정' }).click();
+  await win.locator('.xd-mcp-row', { hasText: 'Demo' }).getByRole('button', { name: '고치기' }).click();
+  assert.equal(await win.getByPlaceholder('GITHUB_TOKEN=…').inputValue(), 'DEMO_TOKEN=');
+  await win.getByRole('button', { name: '취소', exact: true }).first().click();
+  await win.getByRole('button', { name: '서버 더하기' }).click();
+  await win.getByPlaceholder('예: GitHub').fill('Broken');
+  await win.getByPlaceholder(/server-github/).fill(join(root, 'no-such-mcp-server'));
+  await win.getByRole('button', { name: '더하기', exact: true }).click();
+  await win.getByRole('button', { name: '저장' }).click();
+  await win.getByLabel('메시지').waitFor();
+  await say(win, '한 번 더');
+  await win.getByText('MCP 서버(Broken)에 연결하지 못해', { exact: false }).waitFor({ timeout: 120_000 });
+  await shot(win, '20-mcp-down');
   await app.close();
 });

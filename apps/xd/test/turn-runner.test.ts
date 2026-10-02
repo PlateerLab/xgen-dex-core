@@ -240,3 +240,33 @@ test('CLI 계정: 실행 파일·전용 홈·인증 방식이 엔진 설정으�
   assert.deepEqual(engineConfig(agent, ollama, null), { ok: true, config: { provider: 'ollama', model: 'sonnet' } });
   store.close();
 });
+
+test('MCP: 턴에 켜 둔 서버를 비밀을 되살려 싣고, 엔진의 상태 사건을 화면으로 넘긴다', async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), 'xd-runner-')), 'xd.db'));
+  const engine = new FakeEngine();
+  const events: XdTurnEvent[] = [];
+  const account = store.createAccount({ kind: 'anthropic', label: 'k' });
+  const agent = store.createAgent({
+    name: 'M',
+    workspace: 'M',
+    accountId: account.id,
+    model: 'claude-x',
+    options: { mcpServers: [{ name: 'Demo', transport: 'stdio', command: 'demo --x', env: { T: '' } }, { name: 'Off', command: 'y', enabled: false }] },
+  });
+  const runner = new TurnRunner({
+    store,
+    engine,
+    secret: (id) => (id === `mcp-${agent.id}` ? JSON.stringify({ Demo: { env: { T: 's3' } } }) : 'sk-test'),
+    emit: (e) => events.push(e),
+  });
+  const t = runner.send({ agentId: agent.id, text: 'q' });
+  assert.deepEqual(engine.calls[0].agent.mcp_servers, [{ slug: 'demo', label: 'Demo', transport: 'stdio', command: 'demo', args: ['--x'], env: { T: 's3' } }]);
+  engine.push(t.turnId, { type: 'mcp', servers: [{ slug: 'demo', label: 'Demo', state: 'failed', error: 'boom', tools: 0 }] });
+  assert.deepEqual(
+    events.filter((e) => e.type === 'mcp').map((e) => (e as Extract<XdTurnEvent, { type: 'mcp' }>).servers),
+    [[{ slug: 'demo', label: 'Demo', state: 'failed', error: 'boom', tools: 0 }]],
+  );
+  engine.end(t.turnId, { type: 'done' });
+  await t.done;
+  store.close();
+});

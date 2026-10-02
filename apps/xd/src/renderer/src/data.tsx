@@ -93,6 +93,16 @@ export const BASE_URL_KINDS: Record<string, string> = {
 };
 
 /** 연결 폴더를 받지 않는 까닭(main 의 `folder_<상태>` 코드·폴더 검사 상태). */
+/** MCP 서버 설정을 받지 않는 까닭(main 의 `mcp_<…>` 코드). */
+export const MCP_TEXT: Record<string, string> = {
+  mcp_duplicate: '같은 이름의 MCP 서버가 둘 있습니다.',
+  mcp_name: 'MCP 서버에 이름이 없습니다.',
+  mcp_command: 'MCP 서버에 실행할 명령이 없습니다.',
+  mcp_url: 'MCP 서버 주소는 http 나 https 로 시작해야 합니다.',
+  mcp_oauth: 'OAuth 로그인이 필요한 MCP 서버는 아직 쓸 수 없습니다.',
+  mcp_bad: 'MCP 서버 설정이 올바르지 않습니다.',
+};
+
 export const FOLDER_TEXT: Record<string, string> = {
   folder_inside_xd: 'XD 의 데이터 폴더 안은 연결할 수 없습니다.',
   folder_contains_xd: 'XD 의 데이터 폴더를 품은 폴더는 연결할 수 없으니 그 안의 폴더를 고르세요.',
@@ -118,6 +128,7 @@ export function errorText(e: unknown, fallback: string): string {
   console.warn('[xd]', message);
   if (code === 'busy') return '이 대화는 아직 답을 만드는 중입니다.';
   if (code && code in FOLDER_TEXT) return FOLDER_TEXT[code];
+  if (code && code in MCP_TEXT) return MCP_TEXT[code];
   if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|fetch failed|getaddrinfo|network/i.test(message)) {
     return '인터넷에 닿지 않아 마치지 못했습니다.';
   }

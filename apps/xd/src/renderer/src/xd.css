@@ -476,3 +476,35 @@ body {
   background: var(--primary-soft-bg);
   color: var(--primary);
 }
+
+/* ── MCP 서버 ───────────────────────────────────────────── */
+.xd-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.xd-mcp-row:first-of-type {
+  border-top: none;
+}
+.xd-mcp-toggle {
+  display: inline-flex;
+  align-items: center;
+}
+.xd-mcp-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.xd-mcp-main > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xd-mcp-form textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

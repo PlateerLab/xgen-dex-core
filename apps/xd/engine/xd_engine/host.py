@@ -59,6 +59,11 @@ class TurnSetup:
     settings: Dict[str, str] = field(default_factory=dict)
     #: CLI 제공자(claude_code·codex)의 실행 파일·XD 전용 홈·인증 방식(oauth|api_key). main 이 정한다.
     cli: Optional["CliSetup"] = None
+    #: 이 에이전트에 붙인 MCP 서버(main 이 넘긴 설정 — 비밀 포함, 로그에 남기지 않는다).
+    mcp_specs: List[Any] = field(default_factory=list)
+    #: 이번 턴에 붙어 있는 MCP 서버의 도구(데몬이 턴 전에 만든다)와 서버들의 상태.
+    mcp_tools: List[Any] = field(default_factory=list)
+    mcp_views: List[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -144,11 +149,13 @@ class XdHostServices:
         return None
 
     def environment_prompt(self, sandbox: Any, provider: str) -> str:
-        return environment_block(
-            workspace=str(self.workspace_dir),
-            linked_folders=self._s.linked_folders,
-            tool_prefix="mcp__connector__" if provider in CLI_PROVIDERS else "",
-        )
+        prefix = "mcp__connector__" if provider in CLI_PROVIDERS else ""
+        block = environment_block(workspace=str(self.workspace_dir), linked_folders=self._s.linked_folders, tool_prefix=prefix)
+        if self._s.mcp_views:
+            from .mcp_tools import mcp_environment
+
+            block += mcp_environment(self._s.mcp_views, prefix)
+        return block
 
     def local_device_platform(self) -> str:
         return sys.platform
@@ -197,7 +204,8 @@ class XdHostServices:
 
     # ── E. 도구 ──────────────────────────────────────────────────────
     def build_connector_mcp_tools(self, user_id: Any, client_surface: Any) -> List[Any]:
-        return []
+        # 사용자가 이 에이전트에 붙인 MCP 서버의 도구 — 런타임이 API 턴·CLI 턴(도구 다리) 모두에 싣는다.
+        return list(self._s.mcp_tools)
 
     def build_host_skill_tools(self, **kwargs: Any) -> List[Any]:
         return []

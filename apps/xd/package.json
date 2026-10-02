@@ -12,7 +12,7 @@
     "url": "https://github.com/PlateerLab/xgen-dex-core.git"
   },
   "scripts": {
-    "test": "tsx --test test/data-root.test.ts test/packaging.test.ts test/store.test.ts test/secrets.test.ts test/workspace-name.test.ts test/engine-service.test.ts test/turn-runner.test.ts test/xd-api.test.ts test/cli-install.test.ts test/cli-login.test.ts test/cli-service.test.ts test/chat-model.test.ts test/renderer-sharing.test.ts test/linked-folders.test.ts test/ide-service.test.ts",
+    "test": "tsx --test test/data-root.test.ts test/packaging.test.ts test/store.test.ts test/secrets.test.ts test/workspace-name.test.ts test/engine-service.test.ts test/turn-runner.test.ts test/xd-api.test.ts test/cli-install.test.ts test/cli-login.test.ts test/cli-service.test.ts test/chat-model.test.ts test/renderer-sharing.test.ts test/linked-folders.test.ts test/ide-service.test.ts test/mcp-config.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "dev": "electron-vite dev",
     "build": "electron-vite build",

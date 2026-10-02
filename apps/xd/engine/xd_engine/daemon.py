@@ -27,20 +27,27 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import platform
 import re
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from xd_engine import PROTOCOL_VERSION
 from xd_engine.host import CLI_PROVIDERS, CliSetup, TurnSetup, XdHostServices
 from xd_engine.layout import Layout, LayoutError, check_folder_name, check_id
+from xd_engine.mcp_pool import McpPool, McpServerSpec, McpSpecError, ServerView
+from xd_engine.mcp_tools import build_mcp_tools
 from xd_engine.protocol import Channel, claim_stdout, read_commands
 from xd_engine.safety import ANSWERS, ApprovalGate, compile_patterns
 
 logger = logging.getLogger("xd_engine.daemon")
+
+#: 턴 전에 MCP 서버가 붙기를 기다리는 시간 — 넘으면 그 서버 없이 턴을 시작하고 뒤에서 계속 붙는다.
+MCP_WAIT_S = 20.0
 
 #: API 키가 있어야 도는 제공자 — 없으면 턴을 시작하지 않고 원인을 말한다(서버도 같다).
 _KEY_REQUIRED = ("openai", "anthropic", "google")
@@ -77,6 +84,8 @@ class Turn:
     approvals: Dict[str, List[Any]] = field(default_factory=dict)
     approvals_lock: threading.Lock = field(default_factory=threading.Lock)
     approval_seq: int = 0
+    #: MCP 연결을 빌려 간 에이전트 — 턴이 끝나면 돌려준다.
+    mcp_lease: str = ""
 
 
 def classify_error_chunk(text: str, *, first: bool) -> Optional[tuple[str, str]]:
@@ -105,6 +114,16 @@ class Daemon:
         self.gate = ApprovalGate()
         self._turns: Dict[str, Turn] = {}
         self._lock = threading.Lock()
+        #: 사용자 MCP 서버의 연결 — 처음 쓸 때 만든다(안 쓰는 PC 에 스레드를 두지 않는다).
+        self._mcp: Optional[McpPool] = None
+        self._mcp_lock = threading.Lock()
+
+    @property
+    def mcp(self) -> McpPool:
+        with self._mcp_lock:
+            if self._mcp is None:
+                self._mcp = McpPool(log_dir=str(self.layout.state / "logs" / "mcp"))
+            return self._mcp
 
     # ── 수명 ─────────────────────────────────────────────────────────
     def ready_event(self) -> Dict[str, Any]:
@@ -148,6 +167,8 @@ class Daemon:
         for turn in turns:
             if turn.thread is not None:
                 turn.thread.join(timeout)
+        if self._mcp is not None:
+            self._mcp.close_all()  # stdio MCP 서버 프로세스를 남기지 않는다
 
     # ── 명령 ─────────────────────────────────────────────────────────
     def handle(self, cmd: Dict[str, Any]) -> None:
@@ -167,6 +188,12 @@ class Daemon:
             self._approval_reply(cmd)
         elif kind == "models":
             threading.Thread(target=self._models, args=(cmd,), name="models", daemon=True).start()
+        elif kind == "mcp_test":
+            threading.Thread(target=self._mcp_test, args=(cmd,), name="mcp-test", daemon=True).start()
+        elif kind == "mcp_close":
+            if self._mcp is not None:
+                agent = str(cmd.get("agent") or "")
+                threading.Thread(target=self._mcp.close_agent, args=(agent,), name="mcp-close", daemon=True).start()
         else:
             self.out.emit({"type": "protocol_error", "message": f"unknown command type: {kind!r}"})
 
@@ -208,6 +235,7 @@ class Daemon:
         stream: Any = None
         try:
             setup, kwargs = self._prepare(turn, cmd)
+            self._connect_mcp(turn, setup)
             host = XdHostServices(setup, self.gate, lambda command: self._ask(turn, command))
             from xgen_agent_runtime.host.turn_executor import AgentTurnExecutor
 
@@ -239,6 +267,8 @@ class Daemon:
             logger.exception("turn %s failed", turn.id)
             failure = ("internal", f"{type(exc).__name__}: {exc}")
         finally:
+            if turn.mcp_lease and self._mcp is not None:
+                self._mcp.release(turn.mcp_lease)
             close = getattr(stream, "close", None)
             if callable(close):
                 try:
@@ -248,6 +278,63 @@ class Daemon:
             with self._lock:
                 self._turns.pop(turn.id, None)
             self._terminal(turn, failure)
+
+    def _connect_mcp(self, turn: Turn, setup: TurnSetup) -> None:
+        """이 에이전트의 MCP 서버를 맞추고(새로 띄우기·다시·닫기) 붙은 것의 도구를 턴에 싣는다.
+
+        정해진 시간만 기다린다 — 그때까지 안 붙은 서버는 이번 턴에서 빠지고 뒤에서 계속 붙는다. 기다리는 동안
+        [정지]가 오면 곧바로 턴으로 넘어간다(턴이 취소로 끝난다).
+        """
+        invalid = list(setup.mcp_views)
+        views: List[ServerView] = []
+        if setup.mcp_specs or (self._mcp is not None and self._mcp.has_agent(setup.agent_id)):
+            pool = self.mcp
+            cwd = str(setup.layout.agent_workspace(setup.workspace_name))
+            os.makedirs(cwd, exist_ok=True)
+            # 빌려 간다 — 이 턴이 도는 동안은 오래 안 써도 닫지 않는다(턴 끝에 돌려준다). 맞추기보다 먼저: 맞추기가
+            # 시간을 넘겨 실패해도 돌려줄 수 있게.
+            pool.acquire(setup.agent_id)
+            turn.mcp_lease = setup.agent_id
+            views = pool.ensure(setup.agent_id, setup.mcp_specs, cwd=cwd, wait_s=0)
+            slugs = [s.slug for s in setup.mcp_specs]
+            deadline = time.monotonic() + MCP_WAIT_S
+            while any(v.state == "connecting" for v in views) and time.monotonic() < deadline and not turn.cancel.is_set():
+                time.sleep(0.2)
+                views = pool.snapshot(setup.agent_id, slugs)
+            setup.mcp_tools = build_mcp_tools(pool, setup.agent_id, views)
+        views = views + invalid
+        setup.mcp_views = views
+        if views:
+            self.out.emit(
+                {
+                    "type": "mcp",
+                    "id": turn.id,
+                    "servers": [
+                        {"slug": v.slug, "label": v.label, "state": v.state, "error": v.error, "tools": len(v.tools)}
+                        for v in views
+                    ],
+                }
+            )
+
+    def _mcp_test(self, cmd: Dict[str, Any]) -> None:
+        """[연결 확인] — 붙어 보고 도구 목록만 받고 닫는다(에이전트의 연결과 따로)."""
+        req = str(cmd.get("id") or "")
+        try:
+            spec = McpServerSpec.parse({**(cmd.get("server") or {}), "slug": "test"})
+            cwd = str(self.layout.workspace)
+            os.makedirs(cwd, exist_ok=True)
+            view = self.mcp.test(spec, cwd=cwd, timeout_s=float(cmd.get("timeout_s") or 60.0))
+            self.out.emit(
+                {
+                    "type": "mcp_test_result",
+                    "id": req,
+                    "ok": view.state == "connected",
+                    "error": view.error,
+                    "tools": [{"name": t["name"], "description": t["description"][:200]} for t in view.tools],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — 대답은 언제나 하나
+            self.out.emit({"type": "mcp_test_result", "id": req, "ok": False, "error": str(exc)[:300], "tools": []})
 
     def _terminal(self, turn: Turn, failure: Optional[tuple[str, str]]) -> None:
         if turn.cancel.is_set():
@@ -301,6 +388,23 @@ class Daemon:
         settings = config.get("settings") or {}
         if not isinstance(settings, dict):
             raise BadRequest("config.settings must be an object")
+        raw_mcp = agent.get("mcp_servers") or []
+        if not isinstance(raw_mcp, list):
+            raise BadRequest("agent.mcp_servers must be a list")
+        # 틀린 서버 하나가 턴을 막지 않는다 — 그 서버만 빼고 "못 붙음" 으로 알린다.
+        mcp_specs: List[McpServerSpec] = []
+        mcp_invalid: List[ServerView] = []
+        for raw in raw_mcp:
+            try:
+                spec = McpServerSpec.parse(raw)
+            except McpSpecError as exc:
+                label = str(raw.get("label") or raw.get("slug") or "?") if isinstance(raw, dict) else "?"
+                mcp_invalid.append(ServerView(slug=str(raw.get("slug") or "") if isinstance(raw, dict) else "", label=label, state="failed", error=str(exc)))
+                continue
+            if any(s.slug == spec.slug for s in mcp_specs):
+                mcp_invalid.append(ServerView(slug=spec.slug, label=spec.label, state="failed", error="duplicate server"))
+                continue
+            mcp_specs.append(spec)
 
         setup = TurnSetup(
             layout=self.layout,
@@ -316,6 +420,8 @@ class Daemon:
             linked_folders=linked,
             settings={str(k): str(v) for k, v in settings.items() if v is not None},
             cli=cli,
+            mcp_specs=mcp_specs,
+            mcp_views=mcp_invalid,
         )
         history = cmd.get("history")
         kwargs: Dict[str, Any] = {
@@ -426,6 +532,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         stream=sys.stderr,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx 는 요청마다 주소 전체(쿼리의 키 포함)를 INFO 로 적는다 — MCP http 서버의 ping 마다 한 줄씩. 경고만 남긴다.
+    for noisy in ("httpx", "httpcore", "mcp.client"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
         layout = Layout.at(args.root)
         layout.workspace.mkdir(parents=True, exist_ok=True)

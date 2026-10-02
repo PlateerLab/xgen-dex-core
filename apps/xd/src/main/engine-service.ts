@@ -44,8 +44,17 @@ export interface TurnCommand {
     system_prompt?: string;
     folders?: string[];
     memory?: boolean;
+    /** 사용자 MCP 서버(mcp-config.ts 의 EngineMcpServer — 비밀 포함). */
+    mcp_servers?: unknown[];
   };
   config: Record<string, unknown>;
+}
+
+/** MCP 서버 [연결 확인]의 대답. */
+export interface McpTestResult {
+  ok: boolean;
+  error?: string;
+  tools: Array<{ name: string; description: string }>;
 }
 
 /** 동봉 Python 의 자리. 개발 실행은 `scripts/bundle-engine.mjs` 가 만든 것을 쓴다. */
@@ -189,6 +198,39 @@ export class EngineService {
     });
   }
 
+  /** MCP 서버 하나에 붙어 보고 도구 목록만 받는다(에이전트의 연결과 따로). 실패는 예외가 아니라 ok:false. */
+  async mcpTest(server: unknown, timeoutMs = 90_000): Promise<McpTestResult> {
+    try {
+      await this.ensure();
+    } catch (err) {
+      return { ok: false, tools: [], error: String((err as Error).message ?? err) };
+    }
+    this.requestSeq += 1;
+    const id = `mcp-${this.requestSeq}`;
+    return new Promise<McpTestResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.requests.delete(id);
+        resolve({ ok: false, tools: [], error: 'timeout' });
+      }, timeoutMs);
+      this.requests.set(id, (event) => {
+        clearTimeout(timer);
+        resolve({
+          ok: event.ok === true,
+          tools: Array.isArray(event.tools) ? (event.tools as McpTestResult['tools']) : [],
+          ...(typeof event.error === 'string' && event.error ? { error: event.error } : {}),
+        });
+      });
+      if (!this.send({ type: 'mcp_test', id, server, timeout_s: Math.max(5, Math.floor(timeoutMs / 1000) - 10) })) {
+        this.requests.get(id)?.({ type: 'mcp_test_result', ok: false, tools: [], error: 'engine stopped' });
+      }
+    });
+  }
+
+  /** 이 에이전트의 MCP 연결을 닫는다(에이전트를 지울 때). 엔진이 떠 있지 않으면 닫을 것도 없다. */
+  mcpClose(agentId: string): void {
+    if (this.child) this.send({ type: 'mcp_close', agent: agentId });
+  }
+
   cancel(turnId: string): void {
     if (this.turns.has(turnId)) this.send({ type: 'cancel', id: turnId });
     else {
@@ -277,7 +319,8 @@ export class EngineService {
       }
       for (const [id, answer] of [...this.requests]) {
         this.requests.delete(id);
-        answer({ type: 'models_result', ok: false, models: [], error: 'engine stopped' });
+        // 모델 목록·MCP 연결 확인 모두 이 모양을 실패로 읽는다.
+        answer({ type: 'models_result', ok: false, models: [], tools: [], error: 'engine stopped' });
       }
       // 끝나지 못한 턴은 여기서 끝낸다 — 화면이 영원히 "실행 중" 으로 남지 않게.
       for (const id of [...this.turns.keys()]) {
@@ -318,7 +361,7 @@ export class EngineService {
 
   private route(event: EngineEvent): void {
     const id = typeof event.id === 'string' ? event.id : '';
-    if (event.type === 'models_result') {
+    if (event.type === 'models_result' || event.type === 'mcp_test_result') {
       const answer = this.requests.get(id);
       this.requests.delete(id);
       answer?.(event);

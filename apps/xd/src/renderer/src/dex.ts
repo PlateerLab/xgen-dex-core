@@ -11,6 +11,8 @@ export { Tooltip } from '../../../../desktop/src/renderer/src/views/Tooltip';
 // 작업 공간 IDE(M5b) — 편집기(Monaco 와 그 worker 를 이 앱 번들로)·미리보기(그림·PDF·마크다운·표).
 export { loadMonaco } from '../../../../desktop/src/renderer/src/ide/monaco';
 export { FileViewerPane, type FileViewerSource } from '../../../../desktop/src/renderer/src/views/FileViewerPane';
+// MCP 서버(M5c) — 표준 MCP 설정 JSON(Claude Desktop·Cursor·mcp.json) 붙여 넣기와 표시용 명령줄.
+export { McpImportError, parseMcpConfig, toDisplayCommand } from '../../../../desktop/src/renderer/src/views/mcp-import';
 export {
   BotIcon,
   ChatIcon,

@@ -8,8 +8,19 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CliName } from './cli/detect';
 import { checkLinkedFolder, UNSAFE_FOLDER, type LinkedFolderCheck } from './linked-folders';
+import { withResolvedSecrets } from '@dex/engine/mcp-secrets';
+import {
+  cleanMcpServers,
+  engineServer,
+  McpConfigError,
+  mcpSecretId,
+  parseMcpSecrets,
+  splitMcpSecrets,
+  type McpSecretsByName,
+  type McpServerConfig,
+} from './mcp-config';
 import type { CliService, CliState } from './cli/service';
-import type { EngineService, ModelsResult } from './engine-service';
+import type { EngineService, McpTestResult, ModelsResult } from './engine-service';
 import type { Secrets, SecretStatus } from './secrets';
 import type { XdAccount, XdAgent, XdConversation, Store, XdTurn } from './store';
 import type { TurnRunner } from './turn-runner';
@@ -52,7 +63,11 @@ export interface XdApiDeps {
   store: Store;
   secrets: Secrets;
   runner: TurnRunner;
-  engine: Pick<EngineService, 'info' | 'running'> & { models?: EngineService['models'] };
+  engine: Pick<EngineService, 'info' | 'running'> & {
+    models?: EngineService['models'];
+    mcpTest?: EngineService['mcpTest'];
+    mcpClose?: EngineService['mcpClose'];
+  };
   cli?: CliService;
   /** `<루트>/workspace` */
   workspaceDir: string;
@@ -116,6 +131,28 @@ export function createXdApi(deps: XdApiDeps) {
     return out;
   };
 
+  /**
+   * options 의 MCP 서버를 검사하고 비밀(env·headers 값)을 갈라 낸다 — 저장할 options 에는 키만 남는다. 값이 빈 칸이면
+   * 저장된 비밀을 그대로 둔다(화면은 저장된 값을 모른다).
+   */
+  const splitMcp = (agentId: string | null, options: Record<string, unknown>) => {
+    if (!('mcpServers' in options)) return { options, mcpSecrets: undefined };
+    let servers: McpServerConfig[];
+    try {
+      servers = cleanMcpServers(options.mcpServers);
+    } catch (err) {
+      if (err instanceof McpConfigError) throw new XdError(err.code, err.message);
+      throw err;
+    }
+    const stored = agentId ? parseMcpSecrets(secrets.get(mcpSecretId(agentId))) : null;
+    const split = splitMcpSecrets(servers, stored);
+    return { options: { ...options, mcpServers: split.servers }, mcpSecrets: split.secrets };
+  };
+  const saveMcpSecrets = (agentId: string, value: McpSecretsByName | undefined) => {
+    if (value === undefined) return;
+    secrets.set(mcpSecretId(agentId), Object.keys(value).length ? JSON.stringify(value) : null);
+  };
+
   const cli = (name: unknown): CliService => {
     if (!deps.cli) throw new Error('CLI management is not available');
     if (!isCliName(name)) throw new Error(`unknown CLI ${String(name)}`);
@@ -146,8 +183,9 @@ export function createXdApi(deps: XdApiDeps) {
         name,
         (candidate) => store.workspaceTaken(candidate) || existsSync(join(deps.workspaceDir, candidate)),
       );
+      const { options, mcpSecrets } = splitMcp(null, input.options && typeof input.options === 'object' ? input.options : {});
       mkdirSync(join(deps.workspaceDir, workspace), { recursive: true });
-      return store.createAgent({
+      const created = store.createAgent({
         name,
         workspace,
         description: typeof input.description === 'string' ? input.description : '',
@@ -156,14 +194,38 @@ export function createXdApi(deps: XdApiDeps) {
         model: typeof input.model === 'string' ? input.model : '',
         folders,
         memory: input.memory !== false,
-        options: input.options && typeof input.options === 'object' ? input.options : {},
+        options,
       });
+      saveMcpSecrets(created.id, mcpSecrets);
+      return created;
     },
     async agentsUpdate(id: string, patch: Partial<AgentInput>): Promise<XdAgent> {
       if (patch.name !== undefined) patch.name = text(patch.name, 'name', 100);
       if (patch.folders !== undefined) patch.folders = await linkedFolders(patch.folders);
       checkAccount(patch.accountId);
-      return store.updateAgent(id, patch as Partial<XdAgent>);
+      let mcpSecrets: McpSecretsByName | undefined;
+      if (patch.options && typeof patch.options === 'object') ({ options: patch.options, mcpSecrets } = splitMcp(id, patch.options));
+      const updated = store.updateAgent(id, patch as Partial<XdAgent>);
+      saveMcpSecrets(id, mcpSecrets);
+      return updated;
+    },
+    /**
+     * MCP 서버 [연결 확인] — 붙어 보고 도구 목록만 받는다. 저장하기 전 입력도 시험할 수 있고, 값이 빈 비밀은 그
+     * 에이전트에 저장된 것을 쓴다.
+     */
+    async mcpTest(input: { server: unknown; agentId?: string | null }): Promise<McpTestResult> {
+      let server: McpServerConfig;
+      try {
+        [server] = cleanMcpServers([input?.server]);
+      } catch (err) {
+        if (err instanceof McpConfigError) throw new XdError(err.code, err.message);
+        throw err;
+      }
+      if (!deps.engine.mcpTest) return { ok: false, tools: [], error: 'engine unavailable' };
+      const stored = input.agentId ? parseMcpSecrets(secrets.get(mcpSecretId(input.agentId))) : null;
+      const { previousName, ...config } = server;
+      const saved = (previousName ? stored?.[previousName] : undefined) ?? stored?.[config.name] ?? null;
+      return deps.engine.mcpTest(engineServer(withResolvedSecrets(config, saved), 'test'));
     },
     /** 연결 폴더의 지금 상태 — 고를 때 바로, 그리고 채팅·편집 화면이 없어진 폴더를 알리려고. */
     foldersCheck: (paths: string[]): Promise<LinkedFolderCheck[]> =>
@@ -172,6 +234,8 @@ export function createXdApi(deps: XdApiDeps) {
       if (runner.isAgentRunning(id)) throw new Error('this agent has a turn running');
       store.deleteAgent(id);
       rmSync(join(deps.stateDir, 'agents', id), { recursive: true, force: true });
+      secrets.set(mcpSecretId(id), null);
+      deps.engine.mcpClose?.(id);
     },
 
     // ── 대화 ──

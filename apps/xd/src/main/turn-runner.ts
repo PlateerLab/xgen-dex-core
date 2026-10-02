@@ -7,6 +7,7 @@
  * - 대화 하나에 도는 턴은 하나. 엔진이 받기 전에 알 수 있는 실패(계정·키 없음)는 엔진에 가지 않고 끝난다.
  */
 import { turnEventToChatEvent } from '@dex/protocol/chat';
+import { agentMcpServers } from './mcp-config';
 import type { ChatEvent, HistoryFlowItem, ToolEvent } from '@dex/protocol';
 import { errorInfo } from '../shared/error-info';
 export { errorInfo } from '../shared/error-info';
@@ -52,7 +53,18 @@ type XdTurnEventBody =
   | { type: 'approval'; turnId: string; conversationId: string; request: string; command: string }
   /** 확인 창에 대답했다 — 화면은 "묻는 중" 안내를 걷는다. */
   | { type: 'approval_done'; turnId: string; conversationId: string; request: string; answer: 'once' | 'session' | 'deny' }
-  | { type: 'finished'; turnId: string; conversationId: string; turn: XdTurn };
+  | { type: 'finished'; turnId: string; conversationId: string; turn: XdTurn }
+  /** 이 턴 앞에서 본 MCP 서버들의 상태 — 못 붙은 서버를 화면이 알린다. */
+  | { type: 'mcp'; turnId: string; conversationId: string; servers: XdMcpStatus[] };
+
+/** MCP 서버 한 대의 상태(비밀 없음). */
+export interface XdMcpStatus {
+  slug: string;
+  label: string;
+  state: 'connecting' | 'connected' | 'failed';
+  error: string;
+  tools: number;
+}
 
 /** 턴 사건 — 어느 에이전트의 턴인지도 싣는다(작업 공간 IDE 는 자기 에이전트의 턴에만 다시 읽는다). */
 export type XdTurnEvent = XdTurnEventBody & { agentId: string };
@@ -215,6 +227,7 @@ export class TurnRunner {
     }
 
     this.running.set(turn.id, { conversationId, agentId: agent.id });
+    const mcpServers = agentMcpServers(agent, (id) => this.deps.secret(id));
     const cmd: TurnCommand = {
       id: turn.id,
       conversation: conversationId,
@@ -227,6 +240,9 @@ export class TurnRunner {
         folders: agent.folders,
         memory: agent.memory,
         ...(agent.systemPrompt !== null ? { system_prompt: agent.systemPrompt } : {}),
+        // 사용자가 붙인 MCP 서버 — 켜 둔 것만, 비밀을 되살려(엔진은 로그에 남기지 않는다). 없으면 싣지 않는다(엔진은
+        // 빈 목록으로 보고 그 에이전트의 연결이 남아 있으면 닫는다).
+        ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),
       },
       config: prepared.config,
     };
@@ -277,6 +293,16 @@ export class TurnRunner {
     } else if (event.type === 'usage' && event.usage && typeof event.usage === 'object') {
       recorder.usage = event.usage as Record<string, unknown>;
       this.emit({ type: 'usage', turnId, conversationId, usage: recorder.usage });
+      return;
+    } else if (event.type === 'mcp' && Array.isArray(event.servers)) {
+      const servers = (event.servers as Array<Record<string, unknown>>).map((s) => ({
+        slug: String(s.slug ?? ''),
+        label: String(s.label ?? ''),
+        state: (s.state === 'connected' || s.state === 'failed' ? s.state : 'connecting') as XdMcpStatus['state'],
+        error: String(s.error ?? ''),
+        tools: Number(s.tools ?? 0),
+      }));
+      this.emit({ type: 'mcp', turnId, conversationId, servers });
       return;
     } else if (event.type === 'approval_request') {
       this.approve(turnId, conversationId, String(event.request ?? ''), String(event.command ?? ''));

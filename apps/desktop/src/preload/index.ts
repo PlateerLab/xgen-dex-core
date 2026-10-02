@@ -872,6 +872,14 @@ const api = {
     /** 공개 링크(서버가 준 경로)를 기본 브라우저로 연다 — 절대 주소는 main 이 붙인다. */
     openPublic: (path: string): Promise<string> =>
       ipcRenderer.invoke(CHANNELS.appOpenPublic, path),
+    /** 카드의 미리보기 그림(서버가 준 `preview_url`) → data URL. 없거나 못 받으면 빈 문자열. */
+    previewImage: (previewUrl: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.appPreviewImage, previewUrl),
+    /** 앱을 띄워 미리보기를 찍어 올린다(사이트, 그리고 지금 도는 앱만). 한 번에 하나씩 main 이 줄 세운다. */
+    capturePreview: (target: {
+      workflow_id: string; slug: string; kind: string; app_url?: string; force?: boolean;
+    }): Promise<{ ok: boolean; preview_url?: string; reason?: string }> =>
+      ipcRenderer.invoke(CHANNELS.appCapturePreview, target),
     /** 앱 소식을 받기 시작한다(서버의 목록 소켓). 여러 번 불러도 소켓은 하나다. */
     watch: (): Promise<{ ok: boolean }> => ipcRenderer.invoke(CHANNELS.appsWatch),
     /** 어느 에이전트의 앱이 바뀌었다(생김·지움·배포·공유) — 다른 기기·웹·에이전트가 바꾼 것도. */

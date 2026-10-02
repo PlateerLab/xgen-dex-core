@@ -170,6 +170,9 @@ export const CHANNELS = {
   appOpenWeb: 'apps:openWeb',
   // [앱 스토어] 의 앱을 공개 링크로 연다 — 경로만 받고 절대 주소는 main 이 만든다.
   appOpenPublic: 'apps:openPublic',
+  // 카드의 미리보기 — 그림을 data URL 로(렌더러의 CSP 는 서버 그림을 직접 받지 못한다), 앱을 찍어 올리기.
+  appPreviewImage: 'apps:previewImage',
+  appCapturePreview: 'apps:capturePreview',
   // 앱 소식 — 서버가 주인의 목록 소켓으로 "이 에이전트의 앱이 바뀌었다" 를 알린다(생김·지움·배포·공유).
   appsWatch: 'apps:watch', // 렌더러 → main: 목록 소켓을 열어 달라(이미 열려 있으면 그대로)
   appsChanged: 'apps:changed', // main → 렌더러: 바뀐 에이전트(workflowId)

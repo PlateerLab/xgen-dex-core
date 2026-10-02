@@ -33,6 +33,8 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeExternalUrl } from './external-url';
 import { publicAppUrl } from './app-links';
+import { AppPreviewService, type PreviewTarget } from './app-preview';
+import { shootAppPreview } from './app-preview-shot';
 import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
@@ -2576,6 +2578,26 @@ ipcMain.handle(CHANNELS.appOpenPublic, (_e, path: string) => {
   if (!url) throw new Error('열 수 없는 주소입니다');
   void shell.openExternal(url);
   return url;
+});
+
+// 카드의 미리보기 그림 — 받기(data URL)·찍어 올리기. 판정은 app-preview.ts.
+const appPreviews = new AppPreviewService({
+  client: () => getClient(),
+  serverBase: () => normalizeServerUrl(loadConfig().serverUrl),
+  shoot: (url) => shootAppPreview(url),
+});
+ipcMain.handle(CHANNELS.appPreviewImage, (_e, previewUrl: string) =>
+  appPreviews.image(typeof previewUrl === 'string' ? previewUrl : ''),
+);
+ipcMain.handle(CHANNELS.appCapturePreview, (_e, target: PreviewTarget) => {
+  const t = target && typeof target === 'object' ? target : ({} as PreviewTarget);
+  return appPreviews.capture({
+    workflow_id: String(t.workflow_id ?? ''),
+    slug: String(t.slug ?? ''),
+    kind: String(t.kind ?? ''),
+    app_url: typeof t.app_url === 'string' ? t.app_url : undefined,
+    force: t.force === true,
+  });
 });
 
 // [앱] 탭 — [내 앱]·[앱 스토어]. 서버가 에이전트를 훑어 모아 주므로 여기서는 통과만 한다.

@@ -259,6 +259,42 @@ export class HttpClient {
     return this.json<T>('PUT', path, body, opts);
   }
 
+  /** 바이트 본문을 그대로 PUT 한다(그림 한 장 같은 것). JSON 응답을 돌려준다. */
+  async putBytes<T>(
+    path: string,
+    bytes: Uint8Array,
+    contentType: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 60_000);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.url(path), {
+        method: 'PUT',
+        headers: this.headers({ 'Content-Type': contentType, Accept: 'application/json' }),
+        body: bytes as unknown as BodyInit,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await res.text();
+    let parsed: unknown = undefined;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
+    }
+    if (!res.ok) {
+      if (res.status === 401) this.onAuthFailure?.();
+      throw new ApiError(res.status, `PUT ${path} → ${res.status}`, parsed);
+    }
+    return parsed as T;
+  }
+
   patch<T>(
     path: string,
     body?: unknown,

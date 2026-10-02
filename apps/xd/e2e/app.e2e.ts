@@ -54,7 +54,10 @@ function fixture(responses: unknown[]) {
   return { root, log, launch };
 }
 
-/** 턴을 보내고 끝(finished)까지 기다린다 — 화면 쪽에서 듣는다. */
+/**
+ * 턴을 보내고 끝(finished)까지 기다린다 — 화면 쪽에서 듣는다. preload 는 대답을 값으로 넘기므로({ok, value}) 부를 때마다
+ * 풀어 쓴다(화면의 bridge.ts 와 같다). evaluate 안에서는 이름 붙은 함수를 만들지 않는다(tsx 가 넣는 __name 이 없다).
+ */
 async function sendAndWait(win: Page, input: { agentId: string; conversationId?: string; text: string }) {
   return win.evaluate(async (input) => {
     const xd = (window as any).xd;
@@ -65,7 +68,7 @@ async function sendAndWait(win: Page, input: { agentId: string; conversationId?:
       events.push(e);
       if (e.type === 'finished') resolveEnd(e);
     });
-    const sent = await xd.turn.send(input);
+    const sent = await xd.turn.send(input).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
     const end = await finished;
     off();
     return {
@@ -80,8 +83,8 @@ async function sendAndWait(win: Page, input: { agentId: string; conversationId?:
 async function makeAgent(win: Page, name: string) {
   return win.evaluate(async (name) => {
     const xd = (window as any).xd;
-    const account = await xd.accounts.create({ kind: 'xd_fake', label: 'fake' });
-    return xd.agents.create({ name, accountId: account.id, model: 'fake-1', options: { memory_distill: false } });
+    const account = await xd.accounts.create({ kind: 'xd_fake', label: 'fake' }).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
+    return xd.agents.create({ name, accountId: account.id, model: 'fake-1', options: { memory_distill: false } }).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
   }, name);
 }
 
@@ -103,8 +106,8 @@ test('앱을 껐다 켜도 대화가 이어진다 (M2 완료 기준)', { timeout
   ({ app, win } = await launch());
   const after = await win.evaluate(async (agentId) => {
     const xd = (window as any).xd;
-    const convs = await xd.conversations.list(agentId);
-    return { agents: (await xd.agents.list()).length, convs, turns: await xd.conversations.turns(convs[0].id) };
+    const convs = await xd.conversations.list(agentId).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
+    return { agents: (await xd.agents.list().then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; })).length, convs, turns: await xd.conversations.turns(convs[0].id).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; }) };
   }, agent.id);
   assert.equal(after.agents, 1);
   assert.deepEqual(
@@ -180,9 +183,9 @@ async function cliTurn(
 ) {
   const setup = await win.evaluate(async (o) => {
     const xd = (window as any).xd;
-    const state = await xd.cli.state(o.cli);
-    const account = await xd.accounts.create({ kind: o.kind, label: o.cli, baseUrl: o.url, settings: { auth: 'api_key' }, secret: 'sk-e2e' });
-    const agent = await xd.agents.create({ name: o.agent, accountId: account.id, model: o.model, options: { memory_distill: false } });
+    const state = await xd.cli.state(o.cli).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
+    const account = await xd.accounts.create({ kind: o.kind, label: o.cli, baseUrl: o.url, settings: { auth: 'api_key' }, secret: 'sk-e2e' }).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
+    const agent = await xd.agents.create({ name: o.agent, accountId: account.id, model: o.model, options: { memory_distill: false } }).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
     return { state, agent };
   }, opts);
   assert.ok(setup.state.installed?.path, `${opts.cli} detected`);
@@ -201,7 +204,11 @@ test('CLI 계정으로 앱에서 턴이 돈다 — Claude Code·Codex (설치기
   try {
     if (INSTALL) {
       for (const name of ['codex', 'claude'] as const) {
-        const installed = await win.evaluate((n) => (window as any).xd.cli.install(n), name);
+        const installed = await win.evaluate(async (n) => {
+          const r = await (window as any).xd.cli.install(n);
+          if (!r.ok) throw new Error(r.error);
+          return r.value;
+        }, name);
         assert.equal(installed.source, 'xd');
         assert.match(installed.version, /^\d+\.\d+\.\d+/);
         assert.ok(installed.path.startsWith(join(root, '.xd', 'cli', name, 'bin')), installed.path);

@@ -46,13 +46,16 @@ const OPTION_KEYS = [
   'memory_distill',
 ] as const;
 
-export type XdTurnEvent =
+type XdTurnEventBody =
   | { type: 'chat'; turnId: string; conversationId: string; event: ChatEvent }
   | { type: 'usage'; turnId: string; conversationId: string; usage: Record<string, unknown> }
   | { type: 'approval'; turnId: string; conversationId: string; request: string; command: string }
   /** 확인 창에 대답했다 — 화면은 "묻는 중" 안내를 걷는다. */
   | { type: 'approval_done'; turnId: string; conversationId: string; request: string; answer: 'once' | 'session' | 'deny' }
   | { type: 'finished'; turnId: string; conversationId: string; turn: XdTurn };
+
+/** 턴 사건 — 어느 에이전트의 턴인지도 싣는다(작업 공간 IDE 는 자기 에이전트의 턴에만 다시 읽는다). */
+export type XdTurnEvent = XdTurnEventBody & { agentId: string };
 
 export interface EnginePort {
   turn(cmd: TurnCommand, listener: (event: EngineEvent) => void): Promise<TurnTerminal>;
@@ -144,6 +147,8 @@ export class BusyError extends Error {
 
 export class TurnRunner {
   private readonly running = new Map<string, { conversationId: string; agentId: string }>(); // turnId →
+  /** 턴 → 에이전트 — 사건에 싣는다. 엔진에 가기 전에 끝나는 턴도 있어 running 과 따로 둔다(끝 사건까지). */
+  private readonly agentOf = new Map<string, string>();
   private readonly now: () => number;
 
   constructor(private readonly deps: TurnRunnerDeps) {
@@ -179,6 +184,7 @@ export class TurnRunner {
 
     const history = store.history(conversationId);
     const turn = store.startTurn(conversationId, input.text, input.attachments ?? []);
+    this.agentOf.set(turn.id, agent.id);
     const recorder = new TurnRecorder(this.now);
 
     const finish = (status: 'done' | 'error' | 'cancelled', error: { code: string; message: string } | null): XdTurn => {
@@ -190,7 +196,8 @@ export class TurnRunner {
         status,
         error,
       });
-      this.deps.emit({ type: 'finished', turnId: turn.id, conversationId, turn: saved });
+      this.emit({ type: 'finished', turnId: turn.id, conversationId, turn: saved });
+      this.agentOf.delete(turn.id);
       return saved;
     };
     const fail = (code: string, message: string): XdTurn => {
@@ -253,8 +260,12 @@ export class TurnRunner {
     return false;
   }
 
+  private emit(event: XdTurnEventBody): void {
+    this.deps.emit({ ...event, agentId: this.agentOf.get(event.turnId) ?? '' } as XdTurnEvent);
+  }
+
   private chat(turnId: string, conversationId: string, event: ChatEvent): void {
-    this.deps.emit({ type: 'chat', turnId, conversationId, event });
+    this.emit({ type: 'chat', turnId, conversationId, event });
   }
 
   private onEngineEvent(turnId: string, conversationId: string, event: EngineEvent, recorder: TurnRecorder): void {
@@ -265,7 +276,7 @@ export class TurnRunner {
       chat = turnEventToChatEvent('tool', event.event as Record<string, unknown>);
     } else if (event.type === 'usage' && event.usage && typeof event.usage === 'object') {
       recorder.usage = event.usage as Record<string, unknown>;
-      this.deps.emit({ type: 'usage', turnId, conversationId, usage: recorder.usage });
+      this.emit({ type: 'usage', turnId, conversationId, usage: recorder.usage });
       return;
     } else if (event.type === 'approval_request') {
       this.approve(turnId, conversationId, String(event.request ?? ''), String(event.command ?? ''));
@@ -277,7 +288,7 @@ export class TurnRunner {
   }
 
   private approve(turnId: string, conversationId: string, request: string, command: string): void {
-    this.deps.emit({ type: 'approval', turnId, conversationId, request, command });
+    this.emit({ type: 'approval', turnId, conversationId, request, command });
     const ask = this.deps.confirmDangerous;
     const agentId = this.running.get(turnId)?.agentId;
     const agentName = (agentId && this.deps.store.getAgent(agentId)?.name) || '';
@@ -285,7 +296,7 @@ export class TurnRunner {
     const answer = ask ? ask(command, { conversationId, agentName }).catch(() => 'deny' as const) : Promise.resolve('deny' as const);
     void answer.then((a) => {
       this.deps.engine.approvalReply(turnId, request, a);
-      this.deps.emit({ type: 'approval_done', turnId, conversationId, request, answer: a });
+      this.emit({ type: 'approval_done', turnId, conversationId, request, answer: a });
     });
   }
 }

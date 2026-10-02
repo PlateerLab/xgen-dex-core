@@ -13,7 +13,14 @@ export const CHANNELS = {
   turnEvent: 'xd:turn-event',
   /** main → 화면: CLI 설치 진행·로그인 사건(CliEvent). */
   cliEvent: 'xd:cli-event',
+  /** 작업 공간 IDE — 에이전트의 작업 공간·연결 폴더의 파일(ide-service.ts). */
+  ide: 'xd:ide',
+  /** 작업 공간 IDE 의 연결 폴더 목록. */
+  ideFolders: 'xd:ide-folders',
 } as const;
+
+/** `xd:ide` 의 대답 — 실패는 IDE 가 다음 행동을 고르는 코드(not_found·changed·too_large…)와 함께. */
+export type IdeResult<T> = { ok: true; value: T } | { ok: false; code: string; message: string; detail?: Record<string, unknown> };
 
 /** 화면이 아는 이 앱의 상태. */
 export interface XdInfo {

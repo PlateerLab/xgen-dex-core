@@ -21,3 +21,12 @@ test('XD 화면은 Dex 부품을 dex.ts 한 곳으로만 가져온다', () => {
     .map(({ file }) => file);
   assert.deepEqual(offenders, []);
 });
+
+test('XD main 도 Dex 데스크톱 코드는 src/main/dex.ts 한 곳으로만 가져온다', () => {
+  const MAIN = resolve(__dirname, '..', 'src', 'main');
+  const offenders = files(MAIN)
+    .map((p) => ({ file: relative(MAIN, p).replace(/\\/g, '/'), src: readFileSync(p, 'utf8') }))
+    .filter(({ file, src }) => file !== 'dex.ts' && /(?:from|import)\s*\(?\s*['"][^'"]*\/desktop\/src\//.test(src))
+    .map(({ file }) => file);
+  assert.deepEqual(offenders, []);
+});

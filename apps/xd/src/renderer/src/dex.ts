@@ -8,6 +8,9 @@ export type { ChatMsg, FlowItem } from '../../../../desktop/src/renderer/src/ses
 export { Markdown } from '../../../../desktop/src/renderer/src/views/Markdown';
 export { ProcessTimeline } from '../../../../desktop/src/renderer/src/views/ProcessTimeline';
 export { Tooltip } from '../../../../desktop/src/renderer/src/views/Tooltip';
+// 작업 공간 IDE(M5b) — 편집기(Monaco 와 그 worker 를 이 앱 번들로)·미리보기(그림·PDF·마크다운·표).
+export { loadMonaco } from '../../../../desktop/src/renderer/src/ide/monaco';
+export { FileViewerPane, type FileViewerSource } from '../../../../desktop/src/renderer/src/views/FileViewerPane';
 export {
   BotIcon,
   ChatIcon,
@@ -17,13 +20,16 @@ export {
   CopyIcon,
   DownloadIcon,
   FolderIcon,
+  FolderCodeIcon,
   FolderOpenIcon,
   HistoryIcon,
   InfoIcon,
   ModelIcon,
+  PanelRightIcon,
   PencilIcon,
   PlusIcon,
   RefreshIcon,
+  SearchIcon,
   SendIcon,
   ServerIcon,
   SettingsIcon,

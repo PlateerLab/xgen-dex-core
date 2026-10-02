@@ -466,3 +466,13 @@ body {
 .xd-linked-pop p {
   margin: 0 0 4px;
 }
+
+/* ── 작업 공간(IDE) ─────────────────────────────────────── */
+/* [작업 공간 보기] — 켜져 있으면 브랜드 색(Dex 의 머리 토글과 같다) */
+.chat-hbtn.xd-ide-toggle.on {
+  color: var(--primary);
+}
+.chat-hbtn.xd-ide-toggle.on:hover:not(:disabled) {
+  background: var(--primary-soft-bg);
+  color: var(--primary);
+}

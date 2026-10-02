@@ -28,5 +28,5 @@
       "@dex/ide/*": ["../../packages/ide/src/*"]
     }
   },
-  "include": ["src", "test", "e2e"]
+  "include": ["src", "test", "e2e", "../desktop/src/raw-modules.d.ts"]
 }

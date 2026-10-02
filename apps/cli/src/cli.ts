@@ -15,6 +15,7 @@ import { bindCliHost } from './dex-host';
 import { runDeviceCommand } from './device-command';
 import { runSessionCommand } from './session-command';
 import { runCanonicalChatCommand } from './canonical-chat-command';
+import { runCanonicalTuiCommand } from './canonical-tui-command';
 
 /**
  * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
@@ -33,6 +34,7 @@ const HELP = `XGEN Dex CLI ${VERSION}
 Usage:
   dex                     대화형 터미널 UI
   dex ui                  대화형 터미널 UI
+  dex ui --canonical --user-id <id> [--profile <name>]  공유 대화 조회 전용 TUI
   dex profile set [name] --server <url>
   dex profile use <name>
   dex profile list [--json]
@@ -345,6 +347,15 @@ async function run(): Promise<void> {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
     }
+    return;
+  }
+
+  // Presence dispatch keeps malformed Canonical flags out of the legacy TUI as well.
+  if (args.options.has('canonical')) {
+    await runCanonicalTuiCommand(args, new FileConfigStore(), {
+      terminal: { stdinIsTty: !!stdin.isTTY, stdoutIsTty: !!stdout.isTTY,
+        term: process.env.TERM, ci: process.env.CI },
+    });
     return;
   }
 

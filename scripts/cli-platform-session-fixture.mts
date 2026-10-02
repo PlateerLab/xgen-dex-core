@@ -14,7 +14,9 @@ import { nativeKeyThumbprint } from '../packages/engine/src/native-dpop';
 import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
-const testLive = process.argv.includes('--live');
+const testTui = process.argv.includes('--tui');
+if (testTui && platform !== 'cli') throw new Error('--tui requires the CLI platform.');
+const testLive = process.argv.includes('--live') || testTui;
 const testCatalogPages = process.argv.includes('--catalog-pages');
 const testWorkspaceUi = process.argv.includes('--workspace-ui');
 if (testWorkspaceUi && platform !== 'desktop') throw new Error('Workspace UI verification requires --desktop.');
@@ -359,6 +361,68 @@ async function canonicalCli(input: string, version: number, key: string, expecte
     child.stdin.end(input);
   });
 }
+/** Launch the built command on a real terminal with the same OS vault and trusted TLS. */
+async function tuiFixture(): Promise<void> {
+  focus = { active_agent_session_id: agentId, version: 1, event_id: event1 };
+  for (const termination of ['q', 'SIGINT', 'SIGTERM'] as const) {
+    const bridge = spawn('python3', ['scripts/fixtures/canonical-tui-pty.py', process.execPath,
+      resolve('apps/cli/dist/cli.js'), userId], {
+      env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let pending = ''; let output = ''; let stderr = ''; let exit: number | null = null;
+    const done = new Promise<void>((resolveDone, reject) => {
+      bridge.on('error', reject);
+      bridge.on('close', (code) => code === 0 ? resolveDone() : reject(new Error('PTY bridge failed; output withheld')));
+    });
+    // A failure is awaited below; avoid an unhandled rejection while observing the terminal.
+    void done.catch(() => undefined);
+    bridge.stderr.on('data', (chunk) => { stderr += chunk; });
+    bridge.stdout.on('data', (chunk) => {
+      pending += chunk;
+      for (;;) {
+        const end = pending.indexOf('\n'); if (end < 0) break;
+        const event = JSON.parse(pending.slice(0, end)); pending = pending.slice(end + 1);
+        if (event.data) output += Buffer.from(event.data, 'base64').toString('utf8');
+        if ('exit' in event) exit = event.exit;
+      }
+      if (output.length > 8 * 1024 * 1024) bridge.kill();
+    });
+    const command = (value: object) => bridge.stdin.write(`${JSON.stringify(value)}\n`);
+    const until = async (condition: () => boolean) => {
+      for (let i = 0; i < 1000 && !condition() && exit === null; i++) await new Promise((r) => setTimeout(r, 10));
+      assert.ok(condition(), 'Product Canonical TUI did not reach expected state; output withheld');
+    };
+    try {
+      await until(() => output.includes('실행 completed'));
+      await until(() => output.includes('일부 기록만 표시'));
+      if (termination === 'q') {
+        command({ key: '\u001b[H' }); await until(() => output.includes('native-message-question'));
+        command({ key: 'w' }); await until(() => liveSockets.size === 1);
+        wakeLive(); await until(() => output.includes('버전 5'));
+        const before = liveAccesses.size; await cli('refresh');
+        await until(() => liveAccesses.size > before);
+        command({ key: 's' }); await until(() => liveSockets.size === 0 && output.includes('stopped'));
+        const readStart = output.length;
+        command({ key: 'r' }); await until(() => output.slice(readStart).includes('실행 completed'));
+        command({ key: 'q' });
+      } else {
+        command({ key: 'w' }); await until(() => liveSockets.size === 1);
+        command({ signal: termination });
+      }
+      await done;
+      assert.equal(exit, 0); assert.equal(stderr, '');
+      await untilLive(() => liveSockets.size === 0);
+      assert.equal(output.split('\u001b[?1049h').length - 1, 1);
+      assert.equal(output.split('\u001b[?1049l').length - 1, 1);
+      for (const forbidden of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken']) {
+        assert.equal(output.includes(forbidden), false, 'Sensitive native data escaped to TUI');
+      }
+    } finally { bridge.kill(); await done.catch(() => undefined); }
+  }
+  focus = { active_agent_session_id: null, version: 0, event_id: null }; liveSequence = 4; watchCursors.length = 0;
+  console.log('CLI built Canonical TUI / real PTY and Ink / OS keychain / trusted HTTPS and WSS fresh DPoP / completed messages and partial notice / token rotation / stop and explicit reread / Q SIGINT SIGTERM actual drain and screen restore PASS');
+}
 async function sessionCli(action: string, extra: string[] = [], expectedExit = 0): Promise<any> {
   return new Promise((resolveResult, reject) => {
     const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', action, '--user-id', userId, '--json', ...extra],
@@ -636,6 +700,7 @@ try {
   const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
   assert.deepEqual(await cli('status'), loggedIn);
   await cli('focus'); await cli('refresh'); await cli('focus');
+  if (testTui) await tuiFixture();
   if (testSessions) await sessionFixture();
   if (testTurns) await turnFixture();
   watching = true;

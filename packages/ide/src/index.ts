@@ -14,6 +14,7 @@
  * `host` 는 {@link IdeHost} 를 구현한다: 스토리지 목록·샌드박스 파일·터미널 소켓·git·Monaco.
  */
 export { IdeView, type IdeViewProps } from './components/IdeView';
+export { FileTree, type FileTreeProps } from './components/FileTree';
 export type { SideView } from './components/ActivityBar';
 export {
   ideActivityItems,
@@ -50,5 +51,8 @@ export type {
   TerminalHandlers,
   MonacoApi,
   ThemeKind,
+  IdePreview,
+  IdePreviewMode,
+  IdePreviewRequest,
 } from './types';
 export type { GitStatus, GitChange, GitRemote, GitAccount, GitBranches } from './git-model';

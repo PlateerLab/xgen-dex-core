@@ -139,6 +139,8 @@ export const CHANNELS = {
   agentWsTree: 'agent:wsTree',
   agentWsFile: 'agent:wsFile',
   agentWsBinary: 'agent:wsBinary',
+  agentWsDocPreview: 'agent:wsDocPreview',
+  agentWsPreviewPage: 'agent:wsPreviewPage',
   agentWsUpload: 'agent:wsUpload',
 
   // IDE — 채팅의 [IDE] 보기. 호출은 한 채널(허용된 메서드만)로 받아 결과를 봉투로 돌려준다

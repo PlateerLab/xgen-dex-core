@@ -69,7 +69,8 @@ export const DEFAULT_LAYOUT: Layout = {
   fontSize: 13,
 };
 
-export type TabKind = 'file' | 'diff' | 'image';
+/** preview = 편집기 대신 호스트의 미리보기 부품이 그리는 탭(문서·PDF·소리·영상). */
+export type TabKind = 'file' | 'diff' | 'image' | 'preview';
 
 export interface DiffSpec {
   repo: string;
@@ -243,6 +244,11 @@ export interface IdeState {
   monacoError: string | null;
   /** 탐색기 아래 [연결된 폴더] 칸 — 이 대화에 연결한 기기의 폴더. */
   folders: FoldersState;
+  /**
+   * md·csv 처럼 편집기와 미리보기를 오가는 파일의 지금 보기 — 경로 → true(미리보기)/false(편집기).
+   * 없으면 미리보기다: 에이전트가 만든 문서를 열었을 때 먼저 보고 싶은 것은 그려진 모습이다.
+   */
+  rendered: Readonly<Record<string, boolean>>;
 }
 
 export interface FoldersState {
@@ -403,6 +409,7 @@ export class IdeStore {
         collapsed: new Set<string>(),
       },
       cursor: null,
+      rendered: {},
       notice: null,
       dialog: null,
       quickOpen: null,
@@ -1615,14 +1622,64 @@ export class IdeStore {
     this.persistTabs();
   }
 
-  /** 파일을 연다 — 그림은 그림으로, 나머지는 편집기로. */
+  /**
+   * 이 파일을 어떤 탭으로 여는가 — 그림은 그림으로, 호스트가 그려 주는 문서·PDF·소리·영상은 미리보기로,
+   * 나머지는 편집기로. `forceText` 는 [그래도 열기] — 무엇이든 편집기로.
+   */
+  tabKindFor(path: string, forceText = false): TabKind {
+    if (forceText) return 'file';
+    if (isImagePath(path)) return 'image';
+    return this.previewMode(path) === 'view' ? 'preview' : 'file';
+  }
+
+  /** 호스트가 이 파일을 그려 줄 수 있는가. 호스트의 판정이 던져도 편집기로 연다. */
+  previewMode(path: string): 'view' | 'toggle' | null {
+    try {
+      return this.host.preview?.mode(path) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** md·csv — 지금 그린 모습을 보는가(기본은 그렇다). */
+  isRendered(path: string): boolean {
+    return this.state.rendered[path] ?? true;
+  }
+
+  setRendered(path: string, on: boolean): void {
+    this.set((s) => ({ rendered: { ...s.rendered, [path]: on } }));
+  }
+
+  /** 편집기로 열었는데 글이 아닌 파일 — 호스트가 그릴 수 있으면 그 자리를 미리보기 탭으로 바꾼다. */
+  openAsPreview(path: string, opts: { groupId?: string } = {}): void {
+    const p = normalize(path);
+    if (!p || !this.host.preview) return;
+    const fileId = tabIdFor('file', p);
+    const groupId = opts.groupId ?? this.state.activeGroup;
+    this.set((s) => ({
+      groups: s.groups.map((g) =>
+        g.id !== groupId ? g : {
+          ...g,
+          tabs: g.tabs.map((t) => (t.id === fileId ? { ...t, id: tabIdFor('preview', p), kind: 'preview' as const } : t)),
+          activeId: g.activeId === fileId ? tabIdFor('preview', p) : g.activeId,
+        },
+      ),
+    }));
+    if (!this.state.groups.some((g) => g.tabs.some((t) => t.id === tabIdFor('preview', p)))) {
+      this.openTab({ id: tabIdFor('preview', p), kind: 'preview', path: p, preview: false }, { groupId });
+    }
+    this.releaseDocIfUnused(p);
+    this.persistTabs();
+  }
+
+  /** 파일을 연다 — 그림은 그림으로, 그려 볼 문서는 미리보기로, 나머지는 편집기로. */
   async openFile(
     path: string,
     opts: { preview?: boolean; groupId?: string; line?: number; col?: number; length?: number; forceText?: boolean } = {},
   ): Promise<void> {
     const p = normalize(path);
     if (!p) return;
-    const kind: TabKind = isImagePath(p) && !opts.forceText ? 'image' : 'file';
+    const kind: TabKind = this.tabKindFor(p, !!opts.forceText);
     this.openTab({ id: tabIdFor(kind, p), kind, path: p, preview: opts.preview ?? false }, { groupId: opts.groupId });
     this.reveal(p);
     if (kind === 'file') {
@@ -1840,7 +1897,9 @@ export class IdeStore {
       const tabs: EditorTab[] = [];
       for (const t of sg.tabs ?? []) {
         if (t.kind !== 'diff' && !known.has(t.path)) continue;
-        tabs.push({ id: tabIdFor(t.kind, t.path, t.diff), kind: t.kind, path: t.path, preview: false, diff: t.diff });
+        // 미리보기 탭은 이 호스트가 지금도 그려 줄 때만 — 아니면 편집기로 되살린다.
+        const kind: TabKind = t.kind === 'preview' && this.previewMode(t.path) !== 'view' ? 'file' : t.kind;
+        tabs.push({ id: tabIdFor(kind, t.path, t.diff), kind, path: t.path, preview: false, diff: t.diff });
       }
       if (!tabs.length) continue;
       const active = tabs.find((t) => t.path === sg.active && t.kind !== 'diff') ?? tabs[0];
@@ -1941,7 +2000,7 @@ export class IdeStore {
     for (const old of moved) {
       this.releaseDocIfUnused(old);
       const next = dst + old.slice(src.length);
-      if (!isImagePath(next)) void this.ensureDoc(next);
+      if (this.tabKindFor(next) === 'file') void this.ensureDoc(next);
     }
     if (this.state.selected && isWithin(this.state.selected, src)) this.select(dst + this.state.selected.slice(src.length));
     this.persistTabs();

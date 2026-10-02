@@ -36,6 +36,7 @@ import type { Agent, Conversation } from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
 import { ChatView, formatWhen } from './chat/chat-view';
 import { AppsSection } from './apps/apps-section';
+import { AgentDetail } from './agents/agent-detail';
 import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -639,6 +640,8 @@ function AgentsSection({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [picked, setPicked] = useState<Agent | null>(null);
+  /** 에이전트 상세(개요·메모리·작업·도구·앱·스토리지·실행 기록). */
+  const [detail, setDetail] = useState<Agent | null>(null);
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
@@ -798,6 +801,17 @@ function AgentsSection({
             >
               <Text style={st.btnPrimaryText}>새 대화 시작</Text>
             </Pressable>
+            <Pressable
+              style={st.btnSecondary}
+              onPress={() => {
+                const a = picked;
+                setPicked(null);
+                setDetail(a);
+              }}
+              accessibilityRole="button"
+            >
+              <Text style={st.btnSecondaryText}>에이전트 상세</Text>
+            </Pressable>
             {convsFor(picked.workflowId).length > 0 && (
               <Text style={[st.fieldLabel, { marginTop: 8 }]}>대화 내역</Text>
             )}
@@ -828,6 +842,16 @@ function AgentsSection({
           )}
         </KeyboardAvoidingView>
       </Modal>
+
+      <AgentDetail
+        client={client}
+        agent={detail}
+        onClose={() => setDetail(null)}
+        onOpenChat={(a) => {
+          setDetail(null);
+          onOpenChat(a);
+        }}
+      />
 
       <Modal visible={creating} transparent animationType="slide" onRequestClose={() => setCreating(false)}>
         <Pressable style={st.scrim} onPress={() => setCreating(false)} />
@@ -1175,6 +1199,11 @@ function makeStyles(p: Palette) {
       alignItems: 'center', width: '100%', marginTop: 4,
     },
     btnPrimaryText: { color: p.onPrimary, fontSize: 15, fontWeight: '700' },
+    btnSecondary: {
+      backgroundColor: p.panel2, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 18,
+      alignItems: 'center', width: '100%', marginTop: 8, borderWidth: 1, borderColor: p.border,
+    },
+    btnSecondaryText: { color: p.text, fontSize: 15, fontWeight: '700' },
     btnSmall: { backgroundColor: p.panel2, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
     btnDanger: {
       borderWidth: 1, borderColor: p.danger, borderRadius: 12, paddingVertical: 11,

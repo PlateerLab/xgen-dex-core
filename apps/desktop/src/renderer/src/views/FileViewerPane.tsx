@@ -1,13 +1,17 @@
 /**
- * FileViewerPane — 탐색기에서 파일을 클릭하면 콘텐츠 영역에 열리는 뷰어 탭.
+ * FileViewerPane — 파일 하나를 **그려서** 보여 주는 뷰어. 탐색기 탭·에이전트 [스토리지]·IDE 미리보기가 함께 쓴다.
  *
  * 코드/텍스트는 VS Code 풍(줄 번호 + 구문 강조 + 줄바꿈 토글)으로, 문서류는
  * 웹 [파일 저장소]와 같은 렌더(이미지/PDF/오디오/비디오 네이티브, 오피스는
  * 서버 렌더 페이지 이미지)로 보여준다. 읽기 전용 — 편집은 하지 않는다.
  *
- * 데이터 경로 — 전부 서버에서 받는다(탐색기와 같다):
- *   · 파일 저장소 → storage.cloudReadRaw (파일 저장소 항목 다운로드)
- *   · 에이전트    → agentData.workspaceBinary (서버 워크스페이스)
+ * 어디서 읽는지는 출처(FileViewerSource)가 정한다 — 그리는 규칙은 하나다:
+ *   · 파일 저장소 → storage.cloudReadRaw · 문서는 filestore-preview
+ *   · 에이전트    → agentData.workspaceBinary · 문서는 geny-workspace doc-preview (같은 렌더러)
+ *   · IDE         → IDE 가 고른 길(샌드박스·연결된 폴더) · 문서는 작업 공간 doc-preview
+ *
+ * 예전에는 문서(docx·pptx·xlsx·hwp)를 [파일 저장소] 출처에서만 그렸다 — 에이전트가 만든 보고서는 "다운로드해
+ * 여세요" 로 끝났다(2026-10-02 사용자 보고). 서버는 작업 공간 문서도 같은 렌더러로 그려 준다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import hljs from 'highlight.js/lib/core';
@@ -81,16 +85,92 @@ for (const [name, def] of Object.entries(LANGS)) {
   if (!hljs.getLanguage(name)) hljs.registerLanguage(name, def as Parameters<typeof hljs.registerLanguage>[1]);
 }
 
+/** 문서(docx·pptx·xlsx·hwp)의 서버 렌더 페이지. */
+export interface OfficePagesSource {
+  /** 페이지 열쇠 목록 — 처음 여는 문서는 서버가 그리는 동안 오래 걸린다. 그릴 수 없으면 던진다. */
+  pages(): Promise<string[]>;
+  page(page: string): Promise<{ bytes: Uint8Array; contentType: string }>;
+}
+
+/** 이 파일을 어디서 읽는가. */
+export interface FileViewerSource {
+  /** 머리에 보이는 출처 이름. */
+  label: string;
+  readRaw(): Promise<Uint8Array>;
+  /** 없으면 문서는 그리지 못하고 내려받기 안내로 간다. */
+  office?: OfficePagesSource;
+}
+
+/** [파일 저장소] 의 파일. */
+export function cloudFileSource(rel: string): FileViewerSource {
+  let itemId: number | null = null;
+  return {
+    label: '파일 저장소',
+    async readRaw() {
+      const r = await xgen.storage.cloudReadRaw(rel);
+      if (!r.ok || !r.bytes) throw new Error(r.error || '다운로드 실패');
+      return r.bytes;
+    },
+    office: {
+      async pages() {
+        const meta = await xgen.storage.cloudOfficePreview(rel);
+        if (!meta.ok || meta.itemId == null || !meta.pages?.length) {
+          throw new Error(meta.error || '이 문서의 미리보기를 만들지 못했습니다.');
+        }
+        itemId = meta.itemId;
+        return meta.pages;
+      },
+      async page(page: string) {
+        if (itemId == null) throw new Error('문서 미리보기를 먼저 불러와야 합니다.');
+        const r = await xgen.storage.cloudOfficePreviewPage(itemId, page);
+        if (!r.ok || !r.bytes) throw new Error(r.error || '페이지를 받지 못했습니다.');
+        return { bytes: r.bytes, contentType: r.contentType ?? '' };
+      },
+    },
+  };
+}
+
+/** 에이전트 작업 공간의 문서 렌더 — [파일 저장소] 와 같은 렌더러(서버). `rel` 은 workspace 기준 경로. */
+export function workspaceOfficePages(workflowId: string, rel: string): OfficePagesSource {
+  return {
+    async pages() {
+      const meta = await xgen.agentData.workspaceDocPreview(workflowId, rel);
+      if (meta.kind === 'unsupported' || !meta.pages.length) throw new Error('이 문서의 미리보기를 만들지 못했습니다.');
+      return meta.pages;
+    },
+    page: (page: string) => xgen.agentData.workspacePreviewPage(workflowId, page),
+  };
+}
+
+/** 에이전트 작업 공간(서버 스토리지)의 파일. */
+export function agentFileSource(workflowId: string, rel: string): FileViewerSource {
+  return {
+    label: '에이전트 워크스페이스',
+    readRaw: async () => (await xgen.agentData.workspaceBinary(workflowId, rel)).bytes,
+    office: workspaceOfficePages(workflowId, rel),
+  };
+}
+
 export interface FileViewerProps {
-  sectionKind: 'cloud' | 'agent';
-  workflowId: string;
-  rel: string;
   fileName: string;
+  /** 탐색기 탭 — 출처를 구역으로 준다(source 를 주면 쓰지 않는다). */
+  sectionKind?: 'cloud' | 'agent';
+  workflowId?: string;
+  rel?: string;
+  /** 출처를 직접 준다(에이전트 [스토리지]·IDE). */
+  source?: FileViewerSource;
+  /** 출처가 바뀌었는지 가르는 열쇠(파일이 바뀌면 달라져야 다시 읽는다). */
+  sourceKey?: string;
+  /** 편집 중인 글(IDE 의 md·csv) — 주면 바이트 대신 이것을 그린다. */
+  text?: string;
+  /** IDE 안 — 탭이 이름을 보여 주므로 머리에서 이름과 [원본] 전환을 뺀다. */
+  embedded?: boolean;
+  /** 내려받기를 맡긴다(없으면 읽은 바이트로 저장). */
+  onDownload?: () => void;
 }
 
 interface Loaded {
   bytes: Uint8Array;
-  source: 'cloud' | 'agent';
 }
 
 /** IPC 로 온 Uint8Array 는 더 큰 버퍼 위 뷰일 수 있다 — 정확한 조각으로 Blob 을 만든다. */
@@ -157,14 +237,18 @@ const CsvView: React.FC<{ text: string; delim: ',' | '\t' }> = ({ text, delim })
           ))}
         </tbody>
       </table>
-      {truncated && <div className="fv-note">표시는 2,000행까지 — 전체는 [원본]이나 다운로드로.</div>}
+      {truncated && <div className="fv-note">표시는 2,000행까지입니다. 전체는 [원본]이나 다운로드로 보세요.</div>}
     </div>
   );
 };
 
 // ── 오피스 문서 (서버 렌더 페이지) ───────────────────────────────
 
-const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName }) => {
+const OfficeView: React.FC<{ office: OfficePagesSource; sourceKey: string; fileName: string }> = ({
+  office,
+  sourceKey,
+  fileName,
+}) => {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
   const [pageUrls, setPageUrls] = useState<string[]>([]);
@@ -176,20 +260,16 @@ const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName
     setPageUrls([]);
     void (async () => {
       try {
-        const meta = await xgen.storage.cloudOfficePreview(rel);
+        const pages = await office.pages();
         if (cancelled) return;
-        if (!meta.ok || meta.itemId == null || !meta.pages?.length) {
-          setError(meta.error || '이 문서의 미리보기를 만들지 못했습니다.');
-          setState('error');
-          return;
-        }
         const urls: string[] = [];
-        for (const page of meta.pages) {
-          const res = await xgen.storage.cloudOfficePreviewPage(meta.itemId, page);
+        for (const page of pages) {
+          const res = await office.page(page).catch(() => null);
           if (cancelled) return;
-          if (res.ok && res.bytes) {
-            const type =
-              res.contentType || (page.endsWith('.svg') ? 'image/svg+xml' : 'image/png');
+          if (res?.bytes?.byteLength) {
+            // 서버의 형식 표시가 없거나 뭉뚱그려 오면(octet-stream) 확장자로 — SVG 페이지가 그림으로 안 뜨던 자리다.
+            const declared = (res.contentType || '').split(';')[0].trim();
+            const type = declared.startsWith('image/') ? declared : page.endsWith('.svg') ? 'image/svg+xml' : 'image/png';
             urls.push(URL.createObjectURL(toBlob(res.bytes, type)));
             urlsRef.current = urls;
             setPageUrls([...urls]);
@@ -212,7 +292,8 @@ const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName
       for (const u of urlsRef.current) URL.revokeObjectURL(u);
       urlsRef.current = [];
     };
-  }, [rel]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey]);
 
   if (state === 'loading' && pageUrls.length === 0) {
     return <div className="fv-note">문서를 렌더링하는 중… (처음 열 때는 수십 초 걸릴 수 있습니다)</div>;
@@ -221,7 +302,7 @@ const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName
   return (
     <div className="fv-office">
       {pageUrls.map((u, i) => (
-        <img key={i} src={u} alt={`${fileName} — ${i + 1}페이지`} className="fv-office-page" />
+        <img key={i} src={u} alt={`${fileName} ${i + 1}페이지`} className="fv-office-page" />
       ))}
       {state === 'loading' && <div className="fv-note">다음 페이지 불러오는 중…</div>}
     </div>
@@ -231,11 +312,23 @@ const OfficeView: React.FC<{ rel: string; fileName: string }> = ({ rel, fileName
 // ── 본체 ────────────────────────────────────────────────────────
 
 export const FileViewerPane: React.FC<FileViewerProps> = ({
-  sectionKind,
-  workflowId,
-  rel,
+  sectionKind = 'agent',
+  workflowId = '',
+  rel = '',
   fileName,
+  source: givenSource,
+  sourceKey: givenKey,
+  text: givenText,
+  embedded = false,
+  onDownload,
 }) => {
+  const sourceKey = givenKey ?? `${sectionKind}:${workflowId}:${rel}`;
+  // 출처는 열쇠가 같으면 그대로 둔다 — 매 그리기마다 새로 만들면 다시 읽기를 되풀이한다.
+  const source = useMemo<FileViewerSource>(
+    () => givenSource ?? (sectionKind === 'cloud' ? cloudFileSource(rel) : agentFileSource(workflowId, rel)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sourceKey],
+  );
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -245,8 +338,10 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
   const loadSeq = useRef(0);
 
   const declared: ViewerKind = kindForFile(fileName);
-  // 오피스 렌더는 파일 저장소 항목에만 있다 — 에이전트 워크스페이스는 정보 패널로.
-  const kind: ViewerKind = declared === 'office' && sectionKind !== 'cloud' ? 'binary' : declared;
+  // 문서 렌더가 없는 출처(이 PC 의 연결된 폴더)만 안내 패널로 — 서버는 파일 저장소·작업 공간 문서를 같은 렌더러로 그린다.
+  const kind: ViewerKind = declared === 'office' && !source.office ? 'binary' : declared;
+  // 편집 중인 글을 그리는 경우(IDE 의 md·csv) — 바이트를 읽지 않는다.
+  const liveText = givenText !== undefined && ['markdown', 'csv', 'code'].includes(kind) ? givenText : undefined;
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
@@ -254,22 +349,14 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
     setLoadErr(null);
     setLoaded(null);
     try {
-      // 오피스는 바이트가 필요 없다 (서버 렌더) — 로드를 건너뛴다.
-      if (kind === 'office') {
+      // 오피스는 바이트가 필요 없다 (서버 렌더) — 편집 중인 글을 그릴 때도. 로드를 건너뛴다.
+      if (kind === 'office' || liveText !== undefined) {
         if (seq === loadSeq.current) setLoading(false);
         return;
       }
-      let result: Loaded;
-      if (sectionKind === 'cloud') {
-        const r = await xgen.storage.cloudReadRaw(rel);
-        if (!r.ok || !r.bytes) throw new Error(r.error || '다운로드 실패');
-        result = { bytes: r.bytes, source: 'cloud' };
-      } else {
-        const r = await xgen.agentData.workspaceBinary(workflowId, rel);
-        result = { bytes: r.bytes, source: 'agent' };
-      }
+      const bytes = await source.readRaw();
       if (seq !== loadSeq.current) return;
-      setLoaded(result);
+      setLoaded({ bytes });
     } catch (e) {
       if (seq !== loadSeq.current) return;
       setLoadErr(e instanceof Error ? e.message : String(e));
@@ -277,7 +364,7 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
       if (seq === loadSeq.current) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, rel, sectionKind, kind]);
+  }, [sourceKey, kind, liveText !== undefined]);
 
   useEffect(() => {
     void load();
@@ -299,6 +386,7 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
   }, [loaded, kind, fileName]);
 
   const text = useMemo(() => {
+    if (liveText !== undefined) return liveText;
     if (!loaded) return '';
     if (!['code', 'markdown', 'csv', 'binary'].includes(kind)) return '';
     if (kind === 'binary' && looksBinary(loaded.bytes)) return '';
@@ -308,7 +396,7 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
         : loaded.bytes,
     );
     return t;
-  }, [loaded, kind]);
+  }, [loaded, kind, liveText]);
   // 글로 보여 주는 형식만 앞부분을 자른다 — PDF·그림 같은 파일에 "앞 2MB만 표시"가 붙으면 안 된다
   const textTruncated =
     !!loaded && ['code', 'markdown', 'csv', 'binary'].includes(kind) && loaded.bytes.byteLength > TEXT_RENDER_LIMIT;
@@ -316,6 +404,10 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
   const effKind: ViewerKind = kind === 'binary' && text ? 'code' : kind;
 
   const download = useCallback(() => {
+    if (onDownload) {
+      onDownload();
+      return;
+    }
     if (!loaded) return;
     const url = URL.createObjectURL(toBlob(loaded.bytes, 'application/octet-stream'));
     const a = document.createElement('a');
@@ -323,11 +415,11 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
     a.download = fileName;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }, [loaded, fileName]);
+  }, [loaded, fileName, onDownload]);
 
   const sizeLabel = loaded ? formatBytes(loaded.bytes.byteLength) : '';
-  const sourceLabel =
-    loaded?.source === 'cloud' ? '파일 저장소' : loaded?.source === 'agent' ? '에이전트 워크스페이스' : '';
+  const sourceLabel = source.label;
+  const canDownload = !!onDownload || !!loaded;
 
   let body: React.ReactNode = null;
   if (loading) body = <div className="fv-note">불러오는 중…</div>;
@@ -342,7 +434,8 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
         </div>
       </div>
     );
-  } else if (effKind === 'office') body = <OfficeView rel={rel} fileName={fileName} />;
+  } else if (effKind === 'office' && source.office)
+    body = <OfficeView office={source.office} sourceKey={sourceKey} fileName={fileName} />;
   else if (effKind === 'image')
     body = (
       <div className="fv-media">
@@ -384,11 +477,11 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
         <div className="fv-binary-name">{fileName}</div>
         <div className="fv-note">
           {declared === 'office'
-            ? '문서 미리보기는 [파일 저장소] 파일에서 지원됩니다 — 원본을 다운로드해 여세요.'
+            ? '이 PC 폴더의 문서는 미리보기를 만들 수 없습니다. 내려받아 여세요.'
             : '미리보기를 지원하지 않는 형식입니다.'}
         </div>
         <div className="fv-binary-actions">
-          <button className="viewer-btn" onClick={download} disabled={!loaded}>
+          <button className="viewer-btn" onClick={download} disabled={!canDownload}>
             다운로드
           </button>
         </div>
@@ -397,18 +490,20 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
 
   const showsText = ['code', 'markdown', 'csv'].includes(effKind);
   return (
-    <div className="fv-root">
+    <div className={`fv-root${embedded ? ' embedded' : ''}`}>
       <div className="fv-head">
-        <span className="fv-title" title={rel}>
-          {fileName}
-        </span>
+        {!embedded && (
+          <span className="fv-title" title={rel || fileName}>
+            {fileName}
+          </span>
+        )}
         <span className="fv-meta">
           {sizeLabel}
           {sourceLabel ? ` · ${sourceLabel}` : ''}
           {textTruncated ? ' · 앞 2MB만 표시' : ''}
         </span>
         <span className="fv-actions">
-          {(effKind === 'markdown' || effKind === 'csv') && (
+          {!embedded && (effKind === 'markdown' || effKind === 'csv') && (
             <button
               className={`viewer-btn sm ${rawMode ? 'on' : ''}`}
               onClick={() => setRawMode((v) => !v)}
@@ -426,7 +521,7 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
               <CopyIcon size={12} /> 복사
             </button>
           )}
-          <button className="viewer-btn sm" onClick={download} disabled={!loaded}>
+          <button className="viewer-btn sm" onClick={download} disabled={!canDownload}>
             다운로드
           </button>
           <button className="viewer-btn sm" onClick={() => void load()} title="다시 읽기">

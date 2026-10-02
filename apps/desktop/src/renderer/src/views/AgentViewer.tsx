@@ -1,7 +1,10 @@
 /** Read-only agent inspector. Persisted subtab keys remain compatible with saved layouts. */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { xgen, copyText } from '../bridge';
-import { BotIcon, CopyIcon, FolderIcon, FolderOpenIcon, DocIcon } from '../brand/icons';
+import { BotIcon, CopyIcon } from '../brand/icons';
+import { FileTree, type IdeFileEntry } from '@dex/ide';
+import { useResolvedTheme } from '../ide/ide-sessions';
+import { FileViewerPane, agentFileSource } from './FileViewerPane';
 import type { AgentViewerSub } from './workspace-layout';
 import { AppsView } from '../apps/AppsView';
 import { AgentOverview } from './AgentOverview';
@@ -16,7 +19,7 @@ import {
   useViewerScroll,
   type AgentViewerState,
 } from './agent-viewer-state';
-import type { Task, Job, JobRun, WsNode } from '@dex/protocol';
+import type { Task, Job, JobRun } from '@dex/protocol';
 
 interface Props {
   workflowId: string;
@@ -217,242 +220,62 @@ const TasksView: React.FC<{ workflowId: string }> = ({ workflowId }) => {
   );
 };
 
-interface TreeNode {
-  node: WsNode;
-  children: TreeNode[];
-}
-
-const WORKSPACE_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif']);
-const WORKSPACE_IMAGE_MIME: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-  avif: 'image/avif',
-};
-
-function isWorkspaceImage(path: string): boolean {
-  const name = path.split('/').pop() ?? '';
-  const dot = name.lastIndexOf('.');
-  return dot >= 0 && WORKSPACE_IMAGE_EXTS.has(name.slice(dot + 1).toLowerCase());
-}
-
-function workspaceImageMime(path: string): string {
-  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-  return WORKSPACE_IMAGE_MIME[ext] ?? 'application/octet-stream';
-}
-
-function buildTree(files: WsNode[]): TreeNode[] {
-  const byPath = new Map<string, TreeNode>();
-  for (const n of files) byPath.set(n.path, { node: n, children: [] });
-  const roots: TreeNode[] = [];
-  for (const tn of byPath.values()) {
-    const parent = tn.node.path.split('/').slice(0, -1).join('/');
-    const p = parent && byPath.get(parent);
-    if (p) p.children.push(tn);
-    else roots.push(tn);
-  }
-  const sort = (arr: TreeNode[]): void => {
-    arr.sort(
-      (a, b) =>
-        Number(b.node.is_dir) - Number(a.node.is_dir) || a.node.name.localeCompare(b.node.name),
-    );
-    for (const t of arr) sort(t.children);
-  };
-  sort(roots);
-  return roots;
-}
-
-const TreeRow: React.FC<{
-  tn: TreeNode;
-  depth: number;
-  selected: string | null;
-  onFile: (n: WsNode) => void;
-}> = ({ tn, depth, selected, onFile }) => {
-  const [open, setOpen] = useState(depth < 1);
-  const isDir = tn.node.is_dir;
-  return (
-    <>
-      <button
-        className={`viewer-tree-row ${selected === tn.node.path ? 'active' : ''}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
-        onClick={() => (isDir ? setOpen((o) => !o) : onFile(tn.node))}
-      >
-        <span className="viewer-tree-icon">
-          {isDir ? (
-            open ? (
-              <FolderOpenIcon size={14} />
-            ) : (
-              <FolderIcon size={14} />
-            )
-          ) : (
-            <DocIcon size={12} />
-          )}
-        </span>
-        <span className="viewer-tree-name">{tn.node.name}</span>
-        {!isDir && typeof tn.node.size === 'number' && (
-          <span className="viewer-tree-size">{tn.node.size}B</span>
-        )}
-      </button>
-      {isDir &&
-        open &&
-        tn.children.map((c) => (
-          <TreeRow key={c.node.path} tn={c} depth={depth + 1} selected={selected} onFile={onFile} />
-        ))}
-    </>
-  );
-};
-
-const StorageView: React.FC<{ workflowId: string }> = ({ workflowId }) => {
+/**
+ * [스토리지] — 왼쪽은 IDE 탐색기와 **같은 모양**(@dex/ide FileTree), 오른쪽은 [파일 저장소]·탐색기 탭과 **같은
+ * 뷰어**(FileViewerPane). 예전에는 이 탭만 따로 만든 단순 목록과 글/그림 미리보기였다 — 문서·PDF·md·표는
+ * "미리보기할 수 없는 파일" 로 끝났다(2026-10-02 사용자 보고).
+ */
+const StorageView: React.FC<{ workflowId: string; workflowName?: string }> = ({ workflowId, workflowName }) => {
   const list = useLoader(() => xgen.agentData.workspaceTree(workflowId), [workflowId]);
   const [sel, setSel] = useViewerState<string | null>('storage.selected', null);
-  const [content, setContent] = useState<string>('');
-  const [imageUrl, setImageUrl] = useState<string>('');
-  const [detailErr, setDetailErr] = useState<string | null>(null);
-  const [detailNote, setDetailNote] = useState<string | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const loadId = useRef(0);
-  const [detailVersion, setDetailVersion] = useState(0);
-
-  useEffect(
-    () => () => {
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-    },
-    [imageUrl],
+  const theme = useResolvedTheme();
+  const entries = useMemo<IdeFileEntry[]>(
+    () =>
+      (list.data?.files ?? []).map((f) => ({
+        path: f.path,
+        isDir: f.is_dir,
+        size: f.size ?? undefined,
+        modifiedAt: f.modified_at ?? undefined,
+        originName: f.origin_name ?? undefined,
+      })),
+    [list.data],
   );
-  useEffect(
-    () => () => {
-      // 언마운트 뒤 끝난 요청이 Blob URL을 만들거나 상태를 갱신하지 못하게 한다.
-      loadId.current += 1;
-    },
-    [],
+  const selected = sel ? (list.data?.files ?? []).find((f) => f.path === sel && !f.is_dir) : undefined;
+  // 파일이 바뀌면(에이전트가 다시 썼다) 열쇠가 달라져 다시 읽는다.
+  const sourceKey = selected ? `agent:${workflowId}:${selected.path}:${selected.modified_at ?? ''}:${selected.size ?? ''}` : '';
+  const source = useMemo(
+    () => (selected ? agentFileSource(workflowId, selected.path) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sourceKey],
   );
-
-  const openFile = useCallback(
-    async (path: string) => {
-      const requestId = ++loadId.current;
-      setContent('');
-      setImageUrl('');
-      setDetailErr(null);
-      setDetailNote(null);
-      setDetailLoading(true);
-      try {
-        if (isWorkspaceImage(path)) {
-          const file = await xgen.agentData.workspaceBinary(workflowId, path);
-          if (requestId !== loadId.current) return;
-          // Uint8Array 가 더 큰 버퍼 위의 뷰일 수 있다(IPC) — 선택한 파일 바이트만 담는다.
-          const bytes = file.bytes;
-          const buffer = bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength,
-          ) as ArrayBuffer;
-          setImageUrl(
-            URL.createObjectURL(
-              new Blob([buffer], { type: file.contentType || workspaceImageMime(path) }),
-            ),
-          );
-        } else {
-          const file = await xgen.agentData.workspaceFile(workflowId, path);
-          if (requestId !== loadId.current) return;
-          setContent(file.content);
-        }
-      } catch (e) {
-        if (requestId !== loadId.current) return;
-        // 서버는 바이너리에 415, 과대 파일에 413 을 준다 — 오류가 아니라 안내로.
-        const msg = errText(e);
-        if (/→ 415/.test(msg)) setDetailNote('미리보기할 수 없는 파일입니다(바이너리).');
-        else if (/→ 413/.test(msg)) setDetailNote('파일이 너무 커서 미리보기할 수 없습니다.');
-        else setDetailErr(msg);
-      } finally {
-        if (requestId === loadId.current) setDetailLoading(false);
-      }
-    },
-    [workflowId],
-  );
-
-  useEffect(() => {
-    if (sel) void openFile(sel);
-    return () => {
-      loadId.current += 1;
-    };
-  }, [sel, openFile, detailVersion]);
-  const listScroll = useViewerScroll('storage.list', !!list.data);
-  const detailScroll = useViewerScroll(
-    `storage.detail:${sel}`,
-    !!list.data && !detailLoading && !!(content || imageUrl),
-  );
-
-  const tree = useMemo(() => buildTree(list.data?.files ?? []), [list.data]);
-  if (!list.data || tree.length === 0)
-    return (
-      <ViewerEmpty
-        title={
-          list.loading
-            ? '파일을 불러오는 중…'
-            : list.error
-              ? '파일을 불러오지 못했습니다'
-              : '아직 저장된 파일이 없습니다'
-        }
-        description={
-          list.error ||
-          (!list.loading
-            ? '에이전트가 작업하며 저장한 파일을 이곳에서 확인할 수 있습니다.'
-            : undefined)
-        }
-        error={!!list.error}
-        onRetry={list.loading ? undefined : list.reload}
-      />
-    );
 
   return (
-    <div className="viewer-split">
-      <div className="viewer-list tree" {...listScroll}>
-        <StateNote
-          loading={list.loading}
-          error={list.error}
-          empty={!!list.data && tree.length === 0}
-          emptyText="파일이 없습니다."
+    <div className="storage-split">
+      <div className="storage-tree">
+        <FileTree
+          rootName={workflowName || '스토리지'}
+          entries={entries}
+          activePath={selected?.path ?? null}
+          onOpen={(path) => setSel(path)}
+          loading={list.loading && !list.data}
+          error={list.error ? '파일을 불러오지 못했습니다.' : null}
+          onRefresh={list.reload}
+          emptyText="아직 저장된 파일이 없습니다."
+          theme={theme}
+          initialDepth={1}
         />
-        {tree.map((tn) => (
-          <TreeRow
-            key={tn.node.path}
-            tn={tn}
-            depth={0}
-            selected={sel}
-            onFile={(n) => {
-              setSel(n.path);
-              setDetailVersion((value) => value + 1);
-            }}
-          />
-        ))}
       </div>
-      <div className="viewer-detail" {...detailScroll}>
-        {!sel && !detailLoading && <div className="viewer-note">파일을 고르면 미리보기합니다.</div>}
-        <StateNote loading={detailLoading} error={detailErr} />
-        {detailNote && <div className="viewer-note">{detailNote}</div>}
-        {sel && imageUrl && (
-          <>
-            <div className="viewer-detail-head">
-              <strong className="viewer-path">{sel}</strong>
-            </div>
-            <div className="viewer-image-preview">
-              <img src={imageUrl} alt={sel.split('/').pop() ?? sel} />
-            </div>
-          </>
-        )}
-        {sel && content && (
-          <>
-            <div className="viewer-detail-head">
-              <strong className="viewer-path">{sel}</strong>
-              <button className="viewer-btn sm" onClick={() => void copyText(content)}>
-                <CopyIcon size={12} /> 복사
-              </button>
-            </div>
-            <pre className="viewer-body code">{content}</pre>
-          </>
+      <div className="storage-detail">
+        {selected && source ? (
+          <FileViewerPane
+            key={sourceKey}
+            fileName={selected.name || selected.path.split('/').pop() || selected.path}
+            rel={selected.path}
+            source={source}
+            sourceKey={sourceKey}
+          />
+        ) : (
+          <div className="viewer-note storage-empty">파일을 고르면 미리보기합니다.</div>
         )}
       </div>
     </div>
@@ -535,7 +358,7 @@ export const AgentViewer: React.FC<Props> = ({
               onSlugChange={onAppChange}
             />
           )}
-          {sub === 'storage' && <StorageView workflowId={workflowId} />}
+          {sub === 'storage' && <StorageView workflowId={workflowId} workflowName={workflowName} />}
         </div>
       </div>
     </AgentViewerStateContext.Provider>

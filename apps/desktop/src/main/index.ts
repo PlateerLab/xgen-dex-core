@@ -2707,6 +2707,13 @@ ipcMain.handle(
   (_e, wf: string, path: string, purpose?: 'chat_attachment') =>
     getClient().agentData.workspaceBinary(wf, path, purpose),
 );
+// 문서 미리보기 — [파일 저장소] 와 같은 렌더러(서버)가 그린 페이지 그림. 에이전트 작업 공간의 docx·pptx·xlsx·hwp.
+ipcMain.handle(CHANNELS.agentWsDocPreview, (_e, wf: string, path: string) =>
+  getClient().agentData.workspaceDocPreview(wf, path),
+);
+ipcMain.handle(CHANNELS.agentWsPreviewPage, (_e, wf: string, page: string) =>
+  getClient().agentData.workspacePreviewPage(wf, page),
+);
 ipcMain.handle(
   CHANNELS.agentWsUpload,
   (

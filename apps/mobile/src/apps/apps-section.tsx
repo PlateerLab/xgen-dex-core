@@ -13,8 +13,9 @@
  * 미리보기는 서버에 올라간 한 장(데스크톱 앱이 앱을 띄워 찍은 화면)이다. 폰은 앱을 그려 찍을 수
  * 없으니 받아서 보여 주기만 하고, 없거나 못 받으면 기본 그림을 그린다.
  *
- * [열기] — 내 앱은 웹의 같은 화면(로그인한 브라우저에서 열린다), 스토어의 앱은 공개 링크(로그인 없이)로
- * 기본 브라우저에서 연다. 폰 앱 안에는 웹 화면을 띄울 자리가 없다.
+ * [열기] — 폰 **안에서** 앱을 띄운다(app-viewer, 데스크톱이 탭으로 여는 것과 같은 자리). 내 앱은 로그인을
+ * 실어 그 앱의 주소로, 스토어의 앱은 공개 링크로. 기기의 브라우저로 넘기는 예전 길은 [⋯] 와 보기 화면의
+ * [브라우저로 열기] 에 남는다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -33,6 +34,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Linking from 'expo-linking';
+import { AppViewer, myAppTarget, storeAppTarget, type AppViewTarget } from './app-viewer';
 import {
   APP_CONFIRM,
   appDescription,
@@ -85,6 +87,7 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
   const storeSeq = useRef(0);
 
   const [notice, setNotice] = useState('');
+  const [viewing, setViewing] = useState<AppViewTarget | null>(null);
 
   const loadMine = useCallback(async () => {
     setMineLoading(true);
@@ -144,10 +147,16 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
   }, [mine, query]);
 
   // ── 동작 ──
-  const open = (path: string) => {
+  /** 기기의 브라우저로 — 예전 길(보기 화면의 [브라우저로 열기] 와 같다). */
+  const openInBrowser = (path: string) => {
     const url = serverLink(client.session.serverUrl, path);
     if (!url) return setNotice('열 수 없는 주소입니다.');
     void Linking.openURL(url).catch(() => setNotice('브라우저를 열지 못했습니다.'));
+  };
+  /** 폰 안에서 연다. */
+  const view = (target: AppViewTarget | null) => {
+    if (!target) return setNotice('열 수 없는 주소입니다.');
+    setViewing(target);
   };
 
   const toggleShare = async (app: MyApp) => {
@@ -195,7 +204,12 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
       `폴더: apps/${app.slug}`,
       ...(app.issues.length ? ['', ...app.issues] : []),
     ];
-    Alert.alert(app.title, lines.join('\n'));
+    Alert.alert(app.title, lines.join('\n'), [
+      ...(app.ready
+        ? [{ text: '브라우저로 열기', onPress: () => openInBrowser(client.api.agentData.appWebPath(app.workflow_id, app.slug)) }]
+        : []),
+      { text: '닫기', style: 'cancel' as const },
+    ]);
   };
 
   const previewSource = (url?: string) =>
@@ -216,14 +230,14 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
         description={appDescription(app)}
         kind={app.kind}
         preview={previewSource(app.preview_url)}
-        onPreview={app.ready ? () => open(client.api.agentData.appWebPath(app.workflow_id, app.slug)) : undefined}
+        onPreview={app.ready ? () => view(myAppTarget(client, app)) : undefined}
         onMore={() => showDetail(app)}
         actions={[
           {
             label: '열기',
             strong: true,
             disabled: !app.ready,
-            onPress: () => open(client.api.agentData.appWebPath(app.workflow_id, app.slug)),
+            onPress: () => view(myAppTarget(client, app)),
           },
           {
             label: app.shared ? '공유 중지' : '공유',
@@ -243,8 +257,8 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
       description={appDescription(app)}
       kind={app.kind}
       preview={previewSource(app.preview_url)}
-      onPreview={() => open(app.path)}
-      actions={[{ label: '열기', strong: true, onPress: () => open(app.path) }]}
+      onPreview={() => view(storeAppTarget(client, app))}
+      actions={[{ label: '열기', strong: true, onPress: () => view(storeAppTarget(client, app)) }]}
     />
   );
 
@@ -339,6 +353,7 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
           }
         />
       )}
+      <AppViewer client={client} target={viewing} onClose={() => setViewing(null)} />
     </View>
   );
 }

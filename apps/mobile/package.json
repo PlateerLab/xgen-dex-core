@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/mobile-folders.test.ts test/errors.test.ts test/chat-messages.test.ts test/attachments-apps.test.ts",
+    "test": "tsx --test test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/mobile-folders.test.ts test/errors.test.ts test/chat-messages.test.ts test/attachments-apps.test.ts test/viewer-detail.test.ts",
     "start": "expo start",
     "prebuild": "expo prebuild",
     "apk": "cd android && ./gradlew assembleRelease",
@@ -37,7 +37,8 @@
     "js-sha256": "^0.11.0",
     "react": "19.0.0",
     "react-native": "0.79.5",
-    "react-native-markdown-display": "^7.0.2"
+    "react-native-markdown-display": "^7.0.2",
+    "react-native-webview": "13.13.5"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

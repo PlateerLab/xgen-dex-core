@@ -111,3 +111,58 @@ test('밝은 테마·채팅 닫힘·사이드바 찾기', () => {
   assert.match(html, /aria-hidden="true"/, '닫힌 채팅은 남겨 두되 감춘다');
   store.dispose();
 });
+
+// ── 미리보기와 읽기 전용 탐색기 (2026-10-02) ─────────────────────────────
+
+import { FileTree } from '../src/index';
+import type { IdePreviewRequest } from '../src/types';
+
+test('미리보기 탭 — 호스트의 렌더러가 그 자리를 그리고, 요청에 경로·이름·판이 실린다', async () => {
+  const seen: IdePreviewRequest[] = [];
+  const previewHost: IdeHost = {
+    ...host,
+    listFiles: async () => [{ path: 'docs/보고서.docx', isDir: false, size: 10, modifiedAt: 't1' }],
+    preview: {
+      mode: (p) => (p.endsWith('.docx') ? 'view' : null),
+      render: (req) => {
+        seen.push(req);
+        return <div id="host-preview">{req.name}</div>;
+      },
+    },
+  };
+  const store = new IdeStore(previewHost);
+  await store.start();
+  await store.openFile('docs/보고서.docx', { preview: false });
+  const html = renderToString(<IdeView store={store} chat={<div />} theme="light" />);
+  assert.match(html, /id="host-preview"/);
+  assert.match(html, /class="xide-preview-pane"/);
+  assert.equal(seen[0]?.path, 'docs/보고서.docx');
+  assert.equal(seen[0]?.name, '보고서.docx');
+  assert.equal(seen[0]?.local, false);
+  assert.equal(seen[0]?.version, 't1');
+  store.dispose();
+});
+
+test('읽기 전용 탐색기 — IDE 탐색기와 같은 마크업(클래스·아이콘·줄)이다', () => {
+  const html = renderToString(
+    <FileTree
+      rootName="카톡분석"
+      entries={[
+        { path: 'uploads', isDir: true },
+        { path: 'uploads/a.png', isDir: false, size: 10 },
+        { path: '리포트.docx', isDir: false, size: 45666 },
+        { path: '리포트.md', isDir: false, size: 17674 },
+      ]}
+      activePath="리포트.docx"
+      onOpen={() => undefined}
+      theme="dark"
+    />,
+  );
+  assert.match(html, /class="xide-root xide-theme-dark xide-filetree"/);
+  assert.match(html, /class="xide-side-view xide-explorer"/);
+  assert.match(html, /class="xide-section-title">카톡분석</);
+  assert.match(html, /class="xide-tree-row[^"]*xide--active[^"]*"[^>]*data-path="리포트.docx"/);
+  assert.match(html, /xide-file-badge/, '확장자 배지 아이콘');
+  assert.doesNotMatch(html, /data-path="uploads\/a.png"/, '접힌 폴더의 파일은 그리지 않는다');
+  assert.doesNotMatch(html, /—/, '화면 문구에 줄표를 쓰지 않는다');
+});

@@ -559,6 +559,22 @@ export interface WorkspaceBinary {
 
 export type WorkspaceBinaryPurpose = 'chat_attachment';
 
+/**
+ * 문서(docx·pptx·xlsx·hwp…)의 서버 렌더 — [파일 저장소] 와 **같은 렌더러**(edit2docs)가 그린 페이지 그림.
+ *
+ *   svg / png   `pages` 의 각 항목을 `workspacePreviewPage` 로 받는다(스토리지 루트 기준 경로).
+ *   pdf         서버가 그리지 않는다 — 원바이트를 받아 화면이 직접 그린다.
+ *   unsupported 그릴 수 없는 형식.
+ */
+export interface WorkspaceDocPreview {
+  kind: 'svg' | 'png' | 'pdf' | 'unsupported' | string;
+  count: number;
+  pages: string[];
+}
+
+/** 렌더된 페이지가 사는 곳 — 스토리지 루트의 `.canvas-preview/` 아래만 받는다. */
+export const DOC_PREVIEW_PAGE_PREFIX = '.canvas-preview/';
+
 /** `/storage/list` 는 workspace 루트 상대 경로를 돌려주지만 읽기 API는
  * 스토리지 루트 상대(`workspace/...`)를 받는다. 두 계약의 경계를 여기서만
  * 보정해 호출부마다 접두사를 붙였다 뗐다 하지 않게 한다. */
@@ -917,17 +933,55 @@ export class AgentDataApi {
     );
   }
 
+  /**
+   * 작업 공간 파일의 원본 주소(서버 기준 경로). 바이트를 직접 받지 않고 **주소로 그리는** 화면(모바일 WebView 의
+   * 문서·소리·영상, 그림)이 쓴다 — 로그인은 그 화면이 싣는다.
+   */
+  workspaceRawPath(workflowId: string, path: string, purpose?: WorkspaceBinaryPurpose): string {
+    const encodedPath = workspaceStoragePath(path).split('/').map(encodeURIComponent).join('/');
+    const query = purpose ? `?purpose=${encodeURIComponent(purpose)}` : '';
+    return `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage-raw/${encodedPath}${query}`;
+  }
+
   /** 원바이트 파일 읽기 — 이미지처럼 텍스트 API로 읽을 수 없는 미리보기용. */
   workspaceBinary(
     workflowId: string,
     path: string,
     purpose?: WorkspaceBinaryPurpose,
   ): Promise<WorkspaceBinary> {
-    const encodedPath = workspaceStoragePath(path).split('/').map(encodeURIComponent).join('/');
-    const query = purpose ? `?purpose=${encodeURIComponent(purpose)}` : '';
-    return this.http.getBinary(
-      `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage-raw/${encodedPath}${query}`,
+    return this.http.getBinary(this.workspaceRawPath(workflowId, path, purpose));
+  }
+
+  /**
+   * 문서의 페이지 그림 목록 — [파일 저장소] 의 문서 미리보기와 같은 렌더러다. 처음 여는 문서는 서버가 그리는 동안
+   * 수십 초가 걸릴 수 있어 넉넉히 기다린다(같은 문서는 다음부터 바로 온다).
+   */
+  async workspaceDocPreview(workflowId: string, path: string): Promise<WorkspaceDocPreview> {
+    const params = new URLSearchParams({ path: workspaceStoragePath(path) });
+    const res = await this.http.get<Partial<WorkspaceDocPreview>>(
+      `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/doc-preview?${params}`,
+      { timeoutMs: 300_000 },
     );
+    const pages = Array.isArray(res?.pages) ? res.pages.filter((p): p is string => typeof p === 'string') : [];
+    return { kind: String(res?.kind ?? 'unsupported'), count: Number(res?.count ?? pages.length), pages };
+  }
+
+  /**
+   * 렌더된 페이지 한 장. `page` 는 `workspaceDocPreview` 가 돌려준 경로 그대로다(스토리지 루트 기준 —
+   * `workspace/` 를 붙이지 않는다). 렌더 결과가 아닌 곳은 부르지 않는다.
+   */
+  workspacePreviewPage(workflowId: string, page: string): Promise<WorkspaceBinary> {
+    const path = this.workspacePreviewPagePath(workflowId, page);
+    if (!path) return Promise.reject(new Error('문서 미리보기 페이지가 아닙니다.'));
+    return this.http.getBinary(path);
+  }
+
+  /** 렌더된 페이지의 주소(서버 기준 경로). 렌더 결과가 아닌 경로면 빈 문자열. */
+  workspacePreviewPagePath(workflowId: string, page: string): string {
+    const clean = String(page ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!clean.startsWith(DOC_PREVIEW_PAGE_PREFIX) || clean.split('/').includes('..')) return '';
+    const encodedPath = clean.split('/').map(encodeURIComponent).join('/');
+    return `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage-raw/${encodedPath}`;
   }
 
   /**

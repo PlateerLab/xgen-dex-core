@@ -351,7 +351,7 @@ async function run(): Promise<void> {
   }
 
   // Presence dispatch keeps malformed Canonical flags out of the legacy TUI as well.
-  if (args.positionals[0] === 'ui' && args.options.has('canonical')) {
+  if (args.options.has('canonical')) {
     await runCanonicalTuiCommand(args, new FileConfigStore(), {
       terminal: { stdinIsTty: !!stdin.isTTY, stdoutIsTty: !!stdout.isTTY,
         term: process.env.TERM, ci: process.env.CI },

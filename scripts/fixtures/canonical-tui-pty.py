@@ -55,8 +55,12 @@ try:
                 os.write(master, command["key"].encode("utf-8"))
         if child.poll() is not None and not readable:
             break
-    if child.poll() is None:
-        child.terminate()
+    if time.monotonic() >= deadline:
+        # Never rescue a broken Q/SIGINT path with a product-handled graceful signal.
+        child.kill()
+        child.wait()
+        emit({"exit": -1})
+        raise SystemExit(1)
     emit({"exit": child.wait(timeout=5)})
 finally:
     if child.poll() is None:

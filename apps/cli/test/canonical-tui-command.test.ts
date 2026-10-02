@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { MemoryConfigStore, defaultConfig } from '@dex/engine';
 import { parseArgs } from '../src/args';
 import { runCanonicalTuiCommand } from '../src/canonical-tui-command';
@@ -35,4 +36,15 @@ test('validated HTTPS profile launches only fixed CLI account source without doi
   }
   await assert.rejects(runCanonicalTuiCommand(parseArgs([...base, '--profile', 'missing']), configs(), {terminal, launch: async () => { launches++; }}));
   assert.equal(launches,0);
+});
+test('CLI dispatcher rejects Canonical markers without ui before falling into the legacy default path', () => {
+  for (const values of [['--canonical', '--user-id', '7'], ['--canonical=false', '--user-id', '7']]) {
+    const child = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...values], {
+      encoding:'utf8', env:{...process.env, TERM:'dumb', CI:'true'}, timeout:5000,
+    });
+    assert.equal(child.status,2);
+    assert.equal(child.stdout,'');
+    assert.match(child.stderr,/dex ui --canonical/);
+    assert.doesNotMatch(child.stderr,/로그인|local.tools|password/);
+  }
 });

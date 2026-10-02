@@ -5,7 +5,7 @@ import type { CanonicalTuiView } from './canonical-types';
 /** Server text is data, never a terminal instruction (including OSC clipboard/hyperlinks). */
 export function terminalText(value: string): string {
   return stripVTControlCharacters(value)
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, '')
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, '')
     .replace(/\t/g, '    ');
 }
 

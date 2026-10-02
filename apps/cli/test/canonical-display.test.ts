@@ -7,6 +7,7 @@ import type { AgentConversationView } from '@dex/protocol/agent-session-conversa
 test('remote content cannot issue terminal controls or bidi reordering', () => {
   assert.equal(terminalText('a\u001b[2Jb\u001b]52;c;clipboard\u0007c\u001b]8;;https://evil.test\u001b\\d\u001b]8;;\u001b\\\r\u0000\u009be\u202e\t한글\nlast'), 'abcde    한글\nlast');
   assert.equal(displayLine('first\nsecond\u001b[31m', 50), 'first second');
+  assert.equal(terminalText('a\u061cb\u200ec\u200fd'), 'abcd');
 });
 test('only complete message content is displayed with explicit source and status', () => {
   const conversation: AgentConversationView = {

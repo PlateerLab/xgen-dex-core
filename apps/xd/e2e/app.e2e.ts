@@ -6,7 +6,7 @@
  *
  * 엔진은 개발 실행처럼 `apps/xd/engine/dist/<platform>-<arch>/python` 을 쓴다(XD_ENGINE_PYTHON 으로 바꿀 수 있다).
  */
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -20,6 +20,12 @@ import { fakeResponses } from './fake-responses';
 const APP = resolve(__dirname, '..');
 // Electron 43 은 설치 스크립트가 없다 — `require('electron')` 이 실행 파일 경로를 주고, 없으면 그때 내려받는다.
 const ELECTRON = createRequire(__filename)('electron') as string;
+
+/** 띄운 앱은 시험이 실패해도 닫는다 — 남으면 node 가 끝나지 않는다. */
+const opened: ElectronApplication[] = [];
+afterEach(async () => {
+  for (const app of opened.splice(0)) await app.close().catch(() => undefined);
+});
 
 interface Launched {
   app: ElectronApplication;
@@ -36,6 +42,11 @@ function fixture(responses: unknown[]) {
   delete env.ELECTRON_RUN_AS_NODE;
   const launch = async (): Promise<Launched> => {
     const app = await _electron.launch({ executablePath: ELECTRON, args: [APP, '--no-sandbox'], env });
+    opened.push(app);
+    app.once('close', () => {
+      const i = opened.indexOf(app);
+      if (i >= 0) opened.splice(i, 1);
+    });
     const win = await app.firstWindow();
     await win.waitForFunction(() => Boolean((window as unknown as { xd?: { agents?: unknown } }).xd?.agents));
     return { app, win };

@@ -3,12 +3,10 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 
 /**
- * XD 의 빌드 — main·preload 는 이 앱의 것, **화면은 Dex 와 같은 코드**를 쓴다.
- *
- * 화면 공유(2026-10-02 결정): XD 에 없는 기능(Teams·앱 스토어·서버 로그인…)은 기능 스위치로 끄고,
- * 채팅·작업 과정·파일 보기·IDE 는 Dex 렌더러(apps/desktop/src/renderer)를 그대로 쓴다. 고치면 양쪽에
- * 같이 반영된다. 그래서 XD 를 빌드하려면 Dex 의 의존(`npm --prefix apps/desktop ci`)이 먼저 깔려
- * 있어야 한다 — 화면 코드가 그쪽 node_modules 에서 react·monaco 등을 찾는다.
+ * XD 의 빌드 — main·preload·화면은 이 앱의 것이고, Dex 와 같은 **기본 부품**(마크다운·작업 과정·아이콘·스타일)만
+ * Dex 렌더러(apps/desktop/src/renderer)에서 그대로 가져온다(DESIGN.md §8, `src/renderer/src/dex.ts`). 그래서 XD 를
+ * 빌드하려면 Dex 의 의존(`npm --prefix apps/desktop ci`)이 먼저 깔려 있어야 한다 — 그 부품이 그쪽 node_modules 에서
+ * react 등을 찾는다.
  *
  * 공용 패키지(@dex/*)는 Dex 와 같은 방식으로 **소스를 번들**한다(별칭).
  */

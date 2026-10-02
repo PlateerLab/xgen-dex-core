@@ -43,6 +43,8 @@ export function codexCachedModels(home: string): string[] {
 }
 
 const CLI_OF_KIND: Record<string, CliName> = { claude_code: 'claude', codex: 'codex' };
+const KIND_OF_CLI: Record<CliName, string> = { claude: 'claude_code', codex: 'codex' };
+const CLI_LABEL: Record<CliName, string> = { claude: 'Claude Code', codex: 'Codex' };
 const isCliName = (name: unknown): name is CliName => name === 'claude' || name === 'codex';
 
 export interface XdApiDeps {
@@ -178,6 +180,8 @@ export function createXdApi(deps: XdApiDeps) {
     turnStop: (conversationId: string): boolean => runner.cancelConversation(conversationId),
 
     // ── 계정 ──
+    /** 이 앱이 받는 계정 종류(시험 실행이면 시험용 제공자도). */
+    accountKinds: (): string[] => [...kinds],
     accountsList: (): AccountView[] => store.listAccounts().map(view),
     accountsCreate(input: { kind: string; label: string; baseUrl?: string | null; settings?: Record<string, unknown>; secret?: string }): AccountView {
       if (!kinds.has(input?.kind)) throw new Error(`unknown account kind: ${String(input?.kind)}`);
@@ -229,6 +233,17 @@ export function createXdApi(deps: XdApiDeps) {
     },
     cliLoginCancel: (name: CliName): void => cli(name).cancelLogin(name),
     cliLogout: (name: CliName) => cli(name).logout(name),
+    /**
+     * 이 CLI 로 에이전트를 돌릴 계정 — 있으면 그것, 없으면 하나 만든다(로그인이 끝나면 main 이 부른다). 로그인은 CLI
+     * 마다 하나라 계정도 하나면 된다.
+     */
+    cliAccountEnsure(name: CliName): AccountView {
+      if (!isCliName(name)) throw new Error(`unknown CLI ${String(name)}`);
+      const kind = KIND_OF_CLI[name];
+      const existing = store.listAccounts().find((a) => a.kind === kind);
+      if (existing) return view(existing);
+      return view(store.createAccount({ kind, label: CLI_LABEL[name], baseUrl: null, settings: { auth: 'oauth' } }));
+    },
 
     // ── 엔진 ──
     engineStatus: () => ({ running: deps.engine.running, info: deps.engine.info }),

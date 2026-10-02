@@ -17,7 +17,8 @@ XD 는 **서버 없이 이 PC 에서 에이전트를 돌리는** 로컬용 XGEN 
 
 ## 2. 사용자 결정 (2026-10-02)
 
-1. **화면** — Dex 의 화면 코드(apps/desktop/src/renderer)를 공유하고, XD 에 없는 기능은 기능 스위치로 끈다.
+1. **화면** — 기본 부품만 Dex 와 공유하고, 나머지는 XD 에 맞춘 XD 전용 화면이다(같은 날 수정 — 처음 결정은 "Dex
+   화면 공유 + 기능 스위치" 였다. 까닭은 §8). Dex 코드는 고치지 않는다.
 2. **루트 폴더** — 설치 폴더(쓸 수 있으면), 아니면 `~/XD`. 설정에서 보이고 옮길 수 있다.
 3. **실행 안전** — 파일 도구는 작업 공간·연결 폴더 안으로 제한, 셸은 위험 명령만 사용자에게 묻는다.
 4. **제공자(v1)** — Claude Code, Codex, Anthropic, OpenAI, Gemini, OpenAI 호환(Ollama·vLLM·LM Studio).
@@ -49,8 +50,9 @@ apps/xd
 │     xd-api.ts                 화면이 IPC 로 부르는 일들(Electron 모름) (M2)
 │     workspace-name.ts         에이전트 이름 → 작업 공간 폴더 이름 (M2)
 │     cli/                      CLI 감지·설치·로그인·상태 (M3)
-├─ src/preload/                 window.xd (XD 전용) + Dex 화면 공유용 window.xgen(부분)
-└─ src/renderer/                XD 셸 — Dex 화면 부품을 가져다 쓴다
+├─ src/shared/                  main·화면이 같이 쓰는 것 — 실패 코드 → 사람이 읽는 말 (M4)
+├─ src/preload/                 window.xd (XD 전용) + 공유 마크다운의 [복사]용 window.xgen.clipboard 한 칸
+└─ src/renderer/                XD 전용 화면 (M4) — Dex 와 같은 부품은 dex.ts 한 곳으로만 가져온다
 ```
 
 프로세스:
@@ -248,22 +250,51 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 
 ## 8. 화면 (M4)
 
-Dex 화면 조사(2026-10-02)에서 알게 된 것 — M4 의 출발점:
+### 결정: 기본은 공유, 나머지는 XD 전용 (2026-10-02 수정)
+
+처음에는 Dex 화면을 통째로 쓰고 기능 스위치로 감추려 했다. 조사해 보니 맞지 않았다.
 
 - Dex 화면에는 **기능 스위치 장치가 없다.** 감추기는 흩어진 조건(옵셔널 체이닝·돌려받은 값·설정 값)뿐이다.
-- 채팅 경로에서 **없으면 바로 깨지는** 호출: `guardrails.*`·`overlay.pushState`·`quickChat.onQuickSend`·
+- 채팅 경로에서 **없으면 바로 깨지는** 호출이 많다: `guardrails.*`·`overlay.pushState`·`quickChat.onQuickSend`·
   `config.get/onChange/set`·`chatFolders.list/remote/on*`·`chat.stream/stop`·`history.turns/snapshot`,
-  에이전트 목록의 `agents.list`·`history.conversations`. XD 는 이것들을 채우거나 무해한 값을 돌려줘야 한다.
-- 채팅 수송은 `SessionTransport`(renderer/session.ts) 하나로 들어온다 — `xgen.chat.stream(req, onEvent)` 는
-  동기로 손잡이(`cancel`·`stop`)를 돌려주고, 사건은 `ChatEvent`. XD 는 M2 의 턴 실행기 사건을 그대로 넘기면 된다.
-- 서버 전제(로그인·서버 주소·사용자 id·Teams·알림 계정·`ioId`/피드백·원격 실행 모델)는 App·Workspace 에 있다 —
-  XD 셸이 그 자리를 대신하고, 피드백 별점은 `executionIoId` 를 싣지 않아 숨긴다.
+  에이전트 목록의 `agents.list`·`history.conversations`.
+- 서버 전제(로그인·서버 주소·사용자 id·Teams·알림 계정·`ioId`/피드백·원격 실행 모델)가 App·Workspace 에 박혀 있다.
 
-- XD 의 화면은 XD 셸(온보딩·루트·제공자 설정) + Dex 화면 부품(채팅·작업 과정·도구 기록·파일 보기·IDE·에이전트
-  상세).
-- Dex 화면 코드는 `window.xgen` 을 부른다 — XD 의 preload 가 **XD 가 채울 수 있는 부분만** 같은 모양으로 열고,
-  나머지 기능은 기능 스위치(capabilities)로 화면에서 감춘다. 감출 것: 서버 설정·로그인·Teams·앱 스토어·
-  음성·아바타 스토어·SSH(서버)·답변 평가·가드레일·연결된 기기.
+통째로 쓰려면 Dex 화면 곳곳에 XD 조건을 넣어야 하고, 그러면 Dex 가 바뀐다. 그래서 **기본 부품만 공유**하고
+화면의 짜임(셸·채팅·에이전트·제공자·설정)은 XD 가 따로 짓는다.
+
+| 공유 (Dex 코드 그대로) | XD 전용 |
+|---|---|
+| `Markdown`·`ProcessTimeline`(작업 과정)·`Tooltip`·아이콘 | 셸(활동 막대·사이드바)·첫 화면 |
+| CSS: `@dex/ide/ide.css`·Dex `styles.css`·`process-timeline.css` (채팅 마크업 `chat-log`·`msg-row`·`bubble` 같은 이름을 그대로 써서 모양이 같다) | 채팅 화면(턴 저장소 + 도는 턴), 에이전트 편집, 제공자(API 키·Claude Code·Codex 설치·로그인), 설정 |
+| `@dex/protocol` — `ChatEvent`·`HistoryFlowItem` 모양, `describeStreamError`, `INTERRUPTED_TEXT` | 실패 코드 문구 `src/shared/error-info.ts`(XD 에만 있는 까닭: 계정·키·CLI 없음 등) |
+
+규칙:
+
+- 화면이 Dex 부품을 가져오는 곳은 **`src/renderer/src/dex.ts` 한 곳**(CSS 는 `main.tsx`). 다른 파일은
+  `apps/desktop` 을 직접 가져오지 않는다.
+- 공유 부품은 `window.xgen` 에 기대지 않는 것만 고른다. 예외는 마크다운의 [복사] 하나 — preload 가
+  `window.xgen.clipboard` 한 칸만 같은 모양으로 연다(없어도 브라우저 클립보드로 간다).
+- Dex 의 파일은 고치지 않는다. Dex 부품이 바뀌면 XD 는 그대로 따라간다 — CI 의 XD 잡이 Dex 쪽 변경에도 돈다.
+
+### 화면
+
+- **셸** — 활동 막대(대화·AI 제공자·설정) + 사이드바(에이전트 → 고른 에이전트의 대화) + 본문.
+- **첫 화면** — 제공자 연결 → 에이전트 만들기 두 걸음.
+- **채팅** — 지난 턴은 저장소에서, 도는 턴은 `live-store`(사건 구독 하나)에서 그린다. 도구를 쓴 답은 작업
+  과정 타임라인, 아니면 마크다운. 정지한 답은 Dex 와 같은 "작업이 중단되었습니다". 실패는 Dex 와 같은 실패
+  블록(제목·설명·코드). 끝난 턴은 저장소에서 다시 읽힐 때까지 그 모습을 붙들어 깜박이지 않는다.
+- **에이전트** — 이름·설명·제공자·모델(그 제공자에게 물은 목록, 없으면 직접 입력)·지시·도구 묶음(파일·명령
+  실행·웹·문서 읽기 → 엔진 설정 `GENY_TOOLS_<묶음>_ENABLED`)·기억·연결 폴더.
+- **AI 제공자** — API 키·로컬 서버 계정(연결 확인=모델 목록), Claude Code·Codex 카드(상태·설치/업데이트·
+  로그인·로그아웃). 설치·로그인의 진행은 main(`CliService`)이 들고 있어 화면을 떠났다 와도 이어 보이고(같은 설치를
+  두 번 받지 않는다), 로그인이 끝나면 main 이 그 CLI 계정을 하나만 만든다(`cliAccountEnsure`).
+- **보내기** — 보내기 대답을 기다리는 동안(CLI 를 처음 찾느라 몇 초) 다시 보내지 못하고, 그 사이 다른 대화로
+  옮기면 끌고 오지 않는다. 엔진이 처음 뜨는 동안 누른 [정지]도 듣는다(엔진에 보내지 않고 취소로 끝낸다).
+- **문구** — 한 문장, 내부 글(영어 원문·코드) 없이. main 의 실패 글은 `errorText` 가 아는 까닭만 풀고 나머지는
+  화면이 준 문장으로(원문은 개발자 콘솔). 실패 블록의 코드 칩은 Dex 와 같은 모양이라 그대로 둔다.
+- **설정** — 루트·작업 공간 폴더, 키 보관 상태, 엔진 상태, 판.
+- 창: 새 창은 열지 않고 https 링크만 브라우저로, 창 안 이동은 막는다.
 
 ## 9. 안전 (엔진은 M1, 확인 창은 M4·M5)
 
@@ -300,6 +331,12 @@ Dex 화면 조사(2026-10-02)에서 알게 된 것 — M4 의 출발점:
 ### 진행
 
 - **M0** (2026-10-02, PR #160) — 설계·뼈대·정체성·버전/계약/CI.
+- **M4** (2026-10-03) — 화면. 기본 부품만 Dex 와 공유하고 나머지는 XD 전용(§8). 완료 기준 실측(실제 Electron 43 +
+  동봉 엔진 + 가짜 LLM, 모든 단계를 화면 조작으로): 첫 실행 → 제공자 추가 → 에이전트 → 대화(작업 과정·표) →
+  껐다 켜도 이어짐, 정지 → 중단, 제공자 없음 → 까닭, CLI 카드, 가짜 claude 로 로그인(떠났다 와도 이어짐·계정 하나).
+  독립 검토로 찾아 고친 것: CLI 계정 중복 생성, 보내기 중 두 번 보내기, 엔진 기동 중 정지 무시, 새 대화 첫 답
+  깜박임, 제공자 바꿔도 모델이 남음, 화면 이탈 후 설치·로그인 상태 잃음, 문구(두 문장·영어 원문·암호화 문구).
+  Dex 파일 변경 0, 공유 규칙은 시험으로 고정(`renderer-sharing.test.ts`). XD 단위 시험 70개, E2E 7개.
 - **M3** (2026-10-02, 코드) — 제공자·CLI: 계정 종류 8개, 모델 목록=연결 시험(엔진), Claude Code·Codex 감지·설치(공식
   배포처·sha256)·로그인(파이프)·상태·로그아웃, CLI 턴의 도구 다리. 실측: 실제 CLI 로 앱 전체 경로 턴(가짜 모델), 실제
   배포처에서 설치. 찾아 고친 것: 런타임 4.83.3(Windows CLI 창·트리 종료). **실제 계정 턴은 확인 대기.**

@@ -15,16 +15,19 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 const testTui = process.argv.includes('--tui');
-if (testTui && platform !== 'cli') throw new Error('--tui requires the CLI platform.');
-const testLive = process.argv.includes('--live') || testTui;
+const testTuiChat = process.argv.includes('--tui-chat');
+if ((testTui || testTuiChat) && platform !== 'cli') throw new Error('TUI verification requires the CLI platform.');
+const testLive = process.argv.includes('--live') || testTui || testTuiChat;
 const testCatalogPages = process.argv.includes('--catalog-pages');
 const testWorkspaceUi = process.argv.includes('--workspace-ui');
 if (testWorkspaceUi && platform !== 'desktop') throw new Error('Workspace UI verification requires --desktop.');
 const testTurnUi = process.argv.includes('--turn-ui') || testWorkspaceUi;
 const testSessionUi = process.argv.includes('--session-ui') || testWorkspaceUi;
-const testSessions = process.argv.includes('--sessions') || testSessionUi || testCatalogPages;
+const testSessions = process.argv.includes('--sessions') || testSessionUi || testCatalogPages || testTuiChat;
 const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi || testSessionUi;
-const testTurns = process.argv.includes('--turns') || testTurnUi;
+const testTurns = process.argv.includes('--turns') || testTurnUi || testTuiChat;
+const turnUiBehavior = testTurnUi || testTuiChat;
+const sessionUiBehavior = testSessionUi || testTuiChat;
 if (testTurnUi && platform === 'cli') throw new Error('Turn UI verification requires --vscode or --desktop.');
 if (testSessionUi && platform === 'cli') throw new Error('Session UI verification requires --vscode or --desktop.');
 const desktopElectron: string | null = platform === 'desktop' || testTurnUi || testSessionUi ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
@@ -65,9 +68,9 @@ const ownedSessions = new Map<string, { title: string; status: 'active' | 'archi
 ]);
 if (testCatalogPages) for (let index = 0; index < 205; index++) ownedSessions.set(randomUUID(), { title: `Catalog older session ${index + 1}`, status: 'active' });
 const catalogPagesRead: Array<{ before: string | null; count: number }> = [];
-let sessionRequests = 0; let sessionCreations = 0; let loseSessionAck = testSessionUi;
+let sessionRequests = 0; let sessionCreations = 0; let loseSessionAck = sessionUiBehavior;
 const sessionWriteBodies: unknown[] = [];
-const freshSession = () => testSessionUi && focus.active_agent_session_id !== null
+const freshSession = () => sessionUiBehavior && focus.active_agent_session_id !== null
   && focus.active_agent_session_id !== agentId && focus.active_agent_session_id !== recoveredId;
 let watching = false; let disconnected = false; let rotatedDuringWatch = false;
 const watchCursors: number[] = [];
@@ -75,7 +78,7 @@ const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), r
 const messageText = `native-message-answer ${'가'.repeat(24000)}`;
 let liveSequence = 4; const liveEvent = randomUUID();
 const liveSockets = new Set<WebSocket>(); const liveAccesses = new Set<string>();
-let turnVersion = testTurnUi ? 4 : 1; let executions = 0; let turnRequests = 0; let loseUiAck = testTurnUi;
+let turnVersion = turnUiBehavior ? 4 : 1; let executions = 0; let turnRequests = 0; let loseUiAck = turnUiBehavior;
 let uiTurn: { id: string; status: 'running' | 'cancelled'; sequence: number; input: string } | null = null;
 const uiEvents: Array<{ event_id: string; sequence: number; event_type: string; created_at: string }> = [];
 const turnBodies = new Map<string, { serialized: string; ack: { turn_id: string; status: string; accepted_sequence: number; state_version: number; replayed: boolean } }>();
@@ -100,7 +103,7 @@ async function verifyProof(req: IncomingMessage): Promise<string> {
 function eventPage(after: number) {
   if (freshSession()) return { type: 'agent_session.events', events: [], next_cursor: 0, snapshot_sequence: 0,
     state_version: 1, has_more: false };
-  if (testTurnUi) return { type: 'agent_session.events', events: uiEvents.filter((e) => e.sequence > after),
+  if (turnUiBehavior) return { type: 'agent_session.events', events: uiEvents.filter((e) => e.sequence > after),
     next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: turnVersion, has_more: false };
   return { type: 'agent_session.events', events: after < liveSequence ? [{ event_id: liveEvent, sequence: 5,
     event_type: 'agent_session.turn_completed', created_at: new Date().toISOString() }] : [],
@@ -217,7 +220,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
         if (body.turn_id !== last.turn_id) { conflict('TURN_ID_CONFLICT'); return; }
         if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
         const requestedVersion = turnVersion;
-        if (testTurnUi && uiTurn) {
+        if (turnUiBehavior && uiTurn) {
           uiTurn.status = 'cancelled'; uiTurn.sequence = ++liveSequence; turnVersion++;
           uiEvents.push({ event_id: randomUUID(), sequence: liveSequence, event_type: 'agent_session.turn_cancelled', created_at: new Date().toISOString() });
         }
@@ -227,14 +230,14 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       const previous = turnBodies.get(body.idempotency_key); const serialized = JSON.stringify(body);
       if (previous) {
         if (previous.serialized !== serialized) { conflict('IDEMPOTENCY_KEY_REUSED'); return; }
-        send(202, { ...previous.ack, ...(testTurnUi ? { status: uiTurn?.status ?? 'running' } : {}), replayed: true }); return;
+        send(202, { ...previous.ack, ...(turnUiBehavior ? { status: uiTurn?.status ?? 'running' } : {}), replayed: true }); return;
       }
       if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
       if (body.idempotency_key === 'unauthorized') { send(401, { raw: 'private-server-secret' }); return; }
       executions++; turnVersion++;
-      const ack = { turn_id: randomUUID(), status: 'accepted', accepted_sequence: testTurnUi ? ++liveSequence : executions, state_version: turnVersion, replayed: false };
+      const ack = { turn_id: randomUUID(), status: 'accepted', accepted_sequence: turnUiBehavior ? ++liveSequence : executions, state_version: turnVersion, replayed: false };
       turnBodies.set(body.idempotency_key, { serialized, ack });
-      if (testTurnUi) {
+      if (turnUiBehavior) {
         uiTurn = { id: ack.turn_id, status: 'running', sequence: ack.accepted_sequence, input: body.input_text };
         uiEvents.push({ event_id: randomUUID(), sequence: liveSequence, event_type: 'agent_session.turn_accepted', created_at: new Date().toISOString() });
         if (loseUiAck) { loseUiAck = false; req.socket.destroy(); return; }
@@ -258,7 +261,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       }
       if (conversationRoute[2] === 'snapshot') {
         reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: testSessions ? ownedSessions.get(focus.active_agent_session_id!)?.title : 'Native shared conversation',
-          current_sequence: liveSequence, state_version: testTurnUi ? turnVersion : liveSequence, message_history_complete: false,
+          current_sequence: liveSequence, state_version: turnUiBehavior ? turnVersion : liveSequence, message_history_complete: false,
           latest_turn: uiTurn ? { id: uiTurn.id, status: uiTurn.status, accepted_sequence: turnBodies.values().next().value!.ack.accepted_sequence }
             : { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
       }
@@ -267,8 +270,8 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
         assert.equal(query.get('limit'), '100'); assert.ok(after >= 4 && after <= liveSequence);
         reply(eventPage(after)); return;
       }
-      assert.equal(query.get('limit'), '1'); assert.ok(testTurnUi ? [0, 2, 4, 6].includes(after) : [0, 2, 4].includes(after));
-      if (testTurnUi) {
+      assert.equal(query.get('limit'), '1'); assert.ok(turnUiBehavior ? [0, 2, 4, 6].includes(after) : [0, 2, 4].includes(after));
+      if (turnUiBehavior) {
         const messages = [
           ...messageTurns.map((id, index) => ({ turn_id: id, sequence: index === 0 ? 2 : 4, status: 'completed', input_text: 'native-message-question',
             output_text: messageText, content_complete: true, source: 'user' })),
@@ -422,6 +425,99 @@ async function tuiFixture(): Promise<void> {
   }
   focus = { active_agent_session_id: null, version: 0, event_id: null }; liveSequence = 4; watchCursors.length = 0;
   console.log('CLI built Canonical TUI / real PTY and Ink / OS keychain / trusted HTTPS and WSS fresh DPoP / completed messages and partial notice / token rotation / stop and explicit reread / Q SIGINT SIGTERM actual drain and screen restore PASS');
+}
+/** Interactive writes use the real product, terminal, vault and native signed transport. */
+async function tuiChatFixture(): Promise<void> {
+  for (const termination of ['q', 'SIGINT', 'SIGTERM'] as const) {
+    const bridge = spawn('python3', ['scripts/fixtures/canonical-tui-pty.py', process.execPath,
+      resolve('apps/cli/dist/cli.js'), userId, '--chat-fixture'], {
+      env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let pending = ''; let output = ''; let stderr = ''; let exit: number | null = null;
+    const done = new Promise<void>((yes, no) => {
+      bridge.on('error', no);
+      bridge.on('close', (code) => code === 0 ? yes() : no(new Error('Chat PTY bridge failed; output withheld')));
+    });
+    void done.catch(() => undefined);
+    bridge.stderr.on('data', (chunk) => { stderr += chunk; });
+    bridge.stdout.on('data', (chunk) => {
+      pending += chunk;
+      for (;;) {
+        const end = pending.indexOf('\n'); if (end < 0) break;
+        const value = JSON.parse(pending.slice(0, end)); pending = pending.slice(end + 1);
+        if (value.data) output += Buffer.from(value.data, 'base64').toString('utf8');
+        if ('exit' in value) exit = value.exit;
+      }
+      if (output.length > 8 * 1024 * 1024) bridge.kill();
+    });
+    const key = (value: string) => bridge.stdin.write(`${JSON.stringify({ key: value })}\n`);
+    const until = async (condition: () => boolean, stage: string) => {
+      for (let i = 0; i < 1000 && !condition() && exit === null; i++) await new Promise(r => setTimeout(r, 10));
+      assert.ok(condition(), `Chat PTY did not reach ${stage}; catalog=${catalogPagesRead.length}, lifecycle=${sessionRequests}, turn=${turnRequests}, selected=${focus.active_agent_session_id===agentId}; output withheld`);
+    };
+    const since = () => { const start = output.length; return () => output.slice(start); };
+    try {
+      if (termination === 'q') {
+        await until(() => output.includes('현재 대화: 없음') && output.includes('connected'), 'empty focus');
+        key('l'); await until(() => output.includes('Native shared conversation') && catalogPagesRead.length > 0, 'catalog');
+        if (testCatalogPages) {
+          key('p'); await until(() => catalogPagesRead.length === 2, 'second bounded page');
+          await until(() => output.includes('Catalog older session 100'), 'second page display');
+          key('p'); await until(() => catalogPagesRead.length === 3, 'last bounded page');
+          assert.deepEqual(catalogPagesRead.map(p => p.count), [100, 100, 7]);
+          assert.ok(catalogPagesRead.slice(1).every(p => p.before !== null));
+          const latest = since(); key('l'); await until(() => catalogPagesRead.length === 4 && latest().includes('N 생성'), 'latest bounded replacement');
+        }
+        await until(() => output.includes('N 생성'), 'verified creation controls');
+        key('n'); await until(() => output.includes('workflow ID:'), 'create workflow editor');
+        key('native-fixture'); await until(() => output.includes('workflow ID: native-fixture'), 'visible workflow');
+        key('\r'); await until(() => output.includes('새 대화 제목:'), 'create title editor');
+        key('CLI new 대화'); await until(() => output.includes('CLI new 대화'), 'visible title');
+        key('\r'); await until(() => sessionCreations === 1 && output.includes('작업 완료 여부'), 'lost creation receipt');
+        key('n'); await new Promise(r => setTimeout(r, 60)); assert.equal(sessionRequests, 1);
+        const afterRead = since(); key('r'); await until(() => afterRead().includes('CLI new 대화') && afterRead().includes('최신 목록'), 'unknown create reread remains locked');
+        assert.equal(sessionRequests, 1);
+        const afterLatest = since(); key('l'); await until(() => afterLatest().includes('N 생성') && afterLatest().includes('Native shared conversation'), 'explicit creation recovery');
+        assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 1);
+        const moved = since(); key('\u001b[B'); await until(() => moved().includes('> Native shared conversation'), 'owned active row');
+        const selected = since(); key('\r'); await until(() => focus.active_agent_session_id === agentId && selected().includes('버전 4'), 'selected conversation');
+        key('i'); await until(() => output.includes('메시지:'), 'message editor');
+        const prompt = 'CLI 한글 original rwysqnt';
+        key(prompt); await until(() => output.includes(prompt), 'visible exact prompt');
+        assert.equal(turnRequests, 0);
+        key('\r'); await until(() => turnRequests === 1 && output.includes('턴 unknown'), 'unknown turn');
+        assert.equal(executions, 1);
+        const original = [...turnBodies.values()][0]!.serialized;
+        assert.equal(JSON.parse(original).input_text, prompt);
+        assert.equal(JSON.parse(original).expected_state_version, 4);
+        const retryRead = since(); key('r'); await until(() => retryRead().includes('실행 running') && retryRead().includes('턴 unknown'), 'verified original retry context');
+        const retried = since(); key('y'); await until(() => turnRequests === 2 && retried().includes('실행 running') && retried().includes('draft 0 bytes'), 'exact explicit replay');
+        assert.equal(executions, 1); assert.equal(turnBodies.size, 1); assert.equal([...turnBodies.values()][0]!.serialized, original);
+        const stopped = since(); key('t'); await until(() => turnRequests === 3 && stopped().includes('native-ui-answer'), 'exact stop and completed transcript');
+        assert.equal(uiTurn?.status, 'cancelled');
+        key('x'); await until(() => output.includes('해제할까요?'), 'clear confirmation');
+        const cleared = since(); key('\r'); await until(() => focus.active_agent_session_id === null && cleared().includes('현재 대화: 없음'), 'clear focus');
+        assert.equal(sessionRequests, 3); assert.equal(sessionCreations, 1);
+        key('q');
+      } else {
+        focus = { active_agent_session_id: agentId, version: focus.version + 1, event_id: randomUUID() };
+        await until(() => output.includes('실행 cancelled'), 'terminal reread');
+        key('w'); await until(() => liveSockets.size === 1, 'actual WSS open');
+        bridge.stdin.write(`${JSON.stringify({ signal: termination })}\n`);
+      }
+      await done; assert.equal(exit, 0); assert.equal(stderr, '');
+      await untilLive(() => liveSockets.size === 0);
+      assert.equal(output.split('\u001b[?1049h').length - 1, 1);
+      assert.equal(output.split('\u001b[?1049l').length - 1, 1);
+      for (const forbidden of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken']) {
+        assert.equal(output.includes(forbidden), false, 'Sensitive native data escaped to chat TUI');
+      }
+    } finally { bridge.kill(); await done.catch(() => undefined); }
+  }
+  focus = { active_agent_session_id: null, version: 0, event_id: null };
+  liveSequence = 4; turnVersion = 4; uiTurn = null; uiEvents.length = 0; turnBodies.clear(); watchCursors.length = 0;
+  console.log('CLI built chat TUI / actual PTY and Ink / OS keychain / trusted HTTPS native P-256 writes / bounded catalog / lost create ACK once and explicit latest recovery / exact original turn replay once / exact stop and verified transcript / clear confirmation / no legacy dispatch / Q SIGINT SIGTERM actual socket drain and screen restore PASS');
 }
 async function sessionCli(action: string, extra: string[] = [], expectedExit = 0): Promise<any> {
   return new Promise((resolveResult, reject) => {
@@ -701,8 +797,9 @@ try {
   assert.deepEqual(await cli('status'), loggedIn);
   await cli('focus'); await cli('refresh'); await cli('focus');
   if (testTui) await tuiFixture();
-  if (testSessions) await sessionFixture();
-  if (testTurns) await turnFixture();
+  if (testTuiChat) await tuiChatFixture();
+  if (testSessions && !testTuiChat) await sessionFixture();
+  if (testTurns && !testTuiChat) await turnFixture();
   watching = true;
   const subscriber = watch(3);
   try {

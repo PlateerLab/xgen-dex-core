@@ -3,6 +3,7 @@ import type { ParsedArgs } from './args';
 import { flag, option, requiredOption } from './args';
 import { isInteractiveTerminal, type TerminalModeInput } from './mode';
 import type { CanonicalTuiAccount, CanonicalTuiSource } from './tui/canonical-types';
+import { createCanonicalTuiChatSource } from './canonical-tui-chat-source';
 
 export interface CanonicalTuiCommandDependencies {
   terminal: TerminalModeInput;
@@ -49,7 +50,7 @@ export async function runCanonicalTuiCommand(
   if (!profile) throw new DexError('not_found', '먼저 HTTPS 서버 프로필을 설정하세요.');
   const origin = nativeKeyScope({ origin: profile.serverUrl, platform: 'cli', userId }).origin;
   const account = { profile: profileName, origin, userId };
-  const source = (dependencies.sourceFactory ?? createCanonicalTuiSource)(account);
-  const launch = dependencies.launch ?? (await import('./tui/canonical-index')).runCanonicalTui;
+  const source = (dependencies.sourceFactory ?? createCanonicalTuiChatSource)(account);
+  const launch = dependencies.launch ?? (await import('./tui/canonical-chat-index')).runCanonicalChatTui;
   await launch(account, source);
 }

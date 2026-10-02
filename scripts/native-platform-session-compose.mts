@@ -30,8 +30,8 @@ import { createMobileAgentLifecycleSource } from '../apps/mobile/src/lib/native-
 import { MobileAgentConversationModel } from '../apps/mobile/src/lib/native-agent-conversation-model';
 import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
 import { NativeCliSession } from '../packages/engine/src/native-platform-session';
-import { createCanonicalTuiSource } from '../apps/cli/src/canonical-tui-command';
-import { CanonicalTuiController } from '../apps/cli/src/tui/canonical-controller';
+import { createCanonicalTuiChatSource } from '../apps/cli/src/canonical-tui-chat-source';
+import { CanonicalTuiChatModel } from '../apps/cli/src/tui/canonical-chat-model';
 
 const origin = 'https://localhost:3443';
 const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
@@ -195,8 +195,9 @@ try {
         let wire = 0;
         const blockedFetch = (async () => { wire++; throw new Error('Canonical wire must not be reached'); }) as typeof fetch;
         const session = new NativeCliSession(origin, cliKeys, blockedFetch);
-        const source = createCanonicalTuiSource({ origin, userId: String(userId), profile: 'compose' }, session);
-        const controller = new CanonicalTuiController(source, String(userId));
+        const account = { origin, userId: String(userId), profile: 'compose' };
+        const source = createCanonicalTuiChatSource(account, session);
+        const controller = new CanonicalTuiChatModel(account, source);
         try {
           assert.equal(await controller.read(), false);
           assert.equal(controller.state.status, 'stopped');
@@ -205,12 +206,22 @@ try {
           for (let i = 0; i < 200 && controller.state.status !== 'stopped'; i++) await new Promise((r) => setTimeout(r, 10));
           assert.equal(controller.state.status, 'stopped'); assert.match(controller.state.error, /인증/);
           assert.equal(controller.state.conversation, null);
+          assert.equal(await controller.loadCatalog(), false);
+          assert.equal(controller.state.catalog.canWrite, false); assert.equal(controller.state.canEdit, false);
+          assert.equal(await controller.create('compose', 'denied'), false);
+          assert.equal(await controller.select(null), false); assert.equal(await controller.submit(), false);
+          assert.equal(await controller.retry(), false); assert.equal(await controller.stopTurn(), false);
+          const control = new AbortController(); const guessed = 'a'.repeat(64);
+          await assert.rejects(source.create(guessed, { workflow_id: 'compose', title: 'denied', expected_version: 0 }, control.signal));
+          await assert.rejects(source.select(guessed, { active_agent_session_id: null, expected_version: 0 }, control.signal));
+          await assert.rejects(source.send(guessed, { operation: 'submit', scope: { platform_type: 'cli', profile: 'compose', server_url: origin, user_id: String(userId) },
+            agent_session_id: randomUUID(), input: { input_text: 'denied', expected_state_version: 1, idempotency_key: 'compose-denied' } }, control.signal));
           assert.equal(JSON.stringify(controller.state).includes(password), false);
           assert.equal(wire, 0);
         } finally { await controller.dispose(); }
         assert.equal((await run('status', [], 'session')).state, 'login_pending');
         assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
-        console.log('CLI production Canonical TUI source/controller: real enrollment login_pending blocks read and live before proof/wire; safe empty authentication view, journal unchanged PASS');
+        console.log('CLI production Canonical chat TUI source/model: real enrollment login_pending blocks read/live/catalog/create/select/turn before proof/wire; disabled actions, safe empty UI and unchanged journal; no Canonical DB effects PASS');
       }
       if (platform === 'desktop' && testDesktopWorkspace) {
         const checked: { ui: string; legacy_dispatches: number } = await rpc!.request('verify/workspace-enrollment');

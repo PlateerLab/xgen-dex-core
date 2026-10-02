@@ -117,6 +117,37 @@ test('login stores only scoped native credentials; process restart restores the 
   } finally { await f.cleanup(); }
 });
 
+test('bound native writes allow same-sid rotation and reject changed login ownership before proof or wire', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a','p');
+    const binding = await session.withProofSource('7',async (_proof, value)=>value);
+    await session.refresh('7');
+    f.custom((path,init)=> {
+      if (path.endsWith('/turns')) return Response.json({turn_id:TURN1,status:'accepted',accepted_sequence:1,state_version:2,replayed:false},{status:202});
+      if (path.endsWith('/stop')) return Response.json({turn_id:TURN1,state_version:2,requested:true},{status:202});
+      if (path.endsWith('/agent-sessions')&&init.method==='POST') return Response.json({id:SID,workflow_id:'wf',focus:{active_agent_session_id:SID,version:1,event_id:EVENT}},{status:201});
+      if (path.endsWith('/agent-state')&&init.method==='PUT') return Response.json({active_agent_session_id:null,version:2,event_id:EVENT});
+      return undefined;
+    });
+    const writes = (expected: string) => [
+      ()=>session.submitTurn('7',SID,{input_text:'bound message',expected_state_version:1,idempotency_key:'bound-1'},undefined,expected),
+      ()=>session.stopTurn('7',SID,{turn_id:TURN1,expected_state_version:2},undefined,expected),
+      ()=>session.createAgentSession('7',{workflow_id:'wf',expected_version:0},undefined,expected),
+      ()=>session.switchAgentFocus('7',{active_agent_session_id:null,expected_version:1},undefined,expected),
+    ];
+    for (const write of writes(binding)) await write();
+    const count=f.calls.length;
+    await f.keys().withSession(scope,async (_identity,_sign,vault)=>{
+      const old=(await vault.read())!; const access=f.access({sid:FLOW});
+      await vault.write({...old,sessionId:FLOW,generation:FLOW,accessToken:access.access_token,accessExpiresAt:access.access_expires_at});
+    });
+    for (const write of writes(binding)) await assert.rejects(write(),(error:unknown)=>error instanceof DexError&&error.code==='auth_required');
+    for (const write of writes('malformed-private-scope')) await assert.rejects(write(),(error:unknown)=>error instanceof DexError&&error.code==='usage_error');
+    assert.equal(f.calls.length,count);
+  } finally {await f.cleanup();}
+});
+
 test('VSCode/Desktop hosts use platform-specific keys, registration routes and access bindings; CLI cannot borrow them', async () => {
   for (const platform of ['vscode', 'desktop'] as const) {
     const f = await fixture(platform);

@@ -34,7 +34,7 @@ const HELP = `XGEN Dex CLI ${VERSION}
 Usage:
   dex                     대화형 터미널 UI
   dex ui                  대화형 터미널 UI
-  dex ui --canonical --user-id <id> [--profile <name>]  공유 대화 조회 전용 TUI
+  dex ui --canonical --user-id <id> [--profile <name>]  공유 대화·세션·턴 TUI
   dex profile set [name] --server <url>
   dex profile use <name>
   dex profile list [--json]

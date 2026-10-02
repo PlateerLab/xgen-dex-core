@@ -52,6 +52,7 @@ function make(raw: XdBridge) {
     clipboard: raw.clipboard,
     agents: unwrap(raw.agents),
     folders: unwrap(raw.folders),
+    mcp: unwrap(raw.mcp),
     conversations: unwrap(raw.conversations),
     turn: unwrap(raw.turn),
     accounts: unwrap(raw.accounts),

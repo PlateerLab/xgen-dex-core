@@ -45,6 +45,10 @@ const api = {
   folders: {
     check: call('foldersCheck'),
   },
+  mcp: {
+    /** MCP 서버 [연결 확인] — 붙어 보고 도구 목록만. */
+    test: call('mcpTest'),
+  },
   /** 작업 공간 IDE — 이 에이전트의 작업 공간(`'workspace'`)이나 연결 폴더(그 경로)의 파일. 대답은 값으로. */
   ide: {
     call: <T = unknown>(agentId: string, root: 'workspace' | string, op: string, args: Record<string, unknown> = {}): Promise<IdeResult<T>> =>

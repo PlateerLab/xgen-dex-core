@@ -3,7 +3,7 @@
  * 끊기지 않는다. 턴이 끝나면(finished) 그 대화의 판(version)을 올려 화면이 저장된 턴을 다시 읽게 한다.
  */
 import { useSyncExternalStore } from 'react';
-import type { XdTurnEvent } from '../../main/turn-runner';
+import type { XdMcpStatus, XdTurnEvent } from '../../main/turn-runner';
 import { applyChatEvent, startLive, type ChatMsg } from './chat-model';
 
 export interface LiveTurn {
@@ -28,6 +28,8 @@ export class LiveStore {
    */
   private finished = new Set<string>();
   private listeners = new Set<Listener>();
+  /** 대화마다 마지막 턴이 본 MCP 서버 상태. */
+  private mcp = new Map<string, { turnId: string; servers: XdMcpStatus[] }>();
   private snapshot = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -58,13 +60,27 @@ export class LiveStore {
 
   /** 보냈다 — 첫 사건 전에도 질문과 빈 답이 보이게. */
   begin(turnId: string, conversationId: string, question: string): void {
+    // 앞 턴의 MCP 상태는 새 턴이 시작하면 걷는다(이 턴의 것이 먼저 와 있을 수도 있다).
+    const mcp = this.mcp.get(conversationId);
+    if (mcp && mcp.turnId !== turnId) this.mcp.delete(conversationId);
     if (this.finished.has(turnId)) return;
     this.turns.set(conversationId, { turnId, conversationId, question, answer: startLive(this.now()), approval: null, approvals: [] });
     this.bump();
   }
 
+  /** 이 대화의 마지막 턴이 본 MCP 서버 상태(없으면 null). */
+  mcpStatus(conversationId: string): XdMcpStatus[] | null {
+    return this.mcp.get(conversationId)?.servers ?? null;
+  }
+
   apply(event: XdTurnEvent): void {
     const live = this.turns.get(event.conversationId);
+    if (event.type === 'mcp') {
+      // 턴이 끝난 뒤에도 남긴다 — 못 붙은 서버를 다음 턴까지 알린다.
+      this.mcp.set(event.conversationId, { turnId: event.turnId, servers: event.servers });
+      this.bump();
+      return;
+    }
     if (event.type === 'finished') {
       this.finished.add(event.turnId);
       if (this.finished.size > 500) this.finished.delete(this.finished.values().next().value as string);
@@ -92,11 +108,12 @@ export class LiveStore {
 export const liveStore = new LiveStore();
 
 /** 화면 훅 — 이 대화에서 도는 턴과, 저장된 턴이 바뀐 횟수. */
-export function useLive(conversationId: string | null): { live: LiveTurn | null; version: number } {
+export function useLive(conversationId: string | null): { live: LiveTurn | null; version: number; mcp: XdMcpStatus[] | null } {
   useSyncExternalStore(liveStore.subscribe, liveStore.version);
   return {
     live: conversationId ? liveStore.get(conversationId) : null,
     version: conversationId ? liveStore.conversationVersion(conversationId) : 0,
+    mcp: conversationId ? liveStore.mcpStatus(conversationId) : null,
   };
 }
 

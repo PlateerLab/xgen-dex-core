@@ -174,3 +174,42 @@ test('모델 목록: API 종류는 엔진에 묻고, Claude Code 는 별칭, Cod
   void api;
   store.close();
 });
+
+test('MCP 서버: 비밀은 따로 두고(설정에는 키만), 빈 값은 저장된 것을, 지우면 비밀도 지운다, 연결 확인은 저장된 비밀로', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'xd-api-mcp-'));
+  const stateDir = join(root, '.xd');
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
+  const store = new Store(join(stateDir, 'xd.db'));
+  const secrets = new Secrets(join(stateDir, 'secrets'), plainCrypto);
+  const tested: unknown[] = [];
+  const closed: string[] = [];
+  const api = createXdApi({
+    store,
+    secrets,
+    runner: new TurnRunner({ store, engine: { turn: async () => ({ type: 'done', id: 'x' }), cancel() {}, approvalReply() {} }, secret: () => null, emit() {} }),
+    engine: {
+      info: null,
+      running: true,
+      mcpTest: async (server: unknown) => (tested.push(server), { ok: true, tools: [{ name: 'echo', description: '' }] }),
+      mcpClose: (id: string) => void closed.push(id),
+    },
+    workspaceDir: join(root, 'workspace'),
+    stateDir,
+  });
+  const servers = [{ name: 'GitHub', transport: 'stdio', command: 'gh-mcp --x', env: { TOKEN: 'ghp_secret' } }];
+  const agent = await api.agentsCreate({ name: 'M', options: { mcpServers: servers, other: 1 } });
+  assert.deepEqual((agent.options.mcpServers as any)[0].env, { TOKEN: '' });
+  assert.equal(agent.options.other, 1);
+  assert.equal(JSON.stringify(store.getAgent(agent.id)).includes('ghp_secret'), false);
+  // 빈 값으로 다시 저장해도 비밀은 남는다
+  await api.agentsUpdate(agent.id, { options: { mcpServers: [{ ...servers[0], env: { TOKEN: '' } }] } });
+  const res = await api.mcpTest({ server: { name: 'GitHub', transport: 'stdio', command: 'gh-mcp --x', env: { TOKEN: '' } }, agentId: agent.id });
+  assert.equal(res.ok, true);
+  assert.deepEqual(tested[0], { slug: 'test', label: 'GitHub', transport: 'stdio', command: 'gh-mcp', args: ['--x'], env: { TOKEN: 'ghp_secret' } });
+  await assert.rejects(api.agentsUpdate(agent.id, { options: { mcpServers: [{ name: 'a', command: 'x' }, { name: 'A', command: 'y' }] } }), (e: Error & { code?: string }) => e.code === 'mcp_duplicate');
+  api.agentsDelete(agent.id);
+  assert.equal(secrets.get(`mcp-${agent.id}`), null);
+  assert.deepEqual(closed, [agent.id]);
+  store.close();
+});

@@ -73,7 +73,9 @@ export const ChatView: React.FC<{
 }> = ({ agent, conversationId, onConversation, onEditAgent }) => {
   const { accounts } = useData();
   const account = accounts.find((a) => a.id === agent.accountId) ?? null;
-  const { live, version } = useLive(conversationId);
+  const { live, version, mcp } = useLive(conversationId);
+  // 이번(마지막) 턴에 못 붙은 MCP 서버 — 그 도구 없이 답했다.
+  const mcpDown = (mcp ?? []).filter((s) => s.state !== 'connected');
   const [turns, setTurns] = useState<XdTurn[]>([]);
   const [loading, setLoading] = useState(false);
   /** 끝난 턴이 저장소에서 다시 읽힐 때까지 그 모습을 붙들어 둔다 — 깜박이지 않게. */
@@ -336,6 +338,12 @@ export const ChatView: React.FC<{
         {blockedFolders && (
           <div className="xd-notice" role="status">
             연결할 수 없는 폴더가 있어 에이전트 설정에서 빼야 대화할 수 있습니다.
+          </div>
+        )}
+        {mcpDown.length > 0 && (
+          <div className="xd-notice" role="status" title={mcpDown.map((s) => `${s.label}: ${s.error || s.state}`).join('\n')}>
+            MCP 서버({mcpDown.map((s) => s.label).join(', ')})에 {mcpDown.every((s) => s.state === 'connecting') ? '아직 붙는 중이라' : '연결하지 못해'} 이번 답에서는 그
+            도구를 쓰지 않았습니다.
           </div>
         )}
         {missingFolders && (

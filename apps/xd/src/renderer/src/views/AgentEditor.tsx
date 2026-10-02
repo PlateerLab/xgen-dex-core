@@ -8,7 +8,9 @@ import React, { useEffect, useState } from 'react';
 import type { XdAgent } from '../../../main/store';
 import { xd } from '../bridge';
 import { errorText, FOLDER_BADGE, FOLDER_TEXT, KIND_LABEL, useData } from '../data';
+import type { McpServerConfig } from '../../../main/mcp-config';
 import { FolderIcon, PlusIcon, TrashIcon } from '../dex';
+import { McpServers } from './McpServers';
 
 /** 끌 수 있는 도구 묶음 — 엔진 설정 이름(GENY_TOOLS_<묶음>_ENABLED)과 화면 이름. */
 const TOOL_FAMILIES: Array<{ key: string; label: string; hint: string }> = [
@@ -35,6 +37,9 @@ export const AgentEditor: React.FC<{
   const [prompt, setPrompt] = useState(agent?.systemPrompt ?? '');
   const [memory, setMemory] = useState(agent?.memory ?? true);
   const [folders, setFolders] = useState<string[]>(agent?.folders ?? []);
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() =>
+    Array.isArray(agent?.options.mcpServers) ? (agent!.options.mcpServers as McpServerConfig[]) : [],
+  );
   /** 연결 폴더의 지금 상태(없어졌는지) — 경로 → 상태. */
   const [folderStatus, setFolderStatus] = useState<Record<string, string>>({});
   const [folderError, setFolderError] = useState('');
@@ -107,6 +112,7 @@ export const AgentEditor: React.FC<{
         ...settings,
         ...Object.fromEntries(TOOL_FAMILIES.map((f) => [flag(f.key), tools[f.key] ? '1' : '0'])),
       },
+      mcpServers,
     };
     const input = {
       name,
@@ -270,6 +276,8 @@ export const AgentEditor: React.FC<{
           </p>
         )}
       </section>
+
+      <McpServers value={mcpServers} onChange={setMcpServers} agentId={agent?.id ?? null} />
 
       {error && (
         <div className="voice-error small" role="alert">

@@ -29,6 +29,9 @@ import { createMobileAgentLifecycleFetch } from '../apps/mobile/src/lib/native-a
 import { createMobileAgentLifecycleSource } from '../apps/mobile/src/lib/native-agent-lifecycle';
 import { MobileAgentConversationModel } from '../apps/mobile/src/lib/native-agent-conversation-model';
 import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
+import { NativeCliSession } from '../packages/engine/src/native-platform-session';
+import { createCanonicalTuiSource } from '../apps/cli/src/canonical-tui-command';
+import { CanonicalTuiController } from '../apps/cli/src/tui/canonical-controller';
 
 const origin = 'https://localhost:3443';
 const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
@@ -77,6 +80,8 @@ const tag = `dex-native-${randomUUID()}`;
 const password = randomBytes(32).toString('base64url');
 const browserId = randomUUID();
 const testCli = process.argv.includes('--cli');
+const testCliTui = process.argv.includes('--cli-tui');
+if (testCliTui && !testCli) throw new Error('--cli-tui requires --cli.');
 const testVscode = process.argv.includes('--vscode');
 const testDesktop = process.argv.includes('--desktop');
 const testDesktopWorkspace = process.argv.includes('--desktop-workspace');
@@ -186,6 +191,27 @@ try {
       await assert.rejects(run('login', [], 'session'), (error: unknown) =>
         error instanceof Error && (error.message.includes('503') || ('stderr' in error && String(error.stderr).includes('503'))));
       assert.equal((await run('status', [], 'session')).state, 'login_pending');
+      if (platform === 'cli' && testCliTui) {
+        let wire = 0;
+        const blockedFetch = (async () => { wire++; throw new Error('Canonical wire must not be reached'); }) as typeof fetch;
+        const session = new NativeCliSession(origin, cliKeys, blockedFetch);
+        const source = createCanonicalTuiSource({ origin, userId: String(userId), profile: 'compose' }, session);
+        const controller = new CanonicalTuiController(source, String(userId));
+        try {
+          assert.equal(await controller.read(), false);
+          assert.equal(controller.state.status, 'stopped');
+          assert.equal(controller.state.conversation, null); assert.match(controller.state.error, /인증/);
+          await controller.watch();
+          for (let i = 0; i < 200 && controller.state.status !== 'stopped'; i++) await new Promise((r) => setTimeout(r, 10));
+          assert.equal(controller.state.status, 'stopped'); assert.match(controller.state.error, /인증/);
+          assert.equal(controller.state.conversation, null);
+          assert.equal(JSON.stringify(controller.state).includes(password), false);
+          assert.equal(wire, 0);
+        } finally { await controller.dispose(); }
+        assert.equal((await run('status', [], 'session')).state, 'login_pending');
+        assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
+        console.log('CLI production Canonical TUI source/controller: real enrollment login_pending blocks read and live before proof/wire; safe empty authentication view, journal unchanged PASS');
+      }
       if (platform === 'desktop' && testDesktopWorkspace) {
         const checked: { ui: string; legacy_dispatches: number } = await rpc!.request('verify/workspace-enrollment');
         assert.equal(checked.ui, 'passed'); assert.equal(checked.legacy_dispatches, 0);

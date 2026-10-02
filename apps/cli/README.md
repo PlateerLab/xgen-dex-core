@@ -40,6 +40,20 @@ JSONL은 `reset`, `conversation`, `reconnecting`, `stopped`를 출력한다. `co
 
 The explicit `conversation`, `watch-conversation` and `watch-live` actions read bounded canonical snapshots, execution events and linked terminal messages. Live mode uses scoped GET DPoP over receive-only WSS to wake authoritative HTTP recovery, with periodic vault/focus checks. Same-session token rotation replaces the socket without resetting cursors. Display projections exclude credentials; authentication, integrity and repeated no-progress socket failures stop. Ctrl+C waits for actual socket teardown. These commands do not send chat messages; migration of existing chat sends remains subsequent work.
 
+### Canonical 조회 전용 TUI
+
+```sh
+dex ui --canonical --user-id 7 --profile corp
+```
+
+대화형 TTY에서 승인된 CLI 기기의 HTTPS Platform Session으로 현재 공유 대화와 실행 상태를 표시한다. 첫 화면은 한 번 조회하며 R은 재조회, W는 실시간 WSS/HTTP 연결, S는 연결 중단, Q 또는 Ctrl+Q는 종료다. ↑↓·PgUp/PgDn·Home/End로 조회한 본문을 스크롤한다. 프로필·계정은 실행 시 고정되므로 바꾸려면 종료 후 다시 실행한다.
+
+완료되고 검증된 메시지만 표시하며 생략·불완전 이력·부분 조회를 안내한다. 실행 중 본문은 완료 후 조회한다. 재연결·인증 실패·선택 변경·중단 시 오래된 대화를 지우며, 취소된 요청과 실제 vault/소켓 정리가 끝난 뒤 다음 작업을 시작한다. 서버 제목·본문의 터미널 제어 문자는 제거한다. 대화와 마지막 선택을 파일에 저장하지 않는다.
+
+HTTPS 프로필과 `dex session login`의 ACTIVE 세션이 먼저 필요하다. 인증을 자동 갱신하거나 재로그인하지 않으며 인증 실패 때 안전한 안내를 표시한다. 현재 enrollment Compose에서는 ACTIVE 발급이 503으로 차단되어 이 화면도 대화를 표시할 수 없다. 새 대화 생성·선택·메시지 제출·첨부는 TUI의 후속 작업이다. CLI 명령 `session create-agent-session`, `switch-agent-focus`, `chat --canonical`은 별도로 사용할 수 있다.
+
+`ui --canonical` is an explicit read-only Ink terminal view using the CLI's native Platform Session and OS vault. It reads once on entry; R reads, W starts authoritative HTTP recovery with receive-only WSS wakeups, S stops, and Q/Ctrl+Q exits. Arrow/Page/Home/End keys scroll the bounded complete transcript. Profile, HTTPS origin and user are fixed for the invocation. Reconnect, authentication failure, focus reset and cancellation clear old content; actual request/vault/socket settlement precedes subsequent work or exit. Terminal controls are stripped, private conversation state is memory-only, and authentication is never refreshed automatically. Canonical session selection, creation, submission and attachments inside the TUI remain subsequent work. The local enrollment-mode Gateway cannot issue ACTIVE credentials yet.
+
 ### 기존 Canonical 대화에 턴 제출
 
 이미 Canonical 방식으로 생성된 대화에는 명시적으로 한 턴을 제출할 수 있다.

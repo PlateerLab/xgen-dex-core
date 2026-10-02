@@ -85,6 +85,18 @@ test('취소하면 cancelled 로 끝난다', async () => {
   await svc.stop();
 });
 
+test('엔진이 뜨는 동안 누른 정지도 듣는다 — 턴을 엔진에 보내지 않고 cancelled 로 끝난다', async () => {
+  const { svc } = service();
+  const seen: EngineEvent[] = [];
+  const done = svc.turn(turnCmd('t1', 'hi'), (e) => seen.push(e));
+  svc.cancel('t1'); // 아직 ready 전이다
+  assert.equal((await done).type, 'cancelled');
+  assert.deepEqual(seen, []);
+  // 엔진은 그대로 쓸 수 있다
+  assert.equal((await svc.turn(turnCmd('t2', 'after'), () => {})).type, 'done');
+  await svc.stop();
+});
+
 test('끄면 도는 턴은 엔진이 취소로 마무리한다', async () => {
   const { svc } = service();
   let started!: () => void;

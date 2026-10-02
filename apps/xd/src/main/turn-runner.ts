@@ -6,9 +6,10 @@
  *   Dex 의 `HistoryFlowItem` 그대로 모아 끝날 때 한 번에 저장한다 — 지난 턴도 화면이 같은 타임라인으로 그린다.
  * - 대화 하나에 도는 턴은 하나. 엔진이 받기 전에 알 수 있는 실패(계정·키 없음)는 엔진에 가지 않고 끝난다.
  */
-import { describeStreamError } from '@dex/protocol/errors';
 import { turnEventToChatEvent } from '@dex/protocol/chat';
-import type { ChatEvent, HistoryFlowItem, ToolEvent, XgenErrorInfo } from '@dex/protocol';
+import type { ChatEvent, HistoryFlowItem, ToolEvent } from '@dex/protocol';
+import { errorInfo } from '../shared/error-info';
+export { errorInfo } from '../shared/error-info';
 import type { EngineEvent, TurnCommand, TurnTerminal } from './engine-service';
 import type { XdAccount, XdAgent, Store, XdTurn } from './store';
 
@@ -69,26 +70,6 @@ export interface TurnRunnerDeps {
   /** 시험용 제공자(xd_fake)를 허용하는가 — 엔진이 가짜 LLM 을 등록했을 때만. */
   allowFakeProvider?: boolean;
   now?: () => number;
-}
-
-/** XD 가 붙이는 실패 코드 → 화면 문구. 문구는 한 문장, 내부 사정을 말하지 않는다. */
-const XD_ERRORS: Record<string, Pick<XgenErrorInfo, 'title' | 'hint' | 'retryable'>> = {
-  no_account: { title: '이 에이전트에 연결된 AI 제공자가 없습니다.', hint: '에이전트 설정에서 제공자를 고르세요.', retryable: false },
-  no_key: { title: '이 제공자의 API 키가 없습니다.', hint: '제공자 설정에서 키를 입력하세요.', retryable: false },
-  no_model: { title: '이 에이전트에 모델이 정해져 있지 않습니다.', hint: '에이전트 설정에서 모델을 고르세요.', retryable: false },
-  no_cli: { title: '이 PC 에 CLI 가 설치되어 있지 않습니다.', hint: '제공자 설정에서 설치하세요.', retryable: false },
-  no_base_url: { title: '서버 주소가 없습니다.', hint: '제공자 설정에서 주소를 입력하세요.', retryable: false },
-  unsupported_provider: { title: '이 제공자는 아직 쓸 수 없습니다.', retryable: false },
-  engine_unavailable: { title: '실행 엔진을 시작하지 못했습니다.', hint: '앱을 다시 시작해 보세요.', retryable: true },
-  engine_exited: { title: '실행 엔진이 멈췄습니다.', hint: '다시 보내면 새로 시작합니다.', retryable: true },
-  bad_request: { title: '에이전트 설정을 확인해 주세요.', retryable: false },
-};
-
-export function errorInfo(code: string, message: string): XgenErrorInfo {
-  const known = XD_ERRORS[code];
-  if (known) return { code: `XD-${code}`, detail: message, ...known };
-  // 엔진(제공자·파이프라인)의 실패는 Dex 와 같은 분류기로 사람이 읽는 말로 바꾼다.
-  return describeStreamError(message);
 }
 
 /** 엔진 config — 계정 종류·키·주소와 에이전트 옵션. 엔진에 가기 전에 알 수 있는 실패는 코드로. */

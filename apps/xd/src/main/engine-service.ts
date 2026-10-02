@@ -100,6 +100,8 @@ export class EngineService {
   private starting: Promise<EngineEvent> | null = null;
   private readyInfo: EngineEvent | null = null;
   private turns = new Map<string, PendingTurn>();
+  /** 엔진이 뜨기를 기다리는 턴 — 그 사이 온 [정지]를 여기 적어 두었다가 엔진에 보내지 않고 끝낸다. */
+  private waiting = new Map<string, { cancelled: boolean }>();
   /** 턴이 아닌 요청(모델 목록) — 요청 id → 대답을 받을 함수. */
   private requests = new Map<string, (event: EngineEvent) => void>();
   private requestSeq = 0;
@@ -132,12 +134,17 @@ export class EngineService {
 
   /** 턴 하나 — 사건은 `listener` 로, 종결 사건으로 끝난다(거부되지 않는다). */
   async turn(cmd: TurnCommand, listener: Listener): Promise<TurnTerminal> {
-    if (this.turns.has(cmd.id)) throw new Error(`turn ${cmd.id} is already running`);
+    if (this.turns.has(cmd.id) || this.waiting.has(cmd.id)) throw new Error(`turn ${cmd.id} is already running`);
+    const wait = { cancelled: false };
+    this.waiting.set(cmd.id, wait);
     try {
       await this.ensure();
     } catch (err) {
       return { type: 'error', id: cmd.id, code: 'engine_unavailable', message: String((err as Error).message ?? err) };
+    } finally {
+      this.waiting.delete(cmd.id);
     }
+    if (wait.cancelled) return { type: 'cancelled', id: cmd.id };
     return new Promise<TurnTerminal>((resolve) => {
       this.turns.set(cmd.id, { listener, resolve });
       if (!this.send({ type: 'turn', ...cmd })) {
@@ -184,6 +191,10 @@ export class EngineService {
 
   cancel(turnId: string): void {
     if (this.turns.has(turnId)) this.send({ type: 'cancel', id: turnId });
+    else {
+      const wait = this.waiting.get(turnId);
+      if (wait) wait.cancelled = true;
+    }
   }
 
   approvalReply(turnId: string, request: string, answer: 'once' | 'session' | 'deny'): void {

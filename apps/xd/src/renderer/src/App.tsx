@@ -1,53 +1,121 @@
 /**
- * XD 의 첫 화면 — 지금은 이 앱이 어디에 자리 잡았는지(루트·작업 공간)를 보여 준다.
+ * XD 앱 틀 — 왼쪽 줄(대화·제공자·설정), 사이드바(에이전트·대화), 본문.
  *
- * 화면은 Dex 와 같은 코드를 쓴다(2026-10-02 결정). 여기서 쓰는 마크다운 렌더러가 그 첫 조각이다 — 채팅·
- * 작업 과정·파일 보기·IDE 도 같은 방식으로 붙는다.
+ * 화면은 XD 전용이다(2026-10-02 결정). Dex 와 같은 부품(마크다운·작업 과정·아이콘·스타일)은 `dex.ts` 로만 가져온다.
  */
 import React, { useEffect, useState } from 'react';
-import { Markdown } from '../../../../desktop/src/renderer/src/views/Markdown';
 import { xd } from './bridge';
-import type { XdInfo } from '../../main/ipc';
+import { DataProvider, useData } from './data';
+import { ChatIcon, ServerIcon, SettingsIcon, Tooltip } from './dex';
+import { liveStore } from './live-store';
+import { AgentEditor } from './views/AgentEditor';
+import { ChatView } from './views/ChatView';
+import { ProvidersView } from './views/ProvidersView';
+import { SettingsView } from './views/SettingsView';
+import { Sidebar } from './views/Sidebar';
+import { Welcome } from './views/Welcome';
+import { XdMark } from './views/XdMark';
 
-const SOURCE_TEXT: Record<XdInfo['rootSource'], string> = {
-  install: '설치 폴더',
-  home: '홈 폴더',
-  moved: '설정에서 옮긴 곳',
-  env: '환경 변수(XD_DATA_ROOT)',
-  dev: '개발 실행',
-};
+export type Route =
+  | { name: 'home' }
+  | { name: 'chat'; agentId: string; conversationId: string | null }
+  | { name: 'agent-new' }
+  | { name: 'agent-edit'; agentId: string }
+  | { name: 'providers' }
+  | { name: 'settings' };
 
-export const App: React.FC = () => {
-  const [info, setInfo] = useState<XdInfo | null>(null);
-  const [error, setError] = useState('');
+const Shell: React.FC = () => {
+  const { agents, loaded, error } = useData();
+  const [route, setRoute] = useState<Route>({ name: 'home' });
+
+  // 턴 사건은 앱에 한 번만 듣는다 — 화면을 옮겨도 도는 답이 끊기지 않는다.
+  useEffect(() => xd.onTurnEvent((event) => liveStore.apply(event)), []);
+
+  // 지워진 에이전트를 보고 있었다면 처음으로.
   useEffect(() => {
-    xd.info()
-      .then(setInfo)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+    if ((route.name === 'chat' || route.name === 'agent-edit') && loaded && !agents.some((a) => a.id === route.agentId)) {
+      setRoute({ name: 'home' });
+    }
+  }, [agents, loaded, route]);
 
   if (error) return <div className="center">{error}</div>;
-  if (!info) return <div className="center muted small">불러오는 중…</div>;
-  const text = [
-    '## XD',
-    '',
-    '이 PC 에서 에이전트를 돌리는 로컬용 XGEN Dex 입니다.',
-    '',
-    `- 루트 폴더: \`${info.root}\` (${SOURCE_TEXT[info.rootSource]})`,
-    `- 작업 공간: \`${info.workspace}\``,
-    `- 판: v${info.version}`,
-  ].join('\n');
+  if (!loaded) return <div className="center muted small">불러오는 중…</div>;
+
+  const agentId = route.name === 'chat' || route.name === 'agent-edit' ? route.agentId : null;
+  const agent = agentId ? agents.find((a) => a.id === agentId) ?? null : null;
+  const top = route.name === 'providers' ? 'providers' : route.name === 'settings' ? 'settings' : 'chat';
+
+  let main: React.ReactNode;
+  if (route.name === 'chat' && agent) {
+    main = (
+      <ChatView
+        key={agent.id}
+        agent={agent}
+        conversationId={route.conversationId}
+        onConversation={(id) => setRoute({ name: 'chat', agentId: agent.id, conversationId: id })}
+        onEditAgent={() => setRoute({ name: 'agent-edit', agentId: agent.id })}
+      />
+    );
+  } else if (route.name === 'agent-new') {
+    main = <AgentEditor agent={null} onDone={(id) => setRoute(id ? { name: 'chat', agentId: id, conversationId: null } : { name: 'home' })} onProviders={() => setRoute({ name: 'providers' })} />;
+  } else if (route.name === 'agent-edit' && agent) {
+    main = (
+      <AgentEditor
+        key={agent.id}
+        agent={agent}
+        onDone={(id) => setRoute(id ? { name: 'chat', agentId: id, conversationId: null } : { name: 'home' })}
+        onProviders={() => setRoute({ name: 'providers' })}
+      />
+    );
+  } else if (route.name === 'providers') {
+    main = <ProvidersView />;
+  } else if (route.name === 'settings') {
+    main = <SettingsView />;
+  } else {
+    main = (
+      <Welcome
+        onProviders={() => setRoute({ name: 'providers' })}
+        onNewAgent={() => setRoute({ name: 'agent-new' })}
+        onOpenAgent={(id) => setRoute({ name: 'chat', agentId: id, conversationId: null })}
+      />
+    );
+  }
+
+  const rail = (name: 'chat' | 'providers' | 'settings', label: string, icon: React.ReactNode, go: () => void) => (
+    <Tooltip label={label} side="bottom">
+      <button type="button" className={`ab-btn${top === name ? ' active' : ''}`} aria-label={label} onClick={go}>
+        {top === name && <span className="ab-ind" />}
+        {icon}
+      </button>
+    </Tooltip>
+  );
+
   return (
-    <div className="center" style={{ alignItems: 'stretch', maxWidth: 640, margin: '0 auto', gap: 16 }}>
-      <Markdown text={text} />
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button type="button" className="primary" onClick={() => void xd.openFolder('workspace')}>
-          작업 공간 열기
-        </button>
-        <button type="button" className="secondary" onClick={() => void xd.openFolder('root')}>
-          루트 폴더 열기
-        </button>
-      </div>
+    <div className="xd-shell">
+      <nav className="activity-bar">
+        <div className="ab-logo">
+          <XdMark size={28} />
+        </div>
+        <div className="ab-top">
+          {rail('chat', '대화', <ChatIcon size={20} />, () => setRoute(agent ? { name: 'chat', agentId: agent.id, conversationId: null } : { name: 'home' }))}
+          {rail('providers', 'AI 제공자', <ServerIcon size={20} />, () => setRoute({ name: 'providers' }))}
+        </div>
+        <div className="ab-bottom">{rail('settings', '설정', <SettingsIcon size={20} />, () => setRoute({ name: 'settings' }))}</div>
+      </nav>
+      <Sidebar
+        agentId={agentId}
+        conversationId={route.name === 'chat' ? route.conversationId : null}
+        onOpenAgent={(id) => setRoute({ name: 'chat', agentId: id, conversationId: null })}
+        onOpenConversation={(id, conversationId) => setRoute({ name: 'chat', agentId: id, conversationId })}
+        onNewAgent={() => setRoute({ name: 'agent-new' })}
+      />
+      <main className="xd-main">{main}</main>
     </div>
   );
 };
+
+export const App: React.FC = () => (
+  <DataProvider>
+    <Shell />
+  </DataProvider>
+);

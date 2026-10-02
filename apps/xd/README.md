@@ -3,7 +3,8 @@
 서버 없이 **이 PC 에서** 에이전트를 돌리는 로컬용 XGEN Dex. Dex 와 같은 버전으로 같은 릴리스에 나간다.
 
 - 설계·단계: [DESIGN.md](DESIGN.md)
-- 화면은 Dex 의 화면 코드(`apps/desktop/src/renderer`)를 공유한다 — 빌드 전에 `npm --prefix apps/desktop ci`.
+- 화면은 XD 전용이고, Dex 와 같은 기본 부품(마크다운·작업 과정·아이콘·스타일)만 `src/renderer/src/dex.ts` 로
+  가져온다(DESIGN.md §8) — 빌드 전에 `npm --prefix apps/desktop ci`.
 
 ```bash
 npm --prefix apps/desktop ci
@@ -19,6 +20,9 @@ XD_DATA_ROOT=/tmp/xd npx --prefix apps/xd electron apps/xd   # 시험 루트로 
 node apps/xd/scripts/bundle-engine.mjs && npm --prefix apps/xd run build
 xvfb-run -a npm --prefix apps/xd run e2e      # 화면이 있으면 xvfb-run 없이
 ```
+
+`e2e/screens.e2e.ts` 는 모든 단계를 화면 조작으로 한다(제공자 추가 → 에이전트 → 대화 → 다시 켜기 → 정지·실패).
+`XD_E2E_SHOTS=<폴더>` 를 주면 단계마다 화면을 찍어 둔다.
 
 ## 엔진 (Python)
 

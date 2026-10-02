@@ -4,7 +4,8 @@
  * 정체성은 Dex 와 **나란히 설치되도록** 모두 따로다: 앱 이름(userData)·appId·작업 표시줄 id·단일 실행
  * 잠금. 루트 폴더와 그 아래 구조는 data-root.ts 가 정한다.
  */
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -38,6 +39,14 @@ const layout = rootLayout(chosen.root);
 ensureLayout(layout);
 // userData 를 루트 안으로 — 단일 실행 잠금이 userData 에 있으므로 "루트 하나에 앱 하나" 가 된다.
 app.setPath('userData', layout.electron);
+
+function isHttps(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 /** 위험 명령 확인 — Dex 데스크톱과 같은 문구·버튼(거부가 기본값·Esc). */
 async function confirmDangerous(command: string): Promise<'once' | 'session' | 'deny'> {
@@ -85,7 +94,17 @@ if (!app.requestSingleInstanceLock()) {
   const cli = new CliService({
     cliDir: join(layout.state, 'cli'),
     pathStr: augmentedPath,
-    emit: (event: CliEvent) => send(CHANNELS.cliEvent, event),
+    emit: (event: CliEvent) => {
+      // 로그인이 끝나면 그 CLI 의 계정을 여기서 만든다 — 화면이 그 사이 닫혀 있어도, 여러 번 로그인해도 하나만.
+      if (event.type === 'login' && event.event.type === 'done' && event.event.ok) {
+        try {
+          api.cliAccountEnsure(event.cli);
+        } catch (err) {
+          console.error('[xd] CLI account', err);
+        }
+      }
+      send(CHANNELS.cliEvent, event);
+    },
   });
   const runner = new TurnRunner({
     store,
@@ -152,6 +171,17 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     win.once('ready-to-show', () => win?.show());
+    // 이 창은 앱 화면만 연다 — 새 창은 띄우지 않고(https 링크만 브라우저로), 앱 밖으로 옮겨 가지 않는다.
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (isHttps(url)) void shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    win.webContents.on('will-navigate', (event, url) => {
+      if (url !== win?.webContents.getURL()) {
+        event.preventDefault();
+        if (isHttps(url)) void shell.openExternal(url);
+      }
+    });
     if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
     else void win.loadFile(join(__dirname, '../renderer/index.html'));
   };
@@ -169,10 +199,35 @@ if (!app.requestSingleInstanceLock()) {
     rootSource: chosen.source,
     workspace: layout.workspace,
   }));
-  ipcMain.handle(CHANNELS.openFolder, async (_e, which: unknown) => {
-    const target = which === 'root' ? layout.root : layout.workspace;
+  ipcMain.handle(CHANNELS.openFolder, async (_e, which: unknown, agentId?: unknown) => {
+    let target = which === 'root' ? layout.root : layout.workspace;
+    if (which === 'agent') {
+      const agent = typeof agentId === 'string' ? store.getAgent(agentId) : null;
+      if (!agent) return { ok: false, error: 'no agent' };
+      target = join(layout.workspace, agent.workspace);
+      try {
+        mkdirSync(target, { recursive: true });
+      } catch (err) {
+        return { ok: false, error: String((err as Error).message ?? err) };
+      }
+    }
     const error = await shell.openPath(target);
     return error ? { ok: false, error } : { ok: true };
+  });
+  ipcMain.handle(CHANNELS.pickFolder, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = { properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'> };
+    const result = await (owner ? dialog.showOpenDialog(owner, options) : dialog.showOpenDialog(options));
+    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
+  });
+  ipcMain.handle(CHANNELS.openExternal, async (_e, url: unknown) => {
+    if (typeof url !== 'string' || !isHttps(url)) return false;
+    await shell.openExternal(url);
+    return true;
+  });
+  ipcMain.handle(CHANNELS.clipboardWrite, (_e, text: unknown) => {
+    clipboard.writeText(String(text ?? ''));
+    return true;
   });
 
   void app.whenReady().then(() => {

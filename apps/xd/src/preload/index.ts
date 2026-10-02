@@ -1,8 +1,8 @@
 /**
  * XD 의 preload — 화면이 이 앱에 닿는 유일한 길(`window.xd`).
  *
- * Dex 의 `window.xgen` 과 이름을 나눈다: 공유하는 Dex 화면 코드는 XD 에서 기능 스위치로 서버 기능을
- * 끄고, XD 가 직접 채울 부분만 같은 모양으로 맞춘다(화면 공유 단계에서).
+ * Dex 의 `window.xgen` 과 이름을 나눈다. 화면은 XD 전용이고, 같이 쓰는 Dex 부품이 찾는 것은
+ * `window.xgen.clipboard` 한 칸뿐이다(아래).
  */
 import { contextBridge, ipcRenderer } from 'electron';
 import { CHANNELS, type ApiResult, type XdInfo } from '../main/ipc';
@@ -24,12 +24,19 @@ function call<M extends Method>(method: M): Fn<M> {
   }) as Fn<M>;
 }
 
+const clipboard = {
+  write: (text: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.clipboardWrite, text),
+};
+
 const api = {
   /** 이 앱의 판·루트 폴더. */
   info: (): Promise<XdInfo> => ipcRenderer.invoke(CHANNELS.info),
-  /** 루트·작업 공간 폴더를 파일 관리자로 연다. */
-  openFolder: (which: 'root' | 'workspace'): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke(CHANNELS.openFolder, which),
+  /** 루트·작업 공간·에이전트 작업 공간 폴더를 파일 관리자로 연다. */
+  openFolder: (which: 'root' | 'workspace' | 'agent', agentId?: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(CHANNELS.openFolder, which, agentId),
+  pickFolder: (): Promise<string | null> => ipcRenderer.invoke(CHANNELS.pickFolder),
+  openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.openExternal, url),
+  clipboard,
   agents: {
     list: call('agentsList'),
     get: call('agentsGet'),
@@ -49,6 +56,7 @@ const api = {
     stop: call('turnStop'),
   },
   accounts: {
+    kinds: call('accountKinds'),
     list: call('accountsList'),
     create: call('accountsCreate'),
     update: call('accountsUpdate'),
@@ -68,6 +76,8 @@ const api = {
     loginCode: call('cliLoginCode'),
     loginCancel: call('cliLoginCancel'),
     logout: call('cliLogout'),
+    /** 이 CLI 로 에이전트를 돌릴 계정(없으면 만든다). */
+    useAccount: call('cliAccountEnsure'),
   },
   engine: {
     status: call('engineStatus'),
@@ -88,3 +98,7 @@ const api = {
 
 export type XdBridge = typeof api;
 contextBridge.exposeInMainWorld('xd', api);
+// 같이 쓰는 Dex 화면 부품(마크다운·도구 기록의 [복사])은 `window.xgen.clipboard` 가 있으면 main 의 클립보드를 쓴다
+// (Electron 의 navigator.clipboard 는 권한 문제로 조용히 실패한다). XD 는 그 한 칸만 같은 모양으로 연다 — 서버
+// 기능은 하나도 열지 않는다.
+contextBridge.exposeInMainWorld('xgen', { clipboard });

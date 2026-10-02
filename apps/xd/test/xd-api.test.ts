@@ -104,6 +104,19 @@ test('계정: 종류 검사, 키는 비밀 저장소에, 목록에는 있음/없
   store.close();
 });
 
+test('CLI 계정은 하나 — 로그인을 몇 번 해도 같은 계정, 지우면 다시 하나', () => {
+  const { api, store } = setup();
+  const first = api.cliAccountEnsure('claude');
+  assert.deepEqual([first.kind, first.label, first.settings], ['claude_code', 'Claude Code', { auth: 'oauth' }]);
+  assert.equal(api.cliAccountEnsure('claude').id, first.id);
+  assert.equal(api.accountsList().filter((a) => a.kind === 'claude_code').length, 1);
+  assert.equal(api.cliAccountEnsure('codex').kind, 'codex');
+  api.accountsDelete(first.id);
+  assert.notEqual(api.cliAccountEnsure('claude').id, first.id);
+  assert.throws(() => api.cliAccountEnsure('gemini' as never), /unknown CLI/);
+  store.close();
+});
+
 test('모델 목록: API 종류는 엔진에 묻고, Claude Code 는 별칭, Codex 는 홈의 캐시', async () => {
   const { api, store, stateDir } = setup();
   const asked: unknown[] = [];

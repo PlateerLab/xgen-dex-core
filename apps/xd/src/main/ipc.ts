@@ -2,6 +2,11 @@
 export const CHANNELS = {
   info: 'xd:info',
   openFolder: 'xd:openFolder',
+  /** 폴더 고르기 창 — 고른 경로(취소면 null). */
+  pickFolder: 'xd:pickFolder',
+  /** https 주소만 브라우저로 연다(로그인 주소·답의 링크). */
+  openExternal: 'xd:openExternal',
+  clipboardWrite: 'xd:clipboardWrite',
   /** main 의 API 한 칸 — `xd:api` 하나로 이름(메서드)과 인자를 넘긴다(xd-api.ts). */
   api: 'xd:api',
   /** main → 화면: 턴 사건(XdTurnEvent). */

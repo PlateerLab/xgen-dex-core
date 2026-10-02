@@ -7,6 +7,7 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 import { CHANNELS } from '../main/ipc';
+import type { ChatDownload } from '@dex/protocol/chat-files';
 import type {
   ChatEvent,
   ChatRequest,
@@ -464,6 +465,12 @@ const api = {
       ipcRenderer.on(CHANNELS.browserRevealEvent, handler);
       return () => ipcRenderer.removeListener(CHANNELS.browserRevealEvent, handler);
     },
+  },
+
+  /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일). `preview` 는 그림을 화면에 그릴 때. */
+  chatFiles: {
+    download: (item: ChatDownload, opts?: { preview?: boolean }): Promise<WorkspaceBinary> =>
+      ipcRenderer.invoke(CHANNELS.chatFileDownload, item, opts),
   },
 
   chat: {

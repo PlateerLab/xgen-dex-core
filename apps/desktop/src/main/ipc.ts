@@ -142,6 +142,8 @@ export const CHANNELS = {
   agentWsDocPreview: 'agent:wsDocPreview',
   agentWsPreviewPage: 'agent:wsPreviewPage',
   agentWsUpload: 'agent:wsUpload',
+  /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일)의 바이트. */
+  chatFileDownload: 'chat:fileDownload',
 
   // IDE — 채팅의 [IDE] 보기. 호출은 한 채널(허용된 메서드만)로 받아 결과를 봉투로 돌려준다
   // (409 의 지금 sha 같은 상세가 IPC 오류 문자열로 뭉개지지 않게). 터미널은 main 이 소켓을 연다.

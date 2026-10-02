@@ -731,21 +731,36 @@ function useLiveText(monaco: typeof Monaco | null, workflowId: string, path: str
   const [text, setText] = useState<string | undefined>(undefined);
   const ready = useIde((s) => s.docs[path]?.status === 'ready');
   useEffect(() => {
-    if (!on || !monaco || !ready) {
-      setText(undefined);
-      return;
-    }
-    const model = monaco.editor.getModel(modelUri(monaco, workflowId, path));
-    if (!model) return;
-    setText(model.getValue());
+    // 이 파일의 글을 받기 전까지는 비워 둔다 — 예전에는 새 파일의 모델이 아직 없으면 그냥 돌아가서
+    // 앞 파일의 글이 그대로 남았다(md 다음에 csv 를 열면 md 가 표로 그려졌다).
+    setText(undefined);
+    if (!on || !monaco || !ready) return;
+    const uri = modelUri(monaco, workflowId, path);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const sub = model.onDidChangeContent(() => {
-      clearTimeout(timer);
-      timer = setTimeout(() => setText(model.getValue()), 250);
-    });
+    let sub: { dispose(): void } | undefined;
+    let created: { dispose(): void } | undefined;
+    const follow = (model: Monaco.editor.ITextModel): void => {
+      setText(model.getValue());
+      sub = model.onDidChangeContent(() => {
+        clearTimeout(timer);
+        timer = setTimeout(() => setText(model.getValue()), 250);
+      });
+    };
+    const model = monaco.editor.getModel(uri);
+    if (model) follow(model);
+    else {
+      // 모델은 편집기가 그 파일을 처음 열 때 생긴다 — 생기면 그때 따라간다.
+      created = monaco.editor.onDidCreateModel((m) => {
+        if (m.uri.toString() !== uri.toString()) return;
+        created?.dispose();
+        created = undefined;
+        follow(m);
+      });
+    }
     return () => {
       clearTimeout(timer);
-      sub.dispose();
+      sub?.dispose();
+      created?.dispose();
     };
   }, [monaco, workflowId, path, on, ready]);
   return text;

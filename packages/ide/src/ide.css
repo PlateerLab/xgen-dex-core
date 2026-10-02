@@ -1794,7 +1794,8 @@ del.xide-search-hit {
   position: absolute;
   top: 8px;
   right: 22px;
-  z-index: 5;
+  /* Monaco 미니맵(z-index 5)보다 위 — 같으면 문서 순서상 미니맵이 덮어 편집 중에 눌리지 않았다. */
+  z-index: 10;
   display: inline-flex;
   gap: 2px;
   padding: 2px;

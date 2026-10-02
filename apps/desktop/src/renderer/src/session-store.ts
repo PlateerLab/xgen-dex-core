@@ -23,6 +23,7 @@
  */
 import type {
   Agent,
+  ChatDownload,
   ChatEvent,
   ChatRequest,
   Citation,
@@ -37,6 +38,7 @@ import {
   appendFlowItem,
   describeStreamError,
   liveTurnFlow,
+  mergeChatDownload,
   turnEventToChatEvent,
   turnInputText,
 } from '@dex/protocol';
@@ -205,6 +207,11 @@ export interface ChatMsg {
   /** 마지막으로 텍스트·도구 이벤트를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 표시. */
   lastEventAt?: number;
   citations?: Citation[];
+  /**
+   * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact` 로 받은 것.
+   * 이력으로 되살린 답은 본문 표식에서 같은 것을 다시 읽는다(@dex/protocol chatAnswerFiles).
+   */
+  downloads?: ChatDownload[];
   /**
    * 이 답변이 서버에 남은 실행 한 건의 id.
    *
@@ -1243,6 +1250,9 @@ export class SessionStore {
       } else if (ev.kind === 'execution_io') {
         // 이 턴이 서버에 남은 자리 — 답변 평가가 이 id 로 붙는다.
         nl.executionIoId = ev.executionIoId;
+      } else if (ev.kind === 'download') {
+        // 도구가 파일 저장소에 올린 결과물 — 답이 끝나면 아래에 단추·그림으로 보인다(웹과 같다).
+        nl.downloads = mergeChatDownload(last.downloads ?? [], ev.data);
       } else if (ev.kind === 'summary' && !nl.text) nl.text = ev.text;
       else if (ev.kind === 'tool') {
         rt.tools = [...rt.tools, ev.event];

@@ -28,6 +28,7 @@ export type { McpSecretStore, McpOAuthStore } from './secret-stores';
 
 // ── 로컬 도구 — 에이전트가 이 기기에서 부를 수 있는 것 ──
 export * from './local-tools';
+export * from './workspace-transfer';
 export * from './exec-resolve';
 
 // ── MCP ──

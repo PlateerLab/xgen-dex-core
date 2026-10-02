@@ -48,6 +48,7 @@ import {
   type PermissionState,
   type ToolGroup,
 } from './lib/mobile-tools';
+import { mobileWorkspaceTransfer } from './lib/workspace-transfer';
 import { rnPort } from './lib/rn-port';
 import { folderFs, folderStore, setFolderServer, useFolderAccount } from './lib/folder-store';
 import { ensureDeviceId, cachedDeviceId, deviceName, devicePlatform } from './lib/device';
@@ -269,6 +270,10 @@ export default function App(): React.ReactElement {
           folders,
           fs: folderFs,
           ...(context.remote ? { remoteFrom: context.originName ?? '' } : {}),
+          // 복사 도구의 길 — 서버가 보증한 이 호출의 에이전트·대화로 묶는다.
+          ...(context.workflowId && context.interactionId
+            ? { workspace: mobileWorkspaceTransfer(client, context.workflowId, context.interactionId) }
+            : {}),
         });
       },
       onStatus: setBridgeStatus,

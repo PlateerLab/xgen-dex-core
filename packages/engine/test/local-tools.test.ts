@@ -2,7 +2,7 @@
 import assert from 'assert';
 import { test } from 'node:test';
 import { platform, homedir, tmpdir } from 'os';
-import { mkdtemp, realpath, symlink, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'fs/promises';
 import { join, resolve } from 'path';
 import { normalizeLocalFolders } from '@dex/engine/local-folders';
 import { setWorkspaceShellSupportForTest } from '@dex/engine/workspace-shell';
@@ -35,6 +35,8 @@ import {
   mcpListServersToolSchema,
   NO_FOLDER_MESSAGE,
   FOLDER_TOOL_NAMES,
+  COPY_TO_WORKSPACE_TOOL,
+  COPY_FROM_WORKSPACE_TOOL,
 } from '@dex/engine/local-tools';
 import { bindTestHost, recordingInteraction } from './_host';
 
@@ -127,7 +129,90 @@ test('폴더 도구는 늘 광고된다 — 쓸 수 있는지는 호출마다 �
     'Clipboard',
     'Notify',
   ]);
-  assert.deepEqual(new Set(names.slice(1)), FOLDER_TOOL_NAMES);
+  // 작업 공간과 주고받는 길이 없으면(호스트가 서버 연결을 붙이지 않았다) 복사 도구는 광고하지 않는다.
+  assert.deepEqual(
+    new Set([...names.slice(1), COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]),
+    FOLDER_TOOL_NAMES,
+  );
+  p.configureWorkspaceTransfer({ upload: async () => ({ path: '', size: 0 }), download: async () => new Uint8Array() });
+  assert.deepEqual(p.advertise().map((t) => t.name).slice(-2), [COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]);
+});
+
+test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 구조째, 숨김·폴더 밖은 건너뛴다', async () => {
+  const dir = await folder();
+  await mkdir(join(dir, 'docs', 'sub'), { recursive: true });
+  await writeFile(join(dir, 'a.docx'), 'A');
+  await writeFile(join(dir, 'docs', 'b.pdf'), 'BB');
+  await writeFile(join(dir, 'docs', 'sub', 'c.hwp'), 'CCC');
+  await writeFile(join(dir, 'docs', '.hidden'), 'x');
+  const { p } = provider({ c: [dir] });
+  const uploads: Array<{ name: string; relDir: string; size: number; wf: string; conv: string }> = [];
+  p.configureWorkspaceTransfer({
+    upload: async (input) => {
+      uploads.push({ name: input.name, relDir: input.relDir, size: input.bytes.byteLength, wf: input.workflowId, conv: input.interactionId });
+      const rel = [input.relDir, input.name].filter(Boolean).join('/');
+      return { path: `uploads/users_1/c/${rel}`, size: input.bytes.byteLength, sha256: 'h' };
+    },
+    download: async () => new Uint8Array(),
+  });
+  const r = await p.callTool(
+    COPY_TO_WORKSPACE_TOOL,
+    { paths: ['a.docx', join(dir, 'docs'), '/etc/hostname'] },
+    { interactionId: 'c', workflowId: 'wf-1' },
+  );
+  assert.equal(r.isError, undefined);
+  assert.deepEqual(
+    uploads.map((u) => `${u.relDir}|${u.name}|${u.size}|${u.wf}|${u.conv}`),
+    ['|a.docx|1|wf-1|c', 'docs|b.pdf|2|wf-1|c', 'docs/sub|c.hwp|3|wf-1|c'],
+  );
+  assert.deepEqual(
+    (r.structuredContent?.workspaceFiles as Array<{ path: string }>).map((f) => f.path),
+    ['uploads/users_1/c/a.docx', 'uploads/users_1/c/docs/b.pdf', 'uploads/users_1/c/docs/sub/c.hwp'],
+  );
+  assert.match(r.content[0].text, /Skipped 1:\n- \/etc\/hostname: \[PATH_DOMAIN_MISMATCH\]/);
+  await assert.rejects(
+    () => p.callTool(COPY_TO_WORKSPACE_TOOL, { paths: ['a.docx'] }, inChat('c')),
+    /어느 대화의 작업 공간/,
+    '호출 문맥에 에이전트가 없으면 옮기지 않는다',
+  );
+});
+
+test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 쓰고, 있는 파일은 덮어쓰라고 할 때만 바꾼다', async () => {
+  const dir = await folder();
+  const { p } = provider({ c: [dir] });
+  const asked: Array<{ url: string; token?: string }> = [];
+  p.configureWorkspaceTransfer({
+    upload: async () => ({ path: '', size: 0 }),
+    download: async (d) => {
+      asked.push(d);
+      return new TextEncoder().encode('REPORT');
+    },
+  });
+  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 'tok', name: 'report.docx' };
+  const saved = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'out/report.docx', path: dir, download }, inChat('c'));
+  assert.equal(saved.isError, undefined);
+  assert.equal(await readFile(join(dir, 'report.docx'), 'utf8'), 'REPORT');
+  assert.deepEqual(asked, [{ url: download.url, token: 'tok', name: 'report.docx' }]);
+  const again = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: join(dir, 'report.docx'), download }, inChat('c'));
+  assert.equal(again.isError, true);
+  const nested = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: 'new/dir/', download }, inChat('c'));
+  assert.equal(nested.isError, undefined);
+  assert.equal(await readFile(join(dir, 'new', 'dir', 'report.docx'), 'utf8'), 'REPORT');
+  const old = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: dir }, inChat('c'));
+  assert.equal(old.isError, true, '서버가 받을 거리를 싣지 않았다(옛 서버)');
+  await assert.rejects(
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: '/tmp/out.docx', download }, inChat('c')),
+    /PATH_DOMAIN_MISMATCH/,
+  );
+});
+
+test('ListDir 은 수정 시각(기기 현지 시각)을 함께 보여 준다', async () => {
+  const dir = await folder();
+  await writeFile(join(dir, 'today.txt'), 'x');
+  const { p } = provider({ c: [dir] });
+  const l = await p.callTool('ListDir', {}, inChat('c'));
+  assert.match(l.content[0].text, /modified\(local time\)/);
+  assert.match(l.content[0].text, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}  today\.txt/);
 });
 
 test('LocalControl 은 이 대화의 폴더와 쓸 수 있는 도구를 알려 준다', async () => {

@@ -90,6 +90,8 @@ function createIosFs(onBookmarkRenewed?: (uri: string, bookmark: string) => void
           name,
           isDir: info.exists && info.isDirectory === true,
           size: info.exists && 'size' in info ? Number(info.size ?? 0) : 0,
+          // expo-file-system 은 초 단위다.
+          ...(info.exists && info.modificationTime ? { modified: Math.round(info.modificationTime * 1000) } : {}),
         });
       }
       return out;

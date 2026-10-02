@@ -59,6 +59,8 @@ export interface ExecCallbacks {
    * 그리고, 소켓 구멍을 이력으로 메울 때 "어디까지 그렸나" 를 이 id 로 안다(없으면 메우지 못한다).
    */
   onExecutionIo?: (ioId: number) => void;
+  /** 도구가 파일 저장소에 올린 결과물(`download_artifact`) — 답 아래에 그림·단추로 그린다. */
+  onDownload?: (data: Record<string, unknown>) => void;
   onEnd?: () => void;
   onError?: (message: string) => void;
   /**
@@ -245,6 +247,9 @@ export function dispatchExec(
       return null;
     case 'execution_io':
       if (ev.executionIoId > 0) cb.onExecutionIo?.(ev.executionIoId);
+      return null;
+    case 'download':
+      cb.onDownload?.(ev.data);
       return null;
     case 'text':
       // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면 절반이

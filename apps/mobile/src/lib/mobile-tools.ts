@@ -17,7 +17,21 @@
  * 에이전트에게 그대로 간다.
  */
 import {
+  COPY_FROM_WORKSPACE_TOOL,
+  COPY_TO_WORKSPACE_TOOL,
+  NO_DOWNLOAD_MESSAGE,
+  WORKSPACE_COPY_LIMITS,
+  copyTargetDir,
+  copyToWorkspaceResult,
+  deviceTimeText,
+  workspaceCopySchemas,
+  workspaceDownloadOf,
+  type CopiedFile,
+  type SkippedFile,
+} from '@dex/protocol';
+import {
   NO_FOLDER_MESSAGE,
+  pathSegments,
   resolveFolderPath,
   virtualRoot,
   type MobileFolder,
@@ -69,6 +83,8 @@ export const FOLDER_TOOLS: ReadonlySet<string> = new Set([
   'Search',
   'OpenFile',
   'TakePhoto',
+  COPY_TO_WORKSPACE_TOOL,
+  COPY_FROM_WORKSPACE_TOOL,
 ]);
 
 export type PermissionState = 'granted' | 'denied' | 'prompt';
@@ -76,6 +92,8 @@ export type PermissionState = 'granted' | 'denied' | 'prompt';
 export interface ToolResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
+  /** 서버가 읽는 기계용 결과(복사 도구의 `workspaceFiles` — 서버가 그 턴의 sandbox 에 바로 들인다). */
+  structuredContent?: Record<string, unknown>;
 }
 
 export interface ToolAdvert {
@@ -110,6 +128,21 @@ export interface FolderEntry {
   name: string;
   isDir: boolean;
   size: number;
+  /** 수정 시각(ms). 모르면 없다. "오늘 받은 파일" 을 고를 근거다. */
+  modified?: number;
+}
+
+/**
+ * 이 호출의 대화 작업 공간과 주고받는 길 — 호출마다 그 대화(context)로 묶여 온다.
+ * 폰은 파일을 경로로 흘려보낸다(RN 의 Blob 은 바이트로 만들 수 없다).
+ */
+export interface WorkspaceTransfer {
+  /** 폰의 로컬 파일(file://)을 이 대화의 첨부 폴더(하위 `relDir`)로 올린다. 같은 이름은 덮어쓴다. */
+  upload(localUri: string, name: string, relDir: string): Promise<{ path: string; size: number; sha256?: string }>;
+  /** 서버가 내어 준 임시 파일을 로컬 파일(file://)로 받는다. */
+  download(url: string, token: string | undefined, name: string): Promise<string>;
+  /** 다 쓴 로컬 사본을 지운다. 실패해도 조용히. */
+  discard(localUri: string): Promise<void>;
 }
 
 /** 연결한 폴더의 파일 작업 — folder-fs.ts 가 플랫폼별로 구현한다. 경로는 폴더 기준 상대 경로. */
@@ -135,6 +168,8 @@ export interface FolderScope {
   fs: FolderFs;
   /** 다른 화면(웹·PC)에서 보낸 턴의 호출 — 그 화면의 이름. */
   remoteFrom?: string;
+  /** 이 호출의 대화 작업 공간(복사 도구). 호출 문맥에 에이전트·대화가 없으면 없다. */
+  workspace?: WorkspaceTransfer;
 }
 
 /** 휴대폰 앞에 사람이 있어야 뜻이 있는 폴더 도구 — 다른 화면에서 온 요청에서는 쓰지 않는다. */
@@ -183,7 +218,7 @@ export function advertiseMobileTools(enabled?: Partial<Record<ToolGroup, boolean
       content: str('Text to write.'),
       append: { type: 'boolean', description: 'true appends to the end (default false = overwrite).' },
     }, ['path', 'content']),
-    t('ListDir', 'List a folder on the phone (type, size, name).' + FOLDER_NOTE, {
+    t('ListDir', 'List a folder on the phone (type, size, modified time in the phone\'s local time, name).' + FOLDER_NOTE, {
       path: str(`${PATH_HELP} Empty = the first connected folder.`),
     }),
     t('DeleteFile', 'Delete a file or folder on the phone. A connected folder itself cannot be deleted.' + FOLDER_NOTE, {
@@ -200,6 +235,7 @@ export function advertiseMobileTools(enabled?: Partial<Record<ToolGroup, boolean
     t('TakePhoto', 'Take a photo with the phone camera and save it as a JPEG in a connected folder.' + FOLDER_NOTE, {
       path: str(`${PATH_HELP} Default: photo-<time>.jpg in the first connected folder.`),
     }),
+    ...workspaceCopySchemas('phone').map((schema) => ({ server: MOBILE_SERVER, ...schema })),
     t('Notify', '휴대폰에 로컬 알림을 표시합니다.', {
       title: str('알림 제목'),
       body: str('알림 내용'),
@@ -311,11 +347,15 @@ async function callFolderTool(
       const at = resolveFolderPath(folders, args.path ?? '');
       const entries = await fs.list(at.folder, at.rel);
       if (entries.length === 0) return ok(`(비어 있음) ${at.display}`);
-      const rows = entries
-        .slice(0, LIST_CAP)
-        .map((entry) => (entry.isDir ? `d ${entry.name}/` : `- ${entry.name} (${entry.size}B)`));
+      // 수정 시각을 함께 — "오늘 받은 파일" 같은 요청은 이것 없이는 고를 수 없다(2026-10-02 사용자 실측).
+      const rows = entries.slice(0, LIST_CAP).map((entry) => {
+        const when = deviceTimeText(entry.modified);
+        return entry.isDir
+          ? `d ${entry.name}/${when ? `  (modified ${when})` : ''}`
+          : `- ${entry.name} (${entry.size}B${when ? `, modified ${when}` : ''})`;
+      });
       const more = entries.length > LIST_CAP ? `\n…(${entries.length} entries, first ${LIST_CAP} shown)` : '';
-      return ok(`${at.display}\n${rows.join('\n')}${more}`);
+      return ok(`${at.display}  (times are the phone's local time)\n${rows.join('\n')}${more}`);
     }
     case 'DeleteFile': {
       const at = resolveFolderPath(folders, args.path);
@@ -346,9 +386,124 @@ async function callFolderTool(
       await fs.importFile(at.folder, rel, shot);
       return ok(`사진을 저장했습니다: ${virtualRoot(at.folder)}/${rel}`);
     }
+    case COPY_TO_WORKSPACE_TOOL:
+      return copyToWorkspace(args, scope);
+    case COPY_FROM_WORKSPACE_TOOL:
+      return copyFromWorkspace(args, scope);
     default:
       return err(`알 수 없는 도구: ${tool}`);
   }
+}
+
+/**
+ * 폰의 파일·폴더 → 이 대화의 작업 공간. 폴더는 구조째(숨김은 건너뛴다). 파일은 앱 캐시에 사본을 만들어
+ * 경로로 흘려보낸 뒤 지운다 — 문서 제공자 트리의 파일은 다른 앱이 직접 읽을 수 없다.
+ */
+async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope): Promise<ToolResult> {
+  const transfer = scope.workspace;
+  if (!transfer) return err('어느 대화의 작업 공간인지 알 수 없어 옮기지 못했습니다.');
+  const { folders, fs } = scope;
+  const inputs = (Array.isArray(args.paths) ? args.paths : [args.paths ?? args.path])
+    .map((p) => String(p ?? '').trim())
+    .filter(Boolean);
+  if (!inputs.length) return err('paths 가 필요합니다.');
+
+  const limits = WORKSPACE_COPY_LIMITS;
+  const skipped: SkippedFile[] = [];
+  const plan: Array<{ folder: MobileFolder; rel: string; relDir: string; size: number }> = [];
+  let planned = 0;
+  const show = (folder: MobileFolder, rel: string): string => `${virtualRoot(folder)}/${rel}`;
+  const take = (folder: MobileFolder, rel: string, relDir: string, size: number): void => {
+    const source = show(folder, rel);
+    if (size > limits.maxFileBytes) skipped.push({ source, reason: `larger than ${limits.maxFileBytes / (1024 * 1024)}MB` });
+    else if (plan.length >= limits.maxFiles) skipped.push({ source, reason: `more than ${limits.maxFiles} files in one copy` });
+    else if (planned + size > limits.maxTotalBytes) skipped.push({ source, reason: 'total size limit for one copy reached' });
+    else {
+      plan.push({ folder, rel, relDir, size });
+      planned += size;
+    }
+  };
+  const walk = async (folder: MobileFolder, rootRel: string, rootName: string, rel: string, depth: number): Promise<void> => {
+    let entries: FolderEntry[];
+    try {
+      entries = await fs.list(folder, rel);
+    } catch (e) {
+      skipped.push({ source: show(folder, rel), reason: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith('.')) continue;
+      const child = joinRel(rel, entry.name);
+      if (entry.isDir) {
+        if (depth >= limits.maxDepth) skipped.push({ source: show(folder, child), reason: 'folder nested too deep' });
+        else await walk(folder, rootRel, rootName, child, depth + 1);
+      } else {
+        const inside = rootRel ? child.slice(rootRel.length + 1) : child;
+        take(folder, child, copyTargetDir(rootName, inside), entry.size);
+      }
+    }
+  };
+  for (const input of inputs) {
+    let at: ReturnType<typeof resolveFolderPath>;
+    try {
+      at = resolveFolderPath(folders, input);
+    } catch (e) {
+      skipped.push({ source: input, reason: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+    try {
+      const st = await fs.stat(at.folder, at.rel);
+      if (!st.exists) skipped.push({ source: at.display, reason: 'not found' });
+      else if (st.isDir) await walk(at.folder, at.rel, pathSegments(at.rel).at(-1) ?? at.folder.name, at.rel, 0);
+      else take(at.folder, at.rel, '', st.size);
+    } catch (e) {
+      skipped.push({ source: at.display, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  const copied: CopiedFile[] = [];
+  for (const item of plan) {
+    const source = show(item.folder, item.rel);
+    let local = '';
+    try {
+      local = await fs.exportFile(item.folder, item.rel);
+      const name = pathSegments(item.rel).at(-1) ?? 'file';
+      const res = await transfer.upload(local, name, item.relDir);
+      copied.push({ source, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
+    } catch (e) {
+      skipped.push({ source, reason: e instanceof Error ? e.message : String(e) });
+    } finally {
+      if (local) await transfer.discard(local);
+    }
+  }
+  return copyToWorkspaceResult(copied, skipped);
+}
+
+/** 서버가 실어 준 작업 공간 파일 → 연결한 폴더. 있는 파일은 덮어쓰라고 할 때만 바꾼다. */
+async function copyFromWorkspace(args: Record<string, unknown>, scope: FolderScope): Promise<ToolResult> {
+  const transfer = scope.workspace;
+  if (!transfer) return err('어느 대화의 작업 공간인지 알 수 없어 받지 못했습니다.');
+  const download = workspaceDownloadOf(args);
+  if (!download) return err(NO_DOWNLOAD_MESSAGE);
+  const raw = String(args.path ?? '').trim();
+  const at = resolveFolderPath(scope.folders, raw);
+  let rel = at.rel;
+  const here = rel ? await scope.fs.stat(at.folder, rel) : { exists: true, isDir: true, size: 0 };
+  if ((here.exists && here.isDir) || /[\\/]$/.test(raw)) rel = joinRel(rel, download.name);
+  const shown = `${virtualRoot(at.folder)}/${rel}`;
+  const target = await scope.fs.stat(at.folder, rel);
+  if (target.exists && target.isDir) return err(`${shown} is a folder.`);
+  if (target.exists && args.overwrite !== true) {
+    return err(`${shown} already exists. Pass overwrite=true to replace it, or choose another path.`);
+  }
+  const local = await transfer.download(download.url, download.token, download.name);
+  try {
+    if (target.exists) await scope.fs.remove(at.folder, rel);
+    await scope.fs.importFile(at.folder, rel, local);
+  } finally {
+    await transfer.discard(local);
+  }
+  return ok(`Saved ${download.name} to ${shown}.`);
 }
 
 export async function callMobileTool(

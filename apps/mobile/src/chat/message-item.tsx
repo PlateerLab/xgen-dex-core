@@ -9,12 +9,15 @@
  *   · 실패는 본문 대신 구조로 — 무슨 일인지 · 이제 뭘 하면 되는지 · 문의 코드
  *   · 길게 누르면 그 줄을 복사한다 (폰에는 마우스 우클릭이 없다)
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { parseAgentTrigger, INTERRUPTED_TEXT, type ToolEvent } from '@dex/protocol';
+import { chatAnswerFiles, parseAgentTrigger, INTERRUPTED_TEXT, type ToolEvent } from '@dex/protocol';
+import type { XgenMobileClient } from '../lib/xgen';
+import type { PreviewFile } from '../files/file-preview';
+import { AnswerFiles, AttachmentChips } from './message-files';
 import { alpha, useP } from '../theme';
 import { AssistantMarkdown } from './markdown';
 import { ToolActivity } from './tool-activity';
@@ -152,9 +155,23 @@ export const MessageItem: React.FC<{
   /** 글 조각 하나를 같은 규칙으로 정리한다 — 작업 과정의 단계 글에 쓴다. */
   clean: (text: string) => string;
   onOpenLog: (events: ToolEvent[], initialOpen?: number) => void;
-}> = React.memo(({ message: m, text, clean, onOpenLog }) => {
+  client: XgenMobileClient;
+  workflowId: string;
+  /** 이 답을 부른 질문 — 답이 만든 파일 중 요청한 결과물을 고르는 근거. */
+  request: string;
+  /** 대화의 마지막 답인가. */
+  latest: boolean;
+  /** 파일 한 장을 폰 안에서 연다. */
+  onOpenFile: (file: PreviewFile) => void;
+}> = React.memo(({ message: m, text: rawText, clean, onOpenLog, client, workflowId, request, latest, onOpenFile }) => {
   const p = useP();
   const [copied, setCopied] = useState(false);
+  // 답의 파일 저장소 결과물 — 스트림으로 받은 것 + 이력 본문의 표식. 본문에서는 그 표식을 걷는다(웹과 같다).
+  const answer = useMemo(
+    () => (m.role === 'assistant' ? chatAnswerFiles(rawText, m.downloads) : { text: rawText, downloads: [] }),
+    [m.role, rawText, m.downloads],
+  );
+  const text = answer.text;
 
   const copy = async (): Promise<void> => {
     if (!text) return;
@@ -184,28 +201,7 @@ export const MessageItem: React.FC<{
         }}
       >
         {m.attachments && m.attachments.length > 0 ? (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            {m.attachments.map((file, i) => (
-              <View
-                key={`${file.name}-${i}`}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 5,
-                  backgroundColor: alpha('#FFFFFF', 18),
-                  borderRadius: 999,
-                  paddingHorizontal: 9,
-                  paddingVertical: 4,
-                  maxWidth: 200,
-                }}
-              >
-                <Text style={{ fontSize: 11 }}>{file.kind === 'image' ? '🖼' : '📎'}</Text>
-                <Text numberOfLines={1} style={{ color: '#FFFFFF', fontSize: 12, flexShrink: 1 }}>
-                  {file.name}
-                </Text>
-              </View>
-            ))}
-          </View>
+          <AttachmentChips client={client} workflowId={workflowId} files={m.attachments} onOpen={onOpenFile} />
         ) : null}
         {text ? <Text style={{ color: '#FFFFFF', fontSize: 15.5, lineHeight: 22 }}>{text}</Text> : null}
         {copied ? <Text style={{ color: alpha('#FFFFFF', 75), fontSize: 11 }}>복사됨</Text> : null}
@@ -258,6 +254,17 @@ export const MessageItem: React.FC<{
         )}
         {!!text && live && !timeline ? <Caret /> : null}
       </Pressable>
+
+      <AnswerFiles
+        client={client}
+        workflowId={workflowId}
+        message={m}
+        text={text}
+        downloads={answer.downloads}
+        request={request}
+        latest={latest}
+        onOpen={onOpenFile}
+      />
 
       {m.interrupted ? (
         <Text style={{ color: p.muted, fontSize: 11.5, marginTop: 2 }}>{INTERRUPTED_TEXT}</Text>

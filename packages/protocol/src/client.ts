@@ -193,7 +193,7 @@ export class HttpClient {
    */
   async getBinary(
     path: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; headers?: Record<string, string> },
   ): Promise<{ bytes: Uint8Array; contentType: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 120_000);
@@ -201,7 +201,7 @@ export class HttpClient {
     try {
       res = await this.fetchImpl(this.url(path), {
         method: 'GET',
-        headers: this.headers({ Accept: '*/*' }),
+        headers: this.headers({ Accept: '*/*', ...(opts?.headers ?? {}) }),
         signal: controller.signal,
       });
     } finally {

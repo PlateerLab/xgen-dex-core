@@ -51,7 +51,21 @@ import {
   dirname,
   extname,
   delimiter,
+  basename,
 } from 'node:path';
+import {
+  COPY_FROM_WORKSPACE_TOOL,
+  COPY_TO_WORKSPACE_TOOL,
+  NO_DOWNLOAD_MESSAGE,
+  WORKSPACE_COPY_LIMITS,
+  copyTargetDir,
+  copyToWorkspaceResult,
+  deviceTimeText,
+  workspaceCopySchemas,
+  workspaceDownloadOf,
+  type CopiedFile,
+  type SkippedFile,
+} from '@dex/protocol';
 import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
 import { interaction } from './host';
 import type { LocalFolder } from './local-folders';
@@ -86,6 +100,8 @@ export const NOTIFY_TOOL = 'Notify';
  *  list / poll (status + captured output, paginated) / kill. */
 export const SHELL_JOB_TOOL = 'ShellJob';
 
+export { COPY_FROM_WORKSPACE_TOOL, COPY_TO_WORKSPACE_TOOL };
+
 /** Tools that work inside the folders connected to a conversation. */
 export const FOLDER_TOOL_NAMES: ReadonlySet<string> = new Set([
   SHELL_TOOL,
@@ -97,7 +113,27 @@ export const FOLDER_TOOL_NAMES: ReadonlySet<string> = new Set([
   SEARCH_TOOL,
   CLIPBOARD_TOOL,
   NOTIFY_TOOL,
+  COPY_TO_WORKSPACE_TOOL,
+  COPY_FROM_WORKSPACE_TOOL,
 ]);
+
+/**
+ * 에이전트 작업 공간과 주고받는 길 — 호스트(앱·CLI·VSCode)가 자기 서버 연결로 채운다.
+ * 엔진은 서버 주소도 토큰도 모르므로 이 포트가 없으면 복사 도구를 광고하지 않는다.
+ */
+export interface WorkspaceTransfer {
+  /** 이 대화의 첨부 폴더(하위 폴더 `relDir`)로 올린다. 같은 이름은 덮어쓴다. */
+  upload(input: {
+    workflowId: string;
+    interactionId: string;
+    bytes: Uint8Array;
+    name: string;
+    relDir: string;
+    mimeType: string;
+  }): Promise<{ path: string; size: number; sha256?: string }>;
+  /** 서버가 내어 준 임시 파일의 바이트. */
+  download(input: { url: string; token?: string }): Promise<Uint8Array>;
+}
 
 /** A folder tool was called from a conversation with no connected folder. */
 export const NO_FOLDER_MESSAGE =
@@ -1139,6 +1175,17 @@ export class LocalToolProvider {
   /** 대화 → 연결된 폴더. 호스트가 자기 장부로 답한다. 기본은 "없음". */
   private resolveFolders: LocalFolderResolver = () => [];
   private missingFolderMessage = NO_FOLDER_MESSAGE;
+  private workspaceTransfer: WorkspaceTransfer | null = null;
+
+  /** 작업 공간과 주고받는 길을 붙인다. null 이면 복사 도구를 광고하지 않는다. */
+  configureWorkspaceTransfer(transfer: WorkspaceTransfer | null): void {
+    this.workspaceTransfer = transfer;
+  }
+
+  /** 이 호스트가 지금 광고하는 폴더 도구 — 작업 공간 길이 붙어 있으면 복사 도구까지. */
+  private folderTools(): LocalToolSchema[] {
+    return [...folderToolSchemas(), ...(this.workspaceTransfer ? workspaceCopySchemas('computer') : [])];
+  }
 
   /**
    * 대화별 폴더 장부를 붙인다. 폴더 도구는 호출마다 이것으로 그 대화의 폴더를
@@ -1180,7 +1227,7 @@ export class LocalToolProvider {
    * 그 대화의 폴더로 다시 정한다.
    */
   catalog(): LocalToolSchema[] {
-    return [localControlToolSchema(), ...folderToolSchemas()];
+    return [localControlToolSchema(), ...this.folderTools()];
   }
 
   /** Tools advertised into the bridge catalog. */
@@ -1235,8 +1282,11 @@ export class LocalToolProvider {
         }
       }
     }
-    const changes = tool === SHELL_TOOL || tool === SHELL_JOB_TOOL || tool === WRITE_FILE_TOOL;
+    const changes =
+      tool === SHELL_TOOL || tool === SHELL_JOB_TOOL || tool === WRITE_FILE_TOOL || tool === COPY_FROM_WORKSPACE_TOOL;
     try {
+      if (tool === COPY_TO_WORKSPACE_TOOL) return await this.copyToWorkspace(args, scope, context);
+      if (tool === COPY_FROM_WORKSPACE_TOOL) return await this.copyFromWorkspace(args, scope);
       if (tool === SHELL_TOOL) return await this.shell(args, scope);
       if (tool === SHELL_JOB_TOOL) return await this.shellJob(args, scope);
       if (tool === OPEN_TOOL) return await this.open(args, scope);
@@ -1275,7 +1325,7 @@ export class LocalToolProvider {
   private localControl(context?: LocalToolCallContext): LocalToolResult {
     const folders = this.resolveFolders(context);
     const tools = [
-      ...(folders.length ? folderToolSchemas() : []),
+      ...(folders.length ? this.folderTools() : []),
       ...(this.delegate?.advertise() ?? []),
       ...(this.mcpAdmin?.advertise() ?? []),
     ].filter((tool) => !tool.name.startsWith('_'));
@@ -1369,19 +1419,162 @@ export class LocalToolProvider {
       for (const name of names.slice(0, 1000)) {
         try {
           const s = await stat(pathJoin(abs, name));
-          rows.push(`${s.isDirectory() ? 'd' : '-'} ${String(s.size).padStart(10)}  ${name}`);
+          // 수정 시각 — "오늘 받은 파일" 같은 요청은 이것 없이는 고를 수 없다.
+          rows.push(`${s.isDirectory() ? 'd' : '-'} ${String(s.size).padStart(10)}  ${deviceTimeText(s.mtimeMs)}  ${name}`);
         } catch {
-          rows.push(`?          ?  ${name}`);
+          rows.push(`?          ?  ${''.padEnd(16)}  ${name}`);
         }
       }
+      if (rows.length === 0) return { content: [{ type: 'text', text: '(empty directory)' }] };
+      const head = `type size modified(local time) name — ${abs}`;
       const more = names.length > 1000 ? `\n…(${names.length} entries, first 1000 shown)` : '';
-      return { content: [{ type: 'text', text: rows.join('\n') + more || '(empty directory)' }] };
+      return { content: [{ type: 'text', text: `${head}\n${rows.join('\n')}${more}` }] };
     } catch (e) {
       return {
         content: [{ type: 'text', text: `목록 실패: ${(e as Error).message}` }],
         isError: true,
       };
     }
+  }
+
+  /**
+   * 이 PC 의 파일·폴더 → 이 대화의 작업 공간(첨부 폴더). 폴더는 구조째. 숨김·심볼릭 링크·의존성 폴더는
+   * 건너뛴다. 한도를 넘는 것은 건너뛰고 결과에 이유를 적는다.
+   */
+  private async copyToWorkspace(
+    args: unknown,
+    scope: FolderScope,
+    context?: LocalToolCallContext,
+  ): Promise<LocalToolResult> {
+    const transfer = this.workspaceTransfer;
+    if (!transfer) throw new Error('이 앱에서는 작업 공간으로 파일을 옮길 수 없습니다.');
+    const workflowId = context?.workflowId;
+    const interactionId = context?.interactionId;
+    if (!workflowId || !interactionId) throw new Error('어느 대화의 작업 공간인지 알 수 없어 옮기지 못했습니다.');
+    const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+    const inputs = (Array.isArray(a.paths) ? a.paths : [a.paths ?? a.path])
+      .map((p) => String(p ?? '').trim())
+      .filter(Boolean);
+    if (!inputs.length) throw new Error('paths 가 필요합니다.');
+
+    const limits = WORKSPACE_COPY_LIMITS;
+    const skipped: SkippedFile[] = [];
+    const plan: Array<{ abs: string; relDir: string; size: number }> = [];
+    let planned = 0;
+    const take = (abs: string, relDir: string, size: number): void => {
+      if (size > limits.maxFileBytes) {
+        skipped.push({ source: abs, reason: `larger than ${limits.maxFileBytes / (1024 * 1024)}MB` });
+      } else if (plan.length >= limits.maxFiles) {
+        skipped.push({ source: abs, reason: `more than ${limits.maxFiles} files in one copy` });
+      } else if (planned + size > limits.maxTotalBytes) {
+        skipped.push({ source: abs, reason: 'total size limit for one copy reached' });
+      } else {
+        plan.push({ abs, relDir, size });
+        planned += size;
+      }
+    };
+    const skipDirs = new Set(['node_modules', '.git', '.venv', '__pycache__']);
+    const walk = async (root: string, dir: string, depth: number): Promise<void> => {
+      let names: string[];
+      try {
+        names = await readdir(dir);
+      } catch (e) {
+        skipped.push({ source: dir, reason: (e as Error).message });
+        return;
+      }
+      for (const name of names.sort()) {
+        if (name.startsWith('.')) continue;
+        const full = pathJoin(dir, name);
+        let s;
+        try {
+          s = await lstat(full);
+        } catch {
+          continue;
+        }
+        if (s.isSymbolicLink()) continue;
+        if (s.isDirectory()) {
+          if (skipDirs.has(name)) continue;
+          if (depth >= limits.maxDepth) skipped.push({ source: full, reason: 'folder nested too deep' });
+          else await walk(root, full, depth + 1);
+        } else if (s.isFile()) {
+          const rel = pathRelative(root, full).split(/[\\/]+/).join('/');
+          take(full, copyTargetDir(basename(root), rel), s.size);
+        }
+      }
+    };
+    for (const input of inputs) {
+      let abs: string;
+      try {
+        abs = await this.guardPath(input, scope);
+      } catch (e) {
+        skipped.push({ source: input, reason: (e as Error).message });
+        continue;
+      }
+      try {
+        const s = await stat(abs);
+        if (s.isDirectory()) await walk(abs, abs, 0);
+        else take(abs, '', s.size);
+      } catch {
+        skipped.push({ source: input, reason: 'not found' });
+      }
+    }
+
+    const copied: CopiedFile[] = [];
+    for (const item of plan) {
+      try {
+        const bytes = await fsReadFile(item.abs);
+        const res = await transfer.upload({
+          workflowId,
+          interactionId,
+          bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          name: basename(item.abs),
+          relDir: item.relDir,
+          mimeType: 'application/octet-stream',
+        });
+        copied.push({ source: item.abs, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
+      } catch (e) {
+        skipped.push({ source: item.abs, reason: (e as Error).message || 'upload failed' });
+      }
+    }
+    return copyToWorkspaceResult(copied, skipped);
+  }
+
+  /** 서버가 실어 준 작업 공간 파일 → 이 PC 의 연결된 폴더. */
+  private async copyFromWorkspace(args: unknown, scope: FolderScope): Promise<LocalToolResult> {
+    const transfer = this.workspaceTransfer;
+    if (!transfer) throw new Error('이 앱에서는 작업 공간의 파일을 받을 수 없습니다.');
+    const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+    const download = workspaceDownloadOf(a);
+    if (!download) return { content: [{ type: 'text', text: NO_DOWNLOAD_MESSAGE }], isError: true };
+    const raw = String(a.path ?? '').trim();
+    const dest = await this.guardPath(raw, scope);
+    let target = dest;
+    try {
+      if ((await stat(dest)).isDirectory()) target = pathJoin(dest, download.name);
+    } catch {
+      if (/[\\/]$/.test(raw)) target = pathJoin(dest, download.name);
+    }
+    target = await this.guardPath(target, scope);
+    let exists = false;
+    try {
+      await stat(target);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    if (exists && a.overwrite !== true) {
+      return {
+        content: [{ type: 'text', text: `${target} already exists. Pass overwrite=true to replace it, or choose another path.` }],
+        isError: true,
+      };
+    }
+    const bytes = await transfer.download(download);
+    await mkdir(dirname(target), { recursive: true });
+    if (!(await resolveWithinRootsReal(dirname(target), scope.roots))) {
+      throw new Error('[PATH_DOMAIN_MISMATCH] 생성된 상위 폴더가 허용 범위 밖입니다.');
+    }
+    await fsWriteFile(target, bytes);
+    return { content: [{ type: 'text', text: `Saved ${download.name} to ${target} (${bytes.byteLength} bytes).` }] };
   }
 
   private async search(args: unknown, scope: FolderScope): Promise<LocalToolResult> {

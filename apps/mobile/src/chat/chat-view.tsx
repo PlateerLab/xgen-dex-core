@@ -14,7 +14,7 @@
  *
  * 전송·재연결·다른 기기 턴의 규칙은 예전 그대로다(chat-ws). 화면만 바뀐다.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -36,7 +36,8 @@ import { attachmentName, base64Bytes, imageMime } from '../lib/attachment-file';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import type { Agent, Conversation, HistoryFlowItem, ToolEvent } from '@dex/protocol';
-import { describeError, describeStreamError, turnEventToChatEvent } from '@dex/protocol';
+import { chatAnswerFiles, describeError, describeStreamError, requestBefore, turnEventToChatEvent } from '@dex/protocol';
+import { FilePreviewScreen, type PreviewFile } from '../files/file-preview';
 import {
   createChat,
   stripAgentMarkers,
@@ -60,6 +61,7 @@ import { toWire } from '../lib/mobile-folders';
 import {
   appendAssistantText,
   assistantPlaceholder,
+  attachDownload,
   attachProcessById,
   attachTool,
   completeRemoteTurn,
@@ -100,6 +102,12 @@ interface PickedFile {
 /** 바닥에서 이 정도 안쪽이면 "따라가는 중" 으로 본다. */
 const STICK_PX = 120;
 
+
+/** 작업 과정의 단계 글 정리 — 상태 표식·생각 블록, 그리고 단추로 그리는 파일 표식을 걷는다. */
+function cleanStep(text: string): string {
+  return chatAnswerFiles(stripAgentMarkers(text)).text;
+}
+
 export function ChatView({
   client,
   agent,
@@ -118,6 +126,11 @@ export function ChatView({
 }): React.ReactElement {
   const p = useP();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  /** 대화의 마지막 답 — 시작 시각을 모르는 되살린 답은 이것만 본문 경로로 파일을 찾는다. */
+  const lastAssistant = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'assistant') return i;
+    return -1;
+  }, [messages]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<MobileChatAttachment[]>([]);
@@ -125,6 +138,9 @@ export function ChatView({
   const [uploading, setUploading] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
   const [logFor, setLogFor] = useState<{ events: ToolEvent[]; initialOpen?: number } | null>(null);
+  /** 폰 안에서 여는 파일 한 장(첨부·답이 만든 파일·답에 딸린 결과물). */
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
+  const openFile = useCallback((file: PreviewFile) => setPreviewFile(file), []);
   const [convSheet, setConvSheet] = useState(false);
   /** 에이전트 상세 — 데스크톱·웹 채팅 머리의 [상세] 와 같은 자리. */
   const [detailOpen, setDetailOpen] = useState(false);
@@ -320,6 +336,8 @@ export function ChatView({
           } else if (ev?.kind === 'tool') {
             remoteTurnRef.current = true;
             setMessages((prev) => attachTool(ensureRemotePartial(prev), ev.event));
+          } else if (ev?.kind === 'download') {
+            setMessages((prev) => attachDownload(ensureRemotePartial(prev), ev.data));
           }
           return;
         }
@@ -368,6 +386,7 @@ export function ChatView({
       callbacks: {
         onData: (text) => setMessages((prev) => appendAssistantText(prev, text)),
         onTool: (ev) => setMessages((prev) => attachTool(prev, ev)),
+        onDownload: (data) => setMessages((prev) => attachDownload(prev, data)),
         // 이 턴의 실행 id — 같은 턴이 완결 행·이력으로 다시 와도 한 번만, 소켓 구멍도 이것으로 메운다.
         onExecutionIo: (ioId) => setMessages((prev) => markExecutionIo(prev, ioId) ?? prev),
         onEnd: () => {
@@ -463,7 +482,8 @@ export function ChatView({
       ...prev,
       userMessage(
         text,
-        sending.map((a) => ({ name: a.name, kind: a.kind })),
+        // 올라간 자리를 함께 — 말풍선의 첨부를 눌러 다시 열고 내보낸다.
+        sending.map((a) => ({ name: a.name, kind: a.kind, workspacePath: a.workspace_path, size: a.size })),
       ),
       assistantPlaceholder(),
     ]);
@@ -713,7 +733,7 @@ export function ChatView({
           onScroll={onScroll}
           scrollEventThrottle={64}
           keyboardDismissMode="on-drag"
-          renderItem={({ item: m }) => {
+          renderItem={({ item: m, index }) => {
             const text = m.role === 'assistant' ? stripAgentMarkers(m.text) : m.text;
             if (
               !text &&
@@ -729,8 +749,13 @@ export function ChatView({
               <MessageItem
                 message={m}
                 text={text}
-                clean={stripAgentMarkers}
+                clean={cleanStep}
                 onOpenLog={(events, initialOpen) => setLogFor({ events, initialOpen })}
+                client={client}
+                workflowId={agent.workflowId}
+                request={m.role === 'assistant' ? requestBefore(messages, index) : ''}
+                latest={index === lastAssistant}
+                onOpenFile={openFile}
               />
             );
           }}
@@ -946,6 +971,8 @@ export function ChatView({
           ))}
         </View>
       </Modal>
+
+      <FilePreviewScreen client={client} workflowId={agent.workflowId} file={previewFile} onClose={() => setPreviewFile(null)} />
 
       {/* 이 에이전트의 대화들 */}
       <AgentDetail

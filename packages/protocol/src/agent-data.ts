@@ -44,6 +44,26 @@ export function appendUploadFile(
   form.append(field, { uri: source.uri, name: filename, type: mimeType } as unknown as Blob);
 }
 
+export interface WorkspaceUploadOptions {
+  /**
+   * 대화 첨부 폴더 안의 하위 폴더(`KakaoTalk/2026`). 폴더를 구조째 옮길 때 쓴다. 이 값을 모르는 옛 서버는
+   * 무시하고 첨부 폴더 바로 아래에 둔다.
+   */
+  relDir?: string;
+  /** 같은 이름이 있으면 덮어쓴다(기본은 `이름(1)` 로 비켜 쓴다). 같은 파일을 다시 옮길 때 쓴다. */
+  replace?: boolean;
+}
+
+/** 하위 폴더 값 정리 — 빈 칸·`.`·`..` 을 버린다(서버도 다시 검사한다). */
+export function workspaceRelDir(value: string | undefined): string {
+  return String(value ?? '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter((part) => part && part !== '.' && part !== '..')
+    .join('/');
+}
+
 export interface WorkspaceUploadResult {
   ok: boolean;
   workflow_id?: string;
@@ -999,11 +1019,21 @@ export class AgentDataApi {
     mimeType: string,
     interactionId: string,
     attachmentId: string,
+    opts: WorkspaceUploadOptions = {},
   ): Promise<WorkspaceUploadResult> {
     const form = new FormData();
     appendUploadFile(form, 'file', source, filename, mimeType);
+    const query = new URLSearchParams({
+      subdir: 'uploads',
+      purpose: 'chat_attachment',
+      interaction_id: interactionId,
+      attachment_id: attachmentId,
+    });
+    const relpath = workspaceRelDir(opts.relDir);
+    if (relpath) query.set('relpath', relpath);
+    if (opts.replace) query.set('replace', '1');
     return this.http.upload<WorkspaceUploadResult>(
-      `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage/upload?subdir=uploads&purpose=chat_attachment&interaction_id=${encodeURIComponent(interactionId)}&attachment_id=${encodeURIComponent(attachmentId)}`,
+      `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage/upload?${query}`,
       form,
       { timeoutMs: 300_000 },
     );

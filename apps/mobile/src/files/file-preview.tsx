@@ -1,5 +1,6 @@
 /**
- * 파일 한 장 보기 — 에이전트 [스토리지] 의 파일을 폰 안에서 **그려서** 보여 준다(데스크톱·웹과 같은 규칙).
+ * 파일 한 장 보기 — 에이전트 [스토리지] 의 파일, 대화 첨부, 답에 딸린 파일을 폰 안에서 **그려서** 보여 준다
+ * (데스크톱·웹과 같은 규칙).
  *
  *   그림        RN 그림(로그인 머리를 실어 받는다)
  *   md          마크다운으로 그린다(채팅 답변과 같은 렌더러)
@@ -17,6 +18,7 @@ import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import {
+  chatDownloadRequest,
   decodeText,
   extOf,
   formatBytes,
@@ -24,7 +26,9 @@ import {
   looksBinary,
   parseCsv,
   TEXT_RENDER_LIMIT,
+  type ChatDownload,
   type ViewerKind,
+  type WorkspaceBinaryPurpose,
 } from '@dex/protocol';
 import { MONO, useP, type Palette } from '../theme';
 import type { XgenMobileClient } from '../lib/xgen';
@@ -36,9 +40,32 @@ import { mediaBody, pagesBody, pdfBody } from '../lib/web-session';
 import { AssistantMarkdown } from '../chat/markdown';
 
 export interface PreviewFile {
-  path: string;
   name: string;
   size?: number | null;
+  /** 에이전트 작업 공간의 파일(작업 공간 기준 경로). */
+  path?: string;
+  /** 대화 첨부 — 실행 권한으로 읽는다(남의 에이전트와 나눈 대화에서도 내가 붙인 파일은 연다). */
+  purpose?: WorkspaceBinaryPurpose;
+  /** 답에 딸린 파일 저장소 결과물·API 응답 임시 파일. */
+  download?: ChatDownload;
+}
+
+/** 이 파일을 받는 주소와 머리. 받을 길이 없으면 null. */
+function fileRequest(
+  client: XgenMobileClient,
+  workflowId: string,
+  file: PreviewFile,
+  opts: { preview?: boolean } = {},
+): { url: string; headers: Record<string, string> } | null {
+  const auth = { Authorization: `Bearer ${client.session.accessToken}` };
+  if (file.download) {
+    const req = chatDownloadRequest(file.download, opts);
+    const url = req ? serverLink(client.session.serverUrl, req.path) : '';
+    return url && req ? { url, headers: { ...auth, ...req.headers } } : null;
+  }
+  if (!file.path) return null;
+  const url = serverLink(client.session.serverUrl, client.api.agentData.workspaceRawPath(workflowId, file.path, file.purpose));
+  return url ? { url, headers: auth } : null;
 }
 
 type Loaded =
@@ -62,9 +89,10 @@ export const FilePreviewScreen: React.FC<{
     setExporting(true);
     setNote('');
     try {
-      const url = serverLink(client.session.serverUrl, client.api.agentData.workspaceRawPath(workflowId, file.path));
+      const req = fileRequest(client, workflowId, file);
+      if (!req) throw new Error('받을 수 없는 파일입니다.');
       const dest = `${FileSystem.cacheDirectory}${Date.now()}-${file.name.replace(/[\\/:*?"<>|]/g, '_')}`;
-      const res = await FileSystem.downloadAsync(url, dest, { headers: { Authorization: `Bearer ${client.session.accessToken}` } });
+      const res = await FileSystem.downloadAsync(req.url, dest, { headers: req.headers });
       if (res.status >= 400) throw new Error(`파일을 받지 못했습니다(${res.status}).`);
       if (!(await Sharing.isAvailableAsync())) throw new Error('이 기기에서는 내보낼 수 없습니다.');
       await Sharing.shareAsync(res.uri, { dialogTitle: file.name });
@@ -100,7 +128,9 @@ const FileBody: React.FC<{ client: XgenMobileClient; workflowId: string; file: P
   const declared: ViewerKind = kindForFile(file.name);
   const [loaded, setLoaded] = useState<Loaded>({ state: 'loading' });
   const [kind, setKind] = useState<ViewerKind>(declared);
-  const rawPath = client.api.agentData.workspaceRawPath(workflowId, file.path);
+  const workspacePath = file.path ?? '';
+  const rawPath = workspacePath ? client.api.agentData.workspaceRawPath(workflowId, workspacePath, file.purpose) : '';
+  const download = file.download;
 
   useEffect(() => {
     let alive = true;
@@ -108,8 +138,25 @@ const FileBody: React.FC<{ client: XgenMobileClient; workflowId: string; file: P
     setLoaded({ state: 'loading' });
     void (async () => {
       try {
+        // 답에 딸린 파일 — 그림과 글은 그리고, 나머지는 [내보내기] 로 기기 앱에 넘긴다(서버 렌더는 작업 공간 파일만).
+        if (download) {
+          if (declared === 'image') {
+            setLoaded({ state: 'ready' });
+            return;
+          }
+          if (!['markdown', 'code', 'csv'].includes(declared)) {
+            setKind('binary');
+            setLoaded({ state: 'ready' });
+            return;
+          }
+          const { bytes } = await client.api.chatFiles.download(download);
+          if (!alive) return;
+          const truncated = bytes.byteLength > TEXT_RENDER_LIMIT;
+          setLoaded({ state: 'text', text: decodeText(truncated ? bytes.subarray(0, TEXT_RENDER_LIMIT) : bytes), truncated });
+          return;
+        }
         if (declared === 'office') {
-          const meta = await client.api.agentData.workspaceDocPreview(workflowId, file.path);
+          const meta = await client.api.agentData.workspaceDocPreview(workflowId, workspacePath);
           if (!alive) return;
           const pages = meta.pages.map((pg) => client.api.agentData.workspacePreviewPagePath(workflowId, pg)).filter(Boolean);
           if (!pages.length) throw new Error('이 문서의 미리보기를 만들지 못했습니다.');
@@ -121,7 +168,7 @@ const FileBody: React.FC<{ client: XgenMobileClient; workflowId: string; file: P
           return;
         }
         // 글로 그리는 형식 — md·코드·csv, 그리고 모르는 확장자(글이면 코드로 보인다).
-        const { bytes } = await client.api.agentData.workspaceBinary(workflowId, file.path);
+        const { bytes } = await client.api.agentData.workspaceBinary(workflowId, workspacePath, file.purpose);
         if (!alive) return;
         if (declared === 'binary' && looksBinary(bytes)) {
           setLoaded({ state: 'ready' });
@@ -138,7 +185,7 @@ const FileBody: React.FC<{ client: XgenMobileClient; workflowId: string; file: P
     return () => {
       alive = false;
     };
-  }, [client, workflowId, file.path, declared]);
+  }, [client, workflowId, workspacePath, file.purpose, download, declared]);
 
   if (loaded.state === 'loading') {
     return (
@@ -165,7 +212,10 @@ const FileBody: React.FC<{ client: XgenMobileClient; workflowId: string; file: P
   if (kind === 'audio' || kind === 'video') {
     return <ServerWebView serverUrl={server} token={token} dark={dark} content={{ kind: 'document', body: mediaBody(rawPath, kind) }} />;
   }
-  if (kind === 'image') return <ImageView uri={serverLink(server, rawPath)} token={token} />;
+  if (kind === 'image') {
+    const req = fileRequest(client, workflowId, file, { preview: !!download && !download.artifactId });
+    return req ? <ImageView uri={req.url} headers={req.headers} /> : null;
+  }
   if (loaded.state === 'text') {
     const tail = loaded.truncated ? <Text style={[styles.hint, { color: p.muted }]}>앞 2MB만 보여 줍니다.</Text> : null;
     if (kind === 'markdown') {
@@ -191,15 +241,17 @@ const FileBody: React.FC<{ client: XgenMobileClient; workflowId: string; file: P
   return (
     <View style={styles.center}>
       <Text style={{ color: p.text, fontWeight: '700', marginBottom: 6 }}>{file.name}</Text>
-      <Text style={{ color: p.muted, marginBottom: 16 }}>미리보기를 지원하지 않는 형식입니다.</Text>
+      <Text style={{ color: p.muted, marginBottom: 16, textAlign: 'center' }}>
+        {download ? '이 파일은 기기의 앱으로 열어 볼 수 있습니다.' : '미리보기를 지원하지 않는 형식입니다.'}
+      </Text>
       <Pressable onPress={onShare} style={[styles.btn, { backgroundColor: p.primary }]}>
-        <Text style={{ color: p.onPrimary, fontWeight: '800' }}>내보내기</Text>
+        <Text style={{ color: p.onPrimary, fontWeight: '800' }}>{download ? '열기' : '내보내기'}</Text>
       </Pressable>
     </View>
   );
 };
 
-const ImageView: React.FC<{ uri: string; token: string }> = ({ uri, token }) => {
+const ImageView: React.FC<{ uri: string; headers: Record<string, string> }> = ({ uri, headers }) => {
   const { width } = useWindowDimensions();
   const [ratio, setRatio] = useState(1);
   const [failed, setFailed] = useState(false);
@@ -214,12 +266,12 @@ const ImageView: React.FC<{ uri: string; token: string }> = ({ uri, token }) => 
   return (
     <ScrollView contentContainerStyle={styles.pad} maximumZoomScale={4} minimumZoomScale={1} centerContent>
       <Image
-        source={{ uri, headers: { Authorization: `Bearer ${token}` } }}
+        source={{ uri, headers }}
         style={{ width: width - 24, height: (width - 24) / ratio, borderRadius: 6 }}
         resizeMode="contain"
         onLoad={(e) => {
-          const { width: w, height: h } = e.nativeEvent.source;
-          if (w && h) setRatio(w / h);
+          const src = e.nativeEvent?.source;
+          if (src?.width && src?.height) setRatio(src.width / src.height);
         }}
         onError={() => setFailed(true)}
       />

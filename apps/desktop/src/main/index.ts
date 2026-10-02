@@ -40,6 +40,7 @@ import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
   teamsAttachmentRejectReason,
+  type ChatDownload,
   type ChatEvent,
   type ChatRequest,
   type TeamsAttachment,
@@ -112,6 +113,7 @@ import { hostname } from 'os';
 import { TRAY_ICON_B64 } from './tray-icon';
 import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
+import { clientWorkspaceTransfer } from '@dex/engine/workspace-transfer';
 import {
   getLocalToolProvider,
   openWithDefaultApp,
@@ -1543,6 +1545,9 @@ const chatFolders = new ChatFolderStore(
   () => currentAccountKey(),
 );
 getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
+// 연결한 폴더 ↔ 에이전트 작업 공간 — 복사 도구(CopyToWorkspace·CopyFromWorkspace)가 이 길로 옮긴다.
+// 올리는 자리는 그 대화의 첨부 폴더다(채팅 첨부와 같은 권한·같은 자리). 같은 파일은 덮어쓴다.
+getLocalToolProvider().configureWorkspaceTransfer(clientWorkspaceTransfer(getClient));
 /** 이 PC 의 기기 — 서버의 대화 폴더 사본에 "이 폴더는 이 PC 에 있다" 로 적힌다. */
 function thisDevice() {
   return {
@@ -2713,6 +2718,10 @@ ipcMain.handle(CHANNELS.agentWsDocPreview, (_e, wf: string, path: string) =>
 );
 ipcMain.handle(CHANNELS.agentWsPreviewPage, (_e, wf: string, page: string) =>
   getClient().agentData.workspacePreviewPage(wf, page),
+);
+// 답에 딸린 파일 — 웹 채팅의 다운로드 단추·그림 카드와 같은 것(파일 저장소의 결과물·API 응답 임시 파일).
+ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean }) =>
+  getClient().chatFiles.download(item, { preview: opts?.preview === true }),
 );
 ipcMain.handle(
   CHANNELS.agentWsUpload,

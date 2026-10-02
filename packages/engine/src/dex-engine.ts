@@ -27,6 +27,7 @@ import {
   type LocalFolder,
 } from './local-folders';
 import { hostPorts, bindHost, isHostBound } from './host';
+import { clientWorkspaceTransfer } from './workspace-transfer';
 import type {
   Agent,
   AgentCreateOptions,
@@ -231,6 +232,8 @@ export class DexEngine {
         return token;
       },
     });
+    // 연결한 폴더 ↔ 작업 공간 — 브리지와 같은 계정(이 프로필)으로 옮긴다.
+    this.localTools.configureWorkspaceTransfer(clientWorkspaceTransfer(() => record.client));
     if (waitMs > 0) await this.localToolBridge.waitUntilReady(waitMs);
     return this.localToolsStatus();
   }

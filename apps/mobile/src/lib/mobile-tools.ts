@@ -155,7 +155,7 @@ export interface FolderFs {
     maxBytes: number,
   ): Promise<{ text: string; size: number; truncated: boolean }>;
   writeText(folder: MobileFolder, rel: string, content: string, append: boolean): Promise<void>;
-  /** 로컬 파일(카메라 촬영본)을 폴더 안으로 복사한다. */
+  /** 로컬 파일(카메라 촬영본·작업 공간에서 받은 파일)을 폴더 안으로 복사한다. 같은 이름이 있으면 덮어쓴다. */
   importFile(folder: MobileFolder, rel: string, sourceUri: string): Promise<void>;
   remove(folder: MobileFolder, rel: string): Promise<void>;
   /** 다른 앱에 넘길 수 있는 로컬 사본(file://)을 만든다. */
@@ -499,7 +499,7 @@ async function copyFromWorkspace(args: Record<string, unknown>, scope: FolderSco
   }
   const local = await transfer.download(download.url, download.token, download.name);
   try {
-    if (target.exists) await scope.fs.remove(at.folder, rel);
+    // 있던 파일은 지우지 않고 그 자리에 쓴다 — 먼저 지우면 쓰기가 실패할 때 사용자의 파일이 사라진다.
     await scope.fs.importFile(at.folder, rel, local);
   } finally {
     await transfer.discard(local);

@@ -12,6 +12,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   answerTurnFiles,
   isChatImageName,
+  sharedTreeFetch,
   shouldLookForTurnFiles,
   withoutShownFiles,
   type ChatDownload,
@@ -31,6 +32,9 @@ function blobOf(bytes: Uint8Array, contentType: string): Blob {
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   return new Blob([buffer], { type: contentType || 'application/octet-stream' });
 }
+
+/** 작업 공간 목록 — 대화를 열 때 답마다 묻던 것을 동시 요청 하나로 묶는다. */
+const workspaceTree = sharedTreeFetch((workflowId: string) => xgen.agentData.workspaceTree(workflowId));
 
 /** 다운로드 한 개의 열쇠 — 같은 파일이면 같다. */
 const downloadKey = (d: ChatDownload): string => d.artifactId ?? `${d.storageId}:${d.fileId}`;
@@ -69,8 +73,7 @@ export const TurnFiles: React.FC<{
   useEffect(() => {
     if (!finished || !workflowId) return;
     let alive = true;
-    xgen.agentData
-      .workspaceTree(workflowId)
+    workspaceTree(workflowId)
       .then((res) => {
         if (!alive) return;
         setFiles(answerTurnFiles(res.files ?? [], { startedAt, lastEventAt: endedAt, text: answer }, { latest }));

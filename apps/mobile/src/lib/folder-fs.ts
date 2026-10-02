@@ -137,7 +137,20 @@ function createIosFs(onBookmarkRenewed?: (uri: string, bookmark: string) => void
       if (parent) {
         await FileSystem.makeDirectoryAsync(await at(folder, parent), { intermediates: true }).catch(() => undefined);
       }
-      await FileSystem.copyAsync({ from: sourceUri, to: await at(folder, rel) });
+      const target = await at(folder, rel);
+      // 같은 이름이 있으면 덮어쓴다(안드로이드 네이티브의 "wt" 와 같다) — copyAsync 는 있는 대상에서 실패한다.
+      // 먼저 옆 이름으로 복사한 뒤 바꿔 끼워, 복사가 실패해도 있던 파일은 그대로 둔다.
+      const staging = `${target}.xgen-${Date.now()}`;
+      await FileSystem.copyAsync({ from: sourceUri, to: staging });
+      try {
+        await FileSystem.deleteAsync(target, { idempotent: true });
+      } catch (e) {
+        // 있던 파일을 못 치웠다 — 그대로 두고 옆 사본만 거둔다.
+        await FileSystem.deleteAsync(staging, { idempotent: true }).catch(() => undefined);
+        throw e;
+      }
+      // 여기서 실패하면 새 내용은 옆 이름(staging)에 남는다 — 지우지 않는다.
+      await FileSystem.moveAsync({ from: staging, to: target });
     },
     async remove(folder, rel) {
       if (!pathSegments(rel).length) throw new Error('연결한 폴더 자체는 지울 수 없습니다.');

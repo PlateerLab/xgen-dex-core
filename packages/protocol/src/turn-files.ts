@@ -159,3 +159,20 @@ export function shouldLookForTurnFiles(
   if (answer.role !== 'assistant' || answer.streaming || answer.remotePartial) return false;
   return answer.startedAt !== undefined || latest;
 }
+
+/**
+ * 같은 에이전트의 작업 공간 목록을 **동시에** 묻는 요청을 하나로 묶는다.
+ *
+ * 대화를 열면 시작 시각을 아는 답(되살린 작업 과정이 있는 답)마다 "이 답이 만든 파일" 을 찾으려고 같은 목록을
+ * 물어, 요청이 답 수만큼 한꺼번에 몰렸다. 끝난 요청은 다시 쓰지 않는다 — 방금 끝난 턴의 파일을 놓치지 않게.
+ */
+export function sharedTreeFetch<T>(fetch: (workflowId: string) => Promise<T>): (workflowId: string) => Promise<T> {
+  const inflight = new Map<string, Promise<T>>();
+  return (workflowId) => {
+    const hit = inflight.get(workflowId);
+    if (hit) return hit;
+    const request = fetch(workflowId).finally(() => inflight.delete(workflowId));
+    inflight.set(workflowId, request);
+    return request;
+  };
+}

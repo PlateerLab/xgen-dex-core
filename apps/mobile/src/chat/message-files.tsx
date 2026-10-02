@@ -16,6 +16,7 @@ import {
   chatDownloadRequest,
   formatFileSize,
   isChatImageName,
+  sharedTreeFetch,
   shouldLookForTurnFiles,
   splitRequestedFiles,
   withoutShownFiles,
@@ -27,6 +28,19 @@ import type { XgenMobileClient } from '../lib/xgen';
 import { serverLink } from '../lib/links';
 import type { PreviewFile } from '../files/file-preview';
 import type { ChatAttachmentMark, ChatMessage } from './message-model';
+
+/**
+ * 작업 공간 목록 — 대화를 열 때 답마다 묻던 것을 동시 요청 하나로 묶는다. 계정(클라이언트)마다 따로 둔다.
+ */
+const treeFetchers = new WeakMap<XgenMobileClient, (workflowId: string) => Promise<{ files?: WsNode[] }>>();
+function workspaceTree(client: XgenMobileClient, workflowId: string): Promise<{ files?: WsNode[] }> {
+  let fetcher = treeFetchers.get(client);
+  if (!fetcher) {
+    fetcher = sharedTreeFetch((wf: string) => client.api.agentData.workspaceTree(wf));
+    treeFetchers.set(client, fetcher);
+  }
+  return fetcher(workflowId);
+}
 
 /** 답 아래에 바로 그릴 그림의 크기 상한 — 이보다 크면 카드로만 둔다(대화가 무거워지지 않게). */
 const IMAGE_INLINE_MAX_BYTES = 12 * 1024 * 1024;
@@ -218,8 +232,7 @@ export const AnswerFiles: React.FC<{
   useEffect(() => {
     if (!look || !workflowId) return;
     let alive = true;
-    client.api.agentData
-      .workspaceTree(workflowId)
+    workspaceTree(client, workflowId)
       .then((res) => {
         if (alive) setFiles(answerTurnFiles(res.files ?? [], { startedAt, lastEventAt, text }, { latest }));
       })

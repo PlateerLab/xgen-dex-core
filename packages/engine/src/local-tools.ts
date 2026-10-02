@@ -42,6 +42,8 @@ import {
   lstat,
   realpath,
   mkdir,
+  rename,
+  rm,
 } from 'node:fs/promises';
 import {
   resolve as pathResolve,
@@ -1573,7 +1575,15 @@ export class LocalToolProvider {
     if (!(await resolveWithinRootsReal(dirname(target), scope.roots))) {
       throw new Error('[PATH_DOMAIN_MISMATCH] 생성된 상위 폴더가 허용 범위 밖입니다.');
     }
-    await fsWriteFile(target, bytes);
+    // 옆 이름에 다 쓴 뒤 바꿔 끼운다 — 쓰다 끊겨도 있던 파일이 반쪽이 되지 않는다.
+    const staging = `${target}.xgen-${process.pid}-${Date.now()}`;
+    try {
+      await fsWriteFile(staging, bytes);
+      await rename(staging, target);
+    } catch (e) {
+      await rm(staging, { force: true }).catch(() => undefined);
+      throw e;
+    }
     return { content: [{ type: 'text', text: `Saved ${download.name} to ${target} (${bytes.byteLength} bytes).` }] };
   }
 

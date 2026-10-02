@@ -836,3 +836,50 @@ Mobile 설정 → 공유 대화 → 내 목록 + 현재 account focus 조회
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. Mobile's shared conversation card now connects bounded owned-session catalog reads, creation, active-session selection and explicit focus clearing to the existing scoped turn model. Dedicated native POST/PUT lifecycle transport and fresh DPoP stay inside ready account vault ownership; cancelled reads and all writes share the actual native completion latch. Unknown lifecycle results and focus conflicts lock writes until an explicit catalog recheck, with no creation replay or CAS rebase. Unknown turn intent blocks lifecycle changes and survives same-focus reads; actual scope/focus changes clear stale drafts and content. JS and native regressions plus a production trusted-HTTPS fixture verify one creation/execution despite lost receipts, exact retry/stop, owned selection/clear and unchanged vault. Integration-branch enrollment Compose verifies pre-proof/pre-wire denial and cleanup. Full catalog pagination, TUI/attachments, physical Mobile UI/hardware/SecureStore and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.
+
+## Desktop·VS Code·Mobile 소유 세션 목록 페이지 탐색 (2026-10-02)
+
+작업 브랜치 `feat/cross-platform-session-catalog-pages`, 기준 통합 SHA `620abb6b29dabef17d489ccca135912f24a1fc95`, 제품·검증 코드 SHA `d349b3014f5e6786477f50dc62161ecceee530ff`. 하위 [PR152](https://github.com/PlateerLab/xgen-dex-core/pull/152) → `feat/cross-platform-session`; 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지한다.
+
+```text
+최신 목록: 동일 로그인 범위의 현재 focus + owned sessions(limit=100)
+  → 이전 목록: 방금 검증한 next_cursor를 before_id로 전달 → 최대100개 교체
+  → 마지막 페이지: next_cursor=null → 추가 조회 차단
+  → 최신 목록 버튼: before_id 없이 조회 → 최신 페이지로 교체
+탐색은 현재 대화·draft·미확정 turn을 유지하며 생성/선택/turn을 보내지 않음
+계정·실시간 선택 변경 / 화면 숨김 → 오래된 표시·커서 폐기 → 직접 최신 조회
+```
+
+### 구현과 리뷰
+
+- Desktop의 Workspace 공유 대화와 기기·세션 설정, VS Code webview, Mobile 공유 대화 카드에 이전 목록과 최신 목록 복귀를 연결했다. 현재 focus가 표시 페이지 밖에 있어도 별도로 표시하며 빈 선택으로 오인하지 않는다. 목록은 페이지당 최대100개를 교체하고 자동 탐색·전체 목록 누적·디스크 저장을 하지 않는다.
+- Workflow의 기존 keyset은 `(created_at,id)` 내림차순이며 cursor UUID는 불투명한 위치 표식이다. 공통 검증기가 canonical UUID·페이지 크기·중복 항목·`has_more/next_cursor`와 마지막 표시 ID의 일치·직전 페이지 중복과 정지 cursor를 검사한다. UUID 문자열 크기로 시간 순서를 추정하지 않는다. 새 세션 생성 후에는 과거 페이지에 신규 항목을 섞어 유효한 continuation으로 사용하지 않고 cursor와 페이지 상태를 무효화한다.
+- Desktop/VS Code는 검증된 계정·HTTPS origin과 현재 cursor를 고정하고 이중 클릭·끝 페이지·reset/dispose·늦은 응답을 차단한다. Mobile은 ready vault의 동일 Platform sid 공개 scope hash를 focus/list GET 전에 확인하고 query 없는 경로에 fresh DPoP를 서명한다. 같은 로그인 token rotation은 유지하고 실제 sid/account 변경은 이전 페이지 요청을 차단한다. focus/list는 같은 owner의 순차 조회이며 원자적 DB snapshot은 아니다.
+- 페이지 탐색은 현재 대화·draft·unknown turn intent를 유지한다. 이전 페이지 조회는 unknown lifecycle 쓰기 잠금을 해제하지 않는다. 부분 조회 실패는 검증된 이전 페이지를 유지하고 안전한 오류를 표시한다. Mobile은 실패 후 최신 목록을 다시 조회해야 한다. 실제 focus 변경 응답이나 live 선택 변경은 오래된 page/cursor를 폐기하고 직접 최신 조회를 요구한다. 최신 조회의 기존 생성 ACK 유실 복구도 유지한다.
+- 주 에이전트 리뷰와 실제 UI 검증에서 VS Code 최신 조회의 생성 ACK 유실 복구 회귀, Desktop의 페이지 조회 전 live 선택 변경, Mobile hide→show 및 live 선택 변경 후 오래된 catalog 표시를 발견해 고쳤다. Desktop은 새 authoritative conversation을 유지하며 이전 catalog를 즉시 폐기한다. Mobile은 숨김·live 선택 변경 때 이전 focus/rows/cursor/marker를 지우며 동일 로그인에 속한 unknown intent와 lifecycle 잠금은 유지한다. Mobile 최종 diff의 두 표시 수정은 독립 소스 리뷰로 재확인했다.
+- 환경변수와 인증 정책 변경은 없다. password + browser key를 유지하며 SDK/runtime 패키지는 배포하지 않는다.
+
+### 검증과 실행 환경
+
+- 공통 protocol253/253, Desktop 전체559/559, VS Code 전체50/50, Mobile 전체191/191 회귀 통과. Desktop 최종 model/binding30/30, Mobile/VS Code/Desktop 타입 검사, workspace 타입·빌드·계약 검사와 세 opt-in harness strict 타입 검사 통과. 마지막 페이지·이중 클릭·모호한 cursor·scope/focus 변경·late reply·unknown intent/lock·생성 후 cursor 무효화를 포함한다. 최종 Head의 필수 CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --desktop --workspace-ui --catalog-pages`: 실제 production Workspace/Settings 공유 모델·preload·IPC·engine·OS keychain과 trusted HTTPS를 연결했다. 생성 ACK 유실 복구 후208개 목록의 `100→100→8→최신100`, 이전 GET 정확히2회, 마지막 비활성 버튼·현재 대화/draft 유지·목록 밖 focus 표시를 검증했다. 기존 생성1회·lifecycle write3회·turn write3회·실행1회와 원래 요청 retry/stop·tab close/reopen도 통과했다. 선택 목록의 archived 항목은 표시 대상이지만 선택할 수 없다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --vscode --session-ui --catalog-pages`: production provider HTML·webview JS·controller와 실제 CLI/OS keychain을 Electron adapter에서 실행했다. 같은208개 페이지 탐색·정확한 이전 GET2회·끝 페이지의 추가 요청0·현재 identity/draft 유지·생성 ACK 유실 최신 복구·소유 세션 선택/해제가 통과했다. 설치된 VS Code extension host의 실사용 검증을 대체하지 않는다.
+- `node --import tsx scripts/mobile-agent-turn-fixture.mts --catalog-pages`: production Mobile read/lifecycle/turn source·JS adapter·composer/model과 실제 trusted TLS/P-256 proof를 연결했다.207개 목록 `100→100→7→최신100`, 이중 클릭1GET·끝 페이지0GET·동일 focus/draft 유지·탐색 쓰기0을 검증했다. 생성1회·lifecycle write5회·turn write3회·실행1회·fresh ES256 proof80개, ACK 유실·화면 숨김·원래 요청 retry/stop·자료 정리가 통과했다. software key/memory vault/Node bridge/HTTP watcher 대체 구현을 사용하며 RN UI·실기기·SecureStore 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --mobile-sessions --mobile-ws`와 `--desktop --desktop-workspace --vscode --native-sessions`: 실제 Compose Gateway enrollment의 일회용 계정과 trusted browser 승인으로 검증했다. login503/login_pending이 최신/이전 catalog와 lifecycle/turn을 proof/wire 이전에 차단하며 Canonical session0·token-free journal·명시적 local recovery·DB/keychain 정리를 확인했다. 실제 ACTIVE 양성 탐색·실행은 별도 관문이다.
+- 기본 infra/core/gateway 및 workflow/frontend 프로필과 HTTPS3443을 사용했다. `.env` 서비스별 override, clean source/container ref·HEAD·실제 `/app` mount와 Gateway `PLATFORM_SESSION_MODE=enrollment`를 재확인했다. 모든 서비스는 `feat/cross-platform-session`: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`이다. 서버 소스는 이번 작업에서 변경하지 않았고 DEX는 위 제품 SHA로 실행했다.
+- Workflow 임시 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` 및 runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 overlay marker와 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` 실제 import를 재확인했다. 미배포 연결을 유지한다.
+- 증거: `/tmp/cross-sync-catalog-pages-{protocol-tests,desktop-all-tests,vscode-all-tests,mobile-all-tests,mobile-check,workspace-check,workspace-build,desktop-build,contracts,harness-check,desktop-tls,vscode-tls,mobile-tls,compose-mobile,compose-native,environment,overlay}.log`. 화면은 `/tmp/cross-sync-catalog-pages-{desktop,vscode}-catalog.png`와 최종 UI PNG이며 주 에이전트가 직접 확인했다. 임시 fixture 계정·키·자료는 정리된다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 5% | TUI/첨부·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Desktop, VS Code and Mobile now browse owned sessions in bounded replacement pages using the server's opaque keyset cursor, with explicit return to latest and no automatic paging or write dispatch. Current conversation and same-focus drafts/unknown turn intent survive paging; older reads cannot unlock an uncertain lifecycle write. Creation invalidates the old boundary, scope/live selection changes discard stale pages, and Mobile hide/resume no longer republishes an old private catalog. Review and actual UI checks caught and fixed latest create-ACK recovery and stale-display races. Protocol/Desktop/VS Code/Mobile regressions, trusted-HTTPS product fixtures and integration-branch enrollment Compose passed with explicit test seams and cleanup. Installed VS Code, physical Mobile UI/hardware/SecureStore, TUI/attachments and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow source overlays and parent PR90 stays Draft.

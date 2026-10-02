@@ -229,6 +229,9 @@ try {
           : error instanceof Error && 'status' in error && error.status === 3 && 'stderr' in error && String(error.stderr).includes('auth_required');
         await assert.rejects(platform === 'cli' ? run('agent-sessions', [], 'session') : nativeRpc(platform, 'agent-sessions'), denied);
         await assert.rejects(platform === 'cli'
+          ? run('agent-sessions', ['--before-id', randomUUID(), '--limit', '100'], 'session')
+          : nativeRpc(platform, 'agent-sessions', undefined, { limit: 100, before_id: randomUUID() }), denied);
+        await assert.rejects(platform === 'cli'
           ? run('create-agent-session', ['--workflow-id', 'compose-fixture', '--expected-version', '0'], 'session')
           : nativeRpc(platform, 'create-agent-session', undefined, { workflow_id: 'compose-fixture', expected_version: 0 }), denied);
         await assert.rejects(platform === 'cli'
@@ -236,7 +239,7 @@ try {
           : nativeRpc(platform, 'switch-agent-focus', undefined, { active_agent_session_id: null, expected_version: 0 }), denied);
         assert.equal((await run('status', [], 'session')).state, 'login_pending');
         assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
-        console.log(`${platform}: catalog/create/focus CAS reject login_pending before wire; no new Canonical session or automatic legacy fallback PASS`);
+        console.log(`${platform}: latest/older catalog/create/focus CAS reject login_pending before wire; no new Canonical session or automatic legacy fallback PASS`);
       }
       assert.equal((await run('forget-local', [], 'session')).state, 'signed_out');
       await stopNativeRpc();
@@ -384,6 +387,7 @@ try {
             }, origin) }) : null;
           if (lifecycle) {
             await assert.rejects(source.readCatalog());
+            await assert.rejects(source.readCatalog(undefined, { beforeId: randomUUID(), authScope: '0'.repeat(64) }));
             await assert.rejects(lifecycle.send({ operation: 'create', scope, input: { workflow_id: 'disposable-wf', expected_version: 0 } }), denied);
             await assert.rejects(lifecycle.send({ operation: 'switch', scope, input: { active_agent_session_id: null, expected_version: 0 } }), denied);
           }
@@ -395,13 +399,14 @@ try {
           assert.equal(model.state.error.includes('세션'), true);
           if (lifecycle) {
             assert.equal(await model.refreshCatalog(), false); assert.equal(model.state.catalog.canWrite, false);
+            assert.equal(await model.loadOlderCatalog(), false); assert.equal(model.state.catalog.canLoadOlder, false);
             assert.equal(await model.createSession('disposable-wf'), false); assert.equal(await model.selectSession(null), false);
           }
           model.dispose();
           assert.equal(writes, 0); assert.equal(signatures, 0);
           assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
           console.log('Mobile production scoped writer/composer model: enrollment login_pending blocks submit/stop before proof/wire; no Canonical session, auto refresh or legacy dispatch PASS');
-          if (lifecycle) console.log('Mobile production catalog/lifecycle writer/model: enrollment login_pending blocks catalog/create/focus-clear before proof/wire; UI writes disabled, no Canonical session or automatic fallback PASS');
+          if (lifecycle) console.log('Mobile production catalog/lifecycle writer/model: enrollment login_pending blocks latest/older catalog/create/focus-clear before proof/wire; UI reads/writes disabled, no Canonical session or automatic fallback PASS');
         }
         assert.equal(canonicalCalls, 0); assert.equal(calls, 1); assert.equal(records.size, 1); source.dispose();
         console.log('Mobile production Canonical source/watcher: enrollment-mode login_pending blocks focus/read/poll before wire; no refresh/Bearer fallback PASS');

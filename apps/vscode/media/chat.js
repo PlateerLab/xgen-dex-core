@@ -47,6 +47,8 @@
     canonicalTitle: byId('canonical-session-title'),
     canonicalCreate: byId('canonical-session-create'),
     canonicalRefresh: byId('canonical-session-refresh'),
+    canonicalOlder: byId('canonical-session-older'),
+    canonicalPage: byId('canonical-session-page'),
     canonicalSelect: byId('canonical-session-select'),
     canonicalSwitch: byId('canonical-session-switch'),
     canonicalClear: byId('canonical-session-clear'),
@@ -767,11 +769,22 @@
       option.textContent = `${session.title || session.workflow_id} · ${session.id.slice(0, 8)}`;
       elements.canonicalSelect.append(option);
     }
-    elements.canonicalSelect.value = (catalog?.items || []).some((item) => item.id === selectedValue && item.status === 'active') ? selectedValue : '';
+    const focusIsOnPage = (catalog?.items || []).some((item) => item.id === selectedValue && item.status === 'active');
+    if (selectedValue && !focusIsOnPage) {
+      const current = document.createElement('option');
+      current.value = selectedValue; current.disabled = true;
+      current.textContent = `현재 포커스 (이 페이지 외부) · ${selectedValue.slice(0, 8)}`;
+      elements.canonicalSelect.append(current);
+    }
+    elements.canonicalSelect.value = selectedValue && (focusIsOnPage || catalog?.focus) ? selectedValue : '';
     elements.canonicalSelect.disabled = sessionWriteDisabled;
-    elements.canonicalSwitch.disabled = sessionWriteDisabled || !elements.canonicalSelect.value;
+    elements.canonicalSwitch.disabled = sessionWriteDisabled || !elements.canonicalSelect.value || !focusIsOnPage;
     elements.canonicalClear.disabled = sessionWriteDisabled || selectedValue === '';
     elements.canonicalRefresh.disabled = !canonical || !!catalog?.busy;
+    elements.canonicalOlder.disabled = !canonical || !!catalog?.busy || !catalog?.scope || !catalog?.hasMore || !catalog?.nextCursor;
+    elements.canonicalPage.textContent = catalog?.page
+      ? `페이지 ${catalog.page} · ${catalog.hasMore ? '일부 목록, 더 이전 항목 있음' : '마지막 목록'}`
+      : catalog?.scope ? '최신 목록을 다시 확인해야 함' : '목록을 확인하지 않음';
     elements.canonicalCreate.disabled = sessionWriteDisabled || !elements.canonicalWorkflow.value;
     elements.canonicalWorkflow.disabled = sessionWriteDisabled;
     elements.canonicalTitle.disabled = sessionWriteDisabled;
@@ -976,6 +989,7 @@
   elements.canonicalMode.addEventListener('click', () => post('canonicalMode'));
   elements.canonicalRetry.addEventListener('click', () => post('canonicalRetry'));
   elements.canonicalRefresh.addEventListener('click', () => post('canonicalCatalogRefresh'));
+  elements.canonicalOlder.addEventListener('click', () => post('canonicalCatalogOlder'));
   elements.canonicalCreate.addEventListener('click', () => post('canonicalCreate', {
     workflowId: elements.canonicalWorkflow.value,
     title: elements.canonicalTitle.value,
@@ -984,7 +998,8 @@
   elements.canonicalClear.addEventListener('click', () => post('canonicalSwitch', { agentSessionId: '' }));
   elements.canonicalSelect.addEventListener('change', () => {
     const catalog = state.canonical?.catalog;
-    elements.canonicalSwitch.disabled = !elements.canonicalSelect.value || !catalog?.scope || !catalog?.focus
+    const selected = (catalog?.items || []).some((item) => item.id === elements.canonicalSelect.value && item.status === 'active');
+    elements.canonicalSwitch.disabled = !selected || !catalog?.scope || !catalog?.focus
       || catalog.busy || catalog.writeBlocked
       || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
   });

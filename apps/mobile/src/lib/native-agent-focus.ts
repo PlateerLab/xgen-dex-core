@@ -9,6 +9,7 @@ import type { MobileAgentFetch } from './native-agent-http';
 import type { MobileAgentSocket } from './native-agent-socket';
 import { MobileSocketInvalid, type createMobileAgentSocketTransport } from './native-agent-socket';
 import { mobileAgentScope } from './native-agent-scope';
+import { parseAgentSessionCatalogPage, validateAgentSessionCatalogCursor } from '@dex/protocol/agent-session-catalog';
 
 export class MobileFocusBusy extends Error { constructor() { super('Mobile Canonical read is still settling'); } }
 /** A source owns one login lifetime. Its callback-scoped credentials cannot escape the vault lock. */
@@ -90,9 +91,16 @@ export function createMobileAgentFocusSource(options: {
     finally { signal?.removeEventListener('abort', abort); if (active === controller) active = null; }
   }
   return {
-    readCatalog: (signal?: AbortSignal) => read(async (reader, scope, abort) => ({
-      authScope: scope, focus: await reader.focus(abort), sessions: await reader.sessions(100, undefined, abort),
-    }), signal),
+    readCatalog: (signal?: AbortSignal, page?: { beforeId: string; authScope: string }) => {
+      // Copy the cursor/scope before yielding to key preparation or account-vault waits.
+      const selected = page ? { beforeId: validateAgentSessionCatalogCursor(page.beforeId), authScope: page.authScope } : null;
+      return read(async (reader, scope, abort) => {
+        if (selected && scope !== selected.authScope) throw new NativeAccountChanged();
+        const focus = await reader.focus(abort);
+        const sessions = parseAgentSessionCatalogPage(await reader.sessions(100, selected?.beforeId, abort), selected?.beforeId);
+        return { authScope: scope, focus, sessions };
+      }, signal);
+    },
     reconcileFocus: (previous: ScopedAgentFocus | null, signal?: AbortSignal) => read((reader, scope, abort) => reconcileAgentFocus(reader, scope, previous, abort), signal),
     reconcileConversation: (previous: ScopedAgentConversation | null, signal?: AbortSignal) => read((reader, scope, abort) => reconcileAgentConversation(reader, scope, previous, abort), signal),
     openConversationSocket: async (state: ScopedAgentConversation, signal: AbortSignal) => {

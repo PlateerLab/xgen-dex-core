@@ -753,6 +753,14 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.canonical-session-page-row {
+  display: flex;
+  min-height: 18px;
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9px;
+}
+
 .canonical-session-row label {
   display: grid;
   flex: 1 1 150px;

@@ -1,6 +1,7 @@
 import { DexRpcError, type DexRpcClient } from '@dex/rpc/client';
 import type { NativeConversationView, NativeRpcResult, NativeSessionSummary } from '@dex/rpc';
-import { parseAgentFocus, parseAgentSessionList, type AgentFocus, type AgentSessionSnapshot, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { parseAgentFocus, type AgentFocus, type AgentSessionSnapshot, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { parseAgentSessionCatalogPage } from '@dex/protocol/agent-session-catalog';
 import { parseAgentConversationView } from '@dex/protocol/agent-session-conversation-recovery';
 import {
   AgentSessionLifecycleOutcomeUnknown,
@@ -30,6 +31,7 @@ export interface NativeSessionViewState {
     items: OwnedAgentSession[];
     nextCursor: string | null;
     hasMore: boolean;
+    page: number;
     busy: boolean;
     writeBlocked: boolean;
     notice?: string;
@@ -54,7 +56,8 @@ export class NativeSessionController {
   private verifiedSnapshot: AgentSessionSnapshot | null = null;
   private mutating = false;
   private catalog = { scope: null as AgentTurnScope | null, focus: null as AgentFocus | null, items: [] as OwnedAgentSession[],
-    nextCursor: null as string | null, hasMore: false, busy: false, writeBlocked: false, notice: undefined as string | undefined };
+    nextCursor: null as string | null, hasMore: false, page: 0, busy: false, writeBlocked: false,
+    notice: undefined as string | undefined };
   private mutationBarrier: Promise<void> | null = null;
   private releaseMutation: (() => void) | null = null;
   private readBarrier: Promise<void> | null = null;
@@ -91,7 +94,8 @@ export class NativeSessionController {
     return this.selected?.profile === profile && this.selected.server_url === new URL(origin).origin ? this.selected.user_id : null;
   }
   reset(cancel = true): void {
-    this.connection++; this.generation++; this.selected = null; this.canonicalTurns = false; this.restoreLiveAfterCatalog = false; this.clear(); this.clearVerified();
+    this.connection++; this.generation++; this.selected = null; this.canonicalTurns = false; this.restoreLiveAfterCatalog = false;
+    this.clear(); this.clearVerified();
     this.clearCatalog();
     this.setState(empty('idle'));
     if (cancel && this.rpc.state === 'ready') void this.rpc.request('native/cancel').catch(() => {});
@@ -141,6 +145,7 @@ export class NativeSessionController {
         view: 'conversation', conversation, has_more: result.has_more };
       this.selected = validated;
       const scope = this.scopeOf(validated);
+      if (this.catalog.scope && !this.sameScope(this.catalog.scope, scope)) this.clearCatalog();
       this.acceptConversation(scope, conversation);
       this.setState({ status: 'connected', focus: null, conversation, hasMore: result.has_more, scope });
       return validated;
@@ -182,43 +187,101 @@ export class NativeSessionController {
     await this.mutate(() => this.composer.stop());
   }
   async refreshAgentSessions(profile: string, userId: string, beforeId?: string): Promise<void> {
+    if (beforeId !== undefined) {
+      const { scope, nextCursor, hasMore, busy } = this.catalog;
+      if (!scope || scope.profile !== profile || scope.user_id !== userId || busy || !hasMore || beforeId !== nextCursor) {
+        throw new Error('현재 목록에서 검증한 다음 커서만 사용할 수 있습니다.');
+      }
+      return this.loadOlderAgentSessions(profile, userId);
+    }
+    const selected = this.selected;
+    if (this.catalog.busy || !selected || selected.profile !== profile || selected.user_id !== userId) return;
+    const expectedScope = this.scopeOf(selected);
+    const startedAt = this.generation;
+    const resumeLive = this.watchMethod === 'native/watch-live' || this.restoreLiveAfterCatalog;
+    const previous = this.catalog;
+    this.catalog = { ...previous, busy: true, notice: undefined }; this.publish();
     await this.waitForMutation();
     await this.waitForRead();
+    if (this.mutating || startedAt !== this.generation || !this.selected || !this.sameScope(this.selected, expectedScope)
+      || !this.catalogReadStillCurrent(previous)) {
+      this.finishAbandonedCatalogRead(previous); return;
+    }
     await this.lifecycle(async () => {
       const generation = ++this.generation;
-      const resumeLive = this.watchMethod === 'native/watch-live' || this.restoreLiveAfterCatalog;
-      this.clear(); this.catalog = { ...this.catalog, busy: true, notice: undefined }; this.publish();
       try {
         await this.requireSessionCatalogHost();
-        const expectedScope = this.selected && this.selected.profile === profile && this.selected.user_id === userId
-          ? this.scopeOf(this.selected) : null;
         const result = await this.rpc.request<NativeRpcResult>('native/agent-sessions', {
-          profile, user_id: userId, limit: 100, ...(beforeId ? { before_id: beforeId } : {}),
+          profile: expectedScope.profile, user_id: expectedScope.user_id, limit: 100,
         });
-        if (generation !== this.generation) return;
-        this.validateScope(result, profile, userId, 'focus');
-        const priorScope = this.catalog.scope;
-        if (expectedScope && result.server_url !== expectedScope.server_url) throw new Error('Agent 세션 응답 서버 범위가 변경되었습니다.');
-        if (priorScope && priorScope.profile === profile && priorScope.user_id === userId
-          && result.server_url !== priorScope.server_url) throw new Error('Agent 세션 응답 서버 범위가 변경되었습니다.');
+        if (generation !== this.generation || !this.selected || !this.sameScope(this.selected, expectedScope)
+          || !this.catalogReadStillCurrent(previous)) return;
+        this.validateCatalogResult(result, expectedScope);
         const focus = parseAgentFocus(result.focus);
-        const sessions = parseAgentSessionList(result.sessions);
-        const scope = this.scopeOf(result);
-        const oldFocus = this.catalog.scope && this.sameScope(scope, this.catalog.scope) ? this.catalog.focus : null;
-        const displayed = this.sessionState.conversation?.snapshot?.id ?? oldFocus?.active_agent_session_id ?? null;
-        const changed = displayed !== focus.active_agent_session_id;
-        if (changed) {
-          this.clearVerified();
-          this.setState({ status: 'connected', focus, conversation: null, hasMore: false, scope: null });
-        }
-        this.catalog = { scope, focus, items: sessions.items, nextCursor: sessions.next_cursor, hasMore: sessions.has_more,
-          busy: false, writeBlocked: false, notice: beforeId ? 'Agent 세션 목록을 더 불러왔습니다.' : 'Agent 세션 목록과 현재 포커스를 다시 확인했습니다.' };
+        const sessions = parseAgentSessionCatalogPage(result.sessions);
+        const displayed = this.sessionState.conversation?.snapshot;
+        const recover = !!focus.active_agent_session_id && (!displayed
+          || displayed.id !== focus.active_agent_session_id || !displayed.message_history_complete);
+        this.applyCatalogFocus(previous.focus, focus);
+        this.catalog = { scope: expectedScope, focus, items: sessions.items, nextCursor: sessions.next_cursor,
+          hasMore: sessions.has_more, page: 1, busy: false, writeBlocked: false,
+          notice: 'Agent 세션 최신 목록과 현재 포커스를 다시 확인했습니다.' };
         this.publish();
-        if (focus.active_agent_session_id) await this.recoverSelectedConversation(scope, resumeLive);
+        if (recover) await this.recoverSelectedConversation(expectedScope, resumeLive);
+        else if (resumeLive && focus.active_agent_session_id && this.watchMethod !== 'native/watch-live'
+          && this.selected && this.sameScope(this.selected, expectedScope)) {
+          await this.startWatch('conversation', expectedScope.profile, expectedScope.user_id, 'native/watch-live');
+        }
         this.restoreLiveAfterCatalog = false;
       } catch (error) {
-        if (generation !== this.generation) return;
-        this.catalog = { ...this.catalog, busy: false, notice: lifecycleMessage(error, false) }; this.publish();
+        if (generation !== this.generation || !this.selected || !this.sameScope(this.selected, expectedScope)
+          || !this.catalogReadStillCurrent(previous)) return;
+        this.catalog = { ...previous, busy: false, notice: lifecycleMessage(error, false) }; this.publish();
+        throw error;
+      }
+    });
+  }
+  async loadOlderAgentSessions(profile: string, userId: string): Promise<void> {
+    const previous = this.catalog;
+    const { scope, focus, items, nextCursor, hasMore, page } = previous;
+    const selected = this.selected;
+    if (this.mutating || previous.busy || !scope || !focus || !hasMore || !nextCursor
+      || items.at(-1)?.id !== nextCursor
+      || scope.profile !== profile || scope.user_id !== userId || !selected || !this.sameScope(selected, scope)) return;
+    const startedAt = this.generation;
+    this.catalog = { ...previous, busy: true, notice: undefined }; this.publish();
+    await this.waitForRead();
+    if (this.mutating || startedAt !== this.generation || !this.selected || !this.sameScope(this.selected, scope)
+      || this.catalog.scope !== scope || this.catalog.focus !== focus || this.catalog.items !== items
+      || this.catalog.nextCursor !== nextCursor) {
+      this.finishAbandonedCatalogRead(previous); return;
+    }
+    await this.lifecycle(async () => {
+      const generation = ++this.generation;
+      try {
+        await this.requireSessionCatalogHost();
+        const result = await this.rpc.request<NativeRpcResult>('native/agent-sessions', {
+          profile: scope.profile, user_id: scope.user_id, limit: 100, before_id: nextCursor,
+        });
+        if (generation !== this.generation || !this.selected || !this.sameScope(this.selected, scope)
+          || !this.catalogReadStillCurrent(previous)) return;
+        this.validateCatalogResult(result, scope);
+        const currentFocus = parseAgentFocus(result.focus);
+        if (!sameFocus(currentFocus, focus)) {
+          this.applyCatalogFocus(focus, currentFocus);
+          this.catalog = { scope, focus: currentFocus, items: [], nextCursor: null, hasMore: false, page: 0,
+            busy: false, writeBlocked: true,
+            notice: '다른 클라이언트에서 현재 포커스가 바뀌었습니다. 최신 목록을 명시적으로 다시 확인해 주세요.' };
+          this.publish();
+          return;
+        }
+        const sessions = parseAgentSessionCatalogPage(result.sessions, nextCursor, items);
+        this.catalog = { ...previous, items: sessions.items, nextCursor: sessions.next_cursor, hasMore: sessions.has_more,
+          page: page + 1, busy: false, notice: '더 이전 Agent 세션 페이지를 확인했습니다.' };
+        this.publish();
+      } catch (error) {
+        if (generation !== this.generation || !this.catalogReadStillCurrent(previous)) return;
+        this.catalog = { ...previous, busy: false, notice: lifecycleMessage(error, false) }; this.publish();
         throw error;
       }
     });
@@ -260,6 +323,8 @@ export class NativeSessionController {
       if (!this.validWatchId(result.watch_id)) throw new Error('현재 대화 구독을 시작하지 못했습니다.');
       this.selected = { platform_type: 'vscode', profile, server_url: result.server_url, user_id: userId, watch_id: result.watch_id,
         ...(view === 'conversation' ? { view: 'conversation' as const } : {}) };
+      const scope = this.scopeOf(this.selected);
+      if (this.catalog.scope && !this.sameScope(this.catalog.scope, scope)) this.clearCatalog();
       this.watchId = result.watch_id; this.watchView = view; this.pendingWatch = false;
       this.watchMethod = method;
       const buffered = this.buffered; this.buffered = null;
@@ -330,6 +395,8 @@ export class NativeSessionController {
         const conversation = parseAgentConversationView(n.update.conversation);
         if (typeof n.update.has_more !== 'boolean' || !['snapshot', 'replay', 'recovered'].includes(n.update.source)) throw new Error();
         const scope = this.scopeOf(this.selected!);
+        if (this.catalog.scope && this.sameScope(this.catalog.scope, scope)
+          && this.catalog.focus?.active_agent_session_id !== (conversation.snapshot?.id ?? null)) this.clearCatalog();
         this.acceptConversation(scope, conversation);
         this.setState({ status: 'connected', focus: null, conversation, hasMore: n.update.has_more, scope });
       }
@@ -338,6 +405,8 @@ export class NativeSessionController {
       try {
         const focus = parseAgentFocus(n.update.focus);
         const scope = this.scopeOf(this.selected!);
+        if (this.catalog.scope && this.sameScope(this.catalog.scope, scope)
+          && this.catalog.focus && !sameFocus(this.catalog.focus, focus)) this.clearCatalog();
         if (this.verifiedScope && this.sameScope(scope, this.verifiedScope)
           && this.verifiedSnapshot?.id === focus.active_agent_session_id) {
           this.composer.context(this.verifiedScope, this.verifiedSnapshot, false);
@@ -396,8 +465,28 @@ export class NativeSessionController {
     this.composer.reset();
   }
   private clearCatalog(): void {
-    this.catalog = { scope: null, focus: null, items: [], nextCursor: null, hasMore: false,
+    this.catalog = { scope: null, focus: null, items: [], nextCursor: null, hasMore: false, page: 0,
       busy: false, writeBlocked: false, notice: undefined };
+  }
+  private validateCatalogResult(result: NativeRpcResult, scope: AgentTurnScope): void {
+    this.validateScope(result, scope.profile, scope.user_id, 'focus');
+    if (result.server_url !== scope.server_url) throw new Error('Agent 세션 응답 서버 범위가 변경되었습니다.');
+  }
+  private applyCatalogFocus(previous: AgentFocus | null, focus: AgentFocus): void {
+    const displayed = this.sessionState.conversation?.snapshot?.id ?? previous?.active_agent_session_id ?? null;
+    if (displayed === focus.active_agent_session_id) return;
+    this.clearVerified();
+    this.setState({ status: 'connected', focus, conversation: null, hasMore: false, scope: null });
+  }
+  private finishAbandonedCatalogRead(previous: typeof this.catalog): void {
+    if (this.catalog.busy && this.catalog.scope === previous.scope && this.catalog.focus === previous.focus
+      && this.catalog.items === previous.items && this.catalog.nextCursor === previous.nextCursor) {
+      this.catalog = { ...previous, busy: false }; this.publish();
+    }
+  }
+  private catalogReadStillCurrent(previous: typeof this.catalog): boolean {
+    return this.catalog.busy && this.catalog.scope === previous.scope && this.catalog.focus === previous.focus
+      && this.catalog.items === previous.items && this.catalog.nextCursor === previous.nextCursor;
   }
   private publish(): void {
     if (!this.turnView) return;
@@ -493,6 +582,7 @@ export class NativeSessionController {
           this.setState({ status: 'connected', focus, conversation: null, hasMore: false, scope: null });
         }
         this.catalog = { ...this.catalog, focus, busy: false, writeBlocked: false,
+          ...(method === 'native/create-agent-session' ? { page: 0, nextCursor: null, hasMore: false } : {}),
           notice: method === 'native/create-agent-session' ? '새 Agent 세션을 만들고 현재 세션으로 선택했습니다.' : '현재 Agent 세션 포커스를 변경했습니다.' };
         this.publish();
         if (focus.active_agent_session_id) await this.recoverSelectedConversation(catalog.scope, resumeLive);
@@ -521,18 +611,15 @@ export class NativeSessionController {
       this.clearVerified(); this.setState(empty('stopped'));
       throw new Error('현재 대화 응답 서버 범위가 변경되었습니다.');
     }
-    const snapshot = read?.conversation?.snapshot;
-    if (snapshot && this.catalog.scope && this.sameScope(this.catalog.scope, scope)
-      && this.catalog.focus?.active_agent_session_id === snapshot.id) {
-      const item: OwnedAgentSession = { id: snapshot.id, workflow_id: snapshot.workflow_id, title: snapshot.title,
-        status: 'active', current_sequence: snapshot.current_sequence, state_version: snapshot.state_version };
-      this.catalog = { ...this.catalog, items: [item, ...this.catalog.items.filter((candidate) => candidate.id !== item.id)] };
-      this.publish();
-    }
     if (read && resumeLive && this.selected?.server_url === scope.server_url) {
       await this.startWatch('conversation', scope.profile, scope.user_id, 'native/watch-live');
     }
   }
+}
+
+function sameFocus(left: AgentFocus, right: AgentFocus): boolean {
+  return left.active_agent_session_id === right.active_agent_session_id && left.version === right.version
+    && left.event_id === right.event_id;
 }
 
 function lifecycleFailure(error: unknown): { handled: boolean; unknown: boolean; focus?: AgentFocus; message: string } {

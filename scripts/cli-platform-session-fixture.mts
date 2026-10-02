@@ -15,11 +15,12 @@ import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
 
 const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
 const testLive = process.argv.includes('--live');
+const testCatalogPages = process.argv.includes('--catalog-pages');
 const testWorkspaceUi = process.argv.includes('--workspace-ui');
 if (testWorkspaceUi && platform !== 'desktop') throw new Error('Workspace UI verification requires --desktop.');
 const testTurnUi = process.argv.includes('--turn-ui') || testWorkspaceUi;
 const testSessionUi = process.argv.includes('--session-ui') || testWorkspaceUi;
-const testSessions = process.argv.includes('--sessions') || testSessionUi;
+const testSessions = process.argv.includes('--sessions') || testSessionUi || testCatalogPages;
 const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi || testSessionUi;
 const testTurns = process.argv.includes('--turns') || testTurnUi;
 if (testTurnUi && platform === 'cli') throw new Error('Turn UI verification requires --vscode or --desktop.');
@@ -60,6 +61,8 @@ const ownedSessions = new Map<string, { title: string; status: 'active' | 'archi
   [agentId, { title: 'Native shared conversation', status: 'active' }],
   [recoveredId, { title: 'Archived conversation', status: 'archived' }],
 ]);
+if (testCatalogPages) for (let index = 0; index < 205; index++) ownedSessions.set(randomUUID(), { title: `Catalog older session ${index + 1}`, status: 'active' });
+const catalogPagesRead: Array<{ before: string | null; count: number }> = [];
 let sessionRequests = 0; let sessionCreations = 0; let loseSessionAck = testSessionUi;
 const sessionWriteBodies: unknown[] = [];
 const freshSession = () => testSessionUi && focus.active_agent_session_id !== null
@@ -176,7 +179,10 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
       assert.equal(body.origin_id, undefined); assert.equal(body.idempotency_key, undefined);
       if (req.method === 'POST') {
         assert.equal(body.workflow_id, 'native-fixture');
-        const id = randomUUID(); ownedSessions.set(id, { title: body.title, status: 'active' }); sessionCreations++;
+        const id = randomUUID(); const previous = [...ownedSessions];
+        ownedSessions.clear(); ownedSessions.set(id, { title: body.title, status: 'active' });
+        for (const [ownedId, value] of previous) ownedSessions.set(ownedId, value);
+        sessionCreations++;
         focus = { active_agent_session_id: id, version: focus.version + 1, event_id: randomUUID() };
         if (loseSessionAck) { loseSessionAck = false; req.socket.destroy(); return; }
         send(201, { id, workflow_id: body.workflow_id, focus, raw: 'private-server-secret' }); return;
@@ -196,6 +202,7 @@ const server = createServer({ cert: readFileSync(join(certificates, 'localhost.p
         current_sequence: id === agentId || id === recoveredId ? 4 : 0, state_version: id === agentId || id === recoveredId ? 4 : 1,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), raw: 'private-server-secret' }));
       const hasMore = start + items.length < entries.length;
+      catalogPagesRead.push({ before, count: items.length });
       reply({ items, has_more: hasMore, next_cursor: hasMore ? items.at(-1)!.id : null }); return;
     }
     const mutationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(turns|stop)$/.exec(path);
@@ -490,9 +497,11 @@ async function vscodeFixture() {
     const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
       ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
         ...(testWorkspaceUi ? ['--workspace-ui=1'] : []),
-        `--screenshot=${testWorkspaceUi ? '/tmp/cross-sync-desktop-shared-chat.png' : testSessionUi ? '/tmp/cross-sync-native-session-ui-desktop.png' : testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+        ...(testCatalogPages ? ['--catalog-pages=1'] : []),
+        `--screenshot=${testCatalogPages ? '/tmp/cross-sync-catalog-pages-desktop.png' : testWorkspaceUi ? '/tmp/cross-sync-desktop-shared-chat.png' : testSessionUi ? '/tmp/cross-sync-native-session-ui-desktop.png' : testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
       : testTurnUi || testSessionUi ? ['-r', 'tsx/cjs', 'apps/vscode/verify/native-turn-webview.cjs', `--origin=${origin}`, `--user-id=${userId}`, `--node=${process.execPath}`,
-        `--screenshot=/tmp/cross-sync-native-${testSessionUi ? 'session' : 'turn'}-ui-vscode.png`]
+        ...(testCatalogPages ? ['--catalog-pages=1'] : []),
+        `--screenshot=${testCatalogPages ? '/tmp/cross-sync-catalog-pages-vscode.png' : `/tmp/cross-sync-native-${testSessionUi ? 'session' : 'turn'}-ui-vscode.png`}`]
       : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
     clients.push(c); return c;
@@ -596,6 +605,12 @@ async function vscodeFixture() {
       assert.equal(JSON.parse([...turnBodies.values()][0]!.serialized).input_text, 'native-ui-question\nexact tail\n');
       assert.equal(uiTurn?.status, 'cancelled'); assert.equal(turnVersion, 6);
       console.log('Desktop production Workspace / shared Settings model / tab close and reopen / uncertain create and turn preservation / exact retry and stop / focus clear / no legacy dispatch or private persistence PASS');
+    }
+    if (testCatalogPages && testSessionUi) {
+      const older = catalogPagesRead.filter((page) => page.before !== null);
+      assert.deepEqual(older.map((page) => page.count), [100, 8]);
+      assert(catalogPagesRead.every((page) => page.count <= 100));
+      console.log(`${platform}: production catalog pagination UI / 208 owned sessions / bounded100→100→8→latest100 / opaque cursors / unchanged focus and draft / no lifecycle or turn dispatch from browsing PASS`);
     }
     assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
     const restarted = client(); await session(restarted, 'login'); loseCompletion = true;

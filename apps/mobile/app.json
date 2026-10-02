@@ -2,7 +2,7 @@
   "expo": {
     "name": "XGEN Dex",
     "slug": "xgen-dex",
-    "version": "1.77.0",
+    "version": "1.78.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",

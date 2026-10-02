@@ -4,6 +4,7 @@ import fs from "node:fs";
 const [portText, certPath, keyPath] = process.argv.slice(2);
 let disconnectedPosts = 0;
 let disconnectedTurnPosts = 0;
+let disconnectedLifecyclePosts = 0;
 const expectedAuthorization = "Bearer fixture-token_123~safe";
 const expectedDpopAuthorization = "DPoP fixture.access.token";
 const expectedDpop = "fixture.header.signature";
@@ -101,6 +102,32 @@ const server = https.createServer({ cert: fs.readFileSync(certPath), key: fs.rea
         request.headers.dpop !== expectedDpop || request.headers["content-type"] !== "application/json" ||
         body !== '{"password":"fixture-password"}') { response.writeHead(400); response.end("bad delete"); return; }
       response.writeHead(204); response.end(); return;
+    }
+    if (request.url === "/api/agentflow/agent-sessions") {
+      if (request.method !== "POST" || request.headers.authorization !== expectedDpopAuthorization ||
+        request.headers.dpop !== expectedDpop || request.headers["content-type"] !== "application/json" ||
+        request.headers.origin !== undefined || request.headers.cookie !== undefined) {
+        response.writeHead(400); response.end("bad lifecycle create headers"); return;
+      }
+      const parsed = JSON.parse(body);
+      if (parsed.workflow_id === "lost") { disconnectedLifecyclePosts += 1; request.socket.destroy(); return; }
+      if (parsed.workflow_id === "delayed") {
+        setTimeout(() => { if (!response.destroyed) { response.writeHead(201); response.end("late"); } }, 5000); return;
+      }
+      if (parsed.workflow_id === "large-ack") { response.writeHead(201); response.end("x".repeat(65537)); return; }
+      if (parsed.workflow_id === "invalid-ack") { response.writeHead(201); response.end(Buffer.from([0xc3, 0x28])); return; }
+      if (parsed.workflow_id === "redirect") { response.writeHead(302, { Location: "/escaped" }); response.end(); return; }
+      response.writeHead(201, { "Set-Cookie": "lifecycle-secret=must-not-return", "Content-Type": "application/json" });
+      response.end('{"created":true}'); return;
+    }
+    if (request.url === "/api/agentflow/me/agent-state" && request.method === "PUT") {
+      if (request.headers.authorization !== expectedDpopAuthorization || request.headers.dpop !== expectedDpop ||
+        request.headers["content-type"] !== "application/json" || request.headers.origin !== undefined ||
+        request.headers.cookie !== undefined || body !== '{"active_agent_session_id":null,"expected_version":0}') {
+        response.writeHead(400); response.end("bad lifecycle focus"); return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ focused: true, disconnectedLifecyclePosts })); return;
     }
     if (request.url === `/api/agentflow/agent-sessions/${canonicalSession}/turns`) {
       if (request.method !== "POST" || request.headers.authorization !== expectedDpopAuthorization ||

@@ -11,14 +11,17 @@ import { mobileAgentFetch } from './lib/native-agent-http-expo';
 import { mobileAgentSocketTransport } from './lib/native-agent-socket-expo';
 import { mobileDeviceKeys } from './lib/native-device-key-expo';
 import { mobileSessionVault } from './lib/native-session-vault-expo';
+import { createMobileAgentLifecycleSource } from './lib/native-agent-lifecycle';
+import { mobileAgentLifecycleFetch } from './lib/native-agent-lifecycle-http-expo';
 import { stripAgentMarkers } from './lib/chat-ws';
 
 const TURN_STATUS = { accepted: '대기', running: '실행 중', completed: '완료', failed: '실패', cancelled: '취소' };
 export function NativeAgentConversationCard({ client, visible }: { client: XgenMobileClient; visible: boolean }): React.ReactElement {
   const p = useP(); const owner = useRef<MobileAgentConversationModel | null>(null);
   const [state, setState] = useState<MobileConversationModelView | null>(null); const [unavailable, setUnavailable] = useState('');
+  const [workflowId, setWorkflowId] = useState(''); const [title, setTitle] = useState('');
   useEffect(() => {
-    let live = true; const account = client.nativeAccount(); setState(null); setUnavailable('');
+    let live = true; const account = client.nativeAccount(); setState(null); setUnavailable(''); setWorkflowId(''); setTitle('');
     if (!account) return;
     let source: ReturnType<typeof createMobileAgentFocusSource> | null = null;
     try {
@@ -26,9 +29,12 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
       source = createMobileAgentFocusSource({ current, keys, vault: mobileSessionVault,
         fetch: mobileAgentFetch(account.origin), socket: mobileAgentSocketTransport(account.origin) });
       const writer = createMobileAgentMutationSource({ current, keys, vault: mobileSessionVault, fetch: mobileAgentMutationFetch(account.origin) });
+      const lifecycle = createMobileAgentLifecycleSource({ current, keys, vault: mobileSessionVault, fetch: mobileAgentLifecycleFetch(account.origin) });
       const selected = source;
       const model = new MobileAgentConversationModel(account, createMobileAgentLiveWatcher(source), writer,
-        (value) => { if (live) setState(value); }, mobileTurnKey, () => selected.dispose());
+        (value) => { if (live) setState(value); }, mobileTurnKey, () => selected.dispose(), {
+          read: (signal) => selected.readCatalog(signal), send: lifecycle.send, dispose: lifecycle.dispose,
+        });
       owner.current = model;
     } catch { source?.dispose(); setUnavailable('공유 대화는 HTTPS 서버와 최신 네이티브 앱에서 사용할 수 있습니다.'); }
     return () => { live = false; owner.current?.dispose(); owner.current = null; };
@@ -37,14 +43,33 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
     const activate = () => owner.current?.setVisible(visible && AppState.currentState === 'active');
     activate(); const listener = AppState.addEventListener('change', activate); return () => listener.remove();
   }, [client, visible]);
-  const view = state?.conversation; const busy = Boolean(state?.watching || state?.writing); const hasMore = Boolean(state?.hasMore);
+  const view = state?.conversation; const busy = Boolean(state?.watching || state?.writing || state?.catalog.busy); const hasMore = Boolean(state?.hasMore);
   const available = Boolean(owner.current && state?.visible);
   const button = (label: string, disabled: boolean, action: () => void) => <Pressable accessibilityRole="button" disabled={disabled} onPress={action}
     style={{ padding: 12, borderWidth: 1, borderColor: p.border, borderRadius: 8, opacity: disabled ? 0.5 : 1 }}><Text style={{ color: p.text }}>{label}</Text></Pressable>;
   return <View style={{ padding: 14, marginBottom: 12, borderRadius: 12, backgroundColor: p.panel, gap: 10 }}>
     <Text style={{ color: p.text, fontSize: 16, fontWeight: '700' }}>공유 대화</Text>
-    <Text style={{ color: p.muted }}>현재 계정에서 선택한 공유 대화를 확인하고 텍스트를 전송합니다. 다른 기기에서 생성·선택한 대화를 이어 사용할 수 있습니다. 진행 중 출력은 완료 후 표시됩니다.</Text>
+    <Text style={{ color: p.muted }}>내 공유 대화를 생성하거나 선택하고 다른 기기와 이어 사용합니다. 진행 중 출력은 완료 후 표시됩니다.</Text>
     <Text style={{ color: p.text }}>상태: {state?.status ?? '미확인'}</Text>
+    {button('내 공유 대화 목록 다시 조회', !available || Boolean(state?.writing || state?.catalog.busy), () => { void owner.current?.refreshCatalog(); })}
+    {state?.catalog.focus && <Text style={{ color: p.muted }}>현재 선택: {state.catalog.focus.active_agent_session_id ?? '선택 없음'}</Text>}
+    {state?.catalog.items.map((item) => <View key={item.id} style={{ gap: 4, paddingVertical: 6 }}>
+      <Text style={{ color: p.text }}>{item.title || '제목 없는 공유 대화'}</Text>
+      <Text style={{ color: p.muted }}>Workflow: {item.workflow_id} · {item.status === 'active' ? '활성' : '보관됨'}</Text>
+      {button(item.id === state.catalog.focus?.active_agent_session_id ? '선택한 대화 다시 확인' : '이 대화 선택',
+        !state.catalog.canWrite || item.status !== 'active', () => { void owner.current?.selectSession(item.id); })}
+    </View>)}
+    {state?.catalog.hasMore && <Text style={{ color: p.muted }}>최신 100개 목록입니다. 이전 세션 페이지 탐색은 아직 지원하지 않습니다.</Text>}
+    <TextInput accessibilityLabel="새 공유 대화 Workflow ID" placeholder="사용할 Workflow ID" placeholderTextColor={p.muted}
+      value={workflowId} onChangeText={setWorkflowId} editable={Boolean(state?.catalog.canWrite)} autoCapitalize="none"
+      style={{ padding: 12, color: p.text, borderWidth: 1, borderColor: p.border, borderRadius: 8 }} />
+    <TextInput accessibilityLabel="새 공유 대화 제목" placeholder="대화 제목 (선택)" placeholderTextColor={p.muted}
+      value={title} onChangeText={setTitle} editable={Boolean(state?.catalog.canWrite)}
+      style={{ padding: 12, color: p.text, borderWidth: 1, borderColor: p.border, borderRadius: 8 }} />
+    {button('새 공유 대화 생성·선택', !state?.catalog.canWrite || !workflowId, () => { void owner.current?.createSession(workflowId, title); })}
+    {button('공유 대화 선택 해제', !state?.catalog.canWrite || !state?.catalog.focus?.active_agent_session_id,
+      () => { void owner.current?.selectSession(null); })}
+    {!!state?.catalog.notice && <Text accessibilityRole="alert" style={{ color: p.muted }}>{state.catalog.notice}</Text>}
     {button('현재 공유 대화 조회', !available || busy, () => { void owner.current?.start(true); })}
     {button('대화 변경 구독 시작', !available || busy, () => { void owner.current?.start(false); })}
     {button('조회·구독 중단', !state?.watching || Boolean(state?.writing), () => owner.current?.stopRead())}
@@ -63,7 +88,7 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
     </>}
     <TextInput accessibilityLabel="공유 대화 입력" placeholder="공유 대화에 보낼 내용" placeholderTextColor={p.muted}
       value={state?.draft ?? ''} onChangeText={(value) => owner.current?.setDraft(value)} multiline
-      editable={available && Boolean(view?.snapshot) && !state?.writing && !state?.turn.canRetry}
+      editable={available && Boolean(view?.snapshot) && !state?.writing && !state?.catalog.busy && !state?.catalog.writeBlocked && !state?.turn.canRetry}
       style={{ minHeight: 88, maxHeight: 240, padding: 12, color: p.text, borderWidth: 1, borderColor: p.border, borderRadius: 8, textAlignVertical: 'top' }} />
     {button('공유 대화 전송', !available || !state?.turn.canSubmit || !state?.draft || Boolean(state?.writing), () => { void owner.current?.submit(); })}
     {button('원래 요청 재확인', !available || !state?.turn.canRetry || Boolean(state?.writing), () => { void owner.current?.retry(); })}

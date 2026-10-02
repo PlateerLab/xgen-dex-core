@@ -101,6 +101,21 @@ public final class XgenNativeDeviceModule: Module {
         promise.reject("mobile_transport_unavailable", "Mobile transport unavailable")
       }
     }
+    AsyncFunction("lifecycleRequest") { (requestId: String, origin: String, path: String, method: String, accessToken: String, dpop: String, body: String, promise: Promise) in
+      do {
+        try self.transport.lifecycleRequest(requestId: requestId, origin: origin, path: path, method: method,
+          accessToken: accessToken, dpop: dpop, body: body) { result in
+          switch result {
+          case .success(let response): promise.resolve(["status": response.status, "body": response.body])
+          case .failure(let error): promise.reject(error.code, "Mobile transport unavailable")
+          }
+        }
+      } catch let error as MobileTransportFailure {
+        promise.reject(error.code, "Mobile transport unavailable")
+      } catch {
+        promise.reject("mobile_transport_unavailable", "Mobile transport unavailable")
+      }
+    }
     AsyncFunction("cancelRequest") { (requestId: String) in
       do { try self.transport.cancelRequest(requestId) }
       catch let error as MobileTransportFailure {

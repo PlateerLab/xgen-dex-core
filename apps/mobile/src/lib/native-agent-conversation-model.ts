@@ -2,6 +2,19 @@ import { AgentTurnComposer, AgentTurnComposeFailure, type AgentTurnComposerView,
 import type { MobileEnrollmentAccount } from './native-device-enrollment';
 import type { MobileConversationView } from './native-agent-conversation-watch';
 import type { MobileCanonicalUpdate } from './native-agent-focus-watch';
+import { parseAgentFocus, parseAgentSessionList, type AgentFocus, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { validateCreateAgentSession, validateSwitchAgentFocus, parseCreatedAgentSession, parseSwitchedAgentFocus } from '@dex/protocol/agent-session-lifecycle';
+import { MobileAgentLifecycleFailure, type MobileAgentLifecycleRequest } from './native-agent-lifecycle';
+
+interface CatalogPort {
+  read(signal?: AbortSignal): Promise<{ authScope: string; focus: unknown; sessions: unknown }>;
+  send(request: MobileAgentLifecycleRequest, signal?: AbortSignal): Promise<unknown>;
+  dispose(): void;
+}
+export interface MobileAgentCatalogView {
+  focus: AgentFocus | null; items: OwnedAgentSession[]; hasMore: boolean;
+  busy: boolean; writeBlocked: boolean; canWrite: boolean; notice: string;
+}
 
 export interface MobileConversationModelView {
   visible: boolean;
@@ -13,6 +26,7 @@ export interface MobileConversationModelView {
   error: string;
   draft: string;
   turn: AgentTurnComposerView;
+  catalog: MobileAgentCatalogView;
 }
 interface Watcher {
   run(update: (value: MobileCanonicalUpdate<MobileConversationView>) => void, signal: AbortSignal, once?: boolean): Promise<void>;
@@ -35,6 +49,14 @@ export class MobileAgentConversationModel {
   private read: { control: AbortController; done: Promise<void> } | null = null;
   private write: AbortController | null = null;
   private actionBusy = false;
+  private catalogFocus: AgentFocus | null = null;
+  private catalogItems: OwnedAgentSession[] = [];
+  private catalogScope: string | null = null;
+  private catalogReady = false;
+  private catalogHasMore = false;
+  private lifecycleBlocked = false;
+  private catalogNotice = '';
+  private catalogTask: AbortController | null = null;
   state!: MobileConversationModelView;
 
   constructor(private readonly account: Pick<MobileEnrollmentAccount, 'origin' | 'userId'>,
@@ -42,7 +64,8 @@ export class MobileAgentConversationModel {
     private readonly writer: { send(request: AgentTurnComposeRequest, signal?: AbortSignal): Promise<unknown>; dispose(): void },
     private readonly render: (value: MobileConversationModelView) => void,
     createKey: () => string,
-    private readonly disposeSource: () => void = () => undefined) {
+    private readonly disposeSource: () => void = () => undefined,
+    private readonly catalogPort?: CatalogPort) {
     this.composer = new AgentTurnComposer((request) => this.dispatch(request), (value) => {
       this.turn = value; if (this.state) this.publish();
     }, createKey);
@@ -51,7 +74,10 @@ export class MobileAgentConversationModel {
   private publish(): void {
     this.state = { visible: this.visible, watching: Boolean(this.read), writing: Boolean(this.write) || this.actionBusy,
       conversation: this.visible ? this.conversation : null, hasMore: this.visible && this.hasMore,
-      status: this.status, error: this.error, draft: this.visible ? this.draft : '', turn: this.turn };
+      status: this.status, error: this.error, draft: this.visible ? this.draft : '', turn: this.turn,
+      catalog: { focus: this.visible && this.catalogFocus ? { ...this.catalogFocus } : null, items: this.visible ? this.catalogItems.map((item) => ({ ...item })) : [],
+        hasMore: this.visible && this.catalogHasMore, busy: Boolean(this.catalogTask), writeBlocked: this.lifecycleBlocked,
+        canWrite: this.canWriteCatalog(), notice: this.visible ? this.catalogNotice : '' } };
     if (!this.disposed) this.render(this.state);
   }
   private unavailable(): void { this.composer.context(this.scope, null, false); }
@@ -61,12 +87,13 @@ export class MobileAgentConversationModel {
     if (!value) {
       this.visibilityGeneration++;
       this.read?.control.abort(); this.write?.abort(); this.conversation = null; this.hasMore = false;
+      this.catalogTask?.abort(); this.catalogReady = false;
       this.status = '조회 중단'; this.error = ''; this.unavailable();
     }
     this.publish();
   }
   setDraft(value: string): void {
-    if (!this.visible || this.disposed || this.write || this.actionBusy) return;
+    if (!this.visible || this.disposed || this.write || this.actionBusy || this.catalogTask || this.lifecycleBlocked) return;
     this.draft = value; this.publish();
   }
   private update(update: MobileCanonicalUpdate<MobileConversationView>): void {
@@ -81,7 +108,16 @@ export class MobileAgentConversationModel {
       }
       if (identity) this.observed = identity;
       this.scope = nextScope; this.conversation = value; this.hasMore = update.hasMore;
-      this.composer.context(nextScope, value.snapshot, !update.hasMore);
+      if (this.catalogPort && this.catalogScope !== nextScope.profile) {
+        this.catalogFocus = null; this.catalogItems = []; this.catalogHasMore = false; this.catalogReady = false;
+        // An unknown lifecycle outcome belongs to its original Platform Session only.
+        if (this.catalogScope !== null) this.lifecycleBlocked = false;
+        this.catalogScope = nextScope.profile;
+      }
+      if (this.catalogPort && identity && this.catalogFocus?.active_agent_session_id !== (value.snapshot?.id ?? null)) {
+        this.catalogReady = false; this.catalogNotice = '공유 대화 선택이 바뀌었습니다. 세션 목록을 직접 다시 조회하세요.';
+      }
+      this.composer.context(nextScope, value.snapshot, !update.hasMore && this.turnAvailable());
       this.status = update.hasMore ? '기록을 이어서 불러오는 중' : '최신 대화 확인'; this.error = '';
     } else {
       this.conversation = null; this.hasMore = false; this.unavailable();
@@ -93,7 +129,7 @@ export class MobileAgentConversationModel {
     this.publish();
   }
   async start(once = false): Promise<void> {
-    if (!this.visible || this.disposed || this.write || this.actionBusy || this.read) return;
+    if (!this.visible || this.disposed || this.write || this.actionBusy || this.read || this.catalogTask) return;
     const control = new AbortController();
     const selected = { control, done: Promise.resolve() }; this.read = selected; this.error = '';
     // Install ownership before calling run; watchers can emit their first value synchronously.
@@ -109,12 +145,12 @@ export class MobileAgentConversationModel {
     this.publish(); await selected.done;
   }
   stopRead(): void {
-    if (this.write || this.actionBusy || this.disposed) return;
+    if (this.write || this.actionBusy || this.disposed || this.catalogTask) return;
     this.read?.control.abort(); this.conversation = null; this.hasMore = false; this.status = '조회 중단'; this.unavailable(); this.publish();
   }
   private async dispatch(request: AgentTurnComposeRequest): Promise<unknown> {
     if (this.write || !this.visible || this.disposed || !this.scope || request.scope.profile !== this.scope.profile
-      || this.conversation?.snapshot?.id !== request.agent_session_id) throw new AgentTurnComposeFailure('unavailable');
+      || !this.turnAvailable() || this.conversation?.snapshot?.id !== request.agent_session_id) throw new AgentTurnComposeFailure('unavailable');
     const control = new AbortController(); this.write = control;
     // Leave the watcher before acquiring a write proof/vault lock. The shared HTTP latch
     // refuses writes until a cancelled native GET actually settles; cancellation is not turn stop.
@@ -131,7 +167,7 @@ export class MobileAgentConversationModel {
     }
   }
   private async action(operation: 'submit' | 'retry' | 'stop'): Promise<void> {
-    if (this.disposed || !this.visible || this.write || this.actionBusy) return;
+    if (this.disposed || !this.visible || this.write || this.actionBusy || this.catalogTask || !this.turnAvailable()) return;
     this.actionBusy = true;
     const generation = this.generation; const visibilityGeneration = this.visibilityGeneration;
     const original = this.draft; const identity = this.observed;
@@ -153,8 +189,103 @@ export class MobileAgentConversationModel {
   submit(): Promise<void> { return this.action('submit'); }
   retry(): Promise<void> { return this.action('retry'); }
   stopTurn(): Promise<void> { return this.action('stop'); }
+  private turnAvailable(): boolean {
+    return !this.catalogPort || (!this.catalogTask && !this.lifecycleBlocked && this.catalogReady
+      && this.catalogScope === this.scope?.profile && this.catalogFocus?.active_agent_session_id === (this.conversation?.snapshot?.id ?? null));
+  }
+  private canWriteCatalog(): boolean {
+    return Boolean(this.catalogPort && this.visible && !this.disposed && this.catalogReady && this.catalogFocus && this.scope
+      && this.catalogScope === this.scope.profile && !this.lifecycleBlocked && !this.catalogTask && !this.write && !this.actionBusy
+      && !(this.turn.request && this.turn.status === 'unavailable')
+      && !['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(this.turn.status));
+  }
+  private acceptFocus(authScope: string, focus: AgentFocus): void {
+    const identity = `${authScope}:${focus.active_agent_session_id ?? 'none'}`;
+    if ((this.scope && this.scope.profile !== authScope) || (this.observed && identity !== this.observed)) {
+      this.generation++; this.draft = ''; this.conversation = null; this.hasMore = false; this.composer.reset();
+    }
+    if (this.catalogScope !== null && this.catalogScope !== authScope) this.lifecycleBlocked = false;
+    this.observed = identity; this.catalogScope = authScope;
+    this.scope = { platform_type: 'mobile', profile: authScope, server_url: this.account.origin, user_id: this.account.userId };
+    this.catalogFocus = focus;
+    // Catalog proves selection, not a conversation snapshot or a running turn.
+    this.unavailable();
+  }
+  async refreshCatalog(): Promise<boolean> {
+    if (!this.catalogPort || !this.visible || this.disposed || this.catalogTask || this.write || this.actionBusy) return false;
+    const control = new AbortController(); this.catalogTask = control; const visibility = this.visibilityGeneration;
+    const reading = this.read; reading?.control.abort(); this.catalogReady = false; this.catalogNotice = ''; this.unavailable(); this.publish();
+    let success = false;
+    try {
+      await reading?.done; control.signal.throwIfAborted();
+      const result = await this.catalogPort.read(control.signal);
+      if (this.disposed || !this.visible || control.signal.aborted || visibility !== this.visibilityGeneration) return false;
+      if (typeof result.authScope !== 'string' || !/^[0-9a-f]{64}$/.test(result.authScope)) throw new TypeError();
+      const focus = parseAgentFocus(result.focus); const sessions = parseAgentSessionList(result.sessions);
+      this.acceptFocus(result.authScope, focus); this.catalogItems = sessions.items; this.catalogHasMore = sessions.has_more;
+      this.catalogReady = true; this.lifecycleBlocked = false;
+      this.catalogNotice = '현재 선택과 내 세션 목록을 확인했습니다.'; this.error = ''; success = true;
+    } catch {
+      if (!this.disposed && !control.signal.aborted) this.catalogNotice = '세션 목록을 확인하지 못했습니다. 기기 키·세션과 서버 상태를 확인하세요.';
+    } finally { if (this.catalogTask === control) this.catalogTask = null; this.publish(); }
+    if (success && this.catalogFocus?.active_agent_session_id && this.visible && visibility === this.visibilityGeneration) void this.start(false);
+    return success;
+  }
+  async createSession(workflowId: string, title = ''): Promise<boolean> {
+    if (!this.canWriteCatalog()) return false;
+    try { return await this.lifecycle({ scope: { ...this.scope! }, operation: 'create',
+      input: validateCreateAgentSession({ workflow_id: workflowId, title, expected_version: this.catalogFocus!.version }) }); }
+    catch { this.error = 'Workflow ID와 제목 형식을 확인하세요.'; this.publish(); return false; }
+  }
+  async selectSession(id: string | null): Promise<boolean> {
+    if (!this.canWriteCatalog()) return false;
+    if (id !== null && !this.catalogItems.some((item) => item.id === id && item.status === 'active')) {
+      this.error = '조회된 내 활성 세션만 선택할 수 있습니다.'; this.publish(); return false;
+    }
+    return this.lifecycle({ scope: { ...this.scope! }, operation: 'switch',
+      input: validateSwitchAgentFocus({ active_agent_session_id: id, expected_version: this.catalogFocus!.version }) });
+  }
+  private async lifecycle(request: MobileAgentLifecycleRequest): Promise<boolean> {
+    if (!this.canWriteCatalog()) return false;
+    const control = new AbortController(); this.catalogTask = control; const visibility = this.visibilityGeneration;
+    const reading = this.read; reading?.control.abort(); this.catalogNotice = ''; this.error = ''; this.unavailable(); this.publish();
+    let success = false; let dispatched = false;
+    try {
+      await reading?.done; control.signal.throwIfAborted();
+      dispatched = true;
+      const value = await this.catalogPort!.send(request, control.signal);
+      if (this.disposed) return false;
+      if (control.signal.aborted || !this.visible || visibility !== this.visibilityGeneration) throw new MobileAgentLifecycleFailure('unknown');
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new MobileAgentLifecycleFailure('unknown');
+      const result = value as Record<string, unknown>;
+      for (const key of ['platform_type', 'profile', 'server_url', 'user_id'] as const) {
+        if (result[key] !== request.scope[key]) throw new MobileAgentLifecycleFailure('unknown');
+      }
+      const created = request.operation === 'create' ? parseCreatedAgentSession(result.created, request.input) : null;
+      const focus = created ? created.focus : parseSwitchedAgentFocus(result.focus, (request as Extract<MobileAgentLifecycleRequest, { operation: 'switch' }>).input);
+      this.acceptFocus(request.scope.profile, focus); this.catalogReady = true;
+      if (created) {
+        const items: OwnedAgentSession[] = [{ id: created.id, workflow_id: created.workflow_id, title: request.operation === 'create' ? request.input.title ?? '' : '',
+          status: 'active', state_version: 1, current_sequence: 0 }, ...this.catalogItems.filter((item) => item.id !== created.id)];
+        this.catalogHasMore ||= items.length > 100; this.catalogItems = items.slice(0, 100);
+      }
+      this.catalogNotice = created ? '공유 대화를 생성하고 선택했습니다.' : '공유 대화 선택을 확인했습니다.'; success = true;
+    } catch (error) {
+      if (!this.disposed) {
+        const failure = error instanceof MobileAgentLifecycleFailure ? error : new MobileAgentLifecycleFailure(dispatched ? 'unknown' : 'unavailable');
+        if (failure.outcome === 'unknown' || failure.conflict) { this.lifecycleBlocked = true; this.catalogReady = false;
+          this.conversation = null; this.hasMore = false; this.unavailable(); }
+        if (failure.conflict) this.acceptFocus(request.scope.profile, parseAgentFocus(failure.conflict.current));
+        this.catalogNotice = failure.conflict ? '다른 기기에서 선택이 바뀌었습니다. 목록을 직접 다시 조회하고 선택하세요.' : failure.message;
+      }
+    } finally { if (this.catalogTask === control) this.catalogTask = null; this.publish(); }
+    if (success && this.visible && visibility === this.visibilityGeneration && this.catalogFocus?.active_agent_session_id) void this.start(false);
+    return success;
+  }
   dispose(): void {
-    this.disposed = true; this.generation++; this.read?.control.abort(); this.write?.abort(); this.writer.dispose(); this.disposeSource();
-    this.scope = null; this.observed = null; this.draft = ''; this.conversation = null; this.composer.reset();
+    this.disposed = true; this.generation++; this.read?.control.abort(); this.write?.abort(); this.catalogTask?.abort();
+    this.catalogPort?.dispose(); this.writer.dispose(); this.disposeSource();
+    this.visible = false; this.scope = null; this.observed = null; this.draft = ''; this.conversation = null;
+    this.catalogFocus = null; this.catalogItems = []; this.catalogScope = null; this.composer.reset();
   }
 }

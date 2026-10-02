@@ -786,3 +786,53 @@ Mobile 설정 → 공유 대화 → 현재 focus/snapshot 조회
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. Mobile's existing shared conversation now uses the shared scoped composer for plain-text submit, explicit original-request retry and exact verified latest-turn stop. Unknown intent and drafts survive same-login screen/background suspension in memory; returning requires a read, and actual scope/focus changes discard stale data. Dedicated native POST DPoP is tied to the ready vault and public read binding, with bounded strict transport and no automatic refresh/replay/rebase or legacy fallback. Review exposed three settling/classification gaps: known pre-enqueue failures are unavailable, GET/POST share the actual native completion latch, and iOS cancellation/rejected responses wait for didComplete while retaining responseInvalid. JS/native regressions and production trusted-HTTPS seams verify one execution despite lost receipt and three explicit writes; enrollment-mode integration Compose verifies pre-wire rejection and cleanup. Physical RN UI/hardware/SecureStore and ACTIVE Gateway success remain gates. Mobile session creation/selection, TUI/attachments and full catalog pagination follow. SDK/runtime remain unreleased Workflow overlays and PR90 stays Draft.
+
+## Mobile Canonical 공유 세션 생성·선택 (2026-10-02)
+
+작업 브랜치 `feat/cross-platform-mobile-session-selection`, 기준 통합 SHA `c7c228e0065377565b320456ff60af629de80cf5`, 제품·검증 코드 SHA `105c62d1e787cf0f2bc1ec81943ce693abb496af`. 하위 [PR151](https://github.com/PlateerLab/xgen-dex-core/pull/151) → `feat/cross-platform-session`, 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지한다.
+
+```text
+Mobile 설정 → 공유 대화 → 내 목록 + 현재 account focus 조회
+  → 동일 ready vault scope 안에서 GET focus / GET owned sessions(limit=100)
+  → Workflow ID·선택 제목 입력 → POST create(expected focus version)
+  → 조회된 내 active 세션 선택 / 선택 해제 → PUT focus(expected version)
+  → 성공 ACK 검증 → 실제 선택 변경 시 이전 draft·본문 폐기
+  → authoritative selected snapshot + watch → 텍스트 submit/retry/stop
+생성 ACK 유실 / dispatch 후 취소 / 잘못된 scope·ACK / 409 focus conflict
+  → 생성·선택·turn 쓰기 잠금 → 직접 catalog 재확인 → 현재 선택만 복구
+숨김·백그라운드 → 요청 취소·private 표시 제거 → 복귀 후 직접 조회
+```
+
+### 구현과 경계
+
+- 기존 설정의 공유 대화 카드에 owned catalog, 새 공유 대화 생성, 내 활성 세션 선택, 현재 선택 해제를 연결했다. Workflow ID는 서버에서 사용할 실제 workflow의 ID이며 title은 선택 입력이다. archived/조회되지 않은 세션은 선택하지 못한다. 서버 선택은 계정 공통이고 CAS에는 방금 조회한 focus version만 사용한다. 같은 대상 선택은 서버의 동일 version no-op ACK도 검증하며 기존 draft를 유지하고 대화를 다시 조회한다.
+- 목록은 최신100개로 제한하고 `has_more`를 표시한다. 이전 페이지 탐색은 후속 작업이며 전체 목록으로 표시하지 않는다. 생성 ACK의 신규 ID·workflow·focus·version을 검사한 뒤 목록에 포함하고 실제 snapshot으로 실행 상태를 확인한다. focus와 list는 동일 vault 범위의 순차 REST 조회이며 원자적 DB snapshot이라고 주장하지 않는다. 그 사이의 다른 기기 변경은 서버 CAS 충돌 또는 후속 대화/focus 불일치로 차단한다.
+- login 수명 모델이 catalog/turn/watch를 함께 소유한다. catalog 또는 lifecycle 작업 전에 기존 watcher를 취소·대기하고, GET/turn/lifecycle JS adapter가 같은 native module/origin의 실제 완료 latch를 공유한다. 취소된 OS 요청이 아직 정리 중이면 신규 key/proof를 만들기 전에 차단한다. ready vault·기기 키·expiry·journal·account/login lifetime·Platform sid 공개 hash를 매 요청 직전에 다시 검사하며 자격증명·signer는 vault callback 안에서만 사용한다.
+- 생성에는 idempotency key가 없으므로 ACK 유실을 재전송하거나 새 version으로 재작성하지 않는다. unknown 생성/선택 및 focus409 뒤에는 사용자가 목록을 직접 재조회하기 전까지 lifecycle과 turn 쓰기를 모두 막는다. 목록 재확인은 현재 서버 선택을 보여줄 뿐 이전 요청 성공을 확정하지 않는다. unknown/미확정/접수된 turn은 결과가 확인될 때까지 lifecycle 변경을 막으며, 같은 focus 목록 재조회는 원래 turn intent를 없애지 않는다.
+- 다른 표면에서 focus가 바뀌면 이전 draft·본문을 폐기하고 stale catalog와 새 snapshot을 혼합해 전송하지 않는다. 다시 목록을 확인해야 한다. 같은 Platform sid의 token rotation은 scope/intent를 유지하고, 실제 sid/account 변경은 이전 범위를 폐기한다. 화면 숨김/백그라운드는 표시와 요청을 취소하지만 unknown 잠금을 메모리에 유지하며 빠른 hide→resume 후 늦은 ACK도 자동 조회/쓰기나 private 표시를 복구하지 않는다. 앱 종료/로그아웃 시 모델·draft·catalog를 폐기하며 디스크에 저장하지 않는다.
+- Expo 전용 `lifecycleRequest(id,origin,path,method,accessToken,dpop,body)`는 exact POST `/api/agentflow/agent-sessions`, PUT `/api/agentflow/me/agent-state`만 허용한다. 기존 GET·turn-only POST·enrollment/session API를 generic write로 확장하지 않는다. JS와 두 OS에서 unknown/중복/잘못된 JSON field·Unicode·UUID·safe version·origin과 method/path를 검사하며 body32KiB·fatal UTF8 ACK64KiB를 제한한다. 시스템 TLS·고정 DPoP header·cookie/redirect/retry 차단과 실제 OS completion 이후 취소 완료를 유지한다. 구형 native 앱/Expo Go는 새 native bridge가 없어 fail closed하므로 앱을 다시 빌드해야 한다.
+- 환경변수 추가·변경·삭제와 SDK/runtime 패키지 배포는 없다. 기존 password + browser key 인증 정책을 유지한다.
+
+### 검증과 실행 환경
+
+- Mobile 전체 회귀182/182 후 focus/catalog/model/lifecycle 최종 대상42/42 통과(두 추가 catalog source 회귀 포함). focus 다음 list GET 실패·취소·계정 변경 시 부분 결과 미노출, 별도 scope/unknown/409/이중 클릭/선택 변경/숨김·복귀/원래 turn intent 유지/키와 journal 차단을 검증했다. Mobile/workspace 타입 검사·workspace 빌드·계약 검사와 세 opt-in harness strict 타입 검사 통과. 최종 Head 필수 CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- Android transport26 + 실제 P-256 DPoP2 테스트, Swift 타입·actual URLSession TLS fixture 및 native module export syntax 검증 통과. exact create/focus route·method·body bounds와 malformed/decoded duplicate fields, lost ACK·response limits·redirect·취소·fresh signed proof를 포함한다. Android JUnit의 failure/error/skip은 모두0이다.
+- `node --import tsx scripts/mobile-agent-turn-fixture.mts --sessions`: production Mobile read/catalog source·scoped lifecycle/turn writer·JS native adapter·composer/model에 실제 trusted localhost TLS/P-256 proof를 연결했다. software key·memory vault·Node bridge·HTTP watcher는 명시적인 테스트 대체 구현이다. 생성 ACK 유실·이중 클릭에도 생성1회, 직접 catalog 복구, 같은 focus draft 보존, 소유 세션 전환·해제, unknown turn의 lifecycle 차단, 원래 turn retry/stop·terminal 복구를 검증했다. lifecycle write5회·turn write3회·실행1회·fresh ES256 proof59개, vault 불변·credential 표시 없음·legacy dispatch 없음·자료 정리를 확인했다. RN 화면/physical hardware/SecureStore 또는 실제 ACTIVE Gateway 성공 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --mobile-sessions --mobile-ws`: 실제 Gateway enrollment에서 일회용 계정·Mobile 등록과 선택한 trusted browser 승인을 사용했다. login503/login_pending journal이 catalog/create/focus-clear와 read/WSS/submit/stop을 proof/wire 이전에 차단하며 모델의 생성·선택·turn 버튼이 비활성화됨을 확인했다. Canonical session0개, token-free journal 유지·명시적 local recovery·DB/자료 정리를 검증했다. memory vault/software key/Node TLS bridge 대체 구현이 포함되며 실제 ACTIVE 양성 실행은 별도 관문이다.
+- 기본 infra/core/gateway 및 workflow/frontend 프로필, HTTPS3443 환경이다. `.env`의 서비스별 branch override와 clean source/container HEAD/ref·실제 `/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`이다. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment`를 확인했다. DEX는 이 하위 브랜치 제품·검증 코드로 실행했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` Workflow overlay marker·실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 재확인했다. 미배포 임시 연결을 유지했다.
+- 증거: `/tmp/cross-sync-mobile-sessions-{all-tests,final-target-tests,check,workspace-check,workspace-build,contracts,harness-check,tls-fixture,compose,environment,overlay}.log`, `/tmp/cross-sync-mobile-session-native-transport-final.log`; Android JUnit은 `apps/mobile/modules/xgen-native-device/android/build/test-results/testDebugUnitTest/TEST-expo.modules.xgennativedevice.{NativeEnrollmentTransportTest,DpopProofTest}.xml`이다. Swift runner의 임시 자료는 정리된다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 6% | TUI/첨부·catalog pagination·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Mobile's shared conversation card now connects bounded owned-session catalog reads, creation, active-session selection and explicit focus clearing to the existing scoped turn model. Dedicated native POST/PUT lifecycle transport and fresh DPoP stay inside ready account vault ownership; cancelled reads and all writes share the actual native completion latch. Unknown lifecycle results and focus conflicts lock writes until an explicit catalog recheck, with no creation replay or CAS rebase. Unknown turn intent blocks lifecycle changes and survives same-focus reads; actual scope/focus changes clear stale drafts and content. JS and native regressions plus a production trusted-HTTPS fixture verify one creation/execution despite lost receipts, exact retry/stop, owned selection/clear and unchanged vault. Integration-branch enrollment Compose verifies pre-proof/pre-wire denial and cleanup. Full catalog pagination, TUI/attachments, physical Mobile UI/hardware/SecureStore and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.

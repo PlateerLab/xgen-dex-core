@@ -84,6 +84,23 @@ struct NativeEnrollmentTransportVerification {
       return result
     }
 
+    func performLifecycle(_ path: String, method: String, body: String,
+      accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature",
+      cancelAfter: TimeInterval? = nil, onReserved: ((String) -> Void)? = nil) throws -> Result<MobileTransportResponse, MobileTransportFailure> {
+      let id = try transport.newRequestId()
+      onReserved?(id)
+      let semaphore = DispatchSemaphore(value: 0)
+      var result: Result<MobileTransportResponse, MobileTransportFailure>?
+      try transport.lifecycleRequest(requestId: id, origin: origin, path: path, method: method,
+        accessToken: accessToken, dpop: dpop, body: body) {
+        result = $0
+        semaphore.signal()
+      }
+      if let cancelAfter { DispatchQueue.global().asyncAfter(deadline: .now() + cancelAfter) { try? transport.cancelRequest(id) } }
+      guard semaphore.wait(timeout: .now() + 12) == .success, let result else { throw VerificationFailure.failed("lifecycle request timeout") }
+      return result
+    }
+
     let headers = try perform("/api/auth/platform-devices/native/mobile/registration/challenge", method: "POST", body: "{\"case\":\"headers\"}").get()
     guard headers.status == 201, headers.body == "{\"ok\":true}" else { throw VerificationFailure.failed("headers/body") }
 
@@ -239,6 +256,59 @@ struct NativeEnrollmentTransportVerification {
       throw VerificationFailure.failed("lost turn body was replayed")
     }
 
+    let createPath = "/api/agentflow/agent-sessions"
+    let focusPath = "/api/agentflow/me/agent-state"
+    let createBody = "{\"workflow_id\":\"create\",\"expected_version\":0,\"title\":\"\",\"origin_id\":\"mobile-1\"}"
+    guard try performLifecycle(createPath, method: "POST", body: createBody).get().status == 201,
+      try performLifecycle(focusPath, method: "PUT", body: "{\"active_agent_session_id\":null,\"expected_version\":0}").get().body ==
+        "{\"focused\":true,\"disconnectedLifecyclePosts\":0}" else {
+      throw VerificationFailure.failed("lifecycle TLS method/header/body/cookie policy")
+    }
+    func expectInvalidLifecycle(_ path: String = createPath, method: String = "POST", body: String = createBody,
+      accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature") throws {
+      do {
+        _ = try performLifecycle(path, method: method, body: body, accessToken: accessToken, dpop: dpop)
+        throw VerificationFailure.failed("invalid lifecycle request accepted")
+      } catch MobileTransportFailure.invalid {}
+    }
+    try expectInvalidLifecycle(method: "PUT")
+    try expectInvalidLifecycle(focusPath, method: "POST")
+    try expectInvalidLifecycle(createPath + "?x=1")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"a\",\"workflow_id\":\"b\",\"expected_version\":0}")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"a\",\"\\u0077orkflow_id\":\"b\",\"expected_version\":0}")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"\\uD800\",\"expected_version\":0}")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"\",\"expected_version\":0}")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"\(String(repeating: "😀", count: 257))\",\"expected_version\":0}")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"a\",\"expected_version\":9007199254740991}")
+    try expectInvalidLifecycle(body: "{\"workflow_id\":\"a\",\"expected_version\":0,\"title\":\"\(String(repeating: "x", count: 32_769))\"}")
+    try expectInvalidLifecycle(body: String(repeating: " ", count: 32_768) + createBody)
+    try expectInvalidLifecycle(focusPath, method: "PUT", body: "{\"active_agent_session_id\":false,\"expected_version\":0}")
+    try expectInvalidLifecycle(focusPath, method: "PUT", body: "{\"active_agent_session_id\":\"00000000-0000-0000-0000-000000000001\",\"expected_version\":0}")
+    try expectInvalidLifecycle(accessToken: "opaque-token")
+    try expectInvalidLifecycle(dpop: "opaque-proof")
+    for value in ["large-ack", "invalid-ack", "redirect"] {
+      guard case .failure(.responseInvalid) = try performLifecycle(createPath, method: "POST",
+        body: "{\"workflow_id\":\"\(value)\",\"expected_version\":0}") else {
+        throw VerificationFailure.failed("invalid lifecycle ACK accepted")
+      }
+    }
+    var lifecycleCancelId = ""
+    guard case .failure(.unavailable) = try performLifecycle(createPath, method: "POST",
+      body: "{\"workflow_id\":\"delayed\",\"expected_version\":0}", cancelAfter: 0.1,
+      onReserved: { lifecycleCancelId = $0 }), nativeTaskCompleted(lifecycleCancelId) else {
+      throw VerificationFailure.failed("lifecycle cancel completed before URLSession settled")
+    }
+    guard case .failure = try performLifecycle(createPath, method: "POST",
+      body: "{\"workflow_id\":\"lost\",\"expected_version\":0}") else {
+      throw VerificationFailure.failed("lost lifecycle ACK succeeded")
+    }
+    Thread.sleep(forTimeInterval: 0.5)
+    guard try performLifecycle(focusPath, method: "PUT",
+      body: "{\"active_agent_session_id\":null,\"expected_version\":0}").get().body ==
+        "{\"focused\":true,\"disconnectedLifecyclePosts\":1}" else {
+      throw VerificationFailure.failed("lifecycle write body was replayed")
+    }
+
     func expectInvalidRead(_ path: String, accessToken: String = "fixture.access.token", dpop: String = "fixture.header.signature") throws {
       do {
         _ = try performRead(path, accessToken: accessToken, dpop: dpop)
@@ -366,6 +436,25 @@ struct NativeEnrollmentTransportVerification {
       turnClaims["htu"] as? String == turnHtu, turnClaims["htm"] as? String == "POST" else {
       throw VerificationFailure.failed("turn DPoP claims")
     }
+    let createHtu = dpopOrigin + createPath
+    let createInput = try DpopProof.signingInput(origin: dpopOrigin, method: "POST", htu: createHtu,
+      accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
+    let focusHtu = dpopOrigin + focusPath
+    let focusInput = try DpopProof.signingInput(origin: dpopOrigin, method: "PUT", htu: focusHtu,
+      accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
+    guard let createClaimsData = decode(String(createInput.split(separator: ".")[1])),
+      let createClaims = try JSONSerialization.jsonObject(with: createClaimsData) as? [String: Any],
+      createClaims["htu"] as? String == createHtu, createClaims["htm"] as? String == "POST",
+      let focusClaimsData = decode(String(focusInput.split(separator: ".")[1])),
+      let focusClaims = try JSONSerialization.jsonObject(with: focusClaimsData) as? [String: Any],
+      focusClaims["htu"] as? String == focusHtu, focusClaims["htm"] as? String == "PUT" else {
+      throw VerificationFailure.failed("lifecycle DPoP claims")
+    }
+    do {
+      _ = try DpopProof.signingInput(origin: dpopOrigin, method: "PUT", htu: createHtu,
+        accessToken: "access.safe.jwt", x: x, y: y, nowSeconds: 1, jti: dpopJti)
+      throw VerificationFailure.failed("lifecycle DPoP route/method mismatch accepted")
+    } catch DeviceKeyFailure.invalid {}
     do {
       _ = try DpopProof.signingInput(origin: dpopOrigin, method: "GET",
         htu: messagesHtu + "?after_sequence=0&limit=20", accessToken: "access.safe.jwt", x: x, y: y,

@@ -90,6 +90,9 @@ export function createMobileAgentFocusSource(options: {
     finally { signal?.removeEventListener('abort', abort); if (active === controller) active = null; }
   }
   return {
+    readCatalog: (signal?: AbortSignal) => read(async (reader, scope, abort) => ({
+      authScope: scope, focus: await reader.focus(abort), sessions: await reader.sessions(100, undefined, abort),
+    }), signal),
     reconcileFocus: (previous: ScopedAgentFocus | null, signal?: AbortSignal) => read((reader, scope, abort) => reconcileAgentFocus(reader, scope, previous, abort), signal),
     reconcileConversation: (previous: ScopedAgentConversation | null, signal?: AbortSignal) => read((reader, scope, abort) => reconcileAgentConversation(reader, scope, previous, abort), signal),
     openConversationSocket: async (state: ScopedAgentConversation, signal: AbortSignal) => {

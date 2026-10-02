@@ -25,6 +25,8 @@ import { createMobileAgentLiveWatcher } from '../apps/mobile/src/lib/native-agen
 import { createMobileAgentSocketTransport } from '../apps/mobile/src/lib/native-agent-socket';
 import { createMobileAgentMutationFetch } from '../apps/mobile/src/lib/native-agent-mutation-http';
 import { createMobileAgentMutationSource } from '../apps/mobile/src/lib/native-agent-mutation';
+import { createMobileAgentLifecycleFetch } from '../apps/mobile/src/lib/native-agent-lifecycle-http';
+import { createMobileAgentLifecycleSource } from '../apps/mobile/src/lib/native-agent-lifecycle';
 import { MobileAgentConversationModel } from '../apps/mobile/src/lib/native-agent-conversation-model';
 import { createNativeDpopSigner } from '../packages/engine/src/native-dpop';
 
@@ -84,7 +86,8 @@ const testNativeTurns = process.argv.includes('--native-turns');
 const testNativeSessions = process.argv.includes('--native-sessions');
 const testNativeMessages = process.argv.includes('--native-messages') || testNativeWs;
 const testMobileWs = process.argv.includes('--mobile-ws');
-const testMobileTurns = process.argv.includes('--mobile-turns');
+const testMobileSessions = process.argv.includes('--mobile-sessions');
+const testMobileTurns = process.argv.includes('--mobile-turns') || testMobileSessions;
 const testMobileMessages = process.argv.includes('--mobile-messages') || testMobileWs || testMobileTurns;
 const testMobileFocus = process.argv.includes('--mobile-focus') || testMobileMessages;
 const testMobileSession = process.argv.includes('--mobile-session') || testMobileFocus;
@@ -373,14 +376,32 @@ try {
             input: { input_text: 'Disposable Mobile turn', expected_state_version: 1, idempotency_key: 'compose-mobile' } }), denied);
           await assert.rejects(writer.send({ operation: 'stop', scope, agent_session_id: randomUUID(),
             input: { turn_id: randomUUID(), expected_state_version: 1 } }), denied);
+          const lifecycle = testMobileSessions ? createMobileAgentLifecycleSource({ current: mobileCurrent, vault,
+            keys: { identity: async () => { const identity = await mobileKeys.identity(); return { ...identity,
+              signDpop: async (...args) => { signatures++; return identity.signDpop(...args); } }; } },
+            fetch: createMobileAgentLifecycleFetch({ newRequestId: randomUUID,
+              async lifecycleRequest() { writes++; assert.fail('Pending journal must block lifecycle before wire'); }, cancelRequest() {},
+            }, origin) }) : null;
+          if (lifecycle) {
+            await assert.rejects(source.readCatalog());
+            await assert.rejects(lifecycle.send({ operation: 'create', scope, input: { workflow_id: 'disposable-wf', expected_version: 0 } }), denied);
+            await assert.rejects(lifecycle.send({ operation: 'switch', scope, input: { active_agent_session_id: null, expected_version: 0 } }), denied);
+          }
           const model = new MobileAgentConversationModel(mobileCurrent(), createMobileAgentLiveWatcher(source), writer,
-            () => undefined, randomUUID); model.setVisible(true); await model.start(true);
+            () => undefined, randomUUID, () => undefined, lifecycle ? { read: source.readCatalog, send: lifecycle.send, dispose: lifecycle.dispose } : undefined);
+          model.setVisible(true); await model.start(true);
           assert.equal(model.state.conversation, null); assert.equal(model.state.turn.canSubmit, false);
           assert.equal(model.state.turn.canStop, false); assert.equal(model.state.turn.canRetry, false);
-          assert.equal(model.state.error.includes('세션'), true); model.dispose();
+          assert.equal(model.state.error.includes('세션'), true);
+          if (lifecycle) {
+            assert.equal(await model.refreshCatalog(), false); assert.equal(model.state.catalog.canWrite, false);
+            assert.equal(await model.createSession('disposable-wf'), false); assert.equal(await model.selectSession(null), false);
+          }
+          model.dispose();
           assert.equal(writes, 0); assert.equal(signatures, 0);
           assert.equal(sql(`SELECT COUNT(*) FROM agent_sessions WHERE owner_user_id=${userId};`), '0');
           console.log('Mobile production scoped writer/composer model: enrollment login_pending blocks submit/stop before proof/wire; no Canonical session, auto refresh or legacy dispatch PASS');
+          if (lifecycle) console.log('Mobile production catalog/lifecycle writer/model: enrollment login_pending blocks catalog/create/focus-clear before proof/wire; UI writes disabled, no Canonical session or automatic fallback PASS');
         }
         assert.equal(canonicalCalls, 0); assert.equal(calls, 1); assert.equal(records.size, 1); source.dispose();
         console.log('Mobile production Canonical source/watcher: enrollment-mode login_pending blocks focus/read/poll before wire; no refresh/Bearer fallback PASS');

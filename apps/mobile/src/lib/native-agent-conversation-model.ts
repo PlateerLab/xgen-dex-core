@@ -75,7 +75,7 @@ export class MobileAgentConversationModel {
     this.state = { visible: this.visible, watching: Boolean(this.read), writing: Boolean(this.write) || this.actionBusy,
       conversation: this.visible ? this.conversation : null, hasMore: this.visible && this.hasMore,
       status: this.status, error: this.error, draft: this.visible ? this.draft : '', turn: this.turn,
-      catalog: { focus: this.visible ? this.catalogFocus : null, items: this.visible ? this.catalogItems.map((item) => ({ ...item })) : [],
+      catalog: { focus: this.visible && this.catalogFocus ? { ...this.catalogFocus } : null, items: this.visible ? this.catalogItems.map((item) => ({ ...item })) : [],
         hasMore: this.visible && this.catalogHasMore, busy: Boolean(this.catalogTask), writeBlocked: this.lifecycleBlocked,
         canWrite: this.canWriteCatalog(), notice: this.visible ? this.catalogNotice : '' } };
     if (!this.disposed) this.render(this.state);
@@ -93,7 +93,7 @@ export class MobileAgentConversationModel {
     this.publish();
   }
   setDraft(value: string): void {
-    if (!this.visible || this.disposed || this.write || this.actionBusy) return;
+    if (!this.visible || this.disposed || this.write || this.actionBusy || this.catalogTask || this.lifecycleBlocked) return;
     this.draft = value; this.publish();
   }
   private update(update: MobileCanonicalUpdate<MobileConversationView>): void {
@@ -285,7 +285,7 @@ export class MobileAgentConversationModel {
   dispose(): void {
     this.disposed = true; this.generation++; this.read?.control.abort(); this.write?.abort(); this.catalogTask?.abort();
     this.catalogPort?.dispose(); this.writer.dispose(); this.disposeSource();
-    this.scope = null; this.observed = null; this.draft = ''; this.conversation = null; this.composer.reset();
-    this.catalogFocus = null; this.catalogItems = []; this.catalogScope = null;
+    this.visible = false; this.scope = null; this.observed = null; this.draft = ''; this.conversation = null;
+    this.catalogFocus = null; this.catalogItems = []; this.catalogScope = null; this.composer.reset();
   }
 }

@@ -53,6 +53,28 @@ function result(version = 0, source: AgentFocusRecoveryResult['source'] = 'repla
 }
 function page(after: number) { return { events: [], next_cursor: after, snapshot_version: after, has_more: false }; }
 
+test('catalog reads focus then bounded owned list in one vault scope with fresh GET proofs; rotation preserves scope', async () => {
+  const f = fixture(); const agentId = randomUUID();
+  f.handle(async (path) => ({ status: 200, body: JSON.stringify(path.includes('agent-state') ? focus : {
+    items: [{ id: agentId, workflow_id: 'wf', title: 'Owned', status: 'active', state_version: 1, current_sequence: 0 }], next_cursor: null, has_more: false }) }));
+  const first = await f.source.readCatalog(); assert.equal(first.sessions.items[0].id, agentId);
+  assert.deepEqual(f.calls.map((call) => call.path), ['/api/agentflow/me/agent-state', '/api/agentflow/me/agent-sessions?limit=100']);
+  assert.notEqual(f.calls[0].dpop, f.calls[1].dpop); assert.match(first.authScope, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(first).includes(f.record().accessToken!), false);
+  f.put(f.makeRecord(Math.floor(Date.now() / 1000) + 600)); assert.equal((await f.source.readCatalog()).authScope, first.authScope);
+  f.source.dispose();
+});
+test('second catalog GET failure/cancellation/account change exposes no partial catalog or fallback', async () => {
+  for (const mode of ['failure', 'cancel', 'account']) {
+    const f = fixture(); const entered = deferred<void>(); const late = deferred<{ status: number; body: string }>(); const control = new AbortController();
+    f.handle(async (path) => { if (path.includes('agent-state')) return { status: 200, body: JSON.stringify(focus) }; entered.resolve(); return late.promise; });
+    const reading = f.source.readCatalog(control.signal); await entered.promise;
+    if (mode === 'cancel') control.abort(); if (mode === 'account') f.change({ ...f.initial, authScope: randomUUID() });
+    late.resolve({ status: mode === 'failure' ? 503 : 200, body: JSON.stringify({ items: [], next_cursor: null, has_more: false }) });
+    await assert.rejects(reading); assert.equal(f.calls.length, 2); f.source.dispose();
+  }
+});
+
 test('hardware-provider seam signs fresh real ES256/ath/GET proof for each read, excluding query; replay shares only a token-free scope', async () => {
   const f = fixture(); const first = await f.source.reconcileFocus(null); assert.equal(first.source, 'snapshot');
   f.handle(async () => ({ status: 200, body: JSON.stringify(page(0)) }));

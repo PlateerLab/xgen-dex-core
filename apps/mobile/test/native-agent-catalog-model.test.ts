@@ -46,6 +46,7 @@ test('empty focus can create once; observed CAS, active owned selection, same-ta
   f.handle(async (r) => { f.focus(null, 2); return { ...r.scope, focus: { active_agent_session_id: null, version: 2, event_id: b } }; });
   await f.model.selectSession(null); assert.equal(f.model.state.draft, ''); assert.equal(f.model.state.conversation, null);
   assert.equal(f.model.state.turn.canSubmit, false); f.model.dispose();
+  assert.deepEqual(f.model.state.catalog.items, []); assert.equal(f.model.state.catalog.focus, null);
 });
 test('lost create ACK locks all writes across hide/resume until explicit catalog recheck, never replays', async () => {
   const f = fixture(); await f.model.refreshCatalog(); f.handle(async () => { f.focus(a, 1); throw new MobileAgentLifecycleFailure('unknown'); });

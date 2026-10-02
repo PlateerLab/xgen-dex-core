@@ -111,3 +111,11 @@ test('프로토콜 판이 다르면 띄우지 않는다', async () => {
   assert.equal(end.type === 'error' && end.code, 'engine_unavailable');
   assert.equal(svc.running, false);
 });
+
+test('모델 목록: 엔진에 묻고, 실패·시간 초과도 값으로 돌아온다', async () => {
+  const { svc } = service();
+  assert.deepEqual(await svc.models({ provider: 'ollama' }), { ok: true, models: [{ id: 'ollama-a' }, { id: 'ollama-b' }] });
+  assert.deepEqual(await svc.models({ provider: 'down' }), { ok: false, models: [], error: 'unreachable' });
+  assert.deepEqual(await svc.models({ provider: 'slow' }, 200), { ok: false, models: [], error: 'timeout' });
+  await svc.stop();
+});

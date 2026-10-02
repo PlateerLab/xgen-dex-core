@@ -74,7 +74,7 @@ test('대화를 지우면 그 대화의 기록(STM)만 지운다', async () => {
   const { api, stateDir, store, pending } = setup(true);
   const acc = api.accountsCreate({ kind: 'xd_fake', label: 'f' });
   const a = api.agentsCreate({ name: 'A', accountId: acc.id, model: 'm' });
-  const { conversationId } = api.turnSend({ agentId: a.id, text: 'q' });
+  const { conversationId } = await api.turnSend({ agentId: a.id, text: 'q' });
   assert.throws(() => api.conversationsDelete(conversationId), /turn running/);
   pending.shift()?.();
   await new Promise((r) => setImmediate(r));
@@ -101,5 +101,42 @@ test('계정: 종류 검사, 키는 비밀 저장소에, 목록에는 있음/없
   api.accountsDelete(acc.id);
   assert.deepEqual(api.accountsList().map((a) => a.label), ['Ollama']);
   assert.deepEqual(api.secretsStatus(), { encrypted: true, backend: '' });
+  store.close();
+});
+
+test('모델 목록: API 종류는 엔진에 묻고, Claude Code 는 별칭, Codex 는 홈의 캐시', async () => {
+  const { api, store, stateDir } = setup();
+  const asked: unknown[] = [];
+  const codexHome = join(stateDir, 'cli', 'codex', 'home');
+  mkdirSync(codexHome, { recursive: true });
+  const withEngine = createXdApi({
+    store,
+    secrets: new Secrets(join(stateDir, 'secrets'), plainCrypto),
+    runner: new TurnRunner({ store, engine: { turn: async () => ({ type: 'done', id: 'x' }), cancel() {}, approvalReply() {} }, secret: () => null, emit() {} }),
+    engine: {
+      info: null,
+      running: false,
+      models: async (input) => {
+        asked.push(input);
+        return { ok: true, models: [{ id: 'm1' }] };
+      },
+    },
+    cli: { home: () => codexHome } as never,
+    workspaceDir: join(stateDir, '..', 'workspace'),
+    stateDir,
+  });
+  const acc = withEngine.accountsCreate({ kind: 'openai_compatible', label: 'vLLM', baseUrl: 'http://h:8000/v1', secret: 'k' });
+  assert.deepEqual(await withEngine.modelsList(acc.id), { ok: true, models: [{ id: 'm1' }] });
+  assert.deepEqual(asked.pop(), { provider: 'vllm', apiKey: 'k', baseUrl: 'http://h:8000/v1' });
+  await withEngine.modelsProbe({ kind: 'ollama', baseUrl: ' ' });
+  assert.deepEqual(asked.pop(), { provider: 'ollama', apiKey: null, baseUrl: null });
+  const claude = withEngine.accountsCreate({ kind: 'claude_code', label: 'Claude' });
+  assert.deepEqual((await withEngine.modelsList(claude.id)).models.map((m) => m.id), ['sonnet', 'opus', 'haiku']);
+  const codex = withEngine.accountsCreate({ kind: 'codex', label: 'Codex' });
+  assert.deepEqual(await withEngine.modelsList(codex.id), { ok: false, models: [], error: 'not_cached' });
+  writeFileSync(join(codexHome, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'gpt-x', visibility: 'list' }, { slug: 'hidden', visibility: 'hide' }] }));
+  assert.deepEqual((await withEngine.modelsList(codex.id)).models, [{ id: 'gpt-x' }]);
+  assert.equal(asked.length, 0); // CLI 는 엔진에 묻지 않는다
+  void api;
   store.close();
 });

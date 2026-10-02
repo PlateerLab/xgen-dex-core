@@ -13,6 +13,7 @@ PowerShell)로 돈다. 셸은 경로 가드 밖이므로 위험 명령 확인(:m
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -56,6 +57,18 @@ class TurnSetup:
     linked_folders: List[str] = field(default_factory=list)
     #: 제공자·도구 설정(비밀 아님). 환경 변수로 넘어가지 않는다 — 사용자의 셸 환경이 턴을 바꾸지 않게.
     settings: Dict[str, str] = field(default_factory=dict)
+    #: CLI 제공자(claude_code·codex)의 실행 파일·XD 전용 홈·인증 방식(oauth|api_key). main 이 정한다.
+    cli: Optional["CliSetup"] = None
+
+
+@dataclass
+class CliSetup:
+    binary: str
+    #: CLAUDE_CONFIG_DIR / CODEX_HOME — XD 전용(사용자의 ~/.claude·~/.codex 와 섞지 않는다).
+    home: str
+    #: oauth = 구독 로그인(홈에 든 자격), api_key = 이 턴의 키.
+    auth: str = "oauth"
+    timeout_s: float = 3600.0
 
 
 class XdHostServices:
@@ -301,10 +314,114 @@ class XdHostServices:
 
     # ── F. CLI 제공자 ────────────────────────────────────────────────
     def build_cli_runtime(self, provider: str, params: Mapping[str, Any]) -> Any:
-        raise RuntimeError(f"{provider} is not available in this XD build yet")
+        """claude·codex 클라이언트 + 이 턴의 도구 다리. 설정은 XGEN 서버(agent_geny)와 같다.
+
+        - 도구는 MCP 로만 닿는다(네이티브는 런타임이 전부 끈다). 다리는 이 턴의 표면을 열고 턴이 끝나면 닫는다.
+        - claude: ``--print`` 에서 도구마다 권한을 묻지 않게 다리 서버를 미리 허용하고(설정·allowedTools),
+          CLI 자체의 도구 검색을 끈다(우리 표면이 이미 계층을 가진다 — 둘이 겹치면 도구가 한 번 더 숨는다).
+        - codex: 턴 중에 도구 목록을 다시 읽지 않으므로 재조회를 기다리지 않는다.
+        - 홈은 XD 전용(CLAUDE_CONFIG_DIR·CODEX_HOME). 구독 로그인에 API 키를 섞지 않는다(런타임이 집행).
+        """
+        from xd_engine.mcp_bridge import ToolBridge
+
+        cli = self._s.cli
+        if cli is None or not cli.binary:
+            raise RuntimeError(f"{provider}: no CLI is set up for this account")
+        surface = params.get("_tool_surface")
+        bridge = ToolBridge(surface).start() if surface is not None else None
+        mcp_config = None
+        if bridge is not None:
+            mcp_config = {
+                "mcpServers": {
+                    "connector": {
+                        "type": "stdio",
+                        "command": _shim_python(),
+                        "args": ["-I", str(Path(__file__).with_name("mcp_shim.py"))],
+                        "env": {
+                            "XD_MCP_URL": bridge.url,
+                            "XD_MCP_TOKEN": bridge.token,
+                            "XD_MCP_TIMEOUT_S": str(int(cli.timeout_s)),
+                            "XD_MCP_REFRESH_WAIT_S": "0" if provider == "codex" else "3",
+                        },
+                        "tool_timeout_sec": cli.timeout_s,
+                    }
+                }
+            }
+        workspace = self.agent_workspace_dir(self._s.agent_id)
+        auth = "api_key" if cli.auth == "api_key" else "oauth"
+        try:
+            if provider == "codex":
+                from xgen_agent_runtime.host.runner import build_codex_cli_client
+
+                extra_args: list = []
+                if auth == "api_key" and self._s.base_url:
+                    # OpenAI 호환 게이트웨이(사내 프록시·LiteLLM 등) — 키 방식에서만. 구독 로그인은 OpenAI 로만 간다.
+                    extra_args = [
+                        "-c",
+                        "model_provider=xd_gateway",
+                        "-c",
+                        "model_providers.xd_gateway={name=\"xd_gateway\",base_url=%s,wire_api=\"responses\","
+                        "env_key=\"OPENAI_API_KEY\"}" % json.dumps(self._s.base_url),
+                    ]
+                client = build_codex_cli_client(
+                    auth_mode=auth,
+                    api_key=self._s.api_key if auth == "api_key" else "",
+                    binary_path=cli.binary,
+                    workspace_dir=workspace,
+                    timeout_s=cli.timeout_s,
+                    mcp_config=mcp_config,
+                    extra_args=extra_args,
+                    env_extras={"CODEX_HOME": cli.home, "CODEX_DISABLE_UPDATE_CHECK": "1"},
+                    # 네이티브 셸은 꺼져 있다(host_tools_only) — 끄는 설정을 모르는 판을 위한 이중 잠금.
+                    sandbox_mode="read-only",
+                    host_tools_only=True,
+                )
+            else:
+                from xgen_agent_runtime.host.runner import build_cli_client
+
+                extra_env = {"CLAUDE_CONFIG_DIR": cli.home}
+                if auth == "api_key" and self._s.base_url:
+                    # Anthropic 호환 게이트웨이 — 키 방식에서만(구독 로그인은 Anthropic 으로만 간다).
+                    extra_env["ANTHROPIC_BASE_URL"] = self._s.base_url
+                if mcp_config is not None:
+                    extra_env["ENABLE_TOOL_SEARCH"] = "false"
+                client = build_cli_client(
+                    auth_mode=auth,
+                    api_key=self._s.api_key if auth == "api_key" else "",
+                    binary_path=cli.binary,
+                    workspace_dir=workspace,
+                    timeout_s=cli.timeout_s,
+                    allow_local_tools=False,
+                    mcp_config=mcp_config,
+                    settings_path=json.dumps({"permissions": {"allow": ["mcp__connector"]}}) if mcp_config else "",
+                    allow_tools=("mcp__connector",) if mcp_config else (),
+                    extra_env=extra_env,
+                    # 클라이언트가 턴마다 새로 만들어진다 — 미리 띄운 다음 프로세스는 쓰이지 않고 고아가 된다.
+                    prewarm_spawn=False,
+                )
+        except Exception:
+            if bridge is not None:
+                bridge.stop()
+            raise
+
+        def cleanup() -> None:
+            if bridge is not None:
+                bridge.stop()
+
+        return client, cleanup
 
     def cli_bridge_available(self, provider: str) -> bool:
-        return False
+        return provider in CLI_PROVIDERS
+
+
+def _shim_python() -> str:
+    """도구 다리 중계를 띄울 파이썬. Windows 는 창 없는 pythonw.exe — CLI 가 콘솔 없이 돌 때 python.exe 를
+    띄우면 Windows 가 새 콘솔 창을 만든다. 파이프로 이어진 stdio 는 pythonw 에서도 그대로 쓴다."""
+    if sys.platform == "win32":
+        candidate = Path(sys.executable).with_name("pythonw.exe")
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
 
 
 def memory_config(root: Path, interaction_id: str, agent_id: str) -> Dict[str, Any]:

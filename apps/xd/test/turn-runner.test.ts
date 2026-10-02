@@ -215,3 +215,26 @@ test('시험용 제공자는 허락했을 때만', () => {
   assert.equal(engineConfig(agent, acc, null, { allowFakeProvider: true }).ok, true);
   store.close();
 });
+
+test('CLI 계정: 실행 파일·전용 홈·인증 방식이 엔진 설정으로 가고, 구독 로그인에는 키를 싣지 않는다', () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), 'xd-runner-')), 'xd.db'));
+  const cli = (name: 'claude' | 'codex') => (name === 'claude' ? { binary: '/x/claude', home: '/r/.xd/cli/claude/home' } : null);
+  const oauth = store.createAccount({ kind: 'claude_code', label: 'c' });
+  const agent = store.createAgent({ name: 'A', workspace: 'A', accountId: oauth.id, model: 'sonnet' });
+  const sub = engineConfig(agent, oauth, 'sk-should-not-go', { cli });
+  assert.deepEqual(sub, { ok: true, config: { provider: 'claude_code', model: 'sonnet', cli: { binary: '/x/claude', home: '/r/.xd/cli/claude/home', auth: 'oauth' } } });
+
+  const keyed = store.createAccount({ kind: 'claude_code', label: 'k', baseUrl: 'http://gw', settings: { auth: 'api_key' } });
+  assert.deepEqual(engineConfig(agent, keyed, null, { cli }), { ok: false, code: 'no_key', message: 'no API key for claude_code' });
+  const withKey = engineConfig(agent, keyed, 'sk-1', { cli });
+  assert.equal(withKey.ok && withKey.config.api_key, 'sk-1');
+  assert.equal(withKey.ok && withKey.config.base_url, 'http://gw');
+
+  const codex = store.createAccount({ kind: 'codex', label: 'x' });
+  assert.deepEqual(engineConfig(agent, codex, null, { cli }), { ok: false, code: 'no_cli', message: 'codex is not installed' });
+  const vllm = store.createAccount({ kind: 'openai_compatible', label: 'v' });
+  assert.equal(engineConfig(agent, vllm, null, { cli }).ok, false);
+  const ollama = store.createAccount({ kind: 'ollama', label: 'o' });
+  assert.deepEqual(engineConfig(agent, ollama, null), { ok: true, config: { provider: 'ollama', model: 'sonnet' } });
+  store.close();
+});

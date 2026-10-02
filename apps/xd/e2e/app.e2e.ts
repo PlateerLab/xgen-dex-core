@@ -13,6 +13,9 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron, type ElectronApplication, type Page } from 'playwright-core';
+import { homedir } from 'node:os';
+import { fakeAnthropic } from './fake-anthropic';
+import { fakeResponses } from './fake-responses';
 
 const APP = resolve(__dirname, '..');
 // Electron 43 은 설치 스크립트가 없다 — `require('electron')` 이 실행 파일 경로를 주고, 없으면 그때 내려받는다.
@@ -150,4 +153,77 @@ test('위험 명령은 Dex 와 같은 확인 창을 거치고, 거부하면 실�
   assert.match(String(tools[1].result ?? tools[1].error), /user_denied/);
   assert.match(String(tools[3].result), /safe-command-ran/);
   assert.ok(existsSync(join(root, 'workspace', agent.workspace, 'keep')));
+});
+
+// CLI 턴 — 앱 전체 경로(main → 엔진 → 실제 CLI → XD 도구 다리). 모델만 가짜(게이트웨이 주소, 키 방식).
+// XD_E2E_INSTALL=1(CI)이면 앱의 설치기가 공식 배포처에서 CLI 를 받아 쓴다. 아니면 이 PC 에 있는 CLI 를 찾는다.
+const INSTALL = process.env.XD_E2E_INSTALL === '1';
+const LOCAL_CLAUDE = [process.env.XD_TEST_CLAUDE, join(homedir(), '.local', 'bin', 'claude')].find((p) => p && existsSync(p));
+const LOCAL_CODEX = [process.env.XD_TEST_CODEX, join(homedir(), '.local', 'codex-cli', 'bin', 'codex')].find((p) => p && existsSync(p));
+
+async function cliTurn(
+  win: Page,
+  root: string,
+  opts: { cli: 'claude' | 'codex'; kind: 'claude_code' | 'codex'; model: string; url: string; agent: string },
+) {
+  const setup = await win.evaluate(async (o) => {
+    const xd = (window as any).xd;
+    const state = await xd.cli.state(o.cli);
+    const account = await xd.accounts.create({ kind: o.kind, label: o.cli, baseUrl: o.url, settings: { auth: 'api_key' }, secret: 'sk-e2e' });
+    const agent = await xd.agents.create({ name: o.agent, accountId: account.id, model: o.model, options: { memory_distill: false } });
+    return { state, agent };
+  }, opts);
+  assert.ok(setup.state.installed?.path, `${opts.cli} detected`);
+  // XD 전용 홈 — 사용자의 기존 로그인과 섞이지 않는다
+  assert.equal(setup.state.login?.loggedIn, false);
+  const file = `via-${opts.cli}.txt`;
+  const turn = await sendAndWait(win, { agentId: setup.agent.id, text: '파일 하나 만들어 줘' });
+  assert.equal(turn.turn.status, 'done', JSON.stringify(turn.turn.error));
+  assert.equal(readFileSync(join(root, 'workspace', opts.agent, file), 'utf8'), `${opts.cli} turn`);
+  return { setup, turn };
+}
+
+test('CLI 계정으로 앱에서 턴이 돈다 — Claude Code·Codex (설치기 포함)', { timeout: 600_000, skip: !INSTALL && !LOCAL_CLAUDE && !LOCAL_CODEX }, async () => {
+  const { root, launch } = fixture([]);
+  const { app, win } = await launch();
+  try {
+    if (INSTALL) {
+      for (const name of ['codex', 'claude'] as const) {
+        const installed = await win.evaluate((n) => (window as any).xd.cli.install(n), name);
+        assert.equal(installed.source, 'xd');
+        assert.match(installed.version, /^\d+\.\d+\.\d+/);
+        assert.ok(installed.path.startsWith(join(root, '.xd', 'cli', name, 'bin')), installed.path);
+      }
+    }
+    if (INSTALL || LOCAL_CLAUDE) {
+      const model = await fakeAnthropic([
+        { tool: 'mcp__connector__Write', input: { file_path: 'via-claude.txt', content: 'claude turn' } },
+        { text: 'Claude CLI 로 만들었습니다.' },
+      ]);
+      try {
+        const { turn } = await cliTurn(win, root, { cli: 'claude', kind: 'claude_code', model: 'sonnet', url: model.url, agent: 'Claude 에이전트' });
+        assert.match(turn.turn.answer, /Claude CLI 로 만들었습니다/);
+        const names = (model.main[0]?.tools ?? []).map((t: any) => t.name);
+        assert.ok(names.length > 0 && names.every((n: string) => n.startsWith('mcp__connector__')), names.join(','));
+      } finally {
+        model.close();
+      }
+    }
+    if (INSTALL || LOCAL_CODEX) {
+      const model = await fakeResponses([
+        { tool: 'Write', input: { file_path: 'via-codex.txt', content: 'codex turn' } },
+        { text: 'Codex CLI 로 만들었습니다.' },
+      ]);
+      try {
+        const { turn } = await cliTurn(win, root, { cli: 'codex', kind: 'codex', model: 'gpt-e2e', url: model.url, agent: 'Codex 에이전트' });
+        assert.match(turn.turn.answer, /Codex CLI 로 만들었습니다/);
+        const spaces = (model.main[0]?.tools ?? []).filter((t: any) => t.type === 'namespace').map((t: any) => t.name);
+        assert.deepEqual(spaces, ['mcp__connector']);
+      } finally {
+        model.close();
+      }
+    }
+  } finally {
+    await app.close();
+  }
 });

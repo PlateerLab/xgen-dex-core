@@ -25,6 +25,9 @@ rl.on('line', (line) => {
     out({ type: 'chunk', id: cmd.id, text: `echo: ${cmd.text} (history ${cmd.history ? cmd.history.length : 0})` });
     out({ type: 'usage', id: cmd.id, usage: { input_tokens: 1, output_tokens: 2 } });
     out({ type: 'done', id: cmd.id });
+  } else if (cmd.type === 'models') {
+    if (cmd.provider === 'slow') return;
+    out({ type: 'models_result', id: cmd.id, ok: cmd.provider !== 'down', models: cmd.provider === 'down' ? [] : [{ id: `${cmd.provider}-a` }, { id: `${cmd.provider}-b` }], ...(cmd.provider === 'down' ? { error: 'unreachable' } : {}), key: cmd.api_key ?? null });
   } else if (cmd.type === 'cancel') {
     clearTimeout(running.get(cmd.id));
     running.delete(cmd.id);

@@ -17,6 +17,8 @@ import { canWrite, chooseDataRoot, ensureLayout, movedRootFile, readMovedRoot, r
 import { EngineService, enginePythonPath } from './engine-service';
 import { Secrets } from './secrets';
 import { Store } from './store';
+import { augmentedPath } from '@dex/engine/exec-resolve';
+import { CliService, type CliEvent } from './cli/service';
 import { BusyError, TurnRunner, type XdTurnEvent } from './turn-runner';
 import { createXdApi, type XdApi } from './xd-api';
 
@@ -74,15 +76,25 @@ if (!app.requestSingleInstanceLock()) {
     root: layout.root,
     logDir: layout.logs,
   });
-  const broadcast = (event: XdTurnEvent): void => {
+  const send = (channel: string, event: unknown): void => {
     for (const w of BrowserWindow.getAllWindows()) {
-      if (!w.isDestroyed()) w.webContents.send(CHANNELS.turnEvent, event);
+      if (!w.isDestroyed()) w.webContents.send(channel, event);
     }
   };
+  const broadcast = (event: XdTurnEvent): void => send(CHANNELS.turnEvent, event);
+  const cli = new CliService({
+    cliDir: join(layout.state, 'cli'),
+    pathStr: augmentedPath,
+    emit: (event: CliEvent) => send(CHANNELS.cliEvent, event),
+  });
   const runner = new TurnRunner({
     store,
     engine,
     secret: (accountId) => secrets.get(accountId),
+    cli: (name) => {
+      const binary = cli.binary(name);
+      return binary ? { binary, home: cli.home(name) } : null;
+    },
     emit: broadcast,
     confirmDangerous: (command) => confirmDangerous(command),
     allowFakeProvider,
@@ -92,6 +104,7 @@ if (!app.requestSingleInstanceLock()) {
     secrets,
     runner,
     engine,
+    cli,
     workspaceDir: layout.workspace,
     stateDir: layout.state,
     allowFakeProvider,

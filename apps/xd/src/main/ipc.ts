@@ -6,6 +6,8 @@ export const CHANNELS = {
   api: 'xd:api',
   /** main → 화면: 턴 사건(XdTurnEvent). */
   turnEvent: 'xd:turn-event',
+  /** main → 화면: CLI 설치 진행·로그인 사건(CliEvent). */
+  cliEvent: 'xd:cli-event',
 } as const;
 
 /** 화면이 아는 이 앱의 상태. */

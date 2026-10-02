@@ -89,11 +89,20 @@ interface PendingTurn {
   resolve: (terminal: TurnTerminal) => void;
 }
 
+export interface ModelsResult {
+  ok: boolean;
+  models: Array<{ id: string; display_name?: string | null }>;
+  error?: string;
+}
+
 export class EngineService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<EngineEvent> | null = null;
   private readyInfo: EngineEvent | null = null;
   private turns = new Map<string, PendingTurn>();
+  /** 턴이 아닌 요청(모델 목록) — 요청 id → 대답을 받을 함수. */
+  private requests = new Map<string, (event: EngineEvent) => void>();
+  private requestSeq = 0;
   private stopping = false;
   private readonly logFile: string;
 
@@ -134,6 +143,42 @@ export class EngineService {
       if (!this.send({ type: 'turn', ...cmd })) {
         this.finish(cmd.id, { type: 'error', id: cmd.id, code: 'engine_exited', message: 'The engine stopped.' });
       }
+    });
+  }
+
+  /**
+   * 제공자가 지금 내는 모델 — 엔진(런타임 discover_models, XGEN 과 같은 코드)에 묻는다. 키·주소가 맞는지도 이걸로
+   * 본다. 실패는 예외가 아니라 `ok: false` 와 짧은 까닭.
+   */
+  async models(input: { provider: string; apiKey?: string | null; baseUrl?: string | null }, timeoutMs = 30_000): Promise<ModelsResult> {
+    try {
+      await this.ensure();
+    } catch (err) {
+      return { ok: false, models: [], error: String((err as Error).message ?? err) };
+    }
+    this.requestSeq += 1;
+    const id = `models-${this.requestSeq}`;
+    return new Promise<ModelsResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.requests.delete(id);
+        resolve({ ok: false, models: [], error: 'timeout' });
+      }, timeoutMs);
+      this.requests.set(id, (event) => {
+        clearTimeout(timer);
+        resolve({
+          ok: event.ok === true,
+          models: Array.isArray(event.models) ? (event.models as ModelsResult['models']) : [],
+          ...(typeof event.error === 'string' ? { error: event.error } : {}),
+        });
+      });
+      const sent = this.send({
+        type: 'models',
+        id,
+        provider: input.provider,
+        ...(input.apiKey ? { api_key: input.apiKey } : {}),
+        ...(input.baseUrl ? { base_url: input.baseUrl } : {}),
+      });
+      if (!sent) this.requests.get(id)?.({ type: 'models_result', ok: false, models: [], error: 'engine stopped' });
     });
   }
 
@@ -219,6 +264,10 @@ export class EngineService {
         this.child = null;
         this.readyInfo = null;
       }
+      for (const [id, answer] of [...this.requests]) {
+        this.requests.delete(id);
+        answer({ type: 'models_result', ok: false, models: [], error: 'engine stopped' });
+      }
       // 끝나지 못한 턴은 여기서 끝낸다 — 화면이 영원히 "실행 중" 으로 남지 않게.
       for (const id of [...this.turns.keys()]) {
         this.finish(id, {
@@ -258,6 +307,12 @@ export class EngineService {
 
   private route(event: EngineEvent): void {
     const id = typeof event.id === 'string' ? event.id : '';
+    if (event.type === 'models_result') {
+      const answer = this.requests.get(id);
+      this.requests.delete(id);
+      answer?.(event);
+      return;
+    }
     const pending = id ? this.turns.get(id) : undefined;
     if (!pending) {
       if (event.type === 'protocol_error') this.log(`[protocol_error] ${String(event.message)}\n`);

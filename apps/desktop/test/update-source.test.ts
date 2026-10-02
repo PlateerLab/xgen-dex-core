@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   compareVersions,
+  dexMacDmg,
   selectXgenUpdate,
   windowsNsisLauncherCommand,
   windowsNsisUpdateArgs,
@@ -39,4 +40,15 @@ test('Windows 설치는 진행 UI를 표시하는 NSIS update 인자를 사용�
     windowsNsisLauncherCommand(),
     'ping 127.0.0.1 -n 5 > nul & start "" "%XGEN_UPDATE_INSTALLER%" --updated --force-run',
   );
+});
+
+test('맥 수동 업데이트는 Dex 의 dmg 만 고른다 — 같은 릴리스의 XD dmg 를 집지 않는다', () => {
+  const assets = [
+    { name: 'XD-1.82.0-arm64.dmg' },
+    { name: 'XGen-Dex-1.82.0.dmg' },
+    { name: 'XGen-Dex-Setup-1.82.0.exe' },
+  ];
+  assert.equal(dexMacDmg(assets)?.name, 'XGen-Dex-1.82.0.dmg');
+  assert.equal(dexMacDmg([{ name: 'XD-1.82.0-x64.dmg' }]), undefined);
+  assert.equal(dexMacDmg(undefined), undefined);
 });

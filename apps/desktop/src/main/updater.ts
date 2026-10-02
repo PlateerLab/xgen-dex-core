@@ -27,6 +27,7 @@ import electronUpdater, { type AppUpdater } from 'electron-updater';
 import { installerDownloadPath, installerListPath } from '@dex/protocol';
 import {
   compareVersions,
+  dexMacDmg,
   selectXgenUpdate,
   windowsNsisLauncherCommand,
   type UpdateServer,
@@ -197,7 +198,7 @@ async function macAssistedUpdate(version: string, manual: boolean): Promise<void
   try {
     notify(`새 버전 v${version} 내려받는 중…`);
     const rel = await latestRelease();
-    const asset = (rel.assets ?? []).find((a) => /\.dmg$/i.test(a.name));
+    const asset = dexMacDmg(rel.assets);
     if (!asset) throw new Error('no dmg asset');
     const res = await netFetch(asset.browser_download_url, 180000);
     if (!res.ok) throw new Error(`download ${res.status}`);

@@ -1,0 +1,65 @@
+# XD — Dex 와 **나란히** 설치되는 별개의 앱이다. 정체성은 전부 Dex 와 다르다.
+#
+# ⚠ appId 는 한 번 정하면 바꾸지 않는다 — NSIS 의 설치·업데이트 식별 GUID 와 macOS 번들 ID 가 여기서
+# 파생된다(Dex 의 electron-builder.yml 머리말 참고).
+appId: com.plateerlab.xd
+# 리눅스 설치 경로(/opt/<productName>)에 그대로 쓰인다 — 공백 없이.
+productName: XD
+directories:
+  buildResources: build
+  output: release
+# Dex 와 같은 GitHub 릴리스에 함께 올라간다(같은 버전). 업데이트 정보 파일 이름이 Dex 의 latest*.yml 과
+# 겹치면 두 앱이 서로의 정보를 덮어쓴다 — XD 는 채널을 나눠 xd.yml · xd-mac.yml · xd-linux.yml 을 쓴다.
+publish:
+  provider: github
+  owner: PlateerLab
+  repo: xgen-dex-core
+  channel: xd
+generateUpdatesFilesForAllChannels: false
+files:
+  - out/**
+  - package.json
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
+  maintainer: PlateerLab <noreply@plateerlab.dev>
+  synopsis: XD - run agents on this computer
+  artifactName: XD-${version}.${ext}
+  desktop:
+    StartupWMClass: xd
+    Name: XD
+deb:
+  depends:
+    - libnotify4
+    - libxtst6
+    - libnss3
+    - libsecret-1-0
+    - libxss1
+    - xdg-utils
+    - libgtk-3-0 | libgtk-3-0t64
+    - libatspi2.0-0 | libatspi2.0-0t64
+win:
+  target:
+    - nsis
+  artifactName: XD-Setup-${version}.${ext}
+nsis:
+  # 설치 폴더가 곧 XD 의 루트 폴더다(작업 공간이 그 안에 생긴다) — 사용자가 위치를 고르게 한다.
+  # 사용자별 설치라 기본 위치(%LOCALAPPDATA%\Programs\XD)에 앱이 쓸 수 있다.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerLanguages:
+    - en_US
+    - ko_KR
+  unicode: true
+  shortcutName: XD
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  # 동봉 엔진(Python)이 아키텍처마다 다르다 — 이름에 아키텍처를 넣어 두 dmg 가 겹치지 않게 한다.
+  artifactName: XD-${version}-${arch}.${ext}
+  extendInfo:
+    CFBundleDisplayName: XD

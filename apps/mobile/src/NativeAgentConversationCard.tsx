@@ -33,7 +33,7 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
       const selected = source;
       const model = new MobileAgentConversationModel(account, createMobileAgentLiveWatcher(source), writer,
         (value) => { if (live) setState(value); }, mobileTurnKey, () => selected.dispose(), {
-          read: (signal) => selected.readCatalog(signal), send: lifecycle.send, dispose: lifecycle.dispose,
+          read: (signal, page) => selected.readCatalog(signal, page), send: lifecycle.send, dispose: lifecycle.dispose,
         });
       owner.current = model;
     } catch { source?.dispose(); setUnavailable('공유 대화는 HTTPS 서버와 최신 네이티브 앱에서 사용할 수 있습니다.'); }
@@ -51,7 +51,11 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
     <Text style={{ color: p.text, fontSize: 16, fontWeight: '700' }}>공유 대화</Text>
     <Text style={{ color: p.muted }}>내 공유 대화를 생성하거나 선택하고 다른 기기와 이어 사용합니다. 진행 중 출력은 완료 후 표시됩니다.</Text>
     <Text style={{ color: p.text }}>상태: {state?.status ?? '미확인'}</Text>
-    {button('내 공유 대화 목록 다시 조회', !available || Boolean(state?.writing || state?.catalog.busy), () => { void owner.current?.refreshCatalog(); })}
+    {button('최신 공유 대화 목록 조회', !available || Boolean(state?.writing || state?.catalog.busy), () => { void owner.current?.refreshCatalog(); })}
+    {button('이전 세션 목록 보기', !available || !state?.catalog.canLoadOlder, () => { void owner.current?.loadOlderCatalog(); })}
+    {!!state?.catalog.focus && <Text style={{ color: p.muted }}>{state.catalog.pageKnown
+      ? `${state.catalog.olderPage ? '이전 목록' : '최신 목록'} · 최대 100개씩 표시 · ${state.catalog.hasMore ? '이전 세션 더 있음' : '목록 끝'}`
+      : '최신 목록을 조회하면 이전 페이지를 탐색할 수 있습니다.'}</Text>}
     {state?.catalog.focus && <Text style={{ color: p.muted }}>현재 선택: {state.catalog.focus.active_agent_session_id ?? '선택 없음'}</Text>}
     {state?.catalog.items.map((item) => <View key={item.id} style={{ gap: 4, paddingVertical: 6 }}>
       <Text style={{ color: p.text }}>{item.title || '제목 없는 공유 대화'}</Text>
@@ -59,7 +63,8 @@ export function NativeAgentConversationCard({ client, visible }: { client: XgenM
       {button(item.id === state.catalog.focus?.active_agent_session_id ? '선택한 대화 다시 확인' : '이 대화 선택',
         !state.catalog.canWrite || item.status !== 'active', () => { void owner.current?.selectSession(item.id); })}
     </View>)}
-    {state?.catalog.hasMore && <Text style={{ color: p.muted }}>최신 100개 목록입니다. 이전 세션 페이지 탐색은 아직 지원하지 않습니다.</Text>}
+    {!!state?.catalog.focus?.active_agent_session_id && !state.catalog.items.some((item) => item.id === state.catalog.focus!.active_agent_session_id)
+      && <Text style={{ color: p.muted }}>현재 선택된 대화는 이 목록에 없습니다. 페이지 탐색은 대화 선택을 바꾸지 않습니다.</Text>}
     <TextInput accessibilityLabel="새 공유 대화 Workflow ID" placeholder="사용할 Workflow ID" placeholderTextColor={p.muted}
       value={workflowId} onChangeText={setWorkflowId} editable={Boolean(state?.catalog.canWrite)} autoCapitalize="none"
       style={{ padding: 12, color: p.text, borderWidth: 1, borderColor: p.border, borderRadius: 8 }} />

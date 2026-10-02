@@ -2,18 +2,20 @@ import { AgentTurnComposer, AgentTurnComposeFailure, type AgentTurnComposerView,
 import type { MobileEnrollmentAccount } from './native-device-enrollment';
 import type { MobileConversationView } from './native-agent-conversation-watch';
 import type { MobileCanonicalUpdate } from './native-agent-focus-watch';
-import { parseAgentFocus, parseAgentSessionList, type AgentFocus, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { parseAgentFocus, type AgentFocus, type OwnedAgentSession } from '@dex/protocol/agent-session';
+import { parseAgentSessionCatalogPage } from '@dex/protocol/agent-session-catalog';
 import { validateCreateAgentSession, validateSwitchAgentFocus, parseCreatedAgentSession, parseSwitchedAgentFocus } from '@dex/protocol/agent-session-lifecycle';
 import { MobileAgentLifecycleFailure, type MobileAgentLifecycleRequest } from './native-agent-lifecycle';
 
 interface CatalogPort {
-  read(signal?: AbortSignal): Promise<{ authScope: string; focus: unknown; sessions: unknown }>;
+  read(signal?: AbortSignal, page?: { beforeId: string; authScope: string }): Promise<{ authScope: string; focus: unknown; sessions: unknown }>;
   send(request: MobileAgentLifecycleRequest, signal?: AbortSignal): Promise<unknown>;
   dispose(): void;
 }
 export interface MobileAgentCatalogView {
   focus: AgentFocus | null; items: OwnedAgentSession[]; hasMore: boolean;
   busy: boolean; writeBlocked: boolean; canWrite: boolean; notice: string;
+  olderPage: boolean; canLoadOlder: boolean; pageKnown: boolean;
 }
 
 export interface MobileConversationModelView {
@@ -54,6 +56,9 @@ export class MobileAgentConversationModel {
   private catalogScope: string | null = null;
   private catalogReady = false;
   private catalogHasMore = false;
+  private catalogNextCursor: string | null = null;
+  private catalogOlderPage = false;
+  private catalogPageKnown = false;
   private lifecycleBlocked = false;
   private catalogNotice = '';
   private catalogTask: AbortController | null = null;
@@ -77,7 +82,8 @@ export class MobileAgentConversationModel {
       status: this.status, error: this.error, draft: this.visible ? this.draft : '', turn: this.turn,
       catalog: { focus: this.visible && this.catalogFocus ? { ...this.catalogFocus } : null, items: this.visible ? this.catalogItems.map((item) => ({ ...item })) : [],
         hasMore: this.visible && this.catalogHasMore, busy: Boolean(this.catalogTask), writeBlocked: this.lifecycleBlocked,
-        canWrite: this.canWriteCatalog(), notice: this.visible ? this.catalogNotice : '' } };
+        canWrite: this.canWriteCatalog(), notice: this.visible ? this.catalogNotice : '',
+        olderPage: this.visible && this.catalogOlderPage, canLoadOlder: this.canLoadOlderCatalog(), pageKnown: this.visible && this.catalogPageKnown } };
     if (!this.disposed) this.render(this.state);
   }
   private unavailable(): void { this.composer.context(this.scope, null, false); }
@@ -110,12 +116,14 @@ export class MobileAgentConversationModel {
       this.scope = nextScope; this.conversation = value; this.hasMore = update.hasMore;
       if (this.catalogPort && this.catalogScope !== nextScope.profile) {
         this.catalogFocus = null; this.catalogItems = []; this.catalogHasMore = false; this.catalogReady = false;
+        this.catalogNextCursor = null; this.catalogOlderPage = false; this.catalogPageKnown = false;
         // An unknown lifecycle outcome belongs to its original Platform Session only.
         if (this.catalogScope !== null) this.lifecycleBlocked = false;
         this.catalogScope = nextScope.profile;
       }
       if (this.catalogPort && identity && this.catalogFocus?.active_agent_session_id !== (value.snapshot?.id ?? null)) {
-        this.catalogReady = false; this.catalogNotice = '공유 대화 선택이 바뀌었습니다. 세션 목록을 직접 다시 조회하세요.';
+        this.catalogReady = false; this.catalogNextCursor = null; this.catalogPageKnown = false;
+        this.catalogNotice = '공유 대화 선택이 바뀌었습니다. 최신 세션 목록을 직접 다시 조회하세요.';
       }
       this.composer.context(nextScope, value.snapshot, !update.hasMore && this.turnAvailable());
       this.status = update.hasMore ? '기록을 이어서 불러오는 중' : '최신 대화 확인'; this.error = '';
@@ -211,20 +219,41 @@ export class MobileAgentConversationModel {
     // Catalog proves selection, not a conversation snapshot or a running turn.
     this.unavailable();
   }
-  async refreshCatalog(): Promise<boolean> {
+  private canLoadOlderCatalog(): boolean {
+    return Boolean(this.catalogPort && this.visible && !this.disposed && this.catalogReady && this.catalogPageKnown && this.catalogFocus && this.catalogScope
+      && this.catalogScope === this.scope?.profile && this.catalogHasMore && this.catalogNextCursor
+      && !this.lifecycleBlocked && !this.catalogTask && !this.write && !this.actionBusy);
+  }
+  refreshCatalog(): Promise<boolean> { return this.readCatalog(false); }
+  loadOlderCatalog(): Promise<boolean> { return this.readCatalog(true); }
+  private async readCatalog(older: boolean): Promise<boolean> {
     if (!this.catalogPort || !this.visible || this.disposed || this.catalogTask || this.write || this.actionBusy) return false;
+    if (older && !this.canLoadOlderCatalog()) return false;
+    const priorFocus = this.catalogFocus ? { ...this.catalogFocus } : null;
+    const previousItems = this.catalogItems.map((item) => ({ ...item }));
+    const page = older ? { beforeId: this.catalogNextCursor!, authScope: this.catalogScope! } : undefined;
     const control = new AbortController(); this.catalogTask = control; const visibility = this.visibilityGeneration;
     const reading = this.read; reading?.control.abort(); this.catalogReady = false; this.catalogNotice = ''; this.unavailable(); this.publish();
     let success = false;
     try {
       await reading?.done; control.signal.throwIfAborted();
-      const result = await this.catalogPort.read(control.signal);
+      const result = await this.catalogPort.read(control.signal, page);
       if (this.disposed || !this.visible || control.signal.aborted || visibility !== this.visibilityGeneration) return false;
       if (typeof result.authScope !== 'string' || !/^[0-9a-f]{64}$/.test(result.authScope)) throw new TypeError();
-      const focus = parseAgentFocus(result.focus); const sessions = parseAgentSessionList(result.sessions);
+      const focus = parseAgentFocus(result.focus);
+      if (page && (result.authScope !== page.authScope || !priorFocus || focus.version !== priorFocus.version
+        || focus.event_id !== priorFocus.event_id || focus.active_agent_session_id !== priorFocus.active_agent_session_id)) {
+        this.acceptFocus(result.authScope, focus); this.catalogItems = []; this.catalogHasMore = false;
+        this.catalogNextCursor = null; this.catalogOlderPage = false; this.catalogPageKnown = false;
+        this.catalogNotice = '기기 세션 또는 현재 선택이 바뀌었습니다. 최신 목록을 직접 다시 조회하세요.';
+        return false;
+      }
+      const sessions = parseAgentSessionCatalogPage(result.sessions, page?.beforeId, previousItems);
       this.acceptFocus(result.authScope, focus); this.catalogItems = sessions.items; this.catalogHasMore = sessions.has_more;
-      this.catalogReady = true; this.lifecycleBlocked = false;
-      this.catalogNotice = '현재 선택과 내 세션 목록을 확인했습니다.'; this.error = ''; success = true;
+      this.catalogNextCursor = sessions.next_cursor; this.catalogOlderPage = older; this.catalogPageKnown = true;
+      this.catalogReady = true; if (!older) this.lifecycleBlocked = false;
+      this.catalogNotice = older ? '이전 세션 목록을 확인했습니다. 현재 대화 선택은 유지됩니다.' : '현재 선택과 내 세션 목록을 확인했습니다.';
+      this.error = ''; success = true;
     } catch {
       if (!this.disposed && !control.signal.aborted) this.catalogNotice = '세션 목록을 확인하지 못했습니다. 기기 키·세션과 서버 상태를 확인하세요.';
     } finally { if (this.catalogTask === control) this.catalogTask = null; this.publish(); }
@@ -265,9 +294,11 @@ export class MobileAgentConversationModel {
       const focus = created ? created.focus : parseSwitchedAgentFocus(result.focus, (request as Extract<MobileAgentLifecycleRequest, { operation: 'switch' }>).input);
       this.acceptFocus(request.scope.profile, focus); this.catalogReady = true;
       if (created) {
-        const items: OwnedAgentSession[] = [{ id: created.id, workflow_id: created.workflow_id, title: request.operation === 'create' ? request.input.title ?? '' : '',
-          status: 'active', state_version: 1, current_sequence: 0 }, ...this.catalogItems.filter((item) => item.id !== created.id)];
-        this.catalogHasMore ||= items.length > 100; this.catalogItems = items.slice(0, 100);
+        // A new session does not belong to an older keyset page. Require a fresh latest page
+        // before reusing its continuation instead of splicing a fabricated page boundary.
+        this.catalogItems = [{ id: created.id, workflow_id: created.workflow_id, title: request.operation === 'create' ? request.input.title ?? '' : '',
+          status: 'active' as const, state_version: 1, current_sequence: 0 }, ...this.catalogItems.filter((item) => item.id !== created.id)].slice(0, 100);
+        this.catalogHasMore = false; this.catalogNextCursor = null; this.catalogOlderPage = false; this.catalogPageKnown = false;
       }
       this.catalogNotice = created ? '공유 대화를 생성하고 선택했습니다.' : '공유 대화 선택을 확인했습니다.'; success = true;
     } catch (error) {
@@ -286,6 +317,7 @@ export class MobileAgentConversationModel {
     this.disposed = true; this.generation++; this.read?.control.abort(); this.write?.abort(); this.catalogTask?.abort();
     this.catalogPort?.dispose(); this.writer.dispose(); this.disposeSource();
     this.visible = false; this.scope = null; this.observed = null; this.draft = ''; this.conversation = null;
-    this.catalogFocus = null; this.catalogItems = []; this.catalogScope = null; this.composer.reset();
+    this.catalogFocus = null; this.catalogItems = []; this.catalogScope = null; this.catalogNextCursor = null;
+    this.catalogOlderPage = false; this.catalogPageKnown = false; this.composer.reset();
   }
 }

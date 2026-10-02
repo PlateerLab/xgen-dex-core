@@ -11,6 +11,7 @@ import { createMobileAgentFocusSource, MobileFocusBusy } from '../src/lib/native
 import { createMobileAgentFocusWatcher, mobileFocusMessage, mobileFocusWait, MobileFocusWatchError, type MobileAgentFocusUpdate } from '../src/lib/native-agent-focus-watch';
 import { createMobileAgentConversationWatcher } from '../src/lib/native-agent-conversation-watch';
 import { createMobileAgentSocketTransport, MobileSocketBusy, type MobileAgentSocketModule } from '../src/lib/native-agent-socket';
+import { mobileAgentScope } from '../src/lib/native-agent-scope';
 
 const origin = 'https://mobile.example.test'; const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const key = pair.publicKey.export({ format: 'jwk' }); const publicKey = { kty: 'EC', crv: 'P-256', x: key.x!, y: key.y! } as const;
@@ -73,6 +74,21 @@ test('second catalog GET failure/cancellation/account change exposes no partial 
     late.resolve({ status: mode === 'failure' ? 503 : 200, body: JSON.stringify({ items: [], next_cursor: null, has_more: false }) });
     await assert.rejects(reading); assert.equal(f.calls.length, 2); f.source.dispose();
   }
+});
+test('older catalog captures opaque cursor and ready scope; different Platform sid blocks before any GET/proof', async () => {
+  const f = fixture(); const identity = await f.keys.identity(); const scope = mobileAgentScope(f.initial, identity, f.record());
+  const before = randomUUID(), older = randomUUID();
+  f.handle(async (path) => ({ status: 200, body: JSON.stringify(path.includes('agent-state') ? focus : {
+    items: [{ id: older, workflow_id: 'wf', title: 'Older', status: 'active', state_version: 1, current_sequence: 0 }], next_cursor: null, has_more: false }) }));
+  const page = { beforeId: before, authScope: scope }; const reading = f.source.readCatalog(undefined, page);
+  page.beforeId = randomUUID(); page.authScope = 'foreign';
+  assert.equal((await reading).sessions.items[0].id, older);
+  assert.equal(f.calls[1].path, `/api/agentflow/me/agent-sessions?limit=100&before_id=${before}`);
+  const claims = JSON.parse(Buffer.from(f.calls[1].dpop.split('.')[1], 'base64url').toString());
+  assert.equal(claims.htu, `${origin}/api/agentflow/me/agent-sessions`);
+  f.put(f.makeRecord(undefined, randomUUID()));
+  await assert.rejects(f.source.readCatalog(undefined, { beforeId: before, authScope: scope }), NativeAccountChanged);
+  assert.equal(f.calls.length, 2); f.source.dispose();
 });
 
 test('hardware-provider seam signs fresh real ES256/ath/GET proof for each read, excluding query; replay shares only a token-free scope', async () => {

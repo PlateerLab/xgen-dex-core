@@ -70,7 +70,8 @@ enum DpopProof {
   private static func allowed(_ method: String, _ path: String) -> Bool {
     switch method {
     case "DELETE": return matches(sessionIdPath, path)
-    case "POST": return matches(agentSessionTurnPath, path)
+    case "POST": return path == "/api/agentflow/agent-sessions" || matches(agentSessionTurnPath, path)
+    case "PUT": return path == "/api/agentflow/me/agent-state"
     case "GET":
       return path == "/api/agentflow/me/agent-state" || path == "/api/agentflow/me/agent-events" ||
         path == "/api/agentflow/me/agent-sessions" || matches(agentSessionPath, path)

@@ -93,6 +93,18 @@ class NativeEnrollmentTransportTest {
     return result.get()
   }
 
+  private fun executeLifecycle(path: String, method: String, body: String,
+    accessToken: String = "access.safe.jwt", dpop: String = "proof.safe.jwt"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.lifecycleRequest(transport.newRequestId(), origin, path, method, accessToken, dpop, body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("lifecycle request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
   @Test fun sendsOnlyFixedHeadersAndJsonOverFixtureTls() {
     server.enqueue(MockResponse().setResponseCode(201).setBody("{\"ok\":true}"))
     val result = execute("/api/auth/platform-devices/native/mobile/registration/challenge", "POST", "{\"nested\":[true,1,null,\"ok\"]}").getOrThrow()
@@ -499,5 +511,103 @@ class NativeEnrollmentTransportTest {
       transport.turnRequest(id, origin, path, "access.safe.jwt", "proof.safe.jwt", body) {}
     }.code)
     assertEquals(1, server.requestCount)
+  }
+
+  @Test fun lifecycleWritesUseExactMethodsBodiesHeadersAndFixtureTls() {
+    val create = "{\"workflow_id\":\"workflow-😀\",\"expected_version\":0,\"title\":\"\",\"origin_id\":\"mobile-1\"}"
+    val focus = "{\"active_agent_session_id\":\"00000000-0000-4000-8000-000000000001\",\"expected_version\":1}"
+    server.enqueue(MockResponse().setResponseCode(201).addHeader("Set-Cookie", "secret=never-return").setBody("{\"created\":true}"))
+    server.enqueue(MockResponse().setResponseCode(200).setBody("{\"focused\":true}"))
+    assertEquals(201, executeLifecycle("/api/agentflow/agent-sessions", "POST", create).getOrThrow().status)
+    assertEquals(200, executeLifecycle("/api/agentflow/me/agent-state", "PUT", focus).getOrThrow().status)
+    listOf("POST" to create, "PUT" to focus).forEach { (method, expectedBody) ->
+      val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+      assertEquals(method, request.method)
+      assertEquals("application/json", request.getHeader("Accept"))
+      assertEquals("application/json", request.getHeader("Content-Type"))
+      assertEquals("DPoP access.safe.jwt", request.getHeader("Authorization"))
+      assertEquals("proof.safe.jwt", request.getHeader("DPoP"))
+      assertNull(request.getHeader("Cookie")); assertNull(request.getHeader("Origin"))
+      assertEquals(expectedBody, request.body.readUtf8())
+    }
+  }
+
+  @Test fun lifecycleWritesRejectRoutesCredentialsAndNoncanonicalBodiesBeforeWire() {
+    val transport = NativeEnrollmentTransport(client)
+    val create = "/api/agentflow/agent-sessions"
+    val focus = "/api/agentflow/me/agent-state"
+    val validCreate = "{\"workflow_id\":\"workflow\",\"expected_version\":0}"
+    fun invalid(path: String = create, method: String = "POST", body: String = validCreate,
+      token: String = "access.safe.jwt", proof: String = "proof.safe.jwt", originValue: String = origin) {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.lifecycleRequest(transport.newRequestId(), originValue, path, method, token, proof, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid(method = "PUT"); invalid(path = focus, method = "POST")
+    invalid(path = "$create?x=1"); invalid(path = "$create/extra")
+    invalid(token = "opaque-token"); invalid(proof = "opaque-proof")
+    invalid(originValue = origin.replace("localhost", "LOCALHOST"))
+    invalid(body = "{\"workflow_id\":\"a\",\"workflow_id\":\"b\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"a\",\"\\u0077orkflow_id\":\"b\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"\\uD800\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"\uD800\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":0,\"unknown\":true}")
+    invalid(body = "{\"workflow_id\":\"\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"${"😀".repeat(257)}\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":9007199254740991}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":-1}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":0,\"origin_id\":\"\"}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":0,\"title\":\"${"x".repeat(32_769)}\"}")
+    invalid(body = " ".repeat(32_768) + validCreate)
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":false,\"expected_version\":0}")
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":\"00000000-0000-0000-0000-000000000001\",\"expected_version\":0}")
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":\"00000000-0000-4000-8000-00000000000A\",\"expected_version\":0}")
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":null,\"expected_version\":0,\"origin_id\":null}")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun lifecycleWritesAcceptBoundariesAndNullFocus() {
+    val workflow = "😀".repeat(256)
+    val title = "é".repeat(256)
+    val originId = "界".repeat(128)
+    val create = "{\"workflow_id\":\"$workflow\",\"expected_version\":9007199254740990,\"title\":\"$title\",\"origin_id\":\"$originId\"}"
+    val focus = "{\"active_agent_session_id\":null,\"expected_version\":0}"
+    server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+    server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+    assertTrue(executeLifecycle("/api/agentflow/agent-sessions", "POST", create).isSuccess)
+    assertTrue(executeLifecycle("/api/agentflow/me/agent-state", "PUT", focus).isSuccess)
+  }
+
+  @Test fun lifecycleWriteAckFailuresCancellationAndLostAckAreNeverRetried() {
+    val path = "/api/agentflow/agent-sessions"
+    val body = "{\"workflow_id\":\"workflow\",\"expected_version\":0}"
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(65_537), 1024))
+    assertEquals("mobile_transport_response_invalid", (executeLifecycle(path, "POST", body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertEquals("mobile_transport_response_invalid", (executeLifecycle(path, "POST", body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/escaped"))
+    assertEquals("mobile_transport_response_invalid", (executeLifecycle(path, "POST", body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+    assertTrue(executeLifecycle(path, "POST", body).isFailure)
+    repeat(4) { assertNotNull(server.takeRequest(1, TimeUnit.SECONDS)) }
+    assertNull(server.takeRequest(250, TimeUnit.MILLISECONDS))
+
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.lifecycleRequest(id, origin, path, "POST", "access.safe.jwt", "proof.safe.jwt", body) {
+      result.set(it); latch.countDown()
+    }
+    assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+    assertEquals("mobile_transport_invalid", assertThrows(MobileTransportFailure::class.java) {
+      transport.lifecycleRequest(id, origin, path, "POST", "access.safe.jwt", "proof.safe.jwt", body) {}
+    }.code)
+    assertNull(server.takeRequest(250, TimeUnit.MILLISECONDS))
   }
 }

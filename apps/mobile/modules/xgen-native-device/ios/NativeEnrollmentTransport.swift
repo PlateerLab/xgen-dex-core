@@ -47,6 +47,8 @@ final class NativeEnrollmentTransport {
   private static let sessionTurnPath = try! NSRegularExpression(pattern: "^/api/agentflow/agent-sessions/\(canonicalUUID)/(turns|stop)$")
   private static let canonicalUUIDPattern = try! NSRegularExpression(pattern: "^\(canonicalUUID)$")
   private static let stableASCII = try! NSRegularExpression(pattern: "^[!-~]{1,128}$")
+  private static let createAgentSessionPath = "/api/agentflow/agent-sessions"
+  private static let switchAgentFocusPath = "/api/agentflow/me/agent-state"
 
   private let lock = NSLock()
 #if NATIVE_ENROLLMENT_TRANSPORT_TESTING
@@ -280,6 +282,61 @@ final class NativeEnrollmentTransport {
     return request
   }
 
+  private static func validLifecycleBody(_ body: String, path: String, data: Data) -> Bool {
+    guard data.count <= maximumRequestBodyBytes, StrictJSONObject.isValid(body),
+      let object = try? JSONSerialization.jsonObject(with: data), let fields = object as? [String: Any] else { return false }
+    let keys = Set(fields.keys)
+    func codePointString(_ name: String, minimum: Int, maximum: Int) -> Bool {
+      guard let value = fields[name] as? String else { return false }
+      return (minimum...maximum).contains(value.unicodeScalars.count)
+    }
+    func expectedVersion() -> Bool {
+      guard let number = fields["expected_version"] as? NSNumber,
+        CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+      let value = number.doubleValue
+      return value.isFinite && value.rounded(.towardZero) == value && value >= 0 && value < 9_007_199_254_740_991
+    }
+    if fields["origin_id"] != nil && !codePointString("origin_id", minimum: 1, maximum: 128) { return false }
+    switch path {
+    case createAgentSessionPath:
+      let required = Set(["workflow_id", "expected_version"])
+      guard keys == required || keys == required.union(["title"]) || keys == required.union(["origin_id"]) ||
+        keys == required.union(["title", "origin_id"]), codePointString("workflow_id", minimum: 1, maximum: 256),
+        expectedVersion() else { return false }
+      return fields["title"] == nil || codePointString("title", minimum: 0, maximum: 256)
+    case switchAgentFocusPath:
+      let required = Set(["active_agent_session_id", "expected_version"])
+      guard keys == required || keys == required.union(["origin_id"]), expectedVersion(),
+        let active = fields["active_agent_session_id"] else { return false }
+      return active is NSNull || (active as? String).map { matches(canonicalUUIDPattern, $0) } == true
+    default:
+      return false
+    }
+  }
+
+  private static func buildLifecycleRequest(origin: String, path: String, method: String, accessToken: String,
+    dpop: String, body: String) throws -> URLRequest {
+    let allowed = (method == "POST" && path == createAgentSessionPath) ||
+      (method == "PUT" && path == switchAgentFocusPath)
+    guard let components = URLComponents(string: origin), components.scheme == "https", let host = components.host,
+      host == host.lowercased(), components.port != 443,
+      components.user == nil, components.password == nil, components.path.isEmpty, components.query == nil,
+      components.fragment == nil, components.url?.absoluteString == origin, allowed,
+      !path.contains("%"), !path.contains("?"), !path.contains("#"), !path.contains("\\"),
+      accessToken.utf8.count <= 8_192, matches(dpopPattern, accessToken),
+      dpop.utf8.count <= 8_192, matches(dpopPattern, dpop),
+      let data = body.data(using: .utf8), validLifecycleBody(body, path: path, data: data),
+      let url = URL(string: origin + path), url.absoluteString == origin + path else { throw MobileTransportFailure.invalid }
+    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+    request.httpMethod = method
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("DPoP \(accessToken)", forHTTPHeaderField: "Authorization")
+    request.setValue(dpop, forHTTPHeaderField: "DPoP")
+    request.httpBodyStream = InputStream(data: data)
+    return request
+  }
+
   func request(requestId: String, origin: String, path: String, method: String, accessToken: String, body: String?, completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     // Validate the complete request before a URLSession or URLSessionTask is created.
@@ -308,6 +365,16 @@ final class NativeEnrollmentTransport {
     completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
     guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
     let request = try Self.buildTurnRequest(origin: origin, path: path, accessToken: accessToken, dpop: dpop, body: body)
+    try execute(requestId: requestId, request: request, maximumResponseBodyBytes: Self.maximumResponseBodyBytes,
+      invalidResponseFailure: .responseInvalid, completion: completion)
+  }
+
+  func lifecycleRequest(requestId: String, origin: String, path: String, method: String, accessToken: String,
+    dpop: String, body: String,
+    completion: @escaping (Result<MobileTransportResponse, MobileTransportFailure>) -> Void) throws {
+    guard Self.isCanonicalUUID(requestId) else { throw MobileTransportFailure.invalid }
+    let request = try Self.buildLifecycleRequest(origin: origin, path: path, method: method,
+      accessToken: accessToken, dpop: dpop, body: body)
     try execute(requestId: requestId, request: request, maximumResponseBodyBytes: Self.maximumResponseBodyBytes,
       invalidResponseFailure: .responseInvalid, completion: completion)
   }

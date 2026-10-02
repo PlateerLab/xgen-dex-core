@@ -55,12 +55,17 @@ class DpopProofTest {
       val path = "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/$action"
       assertTrue(DpopProof.signingInput(origin, "POST", origin + path, "safe.jwt.token", x, y, 1, jti).contains('.'))
     }
+    assertTrue(DpopProof.signingInput(origin, "POST", "$origin/api/agentflow/agent-sessions", "safe.jwt.token", x, y, 1, jti).contains('.'))
+    assertTrue(DpopProof.signingInput(origin, "PUT", "$origin/api/agentflow/me/agent-state", "safe.jwt.token", x, y, 1, jti).contains('.'))
     fun invalid(originValue: String = origin, method: String = "GET", htu: String = "$origin/api/agentflow/me/agent-state", token: String = "safe.jwt.token", id: String = jti) {
       assertThrows(IllegalArgumentException::class.java) { DpopProof.signingInput(originValue, method, htu, token, x, y, 1, id) }
     }
     invalid(originValue = "http://xgen.example.test", htu = "http://xgen.example.test/api/agentflow/me/agent-state")
     invalid(method = "POST")
     invalid(method = "POST", htu = "$origin/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/messages")
+    invalid(method = "PUT", htu = "$origin/api/agentflow/agent-sessions")
+    invalid(method = "POST", htu = "$origin/api/agentflow/me/agent-state")
+    invalid(method = "PUT", htu = "$origin/api/agentflow/me/agent-state/extra")
     invalid(htu = "$origin/api/agentflow/me/agent-state?x=1")
     invalid(htu = "$origin/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/messages?after_sequence=0&limit=20")
     invalid(htu = "${origin}evil/api/agentflow/me/agent-state")

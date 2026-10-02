@@ -23,7 +23,8 @@ internal object DpopProof {
 
   private fun allowed(method: String, path: String): Boolean = when (method) {
     "DELETE" -> sessionIdPath.matches(path)
-    "POST" -> agentSessionTurnPath.matches(path)
+    "POST" -> path == "/api/agentflow/agent-sessions" || agentSessionTurnPath.matches(path)
+    "PUT" -> path == "/api/agentflow/me/agent-state"
     "GET" -> path == "/api/agentflow/me/agent-state" ||
       path == "/api/agentflow/me/agent-events" ||
       path == "/api/agentflow/me/agent-sessions" || agentSessionPath.matches(path)

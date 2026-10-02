@@ -57,6 +57,8 @@ internal class NativeEnrollmentTransport internal constructor(private val client
     private val canonicalUuidPattern = Regex(CANONICAL_UUID)
     private val stableAscii = Regex("[!-~]{1,128}")
     private val maximumSafeVersion = BigDecimal("9007199254740991")
+    private const val CREATE_AGENT_SESSION_PATH = "/api/agentflow/agent-sessions"
+    private const val SWITCH_AGENT_FOCUS_PATH = "/api/agentflow/me/agent-state"
 
     fun production(): NativeEnrollmentTransport = NativeEnrollmentTransport(
       OkHttpClient.Builder()
@@ -277,6 +279,70 @@ internal class NativeEnrollmentTransport internal constructor(private val client
         .build()
     }
 
+    private fun validLifecycleBody(body: String, path: String, bytes: ByteArray): Boolean {
+      if (bytes.size > MAX_REQUEST_BODY_BYTES) return false
+      val fields = StrictJsonObject.parse(body) ?: return false
+      fun codePointString(name: String, minimum: Int, maximum: Int): Boolean {
+        val value = (fields[name] as? StrictJsonValue.StringValue)?.value ?: return false
+        return value.codePointCount(0, value.length) in minimum..maximum
+      }
+      fun expectedVersion(): Boolean {
+        val number = (fields["expected_version"] as? StrictJsonValue.NumberValue)?.raw?.toBigDecimalOrNull() ?: return false
+        return number >= BigDecimal.ZERO && number < maximumSafeVersion && number.stripTrailingZeros().scale() <= 0
+      }
+      val origin = fields["origin_id"]
+      if (origin != null && !codePointString("origin_id", 1, 128)) return false
+      return when (path) {
+        CREATE_AGENT_SESSION_PATH -> {
+          val required = setOf("workflow_id", "expected_version")
+          if (fields.keys != required && fields.keys != required + "title" &&
+            fields.keys != required + "origin_id" && fields.keys != required + setOf("title", "origin_id")
+          ) return false
+          codePointString("workflow_id", 1, 256) && expectedVersion() &&
+            (fields["title"] == null || codePointString("title", 0, 256))
+        }
+        SWITCH_AGENT_FOCUS_PATH -> {
+          val required = setOf("active_agent_session_id", "expected_version")
+          if (fields.keys != required && fields.keys != required + "origin_id") return false
+          val active = fields["active_agent_session_id"]
+          (active === StrictJsonValue.NullValue ||
+            (active as? StrictJsonValue.StringValue)?.value?.let { canonicalUuidPattern.matches(it) } == true) &&
+            expectedVersion()
+        }
+        else -> false
+      }
+    }
+
+    private fun buildLifecycleRequest(
+      origin: String,
+      path: String,
+      method: String,
+      accessToken: String,
+      dpop: String,
+      body: String
+    ): Request {
+      validatedOrigin(origin)
+      val routeAllowed = (method == "POST" && path == CREATE_AGENT_SESSION_PATH) ||
+        (method == "PUT" && path == SWITCH_AGENT_FOCUS_PATH)
+      if (!routeAllowed || '%' in path || '?' in path || '#' in path || '\\' in path ||
+        accessToken.length > 8_192 || !dpopPattern.matches(accessToken) ||
+        dpop.length > 8_192 || !dpopPattern.matches(dpop)
+      ) throw MobileTransportFailure("mobile_transport_invalid")
+      val bytes = strictUtf8(body)
+      if (!validLifecycleBody(body, path, bytes)) throw MobileTransportFailure("mobile_transport_invalid")
+      val expected = origin + path
+      val url = expected.toHttpUrlOrNull()
+      if (url == null || url.toString() != expected) throw MobileTransportFailure("mobile_transport_invalid")
+      return Request.Builder()
+        .url(url)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "DPoP $accessToken")
+        .header("DPoP", dpop)
+        .method(method, bytes.toRequestBody(JSON))
+        .build()
+    }
+
     private fun readResponse(response: Response, maximumBodyBytes: Int, invalidResponseCode: String): MobileTransportResponse {
       val status = response.code
       if (status !in 200..599 || status in 300..399) throw MobileTransportFailure(invalidResponseCode)
@@ -384,6 +450,21 @@ internal class NativeEnrollmentTransport internal constructor(private val client
       MAX_RESPONSE_BODY_BYTES, "mobile_transport_response_invalid", completion)
   }
 
+  fun lifecycleRequest(
+    requestId: String,
+    origin: String,
+    path: String,
+    method: String,
+    accessToken: String,
+    dpop: String,
+    body: String,
+    completion: (Result<MobileTransportResponse>) -> Unit
+  ) {
+    if (!isCanonicalUuid(requestId)) throw MobileTransportFailure("mobile_transport_invalid")
+    execute(requestId, client.newCall(buildLifecycleRequest(origin, path, method, accessToken, dpop, body)),
+      MAX_RESPONSE_BODY_BYTES, "mobile_transport_response_invalid", completion)
+  }
+
   private fun execute(
     requestId: String,
     call: Call,
@@ -455,6 +536,7 @@ private sealed class StrictJsonValue {
   data class ObjectValue(val fields: Map<String, StrictJsonValue>) : StrictJsonValue()
   data class StringValue(val value: String) : StrictJsonValue()
   data class NumberValue(val raw: String) : StrictJsonValue()
+  object NullValue : StrictJsonValue()
   object Other : StrictJsonValue()
 }
 
@@ -488,7 +570,7 @@ private object StrictJsonObject {
         '"' -> StrictJsonValue.StringValue(string())
         't' -> { literal("true"); StrictJsonValue.Other }
         'f' -> { literal("false"); StrictJsonValue.Other }
-        'n' -> { literal("null"); StrictJsonValue.Other }
+        'n' -> { literal("null"); StrictJsonValue.NullValue }
         '-', in '0'..'9' -> StrictJsonValue.NumberValue(number())
         else -> fail()
       }

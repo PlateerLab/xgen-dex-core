@@ -68,6 +68,7 @@ import {
   type CopiedFile,
   type SkippedFile,
 } from '@dex/protocol';
+import { dangerousCommandPrompt, isDangerousShellCommand } from './dangerous-commands';
 import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
 import { interaction } from './host';
 import type { LocalFolder } from './local-folders';
@@ -378,35 +379,8 @@ export function openWithDefaultApp(
   });
 }
 
-/**
- * 되돌리기 어려운(파괴적) 명령 패턴. 일반 명령은 승인 없이 실행하되, 이 패턴에
- * 걸리는 명령만 사용자 확인을 받는다 — 마찰을 최소화하면서 사고를 막는다.
- * 보안 경계가 아니라 "실수 방지 게이트"다 (에이전트는 어차피 로그인 사용자 권한).
- */
-const DANGEROUS_PATTERNS: RegExp[] = [
-  /\brm\s+-[a-z]*[rf]/i, // rm -rf / -r / -f
-  /(^|[;&|`(])\s*rm\s+\//i, // rm on an absolute path
-  /\bRemove-Item\b[^\n]*-Recurse/i,
-  /\brmdir\s+\/s/i,
-  /\bdel\s+\/[a-z]*[sf]/i,
-  // Only in command position: `git log --format=…` / `docker ps --format` are not `format C:`.
-  /(^|[;&|`(])\s*(sudo\s+)?(mkfs(\.\w+)?|fdisk|format(\.com)?)\b/i,
-  /\bdd\b[^\n]*\b(of|if)=/i,
-  /\b(shutdown|reboot|halt|poweroff)\b/i,
-  /\bchmod\s+-R\b/i,
-  /\bchown\s+-R\b/i,
-  />\s*\/dev\/(sd|nvme|disk|hd)/i,
-  /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:/, // fork bomb
-  /\bgit\s+push\b[^\n]*--force/i,
-  /\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh)\b/i, // curl … | sh
-  /\bsudo\s+rm\b/i,
-];
-
-/** True if the command matches a destructive pattern that warrants confirmation. */
-export function isDangerousShellCommand(command: string): boolean {
-  const c = String(command || '');
-  return DANGEROUS_PATTERNS.some((re) => re.test(c));
-}
+// 위험 명령 판정 규칙은 dangerous-commands.ts 한 곳에 있다 — XD 엔진(Python)도 같은 규칙을 받는다.
+export { isDangerousShellCommand } from './dangerous-commands';
 
 // "이 대화에서 계속 허용"을 고른 대화 — 그 대화에서는 다시 묻지 않는다.
 // 대화마다 가르는 이유: 한 대화에서 준 승인이 폴더가 다른 대화로 번지면 안 된다.
@@ -441,11 +415,7 @@ export async function ensureDangerousApproval(command: string, scope = ''): Prom
 
 /** 확인 창에 쓸 문구 — 호스트가 어떤 UI 로 묻든 **같은 말**을 하도록 여기 둔다.
  *  데스크톱은 다이얼로그로, 터미널은 프롬프트로 묻지만 사용자가 읽는 경고는 하나여야 한다. */
-export const DANGEROUS_COMMAND_PROMPT = {
-  title: '위험할 수 있는 명령 실행 확인',
-  message: 'XGEN 에이전트가 이 PC 에서 되돌리기 어려운 명령을 실행하려 합니다.',
-  detail: (command: string) => command,
-} as const;
+export const DANGEROUS_COMMAND_PROMPT = dangerousCommandPrompt('XGEN');
 
 /** Clamp + label combined stdout/stderr into an MCP text result. */
 export function shapeResult(

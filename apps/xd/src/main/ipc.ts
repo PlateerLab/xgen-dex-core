@@ -2,6 +2,10 @@
 export const CHANNELS = {
   info: 'xd:info',
   openFolder: 'xd:openFolder',
+  /** main 의 API 한 칸 — `xd:api` 하나로 이름(메서드)과 인자를 넘긴다(xd-api.ts). */
+  api: 'xd:api',
+  /** main → 화면: 턴 사건(XdTurnEvent). */
+  turnEvent: 'xd:turn-event',
 } as const;
 
 /** 화면이 아는 이 앱의 상태. */
@@ -12,3 +16,6 @@ export interface XdInfo {
   rootSource: 'env' | 'moved' | 'dev' | 'install' | 'home';
   workspace: string;
 }
+
+/** `xd:api` 의 대답 — 예외는 IPC 를 넘으며 모양을 잃으므로 값으로 싣는다. */
+export type ApiResult<T> = { ok: true; value: T } | { ok: false; error: string; code?: string };

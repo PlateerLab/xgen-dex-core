@@ -1,0 +1,484 @@
+/**
+ * XD 저장소 — `<루트>/.xd/xd.db` (SQLite, Electron 내장 `node:sqlite`. 네이티브 모듈 없음).
+ *
+ * 에이전트·대화·턴·제공자 계정(비밀 아닌 설정)·앱 설정. 비밀(API 키)은 여기 없다 — secrets.ts.
+ * 마이그레이션은 앞으로만 간다(`PRAGMA user_version`). 설계: apps/xd/DESIGN.md §7.
+ */
+import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+
+export type TurnStatus = 'running' | 'done' | 'error' | 'cancelled';
+
+export interface XdAgent {
+  id: string;
+  name: string;
+  description: string;
+  /** null = 런타임 기본 문구, '' = 시스템 프롬프트 없음(사용자가 일부러 비움). */
+  systemPrompt: string | null;
+  accountId: string | null;
+  model: string;
+  /** `<루트>/workspace/` 아래 폴더 이름 — 만들 때 정하고, 이름을 바꿔도 그대로다. */
+  workspace: string;
+  folders: string[];
+  memory: boolean;
+  /** temperature·max_tokens·thinking·도구 묶음 끄기 등 — 엔진 config 로 그대로 간다. */
+  options: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface XdConversation {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface XdTurn {
+  id: string;
+  conversationId: string;
+  seq: number;
+  question: string;
+  attachments: unknown[];
+  answer: string;
+  /** 작업 과정 — 엔진의 tool·progress 사건 그대로. */
+  process: unknown[];
+  usage: Record<string, unknown> | null;
+  status: TurnStatus;
+  error: { code: string; message: string } | null;
+  startedAt: number;
+  endedAt: number | null;
+}
+
+export interface XdAccount {
+  id: string;
+  /** anthropic · openai · google · openai_compatible · claude_code · codex */
+  kind: string;
+  label: string;
+  baseUrl: string | null;
+  settings: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const MIGRATIONS: string[] = [
+  // 1 — 처음 모양
+  `
+  CREATE TABLE agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT,
+    account_id TEXT,
+    model TEXT NOT NULL DEFAULT '',
+    workspace TEXT NOT NULL UNIQUE,
+    folders TEXT NOT NULL DEFAULT '[]',
+    memory INTEGER NOT NULL DEFAULT 1,
+    options TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE conversations (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX conversations_by_agent ON conversations(agent_id, updated_at DESC);
+  CREATE TABLE turns (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    question TEXT NOT NULL,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    answer TEXT NOT NULL DEFAULT '',
+    process TEXT NOT NULL DEFAULT '[]',
+    usage TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    UNIQUE (conversation_id, seq)
+  );
+  CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    base_url TEXT,
+    settings TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  `,
+];
+
+/** 이 판이 아는 마지막 마이그레이션. 이보다 새 DB(앱을 내린 경우)는 열지 않는다 — 모르는 모양을 망가뜨린다. */
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
+/** 엔진(layout.check_id)이 받는 id — 대화 id 는 엔진에서 기억의 대화 칸 폴더 이름이 된다. */
+const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+const json = (value: unknown) => JSON.stringify(value ?? null);
+function parse<T>(text: unknown, fallback: T): T {
+  if (typeof text !== 'string') return fallback;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+type Row = Record<string, unknown>;
+
+function toAgent(r: Row): XdAgent {
+  return {
+    id: String(r.id),
+    name: String(r.name),
+    description: String(r.description ?? ''),
+    systemPrompt: r.system_prompt === null || r.system_prompt === undefined ? null : String(r.system_prompt),
+    accountId: r.account_id ? String(r.account_id) : null,
+    model: String(r.model ?? ''),
+    workspace: String(r.workspace),
+    folders: parse<string[]>(r.folders, []),
+    memory: Number(r.memory) === 1,
+    options: parse<Record<string, unknown>>(r.options, {}),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
+function toConversation(r: Row): XdConversation {
+  return {
+    id: String(r.id),
+    agentId: String(r.agent_id),
+    title: String(r.title ?? ''),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
+function toTurn(r: Row): XdTurn {
+  return {
+    id: String(r.id),
+    conversationId: String(r.conversation_id),
+    seq: Number(r.seq),
+    question: String(r.question),
+    attachments: parse<unknown[]>(r.attachments, []),
+    answer: String(r.answer ?? ''),
+    process: parse<unknown[]>(r.process, []),
+    usage: parse<Record<string, unknown> | null>(r.usage, null),
+    status: String(r.status) as TurnStatus,
+    error: parse<{ code: string; message: string } | null>(r.error, null),
+    startedAt: Number(r.started_at),
+    endedAt: r.ended_at === null || r.ended_at === undefined ? null : Number(r.ended_at),
+  };
+}
+
+function toAccount(r: Row): XdAccount {
+  return {
+    id: String(r.id),
+    kind: String(r.kind),
+    label: String(r.label),
+    baseUrl: r.base_url ? String(r.base_url) : null,
+    settings: parse<Record<string, unknown>>(r.settings, {}),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
+/** 대화 제목 — 첫 질문의 첫 줄(길면 줄인다). */
+export function titleFrom(question: string): string {
+  const line = question.trim().split(/\r?\n/, 1)[0] ?? '';
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+}
+
+export class Store {
+  readonly db: DatabaseSync;
+  private readonly now: () => number;
+
+  constructor(file: string, opts: { now?: () => number } = {}) {
+    this.now = opts.now ?? Date.now;
+    this.db = new DatabaseSync(file);
+    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+    this.migrate();
+    this.recoverInterrupted();
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  private migrate(): void {
+    const current = Number((this.db.prepare('PRAGMA user_version').get() as Row).user_version ?? 0);
+    if (current > SCHEMA_VERSION) {
+      throw new Error(`this data was written by a newer XD (schema ${current} > ${SCHEMA_VERSION})`);
+    }
+    for (let v = current; v < SCHEMA_VERSION; v += 1) {
+      this.tx(() => {
+        this.db.exec(MIGRATIONS[v]);
+        this.db.exec(`PRAGMA user_version = ${v + 1}`);
+      });
+    }
+  }
+
+  /** 앱이 턴 도중 꺼졌다 — 그 턴은 끝나지 않았다고 적는다(영원히 "실행 중" 으로 남지 않게). */
+  private recoverInterrupted(): void {
+    this.db
+      .prepare(`UPDATE turns SET status = 'error', error = ?, ended_at = ? WHERE status = 'running'`)
+      .run(json({ code: 'interrupted', message: 'The app closed before this answer finished.' }), this.now());
+  }
+
+  tx<T>(fn: () => T): T {
+    this.db.exec('BEGIN');
+    try {
+      const out = fn();
+      this.db.exec('COMMIT');
+      return out;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // ── 에이전트 ────────────────────────────────────────────────────────
+  listAgents(): XdAgent[] {
+    return (this.db.prepare('SELECT * FROM agents ORDER BY updated_at DESC').all() as Row[]).map(toAgent);
+  }
+
+  getAgent(id: string): XdAgent | null {
+    const row = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Row | undefined;
+    return row ? toAgent(row) : null;
+  }
+
+  workspaceTaken(name: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM agents WHERE workspace = ? COLLATE NOCASE').get(name));
+  }
+
+  createAgent(input: {
+    name: string;
+    workspace: string;
+    description?: string;
+    systemPrompt?: string | null;
+    accountId?: string | null;
+    model?: string;
+    folders?: string[];
+    memory?: boolean;
+    options?: Record<string, unknown>;
+  }): XdAgent {
+    const id = randomUUID();
+    const at = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO agents (id, name, description, system_prompt, account_id, model, workspace, folders, memory, options, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.name,
+        input.description ?? '',
+        input.systemPrompt === undefined ? null : input.systemPrompt,
+        input.accountId ?? null,
+        input.model ?? '',
+        input.workspace,
+        json(input.folders ?? []),
+        input.memory === false ? 0 : 1,
+        json(input.options ?? {}),
+        at,
+        at,
+      );
+    return this.getAgent(id) as XdAgent;
+  }
+
+  updateAgent(
+    id: string,
+    patch: Partial<Pick<XdAgent, 'name' | 'description' | 'systemPrompt' | 'accountId' | 'model' | 'folders' | 'memory' | 'options'>>,
+  ): XdAgent {
+    const current = this.getAgent(id);
+    if (!current) throw new Error(`no agent ${id}`);
+    const next = { ...current, ...patch };
+    this.db
+      .prepare(
+        `UPDATE agents SET name = ?, description = ?, system_prompt = ?, account_id = ?, model = ?, folders = ?, memory = ?, options = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        next.name,
+        next.description,
+        next.systemPrompt,
+        next.accountId,
+        next.model,
+        json(next.folders),
+        next.memory ? 1 : 0,
+        json(next.options),
+        this.now(),
+        id,
+      );
+    return this.getAgent(id) as XdAgent;
+  }
+
+  /** 에이전트와 그 대화·턴을 지운다. 작업 공간 폴더는 지우지 않는다(사용자 파일). */
+  deleteAgent(id: string): void {
+    this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+  }
+
+  // ── 대화 ────────────────────────────────────────────────────────────
+  listConversations(agentId: string): XdConversation[] {
+    return (
+      this.db.prepare('SELECT * FROM conversations WHERE agent_id = ? ORDER BY updated_at DESC').all(agentId) as Row[]
+    ).map(toConversation);
+  }
+
+  getConversation(id: string): XdConversation | null {
+    const row = this.db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as Row | undefined;
+    return row ? toConversation(row) : null;
+  }
+
+  /** 대화를 만든다. id 를 주면 그대로 쓴다(Dex 화면은 대화 id 를 스스로 만든다) — 엔진이 받는 글자만. */
+  createConversation(agentId: string, title = '', id: string = randomUUID()): XdConversation {
+    if (!this.getAgent(agentId)) throw new Error(`no agent ${agentId}`);
+    if (!ID_RE.test(id)) throw new Error(`invalid conversation id: ${id}`);
+    const at = this.now();
+    this.db
+      .prepare('INSERT INTO conversations (id, agent_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(id, agentId, title, at, at);
+    return this.getConversation(id) as XdConversation;
+  }
+
+  renameConversation(id: string, title: string): void {
+    this.db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(title, this.now(), id);
+  }
+
+  deleteConversation(id: string): void {
+    this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+  }
+
+  // ── 턴 ──────────────────────────────────────────────────────────────
+  listTurns(conversationId: string): XdTurn[] {
+    return (
+      this.db.prepare('SELECT * FROM turns WHERE conversation_id = ? ORDER BY seq').all(conversationId) as Row[]
+    ).map(toTurn);
+  }
+
+  getTurn(id: string): XdTurn | null {
+    const row = this.db.prepare('SELECT * FROM turns WHERE id = ?').get(id) as Row | undefined;
+    return row ? toTurn(row) : null;
+  }
+
+  /** 새 턴(실행 중). 대화의 첫 턴이면 제목을 질문에서 정한다. */
+  startTurn(conversationId: string, question: string, attachments: unknown[] = []): XdTurn {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) throw new Error(`no conversation ${conversationId}`);
+    const id = randomUUID();
+    const at = this.now();
+    return this.tx(() => {
+      const last = this.db.prepare('SELECT MAX(seq) AS seq FROM turns WHERE conversation_id = ?').get(conversationId) as Row;
+      const seq = last.seq === null || last.seq === undefined ? 1 : Number(last.seq) + 1;
+      this.db
+        .prepare(
+          `INSERT INTO turns (id, conversation_id, seq, question, attachments, status, started_at) VALUES (?, ?, ?, ?, ?, 'running', ?)`,
+        )
+        .run(id, conversationId, seq, question, json(attachments), at);
+      const title = conversation.title || titleFrom(question);
+      this.db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(title, at, conversationId);
+      this.db.prepare('UPDATE agents SET updated_at = ? WHERE id = ?').run(at, conversation.agentId);
+      return this.getTurn(id) as XdTurn;
+    });
+  }
+
+  /** 끝난 턴을 적는다 — 답·작업 과정·사용량·상태를 한 번에. */
+  finishTurn(
+    id: string,
+    result: {
+      answer: string;
+      process: unknown[];
+      usage: Record<string, unknown> | null;
+      status: Exclude<TurnStatus, 'running'>;
+      error?: { code: string; message: string } | null;
+    },
+  ): XdTurn {
+    this.db
+      .prepare(`UPDATE turns SET answer = ?, process = ?, usage = ?, status = ?, error = ?, ended_at = ? WHERE id = ?`)
+      .run(
+        result.answer,
+        json(result.process),
+        result.usage ? json(result.usage) : null,
+        result.status,
+        result.error ? json(result.error) : null,
+        this.now(),
+        id,
+      );
+    return this.getTurn(id) as XdTurn;
+  }
+
+  /**
+   * 엔진에 넘길 이전 대화 — 답이 있는 턴만, 오래된 것부터, 끝에서 `limit` 개.
+   * 답이 없는 질문만 넣으면 같은 쪽 말이 이어져 제공자가 거절하거나 모델이 헷갈린다.
+   */
+  history(conversationId: string, limit = 50): Array<{ role: 'user' | 'assistant'; content: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT question, answer FROM turns WHERE conversation_id = ? AND status != 'running' AND answer != ''
+         ORDER BY seq DESC LIMIT ?`,
+      )
+      .all(conversationId, limit) as Row[];
+    return rows.reverse().flatMap((r) => [
+      { role: 'user' as const, content: String(r.question) },
+      { role: 'assistant' as const, content: String(r.answer) },
+    ]);
+  }
+
+  // ── 계정 ────────────────────────────────────────────────────────────
+  listAccounts(): XdAccount[] {
+    return (this.db.prepare('SELECT * FROM accounts ORDER BY created_at').all() as Row[]).map(toAccount);
+  }
+
+  getAccount(id: string): XdAccount | null {
+    const row = this.db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as Row | undefined;
+    return row ? toAccount(row) : null;
+  }
+
+  createAccount(input: { kind: string; label: string; baseUrl?: string | null; settings?: Record<string, unknown> }): XdAccount {
+    const id = randomUUID();
+    const at = this.now();
+    this.db
+      .prepare('INSERT INTO accounts (id, kind, label, base_url, settings, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, input.kind, input.label, input.baseUrl ?? null, json(input.settings ?? {}), at, at);
+    return this.getAccount(id) as XdAccount;
+  }
+
+  updateAccount(id: string, patch: Partial<Pick<XdAccount, 'label' | 'baseUrl' | 'settings'>>): XdAccount {
+    const current = this.getAccount(id);
+    if (!current) throw new Error(`no account ${id}`);
+    const next = { ...current, ...patch };
+    this.db
+      .prepare('UPDATE accounts SET label = ?, base_url = ?, settings = ?, updated_at = ? WHERE id = ?')
+      .run(next.label, next.baseUrl, json(next.settings), this.now(), id);
+    return this.getAccount(id) as XdAccount;
+  }
+
+  /** 계정을 지운다. 그 계정을 쓰던 에이전트는 계정 없음으로 남는다(지우지 않는다). */
+  deleteAccount(id: string): void {
+    this.tx(() => {
+      this.db.prepare('UPDATE agents SET account_id = NULL WHERE account_id = ?').run(id);
+      this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+    });
+  }
+
+  // ── 설정 ────────────────────────────────────────────────────────────
+  getSetting<T>(key: string, fallback: T): T {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as Row | undefined;
+    return row ? parse<T>(row.value, fallback) : fallback;
+  }
+
+  setSetting(key: string, value: unknown): void {
+    this.db
+      .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(key, json(value));
+  }
+}

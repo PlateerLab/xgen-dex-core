@@ -7,6 +7,7 @@
  */
 import { app, BrowserWindow, clipboard, dialog, Notification, shell } from 'electron';
 import { bindHost, type HostPorts, type InteractionPort } from '@dex/engine';
+import { DANGEROUS_COMMAND_ANSWERS, DANGEROUS_COMMAND_CHOICES } from '@dex/engine/dangerous-commands';
 import { DANGEROUS_COMMAND_PROMPT, openWithDefaultApp } from '@dex/engine/local-tools';
 import { loadConfig, saveConfig, type ConnectorConfig } from './config';
 import { secretGet, secretSet } from './keychain';
@@ -22,7 +23,7 @@ async function confirmDangerous(command: string): Promise<'once' | 'session' | '
   const options = {
     type: 'warning' as const,
     // 세 번째 버튼의 승인은 이 대화에만 남는다(다른 대화에서는 다시 묻는다).
-    buttons: ['거부', '이번만 허용', '이 대화에서 계속 허용'],
+    buttons: [...DANGEROUS_COMMAND_CHOICES],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
@@ -33,7 +34,7 @@ async function confirmDangerous(command: string): Promise<'once' | 'session' | '
   const result = await (win
     ? dialog.showMessageBox(win, options)
     : dialog.showMessageBox(options));
-  return result.response === 2 ? 'session' : result.response === 1 ? 'once' : 'deny';
+  return DANGEROUS_COMMAND_ANSWERS[result.response] ?? 'deny';
 }
 
 const desktopInteraction: InteractionPort = {

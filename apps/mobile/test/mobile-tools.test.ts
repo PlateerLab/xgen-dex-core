@@ -156,7 +156,7 @@ test('파일 왕복 — 가상 경로 /<폴더>/…, 상대 경로는 첫 폴더
   assert.equal(s.fs.files.get(photos.uri)?.get('목록.txt'), 'x'); // 두 번째 폴더로 간다
 
   const list = await callMobileTool(port, 'ListDir', { path: '/Notes/메모' }, undefined, s);
-  assert.match(list.content[0].text, /^\/Notes\/메모\n- 할일\.txt \(\d+B\)/);
+  assert.match(list.content[0].text, /^\/Notes\/메모  \(times are the phone's local time\)\n- 할일\.txt \(\d+B\)/);
   const root = await callMobileTool(port, 'ListDir', {}, undefined, s);
   assert.match(root.content[0].text, /d 메모\//);
 
@@ -272,4 +272,89 @@ test('다른 화면에서 온 요청은 휴대폰 앞에 사람이 있어야 하
   assert.deepEqual(port.opened, []);
   const read = await callMobileTool(port, 'ReadFile', { path: '/Notes/doc.txt' }, undefined, s);
   assert.equal(read.isError, undefined);
+});
+
+test('ListDir 은 수정 시각을 폰의 현지 시각으로 보여 준다 — "오늘 받은 파일" 의 근거', async () => {
+  const s = scope();
+  const at = new Date(2026, 9, 2, 9, 5).getTime();
+  s.fs.list = async () => [{ name: '확인요청.docx', isDir: false, size: 120, modified: at }];
+  const r = await callMobileTool(fakePort(), 'ListDir', {}, undefined, s);
+  assert.match(r.content[0].text, /- 확인요청\.docx \(120B, modified 2026-10-02 09:05\)/);
+});
+
+function fakeTransfer() {
+  const uploads: string[] = [];
+  const discarded: string[] = [];
+  return {
+    uploads,
+    discarded,
+    async upload(localUri: string, name: string, relDir: string) {
+      uploads.push(`${relDir}|${name}|${localUri}`);
+      return { path: `uploads/users_1/conv/${relDir ? `${relDir}/` : ''}${name}`, size: 3, sha256: 'h' };
+    },
+    async download(url: string, token: string | undefined, name: string) {
+      return `file:///cache/xgen-copy/${name}?${url}&${token ?? ''}`;
+    },
+    async discard(localUri: string) {
+      discarded.push(localUri);
+    },
+  };
+}
+
+test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 이름부터 구조째, 사본은 지운다', async () => {
+  const s = scope();
+  const tree = new Map([
+    ['KakaoTalk/확인요청.docx', 'abc'],
+    ['KakaoTalk/sub/보고.hwp', 'abcd'],
+    ['KakaoTalk/.nomedia', ''],
+    ['a.pdf', 'x'],
+  ]);
+  s.fs.files.set(notes.uri, tree);
+  const transfer = fakeTransfer();
+  const r = await callMobileTool(
+    fakePort(),
+    'CopyToWorkspace',
+    { paths: ['/Notes/a.pdf', '/Notes/KakaoTalk', '/Notes/없음.txt'] },
+    undefined,
+    { ...s, workspace: transfer },
+  );
+  assert.equal(r.isError, undefined);
+  assert.deepEqual(transfer.uploads.map((u) => u.split('|').slice(0, 2).join('|')), [
+    '|a.pdf',
+    'KakaoTalk/sub|보고.hwp',
+    'KakaoTalk|확인요청.docx',
+  ]);
+  assert.equal(transfer.discarded.length, 3, '앱 캐시에 만든 사본은 올린 뒤 지운다');
+  assert.deepEqual(
+    (r.structuredContent?.workspaceFiles as Array<{ path: string }>).map((f) => f.path),
+    ['uploads/users_1/conv/a.pdf', 'uploads/users_1/conv/KakaoTalk/sub/보고.hwp', 'uploads/users_1/conv/KakaoTalk/확인요청.docx'],
+  );
+  assert.match(r.content[0].text, /\/Notes\/없음\.txt: not found/);
+  const noCtx = await callMobileTool(fakePort(), 'CopyToWorkspace', { paths: ['a.pdf'] }, undefined, s);
+  assert.equal(noCtx.isError, true, '이 호출의 대화를 모르면 옮기지 않는다');
+});
+
+test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 두고, 있는 파일은 덮어쓰라고 할 때만 바꾼다', async () => {
+  const s = scope();
+  const transfer = fakeTransfer();
+  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 't', name: 'report.docx' };
+  const ctx = { ...s, workspace: transfer };
+  const saved = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'out/report.docx', path: '/Notes', download }, undefined, ctx);
+  assert.equal(saved.content[0].text, 'Saved report.docx to /Notes/report.docx.');
+  assert.match(s.fs.files.get(notes.uri)?.get('report.docx') ?? '', /copy of file:\/\/\/cache\/xgen-copy\/report\.docx/);
+  const again = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'x', path: '/Notes/report.docx', download }, undefined, ctx);
+  assert.equal(again.isError, true);
+  const over = await callMobileTool(
+    fakePort(),
+    'CopyFromWorkspace',
+    { source: 'x', path: '/Notes/report.docx', download, overwrite: true },
+    undefined,
+    ctx,
+  );
+  assert.equal(over.isError, undefined);
+  const nested = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'x', path: '/Photos/결과/', download }, undefined, ctx);
+  assert.equal(nested.content[0].text, 'Saved report.docx to /Photos/결과/report.docx.');
+  const old = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'x', path: '/Notes' }, undefined, ctx);
+  assert.equal(old.isError, true, '옛 서버는 받을 거리를 싣지 않는다');
+  assert.equal(transfer.discarded.length, 3, '받은 사본은 폴더에 넣은 뒤 지운다');
 });

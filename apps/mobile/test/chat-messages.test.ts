@@ -25,6 +25,8 @@ import {
   mergeMissedTurns,
   startRemoteTurn,
 } from '../src/chat/message-model';
+import { attachDownload, attachmentMarks } from '../src/chat/message-model';
+import { dispatchExec } from '../src/lib/chat-ws';
 
 const live = (text: string, events: unknown[] = []) => ({ text, events });
 
@@ -124,8 +126,8 @@ test('지난 대화는 빈 쪽을 만들지 않는다', () => {
     ['user:질문', 'assistant:답', 'assistant:트리거 반응', 'user:첨부와 함께'],
   );
   assert.deepEqual(msgs[3].attachments, [
-    { name: 'a.png', kind: 'image' },
-    { name: 'b.pdf', kind: 'file' },
+    { name: 'a.png', kind: 'image', size: 1 },
+    { name: 'b.pdf', kind: 'file', size: 1 },
   ]);
 });
 
@@ -377,9 +379,9 @@ test('이력으로 메운 놓친 턴의 질문에도 첨부 이름표가 붙는�
   const list = historyMessages([{ ioId: 1, input: 'a', output: 'A' }]);
   const attachments = [{ type: 'file' as const, name: '보고서.docx', size: 10, contentType: 'application/x', path: 'uploads/u/보고서.docx', bucket: 'b' }];
   const quiet = mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }, { ioId: 2, input: 'b', output: 'B', attachments }], false)!;
-  assert.deepEqual(quiet[2].attachments, [{ name: '보고서.docx', kind: 'file' }]);
+  assert.deepEqual(quiet[2].attachments, [{ name: '보고서.docx', kind: 'file', size: 10 }]);
   const busy = mergeMissedTurns(list, [{ ioId: 1, input: 'a', output: 'A' }, { ioId: 2, input: 'b', output: 'B', attachments }], true)!;
-  assert.deepEqual(busy[2].attachments, [{ name: '보고서.docx', kind: 'file' }]);
+  assert.deepEqual(busy[2].attachments, [{ name: '보고서.docx', kind: 'file', size: 10 }]);
 });
 
 // ── 끊긴 내 턴이 끝날 때 — 서버의 작업 과정이 정본이다 (2026-10-02) ─────────────
@@ -410,4 +412,37 @@ test('서버의 과정이 아직 덜 쓰였으면 진행분을 쓴다', () => {
   const process = [{ kind: 'tool' as const, at: 1, event: { eventType: 'tool_call', toolName: 'Read', toolUseId: 'r' } }];
   const done = completeRemoteTurn(list, { ioId: 9, input: 'q', output: 'a', process })!;
   assert.equal(done[1].flow?.filter((f) => f.kind === 'tool').length, 2);
+});
+
+test('파일 저장소 결과물(download_artifact)은 도는 답에, 끝났으면 마지막 답에 한 번만 붙는다', () => {
+  const live = [userMessage('그림 하나'), assistantPlaceholder()];
+  const payload = { file_name: 'a_1.png', storage_id: 3, file_id: 9, path: 'file-storage/x/a_1.png' };
+  const once = attachDownload(live, payload);
+  assert.deepEqual(once[1].downloads, [{ name: 'a_1.png', storageId: 3, fileId: 9, path: 'file-storage/x/a_1.png' }]);
+  assert.equal(attachDownload(once, payload), once, '같은 파일은 다시 붙이지 않는다');
+  const done = [userMessage('q'), { ...assistantPlaceholder({ streaming: false }), text: '끝' }];
+  assert.equal(attachDownload(done, payload)[1].downloads?.length, 1);
+  assert.equal(attachDownload([userMessage('q')], payload).length, 1, '붙일 답이 없으면 그대로');
+
+  const got: Record<string, unknown>[] = [];
+  dispatchExec('download_artifact', payload, { onDownload: (d) => got.push(d) });
+  assert.deepEqual(got, [payload], '스트림의 download_artifact 가 화면까지 온다');
+});
+
+test('첨부 이름표는 작업 공간 자리를 함께 싣는다 — 눌러서 다시 연다', () => {
+  assert.deepEqual(
+    attachmentMarks([{ name: 'a.png', kind: 'image', workspacePath: 'uploads/users_1/c/a.png', size: 10 }]),
+    [{ name: 'a.png', kind: 'image', workspacePath: 'uploads/users_1/c/a.png', size: 10 }],
+  );
+  assert.deepEqual(
+    attachmentMarks([
+      { name: 'b.docx', size: 20, contentType: 'application/x', type: 'file', path: 'geny-workspace:uploads/users_1/c/b.docx', bucket: 'geny-workspace' },
+    ]),
+    [{ name: 'b.docx', kind: 'file', workspacePath: 'uploads/users_1/c/b.docx', size: 20 }],
+  );
+  assert.deepEqual(
+    attachmentMarks([{ name: 'old.pdf', size: 0, contentType: 'application/pdf', type: 'file', path: 'minio/x.pdf', bucket: 'b' }]),
+    [{ name: 'old.pdf', kind: 'file' }],
+    '옛 웹 첨부는 자리가 없다 — 이름표만',
+  );
 });

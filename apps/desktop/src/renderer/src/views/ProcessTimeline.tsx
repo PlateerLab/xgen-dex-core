@@ -13,6 +13,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { shortToolName, toolValueText } from '@dex/protocol/tool-activity';
+import { chatAnswerFiles } from '@dex/protocol/chat-files';
 import type { ChatMsg } from '../session-store';
 import { Markdown } from './Markdown';
 import {
@@ -257,10 +258,11 @@ export const ProcessTimeline: React.FC<{
     const last = i === visibleSteps - 1;
     let { title, body } = splitFirstParagraph(step.text);
     if (last && step.rows.length === 0) {
+      // 최종 답의 파일 표식은 걷는다 — 파일은 답 아래 카드로 보인다(TurnFiles).
       if (body) {
-        answer = trimAnswer(body);
+        answer = chatAnswerFiles(trimAnswer(body)).text;
       } else if (!streaming) {
-        answer = trimAnswer(title);
+        answer = chatAnswerFiles(trimAnswer(title)).text;
         title = '';
       }
     } else if (body) {

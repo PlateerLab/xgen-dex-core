@@ -8,8 +8,10 @@
  * 규칙은 데스크톱 SessionStore 와 같다 — 도구·출처·오류는 **그 답변의 것**이고,
  * 말풍선 사이에 따로 떠다니는 줄이 아니다.
  */
-import { appendFlowItem, liveTurnFlow } from '@dex/protocol';
+import { appendFlowItem, genyHistoryWorkspacePath, liveTurnFlow, mergeChatDownload } from '@dex/protocol';
 import type {
+  ChatDownload,
+  ChatDownloadPayload,
   Citation,
   HistoryAttachment,
   HistoryFlowItem,
@@ -22,10 +24,13 @@ import type {
 
 export type ChatRole = 'user' | 'assistant';
 
-/** 함께 보낸 파일 — 원본은 서버 워크스페이스에 있고, 대화에는 무엇을 붙였는지만 남는다. */
+/** 함께 보낸 파일 — 원본은 서버 워크스페이스에 있다. 자리를 알면 눌러서 열고 내보낸다. */
 export interface ChatAttachmentMark {
   name: string;
   kind: 'image' | 'file';
+  /** 에이전트 작업 공간 안의 자리(uploads/…). 없으면(옛 기록) 이름표만 그린다. */
+  workspacePath?: string;
+  size?: number;
 }
 
 export interface ChatMessage {
@@ -46,6 +51,11 @@ export interface ChatMessage {
   /** 마지막으로 글·도구를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 와 끝난 턴의 걸린 시간. */
   lastEventAt?: number;
   citations?: Citation[];
+  /**
+   * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact`. 이력의 답은 본문 표식에서
+   * 같은 것을 다시 읽는다(@dex/protocol chatAnswerFiles).
+   */
+  downloads?: ChatDownload[];
   /** 실패한 답변 — 본문 대신 구조로 보여준다. */
   errorInfo?: XgenErrorInfo;
   streaming?: boolean;
@@ -87,10 +97,15 @@ export function attachmentMarks(
   items: readonly (TurnAttachment | HistoryAttachment)[] | undefined,
 ): ChatAttachmentMark[] | undefined {
   if (!items || items.length === 0) return undefined;
-  return items.map((a) => ({
-    name: a.name,
-    kind: 'kind' in a ? a.kind : a.type === 'picture' ? 'image' : 'file',
-  }));
+  return items.map((a) => {
+    const workspacePath = 'kind' in a ? a.workspacePath : genyHistoryWorkspacePath(a) ?? undefined;
+    return {
+      name: a.name,
+      kind: 'kind' in a ? a.kind : a.type === 'picture' ? 'image' : 'file',
+      ...(workspacePath ? { workspacePath: workspacePath.replace(/^workspace\//, '') } : {}),
+      ...(a.size ? { size: a.size } : {}),
+    };
+  });
 }
 
 /**
@@ -202,6 +217,26 @@ export function attachTool(list: readonly ChatMessage[], ev: ToolEvent, now = Da
     ? mergeCitations(base[i].citations, ev.citations)
     : base[i].citations;
   return patchAt(base, i, { tools, citations, ...withFlow(base[i], { kind: 'tool', event: ev, at: now }) });
+}
+
+/**
+ * 도구가 파일 저장소에 올린 결과물을 **그 답에** 붙인다 — 답이 끝나면 아래에 그림·단추로 보인다.
+ * 받을 자리가 없으면(답이 이미 끝났다) 마지막 답에 붙인다.
+ */
+export function attachDownload(list: readonly ChatMessage[], payload: ChatDownloadPayload): ChatMessage[] {
+  let i = streamingIndex(list);
+  if (i < 0) {
+    for (let j = list.length - 1; j >= 0; j--) {
+      if (list[j].role === 'assistant') {
+        i = j;
+        break;
+      }
+    }
+  }
+  if (i < 0) return list as ChatMessage[];
+  const prev = list[i].downloads ?? [];
+  const next = mergeChatDownload(prev, payload);
+  return next === prev ? (list as ChatMessage[]) : patchAt(list, i, { downloads: next });
 }
 
 function mergeCitations(prev: Citation[] | undefined, next: Citation[]): Citation[] {

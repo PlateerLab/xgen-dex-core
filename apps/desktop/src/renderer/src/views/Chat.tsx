@@ -24,7 +24,7 @@ import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
 import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
-import { CHAT_AI_DISCLAIMER_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, describeError } from '@dex/protocol';
+import { CHAT_AI_DISCLAIMER_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
@@ -1474,6 +1474,8 @@ export const Chat: React.FC<{
               // 사용자 메시지의 첨부: 파일은 말풍선 위 카드(열기·저장), 그림은 말풍선 안 미리보기
               const files = m.role === 'user' ? (m.images ?? []).filter((image) => image.kind === 'file') : [];
               const pictures = (m.images ?? []).filter((image) => image.kind !== 'file');
+              // 답의 파일 저장소 결과물 — 스트림으로 받은 것 + 이력 본문의 표식. 본문에서는 그 표식을 걷는다.
+              const answerFiles = m.role === 'assistant' ? chatAnswerFiles(m.text, m.downloads) : null;
               return (
             <div key={i} className={`msg-row ${m.role}`}>
               {m.role === 'assistant' && (
@@ -1533,7 +1535,7 @@ export const Chat: React.FC<{
                     ) : processView && hasProcessFlow(m) ? (
                       <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
                     ) : m.text ? (
-                      <Markdown text={m.text} />
+                      <Markdown text={answerFiles?.text ?? m.text} />
                     ) : (
                       m.streaming && <span className="cursor" />
                     )
@@ -1578,6 +1580,10 @@ export const Chat: React.FC<{
                   <TurnFiles
                     workflowId={agent.workflowId}
                     msg={m}
+                    downloads={answerFiles?.downloads}
+                    onPreviewImage={(image) =>
+                      setPreviewImage({ name: image.name, dataUrl: image.url, mime: 'image/*', size: 0, kind: 'image' })
+                    }
                     request={requestBefore(messages, i)}
                     onOpenFile={onOpenFile}
                     latest={i === lastAssistantIndex}

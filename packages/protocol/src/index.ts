@@ -20,6 +20,7 @@
  * (keychain) and base-URL config are the host's concern (Electron main).
  */
 import { AgentDataApi } from './agent-data';
+import { ChatFilesApi } from './chat-files';
 import { FilestoreApi } from './filestore';
 import { ConnectorDevicesApi } from './connector-devices';
 import { ConversationFoldersApi } from './conversation-folders';
@@ -69,6 +70,8 @@ export class XgenClient {
   readonly voice: VoiceApi;
   readonly agentData: AgentDataApi;
   readonly filestore: FilestoreApi;
+  /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일) 받기. */
+  readonly chatFiles: ChatFilesApi;
   readonly connectorDevices: ConnectorDevicesApi;
   /** 대화의 폴더 — 서버 사본(어느 화면에서든 보이고 쓰인다). */
   readonly conversationFolders: ConversationFoldersApi;
@@ -105,6 +108,7 @@ export class XgenClient {
     this.voice = new VoiceApi(this.http);
     this.agentData = new AgentDataApi(this.http);
     this.filestore = new FilestoreApi(this.http);
+    this.chatFiles = new ChatFilesApi(this.http);
     this.connectorDevices = new ConnectorDevicesApi(this.http);
     this.conversationFolders = new ConversationFoldersApi(this.http);
     this.conversationModel = new ConversationModelApi(this.http);
@@ -262,6 +266,9 @@ export * from './types';
 export * from './agent-data';
 export * from './agent-inspect';
 export * from './file-view';
+export * from './chat-files';
+export * from './turn-files';
+export * from './workspace-copy';
 export * from './app-card';
 export * from './filestore';
 export * from './agent-trigger';
@@ -289,7 +296,7 @@ export type { LiveTurnSnapshot, SubscribedState } from './chat';
 export { liveTurnFlow, liveTurnProcess } from './chat';
 export type { LiveProcessItem } from './chat';
 // 서버가 실행 기록에서 되살린 작업 과정 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
-export { turnInputText, turnAttachments, toHistoryProcess } from './history';
+export { turnInputText, turnAttachments, toHistoryProcess, genyHistoryWorkspacePath } from './history';
 export type { TurnAttachment } from './history';
 export { sha256Hex } from './hash';
 export type { StoreAvatar } from './avatars';

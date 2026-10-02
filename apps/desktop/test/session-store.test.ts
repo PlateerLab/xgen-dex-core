@@ -329,6 +329,19 @@ test('스트림 이벤트가 텍스트·도구·출처를 누적하고 end 에�
   assert.equal(store.get(k)!.streaming, false)
 })
 
+test('도구가 파일 저장소에 올린 결과물(download)은 그 답에 한 번만 쌓인다 — 웹과 같은 단추가 된다', () => {
+  const { store, streams } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, '그림')
+  const data = { file_name: 'a_1.png', storage_id: 3, file_id: 9 }
+  streams[0].onEvent({ kind: 'download', data })
+  streams[0].onEvent({ kind: 'download', data })
+  streams[0].onEvent({ kind: 'text', content: '만들었어요' })
+  streams[0].onEvent({ kind: 'end' })
+  const last = store.get(k)!.messages.at(-1)!
+  assert.deepEqual(last.downloads, [{ name: 'a_1.png', storageId: 3, fileId: 9, path: undefined }])
+})
+
 test('다른 세션으로 전환해도 진행 중 스트림이 죽지 않고 백그라운드로 누적된다', () => {
   const { store, streams } = makeStore()
   const kA = store.openNew(agent('A'))

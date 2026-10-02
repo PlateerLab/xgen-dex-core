@@ -40,7 +40,7 @@ JSONL은 `reset`, `conversation`, `reconnecting`, `stopped`를 출력한다. `co
 
 The explicit `conversation`, `watch-conversation` and `watch-live` actions read bounded canonical snapshots, execution events and linked terminal messages. Live mode uses scoped GET DPoP over receive-only WSS to wake authoritative HTTP recovery, with periodic vault/focus checks. Same-session token rotation replaces the socket without resetting cursors. Display projections exclude credentials; authentication, integrity and repeated no-progress socket failures stop. Ctrl+C waits for actual socket teardown. These commands do not send chat messages; migration of existing chat sends remains subsequent work.
 
-### Canonical 조회 전용 TUI
+### Canonical 공유 대화 TUI
 
 ```sh
 dex ui --canonical --user-id 7 --profile corp
@@ -48,11 +48,19 @@ dex ui --canonical --user-id 7 --profile corp
 
 대화형 TTY에서 승인된 CLI 기기의 HTTPS Platform Session으로 현재 공유 대화와 실행 상태를 표시한다. 첫 화면은 한 번 조회하며 R은 재조회, W는 실시간 WSS/HTTP 연결, S는 연결 중단, Q 또는 Ctrl+Q는 종료다. ↑↓·PgUp/PgDn·Home/End로 조회한 본문을 스크롤한다. 프로필·계정은 실행 시 고정되므로 바꾸려면 종료 후 다시 실행한다.
 
+L은 소유 세션의 최신 목록, P는 이전 페이지다. 최대 100개씩 페이지를 교체하며 ↑↓/Enter로 활성 세션을 선택한다. 보관된 세션은 열 수 없다. 최신 목록 확인 후 N으로 workflow ID와 제목을 입력해 서버 ID의 새 세션을 만들고, X/Enter로 현재 선택을 해제한다. workflow ID는 실행 가능한 기존 workflow의 ID를 입력한다. 생성·선택은 조회한 focus version으로 비교하며, 생성 응답 유실이나 충돌은 L로 최신 결과를 확인하기 전까지 쓰기를 잠근다. 생성 요청은 자동 반복하지 않는다.
+
+I는 한 줄 메시지 입력, Enter는 송신, Esc는 입력 닫기다. 입력 모드의 R/W/S/Q/N/T는 글자로 입력되고 Ctrl+Q는 종료한다. 붙여넣은 개행은 공백으로 표시하며 그 보이는 입력을 전송한다. 메시지는 UTF-8 262144 bytes까지다. 송신 결과가 불명확하면 R로 같은 대화를 확인한 뒤 Y로 원래 본문·버전·중복 방지 키를 그대로 재확인한다. T는 검증된 현재 실행 ID와 버전으로 중단을 요청한다. 접수는 답변 완료를 뜻하지 않으며, 후속 조회에서 완료 본문을 확인한다. 불명확한 턴이 남아 있으면 생성·선택은 차단한다.
+
 완료되고 검증된 메시지만 표시하며 생략·불완전 이력·부분 조회를 안내한다. 실행 중 본문은 완료 후 조회한다. 재연결·인증 실패·선택 변경·중단 시 오래된 대화를 지우며, 취소된 요청과 실제 vault/소켓 정리가 끝난 뒤 다음 작업을 시작한다. 서버 제목·본문의 터미널 제어 문자는 제거한다. 대화와 마지막 선택을 파일에 저장하지 않는다.
 
-HTTPS 프로필과 `dex session login`의 ACTIVE 세션이 먼저 필요하다. 인증을 자동 갱신하거나 재로그인하지 않으며 인증 실패 때 안전한 안내를 표시한다. 현재 enrollment Compose에서는 ACTIVE 발급이 503으로 차단되어 이 화면도 대화를 표시할 수 없다. 새 대화 생성·선택·메시지 제출·첨부는 TUI의 후속 작업이다. CLI 명령 `session create-agent-session`, `switch-agent-focus`, `chat --canonical`은 별도로 사용할 수 있다.
+로그인 세션 또는 실제 대화가 바뀌면 이전 draft·재시도 요청·목록을 폐기한다. 같은 sid의 정상 token rotation은 허용하되 네이티브 vault 잠금 안에서 원래 로그인 범위를 다시 확인한 뒤 서명한다. 임시 읽기 실패에는 같은 로그인 범위의 draft와 불명확한 턴을 메모리에 보존하고, 검증된 재조회 전까지 쓰기를 막는다. 첨부와 로컬 도구 연결은 후속 작업이다.
 
-`ui --canonical` is an explicit read-only Ink terminal view using the CLI's native Platform Session and OS vault. It reads once on entry; R reads, W starts authoritative HTTP recovery with receive-only WSS wakeups, S stops, and Q/Ctrl+Q exits. Arrow/Page/Home/End keys scroll the bounded complete transcript. Profile, HTTPS origin and user are fixed for the invocation. Reconnect, authentication failure, focus reset and cancellation clear old content; actual request/vault/socket settlement precedes subsequent work or exit. Terminal controls are stripped, private conversation state is memory-only, and authentication is never refreshed automatically. Canonical session selection, creation, submission and attachments inside the TUI remain subsequent work. The local enrollment-mode Gateway cannot issue ACTIVE credentials yet.
+HTTPS 프로필과 `dex session login`의 ACTIVE 세션이 먼저 필요하다. 인증을 자동 갱신하거나 재로그인하지 않으며 인증 실패 때 안전한 안내를 표시한다. 현재 enrollment Compose에서는 ACTIVE 발급이 503으로 차단되어 이 화면도 대화를 표시할 수 없다. CLI 명령 `session create-agent-session`, `switch-agent-focus`, `chat --canonical`은 별도로 사용할 수 있다.
+
+`ui --canonical` uses the fixed CLI account, HTTPS origin, native Platform Session and OS vault. R reads, W starts receive-only WSS wakeups and authoritative HTTP recovery, S stops, and Q/Ctrl+Q exits. L loads the latest owned catalog; P replaces it with an older page of at most 100 items. Arrows/Enter select an active row. N creates a session from an existing workflow ID and title; X/Enter clears focus. Lifecycle mutations use the verified focus version, and unknown creation or conflicts require explicit latest catalog recovery with no automatic replay.
+
+I opens a single-line editor. Enter submits the visible UTF-8 text (262144-byte limit), Esc closes it, and navigation letters are text while editing. Pasted newlines become spaces without submitting. An unknown turn requires an authoritative R read and explicit Y retry with the exact original message, session, version and idempotency key. T stops the verified current turn with its exact ID/version. Reservations and stop receipts are not completed answers; subsequent reads display verified terminal messages. Unknown turns block lifecycle changes. Binding/focus changes discard old drafts and private retry intent; temporary loss retains same-login intent in memory with writes disabled. Native writes recheck the original login binding under the vault lock before proof/wire and allow same-sid rotation. Controls are stripped, conversation state is not persisted, and actual request/vault/socket drain precedes transitions or exit. Authentication is never refreshed automatically. Attachments/local tools and actual ACTIVE Gateway success remain gates; enrollment mode currently returns 503 for ACTIVE issuance.
 
 ### 기존 Canonical 대화에 턴 제출
 
@@ -69,9 +77,9 @@ printf '%s' '계속 설명해줘' | dex chat --canonical \
 
 메시지는 `--message`와 `--stdin` 중 하나로만 전달하며 UTF-8 262144바이트가 상한이다. `--idempotency-key`는 자동 생성하지 않는다. 응답을 받지 못해 결과가 불명확하면 같은 메시지, session ID, expected state version, idempotency key를 명시해 다시 실행해야 한다. 다른 메시지에 같은 key를 재사용하면 서버가 거절한다. Ctrl+C와 SIGTERM은 현재 HTTP 요청만 취소하며 서버의 턴 중단 요청을 보내지 않는다.
 
-명령의 성공은 서버가 턴을 한 번 접수했다는 응답이다. AI 답변 완료를 뜻하지 않는다. 결과는 `dex session watch-live --user-id <id>` 또는 `watch-conversation`/`conversation`으로 확인한다. 이 단계에서는 새 Canonical 대화나 workflow를 만들지 않으므로 workflow와 Agent Session을 기존 Canonical 흐름에서 먼저 생성해야 한다. 첨부 파일, 로컬 도구 연결, TUI 채팅 이관은 지원하지 않는다. 기존 `dex chat --agent` 경로와 자격증명은 fallback으로 사용하지 않는다.
+명령의 성공은 서버가 턴을 한 번 접수했다는 응답이다. AI 답변 완료를 뜻하지 않는다. 결과는 `dex session watch-live --user-id <id>` 또는 `watch-conversation`/`conversation`으로 확인한다. 이 명령은 새 Canonical 대화나 workflow를 만들지 않으므로 기존 workflow와 서버 Agent Session ID가 필요하다. 세션 생성·선택은 위 TUI 또는 `session create-agent-session`/`switch-agent-focus`로 수행할 수 있다. 첨부 파일과 로컬 도구 연결은 지원하지 않는다. 기존 `dex chat --agent` 경로와 자격증명은 fallback으로 사용하지 않는다.
 
-`chat --canonical` explicitly submits one turn to an existing server-issued Canonical session through the CLI's OS-vault Platform access and scoped POST DPoP. Supply the session ID, snapshot state version and stable idempotency key yourself. UTF-8 stdin, including trailing newlines, is preserved exactly; the limit is 262144 bytes. A successful response acknowledges reservation, not AI completion. Read the conversation separately. A lost response or cancellation after dispatch reports an unknown outcome and never retries automatically; explicitly repeat the same message, session, original version and key to reconcile. SIGINT does not request server-side turn cancellation. Session creation, attachments, local tools and TUI migration remain pending.
+`chat --canonical` explicitly submits one turn to an existing server-issued Canonical session through the CLI's OS-vault Platform access and scoped POST DPoP. Supply the session ID, snapshot state version and stable idempotency key yourself. UTF-8 stdin, including trailing newlines, is preserved exactly; the limit is 262144 bytes. A successful response acknowledges reservation, not AI completion. Read the conversation separately. A lost response or cancellation after dispatch reports an unknown outcome and never retries automatically; explicitly repeat the same message, session, original version and key to reconcile. SIGINT does not request server-side turn cancellation. Create/select sessions through the TUI or the session lifecycle commands. Attachments and local tools remain pending.
 
 XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.

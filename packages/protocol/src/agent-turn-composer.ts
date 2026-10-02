@@ -25,7 +25,7 @@ const CONFLICT_CODES = new Set([
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
 export interface AgentTurnScope {
-  platform_type: 'vscode' | 'desktop' | 'mobile';
+  platform_type: 'vscode' | 'desktop' | 'mobile' | 'cli';
   profile: string;
   server_url: string;
   user_id: string;
@@ -107,7 +107,7 @@ function scope(value: AgentTurnScope): AgentTurnScope {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Reflect.ownKeys(value).some((key) => typeof key !== 'string'
       || !['platform_type', 'profile', 'server_url', 'user_id'].includes(key))
-    || !['vscode', 'desktop', 'mobile'].includes(value.platform_type)
+    || !['vscode', 'desktop', 'mobile', 'cli'].includes(value.platform_type)
     || typeof value.profile !== 'string' || value.profile.length < 1 || value.profile.length > 1024
     || typeof value.user_id !== 'string'
     || !/^[1-9][0-9]{0,9}$/.test(value.user_id) || Number(value.user_id) > 2147483647) {

@@ -20,7 +20,7 @@ child = subprocess.Popen(
     env={**os.environ, "TERM": "xterm-256color", "CI": "false"},
 )
 os.close(slave)
-deadline = time.monotonic() + 25
+deadline = time.monotonic() + (50 if "--chat-fixture" in sys.argv else 25)
 
 def terminate_bridge(_signum, _frame):
     raise SystemExit(1)

@@ -1,5 +1,5 @@
 import type { AgentFocus, OwnedAgentSession } from '@dex/protocol/agent-session';
-import type { AgentSessionCatalogPage } from '@dex/protocol/agent-session-catalog';
+import type { parseAgentSessionCatalogPage } from '@dex/protocol/agent-session-catalog';
 import type { AgentTurnComposeRequest, AgentTurnComposerView } from '@dex/protocol/agent-turn-composer';
 import type { CreateAgentSessionInput, CreatedAgentSession, SwitchAgentFocusInput } from '@dex/protocol/agent-session-lifecycle';
 import type { CanonicalTuiSource, CanonicalTuiView } from './canonical-types';
@@ -8,7 +8,7 @@ import type { CanonicalTuiSource, CanonicalTuiView } from './canonical-types';
 export interface CanonicalTuiChatSource extends CanonicalTuiSource {
   binding(): string | null;
   catalog(signal: AbortSignal, beforeId?: string): Promise<{
-    binding: string; focus: AgentFocus; sessions: AgentSessionCatalogPage;
+    binding: string; focus: AgentFocus; sessions: ReturnType<typeof parseAgentSessionCatalogPage>;
   }>;
   create(binding: string, input: CreateAgentSessionInput, signal: AbortSignal): Promise<CreatedAgentSession>;
   select(binding: string, input: SwitchAgentFocusInput, signal: AbortSignal): Promise<AgentFocus>;

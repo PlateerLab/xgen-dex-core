@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "paths": {
+      "react": ["../desktop/node_modules/@types/react"],
+      "react/*": ["../desktop/node_modules/@types/react/*"],
+      "react-dom": ["../desktop/node_modules/@types/react-dom"],
+      "react-dom/*": ["../desktop/node_modules/@types/react-dom/*"],
+      "@dex/protocol": ["../../packages/protocol/src/index.ts"],
+      "@dex/protocol/*": ["../../packages/protocol/src/*"],
+      "@dex/engine": ["../../packages/engine/src/index.ts"],
+      "@dex/engine/*": ["../../packages/engine/src/*"],
+      "@dex/rpc": ["../../packages/rpc/src/index.ts"],
+      "@dex/rpc/*": ["../../packages/rpc/src/*"],
+      "@dex/ide": ["../../packages/ide/src/index.ts"],
+      "@dex/ide/*": ["../../packages/ide/src/*"]
+    }
+  },
+  "include": ["src", "test"]
+}

@@ -48,12 +48,13 @@ const meaningful = files.filter((file) => !file.endsWith('.md') && !onlyVersionL
 const under = (prefixes) => (file) => prefixes.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p));
 
 const areas = {
-  // 데스크톱·CLI·VS Code·패키지 — verify 잡
+  // 데스크톱·CLI·VS Code·패키지·XD — verify 잡(XD 는 Dex 의 화면 코드를 함께 쓴다)
   core: under([
     'packages/',
     'apps/cli/',
     'apps/vscode/',
     'apps/desktop/',
+    'apps/xd/',
     'scripts/',
     'package.json',
     'package-lock.json',

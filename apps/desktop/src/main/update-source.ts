@@ -71,3 +71,11 @@ export function selectXgenUpdate(
   });
   return candidates[0] ?? null;
 }
+
+/**
+ * 맥 수동 업데이트가 받을 dmg — **Dex 의 것만**. 같은 GitHub 릴리스에 XD(로컬용 앱)의 dmg 도 함께
+ * 올라가므로, "dmg 아무거나" 를 고르면 Dex 가 XD 를 내려받아 연다.
+ */
+export function dexMacDmg<T extends { name: string }>(assets: readonly T[] | undefined): T | undefined {
+  return (assets ?? []).find((a) => /^XGen-Dex-.*\.dmg$/i.test(a.name));
+}

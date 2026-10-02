@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 버전은 하나다 — 루트 package.json 이 정본이고, 이 저장소에서 나가는 모든 것
- * (데스크톱·CLI·VS Code 확장·패키지·모바일 앱)이 같은 버전을 단다.
+ * (데스크톱·CLI·VS Code 확장·패키지·모바일 앱·XD)이 같은 버전을 단다.
  *
  * 예전에는 모바일만 따로 놀았다(package.json 1.38.0 · app.json 1.37.1 ·
  * iOS Info.plist 1.25.0). 그러면 "이 APK 가 어느 릴리스의 것인가"를 아무도 모른다.
@@ -30,9 +30,16 @@ const PACKAGES = [
   'apps/vscode/package.json',
   'apps/desktop/package.json',
   'apps/mobile/package.json',
+  // XD — 서버 없이 이 PC 에서 에이전트를 돌리는 로컬용 Dex. Dex 와 같은 버전으로 같이 나간다.
+  'apps/xd/package.json',
 ];
 /** 우리 패키지의 버전이 적혀 있는 잠금 파일들. */
-const LOCKS = ['package-lock.json', 'apps/desktop/package-lock.json', 'apps/mobile/package-lock.json'];
+const LOCKS = [
+  'package-lock.json',
+  'apps/desktop/package-lock.json',
+  'apps/mobile/package-lock.json',
+  'apps/xd/package-lock.json',
+];
 const EXPO_APP = 'apps/mobile/app.json';
 const IOS_PLIST = 'apps/mobile/ios/XGENDex/Info.plist';
 

@@ -53,6 +53,11 @@ jobs:
       # 데스크톱은 workspace 밖이라(electron) 따로 설치한다.
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
+      # XD 도 따로 — 화면은 Dex 의 코드·의존을 쓰므로 데스크톱 설치 뒤에 둔다. 이 잡은 실행하지 않으니
+      # Electron 바이너리는 받지 않는다.
+      - run: npm --prefix apps/xd ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       # 산출물이 필요한 검사(확장 번들에 엔진이 없는지)가 있으므로 빌드가 먼저다.
       - name: 빌드
@@ -60,6 +65,7 @@ jobs:
           npm --prefix apps/cli run build
           npm --prefix apps/vscode run build
           npm --prefix apps/desktop run build
+          npm --prefix apps/xd run build
           npm --prefix packages/ide run build
 
       - name: 계약 검사
@@ -74,6 +80,7 @@ jobs:
           npx tsc --noEmit -p apps/cli/tsconfig.json
           npx tsc --noEmit -p apps/vscode/tsconfig.json
           npx tsc --noEmit -p apps/desktop/tsconfig.json
+          npx tsc --noEmit -p apps/xd/tsconfig.json
 
       - name: 테스트
         run: |
@@ -83,6 +90,7 @@ jobs:
           npm --prefix apps/cli test
           npm --prefix apps/vscode test
           npm --prefix apps/desktop test
+          npm --prefix apps/xd test
 
   # ── 모바일 JS (별도 npm 프로젝트) ──
   mobile:

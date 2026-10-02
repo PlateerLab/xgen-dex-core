@@ -9,8 +9,15 @@
 npm --prefix apps/desktop ci
 npm --prefix apps/xd ci
 npm --prefix apps/xd run build      # out/
-npm --prefix apps/xd test
+npm --prefix apps/xd test           # Node 22 이상(node:sqlite) — CI 는 Electron 과 같은 Node 24
 XD_DATA_ROOT=/tmp/xd npx --prefix apps/xd electron apps/xd   # 시험 루트로 실행
+```
+
+실제 앱 E2E(가짜 LLM, 키·네트워크 없음) — 동봉 엔진과 빌드가 먼저다:
+
+```bash
+node apps/xd/scripts/bundle-engine.mjs && npm --prefix apps/xd run build
+xvfb-run -a npm --prefix apps/xd run e2e      # 화면이 있으면 xvfb-run 없이
 ```
 
 ## 엔진 (Python)

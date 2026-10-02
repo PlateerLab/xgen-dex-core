@@ -13,7 +13,7 @@ import pytest
 from xd_engine.safety import ApprovalGate, compile_patterns
 
 REPO = Path(__file__).resolve().parents[4]
-DEX_RULES = REPO / "packages" / "engine" / "src" / "local-tools.ts"
+DEX_RULES = REPO / "packages" / "engine" / "src" / "dangerous-commands.ts"
 
 #: 판정을 맞춰 볼 명령들 — 걸려야 하는 것과 걸리면 안 되는 것을 섞는다.
 CORPUS = [
@@ -48,7 +48,7 @@ CORPUS = [
 def _dex_literals() -> list[str]:
     text = DEX_RULES.read_text(encoding="utf-8")
     block = re.search(r"const DANGEROUS_PATTERNS: RegExp\[\] = \[(.*?)\n\];", text, re.S)
-    assert block, "DANGEROUS_PATTERNS not found in @dex/engine local-tools.ts"
+    assert block, "DANGEROUS_PATTERNS not found in @dex/engine dangerous-commands.ts"
     literals = []
     for line in block.group(1).splitlines():
         line = line.strip()

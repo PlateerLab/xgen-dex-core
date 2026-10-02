@@ -28,5 +28,5 @@
       "@dex/ide/*": ["../../packages/ide/src/*"]
     }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "e2e"]
 }

@@ -41,8 +41,12 @@ apps/xd
 ├─ scripts/bundle-engine.mjs    동봉본 만들기 → engine/dist/<platform>-<arch>/python
 ├─ src/main/                    Electron main
 │     data-root.ts              루트 폴더 결정·구조
-│     (M2~) store.ts            SQLite(node:sqlite) — 에이전트·대화·계정·설정
-│     (M2~) engine-service.ts   엔진 데몬 띄우기·재시작·턴 중계
+│     store.ts                  SQLite(node:sqlite) — 에이전트·대화·턴·계정·설정 (M2)
+│     secrets.ts                API 키 — safeStorage 암호 파일 (M2)
+│     engine-service.ts         엔진 데몬 띄우기·재시작·턴 중계 (M2)
+│     turn-runner.ts            턴: 이력·계정 → 엔진, 사건 → Dex ChatEvent, 끝나면 저장 (M2)
+│     xd-api.ts                 화면이 IPC 로 부르는 일들(Electron 모름) (M2)
+│     workspace-name.ts         에이전트 이름 → 작업 공간 폴더 이름 (M2)
 │     (M3~) providers/, cli/    제공자 계정·CLI 감지·설치·로그인
 ├─ src/preload/                 window.xd (XD 전용) + Dex 화면 공유용 window.xgen(부분)
 └─ src/renderer/                XD 셸 — Dex 화면 부품을 가져다 쓴다
@@ -174,12 +178,46 @@ Windows 설치본의 설치 폴더(쓸 수 있을 때) → `~/XD`.
 
 ## 7. 저장소 (M2)
 
-SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24):
-`agents`(이름·설명·시스템 프롬프트·제공자 계정·모델·도구 묶음·기억·연결 폴더) · `conversations` · `turns`
-(질문·답·작업 과정·사용량) · `accounts`(비밀 아닌 설정) · `settings`. 앞으로만 가는 마이그레이션
-(`PRAGMA user_version`).
+SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, SQLite 3.53), `<루트>/.xd/xd.db`, WAL.
+
+- `agents`(이름·설명·시스템 프롬프트·계정·모델·작업 공간 이름·연결 폴더·기억·옵션) · `conversations` · `turns`
+  (질문·첨부·답·작업 과정·사용량·상태·오류) · `accounts`(비밀 아닌 설정) · `settings`.
+- 마이그레이션은 앞으로만(`PRAGMA user_version`). 더 새 판 XD 가 쓴 DB 는 열지 않는다(앱을 내렸을 때 망가뜨리지
+  않게).
+- 앱이 턴 도중 꺼지면 다음 시작 때 그 턴을 `interrupted` 로 끝낸다(영원히 "실행 중" 으로 남지 않게).
+- 작업 공간 이름은 에이전트를 만들 때 이름에서 정하고(엔진 규칙과 같은 검사, 겹치면 ` (2)`, 디스크에 남은 폴더도
+  피한다) 이름을 바꿔도 그대로다. 에이전트를 지우면 엔진 상태(`.xd/agents/<id>`)만 지우고 작업 공간은 남긴다.
+  대화를 지우면 그 대화의 기록(STM)도 지운다.
+- 대화 id 는 부르는 쪽이 줄 수 있다 — Dex 화면은 대화 id 를 스스로 만든다(`conn-<에이전트>-<시각>`).
+- 작업 과정은 Dex 의 `HistoryFlowItem`(`{kind:'text'|'tool', …, at}`) 그대로 — 지난 턴도 같은 타임라인으로 그린다.
+- 엔진에 넘기는 이력: 답이 있는 끝난 턴만, 끝에서 50개.
+- 비밀: `.xd/secrets/<계정 id>.bin` 을 safeStorage 로 암호화. 쓸 수 없으면(리눅스 키링 없음·`basic_text`) 파일
+  권한만으로 두고 `secretsStatus` 가 그 사실을 알린다. 다른 PC 로 옮긴 루트의 키는 풀리지 않는다 — 다시 입력.
+
+### 턴 (M2)
+
+- main 의 턴 실행기가 엔진 사건을 Dex 화면의 `ChatEvent` 로 바꿔 내보낸다(`@dex/protocol` 의
+  `turnEventToChatEvent` 그대로): 글 → `text`, 도구 → `tool`, 끝·취소 → `end`, 실패 → `error`(+`XgenErrorInfo`).
+- 엔진에 가기 전에 아는 실패(계정·키·모델 없음, 아직 못 쓰는 제공자)는 엔진을 깨우지 않고 그 까닭으로 끝난다.
+  제공자의 실패 글은 Dex 와 같은 분류기(`describeStreamError`)로 사람이 읽는 말로.
+- 대화 하나에 턴 하나 — 도는 중에 같은 대화로 보내면 거절하고 기록하지 않는다.
+- 위험 명령 확인 창은 Dex 데스크톱과 같은 문구·버튼(`@dex/engine/dangerous-commands`): 거부가 기본값·Esc,
+  "이 대화에서 계속" 은 그 대화에만.
+- 끌 때는 엔진이 도는 턴을 취소로 마무리하고(저장까지) 저장소를 닫은 뒤에 끝난다. 엔진이 죽으면 도는 턴은
+  `engine_exited` 로 끝나고 다음 턴에 다시 뜬다. 엔진은 창 없이, 로그인 셸의 PATH 로(`@dex/engine/exec-resolve`).
 
 ## 8. 화면 (M4)
+
+Dex 화면 조사(2026-10-02)에서 알게 된 것 — M4 의 출발점:
+
+- Dex 화면에는 **기능 스위치 장치가 없다.** 감추기는 흩어진 조건(옵셔널 체이닝·돌려받은 값·설정 값)뿐이다.
+- 채팅 경로에서 **없으면 바로 깨지는** 호출: `guardrails.*`·`overlay.pushState`·`quickChat.onQuickSend`·
+  `config.get/onChange/set`·`chatFolders.list/remote/on*`·`chat.stream/stop`·`history.turns/snapshot`,
+  에이전트 목록의 `agents.list`·`history.conversations`. XD 는 이것들을 채우거나 무해한 값을 돌려줘야 한다.
+- 채팅 수송은 `SessionTransport`(renderer/session.ts) 하나로 들어온다 — `xgen.chat.stream(req, onEvent)` 는
+  동기로 손잡이(`cancel`·`stop`)를 돌려주고, 사건은 `ChatEvent`. XD 는 M2 의 턴 실행기 사건을 그대로 넘기면 된다.
+- 서버 전제(로그인·서버 주소·사용자 id·Teams·알림 계정·`ioId`/피드백·원격 실행 모델)는 App·Workspace 에 있다 —
+  XD 셸이 그 자리를 대신하고, 피드백 별점은 `executionIoId` 를 싣지 않아 숨긴다.
 
 - XD 의 화면은 XD 셸(온보딩·루트·제공자 설정) + Dex 화면 부품(채팅·작업 과정·도구 기록·파일 보기·IDE·에이전트
   상세).
@@ -222,6 +260,10 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24):
 ### 진행
 
 - **M0** (2026-10-02, PR #160) — 설계·뼈대·정체성·버전/계약/CI.
+- **M2** (2026-10-02) — 저장소·에이전트·대화·턴·엔진 관리. 완료 기준 실측(E2E, 실제 Electron 43 + 동봉 엔진 +
+  가짜 LLM): 턴이 작업 공간에 파일을 만들고, 앱을 껐다 켜도 에이전트·대화·턴(답·작업 과정)이 그대로이며, 다음 턴에
+  앞 대화가 이력으로 엔진까지 간다(요청 메시지 수 1·3 → 3·5). 위험 명령은 Dex 와 같은 확인 창을 거치고 거부하면
+  실행되지 않는다. XD 단위 시험 45개(Node 22·24), CI `xd-app` 잡(Node 24·E2E).
 - **M1** (2026-10-02) — 엔진·동봉 Python. 완료 기준 실측: 가짜 LLM 으로 도구가 든 턴이 끝까지(Write·Bash·문서 4종),
   종결 하나, 동봉본에서 `ready` 0.2~0.3초. 엔진 시험 73개를 동봉 인터프리터로 — 리눅스·맥 전부, 윈도우는 POSIX 전용 3개를 뺀 전부(CI). 동봉본 크기: linux-x64 242MB · win32-x64 222MB · darwin-arm64 225MB. 찾아 고친 것: 런타임
   호스트 경로 Bash 가 취소·시간 초과 때 자식을 남기던 것(runtime 4.83.1), Windows 에서 명령마다 콘솔 창이
@@ -233,8 +275,8 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24):
 - IDE 터미널은 네이티브 모듈(node-pty)이 필요 — 처음에는 터미널 없이.
 - 서명 없음 — macOS Gatekeeper·Windows SmartScreen 안내 필요(Dex 와 같다).
 - 실기기·실계정 검증은 계정이 있어야 한다 — 그 단계에서 확인을 받는다.
-- (M2) Finder·시작 메뉴에서 켠 앱은 로그인 셸의 PATH 를 모른다(맥은 `/usr/bin:/bin` 정도) — 엔진을 띄울 때 로그인
-  셸의 PATH 를 넘겨야 에이전트의 셸이 사용자의 `node`·`brew`·`git` 을 찾는다.
+- Finder·시작 메뉴에서 켠 앱은 로그인 셸의 PATH 를 모른다(맥은 `/usr/bin:/bin` 정도) — 엔진을 로그인 셸의
+  PATH 로 띄운다(M2, Dex 의 exec-resolve). 실제 맥에서 켠 앱으로는 M6 설치본에서 확인한다.
 - (M6) 맥 동봉 인터프리터·확장 모듈의 서명·공증, Gatekeeper 격리 속성.
 - (M3) Windows 에서 CLI(claude·codex)도 콘솔 프로그램이다 — 창 없는 엔진이 띄우면 창이 뜨는지 런타임 CLI
   클라이언트의 생성 플래그를 확인한다(Bash 는 4.83.2 에서 막았다).

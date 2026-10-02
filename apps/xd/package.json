@@ -12,21 +12,22 @@
     "url": "https://github.com/PlateerLab/xgen-dex-core.git"
   },
   "scripts": {
-    "test": "tsx --test test/data-root.test.ts test/packaging.test.ts",
+    "test": "tsx --test test/data-root.test.ts test/packaging.test.ts test/store.test.ts test/secrets.test.ts test/workspace-name.test.ts test/engine-service.test.ts test/turn-runner.test.ts test/xd-api.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "dist": "electron-vite build && electron-builder",
-    "bundle:engine": "node scripts/bundle-engine.mjs"
+    "bundle:engine": "node scripts/bundle-engine.mjs",
+    "e2e": "tsx --test --test-concurrency=1 e2e/app.e2e.ts"
   },
-  "dependencies": {},
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^24.19.1",
     "@vitejs/plugin-react": "^4.3.1",
     "electron": "43.4.1",
     "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3",
     "vite": "^5.3.4",

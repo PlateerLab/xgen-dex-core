@@ -91,7 +91,42 @@ jobs:
           npm --prefix apps/cli test
           npm --prefix apps/vscode test
           npm --prefix apps/desktop test
-          npm --prefix apps/xd test
+
+  # ── XD 앱 — Electron 43 과 같은 Node 24(node:sqlite)로 단위 시험, 동봉 엔진으로 실제 앱 E2E ──
+  #
+  # 화면은 Dex 의 코드를 같이 쓰므로 Dex 쪽 변경(core)에서도 돈다. E2E 는 실제 Electron 을 띄워 가짜 LLM 으로
+  # 턴을 돌리고, 껐다 켜도 대화가 이어지는지·위험 명령이 확인 창을 거치는지 본다.
+  xd-app:
+    name: XD 앱 (시험 · E2E)
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.engine == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: apps/xd/engine/.cache/python
+          key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
+      - run: npm ci --no-audit --no-fund
+      # 화면 코드가 Dex 의 의존(react 등)을 쓴다. Dex 의 Electron 은 여기서 쓰지 않는다.
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm --prefix apps/xd ci --no-audit --no-fund
+      - name: 단위 시험
+        run: npm --prefix apps/xd test
+      - name: 동봉 엔진
+        run: node apps/xd/scripts/bundle-engine.mjs --skip-verify
+      - name: 빌드
+        run: npm --prefix apps/xd run build
+      - name: E2E (실제 앱)
+        run: |
+          command -v xvfb-run >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb)
+          xvfb-run -a npm --prefix apps/xd run e2e
 
   # ── XD 엔진 (동봉 Python) — 세 OS 에서 동봉본을 만들고, 그 인터프리터로 엔진 시험을 돌린다 ──
   #

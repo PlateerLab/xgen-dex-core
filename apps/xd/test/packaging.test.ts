@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { parse } from 'yaml';
+import { macDmgUrl, UPDATE_REPO } from '../src/main/update-feed';
 
 const here = join(__dirname, '..');
 const xd = parse(readFileSync(join(here, 'electron-builder.yml'), 'utf8'));
@@ -36,4 +37,31 @@ test('Windows 설치 폴더를 고를 수 있다 — 설치 폴더가 루트 폴
   assert.equal(xd.nsis.oneClick, false);
   assert.equal(xd.nsis.perMachine, false);
   assert.equal(xd.nsis.allowToChangeInstallationDirectory, true);
+});
+
+test('설치본에 동봉 엔진이 asar 밖 resources/engine/python 으로 실린다(엔진 자리와 같다)', () => {
+  assert.deepEqual(xd.extraResources, [{ from: 'engine/dist/${platform}-${arch}/python', to: 'engine/python' }]);
+});
+
+test('Windows 제거·업데이트는 설치 폴더(= 루트)의 workspace·.xd 를 남긴다', () => {
+  assert.equal(xd.nsis.include, 'build/installer.nsh');
+  const nsh = readFileSync(join(here, 'build', 'installer.nsh'), 'utf8');
+  assert.match(nsh, /!macro customRemoveFiles/);
+  assert.match(nsh, /StrCmp \$1 "workspace" xd_rm_next/);
+  assert.match(nsh, /StrCmp \$1 "\.xd" xd_rm_next/);
+  assert.doesNotMatch(nsh, /RMDir \/r "?\$INSTDIR"?\s*$/m, '설치 폴더를 통째로 지우지 않는다');
+});
+
+test('업데이트가 보는 곳 = 발행하는 곳, 맥 dmg 이름 = 설치본 이름', () => {
+  assert.equal(UPDATE_REPO, `${xd.publish.owner}/${xd.publish.repo}`);
+  const name = xd.mac.artifactName.replace('${version}', '1.2.3').replace('${arch}', 'arm64').replace('${ext}', 'dmg');
+  assert.equal(macDmgUrl('1.2.3', 'arm64'), `https://github.com/${UPDATE_REPO}/releases/download/v1.2.3/${name}`);
+  assert.ok(pkg.dependencies['electron-updater'], '설치본이 업데이트 모듈을 싣는다');
+});
+
+test('앱 아이콘이 있다 — build/icon.png 1024px(electron-builder 가 Windows ico·macOS icns 로 바꾼다)', () => {
+  const png = readFileSync(join(here, 'build', 'icon.png'));
+  assert.equal(png.subarray(1, 4).toString('latin1'), 'PNG');
+  assert.equal(png.readUInt32BE(16), 1024);
+  assert.equal(png.readUInt32BE(20), 1024);
 });

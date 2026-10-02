@@ -1,6 +1,7 @@
 /** 설정 — 이 앱이 어디에 자리 잡았는지, 키를 어떻게 지키는지, 실행 엔진의 상태. */
 import React, { useEffect, useState } from 'react';
 import type { SecretStatus } from '../../../main/secrets';
+import type { UpdateState } from '../../../main/updater';
 import { xd } from '../bridge';
 import { useData } from '../data';
 import { FolderOpenIcon } from '../dex';
@@ -62,10 +63,47 @@ export const SettingsView: React.FC = () => {
         <h3>실행 엔진</h3>
         <p className="small">{engine === null ? '확인하는 중…' : engine.running ? '실행 중입니다.' : '첫 대화를 보낼 때 시작합니다.'}</p>
       </section>
+      <UpdateCard />
       <p className="muted small xd-version">
         XD {info.version}
         {engine?.running && engine.info?.runtime ? ` · 런타임 ${String(engine.info.runtime)}` : ''}
       </p>
     </div>
+  );
+};
+
+const UPDATE_TEXT: Record<string, string> = {
+  idle: '아직 확인하지 않았습니다.',
+  checking: '확인하는 중…',
+  latest: '최신 판입니다.',
+  error: '확인하지 못했으니 잠시 뒤에 다시 해 보세요.',
+};
+
+/** 업데이트 — 설치본에서만(개발 실행은 꺼져 있다). */
+const UpdateCard: React.FC = () => {
+  const [state, setState] = useState<UpdateState | null>(null);
+  useEffect(() => {
+    void xd.update.state().then(setState);
+    return xd.update.on(setState);
+  }, []);
+  if (!state || state.state === 'disabled') return null;
+  const text =
+    state.state === 'downloading'
+      ? `새 판 ${state.version} 을(를) 받는 중입니다(${state.percent}%).`
+      : state.state === 'ready'
+        ? `새 판 ${state.version} 을(를) 받았으니 다시 시작하면 바뀝니다.`
+        : state.state === 'available'
+          ? `새 판 ${state.version} 이(가) 나왔습니다.`
+          : UPDATE_TEXT[state.state];
+  return (
+    <section className="xd-card">
+      <h3>업데이트</h3>
+      <div className="xd-kv">
+        <span className="small">{text}</span>
+        <button type="button" className="secondary" disabled={state.state === 'checking' || state.state === 'downloading'} onClick={() => void xd.update.check().then(setState)}>
+          업데이트 확인
+        </button>
+      </div>
+    </section>
   );
 };

@@ -22,6 +22,7 @@ import { augmentedPath } from '@dex/engine/exec-resolve';
 import { CliService, type CliEvent } from './cli/service';
 import { FolderFsError } from './dex';
 import { IdeService } from './ide-service';
+import { checkForUpdates, onUpdateState, startUpdater, updateState } from './updater';
 import { BusyError, TurnRunner, type XdTurnEvent } from './turn-runner';
 import { createXdApi, XdError, type XdApi } from './xd-api';
 
@@ -269,8 +270,13 @@ if (!app.requestSingleInstanceLock()) {
     return true;
   });
 
+  ipcMain.handle(CHANNELS.updateState, () => updateState());
+  ipcMain.handle(CHANNELS.updateCheck, () => checkForUpdates());
+  onUpdateState((state) => send(CHANNELS.updateEvent, state));
+
   void app.whenReady().then(() => {
     createWindow();
+    startUpdater();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

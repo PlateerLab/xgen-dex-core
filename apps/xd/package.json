@@ -35,5 +35,8 @@
   },
   "bugs": {
     "url": "https://github.com/PlateerLab/xgen-dex-core/issues"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

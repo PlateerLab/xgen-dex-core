@@ -5,6 +5,7 @@
 appId: com.plateerlab.xd
 # 리눅스 설치 경로(/opt/<productName>)에 그대로 쓰인다 — 공백 없이.
 productName: XD
+# 아이콘은 build/icon.png(1024px — 화면의 XD 표식과 같은 그림, Pretendard ExtraBold). electron-builder 가 OS 마다 바꾼다.
 directories:
   buildResources: build
   output: release
@@ -19,6 +20,11 @@ generateUpdatesFilesForAllChannels: false
 files:
   - out/**
   - package.json
+# 동봉 엔진(이 OS·아키텍처용 Python + xd_engine + 런타임) — asar 밖에 둔다(실행 파일이다). 앱은
+# `resources/engine/python` 에서 찾는다(engine-service.ts enginePythonPath). 빌드 전에 `npm run bundle:engine`.
+extraResources:
+  - from: engine/dist/${platform}-${arch}/python
+    to: engine/python
 linux:
   target:
     - AppImage
@@ -55,6 +61,8 @@ nsis:
     - ko_KR
   unicode: true
   shortcutName: XD
+  # 제거·업데이트 때 설치 폴더(= 루트)의 workspace·.xd 는 남긴다(build/installer.nsh).
+  include: build/installer.nsh
 mac:
   target:
     - dmg

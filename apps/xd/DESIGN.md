@@ -382,10 +382,23 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 
 ## 10. 릴리스 (M6)
 
-- 버전은 하나(`scripts/version.mjs` — apps/xd 포함). 같은 릴리스 워크플로가 XD 도 만든다.
-- 산출물 `XD-*`, 업데이트 채널 `xd`(`xd*.yml`) — Dex 의 `latest*.yml` 과 겹치지 않는다. Dex 맥 수동 업데이트는
-  `XGen-Dex-*.dmg` 만 고른다.
-- 릴리스에는 **M4 가 끝나 쓸 수 있을 때부터** XD 를 넣는다. 그 전 단계는 main 에만 쌓는다.
+- 버전은 하나(`scripts/version.mjs` — apps/xd 포함). **같은 릴리스 워크플로가 XD 도 만든다**(release.yml 의 `xd` 잡) —
+  Dex 와 같은 태그, 같은 GitHub 릴리스.
+- 설치본: Windows `XD-Setup-*.exe`(NSIS, 사용자별·설치 폴더를 고른다), macOS `XD-*-arm64.dmg`·`XD-*-x64.dmg`
+  (아키텍처마다 엔진이 다르다 — Intel 은 `macos-15-intel` 러너에서), Linux `XD-*.AppImage`·`XD-*.deb`. 동봉 엔진은
+  asar 밖 `resources/engine/python`(extraResources).
+- Windows 는 설치 폴더가 곧 루트다 — 기본 제거는 설치 폴더를 통째로 지우므로 `build/installer.nsh` 의
+  `customRemoveFiles` 가 **workspace·.xd 를 남기고** 앱이 깐 것만 지운다(제거·업데이트 모두). 같은 곳에 다시 설치하면
+  그대로 이어진다. macOS·Linux 의 루트는 `~/XD` 라 설치본과 상관없다.
+- 업데이트(`updater.ts`): 채널 `xd`(`xd.yml`·`xd-mac.yml`·`xd-linux.yml`) — Dex 의 `latest*.yml` 과 겹치지 않는다.
+  Windows·Linux 는 electron-updater 가 받아 두고 "다시 시작해 바꿀까요" 를 묻는다. 서명 없는 macOS 는 스스로 바꿀 수
+  없어 새 판을 알리고 그 아키텍처의 dmg 를 브라우저로 받게 한다(맥 x64 잡은 dmg 만 올린다 — `xd-mac.yml` 은 하나).
+  설정에 [업데이트 확인]. 설치본에서만, 시작 30초 뒤·6시간마다.
+- 확인(CI `xd-package` 잡과 릴리스가 같은 확인): 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고 **그 설치본으로
+  턴**(`e2e/packaged.e2e.ts` — 엔진이 설치본 안의 것으로 뜨는지), Windows 는 **설치 → 다시 설치(업데이트) → 제거** 뒤에
+  루트의 workspace·.xd 가 남고 앱은 지워지는지(`scripts/check-installer.mjs`). 설치본에 닿는 것이 바뀔 때만 돈다.
+- Dex 맥 수동 업데이트는 `XGen-Dex-*.dmg` 만 고른다(같은 릴리스에 XD dmg 가 있어도 섞이지 않는다).
+- 서명 없음 — macOS Gatekeeper(우클릭 → 열기·`xattr`)·Windows SmartScreen 안내(Dex 와 같다).
 
 ## 11. 단계
 
@@ -402,6 +415,8 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 ### 진행
 
 - **M0** (2026-10-02, PR #160) — 설계·뼈대·정체성·버전/계약/CI.
+- **M6** (2026-10-03) — 설치본·같은 릴리스·업데이트(§10). 실측(로컬): 리눅스 설치본(풀린 폴더)을 띄워 설치본에 실린
+  엔진으로 턴이 끝까지(엔진 로그의 자리가 resources/engine/python). 세 OS·Windows 제거 보존은 CI `xd-package` 잡.
 - **M5c** (2026-10-03) — 사용자 MCP 서버(§8). 실측: 엔진 시험(실제 stdio MCP 서버 — 연결·호출·실패 결과·턴을 넘어
   같은 프로세스·비밀이 바뀌면 다시·목록에서 빠지면 닫기·하나가 실패해도 나머지·끄면 프로세스가 남지 않음·데몬 턴이
   MCP 도구를 씀·[연결 확인]), 화면 E2E(서버 더하기 → 연결 확인 "도구 4개" → 턴이 그 도구를 써 작업 공간에서 저장한

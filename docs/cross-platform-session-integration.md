@@ -927,3 +927,50 @@ R/W 전환·S·Q·SIGINT·SIGTERM → 오래된 표시 폐기 → 실제 요청/
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. The explicit CLI Canonical TUI now reads the current shared conversation and displays bounded complete messages and execution status using its fixed native Platform Session, OS vault and DPoP. WSS only wakes authoritative HTTP recovery. Read/watch transitions wait for actual task/vault settlement; cancellation, resets, reconnects and terminal authentication events discard old private content and late callbacks. Untrusted terminal controls are removed and no conversation state is persisted. CLI regressions, actual built-command POSIX PTY/trusted-HTTPS/WSS/keychain fixtures and integration-branch enrollment Compose denial/cleanup passed. The controlled TLS server and pending-mode failed-fetch seam are explicit test boundaries, not ACTIVE Gateway success. TUI creation/selection/sending, attachments, installed VS Code, physical Mobile UI/hardware/SecureStore and real ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.
+
+## CLI Canonical TUI 생성·선택·턴 송신 (2026-10-02)
+
+- 기준 통합 브랜치: `feat/cross-platform-session` / `3c30ea6f1779b4db5898b0327ee3890a47dd8524`.
+- 하위 브랜치·PR: `feat/cross-platform-canonical-tui-chat` / [PR155](https://github.com/PlateerLab/xgen-dex-core/pull/155). 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90)은 `main` 대상 Draft를 유지한다.
+- 제품·실사용 검증 SHA: `159276a269bc75db831f9812090c0a0747006011`. 이 커밋과 같은 소스 트리에서 검증했으며 이후 증거 문서만 추가한다. 최종 Head CI와 리뷰를 확인한 뒤 하위 PR을 통합한다.
+
+```text
+dex ui --canonical --user-id <id> --profile <HTTPS profile>
+  L 최신 소유 목록 / P 이전 100개 페이지 → ↑↓ Enter 활성 세션 선택
+  N workflow ID·제목 → 현재 focus version CAS → 서버 세션 생성·선택
+  I 보이는 한 줄 입력 / Enter → 검증된 snapshot version·고정 중복 방지 키로 턴 접수
+  결과 불명확 → 자동 재전송 없음 → R 같은 대화 검증 → Y 원래 요청 재확인
+  T 현재 실행 ID·version 중단 → authoritative HTTP 조회 → 완료 본문
+  X Enter 선택 해제 / S 연결 중단 / Q·SIGINT·SIGTERM 실제 drain·화면 복원
+```
+
+### 구현과 리뷰
+
+- 기존 read/watch controller와 공통 `AgentTurnComposer`를 TUI 모델에 연결했다. CLI platform scope를 추가하고 lifecycle·catalog·turn을 단일 작업으로 직렬화한다. 실제 읽기/소켓 작업과 native proof operation이 정리된 뒤 쓰기 요청을 시작한다. UI는 복제된 표시 상태와 safe notice만 받으며 native binding·키·토큰·raw ACK·오류 세부정보를 받지 않는다.
+- 목록은 현재 소유 페이지를 최대100개로 교체한다. cursor 진행·중복·malformed 항목을 검증하고 보관/목록 밖 세션을 선택하지 않는다. 생성/선택/해제는 조회한 focus version CAS와 정확한 workflow/focus ACK를 검사한다. 생성 ACK 유실·focus 충돌은 명시적 **최신** L 조회 전까지 쓰기를 잠그며 R 또는 이전 P 페이지가 잠금을 풀지 않는다. 생성 요청을 자동 반복하거나 새 버전으로 재작성하지 않는다.
+- 메시지 편집은 시스템 IME를 사용하는 기존 한 줄 입력이다. 붙여넣은 개행은 공백으로 표시하며 그 보이는 본문만 Enter에서 보낸다. UTF-8 262144 bytes 상한을 적용하고 터미널 제어 문자를 제거한다. 입력 모드의 navigation 문자는 글자로 처리한다. 불명확한 턴은 같은 계정·대화에서 원래 본문/version/idempotency key로 Y 재시도만 허용한다. 검증된 현재 실행의 ID/version으로 T 중단하며 접수 ACK를 답변 완료로 표시하지 않는다.
+- 실제 focus/binding 변경은 draft·목록·private retry intent·늦은 응답을 폐기한다. 일시적 읽기 실패에는 같은 로그인 범위의 draft/unknown intent를 메모리에 보존하지만 authoritative read 전까지 쓰기를 막는다. native host는 ready vault를 읽는 같은 잠금 안에서 원래 `expectedAuthScope`를 비교하여 다른 로그인 sid로 이전 의도가 전송되지 않게 한다. 같은 sid의 정상 token rotation은 허용한다. 새 옵션은 TUI host-only 계약이며 기존 호출은 호환된다.
+- 직접 diff와 별도 보안·경합 검토를 수행했다. UI 검증에서 intent 없는 `unavailable`가 첫 대화 생성까지 막는 문제를 수정했다. 실제 PTY 검증에서 임시 empty read가 목록 화면을 닫는 문제를 수정하고 지연 HTTP 회귀를 추가했다. unknown 작업의 자동 재전송·scope를 벗어난 ACK 반영·비밀/원시 데이터 저장은 없다. 환경변수나 서버 정책은 변경하지 않았고 SDK/runtime을 배포하지 않았다.
+
+### 검증과 실행 환경
+
+- CLI 전체200/200, 모델8/8 및 최종 UI3/3 통과. UI 회귀는 실제 Ink 키로 메시지/nav/paste 분리·명시적 retry/stop·보관 세션 선택 거부·clear 확인·첫 대화 생성·지연 read 중 목록 유지·same-session credential replacement·8행 authentication 화면을 확인한다. native binding/공통 composer 집중56/56은 모든 bound create/select/submit/stop의 같은 sid rotation 허용과 다른 sid·malformed binding의 proof/wire 전 차단을 확인한다. workspace/CLI 타입·빌드·계약 검사와 opt-in harness strict 타입 검사를 통과했다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --tui-chat --catalog-pages`: 빌드된 제품을 실제 POSIX PTY·Ink·OS keychain·trusted localhost HTTPS/WSS·P-256 DPoP로 실행했다. 소유207개를100/100/7 페이지로 교체하고, 생성 ACK 유실 뒤 한 번 생성·R에서 잠금 유지·L로 명시적 복구·owned selection·한글 원문 turn ACK 유실·원래 body/key/version exact replay와 실행1회·현재 실행 중단 후 검증 본문·선택 해제·legacy dispatch0·Q/SIGINT/SIGTERM 실제 socket drain/화면 복원을 확인했다. 후속 기존 focus cursor replay/reconnect/409/authentication stop·>64KiB 메시지·token rotation·logout·lost refresh journal/local recovery도 통과했다. 통제된 HTTPS 서버의 양성 증거이며 실제 ACTIVE Gateway 성공을 대체하지 않는다.
+- `node --import tsx scripts/native-platform-session-compose.mts --cli --cli-tui`: 실제 enrollment Gateway의 일회용 계정 CLI 등록·브라우저 승인·login503/login_pending을 사용했다. production chat source/model의 read/live/catalog와 create/select/submit/retry/stop이 proof/wire 전에 차단되고 disabled UI·안전한 빈 표시·journal 유지·Canonical session0을 확인했다. pending 상태 이후 fetch는 호출0을 검증하는 실패 대체 구현이며 ACTIVE 서버 송신 증거가 아니다. fixture 계정·기기·승인·DB 이벤트·OS keychain을 정리했다.
+- Compose 기본 infra/core/gateway + workflow/frontend 프로필과 HTTPS3443이다. `.env` 서비스별 branch override, clean source/container ref·HEAD·실제 `/app` mount 및 Gateway `PLATFORM_SESSION_MODE=enrollment`를 다시 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589` 모두 `feat/cross-platform-session`이다. 프론트 변경은 없으며 앱 미리보기 로그인은 이 CLI 검증에 사용하지 않았다.
+- Workflow의 미배포 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` source overlay marker와 실제 `/opt/xgen-local-sdk/src/xgen_sdk/__init__.py`, `/opt/xgen-local-runtime/src/xgen_agent_runtime/__init__.py` import를 확인했다.
+- 증거: `/tmp/cross-sync-canonical-tui-chat-{native-tests,cli-tests,tls-fixture,compose,environment,overlay}.log` 및 이 작업의 최종 UI/type/contract tool 출력. 필수 최신 Head CI·리뷰는 PR155에 기록한다. 남은 관문은 첨부, 설치된 VS Code, 물리 Mobile UI/hardware/SecureStore 및 실제 ACTIVE cross-surface 성공이다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 3% | 첨부·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. The explicit Canonical CLI TUI now supports bounded owned catalog pagination, session creation/selection/clear, visible plain-text submission, original-request retry and exact current-turn stop through its native session. A single model owns drain and write ordering; unknown lifecycle results require explicit latest catalog recovery, and unknown turns cannot change lifecycle scope. Original binding is rechecked under the actual vault lock before native proof/wire, allowing same-sid rotation and rejecting changed login ownership. Parent and independent review plus CLI/native/protocol regressions, actual built-product POSIX PTY/trusted HTTPS/WSS/keychain fixtures and integration-branch enrollment Compose denial/cleanup passed. Review and real UI checks fixed empty-focus creation and catalog loss during transient reads. The HTTPS server and pending-mode failed-fetch seam are explicit test boundaries, not ACTIVE Gateway success. Attachments, installed VS Code, physical Mobile UI/hardware/SecureStore and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.

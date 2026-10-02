@@ -12,6 +12,7 @@ import {
   looksBinary,
   parseCsv,
   splitHighlightedLines,
+  idePreviewModeFor,
 } from '../src/renderer/src/views/file-viewer-model';
 
 test('extOf — 확장자·dot 파일·특수 이름', () => {
@@ -87,4 +88,17 @@ test('escapeHtml / formatBytes / fileTabId', () => {
   assert.equal(escapeHtml('<a & "b">'), '&lt;a &amp; &quot;b&quot;&gt;');
   assert.equal(formatBytes(2867), '2.8KB');
   assert.equal(fileTabId('wf1', 'tools/a.py'), 'file:wf1:tools/a.py');
+});
+
+test('IDE 에서 여는 방식 — 문서·PDF·소리·영상은 그리고, md·csv 는 오가고, 코드는 편집기 (2026-10-02)', () => {
+  assert.equal(idePreviewModeFor('보고서.docx'), 'view');
+  assert.equal(idePreviewModeFor('발표.pptx'), 'view');
+  assert.equal(idePreviewModeFor('표.xlsx'), 'view');
+  assert.equal(idePreviewModeFor('한글.hwp'), 'view');
+  assert.equal(idePreviewModeFor('논문.pdf'), 'view');
+  assert.equal(idePreviewModeFor('녹음.mp3'), 'view');
+  assert.equal(idePreviewModeFor('노트.md'), 'toggle');
+  assert.equal(idePreviewModeFor('data.csv'), 'toggle');
+  assert.equal(idePreviewModeFor('main.py'), null);
+  assert.equal(idePreviewModeFor('그림.png'), null, '그림은 IDE 가 스스로 그린다');
 });

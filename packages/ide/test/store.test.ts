@@ -820,3 +820,75 @@ test('연결을 해제한 폴더의 펼침·목록은 잊는다', async () => {
   assert.equal(f.expanded.size, 0);
   assert.deepEqual(Object.keys(f.dirs), []);
 });
+
+// ── 미리보기 — 문서·PDF·소리·영상은 그려서, md·csv 는 편집기와 오가며 (2026-10-02) ─────────────
+
+class PreviewHost extends FakeHost {
+  reads: string[] = [];
+  preview = {
+    mode: (path: string) =>
+      /\.(docx|pptx|xlsx|hwp|pdf|mp3|mp4)$/i.test(path) ? ('view' as const) : /\.(md|csv)$/i.test(path) ? ('toggle' as const) : null,
+    render: () => null,
+  };
+  override async readFile(path: string) {
+    this.reads.push(path);
+    return super.readFile(path);
+  }
+}
+
+test('문서는 편집기가 아니라 미리보기 탭으로 연다 — 글로 읽어 들이지 않는다', async () => {
+  const host = new PreviewHost();
+  host.files.set('보고서.docx', 'PK\u0003\u0004');
+  const { store } = await started(host);
+  await store.openFile('보고서.docx', { preview: false });
+  const tab = store.activeGroup().tabs[0];
+  assert.equal(tab.kind, 'preview');
+  assert.deepEqual(host.reads, [], '바이트는 미리보기가 필요할 때 읽는다');
+  assert.equal(store.tabKindFor('그림.png'), 'image');
+  assert.equal(store.tabKindFor('노트.md'), 'file', 'md 는 편집기로 열고 미리보기를 오간다');
+  assert.equal(store.tabKindFor('보고서.docx', true), 'file', '[글로 열기] 는 무엇이든 편집기로');
+});
+
+test('미리보기가 없는 호스트는 예전처럼 편집기로 연다', async () => {
+  const { host, store } = await started();
+  host.files.set('보고서.docx', 'x');
+  await store.openFile('보고서.docx', { preview: false });
+  assert.equal(store.activeGroup().tabs[0].kind, 'file');
+});
+
+test('md 는 처음엔 그린 모습, [편집] 을 누르면 편집기 — 파일마다 기억한다', async () => {
+  const host = new PreviewHost();
+  host.files.set('노트.md', '# 제목');
+  const { store } = await started(host);
+  await store.openFile('노트.md', { preview: false });
+  assert.equal(store.isRendered('노트.md'), true);
+  store.setRendered('노트.md', false);
+  assert.equal(store.isRendered('노트.md'), false);
+  assert.equal(store.isRendered('다른.md'), true);
+});
+
+test('편집기로 연 글 아닌 파일을 미리보기 탭으로 바꾼다', async () => {
+  const host = new PreviewHost();
+  host.files.set('data.bin', '\u0000\u0001');
+  const { store } = await started(host);
+  await store.openFile('data.bin', { preview: false });
+  assert.equal(store.getState().docs['data.bin']?.status, 'binary');
+  store.openAsPreview('data.bin');
+  const tabs = store.activeGroup().tabs;
+  assert.deepEqual(tabs.map((t) => t.kind), ['preview']);
+  assert.equal(store.getState().docs['data.bin'], undefined, '편집기 문서는 버린다');
+});
+
+test('되살린 미리보기 탭 — 호스트가 더는 그려 주지 않으면 편집기로 되살린다', async () => {
+  const host = new PreviewHost();
+  host.files.set('보고서.docx', 'x');
+  const first = await started(host);
+  await first.store.openFile('보고서.docx', { preview: false });
+  const plain = new FakeHost();
+  plain.files.set('보고서.docx', 'x');
+  plain.storageMap = host.storageMap;
+  const second = new IdeStore(plain);
+  live.push(second);
+  await second.start();
+  assert.deepEqual(second.activeGroup().tabs.map((t) => t.kind), ['file']);
+});

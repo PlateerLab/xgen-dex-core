@@ -15,6 +15,7 @@
  * 메인 프로세스가 대신 열고, 웹은 쿠키로 바로 연다 — 그 차이가 이 경계 밖에 있다.
  */
 import type * as Monaco from 'monaco-editor';
+import type { ReactNode } from 'react';
 
 export type MonacoApi = typeof Monaco;
 
@@ -240,6 +241,44 @@ export interface IdeHost {
   readText?(): Promise<string | null> | string | null;
   /** 이 대화에 연결된 폴더. 없으면 탐색기에 [연결된 폴더] 칸이 없다. */
   folders?: IdeFolderSource;
+  /**
+   * 편집기 대신 **그려서 보여 줄** 파일 — 문서·PDF·소리·영상, 그리고 글이지만 그려 보는 쪽이 나은 md·csv.
+   * 없으면 그런 파일은 예전처럼 "텍스트가 아니라 열지 않았다" 로 남는다.
+   */
+  preview?: IdePreview;
+}
+
+/**
+ * 어떻게 보여 주는가.
+ *
+ *   view    편집기로 열지 않고 그린다(docx·pptx·xlsx·hwp·pdf·소리·영상). 탭 하나가 통째로 미리보기다.
+ *   toggle  편집기로 열되 [미리보기] 로 그려 볼 수 있다(md·csv). 처음에는 그린 쪽을 보여 준다.
+ */
+export type IdePreviewMode = 'view' | 'toggle';
+
+/** 미리보기 한 장에 필요한 것 — 바이트를 어디서 읽는지는 IDE 가 정한다(스토리지든 연결된 폴더든). */
+export interface IdePreviewRequest {
+  /** workspace 기준 경로(연결된 폴더면 그 표식 경로). */
+  path: string;
+  /** 파일 이름. */
+  name: string;
+  /** 연결된 폴더(이 기기)의 파일이다 — 서버가 그려 주는 문서 렌더가 없다. */
+  local: boolean;
+  /** 원바이트 — IDE 가 고른 길(샌드박스·연결된 폴더)로 읽는다. */
+  readRaw(): Promise<Uint8Array>;
+  /** toggle 에서 편집기의 **지금 글**(저장 전 내용 포함). 없으면 바이트를 읽어 그린다. */
+  text?: string;
+  /** 파일이 바뀌면 달라진다 — 다시 그리는 열쇠. */
+  version: string;
+  theme: ThemeKind;
+  /** 내려받기(없으면 단추를 숨긴다). */
+  download?: () => void;
+}
+
+/** 호스트가 가진 미리보기 부품을 IDE 에 꽂는 자리 — 데스크톱·웹의 [파일 저장소] 와 같은 렌더러를 쓴다. */
+export interface IdePreview {
+  mode(path: string): IdePreviewMode | null;
+  render(req: IdePreviewRequest): ReactNode;
 }
 
 export type ThemeKind = 'dark' | 'light';

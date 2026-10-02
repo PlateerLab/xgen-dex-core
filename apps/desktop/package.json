@@ -28,7 +28,8 @@
     "verify:app": "electron -r tsx/cjs verify/artifact-frame-smoke.cjs",
     "verify:app-site": "electron verify/artifact-site-frame-smoke.cjs",
     "verify:app-preview": "electron -r tsx/cjs verify/app-preview-capture-smoke.cjs",
-    "verify:agent-viewer": "electron verify/agent-viewer-smoke.cjs"
+    "verify:agent-viewer": "electron verify/agent-viewer-smoke.cjs",
+    "verify:storage-preview": "electron verify/storage-preview-smoke.cjs"
   },
   "dependencies": {
     "@esotericsoftware/spine-pixi-v7": "^4.2.114",

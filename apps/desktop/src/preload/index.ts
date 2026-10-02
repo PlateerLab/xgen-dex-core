@@ -49,6 +49,7 @@ import type {
   WorkspaceFile,
   WorkspaceBinary,
   WorkspaceBinaryPurpose,
+  WorkspaceDocPreview,
   WorkspaceUploadResult,
   NotificationPreferenceUpdate,
   NotificationProfile,
@@ -342,6 +343,12 @@ const api = {
       path: string,
       purpose?: WorkspaceBinaryPurpose,
     ): Promise<WorkspaceBinary> => ipcRenderer.invoke(CHANNELS.agentWsBinary, wf, path, purpose),
+    /** 문서(docx·pptx·xlsx·hwp)의 서버 렌더 페이지 목록 — [파일 저장소] 와 같은 렌더러. */
+    workspaceDocPreview: (wf: string, path: string): Promise<WorkspaceDocPreview> =>
+      ipcRenderer.invoke(CHANNELS.agentWsDocPreview, wf, path),
+    /** 렌더된 페이지 한 장(`workspaceDocPreview` 가 준 경로 그대로). */
+    workspacePreviewPage: (wf: string, page: string): Promise<WorkspaceBinary> =>
+      ipcRenderer.invoke(CHANNELS.agentWsPreviewPage, wf, page),
     workspaceUpload: (
       wf: string,
       bytes: Uint8Array,

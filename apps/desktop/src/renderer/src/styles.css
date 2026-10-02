@@ -7330,6 +7330,44 @@ button.sm {
   overflow: auto;
   padding: 10px 12px;
 }
+/* 에이전트 [스토리지] — 왼쪽은 IDE 탐색기(@dex/ide FileTree)와 같은 모양, 오른쪽은 파일 뷰어(FileViewerPane). */
+.storage-split {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+}
+.storage-tree {
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+.storage-detail {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.storage-detail > .fv-root {
+  flex: 1;
+  min-height: 0;
+}
+.storage-empty {
+  margin: 24px auto;
+  text-align: center;
+}
+@media (max-width: 720px) {
+  .storage-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(180px, 40%) 1fr;
+  }
+  .storage-tree {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
 .viewer-split {
   flex: 1;
   min-height: 0;

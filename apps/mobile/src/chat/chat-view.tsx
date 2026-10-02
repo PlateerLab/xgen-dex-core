@@ -52,6 +52,7 @@ import { TAP, alpha, useP } from '../theme';
 import { notifyAnswer } from './answer-notice';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
+import { AgentDetail } from '../agents/agent-detail';
 import { FolderPill, FolderSheet } from './folder-sheet';
 import { ModelChip, ModelSheet, ThinkingChip, ThinkingSheet, useConversationModel } from './model-picker';
 import { folderStore, useChatFolderRemote, useChatFolders } from '../lib/folder-store';
@@ -125,6 +126,8 @@ export function ChatView({
   const [attachMenu, setAttachMenu] = useState(false);
   const [logFor, setLogFor] = useState<{ events: ToolEvent[]; initialOpen?: number } | null>(null);
   const [convSheet, setConvSheet] = useState(false);
+  /** 에이전트 상세 — 데스크톱·웹 채팅 머리의 [상세] 와 같은 자리. */
+  const [detailOpen, setDetailOpen] = useState(false);
   // 이 대화에 연결된 휴대폰 폴더 — 에이전트의 파일 도구가 닿는 범위.
   const folders = useChatFolders(interactionId);
   const folderRemote = useChatFolderRemote(interactionId);
@@ -685,6 +688,15 @@ export function ChatView({
         >
           <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>새 대화</Text>
         </Pressable>
+        <Pressable
+          onPress={() => setDetailOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="에이전트 상세"
+          style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: p.panel2 }}
+        >
+          <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>상세</Text>
+        </Pressable>
       </View>
 
       {loadingHistory && messages.length === 0 ? (
@@ -936,6 +948,15 @@ export function ChatView({
       </Modal>
 
       {/* 이 에이전트의 대화들 */}
+      <AgentDetail
+        client={client}
+        agent={detailOpen ? agent : null}
+        onClose={() => setDetailOpen(false)}
+        onOpenChat={(a) => {
+          setDetailOpen(false);
+          onOpenChat(a);
+        }}
+      />
       <Modal visible={convSheet} transparent animationType="slide" onRequestClose={() => setConvSheet(false)}>
         <Pressable
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}

@@ -32,6 +32,7 @@ import type {
 import { xgen, copyText } from '../bridge';
 import { subscribeWorkspace } from '../workspace-watch';
 import { loadMonaco } from './monaco';
+import { createDexIdePreview } from './dex-ide-preview';
 
 async function call<T>(method: string, workflowId: string, ...args: unknown[]): Promise<T> {
   const out = await xgen.ide.call(method, workflowId, ...args);
@@ -156,6 +157,8 @@ export function createDexIdeHost(
     agentName: agent.workflowName,
     // 이 대화에 연결한 이 PC 의 폴더 — 탐색기 아래 [연결된 폴더].
     folders: interactionId ? createDexFolderSource(interactionId) : undefined,
+    // 문서·PDF·소리·영상·md·csv 를 그려 보여 준다 — 탐색기 탭과 같은 뷰어.
+    preview: createDexIdePreview(wf),
 
     async session() {
       const s = await call<IdeSessionResponse>('session', wf);

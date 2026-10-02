@@ -16,7 +16,7 @@ import { folderPath, isFolderPath, parseFolderPath } from '../folders';
 import { decodeText, formatBytes, imageMime } from '../text';
 import { formatBinding } from '../keys';
 import { STATUS_LABEL } from '../git-model';
-import type { ThemeKind } from '../types';
+import type { IdePreviewRequest, ThemeKind } from '../types';
 
 export function EditorArea({ theme }: { theme: ThemeKind }) {
   const groups = useIde((s) => s.groups);
@@ -64,7 +64,16 @@ function EditorGroupView({ group, index, theme }: { group: EditorGroup; index: n
       <TabBar group={group} />
       {tab ? <Breadcrumbs tab={tab} /> : null}
       <div className="xide-editor-body">
-        {tab ? <TabContent key={tab.kind === 'diff' ? 'diff' : tab.kind === 'image' ? `img:${tab.path}` : 'code'} group={group} tab={tab} theme={theme} /> : <Welcome />}
+        {tab ? (
+          <TabContent
+            key={tab.kind === 'diff' ? 'diff' : tab.kind === 'image' ? `img:${tab.path}` : tab.kind === 'preview' ? `pv:${tab.path}` : 'code'}
+            group={group}
+            tab={tab}
+            theme={theme}
+          />
+        ) : (
+          <Welcome />
+        )}
       </div>
     </section>
   );
@@ -327,6 +336,7 @@ function Welcome() {
 
 function TabContent({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; theme: ThemeKind }) {
   if (tab.kind === 'image') return <ImagePane path={tab.path} />;
+  if (tab.kind === 'preview') return <PreviewPane path={tab.path} theme={theme} />;
   if (tab.kind === 'diff' && tab.diff) return <DiffPane group={group} tab={tab} diff={tab.diff} theme={theme} />;
   return <CodePane group={group} tab={tab} theme={theme} />;
 }
@@ -377,6 +387,12 @@ function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; t
   const host = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const shownTab = useRef<string | null>(null);
+  // md·csv — 편집기와 그린 모습을 오간다(처음엔 그린 쪽). 그릴 때는 편집기의 지금 글을 쓴다(저장 전 포함).
+  const toggle = doc?.status === 'ready' && !!store.host.preview && store.previewMode(tab.path) === 'toggle';
+  const rendered = useIde((s) => toggle && (s.rendered[tab.path] ?? true));
+  const liveText = useLiveText(monaco, store.host.workflowId, tab.path, rendered);
+  // 글이 아닌 파일 — 호스트가 그릴 수 있으면 "열지 않았다" 대신 그린 모습을 보여 준다.
+  const binaryPreview = doc?.status === 'binary' && !!store.host.preview;
 
   // 편집기를 만든다(묶음마다 하나).
   useEffect(() => {
@@ -446,10 +462,43 @@ function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; t
   return (
     <div className="xide-code-pane">
       {doc?.diskChanged && doc.status === 'ready' ? <DiskChangedBar path={tab.path} deleted={!!doc.message} /> : null}
-      <div className="xide-monaco" ref={host} style={{ display: doc?.status === 'ready' ? undefined : 'none' }} />
+      {toggle ? (
+        <div className="xide-view-toggle" role="group" aria-label="보기">
+          <button
+            type="button"
+            className={rendered ? 'xide--on' : ''}
+            aria-pressed={rendered}
+            onClick={() => store.setRendered(tab.path, true)}
+          >
+            미리보기
+          </button>
+          <button
+            type="button"
+            className={!rendered ? 'xide--on' : ''}
+            aria-pressed={!rendered}
+            onClick={() => store.setRendered(tab.path, false)}
+          >
+            편집
+          </button>
+        </div>
+      ) : null}
+      <div className="xide-monaco" ref={host} style={{ display: doc?.status === 'ready' && !rendered ? undefined : 'none' }} />
+      {rendered ? <PreviewPane path={tab.path} theme={theme} text={liveText} /> : null}
       {error ? <Empty icon="error">{error}</Empty> : null}
       {!error && (!doc || doc.status === 'loading' || !monaco) ? <div className="xide-pane-note">여는 중</div> : null}
-      {doc?.status === 'binary' ? (
+      {binaryPreview ? (
+        <>
+          <div className="xide-banner xide--info" role="note">
+            <Icon name="file" />
+            <span>글 파일이 아니라 그려서 보여 줍니다.</span>
+            <button type="button" className="xide-link" onClick={() => void store.openFile(tab.path, { forceText: true, preview: false })}>
+              글로 열기
+            </button>
+          </div>
+          <PreviewPane path={tab.path} theme={theme} />
+        </>
+      ) : null}
+      {doc?.status === 'binary' && !binaryPreview ? (
         <Empty icon="file">
           <p>텍스트 파일이 아니거나 UTF-8 이 아니라 편집기로 열지 않았습니다.</p>
           <div className="xide-empty-actions">
@@ -675,6 +724,58 @@ function DiffPane({ group, tab, diff, theme }: { group: EditorGroup; tab: Editor
       {!ready && !error && !loadError ? <div className="xide-pane-note">비교할 내용을 읽는 중</div> : null}
     </div>
   );
+}
+
+/** 편집기 모델의 지금 글 — 그린 모습을 저장 전 내용으로 갱신한다(타자마다가 아니라 잠깐 멈췄을 때). */
+function useLiveText(monaco: typeof Monaco | null, workflowId: string, path: string, on: boolean): string | undefined {
+  const [text, setText] = useState<string | undefined>(undefined);
+  const ready = useIde((s) => s.docs[path]?.status === 'ready');
+  useEffect(() => {
+    if (!on || !monaco || !ready) {
+      setText(undefined);
+      return;
+    }
+    const model = monaco.editor.getModel(modelUri(monaco, workflowId, path));
+    if (!model) return;
+    setText(model.getValue());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sub = model.onDidChangeContent(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setText(model.getValue()), 250);
+    });
+    return () => {
+      clearTimeout(timer);
+      sub.dispose();
+    };
+  }, [monaco, workflowId, path, on, ready]);
+  return text;
+}
+
+/**
+ * 그린 모습 — 문서·PDF·소리·영상과 md·csv. 그리는 일은 호스트의 미리보기 부품이 한다(데스크톱·웹의
+ * [파일 저장소] 와 같은 렌더러). 바이트는 IDE 가 고른 길(샌드박스·연결된 폴더)로 읽는다.
+ */
+function PreviewPane({ path, theme, text }: { path: string; theme: ThemeKind; text?: string }) {
+  const store = useStore();
+  const version = useIde((s) => s.files.find((f) => f.path === path)?.modifiedAt ?? '');
+  const preview = store.host.preview;
+  const local = isFolderPath(path);
+  const canDownload = !!store.host.download && !local;
+  const req = useMemo<IdePreviewRequest>(
+    () => ({
+      path,
+      name: basename(path),
+      local,
+      readRaw: () => store.readRaw(path),
+      text,
+      version,
+      theme,
+      download: canDownload ? () => void store.host.download?.(path) : undefined,
+    }),
+    [path, local, text, version, theme, canDownload, store],
+  );
+  if (!preview) return <Empty icon="file">이 형식은 미리보기를 지원하지 않습니다.</Empty>;
+  return <div className="xide-preview-pane">{preview.render(req)}</div>;
 }
 
 function ImagePane({ path }: { path: string }) {

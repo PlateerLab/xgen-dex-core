@@ -1,0 +1,105 @@
+{
+  "$comment": "XD 엔진 동봉본 — apps/xd/scripts/bundle-engine.mjs 가 읽는다. 설명은 apps/xd/DESIGN.md §5 '동봉 Python'.",
+  "python": {
+    "version": "3.12.15",
+    "release": "20261001",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261001/cpython-3.12.15%2B20261001-{triple}-install_only_stripped.tar.gz",
+    "targets": {
+      "linux-x64": {
+        "triple": "x86_64-unknown-linux-gnu",
+        "sha256": "7bb1659e3235077b7f63d5b6eb6ce653c6fcd6c5041e9d5f73b42ce10421464d"
+      },
+      "darwin-arm64": {
+        "triple": "aarch64-apple-darwin",
+        "sha256": "10cab8f6ed6202fdd81637aa6eda4af8d5b7eaa8fc42f9df3c6bea4923de0d93"
+      },
+      "darwin-x64": {
+        "triple": "x86_64-apple-darwin",
+        "sha256": "d101ac54bc34afff54741406261325dc896b7b646a36a58fff4845ef0a00b2ce"
+      },
+      "win32-x64": {
+        "triple": "x86_64-pc-windows-msvc",
+        "sha256": "52124cee54126f3f360eaa378288f6f64c402c983a3c14c95eff67f4af986aaa"
+      }
+    }
+  },
+  "forbidden": [
+    "psycopg",
+    "psycopg-binary",
+    "pgvector",
+    "qdrant-client",
+    "asyncssh",
+    "croniter",
+    "boto3",
+    "botocore",
+    "sqlalchemy",
+    "langchain",
+    "langchain-community",
+    "langgraph",
+    "langchain-anthropic",
+    "langchain-openai",
+    "langchain-aws",
+    "langchain-google-genai",
+    "pip",
+    "pytest",
+    "numpy",
+    "pandas",
+    "tiktoken"
+  ],
+  "compileSkip": {
+    "$comment": "pyc 를 만들 수 없는 파일 — import 되지 않는 옛 파일만. 그 밖의 컴파일 실패는 빌드를 멈춘다.",
+    "patterns": [
+      "[/\\\\]olefile[/\\\\]olefile2\\.py$"
+    ]
+  },
+  "prune": {
+    "$comment": "인터프리터 폴더 기준. posix 는 맥·리눅스 공통, 그 밖에는 그 OS 만.",
+    "posix": [
+      "bin/idle3*",
+      "bin/pydoc3*",
+      "bin/2to3*",
+      "bin/pip*",
+      "bin/python3*-config",
+      "include",
+      "share",
+      "lib/tcl*",
+      "lib/tk*",
+      "lib/itcl*",
+      "lib/thread*",
+      "lib/libtcl*",
+      "lib/libtk*",
+      "lib/python3.12/idlelib",
+      "lib/python3.12/tkinter",
+      "lib/python3.12/turtledemo",
+      "lib/python3.12/ensurepip",
+      "lib/python3.12/lib-dynload/_tkinter*"
+    ],
+    "linux": [
+      "lib/libpython3.12.so*",
+      "lib/libpython3.so"
+    ],
+    "win32": [
+      "Scripts",
+      "include",
+      "libs",
+      "tcl",
+      "DLLs/_tkinter*",
+      "DLLs/tcl*",
+      "DLLs/tk*",
+      "Lib/idlelib",
+      "Lib/tkinter",
+      "Lib/turtledemo",
+      "Lib/ensurepip"
+    ]
+  },
+  "prunePackages": {
+    "$comment": "site-packages 기준. 'tests' 는 이름이 tests 인 폴더 전부(어느 깊이든) — 실행 때 import 되지 않는다.",
+    "dirsNamed": [
+      "tests"
+    ],
+    "paths": [
+      "zstandard/_cffi*",
+      "zstandard/backend_cffi.py"
+    ]
+  }
+}

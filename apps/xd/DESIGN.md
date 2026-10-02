@@ -30,7 +30,15 @@ apps/xd
 │   xd_engine/
 │     host.py                   XdHostServices — 런타임의 HostServices 를 로컬로 구현
 │     daemon.py                 상주 데몬, stdio JSON 줄(프로토콜 v1)
-│     mcp_bridge.py             CLI 제공자 턴의 도구 다리(TurnToolSurface → MCP)
+│     protocol.py               stdout 떼어 내기·사건 내보내기·명령 읽기
+│     layout.py                 루트 구조·이름 검사(data-root.ts 와 같은 모양)
+│     safety.py                 위험 명령 확인(규칙은 main 이 Dex 것을 넘긴다)·셸 도구 감싸기
+│     memory_llm.py             턴 끝 기억 증류용 LLM
+│     testing.py                시험용 가짜 LLM(xd_fake) — 환경 변수가 있을 때만
+│     (M3) mcp_bridge.py        CLI 제공자 턴의 도구 다리(TurnToolSurface → MCP)
+│   bundle/                     동봉 목록 — bundle.json · requirements.in/.lock · nodeps.lock · verify.py
+│   tests/                      pytest — 데몬은 실제 프로세스로 띄워 stdio 로 시험한다
+├─ scripts/bundle-engine.mjs    동봉본 만들기 → engine/dist/<platform>-<arch>/python
 ├─ src/main/                    Electron main
 │     data-root.ts              루트 폴더 결정·구조
 │     (M2~) store.ts            SQLite(node:sqlite) — 에이전트·대화·계정·설정
@@ -86,32 +94,66 @@ Windows 설치본의 설치 폴더(쓸 수 있을 때) → `~/XD`.
 | 런타임이 부르는 것 | XD |
 |---|---|
 | `make_sandbox` | `None` — 파일 도구는 LocalFS(경로 가드), Bash 는 이 PC 의 셸(Windows 는 PowerShell) |
-| `agent_workspace_dir` | `<루트>/workspace/<에이전트>` |
-| `hydrate_workspace`·`finalize_turn` | 할 일 없음(원본이 로컬) |
-| `workspace_storage_root` | `<루트>/.xd/agents/<id>` — 도구 결과·실행 기록 |
-| `environment_prompt` | 이 PC(OS·셸·작업 공간·연결 폴더) 설명 |
-| `build_memory_provider` | 파일 기억(`memory/providers/file`), `<루트>/.xd/agents/<id>/memory` |
-| `register_builtin_tools` | filesystem·shell·workflow(TodoWrite·ToolBatch)·web·parsing + memory 도구 |
-| `build_run_tool_context` | `working_dir`=작업 공간, `allowed_paths`=작업 공간+연결 폴더 |
-| `resolve_*`·`setting` | 턴마다 main 이 넘기는 제공자 설정·비밀 |
-| `build_cli_runtime` | `build_cli_client`·`build_codex_cli_client` + 격리 홈 + 도구 다리(MCP) |
-| `build_connector_mcp_tools`·`register_forged_tools`·`register_workflow_self_tools`·`build_job_tools` | 없음(빈 목록) — 서버 소유이거나 sandbox 가 필요 |
+| `agent_workspace_dir` | `<루트>/workspace/<작업 공간 이름>` — 이름은 main 이 정하고 엔진이 한 칸짜리 이름인지 다시 본다 |
+| `hydrate_workspace` | `None`("복원 개념 없음" — 실행기가 False 와 구분한다) · `finalize_turn` 할 일 없음(원본이 로컬) |
+| `workspace_storage_root` | `<루트>/.xd/agents/<id>` — 도구 결과(`executor/`)·기억(`memory/`) |
+| `environment_prompt` | 이 PC(OS·셸·작업 폴더·연결 폴더) — "서버도 sandbox 도 없다, 실제로 일어난다" |
+| `build_memory_provider` | 파일 기억(서버 file 백엔드와 같은 composite): `memory/vault` 에이전트당 하나, `memory/sessions/<대화>` |
+| `register_builtin_tools` | web·parsing·workflow(TodoWrite·ToolBatch)·filesystem·shell. Bash 는 감싸서 위험 명령 확인을 지나고 설명을 "이 PC" 로 바꾼다(`to_api_format` 까지). 끄기: `GENY_TOOLS_<묶음>_ENABLED` |
+| `build_run_tool_context` | `working_dir`=작업 공간, `allowed_paths`=작업 공간+연결 폴더, `extras[host_is_execution_target]` |
+| `resolve_*`·`setting` | 턴마다 main 이 넘기는 값만 — **환경 변수를 읽지 않는다**(사용자 셸 환경이 턴을 바꾸지 않게). 다른 제공자의 키를 물으면 빈 값 |
+| `build_turn_memory_llm` | 그 턴의 API 제공자 그대로(CLI 제공자는 M3) |
+| `build_cli_runtime` | (M3) `build_cli_client`·`build_codex_cli_client` + 격리 홈 + 도구 다리(MCP). 그 전에는 턴을 시작하지 않고 `bad_request` |
+| `build_connector_mcp_tools`·`register_forged_tools`·`register_workflow_self_tools`·`build_job_tools`·`build_host_skill_tools`·`load_ssh_servers`·`rag_context_builder` | 없음 — 서버 소유이거나 sandbox 가 필요. 자기 워크플로 편집은 `enable_self_evolution=False` 로 끈다 |
 
 ### 데몬 프로토콜 v1 (stdio JSON 줄)
 
-- 명령: `ping` · `turn{id, agent, conversation, text, config}` · `cancel{id}` · `approval_reply{id, ok}` · `shutdown`
-- 사건: `ready{protocol, runtime, python}` · `started` · `chunk{text}` · `tool{phase, …}` · `approval_request` ·
-  `usage` · **종결 하나**: `done` | `error{code, message}` | `cancelled`
-- 규칙: 턴마다 종결 사건은 정확히 하나(취소 > 실패 > 끝). 런타임은 실패를 예외가 아니라 `[ERROR]` 글로 흘리므로
-  데몬이 읽어 `error` 로 바꾼다. stdout 은 프로토콜 전용 — 라이브러리 출력은 stderr 로 돌린다.
+띄우기: `<python> -I -m xd_engine --root <루트>` — `-I` 로 사용자의 `PYTHONPATH`·`PYTHONHOME`·사용자 site 를 무시한다.
+
+- 명령
+  - `ping{id?}` → `pong`
+  - `configure{dangerous: [{source, flags}]}` → `configured{dangerous: n}` — 위험 명령 규칙(§9)
+  - `turn{id, conversation, text, history?, agent{id, name, workspace, system_prompt?, folders?, memory?}, config{provider, model, api_key?, base_url?, credentials?, settings?, temperature?, max_tokens?, max_iterations?, thinking?, context_window?, tool_exposure?, enable_compaction?, memory_distill?}}`
+  - `cancel{id}` · `approval_reply{id, request, answer: once | session | deny}` · `shutdown`
+- 사건
+  - `ready{protocol, runtime, python, platform, root}` — 루트를 쓸 수 없으면 대신 `fatal{message}` 후 종료(2)
+  - 턴: `started` · `chunk{text}` · `tool{event}`(tool_call·tool_result·tool_error) · `progress{event}` · `usage{usage}` ·
+    `approval_request{request, command}` · **종결 하나**: `done` | `error{code, message}` | `cancelled`
+  - 턴 밖: `protocol_error{message}` — 깨진 줄·모르는 명령·틀린 규칙·없는 승인. 데몬은 계속 돈다.
+- 오류 코드: `bad_request`(이름·경로·제공자·키 — 턴을 시작하지 않는다) · `busy`(그 대화에 도는 턴이 있다) ·
+  `runtime`(제공자·파이프라인 실패) · `start`(조립 실패) · `E104` 등(런타임의 실행 전 검사) · `internal`
+- 규칙
+  - 턴마다 종결 사건은 정확히 하나(취소 > 실패 > 끝). 런타임은 실패를 예외가 아니라 `[ERROR]` 글로 흘리므로 데몬이
+    읽어 `error` 로 바꾸고 `chunk` 로는 내보내지 않는다(스트림 도중의 실패는 줄바꿈이 앞에 붙은 조각 하나다).
+  - 대화 하나에 도는 턴은 하나. 대화가 다르면 동시에 돈다.
+  - 취소는 기다리던 승인도 거부로 끝낸다. `shutdown`(또는 stdin 닫힘)은 도는 턴을 모두 취소하고 정리를 기다린다.
+  - stdout 은 프로토콜 전용 — 시작할 때 fd 1 을 stderr 로 돌려 라이브러리·자식 프로세스 출력이 섞이지 않는다.
+- 취소된 셸 명령은 자식까지 끝난다 — 런타임 4.83.1(호스트 경로 Bash 가 프로세스 그룹째 종료. 그 전에는 고아로 남았다). Windows 는 셸을 창 없이 띄운다(4.83.2 — 창 없는 엔진이 띄운 PowerShell 이 명령마다 콘솔 창을 만들었다).
+- 시험용 가짜 LLM: `XD_ENGINE_FAKE_LLM=<각본.json>` 이면 제공자 `xd_fake` 가 등록된다(앱은 설정하지 않는다).
 
 ### 동봉 Python
 
-- python-build-standalone 3.12.x `install_only_stripped`, **아키텍처마다 따로**(win-x64·mac-arm64·mac-x64·
-  linux-x64). Geny 앱은 맥 두 dmg 를 arm64 하나로 묶어 x64 에 엉뚱한 인터프리터가 들어갔다.
-- 런타임 wheel(GitHub 릴리스)은 `--no-deps`, 의존성은 XD 가 쓰는 것만. 서버 전용(psycopg·pgvector·
-  qdrant-client 등)은 금지 목록으로 빌드를 실패시킨다. pyc 동봉(읽기 전용 설치 경로에서 매 실행 재컴파일 방지).
-- 설치 크기 목표 250MB 안팎(M1 에서 실측해 정한다). 검증 게이트: import 스모크 + 데몬 `ready` + 가짜 LLM 턴.
+- python-build-standalone 3.12.15(20261001) `install_only_stripped`, **아키텍처마다 따로**(win-x64·mac-arm64·
+  mac-x64·linux-x64), 압축본 sha256 고정. Geny 앱은 맥 두 dmg 를 arm64 하나로 묶어 x64 에 엉뚱한 인터프리터가
+  들어갔다. 동봉본은 그 아키텍처에서 만든다 — 패키지 설치를 그 인터프리터가 직접 한다.
+- 설치는 잠금 그대로: `pip install --no-deps --require-hashes --only-binary=:all:`
+  - `requirements.lock` — `uv pip compile --universal --generate-hashes` (플랫폼 표지 포함, 85개). 판은 런타임·
+    문서 파서가 선언한 판(서버와 같은 조합). 네 대상 모두 바이너리 wheel 만으로 설치됨을 확인했다(2026-10-02).
+    cryptography 50 은 Intel 맥 wheel 이 없어 그 자리만 48.0.1.
+  - `nodeps.lock` — 런타임 wheel(GitHub 릴리스)·xgen-doc2chunk·xgen-pdf 를 의존성 없이. 이들이 선언한 서버 전용
+    의존성(psycopg·pgvector·qdrant-client·asyncssh·croniter·langchain-community·langgraph…)은 넣지 않는다.
+  - 선언됐지만 넣지 않는 것: numpy·pandas(모듈 수준에서 쓰는 곳이 없다 — 표를 DataFrame 으로 바꾸는 선택 기능뿐),
+    tiktoken(런타임이 자체 추정기로 바꿨다). 셋이 동봉본의 3분의 1이었다.
+  - 금지 목록(bundle.json `forbidden`)에 걸리면 검증이 실패한다.
+- 걷어 내기: tcl/tk·idle·ensurepip·pip·헤더·패키지 안의 `tests` 폴더·zstandard 의 중복 백엔드, 리눅스는 쓰이지
+  않는 `libpython3.12.so`(인터프리터가 정적으로 품는다 — 확장 모듈 67개가 요구하지 않음을 확인).
+- pyc: `compileall --invalidation-mode unchecked-hash` — 읽기 전용 설치 폴더에서도 매번 다시 컴파일하지 않는다.
+  pyc 를 만들 수 없는 옛 파일(olefile2.py)만 건너뛰고, 그 밖의 실패는 빌드를 멈춘다.
+- 크기(linux-x64 실측): **242MB**(gzip 84MB) — 인터프리터 94MB + site-packages 190MB(pyc 포함), 걷어 낸 것 60MB.
+- 검증 게이트(`bundle/verify.py`, 동봉 인터프리터로): 금지 목록 → import → 데몬 `ready`(0.2초) → 가짜 LLM 턴
+  (Write·Bash·ParseDocument 로 docx·xlsx·pptx·pdf 를 그 자리에서 만들어 읽기) → 종결 하나. CI 는 세 OS 에서
+  동봉본을 만들어 이 검증과 엔진 시험 전체를 그 인터프리터로 돌린다(`xd-engine` 잡).
+- hwp 는 로컬 견본으로만 확인했다(저장소에 넣을 수 있는 견본이 없다).
 
 ## 6. 제공자 (M3)
 
@@ -145,11 +187,18 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24):
   나머지 기능은 기능 스위치(capabilities)로 화면에서 감춘다. 감출 것: 서버 설정·로그인·Teams·앱 스토어·
   음성·아바타 스토어·SSH(서버)·답변 평가·가드레일·연결된 기기.
 
-## 9. 안전 (M5)
+## 9. 안전 (엔진은 M1, 확인 창은 M4·M5)
 
 - 파일 도구: 런타임의 경로 가드 — 작업 공간 + 연결 폴더 밖은 거부.
 - 셸: 이 PC 에서 돈다(경로 가드 밖). 위험 명령(지우기·포맷·권한 변경 등)은 Dex 로컬 도구와 **같은 규칙**
-  (`@dex/engine` isDangerousShellCommand)으로 판정해 사용자에게 묻는다(`approval_request`).
+  (`@dex/engine` DANGEROUS_PATTERNS)으로 판정해 사용자에게 묻는다(`approval_request`).
+  - 규칙은 사본을 두지 않는다 — main 이 Dex 규칙의 RegExp `source`·`flags` 를 `configure` 로 넘긴다. 엔진 시험이
+    같은 글자를 node 와 파이썬에 돌려 판정표(규칙 15개 × 명령 25개)가 같은지 본다.
+  - 규칙을 받기 전에는 **모든** 셸 명령을 묻는다. 물을 수 없거나(창이 없다) 모르는 대답이면 거부.
+  - 대답: 한 번 · 이 대화에서 계속(엔진이 대화 id 로 기억 — Dex 와 같다) · 거부. 거부는 런타임이 알아보는
+    `user_denied` 결과로 돌아가 같은 턴에 같은 일을 다른 방법으로 다시 하지 않는다.
+  - ToolBatch 로 부른 셸도 같은 문을 지난다(시험으로 확인).
+- 연결 폴더는 있는 폴더의 실제 경로만, `.xd`(데이터베이스·암호문) 안은 받지 않는다(심볼릭 링크로 돌아와도).
 
 ## 10. 릴리스 (M6)
 
@@ -167,8 +216,16 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24):
 | M2 | 저장소·에이전트·대화·엔진 관리 | 앱을 껐다 켜도 대화가 이어짐 |
 | M3 | 제공자·CLI | 제공자별 실제 턴(계정이 있는 것) |
 | M4 | 화면 | Playwright 화면 E2E |
-| M5 | 폴더 연결·IDE·사용자 MCP·위험 명령 확인 | 해당 E2E |
+| M5 | 폴더 연결·IDE·사용자 MCP·위험 명령 확인 창 | 해당 E2E |
 | M6 | 3 OS 설치본·같은 릴리스·업데이트·NSIS 데이터 보존 | 설치본을 풀어 엔진 기동, 제거 후 루트 보존 |
+
+### 진행
+
+- **M0** (2026-10-02, PR #160) — 설계·뼈대·정체성·버전/계약/CI.
+- **M1** (2026-10-02) — 엔진·동봉 Python. 완료 기준 실측: 가짜 LLM 으로 도구가 든 턴이 끝까지(Write·Bash·문서 4종),
+  종결 하나, 동봉본(linux-x64)에서 `ready` 0.2초. 엔진 시험 72개를 동봉 인터프리터로 통과. 찾아 고친 것: 런타임
+  호스트 경로 Bash 가 취소·시간 초과 때 자식을 남기던 것(runtime 4.83.1), Windows 에서 명령마다 콘솔 창이
+  뜨던 것(4.83.2).
 
 ## 12. 위험·미정
 
@@ -176,3 +233,8 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24):
 - IDE 터미널은 네이티브 모듈(node-pty)이 필요 — 처음에는 터미널 없이.
 - 서명 없음 — macOS Gatekeeper·Windows SmartScreen 안내 필요(Dex 와 같다).
 - 실기기·실계정 검증은 계정이 있어야 한다 — 그 단계에서 확인을 받는다.
+- (M2) Finder·시작 메뉴에서 켠 앱은 로그인 셸의 PATH 를 모른다(맥은 `/usr/bin:/bin` 정도) — 엔진을 띄울 때 로그인
+  셸의 PATH 를 넘겨야 에이전트의 셸이 사용자의 `node`·`brew`·`git` 을 찾는다.
+- (M6) 맥 동봉 인터프리터·확장 모듈의 서명·공증, Gatekeeper 격리 속성.
+- (M3) Windows 에서 CLI(claude·codex)도 콘솔 프로그램이다 — 창 없는 엔진이 띄우면 창이 뜨는지 런타임 CLI
+  클라이언트의 생성 플래그를 확인한다(Bash 는 4.83.2 에서 막았다).

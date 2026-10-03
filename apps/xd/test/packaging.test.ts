@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { parse } from 'yaml';
+import { dexMacDmg } from '../../desktop/src/main/update-source';
 import { macDmgUrl, UPDATE_REPO } from '../src/main/update-feed';
 
 const here = join(__dirname, '..');
@@ -25,15 +26,62 @@ test('정체성이 Dex 와 겹치지 않는다 — 나란히 설치된다', () =
   assert.equal(pkg.desktopName, `${pkg.name}.desktop`);
 });
 
+/** 설치본 이름 틀(artifactName)에 판·아키텍처·확장자를 채운다. */
+const fill = (pattern: string, ext: string, arch = 'arm64') =>
+  pattern.replace('${version}', '1.82.0').replace('${arch}', arch).replace('${ext}', ext);
+
 test('같은 릴리스에서 업데이트 정보와 산출물 이름이 겹치지 않는다', () => {
   assert.equal(xd.publish.repo, dex.publish.repo, '같은 릴리스에 함께 올라간다');
   assert.equal(xd.publish.channel, 'xd', 'latest*.yml 대신 xd*.yml');
   assert.equal(dex.publish.channel, undefined, 'Dex 는 그대로 latest');
   for (const key of ['linux', 'win', 'mac'] as const) {
-    assert.match(xd[key].artifactName, /^XD-/);
-    assert.doesNotMatch(dex[key].artifactName, /^XD-/);
+    assert.match(xd[key].artifactName, /^XGen-XD-/);
+    assert.doesNotMatch(dex[key].artifactName, /^XGen-XD-/);
   }
   assert.match(xd.mac.artifactName, /\$\{arch\}/, '아키텍처마다 엔진이 달라 dmg 이름에 아키텍처가 들어간다');
+});
+
+test('옛 Dex 의 맥 업데이트가 같은 릴리스의 XD dmg 를 집지 않는다', () => {
+  // 1.81.1 까지의 Dex 는 GitHub 릴리스 자산 중 처음 나오는 .dmg 를 받는다 — GitHub API 는 자산을 이름순(대소문자
+  // 무시)으로 준다(실측). XD dmg 가 Dex dmg 보다 앞이면 옛 Dex 가 XD 를 내려받아 연다("XD-…" 는 "XGen-Dex-…" 보다
+  // 앞이었다). 새 Dex 는 이름으로 고른다(dexMacDmg).
+  const dexDmg = fill(dex.mac.artifactName, 'dmg');
+  const names = [
+    dexDmg,
+    `${dexDmg}.blockmap`,
+    fill(dex.win.artifactName, 'exe'),
+    fill(dex.linux.artifactName, 'AppImage'),
+    'latest-mac.yml',
+    ...['arm64', 'x64'].flatMap((arch) => [fill(xd.mac.artifactName, 'dmg', arch), `${fill(xd.mac.artifactName, 'dmg', arch)}.blockmap`]),
+    fill(xd.win.artifactName, 'exe'),
+    fill(xd.linux.artifactName, 'AppImage'),
+    fill(xd.linux.artifactName, 'deb'),
+    'xd-mac.yml',
+  ];
+  const listed = [...names].sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1)).map((name) => ({ name }));
+  assert.equal(listed.find((a) => /\.dmg$/i.test(a.name))?.name, dexDmg, '옛 Dex(처음 나오는 dmg)');
+  assert.equal(dexMacDmg(listed)?.name, dexDmg, '새 Dex(이름으로)');
+});
+
+test('릴리스가 올리는 XD 파일 = 설치본이 만드는 이름(빠지거나 남는 것 없이)', () => {
+  const release = parse(readFileSync(join(here, '../../.github/workflows/release.yml'), 'utf8'));
+  const include = release.jobs.xd.strategy.matrix.include as Array<{ name: string; glob: string }>;
+  const made: Record<string, string[]> = {
+    'linux-x64': [fill(xd.linux.artifactName, 'AppImage'), fill(xd.linux.artifactName, 'deb'), 'xd-linux.yml'],
+    'windows-x64': [fill(xd.win.artifactName, 'exe'), `${fill(xd.win.artifactName, 'exe')}.blockmap`, 'xd.yml'],
+    'macos-arm64': [fill(xd.mac.artifactName, 'dmg', 'arm64'), `${fill(xd.mac.artifactName, 'dmg', 'arm64')}.blockmap`, 'xd-mac.yml'],
+    // 맥 x64 는 dmg 만 — xd-mac.yml 은 하나여야 한다(맥 업데이트는 버전만 보고 그 아키텍처의 dmg 를 받는다)
+    'macos-x64': [fill(xd.mac.artifactName, 'dmg', 'x64'), `${fill(xd.mac.artifactName, 'dmg', 'x64')}.blockmap`],
+  };
+  assert.deepEqual(include.map((m) => m.name).sort(), Object.keys(made).sort());
+  const toRe = (glob: string) => new RegExp(`^${glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
+  for (const { name, glob } of include) {
+    const patterns = glob.trim().split('\n').map((line) => line.trim());
+    for (const p of patterns) assert.ok(p.startsWith('apps/xd/release/'), `${name}: ${p}`);
+    const res = patterns.map((p) => toRe(p.slice('apps/xd/release/'.length)));
+    for (const [i, re] of res.entries()) assert.ok(made[name].some((f) => re.test(f)), `${name}: ${patterns[i]} 에 맞는 설치본이 없다`);
+    for (const f of made[name]) assert.ok(res.some((re) => re.test(f)), `${name}: ${f} 을(를) 올리지 않는다`);
+  }
 });
 
 test('Windows 설치 폴더를 고를 수 있다 — 설치 폴더가 루트 폴더다', () => {

@@ -153,32 +153,32 @@ jobs:
             flag: --linux
             exe: apps/xd/release/linux-unpacked/xd
             glob: |
-              apps/xd/release/XD-*.AppImage
-              apps/xd/release/XD-*.deb
+              apps/xd/release/XGen-XD-*.AppImage
+              apps/xd/release/XGen-XD-*.deb
               apps/xd/release/xd-linux.yml
           - name: windows-x64
             os: windows-latest
             flag: --win
             exe: apps/xd/release/win-unpacked/XD.exe
             glob: |
-              apps/xd/release/XD-Setup-*.exe
-              apps/xd/release/XD-Setup-*.exe.blockmap
+              apps/xd/release/XGen-XD-Setup-*.exe
+              apps/xd/release/XGen-XD-Setup-*.exe.blockmap
               apps/xd/release/xd.yml
           - name: macos-arm64
             os: macos-latest
             flag: --mac --arm64
             exe: apps/xd/release/mac-arm64/XD.app/Contents/MacOS/XD
             glob: |
-              apps/xd/release/XD-*-arm64.dmg
-              apps/xd/release/XD-*-arm64.dmg.blockmap
+              apps/xd/release/XGen-XD-*-arm64.dmg
+              apps/xd/release/XGen-XD-*-arm64.dmg.blockmap
               apps/xd/release/xd-mac.yml
           - name: macos-x64
             os: macos-15-intel
             flag: --mac --x64
             exe: apps/xd/release/mac/XD.app/Contents/MacOS/XD
             glob: |
-              apps/xd/release/XD-*-x64.dmg
-              apps/xd/release/XD-*-x64.dmg.blockmap
+              apps/xd/release/XGen-XD-*-x64.dmg
+              apps/xd/release/XGen-XD-*-x64.dmg.blockmap
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -690,10 +690,10 @@ jobs:
 
             | OS | 파일 | 설치 |
             |---|---|---|
-            | Windows | `XD-Setup-*.exe` | 실행 → 설치 위치를 고릅니다(기본 `…\Programs\XD`, 그 안에 에이전트의 작업 공간이 생깁니다). SmartScreen 이 뜨면 **추가 정보 → 실행** |
-            | macOS (Apple 실리콘) | `XD-*-arm64.dmg` | 열어서 **XD.app** 을 **응용 프로그램**으로 옮긴 뒤 터미널에서 아래 한 줄 |
-            | macOS (Intel) | `XD-*-x64.dmg` | 위와 같습니다 |
-            | Linux | `XD-*.AppImage` / `XD-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
+            | Windows | `XGen-XD-Setup-*.exe` | 실행 → 설치 위치를 고릅니다(기본 `…\Programs\XD`, 그 안에 에이전트의 작업 공간이 생깁니다). SmartScreen 이 뜨면 **추가 정보 → 실행** |
+            | macOS (Apple 실리콘) | `XGen-XD-*-arm64.dmg` | 열어서 **XD.app** 을 **응용 프로그램**으로 옮긴 뒤 터미널에서 아래 한 줄 |
+            | macOS (Intel) | `XGen-XD-*-x64.dmg` | 위와 같습니다 |
+            | Linux | `XGen-XD-*.AppImage` / `XGen-XD-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
 
             > macOS: XD 는 실행 엔진(Python)을 함께 실어 서명 없이는 안의 실행 파일까지 격리됩니다 — 옮긴 뒤 한 번
             > `xattr -dr com.apple.quarantine "/Applications/XD.app"` 를 실행하세요.

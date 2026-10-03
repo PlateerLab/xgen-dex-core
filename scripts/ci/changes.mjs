@@ -70,11 +70,13 @@ const areas = {
   // 실제 설치본을 만든다(무겁다).
   xdpack: under([
     'apps/xd/electron-builder.yml',
+    'apps/xd/electron.vite.config.ts',
     'apps/xd/build/',
     'apps/xd/package.json',
     'apps/xd/package-lock.json',
     'apps/xd/scripts/',
     'apps/xd/engine/bundle/',
+    'apps/xd/src/main/index.ts',
     'apps/xd/src/main/engine-service.ts',
     'apps/xd/src/main/data-root.ts',
     'apps/xd/src/main/updater.ts',

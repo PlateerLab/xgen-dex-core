@@ -10,6 +10,8 @@ export const CHANNELS = {
   /** 업데이트 — 지금 상태 / 지금 확인 / main → 화면: 상태가 바뀜(updater.ts). */
   updateState: 'xd:updateState',
   updateCheck: 'xd:updateCheck',
+  /** macOS — 새 판의 dmg 를 브라우저로 받는다(서명 없는 맥은 스스로 바꾸지 못한다). */
+  updateDownload: 'xd:updateDownload',
   updateEvent: 'xd:update-event',
   /** main 의 API 한 칸 — `xd:api` 하나로 이름(메서드)과 인자를 넘긴다(xd-api.ts). */
   api: 'xd:api',

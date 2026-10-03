@@ -22,7 +22,7 @@ import { augmentedPath } from '@dex/engine/exec-resolve';
 import { CliService, type CliEvent } from './cli/service';
 import { FolderFsError } from './dex';
 import { IdeService } from './ide-service';
-import { checkForUpdates, onUpdateState, startUpdater, updateState } from './updater';
+import { checkForUpdates, downloadMacUpdate, onUpdateState, startUpdater, updateState } from './updater';
 import { BusyError, TurnRunner, type XdTurnEvent } from './turn-runner';
 import { createXdApi, XdError, type XdApi } from './xd-api';
 
@@ -150,18 +150,19 @@ if (!app.requestSingleInstanceLock()) {
 
   // 끌 때 — 도는 턴을 엔진이 취소로 마무리하고(저장까지) 저장소를 닫은 뒤에 끝낸다.
   let closing = false;
+  /** 엔진(과 그 MCP 서버)을 멈추고 저장소를 닫는다 — 끌 때도, 업데이트로 바꾸기 전에도. 한 번만 돈다. */
+  let shuttingDown: Promise<void> | null = null;
+  const shutdown = (): Promise<void> =>
+    (shuttingDown ??= engine
+      .stop()
+      .catch(() => undefined)
+      .then(() => new Promise<void>((r) => setTimeout(r, 0)))
+      .finally(() => store.close()));
   app.on('before-quit', (event) => {
     if (closing) return;
     closing = true;
     event.preventDefault();
-    void engine
-      .stop()
-      .catch(() => undefined)
-      .then(() => new Promise((r) => setTimeout(r, 0)))
-      .finally(() => {
-        store.close();
-        app.quit();
-      });
+    void shutdown().finally(() => app.quit());
   });
 
   const createWindow = (): void => {
@@ -272,11 +273,18 @@ if (!app.requestSingleInstanceLock()) {
 
   ipcMain.handle(CHANNELS.updateState, () => updateState());
   ipcMain.handle(CHANNELS.updateCheck, () => checkForUpdates());
+  ipcMain.handle(CHANNELS.updateDownload, () => downloadMacUpdate());
   onUpdateState((state) => send(CHANNELS.updateEvent, state));
 
   void app.whenReady().then(() => {
     createWindow();
-    startUpdater();
+    // 바꾸기 전에 엔진을 먼저 멈춘다 — 설치 프로그램이 XD 를 끝내기 전에 엔진 파일의 잠금이 풀려 있어야 한다.
+    startUpdater({
+      beforeInstall: async () => {
+        closing = true;
+        await shutdown();
+      },
+    });
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

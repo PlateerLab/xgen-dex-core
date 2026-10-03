@@ -388,15 +388,26 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
   (아키텍처마다 엔진이 다르다 — Intel 은 `macos-15-intel` 러너에서), Linux `XD-*.AppImage`·`XD-*.deb`. 동봉 엔진은
   asar 밖 `resources/engine/python`(extraResources).
 - Windows 는 설치 폴더가 곧 루트다 — 기본 제거는 설치 폴더를 통째로 지우므로 `build/installer.nsh` 의
-  `customRemoveFiles` 가 **workspace·.xd 를 남기고** 앱이 깐 것만 지운다(제거·업데이트 모두). 같은 곳에 다시 설치하면
-  그대로 이어진다. macOS·Linux 의 루트는 `~/XD` 라 설치본과 상관없다.
+  `customRemoveFiles` 가 **이 설치본이 깐 것만** 지운다(제거·업데이트 모두). 목록은 설치본마다 `scripts/after-pack.cjs`
+  가 풀린 폴더의 맨 위 항목으로 만든다 — "workspace·.xd 만 빼고 다" 는 사용자가 쓰던 폴더에 깔았을 때 그 사람의 파일을
+  지운다. 엔진 파일이 잠겨 있으면(엔진이 돎) 지우다 말지 않고 멈춘다. electron-builder 는 고른 경로에 "XD" 가 들면
+  `\XD` 를 붙이지 않으므로(대소문자 무시 — `C:\Users\alexd\…` 도), 그런 경로에서는 비었거나 이미 XD 인 폴더만 받는다
+  (`.onVerifyInstDir`). 같은 곳에 다시 설치하면 그대로 이어진다. macOS·Linux 의 루트는 `~/XD` 라 설치본과 상관없다.
 - 업데이트(`updater.ts`): 채널 `xd`(`xd.yml`·`xd-mac.yml`·`xd-linux.yml`) — Dex 의 `latest*.yml` 과 겹치지 않는다.
-  Windows·Linux 는 electron-updater 가 받아 두고 "다시 시작해 바꿀까요" 를 묻는다. 서명 없는 macOS 는 스스로 바꿀 수
+  Windows·Linux 는 electron-updater 가 받아 두고 "다시 시작해 바꿀까요" 를 묻는다 — 바꾸기 전에 엔진을 먼저 멈춘다
+  (설치 프로그램이 XD 를 몇 초 만에 끝내 버리면 엔진 파일이 잠긴 채 남는다). 리눅스는 1.5초 뒤 분리된 셸로 다시 띄운다
+  (Dex 와 같은 방법 — relauncher 의 NoNewPrivs·단일 실행 잠금). Windows 는 설치 프로그램으로 깐 것만 스스로 바꾼다. 서명 없는 macOS 는 스스로 바꿀 수
   없어 새 판을 알리고 그 아키텍처의 dmg 를 브라우저로 받게 한다(맥 x64 잡은 dmg 만 올린다 — `xd-mac.yml` 은 하나).
   설정에 [업데이트 확인]. 설치본에서만, 시작 30초 뒤·6시간마다.
 - 확인(CI `xd-package` 잡과 릴리스가 같은 확인): 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고 **그 설치본으로
   턴**(`e2e/packaged.e2e.ts` — 엔진이 설치본 안의 것으로 뜨는지), Windows 는 **설치 → 다시 설치(업데이트) → 제거** 뒤에
   루트의 workspace·.xd 가 남고 앱은 지워지는지(`scripts/check-installer.mjs`). 설치본에 닿는 것이 바뀔 때만 돈다.
+- electron-builder 는 **26.12 이상**(XD 의 것만 — XD 는 따로 lock 을 가진다, Dex 는 그대로). 26.12 아래의 NSIS
+  템플릿(`multiUser.nsh`)은 처음 하는 사용자별 설치에서 기본 위치를 1024자로 읽어 힙을 넘겨 읽고, Windows 11 24H2·
+  Server 2025 에서 설치 프로그램이 바로 0xC0000005 로 죽는다(electron-builder #9769 — CI 의 Windows 설치 확인이 잡았다).
+  NSIS 바이너리는 기본(3.0.4.1) 그대로. makensis 는 `-WX`(경고도 실패)로 돈다 — `ESTIMATED_SIZE` 는 electron-builder 가
+  정의하니 다시 정의하지 않는다. 리눅스는 `desktopName` = `xd.desktop`(Wayland app_id 가 설치되는 `xd.desktop`·
+  `StartupWMClass` 와 같게 — 실측 `CHROME_DESKTOP=xd.desktop`).
 - Dex 맥 수동 업데이트는 `XGen-Dex-*.dmg` 만 고른다(같은 릴리스에 XD dmg 가 있어도 섞이지 않는다).
 - 서명 없음 — macOS Gatekeeper(우클릭 → 열기·`xattr`)·Windows SmartScreen 안내(Dex 와 같다).
 

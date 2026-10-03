@@ -100,9 +100,15 @@ const UpdateCard: React.FC = () => {
       <h3>업데이트</h3>
       <div className="xd-kv">
         <span className="small">{text}</span>
-        <button type="button" className="secondary" disabled={state.state === 'checking' || state.state === 'downloading'} onClick={() => void xd.update.check().then(setState)}>
-          업데이트 확인
-        </button>
+        {state.state === 'available' ? (
+          <button type="button" className="primary" onClick={() => void xd.update.download()}>
+            내려받기
+          </button>
+        ) : (
+          <button type="button" className="secondary" disabled={state.state === 'checking' || state.state === 'downloading'} onClick={() => void xd.update.check().then(setState)}>
+            업데이트 확인
+          </button>
+        )}
       </div>
     </section>
   );

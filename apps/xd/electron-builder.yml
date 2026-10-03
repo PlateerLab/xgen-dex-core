@@ -17,6 +17,8 @@ publish:
   repo: xgen-dex-core
   channel: xd
 generateUpdatesFilesForAllChannels: false
+# Windows 설치본의 지울 목록·설치 크기를 만든다(build/xd-app-files.nsh — build/installer.nsh 가 쓴다).
+afterPack: scripts/after-pack.cjs
 files:
   - out/**
   - package.json
@@ -34,8 +36,9 @@ linux:
   synopsis: XD - run agents on this computer
   artifactName: XD-${version}.${ext}
   desktop:
-    StartupWMClass: xd
-    Name: XD
+    entry:
+      StartupWMClass: xd
+      Name: XD
 deb:
   depends:
     - libnotify4

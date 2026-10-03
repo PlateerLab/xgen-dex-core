@@ -9,6 +9,9 @@
  *
  * 설치본에서만 돈다(개발 실행·시험은 `XD_DISABLE_UPDATES`). 시작 30초 뒤, 그다음은 6시간마다 본다.
  */
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import electronUpdater from 'electron-updater';
 import { macDmgUrl } from './update-feed';
@@ -30,6 +33,7 @@ export type UpdateState =
 
 let current: UpdateState = { state: 'disabled' };
 let asked: string | null = null;
+let beforeInstall: () => Promise<void> = async () => undefined;
 const listeners = new Set<(s: UpdateState) => void>();
 
 function set(next: UpdateState): void {
@@ -63,7 +67,27 @@ async function askRestart(version: string): Promise<void> {
     detail: '다시 시작하면 새 판으로 바뀌고, 에이전트와 대화는 그대로 남습니다.',
   };
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
-  if (response === 1) autoUpdater.quitAndInstall();
+  if (response === 1) await installNow();
+}
+
+/**
+ * 받아 둔 새 판으로 바꾼다 — 엔진을 먼저 멈추고(설치 프로그램이 엔진 파일을 바꾸려면 잠금이 풀려 있어야 한다) 바꾼다.
+ * Windows 는 설치 프로그램이 다 바꾼 뒤 XD 를 다시 띄운다. Linux 는 스스로 다시 띄운다(아래 before-quit-for-update).
+ */
+async function installNow(): Promise<void> {
+  try {
+    await beforeInstall();
+  } catch (err) {
+    console.warn('[xd] before update install', err);
+  }
+  autoUpdater.quitAndInstall(false, process.platform === 'win32');
+}
+
+/** macOS — 새 판의 dmg 를 브라우저로 받는다(설정의 [내려받기], 알림 창에서 "나중에" 를 골랐어도). */
+export async function downloadMacUpdate(): Promise<boolean> {
+  if (current.state !== 'available') return false;
+  await shell.openExternal(macDmgUrl(current.version, process.arch));
+  return true;
 }
 
 async function askDownloadMac(version: string): Promise<void> {
@@ -81,7 +105,7 @@ async function askDownloadMac(version: string): Promise<void> {
     detail: '내려받은 dmg 를 열어 XD 를 응용 프로그램 폴더로 옮기면 바뀌고, 에이전트와 대화는 그대로 남습니다.',
   };
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
-  if (response === 1) await shell.openExternal(macDmgUrl(version, process.arch));
+  if (response === 1) await downloadMacUpdate();
 }
 
 /** 지금 한 번 본다 — 설정의 [업데이트 확인]. */
@@ -101,8 +125,12 @@ export async function checkForUpdates(): Promise<UpdateState> {
   return current;
 }
 
-export function startUpdater(): void {
+export function startUpdater(deps: { beforeInstall: () => Promise<void> }): void {
   if (!app.isPackaged || process.env.XD_DISABLE_UPDATES) return;
+  // Windows 는 설치 프로그램으로 깐 XD 만 — 풀린 폴더를 옮겨 쓴 것이 스스로 바꾸면 설치 프로그램이 다른 자리(기본
+  // 위치)에 깔아, 루트(= 설치 폴더)가 갈린다.
+  if (process.platform === 'win32' && !existsSync(join(dirname(process.execPath), 'Uninstall XD.exe'))) return;
+  beforeInstall = deps.beforeInstall;
   const mac = process.platform === 'darwin';
   autoUpdater.channel = 'xd';
   autoUpdater.allowPrerelease = false;
@@ -111,8 +139,21 @@ export function startUpdater(): void {
   autoUpdater.autoDownload = !mac;
   autoUpdater.autoInstallOnAppQuit = !mac;
   autoUpdater.logger = null;
-  // 스스로 바꿀 수 없는 설치 꼴(AppImage·deb·NSIS·dmg 가 아닌 풀린 폴더 등)이면 끈다.
+  // 설치본이 아니면(isPackaged 가 아님, 리눅스에서 AppImage 가 아님 등) 끈다.
   if (!autoUpdater.isUpdaterActive()) return;
+  if (process.platform === 'linux') {
+    // electron-updater 의 재시작은 app.relaunch() 를 타는데 리눅스의 relauncher 가 NoNewPrivs 를 걸어 Ubuntu 24.04 에서
+    // 새 프로세스의 SUID chrome-sandbox 가 SIGTRAP 으로 죽는다(Dex 가 겪은 일). 또 새 판이 옛 판보다 먼저 뜨면 단일
+    // 실행 잠금에 걸려 바로 끝난다. 분리된 셸로 1.5초 뒤 깨끗하게 다시 띄운다(Dex 와 같은 방법).
+    (app as unknown as NodeJS.EventEmitter).on('before-quit-for-update', () => {
+      try {
+        const target = process.env.APPIMAGE || app.getPath('exe');
+        spawn('/bin/sh', ['-c', 'sleep 1.5; exec "$@"', 'relaunch', target], { detached: true, stdio: 'ignore' }).unref();
+      } catch (err) {
+        console.warn('[xd] relaunch after update', err);
+      }
+    });
+  }
   autoUpdater.on('update-available', (info) => {
     if (mac) {
       set({ state: 'available', version: info.version });

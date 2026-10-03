@@ -98,6 +98,7 @@ const api = {
   update: {
     state: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNELS.updateState),
     check: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNELS.updateCheck),
+    download: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.updateDownload),
     on(cb: (state: UpdateState) => void): () => void {
       const listener = (_e: unknown, state: UpdateState) => cb(state);
       ipcRenderer.on(CHANNELS.updateEvent, listener);

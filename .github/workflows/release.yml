@@ -678,7 +678,7 @@ jobs:
             |---|---|---|
             | Windows | `XGen-Dex-Setup-*.exe` | 실행 → SmartScreen 이 뜨면 **추가 정보 → 실행** |
             | macOS | `XGen-Dex-*.dmg` | 열어서 **XGen-Dex.app** 을 **응용 프로그램**으로 → 첫 실행은 **우클릭 → 열기** |
-            | Linux | `*.AppImage` / `*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
+            | Linux | `XGen-Dex-*.AppImage` / `XGen-Dex-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
 
             > macOS 가 "손상됨" 이라고 하면:
             > `xattr -dr com.apple.quarantine "/Applications/XGen-Dex.app"`
@@ -690,12 +690,13 @@ jobs:
 
             | OS | 파일 | 설치 |
             |---|---|---|
-            | Windows | `XD-Setup-*.exe` | 실행 → 설치 폴더를 고릅니다(그 폴더에 에이전트의 작업 공간이 생깁니다). SmartScreen 이 뜨면 **추가 정보 → 실행** |
-            | macOS (Apple 실리콘) | `XD-*-arm64.dmg` | 열어서 **XD.app** 을 **응용 프로그램**으로 → 첫 실행은 **우클릭 → 열기** |
+            | Windows | `XD-Setup-*.exe` | 실행 → 설치 위치를 고릅니다(기본 `…\Programs\XD`, 그 안에 에이전트의 작업 공간이 생깁니다). SmartScreen 이 뜨면 **추가 정보 → 실행** |
+            | macOS (Apple 실리콘) | `XD-*-arm64.dmg` | 열어서 **XD.app** 을 **응용 프로그램**으로 옮긴 뒤 터미널에서 아래 한 줄 |
             | macOS (Intel) | `XD-*-x64.dmg` | 위와 같습니다 |
             | Linux | `XD-*.AppImage` / `XD-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
 
-            > macOS 가 "손상됨" 이라고 하면: `xattr -dr com.apple.quarantine "/Applications/XD.app"`
+            > macOS: XD 는 실행 엔진(Python)을 함께 실어 서명 없이는 안의 실행 파일까지 격리됩니다 — 옮긴 뒤 한 번
+            > `xattr -dr com.apple.quarantine "/Applications/XD.app"` 를 실행하세요.
 
             작업 공간과 대화는 Windows 는 설치 폴더에, macOS·Linux 는 `~/XD` 에 남습니다 — 앱을 지우거나 새 판으로
             바꿔도 그대로입니다. Dex 와 나란히 설치됩니다.

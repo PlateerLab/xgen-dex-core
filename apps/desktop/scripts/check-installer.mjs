@@ -13,7 +13,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,9 +56,8 @@ const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('he
 const uninstall = async (where) => {
   const uninstaller = readdirSync(where).find((f) => /^Uninstall .*\.exe$/i.test(f));
   if (!uninstaller) fail('제거 프로그램이 없습니다');
-  // 설치 직후 곧바로 지우면 백신(Defender)이 막 쓴 exe 를 검사하느라 쥐고 있어 지우지 못할 수 있다(사용자는 설치 직후에
-  // 지우지 않는다) — 남으면 그 파일이 잠겼는지 남기고 잠시 뒤 다시 지운다. 정말 지우지 못하는 거라면 다시 해도 남는다.
-  // 제거 직전 — exe 가 잠겼는지, 설치 폴더 아래에서 도는 프로세스(제거 프로그램이 PowerShell 로 찾아 끄는 것과 같은 조회)
+  // 제거 직전·직후의 상태 — exe 가 잠겼는지, 설치 폴더 아래에서 도는 프로세스(제거 프로그램이 PowerShell 로 찾아 끄는 것과
+  // 같은 조회)
   const state = () => {
     let lock = '잠기지 않음';
     try {
@@ -73,35 +72,36 @@ const uninstall = async (where) => {
     );
     return `exe ${lock}; 설치 폴더 아래 프로세스: ${(ps.stdout || '').trim().replace(/\r?\n/g, ' | ') || '없음'}`;
   };
-  console.log(`  제거 직전: ${state()}`);
-  for (let attempt = 1; ; attempt++) {
-    // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
-    const t0 = Date.now();
-    // 둘째 시도는 사용자가 제어판에서 지우는 것과 같이 — _?= 없이(임시 폴더로 복사해 띄우고 바로 돌아온다) 지워지길 기다린다.
-    const inPlace = attempt !== 2;
-    const r = spawnSync(join(where, uninstaller), inPlace ? ['/S', `_?=${where}`] : ['/S'], { stdio: 'inherit', timeout: 600_000 });
-    if (!inPlace) for (let i = 0; i < 60 && existsSync(exe(where)); i++) await new Promise((res) => setTimeout(res, 1000));
-    if (!existsSync(exe(where))) {
-      if (attempt > 1) console.log(`::warning::${attempt}번째 제거(${inPlace ? '제자리' : '임시 폴더에서'})로 지워졌다`);
-      return;
-    }
-    console.log(`  ${attempt}번째 제거(${inPlace ? '제자리 _?=' : '임시 폴더에서'})`);
-    // 왜 남았는지 — 제거 프로그램의 종료 코드·걸린 시간, 남은 것, 제거 정보(레지스트리)
-    console.log(`  제거 프로그램 종료 코드 ${r.status ?? r.signal ?? r.error}, ${Date.now() - t0}ms`);
-    console.log(`  남은 것: ${readdirSync(where).join(', ')}`);
-    console.log(`  제거 직후: ${state()}`);
-    const reg = spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s', '/f', 'XGen', '/d'], { encoding: 'utf8' });
-    console.log(`  제거 정보: ${(reg.stdout || reg.stderr || '').split('\n').filter((l) => /HKEY|DisplayName|InstallLocation|UninstallString/.test(l)).join(' | ').slice(0, 800)}`);
-    let lock = '잠기지 않음';
+  // 설치 직후 곧바로 지우면, 막 쓴 exe 를 무언가(백신 검사 등)가 **지우기만 막는** 핸들로 쥐고 있을 수 있다 — 그러면 제거가
+  // exe 하나만 남기고 끝나고, 한 번 이렇게 끝난 제거는 다시 돌려도 지우지 않는다(CI 에서 네 번 중 두 번). 사용자는 설치 직후에
+  // 지우지 않는다. 이름 바꾸기(지우기 권한이 든다)가 될 때까지 기다렸다가 지운다 — 기다렸으면 남긴다.
+  const deletable = () => {
     try {
-      closeSync(openSync(exe(where), 'r+'));
-    } catch (err) {
-      lock = err.code;
+      renameSync(exe(where), `${exe(where)}.probe`);
+      renameSync(`${exe(where)}.probe`, exe(where));
+      return true;
+    } catch {
+      return false;
     }
-    if (attempt >= 3) fail(`제거 뒤에도 XGen-Dex.exe 가 남았습니다(${lock})`);
-    console.log(`::warning::제거 뒤에도 XGen-Dex.exe 가 남음(${attempt}번째, ${lock}) — 5초 뒤 다시 제거`);
-    await new Promise((r) => setTimeout(r, 5000));
+  };
+  let waited = 0;
+  while (!deletable() && waited < 60) {
+    await new Promise((r) => setTimeout(r, 1000));
+    waited += 1;
   }
+  if (waited) console.log(`::warning::설치 직후 XGen-Dex.exe 를 지우지 못하게 쥔 것이 있어 ${waited}초 기다렸다`);
+  console.log(`  제거 직전: ${state()}`);
+  // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
+  const t0 = Date.now();
+  const r = spawnSync(join(where, uninstaller), ['/S', `_?=${where}`], { stdio: 'inherit', timeout: 600_000 });
+  if (!existsSync(exe(where))) return;
+  // 왜 남았는지 — 제거 프로그램의 종료 코드·걸린 시간, 남은 것, 제거 정보(레지스트리), 그 순간의 상태
+  console.log(`  제거 프로그램 종료 코드 ${r.status ?? r.signal ?? r.error}, ${Date.now() - t0}ms`);
+  console.log(`  남은 것: ${readdirSync(where).join(', ')}`);
+  console.log(`  제거 직후: ${state()}`);
+  const reg = spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s', '/f', 'XGen', '/d'], { encoding: 'utf8' });
+  console.log(`  제거 정보: ${(reg.stdout || reg.stderr || '').split('\n').filter((l) => /HKEY|DisplayName|InstallLocation|UninstallString/.test(l)).join(' | ').slice(0, 800)}`);
+  fail('제거 뒤에도 XGen-Dex.exe 가 남았습니다');
 };
 
 console.log(`처음 설치(사용자별): ${setup} → ${dir}`);

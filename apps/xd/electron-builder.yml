@@ -34,7 +34,7 @@ linux:
   category: Utility
   maintainer: PlateerLab <noreply@plateerlab.dev>
   synopsis: XD - run agents on this computer
-  artifactName: XD-${version}.${ext}
+  artifactName: XGen-XD-${version}.${ext}
   desktop:
     entry:
       StartupWMClass: xd
@@ -52,7 +52,7 @@ deb:
 win:
   target:
     - nsis
-  artifactName: XD-Setup-${version}.${ext}
+  artifactName: XGen-XD-Setup-${version}.${ext}
 nsis:
   # 설치 폴더가 곧 XD 의 루트 폴더다(작업 공간이 그 안에 생긴다) — 사용자가 위치를 고르게 한다.
   # 사용자별 설치라 기본 위치(%LOCALAPPDATA%\Programs\XD)에 앱이 쓸 수 있다.
@@ -71,6 +71,6 @@ mac:
     - dmg
   category: public.app-category.productivity
   # 동봉 엔진(Python)이 아키텍처마다 다르다 — 이름에 아키텍처를 넣어 두 dmg 가 겹치지 않게 한다.
-  artifactName: XD-${version}-${arch}.${ext}
+  artifactName: XGen-XD-${version}-${arch}.${ext}
   extendInfo:
     CFBundleDisplayName: XD

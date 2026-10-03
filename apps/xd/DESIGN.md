@@ -384,8 +384,8 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 
 - 버전은 하나(`scripts/version.mjs` — apps/xd 포함). **같은 릴리스 워크플로가 XD 도 만든다**(release.yml 의 `xd` 잡) —
   Dex 와 같은 태그, 같은 GitHub 릴리스.
-- 설치본: Windows `XD-Setup-*.exe`(NSIS, 사용자별·설치 폴더를 고른다), macOS `XD-*-arm64.dmg`·`XD-*-x64.dmg`
-  (아키텍처마다 엔진이 다르다 — Intel 은 `macos-15-intel` 러너에서), Linux `XD-*.AppImage`·`XD-*.deb`. 동봉 엔진은
+- 설치본: Windows `XGen-XD-Setup-*.exe`(NSIS, 사용자별·설치 폴더를 고른다), macOS `XGen-XD-*-arm64.dmg`·`XGen-XD-*-x64.dmg`
+  (아키텍처마다 엔진이 다르다 — Intel 은 `macos-15-intel` 러너에서), Linux `XGen-XD-*.AppImage`·`XGen-XD-*.deb`. 동봉 엔진은
   asar 밖 `resources/engine/python`(extraResources).
 - Windows 는 설치 폴더가 곧 루트다 — 기본 제거는 설치 폴더를 통째로 지우므로 `build/installer.nsh` 의
   `customRemoveFiles` 가 **이 설치본이 깐 것만** 지운다(제거·업데이트 모두). 목록은 설치본마다 `scripts/after-pack.cjs`
@@ -416,7 +416,10 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
   NSIS 바이너리는 기본(3.0.4.1) 그대로. makensis 는 `-WX`(경고도 실패)로 돈다 — `ESTIMATED_SIZE` 는 electron-builder 가
   정의하니 다시 정의하지 않는다. 리눅스는 `desktopName` = `xd.desktop`(Wayland app_id 가 설치되는 `xd.desktop`·
   `StartupWMClass` 와 같게 — 실측 `CHROME_DESKTOP=xd.desktop`).
-- Dex 맥 수동 업데이트는 `XGen-Dex-*.dmg` 만 고른다(같은 릴리스에 XD dmg 가 있어도 섞이지 않는다).
+- Dex 맥 수동 업데이트는 `XGen-Dex-*.dmg` 만 고른다(같은 릴리스에 XD dmg 가 있어도 섞이지 않는다). **1.81.1 까지의
+  Dex 는 처음 나오는 `.dmg` 를 받는데 GitHub API 는 자산을 이름순(대소문자 무시)으로 준다** — 그래서 XD 산출물은
+  `XGen-XD-*` 로, 이름순으로 Dex 의 것보다 뒤에 온다(`XD-*` 였다면 옛 Dex 가 XD 를 받았다). 릴리스가 올리는 경로와
+  설치본 이름은 packaging.test.ts 가 맞댄다.
 - 서명 없음 — macOS Gatekeeper(우클릭 → 열기·`xattr`)·Windows SmartScreen 안내(Dex 와 같다).
 
 ## 11. 단계

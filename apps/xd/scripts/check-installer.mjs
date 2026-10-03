@@ -5,7 +5,7 @@
  * 있으면 제거가 아무것도 지우지 않고 멈추는지, 설치 폴더 고르기(xdInstDirPre — 화면에서만 돌아 /S 로는 타지 않는다)가
  * 남의 폴더에 \XD 를 붙이는지도 본다(electron-builder 가 받아 둔 makensis 로 그 함수만 돌리는 작은 설치 프로그램).
  *
- *   node apps/xd/scripts/check-installer.mjs            (apps/xd/release/XD-Setup-*.exe 를 쓴다)
+ *   node apps/xd/scripts/check-installer.mjs            (apps/xd/release/XGen-XD-Setup-*.exe 를 쓴다)
  *
  * Windows 가 아니면 아무것도 하지 않는다. CI(xd-package)와 릴리스가 같은 확인을 한다.
  */
@@ -24,7 +24,7 @@ if (process.platform !== 'win32') {
 
 const XD = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const release = join(XD, 'release');
-const setup = readdirSync(release).find((f) => /^XD-Setup-.*\.exe$/.test(f));
+const setup = readdirSync(release).find((f) => /^XGen-XD-Setup-.*\.exe$/.test(f));
 if (!setup) throw new Error(`설치본이 없습니다: ${release}`);
 const installer = join(release, setup);
 // 공백 없는 곳 — NSIS 의 /D= 는 따옴표 없이 마지막 인자여야 한다(공백이 있으면 인자가 따옴표로 싸여 거절된다).

@@ -65,13 +65,13 @@ linux:
   # WM_CLASS 는 package.json name("xgen-dex")에서 온다 — 브랜드명과
   # 무관한 기술 식별자라 리브랜딩(XGen Dex) 이후에도 그대로 둔다(기존 사용자의
   # 독/작업 표시줄 고정 아이콘이 갈라지지 않는다).
-  # ⚠ electron-builder 24 는 desktop 키를 FLAT 맵으로 받는다 (v26 의
-  # desktop.entry 중첩형을 쓰면 조용히 무시되어 기본 productName 이 들어간다
-  # — 실빌드 dpkg-deb 검증으로 확인).
+  # ⚠ electron-builder 26 은 desktop 키를 entry 중첩형으로 받는다(24 의 FLAT 맵은 스키마가 거절한다 —
+  # 24 는 거꾸로 중첩형을 조용히 무시했다). 실빌드 deb 의 xgen-dex.desktop 으로 확인할 것.
   desktop:
-    StartupWMClass: xgen-dex
-    # 설치 경로는 공백이 없어야 하지만(위 참조) 런처에 보이는 이름은 예쁘게.
-    Name: XGen Dex
+    entry:
+      StartupWMClass: xgen-dex
+      # 설치 경로는 공백이 없어야 하지만(위 참조) 런처에 보이는 이름은 예쁘게.
+      Name: XGen Dex
 deb:
   # 커스텀 postinst: chrome-sandbox 를 **무조건** SUID-root 로 만든다. 기본
   # 템플릿의 `unshare --user` 프로브는 root 로 돌아 항상 성공하지만, Ubuntu

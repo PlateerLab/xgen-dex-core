@@ -4,6 +4,7 @@
   "description": "XGen Dex — XGEN 에이전트를 쓰는 데스크톱 앱 (터미널 CLI · VSCode 확장과 같은 코어)",
   "author": "PlateerLab",
   "license": "Apache-2.0",
+  "desktopName": "xgen-dex.desktop",
   "main": "./out/main/index.js",
   "homepage": "https://github.com/PlateerLab/xgen-dex-core",
   "repository": {
@@ -11,7 +12,7 @@
     "url": "https://github.com/PlateerLab/xgen-dex-core.git"
   },
   "scripts": {
-    "test": "tsx --test test/auth-selfheal.test.ts test/markdown-core.test.ts test/session-store.test.ts test/teams-store.test.ts test/teams-ws-frames.test.ts test/connection-security.test.ts test/diag-log.test.ts test/harness.test.ts test/mcp-debug.test.ts test/mcp-import.test.ts test/mcp-secrets.test.ts test/mcp-oauth.test.ts test/mcp-status.test.ts test/settings-reset.test.ts test/sso-preload.test.ts test/sso-window-options.test.ts test/tool-activity.test.ts test/update-source.test.ts test/avatar-live-text.test.ts test/overlay-lock.test.ts test/screen-capture.test.ts test/tool-log.test.ts test/explorer-model.test.ts test/file-viewer-model.test.ts test/agent-memory-model.test.ts test/tab-model.test.ts test/workspace-layout.test.ts test/workspace-tab-focus.test.ts test/browser-context.test.ts test/browser-security.test.ts test/browser-history.test.ts test/cdp-page-proxy.test.ts test/system-metrics.test.ts test/server-probe.test.ts test/selector.test.ts test/data-root.test.ts test/chat-folders.test.ts test/no-local-require.test.ts test/mcp-exposed-filter.test.ts test/artifact-isolation.test.ts test/artifact-frame-runtime.test.ts test/app-actions.test.ts test/app-gallery-model.test.ts test/app-preview.test.ts test/session-restore.test.ts test/process-timeline-model.test.ts test/turn-files-model.test.ts test/turn-process-memory.test.ts test/session-process-memory.test.ts test/attachment-model.test.ts test/chat-scroll.test.ts test/chat-drop.test.ts test/ide-sidebar.test.ts test/chat-folder-sync.test.ts test/folder-fs.test.ts",
+    "test": "tsx --test test/auth-selfheal.test.ts test/markdown-core.test.ts test/session-store.test.ts test/teams-store.test.ts test/teams-ws-frames.test.ts test/connection-security.test.ts test/diag-log.test.ts test/harness.test.ts test/mcp-debug.test.ts test/mcp-import.test.ts test/mcp-secrets.test.ts test/mcp-oauth.test.ts test/mcp-status.test.ts test/settings-reset.test.ts test/sso-preload.test.ts test/sso-window-options.test.ts test/tool-activity.test.ts test/update-source.test.ts test/packaging.test.ts test/avatar-live-text.test.ts test/overlay-lock.test.ts test/screen-capture.test.ts test/tool-log.test.ts test/explorer-model.test.ts test/file-viewer-model.test.ts test/agent-memory-model.test.ts test/tab-model.test.ts test/workspace-layout.test.ts test/workspace-tab-focus.test.ts test/browser-context.test.ts test/browser-security.test.ts test/browser-history.test.ts test/cdp-page-proxy.test.ts test/system-metrics.test.ts test/server-probe.test.ts test/selector.test.ts test/data-root.test.ts test/chat-folders.test.ts test/no-local-require.test.ts test/mcp-exposed-filter.test.ts test/artifact-isolation.test.ts test/artifact-frame-runtime.test.ts test/app-actions.test.ts test/app-gallery-model.test.ts test/app-preview.test.ts test/session-restore.test.ts test/process-timeline-model.test.ts test/turn-files-model.test.ts test/turn-process-memory.test.ts test/session-process-memory.test.ts test/attachment-model.test.ts test/chat-scroll.test.ts test/chat-drop.test.ts test/ide-sidebar.test.ts test/chat-folder-sync.test.ts test/folder-fs.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:teams": "electron verify/teams-smoke.cjs",
     "verify:browser-selection": "electron -r tsx/cjs verify/browser-selection-smoke.cjs",
@@ -55,9 +56,10 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.1",
     "electron": "43.4.1",
-    "electron-builder": "^24.13.3",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "monaco-editor": "^0.52.2",
+    "playwright-core": "^1.63.0",
     "prettier": "^3.3.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

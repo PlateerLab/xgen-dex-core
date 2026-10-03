@@ -83,6 +83,18 @@ const areas = {
     'apps/xd/src/main/update-feed.ts',
     'apps/xd/e2e/packaged.e2e.ts',
   ]),
+  // Dex 설치본 — 설치본에 닿는 것(설치 설정·NSIS·의존성·이 확인)이 바뀔 때만 세 OS 에서 실제 설치본을 만든다(무겁다).
+  deskpack: under([
+    'apps/desktop/electron-builder.yml',
+    'apps/desktop/electron.vite.config.ts',
+    'apps/desktop/build/',
+    'apps/desktop/package.json',
+    'apps/desktop/package-lock.json',
+    'apps/desktop/scripts/',
+    'apps/desktop/e2e/packaged.e2e.ts',
+    // 설치본 시험이 보는 것 — OS 키체인(keytar) 싣기
+    'apps/desktop/src/main/keychain.ts',
+  ]),
   // 모바일 네이티브 컴파일 — 로컬 모듈·네이티브 프로젝트·의존성이 바뀔 때만
   native: under([
     'apps/mobile/modules/',
@@ -112,6 +124,7 @@ const JOB_AREA = {
   'xd-engine': 'engine',
   'xd-app': 'core',
   'xd-package': 'xdpack',
+  'desktop-package': 'deskpack',
 };
 
 function ciDefinitionAreas() {

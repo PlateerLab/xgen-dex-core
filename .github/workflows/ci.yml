@@ -29,6 +29,7 @@ jobs:
       native: ${{ steps.areas.outputs.native }}
       engine: ${{ steps.areas.outputs.engine }}
       xdpack: ${{ steps.areas.outputs.xdpack }}
+      deskpack: ${{ steps.areas.outputs.deskpack }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,6 +240,54 @@ jobs:
         if: runner.os == 'Windows'
         run: node apps/xd/scripts/check-installer.mjs
 
+  # ── Dex 설치본 — 릴리스와 같은 설치본을 만들어 그 설치본으로 띄우고, Windows 는 처음 설치·업데이트·제거 ──
+  # 설치본에 닿는 것(설치 설정·NSIS·의존성·이 확인)이 바뀔 때만 돈다(changes.mjs 의 deskpack). 처음 하는 사용자별
+  # 설치는 Windows 11 24H2·Server 2025(windows-latest)에서 electron-builder 26.12 아래의 템플릿이 죽던 길이다.
+  desktop-package:
+    name: Dex 설치본 (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.deskpack == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest, flag: --linux, exe: apps/desktop/release/linux-unpacked/xgen-dex }
+          - { name: windows-x64, os: windows-latest, flag: --win, exe: apps/desktop/release/win-unpacked/XGen-Dex.exe }
+          - { name: macos-arm64, os: macos-latest, flag: --mac, exe: apps/desktop/release/mac-arm64/XGen-Dex.app/Contents/MacOS/XGen-Dex }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+      - name: 빌드
+        run: npm --prefix apps/desktop run build
+      - name: 설치본
+        working-directory: apps/desktop
+        run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: 설치본으로 띄우기
+        shell: bash
+        env:
+          DEX_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            # keytar 가 여는 libsecret(deb 의 depends 에 있다), 화면 없는 X
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libsecret-1-0
+            RUN="xvfb-run -a"
+          else
+            RUN=""
+          fi
+          cd apps/desktop && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
+      - name: Windows 처음 설치·업데이트·제거·이전 릴리스에서 올라오기
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/check-installer.mjs
   # ── 모바일 JS (별도 npm 프로젝트) ──
   mobile:
     name: 모바일 (타입 · 테스트)

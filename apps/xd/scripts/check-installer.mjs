@@ -67,13 +67,14 @@ if (existsSync(join(dir, 'resources', 'stale-from-old.txt'))) fail('업데이트
 
 // 엔진이 아직 돌 때(파일 잠김) — 제거가 아무것도 지우지 않고 2 로 끝나야 한다(업데이트 설치 프로그램은 그것을 보고 옛 판을
 // 둔 채 멈춘다). 잠금은 설치 폴더 밖의 PowerShell 이 쥔다 — 설치 폴더 안의 프로세스는 제거 프로그램이 먼저 끝낸다.
+// 도는 exe 와 같은 공유(읽기·지우기·이름 바꾸기는 되고 쓰기만 안 됨)로 쥔다 — 이름 바꾸기로 보는 검사는 여기서 통과해 버린다.
 const uninstaller = readdirSync(dir).find((f) => /^Uninstall .*\.exe$/i.test(f));
 if (!uninstaller) fail('제거 프로그램이 없습니다');
 const python = join(dir, 'resources', 'engine', 'python', 'python.exe');
 console.log('엔진 파일이 잠긴 채 제거 — 지우지 않고 멈춘다');
 const holder = spawn(
   'powershell',
-  ['-NoProfile', '-Command', `$f = [System.IO.File]::Open('${python}', 'Open', 'Read', 'Read'); Write-Output held; Start-Sleep -Seconds 120`],
+  ['-NoProfile', '-Command', `$f = [System.IO.File]::Open('${python}', 'Open', 'Read', 'Read, Delete'); Write-Output held; Start-Sleep -Seconds 120`],
   { stdio: ['ignore', 'pipe', 'inherit'] },
 );
 holder.stdout.setEncoding('utf8');
@@ -94,7 +95,7 @@ try {
   if (!['EBUSY', 'EPERM', 'EACCES'].includes(err.code)) throw err;
 }
 // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
-const busy = spawnSync(join(dir, uninstaller), ['/S', `_?=${dir}`], { stdio: 'inherit' });
+const busy = spawnSync(join(dir, uninstaller), ['/S', `_?=${dir}`], { stdio: 'inherit', timeout: 120_000 });
 if (holder.exitCode === null && holder.signalCode === null) {
   const exited = once(holder, 'exit');
   holder.kill();
@@ -123,7 +124,8 @@ console.log('설치 폴더 고르기');
 const require = createRequire(join(XD, 'package.json'));
 const { getMakeNsisPath } = require('app-builder-lib/out/toolsets/windows');
 const makensis = await getMakeNsisPath('0.0.0');
-const pick = /xd/i.test(base) ? join(process.env.SystemDrive || 'C:', '\\dir-pick') : join(base, 'dir-pick');
+// "xd" 도 공백도 없는 곳 — 경로 자체에 "xd" 가 있으면 모든 경우가 "XD 가 든 경로" 가 된다.
+const pick = /xd|\s/i.test(base) ? join(process.env.SystemDrive || 'C:', '\\dir-pick') : join(base, 'dir-pick');
 rmSync(pick, { recursive: true, force: true });
 const harness = join(pick, 'harness');
 mkdirSync(harness, { recursive: true });
@@ -147,6 +149,7 @@ writeFileSync(
     '  FileOpen $0 "$EXEDIR\\result.txt" w',
     '  FileWrite $0 "$INSTDIR"',
     '  FileClose $0',
+    '  SetErrorLevel 0', // .onInit 의 Quit 은 그대로면 2(스크립트가 멈춤)로 끝난다
     '  Quit',
     'FunctionEnd',
     'Section',
@@ -154,9 +157,9 @@ writeFileSync(
     '',
   ].join('\r\n'),
 );
-execFileSync(makensis.path, ['-INPUTCHARSET', 'UTF8', join(harness, 'pick.nsi')], {
+execFileSync(makensis.path, ['-V2', '-INPUTCHARSET', 'UTF8', join(harness, 'pick.nsi')], {
   env: { ...process.env, ...(makensis.env ?? {}) },
-  stdio: ['ignore', 'ignore', 'inherit'],
+  stdio: ['ignore', 'inherit', 'inherit'],
 });
 const at = (...p) => join(pick, ...p);
 const file = (p) => (mkdirSync(dirname(p), { recursive: true }), writeFileSync(p, 'x'));

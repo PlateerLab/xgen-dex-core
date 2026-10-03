@@ -10,7 +10,7 @@
  * 설치본에서만 돈다(개발 실행·시험은 `XD_DISABLE_UPDATES`). 시작 30초 뒤, 그다음은 6시간마다 본다.
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { app, BrowserWindow, dialog, autoUpdater as electronAutoUpdater, shell } from 'electron';
 import electronUpdater from 'electron-updater';
@@ -55,6 +55,15 @@ export function onUpdateState(fn: (s: UpdateState) => void): () => void {
 const window = () => BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
 
 let appImagePath = process.env.APPIMAGE;
+
+/** 리눅스 설치 꼴 — electron-builder 가 deb 등에 남기는 resources/package-type(AppImage 는 없다). */
+function packageType(): string | null {
+  try {
+    return readFileSync(join(process.resourcesPath, 'package-type'), 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 리눅스 — 이 프로세스가 끝난 뒤에 새 판을 띄운다. 분리된 셸이 이 pid 가 사라질 때까지(엔진을 멈추느라 몇 초 걸릴 수
@@ -187,6 +196,8 @@ export function startUpdater(deps: { beforeInstall: () => Promise<void> }): void
     // 걸어 Ubuntu 24.04 에서 새 프로세스의 SUID chrome-sandbox 가 SIGTRAP 으로 죽고(Dex 가 겪은 일), AppImage 는 옛 판이
     // 살아 있는 동안 새 판을 띄워 단일 실행 잠금에 걸린다. 끄면 AppImage 는 설치만 하고 띄우지 않는다.
     autoUpdater.autoRunAppAfterInstall = false;
+    // deb 는 설치에 관리자 암호가 든다 — 끌 때 몰래 바꾸려다 암호 창을 띄우지 않는다([다시 시작]을 눌렀을 때만 바꾼다).
+    if (packageType() === 'deb') autoUpdater.autoInstallOnAppQuit = false;
     // 이름에 버전이 든 AppImage 는 새 판이 새 이름으로 놓인다 — 그것을 띄운다.
     autoUpdater.on('appimage-filename-updated', (path) => {
       appImagePath = path;

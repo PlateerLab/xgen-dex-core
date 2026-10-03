@@ -401,12 +401,15 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
   다시 띄워 되살린다. 리눅스는 먼저 멈추지 않고(설치가 실패하면 그대로 계속), electron-updater 의 재시작을 끄고
   (`autoRunAppAfterInstall` — deb 의 `app.relaunch()` 는 NoNewPrivs, AppImage 는 옛 판이 살아 있을 때 새 판을 띄움) Electron
   `autoUpdater` 의 `before-quit-for-update`(electron-updater 가 `app` 이 아니라 여기에 쏜다)에서 분리된 셸이 이 프로세스가
-  끝나길 기다렸다가 새 판(이름이 바뀐 AppImage 면 그것)을 띄운다. Windows 는 설치 프로그램으로 깐 것만 스스로 바꾼다. 서명 없는 macOS 는 스스로 바꿀 수
+  끝나길 기다렸다가 새 판(이름이 바뀐 AppImage 면 그것)을 띄운다. deb 는 설치에 관리자 암호가 들어 끌 때 몰래 바꾸지
+  않는다([다시 시작]을 눌렀을 때만). Windows 는 설치 프로그램으로 깐 것만 스스로 바꾼다. 서명 없는 macOS 는 스스로 바꿀 수
   없어 새 판을 알리고 그 아키텍처의 dmg 를 브라우저로 받게 한다(맥 x64 잡은 dmg 만 올린다 — `xd-mac.yml` 은 하나).
   설정에 [업데이트 확인]. 설치본에서만, 시작 30초 뒤·6시간마다.
 - 확인(CI `xd-package` 잡과 릴리스가 같은 확인): 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고 **그 설치본으로
   턴**(`e2e/packaged.e2e.ts` — 엔진이 설치본 안의 것으로 뜨는지), Windows 는 **설치 → 다시 설치(업데이트) → 제거** 뒤에
-  루트의 workspace·.xd 가 남고 앱은 지워지는지(`scripts/check-installer.mjs`). 설치본에 닿는 것이 바뀔 때만 돈다.
+  루트의 workspace·.xd 가 남고 앱은 지워지는지, 엔진 파일이 잠겨 있으면(도는 exe 와 같은 공유로 쥠) 제거가 2 로 끝나고
+  아무것도 지우지 않는지, 설치 폴더 고르기(`xdInstDirPre` — electron-builder 의 makensis 로 그 함수만 돌림)가 여덟 가지
+  경로에서 맞게 고르는지(`scripts/check-installer.mjs`). 설치본에 닿는 것이 바뀔 때만 돈다.
 - electron-builder 는 **26.12 이상**(XD 의 것만 — XD 는 따로 lock 을 가진다, Dex 는 그대로). 26.12 아래의 NSIS
   템플릿(`multiUser.nsh`)은 처음 하는 사용자별 설치에서 기본 위치를 1024자로 읽어 힙을 넘겨 읽고, Windows 11 24H2·
   Server 2025 에서 설치 프로그램이 바로 0xC0000005 로 죽는다(electron-builder #9769 — CI 의 Windows 설치 확인이 잡았다).

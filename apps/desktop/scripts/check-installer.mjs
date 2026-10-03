@@ -11,7 +11,7 @@
  *
  * Windows 가 아니면 아무것도 하지 않는다.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,8 +60,21 @@ const uninstall = async (where) => {
   // 지우지 않는다) — 남으면 그 파일이 잠겼는지 남기고 잠시 뒤 다시 지운다. 정말 지우지 못하는 거라면 다시 해도 남는다.
   for (let attempt = 1; ; attempt++) {
     // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
-    run(join(where, uninstaller), ['/S', `_?=${where}`]);
-    if (!existsSync(exe(where))) return;
+    const t0 = Date.now();
+    // 둘째 시도는 사용자가 제어판에서 지우는 것과 같이 — _?= 없이(임시 폴더로 복사해 띄우고 바로 돌아온다) 지워지길 기다린다.
+    const inPlace = attempt !== 2;
+    const r = spawnSync(join(where, uninstaller), inPlace ? ['/S', `_?=${where}`] : ['/S'], { stdio: 'inherit', timeout: 600_000 });
+    if (!inPlace) for (let i = 0; i < 60 && existsSync(exe(where)); i++) await new Promise((res) => setTimeout(res, 1000));
+    if (!existsSync(exe(where))) {
+      if (attempt > 1) console.log(`::warning::${attempt}번째 제거(${inPlace ? '제자리' : '임시 폴더에서'})로 지워졌다`);
+      return;
+    }
+    console.log(`  ${attempt}번째 제거(${inPlace ? '제자리 _?=' : '임시 폴더에서'})`);
+    // 왜 남았는지 — 제거 프로그램의 종료 코드·걸린 시간, 남은 것, 제거 정보(레지스트리)
+    console.log(`  제거 프로그램 종료 코드 ${r.status ?? r.signal ?? r.error}, ${Date.now() - t0}ms`);
+    console.log(`  남은 것: ${readdirSync(where).join(', ')}`);
+    const reg = spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s', '/f', 'XGen', '/d'], { encoding: 'utf8' });
+    console.log(`  제거 정보: ${(reg.stdout || reg.stderr || '').split('\n').filter((l) => /HKEY|DisplayName|InstallLocation|UninstallString/.test(l)).join(' | ').slice(0, 800)}`);
     let lock = '잠기지 않음';
     try {
       closeSync(openSync(exe(where), 'r+'));

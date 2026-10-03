@@ -29,6 +29,7 @@ import {
   compareVersions,
   dexMacDmg,
   linuxRelaunchTarget,
+  ownAppImage,
   relaunchAfterExitArgs,
   selectXgenUpdate,
   windowsNsisLauncherCommand,
@@ -63,7 +64,7 @@ let appInstallAborted: () => void = () => {};
 /** electron-updater 가 설치를 시작했다(before-quit-for-update) — 곧 끝난다. */
 let installStarted = false;
 /** 리눅스 AppImage — electron-updater 가 새 판을 새 이름으로 놓으면 그 이름. */
-let appImagePath = process.env.APPIMAGE;
+let updatedAppImage: string | undefined;
 let showUpdateNotification: (version: string, onAccept: () => void) => void = () => {};
 let busy = false; // guard against overlapping checks
 
@@ -120,8 +121,11 @@ async function latestRelease(): Promise<GhRelease> {
 /** 리눅스 — 이 프로세스가 끝난 뒤에 새 판을 띄운다(분리된 셸이 기다린다). */
 function relaunchAfterExit(): void {
   try {
-    const target = linuxRelaunchTarget(app.getPath('exe'), appImagePath, existsSync);
-    spawn('/bin/sh', relaunchAfterExitArgs(process.pid, target), { detached: true, stdio: 'ignore' }).unref();
+    const exe = app.getPath('exe');
+    const target = linuxRelaunchTarget(exe, updatedAppImage ?? ownAppImage(exe, process.env), existsSync);
+    spawn('/bin/sh', relaunchAfterExitArgs(process.pid, target), { detached: true, stdio: 'ignore' })
+      .on('error', (e) => log('linux relaunch', e))
+      .unref();
     log('relaunch after exit', target);
   } catch (e) {
     log('linux relaunch schedule', e);
@@ -157,8 +161,11 @@ function getUpdater(): AppUpdater | null {
     // APPIMAGE_EXIT_AFTER_INSTALL).
     autoUpdater.autoRunAppAfterInstall = false;
     autoUpdater.on('appimage-filename-updated', (path) => {
-      appImagePath = path;
+      updatedAppImage = path;
     });
+    // FUSE 없이 `--appimage-extract-and-run` 으로 돌면(풀린 폴더가 APPDIR) — electron-updater 가 설치 마무리로 새 AppImage 를
+    // 한 번 실행하고 다시 띄우기도 AppImage 를 실행하는데, 플래그는 넘어가지 않는다. 환경 변수로 같은 방식을 잇는다.
+    if (process.env.APPDIR?.includes('/appimage_extracted_')) process.env.APPIMAGE_EXTRACT_AND_RUN = '1';
   }
   autoUpdater.on('update-downloaded', async (info) => {
     notify(`업데이트 준비됨 (v${info.version})`);

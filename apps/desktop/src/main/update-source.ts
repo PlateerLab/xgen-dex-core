@@ -81,6 +81,17 @@ export function dexMacDmg<T extends { name: string }>(assets: readonly T[] | und
 }
 
 /**
+ * 이 프로세스가 AppImage 로 돌고 있으면 그 AppImage 파일. `APPIMAGE` 는 다른 AppImage 앱(그 앱의 터미널 등)에서 물려받을
+ * 수도 있어 — 그러면 deb 로 깐 Dex 가 엉뚱한 앱을 다시 띄운다 — 실행 파일이 그 AppImage 가 펼친 곳(`APPDIR`, 마운트 또는
+ * extract-and-run 의 풀린 폴더) 안에 있을 때만 믿는다.
+ */
+export function ownAppImage(exe: string, env: { APPIMAGE?: string; APPDIR?: string }): string | undefined {
+  const { APPIMAGE, APPDIR } = env;
+  if (!APPIMAGE || !APPDIR) return undefined;
+  return exe.startsWith(APPDIR.endsWith('/') ? APPDIR : `${APPDIR}/`) ? APPIMAGE : undefined;
+}
+
+/**
  * 리눅스 — 업데이트 뒤 다시 띄울 것. AppImage 면 그 AppImage(electron-updater 가 새 판을 새 이름으로 놓았으면 그 이름).
  * 아니면(deb) 실행 시임 — `app.getPath('exe')` 는 시임(build/afterPack.cjs)이 띄운 `<실행 파일>.bin` 이라, 그것을 바로
  * 띄우면 시임의 샌드박스 판단(--no-sandbox 로 되돌리기)을 건너뛴다.

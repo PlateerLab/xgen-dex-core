@@ -9,6 +9,7 @@ import {
   compareVersions,
   dexMacDmg,
   linuxRelaunchTarget,
+  ownAppImage,
   relaunchAfterExitArgs,
   selectXgenUpdate,
   windowsNsisLauncherCommand,
@@ -87,4 +88,21 @@ test('다시 띄우기는 옛 프로세스가 끝난 뒤에 — 먼저 뜨면 �
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('이 프로세스의 AppImage — 다른 AppImage 앱에서 물려받은 APPIMAGE 는 믿지 않는다', () => {
+  const env = { APPIMAGE: '/home/u/XGen-Dex-1.82.0.AppImage', APPDIR: '/tmp/.mount_XGen-DabC' };
+  assert.equal(ownAppImage('/tmp/.mount_XGen-DabC/xgen-dex.bin', env), '/home/u/XGen-Dex-1.82.0.AppImage');
+  // FUSE 없이 --appimage-extract-and-run — 풀린 폴더가 APPDIR
+  assert.equal(
+    ownAppImage('/tmp/appimage_extracted_d0de/xgen-dex.bin', { APPIMAGE: '/home/u/X.AppImage', APPDIR: '/tmp/appimage_extracted_d0de' }),
+    '/home/u/X.AppImage',
+  );
+  // deb 로 깐 Dex 를 Cursor(AppImage)의 터미널에서 띄움 — 그 앱의 APPIMAGE·APPDIR 를 물려받았다
+  const cursor = { APPIMAGE: '/home/u/Cursor.AppImage', APPDIR: '/tmp/.mount_CursorXy' };
+  assert.equal(ownAppImage('/opt/XGen-Dex/xgen-dex.bin', cursor), undefined);
+  assert.equal(linuxRelaunchTarget('/opt/XGen-Dex/xgen-dex.bin', ownAppImage('/opt/XGen-Dex/xgen-dex.bin', cursor), (p) => p === '/opt/XGen-Dex/xgen-dex'), '/opt/XGen-Dex/xgen-dex');
+  // 앞부분만 같은 다른 폴더는 안이 아니다
+  assert.equal(ownAppImage('/tmp/.mount_XGen-DabC2/xgen-dex.bin', env), undefined);
+  assert.equal(ownAppImage('/opt/XGen-Dex/xgen-dex.bin', {}), undefined);
 });

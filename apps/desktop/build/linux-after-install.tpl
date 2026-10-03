@@ -1,11 +1,16 @@
 #!/bin/bash
 
-# Custom after-install: identical to electron-builder 25's default template
-# EXCEPT the chrome-sandbox permission logic (see below). Keep the alternatives
-# symlink + mime/desktop-database blocks in sync with the stock template when
-# upgrading electron-builder.
+# Custom after-install: identical to electron-builder 26's default template
+# EXCEPT the chrome-sandbox permission logic (see below) and the AppArmor
+# profile block. Keep the alternatives symlink + mime/desktop-database blocks in
+# sync with the stock template when upgrading electron-builder.
+#
+# The stock AppArmor profile (userns for /opt/<product>/<executable>) is left
+# out: the SUID helper below already works on every kernel/AppArmor combination,
+# and that profile path is our launcher shim (build/afterPack.cjs), not the real
+# <executable>.bin it execs — unverified whether the profile would cover it.
 
-if type update-alternatives 2>/dev/null >&1; then
+if type update-alternatives >/dev/null 2>&1; then
     # Remove previous link if it doesn't use update-alternatives
     if [ -L '/usr/bin/${executable}' -a -e '/usr/bin/${executable}' -a "`readlink '/usr/bin/${executable}'`" != '/etc/alternatives/${executable}' ]; then
         rm -f '/usr/bin/${executable}'

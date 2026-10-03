@@ -111,8 +111,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.tag }}
+      # electron-builder 26 의 @electron/rebuild 는 Node 22.12 이상이 든다(keytar 를 Electron 에 맞춰 다시 짓는다).
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 24 }
 
       # 루트 install 은 packages/* 의 의존(ws · MCP SDK)을 놓는다 — 데스크톱이
       # 그것을 소스로 번들하므로 둘 다 필요하다.

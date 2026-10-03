@@ -1,6 +1,7 @@
 /**
  * 설치본으로 띄운다 — electron-builder 가 만든 앱(풀린 폴더)이 실제로 뜨고, 창이 화면을 그리고, OS 키체인 모듈(keytar —
- * 네이티브, asar 밖)이 실리는지 본다. keytar 는 실리지 않으면 조용히 파일 저장으로 넘어가 겉으로는 드러나지 않는다.
+ * 네이티브, asar 밖)과 MCP SDK(asar 밖, ESM)가 실리는지 본다. keytar 는 실리지 않으면 조용히 파일 저장으로 넘어가 겉으로는
+ * 드러나지 않는다.
  *
  *   DEX_E2E_PACKAGED=<설치본 실행 파일> npx tsx --test e2e/packaged.e2e.ts
  *
@@ -15,7 +16,7 @@ import { _electron } from 'playwright-core';
 
 const EXE = process.env.DEX_E2E_PACKAGED;
 
-test('설치본: 창이 화면을 그리고 OS 키체인 모듈이 실린다', { skip: !EXE && 'DEX_E2E_PACKAGED 가 없다' }, async () => {
+test('설치본: 창이 화면을 그리고 OS 키체인 모듈·MCP SDK 가 실린다', { skip: !EXE && 'DEX_E2E_PACKAGED 가 없다' }, async () => {
   const home = mkdtempSync(join(tmpdir(), 'dex-packaged-'));
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -42,6 +43,27 @@ test('설치본: 창이 화면을 그리고 OS 키체인 모듈이 실린다', {
       return typeof mod.getPassword;
     });
     assert.equal(keytar, 'function', 'keytar 가 실리지 않는다');
+    // MCP SDK — 앱과 같은 길(asar 안 out/main 의 모듈이 bare specifier 로 import())로 실어 클라이언트를 만든다.
+    // SDK 는 asar 밖에 풀리고 그 의존(ajv 등)은 asar 안에 놓일 수 있다 — 그 사이를 ESM 해석기가 건너는지 본다.
+    const mcp = await app.evaluate(async () => {
+      const Module = process.mainModule!.require('node:module');
+      const { join, dirname } = process.mainModule!.require('node:path');
+      const filename = join(process.resourcesPath, 'app.asar', 'out', 'main', 'mcp-probe.js');
+      const probe = new Module(filename, null);
+      probe.filename = filename;
+      probe.paths = Module._nodeModulePaths(dirname(filename));
+      probe._compile(
+        "module.exports = import('@modelcontextprotocol/sdk/client/index.js').then((m) => typeof new m.Client({ name: 'probe', version: '0' }).connect)",
+        filename,
+      );
+      return (await probe.exports) as string;
+    });
+    assert.equal(mcp, 'function', 'MCP SDK 가 실리지 않는다');
+    if (process.platform === 'linux') {
+      // 창이 설치되는 xgen-dex.desktop(StartupWMClass=xgen-dex)에 묶이는 이름 — Wayland 의 app_id 가 여기서 온다.
+      const desktopName = await app.evaluate(() => process.env.CHROME_DESKTOP ?? null);
+      assert.equal(desktopName, 'xgen-dex.desktop');
+    }
   } finally {
     await app.close().catch(() => undefined);
     rmSync(home, { recursive: true, force: true });

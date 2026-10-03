@@ -16,10 +16,10 @@
  * system proxy/cert aware — NOT the ambiguous global fetch) with a timeout, so a
  * check ALWAYS resolves and the UI never gets stuck on "확인 중…".
  */
-import { app, dialog, shell, BrowserWindow, net } from 'electron';
+import { app, dialog, shell, BrowserWindow, net, autoUpdater as electronAutoUpdater } from 'electron';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { finished } from 'node:stream/promises';
 import { basename, join } from 'node:path';
@@ -28,6 +28,8 @@ import { installerDownloadPath, installerListPath } from '@dex/protocol';
 import {
   compareVersions,
   dexMacDmg,
+  linuxRelaunchTarget,
+  relaunchAfterExitArgs,
   selectXgenUpdate,
   windowsNsisLauncherCommand,
   type UpdateServer,
@@ -57,6 +59,11 @@ let timer: NodeJS.Timeout | null = null;
 let updaterRef: AppUpdater | null = null;
 let lastNotifiedVersion: string | null = null;
 let appWillInstall: () => void = () => {};
+let appInstallAborted: () => void = () => {};
+/** electron-updater 가 설치를 시작했다(before-quit-for-update) — 곧 끝난다. */
+let installStarted = false;
+/** 리눅스 AppImage — electron-updater 가 새 판을 새 이름으로 놓으면 그 이름. */
+let appImagePath = process.env.APPIMAGE;
 let showUpdateNotification: (version: string, onAccept: () => void) => void = () => {};
 let busy = false; // guard against overlapping checks
 
@@ -110,6 +117,17 @@ async function latestRelease(): Promise<GhRelease> {
   return (await res.json()) as GhRelease;
 }
 
+/** 리눅스 — 이 프로세스가 끝난 뒤에 새 판을 띄운다(분리된 셸이 기다린다). */
+function relaunchAfterExit(): void {
+  try {
+    const target = linuxRelaunchTarget(app.getPath('exe'), appImagePath, existsSync);
+    spawn('/bin/sh', relaunchAfterExitArgs(process.pid, target), { detached: true, stdio: 'ignore' }).unref();
+    log('relaunch after exit', target);
+  } catch (e) {
+    log('linux relaunch schedule', e);
+  }
+}
+
 // ── electron-updater (Windows / Linux) ───────────────────────────
 function getUpdater(): AppUpdater | null {
   if (!canSelfUpdate()) return null;
@@ -125,25 +143,21 @@ function getUpdater(): AppUpdater | null {
     debug: () => {},
   } as never;
   autoUpdater.on('download-progress', (p) => notify(`업데이트 내려받는 중… ${Math.round(p.percent)}%`));
-  // Linux deb: electron-updater 의 재시작은 app.relaunch() 를 타는데, 리눅스의
-  // `--type=relauncher` 헬퍼가 NoNewPrivs 를 설정한다 — 비가역이라 재시작된
-  // 프로세스의 SUID chrome-sandbox 가 무력화돼 Ubuntu 24.04 에서 SIGTRAP 으로
-  // 죽는다 (geny-connector 이식). 설치 직전 훅에서 분리 셸로 1.5초 뒤 재실행을
-  // 예약해 NNP 없는 깨끗한 프로세스로 살아나게 한다.
+  // electron-updater 는 설치를 시작하면 **Electron 의 autoUpdater** 에 이것을 쏘고 끝낸다(app 이 아니다 — 예전에
+  // app 에 단 리스너는 한 번도 불리지 않았다).
+  electronAutoUpdater.on('before-quit-for-update', () => {
+    installStarted = true;
+    if (process.platform === 'linux') relaunchAfterExit();
+  });
   if (process.platform === 'linux') {
-    // 'before-quit-for-update' 는 electron-updater 가 quitAndInstall 직전에
-    // 쏘는 이벤트 — Electron 타입 정의에 없어 EventEmitter 로 캐스팅.
-    (app as unknown as NodeJS.EventEmitter).on('before-quit-for-update', () => {
-      try {
-        const { spawn } = require('node:child_process') as typeof import('node:child_process');
-        const target = process.env.APPIMAGE || app.getPath('exe');
-        spawn('/bin/sh', ['-c', 'sleep 1.5; exec "$@"', 'relaunch', target], {
-          detached: true,
-          stdio: 'ignore',
-        }).unref();
-      } catch (e) {
-        log('linux relaunch schedule', e);
-      }
+    // electron-updater 의 재시작은 쓰지 않는다 — deb 는 app.relaunch() 를 타는데 리눅스의 `--type=relauncher` 헬퍼가
+    // NoNewPrivs 를 걸어(비가역) 재시작된 프로세스의 SUID chrome-sandbox 가 무력화돼 Ubuntu 24.04 에서 SIGTRAP 으로
+    // 죽고(geny-connector 이식), 실행 시임(xgen-dex)이 아니라 xgen-dex.bin 을 바로 띄운다. AppImage 는 옛 판이 살아 있는
+    // 동안 새 판을 띄워 단일 실행 잠금에 걸린다. 끄면 AppImage 는 설치만 하고 띄우지 않는다(AppRun 의
+    // APPIMAGE_EXIT_AFTER_INSTALL).
+    autoUpdater.autoRunAppAfterInstall = false;
+    autoUpdater.on('appimage-filename-updated', (path) => {
+      appImagePath = path;
     });
   }
   autoUpdater.on('update-downloaded', async (info) => {
@@ -163,15 +177,23 @@ function getUpdater(): AppUpdater | null {
       // (과거 silent 였던 이유는 oneClick 설치자의 즉시 파일락 체크가 앱 종료와
       // 레이스했기 때문 — 지금은 assisted 라 사용자가 페이지를 넘기는 사이 앱
       // 종료가 끝난다. 아래 safety-net 이 잔류 프로세스도 정리한다.)
+      // isSilent=false 면 설치 뒤 다시 띄우기는 autoRunAppAfterInstall 이 정한다(두 번째 인자는 무시된다) —
+      // Windows 는 설치 프로그램이 띄우고, 리눅스는 위의 before-quit-for-update 가 띄운다.
       try {
-        autoUpdater.quitAndInstall(false, true);
+        autoUpdater.quitAndInstall(false);
       } catch (e) {
         log('quitAndInstall', e);
       }
-      // Safety net: a tray app can linger on quit (MCP stdio child pipes, the
-      // overlay/quick-chat sockets). If the process is somehow still alive a few
-      // seconds later, force-exit so the installer can replace the locked files.
       setTimeout(() => {
+        // 설치가 시작되지 못했다(리눅스에서 관리자 암호 창을 닫음·설치 실패 등) — 끄지 않고 그대로 쓴다.
+        if (!installStarted) {
+          appInstallAborted();
+          notify('업데이트를 설치하지 못했습니다.');
+          return;
+        }
+        // Safety net: a tray app can linger on quit (MCP stdio child pipes, the
+        // overlay/quick-chat sockets). If the process is somehow still alive a few
+        // seconds later, force-exit so the installer can replace the locked files.
         try {
           app.exit(0);
         } catch {
@@ -528,6 +550,8 @@ export interface UpdaterOptions {
   xgenServerUrl: () => string;
   xgenToken: () => Promise<string | null>;
   onWillInstall?: () => void;
+  /** 설치가 시작되지 못해 앱이 그대로 계속될 때 — onWillInstall 이 바꾼 것을 되돌린다. */
+  onInstallAborted?: () => void;
   onUpdateAvailable?: (version: string, onAccept: () => void) => void;
 }
 
@@ -538,6 +562,7 @@ export function initUpdater(options: UpdaterOptions): void {
   getXgenServerUrl = options.xgenServerUrl;
   getXgenToken = options.xgenToken;
   if (options.onWillInstall) appWillInstall = options.onWillInstall;
+  if (options.onInstallAborted) appInstallAborted = options.onInstallAborted;
   if (options.onUpdateAvailable) showUpdateNotification = options.onUpdateAvailable;
   if (!app.isPackaged) return; // dev builds never check
   setTimeout(() => void runCheck(false), 8000);

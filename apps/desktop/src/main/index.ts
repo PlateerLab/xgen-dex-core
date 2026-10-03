@@ -3929,6 +3929,9 @@ if (!gotLock) {
       onWillInstall: () => {
         appQuitting = true;
       },
+      onInstallAborted: () => {
+        appQuitting = false;
+      },
       onUpdateAvailable: (version, onAccept) => {
         notificationCenter.publish(
           {

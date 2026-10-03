@@ -79,3 +79,30 @@ export function selectXgenUpdate(
 export function dexMacDmg<T extends { name: string }>(assets: readonly T[] | undefined): T | undefined {
   return (assets ?? []).find((a) => /^XGen-Dex-.*\.dmg$/i.test(a.name));
 }
+
+/**
+ * 리눅스 — 업데이트 뒤 다시 띄울 것. AppImage 면 그 AppImage(electron-updater 가 새 판을 새 이름으로 놓았으면 그 이름).
+ * 아니면(deb) 실행 시임 — `app.getPath('exe')` 는 시임(build/afterPack.cjs)이 띄운 `<실행 파일>.bin` 이라, 그것을 바로
+ * 띄우면 시임의 샌드박스 판단(--no-sandbox 로 되돌리기)을 건너뛴다.
+ */
+export function linuxRelaunchTarget(
+  exe: string,
+  appImage: string | undefined,
+  exists: (path: string) => boolean,
+): string {
+  if (appImage) return appImage;
+  if (exe.endsWith('.bin')) {
+    const shim = exe.slice(0, -'.bin'.length);
+    if (exists(shim)) return shim;
+  }
+  return exe;
+}
+
+/**
+ * 이 프로세스(pid)가 끝나길(최대 30초) 기다렸다가 target 을 띄우는 분리 셸(`/bin/sh`)의 인자. 새 판이 옛 판보다 먼저
+ * 뜨면 단일 실행 잠금에 걸려 바로 끝나고, 끝날 때 MCP·브라우저 자식을 정리하느라 몇 초 걸릴 수 있다.
+ */
+export function relaunchAfterExitArgs(pid: number, target: string): string[] {
+  const wait = 'i=0; while kill -0 "$1" 2>/dev/null && [ "$i" -lt 120 ]; do sleep 0.25; i=$((i+1)); done; exec "$2"';
+  return ['-c', wait, 'relaunch', String(pid), target];
+}

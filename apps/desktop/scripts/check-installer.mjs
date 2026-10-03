@@ -58,6 +58,22 @@ const uninstall = async (where) => {
   if (!uninstaller) fail('제거 프로그램이 없습니다');
   // 설치 직후 곧바로 지우면 백신(Defender)이 막 쓴 exe 를 검사하느라 쥐고 있어 지우지 못할 수 있다(사용자는 설치 직후에
   // 지우지 않는다) — 남으면 그 파일이 잠겼는지 남기고 잠시 뒤 다시 지운다. 정말 지우지 못하는 거라면 다시 해도 남는다.
+  // 제거 직전 — exe 가 잠겼는지, 설치 폴더 아래에서 도는 프로세스(제거 프로그램이 PowerShell 로 찾아 끄는 것과 같은 조회)
+  const state = () => {
+    let lock = '잠기지 않음';
+    try {
+      closeSync(openSync(exe(where), 'r+'));
+    } catch (err) {
+      lock = err.code;
+    }
+    const ps = spawnSync(
+      'powershell',
+      ['-NoProfile', '-Command', `Get-CimInstance -ClassName Win32_Process | ? { $_.Path -and $_.Path.StartsWith('${where}', 'CurrentCultureIgnoreCase') } | % { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }`],
+      { encoding: 'utf8' },
+    );
+    return `exe ${lock}; 설치 폴더 아래 프로세스: ${(ps.stdout || '').trim().replace(/\r?\n/g, ' | ') || '없음'}`;
+  };
+  console.log(`  제거 직전: ${state()}`);
   for (let attempt = 1; ; attempt++) {
     // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
     const t0 = Date.now();
@@ -73,6 +89,7 @@ const uninstall = async (where) => {
     // 왜 남았는지 — 제거 프로그램의 종료 코드·걸린 시간, 남은 것, 제거 정보(레지스트리)
     console.log(`  제거 프로그램 종료 코드 ${r.status ?? r.signal ?? r.error}, ${Date.now() - t0}ms`);
     console.log(`  남은 것: ${readdirSync(where).join(', ')}`);
+    console.log(`  제거 직후: ${state()}`);
     const reg = spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s', '/f', 'XGen', '/d'], { encoding: 'utf8' });
     console.log(`  제거 정보: ${(reg.stdout || reg.stderr || '').split('\n').filter((l) => /HKEY|DisplayName|InstallLocation|UninstallString/.test(l)).join(' | ').slice(0, 800)}`);
     let lock = '잠기지 않음';

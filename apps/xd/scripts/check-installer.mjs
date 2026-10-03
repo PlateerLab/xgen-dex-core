@@ -11,7 +11,7 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -76,16 +76,31 @@ const holder = spawn(
   ['-NoProfile', '-Command', `$f = [System.IO.File]::Open('${python}', 'Open', 'Read', 'Read'); Write-Output held; Start-Sleep -Seconds 120`],
   { stdio: ['ignore', 'pipe', 'inherit'] },
 );
-let heldOut = '';
 holder.stdout.setEncoding('utf8');
-while (!heldOut.includes('held')) {
-  const [chunk] = await Promise.race([once(holder.stdout, 'data'), once(holder, 'exit').then(() => fail('잠금을 쥐지 못했습니다'))]);
-  heldOut += chunk;
+const held = await new Promise((done) => {
+  let out = '';
+  holder.stdout.on('data', (chunk) => {
+    out += chunk;
+    if (out.includes('held')) done(true);
+  });
+  holder.on('exit', () => done(false));
+});
+if (!held) fail('잠금을 쥐지 못했습니다');
+// 정말 쓰기가 막혔는지(엔진이 도는 것과 같은 상태) — 아니면 아래 확인이 헛돈다.
+try {
+  closeSync(openSync(python, 'r+'));
+  fail('잠금이 쓰기를 막지 않습니다');
+} catch (err) {
+  if (!['EBUSY', 'EPERM', 'EACCES'].includes(err.code)) throw err;
 }
 // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
 const busy = spawnSync(join(dir, uninstaller), ['/S', `_?=${dir}`], { stdio: 'inherit' });
-holder.kill();
-await once(holder, 'exit');
+if (holder.exitCode === null && holder.signalCode === null) {
+  const exited = once(holder, 'exit');
+  holder.kill();
+  await exited;
+}
+console.log(`  제거 프로그램 종료 코드 ${busy.status}`);
 if (busy.status !== 2) fail(`엔진 파일이 잠겼는데 제거가 ${busy.status} 로 끝났습니다(2 여야 한다)`);
 kept();
 for (const left of ['XD.exe', 'locales', 'resources', uninstaller]) {

@@ -28,7 +28,7 @@ import {
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +90,7 @@ import {
   checkForUpdatesAfterLogin,
   disposeUpdater,
 } from './updater';
+import { linuxRelaunchTarget, ownAppImage, relaunchAfterExitArgs } from './update-source';
 import { CHANNELS } from './ipc';
 import { ARTIFACT_FRAME_CSP, ARTIFACT_FRAME_HTML } from './artifact-frame';
 import { stripFrameAncestorsFromHeaders } from './artifact-csp';
@@ -1069,6 +1070,8 @@ let quickChatShownAt = 0;
 let quickChatPosTimer: ReturnType<typeof setTimeout> | null = null;
 let suppressQuickChatPosSave = false;
 let appQuitting = false;
+/** 끄기가 시작됐다(before-quit) — 업데이트 설치가 실패해 appQuitting 을 되돌릴 때 사용자의 끄기를 무르지 않게. */
+let quitRequested = false;
 
 function persistQuickChatPos(): void {
   if (suppressQuickChatPosSave) return;
@@ -1247,6 +1250,13 @@ function openMainSettings(): void {
   safeSend(mainWindow, CHANNELS.openSettingsModal);
 }
 
+/** 리눅스에서 이 앱을 다시 띄울 때 실행할 것 — AppImage 면 그 AppImage(영속 파일), deb 면 실행 시임(xgen-dex —
+ *  `app.getPath('exe')` 는 시임이 띄운 xgen-dex.bin 이다). update-source.ts 의 linuxRelaunchTarget. */
+function linuxLaunchTarget(): string {
+  const exe = app.getPath('exe');
+  return linuxRelaunchTarget(exe, ownAppImage(exe, process.env), existsSync);
+}
+
 /** 로그인 시 자동 시작 적용 — **실효 결과**를 반환한다 (UI 가 거짓 토글을
  *  보여주지 않도록; geny-connector 동형).
  *
@@ -1279,8 +1289,8 @@ function applyAutoLaunch(enabled: boolean): boolean {
     }
     return false;
   }
-  // AppImage 는 $APPIMAGE(영속 파일)를, 그 외는 실행 바이너리를 가리킨다.
-  const target = process.env.APPIMAGE || app.getPath('exe');
+  // AppImage 는 $APPIMAGE(영속 파일)를, deb 는 실행 시임(샌드박스 판단을 거치게)을 가리킨다.
+  const target = linuxLaunchTarget();
   if (!target || target.includes(`${sep}.mount_`) || target.startsWith('/tmp/')) {
     // 임시 마운트에서 실행 중 — 재부팅 후 깨진 경로가 된다. 등록 거부.
     return false;
@@ -1311,16 +1321,18 @@ function applyAutoLaunch(enabled: boolean): boolean {
 /** Linux-안전 재시작 (geny-connector 이식): `app.relaunch()` 는 리눅스에서
  *  `--type=relauncher` 헬퍼를 거치며 NoNewPrivs 를 설정한다 — 비가역이라
  *  재시작된 프로세스의 SUID chrome-sandbox 가 죽는다 (Ubuntu 24.04 SIGTRAP).
- *  리눅스는 분리된 셸로 1초 뒤 재실행; 그 외 플랫폼은 표준 relaunch. */
+ *  리눅스는 분리된 셸이 이 프로세스가 끝나길 기다렸다가(끌 때 MCP·브라우저 정리로 몇 초 걸릴 수 있다 — 먼저 뜨면
+ *  단일 실행 잠금에 걸려 바로 끝난다) 실행 시임/AppImage 로 다시 띄운다; 그 외 플랫폼은 표준 relaunch. */
 function relaunchSelf(): void {
   appQuitting = true;
   if (IS_LINUX) {
-    const target = process.env.APPIMAGE || app.getPath('exe');
     try {
-      spawn('/bin/sh', ['-c', 'sleep 1; exec "$@"', 'relaunch', target], {
+      spawn('/bin/sh', relaunchAfterExitArgs(process.pid, linuxLaunchTarget()), {
         detached: true,
         stdio: 'ignore',
-      }).unref();
+      })
+        .on('error', (e) => console.warn('[relaunch]', e))
+        .unref();
     } catch {
       app.relaunch(); // 폴백 — 없는 것보단 낫다
     }
@@ -3918,6 +3930,9 @@ if (!gotLock) {
         },
       });
     });
+    // 리눅스 자동 시작 항목을 지금 실행 중인 것으로 다시 쓴다 — 이름에 판이 든 AppImage 는 업데이트하면 새 이름이
+    // 되어 옛 항목이 사라진 파일을 가리키고, 예전 항목은 실행 시임 대신 xgen-dex.bin 을 가리켰다.
+    if (IS_LINUX && cfg.autoLaunch === true) applyAutoLaunch(true);
     // The install callback flips appQuitting so quitAndInstall isn't blocked by
     // the close-to-tray guard.
     initUpdater({
@@ -3928,6 +3943,10 @@ if (!gotLock) {
       xgenToken: async () => (await liveAccessToken()) || null,
       onWillInstall: () => {
         appQuitting = true;
+      },
+      onInstallAborted: () => {
+        // 그사이 사용자가 끄기를 시작했으면(트레이 [종료] 등) 되돌리지 않는다 — 창 닫기가 트레이로 숨겨 종료가 멈춘다.
+        if (!quitRequested) appQuitting = false;
       },
       onUpdateAvailable: (version, onAccept) => {
         notificationCenter.publish(
@@ -3994,6 +4013,7 @@ if (!gotLock) {
     /* stay resident in the tray */
   });
   app.on('before-quit', () => {
+    quitRequested = true;
     appQuitting = true;
     saveOverlayGeometry(true); // don't drop a pending move/resize on quit
     void browserHistoryStore?.flushAll().catch(() => undefined);

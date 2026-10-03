@@ -79,3 +79,41 @@ export function selectXgenUpdate(
 export function dexMacDmg<T extends { name: string }>(assets: readonly T[] | undefined): T | undefined {
   return (assets ?? []).find((a) => /^XGen-Dex-.*\.dmg$/i.test(a.name));
 }
+
+/**
+ * 이 프로세스가 AppImage 로 돌고 있으면 그 AppImage 파일. `APPIMAGE` 는 다른 AppImage 앱(그 앱의 터미널 등)에서 물려받을
+ * 수도 있어 — 그러면 deb 로 깐 Dex 가 엉뚱한 앱을 다시 띄운다 — 실행 파일이 그 AppImage 가 펼친 곳(`APPDIR`, 마운트 또는
+ * extract-and-run 의 풀린 폴더) 안에 있을 때만 믿는다.
+ */
+export function ownAppImage(exe: string, env: { APPIMAGE?: string; APPDIR?: string }): string | undefined {
+  const { APPIMAGE, APPDIR } = env;
+  if (!APPIMAGE || !APPDIR) return undefined;
+  return exe.startsWith(APPDIR.endsWith('/') ? APPDIR : `${APPDIR}/`) ? APPIMAGE : undefined;
+}
+
+/**
+ * 리눅스 — 업데이트 뒤 다시 띄울 것. AppImage 면 그 AppImage(electron-updater 가 새 판을 새 이름으로 놓았으면 그 이름).
+ * 아니면(deb) 실행 시임 — `app.getPath('exe')` 는 시임(build/afterPack.cjs)이 띄운 `<실행 파일>.bin` 이라, 그것을 바로
+ * 띄우면 시임의 샌드박스 판단(--no-sandbox 로 되돌리기)을 건너뛴다.
+ */
+export function linuxRelaunchTarget(
+  exe: string,
+  appImage: string | undefined,
+  exists: (path: string) => boolean,
+): string {
+  if (appImage) return appImage;
+  if (exe.endsWith('.bin')) {
+    const shim = exe.slice(0, -'.bin'.length);
+    if (exists(shim)) return shim;
+  }
+  return exe;
+}
+
+/**
+ * 이 프로세스(pid)가 끝나길(최대 30초) 기다렸다가 target 을 띄우는 분리 셸(`/bin/sh`)의 인자. 새 판이 옛 판보다 먼저
+ * 뜨면 단일 실행 잠금에 걸려 바로 끝나고, 끝날 때 MCP·브라우저 자식을 정리하느라 몇 초 걸릴 수 있다.
+ */
+export function relaunchAfterExitArgs(pid: number, target: string): string[] {
+  const wait = 'i=0; while kill -0 "$1" 2>/dev/null && [ "$i" -lt 120 ]; do sleep 0.25; i=$((i+1)); done; exec "$2"';
+  return ['-c', wait, 'relaunch', String(pid), target];
+}

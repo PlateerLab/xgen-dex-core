@@ -13,7 +13,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,12 +53,25 @@ const installed = (where) => {
   if (!existsSync(keytar)) fail(`keytar 네이티브 모듈이 없습니다: ${keytar}`);
 };
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
-const uninstall = (where) => {
+const uninstall = async (where) => {
   const uninstaller = readdirSync(where).find((f) => /^Uninstall .*\.exe$/i.test(f));
   if (!uninstaller) fail('제거 프로그램이 없습니다');
-  // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
-  run(join(where, uninstaller), ['/S', `_?=${where}`]);
-  if (existsSync(exe(where))) fail('제거 뒤에도 XGen-Dex.exe 가 남았습니다');
+  // 설치 직후 곧바로 지우면 백신(Defender)이 막 쓴 exe 를 검사하느라 쥐고 있어 지우지 못할 수 있다(사용자는 설치 직후에
+  // 지우지 않는다) — 남으면 그 파일이 잠겼는지 남기고 잠시 뒤 다시 지운다. 정말 지우지 못하는 거라면 다시 해도 남는다.
+  for (let attempt = 1; ; attempt++) {
+    // _?= — 제자리에서 돌고 끝날 때까지 기다린다(없으면 임시 폴더로 복사해 띄우고 바로 돌아온다).
+    run(join(where, uninstaller), ['/S', `_?=${where}`]);
+    if (!existsSync(exe(where))) return;
+    let lock = '잠기지 않음';
+    try {
+      closeSync(openSync(exe(where), 'r+'));
+    } catch (err) {
+      lock = err.code;
+    }
+    if (attempt >= 3) fail(`제거 뒤에도 XGen-Dex.exe 가 남았습니다(${lock})`);
+    console.log(`::warning::제거 뒤에도 XGen-Dex.exe 가 남음(${attempt}번째, ${lock}) — 5초 뒤 다시 제거`);
+    await new Promise((r) => setTimeout(r, 5000));
+  }
 };
 
 console.log(`처음 설치(사용자별): ${setup} → ${dir}`);
@@ -68,7 +81,7 @@ console.log('같은 곳에 다시 설치(업데이트)');
 run(installer, ['/S', '--updated', `/D=${dir}`]);
 installed(dir);
 console.log('제거');
-uninstall(dir);
+await uninstall(dir);
 console.log('✓ 처음 설치·업데이트·제거');
 rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
 
@@ -116,7 +129,7 @@ installed(upgrade);
 const after = sha(join(upgrade, 'resources', 'app.asar'));
 const built = sha(join(release, 'win-unpacked', 'resources', 'app.asar'));
 if (after !== built) fail(`올라온 뒤의 app.asar 가 이 설치본의 것이 아닙니다(${before === after ? '이전 판 그대로' : '알 수 없는 판'})`);
-uninstall(upgrade);
+await uninstall(upgrade);
 console.log(`✓ 이전 릴리스(${latest.tag_name})에서 올라오기·제거`);
 rmSync(upgrade, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
 rmSync(previous, { force: true });

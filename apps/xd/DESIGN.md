@@ -390,13 +390,18 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 - Windows 는 설치 폴더가 곧 루트다 — 기본 제거는 설치 폴더를 통째로 지우므로 `build/installer.nsh` 의
   `customRemoveFiles` 가 **이 설치본이 깐 것만** 지운다(제거·업데이트 모두). 목록은 설치본마다 `scripts/after-pack.cjs`
   가 풀린 폴더의 맨 위 항목으로 만든다 — "workspace·.xd 만 빼고 다" 는 사용자가 쓰던 폴더에 깔았을 때 그 사람의 파일을
-  지운다. 엔진 파일이 잠겨 있으면(엔진이 돎) 지우다 말지 않고 멈춘다. electron-builder 는 고른 경로에 "XD" 가 들면
-  `\XD` 를 붙이지 않으므로(대소문자 무시 — `C:\Users\alexd\…` 도), 그런 경로에서는 비었거나 이미 XD 인 폴더만 받는다
-  (`.onVerifyInstDir`). 같은 곳에 다시 설치하면 그대로 이어진다. macOS·Linux 의 루트는 `~/XD` 라 설치본과 상관없다.
+  지운다. 엔진 파일이 잠겨 있으면(엔진이 돎) 아무것도 지우지 않고 2 로 멈춘다 — 실행 중인 exe 는 이름은 바뀌므로 쓰기로
+  열어 본다(업데이트 설치 프로그램은 다섯 번 다시 해 보고 실패로 끝나며 옛 판은 그대로). electron-builder 는 고른 경로에
+  "XD" 가 들면 `\XD` 를 붙이지 않으므로(대소문자 무시 — `C:\Users\alexd\…` 도), 그런 경로가 비어 있지 않은 남의 폴더면
+  보이지 않는 페이지(`customPageAfterChangeDir` 의 `xdInstDirPre`)가 똑같이 `\XD` 를 붙인다. 같은 곳에 다시 설치하면
+  그대로 이어진다. macOS·Linux 의 루트는 `~/XD` 라 설치본과 상관없다.
 - 업데이트(`updater.ts`): 채널 `xd`(`xd.yml`·`xd-mac.yml`·`xd-linux.yml`) — Dex 의 `latest*.yml` 과 겹치지 않는다.
-  Windows·Linux 는 electron-updater 가 받아 두고 "다시 시작해 바꿀까요" 를 묻는다 — 바꾸기 전에 엔진을 먼저 멈춘다
-  (설치 프로그램이 XD 를 몇 초 만에 끝내 버리면 엔진 파일이 잠긴 채 남는다). 리눅스는 1.5초 뒤 분리된 셸로 다시 띄운다
-  (Dex 와 같은 방법 — relauncher 의 NoNewPrivs·단일 실행 잠금). Windows 는 설치 프로그램으로 깐 것만 스스로 바꾼다. 서명 없는 macOS 는 스스로 바꿀 수
+  Windows·Linux 는 electron-updater 가 받아 두고 "다시 시작해 바꿀까요" 를 묻는다. Windows 는 바꾸기 전에 엔진·저장소를
+  먼저 멈추고(설치 프로그램이 XD 를 몇 초 만에 끝내 버리면 엔진 파일이 잠긴 채 남는다), 설치가 시작되지 못하면 XD 를
+  다시 띄워 되살린다. 리눅스는 먼저 멈추지 않고(설치가 실패하면 그대로 계속), electron-updater 의 재시작을 끄고
+  (`autoRunAppAfterInstall` — deb 의 `app.relaunch()` 는 NoNewPrivs, AppImage 는 옛 판이 살아 있을 때 새 판을 띄움) Electron
+  `autoUpdater` 의 `before-quit-for-update`(electron-updater 가 `app` 이 아니라 여기에 쏜다)에서 분리된 셸이 이 프로세스가
+  끝나길 기다렸다가 새 판(이름이 바뀐 AppImage 면 그것)을 띄운다. Windows 는 설치 프로그램으로 깐 것만 스스로 바꾼다. 서명 없는 macOS 는 스스로 바꿀 수
   없어 새 판을 알리고 그 아키텍처의 dmg 를 브라우저로 받게 한다(맥 x64 잡은 dmg 만 올린다 — `xd-mac.yml` 은 하나).
   설정에 [업데이트 확인]. 설치본에서만, 시작 30초 뒤·6시간마다.
 - 확인(CI `xd-package` 잡과 릴리스가 같은 확인): 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고 **그 설치본으로

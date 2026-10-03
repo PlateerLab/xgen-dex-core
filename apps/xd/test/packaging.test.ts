@@ -62,6 +62,12 @@ test('Windows 제거·업데이트는 설치본이 깐 것만 지운다(목록�
   assert.match(nsh, /!include "\$\{__FILEDIR__\}\\xd-app-files\.nsh"/);
   assert.doesNotMatch(nsh, /RMDir \/r "?\$INSTDIR"?\s*$/m, '설치 폴더를 통째로 지우지 않는다');
   assert.doesNotMatch(nsh, /FindFirst \$0/, '"이것만 빼고 다" 지우기가 아니다');
+  // 엔진이 도는지는 쓰기로 열어 본다 — 실행 중인 exe 는 이름은 바뀌므로 이름 바꾸기로는 알 수 없다
+  assert.match(nsh, /FileOpen \$R9 "\$INSTDIR\\resources\\engine\\python\\python\.exe" a/);
+  assert.doesNotMatch(nsh, /^\s*Rename /m);
+  // 설치 폴더 고르기는 보이지 않는 페이지로 \XD 를 붙인다(버튼을 막는 .onVerifyInstDir 가 아니다)
+  assert.match(nsh, /!macro customPageAfterChangeDir\s+Page custom xdInstDirPre\s+Function xdInstDirPre[\s\S]*StrCpy \$INSTDIR "\$INSTDIR\\\$\{APP_FILENAME\}"[\s\S]*FunctionEnd\s+!macroend/);
+  assert.doesNotMatch(nsh, /\.onVerifyInstDir/);
   // 설치본의 맨 위 항목에서 지울 목록을 만든다
   const out = mkdtempSync(join(tmpdir(), 'xd-afterpack-'));
   const app = join(out, 'win-unpacked');

@@ -12,7 +12,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, autoUpdater as electronAutoUpdater, shell } from 'electron';
 import electronUpdater from 'electron-updater';
 import { macDmgUrl } from './update-feed';
 
@@ -34,6 +34,8 @@ export type UpdateState =
 let current: UpdateState = { state: 'disabled' };
 let asked: string | null = null;
 let beforeInstall: () => Promise<void> = async () => undefined;
+/** electron-updater 가 설치를 시작했다(before-quit-for-update) — 곧 끝난다. */
+let installing = false;
 const listeners = new Set<(s: UpdateState) => void>();
 
 function set(next: UpdateState): void {
@@ -51,6 +53,22 @@ export function onUpdateState(fn: (s: UpdateState) => void): () => void {
 }
 
 const window = () => BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+
+let appImagePath = process.env.APPIMAGE;
+
+/**
+ * 리눅스 — 이 프로세스가 끝난 뒤에 새 판을 띄운다. 분리된 셸이 이 pid 가 사라질 때까지(엔진을 멈추느라 몇 초 걸릴 수
+ * 있다, 최대 30초) 기다렸다가 띄운다 — 먼저 뜨면 단일 실행 잠금에 걸려 바로 끝난다.
+ */
+function relaunchAfterExit(): void {
+  try {
+    const target = appImagePath || app.getPath('exe');
+    const wait = 'i=0; while kill -0 "$1" 2>/dev/null && [ "$i" -lt 120 ]; do sleep 0.25; i=$((i+1)); done; exec "$2"';
+    spawn('/bin/sh', ['-c', wait, 'relaunch', String(process.pid), target], { detached: true, stdio: 'ignore' }).unref();
+  } catch (err) {
+    console.warn('[xd] relaunch after update', err);
+  }
+}
 
 async function askRestart(version: string): Promise<void> {
   if (asked === version) return;
@@ -71,16 +89,34 @@ async function askRestart(version: string): Promise<void> {
 }
 
 /**
- * 받아 둔 새 판으로 바꾼다 — 엔진을 먼저 멈추고(설치 프로그램이 엔진 파일을 바꾸려면 잠금이 풀려 있어야 한다) 바꾼다.
- * Windows 는 설치 프로그램이 다 바꾼 뒤 XD 를 다시 띄운다. Linux 는 스스로 다시 띄운다(아래 before-quit-for-update).
+ * 받아 둔 새 판으로 바꾼다.
+ *
+ * - Windows: 설치 프로그램이 엔진 파일을 바꾸려면 잠금이 풀려 있어야 한다 — 엔진·저장소를 먼저 멈추고 바꾼다. 설치가
+ *   시작되지 못하면(설치 프로그램을 못 띄움) 닫힌 저장소를 든 채 남지 않게 XD 를 다시 띄우고, 시작됐는데 XD 가 아직
+ *   살아 있으면 끝낸다(설치 프로그램이 다 바꾼 뒤 XD 를 다시 띄운다).
+ * - Linux: 도는 프로세스와 상관없이 파일을 바꿀 수 있다 — 먼저 멈추지 않는다(설치가 실패하면 그대로 계속 쓴다). 끝날
+ *   때는 보통처럼 멈추고, 다시 띄우는 것은 아래 before-quit-for-update 가 한다.
  */
 async function installNow(): Promise<void> {
+  if (process.platform !== 'win32') {
+    autoUpdater.quitAndInstall(false);
+    return;
+  }
   try {
     await beforeInstall();
   } catch (err) {
     console.warn('[xd] before update install', err);
   }
-  autoUpdater.quitAndInstall(false, process.platform === 'win32');
+  autoUpdater.quitAndInstall(false);
+  // 설치가 시작되면 electron-updater 가 곧바로(setImmediate) before-quit-for-update 를 쏘고 끝내기 시작한다.
+  setTimeout(() => {
+    if (!installing) {
+      app.relaunch();
+      app.exit(0);
+      return;
+    }
+    setTimeout(() => app.exit(0), 10_000);
+  }, 1000);
 }
 
 /** macOS — 새 판의 dmg 를 브라우저로 받는다(설정의 [내려받기], 알림 창에서 "나중에" 를 골랐어도). */
@@ -141,17 +177,19 @@ export function startUpdater(deps: { beforeInstall: () => Promise<void> }): void
   autoUpdater.logger = null;
   // 설치본이 아니면(isPackaged 가 아님, 리눅스에서 AppImage 가 아님 등) 끈다.
   if (!autoUpdater.isUpdaterActive()) return;
+  // electron-updater 는 설치를 시작하면 Electron 의 autoUpdater 에 이것을 쏘고 끝낸다(app 이 아니다).
+  electronAutoUpdater.on('before-quit-for-update', () => {
+    installing = true;
+    if (process.platform === 'linux') relaunchAfterExit();
+  });
   if (process.platform === 'linux') {
-    // electron-updater 의 재시작은 app.relaunch() 를 타는데 리눅스의 relauncher 가 NoNewPrivs 를 걸어 Ubuntu 24.04 에서
-    // 새 프로세스의 SUID chrome-sandbox 가 SIGTRAP 으로 죽는다(Dex 가 겪은 일). 또 새 판이 옛 판보다 먼저 뜨면 단일
-    // 실행 잠금에 걸려 바로 끝난다. 분리된 셸로 1.5초 뒤 깨끗하게 다시 띄운다(Dex 와 같은 방법).
-    (app as unknown as NodeJS.EventEmitter).on('before-quit-for-update', () => {
-      try {
-        const target = process.env.APPIMAGE || app.getPath('exe');
-        spawn('/bin/sh', ['-c', 'sleep 1.5; exec "$@"', 'relaunch', target], { detached: true, stdio: 'ignore' }).unref();
-      } catch (err) {
-        console.warn('[xd] relaunch after update', err);
-      }
+    // electron-updater 의 재시작은 쓰지 않는다 — deb 는 app.relaunch() 를 타는데 리눅스의 relauncher 가 NoNewPrivs 를
+    // 걸어 Ubuntu 24.04 에서 새 프로세스의 SUID chrome-sandbox 가 SIGTRAP 으로 죽고(Dex 가 겪은 일), AppImage 는 옛 판이
+    // 살아 있는 동안 새 판을 띄워 단일 실행 잠금에 걸린다. 끄면 AppImage 는 설치만 하고 띄우지 않는다.
+    autoUpdater.autoRunAppAfterInstall = false;
+    // 이름에 버전이 든 AppImage 는 새 판이 새 이름으로 놓인다 — 그것을 띄운다.
+    autoUpdater.on('appimage-filename-updated', (path) => {
+      appImagePath = path;
     });
   }
   autoUpdater.on('update-available', (info) => {

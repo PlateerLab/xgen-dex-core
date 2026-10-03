@@ -8,63 +8,55 @@
 !include "${__FILEDIR__}\xd-app-files.nsh"
 
 !macro customRemoveFiles
-  ; 엔진이 아직 돌면(파일이 잠겨) 지우다 말아 옛 판과 새 판이 섞인다 — 그 전에 멈춘다(업데이트는 다시 시도할 수 있다).
+  ; 엔진(또는 그 동봉 Python 으로 돈 MCP 서버)이 아직 돌면 파일이 잠겨 지우다 만다 — 옛 판과 새 판이 섞인다. 그 전에
+  ; 멈춘다(업데이트는 실패로 끝나고 옛 판은 그대로, 다시 시도하면 된다). 실행 중인 exe 는 이름은 바뀌어도 쓰기로는
+  ; 열리지 않으므로 쓰기로 열어 본다(내용은 건드리지 않는다).
   IfFileExists "$INSTDIR\resources\engine\python\python.exe" 0 xd_probe_done
     ClearErrors
-    Rename "$INSTDIR\resources\engine\python\python.exe" "$INSTDIR\resources\engine\python\python.exe.xd-busy"
+    FileOpen $R9 "$INSTDIR\resources\engine\python\python.exe" a
     IfErrors 0 xd_probe_free
       SetErrorLevel 2
       Abort "XD 가 아직 돌고 있어 바꿀 수 없습니다."
     xd_probe_free:
-    Rename "$INSTDIR\resources\engine\python\python.exe.xd-busy" "$INSTDIR\resources\engine\python\python.exe"
+    FileClose $R9
   xd_probe_done:
   !insertmacro xdRemoveAppFiles
 !macroend
 
-; 설치 폴더 고르기 — electron-builder 는 고른 경로에 "XD" 가 들어 있으면 \XD 를 붙이지 않는다(대소문자 무시). 그런데
-; 사용자 이름처럼 우연히 "xd" 가 든 경로(C:\Users\alexd\Documents)라면 그 폴더에 바로 깔리고 그 폴더가 루트가 된다.
-; 그런 경로에서는 비어 있거나 이미 XD 설치·XD 루트인 폴더만 받는다. (제거 프로그램을 만드는 단계에는 필요 없다.)
-!ifndef BUILD_UNINSTALLER
-Function .onVerifyInstDir
+; 설치 폴더 고르기 — electron-builder 는 고른 경로에 "XD" 가 없을 때만 \XD 를 붙인다(대소문자 무시, instFilesPre).
+; 사용자 이름처럼 우연히 "xd" 가 든 경로(C:\Users\alexd\Projects)라면 그 폴더에 바로 깔리고, 그 사람의 폴더가 루트가
+; 되며 제거·업데이트가 그 안의 같은 이름(resources·locales 등)을 지운다. 그런 경로가 비어 있지 않고 XD 의 것(설치본·
+; 루트)도 아니면 똑같이 \XD 를 붙인다. 보이지 않는 페이지 — 폴더 페이지 다음, 설치 직전에 돈다. (함수도 매크로 안에 —
+; electron-builder 가 StrContains 를 들인 뒤인 페이지 자리에서 펼쳐진다.)
+!macro customPageAfterChangeDir
+Page custom xdInstDirPre
+Function xdInstDirPre
   Push $R0
   Push $R1
   Push $R2
-  Push $R3
-  Push $R4
-  StrLen $R1 "$INSTDIR"
-  StrCpy $R0 0
-  xd_vid_scan:
-    IntCmp $R0 $R1 xd_vid_ok xd_vid_ok
-    StrCpy $R2 "$INSTDIR" 2 $R0
-    StrCmp $R2 "XD" xd_vid_has
-    IntOp $R0 $R0 + 1
-    Goto xd_vid_scan
-  xd_vid_has:
-    IfFileExists "$INSTDIR\*.*" 0 xd_vid_ok
-    IfFileExists "$INSTDIR\XD.exe" xd_vid_ok
-    IfFileExists "$INSTDIR\.xd\*.*" xd_vid_ok
-    FindFirst $R3 $R4 "$INSTDIR\*.*"
-    xd_vid_entry:
-      StrCmp $R4 "" xd_vid_empty
-      StrCmp $R4 "." xd_vid_next
-      StrCmp $R4 ".." xd_vid_next
-      FindClose $R3
-      Pop $R4
-      Pop $R3
-      Pop $R2
-      Pop $R1
-      Pop $R0
-      Abort
-      xd_vid_next:
-      FindNext $R3 $R4
-      Goto xd_vid_entry
-    xd_vid_empty:
-    FindClose $R3
-  xd_vid_ok:
-  Pop $R4
-  Pop $R3
+  ${StrContains} $R0 "${APP_FILENAME}" "$INSTDIR"
+  StrCmp $R0 "" xd_dir_done
+  IfFileExists "$INSTDIR\*.*" 0 xd_dir_done
+  IfFileExists "$INSTDIR\${APP_EXECUTABLE_FILENAME}" xd_dir_done
+  IfFileExists "$INSTDIR\.xd\*.*" xd_dir_done
+  IfFileExists "$INSTDIR\workspace\*.*" xd_dir_done
+  FindFirst $R1 $R2 "$INSTDIR\*.*"
+  xd_dir_entry:
+    StrCmp $R2 "" xd_dir_empty
+    StrCmp $R2 "." xd_dir_next
+    StrCmp $R2 ".." xd_dir_next
+    ; 비어 있지 않은 남의 폴더 — 그 안에 XD 폴더를 만든다.
+    FindClose $R1
+    StrCpy $INSTDIR "$INSTDIR\${APP_FILENAME}"
+    Goto xd_dir_done
+    xd_dir_next:
+    FindNext $R1 $R2
+    Goto xd_dir_entry
+  xd_dir_empty:
+  FindClose $R1
+  xd_dir_done:
   Pop $R2
   Pop $R1
   Pop $R0
 FunctionEnd
-!endif
+!macroend

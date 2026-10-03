@@ -10,6 +10,7 @@ import type { IdeFolderRootView } from '../main/ide-service';
 import type { XdApi } from '../main/xd-api';
 import type { XdTurnEvent } from '../main/turn-runner';
 import type { CliEvent } from '../main/cli/service';
+import type { UpdateState } from '../main/updater';
 
 type Method = keyof XdApi;
 type Raw<M extends Method> = XdApi[M] extends (...a: infer A) => infer R ? (...a: A) => Promise<ApiResult<Awaited<R>>> : never;
@@ -94,6 +95,16 @@ const api = {
     status: call('engineStatus'),
   },
   /** CLI 설치 진행·로그인 사건 — 돌려받은 함수를 부르면 그만 듣는다. */
+  update: {
+    state: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNELS.updateState),
+    check: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNELS.updateCheck),
+    download: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.updateDownload),
+    on(cb: (state: UpdateState) => void): () => void {
+      const listener = (_e: unknown, state: UpdateState) => cb(state);
+      ipcRenderer.on(CHANNELS.updateEvent, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.updateEvent, listener);
+    },
+  },
   onCliEvent(cb: (event: CliEvent) => void): () => void {
     const listener = (_e: unknown, event: CliEvent) => cb(event);
     ipcRenderer.on(CHANNELS.cliEvent, listener);

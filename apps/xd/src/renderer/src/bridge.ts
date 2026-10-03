@@ -67,6 +67,7 @@ function make(raw: XdBridge) {
       },
       folders: raw.ide.folders,
     },
+    update: raw.update,
     onCliEvent: raw.onCliEvent,
     onTurnEvent: raw.onTurnEvent,
   };

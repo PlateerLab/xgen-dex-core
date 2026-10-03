@@ -135,6 +135,93 @@ jobs:
           path: ${{ matrix.glob }}
           if-no-files-found: error
 
+  # ── XD (서버 없이 이 PC 에서 에이전트를 돌리는 앱) — Dex 와 같은 버전, 같은 릴리스 ──
+  #
+  # 설치본마다 그 OS·아키텍처의 Python 엔진이 실린다(맥은 arm64·x64 따로). 업데이트 정보는 채널 xd
+  # (xd.yml · xd-mac.yml · xd-linux.yml) — Dex 의 latest*.yml 과 겹치지 않는다. 맥 x64 는 dmg 만 올린다(xd-mac.yml 은
+  # 하나여야 하고, 맥 업데이트는 버전만 보고 그 아키텍처의 dmg 를 받게 한다 — updater.ts).
+  # 발행 전에 CI 와 같은 확인을 한다: 설치본으로 턴, Windows 설치·업데이트·제거 뒤 루트 보존.
+  xd:
+    name: XD (${{ matrix.name }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            flag: --linux
+            exe: apps/xd/release/linux-unpacked/xd
+            glob: |
+              apps/xd/release/XD-*.AppImage
+              apps/xd/release/XD-*.deb
+              apps/xd/release/xd-linux.yml
+          - name: windows-x64
+            os: windows-latest
+            flag: --win
+            exe: apps/xd/release/win-unpacked/XD.exe
+            glob: |
+              apps/xd/release/XD-Setup-*.exe
+              apps/xd/release/XD-Setup-*.exe.blockmap
+              apps/xd/release/xd.yml
+          - name: macos-arm64
+            os: macos-latest
+            flag: --mac --arm64
+            exe: apps/xd/release/mac-arm64/XD.app/Contents/MacOS/XD
+            glob: |
+              apps/xd/release/XD-*-arm64.dmg
+              apps/xd/release/XD-*-arm64.dmg.blockmap
+              apps/xd/release/xd-mac.yml
+          - name: macos-x64
+            os: macos-15-intel
+            flag: --mac --x64
+            exe: apps/xd/release/mac/XD.app/Contents/MacOS/XD
+            glob: |
+              apps/xd/release/XD-*-x64.dmg
+              apps/xd/release/XD-*-x64.dmg.blockmap
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - uses: actions/cache@v4
+        with:
+          path: apps/xd/engine/.cache/python
+          key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm --prefix apps/xd ci --no-audit --no-fund
+      - name: 동봉 엔진
+        run: node apps/xd/scripts/bundle-engine.mjs
+      - name: 빌드
+        run: npm --prefix apps/xd run build
+      - name: 패키징
+        working-directory: apps/xd
+        run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: 설치본으로 턴
+        shell: bash
+        env:
+          XD_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
+        run: |
+          command -v xvfb-run >/dev/null || [ "$RUNNER_OS" != Linux ] || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb)
+          if [ "$RUNNER_OS" = Linux ]; then RUN="xvfb-run -a"; else RUN=""; fi
+          cd apps/xd && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
+      - name: Windows 설치·업데이트·제거 — 루트 보존
+        if: runner.os == 'Windows'
+        run: node apps/xd/scripts/check-installer.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xd-${{ matrix.name }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+
   # ── CLI · VSCode 확장 (플랫폼 무관) ──
   packages:
     name: CLI + 확장
@@ -555,9 +642,9 @@ jobs:
     # ios 를 needs 에 넣되 결과는 보지 않는다 — ipa 가 나왔으면 릴리스에 싣고,
     # iOS 가 실패했어도(비차단 설계) 나머지 자산으로 릴리스는 발행한다.
     # ios 를 기다리지 않으면 ipa 아티팩트가 릴리스에 못 붙는다(v1.25.1 실측).
-    needs: [prepare, desktop, packages, android, ios]
+    needs: [prepare, desktop, xd, packages, android, ios]
     if: >-
-      always() && needs.desktop.result == 'success' &&
+      always() && needs.desktop.result == 'success' && needs.xd.result == 'success' &&
       needs.packages.result == 'success' && needs.android.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -591,10 +678,28 @@ jobs:
             |---|---|---|
             | Windows | `XGen-Dex-Setup-*.exe` | 실행 → SmartScreen 이 뜨면 **추가 정보 → 실행** |
             | macOS | `XGen-Dex-*.dmg` | 열어서 **XGen-Dex.app** 을 **응용 프로그램**으로 → 첫 실행은 **우클릭 → 열기** |
-            | Linux | `*.AppImage` / `*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
+            | Linux | `XGen-Dex-*.AppImage` / `XGen-Dex-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
 
             > macOS 가 "손상됨" 이라고 하면:
             > `xattr -dr com.apple.quarantine "/Applications/XGen-Dex.app"`
+
+            ### XD — 서버 없이 이 PC 에서 에이전트를 돌리는 앱
+
+            XGEN 서버에 붙지 않고, 에이전트가 **이 PC 에서** 돕니다(실행 엔진이 설치본에 들어 있습니다). AI 제공자는
+            API 키(Anthropic·OpenAI·Gemini·OpenAI 호환 서버) 또는 Claude Code·Codex 로그인을 씁니다.
+
+            | OS | 파일 | 설치 |
+            |---|---|---|
+            | Windows | `XD-Setup-*.exe` | 실행 → 설치 위치를 고릅니다(기본 `…\Programs\XD`, 그 안에 에이전트의 작업 공간이 생깁니다). SmartScreen 이 뜨면 **추가 정보 → 실행** |
+            | macOS (Apple 실리콘) | `XD-*-arm64.dmg` | 열어서 **XD.app** 을 **응용 프로그램**으로 옮긴 뒤 터미널에서 아래 한 줄 |
+            | macOS (Intel) | `XD-*-x64.dmg` | 위와 같습니다 |
+            | Linux | `XD-*.AppImage` / `XD-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
+
+            > macOS: XD 는 실행 엔진(Python)을 함께 실어 서명 없이는 안의 실행 파일까지 격리됩니다 — 옮긴 뒤 한 번
+            > `xattr -dr com.apple.quarantine "/Applications/XD.app"` 를 실행하세요.
+
+            작업 공간과 대화는 Windows 는 설치 폴더에, macOS·Linux 는 `~/XD` 에 남습니다 — 앱을 지우거나 새 판으로
+            바꿔도 그대로입니다. Dex 와 나란히 설치됩니다.
 
             ### 모바일 (React Native — 안드로이드 / iOS)
 

@@ -28,6 +28,7 @@ jobs:
       mobile: ${{ steps.areas.outputs.mobile }}
       native: ${{ steps.areas.outputs.native }}
       engine: ${{ steps.areas.outputs.engine }}
+      xdpack: ${{ steps.areas.outputs.xdpack }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,6 +184,60 @@ jobs:
           DIR="dist/$(node -p "process.platform + '-' + process.arch")/python"
           if [ -f "$DIR/python.exe" ]; then PY="$DIR/python.exe"; else PY="$DIR/bin/python3"; fi
           PYTHONPATH="$RUNNER_TEMP/pytest-lib" "$PY" -m pytest -q -p no:cacheprovider tests
+
+  # ── XD 설치본 — 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고, 그 설치본으로 턴을 돌린다 ──
+  #
+  # 릴리스와 같은 길이다(release.yml 의 xd 잡). 설치본에 실린 엔진(resources/engine/python)이 그 OS 에서 뜨는지,
+  # Windows 는 설치 → 다시 설치(업데이트) → 제거 뒤에도 설치 폴더(= XD 루트)의 workspace·.xd 가 남는지 본다.
+  # 설치본에 닿는 것이 바뀔 때만 돈다(changes.mjs 의 xdpack).
+  xd-package:
+    name: XD 설치본 (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.xdpack == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest, flag: --linux, exe: apps/xd/release/linux-unpacked/xd }
+          - { name: windows-x64, os: windows-latest, flag: --win, exe: apps/xd/release/win-unpacked/XD.exe }
+          - { name: macos-arm64, os: macos-latest, flag: --mac --arm64, exe: apps/xd/release/mac-arm64/XD.app/Contents/MacOS/XD }
+          - { name: macos-x64, os: macos-15-intel, flag: --mac --x64, exe: apps/xd/release/mac/XD.app/Contents/MacOS/XD }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: apps/xd/engine/.cache/python
+          key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm --prefix apps/xd ci --no-audit --no-fund
+      - name: 동봉 엔진
+        run: node apps/xd/scripts/bundle-engine.mjs
+      - name: 빌드
+        run: npm --prefix apps/xd run build
+      - name: 설치본
+        working-directory: apps/xd
+        run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: 설치본으로 턴
+        shell: bash
+        env:
+          XD_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
+        run: |
+          command -v xvfb-run >/dev/null || [ "$RUNNER_OS" != Linux ] || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb)
+          if [ "$RUNNER_OS" = Linux ]; then RUN="xvfb-run -a"; else RUN=""; fi
+          cd apps/xd && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
+      - name: Windows 설치·업데이트·제거 — 루트 보존
+        if: runner.os == 'Windows'
+        run: node apps/xd/scripts/check-installer.mjs
 
   # ── 모바일 JS (별도 npm 프로젝트) ──
   mobile:

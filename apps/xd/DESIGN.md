@@ -382,10 +382,42 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 
 ## 10. 릴리스 (M6)
 
-- 버전은 하나(`scripts/version.mjs` — apps/xd 포함). 같은 릴리스 워크플로가 XD 도 만든다.
-- 산출물 `XD-*`, 업데이트 채널 `xd`(`xd*.yml`) — Dex 의 `latest*.yml` 과 겹치지 않는다. Dex 맥 수동 업데이트는
-  `XGen-Dex-*.dmg` 만 고른다.
-- 릴리스에는 **M4 가 끝나 쓸 수 있을 때부터** XD 를 넣는다. 그 전 단계는 main 에만 쌓는다.
+- 버전은 하나(`scripts/version.mjs` — apps/xd 포함). **같은 릴리스 워크플로가 XD 도 만든다**(release.yml 의 `xd` 잡) —
+  Dex 와 같은 태그, 같은 GitHub 릴리스.
+- 설치본: Windows `XD-Setup-*.exe`(NSIS, 사용자별·설치 폴더를 고른다), macOS `XD-*-arm64.dmg`·`XD-*-x64.dmg`
+  (아키텍처마다 엔진이 다르다 — Intel 은 `macos-15-intel` 러너에서), Linux `XD-*.AppImage`·`XD-*.deb`. 동봉 엔진은
+  asar 밖 `resources/engine/python`(extraResources).
+- Windows 는 설치 폴더가 곧 루트다 — 기본 제거는 설치 폴더를 통째로 지우므로 `build/installer.nsh` 의
+  `customRemoveFiles` 가 **이 설치본이 깐 것만** 지운다(제거·업데이트 모두). 목록은 설치본마다 `scripts/after-pack.cjs`
+  가 풀린 폴더의 맨 위 항목으로 만든다 — "workspace·.xd 만 빼고 다" 는 사용자가 쓰던 폴더에 깔았을 때 그 사람의 파일을
+  지운다. 엔진 파일이 잠겨 있으면(엔진이 돎) 아무것도 지우지 않고 2 로 멈춘다 — 실행 중인 exe 는 이름은 바뀌므로 쓰기로
+  열어 본다(업데이트 설치 프로그램은 다섯 번 다시 해 보고 실패로 끝나며 옛 판은 그대로). electron-builder 는 고른 경로에
+  "XD" 가 들면 `\XD` 를 붙이지 않으므로(대소문자 무시 — `C:\Users\alexd\…` 도), 그런 경로가 비어 있지 않은 남의 폴더면
+  보이지 않는 페이지(`customPageAfterChangeDir` 의 `xdInstDirPre`)가 똑같이 `\XD` 를 붙인다. 같은 곳에 다시 설치하면
+  그대로 이어진다. macOS·Linux 의 루트는 `~/XD` 라 설치본과 상관없다.
+- 업데이트(`updater.ts`): 채널 `xd`(`xd.yml`·`xd-mac.yml`·`xd-linux.yml`) — Dex 의 `latest*.yml` 과 겹치지 않는다.
+  Windows·Linux 는 electron-updater 가 받아 두고 "다시 시작해 바꿀까요" 를 묻는다. Windows 는 바꾸기 전에 엔진·저장소를
+  먼저 멈추고(설치 프로그램이 XD 를 몇 초 만에 끝내 버리면 엔진 파일이 잠긴 채 남는다), 설치가 시작되지 못하면 XD 를
+  다시 띄워 되살린다. 리눅스는 먼저 멈추지 않고(설치가 실패하면 그대로 계속), electron-updater 의 재시작을 끄고
+  (`autoRunAppAfterInstall` — deb 의 `app.relaunch()` 는 NoNewPrivs, AppImage 는 옛 판이 살아 있을 때 새 판을 띄움) Electron
+  `autoUpdater` 의 `before-quit-for-update`(electron-updater 가 `app` 이 아니라 여기에 쏜다)에서 분리된 셸이 이 프로세스가
+  끝나길 기다렸다가 새 판(이름이 바뀐 AppImage 면 그것)을 띄운다. deb 는 설치에 관리자 암호가 들어 끌 때 몰래 바꾸지
+  않는다([다시 시작]을 눌렀을 때만). Windows 는 설치 프로그램으로 깐 것만 스스로 바꾼다. 서명 없는 macOS 는 스스로 바꿀 수
+  없어 새 판을 알리고 그 아키텍처의 dmg 를 브라우저로 받게 한다(맥 x64 잡은 dmg 만 올린다 — `xd-mac.yml` 은 하나).
+  설정에 [업데이트 확인]. 설치본에서만, 시작 30초 뒤·6시간마다.
+- 확인(CI `xd-package` 잡과 릴리스가 같은 확인): 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고 **그 설치본으로
+  턴**(`e2e/packaged.e2e.ts` — 엔진이 설치본 안의 것으로 뜨는지), Windows 는 **설치 → 다시 설치(업데이트) → 제거** 뒤에
+  루트의 workspace·.xd 가 남고 앱은 지워지는지, 엔진 파일이 잠겨 있으면(도는 exe 와 같은 공유로 쥠) 제거가 2 로 끝나고
+  아무것도 지우지 않는지, 설치 폴더 고르기(`xdInstDirPre` — electron-builder 의 makensis 로 그 함수만 돌림)가 여덟 가지
+  경로에서 맞게 고르는지(`scripts/check-installer.mjs`). 설치본에 닿는 것이 바뀔 때만 돈다.
+- electron-builder 는 **26.12 이상**(XD 의 것만 — XD 는 따로 lock 을 가진다, Dex 는 그대로). 26.12 아래의 NSIS
+  템플릿(`multiUser.nsh`)은 처음 하는 사용자별 설치에서 기본 위치를 1024자로 읽어 힙을 넘겨 읽고, Windows 11 24H2·
+  Server 2025 에서 설치 프로그램이 바로 0xC0000005 로 죽는다(electron-builder #9769 — CI 의 Windows 설치 확인이 잡았다).
+  NSIS 바이너리는 기본(3.0.4.1) 그대로. makensis 는 `-WX`(경고도 실패)로 돈다 — `ESTIMATED_SIZE` 는 electron-builder 가
+  정의하니 다시 정의하지 않는다. 리눅스는 `desktopName` = `xd.desktop`(Wayland app_id 가 설치되는 `xd.desktop`·
+  `StartupWMClass` 와 같게 — 실측 `CHROME_DESKTOP=xd.desktop`).
+- Dex 맥 수동 업데이트는 `XGen-Dex-*.dmg` 만 고른다(같은 릴리스에 XD dmg 가 있어도 섞이지 않는다).
+- 서명 없음 — macOS Gatekeeper(우클릭 → 열기·`xattr`)·Windows SmartScreen 안내(Dex 와 같다).
 
 ## 11. 단계
 
@@ -402,6 +434,8 @@ SQLite(`node:sqlite`, 네이티브 모듈 없음 — Electron 43 = Node 24.18, S
 ### 진행
 
 - **M0** (2026-10-02, PR #160) — 설계·뼈대·정체성·버전/계약/CI.
+- **M6** (2026-10-03) — 설치본·같은 릴리스·업데이트(§10). 실측(로컬): 리눅스 설치본(풀린 폴더)을 띄워 설치본에 실린
+  엔진으로 턴이 끝까지(엔진 로그의 자리가 resources/engine/python). 세 OS·Windows 제거 보존은 CI `xd-package` 잡.
 - **M5c** (2026-10-03) — 사용자 MCP 서버(§8). 실측: 엔진 시험(실제 stdio MCP 서버 — 연결·호출·실패 결과·턴을 넘어
   같은 프로세스·비밀이 바뀌면 다시·목록에서 빠지면 닫기·하나가 실패해도 나머지·끄면 프로세스가 남지 않음·데몬 턴이
   MCP 도구를 씀·[연결 확인]), 화면 E2E(서버 더하기 → 연결 확인 "도구 4개" → 턴이 그 도구를 써 작업 공간에서 저장한

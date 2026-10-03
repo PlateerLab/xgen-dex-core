@@ -66,6 +66,23 @@ const areas = {
   // XD 엔진(동봉 Python) — 세 OS 에서 동봉본을 만들고 그 인터프리터로 시험한다. 위험 명령 규칙은 Dex 의 것을
   // 그대로 넘기므로(엔진 시험이 두 언어의 판정을 맞춰 본다) 그 파일도 본다.
   engine: under(['apps/xd/engine/', 'apps/xd/scripts/bundle-engine.mjs', 'packages/engine/src/dangerous-commands.ts']),
+  // XD 설치본 — 설치본에 닿는 것(설치 설정·NSIS·의존성·동봉 엔진의 목록·엔진 자리·업데이트)이 바뀔 때만 세 OS 에서
+  // 실제 설치본을 만든다(무겁다).
+  xdpack: under([
+    'apps/xd/electron-builder.yml',
+    'apps/xd/electron.vite.config.ts',
+    'apps/xd/build/',
+    'apps/xd/package.json',
+    'apps/xd/package-lock.json',
+    'apps/xd/scripts/',
+    'apps/xd/engine/bundle/',
+    'apps/xd/src/main/index.ts',
+    'apps/xd/src/main/engine-service.ts',
+    'apps/xd/src/main/data-root.ts',
+    'apps/xd/src/main/updater.ts',
+    'apps/xd/src/main/update-feed.ts',
+    'apps/xd/e2e/packaged.e2e.ts',
+  ]),
   // 모바일 네이티브 컴파일 — 로컬 모듈·네이티브 프로젝트·의존성이 바뀔 때만
   native: under([
     'apps/mobile/modules/',
@@ -94,6 +111,7 @@ const JOB_AREA = {
   ios: 'native',
   'xd-engine': 'engine',
   'xd-app': 'core',
+  'xd-package': 'xdpack',
 };
 
 function ciDefinitionAreas() {

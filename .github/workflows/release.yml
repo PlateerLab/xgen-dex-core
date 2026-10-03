@@ -90,18 +90,21 @@ jobs:
           # 올려야 자동 업데이트가 새 버전을 찾는다.
           - os: ubuntu-latest
             flag: --linux
+            exe: apps/desktop/release/linux-unpacked/xgen-dex
             glob: |
               apps/desktop/release/*.AppImage
               apps/desktop/release/*.deb
               apps/desktop/release/latest-linux.yml
           - os: windows-latest
             flag: --win
+            exe: apps/desktop/release/win-unpacked/XGen-Dex.exe
             glob: |
               apps/desktop/release/*.exe
               apps/desktop/release/*.blockmap
               apps/desktop/release/latest.yml
           - os: macos-latest
             flag: --mac
+            exe: apps/desktop/release/mac-arm64/XGen-Dex.app/Contents/MacOS/XGen-Dex
             glob: |
               apps/desktop/release/*.dmg
               apps/desktop/release/*.blockmap
@@ -129,6 +132,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # 발행 전에 CI(desktop-package)와 같은 확인 — 설치본으로 띄우기, Windows 처음 설치·업데이트·제거·이전 릴리스에서 올라오기.
+      - name: 설치본으로 띄우기
+        shell: bash
+        env:
+          DEX_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libsecret-1-0
+            RUN="xvfb-run -a"
+          else
+            RUN=""
+          fi
+          cd apps/desktop && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
+      - name: Windows 처음 설치·업데이트·제거·올라오기
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node apps/desktop/scripts/check-installer.mjs
 
       - uses: actions/upload-artifact@v4
         with:

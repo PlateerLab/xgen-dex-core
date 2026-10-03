@@ -283,8 +283,10 @@ jobs:
             RUN=""
           fi
           cd apps/desktop && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
-      - name: Windows 처음 설치·업데이트·제거
+      - name: Windows 처음 설치·업데이트·제거·이전 릴리스에서 올라오기
         if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node apps/desktop/scripts/check-installer.mjs
   # ── 모바일 JS (별도 npm 프로젝트) ──
   mobile:

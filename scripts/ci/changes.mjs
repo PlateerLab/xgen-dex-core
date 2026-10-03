@@ -92,6 +92,8 @@ const areas = {
     'apps/desktop/package-lock.json',
     'apps/desktop/scripts/',
     'apps/desktop/e2e/packaged.e2e.ts',
+    // 설치본 시험이 보는 것 — OS 키체인(keytar) 싣기
+    'apps/desktop/src/main/keychain.ts',
   ]),
   // 모바일 네이티브 컴파일 — 로컬 모듈·네이티브 프로젝트·의존성이 바뀔 때만
   native: under([

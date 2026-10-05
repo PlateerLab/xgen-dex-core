@@ -60,6 +60,9 @@ const POPUP_REQUEST_TTL_MS = 60_000;
 const MAX_PENDING_POPUPS = 12;
 const BROWSER_SELECTION_TTL_MS = 60_000;
 
+/** 사용자 대신 누르는 명령 — 직후의 새 창(target=_blank 링크 등)은 팝업 차단 없이 새 탭으로 연다. */
+const GESTURE_COMMANDS = new Set(['click', 'press', 'dblclick']);
+const AGENT_POPUP_WINDOW_MS = 3_000;
 /** 키보드 초점으로 전달되는 agent-browser 명령. */
 const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown', 'keyup']);
 
@@ -119,6 +122,11 @@ export class BrowserRuntime {
   private popupPermissions = new Map<string, BrowserPopupPermission>();
   private sessionPopupPermissions = new Set<string>();
   private pendingPopups = new Map<string, PendingBrowserPopup>();
+  /**
+   * 에이전트가 사용자 대신 누른 직후(페이지별 시각까지)의 새 창은 막지 않고 새 탭으로 연다 — 사용자가 시킨
+   * 조작이다("블로그 들어가 봐" → 네이버 메뉴 링크는 새 창으로 열려 팝업 차단에 걸렸다, 10/5).
+   */
+  private agentGestureUntil = new Map<string, number>();
   private pendingSelections = new Map<string, PendingBrowserSelection>();
 
   setStateListener(listener: (state: BrowserState) => void): void {
@@ -542,7 +550,10 @@ export class BrowserRuntime {
         return { action: 'deny' };
       }
 
+      const byAgent = (this.agentGestureUntil.get(runtime.info.pageId) ?? 0) > Date.now();
+      if (byAgent) this.agentGestureUntil.delete(runtime.info.pageId); // 누름 한 번에 새 창 하나
       if (
+        byAgent ||
         this.popupPermissions.get(openerOrigin) === 'allow' ||
         this.sessionPopupPermissions.has(openerOrigin)
       ) {
@@ -952,6 +963,9 @@ export class BrowserRuntime {
     // 글자와 Enter 가 웹뷰가 아니라 채팅 입력창으로 들어가 그대로 전송된다(10/5 실측: 검색어 "원피스" 가
     // 채팅 메시지로 나감). 키보드 명령 전에는 이 탭(게스트)에 초점을 준다.
     if (KEYBOARD_COMMANDS.has(command[0] ?? '') && !contents.isDestroyed()) await focusGuest(contents);
+    if (GESTURE_COMMANDS.has(command[0] ?? '')) {
+      this.agentGestureUntil.set(runtime.info.pageId, Date.now() + AGENT_POPUP_WINDOW_MS);
+    }
     if (command[0] === 'snapshot') {
       // Every snapshot replaces agent-browser's @eN registry. Advancing the
       // public generation makes refs from an earlier snapshot reject locally.

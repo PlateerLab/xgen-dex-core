@@ -40,6 +40,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
   return [
     {
       name: BROWSER_TABS_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
         'A missing page_id on other browser tools uses the workflow default background page.',
@@ -62,6 +63,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_NAVIGATE_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description: 'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait.',
       inputSchema: {
         type: 'object',
@@ -80,6 +82,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_SNAPSHOT_TOOL,
+      annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Return the accessibility snapshot and fresh @eN refs for a page. Pass the returned generation to ref-based interactions so stale refs are rejected.',
       inputSchema: {
@@ -95,6 +98,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_INTERACT_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse.',
       inputSchema: {
@@ -137,6 +141,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_CAPTURE_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description: 'Capture screenshot/full screenshot/PDF or inspect console/page errors.',
       inputSchema: {
         type: 'object',
@@ -160,6 +165,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_ADVANCED_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
       inputSchema: {

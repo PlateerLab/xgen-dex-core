@@ -2462,6 +2462,17 @@ button {
   gap: 6px;
   flex-shrink: 0;
 }
+/* 채팅 칸이 좁으면(분할 화면) 헤더 버튼은 아이콘만 — 글자를 숨겨 [채팅 | IDE] 까지 한 줄에 들어오게
+   한다. 버튼 이름은 툴팁(title)으로 남는다. */
+.chat-header {
+  container-type: inline-size;
+}
+@container (max-width: 500px) {
+  .chat-hbtn-label,
+  .chat-title-text {
+    display: none; /* 이름은 한두 글자로 잘려 보이느니 숨긴다 — 탭 제목에 이미 있다 */
+  }
+}
 /* [채팅 | IDE] — 같은 대화를 두 가지로 본다. 헤더 맨 오른쪽에서, 옆의 가벼운 헤더
    버튼들과 구분되게 한 덩어리로. */
 .chat-view-switch {

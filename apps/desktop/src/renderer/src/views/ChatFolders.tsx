@@ -179,7 +179,7 @@ export const FolderConnectButton: React.FC<{
     }
     aria-haspopup="dialog"
   >
-    <FolderIcon size={14} /> 폴더
+    <FolderIcon size={14} /> <span className="chat-hbtn-label">폴더</span>
     {count > 0 && <span className="folder-connect-count">{count}</span>}
     {remoteNow && <span className="folder-connect-remote" aria-label="다른 화면에서 사용 중" />}
   </button>

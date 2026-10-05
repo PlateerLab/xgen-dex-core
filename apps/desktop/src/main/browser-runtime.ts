@@ -60,6 +60,26 @@ const POPUP_REQUEST_TTL_MS = 60_000;
 const MAX_PENDING_POPUPS = 12;
 const BROWSER_SELECTION_TTL_MS = 60_000;
 
+/** 키보드 초점으로 전달되는 agent-browser 명령. */
+const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown', 'keyup']);
+
+/**
+ * 웹뷰 게스트에 키보드 초점을 준다. 게스트의 focus() 만으로는 앱 창(임베더) 안의 DOM 초점이 채팅 입력창에
+ * 그대로 남는다 — 임베더가 이 게스트를 품은 <webview> 요소에 초점을 줘야 한다.
+ */
+async function focusGuest(contents: WebContents): Promise<void> {
+  const host = (contents as WebContents & { hostWebContents?: WebContents }).hostWebContents;
+  if (host && !host.isDestroyed()) {
+    await host
+      .executeJavaScript(
+        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (w && document.activeElement !== w) w.focus(); return !!w; })()`,
+        true,
+      )
+      .catch(() => false);
+  }
+  contents.focus();
+}
+
 export class BrowserRuntimeError extends Error {
   constructor(
     readonly code:
@@ -928,6 +948,10 @@ export class BrowserRuntime {
         this.emit();
       });
     }
+    // 글자 넣기·키 누르기는 키보드 초점을 따라간다 — 앱 창의 채팅 입력창에 초점이 있으면 CDP 로 보낸
+    // 글자와 Enter 가 웹뷰가 아니라 채팅 입력창으로 들어가 그대로 전송된다(10/5 실측: 검색어 "원피스" 가
+    // 채팅 메시지로 나감). 키보드 명령 전에는 이 탭(게스트)에 초점을 준다.
+    if (KEYBOARD_COMMANDS.has(command[0] ?? '') && !contents.isDestroyed()) await focusGuest(contents);
     if (command[0] === 'snapshot') {
       // Every snapshot replaces agent-browser's @eN registry. Advancing the
       // public generation makes refs from an earlier snapshot reject locally.

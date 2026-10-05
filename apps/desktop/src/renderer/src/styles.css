@@ -9163,6 +9163,12 @@ button.sm {
   min-width: 0;
   flex: 0 1 auto;
 }
+/* 툴팁 감싸개는 기본이 내용 폭(min-width:auto)이라, 채팅 칸이 좁으면 선택기만 줄고 칩은
+   그대로 남아 오른쪽 생각 선택기 위로 겹친다 — 감싸개도 줄어들게 해 칩 글자가 말줄임되게 한다. */
+.model-picker > .dex-tip-anchor {
+  min-width: 0;
+  max-width: 100%;
+}
 .model-chip {
   display: inline-flex;
   align-items: center;

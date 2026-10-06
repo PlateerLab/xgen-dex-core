@@ -54,6 +54,16 @@ function EditorGroupView({ group, index, theme }: { group: EditorGroup; index: n
   const store = useStore();
   const activeGroup = useIde((s) => s.activeGroup);
   const tab = group.tabs.find((t) => t.id === group.activeId) ?? null;
+  // 그린 모습(미리보기)을 보는 동안은 경로 줄을 두지 않는다. 파일 이름이 탭과 경로 줄에 두 번 서고, 미리보기는
+  // 자기 머리(출처·복사·내려받기)가 따로 있다. 폴더 위치는 탭에 마우스를 올리면 보인다.
+  const previewing = useIde((s) => {
+    if (!tab) return false;
+    if (tab.kind === 'preview') return true;
+    if (tab.kind !== 'file' || !store.host.preview) return false;
+    const doc = s.docs[tab.path];
+    if (doc?.status === 'binary') return true;
+    return doc?.status === 'ready' && store.previewMode(tab.path) === 'toggle' && (s.rendered[tab.path] ?? true);
+  });
   return (
     <section
       className={`xide-editor-group${activeGroup === group.id ? ' xide--focused' : ''}`}
@@ -62,7 +72,7 @@ function EditorGroupView({ group, index, theme }: { group: EditorGroup; index: n
       onFocusCapture={() => store.setActiveGroup(group.id)}
     >
       <TabBar group={group} />
-      {tab ? <Breadcrumbs tab={tab} /> : null}
+      {tab && !previewing ? <Breadcrumbs tab={tab} /> : null}
       <div className="xide-editor-body">
         {tab ? (
           <TabContent

@@ -27,9 +27,12 @@ import {
   langForFile,
   looksBinary,
   mimeForFile,
+  nextTableSort,
   parseCsv,
+  sortedRowOrder,
   splitHighlightedLines,
   TEXT_RENDER_LIMIT,
+  type TableSort,
   type ViewerKind,
 } from './file-viewer-model';
 import { CopyIcon, DocIcon, RefreshIcon } from '../brand/icons';
@@ -211,30 +214,61 @@ const CodeView: React.FC<{ text: string; lang: string; wrap: boolean }> = ({ tex
 
 // ── CSV 표 뷰 ───────────────────────────────────────────────────
 
+/**
+ * 머리를 누르면 그 열로 정렬한다: 오름차순 → 내림차순 → 정렬 없음(처음은 정렬 없음). 행 번호는 파일의 원래
+ * 번호 그대로다(정렬해도 "몇 번째 행" 을 잃지 않는다). 규칙은 @dex/protocol file-view 의 sortedRowOrder.
+ */
 const CsvView: React.FC<{ text: string; delim: ',' | '\t' }> = ({ text, delim }) => {
   const { rows, truncated } = useMemo(() => parseCsv(text, delim), [text, delim]);
+  const [sort, setSort] = useState<TableSort>(null);
+  const body = useMemo(() => rows.slice(1), [rows]);
+  const order = useMemo(() => sortedRowOrder(body, sort), [body, sort]);
   if (rows.length === 0) return <div className="fv-note">빈 파일입니다.</div>;
-  const [head, ...body] = rows;
+  const head = rows[0];
   return (
     <div className="fv-csv-scroll">
       <table className="fv-csv">
         <thead>
           <tr>
             <th className="fv-csv-ln" />
-            {head.map((h, i) => (
-              <th key={i}>{h}</th>
-            ))}
+            {head.map((h, i) => {
+              const dir = sort?.col === i ? sort.dir : null;
+              return (
+                <th key={i} aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'}>
+                  <button
+                    type="button"
+                    className={`fv-csv-sort${dir ? ' on' : ''}`}
+                    onClick={() => setSort((cur) => nextTableSort(cur, i))}
+                    title={
+                      dir === 'asc'
+                        ? '오름차순 · 누르면 내림차순'
+                        : dir === 'desc'
+                          ? '내림차순 · 누르면 정렬 없음'
+                          : '누르면 오름차순으로 정렬'
+                    }
+                  >
+                    <span className="fv-csv-sort-label">{h}</span>
+                    <span className="fv-csv-sort-mark" aria-hidden>
+                      {dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '↕'}
+                    </span>
+                  </button>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
-          {body.map((r, i) => (
-            <tr key={i}>
-              <td className="fv-csv-ln">{i + 1}</td>
-              {head.map((_, j) => (
-                <td key={j}>{r[j] ?? ''}</td>
-              ))}
-            </tr>
-          ))}
+          {order.map((ri) => {
+            const r = body[ri];
+            return (
+              <tr key={ri}>
+                <td className="fv-csv-ln">{ri + 1}</td>
+                {head.map((_, j) => (
+                  <td key={j}>{r[j] ?? ''}</td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {truncated && <div className="fv-note">표시는 2,000행까지입니다. 전체는 [원본]이나 다운로드로 보세요.</div>}

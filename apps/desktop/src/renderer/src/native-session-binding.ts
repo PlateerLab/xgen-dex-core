@@ -23,6 +23,7 @@ export function blankDesktopNativeView(): DesktopNativeView {
     transport: 'none',
     error: '',
     turn: initialTurn,
+    attachments: { items: Object.freeze([]), busy: false, notice: '' },
     catalog: {
       focus: null,
       items: [],
@@ -55,7 +56,7 @@ interface ObservedIdentity {
   sessionKnown: boolean;
 }
 
-function expectedOrigin(value: string): string | null {
+export function expectedDesktopNativeOrigin(value: string): string | null {
   try {
     const url = new URL(value);
     if (
@@ -100,7 +101,8 @@ export function createDesktopScopedBridge(bridge: DesktopNativeBridge, origin: s
           ok: false,
           code: 'scope_mismatch',
           message: '현재 계정과 서버에 맞는 Desktop 세션이 아닙니다.',
-          ...(['submit-turn', 'stop-turn', 'create-agent-session', 'switch-agent-focus'].includes(method)
+          ...(['submit-turn', 'stop-turn', 'create-agent-session', 'switch-agent-focus', 'pick-attachments',
+            'upload-attachment', 'recover-attachment', 'cancel-attachment', 'discard-attachments'].includes(method)
             ? { outcome: 'unknown' as const } : {}),
         };
       }
@@ -124,7 +126,7 @@ export function observedDesktopAgentSession(view: DesktopNativeView): string | n
 /** Owns the native session model for the lifetime of its Workspace scope. */
 export function useDesktopNativeSessionBinding(origin: string, userId: string): DesktopNativeSessionBinding {
   const key = useMemo(() => JSON.stringify([origin, userId]), [origin, userId]);
-  const canonicalOrigin = expectedOrigin(origin);
+  const canonicalOrigin = expectedDesktopNativeOrigin(origin);
   const validUser = /^[1-9][0-9]{0,9}$/.test(userId) && Number(userId) <= 2147483647;
   const modelRef = useRef<DesktopNativeSessionModel | null>(null);
   const identityRef = useRef<ObservedIdentity>({ scope: null, session: null, sessionKnown: false });

@@ -70,12 +70,14 @@ test('all operations use exact URLs, methods, DPoP proofs and cookie-free no-red
     Response.json(RECEIPT), new Response(null, { status: 204 })];
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const signatures: Array<{ method: string; htu: string; token: string }> = [];
+  let transmitted: number[] | undefined;
   const client = new AgentSessionAttachmentClient(ORIGIN, proof({
     signProof: async (method, htu, token) => {
       signatures.push({ method, htu, token });
       return `proof.${signatures.length}.jwt`;
     },
   }), (async (input, init = {}) => {
+    if (init.body instanceof Uint8Array) transmitted = Array.from(init.body);
     calls.push({ url: String(input), init });
     return responses.shift()!;
   }) as typeof fetch);
@@ -93,7 +95,8 @@ test('all operations use exact URLs, methods, DPoP proofs and cookie-free no-red
   assert.deepEqual(signatures.map(({ method }) => method), ['POST', 'PUT', 'GET', 'POST']);
   assert.deepEqual(signatures.map(({ htu }) => htu), calls.map(({ url }) => url));
   assert.deepEqual(JSON.parse(String(calls[0].init.body)), METADATA);
-  assert.deepEqual(Array.from(calls[1].init.body as Uint8Array), Array.from(BYTES));
+  assert.deepEqual(transmitted, Array.from(BYTES));
+  assert.deepEqual(Array.from(calls[1].init.body as Uint8Array), Array(5).fill(0));
   for (const [index, call] of calls.entries()) {
     assert.equal(call.init.credentials, 'omit');
     assert.equal(call.init.redirect, 'error');
@@ -109,17 +112,52 @@ test('upload copies bytes and metadata before waiting for credentials', async ()
   let release!: (token: string) => void;
   const waiting = new Promise<string>((resolve) => { release = resolve; });
   let sent: Uint8Array | undefined;
+  let transmitted: number[] | undefined;
   const metadata = { ...METADATA };
   const bytes = Uint8Array.from(BYTES);
   const client = new AgentSessionAttachmentClient(ORIGIN, proof({ accessToken: () => waiting }),
     (async (_input, init) => {
       sent = init?.body as Uint8Array;
+      transmitted = Array.from(sent);
       return Response.json(RECEIPT);
     }) as typeof fetch);
   const pending = client.uploadAttachment(SCOPE, ATTACHMENT, metadata, bytes);
   bytes.fill(0); metadata.filename = 'mutated.txt'; release('platform.access.jwt');
   assert.deepEqual(await pending, RECEIPT);
-  assert.deepEqual(Array.from(sent!), Array.from(BYTES));
+  assert.deepEqual(transmitted, Array.from(BYTES));
+  assert.deepEqual(Array.from(sent!), Array(5).fill(0));
+});
+
+test('cancelled upload wipes its owned buffer after a still-consuming transport settles', async () => {
+  let entered!: () => void; let settle!: (response: Response) => void;
+  const dispatched = new Promise<void>((resolve) => { entered = resolve; });
+  const response = new Promise<Response>((resolve) => { settle = resolve; });
+  let sent!: Uint8Array;
+  const client = new AgentSessionAttachmentClient(ORIGIN, proof(), (async (_input, init) => {
+    sent = init?.body as Uint8Array; entered(); return response;
+  }) as typeof fetch);
+  const controller = new AbortController();
+  const original = Uint8Array.from(BYTES);
+  const pending = client.uploadAttachment(SCOPE, ATTACHMENT, METADATA, original, controller.signal);
+  await dispatched; controller.abort();
+  await assert.rejects(pending, AgentAttachmentOutcomeUnknown);
+  assert.deepEqual(Array.from(sent), Array.from(BYTES));
+  settle(Response.json(RECEIPT));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(Array.from(sent), Array(5).fill(0));
+  assert.deepEqual(Array.from(original), Array.from(BYTES));
+});
+
+test('source length mismatch is rejected before copying or fetching', async () => {
+  let copies = 0; let fetches = 0;
+  class ObservableBytes extends Uint8Array {
+    override [Symbol.iterator](): ArrayIterator<number> { copies++; return super[Symbol.iterator](); }
+  }
+  const client = new AgentSessionAttachmentClient(ORIGIN, proof(), (async () => {
+    fetches++; return Response.json(RECEIPT);
+  }) as typeof fetch);
+  await assert.rejects(client.uploadAttachment(SCOPE, ATTACHMENT, METADATA, new ObservableBytes(6)), TypeError);
+  assert.equal(copies, 0); assert.equal(fetches, 0);
 });
 
 test('invalid scope, metadata, id, bytes and size fail before credentials or proof', async () => {

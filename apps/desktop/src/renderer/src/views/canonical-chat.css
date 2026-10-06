@@ -168,8 +168,29 @@
 .canonical-chat__composer {
   border-top: 1px solid var(--border-soft);
   border-bottom: 0;
+  max-height: 56%;
+  overflow-y: auto;
 }
 
 .canonical-chat__composer textarea {
   resize: vertical;
+}
+
+.canonical-chat__attachments {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.canonical-chat__attachment {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+
+.canonical-chat__attachment p {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
 }

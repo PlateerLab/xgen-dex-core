@@ -84,6 +84,40 @@ test('unknown submit explicitly retries the exact original body, key, version an
   assert.equal((requests[1].input as { expected_state_version: number }).expected_state_version, 4);
 });
 
+test('unknown attachment submit retries the exact ordered references after adapter mutation', async () => {
+  const first = '018f1240-0000-7000-8000-000000000005';
+  const second = '018f1240-0000-7000-8000-000000000006';
+  const original = [
+    { attachment_id: first, sha256: 'a'.repeat(64) },
+    { attachment_id: second, sha256: 'b'.repeat(64) },
+  ];
+  const requests: AgentTurnComposeRequest[] = [];
+  let attempt = 0;
+  const f = fixture(async (request) => {
+    requests.push(structuredClone(request));
+    if (request.operation !== 'submit') throw new Error('unexpected operation');
+    const sent = request.input.attachments as { attachment_id: string; sha256: string }[];
+    sent.reverse();
+    sent[0]!.attachment_id = TURN;
+    if (++attempt === 1) throw new Error('lost acknowledgement');
+    return envelope(requests.at(-1)!, { turn_id: TURN, status: 'running', accepted_sequence: 8,
+      state_version: 5, replayed: true });
+  });
+
+  await assert.rejects(f.composer.submit('same body', original), AgentTurnComposeFailure);
+  original.reverse();
+  original[0]!.attachment_id = OTHER_TURN;
+  await f.composer.retry();
+
+  assert.deepEqual(requests[1], requests[0]);
+  assert.deepEqual((requests[1] as Extract<AgentTurnComposeRequest, { operation: 'submit' }>).input.attachments, [
+    { attachment_id: first, sha256: 'a'.repeat(64) },
+    { attachment_id: second, sha256: 'b'.repeat(64) },
+  ]);
+  assert.equal((requests[1].input as { expected_state_version: number }).expected_state_version, 4);
+  assert.equal((requests[1].input as { idempotency_key: string }).idempotency_key, 'logical-key');
+});
+
 test('temporary read unavailability preserves uncertain intent and disables every action', async () => {
   const f = fixture(async () => { throw new AgentTurnComposeFailure('unknown'); });
   await assert.rejects(f.composer.submit('question'), AgentTurnComposeFailure);

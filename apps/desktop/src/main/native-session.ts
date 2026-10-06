@@ -74,10 +74,16 @@ export class DesktopNativeSessions {
     const scope = nativeKeyScope({ origin: current.origin, userId: current.userId, platform: 'desktop' });
     return { ...scope, key: JSON.stringify([scope.origin, scope.userId]) };
   }
+  private discardStaleOwner(): void {
+    if (!this.host) return;
+    try { if (this.current().key !== this.scope) this.reset(); }
+    catch { this.reset(); }
+  }
   async request(rawMethod: unknown, rawParams: unknown = {}): Promise<DesktopNativeReply> {
     try {
       if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'watch-live',
-        'submit-turn', 'stop-turn', 'agent-sessions', 'create-agent-session', 'switch-agent-focus', 'unwatch', 'cancel'].includes(rawMethod)) {
+        'submit-turn', 'stop-turn', 'agent-sessions', 'create-agent-session', 'switch-agent-focus', 'unwatch', 'cancel',
+        'pick-attachments', 'attachments', 'upload-attachment', 'recover-attachment', 'cancel-attachment', 'discard-attachments'].includes(rawMethod)) {
         throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
       }
       const params = object(rawParams);
@@ -104,7 +110,9 @@ export class DesktopNativeSessions {
         ...(rawMethod === 'device' || (rawMethod === 'session' && params.action === 'login') ? {} : { user_id: scope.userId }) };
       const value = await this.host!.request(`native/${rawMethod}`, scoped);
       if (generation !== this.generation || this.current().key !== scope.key) {
-        if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn' || rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus') {
+        this.discardStaleOwner();
+        if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn' || rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus'
+          || rawMethod === 'upload-attachment' || rawMethod === 'cancel-attachment') {
           throw new DexError('network_error', rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus'
             ? '작업 완료 여부를 확인할 수 없습니다. 현재 포커스와 세션 목록을 다시 확인하세요.'
             : '송신 완료 여부를 확인할 수 없습니다. 대화 상태를 확인하고 같은 요청으로 재확인하세요.',
@@ -113,7 +121,7 @@ export class DesktopNativeSessions {
         throw new DOMException('Cancelled', 'AbortError');
       }
       return { ok: true, value };
-    } catch (error) { return safeError(error); }
+    } catch (error) { this.discardStaleOwner(); return safeError(error); }
   }
 }
 

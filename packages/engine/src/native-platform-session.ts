@@ -282,16 +282,19 @@ export class NativeHostSession {
   async uploadAttachment(userId: string, sessionId: string, workflowId: string, attachmentId: string,
     input: ReserveAgentAttachmentInput, bytes: Uint8Array, signal?: AbortSignal, expectedAuthScope?: string): Promise<AgentAttachmentReceipt> {
     const scope = this.attachmentScope(userId, sessionId, workflowId);
-    let metadata: ReserveAgentAttachmentInput; let captured: Uint8Array;
+    let metadata: ReserveAgentAttachmentInput; let captured: Uint8Array | undefined;
     try {
       validateAgentAttachmentId(attachmentId);
       metadata = validateReserveAgentAttachment(scope, input);
       if (!(bytes instanceof Uint8Array) || bytes.byteLength !== metadata.size_bytes) throw new TypeError();
       captured = new Uint8Array(bytes);
       if (createHash('sha256').update(captured).digest('hex') !== metadata.sha256) throw new TypeError();
-    } catch { throw new DexError('usage_error', '첨부 파일 길이와 checksum을 확인하세요.'); }
-    return this.attachmentOperation(userId, 'PUT', `/api/agentflow/agent-sessions/${sessionId}/attachments/${attachmentId}/content`,
-      (client, control) => client.uploadAttachment(scope, attachmentId, metadata, captured, control), signal, expectedAuthScope);
+    } catch { captured?.fill(0); throw new DexError('usage_error', '첨부 파일 길이와 checksum을 확인하세요.'); }
+    const content = captured;
+    try {
+      return await this.attachmentOperation(userId, 'PUT', `/api/agentflow/agent-sessions/${sessionId}/attachments/${attachmentId}/content`,
+        (client, control) => client.uploadAttachment(scope, attachmentId, metadata, content, control), signal, expectedAuthScope);
+    } finally { content.fill(0); }
   }
   async readAttachmentReceipt(userId: string, sessionId: string, workflowId: string, attachmentId: string,
     signal?: AbortSignal, expectedAuthScope?: string): Promise<AgentAttachmentReceipt> {

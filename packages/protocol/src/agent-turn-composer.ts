@@ -12,6 +12,7 @@ import {
   type SubmittedAgentTurn,
 } from './agent-session-mutation';
 import { parseAgentSessionSnapshot, type AgentSessionSnapshot } from './agent-session';
+import type { AgentAttachmentReference } from './agent-session-attachments';
 
 const CONFLICT_CODES = new Set([
   'STATE_VERSION_CONFLICT',
@@ -128,6 +129,14 @@ function scopeKey(value: AgentTurnScope): string {
 function copyScope(value: AgentTurnScope): AgentTurnScope { return { ...value }; }
 function copySubmitted(value: SubmittedAgentTurn): SubmittedAgentTurn { return { ...value }; }
 function copyStopped(value: StoppedAgentTurn): StoppedAgentTurn { return { ...value }; }
+function copySubmitInput(value: SubmitAgentTurnInput): SubmitAgentTurnInput {
+  return {
+    ...value,
+    ...(value.attachments
+      ? { attachments: value.attachments.map((attachment) => ({ ...attachment })) }
+      : {}),
+  };
+}
 function terminal(snapshot: AgentSessionSnapshot): boolean {
   return snapshot.latest_turn === null || snapshot.latest_turn === undefined || TERMINAL.has(snapshot.latest_turn.status);
 }
@@ -143,9 +152,22 @@ function requestView(request: AgentTurnComposeRequest): AgentTurnComposerRequest
 function cloneRequest(request: AgentTurnComposeRequest): AgentTurnComposeRequest {
   return request.operation === 'submit'
     ? { operation: 'submit', scope: copyScope(request.scope), agent_session_id: request.agent_session_id,
-      input: { ...request.input } }
+      input: copySubmitInput(request.input) }
     : { operation: 'stop', scope: copyScope(request.scope), agent_session_id: request.agent_session_id,
       input: { ...request.input } };
+}
+
+function immutableRequest(request: AgentTurnComposeRequest): AgentTurnComposeRequest {
+  const frozenScope = Object.freeze(copyScope(request.scope));
+  if (request.operation === 'stop') {
+    return Object.freeze({ operation: 'stop', scope: frozenScope, agent_session_id: request.agent_session_id,
+      input: Object.freeze({ ...request.input }) });
+  }
+  const attachments = request.input.attachments
+    ? Object.freeze(request.input.attachments.map((attachment) => Object.freeze({ ...attachment })))
+    : undefined;
+  return Object.freeze({ operation: 'submit', scope: frozenScope, agent_session_id: request.agent_session_id,
+    input: Object.freeze({ ...request.input, ...(attachments ? { attachments } : {}) }) });
 }
 
 function immutableView(view: AgentTurnComposerView): AgentTurnComposerView {
@@ -256,7 +278,7 @@ export class AgentTurnComposer {
     this.publish();
   }
 
-  async submit(input_text: string): Promise<SubmittedAgentTurn | null> {
+  async submit(input_text: string, attachments?: readonly AgentAttachmentReference[]): Promise<SubmittedAgentTurn | null> {
     this.requireAction(this.canStartSubmit());
     const currentScope = this.currentScope!;
     const snapshot = this.snapshot!;
@@ -264,11 +286,12 @@ export class AgentTurnComposer {
       input_text,
       expected_state_version: snapshot.state_version,
       idempotency_key: this.createKey(),
+      ...(attachments === undefined ? {} : { attachments }),
     });
     const request: AgentTurnComposeRequest = {
       operation: 'submit', scope: copyScope(currentScope), agent_session_id: snapshot.id, input,
     };
-    this.intent = { request: cloneRequest(request), scopeKey: scopeKey(currentScope), sessionId: snapshot.id };
+    this.intent = { request: immutableRequest(request), scopeKey: scopeKey(currentScope), sessionId: snapshot.id };
     this.publicRequest = requestView(request);
     this.submitted = undefined;
     this.stopped = undefined;
@@ -292,7 +315,7 @@ export class AgentTurnComposer {
     const request: AgentTurnComposeRequest = {
       operation: 'stop', scope: copyScope(currentScope), agent_session_id: snapshot.id, input,
     };
-    this.intent = { request: cloneRequest(request), scopeKey: scopeKey(currentScope), sessionId: snapshot.id };
+    this.intent = { request: immutableRequest(request), scopeKey: scopeKey(currentScope), sessionId: snapshot.id };
     this.publicRequest = requestView(request);
     this.submitted = undefined;
     this.stopped = undefined;

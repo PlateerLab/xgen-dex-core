@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { DexEngine, MemoryConfigStore, MemoryCredentialStore, NativeDeviceKeyStore, NativeCliSession, defaultConfig } from '@dex/engine';
+import { DexEngine, MemoryConfigStore, MemoryCredentialStore, NativeDeviceKeyStore, NativeCliSession, NativeHostSession, defaultConfig } from '@dex/engine';
 import { DexRpcServer } from '@dex/rpc/server';
 import { nativeKeyThumbprint } from '@dex/engine/native-dpop';
 
@@ -18,7 +18,10 @@ async function fixture(enabled = true, expectedUserId?: string) {
     getPassword: async (s, n) => values.get(`${s}:${n}`) ?? null, setPassword: async (s, n, v) => { values.set(`${s}:${n}`, v); }, deletePassword: async (s, n) => values.delete(`${s}:${n}`),
   }) });
   const configs = new MemoryConfigStore({ ...defaultConfig(), currentProfile: 'corp', profiles: { corp: { serverUrl: origin } } });
-  let registered = false; let trusted = false; let publicKey: any; let refreshCount = 0; let socketFactories = 0;
+  let registered = false; let trusted = false; let publicKey: any; let refreshCount = 0; let socketFactories = 0; let platformSessionId = sid;
+  let picker: (signal: AbortSignal, limits: Readonly<{ max_files: number; max_bytes: number }>)
+    => Promise<readonly { filename: string; media_type: string; bytes: Uint8Array }[]>
+    = async () => [];
   const calls: Array<{ path: string; url: string; init: RequestInit }> = []; const secrets = [account, 'private-password'];
   let custom: ((path: string, init: RequestInit) => Promise<Response> | Response | undefined) | undefined;
   const fetchImpl = (async (input, init: RequestInit = {}) => {
@@ -33,9 +36,9 @@ async function fixture(enabled = true, expectedUserId?: string) {
     if (path.endsWith('/begin')) return Response.json({ flow_id: sid, device_id: device, challenge, expires_in_seconds: 300 });
     if (path.endsWith('/complete')) {
       const refresh = Buffer.alloc(32, ++refreshCount).toString('base64url'); const exp = Math.floor(Date.now() / 1000) + 600;
-      const access = `e30.${Buffer.from(JSON.stringify({ sub: user, sid, device_id: device, platform_type: 'vscode', token_use: 'platform_access', cnf: { jkt: nativeKeyThumbprint(publicKey) }, exp })).toString('base64url')}.c2ln`;
+      const access = `e30.${Buffer.from(JSON.stringify({ sub: user, sid: platformSessionId, device_id: device, platform_type: 'vscode', token_use: 'platform_access', cnf: { jkt: nativeKeyThumbprint(publicKey) }, exp })).toString('base64url')}.c2ln`;
       secrets.push(refresh, access);
-      return Response.json({ session_id: sid, ...(path.includes('/refresh/') ? { refreshed: true, access_ready: true } : { state: 'active' }),
+      return Response.json({ session_id: platformSessionId, ...(path.includes('/refresh/') ? { refreshed: true, access_ready: true } : { state: 'active' }),
         refresh_token: refresh, token_type: 'DPoP', access_token: access, access_expires_at: new Date(exp * 1000).toISOString() });
     }
     if (path.endsWith('/agent-state')) { assert.ok((init.headers as any).Authorization.startsWith('DPoP ')); return Response.json({ active_agent_session_id: null, version: 0, event_id: null }); }
@@ -59,12 +62,13 @@ async function fixture(enabled = true, expectedUserId?: string) {
         let closed = false;
         return { get closed() { return closed; }, next: () => new Promise(() => {}), close: async () => { closed = true; } };
       } };
-    }, ...(expectedUserId === undefined ? {} : { expectedUserId }) } } : {}) }); rpc.start();
+    }, attachmentPicker: (signal, limits) => picker(signal, limits), ...(expectedUserId === undefined ? {} : { expectedUserId }) } } : {}) }); rpc.start();
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<any>((resolve, reject) => {
     const current = ++id; const timer = setTimeout(() => reject(new Error('RPC fixture deadline')), 3000);
     pending.set(current, (m) => { clearTimeout(timer); resolve(m); }); input.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
   });
   return { send, keys, configs, calls, values, secrets, logs, messages, rpc, trusted: () => { trusted = true; }, custom: (f: typeof custom) => { custom = f; },
+    picker: (value: typeof picker) => { picker = value; }, fetch: fetchImpl, sessionId: (value: string) => { platformSessionId = value; },
     socketFactories: () => socketFactories,
     cleanup: async () => { rpc.close(); input.destroy(); output.destroy(); await rm(directory, { recursive: true, force: true }); } };
 }
@@ -590,5 +594,309 @@ test('RPC cancel after turn dispatch reports an unknown outcome and never emits 
     assert.equal(f.calls.filter(({ path }) => path.endsWith('/turns')).length, 1);
     assert.equal(JSON.stringify([response, f.messages, f.logs]).includes('private-user-input'), false);
     assert.equal(JSON.stringify([response, f.messages, f.logs]).includes('private-server-secret'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('native attachment selection is trusted-host-only, bounded, copied and invalidated by auth changes', async () => {
+  const f = await fixture(); let picks = 0;
+  try {
+    await initialize(f); await login(f);
+    const callsBeforeValidation = f.calls.length;
+    const privateBytes = new Uint8Array([1, 2, 3]); let firstLimits: any;
+    f.picker(async (_signal, limits) => { picks++; firstLimits = limits;
+      return [{ filename: 'report.txt', media_type: 'text/plain', bytes: privateBytes }]; });
+    for (const [method, params] of [
+      ['native/pick-attachments', { user_id: user, agent_session_id: 'not-a-session', workflow_id: 'flow' }],
+      ['native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'bad\nflow' }],
+      ['native/upload-attachment', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: 'not-a-selection' }],
+    ] as const) {
+      assert.equal((await f.send(method, params)).error.data.code, 'usage_error');
+    }
+    assert.equal(picks, 0); assert.equal(f.calls.length, callsBeforeValidation);
+    const injected = await f.send('native/pick-attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', path: '/private/secret.txt', bytes: [9],
+    });
+    assert.equal(injected.error.data.code, 'usage_error'); assert.equal(picks, 0);
+
+    const picked = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    assert.equal(picked.error, undefined); assert.equal(picks, 1); assert.equal(picked.result.attachments.length, 1);
+    assert.deepEqual(firstLimits, { max_files: 10, max_bytes: 100 * 1024 * 1024 });
+    assert.deepEqual(Object.keys(picked.result.attachments[0]).sort(),
+      ['filename', 'media_type', 'selection_id', 'sha256', 'size_bytes', 'status']);
+    assert.equal(picked.result.attachments[0].status, 'selected');
+    assert.equal(JSON.stringify(picked).includes('/private/secret.txt'), false);
+    assert.equal(JSON.stringify(picked).includes('bytes'), true); // size_bytes only; no raw byte field.
+    assert.equal(Object.prototype.hasOwnProperty.call(picked.result.attachments[0], 'bytes'), false);
+    assert.deepEqual([...privateBytes], [0, 0, 0]);
+    privateBytes[0] = 99;
+
+    class OversizedClaim extends Uint8Array { override get byteLength() { return 100 * 1024 * 1024 + 1; } }
+    const oversized = new OversizedClaim(1); let remainingLimits: any;
+    f.picker(async (_signal, limits) => { remainingLimits = limits;
+      return [{ filename: 'too-large.txt', media_type: 'text/plain', bytes: oversized }]; });
+    const overBytes = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    assert.equal(overBytes.error.data.code, 'usage_error');
+    assert.deepEqual(remainingLimits, { max_files: 9, max_bytes: 100 * 1024 * 1024 - 3 });
+    assert.equal(oversized[0], 0);
+
+    const countSources = Array.from({ length: 10 }, () => new Uint8Array([5]));
+    f.picker(async () => countSources.map((bytes, index) => ({
+      filename: `bounded-${index}.txt`, media_type: 'text/plain', bytes,
+    })));
+    const overCount = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    assert.equal(overCount.error.data.code, 'usage_error');
+    assert.equal(countSources.every((bytes) => bytes[0] === 0), true);
+    assert.equal((await f.send('native/attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+    })).result.attachments.length, 1);
+
+    f.picker(async () => Array.from({ length: 9 }, (_, index) => ({
+      filename: `retained-${index}.txt`, media_type: 'text/plain', bytes: new Uint8Array(),
+    })));
+    assert.equal((await f.send('native/pick-attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+    })).result.attachments.length, 10);
+    let openedAtLimit = false; f.picker(async () => { openedAtLimit = true; return []; });
+    assert.equal((await f.send('native/pick-attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+    })).error.data.code, 'usage_error');
+    assert.equal(openedAtLimit, false);
+
+    const changedAccount = await f.send('native/attachments', {
+      user_id: '8', agent_session_id: agentSid, workflow_id: 'flow',
+    });
+    assert.equal(changedAccount.error.data.code, 'auth_required');
+    assert.deepEqual((await f.send('native/attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+    })).result.attachments, []);
+
+    f.picker(async () => [{ filename: 'scope.txt', media_type: 'text/plain', bytes: new Uint8Array([4]) }]);
+    await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    const changedSession = await f.send('native/attachments', {
+      user_id: user, agent_session_id: turn, workflow_id: 'flow',
+    });
+    assert.deepEqual(changedSession.result.attachments, []);
+
+    let cancelOpened!: () => void; let cancelFinish!: () => void;
+    const cancelOpen = new Promise<void>((resolve) => { cancelOpened = resolve; });
+    const cancelWait = new Promise<void>((resolve) => { cancelFinish = resolve; });
+    const cancelledSource = new Uint8Array([6]);
+    f.picker(async () => { cancelOpened(); await cancelWait; return [{
+      filename: 'cancelled-late.txt', media_type: 'text/plain', bytes: cancelledSource,
+    }]; });
+    const cancelledPick = f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    await cancelOpen; await f.send('native/cancel'); cancelFinish();
+    assert.equal((await cancelledPick).error.data.code, 'cancelled');
+    assert.equal(cancelledSource[0], 0);
+    assert.deepEqual((await f.send('native/attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+    })).result.attachments, []);
+
+    let opened!: () => void; let finish!: () => void;
+    const open = new Promise<void>((resolve) => { opened = resolve; });
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const authChangedSource = new Uint8Array([7]);
+    f.picker(async () => { opened(); await wait; return [{ filename: 'late.txt', media_type: 'text/plain', bytes: authChangedSource }]; });
+    const pendingPick = f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    await open;
+    await new NativeHostSession(origin, 'vscode', f.keys, f.fetch).forgetLocal(user);
+    finish();
+    const changedAuth = await pendingPick;
+    assert.equal(changedAuth.error.data.code, 'auth_required');
+    assert.equal(authChangedSource[0], 0);
+    assert.equal(JSON.stringify([changedAuth, f.messages, f.logs]).includes('/private/secret.txt'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('native attachment upload re-reserves stably, recovers uncertain PUT without replay, rejects foreign receipts and releases after ACK', async () => {
+  const f = await fixture();
+  const attachmentA = '018f1240-0000-7000-8000-000000000005';
+  const attachmentB = '018f1240-0000-7000-8000-000000000006';
+  const reservations: any[] = []; let reserveCalls = 0; let putA = 0; let putB = 0; let foreignB = true;
+  const metadata = new Map<string, any>();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => {
+      const collection = `/api/agentflow/agent-sessions/${agentSid}/attachments`;
+      if (path === collection && init.method === 'POST') {
+        const body = JSON.parse(String(init.body)); reservations.push(body); reserveCalls++;
+        if (reserveCalls === 1) throw new Error('private reserve path /Users/private/file');
+        const id = reserveCalls === 2 ? attachmentA : attachmentB; metadata.set(id, body);
+        return Response.json({ attachment_id: id, status: 'reserved', expires_at: '2030-01-01T00:00:00Z' }, { status: 201 });
+      }
+      if (path === `${collection}/${attachmentA}/content` && init.method === 'PUT') {
+        putA++; assert.deepEqual([...init.body as Uint8Array], [1, 2, 3]);
+        const body = metadata.get(attachmentA); return Response.json({ origin, user_id: user, session_id: agentSid,
+          workflow_id: 'flow', attachment_id: attachmentA, filename: body.filename, size_bytes: body.size_bytes,
+          media_type: body.media_type, sha256: body.sha256 });
+      }
+      if (path === `${collection}/${attachmentB}/content` && init.method === 'PUT') {
+        putB++; throw new Error('private PUT response /Users/private/file');
+      }
+      if (path === `${collection}/${attachmentB}` && init.method === 'GET') {
+        const body = metadata.get(attachmentB); return Response.json({ origin, user_id: user, session_id: agentSid,
+          workflow_id: 'flow', attachment_id: attachmentB, filename: foreignB ? 'foreign-private-name.txt' : body.filename,
+          size_bytes: body.size_bytes, media_type: body.media_type, sha256: body.sha256 });
+      }
+      if (path.endsWith('/turns') && init.method === 'POST') return Response.json({
+        turn_id: turn, status: 'accepted', accepted_sequence: 1, state_version: 2, replayed: false,
+      }, { status: 202 });
+      return undefined;
+    });
+
+    const sourceA = new Uint8Array([1, 2, 3]);
+    f.picker(async () => [{ filename: 'a.txt', media_type: 'text/plain', bytes: sourceA }]);
+    const pickedA = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    const selectionA = pickedA.result.attachments[0].selection_id;
+    sourceA.fill(99);
+    const firstReserve = await f.send('native/upload-attachment', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionA,
+    });
+    assert.equal(firstReserve.error.data.code, 'network_error'); assert.equal(firstReserve.error.data.details.outcome, 'unknown');
+    const uploadedA = await f.send('native/upload-attachment', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionA,
+    });
+    assert.equal(uploadedA.result.attachments[0].status, 'ready'); assert.equal(putA, 1);
+    assert.equal(reservations[0].upload_key, reservations[1].upload_key);
+    assert.equal(JSON.stringify([firstReserve, f.messages, f.logs]).includes('/Users/private/file'), false);
+
+    f.picker(async () => [{ filename: 'b.txt', media_type: 'text/plain', bytes: new Uint8Array([4, 5]) }]);
+    const pickedB = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    const selectionB = pickedB.result.attachments[1].selection_id;
+    const unknownPut = await f.send('native/upload-attachment', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionB,
+    });
+    assert.equal(unknownPut.error.data.details.outcome, 'unknown'); assert.equal(putB, 1);
+    const noReplay = await f.send('native/upload-attachment', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionB,
+    });
+    assert.equal(noReplay.error.data.details.outcome, 'unknown'); assert.equal(putB, 1); assert.equal(reserveCalls, 3);
+
+    const foreign = await f.send('native/recover-attachment', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionB,
+    });
+    assert.equal(foreign.error.data.code, 'protocol_mismatch');
+    assert.equal(JSON.stringify([foreign, f.messages, f.logs]).includes('foreign-private-name.txt'), false);
+    foreignB = false;
+    const recovered = await f.send('native/recover-attachment', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionB,
+    });
+    assert.equal(recovered.result.attachments[1].status, 'ready'); assert.equal(putB, 1);
+
+    const refs = recovered.result.attachments.map((item: any) => ({ attachment_id: item.attachment_id, sha256: item.sha256 })).reverse();
+    const submitted = await f.send('native/submit-turn', { user_id: user, agent_session_id: agentSid,
+      input_text: 'with attachments', expected_state_version: 1, idempotency_key: 'attachment-order', attachments: refs });
+    assert.equal(submitted.error, undefined);
+    const turnWrites = f.calls.filter(({ path, init }) => path.endsWith('/turns') && init.method === 'POST');
+    const turnBody = JSON.parse(String(turnWrites[turnWrites.length - 1].init.body));
+    assert.deepEqual(turnBody.attachments, refs);
+    assert.deepEqual((await f.send('native/attachments', {
+      user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+    })).result.attachments, []);
+  } finally { await f.cleanup(); }
+});
+
+test('attached turn retry guard survives cancel, accepts only the exact intent and rejects a replaced native login before wire', async () => {
+  const f = await fixture();
+  const ids = ['018f1240-0000-7000-8000-000000000008', '018f1240-0000-7000-8000-000000000009'];
+  const metadata = new Map<string, any>(); let reserves = 0;
+  const turnAttempts = new Map<string, number>();
+  try {
+    await initialize(f); await login(f);
+    f.custom((path, init) => {
+      const collection = `/api/agentflow/agent-sessions/${agentSid}/attachments`;
+      if (path === collection && init.method === 'POST') {
+        const id = ids[reserves++]; const body = JSON.parse(String(init.body)); metadata.set(id, body);
+        return Response.json({ attachment_id: id, status: 'reserved', expires_at: '2030-01-01T00:00:00Z' }, { status: 201 });
+      }
+      const contentId = ids.find((id) => path === `${collection}/${id}/content` && init.method === 'PUT');
+      if (contentId) {
+        const body = metadata.get(contentId); return Response.json({ origin, user_id: user, session_id: agentSid,
+          workflow_id: 'flow', attachment_id: contentId, filename: body.filename, size_bytes: body.size_bytes,
+          media_type: body.media_type, sha256: body.sha256 });
+      }
+      if (path.endsWith('/turns') && init.method === 'POST') {
+        const body = JSON.parse(String(init.body)); const attempt = (turnAttempts.get(body.idempotency_key) ?? 0) + 1;
+        turnAttempts.set(body.idempotency_key, attempt);
+        if (attempt === 1) throw new Error('private lost turn response');
+        return Response.json({ turn_id: turn, status: 'accepted', accepted_sequence: 1,
+          state_version: 2, replayed: true }, { status: 202 });
+      }
+      return undefined;
+    });
+
+    const readyIntent = async (name: string, key: string) => {
+      f.picker(async () => [{ filename: name, media_type: 'text/plain', bytes: new Uint8Array([reserves + 1]) }]);
+      const picked = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+      const selectionId = picked.result.attachments[0].selection_id;
+      const uploaded = await f.send('native/upload-attachment', {
+        user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionId,
+      });
+      const item = uploaded.result.attachments[0];
+      return { user_id: user, agent_session_id: agentSid, input_text: `intent-${key}`,
+        expected_state_version: 1, idempotency_key: key,
+        attachments: [{ attachment_id: item.attachment_id, sha256: item.sha256 }] };
+    };
+
+    const sameIntent = await readyIntent('same.txt', 'retry-same');
+    assert.equal((await f.send('native/submit-turn', sameIntent)).error.data.details.outcome, 'unknown');
+    await f.send('native/cancel');
+    const different = await f.send('native/submit-turn', { ...sameIntent, input_text: 'different-private-intent' });
+    assert.equal(different.error.data.details.outcome, 'unknown');
+    assert.equal(turnAttempts.get('retry-same'), 1);
+    assert.equal((await f.send('native/submit-turn', sameIntent)).error, undefined);
+    assert.equal(turnAttempts.get('retry-same'), 2);
+
+    const replacedIntent = await readyIntent('replaced.txt', 'retry-replaced');
+    assert.equal((await f.send('native/submit-turn', replacedIntent)).error.data.details.outcome, 'unknown');
+    await f.send('native/cancel');
+    await new NativeHostSession(origin, 'vscode', f.keys, f.fetch).forgetLocal(user);
+    f.sessionId('018f1240-0000-7000-8000-000000000010');
+    assert.equal((await new NativeHostSession(origin, 'vscode', f.keys, f.fetch).login(
+      'a@example.test', 'private-password')).state, 'active');
+    const replaced = await f.send('native/submit-turn', replacedIntent);
+    assert.equal(replaced.error.data.code, 'auth_required');
+    assert.equal(turnAttempts.get('retry-replaced'), 1);
+    assert.equal(JSON.stringify([different, replaced, f.messages, f.logs]).includes('different-private-intent'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('native attachment cancel removes only after local removal or remote 204; discard never remote-cancels', async () => {
+  const f = await fixture(); const attachmentId = '018f1240-0000-7000-8000-000000000007'; let cancels = 0; let acceptCancel = false;
+  try {
+    await initialize(f); await login(f);
+    f.picker(async () => [{ filename: 'cancel.txt', media_type: 'text/plain', bytes: new Uint8Array([8]) }]);
+    let state = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    await f.send('native/cancel-attachment', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow',
+      selection_id: state.result.attachments[0].selection_id });
+    assert.equal(cancels, 0);
+
+    state = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    const selectionId = state.result.attachments[0].selection_id;
+    f.custom((path, init) => {
+      const collection = `/api/agentflow/agent-sessions/${agentSid}/attachments`;
+      if (path === collection && init.method === 'POST') return Response.json({
+        attachment_id: attachmentId, status: 'uploading', expires_at: '2030-01-01T00:00:00Z',
+      }, { status: 201 });
+      if (path === `${collection}/${attachmentId}/cancel` && init.method === 'POST') {
+        cancels++; return acceptCancel ? new Response(null, { status: 204 }) : Response.json({ private: 'server-secret' }, { status: 409 });
+      }
+      return undefined;
+    });
+    const upload = await f.send('native/upload-attachment', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionId });
+    assert.equal(upload.error.data.details.outcome, 'unknown');
+    const rejected = await f.send('native/cancel-attachment', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionId });
+    assert.equal(rejected.error.data.details.outcome, 'rejected');
+    assert.equal((await f.send('native/attachments', { user_id: user, agent_session_id: agentSid,
+      workflow_id: 'flow' })).result.attachments.length, 1);
+    acceptCancel = true;
+    const cancelled = await f.send('native/cancel-attachment', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: selectionId });
+    assert.deepEqual(cancelled.result.attachments, []); assert.equal(cancels, 2);
+
+    state = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    assert.equal(state.result.attachments.length, 1);
+    const discarded = await f.send('native/discard-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    assert.deepEqual(discarded.result.attachments, []); assert.equal(cancels, 2);
+    assert.equal(JSON.stringify([rejected, f.messages, f.logs]).includes('server-secret'), false);
   } finally { await f.cleanup(); }
 });

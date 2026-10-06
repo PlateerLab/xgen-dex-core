@@ -7,6 +7,7 @@ import { NativeDeviceKeyStore, NativeCliSession } from '@dex/engine';
 import { nativeKeyThumbprint } from '@dex/engine/native-dpop';
 import { DesktopNativeSessions, isNativeSessionSender } from '../src/main/native-session';
 import type { DesktopNativeNotice, DesktopNativeReply } from '../src/native-session-types';
+import type { NativeSessionHostOptions } from '@dex/rpc/native-session-host';
 
 const origin = 'https://app.example.test'; const device = '018f1240-0000-7000-8000-000000000001'; const sid = '018f1240-0000-7000-8000-000000000002';
 const agentSid = '018f1240-0000-7000-8000-000000000003'; const turn = '018f1240-0000-7000-8000-000000000004';
@@ -19,6 +20,7 @@ async function fixture() {
   const notices: DesktopNativeNotice[] = []; const replies: DesktopNativeReply[] = []; const calls: string[] = []; const secrets = ['private-password', 'e30.e30.c2ln'];
   let current = { origin, userId: '7' as string | null }; let account = '7'; let registered = false; let trusted = false; let publicKey: any; let count = 0;
   let custom: ((path: string, init: RequestInit) => Promise<Response> | undefined) | undefined;
+  let picker: NativeSessionHostOptions['attachmentPicker'];
   const fetchImpl = (async (input, init: RequestInit = {}) => {
     const path = new URL(String(input)).pathname; calls.push(path); assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error');
     const intercepted = await custom?.(path, init); if (intercepted) return intercepted;
@@ -40,13 +42,15 @@ async function fixture() {
     if (init.method === 'DELETE') { assert.ok((init.headers as any).DPoP); return new Response(null, { status: 204 }); }
     assert.fail('Unexpected native fixture request');
   }) as typeof fetch;
-  const host = new DesktopNativeSessions({ current: () => current, keys, fetch: fetchImpl, notify: (n) => notices.push(n) });
+  const host = new DesktopNativeSessions({ current: () => current, keys, fetch: fetchImpl,
+    attachmentPicker: (signal, limits) => picker ? picker(signal, limits) : Promise.resolve([]), notify: (n) => notices.push(n) });
   const request = async (method: string, params: Record<string, unknown> = {}) => { const r = await host.request(method, params); replies.push(r); return r; };
   const value = async (method: string, params: Record<string, unknown> = {}) => { const r = await request(method, params); assert.ok(r.ok); return r.value as any; };
   const register = () => value('device', { action: 'register', email: 'a', password: secrets[0] });
   const login = async () => { await register(); trusted = true; return value('session', { action: 'login', email: 'a', password: secrets[0] }); };
   return { host, keys, values, notices, replies, calls, secrets, request, value, register, login,
     change: (context: typeof current) => { current = context; }, account: (id: string) => { account = id; }, custom: (f: typeof custom) => { custom = f; },
+    picker: (f: typeof picker) => { picker = f; },
     cleanup: async () => { host.reset(); await rm(dir, { recursive: true, force: true }); } };
 }
 test('only the designated main top frame can enter the native IPC credential boundary', () => {
@@ -56,6 +60,31 @@ test('only the designated main top frame can enter the native IPC credential bou
   main.mainFrame.url = `${url}#settings`; assert.equal(isNativeSessionSender(main, main.mainFrame, main, url), true);
   for (const outside of ['https://other.test/index.html', 'about:blank', 'file:///application/renderer/overlay.html', `${url}?override=1`]) {
     main.mainFrame.url = outside; assert.equal(isNativeSessionSender(main, main.mainFrame, main, url), false);
+  }
+});
+test('main account changes destroy drafts after both successful and rejected late picker completions', async () => {
+  for (const rejected of [false, true]) {
+    const f = await fixture();
+    try {
+      await f.login();
+      const target = { agent_session_id: agentSid, workflow_id: 'flow' };
+      f.picker(async () => [{ filename: 'original.txt', media_type: 'text/plain', bytes: new Uint8Array([1]) }]);
+      assert.equal((await f.value('pick-attachments', target)).attachments.length, 1);
+      let settle!: () => void; let selected!: () => void;
+      const started = new Promise<void>((resolve) => { selected = resolve; });
+      f.picker(() => new Promise((resolve, reject) => {
+        settle = () => rejected ? reject(new Error('/private/local-picker-path'))
+          : resolve([{ filename: 'late.txt', media_type: 'text/plain', bytes: new Uint8Array([2]) }]);
+        selected();
+      }));
+      const pending = f.request('pick-attachments', target); await started;
+      f.change({ origin, userId: null }); settle();
+      assert.equal((await pending).ok, false);
+      assert.ok(f.notices.some((notice) => notice.type === 'cleared'));
+      f.change({ origin, userId: '7' });
+      assert.deepEqual((await f.value('attachments', target)).attachments, []);
+      assert.equal(JSON.stringify(f.replies).includes('/private/local-picker-path'), false);
+    } finally { await f.cleanup(); }
   }
 });
 test('Desktop rejects renderer account/origin/platform overrides, signed-out and HTTP contexts before network/key access', async () => {

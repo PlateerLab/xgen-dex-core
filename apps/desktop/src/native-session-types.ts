@@ -3,7 +3,9 @@ import type { AgentSessionMutationConflict } from '@dex/protocol/agent-session-m
 import type { AgentSessionLifecycleConflict } from '@dex/protocol/agent-session-lifecycle';
 
 export type DesktopNativeMethod = 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live'
-  | 'submit-turn' | 'stop-turn' | 'agent-sessions' | 'create-agent-session' | 'switch-agent-focus' | 'unwatch' | 'cancel';
+  | 'submit-turn' | 'stop-turn' | 'agent-sessions' | 'create-agent-session' | 'switch-agent-focus'
+  | 'pick-attachments' | 'attachments' | 'upload-attachment' | 'recover-attachment' | 'cancel-attachment'
+  | 'discard-attachments' | 'unwatch' | 'cancel';
 export type DesktopNativeMutationFailure = {
   outcome: 'rejected'; status: number; conflict?: AgentSessionMutationConflict | AgentSessionLifecycleConflict;
 } | { outcome: 'unknown' };

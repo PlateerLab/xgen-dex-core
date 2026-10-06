@@ -521,7 +521,13 @@
           "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       ],
-      "valid": false
+      "valid": true,
+      "references": [
+        {
+          "attachment_id": "22222222-2222-4222-8222-222222222222",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
     },
     {
       "name": "name control",
@@ -1257,8 +1263,7 @@
         "workflow_id": "workflow-\ud55c\uae00"
       },
       "receipts": [],
-      "valid": true,
-      "references": []
+      "valid": false
     },
     {
       "name": "origin https://127.1",
@@ -1482,6 +1487,284 @@
       },
       "receipts": [],
       "valid": false
+    },
+    {
+      "name": "origin https://[::ffff:c000:201]",
+      "scope": {
+        "origin": "https://[::ffff:c000:201]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": true,
+      "references": []
+    },
+    {
+      "name": "origin https://[::ffff:0:0]",
+      "scope": {
+        "origin": "https://[::ffff:0:0]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": true,
+      "references": []
+    },
+    {
+      "name": "origin https://[::ffff:192.0.2.1]",
+      "scope": {
+        "origin": "https://[::ffff:192.0.2.1]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://0x7f.1",
+      "scope": {
+        "origin": "https://0x7f.1",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://2130706433",
+      "scope": {
+        "origin": "https://2130706433",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://foo.123",
+      "scope": {
+        "origin": "https://foo.123",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://foo.0x1",
+      "scope": {
+        "origin": "https://foo.0x1",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://[1:0:0:2::3:4]",
+      "scope": {
+        "origin": "https://[1:0:0:2::3:4]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://[1::2:0:0:3:4]",
+      "scope": {
+        "origin": "https://[1::2:0:0:3:4]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": true,
+      "references": []
+    },
+    {
+      "name": "scope session_id forbidden end/path",
+      "scope": {
+        "origin": "https://xgen.example.com",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111\n",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "scope workflow_id forbidden end/path",
+      "scope": {
+        "origin": "https://xgen.example.com",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "../wf"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://xn--a.example",
+      "scope": {
+        "origin": "https://xn--a.example",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://xn--0.example",
+      "scope": {
+        "origin": "https://xn--0.example",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://xn--abc.example",
+      "scope": {
+        "origin": "https://xn--abc.example",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://xn--a-ecp.example",
+      "scope": {
+        "origin": "https://xn--a-ecp.example",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://[1:0:0:2::3]",
+      "scope": {
+        "origin": "https://[1:0:0:2::3]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": true,
+      "references": []
+    },
+    {
+      "name": "origin https://[::]",
+      "scope": {
+        "origin": "https://[::]",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": true,
+      "references": []
+    },
+    {
+      "name": "raw Unicode16 combining metadata",
+      "scope": {
+        "origin": "https://xgen.example.com",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "e\u0301-a\u0315\ud804\udfce"
+      },
+      "receipts": [
+        {
+          "origin": "https://xgen.example.com",
+          "user_id": "7",
+          "session_id": "11111111-1111-4111-8111-111111111111",
+          "workflow_id": "e\u0301-a\u0315\ud804\udfce",
+          "attachment_id": "22222222-2222-4222-8222-222222222222",
+          "filename": "e\u0301-a\u0315\ud804\udfce.txt",
+          "size_bytes": 42,
+          "media_type": "text/plain",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "valid": true,
+      "references": [
+        {
+          "attachment_id": "22222222-2222-4222-8222-222222222222",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "name": "exact Unicode scope differs",
+      "scope": {
+        "origin": "https://xgen.example.com",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "\u00e9"
+      },
+      "receipts": [
+        {
+          "origin": "https://xgen.example.com",
+          "user_id": "7",
+          "session_id": "11111111-1111-4111-8111-111111111111",
+          "workflow_id": "e\u0301",
+          "attachment_id": "22222222-2222-4222-8222-222222222222",
+          "filename": "\uc790\ub8cc.txt",
+          "size_bytes": 42,
+          "media_type": "text/plain",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "origin https://foo.0x",
+      "scope": {
+        "origin": "https://foo.0x",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://0x",
+      "scope": {
+        "origin": "https://0x",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": false
+    },
+    {
+      "name": "origin https://foo.0xffg",
+      "scope": {
+        "origin": "https://foo.0xffg",
+        "user_id": "7",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "workflow_id": "workflow-\ud55c\uae00"
+      },
+      "receipts": [],
+      "valid": true,
+      "references": []
     }
   ]
 }

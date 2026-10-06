@@ -77,7 +77,7 @@ function validOrigin(value: unknown): value is string {
     const host = parsed.hostname;
     if (host.startsWith('[')) return true; // URL parser enforces canonical IPv6 through origin equality.
     return host.length <= 253 && host.split('.').every((label) =>
-      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+      !label.startsWith('xn--') && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
   } catch { return false; }
 }
 
@@ -94,13 +94,14 @@ function wellFormed(value: string): boolean {
 
 function validName(value: unknown, maxBytes: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maxBytes
-    && wellFormed(value) && value.normalize('NFC') === value && !UNSAFE_NAME.test(value)
+    && wellFormed(value) && !UNSAFE_NAME.test(value)
     && new TextEncoder().encode(value).length <= maxBytes;
 }
 
 function parseScopeFields(raw: Record<string, unknown>): AgentAttachmentScope {
   if (!validOrigin(raw.origin) || typeof raw.user_id !== 'string'
-    || !/^[1-9][0-9]{0,18}(?![\s\S])/.test(raw.user_id) || BigInt(raw.user_id) > 9223372036854775807n
+    || !/^[1-9][0-9]{0,18}(?![\s\S])/.test(raw.user_id)
+    || (raw.user_id.length === 19 && raw.user_id > '9223372036854775807')
     || typeof raw.session_id !== 'string' || !UUID.test(raw.session_id)
     || !validName(raw.workflow_id, 128)) invalid();
   return Object.freeze({

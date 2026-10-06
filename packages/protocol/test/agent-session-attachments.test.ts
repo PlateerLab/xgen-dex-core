@@ -91,6 +91,15 @@ test('parsed receipts are bound to every authenticated context field; MIME is no
   assert.equal(parseAgentAttachmentScope({ ...scope, user_id: '9223372036854775807' }).user_id, '9223372036854775807');
 });
 
+test('Unicode metadata preserves exact code points without runtime-dependent normalization', () => {
+  const filename = 'e\u0301-a\u0315\u{113ce}.txt';
+  const workflow_id = 'e\u0301-a\u0315\u{113ce}';
+  const parsed = parseAgentAttachmentReceipt({ ...receipt, filename, workflow_id }, { ...scope, workflow_id });
+  assert.equal(parsed.filename, filename);
+  assert.equal(parsed.workflow_id, workflow_id);
+  assert.throws(() => prepareAgentAttachmentReferences([parsed], { ...scope, workflow_id: workflow_id.normalize('NFC') }), AgentAttachmentValidationError);
+});
+
 test('metadata preparation never enables attachment submission to the current text-only API', async () => {
   let tokenCalls = 0; let proofCalls = 0; let wireCalls = 0;
   const client = new AgentSessionMutationClient(scope.origin, {

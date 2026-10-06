@@ -199,6 +199,7 @@ jobs:
         run: |
           npm --prefix packages/protocol test
           npm --prefix packages/engine test
+          npm --prefix packages/rpc test
           npm --prefix apps/cli test
           npm --prefix apps/vscode test
           npm --prefix apps/desktop test

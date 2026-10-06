@@ -28,7 +28,8 @@ test('directories, symlinks, missing and relative paths are rejected with generi
     const path = join(dir, 'private-file.txt'); await writeFile(path, 'private contents');
     await mkdir(join(dir, 'directory'));
     await symlink(path, join(dir, 'link'));
-    for (const paths of [[join(dir, 'directory')], [join(dir, 'link')], [join(dir, 'missing-secret-name')], ['relative-private-file']]) {
+    for (const paths of [[join(dir, 'directory')], [join(dir, 'link')], [join(dir, 'missing-secret-name')], ['relative-private-file'],
+      [`/${'a'.repeat(4096)}`]]) {
       await assert.rejects(readSelectedNativeAttachments(paths, new AbortController().signal), (error: Error) => {
         assert.equal(error.message.includes(dir), false); assert.equal(error.message.includes('private'), false);
         assert.equal(error.message.includes('missing-secret-name'), false); return true;

@@ -11,6 +11,7 @@ import type {
 import { DEX_PROTOCOL_VERSION } from './wire';
 import { NativeSessionRpcHost, type NativeSessionHostOptions } from './native-session-host';
 import type { ConfigStore } from '@dex/engine';
+import { NativeAttachmentPickerBroker } from './native-attachment-picker-server';
 
 type RpcId = string | number | null;
 
@@ -89,6 +90,8 @@ export interface RpcServerOptions {
   log?: (message: string) => void;
   version?: string;
   nativeSessions?: NativeSessionHostOptions & { configs: ConfigStore };
+  /** Opt-in private extension-host reverse chooser. Native params cannot contain paths. */
+  nativeAttachmentPicker?: boolean;
 }
 
 interface ActiveChat {
@@ -112,6 +115,8 @@ export class DexRpcServer {
   private initialized = false;
   private closed = false;
   private readonly nativeSessions?: NativeSessionRpcHost;
+  private readonly attachmentPicker?: NativeAttachmentPickerBroker;
+  private readonly trustedAttachmentPicker: boolean;
   private readonly removeLocalToolsListener: () => void;
 
   constructor(
@@ -122,8 +127,15 @@ export class DexRpcServer {
     this.output = options.output ?? process.stdout;
     this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.version = options.version ?? '0.1.0';
+    this.trustedAttachmentPicker = Boolean(options.nativeSessions?.attachmentPicker);
+    if (options.nativeSessions && options.nativeAttachmentPicker && !this.trustedAttachmentPicker) {
+      this.attachmentPicker = new NativeAttachmentPickerBroker((frame) => this.write(frame));
+    }
     if (options.nativeSessions) this.nativeSessions = new NativeSessionRpcHost(options.nativeSessions.configs,
-      (value) => this.notify('view' in value ? 'native/conversation' : 'native/focus', value), options.nativeSessions);
+      (value) => this.notify('view' in value ? 'native/conversation' : 'native/focus', value), {
+        ...options.nativeSessions,
+        ...(this.attachmentPicker ? { attachmentPicker: (signal, limits) => this.attachmentPicker!.pick(signal, limits) } : {}),
+      });
     this.removeLocalToolsListener = engine.onLocalToolsStatus((status) => {
       if (this.initialized && !this.closed) this.notify('localTools/status', status);
     });
@@ -140,6 +152,7 @@ export class DexRpcServer {
     if (this.closed) return;
     this.closed = true;
     this.nativeSessions?.close();
+    this.attachmentPicker?.close();
     for (const active of this.activeChats.values()) active.controller.abort();
     this.activeChats.clear();
     this.engine.stopLocalTools();
@@ -161,6 +174,7 @@ export class DexRpcServer {
       this.writeError(null, -32700, 'Parse error');
       return;
     }
+    if (this.attachmentPicker?.receive(value)) return;
     if (!isRequest(value)) {
       this.writeError(null, -32600, 'Invalid Request');
       return;
@@ -203,6 +217,11 @@ export class DexRpcServer {
             { supported: DEX_PROTOCOL_VERSION },
           );
         }
+        const client = params.client && typeof params.client === 'object' && !Array.isArray(params.client)
+          ? params.client as Record<string, unknown> : null;
+        const clientCapabilities = client?.capabilities && typeof client.capabilities === 'object' && !Array.isArray(client.capabilities)
+          ? client.capabilities as Record<string, unknown> : null;
+        this.attachmentPicker?.negotiate(clientCapabilities?.nativeAttachmentPicker === true);
         this.initialized = true;
         setImmediate(() => {
           void this.engine.startLocalTools().catch((error: unknown) =>
@@ -221,7 +240,8 @@ export class DexRpcServer {
             history: true,
             localTools: true,
             ssh: true,
-            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true } } : {}),
+            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true,
+              ...(this.trustedAttachmentPicker || this.attachmentPicker?.available ? { canonicalAttachments: true } : {}) } } : {}),
           },
         };
       }

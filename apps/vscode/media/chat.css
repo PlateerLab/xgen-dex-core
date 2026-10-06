@@ -1966,3 +1966,12 @@ kbd {
 .chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
 .chat-attachment-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 999px; font-size: 12px; }
 .chat-attachment-chip button { border: 0; color: inherit; background: transparent; cursor: pointer; }
+.canonical-attachment-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; border: 1px solid var(--dex-border); border-radius: 7px; background: var(--dex-surface); }
+.canonical-attachment-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.canonical-attachment-copy b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.canonical-attachment-copy span { color: var(--vscode-descriptionForeground); font-size: 9px; }
+.canonical-attachment-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.canonical-attachment-row.status-ready { border-color: color-mix(in srgb, var(--dex-success) 48%, var(--dex-border)); }
+.canonical-attachment-row.status-uncertain { border-color: color-mix(in srgb, var(--dex-danger) 48%, var(--dex-border)); }
+.canonical-attachment-discard { margin-left: auto; }
+.canonical-attachment-notice { width: 100%; margin: 0; color: var(--vscode-descriptionForeground); font-size: 9px; line-height: 1.4; }

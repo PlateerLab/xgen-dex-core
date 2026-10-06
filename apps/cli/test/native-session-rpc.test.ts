@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -12,7 +13,7 @@ const origin = 'https://app.example.test'; const user = '7';
 const device = '018f1240-0000-7000-8000-000000000001'; const sid = '018f1240-0000-7000-8000-000000000002';
 const agentSid = '018f1240-0000-7000-8000-000000000003'; const turn = '018f1240-0000-7000-8000-000000000004';
 const challenge = Buffer.alloc(32, 5).toString('base64url'); const account = 'e30.e30.c2ln';
-async function fixture(enabled = true, expectedUserId?: string) {
+async function fixture(enabled = true, expectedUserId?: string, reversePicker = false) {
   const directory = await mkdtemp(join(tmpdir(), 'dex-native-rpc-')); const values = new Map<string, string>();
   const keys = new NativeDeviceKeyStore({ lockDirectory: directory, env: {}, keychain: async () => ({
     getPassword: async (s, n) => values.get(`${s}:${n}`) ?? null, setPassword: async (s, n, v) => { values.set(`${s}:${n}`, v); }, deletePassword: async (s, n) => values.delete(`${s}:${n}`),
@@ -48,21 +49,25 @@ async function fixture(enabled = true, expectedUserId?: string) {
   }) as typeof fetch;
   const input = new PassThrough(); const output = new PassThrough(); const logs: string[] = []; const messages: any[] = [];
   const pending = new Map<number, (v: any) => void>(); let buffer = ''; let id = 0;
+  const pickerWaiters: Array<(frame: any) => void> = [];
   output.on('data', (chunk) => {
     buffer += chunk;
     while (buffer.includes('\n')) {
       const index = buffer.indexOf('\n'); const m = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1); messages.push(m);
       const resolve = pending.get(m.id); if (resolve) { pending.delete(m.id); resolve(m); }
+      if (m.method === 'host/pick-native-attachments') pickerWaiters.shift()?.(m);
     }
   });
   const rpc = new DexRpcServer(new DexEngine(configs, new MemoryCredentialStore()), { input, output, log: (v) => logs.push(v),
+    nativeAttachmentPicker: reversePicker,
     ...(enabled ? { nativeSessions: { configs, keys, fetch: fetchImpl, socket: () => {
       socketFactories++;
       return { assertAvailable() {}, open: async () => {
         let closed = false;
         return { get closed() { return closed; }, next: () => new Promise(() => {}), close: async () => { closed = true; } };
       } };
-    }, attachmentPicker: (signal, limits) => picker(signal, limits), ...(expectedUserId === undefined ? {} : { expectedUserId }) } } : {}) }); rpc.start();
+    }, ...(!reversePicker ? { attachmentPicker: (signal: AbortSignal, limits: Readonly<{ max_files: number; max_bytes: number }>) => picker(signal, limits) } : {}),
+      ...(expectedUserId === undefined ? {} : { expectedUserId }) } } : {}) }); rpc.start();
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<any>((resolve, reject) => {
     const current = ++id; const timer = setTimeout(() => reject(new Error('RPC fixture deadline')), 3000);
     pending.set(current, (m) => { clearTimeout(timer); resolve(m); }); input.write(`${JSON.stringify({ jsonrpc: '2.0', id: current, method, params })}\n`);
@@ -70,6 +75,11 @@ async function fixture(enabled = true, expectedUserId?: string) {
   return { send, keys, configs, calls, values, secrets, logs, messages, rpc, trusted: () => { trusted = true; }, custom: (f: typeof custom) => { custom = f; },
     picker: (value: typeof picker) => { picker = value; }, fetch: fetchImpl, sessionId: (value: string) => { platformSessionId = value; },
     socketFactories: () => socketFactories,
+    directory, respond: (frame: unknown) => input.write(`${JSON.stringify(frame)}\n`),
+    nextPicker: () => new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Picker fixture deadline')), 3000);
+      pickerWaiters.push((frame) => { clearTimeout(timer); resolve(frame); });
+    }),
     cleanup: async () => { rpc.close(); input.destroy(); output.destroy(); await rm(directory, { recursive: true, force: true }); } };
 }
 const initialize = (f: Awaited<ReturnType<typeof fixture>>) => f.send('initialize', { protocolVersion: 1 });
@@ -95,6 +105,40 @@ test('RPC capability is opt-in and platform override/secret flags are rejected b
     assert.equal(f.socketFactories(), 0);
     assert.equal(f.calls.length, 0);
   } finally { await old.cleanup(); await f.cleanup(); }
+});
+
+test('real native RPC scopes a negotiated reverse file chooser and ignores forged, duplicate and cancelled responses', async () => {
+  const f = await fixture(true, undefined, true);
+  const scope = { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' };
+  try {
+    assert.equal((await initialize(f)).result.capabilities.nativePlatformSession.canonicalAttachments, undefined);
+    await login(f);
+    assert.ok((await f.send('native/pick-attachments', scope)).error);
+    const capability = await f.send('initialize', { protocolVersion: 1, client: { capabilities: { nativeAttachmentPicker: true } } });
+    assert.equal(capability.result.capabilities.nativePlatformSession.canonicalAttachments, true);
+    assert.ok((await f.send('native/pick-attachments', { ...scope, paths: ['/private/webview-file'] })).error);
+    assert.equal(f.messages.some((frame) => frame.method === 'host/pick-native-attachments'), false);
+    const path = join(f.directory, 'chosen.bin'); await writeFile(path, new Uint8Array([1, 2, 3]));
+    const issuedPromise = f.nextPicker();
+    const selected = f.send('native/pick-attachments', scope);
+    const issued = await issuedPromise; assert.ok(issued);
+    assert.deepEqual(issued.params, { max_files: 10, max_bytes: 104857600 });
+    f.respond({ jsonrpc: '2.0', id: `${issued.id}-forged`, result: { paths: ['/private/never-read'] } });
+    f.respond({ jsonrpc: '2.0', id: issued.id, result: { paths: [path] } });
+    const result = await selected; assert.equal(result.error, undefined);
+    assert.equal(result.result.attachments[0].filename, 'chosen.bin');
+    assert.equal(result.result.attachments[0].size_bytes, 3);
+    f.respond({ jsonrpc: '2.0', id: issued.id, result: { paths: ['/private/never-read'] } });
+    assert.equal((await f.send('native/attachments', scope)).result.attachments.length, 1);
+    const secondPromise = f.nextPicker();
+    const next = f.send('native/pick-attachments', scope);
+    const second = await secondPromise; assert.ok(second);
+    await f.send('native/cancel'); assert.ok((await next).error);
+    f.respond({ jsonrpc: '2.0', id: second.id, result: { paths: [path] } });
+    assert.deepEqual((await f.send('native/attachments', scope)).result.attachments, []);
+    assert.equal(JSON.stringify([f.messages, f.logs]).includes(f.directory), false);
+    assert.equal(JSON.stringify([f.messages, f.logs]).includes('"bytes":'), false);
+  } finally { await f.cleanup(); }
 });
 
 test('invalid focus and conversation watch intervals fail before HTTP and leave the RPC process usable', async () => {
@@ -500,18 +544,44 @@ test('Canonical session RPC rejects wrong account, profile and fields before wir
 
 test('Canonical turn RPC methods pass flat named bodies and return safe scoped acknowledgements', async () => {
   const f = await fixture(); const longInput = 'h'.repeat(1025);
-  const references = [{ attachment_id: turn, sha256: 'a'.repeat(64) }, { attachment_id: agentSid, sha256: 'b'.repeat(64) }];
+  const references = [turn, agentSid].map((attachment_id, index) => ({ attachment_id,
+    sha256: createHash('sha256').update(new Uint8Array([index + 1])).digest('hex') }));
+  const metadata = new Map<string, any>();
   try {
     await initialize(f); await login(f);
-    f.custom((path) => {
+    f.custom((path, init) => {
+      const collection = `/api/agentflow/agent-sessions/${agentSid}/attachments`;
+      if (path === collection) {
+        const body = JSON.parse(String(init.body)); const id = body.filename === 'first.bin' ? turn : agentSid;
+        metadata.set(id, body);
+        return Response.json({ attachment_id: id, status: 'reserved', expires_at: '2030-01-01T00:00:00Z' }, { status: 201 });
+      }
+      const uploaded = references.find((reference) => path === `${collection}/${reference.attachment_id}/content`);
+      if (uploaded) { const body = metadata.get(uploaded.attachment_id);
+        return Response.json({ origin, user_id: user, session_id: agentSid, workflow_id: 'flow',
+          attachment_id: uploaded.attachment_id, filename: body.filename, size_bytes: body.size_bytes,
+          media_type: body.media_type, sha256: body.sha256 }); }
       if (path.endsWith('/turns')) return Response.json({ turn_id: turn, status: 'accepted', accepted_sequence: 3,
         state_version: 2, replayed: false, private_server_field: 'private-server-secret' }, { status: 202 });
       if (path.endsWith('/stop')) return Response.json({ turn_id: turn, state_version: 2, requested: true,
         private_server_field: 'private-server-secret' }, { status: 202 });
       return undefined;
     });
-    const submitted = await f.send('native/submit-turn', { profile: 'corp', user_id: user, agent_session_id: agentSid,
-      input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1', attachments: references });
+    const original = { profile: 'corp', user_id: user, agent_session_id: agentSid,
+      input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1' };
+    assert.equal((await f.send('native/submit-turn', { ...original, attachments: references })).error.data.code, 'usage_error');
+    assert.equal(f.calls.some(({ path }) => path.endsWith('/turns')), false);
+    f.picker(async () => ['first.bin', 'second.bin'].map((filename, index) => ({ filename,
+      media_type: 'application/octet-stream', bytes: new Uint8Array([index + 1]) })));
+    const chosen = await f.send('native/pick-attachments', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' });
+    assert.equal((await f.send('native/submit-turn', original)).error.data.code, 'usage_error');
+    for (const item of chosen.result.attachments) {
+      await f.send('native/upload-attachment', { user_id: user, agent_session_id: agentSid, workflow_id: 'flow', selection_id: item.selection_id });
+    }
+    assert.equal((await f.send('native/submit-turn', { ...original, attachments: references.slice(0, 1) })).error.data.code, 'usage_error');
+    assert.equal((await f.send('native/submit-turn', { ...original, attachments: [references[0], { attachment_id: device, sha256: 'a'.repeat(64) }] })).error.data.code, 'usage_error');
+    assert.equal(f.calls.some(({ path }) => path.endsWith('/turns')), false);
+    const submitted = await f.send('native/submit-turn', { ...original, attachments: references });
     assert.equal(submitted.error, undefined); assert.equal(submitted.result.platform_type, 'vscode');
     assert.equal(submitted.result.profile, 'corp'); assert.equal(submitted.result.server_url, origin);
     assert.equal(submitted.result.user_id, user); assert.equal(submitted.result.agent_session_id, agentSid);
@@ -859,6 +929,87 @@ test('attached turn retry guard survives cancel, accepts only the exact intent a
     assert.equal(turnAttempts.get('retry-replaced'), 1);
     assert.equal(JSON.stringify([different, replaced, f.messages, f.logs]).includes('different-private-intent'), false);
   } finally { await f.cleanup(); }
+});
+
+test('definite attachment turn auth rejection clears retained drafts and the pending retry binding', async () => {
+  for (const failure of ['rotation', '401', '403']) {
+    const f = await fixture(); const attachmentId = '018f1240-0000-7000-8000-000000000008';
+    const scope = { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' };
+    let metadata: any; let turnCalls = 0; let rejectTurn = failure !== 'rotation';
+    try {
+      await initialize(f); await login(f);
+      f.custom((path, init) => {
+        const collection = `/api/agentflow/agent-sessions/${agentSid}/attachments`;
+        if (path === collection && init.method === 'POST') {
+          metadata = JSON.parse(String(init.body));
+          return Response.json({ attachment_id: attachmentId, status: 'reserved', expires_at: '2030-01-01T00:00:00Z' }, { status: 201 });
+        }
+        if (path === `${collection}/${attachmentId}/content` && init.method === 'PUT') {
+          return Response.json({ origin, user_id: user, session_id: agentSid, workflow_id: 'flow',
+            attachment_id: attachmentId, filename: metadata.filename, size_bytes: metadata.size_bytes,
+            media_type: metadata.media_type, sha256: metadata.sha256 });
+        }
+        if (path.endsWith('/turns') && init.method === 'POST') {
+          turnCalls++;
+          if (rejectTurn) return new Response(null, { status: Number(failure) });
+          return Response.json({ turn_id: turn, status: 'accepted', accepted_sequence: 1,
+            state_version: 2, replayed: false }, { status: 202 });
+        }
+        return undefined;
+      });
+      f.picker(async () => [{ filename: 'bound.bin', media_type: 'application/octet-stream', bytes: new Uint8Array([1]) }]);
+      const picked = await f.send('native/pick-attachments', scope);
+      const uploaded = await f.send('native/upload-attachment', { ...scope, selection_id: picked.result.attachments[0].selection_id });
+      const item = uploaded.result.attachments[0];
+      if (failure === 'rotation') {
+        const replaced = new NativeHostSession(origin, 'vscode', f.keys, f.fetch);
+        await replaced.forgetLocal(user); f.sessionId('018f1240-0000-7000-8000-000000000010');
+        assert.equal((await replaced.login('a@example.test', 'private-password')).state, 'active');
+      }
+      const rejected = await f.send('native/submit-turn', { user_id: user, agent_session_id: agentSid,
+        input_text: 'bound intent', expected_state_version: 1, idempotency_key: 'bound-key',
+        attachments: [{ attachment_id: item.attachment_id, sha256: item.sha256 }] });
+      assert.equal(rejected.error.data.code, 'auth_required');
+      assert.equal(turnCalls, failure === 'rotation' ? 0 : 1);
+      assert.deepEqual((await f.send('native/attachments', scope)).result.attachments, []);
+      rejectTurn = false;
+      assert.equal((await f.send('native/submit-turn', { user_id: user, agent_session_id: agentSid,
+        input_text: 'fresh intent', expected_state_version: 1, idempotency_key: 'fresh-key' })).error, undefined);
+      assert.equal(turnCalls, failure === 'rotation' ? 1 : 2);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test('server auth rejection during attachment upload, recovery or cancellation releases the host draft', async () => {
+  for (const operation of ['upload', 'recover', 'cancel']) {
+    const f = await fixture(); const attachmentId = '018f1240-0000-7000-8000-000000000008';
+    const scope = { user_id: user, agent_session_id: agentSid, workflow_id: 'flow' };
+    let metadata: any; let reject = operation === 'upload'; let rejected = 0;
+    try {
+      await initialize(f); await login(f);
+      f.custom((path, init) => {
+        const collection = `/api/agentflow/agent-sessions/${agentSid}/attachments`;
+        if (path === collection && init.method === 'POST') {
+          metadata = JSON.parse(String(init.body));
+          return Response.json({ attachment_id: attachmentId, status: 'reserved', expires_at: '2030-01-01T00:00:00Z' }, { status: 201 });
+        }
+        if (path.startsWith(`${collection}/${attachmentId}`)) {
+          if (reject) { rejected++; return new Response(null, { status: 403 }); }
+          return Response.json({ origin, user_id: user, session_id: agentSid, workflow_id: 'flow', attachment_id: attachmentId,
+            filename: metadata.filename, size_bytes: metadata.size_bytes, media_type: metadata.media_type, sha256: metadata.sha256 });
+        }
+        return undefined;
+      });
+      f.picker(async () => [{ filename: 'retained.bin', media_type: 'application/octet-stream', bytes: new Uint8Array([3]) }]);
+      const selected = await f.send('native/pick-attachments', scope);
+      const params = { ...scope, selection_id: selected.result.attachments[0].selection_id };
+      if (operation !== 'upload') assert.equal((await f.send('native/upload-attachment', params)).result.attachments[0].status, 'ready');
+      reject = true;
+      const response = await f.send(`native/${operation}-attachment`, params);
+      assert.equal(response.error.data.code, 'auth_required'); assert.equal(rejected, 1);
+      assert.deepEqual((await f.send('native/attachments', scope)).result.attachments, []);
+    } finally { await f.cleanup(); }
+  }
 });
 
 test('native attachment cancel removes only after local removal or remote 204; discard never remote-cancels', async () => {

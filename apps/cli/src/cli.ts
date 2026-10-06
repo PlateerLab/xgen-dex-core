@@ -618,7 +618,7 @@ async function run(): Promise<void> {
     const nativePlatform = option(args, 'native-platform');
     if (nativePlatform !== undefined && nativePlatform !== 'vscode') throw new DexError('usage_error', 'stdio 네이티브 플랫폼은 vscode만 지원합니다.');
     const server = new DexRpcServer(engine, { version: VERSION,
-      ...(nativePlatform ? { nativeSessions: { configs: configStore } } : {}) });
+      ...(nativePlatform ? { nativeSessions: { configs: configStore }, nativeAttachmentPicker: true } : {}) });
     server.start();
     return;
   }

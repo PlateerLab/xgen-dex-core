@@ -74,7 +74,10 @@ test('Canonical mode is an explicit native-only composer path with stable contro
   assert.match(provider, /data\.type === 'canonicalInputRejected'/);
   assert.match(provider, /this\.native\?\.retryTurn\(\)/);
   assert.match(provider, /this\.native\?\.stopTurn\(\)/);
-  assert.match(provider, /if \(this\.canonicalMode\) return;/, 'attachments must be unavailable in Canonical mode');
+  assert.match(provider, /this\.native\?\.pickAttachments\(\)/,
+    'Canonical selection must use the native controller instead of the legacy uploader');
+  assert.match(provider, /첨부 파일을 모두 취소한 뒤 공유 대화를 나가세요/,
+    'Canonical drafts must stay visible until explicitly cleared');
   assert.match(provider,
     /messages: this\.canonicalMode \? \(canonicalConversation \? canonicalMessages\(canonicalConversation\) : \[\]\) : this\.messages/,
     'a missing Canonical snapshot must never reveal the legacy transcript');
@@ -93,6 +96,39 @@ test('Canonical mode is an explicit native-only composer path with stable contro
   assert.match(script, /post\('canonicalCatalogOlder'\)/);
   assert.match(script, /catalog\.hasMore/);
   assert.match(script, /catalog\?\.nextCursor/);
+  assert.match(script, /canonicalPickAttachments/);
+  assert.match(script, /canonicalUploadAttachment/);
+  assert.match(script, /canonicalRecoverAttachment/);
+  assert.match(script, /canonicalCancelAttachment/);
+  assert.match(script, /canonicalAttachmentsReady/);
+  assert.match(script, /item\.filename/);
+  assert.match(script, /item\.media_type/);
+  assert.match(script, /item\.status/);
+  const canonicalAttachmentRenderer = script.slice(script.indexOf('if (state.canonical?.active) {', script.indexOf('function renderAttachments')),
+    script.indexOf('for (const item of state.attachments || [])'));
+  assert.doesNotMatch(canonicalAttachmentRenderer, /item\.sha256|item\.attachment_id|item\.receipt/,
+    'Canonical attachment secrets and receipts must not be rendered');
+});
+
+test('VSCode registers a bounded local-file picker and sends only sanitized Canonical attachment state to the webview', async () => {
+  const [service, provider, fixture] = await Promise.all([
+    readFile(path.join(extensionRoot, 'src', 'dex-service.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'verify', 'native-turn-webview.cjs'), 'utf8'),
+  ]);
+  assert.match(service, /nativeAttachmentPicker: async \(signal, limits\)/);
+  assert.match(service, /signal\.aborted/);
+  assert.match(service, /uri\.scheme !== 'file'/);
+  assert.match(service, /uri\.fsPath\.length > 4096/);
+  assert.match(service, /selected\.length > limits\.max_files/);
+  assert.doesNotMatch(provider, /items: this\.nativeState\.attachments\.items[,\s]/,
+    'raw attachment drafts must not cross into the webview');
+  assert.match(provider, /selection_id: item\.selection_id/);
+  assert.match(provider, /filename: item\.filename/);
+  assert.doesNotMatch(provider, /sha256: item\.sha256|receipt: item\.receipt|attachment_id: item\.attachment_id/);
+  assert.match(fixture, /verify\/attachment-ui/);
+  assert.match(fixture, /private_values_rendered: false/);
+  assert.match(fixture, /action\.method === 'submit' && action\.text === 'attachment-ui-submit'/);
 });
 
 test('every webview element referenced by the client script exists in the provider markup', async () => {

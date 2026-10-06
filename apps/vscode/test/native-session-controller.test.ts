@@ -12,14 +12,14 @@ messages: [{ turn_id: '00000000-0000-4000-8000-000000000002', sequence: 1, statu
 const owned = (id: string, title: string) => ({ id, workflow_id: 'flow', title, status: 'active' as const,
   current_sequence: 1, state_version: 1 });
 const session = (value: NativeSessionViewState) => {
-  const { turn: _turn, scope: _scope, connectionVersion: _connectionVersion, ...state } = value;
+  const { turn: _turn, scope: _scope, connectionVersion: _connectionVersion, attachments: _attachments, ...state } = value;
   return state;
 };
-function fixture(capable = true, canonical = true, live = true, turns = true) {
+function fixture(capable = true, canonical = true, live = true, turns = true, attachments = true) {
   let notify!: (n: RpcNotification) => void; let change!: (s: any) => void;
   let respond: (m: string, p: Record<string, unknown>) => Promise<any> = async () => context;
   const calls: string[] = []; const requests: Array<{ method: string; params: Record<string, unknown> }> = []; const states: NativeSessionViewState[] = [];
-  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalSessions: true as const, ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}), ...(turns ? { canonicalTurns: true as const } : {}) } } : {} }) as InitializeResult,
+  const rpc = { state: 'ready' as const, start: async () => ({ capabilities: capable ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalSessions: true as const, ...(canonical ? { canonicalConversation: true as const } : {}), ...(live ? { canonicalLive: true as const } : {}), ...(turns ? { canonicalTurns: true as const } : {}), ...(attachments ? { canonicalAttachments: true as const } : {}) } } : {} }) as InitializeResult,
     request: async <T>(m: string, p: Record<string, unknown> = {}) => { calls.push(m); requests.push({ method: m, params: p }); return respond(m, p) as Promise<T>; },
     onNotification: (f: typeof notify) => { notify = f; return () => {}; }, onStateChange: (f: typeof change) => { change = f; return () => {}; } };
   const controller = new NativeSessionController(rpc, (v) => states.push(v));
@@ -746,4 +746,208 @@ test('a live focus conversation invalidates the catalog and wins over an older i
   assert.equal(f.states.at(-1)?.catalog, undefined);
   assert.equal(f.states.at(-1)?.conversation?.snapshot?.id, replacement);
   assert.equal(f.requests.filter((request) => request.method === 'native/agent-sessions').length, 2);
+});
+
+const attachmentId = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+const selectedAttachment = (selectionId: string, filename: string, sha256: string) => ({
+  selection_id: selectionId, filename, size_bytes: 4, media_type: 'application/octet-stream', sha256, status: 'selected' as const,
+});
+const readyAttachment = (selectionId: string, filename: string, sha256: string, id: string) => ({
+  ...selectedAttachment(selectionId, filename, sha256), status: 'ready' as const, attachment_id: id,
+  receipt: { origin: context.server_url, user_id: context.user_id, session_id: conversation.snapshot!.id,
+    workflow_id: conversation.snapshot!.workflow_id, attachment_id: id, filename, size_bytes: 4,
+    media_type: 'application/octet-stream', sha256 },
+});
+const attachmentReply = (items: readonly unknown[], overrides: Partial<NativeRpcResult> = {}): NativeRpcResult => ({
+  ...context, agent_session_id: conversation.snapshot!.id, workflow_id: conversation.snapshot!.workflow_id,
+  attachments: items as any, ...overrides,
+});
+
+test('canonical attachments fail closed, preserve display order, and submit only verified ready references', async () => {
+  const unsupported = fixture(true, true, true, true, false);
+  unsupported.respond(async (method) => method === 'native/conversation'
+    ? { ...context, view: 'conversation', conversation, has_more: false } : context);
+  await unsupported.controller.conversation('corp', '7');
+  assert.equal(await unsupported.controller.pickAttachments(), false);
+  assert.equal(unsupported.calls.includes('native/pick-attachments'), false);
+
+  const f = fixture(); const firstSelection = 'first-selection'; const secondSelection = 'second-selection';
+  const firstDigest = 'a'.repeat(64); const secondDigest = 'b'.repeat(64);
+  const firstId = attachmentId(81); const secondId = attachmentId(82);
+  const selected = [selectedAttachment(firstSelection, 'first.bin', firstDigest),
+    selectedAttachment(secondSelection, 'second.bin', secondDigest)];
+  const firstReady = [readyAttachment(firstSelection, 'first.bin', firstDigest, firstId), selected[1]!];
+  const allReady = [firstReady[0]!, readyAttachment(secondSelection, 'second.bin', secondDigest, secondId)];
+  f.respond(async (method, params) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/pick-attachments') return attachmentReply(selected);
+    if (method === 'native/upload-attachment' && params.selection_id === firstSelection) return attachmentReply(firstReady);
+    if (method === 'native/upload-attachment' && params.selection_id === secondSelection) return attachmentReply(allReady);
+    if (method === 'native/submit-turn') return { ...context, agent_session_id: conversation.snapshot!.id, mutation: {
+      turn_id: attachmentId(83), status: 'accepted', accepted_sequence: 2, state_version: 2, replayed: false,
+    } };
+    if (method === 'native/watch-live') return { ...context, watch_id: 'attachment-watch', view: 'conversation' };
+    if (method === 'native/discard-attachments') return attachmentReply([]);
+    return context;
+  });
+  await f.controller.conversation('corp', '7');
+  assert.equal(await f.controller.pickAttachments(), true);
+  assert.deepEqual(f.requests.find((request) => request.method === 'native/pick-attachments')?.params, {
+    profile: 'corp', user_id: '7', agent_session_id: conversation.snapshot!.id, workflow_id: 'flow',
+  });
+  assert.equal(JSON.stringify(f.requests.find((request) => request.method === 'native/pick-attachments')).includes('path'), false);
+  assert.equal(JSON.stringify(f.requests.find((request) => request.method === 'native/pick-attachments')).includes('bytes'), false);
+  assert.deepEqual(f.states.at(-1)?.attachments?.items.map((item) => item.filename), ['first.bin', 'second.bin']);
+  await f.controller.submitTurn('blocked until ready');
+  assert.equal(f.calls.includes('native/submit-turn'), false);
+  assert.equal(await f.controller.uploadAttachment(firstSelection), true);
+  assert.equal(await f.controller.uploadAttachment(secondSelection), true);
+  await f.controller.submitTurn('with files');
+  const write = f.requests.find((request) => request.method === 'native/submit-turn')!;
+  assert.deepEqual(write.params.attachments, [
+    { attachment_id: firstId, sha256: firstDigest }, { attachment_id: secondId, sha256: secondDigest },
+  ]);
+  assert.equal('selection_id' in write.params, false);
+  assert.deepEqual(f.states.at(-1)?.attachments?.items, []);
+  assert.ok(f.requests.some((request) => request.method === 'native/discard-attachments'));
+});
+
+test('unknown upload performs a read-back without repeating PUT and recovery keeps opaque values out of notices', async () => {
+  const f = fixture(); const selectionId = 'unknown-selection'; const digest = 'c'.repeat(64);
+  const selected = selectedAttachment(selectionId, 'safe.bin', digest); const id = attachmentId(84);
+  const uncertain = { ...selected, status: 'uncertain' as const, attachment_id: id };
+  let uploads = 0; let reads = 0;
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/watch-live') return { ...context, watch_id: 'unknown-watch', view: 'conversation' };
+    if (method === 'native/pick-attachments') return attachmentReply([selected]);
+    if (method === 'native/upload-attachment') {
+      uploads++; throw new DexRpcError('private transport path /tmp/secret', -32603,
+        { code: 'network_error', details: { outcome: 'unknown', token: 'private-token' } });
+    }
+    if (method === 'native/attachments') { reads++; return attachmentReply([uncertain]); }
+    if (method === 'native/recover-attachment') return attachmentReply([readyAttachment(selectionId, 'safe.bin', digest, id)]);
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.pickAttachments();
+  assert.equal(await f.controller.uploadAttachment(selectionId), false);
+  assert.equal(uploads, 1); assert.equal(reads, 1);
+  assert.equal(f.states.at(-1)?.attachments?.items[0]?.status, 'uncertain');
+  assert.equal(JSON.stringify(f.states).includes('/tmp/secret'), false);
+  assert.equal(JSON.stringify(f.states).includes('private-token'), false);
+  assert.equal(await f.controller.recoverAttachment(selectionId), true);
+  assert.equal(uploads, 1);
+  assert.equal(f.states.at(-1)?.attachments?.items[0]?.status, 'ready');
+});
+
+test('attachment responses reject extra receipt fields and wrong authenticated scope without replacing the safe draft', async () => {
+  const f = fixture(); const selectionId = 'malformed-selection'; const digest = 'e'.repeat(64);
+  const selected = selectedAttachment(selectionId, 'visible.bin', digest);
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/pick-attachments') return attachmentReply([selected]);
+    if (method === 'native/upload-attachment') return attachmentReply([{
+      ...readyAttachment(selectionId, 'visible.bin', digest, attachmentId(86)),
+      receipt: { ...readyAttachment(selectionId, 'visible.bin', digest, attachmentId(86)).receipt,
+        user_id: '8', raw_path: '/private/secret', token: 'hidden-token' },
+    }]);
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.pickAttachments();
+  assert.equal(await f.controller.uploadAttachment(selectionId), false);
+  assert.equal(f.states.at(-1)?.attachments?.items[0]?.status, 'selected');
+  assert.match(f.states.at(-1)?.attachments?.notice ?? '', /응답을 확인할 수 없습니다/);
+  assert.equal(JSON.stringify(f.states).includes('/private/secret'), false);
+  assert.equal(JSON.stringify(f.states).includes('hidden-token'), false);
+});
+
+test('auth scope replacement clears local attachment handles before a same-session read can preserve them', async () => {
+  const f = fixture(); const selectionId = 'auth-rotated-selection'; const digest = 'f'.repeat(64);
+  const selected = selectedAttachment(selectionId, 'rotated.bin', digest);
+  const ready = readyAttachment(selectionId, 'rotated.bin', digest, attachmentId(87));
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/pick-attachments') return attachmentReply([selected]);
+    if (method === 'native/upload-attachment') return attachmentReply([ready]);
+    if (method === 'native/cancel-attachment') {
+      throw new DexRpcError('rotated private authentication', -32603, { code: 'auth_required' });
+    }
+    if (method === 'native/submit-turn') return { ...context, agent_session_id: conversation.snapshot!.id, mutation: {
+      turn_id: attachmentId(88), status: 'accepted', accepted_sequence: 2, state_version: 2, replayed: false,
+    } };
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.pickAttachments();
+  assert.equal(await f.controller.uploadAttachment(selectionId), true);
+  assert.equal(f.states.at(-1)?.attachments?.items[0]?.status, 'ready');
+  const discardCount = f.requests.filter((request) => request.method === 'native/discard-attachments').length;
+  assert.equal(await f.controller.cancelAttachment(selectionId), false);
+  assert.deepEqual(f.states.at(-1)?.attachments?.items, []);
+  assert.equal(f.requests.filter((request) => request.method === 'native/discard-attachments').length, discardCount,
+    'the host already revoked the stale private scope');
+  await f.controller.conversation('corp', '7');
+  assert.deepEqual(f.states.at(-1)?.attachments?.items, []);
+  await f.controller.submitTurn('new authentication scope');
+  const write = f.requests.filter((request) => request.method === 'native/submit-turn').at(-1)!;
+  assert.equal('attachments' in write.params, false);
+});
+
+test('submit auth replacement clears ready attachments before automatic same-session recovery and a new intent', async () => {
+  const f = fixture(); const selectionId = 'submit-auth-selection'; const digest = '1'.repeat(64);
+  const selected = selectedAttachment(selectionId, 'submit-auth.bin', digest);
+  const ready = readyAttachment(selectionId, 'submit-auth.bin', digest, attachmentId(89));
+  let attempts = 0; let watch = 0;
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/watch-live') {
+      const watchId = `submit-auth-watch-${++watch}`;
+      f.conversationUpdate({ ...context, watch_id: watchId, view: 'conversation', update: {
+        type: 'conversation', user_id: '7', conversation, source: 'snapshot', has_more: false,
+      } });
+      return { ...context, watch_id: watchId, view: 'conversation' };
+    }
+    if (method === 'native/pick-attachments') return attachmentReply([selected]);
+    if (method === 'native/upload-attachment') return attachmentReply([ready]);
+    if (method === 'native/submit-turn' && attempts++ === 0) {
+      throw new DexRpcError('rotated submit authentication', -32603, { code: 'auth_invalid' });
+    }
+    if (method === 'native/submit-turn') return { ...context, agent_session_id: conversation.snapshot!.id, mutation: {
+      turn_id: attachmentId(90), status: 'accepted', accepted_sequence: 2, state_version: 2, replayed: false,
+    } };
+    return context;
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.pickAttachments();
+  await f.controller.uploadAttachment(selectionId);
+  await f.controller.submitTurn('old authenticated intent');
+  assert.deepEqual(f.states.at(-1)?.attachments?.items, []);
+  const first = f.requests.filter((request) => request.method === 'native/submit-turn')[0]!;
+  assert.deepEqual(first.params.attachments, [{ attachment_id: attachmentId(89), sha256: digest }]);
+  await f.controller.submitTurn('new authenticated intent');
+  const second = f.requests.filter((request) => request.method === 'native/submit-turn')[1]!;
+  assert.equal(second.params.input_text, 'new authenticated intent');
+  assert.equal('attachments' in second.params, false);
+});
+
+test('malformed or wrong-scope receipts are rejected and reset suppresses a late attachment result', async () => {
+  const f = fixture(); const selectionId = 'late-selection'; const digest = 'd'.repeat(64);
+  const selected = selectedAttachment(selectionId, 'late.bin', digest); let finish!: (value: NativeRpcResult) => void;
+  let entered!: () => void; const started = new Promise<void>((resolve) => { entered = resolve; });
+  f.respond(async (method) => {
+    if (method === 'native/conversation') return { ...context, view: 'conversation', conversation, has_more: false };
+    if (method === 'native/watch-live') return { ...context, watch_id: 'late-watch', view: 'conversation' };
+    if (method === 'native/pick-attachments') return attachmentReply([selected]);
+    if (method === 'native/upload-attachment') {
+      entered(); return new Promise<NativeRpcResult>((resolve) => { finish = resolve; });
+    }
+    return attachmentReply([]);
+  });
+  await f.controller.conversation('corp', '7'); await f.controller.pickAttachments();
+  const pending = f.controller.uploadAttachment(selectionId); await started; f.controller.reset(false);
+  assert.deepEqual(f.requests.find((request) => request.method === 'native/cancel')?.params, {});
+  finish(attachmentReply([readyAttachment(selectionId, 'late.bin', digest, attachmentId(85))], {
+    server_url: 'https://other.example.test',
+  }));
+  assert.equal(await pending, false);
+  assert.deepEqual(f.states.at(-1)?.attachments?.items, []);
+  assert.equal(f.states.at(-1)?.status, 'idle');
 });

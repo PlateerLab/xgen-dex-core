@@ -300,13 +300,18 @@ export class NativeSessionRpcHost {
           references?.map((reference) => [reference.attachment_id, reference.sha256]) ?? [],
         ])).digest('hex') : undefined;
         let expectedAuthScope: string | undefined;
+        if (method === 'native/submit-turn' && !references
+          && this.attachmentDrafts.hasDraftsFor(profile, scope.origin, account, agentSessionId)) {
+          throw new DexError('usage_error', '선택한 첨부 파일을 준비해 함께 제출하거나 명시적으로 지워 주세요.');
+        }
         if (method === 'native/submit-turn' && this.pendingAttachedTurn) {
           if (turnDigest !== this.pendingAttachedTurn.digest) {
             throw new DexError('network_error', '이전 첨부 턴의 완료 여부를 먼저 같은 요청으로 확인하세요.', { outcome: 'unknown' });
           }
           expectedAuthScope = this.pendingAttachedTurn.authScope;
         } else if (references) {
-          expectedAuthScope = this.attachmentDrafts.authScopeForReferences(profile, scope.origin, account, agentSessionId, references);
+          try { expectedAuthScope = this.attachmentDrafts.authScopeForReferences(profile, scope.origin, account, agentSessionId, references); }
+          catch { throw new DexError('usage_error', '선택한 모든 첨부 파일의 영수증을 확인한 뒤 원래 참조로 제출하세요.'); }
           if (expectedAuthScope) this.pendingAttachedTurn = { digest: turnDigest!, authScope: expectedAuthScope };
         }
         let result;
@@ -387,6 +392,12 @@ export class NativeSessionRpcHost {
       if (action === 'status' && result.state !== 'active') this.attachmentDrafts.clear();
       signal.throwIfAborted(); return { ...envelope, user_id: result.user_id, result,
         ...(action === 'forget-local' ? { server_revoked: false as const } : {}) };
+    } catch (error) {
+      if (error instanceof DexError && ['auth_required', 'auth_invalid'].includes(error.code)) {
+        // A definite auth rejection revokes the private draft and its retry binding.
+        this.attachmentDrafts.clear(); this.pendingAttachedTurn = null;
+      }
+      throw error;
     } finally {
       if (sessionForDrain) this.draining = Promise.all([this.draining, sessionForDrain.settleProofOperations()]).then(() => undefined);
       clearTimeout(timeout); this.active = null;

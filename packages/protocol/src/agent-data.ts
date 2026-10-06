@@ -9,6 +9,7 @@
  * camelCase 재사상은 이득 없이 매핑 버그만 늘리므로(voice SttPref 와 같은 판단),
  * 렌더러가 서버 필드명을 그대로 읽는다.
  */
+import type { ShareAudience } from './shares';
 import { HttpClient } from './client';
 
 /** 에이전트 뷰어의 하위 탭 — **단일 정의**.
@@ -389,6 +390,8 @@ export interface AppSummary {
    * 공개됐다는 *사실*과 그 *링크를 쥐는 것*을 구분한다.
    */
   shared: boolean;
+  /** 공개 범위(users=XGEN 사용자, public=모두). 공개 중이 아니면 빈 문자열, 옛 서버는 보내지 않는다. */
+  share_audience?: ShareAudience | '';
   shared_by: string;
   shared_at: number | null;
   /** epoch 초. 폴더 안에서 가장 최근에 바뀐 파일 기준. */
@@ -463,6 +466,8 @@ export interface AppShareState {
   ok: boolean;
   slug: string;
   shared: boolean;
+  /** 공개 범위. 공개 중이 아니면 빈 문자열, 옛 서버는 보내지 않는다(그때는 모두에게 공개였다). */
+  audience?: ShareAudience | '';
   shared_by: string;
   shared_at: number | null;
   /** 공개 토큰 — **켠 사람에게만** 돌아온다. 목록에는 없다. */
@@ -809,14 +814,31 @@ export class AgentDataApi {
    * **않는다** — 그 호출은 보는 사람의 권한으로 나가는데 익명에게는 권한이 없다.
    * 공유는 화면을 보여 주는 것이지 권한을 빌려주는 것이 아니다.
    *
-   * 다시 켜면 새 토큰이라 이미 나간 링크는 되살아나지 않는다.
+   * 공개 범위(`audience`)는 둘이다: users(XGEN 사용자에게, 로그인한 사람만) / public(모두에게, 로그인 없이).
+   * 이미 공유 중이면 **같은 링크**를 두고 범위만 바꾼다. 껐다 다시 켜거나 `rotate` 를 주면 새 토큰이라
+   * 이미 나간 링크는 되살아나지 않는다. 옛 서버는 범위를 모른다(그때는 모두에게 공개였다).
    */
-  appSetShare(workflowId: string, slug: string, shared: boolean): Promise<AppShareState> {
+  appSetShare(
+    workflowId: string,
+    slug: string,
+    shared: boolean,
+    opts: { audience?: ShareAudience; rotate?: boolean } = {},
+  ): Promise<AppShareState> {
+    const body: Record<string, unknown> = { shared };
+    if (opts.audience) body.audience = opts.audience;
+    if (opts.rotate) body.rotate = true;
     return this.viaAppsApi((base) =>
       this.http.post<AppShareState>(
         `${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/share`,
-        { shared },
+        body,
       ),
+    );
+  }
+
+  /** 지금의 공유 상태와 링크(주인만). 공유 창을 다시 열 때 같은 링크를 보여 준다. */
+  appGetShare(workflowId: string, slug: string): Promise<AppShareState> {
+    return this.viaAppsApi((base) =>
+      this.http.get<AppShareState>(`${base}/${encodeURIComponent(workflowId)}/${encodeURIComponent(slug)}/share`),
     );
   }
 

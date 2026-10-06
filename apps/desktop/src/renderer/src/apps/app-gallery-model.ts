@@ -99,7 +99,9 @@ export function withServing<T extends AppSummary>(app: T, res: AppServingState):
 
 /** 공유 토글의 서버 응답을 앱 한 개에 입힌다. 링크(토큰)는 목록에 두지 않는다. */
 export function withShare<T extends AppSummary>(app: T, res: AppShareState): T {
-  return { ...app, shared: res.shared, shared_by: res.shared_by, shared_at: res.shared_at };
+  // 공개 범위가 없는 옛 서버는 모두에게 공개였다.
+  const audience = res.shared ? (res.audience || 'public') : '';
+  return { ...app, shared: res.shared, share_audience: audience, shared_by: res.shared_by, shared_at: res.shared_at };
 }
 
 /** [내 앱] 목록에서 앱 한 개만 바꾼다. 없으면 그대로 돌려준다. */

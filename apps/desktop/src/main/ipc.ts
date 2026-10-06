@@ -107,6 +107,10 @@ export const CHANNELS = {
   /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 [진행 중] 복원. */
   historySnapshot: 'history:snapshot',
   historyConversations: 'history:conversations',
+  // 채팅 공유: 대화를 그 시점까지 얼린 링크. 절대 주소는 main 이 붙인다(렌더러는 서버 주소를 모른다).
+  chatShareState: 'chatShare:state',
+  chatShareCreate: 'chatShare:create',
+  chatShareRevoke: 'chatShare:revoke',
 
   // Agent Viewer — 한 에이전트의 읽기 전용 관측 데이터 (메모리/작업/도구/스토리지/전체로그).
   // 전부 core 의 AgentDataApi(GET only) 에 위임한다.
@@ -168,6 +172,8 @@ export const CHANNELS = {
   appHttp: 'apps:http',
   appSetServing: 'apps:setServing',
   appSetShare: 'apps:setShare',
+  /** 지금의 공유 상태와 링크(주인만). 공유 창을 다시 열 때 같은 링크. */
+  appGetShare: 'apps:getShare',
   appDelete: 'apps:delete',
   // 웹의 같은 화면을 기본 브라우저로 연다. 주소를 렌더러가 조립하지 않는 이유는
   // 렌더러가 서버 주소를 모르기 때문이다 — 그건 main 의 설정이다.

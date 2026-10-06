@@ -29,12 +29,13 @@
  * 그 파일에 적혀 있다(이 창에는 window.xgen 이 있다).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppDetail, AppSummary } from '@dex/protocol';
-import { copyText, xgen } from '../bridge';
+import { APP_SHARE_TEXT, type AppDetail, type AppSummary } from '@dex/protocol';
+import { xgen } from '../bridge';
 import { RefreshIcon } from '../brand/icons';
 import { Selector } from '../views/Selector';
 import { AppFrame } from './AppFrame';
 import { AppSiteFrame } from './AppSiteFrame';
+import { ShareAppModal } from './ShareAppModal';
 import { ViewerEmpty } from '../views/agent-viewer-shared';
 import { APP_CONFIRM, withServing, withShare } from './app-gallery-model';
 import { announceAppChange, useAppChanges } from './app-sync';
@@ -53,12 +54,8 @@ export const AppsView: React.FC<{
 }> = ({ workflowId, focusSlug, onSlugChange }) => {
   /** 내리기/공유/삭제가 도는 동안 버튼을 막는다 — 두 번 눌러 두 번 나가지 않게. */
   const [busy, setBusy] = useState(false);
-  /**
-   * 방금 만든 공개 주소. 서버는 링크를 **켠 응답에만** 실어 준다(목록에 실으면
-   * 공유·감독으로 들어온 사람도 링크를 쥔다). 그래서 화면이 잠깐 들고 있다가
-   * 보여 준다 — 클립보드가 막혔을 때의 유일한 통로다.
-   */
-  const [shareUrl, setShareUrl] = useState('');
+  /** 공유 창(범위·링크·중지). 링크는 주인에게만 오므로 창이 열 때 서버에서 받는다. */
+  const [shareOpen, setShareOpen] = useState(false);
   const [items, setItems] = useState<AppSummary[]>([]);
   const [slug, setSlug] = useState(focusSlug ?? '');
   /** 마지막으로 읽은 상세 — 화면은 아래의 `detail`(고른 앱의 것만)을 쓴다. */
@@ -171,9 +168,11 @@ export const AppsView: React.FC<{
   const serving = current?.serving ?? detail?.serving ?? true;
   const shared = current?.shared ?? detail?.shared ?? false;
 
-  // 다른 앱으로 옮기면 방금 만든 링크는 이 화면의 것이 아니다.
+  const shareAudience = current?.share_audience || detail?.share_audience || '';
+
+  // 다른 앱으로 옮기면 열려 있던 공유 창은 이 앱의 것이 아니다.
   useEffect(() => {
-    setShareUrl('');
+    setShareOpen(false);
   }, [slug]);
 
   const act = useCallback(
@@ -205,36 +204,20 @@ export const AppsView: React.FC<{
       // 서버의 답을 곧바로 입힌다 — 버튼·배너·프레임이 다음 목록을 기다리지 않는다.
       setItems((list) => list.map((a) => (a.slug === target ? withServing(a, res) : a)));
       setLoaded((d) => (d && d.slug === target ? withServing(d, res) : d));
-      if (!res.serving) setShareUrl('');
       setPull((n) => n + 1);
     });
   }, [slug, serving, workflowId, act]);
 
-  /**
-   * 공유는 **바깥 세상에 문을 내는 일**이다. 그래서 켤 때는 무엇이 공개되고
-   * 무엇이 공개되지 *않는지*를 먼저 말하고 확인을 받는다 — 나중에 "이게 밖에서도
-   * 보이는 줄 몰랐다" 가 나오면 되돌릴 수 없다(이미 본 사람이 있다).
-   */
-  const onToggleShare = useCallback(() => {
-    if (!slug) return;
-    const next = !shared;
-    // 웹·[앱] 탭과 **같은 문장**이다(APP_CONFIRM). 나머지 사실은 공개 중 내내 떠 있는 배너가 말한다.
-    const ok = window.confirm(next ? APP_CONFIRM.share : APP_CONFIRM.unshare);
-    if (!ok) return;
-    const target = slug;
-    void act(async () => {
-      const res = await xgen.apps.setShare(workflowId, target, next);
+  /** 공유 창이 바꾼 것을 곧바로 입히고(버튼·배너가 다음 목록을 기다리지 않는다) 목록을 다시 읽는다. */
+  const onShareChanged = useCallback(
+    (target: string, res: Parameters<typeof withShare>[1]) => {
       setItems((list) => list.map((a) => (a.slug === target ? withShare(a, res) : a)));
       setLoaded((d) => (d && d.slug === target ? withShare(d, res) : d));
-      if (res.shared && res.url) {
-        // 링크는 이 응답에만 들어 있다 — 지금 손에 쥐여 주지 않으면 다시 켜야 받는다.
-        await copyText(res.url);
-        setShareUrl(res.url);
-      } else {
-        setShareUrl('');
-      }
-    });
-  }, [slug, shared, workflowId, act]);
+      announceAppChange(workflowId, self);
+      void refresh(true);
+    },
+    [workflowId, self, refresh],
+  );
 
   const onDelete = useCallback(() => {
     if (!slug) return;
@@ -292,8 +275,8 @@ export const AppsView: React.FC<{
           </button>
         ) : null}
         {slug ? (
-          <button type="button" className="apps-action" disabled={busy} onClick={onToggleShare}>
-            {shared ? '공유 중지' : '공유'}
+          <button type="button" className="apps-action" disabled={busy} onClick={() => setShareOpen(true)}>
+            {shared ? APP_SHARE_TEXT.shareSettings : '공유'}
           </button>
         ) : null}
         {slug ? (
@@ -318,11 +301,11 @@ export const AppsView: React.FC<{
       {shared && serving ? (
         <div className="apps-share">
           <strong>공개 중</strong>
-          <p>링크를 아는 사람은 로그인 없이 이 화면을 봅니다. [공유 중지]로 닫을 수 있습니다.</p>
-          {shareUrl ? (
-            // 주소는 켠 직후 한 번만 손에 들어온다 — 읽을 수 있게 그대로 보여 준다.
-            <code>{shareUrl}</code>
-          ) : null}
+          <p>
+            {shareAudience === 'users'
+              ? 'XGEN 에 로그인한 사람은 링크로 이 화면을 봅니다. [공유 설정]에서 범위를 바꾸거나 공유를 중지합니다.'
+              : '링크를 아는 사람은 로그인 없이 이 화면을 봅니다. [공유 설정]에서 범위를 바꾸거나 공유를 중지합니다.'}
+          </p>
         </div>
       ) : null}
 
@@ -364,6 +347,20 @@ export const AppsView: React.FC<{
             <AppFrame app={detail} reloadKey={revision} />
           )}
         </div>
+      ) : null}
+
+      {shareOpen && slug ? (
+        <ShareAppModal
+          app={{
+            workflow_id: workflowId,
+            slug,
+            title: current?.title || slug,
+            shared,
+            ready: serving && (detail?.ready ?? current?.ready ?? false),
+          }}
+          onClose={() => setShareOpen(false)}
+          onChanged={(res) => onShareChanged(slug, res)}
+        />
       ) : null}
     </div>
   );

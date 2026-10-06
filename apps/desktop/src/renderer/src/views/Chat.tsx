@@ -24,13 +24,14 @@ import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
 import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
-import { CHAT_AI_DISCLAIMER_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError } from '@dex/protocol';
+import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { DropTracker, dragHasFiles } from './chat-drop';
 import { mcpChatStatus } from './mcp-status-model';
 import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
+import { ChatShareModal } from './ChatShareModal';
 import { ModelPicker } from './ModelPicker';
 import { Tooltip } from './Tooltip';
 import { OPEN_CHAT_FOLDERS_EVENT } from '../ide/dex-ide-host';
@@ -431,6 +432,8 @@ export const Chat: React.FC<{
   const ideTheme = useResolvedTheme();
   const ideStore = ideMode ? ideStoreFor(session.key, agent) : null;
   const [foldersOpen, setFoldersOpen] = useState(false);
+  /** [공유] 창: 지금까지의 대화를 이 시점 그대로 링크로. */
+  const [shareOpen, setShareOpen] = useState(false);
   // IDE 탐색기의 [폴더 연결 관리] — 이 대화의 [폴더] 창을 연다.
   useEffect(() => {
     const onOpen = (e: Event) => {
@@ -1395,6 +1398,15 @@ export const Chat: React.FC<{
               <CodeIcon size={13} /> IDE
             </button>
           </div>
+          {/* [공유]: [채팅 | IDE] 오른쪽. 지금까지 끝난 대화를 이 시점 그대로 링크로 공유한다(웹과 같은 자리). */}
+          <button
+            className="chat-hbtn icon chat-share-btn"
+            onClick={() => setShareOpen(true)}
+            title={CHAT_SHARE_TEXT.buttonTitle}
+            aria-label={CHAT_SHARE_TEXT.button}
+          >
+            <ShareIcon size={15} />
+          </button>
         </div>
       </div>
     </>
@@ -1403,6 +1415,13 @@ export const Chat: React.FC<{
     <>
       {foldersOpen && (
         <FolderConnectModal state={chatFolders} onClose={() => setFoldersOpen(false)} />
+      )}
+      {shareOpen && (
+        <ChatShareModal
+          workflowId={agent.workflowId}
+          interactionId={session.interactionId}
+          onClose={() => setShareOpen(false)}
+        />
       )}
 
       {mcpDebug && mcpLogsOpen && (

@@ -25,18 +25,18 @@ import {
   Image,
   Pressable,
   RefreshControl,
-  Share,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Clipboard from 'expo-clipboard';
 import * as Linking from 'expo-linking';
 import { AppViewer, myAppTarget, storeAppTarget, type AppViewTarget } from './app-viewer';
+import { AppShareSheet } from './app-share-sheet';
 import {
   APP_CONFIRM,
+  APP_SHARE_TEXT,
   appDescription,
   appKindLabel,
   appStatus,
@@ -159,27 +159,8 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
     setViewing(target);
   };
 
-  const toggleShare = async (app: MyApp) => {
-    const next = !app.shared;
-    if (!(await confirm(next ? APP_CONFIRM.share : APP_CONFIRM.unshare, next ? '공유' : '공유 중지'))) return;
-    setBusy(`${app.workflow_id}/${app.slug}`);
-    try {
-      const res = await client.api.agentData.appSetShare(app.workflow_id, app.slug, next);
-      const link = res.shared && res.path ? serverLink(client.session.serverUrl, res.path) : '';
-      if (link) {
-        await Clipboard.setStringAsync(link).catch(() => undefined);
-        Alert.alert('공개 링크를 만들었습니다', `${link}\n\n링크를 복사했습니다.`, [
-          { text: '공유하기', onPress: () => void Share.share({ message: link }).catch(() => undefined) },
-          { text: '닫기', style: 'cancel' },
-        ]);
-      }
-      await loadMine();
-    } catch (e) {
-      setNotice(friendlyError(e, '공유를 바꾸지 못했습니다.'));
-    } finally {
-      setBusy('');
-    }
-  };
+  /** 공유 시트를 연 앱: 범위·링크·중지를 시트 하나에서(데스크톱·웹 공유 창과 같다). */
+  const [sharing, setSharing] = useState<MyApp | null>(null);
 
   const toggleServing = async (app: MyApp) => {
     const next = !app.serving;
@@ -240,9 +221,9 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
             onPress: () => view(myAppTarget(client, app)),
           },
           {
-            label: app.shared ? '공유 중지' : '공유',
+            label: app.shared ? APP_SHARE_TEXT.shareSettings : '공유',
             disabled: !!busy || (!app.shared && !app.ready),
-            onPress: () => void toggleShare(app),
+            onPress: () => setSharing(app),
           },
           { label: app.serving ? '배포 중지' : '배포', disabled: !!busy, onPress: () => void toggleServing(app) },
         ]}
@@ -354,6 +335,14 @@ export function AppsSection({ client, visible }: { client: XgenMobileClient; vis
         />
       )}
       <AppViewer client={client} target={viewing} onClose={() => setViewing(null)} />
+      {sharing ? (
+        <AppShareSheet
+          client={client}
+          app={sharing}
+          onClose={() => setSharing(null)}
+          onChanged={() => void loadMine()}
+        />
+      ) : null}
     </View>
   );
 }

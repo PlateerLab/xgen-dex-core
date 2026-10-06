@@ -54,7 +54,10 @@ import {
   ideFailureOf,
   notificationProfileForAccount,
   shareBodyOf,
+  shareLinkUrl,
   withNotificationProfile,
+  type ChatShareInput,
+  type ShareAudience,
   type NotificationEvent,
   type NotificationPreferenceUpdate,
   type NotificationProfile,
@@ -2514,6 +2517,22 @@ ipcMain.handle(
 );
 ipcMain.handle(CHANNELS.historyConversations, () => getClient().history.conversations());
 
+// ── IPC: 채팅 공유 ─────────────────────────────────────────────────
+// 서버는 경로(/share/chat/<token>)만 준다. 절대 주소는 서버 주소를 아는 여기서 붙인다(appSetShare 와 같다).
+const withShareUrl = <T extends { path: string } | null>(link: T): (T & { url: string }) | null => {
+  if (!link) return null;
+  return { ...link, url: shareLinkUrl(normalizeServerUrl(loadConfig().serverUrl), link.path) };
+};
+ipcMain.handle(CHANNELS.chatShareState, async (_e, workflowId: string, interactionId: string) => {
+  const res = await getClient().chatShares.state(workflowId, interactionId);
+  return { ...res, share: withShareUrl(res.share), previous: res.previous.map((p) => withShareUrl(p)) };
+});
+ipcMain.handle(CHANNELS.chatShareCreate, async (_e, input: ChatShareInput) => {
+  const res = await getClient().chatShares.create(input);
+  return { ...res, share: withShareUrl(res.share) };
+});
+ipcMain.handle(CHANNELS.chatShareRevoke, (_e, token: string) => getClient().chatShares.revoke(token));
+
 // ── IPC: Agent Viewer (읽기 전용 관측 데이터) ───────────────────────
 ipcMain.handle(CHANNELS.agentTraceList, (_e, wf: string, page?: number, pageSize?: number) =>
   getClient().agentData.traceList(wf, page, pageSize),
@@ -2601,12 +2620,20 @@ ipcMain.handle(CHANNELS.appDelete, (_e, wf: string, slug: string) =>
  */
 ipcMain.handle(
   CHANNELS.appSetShare,
-  async (_e, wf: string, slug: string, shared: boolean) => {
-    const res = await getClient().agentData.appSetShare(wf, slug, shared);
+  async (
+    _e, wf: string, slug: string, shared: boolean,
+    opts?: { audience?: ShareAudience; rotate?: boolean },
+  ) => {
+    const res = await getClient().agentData.appSetShare(wf, slug, shared, opts ?? {});
     const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
     return { ...res, url: res.shared && res.path ? `${base}${res.path}` : '' };
   },
 );
+ipcMain.handle(CHANNELS.appGetShare, async (_e, wf: string, slug: string) => {
+  const res = await getClient().agentData.appGetShare(wf, slug);
+  const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
+  return { ...res, url: res.shared && res.path ? `${base}${res.path}` : '' };
+});
 
 /** 웹의 같은 앱 화면을 기본 브라우저로 연다(사내 링크 — 로그인이 필요하다). */
 ipcMain.handle(CHANNELS.appOpenWeb, (_e, wf: string, slug: string) => {

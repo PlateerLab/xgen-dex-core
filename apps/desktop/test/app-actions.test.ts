@@ -2,9 +2,9 @@
  * 앱 동작 버튼의 **소스 계약** — [새 창으로 열기]·[배포 중지]·[공유]·[삭제], 그리고
  * 같은 동작을 카드로 보여 주는 [앱] 탭(AgentAppsPage).
  *
- * 이 중 하나는 성격이 다르다. [공유]는 **회사 밖에 문을 내는 일**이라, 잘못
+ * 이 중 하나는 성격이 다르다. [공유]는 **회사 밖에 문을 낼 수 있는 일**이라, 잘못
  * 눌리면 되돌릴 수 없다(이미 본 사람이 있다). 그래서 여기서 지키는 것은
- * "버튼이 있다" 가 아니라 **묻고 나서 연다**와 **무엇이 공개되지 않는지 말한다** 다.
+ * "버튼이 있다" 가 아니라 **범위를 고르고 나서 연다**와 **누가 여는지 말한다** 다.
  *
  * 실행 테스트로는 잡히지 않는다 — 확인 문구가 통째로 빠져도 기능은 멀쩡히
  * 돌기 때문이다. 값싸고, 사람이 실수하는 바로 그 지점에 있는 검사다.
@@ -31,6 +31,8 @@ const MODEL = '../../packages/protocol/src/app-card.ts'
 const MAIN = 'src/main/index.ts'
 const PRELOAD = 'src/preload/index.ts'
 const IPC = 'src/main/ipc.ts'
+const SHARE_MODAL = 'src/renderer/src/apps/ShareAppModal.tsx'
+const SHARE_TEXT = '../../packages/protocol/src/shares.ts'
 
 test('네 동작이 모두 있다', () => {
   const v = code(VIEW)
@@ -39,35 +41,32 @@ test('네 동작이 모두 있다', () => {
   }
 })
 
-test('공유는 **묻고 나서** 연다', () => {
+test('공유는 **창에서 범위를 고르고 나서** 연다(운영체제 확인 창이 아니다)', () => {
+  // 2026-10-06: window.confirm 한 줄로 켜고 끄던 것을 공유 창(ShareAppModal)으로 바꿨다.
+  // 범위(XGEN 사용자에게 / 모두에게)를 고르고, 링크를 다시 보고, 중지는 창 안에서 한 번 더 묻는다.
   const v = code(VIEW)
-  const share = v.slice(v.indexOf('onToggleShare'), v.indexOf('onDelete'))
-  assert.match(share, /window\.confirm/,
-    '확인 없이 공개되면 되돌릴 수 없다 — 이미 본 사람이 있다')
-  assert.ok(
-    share.indexOf('window.confirm') < share.indexOf('setShare'),
-    '묻기 전에 부르면 확인이 장식이다',
-  )
+  assert.match(v, /<ShareAppModal/)
+  assert.match(v, /setShareOpen\(true\)/)
+  assert.doesNotMatch(v, /APP_CONFIRM\.(share|unshare)/, '공유를 운영체제 확인 창으로 묻지 않는다')
+  const modal = code(SHARE_MODAL)
+  const create = modal.slice(modal.indexOf('const create'), modal.indexOf('const changeAudience'))
+  assert.match(create, /setShare\(app\.workflow_id, app\.slug, true, \{ audience \}\)/,
+    '고른 범위로 만든다')
+  const stop = modal.slice(modal.indexOf('const stop'))
+  assert.match(stop, /setShare\(app\.workflow_id, app\.slug, false\)/)
+  assert.match(modal, /onClick=\{\(\) => setAskStop\(true\)\}/, '중지는 한 번 더 묻는다')
 })
 
-test('공유 확인 문구가 **무엇이 열리는지**를 말한다', () => {
-  const v = code(VIEW)
-  const share = v.slice(v.indexOf('onToggleShare'), v.indexOf('onDelete'))
-  // 문구는 [앱] 탭과 같이 쓰려고 한 곳(APP_CONFIRM)에 있다 — 두 화면이 다른 말을 하지 않게.
-  assert.match(share, /APP_CONFIRM\.share/)
-  // 한 줄로 줄였다 — 길게 적으면 아무도 안 읽고, 안 읽히는 확인은 확인이 아니다.
-  // 그 한 줄은 **사실**이어야 한다. 예전 문장 "API는 동작하지 않습니다" 는 한 파일 화면에만
-  // 맞았고, 앱(백엔드까지 공개 링크에서 그대로 돈다) 주인은 그 말을 "안전하다" 로 읽었다.
-  const m = code(MODEL)
-  assert.match(m, /share: '[^']*로그인 없이 이 화면을 쓸 수 있습니다/)
-  assert.doesNotMatch(m, /API는 동작하지 않습니다/)
-})
-
-test('공유를 닫을 때 옛 링크가 되살아나지 않는다고 말한다', () => {
-  const v = code(VIEW)
-  assert.match(v, /APP_CONFIRM\.unshare/)
-  assert.match(code(MODEL), /unshare: '[^']*되살아나지 않습니다/,
-    '다시 켜면 새 토큰이다 — 그걸 모르면 옛 링크가 살아 있다고 오해한다')
+test('공유 창 문구가 범위마다 **누가 여는지**와 되돌릴 수 없음을 말한다', () => {
+  const t = code(SHARE_TEXT)
+  // 문구는 데스크톱·모바일·웹이 같은 말을 하도록 프로토콜 한 곳(APP_SHARE_TEXT)에 있다.
+  assert.match(t, /title: 'XGEN 사용자에게 공유'/)
+  assert.match(t, /hint: 'XGEN 에 로그인한 사람만 엽니다[^']*'/)
+  assert.match(t, /title: '모두에게 공유'/)
+  assert.match(t, /hint: '링크를 아는 사람은 누구나 로그인 없이 엽니다\.'/)
+  assert.match(t, /stopAsk: '[^']*되살아나지 않습니다\.'/,
+    '다시 켜면 새 토큰이다. 그걸 모르면 옛 링크가 살아 있다고 오해한다')
+  assert.doesNotMatch(t, /API는 동작하지 않습니다/)
 })
 
 test('배포 중지는 **묻고 나서** 멈춘다 — 앱과 공개 링크가 함께 닫힌다', () => {
@@ -86,13 +85,12 @@ test('배포 중지는 **묻고 나서** 멈춘다 — 앱과 공개 링크가 �
   }
 })
 
-test('[앱] 탭의 공유도 묻고 나서 연다', () => {
+test('[앱] 탭의 공유도 같은 창을 연다', () => {
   const p = code(PAGE)
-  const share = p.slice(p.indexOf('const toggleShare'), p.indexOf('const toggleServing'))
-  assert.match(share, /APP_CONFIRM\.share/)
-  assert.match(share, /APP_CONFIRM\.unshare/)
-  assert.ok(share.indexOf('window.confirm') < share.indexOf('setShare'))
-  assert.match(share, /res\.url/, '절대 주소는 main 이 붙여 돌려준다')
+  assert.match(p, /<ShareAppModal/)
+  assert.match(p, /onClick=\{\(\) => setShareTarget\(app\)\}/)
+  assert.doesNotMatch(p, /APP_CONFIRM\.(share|unshare)/)
+  assert.match(code(SHARE_MODAL), /res\.url/, '절대 주소는 main 이 붙여 돌려준다')
 })
 
 test('삭제는 되돌릴 수 없다고 말한다', () => {
@@ -110,7 +108,8 @@ test('렌더러는 공개 주소를 **직접 조립하지 않는다**', () => {
     assert.doesNotMatch(src, /serverUrl/,
       '렌더러는 서버 주소를 모른다. 알아내려 하면 설정과 어긋난 주소를 사람에게 준다')
   }
-  assert.match(v, /res\.url/, '절대 주소는 main 이 붙여 돌려준다')
+  assert.doesNotMatch(code(SHARE_MODAL), /serverUrl/)
+  assert.match(code(SHARE_MODAL), /res\.url/, '절대 주소는 main 이 붙여 돌려준다')
   // 스토어의 앱은 서버가 준 경로만 넘긴다 — 절대 주소는 main 이 만든다.
   assert.match(code(PAGE), /openPublic\(app\.path\)/)
 })
@@ -143,7 +142,7 @@ test('공개 링크는 서버와 같은 곳만 연다', () => {
 
 test('preload 가 네 동작을 모두 건넨다', () => {
   const p = code(PRELOAD)
-  for (const fn of ['setServing', 'setShare', 'remove', 'openWeb', 'mine', 'store', 'openPublic']) {
+  for (const fn of ['setServing', 'setShare', 'getShare', 'remove', 'openWeb', 'mine', 'store', 'openPublic']) {
     assert.match(p, new RegExp(`\\b${fn}:`), `apps.${fn} 가 없다`)
   }
 })

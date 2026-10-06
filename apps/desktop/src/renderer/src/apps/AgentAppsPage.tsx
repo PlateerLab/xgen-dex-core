@@ -19,10 +19,11 @@
  * 그래서 웹·모바일의 카드도 같은 그림을 본다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AppStoreListResult, AppStoreScope, MyApp, MyAppsResult, StoreApp } from '@dex/protocol';
-import { copyText, xgen } from '../bridge';
+import { APP_SHARE_TEXT, type AppStoreListResult, type AppStoreScope, type MyApp, type MyAppsResult, type StoreApp } from '@dex/protocol';
+import { xgen } from '../bridge';
 import { AppIcon, MoreIcon, RefreshIcon } from '../brand/icons';
 import { AppCard } from './AppCard';
+import { ShareAppModal } from './ShareAppModal';
 import { Selector } from '../views/Selector';
 import { ViewerEmpty } from '../views/agent-viewer-shared';
 import { useModalDismiss } from '../views/use-modal-dismiss';
@@ -96,7 +97,8 @@ export const AgentAppsPage: React.FC<{
   /** 도는 중인 토글의 앱 키 — 한 번에 하나만 보낸다(두 번 눌러 두 번 나가지 않게). */
   const [busy, setBusy] = useState('');
   const [actionError, setActionError] = useState('');
-  const [shareLink, setShareLink] = useState<{ title: string; url: string; copied: boolean } | null>(null);
+  /** 공유 창을 연 앱: 범위·링크·중지를 창 하나에서. */
+  const [shareTarget, setShareTarget] = useState<MyApp | null>(null);
   const [detail, setDetail] = useState<MyApp | null>(null);
   const [menu, setMenu] = useState('');
   const mineSeq = useRef(0);
@@ -214,18 +216,12 @@ export const AgentAppsPage: React.FC<{
     }
   };
 
-  const toggleShare = (app: MyApp) => {
-    const next = !app.shared;
-    if (!window.confirm(next ? APP_CONFIRM.share : APP_CONFIRM.unshare)) return;
-    void runToggle(app, async () => {
-      const res = await xgen.apps.setShare(app.workflow_id, app.slug, next);
-      if (res.shared && res.url) {
-        // 링크는 이 응답에만 들어 있다 — 지금 손에 쥐여 주지 않으면 다시 켜야 받는다.
-        const copied = await copyText(res.url);
-        setShareLink({ title: app.title, url: res.url, copied });
-      }
-      return (a) => withShare(a, res);
-    });
+  /** 공유 창이 바꾼 것을 그 카드에 곧바로 입히고 목록을 다시 읽는다(토글과 같은 흐름). */
+  const onShareChanged = (app: MyApp, res: Parameters<typeof withShare>[1]) => {
+    setMine((cur) => (cur ? patchMyApp(cur, app.workflow_id, app.slug, (a) => withShare(a, res)) : cur));
+    setDetail((cur) => (cur && appKey(cur) === appKey(app) ? withShare(cur, res) : cur));
+    announceAppChange(app.workflow_id, self);
+    void loadMine(true);
   };
 
   const toggleServing = (app: MyApp) => {
@@ -323,9 +319,9 @@ export const AgentAppsPage: React.FC<{
                     type="button"
                     className="apps-action"
                     disabled={!!busy || (!app.shared && !app.ready)}
-                    onClick={() => toggleShare(app)}
+                    onClick={() => setShareTarget(app)}
                   >
-                    {app.shared ? '공유 중지' : '공유'}
+                    {app.shared ? APP_SHARE_TEXT.shareSettings : '공유'}
                   </button>
                   <button
                     type="button"
@@ -572,7 +568,19 @@ export const AgentAppsPage: React.FC<{
           }}
         />
       ) : null}
-      {shareLink ? <ShareLinkModal link={shareLink} onClose={() => setShareLink(null)} /> : null}
+      {shareTarget ? (
+        <ShareAppModal
+          app={{
+            workflow_id: shareTarget.workflow_id,
+            slug: shareTarget.slug,
+            title: shareTarget.title,
+            shared: shareTarget.shared,
+            ready: shareTarget.ready && shareTarget.serving,
+          }}
+          onClose={() => setShareTarget(null)}
+          onChanged={(res) => onShareChanged(shareTarget, res)}
+        />
+      ) : null}
     </div>
   );
 };
@@ -627,46 +635,6 @@ const AppDetailModal: React.FC<{ app: MyApp; onClose: () => void; onOpen: () => 
           </button>
           <button className="primary" onClick={onOpen}>
             에이전트에서 보기
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/** 방금 만든 공개 링크 — 클립보드가 막힌 환경에서도 읽고 옮길 수 있게. */
-const ShareLinkModal: React.FC<{
-  link: { title: string; url: string; copied: boolean };
-  onClose: () => void;
-}> = ({ link, onClose }) => {
-  useModalDismiss(onClose);
-  const [copied, setCopied] = useState(link.copied);
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" role="dialog" aria-label="공개 링크" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <h2>공개 링크</h2>
-          <button className="link" onClick={onClose}>
-            닫기
-          </button>
-        </div>
-        <p className="app-detail-desc">
-          {copied
-            ? `'${link.title}' 앱의 공개 링크를 만들고 복사했습니다.`
-            : `'${link.title}' 앱의 공개 링크를 만들었습니다.`}
-        </p>
-        <input readOnly value={link.url} aria-label="공개 링크" onFocus={(e) => e.currentTarget.select()} />
-        <div className="modal-actions">
-          <button className="secondary" onClick={onClose}>
-            닫기
-          </button>
-          <button
-            className="primary"
-            onClick={() => {
-              void copyText(link.url).then((ok) => setCopied(ok));
-            }}
-          >
-            복사
           </button>
         </div>
       </div>

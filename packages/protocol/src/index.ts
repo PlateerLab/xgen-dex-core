@@ -33,6 +33,7 @@ import { ChatGuardrailsApi } from './chat-guardrails';
 import { FeedbackApi } from './feedback';
 import { HistoryApi } from './history';
 import { IdeApi } from './ide';
+import { ChatSharesApi } from './shares';
 import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
 import { TeamsApi } from './teams';
@@ -79,6 +80,8 @@ export class XgenClient {
   readonly conversationModel: ConversationModelApi;
   /** 채팅의 [IDE] 보기 — 편집기·터미널·찾기·소스 제어. */
   readonly ide: IdeApi;
+  /** 채팅 공유: 대화를 그 시점까지 얼린 링크(/api/chat/shares). */
+  readonly chatShares: ChatSharesApi;
 
   private refreshToken?: string;
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
@@ -113,6 +116,7 @@ export class XgenClient {
     this.conversationFolders = new ConversationFoldersApi(this.http);
     this.conversationModel = new ConversationModelApi(this.http);
     this.ide = new IdeApi(this.http);
+    this.chatShares = new ChatSharesApi(this.http);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -270,6 +274,7 @@ export * from './chat-files';
 export * from './turn-files';
 export * from './workspace-copy';
 export * from './app-card';
+export * from './shares';
 export * from './filestore';
 export * from './agent-trigger';
 export * from './connector-devices';

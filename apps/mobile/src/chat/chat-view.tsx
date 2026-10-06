@@ -36,7 +36,8 @@ import { attachmentName, base64Bytes, imageMime } from '../lib/attachment-file';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import type { Agent, Conversation, HistoryFlowItem, ToolEvent } from '@dex/protocol';
-import { chatAnswerFiles, describeError, describeStreamError, requestBefore, turnEventToChatEvent } from '@dex/protocol';
+import { CHAT_SHARE_TEXT, chatAnswerFiles, describeError, describeStreamError, requestBefore, turnEventToChatEvent } from '@dex/protocol';
+import { Ionicons } from '@expo/vector-icons';
 import { FilePreviewScreen, type PreviewFile } from '../files/file-preview';
 import {
   createChat,
@@ -55,6 +56,7 @@ import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
 import { AgentDetail } from '../agents/agent-detail';
 import { FolderPill, FolderSheet } from './folder-sheet';
+import { ChatShareSheet } from './chat-share-sheet';
 import { ModelChip, ModelSheet, ThinkingChip, ThinkingSheet, useConversationModel } from './model-picker';
 import { folderStore, useChatFolderRemote, useChatFolders } from '../lib/folder-store';
 import { toWire } from '../lib/mobile-folders';
@@ -152,6 +154,8 @@ export function ChatView({
   const [modelSheet, setModelSheet] = useState(false);
   const [thinkingSheet, setThinkingSheet] = useState(false);
   const [folderSheet, setFolderSheet] = useState(false);
+  /** [공유] 시트: 지금까지의 대화를 링크로. */
+  const [shareSheet, setShareSheet] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [wsState, setWsState] = useState<ChatWsState>('closed');
   const [running, setRunningState] = useState(false);
@@ -717,6 +721,16 @@ export function ChatView({
         >
           <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>상세</Text>
         </Pressable>
+        {/* [공유]: 지금까지 끝난 대화를 이 시점 그대로 링크로(데스크톱·웹 머리줄의 공유 아이콘과 같다). */}
+        <Pressable
+          onPress={() => setShareSheet(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={CHAT_SHARE_TEXT.buttonTitle}
+          style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: p.panel2 }}
+        >
+          <Ionicons name="share-outline" size={16} color={p.text} />
+        </Pressable>
       </View>
 
       {loadingHistory && messages.length === 0 ? (
@@ -1055,6 +1069,13 @@ export function ChatView({
       </Modal>
 
       <FolderSheet interactionId={interactionId} visible={folderSheet} onClose={() => setFolderSheet(false)} />
+      <ChatShareSheet
+        client={client}
+        workflowId={agent?.workflowId ?? ''}
+        interactionId={interactionId}
+        visible={shareSheet}
+        onClose={() => setShareSheet(false)}
+      />
       <ModelSheet
         state={model.state}
         visible={modelSheet}

@@ -841,3 +841,7 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* [공유]: [채팅 | IDE] 오른쪽의 아이콘 단추. 알약과 붙지 않게 조금 띄운다. */
+.chat-hbtn.chat-share-btn {
+  margin-left: 4px;
+}

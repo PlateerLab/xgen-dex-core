@@ -16,6 +16,10 @@ import type {
   AppListResult,
   AppServingState,
   AppShareState,
+  ChatShareInput,
+  ChatShareLink,
+  ChatShareState,
+  ShareAudience,
   AppStoreListParams,
   AppStoreListResult,
   MyAppsResult,
@@ -261,6 +265,19 @@ const api = {
     ): Promise<ConversationSnapshot> =>
       ipcRenderer.invoke(CHANNELS.historySnapshot, workflowId, interactionId, name),
     conversations: (): Promise<Conversation[]> => ipcRenderer.invoke(CHANNELS.historyConversations),
+  },
+
+  /** 채팅 공유: 대화를 그 시점까지 얼린 링크. 링크에는 절대 주소(`url`)가 붙어 온다. */
+  chatShares: {
+    state: (
+      workflowId: string, interactionId: string,
+    ): Promise<Omit<ChatShareState, 'share' | 'previous'> & {
+      share: (ChatShareLink & { url: string }) | null;
+      previous: Array<ChatShareLink & { url: string }>;
+    }> => ipcRenderer.invoke(CHANNELS.chatShareState, workflowId, interactionId),
+    create: (input: ChatShareInput): Promise<{ share: ChatShareLink & { url: string }; reused: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.chatShareCreate, input),
+    revoke: (token: string): Promise<void> => ipcRenderer.invoke(CHANNELS.chatShareRevoke, token),
   },
 
   /** 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 판정은 서버가 한다(웹과 같은 자리). */
@@ -874,11 +891,18 @@ const api = {
       ipcRenderer.invoke(CHANNELS.appHttp, workflowId, slug, req),
     setServing: (workflowId: string, slug: string, serving: boolean): Promise<AppServingState> =>
       ipcRenderer.invoke(CHANNELS.appSetServing, workflowId, slug, serving),
-    /** 절대 주소(`url`)까지 붙여 돌아온다 — 렌더러는 서버 주소를 모른다. */
+    /**
+     * 공유를 켜고 끄거나 공개 범위를 바꾼다. 이미 공유 중이면 같은 링크를 두고 범위만 바꾼다.
+     * 절대 주소(`url`)까지 붙여 돌아온다(렌더러는 서버 주소를 모른다).
+     */
     setShare: (
       workflowId: string, slug: string, shared: boolean,
+      opts?: { audience?: ShareAudience; rotate?: boolean },
     ): Promise<AppShareState & { url: string }> =>
-      ipcRenderer.invoke(CHANNELS.appSetShare, workflowId, slug, shared),
+      ipcRenderer.invoke(CHANNELS.appSetShare, workflowId, slug, shared, opts ?? {}),
+    /** 지금의 공유 상태와 링크(주인만). 공유 창을 다시 열 때 같은 링크를 보여 준다. */
+    getShare: (workflowId: string, slug: string): Promise<AppShareState & { url: string }> =>
+      ipcRenderer.invoke(CHANNELS.appGetShare, workflowId, slug),
     remove: (workflowId: string, slug: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke(CHANNELS.appDelete, workflowId, slug),
     /** 웹의 같은 화면을 기본 브라우저로 연다. 만들어진 주소를 돌려준다. */

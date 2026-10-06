@@ -17,6 +17,10 @@ import { AgentSessionLifecycleClient, AgentSessionLifecycleHttpError, AgentSessi
   validateCreateAgentSession, validateSwitchAgentFocus, type AgentSessionLifecycleProofSource,
   type CreateAgentSessionInput, type SwitchAgentFocusInput, type CreatedAgentSession } from '@dex/protocol/agent-session-lifecycle';
 import { nativeAgentMutationFetch } from './native-agent-mutation-http';
+import { parseAgentAttachmentScope, validateReserveAgentAttachment, validateAgentAttachmentId,
+  type AgentAttachmentReceipt, type ReserveAgentAttachment as ReserveAgentAttachmentInput } from '@dex/protocol/agent-session-attachments';
+import { AgentSessionAttachmentClient, AgentAttachmentHttpError, AgentAttachmentOutcomeUnknown,
+  type AgentSessionAttachmentProofSource, type ReservedAgentAttachment } from '@dex/protocol/agent-session-attachment-client';
 
 export interface NativeSessionSummary {
   user_id: string;
@@ -119,16 +123,17 @@ export class NativeHostSession {
     while (this.proofOperations.size) await Promise.allSettled([...this.proofOperations]);
   }
   private async withScopedProofSource<T>(userId: string,
-    work: (proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource,
+    work: (proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource & AgentSessionAttachmentProofSource,
       authScope: string, generation: string) => Promise<T>,
-    signal?: AbortSignal, writeScope?: { method: 'POST' | 'PUT'; path: string; expectedAuthScope?: string }): Promise<T> {
+    signal?: AbortSignal, writeScope?: { method: 'GET' | 'POST' | 'PUT'; path: string; expectedAuthScope?: string }): Promise<T> {
     if (writeScope?.expectedAuthScope !== undefined && !/^[a-f0-9]{64}$/.test(writeScope.expectedAuthScope)) {
       throw new DexError('usage_error', '검증된 네이티브 대화 범위가 필요합니다.');
     }
     const operation = this.keys.withSession(this.scope(userId), async (_identity, sign, vault) => {
       const record = requireReady(await vault.read()); const token = requireAccess(record); let live = true; let writeAvailable = true;
+      const pendingProofs = new Set<Promise<string>>();
       const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', '네이티브 세션 사용 범위가 종료되었습니다.'); };
-      const proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource = {
+      const proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource & AgentSessionAttachmentProofSource = {
         accessToken: async () => { check(); return token; },
         signProof: async (method, htu, expected) => {
           check();
@@ -140,7 +145,9 @@ export class NativeHostSession {
             throw new DexError('usage_error', '허용된 Canonical 경로와 현재 플랫폼 토큰에만 서명할 수 있습니다.');
           }
           if (write) writeAvailable = false;
-          const result = await sign(method, htu, token, signal); check(); return result;
+          const pending = (async () => { check(); const result = await sign(method, htu, token, signal); check(); return result; })();
+          pendingProofs.add(pending);
+          try { return await pending; } finally { pendingProofs.delete(pending); }
         },
       };
       // Rotation keeps the sid, so its token/write generation must not reset an account cursor.
@@ -156,7 +163,12 @@ export class NativeHostSession {
         }
       }
       try { const result = await work(proof, authScope, record.generation); check(); return result; }
-      finally { live = false; }
+      finally {
+        live = false;
+        // A client may race cancellation against proof generation. Keep the
+        // vault lock until every signing operation has stopped using its key.
+        await Promise.allSettled([...pendingProofs]);
+      }
     });
     this.proofOperations.add(operation);
     try { return await operation; }
@@ -256,6 +268,90 @@ export class NativeHostSession {
   }
   async conversation(userId: string, signal?: AbortSignal) {
     return readNativeAgentConversation(this, userId, signal);
+  }
+  /** Metadata and bytes are captured before any vault wait; local paths never cross this boundary. */
+  async reserveAttachment(userId: string, sessionId: string, workflowId: string, input: ReserveAgentAttachmentInput,
+    signal?: AbortSignal, expectedAuthScope?: string): Promise<ReservedAgentAttachment> {
+    const scope = this.attachmentScope(userId, sessionId, workflowId);
+    let metadata: ReserveAgentAttachmentInput;
+    try { metadata = validateReserveAgentAttachment(scope, input); }
+    catch { throw new DexError('usage_error', '첨부 파일 메타데이터와 예약 키를 확인하세요.'); }
+    return this.attachmentOperation(userId, 'POST', `/api/agentflow/agent-sessions/${sessionId}/attachments`,
+      (client, control) => client.reserveAttachment(scope, metadata, control), signal, expectedAuthScope);
+  }
+  async uploadAttachment(userId: string, sessionId: string, workflowId: string, attachmentId: string,
+    input: ReserveAgentAttachmentInput, bytes: Uint8Array, signal?: AbortSignal, expectedAuthScope?: string): Promise<AgentAttachmentReceipt> {
+    const scope = this.attachmentScope(userId, sessionId, workflowId);
+    let metadata: ReserveAgentAttachmentInput; let captured: Uint8Array;
+    try {
+      validateAgentAttachmentId(attachmentId);
+      metadata = validateReserveAgentAttachment(scope, input);
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength !== metadata.size_bytes) throw new TypeError();
+      captured = new Uint8Array(bytes);
+      if (createHash('sha256').update(captured).digest('hex') !== metadata.sha256) throw new TypeError();
+    } catch { throw new DexError('usage_error', '첨부 파일 길이와 checksum을 확인하세요.'); }
+    return this.attachmentOperation(userId, 'PUT', `/api/agentflow/agent-sessions/${sessionId}/attachments/${attachmentId}/content`,
+      (client, control) => client.uploadAttachment(scope, attachmentId, metadata, captured, control), signal, expectedAuthScope);
+  }
+  async readAttachmentReceipt(userId: string, sessionId: string, workflowId: string, attachmentId: string,
+    signal?: AbortSignal, expectedAuthScope?: string): Promise<AgentAttachmentReceipt> {
+    const scope = this.attachmentScope(userId, sessionId, workflowId);
+    this.attachmentId(attachmentId);
+    return this.attachmentOperation(userId, 'GET', `/api/agentflow/agent-sessions/${sessionId}/attachments/${attachmentId}`,
+      (client, control) => client.readReceipt(scope, attachmentId, control), signal, expectedAuthScope);
+  }
+  async cancelAttachment(userId: string, sessionId: string, workflowId: string, attachmentId: string,
+    signal?: AbortSignal, expectedAuthScope?: string): Promise<void> {
+    const scope = this.attachmentScope(userId, sessionId, workflowId);
+    this.attachmentId(attachmentId);
+    return this.attachmentOperation(userId, 'POST', `/api/agentflow/agent-sessions/${sessionId}/attachments/${attachmentId}/cancel`,
+      (client, control) => client.cancelAttachment(scope, attachmentId, control), signal, expectedAuthScope);
+  }
+  private attachmentScope(userId: string, sessionId: string, workflowId: string) {
+    this.scope(userId);
+    try { return parseAgentAttachmentScope({ origin: this.origin, user_id: userId, session_id: sessionId, workflow_id: workflowId }); }
+    catch { throw new DexError('usage_error', '현재 계정의 Agent 세션과 워크플로를 확인하세요.'); }
+  }
+  private attachmentId(value: string) {
+    try { validateAgentAttachmentId(value); }
+    catch { throw new DexError('usage_error', '서버에서 발급한 첨부 ID를 확인하세요.'); }
+  }
+  private async attachmentOperation<T>(userId: string, method: 'GET' | 'POST' | 'PUT', path: string,
+    work: (client: AgentSessionAttachmentClient, signal: AbortSignal) => Promise<T>, signal?: AbortSignal, expectedAuthScope?: string): Promise<T> {
+    signal?.throwIfAborted();
+    const control = new AbortController(); const cancel = () => control.abort(signal?.reason);
+    signal?.addEventListener('abort', cancel, { once: true }); if (signal?.aborted) cancel();
+    const timer = setTimeout(() => control.abort(), method === 'PUT' ? 120000 : 10000);
+    let dispatched = false;
+    try {
+      return await this.withScopedProofSource(userId, async (proof) => {
+        const fetch = (async (input, init) => {
+          control.signal.throwIfAborted(); await proof.accessToken();
+          dispatched = true;
+          const response = await this.fetchImpl(input, init);
+          try { control.signal.throwIfAborted(); await proof.accessToken(); }
+          catch (error) { void response.body?.cancel().catch(() => undefined); throw error; }
+          return response;
+        }) as typeof globalThis.fetch;
+        return work(new AgentSessionAttachmentClient(this.origin, proof, fetch), control.signal);
+      }, control.signal, { method, path, expectedAuthScope });
+    } catch (error) {
+      if (error instanceof AgentAttachmentHttpError) {
+        if (method === 'GET') {
+          // An inconclusive recovery read cannot establish the earlier PUT outcome.
+          throw new DexError([401, 403].includes(error.status) ? 'auth_required' : error.status >= 500 ? 'network_error' : 'usage_error',
+            '첨부 receipt를 확인할 수 없습니다. 원래 업로드 결과는 유지됩니다.', { status: error.status });
+        }
+        throw new DexError([401, 403].includes(error.status) ? 'auth_required' : 'usage_error',
+          '첨부 요청이 거절되었습니다. 현재 인증과 파일 상태를 확인하세요.', { outcome: 'rejected', status: error.status });
+      }
+      if (method !== 'GET' && (dispatched || error instanceof AgentAttachmentOutcomeUnknown)) {
+        throw new DexError('network_error', '첨부 요청 결과를 확인할 수 없습니다. 파일 receipt를 먼저 조회하세요.', { outcome: 'unknown' });
+      }
+      control.signal.throwIfAborted();
+      if (error instanceof DexError) throw error;
+      throw new DexError('network_error', '첨부 요청을 완료할 수 없습니다.');
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
   }
   async submitTurn(userId: string, sessionId: string, input: SubmitAgentTurnInput, signal?: AbortSignal, expectedAuthScope?: string): Promise<SubmittedAgentTurn> {
     let body: SubmitAgentTurnInput;

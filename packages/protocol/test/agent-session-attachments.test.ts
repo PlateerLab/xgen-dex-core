@@ -100,16 +100,24 @@ test('Unicode metadata preserves exact code points without runtime-dependent nor
   assert.throws(() => prepareAgentAttachmentReferences([parsed], { ...scope, workflow_id: workflow_id.normalize('NFC') }), AgentAttachmentValidationError);
 });
 
-test('metadata preparation never enables attachment submission to the current text-only API', async () => {
+test('prepared metadata enables only canonical ID/checksum attachment references on turn submission', async () => {
   let tokenCalls = 0; let proofCalls = 0; let wireCalls = 0;
   const client = new AgentSessionMutationClient(scope.origin, {
     accessToken: async () => { tokenCalls++; return 'token'; },
     signProof: async () => { proofCalls++; return 'proof'; },
-  }, async () => { wireCalls++; throw new Error('must not dispatch'); });
+  }, async (_url, init) => {
+    wireCalls++;
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.attachments, [{ attachment_id: receipt.attachment_id, sha256: receipt.sha256 }]);
+    return Response.json({
+      turn_id: '33333333-3333-4333-8333-333333333333', status: 'accepted', accepted_sequence: 1,
+      state_version: 2, replayed: false,
+    }, { status: 202 });
+  });
   const references = prepareAgentAttachmentReferences([receipt], scope);
-  await assert.rejects(() => client.submitTurn(scope.session_id, {
+  await client.submitTurn(scope.session_id, {
     input_text: 'text', idempotency_key: 'one', expected_state_version: 1,
     attachments: references,
-  } as never), TypeError);
-  assert.deepEqual([tokenCalls, proofCalls, wireCalls], [0, 0, 0]);
+  });
+  assert.deepEqual([tokenCalls, proofCalls, wireCalls], [1, 1, 1]);
 });

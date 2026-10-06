@@ -55,7 +55,8 @@ async function fixture(platform: 'cli' | 'desktop' | 'vscode' = 'cli') {
   const calls: Array<{ url: URL; path: string; init: RequestInit; body: any }> = [];
   let custom: ((path: string, init: RequestInit) => Response | Promise<Response> | undefined) | undefined;
   const fetchImpl = (async (input, init: RequestInit = {}) => {
-    const url = new URL(String(input)); const path = url.pathname; calls.push({ url, path, init, body: JSON.parse(String(init.body ?? '{}')) });
+    const url = new URL(String(input)); const path = url.pathname;
+    calls.push({ url, path, init, body: init.body instanceof Uint8Array ? Array.from(init.body as Uint8Array) : JSON.parse(String(init.body ?? '{}')) });
     const response = await custom?.(path, init); if (response) return response;
     if (path === '/api/auth/login') return Response.json({ success: true, user_id: '7', access_token: ACCOUNT });
     if (path === '/api/auth/logout') return Response.json({ success: true });
@@ -1136,5 +1137,178 @@ test('turn mutations classify authoritative rejection and all post-dispatch unce
       assert.deepEqual(error.details, { outcome: 'unknown', agent_session_id: SID, expected_state_version: 2, turn_id: TURN1 }); return true;
     });
     assert.equal(f.calls.filter(({ path }) => path.endsWith('/stop')).length, 1);
+  } finally { await f.cleanup(); }
+});
+
+
+const ATTACHMENT = '018f1240-0000-7000-8000-000000000007';
+const attachmentBytes = Uint8Array.from([0, 128, 255, 10]);
+const attachmentMetadata = () => ({ upload_key: 'upload-original', filename: '보고서.bin', size_bytes: attachmentBytes.length,
+  media_type: 'application/octet-stream', sha256: createHash('sha256').update(attachmentBytes).digest('hex') });
+const attachmentReceipt = () => ({ origin: ORIGIN, user_id: '7', session_id: SID, workflow_id: FLOW,
+  attachment_id: ATTACHMENT, ...(({ upload_key: _key, ...metadata }) => metadata)(attachmentMetadata()) });
+
+ test('native staged attachments use scoped GET/POST/PUT proofs and exact binary bytes for each supported host', async () => {
+  for (const platform of ['cli', 'desktop', 'vscode'] as const) {
+    const f = await fixture(platform);
+    try {
+      const session = f.client(); await session.login('a', 'p');
+      f.custom((path, init) => {
+        if (path.endsWith('/attachments')) return Response.json({ attachment_id: ATTACHMENT, status: 'reserved', expires_at: new Date(Date.now() + 60000).toISOString() }, { status: 201 });
+        if (path.endsWith('/content') || path.endsWith(`/attachments/${ATTACHMENT}`)) return Response.json(attachmentReceipt());
+        if (path.endsWith('/cancel')) return new Response(null, { status: 204 });
+        return undefined;
+      });
+      const binding = await session.withProofSource('7', async (_proof, value) => value);
+      assert.equal((await session.reserveAttachment('7', SID, FLOW, attachmentMetadata(), undefined, binding)).attachment_id, ATTACHMENT);
+      assert.deepEqual(await session.uploadAttachment('7', SID, FLOW, ATTACHMENT, attachmentMetadata(), attachmentBytes, undefined, binding), attachmentReceipt());
+      assert.deepEqual(await session.readAttachmentReceipt('7', SID, FLOW, ATTACHMENT, undefined, binding), attachmentReceipt());
+      await session.cancelAttachment('7', SID, FLOW, ATTACHMENT, undefined, binding);
+      const calls = f.calls.filter(({ path }) => path.includes('/attachments'));
+      assert.deepEqual(calls.map(({ init }) => init.method), ['POST', 'PUT', 'GET', 'POST']);
+      assert.deepEqual(calls[1]!.body, [...attachmentBytes]);
+      const proofs = calls.map(({ init, url }) => {
+        const headers = new Headers(init.headers);
+        assert.equal(headers.get('authorization'), `DPoP ${f.stored()!.accessToken}`);
+        assert.equal(headers.has('cookie'), false); assert.equal(headers.has('origin'), false);
+        assert.equal(init.credentials, 'omit'); assert.equal(init.redirect, 'error'); assert.equal(init.cache, 'no-store');
+        const jwt = headers.get('dpop')!;
+        const claims = JSON.parse(Buffer.from(jwt.split('.')[1]!, 'base64url').toString());
+        assert.equal(claims.htm, init.method); assert.equal(claims.htu, url.toString());
+        return jwt;
+      });
+      assert.equal(new Set(proofs).size, 4);
+      assert.equal(new Headers(calls[1]!.init.headers).get('content-type'), 'application/octet-stream');
+      assert.equal(new Headers(calls[1]!.init.headers).get('content-length'), String(attachmentBytes.length));
+      await session.withProofSource('7', async (proof) => {
+        await assert.rejects(proof.signProof('GET', `${ORIGIN}/api/agentflow/agent-sessions/${SID}/attachments/${ATTACHMENT}`, (await proof.accessToken())!), DexError);
+      });
+    } finally { await f.cleanup(); }
+  }
+});
+
+ test('lost native upload acknowledgement is recovered with GET without another PUT or automatic refresh', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    f.custom((path) => {
+      if (path.endsWith('/content')) throw new Error('private-transport-secret');
+      if (path.endsWith(`/attachments/${ATTACHMENT}`)) return Response.json(attachmentReceipt());
+      return undefined;
+    });
+    await assert.rejects(session.uploadAttachment('7', SID, FLOW, ATTACHMENT, attachmentMetadata(), attachmentBytes),
+      (error: unknown) => error instanceof DexError && (error.details as { outcome?: string } | undefined)?.outcome === 'unknown' && !JSON.stringify(error).includes('private-transport-secret'));
+    assert.deepEqual(await session.readAttachmentReceipt('7', SID, FLOW, ATTACHMENT), attachmentReceipt());
+    assert.equal(f.calls.filter(({ path }) => path.endsWith('/content')).length, 1);
+    assert.equal(f.calls.filter(({ path }) => path.includes('/refresh/')).length, 0);
+    for (const status of [401, 403, 409, 410, 422]) {
+      f.custom((path) => path.endsWith('/content') ? new Response('private-server-secret', { status }) : undefined);
+      await assert.rejects(session.uploadAttachment('7', SID, FLOW, ATTACHMENT, attachmentMetadata(), attachmentBytes),
+        (error: unknown) => error instanceof DexError && (error.details as { outcome?: string } | undefined)?.outcome === 'rejected' && (error.details as { status: number }).status === status && !JSON.stringify(error).includes('private-server-secret'));
+    }
+  } finally { await f.cleanup(); }
+});
+
+ test('native attachments reject invalid scope, metadata, bytes and changed login binding before network', async () => {
+  const f = await fixture();
+  try {
+    f.keychain.getPassword = async () => { throw new Error('must-not-read-vault'); };
+    const session = f.client();
+    const invalid = [
+      () => session.reserveAttachment('7', SID, FLOW, { ...attachmentMetadata(), filename: '../secret' }),
+      () => session.reserveAttachment('7', SID, 'bad/workflow', attachmentMetadata()),
+      () => session.readAttachmentReceipt('7', SID, FLOW, '../path'),
+      () => session.cancelAttachment('7', 'bad-session', FLOW, ATTACHMENT),
+      () => session.uploadAttachment('7', SID, FLOW, ATTACHMENT, attachmentMetadata(), new Uint8Array([1])),
+      () => session.uploadAttachment('7', SID, FLOW, ATTACHMENT, attachmentMetadata(), new Uint8Array(4)),
+    ];
+    for (const operation of invalid) await assert.rejects(operation(), (error: unknown) => error instanceof DexError && error.code === 'usage_error');
+    assert.equal(f.calls.length, 0);
+  } finally { await f.cleanup(); }
+  const g = await fixture();
+  try {
+    const session = g.client(); await session.login('a', 'p');
+    const before = g.calls.length;
+    await assert.rejects(session.reserveAttachment('7', SID, FLOW, attachmentMetadata(), undefined, '0'.repeat(64)),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    await assert.rejects(session.readAttachmentReceipt('7', SID, FLOW, ATTACHMENT, undefined, '0'.repeat(64)),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    assert.equal(g.calls.length, before);
+  } finally { await g.cleanup(); }
+});
+
+ test('native attachment bytes and turn reference order are copied before a vault wait', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    let entered!: () => void; let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const getPassword = f.keychain.getPassword;
+    f.keychain.getPassword = async (...args) => { entered(); await gate; return getPassword(...args); };
+    const metadata = attachmentMetadata(); const bytes = new Uint8Array(attachmentBytes);
+    f.custom((path) => path.endsWith('/content') ? Response.json(attachmentReceipt()) : undefined);
+    const pending = session.uploadAttachment('7', SID, FLOW, ATTACHMENT, metadata, bytes);
+    await waiting; bytes.fill(5); metadata.filename = 'mutated'; metadata.sha256 = '0'.repeat(64); release();
+    await pending;
+    assert.deepEqual(f.calls.find(({ path }) => path.endsWith('/content'))!.body, [...attachmentBytes]);
+    f.custom((path) => path.endsWith('/turns') ? Response.json({ turn_id: TURN1, status: 'accepted', accepted_sequence: 1, state_version: 2, replayed: false }, { status: 202 }) : undefined);
+    const refs = [{ attachment_id: ATTACHMENT, sha256: attachmentMetadata().sha256 }, { attachment_id: TURN2, sha256: '1'.repeat(64) }];
+    const submit = session.submitTurn('7', SID, { input_text: 'hello', expected_state_version: 1, idempotency_key: 'ordered-original', attachments: refs });
+    refs.reverse(); refs[0]!.sha256 = '9'.repeat(64);
+    await submit;
+    assert.deepEqual(f.calls.find(({ path }) => path.endsWith('/turns'))!.body.attachments, [
+      { attachment_id: ATTACHMENT, sha256: attachmentMetadata().sha256 }, { attachment_id: TURN2, sha256: '1'.repeat(64) },
+    ]);
+  } finally { await f.cleanup(); }
+});
+
+
+test('inconclusive receipt GET never classifies an earlier unknown upload as rejected', async () => {
+  const f = await fixture();
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    for (const status of [404, 409, 410, 503]) {
+      f.custom((path) => path.endsWith(`/attachments/${ATTACHMENT}`) ? new Response(null, { status }) : undefined);
+      await assert.rejects(session.readAttachmentReceipt('7', SID, FLOW, ATTACHMENT), (error: unknown) => {
+        assert.ok(error instanceof DexError);
+        assert.deepEqual(error.details, { status });
+        assert.equal(error.code, status >= 500 ? 'network_error' : 'usage_error');
+        return true;
+      });
+    }
+    assert.equal(f.calls.some(({ path }) => path.endsWith('/content')), false);
+  } finally { await f.cleanup(); }
+});
+
+test('attachment proof cancellation drains signing before releasing the native vault lock', async () => {
+  const f = await fixture();
+  try {
+    await f.client().login('a', 'p');
+    const keys = f.keys(); const withSession = keys.withSession.bind(keys);
+    let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    keys.withSession = (scope, work) => withSession(scope, (identity, sign, vault) => work(identity, async (...args) => {
+      entered(); await gate; return sign(...args);
+    }, vault));
+    const session = new NativeCliSession(ORIGIN, keys, (async () => { assert.fail('cancelled proof must not dispatch'); }) as typeof fetch);
+    const controller = new AbortController();
+    let finished = false;
+    const pending = session.reserveAttachment('7', SID, FLOW, attachmentMetadata(), controller.signal)
+      .finally(() => { finished = true; });
+    // Observe the rejection now so the intentionally delayed drain cannot cause an unhandled rejection.
+    const rejected = assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === 'AbortError');
+    await started; controller.abort();
+    let drained = false;
+    const drain = session.settleProofOperations().then(() => { drained = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    assert.equal(finished, false); assert.equal(drained, false);
+    await assert.rejects(f.keys().withSession(scope, async () => {}),
+      (error: unknown) => error instanceof DexError && error.code === 'credential_store_unavailable');
+    release(); await rejected; await drain;
+    let nextLock = false;
+    await f.keys().withSession(scope, async () => { nextLock = true; });
+    assert.equal(drained, true); assert.equal(nextLock, true);
   } finally { await f.cleanup(); }
 });

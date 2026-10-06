@@ -1,5 +1,11 @@
 /** Canonical Agent Session writes. These requests may commit before their acknowledgement is lost. */
 
+import {
+  AGENT_ATTACHMENT_MAX_COUNT,
+  validateAgentAttachmentId,
+  type AgentAttachmentReference,
+} from './agent-session-attachments';
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9._~-]{1,8192}$/;
 const STABLE_ASCII = /^[\x21-\x7e]{1,128}$/;
@@ -28,6 +34,7 @@ export interface SubmitAgentTurnInput {
   expected_state_version: number;
   idempotency_key: string;
   origin_id?: string;
+  attachments?: readonly AgentAttachmentReference[];
 }
 
 export interface StopAgentTurnInput {
@@ -108,22 +115,58 @@ function invalidInput(): never {
   throw new TypeError('Invalid canonical Agent Session mutation input');
 }
 
+function validateAttachmentReferences(value: unknown): readonly AgentAttachmentReference[] {
+  try { return parseAttachmentReferences(value); } catch { invalidInput(); }
+}
+
+function parseAttachmentReferences(value: unknown): readonly AgentAttachmentReference[] {
+  if (!Array.isArray(value) || value.length > AGENT_ATTACHMENT_MAX_COUNT) invalidInput();
+  const seen = new Set<string>();
+  const result: AgentAttachmentReference[] = [];
+  for (let index = 0; index < value.length; index++) {
+    if (!(index in value)) invalidInput();
+    const item = value[index];
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || (Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null)) invalidInput();
+    const keys = Reflect.ownKeys(item);
+    if (keys.length !== 2 || !keys.every((key) => key === 'attachment_id' || key === 'sha256')) invalidInput();
+    const idDescriptor = Object.getOwnPropertyDescriptor(item, 'attachment_id');
+    const digestDescriptor = Object.getOwnPropertyDescriptor(item, 'sha256');
+    if (!idDescriptor || !('value' in idDescriptor) || !digestDescriptor || !('value' in digestDescriptor)) invalidInput();
+    let attachmentId: string;
+    try { attachmentId = validateAgentAttachmentId(idDescriptor.value); } catch { invalidInput(); }
+    const sha256 = digestDescriptor.value;
+    if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}(?![\s\S])/.test(sha256) || seen.has(attachmentId)) invalidInput();
+    seen.add(attachmentId);
+    result.push(Object.freeze({ attachment_id: attachmentId, sha256 }));
+  }
+  return Object.freeze(result);
+}
+
 /** Validate synchronously and return a primitive-only copy suitable for serialization. */
 export function validateSubmitAgentTurn(sessionId: string, input: unknown): SubmitAgentTurnInput {
   const raw = record(input);
   if (typeof sessionId !== 'string' || !UUID.test(sessionId) || !raw
-    || !exactFields(raw, ['input_text', 'expected_state_version', 'idempotency_key', 'origin_id'])
+    || !exactFields(raw, ['input_text', 'expected_state_version', 'idempotency_key', 'origin_id', 'attachments'])
     || typeof raw.input_text !== 'string' || raw.input_text.length === 0
     || raw.input_text.length > 262144
     || !isWellFormed(raw.input_text) || new TextEncoder().encode(raw.input_text).length > 262144
     || !isSafeVersion(raw.expected_state_version, false)
     || typeof raw.idempotency_key !== 'string' || !STABLE_ASCII.test(raw.idempotency_key)
     || (raw.origin_id !== undefined && !isOriginId(raw.origin_id))) invalidInput();
+  let attachmentsValue: unknown;
+  if (Object.prototype.hasOwnProperty.call(raw, 'attachments')) {
+    const descriptor = Object.getOwnPropertyDescriptor(raw, 'attachments');
+    if (!descriptor || !('value' in descriptor)) invalidInput();
+    attachmentsValue = descriptor.value;
+  }
+  const attachments = attachmentsValue === undefined ? undefined : validateAttachmentReferences(attachmentsValue);
   return {
     input_text: raw.input_text,
     expected_state_version: raw.expected_state_version,
     idempotency_key: raw.idempotency_key,
     ...(raw.origin_id === undefined ? {} : { origin_id: raw.origin_id }),
+    ...(!attachments?.length ? {} : { attachments }),
   };
 }
 

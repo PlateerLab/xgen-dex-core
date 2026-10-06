@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DexError, NativeAgentConversationWatcher, NativeAgentFocusWatcher, NativeAgentLiveWatcher, NativeDeviceKeyStore, NativeHostSession, nativeAccountDeviceEnrollment, nativeKeyScope,
   type ConfigStore, type NativeAgentSocketTransport, type NativeEnrollmentAction } from '@dex/engine';
 import type { NativeRpcResult, NativeSessionNotification } from './wire';
+import { validateSubmitAgentTurn } from '@dex/protocol/agent-session-mutation';
 
 function text(p: Record<string, unknown>, key: string, required = true): string | undefined {
   const value = p[key];
@@ -59,6 +60,16 @@ export class NativeSessionRpcHost {
       throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
     }
     if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
+    if (method === 'native/submit-turn' && p.attachments !== undefined) {
+      // Nested references must be copied before stopWatch/config/vault can yield.
+      try {
+        p.attachments = validateSubmitAgentTurn(p.agent_session_id as string, {
+          input_text: p.input_text, expected_state_version: p.expected_state_version,
+          idempotency_key: p.idempotency_key, ...(p.origin_id !== undefined ? { origin_id: p.origin_id } : {}),
+          attachments: p.attachments,
+        }).attachments;
+      } catch { throw new DexError('usage_error', '첨부 참조와 원래 턴 입력을 확인하세요.'); }
+    }
     const controller = new AbortController(); this.active = controller;
     const signal = controller.signal;
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -75,7 +86,7 @@ export class NativeSessionRpcHost {
       const device = method === 'native/device'; const passwordAction = device || ['login', 'logout'].includes(action);
       const accountField = device || action === 'login' ? 'email' : 'user_id';
       fields(p, ['profile', ...(mutation ? ['user_id', 'agent_session_id', 'expected_state_version',
-        ...(method === 'native/submit-turn' ? ['input_text', 'idempotency_key', 'origin_id'] : ['turn_id'])]
+        ...(method === 'native/submit-turn' ? ['input_text', 'idempotency_key', 'origin_id', 'attachments'] : ['turn_id'])]
         : catalog ? ['user_id', 'limit', 'before_id']
         : lifecycle ? ['user_id', 'expected_version', 'origin_id', ...(method === 'native/create-agent-session' ? ['workflow_id', 'title'] : ['active_agent_session_id'])]
         : watching ? ['user_id', 'interval_ms'] : conversation ? ['user_id'] : ['action', accountField]),
@@ -125,6 +136,7 @@ export class NativeSessionRpcHost {
         const result = method === 'native/submit-turn'
           ? await session.submitTurn(account, agentSessionId, { input_text: p.input_text as string,
             expected_state_version: p.expected_state_version as number, idempotency_key: text(p, 'idempotency_key')!,
+            ...(p.attachments !== undefined ? { attachments: p.attachments as import('@dex/protocol/agent-session-mutation').SubmitAgentTurnInput['attachments'] } : {}),
             ...(p.origin_id !== undefined ? { origin_id: text(p, 'origin_id')! } : {}) }, signal)
           : await session.stopTurn(account, agentSessionId, { turn_id: text(p, 'turn_id')!, expected_state_version: p.expected_state_version as number }, signal);
         // A validated mutation ack may already be durable. Do not replace it with a late generic cancellation.

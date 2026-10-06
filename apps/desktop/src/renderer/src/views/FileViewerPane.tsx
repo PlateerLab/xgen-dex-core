@@ -422,6 +422,8 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
   const canDownload = !!onDownload || !!loaded;
 
   let body: React.ReactNode = null;
+  // 표처럼 자기 상자 안에서 스크롤하는 내용이면 본문이 높이를 넘겨준다(아래 fv-body-fill).
+  let fill = false;
   if (loading) body = <div className="fv-note">불러오는 중…</div>;
   else if (loadErr) {
     body = (
@@ -463,13 +465,14 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
         <Markdown text={text} />
       </div>
     );
-  else if (effKind === 'csv')
+  else if (effKind === 'csv') {
+    fill = !rawMode;
     body = rawMode ? (
       <CodeView text={text} lang="plaintext" wrap={wrap} />
     ) : (
       <CsvView text={text} delim={extOf(fileName) === 'tsv' ? '\t' : ','} />
     );
-  else if (effKind === 'code') body = <CodeView text={text} lang={langForFile(fileName)} wrap={wrap} />;
+  } else if (effKind === 'code') body = <CodeView text={text} lang={langForFile(fileName)} wrap={wrap} />;
   else
     body = (
       <div className="fv-binary">
@@ -498,9 +501,8 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
           </span>
         )}
         <span className="fv-meta">
-          {sizeLabel}
-          {sourceLabel ? ` · ${sourceLabel}` : ''}
-          {textTruncated ? ' · 앞 2MB만 표시' : ''}
+          {/* 있는 것만 잇는다(편집 중인 글을 그릴 때는 크기가 없어 "· 출처" 로 시작했다) */}
+          {[sizeLabel, sourceLabel, textTruncated ? '앞 2MB만 표시' : ''].filter(Boolean).join(' · ')}
         </span>
         <span className="fv-actions">
           {!embedded && (effKind === 'markdown' || effKind === 'csv') && (
@@ -529,7 +531,9 @@ export const FileViewerPane: React.FC<FileViewerProps> = ({
           </button>
         </span>
       </div>
-      <div className="fv-body">{body}</div>
+      {/* 표는 자기 상자 안에서 가로·세로로 스크롤한다: 본문이 세로 스크롤을 가지면 표 상자가 표 높이만큼
+          늘어나, 가로 스크롤 막대가 표 맨 아래(마지막 행 밑)에 붙고 머리글 고정도 풀렸다. */}
+      <div className={`fv-body${fill ? ' fv-body-fill' : ''}`}>{body}</div>
     </div>
   );
 };

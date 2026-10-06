@@ -166,3 +166,28 @@ test('읽기 전용 탐색기 — IDE 탐색기와 같은 마크업(클래스·�
   assert.doesNotMatch(html, /data-path="uploads\/a.png"/, '접힌 폴더의 파일은 그리지 않는다');
   assert.doesNotMatch(html, /—/, '화면 문구에 줄표를 쓰지 않는다');
 });
+
+test('md·csv 의 미리보기/편집 전환은 탭 줄의 동작 칸에 있다(편집기 위에 떠 있지 않다)', async () => {
+  const toggleHost: IdeHost = {
+    ...host,
+    listFiles: async () => [{ path: 'titanic.csv', isDir: false, size: 10, modifiedAt: 't1' }],
+    preview: { mode: (p) => (p.endsWith('.csv') ? 'toggle' : null), render: () => <div id="csv-table" /> },
+  };
+  const store = new IdeStore(toggleHost);
+  await store.start();
+  await store.openFile('titanic.csv', { preview: false }).catch(() => undefined);
+  // 테스트에는 Monaco 가 없다 — 문서가 열린 상태만 세운다.
+  (store as unknown as { patchDoc(path: string, patch: Record<string, unknown>): void }).patchDoc('titanic.csv', {
+    status: 'ready', path: 'titanic.csv',
+  });
+  let html = renderToString(<IdeView store={store} chat={<div />} theme="dark" />);
+  assert.match(html, /class="xide-tabbar-actions"><div class="xide-view-switch" role="group" aria-label="보기">/);
+  assert.match(html, /aria-pressed="true"[^>]*title="그린 모습으로 보기"/);
+  assert.match(html, /id="csv-table"/);
+  assert.doesNotMatch(html, /xide-view-toggle/, '편집기 위에 떠 있는 전환은 없다');
+  store.setRendered('titanic.csv', false);
+  html = renderToString(<IdeView store={store} chat={<div />} theme="dark" />);
+  assert.match(html, /aria-pressed="true"[^>]*title="편집기로 고치기"/);
+  assert.doesNotMatch(html, /id="csv-table"/);
+  store.dispose();
+});

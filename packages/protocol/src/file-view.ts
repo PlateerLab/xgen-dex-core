@@ -124,6 +124,43 @@ export const TEXT_RENDER_LIMIT = 2 * 1024 * 1024;
 export const HIGHLIGHT_LIMIT = 512 * 1024;
 
 /**
+ * 표 미리보기의 열 정렬. 처음에는 정렬하지 않고(파일 순서), 같은 열 머리를 누를 때마다
+ * 오름차순 → 내림차순 → 정렬 없음 으로 돈다. 다른 열을 누르면 그 열의 오름차순부터.
+ */
+export type TableSort = { col: number; dir: 'asc' | 'desc' } | null;
+
+export function nextTableSort(current: TableSort, col: number): TableSort {
+  if (!current || current.col !== col) return { col, dir: 'asc' };
+  return current.dir === 'asc' ? { col, dir: 'desc' } : null;
+}
+
+const NUMERIC_CELL = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+const collator = new Intl.Collator('ko', { numeric: true, sensitivity: 'base' });
+
+/**
+ * 정렬한 행의 **원래 자리**(0부터) 목록. 행을 옮기지 않고 순서만 돌려주므로 화면은 원래 행 번호를 그대로
+ * 보여 줄 수 있다.
+ *   - 열의 값이 (빈 칸을 빼고) 모두 수면 수로, 아니면 글자로(자연 순서: "a2" < "a10", 한글 포함) 비교한다.
+ *   - 빈 칸은 방향과 상관없이 늘 맨 아래다.
+ *   - 같은 값끼리는 원래 순서를 지킨다.
+ */
+export function sortedRowOrder(rows: readonly (readonly string[])[], sort: TableSort): number[] {
+  const order = rows.map((_, i) => i);
+  if (!sort) return order;
+  const { col, dir } = sort;
+  const cell = (i: number) => String(rows[i]?.[col] ?? '').trim();
+  const filled = order.filter((i) => cell(i) !== '');
+  const empty = order.filter((i) => cell(i) === '');
+  const numeric = filled.length > 0 && filled.every((i) => NUMERIC_CELL.test(cell(i)));
+  const sign = dir === 'asc' ? 1 : -1;
+  filled.sort((a, b) => {
+    const d = numeric ? Number(cell(a)) - Number(cell(b)) : collator.compare(cell(a), cell(b));
+    return d !== 0 ? sign * d : a - b;
+  });
+  return [...filled, ...empty];
+}
+
+/**
  * CSV/TSV 파서 — RFC4180 따옴표 규칙 (겹따옴표 이스케이프, 따옴표 안 개행).
  * 표 렌더 상한을 위해 maxRows 에서 끊고 잘림 여부를 알린다.
  */

@@ -24,7 +24,10 @@ import {
   formatBytes,
   kindForFile,
   looksBinary,
+  nextTableSort,
   parseCsv,
+  sortedRowOrder,
+  type TableSort,
   TEXT_RENDER_LIMIT,
   type ChatDownload,
   type ViewerKind,
@@ -279,8 +282,12 @@ const ImageView: React.FC<{ uri: string; headers: Record<string, string> }> = ({
   );
 };
 
+/** 머리를 누르면 그 열로 정렬한다: 오름차순 → 내림차순 → 정렬 없음(데스크톱 미리보기와 같은 규칙). */
 const CsvTable: React.FC<{ text: string; tsv: boolean; p: Palette; footer: React.ReactNode }> = ({ text, tsv, p, footer }) => {
   const { rows, truncated } = useMemo(() => parseCsv(text, tsv ? '\t' : ','), [text, tsv]);
+  const [sort, setSort] = useState<TableSort>(null);
+  const body = useMemo(() => rows.slice(1), [rows]);
+  const order = useMemo(() => sortedRowOrder(body, sort), [body, sort]);
   if (rows.length === 0) {
     return (
       <View style={styles.center}>
@@ -288,20 +295,37 @@ const CsvTable: React.FC<{ text: string; tsv: boolean; p: Palette; footer: React
       </View>
     );
   }
-  const [head, ...body] = rows;
-  const cell = (value: string, i: number, bold = false) => (
-    <Text key={i} numberOfLines={3} style={[styles.cell, { color: p.text, borderColor: p.border }, bold && { fontWeight: '800', backgroundColor: p.panel2 }]}>
+  const head = rows[0];
+  const cell = (value: string, i: number) => (
+    <Text key={i} numberOfLines={3} style={[styles.cell, { color: p.text, borderColor: p.border }]}>
       {value}
     </Text>
   );
+  const headCell = (value: string, i: number) => {
+    const dir = sort?.col === i ? sort.dir : null;
+    return (
+      <Pressable
+        key={i}
+        onPress={() => setSort((cur) => nextTableSort(cur, i))}
+        accessibilityRole="button"
+        accessibilityLabel={`${value} ${dir === 'asc' ? '오름차순' : dir === 'desc' ? '내림차순' : '정렬 없음'}`}
+        style={[styles.cell, styles.headCell, { borderColor: p.border, backgroundColor: p.panel2 }]}
+      >
+        <Text numberOfLines={2} style={{ flex: 1, color: dir ? p.primary : p.text, fontWeight: '800', fontSize: 13 }}>
+          {value}
+        </Text>
+        {dir ? <Text style={{ color: p.primary, fontSize: 10 }}>{dir === 'asc' ? '▲' : '▼'}</Text> : null}
+      </Pressable>
+    );
+  };
   return (
     <ScrollView contentContainerStyle={styles.pad}>
       <ScrollView horizontal>
         <View style={{ borderWidth: 1, borderColor: p.border, borderRadius: 6, overflow: 'hidden' }}>
-          <View style={styles.row}>{head.map((h, i) => cell(h, i, true))}</View>
-          {body.map((r, ri) => (
+          <View style={styles.row}>{head.map((h, i) => headCell(h, i))}</View>
+          {order.map((ri) => (
             <View key={ri} style={styles.row}>
-              {head.map((_, i) => cell(r[i] ?? '', i))}
+              {head.map((_, i) => cell(body[ri][i] ?? '', i))}
             </View>
           ))}
         </View>
@@ -320,5 +344,6 @@ const styles = StyleSheet.create({
   code: { fontFamily: MONO, fontSize: 12.5, lineHeight: 18, padding: 10, borderRadius: 8, minWidth: '100%' },
   row: { flexDirection: 'row' },
   cell: { width: 140, paddingHorizontal: 8, paddingVertical: 6, borderRightWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, fontSize: 13 },
+  headCell: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   btn: { height: 44, paddingHorizontal: 22, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
 });

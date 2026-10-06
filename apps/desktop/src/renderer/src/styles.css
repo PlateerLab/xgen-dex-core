@@ -8667,6 +8667,19 @@ button.sm {
 }
 .fv-csv thead th.fv-csv-ln { z-index: 3; }
 .fv-csv-scroll > .fv-note { position: sticky; left: 0; }
+/* 머리를 누르면 그 열로 정렬(오름차순 → 내림차순 → 정렬 없음). 칸 전체가 단추다. */
+.fv-csv thead th:not(.fv-csv-ln) { padding: 0; }
+.fv-csv-sort {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 5px 10px; font: inherit; font-weight: 700; color: var(--text); cursor: pointer;
+}
+.fv-csv-sort:hover { background: var(--panel-2); }
+.fv-csv-sort:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.fv-csv-sort-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fv-csv-sort-mark { flex: none; font-size: 10px; color: var(--muted); opacity: 0; transition: opacity 0.12s ease; }
+.fv-csv-sort:hover .fv-csv-sort-mark { opacity: 0.7; }
+.fv-csv-sort.on { color: var(--primary); }
+.fv-csv-sort.on .fv-csv-sort-mark { opacity: 1; color: var(--primary); }
 
 /* 오피스 문서 — 서버 렌더 페이지 이미지 (웹 파일 저장소와 동형) */
 .fv-office { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 24px; }

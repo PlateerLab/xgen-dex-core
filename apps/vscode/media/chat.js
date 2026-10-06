@@ -93,7 +93,8 @@
     running: false,
     refreshing: true,
     localToolsSaving: false,
-    canonical: { active: false, available: false, omittedMessages: 0, hasMore: false, sessionStatus: 'idle', connectionVersion: 0 },
+    canonical: { active: false, available: false, omittedMessages: 0, hasMore: false, sessionStatus: 'idle',
+      connectionVersion: 0, attachments: { items: [], busy: false } },
   };
   let agentFilter = persisted.agentFilter || 'all';
   let composing = false;
@@ -142,7 +143,10 @@
   function send() {
     const raw = elements.input.value;
     if (state.canonical?.active) {
-      if (!raw.length || !state.canonical.turn?.canSubmit) return;
+      const attachmentState = state.canonical.attachments || { items: [], busy: false };
+      const attachmentsReady = !attachmentState.busy
+        && (attachmentState.items || []).every((item) => item.status === 'ready');
+      if (!raw.length || !state.canonical.turn?.canSubmit || !attachmentsReady) return;
       if (new TextEncoder().encode(raw).byteLength > CANONICAL_INPUT_MAX_BYTES) {
         post('canonicalInputRejected');
         return;
@@ -159,6 +163,55 @@
 
   function renderAttachments() {
     elements.attachments.replaceChildren();
+    if (state.canonical?.active) {
+      const attachmentState = state.canonical.attachments || { items: [], busy: false };
+      const actionsDisabled = !!attachmentState.busy || !state.canonical.turn?.canSubmit;
+      const statusLabel = { selected: '선택됨', reserved: '업로드 준비됨', uncertain: '확인 필요', ready: '준비 완료' };
+      for (const item of attachmentState.items || []) {
+        const row = document.createElement('div');
+        row.className = `canonical-attachment-row status-${item.status}`;
+        const copy = document.createElement('div');
+        copy.className = 'canonical-attachment-copy';
+        const name = document.createElement('b');
+        name.textContent = item.filename;
+        const metadata = document.createElement('span');
+        metadata.textContent = `${formatBytes(item.size_bytes)} · ${item.media_type} · ${statusLabel[item.status] || '확인 필요'}`;
+        copy.append(name, metadata);
+        const actions = document.createElement('div');
+        actions.className = 'canonical-attachment-actions';
+        if (item.status === 'selected' || item.status === 'reserved') {
+          const upload = document.createElement('button');
+          upload.type = 'button'; upload.className = 'secondary-button compact'; upload.textContent = '업로드';
+          upload.disabled = actionsDisabled;
+          upload.addEventListener('click', () => post('canonicalUploadAttachment', { selectionId: item.selection_id }));
+          actions.append(upload);
+        } else if (item.status === 'uncertain') {
+          const recover = document.createElement('button');
+          recover.type = 'button'; recover.className = 'secondary-button compact'; recover.textContent = '상태 복구';
+          recover.disabled = actionsDisabled;
+          recover.addEventListener('click', () => post('canonicalRecoverAttachment', { selectionId: item.selection_id }));
+          actions.append(recover);
+        }
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.className = 'secondary-button compact'; cancel.textContent = '취소';
+        cancel.disabled = actionsDisabled;
+        cancel.addEventListener('click', () => post('canonicalCancelAttachment', { selectionId: item.selection_id }));
+        actions.append(cancel); row.append(copy, actions); elements.attachments.append(row);
+      }
+      if ((attachmentState.items || []).length > 1) {
+        const discard = document.createElement('button');
+        discard.type = 'button'; discard.className = 'text-button canonical-attachment-discard';
+        discard.textContent = '모두 지우기'; discard.disabled = actionsDisabled;
+        discard.addEventListener('click', () => post('canonicalDiscardAttachments'));
+        elements.attachments.append(discard);
+      }
+      if (attachmentState.notice) {
+        const notice = document.createElement('p'); notice.className = 'canonical-attachment-notice';
+        notice.setAttribute('role', 'status'); notice.textContent = attachmentState.notice; elements.attachments.append(notice);
+      }
+      elements.attachments.classList.toggle('hidden', !(attachmentState.items || []).length && !attachmentState.notice);
+      return;
+    }
     for (const item of state.attachments || []) {
       const chip = document.createElement('span');
       chip.className = 'chat-attachment-chip';
@@ -173,6 +226,13 @@
       elements.attachments.append(chip);
     }
     elements.attachments.classList.toggle('hidden', !(state.attachments || []).length);
+  }
+
+  function formatBytes(value) {
+    if (!Number.isFinite(value) || value < 0) return '크기 확인 필요';
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
   }
 
   function copyButton(text, label) {
@@ -747,9 +807,13 @@
     elements.status.classList.toggle('running', canonical ? ['sending', 'stopping'].includes(state.canonical.turn?.status) : !!state.running);
     elements.input.disabled = canonical ? !state.canonical.turn?.canSubmit : !!state.running;
     elements.input.placeholder = canonical ? '현재 공유 대화에 메시지 보내기' : `${agent.workflowName}에게 메시지 보내기`;
-    elements.send.disabled = canonical ? !state.canonical.turn?.canSubmit : !!state.running;
-    elements.attach.disabled = canonical || !!state.running;
-    elements.attach.classList.toggle('hidden', canonical);
+    const canonicalAttachments = state.canonical?.attachments || { items: [], busy: false };
+    const canonicalAttachmentsReady = !canonicalAttachments.busy
+      && (canonicalAttachments.items || []).every((item) => item.status === 'ready');
+    elements.send.disabled = canonical ? !state.canonical.turn?.canSubmit || !canonicalAttachmentsReady : !!state.running;
+    elements.attach.disabled = canonical ? !state.canonical.turn?.canSubmit || !!canonicalAttachments.busy : !!state.running;
+    elements.attach.classList.toggle('hidden', false);
+    elements.attach.textContent = canonical ? (canonicalAttachments.busy ? '첨부 처리 중…' : '📎 파일 선택') : '📎 첨부';
     elements.canonicalRetry.classList.toggle('hidden', !canonical || !state.canonical.turn?.canRetry);
     renderAttachments();
     elements.changeAgent.disabled = canonical ? false : !!state.running;
@@ -1009,7 +1073,7 @@
       || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
     elements.canonicalCreate.disabled = blocked || !elements.canonicalWorkflow.value;
   });
-  elements.attach.addEventListener('click', () => post('attach'));
+  elements.attach.addEventListener('click', () => post(state.canonical?.active ? 'canonicalPickAttachments' : 'attach'));
   elements.cancel.addEventListener('click', () => post('cancel'));
   elements.input.addEventListener('compositionstart', () => {
     composing = true;

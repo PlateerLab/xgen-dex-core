@@ -7,6 +7,7 @@ import type {
   OwnedAgentSession,
 } from '@dex/protocol/agent-session';
 import type { AgentConversationView } from '@dex/protocol/agent-session-conversation-recovery';
+import type { AgentAttachmentReceipt } from '@dex/protocol/agent-session-attachments';
 import { AgentTurnComposeFailure, type AgentTurnComposeRequest } from '@dex/protocol/agent-turn-composer';
 import type {
   CreateAgentSessionInput,
@@ -14,7 +15,11 @@ import type {
   SwitchAgentFocusInput,
 } from '@dex/protocol/agent-session-lifecycle';
 import { CanonicalTuiChatModel } from '../src/tui/canonical-chat-model';
-import type { CanonicalTuiChatSource } from '../src/tui/canonical-chat-types';
+import type {
+  CanonicalTuiAttachmentDraft,
+  CanonicalTuiAttachmentScope,
+  CanonicalTuiChatSource,
+} from '../src/tui/canonical-chat-types';
 
 const ACCOUNT = { profile: 'corp', origin: 'https://app.example.test', userId: '7' };
 const SESSION1 = '11111111-1111-4111-8111-111111111111';
@@ -25,6 +30,8 @@ const EVENT2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const TURN1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const BINDING1 = 'native-binding.private.one';
 const BINDING2 = 'native-binding.private.two';
+const ATTACHMENT1 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const ATTACHMENT2 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 function snapshot(id = SESSION1, version = 2): AgentSessionSnapshot {
   return {
@@ -82,12 +89,15 @@ class ChatSource implements CanonicalTuiChatSource {
   selectCalls: Array<{ binding: string; input: SwitchAgentFocusInput }> = [];
   sendCalls: Array<{ binding: string; request: AgentTurnComposeRequest }> = [];
   settleCalls = 0;
+  attachmentDrafts: CanonicalTuiAttachmentDraft[] = [];
+  attachmentCalls: Array<{ action: string; binding: string; scope: CanonicalTuiAttachmentScope; value?: unknown }> = [];
   readImpl?: (signal: AbortSignal) => Promise<{ conversation: AgentConversationView; has_more: boolean }>;
   catalogImpl?: (signal: AbortSignal, beforeId?: string) => Promise<CatalogResult>;
   createImpl?: (binding: string, input: CreateAgentSessionInput, signal: AbortSignal) => Promise<CreatedAgentSession>;
   selectImpl?: (binding: string, input: SwitchAgentFocusInput, signal: AbortSignal) => Promise<AgentFocus>;
   sendImpl?: (binding: string, request: AgentTurnComposeRequest, signal: AbortSignal) => Promise<unknown>;
   settleImpl?: () => Promise<void>;
+  selectAttachmentsImpl?: (binding: string, scope: CanonicalTuiAttachmentScope, paths: readonly string[], signal: AbortSignal) => Promise<readonly CanonicalTuiAttachmentDraft[]>;
 
   binding(): string | null { return this.currentBinding; }
 
@@ -140,6 +150,69 @@ class ChatSource implements CanonicalTuiChatSource {
       state_version: request.input.expected_state_version + 1, replayed: false,
     });
   }
+
+  attachments(binding: string, scope: CanonicalTuiAttachmentScope): readonly CanonicalTuiAttachmentDraft[] {
+    this.attachmentCalls.push({ action: 'list', binding, scope });
+    return this.attachmentDrafts.map((value) => ({ ...value, ...(value.receipt ? { receipt: { ...value.receipt } } : {}) }));
+  }
+
+  async selectAttachments(binding: string, scope: CanonicalTuiAttachmentScope, paths: readonly string[], signal: AbortSignal) {
+    this.attachmentCalls.push({ action: 'select', binding, scope, value: [...paths] });
+    if (this.selectAttachmentsImpl) return this.selectAttachmentsImpl(binding, scope, paths, signal);
+    const start = this.attachmentDrafts.length;
+    this.attachmentDrafts.push(...paths.map((path, index) => ({
+      handle: `selection-${start + index}`,
+      filename: path.split('/').at(-1) || 'file',
+      sizeBytes: index + 1,
+      mediaType: 'application/octet-stream',
+      status: 'selected' as const,
+      sha256: `${index + 1}`.repeat(64).slice(0, 64),
+    })));
+    return this.attachments(binding, scope);
+  }
+
+  async uploadAttachment(binding: string, scope: CanonicalTuiAttachmentScope, handle: string) {
+    this.attachmentCalls.push({ action: 'upload', binding, scope, value: handle });
+    const index = this.attachmentDrafts.findIndex((value) => value.handle === handle);
+    const value = this.attachmentDrafts[index]!;
+    const attachmentId = index === 0 ? ATTACHMENT1 : ATTACHMENT2;
+    const receipt: AgentAttachmentReceipt = {
+      origin: ACCOUNT.origin, user_id: ACCOUNT.userId,
+      session_id: scope.agentSessionId, workflow_id: scope.workflowId,
+      attachment_id: attachmentId, filename: value.filename, size_bytes: value.sizeBytes,
+      media_type: value.mediaType, sha256: value.sha256,
+    };
+    this.attachmentDrafts[index] = { ...value, status: 'ready', receipt };
+    return this.attachments(binding, scope);
+  }
+
+  async recoverAttachment(binding: string, scope: CanonicalTuiAttachmentScope, handle: string) {
+    this.attachmentCalls.push({ action: 'recover', binding, scope, value: handle });
+    return this.attachments(binding, scope);
+  }
+
+  async cancelAttachment(binding: string, scope: CanonicalTuiAttachmentScope, handle: string) {
+    this.attachmentCalls.push({ action: 'cancel', binding, scope, value: handle });
+    this.attachmentDrafts = this.attachmentDrafts.filter((value) => value.handle !== handle);
+    return this.attachments(binding, scope);
+  }
+
+  discardAttachments(binding: string, scope: CanonicalTuiAttachmentScope) {
+    this.attachmentCalls.push({ action: 'discard', binding, scope });
+    this.attachmentDrafts = [];
+    return [];
+  }
+
+  attachmentReferences(binding: string, scope: CanonicalTuiAttachmentScope) {
+    this.attachmentCalls.push({ action: 'references', binding, scope });
+    if (this.attachmentDrafts.some((value) => value.status !== 'ready' || !value.receipt)) throw new TypeError('not ready');
+    return this.attachmentDrafts.map((value) => ({
+      attachment_id: value.receipt!.attachment_id,
+      sha256: value.receipt!.sha256,
+    }));
+  }
+
+  clearAttachments(): void { this.attachmentDrafts = []; }
 }
 
 function envelope(request: AgentTurnComposeRequest, mutation: unknown): unknown {
@@ -403,4 +476,71 @@ test('malformed lifecycle and cross-scope turn acknowledgements fail closed with
   assert.equal(turn.model.state.draft, '');
   assert.equal(turn.model.state.conversation, null);
   assert.equal(turn.model.state.catalog.items.length, 0);
+});
+
+test('attachments must all be ready and an uncertain turn retries the exact ordered references after local cancellation', async () => {
+  const { source, model } = await ready();
+  model.setDraft('message with files');
+  assert.equal(await model.selectAttachments(['/tmp/first secret.txt', '/tmp/second.bin']), true);
+  assert.deepEqual(model.state.attachments.items.map((value) => value.status), ['selected', 'selected']);
+  assert.equal(JSON.stringify(model.state).includes('/tmp/'), false);
+  assert.equal(JSON.stringify(model.state).includes('selection-'), false);
+  assert.equal(JSON.stringify(model.state).includes('dddddddd'), false);
+  assert.equal(await model.submit(), false);
+  assert.equal(source.sendCalls.length, 0);
+  assert.match(model.state.attachments.notice, /ready/);
+
+  assert.equal(await model.uploadAttachment(0), true);
+  assert.equal(await model.uploadAttachment(1), true);
+  assert.deepEqual(model.state.attachments.items.map((value) => value.status), ['ready', 'ready']);
+  let attempts = 0;
+  source.sendImpl = async (_binding, request) => {
+    attempts++;
+    if (attempts === 1) throw new AgentTurnComposeFailure('unknown');
+    return envelope(request, {
+      turn_id: TURN1, status: 'completed', accepted_sequence: 4,
+      state_version: request.input.expected_state_version + 1, replayed: true,
+    });
+  };
+  assert.equal(await model.submit(), false);
+  assert.equal(source.sendCalls.length, 1);
+  assert.deepEqual(source.sendCalls[0]!.request.operation === 'submit'
+    ? source.sendCalls[0]!.request.input.attachments : undefined, [
+    { attachment_id: ATTACHMENT1, sha256: '1'.repeat(64) },
+    { attachment_id: ATTACHMENT2, sha256: '2'.repeat(64) },
+  ]);
+
+  // Local/server cancellation changes the visible draft only. The composer owns
+  // the original text, CAS, idempotency key and ordered attachment references.
+  assert.equal(await model.read(), true);
+  assert.equal(await model.cancelAttachment(0), true);
+  assert.equal(source.sendCalls.length, 1);
+  assert.equal(model.state.attachments.items.length, 1);
+  assert.equal(model.state.turn.canRetry, true);
+  assert.equal(await model.retry(), true);
+  assert.equal(source.sendCalls.length, 2);
+  assert.deepEqual(source.sendCalls[1], source.sendCalls[0]);
+  assert.equal(model.state.draft, '');
+  await model.dispose();
+});
+
+test('a stopped or credential-replaced attachment selection cannot restore a late private draft', async () => {
+  const source = new ChatSource();
+  const late = deferred<readonly CanonicalTuiAttachmentDraft[]>();
+  source.selectAttachmentsImpl = async () => late.promise;
+  const { model } = await ready(source);
+  const selecting = model.selectAttachments(['/tmp/private-name.txt']);
+  await until(() => source.attachmentCalls.some((value) => value.action === 'select'));
+  const stopping = model.stop();
+  source.currentBinding = BINDING2;
+  late.resolve([{
+    handle: 'private-handle', filename: 'private-name.txt', sizeBytes: 9,
+    mediaType: 'application/octet-stream', status: 'selected', sha256: 'a'.repeat(64),
+  }]);
+  assert.equal(await selecting, false);
+  await stopping;
+  assert.deepEqual(model.state.attachments.items, []);
+  assert.equal(JSON.stringify(model.state).includes('private-handle'), false);
+  assert.equal(JSON.stringify(model.state).includes('/tmp/'), false);
+  await model.dispose();
 });

@@ -84,6 +84,53 @@ app.whenReady().then(async () => {
       request = JSON.parse(line); const { method, params = {} } = request; let result;
       if (method === 'initialize') { initialized = true; result = await rpc.start(); }
       else if (method === 'shutdown' || method === 'exit') result = null;
+      else if (method === 'verify/attachment-ui') {
+        const actions = [];
+        native.pickAttachments = async () => { actions.push({ method: 'pick' }); return true; };
+        native.uploadAttachment = async (selectionId) => { actions.push({ method: 'upload', selectionId }); return true; };
+        native.recoverAttachment = async (selectionId) => { actions.push({ method: 'recover', selectionId }); return true; };
+        native.cancelAttachment = async (selectionId) => { actions.push({ method: 'cancel', selectionId }); return true; };
+        native.discardAttachments = async () => { actions.push({ method: 'discard' }); return true; };
+        native.submitTurn = async (text) => { actions.push({ method: 'submit', text }); };
+        chat.canonicalMode = true; chat.screen = 'chat';
+        const turn = { status: 'idle', canSubmit: true, canRetry: false, canStop: false };
+        const attachment = { selection_id: 'opaque-selection-action', filename: 'visible.bin', size_bytes: 1536,
+          media_type: 'application/octet-stream', sha256: 'a'.repeat(64), status: 'selected',
+          attachment_id: '00000000-0000-4000-8000-000000000099', receipt: { private: 'must-not-cross' } };
+        const view = { status: 'connected', focus: null, conversation: null, hasMore: false,
+          scope: { platform_type: 'vscode', profile: 'fixture', server_url: origin, user_id: userId }, turn,
+          attachments: { items: [attachment], busy: false, notice: '파일을 업로드해 주세요.' }, connectionVersion: 1 };
+        chat.updateNative(view);
+        await until(`document.body.textContent.includes('visible.bin') && document.body.textContent.includes('1.5 KB')
+          && document.body.textContent.includes('선택됨') && document.getElementById('send').disabled
+          && !document.getElementById('attach').classList.contains('hidden')`);
+        const body = await win.webContents.executeJavaScript(`document.body.textContent`, true);
+        if (body.includes(attachment.sha256) || body.includes(attachment.selection_id)
+          || body.includes(attachment.attachment_id) || body.includes('must-not-cross')) {
+          throw new Error('Canonical attachment private values rendered in the webview');
+        }
+        await win.webContents.executeJavaScript(`document.getElementById('attach').click();Array.from(document.querySelectorAll('.canonical-attachment-actions button')).find((button)=>button.textContent==='업로드').click()`, true);
+        await untilState(() => actions.some((action) => action.method === 'pick') && actions.some((action) => action.method === 'upload'));
+        const second = { ...attachment, selection_id: 'opaque-second-action', filename: 'second.bin' };
+        chat.updateNative({ ...view, attachments: { items: [{ ...attachment, status: 'uncertain' }, second], busy: false,
+          notice: '업로드 결과를 확인해 주세요.' } });
+        await until(`document.querySelector('.canonical-attachment-discard') && document.body.textContent.includes('확인 필요')`);
+        const names = await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.canonical-attachment-copy b')).map((item)=>item.textContent)`, true);
+        if (JSON.stringify(names) !== JSON.stringify(['visible.bin', 'second.bin'])) throw new Error('Attachment order changed');
+        await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.canonical-attachment-actions button')).find((button)=>button.textContent==='상태 복구').click();document.querySelector('.canonical-attachment-discard').click()`, true);
+        await untilState(() => actions.some((action) => action.method === 'recover') && actions.some((action) => action.method === 'discard'));
+        chat.updateNative({ ...view, turn: { ...turn, status: 'unknown', canSubmit: false },
+          attachments: { items: [{ ...attachment, status: 'uncertain' }, second], busy: false } });
+        await until(`Array.from(document.querySelectorAll('.canonical-attachment-actions button,.canonical-attachment-discard')).every((button)=>button.disabled)`);
+        chat.updateNative({ ...view, attachments: { items: [{ ...attachment, status: 'ready' }], busy: false,
+          notice: '첨부 파일 업로드를 확인했습니다.' } });
+        await until(`!document.getElementById('send').disabled && document.body.textContent.includes('준비 완료')`);
+        await win.webContents.executeJavaScript(`document.getElementById('input').value='attachment-ui-submit';document.getElementById('send').click();Array.from(document.querySelectorAll('.canonical-attachment-actions button')).find((button)=>button.textContent==='취소').click()`, true);
+        await untilState(() => actions.some((action) => action.method === 'submit' && action.text === 'attachment-ui-submit')
+          && actions.some((action) => action.method === 'cancel'));
+        result = { ui: 'passed', shell: 'electron-adapter', actions: actions.map((action) => action.method),
+          ordered_files: true, unknown_turn_actions_locked: true, private_values_rendered: false };
+      }
       else if (method === 'verify/turn-ui') {
         suppressNotifications = true;
         try {

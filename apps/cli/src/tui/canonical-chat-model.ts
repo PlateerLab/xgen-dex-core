@@ -17,13 +17,15 @@ import {
 } from '@dex/protocol/agent-turn-composer';
 import { CanonicalTuiController } from './canonical-controller';
 import type {
+  CanonicalTuiAttachmentDraft,
+  CanonicalTuiAttachmentScope,
   CanonicalTuiChatSource,
   CanonicalTuiChatView,
 } from './canonical-chat-types';
 import type { CanonicalTuiAccount, CanonicalTuiView } from './canonical-types';
 
 type Listener = (view: CanonicalTuiChatView) => void;
-type OperationKind = 'catalog' | 'lifecycle' | 'turn';
+type OperationKind = 'catalog' | 'lifecycle' | 'turn' | 'attachment';
 
 interface ActiveOperation {
   kind: OperationKind;
@@ -61,6 +63,13 @@ const safe = {
   selected: '현재 Agent 세션 포커스를 변경했습니다.',
   invalidInput: 'Agent 세션 입력 형식을 확인하세요.',
   invalidSelection: '새로 확인한 내 활성 Agent 세션만 선택할 수 있습니다.',
+  attachmentSelected: '파일을 첨부 목록에 추가했습니다. 각 파일을 명시적으로 업로드하세요.',
+  attachmentUploaded: '첨부 파일 receipt를 확인했습니다.',
+  attachmentRecovered: '첨부 파일 상태를 다시 확인했습니다.',
+  attachmentCancelled: '첨부 파일을 취소하고 로컬 사본을 지웠습니다.',
+  attachmentsDiscarded: '모든 첨부 파일의 로컬 사본을 지웠습니다.',
+  attachmentUnavailable: '첨부 파일 작업을 완료할 수 없습니다. 표시된 상태를 확인하세요.',
+  attachmentNotReady: '모든 첨부 파일의 상태가 ready여야 메시지를 보낼 수 있습니다.',
 } as const;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -116,6 +125,15 @@ function cloneBase(view: CanonicalTuiView): CanonicalTuiView {
   };
 }
 
+function publicAttachments(values: readonly CanonicalTuiAttachmentDraft[]) {
+  return values.map((value) => ({
+    filename: value.filename,
+    sizeBytes: value.sizeBytes,
+    mediaType: value.mediaType,
+    status: value.status,
+  }));
+}
+
 /** Owns the CLI read, catalog, lifecycle and turn-write state without exposing native bindings. */
 export class CanonicalTuiChatModel {
   private readonly controller: CanonicalTuiController;
@@ -128,11 +146,15 @@ export class CanonicalTuiChatModel {
   private draft = '';
   private binding: string | null = null;
   private conversationIdentity: string | null = null;
+  private conversationWorkflow: string | null = null;
   private identityKnown = false;
   private authoritativeRead = false;
   private lifecycleBlocked = false;
   private operation: ActiveOperation | null = null;
   private turnDraft: string | null = null;
+  private attachmentDrafts: readonly CanonicalTuiAttachmentDraft[] = [];
+  private attachmentNotice = '';
+  private attachmentGeneration = 0;
   private disposed = false;
   private ready = false;
 
@@ -185,6 +207,7 @@ export class CanonicalTuiChatModel {
   async stop(): Promise<void> {
     this.operation?.control.abort();
     const operation = this.operation?.done;
+    this.clearAttachmentState();
     await this.controller.stop();
     if (operation) await operation;
     await this.settle();
@@ -201,9 +224,11 @@ export class CanonicalTuiChatModel {
       this.binding = null;
       this.identityKnown = false;
       this.conversationIdentity = null;
+      this.conversationWorkflow = null;
       this.lifecycleBlocked = false;
       this.draft = '';
       this.turnDraft = null;
+      this.clearAttachmentState();
       this.catalog = emptyCatalog();
       this.composer.reset();
       this.base = {
@@ -224,6 +249,52 @@ export class CanonicalTuiChatModel {
     if (typeof value !== 'string' || !this.state.canEdit) return;
     this.draft = value;
     this.publish();
+  }
+
+  async selectAttachments(paths: readonly string[]): Promise<boolean> {
+    const context = this.attachmentContext();
+    if (!context || this.disposed || this.operation || blockingTurn(this.turn)) return false;
+    return this.attachmentOperation(context, safe.attachmentSelected,
+      (signal) => this.source.selectAttachments(context.binding, context.scope, paths, signal));
+  }
+
+  async uploadAttachment(index: number): Promise<boolean> {
+    const context = this.attachmentContext();
+    const draft = this.attachmentDrafts[index];
+    if (!context || !draft || this.disposed || this.operation || blockingTurn(this.turn)) return false;
+    return this.attachmentOperation(context, safe.attachmentUploaded,
+      (signal) => this.source.uploadAttachment(context.binding, context.scope, draft.handle, signal));
+  }
+
+  async recoverAttachment(index: number): Promise<boolean> {
+    const context = this.attachmentContext();
+    const draft = this.attachmentDrafts[index];
+    if (!context || !draft || this.disposed || this.operation) return false;
+    return this.attachmentOperation(context, safe.attachmentRecovered,
+      (signal) => this.source.recoverAttachment(context.binding, context.scope, draft.handle, signal));
+  }
+
+  async cancelAttachment(index: number): Promise<boolean> {
+    const context = this.attachmentContext();
+    const draft = this.attachmentDrafts[index];
+    if (!context || !draft || this.disposed || this.operation) return false;
+    return this.attachmentOperation(context, safe.attachmentCancelled,
+      (signal) => this.source.cancelAttachment(context.binding, context.scope, draft.handle, signal));
+  }
+
+  discardAttachments(): boolean {
+    const context = this.attachmentContext();
+    if (!context || this.disposed || this.operation || this.attachmentDrafts.length === 0) return false;
+    try {
+      this.attachmentDrafts = this.source.discardAttachments(context.binding, context.scope);
+      this.attachmentNotice = safe.attachmentsDiscarded;
+      this.publish();
+      return true;
+    } catch {
+      this.attachmentNotice = safe.attachmentUnavailable;
+      this.publish();
+      return false;
+    }
   }
 
   async loadCatalog(older = false): Promise<boolean> {
@@ -315,16 +386,41 @@ export class CanonicalTuiChatModel {
     const logicalDraft = this.draft;
     const context = this.writeContext();
     if (!context) return false;
+    let references;
+    try {
+      references = this.source.attachmentReferences(context.binding, {
+        agentSessionId: context.session,
+        workflowId: context.workflow,
+      });
+    } catch {
+      this.attachmentNotice = safe.attachmentNotReady;
+      this.publish();
+      return false;
+    }
     this.turnDraft = logicalDraft;
     const result = await this.exclusive('turn', false, async () => {
       try {
-        const accepted = await this.composer.submit(logicalDraft);
+        const accepted = await this.composer.submit(logicalDraft,
+          references.length === 0 ? undefined : references);
         if (!accepted) return false;
         if (this.sameWriteContext(context) && this.draft === logicalDraft) this.draft = '';
+        if (this.sameWriteContext(context)) {
+          this.attachmentDrafts = [];
+          this.attachmentNotice = '';
+        }
         this.turnDraft = null;
         return true;
       } catch {
-        if (!['unknown', 'unavailable'].includes(this.composer.view.status)) this.turnDraft = null;
+        if (this.composer.view.status !== 'unknown') {
+          this.turnDraft = null;
+          if (this.sameWriteContext(context)) {
+            try {
+              this.attachmentDrafts = this.source.attachments(context.binding, {
+                agentSessionId: context.session, workflowId: context.workflow,
+              });
+            } catch { this.clearAttachmentState(); }
+          }
+        }
         return false;
       }
     });
@@ -465,6 +561,31 @@ export class CanonicalTuiChatModel {
     }
   }
 
+  private async attachmentOperation(
+    context: { binding: string; scope: CanonicalTuiAttachmentScope; generation: number },
+    successNotice: string,
+    work: (signal: AbortSignal) => Promise<readonly CanonicalTuiAttachmentDraft[]>,
+  ): Promise<boolean> {
+    const result = await this.exclusive('attachment', true, async (signal) => {
+      try {
+        const values = await work(signal);
+        if (signal.aborted || !this.sameAttachmentContext(context)) return false;
+        this.attachmentDrafts = values;
+        this.attachmentNotice = successNotice;
+        return true;
+      } catch {
+        if (!this.disposed && this.sameAttachmentContext(context)) {
+          try { this.attachmentDrafts = this.source.attachments(context.binding, context.scope); }
+          catch { /* the source already destroyed a changed private scope */ }
+          this.attachmentNotice = safe.attachmentUnavailable;
+        }
+        return false;
+      }
+    });
+    if (this.sameAttachmentContext(context)) await this.recoverConversation();
+    return result;
+  }
+
   private async exclusive(
     kind: OperationKind,
     drainBefore: boolean,
@@ -522,10 +643,12 @@ export class CanonicalTuiChatModel {
         if (this.binding !== null && this.binding !== nextBinding) this.resetPrivate(nextBinding);
         this.binding = nextBinding;
         const sessionId = view.conversation?.snapshot?.id ?? null;
+        const workflowId = view.conversation?.snapshot?.workflow_id ?? null;
         const changedIdentity = this.identityKnown && this.conversationIdentity !== sessionId;
+        const changedWorkflow = this.identityKnown && this.conversationWorkflow !== workflowId;
         const contradictsCatalog = this.catalog.focus !== null
           && this.catalog.focus.active_agent_session_id !== sessionId;
-        if (changedIdentity || contradictsCatalog) {
+        if (changedIdentity || changedWorkflow || contradictsCatalog) {
           this.resetPrivate(nextBinding);
           this.catalog = { ...emptyCatalog(), notice: safe.focusChanged };
         }
@@ -534,6 +657,14 @@ export class CanonicalTuiChatModel {
         this.authoritativeRead = true;
         this.identityKnown = true;
         this.conversationIdentity = sessionId;
+        this.conversationWorkflow = workflowId;
+        if (sessionId && workflowId && this.attachmentDrafts.length === 0) {
+          try {
+            this.attachmentDrafts = this.source.attachments(nextBinding, {
+              agentSessionId: sessionId, workflowId,
+            });
+          } catch { /* a changed private scope starts with no drafts */ }
+        }
       }
     }
     this.syncComposer();
@@ -545,10 +676,12 @@ export class CanonicalTuiChatModel {
     this.binding = nextBinding;
     this.identityKnown = false;
     this.conversationIdentity = null;
+    this.conversationWorkflow = null;
     this.authoritativeRead = false;
     this.lifecycleBlocked = lifecycleBlocked;
     this.draft = '';
     this.turnDraft = null;
+    this.clearAttachmentState();
     this.catalog = emptyCatalog();
     this.composer.reset();
   }
@@ -569,16 +702,54 @@ export class CanonicalTuiChatModel {
     };
   }
 
-  private writeContext(): { binding: string; session: string; focus: number | null } | null {
+  private writeContext(): { binding: string; session: string; workflow: string; focus: number | null } | null {
     const snapshot = this.base.conversation?.snapshot;
     if (!validBinding(this.binding) || !this.authoritativeRead || !snapshot) return null;
-    return { binding: this.binding, session: snapshot.id, focus: this.catalog.focus?.version ?? null };
+    return {
+      binding: this.binding, session: snapshot.id, workflow: snapshot.workflow_id,
+      focus: this.catalog.focus?.version ?? null,
+    };
   }
 
-  private sameWriteContext(value: { binding: string; session: string; focus: number | null }): boolean {
+  private sameWriteContext(value: { binding: string; session: string; workflow: string; focus: number | null }): boolean {
     return this.binding === value.binding && this.identityKnown
       && this.conversationIdentity === value.session
+      && this.conversationWorkflow === value.workflow
       && (this.catalog.focus?.version ?? null) === value.focus;
+  }
+
+  private attachmentContext(): {
+    binding: string;
+    scope: CanonicalTuiAttachmentScope;
+    generation: number;
+  } | null {
+    const snapshot = this.base.conversation?.snapshot;
+    if (!validBinding(this.binding) || !this.authoritativeRead || !snapshot
+      || !this.identityKnown || this.conversationIdentity !== snapshot.id
+      || this.conversationWorkflow !== snapshot.workflow_id) return null;
+    return {
+      binding: this.binding,
+      scope: { agentSessionId: snapshot.id, workflowId: snapshot.workflow_id },
+      generation: this.attachmentGeneration,
+    };
+  }
+
+  private sameAttachmentContext(value: {
+    binding: string;
+    scope: CanonicalTuiAttachmentScope;
+    generation: number;
+  }): boolean {
+    return !this.disposed && this.attachmentGeneration === value.generation
+      && this.binding === value.binding && this.source.binding() === value.binding
+      && this.conversationIdentity === value.scope.agentSessionId
+      && this.conversationWorkflow === value.scope.workflowId;
+  }
+
+  private clearAttachmentState(): void {
+    this.attachmentGeneration++;
+    this.attachmentDrafts = [];
+    this.attachmentNotice = '';
+    this.source.clearAttachments();
   }
 
   private async recoverConversation(): Promise<void> {
@@ -592,16 +763,26 @@ export class CanonicalTuiChatModel {
 
   private snapshot(): CanonicalTuiChatView {
     const base = cloneBase(this.base);
-    const writing = this.operation?.kind === 'lifecycle' || this.operation?.kind === 'turn';
+    const writing = this.operation?.kind === 'lifecycle' || this.operation?.kind === 'turn'
+      || this.operation?.kind === 'attachment';
     const canWrite = this.authoritativeRead && validBinding(this.binding) && this.catalog.focus !== null
       && !this.lifecycleBlocked && !this.operation && !blockingTurn(this.turn);
     const canEdit = this.authoritativeRead && this.base.conversation?.snapshot !== null
       && !this.lifecycleBlocked && !this.operation && this.turn.canSubmit;
+    const attachmentsReady = this.attachmentDrafts.every((draft) => draft.status === 'ready');
     return {
       ...base,
       draft: this.draft,
       writing,
       canEdit,
+      attachments: {
+        items: publicAttachments(this.attachmentDrafts),
+        epoch: this.attachmentGeneration,
+        busy: this.operation?.kind === 'attachment',
+        canSelect: canEdit && !blockingTurn(this.turn),
+        canSubmit: canEdit && attachmentsReady,
+        notice: this.attachmentNotice,
+      },
       turn: cloneTurn(this.turn),
       catalog: {
         focus: copyFocus(this.catalog.focus), items: copyItems(this.catalog.items),

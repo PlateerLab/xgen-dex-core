@@ -45,6 +45,14 @@ interface ChatMessage {
   toolRef?: { assistantId: string; index: number };
 }
 
+interface CanonicalAttachmentView {
+  selection_id: string;
+  filename: string;
+  size_bytes: number;
+  media_type: string;
+  status: 'selected' | 'reserved' | 'uncertain' | 'ready';
+}
+
 interface ChatViewState {
   screen: ViewScreen;
   profiles: ProfileSummary[];
@@ -72,6 +80,11 @@ interface ChatViewState {
     hasMore: boolean;
     sessionStatus: NativeSessionViewState['status'];
     turn?: NativeSessionViewState['turn'];
+    attachments: {
+      items: readonly CanonicalAttachmentView[];
+      busy: boolean;
+      notice?: string;
+    };
     identity?: string;
     connectionVersion: number;
     createOpen: boolean;
@@ -760,6 +773,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.canonicalNotice = '메시지는 UTF-8 기준 262,144바이트 이하로 입력해 주세요.';
       this.postState();
     }
+    else if (data.type === 'canonicalPickAttachments') void this.native?.pickAttachments();
+    else if (data.type === 'canonicalUploadAttachment' && typeof data.selectionId === 'string') {
+      void this.native?.uploadAttachment(data.selectionId);
+    }
+    else if (data.type === 'canonicalRecoverAttachment' && typeof data.selectionId === 'string') {
+      void this.native?.recoverAttachment(data.selectionId);
+    }
+    else if (data.type === 'canonicalCancelAttachment' && typeof data.selectionId === 'string') {
+      void this.native?.cancelAttachment(data.selectionId);
+    }
+    else if (data.type === 'canonicalDiscardAttachments') void this.native?.discardAttachments();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
     else if (data.type === 'attach') void this.attachFiles();
     else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
@@ -942,6 +966,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         hasMore: this.nativeState?.hasMore ?? false,
         sessionStatus: this.nativeState?.status ?? 'idle',
         turn: this.nativeState?.turn,
+        attachments: this.nativeState?.attachments ? {
+          busy: this.nativeState.attachments.busy,
+          notice: this.nativeState.attachments.notice,
+          items: this.nativeState.attachments.items.map((item) => ({ selection_id: item.selection_id,
+            filename: item.filename, size_bytes: item.size_bytes, media_type: item.media_type, status: item.status })),
+        } : { items: [], busy: false },
         identity: canonicalIdentity(this.nativeState),
         connectionVersion: this.nativeState?.connectionVersion ?? 0,
         createOpen: this.canonicalCreateOpen,
@@ -953,6 +983,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private async toggleCanonical(): Promise<void> {
     if (this.canonicalMode) {
+      const attachments = this.nativeState?.attachments;
+      const turnStatus = this.nativeState?.turn?.status;
+      if (attachments?.busy || (turnStatus && ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(turnStatus))) {
+        this.canonicalNotice = '현재 요청 상태를 확인한 뒤 공유 대화를 나갈 수 있습니다.';
+        this.postState(); return;
+      }
+      if (attachments?.items.length) {
+        this.canonicalNotice = '첨부 파일을 모두 취소한 뒤 공유 대화를 나가세요.';
+        this.postState(); return;
+      }
       this.leaveCanonical(false);
       return;
     }

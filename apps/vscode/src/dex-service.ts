@@ -20,6 +20,24 @@ export class DexService implements vscode.Disposable {
       process: this.resolveProcess(),
       clientVersion: String(context.extension.packageJSON.version ?? '0.1.0'),
       log: (message) => this.output.appendLine(message),
+      nativeAttachmentPicker: async (signal, limits) => {
+        if (signal.aborted) throw new DOMException('Attachment selection cancelled', 'AbortError');
+        const selected = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectMany: true,
+          canSelectFolders: false,
+        });
+        if (signal.aborted) throw new DOMException('Attachment selection cancelled', 'AbortError');
+        if (!selected) return Object.freeze([]);
+        if (selected.length > limits.max_files) throw new Error(`파일은 최대 ${limits.max_files}개까지 선택할 수 있습니다.`);
+        const paths = selected.map((uri) => {
+          if (uri.scheme !== 'file' || !uri.fsPath || uri.fsPath.length > 4096) {
+            throw new Error('로컬 파일만 첨부할 수 있습니다.');
+          }
+          return uri.fsPath;
+        });
+        return Object.freeze(paths);
+      },
     });
   }
 

@@ -1,5 +1,5 @@
 import { DexRpcError, type DexRpcClient } from '@dex/rpc/client';
-import type { NativeConversationView, NativeRpcResult, NativeSessionSummary } from '@dex/rpc';
+import type { NativeAttachmentDraftView, NativeConversationView, NativeRpcResult, NativeSessionSummary } from '@dex/rpc';
 import { parseAgentFocus, type AgentFocus, type AgentSessionSnapshot, type OwnedAgentSession } from '@dex/protocol/agent-session';
 import { parseAgentSessionCatalogPage } from '@dex/protocol/agent-session-catalog';
 import { parseAgentConversationView } from '@dex/protocol/agent-session-conversation-recovery';
@@ -16,6 +16,17 @@ import {
   type AgentTurnComposerView,
   type AgentTurnScope,
 } from '@dex/protocol/agent-turn-composer';
+import {
+  AGENT_ATTACHMENT_MAX_COUNT,
+  AGENT_ATTACHMENT_MAX_TOTAL_BYTES,
+  parseAgentAttachmentReceipt,
+  prepareAgentAttachmentReferences,
+  validateAgentAttachmentId,
+  validateReserveAgentAttachment,
+  type AgentAttachmentReceipt,
+  type AgentAttachmentScope,
+  type AgentAttachmentReference,
+} from '@dex/protocol/agent-session-attachments';
 
 export interface NativeSessionViewState {
   status: 'idle' | 'waiting' | 'connected' | 'reconnecting' | 'stopped';
@@ -24,6 +35,11 @@ export interface NativeSessionViewState {
   hasMore: boolean;
   scope?: AgentTurnScope | null;
   turn?: AgentTurnComposerView;
+  attachments?: {
+    items: readonly NativeAttachmentDraftView[];
+    busy: boolean;
+    notice?: string;
+  };
   connectionVersion?: number;
   catalog?: {
     scope: AgentTurnScope | null;
@@ -37,8 +53,29 @@ export interface NativeSessionViewState {
     notice?: string;
   };
 }
-type SessionState = Omit<NativeSessionViewState, 'turn' | 'catalog'> & { scope: AgentTurnScope | null };
-const empty = (status: SessionState['status']): SessionState => ({ status, focus: null, conversation: null, hasMore: false, scope: null });
+type SessionState = Omit<NativeSessionViewState, 'turn' | 'catalog' | 'attachments'> & {
+  scope: AgentTurnScope | null;
+  attachments: NonNullable<NativeSessionViewState['attachments']>;
+};
+const emptyAttachments = (): SessionState['attachments'] => ({ items: Object.freeze([]), busy: false });
+const empty = (status: SessionState['status']): SessionState => ({ status, focus: null, conversation: null,
+  hasMore: false, scope: null, attachments: emptyAttachments() });
+interface NativeAttachmentTarget { scope: AgentTurnScope; sessionId: string; workflowId: string }
+const TURN_DRAFT_LOCKS = new Set<AgentTurnComposerView['status']>([
+  'unknown', 'sending', 'stopping', 'accepted', 'stop-requested',
+]);
+function attachmentRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) throw new TypeError();
+  const result: Record<string, unknown> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') throw new TypeError();
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor)) throw new TypeError();
+    result[key] = descriptor.value;
+  }
+  return result;
+}
 export class NativeSessionController {
   private generation = 0;
   private connection = 0;
@@ -61,6 +98,8 @@ export class NativeSessionController {
   private mutationBarrier: Promise<void> | null = null;
   private releaseMutation: (() => void) | null = null;
   private readBarrier: Promise<void> | null = null;
+  private attachmentGeneration = 0;
+  private attachmentTarget: NativeAttachmentTarget | null = null;
   private readonly composer: AgentTurnComposer;
   private readonly remove: Array<() => void>;
   constructor(private readonly rpc: Pick<DexRpcClient, 'start' | 'request' | 'onNotification' | 'onStateChange' | 'state'>,
@@ -80,7 +119,13 @@ export class NativeSessionController {
           agent_session_id: request.agent_session_id,
           ...request.input,
         });
-      } catch (error) { throw composeFailure(error); }
+      } catch (error) {
+        if (request.operation === 'submit' && attachmentAuthenticationChanged(error)) {
+          this.clearAttachmentDraft(false);
+          this.clearVerified(false);
+        }
+        throw composeFailure(error);
+      }
     }, (view) => { this.turnView = view; this.publish(); });
     this.remove = [rpc.onNotification((n) => {
       if (n.method === 'native/focus') this.update(n.params, 'focus');
@@ -95,7 +140,7 @@ export class NativeSessionController {
   }
   reset(cancel = true): void {
     this.connection++; this.generation++; this.selected = null; this.canonicalTurns = false; this.restoreLiveAfterCatalog = false;
-    this.clear(); this.clearVerified();
+    this.clear(); this.clearVerified(true);
     this.clearCatalog();
     this.setState(empty('idle'));
     if (cancel && this.rpc.state === 'ready') void this.rpc.request('native/cancel').catch(() => {});
@@ -178,13 +223,49 @@ export class NativeSessionController {
     finally { if (this.readBarrier === pendingRead) this.readBarrier = null; }
   }
   async submitTurn(input: string): Promise<void> {
-    await this.mutate(() => this.composer.submit(input));
+    const attachments = this.turnAttachmentReferences();
+    if (attachments === null) return;
+    await this.mutate(async () => {
+      const receipt = await this.composer.submit(input, attachments.length ? attachments : undefined);
+      if (receipt) await this.releaseAcceptedAttachments();
+    });
   }
   async retryTurn(): Promise<void> {
-    await this.mutate(() => this.composer.retry());
+    await this.mutate(async () => {
+      const operation = this.turnView.request?.operation;
+      const receipt = await this.composer.retry();
+      if (receipt && operation === 'submit') await this.releaseAcceptedAttachments();
+    });
   }
   async stopTurn(): Promise<void> {
     await this.mutate(() => this.composer.stop());
+  }
+  async pickAttachments(): Promise<boolean> { return this.attachmentMutation('native/pick-attachments'); }
+  async uploadAttachment(selectionId: string): Promise<boolean> {
+    const item = this.sessionState.attachments.items.find((candidate) => candidate.selection_id === selectionId);
+    if (!item || (item.status !== 'selected' && item.status !== 'reserved')) return false;
+    return this.attachmentMutation('native/upload-attachment', selectionId);
+  }
+  async recoverAttachment(selectionId: string): Promise<boolean> {
+    let item = this.sessionState.attachments.items.find((candidate) => candidate.selection_id === selectionId);
+    if (!item || item.status !== 'uncertain') return false;
+    if (!item.attachment_id) {
+      if (!await this.attachmentMutation('native/attachments')) return false;
+      item = this.sessionState.attachments.items.find((candidate) => candidate.selection_id === selectionId);
+      if (!item) return false;
+      if (item.status !== 'uncertain' || !item.attachment_id) {
+        return item.status === 'selected' || item.status === 'reserved' || item.status === 'ready';
+      }
+    }
+    return this.attachmentMutation('native/recover-attachment', selectionId);
+  }
+  async cancelAttachment(selectionId: string): Promise<boolean> {
+    if (!this.sessionState.attachments.items.some((candidate) => candidate.selection_id === selectionId)) return false;
+    return this.attachmentMutation('native/cancel-attachment', selectionId);
+  }
+  async discardAttachments(): Promise<boolean> {
+    if (!this.sessionState.attachments.items.length) return false;
+    return this.attachmentMutation('native/discard-attachments');
   }
   async refreshAgentSessions(profile: string, userId: string, beforeId?: string): Promise<void> {
     if (beforeId !== undefined) {
@@ -357,6 +438,13 @@ export class NativeSessionController {
       && initialized.capabilities.nativePlatformSession.canonicalTurns === true;
     if (!this.canonicalTurns) throw new AgentTurnComposeFailure('unavailable');
   }
+  private async requireAttachmentHost(): Promise<void> {
+    const initialized = await this.rpc.start();
+    if (initialized.capabilities.nativePlatformSession?.platform !== 'vscode'
+      || initialized.capabilities.nativePlatformSession.canonicalAttachments !== true) {
+      throw new Error('Canonical 첨부 파일을 지원하는 CLI가 필요합니다.');
+    }
+  }
   private async requireSessionCatalogHost(): Promise<void> {
     const initialized = await this.rpc.start();
     if (initialized.capabilities.nativePlatformSession?.platform !== 'vscode'
@@ -431,7 +519,10 @@ export class NativeSessionController {
   private scopeOf(result: NativeRpcResult): AgentTurnScope {
     return { platform_type: 'vscode', profile: result.profile, server_url: result.server_url, user_id: result.user_id };
   }
-  private setState(state: SessionState): void { this.sessionState = state; this.publish(); }
+  private setState(state: Omit<SessionState, 'attachments'> & { attachments?: SessionState['attachments'] }): void {
+    this.sessionState = { ...state, attachments: state.attachments ?? this.sessionState.attachments };
+    this.publish();
+  }
   private setTransient(status: 'waiting' | 'reconnecting' | 'stopped', preserve: boolean): void {
     if (preserve && this.verifiedScope) {
       this.composer.context(this.verifiedScope, this.verifiedSnapshot, false);
@@ -447,6 +538,10 @@ export class NativeSessionController {
     this.setState(empty(status));
   }
   private acceptConversation(scope: AgentTurnScope, conversation: NativeConversationView): void {
+    const snapshot = conversation.snapshot;
+    if (this.attachmentTarget && (!snapshot || !this.sameAttachmentTarget(this.attachmentTarget, {
+      scope, sessionId: snapshot.id, workflowId: snapshot.workflow_id,
+    }))) this.clearAttachmentDraft(true);
     this.composer.context(scope, conversation.snapshot, this.canonicalTurns);
     this.verifiedScope = scope;
     this.verifiedSnapshot = conversation.snapshot;
@@ -459,7 +554,8 @@ export class NativeSessionController {
     return left.platform_type === right.platform_type && left.profile === right.profile
       && left.server_url === right.server_url && left.user_id === right.user_id;
   }
-  private clearVerified(): void {
+  private clearVerified(discardAttachments = true): void {
+    if (discardAttachments) this.clearAttachmentDraft(true);
     this.verifiedScope = null;
     this.verifiedSnapshot = null;
     this.composer.reset();
@@ -493,6 +589,204 @@ export class NativeSessionController {
     const visibleCatalog = this.catalog.scope || this.catalog.busy || this.catalog.writeBlocked || this.catalog.notice;
     this.render({ ...this.sessionState, turn: this.turnView, connectionVersion: this.connection,
       ...(visibleCatalog ? { catalog: this.catalog } : {}) });
+  }
+
+  private currentAttachmentTarget(): NativeAttachmentTarget | null {
+    const scope = this.sessionState.scope; const snapshot = this.sessionState.conversation?.snapshot;
+    if (!scope || !snapshot || !this.verifiedSnapshot || snapshot.id !== this.verifiedSnapshot.id) return null;
+    return { scope, sessionId: snapshot.id, workflowId: snapshot.workflow_id };
+  }
+
+  private sameAttachmentTarget(left: NativeAttachmentTarget, right: NativeAttachmentTarget): boolean {
+    return left.sessionId === right.sessionId && left.workflowId === right.workflowId && this.sameScope(left.scope, right.scope);
+  }
+
+  private attachmentScope(target: NativeAttachmentTarget): AgentAttachmentScope {
+    return { origin: target.scope.server_url, user_id: target.scope.user_id,
+      session_id: target.sessionId, workflow_id: target.workflowId };
+  }
+
+  private clearAttachmentDraft(discardHost: boolean): void {
+    const target = this.attachmentTarget;
+    const pending = this.sessionState.attachments.busy;
+    const hadDraft = this.sessionState.attachments.items.length > 0 || pending;
+    this.attachmentGeneration++;
+    this.attachmentTarget = null;
+    if (hadDraft || this.sessionState.attachments.notice) {
+      this.sessionState = { ...this.sessionState, attachments: emptyAttachments() };
+      this.publish();
+    }
+    if (discardHost && target && hadDraft && this.rpc.state === 'ready') {
+      const params = { profile: target.scope.profile, user_id: target.scope.user_id,
+        agent_session_id: target.sessionId, workflow_id: target.workflowId };
+      void (pending ? this.rpc.request('native/cancel', {})
+        : this.rpc.request('native/discard-attachments', params)).catch(() => {});
+    }
+  }
+
+  private parseAttachmentViews(value: NativeRpcResult, target: NativeAttachmentTarget): readonly NativeAttachmentDraftView[] {
+    this.validateScope(value, target.scope.profile, target.scope.user_id, 'focus');
+    if (value.server_url !== target.scope.server_url || value.agent_session_id !== target.sessionId
+      || value.workflow_id !== target.workflowId || !Array.isArray(value.attachments)
+      || value.attachments.length > AGENT_ATTACHMENT_MAX_COUNT) throw new TypeError();
+    const expected = this.attachmentScope(target); const selections = new Set<string>(); const attachmentIds = new Set<string>();
+    let total = 0; const result: NativeAttachmentDraftView[] = [];
+    for (let index = 0; index < value.attachments.length; index++) {
+      if (!(index in value.attachments)) throw new TypeError();
+      const raw = attachmentRecord(value.attachments[index]);
+      const allowed = ['selection_id', 'filename', 'size_bytes', 'media_type', 'sha256', 'status', 'attachment_id', 'receipt'];
+      if (!Reflect.ownKeys(raw).every((key) => typeof key === 'string' && allowed.includes(key))
+        || typeof raw.selection_id !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(raw.selection_id)
+        || !['selected', 'reserved', 'uncertain', 'ready'].includes(String(raw.status))) throw new TypeError();
+      const metadata = validateReserveAgentAttachment(expected, { upload_key: raw.selection_id,
+        filename: raw.filename, size_bytes: raw.size_bytes, media_type: raw.media_type, sha256: raw.sha256 });
+      total += metadata.size_bytes;
+      if (total > AGENT_ATTACHMENT_MAX_TOTAL_BYTES || selections.has(raw.selection_id)) throw new TypeError();
+      selections.add(raw.selection_id);
+      const status = raw.status as NativeAttachmentDraftView['status'];
+      let attachmentId: string | undefined;
+      if (raw.attachment_id !== undefined) {
+        attachmentId = validateAgentAttachmentId(raw.attachment_id);
+        if (attachmentIds.has(attachmentId)) throw new TypeError();
+        attachmentIds.add(attachmentId);
+      }
+      if (status === 'selected' && attachmentId !== undefined) throw new TypeError();
+      if (status === 'reserved' && attachmentId === undefined) throw new TypeError();
+      let receipt: AgentAttachmentReceipt | undefined;
+      if (status === 'ready') {
+        if (!attachmentId || raw.receipt === undefined) throw new TypeError();
+        receipt = parseAgentAttachmentReceipt(raw.receipt, expected);
+        if (receipt.attachment_id !== attachmentId || receipt.filename !== metadata.filename
+          || receipt.size_bytes !== metadata.size_bytes || receipt.media_type !== metadata.media_type
+          || receipt.sha256 !== metadata.sha256) throw new TypeError();
+      } else if (raw.receipt !== undefined) throw new TypeError();
+      result.push(Object.freeze({ selection_id: raw.selection_id, filename: metadata.filename,
+        size_bytes: metadata.size_bytes, media_type: metadata.media_type, sha256: metadata.sha256, status,
+        ...(attachmentId ? { attachment_id: attachmentId } : {}), ...(receipt ? { receipt } : {}) }));
+    }
+    return Object.freeze(result);
+  }
+
+  private async attachmentMutation(
+    method: 'native/pick-attachments' | 'native/attachments' | 'native/upload-attachment'
+      | 'native/recover-attachment' | 'native/cancel-attachment' | 'native/discard-attachments',
+    selectionId?: string,
+  ): Promise<boolean> {
+    await this.waitForRead();
+    const target = this.currentAttachmentTarget();
+    if (this.mutating || !target || !this.turnView.canSubmit || TURN_DRAFT_LOCKS.has(this.turnView.status)) return false;
+    if (this.attachmentTarget && !this.sameAttachmentTarget(this.attachmentTarget, target)) {
+      this.clearAttachmentDraft(true); return false;
+    }
+    let succeeded = false;
+    await this.lifecycle(async () => {
+      const operationGeneration = ++this.attachmentGeneration; const generation = ++this.generation;
+      const resume = this.watchView === 'conversation'
+        && (this.watchMethod === 'native/watch-conversation' || this.watchMethod === 'native/watch-live')
+        ? this.watchMethod : null;
+      this.clear(); this.attachmentTarget = target;
+      this.sessionState = { ...this.sessionState,
+        attachments: { ...this.sessionState.attachments, busy: true, notice: undefined } };
+      this.publish();
+      try {
+        await this.requireAttachmentHost();
+        const result = await this.rpc.request<NativeRpcResult>(method, {
+          profile: target.scope.profile, user_id: target.scope.user_id,
+          agent_session_id: target.sessionId, workflow_id: target.workflowId,
+          ...(selectionId ? { selection_id: selectionId } : {}),
+        });
+        if (!this.attachmentOperationCurrent(generation, operationGeneration, target)) return;
+        const items = this.parseAttachmentViews(result, target);
+        this.attachmentTarget = items.length ? target : null;
+        this.sessionState = { ...this.sessionState, attachments: { items, busy: false,
+          notice: method === 'native/pick-attachments' ? (items.length ? `${items.length}개 파일을 선택했습니다.` : '선택한 파일이 없습니다.')
+            : method === 'native/attachments' ? '첨부 파일 상태를 다시 확인했습니다.'
+              : method === 'native/upload-attachment' ? '첨부 파일 업로드를 확인했습니다.'
+                : method === 'native/recover-attachment' ? '첨부 파일 영수증을 복구했습니다.'
+                  : method === 'native/cancel-attachment' ? '첨부 파일을 취소했습니다.' : '선택한 첨부 파일을 모두 지웠습니다.' } };
+        this.publish(); succeeded = true;
+      } catch (error) {
+        if (!this.attachmentOperationCurrent(generation, operationGeneration, target)) return;
+        if (attachmentAuthenticationChanged(error)) {
+          // The host already destroyed private bytes when its authenticated scope changed.
+          // Drop every public handle locally without issuing a stale-scope discard.
+          this.clearAttachmentDraft(false);
+        } else if (attachmentOutcomeUnknown(error) && selectionId) {
+          let items: readonly NativeAttachmentDraftView[] = Object.freeze(this.sessionState.attachments.items.map((item) =>
+            item.selection_id === selectionId ? Object.freeze({ ...item, status: 'uncertain' as const, receipt: undefined }) : item));
+          try {
+            const observed = await this.rpc.request<NativeRpcResult>('native/attachments', {
+              profile: target.scope.profile, user_id: target.scope.user_id,
+              agent_session_id: target.sessionId, workflow_id: target.workflowId,
+            });
+            if (!this.attachmentOperationCurrent(generation, operationGeneration, target)) return;
+            items = this.parseAttachmentViews(observed, target);
+          } catch { /* retain the last bytes-free safe view */ }
+          if (!this.attachmentOperationCurrent(generation, operationGeneration, target)) return;
+          this.sessionState = { ...this.sessionState, attachments: { items, busy: false,
+            notice: '업로드 또는 취소 결과를 확인할 수 없습니다. 서버 영수증을 복구하거나 다시 취소해 주세요.' } };
+        } else {
+          this.sessionState = { ...this.sessionState, attachments: { ...this.sessionState.attachments, busy: false,
+            notice: error instanceof TypeError ? '첨부 응답을 확인할 수 없습니다. 파일을 다시 선택해 주세요.'
+              : method === 'native/recover-attachment' ? '첨부 영수증을 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.'
+                : method === 'native/pick-attachments' ? '첨부 파일을 선택하지 못했습니다.' : '첨부 작업을 완료하지 못했습니다.' } };
+        }
+        this.publish();
+      } finally {
+        if (this.attachmentOperationCurrent(generation, operationGeneration, target)) {
+          this.sessionState = { ...this.sessionState,
+            attachments: { ...this.sessionState.attachments, busy: false } };
+          this.publish();
+          await this.restartAfterAttachment(target.scope, resume);
+        }
+      }
+    });
+    return succeeded;
+  }
+
+  private attachmentOperationCurrent(generation: number, operationGeneration: number, target: NativeAttachmentTarget): boolean {
+    return generation === this.generation && operationGeneration === this.attachmentGeneration
+      && !!this.selected && this.sameScope(this.selected, target.scope);
+  }
+
+  private turnAttachmentReferences(): readonly AgentAttachmentReference[] | null {
+    const items = this.sessionState.attachments.items;
+    if (!items.length) return Object.freeze([]);
+    const target = this.currentAttachmentTarget();
+    if (!target || !this.attachmentTarget || !this.sameAttachmentTarget(this.attachmentTarget, target)
+      || items.some((item) => item.status !== 'ready' || !item.receipt)) {
+      this.sessionState = { ...this.sessionState, attachments: { ...this.sessionState.attachments,
+        notice: '선택한 모든 파일의 업로드와 영수증 확인을 완료한 뒤 턴을 보내세요.' } };
+      this.publish(); return null;
+    }
+    try { return prepareAgentAttachmentReferences(items.map((item) => item.receipt), this.attachmentScope(target)); }
+    catch {
+      this.sessionState = { ...this.sessionState, attachments: { ...this.sessionState.attachments,
+        notice: '첨부 영수증이 선택한 파일과 일치하지 않습니다. 파일을 다시 선택해 주세요.' } };
+      this.publish(); return null;
+    }
+  }
+
+  private async releaseAcceptedAttachments(): Promise<void> {
+    const target = this.attachmentTarget;
+    if (!target || !this.sessionState.attachments.items.length) return;
+    this.clearAttachmentDraft(false);
+    try {
+      await this.rpc.request('native/discard-attachments', { profile: target.scope.profile, user_id: target.scope.user_id,
+        agent_session_id: target.sessionId, workflow_id: target.workflowId });
+    } catch { /* the accepted turn already owns its submitted references */ }
+  }
+
+  private async restartAfterAttachment(scope: AgentTurnScope,
+    resume: 'native/watch-conversation' | 'native/watch-live' | null): Promise<void> {
+    try {
+      const read = await this.readConversation(scope.profile, scope.user_id);
+      if (read && this.selected?.server_url === scope.server_url && resume) {
+        await this.startWatch('conversation', scope.profile, scope.user_id, resume);
+      }
+    } catch {
+      // Keep the validated attachment draft visible for an explicit refresh or recovery.
+    }
   }
   private async mutate(action: () => Promise<unknown>): Promise<void> {
     if (this.mutating) return;
@@ -663,6 +957,17 @@ function composeFailure(error: unknown): AgentTurnComposeFailure {
     return new AgentTurnComposeFailure('unavailable');
   }
   return new AgentTurnComposeFailure('unknown');
+}
+function attachmentOutcomeUnknown(error: unknown): boolean {
+  if (!(error instanceof DexRpcError)) return false;
+  const data = error.data && typeof error.data === 'object' && !Array.isArray(error.data)
+    ? error.data as Record<string, unknown> : null;
+  const details = data?.details && typeof data.details === 'object' && !Array.isArray(data.details)
+    ? data.details as Record<string, unknown> : null;
+  return details?.outcome === 'unknown';
+}
+function attachmentAuthenticationChanged(error: unknown): boolean {
+  return error instanceof DexRpcError && ['auth_required', 'auth_invalid'].includes(error.engineCode ?? '');
 }
 export function nativeSessionSummary(result: NativeRpcResult): NativeSessionSummary | null {
   return result.result && 'session_id' in result.result ? result.result : null;

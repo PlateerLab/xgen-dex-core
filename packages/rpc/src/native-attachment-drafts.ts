@@ -251,13 +251,20 @@ export class NativeAttachmentDraftRegistry {
   authScopeForReferences(
     profile: string, origin: string, userId: string, sessionId: string,
     references: readonly AgentAttachmentReference[],
-  ): string | undefined {
+  ): string {
     const scope = this.scope;
     if (!scope || scope.profile !== profile || scope.origin !== origin || scope.user_id !== userId
-      || scope.agent_session_id !== sessionId) return undefined;
+      || scope.agent_session_id !== sessionId) throw new TypeError('Native attachment scope changed');
     const ready = [...this.drafts.values()].filter((draft) => draft.status === 'ready' && draft.receipt);
-    return references.some((reference) => ready.some((draft) => draft.receipt!.attachment_id === reference.attachment_id
-      && draft.receipt!.sha256 === reference.sha256)) ? scope.auth_scope : undefined;
+    if (ready.length !== this.drafts.size || references.length !== ready.length || references.length === 0
+      || references.some((reference) => !ready.some((draft) => draft.receipt!.attachment_id === reference.attachment_id
+        && draft.receipt!.sha256 === reference.sha256))) throw new TypeError('All selected receipts must be ready');
+    return scope.auth_scope;
+  }
+
+  hasDraftsFor(profile: string, origin: string, userId: string, sessionId: string): boolean {
+    return this.drafts.size > 0 && this.scope !== null && this.scope.profile === profile
+      && this.scope.origin === origin && this.scope.user_id === userId && this.scope.agent_session_id === sessionId;
   }
 
   releaseSubmitted(

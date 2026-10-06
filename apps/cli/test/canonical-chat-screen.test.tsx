@@ -42,7 +42,16 @@ function fixture(){
       }
       running=false;version=4;
       return{...request.scope,agent_session_id:request.agent_session_id,mutation:{turn_id:turn,state_version:3,requested:true}};
-    }};
+    },
+    attachments:()=>[],
+    selectAttachments:async()=>[],
+    uploadAttachment:async()=>[],
+    recoverAttachment:async()=>[],
+    cancelAttachment:async()=>[],
+    discardAttachments:()=>[],
+    attachmentReferences:()=>[],
+    clearAttachments:()=>{},
+  };
   return{source,sends,creates,selections,changeBinding(){binding='b'.repeat(64);}};
 }
 
@@ -102,5 +111,80 @@ test('same-session credential replacement discards unfinished create fields; sma
     f.source.read=async()=>{throw new DexError('auth_required','private token');};await model.read();
     const value=await frame(ui,s=>s.includes('인증')&&s.includes('Q 종료'));
     assert.ok(value.split('\n').length<=8);assert.doesNotMatch(value,/private token|stale-workflow|a{64}|b{64}/);
+  }finally{ui.unmount();await model.dispose();}
+});
+
+test('Ink attachment form masks local paths and exposes ordered metadata with explicit actions',async()=>{
+  const f=fixture();const actions:string[]=[];
+  const item={handle:'private-selection',filename:'report\u001b]52;c;LEAK\u0007.txt',sizeBytes:1536,
+    mediaType:'application/octet-stream',status:'selected' as const,sha256:'a'.repeat(64)};
+  f.source.selectAttachments=async(_binding,_scope,paths)=>{actions.push(`select:${paths[0]}`);return[item];};
+  f.source.uploadAttachment=async()=>{actions.push('upload');return[{...item,status:'ready' as const,receipt:{
+    origin:account.origin,user_id:account.userId,session_id:sid,workflow_id:'wf',
+    attachment_id:'44444444-4444-4444-8444-444444444444',filename:item.filename,
+    size_bytes:item.sizeBytes,media_type:item.mediaType,sha256:item.sha256,
+  }}];};
+  f.source.recoverAttachment=async()=>{actions.push('recover');return[{...item,status:'ready' as const}];};
+  f.source.cancelAttachment=async()=>{actions.push('cancel');return[];};
+  f.source.discardAttachments=()=>{actions.push('discard');return[];};
+  const model=new CanonicalTuiChatModel(account,f.source);
+  const ui=render(<CanonicalChatScreen account={account} model={model} onExit={()=>{}}/>);
+  try{
+    await model.read();await frame(ui,s=>s.includes('visible title'));
+    ui.stdin.write('a');await frame(ui,s=>s.includes('첨부 파일이 없습니다'));
+    ui.stdin.write('a');await frame(ui,s=>s.includes('로컬 파일 경로(숨김):'));
+    ui.stdin.write('/tmp/private file.txt');
+    const masked=await frame(ui,s=>s.includes('••••'));
+    assert.doesNotMatch(masked,/private file|\/tmp/);
+    ui.stdin.write('\r');
+    const selectedFrame=await frame(ui,s=>s.includes('1.5 KiB')&&s.includes('selected'));
+    assert.match(selectedFrame,/report\.txt/);assert.doesNotMatch(selectedFrame,/LEAK|\u001b|private-selection|a{64}/);
+    ui.stdin.write('u');await frame(ui,s=>s.includes('ready')&&actions.includes('upload'));
+    ui.stdin.write('r');await frame(ui,()=>actions.includes('recover'));
+    ui.stdin.write('c');await frame(ui,s=>s.includes('첨부 파일이 없습니다')&&actions.includes('cancel'));
+    assert.deepEqual(actions.slice(0,4),['select:/tmp/private file.txt','upload','recover','cancel']);
+
+    ui.stdin.write('a');await frame(ui,s=>s.includes('로컬 파일 경로(숨김):'));
+    ui.stdin.write('/tmp/again.txt');await frame(ui,s=>s.includes('••••'));ui.stdin.write('\r');
+    await frame(ui,s=>s.includes('selected'));
+    ui.stdin.write('d');await frame(ui,s=>s.includes('모든 첨부의 로컬 사본'));
+    ui.stdin.write('\r');await frame(ui,s=>s.includes('첨부 파일이 없습니다')&&actions.includes('discard'));
+  }finally{ui.unmount();await model.dispose();}
+});
+
+test('same-session credential replacement closes the masked path form without replaying its value',async()=>{
+  const f=fixture();const selected:string[][]=[];
+  f.source.selectAttachments=async(_binding,_scope,paths)=>{selected.push([...paths]);return[];};
+  const model=new CanonicalTuiChatModel(account,f.source);
+  const ui=render(<CanonicalChatScreen account={account} model={model} onExit={()=>{}}/>);
+  try{
+    await model.read();await frame(ui,s=>s.includes('visible title'));
+    ui.stdin.write('a');await frame(ui,s=>s.includes('첨부 파일이 없습니다'));
+    ui.stdin.write('a');await frame(ui,s=>s.includes('로컬 파일 경로(숨김):'));
+    ui.stdin.write('/tmp/old-auth-private.txt');await frame(ui,s=>s.includes('••••'));
+    f.changeBinding();await model.read();
+    const replaced=await frame(ui,s=>!s.includes('로컬 파일 경로(숨김):'));
+    assert.doesNotMatch(replaced,/old-auth-private|\/tmp/);
+    ui.stdin.write('\r');await new Promise(r=>setTimeout(r,30));
+    assert.deepEqual(selected,[]);
+  }finally{ui.unmount();await model.dispose();}
+});
+
+test('authentication loss closes and clears an in-progress masked attachment path',async()=>{
+  const f=fixture();const selected:string[][]=[];
+  f.source.selectAttachments=async(_binding,_scope,paths)=>{selected.push([...paths]);return[];};
+  const model=new CanonicalTuiChatModel(account,f.source);
+  const ui=render(<CanonicalChatScreen account={account} model={model} onExit={()=>{}}/>);
+  try{
+    await model.read();await frame(ui,s=>s.includes('visible title'));
+    ui.stdin.write('a');await frame(ui,s=>s.includes('첨부 파일이 없습니다'));
+    ui.stdin.write('a');await frame(ui,s=>s.includes('로컬 파일 경로(숨김):'));
+    ui.stdin.write('/tmp/revoked-private.txt');await frame(ui,s=>s.includes('••••'));
+    f.source.read=async()=>{throw new DexError('auth_required','private credential detail');};
+    await model.read();
+    const stopped=await frame(ui,s=>s.includes('인증')&&!s.includes('로컬 파일 경로(숨김):'));
+    assert.doesNotMatch(stopped,/revoked-private|\/tmp|private credential detail/);
+    ui.stdin.write('\r');await new Promise(r=>setTimeout(r,30));
+    assert.deepEqual(selected,[]);
   }finally{ui.unmount();await model.dispose();}
 });

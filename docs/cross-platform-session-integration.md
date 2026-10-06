@@ -974,3 +974,36 @@ dex ui --canonical --user-id <id> --profile <HTTPS profile>
 | 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
 
 These are remaining-work estimates, not coverage or delivery dates. The explicit Canonical CLI TUI now supports bounded owned catalog pagination, session creation/selection/clear, visible plain-text submission, original-request retry and exact current-turn stop through its native session. A single model owns drain and write ordering; unknown lifecycle results require explicit latest catalog recovery, and unknown turns cannot change lifecycle scope. Original binding is rechecked under the actual vault lock before native proof/wire, allowing same-sid rotation and rejecting changed login ownership. Parent and independent review plus CLI/native/protocol regressions, actual built-product POSIX PTY/trusted HTTPS/WSS/keychain fixtures and integration-branch enrollment Compose denial/cleanup passed. Review and real UI checks fixed empty-focus creation and catalog loss during transient reads. The HTTPS server and pending-mode failed-fetch seam are explicit test boundaries, not ACTIVE Gateway success. Attachments, installed VS Code, physical Mobile UI/hardware/SecureStore and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.
+
+## Canonical 첨부 메타데이터 계약 (2026-10-06)
+
+- 기준 통합 Head: DEX `9eba2fd854ca1511d55e1cecc3daf801e12e46cb`, SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`. 각각 최신 `feat/cross-platform-session`에서 하위 `feat/cross-platform-attachment-contract`를 만들었다.
+- DEX 하위 [PR172](https://github.com/PlateerLab/xgen-dex-core/pull/172), SDK 하위 [PR60](https://github.com/PlateerLab/xgen-sdk/pull/60)은 별도 관리한다. 상위 DEX PR90·SDK PR53은 `main` 대상 Draft를 유지한다.
+- [첨부 참조 계약](canonical-attachment-reference-contract.md)에 scope/receipt/reference의 타입·Unicode·origin·크기·MIME·checksum 규칙과 서버 연결 순서를 한·영으로 정리했다. DEX와 SDK에 같은 JSON 벡터를 적용한다.
+- 서버 origin·사용자·Canonical 세션·workflow가 정확히 일치하는 receipt만 받아 opaque ID/checksum의 순서가 고정된 불변 참조를 만든다. 중복 ID, 잘못된 Unicode, 경로·URL·raw bytes·신뢰 주장과 상한 초과를 거부한다. MIME은 내용 검증 결과로 취급하지 않는다. 파싱은 인증을 대신하지 않으며 향후 서버 저장 checksum·소유권 검사가 필수다.
+- 현재 text-only API는 `attachments`를 token/proof/wire 전에 거부한다. 업로드·저장소·저널 연결·첨부 UI는 후속 작업이며 이번 계약으로 활성화하지 않았다. 환경변수 변경은 없다. SDK/runtime은 미배포 Workflow source overlay로 검증한다.
+
+### 검증과 실제 테스트 환경
+
+- 제품 검증 SHA: DEX `473d621094750d50671b53a14021c6152b89dc2f`, SDK 최종 Head `308594b15e2d09ee3d64660b0880a90bc1d6319d`. SDK PR60 통합 SHA는 `2d646dcf8ff2e32f75c75d6d859dd1981f864fba`이며 tested Head와 전체 tree가 같다. 이후 DEX에는 증거 문서만 추가하며 최신 Head CI를 확인한다.
+- DEX 첨부 집중96/96, 전체 protocol350/350 및 workspace 타입·protocol 빌드·앱 우회 계약 검사 통과. 빌드된 ESM root export에서 실제 import 및 immutable reference 준비를 확인했다. 추가 `attachments` 입력은 현재 native transport의 token/proof/wire 호출0으로 거부한다.
+- SDK Python3.11 및 기존3.13에서 Agent Session 전체172/172 통과. Python3.11/3.12의 최신 Head CI(run37406432772 및 push run37406430220) 모두 성공이다. 모델 전용 CI는 관계없는 approval registry conftest를 로드하지 않으며 패키지 배포를 실행하지 않는다. 기존3.13 환경에서는 해당 conftest를 포함해 실행했다.
+- 직접 diff 및 독립 보안 리뷰에서 IPv4-mapped IPv6·bare `0x` host·IDN A-label·런타임 Unicode 표 차이·Pydantic 모델 구성 우회·raw exception context를 보완했다. Python IPv6는 packed hextet으로 같은 WHATWG 문자열을 만들며 IDN은 공통 정규화 계약 전까지 거부한다. Unicode 원문을 보존하고 scope를 정확히 비교한다. public helper 예외에서 원시 Pydantic 입력을 보유한 `__context__`까지 제거했다. 추가 blocking 리뷰 문제는 없다.
+- 양쪽 공통 fixture90건의 SHA-256은 `ab4ec79013c8c37a67b8379fb3b16d444c9f25d4215f1eb3fd1ddd7162a47ffa`다. 계약 문서도 한·영 동일 사본이다.
+- Compose 기본 infra/core/gateway + workflow/frontend 및 기존 HTTPS3443 환경이다. `.env` 기본 `GIT_BRANCH=develop`에 대한 서비스별 `feat/cross-platform-session` override를 실제 clean source·container ref/SHA·정확한 `/app` bind와 비교했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`다. 프론트에는 Git binary가 없어 Node로 실제 mount의 HEAD/ref를 읽고 clean host source와 비교했다. Gateway는 실제 `PLATFORM_SESSION_MODE=enrollment`이며 이번 검증을 ACTIVE 성공으로 보고하지 않는다.
+- `bash local-python-packages.sh start/verify`로 SDK 통합 SHA `2d646dcf8ff2e32f75c75d6d859dd1981f864fba`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 fresh snapshot/marker와 실제 `/opt/xgen-local-sdk/src/xgen_sdk`, `/opt/xgen-local-runtime/src/xgen_agent_runtime` import를 확인했다. 새 SDK 첨부 모델을 **실행 중인 Workflow Python3.14 컨테이너**에서 불러 공통90벡터·불변 복사·generic detached error를 통과했다. 실행 중인 OpenAPI와 실제 `SubmitTurnBody`에서 text-only/extra-forbidden도 확인했다. 업로드·턴 실행·DB write·SDK/runtime 배포는 수행하지 않았다. frontend/UI 변경이 없어 앱 미리보기 로그인은 사용하지 않았다.
+- 증거: `/tmp/cross-sync-attachment-{target-tests,protocol-final,check,protocol-check-final,contracts,build-final,sdk-py311,sdk-py313,environment,overlay,overlay-verify,workflow}.log`. fixture90건과 컨테이너 검사 스크립트는 검사 후 컨테이너에서 제거했다. DEX 필수 최신 Head CI·최종 리뷰 결론은 PR172에 기록한다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 3% | 첨부 서버/저널/클라이언트 연결·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+Remaining-work estimates are unchanged because only the attachment metadata foundation is completed. Server-owned upload/storage, journal/hash linking, native/client integration and actual ACTIVE validation are still required. Parent main PRs remain Draft and no SDK/runtime release is performed.

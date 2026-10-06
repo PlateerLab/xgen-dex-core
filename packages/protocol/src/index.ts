@@ -38,6 +38,7 @@ import type { CurrentUser, LoginResult } from './types';
 
 export * from './agent-session';
 export * from './agent-session-focus-recovery';
+export * from './agent-session-attachments';
 export * from './native-platform-session';
 export * from './native-device-proof';
 

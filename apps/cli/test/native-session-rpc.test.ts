@@ -496,6 +496,7 @@ test('Canonical session RPC rejects wrong account, profile and fields before wir
 
 test('Canonical turn RPC methods pass flat named bodies and return safe scoped acknowledgements', async () => {
   const f = await fixture(); const longInput = 'h'.repeat(1025);
+  const references = [{ attachment_id: turn, sha256: 'a'.repeat(64) }, { attachment_id: agentSid, sha256: 'b'.repeat(64) }];
   try {
     await initialize(f); await login(f);
     f.custom((path) => {
@@ -506,7 +507,7 @@ test('Canonical turn RPC methods pass flat named bodies and return safe scoped a
       return undefined;
     });
     const submitted = await f.send('native/submit-turn', { profile: 'corp', user_id: user, agent_session_id: agentSid,
-      input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1' });
+      input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1', attachments: references });
     assert.equal(submitted.error, undefined); assert.equal(submitted.result.platform_type, 'vscode');
     assert.equal(submitted.result.profile, 'corp'); assert.equal(submitted.result.server_url, origin);
     assert.equal(submitted.result.user_id, user); assert.equal(submitted.result.agent_session_id, agentSid);
@@ -524,7 +525,7 @@ test('Canonical turn RPC methods pass flat named bodies and return safe scoped a
       `/api/agentflow/agent-sessions/${agentSid}/turns`, `/api/agentflow/agent-sessions/${agentSid}/stop`,
     ]);
     assert.deepEqual(writes.map(({ init }) => JSON.parse(String(init.body))), [
-      { input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1' },
+      { input_text: longInput, expected_state_version: 1, idempotency_key: 'rpc-request-1', origin_id: 'vscode-1', attachments: references },
       { turn_id: turn, expected_state_version: 2 },
     ]);
     for (const write of writes) {
@@ -546,6 +547,9 @@ test('Canonical turn RPC validation, unknown fields and host account binding fai
       ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 0, idempotency_key: 'request' }],
       ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: '', private_token: 'private-secret' }],
       ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: 'request', origin_id: '' }],
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: 'request', attachments: [{ attachment_id: turn, sha256: 'a'.repeat(64), path: '/private-secret' }] }],
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: 'request', attachments: [{ attachment_id: turn, sha256: 'a'.repeat(64) }, { attachment_id: turn, sha256: 'a'.repeat(64) }] }],
+      ['native/submit-turn', { user_id: user, agent_session_id: agentSid, input_text: 'x', expected_state_version: 1, idempotency_key: 'request', attachments: [{ attachment_id: turn, sha256: 'A'.repeat(64) }] }],
       ['native/stop-turn', { user_id: user, agent_session_id: agentSid, turn_id: 'not-a-turn', expected_state_version: 1 }],
       ['native/stop-turn', { user_id: user, agent_session_id: agentSid, turn_id: turn, expected_state_version: 0 }],
       ['native/stop-turn', { user_id: user, agent_session_id: agentSid, turn_id: turn, expected_state_version: 1, password: 'private-secret' }],

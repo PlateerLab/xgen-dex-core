@@ -62,3 +62,22 @@ test('extractable private keys are rejected by the DPoP supplier', async () => {
   const publicKey = await subtle.exportKey('jwk', pair.publicKey) as NativePublicKey;
   assert.throws(() => createNativeDpopSigner(pair.privateKey, publicKey, origin), TypeError);
 });
+
+test('attachment signing admits only exact reservation, content and cancellation methods', async () => {
+  const f = await fixture();
+  const base = '/api/agentflow/agent-sessions/018f1240-0000-7000-8000-000000000001/attachments';
+  const attachment = base + '/018f1240-0000-7000-8000-000000000002';
+  for (const [method, path] of [['POST', base], ['PUT', attachment + '/content'], ['POST', attachment + '/cancel']] as const) {
+    const jwt = await f.sign(method, origin + path, token);
+    const [header, payload, signature] = jwt.split('.');
+    const claims = JSON.parse(Buffer.from(payload!, 'base64url').toString());
+    assert.equal(claims.htm, method); assert.equal(claims.htu, origin + path);
+    assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, f.pair.publicKey,
+      Buffer.from(signature!, 'base64url'), new TextEncoder().encode(`${header}.${payload}`)), true);
+  }
+  for (const [method, path] of [['PUT', base], ['POST', attachment + '/content'], ['PUT', attachment + '/cancel'],
+    ['POST', base + '/'], ['PUT', attachment + '/content?x=1'], ['POST', attachment + '/cancel/extra'],
+    ['PUT', attachment.toUpperCase() + '/content'], ['POST', base.replace('018f1240', 'not-a-uuid')]] as const) {
+    await assert.rejects(f.sign(method, origin + path, token), TypeError);
+  }
+});

@@ -1,6 +1,6 @@
 /**
- * Canonical attachment metadata preparation. This does not enable uploads or
- * attachment turns, authenticate receipts, or grant access to stored bytes.
+ * Canonical attachment metadata preparation. Parsing does not authenticate
+ * receipts or grant access to stored bytes; the upload client and server do that.
  * Servers must still verify ownership and stored checksum under their verified
  * principal. MIME is descriptive only; no path, URL or raw data is accepted.
  */
@@ -14,6 +14,7 @@ const DIGEST = /^[0-9a-f]{64}(?![\s\S])/;
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?![\s\S])/;
 const UNSAFE_NAME = /[\/\\\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 const SCOPE_FIELDS = ['origin', 'user_id', 'session_id', 'workflow_id'] as const;
+const RESERVE_FIELDS = ['upload_key', 'filename', 'size_bytes', 'media_type', 'sha256'] as const;
 const RECEIPT_FIELDS = [
   ...SCOPE_FIELDS, 'attachment_id', 'filename', 'size_bytes', 'media_type', 'sha256',
 ] as const;
@@ -33,7 +34,17 @@ export interface AgentAttachmentReceipt extends AgentAttachmentScope {
   readonly sha256: string;
 }
 
-/** Future wire reference: does not carry display hints, identity claims or storage locations. */
+export interface ReserveAgentAttachment {
+  readonly upload_key: string;
+  readonly filename: string;
+  readonly size_bytes: number;
+  readonly media_type: string;
+  readonly sha256: string;
+}
+
+export type ReserveAgentAttachmentInput = ReserveAgentAttachment;
+
+/** Turn wire reference: does not carry display hints, identity claims or storage locations. */
 export interface AgentAttachmentReference {
   readonly attachment_id: string;
   readonly sha256: string;
@@ -136,10 +147,38 @@ function parseReceipt(value: unknown, expectedScope: unknown): AgentAttachmentRe
   });
 }
 
+/** Validate a server-issued attachment identifier before placing it in a URL or turn reference. */
+export function validateAgentAttachmentId(value: unknown): string {
+  return safe(() => {
+    if (typeof value !== 'string' || !UUID.test(value)) invalid();
+    return value;
+  });
+}
+
+/** Validate and copy reservation metadata before credentials, proofs or storage are consulted. */
+export function validateReserveAgentAttachment(
+  scope: unknown, metadata: unknown,
+): Readonly<ReserveAgentAttachment> {
+  return safe(() => {
+    parseAgentAttachmentScope(scope);
+    const raw = exactRecord(metadata, RESERVE_FIELDS);
+    if (typeof raw.upload_key !== 'string' || !/^[\x21-\x7e]{1,128}(?![\s\S])/.test(raw.upload_key)
+      || !validName(raw.filename, 255) || raw.filename === '.' || raw.filename === '..'
+      || typeof raw.size_bytes !== 'number' || !Number.isSafeInteger(raw.size_bytes)
+      || raw.size_bytes < 0 || raw.size_bytes > AGENT_ATTACHMENT_MAX_BYTES
+      || typeof raw.media_type !== 'string' || raw.media_type.length > 255 || !MEDIA_TYPE.test(raw.media_type)
+      || typeof raw.sha256 !== 'string' || !DIGEST.test(raw.sha256)) invalid();
+    return Object.freeze({
+      upload_key: raw.upload_key, filename: raw.filename, size_bytes: raw.size_bytes,
+      media_type: raw.media_type, sha256: raw.sha256,
+    });
+  });
+}
+
 /**
  * Copy a bounded ordered list for an immutable original intent. A caller must
- * discard it when its authenticated scope changes, and must not send it to the
- * current text-only turn API. Duplicate IDs are never deduplicated silently.
+ * discard it when its authenticated scope changes. Duplicate IDs are never
+ * deduplicated silently; submitTurn preserves this list in the canonical request.
  */
 export function prepareAgentAttachmentReferences(
   receipts: unknown, expectedScope: unknown,

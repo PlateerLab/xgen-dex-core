@@ -162,6 +162,52 @@ test('validators return copies and reject unknown fields, unsafe primitives, mal
   assert.throws(() => validateStopAgentTurn(SESSION, { turn_id: TURN.toUpperCase(), expected_state_version: 1 }), TypeError);
 });
 
+test('submit accepts copied frozen ordered attachment references and omits an empty list on the wire', async () => {
+  const references = [
+    { attachment_id: TURN, sha256: 'a'.repeat(64) },
+    { attachment_id: OTHER_TURN, sha256: 'b'.repeat(64) },
+  ];
+  const normalized = validateSubmitAgentTurn(SESSION, { ...SUBMIT, attachments: references });
+  assert.deepEqual(normalized.attachments, references);
+  assert.ok(Object.isFrozen(normalized.attachments));
+  assert.ok(normalized.attachments?.every(Object.isFrozen));
+  references.reverse(); references[1].sha256 = 'c'.repeat(64);
+  assert.equal(normalized.attachments?.[0].attachment_id, TURN);
+  assert.equal(normalized.attachments?.[0].sha256, 'a'.repeat(64));
+  assert.deepEqual(validateSubmitAgentTurn(SESSION, { ...SUBMIT, attachments: [] }), SUBMIT);
+
+  let body: Record<string, unknown> | undefined;
+  const client = new AgentSessionMutationClient('https://app.example.test', proof(), (async (_url, init) => {
+    body = JSON.parse(String(init?.body));
+    return Response.json(submitted(), { status: 202 });
+  }) as typeof fetch);
+  await client.submitTurn(SESSION, { ...SUBMIT, attachments: [] });
+  assert.deepEqual(body, SUBMIT);
+});
+
+test('attachment references reject duplicates, excess, sparse entries and location or display fields', () => {
+  const reference = { attachment_id: TURN, sha256: 'a'.repeat(64) };
+  const invalid: unknown[] = [
+    [reference, reference],
+    Array.from({ length: 11 }, (_, index) => ({
+      attachment_id: `0000000${index}-1111-4111-8111-111111111111`, sha256: 'a'.repeat(64),
+    })),
+    new Array(1),
+    [{ ...reference, path: '/private/file' }], [{ ...reference, url: 'https://storage.example/file' }],
+    [{ ...reference, filename: 'secret.txt' }], [{ ...reference, sha256: 'A'.repeat(64) }],
+    [{ ...reference, attachment_id: TURN.toUpperCase() }],
+    [{ ...reference, sha256: 'a'.repeat(64) + '\n' }],
+  ];
+  for (const attachments of invalid) {
+    assert.throws(() => validateSubmitAgentTurn(SESSION, { ...SUBMIT, attachments }), TypeError);
+  }
+  const accessor = { ...SUBMIT } as Record<string, unknown>;
+  Object.defineProperty(accessor, 'attachments', { get: () => { throw new Error('/private/path'); }, enumerable: true });
+  assert.throws(() => validateSubmitAgentTurn(SESSION, accessor), {
+    name: 'TypeError', message: 'Invalid canonical Agent Session mutation input',
+  });
+});
+
 test('invalid input fails synchronously before credentials, proof, or fetch are consulted', async () => {
   let credentials = 0; let signatures = 0; let fetches = 0;
   const client = new AgentSessionMutationClient('https://app.example.test', proof({

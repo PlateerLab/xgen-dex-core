@@ -2,6 +2,9 @@ import { createHash, randomUUID, webcrypto } from 'node:crypto';
 import type { NativePublicKey } from '@dex/protocol/native-platform-session';
 
 const subtle = webcrypto.subtle as unknown as SubtleCrypto;
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const POST_AGENT_ROUTE = new RegExp(`^/api/agentflow/agent-sessions/${UUID}/(?:turns|stop|attachments(?:/${UUID}/cancel)?)$`);
+const PUT_ATTACHMENT_ROUTE = new RegExp(`^/api/agentflow/agent-sessions/${UUID}/attachments/${UUID}/content$`);
 export type NativeDpopSigner = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', htu: string, token: string, signal?: AbortSignal) => Promise<string>;
 export function nativeKeyThumbprint(key: NativePublicKey): string {
   return createHash('sha256').update(JSON.stringify({ crv: key.crv, kty: key.kty, x: key.x, y: key.y })).digest('base64url');
@@ -20,8 +23,8 @@ export function createNativeDpopSigner(key: CryptoKey, publicKey: NativePublicKe
     const url = new URL(htu);
     if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)
       || (method === 'POST' && url.pathname !== '/api/agentflow/agent-sessions'
-        && !/^\/api\/agentflow\/agent-sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:turns|stop)$/.test(url.pathname))
-      || (method === 'PUT' && url.pathname !== '/api/agentflow/me/agent-state')
+        && !POST_AGENT_ROUTE.test(url.pathname))
+      || (method === 'PUT' && url.pathname !== '/api/agentflow/me/agent-state' && !PUT_ATTACHMENT_ROUTE.test(url.pathname))
       || url.origin !== origin || url.username || url.password || url.search || url.hash
       || url.href !== htu || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token) || token.length > 8192) {
       throw new TypeError('Invalid DPoP request binding');

@@ -116,6 +116,10 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
   const incompleteMessages = (view.conversation?.messages.length ?? 0) - completeMessages.length;
   const draftBytes = new TextEncoder().encode(binding.draft).length;
   const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(view.turn.status);
+  const attachmentBytes = view.attachments.items.reduce((sum, item) => sum + item.size_bytes, 0);
+  const attachmentsReady = view.attachments.items.every((item) => item.status === 'ready' && item.receipt);
+  const attachmentDisabled = !binding.model || !authoritativeConversation || view.busy || view.attachments.busy
+    || !view.turn.canSubmit || turnBlocksSessionWrite;
   const sessionWriteDisabled = !binding.model
     || !ready
     || view.busy
@@ -341,12 +345,74 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
         }}
       />
       <p className="canonical-chat__hint">UTF-8 {draftBytes.toLocaleString()} / 262,144 bytes · 공백과 줄바꿈을 입력 그대로 전송합니다.</p>
+      <div className="canonical-chat__attachments" id="canonical-chat-attachment-composer">
+        <div className="canonical-chat__actions">
+          <button
+            id="canonical-chat-attachment-pick"
+            type="button"
+            className="secondary"
+            disabled={attachmentDisabled || view.attachments.items.length >= 10 || attachmentBytes >= 100 * 1024 * 1024}
+            onClick={() => void binding.model?.pickAttachments()}
+          >파일 선택</button>
+          <button
+            id="canonical-chat-attachment-discard"
+            type="button"
+            className="secondary"
+            disabled={attachmentDisabled || !view.attachments.items.length}
+            onClick={() => void binding.model?.discardAttachments()}
+          >모든 첨부 지우기</button>
+        </div>
+        <p className="canonical-chat__hint" id="canonical-chat-attachment-summary">
+          첨부 {view.attachments.items.length} / 10개 · {attachmentBytes.toLocaleString()} / {(100 * 1024 * 1024).toLocaleString()} bytes
+        </p>
+        <div id="canonical-chat-attachment-list">
+          {view.attachments.items.map((item, index) => <div className="canonical-chat__attachment" key={item.selection_id}
+            id={`canonical-chat-attachment-item-${item.selection_id}`}>
+            <p>{index + 1}. {item.filename}</p>
+            <p className="canonical-chat__hint">{item.media_type} · {item.size_bytes.toLocaleString()} bytes · 상태 {
+              item.status === 'selected' ? '선택됨' : item.status === 'reserved' ? '예약됨'
+                : item.status === 'uncertain' ? '결과 확인 필요' : '영수증 확인 완료'
+            }</p>
+            <div className="canonical-chat__actions">
+              {(item.status === 'selected' || item.status === 'reserved') && <button
+                id={`canonical-chat-attachment-upload-${item.selection_id}`}
+                type="button"
+                className="secondary"
+                disabled={attachmentDisabled}
+                onClick={() => void binding.model?.uploadAttachment(item.selection_id)}
+              >업로드</button>}
+              {item.status === 'uncertain' && <button
+                id={`canonical-chat-attachment-recover-${item.selection_id}`}
+                type="button"
+                className="secondary"
+                disabled={attachmentDisabled}
+                onClick={() => void binding.model?.recoverAttachment(item.selection_id)}
+              >영수증 복구</button>}
+              <button
+                id={`canonical-chat-attachment-cancel-${item.selection_id}`}
+                type="button"
+                className="secondary"
+                disabled={attachmentDisabled}
+                onClick={() => void binding.model?.cancelAttachment(item.selection_id)}
+              >첨부 취소</button>
+            </div>
+          </div>)}
+        </div>
+        {view.attachments.items.length > 0 && !attachmentsReady && <p className="canonical-chat__warning"
+          id="canonical-chat-attachment-required" role="status">
+          선택한 모든 파일의 업로드와 영수증 확인을 완료한 뒤 요청을 보내세요.
+        </p>}
+        {view.attachments.notice && <p className="canonical-chat__warning" id="canonical-chat-attachment-notice" role="status">
+          {view.attachments.notice}
+        </p>}
+      </div>
       <div className="canonical-chat__actions">
         <button
           id="canonical-chat-submit"
           type="button"
           className="primary"
-          disabled={!authoritativeConversation || view.busy || !view.turn.canSubmit || draftBytes === 0 || draftBytes > 262144}
+          disabled={!authoritativeConversation || view.busy || !view.turn.canSubmit || !attachmentsReady
+            || draftBytes === 0 || draftBytes > 262144}
           onClick={() => void submit(false)}
         >보내기</button>
         <button

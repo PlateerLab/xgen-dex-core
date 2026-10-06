@@ -34,6 +34,10 @@ import type {
 import type { SubmittedAgentTurn, StoppedAgentTurn } from '@dex/protocol/agent-session-mutation';
 import type { AgentFocus, parseAgentSessionList } from '@dex/protocol/agent-session';
 import type { CreatedAgentSession } from '@dex/protocol/agent-session-lifecycle';
+import type { NativeAttachmentDraftView } from './native-attachment-drafts';
+
+export type { NativeAttachmentDraftView, NativeAttachmentDraftStatus, NativeAttachmentSelectionLimits,
+  TrustedNativeAttachment } from './native-attachment-drafts';
 
 export type {
   Agent,
@@ -89,6 +93,8 @@ export interface NativeRpcResult {
   created?: CreatedAgentSession;
   agent_session_id?: string;
   mutation?: SubmittedAgentTurn | StoppedAgentTurn;
+  workflow_id?: string;
+  attachments?: readonly NativeAttachmentDraftView[];
   platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; user_id: string;
   result?: NativeSessionSummary | NativeEnrollmentResult;
   watch_id?: string;

@@ -245,6 +245,7 @@ export class AgentSessionAttachmentClient {
   private async request(
     method: 'GET' | 'POST' | 'PUT', path: string, body: BodyInit | undefined,
     contentType: string | undefined, signal: AbortSignal | undefined, write: boolean,
+    dispatched?: (pending: Promise<Response>) => void,
   ): Promise<Response> {
     if (signal?.aborted) throw abortError();
     let token: string | null;
@@ -277,6 +278,7 @@ export class AgentSessionAttachmentClient {
       if (write) throw new AgentSessionAttachmentOutcomeUnknown();
       throw new AgentSessionAttachmentTransportError();
     }
+    dispatched?.(pending);
     const aborted = abortRace<Response>(signal, () => {
       void pending.then((response) => cancelBody(response), () => undefined);
     });
@@ -322,26 +324,34 @@ export class AgentSessionAttachmentClient {
     const scope = this.scope(scopeValue);
     const attachmentId = validateAgentAttachmentId(attachmentIdValue);
     const metadata = validateReserveAgentAttachment(scope, metadataValue);
-    if (!(bytesValue instanceof Uint8Array)) {
+    if (!(bytesValue instanceof Uint8Array) || bytesValue.byteLength !== metadata.size_bytes) {
       throw new TypeError('Attachment content must be a Uint8Array');
     }
     let bytes: Uint8Array<ArrayBuffer>;
     try { bytes = Uint8Array.from(bytesValue); }
     catch { throw new TypeError('Attachment content must be a readable Uint8Array'); }
-    if (bytes.byteLength !== metadata.size_bytes) {
-      throw new TypeError('Attachment content size does not match reserved metadata');
-    }
-    if (await sha256Bytes(bytes, signal) !== metadata.sha256) {
-      throw new TypeError('Attachment content checksum does not match reserved metadata');
-    }
-    const path = `/api/agentflow/agent-sessions/${scope.session_id}/attachments/${attachmentId}/content`;
-    const response = await this.request('PUT', path, bytes, 'application/octet-stream', signal, true);
-    this.checkResponse(response, `${this.origin}${path}`, 200, true);
+    let handedToTransport = false;
     try {
-      const receipt = parseAgentAttachmentReceipt(await readBoundedJson(response, signal), scope);
-      if (!sameReceipt(receipt, attachmentId, metadata)) protocolError();
-      return receipt;
-    } catch { throw new AgentSessionAttachmentOutcomeUnknown(response.status); }
+      if (bytes.byteLength !== metadata.size_bytes) {
+        throw new TypeError('Attachment content size does not match reserved metadata');
+      }
+      if (await sha256Bytes(bytes, signal) !== metadata.sha256) {
+        throw new TypeError('Attachment content checksum does not match reserved metadata');
+      }
+      const path = `/api/agentflow/agent-sessions/${scope.session_id}/attachments/${attachmentId}/content`;
+      const response = await this.request('PUT', path, bytes, 'application/octet-stream', signal, true, (pending) => {
+        // A cancelled caller may return while an injected transport still consumes its body.
+        // Wipe only when that transport settles, and never mutate the public caller's buffer.
+        handedToTransport = true;
+        void pending.then(() => bytes.fill(0), () => bytes.fill(0));
+      });
+      this.checkResponse(response, `${this.origin}${path}`, 200, true);
+      try {
+        const receipt = parseAgentAttachmentReceipt(await readBoundedJson(response, signal), scope);
+        if (!sameReceipt(receipt, attachmentId, metadata)) protocolError();
+        return receipt;
+      } catch { throw new AgentSessionAttachmentOutcomeUnknown(response.status); }
+    } finally { if (!handedToTransport) bytes.fill(0); }
   }
 
   async readReceipt(

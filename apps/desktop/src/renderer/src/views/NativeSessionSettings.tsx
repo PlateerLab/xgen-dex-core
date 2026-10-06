@@ -17,6 +17,7 @@ const initialTurn: AgentTurnComposerView = { status: 'unavailable', canSubmit: f
 export const NativeSessionSettings: React.FC<{ origin: string; binding?: DesktopNativeSessionBinding }> = ({ origin, binding }) => {
   const [localView, setView] = useState<DesktopNativeView>({ busy: false, result: null, focus: null, conversation: null, hasMore: false,
     connection: 'idle', transport: 'none', error: '', turn: initialTurn,
+    attachments: { items: Object.freeze([]), busy: false, notice: '' },
     catalog: { focus: null, items: [], nextCursor: null, hasMore: false, olderPage: false, pageKnown: false, busy: false, writeBlocked: false, notice: '' } });
   const model = useRef<DesktopNativeSessionModel | null>(null);
   const currentBinding = useRef(binding);
@@ -88,6 +89,9 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
   const incompleteMessages = (view.conversation?.messages.length ?? 0) - completeMessages.length;
   const turnInputBytes = new TextEncoder().encode(turnInput).length;
   const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(view.turn.status);
+  const attachmentBytes = view.attachments.items.reduce((sum, item) => sum + item.size_bytes, 0);
+  const attachmentsReady = view.attachments.items.every((item) => item.status === 'ready' && item.receipt);
+  const attachmentDisabled = disabled || view.attachments.busy || !view.turn.canSubmit || turnBlocksSessionWrite;
   const sessionWriteDisabled = disabled || !view.catalog.focus || view.catalog.busy || view.catalog.writeBlocked || turnBlocksSessionWrite;
   const catalogPageStatus = view.catalog.pageKnown
     ? `${view.catalog.olderPage ? '이전 세션 페이지' : '최신 세션 페이지'} · ${view.catalog.items.length}개 표시`
@@ -178,7 +182,8 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('watch-conversation')}>공유 대화 폴링</button>
         <button className="secondary" disabled={disabled} onClick={() => void model.current?.execute('watch-live')}>공유 대화 실시간 연결</button>
         <button className="secondary" disabled={view.busy || view.connection === 'idle'} onClick={() => void model.current?.stopWatch()}>대화 연결·폴링 중단</button>
-        <button className="secondary" onClick={() => void model.current?.execute('cancel')}>작업·구독 중단</button>
+        <button className="secondary" disabled={turnBlocksSessionWrite && view.attachments.items.length > 0}
+          onClick={() => void model.current?.execute('cancel')}>작업·구독 중단</button>
         <button className="secondary" disabled={disabled} onClick={() => setForget(true)}>중단된 로컬 기록 삭제</button>
       </div>
       {forget && <div className="field"><p className="settings-hint warn">먼저 브라우저 내 페이지에서 서버 세션을 폐기하세요. 이 작업은 서버 폐기 없이 로컬 기록만 삭제합니다.</p>
@@ -193,8 +198,52 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
             }} />
         </label>
         <p className="small muted">UTF-8 {turnInputBytes.toLocaleString()} / 262,144 bytes · 줄바꿈을 포함한 입력 그대로 전송합니다.</p>
+        <div className="field" id="native-attachment-composer">
+          <p><strong>첨부 파일</strong></p>
+          <p className="settings-hint">신뢰된 시스템 파일 선택 창에서 최대 10개, 합계 100 MiB까지 선택한 뒤 각 파일을 업로드하세요.</p>
+          <div className="field-row">
+            <button id="native-attachment-pick" className="secondary"
+              disabled={attachmentDisabled || view.attachments.items.length >= 10 || attachmentBytes >= 100 * 1024 * 1024}
+              onClick={() => void model.current?.pickAttachments()}>파일 선택</button>
+            <button id="native-attachment-discard" className="secondary"
+              disabled={attachmentDisabled || !view.attachments.items.length}
+              onClick={() => void model.current?.discardAttachments()}>모든 첨부 지우기</button>
+          </div>
+          <p className="small muted" id="native-attachment-summary">
+            {view.attachments.items.length} / 10개 · {attachmentBytes.toLocaleString()} / {(100 * 1024 * 1024).toLocaleString()} bytes
+          </p>
+          <div id="native-attachment-list">
+            {view.attachments.items.map((item, index) => <div className="field" key={item.selection_id}
+              id={`native-attachment-item-${item.selection_id}`}>
+              <p>{index + 1}. {item.filename}</p>
+              <p className="small muted">{item.media_type} · {item.size_bytes.toLocaleString()} bytes · 상태 {
+                item.status === 'selected' ? '선택됨' : item.status === 'reserved' ? '예약됨'
+                  : item.status === 'uncertain' ? '결과 확인 필요' : '영수증 확인 완료'
+              }</p>
+              <p className="small muted">선택 핸들 {item.selection_id} · SHA-256 {item.sha256}</p>
+              {item.attachment_id && <p className="small muted">첨부 ID {item.attachment_id}</p>}
+              {item.receipt && <p className="small muted">영수증: {item.receipt.filename} · {item.receipt.media_type}
+                {' · '}{item.receipt.size_bytes.toLocaleString()} bytes · {item.receipt.sha256}</p>}
+              <div className="field-row">
+                {(item.status === 'selected' || item.status === 'reserved') && <button className="secondary"
+                  id={`native-attachment-upload-${item.selection_id}`} disabled={attachmentDisabled}
+                  onClick={() => void model.current?.uploadAttachment(item.selection_id)}>업로드</button>}
+                {item.status === 'uncertain' && <button className="secondary"
+                  id={`native-attachment-recover-${item.selection_id}`} disabled={attachmentDisabled}
+                  onClick={() => void model.current?.recoverAttachment(item.selection_id)}>영수증 복구</button>}
+                <button className="secondary" id={`native-attachment-cancel-${item.selection_id}`}
+                  disabled={attachmentDisabled}
+                  onClick={() => void model.current?.cancelAttachment(item.selection_id)}>첨부 취소</button>
+              </div>
+            </div>)}
+          </div>
+          {view.attachments.notice && <p className="settings-hint warn" id="native-attachment-notice" role="status">
+            {view.attachments.notice}
+          </p>}
+        </div>
         <div className="field-row">
-          <button id="native-turn-submit" disabled={disabled || !view.turn.canSubmit || turnInputBytes === 0 || turnInputBytes > 262144}
+          <button id="native-turn-submit" disabled={disabled || !view.turn.canSubmit || !attachmentsReady
+            || turnInputBytes === 0 || turnInputBytes > 262144}
             onClick={() => void submitTurn(false)}>턴 보내기</button>
           <button id="native-turn-retry" className="secondary" disabled={disabled || !view.turn.canRetry}
             onClick={() => void submitTurn(true)}>같은 요청 다시 확인</button>

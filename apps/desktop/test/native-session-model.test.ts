@@ -13,6 +13,20 @@ const runningConversation = { ...conversation, snapshot: { ...conversation.snaps
 const sessionId = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const ownedSession = (value: number, title = `Session ${value}`) => ({ id: sessionId(value), workflow_id: `flow-${value}`, title,
   status: 'active' as const, current_sequence: value, state_version: Math.max(1, value) });
+const attachmentId = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+const selectedAttachment = (selectionId: string, name: string, digest: string) => ({ selection_id: selectionId, filename: name,
+  size_bytes: 4, media_type: 'application/octet-stream', sha256: digest, status: 'selected' as const });
+const uncertainAttachment = (selectionId: string, name: string, digest: string, id: string) => ({
+  ...selectedAttachment(selectionId, name, digest), status: 'uncertain' as const, attachment_id: id,
+});
+const readyAttachment = (selectionId: string, name: string, digest: string, id: string) => ({
+  ...selectedAttachment(selectionId, name, digest), status: 'ready' as const, attachment_id: id,
+  receipt: { origin: context.server_url, user_id: context.user_id, session_id: conversation.snapshot.id,
+    workflow_id: conversation.snapshot.workflow_id, attachment_id: id, filename: name, size_bytes: 4,
+    media_type: 'application/octet-stream', sha256: digest },
+});
+const attachmentReply = (attachments: readonly unknown[]): DesktopNativeReply => ({ ok: true, value: { ...context,
+  agent_session_id: conversation.snapshot.id, workflow_id: conversation.snapshot.workflow_id, attachments: attachments as any } });
 function fixture() {
   let listener!: (n: DesktopNativeNotice) => void; let respond: DesktopNativeBridge['request'] = async () => ({ ok: true, value: context });
   const calls: string[] = []; const requests: Array<{ method: string; params?: Record<string, unknown> }> = []; const rendered: unknown[] = [];
@@ -111,6 +125,201 @@ test('Desktop retries an unknown submit with the exact original private intent a
   assert.equal(writes[0].input_text, ' first\nsecond ');
   assert.equal(typeof writes[0].idempotency_key, 'string');
   for (const forbidden of ['profile', 'user_id', 'server_url', 'platform_type', 'origin']) assert.equal(forbidden in writes[0], false);
+});
+
+test('Desktop recovers an unknown upload and submits every ready receipt in selected order', async () => {
+  const f = fixture(); const firstSelection = 'selection-a'; const secondSelection = 'selection-b';
+  const firstId = attachmentId(31); const secondId = attachmentId(32);
+  const firstDigest = 'a'.repeat(64); const secondDigest = 'b'.repeat(64);
+  const selected = [selectedAttachment(firstSelection, 'first.bin', firstDigest),
+    selectedAttachment(secondSelection, 'second.bin', secondDigest)];
+  const uncertain = [uncertainAttachment(firstSelection, 'first.bin', firstDigest, firstId), selected[1]!];
+  const firstReady = [readyAttachment(firstSelection, 'first.bin', firstDigest, firstId), selected[1]!];
+  const allReady = [firstReady[0]!, readyAttachment(secondSelection, 'second.bin', secondDigest, secondId)];
+  const writes: Record<string, unknown>[] = []; let submitAttempts = 0;
+  f.respond(async (method, params) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply(selected);
+    if (method === 'upload-attachment' && params?.selection_id === firstSelection) {
+      return { ok: false, code: 'network_error', message: 'private transport details', outcome: 'unknown' };
+    }
+    if (method === 'attachments') return attachmentReply(uncertain);
+    if (method === 'recover-attachment') return attachmentReply(firstReady);
+    if (method === 'upload-attachment' && params?.selection_id === secondSelection) return attachmentReply(allReady);
+    if (method === 'submit-turn') {
+      writes.push(structuredClone(params ?? {})); submitAttempts++;
+      if (submitAttempts === 1) return { ok: false, code: 'network_error', message: 'lost acknowledgement', outcome: 'unknown' };
+      return { ok: true, value: { ...context, agent_session_id: conversation.snapshot.id,
+        mutation: { turn_id: attachmentId(33), status: 'running', accepted_sequence: 2, state_version: 2, replayed: true } } };
+    }
+    if (method === 'discard-attachments') return attachmentReply([]);
+    return { ok: true, value: context };
+  });
+
+  await f.model.execute('conversation');
+  assert.equal(await f.model.pickAttachments(), true);
+  assert.deepEqual(f.model.state.attachments.items.map((item) => item.selection_id), [firstSelection, secondSelection]);
+  assert.equal(await f.model.uploadAttachment(firstSelection), false);
+  assert.equal(f.model.state.attachments.items[0]?.status, 'uncertain');
+  assert.equal(f.model.state.attachments.items[0]?.attachment_id, firstId);
+  assert.equal(await f.model.recoverAttachment(firstSelection), true);
+  assert.equal(await f.model.uploadAttachment(secondSelection), true);
+  assert.ok(f.model.state.attachments.items.every((item) => item.status === 'ready' && Object.isFrozen(item)));
+  assert.ok(Object.isFrozen(f.model.state.attachments.items));
+
+  assert.equal(await f.model.submitTurn('attach both'), false);
+  assert.equal(f.model.state.turn.status, 'unknown');
+  const beforeBlockedAction = f.requests.length;
+  assert.equal(await f.model.execute('cancel'), null);
+  assert.equal(await f.model.cancelAttachment(firstSelection), false);
+  assert.equal(f.requests.length, beforeBlockedAction);
+  assert.equal(await f.model.retryTurn(), true);
+  assert.equal(submitAttempts, 2); assert.deepEqual(writes[1], writes[0]);
+  assert.deepEqual(writes[0]?.attachments, [
+    { attachment_id: firstId, sha256: firstDigest }, { attachment_id: secondId, sha256: secondDigest },
+  ]);
+  assert.deepEqual(f.model.state.attachments.items, []);
+  assert.ok(f.requests.some((request) => request.method === 'discard-attachments'));
+});
+
+test('Desktop rejects malformed attachment receipts without losing the selected draft or exposing raw values', async () => {
+  const f = fixture(); const selection = selectedAttachment('selection-malformed', 'safe.bin', 'c'.repeat(64));
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply([selection]);
+    if (method === 'upload-attachment') return attachmentReply([{ ...readyAttachment(selection.selection_id, selection.filename,
+      selection.sha256, attachmentId(40)), receipt: { raw_path: '/private/secret', token: 'server-secret' } }]);
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.pickAttachments();
+  assert.equal(await f.model.uploadAttachment(selection.selection_id), false);
+  assert.equal(f.model.state.attachments.items[0]?.status, 'selected');
+  assert.equal(f.model.state.attachments.notice, '첨부 응답을 확인할 수 없습니다. 파일을 다시 선택해 주세요.');
+  assert.equal(JSON.stringify(f.model.state).includes('/private/secret'), false);
+  assert.equal(JSON.stringify(f.model.state).includes('server-secret'), false);
+});
+
+test('Desktop clears attachment handles before a changed account can apply a late upload callback', async () => {
+  const f = fixture(); const selection = selectedAttachment('selection-late', 'late.bin', 'd'.repeat(64));
+  let resolveUpload!: (reply: DesktopNativeReply) => void; let started!: () => void;
+  const uploadStarted = new Promise<void>((resolve) => { started = resolve; });
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply([selection]);
+    if (method === 'upload-attachment') {
+      started(); return new Promise<DesktopNativeReply>((resolve) => { resolveUpload = resolve; });
+    }
+    if (method === 'cancel') return { ok: true, value: { watching: false } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.pickAttachments();
+  const pending = f.model.uploadAttachment(selection.selection_id); await uploadStarted;
+  f.notify({ type: 'cleared' });
+  assert.deepEqual(f.model.state.attachments.items, []);
+  assert.equal(f.requests.at(-1)?.method, 'cancel');
+  resolveUpload(attachmentReply([readyAttachment(selection.selection_id, selection.filename, selection.sha256, attachmentId(41))]));
+  assert.equal(await pending, false);
+  assert.deepEqual(f.model.state.attachments.items, []); assert.equal(f.model.state.result, null);
+});
+
+test('Desktop suppresses an old-scope attachment read-back after account clear', async () => {
+  const f = fixture(); const selection = selectedAttachment('selection-readback', 'readback.bin', 'e'.repeat(64));
+  const uncertain = uncertainAttachment(selection.selection_id, selection.filename, selection.sha256, attachmentId(42));
+  let resolveRead!: (reply: DesktopNativeReply) => void; let reading!: () => void;
+  const readStarted = new Promise<void>((resolve) => { reading = resolve; });
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply([selection]);
+    if (method === 'upload-attachment') return { ok: false, code: 'network_error', message: 'unknown', outcome: 'unknown' };
+    if (method === 'attachments') {
+      reading(); return new Promise<DesktopNativeReply>((resolve) => { resolveRead = resolve; });
+    }
+    if (method === 'cancel') return { ok: true, value: { watching: false } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.pickAttachments();
+  const pending = f.model.uploadAttachment(selection.selection_id); await readStarted;
+  f.notify({ type: 'cleared' }); resolveRead(attachmentReply([uncertain]));
+  assert.equal(await pending, false);
+  assert.equal(f.model.state.result, null); assert.deepEqual(f.model.state.attachments.items, []);
+  assert.equal(JSON.stringify(f.model.state).includes(selection.filename), false);
+});
+
+test('Desktop suppresses an old-scope attachment read-back rejection after account clear', async () => {
+  const f = fixture(); const selection = selectedAttachment('selection-readback-error', 'readback-error.bin', '1'.repeat(64));
+  let rejectRead!: (error: Error) => void; let reading!: () => void;
+  const readStarted = new Promise<void>((resolve) => { reading = resolve; });
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply([selection]);
+    if (method === 'upload-attachment') return { ok: false, code: 'network_error', message: 'unknown', outcome: 'unknown' };
+    if (method === 'attachments') {
+      reading(); return new Promise<DesktopNativeReply>((_resolve, reject) => { rejectRead = reject; });
+    }
+    if (method === 'cancel') return { ok: true, value: { watching: false } };
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.pickAttachments();
+  const pending = f.model.uploadAttachment(selection.selection_id); await readStarted;
+  f.notify({ type: 'cleared' }); rejectRead(new Error('old private transport detail'));
+  assert.equal(await pending, false);
+  assert.equal(f.model.state.result, null); assert.deepEqual(f.model.state.attachments.items, []);
+  assert.equal(JSON.stringify(f.model.state).includes(selection.filename), false);
+});
+
+test('Desktop resyncs a handle-only unknown upload before deciding whether recovery is possible', async () => {
+  const f = fixture(); const selection = selectedAttachment('selection-resync', 'resync.bin', 'f'.repeat(64));
+  let attachmentReads = 0; let uploads = 0; let recoveries = 0;
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply([selection]);
+    if (method === 'upload-attachment') {
+      uploads++; return { ok: false, code: 'network_error', message: 'unknown', outcome: 'unknown' };
+    }
+    if (method === 'attachments') {
+      attachmentReads++;
+      return attachmentReads === 1
+        ? { ok: false, code: 'network_error', message: 'unavailable' }
+        : attachmentReply([selection]);
+    }
+    if (method === 'recover-attachment') { recoveries++; return attachmentReply([selection]); }
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.pickAttachments();
+  assert.equal(await f.model.uploadAttachment(selection.selection_id), false);
+  assert.equal(f.model.state.attachments.items[0]?.status, 'uncertain');
+  assert.equal(f.model.state.attachments.items[0]?.attachment_id, undefined);
+  assert.equal(await f.model.recoverAttachment(selection.selection_id), true);
+  assert.equal(f.model.state.attachments.items[0]?.status, 'selected');
+  assert.equal(attachmentReads, 2); assert.equal(uploads, 1); assert.equal(recoveries, 0);
+});
+
+test('Desktop never opens the native picker without an available canonical conversation', async () => {
+  const f = fixture();
+  assert.equal(await f.model.pickAttachments(), false);
+  assert.equal(f.requests.length, 0);
+});
+
+test('Desktop discards a visible attachment before rendering a different session and workflow', async () => {
+  const f = fixture(); const selection = selectedAttachment('selection-session-change', 'old-session.bin', '2'.repeat(64));
+  const replacement = { ...conversation, snapshot: { ...conversation.snapshot, id: attachmentId(90), workflow_id: 'other-flow' } };
+  let reads = 0;
+  f.respond(async (method) => {
+    if (method === 'conversation') return { ok: true, value: { ...context, view: 'conversation',
+      conversation: reads++ < 2 ? conversation : replacement, has_more: false } };
+    if (method === 'pick-attachments') return attachmentReply([selection]);
+    if (method === 'discard-attachments') return attachmentReply([]);
+    return { ok: true, value: context };
+  });
+  await f.model.execute('conversation'); await f.model.pickAttachments();
+  assert.equal(f.model.state.attachments.items[0]?.filename, selection.filename);
+  await f.model.execute('conversation');
+  assert.equal(f.model.state.conversation?.snapshot?.id, replacement.snapshot.id);
+  assert.deepEqual(f.model.state.attachments.items, []);
+  assert.ok(f.requests.some((request) => request.method === 'discard-attachments'
+    && request.params?.agent_session_id === conversation.snapshot.id && request.params?.workflow_id === conversation.snapshot.workflow_id));
+  assert.ok(f.rendered.filter((state) => (state as any).conversation?.snapshot?.id === replacement.snapshot.id)
+    .every((state) => !JSON.stringify(state).includes(selection.filename)));
 });
 test('Desktop preserves unknown intent through cancel and same-session focus before an explicit retry', async () => {
   const f = fixture(); const writes: Array<Record<string, unknown>> = []; let attempts = 0;

@@ -1,7 +1,7 @@
 {
   "name": "xd",
   "productName": "XD",
-  "version": "1.82.1",
+  "version": "1.82.2",
   "description": "서버 없이 이 PC 에서 에이전트를 돌리는 로컬용 XGEN Dex",
   "desktopName": "xd.desktop",
   "author": "PlateerLab <noreply@plateerlab.dev>",

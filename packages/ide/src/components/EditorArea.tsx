@@ -144,6 +144,11 @@ function TabBar({ group }: { group: EditorGroup }) {
 
   const active = group.tabs.find((t) => t.id === group.activeId);
   const activeDoc = active ? docs[active.path] : undefined;
+  // md·csv: 그린 모습과 편집기를 오간다. 편집기 위에 떠 있지 않고 탭 줄의 동작 칸에 둔다
+  // (떠 있으면 표의 머리글·편집기 글을 가리고, 편집기가 좁으면 글자가 한 자씩 꺾였다).
+  const viewToggle =
+    active?.kind === 'file' && activeDoc?.status === 'ready' && !!store.host.preview && store.previewMode(active.path) === 'toggle';
+  const rendered = useIde((s) => (active ? s.rendered[active.path] ?? true : true));
 
   return (
     <div className="xide-tabbar" onDragLeave={() => setDropAt(null)} onDrop={onDrop} onDragOver={(e) => onDragOver(group.tabs.length - 1, e)}>
@@ -222,6 +227,30 @@ function TabBar({ group }: { group: EditorGroup }) {
         })}
       </div>
       <div className="xide-tabbar-actions">
+        {viewToggle && active ? (
+          <div className="xide-view-switch" role="group" aria-label="보기">
+            <button
+              type="button"
+              className={rendered ? 'xide--on' : ''}
+              aria-pressed={rendered}
+              title="그린 모습으로 보기"
+              onClick={() => store.setRendered(active.path, true)}
+            >
+              <Icon name="preview" />
+              <span>미리보기</span>
+            </button>
+            <button
+              type="button"
+              className={!rendered ? 'xide--on' : ''}
+              aria-pressed={!rendered}
+              title="편집기로 고치기"
+              onClick={() => store.setRendered(active.path, false)}
+            >
+              <Icon name="edit" />
+              <span>편집</span>
+            </button>
+          </div>
+        ) : null}
         {active?.kind === 'diff' && active.diff && !active.diff.disk ? (
           <IconButton
             icon="go-to-file"
@@ -387,7 +416,7 @@ function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; t
   const host = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const shownTab = useRef<string | null>(null);
-  // md·csv — 편집기와 그린 모습을 오간다(처음엔 그린 쪽). 그릴 때는 편집기의 지금 글을 쓴다(저장 전 포함).
+  // md·csv: 편집기와 그린 모습을 오간다(처음엔 그린 쪽, 전환은 탭 줄). 그릴 때는 편집기의 지금 글을 쓴다(저장 전 포함).
   const toggle = doc?.status === 'ready' && !!store.host.preview && store.previewMode(tab.path) === 'toggle';
   const rendered = useIde((s) => toggle && (s.rendered[tab.path] ?? true));
   const liveText = useLiveText(monaco, store.host.workflowId, tab.path, rendered);
@@ -462,26 +491,6 @@ function CodePane({ group, tab, theme }: { group: EditorGroup; tab: EditorTab; t
   return (
     <div className="xide-code-pane">
       {doc?.diskChanged && doc.status === 'ready' ? <DiskChangedBar path={tab.path} deleted={!!doc.message} /> : null}
-      {toggle ? (
-        <div className="xide-view-toggle" role="group" aria-label="보기">
-          <button
-            type="button"
-            className={rendered ? 'xide--on' : ''}
-            aria-pressed={rendered}
-            onClick={() => store.setRendered(tab.path, true)}
-          >
-            미리보기
-          </button>
-          <button
-            type="button"
-            className={!rendered ? 'xide--on' : ''}
-            aria-pressed={!rendered}
-            onClick={() => store.setRendered(tab.path, false)}
-          >
-            편집
-          </button>
-        </div>
-      ) : null}
       <div className="xide-monaco" ref={host} style={{ display: doc?.status === 'ready' && !rendered ? undefined : 'none' }} />
       {rendered ? <PreviewPane path={tab.path} theme={theme} text={liveText} /> : null}
       {error ? <Empty icon="error">{error}</Empty> : null}

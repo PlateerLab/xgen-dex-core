@@ -8650,15 +8650,23 @@ button.sm {
 /* 마크다운 렌더 */
 .fv-md { max-width: 860px; margin: 0 auto; padding: 24px 28px 48px; font-size: 14px; }
 
-/* CSV 표 */
-.fv-csv-scroll { overflow: auto; padding: 0 0 24px; }
-.fv-csv { border-collapse: collapse; font-size: 12.5px; min-width: 100%; }
+/* CSV 표: 표 상자가 본문 높이를 채우고 스스로 스크롤한다(가로 막대는 창 아래, 머리글·행 번호는 고정) */
+.fv-body.fv-body-fill { display: flex; flex-direction: column; overflow: hidden; }
+.fv-body-fill > .fv-csv-scroll { flex: 1 1 auto; min-height: 0; }
+.fv-csv-scroll { overflow: auto; }
+.fv-csv { border-collapse: separate; border-spacing: 0; font-size: 12.5px; min-width: 100%; }
 .fv-csv th, .fv-csv td {
-  border: 1px solid var(--border); padding: 5px 10px; text-align: left;
+  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 5px 10px; text-align: left;
   white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis;
 }
-.fv-csv thead th { position: sticky; top: 0; background: var(--panel); font-weight: 700; z-index: 1; }
-.fv-csv-ln { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; user-select: none; background: var(--panel); }
+.fv-csv tr > :first-child { border-left: 1px solid var(--border); }
+.fv-csv thead th { position: sticky; top: 0; background: var(--panel); font-weight: 700; z-index: 2; border-top: 1px solid var(--border); }
+.fv-csv-ln {
+  position: sticky; left: 0; z-index: 1;
+  color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; user-select: none; background: var(--panel);
+}
+.fv-csv thead th.fv-csv-ln { z-index: 3; }
+.fv-csv-scroll > .fv-note { position: sticky; left: 0; }
 
 /* 오피스 문서 — 서버 렌더 페이지 이미지 (웹 파일 저장소와 동형) */
 .fv-office { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 24px; }

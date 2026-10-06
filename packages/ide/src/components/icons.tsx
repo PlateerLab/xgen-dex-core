@@ -60,11 +60,25 @@ export type IconName =
   | 'history'
   | 'layout-sidebar'
   | 'layout-panel'
-  | 'settings';
+  | 'settings'
+  | 'preview'
+  | 'edit';
 
 const P = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
 const SHAPES: Record<IconName, ReactElement> = {
+  preview: (
+    <>
+      <path {...P} d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z" />
+      <circle {...P} cx="8" cy="8" r="2" />
+    </>
+  ),
+  edit: (
+    <>
+      <path {...P} d="M10.5 2.5l3 3L6 13H3v-3z" />
+      <path {...P} d="M9 4l3 3" />
+    </>
+  ),
   files: (
     <>
       <path {...P} d="M9.5 1.5H4.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V4.5z" />

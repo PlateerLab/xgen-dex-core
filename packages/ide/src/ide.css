@@ -1526,6 +1526,8 @@ del.xide-search-hit {
   display: flex;
   align-items: stretch;
   height: 38px;
+  /* 동작 칸이 탭 줄 너비에 맞춰 접힌다(.xide-view-switch). 편집기 본문은 담지 않는다. */
+  container: xide-tabbar / inline-size;
   background: var(--xide-app);
   border-bottom: 1px solid var(--xide-border);
 }
@@ -1784,46 +1786,79 @@ del.xide-search-hit {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: auto;
   background: var(--xide-panel);
   color: var(--xide-text);
 }
 
-/* md·csv — 미리보기 / 편집 */
-.xide-view-toggle {
-  position: absolute;
-  top: 8px;
-  right: 22px;
-  /* Monaco 미니맵(z-index 5)보다 위 — 같으면 문서 순서상 미니맵이 덮어 편집 중에 눌리지 않았다. */
-  z-index: 10;
+/* 호스트가 그린 내용은 창 높이를 채운다: 자기 안에서 스크롤해야 가로 스크롤 막대가 창 아래에 붙는다 */
+.xide-preview-pane > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* md·csv: 미리보기 / 편집. 탭 줄의 동작 칸에 둔다(편집기 위에 떠 있으면 내용을 가리고, 좁으면 글자가 꺾였다). */
+.xide-view-switch {
+  flex: none;
   display: inline-flex;
+  align-items: center;
   gap: 2px;
+  height: 26px;
+  margin-right: 4px;
   padding: 2px;
   border: 1px solid var(--xide-border);
   border-radius: var(--xide-radius-sm);
   background: var(--xide-panel);
-  box-shadow: var(--xide-shadow-md);
 }
 
-.xide-view-toggle button {
-  height: 24px;
-  padding: 0 10px;
+.xide-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--xide-text-2);
+  font: inherit;
   font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.xide-view-toggle button:hover {
-  background: var(--xide-hover);
+.xide-view-switch button .xide-icon {
+  width: 14px;
+  height: 14px;
 }
 
-.xide-view-toggle button.xide--on {
+.xide-view-switch button:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+.xide-view-switch button.xide--on {
   background: var(--xide-primary-soft);
   color: var(--xide-primary-text);
   font-weight: 600;
+}
+
+.xide-view-switch button:focus-visible {
+  outline: 2px solid var(--xide-focus, var(--xide-primary));
+  outline-offset: -2px;
+}
+
+/* 편집기 묶음이 좁으면 글자를 접고 아이콘만 남긴다(이름은 title·aria 로) */
+@container xide-tabbar (max-width: 460px) {
+  .xide-view-switch button span {
+    display: none;
+  }
+  .xide-view-switch button {
+    padding: 0 6px;
+  }
 }
 
 /* 읽기 전용 탐색기(FileTree) — IDE 탐색기와 같은 모양을 다른 화면에 그대로 */

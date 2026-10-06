@@ -1,6 +1,6 @@
 {
   "name": "@dex/ide",
-  "version": "1.83.0",
+  "version": "1.83.1",
   "private": true,
   "type": "module",
   "description": "채팅 안의 IDE 보기 — 탐색기·편집기·터미널·찾기·소스 제어 (React, 호스트 주입)",

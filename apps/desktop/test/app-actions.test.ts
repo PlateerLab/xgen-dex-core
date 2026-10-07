@@ -61,7 +61,7 @@ test('공유 창 문구가 범위마다 **누가 여는지**와 되돌릴 수 �
   const t = code(SHARE_TEXT)
   // 문구는 데스크톱·모바일·웹이 같은 말을 하도록 프로토콜 한 곳(APP_SHARE_TEXT)에 있다.
   assert.match(t, /title: 'XGEN 사용자에게 공유'/)
-  assert.match(t, /hint: 'XGEN 에 로그인한 사람만 엽니다[^']*'/)
+  assert.match(t, /hint: 'XGEN의 유저만 볼 수 있습니다\.'/)
   assert.match(t, /title: '모두에게 공유'/)
   assert.match(t, /hint: '링크를 아는 사람은 누구나 로그인 없이 엽니다\.'/)
   assert.match(t, /stopAsk: '[^']*되살아나지 않습니다\.'/,

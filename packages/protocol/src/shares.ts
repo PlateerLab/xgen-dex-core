@@ -36,7 +36,7 @@ export const APP_SHARE_TEXT = {
   audience: '공개 범위',
   users: {
     title: 'XGEN 사용자에게 공유',
-    hint: 'XGEN 에 로그인한 사람만 엽니다. 로그인하지 않았으면 로그인한 뒤 이 앱으로 돌아옵니다.',
+    hint: 'XGEN의 유저만 볼 수 있습니다.',
   },
   public: {
     title: '모두에게 공유',
@@ -77,7 +77,7 @@ export const CHAT_SHARE_TEXT = {
   audience: '공개 범위',
   users: {
     title: 'XGEN 사용자에게 공유',
-    hint: 'XGEN 에 로그인한 사람만 봅니다. 로그인하지 않았으면 로그인한 뒤 이 대화로 돌아옵니다.',
+    hint: 'XGEN의 유저만 볼 수 있습니다.',
   },
   public: {
     title: '모두에게 공유',

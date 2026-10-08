@@ -61,8 +61,8 @@ export function pathMaps(roots: string[], mounts: string[]) {
 
 /**
  * 앱 번들에 싣지 않는 명령 — 이것들만 큰 패키지를 따로 부른다(sqlite3 → sql.js,
- * html-to-markdown → turndown). 데스크톱·CLI 빌드가 그 패키지를 빼므로 명령도 등록하지 않는다
- * (`which sqlite3` 가 없다고 정직하게 답한다). 빌드 설정의 뺄 패키지 목록과 짝이다.
+ * html-to-markdown → turndown). 앱 빌드가 그 패키지를 빼므로 명령도 등록하지 않는다
+ * (`which sqlite3` 가 없다고 정직하게 답한다). 뺄 패키지 목록(user-pc-bundle)과 짝이다.
  */
 export const BUILTIN_LEFT_OUT_COMMANDS = ['sqlite3', 'html-to-markdown'];
 

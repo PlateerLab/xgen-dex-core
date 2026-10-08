@@ -1,6 +1,8 @@
 import { resolve } from 'path';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+// 내장 bash 해석기(just-bash)는 번들에 녹이고, 이 목록의 패키지만 뺀다(XD 와 같은 목록).
+import { JUST_BASH_LEFT_OUT_PACKAGES } from '../../packages/engine/src/user-pc-bundle';
 
 /**
  * 공용 패키지는 **소스로 번들**한다 (런타임 의존이 아니다).
@@ -72,6 +74,7 @@ export default defineConfig({
           'electron-updater',
           'chokidar',
           'picomatch',
+          ...JUST_BASH_LEFT_OUT_PACKAGES,
         ],
       },
     },

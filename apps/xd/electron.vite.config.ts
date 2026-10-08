@@ -1,6 +1,8 @@
 import { resolve } from 'path';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+// 엔진의 내장 bash 해석기(just-bash)는 번들에 녹이고, 이 목록의 패키지만 뺀다(Dex 와 같은 목록).
+import { JUST_BASH_LEFT_OUT_PACKAGES } from '../../packages/engine/src/user-pc-bundle';
 
 /**
  * XD 의 빌드 — main·preload·화면은 이 앱의 것이고, Dex 와 같은 **기본 부품**(마크다운·작업 과정·아이콘·스타일)만
@@ -36,7 +38,12 @@ export default defineConfig({
   main: {
     resolve: { alias: dexAliases },
     plugins: [externalizeDepsPlugin()],
-    build: { rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts') } } },
+    build: {
+      rollupOptions: {
+        input: { index: resolve(__dirname, 'src/main/index.ts') },
+        external: [...JUST_BASH_LEFT_OUT_PACKAGES],
+      },
+    },
   },
   preload: {
     resolve: { alias: dexAliases },

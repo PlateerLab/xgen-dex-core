@@ -4249,6 +4249,19 @@ button {
 .chat-folders-elsewhere .root-add {
   margin-top: 10px;
 }
+/* 다른 기기의 폴더 — 이 PC 의 폴더 아래, 기기마다 이름·켜짐과 폴더 이름(경로 없음) */
+.chat-folders-others {
+  margin-top: 16px;
+}
+.chat-folders-others-title {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chat-folders-other + .chat-folders-other {
+  margin-top: 10px;
+}
 /* 다른 화면에서 온 요청으로 이 PC 폴더를 썼다는 한 줄 */
 .chat-folders-remote-use {
   margin: 10px 0 0;

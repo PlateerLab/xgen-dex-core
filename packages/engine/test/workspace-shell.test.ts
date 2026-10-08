@@ -96,7 +96,9 @@ test(
     });
     assert.equal(result.isError, false, result.content[0].text);
     assert.match(result.content[0].text, /workspace-ok/);
-    assert.ok(result.content[0].text.includes(workspace));
+    // HOME 은 사용자 폴더 밖의 임시 폴더다 — 폴더에 아무것도 남기지 않는다.
+    const home = result.content[0].text.split('\n').pop() ?? '';
+    assert.ok(home && !home.startsWith(workspace), home);
     assert.equal(await readFile(join(workspace, 'result.txt'), 'utf8'), 'workspace-ok');
     assert.ok(!(await readdir(workspace)).some((p) => p.startsWith('.xgen-shell-')));
   },

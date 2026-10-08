@@ -4,8 +4,9 @@
  * 폴더는 대화에 붙는다. 연결한 폴더 안에서만 파일 도구가 돌고, 연결을 해제하면
  * 다음 요청부터 그 폴더를 쓰지 않는다. 폴더는 시스템 폴더 선택기로만 더해진다.
  *
- * 한 대화의 폴더는 기기 하나에 있다. 다른 기기(PC 등)에 있으면 그 기기와 켜짐 여부를
- * 보이고 [이 기기로 옮기기] 를 준다. 웹·PC 에서 보낸 턴이 이 휴대폰의 폴더를 쓰면 알린다.
+ * 한 대화에 여러 기기의 폴더가 함께 붙을 수 있다 — 이 휴대폰의 폴더 아래에 다른 기기(PC 등)의
+ * 폴더 이름과 켜짐 여부를 보인다. 대화당 기기 하나만 받는 옛 서버면 예전처럼 그 기기를 보이고
+ * [이 기기로 옮기기] 를 준다. 웹·PC 에서 보낸 턴이 이 휴대폰의 폴더를 쓰면 알린다.
  */
 import React, { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'react-native';
@@ -178,7 +179,7 @@ export function FolderSheet({
         <ScrollView style={{ flexGrow: 0 }}>
           {remote.elsewhere ? null : folders.length === 0 ? (
             <Text style={{ color: p.muted, fontSize: 13, paddingVertical: 16, textAlign: 'center' }}>
-              연결된 폴더가 없습니다.
+              {remote.others.length ? '이 휴대폰에 연결된 폴더가 없습니다.' : '연결된 폴더가 없습니다.'}
             </Text>
           ) : (
             folders.map((folder) => (
@@ -222,6 +223,38 @@ export function FolderSheet({
               </View>
             ))
           )}
+          {remote.others.map((other) => (
+            <View key={other.deviceId} style={{ backgroundColor: p.panel2, borderRadius: 12, padding: 12, marginTop: 10 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text numberOfLines={1} style={{ flex: 1, color: p.text, fontSize: 14, fontWeight: '800' }}>
+                  {other.name}
+                </Text>
+                <View
+                  style={{
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
+                    borderRadius: 999,
+                    backgroundColor: other.online ? alpha(p.primary, 14) : p.panel,
+                  }}
+                >
+                  <Text style={{ color: other.online ? p.primary : p.muted, fontSize: 11.5, fontWeight: '700' }}>
+                    {other.online ? '켜짐' : '꺼짐'}
+                  </Text>
+                </View>
+              </View>
+              {other.folders.map((folder) => (
+                <Text key={folder.id || folder.name} numberOfLines={1} style={{ color: p.text, fontSize: 13, marginTop: 6 }}>
+                  {folder.name}
+                </Text>
+              ))}
+            </View>
+          ))}
+          {remote.others.length ? (
+            <Text style={{ color: p.muted, fontSize: 12.5, marginTop: 8, lineHeight: 18 }}>
+              다른 기기의 폴더도 이 대화에서 함께 쓰입니다. 그 기기가 켜져 있을 때만 사용할 수 있고, 연결과 해제는 그
+              기기에서 합니다.
+            </Text>
+          ) : null}
         </ScrollView>
 
         {remote.lastRemoteUse && folders.length > 0 ? (

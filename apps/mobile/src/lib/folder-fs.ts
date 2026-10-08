@@ -79,7 +79,7 @@ function createIosFs(onBookmarkRenewed?: (uri: string, bookmark: string) => void
   const at = async (folder: MobileFolder, rel: string): Promise<string> =>
     `${await iosFolderUri(folder, onBookmarkRenewed)}${encodeRel(rel)}`;
   const parentOf = (rel: string): string => pathSegments(rel).slice(0, -1).join('/');
-  return {
+  const fs: FolderFs = {
     async list(folder, rel) {
       const dir = await at(folder, rel);
       const names = await FileSystem.readDirectoryAsync(dir);
@@ -159,6 +159,13 @@ function createIosFs(onBookmarkRenewed?: (uri: string, bookmark: string) => void
       if (!info.exists) throw new Error(`파일이 없습니다: ${rel}`);
       await FileSystem.deleteAsync(uri);
     },
+    async mkdir(folder, rel) {
+      await FileSystem.makeDirectoryAsync(await at(folder, rel), { intermediates: true });
+    },
+    // 바이트 그대로 — 들이기(importFile)와 같은 길로 옆 이름에 복사한 뒤 바꿔 끼운다.
+    async copy(folder, from, to) {
+      await fs.importFile(folder, to, await at(folder, from));
+    },
     async exportFile(folder, rel) {
       // 다른 앱은 이 앱이 연 보안 범위를 모른다 — 캐시에 사본을 두고 넘긴다.
       const name = pathSegments(rel).at(-1) ?? 'file';
@@ -170,6 +177,7 @@ function createIosFs(onBookmarkRenewed?: (uri: string, bookmark: string) => void
       return target;
     },
   };
+  return fs;
 }
 
 function createAndroidFs(): FolderFs {
@@ -189,6 +197,22 @@ function createAndroidFs(): FolderFs {
     importFile: (folder, rel, sourceUri) => android().importFile(folder.uri, rel, sourceUri),
     remove: (folder, rel) => android().remove(folder.uri, rel),
     exportFile: (folder, rel) => android().exportFile(folder.uri, rel),
+    // 문서 제공자에는 폴더만 만드는 함수가 모듈에 없다 — 쓰기가 부모 폴더를 만드는 것을 빌려, 빈 표시 파일을
+    // 썼다가 지운다.
+    async mkdir(folder, rel) {
+      const marker = `${pathSegments(rel).join('/')}/.xgen-mkdir`;
+      await android().writeText(folder.uri, marker, '', false);
+      await android().remove(folder.uri, marker);
+    },
+    // 바이트 그대로 — 앱 캐시로 내보냈다가 들인다(글로 읽고 쓰면 사진 같은 파일이 깨진다).
+    async copy(folder, from, to) {
+      const local = await android().exportFile(folder.uri, from);
+      try {
+        await android().importFile(folder.uri, to, local);
+      } finally {
+        await FileSystem.deleteAsync(local, { idempotent: true }).catch(() => undefined);
+      }
+    },
   };
 }
 

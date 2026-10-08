@@ -48,6 +48,7 @@ import {
   type PermissionState,
   type ToolGroup,
 } from './lib/mobile-tools';
+import { USER_PC_TOOL_NAMES, stopAllUserPc } from './lib/user-pc';
 import { mobileWorkspaceTransfer } from './lib/workspace-transfer';
 import { rnPort } from './lib/rn-port';
 import { folderFs, folderStore, setFolderServer, useFolderAccount } from './lib/folder-store';
@@ -249,14 +250,13 @@ export default function App(): React.ReactElement {
       devicePlatform: devicePlatform(),
       catalog: () => advertiseMobileTools(groupsRef.current),
       // 파일 도구는 그 대화에 연결된 폴더 안에서만 — 호출마다 장부에서 찾는다.
-      call: async (tool, args, context) => {
+      call: async (tool, args, context, signal) => {
         const folders = await folderStore.listReady(context.interactionId);
         // 다른 화면에서 보낸 턴이 이 휴대폰의 폴더를 쓴다 — 시트가 "다른 기기에서 온 요청" 을 보여 준다.
         if (
           context.remote &&
           context.interactionId &&
-          FOLDER_TOOLS.has(tool) &&
-          !PRESENCE_TOOLS.has(tool) &&
+          ((FOLDER_TOOLS.has(tool) && !PRESENCE_TOOLS.has(tool)) || USER_PC_TOOL_NAMES.has(tool)) &&
           folders.length
         ) {
           folderStore.remoteUsed({
@@ -269,6 +269,8 @@ export default function App(): React.ReactElement {
         return callMobileTool(rnPort, tool, args, groupsRef.current, {
           folders,
           fs: folderFs,
+          interactionId: context.interactionId,
+          signal,
           ...(context.remote ? { remoteFrom: context.originName ?? '' } : {}),
           // 복사 도구의 길 — 서버가 보증한 이 호출의 에이전트·대화로 묶는다.
           ...(context.workflowId && context.interactionId
@@ -282,7 +284,11 @@ export default function App(): React.ReactElement {
     });
     bridge.start();
     bridgeRef.current = bridge;
-    return () => bridge.stop();
+    return () => {
+      bridge.stop();
+      // 로그아웃·도구 끔 — 이 폰에서 돌던 사용자 PC 접속 명령도 멈춘다.
+      stopAllUserPc();
+    };
   }, [client, toolsEnabled]);
 
   // 앱 복귀 — 브리지 즉시 재연결.

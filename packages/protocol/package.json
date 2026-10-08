@@ -14,5 +14,8 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
     "build": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "just-bash": "3.6.0"
   }
 }

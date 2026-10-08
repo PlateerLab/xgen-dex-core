@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { access, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
 export interface WorkspaceShellLaunch {
@@ -250,6 +250,7 @@ export async function prepareWorkspaceShell(
   cwd: string,
   roots: string[],
   readOnly: string[] = [],
+  scratchParent?: string,
 ): Promise<WorkspaceShellLaunch> {
   const mac = process.platform === 'darwin';
   if (!mac && process.platform !== 'linux') {
@@ -271,8 +272,12 @@ export async function prepareWorkspaceShell(
         (mac ? '' : ' bubblewrap 설치가 필요합니다.'),
     );
   }
-  // Per-command home/temp stay inside the allowed workspace, including jobs.
-  const scratch = await mkdtemp(join(cwd, '.xgen-shell-'));
+  // Per-command home/temp live in the OS temp folder, outside the user's folder. They used to
+  // be created inside the connected folder: a read-only folder then failed even `find`, a
+  // crashed app left `.xgen-shell-*` behind, and on macOS the create in a protected folder
+  // (Downloads, Documents…) could block on a privacy prompt before the command started — no
+  // timeout covers that step (2026-10-07: five Shell calls never answered).
+  const scratch = await realpath(await mkdtemp(join(scratchParent ?? tmpdir(), 'xgen-shell-')));
   const cleanup = () => rm(scratch, { recursive: true, force: true }).catch(() => undefined);
   try {
     await writeFile(join(scratch, '.gitignore'), '*\n');
@@ -332,10 +337,10 @@ export async function prepareWorkspaceShell(
         // IP listeners while keeping filesystem scope and Unix socket denial.
         '(allow network-bind (local ip))',
         '(allow network-inbound (local ip))',
-        `(allow file-read* (literal "/") ${[...runtime, ...certificates, ...toolchains, ...roots].map(subpath).join(' ')} ${systemFiles.map(literal).join(' ')})`,
+        `(allow file-read* (literal "/") ${[...runtime, ...certificates, ...toolchains, ...roots, scratch].map(subpath).join(' ')} ${systemFiles.map(literal).join(' ')})`,
         '(allow file-read* (literal "/dev/urandom") (literal "/dev/random") (literal "/dev/zero"))',
         '(allow file-read* file-write-data file-ioctl (literal "/dev/null"))',
-        `(allow file-write* ${roots.map(subpath).join(' ')})`,
+        `(allow file-write* ${[...roots, scratch].map(subpath).join(' ')})`,
       ].join('\n');
       return {
         file: launcher,
@@ -366,6 +371,7 @@ export async function prepareWorkspaceShell(
     argv.push('--proc', '/proc', '--dev', '/dev');
     for (const dir of toolchains) argv.push('--ro-bind', dir, dir);
     for (const root of roots) argv.push('--bind', root, root);
+    argv.push('--bind', scratch, scratch);
     argv.push('--chdir', cwd, '--', file, ...commandArgs);
     return { file: launcher, args: argv, env: childEnv, cleanup };
   } catch (error) {

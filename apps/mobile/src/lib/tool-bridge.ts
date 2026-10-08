@@ -9,6 +9,7 @@
  * 에이전트에 노출된다.
  */
 
+import { LocalDeadlineError, localDeadlineMs } from '@dex/protocol';
 import type { ToolAdvert, ToolResult } from './mobile-tools';
 
 export type BridgeState = 'off' | 'connecting' | 'connected' | 'error';
@@ -51,8 +52,11 @@ export interface ToolBridgeOptions {
   wsBase: string;
   userId: string;
   catalog: () => ToolAdvert[];
-  /** 도구 실행. context 는 서버가 실어 준 호출자 신원(어느 대화인지). */
-  call: (tool: string, args: unknown, context: ToolCallContext) => Promise<ToolResult>;
+  /**
+   * 도구 실행. context 는 서버가 실어 준 호출자 신원(어느 대화인지). signal 은 서버의 취소(`mcp_cancel`)나
+   * 감시 시한이 지나면 끊긴다 — 도는 일을 멈춘다.
+   */
+  call: (tool: string, args: unknown, context: ToolCallContext, signal: AbortSignal) => Promise<ToolResult>;
   onStatus?: (s: BridgeStatus) => void;
   wsFactory?: (url: string) => WebSocket;
   heartbeatMs?: number;
@@ -81,6 +85,8 @@ export class MobileToolBridge {
   private pendingCatalogId = '';
   private ackWatchdog: ReturnType<typeof setTimeout> | null = null;
   private status: BridgeStatus = { state: 'off', toolCount: 0 };
+  /** 도는 호출 — 서버의 `mcp_cancel` 이 끊는다. */
+  private inflight = new Map<string, AbortController>();
 
   constructor(private opts: ToolBridgeOptions) {}
 
@@ -278,6 +284,7 @@ export class MobileToolBridge {
       context?: unknown;
       catalog_id?: string;
       tool_count?: number;
+      deadline_ms?: number;
     };
     try {
       msg = JSON.parse(text);
@@ -293,14 +300,35 @@ export class MobileToolBridge {
       });
       return;
     }
+    if (msg.type === 'mcp_cancel') {
+      // 서버가 이 호출을 더 기다리지 않는다(시한이 지났거나 턴이 취소됐다) — 도는 일을 멈춘다.
+      if (msg.request_id) this.inflight.get(String(msg.request_id))?.abort();
+      return;
+    }
     if (msg.type === 'mcp_call') {
       const { request_id, tool } = msg;
+      const controller = new AbortController();
+      if (request_id) this.inflight.set(String(request_id), controller);
+      // 서버보다 먼저 스스로 멈추고 사유를 돌려준다 — 답이 없는 호출로 턴이 묶이지 않게.
+      const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, true);
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
       let payload: Record<string, unknown>;
       try {
-        const result = await this.opts.call(String(tool), msg.args ?? {}, toolCallContext(msg.context));
+        const work = this.opts.call(String(tool), msg.args ?? {}, toolCallContext(msg.context), controller.signal);
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          watchdog = setTimeout(() => {
+            // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
+            reject(new LocalDeadlineError(String(tool), deadlineMs));
+            controller.abort();
+          }, deadlineMs);
+        });
+        const result = await Promise.race([work, timedOut]);
         payload = { request_id, ok: true, result };
       } catch (e) {
         payload = { request_id, ok: false, error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+        if (request_id) this.inflight.delete(String(request_id));
       }
       try {
         this.ws?.send(JSON.stringify({ type: 'mcp_result', ...payload }));

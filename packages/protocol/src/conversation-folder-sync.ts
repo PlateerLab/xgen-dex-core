@@ -1,16 +1,17 @@
 /**
  * 기기의 폴더 장부 ↔ 서버의 대화 폴더 사본 — 데스크톱·모바일이 같은 규칙을 쓴다.
  *
- * 폴더는 대화의 속성이고 물리적으로는 기기 하나에 있다. 장부가 원본이고, 서버는 사본을
- * 들고 **어느 화면에서든** 그것을 보이고 쓰게 한다(웹·휴대폰·다른 PC 에서 보낸 턴도 이
- * 기기의 폴더 도구를 쓴다). 여기서 하는 일:
+ * 폴더는 대화의 속성이고 물리적으로는 기기에 있다. 장부가 원본이고, 서버는 사본을 들고
+ * **어느 화면에서든** 그것을 보이고 쓰게 한다(웹·휴대폰·다른 PC 에서 보낸 턴도 이 기기의
+ * 폴더를 쓴다). 한 대화에 여러 기기의 폴더가 함께 붙을 수 있다. 여기서 하는 일:
  *
- *   올리기   폴더를 연결·해제하면 서버에 올린다. 다른 기기에 폴더가 있는 대화면 서버가
- *            거절한다(other_device) — 화면이 [이 기기로 옮기기] 를 묻는다.
- *   맞추기   켜질 때(로그인) 장부 전체를 올리고, 그 사이 다른 기기로 **옮겨 간** 대화는 잊는다.
- *   따르기   다른 기기가 이 기기의 대화를 옮겨 갔다는 알림(대화 버스 `folders`)을 받으면 잊는다.
+ *   올리기   폴더를 연결·해제하면 서버에 올린다(이 기기의 몫만).
+ *   맞추기   켜질 때(로그인) 장부 전체를 올린다.
+ *   따르기   대화 버스 `folders` 알림에 이 기기의 폴더가 빠져 있으면 다시 올린다.
  *
- * 서버가 시켜서 잊는 것은 다시 올리지 않는다(메아리가 되면 다른 기기의 연결을 덮는다).
+ * 대화당 기기 하나만 받는 서버(옛 서버, 표를 아직 바꾸지 않은 서버)에서는 다른 기기가 그 대화를
+ * 가져가면 올리기가 거절된다(other_device). 그때는 이 기기가 잊는다 — 화면이 [이 기기로 옮기기]
+ * 를 묻는다. 서버가 시켜서 잊는 것은 다시 올리지 않는다(메아리가 되면 다른 기기의 연결을 덮는다).
  * 옛 서버(API 없음)면 아무것도 하지 않는다 — 예전처럼 요청에 실린 폴더만 쓴다.
  *
  * 기기마다 폴더 모양이 다르다(데스크톱은 절대 경로, 모바일은 content:// URI 와 가상 경로) —
@@ -46,6 +47,8 @@ export interface ConversationFolderSyncDeps<F> {
 export class ConversationFolderSync<F> {
   /** 서버가 시켜서 바꾸는 중인 대화 — 그 변화는 다시 올리지 않는다. */
   private quiet = new Set<string>();
+  /** 올리기가 other_device 로 거절된 대화 — 서버가 이 대화에 기기 하나만 받는다. */
+  private exclusive = new Set<string>();
   private reconciledAccount: string | null = null;
 
   constructor(protected deps: ConversationFolderSyncDeps<F>) {}
@@ -53,6 +56,14 @@ export class ConversationFolderSync<F> {
   /** 이 변화가 서버에서 온 것인가(올리지 말 것). */
   isQuiet(interactionId: string): boolean {
     return this.quiet.has(interactionId);
+  }
+
+  /**
+   * 서버가 이 대화에 기기 하나만 받는가 — 기기 목록을 모르는 옛 서버이거나, 이 대화의 올리기가
+   * 거절됐다(표를 아직 바꾸지 않은 서버). 그때만 화면이 [이 기기로 옮기기] 를 묻는다.
+   */
+  isExclusive(interactionId: string, state: ConversationFoldersState | null): boolean {
+    return this.exclusive.has(interactionId) || (!!state && !Array.isArray(state.devices));
   }
 
   /** 이 대화의 서버 사본(다른 기기의 폴더·켜짐 여부). 옛 서버·실패면 null. */
@@ -75,9 +86,12 @@ export class ConversationFolderSync<F> {
     if (!api) return null;
     const folders = opts.folders ?? this.deps.ledger.list(interactionId);
     try {
-      return await api.put(interactionId, this.deps.device(), this.deps.wire(folders), {
+      const result = await api.put(interactionId, this.deps.device(), this.deps.wire(folders), {
         takeOver: opts.takeOver,
       });
+      if (!result.ok && result.code === 'other_device') this.exclusive.add(interactionId);
+      else if (result.ok) this.exclusive.delete(interactionId);
+      return result;
     } catch (error) {
       this.deps.log?.(`[chat-folders] 서버에 올리지 못했습니다: ${String(error)}`);
       return null;
@@ -124,16 +138,48 @@ export class ConversationFolderSync<F> {
   }
 
   /**
-   * 대화 버스의 `folders` — 어느 기기가 이 대화의 폴더를 가졌는가. 다른 기기가 가져갔는데
-   * 이 기기 장부에 남아 있으면 잊는다(옮겨 갔다). 잊었으면 true.
+   * 대화 버스의 `folders` — 이 대화의 폴더가 어느 기기들에 있는가. 잊었으면 true.
+   *
+   * 기기 목록(`devices`)을 주는 서버: 이 기기 장부에 폴더가 있는데 목록에 이 기기가 없으면(올리기가
+   * 닿지 않았거나 서버가 놓쳤다) 다시 올린다. 대화당 기기 하나만 받는 서버면 그 올리기가 거절되고
+   * (other_device), 그때 잊는다 — 다른 기기의 알림만 보고 잊지 않는다.
+   * 기기 목록을 모르는 옛 서버: 다른 기기가 가져갔는데 장부에 남아 있으면 잊는다(옮겨 갔다).
    */
   onServerFolders(state: ConversationFoldersState): boolean {
+    const id = state.interactionId;
+    if (!id || !this.deps.ledger.list(id).length) return false;
     const mine = this.deps.device().deviceId;
-    if (!state.interactionId || !state.device || state.device.deviceId === mine) return false;
-    if (!state.folders.length) return false;
-    if (!this.deps.ledger.list(state.interactionId).length) return false;
-    this.forgetQuietly(state.interactionId);
+    if (Array.isArray(state.devices)) {
+      if (!state.devices.some((d) => d.deviceId === mine)) void this.republish(id);
+      return false;
+    }
+    if (!state.device || state.device.deviceId === mine || !state.folders.length) return false;
+    this.forgetQuietly(id);
     return true;
+  }
+
+  /**
+   * 서버가 이 기기의 올리기를 거절했다(other_device) — 대화당 기기 하나만 받는 서버에서 다른 기기가
+   * 이 대화를 가졌다. 장부에 남아 있으면 잊는다. 잊었으면 true.
+   */
+  onOtherDevice(state: ConversationFoldersState): boolean {
+    const id = state.interactionId;
+    if (!id || !this.deps.ledger.list(id).length) return false;
+    this.forgetQuietly(id);
+    return true;
+  }
+
+  private republishing = new Set<string>();
+
+  private async republish(interactionId: string): Promise<void> {
+    if (this.republishing.has(interactionId)) return;
+    this.republishing.add(interactionId);
+    try {
+      const result = await this.publish(interactionId);
+      if (result && !result.ok && result.code === 'other_device') this.onOtherDevice(result.state);
+    } finally {
+      this.republishing.delete(interactionId);
+    }
   }
 
   private forgetQuietly(interactionId: string): void {

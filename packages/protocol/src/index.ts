@@ -280,6 +280,9 @@ export * from './agent-trigger';
 export * from './connector-devices';
 export * from './conversation-folders';
 export * from './conversation-folder-sync';
+// 사용자 PC 접속(UserPc)의 기기 쪽 약속과 휴대폰·브라우저의 내장 셸.
+export * from './user-pc-shell';
+export * from './connector-deadline';
 export * from './conversation-model';
 export * from './notifications';
 // 도구 과정 표시 규칙(칩 단계 · 호출 한 건 한 행 · 건수) — 앱과 웹이 같은 답을 내도록.

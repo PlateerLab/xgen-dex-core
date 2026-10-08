@@ -29,6 +29,8 @@ export interface ChatFolderRemote {
   state: import('@dex/protocol/conversation-folders').ConversationFoldersState | null;
   /** 이 PC 의 기기 id — 사본의 기기와 비교해 "다른 기기" 를 가른다. */
   deviceId: string;
+  /** 서버가 이 대화에 기기 하나만 받는다(옛 서버, 표를 아직 바꾸지 않은 서버) — [이 기기로 옮기기]. */
+  exclusive: boolean;
   /** 이 대화에서 마지막으로 다른 화면에서 온 요청으로 조작한 것. */
   lastRemoteUse: import('@dex/engine/local-tools').RemoteFolderUse | null;
 }

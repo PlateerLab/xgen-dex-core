@@ -699,7 +699,11 @@ export function ChatView({
           <Text style={{ color: p.muted, fontSize: 11 }}>▾</Text>
         </Pressable>
         <FolderPill
-          count={folderRemote.elsewhere ? (folderRemote.state?.folders.length ?? 0) : folders.length}
+          count={
+            folderRemote.elsewhere
+              ? (folderRemote.state?.folders.length ?? 0)
+              : folders.length + folderRemote.others.reduce((n, other) => n + other.folders.length, 0)
+          }
           elsewhereName={folderRemote.elsewhere ? folderRemote.state?.device?.name : undefined}
           onPress={() => setFolderSheet(true)}
         />

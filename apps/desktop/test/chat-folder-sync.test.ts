@@ -1,7 +1,7 @@
 /**
  * 이 PC 의 폴더 장부 ↔ 서버의 대화 폴더 사본(main/chat-folder-sync).
  *
- * 한 대화의 폴더는 기기 하나에 모인다. 다른 기기에 있으면 더하지 않고(창이 옮기기를 묻는다),
+ * 대화당 기기 하나만 받는 서버에서는 다른 기기에 있으면 더하지 않고(창이 옮기기를 묻는다),
  * 옮기면 가져오고, 꺼져 있던 사이 옮겨 간 대화는 잊는다. 서버가 시켜서 잊은 것은 다시 올리지
  * 않는다 — 올리면 다른 기기의 연결을 덮는다.
  */
@@ -111,4 +111,47 @@ test('다른 기기가 이 대화를 가져갔다는 알림이 오면 이 PC 는
   led.book.chat_1 = [DOCS];
   assert.equal(sync.onServerFolders(mine), false);
   assert.deepEqual(led.book.chat_1, [DOCS]);
+});
+
+// ── 여러 기기를 받는 서버(devices 를 주는 서버) ─────────────────────────────
+
+const OTHER = { deviceId: 'desk-a', name: '사무실 PC', platform: 'win32', online: true, folders: [{ id: 'f1', name: 'report' }] };
+const MINE = { deviceId: 'desk-b', name: '집 PC', platform: 'darwin', online: true, folders: [{ id: 'd', name: 'docs' }] };
+
+test('여러 기기 서버: 다른 기기가 폴더를 붙여도 이 PC 는 잊지 않는다', () => {
+  const led = ledger({ chat_1: [DOCS] });
+  const fake = api({});
+  const sync = new ChatFolderSync({ api: () => fake.api as never, ledger: led.l, device: () => ME });
+  led.bind(sync);
+  // 두 기기에 폴더가 있으면 서버는 옛 device 칸을 비우고 devices 에 둘 다 싣는다.
+  assert.equal(sync.onServerFolders({ ...A_STATE, device: null, folders: [], devices: [OTHER, MINE] }), false);
+  assert.deepEqual(led.book.chat_1, [DOCS]);
+  assert.equal(fake.calls.length, 0, '목록에 이 PC 가 있으면 올릴 것도 없다');
+});
+
+test('여러 기기 서버: 목록에 이 PC 가 빠져 있으면 잊지 않고 다시 올린다', async () => {
+  const led = ledger({ chat_1: [DOCS] });
+  const fake = api({});
+  const sync = new ChatFolderSync({ api: () => fake.api as never, ledger: led.l, device: () => ME });
+  led.bind(sync);
+  assert.equal(sync.onServerFolders({ ...A_STATE, devices: [OTHER] }), false);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(led.book.chat_1, [DOCS]);
+  assert.equal(fake.calls.filter((c) => c.method === 'put').length, 1);
+  assert.equal(sync.isExclusive('chat_1', { ...A_STATE, devices: [OTHER] }), false);
+});
+
+test('기기 하나만 받는 서버가 다시 올리기를 거절하면 그때 잊고, 화면은 옮기기를 묻는다', async () => {
+  const led = ledger({ chat_1: [DOCS] });
+  const state = { ...A_STATE, devices: [OTHER] };
+  const fake = api({ put: { ok: false, code: 'other_device', state } });
+  const sync = new ChatFolderSync({ api: () => fake.api as never, ledger: led.l, device: () => ME });
+  led.bind(sync);
+  sync.onServerFolders(state);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(led.book, {});
+  assert.deepEqual(led.published, [], '서버가 시켜서 잊은 것은 다시 올리지 않는다');
+  assert.equal(sync.isExclusive('chat_1', state), true);
+  // 기기 목록을 모르는 옛 서버도 기기 하나만 받는다.
+  assert.equal(sync.isExclusive('chat_2', A_STATE), true);
 });

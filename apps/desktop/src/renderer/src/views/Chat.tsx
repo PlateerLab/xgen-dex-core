@@ -1347,8 +1347,10 @@ export const Chat: React.FC<{
             count={
               chatFolders.elsewhere
                 ? (chatFolders.remote?.state?.folders.length ?? 0)
-                : chatFolders.folders.length
+                : chatFolders.folders.length +
+                  chatFolders.others.reduce((n, other) => n + other.folders.length, 0)
             }
+            otherCount={chatFolders.others.reduce((n, other) => n + other.folders.length, 0)}
             elsewhereName={
               chatFolders.elsewhere ? chatFolders.remote?.state?.device?.name : undefined
             }

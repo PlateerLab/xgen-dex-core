@@ -7,13 +7,17 @@
  *
  * 연결·해제는 서버 사본에도 올린다(@dex/protocol 의 ConversationFolderSync, 데스크톱과
  * 같은 규칙) — 웹·PC 에서 이 대화를 열어도 폴더가 보이고, 그 화면에서 보낸 턴도 이
- * 휴대폰의 폴더를 쓴다. 한 대화의 폴더는 기기 하나에만 있다.
+ * 휴대폰의 폴더를 쓴다. 한 대화에 여러 기기의 폴더가 함께 붙을 수 있다(대화당 기기 하나만
+ * 받는 옛 서버면 예전처럼 [이 기기로 옮기기]).
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useState } from 'react';
 import {
   ConversationFolderSync,
+  folderOwnership,
+  otherDeviceFolders,
   parseConversationFolders,
+  type ConversationFolderDeviceFolders,
   type ConversationFoldersApi,
   type ConversationFoldersState,
   type FolderLedger,
@@ -28,6 +32,7 @@ import {
   releaseFolder,
 } from './folder-fs';
 import { MobileFolderBook, toWire, type MobileFolder } from './mobile-folders';
+import { userPcFoldersChanged } from './user-pc';
 import type { FolderFs } from './mobile-tools';
 
 const STORAGE_PREFIX = 'chat-folders:';
@@ -115,11 +120,13 @@ async function refreshRemote(interactionId: string): Promise<void> {
 
 book.onChange((interactionId) => {
   notifyAll();
+  // 빠진 폴더에서 돌던 사용자 PC 접속 명령을 멈춘다.
+  userPcFoldersChanged(interactionId, book.list(interactionId));
   // 이 휴대폰에서 바꾼 것만 서버에 올린다(서버가 시켜서 잊은 것은 메아리가 된다).
   if (sync.isQuiet(interactionId)) return;
   void sync.publish(interactionId).then((result) => {
-    // 그 사이 다른 기기가 이 대화를 옮겨 갔다 — 이 휴대폰은 잊는다.
-    if (result && !result.ok && result.code === 'other_device') sync.onServerFolders(result.state);
+    // 대화당 기기 하나만 받는 서버에서 그 사이 다른 기기가 이 대화를 가져갔다 — 이 휴대폰은 잊는다.
+    if (result && !result.ok && result.code === 'other_device') sync.onOtherDevice(result.state);
     void refreshRemote(interactionId);
   });
 });
@@ -146,7 +153,8 @@ export const folderStore = {
 
   /**
    * 시스템 폴더 선택기로 골라 이 대화에 연결한다. 취소하면 그대로.
-   * 이 대화의 폴더가 다른 기기에 있으면 더하지 않는다 — 시트가 [이 기기로 옮기기] 를 보여 준다.
+   * 대화당 기기 하나만 받는 서버가 거절하면(다른 기기에 폴더가 있다) 더하지 않는다 — 시트가
+   * [이 기기로 옮기기] 를 보여 준다.
    * `takeOver` 면 고른 폴더가 이 대화의 폴더가 되고 다른 기기의 연결은 해제된다.
    */
   async add(interactionId: string, opts: { takeOver?: boolean } = {}): Promise<MobileFolder[]> {
@@ -180,7 +188,7 @@ export const folderStore = {
     book.forget(interactionId);
   },
 
-  /** 대화 채널의 `folders` 소식 — 다른 기기가 이 대화를 옮겨 갔으면 이 휴대폰은 잊는다. */
+  /** 대화 채널의 `folders` 소식 — 규칙은 ConversationFolderSync.onServerFolders. */
   serverFolders(interactionId: string, data: Record<string, unknown>): void {
     const state = parseConversationFolders(data, interactionId);
     sync.onServerFolders(state);
@@ -212,8 +220,10 @@ export function useChatFolders(interactionId: string): MobileFolder[] {
 export interface ChatFolderRemote {
   /** 서버 사본 — 폴더가 있는 기기와 켜짐 여부. 옛 서버·아직 모름이면 null. */
   state: ConversationFoldersState | null;
-  /** 폴더가 다른 기기에 있다(이 휴대폰에는 없다). */
+  /** 폴더가 다른 기기에만 있고 서버가 대화당 기기 하나만 받는다 — [이 기기로 옮기기]. */
   elsewhere: boolean;
+  /** 다른 기기들에 있는 이 대화의 폴더(이름만). */
+  others: ConversationFolderDeviceFolders[];
   /** 다른 화면에서 온 요청으로 조작한 마지막 것. */
   lastRemoteUse: RemoteFolderUse | null;
 }
@@ -222,8 +232,11 @@ function remoteView(interactionId: string): ChatFolderRemote {
   const state = remoteStates.get(interactionId) ?? null;
   const mine = cachedDeviceId();
   const elsewhere =
-    !!state?.device && state.device.deviceId !== mine && state.folders.length > 0 && !book.list(interactionId).length;
-  return { state, elsewhere, lastRemoteUse: remoteUses.get(interactionId) ?? null };
+    !book.list(interactionId).length &&
+    sync.isExclusive(interactionId, state) &&
+    folderOwnership(state, mine) === 'other';
+  const others = elsewhere ? [] : otherDeviceFolders(state, mine);
+  return { state, elsewhere, others, lastRemoteUse: remoteUses.get(interactionId) ?? null };
 }
 
 /** 이 대화 폴더의 서버 사본을 구독한다 — 열 때 한 번 읽고, 소식이 오면 다시 그린다. */

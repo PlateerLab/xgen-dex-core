@@ -358,3 +358,56 @@ test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 두고, 있는 
   assert.equal(old.isError, true, '옛 서버는 받을 거리를 싣지 않는다');
   assert.equal(transfer.discarded.length, 3, '받은 사본은 폴더에 넣은 뒤 지운다');
 });
+
+// ── 사용자 PC 접속(UserPc) — 서버의 내부 호출로 연결 폴더에서 bash 명령을 돌린다 ─────────────
+
+test('사용자 PC 접속: 실행 통로가 카탈로그에 서고(숨는 이름) 셸 정보가 붙는다', () => {
+  const run = advertiseMobileTools().find((t) => t.name === '_UserPcRun');
+  assert.ok(run, '_UserPcRun 누락');
+  assert.equal(run!.server, 'mobile');
+  assert.match(String(run!.meta?.shell), /bash/);
+  assert.ok(advertiseMobileTools().some((t) => t.name === '_UserPcJob'));
+});
+
+test('사용자 PC 접속: 연결 폴더가 /<이름> 으로 붙고, 서버가 보낸 폴더 경로에서 시작한다', async () => {
+  const s = scope();
+  s.fs.files.set(notes.uri, new Map([['memo/today.txt', '장보기\nTODO 우유\n']]));
+  s.fs.files.set(photos.uri, new Map([['2026/a.txt', 'x']]));
+  const r = await callMobileTool(
+    fakePort(),
+    '_UserPcRun',
+    { command: 'pwd && grep -rn TODO . && ls /', cwd: '/Notes', wait_ms: 10_000 },
+    undefined,
+    { ...s, interactionId: 'chat-1' },
+  );
+  assert.equal(r.isError, undefined, r.content[0].text);
+  const out = r.structuredContent as { exit_code: number; stdout: string; shell: string };
+  assert.equal(out.exit_code, 0);
+  const lines = out.stdout.split('\n');
+  assert.deepEqual(lines.slice(0, 2), ['/Notes', 'memo/today.txt:2:TODO 우유']);
+  // 루트에는 연결 폴더(와 해석기의 가상 /bin·/usr)만 있다 — 휴대폰의 다른 곳은 보이지 않는다.
+  assert.ok(lines.includes('Notes') && lines.includes('Photos'));
+  assert.match(out.shell, /built in/);
+
+  const written = await callMobileTool(
+    fakePort(),
+    '_UserPcRun',
+    { command: "echo '사진 정리' > list.txt && cat list.txt", cwd: '/Photos/2026', wait_ms: 10_000 },
+    undefined,
+    { ...s, interactionId: 'chat-1' },
+  );
+  assert.equal((written.structuredContent as { stdout: string }).stdout, '사진 정리\n');
+  assert.equal(s.fs.files.get(photos.uri)!.get('2026/list.txt'), '사진 정리\n');
+});
+
+test('사용자 PC 접속: 폴더가 없는 대화·폴더 밖 경로는 거부한다', async () => {
+  const none = await callMobileTool(fakePort(), '_UserPcRun', { command: 'ls' }, undefined, { ...scope([]), interactionId: 'c' });
+  assert.equal(none.isError, true);
+  assert.equal(none.content[0].text, NO_FOLDER_MESSAGE);
+  const outside = await callMobileTool(fakePort(), '_UserPcRun', { command: 'ls', cwd: '/Elsewhere' }, undefined, {
+    ...scope(),
+    interactionId: 'c',
+  });
+  assert.equal(outside.isError, true);
+  assert.match(outside.content[0].text, /PATH_DOMAIN_MISMATCH/);
+});

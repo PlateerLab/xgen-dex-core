@@ -15,6 +15,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "just-bash": "3.6.0",
     "ws": "^8.21.0",
     "@modelcontextprotocol/sdk": "^1.29.0"
   }

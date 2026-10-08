@@ -40,6 +40,22 @@ const deploymentDefaultDefines = Object.fromEntries(
   ].map((name) => [`process.env.${name}`, JSON.stringify(process.env[name] ?? '')]),
 );
 
+/**
+ * 내장 bash 해석기(just-bash, 엔진의 user-pc-builtin)는 번들에 녹이고, 몇 명령만 쓰는 큰
+ * 패키지는 뺀다 — 다 실으면 설치본이 90MB 늘어난다. 해석기는 그 명령을 등록하지 않으므로
+ * (BUILTIN_LEFT_OUT_COMMANDS) 빠진 패키지를 부를 일이 없다. guarded-fetch 는 네트워크 명령용
+ * (해석기는 네트워크를 켜지 않는다), 나머지는 just-bash 의 선택 의존이다. CLI 빌드와 같은 목록.
+ */
+const justBashLeftOut = [
+  'sql.js',
+  'turndown',
+  'run',
+  'typescript',
+  'guarded-fetch',
+  'node-liblzma',
+  '@mongodb-js/zstd',
+];
+
 /** 객체 별칭을 vite 의 배열 형태로 — 서브경로 정규식과 같이 쓰려면 배열이어야 한다. */
 function aliasEntries() {
   return Object.entries(dexAliases).map(([find, replacement]) => ({ find, replacement }));
@@ -72,6 +88,7 @@ export default defineConfig({
           'electron-updater',
           'chokidar',
           'picomatch',
+          ...justBashLeftOut,
         ],
       },
     },

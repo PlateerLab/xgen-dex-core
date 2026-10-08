@@ -321,3 +321,62 @@ test('kick — 열려 있다고 믿는 소켓도 카탈로그를 다시 알려 �
   assert.ok(bridgeAny.ackWatchdog, '확인이 오지 않으면 워치독이 새로 붙는다');
   bridge.stop();
 });
+
+test('서버 시한(deadline_ms)보다 먼저 스스로 멈추고 사유를 돌려준다 — 도는 일도 끊긴다', async () => {
+  let aborted = false;
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: (_tool, _args, _context, signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener('abort', () => {
+          aborted = true;
+          resolve({ content: [{ type: 'text', text: 'late' }] });
+        });
+      }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'mcp_call', request_id: 'r-slow', server: 'mobile', tool: '_UserPcRun', args: {}, deadline_ms: 1_200 });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(ws.sent.some((f) => f.type === 'mcp_result'), false, '아직 시한 전');
+  // 이 기기의 시한은 서버 시한보다 1초 짧다(1.2초 → 1초).
+  await new Promise((r) => setTimeout(r, 800));
+  const result = ws.sent.find((f) => f.type === 'mcp_result') as { ok: boolean; error: string };
+  assert.equal(result.ok, false);
+  assert.match(result.error, /LOCAL_TIMEOUT.*_UserPcRun/);
+  assert.equal(aborted, true);
+  bridge.stop();
+});
+
+test('서버의 mcp_cancel 이 오면 그 호출을 끊는다', async () => {
+  let aborted = false;
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: (_tool, _args, _context, signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener('abort', () => {
+          aborted = true;
+          resolve({ content: [{ type: 'text', text: 'stopped' }], isError: true });
+        });
+      }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'mcp_call', request_id: 'r-c', server: 'mobile', tool: '_UserPcRun', args: {}, deadline_ms: 60_000 });
+  await tick();
+  ws.recv({ type: 'mcp_cancel', request_id: 'r-c', reason: 'timeout' });
+  await tick();
+  assert.equal(aborted, true);
+  assert.ok(ws.sent.some((f) => f.type === 'mcp_result' && f.request_id === 'r-c'));
+  bridge.stop();
+});

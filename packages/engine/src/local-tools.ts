@@ -69,6 +69,15 @@ import {
   type SkippedFile,
 } from '@dex/protocol';
 import { dangerousCommandPrompt, isDangerousShellCommand } from './dangerous-commands';
+import {
+  USER_PC_JOB_TOOL,
+  USER_PC_TOOL_NAMES,
+  outcomeText,
+  runUserPcCommand,
+  stopUserPcJobsOutside,
+  userPcJob,
+  userPcToolSchemas,
+} from './user-pc';
 import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
 import { interaction } from './host';
 import type { LocalFolder } from './local-folders';
@@ -147,6 +156,8 @@ export interface LocalToolSchema {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** 서버에 함께 알리는 사실(예: UserPc 셸 이름). 모델에게 가는 설명이 아니다. */
+  meta?: Record<string, unknown>;
 }
 
 export interface LocalToolResult {
@@ -168,6 +179,8 @@ export interface LocalToolCallContext {
   remote?: boolean;
   /** 그 요청을 보낸 화면의 이름("웹", "집 PC · 데스크톱"…). */
   originName?: string;
+  /** 서버가 그 호출을 그만뒀다(시한 초과·사용자 [정지]) — 하던 일을 멈춘다. */
+  signal?: AbortSignal;
 }
 
 /** 다른 화면에서 온 요청으로 이 PC 의 폴더를 조작했다 — 앱이 사용자에게 보여 준다. */
@@ -390,6 +403,9 @@ const approvedDangerousScopes = new Set<string>();
  *  서버 런타임은 이 문구를 사용자 거부로 인식한다(xgen-agent-runtime host/tools.py). 바꾸면 거기도 바꿀 것. */
 export const DANGEROUS_COMMAND_DENIED = '사용자가 이 명령의 실행을 거부했습니다 (위험할 수 있는 명령).';
 
+/** 위험 명령 확인 창을 기다리는 시간. 지나면 거부한다. */
+export const DANGEROUS_APPROVAL_TIMEOUT_MS = 120_000;
+
 /** 위험 패턴이면 사용자에게 확인. false = 거부. dialog 는 main 프로세스에서만.
  *  사용자 PC 에서 명령을 실행하는 경로가 모두 이 한 곳을 거친다. `scope` 는
  *  승인을 기억하는 단위(대화 id)다. */
@@ -401,7 +417,14 @@ export async function ensureDangerousApproval(command: string, scope = ''): Prom
   // 없다"이고, 그때 실행하면 사용자가 모르는 사이에 파괴적인 명령이 돈다.
   if (!ask) return false;
   try {
-    const answer = await ask(command);
+    // 확인 창은 사람이 답할 때까지 기다린다 — 창이 가려져 있으면 끝없이. 시한이 지나면 거부한다(기본값과 같다).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const answer = await Promise.race([
+      ask(command),
+      new Promise<'deny'>((resolve) => {
+        timer = setTimeout(() => resolve('deny'), DANGEROUS_APPROVAL_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
     if (answer === 'session') {
       approvedDangerousScopes.add(scope);
       return true;
@@ -1156,7 +1179,12 @@ export class LocalToolProvider {
 
   /** 이 호스트가 지금 광고하는 폴더 도구 — 작업 공간 길이 붙어 있으면 복사 도구까지. */
   private folderTools(): LocalToolSchema[] {
-    return [...folderToolSchemas(), ...(this.workspaceTransfer ? workspaceCopySchemas('computer') : [])];
+    return [
+      ...folderToolSchemas(),
+      ...(this.workspaceTransfer ? workspaceCopySchemas('computer') : []),
+      // 사용자 PC 접속(UserPc)의 실행 통로 — `_` 로 시작해 서버가 모델에게 숨긴다.
+      ...userPcToolSchemas(),
+    ];
   }
 
   /**
@@ -1221,7 +1249,7 @@ export class LocalToolProvider {
     const key = String(interactionId ?? '').trim();
     if (!key) return 0;
     const roots = this.resolveFolders({ interactionId: key }).map((folder) => folder.path);
-    return stopJobsOutside(key, roots);
+    return stopJobsOutside(key, roots) + stopUserPcJobsOutside(key, roots);
   }
 
   async callTool(
@@ -1232,6 +1260,7 @@ export class LocalToolProvider {
     if (tool === LOCAL_CONTROL_TOOL) return this.localControl(context);
     if (this.delegate?.owns(tool)) return this.delegate.callTool(tool, args, context);
     if (this.mcpAdmin?.owns(tool)) return this.mcpAdmin.callTool(tool, args);
+    if (USER_PC_TOOL_NAMES.has(tool)) return this.userPc(tool, args, context);
     if (!FOLDER_TOOL_NAMES.has(tool)) throw new Error(`unknown local tool: ${tool}`);
     if (context?.remote && PRESENCE_TOOLS.has(tool)) {
       throw new Error(
@@ -1271,6 +1300,66 @@ export class LocalToolProvider {
     } finally {
       // 실패한 명령도 폴더를 바꿨을 수 있다(절반쯤 쓰고 끊긴 경우).
       if (changes && context?.interactionId) {
+        for (const listener of this.folderChangeListeners) {
+          try {
+            listener(context.interactionId);
+          } catch {
+            /* 표시 실패가 도구를 막지 않는다 */
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 사용자 PC 접속(UserPc) — 서버가 보낸 명령을 이 대화의 연결 폴더에서 실행하거나, 그 작업을 확인한다.
+   * 범위는 지금과 같다: 그 대화에 연결된 폴더 안에서만 시작하고, 위험한 명령은 사람에게 묻는다.
+   */
+  private async userPc(tool: string, args: unknown, context?: LocalToolCallContext): Promise<LocalToolResult> {
+    const scope = this.scopeFor(context);
+    const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+    if (context?.remote && context.interactionId) {
+      for (const listener of this.remoteUseListeners) {
+        try {
+          listener({ interactionId: context.interactionId, tool, originName: context.originName || '다른 기기', at: Date.now() });
+        } catch {
+          /* 표시 실패가 도구를 막지 않는다 */
+        }
+      }
+    }
+    if (tool === USER_PC_JOB_TOOL) {
+      const action = String(a.action ?? 'poll') === 'stop' ? 'stop' : 'poll';
+      const out = await userPcJob(String(a.job_id ?? ''), scope.key, action, Number(a.wait_ms) || undefined, context?.signal);
+      return { content: [{ type: 'text', text: outcomeText(out) }], structuredContent: { ...out } };
+    }
+    const command = String(a.command ?? '');
+    if (!command.trim()) throw new Error('command must not be empty');
+    const raw = String(a.cwd ?? '').trim();
+    const cwd = await resolveWithinRootsReal(resolveOne(raw || scope.cwd, scope.cwd), scope.roots);
+    if (!cwd) {
+      throw new Error(
+        `[PATH_DOMAIN_MISMATCH] 작업 폴더가 이 대화에 연결된 폴더 밖입니다: ${raw}. ` +
+          `연결된 폴더 안에서 실행하세요 (${scope.roots.join(', ')}).`,
+      );
+    }
+    if (!(await ensureDangerousApproval(command, scope.key))) {
+      return { content: [{ type: 'text', text: DANGEROUS_COMMAND_DENIED }], isError: true };
+    }
+    const folders = this.resolveFolders(context);
+    try {
+      const out = await runUserPcCommand({
+        command,
+        cwd,
+        roots: scope.roots,
+        names: scope.roots.map((root) => folders.find((f) => f.path === root)?.name ?? ''),
+        key: scope.key,
+        waitMs: Number(a.wait_ms) || undefined,
+        maxRuntimeMs: Number(a.max_runtime_ms) || undefined,
+        signal: context?.signal,
+      });
+      return { content: [{ type: 'text', text: outcomeText(out) }], structuredContent: { ...out } };
+    } finally {
+      if (context?.interactionId) {
         for (const listener of this.folderChangeListeners) {
           try {
             listener(context.interactionId);
@@ -1735,9 +1824,10 @@ export class LocalToolProvider {
         launch.cleanup,
       );
     }
-    const r = await this.spawnCapture(launch.file, launch.args, launch.env, runCwd, timeout).finally(
-      launch.cleanup,
-    );
+    // 임시 폴더는 사용자 폴더 밖에 있다 — 지우는 일을 결과가 기다리지 않는다(지우기가 멈춰도 답은 간다).
+    const r = await this.spawnCapture(launch.file, launch.args, launch.env, runCwd, timeout).finally(() => {
+      void launch.cleanup();
+    });
     if (r.error)
       return {
         content: [{ type: 'text', text: `셸 실행 실패: ${r.error.message}` }],
@@ -2005,7 +2095,7 @@ export class LocalToolProvider {
         });
       });
       child.on('close', (code, signal) => {
-        const cleaned = cleanup();
+        void cleanup();
         // Always record the real exit code/signal (even for a job we killed, so
         // list/poll can show it); only transition status if still running.
         job.code = code;
@@ -2018,14 +2108,13 @@ export class LocalToolProvider {
         }
         if (maxRuntimeTimer) clearTimeout(maxRuntimeTimer);
         // Automatic foreground conversion preserves the ordinary foreground
-        // result when the command finishes within the grace period. The result
-        // waits for the scratch folder to be removed — otherwise it is still
-        // sitting in the user's folder when the agent looks.
+        // result when the command finishes within the grace period. The scratch
+        // folder lives outside the user's folder, so the result does not wait
+        // for its removal (a stuck removal must not hold the answer).
         if (!settled && (options || code !== 0 || signal)) {
           finishing = true;
           bgJobs.delete(job.id);
-          const result = shapeResult(job.stdout, job.stderr, code, signal);
-          void cleaned.then(() => done(result));
+          done(shapeResult(job.stdout, job.stderr, code, signal));
         }
       });
       // Don't let the piped child keep the connector's event loop alive on quit —

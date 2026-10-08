@@ -29,6 +29,7 @@ import {
   type CopiedFile,
   type SkippedFile,
 } from '@dex/protocol';
+import { USER_PC_TOOL_NAMES, callUserPc, userPcSchemas } from './user-pc';
 import {
   NO_FOLDER_MESSAGE,
   pathSegments,
@@ -101,6 +102,8 @@ export interface ToolAdvert {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** 서버가 읽는 도구 정보(사용자 PC 접속의 셸 이름 등). */
+  meta?: Record<string, unknown>;
 }
 
 /** 기기 기능 포트 — rn-port.ts 가 구현하고, 테스트는 인메모리 가짜로 구현한다. */
@@ -160,6 +163,10 @@ export interface FolderFs {
   remove(folder: MobileFolder, rel: string): Promise<void>;
   /** 다른 앱에 넘길 수 있는 로컬 사본(file://)을 만든다. */
   exportFile(folder: MobileFolder, rel: string): Promise<string>;
+  /** 폴더를 만든다(부모까지). */
+  mkdir?(folder: MobileFolder, rel: string): Promise<void>;
+  /** 폴더 안에서 파일을 바이트 그대로 복사한다. 같은 이름이 있으면 덮어쓴다. */
+  copy?(folder: MobileFolder, from: string, to: string): Promise<void>;
 }
 
 /** 한 호출이 닿을 수 있는 범위 — 그 대화에 연결된 폴더. */
@@ -170,6 +177,10 @@ export interface FolderScope {
   remoteFrom?: string;
   /** 이 호출의 대화 작업 공간(복사 도구). 호출 문맥에 에이전트·대화가 없으면 없다. */
   workspace?: WorkspaceTransfer;
+  /** 이 호출의 대화 — 사용자 PC 접속의 작업은 그 대화에서만 보인다. */
+  interactionId?: string;
+  /** 서버의 취소·감시 시한. */
+  signal?: AbortSignal;
 }
 
 /** 휴대폰 앞에 사람이 있어야 뜻이 있는 폴더 도구 — 다른 화면에서 온 요청에서는 쓰지 않는다. */
@@ -236,6 +247,8 @@ export function advertiseMobileTools(enabled?: Partial<Record<ToolGroup, boolean
       path: str(`${PATH_HELP} Default: photo-<time>.jpg in the first connected folder.`),
     }),
     ...workspaceCopySchemas('phone').map((schema) => ({ server: MOBILE_SERVER, ...schema })),
+    // 사용자 PC 접속(UserPc)의 실행 통로 — `_` 도구는 서버가 모델에게 숨긴다.
+    ...userPcSchemas().map((schema) => ({ server: MOBILE_SERVER, ...schema })),
     t('Notify', '휴대폰에 로컬 알림을 표시합니다.', {
       title: str('알림 제목'),
       body: str('알림 내용'),
@@ -521,6 +534,10 @@ export async function callMobileTool(
     return err(`이 도구는 사용자가 설정에서 꺼 두었습니다 (${group}).`);
   }
   try {
+    if (USER_PC_TOOL_NAMES.has(tool)) {
+      if (!scope) return err(NO_FOLDER_MESSAGE);
+      return await callUserPc(tool, args, scope);
+    }
     if (FOLDER_TOOLS.has(tool)) {
       // 폴더 도구는 그 대화에 연결된 폴더 안에서만 — 없으면 이유와 방법을 알린다.
       if (!scope || !scope.folders.length) return err(NO_FOLDER_MESSAGE);

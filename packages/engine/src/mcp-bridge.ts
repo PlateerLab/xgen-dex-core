@@ -20,6 +20,7 @@
  * (grace). Reconnect uses exponential backoff; status emits are de-duplicated.
  */
 import WebSocket from 'ws';
+import { LocalDeadlineError, localDeadlineMs } from '@dex/protocol/connector-deadline';
 import { getMcpManager, type McpServerAdvert } from './mcp-manager';
 import {
   getLocalToolProvider,
@@ -28,6 +29,9 @@ import {
 } from './local-tools';
 import { appendMcpRuntimeLog } from './mcp-runtime-log';
 import { xgenWebSocketTlsOptions } from './connection-security';
+
+// 감시 시한 규칙은 휴대폰·브라우저와 같다(@dex/protocol/connector-deadline).
+export { LocalDeadlineError, localDeadlineMs };
 
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MIN_MS = 5000;
@@ -349,7 +353,7 @@ export class McpBridge {
       }, SETTLE_MS);
     });
 
-    ws.on('message', (raw: WebSocket.RawData) => void this.onMessage(String(raw)));
+    ws.on('message', (raw: WebSocket.RawData) => void this.onMessage(String(raw), ws));
 
     ws.on('close', () => {
       if (this.settle) {
@@ -410,6 +414,8 @@ export class McpBridge {
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
+          // 서버에 함께 알리는 사실(UserPc 셸 이름 등). 모델에게 가는 설명이 아니다.
+          ...(t.meta ? { meta: t.meta } : {}),
         }));
       tools.unshift(...builtins);
       if (this.ws?.readyState === WebSocket.OPEN) {
@@ -445,7 +451,10 @@ export class McpBridge {
     }
   }
 
-  private async onMessage(text: string): Promise<void> {
+  /** 기기에서 돌고 있는 호출 — 서버가 `mcp_cancel` 을 보내거나 시한이 지나면 멈춘다. */
+  private inflight = new Map<string, AbortController>();
+
+  private async onMessage(text: string, from?: WebSocket): Promise<void> {
     let msg: {
       type?: string;
       request_id?: string;
@@ -455,6 +464,7 @@ export class McpBridge {
       context?: unknown;
       catalog_id?: string;
       tool_count?: number;
+      deadline_ms?: number;
     };
     try {
       msg = JSON.parse(text);
@@ -476,9 +486,17 @@ export class McpBridge {
       this.emit();
       return;
     }
+    if (msg.type === 'mcp_cancel') {
+      // 서버가 그 호출을 그만뒀다(시한 초과·사용자 [정지]) — 하던 일을 멈춘다. 결과는 보내지 않아도 된다.
+      this.inflight.get(String(msg.request_id ?? ''))?.abort();
+      return;
+    }
     if (msg.type === 'mcp_call') {
       const { request_id, server, tool, args } = msg;
-      const context = localToolCallContext(msg.context);
+      const controller = new AbortController();
+      const requestKey = String(request_id ?? '');
+      if (requestKey) this.inflight.set(requestKey, controller);
+      const context = { ...localToolCallContext(msg.context), signal: controller.signal };
       const startedAt = Date.now();
       appendMcpRuntimeLog({
         kind: 'call',
@@ -488,16 +506,33 @@ export class McpBridge {
         tool: String(tool),
       });
       let payload: Record<string, unknown>;
+      const local = getLocalToolProvider();
+      const isLocal = local.owns(String(server));
+      // 감시 시한 — 이 호출은 반드시 이 안에 답한다. 도구 안의 어느 단계(폴더 확인·실행 준비·확인 창…)가
+      // 멈춰도 서버가 끝없이 기다리지 않게(2026-10-07: 결과 없는 Shell 호출 다섯 번).
+      const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, isLocal);
+      let watchdog: NodeJS.Timeout | null = null;
       try {
         // Built-in (connector-hosted) tools dispatch locally; everything else
         // goes to the configured MCP server via MCPManager. Same wire contract.
-        const local = getLocalToolProvider();
-        const result = local.owns(String(server))
-          ? await local.callTool(String(tool), args ?? {}, context)
-          : await getMcpManager().callTool(String(server), String(tool), args ?? {});
+        const work = isLocal
+          ? local.callTool(String(tool), args ?? {}, context)
+          : getMcpManager().callTool(String(server), String(tool), args ?? {});
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          watchdog = setTimeout(() => {
+            // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
+            reject(new LocalDeadlineError(String(tool), deadlineMs));
+            controller.abort();
+          }, deadlineMs);
+          (watchdog as unknown as { unref?: () => void }).unref?.();
+        });
+        const result = await Promise.race([work, timedOut]);
         payload = { request_id, ok: true, result };
       } catch (e) {
         payload = { request_id, ok: false, error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+        if (requestKey) this.inflight.delete(requestKey);
       }
       appendMcpRuntimeLog({
         kind: 'result',
@@ -511,7 +546,9 @@ export class McpBridge {
         durationMs: Date.now() - startedAt,
       });
       try {
-        this.ws?.send(JSON.stringify({ type: 'mcp_result', ...payload }));
+        // 호출을 받은 소켓으로 답한다 — 그사이 다시 붙었으면 지금 소켓으로.
+        const target = from && from.readyState === WebSocket.OPEN ? from : this.ws;
+        target?.send(JSON.stringify({ type: 'mcp_result', ...payload }));
       } catch {
         /* socket gone */
       }

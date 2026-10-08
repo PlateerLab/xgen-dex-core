@@ -128,14 +128,17 @@ test('폴더 도구는 늘 광고된다 — 쓸 수 있는지는 호출마다 �
     'Search',
     'Clipboard',
     'Notify',
+    // 사용자 PC 접속(UserPc)의 실행 통로 — `_` 로 시작해 서버가 모델에게 숨긴다.
+    '_UserPcRun',
+    '_UserPcJob',
   ]);
   // 작업 공간과 주고받는 길이 없으면(호스트가 서버 연결을 붙이지 않았다) 복사 도구는 광고하지 않는다.
   assert.deepEqual(
-    new Set([...names.slice(1), COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]),
+    new Set([...names.slice(1, -2), COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]),
     FOLDER_TOOL_NAMES,
   );
   p.configureWorkspaceTransfer({ upload: async () => ({ path: '', size: 0 }), download: async () => new Uint8Array() });
-  assert.deepEqual(p.advertise().map((t) => t.name).slice(-2), [COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]);
+  assert.deepEqual(p.advertise().map((t) => t.name).slice(-4, -2), [COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]);
 });
 
 test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 구조째, 숨김·폴더 밖은 건너뛴다', async () => {

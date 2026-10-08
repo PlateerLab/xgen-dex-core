@@ -107,6 +107,7 @@ import type { ThinkingValue } from '@dex/protocol/conversation-model';
 import { ChatFolderSync } from './chat-folder-sync';
 import { FolderFsError, folderFsCall } from './folder-fs';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
+import { stopAllUserPcJobs } from '@dex/engine/user-pc';
 import {
   consumeInstallOptions,
   resolveDataRoot,
@@ -1609,8 +1610,8 @@ chatFolders.onChange((interactionId) => {
   // 이 PC 에서 바꾼 것만 서버에 올린다(서버가 시켜서 잊은 것은 메아리가 된다).
   if (chatFolderSync.isQuiet(interactionId)) return;
   void chatFolderSync.publish(interactionId).then((result) => {
-    // 그 사이 다른 기기가 이 대화를 옮겨 갔다 — 이 PC 는 잊는다.
-    if (result && !result.ok && result.code === 'other_device') chatFolderSync.onServerFolders(result.state);
+    // 대화당 기기 하나만 받는 서버에서 그 사이 다른 기기가 이 대화를 가져갔다 — 이 PC 는 잊는다.
+    if (result && !result.ok && result.code === 'other_device') chatFolderSync.onOtherDevice(result.state);
     notifyFolderRemote(interactionId);
   });
 });
@@ -1736,7 +1737,7 @@ const conversationWatchHub = new ConversationWatchHub(
  */
 const conversationsWatch = new ConversationsWatch((event) => {
   if (event.kind === 'folders') {
-    // 어느 기기가 이 대화의 폴더를 가졌는가 — 다른 기기가 옮겨 갔으면 이 PC 는 잊는다.
+    // 이 대화의 폴더가 어느 기기들에 있는가 — 규칙은 ConversationFolderSync.onServerFolders.
     chatFolderSync.onServerFolders(parseConversationFolders(event.data ?? {}, event.interactionId));
     notifyFolderRemote(event.interactionId);
     return;
@@ -3363,7 +3364,8 @@ ipcMain.handle(CHANNELS.chatFoldersAdd, async (e, interactionId: string) => {
   };
   const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
   if (!r.canceled && r.filePaths.length) {
-    // 다른 기기에 이 대화의 폴더가 있으면 더하지 않는다 — 창이 [이 기기로 옮기기] 를 묻는다.
+    // 대화당 기기 하나만 받는 서버가 거절하면(다른 기기에 폴더가 있다) 더하지 않는다 — 창이
+    // [이 기기로 옮기기] 를 묻는다. 여러 기기를 받는 서버면 이 PC 의 폴더가 함께 붙는다.
     const next = normalizeLocalFolders([
       ...chatFolders.list(id),
       ...r.filePaths.map((path) => ({ path })),
@@ -3376,9 +3378,11 @@ ipcMain.handle(CHANNELS.chatFoldersAdd, async (e, interactionId: string) => {
 /** 이 대화의 서버 사본 — 다른 기기에 있는 폴더와 그 기기가 켜져 있는지. */
 ipcMain.handle(CHANNELS.chatFoldersRemote, async (_e, interactionId: string) => {
   const id = String(interactionId ?? '').trim();
+  const state = id ? await chatFolderSync.state(id) : null;
   return {
-    state: id ? await chatFolderSync.state(id) : null,
+    state,
     deviceId: ensureDeviceId(),
+    exclusive: chatFolderSync.isExclusive(id, state),
     lastRemoteUse: lastRemoteUse.get(id) ?? null,
   };
 });
@@ -4049,6 +4053,8 @@ if (!gotLock) {
     globalShortcut.unregisterAll();
     disposeUpdater();
     getMcpBridge().stop();
+    // 사용자 PC 접속으로 돌던 명령(작업)을 끝낸다 — 따로 묶인 프로세스라 앱과 함께 끝나지 않는다.
+    stopAllUserPcJobs();
     void getBrowserRuntime().closeAll();
     void getMcpManager().closeAll();
   });

@@ -2461,6 +2461,7 @@ ipcMain.handle(CHANNELS.avatarStoreUnpublish, (_e, storeId: string) =>
 ipcMain.handle(CHANNELS.agentsList, (_e, query) => getClient().agents.list(query ?? {}));
 ipcMain.handle(CHANNELS.agentsCreateOptions, () => getClient().agents.createOptions());
 ipcMain.handle(CHANNELS.agentsCreate, (_e, input) => getClient().agents.create(input));
+ipcMain.handle(CHANNELS.agentsNameTaken, (_e, name: string) => getClient().agents.nameTaken(String(name ?? '')));
 
 // ── IPC: voice (STT/TTS) ─────────────────────────────────────────
 // The renderer captures audio via getUserMedia and hands bytes to main; main
@@ -2517,6 +2518,18 @@ ipcMain.handle(
     getClient().history.snapshot(workflowId, interactionId, name),
 );
 ipcMain.handle(CHANNELS.historyConversations, () => getClient().history.conversations());
+ipcMain.handle(CHANNELS.historyConversationPage, (_e, opts?: { limit?: number; cursor?: string | null }) => {
+  // 목록을 그리는 화면이 있으면 목록 소켓도 붙인다. 새 대화·방금 말한 대화가 곧바로 밀려온다.
+  ensureConversationsWatch();
+  return getClient().history.conversationPage(opts ?? {});
+});
+ipcMain.handle(CHANNELS.historyRename, (_e, workflowId: string, interactionId: string, title: string) =>
+  getClient().history.renameConversation(workflowId, interactionId, String(title ?? '')),
+);
+ipcMain.handle(CHANNELS.historyDelete, (_e, workflowId: string, interactionId: string, workflowName?: string) =>
+  getClient().history.deleteConversation(workflowId, interactionId, workflowName),
+);
+ipcMain.handle(CHANNELS.historyPurgeDeletedAgents, () => getClient().history.purgeDeletedAgentConversations());
 
 // ── IPC: 채팅 공유 ─────────────────────────────────────────────────
 // 서버는 경로(/share/chat/<token>)만 준다. 절대 주소는 서버 주소를 아는 여기서 붙인다(appSetShare 와 같다).

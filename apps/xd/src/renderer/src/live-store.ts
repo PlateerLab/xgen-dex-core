@@ -31,6 +31,8 @@ export class LiveStore {
   /** 대화마다 마지막 턴이 본 MCP 서버 상태. */
   private mcp = new Map<string, { turnId: string; servers: XdMcpStatus[] }>();
   private snapshot = 0;
+  /** 끝난 턴의 수(대화를 가리지 않고). 대화 목록이 이 값이 바뀔 때 다시 읽는다(제목·순서가 바뀐다). */
+  private finishedTotal = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -45,6 +47,8 @@ export class LiveStore {
   }
 
   version = (): number => this.snapshot;
+
+  finishedCount = (): number => this.finishedTotal;
 
   get(conversationId: string): LiveTurn | null {
     return this.turns.get(conversationId) ?? null;
@@ -83,6 +87,7 @@ export class LiveStore {
     }
     if (event.type === 'finished') {
       this.finished.add(event.turnId);
+      this.finishedTotal += 1;
       if (this.finished.size > 500) this.finished.delete(this.finished.values().next().value as string);
       if (live?.turnId === event.turnId) this.turns.delete(event.conversationId);
       this.versions.set(event.conversationId, this.conversationVersion(event.conversationId) + 1);
@@ -115,6 +120,14 @@ export function useLive(conversationId: string | null): { live: LiveTurn | null;
     version: conversationId ? liveStore.conversationVersion(conversationId) : 0,
     mcp: conversationId ? liveStore.mcpStatus(conversationId) : null,
   };
+}
+
+/**
+ * 대화 목록을 다시 읽을 때를 정하는 열쇠: 도는 대화가 바뀌거나(새 대화가 생기거나 맨 위로 오른다) 턴이 끝날 때만
+ * 바뀐다. 글 조각마다 바뀌지 않는다.
+ */
+export function useConversationListKey(): string {
+  return useSyncExternalStore(liveStore.subscribe, () => `${liveStore.running().join(',')}:${liveStore.finishedCount()}`);
 }
 
 /** 지금 도는 대화들(사이드바의 표시). */

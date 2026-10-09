@@ -4,9 +4,18 @@
  * - io-logs: the ordered turns of one conversation (workflowId + interactionId).
  * - interactions: the list of past conversations for a sidebar.
  */
-import { HttpClient } from './client';
-import type { Conversation, ConversationSnapshot, HistoryAttachment, HistoryFlowItem, HistoryTurn, ToolEvent } from './types';
+import { ApiError, HttpClient } from './client';
+import type {
+  Conversation,
+  ConversationPage,
+  ConversationSnapshot,
+  HistoryAttachment,
+  HistoryFlowItem,
+  HistoryTurn,
+  ToolEvent,
+} from './types';
 import { stripBrowserContext } from './browser';
+import { foldLegacyConversations, legacyConversation, parseConversation } from './conversation-list';
 
 interface RawIoLog {
   log_id: number;
@@ -261,7 +270,13 @@ interface RawInteraction {
   metadata?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
+  agent_deleted?: boolean;
 }
+
+/** 한 번에 받는 대화 수(서버 상한 100). */
+const CONVERSATION_PAGE_SIZE = 40;
+/** `conversations()` 가 끝까지 따라가는 쪽 수 상한. 사이드바가 아닌 호출자(검색·복원)용. */
+const CONVERSATIONS_ALL_MAX_PAGES = 10;
 
 export class HistoryApi {
   constructor(private http: HttpClient) {}
@@ -305,18 +320,90 @@ export class HistoryApi {
     return { turns, running: res.running === true };
   }
 
-  /** Past conversations (interactions) for the sidebar. */
+  /**
+   * 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(GET /api/interaction/conversations).
+   *
+   * 그 API 가 없는 옛 서버(404)에서는 옛 목록을 한 번에 읽어 같은 규칙으로 제목·꼬리표를 만들고
+   * 비교 파생을 접어 한 쪽으로 돌려준다. 옛 서버는 마지막 활동 시각을 적지 않아 순서는 시작 순이다.
+   */
+  async conversationPage(opts: { limit?: number; cursor?: string | null } = {}): Promise<ConversationPage> {
+    const params = new URLSearchParams({
+      limit: String(Math.max(1, Math.min(100, opts.limit ?? CONVERSATION_PAGE_SIZE))),
+    });
+    if (opts.cursor) params.set('cursor', opts.cursor);
+    try {
+      const res = await this.http.get<{
+        conversations?: unknown[];
+        next_cursor?: string | null;
+        agent_deleted_count?: number;
+      }>(`/api/interaction/conversations?${params}`);
+      return {
+        conversations: (res.conversations ?? []).map(parseConversation).filter((c): c is Conversation => c != null),
+        nextCursor: res.next_cursor ?? null,
+        ...(typeof res.agent_deleted_count === 'number' ? { agentDeletedCount: res.agent_deleted_count } : {}),
+      };
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 404 || opts.cursor) throw e;
+    }
+    const legacy = await this.legacyConversations();
+    return {
+      conversations: legacy,
+      nextCursor: null,
+      agentDeletedCount: legacy.filter((c) => c.agentDeleted).length,
+    };
+  }
+
+  /** 대화 목록 전부(쪽을 따라간다, 상한 있음). 사이드바는 {@link conversationPage} 로 나눠 받는다. */
   async conversations(): Promise<Conversation[]> {
+    const out: Conversation[] = [];
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let i = 0; i < CONVERSATIONS_ALL_MAX_PAGES; i += 1) {
+      const page: ConversationPage = await this.conversationPage({ limit: 100, cursor });
+      for (const c of page.conversations) {
+        const key = `${c.workflowId}\u0000${c.interactionId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(c);
+      }
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  /** 옛 서버의 목록(/api/interaction/list) → 같은 모양. */
+  private async legacyConversations(): Promise<Conversation[]> {
     const res = await this.http.get<{ execution_meta_list?: RawInteraction[] }>('/api/interaction/list');
-    return (res.execution_meta_list ?? []).map((r) => ({
-      id: r.id,
-      interactionId: r.interaction_id,
-      workflowId: r.workflow_id,
-      workflowName: r.workflow_name,
-      interactionCount: r.interaction_count ?? 0,
-      metadata: r.metadata ?? {},
-      createdAt: r.created_at ?? '',
-      updatedAt: r.updated_at ?? '',
-    }));
+    return foldLegacyConversations((res.execution_meta_list ?? []).map(legacyConversation));
+  }
+
+  /**
+   * 이름 바꾸기(내 대화만). 빈 이름이면 붙인 이름을 지워 첫 메시지 제목으로 돌아간다.
+   * 목록 순서는 그대로다. 바뀐 제목은 대화 목록 소켓으로 다른 화면에도 간다.
+   */
+  async renameConversation(
+    workflowId: string,
+    interactionId: string,
+    title: string,
+  ): Promise<{ title: string; customTitle: boolean }> {
+    const res = await this.http.post<{ title?: string; custom_title?: boolean }>(
+      '/api/interaction/conversations/rename',
+      { workflow_id: workflowId, interaction_id: interactionId, title },
+    );
+    return { title: typeof res?.title === 'string' ? res.title : '', customTitle: res?.custom_title === true };
+  }
+
+  /** 대화 지우기. 비교 채팅이면 딸린 파생 스레드까지 서버가 함께 지운다. */
+  async deleteConversation(workflowId: string, interactionId: string, workflowName?: string): Promise<void> {
+    const params = new URLSearchParams({ workflow_id: workflowId, interaction_id: interactionId, with_compare: 'true' });
+    if (workflowName) params.set('workflow_name', workflowName);
+    await this.http.del(`/api/chat/io-logs?${params}`);
+  }
+
+  /** 에이전트가 사라진 내 대화를 한 번에 지운다. 지운 수를 돌려준다. */
+  async purgeDeletedAgentConversations(): Promise<number> {
+    const res = await this.http.del<{ deleted_interactions?: number }>('/api/chat/io-logs/orphans');
+    return typeof res?.deleted_interactions === 'number' ? res.deleted_interactions : 0;
   }
 }

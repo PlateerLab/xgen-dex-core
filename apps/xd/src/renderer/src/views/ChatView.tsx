@@ -1,5 +1,6 @@
 /**
  * 채팅 — 한 에이전트의 한 대화. 지난 턴은 저장소에서, 도는 턴은 live-store 에서 그린다.
+ * 시작 화면에서 넘어오면 그 첫 메시지(`initialMessage`)를 마운트 뒤 한 번만 보낸다.
  *
  * 메시지 마크업·CSS 는 Dex 채팅과 같다(`chat-log`·`msg-row`·`bubble`·`chat-input`). 답은 도구를 쓴 턴이면 Dex 의 작업
  * 과정 타임라인, 아니면 Dex 의 마크다운으로 그린다.
@@ -11,11 +12,13 @@ import { xd } from '../bridge';
 import { turnMessages, usedTools, type ChatMsg } from '../chat-model';
 import { errorText, useData, KIND_LABEL } from '../data';
 import { IdeView } from '@dex/ide';
-import { ChatIcon, CheckIcon, CopyIcon, FolderCodeIcon, FolderOpenIcon, Markdown, PencilIcon, ProcessTimeline, SendIcon, StopIcon, Tooltip } from '../dex';
+import { ChatIcon, CheckIcon, CopyIcon, FolderCodeIcon, FolderOpenIcon, Markdown, PencilIcon, ProcessTimeline, Tooltip } from '../dex';
 import { setVisibleIde } from '../ide/activity';
 import { ideStoreFor, setIdeMode, useIdeMode } from '../ide/ide-stores';
 import { useTheme } from '../theme';
 import { liveStore, useLive, type LiveTurn } from '../live-store';
+import { conversationTitle } from '../start-model';
+import { Composer } from './Composer';
 import { ErrorBlock } from './ErrorBlock';
 import { LinkedFolders } from './LinkedFolders';
 import { XdMark } from './XdMark';
@@ -65,12 +68,26 @@ const AnswerFooter: React.FC<{ msg: ChatMsg }> = ({ msg }) => {
   );
 };
 
+/** 시작 화면이 넘긴 첫 메시지. `key` 하나에 한 번만 보낸다. */
+export interface InitialMessage {
+  key: string;
+  text: string;
+}
+
+/**
+ * 이미 보낸 첫 메시지의 key. 화면 밖(모듈)에 두어 StrictMode 의 효과 두 번 돌기나 다시 마운트돼도 두 번 보내지 않는다.
+ */
+const sentInitial = new Set<string>();
+
 export const ChatView: React.FC<{
   agent: XdAgent;
   conversationId: string | null;
+  /** 대화 제목(목록이 아는 것). 새 대화면 비어 있다. */
+  title?: string;
+  initialMessage?: InitialMessage | null;
   onConversation: (id: string) => void;
   onEditAgent: () => void;
-}> = ({ agent, conversationId, onConversation, onEditAgent }) => {
+}> = ({ agent, conversationId, title = '', initialMessage = null, onConversation, onEditAgent }) => {
   const { accounts } = useData();
   const account = accounts.find((a) => a.id === agent.accountId) ?? null;
   const { live, version, mcp } = useLive(conversationId);
@@ -96,14 +113,6 @@ export const ChatView: React.FC<{
   const currentConversation = useRef(conversationId);
   currentConversation.current = conversationId;
   const logRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  // 입력창은 쓰는 만큼 늘어난다(CSS 의 최대 높이까지).
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, [draft]);
   const stick = useRef(true);
 
   // 연결 폴더가 그대로 있는지 — 없어진 폴더는 엔진이 빼고 가므로 사용자에게 알린다. 턴이 끝날 때도 다시 본다.
@@ -195,8 +204,8 @@ export const ChatView: React.FC<{
   }, [rows]);
 
   const running = !!live;
-  const send = async () => {
-    const text = draft.trim();
+  const sendText = async (raw: string) => {
+    const text = raw.trim();
     if (!text || running || sending) return;
     const from = conversationId;
     setSendError('');
@@ -217,6 +226,15 @@ export const ChatView: React.FC<{
       if (mounted.current) setSending(false);
     }
   };
+  const send = () => sendText(draft);
+
+  // 시작 화면의 첫 메시지: 새 대화로 한 번만 보낸다. 실패하면 입력창에 그 글이 남는다.
+  useEffect(() => {
+    if (!initialMessage || sentInitial.has(initialMessage.key)) return;
+    sentInitial.add(initialMessage.key);
+    void sendText(initialMessage.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMessage?.key]);
 
   // [대화 | 작업 공간] — 에이전트마다 기억한다(앱을 다시 켜도). 저장소는 화면 밖에 있어 편집 중인 것이 남는다.
   const ideMode = useIdeMode(agent.id);
@@ -241,8 +259,10 @@ export const ChatView: React.FC<{
       <div className="chat-title">
         <XdMark size={26} />
         <div className="chat-title-text">
-          <strong>{agent.name}</strong>
-          <span className="muted small">{modelLabel}</span>
+          <strong>{conversationTitle({ title })}</strong>
+          <span className="muted small">
+            {agent.name} · {modelLabel}
+          </span>
         </div>
       </div>
       <div className="chat-header-actions">
@@ -356,41 +376,14 @@ export const ChatView: React.FC<{
             에이전트 설정에서 AI 제공자를 골라야 대화할 수 있습니다.
           </div>
         )}
-        <div className="composer">
-          <textarea
-            ref={inputRef}
-            className="composer-input"
-            rows={1}
-            value={draft}
-            placeholder={running ? '답을 만드는 중입니다' : '메시지를 입력하세요'}
-            aria-label="메시지"
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
-          {running ? (
-            <Tooltip label="정지">
-              <button
-                type="button"
-                className="composer-send stop"
-                aria-label="정지"
-                onClick={() => conversationId && void xd.turn.stop(conversationId)}
-              >
-                <StopIcon size={15} />
-              </button>
-            </Tooltip>
-          ) : (
-            <Tooltip label="보내기">
-              <button type="button" className="composer-send" aria-label="보내기" disabled={!draft.trim() || sending} onClick={() => void send()}>
-                <SendIcon size={16} />
-              </button>
-            </Tooltip>
-          )}
-        </div>
+        <Composer
+          value={draft}
+          onChange={setDraft}
+          onSend={() => void send()}
+          sending={sending}
+          running={running}
+          onStop={() => conversationId && void xd.turn.stop(conversationId)}
+        />
       </div>
     </>
   );

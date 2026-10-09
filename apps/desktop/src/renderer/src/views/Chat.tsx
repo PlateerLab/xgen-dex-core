@@ -349,6 +349,11 @@ export const Chat: React.FC<{
   const remote = session.remote;
   /** 이 대화에 도는 턴이 있는가 — 여기서 시작했든 다른 곳에서 시작했든. */
   const busy = streaming || remote;
+  /**
+   * 에이전트가 지워진 대화(2026-10-09). 같은 채팅 화면이지만 지난 기록만 보인다: 머리 단추와
+   * 작성기 대신 안내 한 줄. 이어 갈 에이전트가 없다.
+   */
+  const readOnly = session.agentDeleted === true;
   const loadingHistory = session.loadingHistory;
   const notificationSnapshot = useNotifications();
   useEffect(() => {
@@ -1249,7 +1254,13 @@ export const Chat: React.FC<{
             <XgenMark height={18} variant="color" />
           </span>
           <div className="chat-title-text">
-            <strong>{agent.workflowName}</strong>
+            <strong>
+              {agent.workflowName}
+              {readOnly && <span className="chat-deleted-badge">지워짐</span>}
+            </strong>
+            {readOnly ? (
+              <div className="agent-meta">지워진 에이전트입니다</div>
+            ) : (
             <div className="agent-meta">
               Agent
               {agent.nodeCount ? ` · 노드 ${agent.nodeCount}개` : ''}
@@ -1262,11 +1273,12 @@ export const Chat: React.FC<{
                     ? ' · 이어보기'
                     : ''}
             </div>
+            )}
           </div>
         </div>
         {/* 헤더 단추는 아이콘 + 두 글자: [알림] [폴더] [작업] [상세] [채팅 | IDE].
             음성 출력·MCP 진단처럼 켜 둔 때만 보이는 단추는 그 앞에 둔다. */}
-        <div className="chat-header-actions">
+        <div className="chat-header-actions" style={readOnly ? { display: 'none' } : undefined}>
           {mcpDebug && (
             <button
               type="button"
@@ -1478,7 +1490,7 @@ export const Chat: React.FC<{
           <div className="chat-empty">
             <ChatIcon size={44} className="mark" />
             <h3>{agent.workflowName}</h3>
-            <p>이 에이전트와 대화를 시작하세요.</p>
+            <p>{readOnly ? '남아 있는 대화 내용이 없습니다' : '이 에이전트와 대화를 시작하세요.'}</p>
           </div>
         ) : (
           messages.map((m, i) => (
@@ -1799,6 +1811,12 @@ export const Chat: React.FC<{
             {imageNotice}
           </div>
         )}
+        {readOnly ? (
+          <div className="chat-readonly-notice" role="status">
+            지워진 에이전트입니다. 지난 대화만 볼 수 있습니다.
+          </div>
+        ) : (
+        <>
         {/* Teams 문맥 칩 — 켜져 있다는 사실이 **항상** 보여야 한다. 화면 캡처
             토글과 같은 원칙이다: 켜 둔 것을 잊고 남의 대화를 흘려보내는 것이
             이 기능의 유일한 위험이다. */}
@@ -2021,6 +2039,8 @@ export const Chat: React.FC<{
             <kbd>Enter</kbd> 전송 · <kbd>Shift + Enter</kbd> 줄바꿈
           </span>
         </div>
+        </>
+        )}
       </div>
 
       {previewImage && (
@@ -2120,7 +2140,7 @@ export const Chat: React.FC<{
     </>
   );
 
-  if (ideMode && ideStore) {
+  if (ideMode && ideStore && !readOnly) {
     // IDE — 헤더는 그대로 위에, 그 아래를 편집기로. 대화(기록·작성기)는 오른쪽 칸이다.
     // 파일을 끌어다 놓아 첨부하는 것은 대화 칸에서만 받는다(탐색기에 놓으면 올리기다).
     return (
@@ -2140,6 +2160,16 @@ export const Chat: React.FC<{
             }
           />
         </div>
+      </div>
+    );
+  }
+
+  if (readOnly) {
+    // 기록만 본다: 파일을 끌어 놓아도 받지 않는다(보낼 곳이 없다).
+    return (
+      <div className="chat chat-readonly">
+        {header}
+        {body}
       </div>
     );
   }

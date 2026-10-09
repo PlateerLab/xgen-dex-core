@@ -136,6 +136,7 @@ export class DexRpcServer {
     for (const active of this.activeChats.values()) active.controller.abort();
     this.activeChats.clear();
     this.engine.stopLocalTools();
+    this.engine.unwatchConversationList();
     this.removeLocalToolsListener();
     if (this.readline) {
       const readline = this.readline;
@@ -215,12 +216,19 @@ export class DexRpcServer {
             // conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기.
             conversationModel: true,
             conversationThinking: true,
+            // history/conversationPage · rename · delete · purgeDeletedAgents (대화 목록).
+            conversationList: true,
+            // conversations/watch · unwatch → conversations/changed 알림(대화 목록 실시간).
+            conversationListWatch: true,
+            // agents/createOptions · nameTaken · create (시작 화면의 새 에이전트).
+            agentCreate: true,
           },
         };
       }
       case 'shutdown':
       case 'exit':
         this.engine.stopLocalTools();
+        this.engine.unwatchConversationList();
         return null;
       case 'health':
         return { ok: true, activeChats: this.activeChats.size };
@@ -319,6 +327,48 @@ export class DexRpcServer {
       }
       case 'history/conversations':
         return this.engine.listConversations(optionalString(params, 'profile'));
+      // 대화 목록(2026-10-09): 마지막으로 말한 순서로 한 쪽씩, 이름 바꾸기·지우기·사라진 에이전트 대화 정리.
+      case 'history/conversationPage':
+        return this.engine.conversationPage(
+          { limit: optionalInteger(params, 'limit'), cursor: optionalString(params, 'cursor') ?? null },
+          optionalString(params, 'profile'),
+        );
+      case 'history/rename':
+        return this.engine.renameConversation(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          typeof params.title === 'string' ? params.title : '',
+          optionalString(params, 'profile'),
+        );
+      case 'history/delete':
+        await this.engine.deleteConversation(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'workflowName'),
+          optionalString(params, 'profile'),
+        );
+        return { ok: true };
+      case 'history/purgeDeletedAgents':
+        return { deleted: await this.engine.purgeDeletedAgentConversations(optionalString(params, 'profile')) };
+      // 시작 화면의 새 에이전트(웹과 같은 칸: 이름·제공사·모델·설정, 이름은 적는 대로 겹치는지 묻는다).
+      case 'agents/createOptions':
+        return this.engine.agentCreateOptions(optionalString(params, 'profile'));
+      case 'agents/nameTaken':
+        return { taken: await this.engine.agentNameTaken(requiredString(params, 'name'), optionalString(params, 'profile')) };
+      case 'agents/create': {
+        const settings = params.settings;
+        return this.engine.createAgent(
+          {
+            name: requiredString(params, 'name'),
+            provider: requiredString(params, 'provider'),
+            model: optionalString(params, 'model'),
+            settings: settings && typeof settings === 'object' && !Array.isArray(settings)
+              ? (settings as Record<string, unknown>)
+              : undefined,
+          },
+          optionalString(params, 'profile'),
+        );
+      }
       case 'history/turns':
         return this.engine.historyTurns(
           requiredString(params, 'workflowId'),
@@ -356,6 +406,15 @@ export class DexRpcServer {
       }
       case 'chat/unwatch':
         this.engine.unwatchConversation(requiredString(params, 'interactionId'));
+        return { ok: true };
+      // 대화 **목록** 감시(사용자당 소켓 하나). 소식은 conversations/changed 로 흐르고, 목록이 할 일은
+      // 받는 쪽이 @dex/protocol conversationListChange(kind, data) 로 정한다(데스크톱과 같다).
+      case 'conversations/watch':
+        this.engine.onConversationListChange = (event) => this.notify('conversations/changed', event);
+        await this.engine.watchConversationList(optionalString(params, 'profile'));
+        return { ok: true };
+      case 'conversations/unwatch':
+        this.engine.unwatchConversationList();
         return { ok: true };
       // 이 스트림을 **그만 본다**. 서버 실행은 건드리지 않는다 — 새 대화를
       // 열거나 화면을 닫는 것은 "멈춰 달라" 가 아니다. 멈추려면 chat/stop.

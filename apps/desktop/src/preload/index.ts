@@ -38,6 +38,7 @@ import type {
   HistoryTurn,
   HistoryFlowItem,
   Conversation,
+  ConversationPage,
   VoiceConfig,
   TtsSpeakOptions,
   TraceListResult,
@@ -203,6 +204,8 @@ const api = {
     /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
     create: (input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> =>
       ipcRenderer.invoke(CHANNELS.agentsCreate, input),
+    /** 이 이름의 에이전트가 이미 있는가. 시작 화면이 적는 대로 묻는다. */
+    nameTaken: (name: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.agentsNameTaken, name),
   },
 
   user: {
@@ -265,6 +268,17 @@ const api = {
     ): Promise<ConversationSnapshot> =>
       ipcRenderer.invoke(CHANNELS.historySnapshot, workflowId, interactionId, name),
     conversations: (): Promise<Conversation[]> => ipcRenderer.invoke(CHANNELS.historyConversations),
+    /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다. */
+    conversationPage: (opts?: { limit?: number; cursor?: string | null }): Promise<ConversationPage> =>
+      ipcRenderer.invoke(CHANNELS.historyConversationPage, opts ?? {}),
+    /** 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. 순서는 그대로다. */
+    rename: (workflowId: string, interactionId: string, title: string): Promise<{ title: string; customTitle: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.historyRename, workflowId, interactionId, title),
+    /** 대화 지우기(비교 채팅의 파생 스레드까지). */
+    remove: (workflowId: string, interactionId: string, workflowName?: string): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.historyDelete, workflowId, interactionId, workflowName),
+    /** 에이전트가 사라진 대화를 모두 지운다. 지운 수. */
+    purgeDeletedAgents: (): Promise<number> => ipcRenderer.invoke(CHANNELS.historyPurgeDeletedAgents),
   },
 
   /** 채팅 공유: 대화를 그 시점까지 얼린 링크. 링크에는 절대 주소(`url`)가 붙어 온다. */
@@ -992,7 +1006,14 @@ const api = {
      * 다시 읽으면 대화 하나가 도는 동안 목록이 계속 깜빡인다.
      */
     onConversationsChanged: (
-      cb: (event: { kind: string; interactionId: string; workflowId: string; running?: boolean }) => void,
+      cb: (event: {
+        kind: string;
+        interactionId: string;
+        workflowId: string;
+        running?: boolean;
+        /** 목록 소식(touched·updated·deleted)의 원문. 할 일은 @dex/protocol conversationListChange 가 정한다. */
+        data?: Record<string, unknown>;
+      }) => void,
     ): (() => void) => {
       const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
       ipcRenderer.on(CHANNELS.conversationsChanged, h);

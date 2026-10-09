@@ -1,14 +1,15 @@
 /**
  * XGEN Dex Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS).
  *
- * 구조는 WebView 세대와 동일(제품 지시): 좌상단 [☰] → 드로어로
- * [현재 채팅] / [에이전트 목록] / [앱] / [설정]. 섹션은 상시 마운트(숨김 전환)라
- * 채팅 WS/스크롤이 이동 중에도 살아 있다. 순수 로직(chat-ws/tool-bridge/
+ * 좌상단 [☰] → 드로어로 [새 채팅] / [현재 채팅] / [채팅 목록] / [앱] / [설정].
+ * 2026-10-09 부터 첫 화면은 "에이전트를 고르고 그 대화를 본다" 가 아니라 **채팅 목록**이다
+ * (웹·데스크톱과 같은 ChatGPT 식, src/conversations/). [+ 새 채팅] 은 시작 화면으로 간다.
+ * 섹션은 상시 마운트(숨김 전환)라 채팅 WS/스크롤이 이동 중에도 살아 있다. 순수 로직(chat-ws/tool-bridge/
  * mobile-tools)은 WebView 세대와 같은 파일 — 전송로만 RN 네이티브다
  * (fetch/WS 에 CORS 없음, WS 는 Bearer 헤더 인증).
  *
- * 이 파일은 **껍데기**다: 로그인·드로어·에이전트 목록·설정. 채팅 화면은
- * `src/chat/` 에 따로 있다 — 한 파일에 두면 말풍선 하나를 고칠 때마다 로그인과
+ * 이 파일은 **껍데기**다: 로그인·드로어·설정. 채팅 화면은 `src/chat/`, 채팅 목록과
+ * 시작 화면은 `src/conversations/` 에 따로 있다. 한 파일에 두면 말풍선 하나를 고칠 때마다 로그인과
  * 설정까지 다시 읽어야 하고, 실제로 그 무게 때문에 채팅이 오래 방치됐다.
  */
 
@@ -16,12 +17,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   AppState,
-  FlatList,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
-  RefreshControl,
   ScrollView,
   StatusBar as RnStatusBar,
   StyleSheet,
@@ -32,11 +30,13 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import type { Agent, Conversation } from '@dex/protocol';
+import { conversationKey, type Agent, type Conversation } from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
-import { ChatView, formatWhen } from './chat/chat-view';
+import { ChatView } from './chat/chat-view';
+import { newInitialMessage, type InitialMessage } from './chat/initial-message';
+import { ConversationsSection } from './conversations/conversation-list';
+import { StartScreen, type StartPreset } from './conversations/start-screen';
 import { AppsSection } from './apps/apps-section';
-import { AgentDetail } from './agents/agent-detail';
 import { PALETTES, PaletteCtx, useP, type Palette } from './theme';
 import { MobileToolBridge, type BridgeStatus } from './lib/tool-bridge';
 import {
@@ -68,10 +68,20 @@ import {
 } from './lib/xgen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-type Section = 'chat' | 'agents' | 'apps' | 'settings';
+type Section = 'chat' | 'conversations' | 'start' | 'apps' | 'settings';
 
 /** 앱을 껐다 켠 뒤 되찾을 대화가 적히는 자리. */
 const LAST_CHAT_KEY = 'last-chat';
+
+/** 대화를 열 때 함께 넘기는 것. */
+interface OpenChatOptions {
+  /** 에이전트가 사라진 대화: 기록만 본다. */
+  readOnly?: boolean;
+  /** 머리에 보일 제목(목록에서 열 때). */
+  title?: string;
+  /** 시작 화면에서 적은 첫 메시지. 채팅 소켓이 처음 붙을 때 한 번 보낸다. */
+  firstMessage?: string;
+}
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -97,7 +107,8 @@ const EMPTY_AGENT = {
 
 const SECTION_TITLE: Record<Section, string> = {
   chat: '현재 채팅',
-  agents: '에이전트',
+  conversations: '채팅 목록',
+  start: '새 채팅',
   apps: '앱',
   settings: '설정',
 };
@@ -118,7 +129,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     setFolderServer(client ? client.api.conversationFolders : null);
   }, [client]);
-  const [section, setSection] = useState<Section>('agents');
+  const [section, setSection] = useState<Section>('conversations');
   const [drawer, setDrawer] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({ state: 'off', toolCount: 0 });
   const [toolsEnabled, setToolsEnabled] = useState(true);
@@ -136,6 +147,13 @@ export default function App(): React.ReactElement {
   // 알려면 렌더와 무관한 현재값이 필요하다.
   const activeAgentRef = useRef<Agent | null>(null);
   const [activeInteraction, setActiveInteraction] = useState('');
+  /** 지금 대화의 에이전트가 사라졌다: 기록만 본다. */
+  const [activeReadOnly, setActiveReadOnly] = useState(false);
+  const [activeTitle, setActiveTitle] = useState('');
+  /** 시작 화면에서 넘어온 첫 메시지. 채팅 화면이 꺼내 가면 비운다. */
+  const [initialMessage, setInitialMessage] = useState<InitialMessage | null>(null);
+  /** 시작 화면을 여는 표식(열 때마다 처음으로, 또는 넘겨받은 에이전트를 골라 둔다). */
+  const [startPreset, setStartPreset] = useState<StartPreset>({ seq: 0 });
   const [chatWsState, setChatWsState] = useState<ChatWsState>('closed');
 
   const handleLogout = useCallback(async () => {
@@ -147,7 +165,11 @@ export default function App(): React.ReactElement {
     setClient(null);
     setActiveAgent(null);
     activeAgentRef.current = null;
-    setSection('agents');
+    setActiveInteraction('');
+    setActiveReadOnly(false);
+    setActiveTitle('');
+    setInitialMessage(null);
+    setSection('conversations');
   }, []);
 
   // 자동 로그인 체인 — 토큰 검증/회전 → 저장 자격증명 재로그인 → 로그인 화면.
@@ -308,23 +330,61 @@ export default function App(): React.ReactElement {
     [handleLogout],
   );
 
-  const openChat = useCallback((agent: Agent, interactionId?: string) => {
+  const openChat = useCallback((agent: Agent, interactionId?: string, opts: OpenChatOptions = {}) => {
     const iid = interactionId ?? newInteractionId(agent.workflowId);
     setActiveAgent(agent);
     activeAgentRef.current = agent;
     setActiveInteraction(iid);
+    setActiveReadOnly(!!opts.readOnly);
+    setActiveTitle(opts.title ?? '');
+    setInitialMessage(opts.firstMessage ? newInitialMessage(agent.workflowId, iid, opts.firstMessage) : null);
     setSection('chat');
     setDrawer(false);
-    // 앱을 껐다 켰을 때 되찾을 자리. 되찾는 데 필요한 것은 이 셋뿐이다.
+    // 앱을 껐다 켰을 때 되찾을 자리. 되찾는 데 필요한 것은 에이전트·대화 id 뿐이다(기록만 보는 대화인지, 제목은 덤).
     void AsyncStorage.setItem(
       LAST_CHAT_KEY,
       JSON.stringify({
         workflowId: agent.workflowId,
         workflowName: agent.workflowName,
         interactionId: iid,
+        ...(opts.readOnly ? { readOnly: true } : {}),
+        ...(opts.title ? { title: opts.title } : {}),
       }),
     );
   }, []);
+
+  /** 목록의 대화 한 줄을 연다. 목록이 아는 것은 에이전트 id·이름뿐이라 나머지는 비운 자리표시로 연다. */
+  const openConversation = useCallback(
+    (c: Conversation) => {
+      const agent = { ...EMPTY_AGENT, workflowId: c.workflowId, workflowName: c.workflowName || c.workflowId } as Agent;
+      openChat(agent, c.interactionId, { readOnly: c.agentDeleted, title: c.title });
+    },
+    [openChat],
+  );
+
+  /** 시작 화면으로. 에이전트를 주면 그것을 골라 둔다. */
+  const startNew = useCallback((agent?: Agent) => {
+    setStartPreset((prev) => ({ seq: prev.seq + 1, agent: agent ?? null }));
+    setSection('start');
+    setDrawer(false);
+  }, []);
+
+  /** 열려 있던 대화가 사라졌다(지웠다): 채팅 화면을 비우고 되찾을 자리도 지운다. */
+  const clearChat = useCallback(() => {
+    setActiveAgent(null);
+    activeAgentRef.current = null;
+    setActiveInteraction('');
+    setActiveReadOnly(false);
+    setActiveTitle('');
+    setInitialMessage(null);
+    void AsyncStorage.removeItem(LAST_CHAT_KEY).catch(() => undefined);
+  }, []);
+
+  const activeKey = activeAgent ? conversationKey({ workflowId: activeAgent.workflowId, interactionId: activeInteraction }) : '';
+  const isActive = useCallback(
+    (c: Conversation) => !!activeAgent && c.workflowId === activeAgent.workflowId && c.interactionId === activeInteraction,
+    [activeAgent, activeInteraction],
+  );
 
   /**
    * 앱을 내렸다 다시 켜면 마지막 대화로 돌아온다.
@@ -345,6 +405,8 @@ export default function App(): React.ReactElement {
           workflowId?: string;
           workflowName?: string;
           interactionId?: string;
+          readOnly?: boolean;
+          title?: string;
         };
         if (!saved.workflowId || !saved.interactionId) return;
         const agent = {
@@ -355,6 +417,8 @@ export default function App(): React.ReactElement {
         activeAgentRef.current = agent;
         setActiveAgent(agent);
         setActiveInteraction(saved.interactionId);
+        setActiveReadOnly(saved.readOnly === true);
+        setActiveTitle(typeof saved.title === 'string' ? saved.title : '');
         setSection('chat');
       } catch {
         /* 저장값이 깨졌다 — 목록에서 시작하면 된다 */
@@ -405,13 +469,41 @@ export default function App(): React.ReactElement {
               client={client}
               agent={activeAgent}
               interactionId={activeInteraction}
+              title={activeTitle}
+              readOnly={activeReadOnly}
+              initialMessage={initialMessage}
+              onInitialMessageSent={(id) => setInitialMessage((cur) => (cur?.id === id ? null : cur))}
               onWsState={setChatWsState}
-              onPickAgent={() => go('agents')}
-              onOpenChat={openChat}
+              onNewChat={startNew}
+              onOpenList={() => go('conversations')}
             />
           </View>
-          <View style={[st.section, section !== 'agents' && st.off]}>
-            <AgentsSection client={client} onOpenChat={openChat} />
+          <View style={[st.section, section !== 'conversations' && st.off]}>
+            <ConversationsSection
+              client={client}
+              visible={section === 'conversations'}
+              activeKey={activeKey}
+              onOpen={openConversation}
+              onNewChat={() => startNew()}
+              onRemoved={(c) => {
+                if (isActive(c)) clearChat();
+              }}
+              onRenamed={(c, title) => {
+                if (isActive(c)) setActiveTitle(title);
+              }}
+              onPurged={() => {
+                // 기록만 보던 대화(에이전트가 사라진 대화)는 방금 함께 지워졌다.
+                if (activeReadOnly) clearChat();
+              }}
+            />
+          </View>
+          <View style={[st.section, section !== 'start' && st.off]}>
+            <StartScreen
+              client={client}
+              visible={section === 'start'}
+              preset={startPreset}
+              onStart={(agent, text) => openChat(agent, undefined, { firstMessage: text })}
+            />
           </View>
           <View style={[st.section, section !== 'apps' && st.off]}>
             <AppsSection client={client} visible={section === 'apps'} />
@@ -439,13 +531,14 @@ export default function App(): React.ReactElement {
                 {client.session.username} · {shortHost(client.session.serverUrl)}
               </Text>
             </View>
+            <DrawerItem label="새 채팅" active={section === 'start'} onPress={() => startNew()} />
             <DrawerItem
               label="현재 채팅"
               hint={activeAgent ? activeAgent.workflowName || activeAgent.workflowId : '대화 없음'}
               active={section === 'chat'}
               onPress={() => go('chat')}
             />
-            <DrawerItem label="에이전트 목록" active={section === 'agents'} onPress={() => go('agents')} />
+            <DrawerItem label="채팅 목록" active={section === 'conversations'} onPress={() => go('conversations')} />
             <DrawerItem
               label="앱"
               hint="내가 만든 앱과 앱 스토어"
@@ -634,379 +727,6 @@ function Field({
   );
 }
 
-// ── 에이전트 목록 ────────────────────────────────────────────────
-
-function AgentsSection({
-  client,
-  onOpenChat,
-}: {
-  client: XgenMobileClient;
-  onOpenChat: (agent: Agent, interactionId?: string) => void;
-}): React.ReactElement {
-  const p = useP();
-  const st = useMemo(() => makeStyles(p), [p]);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [picked, setPicked] = useState<Agent | null>(null);
-  /** 에이전트 상세(개요·메모리·작업·도구·앱·스토리지·실행 기록). */
-  const [detail, setDetail] = useState<Agent | null>(null);
-  const [creating, setCreating] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const [list, convs] = await Promise.all([
-        client.api.agents.listAll({ pageSize: 100 }, 5),
-        client.api.history.conversations().catch(() => [] as Conversation[]),
-      ]);
-      diagLog(`에이전트 ${list.length}개 / 대화 ${convs.length}개 로드`);
-      setAgents(list);
-      setConversations(convs);
-    } catch (e) {
-      const msg = friendlyError(e, '에이전트 목록을 불러오지 못했습니다.');
-      diagLog(`에이전트 목록 실패: ${msg}`);
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, [client]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  /** 그 에이전트와 마지막으로 말한 때 — 없으면 빈 문자열(맨 아래). */
-  const lastUsed = useMemo(() => {
-    const at = new Map<string, string>();
-    for (const c of conversations) {
-      const prev = at.get(c.workflowId) ?? '';
-      if (c.updatedAt > prev) at.set(c.workflowId, c.updatedAt);
-    }
-    return at;
-  }, [conversations]);
-
-  /**
-   * 검색 + **최근 순**.
-   *
-   * 폰에서 목록이 서버 순서대로 놓이면 늘 쓰는 에이전트가 스무 번째에 있다 —
-   * 매번 검색해서 찾아야 했다. 지금 쓴 것이 위에 온다.
-   */
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const base = q
-      ? agents.filter((a) => `${a.workflowName ?? ''} ${a.workflowId ?? ''}`.toLowerCase().includes(q))
-      : agents.slice();
-    return base.sort((a, b) => {
-      const av = lastUsed.get(a.workflowId) ?? '';
-      const bv = lastUsed.get(b.workflowId) ?? '';
-      if (av === bv) return (a.workflowName || '').localeCompare(b.workflowName || '');
-      return av > bv ? -1 : 1;
-    });
-  }, [agents, search, lastUsed]);
-
-  const convsFor = useCallback(
-    (workflowId: string) =>
-      conversations
-        .filter((c) => c.workflowId === workflowId)
-        .sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1)),
-    [conversations],
-  );
-
-  return (
-    <View style={{ flex: 1 }}>
-      <View style={st.paneToolbar}>
-        <TextInput
-          style={[st.input, { flex: 1, backgroundColor: p.panel2, borderColor: 'transparent' }]}
-          placeholder="에이전트 검색…"
-          placeholderTextColor={p.muted}
-          value={search}
-          onChangeText={setSearch}
-        />
-        <Pressable style={st.btnSmall} onPress={() => setCreating(true)}>
-          <Text style={{ color: p.text, fontSize: 13, fontWeight: '700' }}>+ 새 에이전트</Text>
-        </Pressable>
-      </View>
-
-      {error ? (
-        <View style={st.notice}>
-          <Text style={{ color: p.danger, textAlign: 'center' }}>{error}</Text>
-          <Pressable style={[st.btnSmall, { marginTop: 8, alignSelf: 'center' }]} onPress={() => void load()}>
-            <Text style={{ color: p.text, fontSize: 13, fontWeight: '700' }}>다시 시도</Text>
-          </Pressable>
-        </View>
-      ) : null}
-      {loading && agents.length === 0 ? (
-        <ActivityIndicator style={{ marginTop: 20 }} color={p.primary} />
-      ) : null}
-      {!loading && !error && filtered.length === 0 ? (
-        <Text style={st.notice}>에이전트가 없습니다.</Text>
-      ) : null}
-
-      <FlatList
-        data={filtered}
-        keyExtractor={(a) => a.workflowId || String(a.id)}
-        contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
-        keyboardDismissMode="on-drag"
-        // 당겨서 새로고침 — 폰에서 목록을 다시 받는 가장 익숙한 손짓이다.
-        refreshControl={
-          <RefreshControl refreshing={loading} onRefresh={() => void load()} tintColor={p.muted} />
-        }
-        renderItem={({ item: a }) => {
-          const name = a.workflowName || a.workflowId || '(이름 없음)';
-          const count = convsFor(a.workflowId).length;
-          const when = formatWhen(lastUsed.get(a.workflowId) ?? '');
-          return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`${name} 열기`}
-              style={({ pressed }) => [st.agentRow, pressed && { backgroundColor: p.panel2 }]}
-              onPress={() => setPicked(a)}
-            >
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={st.agentTitle} numberOfLines={1}>
-                  {name}
-                </Text>
-                <Text style={st.mutedSmall} numberOfLines={1}>
-                  {count > 0 ? `대화 ${count}개` : '대화 없음'}
-                  {when ? ` · ${when}` : ''}
-                  {a.description ? ` · ${a.description}` : ''}
-                </Text>
-              </View>
-              {count > 0 ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`${name} 최근 대화 이어서`}
-                  hitSlop={8}
-                  onPress={() => onOpenChat(a, convsFor(a.workflowId)[0]?.interactionId)}
-                  style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: p.panel2 }}
-                >
-                  <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>이어서</Text>
-                </Pressable>
-              ) : null}
-              <Text style={{ color: p.muted, fontSize: 18, fontWeight: '700' }}>›</Text>
-            </Pressable>
-          );
-        }}
-      />
-
-      <Modal visible={!!picked} transparent animationType="slide" onRequestClose={() => setPicked(null)}>
-        <Pressable style={st.scrim} onPress={() => setPicked(null)} />
-        <KeyboardAvoidingView behavior="padding" style={st.sheetHost} pointerEvents="box-none">
-          {picked && (
-            <View style={st.sheet}>
-            <View style={st.sheetHandle} />
-            <Text style={st.sheetTitle} numberOfLines={1}>
-              {picked.workflowName || picked.workflowId}
-            </Text>
-            <Pressable
-              style={st.btnPrimary}
-              onPress={() => {
-                const a = picked;
-                setPicked(null);
-                onOpenChat(a);
-              }}
-            >
-              <Text style={st.btnPrimaryText}>새 대화 시작</Text>
-            </Pressable>
-            <Pressable
-              style={st.btnSecondary}
-              onPress={() => {
-                const a = picked;
-                setPicked(null);
-                setDetail(a);
-              }}
-              accessibilityRole="button"
-            >
-              <Text style={st.btnSecondaryText}>에이전트 상세</Text>
-            </Pressable>
-            {convsFor(picked.workflowId).length > 0 && (
-              <Text style={[st.fieldLabel, { marginTop: 8 }]}>대화 내역</Text>
-            )}
-            <FlatList
-              data={convsFor(picked.workflowId)}
-              keyExtractor={(c) => c.interactionId}
-              style={{ maxHeight: 340 }}
-              renderItem={({ item: c }) => (
-                <Pressable
-                  style={({ pressed }) => [st.convRow, pressed && { backgroundColor: p.panel2 }]}
-                  onPress={() => {
-                    const a = picked;
-                    setPicked(null);
-                    onOpenChat(a, c.interactionId);
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: p.text, fontSize: 14, fontWeight: '700' }}>
-                      {formatWhen(c.updatedAt) || '대화'}
-                    </Text>
-                    <Text style={st.mutedSmall}>메시지 {c.interactionCount}개</Text>
-                  </View>
-                  <Text style={{ color: p.muted, fontSize: 18 }}>›</Text>
-                </Pressable>
-              )}
-            />
-            </View>
-          )}
-        </KeyboardAvoidingView>
-      </Modal>
-
-      <AgentDetail
-        client={client}
-        agent={detail}
-        onClose={() => setDetail(null)}
-        onOpenChat={(a) => {
-          setDetail(null);
-          onOpenChat(a);
-        }}
-      />
-
-      <Modal visible={creating} transparent animationType="slide" onRequestClose={() => setCreating(false)}>
-        <Pressable style={st.scrim} onPress={() => setCreating(false)} />
-        <KeyboardAvoidingView behavior="padding" style={st.sheetHost} pointerEvents="box-none">
-          <CreateAgentSheet
-            client={client}
-            onCreated={(agent) => {
-              setCreating(false);
-              void load();
-              onOpenChat(agent);
-            }}
-          />
-        </KeyboardAvoidingView>
-      </Modal>
-    </View>
-  );
-}
-
-function CreateAgentSheet({
-  client,
-  onCreated,
-}: {
-  client: XgenMobileClient;
-  onCreated: (agent: Agent) => void;
-}): React.ReactElement {
-  const p = useP();
-  const st = useMemo(() => makeStyles(p), [p]);
-  const [name, setName] = useState('');
-  const [providers, setProviders] = useState<
-    Array<{ value: string; label: string; models: Array<{ value: string; label: string }>; defaultModel?: string }>
-  >([]);
-  const [provider, setProvider] = useState('');
-  const [model, setModel] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    void client.api.agents
-      .createOptions()
-      .then((opts) => {
-        setProviders(opts.providers);
-        const def = opts.providers.find((x) => x.value === opts.defaultProvider) ?? opts.providers[0];
-        if (def) {
-          setProvider(def.value);
-          setModel(def.defaultModel ?? def.models[0]?.value ?? '');
-        }
-      })
-      .catch((e) => setError(friendlyError(e, '생성 옵션을 불러오지 못했습니다.')));
-  }, [client]);
-
-  const current = providers.find((x) => x.value === provider);
-  const ready = !busy && !!name.trim() && !!provider;
-
-  const submit = async (): Promise<void> => {
-    setBusy(true);
-    setError('');
-    try {
-      const created = await client.api.agents.create({ name: name.trim(), provider, model: model || undefined });
-      diagLog(`새 에이전트 생성: ${created.workflowName} (${created.workflowId})`);
-      onCreated({
-        id: 0,
-        workflowId: created.workflowId,
-        workflowName: created.workflowName,
-        nodeCount: 0,
-        isShared: false,
-        isDeployed: false,
-        isCompleted: false,
-        description: '',
-        username: '',
-        fullName: '',
-        createdAt: '',
-        updatedAt: '',
-        hasAgentGeny: true,
-      } as Agent);
-    } catch (e) {
-      setError(friendlyError(e, '에이전트 생성에 실패했습니다.'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <View style={st.sheet}>
-      <View style={st.sheetHandle} />
-      <Text style={st.sheetTitle}>새 에이전트</Text>
-      {/* 키보드가 떠서 공간이 줄어도 provider/model/만들기 버튼이 전부 닿도록
-          내용은 스크롤 컨테이너에 담고, 키보드를 내리지 않고도 칩을 바로
-          누를 수 있게 keyboardShouldPersistTaps 를 켠다. */}
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ gap: 10 }}
-      >
-      <Field label="이름" value={name} onChange={setName} placeholder="예: 리서치 도우미" />
-      {providers.length > 0 && (
-        <View style={{ width: '100%', marginBottom: 10 }}>
-          <Text style={st.fieldLabel}>AI 제공자</Text>
-          <View style={st.chipsWrap}>
-            {providers.map((pr) => (
-              <Pressable
-                key={pr.value}
-                style={[st.chip, provider === pr.value && { backgroundColor: p.primary }]}
-                onPress={() => {
-                  setProvider(pr.value);
-                  setModel(pr.defaultModel ?? pr.models[0]?.value ?? '');
-                }}
-              >
-                <Text style={{ color: provider === pr.value ? p.onPrimary : p.text, fontSize: 13 }}>
-                  {pr.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      )}
-      {current && current.models.length > 0 && (
-        <View style={{ width: '100%', marginBottom: 10 }}>
-          <Text style={st.fieldLabel}>모델</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View style={st.chipsWrap}>
-              {current.models.map((m) => (
-                <Pressable
-                  key={m.value}
-                  style={[st.chip, model === m.value && { backgroundColor: p.primary }]}
-                  onPress={() => setModel(m.value)}
-                >
-                  <Text style={{ color: model === m.value ? p.onPrimary : p.text, fontSize: 13 }}>
-                    {m.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </ScrollView>
-        </View>
-      )}
-      {error ? <Text style={st.formError}>{error}</Text> : null}
-      <Pressable style={[st.btnPrimary, !ready && { opacity: 0.4 }]} disabled={!ready} onPress={() => void submit()}>
-        {busy ? <ActivityIndicator color={p.onPrimary} /> : <Text style={st.btnPrimaryText}>만들기</Text>}
-      </Pressable>
-      </ScrollView>
-    </View>
-  );
-}
-
 // ── 설정 ────────────────────────────────────────────────────────
 
 function SettingsSection({
@@ -1182,7 +902,6 @@ function makeStyles(p: Palette) {
     content: { flex: 1 },
     section: { ...StyleSheet.absoluteFillObject },
     off: { display: 'none' },
-    notice: { color: p.muted, textAlign: 'center', padding: 18, fontSize: 14 },
 
     scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)' },
     drawer: {
@@ -1210,48 +929,9 @@ function makeStyles(p: Palette) {
       alignItems: 'center', width: '100%', marginTop: 4,
     },
     btnPrimaryText: { color: p.onPrimary, fontSize: 15, fontWeight: '700' },
-    btnSecondary: {
-      backgroundColor: p.panel2, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 18,
-      alignItems: 'center', width: '100%', marginTop: 8, borderWidth: 1, borderColor: p.border,
-    },
-    btnSecondaryText: { color: p.text, fontSize: 15, fontWeight: '700' },
-    btnSmall: { backgroundColor: p.panel2, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
     btnDanger: {
       borderWidth: 1, borderColor: p.danger, borderRadius: 12, paddingVertical: 11,
       alignItems: 'center', marginTop: 10,
-    },
-
-    paneToolbar: {
-      flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10,
-      backgroundColor: p.panel, borderBottomWidth: 1, borderBottomColor: p.border,
-    },
-    agentRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 10,
-      backgroundColor: p.panel, borderWidth: 1, borderColor: p.border, borderRadius: 14,
-      paddingHorizontal: 16, paddingVertical: 15, marginBottom: 10, minHeight: 60,
-    },
-    agentTitle: { color: p.text, fontSize: 15, fontWeight: '700' },
-
-    sheet: {
-      width: '100%',
-      backgroundColor: p.panel, borderTopLeftRadius: 18, borderTopRightRadius: 18,
-      borderWidth: 1, borderColor: p.border, padding: 16, paddingBottom: 28, gap: 10, maxHeight: '80%',
-    },
-    // 시트를 바닥에 붙이면서 키보드가 뜨면 겹치는 만큼만 밀어 올리고, 내려가면
-    // 원위치로 되돌리는 컨테이너. RN Modal 은 별도 윈도우라 adjustResize 를
-    // 못 받는 경우가 있어(안드로이드 실사고: provider/model 선택이 키보드에
-    // 밀려 들어감) 겹침 기반 KeyboardAvoidingView 로 결정적으로 처리한다.
-    sheetHost: { flex: 1, justifyContent: 'flex-end' },
-    sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: p.border, alignSelf: 'center' },
-    sheetTitle: { fontSize: 16, fontWeight: '800', color: p.text, textAlign: 'center' },
-    convRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 10,
-      paddingVertical: 13, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: p.border,
-    },
-    chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    chip: {
-      backgroundColor: p.panel2, borderRadius: 16, paddingVertical: 8, paddingHorizontal: 14,
-      borderWidth: 1, borderColor: p.border,
     },
 
     card: {

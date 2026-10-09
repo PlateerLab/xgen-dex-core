@@ -1,6 +1,12 @@
 #!/usr/bin/env node
-import { describeStreamError } from '@dex/protocol';
+import {
+  CONVERSATION_TAG_LABELS,
+  conversationAgentLabel,
+  conversationDisplayTitle,
+  describeStreamError,
+} from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
+import stringWidth from 'string-width';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
 import { SystemCredentialStore, credentialBackend } from '@dex/engine';
@@ -40,8 +46,11 @@ Usage:
   dex agents list [--search <text>] [--owner personal|shared] [--json]
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
            [--folder <path,...> | --no-folder]
-  dex history list [--json]
+  dex history list [--json]          대화 목록 (마지막으로 말한 순서)
   dex history turns --workflow <id> --interaction <id> [--json]
+  dex history rename --workflow <id> --interaction <id> --title <text>
+                                     빈 제목이면 첫 메시지 제목으로 돌아갑니다
+  dex history delete --workflow <id> --interaction <id>
   dex tools list [--json]
   dex tools status [--profile <name>] [--json]
   dex tools configure [--allow-dangerous|--no-allow-dangerous]
@@ -78,9 +87,19 @@ function writeJson(value: unknown): void {
   stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/**
+ * 표 한 칸. 글자 수가 아니라 **화면 폭**으로 맞춘다: 한글은 한 글자가 두 칸이라, 길이로
+ * 자르면 제목(대개 한글)이 들어간 줄마다 다음 칸이 밀린다.
+ */
 function cell(value: unknown, width: number): string {
   const text = String(value ?? '');
-  return text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width);
+  if (stringWidth(text) <= width) return text + ' '.repeat(width - stringWidth(text));
+  let out = '';
+  for (const char of text) {
+    if (stringWidth(out + char) > width - 1) break;
+    out += char;
+  }
+  return out + '…' + ' '.repeat(Math.max(0, width - 1 - stringWidth(out)));
 }
 
 function printAgents(agents: Agent[]): void {
@@ -101,9 +120,13 @@ function printConversations(items: Conversation[]): void {
     stdout.write('대화 기록이 없습니다.\n');
     return;
   }
-  stdout.write(`${cell('INTERACTION ID', 38)}  ${cell('AGENT', 28)}  UPDATED\n`);
+  stdout.write(`${cell('TITLE', 36)}  ${cell('AGENT', 20)}  ${cell('TAG', 8)}  ${cell('UPDATED', 24)}  INTERACTION ID\n`);
   for (const item of items) {
-    stdout.write(`${cell(item.interactionId, 38)}  ${cell(item.workflowName, 28)}  ${item.updatedAt}\n`);
+    const tag = item.tag ? CONVERSATION_TAG_LABELS[item.tag] : '';
+    stdout.write(
+      `${cell(conversationDisplayTitle(item), 36)}  ${cell(conversationAgentLabel(item), 20)}  ${cell(tag, 8)}  ` +
+        `${cell(item.updatedAt, 24)}  ${item.interactionId}\n`,
+    );
   }
 }
 
@@ -529,6 +552,30 @@ async function run(): Promise<void> {
     const conversations = await engine.listConversations(option(args, 'profile'));
     if (asJson) writeJson(conversations);
     else printConversations(conversations);
+    return;
+  }
+  if (command === 'history' && action === 'rename') {
+    // --title 은 비워도 된다(붙인 이름을 지워 첫 메시지 제목으로 돌아간다). 아예 없으면 실수다.
+    if (!args.options.has('title')) throw new DexError('usage_error', '--title 값이 필요합니다.');
+    const result = await engine.renameConversation(
+      requiredOption(args, 'workflow'),
+      requiredOption(args, 'interaction'),
+      option(args, 'title') ?? '',
+      option(args, 'profile'),
+    );
+    if (asJson) writeJson(result);
+    else stdout.write(`이름: ${conversationDisplayTitle(result)}\n`);
+    return;
+  }
+  if (command === 'history' && action === 'delete') {
+    await engine.deleteConversation(
+      requiredOption(args, 'workflow'),
+      requiredOption(args, 'interaction'),
+      option(args, 'name'),
+      option(args, 'profile'),
+    );
+    if (asJson) writeJson({ ok: true });
+    else stdout.write('대화를 지웠습니다.\n');
     return;
   }
   if (command === 'history' && action === 'turns') {

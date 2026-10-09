@@ -26,10 +26,10 @@ import { onIdeViewChange, onSidebarToggle } from './ide-sidebar';
 import { Settings } from './Settings';
 import { AgentViewer } from './AgentViewer';
 import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
-import { AgentCreate } from './AgentCreate';
+import { StartChat } from './StartChat';
 import { ActivityBar } from './ActivityBar';
 import { restoreSideView, type SideView } from './side-view';
-import { AgentPanel } from './AgentPanel';
+import { ConversationPanel } from './ConversationPanel';
 import { ExplorerPanel } from './ExplorerPanel';
 import { FileViewerPane } from './FileViewerPane';
 import { fileTabId } from './file-viewer-model';
@@ -690,22 +690,21 @@ export const Workspace: React.FC<{
     [],
   );
 
-  /** 새 에이전트 만들기 — 메인에 탭 하나. 이미 열려 있으면 그리로 간다. */
-  const openAgentCreate = useCallback(() => {
+  /**
+   * 새 채팅: 메인에 시작 화면("오늘은 무엇을 해볼까요?") 탭 하나. 이미 열려 있으면 그리로 간다.
+   * 탭 종류 이름 'agent-create' 는 저장된 배치와 맞추려고 그대로 둔다(예전의 새 에이전트 화면 자리다).
+   */
+  const openStartChat = useCallback(() => {
     setLayout((current) =>
       addWorkspaceTab(current, current.focusedGroupId, { id: 'agent-create', kind: 'agent-create' }),
     );
   }, []);
 
-  /** 만들어진 에이전트로 곧장 대화를 연다. */
-  const openAgentChat = useCallback((agent: { workflowId: string; workflowName: string }) => {
-    sessionStore.openNew({
-      workflowId: agent.workflowId,
-      workflowName: agent.workflowName,
-      // [+] 새 에이전트 화면은 Agent Geny 하나만 만든다. 이 표시가 없으면 스토어가 첨부를 그림만 남기고
-      // 걸러, 만들자마자 올린 PDF·문서가 조용히 빠졌다(2026-09-16 대화로 에이전트 만들기 시험).
-      hasAgentGeny: true,
-    } as Agent);
+  // 처음 켰을 때 열린 탭이 하나도 없으면 시작 화면으로 들어선다. 예전에는 마지막 에이전트와의 새 대화를
+  // 열었다. 저장된 탭이 있으면(되살리는 중이어도) 그 배치를 그대로 둔다.
+  useEffect(() => {
+    if (layoutRef.current.groups.every((group) => group.tabs.length === 0)) openStartChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectTab = useCallback((groupId: string, tabId: string) => {
@@ -1161,15 +1160,10 @@ export const Workspace: React.FC<{
     if (active?.kind === 'agent-create') {
       return (
         <div className="pane-fill">
-          <AgentCreate
+          <StartChat
             key={active.id}
-            onCreated={(agent) => {
-              // 만들자마자 그 에이전트와 대화를 연다. 목록에서 다시 찾아 들어가야
-              // 한다면 "만들면 바로 쓸 수 있다"가 성립하지 않는다.
-              closeTab(active);
-              openAgentChat(agent);
-            }}
-            onClose={() => closeTab(active)}
+            // 대화가 열리고 첫 메시지가 갔다. 시작 화면 탭은 닫고 그 대화 탭이 앞에 선다.
+            onStarted={() => closeTab(active)}
           />
         </div>
       );
@@ -1260,7 +1254,7 @@ export const Workspace: React.FC<{
         style={{ width: sidebarWidth }}
       >
         <div className="panel-host" style={{ display: sideView === 'agent' ? undefined : 'none' }}>
-          <AgentPanel config={config} onCreateAgent={openAgentCreate} />
+          <ConversationPanel onNewChat={openStartChat} />
         </div>
         <div
           className="panel-host"

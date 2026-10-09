@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import type { InitializeResult } from '@dex/rpc';
 import { DexRpcClient, type RpcProcessSpec } from '@dex/rpc/client';
 import { installCli, locateCli, type CliLocation, type InstallOutcome } from './cli-installer';
 
@@ -30,6 +31,14 @@ export class DexService implements vscode.Disposable {
 
   async request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     return this.rpc.request<T>(method, params);
+  }
+
+  /**
+   * 엔진이 initialize 에서 알린 기능. 옛 dex-cli 에는 새 칸(대화 목록·에이전트 만들기)이 없다.
+   * 없는 칸은 꺼진 것으로 읽고 그 화면을 예전 방식으로 그린다.
+   */
+  async capabilities(): Promise<InitializeResult['capabilities']> {
+    return (await this.rpc.start()).capabilities;
   }
 
   async restart(): Promise<void> {

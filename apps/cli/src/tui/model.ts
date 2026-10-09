@@ -10,6 +10,7 @@ import type {
   ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
+  ConversationPage,
   ConversationSnapshot,
   HistoryTurn,
   CreateAgentInput,
@@ -37,7 +38,31 @@ export interface TuiEngine {
     input: CreateAgentInput,
     profile?: string,
   ): Promise<{ workflowId: string; workflowName: string }>;
+  /** 이 이름의 에이전트가 이미 있는가(시작 화면이 적는 대로, 그리고 만들기 직전에 묻는다). */
+  agentNameTaken(name: string, profile?: string): Promise<boolean>;
+  /** 대화 목록 전부(쪽을 따라간다, 상한 있음). 기록 화면이 쓴다. */
   listConversations(profile?: string): Promise<Conversation[]>;
+  /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(사이드바). */
+  conversationPage(
+    opts: { limit?: number; cursor?: string | null },
+    profile?: string,
+  ): Promise<ConversationPage>;
+  /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */
+  renameConversation(
+    workflowId: string,
+    interactionId: string,
+    title: string,
+    profile?: string,
+  ): Promise<{ title: string; customTitle: boolean }>;
+  /** 대화 지우기(비교 채팅의 딸린 대화까지 서버가 함께 지운다). */
+  deleteConversation(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+    profile?: string,
+  ): Promise<void>;
+  /** 에이전트가 사라진 내 대화를 모두 지운다. 지운 수. */
+  purgeDeletedAgentConversations(profile?: string): Promise<number>;
   historyTurns(
     workflowId: string,
     interactionId: string,
@@ -70,6 +95,21 @@ export interface TuiEngine {
     profile?: string,
   ): Promise<void>;
   unwatchConversation?(interactionId: string): void;
+  /**
+   * 대화 **목록** 소켓(선택 구현). 다른 기기의 새 대화·방금 말한 대화·지운 대화·바뀐 이름이 곧바로
+   * onConversationListChange 로 흐르고, 목록이 할 일은 @dex/protocol conversationListChange 가 정한다.
+   */
+  watchConversationList?(profile?: string): Promise<void>;
+  unwatchConversationList?(): void;
+  onConversationListChange?:
+    | ((event: {
+        kind: string;
+        interactionId: string;
+        workflowId: string;
+        running?: boolean;
+        data?: Record<string, unknown>;
+      }) => void)
+    | null;
   onConversationTurn?:
     | ((turn: {
         interactionId: string;

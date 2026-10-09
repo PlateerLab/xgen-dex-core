@@ -58,6 +58,8 @@ const api = {
   },
   conversations: {
     list: call('conversationsList'),
+    /** 모든 에이전트의 대화, 마지막으로 말한 순서(사이드바의 대화 목록). */
+    listAll: call('conversationsListAll'),
     rename: call('conversationsRename'),
     remove: call('conversationsDelete'),
     turns: call('turnsList'),

@@ -15,13 +15,13 @@ const plainCrypto = {
   decrypt: (b: Buffer) => b.toString('utf8'),
 };
 
-function setup(allowFakeProvider = false) {
+function setup(allowFakeProvider = false, now?: () => number) {
   const root = mkdtempSync(join(tmpdir(), 'xd-api-'));
   const workspaceDir = join(root, 'workspace');
   const stateDir = join(root, '.xd');
   mkdirSync(workspaceDir, { recursive: true });
   mkdirSync(stateDir, { recursive: true });
-  const store = new Store(join(stateDir, 'xd.db'));
+  const store = new Store(join(stateDir, 'xd.db'), { now });
   const secrets = new Secrets(join(stateDir, 'secrets'), plainCrypto);
   const pending: Array<() => void> = [];
   const engine: EnginePort = {
@@ -106,6 +106,43 @@ test('대화를 지우면 그 대화의 기록(STM)만 지운다', async () => {
   assert.equal(store.getConversation(conversationId), null);
   assert.equal(existsSync(join(sessions, conversationId)), false);
   assert.ok(existsSync(join(sessions, 'other')));
+  store.close();
+});
+
+test('대화 목록 API: 에이전트를 가리지 않고 마지막으로 말한 순서, 이름 바꾸기는 순서를 그대로 두고 빈 이름은 되돌린다', async () => {
+  let t = 1_000;
+  const { api, store } = setup(false, () => (t += 1));
+  const a = await api.agentsCreate({ name: '리서치' });
+  const b = await api.agentsCreate({ name: '코딩' });
+  const first = store.createConversation(a.id);
+  store.startTurn(first.id, '첫 질문');
+  const second = store.createConversation(b.id);
+  store.startTurn(second.id, '둘째 질문');
+  assert.deepEqual(
+    api.conversationsListAll().map((c) => [c.id, c.agentName, c.title]),
+    [
+      [second.id, '코딩', '둘째 질문'],
+      [first.id, '리서치', '첫 질문'],
+    ],
+  );
+  assert.deepEqual(api.conversationsListAll(1).map((c) => c.id), [second.id]);
+  assert.throws(() => api.conversationsListAll(0), /limit/);
+  // 한 에이전트의 목록(옛 호출)도 그대로 있다
+  assert.deepEqual(api.conversationsList(a.id).map((c) => c.id), [first.id]);
+
+  const renamed = api.conversationsRename(first.id, ' 조사 메모 ');
+  assert.equal(renamed.title, '조사 메모');
+  assert.deepEqual(api.conversationsListAll().map((c) => [c.id, c.title]), [
+    [second.id, '둘째 질문'],
+    [first.id, '조사 메모'],
+  ]);
+  assert.equal(api.conversationsRename(first.id, '').title, '첫 질문');
+  assert.throws(() => api.conversationsRename(first.id, 'x'.repeat(201)), /too long/);
+  assert.throws(() => api.conversationsRename(first.id, null as never), /must be a string/);
+  assert.throws(() => api.conversationsRename('missing', 'x'), /no conversation/);
+  // 에이전트를 지우면 그 대화도 목록에서 빠진다
+  api.agentsDelete(b.id);
+  assert.deepEqual(api.conversationsListAll().map((c) => c.id), [first.id]);
   store.close();
 });
 

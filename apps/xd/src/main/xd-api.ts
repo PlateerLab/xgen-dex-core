@@ -22,7 +22,7 @@ import {
 import type { CliService, CliState } from './cli/service';
 import type { EngineService, McpTestResult, ModelsResult } from './engine-service';
 import type { Secrets, SecretStatus } from './secrets';
-import type { XdAccount, XdAgent, XdConversation, Store, XdTurn } from './store';
+import type { XdAccount, XdAgent, XdConversation, XdConversationListItem, Store, XdTurn } from './store';
 import type { TurnRunner } from './turn-runner';
 import { uniqueFolderName } from './workspace-name';
 
@@ -239,9 +239,21 @@ export function createXdApi(deps: XdApiDeps) {
     },
 
     // ── 대화 ──
+    /** 한 에이전트의 대화(옛 화면·시험이 쓴다). 사이드바는 conversationsListAll. */
     conversationsList: (agentId: string): XdConversation[] => store.listConversations(agentId),
-    conversationsRename(id: string, title: string): void {
-      store.renameConversation(id, text(title, 'title', 200));
+    /** 모든 에이전트의 대화를 마지막으로 말한 순서로(사이드바의 대화 목록). */
+    conversationsListAll(limit?: number): XdConversationListItem[] {
+      if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1)) throw new Error('limit must be a positive number');
+      return store.listAllConversations(limit);
+    },
+    /** 이름 바꾸기. 빈 이름이면 첫 질문으로 정한 제목으로 돌아간다. 목록 순서는 그대로다. */
+    conversationsRename(id: string, title: string): XdConversation {
+      if (typeof title !== 'string') throw new Error('title must be a string');
+      const wanted = title.trim();
+      if (wanted.length > 200) throw new Error('title is too long');
+      const renamed = store.renameConversation(text(id, 'id'), wanted);
+      if (!renamed) throw new Error(`no conversation ${id}`);
+      return renamed;
     },
     conversationsDelete(id: string): void {
       const conversation = store.getConversation(id);

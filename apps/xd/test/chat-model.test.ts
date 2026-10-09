@@ -82,6 +82,17 @@ test('도는 턴 저장소: 사건을 그 턴에만, 끝나면 대화의 판이 
   assert.ok(bumps >= 4);
 });
 
+test('도는 턴 저장소: 끝난 턴 수는 대화를 가리지 않고 센다(대화 목록을 다시 읽는 때)', () => {
+  const store = new LiveStore(() => 10);
+  assert.equal(store.finishedCount(), 0);
+  store.begin('t1', 'c1', '질문');
+  store.apply({ type: 'chat', turnId: 't1', conversationId: 'c1', agentId: 'a1', event: { kind: 'text', content: '안녕' } });
+  assert.equal(store.finishedCount(), 0);
+  store.apply({ type: 'finished', turnId: 't1', conversationId: 'c1', agentId: 'a1', turn: baseTurn() });
+  store.apply({ type: 'finished', turnId: 't2', conversationId: 'c2', agentId: 'a2', turn: baseTurn({ id: 't2', conversationId: 'c2' }) });
+  assert.equal(store.finishedCount(), 2);
+});
+
 test('도는 턴 저장소: 보내기 대답보다 끝이 먼저 오면 "도는 중" 으로 남지 않는다', () => {
   const store = new LiveStore();
   // 엔진에 가기 전 실패 — main 이 그 자리에서 끝내 finished 가 먼저 온다.

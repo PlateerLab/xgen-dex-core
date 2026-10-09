@@ -54,8 +54,13 @@
       },
       {
         "command": "xgenDex.showAgents",
-        "title": "XGEN Dex: Agent 변경",
+        "title": "XGEN Dex: Agent 골라 새 채팅",
         "icon": "$(hubot)"
+      },
+      {
+        "command": "xgenDex.showConversations",
+        "title": "XGEN Dex: 대화 목록",
+        "icon": "$(list-unordered)"
       },
       {
         "command": "xgenDex.showSettings",
@@ -64,7 +69,7 @@
       },
       {
         "command": "xgenDex.newChat",
-        "title": "XGEN Dex: 새 대화",
+        "title": "XGEN Dex: 새 채팅",
         "icon": "$(add)"
       },
       {

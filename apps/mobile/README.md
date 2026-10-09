@@ -19,7 +19,8 @@ Expo(React Native) 위에 WebView 세대(apps/android, Capacitor)의 구조를
 | 폴더 네이티브 | `modules/xgen-folder-access` | 로컬 Expo 모듈 — Android 문서 제공자 트리, iOS 폴더 선택기+북마크 |
 | 기기 어댑터 | `src/lib/rn-port.ts` | DevicePort 의 Expo 구현 (알림/카메라/위치/열기/…) |
 | 클라이언트 조립 | `src/lib/xgen.ts` | REST=fetch(네이티브, CORS 없음), **WS 인증=Bearer 헤더** (쿠키/SameSite 핵 폐기 — RN WebSocket 은 헤더를 지원) |
-| 껍데기 UI | `src/App.tsx` | [☰] 드로어 → 현재 채팅 / 에이전트 목록 / 설정 |
+| 껍데기 UI | `src/App.tsx` | [☰] 드로어 → 새 채팅 / 현재 채팅 / 채팅 목록 / 앱 / 설정 |
+| 채팅 목록·시작 화면 | `src/conversations/*` | 대화 단위 목록(마지막으로 말한 순서, 40개씩), [+ 새 채팅] 시작 화면. 규칙은 `conversation-model.ts` (테스트가 지킨다) |
 | 채팅 화면 | `src/chat/*` | 아래 표 참고 |
 | 색·간격 | `src/theme.ts` | 팔레트 한 자리 (라이트/다크) |
 
@@ -27,7 +28,8 @@ Expo(React Native) 위에 WebView 세대(apps/android, Capacitor)의 구조를
 
 | 파일 | 하는 일 |
 |---|---|
-| `chat-view.tsx` | 화면 전체 — 소켓 배선, 스크롤 규칙, 작성기, 첨부, 대화 이동 |
+| `chat-view.tsx` | 화면 전체: 소켓 배선, 스크롤 규칙, 작성기, 첨부, 대화 이동 |
+| `initial-message.ts` | 시작 화면에서 적은 첫 메시지를 소켓이 처음 붙을 때 한 번만 보내는 표식 |
 | `folder-sheet.tsx` | 대화 머리의 [폴더 연결] — 이 대화에서 에이전트가 다룰 휴대폰 폴더 |
 | `message-model.ts` | 대화 한 줄의 모양과 그것을 고치는 **순수 규칙** (테스트가 지킨다) |
 | `message-item.tsx` | 말풍선 한 개 — 답변 본문·오류 블록·출처·복사 |

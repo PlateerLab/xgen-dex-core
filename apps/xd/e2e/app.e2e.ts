@@ -107,12 +107,18 @@ test('앱을 껐다 켜도 대화가 이어진다 (M2 완료 기준)', { timeout
   const after = await win.evaluate(async (agentId) => {
     const xd = (window as any).xd;
     const convs = await xd.conversations.list(agentId).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
-    return { agents: (await xd.agents.list().then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; })).length, convs, turns: await xd.conversations.turns(convs[0].id).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; }) };
+    const all = await xd.conversations.listAll().then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; });
+    return { agents: (await xd.agents.list().then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; })).length, convs, all, turns: await xd.conversations.turns(convs[0].id).then((r: any) => { if (!r.ok) throw new Error(r.error); return r.value; }) };
   }, agent.id);
   assert.equal(after.agents, 1);
   assert.deepEqual(
     after.convs.map((c: any) => [c.id, c.title]),
     [[conversationId, 'hello.txt 만들어 줘']],
+  );
+  // 사이드바의 대화 목록(모든 에이전트)도 같은 대화를 에이전트 이름과 함께
+  assert.deepEqual(
+    after.all.map((c: any) => [c.id, c.agentName, c.title]),
+    [[conversationId, '리서치 도우미', 'hello.txt 만들어 줘']],
   );
   assert.equal(after.turns.length, 1);
   assert.equal(after.turns[0].answer, 'hello.txt 를 만들었습니다.');

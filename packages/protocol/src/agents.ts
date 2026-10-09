@@ -144,6 +144,20 @@ export class AgentsApi {
   }
 
   /**
+   * 이 이름의 에이전트가 이미 있는가(웹과 같은 검사, POST /api/agentflow/check/agentflow).
+   * 시작 화면은 적는 대로 묻고(잠깐 멈추면), 만들기 직전에 한 번 더 묻는다. 겹치면 입력창을 잠근다.
+   */
+  async nameTaken(name: string): Promise<boolean> {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const res = await this.http.post<{ exists?: boolean }>(
+      `/api/agentflow/check/agentflow?workflow_name=${encodeURIComponent(trimmed)}`,
+      {},
+    );
+    return res?.exists === true;
+  }
+
+  /**
    * 에이전트 하나를 세우고 그 workflowId 를 돌려준다.
    *
    * 만들어지는 것은 노드 하나짜리 워크플로우다. 엣지가 없는 것이 이 노드의 성질이라

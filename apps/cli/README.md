@@ -7,7 +7,7 @@ XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니�
 
 - `dex` 또는 `dex ui`로 실행하는 대화형 터미널 UI
 - 최초 서버 설정, 로그인, profile 전환을 포함한 온보딩
-- Agent 사이드바, History, 스트리밍 채팅과 도구 활동 표시
+- 대화 목록 사이드바(마지막으로 말한 순서, 이름 바꾸기·지우기), 시작 화면, History, 스트리밍 채팅과 도구 활동 표시
 - 명령 팔레트와 채팅 취소
 - 여러 XGEN 서버 profile 관리
 - OS keychain을 사용한 access/refresh token 저장
@@ -48,14 +48,26 @@ dex
 dex ui
 ```
 
+왼쪽은 대화 목록입니다. 웹과 같이 대화가 마지막으로 말한 순서로 한 줄씩 놓이고, 한 줄은
+작은 에이전트 이름(에이전트가 지워졌으면 `지워짐`)과 꼬리표(배포·Teams·스케줄 등), 그리고 대화
+제목(첫 메시지 또는 붙인 이름)입니다. 끝까지 내려가면 다음 쪽을 이어 받습니다. 에이전트가 지워진
+대화는 지난 대화만 볼 수 있고 보낼 수 없습니다.
+
+목록 맨 위의 `＋ 새 채팅`(또는 `Ctrl+N`)은 시작 화면을 엽니다. 에이전트 칸의 기본은
+`새 에이전트로 시작`이고, 이름(필수, 겹치면 안 됨)·AI 제공사·모델·세부설정을 정한 뒤 첫 말을
+보내면 에이전트를 만들고 그 에이전트와 새 대화를 엽니다. 있는 에이전트를 고르면(`←→` 또는
+`Enter`로 찾기) 바로 첫 말을 보냅니다. 이름이 없거나 겹치는 동안 입력창은 잠겨 있습니다.
+
 주요 키:
 
-- `Tab`: Agent 목록과 메시지 입력 사이 이동
-- `Enter`: Agent 선택 또는 메시지 전송
-- `Esc`: 실행 중인 채팅 취소
-- `Ctrl+K`: 명령 팔레트
-- `Ctrl+H`: 대화 기록
-- `Ctrl+N`: 새 대화
+- `Tab`: 대화 목록과 오른쪽(시작 화면·대화) 사이 이동
+- `Enter`: 목록에서는 대화 열기, 입력창에서는 메시지 전송
+- `r` / `d`: 목록에서 고른 대화의 이름 바꾸기(비우면 첫 메시지 제목) / 지우기(`y`로 확인)
+- `Esc`: 실행 중인 채팅 취소, 아니면 목록으로
+- `Ctrl+K`: 명령 팔레트(에이전트가 사라진 채팅 제거 포함)
+- `Ctrl+H`: 대화 기록(내 대화 전부)
+- `Ctrl+N`: 새 채팅(시작 화면)
+- `Ctrl+O`: 이 대화의 모델 바꾸기
 - `Ctrl+P`: profile 전환
 - `Ctrl+Q`: 종료
 
@@ -75,6 +87,16 @@ printf '%s' "$XGEN_PASSWORD" | dex login --email me@corp.com --password-stdin
 ```bash
 echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc
 echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc --jsonl
+```
+
+대화 목록은 TUI 와 같은 순서(마지막으로 말한 순서)로 제목·에이전트·꼬리표를 보여 줍니다.
+`--json`에는 `title`, `customTitle`, `tag`, `agentDeleted` 등이 함께 실립니다.
+
+```bash
+dex history list
+dex history rename --workflow wf_abc --interaction <id> --title '분기 보고'
+dex history rename --workflow wf_abc --interaction <id> --title ''   # 첫 메시지 제목으로
+dex history delete --workflow wf_abc --interaction <id>
 ```
 
 ## 이 PC의 파일과 터미널

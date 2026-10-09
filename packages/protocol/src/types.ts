@@ -324,16 +324,50 @@ export interface ChatStopResult {
   detail?: string;
 }
 
-/** A past conversation (interaction) for the sidebar. */
+/** 일반 채팅이 아닌 대화의 꼬리표. 서버가 interaction_id 모양으로 정한다(conversation-list.ts). */
+export type ConversationTag = 'deploy' | 'teams' | 'schedule' | 'compare' | 'api' | 'test' | 'canvas';
+
+/** 비교 채팅의 파생 스레드. 부모 대화 한 줄로 보인다. */
+export interface ConversationCompareThread {
+  interactionId: string;
+  workflowId: string;
+  workflowName: string;
+}
+
+/**
+ * 대화 목록의 한 줄 (2026-10-09: ChatGPT·Claude 처럼 대화 단위, 마지막으로 말한 순서).
+ * 제목·꼬리표는 서버가 정한다. 옛 서버에서는 conversation-list.ts 가 같은 규칙으로 만든다.
+ */
 export interface Conversation {
   id: number;
   interactionId: string;
   workflowId: string;
   workflowName: string;
   interactionCount: number;
+  /** 옛 목록 API 의 원문 메타. 새 API 에서는 빈 객체다. 제목은 `title` 을 쓴다. */
   metadata: Record<string, unknown>;
   createdAt: string;
+  /** 마지막으로 말한 시각. 목록 순서의 기준이다. */
   updatedAt: string;
+  /** 붙인 이름, 없으면 첫 메시지 한 줄. 둘 다 없으면 빈 글(화면은 "새 대화"). */
+  title: string;
+  /** 사용자가 이름을 붙였는가. */
+  customTitle: boolean;
+  tag: ConversationTag | null;
+  /** 에이전트가 사라졌다: 이어 갈 수 없고 기록만 볼 수 있다. */
+  agentDeleted: boolean;
+  /** 에이전트 주인. 공유받은 에이전트로 이어 갈 때 쓴다. 모르면 null. */
+  agentOwnerId: number | null;
+  compare: ConversationCompareThread[];
+}
+
+/** 대화 목록 한 쪽. */
+export interface ConversationPage {
+  conversations: Conversation[];
+  /** 다음 쪽을 받을 커서. 없으면 끝이다. */
+  nextCursor: string | null;
+  /** 첫 쪽에만 온다: 에이전트가 사라진 대화 수(목록 머리 [에이전트가 사라진 채팅 제거]). */
+  agentDeletedCount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────

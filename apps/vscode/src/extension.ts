@@ -73,16 +73,10 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.commands.registerCommand('xgenDex.refresh', () => refreshAll()),
-    vscode.commands.registerCommand('xgenDex.searchAgents', async () => {
-      const search = await vscode.window.showInputBox({
-        title: 'XGEN Dex Agent 검색',
-        prompt: '이름 또는 설명으로 Agent를 검색합니다. 비우면 전체 목록을 표시합니다.',
-        placeHolder: '검색어',
-      });
-      if (search === undefined) return;
-      await chat.showAgents(search);
-    }),
-    vscode.commands.registerCommand('xgenDex.showAgents', () => chat.showAgents()),
+    // Agent 고르기는 시작 화면의 선택 상자다. 검색은 빠른 선택으로 골라 그 자리에 골라 둔다.
+    vscode.commands.registerCommand('xgenDex.searchAgents', () => chat.pickAgent()),
+    vscode.commands.registerCommand('xgenDex.showAgents', () => chat.showStart()),
+    vscode.commands.registerCommand('xgenDex.showConversations', () => chat.showConversations()),
     vscode.commands.registerCommand('xgenDex.showSettings', () => chat.showSettings()),
     vscode.commands.registerCommand('xgenDex.openAgent', async (value: unknown) => {
       const agent = resolveAgent(value);

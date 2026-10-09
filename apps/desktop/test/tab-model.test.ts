@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionState } from '../src/renderer/src/session-store';
-import { chatTabs, tabTitle } from '../src/renderer/src/views/tab-model';
+import { chatTabs, tabTitle, tabTooltip } from '../src/renderer/src/views/tab-model';
 
 function session(partial: Partial<SessionState> & { key: string }): SessionState {
   return {
@@ -67,9 +67,16 @@ test('스트리밍 중인 세션은 비어 있어도 탭으로 남는다', () =>
   );
 });
 
-test('탭 제목은 에이전트 이름, 없으면 자리표시', () => {
-  const s = session({ key: 'a' });
-  assert.equal(tabTitle(s), '봇');
-  s.agent = { ...s.agent, workflowName: '' };
-  assert.equal(tabTitle(s), '대화');
+test('탭 제목은 대화 제목: 목록이 알려 준 제목, 모르면 첫 질문, 아무 말도 없으면 "새 대화"', () => {
+  assert.equal(tabTitle(session({ key: 'a' })), '새 대화');
+  assert.equal(tabTitle(session({ key: 'b', messages: [{ role: 'user', text: '  분기 매출\n정리해 줘 ' }] })), '분기 매출 정리해 줘');
+  assert.equal(
+    tabTitle(session({ key: 'c', title: '내가 붙인 이름', messages: [{ role: 'user', text: '첫 질문' }] })),
+    '내가 붙인 이름',
+  );
+  const long = tabTitle(session({ key: 'd', messages: [{ role: 'user', text: '가'.repeat(100) }] }));
+  assert.equal(long.length, 40);
+  assert.ok(long.endsWith('…'));
+  // 같은 에이전트와의 대화 탭이 모두 에이전트 이름이던 예전 규칙은 쓰지 않는다. 에이전트는 툴팁에 남는다.
+  assert.equal(tabTooltip(session({ key: 'e', title: '보고서' })), '봇 · 보고서');
 });

@@ -140,6 +140,76 @@ test('설정 값은 JSON 으로 오간다', () => {
   s.close();
 });
 
+test('대화 목록: 모든 에이전트의 대화를 마지막으로 말한 순서로, 에이전트 이름과 함께', () => {
+  const s = new Store(dbFile(), { now: clock() });
+  const a = s.createAgent({ name: '리서치', workspace: 'a' });
+  const b = s.createAgent({ name: '코딩', workspace: 'b' });
+  const c1 = s.createConversation(a.id);
+  s.startTurn(c1.id, '첫 질문');
+  const c2 = s.createConversation(b.id);
+  s.startTurn(c2.id, '둘째 질문');
+  const c3 = s.createConversation(a.id); // 아직 말하지 않은 대화
+  assert.deepEqual(
+    s.listAllConversations().map((c) => [c.id, c.agentName, c.title]),
+    [
+      [c3.id, '리서치', ''],
+      [c2.id, '코딩', '둘째 질문'],
+      [c1.id, '리서치', '첫 질문'],
+    ],
+  );
+  // 오래된 대화에서 다시 말하면 맨 위로 오른다
+  s.startTurn(c1.id, '다시');
+  assert.deepEqual(s.listAllConversations().map((c) => c.id), [c1.id, c3.id, c2.id]);
+  assert.deepEqual(s.listAllConversations(2).map((c) => c.id), [c1.id, c3.id]);
+  // 에이전트 이름을 바꾸면 목록도 그 이름, 에이전트를 지우면 그 대화도 빠진다(지워짐 상태는 없다)
+  s.updateAgent(a.id, { name: '리서치 2' });
+  assert.equal(s.listAllConversations()[0].agentName, '리서치 2');
+  s.deleteAgent(b.id);
+  assert.deepEqual(s.listAllConversations().map((c) => c.id), [c1.id, c3.id]);
+  s.close();
+});
+
+test('대화 목록: 같은 시각이면 나중에 생긴 대화가 위, 그것도 같으면 id 로 늘 같은 순서', () => {
+  const s = new Store(dbFile(), { now: () => 7 });
+  const a = s.createAgent({ name: 'A', workspace: 'A' });
+  s.createConversation(a.id, '', 'conv-a');
+  s.createConversation(a.id, '', 'conv-b');
+  assert.deepEqual(s.listAllConversations().map((c) => c.id), ['conv-b', 'conv-a']);
+  s.close();
+});
+
+test('이름 바꾸기: 목록 순서는 그대로, 다음 턴이 덮지 않고, 빈 이름이면 첫 질문의 제목으로 돌아간다', () => {
+  const s = new Store(dbFile(), { now: clock() });
+  const a = s.createAgent({ name: 'A', workspace: 'A' });
+  const older = s.createConversation(a.id);
+  s.startTurn(older.id, '첫 질문\n둘째 줄');
+  s.startTurn(older.id, '두 번째 질문');
+  const newer = s.createConversation(a.id);
+  s.startTurn(newer.id, '새 질문');
+  const before = s.getConversation(older.id)!;
+
+  const renamed = s.renameConversation(older.id, '  내 이름  ');
+  assert.equal(renamed?.title, '내 이름');
+  assert.equal(renamed?.updatedAt, before.updatedAt);
+  assert.deepEqual(s.listAllConversations().map((c) => c.id), [newer.id, older.id]);
+  assert.deepEqual(s.listConversations(a.id).map((c) => c.id), [newer.id, older.id]);
+
+  s.startTurn(older.id, '세 번째 질문');
+  assert.equal(s.getConversation(older.id)?.title, '내 이름');
+
+  const reverted = s.renameConversation(older.id, '   ');
+  assert.equal(reverted?.title, '첫 질문');
+
+  // 아직 질문이 없는 대화는 빈 제목으로 남고, 첫 턴이 정한다
+  const empty = s.createConversation(a.id);
+  assert.equal(s.renameConversation(empty.id, '')?.title, '');
+  s.startTurn(empty.id, '처음 묻는 것');
+  assert.equal(s.getConversation(empty.id)?.title, '처음 묻는 것');
+
+  assert.equal(s.renameConversation('missing', 'x'), null);
+  s.close();
+});
+
 test('대화 제목은 첫 줄, 길면 줄인다', () => {
   assert.equal(titleFrom('  안녕\n두 번째'), '안녕');
   assert.equal(titleFrom('x'.repeat(80)).length, 60);

@@ -30,29 +30,97 @@ body {
   width: 272px;
   overflow: hidden;
 }
-.xd-agent-list {
+/* 대화 목록: 맨 위 [새 채팅], 그 아래 모든 에이전트의 대화(마지막으로 말한 순서). */
+.xd-side-top {
+  flex-shrink: 0;
+  padding: 0 8px 6px;
+}
+.xd-new-chat {
+  align-items: center;
+}
+.xd-new-chat .conv-name {
+  color: var(--primary);
+  font-weight: 600;
+}
+.xd-conv-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 2px 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-.xd-conversations {
-  display: flex;
-  flex-direction: column;
   gap: 1px;
-  margin: 0 0 6px 14px;
-  padding-left: 8px;
-  border-left: 1px solid var(--border);
 }
-.xd-agent-item.active {
-  background: var(--primary-soft);
+.xd-conv {
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 10px;
 }
-.xd-new-chat .conv-name {
-  color: var(--primary);
-  font-weight: 600;
+.xd-conv .conv-name {
+  font-weight: 500;
+}
+.xd-conv-agent {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 줄의 [이름 바꾸기]·[삭제]: 줄에 올리거나 고른 줄에서만 보인다. */
+.xd-conv-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.xd-conv:hover .xd-conv-actions,
+.xd-conv:focus-within .xd-conv-actions,
+.xd-conv.active .xd-conv-actions,
+.xd-conv-actions.open {
+  opacity: 1;
+}
+/* [⋯] 메뉴는 줄 오른쪽 아래로 펼친다(모양은 Dex 의 .conv-menu). */
+.xd-conv-actions.conv-menu-wrap {
+  position: relative;
+}
+.xd-conv-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.xd-conv-act:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+.xd-conv-act.danger:hover {
+  background: var(--error-bg);
+  color: var(--error);
+}
+.xd-conv.editing {
+  cursor: default;
+}
+.xd-conv-rename {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 3px 6px;
+  border: 1px solid var(--primary-end);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
 }
 
 .xd-main {
@@ -507,4 +575,73 @@ body {
 .xd-mcp-form textarea {
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+/* ── 시작 화면 ──────────────────────────────────────────── */
+/* 채팅과 같은 짜임(머리·기록 칸·바닥 입력창)에서, 비어 있는 기록 칸 가운데에 제목과 에이전트 고르기가 선다. */
+/* 가운데 맞춤은 바깥 여백(auto)으로: 칸보다 길어지면 위가 잘리지 않고 스크롤된다. */
+.xd-start-panel {
+  width: min(560px, 100%);
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.xd-start-panel h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  text-align: center;
+}
+.xd-start-panel .field {
+  margin: 0;
+}
+.xd-start-new {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.xd-start-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .xd-start-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.xd-start-field-error {
+  margin: -4px 0 0;
+}
+.xd-start-more summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+.xd-start-more[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.xd-start-more[open] summary {
+  margin-bottom: 2px;
+}
+
+/* 잠긴 입력창: 쓸 수도 보낼 수도 없고, 덮개를 누르면 화면이 까닭을 보인다. */
+.composer.xd-composer-locked {
+  position: relative;
+}
+.composer.xd-composer-locked .composer-input {
+  opacity: 0.6;
+}
+.xd-composer-lock {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  padding: 0;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  cursor: not-allowed;
 }

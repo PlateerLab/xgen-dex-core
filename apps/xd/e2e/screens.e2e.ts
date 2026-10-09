@@ -49,8 +49,28 @@ async function shot(win: Page, name: string): Promise<void> {
   await win.screenshot({ path: join(SHOTS, `${name}.png`) });
 }
 
-/** 제공자(시험용) 추가 → 에이전트 만들기 — 화면으로. */
-async function setUp(win: Page, agentName: string): Promise<void> {
+async function say(win: Page, text: string): Promise<void> {
+  await win.getByLabel('메시지').fill(text);
+  await win.getByLabel('메시지').press('Enter');
+}
+
+/**
+ * 시작 화면([새 채팅])에서 새 에이전트의 이름·모델을 적는다. 이름이 없으면 입력창이 잠겨 있고, 누르면 까닭이
+ * 보인다. 다 적으면 입력창이 열린다.
+ */
+async function startNewAgent(win: Page, agentName: string): Promise<void> {
+  await win.getByRole('button', { name: '새 채팅' }).click();
+  await win.getByRole('heading', { name: '오늘은 무엇을 해볼까요?' }).waitFor();
+  assert.equal(await win.getByLabel('메시지').isDisabled(), true);
+  await win.getByRole('button', { name: '에이전트 이름을 먼저 입력해 주세요.' }).click();
+  await win.getByRole('alert').filter({ hasText: '에이전트 이름을 먼저 입력해 주세요.' }).waitFor();
+  await win.getByPlaceholder('예: 리서치 도우미').fill(agentName);
+  await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
+  await win.locator('textarea.composer-input:not([disabled])').waitFor();
+}
+
+/** 제공자(시험용) 추가 → 시작 화면에서 새 에이전트로 첫 메시지(화면으로). 보내면 그 에이전트의 새 대화가 열린다. */
+async function setUp(win: Page, agentName: string, firstMessage: string): Promise<void> {
   await win.getByText('이 PC 에서 에이전트와 일하세요').waitFor();
   await shot(win, '01-welcome');
   await win.getByRole('button', { name: /AI 제공자 연결/ }).click();
@@ -60,17 +80,18 @@ async function setUp(win: Page, agentName: string): Promise<void> {
   await win.getByRole('button', { name: '추가', exact: true }).click();
   // 계정이 실제로 생겨 목록에 선 뒤에 넘어간다
   await win.locator('.xd-account', { hasText: '시험용 모델' }).waitFor();
-  await win.getByRole('button', { name: '새 에이전트' }).click();
-  await win.getByPlaceholder('예: 리서치 도우미').fill(agentName);
-  await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
-  await shot(win, '03-agent-new');
-  await win.getByRole('button', { name: '만들기' }).click();
-  await win.getByLabel('메시지').waitFor();
+  await startNewAgent(win, agentName);
+  await shot(win, '03-start');
+  await say(win, firstMessage);
+  await win.locator('.chat-title-text', { hasText: agentName }).waitFor();
 }
 
-async function say(win: Page, text: string): Promise<void> {
-  await win.getByLabel('메시지').fill(text);
-  await win.getByLabel('메시지').press('Enter');
+/** 시작 화면 → 세부 설정 → [모든 설정]: 연결 폴더·MCP 처럼 시작 화면에 없는 설정으로 에이전트를 만든다. */
+async function openFullEditor(win: Page): Promise<void> {
+  await win.getByRole('button', { name: '새 채팅' }).click();
+  await win.getByText('세부 설정', { exact: true }).click();
+  await win.getByRole('button', { name: '모든 설정' }).click();
+  await win.getByRole('heading', { name: '새 에이전트' }).waitFor();
 }
 
 test('첫 실행부터 대화까지 화면으로, 다시 켜도 대화가 이어진다', { timeout: 240_000 }, async () => {
@@ -79,28 +100,49 @@ test('첫 실행부터 대화까지 화면으로, 다시 켜도 대화가 이어
     { text: '## 정리\n\n`report.md` 를 만들었습니다.\n\n| 항목 | 값 |\n|---|---|\n| 파일 | report.md |' },
   ]);
   let { app, win } = await launch();
-  await setUp(win, '리서치 도우미');
-  await shot(win, '04-chat-empty');
-  await say(win, '보고서 하나 만들어 줘');
+  await setUp(win, '리서치 도우미', '보고서 하나 만들어 줘');
   // 답: 작업 과정(도구를 썼다)과 마크다운(표)
   await win.getByText('report.md 를 만들었습니다', { exact: false }).waitFor({ timeout: 60_000 });
   await win.locator('.ptl-head, .ptl-summary, [class*="ptl"]').first().waitFor();
   assert.ok(await win.locator('.bubble.assistant table').count());
   await shot(win, '05-chat-answer');
   assert.equal(readFileSync(join(root, 'workspace', '리서치 도우미', 'report.md'), 'utf8'), '# 보고서\n');
-  // 사이드바에 대화가 첫 질문 제목으로 선다
-  await win.locator('.conv-name', { hasText: '보고서 하나 만들어 줘' }).waitFor();
+  // 사이드바에 대화가 첫 질문 제목으로(에이전트 이름은 작게) 서고, 채팅 머리에도 그 제목이 보인다
+  const row = win.locator('.xd-conv', { hasText: '보고서 하나 만들어 줘' });
+  await row.locator('.xd-conv-agent', { hasText: '리서치 도우미' }).waitFor();
+  await win.locator('.chat-title-text strong', { hasText: '보고서 하나 만들어 줘' }).waitFor();
   await app.close();
 
   ({ app, win } = await launch());
-  await win.getByText('리서치 도우미').first().click();
-  await win.locator('.conv-name', { hasText: '보고서 하나 만들어 줘' }).click();
+  // 다시 켜면 시작 화면이다. 같은 이름의 새 에이전트는 적는 대로 막히고, 있는 에이전트를 고르면 입력창이 열린다
+  await win.getByRole('heading', { name: '오늘은 무엇을 해볼까요?' }).waitFor();
+  await win.getByPlaceholder('예: 리서치 도우미').fill('리서치 도우미');
+  await win.getByText('같은 이름의 에이전트가 이미 있습니다. 다른 이름을 써 주세요.').waitFor();
+  assert.equal(await win.getByLabel('메시지').isDisabled(), true);
+  await win.getByRole('button', { name: '에이전트 고르기' }).click();
+  await win.getByRole('option', { name: '리서치 도우미' }).click();
+  await win.locator('textarea.composer-input:not([disabled])').waitFor();
+  await shot(win, '05b-start-existing');
+  await win.locator('.xd-conv .conv-name', { hasText: '보고서 하나 만들어 줘' }).click();
   await win.getByText('report.md 를 만들었습니다', { exact: false }).waitFor();
   await say(win, '고마워');
   await win.locator('.msg-row.user .bubble-plain', { hasText: '고마워' }).waitFor();
   await win.waitForFunction(() => document.querySelectorAll('.msg-row.assistant').length === 2, undefined, { timeout: 60_000 });
   await win.locator('.composer-send:not(.stop)').waitFor();
   await shot(win, '06-chat-resumed');
+
+  // 이름 바꾸기: 줄은 제자리에서 바뀌고 머리에도 보인다. 빈 이름이면 첫 질문의 제목으로 돌아간다
+  await win.locator('.xd-conv', { hasText: '보고서 하나 만들어 줘' }).getByRole('button', { name: '대화 메뉴' }).click();
+  await win.getByRole('menuitem', { name: '이름 바꾸기' }).click();
+  await win.getByLabel('대화 이름').fill('내 보고서');
+  await win.getByLabel('대화 이름').press('Enter');
+  await win.locator('.xd-conv .conv-name', { hasText: '내 보고서' }).waitFor();
+  await win.locator('.chat-title-text strong', { hasText: '내 보고서' }).waitFor();
+  await win.locator('.xd-conv', { hasText: '내 보고서' }).getByRole('button', { name: '대화 메뉴' }).click();
+  await win.getByRole('menuitem', { name: '이름 바꾸기' }).click();
+  await win.getByLabel('대화 이름').fill('');
+  await win.getByLabel('대화 이름').press('Enter');
+  await win.locator('.xd-conv .conv-name', { hasText: '보고서 하나 만들어 줘' }).waitFor();
 
   // 설정: 루트·엔진 상태
   await win.getByRole('button', { name: '설정', exact: true }).click();
@@ -114,8 +156,7 @@ test('첫 실행부터 대화까지 화면으로, 다시 켜도 대화가 이어
 test('정지하면 중단된 답으로 남고, 제공자가 없으면 까닭이 보인다', { timeout: 240_000 }, async () => {
   const { launch } = fixture([{ text: '오래 걸리는 일을 합니다.', tools: [{ name: 'Bash', input: { command: 'sleep 30' } }] }, { text: 'never' }]);
   const { app, win } = await launch();
-  await setUp(win, '느린 에이전트');
-  await say(win, '오래 걸리는 일 해 줘');
+  await setUp(win, '느린 에이전트', '오래 걸리는 일 해 줘');
   const stop = win.getByRole('button', { name: '정지' });
   await stop.waitFor();
   // 도구가 돌기 시작한 뒤 멈춘다(엔진이 처음 뜨는 시간과 상관없이)
@@ -130,7 +171,7 @@ test('정지하면 중단된 답으로 남고, 제공자가 없으면 까닭이 
   win.once('dialog', (d) => void d.accept());
   await win.getByRole('button', { name: '제공자 지우기' }).click();
   await win.getByText('아직 연결한 제공자가 없습니다.').waitFor();
-  await win.getByText('느린 에이전트').first().click();
+  await win.locator('.xd-conv', { hasText: '느린 에이전트' }).click();
   await win.getByText('에이전트 설정에서 AI 제공자를 골라야 대화할 수 있습니다.').waitFor();
   await say(win, '다시 해 줘');
   await win.getByText('이 에이전트에 연결된 AI 제공자가 없습니다.').waitFor({ timeout: 30_000 });
@@ -184,9 +225,10 @@ test('Claude Code 로그인(가짜 CLI): 화면을 떠났다 와도 이어지고
   await login();
   await shot(win, '12-cli-logged-in');
 
-  // main 이 만든 계정 하나 — 새 에이전트의 제공자 목록에 Claude Code 가 한 번
-  await win.getByRole('button', { name: '새 에이전트' }).click();
-  const options = await win.locator('select option').allTextContents();
+  // main 이 만든 계정 하나: 시작 화면(새 에이전트)의 제공자 목록에 Claude Code 가 한 번
+  await win.getByRole('button', { name: '새 채팅' }).click();
+  await win.getByRole('button', { name: 'AI 제공자 고르기' }).click();
+  const options = await win.locator('.selector-opt .selector-opt-label').allTextContents();
   assert.deepEqual(options, ['Claude Code']);
 });
 
@@ -210,7 +252,7 @@ test('연결 폴더: 고를 때 바로 검사하고, 에이전트가 그 폴더�
   await win.getByRole('radio', { name: '시험용 모델' }).click();
   await win.getByRole('button', { name: '추가', exact: true }).click();
   await win.locator('.xd-account', { hasText: '시험용 모델' }).waitFor();
-  await win.getByRole('button', { name: '새 에이전트' }).click();
+  await openFullEditor(win);
   await win.getByPlaceholder('예: 리서치 도우미').fill('폴더 도우미');
   await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
 
@@ -272,7 +314,7 @@ test('작업 공간 IDE: 에이전트가 쓴 파일을 열어 고쳐 저장하�
   ]);
   let { app, win } = await launch();
   await addFakeProvider(win);
-  await win.getByRole('button', { name: '새 에이전트' }).click();
+  await openFullEditor(win);
   await win.getByPlaceholder('예: 리서치 도우미').fill('편집 도우미');
   await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
   await app.evaluate(({ dialog }, p) => {
@@ -340,7 +382,7 @@ test('작업 공간 IDE: 에이전트가 쓴 파일을 열어 고쳐 저장하�
 
   // 다시 켜도 그 에이전트는 작업 공간으로, 열어 둔 탭·보기까지 그대로 열린다. 끄면 대화만 남는다.
   ({ app, win } = await launch());
-  await win.getByText('편집 도우미').first().click();
+  await win.locator('.xd-conv', { hasText: '편집 도우미' }).first().click();
   await win.locator('.xide-tab', { hasText: 'plan.md' }).waitFor({ timeout: 30_000 });
   await shot(win, '18-ide-restored');
   await win.getByRole('button', { name: '작업 공간 보기' }).click();
@@ -358,7 +400,7 @@ test('MCP 서버: 화면에서 붙이고(연결 확인), 턴이 그 도구를 �
   ]);
   const { app, win } = await launch();
   await addFakeProvider(win);
-  await win.getByRole('button', { name: '새 에이전트' }).click();
+  await openFullEditor(win);
   await win.getByPlaceholder('예: 리서치 도우미').fill('MCP 도우미');
   await win.getByPlaceholder(/모델 이름|모델 목록/).fill('fake-1');
 

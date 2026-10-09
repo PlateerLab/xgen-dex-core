@@ -13,16 +13,24 @@ import {
   TeamsIcon,
 } from '../brand/icons';
 import type { WorkspaceGroup, WorkspaceTab } from './workspace-layout';
+import { tabTitle, tabTooltip } from './tab-model';
 
 function label(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
   if (tab.kind === 'teams') return tab.roomName || '대화';
   if (tab.kind === 'settings') return '설정';
   if (tab.kind === 'apps') return '앱';
-  if (tab.kind === 'agent-create') return '새 에이전트';
+  // 'agent-create' 탭은 이제 새 채팅 시작 화면이다(저장된 배치와 맞추려고 종류 이름은 그대로 둔다).
+  if (tab.kind === 'agent-create') return '새 채팅';
   if (tab.kind === 'file-viewer') return tab.fileName || '파일';
   if (tab.kind === 'agent-viewer') return `${tab.workflowName || '에이전트'} 뷰어`;
   if (tab.kind === 'browser') return `${tab.workflowName || 'Agent'} 브라우저`;
-  return sessions.get(tab.sessionKey ?? '')?.agent.workflowName || tab.workflowName || '대화';
+  const session = sessions.get(tab.sessionKey ?? '');
+  return session ? tabTitle(session) : tab.workflowName || '대화';
+}
+
+function tooltip(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
+  const session = tab.kind === 'chat' ? sessions.get(tab.sessionKey ?? '') : undefined;
+  return session ? tabTooltip(session) : label(tab, sessions);
 }
 
 export const TabBar: React.FC<{
@@ -52,7 +60,7 @@ export const TabBar: React.FC<{
             onKeyDown={(event) => event.key === 'Enter' && onSelect(tab.id)}
             onPointerDown={(event) => onTabPointerDown(event, tab)}
             onAuxClick={(event) => event.button === 1 && onClose(tab)}
-            title={label(tab, sessions)}
+            title={tooltip(tab, sessions)}
           >
             <span className="tab-icon">
               {tab.kind === 'chat' ? (

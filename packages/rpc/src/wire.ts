@@ -74,6 +74,12 @@ export interface InitializeResult {
     conversationModel?: boolean;
     /** conversation/thinking/set(·/reset) — 대화 도중 생각(추론) 값 바꾸기(지금 모델이 받는 값만). */
     conversationThinking?: boolean;
+    /** history/conversationPage · history/rename · history/delete · history/purgeDeletedAgents (대화 목록). */
+    conversationList?: boolean;
+    /** conversations/watch · conversations/unwatch → conversations/changed 알림(대화 목록 실시간). */
+    conversationListWatch?: boolean;
+    /** agents/createOptions · agents/nameTaken · agents/create (시작 화면의 새 에이전트). */
+    agentCreate?: boolean;
   };
 }
 

@@ -2,10 +2,33 @@ import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+/** 대화 목록 한 줄(GET /api/interaction/conversations 의 모양). */
+export interface MockConversation {
+  id: number;
+  interaction_id: string;
+  workflow_id: string;
+  workflow_name: string;
+  interaction_count: number;
+  created_at: string;
+  updated_at: string;
+  /** 첫 메시지(붙인 이름을 지우면 이 제목으로 돌아간다). */
+  first_message: string;
+  title: string;
+  custom_title: boolean;
+  tag: string | null;
+  agent_deleted: boolean;
+  agent_owner_id: number | null;
+  compare: Array<{ interaction_id: string; workflow_id: string; workflow_name: string }>;
+}
+
 export interface MockXgen {
   server: Server;
   baseUrl: string;
   requests: { chatInputs: unknown[]; chatFolders: unknown[]; createdAgents: unknown[] };
+  /** 대화 목록(마지막으로 말한 순서). 이름 바꾸기·지우기가 여기를 고친다. */
+  conversations: MockConversation[];
+  /** 이미 있는 에이전트 이름(이름 겹침 검사). */
+  agentNames: Set<string>;
   /** 이 대화들은 "지금 도는 턴이 있다" 고 답한다 — io-logs 의 `running`. */
   running: Set<string>;
   /** POST /execute/stop/{id} 로 실제로 닿은 대화들. */
@@ -40,6 +63,41 @@ export async function startMockXgen(): Promise<MockXgen> {
   const running = new Set<string>();
   const stopped: string[] = [];
   const conversationModels = new Map<string, (typeof MODEL_CHOICES)[number]>();
+  const conversations: MockConversation[] = [
+    {
+      id: 2,
+      interaction_id: 'interaction-1',
+      workflow_id: 'wf_abc',
+      workflow_name: 'Sales Agent',
+      interaction_count: 1,
+      created_at: '2026-08-28T00:00:00Z',
+      updated_at: '2026-08-28T00:00:00Z',
+      first_message: 'hello',
+      title: 'hello',
+      custom_title: false,
+      tag: null,
+      agent_deleted: false,
+      agent_owner_id: 123,
+      compare: [],
+    },
+    {
+      id: 1,
+      interaction_id: 'teams-room-1',
+      workflow_id: 'wf_gone',
+      workflow_name: 'Old Agent',
+      interaction_count: 3,
+      created_at: '2026-08-01T00:00:00Z',
+      updated_at: '2026-08-01T00:00:00Z',
+      first_message: '지난 회의 정리',
+      title: '지난 회의 정리',
+      custom_title: false,
+      tag: 'teams',
+      agent_deleted: true,
+      agent_owner_id: null,
+      compare: [],
+    },
+  ];
+  const agentNames = new Set(['Sales Agent']);
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://mock');
@@ -86,6 +144,7 @@ export async function startMockXgen(): Promise<MockXgen> {
       if (url.pathname === '/api/agentflow/create' && request.method === 'POST') {
         const body = await bodyOf(request);
         requests.createdAgents.push(body);
+        agentNames.add(String(body.workflow_name ?? ''));
         json(response, 200, {
           workflow_id: 'wf_created_1',
           workflow_name: String(body.workflow_name ?? ''),
@@ -163,6 +222,54 @@ export async function startMockXgen(): Promise<MockXgen> {
         response.end('data: {"type":"end"}\n\n');
         return;
       }
+      // 대화 목록: 마지막으로 말한 순서, 커서(여기서는 건너뛴 수)로 이어 받는다.
+      if (url.pathname === '/api/interaction/conversations' && request.method === 'GET') {
+        const limit = Math.max(1, Number(url.searchParams.get('limit') ?? 40));
+        const offset = Number(url.searchParams.get('cursor') ?? 0) || 0;
+        const page = conversations.slice(offset, offset + limit).map(({ first_message: _f, ...row }) => row);
+        json(response, 200, {
+          conversations: page,
+          next_cursor: offset + limit < conversations.length ? String(offset + limit) : null,
+          ...(offset === 0 ? { agent_deleted_count: conversations.filter((c) => c.agent_deleted).length } : {}),
+        });
+        return;
+      }
+      if (url.pathname === '/api/interaction/conversations/rename' && request.method === 'POST') {
+        const body = await bodyOf(request);
+        const found = conversations.find(
+          (c) => c.workflow_id === body.workflow_id && c.interaction_id === body.interaction_id,
+        );
+        if (!found) return json(response, 404, { detail: 'not found' });
+        const title = String(body.title ?? '').trim();
+        // 빈 이름이면 붙인 이름을 지워 첫 메시지 제목으로 돌아간다.
+        found.title = title || found.first_message;
+        found.custom_title = !!title;
+        json(response, 200, { title: found.title, custom_title: found.custom_title });
+        return;
+      }
+      if (url.pathname === '/api/chat/io-logs/orphans' && request.method === 'DELETE') {
+        const before = conversations.length;
+        for (let i = conversations.length - 1; i >= 0; i -= 1) {
+          if (conversations[i]!.agent_deleted) conversations.splice(i, 1);
+        }
+        json(response, 200, { deleted_interactions: before - conversations.length });
+        return;
+      }
+      if (url.pathname === '/api/chat/io-logs' && request.method === 'DELETE') {
+        const at = conversations.findIndex(
+          (c) =>
+            c.workflow_id === url.searchParams.get('workflow_id') &&
+            c.interaction_id === url.searchParams.get('interaction_id'),
+        );
+        if (at >= 0) conversations.splice(at, 1);
+        json(response, 200, { success: true });
+        return;
+      }
+      // 에이전트 이름 겹침: 웹과 같은 검사.
+      if (url.pathname === '/api/agentflow/check/agentflow' && request.method === 'POST') {
+        json(response, 200, { exists: agentNames.has(String(url.searchParams.get('workflow_name') ?? '')) });
+        return;
+      }
       if (url.pathname === '/api/interaction/list' && request.method === 'GET') {
         json(response, 200, {
           execution_meta_list: [
@@ -235,5 +342,5 @@ export async function startMockXgen(): Promise<MockXgen> {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
-  return { server, baseUrl: `http://127.0.0.1:${port}`, requests, running, stopped };
+  return { server, baseUrl: `http://127.0.0.1:${port}`, requests, conversations, agentNames, running, stopped };
 }

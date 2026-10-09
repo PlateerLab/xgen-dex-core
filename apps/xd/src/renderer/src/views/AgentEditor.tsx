@@ -10,6 +10,7 @@ import { xd } from '../bridge';
 import { errorText, FOLDER_BADGE, FOLDER_TEXT, KIND_LABEL, useData } from '../data';
 import type { McpServerConfig } from '../../../main/mcp-config';
 import { FolderIcon, PlusIcon, TrashIcon } from '../dex';
+import { agentNameTaken, START_TEXT, type AgentDraft } from '../start-model';
 import { McpServers } from './McpServers';
 
 /** 끌 수 있는 도구 묶음 — 엔진 설정 이름(GENY_TOOLS_<묶음>_ENABLED)과 화면 이름. */
@@ -24,17 +25,19 @@ const flag = (key: string) => `GENY_TOOLS_${key}_ENABLED`;
 
 export const AgentEditor: React.FC<{
   agent: XdAgent | null;
+  /** 새 에이전트: 시작 화면에서 이미 적은 것. */
+  draft?: AgentDraft;
   onDone: (agentId: string | null) => void;
   onProviders: () => void;
-}> = ({ agent, onDone, onProviders }) => {
-  const { accounts, info, reloadAgents } = useData();
-  const [name, setName] = useState(agent?.name ?? '');
-  const [description, setDescription] = useState(agent?.description ?? '');
-  const [accountId, setAccountId] = useState<string>(agent?.accountId ?? accounts[0]?.id ?? '');
-  const [model, setModel] = useState(agent?.model ?? '');
+}> = ({ agent, draft, onDone, onProviders }) => {
+  const { accounts, agents, info, reloadAgents } = useData();
+  const [name, setName] = useState(agent?.name ?? draft?.name ?? '');
+  const [description, setDescription] = useState(agent?.description ?? draft?.description ?? '');
+  const [accountId, setAccountId] = useState<string>(agent?.accountId ?? (draft?.accountId || accounts[0]?.id) ?? '');
+  const [model, setModel] = useState(agent?.model ?? draft?.model ?? '');
   const [models, setModels] = useState<string[] | null>(null);
   const [modelsNote, setModelsNote] = useState('');
-  const [prompt, setPrompt] = useState(agent?.systemPrompt ?? '');
+  const [prompt, setPrompt] = useState(agent?.systemPrompt ?? draft?.systemPrompt ?? '');
   const [memory, setMemory] = useState(agent?.memory ?? true);
   const [folders, setFolders] = useState<string[]>(agent?.folders ?? []);
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() =>
@@ -50,6 +53,9 @@ export const AgentEditor: React.FC<{
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 이름은 이 PC 의 다른 에이전트와 겹치지 않게(시작 화면과 같은 검사, 자기 자신은 빼고). 저장하는 동안은 보지
+  // 않는다: 막 만든 에이전트가 목록에 들어오면 그 이름이 "겹친다" 로 읽힌다.
+  const nameTaken = !busy && agentNameTaken(name, agents, agent?.id);
 
   // 계정 목록이 늦게 오면(새 에이전트) 첫 제공자를 고른다 — 보이는 것과 저장되는 것이 같게.
   useEffect(() => {
@@ -165,8 +171,13 @@ export const AgentEditor: React.FC<{
       <section className="xd-card">
         <label className="field">
           <span>이름</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 리서치 도우미" maxLength={100} />
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 리서치 도우미" maxLength={100} aria-invalid={nameTaken} />
         </label>
+        {nameTaken && (
+          <p className="voice-error small xd-start-field-error" role="alert">
+            {START_TEXT.nameTaken}
+          </p>
+        )}
         <label className="field">
           <span>설명</span>
           <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="무엇을 하는 에이전트인지 한 줄로" />
@@ -285,7 +296,7 @@ export const AgentEditor: React.FC<{
         </div>
       )}
       <div className="xd-actions">
-        <button type="button" className="primary" disabled={busy || !name.trim()} onClick={() => void save()}>
+        <button type="button" className="primary" disabled={busy || !name.trim() || nameTaken} onClick={() => void save()}>
           {agent ? '저장' : '만들기'}
         </button>
         <button type="button" className="secondary" disabled={busy} onClick={() => onDone(agent?.id ?? null)}>

@@ -1,14 +1,13 @@
-/** 첫 화면 — 제공자를 연결하고 에이전트를 만들면 대화할 수 있다. 다 됐으면 에이전트를 고르라고 한다. */
+/**
+ * 처음 켰을 때(제공자도 에이전트도 없다). 제공자를 연결하면 시작 화면에서 에이전트를 만들고 대화한다.
+ * 제공자나 에이전트가 하나라도 있으면 이 화면 대신 시작 화면이 선다(App).
+ */
 import React from 'react';
 import { useData } from '../data';
 import { BotIcon, CheckIcon, ServerIcon } from '../dex';
 import { XdMark } from './XdMark';
 
-export const Welcome: React.FC<{ onProviders: () => void; onNewAgent: () => void; onOpenAgent: (id: string) => void }> = ({
-  onProviders,
-  onNewAgent,
-  onOpenAgent,
-}) => {
+export const Welcome: React.FC<{ onProviders: () => void; onStart: () => void }> = ({ onProviders, onStart }) => {
   const { accounts, agents } = useData();
   const hasProvider = accounts.length > 0;
   const hasAgent = agents.length > 0;
@@ -25,7 +24,7 @@ export const Welcome: React.FC<{ onProviders: () => void; onNewAgent: () => void
             <em>{hasProvider ? `${accounts.length}개 연결됨` : 'API 키나 Claude Code·Codex 로그인'}</em>
           </span>
         </button>
-        <button type="button" className={`xd-step${hasAgent ? ' done' : ''}`} onClick={onNewAgent} disabled={!hasProvider}>
+        <button type="button" className={`xd-step${hasAgent ? ' done' : ''}`} onClick={onStart} disabled={!hasProvider}>
           <span className="xd-step-icon">{hasAgent ? <CheckIcon size={16} /> : <BotIcon size={16} />}</span>
           <span>
             <strong>에이전트 만들기</strong>
@@ -33,11 +32,6 @@ export const Welcome: React.FC<{ onProviders: () => void; onNewAgent: () => void
           </span>
         </button>
       </div>
-      {hasAgent && (
-        <button type="button" className="primary" onClick={() => onOpenAgent(agents[0].id)}>
-          대화 시작하기
-        </button>
-      )}
     </div>
   );
 };

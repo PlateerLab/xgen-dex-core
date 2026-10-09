@@ -4,6 +4,7 @@ import { basename, extname, resolve } from 'node:path';
 import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
+import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
 import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
@@ -40,6 +41,7 @@ import type {
   ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
+  ConversationPage,
   ConversationSnapshot,
   DexProfile,
   HistoryTurn,
@@ -326,6 +328,42 @@ export class DexEngine {
     this.conversationHub?.unwatch(interactionId);
   }
 
+  /**
+   * 호스트가 설정: 대화 **목록**의 소식(새 대화·방금 말한 대화·지운 대화·바뀐 이름·도는 대화).
+   * 무엇을 할지는 @dex/protocol `conversationListChange(kind, data)` 가 정한다(데스크톱과 같다).
+   */
+  onConversationListChange: ((event: ConversationListEvent) => void) | null = null;
+  private conversationList: ConversationsWatch | null = null;
+
+  /**
+   * 대화 목록 소켓을 연다(사용자당 하나). 데스크톱은 메인 프로세스가 같은 것을 직접 열고, CLI·VSCode 는
+   * 이 길로 연다. 이게 없으면 다른 기기에서 만든 대화가 목록을 다시 열 때까지 보이지 않는다.
+   */
+  async watchConversationList(requestedProfile?: string): Promise<void> {
+    const record = await this.authenticatedRecord(requestedProfile);
+    // 다른 프로필로 바뀌었으면 옛 소켓을 닫고 새로 연다(옛 토큰으로 남의 목록을 볼 일은 없지만 소식이 끊긴다).
+    this.conversationList?.stop();
+    this.conversationList = new ConversationsWatch((event) => this.onConversationListChange?.(event));
+    this.conversationList.setDeps({
+      baseUrl: () => record.serverUrl,
+      token: async () => {
+        await this.flush(record);
+        return (
+          record.client.getAccessTokenAfterRotation() ||
+          (await this.credentials.get(record.profile))?.accessToken ||
+          null
+        );
+      },
+      allowPrivateCertificate: () => false,
+    });
+    this.conversationList.start();
+  }
+
+  unwatchConversationList(): void {
+    this.conversationList?.stop();
+    this.conversationList = null;
+  }
+
   // ── SSH ───────────────────────────────────────────────────────────
   //
   // 개인 SSH 서버 목록은 XGEN 계정에 있고 접속은 서버가 연다 — 이 기기에서
@@ -546,6 +584,54 @@ export class DexEngine {
 
   async listConversations(requestedProfile?: string): Promise<Conversation[]> {
     return this.withAuthRetry(requestedProfile, (client) => client.history.conversations());
+  }
+
+  /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(@dex/protocol conversation-list). */
+  async conversationPage(
+    opts: { limit?: number; cursor?: string | null } = {},
+    requestedProfile?: string,
+  ): Promise<ConversationPage> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.conversationPage(opts));
+  }
+
+  /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */
+  async renameConversation(
+    workflowId: string,
+    interactionId: string,
+    title: string,
+    requestedProfile?: string,
+  ): Promise<{ title: string; customTitle: boolean }> {
+    if (!workflowId || !interactionId) {
+      throw new DexError('usage_error', 'workflowId와 interactionId가 필요합니다.');
+    }
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.history.renameConversation(workflowId, interactionId, title),
+    );
+  }
+
+  /** 대화 지우기(비교 채팅의 파생 스레드까지). */
+  async deleteConversation(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+    requestedProfile?: string,
+  ): Promise<void> {
+    if (!workflowId || !interactionId) {
+      throw new DexError('usage_error', 'workflowId와 interactionId가 필요합니다.');
+    }
+    await this.withAuthRetry(requestedProfile, (client) =>
+      client.history.deleteConversation(workflowId, interactionId, workflowName),
+    );
+  }
+
+  /** 에이전트가 사라진 내 대화를 모두 지운다. 지운 수. */
+  async purgeDeletedAgentConversations(requestedProfile?: string): Promise<number> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.purgeDeletedAgentConversations());
+  }
+
+  /** 이 이름의 에이전트가 이미 있는가(시작 화면이 적는 대로 묻는다). */
+  async agentNameTaken(name: string, requestedProfile?: string): Promise<boolean> {
+    return this.withAuthRetry(requestedProfile, (client) => client.agents.nameTaken(name));
   }
 
   async historyTurns(

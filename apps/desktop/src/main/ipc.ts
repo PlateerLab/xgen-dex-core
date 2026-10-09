@@ -37,6 +37,8 @@ export const CHANNELS = {
   agentsList: 'agents:list',
   agentsCreateOptions: 'agents:create-options',
   agentsCreate: 'agents:create',
+  /** 시작 화면의 새 에이전트 이름이 이미 있는가(적는 대로 묻는다). */
+  agentsNameTaken: 'agents:name-taken',
 
   // Voice (STT/TTS) — renderer captures audio, main proxies to the backend
   // (secrets stay server-side). Audio crosses IPC as Uint8Array + mime.
@@ -107,6 +109,11 @@ export const CHANNELS = {
   /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 [진행 중] 복원. */
   historySnapshot: 'history:snapshot',
   historyConversations: 'history:conversations',
+  // 대화 목록(2026-10-09): 마지막으로 말한 순서로 한 쪽씩, 이름 바꾸기·지우기·사라진 에이전트 대화 정리.
+  historyConversationPage: 'history:conversation-page',
+  historyRename: 'history:rename',
+  historyDelete: 'history:delete',
+  historyPurgeDeletedAgents: 'history:purge-deleted-agents',
   // 채팅 공유: 대화를 그 시점까지 얼린 링크. 절대 주소는 main 이 붙인다(렌더러는 서버 주소를 모른다).
   chatShareState: 'chatShare:state',
   chatShareCreate: 'chatShare:create',

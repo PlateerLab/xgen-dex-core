@@ -1445,3 +1445,43 @@ test('끊긴 뒤에도 그 대화는 살아 있다 — 상태 점이 진행 중�
   const base = { error: null, streaming: false, remote: true, updatedAt: 0 } as unknown as SessionState
   assert.equal(sessionDotState(base, CONNECTOR_SESSION_IDLE_MS * 2), 'active')
 })
+
+test('대화 목록에서 연 지워진 에이전트의 대화: 기록만 읽고 대화 소켓·보내기는 없다', async () => {
+  const watched: string[] = []
+  const streams: string[] = []
+  const store = new SessionStore({
+    stream: (req: { interactionId: string }) => {
+      streams.push(req.interactionId)
+      return { cancel: () => undefined }
+    },
+    historyTurns: async () => [{ input: '예전 질문', output: '예전 답' }],
+    watchConversation: (_wf: string, _name: string, iid: string) => watched.push(iid),
+  } as unknown as SessionTransport)
+  const key = store.openResume(agent('gone', '사라진 봇'), 'c-1', '사라진 봇', { title: '예전 질문', agentDeleted: true })
+  await flush()
+  const s = store.get(key)!
+  assert.equal(s.agentDeleted, true)
+  assert.equal(s.title, '예전 질문')
+  assert.deepEqual(watched, [], '새 턴이 생기지 않는 대화에는 소켓을 열지 않는다')
+  assert.equal(s.messages.length, 2, '지난 기록은 보인다')
+  store.send(key, '새 질문')
+  assert.deepEqual(streams, [], '보내기는 스토어에서도 막힌다')
+})
+
+test('대화 목록의 제목·지워짐 표시를 열린 세션에 맞춘다(바뀐 것이 있을 때만 알린다)', async () => {
+  const { store } = makeStore({ 'c-9': [{ input: 'q', output: 'a' }] })
+  store.openResume(agent('A'), 'c-9', 'A')
+  await flush()
+  let emits = 0
+  const off = store.subscribe(() => emits++)
+  store.applyConversationInfo([{ interactionId: 'c-9', title: '보고서 정리' }, { interactionId: 'unknown', title: 'x' }])
+  assert.equal(store.get('c-9')?.title, '보고서 정리')
+  assert.equal(emits, 1)
+  store.applyConversationInfo([{ interactionId: 'c-9', title: '보고서 정리' }])
+  assert.equal(emits, 1, '같은 값이면 알리지 않는다')
+  // 이미 열린 대화를 목록에서 다시 누르면 새로 열지 않고 제목만 맞춘 뒤 앞에 세운다.
+  store.openResume(agent('A'), 'c-9', 'A', { title: '새 이름' })
+  assert.equal(store.get('c-9')?.title, '새 이름')
+  assert.equal(store.activeKey, 'c-9')
+  off()
+})

@@ -1,7 +1,7 @@
 /**
  * ActivityBar — VS Code 식 왼쪽 아이콘 스트립.
  *
- * 위쪽: 사이드바 **뷰**를 고르는 탭들 (Agent / 탐색기 / Teams). 활성 뷰의 아이콘을
+ * 위쪽: 사이드바 **뷰**를 고르는 탭들 (채팅 / 탐색기 / Teams). 활성 뷰의 아이콘을
  * 다시 누르면 사이드바가 접힌다 — VS Code 와 같은 규칙이고, 접힌 상태에서는
  * 어떤 아이콘을 눌러도 그 뷰로 펼쳐진다. 이 토글 판정은 Workspace 가 한다
  * (여기는 "눌렸다"만 알린다).
@@ -43,7 +43,8 @@ import { restoreSideView, type SideView } from './side-view';
 export { restoreSideView, type SideView };
 
 const VIEWS: Array<{ id: SideView; title: string; icon: React.FC<{ size?: number }> }> = [
-  { id: 'agent', title: 'Agent', icon: ChatIcon },
+  // 뷰 id 'agent' 는 저장된 설정(ui.sideView)과 맞추려고 그대로 둔다. 2026-10-09 부터 대화 목록이다.
+  { id: 'agent', title: '채팅', icon: ChatIcon },
   { id: 'explorer', title: '탐색기', icon: FilesIcon },
   { id: 'teams', title: 'Teams', icon: TeamsIcon },
 ];

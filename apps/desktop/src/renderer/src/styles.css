@@ -9556,3 +9556,354 @@ button.sm {
 .share-previous-list button.stop {
   color: var(--error);
 }
+
+/* ─── 대화 목록 (사이드바 [채팅], 2026-10-09) ───
+   ChatGPT·Claude 처럼 대화 단위. 한 줄 = 에이전트 이름(작게)·꼬리표 + 대화 제목. */
+.conv-list-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 6px 8px;
+  flex-shrink: 0;
+}
+.conv-list-head .new-chat-btn.conv-new {
+  flex: 1;
+  width: auto;
+  margin: 0;
+  padding: 9px 12px;
+}
+.conv-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.conv-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  display: flex;
+  flex-direction: column;
+}
+.conv-menu-item {
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.conv-menu-item:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+.conv-menu-item.danger {
+  color: var(--error);
+}
+.conv-menu-item:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.conv-notice {
+  margin: 0 12px 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+}
+.conv-list {
+  gap: 1px;
+}
+.conv-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
+  transition: background-color 0.12s ease;
+}
+.conv-row:hover {
+  background: var(--panel-2);
+}
+.conv-row.active {
+  background: var(--primary-soft);
+}
+.conv-row.editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 7px 10px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--primary-soft-border);
+}
+.conv-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 7px 34px 7px 10px;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+.conv-row-agent {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--muted);
+}
+.conv-row-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conv-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+}
+.conv-tag.deleted {
+  background: var(--error-bg);
+  border-color: transparent;
+  color: var(--error);
+}
+.conv-row-live {
+  margin: 0 0 0 auto;
+}
+.conv-row-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  line-height: 19px;
+}
+.conv-row.active .conv-row-title {
+  font-weight: 600;
+}
+.conv-row-menu {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.conv-row-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+.conv-row:hover .conv-row-more,
+.conv-row:focus-within .conv-row-more,
+.conv-row-more.open {
+  opacity: 1;
+}
+.conv-row-more:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+.conv-rename-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 19px;
+  padding: 0;
+}
+
+/* ─── 시작 화면 ("오늘은 무엇을 해볼까요?") ───
+   채팅 화면과 같은 짜임: 가운데에 제목·에이전트 고르기·새 에이전트 칸, 바닥에 입력창. */
+.start-chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-bg);
+}
+.start-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  align-items: safe center;
+  padding: 40px 28px;
+}
+.start-chat-center {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.start-chat-title {
+  margin: 0 0 6px;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.start-chat-pick .selector,
+.start-chat-selector {
+  width: 100%;
+}
+.start-chat-card {
+  padding: 18px 20px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+}
+.start-chat-card .field {
+  display: block;
+  margin: 0 0 14px;
+}
+.start-chat-card .field > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.start-chat-card .field input,
+.start-chat-card .field select,
+.start-chat-card .field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13.5px;
+  font-family: inherit;
+}
+.start-chat-card .field.invalid input {
+  border-color: var(--error);
+}
+.start-chat-card .field.alert input {
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px var(--error-bg);
+}
+.start-chat-card .field small,
+.start-chat-card .switch-field small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.start-chat-card .field .field-error {
+  color: var(--error);
+}
+.start-chat-card .field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+}
+.start-chat-card .link {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 10px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.start-chat-card .link:hover {
+  color: var(--text);
+}
+.start-chat-card .link-caret {
+  color: var(--muted);
+  font-size: 20px;
+  font-weight: 700;
+}
+.start-chat-card .advanced {
+  margin-top: 12px;
+}
+.start-chat-error {
+  margin: 0;
+  color: var(--error);
+  font-size: 12.5px;
+  text-align: center;
+}
+.start-chat-progress {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+.composer {
+  position: relative;
+}
+.composer.locked {
+  opacity: 0.6;
+}
+.composer-lock {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: none;
+  background: transparent;
+  cursor: not-allowed;
+  border-radius: 14px;
+}
+
+/* 에이전트가 지워진 대화: 기록만 보인다. */
+.chat-deleted-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--error-bg);
+  color: var(--error);
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.chat-readonly-notice {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+}

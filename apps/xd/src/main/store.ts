@@ -35,6 +35,14 @@ export interface XdConversation {
   updatedAt: number;
 }
 
+/**
+ * 대화 목록의 한 줄: 에이전트를 가리지 않는 한 목록(마지막으로 말한 순서)에 쓴다. 에이전트 이름은 줄 위쪽에 작게.
+ * 제목이 빈 대화는 화면이 "새 대화" 로 보인다.
+ */
+export interface XdConversationListItem extends XdConversation {
+  agentName: string;
+}
+
 export interface XdTurn {
   id: string;
   conversationId: string;
@@ -334,6 +342,22 @@ export class Store {
     ).map(toConversation);
   }
 
+  /**
+   * 모든 에이전트의 대화를 한 목록으로. 마지막으로 말한 순서(updated_at), 같은 시각이면 나중에 생긴 대화가 위.
+   * 에이전트 이름을 함께 싣는다. 에이전트를 지우면 그 대화도 함께 지워지므로(ON DELETE CASCADE) 주인 없는 줄은 없다.
+   *
+   * 이 정렬에 맞춘 색인은 따로 두지 않는다. 이 PC 한 사람의 대화라 줄 수가 작아 정렬 비용이 없고, 에이전트별
+   * 목록은 conversations_by_agent 가 받친다.
+   */
+  listAllConversations(limit?: number): XdConversationListItem[] {
+    const sql = `SELECT c.*, a.name AS agent_name FROM conversations c JOIN agents a ON a.id = c.agent_id
+       ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC`;
+    const rows = (
+      limit !== undefined ? this.db.prepare(`${sql} LIMIT ?`).all(Math.max(0, Math.floor(limit))) : this.db.prepare(sql).all()
+    ) as Row[];
+    return rows.map((r) => ({ ...toConversation(r), agentName: String(r.agent_name ?? '') }));
+  }
+
   getConversation(id: string): XdConversation | null {
     const row = this.db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as Row | undefined;
     return row ? toConversation(row) : null;
@@ -350,8 +374,23 @@ export class Store {
     return this.getConversation(id) as XdConversation;
   }
 
-  renameConversation(id: string, title: string): void {
-    this.db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(title, this.now(), id);
+  /**
+   * 대화 이름을 바꾼다. 목록 순서(마지막으로 말한 시각)는 그대로 둔다. 빈 이름이면 붙인 이름을 버리고 첫 질문에서
+   * 다시 정한다(아직 질문이 없으면 빈 제목, 첫 턴이 정한다). 바뀐 대화를 돌려준다(없으면 null).
+   */
+  renameConversation(id: string, title: string): XdConversation | null {
+    const wanted = title.trim();
+    const next = wanted || this.titleFromFirstTurn(id);
+    this.db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(next, id);
+    return this.getConversation(id);
+  }
+
+  /** 첫 턴의 질문으로 정하는 제목(턴이 없으면 빈 글). */
+  private titleFromFirstTurn(conversationId: string): string {
+    const row = this.db
+      .prepare('SELECT question FROM turns WHERE conversation_id = ? ORDER BY seq LIMIT 1')
+      .get(conversationId) as Row | undefined;
+    return row ? titleFrom(String(row.question)) : '';
   }
 
   deleteConversation(id: string): void {

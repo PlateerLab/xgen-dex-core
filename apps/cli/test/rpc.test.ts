@@ -300,3 +300,62 @@ test('conversation/model 은 지금 모델을 맨 앞에 두고 바꾸고 되돌
     );
   }
 });
+
+/** 대화 목록(2026-10-09): `dex serve --stdio` 를 쓰는 VS Code 확장이 같은 목록을 그린다. */
+test('history/conversationPage · rename · delete · purgeDeletedAgents 와 agents/nameTaken', async () => {
+  const mock = await startMockXgen();
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const engine = new DexEngine(new MemoryConfigStore(), new MemoryCredentialStore());
+  const rpc = new DexRpcServer(engine, { input, output, log: () => {} });
+  try {
+    await engine.setProfile('corp', mock.baseUrl);
+    await engine.useProfile('corp');
+    await engine.login('me@corp.com', 'pw123');
+    const collector = collectLines(output);
+    rpc.start();
+    const call = async (id: number, method: string, params: Record<string, unknown>): Promise<RpcMessage> => {
+      input.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      return collector.waitFor((message) => message.id === id);
+    };
+    const initialized = await call(1, 'initialize', { protocolVersion: 1 });
+    const capabilities = initialized.result?.capabilities as Record<string, unknown>;
+    assert.equal(capabilities.conversationList, true);
+    assert.equal(capabilities.agentCreate, true);
+
+    const page = await call(2, 'history/conversationPage', { limit: 40 });
+    const rows = page.result?.conversations as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      rows.map((row) => [row.title, row.tag, row.agentDeleted]),
+      [
+        ['hello', null, false],
+        ['지난 회의 정리', 'teams', true],
+      ],
+    );
+    assert.equal(page.result?.agentDeletedCount, 1);
+
+    const renamed = await call(3, 'history/rename', {
+      workflowId: 'wf_abc',
+      interactionId: 'interaction-1',
+      title: '분기 보고',
+    });
+    assert.deepEqual(renamed.result, { title: '분기 보고', customTitle: true });
+
+    assert.deepEqual((await call(4, 'agents/nameTaken', { name: 'Sales Agent' })).result, { taken: true });
+    assert.deepEqual((await call(5, 'agents/nameTaken', { name: '새 도우미' })).result, { taken: false });
+
+    assert.deepEqual((await call(6, 'history/purgeDeletedAgents', {})).result, { deleted: 1 });
+    assert.deepEqual(
+      (await call(7, 'history/delete', { workflowId: 'wf_abc', interactionId: 'interaction-1' })).result,
+      { ok: true },
+    );
+    assert.deepEqual(mock.conversations, []);
+  } finally {
+    rpc.close();
+    input.destroy();
+    output.destroy();
+    await new Promise<void>((resolve, reject) =>
+      mock.server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});

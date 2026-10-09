@@ -9,7 +9,9 @@
  *   원문은 [자세히] 로 접어 둔다.
  * · 스크롤: 새 글이 올 때마다 바닥으로 끌어내리지 않는다. 위를 읽는 중이면
  *   그 자리에 두고 [새 메시지] 단추를 띄운다 — 스트리밍 중에 옛 답을 읽을 수 있다.
- * · 대화 이동: 채팅 안에서 같은 에이전트의 다른 대화로 건너뛰고, 새 대화를 연다.
+ * · 대화 이동: 머리의 제목을 누르면 대화 목록으로, [새 대화] 는 시작 화면으로 간다(2026-10-09 대화 목록).
+ *   시작 화면에서 적은 첫 메시지는 소켓이 처음 붙을 때 한 번만 보낸다(initial-message).
+ * · 에이전트가 사라진 대화: 지난 기록만 보여 주고 입력창을 두지 않는다.
  * · 첨부: 파일뿐 아니라 사진·카메라. 폰에서 가장 많이 붙이는 것이 사진이다.
  *
  * 전송·재연결·다른 기기 턴의 규칙은 예전 그대로다(chat-ws). 화면만 바뀐다.
@@ -35,8 +37,16 @@ import * as FileSystem from 'expo-file-system';
 import { attachmentName, base64Bytes, imageMime } from '../lib/attachment-file';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import type { Agent, Conversation, HistoryFlowItem, ToolEvent } from '@dex/protocol';
-import { CHAT_SHARE_TEXT, chatAnswerFiles, describeError, describeStreamError, requestBefore, turnEventToChatEvent } from '@dex/protocol';
+import type { Agent, HistoryFlowItem, ToolEvent } from '@dex/protocol';
+import {
+  CHAT_SHARE_TEXT,
+  UNTITLED_CONVERSATION,
+  chatAnswerFiles,
+  describeError,
+  describeStreamError,
+  requestBefore,
+  turnEventToChatEvent,
+} from '@dex/protocol';
 import { Ionicons } from '@expo/vector-icons';
 import { FilePreviewScreen, type PreviewFile } from '../files/file-preview';
 import {
@@ -50,8 +60,10 @@ import { cachedDeviceId } from '../lib/device';
 import { diagLog } from '../lib/diag';
 import { friendlyError } from '../lib/errors';
 import { wsBaseOf, type XgenMobileClient } from '../lib/xgen';
-import { TAP, alpha, useP } from '../theme';
+import { TAP, useP } from '../theme';
 import { notifyAnswer } from './answer-notice';
+import { initialMessageGate, type InitialMessage } from './initial-message';
+import { CONVERSATION_TEXT } from '../conversations/conversation-model';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
 import { AgentDetail } from '../agents/agent-detail';
@@ -114,17 +126,30 @@ export function ChatView({
   client,
   agent,
   interactionId,
+  title,
+  readOnly = false,
+  initialMessage,
+  onInitialMessageSent,
   onWsState,
-  onPickAgent,
-  onOpenChat,
+  onNewChat,
+  onOpenList,
 }: {
   client: XgenMobileClient;
   agent: Agent | null;
   interactionId: string;
+  /** 머리에 보일 대화 제목(목록에서 열었을 때). 없으면 첫 메시지, 그것도 없으면 "새 대화". */
+  title?: string;
+  /** 에이전트가 사라진 대화: 지난 기록만 보여 주고 입력창을 두지 않는다(소켓도 붙지 않는다). */
+  readOnly?: boolean;
+  /** 시작 화면에서 적은 첫 메시지. 이 대화의 소켓이 처음 붙을 때 한 번만 보낸다. */
+  initialMessage?: InitialMessage | null;
+  /** 첫 메시지를 꺼냈다(보냈거나, 보낼 수 없어 입력창에 옮겼다). */
+  onInitialMessageSent?: (id: string) => void;
   onWsState: (s: ChatWsState) => void;
-  onPickAgent: () => void;
-  /** 같은 에이전트의 다른 대화로 옮겨 간다(대화 id 를 비우면 새 대화). */
-  onOpenChat: (agent: Agent, interactionId?: string) => void;
+  /** 시작 화면으로 간다. 에이전트를 주면 그 에이전트를 골라 둔다. */
+  onNewChat: (agent?: Agent) => void;
+  /** 대화 목록으로 간다. */
+  onOpenList: () => void;
 }): React.ReactElement {
   const p = useP();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -143,20 +168,19 @@ export function ChatView({
   /** 폰 안에서 여는 파일 한 장(첨부·답이 만든 파일·답에 딸린 결과물). */
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const openFile = useCallback((file: PreviewFile) => setPreviewFile(file), []);
-  const [convSheet, setConvSheet] = useState(false);
   /** 에이전트 상세 — 데스크톱·웹 채팅 머리의 [상세] 와 같은 자리. */
   const [detailOpen, setDetailOpen] = useState(false);
   // 이 대화에 연결된 휴대폰 폴더 — 에이전트의 파일 도구가 닿는 범위.
   const folders = useChatFolders(interactionId);
   const folderRemote = useChatFolderRemote(interactionId);
   // 이 대화의 모델 — 입력창 위 칩과 아래에서 올라오는 목록(다음 답변부터, 세션 재시작 없음).
-  const model = useConversationModel(client, agent?.workflowId ?? '', interactionId);
+  // 에이전트가 사라진 대화는 모델을 묻지 않는다(바꿀 수도 없다).
+  const model = useConversationModel(client, readOnly ? '' : (agent?.workflowId ?? ''), interactionId);
   const [modelSheet, setModelSheet] = useState(false);
   const [thinkingSheet, setThinkingSheet] = useState(false);
   const [folderSheet, setFolderSheet] = useState(false);
   /** [공유] 시트: 지금까지의 대화를 링크로. */
   const [shareSheet, setShareSheet] = useState(false);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [wsState, setWsState] = useState<ChatWsState>('closed');
   const [running, setRunningState] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
@@ -186,6 +210,20 @@ export function ChatView({
   /** 사용자가 [정지] 를 눌렀다 — 끝난 뒤 그 사실을 답변에 남긴다. */
   const stoppedRef = useRef(false);
   const chatRef = useRef<ChatWsHandle | null>(null);
+  /**
+   * 시작 화면의 첫 메시지를 건네는 자리. 소켓 콜백은 붙을 때의 렌더를 들고 있어, 지금 렌더의 대화·보내기를
+   * 쓰도록 ref 로 건넨다(내용은 보내기 아래에서 채운다).
+   */
+  const initialRef = useRef(initialMessage);
+  initialRef.current = initialMessage;
+  const initialSentRef = useRef(onInitialMessageSent);
+  initialSentRef.current = onInitialMessageSent;
+  const deliverInitialRef = useRef<(s: ChatWsState) => void>(() => undefined);
+  /**
+   * 이 대화의 이력을 다 읽었다. 첫 메시지는 이력 뒤에 보낸다: 이력이 늦게 오면 그 응답의 [진행 중] 이 방금 보낸
+   * 내 턴을 다른 화면의 턴으로 잘못 읽는다(답이 두 번 그려진다).
+   */
+  const historyReadyRef = useRef(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const atBottomRef = useRef(true);
 
@@ -209,6 +247,7 @@ export function ChatView({
     setAttachmentStatus('');
     setUnseen(0);
     setLoadingHistory(true);
+    historyReadyRef.current = false;
     atBottomRef.current = true;
     setAtBottom(true);
     void client.api.history
@@ -227,7 +266,11 @@ export function ChatView({
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setLoadingHistory(false);
+        if (cancelled) return;
+        setLoadingHistory(false);
+        historyReadyRef.current = true;
+        // 소켓이 이력보다 먼저 붙었으면 기다리던 첫 메시지를 지금 보낸다.
+        if (chatRef.current?.state() === 'connected') deliverInitialRef.current('connected');
       });
     return () => {
       cancelled = true;
@@ -237,6 +280,11 @@ export function ChatView({
   // ── 소켓 ───────────────────────────────────────────────────
   useEffect(() => {
     if (!agent) return;
+    if (readOnly) {
+      // 에이전트가 사라진 대화: 이어 갈 수 없으니 붙지 않는다. 앞 대화의 [연결됨] 도 들고 오지 않는다.
+      setWsState('closed');
+      return;
+    }
     const seenExternalIo = new Set<number>();
     /**
      * 완결 행이 실어 온 작업 과정(실행 id 별). 행이 종료 프레임보다 먼저 오는데, 그 순간 이 폰이 그 턴을 다른
@@ -272,7 +320,16 @@ export function ChatView({
       workflowName: agent.workflowName || agent.workflowId,
       interactionId,
       clientDeviceId: cachedDeviceId() || undefined,
-      onState: setWsState,
+      onState: (s) => {
+        setWsState(s);
+        // 시작 화면의 첫 메시지: 붙은 순간(또는 붙을 수 없다고 알게 된 순간) 한 번. 한 박자 뒤에 본다:
+        // 같은 구독 응답이 실어 온 [진행 중] 이 먼저 반영된다.
+        if (s === 'connected' || s === 'unsupported' || s === 'failed') {
+          setTimeout(() => {
+            if (alive) deliverInitialRef.current(s);
+          }, 0);
+        }
+      },
       wsFactory: client.wsFactory,
       log: diagLog,
       // 이 대화의 폴더가 다른 기기로 옮겨 가거나 그 기기가 바뀌었다.
@@ -436,7 +493,7 @@ export function ChatView({
       appState.remove();
       handle.close();
     };
-  }, [client, agent, interactionId, setRunning]);
+  }, [client, agent, interactionId, readOnly, setRunning]);
 
   // ── 스크롤 — 따라갈 때만 따라간다 ───────────────────────────
   //
@@ -471,13 +528,9 @@ export function ChatView({
   }, []);
 
   // ── 보내기 ─────────────────────────────────────────────────
-  const send = useCallback(async (): Promise<void> => {
-    const text = input.trim();
-    if ((!text && attachments.length === 0) || running || uploadBusy.current || !chatRef.current) return;
-    const sending = [...attachments];
-    setInput('');
-    setAttachments([]);
-    setAttachmentStatus('');
+  /** 한 턴을 보낸다. 입력창에서도, 시작 화면의 첫 메시지에서도 이 길 하나로. */
+  const sendText = useCallback(async (text: string, sending: MobileChatAttachment[]): Promise<void> => {
+    if ((!text && sending.length === 0) || runningRef.current || uploadBusy.current || !chatRef.current) return;
     setRunning(true);
     stoppedRef.current = false;
     jumpToBottom();
@@ -500,7 +553,33 @@ export function ChatView({
       setAttachments((current) => [...sending, ...current]);
       setMessages((prev) => setError(prev, describeError(e)));
     }
-  }, [attachments, input, interactionId, jumpToBottom, running, setRunning]);
+  }, [interactionId, jumpToBottom, setRunning]);
+
+  const send = useCallback(async (): Promise<void> => {
+    const text = input.trim();
+    if ((!text && attachments.length === 0) || running || uploadBusy.current || !chatRef.current) return;
+    const sending = [...attachments];
+    setInput('');
+    setAttachments([]);
+    setAttachmentStatus('');
+    await sendText(text, sending);
+  }, [attachments, input, running, sendText]);
+
+  // ── 시작 화면의 첫 메시지 ──────────────────────────────────
+  deliverInitialRef.current = (s: ChatWsState): void => {
+    if (!agent || readOnly) return;
+    // 붙었지만 이력이 아직이면 기다린다(이력을 다 읽으면 다시 부른다).
+    if (s === 'connected' && !historyReadyRef.current) return;
+    const msg = initialMessageGate.take(initialRef.current, agent.workflowId, interactionId);
+    if (!msg) return;
+    initialSentRef.current?.(msg.id);
+    if (s === 'connected' && !runningRef.current && !uploadBusy.current && chatRef.current) {
+      void sendText(msg.text.trim(), []);
+      return;
+    }
+    // 지금 보낼 수 없다(이 에이전트는 모바일 채팅을 못 하거나 연결이 끊겼다). 적은 글은 입력창에 남긴다.
+    setInput((cur) => (cur.trim() ? cur : msg.text));
+  };
 
   const stop = useCallback(() => {
     stoppedRef.current = true;
@@ -630,14 +709,14 @@ export function ChatView({
     ]);
   }, [uploadPicked]);
 
-  // ── 대화 이동 ──────────────────────────────────────────────
-  const openConversations = useCallback(() => {
-    setConvSheet(true);
-    void client.api.history
-      .conversations()
-      .then((all) => setConversations(all.filter((c) => c.workflowId === agent?.workflowId)))
-      .catch(() => setConversations([]));
-  }, [client, agent]);
+  // ── 대화 머리의 제목 ───────────────────────────────────────
+  // 목록에서 열었으면 그 제목, 새 대화면 첫 메시지 한 줄(서버도 그것을 제목으로 삼는다), 둘 다 없으면 "새 대화".
+  const headTitle = useMemo(() => {
+    const given = title?.trim();
+    if (given) return given;
+    const first = messages.find((m) => m.role === 'user' && m.text.trim());
+    return first ? first.text.replace(/\s+/g, ' ').trim() : UNTITLED_CONVERSATION;
+  }, [title, messages]);
 
   if (!agent) {
     return (
@@ -645,15 +724,19 @@ export function ChatView({
         <Text style={{ color: p.text, fontSize: 17, fontWeight: '800', textAlign: 'center' }}>
           진행 중인 대화가 없습니다
         </Text>
-        <Text style={{ color: p.muted, fontSize: 14, textAlign: 'center' }}>
-          에이전트를 선택해 대화를 시작하세요.
-        </Text>
         <Pressable
-          onPress={onPickAgent}
+          onPress={() => onNewChat()}
           accessibilityRole="button"
           style={{ backgroundColor: p.primary, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 20, marginTop: 6 }}
         >
-          <Text style={{ color: p.onPrimary, fontSize: 15, fontWeight: '700' }}>에이전트 목록 열기</Text>
+          <Text style={{ color: p.onPrimary, fontSize: 15, fontWeight: '700' }}>새 채팅</Text>
+        </Pressable>
+        <Pressable
+          onPress={onOpenList}
+          accessibilityRole="button"
+          style={{ backgroundColor: p.panel2, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 20 }}
+        >
+          <Text style={{ color: p.text, fontSize: 15, fontWeight: '700' }}>채팅 목록</Text>
         </Pressable>
       </View>
     );
@@ -686,29 +769,33 @@ export function ChatView({
           backgroundColor: p.panel,
         }}
       >
+        {/* 제목: 누르면 대화 목록으로 돌아간다. */}
         <Pressable
-          onPress={openConversations}
+          onPress={onOpenList}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel="이 에이전트의 대화 목록"
+          accessibilityLabel="채팅 목록"
           style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1, minWidth: 0, minHeight: 32 }}
         >
-          <Text numberOfLines={1} style={{ color: p.muted, fontSize: 12.5, flexShrink: 1 }}>
-            대화 · {interactionId.slice(-6)}
+          <Ionicons name="chevron-back" size={16} color={p.muted} />
+          <Text numberOfLines={1} style={{ color: p.text, fontSize: 13, fontWeight: '700', flexShrink: 1 }}>
+            {headTitle}
           </Text>
-          <Text style={{ color: p.muted, fontSize: 11 }}>▾</Text>
         </Pressable>
-        <FolderPill
-          count={
-            folderRemote.elsewhere
-              ? (folderRemote.state?.folders.length ?? 0)
-              : folders.length + folderRemote.others.reduce((n, other) => n + other.folders.length, 0)
-          }
-          elsewhereName={folderRemote.elsewhere ? folderRemote.state?.device?.name : undefined}
-          onPress={() => setFolderSheet(true)}
-        />
+        {!readOnly && (
+          <FolderPill
+            count={
+              folderRemote.elsewhere
+                ? (folderRemote.state?.folders.length ?? 0)
+                : folders.length + folderRemote.others.reduce((n, other) => n + other.folders.length, 0)
+            }
+            elsewhereName={folderRemote.elsewhere ? folderRemote.state?.device?.name : undefined}
+            onPress={() => setFolderSheet(true)}
+          />
+        )}
+        {/* [새 대화]: 시작 화면으로. 이 에이전트를 골라 둔다(사라진 에이전트면 고르지 않는다). */}
         <Pressable
-          onPress={() => onOpenChat(agent)}
+          onPress={() => onNewChat(readOnly ? undefined : agent)}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="새 대화 시작"
@@ -716,25 +803,29 @@ export function ChatView({
         >
           <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>새 대화</Text>
         </Pressable>
-        <Pressable
-          onPress={() => setDetailOpen(true)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="에이전트 상세"
-          style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: p.panel2 }}
-        >
-          <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>상세</Text>
-        </Pressable>
+        {!readOnly && (
+          <Pressable
+            onPress={() => setDetailOpen(true)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="에이전트 상세"
+            style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: p.panel2 }}
+          >
+            <Text style={{ color: p.text, fontSize: 12, fontWeight: '700' }}>상세</Text>
+          </Pressable>
+        )}
         {/* [공유]: 지금까지 끝난 대화를 이 시점 그대로 링크로(데스크톱·웹 머리줄의 공유 아이콘과 같다). */}
-        <Pressable
-          onPress={() => setShareSheet(true)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={CHAT_SHARE_TEXT.buttonTitle}
-          style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: p.panel2 }}
-        >
-          <Ionicons name="share-outline" size={16} color={p.text} />
-        </Pressable>
+        {!readOnly && (
+          <Pressable
+            onPress={() => setShareSheet(true)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={CHAT_SHARE_TEXT.buttonTitle}
+            style={{ paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: p.panel2 }}
+          >
+            <Ionicons name="share-outline" size={16} color={p.text} />
+          </Pressable>
+        )}
       </View>
 
       {loadingHistory && messages.length === 0 ? (
@@ -819,132 +910,147 @@ export function ChatView({
         </Pressable>
       )}
 
-      {/* 작성기 */}
-      <View
-        style={{
-          backgroundColor: p.panel,
-          borderTopWidth: 1,
-          borderTopColor: p.border,
-          padding: 8,
-          paddingBottom: 14,
-        }}
-      >
-        {/* 모델 칩, 그 오른쪽이 생각 칩 — 둘 다 이 대화에만 붙는다. */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: model.state.supported ? 6 : 0, maxWidth: '100%' }}>
-          <ModelChip state={model.state} saving={model.saving} onPress={() => setModelSheet(true)} />
-          <ThinkingChip state={model.state} saving={model.saving} onPress={() => setThinkingSheet(true)} />
-        </View>
-        {attachments.length > 0 && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
-            {attachments.map((item) => (
-              <Pressable
-                key={item.attachment_id}
-                accessibilityRole="button"
-                accessibilityLabel={`${item.name} 첨부 빼기`}
-                onPress={() =>
-                  setAttachments((current) => current.filter((a) => a.attachment_id !== item.attachment_id))
-                }
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
-                  backgroundColor: p.panel2,
-                  borderWidth: 1,
-                  borderColor: p.border,
-                  borderRadius: 999,
-                  paddingHorizontal: 10,
-                  paddingVertical: 6,
-                  maxWidth: 220,
-                }}
-              >
-                <Text style={{ fontSize: 12 }}>{item.kind === 'image' ? '🖼' : '📎'}</Text>
-                <Text numberOfLines={1} style={{ color: p.text, fontSize: 12, flexShrink: 1 }}>
-                  {item.name}
-                </Text>
-                <Text style={{ color: p.muted, fontSize: 12 }}>✕</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        )}
-        {!!attachmentStatus && (
-          <Text style={{ color: p.muted, fontSize: 12, marginBottom: 5 }}>{attachmentStatus}</Text>
-        )}
+      {/* 작성기. 에이전트가 사라진 대화는 지난 기록만 본다. */}
+      {readOnly ? (
         <View
           style={{
-            flexDirection: 'row',
-            alignItems: 'flex-end',
-            gap: 6,
-            backgroundColor: p.panel2,
-            borderWidth: 1,
-            borderColor: p.border,
-            borderRadius: 22,
-            paddingLeft: 6,
-            paddingRight: 6,
-            paddingVertical: 6,
+            backgroundColor: p.panel,
+            borderTopWidth: 1,
+            borderTopColor: p.border,
+            paddingHorizontal: 16,
+            paddingVertical: 14,
+            paddingBottom: 18,
           }}
         >
-          <Pressable
-            onPress={() => setAttachMenu(true)}
-            disabled={running || uploading}
-            hitSlop={6}
-            accessibilityRole="button"
-            accessibilityLabel="첨부"
+          <Text style={{ color: p.muted, fontSize: 13.5, textAlign: 'center' }}>{CONVERSATION_TEXT.deletedAgentNotice}</Text>
+        </View>
+      ) : (
+        <View
+          style={{
+            backgroundColor: p.panel,
+            borderTopWidth: 1,
+            borderTopColor: p.border,
+            padding: 8,
+            paddingBottom: 14,
+          }}
+        >
+          {/* 모델 칩, 그 오른쪽이 생각 칩. 둘 다 이 대화에만 붙는다. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: model.state.supported ? 6 : 0, maxWidth: '100%' }}>
+            <ModelChip state={model.state} saving={model.saving} onPress={() => setModelSheet(true)} />
+            <ThinkingChip state={model.state} saving={model.saving} onPress={() => setThinkingSheet(true)} />
+          </View>
+          {attachments.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
+              {attachments.map((item) => (
+                <Pressable
+                  key={item.attachment_id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.name} 첨부 빼기`}
+                  onPress={() =>
+                    setAttachments((current) => current.filter((a) => a.attachment_id !== item.attachment_id))
+                  }
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                    backgroundColor: p.panel2,
+                    borderWidth: 1,
+                    borderColor: p.border,
+                    borderRadius: 999,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    maxWidth: 220,
+                  }}
+                >
+                  <Text style={{ fontSize: 12 }}>{item.kind === 'image' ? '🖼' : '📎'}</Text>
+                  <Text numberOfLines={1} style={{ color: p.text, fontSize: 12, flexShrink: 1 }}>
+                    {item.name}
+                  </Text>
+                  <Text style={{ color: p.muted, fontSize: 12 }}>✕</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          {!!attachmentStatus && (
+            <Text style={{ color: p.muted, fontSize: 12, marginBottom: 5 }}>{attachmentStatus}</Text>
+          )}
+          <View
             style={{
-              width: TAP - 6,
-              height: TAP - 6,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: running || uploading ? 0.4 : 1,
+              flexDirection: 'row',
+              alignItems: 'flex-end',
+              gap: 6,
+              backgroundColor: p.panel2,
+              borderWidth: 1,
+              borderColor: p.border,
+              borderRadius: 22,
+              paddingLeft: 6,
+              paddingRight: 6,
+              paddingVertical: 6,
             }}
           >
-            {uploading ? <ActivityIndicator color={p.muted} /> : <Text style={{ fontSize: 18 }}>＋</Text>}
-          </Pressable>
-          <TextInput
-            style={{ flex: 1, color: p.text, fontSize: 15.5, maxHeight: 140, paddingVertical: 8 }}
-            value={input}
-            onChangeText={setInput}
-            placeholder={placeholder}
-            placeholderTextColor={p.muted}
-            multiline
-            accessibilityLabel="메시지 입력"
-          />
-          {running ? (
             <Pressable
-              onPress={stop}
+              onPress={() => setAttachMenu(true)}
+              disabled={running || uploading}
+              hitSlop={6}
               accessibilityRole="button"
-              accessibilityLabel="정지"
+              accessibilityLabel="첨부"
               style={{
-                width: 38,
-                height: 38,
-                borderRadius: 19,
-                backgroundColor: p.danger,
+                width: TAP - 6,
+                height: TAP - 6,
                 alignItems: 'center',
                 justifyContent: 'center',
+                opacity: running || uploading ? 0.4 : 1,
               }}
             >
-              <View style={{ width: 12, height: 12, borderRadius: 2, backgroundColor: '#fff' }} />
+              {uploading ? <ActivityIndicator color={p.muted} /> : <Text style={{ fontSize: 18 }}>＋</Text>}
             </Pressable>
-          ) : (
-            <Pressable
-              onPress={() => void send()}
-              disabled={!canSend}
-              accessibilityRole="button"
-              accessibilityLabel="보내기"
-              style={{
-                width: 38,
-                height: 38,
-                borderRadius: 19,
-                backgroundColor: p.primary,
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: canSend ? 1 : 0.35,
-              }}
-            >
-              <Text style={{ color: p.onPrimary, fontSize: 16, fontWeight: '900', marginLeft: 2 }}>➤</Text>
-            </Pressable>
-          )}
+            <TextInput
+              style={{ flex: 1, color: p.text, fontSize: 15.5, maxHeight: 140, paddingVertical: 8 }}
+              value={input}
+              onChangeText={setInput}
+              placeholder={placeholder}
+              placeholderTextColor={p.muted}
+              multiline
+              accessibilityLabel="메시지 입력"
+            />
+            {running ? (
+              <Pressable
+                onPress={stop}
+                accessibilityRole="button"
+                accessibilityLabel="정지"
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  backgroundColor: p.danger,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <View style={{ width: 12, height: 12, borderRadius: 2, backgroundColor: '#fff' }} />
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={() => void send()}
+                disabled={!canSend}
+                accessibilityRole="button"
+                accessibilityLabel="보내기"
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  backgroundColor: p.primary,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: canSend ? 1 : 0.35,
+                }}
+              >
+                <Text style={{ color: p.onPrimary, fontSize: 16, fontWeight: '900', marginLeft: 2 }}>➤</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
-      </View>
+      )}
 
       {/* 첨부 고르기 */}
       <Modal visible={attachMenu} transparent animationType="fade" onRequestClose={() => setAttachMenu(false)}>
@@ -992,86 +1098,16 @@ export function ChatView({
 
       <FilePreviewScreen client={client} workflowId={agent.workflowId} file={previewFile} onClose={() => setPreviewFile(null)} />
 
-      {/* 이 에이전트의 대화들 */}
+      {/* 에이전트 상세: [대화 시작] 은 이 에이전트를 골라 둔 시작 화면으로. */}
       <AgentDetail
         client={client}
         agent={detailOpen ? agent : null}
         onClose={() => setDetailOpen(false)}
         onOpenChat={(a) => {
           setDetailOpen(false);
-          onOpenChat(a);
+          onNewChat(a);
         }}
       />
-      <Modal visible={convSheet} transparent animationType="slide" onRequestClose={() => setConvSheet(false)}>
-        <Pressable
-          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
-          accessibilityLabel="닫기"
-          onPress={() => setConvSheet(false)}
-        />
-        <View
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            maxHeight: '70%',
-            backgroundColor: p.panel,
-            borderTopLeftRadius: 18,
-            borderTopRightRadius: 18,
-            borderWidth: 1,
-            borderColor: p.border,
-            padding: 16,
-            paddingBottom: 28,
-          }}
-        >
-          <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: p.border, alignSelf: 'center', marginBottom: 10 }} />
-          <Text style={{ color: p.text, fontSize: 16, fontWeight: '800', marginBottom: 8 }}>
-            {agent.workflowName || agent.workflowId}
-          </Text>
-          <ScrollView>
-            {conversations.length === 0 ? (
-              <Text style={{ color: p.muted, fontSize: 13, paddingVertical: 16, textAlign: 'center' }}>
-                다른 대화가 없습니다.
-              </Text>
-            ) : (
-              conversations.map((c) => {
-                const current = c.interactionId === interactionId;
-                return (
-                  <Pressable
-                    key={c.interactionId}
-                    onPress={() => {
-                      setConvSheet(false);
-                      if (!current) onOpenChat(agent, c.interactionId);
-                    }}
-                    accessibilityRole="button"
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 10,
-                      paddingVertical: 13,
-                      borderBottomWidth: 1,
-                      borderBottomColor: p.border,
-                      backgroundColor: current ? alpha(p.primary, 12) : undefined,
-                      borderRadius: current ? 10 : 0,
-                      paddingHorizontal: current ? 8 : 0,
-                    }}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: current ? p.primary : p.text, fontSize: 14, fontWeight: '700' }}>
-                        {formatWhen(c.updatedAt) || '대화'}
-                        {current ? ' · 지금 보는 대화' : ''}
-                      </Text>
-                      <Text style={{ color: p.muted, fontSize: 12 }}>메시지 {c.interactionCount}개</Text>
-                    </View>
-                    <Text style={{ color: p.muted, fontSize: 18 }}>›</Text>
-                  </Pressable>
-                );
-              })
-            )}
-          </ScrollView>
-        </View>
-      </Modal>
-
       <FolderSheet interactionId={interactionId} visible={folderSheet} onClose={() => setFolderSheet(false)} />
       <ChatShareSheet
         client={client}
@@ -1110,15 +1146,4 @@ export function ChatView({
       )}
     </KeyboardAvoidingView>
   );
-}
-
-/** 오늘이면 시:분, 아니면 월/일 시:분. */
-export function formatWhen(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const now = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
 }

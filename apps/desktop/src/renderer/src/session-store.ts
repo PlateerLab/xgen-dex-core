@@ -453,6 +453,23 @@ export interface SessionState {
   unseen: boolean;
   createdAt: number;
   updatedAt: number;
+  /**
+   * 대화 제목: 대화 목록이 알려 준 것(붙인 이름, 없으면 첫 메시지 한 줄). 모르면 비어 있고,
+   * 탭은 첫 질문으로 이름을 짓는다(tab-model tabTitle).
+   */
+  title?: string;
+  /**
+   * 에이전트가 지워진 대화. 이어 갈 수 없어 같은 채팅 화면에서 지난 기록만 보인다
+   * (작성기 대신 안내, 보내기·대화 소켓 없음).
+   */
+  agentDeleted?: boolean;
+}
+
+/** 대화 목록이 알려 주는 대화의 사실. 열린 세션의 제목·지워짐 표시를 맞춘다. */
+export interface ConversationInfo {
+  interactionId: string;
+  title?: string;
+  agentDeleted?: boolean;
 }
 
 /**
@@ -769,14 +786,33 @@ export class SessionStore {
    * Reopen a past conversation (이어보기). If it is already open we simply focus
    * it — keeping any in-flight stream — otherwise we create it and load history.
    */
-  openResume(agent: Agent, interactionId: string, workflowName?: string): string {
+  openResume(agent: Agent, interactionId: string, workflowName?: string, info?: Omit<ConversationInfo, 'interactionId'>): string {
     if (this.map.has(interactionId)) {
+      if (info) this.applyConversationInfo([{ interactionId, ...info }]);
       this.setActive(interactionId);
       return interactionId;
     }
     this.gcActiveIfEmpty();
-    this.spawnResume(agent, interactionId, workflowName, true);
+    this.spawnResume(agent, interactionId, workflowName, true, info);
     return interactionId;
+  }
+
+  /**
+   * 대화 목록이 알려 준 제목·지워짐 표시를 열린 세션에 맞춘다. 바뀐 것이 있을 때만 알린다.
+   * 다른 곳에서 이름을 바꾸거나, 앱을 다시 켜 되살린 탭이 제목을 모를 때 쓴다.
+   */
+  applyConversationInfo(list: readonly ConversationInfo[]): void {
+    let changed = false;
+    for (const info of list) {
+      const s = this.map.get(info.interactionId);
+      if (!s) continue;
+      const title = info.title !== undefined ? info.title : s.title;
+      const agentDeleted = info.agentDeleted !== undefined ? info.agentDeleted : s.agentDeleted;
+      if (title === s.title && agentDeleted === s.agentDeleted) continue;
+      this.map.set(s.key, { ...s, title, agentDeleted });
+      changed = true;
+    }
+    if (changed) this.emit();
   }
 
   /**
@@ -819,6 +855,7 @@ export class SessionStore {
     interactionId: string,
     workflowName: string | undefined,
     focus: boolean,
+    info?: Omit<ConversationInfo, 'interactionId'>,
   ): void {
     const t = this.now();
     this.map.set(interactionId, {
@@ -835,6 +872,8 @@ export class SessionStore {
       unseen: false,
       createdAt: t,
       updatedAt: t,
+      ...(info?.title !== undefined ? { title: info.title } : {}),
+      ...(info?.agentDeleted ? { agentDeleted: true } : {}),
     });
     this.rt.set(interactionId, {
       cancel: null,
@@ -843,11 +882,14 @@ export class SessionStore {
       citations: [],
       historyImageUrls: new Set(),
     });
-    this.transport.watchConversation?.(
-      agent.workflowId,
-      workflowName || agent.workflowName || agent.workflowId,
-      interactionId,
-    );
+    // 에이전트가 지워진 대화에는 새 턴이 생기지 않는다. 대화 소켓을 열지 않는다.
+    if (!info?.agentDeleted) {
+      this.transport.watchConversation?.(
+        agent.workflowId,
+        workflowName || agent.workflowName || agent.workflowId,
+        interactionId,
+      );
+    }
     if (focus) {
       this._active = interactionId;
       this.emit();
@@ -1054,7 +1096,8 @@ export class SessionStore {
     );
     // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
     // 두 실행이 겹치고, 두 답이 서로를 덮어쓴다. 멈추려면 [정지] 를 눌러야 한다.
-    if (!s || !rt || rt.stopping || s.streaming || s.remote || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
+    // s.agentDeleted: 에이전트가 지워진 대화는 기록만 본다(작성기도 없지만 스토어도 막는다).
+    if (!s || !rt || rt.stopping || s.streaming || s.remote || s.agentDeleted || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
     const turnToken = {};
     rt.turnToken = turnToken;
     rt.tools = [];

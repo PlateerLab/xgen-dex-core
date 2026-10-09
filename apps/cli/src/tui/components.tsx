@@ -59,6 +59,54 @@ export function Notice({ children, error = false }: { children: ReactNode; error
   );
 }
 
+/**
+ * 메시지 입력창. 대화창과 시작 화면이 같은 것을 쓴다.
+ *
+ * `locked` 는 아직 보낼 수 없다는 표시다(시작 화면에서 새 에이전트의 이름이 없거나 겹칠 때).
+ * 글은 칠 수 있게 두고 보내기만 막는다. 무엇이 모자란지는 부르는 쪽이 알린다.
+ */
+export function Composer(props: {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (value: string) => void;
+  focused: boolean;
+  disabled: boolean;
+  /** 막혀 있는 동안 입력 칸 자리에 보일 글. */
+  disabledText?: string;
+  locked?: boolean;
+  nativeIme: boolean;
+  hangulMode: boolean;
+  onHangulModeChange: (enabled: boolean) => void;
+}): ReactNode {
+  return (
+    <Box borderStyle="round" borderColor={props.focused && !props.locked ? 'cyan' : 'gray'} paddingX={1}>
+      {/* 자체 조합기는 상태를 표시하고, macOS 에서는 시스템 입력기를 쓴다고 알린다. */}
+      <Text
+        color={props.nativeIme || props.hangulMode ? 'yellow' : undefined}
+        dimColor={!props.nativeIme && !props.hangulMode}
+      >
+        {props.nativeIme ? '한/영' : props.hangulMode ? '한' : 'EN'}
+      </Text>
+      {props.locked ? <Text dimColor> 잠김</Text> : null}
+      <Text color={props.locked ? 'gray' : 'cyan'}> › </Text>
+      {props.disabled ? (
+        <Text dimColor>{props.disabledText ?? '응답을 기다리는 중...'}</Text>
+      ) : (
+        <ImeTextInput
+          value={props.value}
+          onChange={props.onChange}
+          onSubmit={props.onSubmit}
+          focus={props.focused}
+          placeholder="메시지를 입력하세요"
+          nativeIme={props.nativeIme}
+          hangulMode={props.hangulMode}
+          onHangulModeChange={props.onHangulModeChange}
+        />
+      )}
+    </Box>
+  );
+}
+
 export function FormField(props: {
   label: string;
   value: string;

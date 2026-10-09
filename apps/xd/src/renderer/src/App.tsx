@@ -1,34 +1,50 @@
 /**
- * XD 앱 틀 — 왼쪽 줄(대화·제공자·설정), 사이드바(에이전트·대화), 본문.
+ * XD 앱 틀: 왼쪽 줄(대화·제공자·설정), 사이드바(대화 목록), 본문.
+ *
+ * 대화를 시작하는 곳은 시작 화면이다(사이드바 [새 채팅], 아무 대화도 열려 있지 않을 때의 첫 화면). 제공자도
+ * 에이전트도 없는 첫 실행에서만 그 자리에 첫 화면(Welcome)이 선다.
  *
  * 화면은 XD 전용이다(2026-10-02 결정). Dex 와 같은 부품(마크다운·작업 과정·아이콘·스타일)은 `dex.ts` 로만 가져온다.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { xd } from './bridge';
+import { useConversationList } from './conversations';
 import { DataProvider, useData } from './data';
 import { ChatIcon, ServerIcon, SettingsIcon, Tooltip } from './dex';
 import { forgetIdeStores, useIdeMode, useIdeStore } from './ide/ide-stores';
 import { liveStore } from './live-store';
+import type { AgentDraft } from './start-model';
 import { AgentEditor } from './views/AgentEditor';
-import { ChatView } from './views/ChatView';
+import { ChatView, type InitialMessage } from './views/ChatView';
 import { IdeActivity } from './views/IdeActivity';
 import { ProvidersView } from './views/ProvidersView';
 import { SettingsView } from './views/SettingsView';
 import { Sidebar } from './views/Sidebar';
+import { StartView } from './views/StartView';
 import { Welcome } from './views/Welcome';
 import { XdMark } from './views/XdMark';
 
 export type Route =
-  | { name: 'home' }
-  | { name: 'chat'; agentId: string; conversationId: string | null }
-  | { name: 'agent-new' }
-  | { name: 'agent-edit'; agentId: string }
+  | { name: 'start' }
+  | { name: 'chat'; agentId: string; conversationId: string | null; initialMessage?: InitialMessage }
+  | { name: 'agent-new'; draft?: AgentDraft }
+  | { name: 'agent-edit'; agentId: string; conversationId: string | null }
   | { name: 'providers' }
   | { name: 'settings' };
 
+type ChatRoute = Extract<Route, { name: 'chat' }>;
+
+const START: Route = { name: 'start' };
+
+/** 첫 메시지 하나의 열쇠(한 번만 보내려고). */
+const messageKey = (): string =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+
 const Shell: React.FC = () => {
-  const { agents, loaded, error } = useData();
-  const [route, setRoute] = useState<Route>({ name: 'home' });
+  const { agents, accounts, loaded, error } = useData();
+  const [route, setRoute] = useState<Route>(START);
+  /** 마지막으로 본 대화. 제공자·설정 화면에서 [대화] 를 누르면 그리로 돌아간다. */
+  const lastChat = useRef<ChatRoute | null>(null);
 
   // 턴 사건은 앱에 한 번만 듣는다 — 화면을 옮겨도 도는 답이 끊기지 않는다.
   useEffect(() => xd.onTurnEvent((event) => liveStore.apply(event)), []);
@@ -39,12 +55,19 @@ const Shell: React.FC = () => {
     if (loaded && !error) forgetIdeStores(agents.map((a) => a.id));
   }, [agents, loaded, error]);
 
-  // 지워진 에이전트를 보고 있었다면 처음으로.
+  // 지워진 에이전트를 보고 있었다면 시작 화면으로.
   useEffect(() => {
     if ((route.name === 'chat' || route.name === 'agent-edit') && loaded && !agents.some((a) => a.id === route.agentId)) {
-      setRoute({ name: 'home' });
+      setRoute(START);
     }
   }, [agents, loaded, route]);
+
+  useEffect(() => {
+    if (route.name === 'chat') lastChat.current = { name: 'chat', agentId: route.agentId, conversationId: route.conversationId };
+  }, [route]);
+
+  const openConversationId = route.name === 'chat' ? route.conversationId : null;
+  const conversations = useConversationList(agents, openConversationId);
 
   // 작업 공간을 보고 있으면 활동 막대에 IDE 단추(탐색기·찾기·대화 칸)를 올린다.
   const chatAgentId = route.name === 'chat' ? route.agentId : null;
@@ -57,26 +80,38 @@ const Shell: React.FC = () => {
   const agentId = route.name === 'chat' || route.name === 'agent-edit' ? route.agentId : null;
   const agent = agentId ? agents.find((a) => a.id === agentId) ?? null : null;
   const top = route.name === 'providers' ? 'providers' : route.name === 'settings' ? 'settings' : 'chat';
+  const openChat = (id: string, conversationId: string | null) => setRoute({ name: 'chat', agentId: id, conversationId });
 
   let main: React.ReactNode;
   if (route.name === 'chat' && agent) {
+    const conversation = route.conversationId ? conversations.items.find((c) => c.id === route.conversationId) : undefined;
     main = (
       <ChatView
         key={agent.id}
         agent={agent}
         conversationId={route.conversationId}
-        onConversation={(id) => setRoute({ name: 'chat', agentId: agent.id, conversationId: id })}
-        onEditAgent={() => setRoute({ name: 'agent-edit', agentId: agent.id })}
+        title={conversation?.title ?? ''}
+        initialMessage={route.initialMessage ?? null}
+        onConversation={(id) => openChat(agent.id, id)}
+        onEditAgent={() => setRoute({ name: 'agent-edit', agentId: agent.id, conversationId: route.conversationId })}
       />
     );
   } else if (route.name === 'agent-new') {
-    main = <AgentEditor agent={null} onDone={(id) => setRoute(id ? { name: 'chat', agentId: id, conversationId: null } : { name: 'home' })} onProviders={() => setRoute({ name: 'providers' })} />;
+    main = (
+      <AgentEditor
+        agent={null}
+        draft={route.draft}
+        onDone={(id) => setRoute(id ? { name: 'chat', agentId: id, conversationId: null } : START)}
+        onProviders={() => setRoute({ name: 'providers' })}
+      />
+    );
   } else if (route.name === 'agent-edit' && agent) {
+    const back = route.conversationId;
     main = (
       <AgentEditor
         key={agent.id}
         agent={agent}
-        onDone={(id) => setRoute(id ? { name: 'chat', agentId: id, conversationId: null } : { name: 'home' })}
+        onDone={(id) => setRoute(id ? { name: 'chat', agentId: id, conversationId: back } : START)}
         onProviders={() => setRoute({ name: 'providers' })}
       />
     );
@@ -84,15 +119,23 @@ const Shell: React.FC = () => {
     main = <ProvidersView />;
   } else if (route.name === 'settings') {
     main = <SettingsView />;
+  } else if (accounts.length === 0 && agents.length === 0) {
+    main = <Welcome onProviders={() => setRoute({ name: 'providers' })} onStart={() => setRoute(START)} />;
   } else {
     main = (
-      <Welcome
+      <StartView
+        onStart={(id, text) => setRoute({ name: 'chat', agentId: id, conversationId: null, initialMessage: { key: messageKey(), text } })}
         onProviders={() => setRoute({ name: 'providers' })}
-        onNewAgent={() => setRoute({ name: 'agent-new' })}
-        onOpenAgent={(id) => setRoute({ name: 'chat', agentId: id, conversationId: null })}
+        onFullEditor={(draft) => setRoute({ name: 'agent-new', draft })}
       />
     );
   }
+
+  const goChat = () => {
+    if (route.name === 'chat' || route.name === 'start') return;
+    const last = lastChat.current;
+    setRoute(last && agents.some((a) => a.id === last.agentId) ? last : START);
+  };
 
   const rail = (name: 'chat' | 'providers' | 'settings', label: string, icon: React.ReactNode, go: () => void) => (
     <Tooltip label={label} side="bottom">
@@ -110,18 +153,24 @@ const Shell: React.FC = () => {
           <XdMark size={28} />
         </div>
         <div className="ab-top">
-          {rail('chat', '대화', <ChatIcon size={20} />, () => setRoute(agent ? { name: 'chat', agentId: agent.id, conversationId: null } : { name: 'home' }))}
+          {rail('chat', '대화', <ChatIcon size={20} />, goChat)}
           {rail('providers', 'AI 제공자', <ServerIcon size={20} />, () => setRoute({ name: 'providers' }))}
           {ideStore && <IdeActivity store={ideStore} />}
         </div>
         <div className="ab-bottom">{rail('settings', '설정', <SettingsIcon size={20} />, () => setRoute({ name: 'settings' }))}</div>
       </nav>
       <Sidebar
-        agentId={agentId}
-        conversationId={route.name === 'chat' ? route.conversationId : null}
-        onOpenAgent={(id) => setRoute({ name: 'chat', agentId: id, conversationId: null })}
-        onOpenConversation={(id, conversationId) => setRoute({ name: 'chat', agentId: id, conversationId })}
-        onNewAgent={() => setRoute({ name: 'agent-new' })}
+        conversations={conversations.items}
+        loaded={conversations.loaded}
+        onConversations={conversations.update}
+        conversationId={openConversationId}
+        starting={route.name === 'start'}
+        onNewChat={() => setRoute(START)}
+        onOpenConversation={openChat}
+        onDeleted={(id) => {
+          if (lastChat.current?.conversationId === id) lastChat.current = null;
+          if (openConversationId === id) setRoute(START);
+        }}
       />
       <main className="xd-main">{main}</main>
     </div>

@@ -17,6 +17,16 @@ const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 60_000;
 const HEARTBEAT_MS = 25_000;
 
+/** 원문을 함께 넘기는 소식. 목록 소식(touched·updated·deleted)은 그 대화 한 줄과 새 제목을 싣는다. */
+const FRAMES_WITH_DATA = new Set([
+  'folders',
+  'devices',
+  'model',
+  'conversation_touched',
+  'conversation_updated',
+  'conversation_deleted',
+]);
+
 export interface ConversationsWatchDeps {
   baseUrl: () => string;
   token: () => Promise<string | null>;
@@ -28,7 +38,11 @@ export interface ConversationListEvent {
   interactionId: string;
   workflowId: string;
   running?: boolean;
-  /** 프레임 원문 — 목록 밖의 소식(대화 폴더 `folders`, 기기 `devices`, 대화 모델 `model`)이 모양을 싣는다. */
+  /**
+   * 프레임 원문. 목록 밖의 소식(대화 폴더 `folders`, 기기 `devices`, 대화 모델 `model`)과 목록 소식
+   * (`conversation_touched` 의 대화 한 줄, `conversation_updated` 의 새 제목)이 모양을 싣는다.
+   * 목록이 할 일은 @dex/protocol `conversationListChange(kind, data)` 가 정한다.
+   */
   data?: Record<string, unknown>;
 }
 
@@ -117,7 +131,7 @@ export class ConversationsWatch {
         interactionId: String(d.interaction_id ?? ''),
         workflowId: String(d.workflow_id ?? ''),
         ...(typeof d.running === 'boolean' ? { running: d.running } : {}),
-        ...(kind === 'folders' || kind === 'devices' || kind === 'model' ? { data: d } : {}),
+        ...(FRAMES_WITH_DATA.has(kind) ? { data: d } : {}),
       });
     });
 

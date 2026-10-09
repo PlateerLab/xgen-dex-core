@@ -8,6 +8,8 @@ export type { ChatMsg, FlowItem } from '../../../../desktop/src/renderer/src/ses
 export { Markdown } from '../../../../desktop/src/renderer/src/views/Markdown';
 export { ProcessTimeline } from '../../../../desktop/src/renderer/src/views/ProcessTimeline';
 export { Tooltip } from '../../../../desktop/src/renderer/src/views/Tooltip';
+// 선택 상자(시작 화면의 에이전트·제공자 고르기). 브라우저 기본 select 대신 Dex 와 같은 부품.
+export { Selector, type SelectorOption } from '../../../../desktop/src/renderer/src/views/Selector';
 // 작업 공간 IDE(M5b) — 편집기(Monaco 와 그 worker 를 이 앱 번들로)·미리보기(그림·PDF·마크다운·표).
 export { loadMonaco } from '../../../../desktop/src/renderer/src/ide/monaco';
 export { FileViewerPane, type FileViewerSource } from '../../../../desktop/src/renderer/src/views/FileViewerPane';
@@ -27,6 +29,7 @@ export {
   HistoryIcon,
   InfoIcon,
   ModelIcon,
+  MoreIcon,
   PanelRightIcon,
   PencilIcon,
   PlusIcon,

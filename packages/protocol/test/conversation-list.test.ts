@@ -107,6 +107,18 @@ test('옛 메타의 제목: 붙인 이름, 없으면 첫 메시지 한 줄, 첨�
   assert.equal(conversationTitleFromMetadata(undefined).title, '')
 })
 
+test('옛 목록이 200자로 잘라 깨진 봉투도 본문만 제목으로 쓴다', () => {
+  const full = JSON.stringify({ input_str: '우리 게임 앱 하나 만들어 줘\n자세히는', attachments: [{ name: 'a.png' }] })
+  const cut = `${full.slice(0, 40)}…`
+  assert.throws(() => JSON.parse(cut))
+  const title = conversationTitleFromMetadata({ first_message: cut }).title
+  assert.ok(title.startsWith('우리 게임 앱 하나 만들어 줘'), title)
+  assert.ok(!title.includes('input_str'))
+  // 이스케이프 중간에서 잘려도 깨진 글자가 남지 않는다.
+  const midEscape = '{"input_str": "줄 하나\\'
+  assert.equal(conversationTitleFromMetadata({ first_message: midEscape }).title, '줄 하나')
+})
+
 test('옛 목록: 같은 모양으로 읽고 비교 파생은 부모 줄로 접는다', () => {
   const rows = [
     { id: 1, interaction_id: 'p1', workflow_id: 'wf-a', workflow_name: 'A', metadata: { first_message: '안녕' } },

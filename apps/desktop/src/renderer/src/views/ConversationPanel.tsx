@@ -37,7 +37,11 @@ const PAGE_SIZE = 40;
 /** 지우기·정리 소식이 몰려올 때 첫 쪽을 한 번만 다시 읽도록 모은다. */
 const HEAD_RELOAD_DELAY_MS = 400;
 
-type Menu = { kind: 'list' } | { kind: 'row'; key: string } | null;
+/** `up`: 목록 아래쪽 줄이라 메뉴를 위로 펼친다(아래로 펼치면 목록 칸에 잘린다). */
+type Menu = { kind: 'list' } | { kind: 'row'; key: string; up: boolean } | null;
+
+/** 줄 메뉴 높이(항목 둘)보다 조금 넉넉하게. 아래 남은 자리가 이보다 작으면 위로 펼친다. */
+const ROW_MENU_SPACE = 96;
 
 export const ConversationPanel: React.FC<{
   /** [+ 새 채팅]: 시작 화면("오늘은 무엇을 해볼까요?")을 메인에 연다. */
@@ -319,7 +323,7 @@ export const ConversationPanel: React.FC<{
         <button className="new-chat-btn conv-new" onClick={onNewChat}>
           <PlusIcon size={16} /> 새 채팅
         </button>
-        <div className="conv-menu-wrap">
+        <div className={`conv-menu-wrap ${menu?.kind === 'list' ? 'open' : ''}`}>
           <button
             className="icon-btn conv-list-more"
             title="채팅 목록 메뉴"
@@ -413,17 +417,22 @@ export const ConversationPanel: React.FC<{
                   {agentLine}
                   <span className="conv-row-title">{title}</span>
                 </button>
-                <div className="conv-menu-wrap conv-row-menu">
+                <div className={`conv-menu-wrap conv-row-menu ${menu?.kind === 'row' && menu.key === key ? 'open' : ''}`}>
                   <button
                     className={`conv-row-more ${menu?.kind === 'row' && menu.key === key ? 'open' : ''}`}
                     title="대화 메뉴"
                     aria-label="대화 메뉴"
-                    onClick={() => setMenu((m) => (m?.kind === 'row' && m.key === key ? null : { kind: 'row', key }))}
+                    onClick={(e) => {
+                      const button = e.currentTarget.getBoundingClientRect();
+                      const list = listRef.current?.getBoundingClientRect();
+                      const up = !!list && list.bottom - button.bottom < ROW_MENU_SPACE;
+                      setMenu((m) => (m?.kind === 'row' && m.key === key ? null : { kind: 'row', key, up }));
+                    }}
                   >
                     <MoreIcon size={15} />
                   </button>
                   {menu?.kind === 'row' && menu.key === key && (
-                    <div className="conv-menu" role="menu">
+                    <div className={`conv-menu ${menu.up ? 'up' : ''}`} role="menu">
                       <button role="menuitem" className="conv-menu-item" onClick={() => startRename(c)}>
                         이름 바꾸기
                       </button>

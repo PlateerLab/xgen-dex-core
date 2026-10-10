@@ -51,6 +51,7 @@ import {
   rowKey,
   type ListRow,
 } from './conversation-list';
+import { SEARCH_LIMIT, SearchPanel } from './conversation-search';
 import type { TuiEngine, TuiSession } from './model';
 import type { LastChat } from './preferences';
 import { useTerminalSize } from './use-terminal-size';
@@ -81,6 +82,7 @@ function draftConversation(resolved: ResolvedChatInput, text: string, now: strin
 }
 
 type Dialog =
+  | { kind: 'search' }
   | { kind: 'rename'; conversation: Conversation }
   | { kind: 'delete'; conversation: Conversation }
   | { kind: 'purge'; count: number };
@@ -981,6 +983,13 @@ export function Dashboard(props: {
     setDialog({ kind: 'purge', count: deletedCount });
   };
 
+  /** 채팅 검색을 목록 자리에 연다(목록에서 `/`, Ctrl+K › 채팅 검색). */
+  const openSearch = (): void => {
+    setPalette(false);
+    setFocus('list');
+    setDialog({ kind: 'search' });
+  };
+
   /** 목록 줄에서 Enter. */
   const activateRow = (): void => {
     if (!cursorRow) return;
@@ -1024,6 +1033,7 @@ export function Dashboard(props: {
       else if (key.upArrow) moveCursor(-1);
       else if (key.downArrow) moveCursor(1);
       else if (key.return) activateRow();
+      else if (keyInput === '/') openSearch();
       else if (cursorRow?.kind !== 'conversation') return;
       // 두벌식 한글 자판이 켜져 있어도 같은 자리의 키(ㄱ=r, ㅇ=d)로 듣는다.
       else if (keyInput === 'r' || keyInput === 'ㄱ') setDialog({ kind: 'rename', conversation: cursorRow.conversation });
@@ -1038,6 +1048,7 @@ export function Dashboard(props: {
 
   const paletteActions: PaletteAction[] = [
     { id: 'new', label: '새 채팅', run: () => openStart() },
+    { id: 'search', label: '채팅 검색', run: openSearch },
     ...(model.supported && model.current && !model.locked
       ? [{ id: 'model', label: `모델 바꾸기 (${model.current.label})`, run: openModelPicker }]
       : []),
@@ -1121,7 +1132,21 @@ export function Dashboard(props: {
               : undefined;
 
   // 묻는 칸(이름 바꾸기·지우기)은 목록 자리에 뜬다. 오른쪽(적던 시작 화면·대화)은 그대로 둔다.
-  const sidebar = dialog?.kind === 'rename' ? (
+  const sidebar = dialog?.kind === 'search' ? (
+    <SearchPanel
+      recent={conversations}
+      search={(query) => props.engine.searchConversations(query, { limit: SEARCH_LIMIT }, props.session.profile)}
+      onOpen={(conversation) => {
+        setDialog(undefined);
+        void openConversation(conversation);
+      }}
+      onCancel={() => setDialog(undefined)}
+      height={bodyHeight}
+      nativeIme={nativeIme}
+      hangulMode={hangulMode}
+      onHangulModeChange={changeHangulMode}
+    />
+  ) : dialog?.kind === 'rename' ? (
     <RenamePanel
       conversation={dialog.conversation}
       onSave={(title) => renameConversation(dialog.conversation, title)}
@@ -1262,7 +1287,7 @@ export function Dashboard(props: {
 
   const footer =
     focus === 'list'
-      ? '↑↓ 이동 · Enter 열기 · r 이름 바꾸기 · d 지우기 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 대화 · Ctrl+P 프로필 · Ctrl+Q 종료'
+      ? '↑↓ 이동 · Enter 열기 · / 검색 · r 이름 바꾸기 · d 지우기 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 대화 · Ctrl+P 프로필 · Ctrl+Q 종료'
       : `${imeShortcut} 한/영 · Ctrl+O 모델 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 목록 · PgUp/PgDn 스크롤 · /attach 경로 · /attachments · /detach · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`;
 
   return (

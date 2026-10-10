@@ -39,6 +39,7 @@ import type {
   HistoryFlowItem,
   Conversation,
   ConversationPage,
+  ConversationSearchPage,
   VoiceConfig,
   TtsSpeakOptions,
   TraceListResult,
@@ -279,6 +280,9 @@ const api = {
       ipcRenderer.invoke(CHANNELS.historyDelete, workflowId, interactionId, workflowName),
     /** 에이전트가 사라진 대화를 모두 지운다. 지운 수. */
     purgeDeletedAgents: (): Promise<number> => ipcRenderer.invoke(CHANNELS.historyPurgeDeletedAgents),
+    /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. */
+    search: (query: string, opts?: { limit?: number }): Promise<ConversationSearchPage> =>
+      ipcRenderer.invoke(CHANNELS.historySearch, query, opts ?? {}),
   },
 
   /** 채팅 공유: 대화를 그 시점까지 얼린 링크. 링크에는 절대 주소(`url`)가 붙어 온다. */

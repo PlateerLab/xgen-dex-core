@@ -22,7 +22,7 @@ import {
 import type { CliService, CliState } from './cli/service';
 import type { EngineService, McpTestResult, ModelsResult } from './engine-service';
 import type { Secrets, SecretStatus } from './secrets';
-import type { XdAccount, XdAgent, XdConversation, XdConversationListItem, Store, XdTurn } from './store';
+import type { XdAccount, XdAgent, XdConversation, XdConversationListItem, XdConversationSearchHit, Store, XdTurn } from './store';
 import type { TurnRunner } from './turn-runner';
 import { uniqueFolderName } from './workspace-name';
 
@@ -245,6 +245,12 @@ export function createXdApi(deps: XdApiDeps) {
     conversationsListAll(limit?: number): XdConversationListItem[] {
       if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1)) throw new Error('limit must be a positive number');
       return store.listAllConversations(limit);
+    },
+    /** 채팅 검색: 제목·에이전트 이름·질문·답, 마지막으로 말한 순서(규칙은 @dex/protocol conversation-search). */
+    conversationsSearch(query: string, limit?: number): { hits: XdConversationSearchHit[]; hasMore: boolean } {
+      if (typeof query !== 'string') throw new Error('query must be a string');
+      if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1)) throw new Error('limit must be a positive number');
+      return store.searchConversations(query.slice(0, 200), Math.min(limit ?? 30, 100));
     },
     /** 이름 바꾸기. 빈 이름이면 첫 질문으로 정한 제목으로 돌아간다. 목록 순서는 그대로다. */
     conversationsRename(id: string, title: string): XdConversation {

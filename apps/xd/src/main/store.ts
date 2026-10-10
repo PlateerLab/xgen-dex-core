@@ -6,6 +6,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { searchCovers, searchParts, searchTerms, searchTurnMatch } from '@dex/protocol/conversation-search';
+import type { ConversationSearchMatch } from '@dex/protocol/types';
 
 export type TurnStatus = 'running' | 'done' | 'error' | 'cancelled';
 
@@ -41,6 +43,12 @@ export interface XdConversation {
  */
 export interface XdConversationListItem extends XdConversation {
   agentName: string;
+}
+
+/** 채팅 검색 결과 한 줄: 대화 + 맞은 자리(강조 조각). */
+export interface XdConversationSearchHit {
+  conversation: XdConversationListItem;
+  match: ConversationSearchMatch;
 }
 
 export interface XdTurn {
@@ -356,6 +364,80 @@ export class Store {
       limit !== undefined ? this.db.prepare(`${sql} LIMIT ?`).all(Math.max(0, Math.floor(limit))) : this.db.prepare(sql).all()
     ) as Row[];
     return rows.map((r) => ({ ...toConversation(r), agentName: String(r.agent_name ?? '') }));
+  }
+
+  /**
+   * 채팅 검색(2026-10-10): 대화 제목·에이전트 이름·질문·답에서 찾는다. 낱말 규칙은 서버와 같은
+   * @dex/protocol conversation-search 다(모든 낱말, 큰따옴표는 구절, 제목·이름·한 턴에 나뉘어도 된다).
+   *
+   * SQL LIKE 는 후보만 좁히고(ASCII 대소문자만 무시한다), 맞았는지는 그 규칙으로 다시 본다. 순서는 목록과 같은
+   * 마지막으로 말한 순서이고, 대화마다 가장 최근에 맞은 턴의 한 줄을 싣는다.
+   */
+  searchConversations(query: string, limit = 30): { hits: XdConversationSearchHit[]; hasMore: boolean } {
+    const terms = searchTerms(query);
+    if (!terms.length) return { hits: [], hasMore: false };
+    const like = (t: string) => `%${t.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const any = (cols: string[]) => `(${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`;
+    const args = (cols: string[]) => terms.flatMap((t) => cols.map(() => like(t)));
+
+    const meta = ['c.title', 'a.name'];
+    const metaRows = this.db
+      .prepare(
+        `SELECT c.*, a.name AS agent_name FROM conversations c JOIN agents a ON a.id = c.agent_id
+         WHERE ${terms.map(() => any(meta)).join(' AND ')}`,
+      )
+      .all(...args(meta)) as Row[];
+
+    const turn = ['t.question', 't.answer'];
+    const all = [...meta, ...turn];
+    const turnRows = this.db
+      .prepare(
+        `SELECT t.conversation_id, t.question, t.answer, t.started_at, c.title, a.name AS agent_name
+         FROM turns t JOIN conversations c ON c.id = t.conversation_id JOIN agents a ON a.id = c.agent_id
+         WHERE (${terms.map(() => any(turn)).join(' OR ')}) AND ${terms.map(() => any(all)).join(' AND ')}
+         ORDER BY t.started_at DESC, t.seq DESC`,
+      )
+      .all(...args(turn), ...args(all)) as Row[];
+
+    const matches = new Map<string, ConversationSearchMatch>();
+    for (const r of turnRows) {
+      const id = String(r.conversation_id);
+      if (matches.has(id)) continue;
+      const title = String(r.title ?? '');
+      const agent = String(r.agent_name ?? '');
+      const found = searchTurnMatch(title, agent, String(r.question ?? ''), String(r.answer ?? ''), terms);
+      if (!found) continue;
+      matches.set(id, {
+        title: searchParts(title, terms),
+        agent: searchParts(agent, terms),
+        snippet: found.snippet,
+        snippetFrom: found.snippetFrom,
+        matchedAt: new Date(Number(r.started_at)).toISOString(),
+      });
+    }
+    for (const r of metaRows) {
+      const id = String(r.id);
+      const title = String(r.title ?? '');
+      const agent = String(r.agent_name ?? '');
+      if (matches.has(id) || !searchCovers([title, agent], terms)) continue;
+      matches.set(id, { title: searchParts(title, terms), agent: searchParts(agent, terms), snippet: null, snippetFrom: null, matchedAt: null });
+    }
+    if (!matches.size) return { hits: [], hasMore: false };
+
+    const ids = [...matches.keys()];
+    const rows = this.db
+      .prepare(
+        `SELECT c.*, a.name AS agent_name FROM conversations c JOIN agents a ON a.id = c.agent_id
+         WHERE c.id IN (${ids.map(() => '?').join(', ')})
+         ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC`,
+      )
+      .all(...ids) as Row[];
+    const max = Math.max(1, Math.floor(limit));
+    const hits = rows.slice(0, max).map((r) => ({
+      conversation: { ...toConversation(r), agentName: String(r.agent_name ?? '') },
+      match: matches.get(String(r.id)) as ConversationSearchMatch,
+    }));
+    return { hits, hasMore: rows.length > max };
   }
 
   getConversation(id: string): XdConversation | null {

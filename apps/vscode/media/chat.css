@@ -407,10 +407,61 @@ button:disabled {
   line-height: 1;
 }
 
-.purge-button {
-  align-self: flex-start;
-  padding-left: 4px;
+/* 목록 머리: [+ 새 채팅] [검색] [⋯] (2026-10-10). ⋯ 메뉴에 [에이전트가 사라진 채팅 제거 (N)]. */
+.list-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.list-head .new-chat-button {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.list-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.list-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  min-width: 210px;
+  padding: 4px;
+  flex-direction: column;
+  border: 1px solid var(--vscode-menu-border, var(--dex-border));
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+.list-menu-item {
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.list-menu-item:hover:not(:disabled) {
+  background: var(--vscode-menu-selectionBackground, var(--dex-accent-soft));
+}
+
+.list-menu-item.danger {
   color: var(--dex-danger);
+}
+
+.list-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .conversation-list {

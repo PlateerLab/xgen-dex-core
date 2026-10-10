@@ -11,6 +11,7 @@ import type {
   ChatStopResult,
   Conversation,
   ConversationPage,
+  ConversationSearchPage,
   ConversationSnapshot,
   HistoryTurn,
   CreateAgentInput,
@@ -47,6 +48,8 @@ export interface TuiEngine {
     opts: { limit?: number; cursor?: string | null },
     profile?: string,
   ): Promise<ConversationPage>;
+  /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. */
+  searchConversations(query: string, opts: { limit?: number }, profile?: string): Promise<ConversationSearchPage>;
   /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */
   renameConversation(
     workflowId: string,

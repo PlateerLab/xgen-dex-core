@@ -8,18 +8,23 @@
  */
 import {
   CONVERSATION_TAG_LABELS,
+  DELETED_AGENT_LABEL,
   conversationAgentLabel,
+  conversationDayLabel,
   conversationDisplayTitle,
   conversationKey,
   conversationTagOf,
   conversationTitleFromMetadata,
   foldLegacyConversations,
   mergeConversationPage,
+  searchHasHit,
+  searchPlain,
   touchConversation,
   type Agent,
   type AgentCreateOptions,
   type AgentCreateSetting,
   type Conversation,
+  type ConversationSearchHit,
 } from '@dex/protocol';
 
 /** 한 번에 받는 대화 수. */
@@ -194,6 +199,57 @@ export function historyPickItem(
   const stamp = c.updatedAt && Number.isFinite(Date.parse(c.updatedAt)) ? formatTime(c.updatedAt) : '';
   const parts = [conversationAgentLabel(c), c.tag ? CONVERSATION_TAG_LABELS[c.tag] : '', stamp].filter(Boolean);
   return { label: conversationDisplayTitle(c), description: parts.join(' · ') };
+}
+
+// ── 채팅 검색 (2026-10-10) ────────────────────────────────────────────
+//
+// 목록 머리의 돋보기가 VS Code 빠른 선택 창을 연다. 비면 최근 채팅, 적으면 엔진(history/search)이 제목·
+// 에이전트 이름·대화 내용으로 찾는다. 빠른 선택 창은 칠할 자리를 받지 않으므로(VS Code 가 적은 글로 스스로
+// 칠한다) 조각은 글로 이어 붙인다. 서버가 맞춘 줄이 VS Code 의 거르기에 가려지지 않게 늘 보이게 둔다.
+
+export const SEARCH_TEXT = {
+  title: '채팅 검색',
+  placeholder: '검색...',
+  recent: '최근 채팅',
+  empty: '맞는 채팅이 없습니다.',
+  failed: '검색하지 못했습니다',
+  more: '맞는 채팅이 더 있습니다. 낱말을 더 적어 좁혀 보세요.',
+  titleOnly: '이 서버는 제목·에이전트 이름으로만 찾습니다.',
+} as const;
+
+/** 빠른 선택 창의 한 줄(대화를 가리킨다). */
+export interface SearchPickItem {
+  label: string;
+  description: string;
+  detail?: string;
+  alwaysShow: true;
+}
+
+function searchDescription(c: Conversation, agent: string): string {
+  const day = conversationDayLabel(c.updatedAt || c.createdAt);
+  return [agent, c.tag ? CONVERSATION_TAG_LABELS[c.tag] : '', day].filter(Boolean).join(' · ');
+}
+
+/** 최근 채팅 한 줄: 제목, 옆에 에이전트 이름 · 꼬리표 · 날. */
+export function recentPickItem(c: Conversation): SearchPickItem {
+  return { label: conversationDisplayTitle(c), description: searchDescription(c, conversationAgentLabel(c)), alwaysShow: true };
+}
+
+/**
+ * 검색 결과 한 줄: 제목, 옆에 에이전트 이름 · 꼬리표 · 날, 아래에 맞은 자리 둘레의 한 줄. 에이전트가 사라진
+ * 대화는 [지워짐] 이고, 이름으로 맞았을 때만 이름을 함께 둔다.
+ */
+export function searchPickItem(hit: ConversationSearchHit): SearchPickItem {
+  const c = hit.conversation;
+  const name = searchPlain(hit.match.agent) || c.workflowName;
+  const agent = c.agentDeleted ? (searchHasHit(hit.match.agent) ? `${DELETED_AGENT_LABEL} ${name}` : DELETED_AGENT_LABEL) : name;
+  const snippet = searchPlain(hit.match.snippet);
+  return {
+    label: searchPlain(hit.match.title) || conversationDisplayTitle(c),
+    description: searchDescription(c, agent),
+    ...(snippet ? { detail: snippet } : {}),
+    alwaysShow: true,
+  };
 }
 
 // ── 시작 화면 ─────────────────────────────────────────────────────────

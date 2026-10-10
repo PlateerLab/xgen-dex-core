@@ -11,6 +11,8 @@
     thinking: ['M6 12h4M6.7 14h2.6', 'M8 2a4 4 0 0 0-2.4 7.2c.3.2.4.5.4.8v.5h4V10c0-.3.1-.6.4-.8A4 4 0 0 0 8 2z'],
     pencil: ['M10.5 3l2.5 2.5L6 12.5H3.5V10z', 'M9 4.5l2.5 2.5'],
     trash: ['M3 4.5h10', 'M6.5 4.5V3h3v1.5', 'M4.5 4.5l.6 8.5h5.8l.6-8.5'],
+    search: ['M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z', 'M13.5 13.5l-3.3-3.3'],
+    more: ['M3 8h1', 'M7.5 8h1', 'M12 8h1'],
   };
   /** 에이전트가 사라진 대화의 표시(@dex/protocol DELETED_AGENT_LABEL 과 같은 글). */
   const DELETED_AGENT_LABEL = '지워짐';
@@ -59,6 +61,9 @@
     accountName: byId('account-name'),
     listContent: byId('list-content'),
     listNew: byId('list-new'),
+    listSearch: byId('list-search'),
+    listMenu: byId('list-menu'),
+    listMenuPanel: byId('list-menu-panel'),
     listPurge: byId('list-purge'),
     conversationList: byId('conversation-list'),
     listStatus: byId('list-status'),
@@ -717,6 +722,11 @@
     post('loadMoreConversations');
   }
 
+  function setListMenu(open) {
+    elements.listMenuPanel.classList.toggle('hidden', !open);
+    elements.listMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
   function renderConversations() {
     showScreen('conversations');
     const user = state.auth?.user;
@@ -724,8 +734,12 @@
     elements.accountAvatar.textContent = textInitials(user?.username);
     elements.accountName.textContent = user?.username || '계정';
     elements.listRefresh.classList.toggle('spinning', !!state.refreshing || !!state.conversationsLoading);
+    // 목록 머리: [+ 새 채팅] [검색] [⋯]. ⋯ 메뉴의 [에이전트가 사라진 채팅 제거 (N)] 은 0 이면 눌리지 않는다.
+    elements.listMenu.classList.toggle('hidden', !state.purgeLabel);
+    if (!state.purgeLabel) setListMenu(false);
     elements.listPurge.textContent = state.purgeLabel || '';
-    elements.listPurge.classList.toggle('hidden', !state.purgeLabel);
+    elements.listPurge.disabled = !(state.agentDeletedCount > 0);
+    elements.listPurge.title = state.agentDeletedCount > 0 ? '' : '정리할 채팅이 없습니다.';
     const rows = state.conversations || [];
     // 답이 흐르는 동안에도 상태는 자주 온다. 목록이 그대로면 다시 그리지 않는다(스크롤·초점 유지).
     const signature = JSON.stringify([rows, !!state.conversationActions, !!state.conversationsLoading, !!state.conversationsError]);
@@ -1163,7 +1177,25 @@
   elements.listRefresh.addEventListener('click', () => post('refresh'));
   elements.listSettings.addEventListener('click', () => post('showSettings'));
   elements.listNew.addEventListener('click', () => post('newChat'));
-  elements.listPurge.addEventListener('click', () => post('purgeDeletedAgents'));
+  // 채팅 검색: VS Code 빠른 선택 창이 뜬다(제목·에이전트 이름·대화 내용).
+  elements.listSearch.append(icon('search', 14));
+  elements.listSearch.addEventListener('click', () => post('searchConversations'));
+  elements.listMenu.append(icon('more', 14));
+  elements.listMenu.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setListMenu(elements.listMenuPanel.classList.contains('hidden'));
+  });
+  elements.listPurge.addEventListener('click', () => {
+    setListMenu(false);
+    post('purgeDeletedAgents');
+  });
+  // 메뉴 바깥을 누르거나 Esc 면 닫는다.
+  document.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest('.list-menu-wrap')) setListMenu(false);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setListMenu(false);
+  });
   elements.listMore.addEventListener('click', () => {
     moreRequested = true;
     post('loadMoreConversations');

@@ -370,6 +370,45 @@ export interface ConversationPage {
   agentDeletedCount?: number;
 }
 
+/**
+ * 채팅 검색의 강조 조각. 낱말이 든 자리는 `hit`. 번호가 아니라 조각인 까닭: 서버(파이썬)와
+ * 화면(자바스크립트)은 이모지 같은 글자의 길이를 다르게 센다.
+ */
+export interface SearchTextPart {
+  text: string;
+  hit: boolean;
+}
+
+/** 검색 결과 한 줄의 맞은 자리. */
+export interface ConversationSearchMatch {
+  /** 대화 제목의 조각(빈 제목이면 빈 배열). */
+  title: SearchTextPart[];
+  /** 에이전트 이름의 조각. */
+  agent: SearchTextPart[];
+  /** 맞은 턴의 한 줄 조각. 제목·이름으로만 맞았으면 null. */
+  snippet: SearchTextPart[] | null;
+  /** 조각이 사용자가 보낸 말(input)인가, 에이전트의 답(output)인가. */
+  snippetFrom: 'input' | 'output' | null;
+  /** 맞은 턴의 시각. */
+  matchedAt: string | null;
+}
+
+export interface ConversationSearchHit {
+  conversation: Conversation;
+  match: ConversationSearchMatch;
+}
+
+/** 채팅 검색 결과(마지막으로 말한 순서). */
+export interface ConversationSearchPage {
+  query: string;
+  terms: string[];
+  hits: ConversationSearchHit[];
+  /** 보낸 수보다 더 맞은 대화가 있다. */
+  hasMore: boolean;
+  /** 대화 내용까지 찾았는가. 검색 API 가 없는 옛 서버는 제목·에이전트 이름만 본다(false). */
+  contentSearched: boolean;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Teams — 사람 사이의 대화 (XGEN Teams, /api/teams/*)
 //

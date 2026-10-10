@@ -8,6 +8,8 @@ import { ApiError, HttpClient } from './client';
 import type {
   Conversation,
   ConversationPage,
+  ConversationSearchHit,
+  ConversationSearchPage,
   ConversationSnapshot,
   HistoryAttachment,
   HistoryFlowItem,
@@ -16,6 +18,7 @@ import type {
 } from './types';
 import { stripBrowserContext } from './browser';
 import { foldLegacyConversations, legacyConversation, parseConversation } from './conversation-list';
+import { parseConversationSearchHit, searchConversationList, searchTerms } from './conversation-search';
 
 interface RawIoLog {
   log_id: number;
@@ -370,6 +373,37 @@ export class HistoryApi {
       if (!cursor) break;
     }
     return out;
+  }
+
+  /**
+   * 채팅 검색: 제목·에이전트 이름·대화 내용으로 내 대화를 찾는다(GET /api/interaction/conversations/search).
+   * 규칙은 서버 한 곳에 있다(conversation-search.ts 머리말). 순서는 마지막으로 말한 순서.
+   *
+   * 그 API 가 없는 옛 서버(404)에서는 대화 목록을 받아 제목·에이전트 이름만으로 찾는다
+   * (`contentSearched: false`, 화면은 내용까지 찾지 못했다고 알린다).
+   */
+  async searchConversations(query: string, opts: { limit?: number } = {}): Promise<ConversationSearchPage> {
+    const limit = Math.max(1, Math.min(100, opts.limit ?? 30));
+    const q = query.trim();
+    if (!searchTerms(q).length) return { query: q, terms: [], hits: [], hasMore: false, contentSearched: true };
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    try {
+      const res = await this.http.get<{ query?: string; terms?: unknown[]; results?: unknown[]; has_more?: boolean }>(
+        `/api/interaction/conversations/search?${params}`,
+      );
+      return {
+        query: typeof res?.query === 'string' ? res.query : q,
+        terms: (res?.terms ?? []).filter((t): t is string => typeof t === 'string'),
+        hits: (res?.results ?? [])
+          .map(parseConversationSearchHit)
+          .filter((h): h is ConversationSearchHit => h != null),
+        hasMore: res?.has_more === true,
+        contentSearched: true,
+      };
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 404) throw e;
+    }
+    return searchConversationList(await this.conversations(), q, limit);
   }
 
   /** 옛 서버의 목록(/api/interaction/list) → 같은 모양. */

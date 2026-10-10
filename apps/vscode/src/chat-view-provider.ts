@@ -31,6 +31,9 @@ import {
   createdAgent,
   historyPickItem,
   normalizeConversations,
+  recentPickItem,
+  searchPickItem,
+  SEARCH_TEXT,
   prepareCreateOptions,
   purgeDeletedLabel,
   sanitizeCreateSettings,
@@ -58,9 +61,13 @@ import {
   thinkingChipLabel,
   thinkingValueLabel,
   touchConversation,
+  SEARCH_DELAY_MS,
+  SEARCH_RECENT_COUNT,
+  searchConversationList,
   type AgentCreateOptions,
   type ConversationModelState,
   type ConversationPage,
+  type ConversationSearchPage,
   type ModelChoice,
   type ThinkingValue,
 } from '@dex/protocol';
@@ -129,7 +136,7 @@ interface ChatViewState {
   conversationActions: boolean;
   /** 에이전트가 사라진 대화 수(첫 쪽이 알려 준다). */
   agentDeletedCount: number;
-  /** 목록 머리의 [에이전트가 사라진 채팅 제거 (N)]. 지울 것이 없거나 엔진이 모르면 없다. */
+  /** 목록 머리 ⋯ 메뉴의 [에이전트가 사라진 채팅 제거 (N)]. 엔진이 모르면 없다(⋯ 도 없다). 0 이면 눌리지 않는다. */
   purgeLabel?: string;
   /** 열린 대화의 제목. 첫 말을 보내기 전이면 없다. */
   conversationTitle?: string;
@@ -208,6 +215,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private canCreateAgent = false;
   /** 엔진이 대화 목록 소켓(conversations/watch)을 열 수 있는가. 열면 다른 기기의 변화가 곧바로 보인다. */
   private canWatchConversationList = false;
+  /** 엔진이 채팅 검색(history/search)을 아는가. 모르면 받아 둔 목록의 제목·이름으로 찾는다. */
+  private canSearchConversations = false;
   /** 대화 목록 소식이 몰려올 때 첫 쪽을 한 번만 다시 읽도록 모은다. */
   private conversationHeadTimer: NodeJS.Timeout | undefined;
   // ── 시작 화면 ──
@@ -472,6 +481,75 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  /**
+   * 채팅 검색(2026-10-10): 목록 머리의 돋보기. VS Code 빠른 선택 창이 뜬다. 비면 최근 채팅, 적으면 잠깐 뒤
+   * 엔진(history/search)이 제목·에이전트 이름·대화 내용으로 찾는다. 고르면 그 대화가 열린다.
+   */
+  async searchConversations(): Promise<void> {
+    type Item = vscode.QuickPickItem & { conversation?: Conversation };
+    const pick = vscode.window.createQuickPick<Item>();
+    pick.title = SEARCH_TEXT.title;
+    pick.placeholder = SEARCH_TEXT.placeholder;
+    pick.matchOnDescription = true;
+    pick.matchOnDetail = true;
+    const note = (label: string): Item => ({ label, alwaysShow: true });
+    const recent = (): Item[] => {
+      const list = this.conversations.slice(0, SEARCH_RECENT_COUNT);
+      return list.length
+        ? [
+            { label: SEARCH_TEXT.recent, kind: vscode.QuickPickItemKind.Separator },
+            ...list.map((conversation) => ({ ...recentPickItem(conversation), conversation })),
+          ]
+        : [];
+    };
+    pick.items = recent();
+    let seq = 0;
+    let timer: NodeJS.Timeout | undefined;
+    pick.onDidChangeValue((value) => {
+      if (timer) clearTimeout(timer);
+      const mine = ++seq;
+      const query = value.trim();
+      if (!query) {
+        pick.busy = false;
+        pick.items = recent();
+        return;
+      }
+      pick.busy = true;
+      timer = setTimeout(() => {
+        const request: Promise<ConversationSearchPage> = this.canSearchConversations
+          ? this.service.request<ConversationSearchPage>('history/search', { ...this.activeProfileParams(), query, limit: 50 })
+          : Promise.resolve(searchConversationList(this.conversations, query, 50));
+        request
+          .then((page) => {
+            if (mine !== seq) return;
+            const items: Item[] = page.hits.map((hit) => ({ ...searchPickItem(hit), conversation: hit.conversation }));
+            if (!items.length) items.push(note(SEARCH_TEXT.empty));
+            else if (!page.contentSearched) items.push(note(SEARCH_TEXT.titleOnly));
+            else if (page.hasMore) items.push(note(SEARCH_TEXT.more));
+            pick.items = items;
+          })
+          .catch((error: unknown) => {
+            if (mine === seq) pick.items = [note(`${SEARCH_TEXT.failed}: ${errorMessage(error)}`)];
+          })
+          .finally(() => {
+            if (mine === seq) pick.busy = false;
+          });
+      }, SEARCH_DELAY_MS);
+    });
+    pick.onDidAccept(() => {
+      const conversation = pick.selectedItems[0]?.conversation;
+      if (!conversation) return;
+      pick.hide();
+      void this.openConversation(conversation);
+    });
+    pick.onDidHide(() => {
+      if (timer) clearTimeout(timer);
+      seq += 1;
+      pick.dispose();
+    });
+    pick.show();
+  }
+
   /** 대화 기록(빠른 선택): 제목으로 찾고, 옆에 에이전트 · 꼬리표 · 시각. */
   async openHistory(): Promise<void> {
     try {
@@ -587,6 +665,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.canPageConversations = capabilities?.conversationList === true;
     this.canCreateAgent = canCreate;
     this.canWatchConversationList = capabilities?.conversationListWatch === true;
+    this.canSearchConversations = capabilities?.conversationSearch === true;
   }
 
   /** 대화 목록 소켓을 연다(로그인한 프로필로). 옛 엔진이면 아무것도 하지 않는다. */
@@ -1405,6 +1484,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       void this.deleteConversation(data.workflowId, data.interactionId);
     } else if (data.type === 'purgeDeletedAgents') void this.purgeDeletedAgents();
     else if (data.type === 'loadMoreConversations') void this.loadConversations('more');
+    else if (data.type === 'searchConversations') void this.searchConversations();
     else if (data.type === 'startAgent' && typeof data.workflowId === 'string') this.onStartAgent(data.workflowId);
     else if (data.type === 'startName' && typeof data.name === 'string') this.onStartName(data.name);
     else if (data.type === 'startSend') void this.startSend(data);
@@ -1571,7 +1651,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       conversationsError: this.conversationsError,
       conversationActions: this.canPageConversations,
       agentDeletedCount: this.agentDeletedCount,
-      purgeLabel: this.canPageConversations && this.agentDeletedCount > 0 ? purgeDeletedLabel(this.agentDeletedCount) : undefined,
+      purgeLabel: this.canPageConversations ? purgeDeletedLabel(this.agentDeletedCount) : undefined,
       conversationTitle: current ? conversationDisplayTitle(current) : undefined,
       readOnly: this.readOnly,
       start: this.startView(),
@@ -1783,8 +1863,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     </header>
     <main id="list-content" class="list-content">
       <div class="list-inner">
-        <button id="list-new" class="new-chat-button" type="button"><span aria-hidden="true">+</span><span>새 채팅</span></button>
-        <button id="list-purge" class="text-button purge-button hidden" type="button"></button>
+        <div class="list-head">
+          <button id="list-new" class="new-chat-button" type="button"><span aria-hidden="true">+</span><span>새 채팅</span></button>
+          <button id="list-search" class="icon-button" type="button" title="채팅 검색" aria-label="채팅 검색"></button>
+          <div class="list-menu-wrap">
+            <button id="list-menu" class="icon-button hidden" type="button" title="채팅 목록 메뉴" aria-label="채팅 목록 메뉴" aria-haspopup="menu" aria-expanded="false"></button>
+            <div id="list-menu-panel" class="list-menu hidden" role="menu">
+              <button id="list-purge" class="list-menu-item danger" type="button" role="menuitem"></button>
+            </div>
+          </div>
+        </div>
         <div id="conversation-list" class="conversation-list" role="list" aria-label="대화 목록"></div>
         <div id="list-status" class="list-status hidden" role="status"></div>
         <button id="list-more" class="secondary-button list-more hidden" type="button">더 보기</button>

@@ -34,6 +34,16 @@ body {
 .xd-side-top {
   flex-shrink: 0;
   padding: 0 8px 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.xd-side-top .xd-new-chat {
+  flex: 1;
+  min-width: 0;
+}
+.xd-search-open {
+  flex-shrink: 0;
 }
 .xd-new-chat {
   align-items: center;

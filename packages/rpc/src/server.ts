@@ -222,6 +222,8 @@ export class DexRpcServer {
             conversationListWatch: true,
             // agents/createOptions · nameTaken · create (시작 화면의 새 에이전트).
             agentCreate: true,
+            // history/search (채팅 검색).
+            conversationSearch: true,
           },
         };
       }
@@ -331,6 +333,13 @@ export class DexRpcServer {
       case 'history/conversationPage':
         return this.engine.conversationPage(
           { limit: optionalInteger(params, 'limit'), cursor: optionalString(params, 'cursor') ?? null },
+          optionalString(params, 'profile'),
+        );
+      // 채팅 검색(2026-10-10): 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서.
+      case 'history/search':
+        return this.engine.searchConversations(
+          typeof params.query === 'string' ? params.query : '',
+          { limit: optionalInteger(params, 'limit') },
           optionalString(params, 'profile'),
         );
       case 'history/rename':

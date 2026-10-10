@@ -9916,3 +9916,172 @@ button.sm {
   font-size: 13px;
   text-align: center;
 }
+
+/* ─── 채팅 검색 창 (2026-10-10) ───
+   대화 목록 머리의 돋보기가 연다. 데스크톱과 XD 가 같은 창을 쓴다. 화면 위쪽에 뜨고 아래로 결과가 내려온다. */
+.conv-list-head .conv-search-open {
+  flex-shrink: 0;
+}
+.conv-search-backdrop {
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+.conv-search {
+  width: 640px;
+  max-width: 92vw;
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.conv-search-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+.conv-search-glyph {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.conv-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  padding: 4px 0;
+}
+.conv-search-input::placeholder {
+  color: var(--muted);
+}
+.conv-search-clear {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.conv-search-clear:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.conv-search-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.conv-search-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.conv-search-label {
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.conv-search-status {
+  padding: 14px 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.conv-search-note {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.conv-search-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 9px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.conv-search-row.active {
+  background: var(--panel-2);
+}
+.conv-search-row-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--muted);
+}
+.conv-search-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.conv-search-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.conv-search-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+.conv-search-row-when {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.conv-search-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
+.conv-search-row-agent {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conv-search-row-snippet {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conv-search mark {
+  background: var(--primary-soft);
+  color: inherit;
+  font-weight: 700;
+  border-radius: 3px;
+}

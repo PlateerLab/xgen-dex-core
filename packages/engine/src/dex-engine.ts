@@ -42,6 +42,7 @@ import type {
   ChatStopResult,
   Conversation,
   ConversationPage,
+  ConversationSearchPage,
   ConversationSnapshot,
   DexProfile,
   HistoryTurn,
@@ -592,6 +593,15 @@ export class DexEngine {
     requestedProfile?: string,
   ): Promise<ConversationPage> {
     return this.withAuthRetry(requestedProfile, (client) => client.history.conversationPage(opts));
+  }
+
+  /** 채팅 검색: 제목·에이전트 이름·대화 내용으로 찾는다(@dex/protocol conversation-search). */
+  async searchConversations(
+    query: string,
+    opts: { limit?: number } = {},
+    requestedProfile?: string,
+  ): Promise<ConversationSearchPage> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.searchConversations(query, opts));
   }
 
   /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */

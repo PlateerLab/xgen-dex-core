@@ -24,16 +24,9 @@ const NEW_AGENT = '__new_agent__';
 /** 적는 동안 이름이 겹치는지 묻는 간격. */
 const NAME_CHECK_DELAY_MS = 300;
 
-export function StartChat({
-  onStarted,
-  initialAgentId,
-}: {
-  onStarted: () => void;
-  /** 처음부터 골라 둘 에이전트(사이드바 [에이전트] 줄의 [+]). 목록에 없으면 평소처럼 시작한다. */
-  initialAgentId?: string;
-}) {
+export function StartChat({ onStarted }: { onStarted: () => void }) {
   const dir = useAgentDirectory();
-  const [choice, setChoice] = useState<string>(initialAgentId || NEW_AGENT);
+  const [choice, setChoice] = useState<string>(NEW_AGENT);
   const [options, setOptions] = useState<AgentCreateOptions | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -91,12 +84,6 @@ export function StartChat({
   }, []);
 
   const isNew = choice === NEW_AGENT;
-
-  // 골라 둔 에이전트가 고를 수 있는 목록에 없으면(공유가 풀렸거나 지워졌다) 평소처럼 시작한다.
-  useEffect(() => {
-    if (!dir.loaded || isNew) return;
-    if (!dir.agents.some((a) => a.workflowId === choice)) setChoice(NEW_AGENT);
-  }, [choice, dir.agents, dir.loaded, isNew]);
 
   // 이름이 겹치는지 적는 대로 묻는다(잠깐 멈추면). 보낼 때 가서야 겹친다고 하면 이미 할 말까지 다 적은 뒤다.
   useEffect(() => {

@@ -246,7 +246,7 @@ test('에이전트 묶음: 대화가 있는 에이전트마다 대화 수와 마
   const s = new Store(dbFile(), { now: clock() });
   const a = s.createAgent({ name: '리서치', workspace: 'a' });
   const b = s.createAgent({ name: '코딩', workspace: 'b' });
-  s.createAgent({ name: '빈 에이전트', workspace: 'c' }); // 대화가 없으면 묶음에 없다([다른 에이전트])
+  s.createAgent({ name: '빈 에이전트', workspace: 'c' }); // 대화가 없으면 묶음에 없다
   const rows = () => s.listConversationAgents().map((g) => [g.agentName, g.conversationCount, g.lastTitle, g.lastConversationId]);
   assert.deepEqual(rows(), []);
 

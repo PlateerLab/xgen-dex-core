@@ -1,7 +1,7 @@
 /**
  * 시작 화면과 대화 목록의 규칙. 순수 함수라 시험이 그대로 부른다.
  *
- * 시작 화면: 에이전트를 고르면(기본은 "새 에이전트로 시작", 사이드바 [+] 로 열면 그 에이전트) 입력창이 열린다. 새 에이전트는 이름·제공자·모델이
+ * 시작 화면: 에이전트를 고르면(기본은 "새 에이전트로 시작") 입력창이 열린다. 새 에이전트는 이름·제공자·모델이
  * 있어야 하고, 이름은 이 PC 의 다른 에이전트와 겹치면 안 된다(대소문자 무시, 적는 대로 확인).
  * 대화 목록: 모든 에이전트의 대화를 마지막으로 말한 순서로. 제목이 없으면 "새 대화".
  */
@@ -38,14 +38,6 @@ export function agentNameTaken(name: string, agents: readonly NamedAgent[], exce
 /** 고른 값이 지금 있는 에이전트인가. 없는 id(그 사이 지워졌다)는 새 에이전트로 본다. */
 export function isExistingAgent(agentId: string, agents: readonly NamedAgent[]): boolean {
   return agentId !== NEW_AGENT && agents.some((a) => a.id === agentId);
-}
-
-/**
- * 시작 화면이 처음 고르는 에이전트: 사이드바의 [+]·[다른 에이전트] 가 준 에이전트(지금 있으면), 아니면
- * "새 에이전트로 시작".
- */
-export function initialStartAgent(preselect: string | null | undefined, agents: readonly NamedAgent[]): string {
-  return preselect && isExistingAgent(preselect, agents) ? preselect : NEW_AGENT;
 }
 
 export type StartLockReason = 'name' | 'duplicate' | 'account' | 'model';

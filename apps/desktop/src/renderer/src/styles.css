@@ -10271,14 +10271,41 @@ button.sm {
 }
 
 /* ─── 사이드바 [최근 채팅] · [에이전트] (2026-10-10) ───
-   [최근 채팅] 은 대화 5개와 [더 보기]·[접기], [에이전트] 는 대화가 있는 에이전트(대화 수, [+], >)와
-   [다른 에이전트]. 에이전트 줄을 누르면 그 에이전트의 대화 목록(머리 [←] 이름 [+])이 된다. */
-.conv-section-title {
-  padding: 10px 10px 4px;
-  font-size: 11px;
+   두 칸 사이에 나누는 줄, 칸 머리(▾)를 누르면 접고 편다. [최근 채팅] 은 대화 5개, [에이전트] 는 최근에 쓴
+   에이전트 5개이고 둘 다 [더 보기]·[접기]. 에이전트 줄에는 [+] 도 > 도 없다(새 채팅은 위의 [+ 새 채팅]).
+   줄에 올리면 바탕이 바뀌고 키보드 초점은 테두리로 보인다. */
+.conv-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.conv-section-head:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.conv-section-head svg {
   color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.conv-section-head svg.open {
+  transform: rotate(90deg);
+}
+.conv-section-divider {
+  height: 1px;
+  margin: 8px 8px;
+  background: var(--border-soft);
+  flex-shrink: 0;
 }
 .conv-more-row {
   display: flex;
@@ -10305,40 +10332,35 @@ button.sm {
   cursor: default;
   opacity: 0.6;
 }
-.conv-others-toggle {
-  align-self: flex-start;
-  margin: 2px 4px 0;
-}
-.conv-others-toggle svg {
-  transition: transform 0.12s ease;
-}
-.conv-others-toggle svg.open {
-  transform: rotate(90deg);
-}
 .conv-agent-row {
-  position: relative;
   display: flex;
   align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  padding: 7px 10px;
   border-radius: var(--radius-md);
+  cursor: pointer;
   transition: background-color 0.12s ease;
 }
 .conv-agent-row:hover {
   background: var(--panel-2);
+}
+.conv-agent-row:focus-visible,
+.conv-row-main:focus-visible,
+.conv-section-head:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--primary-soft-border);
 }
 .conv-agent-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 1px;
-  text-align: left;
-  border: none;
-  background: none;
-  color: var(--text);
-  padding: 7px 78px 7px 10px;
-  cursor: pointer;
-  border-radius: var(--radius-md);
 }
 .conv-agent-name {
   display: flex;
@@ -10364,65 +10386,13 @@ button.sm {
   line-height: 15px;
   color: var(--muted);
 }
-.conv-agent-side {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
 .conv-agent-count {
+  flex-shrink: 0;
   min-width: 18px;
   text-align: right;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-}
-.conv-agent-new {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: none;
-  background: none;
-  color: var(--muted);
-  border-radius: 6px;
-  cursor: pointer;
-}
-.conv-agent-new:hover {
-  background: var(--panel);
-  color: var(--text);
-}
-.conv-agent-chevron {
-  color: var(--muted);
-}
-.conv-other-agent {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  border: none;
-  background: none;
-  color: var(--text-secondary);
-  font-size: 13px;
-  text-align: left;
-  padding: 6px 10px;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-}
-.conv-other-agent:hover {
-  background: var(--panel-2);
-  color: var(--text);
-}
-.conv-other-agent-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 .conv-agent-head {
   display: flex;

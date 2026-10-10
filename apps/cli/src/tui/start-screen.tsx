@@ -56,11 +56,6 @@ export function StartScreen(props: {
   onCapture?: (capturing: boolean) => void;
   /** 고른 있는 에이전트가 바뀌었다(새 에이전트면 undefined). 대시보드가 그 모델을 읽는다(Ctrl+O). */
   onAgentChange?: (agent: AgentRef | undefined) => void;
-  /**
-   * 미리 골라 둘 에이전트([＋ 이 에이전트로 새 채팅]·[다른 에이전트]). nonce 가 바뀔 때마다 다시 고르고, 적던 첫 말은
-   * 그대로 둔다. 고를 수 없는 에이전트(목록에 없다)면 평소대로 시작한다.
-   */
-  preselect?: { workflowId: string; nonce: number };
   /** 고른 에이전트의 지금 모델("제공자: 모델"). Ctrl+O 로 바꾼다. */
   modelLabel?: string;
   /** 새 에이전트를 세웠다(목록에 넣으라고). */
@@ -79,13 +74,9 @@ export function StartScreen(props: {
   );
 
   const form = useAgentForm(props.engine, props.profile);
-  const preselected =
-    props.preselect && props.agents.some((agent) => agent.workflowId === props.preselect?.workflowId)
-      ? props.preselect.workflowId
-      : '';
   /** 고른 에이전트. 빈 글이면 [새 에이전트로 시작]. */
-  const [choice, setChoice] = useState(preselected);
-  const [cursorKey, setCursorKey] = useState(preselected ? COMPOSER_ROW : 'name');
+  const [choice, setChoice] = useState('');
+  const [cursorKey, setCursorKey] = useState('name');
   const [advanced, setAdvanced] = useState(false);
   const [message, setMessage] = useState('');
   const [nameState, setNameState] = useState<NameState>('empty');
@@ -179,16 +170,6 @@ export function StartScreen(props: {
     // 있는 에이전트면 바로 첫 말을, 새 에이전트면 이름부터.
     setCursorKey(id ? COMPOSER_ROW : 'name');
   };
-
-  // 이미 떠 있는 시작 화면에 에이전트를 골라 들어왔다. 처음 그릴 때는 위에서 이미 골라 두었다.
-  const preselectSeen = useRef(props.preselect?.nonce);
-  useEffect(() => {
-    const wanted = props.preselect;
-    if (!wanted || wanted.nonce === preselectSeen.current) return;
-    preselectSeen.current = wanted.nonce;
-    if (props.agents.some((agent) => agent.workflowId === wanted.workflowId)) choose(wanted.workflowId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.preselect?.nonce]);
 
   const cycleAgent = (step: 1 | -1): void => {
     const ids = ['', ...props.agents.map((agent) => agent.workflowId)];

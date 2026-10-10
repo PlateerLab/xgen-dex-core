@@ -27,14 +27,13 @@ import {
   SEARCH_LIMIT,
   START_TEXT,
   agentDrillView,
+  agentSection,
   applyFirstPage,
-  conversationAgentRows,
   conversationStub,
   createdAgent,
   historyPickItem,
   nextRecentCount,
   normalizeConversations,
-  otherAgentsView,
   prepareCreateOptions,
   purgeDeletedLabel,
   recentNeedsPage,
@@ -50,7 +49,6 @@ import {
   type AgentDrillView,
   type AgentRow,
   type ConversationRow,
-  type OtherAgentsView,
   type SearchResultRow,
   type StartCreateOptions,
   type StartLock,
@@ -173,12 +171,14 @@ interface ChatViewState {
   agentDeletedCount: number;
   /** ⋯ 메뉴의 [에이전트가 사라진 채팅 제거 (N)]. 엔진이 모르면 없다(⋯ 도 없다). 0 이면 눌리지 않는다. */
   purgeLabel?: string;
-  /** [에이전트]: 대화가 있는 에이전트, 마지막으로 말한 순서. */
+  /** [에이전트]: 대화가 있는 에이전트, 마지막으로 말한 순서로 5개, [더 보기] 로 5개씩. */
   conversationAgents: AgentRow[];
   conversationAgentsLoading: boolean;
   conversationAgentsError?: string;
-  /** [다른 에이전트]: 쓸 수 있지만 대화가 없는 에이전트(펼쳤을 때만 줄이 있다). */
-  otherAgents: OtherAgentsView;
+  /** [에이전트] 의 [더 보기]. */
+  agentsMore: boolean;
+  /** [에이전트] 의 [접기]. */
+  agentsLess: boolean;
   /** 에이전트 줄을 눌러 들어간 화면. 없으면 목록 첫 화면. */
   agentView?: AgentDrillView;
   /** 채팅 검색 창이 검색어가 비었을 때 보이는 최근 채팅. */
@@ -263,8 +263,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private conversationAgentsLoading = false;
   private conversationAgentsError: string | undefined;
   private conversationAgentsVersion = 0;
-  /** [다른 에이전트] 를 펼쳤는가. */
-  private otherAgentsOpen = false;
+  /** [에이전트] 에 보이는 수. [더 보기] 로 5개씩 늘고 [접기] 로 5개로 돌아간다. */
+  private agentCount = RECENT_CONVERSATION_STEP;
   /** 에이전트 줄을 눌러 들어간 화면. */
   private agentView: AgentDrill | undefined;
   /** 지금 답이 도는 대화(대화 목록 소식). 줄에 진행 점을 그린다. */
@@ -804,7 +804,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.conversationAgents = [];
     this.conversationAgentsLoading = false;
     this.conversationAgentsError = undefined;
-    this.otherAgentsOpen = false;
+    this.agentCount = RECENT_CONVERSATION_STEP;
     this.agentView = undefined;
     this.runningConversations.clear();
     this.removedHere.clear();
@@ -1798,9 +1798,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     } else if (data.type === 'loadMoreAgentConversations') {
       // 에이전트별 쪽을 모르는 옛 엔진은 대화 목록의 다음 쪽에서 그 에이전트 것을 보인다.
       void (this.canListConversationAgents ? this.loadAgentConversations('more') : this.loadConversations('more'));
-    } else if (data.type === 'startWithAgent' && typeof data.workflowId === 'string') void this.showStart(data.workflowId);
-    else if (data.type === 'toggleOtherAgents') {
-      this.otherAgentsOpen = !this.otherAgentsOpen;
+    } else if (data.type === 'loadMoreAgents') {
+      this.agentCount = nextRecentCount(this.agentCount);
+      this.postState();
+    } else if (data.type === 'lessAgents') {
+      this.agentCount = RECENT_CONVERSATION_STEP;
       this.postState();
     } else if (data.type === 'searchConversations' && typeof data.query === 'string' && typeof data.seq === 'number') {
       void this.searchConversations(data.query, data.seq);
@@ -1984,7 +1986,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       activeKey,
       running,
     });
-    const withChats = this.agentsWithChats();
+    const agents = agentSection(this.agentsWithChats(), this.agentCount, now);
     const state: ChatViewState = {
       screen: this.screen,
       profiles: this.profiles,
@@ -2005,10 +2007,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       conversationActions: this.canPageConversations,
       agentDeletedCount: this.agentDeletedCount,
       purgeLabel: this.canPageConversations ? purgeDeletedLabel(this.agentDeletedCount) : undefined,
-      conversationAgents: conversationAgentRows(withChats, now),
+      conversationAgents: agents.rows,
       conversationAgentsLoading: this.conversationAgentsLoading,
       conversationAgentsError: this.conversationAgentsError,
-      otherAgents: otherAgentsView(withChats, this.agents, this.otherAgentsOpen),
+      agentsMore: agents.more,
+      agentsLess: agents.less,
       agentView: this.agentViewState(activeKey, running, now),
       searchRecent: searchRecentRows(this.conversations, now),
       searchDelayMs: SEARCH_DELAY_MS,
@@ -2235,25 +2238,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           </div>
         </div>
         <div id="list-main" class="list-main">
-          <div class="list-section-title">최근 채팅</div>
-          <div id="conversation-list" class="conversation-list" role="list" aria-label="최근 채팅"></div>
-          <div id="list-status" class="list-status hidden" role="status"></div>
-          <div class="list-paging">
-            <button id="list-more" class="text-button hidden" type="button">더 보기</button>
-            <button id="list-less" class="text-button hidden" type="button">접기</button>
+          <div class="list-section">
+            <button id="recent-toggle" class="list-section-title" type="button" aria-expanded="true" aria-controls="recent-body"><span id="recent-caret" class="list-section-caret" aria-hidden="true"></span><span>최근 채팅</span></button>
+            <div id="recent-body" class="list-section-body">
+              <div id="conversation-list" class="conversation-list" role="list" aria-label="최근 채팅"></div>
+              <div id="list-status" class="list-status hidden" role="status"></div>
+              <div class="list-paging">
+                <button id="list-more" class="text-button hidden" type="button">더 보기</button>
+                <button id="list-less" class="text-button hidden" type="button">접기</button>
+              </div>
+            </div>
           </div>
-          <div class="list-section-title">에이전트</div>
-          <div id="agent-list" class="agent-list" role="list" aria-label="에이전트"></div>
-          <div id="agent-list-status" class="list-status hidden" role="status"></div>
-          <button id="other-agents-toggle" class="other-agents-toggle" type="button" aria-expanded="false"><span id="other-agents-chevron" class="other-agents-chevron" aria-hidden="true"></span><span id="other-agents-label">다른 에이전트</span></button>
-          <div id="other-agent-list" class="agent-list hidden" role="list" aria-label="다른 에이전트"></div>
+          <div class="list-section">
+            <button id="agents-toggle" class="list-section-title" type="button" aria-expanded="true" aria-controls="agents-body"><span id="agents-caret" class="list-section-caret" aria-hidden="true"></span><span>에이전트</span></button>
+            <div id="agents-body" class="list-section-body">
+              <div id="agent-list" class="agent-list" role="list" aria-label="에이전트"></div>
+              <div id="agent-list-status" class="list-status hidden" role="status"></div>
+              <div class="list-paging">
+                <button id="agent-more" class="text-button hidden" type="button">더 보기</button>
+                <button id="agent-less" class="text-button hidden" type="button">접기</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div id="agent-view" class="agent-view hidden">
           <div class="agent-view-head">
             <button id="agent-view-back" class="icon-button" type="button" title="뒤로" aria-label="뒤로">‹</button>
             <span id="agent-view-deleted" class="agent-deleted-badge hidden">지워짐</span>
             <b id="agent-view-name" class="agent-view-name"></b>
-            <button id="agent-view-new" class="icon-button" type="button" title="이 에이전트로 새 채팅" aria-label="이 에이전트로 새 채팅">+</button>
           </div>
           <div id="agent-conversation-list" class="conversation-list" role="list" aria-label="이 에이전트의 채팅"></div>
           <div id="agent-view-status" class="list-status hidden" role="status"></div>

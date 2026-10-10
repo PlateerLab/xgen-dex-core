@@ -11,7 +11,7 @@ import {
   conversationKey,
 } from '@dex/protocol';
 import { publicError } from '@dex/engine';
-import type { Agent, Conversation, ConversationAgent } from '@dex/engine';
+import type { Conversation, ConversationAgent } from '@dex/engine';
 import { ImeTextInput } from './ime-text-input';
 
 /**
@@ -20,8 +20,10 @@ import { ImeTextInput } from './ime-text-input';
  * 웹·데스크톱과 같은 모양이다. 맨 위 [＋ 새 채팅] 아래에 두 묶음이 놓인다.
  *
  *   최근 채팅   마지막으로 말한 대화 5개. [더 보기] 로 5개씩 늘리고 [접기] 로 되돌린다.
- *   에이전트    대화가 있는 에이전트(대화 수, 마지막 대화의 제목·날). 고르면 그 에이전트의 대화로 들어간다.
- *               [다른 에이전트] 를 펼치면 아직 대화가 없는 에이전트가 보이고, 고르면 그 에이전트로 새 채팅이다.
+ *   에이전트    대화가 있는 에이전트(대화 수, 마지막 대화의 제목·날). 최근에 쓴 5개, [더 보기]·[접기] 는 같다.
+ *               고르면 그 에이전트의 대화로 들어간다.
+ *
+ * 묶음 머리(최근 채팅·에이전트)에서 Enter 면 그 묶음을 접고 편다. 새 채팅은 [＋ 새 채팅] 에서만 연다.
  *
  * 대화 한 줄은 위에 작은 에이전트 이름(사라졌으면 [지워짐])과 꼬리표, 아래에 대화 제목이다. 제목·꼬리표·순서·묶음
  * 규칙은 @dex/protocol 의 conversation-list·conversation-agents 가 정하고, 여기서는 그대로 그린다.
@@ -41,32 +43,28 @@ export const RECENT_LABEL = '최근 채팅';
 export const MORE_LABEL = '더 보기';
 export const LESS_LABEL = '접기';
 export const AGENTS_LABEL = '에이전트';
-export const AGENT_NEW_CHAT_LABEL = '이 에이전트로 새 채팅';
 export const BACK_LABEL = '뒤로';
 export const NO_AGENT_CHATS = '아직 채팅이 없습니다';
-export const OTHER_AGENTS_LABEL = '다른 에이전트';
-export const NO_OTHER_AGENTS = '다른 에이전트가 없습니다';
 
-/** [다른 에이전트] 줄의 이름. 셀 것이 없으면 수를 붙이지 않는다. */
-export function otherAgentsLabel(count: number): string {
-  return count > 0 ? `${OTHER_AGENTS_LABEL} ${count}개` : OTHER_AGENTS_LABEL;
-}
+/** 목록의 두 묶음. */
+export type ListSection = 'recent' | 'agents';
+
+export const SECTION_LABELS: Record<ListSection, string> = { recent: RECENT_LABEL, agents: AGENTS_LABEL };
 
 export type ListRow =
   | { kind: 'new' }
-  /** 묶음 이름(최근 채팅·에이전트). 고를 수 없다. */
-  | { kind: 'section'; label: string }
+  /** 묶음 머리(최근 채팅·에이전트). Enter 로 접고 편다. */
+  | { kind: 'section'; section: ListSection; open: boolean }
+  /** 두 묶음 사이 빈 줄. 고를 수 없다. */
+  | { kind: 'gap' }
   /** `inAgent` 면 에이전트 안의 대화다. 위쪽 작은 글에 에이전트 이름 대신 날을 쓴다. */
   | { kind: 'conversation'; conversation: Conversation; inAgent?: boolean }
-  | { kind: 'more' }
-  | { kind: 'less' }
+  | { kind: 'more'; section: ListSection }
+  | { kind: 'less'; section: ListSection }
   | { kind: 'agent'; agent: ConversationAgent }
-  | { kind: 'others'; open: boolean; count: number }
-  | { kind: 'other'; agent: Agent }
-  /** 빈 자리 안내(아직 채팅이 없습니다 등). 고를 수 없다. */
+  /** 빈 자리 안내(아직 채팅이 없습니다). 고를 수 없다. */
   | { kind: 'note'; text: string }
-  | { kind: 'back'; agent: ConversationAgent }
-  | { kind: 'agentNew'; agent: ConversationAgent };
+  | { kind: 'back'; agent: ConversationAgent };
 
 /** 목록이 그릴 것. 에이전트 안으로 들어갔으면 `drill` 이 있고 그 에이전트의 대화만 보인다. */
 export interface ListModel {
@@ -76,9 +74,10 @@ export interface ListModel {
   /** 서버에 받을 쪽이 더 있다. */
   hasMore: boolean;
   agents: ConversationAgent[];
-  /** 아직 대화가 없는 에이전트. */
-  others: Agent[];
-  othersOpen: boolean;
+  /** [에이전트] 에 보일 수(5개씩 는다). */
+  agentsShown: number;
+  /** 접어 둔 묶음. */
+  closed: readonly ListSection[];
   drill?: {
     agent: ConversationAgent;
     conversations: Conversation[];
@@ -87,37 +86,55 @@ export interface ListModel {
   };
 }
 
+/** 묶음 하나: 머리, 펴져 있으면 줄들과 [더 보기]·[접기]. */
+function sectionRows<T>(
+  section: ListSection,
+  items: T[],
+  shownCount: number,
+  hasMore: boolean,
+  open: boolean,
+  toRow: (item: T) => ListRow,
+): ListRow[] {
+  const rows: ListRow[] = [{ kind: 'section', section, open }];
+  if (!open) return rows;
+  const shown = items.slice(0, shownCount);
+  for (const item of shown) rows.push(toRow(item));
+  if (items.length > shown.length || hasMore) rows.push({ kind: 'more', section });
+  if (shown.length > RECENT_CONVERSATION_STEP) rows.push({ kind: 'less', section });
+  return rows;
+}
+
 export function buildRows(model: ListModel): ListRow[] {
   if (model.drill) {
     const { agent, conversations, done } = model.drill;
     const rows: ListRow[] = [{ kind: 'back', agent }];
-    // 지워진 에이전트로는 새 채팅을 열 수 없다.
-    if (!agent.agentDeleted) rows.push({ kind: 'agentNew', agent });
     for (const conversation of conversations) rows.push({ kind: 'conversation', conversation, inAgent: true });
     if (done && conversations.length === 0) rows.push({ kind: 'note', text: NO_AGENT_CHATS });
     return rows;
   }
   const rows: ListRow[] = [{ kind: 'new' }];
-  const shown = model.conversations.slice(0, model.recentShown);
-  if (shown.length > 0) {
-    rows.push({ kind: 'section', label: RECENT_LABEL });
-    for (const conversation of shown) rows.push({ kind: 'conversation', conversation });
-    if (model.conversations.length > shown.length || model.hasMore) rows.push({ kind: 'more' });
-    if (shown.length > RECENT_CONVERSATION_STEP) rows.push({ kind: 'less' });
+  const open = (section: ListSection): boolean => !model.closed.includes(section);
+  if (model.conversations.length > 0) {
+    const toRow = (conversation: Conversation): ListRow => ({ kind: 'conversation', conversation });
+    rows.push(...sectionRows('recent', model.conversations, model.recentShown, model.hasMore, open('recent'), toRow));
   }
-  rows.push({ kind: 'section', label: AGENTS_LABEL });
-  for (const agent of model.agents) rows.push({ kind: 'agent', agent });
-  rows.push({ kind: 'others', open: model.othersOpen, count: model.others.length });
-  if (model.othersOpen) {
-    if (model.others.length === 0) rows.push({ kind: 'note', text: NO_OTHER_AGENTS });
-    for (const agent of model.others) rows.push({ kind: 'other', agent });
+  if (model.agents.length > 0) {
+    // 두 묶음 사이는 한 줄 띄운다.
+    if (model.conversations.length > 0) rows.push({ kind: 'gap' });
+    const toRow = (agent: ConversationAgent): ListRow => ({ kind: 'agent', agent });
+    rows.push(...sectionRows('agents', model.agents, model.agentsShown, false, open('agents'), toRow));
   }
   return rows;
 }
 
-/** 하나뿐인 줄([＋ 새 채팅]·[더 보기]·[접기]·[다른 에이전트]·[←]·[＋ 이 에이전트로 새 채팅])의 열쇠. */
-export function fixedRowKey(kind: 'new' | 'more' | 'less' | 'others' | 'back' | 'agentNew'): string {
+/** 하나뿐인 줄([＋ 새 채팅]·[←])의 열쇠. */
+export function fixedRowKey(kind: 'new' | 'back'): string {
   return `\u0000${kind}`;
+}
+
+/** 묶음마다 하나인 줄(머리·[더 보기]·[접기])의 열쇠. */
+export function sectionRowKey(kind: 'section' | 'more' | 'less', section: ListSection): string {
+  return `\u0000${kind}\u0000${section}`;
 }
 
 /** [에이전트] 묶음의 한 줄 열쇠. */
@@ -131,21 +148,23 @@ export function rowKey(row: ListRow): string {
     case 'conversation':
       return conversationKey(row.conversation);
     case 'section':
-      return `\u0000section\u0000${row.label}`;
+    case 'more':
+    case 'less':
+      return sectionRowKey(row.kind, row.section);
+    case 'gap':
+      return '\u0000gap';
     case 'note':
       return `\u0000note\u0000${row.text}`;
     case 'agent':
       return agentRowKey(row.agent.workflowId);
-    case 'other':
-      return `\u0000other\u0000${row.agent.workflowId}`;
     default:
       return fixedRowKey(row.kind);
   }
 }
 
-/** 커서가 설 수 있는 줄인가. 묶음 이름과 빈 자리 안내는 건너뛴다. */
+/** 커서가 설 수 있는 줄인가. 묶음 사이 빈 줄과 빈 자리 안내는 건너뛴다. */
 export function selectableRow(row: ListRow): boolean {
-  return row.kind !== 'section' && row.kind !== 'note';
+  return row.kind !== 'gap' && row.kind !== 'note';
 }
 
 /** `from` 에서 `delta` 쪽으로 가장 가까운 고를 수 있는 줄. 없으면 `from` 그대로. */
@@ -288,12 +307,14 @@ export function ConversationSidebar(props: {
           );
         }
         if (row.kind === 'section') {
+          // 묶음 머리: 굵게, ▾ 펴짐 · ▸ 접힘.
           return (
-            <Text key={rowKey(row)} bold dimColor wrap="truncate-end">
-              {row.label}
+            <Text key={rowKey(row)} color={color} bold wrap="truncate-end">
+              {mark} {row.open ? '▾' : '▸'} {SECTION_LABELS[row.section]}
             </Text>
           );
         }
+        if (row.kind === 'gap') return <Text key={rowKey(row)}> </Text>;
         if (row.kind === 'note') {
           return (
             <Text key={rowKey(row)} dimColor wrap="truncate-end">
@@ -311,6 +332,7 @@ export function ConversationSidebar(props: {
         }
         if (row.kind === 'agent') {
           const agent = row.agent;
+          // 고른 줄은 두 줄 다 커서 색이다.
           return (
             <Box key={rowKey(row)} flexDirection="column">
               <Box justifyContent="space-between">
@@ -318,27 +340,13 @@ export function ConversationSidebar(props: {
                   {mark} {agent.agentDeleted ? <Text color="red">[{DELETED_AGENT_LABEL}] </Text> : null}
                   {agent.workflowName || 'Agent'}
                 </Text>
-                <Text dimColor> {agent.conversationCount}</Text>
+                <Text color={color} dimColor={!color}> {agent.conversationCount}</Text>
               </Box>
-              <Text dimColor wrap="truncate-end">
+              <Text color={color} dimColor={!color} wrap="truncate-end">
                 {'  '}
                 {agentSummary(agent)}
               </Text>
             </Box>
-          );
-        }
-        if (row.kind === 'others') {
-          return (
-            <Text key={rowKey(row)} color={color} wrap="truncate-end">
-              {mark} {otherAgentsLabel(row.count)} {row.open ? '▾' : '▸'}
-            </Text>
-          );
-        }
-        if (row.kind === 'other') {
-          return (
-            <Text key={rowKey(row)} color={color} wrap="truncate-end">
-              {mark}   {row.agent.workflowName || 'Agent'}
-            </Text>
           );
         }
         if (row.kind === 'back') {
@@ -349,18 +357,15 @@ export function ConversationSidebar(props: {
             </Text>
           );
         }
-        if (row.kind === 'agentNew') {
-          return (
-            <Text key={rowKey(row)} color={color} wrap="truncate-end">
-              {mark} ＋ {AGENT_NEW_CHAT_LABEL}
-            </Text>
-          );
-        }
         const conversation = row.conversation;
         const open = rowKey(row) === props.openKey;
         return (
           <Box key={rowKey(row)} flexDirection="column">
-            <Text dimColor color={conversation.agentDeleted && !row.inAgent ? 'red' : undefined} wrap="truncate-end">
+            <Text
+              color={color ?? (conversation.agentDeleted && !row.inAgent ? 'red' : undefined)}
+              dimColor={!color}
+              wrap="truncate-end"
+            >
               {'  '}
               {row.inAgent ? agentConversationCaption(conversation) : conversationCaption(conversation)}
             </Text>

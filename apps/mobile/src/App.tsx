@@ -484,7 +484,7 @@ export default function App(): React.ReactElement {
               visible={section === 'conversations'}
               activeKey={activeKey}
               onOpen={openConversation}
-              // [+ 새 채팅] 은 처음 그대로, 에이전트 줄의 [+] 는 그 에이전트를 골라 둔 시작 화면.
+              // [+ 새 채팅] 은 처음 그대로의 시작 화면(에이전트를 골라 두는 것은 채팅의 [새 대화] 뿐이다).
               onNewChat={startNew}
               onRemoved={(c) => {
                 if (isActive(c)) clearChat();

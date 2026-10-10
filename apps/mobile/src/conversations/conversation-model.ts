@@ -9,11 +9,13 @@
  * (2026-10-10) 목록 몸통이 [최근 채팅] + [에이전트] 가 됐다. 묶음 고치기 규칙은 @dex/protocol
  * conversation-agents 가 정본이고, 여기는 세 목록(최근 채팅·에이전트·들어간 에이전트의 대화)에 함께 싣는다.
  * [⋯] 의 채팅 기록 관리 화면(데스크톱 ConversationManager 와 같은 일)의 규칙도 여기 있다.
+ *
+ * (2026-10-10 저녁) 에이전트마다 붙던 [+] 와 [다른 에이전트] 를 뺐다. 새 채팅은 맨 위 [+ 새 채팅] 으로만 연다.
+ * [에이전트] 도 5개부터 [더 보기]·[접기] 이고, 두 칸의 머리를 누르면 그 칸을 접는다.
  */
 import {
   CONVERSATION_TAG_LABELS,
   RECENT_CONVERSATION_STEP,
-  agentsWithoutConversations,
   conversationAgentLabel,
   conversationDayLabel,
   conversationDisplayTitle,
@@ -221,36 +223,33 @@ export function renameInState(
 //
 // 웹·Dex 전 표면과 같은 모양이다(@dex/protocol conversation-agents 머리말).
 //   최근 채팅: 마지막으로 말한 대화 5개, [더 보기] 로 5개씩 늘린다. 5개보다 많이 보이면 [접기].
-//   에이전트: 대화가 있는 에이전트(이름, 마지막 대화 제목 · 날, 대화 수, [+], >). 누르면 그 에이전트의 대화로.
-//   [다른 에이전트 N개]: 쓸 수 있지만 아직 대화가 없는 에이전트. 누르면 그 에이전트로 새 채팅.
+//   에이전트: 대화가 있는 에이전트(이름, 마지막 대화 제목 · 날, 대화 수). 최근 채팅과 같이 5개씩.
+//     누르면 그 에이전트의 대화로.
+//   두 칸의 머리(최근 채팅·에이전트)를 누르면 그 칸을 접고 편다.
 
 export const LIST_TEXT = {
   recent: '최근 채팅',
   more: '더 보기',
   less: '접기',
   agents: '에이전트',
-  newChatWith: '이 에이전트로 새 채팅',
   agentEmpty: '아직 채팅이 없습니다',
-  others: '다른 에이전트',
-  othersEmpty: '다른 에이전트가 없습니다',
+  agentsEmpty: '최근에 쓴 에이전트가 없습니다',
   recentEmpty: '채팅이 없습니다.',
 } as const;
 
-/** [다른 에이전트] 접기 단추의 말. 쓸 수 있는 에이전트를 아직 받지 못했으면 수를 붙이지 않는다. */
-export function othersLabel(count: number | null): string {
-  return count == null ? LIST_TEXT.others : `${LIST_TEXT.others} ${count}개`;
-}
+/** 목록 몸통의 두 칸. 머리를 누르면 접힌다. */
+export type ListSection = 'recent' | 'agents';
 
-export interface RecentWindow {
-  rows: Conversation[];
+export interface RecentWindow<T = Conversation> {
+  rows: T[];
   /** [더 보기]: 받아 둔 것이 더 있거나 서버에 다음 쪽이 있다. */
   more: boolean;
   /** [접기]: 5개보다 많이 보인다. */
   less: boolean;
 }
 
-/** [최근 채팅] 에 보일 줄. `shown` 은 지금 보이기로 한 수. */
-export function recentWindow(items: readonly Conversation[], shown: number, cursor: string | null): RecentWindow {
+/** [최근 채팅] 에 보일 줄. `shown` 은 지금 보이기로 한 수. [에이전트] 도 같다(다 받아 두니 cursor 는 null). */
+export function recentWindow<T>(items: readonly T[], shown: number, cursor: string | null): RecentWindow<T> {
   const rows = items.slice(0, Math.max(0, shown));
   return {
     rows,
@@ -275,8 +274,6 @@ export interface AgentRow {
   /** 둘째 줄: 마지막 대화 제목 · 날. */
   sub: string;
   count: number;
-  /** [+] 를 그린다(사라진 에이전트는 아니다). */
-  canStart: boolean;
 }
 
 export function agentRow(a: ConversationAgent, now?: Date): AgentRow {
@@ -289,42 +286,18 @@ export function agentRow(a: ConversationAgent, now?: Date): AgentRow {
     deleted: a.agentDeleted,
     sub: day ? `${title} · ${day}` : title,
     count: a.conversationCount,
-    canStart: !a.agentDeleted && !!a.workflowId,
-  };
-}
-
-/**
- * [+] 가 시작 화면에 골라 둘 에이전트. 묶음은 에이전트 id·이름만 알아 나머지는 비운다(시작 화면은 받은
- * 에이전트 목록에 있으면 그것을 쓴다). 사라진 에이전트면 null(시작 화면을 처음 그대로 연다).
- */
-export function agentForStart(a: Pick<ConversationAgent, 'workflowId' | 'workflowName' | 'agentDeleted'>): Agent | null {
-  if (a.agentDeleted || !a.workflowId) return null;
-  return {
-    id: 0,
-    workflowId: a.workflowId,
-    workflowName: a.workflowName || a.workflowId,
-    nodeCount: 0,
-    isShared: false,
-    isDeployed: false,
-    isCompleted: false,
-    description: '',
-    username: '',
-    fullName: '',
-    createdAt: '',
-    updatedAt: '',
   };
 }
 
 /** 목록 몸통의 한 칸. 화면은 이 차례대로 그린다. */
 export type ChatListItem =
-  | { kind: 'title'; key: string; text: string }
+  /** 칸의 머리. 누르면 접고 편다. */
+  | { kind: 'title'; key: string; section: ListSection; text: string; open: boolean }
   | { kind: 'conversation'; key: string; conversation: Conversation }
-  | { kind: 'recentMore'; key: string; more: boolean; less: boolean }
+  | { kind: 'more'; key: string; section: ListSection; more: boolean; less: boolean }
   | { kind: 'agent'; key: string; row: AgentRow }
-  | { kind: 'others'; key: string; label: string; open: boolean }
-  | { kind: 'other'; key: string; agent: Agent }
-  /** 안내 한 줄. `spinner` 면 받는 중, `retry` 면 누르면 그것을 다시 읽는다. */
-  | { kind: 'note'; key: string; text: string; spinner?: boolean; danger?: boolean; retry?: 'agents' | 'available' };
+  /** 안내 한 줄. `spinner` 면 받는 중, `retry` 면 누르면 에이전트 묶음을 다시 읽는다. */
+  | { kind: 'note'; key: string; text: string; spinner?: boolean; danger?: boolean; retry?: boolean };
 
 export interface ChatListInput {
   recent: ConversationListState | null;
@@ -333,49 +306,49 @@ export interface ChatListInput {
   shown: number;
   agents: ConversationAgent[] | null;
   agentsError: string;
-  /** 쓸 수 있는 에이전트(시작 화면과 같은 목록). 받기 전이면 null. */
-  available: Agent[] | null;
-  availableError: string;
-  othersOpen: boolean;
+  /** [에이전트] 에 보이는 수. */
+  agentsShown: number;
+  /** 접힌 칸. 머리만 남는다. */
+  closed: Readonly<Record<ListSection, boolean>>;
   now?: Date;
 }
 
 export function chatListItems(s: ChatListInput): ChatListItem[] {
-  const out: ChatListItem[] = [{ kind: 'title', key: 'title:recent', text: LIST_TEXT.recent }];
-  if (!s.recent) {
-    if (!s.recentError) out.push({ kind: 'note', key: 'note:recent', text: '', spinner: true });
-  } else if (s.recent.items.length === 0) {
-    out.push({ kind: 'note', key: 'note:recent', text: LIST_TEXT.recentEmpty });
-  } else {
-    const win = recentWindow(s.recent.items, s.shown, s.recent.cursor);
-    for (const c of win.rows) out.push({ kind: 'conversation', key: `c:${conversationKey(c)}`, conversation: c });
-    if (win.more || win.less) out.push({ kind: 'recentMore', key: 'recent-more', more: win.more, less: win.less });
+  const out: ChatListItem[] = [];
+  /** 칸의 머리를 넣는다. 펼쳐져 있으면 true. */
+  const head = (section: ListSection, text: string): boolean => {
+    out.push({ kind: 'title', key: `title:${section}`, section, text, open: !s.closed[section] });
+    return !s.closed[section];
+  };
+  const moreBar = (section: ListSection, win: RecentWindow<unknown>) => {
+    if (win.more || win.less) out.push({ kind: 'more', key: `more:${section}`, section, more: win.more, less: win.less });
+  };
+
+  if (head('recent', LIST_TEXT.recent)) {
+    if (!s.recent) {
+      if (!s.recentError) out.push({ kind: 'note', key: 'note:recent', text: '', spinner: true });
+    } else if (s.recent.items.length === 0) {
+      out.push({ kind: 'note', key: 'note:recent', text: LIST_TEXT.recentEmpty });
+    } else {
+      const win = recentWindow(s.recent.items, s.shown, s.recent.cursor);
+      for (const c of win.rows) out.push({ kind: 'conversation', key: `c:${conversationKey(c)}`, conversation: c });
+      moreBar('recent', win);
+    }
   }
 
-  out.push({ kind: 'title', key: 'title:agents', text: LIST_TEXT.agents });
+  if (!head('agents', LIST_TEXT.agents)) return out;
   if (!s.agents) {
     out.push(
       s.agentsError
-        ? { kind: 'note', key: 'note:agents', text: s.agentsError, danger: true, retry: 'agents' }
+        ? { kind: 'note', key: 'note:agents', text: s.agentsError, danger: true, retry: true }
         : { kind: 'note', key: 'note:agents', text: '', spinner: true },
     );
-    return out;
-  }
-  for (const a of s.agents) out.push({ kind: 'agent', key: `a:${a.workflowId}`, row: agentRow(a, s.now) });
-
-  const others = s.available ? agentsWithoutConversations(s.agents, s.available) : null;
-  out.push({ kind: 'others', key: 'others', label: othersLabel(others ? others.length : null), open: s.othersOpen });
-  if (!s.othersOpen) return out;
-  if (!others) {
-    out.push(
-      s.availableError
-        ? { kind: 'note', key: 'note:others', text: s.availableError, danger: true, retry: 'available' }
-        : { kind: 'note', key: 'note:others', text: '', spinner: true },
-    );
-  } else if (others.length === 0) {
-    out.push({ kind: 'note', key: 'note:others', text: LIST_TEXT.othersEmpty });
+  } else if (s.agents.length === 0) {
+    out.push({ kind: 'note', key: 'note:agents', text: LIST_TEXT.agentsEmpty });
   } else {
-    for (const a of others) out.push({ kind: 'other', key: `o:${a.workflowId}`, agent: a });
+    const win = recentWindow(s.agents, s.agentsShown, null);
+    for (const a of win.rows) out.push({ kind: 'agent', key: `a:${a.workflowId}`, row: agentRow(a, s.now) });
+    moreBar('agents', win);
   }
   return out;
 }
@@ -611,7 +584,7 @@ export function managerAfterRename(
 // ── 시작 화면의 잠금 ──────────────────────────────────────────────
 
 /**
- * 넘겨받은 에이전트(목록의 [+]·채팅의 [새 대화])를 골라 둔 채로 둘까. 고를 수 있는 목록에 없으면
+ * 넘겨받은 에이전트(채팅의 [새 대화])를 골라 둔 채로 둘까. 고를 수 있는 목록에 없으면
  * (공유가 풀렸거나 지워졌다) 평소처럼 [새 에이전트로 시작] 에서 시작한다(데스크톱 시작 화면과 같다).
  */
 export function keepPresetAgent(workflowId: string, agents: readonly Pick<Agent, 'workflowId'>[]): boolean {

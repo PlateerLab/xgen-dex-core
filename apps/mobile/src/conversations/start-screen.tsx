@@ -47,7 +47,7 @@ const NAME_CHECK_DELAY_MS = 300;
 
 /**
  * 시작 화면을 여는 표식. `seq` 가 바뀔 때마다 고른 것을 처음으로 되돌린다. `agent` 를 주면 그것을 골라 둔다
- * (채팅의 [새 대화], 목록의 [+]). 고를 수 있는 목록에 없으면 평소처럼 시작한다.
+ * (채팅의 [새 대화]). 고를 수 있는 목록에 없으면 평소처럼 시작한다.
  */
 export interface StartPreset {
   seq: number;
@@ -100,7 +100,7 @@ export function StartScreen({
   /** 넘겨받은 에이전트를 아직 목록과 맞춰 보지 않았다. 연 뒤 처음 받은 목록으로 맞춘다(앞서 받은 목록은 낡았을 수 있다). */
   const presetToCheck = useRef<string | null>(null);
 
-  // 열 때마다 처음으로(목록의 [+ 새 채팅]), 또는 넘겨받은 에이전트를 골라 둔다(채팅의 [새 대화], 목록의 [+]).
+  // 열 때마다 처음으로(목록의 [+ 새 채팅]), 또는 넘겨받은 에이전트를 골라 둔다(채팅의 [새 대화]).
   useEffect(() => {
     setSelected(preset.agent?.workflowId ?? '');
     presetToCheck.current = preset.agent?.workflowId || null;

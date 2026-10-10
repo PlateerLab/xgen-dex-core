@@ -10,7 +10,6 @@ import {
   CONVERSATION_TAG_LABELS,
   RECENT_CONVERSATION_STEP,
   SEARCH_RECENT_COUNT,
-  agentsWithoutConversations,
   conversationAgentLabel,
   conversationDayLabel,
   conversationDisplayTitle,
@@ -93,14 +92,13 @@ export function purgeDeletedLabel(count: number): string {
 
 // ── [최근 채팅] · [에이전트] (2026-10-10) ──────────────────────────────
 //
-// 목록 화면 = 최근 채팅 5개([더 보기] 로 5개씩) + 대화가 있는 에이전트(마지막으로 말한 순서) + [다른 에이전트].
-// 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다. 묶음·고치기 규칙은 @dex/protocol conversation-agents 다.
+// 목록 화면 = 최근 채팅 5개 + 대화가 있는 에이전트 5개(마지막으로 말한 순서). 둘 다 [더 보기] 로 5개씩 늘고
+// [접기] 로 5개로 돌아간다. 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다. 새 채팅은 [+ 새 채팅] 하나뿐이다.
+// 묶음·고치기 규칙은 @dex/protocol conversation-agents 다.
 
 export const LIST_TEXT = {
   agentEmpty: '아직 채팅이 없습니다',
   agentLoading: '불러오는 중...',
-  others: '다른 에이전트',
-  othersEmpty: '다른 에이전트가 없습니다',
 } as const;
 
 /** [최근 채팅] 이 그릴 것. */
@@ -125,7 +123,7 @@ export function recentSection(
   };
 }
 
-/** [더 보기] 를 누른 뒤 보일 수. */
+/** [더 보기] 를 누른 뒤 보일 수([최근 채팅] · [에이전트] 같다). */
 export function nextRecentCount(count: number): number {
   return Math.max(count, RECENT_CONVERSATION_STEP) + RECENT_CONVERSATION_STEP;
 }
@@ -135,7 +133,7 @@ export function recentNeedsPage(loaded: number, count: number, hasNextPage: bool
   return hasNextPage && loaded < count;
 }
 
-/** [에이전트] 한 줄: 이름, 아래에 "마지막 대화 제목 · 날", 오른쪽에 대화 수 · [+] · >. */
+/** [에이전트] 한 줄: 이름, 아래에 "마지막 대화 제목 · 날", 오른쪽에 대화 수. */
 export interface AgentRow {
   workflowId: string;
   /** 에이전트 이름. 사라진 에이전트는 [지워짐] 옆에 흐리게. */
@@ -144,8 +142,6 @@ export interface AgentRow {
   /** 마지막 대화 제목 · 날. */
   detail: string;
   count: number;
-  /** [+] 를 그리는가. 사라진 에이전트로는 새 채팅을 열 수 없다. */
-  canStart: boolean;
 }
 
 function agentName(name: string, deleted: boolean): string {
@@ -161,40 +157,29 @@ export function conversationAgentRows(agents: readonly ConversationAgent[], now?
       .filter(Boolean)
       .join(' · '),
     count: a.conversationCount,
-    canStart: !a.agentDeleted,
   }));
 }
 
-/** [다른 에이전트]: 쓸 수 있지만 아직 대화가 없는 에이전트. 펼쳤을 때만 줄이 있다. */
-export interface OtherAgentsView {
-  open: boolean;
-  label: string;
-  rows: Array<{ workflowId: string; name: string }>;
-  /** 펼쳤는데 없을 때의 글. */
-  empty?: string;
+/** [에이전트] 가 그릴 것. [더 보기] · [접기] 는 [최근 채팅] 과 같다. */
+export interface AgentSection {
+  rows: AgentRow[];
+  /** [더 보기]: 보이는 것보다 많다. */
+  more: boolean;
+  /** [접기]: 5개보다 많이 보인다. */
+  less: boolean;
 }
 
-export function otherAgentsView(
-  withChats: readonly Pick<ConversationAgent, 'workflowId'>[],
-  available: readonly Agent[],
-  open: boolean,
-): OtherAgentsView {
-  if (!open) return { open, label: LIST_TEXT.others, rows: [] };
-  const others = agentsWithoutConversations(withChats, available);
-  return {
-    open,
-    label: others.length ? `${LIST_TEXT.others} ${others.length}개` : LIST_TEXT.others,
-    rows: others.map((a) => ({ workflowId: a.workflowId, name: a.workflowName || a.workflowId })),
-    ...(others.length ? {} : { empty: LIST_TEXT.othersEmpty }),
-  };
+/** 대화가 있는 에이전트(마지막으로 말한 순서)에서 앞의 `count` 개. 묶음은 한 번에 다 받으므로 다음 쪽은 없다. */
+export function agentSection(agents: readonly ConversationAgent[], count: number, now?: Date): AgentSection {
+  const rows = conversationAgentRows(agents.slice(0, count), now);
+  return { rows, more: agents.length > count, less: rows.length > RECENT_CONVERSATION_STEP };
 }
 
-/** 에이전트 줄을 눌러 들어간 화면: 머리 [<] 이름 [+], 그 에이전트의 대화(작은 줄은 날). */
+/** 에이전트 줄을 눌러 들어간 화면: 머리 [<] 이름, 그 에이전트의 대화(작은 줄은 날). */
 export interface AgentDrillView {
   workflowId: string;
   name: string;
   agentDeleted: boolean;
-  canStart: boolean;
   rows: ConversationRow[];
   loading: boolean;
   loadingMore: boolean;
@@ -223,7 +208,6 @@ export function agentDrillView(input: {
     workflowId: input.workflowId,
     name: agentName(input.workflowName, input.agentDeleted),
     agentDeleted: input.agentDeleted,
-    canStart: !input.agentDeleted,
     rows,
     loading: input.loading,
     loadingMore: input.loadingMore,

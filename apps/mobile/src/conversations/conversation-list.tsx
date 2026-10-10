@@ -2,23 +2,25 @@
  * [채팅 목록] (2026-10-09): 폰의 첫 화면. ChatGPT·Claude 처럼 **대화 단위, 마지막으로 말한 순서**.
  *
  *   [+ 새 채팅]                         [검색] [⋯]   ⋯ = 채팅 기록 관리 · 에이전트가 사라진 채팅 제거 (N)
- *   최근 채팅
+ *   최근 채팅 v                                      머리를 누르면 접고 편다
  *     에이전트 이름(작게) [꼬리표]
  *     대화 제목                                [⋯]   5개, [더 보기] 로 5개씩
  *     [더 보기] [접기]
- *   에이전트
- *     이름                             3  [+]  >
+ *   ──────
+ *   에이전트 v
+ *     이름                                   3      5개, [더 보기] 로 5개씩
  *     마지막 대화 제목 · 날
- *     [다른 에이전트 N개]                         펼치면 아직 대화가 없는 에이전트
+ *     [더 보기] [접기]
  *
  * (2026-10-10) 몸통이 웹·Dex 전 표면과 같은 [최근 채팅] · [에이전트] 다(@dex/protocol conversation-agents).
  * 최근 채팅은 40개씩 받아 두고 5개부터 보인다. [더 보기] 에 모자라면 다음 쪽을 받는다. 에이전트 줄을 누르면
- * 그 에이전트의 대화 화면([←] 이름 [+])으로 들어가고, [+] 는 그 에이전트를 골라 둔 시작 화면이다.
+ * 그 에이전트의 대화 화면([←] 이름)으로 들어간다. 새 채팅은 맨 위 [+ 새 채팅] 으로만 연다(에이전트마다의
+ * [+] 와 [다른 에이전트] 는 뺐다). 접은 칸은 기기에 적어 두어 앱을 다시 켜도 접혀 있다.
  * 줄의 말과 목록 고치기는 conversation-model 이 묶는다. 줄을 길게 누르거나 [⋯] 를 누르면 [이름 바꾸기]·[삭제].
  * 바꾼 것은 최근 채팅·에이전트·들어간 화면에 함께 싣는다(applyChatListChanges). 에이전트가 사라진 대화는
  * 열면 기록만 보인다. 돋보기는 채팅 검색(conversation-search)을 연다. [⋯] 는 메뉴다: [채팅 기록 관리] 가
  * 관리 화면(conversation-manager)을 열고, [에이전트가 사라진 채팅 제거 (N)] 는 묻고 지운다(관리 화면에도 있다).
- * 보일 때마다, 그리고 당겨서 새로고침하면 최근 채팅·에이전트 묶음·쓸 수 있는 에이전트를 다시 읽는다.
+ * 보일 때마다, 그리고 당겨서 새로고침하면 최근 채팅과 에이전트 묶음을 다시 읽는다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -32,12 +34,12 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DELETED_AGENT_LABEL,
   RECENT_CONVERSATION_STEP,
   conversationDisplayTitle,
   conversationKey,
-  type Agent,
   type Conversation,
   type ConversationAgent,
   type ConversationListChange,
@@ -51,7 +53,6 @@ import {
   CONVERSATION_TEXT,
   LIST_TEXT,
   MANAGER_TEXT,
-  agentForStart,
   agentRow,
   applyChatListChanges,
   applyConversationPage,
@@ -64,6 +65,7 @@ import {
   withDrillPage,
   type ChatListItem,
   type ChatLists,
+  type ListSection,
 } from './conversation-model';
 import { ConversationSearch } from './conversation-search';
 import { ConversationManager } from './conversation-manager';
@@ -71,6 +73,9 @@ import { ConversationSheet } from './conversation-sheet';
 
 /** 한 번에 받는 대화 수(최근 채팅·에이전트의 대화 모두). */
 const PAGE_SIZE = 40;
+
+/** 접은 칸을 적어 두는 자리({ recent, agents }). */
+const CLOSED_KEY = 'chat-list-closed';
 
 type Styles = ReturnType<typeof makeStyles>;
 
@@ -99,7 +104,7 @@ function ConversationLine({
       delayLongPress={350}
       accessibilityRole="button"
       accessibilityLabel={`${row.title} 열기`}
-      style={({ pressed }) => [st.row, active && st.rowActive, pressed && { backgroundColor: p.panel2 }]}
+      style={({ pressed }) => [st.row, active && st.rowActive, pressed && st.rowPressed]}
     >
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={st.meta}>
@@ -151,8 +156,8 @@ export function ConversationsSection({
   /** 지금 열린 대화(conversationKey). 그 줄을 표시한다. */
   activeKey: string;
   onOpen: (c: Conversation) => void;
-  /** 시작 화면으로. 에이전트를 주면 그것을 골라 둔다. */
-  onNewChat: (agent?: Agent) => void;
+  /** 시작 화면으로(맨 위 [+ 새 채팅]). */
+  onNewChat: () => void;
   /** 대화를 지웠다. 열려 있던 대화면 채팅 화면을 비운다. */
   onRemoved: (c: Conversation) => void;
   /** 이름이 바뀌었다. 열려 있던 대화면 머리의 제목도 바꾼다. */
@@ -167,9 +172,12 @@ export function ConversationsSection({
   listsRef.current = lists;
   /** [최근 채팅] 에 보이는 수. */
   const [shown, setShown] = useState(RECENT_CONVERSATION_STEP);
-  /** 쓸 수 있는 에이전트(시작 화면과 같은 목록). [다른 에이전트] 가 쓴다. */
-  const [available, setAvailable] = useState<Agent[] | null>(null);
-  const [othersOpen, setOthersOpen] = useState(false);
+  /** [에이전트] 에 보이는 수. */
+  const [agentsShown, setAgentsShown] = useState(RECENT_CONVERSATION_STEP);
+  /** 접은 칸. 기기에 적어 둔다. */
+  const [closed, setClosed] = useState<Record<ListSection, boolean>>({ recent: false, agents: false });
+  /** 적어 둔 값을 읽기 전에 눌렀으면 읽은 값으로 덮지 않는다. */
+  const closedTouched = useRef(false);
   const [loading, setLoading] = useState(false);
   /** 당겨서 새로고침 중(보일 때마다 읽는 것은 위 손잡이를 띄우지 않는다). */
   const [pulling, setPulling] = useState(false);
@@ -177,7 +185,6 @@ export function ConversationsSection({
   const loadingMoreRef = useRef(false);
   const [error, setError] = useState('');
   const [agentsError, setAgentsError] = useState('');
-  const [availableError, setAvailableError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   /** [⋯] 를 연 대화(목록과 에이전트의 대화 화면이 함께 쓴다). */
@@ -193,7 +200,6 @@ export function ConversationsSection({
   /** 처음부터 다시 읽을 때마다 올린다. 늦게 온 앞 응답(다음 쪽 포함)은 버린다. */
   const seq = useRef(0);
   const agentsSeq = useRef(0);
-  const availableSeq = useRef(0);
   const drillSeq = useRef(0);
 
   const load = useCallback(
@@ -247,20 +253,6 @@ export function ConversationsSection({
       const msg = friendlyError(e, '에이전트 목록을 불러오지 못했습니다.');
       diagLog(`에이전트 묶음 실패: ${msg}`);
       setAgentsError(msg);
-    }
-  }, [client]);
-
-  /** 시작 화면과 같은 에이전트 목록. */
-  const loadAvailable = useCallback(async () => {
-    const my = ++availableSeq.current;
-    try {
-      const list = await client.api.agents.listAll({ pageSize: 100 }, 5);
-      if (my !== availableSeq.current) return;
-      setAvailable(list);
-      setAvailableError('');
-    } catch (e) {
-      if (my !== availableSeq.current) return;
-      setAvailableError(friendlyError(e, '에이전트 목록을 불러오지 못했습니다.'));
     }
   }, [client]);
 
@@ -322,8 +314,27 @@ export function ConversationsSection({
     if (!visible) return;
     void load(listsRef.current.recent ? 'head' : 'reset');
     void loadAgents();
-    void loadAvailable();
-  }, [visible, load, loadAgents, loadAvailable]);
+  }, [visible, load, loadAgents]);
+
+  useEffect(() => {
+    void AsyncStorage.getItem(CLOSED_KEY)
+      .then((raw) => {
+        if (!raw || closedTouched.current) return;
+        const saved = JSON.parse(raw) as Partial<Record<ListSection, unknown>>;
+        setClosed({ recent: saved.recent === true, agents: saved.agents === true });
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const toggleSection = useCallback((section: ListSection) => {
+    closedTouched.current = true;
+    setClosed((cur) => ({ ...cur, [section]: !cur[section] }));
+  }, []);
+
+  useEffect(() => {
+    if (!closedTouched.current) return;
+    void AsyncStorage.setItem(CLOSED_KEY, JSON.stringify(closed)).catch(() => undefined);
+  }, [closed]);
 
   /** 소식(또는 이 화면에서 바꾼 것)을 세 목록에 싣고, 모르는 것은 다시 읽는다. */
   const applyChanges = useCallback(
@@ -446,18 +457,15 @@ export function ConversationsSection({
     if (next.fetch) void loadMore();
   }, [shown, loadMore]);
 
+  /** [에이전트] 의 [더 보기]: 5개 더(묶음은 다 받아 둔다). */
+  const showMoreAgents = useCallback(() => {
+    setAgentsShown((n) => moreRecent(n, listsRef.current.agents?.length ?? 0, null).shown);
+  }, []);
+
   const refreshAll = useCallback(() => {
     setPulling(true);
-    void Promise.all([load('reset'), loadAgents(), loadAvailable()]).finally(() => setPulling(false));
-  }, [load, loadAgents, loadAvailable]);
-
-  const startWith = useCallback(
-    (agent: Agent | null) => {
-      if (listsRef.current.drill) closeDrill();
-      onNewChat(agent ?? undefined);
-    },
-    [closeDrill, onNewChat],
-  );
+    void Promise.all([load('reset'), loadAgents()]).finally(() => setPulling(false));
+  }, [load, loadAgents]);
 
   const body = useMemo(
     () =>
@@ -467,18 +475,36 @@ export function ConversationsSection({
         shown,
         agents: lists.agents,
         agentsError,
-        available,
-        availableError,
-        othersOpen,
+        agentsShown,
+        closed,
       }),
-    [lists.recent, lists.agents, error, shown, agentsError, available, availableError, othersOpen],
+    [lists.recent, lists.agents, error, shown, agentsError, agentsShown, closed],
   );
 
   const renderItem = useCallback(
     ({ item }: { item: ChatListItem }) => {
       switch (item.kind) {
         case 'title':
-          return <Text style={st.sectionTitle}>{item.text}</Text>;
+          return (
+            <Pressable
+              onPress={() => toggleSection(item.section)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: item.open }}
+              style={({ pressed }) => [
+                st.sectionHead,
+                item.section === 'agents' && st.sectionDivided,
+                pressed && { opacity: 0.6 },
+              ]}
+            >
+              <Text style={st.sectionTitle}>{item.text}</Text>
+              <Ionicons
+                name="chevron-down"
+                size={15}
+                color={p.muted}
+                style={item.open ? undefined : { transform: [{ rotate: '-90deg' }] }}
+              />
+            </Pressable>
+          );
         case 'conversation':
           return (
             <ConversationLine
@@ -490,12 +516,18 @@ export function ConversationsSection({
               st={st}
             />
           );
-        case 'recentMore':
+        case 'more': {
+          const recent = item.section === 'recent';
           return (
             <View style={st.moreBar}>
               {item.more ? (
-                <Pressable onPress={showMore} disabled={loadingMore} accessibilityRole="button" style={st.textBtn}>
-                  {loadingMore ? (
+                <Pressable
+                  onPress={recent ? showMore : showMoreAgents}
+                  disabled={recent && loadingMore}
+                  accessibilityRole="button"
+                  style={st.textBtn}
+                >
+                  {recent && loadingMore ? (
                     <ActivityIndicator color={p.muted} />
                   ) : (
                     <Text style={st.textBtnText}>{LIST_TEXT.more}</Text>
@@ -504,7 +536,7 @@ export function ConversationsSection({
               ) : null}
               {item.less ? (
                 <Pressable
-                  onPress={() => setShown(RECENT_CONVERSATION_STEP)}
+                  onPress={() => (recent ? setShown(RECENT_CONVERSATION_STEP) : setAgentsShown(RECENT_CONVERSATION_STEP))}
                   accessibilityRole="button"
                   style={st.textBtn}
                 >
@@ -513,6 +545,7 @@ export function ConversationsSection({
               ) : null}
             </View>
           );
+        }
         case 'agent': {
           const row = item.row;
           return (
@@ -520,7 +553,7 @@ export function ConversationsSection({
               onPress={() => openDrill(row.agent)}
               accessibilityRole="button"
               accessibilityLabel={row.name}
-              style={({ pressed }) => [st.row, pressed && { backgroundColor: p.panel2 }]}
+              style={({ pressed }) => [st.row, st.agentRow, pressed && st.rowPressed]}
             >
               <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
                 <View style={st.meta}>
@@ -534,67 +567,13 @@ export function ConversationsSection({
                 </Text>
               </View>
               <Text style={st.count}>{row.count}</Text>
-              {row.canStart ? (
-                <Pressable
-                  onPress={() => startWith(agentForStart(row.agent))}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${row.name} ${LIST_TEXT.newChatWith}`}
-                  style={st.plus}
-                >
-                  <Ionicons name="add" size={20} color={p.primary} />
-                </Pressable>
-              ) : null}
-              <Ionicons name="chevron-forward" size={18} color={p.muted} style={{ marginRight: 8 }} />
             </Pressable>
           );
         }
-        case 'others':
-          return (
-            <Pressable
-              onPress={() => {
-                setOthersOpen((v) => !v);
-                if (!available) void loadAvailable();
-              }}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: item.open }}
-              style={st.othersToggle}
-            >
-              <Ionicons name={item.open ? 'chevron-down' : 'chevron-forward'} size={16} color={p.muted} />
-              <Text style={st.othersText}>{item.label}</Text>
-            </Pressable>
-          );
-        case 'other':
-          return (
-            <Pressable
-              onPress={() => startWith(item.agent)}
-              accessibilityRole="button"
-              accessibilityLabel={`${item.agent.workflowName || item.agent.workflowId} ${LIST_TEXT.newChatWith}`}
-              style={({ pressed }) => [st.otherRow, pressed && { backgroundColor: p.panel2 }]}
-            >
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={st.agentName} numberOfLines={1}>
-                  {item.agent.workflowName || item.agent.workflowId}
-                </Text>
-                {item.agent.description ? (
-                  <Text style={st.agentSub} numberOfLines={1}>
-                    {item.agent.description}
-                  </Text>
-                ) : null}
-              </View>
-              <View style={st.plus}>
-                <Ionicons name="add" size={20} color={p.primary} />
-              </View>
-            </Pressable>
-          );
         case 'note':
           if (item.spinner) return <ActivityIndicator style={{ marginVertical: 10 }} color={p.primary} />;
           return item.retry ? (
-            <Pressable
-              onPress={() => void (item.retry === 'agents' ? loadAgents() : loadAvailable())}
-              accessibilityRole="button"
-              style={st.noteBox}
-            >
+            <Pressable onPress={() => void loadAgents()} accessibilityRole="button" style={st.noteBox}>
               <Text style={[st.note, item.danger && { color: p.danger }]}>{item.text}</Text>
               <Text style={st.textBtnText}>다시 시도</Text>
             </Pressable>
@@ -603,14 +582,13 @@ export function ConversationsSection({
           );
       }
     },
-    [activeKey, available, loadAgents, loadAvailable, loadingMore, onOpen, openDrill, p, showMore, st, startWith],
+    [activeKey, loadAgents, loadingMore, onOpen, openDrill, p, showMore, showMoreAgents, st, toggleSection],
   );
 
   const drill = lists.drill;
   // 머리의 이름은 묶음의 최신 줄을 따른다(들어간 뒤 이름이 바뀌었을 수 있다).
   const drillAgent = drill ? (lists.agents?.find((a) => a.workflowId === drill.agent.workflowId) ?? drill.agent) : null;
   const drillRow = drillAgent ? agentRow(drillAgent) : null;
-  const drillStart = drillAgent ? agentForStart(drillAgent) : null;
 
   const sheet = (
     <ConversationSheet conversation={menu} onRename={rename} onRemove={confirmRemove} onClose={() => setMenu(null)} />
@@ -650,7 +628,7 @@ export function ConversationsSection({
         keyExtractor={(item) => item.key}
         renderItem={renderItem}
         contentContainerStyle={st.list}
-        // 당겨서 새로고침: 처음부터 다시 받는다(에이전트 묶음과 쓸 수 있는 에이전트도).
+        // 당겨서 새로고침: 처음부터 다시 받는다(에이전트 묶음도).
         refreshControl={<RefreshControl refreshing={pulling} onRefresh={refreshAll} tintColor={p.muted} />}
         ListHeaderComponent={
           notice || error ? (
@@ -710,13 +688,12 @@ export function ConversationsSection({
         onPurged={purged}
       />
 
-      {/* 에이전트의 대화: [←] 이름 [+]. 사라진 에이전트는 [+] 가 없다. 기기의 뒤로 단추도 목록으로 돌아간다. */}
+      {/* 에이전트의 대화: [←] 이름. 기기의 뒤로 단추도 목록으로 돌아간다. */}
       <ScreenModal
         visible={!!drill}
         title={drillRow?.name ?? ''}
         subtitle={drillRow?.deleted ? CONVERSATION_TEXT.deletedAgentNotice : undefined}
         onClose={closeDrill}
-        actions={drillStart ? [{ icon: 'add', label: LIST_TEXT.newChatWith, onPress: () => startWith(drillStart) }] : []}
       >
         <FlatList
           data={drill?.list?.items ?? []}
@@ -802,13 +779,17 @@ function makeStyles(p: Palette) {
     },
     newChatText: { color: p.primary, fontSize: 15, fontWeight: '800' },
     list: { padding: 12, paddingBottom: 24, gap: 8 },
-    sectionTitle: { color: p.muted, fontSize: 12.5, fontWeight: '700', paddingHorizontal: 4, marginTop: 6 },
+    sectionHead: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: TAP, paddingHorizontal: 4 },
+    sectionDivided: { borderTopWidth: 1, borderTopColor: p.border, marginTop: 12, paddingTop: 12 },
+    sectionTitle: { color: p.text, fontSize: 15, fontWeight: '800' },
     row: {
       flexDirection: 'row', alignItems: 'center', gap: 6,
       backgroundColor: p.panel, borderWidth: 1, borderColor: p.border, borderRadius: 14,
       paddingLeft: 14, paddingRight: 4, paddingVertical: 10, minHeight: 60,
     },
     rowActive: { borderColor: alpha(p.primary, 60), backgroundColor: alpha(p.primary, 8) },
+    rowPressed: { backgroundColor: alpha(p.primary, 16) },
+    agentRow: { paddingRight: 14 },
     meta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
     agent: { color: p.muted, fontSize: 12, fontWeight: '600', flexShrink: 1 },
     agentDeleted: {
@@ -828,17 +809,6 @@ function makeStyles(p: Palette) {
     agentName: { color: p.text, fontSize: 15, fontWeight: '700', flexShrink: 1 },
     agentSub: { color: p.muted, fontSize: 12.5 },
     count: { color: p.muted, fontSize: 13, fontWeight: '600', minWidth: 18, textAlign: 'right' },
-    plus: {
-      width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
-      backgroundColor: alpha(p.primary, 12),
-    },
-    othersToggle: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: TAP, paddingHorizontal: 4 },
-    othersText: { color: p.text, fontSize: 14, fontWeight: '700' },
-    otherRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 10,
-      borderWidth: 1, borderColor: p.border, borderStyle: 'dashed', borderRadius: 14,
-      paddingLeft: 14, paddingRight: 8, paddingVertical: 10, minHeight: 52,
-    },
     note: { color: p.muted, fontSize: 13.5, paddingHorizontal: 4, paddingVertical: 6 },
     noteBox: { gap: 4, paddingVertical: 4 },
     noticeBox: { padding: 10, borderRadius: 10, backgroundColor: p.panel2, gap: 8 },

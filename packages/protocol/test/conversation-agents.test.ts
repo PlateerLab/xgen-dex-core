@@ -1,6 +1,6 @@
 /**
  * 사이드바 [최근 채팅] · [에이전트] (2026-10-10): 서버 묶음 읽기, 옛 서버에서 묶기, 실시간 소식으로 고치기,
- * [다른 에이전트], 에이전트 필터.
+ * 에이전트 필터.
  */
 import assert from 'assert'
 import { test } from 'node:test'
@@ -8,7 +8,6 @@ import { ApiError } from '@dex/protocol/client'
 import { HistoryApi } from '@dex/protocol/history'
 import {
   RECENT_CONVERSATION_STEP,
-  agentsWithoutConversations,
   dropFromConversationAgents,
   groupConversationsByAgent,
   parseConversationAgent,
@@ -16,7 +15,7 @@ import {
   sortConversationAgents,
   touchConversationAgent,
 } from '@dex/protocol/conversation-agents'
-import type { Agent, Conversation, ConversationAgent } from '@dex/protocol/types'
+import type { Conversation, ConversationAgent } from '@dex/protocol/types'
 
 const conv = (iid: string, workflowId: string, updatedAt: string, extra: Partial<Conversation> = {}): Conversation => ({
   id: Number(iid.replace(/\D/g, '')) || 1,
@@ -46,21 +45,6 @@ const agentRow = (workflowId: string, lastActivity: string, extra: Partial<Conve
   agentDeleted: false,
   agentOwnerId: 7,
   ...extra,
-})
-
-const agent = (workflowId: string): Agent => ({
-  id: 1,
-  workflowId,
-  workflowName: workflowId,
-  nodeCount: 1,
-  isShared: false,
-  isDeployed: false,
-  isCompleted: true,
-  description: '',
-  username: 'u',
-  fullName: 'U',
-  createdAt: '',
-  updatedAt: '',
 })
 
 test('최근 채팅은 5개씩', () => {
@@ -156,11 +140,6 @@ test('지우기: 수가 줄고 0 이면 줄이 빠지며, 마지막 대화를 �
   assert.equal(dropFromConversationAgents(agents, 'a', 'a-last').stale, true)
   assert.deepEqual(dropFromConversationAgents(agents, 'b', 'b-last').agents.map((r) => r.workflowId), ['a'])
   assert.deepEqual(dropFromConversationAgents(agents, 'zz', 'x').agents, agents)
-})
-
-test('다른 에이전트: 쓸 수 있지만 대화가 없는 것만, 받은 순서대로', () => {
-  const rest = agentsWithoutConversations([agentRow('a', '')], [agent('c'), agent('a'), agent('b'), agent('c')])
-  assert.deepEqual(rest.map((a) => a.workflowId), ['c', 'b'])
 })
 
 function fakeHttp(routes: Record<string, unknown>) {

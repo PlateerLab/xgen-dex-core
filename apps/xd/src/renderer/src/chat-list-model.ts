@@ -1,10 +1,10 @@
 /**
  * 사이드바 [최근 채팅]·[에이전트] 와 채팅 기록 관리의 규칙(2026-10-10). 순수 함수라 시험이 그대로 부른다.
  *
- * 묶음·[다른 에이전트]·[더 보기] 수·날 표시는 웹·Dex 와 같은 @dex/protocol 규칙을 쓴다. 문구도 Dex 데스크톱과 같다.
+ * 묶음·[더 보기] 수·날 표시는 웹·Dex 와 같은 @dex/protocol 규칙을 쓴다. 문구도 Dex 데스크톱과 같다.
  * XD 에는 서버가 없고 에이전트를 지우면 대화도 지워지므로 [지워짐]·배포 대화·상태 필터는 없다.
  */
-import { RECENT_CONVERSATION_STEP, agentsWithoutConversations, conversationDayLabel } from '@dex/protocol';
+import { RECENT_CONVERSATION_STEP, conversationDayLabel } from '@dex/protocol';
 import type { XdConversation, XdConversationAgent } from '../../main/store';
 import { conversationTitle } from './start-model';
 
@@ -13,18 +13,16 @@ export const LIST_TEXT = {
   more: '더 보기',
   collapse: '접기',
   agents: '에이전트',
-  newChatWith: '이 에이전트로 새 채팅',
   back: '뒤로',
   noChats: '아직 채팅이 없습니다',
-  others: '다른 에이전트',
-  noOthers: '다른 에이전트가 없습니다',
+  noAgents: '최근에 쓴 에이전트가 없습니다',
   manage: '채팅 기록 관리',
 } as const;
 
-/** [다른 에이전트 N개] */
-export const othersLabel = (count: number): string => `다른 에이전트 ${count}개`;
-
-/** [최근 채팅] 에 보일 줄: 처음 `RECENT_CONVERSATION_STEP` 개, [더 보기] 마다 그만큼 더. [접기] 는 그보다 많이 보일 때만. */
+/**
+ * [최근 채팅]·[에이전트] 에 보일 줄: 처음 `RECENT_CONVERSATION_STEP` 개, [더 보기] 마다 그만큼 더. [접기] 는 그보다
+ * 많이 보일 때만.
+ */
 export function recentSlice<T>(items: readonly T[], shown: number): { rows: T[]; canMore: boolean; canCollapse: boolean } {
   const rows = items.slice(0, Math.max(RECENT_CONVERSATION_STEP, shown));
   return { rows, canMore: items.length > rows.length, canCollapse: rows.length > RECENT_CONVERSATION_STEP };
@@ -37,17 +35,31 @@ export function agentLastLine(group: Pick<XdConversationAgent, 'lastTitle' | 'la
   return day ? `${title} · ${day}` : title;
 }
 
-/**
- * [다른 에이전트]: 이 PC 의 에이전트 가운데 아직 대화가 없는 것, 받은 순서대로. 규칙은 @dex/protocol
- * agentsWithoutConversations 이고, 그 함수는 에이전트를 workflowId 로만 본다(XD 의 에이전트 id 를 그 자리에 싣는다).
- */
-export function otherAgents<T extends { id: string }>(groups: readonly Pick<XdConversationAgent, 'agentId'>[], agents: readonly T[]): T[] {
-  const byId = new Map(agents.map((a) => [a.id, a]));
-  const rest = agentsWithoutConversations(
-    groups.map((g) => ({ workflowId: g.agentId })),
-    agents.map((a) => ({ workflowId: a.id })),
-  );
-  return rest.map((a) => byId.get(a.workflowId) as T);
+/** 접은 칸. 껐다 켜도 그대로다(localStorage). */
+export interface CollapsedSections {
+  recent: boolean;
+  agents: boolean;
+}
+
+export const COLLAPSED_KEY = 'xd.sidebar.collapsed';
+
+/** 기억해 둔 접은 칸. 없거나 읽지 못하면 둘 다 펼친다. */
+export function loadCollapsed(storage: () => Pick<Storage, 'getItem'> = () => window.localStorage): CollapsedSections {
+  try {
+    const raw: unknown = JSON.parse(storage().getItem(COLLAPSED_KEY) ?? '{}');
+    const v = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    return { recent: v.recent === true, agents: v.agents === true };
+  } catch {
+    return { recent: false, agents: false };
+  }
+}
+
+export function saveCollapsed(value: CollapsedSections, storage: () => Pick<Storage, 'setItem'> = () => window.localStorage): void {
+  try {
+    storage().setItem(COLLAPSED_KEY, JSON.stringify(value));
+  } catch {
+    /* 기억 못 해도 동작엔 지장 없다 */
+  }
 }
 
 /** 채팅 기록 관리의 삭제 확인(Dex 데스크톱과 같은 문구). */

@@ -1,9 +1,9 @@
 /**
  * XD 앱 틀: 왼쪽 줄(대화·제공자·설정), 사이드바([최근 채팅]·[에이전트]), 본문.
  *
- * 대화를 시작하는 곳은 시작 화면이다(사이드바 [새 채팅], 에이전트 줄의 [+], 아무 대화도 열려 있지 않을 때의 첫
- * 화면). 제공자도 에이전트도 없는 첫 실행에서만 그 자리에 첫 화면(Welcome)이 선다. 사이드바 [⋯] 는 본문에 채팅 기록
- * 관리를 연다(대화를 열거나 [새 채팅] 을 누르면 돌아간다).
+ * 대화를 시작하는 곳은 시작 화면이다(사이드바 [새 채팅], 아무 대화도 열려 있지 않을 때의 첫 화면). 제공자도
+ * 에이전트도 없는 첫 실행에서만 그 자리에 첫 화면(Welcome)이 선다. 사이드바 [⋯] 는 본문에 채팅 기록 관리를 연다
+ * (대화를 열거나 [새 채팅] 을 누르면 돌아간다).
  *
  * 화면은 XD 전용이다(2026-10-02 결정). Dex 와 같은 부품(마크다운·작업 과정·아이콘·스타일)은 `dex.ts` 로만 가져온다.
  */
@@ -27,8 +27,7 @@ import { Welcome } from './views/Welcome';
 import { XdMark } from './views/XdMark';
 
 export type Route =
-  /** `agentId`: 사이드바 [+] 로 열면 그 에이전트가 골라져 있다. */
-  | { name: 'start'; agentId?: string }
+  | { name: 'start' }
   | { name: 'chat'; agentId: string; conversationId: string | null; initialMessage?: InitialMessage }
   | { name: 'agent-new'; draft?: AgentDraft }
   | { name: 'agent-edit'; agentId: string; conversationId: string | null }
@@ -142,11 +141,8 @@ const Shell: React.FC = () => {
   } else if (accounts.length === 0 && agents.length === 0) {
     main = <Welcome onProviders={() => setRoute({ name: 'providers' })} onStart={() => setRoute(START)} />;
   } else {
-    const preselect = route.name === 'start' ? route.agentId : undefined;
     main = (
       <StartView
-        key={preselect ?? ''}
-        agentId={preselect}
         onStart={(id, text) => setRoute({ name: 'chat', agentId: id, conversationId: null, initialMessage: { key: messageKey(), text } })}
         onProviders={() => setRoute({ name: 'providers' })}
         onFullEditor={(draft) => setRoute({ name: 'agent-new', draft })}
@@ -190,7 +186,7 @@ const Shell: React.FC = () => {
         conversationId={openConversationId}
         starting={route.name === 'start'}
         managing={route.name === 'history'}
-        onNewChat={(id) => setRoute(id ? { name: 'start', agentId: id } : START)}
+        onNewChat={() => setRoute(START)}
         onManageHistory={() => setRoute({ name: 'history' })}
         onOpenConversation={openChat}
         onDeleted={forgetDeleted}

@@ -14,21 +14,28 @@ import {
   thinkingChipLabel,
   type ThinkingValue,
   CONVERSATION_TAG_LABELS,
+  RECENT_CONVERSATION_STEP,
   UNTITLED_CONVERSATION,
+  agentsWithoutConversations,
   conversationAgentLabel,
   conversationDisplayTitle,
   conversationKey,
   conversationListChange,
   conversationTitleFromMetadata,
+  dropFromConversationAgents,
+  groupConversationsByAgent,
   mergeConversationPage,
   removeConversation,
   renameConversationInList,
+  renameInConversationAgents,
   touchConversation,
+  touchConversationAgent,
 } from '@dex/protocol';
 import type {
   Agent,
   ChatAttachmentDescriptor,
   Conversation,
+  ConversationAgent,
   ConversationSnapshot,
   ResolvedChatInput,
 } from '@dex/engine';
@@ -41,24 +48,45 @@ import { Composer, Footer, Header } from './components';
 import { HistoryScreen } from './history-screen';
 import { StartScreen, type AgentRef } from './start-screen';
 import {
+  AGENT_GROUP_LIMIT,
+  BACK_LABEL,
   CONVERSATION_PAGE_SIZE,
   ConfirmPanel,
   ConversationSidebar,
   DELETED_AGENT_NOTICE,
   PURGE_LABEL,
   RenamePanel,
+  agentRowKey,
   buildRows,
+  fixedRowKey,
+  nearestSelectable,
   rowKey,
+  stepSelectable,
   type ListRow,
 } from './conversation-list';
 import { SEARCH_LIMIT, SearchPanel } from './conversation-search';
+import { ConversationManagerScreen, MANAGER_TITLE, type ManagerChange } from './conversation-manager';
 import type { TuiEngine, TuiSession } from './model';
 import type { LastChat } from './preferences';
 import { useTerminalSize } from './use-terminal-size';
 import { defaultWorkingFolders } from '../folders';
 
-/** 사이드바 맨 아래로 내려가기 몇 줄 전에 다음 쪽을 받아 둔다. */
+/** 사이드바 맨 아래로 내려가기 몇 줄 전에 다음 쪽을 받아 둔다(에이전트 안의 대화). */
 const PREFETCH_ROWS = 3;
+
+/** 에이전트 안으로 들어갔다: 그 에이전트의 대화(workflowId 로 받은 쪽들). */
+interface Drill {
+  agent: ConversationAgent;
+  items: Conversation[];
+  nextCursor: string | null;
+  /** 받은 쪽 수. 0 이면 아직 첫 쪽도 못 받았다. */
+  pages: number;
+  loading: boolean;
+  error?: string;
+}
+
+/** 목록에서 빠질 대화(지움). 지운 대화 그 자체이거나 소켓이 알려 준 열쇠다. */
+type RemovedRef = Pick<Conversation, 'workflowId' | 'interactionId'> & { agentDeleted?: boolean };
 
 /** 서버가 아직 모르는 새 대화(첫 말을 막 보냈다)의 목록 한 줄. 첫 쪽을 다시 읽으면 서버 것으로 바뀐다. */
 function draftConversation(resolved: ResolvedChatInput, text: string, now: string): Conversation {
@@ -219,7 +247,9 @@ export function Dashboard(props: {
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-  /** 에이전트가 사라진 대화 수(첫 쪽이 알려 준다). 0 이면 [제거] 줄이 없다. */
+  /** [최근 채팅] 에 보이는 수. [더 보기] 가 5개씩 늘리고 [접기] 가 되돌린다. */
+  const [recentShown, setRecentShown] = useState(RECENT_CONVERSATION_STEP);
+  /** 에이전트가 사라진 대화 수(첫 쪽이 알려 준다). 0 이면 Ctrl+K 에 [제거] 가 없다. */
   const [deletedCount, setDeletedCount] = useState(0);
   const [listLoading, setListLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -229,9 +259,35 @@ export function Dashboard(props: {
   const pagesLoaded = useRef(0);
   /** 서버가 아직 모르는 새 대화 줄(첫 말을 막 보냈다). 첫 쪽을 다시 읽어 서버 것이 오면 지운다. */
   const localDrafts = useRef(new Set<string>());
-  const [cursorKey, setCursorKey] = useState(rowKey({ kind: 'new' }));
+  const [cursorKey, setCursorKey] = useState(fixedRowKey('new'));
   const lastRowIndex = useRef(0);
   const [dialog, setDialog] = useState<Dialog>();
+
+  // ── [에이전트] 묶음 ──
+  /**
+   * 서버가 센 묶음(conversationAgents). 아직 못 받았으면 undefined. 이 함수가 없는 엔진이거나 받지 못했으면
+   * 받아 둔 대화 목록으로 묶는다(groupConversationsByAgent). 소식으로 고칠 때는 ref 로 바로 읽는다.
+   */
+  const [fetchedAgents, setFetchedAgents] = useState<ConversationAgent[]>();
+  const fetchedAgentsRef = useRef<ConversationAgent[] | undefined>(undefined);
+  const [agentsFailed, setAgentsFailed] = useState(false);
+  const agentsSeq = useRef(0);
+  const [othersOpen, setOthersOpen] = useState(false);
+  /** 에이전트 안으로 들어갔다(그 에이전트의 대화만 보인다). */
+  const [drill, setDrill] = useState<Drill>();
+  const drillRef = useRef(drill);
+  drillRef.current = drill;
+  /** 들어갈 때마다 오른다. 나온 뒤에 늦게 온 쪽이 목록을 덮지 않게 한다. */
+  const drillSeq = useRef(0);
+  const drillLoadingRef = useRef(false);
+  /**
+   * 여기서 지운 대화. 같은 지움이 목록 소켓으로 다시 오면 [에이전트] 수를 두 번 줄이지 않게 한 번 건너뛴다.
+   */
+  const locallyRemoved = useRef(new Set<string>());
+  /** 시작 화면에 미리 골라 둘 에이전트([＋ 이 에이전트로 새 채팅]·[다른 에이전트]). nonce 가 바뀌면 다시 고른다. */
+  const [startPreselect, setStartPreselect] = useState<{ workflowId: string; nonce: number }>();
+  const preselectNonce = useRef(0);
+  const [manager, setManager] = useState(false);
   /** 시작 화면이 키를 쥐고 있다(에이전트 찾기 목록). */
   const [startCapture, setStartCapture] = useState(false);
 
@@ -367,6 +423,41 @@ export function Dashboard(props: {
     setListError(undefined);
   };
 
+  const storeAgents = (list: ConversationAgent[] | undefined): void => {
+    fetchedAgentsRef.current = list;
+    setFetchedAgents(list);
+  };
+
+  /** [에이전트] 묶음을 서버에서 다시 받는다. 받는 함수가 없는 엔진이면 할 일이 없다(목록으로 묶는다). */
+  const loadAgents = async (): Promise<void> => {
+    const engine = props.engine;
+    if (!engine.conversationAgents) return;
+    const seq = ++agentsSeq.current;
+    try {
+      const list = await engine.conversationAgents({ limit: AGENT_GROUP_LIMIT }, props.session.profile);
+      if (seq !== agentsSeq.current) return;
+      storeAgents(list);
+      setAgentsFailed(false);
+    } catch {
+      // 받지 못하면 받아 둔 대화 목록으로 묶어 보여 준다.
+      if (seq === agentsSeq.current) setAgentsFailed(true);
+    }
+  };
+
+  /**
+   * 받아 둔 묶음을 고친다(소식, 여기서 한 일). 규칙이 서버에 다시 물어야 한다고 하면 true.
+   * 아직 못 받았으면 고칠 것이 없다(곧 올 것이 새 값이다).
+   */
+  const editAgents = (
+    edit: (list: ConversationAgent[]) => { agents: ConversationAgent[]; reload: boolean },
+  ): boolean => {
+    const list = fetchedAgentsRef.current;
+    if (!list) return false;
+    const next = edit(list);
+    storeAgents(next.agents);
+    return next.reload;
+  };
+
   useEffect(() => {
     let alive = true;
     setListLoading(true);
@@ -381,9 +472,11 @@ export function Dashboard(props: {
       })
       .catch((reason: unknown) => alive && setListError(publicError(reason).message))
       .finally(() => alive && setListLoading(false));
+    void loadAgents();
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.engine, props.session.profile]);
 
   /**
@@ -413,21 +506,164 @@ export function Dashboard(props: {
     }
   };
 
+  // ── 에이전트 안 ──
+
+  /** 들어가 있는 에이전트의 대화 한 쪽. cursor 가 없으면 첫 쪽이다(목록을 통째로 바꾼다). */
+  const loadDrillPage = async (cursor: string | null): Promise<void> => {
+    const open = drillRef.current;
+    if (!open || drillLoadingRef.current) return;
+    const seq = drillSeq.current;
+    drillLoadingRef.current = true;
+    setDrill((current) => current && { ...current, loading: true, error: undefined });
+    try {
+      const page = await props.engine.conversationPage(
+        { limit: CONVERSATION_PAGE_SIZE, cursor, workflowId: open.agent.workflowId },
+        props.session.profile,
+      );
+      if (seq !== drillSeq.current) return;
+      setDrill(
+        (current) =>
+          current && {
+            ...current,
+            items: cursor ? mergeConversationPage(current.items, page.conversations, 'append') : page.conversations,
+            nextCursor: page.nextCursor,
+            pages: cursor ? current.pages + 1 : 1,
+            loading: false,
+          },
+      );
+    } catch (reason) {
+      if (seq === drillSeq.current) {
+        setDrill((current) => current && { ...current, loading: false, error: publicError(reason).message });
+      }
+    } finally {
+      if (seq === drillSeq.current) drillLoadingRef.current = false;
+    }
+  };
+
+  /** 들어가 있는 에이전트의 첫 쪽을 다시 읽어 합친다(소식). 받아 둔 뒤쪽은 지킨다. */
+  const refreshDrill = async (): Promise<void> => {
+    const open = drillRef.current;
+    if (!open || open.pages === 0) return;
+    const seq = drillSeq.current;
+    try {
+      const page = await props.engine.conversationPage(
+        { limit: CONVERSATION_PAGE_SIZE, workflowId: open.agent.workflowId },
+        props.session.profile,
+      );
+      if (seq !== drillSeq.current) return;
+      setDrill(
+        (current) =>
+          current && {
+            ...current,
+            items:
+              current.pages <= 1 ? page.conversations : mergeConversationPage(current.items, page.conversations, 'head'),
+            nextCursor: current.pages <= 1 ? page.nextCursor : current.nextCursor,
+          },
+      );
+    } catch {
+      // 다음 소식에 다시 읽는다. 목록을 깨지 않는다.
+    }
+  };
+
+  /** 에이전트 줄에서 Enter: 그 에이전트의 대화로 들어간다. */
+  const openDrill = (agent: ConversationAgent): void => {
+    drillSeq.current += 1;
+    drillLoadingRef.current = false;
+    const fresh: Drill = { agent, items: [], nextCursor: null, pages: 0, loading: true };
+    drillRef.current = fresh;
+    setDrill(fresh);
+    setCursorKey(fixedRowKey(agent.agentDeleted ? 'back' : 'agentNew'));
+    void loadDrillPage(null);
+  };
+
+  /** [← 에이전트] · Esc · ←: 에이전트 묶음으로 돌아간다. 커서는 그 에이전트 줄에 선다. */
+  const closeDrill = (): void => {
+    const open = drillRef.current;
+    drillSeq.current += 1;
+    drillLoadingRef.current = false;
+    drillRef.current = undefined;
+    setDrill(undefined);
+    if (open) setCursorKey(agentRowKey(open.agent.workflowId));
+  };
+
+  // ── 목록 고치기(여기서 한 일과 다른 기기의 소식이 같은 규칙을 탄다) ──
+
+  /** 이름이 바뀌었다: 어디에 있든 제목만 고친다. 순서는 그대로다. */
+  const applyRenamed = (workflowId: string, interactionId: string, title: string, customTitle: boolean): void => {
+    setConversations((list) => renameConversationInList(list, workflowId, interactionId, title, customTitle));
+    setDrill(
+      (current) =>
+        current && {
+          ...current,
+          items: renameConversationInList(current.items, workflowId, interactionId, title, customTitle),
+        },
+    );
+    editAgents((list) => ({ agents: renameInConversationAgents(list, workflowId, interactionId, title), reload: false }));
+    setOpened((current) =>
+      current && current.workflowId === workflowId && current.interactionId === interactionId
+        ? { ...current, title, customTitle }
+        : current,
+    );
+  };
+
+  /**
+   * 대화가 지워졌다: 어디에 있든 줄을 빼고 [에이전트] 수를 줄인다. 지운 것이 그 에이전트의 마지막 대화였으면
+   * 묶음을 서버에 다시 물어야 한다(true). 소켓이 알려 준 지움이 여기서 이미 지운 것이면 수는 다시 줄이지 않는다.
+   */
+  const applyRemoved = (items: RemovedRef[], fromSocket: boolean): boolean => {
+    let reload = false;
+    for (const item of items) {
+      const key = conversationKey(item);
+      if (fromSocket && locallyRemoved.current.has(key)) {
+        locallyRemoved.current.delete(key);
+        continue;
+      }
+      if (!fromSocket) locallyRemoved.current.add(key);
+      const stale = editAgents((list) => {
+        const next = dropFromConversationAgents(list, item.workflowId, item.interactionId);
+        return { agents: next.agents, reload: next.stale };
+      });
+      reload = reload || stale;
+    }
+    const without = (list: Conversation[]): Conversation[] =>
+      items.reduce((rest, item) => removeConversation(rest, item.workflowId, item.interactionId), list);
+    setConversations(without);
+    setDrill((current) => current && { ...current, items: without(current.items) });
+    return reload;
+  };
+
+  /** 이 대화에서 방금 말했다: [에이전트] 의 그 줄을 맨 위로. 묶음에 없는 에이전트의 옛 대화면 true(다시 묻는다). */
+  const bumpAgent = (conversation: Conversation, created: boolean): boolean =>
+    editAgents((list) => {
+      const next = touchConversationAgent(list, conversation, created);
+      return { agents: next.agents, reload: !next.known };
+    });
+
   // 대화 목록 소켓: 다른 기기(웹·앱·VS Code)에서 생긴 변화를 곧바로 반영한다. 규칙은 데스크톱과 같다:
-  // 아는 대화에서 방금 말했으면 맨 위로, 모르는 대화면 첫 쪽을 다시 읽고(숨길 대화인지는 서버만 안다),
-  // 이름이 바뀌었으면 제목만, 지워졌으면 줄을 뺀다.
-  const refreshFirstPageRef = useRef(refreshFirstPage);
-  refreshFirstPageRef.current = refreshFirstPage;
+  // 아는 대화에서 방금 말했으면 맨 위로(에이전트 줄도), 모르는 대화면 첫 쪽과 묶음을 다시 읽고(숨길 대화인지는
+  // 서버만 안다), 이름이 바뀌었으면 제목만, 지워졌으면 줄을 빼고 그 에이전트의 수를 줄인다.
+  const live = useRef({ refreshFirstPage, loadAgents, refreshDrill, applyRenamed, applyRemoved, bumpAgent });
+  live.current = { refreshFirstPage, loadAgents, refreshDrill, applyRenamed, applyRemoved, bumpAgent };
   useEffect(() => {
     const engine = props.engine;
     if (!engine.watchConversationList) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // 지우기·정리 소식이 몰려와도 첫 쪽은 한 번만 다시 읽는다.
-    const scheduleHead = () => {
+    const pending = { head: false, agents: false, drill: false };
+    // 지우기·정리 소식이 몰려와도 다시 읽기는 한 번만 한다.
+    const schedule = (what: { head?: boolean; agents?: boolean; drill?: boolean }): void => {
+      pending.head = pending.head || what.head === true;
+      pending.agents = pending.agents || what.agents === true;
+      pending.drill = pending.drill || what.drill === true;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = undefined;
-        void refreshFirstPageRef.current();
+        const run = { ...pending };
+        pending.head = false;
+        pending.agents = false;
+        pending.drill = false;
+        if (run.head) void live.current.refreshFirstPage();
+        if (run.agents) void live.current.loadAgents();
+        if (run.drill) void live.current.refreshDrill();
       }, 400);
     };
     engine.onConversationListChange = (event) => {
@@ -440,24 +676,40 @@ export function Dashboard(props: {
       switch (change.type) {
         case 'touched': {
           const conv = change.conversation;
-          if (conv && conversationsRef.current.some((item) => conversationKey(item) === conversationKey(conv))) {
+          if (!conv) {
+            schedule({ head: true, agents: true, drill: true });
+            return;
+          }
+          const key = conversationKey(conv);
+          if (conversationsRef.current.some((item) => conversationKey(item) === key)) {
             setConversations((list) => touchConversation(list, conv).list);
+            if (live.current.bumpAgent(conv, false)) schedule({ agents: true });
           } else {
-            scheduleHead();
+            schedule({ head: true, agents: true });
+          }
+          const open = drillRef.current;
+          if (open && open.agent.workflowId === conv.workflowId) {
+            if (open.items.some((item) => conversationKey(item) === key)) {
+              setDrill((current) => current && { ...current, items: touchConversation(current.items, conv).list });
+            } else {
+              schedule({ drill: true });
+            }
           }
           return;
         }
         case 'renamed':
-          setConversations((list) =>
-            renameConversationInList(list, change.workflowId, change.interactionId, change.title, change.customTitle),
+          live.current.applyRenamed(change.workflowId, change.interactionId, change.title, change.customTitle);
+          return;
+        case 'removed': {
+          const stale = live.current.applyRemoved(
+            [{ workflowId: change.workflowId, interactionId: change.interactionId }],
+            true,
           );
+          schedule({ head: true, agents: stale });
           return;
-        case 'removed':
-          setConversations((list) => removeConversation(list, change.workflowId, change.interactionId));
-          scheduleHead();
-          return;
+        }
         case 'reload':
-          scheduleHead();
+          schedule({ head: true, agents: true, drill: true });
           return;
         default:
       }
@@ -470,7 +722,7 @@ export function Dashboard(props: {
     };
   }, [props.engine, props.session.profile]);
 
-  /** 다음 쪽(끝까지 내려왔다). */
+  /** [최근 채팅] 의 다음 쪽([더 보기] 가 받아 둔 것보다 더 보여 주려 한다). */
   const loadMore = async (): Promise<void> => {
     if (!nextCursor || loadingMoreRef.current) return;
     loadingMoreRef.current = true;
@@ -492,26 +744,69 @@ export function Dashboard(props: {
     }
   };
 
-  const rows: ListRow[] = useMemo(() => buildRows(conversations, deletedCount), [conversations, deletedCount]);
-  // 커서는 열쇠로 붙든다. 그 줄이 사라졌으면(지움·정리) 같은 자리 근처에 선다.
+  /** [에이전트] 묶음: 서버가 센 것. 그 함수가 없는 엔진이거나 받지 못했으면 받아 둔 대화 목록으로 묶는다. */
+  const chatAgents = useMemo(
+    () =>
+      props.engine.conversationAgents && !agentsFailed
+        ? (fetchedAgents ?? [])
+        : groupConversationsByAgent(conversations),
+    [props.engine, agentsFailed, fetchedAgents, conversations],
+  );
+  /** [다른 에이전트]: 쓸 수 있지만 아직 대화가 없는 에이전트. */
+  const otherAgents = useMemo(() => agentsWithoutConversations(chatAgents, agents), [chatAgents, agents]);
+  const rows: ListRow[] = useMemo(
+    () =>
+      buildRows({
+        conversations,
+        recentShown,
+        hasMore: nextCursor != null,
+        agents: chatAgents,
+        others: otherAgents,
+        othersOpen,
+        drill: drill && {
+          agent: drill.agent,
+          conversations: drill.items,
+          done: drill.pages > 0 && !drill.nextCursor && !drill.loading,
+        },
+      }),
+    [conversations, recentShown, nextCursor, chatAgents, otherAgents, othersOpen, drill],
+  );
+  // 커서는 열쇠로 붙든다. 그 줄이 사라졌으면(지움·접기) 같은 자리 근처의 고를 수 있는 줄에 선다.
   let rowIndex = rows.findIndex((row) => rowKey(row) === cursorKey);
-  if (rowIndex < 0) rowIndex = Math.min(lastRowIndex.current, rows.length - 1);
+  if (rowIndex < 0) rowIndex = nearestSelectable(rows, lastRowIndex.current);
   lastRowIndex.current = rowIndex;
   const cursorRow = rows[rowIndex];
 
+  // 에이전트 안에서 끝 가까이 내려오면 그 에이전트의 다음 쪽을 받아 둔다.
   useEffect(() => {
-    if (nextCursor && !listError && rowIndex >= rows.length - PREFETCH_ROWS) void loadMore();
+    if (drill?.nextCursor && !drill.loading && !drill.error && rowIndex >= rows.length - PREFETCH_ROWS) {
+      void loadDrillPage(drill.nextCursor);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowIndex, rows.length, nextCursor, listError]);
+  }, [rowIndex, rows.length, drill?.nextCursor, drill?.loading, drill?.error]);
 
   const moveCursor = (delta: 1 | -1): void => {
-    const next = rows[Math.min(rows.length - 1, Math.max(0, rowIndex + delta))];
-    if (next) setCursorKey(rowKey(next));
-    // 맨 끝에서 한 번 더 내리면 못 받은 다음 쪽을 다시 청한다(오류였어도).
-    if (delta === 1 && rowIndex >= rows.length - 1 && nextCursor) {
+    const next = stepSelectable(rows, rowIndex, delta);
+    const row = rows[next];
+    if (row) setCursorKey(rowKey(row));
+    // 에이전트 안의 맨 끝에서 한 번 더 내리면 못 받은 다음 쪽을 다시 청한다(오류였어도).
+    if (delta === 1 && next === rowIndex && drill?.nextCursor) void loadDrillPage(drill.nextCursor);
+  };
+
+  /** [더 보기]: 5개 더. 받아 둔 것이 모자라면 다음 쪽을 받는다. 커서는 [더 보기] 에 남는다. */
+  const showMore = (): void => {
+    const next = recentShown + RECENT_CONVERSATION_STEP;
+    setRecentShown(next);
+    if (conversationsRef.current.length < next && nextCursor) {
       setListError(undefined);
       void loadMore();
     }
+  };
+
+  /** [접기]: 처음 5개로. 커서는 [더 보기] 에 선다. */
+  const showLess = (): void => {
+    setRecentShown(RECENT_CONVERSATION_STEP);
+    setCursorKey(fixedRowKey('more'));
   };
 
   const openModelPicker = (): void => {
@@ -624,9 +919,10 @@ export function Dashboard(props: {
    * 시작 화면(새 채팅)을 연다: [＋ 새 채팅] · Ctrl+N · 팔레트.
    *
    * 지금 도는 턴이 있으면 손만 뗀다. 서버 실행은 계속되고, 그 대화를 목록에서 다시 열면
-   * [진행 중] 이 돌아온다.
+   * [진행 중] 이 돌아온다. `agent` 가 있으면([＋ 이 에이전트로 새 채팅]·[다른 에이전트]) 시작 화면이
+   * 그 에이전트를 골라 둔다.
    */
-  const openStart = (options: { focusMain?: boolean } = {}): void => {
+  const openStart = (options: { focusMain?: boolean; agent?: AgentRef } = {}): void => {
     if (chat.running) detachTurn();
     viewEpoch.current += 1;
     // 이미 시작 화면이면 번호를 지킨다: 거기서 Ctrl+O 로 고른 모델이 그 번호에 붙어 있다.
@@ -638,7 +934,14 @@ export function Dashboard(props: {
     setSelected(undefined);
     setOpened(undefined);
     setView('start');
-    setCursorKey(rowKey({ kind: 'new' }));
+    if (options.agent) {
+      preselectNonce.current += 1;
+      setStartPreselect({ workflowId: options.agent.workflowId, nonce: preselectNonce.current });
+    } else {
+      // 그냥 새 채팅이면 미리 고른 것을 거둔다. 시작 화면에서 사람이 고른 것은 그대로 둔다.
+      setStartPreselect(undefined);
+      setCursorKey(fixedRowKey('new'));
+    }
     if (options.focusMain !== false) setFocus('main');
   };
 
@@ -865,18 +1168,33 @@ export function Dashboard(props: {
       setAttachments([]);
       setAttachmentInteractionId(undefined);
       setAttachmentNotice('');
-      // 방금 말한 대화는 목록 맨 위로. 처음 말한 대화면 서버가 알기 전이라 여기서 한 줄을 세운다.
+      // 방금 말한 대화는 목록 맨 위로, 그 에이전트 줄도 맨 위로. 처음 말한 대화면 서버가 알기 전이라
+      // 여기서 한 줄을 세운다(그 에이전트의 대화 수도 하나 는다).
       const key = conversationKey(resolved);
       const now = new Date().toISOString();
-      known = conversationsRef.current.some((item) => conversationKey(item) === key);
-      if (known) {
-        setConversations((list) => {
-          const found = list.find((item) => conversationKey(item) === key);
-          return found ? touchConversation(list, { ...found, updatedAt: now }).list : list;
-        });
+      const same = (item: Conversation): boolean => conversationKey(item) === key;
+      const inRecent = conversationsRef.current.find(same);
+      known = inRecent !== undefined;
+      // [최근 채팅] 에 없어도 아는 대화일 수 있다(에이전트 안이나 기록·검색에서 연 오래된 대화).
+      const base = inRecent ?? drillRef.current?.items.find(same) ?? (opened && same(opened) ? opened : undefined);
+      const touched = base ? { ...base, updatedAt: now } : draftConversation(resolved, text, now);
+      if (inRecent) {
+        setConversations((list) => touchConversation(list, touched).list);
       } else {
         localDrafts.current.add(key);
-        setConversations((list) => [draftConversation(resolved, text, now), ...list]);
+        setConversations((list) => [touched, ...list.filter((item) => !same(item))]);
+      }
+      if (bumpAgent(touched, !base)) void loadAgents();
+      if (drillRef.current?.agent.workflowId === resolved.workflowId) {
+        setDrill(
+          (current) =>
+            current && {
+              ...current,
+              items: current.items.some(same)
+                ? touchConversation(current.items, touched).list
+                : [touched, ...current.items],
+            },
+        );
       }
       setCursorKey(key);
       void props.engine.watchConversation?.(
@@ -934,14 +1252,7 @@ export function Dashboard(props: {
       title,
       props.session.profile,
     );
-    setConversations((list) =>
-      renameConversationInList(list, conversation.workflowId, conversation.interactionId, result.title, result.customTitle),
-    );
-    setOpened((current) =>
-      current && conversationKey(current) === conversationKey(conversation)
-        ? { ...current, title: result.title, customTitle: result.customTitle }
-        : current,
-    );
+    applyRenamed(conversation.workflowId, conversation.interactionId, result.title, result.customTitle);
     setDialog(undefined);
   };
 
@@ -954,26 +1265,61 @@ export function Dashboard(props: {
       props.session.profile,
     );
     const key = conversationKey(conversation);
-    // 커서는 지운 줄의 아래(없으면 위) 줄로.
+    // 커서는 지운 줄의 아래(없으면 위) 고를 수 있는 줄로.
     const at = rows.findIndex((row) => rowKey(row) === key);
-    const neighbor = rows[at + 1] ?? rows[at - 1];
-    if (neighbor) setCursorKey(rowKey(neighbor));
-    setConversations((list) => removeConversation(list, conversation.workflowId, conversation.interactionId));
+    if (at >= 0) {
+      const below = stepSelectable(rows, at, 1);
+      const neighbor = rows[below !== at ? below : stepSelectable(rows, at, -1)];
+      if (neighbor && neighbor !== rows[at]) setCursorKey(rowKey(neighbor));
+    }
+    if (applyRemoved([conversation], false)) void loadAgents();
     if (conversation.agentDeleted) setDeletedCount((count) => Math.max(0, count - 1));
     setDialog(undefined);
     if (key === openKey) openStart({ focusMain: false });
   };
 
+  /** 에이전트가 사라진 대화를 모두 지운 뒤(여기서, 채팅 기록 관리에서): 목록과 묶음에서 빼고 묶음을 다시 받는다. */
+  const afterPurge = (): void => {
+    setConversations((list) => list.filter((item) => !item.agentDeleted));
+    setDeletedCount(0);
+    editAgents((list) => ({ agents: list.filter((agent) => !agent.agentDeleted), reload: false }));
+    if (drillRef.current?.agent.agentDeleted) closeDrill();
+    else setDrill((current) => current && { ...current, items: current.items.filter((item) => !item.agentDeleted) });
+    if (readOnly) openStart({ focusMain: false });
+    void loadAgents();
+  };
+
   /** 에이전트가 사라진 대화를 모두 지운다. */
   const purgeDeletedAgents = async (): Promise<void> => {
     const removed = await props.engine.purgeDeletedAgentConversations(props.session.profile);
-    setConversations((list) => list.filter((item) => !item.agentDeleted));
-    setDeletedCount(0);
     setDialog(undefined);
     setListNotice(`${removed}개를 지웠습니다.`);
-    if (readOnly) openStart({ focusMain: false });
+    afterPurge();
     // 지운 만큼 비었다: 첫 쪽부터 다시 받는다.
     await loadFirstPage().catch((reason: unknown) => setListError(publicError(reason).message));
+  };
+
+  /** 채팅 기록 관리에서 바꾼 것을 목록에 곧바로 싣는다. */
+  const applyManagerChange = (change: ManagerChange): void => {
+    if (change.type === 'renamed') {
+      applyRenamed(change.workflowId, change.interactionId, change.title, change.customTitle);
+      return;
+    }
+    if (change.type === 'removed') {
+      if (applyRemoved(change.items, false)) void loadAgents();
+      const gone = change.items.filter((item) => item.agentDeleted).length;
+      if (gone > 0) setDeletedCount((count) => Math.max(0, count - gone));
+      if (openKey && change.items.some((item) => conversationKey(item) === openKey)) openStart({ focusMain: false });
+      return;
+    }
+    afterPurge();
+    void loadFirstPage().catch((reason: unknown) => setListError(publicError(reason).message));
+  };
+
+  /** 채팅 기록 관리(목록에서 m, Ctrl+K). 몸통 자리를 쓴다. */
+  const openManager = (): void => {
+    setPalette(false);
+    setManager(true);
   };
 
   const openPurge = (): void => {
@@ -992,10 +1338,38 @@ export function Dashboard(props: {
 
   /** 목록 줄에서 Enter. */
   const activateRow = (): void => {
-    if (!cursorRow) return;
-    if (cursorRow.kind === 'new') openStart();
-    else if (cursorRow.kind === 'purge') openPurge();
-    else void openConversation(cursorRow.conversation);
+    const row = cursorRow;
+    if (!row) return;
+    switch (row.kind) {
+      case 'new':
+        openStart();
+        return;
+      case 'conversation':
+        void openConversation(row.conversation);
+        return;
+      case 'more':
+        showMore();
+        return;
+      case 'less':
+        showLess();
+        return;
+      case 'agent':
+        openDrill(row.agent);
+        return;
+      case 'others':
+        setOthersOpen((open) => !open);
+        return;
+      case 'other':
+        openStart({ agent: { workflowId: row.agent.workflowId, workflowName: row.agent.workflowName } });
+        return;
+      case 'agentNew':
+        openStart({ agent: { workflowId: row.agent.workflowId, workflowName: row.agent.workflowName } });
+        return;
+      case 'back':
+        closeDrill();
+        return;
+      default:
+    }
   };
 
   /**
@@ -1010,7 +1384,7 @@ export function Dashboard(props: {
     setScrollUp((current) => Math.min(limit, Math.max(0, current - direction * step)));
   };
 
-  const overlay = palette || history || modelPicker || thinkingPicker;
+  const overlay = palette || history || modelPicker || thinkingPicker || manager;
 
   useInput(
     (keyInput, key) => {
@@ -1026,14 +1400,19 @@ export function Dashboard(props: {
       else if (key.ctrl && keyInput === 'n') openStart();
       else if (key.pageUp) scrollBy(-1);
       else if (key.pageDown) scrollBy(1);
+      // 에이전트 안의 목록에서 Esc 는 [뒤로] 다. 도는 턴을 멈추는 것보다 가까운 일이다.
+      else if (key.escape && focus === 'list' && drill && !opening) closeDrill();
       else if (key.escape && chat.running) stopTurn();
       else if (key.escape) setFocus('list');
       else if (key.tab) setFocus((current) => (current === 'list' ? 'main' : 'list'));
       else if (focus !== 'list' || opening) return;
+      else if (key.leftArrow && drill) closeDrill();
       else if (key.upArrow) moveCursor(-1);
       else if (key.downArrow) moveCursor(1);
       else if (key.return) activateRow();
       else if (keyInput === '/') openSearch();
+      // 두벌식 한글 자판이 켜져 있어도 같은 자리의 키(ㅡ=m)로 듣는다.
+      else if (keyInput === 'm' || keyInput === 'ㅡ') openManager();
       else if (cursorRow?.kind !== 'conversation') return;
       // 두벌식 한글 자판이 켜져 있어도 같은 자리의 키(ㄱ=r, ㅇ=d)로 듣는다.
       else if (keyInput === 'r' || keyInput === 'ㄱ') setDialog({ kind: 'rename', conversation: cursorRow.conversation });
@@ -1049,6 +1428,7 @@ export function Dashboard(props: {
   const paletteActions: PaletteAction[] = [
     { id: 'new', label: '새 채팅', run: () => openStart() },
     { id: 'search', label: '채팅 검색', run: openSearch },
+    { id: 'manage', label: MANAGER_TITLE, run: openManager },
     ...(model.supported && model.current && !model.locked
       ? [{ id: 'model', label: `모델 바꾸기 (${model.current.label})`, run: openModelPicker }]
       : []),
@@ -1115,11 +1495,34 @@ export function Dashboard(props: {
         onCancel={() => setHistory(false)}
       />
     );
+  } else if (manager) {
+    overlayBody = (
+      <ConversationManagerScreen
+        engine={props.engine}
+        profile={props.session.profile}
+        height={bodyHeight}
+        onOpen={(conversation) => {
+          setManager(false);
+          void openConversation(conversation);
+        }}
+        onChange={applyManagerChange}
+        onClose={() => setManager(false)}
+        nativeIme={nativeIme}
+        hangulMode={hangulMode}
+        onHangulModeChange={changeHangulMode}
+      />
+    );
   }
 
   const listStatus = opening
     ? { text: '대화를 불러오는 중...' }
-    : listLoading
+    : drill
+      ? drill.loading
+        ? { text: drill.pages > 0 ? '더 불러오는 중...' : '불러오는 중...' }
+        : drill.error
+          ? { text: drill.error, error: true }
+          : undefined
+      : listLoading
       ? { text: '불러오는 중...' }
       : loadingMore
         ? { text: '더 불러오는 중...' }
@@ -1198,6 +1601,7 @@ export function Dashboard(props: {
         onHangulModeChange={changeHangulMode}
         onCapture={setStartCapture}
         onAgentChange={setStartAgent}
+        preselect={startPreselect}
         modelLabel={model.supported ? model.current?.label : undefined}
         onCreated={(agent) =>
           setAgents((current) =>
@@ -1285,9 +1689,14 @@ export function Dashboard(props: {
     </Box>
   );
 
-  const footer =
-    focus === 'list'
-      ? '↑↓ 이동 · Enter 열기 · / 검색 · r 이름 바꾸기 · d 지우기 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 대화 · Ctrl+P 프로필 · Ctrl+Q 종료'
+  const listHelp = drill
+    ? `↑↓ 이동 · Enter 열기 · Esc·← ${BACK_LABEL} · r 이름 바꾸기 · d 지우기 · / 검색 · m 기록 관리`
+    : '↑↓ 이동 · Enter 열기 · / 검색 · r 이름 바꾸기 · d 지우기 · m 기록 관리';
+  // 채팅 기록 관리는 제 안내줄이 있다. 여기서는 그 화면에서도 듣는 키만 적는다.
+  const footer = manager
+    ? `${imeShortcut} 한/영 · Esc 닫기 · Ctrl+Q 종료`
+    : focus === 'list'
+      ? `${listHelp} · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 대화 · Ctrl+P 프로필 · Ctrl+Q 종료`
       : `${imeShortcut} 한/영 · Ctrl+O 모델 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 목록 · PgUp/PgDn 스크롤 · /attach 경로 · /attachments · /detach · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`;
 
   return (

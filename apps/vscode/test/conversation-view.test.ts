@@ -1,28 +1,35 @@
 /**
- * 대화 목록·시작 화면의 규칙(2026-10-10): 줄 모양, 옛 엔진 목록 맞추기, 보낸 뒤 맨 위로, 첫 쪽 다시 받기,
- * 시작 화면 입력창 잠금, 새 에이전트 기본값과 세부 설정 값.
+ * 대화 목록·시작 화면의 규칙(2026-10-10): 줄 모양, [최근 채팅] · [에이전트] · 에이전트 화면, 채팅 검색 창의 줄,
+ * 옛 엔진 목록 맞추기, 보낸 뒤 맨 위로, 첫 쪽 다시 받기, 시작 화면 입력창 잠금, 새 에이전트 기본값과 세부 설정 값.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentCreateOptions, AgentCreateSetting, Conversation } from '@dex/protocol';
+import type { Agent, AgentCreateOptions, AgentCreateSetting, Conversation, ConversationAgent } from '@dex/protocol';
 import {
   START_TEXT,
+  agentDrillView,
   applyFirstPage,
+  conversationAgentRows,
   conversationRows,
   conversationStub,
   createdAgent,
   historyPickItem,
+  nextRecentCount,
   normalizeConversations,
+  otherAgentsView,
   prepareCreateOptions,
   purgeDeletedLabel,
+  recentNeedsPage,
+  recentSection,
   sanitizeCreateSettings,
+  searchFailedText,
+  searchResultRow,
+  searchResultView,
   startAgentChoices,
   startComposerLock,
   startSendBlocked,
   touchAfterSend,
   type StartLockInput,
-  recentPickItem,
-  searchPickItem,
 } from '../src/conversation-view';
 
 const conv = (interactionId: string, rest: Partial<Conversation> = {}): Conversation => ({
@@ -257,42 +264,121 @@ test('방금 만든 에이전트는 이름과 번호로 바로 대화할 수 있
   assert.equal(agent.createdAt, '2026-10-10T00:00:00Z');
 });
 
-test('채팅 검색 줄: 제목, 옆에 에이전트 · 꼬리표 · 날, 아래에 맞은 자리 한 줄. 늘 보인다', () => {
-  const c = conv('a', { title: '궁금', workflowName: 'HR Helper', tag: 'teams', updatedAt: '2025-01-02T03:00:00' });
-  const item = searchPickItem({
-    conversation: c,
-    match: {
-      title: [{ text: '궁금', hit: false }],
-      agent: [{ text: 'HR Helper', hit: false }],
-      snippet: [{ text: '…아래는 ', hit: false }, { text: 'INTJ', hit: true }, { text: '에서', hit: false }],
-      snippetFrom: 'output',
-      matchedAt: null,
-    },
-  });
-  assert.equal(item.label, '궁금');
-  assert.equal(item.description, 'HR Helper · Teams · 2025. 1. 2.');
-  assert.equal(item.detail, '…아래는 INTJ에서');
-  assert.equal(item.alwaysShow, true);
-  // 제목·이름으로만 맞았으면 아래 줄이 없다.
-  const plain = searchPickItem({
-    conversation: conv('b', { title: '분기 매출' }),
-    match: { title: [{ text: '분기', hit: true }, { text: ' 매출', hit: false }], agent: [], snippet: null, snippetFrom: null, matchedAt: null },
-  });
-  assert.equal(plain.label, '분기 매출');
-  assert.equal('detail' in plain, false);
+// ── [최근 채팅] · [에이전트] ──────────────────────────────────────────
+
+/** 날 글이 시간대와 상관없이 정해지도록 이 PC 의 시각으로 만든다. */
+const local = (y: number, m: number, d: number, h = 12, min = 0): string => new Date(y, m - 1, d, h, min).toISOString();
+const NOW = new Date(2026, 9, 10, 15, 0);
+
+const group = (workflowId: string, rest: Partial<ConversationAgent> = {}): ConversationAgent => ({
+  workflowId,
+  workflowName: workflowId.toUpperCase(),
+  conversationCount: 3,
+  lastActivity: local(2026, 10, 9),
+  lastTitle: '마지막 제목',
+  lastInteractionId: `${workflowId}-last`,
+  agentDeleted: false,
+  agentOwnerId: 1,
+  ...rest,
 });
 
-test('채팅 검색 줄: 사라진 에이전트는 [지워짐], 이름으로 맞았을 때만 이름을 함께', () => {
-  const gone = conv('g', { title: '회의', workflowName: 'Old Agent', agentDeleted: true, updatedAt: '' , createdAt: '' });
-  const byContent = searchPickItem({
-    conversation: gone,
-    match: { title: [{ text: '회의', hit: false }], agent: [{ text: 'Old Agent', hit: false }], snippet: null, snippetFrom: null, matchedAt: null },
+const agentOf = (workflowId: string, workflowName = workflowId): Agent => ({
+  id: 1,
+  workflowId,
+  workflowName,
+  nodeCount: 1,
+  isShared: false,
+  isDeployed: false,
+  isCompleted: true,
+  description: '',
+  username: '',
+  fullName: '',
+  createdAt: '',
+  updatedAt: '',
+});
+
+test('[최근 채팅]: 처음 5개, 더 있으면 [더 보기], 5개보다 많이 보이면 [접기]. 모자라면 다음 쪽', () => {
+  const list = Array.from({ length: 12 }, (_, i) => conv(`c${i}`));
+  const first = recentSection(list, 5, { hasNextPage: false, running: new Set([key(list[1])]) });
+  assert.deepEqual(first.rows.map((r) => [r.interactionId, r.running]), [['c0', false], ['c1', true], ['c2', false], ['c3', false], ['c4', false]]);
+  assert.deepEqual([first.more, first.less], [true, false]);
+  const opened = recentSection(list, nextRecentCount(5), { hasNextPage: false });
+  assert.deepEqual([opened.rows.length, opened.more, opened.less], [10, true, true]);
+  const all = recentSection(list, 15, { hasNextPage: false });
+  assert.deepEqual([all.rows.length, all.more, all.less], [12, false, true]);
+  assert.equal(recentSection(list.slice(0, 5), 5, { hasNextPage: true }).more, true, '다음 쪽이 있으면 [더 보기]');
+  assert.equal(recentNeedsPage(8, 10, true), true);
+  assert.equal(recentNeedsPage(40, 10, true), false);
+  assert.equal(recentNeedsPage(8, 10, false), false);
+});
+
+test('[에이전트] 줄: 이름, "마지막 대화 제목 · 날", 대화 수, 사라진 에이전트는 [+] 없음. [다른 에이전트 N개]', () => {
+  const rows = conversationAgentRows(
+    [group('w1'), group('w2', { workflowName: '', agentDeleted: true, lastTitle: '', lastActivity: local(2025, 1, 2) })],
+    NOW,
+  );
+  assert.deepEqual(rows, [
+    { workflowId: 'w1', name: 'W1', agentDeleted: false, detail: '마지막 제목 · 어제', count: 3, canStart: true },
+    { workflowId: 'w2', name: '', agentDeleted: true, detail: '새 대화 · 2025. 1. 2.', count: 3, canStart: false },
+  ]);
+  const available = [agentOf('w1'), agentOf('w3', '리서치')];
+  assert.deepEqual(otherAgentsView([group('w1')], available, false), { open: false, label: '다른 에이전트', rows: [] });
+  assert.deepEqual(otherAgentsView([group('w1')], available, true), {
+    open: true,
+    label: '다른 에이전트 1개',
+    rows: [{ workflowId: 'w3', name: '리서치' }],
   });
-  assert.equal(byContent.description, '지워짐');
-  const byName = searchPickItem({
-    conversation: gone,
-    match: { title: [{ text: '회의', hit: false }], agent: [{ text: 'Old', hit: true }, { text: ' Agent', hit: false }], snippet: null, snippetFrom: null, matchedAt: null },
+  assert.equal(otherAgentsView([group('w1')], [agentOf('w1')], true).empty, '다른 에이전트가 없습니다');
+});
+
+test('에이전트 화면: 작은 줄은 날, 없으면 "아직 채팅이 없습니다", 사라진 에이전트는 [+] 없음', () => {
+  const view = agentDrillView({
+    workflowId: 'wf',
+    workflowName: 'gitlab',
+    agentDeleted: false,
+    list: [conv('a', { title: '첫 대화', updatedAt: local(2026, 10, 9) })],
+    loading: false,
+    loadingMore: false,
+    hasMore: true,
+    now: NOW,
   });
-  assert.equal(byName.description, '지워짐 Old Agent');
-  assert.equal(recentPickItem(conv('r', { title: '', workflowName: 'gitlab', updatedAt: '', createdAt: '' })).label, '새 대화');
+  assert.deepEqual([view.name, view.canStart, view.hasMore], ['gitlab', true, true]);
+  assert.deepEqual(view.rows.map((r) => [r.title, r.when]), [['첫 대화', '어제']]);
+  const base = { workflowId: 'gone', workflowName: 'old', agentDeleted: true, list: [], loadingMore: false, hasMore: false };
+  const empty = agentDrillView({ ...base, loading: false });
+  assert.deepEqual([empty.empty, empty.canStart], ['아직 채팅이 없습니다', false]);
+  assert.equal(agentDrillView({ ...base, loading: true }).empty, '불러오는 중...');
+});
+
+test('검색 줄: 조각·날·꼬리표, 제목이 없으면 "새 대화", 사라진 에이전트의 이름은 이름으로 맞았을 때만', () => {
+  const c = conv('a', { title: '궁금', workflowName: 'HR Helper', tag: 'teams', updatedAt: local(2025, 1, 2, 3) });
+  const snippet = [{ text: '…아래는 ', hit: false }, { text: 'INTJ', hit: true }];
+  const row = searchResultRow(
+    c,
+    { title: [{ text: '궁금', hit: false }], agent: [{ text: 'HR Helper', hit: false }], snippet, snippetFrom: 'output', matchedAt: null },
+    NOW,
+  );
+  assert.deepEqual([row.key, row.agent, row.tagLabel, row.snippet, row.day], [key(c), [{ text: 'HR Helper', hit: false }], 'Teams', snippet, '2025. 1. 2.']);
+  const noMatch = { title: [], agent: [{ text: 'Old', hit: false }], snippet: null, snippetFrom: null, matchedAt: null };
+  const gone = conv('g', { agentDeleted: true, workflowName: 'Old' });
+  assert.deepEqual(searchResultRow(gone, noMatch).title, [{ text: '새 대화', hit: false }]);
+  assert.deepEqual(searchResultRow(gone, noMatch).agent, []);
+  assert.deepEqual(searchResultRow(gone, { ...noMatch, agent: [{ text: 'Old', hit: true }] }).agent, [{ text: 'Old', hit: true }]);
+});
+
+test('검색 결과 안내: 없음, 옛 서버는 제목·이름만, 더 있으면 좁혀 보라고, 실패', () => {
+  const page = (hits: number, hasMore = false, contentSearched = true) => ({
+    query: 'q',
+    terms: ['q'],
+    hits: Array.from({ length: hits }, (_, i) => ({
+      conversation: conv(`h${i}`),
+      match: { title: [{ text: 'q', hit: true }], agent: [], snippet: null, snippetFrom: null, matchedAt: null },
+    })),
+    hasMore,
+    contentSearched,
+  });
+  assert.deepEqual(searchResultView(page(0)), { rows: [], status: '맞는 채팅이 없습니다.' });
+  assert.equal(searchResultView(page(1, false, false)).titleOnly, '이 서버는 제목·에이전트 이름으로만 찾습니다.');
+  assert.equal(searchResultView(page(2, true)).more, '맞는 채팅이 더 있습니다. 낱말을 더 적어 좁혀 보세요.');
+  assert.equal(searchFailedText('연결 끊김'), '검색하지 못했습니다. 연결 끊김');
 });

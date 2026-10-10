@@ -704,10 +704,33 @@ export const Workspace: React.FC<{
    * 새 채팅: 메인에 시작 화면("오늘은 무엇을 해볼까요?") 탭 하나. 이미 열려 있으면 그리로 간다.
    * 탭 종류 이름 'agent-create' 는 저장된 배치와 맞추려고 그대로 둔다(예전의 새 에이전트 화면 자리다).
    */
-  const openStartChat = useCallback(() => {
-    setLayout((current) =>
-      addWorkspaceTab(current, current.focusedGroupId, { id: 'agent-create', kind: 'agent-create' }),
-    );
+  /**
+   * 시작 화면 탭(하나뿐이다)을 연다. 에이전트를 주면 그 에이전트가 골라진 채로 연다(사이드바 [에이전트] 줄의
+   * [+]). 이미 열려 있으면 그 탭의 에이전트를 바꿔 앞으로 가져온다(바뀌면 화면을 새로 세운다).
+   */
+  const openStartChat = useCallback((workflowId?: string) => {
+    setLayout((current) => {
+      const existing = findTab(current, 'agent-create');
+      if (!existing) {
+        return addWorkspaceTab(current, current.focusedGroupId, {
+          id: 'agent-create',
+          kind: 'agent-create',
+          ...(workflowId ? { workflowId } : {}),
+        });
+      }
+      const retargeted: WorkspaceLayout = {
+        ...current,
+        groups: current.groups.map((group) =>
+          group.id === existing.group.id
+            ? {
+                ...group,
+                tabs: group.tabs.map((tab) => (tab.id === 'agent-create' ? { ...tab, workflowId } : tab)),
+              }
+            : group,
+        ),
+      };
+      return selectWorkspaceTab(retargeted, existing.group.id, 'agent-create');
+    });
   }, []);
 
   // 처음 켰을 때 열린 탭이 하나도 없으면 시작 화면으로 들어선다. 예전에는 마지막 에이전트와의 새 대화를
@@ -1178,7 +1201,8 @@ export const Workspace: React.FC<{
       return (
         <div className="pane-fill">
           <StartChat
-            key={active.id}
+            key={`${active.id}:${active.workflowId ?? ''}`}
+            initialAgentId={active.workflowId}
             // 대화가 열리고 첫 메시지가 갔다. 시작 화면 탭은 닫고 그 대화 탭이 앞에 선다.
             onStarted={() => closeTab(active)}
           />

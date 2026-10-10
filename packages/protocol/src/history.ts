@@ -7,6 +7,7 @@
 import { ApiError, HttpClient } from './client';
 import type {
   Conversation,
+  ConversationAgent,
   ConversationKind,
   ConversationPage,
   ConversationSearchHit,
@@ -25,6 +26,7 @@ import {
   parseConversation,
 } from './conversation-list';
 import { parseConversationSearchHit, searchConversationList, searchTerms } from './conversation-search';
+import { groupConversationsByAgent, parseConversationAgent } from './conversation-agents';
 
 interface RawIoLog {
   log_id: number;
@@ -336,7 +338,7 @@ export class HistoryApi {
    * 비교 파생을 접어 한 쪽으로 돌려준다. 옛 서버는 마지막 활동 시각을 적지 않아 순서는 시작 순이다.
    */
   async conversationPage(
-    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind } = {},
+    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string } = {},
   ): Promise<ConversationPage> {
     const params = new URLSearchParams({
       limit: String(Math.max(1, Math.min(100, opts.limit ?? CONVERSATION_PAGE_SIZE))),
@@ -344,6 +346,8 @@ export class HistoryApi {
     if (opts.cursor) params.set('cursor', opts.cursor);
     const kind = opts.kind && opts.kind !== 'all' ? opts.kind : undefined;
     if (kind) params.set('kind', kind);
+    const workflowId = opts.workflowId || undefined;
+    if (workflowId) params.set('workflow_id', workflowId);
     try {
       const res = await this.http.get<{
         conversations?: unknown[];
@@ -351,11 +355,16 @@ export class HistoryApi {
         agent_deleted_count?: number;
         total?: number;
         kind?: string;
+        workflow_id?: string | null;
       }>(`/api/interaction/conversations?${params}`);
       let conversations = (res.conversations ?? []).map(parseConversation).filter((c): c is Conversation => c != null);
-      // 상태 필터를 모르는 옛 서버(답에 kind 가 없다)면 받은 쪽을 같은 판정으로 거른다. 총 수는 모른다.
-      const filtered = !!kind && res.kind !== kind;
-      if (filtered) conversations = conversations.filter((c) => conversationMatchesKind(c, kind));
+      // 상태·에이전트 필터를 모르는 옛 서버(답에 kind·workflow_id 가 없다)면 받은 쪽을 같은 판정으로 거른다.
+      // 그때 총 수는 모른다.
+      const kindIgnored = !!kind && res.kind !== kind;
+      const agentIgnored = !!workflowId && res.workflow_id !== workflowId;
+      const filtered = kindIgnored || agentIgnored;
+      if (kindIgnored) conversations = conversations.filter((c) => conversationMatchesKind(c, kind));
+      if (agentIgnored) conversations = conversations.filter((c) => c.workflowId === workflowId);
       return {
         conversations,
         nextCursor: res.next_cursor ?? null,
@@ -366,13 +375,32 @@ export class HistoryApi {
       if (!(e instanceof ApiError) || e.status !== 404 || opts.cursor) throw e;
     }
     const legacy = await this.legacyConversations();
-    const shown = legacy.filter((c) => conversationMatchesKind(c, kind));
+    const shown = legacy.filter(
+      (c) => conversationMatchesKind(c, kind) && (!workflowId || c.workflowId === workflowId),
+    );
     return {
       conversations: shown,
       nextCursor: null,
       agentDeletedCount: legacy.filter((c) => c.agentDeleted).length,
       total: shown.length,
     };
+  }
+
+  /**
+   * 사이드바 [에이전트]: 대화가 있는 에이전트마다 한 줄, 마지막으로 말한 순서(GET /api/interaction/conversations/agents).
+   * 그 API 가 없는 옛 서버(404)에서는 대화 목록을 받아 같은 규칙으로 묶는다(@dex/protocol conversation-agents).
+   */
+  async conversationAgents(opts: { limit?: number } = {}): Promise<ConversationAgent[]> {
+    const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(500, opts.limit ?? 200))) });
+    try {
+      const res = await this.http.get<{ agents?: unknown[] }>(`/api/interaction/conversations/agents?${params}`);
+      return (res?.agents ?? [])
+        .map(parseConversationAgent)
+        .filter((a): a is ConversationAgent => a != null);
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 404) throw e;
+    }
+    return groupConversationsByAgent(await this.conversations());
   }
 
   /** 대화 목록 전부(쪽을 따라간다, 상한 있음). 사이드바는 {@link conversationPage} 로 나눠 받는다. */

@@ -140,9 +140,21 @@ test('대화 목록 API: 에이전트를 가리지 않고 마지막으로 말한
   assert.throws(() => api.conversationsRename(first.id, 'x'.repeat(201)), /too long/);
   assert.throws(() => api.conversationsRename(first.id, null as never), /must be a string/);
   assert.throws(() => api.conversationsRename('missing', 'x'), /no conversation/);
+  // 에이전트 필터·에이전트 묶음(사이드바 [에이전트])
+  assert.deepEqual(api.conversationsListAll(null, b.id).map((c) => c.id), [second.id]);
+  assert.deepEqual(api.conversationsListAll(undefined, a.id).map((c) => c.id), [first.id]);
+  assert.throws(() => api.conversationsListAll(null, 3 as never), /agentId/);
+  assert.deepEqual(
+    api.conversationsAgents().map((g) => [g.agentName, g.conversationCount, g.lastConversationId]),
+    [
+      ['코딩', 1, second.id],
+      ['리서치', 1, first.id],
+    ],
+  );
   // 에이전트를 지우면 그 대화도 목록에서 빠진다
   api.agentsDelete(b.id);
   assert.deepEqual(api.conversationsListAll().map((c) => c.id), [first.id]);
+  assert.deepEqual(api.conversationsAgents().map((g) => g.agentId), [a.id]);
   store.close();
 });
 

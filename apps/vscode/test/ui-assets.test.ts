@@ -111,7 +111,7 @@ test('첫 화면은 대화 목록, [+ 새 채팅] 은 시작 화면이다', asyn
   // 이름 바꾸기는 입력 상자, 지우기·정리는 확인 뒤.
   assert.match(provider, /showInputBox/);
   assert.match(provider, /showWarningMessage\(\s*'이 대화를 지울까요\?'/);
-  assert.match(provider, /에이전트가 사라진 채팅 \$\{count\}개를 지울까요\?/);
+  assert.match(provider, /showWarningMessage\(purgeQuestion\(count\)/);
   // 로그인한 뒤 갈 곳이 없으면 대화 목록. 옛 Agent 격자 화면은 없다.
   assert.match(provider, /else this\.screen = 'conversations';/);
   assert.doesNotMatch(provider, /'agents'/);
@@ -175,4 +175,19 @@ test('입력창 아래 모델 칩 — 누르면 VS Code 빠른 선택, 다른 �
   assert.match(provider, /showQuickPick/);
   // 새 대화도 첫 말 전에 고를 수 있고, 첫 턴이 그 번호로 나가야 고른 모델이 붙는다.
   assert.match(provider, /interactionId: this\.modelTarget\(\)/);
+});
+
+test('⋯ 메뉴는 [채팅 기록 관리] 와 [제거], 관리 탭은 엔진 RPC 로만 부르고 문자열 HTML 을 쓰지 않는다', async () => {
+  const [panel, script, provider] = await Promise.all([
+    readFile(path.join(extensionRoot, 'src', 'conversation-manager-panel.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'media', 'manager.js'), 'utf8'),
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+  ]);
+  const menu = provider.slice(provider.indexOf('id="list-menu-panel"'), provider.indexOf('id="list-main"'));
+  assert.match(menu, /id="list-manage"[^>]*>채팅 기록 관리</);
+  assert.match(menu, /id="list-purge"/);
+  assert.doesNotMatch(panel, /\/api\//);
+  assert.doesNotThrow(() => new Function(script));
+  assert.doesNotMatch(script, /innerHTML/);
+  for (const [, id] of script.matchAll(/byId\('([^']+)'\)/g)) assert.match(panel, new RegExp(`id="${id}"`), `missing markup id: ${id}`);
 });

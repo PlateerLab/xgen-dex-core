@@ -287,6 +287,7 @@ export * from './conversation-model';
 // 대화 목록(2026-10-09): 마지막으로 말한 순서, 제목·꼬리표, 목록 규칙. 모든 앱이 같은 모양으로 그린다.
 export * from './conversation-list';
 export * from './conversation-search';
+export * from './conversation-agents';
 export * from './notifications';
 // 도구 과정 표시 규칙(칩 단계 · 호출 한 건 한 행 · 건수) — 앱과 웹이 같은 답을 내도록.
 export * from './tool-activity';

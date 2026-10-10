@@ -2519,10 +2519,17 @@ ipcMain.handle(
     getClient().history.snapshot(workflowId, interactionId, name),
 );
 ipcMain.handle(CHANNELS.historyConversations, () => getClient().history.conversations());
-ipcMain.handle(CHANNELS.historyConversationPage, (_e, opts?: { limit?: number; cursor?: string | null; kind?: ConversationKind }) => {
-  // 목록을 그리는 화면이 있으면 목록 소켓도 붙인다. 새 대화·방금 말한 대화가 곧바로 밀려온다.
+ipcMain.handle(
+  CHANNELS.historyConversationPage,
+  (_e, opts?: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string }) => {
+    // 목록을 그리는 화면이 있으면 목록 소켓도 붙인다. 새 대화·방금 말한 대화가 곧바로 밀려온다.
+    ensureConversationsWatch();
+    return getClient().history.conversationPage(opts ?? {});
+  },
+);
+ipcMain.handle(CHANNELS.historyConversationAgents, (_e, opts?: { limit?: number }) => {
   ensureConversationsWatch();
-  return getClient().history.conversationPage(opts ?? {});
+  return getClient().history.conversationAgents(opts ?? {});
 });
 ipcMain.handle(CHANNELS.historyRename, (_e, workflowId: string, interactionId: string, title: string) =>
   getClient().history.renameConversation(workflowId, interactionId, String(title ?? '')),

@@ -22,9 +22,11 @@ export {
   type ConversationSearchRow,
 } from '../../../../desktop/src/renderer/src/views/ConversationSearchDialog';
 export {
+  BackIcon,
   BotIcon,
   ChatIcon,
   CheckIcon,
+  ChevronRightIcon,
   CloseIcon,
   CodeIcon,
   CopyIcon,

@@ -116,6 +116,8 @@ export const CHANNELS = {
   historyPurgeDeletedAgents: 'history:purge-deleted-agents',
   /** 채팅 검색(2026-10-10): 제목·에이전트 이름·대화 내용. */
   historySearch: 'history:search',
+  /** 사이드바 [에이전트](2026-10-10): 대화가 있는 에이전트마다 한 줄. */
+  historyConversationAgents: 'history:conversation-agents',
   // 채팅 공유: 대화를 그 시점까지 얼린 링크. 절대 주소는 main 이 붙인다(렌더러는 서버 주소를 모른다).
   chatShareState: 'chatShare:state',
   chatShareCreate: 'chatShare:create',

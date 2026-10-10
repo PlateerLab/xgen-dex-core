@@ -59,7 +59,7 @@ async function say(win: Page, text: string): Promise<void> {
  * 보인다. 다 적으면 입력창이 열린다.
  */
 async function startNewAgent(win: Page, agentName: string): Promise<void> {
-  await win.getByRole('button', { name: '새 채팅' }).click();
+  await win.getByRole('button', { name: '새 채팅', exact: true }).click();
   await win.getByRole('heading', { name: '오늘은 무엇을 해볼까요?' }).waitFor();
   assert.equal(await win.getByLabel('메시지').isDisabled(), true);
   await win.getByRole('button', { name: '에이전트 이름을 먼저 입력해 주세요.' }).click();
@@ -88,7 +88,7 @@ async function setUp(win: Page, agentName: string, firstMessage: string): Promis
 
 /** 시작 화면 → 세부 설정 → [모든 설정]: 연결 폴더·MCP 처럼 시작 화면에 없는 설정으로 에이전트를 만든다. */
 async function openFullEditor(win: Page): Promise<void> {
-  await win.getByRole('button', { name: '새 채팅' }).click();
+  await win.getByRole('button', { name: '새 채팅', exact: true }).click();
   await win.getByText('세부 설정', { exact: true }).click();
   await win.getByRole('button', { name: '모든 설정' }).click();
   await win.getByRole('heading', { name: '새 에이전트' }).waitFor();
@@ -226,7 +226,7 @@ test('Claude Code 로그인(가짜 CLI): 화면을 떠났다 와도 이어지고
   await shot(win, '12-cli-logged-in');
 
   // main 이 만든 계정 하나: 시작 화면(새 에이전트)의 제공자 목록에 Claude Code 가 한 번
-  await win.getByRole('button', { name: '새 채팅' }).click();
+  await win.getByRole('button', { name: '새 채팅', exact: true }).click();
   await win.getByRole('button', { name: 'AI 제공자 고르기' }).click();
   const options = await win.locator('.selector-opt .selector-opt-label').allTextContents();
   assert.deepEqual(options, ['Claude Code']);

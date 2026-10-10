@@ -10,6 +10,8 @@ import type {
   ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
+  ConversationAgent,
+  ConversationKind,
   ConversationPage,
   ConversationSearchPage,
   ConversationSnapshot,
@@ -43,13 +45,25 @@ export interface TuiEngine {
   agentNameTaken(name: string, profile?: string): Promise<boolean>;
   /** 대화 목록 전부(쪽을 따라간다, 상한 있음). 기록 화면이 쓴다. */
   listConversations(profile?: string): Promise<Conversation[]>;
-  /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(사이드바). */
+  /**
+   * 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(사이드바).
+   * kind 는 상태 필터(채팅 기록 관리), workflowId 는 한 에이전트의 대화만(에이전트 안으로 들어갔을 때).
+   */
   conversationPage(
-    opts: { limit?: number; cursor?: string | null },
+    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string },
     profile?: string,
   ): Promise<ConversationPage>;
-  /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. */
-  searchConversations(query: string, opts: { limit?: number }, profile?: string): Promise<ConversationSearchPage>;
+  /**
+   * 사이드바 [에이전트]: 대화가 있는 에이전트마다 한 줄, 마지막으로 말한 순서(선택 구현).
+   * 없는 엔진이면 받아 둔 대화 목록으로 묶는다(@dex/protocol groupConversationsByAgent).
+   */
+  conversationAgents?(opts: { limit?: number }, profile?: string): Promise<ConversationAgent[]>;
+  /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. kind 는 상태 필터. */
+  searchConversations(
+    query: string,
+    opts: { limit?: number; kind?: ConversationKind },
+    profile?: string,
+  ): Promise<ConversationSearchPage>;
   /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */
   renameConversation(
     workflowId: string,

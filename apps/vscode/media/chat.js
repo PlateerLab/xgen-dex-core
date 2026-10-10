@@ -13,6 +13,10 @@
     trash: ['M3 4.5h10', 'M6.5 4.5V3h3v1.5', 'M4.5 4.5l.6 8.5h5.8l.6-8.5'],
     search: ['M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z', 'M13.5 13.5l-3.3-3.3'],
     more: ['M3 8h1', 'M7.5 8h1', 'M12 8h1'],
+    chat: ['M2.5 4A1.5 1.5 0 0 1 4 2.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7l-3 2.5V11A1.5 1.5 0 0 1 2.5 9.5z'],
+    close: ['M4 4l8 8', 'M12 4l-8 8'],
+    plus: ['M8 3.5v9', 'M3.5 8h9'],
+    next: ['M6.5 4.5L10 8l-3.5 3.5'],
   };
   /** 에이전트가 사라진 대화의 표시(@dex/protocol DELETED_AGENT_LABEL 과 같은 글). */
   const DELETED_AGENT_LABEL = '지워짐';
@@ -64,10 +68,27 @@
     listSearch: byId('list-search'),
     listMenu: byId('list-menu'),
     listMenuPanel: byId('list-menu-panel'),
+    listManage: byId('list-manage'),
     listPurge: byId('list-purge'),
+    listMain: byId('list-main'),
     conversationList: byId('conversation-list'),
     listStatus: byId('list-status'),
     listMore: byId('list-more'),
+    listLess: byId('list-less'),
+    agentList: byId('agent-list'),
+    agentListStatus: byId('agent-list-status'),
+    otherAgentsToggle: byId('other-agents-toggle'),
+    otherAgentsChevron: byId('other-agents-chevron'),
+    otherAgentsLabel: byId('other-agents-label'),
+    otherAgentList: byId('other-agent-list'),
+    agentView: byId('agent-view'),
+    agentViewBack: byId('agent-view-back'),
+    agentViewDeleted: byId('agent-view-deleted'),
+    agentViewName: byId('agent-view-name'),
+    agentViewNew: byId('agent-view-new'),
+    agentConversationList: byId('agent-conversation-list'),
+    agentViewStatus: byId('agent-view-status'),
+    agentViewMore: byId('agent-view-more'),
     startBack: byId('start-back'),
     startConnection: byId('start-connection'),
     startSettings: byId('start-settings'),
@@ -653,9 +674,13 @@
   }
 
   // ── 대화 목록 ──────────────────────────────────────────────────────
-  // 마지막으로 말한 순서. 줄의 글(에이전트 이름·[지워짐]·꼬리표·제목)은 확장이 정해서 보낸다.
+  // [최근 채팅] 5개(더 보기·접기) + [에이전트](대화가 있는 에이전트) + [다른 에이전트]. 에이전트 줄을 누르면 그
+  // 에이전트의 대화로 들어간다. 줄의 글(에이전트 이름·[지워짐]·꼬리표·제목·날·수)은 확장이 정해서 보낸다.
 
   let listSignature = '';
+  let agentsSignature = '';
+  let othersSignature = '';
+  let agentViewSignature = '';
   let moreRequested = false;
 
   function rowAction(name, label, type, row) {
@@ -672,10 +697,14 @@
     return button;
   }
 
-  /** 대화 한 줄: 위에 작은 에이전트 이름(사라졌으면 [지워짐])과 꼬리표, 아래에 제목. */
+  /**
+   * 대화 한 줄: 위에 작은 에이전트 이름(사라졌으면 [지워짐])과 꼬리표, 아래에 제목. 에이전트 안의 대화 목록은
+   * 에이전트 이름 대신 날(`when`)을 쓴다. 답이 도는 대화는 진행 점.
+   */
   function conversationRowElement(row) {
+    const dated = typeof row.when === 'string';
     const item = document.createElement('div');
-    item.className = `conversation-row${row.active ? ' active' : ''}${row.agentDeleted ? ' deleted' : ''}`;
+    item.className = `conversation-row${row.active ? ' active' : ''}${row.agentDeleted && !dated ? ' deleted' : ''}`;
     item.setAttribute('role', 'listitem');
     const open = document.createElement('button');
     open.type = 'button';
@@ -685,13 +714,20 @@
     meta.className = 'conversation-meta';
     const agent = document.createElement('span');
     agent.className = 'conversation-agent';
-    agent.textContent = row.agentLabel;
+    agent.textContent = dated ? row.when : row.agentLabel;
     meta.append(agent);
     if (row.tagLabel) {
       const tag = document.createElement('span');
       tag.className = 'conversation-tag';
       tag.textContent = row.tagLabel;
       meta.append(tag);
+    }
+    if (row.running) {
+      const live = document.createElement('span');
+      live.className = 'conversation-live';
+      live.title = '진행 중';
+      live.setAttribute('aria-label', '진행 중');
+      meta.append(live);
     }
     const title = document.createElement('span');
     title.className = 'conversation-title';
@@ -713,18 +749,166 @@
     return item;
   }
 
-  /** 끝까지 내렸으면 다음 쪽을 부른다(한 번에 하나). */
+  /** [+]: 그 에이전트를 골라 둔 시작 화면. */
+  function startWithAgentButton(workflowId, name) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'row-action';
+    button.dataset.tip = '이 에이전트로 새 채팅';
+    button.setAttribute('aria-label', name ? `이 에이전트로 새 채팅: ${name}` : '이 에이전트로 새 채팅');
+    button.append(icon('plus', 13));
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      post('startWithAgent', { workflowId });
+    });
+    return button;
+  }
+
+  function deletedBadge() {
+    const badge = document.createElement('span');
+    badge.className = 'agent-deleted-badge';
+    badge.textContent = DELETED_AGENT_LABEL;
+    return badge;
+  }
+
+  /** 에이전트 한 줄: 이름, 아래에 "마지막 대화 제목 · 날". 오른쪽에 대화 수, [+], >. 누르면 그 에이전트의 대화. */
+  function agentRowElement(row) {
+    const item = document.createElement('div');
+    item.className = `agent-row${row.agentDeleted ? ' deleted' : ''}`;
+    item.setAttribute('role', 'listitem');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'agent-open';
+    const top = document.createElement('span');
+    top.className = 'agent-row-top';
+    if (row.agentDeleted) top.append(deletedBadge());
+    const name = document.createElement('span');
+    name.className = 'agent-row-name';
+    name.textContent = row.name;
+    top.append(name);
+    const detail = document.createElement('span');
+    detail.className = 'agent-row-detail';
+    detail.textContent = row.detail;
+    open.append(top, detail);
+    const count = document.createElement('span');
+    count.className = 'agent-row-count';
+    count.textContent = String(row.count);
+    const chevron = document.createElement('span');
+    chevron.className = 'agent-row-chevron';
+    chevron.append(icon('next', 12));
+    item.append(open, count);
+    if (row.canStart) item.append(startWithAgentButton(row.workflowId, row.name));
+    item.append(chevron);
+    item.addEventListener('click', () => post('openAgent', { workflowId: row.workflowId }));
+    return item;
+  }
+
+  /** 다른 에이전트 한 줄: 아직 대화가 없다. 누르면 그 에이전트를 골라 둔 시작 화면. */
+  function otherAgentRowElement(row) {
+    const item = document.createElement('div');
+    item.className = 'agent-row other';
+    item.setAttribute('role', 'listitem');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'agent-open';
+    open.setAttribute('aria-label', `이 에이전트로 새 채팅: ${row.name}`);
+    const name = document.createElement('span');
+    name.className = 'agent-row-name';
+    name.textContent = row.name;
+    open.append(name);
+    const plus = document.createElement('span');
+    plus.className = 'agent-row-chevron';
+    plus.append(icon('plus', 12));
+    item.append(open, plus);
+    item.addEventListener('click', () => post('startWithAgent', { workflowId: row.workflowId }));
+    return item;
+  }
+
+  function emptyLine(text) {
+    const empty = document.createElement('div');
+    empty.className = 'list-empty';
+    empty.textContent = text;
+    return empty;
+  }
+
+  /** 에이전트 화면에서 끝까지 내렸으면 다음 쪽을 부른다(한 번에 하나). */
   function maybeLoadMore() {
-    if (state.screen !== 'conversations' || !state.conversationsHasMore || state.conversationsLoadingMore || moreRequested) return;
+    const view = state.agentView;
+    if (state.screen !== 'conversations' || !view || !view.hasMore || view.loadingMore || moreRequested) return;
     const list = elements.listContent;
     if (list.scrollHeight - list.scrollTop - list.clientHeight > 160) return;
     moreRequested = true;
-    post('loadMoreConversations');
+    post('loadMoreAgentConversations');
   }
 
   function setListMenu(open) {
     elements.listMenuPanel.classList.toggle('hidden', !open);
     elements.listMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function renderListMain() {
+    const rows = state.conversations || [];
+    // 답이 흐르는 동안에도 상태는 자주 온다. 목록이 그대로면 다시 그리지 않는다(스크롤·초점 유지).
+    const signature = JSON.stringify([rows, !!state.conversationActions, !!state.conversationsLoading, !!state.conversationsError]);
+    if (signature !== listSignature) {
+      listSignature = signature;
+      elements.conversationList.replaceChildren(...rows.map(conversationRowElement));
+      if (!rows.length && !state.conversationsError) {
+        elements.conversationList.append(emptyLine(state.conversationsLoading ? '대화를 불러오는 중...' : '아직 대화가 없습니다.'));
+      }
+    }
+    elements.listStatus.textContent = state.conversationsError
+      ? `대화 목록을 불러오지 못했습니다. ${state.conversationsError}`
+      : '';
+    elements.listStatus.classList.toggle('hidden', !state.conversationsError);
+    elements.listMore.classList.toggle('hidden', !state.recentMore);
+    elements.listMore.disabled = !!state.conversationsLoadingMore;
+    elements.listMore.textContent = state.conversationsLoadingMore ? '불러오는 중...' : '더 보기';
+    elements.listLess.classList.toggle('hidden', !state.recentLess);
+
+    const agents = state.conversationAgents || [];
+    const agentsKey = JSON.stringify([agents, !!state.conversationAgentsLoading]);
+    if (agentsKey !== agentsSignature) {
+      agentsSignature = agentsKey;
+      elements.agentList.replaceChildren(...agents.map(agentRowElement));
+      if (!agents.length && state.conversationAgentsLoading) elements.agentList.append(emptyLine('불러오는 중...'));
+    }
+    elements.agentListStatus.textContent = state.conversationAgentsError
+      ? `에이전트 목록을 불러오지 못했습니다. ${state.conversationAgentsError}`
+      : '';
+    elements.agentListStatus.classList.toggle('hidden', !state.conversationAgentsError);
+
+    const others = state.otherAgents || { open: false, label: '다른 에이전트', rows: [] };
+    elements.otherAgentsLabel.textContent = others.label;
+    elements.otherAgentsToggle.setAttribute('aria-expanded', others.open ? 'true' : 'false');
+    elements.otherAgentsToggle.classList.toggle('open', !!others.open);
+    const othersKey = JSON.stringify(others);
+    if (othersKey !== othersSignature) {
+      othersSignature = othersKey;
+      elements.otherAgentList.replaceChildren(...others.rows.map(otherAgentRowElement));
+      if (others.empty) elements.otherAgentList.append(emptyLine(others.empty));
+    }
+    elements.otherAgentList.classList.toggle('hidden', !others.open);
+  }
+
+  function renderAgentView(view) {
+    elements.agentViewName.textContent = view.name;
+    elements.agentViewName.title = view.name;
+    elements.agentViewName.classList.toggle('deleted', !!view.agentDeleted);
+    elements.agentViewDeleted.classList.toggle('hidden', !view.agentDeleted);
+    elements.agentViewNew.classList.toggle('hidden', !view.canStart);
+    const signature = JSON.stringify([view.workflowId, view.rows, view.empty || '', !!state.conversationActions]);
+    if (signature !== agentViewSignature) {
+      agentViewSignature = signature;
+      elements.agentConversationList.replaceChildren(...view.rows.map(conversationRowElement));
+      if (view.empty) elements.agentConversationList.append(emptyLine(view.empty));
+    }
+    elements.agentViewStatus.textContent = view.error ? `대화 목록을 불러오지 못했습니다. ${view.error}` : '';
+    elements.agentViewStatus.classList.toggle('hidden', !view.error);
+    elements.agentViewMore.classList.toggle('hidden', !view.hasMore);
+    elements.agentViewMore.disabled = !!view.loadingMore;
+    elements.agentViewMore.textContent = view.loadingMore ? '불러오는 중...' : '더 보기';
+    if (!view.loadingMore) moreRequested = false;
   }
 
   function renderConversations() {
@@ -734,33 +918,283 @@
     elements.accountAvatar.textContent = textInitials(user?.username);
     elements.accountName.textContent = user?.username || '계정';
     elements.listRefresh.classList.toggle('spinning', !!state.refreshing || !!state.conversationsLoading);
-    // 목록 머리: [+ 새 채팅] [검색] [⋯]. ⋯ 메뉴의 [에이전트가 사라진 채팅 제거 (N)] 은 0 이면 눌리지 않는다.
+    // 목록 머리: [+ 새 채팅] [검색] [⋯]. ⋯ 메뉴는 [채팅 기록 관리] 와 [에이전트가 사라진 채팅 제거 (N)].
+    // 제거는 0 이면 눌리지 않는다. 엔진이 대화 목록을 모르면 ⋯ 도 없다.
     elements.listMenu.classList.toggle('hidden', !state.purgeLabel);
     if (!state.purgeLabel) setListMenu(false);
     elements.listPurge.textContent = state.purgeLabel || '';
     elements.listPurge.disabled = !(state.agentDeletedCount > 0);
     elements.listPurge.title = state.agentDeletedCount > 0 ? '' : '정리할 채팅이 없습니다.';
-    const rows = state.conversations || [];
-    // 답이 흐르는 동안에도 상태는 자주 온다. 목록이 그대로면 다시 그리지 않는다(스크롤·초점 유지).
-    const signature = JSON.stringify([rows, !!state.conversationActions, !!state.conversationsLoading, !!state.conversationsError]);
-    if (signature !== listSignature) {
-      listSignature = signature;
-      elements.conversationList.replaceChildren(...rows.map(conversationRowElement));
-      if (!rows.length && !state.conversationsError) {
-        const empty = document.createElement('div');
-        empty.className = 'list-empty';
-        empty.textContent = state.conversationsLoading ? '대화를 불러오는 중...' : '아직 대화가 없습니다.';
-        elements.conversationList.append(empty);
+    const view = state.agentView;
+    const drilling = !!view;
+    elements.listMain.classList.toggle('hidden', drilling);
+    elements.agentView.classList.toggle('hidden', !drilling);
+    if (view) renderAgentView(view);
+    else renderListMain();
+    if (searchBox) renderSearch();
+  }
+
+  // ── 채팅 검색 창 ────────────────────────────────────────────────────
+  // 데스크톱 ConversationSearchDialog 와 같은 모양·글. 비면 최근 채팅, 적으면 잠깐 뒤 확장에 묻는다(번호를 붙여,
+  // 마지막으로 물은 것의 답만 그린다). 줄과 안내 글은 확장이 만들어 보낸다. 여기서는 맞은 조각을 칠할 뿐이다.
+
+  let searchBox = null;
+  let searchSeq = 0;
+
+  function highlighted(parts) {
+    const fragment = document.createDocumentFragment();
+    for (const part of parts || []) {
+      if (part.hit) {
+        const mark = document.createElement('mark');
+        mark.textContent = part.text;
+        fragment.append(mark);
+      } else {
+        fragment.append(document.createTextNode(part.text));
       }
     }
-    elements.listStatus.textContent = state.conversationsError
-      ? `대화 목록을 불러오지 못했습니다. ${state.conversationsError}`
-      : '';
-    elements.listStatus.classList.toggle('hidden', !state.conversationsError);
-    elements.listMore.classList.toggle('hidden', !state.conversationsHasMore);
-    elements.listMore.disabled = !!state.conversationsLoadingMore;
-    elements.listMore.textContent = state.conversationsLoadingMore ? '불러오는 중...' : '더 보기';
-    if (!state.conversationsLoadingMore) moreRequested = false;
+    return fragment;
+  }
+
+  function searchRows() {
+    if (!searchBox) return [];
+    return searchBox.query.trim() ? (searchBox.result ? searchBox.result.rows : []) : state.searchRecent || [];
+  }
+
+  function setSearchActive(index) {
+    if (!searchBox) return;
+    searchBox.active = index;
+    for (const node of searchBox.body.querySelectorAll('.conv-search-row')) {
+      node.classList.toggle('active', Number(node.dataset.row) === index);
+    }
+    searchBox.body.querySelector(`[data-row="${index}"]`)?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function chooseSearchRow(row) {
+    if (!row) return;
+    closeSearch();
+    post('openSearchResult', { workflowId: row.workflowId, interactionId: row.interactionId });
+  }
+
+  function searchRowElement(row, index) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `conv-search-row${index === searchBox.active ? ' active' : ''}`;
+    button.dataset.row = String(index);
+    const glyph = document.createElement('span');
+    glyph.className = 'conv-search-row-icon';
+    glyph.append(icon('chat', 16));
+    const main = document.createElement('span');
+    main.className = 'conv-search-row-main';
+    const top = document.createElement('span');
+    top.className = 'conv-search-row-top';
+    const title = document.createElement('span');
+    title.className = 'conv-search-row-title';
+    title.append(highlighted(row.title));
+    const when = document.createElement('span');
+    when.className = 'conv-search-row-when';
+    when.textContent = row.day;
+    top.append(title, when);
+    const sub = document.createElement('span');
+    sub.className = 'conv-search-row-sub';
+    if (row.agentDeleted) {
+      const deleted = document.createElement('span');
+      deleted.className = 'conv-search-tag deleted';
+      deleted.textContent = DELETED_AGENT_LABEL;
+      sub.append(deleted);
+    }
+    if (row.agent && row.agent.length) {
+      const agent = document.createElement('span');
+      agent.className = 'conv-search-row-agent';
+      agent.append(highlighted(row.agent));
+      sub.append(agent);
+    }
+    if (row.tagLabel) {
+      const tag = document.createElement('span');
+      tag.className = 'conv-search-tag';
+      tag.textContent = row.tagLabel;
+      sub.append(tag);
+    }
+    if (row.snippet && row.snippet.length) {
+      const dot = document.createElement('span');
+      dot.setAttribute('aria-hidden', 'true');
+      dot.textContent = '·';
+      const snippet = document.createElement('span');
+      snippet.className = 'conv-search-row-snippet';
+      snippet.append(highlighted(row.snippet));
+      sub.append(dot, snippet);
+    }
+    main.append(top, sub);
+    button.append(glyph, main);
+    button.addEventListener('mousemove', () => {
+      if (searchBox && searchBox.active !== index) setSearchActive(index);
+    });
+    button.addEventListener('click', () => chooseSearchRow(row));
+    return button;
+  }
+
+  function searchNote(text, className) {
+    const node = document.createElement('div');
+    node.className = className;
+    node.textContent = text;
+    return node;
+  }
+
+  function renderSearch() {
+    if (!searchBox) return;
+    const trimmed = searchBox.query.trim();
+    const result = searchBox.result;
+    const rows = searchRows();
+    if (searchBox.active >= rows.length) searchBox.active = rows.length ? rows.length - 1 : 0;
+    searchBox.clear.classList.toggle('hidden', !searchBox.query);
+    let status = '';
+    if (trimmed) {
+      if (searchBox.failed) status = searchBox.failed;
+      else if (!result || (searchBox.searching && rows.length === 0)) status = '검색 중';
+      else if (rows.length === 0) status = result.status || '';
+    }
+    const children = [];
+    if (!trimmed && rows.length) children.push(searchNote('최근 채팅', 'conv-search-label'));
+    if (status) {
+      const node = searchNote(status, 'conv-search-status');
+      node.setAttribute('role', 'status');
+      children.push(node);
+    }
+    if (trimmed && result && result.titleOnly && !searchBox.failed) children.push(searchNote(result.titleOnly, 'conv-search-note'));
+    rows.forEach((row, index) => children.push(searchRowElement(row, index)));
+    if (trimmed && result && result.more && !searchBox.failed) children.push(searchNote(result.more, 'conv-search-note'));
+    searchBox.body.replaceChildren(...children);
+  }
+
+  function onSearchInput() {
+    if (!searchBox) return;
+    searchBox.query = searchBox.input.value;
+    const trimmed = searchBox.query.trim();
+    if (searchBox.timer) window.clearTimeout(searchBox.timer);
+    searchBox.timer = undefined;
+    if (trimmed === searchBox.asked) {
+      renderSearch();
+      return;
+    }
+    searchBox.asked = trimmed;
+    const seq = ++searchSeq;
+    searchBox.seq = seq;
+    if (!trimmed) {
+      searchBox.result = null;
+      searchBox.searching = false;
+      searchBox.failed = null;
+      renderSearch();
+      return;
+    }
+    searchBox.searching = true;
+    renderSearch();
+    searchBox.timer = window.setTimeout(() => {
+      if (searchBox && searchBox.seq === seq) post('searchConversations', { query: trimmed, seq });
+    }, state.searchDelayMs || 0);
+  }
+
+  function onSearchResult(message) {
+    if (!searchBox || message.seq !== searchBox.seq) return;
+    searchBox.searching = false;
+    if (message.error) searchBox.failed = message.error;
+    else {
+      searchBox.result = message.result;
+      searchBox.failed = null;
+      searchBox.active = 0;
+    }
+    renderSearch();
+  }
+
+  function closeSearch() {
+    if (!searchBox) return;
+    if (searchBox.timer) window.clearTimeout(searchBox.timer);
+    searchBox.backdrop.remove();
+    searchBox = null;
+    searchSeq += 1;
+    elements.listSearch.focus();
+  }
+
+  function openSearch() {
+    setListMenu(false);
+    if (searchBox) {
+      searchBox.input.focus();
+      return;
+    }
+    const backdrop = document.createElement('div');
+    backdrop.className = 'conv-search-backdrop';
+    backdrop.addEventListener('mousedown', (event) => {
+      if (event.target === backdrop) closeSearch();
+    });
+    const panel = document.createElement('div');
+    panel.className = 'conv-search';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', '채팅 검색');
+    const head = document.createElement('div');
+    head.className = 'conv-search-head';
+    const glyph = document.createElement('span');
+    glyph.className = 'conv-search-glyph';
+    glyph.append(icon('search', 16));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'conv-search-input';
+    input.placeholder = '검색...';
+    input.maxLength = 200;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.setAttribute('aria-label', '채팅 검색');
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'conv-search-clear hidden';
+    clear.textContent = '지우기';
+    const sep = document.createElement('span');
+    sep.className = 'conv-search-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'conv-search-close';
+    close.title = '닫기';
+    close.setAttribute('aria-label', '닫기');
+    close.append(icon('close', 14));
+    head.append(glyph, input, clear, sep, close);
+    const body = document.createElement('div');
+    body.className = 'conv-search-body';
+    panel.append(head, body);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    searchBox = { backdrop, input, clear, body, query: '', asked: '', result: null, searching: false, failed: null, active: 0, seq: 0, timer: undefined };
+    input.addEventListener('input', onSearchInput);
+    input.addEventListener('compositionstart', () => {
+      composing = true;
+    });
+    input.addEventListener('compositionend', () => {
+      composing = false;
+    });
+    clear.addEventListener('click', () => {
+      input.value = '';
+      onSearchInput();
+      input.focus();
+    });
+    close.addEventListener('click', closeSearch);
+    panel.addEventListener('keydown', (event) => {
+      if (event.isComposing || composing || !searchBox) return;
+      const rows = searchRows();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSearch();
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSearchActive(rows.length ? (searchBox.active + 1) % rows.length : 0);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSearchActive(rows.length ? (searchBox.active - 1 + rows.length) % rows.length : 0);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        chooseSearchRow(rows[searchBox.active]);
+      }
+    });
+    renderSearch();
+    input.focus();
   }
 
   // ── 시작 화면 ──────────────────────────────────────────────────────
@@ -1177,13 +1611,18 @@
   elements.listRefresh.addEventListener('click', () => post('refresh'));
   elements.listSettings.addEventListener('click', () => post('showSettings'));
   elements.listNew.addEventListener('click', () => post('newChat'));
-  // 채팅 검색: VS Code 빠른 선택 창이 뜬다(제목·에이전트 이름·대화 내용).
+  // 채팅 검색: 이 화면 위에 검색 창이 뜬다(제목·에이전트 이름·대화 내용).
   elements.listSearch.append(icon('search', 14));
-  elements.listSearch.addEventListener('click', () => post('searchConversations'));
+  elements.listSearch.addEventListener('click', openSearch);
+  // ⋯ 메뉴: [채팅 기록 관리] 는 편집기 자리의 탭, [에이전트가 사라진 채팅 제거 (N)] 는 확인 뒤 정리.
   elements.listMenu.append(icon('more', 14));
   elements.listMenu.addEventListener('click', (event) => {
     event.stopPropagation();
     setListMenu(elements.listMenuPanel.classList.contains('hidden'));
+  });
+  elements.listManage.addEventListener('click', () => {
+    setListMenu(false);
+    post('manageConversations');
   });
   elements.listPurge.addEventListener('click', () => {
     setListMenu(false);
@@ -1196,9 +1635,17 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') setListMenu(false);
   });
-  elements.listMore.addEventListener('click', () => {
+  elements.listMore.addEventListener('click', () => post('loadMoreConversations'));
+  elements.listLess.addEventListener('click', () => post('lessConversations'));
+  elements.otherAgentsChevron.append(icon('next', 11));
+  elements.otherAgentsToggle.addEventListener('click', () => post('toggleOtherAgents'));
+  elements.agentViewBack.addEventListener('click', () => post('closeAgent'));
+  elements.agentViewNew.addEventListener('click', () => {
+    if (state.agentView) post('startWithAgent', { workflowId: state.agentView.workflowId });
+  });
+  elements.agentViewMore.addEventListener('click', () => {
     moreRequested = true;
-    post('loadMoreConversations');
+    post('loadMoreAgentConversations');
   });
   elements.listContent.addEventListener('scroll', maybeLoadMore, { passive: true });
   elements.startBack.addEventListener('click', () => post('showConversations'));
@@ -1267,8 +1714,14 @@
   elements.extensionSettings.addEventListener('click', () => post('openExtensionSettings'));
   elements.restartEngine.addEventListener('click', () => post('restartEngine'));
   window.addEventListener('message', (event) => {
+    if (event.data?.type === 'searchResult') {
+      onSearchResult(event.data);
+      return;
+    }
     if (event.data?.type !== 'state') return;
     state = event.data.state;
+    // 목록 화면을 떠나면 검색 창도 닫는다.
+    if (searchBox && state.screen !== 'conversations') closeSearch();
     render();
   });
 

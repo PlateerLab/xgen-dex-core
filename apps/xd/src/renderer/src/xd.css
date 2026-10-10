@@ -30,7 +30,7 @@ body {
   width: 272px;
   overflow: hidden;
 }
-/* 대화 목록: 맨 위 [새 채팅], 그 아래 모든 에이전트의 대화(마지막으로 말한 순서). */
+/* 사이드바: 맨 위 [새 채팅] [검색] [⋯], 그 아래 [최근 채팅] · [에이전트](둘이 한 칸에서 같이 스크롤된다). */
 .xd-side-top {
   flex-shrink: 0;
   padding: 0 8px 6px;
@@ -42,7 +42,8 @@ body {
   flex: 1;
   min-width: 0;
 }
-.xd-search-open {
+.xd-search-open,
+.xd-manage-open {
   flex-shrink: 0;
 }
 .xd-new-chat {
@@ -52,14 +53,152 @@ body {
   color: var(--primary);
   font-weight: 600;
 }
-.xd-conv-list {
+.xd-side-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 2px 8px 12px;
+  padding: 0 8px 12px;
+}
+.xd-conv-list,
+.xd-agent-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+/* 칸 제목(최근 채팅 · 에이전트): 사이드바 제목과 같은 작은 글씨. */
+.xd-side-section {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.xd-side-empty {
+  padding: 4px 10px 6px;
+}
+/* [더 보기] · [접기] */
+.xd-side-more {
+  display: flex;
+  gap: 12px;
+  padding: 4px 10px 2px;
+}
+.xd-side-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.xd-side-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+/* 에이전트 줄: 이름, "마지막 대화 제목 · 날", 오른쪽에 대화 수 · [+] · 들어가기 표시. */
+.xd-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 8px 7px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.xd-agent-row:hover {
+  background: var(--panel-2);
+}
+.xd-agent-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.xd-agent-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.xd-agent-last {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.xd-agent-count {
+  flex-shrink: 0;
+  min-width: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.xd-agent-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+/* [+] 는 늘 보인다(웹·Dex 데스크톱의 에이전트 줄과 같다). */
+.xd-agent-row .xd-agent-new {
+  flex-shrink: 0;
+}
+.xd-agent-other .xd-agent-name {
+  font-weight: 500;
+}
+/* [다른 에이전트 N개]: 펼치면 셰브런이 아래를 본다. */
+.xd-others-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.xd-others-toggle:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.xd-others-chevron {
+  transition: transform 0.12s ease;
+}
+.xd-others-toggle.open .xd-others-chevron {
+  transform: rotate(90deg);
+}
+/* 에이전트 안: [←] 이름 [+] */
+.xd-drill-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 6px;
+}
+.xd-drill-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .xd-conv {
   align-items: center;

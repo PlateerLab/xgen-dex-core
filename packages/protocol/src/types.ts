@@ -379,6 +379,24 @@ export interface ConversationPage {
 }
 
 /**
+ * 사이드바 [에이전트] 한 줄(2026-10-10): 대화가 있는 에이전트와 그 대화 수, 마지막으로 말한 대화.
+ * 서버 GET /api/interaction/conversations/agents 가 마지막으로 말한 순서로 준다.
+ */
+export interface ConversationAgent {
+  workflowId: string;
+  workflowName: string;
+  conversationCount: number;
+  /** 마지막으로 말한 시각. */
+  lastActivity: string | null;
+  /** 마지막으로 말한 대화의 제목(빈 글이면 "새 대화"). */
+  lastTitle: string;
+  lastInteractionId: string | null;
+  /** 에이전트가 사라졌다: 새 채팅은 못 열고 지난 대화만 볼 수 있다. */
+  agentDeleted: boolean;
+  agentOwnerId: number | null;
+}
+
+/**
  * 채팅 검색의 강조 조각. 낱말이 든 자리는 `hit`. 번호가 아니라 조각인 까닭: 서버(파이썬)와
  * 화면(자바스크립트)은 이모지 같은 글자의 길이를 다르게 센다.
  */

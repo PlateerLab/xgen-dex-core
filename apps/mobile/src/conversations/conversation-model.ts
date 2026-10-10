@@ -5,21 +5,36 @@
  * 한 줄의 말(에이전트 이름·꼬리표·제목)과 목록 고치기 규칙은 @dex/protocol 의 conversation-list 가 정본이고,
  * 여기는 그것을 폰 화면의 상태(쪽 수·커서·사라진 채팅 수)와 시작 화면의 잠금으로 묶을 뿐이다.
  * 화면 부품과 떨어져 있어 단위 시험으로 확인한다.
+ *
+ * (2026-10-10) 목록 몸통이 [최근 채팅] + [에이전트] 가 됐다. 묶음 고치기 규칙은 @dex/protocol
+ * conversation-agents 가 정본이고, 여기는 세 목록(최근 채팅·에이전트·들어간 에이전트의 대화)에 함께 싣는다.
+ * [⋯] 의 채팅 기록 관리 화면(데스크톱 ConversationManager 와 같은 일)의 규칙도 여기 있다.
  */
 import {
   CONVERSATION_TAG_LABELS,
+  RECENT_CONVERSATION_STEP,
+  agentsWithoutConversations,
   conversationAgentLabel,
   conversationDayLabel,
   conversationDisplayTitle,
   conversationKey,
+  dropFromConversationAgents,
   searchHasHit,
   mergeConversationPage,
   removeConversation,
   renameConversationInList,
+  renameInConversationAgents,
+  touchConversation,
+  touchConversationAgent,
+  type Agent,
   type AgentCreateSetting,
   type Conversation,
+  type ConversationAgent,
+  type ConversationKind,
+  type ConversationListChange,
   type ConversationPage,
   type ConversationSearchMatch,
+  type ConversationSearchPage,
   type SearchTextPart,
 } from '@dex/protocol';
 
@@ -42,11 +57,21 @@ export const CONVERSATION_TEXT = {
   remove: '삭제',
   deletedAgentNotice: '지워진 에이전트입니다. 지난 대화만 볼 수 있습니다.',
   purgeConfirmTitle: '에이전트가 사라진 채팅 제거',
+  purgeNone: '정리할 채팅이 없습니다.',
+  listMenu: '채팅 목록',
 } as const;
 
-/** 목록 머리의 [에이전트가 사라진 채팅 제거 (N)]. 없으면 빈 글(단추를 그리지 않는다). */
+/** 목록 [⋯] 메뉴와 채팅 기록 관리의 [에이전트가 사라진 채팅 제거 (N)]. 0 이어도 같은 말이다. */
 export function purgeLabel(count: number): string {
-  return count > 0 ? `에이전트가 사라진 채팅 제거 (${count})` : '';
+  return `에이전트가 사라진 채팅 제거 (${Math.max(0, count)})`;
+}
+
+export function purgeQuestion(count: number): string {
+  return `에이전트가 사라진 채팅 ${count}개를 모두 지웁니다. 되돌릴 수 없습니다.`;
+}
+
+export function purgeDoneNotice(count: number): string {
+  return `채팅 ${count}개를 정리했습니다.`;
 }
 
 // ── 한 줄 ─────────────────────────────────────────────────────────
@@ -60,15 +85,18 @@ export interface ConversationRow {
   tag: string | null;
   /** 제목, 비었으면 "새 대화". */
   title: string;
+  /** 마지막으로 말한 날. 에이전트의 대화 화면은 에이전트 이름 대신 이것을 쓴다. */
+  day: string;
 }
 
-export function conversationRow(c: Conversation): ConversationRow {
+export function conversationRow(c: Conversation, now?: Date): ConversationRow {
   return {
     key: conversationKey(c),
     agent: conversationAgentLabel(c),
     agentDeleted: c.agentDeleted,
     tag: c.tag ? CONVERSATION_TAG_LABELS[c.tag] : null,
     title: conversationDisplayTitle(c),
+    day: conversationDayLabel(c.updatedAt || c.createdAt, now),
   };
 }
 
@@ -189,7 +217,406 @@ export function renameInState(
   return { ...state, items: renameConversationInList(state.items, c.workflowId, c.interactionId, title, customTitle) };
 }
 
+// ── 목록 몸통: [최근 채팅] + [에이전트] (2026-10-10) ──────────────
+//
+// 웹·Dex 전 표면과 같은 모양이다(@dex/protocol conversation-agents 머리말).
+//   최근 채팅: 마지막으로 말한 대화 5개, [더 보기] 로 5개씩 늘린다. 5개보다 많이 보이면 [접기].
+//   에이전트: 대화가 있는 에이전트(이름, 마지막 대화 제목 · 날, 대화 수, [+], >). 누르면 그 에이전트의 대화로.
+//   [다른 에이전트 N개]: 쓸 수 있지만 아직 대화가 없는 에이전트. 누르면 그 에이전트로 새 채팅.
+
+export const LIST_TEXT = {
+  recent: '최근 채팅',
+  more: '더 보기',
+  less: '접기',
+  agents: '에이전트',
+  newChatWith: '이 에이전트로 새 채팅',
+  agentEmpty: '아직 채팅이 없습니다',
+  others: '다른 에이전트',
+  othersEmpty: '다른 에이전트가 없습니다',
+  recentEmpty: '채팅이 없습니다.',
+} as const;
+
+/** [다른 에이전트] 접기 단추의 말. 쓸 수 있는 에이전트를 아직 받지 못했으면 수를 붙이지 않는다. */
+export function othersLabel(count: number | null): string {
+  return count == null ? LIST_TEXT.others : `${LIST_TEXT.others} ${count}개`;
+}
+
+export interface RecentWindow {
+  rows: Conversation[];
+  /** [더 보기]: 받아 둔 것이 더 있거나 서버에 다음 쪽이 있다. */
+  more: boolean;
+  /** [접기]: 5개보다 많이 보인다. */
+  less: boolean;
+}
+
+/** [최근 채팅] 에 보일 줄. `shown` 은 지금 보이기로 한 수. */
+export function recentWindow(items: readonly Conversation[], shown: number, cursor: string | null): RecentWindow {
+  const rows = items.slice(0, Math.max(0, shown));
+  return {
+    rows,
+    more: items.length > rows.length || !!cursor,
+    less: rows.length > RECENT_CONVERSATION_STEP,
+  };
+}
+
+/** [더 보기] 뒤에 보일 수. 그만큼 받아 두지 못했고 다음 쪽이 있으면 `fetch`(다음 쪽을 받는다). */
+export function moreRecent(shown: number, loaded: number, cursor: string | null): { shown: number; fetch: boolean } {
+  const next = Math.max(shown, RECENT_CONVERSATION_STEP) + RECENT_CONVERSATION_STEP;
+  return { shown: next, fetch: loaded < next && !!cursor };
+}
+
+export interface AgentRow {
+  key: string;
+  agent: ConversationAgent;
+  /** 에이전트 이름(없으면 id). */
+  name: string;
+  /** 에이전트가 사라졌다: [지워짐] 과 흐린 이름, 새 채팅은 못 연다. */
+  deleted: boolean;
+  /** 둘째 줄: 마지막 대화 제목 · 날. */
+  sub: string;
+  count: number;
+  /** [+] 를 그린다(사라진 에이전트는 아니다). */
+  canStart: boolean;
+}
+
+export function agentRow(a: ConversationAgent, now?: Date): AgentRow {
+  const title = conversationDisplayTitle({ title: a.lastTitle });
+  const day = conversationDayLabel(a.lastActivity, now);
+  return {
+    key: a.workflowId,
+    agent: a,
+    name: a.workflowName || a.workflowId,
+    deleted: a.agentDeleted,
+    sub: day ? `${title} · ${day}` : title,
+    count: a.conversationCount,
+    canStart: !a.agentDeleted && !!a.workflowId,
+  };
+}
+
+/**
+ * [+] 가 시작 화면에 골라 둘 에이전트. 묶음은 에이전트 id·이름만 알아 나머지는 비운다(시작 화면은 받은
+ * 에이전트 목록에 있으면 그것을 쓴다). 사라진 에이전트면 null(시작 화면을 처음 그대로 연다).
+ */
+export function agentForStart(a: Pick<ConversationAgent, 'workflowId' | 'workflowName' | 'agentDeleted'>): Agent | null {
+  if (a.agentDeleted || !a.workflowId) return null;
+  return {
+    id: 0,
+    workflowId: a.workflowId,
+    workflowName: a.workflowName || a.workflowId,
+    nodeCount: 0,
+    isShared: false,
+    isDeployed: false,
+    isCompleted: false,
+    description: '',
+    username: '',
+    fullName: '',
+    createdAt: '',
+    updatedAt: '',
+  };
+}
+
+/** 목록 몸통의 한 칸. 화면은 이 차례대로 그린다. */
+export type ChatListItem =
+  | { kind: 'title'; key: string; text: string }
+  | { kind: 'conversation'; key: string; conversation: Conversation }
+  | { kind: 'recentMore'; key: string; more: boolean; less: boolean }
+  | { kind: 'agent'; key: string; row: AgentRow }
+  | { kind: 'others'; key: string; label: string; open: boolean }
+  | { kind: 'other'; key: string; agent: Agent }
+  /** 안내 한 줄. `spinner` 면 받는 중, `retry` 면 누르면 그것을 다시 읽는다. */
+  | { kind: 'note'; key: string; text: string; spinner?: boolean; danger?: boolean; retry?: 'agents' | 'available' };
+
+export interface ChatListInput {
+  recent: ConversationListState | null;
+  /** 최근 채팅을 받지 못했다(머리의 오류 상자가 다시 시도를 맡는다). */
+  recentError: string;
+  shown: number;
+  agents: ConversationAgent[] | null;
+  agentsError: string;
+  /** 쓸 수 있는 에이전트(시작 화면과 같은 목록). 받기 전이면 null. */
+  available: Agent[] | null;
+  availableError: string;
+  othersOpen: boolean;
+  now?: Date;
+}
+
+export function chatListItems(s: ChatListInput): ChatListItem[] {
+  const out: ChatListItem[] = [{ kind: 'title', key: 'title:recent', text: LIST_TEXT.recent }];
+  if (!s.recent) {
+    if (!s.recentError) out.push({ kind: 'note', key: 'note:recent', text: '', spinner: true });
+  } else if (s.recent.items.length === 0) {
+    out.push({ kind: 'note', key: 'note:recent', text: LIST_TEXT.recentEmpty });
+  } else {
+    const win = recentWindow(s.recent.items, s.shown, s.recent.cursor);
+    for (const c of win.rows) out.push({ kind: 'conversation', key: `c:${conversationKey(c)}`, conversation: c });
+    if (win.more || win.less) out.push({ kind: 'recentMore', key: 'recent-more', more: win.more, less: win.less });
+  }
+
+  out.push({ kind: 'title', key: 'title:agents', text: LIST_TEXT.agents });
+  if (!s.agents) {
+    out.push(
+      s.agentsError
+        ? { kind: 'note', key: 'note:agents', text: s.agentsError, danger: true, retry: 'agents' }
+        : { kind: 'note', key: 'note:agents', text: '', spinner: true },
+    );
+    return out;
+  }
+  for (const a of s.agents) out.push({ kind: 'agent', key: `a:${a.workflowId}`, row: agentRow(a, s.now) });
+
+  const others = s.available ? agentsWithoutConversations(s.agents, s.available) : null;
+  out.push({ kind: 'others', key: 'others', label: othersLabel(others ? others.length : null), open: s.othersOpen });
+  if (!s.othersOpen) return out;
+  if (!others) {
+    out.push(
+      s.availableError
+        ? { kind: 'note', key: 'note:others', text: s.availableError, danger: true, retry: 'available' }
+        : { kind: 'note', key: 'note:others', text: '', spinner: true },
+    );
+  } else if (others.length === 0) {
+    out.push({ kind: 'note', key: 'note:others', text: LIST_TEXT.othersEmpty });
+  } else {
+    for (const a of others) out.push({ kind: 'other', key: `o:${a.workflowId}`, agent: a });
+  }
+  return out;
+}
+
+// ── 세 목록을 함께 고치기 ─────────────────────────────────────────
+
+/** 채팅 목록 화면이 들고 있는 목록들. */
+export interface ChatLists {
+  recent: ConversationListState | null;
+  agents: ConversationAgent[] | null;
+  /** 들어간 에이전트와 그 대화(받기 전이면 list 가 null). 들어가지 않았으면 null. */
+  drill: { agent: ConversationAgent; list: ConversationListState | null } | null;
+}
+
+export interface ChatListsUpdate {
+  lists: ChatLists;
+  /** 첫 쪽·묶음을 다시 읽어야 한다(무엇이 바뀌었는지는 서버만 안다). */
+  reloadRecent: boolean;
+  reloadAgents: boolean;
+  reloadDrill: boolean;
+}
+
+const sameConversation = (c: Pick<Conversation, 'workflowId' | 'interactionId'>, workflowId: string, interactionId: string) =>
+  c.workflowId === workflowId && c.interactionId === interactionId;
+
+/**
+ * 소식(@dex/protocol conversationListChange 와 같은 모양)을 세 목록에 싣는다. 이 화면에서 이름을 바꾸거나
+ * 지운 것도 같은 소식으로 싣는다.
+ * - touched: 최근 채팅에 있으면 맨 위로, 에이전트 묶음도 맨 위로(새 대화가 아니니 수는 그대로). 없으면 다시 읽는다.
+ * - renamed: 제목만 고친다(그 대화가 에이전트의 마지막 대화면 둘째 줄도).
+ * - removed: 빼고, 에이전트의 수를 줄인다. 그 에이전트의 마지막 대화였으면 묶음을 다시 읽는다.
+ */
+export function applyChatListChanges(lists: ChatLists, changes: readonly ConversationListChange[]): ChatListsUpdate {
+  let { recent, agents, drill } = lists;
+  let reloadRecent = false;
+  let reloadAgents = false;
+  let reloadDrill = false;
+  const inDrill = (workflowId: string) => !!drill && drill.agent.workflowId === workflowId;
+
+  for (const change of changes) {
+    if (change.type === 'touched') {
+      const c = change.conversation;
+      if (!c) {
+        reloadRecent = true;
+        reloadAgents = true;
+        if (drill) reloadDrill = true;
+        continue;
+      }
+      const touched = recent ? touchConversation(recent.items, c) : null;
+      if (recent && touched?.known) {
+        recent = { ...recent, items: touched.list };
+        if (agents) {
+          const t = touchConversationAgent(agents, c, false);
+          agents = t.agents;
+          if (!t.known) reloadAgents = true;
+        }
+      } else {
+        reloadRecent = true;
+        reloadAgents = true;
+      }
+      if (drill && inDrill(c.workflowId)) {
+        const t = drill.list ? touchConversation(drill.list.items, c) : null;
+        if (drill.list && t?.known) drill = { ...drill, list: { ...drill.list, items: t.list } };
+        else reloadDrill = true;
+      }
+    } else if (change.type === 'renamed') {
+      const { workflowId, interactionId, title, customTitle } = change;
+      if (recent) recent = renameInState(recent, { workflowId, interactionId }, title, customTitle);
+      if (agents) agents = renameInConversationAgents(agents, workflowId, interactionId, title);
+      if (drill?.list) drill = { ...drill, list: renameInState(drill.list, { workflowId, interactionId }, title, customTitle) };
+    } else if (change.type === 'removed') {
+      const { workflowId, interactionId } = change;
+      const found = recent?.items.find((c) => sameConversation(c, workflowId, interactionId));
+      if (recent && found) recent = dropConversation(recent, found);
+      if (agents) {
+        const d = dropFromConversationAgents(agents, workflowId, interactionId);
+        agents = d.agents;
+        if (d.stale) reloadAgents = true;
+      }
+      if (drill?.list && inDrill(workflowId)) {
+        drill = { ...drill, list: { ...drill.list, items: removeConversation(drill.list.items, workflowId, interactionId) } };
+      }
+    } else if (change.type === 'reload') {
+      reloadRecent = true;
+      reloadAgents = true;
+      if (drill) reloadDrill = true;
+    }
+  }
+  return { lists: { recent, agents, drill }, reloadRecent, reloadAgents, reloadDrill };
+}
+
+/** 들어간 에이전트의 대화 한 쪽을 싣는다. 그사이 나왔거나 다른 에이전트로 들어갔으면 버린다. */
+export function withDrillPage(
+  lists: ChatLists,
+  workflowId: string,
+  page: ConversationPage,
+  mode: 'reset' | 'head' | 'append',
+): ChatLists {
+  const drill = lists.drill;
+  if (!drill || drill.agent.workflowId !== workflowId) return lists;
+  if (mode === 'append' && !drill.list) return lists;
+  return { ...lists, drill: { ...drill, list: applyConversationPage(drill.list, page, mode) } };
+}
+
+// ── 채팅 기록 관리 (2026-10-10) ───────────────────────────────────
+//
+// 목록 머리 [⋯] 가 여는 화면. 데스크톱 채팅 기록 관리 탭(ConversationManager)과 같은 일과 말이다.
+// 상태 필터, 검색, 모두 선택·선택 삭제, 줄마다 열기(대화 보기)·이름 바꾸기·삭제, 에이전트가 사라진 채팅 제거.
+
+export const MANAGER_TEXT = {
+  title: '채팅 기록 관리',
+  refresh: '새로고침',
+  kind: '상태',
+  placeholder: '제목·에이전트 이름·내용으로 검색',
+  searchLabel: '채팅 기록 검색',
+  selectAll: '모두 선택',
+  deleteSelected: '선택 삭제',
+  open: '열기',
+  view: '대화 보기',
+  loading: '불러오는 중…',
+  empty: '채팅 기록이 없습니다.',
+  noMatch: '맞는 채팅이 없습니다.',
+  loadFailed: '채팅 기록을 불러오지 못했습니다.',
+  moreFailed: '더 불러오지 못했습니다.',
+  purgeFailed: '채팅 정리에 실패했습니다.',
+  searchMore: '맞는 채팅이 더 있습니다. 낱말을 더 적어 좁혀 보세요.',
+  retry: '다시 시도',
+} as const;
+
+export const MANAGER_KINDS: ReadonlyArray<{ value: ConversationKind; label: string }> = [
+  { value: 'all', label: '전체' },
+  { value: 'active', label: '활성' },
+  { value: 'deploy', label: '배포' },
+  { value: 'deleted', label: '삭제됨' },
+];
+
+/** 한꺼번에 지울 때 동시에 보내는 요청 수. */
+export const DELETE_CONCURRENCY = 4;
+
+/** 줄의 [열기]. 에이전트가 사라진 대화는 기록만 본다. */
+export function openLabel(c: Pick<Conversation, 'agentDeleted'>): string {
+  return c.agentDeleted ? MANAGER_TEXT.view : MANAGER_TEXT.open;
+}
+
+export function deleteQuestion(targets: readonly Conversation[]): string {
+  return targets.length === 1
+    ? `"${conversationDisplayTitle(targets[0])}" 대화를 삭제할까요? 되돌릴 수 없습니다.`
+    : `선택한 채팅 ${targets.length}개를 삭제할까요? 되돌릴 수 없습니다.`;
+}
+
+/** 지운 뒤 안내. 못 지운 것이 있으면 그 수, 여럿을 지웠으면 지운 수. 하나만 지웠으면 줄이 사라진 것으로 충분하다. */
+export function deleteResultNotice(done: number, failed: number): string | null {
+  if (failed > 0) return `채팅 ${failed}개는 삭제하지 못했습니다.`;
+  if (done > 1) return `채팅 ${done}개를 삭제했습니다.`;
+  return null;
+}
+
+/** `size` 개씩 함께 보낸다. 실패한 것은 따로 모은다(나머지는 계속 지운다). */
+export async function removeInBatches<T>(
+  targets: readonly T[],
+  remove: (t: T) => Promise<unknown>,
+  size: number = DELETE_CONCURRENCY,
+): Promise<{ done: T[]; failed: T[] }> {
+  const done: T[] = [];
+  const failed: T[] = [];
+  const step = Math.max(1, size);
+  for (let i = 0; i < targets.length; i += step) {
+    const batch = targets.slice(i, i + step);
+    const results = await Promise.allSettled(batch.map((t) => remove(t)));
+    results.forEach((r, j) => (r.status === 'fulfilled' ? done : failed).push(batch[j]));
+  }
+  return { done, failed };
+}
+
+export interface ManagerListState {
+  items: Conversation[];
+  /** 다음 쪽 커서. 검색 중이면 없다. */
+  cursor: string | null;
+  /** 이 필터(또는 검색)의 수. 모르면 null(필터를 모르는 옛 서버). */
+  total: number | null;
+  /** 검색: 보낸 것보다 맞은 대화가 더 있다. */
+  searchHasMore: boolean;
+  /** 에이전트가 사라진 대화 수(필터와 상관없다, 첫 쪽에만 온다). */
+  deletedCount: number;
+}
+
+export function managerFromPage(page: ConversationPage): ManagerListState {
+  return {
+    items: mergeConversationPage([], page.conversations, 'append'),
+    cursor: page.nextCursor,
+    total: page.total ?? null,
+    searchHasMore: false,
+    deletedCount: page.agentDeletedCount ?? 0,
+  };
+}
+
+/** 검색 결과. 사라진 채팅 수는 검색이 세지 않아 앞 값을 지킨다. */
+export function managerFromSearch(page: ConversationSearchPage, prev: ManagerListState | null): ManagerListState {
+  return {
+    items: page.hits.map((h) => h.conversation),
+    cursor: null,
+    total: page.hits.length,
+    searchHasMore: page.hasMore,
+    deletedCount: prev?.deletedCount ?? 0,
+  };
+}
+
+export function managerAppend(state: ManagerListState, page: ConversationPage): ManagerListState {
+  return { ...state, items: mergeConversationPage(state.items, page.conversations, 'append'), cursor: page.nextCursor };
+}
+
+/** 지운 대화를 뺀다. 총 수와(사라진 에이전트의 대화였으면) 사라진 채팅 수도 줄인다. */
+export function managerAfterRemove(state: ManagerListState, gone: readonly Conversation[]): ManagerListState {
+  const goneKeys = new Set(gone.map(conversationKey));
+  const removed = state.items.filter((c) => goneKeys.has(conversationKey(c)));
+  return {
+    ...state,
+    items: state.items.filter((c) => !goneKeys.has(conversationKey(c))),
+    total: state.total == null ? null : Math.max(0, state.total - removed.length),
+    deletedCount: Math.max(0, state.deletedCount - removed.filter((c) => c.agentDeleted).length),
+  };
+}
+
+export function managerAfterRename(
+  state: ManagerListState,
+  c: Pick<Conversation, 'workflowId' | 'interactionId'>,
+  title: string,
+  customTitle: boolean,
+): ManagerListState {
+  return { ...state, items: renameConversationInList(state.items, c.workflowId, c.interactionId, title, customTitle) };
+}
+
 // ── 시작 화면의 잠금 ──────────────────────────────────────────────
+
+/**
+ * 넘겨받은 에이전트(목록의 [+]·채팅의 [새 대화])를 골라 둔 채로 둘까. 고를 수 있는 목록에 없으면
+ * (공유가 풀렸거나 지워졌다) 평소처럼 [새 에이전트로 시작] 에서 시작한다(데스크톱 시작 화면과 같다).
+ */
+export function keepPresetAgent(workflowId: string, agents: readonly Pick<Agent, 'workflowId'>[]): boolean {
+  return !!workflowId && agents.some((a) => a.workflowId === workflowId);
+}
 
 export type NameCheckState = 'empty' | 'checking' | 'ok' | 'taken';
 

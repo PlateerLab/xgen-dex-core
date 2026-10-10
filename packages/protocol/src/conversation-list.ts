@@ -71,6 +71,23 @@ function oneLine(text: string, limit: number): string {
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`;
 }
 
+/**
+ * 잘린 봉투에서 본문만 꺼낸다. 옛 목록 API(/api/interaction/list)는 메타의 글을 200자로 잘라 보내서,
+ * 첨부와 함께 보낸 첫 메시지(`{"input_str": "...", "attachments": [...]}`)가 길면 JSON 이 깨진 채 온다.
+ * 그대로 두면 제목 자리에 `{"input_str": ...` 가 보였다(2026-10-10). 깨진 데서는 본문 앞부분만 쓴다.
+ */
+function truncatedEnvelopeBody(raw: string): string | null {
+  const m = /^\s*\{\s*"(?:input_str|input)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(raw);
+  if (!m) return null;
+  // 끝이 이스케이프 중간에서 잘렸으면 그 조각을 버린다.
+  const text = m[1].replace(/\\u[0-9a-fA-F]{0,3}$|\\$/, '');
+  try {
+    return JSON.parse(`"${text}"`) as string;
+  } catch {
+    return text.replace(/\\n/g, ' ').replace(/\\(.)/g, '$1');
+  }
+}
+
 /** 옛 목록의 metadata 로 제목을 만든다(붙인 이름, 없으면 첫 메시지 한 줄). 서버 규칙과 같다. */
 export function conversationTitleFromMetadata(metadata: Record<string, unknown> | null | undefined): {
   title: string;
@@ -100,7 +117,7 @@ export function conversationTitleFromMetadata(metadata: Record<string, unknown> 
         body = turnInputText(first);
       }
     } catch {
-      body = first;
+      body = truncatedEnvelopeBody(first) ?? first;
     }
   } else if (first != null) {
     body = turnInputText(first);

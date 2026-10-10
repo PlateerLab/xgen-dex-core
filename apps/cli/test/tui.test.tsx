@@ -494,8 +494,11 @@ test('목록에서 대화를 고르면 그 내용과 제목이 대화창에 올�
     view.stdin.write(DOWN); // ＋ 새 채팅 아래가 그 대화
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
-    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
-    assert.match(frame, /지난 질문/);
+    // 질문과 답을 함께 기다린다. 느린 러너에서는 대화창 높이를 재기 전 한 장에 답 줄만 걸릴 수 있다.
+    const frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('지난 답') && value.includes('지난 질문'),
+    );
     assert.doesNotMatch(frame, new RegExp(START_HEADING), '시작 화면은 닫힌다');
     // 제목 줄: 대화 제목과 작은 에이전트 이름.
     assert.match(frame, /분기 매출 정리 · Sales Agent/);

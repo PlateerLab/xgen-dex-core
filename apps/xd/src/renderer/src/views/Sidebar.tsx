@@ -57,6 +57,9 @@ export const Sidebar: React.FC<{
   const [renaming, setRenaming] = useState<string | null>(null);
   /** [⋯] 메뉴가 열린 대화. */
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  /** 목록 아래쪽 줄이면 메뉴를 위로 펼친다(아래로 펼치면 목록 칸에 잘린다). */
+  const [menuUp, setMenuUp] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   // 메뉴 바깥을 누르면 닫는다.
   useEffect(() => {
@@ -114,7 +117,7 @@ export const Sidebar: React.FC<{
           그래서 웹·Dex 의 [지워짐] 상태도, 지워진 에이전트의 대화를 치우는 동작도 XD 에는 없다.
         */}
         {loaded && conversations.length === 0 && <div className="muted small pad">아직 대화가 없습니다.</div>}
-        <div className="xd-conv-list" role="list" aria-label="대화 목록">
+        <div className="xd-conv-list" role="list" aria-label="대화 목록" ref={listRef}>
           {conversations.map((c) => {
             const live = running.includes(c.id);
             const title = conversationTitle(c);
@@ -158,13 +161,16 @@ export const Sidebar: React.FC<{
                     aria-expanded={menuFor === c.id}
                     onClick={(e) => {
                       e.stopPropagation();
+                      const button = e.currentTarget.getBoundingClientRect();
+                      const list = listRef.current?.getBoundingClientRect();
+                      setMenuUp(!!list && list.bottom - button.bottom < 96);
                       setMenuFor((m) => (m === c.id ? null : c.id));
                     }}
                   >
                     <MoreIcon size={14} />
                   </button>
                   {menuFor === c.id && (
-                    <div className="conv-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                    <div className={`conv-menu${menuUp ? ' up' : ''}`} role="menu" onClick={(e) => e.stopPropagation()}>
                       <button
                         type="button"
                         role="menuitem"

@@ -9576,6 +9576,11 @@ button.sm {
   position: relative;
   flex-shrink: 0;
 }
+/* 열린 메뉴는 아래 줄들 위로 올린다. 줄마다 자리(position)가 있어 같은 층이면 뒤에 오는 줄의 글자가
+   메뉴 위에 그려졌다(2026-10-10). 열린 것 하나만 올려야 다음 줄의 [⋯] 가 메뉴를 가로막지 않는다. */
+.conv-menu-wrap.open {
+  z-index: 40;
+}
 .conv-menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -9589,6 +9594,10 @@ button.sm {
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
   display: flex;
   flex-direction: column;
+}
+.conv-menu.up {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .conv-menu-item {
   text-align: left;

@@ -38,6 +38,7 @@ import type {
   HistoryTurn,
   HistoryFlowItem,
   Conversation,
+  ConversationKind,
   ConversationPage,
   ConversationSearchPage,
   VoiceConfig,
@@ -270,7 +271,7 @@ const api = {
       ipcRenderer.invoke(CHANNELS.historySnapshot, workflowId, interactionId, name),
     conversations: (): Promise<Conversation[]> => ipcRenderer.invoke(CHANNELS.historyConversations),
     /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다. */
-    conversationPage: (opts?: { limit?: number; cursor?: string | null }): Promise<ConversationPage> =>
+    conversationPage: (opts?: { limit?: number; cursor?: string | null; kind?: ConversationKind }): Promise<ConversationPage> =>
       ipcRenderer.invoke(CHANNELS.historyConversationPage, opts ?? {}),
     /** 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. 순서는 그대로다. */
     rename: (workflowId: string, interactionId: string, title: string): Promise<{ title: string; customTitle: boolean }> =>
@@ -281,7 +282,7 @@ const api = {
     /** 에이전트가 사라진 대화를 모두 지운다. 지운 수. */
     purgeDeletedAgents: (): Promise<number> => ipcRenderer.invoke(CHANNELS.historyPurgeDeletedAgents),
     /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. */
-    search: (query: string, opts?: { limit?: number }): Promise<ConversationSearchPage> =>
+    search: (query: string, opts?: { limit?: number; kind?: ConversationKind }): Promise<ConversationSearchPage> =>
       ipcRenderer.invoke(CHANNELS.historySearch, query, opts ?? {}),
   },
 

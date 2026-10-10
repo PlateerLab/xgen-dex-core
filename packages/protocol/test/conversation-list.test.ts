@@ -13,6 +13,7 @@ import {
   conversationAgentLabel,
   conversationDisplayTitle,
   conversationListChange,
+  conversationMatchesKind,
   conversationTagOf,
   conversationTitleFromMetadata,
   foldLegacyConversations,
@@ -316,4 +317,52 @@ test('이름 바꾸기·지우기·정리는 웹과 같은 엔드포인트·같�
   assert.equal(del.searchParams.get('with_compare'), 'true')
   assert.equal(del.searchParams.get('workflow_name'), 'Agent')
   assert.equal(await api.purgeDeletedAgentConversations(), 4)
+})
+
+test('상태 필터 판정: 서버 kind 와 같다(배포 = SHA1, 삭제됨 = 에이전트 사라짐, 활성 = 둘 다 아님)', () => {
+  const sha = 'a'.repeat(40)
+  assert.equal(conversationMatchesKind({ interactionId: sha, agentDeleted: false }, 'deploy'), true)
+  assert.equal(conversationMatchesKind({ interactionId: 'deploy_x', agentDeleted: false }, 'deploy'), false)
+  assert.equal(conversationMatchesKind({ interactionId: 'c1', agentDeleted: true }, 'deleted'), true)
+  assert.equal(conversationMatchesKind({ interactionId: 'c1', agentDeleted: false }, 'active'), true)
+  assert.equal(conversationMatchesKind({ interactionId: sha, agentDeleted: false }, 'active'), false)
+  assert.equal(conversationMatchesKind({ interactionId: 'c1', agentDeleted: true }, 'active'), false)
+  assert.equal(conversationMatchesKind({ interactionId: 'c1', agentDeleted: true }, 'all'), true)
+  assert.equal(conversationMatchesKind({ interactionId: 'c1', agentDeleted: true }, undefined), true)
+})
+
+test('대화 목록 한 쪽: 상태 필터를 보내고 총 수를 읽는다', async () => {
+  const { api, calls } = fakeHttp({
+    'GET /api/interaction/conversations': {
+      conversations: [{ interaction_id: 'g', workflow_id: 'wf', agent_deleted: true }],
+      next_cursor: null,
+      agent_deleted_count: 1,
+      total: 1,
+      kind: 'deleted',
+    },
+  })
+  const page = await api.conversationPage({ kind: 'deleted' })
+  assert.equal(new URL(calls[0].path, 'http://x').searchParams.get('kind'), 'deleted')
+  assert.equal(page.total, 1)
+  assert.deepEqual(page.conversations.map((c) => c.interactionId), ['g'])
+  // 전체는 kind 를 보내지 않는다.
+  await api.conversationPage({ kind: 'all' })
+  assert.equal(new URL(calls[1].path, 'http://x').searchParams.get('kind'), null)
+})
+
+test('대화 목록 한 쪽: 상태 필터를 모르는 서버면 받은 쪽을 같은 판정으로 거르고 총 수는 모른다', async () => {
+  const { api } = fakeHttp({
+    'GET /api/interaction/conversations': {
+      conversations: [
+        { interaction_id: 'a', workflow_id: 'wf', agent_deleted: false },
+        { interaction_id: 'g', workflow_id: 'wf', agent_deleted: true },
+      ],
+      next_cursor: 'next',
+      total: 2,
+    },
+  })
+  const page = await api.conversationPage({ kind: 'deleted' })
+  assert.deepEqual(page.conversations.map((c) => c.interactionId), ['g'])
+  assert.equal(page.total, undefined)
+  assert.equal(page.nextCursor, 'next')
 })

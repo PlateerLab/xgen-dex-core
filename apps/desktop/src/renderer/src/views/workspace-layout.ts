@@ -9,7 +9,9 @@ export type WorkspaceTabKind =
   | 'agent-create'
   | 'file-viewer'
   /** [앱] — 내 앱·앱 스토어. 설정처럼 하나뿐인 탭이다(id 'apps'). */
-  | 'apps';
+  | 'apps'
+  /** 채팅 기록 관리(2026-10-10). 대화 목록 머리 ⋯ 가 연다. 하나뿐인 탭이다(id 'history'). */
+  | 'history';
 
 /** 에이전트 뷰어가 처음 열 하위 탭 — 정의는 core(main 의 영속 스키마와 공유). */
 import type { AgentViewerSub } from '@dex/protocol';
@@ -82,7 +84,7 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   if (
     typeof tab.id !== 'string' ||
     // 옛 [아바타 설정] 탭('avatar')은 설정의 [아바타 설정] 탭으로 들어갔다(2026-09-29) — 버린다.
-    !['chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer', 'apps'].includes(
+    !['chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer', 'apps', 'history'].includes(
       String(tab.kind),
     )
   ) {

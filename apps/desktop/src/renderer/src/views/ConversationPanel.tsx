@@ -4,7 +4,7 @@
  * ChatGPT·Claude 처럼 **대화 단위, 마지막으로 말한 순서**다. 예전 [Agent] 뷰는 에이전트를 고른 뒤 그
  * 에이전트의 대화를 고르는 두 단계였다. 이제는 대화가 주인이고 에이전트는 작은 표시다.
  *
- *   [+ 새 채팅]                       [검색] [⋯]  채팅 검색 창 · 에이전트가 사라진 채팅 제거
+ *   [+ 새 채팅]                       [검색] [⋯]  채팅 검색 창 · 채팅 기록 관리 탭
  *   에이전트 이름 · 꼬리표
  *   대화 제목(첫 메시지 한 줄, 붙인 이름)      [⋯]  이름 바꾸기 · 삭제
  *
@@ -14,6 +14,9 @@
  *
  * 돋보기(2026-10-10)는 채팅 검색 창을 연다. 제목·에이전트 이름·대화 내용으로 서버가 찾고, 고른 대화는
  * 목록 줄을 누른 것과 똑같이 열린다.
+ *
+ * ⋯ (2026-10-10)는 채팅 기록 관리 탭을 연다(ConversationManager): 상태 필터, 여러 대화 한꺼번에 지우기,
+ * 사라진 에이전트 대화 정리, 이름 바꾸기. 거기서 바꾼 것은 이 목록에 곧바로 온다(conversation-events).
  *
  * 패널은 뷰가 바뀌어도 언마운트되지 않고 숨겨질 뿐이다(예전 AgentPanel 과 같은 이유). 목록·스크롤이
  * 전환 사이에 남는다.
@@ -38,13 +41,14 @@ import { sessionStore, useSessions } from '../session';
 import { agentDirectory, agentForConversation } from '../agent-directory';
 import { MoreIcon, PlusIcon, RefreshIcon, SearchIcon } from '../brand/icons';
 import { ConversationSearchDialog, type ConversationSearchResultSet, type ConversationSearchRow } from './ConversationSearchDialog';
+import { onConversationListEvent } from '../conversation-events';
 
 const PAGE_SIZE = 40;
 /** 지우기·정리 소식이 몰려올 때 첫 쪽을 한 번만 다시 읽도록 모은다. */
 const HEAD_RELOAD_DELAY_MS = 400;
 
 /** `up`: 목록 아래쪽 줄이라 메뉴를 위로 펼친다(아래로 펼치면 목록 칸에 잘린다). */
-type Menu = { kind: 'list' } | { kind: 'row'; key: string; up: boolean } | null;
+type Menu = { kind: 'row'; key: string; up: boolean } | null;
 
 /** 줄 메뉴 높이(항목 둘)보다 조금 넉넉하게. 아래 남은 자리가 이보다 작으면 위로 펼친다. */
 const ROW_MENU_SPACE = 96;
@@ -68,13 +72,14 @@ function searchRow(c: Conversation, match?: ConversationSearchMatch): Conversati
 export const ConversationPanel: React.FC<{
   /** [+ 새 채팅]: 시작 화면("오늘은 무엇을 해볼까요?")을 메인에 연다. */
   onNewChat: () => void;
-}> = ({ onNewChat }) => {
+  /** ⋯: 채팅 기록 관리 탭을 연다. */
+  onManageHistory: () => void;
+}> = ({ onNewChat, onManageHistory }) => {
   const [items, setItems] = useState<Conversation[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [deletedCount, setDeletedCount] = useState(0);
   const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
   const [menu, setMenu] = useState<Menu>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -115,7 +120,6 @@ export const ConversationPanel: React.FC<{
       const page = await xgen.history.conversationPage({ limit: PAGE_SIZE });
       setItems(page.conversations);
       setCursor(page.nextCursor);
-      setDeletedCount(page.agentDeletedCount ?? 0);
       syncSessions(page.conversations);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -129,7 +133,6 @@ export const ConversationPanel: React.FC<{
     try {
       const page = await xgen.history.conversationPage({ limit: PAGE_SIZE });
       setItems((cur) => mergeConversationPage(cur, page.conversations, 'head'));
-      setDeletedCount(page.agentDeletedCount ?? 0);
       setCursor((cur) => cur ?? page.nextCursor);
       syncSessions(page.conversations);
     } catch {
@@ -237,6 +240,24 @@ export const ConversationPanel: React.FC<{
     return () => off?.();
   }, [scheduleHeadReload]);
 
+  // 이 창의 채팅 기록 관리 탭에서 한 일(서버 소식을 기다리지 않고 바로).
+  useEffect(
+    () =>
+      onConversationListEvent((event) => {
+        if (event.type === 'removed') {
+          setItems((cur) => event.items.reduce((list, c) => removeConversation(list, c.workflowId, c.interactionId), cur));
+        } else if (event.type === 'renamed') {
+          setItems((cur) =>
+            renameConversationInList(cur, event.workflowId, event.interactionId, event.title, event.customTitle),
+          );
+        } else {
+          setItems((cur) => cur.filter((c) => !c.agentDeleted));
+          void reloadHead();
+        }
+      }),
+    [reloadHead],
+  );
+
   // 메뉴 바깥을 누르면 닫는다.
   useEffect(() => {
     if (!menu) return;
@@ -313,30 +334,9 @@ export const ConversationPanel: React.FC<{
       return;
     }
     setItems((cur) => removeConversation(cur, c.workflowId, c.interactionId));
-    if (c.agentDeleted) setDeletedCount((n) => Math.max(0, n - 1));
     // 열려 있던 탭도 닫는다. 지운 대화가 탭으로 남으면 눌러도 빈 대화다.
     if (sessionStore.get(c.interactionId)) sessionStore.endChat(c.interactionId);
   }, []);
-
-  const purge = useCallback(async () => {
-    setMenu(null);
-    if (deletedCount <= 0) return;
-    if (!window.confirm(`에이전트가 사라진 채팅 ${deletedCount}개를 모두 지웁니다. 되돌릴 수 없습니다.`)) return;
-    let removed = 0;
-    try {
-      removed = await xgen.history.purgeDeletedAgents();
-    } catch (e) {
-      setNotice(`채팅 정리에 실패했습니다. ${e instanceof Error ? e.message : ''}`.trim());
-      return;
-    }
-    for (const c of itemsRef.current) {
-      if (c.agentDeleted && sessionStore.get(c.interactionId)) sessionStore.endChat(c.interactionId);
-    }
-    setItems((cur) => cur.filter((c) => !c.agentDeleted));
-    setDeletedCount(0);
-    setNotice(`채팅 ${removed}개를 정리했습니다.`);
-    void reloadHead();
-  }, [deletedCount, reloadHead]);
 
   // 안내 한 줄은 잠시 뒤 사라진다.
   useEffect(() => {
@@ -382,30 +382,17 @@ export const ConversationPanel: React.FC<{
         >
           <SearchIcon size={16} />
         </button>
-        <div className={`conv-menu-wrap ${menu?.kind === 'list' ? 'open' : ''}`}>
-          <button
-            className="icon-btn conv-list-more"
-            title="채팅 목록 메뉴"
-            aria-label="채팅 목록 메뉴"
-            aria-expanded={menu?.kind === 'list'}
-            onClick={() => setMenu((m) => (m?.kind === 'list' ? null : { kind: 'list' }))}
-          >
-            <MoreIcon size={16} />
-          </button>
-          {menu?.kind === 'list' && (
-            <div className="conv-menu" role="menu">
-              <button
-                role="menuitem"
-                className="conv-menu-item danger"
-                disabled={deletedCount === 0}
-                title={deletedCount === 0 ? '정리할 채팅이 없습니다.' : undefined}
-                onClick={() => void purge()}
-              >
-                에이전트가 사라진 채팅 제거 ({deletedCount})
-              </button>
-            </div>
-          )}
-        </div>
+        <button
+          className="icon-btn conv-list-more"
+          title="채팅 기록 관리"
+          aria-label="채팅 기록 관리"
+          onClick={() => {
+            setMenu(null);
+            onManageHistory();
+          }}
+        >
+          <MoreIcon size={16} />
+        </button>
       </div>
 
       {notice && (

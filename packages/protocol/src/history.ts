@@ -7,6 +7,7 @@
 import { ApiError, HttpClient } from './client';
 import type {
   Conversation,
+  ConversationKind,
   ConversationPage,
   ConversationSearchHit,
   ConversationSearchPage,
@@ -17,7 +18,12 @@ import type {
   ToolEvent,
 } from './types';
 import { stripBrowserContext } from './browser';
-import { foldLegacyConversations, legacyConversation, parseConversation } from './conversation-list';
+import {
+  conversationMatchesKind,
+  foldLegacyConversations,
+  legacyConversation,
+  parseConversation,
+} from './conversation-list';
 import { parseConversationSearchHit, searchConversationList, searchTerms } from './conversation-search';
 
 interface RawIoLog {
@@ -329,30 +335,43 @@ export class HistoryApi {
    * 그 API 가 없는 옛 서버(404)에서는 옛 목록을 한 번에 읽어 같은 규칙으로 제목·꼬리표를 만들고
    * 비교 파생을 접어 한 쪽으로 돌려준다. 옛 서버는 마지막 활동 시각을 적지 않아 순서는 시작 순이다.
    */
-  async conversationPage(opts: { limit?: number; cursor?: string | null } = {}): Promise<ConversationPage> {
+  async conversationPage(
+    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind } = {},
+  ): Promise<ConversationPage> {
     const params = new URLSearchParams({
       limit: String(Math.max(1, Math.min(100, opts.limit ?? CONVERSATION_PAGE_SIZE))),
     });
     if (opts.cursor) params.set('cursor', opts.cursor);
+    const kind = opts.kind && opts.kind !== 'all' ? opts.kind : undefined;
+    if (kind) params.set('kind', kind);
     try {
       const res = await this.http.get<{
         conversations?: unknown[];
         next_cursor?: string | null;
         agent_deleted_count?: number;
+        total?: number;
+        kind?: string;
       }>(`/api/interaction/conversations?${params}`);
+      let conversations = (res.conversations ?? []).map(parseConversation).filter((c): c is Conversation => c != null);
+      // 상태 필터를 모르는 옛 서버(답에 kind 가 없다)면 받은 쪽을 같은 판정으로 거른다. 총 수는 모른다.
+      const filtered = !!kind && res.kind !== kind;
+      if (filtered) conversations = conversations.filter((c) => conversationMatchesKind(c, kind));
       return {
-        conversations: (res.conversations ?? []).map(parseConversation).filter((c): c is Conversation => c != null),
+        conversations,
         nextCursor: res.next_cursor ?? null,
         ...(typeof res.agent_deleted_count === 'number' ? { agentDeletedCount: res.agent_deleted_count } : {}),
+        ...(!filtered && typeof res.total === 'number' ? { total: res.total } : {}),
       };
     } catch (e) {
       if (!(e instanceof ApiError) || e.status !== 404 || opts.cursor) throw e;
     }
     const legacy = await this.legacyConversations();
+    const shown = legacy.filter((c) => conversationMatchesKind(c, kind));
     return {
-      conversations: legacy,
+      conversations: shown,
       nextCursor: null,
       agentDeletedCount: legacy.filter((c) => c.agentDeleted).length,
+      total: shown.length,
     };
   }
 
@@ -382,28 +401,41 @@ export class HistoryApi {
    * 그 API 가 없는 옛 서버(404)에서는 대화 목록을 받아 제목·에이전트 이름만으로 찾는다
    * (`contentSearched: false`, 화면은 내용까지 찾지 못했다고 알린다).
    */
-  async searchConversations(query: string, opts: { limit?: number } = {}): Promise<ConversationSearchPage> {
+  async searchConversations(
+    query: string,
+    opts: { limit?: number; kind?: ConversationKind } = {},
+  ): Promise<ConversationSearchPage> {
     const limit = Math.max(1, Math.min(100, opts.limit ?? 30));
     const q = query.trim();
     if (!searchTerms(q).length) return { query: q, terms: [], hits: [], hasMore: false, contentSearched: true };
+    const kind = opts.kind && opts.kind !== 'all' ? opts.kind : undefined;
     const params = new URLSearchParams({ q, limit: String(limit) });
+    if (kind) params.set('kind', kind);
     try {
-      const res = await this.http.get<{ query?: string; terms?: unknown[]; results?: unknown[]; has_more?: boolean }>(
-        `/api/interaction/conversations/search?${params}`,
-      );
+      const res = await this.http.get<{
+        query?: string;
+        terms?: unknown[];
+        results?: unknown[];
+        has_more?: boolean;
+        kind?: string;
+      }>(`/api/interaction/conversations/search?${params}`);
+      let hits = (res?.results ?? [])
+        .map(parseConversationSearchHit)
+        .filter((h): h is ConversationSearchHit => h != null);
+      // 상태 필터를 모르는 서버면 같은 판정으로 거른다.
+      if (kind && res?.kind !== kind) hits = hits.filter((h) => conversationMatchesKind(h.conversation, kind));
       return {
         query: typeof res?.query === 'string' ? res.query : q,
         terms: (res?.terms ?? []).filter((t): t is string => typeof t === 'string'),
-        hits: (res?.results ?? [])
-          .map(parseConversationSearchHit)
-          .filter((h): h is ConversationSearchHit => h != null),
+        hits,
         hasMore: res?.has_more === true,
         contentSearched: true,
       };
     } catch (e) {
       if (!(e instanceof ApiError) || e.status !== 404) throw e;
     }
-    return searchConversationList(await this.conversations(), q, limit);
+    const all = (await this.conversations()).filter((c) => conversationMatchesKind(c, kind));
+    return searchConversationList(all, q, limit);
   }
 
   /** 옛 서버의 목록(/api/interaction/list) → 같은 모양. */

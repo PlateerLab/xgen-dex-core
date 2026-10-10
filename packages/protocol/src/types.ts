@@ -361,13 +361,21 @@ export interface Conversation {
   compare: ConversationCompareThread[];
 }
 
+/**
+ * 대화 상태 필터(채팅 기록 관리, 2026-10-10). 서버 /list 의 kind 와 같은 뜻이다.
+ * active = 에이전트가 있고 배포 채팅이 아님, deploy = 배포 채팅(SHA1), deleted = 에이전트가 사라짐.
+ */
+export type ConversationKind = 'all' | 'active' | 'deploy' | 'deleted';
+
 /** 대화 목록 한 쪽. */
 export interface ConversationPage {
   conversations: Conversation[];
   /** 다음 쪽을 받을 커서. 없으면 끝이다. */
   nextCursor: string | null;
-  /** 첫 쪽에만 온다: 에이전트가 사라진 대화 수(목록 머리 [에이전트가 사라진 채팅 제거]). */
+  /** 첫 쪽에만 온다: 에이전트가 사라진 대화 수(목록 머리 [에이전트가 사라진 채팅 제거]). 필터와 상관없다. */
   agentDeletedCount?: number;
+  /** 첫 쪽에만 온다: 이 상태 필터의 대화 수(필터를 모르는 옛 서버면 없다). */
+  total?: number;
 }
 
 /**

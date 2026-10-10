@@ -13,7 +13,7 @@
  * 아래 순수 함수들은 목록을 고치는 규칙이다(새 쪽 합치기, 방금 말한 대화 올리기, 지운 대화 빼기).
  * 처음 읽기와 대화 목록 소켓의 소식이 같은 규칙을 탄다.
  */
-import type { Conversation, ConversationCompareThread, ConversationTag } from './types';
+import type { Conversation, ConversationCompareThread, ConversationKind, ConversationTag } from './types';
 import { turnInputText } from './history';
 
 /** 제목 길이: 한 줄로 보이는 만큼만(서버와 같다). */
@@ -225,6 +225,23 @@ export function conversationAgentLabel(c: Pick<Conversation, 'agentDeleted' | 'w
 }
 
 // ── 목록 규칙 (순수 함수) ─────────────────────────────────────────────
+
+const DEPLOY_CHAT_RE = /^[a-f0-9]{40}$/i;
+
+/**
+ * 이 대화가 상태 필터에 드는가(서버 kind 와 같은 판정). 필터를 모르는 옛 서버의 답을 화면에서 거를 때 쓴다.
+ * 배포 채팅은 SHA1 interaction_id 다(/list 의 deploy 와 같다).
+ */
+export function conversationMatchesKind(
+  c: Pick<Conversation, 'interactionId' | 'agentDeleted'>,
+  kind: ConversationKind | undefined,
+): boolean {
+  if (!kind || kind === 'all') return true;
+  const deploy = DEPLOY_CHAT_RE.test(c.interactionId);
+  if (kind === 'deploy') return deploy;
+  if (kind === 'deleted') return c.agentDeleted;
+  return !deploy && !c.agentDeleted;
+}
 
 export const conversationKey = (c: { workflowId: string; interactionId: string }): string =>
   `${c.workflowId}\u0000${c.interactionId}`;

@@ -24,6 +24,8 @@ import { ImeTextInput } from './ime-text-input';
 export const CONVERSATION_PAGE_SIZE = 40;
 export const SIDEBAR_WIDTH = 32;
 export const NEW_CHAT_LABEL = '＋ 새 채팅';
+/** [＋ 새 채팅] 줄 오른쪽: 채팅 검색 열기(목록에서 `/`). */
+export const SEARCH_HINT = '⌕ /';
 export const PURGE_LABEL = '에이전트가 사라진 채팅 제거';
 export const DELETED_AGENT_NOTICE = '지워진 에이전트입니다. 지난 대화만 볼 수 있습니다.';
 
@@ -144,10 +146,14 @@ export function ConversationSidebar(props: {
         const color = cursor && props.focused ? 'cyan' : undefined;
         const mark = cursor ? '›' : ' ';
         if (row.kind === 'new') {
+          // 오른쪽 끝의 ⌕ / 는 채팅 검색(목록에서 / 를 누른다). 웹·데스크톱의 [새 채팅] 옆 돋보기 자리다.
           return (
-            <Text key={rowKey(row)} color={color} wrap="truncate-end">
-              {mark} {NEW_CHAT_LABEL}
-            </Text>
+            <Box key={rowKey(row)} justifyContent="space-between">
+              <Text color={color} wrap="truncate-end">
+                {mark} {NEW_CHAT_LABEL}
+              </Text>
+              <Text dimColor>{SEARCH_HINT}</Text>
+            </Box>
           );
         }
         if (row.kind === 'purge') {

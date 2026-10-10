@@ -21,6 +21,8 @@ import {
   startSendBlocked,
   touchAfterSend,
   type StartLockInput,
+  recentPickItem,
+  searchPickItem,
 } from '../src/conversation-view';
 
 const conv = (interactionId: string, rest: Partial<Conversation> = {}): Conversation => ({
@@ -253,4 +255,44 @@ test('방금 만든 에이전트는 이름과 번호로 바로 대화할 수 있
   assert.equal(agent.workflowName, '리서치');
   assert.equal(agent.isShared, false);
   assert.equal(agent.createdAt, '2026-10-10T00:00:00Z');
+});
+
+test('채팅 검색 줄: 제목, 옆에 에이전트 · 꼬리표 · 날, 아래에 맞은 자리 한 줄. 늘 보인다', () => {
+  const c = conv('a', { title: '궁금', workflowName: 'HR Helper', tag: 'teams', updatedAt: '2025-01-02T03:00:00' });
+  const item = searchPickItem({
+    conversation: c,
+    match: {
+      title: [{ text: '궁금', hit: false }],
+      agent: [{ text: 'HR Helper', hit: false }],
+      snippet: [{ text: '…아래는 ', hit: false }, { text: 'INTJ', hit: true }, { text: '에서', hit: false }],
+      snippetFrom: 'output',
+      matchedAt: null,
+    },
+  });
+  assert.equal(item.label, '궁금');
+  assert.equal(item.description, 'HR Helper · Teams · 2025. 1. 2.');
+  assert.equal(item.detail, '…아래는 INTJ에서');
+  assert.equal(item.alwaysShow, true);
+  // 제목·이름으로만 맞았으면 아래 줄이 없다.
+  const plain = searchPickItem({
+    conversation: conv('b', { title: '분기 매출' }),
+    match: { title: [{ text: '분기', hit: true }, { text: ' 매출', hit: false }], agent: [], snippet: null, snippetFrom: null, matchedAt: null },
+  });
+  assert.equal(plain.label, '분기 매출');
+  assert.equal('detail' in plain, false);
+});
+
+test('채팅 검색 줄: 사라진 에이전트는 [지워짐], 이름으로 맞았을 때만 이름을 함께', () => {
+  const gone = conv('g', { title: '회의', workflowName: 'Old Agent', agentDeleted: true, updatedAt: '' , createdAt: '' });
+  const byContent = searchPickItem({
+    conversation: gone,
+    match: { title: [{ text: '회의', hit: false }], agent: [{ text: 'Old Agent', hit: false }], snippet: null, snippetFrom: null, matchedAt: null },
+  });
+  assert.equal(byContent.description, '지워짐');
+  const byName = searchPickItem({
+    conversation: gone,
+    match: { title: [{ text: '회의', hit: false }], agent: [{ text: 'Old', hit: true }, { text: ' Agent', hit: false }], snippet: null, snippetFrom: null, matchedAt: null },
+  });
+  assert.equal(byName.description, '지워짐 Old Agent');
+  assert.equal(recentPickItem(conv('r', { title: '', workflowName: 'gitlab', updatedAt: '', createdAt: '' })).label, '새 대화');
 });

@@ -12,6 +12,7 @@ import type {
   HistoryTurn,
   ResolvedChatInput,
 } from '@dex/engine';
+import { searchConversationList } from '@dex/protocol';
 import { App } from '../src/tui/app';
 import { ImeTextInput } from '../src/tui/ime-text-input';
 import type { TuiEngine } from '../src/tui/model';
@@ -168,6 +169,10 @@ function fakeEngine(
         nextCursor: offset + limit < list.length ? String(offset + limit) : null,
         ...(offset === 0 ? { agentDeletedCount: list.filter((item) => item.agentDeleted).length } : {}),
       };
+    },
+    async searchConversations(query, opts) {
+      // 서버 대신: 목록의 제목·에이전트 이름으로 찾는다(내용 검색은 서버 시험의 몫).
+      return { ...searchConversationList(list, query, opts.limit ?? 30), contentSearched: true };
     },
     async renameConversation(workflowId, interactionId, title) {
       calls.renamed.push({ workflowId, interactionId, title });
@@ -507,6 +512,54 @@ test('목록에서 대화를 고르면 그 내용과 제목이 대화창에 올�
   }
 });
 
+test('목록에서 / 를 누르면 채팅 검색이 뜨고, 고른 대화가 열린다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN])} />);
+  try {
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    assert.match(frame, /⌕ \//, '[＋ 새 채팅] 줄 오른쪽에 검색이 보인다');
+    await startScreenReady(view);
+    view.stdin.write(TAB); // 목록으로
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('/');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 검색') && value.includes('최근 채팅'));
+    assert.match(frame, /분기 매출 정리/, '검색어가 비면 최근 채팅');
+    // 검색칸의 키 처리기는 그린 뒤에 붙는다. 화면이 멈춘 뒤에 친다(다른 칸의 시험과 같다).
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('고객');
+    frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('고객 문의 응대') && !value.includes('최근 채팅') && !value.includes('분기 매출 정리'),
+    );
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답') && value.includes('지난 질문'));
+    assert.match(frame, /고객 문의 응대/);
+    assert.doesNotMatch(frame, /최근 채팅/, '검색 칸은 닫힌다');
+  } finally {
+    view.unmount();
+    view.cleanup();
+  }
+});
+
+test('채팅 검색은 Esc 로 닫고 목록으로 돌아간다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION])} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('/');
+    await waitForFrame(view.lastFrame, (value) => value.includes('최근 채팅'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B');
+    const frame = await waitForFrame(view.lastFrame, (value) => !value.includes('최근 채팅') && value.includes('＋ 새 채팅'));
+    assert.match(frame, /분기 매출 정리/);
+  } finally {
+    view.unmount();
+    view.cleanup();
+  }
+});
+
 test('에이전트가 지워진 대화는 지난 대화만 보이고 보낼 수 없다', async () => {
   const calls = newCalls();
   const view = render(<App engine={fakeEngine(undefined, [ORPHAN], calls)} />);
@@ -674,7 +727,9 @@ test('Ctrl+K 의 [에이전트가 사라진 채팅 제거] 는 묻고 나서 지
     // 'Enter 실행' 은 팔레트에만 있다('명령' 은 아래 안내줄에도 있다).
     let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Enter 실행'));
     assert.match(frame, /에이전트가 사라진 채팅 제거 \(1\)/);
-    // 팔레트: 새 채팅 · 대화 기록 · 에이전트가 사라진 채팅 제거
+    // 팔레트: 새 채팅 · 채팅 검색 · 대화 기록 · 에이전트가 사라진 채팅 제거
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
     await waitForSettled(view.lastFrame);
     view.stdin.write(DOWN);
     await waitForSettled(view.lastFrame);

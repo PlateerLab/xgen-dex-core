@@ -60,6 +60,8 @@ const api = {
     list: call('conversationsList'),
     /** 모든 에이전트의 대화, 마지막으로 말한 순서(사이드바의 대화 목록). */
     listAll: call('conversationsListAll'),
+    /** 채팅 검색: 제목·에이전트 이름·질문·답. */
+    search: call('conversationsSearch'),
     rename: call('conversationsRename'),
     remove: call('conversationsDelete'),
     turns: call('turnsList'),

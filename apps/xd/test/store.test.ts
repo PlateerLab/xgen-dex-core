@@ -140,6 +140,51 @@ test('설정 값은 JSON 으로 오간다', () => {
   s.close();
 });
 
+test('채팅 검색: 제목·에이전트 이름·질문·답, 모든 낱말, 마지막으로 말한 순서, 맞은 자리 조각', () => {
+  const s = new Store(dbFile(), { now: clock() });
+  const sales = s.createAgent({ name: 'Sales Agent', workspace: 'sales' });
+  const hr = s.createAgent({ name: 'HR Helper', workspace: 'hr' });
+  const q3 = s.createConversation(sales.id);
+  const t1 = s.startTurn(q3.id, '분기 매출 정리해 줘');
+  s.finishTurn(t1.id, { answer: '3분기 매출은 12억입니다.', process: [], usage: null, status: 'done' });
+  const love = s.createConversation(hr.id);
+  const t2 = s.startTurn(love.id, '궁금');
+  s.finishTurn(t2.id, { answer: '아래는 INTJ에서 설명하는 독립성입니다.', process: [], usage: null, status: 'done' });
+  const t3 = s.startTurn(q3.id, '지역별로도');
+  s.finishTurn(t3.id, { answer: '서울이 가장 큽니다. 100% 맞습니다.', process: [], usage: null, status: 'done' });
+
+  const ids = (q: string) => s.searchConversations(q).hits.map((h) => h.conversation.id);
+  const hit = (parts: { text: string; hit: boolean }[] | null) => (parts ?? []).filter((p) => p.hit).map((p) => p.text);
+
+  // 답 속 낱말(대소문자 무시), 조각과 어디서 맞았는지
+  const intj = s.searchConversations('intj').hits;
+  assert.deepEqual(intj.map((h) => h.conversation.id), [love.id]);
+  assert.equal(intj[0].match.snippetFrom, 'output');
+  assert.deepEqual(hit(intj[0].match.snippet), ['INTJ']);
+  assert.equal(intj[0].conversation.agentName, 'HR Helper');
+  // 에이전트 이름: 그 에이전트의 대화, 마지막으로 말한 순서
+  assert.deepEqual(ids('sales agent'), [q3.id]);
+  assert.deepEqual(hit(s.searchConversations('sales agent').hits[0].match.agent), ['Sales', 'Agent']);
+  // 낱말이 이름과 턴에 나뉘어 있어도 맞고, 모든 낱말이 있어야 한다
+  assert.deepEqual(ids('sales 서울'), [q3.id]);
+  assert.deepEqual(ids('매출 독립성'), []);
+  // 제목(첫 질문)으로
+  assert.deepEqual(hit(s.searchConversations('분기').hits[0].match.title), ['분기']);
+  // LIKE 의 특수 글자는 글자 그대로
+  assert.deepEqual(ids('100%'), [q3.id]);
+  assert.deepEqual(ids('%'), [q3.id]);
+  assert.deepEqual(ids('_'), []);
+  // 빈 검색어, 수 제한
+  assert.deepEqual(s.searchConversations('   ').hits, []);
+  const limited = s.searchConversations('니다', 1);
+  assert.equal(limited.hits.length, 1);
+  assert.equal(limited.hasMore, true);
+  // 지운 에이전트의 대화는 함께 사라진다
+  s.deleteAgent(hr.id);
+  assert.deepEqual(ids('intj'), []);
+  s.close();
+});
+
 test('대화 목록: 모든 에이전트의 대화를 마지막으로 말한 순서로, 에이전트 이름과 함께', () => {
   const s = new Store(dbFile(), { now: clock() });
   const a = s.createAgent({ name: '리서치', workspace: 'a' });

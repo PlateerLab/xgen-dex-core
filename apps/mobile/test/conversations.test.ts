@@ -17,6 +17,7 @@ import {
   orderedSettings,
   purgeLabel,
   renameInState,
+  searchResultRow,
   settingsPayload,
   startComposerLock,
   type ConversationListState,
@@ -275,4 +276,38 @@ test('첫 메시지: 빈 글이나 없는 메시지는 꺼내지 않는다, 표�
   const a = newInitialMessage('wf-a', 'i', 'x', 1000);
   const b = newInitialMessage('wf-a', 'i', 'x', 1000);
   assert.notEqual(a.id, b.id);
+});
+
+test('채팅 검색 줄: 최근 채팅은 칠하지 않고, 결과는 서버 조각 그대로, 사라진 에이전트는 이름이 맞을 때만 이름', () => {
+  const now = new Date(2026, 9, 10, 15, 0);
+  const c = conv({ interactionId: 'a', title: '궁금', workflowName: 'HR Helper', updatedAt: new Date(2026, 9, 9, 10, 0).toISOString() });
+  const recent = searchResultRow(c, undefined, now);
+  assert.deepEqual(recent.title, [{ text: '궁금', hit: false }]);
+  assert.deepEqual(recent.agent, [{ text: 'HR Helper', hit: false }]);
+  assert.equal(recent.snippet, null);
+  assert.equal(recent.day, '어제');
+
+  const hit = searchResultRow(
+    c,
+    {
+      title: [{ text: '궁금', hit: false }],
+      agent: [{ text: 'HR Helper', hit: false }],
+      snippet: [{ text: '…', hit: false }, { text: 'INTJ', hit: true }],
+      snippetFrom: 'output',
+      matchedAt: null,
+    },
+    now,
+  );
+  assert.deepEqual(hit.snippet?.filter((p) => p.hit).map((p) => p.text), ['INTJ']);
+
+  const gone = conv({ interactionId: 'g', title: '', workflowName: 'Old', agentDeleted: true });
+  assert.deepEqual(searchResultRow(gone, undefined, now).title, [{ text: '새 대화', hit: false }]);
+  assert.deepEqual(searchResultRow(gone, undefined, now).agent, []);
+  const byName = searchResultRow(
+    gone,
+    { title: [], agent: [{ text: 'Old', hit: true }], snippet: null, snippetFrom: null, matchedAt: null },
+    now,
+  );
+  assert.deepEqual(byName.agent, [{ text: 'Old', hit: true }]);
+  assert.equal(byName.agentDeleted, true);
 });

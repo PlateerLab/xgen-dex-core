@@ -2530,6 +2530,9 @@ ipcMain.handle(CHANNELS.historyDelete, (_e, workflowId: string, interactionId: s
   getClient().history.deleteConversation(workflowId, interactionId, workflowName),
 );
 ipcMain.handle(CHANNELS.historyPurgeDeletedAgents, () => getClient().history.purgeDeletedAgentConversations());
+ipcMain.handle(CHANNELS.historySearch, (_e, query: string, opts?: { limit?: number }) =>
+  getClient().history.searchConversations(String(query ?? ''), opts ?? {}),
+);
 
 // ── IPC: 채팅 공유 ─────────────────────────────────────────────────
 // 서버는 경로(/share/chat/<token>)만 준다. 절대 주소는 서버 주소를 아는 여기서 붙인다(appSetShare 와 같다).

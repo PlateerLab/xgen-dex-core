@@ -1,13 +1,14 @@
 /**
  * [채팅 목록] (2026-10-09): 폰의 첫 화면. ChatGPT·Claude 처럼 **대화 단위, 마지막으로 말한 순서**.
  *
- *   [+ 새 채팅]                                [⋯]  에이전트가 사라진 채팅 제거 (N)
+ *   [+ 새 채팅]                         [검색] [⋯]  채팅 검색 · 에이전트가 사라진 채팅 제거 (N)
  *   에이전트 이름(작게) [꼬리표]
  *   대화 제목                                  [⋯]
  *
  * 순서는 서버가 정한다(받은 그대로). 40개씩 받고 끝에 닿으면 다음 쪽을 잇는다. 줄의 말과 목록 고치기는
  * @dex/protocol 의 conversation-list 가 정본이다(conversation-model 이 묶는다).
  * 줄을 길게 누르거나 [⋯] 를 누르면 [이름 바꾸기]·[삭제]. 에이전트가 사라진 대화는 열면 기록만 보인다.
+ * 돋보기(2026-10-10)는 채팅 검색 화면을 연다(conversation-search). 고른 대화는 줄을 누른 것과 같이 열린다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -38,6 +39,7 @@ import {
   renameInState,
   type ConversationListState,
 } from './conversation-model';
+import { ConversationSearch } from './conversation-search';
 
 /** 한 번에 받는 대화 수. */
 const PAGE_SIZE = 40;
@@ -81,6 +83,7 @@ export function ConversationsSection({
   const [busy, setBusy] = useState(false);
   /** [⋯] 를 연 대화. */
   const [menu, setMenu] = useState<Conversation | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   /** 이름을 바꾸는 중이면 그 글. null 이면 메뉴 단계. */
   const [renameText, setRenameText] = useState<string | null>(null);
   const [renameError, setRenameError] = useState('');
@@ -281,6 +284,14 @@ export function ConversationsSection({
           <Text style={st.newChatText}>{CONVERSATION_TEXT.newChat}</Text>
         </Pressable>
         <Pressable
+          onPress={() => setSearchOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="채팅 검색"
+          style={({ pressed }) => [st.listMore, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name="search" size={19} color={p.text} />
+        </Pressable>
+        <Pressable
           onPress={openListMenu}
           disabled={busy}
           accessibilityRole="button"
@@ -343,6 +354,17 @@ export function ConversationsSection({
           )
         }
         ListFooterComponent={loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={p.primary} /> : null}
+      />
+
+      <ConversationSearch
+        client={client}
+        visible={searchOpen}
+        recent={items}
+        onOpen={(c) => {
+          setSearchOpen(false);
+          onOpen(c);
+        }}
+        onClose={() => setSearchOpen(false)}
       />
 
       {/* 한 줄의 [⋯]: 이름 바꾸기 · 삭제 */}

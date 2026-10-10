@@ -80,6 +80,8 @@ export interface InitializeResult {
     conversationListWatch?: boolean;
     /** agents/createOptions · agents/nameTaken · agents/create (시작 화면의 새 에이전트). */
     agentCreate?: boolean;
+    /** history/search (채팅 검색: 제목·에이전트 이름·대화 내용). */
+    conversationSearch?: boolean;
   };
 }
 

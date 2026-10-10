@@ -4,13 +4,16 @@
  * ChatGPT·Claude 처럼 **대화 단위, 마지막으로 말한 순서**다. 예전 [Agent] 뷰는 에이전트를 고른 뒤 그
  * 에이전트의 대화를 고르는 두 단계였다. 이제는 대화가 주인이고 에이전트는 작은 표시다.
  *
- *   [+ 새 채팅]                              [⋯]  에이전트가 사라진 채팅 제거
+ *   [+ 새 채팅]                       [검색] [⋯]  채팅 검색 창 · 에이전트가 사라진 채팅 제거
  *   에이전트 이름 · 꼬리표
  *   대화 제목(첫 메시지 한 줄, 붙인 이름)      [⋯]  이름 바꾸기 · 삭제
  *
  * 제목·꼬리표·순서는 서버가 정하고(@dex/protocol conversation-list), 웹과 같은 모양이다. 다른 기기에서
  * 말하거나 지우거나 이름을 바꾼 것은 대화 목록 소켓으로 밀려온다. 에이전트가 사라진 대화는
  * [지워짐] 으로만 보이고, 열면 같은 채팅 화면에서 지난 기록만 보인다.
+ *
+ * 돋보기(2026-10-10)는 채팅 검색 창을 연다. 제목·에이전트 이름·대화 내용으로 서버가 찾고, 고른 대화는
+ * 목록 줄을 누른 것과 똑같이 열린다.
  *
  * 패널은 뷰가 바뀌어도 언마운트되지 않고 숨겨질 뿐이다(예전 AgentPanel 과 같은 이유). 목록·스크롤이
  * 전환 사이에 남는다.
@@ -19,6 +22,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CONVERSATION_TAG_LABELS,
   DELETED_AGENT_LABEL,
+  SEARCH_RECENT_COUNT,
   conversationDisplayTitle,
   conversationKey,
   conversationListChange,
@@ -27,11 +31,13 @@ import {
   renameConversationInList,
   touchConversation,
   type Conversation,
+  type ConversationSearchMatch,
 } from '@dex/protocol';
 import { xgen } from '../bridge';
 import { sessionStore, useSessions } from '../session';
 import { agentDirectory, agentForConversation } from '../agent-directory';
-import { MoreIcon, PlusIcon, RefreshIcon } from '../brand/icons';
+import { MoreIcon, PlusIcon, RefreshIcon, SearchIcon } from '../brand/icons';
+import { ConversationSearchDialog, type ConversationSearchResultSet, type ConversationSearchRow } from './ConversationSearchDialog';
 
 const PAGE_SIZE = 40;
 /** 지우기·정리 소식이 몰려올 때 첫 쪽을 한 번만 다시 읽도록 모은다. */
@@ -42,6 +48,22 @@ type Menu = { kind: 'list' } | { kind: 'row'; key: string; up: boolean } | null;
 
 /** 줄 메뉴 높이(항목 둘)보다 조금 넉넉하게. 아래 남은 자리가 이보다 작으면 위로 펼친다. */
 const ROW_MENU_SPACE = 96;
+
+/** 검색 창이 한 번에 받는 결과 수. */
+const SEARCH_LIMIT = 50;
+
+/** 대화(+ 맞은 자리) → 검색 창의 한 줄. 맞은 자리가 없으면(최근 채팅) 강조 없는 조각. */
+function searchRow(c: Conversation, match?: ConversationSearchMatch): ConversationSearchRow {
+  return {
+    key: conversationKey(c),
+    title: match ? match.title : c.title ? [{ text: c.title, hit: false }] : [],
+    agent: match ? match.agent : c.workflowName ? [{ text: c.workflowName, hit: false }] : [],
+    agentDeleted: c.agentDeleted,
+    tag: c.tag ? CONVERSATION_TAG_LABELS[c.tag] : null,
+    snippet: match?.snippet ?? null,
+    when: c.updatedAt || c.createdAt || null,
+  };
+}
 
 export const ConversationPanel: React.FC<{
   /** [+ 새 채팅]: 시작 화면("오늘은 무엇을 해볼까요?")을 메인에 연다. */
@@ -58,6 +80,9 @@ export const ConversationPanel: React.FC<{
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** 검색 창에 보인 대화(열 때 key 로 찾는다). */
+  const searchFound = useRef(new Map<string, Conversation>());
 
   const { sessions, activeKey } = useSessions();
   const itemsRef = useRef(items);
@@ -232,6 +257,27 @@ export const ConversationPanel: React.FC<{
     });
   }, []);
 
+  const searchConversations = useCallback(async (query: string): Promise<ConversationSearchResultSet> => {
+    const page = await xgen.history.search(query, { limit: SEARCH_LIMIT });
+    for (const h of page.hits) searchFound.current.set(conversationKey(h.conversation), h.conversation);
+    return {
+      rows: page.hits.map((h) => searchRow(h.conversation, h.match)),
+      hasMore: page.hasMore,
+      contentSearched: page.contentSearched,
+    };
+  }, []);
+
+  const recentRows = useMemo(() => items.slice(0, SEARCH_RECENT_COUNT).map((c) => searchRow(c)), [items]);
+
+  const openFromSearch = useCallback(
+    (key: string) => {
+      const c = searchFound.current.get(key) ?? itemsRef.current.find((x) => conversationKey(x) === key);
+      setSearchOpen(false);
+      if (c) open(c);
+    },
+    [open],
+  );
+
   const startRename = useCallback((c: Conversation) => {
     setMenu(null);
     renameCancelledRef.current = false;
@@ -322,6 +368,19 @@ export const ConversationPanel: React.FC<{
       <div className="conv-list-head">
         <button className="new-chat-btn conv-new" onClick={onNewChat}>
           <PlusIcon size={16} /> 새 채팅
+        </button>
+        <button
+          className="icon-btn conv-search-open"
+          title="채팅 검색"
+          aria-label="채팅 검색"
+          aria-haspopup="dialog"
+          onClick={() => {
+            setMenu(null);
+            searchFound.current.clear();
+            setSearchOpen(true);
+          }}
+        >
+          <SearchIcon size={16} />
         </button>
         <div className={`conv-menu-wrap ${menu?.kind === 'list' ? 'open' : ''}`}>
           <button
@@ -451,6 +510,14 @@ export const ConversationPanel: React.FC<{
           </div>
         )}
       </div>
+      {searchOpen && (
+        <ConversationSearchDialog
+          recent={recentRows}
+          search={searchConversations}
+          onOpen={openFromSearch}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
     </div>
   );
 };

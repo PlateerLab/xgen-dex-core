@@ -15,6 +15,12 @@ export { loadMonaco } from '../../../../desktop/src/renderer/src/ide/monaco';
 export { FileViewerPane, type FileViewerSource } from '../../../../desktop/src/renderer/src/views/FileViewerPane';
 // MCP 서버(M5c) — 표준 MCP 설정 JSON(Claude Desktop·Cursor·mcp.json) 붙여 넣기와 표시용 명령줄.
 export { McpImportError, parseMcpConfig, toDisplayCommand } from '../../../../desktop/src/renderer/src/views/mcp-import';
+// 채팅 검색 창(2026-10-10). 무엇을 찾을지는 부르는 쪽이 준다(XD 는 제 저장소).
+export {
+  ConversationSearchDialog,
+  type ConversationSearchResultSet,
+  type ConversationSearchRow,
+} from '../../../../desktop/src/renderer/src/views/ConversationSearchDialog';
 export {
   BotIcon,
   ChatIcon,

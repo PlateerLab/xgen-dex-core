@@ -9,14 +9,18 @@
 import {
   CONVERSATION_TAG_LABELS,
   conversationAgentLabel,
+  conversationDayLabel,
   conversationDisplayTitle,
   conversationKey,
+  searchHasHit,
   mergeConversationPage,
   removeConversation,
   renameConversationInList,
   type AgentCreateSetting,
   type Conversation,
   type ConversationPage,
+  type ConversationSearchMatch,
+  type SearchTextPart,
 } from '@dex/protocol';
 
 // ── 화면의 말 ─────────────────────────────────────────────────────
@@ -65,6 +69,55 @@ export function conversationRow(c: Conversation): ConversationRow {
     agentDeleted: c.agentDeleted,
     tag: c.tag ? CONVERSATION_TAG_LABELS[c.tag] : null,
     title: conversationDisplayTitle(c),
+  };
+}
+
+// ── 채팅 검색 (2026-10-10) ────────────────────────────────────────
+//
+// 목록 머리 [새 채팅] 옆 돋보기가 검색 화면을 연다. 비면 최근 채팅, 적으면 서버가 제목·에이전트 이름·대화
+// 내용으로 찾는다(@dex/protocol conversation-search). 한 줄은 제목, 날, 에이전트 이름 · 맞은 자리 한 줄이다.
+
+export const SEARCH_TEXT = {
+  title: '채팅 검색',
+  placeholder: '검색...',
+  clear: '지우기',
+  close: '닫기',
+  recent: '최근 채팅',
+  searching: '검색 중',
+  empty: '맞는 채팅이 없습니다.',
+  failed: '검색하지 못했습니다.',
+  more: '맞는 채팅이 더 있습니다. 낱말을 더 적어 좁혀 보세요.',
+  titleOnly: '이 서버는 제목·에이전트 이름으로만 찾습니다.',
+} as const;
+
+export interface SearchResultRow {
+  key: string;
+  conversation: Conversation;
+  /** 제목 조각(빈 제목이면 "새 대화" 한 조각). */
+  title: SearchTextPart[];
+  /** 에이전트 조각. 사라진 에이전트는 이름이 맞았을 때만 이름이 있다. */
+  agent: SearchTextPart[];
+  agentDeleted: boolean;
+  tag: string | null;
+  /** 맞은 자리 둘레의 한 줄. 최근 채팅이나 제목·이름으로만 맞았으면 null. */
+  snippet: SearchTextPart[] | null;
+  /** 마지막으로 말한 날(오늘은 시각, 어제, 월·일). */
+  day: string;
+}
+
+/** 대화(+ 맞은 자리) → 검색 화면의 한 줄. 맞은 자리가 없으면 최근 채팅 줄(칠하지 않는다). */
+export function searchResultRow(c: Conversation, match?: ConversationSearchMatch, now?: Date): SearchResultRow {
+  const plain = (text: string): SearchTextPart[] => (text ? [{ text, hit: false }] : []);
+  const agentParts = match ? match.agent : plain(c.workflowName);
+  return {
+    key: conversationKey(c),
+    conversation: c,
+    title: match?.title.length ? match.title : plain(conversationDisplayTitle(c)),
+    agent: c.agentDeleted && !searchHasHit(match?.agent) ? [] : agentParts,
+    agentDeleted: c.agentDeleted,
+    tag: c.tag ? CONVERSATION_TAG_LABELS[c.tag] : null,
+    snippet: match?.snippet ?? null,
+    day: conversationDayLabel(c.updatedAt || c.createdAt, now),
   };
 }
 

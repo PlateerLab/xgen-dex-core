@@ -3,12 +3,23 @@
  *
  * 한 줄 = 에이전트 이름(작게) + 대화 제목(붙인 이름, 없으면 첫 질문, 둘 다 없으면 "새 대화"). 도는 대화에는 표시가
  * 붙는다(Dex 사이드바와 같은 CSS). 줄마다 [⋯] 메뉴로 [이름 바꾸기]·[삭제](웹·Dex 와 같은 자리). 이름을 바꿔도 줄은 제자리에 있다.
+ *
+ * [새 채팅] 옆 돋보기(2026-10-10)는 채팅 검색 창(Dex 와 같은 부품)을 연다. 이 PC 의 대화를 제목·에이전트 이름·질문·답으로
+ * 찾는다(main 의 store.searchConversations, 규칙은 @dex/protocol conversation-search).
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SEARCH_RECENT_COUNT, type ConversationSearchMatch } from '@dex/protocol';
 import type { XdConversationListItem } from '../../../main/store';
 import { xd } from '../bridge';
 import { errorText } from '../data';
-import { MoreIcon, PlusIcon } from '../dex';
+import {
+  ConversationSearchDialog,
+  MoreIcon,
+  PlusIcon,
+  SearchIcon,
+  type ConversationSearchResultSet,
+  type ConversationSearchRow,
+} from '../dex';
 import { useRunning } from '../live-store';
 import { conversationTitle, dropConversation, replaceConversation } from '../start-model';
 
@@ -41,6 +52,20 @@ const RenameInput: React.FC<{ initial: string; onDone: (title: string | null) =>
   );
 };
 
+/** 검색 창이 한 번에 받는 결과 수. */
+const SEARCH_LIMIT = 50;
+
+/** 대화(+ 맞은 자리) → 검색 창의 한 줄. 맞은 자리가 없으면(최근 채팅) 강조 없는 조각. */
+function searchRow(c: XdConversationListItem, match?: ConversationSearchMatch): ConversationSearchRow {
+  return {
+    key: c.id,
+    title: match ? match.title : c.title.trim() ? [{ text: c.title.trim(), hit: false }] : [],
+    agent: match ? match.agent : c.agentName ? [{ text: c.agentName, hit: false }] : [],
+    snippet: match?.snippet ?? null,
+    when: c.updatedAt,
+  };
+}
+
 export const Sidebar: React.FC<{
   conversations: XdConversationListItem[];
   loaded: boolean;
@@ -60,6 +85,23 @@ export const Sidebar: React.FC<{
   /** 목록 아래쪽 줄이면 메뉴를 위로 펼친다(아래로 펼치면 목록 칸에 잘린다). */
   const [menuUp, setMenuUp] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** 검색 창에 보인 대화(열 때 id 로 찾는다). */
+  const searchFound = useRef(new Map<string, XdConversationListItem>());
+
+  const recentRows = useMemo(() => conversations.slice(0, SEARCH_RECENT_COUNT).map((c) => searchRow(c)), [conversations]);
+
+  const search = useCallback(async (query: string): Promise<ConversationSearchResultSet> => {
+    const res = await xd.conversations.search(query, SEARCH_LIMIT);
+    for (const h of res.hits) searchFound.current.set(h.conversation.id, h.conversation);
+    return { rows: res.hits.map((h) => searchRow(h.conversation, h.match)), hasMore: res.hasMore, contentSearched: true };
+  }, []);
+
+  const openFromSearch = (id: string) => {
+    const c = searchFound.current.get(id) ?? conversations.find((x) => x.id === id);
+    setSearchOpen(false);
+    if (c) onOpenConversation(c.agentId, c.id);
+  };
 
   // 메뉴 바깥을 누르면 닫는다.
   useEffect(() => {
@@ -110,6 +152,20 @@ export const Sidebar: React.FC<{
             <span className="conv-body">
               <div className="conv-name">새 채팅</div>
             </span>
+          </button>
+          <button
+            type="button"
+            className="icon-btn xd-search-open"
+            title="채팅 검색"
+            aria-label="채팅 검색"
+            aria-haspopup="dialog"
+            onClick={() => {
+              setMenuFor(null);
+              searchFound.current.clear();
+              setSearchOpen(true);
+            }}
+          >
+            <SearchIcon size={16} />
           </button>
         </div>
         {/*
@@ -203,6 +259,14 @@ export const Sidebar: React.FC<{
           })}
         </div>
       </div>
+      {searchOpen && (
+        <ConversationSearchDialog
+          recent={recentRows}
+          search={search}
+          onOpen={openFromSearch}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
     </aside>
   );
 };

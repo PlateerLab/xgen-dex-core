@@ -4,22 +4,40 @@
  * 폰의 첫 화면이 에이전트 목록에서 채팅 목록으로 바뀌었다. 한 줄의 말(에이전트 이름·꼬리표·제목)은 @dex/protocol
  * 정본을 그대로 쓰는가, 쪽을 이어 받고 첫 쪽을 다시 읽을 때 받아 둔 것을 지키는가, 시작 화면의 입력창은
  * 보낼 수 있을 때만 풀리는가, 첫 메시지는 한 번만 나가는가를 본다.
+ *
+ * (2026-10-10) 몸통이 [최근 채팅] + [에이전트] 가 됐다: [더 보기]·[접기], 세 목록을 함께 고치는 규칙,
+ * 채팅 기록 관리의 선택 삭제(4개씩), 시작 화면에 넘겨받은 에이전트를 본다.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DELETED_AGENT_LABEL, type AgentCreateSetting, type Conversation, type ConversationPage } from '@dex/protocol';
 import {
+  DELETED_AGENT_LABEL,
+  RECENT_CONVERSATION_STEP,
+  type AgentCreateSetting,
+  type Conversation,
+  type ConversationAgent,
+  type ConversationPage,
+} from '@dex/protocol';
+import {
+  DELETE_CONCURRENCY,
   START_TEXT,
+  applyChatListChanges,
   applyConversationPage,
   conversationRow,
+  deleteResultNotice,
   dropConversation,
+  keepPresetAgent,
+  moreRecent,
   nameCheckState,
   orderedSettings,
   purgeLabel,
+  recentWindow,
+  removeInBatches,
   renameInState,
   searchResultRow,
   settingsPayload,
   startComposerLock,
+  type ChatLists,
   type ConversationListState,
 } from '../src/conversations/conversation-model';
 import { createInitialMessageGate, newInitialMessage } from '../src/chat/initial-message';
@@ -73,9 +91,9 @@ test('한 줄의 열쇠는 에이전트 + 대화 id (같은 대화 id 가 다른
   assert.notEqual(a.key, b.key);
 });
 
-test('[에이전트가 사라진 채팅 제거 (N)]: 없으면 단추를 그리지 않는다', () => {
+test('[에이전트가 사라진 채팅 제거 (N)]: 수를 붙인다(0 이면 누르면 "정리할 채팅이 없습니다.")', () => {
   assert.equal(purgeLabel(3), '에이전트가 사라진 채팅 제거 (3)');
-  assert.equal(purgeLabel(0), '');
+  assert.equal(purgeLabel(0), '에이전트가 사라진 채팅 제거 (0)');
 });
 
 // ── 목록 상태 ──
@@ -310,4 +328,86 @@ test('채팅 검색 줄: 최근 채팅은 칠하지 않고, 결과는 서버 조
   );
   assert.deepEqual(byName.agent, [{ text: 'Old', hit: true }]);
   assert.equal(byName.agentDeleted, true);
+});
+
+// ── 목록 몸통·관리 화면 (2026-10-10) ──
+
+const many = (n: number): Conversation[] => Array.from({ length: n }, (_, i) => conv({ id: n - i, interactionId: `i${i}` }));
+
+test('최근 채팅: 5개부터, [더 보기] 는 5개씩 늘리고 받아 둔 것이 모자랄 때만 다음 쪽을 받는다, [접기] 는 5개보다 많을 때만', () => {
+  const first = recentWindow(many(12), RECENT_CONVERSATION_STEP, null);
+  assert.deepEqual([first.rows.length, first.more, first.less], [5, true, false]);
+  const all = recentWindow(many(12), 15, null);
+  assert.deepEqual([all.rows.length, all.more, all.less], [12, false, true]);
+  assert.equal(recentWindow(many(5), 5, 'c1').more, true, '받아 둔 것은 다 보였어도 서버에 다음 쪽이 있다');
+  assert.deepEqual(moreRecent(5, 40, 'c1'), { shown: 10, fetch: false });
+  assert.deepEqual(moreRecent(40, 40, 'c1'), { shown: 45, fetch: true });
+  assert.deepEqual(moreRecent(40, 40, null), { shown: 45, fetch: false });
+});
+
+function threeLists(): ChatLists {
+  const group = (workflowId: string, conversationCount: number, lastInteractionId: string, lastTitle: string): ConversationAgent => ({
+    workflowId,
+    workflowName: workflowId,
+    conversationCount,
+    lastActivity: '2026-10-01T00:00:00Z',
+    lastTitle,
+    lastInteractionId,
+    agentDeleted: false,
+    agentOwnerId: 7,
+  });
+  const a1 = conv({ id: 3, interactionId: 'a1', workflowId: 'wf-a', title: '첫' });
+  const b1 = conv({ id: 2, interactionId: 'b1', workflowId: 'wf-b', title: '둘' });
+  const a2 = conv({ id: 1, interactionId: 'a2', workflowId: 'wf-a', title: '셋' });
+  return {
+    recent: { items: [a1, b1, a2], cursor: null, pages: 1, deletedCount: 0 },
+    agents: [group('wf-a', 2, 'a1', '첫'), group('wf-b', 1, 'b1', '둘')],
+    drill: { agent: group('wf-a', 2, 'a1', '첫'), list: { items: [a1, a2], cursor: null, pages: 1, deletedCount: 0 } },
+  };
+}
+
+test('이름 바꾸기: 최근 채팅·에이전트의 마지막 대화 제목·들어간 화면이 함께 바뀌고 다시 읽지 않는다', () => {
+  const up = applyChatListChanges(threeLists(), [
+    { type: 'renamed', workflowId: 'wf-a', interactionId: 'a1', title: '새 이름', customTitle: true },
+  ]);
+  assert.equal(up.lists.recent?.items[0].title, '새 이름');
+  assert.equal(up.lists.agents?.[0].lastTitle, '새 이름');
+  assert.equal(up.lists.drill?.list?.items[0].title, '새 이름');
+  assert.deepEqual([up.reloadRecent, up.reloadAgents, up.reloadDrill], [false, false, false]);
+});
+
+test('지우기: 세 목록에서 빠지고 에이전트 수가 준다(0 이면 줄이 빠진다), 마지막 대화였으면 묶음을 다시 읽는다', () => {
+  const up = applyChatListChanges(threeLists(), [
+    { type: 'removed', workflowId: 'wf-a', interactionId: 'a2' },
+    { type: 'removed', workflowId: 'wf-b', interactionId: 'b1' },
+  ]);
+  assert.deepEqual(up.lists.recent?.items.map((c) => c.interactionId), ['a1']);
+  assert.deepEqual(up.lists.agents?.map((a) => [a.workflowId, a.conversationCount]), [['wf-a', 1]]);
+  assert.deepEqual(up.lists.drill?.list?.items.map((c) => c.interactionId), ['a1']);
+  assert.equal(up.reloadAgents, false);
+  const last = applyChatListChanges(threeLists(), [{ type: 'removed', workflowId: 'wf-a', interactionId: 'a1' }]);
+  assert.equal(last.reloadAgents, true, '새 마지막 대화는 서버만 안다');
+});
+
+test('선택 삭제: 4개씩 함께 보내고 실패한 것은 따로 모은다, 안내는 실패 수가 먼저', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const res = await removeInBatches(Array.from({ length: 10 }, (_, i) => i), async (n) => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 1));
+    inFlight -= 1;
+    if (n === 2 || n === 7) throw new Error('fail');
+  });
+  assert.equal(peak, DELETE_CONCURRENCY);
+  assert.deepEqual(res.failed, [2, 7]);
+  assert.equal(res.done.length, 8);
+  assert.equal(deleteResultNotice(res.done.length, res.failed.length), '채팅 2개는 삭제하지 못했습니다.');
+  assert.equal(deleteResultNotice(3, 0), '채팅 3개를 삭제했습니다.');
+});
+
+test('시작 화면에 넘겨받은 에이전트: 고를 수 있는 목록에 없으면 평소처럼 시작한다', () => {
+  const list = [{ workflowId: 'wf-a' }, { workflowId: 'wf-b' }];
+  assert.equal(keepPresetAgent('wf-a', list), true);
+  assert.equal(keepPresetAgent('wf-gone', list), false);
 });

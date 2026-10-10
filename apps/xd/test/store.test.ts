@@ -223,6 +223,94 @@ test('대화 목록: 같은 시각이면 나중에 생긴 대화가 위, 그것�
   s.close();
 });
 
+test('에이전트 필터: 그 에이전트의 대화만, 목록과 같은 순서', () => {
+  const s = new Store(dbFile(), { now: clock() });
+  const a = s.createAgent({ name: '리서치', workspace: 'a' });
+  const b = s.createAgent({ name: '코딩', workspace: 'b' });
+  const a1 = s.createConversation(a.id);
+  s.startTurn(a1.id, '첫 질문');
+  const b1 = s.createConversation(b.id);
+  const a2 = s.createConversation(a.id);
+  s.startTurn(a1.id, '다시');
+  assert.deepEqual(s.listAllConversations(undefined, a.id).map((c) => [c.id, c.agentName]), [
+    [a1.id, '리서치'],
+    [a2.id, '리서치'],
+  ]);
+  assert.deepEqual(s.listAllConversations(1, a.id).map((c) => c.id), [a1.id]);
+  assert.deepEqual(s.listAllConversations(undefined, b.id).map((c) => c.id), [b1.id]);
+  assert.deepEqual(s.listAllConversations(undefined, 'missing'), []);
+  s.close();
+});
+
+test('에이전트 묶음: 대화가 있는 에이전트마다 대화 수와 마지막 대화, 마지막으로 말한 순서, 에이전트를 지우면 빠진다', () => {
+  const s = new Store(dbFile(), { now: clock() });
+  const a = s.createAgent({ name: '리서치', workspace: 'a' });
+  const b = s.createAgent({ name: '코딩', workspace: 'b' });
+  s.createAgent({ name: '빈 에이전트', workspace: 'c' }); // 대화가 없으면 묶음에 없다([다른 에이전트])
+  const rows = () => s.listConversationAgents().map((g) => [g.agentName, g.conversationCount, g.lastTitle, g.lastConversationId]);
+  assert.deepEqual(rows(), []);
+
+  const a1 = s.createConversation(a.id);
+  s.startTurn(a1.id, '첫 질문');
+  const b1 = s.createConversation(b.id);
+  s.startTurn(b1.id, '코드 질문');
+  const a2 = s.createConversation(a.id); // 아직 말하지 않은 새 대화가 이 에이전트의 마지막
+  assert.deepEqual(rows(), [
+    ['리서치', 2, '', a2.id],
+    ['코딩', 1, '코드 질문', b1.id],
+  ]);
+  // 마지막으로 말한 시각 = 그 에이전트의 마지막 대화의 updatedAt
+  assert.equal(s.listConversationAgents()[0].lastActivity, s.getConversation(a2.id)?.updatedAt);
+
+  // 다른 에이전트에서 말하면 그 에이전트가 맨 위로, 옛 대화에서 다시 말하면 그 대화가 마지막
+  s.startTurn(b1.id, '다시');
+  assert.deepEqual(rows()[0], ['코딩', 1, '코드 질문', b1.id]);
+  s.startTurn(a1.id, '이어서');
+  assert.deepEqual(rows(), [
+    ['리서치', 2, '첫 질문', a1.id],
+    ['코딩', 1, '코드 질문', b1.id],
+  ]);
+
+  // 이름 바꾸기는 제목만(순서는 그대로), 에이전트 이름을 바꾸면 묶음도 그 이름
+  s.renameConversation(a1.id, '조사 메모');
+  s.updateAgent(b.id, { name: '코딩 2' });
+  assert.deepEqual(rows(), [
+    ['리서치', 2, '조사 메모', a1.id],
+    ['코딩 2', 1, '코드 질문', b1.id],
+  ]);
+
+  // 마지막 대화를 지우면 수가 줄고 다음 대화가 마지막(그 시각으로 순서도 다시)
+  s.deleteConversation(a1.id);
+  assert.deepEqual(rows(), [
+    ['코딩 2', 1, '코드 질문', b1.id],
+    ['리서치', 1, '', a2.id],
+  ]);
+
+  // 에이전트를 지우면 그 대화도 지워져(ON DELETE CASCADE) 줄이 빠진다
+  s.deleteAgent(b.id);
+  assert.deepEqual(rows(), [['리서치', 1, '', a2.id]]);
+  s.deleteConversation(a2.id);
+  assert.deepEqual(rows(), []);
+  s.close();
+});
+
+test('에이전트 묶음: 같은 시각이면 이름 순', () => {
+  const s = new Store(dbFile(), { now: () => 7 });
+  const z = s.createAgent({ name: 'Zeta', workspace: 'z' });
+  const al = s.createAgent({ name: 'Alpha', workspace: 'al' });
+  s.createConversation(z.id);
+  s.createConversation(al.id);
+  s.createConversation(al.id);
+  assert.deepEqual(
+    s.listConversationAgents().map((g) => [g.agentName, g.conversationCount]),
+    [
+      ['Alpha', 2],
+      ['Zeta', 1],
+    ],
+  );
+  s.close();
+});
+
 test('이름 바꾸기: 목록 순서는 그대로, 다음 턴이 덮지 않고, 빈 이름이면 첫 질문의 제목으로 돌아간다', () => {
   const s = new Store(dbFile(), { now: clock() });
   const a = s.createAgent({ name: 'A', workspace: 'A' });

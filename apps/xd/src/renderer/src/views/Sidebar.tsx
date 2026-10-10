@@ -1,18 +1,30 @@
 /**
- * 사이드바: 대화 목록(ChatGPT·Claude 처럼 대화 단위, 마지막으로 말한 순서). 맨 위 [새 채팅] 은 시작 화면을 연다.
+ * 사이드바: [최근 채팅] · [에이전트] (2026-10-10, 웹·Dex 와 같은 짜임).
  *
- * 한 줄 = 에이전트 이름(작게) + 대화 제목(붙인 이름, 없으면 첫 질문, 둘 다 없으면 "새 대화"). 도는 대화에는 표시가
- * 붙는다(Dex 사이드바와 같은 CSS). 줄마다 [⋯] 메뉴로 [이름 바꾸기]·[삭제](웹·Dex 와 같은 자리). 이름을 바꿔도 줄은 제자리에 있다.
+ *   [+ 새 채팅]                       [검색] [⋯]
+ *   최근 채팅      마지막으로 말한 대화 5개, [더 보기] 로 5개씩 더, 그보다 많이 보이면 [접기]
+ *   에이전트       대화가 있는 에이전트: 이름, "마지막 대화 제목 · 날", 대화 수, [+], 마지막으로 말한 순서
+ *     [다른 에이전트 N개]  아직 대화가 없는 에이전트(펼치면 보이고, 누르면 그 에이전트로 새 채팅)
  *
- * [새 채팅] 옆 돋보기(2026-10-10)는 채팅 검색 창(Dex 와 같은 부품)을 연다. 이 PC 의 대화를 제목·에이전트 이름·질문·답으로
- * 찾는다(main 의 store.searchConversations, 규칙은 @dex/protocol conversation-search).
+ * 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다([←] 로 돌아온다, 줄에는 에이전트 이름 대신 날). [+] 는 그
+ * 에이전트가 골라진 시작 화면이다. 대화 줄 = 에이전트 이름(작게) + 제목(붙인 이름, 없으면 첫 질문, 둘 다 없으면
+ * "새 대화"). 도는 대화에는 표시가 붙는다(Dex 사이드바와 같은 CSS). 줄마다 [⋯] 메뉴로 [이름 바꾸기]·[삭제].
+ *
+ * 돋보기는 채팅 검색 창(Dex 와 같은 부품, main 의 store.searchConversations), [⋯] 는 메뉴이고 그 [채팅 기록 관리] 가 본문에 관리 화면을 연다.
+ *
+ * XD 는 에이전트를 지우면 그 대화도 함께 지운다(store 의 ON DELETE CASCADE). 그래서 웹·Dex 의 [지워짐] 상태도,
+ * 지워진 에이전트의 대화를 치우는 동작도 XD 에는 없다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SEARCH_RECENT_COUNT, type ConversationSearchMatch } from '@dex/protocol';
-import type { XdConversationListItem } from '../../../main/store';
+import { RECENT_CONVERSATION_STEP, SEARCH_RECENT_COUNT, conversationDayLabel, type ConversationSearchMatch } from '@dex/protocol';
+import type { XdConversationAgent, XdConversationListItem } from '../../../main/store';
 import { xd } from '../bridge';
-import { errorText } from '../data';
+import { LIST_TEXT, agentLastLine, otherAgents, othersLabel, recentSlice } from '../chat-list-model';
+import { useAgentConversations } from '../conversations';
+import { errorText, useData } from '../data';
 import {
+  BackIcon,
+  ChevronRightIcon,
   ConversationSearchDialog,
   MoreIcon,
   PlusIcon,
@@ -22,35 +34,7 @@ import {
 } from '../dex';
 import { useRunning } from '../live-store';
 import { conversationTitle, dropConversation, replaceConversation } from '../start-model';
-
-/** 이름 바꾸기 칸. Enter·칸 밖으로 나가면 저장, Esc 는 그만두기. 빈 이름이면 첫 질문의 제목으로 돌아간다. */
-const RenameInput: React.FC<{ initial: string; onDone: (title: string | null) => void }> = ({ initial, onDone }) => {
-  const [value, setValue] = useState(initial);
-  const done = useRef(false);
-  const finish = (title: string | null) => {
-    if (done.current) return;
-    done.current = true;
-    onDone(title);
-  };
-  return (
-    <input
-      className="xd-conv-rename"
-      autoFocus
-      value={value}
-      maxLength={200}
-      aria-label="대화 이름"
-      onFocus={(e) => e.currentTarget.select()}
-      onChange={(e) => setValue(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) finish(value);
-        else if (e.key === 'Escape') finish(null);
-      }}
-      onBlur={() => finish(value)}
-    />
-  );
-};
+import { RenameInput } from './RenameInput';
 
 /** 검색 창이 한 번에 받는 결과 수. */
 const SEARCH_LIMIT = 50;
@@ -66,18 +50,40 @@ function searchRow(c: XdConversationListItem, match?: ConversationSearchMatch): 
   };
 }
 
+/** 목록 머리 [⋯] 메뉴가 열려 있음을 나타내는 menuFor 값(대화 id 와 겹치지 않는다). */
+const LIST_MENU = '\u0000list';
+
 export const Sidebar: React.FC<{
   conversations: XdConversationListItem[];
+  /** 대화가 있는 에이전트(에이전트마다 대화 수·마지막 대화), 마지막으로 말한 순서. */
+  agentGroups: XdConversationAgent[];
   loaded: boolean;
   onConversations: (update: (list: XdConversationListItem[]) => XdConversationListItem[]) => void;
   /** 열려 있는 대화(없으면 null). */
   conversationId: string | null;
   /** 시작 화면이 열려 있는가([새 채팅] 이 눌린 모양). */
   starting: boolean;
-  onNewChat: () => void;
+  /** 채팅 기록 관리가 열려 있는가. */
+  managing: boolean;
+  /** 시작 화면. 에이전트를 주면 그 에이전트가 골라져 있다. */
+  onNewChat: (agentId?: string) => void;
+  onManageHistory: () => void;
   onOpenConversation: (agentId: string, conversationId: string) => void;
   onDeleted: (conversationId: string) => void;
-}> = ({ conversations, loaded, onConversations, conversationId, starting, onNewChat, onOpenConversation, onDeleted }) => {
+}> = ({
+  conversations,
+  agentGroups,
+  loaded,
+  onConversations,
+  conversationId,
+  starting,
+  managing,
+  onNewChat,
+  onManageHistory,
+  onOpenConversation,
+  onDeleted,
+}) => {
+  const { agents } = useData();
   const running = useRunning();
   const [renaming, setRenaming] = useState<string | null>(null);
   /** [⋯] 메뉴가 열린 대화. */
@@ -88,7 +94,16 @@ export const Sidebar: React.FC<{
   const [searchOpen, setSearchOpen] = useState(false);
   /** 검색 창에 보인 대화(열 때 id 로 찾는다). */
   const searchFound = useRef(new Map<string, XdConversationListItem>());
+  /** [최근 채팅] 에 보이는 수. [더 보기] 마다 늘고 [접기] 로 처음 수. */
+  const [shown, setShown] = useState(RECENT_CONVERSATION_STEP);
+  /** 들어가 있는 에이전트(그 에이전트의 대화를 보는 중). */
+  const [drill, setDrill] = useState<string | null>(null);
+  const [othersOpen, setOthersOpen] = useState(false);
+  const drillItems = useAgentConversations(drill, conversations);
+  const drillAgent = drill ? agents.find((a) => a.id === drill) ?? null : null;
 
+  const recent = recentSlice(conversations, shown);
+  const others = useMemo(() => otherAgents(agentGroups, agents), [agentGroups, agents]);
   const recentRows = useMemo(() => conversations.slice(0, SEARCH_RECENT_COUNT).map((c) => searchRow(c)), [conversations]);
 
   const search = useCallback(async (query: string): Promise<ConversationSearchResultSet> => {
@@ -118,6 +133,17 @@ export const Sidebar: React.FC<{
     if (renaming && !conversations.some((c) => c.id === renaming)) setRenaming(null);
   }, [conversations, renaming]);
 
+  // 들어가 있던 에이전트가 지워지면 목록으로 돌아온다.
+  useEffect(() => {
+    if (drill && !agents.some((a) => a.id === drill)) setDrill(null);
+  }, [agents, drill]);
+
+  const goTo = (agentId: string | null) => {
+    setMenuFor(null);
+    setRenaming(null);
+    setDrill(agentId);
+  };
+
   const rename = (c: XdConversationListItem, title: string | null) => {
     setRenaming(null);
     if (title === null || title.trim() === c.title.trim()) return;
@@ -128,7 +154,7 @@ export const Sidebar: React.FC<{
   };
 
   const remove = (c: XdConversationListItem) => {
-    if (!window.confirm('이 대화를 지울까요?')) return;
+    if (!window.confirm(`"${conversationTitle(c)}" 대화를 삭제할까요? 되돌릴 수 없습니다.`)) return;
     xd.conversations
       .remove(c.id)
       .then(() => {
@@ -138,6 +164,206 @@ export const Sidebar: React.FC<{
       .catch((err) => window.alert(errorText(err, '대화를 지우지 못했습니다.')));
   };
 
+  /** 대화 한 줄. `meta` 는 제목 위의 작은 줄([최근 채팅] 은 에이전트 이름, 에이전트 안에서는 날). */
+  const conversationRow = (c: XdConversationListItem, meta: string) => {
+    const live = running.includes(c.id);
+    const title = conversationTitle(c);
+    const open = () => onOpenConversation(c.agentId, c.id);
+    if (renaming === c.id) {
+      return (
+        <div key={c.id} role="listitem" className={`conv-item xd-conv editing${c.id === conversationId ? ' active' : ''}`}>
+          <span className="conv-body">
+            <div className="xd-conv-agent">{meta}</div>
+            <RenameInput initial={c.title} onDone={(t) => rename(c, t)} />
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div
+        key={c.id}
+        role="listitem"
+        className={`conv-item xd-conv${c.id === conversationId ? ' active' : ''}`}
+        tabIndex={0}
+        title={title}
+        onClick={open}
+        onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && open()}
+      >
+        <span className="conv-body">
+          <div className="xd-conv-agent">
+            {meta}
+            {live && ' · 답을 만드는 중'}
+          </div>
+          <div className="conv-name">
+            {live && <span className="live-dot live" />}
+            {title}
+          </div>
+        </span>
+        <span className={`xd-conv-actions conv-menu-wrap${menuFor === c.id ? ' open' : ''}`}>
+          <button
+            type="button"
+            className="xd-conv-act"
+            title="대화 메뉴"
+            aria-label="대화 메뉴"
+            aria-expanded={menuFor === c.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              const button = e.currentTarget.getBoundingClientRect();
+              const list = listRef.current?.getBoundingClientRect();
+              setMenuUp(!!list && list.bottom - button.bottom < 96);
+              setMenuFor((m) => (m === c.id ? null : c.id));
+            }}
+          >
+            <MoreIcon size={14} />
+          </button>
+          {menuFor === c.id && (
+            <div className={`conv-menu${menuUp ? ' up' : ''}`} role="menu" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                role="menuitem"
+                className="conv-menu-item"
+                onClick={() => {
+                  setMenuFor(null);
+                  setRenaming(c.id);
+                }}
+              >
+                이름 바꾸기
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="conv-menu-item danger"
+                disabled={live}
+                title={live ? '답을 만드는 중에는 지울 수 없습니다.' : undefined}
+                onClick={() => {
+                  setMenuFor(null);
+                  remove(c);
+                }}
+              >
+                삭제
+              </button>
+            </div>
+          )}
+        </span>
+      </div>
+    );
+  };
+
+  /** [+]: 이 에이전트가 골라진 시작 화면. 에이전트 줄에서는 어느 에이전트인지 이름을 붙여 읽힌다(Dex 와 같다). */
+  const newChatButton = (agentId: string, label: string = LIST_TEXT.newChatWith) => (
+    <button
+      type="button"
+      className="xd-conv-act xd-agent-new"
+      title={LIST_TEXT.newChatWith}
+      aria-label={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onNewChat(agentId);
+      }}
+    >
+      <PlusIcon size={14} />
+    </button>
+  );
+
+  const agentRow = (g: XdConversationAgent) => (
+    <div
+      key={g.agentId}
+      role="listitem"
+      className="xd-agent-row"
+      tabIndex={0}
+      title={g.agentName}
+      onClick={() => goTo(g.agentId)}
+      onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && goTo(g.agentId)}
+    >
+      <span className="xd-agent-body">
+        <span className="xd-agent-name">{g.agentName}</span>
+        <span className="xd-agent-last">{agentLastLine(g)}</span>
+      </span>
+      <span className="xd-agent-count">{g.conversationCount}</span>
+      {newChatButton(g.agentId, `${g.agentName} ${LIST_TEXT.newChatWith}`)}
+      <ChevronRightIcon size={14} className="xd-agent-chevron" />
+    </div>
+  );
+
+  let body: React.ReactNode;
+  if (drill && drillAgent) {
+    // 에이전트 하나의 대화: 머리 [←] 이름 [+], 줄에는 에이전트 이름 대신 날.
+    body = (
+      <>
+        <div className="xd-drill-head">
+          <button type="button" className="xd-conv-act" title={LIST_TEXT.back} aria-label={LIST_TEXT.back} onClick={() => goTo(null)}>
+            <BackIcon size={14} />
+          </button>
+          <span className="xd-drill-name" title={drillAgent.name}>
+            {drillAgent.name}
+          </span>
+          {newChatButton(drillAgent.id)}
+        </div>
+        <div className="xd-side-scroll" ref={listRef}>
+          {drillItems && drillItems.length === 0 && <div className="muted small xd-side-empty">{LIST_TEXT.noChats}</div>}
+          <div className="xd-conv-list" role="list" aria-label={drillAgent.name}>
+            {(drillItems ?? []).map((c) => conversationRow(c, conversationDayLabel(c.updatedAt)))}
+          </div>
+        </div>
+      </>
+    );
+  } else {
+    body = (
+      <div className="xd-side-scroll" ref={listRef}>
+        <div className="xd-side-section">{LIST_TEXT.recent}</div>
+        {loaded && conversations.length === 0 && <div className="muted small xd-side-empty">아직 대화가 없습니다.</div>}
+        <div className="xd-conv-list" role="list" aria-label={LIST_TEXT.recent}>
+          {recent.rows.map((c) => conversationRow(c, c.agentName))}
+        </div>
+        {(recent.canMore || recent.canCollapse) && (
+          <div className="xd-side-more">
+            {recent.canMore && (
+              <button type="button" className="xd-side-link" onClick={() => setShown((n) => n + RECENT_CONVERSATION_STEP)}>
+                {LIST_TEXT.more}
+              </button>
+            )}
+            {recent.canCollapse && (
+              <button type="button" className="xd-side-link" onClick={() => setShown(RECENT_CONVERSATION_STEP)}>
+                {LIST_TEXT.collapse}
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="xd-side-section">{LIST_TEXT.agents}</div>
+        <div className="xd-agent-list" role="list" aria-label={LIST_TEXT.agents}>
+          {agentGroups.map(agentRow)}
+        </div>
+        <button
+          type="button"
+          className={`xd-others-toggle${othersOpen ? ' open' : ''}`}
+          aria-expanded={othersOpen}
+          onClick={() => setOthersOpen((o) => !o)}
+        >
+          <ChevronRightIcon size={12} className="xd-others-chevron" />
+          {othersLabel(others.length)}
+        </button>
+        {othersOpen &&
+          (others.length === 0 ? (
+            <div className="muted small xd-side-empty">{LIST_TEXT.noOthers}</div>
+          ) : (
+            <div className="xd-agent-list" role="list" aria-label={LIST_TEXT.others}>
+              {others.map((a) => (
+                <div key={a.id} role="listitem">
+                  <button type="button" className="xd-agent-row xd-agent-other" title={LIST_TEXT.newChatWith} onClick={() => onNewChat(a.id)}>
+                    <span className="xd-agent-body">
+                      <span className="xd-agent-name">{a.name}</span>
+                    </span>
+                    <PlusIcon size={14} className="xd-agent-chevron" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+      </div>
+    );
+  }
+
   return (
     <aside className="sidebar xd-sidebar">
       <div className="side-panel">
@@ -145,7 +371,7 @@ export const Sidebar: React.FC<{
           <span className="sidebar-title-text">대화</span>
         </div>
         <div className="xd-side-top">
-          <button type="button" className={`conv-item xd-new-chat${starting ? ' active' : ''}`} onClick={onNewChat}>
+          <button type="button" className={`conv-item xd-new-chat${starting ? ' active' : ''}`} onClick={() => onNewChat()}>
             <span className="conv-icon">
               <PlusIcon size={14} />
             </span>
@@ -167,97 +393,37 @@ export const Sidebar: React.FC<{
           >
             <SearchIcon size={16} />
           </button>
-        </div>
-        {/*
-          에이전트를 가리지 않는 한 목록. XD 는 에이전트를 지우면 그 대화도 함께 지운다(store 의 ON DELETE CASCADE).
-          그래서 웹·Dex 의 [지워짐] 상태도, 지워진 에이전트의 대화를 치우는 동작도 XD 에는 없다.
-        */}
-        {loaded && conversations.length === 0 && <div className="muted small pad">아직 대화가 없습니다.</div>}
-        <div className="xd-conv-list" role="list" aria-label="대화 목록" ref={listRef}>
-          {conversations.map((c) => {
-            const live = running.includes(c.id);
-            const title = conversationTitle(c);
-            const open = () => onOpenConversation(c.agentId, c.id);
-            if (renaming === c.id) {
-              return (
-                <div key={c.id} role="listitem" className={`conv-item xd-conv editing${c.id === conversationId ? ' active' : ''}`}>
-                  <span className="conv-body">
-                    <div className="xd-conv-agent">{c.agentName}</div>
-                    <RenameInput initial={c.title} onDone={(t) => rename(c, t)} />
-                  </span>
-                </div>
-              );
-            }
-            return (
-              <div
-                key={c.id}
-                role="listitem"
-                className={`conv-item xd-conv${c.id === conversationId ? ' active' : ''}`}
-                tabIndex={0}
-                title={title}
-                onClick={open}
-                onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && open()}
-              >
-                <span className="conv-body">
-                  <div className="xd-conv-agent">
-                    {c.agentName}
-                    {live && ' · 답을 만드는 중'}
-                  </div>
-                  <div className="conv-name">
-                    {live && <span className="live-dot live" />}
-                    {title}
-                  </div>
-                </span>
-                <span className={`xd-conv-actions conv-menu-wrap${menuFor === c.id ? ' open' : ''}`}>
-                  <button
-                    type="button"
-                    className="xd-conv-act"
-                    title="대화 메뉴"
-                    aria-label="대화 메뉴"
-                    aria-expanded={menuFor === c.id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const button = e.currentTarget.getBoundingClientRect();
-                      const list = listRef.current?.getBoundingClientRect();
-                      setMenuUp(!!list && list.bottom - button.bottom < 96);
-                      setMenuFor((m) => (m === c.id ? null : c.id));
-                    }}
-                  >
-                    <MoreIcon size={14} />
-                  </button>
-                  {menuFor === c.id && (
-                    <div className={`conv-menu${menuUp ? ' up' : ''}`} role="menu" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="conv-menu-item"
-                        onClick={() => {
-                          setMenuFor(null);
-                          setRenaming(c.id);
-                        }}
-                      >
-                        이름 바꾸기
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="conv-menu-item danger"
-                        disabled={live}
-                        title={live ? '답을 만드는 중에는 지울 수 없습니다.' : undefined}
-                        onClick={() => {
-                          setMenuFor(null);
-                          remove(c);
-                        }}
-                      >
-                        삭제
-                      </button>
-                    </div>
-                  )}
-                </span>
+          {/* [⋯] 는 메뉴다(웹·Dex 와 같다). [채팅 기록 관리] 를 골라야 본문에 그 화면이 열린다. XD 에는 사라진 에이전트가
+              없어(에이전트를 지우면 대화도 함께 지워진다) [에이전트가 사라진 채팅 제거] 는 없다. */}
+          <span className={`conv-menu-wrap${menuFor === LIST_MENU ? ' open' : ''}`}>
+            <button
+              type="button"
+              className={`icon-btn xd-manage-open${managing ? ' active' : ''}`}
+              title="채팅 목록 메뉴"
+              aria-label="채팅 목록 메뉴"
+              aria-expanded={menuFor === LIST_MENU}
+              onClick={() => setMenuFor((m) => (m === LIST_MENU ? null : LIST_MENU))}
+            >
+              <MoreIcon size={16} />
+            </button>
+            {menuFor === LIST_MENU && (
+              <div className="conv-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="conv-menu-item"
+                  onClick={() => {
+                    setMenuFor(null);
+                    onManageHistory();
+                  }}
+                >
+                  {LIST_TEXT.manage}
+                </button>
               </div>
-            );
-          })}
+            )}
+          </span>
         </div>
+        {body}
       </div>
       {searchOpen && (
         <ConversationSearchDialog

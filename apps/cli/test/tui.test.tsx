@@ -12,11 +12,12 @@ import type {
   HistoryTurn,
   ResolvedChatInput,
 } from '@dex/engine';
-import { searchConversationList } from '@dex/protocol';
+import { conversationMatchesKind, groupConversationsByAgent, searchConversationList } from '@dex/protocol';
 import { App } from '../src/tui/app';
 import { ImeTextInput } from '../src/tui/ime-text-input';
 import type { TuiEngine } from '../src/tui/model';
 import { DELETED_AGENT_NOTICE } from '../src/tui/conversation-list';
+import { SEARCH_TITLE } from '../src/tui/conversation-search';
 import { NAME_REQUIRED, NAME_TAKEN, START_HEADING } from '../src/tui/start-screen';
 
 /** 가짜 서버가 받은 것. 화면이 엔진을 어떻게 불렀는지 본다. */
@@ -162,17 +163,27 @@ function fakeEngine(
       return list;
     },
     async conversationPage(opts) {
+      // 상태 필터(kind)와 에이전트(workflowId)로 거른 뒤 쪽을 나눈다(서버와 같은 판정).
+      const shown = list.filter(
+        (item) => conversationMatchesKind(item, opts.kind) && (!opts.workflowId || item.workflowId === opts.workflowId),
+      );
       const offset = Number(opts.cursor ?? 0) || 0;
       const limit = opts.limit ?? 40;
       return {
-        conversations: list.slice(offset, offset + limit),
-        nextCursor: offset + limit < list.length ? String(offset + limit) : null,
-        ...(offset === 0 ? { agentDeletedCount: list.filter((item) => item.agentDeleted).length } : {}),
+        conversations: shown.slice(offset, offset + limit),
+        nextCursor: offset + limit < shown.length ? String(offset + limit) : null,
+        ...(offset === 0
+          ? { agentDeletedCount: list.filter((item) => item.agentDeleted).length, total: shown.length }
+          : {}),
       };
+    },
+    async conversationAgents() {
+      return groupConversationsByAgent(list);
     },
     async searchConversations(query, opts) {
       // 서버 대신: 목록의 제목·에이전트 이름으로 찾는다(내용 검색은 서버 시험의 몫).
-      return { ...searchConversationList(list, query, opts.limit ?? 30), contentSearched: true };
+      const shown = list.filter((item) => conversationMatchesKind(item, opts.kind));
+      return { ...searchConversationList(shown, query, opts.limit ?? 30), contentSearched: true };
     },
     async renameConversation(workflowId, interactionId, title) {
       calls.renamed.push({ workflowId, interactionId, title });
@@ -479,8 +490,11 @@ test('목록은 대화 제목·작은 에이전트 이름·꼬리표·[지워짐
     assert.match(frame, /Sales Agent · 배포/);
     assert.match(frame, /고객 문의 응대/);
     assert.match(frame, /지워짐/);
-    assert.doesNotMatch(frame, /Old Agent/, '사라진 에이전트의 이름 대신 [지워짐]');
-    assert.match(frame, /에이전트가 사라진 채팅/);
+    // 대화 줄에는 사라진 에이전트의 이름 대신 [지워짐], 이름은 [에이전트] 줄에만 [지워짐] 과 함께 보인다.
+    assert.equal(frame.match(/Old Agent/g)?.length, 1);
+    assert.match(frame, /\[지워짐\] Old Agent\s+1/);
+    // [에이전트]: 대화가 있는 에이전트와 그 수.
+    assert.match(frame, /Sales Agent\s+2/);
     // 마지막으로 말한 순서(서버 순서) 그대로.
     assert.ok(frame.indexOf('분기 매출 정리') < frame.indexOf('고객 문의 응대'));
     assert.ok(frame.indexOf('고객 문의 응대') < frame.indexOf('지난 회의 정리'));
@@ -534,7 +548,7 @@ test('목록에서 / 를 누르면 채팅 검색이 뜨고, 고른 대화가 열
     view.stdin.write('\r');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답') && value.includes('지난 질문'));
     assert.match(frame, /고객 문의 응대/);
-    assert.doesNotMatch(frame, /최근 채팅/, '검색 칸은 닫힌다');
+    assert.ok(!frame.includes(SEARCH_TITLE), '검색 칸은 닫힌다');
   } finally {
     view.unmount();
     view.cleanup();
@@ -552,7 +566,7 @@ test('채팅 검색은 Esc 로 닫고 목록으로 돌아간다', async () => {
     await waitForFrame(view.lastFrame, (value) => value.includes('최근 채팅'));
     await waitForSettled(view.lastFrame);
     view.stdin.write('\u001B');
-    const frame = await waitForFrame(view.lastFrame, (value) => !value.includes('최근 채팅') && value.includes('＋ 새 채팅'));
+    const frame = await waitForFrame(view.lastFrame, (value) => !value.includes(SEARCH_TITLE) && value.includes('＋ 새 채팅'));
     assert.match(frame, /분기 매출 정리/);
   } finally {
     view.unmount();
@@ -568,9 +582,7 @@ test('에이전트가 지워진 대화는 지난 대화만 보이고 보낼 수 
     await startScreenReady(view);
     view.stdin.write(TAB);
     await waitForSettled(view.lastFrame);
-    view.stdin.write(DOWN); // [에이전트가 사라진 채팅 제거]
-    await waitForSettled(view.lastFrame);
-    view.stdin.write(DOWN); // 그 대화
+    view.stdin.write(DOWN); // ＋ 새 채팅 아래가 그 대화([최근 채팅] 머리는 건너뛴다)
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
     const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
@@ -727,7 +739,10 @@ test('Ctrl+K 의 [에이전트가 사라진 채팅 제거] 는 묻고 나서 지
     // 'Enter 실행' 은 팔레트에만 있다('명령' 은 아래 안내줄에도 있다).
     let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Enter 실행'));
     assert.match(frame, /에이전트가 사라진 채팅 제거 \(1\)/);
-    // 팔레트: 새 채팅 · 채팅 검색 · 대화 기록 · 에이전트가 사라진 채팅 제거
+    assert.match(frame, /채팅 기록 관리/, '채팅 기록 관리는 따로 있는 명령이다');
+    // 팔레트: 새 채팅 · 채팅 검색 · 채팅 기록 관리 · 대화 기록 · 에이전트가 사라진 채팅 제거
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
     await waitForSettled(view.lastFrame);
     view.stdin.write(DOWN);
     await waitForSettled(view.lastFrame);
@@ -751,6 +766,152 @@ test('Ctrl+K 의 [에이전트가 사라진 채팅 제거] 는 묻고 나서 지
   }
 });
 
+
+// ── [최근 채팅] · [에이전트] · 채팅 기록 관리 (2026-10-10) ──────────────
+
+/** 목록에서 커서(›)가 `label` 줄에 설 때까지 ↓ 를 누른다. 묶음 이름 줄은 커서가 건너뛴다. */
+async function moveTo(
+  view: { lastFrame: () => string | undefined; stdin: { write: (data: string) => void } },
+  label: string,
+): Promise<void> {
+  for (let i = 0; i < 30; i += 1) {
+    if ((view.lastFrame() ?? '').includes(`› ${label}`)) return;
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+  }
+  throw new Error(`cursor never reached ${label}:\n${view.lastFrame() ?? ''}`);
+}
+
+test('최근 채팅은 5개, [더 보기] 가 5개 더 보여 준다(모자라면 다음 쪽을 받는다)', async () => {
+  const many = Array.from({ length: 12 }, (_, i) =>
+    conversation({
+      id: 100 + i,
+      interactionId: `int-m${i + 1}`,
+      title: `대화 ${String(i + 1).padStart(2, '0')}`,
+      updatedAt: new Date(Date.UTC(2026, 7, 30, 12 - i)).toISOString(),
+    }),
+  );
+  const engine = fakeEngine(undefined, many);
+  // 한 쪽을 5개로 줄여 [더 보기] 가 다음 쪽을 받게 한다.
+  const page = engine.conversationPage.bind(engine);
+  engine.conversationPage = (opts, profile) => page({ ...opts, limit: Math.min(opts.limit ?? 40, 5) }, profile);
+  const view = render(<App engine={engine} />);
+  try {
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('대화 05'));
+    assert.match(frame, /최근 채팅/);
+    assert.doesNotMatch(frame, /대화 06/);
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    await moveTo(view, '더 보기');
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('대화 10'));
+    assert.doesNotMatch(frame, /대화 11/);
+    assert.match(frame, /접기/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('에이전트 줄에서 Enter 면 그 에이전트의 대화로 들어가고 Esc 로 돌아온다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN])} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    await moveTo(view, 'Sales Agent');
+    view.stdin.write('\r');
+    let frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('← Sales Agent') && value.includes('고객 문의 응대'),
+    );
+    assert.match(frame, /＋ 이 에이전트로 새 채팅/);
+    assert.match(frame, /분기 매출 정리/);
+    assert.doesNotMatch(frame, /지난 회의 정리/, '다른 에이전트의 대화는 없다');
+    assert.doesNotMatch(frame, /최근 채팅/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('최근 채팅') && !value.includes('← Sales Agent'));
+    assert.match(frame, /› Sales Agent/, '커서는 그 에이전트 줄로 돌아온다');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('[＋ 이 에이전트로 새 채팅] 은 그 에이전트를 골라 둔 시작 화면을 연다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    await moveTo(view, 'Sales Agent');
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('› ＋ 이 에이전트로 새 채팅'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    const frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('‹ Sales Agent ›') && !value.includes('잠김'),
+    );
+    assert.match(frame, new RegExp(START_HEADING));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    assert.equal(calls.sent[0]!.workflowId, 'wf_abc');
+    assert.deepEqual(calls.created, [], '있는 에이전트라 새로 세우지 않는다');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('채팅 기록 관리: m 으로 열고, 고른 채팅을 묻고 나서 지우고, Esc 로 닫으면 목록에도 없다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('m');
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 기록 관리') && value.includes('총 3개'));
+    assert.match(frame, /\[ \] 분기 매출 정리/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(' ');
+    await waitForFrame(view.lastFrame, (value) => value.includes('[x] 분기 매출 정리'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(' ');
+    await waitForFrame(view.lastFrame, (value) => value.includes('2개 선택'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('d');
+    await waitForFrame(view.lastFrame, (value) => value.includes('선택한 채팅 2개를 삭제할까요? 되돌릴 수 없습니다.'));
+    assert.deepEqual(calls.deleted, [], '묻기 전에는 지우지 않는다');
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('y');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 2개를 삭제했습니다.'));
+    assert.deepEqual(calls.deleted, [
+      { workflowId: 'wf_abc', interactionId: 'int-1' },
+      { workflowId: 'wf_abc', interactionId: 'deploy_abc' },
+    ]);
+    assert.match(frame, /총 1개/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B');
+    frame = await waitForFrame(
+      view.lastFrame,
+      (value) => !value.includes('채팅 기록 관리') && value.includes('＋ 새 채팅'),
+    );
+    assert.doesNotMatch(frame, /분기 매출 정리|고객 문의 응대/, '지운 것은 왼쪽 목록에서도 곧바로 빠진다');
+    assert.match(frame, /지난 회의 정리/);
+  } finally {
+    view.cleanup();
+  }
+});
 
 // ── 서버 주소를 잘못 쳤을 때 ────────────────────────────────────────
 //

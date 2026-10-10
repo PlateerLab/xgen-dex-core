@@ -5,6 +5,7 @@ import {
   agentNameTaken,
   conversationTitle,
   dropConversation,
+  initialStartAgent,
   isExistingAgent,
   NEW_AGENT,
   replaceConversation,
@@ -42,6 +43,13 @@ test('시작 화면 잠금: 있는 에이전트는 바로 보내고, 새 에이�
   assert.equal(isExistingAgent('gone', agents), false);
   assert.equal(startLock({ ...base, agentId: 'gone' }, agents)?.reason, 'name');
   assert.equal(isExistingAgent(NEW_AGENT, agents), false);
+});
+
+test('시작 화면의 처음 에이전트: 사이드바 [+] 가 준 에이전트가 있으면 그것, 없거나 지워졌으면 새 에이전트', () => {
+  assert.equal(initialStartAgent('b', agents), 'b');
+  assert.equal(initialStartAgent(undefined, agents), NEW_AGENT);
+  assert.equal(initialStartAgent(null, agents), NEW_AGENT);
+  assert.equal(initialStartAgent('gone', agents), NEW_AGENT);
 });
 
 const item = (id: string, title: string, updatedAt: number): XdConversationListItem => ({

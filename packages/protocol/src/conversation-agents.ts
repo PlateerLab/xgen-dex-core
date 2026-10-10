@@ -145,14 +145,17 @@ export function dropFromConversationAgents(
   return { agents: next, stale };
 }
 
-/** 쓸 수 있지만 아직 대화가 없는 에이전트([다른 에이전트]). 받은 순서를 지킨다. */
-export function agentsWithoutConversations(
+/**
+ * 쓸 수 있지만 아직 대화가 없는 에이전트([다른 에이전트]). 받은 순서를 지킨다.
+ * 에이전트 모양은 표면마다 다르다(서버 Agent, XD 의 제 에이전트). workflowId 만 본다.
+ */
+export function agentsWithoutConversations<T extends Pick<Agent, 'workflowId'>>(
   withChats: readonly Pick<ConversationAgent, 'workflowId'>[],
-  available: readonly Agent[],
-): Agent[] {
+  available: readonly T[],
+): T[] {
   const has = new Set(withChats.map((a) => a.workflowId));
   const seen = new Set<string>();
-  const out: Agent[] = [];
+  const out: T[] = [];
   for (const a of available) {
     if (has.has(a.workflowId) || seen.has(a.workflowId)) continue;
     seen.add(a.workflowId);

@@ -22,7 +22,16 @@ import {
 import type { CliService, CliState } from './cli/service';
 import type { EngineService, McpTestResult, ModelsResult } from './engine-service';
 import type { Secrets, SecretStatus } from './secrets';
-import type { XdAccount, XdAgent, XdConversation, XdConversationListItem, XdConversationSearchHit, Store, XdTurn } from './store';
+import type {
+  XdAccount,
+  XdAgent,
+  XdConversation,
+  XdConversationAgent,
+  XdConversationListItem,
+  XdConversationSearchHit,
+  Store,
+  XdTurn,
+} from './store';
 import type { TurnRunner } from './turn-runner';
 import { uniqueFolderName } from './workspace-name';
 
@@ -241,11 +250,17 @@ export function createXdApi(deps: XdApiDeps) {
     // ── 대화 ──
     /** 한 에이전트의 대화(옛 화면·시험이 쓴다). 사이드바는 conversationsListAll. */
     conversationsList: (agentId: string): XdConversation[] => store.listConversations(agentId),
-    /** 모든 에이전트의 대화를 마지막으로 말한 순서로(사이드바의 대화 목록). */
-    conversationsListAll(limit?: number): XdConversationListItem[] {
-      if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1)) throw new Error('limit must be a positive number');
-      return store.listAllConversations(limit);
+    /**
+     * 모든 에이전트의 대화를 마지막으로 말한 순서로(사이드바 [최근 채팅]·채팅 기록 관리). `agentId` 를 주면 그
+     * 에이전트의 대화만(사이드바에서 에이전트를 눌러 들어간 목록).
+     */
+    conversationsListAll(limit?: number | null, agentId?: string | null): XdConversationListItem[] {
+      if (limit != null && (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1)) throw new Error('limit must be a positive number');
+      if (agentId != null && typeof agentId !== 'string') throw new Error('agentId must be a string');
+      return store.listAllConversations(limit ?? undefined, agentId ?? undefined);
     },
+    /** 사이드바 [에이전트]: 대화가 있는 에이전트마다 대화 수와 마지막 대화, 마지막으로 말한 순서. */
+    conversationsAgents: (): XdConversationAgent[] => store.listConversationAgents(),
     /** 채팅 검색: 제목·에이전트 이름·질문·답, 마지막으로 말한 순서(규칙은 @dex/protocol conversation-search). */
     conversationsSearch(query: string, limit?: number): { hits: XdConversationSearchHit[]; hasMore: boolean } {
       if (typeof query !== 'string') throw new Error('query must be a string');

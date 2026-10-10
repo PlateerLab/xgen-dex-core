@@ -10269,3 +10269,174 @@ button.sm {
   justify-content: center;
   padding: 8px 0;
 }
+
+/* ─── 사이드바 [최근 채팅] · [에이전트] (2026-10-10) ───
+   [최근 채팅] 은 대화 5개와 [더 보기]·[접기], [에이전트] 는 대화가 있는 에이전트(대화 수, [+], >)와
+   [다른 에이전트]. 에이전트 줄을 누르면 그 에이전트의 대화 목록(머리 [←] 이름 [+])이 된다. */
+.conv-section-title {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.conv-more-row {
+  display: flex;
+  gap: 2px;
+  padding: 2px 4px 4px;
+}
+.conv-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.conv-text-btn:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.conv-text-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.conv-others-toggle {
+  align-self: flex-start;
+  margin: 2px 4px 0;
+}
+.conv-others-toggle svg {
+  transition: transform 0.12s ease;
+}
+.conv-others-toggle svg.open {
+  transform: rotate(90deg);
+}
+.conv-agent-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
+  transition: background-color 0.12s ease;
+}
+.conv-agent-row:hover {
+  background: var(--panel-2);
+}
+.conv-agent-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 7px 78px 7px 10px;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+.conv-agent-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 19px;
+}
+.conv-agent-name > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conv-agent-last {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--muted);
+}
+.conv-agent-side {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.conv-agent-count {
+  min-width: 18px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.conv-agent-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.conv-agent-new:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+.conv-agent-chevron {
+  color: var(--muted);
+}
+.conv-other-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.conv-other-agent:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.conv-other-agent-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conv-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px 6px 2px;
+}
+.conv-agent-head-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}

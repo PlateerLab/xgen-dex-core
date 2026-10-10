@@ -1,6 +1,6 @@
 /**
- * 대화 목록과 시작 화면의 규칙: 목록 한 줄의 모양, 대화 기록 빠른 선택 항목, 시작 화면 입력창의 잠금,
- * 새 에이전트의 제공사·모델 기본값.
+ * 대화 목록과 시작 화면의 규칙: 목록 한 줄의 모양, [최근 채팅] · [에이전트], 채팅 검색 창의 줄, 대화 기록
+ * 빠른 선택 항목, 시작 화면 입력창의 잠금, 새 에이전트의 제공사·모델 기본값.
  *
  * vscode 모듈에 기대지 않는 순수한 부분만 여기 둔다(웹뷰 공급자에서 떼어 냄). 그래야 테스트가 직접 부른다.
  * 제목·꼬리표·[지워짐] 글은 @dex/protocol conversation-list 한 곳에서 온다. 웹뷰(plain JS)는 여기서
@@ -8,7 +8,9 @@
  */
 import {
   CONVERSATION_TAG_LABELS,
-  DELETED_AGENT_LABEL,
+  RECENT_CONVERSATION_STEP,
+  SEARCH_RECENT_COUNT,
+  agentsWithoutConversations,
   conversationAgentLabel,
   conversationDayLabel,
   conversationDisplayTitle,
@@ -18,13 +20,15 @@ import {
   foldLegacyConversations,
   mergeConversationPage,
   searchHasHit,
-  searchPlain,
   touchConversation,
   type Agent,
   type AgentCreateOptions,
   type AgentCreateSetting,
   type Conversation,
-  type ConversationSearchHit,
+  type ConversationAgent,
+  type ConversationSearchMatch,
+  type ConversationSearchPage,
+  type SearchTextPart,
 } from '@dex/protocol';
 
 /** 한 번에 받는 대화 수. */
@@ -46,9 +50,23 @@ export interface ConversationRow {
   title: string;
   /** 지금 열려 있는 대화. */
   active: boolean;
+  /** 지금 답이 도는 대화(진행 점). */
+  running: boolean;
+  /** 에이전트 안의 대화 목록: 작은 줄에 에이전트 이름 대신 이 날을 쓴다. */
+  when?: string;
 }
 
-export function conversationRow(c: Conversation, activeKey?: string): ConversationRow {
+/** 줄을 만들 때 함께 보는 것. */
+interface RowContext {
+  /** 지금 도는 대화의 key. */
+  running?: ReadonlySet<string>;
+  /** 작은 줄에 에이전트 이름 대신 날을 쓴다(에이전트 안의 대화 목록). */
+  dated?: boolean;
+  /** 날을 셀 기준(시험이 고정한다). */
+  now?: Date;
+}
+
+export function conversationRow(c: Conversation, activeKey?: string, context: RowContext = {}): ConversationRow {
   const key = conversationKey(c);
   return {
     key,
@@ -59,16 +77,160 @@ export function conversationRow(c: Conversation, activeKey?: string): Conversati
     ...(c.tag ? { tagLabel: CONVERSATION_TAG_LABELS[c.tag] } : {}),
     title: conversationDisplayTitle(c),
     active: activeKey === key,
+    running: context.running?.has(key) === true,
+    ...(context.dated ? { when: conversationDayLabel(c.updatedAt || c.createdAt, context.now) } : {}),
   };
 }
 
-export function conversationRows(list: Conversation[], activeKey?: string): ConversationRow[] {
-  return list.map((c) => conversationRow(c, activeKey));
+export function conversationRows(list: Conversation[], activeKey?: string, context: RowContext = {}): ConversationRow[] {
+  return list.map((c) => conversationRow(c, activeKey, context));
 }
 
 /** 목록 머리의 정리 버튼 글. */
 export function purgeDeletedLabel(count: number): string {
   return `에이전트가 사라진 채팅 제거 (${count})`;
+}
+
+// ── [최근 채팅] · [에이전트] (2026-10-10) ──────────────────────────────
+//
+// 목록 화면 = 최근 채팅 5개([더 보기] 로 5개씩) + 대화가 있는 에이전트(마지막으로 말한 순서) + [다른 에이전트].
+// 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다. 묶음·고치기 규칙은 @dex/protocol conversation-agents 다.
+
+export const LIST_TEXT = {
+  agentEmpty: '아직 채팅이 없습니다',
+  agentLoading: '불러오는 중...',
+  others: '다른 에이전트',
+  othersEmpty: '다른 에이전트가 없습니다',
+} as const;
+
+/** [최근 채팅] 이 그릴 것. */
+export interface RecentSection {
+  rows: ConversationRow[];
+  /** [더 보기]: 받아 둔 줄이 더 있거나 다음 쪽이 있다. */
+  more: boolean;
+  /** [접기]: 5개보다 많이 보인다. */
+  less: boolean;
+}
+
+export function recentSection(
+  list: Conversation[],
+  count: number,
+  input: { hasNextPage: boolean; activeKey?: string; running?: ReadonlySet<string> },
+): RecentSection {
+  const rows = conversationRows(list.slice(0, count), input.activeKey, { running: input.running });
+  return {
+    rows,
+    more: list.length > count || input.hasNextPage,
+    less: rows.length > RECENT_CONVERSATION_STEP,
+  };
+}
+
+/** [더 보기] 를 누른 뒤 보일 수. */
+export function nextRecentCount(count: number): number {
+  return Math.max(count, RECENT_CONVERSATION_STEP) + RECENT_CONVERSATION_STEP;
+}
+
+/** 보일 수만큼 받아 두지 못했고 다음 쪽이 있으면 다음 쪽을 받는다. */
+export function recentNeedsPage(loaded: number, count: number, hasNextPage: boolean): boolean {
+  return hasNextPage && loaded < count;
+}
+
+/** [에이전트] 한 줄: 이름, 아래에 "마지막 대화 제목 · 날", 오른쪽에 대화 수 · [+] · >. */
+export interface AgentRow {
+  workflowId: string;
+  /** 에이전트 이름. 사라진 에이전트는 [지워짐] 옆에 흐리게. */
+  name: string;
+  agentDeleted: boolean;
+  /** 마지막 대화 제목 · 날. */
+  detail: string;
+  count: number;
+  /** [+] 를 그리는가. 사라진 에이전트로는 새 채팅을 열 수 없다. */
+  canStart: boolean;
+}
+
+function agentName(name: string, deleted: boolean): string {
+  return name || (deleted ? '' : 'Agent');
+}
+
+export function conversationAgentRows(agents: readonly ConversationAgent[], now?: Date): AgentRow[] {
+  return agents.map((a) => ({
+    workflowId: a.workflowId,
+    name: agentName(a.workflowName, a.agentDeleted),
+    agentDeleted: a.agentDeleted,
+    detail: [conversationDisplayTitle({ title: a.lastTitle }), conversationDayLabel(a.lastActivity, now)]
+      .filter(Boolean)
+      .join(' · '),
+    count: a.conversationCount,
+    canStart: !a.agentDeleted,
+  }));
+}
+
+/** [다른 에이전트]: 쓸 수 있지만 아직 대화가 없는 에이전트. 펼쳤을 때만 줄이 있다. */
+export interface OtherAgentsView {
+  open: boolean;
+  label: string;
+  rows: Array<{ workflowId: string; name: string }>;
+  /** 펼쳤는데 없을 때의 글. */
+  empty?: string;
+}
+
+export function otherAgentsView(
+  withChats: readonly Pick<ConversationAgent, 'workflowId'>[],
+  available: readonly Agent[],
+  open: boolean,
+): OtherAgentsView {
+  if (!open) return { open, label: LIST_TEXT.others, rows: [] };
+  const others = agentsWithoutConversations(withChats, available);
+  return {
+    open,
+    label: others.length ? `${LIST_TEXT.others} ${others.length}개` : LIST_TEXT.others,
+    rows: others.map((a) => ({ workflowId: a.workflowId, name: a.workflowName || a.workflowId })),
+    ...(others.length ? {} : { empty: LIST_TEXT.othersEmpty }),
+  };
+}
+
+/** 에이전트 줄을 눌러 들어간 화면: 머리 [<] 이름 [+], 그 에이전트의 대화(작은 줄은 날). */
+export interface AgentDrillView {
+  workflowId: string;
+  name: string;
+  agentDeleted: boolean;
+  canStart: boolean;
+  rows: ConversationRow[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error?: string;
+  /** 줄이 없을 때의 글. */
+  empty?: string;
+}
+
+export function agentDrillView(input: {
+  workflowId: string;
+  workflowName: string;
+  agentDeleted: boolean;
+  list: Conversation[];
+  activeKey?: string;
+  running?: ReadonlySet<string>;
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error?: string;
+  now?: Date;
+}): AgentDrillView {
+  const rows = conversationRows(input.list, input.activeKey, { running: input.running, dated: true, now: input.now });
+  const empty = rows.length || input.error ? undefined : input.loading ? LIST_TEXT.agentLoading : LIST_TEXT.agentEmpty;
+  return {
+    workflowId: input.workflowId,
+    name: agentName(input.workflowName, input.agentDeleted),
+    agentDeleted: input.agentDeleted,
+    canStart: !input.agentDeleted,
+    rows,
+    loading: input.loading,
+    loadingMore: input.loadingMore,
+    hasMore: input.hasMore,
+    ...(input.error ? { error: input.error } : {}),
+    ...(empty ? { empty } : {}),
+  };
 }
 
 const text = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -203,53 +365,86 @@ export function historyPickItem(
 
 // ── 채팅 검색 (2026-10-10) ────────────────────────────────────────────
 //
-// 목록 머리의 돋보기가 VS Code 빠른 선택 창을 연다. 비면 최근 채팅, 적으면 엔진(history/search)이 제목·
-// 에이전트 이름·대화 내용으로 찾는다. 빠른 선택 창은 칠할 자리를 받지 않으므로(VS Code 가 적은 글로 스스로
-// 칠한다) 조각은 글로 이어 붙인다. 서버가 맞춘 줄이 VS Code 의 거르기에 가려지지 않게 늘 보이게 둔다.
+// 목록 머리의 돋보기가 웹뷰 안에 검색 창을 연다(데스크톱 ConversationSearchDialog 와 같은 모양·글).
+// 비면 최근 채팅, 적으면 엔진(history/search)이 제목·에이전트 이름·대화 내용으로 찾는다. 줄과 안내 글은
+// 여기서 만들고, 웹뷰는 조각(hit)을 칠해 그리기만 한다.
 
 export const SEARCH_TEXT = {
-  title: '채팅 검색',
-  placeholder: '검색...',
   recent: '최근 채팅',
+  searching: '검색 중',
   empty: '맞는 채팅이 없습니다.',
-  failed: '검색하지 못했습니다',
+  failed: '검색하지 못했습니다.',
   more: '맞는 채팅이 더 있습니다. 낱말을 더 적어 좁혀 보세요.',
   titleOnly: '이 서버는 제목·에이전트 이름으로만 찾습니다.',
 } as const;
 
-/** 빠른 선택 창의 한 줄(대화를 가리킨다). */
-export interface SearchPickItem {
-  label: string;
-  description: string;
-  detail?: string;
-  alwaysShow: true;
+/** 검색 창이 한 번에 받는 결과 수. */
+export const SEARCH_LIMIT = 50;
+
+/** 검색 창의 한 줄. 위에 제목과 날, 아래에 에이전트 이름 · 맞은 자리 둘레의 한 줄. */
+export interface SearchResultRow {
+  key: string;
+  workflowId: string;
+  interactionId: string;
+  /** 제목 조각. 제목이 없으면 "새 대화" 한 조각. */
+  title: SearchTextPart[];
+  /** 보일 에이전트 이름 조각. 에이전트가 사라졌으면 이름으로 맞았을 때만 있다. */
+  agent: SearchTextPart[];
+  /** 에이전트가 사라졌다: [지워짐]. */
+  agentDeleted: boolean;
+  tagLabel?: string;
+  /** 맞은 자리 둘레의 한 줄. 제목·이름으로만 맞았거나 최근 채팅이면 null. */
+  snippet: SearchTextPart[] | null;
+  /** 오른쪽의 날(오늘은 시각). */
+  day: string;
 }
 
-function searchDescription(c: Conversation, agent: string): string {
-  const day = conversationDayLabel(c.updatedAt || c.createdAt);
-  return [agent, c.tag ? CONVERSATION_TAG_LABELS[c.tag] : '', day].filter(Boolean).join(' · ');
-}
-
-/** 최근 채팅 한 줄: 제목, 옆에 에이전트 이름 · 꼬리표 · 날. */
-export function recentPickItem(c: Conversation): SearchPickItem {
-  return { label: conversationDisplayTitle(c), description: searchDescription(c, conversationAgentLabel(c)), alwaysShow: true };
-}
-
-/**
- * 검색 결과 한 줄: 제목, 옆에 에이전트 이름 · 꼬리표 · 날, 아래에 맞은 자리 둘레의 한 줄. 에이전트가 사라진
- * 대화는 [지워짐] 이고, 이름으로 맞았을 때만 이름을 함께 둔다.
- */
-export function searchPickItem(hit: ConversationSearchHit): SearchPickItem {
-  const c = hit.conversation;
-  const name = searchPlain(hit.match.agent) || c.workflowName;
-  const agent = c.agentDeleted ? (searchHasHit(hit.match.agent) ? `${DELETED_AGENT_LABEL} ${name}` : DELETED_AGENT_LABEL) : name;
-  const snippet = searchPlain(hit.match.snippet);
+/** 대화(+ 맞은 자리) → 검색 창의 한 줄. 맞은 자리가 없으면(최근 채팅) 강조 없는 조각. */
+export function searchResultRow(c: Conversation, match?: ConversationSearchMatch, now?: Date): SearchResultRow {
+  const title = match ? match.title : c.title ? [{ text: c.title, hit: false }] : [];
+  const agent = match ? match.agent : c.workflowName ? [{ text: c.workflowName, hit: false }] : [];
   return {
-    label: searchPlain(hit.match.title) || conversationDisplayTitle(c),
-    description: searchDescription(c, agent),
-    ...(snippet ? { detail: snippet } : {}),
-    alwaysShow: true,
+    key: conversationKey(c),
+    workflowId: c.workflowId,
+    interactionId: c.interactionId,
+    title: title.length ? title : [{ text: conversationDisplayTitle({ title: '' }), hit: false }],
+    agent: !c.agentDeleted || searchHasHit(agent) ? agent : [],
+    agentDeleted: c.agentDeleted === true,
+    ...(c.tag ? { tagLabel: CONVERSATION_TAG_LABELS[c.tag] } : {}),
+    snippet: match?.snippet?.length ? match.snippet : null,
+    day: conversationDayLabel(c.updatedAt || c.createdAt, now),
   };
+}
+
+/** 검색어가 비었을 때 보여 줄 최근 채팅 줄. */
+export function searchRecentRows(list: Conversation[], now?: Date): SearchResultRow[] {
+  return list.slice(0, SEARCH_RECENT_COUNT).map((c) => searchResultRow(c, undefined, now));
+}
+
+/** 검색 결과 → 창이 그릴 것. `titleOnly` 는 줄 위, `more` 는 줄 아래에 둔다. */
+export interface SearchResultView {
+  rows: SearchResultRow[];
+  /** 맞는 줄이 없을 때의 글. */
+  status?: string;
+  /** 옛 서버: 내용까지는 찾지 못했다. */
+  titleOnly?: string;
+  /** 보낸 수보다 더 맞았다. */
+  more?: string;
+}
+
+export function searchResultView(page: ConversationSearchPage, now?: Date): SearchResultView {
+  const rows = page.hits.map((hit) => searchResultRow(hit.conversation, hit.match, now));
+  return {
+    rows,
+    ...(rows.length ? {} : { status: SEARCH_TEXT.empty }),
+    ...(page.contentSearched ? {} : { titleOnly: SEARCH_TEXT.titleOnly }),
+    ...(page.hasMore ? { more: SEARCH_TEXT.more } : {}),
+  };
+}
+
+/** 검색이 실패했을 때 창에 보일 글. */
+export function searchFailedText(message: string): string {
+  return `${SEARCH_TEXT.failed} ${message}`.trim();
 }
 
 // ── 시작 화면 ─────────────────────────────────────────────────────────

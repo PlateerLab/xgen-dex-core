@@ -45,6 +45,22 @@ export interface XdConversationListItem extends XdConversation {
   agentName: string;
 }
 
+/**
+ * 사이드바 [에이전트] 의 한 줄: 대화가 있는 에이전트와 그 대화 수, 마지막으로 말한 대화(2026-10-10).
+ * 웹·Dex 의 묶음(@dex/protocol ConversationAgent)과 같은 뜻이다. XD 는 에이전트를 지우면 대화도 지워지므로
+ * 사라진 에이전트의 줄은 없다.
+ */
+export interface XdConversationAgent {
+  agentId: string;
+  agentName: string;
+  conversationCount: number;
+  /** 마지막으로 말한 시각(그 에이전트의 마지막 대화의 updatedAt). */
+  lastActivity: number;
+  /** 마지막 대화의 제목(빈 글이면 화면이 "새 대화"). */
+  lastTitle: string;
+  lastConversationId: string;
+}
+
 /** 채팅 검색 결과 한 줄: 대화 + 맞은 자리(강조 조각). */
 export interface XdConversationSearchHit {
   conversation: XdConversationListItem;
@@ -356,14 +372,44 @@ export class Store {
    *
    * 이 정렬에 맞춘 색인은 따로 두지 않는다. 이 PC 한 사람의 대화라 줄 수가 작아 정렬 비용이 없고, 에이전트별
    * 목록은 conversations_by_agent 가 받친다.
+   *
+   * `agentId` 를 주면 그 에이전트의 대화만(사이드바에서 에이전트를 눌러 들어간 목록). 순서는 같다.
    */
-  listAllConversations(limit?: number): XdConversationListItem[] {
-    const sql = `SELECT c.*, a.name AS agent_name FROM conversations c JOIN agents a ON a.id = c.agent_id
-       ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC`;
-    const rows = (
-      limit !== undefined ? this.db.prepare(`${sql} LIMIT ?`).all(Math.max(0, Math.floor(limit))) : this.db.prepare(sql).all()
-    ) as Row[];
+  listAllConversations(limit?: number, agentId?: string): XdConversationListItem[] {
+    const where = agentId !== undefined ? 'WHERE c.agent_id = ?' : '';
+    const args: Array<string | number> = agentId !== undefined ? [agentId] : [];
+    if (limit !== undefined) args.push(Math.max(0, Math.floor(limit)));
+    const sql = `SELECT c.*, a.name AS agent_name FROM conversations c JOIN agents a ON a.id = c.agent_id ${where}
+       ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC${limit !== undefined ? ' LIMIT ?' : ''}`;
+    const rows = this.db.prepare(sql).all(...args) as Row[];
     return rows.map((r) => ({ ...toConversation(r), agentName: String(r.agent_name ?? '') }));
+  }
+
+  /**
+   * 사이드바 [에이전트]: 대화가 있는 에이전트마다 대화 수와 마지막으로 말한 대화. 쿼리 하나(창 함수)로 센다.
+   * 에이전트의 마지막 대화는 대화 목록과 같은 순서의 첫 대화이고, 줄은 마지막으로 말한 순서(같으면 이름 순,
+   * @dex/protocol sortConversationAgents 와 같다).
+   */
+  listConversationAgents(): XdConversationAgent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT agent_id, agent_name, conversation_count, last_activity, last_title, last_id FROM (
+           SELECT c.agent_id, a.name AS agent_name, c.updated_at AS last_activity, c.title AS last_title, c.id AS last_id,
+             COUNT(*) OVER (PARTITION BY c.agent_id) AS conversation_count,
+             ROW_NUMBER() OVER (PARTITION BY c.agent_id ORDER BY c.updated_at DESC, c.created_at DESC, c.id DESC) AS rn
+           FROM conversations c JOIN agents a ON a.id = c.agent_id
+         ) WHERE rn = 1
+         ORDER BY last_activity DESC, agent_name, agent_id`,
+      )
+      .all() as Row[];
+    return rows.map((r) => ({
+      agentId: String(r.agent_id),
+      agentName: String(r.agent_name ?? ''),
+      conversationCount: Number(r.conversation_count),
+      lastActivity: Number(r.last_activity),
+      lastTitle: String(r.last_title ?? ''),
+      lastConversationId: String(r.last_id),
+    }));
   }
 
   /**

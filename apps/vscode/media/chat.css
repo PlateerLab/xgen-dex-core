@@ -407,7 +407,7 @@ button:disabled {
   line-height: 1;
 }
 
-/* 목록 머리: [+ 새 채팅] [검색] [⋯] (2026-10-10). ⋯ 메뉴에 [에이전트가 사라진 채팅 제거 (N)]. */
+/* 목록 머리: [+ 새 채팅] [검색] [⋯] (2026-10-10). ⋯ 메뉴에 [채팅 기록 관리] 와 [에이전트가 사라진 채팅 제거 (N)]. */
 .list-head {
   display: flex;
   align-items: center;
@@ -462,6 +462,183 @@ button:disabled {
 .list-menu-item:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* [최근 채팅] · [에이전트] 두 묶음. 에이전트 줄을 누르면 그 에이전트의 대화(.agent-view)로 들어간다. */
+.list-main,
+.agent-view {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list-section-title {
+  margin-top: 8px;
+  padding: 2px 8px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.list-paging {
+  display: flex;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.list-paging .text-button {
+  padding: 2px 6px;
+}
+
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agent-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.agent-row:hover {
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+}
+
+.agent-open {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 5px 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  border: 0;
+  color: var(--vscode-foreground);
+  background: transparent;
+  text-align: left;
+}
+
+.agent-open:hover {
+  color: var(--vscode-foreground);
+  background: transparent;
+}
+
+.agent-row-top {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.agent-row-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-row.other .agent-row-name {
+  font-weight: 400;
+}
+
+.agent-row.deleted .agent-row-name,
+.agent-view-name.deleted {
+  color: var(--vscode-descriptionForeground);
+}
+
+.agent-row-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-row-count {
+  flex: 0 0 auto;
+  min-width: 16px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  text-align: right;
+}
+
+.agent-row-chevron {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.agent-row [data-tip]::after {
+  top: calc(100% + 4px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+}
+
+.agent-deleted-badge {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--dex-danger) 40%, transparent);
+  border-radius: 999px;
+  padding: 0 5px;
+  color: var(--dex-danger);
+  font-size: 8.5px;
+  line-height: 14px;
+}
+
+.other-agents-toggle {
+  display: flex;
+  margin-top: 4px;
+  padding: 4px 8px;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font-size: 10px;
+  text-align: left;
+}
+
+.other-agents-toggle:hover {
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+}
+
+.other-agents-chevron {
+  display: grid;
+  place-items: center;
+  transition: transform 120ms ease;
+}
+
+.other-agents-toggle.open .other-agents-chevron {
+  transform: rotate(90deg);
+}
+
+.agent-view-head {
+  display: flex;
+  min-width: 0;
+  margin: 6px 0 4px;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-view-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conversation-list {
@@ -532,6 +709,21 @@ button:disabled {
   padding: 0 5px;
   font-size: 8.5px;
   line-height: 14px;
+}
+
+.conversation-live {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dex-success);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .conversation-title {
@@ -2162,3 +2354,98 @@ kbd {
 .chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
 .chat-attachment-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 999px; font-size: 12px; }
 .chat-attachment-chip button { border: 0; color: inherit; background: transparent; cursor: pointer; }
+
+/* ── 채팅 검색 창: 데스크톱 ConversationSearchDialog 와 같은 짜임 ── */
+.conv-search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  padding: 36px 8px 8px;
+  align-items: flex-start;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+.conv-search {
+  display: flex;
+  width: min(560px, 100%);
+  max-height: 80vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+}
+.conv-search-head {
+  display: flex;
+  padding: 8px 8px 8px 10px;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.conv-search-glyph { display: grid; place-items: center; color: var(--vscode-descriptionForeground); }
+.conv-search-input {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 3px 2px;
+  border: 0;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  background: transparent;
+  font-size: 12.5px;
+}
+.conv-search-input:focus-visible { outline: none; }
+.conv-search-clear {
+  padding: 2px 6px;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font-size: 11px;
+}
+.conv-search-clear:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.conv-search-sep { width: 1px; height: 16px; background: var(--vscode-panel-border); }
+.conv-search-close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+}
+.conv-search-close:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.conv-search-body { overflow: auto; padding: 4px 4px 8px; }
+.conv-search-label { padding: 6px 8px 4px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 650; }
+.conv-search-status,
+.conv-search-note { padding: 10px 8px; color: var(--vscode-descriptionForeground); font-size: 11px; text-align: center; }
+.conv-search-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  align-items: flex-start;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  text-align: left;
+}
+.conv-search-row:hover { color: var(--vscode-foreground); background: transparent; }
+.conv-search-row.active { background: var(--vscode-list-activeSelectionBackground, var(--dex-accent-soft)); color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); }
+.conv-search-row-icon { display: grid; padding-top: 1px; place-items: center; color: var(--vscode-descriptionForeground); }
+.conv-search-row-main { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; }
+.conv-search-row-top { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.conv-search-row-title { min-width: 0; flex: 1 1 auto; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.conv-search-row-when { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 10px; }
+.conv-search-row-sub { display: flex; min-width: 0; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: 10.5px; white-space: nowrap; }
+.conv-search-row-agent { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conv-search-row-snippet { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.conv-search-tag { flex: 0 0 auto; border: 1px solid var(--dex-soft-border); border-radius: 999px; padding: 0 5px; font-size: 9px; line-height: 14px; }
+.conv-search-tag.deleted { border-color: color-mix(in srgb, var(--dex-danger) 40%, transparent); color: var(--dex-danger); }
+.conv-search mark {
+  border-radius: 2px;
+  color: inherit;
+  background: var(--vscode-editor-findMatchHighlightBackground, color-mix(in srgb, var(--dex-accent) 30%, transparent));
+}

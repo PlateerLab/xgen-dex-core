@@ -5,6 +5,7 @@ import { DexEngine, DexError, publicError } from '@dex/engine';
 import type {
   AgentListQuery,
   ChatInput,
+  ConversationKind,
   LocalToolsConfig,
   ResolvedChatInput,
 } from '@dex/engine';
@@ -64,6 +65,12 @@ function optionalBoolean(params: Record<string, unknown>, key: string): boolean 
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'boolean') throw new RpcFailure(-32602, `${key} must be a boolean`);
   return value;
+}
+
+/** 대화 상태 필터(history/conversationPage · history/search). 모르는 값은 전체로 본다. */
+function conversationKindParam(params: Record<string, unknown>): ConversationKind | undefined {
+  const value = params.kind;
+  return value === 'active' || value === 'deploy' || value === 'deleted' || value === 'all' ? value : undefined;
 }
 
 function optionalStringArray(params: Record<string, unknown>, key: string): string[] | undefined {
@@ -332,14 +339,18 @@ export class DexRpcServer {
       // 대화 목록(2026-10-09): 마지막으로 말한 순서로 한 쪽씩, 이름 바꾸기·지우기·사라진 에이전트 대화 정리.
       case 'history/conversationPage':
         return this.engine.conversationPage(
-          { limit: optionalInteger(params, 'limit'), cursor: optionalString(params, 'cursor') ?? null },
+          {
+            limit: optionalInteger(params, 'limit'),
+            cursor: optionalString(params, 'cursor') ?? null,
+            kind: conversationKindParam(params),
+          },
           optionalString(params, 'profile'),
         );
       // 채팅 검색(2026-10-10): 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서.
       case 'history/search':
         return this.engine.searchConversations(
           typeof params.query === 'string' ? params.query : '',
-          { limit: optionalInteger(params, 'limit') },
+          { limit: optionalInteger(params, 'limit'), kind: conversationKindParam(params) },
           optionalString(params, 'profile'),
         );
       case 'history/rename':

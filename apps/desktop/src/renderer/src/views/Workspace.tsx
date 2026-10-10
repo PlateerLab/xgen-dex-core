@@ -30,6 +30,7 @@ import { StartChat } from './StartChat';
 import { ActivityBar } from './ActivityBar';
 import { restoreSideView, type SideView } from './side-view';
 import { ConversationPanel } from './ConversationPanel';
+import { ConversationManager } from './ConversationManager';
 import { ExplorerPanel } from './ExplorerPanel';
 import { FileViewerPane } from './FileViewerPane';
 import { fileTabId } from './file-viewer-model';
@@ -583,6 +584,15 @@ export const Workspace: React.FC<{
       }
       if (existing) return selectWorkspaceTab(current, existing.group.id, 'apps');
       return addWorkspaceTab(current, current.focusedGroupId, { id: 'apps', kind: 'apps' });
+    });
+  }, []);
+
+  /** 채팅 기록 관리 탭을 연다(사이드바 [채팅] 목록 머리 ⋯). 하나뿐인 탭이다. 열려 있으면 앞으로 가져온다. */
+  const openHistoryManager = useCallback(() => {
+    setLayout((current) => {
+      const existing = findTab(current, 'history');
+      if (existing) return selectWorkspaceTab(current, existing.group.id, 'history');
+      return addWorkspaceTab(current, current.focusedGroupId, { id: 'history', kind: 'history' });
     });
   }, []);
 
@@ -1157,6 +1167,13 @@ export const Workspace: React.FC<{
         </div>
       );
     }
+    if (active?.kind === 'history') {
+      return (
+        <div className="pane-fill">
+          <ConversationManager />
+        </div>
+      );
+    }
     if (active?.kind === 'agent-create') {
       return (
         <div className="pane-fill">
@@ -1254,7 +1271,7 @@ export const Workspace: React.FC<{
         style={{ width: sidebarWidth }}
       >
         <div className="panel-host" style={{ display: sideView === 'agent' ? undefined : 'none' }}>
-          <ConversationPanel onNewChat={openStartChat} />
+          <ConversationPanel onNewChat={openStartChat} onManageHistory={openHistoryManager} />
         </div>
         <div
           className="panel-host"

@@ -183,7 +183,8 @@ export interface WorkspaceLayoutPersistConfig {
         | 'agent-viewer'
         | 'agent-create'
         | 'file-viewer'
-        | 'apps';
+        | 'apps'
+        | 'history';
       sessionKey?: string;
       workflowId?: string;
       workflowName?: string;

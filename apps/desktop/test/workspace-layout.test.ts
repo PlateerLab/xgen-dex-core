@@ -248,3 +248,29 @@ test('사이드바 [앱] 으로 저장된 보기는 기본 보기(Agent)로 연�
   assert.equal(restoreSideView(undefined), 'agent');
   assert.equal(restoreSideView('nope'), 'agent');
 });
+
+test('채팅 기록 관리 탭(history)은 껐다 켜도 그 자리에 다시 선다', () => {
+  const restored = normalizeWorkspaceLayout({
+    groups: [
+      {
+        id: 'group-a',
+        tabs: [
+          { id: 'history', kind: 'history' },
+          { id: 'apps', kind: 'apps' },
+        ],
+        activeTabId: 'history',
+      },
+    ],
+    direction: 'horizontal',
+    ratio: 0.5,
+    focusedGroupId: 'group-a',
+  });
+  assert.deepEqual(
+    restored.groups[0].tabs.map((t) => [t.id, t.kind]),
+    [
+      ['history', 'history'],
+      ['apps', 'apps'],
+    ],
+  );
+  assert.equal(restored.groups[0].activeTabId, 'history');
+});

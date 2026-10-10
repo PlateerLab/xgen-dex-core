@@ -8,6 +8,7 @@ import {
   ChatIcon,
   CloseIcon,
   DocIcon,
+  HistoryIcon,
   PlusIcon,
   SettingsIcon,
   TeamsIcon,
@@ -19,6 +20,7 @@ function label(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
   if (tab.kind === 'teams') return tab.roomName || '대화';
   if (tab.kind === 'settings') return '설정';
   if (tab.kind === 'apps') return '앱';
+  if (tab.kind === 'history') return '채팅 기록';
   // 'agent-create' 탭은 이제 새 채팅 시작 화면이다(저장된 배치와 맞추려고 종류 이름은 그대로 둔다).
   if (tab.kind === 'agent-create') return '새 채팅';
   if (tab.kind === 'file-viewer') return tab.fileName || '파일';
@@ -77,6 +79,8 @@ export const TabBar: React.FC<{
                 <DocIcon size={13} />
               ) : tab.kind === 'apps' ? (
                 <AppIcon size={13} />
+              ) : tab.kind === 'history' ? (
+                <HistoryIcon size={13} />
               ) : (
                 <AvatarIcon size={13} />
               )}

@@ -126,6 +126,8 @@ export class DexEngine {
    * 때마다 지금 폴더를 다시 붙이므로 저장할 이유가 없다.
    */
   private readonly folders = new ConversationFolderBook();
+  /** 커넥터 기기 슬롯 키. 채팅과 브리지가 같은 값을 쓰고, 같은 PC 의 다른 프로세스와는 슬롯을 다투지 않는다. */
+  private readonly deviceId = randomUUID();
 
   constructor(
     private readonly configs: ConfigStore,
@@ -223,7 +225,7 @@ export class DexEngine {
       // CLI 는 사내 인증서를 아직 설정으로 받지 않는다 — 기본은 검증이다.
       allowPrivateCertificate: false,
       // 멀티 디바이스 — 데스크톱 앱과 같은 계정으로 붙어도 서로를 밀어내지 않는다.
-      deviceId: await this.ensureDeviceId(),
+      deviceId: this.deviceId,
       deviceName: `${hostname()} · CLI`,
       getToken: async () => {
         await this.flush(record);
@@ -242,14 +244,6 @@ export class DexEngine {
     return this.localToolsStatus();
   }
 
-  /** 이 설치의 안정적 기기 id — 커넥터 멀티 디바이스 슬롯 키. 설정에 영속. */
-  private async ensureDeviceId(): Promise<string> {
-    const config = await this.configs.read();
-    if (config.deviceId) return config.deviceId;
-    const id = randomUUID();
-    await this.configs.write({ ...config, deviceId: id });
-    return id;
-  }
 
   /** 연결된 커넥터 기기 목록 — 로컬 컨트롤 상태 대시보드. */
   async listConnectorDevices(requestedProfile?: string): Promise<ConnectorDevice[]> {
@@ -791,7 +785,7 @@ export class DexEngine {
               : resolved.input,
             interactionId: resolved.interactionId,
             // 이 표면(CLI/VSCode)의 기기 — 멀티 디바이스에서 내 도구가 주입되게.
-            clientDeviceId: await this.ensureDeviceId(),
+            clientDeviceId: this.deviceId,
             // 이 대화에 연결된 폴더 — 없으면 빈 목록(서버가 폴더 도구를 감춘다).
             localFolders: localFoldersForRequest(folders),
             // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같다. 서버는 이 표식으로

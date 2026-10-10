@@ -231,6 +231,8 @@ export class DexRpcServer {
             agentCreate: true,
             // history/search (채팅 검색).
             conversationSearch: true,
+            // history/conversationAgents · history/conversationPage 의 workflowId (최근 채팅 · 에이전트).
+            conversationAgents: true,
           },
         };
       }
@@ -343,9 +345,13 @@ export class DexRpcServer {
             limit: optionalInteger(params, 'limit'),
             cursor: optionalString(params, 'cursor') ?? null,
             kind: conversationKindParam(params),
+            workflowId: optionalString(params, 'workflowId'),
           },
           optionalString(params, 'profile'),
         );
+      // 사이드바 [에이전트](2026-10-10): 대화가 있는 에이전트마다 한 줄.
+      case 'history/conversationAgents':
+        return this.engine.conversationAgents({ limit: optionalInteger(params, 'limit') }, optionalString(params, 'profile'));
       // 채팅 검색(2026-10-10): 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서.
       case 'history/search':
         return this.engine.searchConversations(

@@ -41,6 +41,7 @@ import type {
   ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
+  ConversationAgent,
   ConversationKind,
   ConversationPage,
   ConversationSearchPage,
@@ -590,10 +591,15 @@ export class DexEngine {
 
   /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(@dex/protocol conversation-list). */
   async conversationPage(
-    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind } = {},
+    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string } = {},
     requestedProfile?: string,
   ): Promise<ConversationPage> {
     return this.withAuthRetry(requestedProfile, (client) => client.history.conversationPage(opts));
+  }
+
+  /** 사이드바 [에이전트]: 대화가 있는 에이전트마다 한 줄, 마지막으로 말한 순서(@dex/protocol conversation-agents). */
+  async conversationAgents(opts: { limit?: number } = {}, requestedProfile?: string): Promise<ConversationAgent[]> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.conversationAgents(opts));
   }
 
   /** 채팅 검색: 제목·에이전트 이름·대화 내용으로 찾는다(@dex/protocol conversation-search). */

@@ -82,6 +82,8 @@ export interface InitializeResult {
     agentCreate?: boolean;
     /** history/search (채팅 검색: 제목·에이전트 이름·대화 내용). */
     conversationSearch?: boolean;
+    /** history/conversationAgents · history/conversationPage 의 workflowId (사이드바 [최근 채팅] · [에이전트]). */
+    conversationAgents?: boolean;
   };
 }
 

@@ -523,11 +523,14 @@ test('목록에서 / 를 누르면 채팅 검색이 뜨고, 고른 대화가 열
     view.stdin.write('/');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 검색') && value.includes('최근 채팅'));
     assert.match(frame, /분기 매출 정리/, '검색어가 비면 최근 채팅');
+    // 검색칸의 키 처리기는 그린 뒤에 붙는다. 화면이 멈춘 뒤에 친다(다른 칸의 시험과 같다).
+    await waitForSettled(view.lastFrame);
     view.stdin.write('고객');
     frame = await waitForFrame(
       view.lastFrame,
       (value) => value.includes('고객 문의 응대') && !value.includes('최근 채팅') && !value.includes('분기 매출 정리'),
     );
+    await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답') && value.includes('지난 질문'));
     assert.match(frame, /고객 문의 응대/);
@@ -547,6 +550,7 @@ test('채팅 검색은 Esc 로 닫고 목록으로 돌아간다', async () => {
     await waitForSettled(view.lastFrame);
     view.stdin.write('/');
     await waitForFrame(view.lastFrame, (value) => value.includes('최근 채팅'));
+    await waitForSettled(view.lastFrame);
     view.stdin.write('\u001B');
     const frame = await waitForFrame(view.lastFrame, (value) => !value.includes('최근 채팅') && value.includes('＋ 새 채팅'));
     assert.match(frame, /분기 매출 정리/);

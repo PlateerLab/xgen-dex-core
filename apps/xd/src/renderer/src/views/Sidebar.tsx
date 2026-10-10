@@ -3,12 +3,14 @@
  *
  *   [+ 새 채팅]                       [검색] [⋯]
  *   최근 채팅      마지막으로 말한 대화 5개, [더 보기] 로 5개씩 더, 그보다 많이 보이면 [접기]
- *   에이전트       대화가 있는 에이전트: 이름, "마지막 대화 제목 · 날", 대화 수, [+], 마지막으로 말한 순서
- *     [다른 에이전트 N개]  아직 대화가 없는 에이전트(펼치면 보이고, 누르면 그 에이전트로 새 채팅)
+ *   ──────
+ *   에이전트       대화가 있는 에이전트: 이름, "마지막 대화 제목 · 날", 대화 수, 마지막으로 말한 순서
+ *                  ([최근 채팅] 처럼 5개, [더 보기]·[접기])
  *
- * 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다([←] 로 돌아온다, 줄에는 에이전트 이름 대신 날). [+] 는 그
- * 에이전트가 골라진 시작 화면이다. 대화 줄 = 에이전트 이름(작게) + 제목(붙인 이름, 없으면 첫 질문, 둘 다 없으면
- * "새 대화"). 도는 대화에는 표시가 붙는다(Dex 사이드바와 같은 CSS). 줄마다 [⋯] 메뉴로 [이름 바꾸기]·[삭제].
+ * 새 채팅은 맨 위 [+ 새 채팅] 에서만 시작한다. 칸 제목을 누르면 그 칸을 접고 펼친다(다시 켜도 기억한다).
+ * 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다([←] 로 돌아온다, 줄에는 에이전트 이름 대신 날). 대화 줄 =
+ * 에이전트 이름(작게) + 제목(붙인 이름, 없으면 첫 질문, 둘 다 없으면 "새 대화"). 도는 대화에는 표시가 붙는다(Dex
+ * 사이드바와 같은 CSS). 줄마다 [⋯] 메뉴로 [이름 바꾸기]·[삭제].
  *
  * 돋보기는 채팅 검색 창(Dex 와 같은 부품, main 의 store.searchConversations), [⋯] 는 메뉴이고 그 [채팅 기록 관리] 가 본문에 관리 화면을 연다.
  *
@@ -19,7 +21,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RECENT_CONVERSATION_STEP, SEARCH_RECENT_COUNT, conversationDayLabel, type ConversationSearchMatch } from '@dex/protocol';
 import type { XdConversationAgent, XdConversationListItem } from '../../../main/store';
 import { xd } from '../bridge';
-import { LIST_TEXT, agentLastLine, otherAgents, othersLabel, recentSlice } from '../chat-list-model';
+import { LIST_TEXT, agentLastLine, loadCollapsed, recentSlice, saveCollapsed, type CollapsedSections } from '../chat-list-model';
 import { useAgentConversations } from '../conversations';
 import { errorText, useData } from '../data';
 import {
@@ -65,8 +67,8 @@ export const Sidebar: React.FC<{
   starting: boolean;
   /** 채팅 기록 관리가 열려 있는가. */
   managing: boolean;
-  /** 시작 화면. 에이전트를 주면 그 에이전트가 골라져 있다. */
-  onNewChat: (agentId?: string) => void;
+  /** 시작 화면. */
+  onNewChat: () => void;
   onManageHistory: () => void;
   onOpenConversation: (agentId: string, conversationId: string) => void;
   onDeleted: (conversationId: string) => void;
@@ -96,14 +98,17 @@ export const Sidebar: React.FC<{
   const searchFound = useRef(new Map<string, XdConversationListItem>());
   /** [최근 채팅] 에 보이는 수. [더 보기] 마다 늘고 [접기] 로 처음 수. */
   const [shown, setShown] = useState(RECENT_CONVERSATION_STEP);
+  /** [에이전트] 에 보이는 수([최근 채팅] 과 같다). */
+  const [agentsShown, setAgentsShown] = useState(RECENT_CONVERSATION_STEP);
+  /** 접은 칸. */
+  const [collapsed, setCollapsed] = useState<CollapsedSections>(() => loadCollapsed());
   /** 들어가 있는 에이전트(그 에이전트의 대화를 보는 중). */
   const [drill, setDrill] = useState<string | null>(null);
-  const [othersOpen, setOthersOpen] = useState(false);
   const drillItems = useAgentConversations(drill, conversations);
   const drillAgent = drill ? agents.find((a) => a.id === drill) ?? null : null;
 
   const recent = recentSlice(conversations, shown);
-  const others = useMemo(() => otherAgents(agentGroups, agents), [agentGroups, agents]);
+  const agentRows = recentSlice(agentGroups, agentsShown);
   const recentRows = useMemo(() => conversations.slice(0, SEARCH_RECENT_COUNT).map((c) => searchRow(c)), [conversations]);
 
   const search = useCallback(async (query: string): Promise<ConversationSearchResultSet> => {
@@ -142,6 +147,14 @@ export const Sidebar: React.FC<{
     setMenuFor(null);
     setRenaming(null);
     setDrill(agentId);
+  };
+
+  const toggleSection = (key: keyof CollapsedSections) => {
+    const next = { ...collapsed, [key]: !collapsed[key] };
+    setMenuFor(null);
+    setRenaming(null);
+    setCollapsed(next);
+    saveCollapsed(next);
   };
 
   const rename = (c: XdConversationListItem, title: string | null) => {
@@ -249,22 +262,6 @@ export const Sidebar: React.FC<{
     );
   };
 
-  /** [+]: 이 에이전트가 골라진 시작 화면. 에이전트 줄에서는 어느 에이전트인지 이름을 붙여 읽힌다(Dex 와 같다). */
-  const newChatButton = (agentId: string, label: string = LIST_TEXT.newChatWith) => (
-    <button
-      type="button"
-      className="xd-conv-act xd-agent-new"
-      title={LIST_TEXT.newChatWith}
-      aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation();
-        onNewChat(agentId);
-      }}
-    >
-      <PlusIcon size={14} />
-    </button>
-  );
-
   const agentRow = (g: XdConversationAgent) => (
     <div
       key={g.agentId}
@@ -280,14 +277,39 @@ export const Sidebar: React.FC<{
         <span className="xd-agent-last">{agentLastLine(g)}</span>
       </span>
       <span className="xd-agent-count">{g.conversationCount}</span>
-      {newChatButton(g.agentId, `${g.agentName} ${LIST_TEXT.newChatWith}`)}
-      <ChevronRightIcon size={14} className="xd-agent-chevron" />
     </div>
   );
 
+  /** 칸 제목: 누르면 그 칸을 접고 펼친다. */
+  const sectionHead = (key: keyof CollapsedSections, label: string) => (
+    <h2 className="xd-side-heading">
+      <button type="button" className="xd-side-section" aria-expanded={!collapsed[key]} onClick={() => toggleSection(key)}>
+        <ChevronRightIcon size={12} className="xd-side-caret" />
+        {label}
+      </button>
+    </h2>
+  );
+
+  /** [더 보기] · [접기]: 두 칸이 같다. */
+  const moreRow = (slice: { canMore: boolean; canCollapse: boolean }, setCount: React.Dispatch<React.SetStateAction<number>>) =>
+    (slice.canMore || slice.canCollapse) && (
+      <div className="xd-side-more">
+        {slice.canMore && (
+          <button type="button" className="xd-side-link" onClick={() => setCount((n) => n + RECENT_CONVERSATION_STEP)}>
+            {LIST_TEXT.more}
+          </button>
+        )}
+        {slice.canCollapse && (
+          <button type="button" className="xd-side-link" onClick={() => setCount(RECENT_CONVERSATION_STEP)}>
+            {LIST_TEXT.collapse}
+          </button>
+        )}
+      </div>
+    );
+
   let body: React.ReactNode;
   if (drill && drillAgent) {
-    // 에이전트 하나의 대화: 머리 [←] 이름 [+], 줄에는 에이전트 이름 대신 날.
+    // 에이전트 하나의 대화: 머리 [←] 이름, 줄에는 에이전트 이름 대신 날.
     body = (
       <>
         <div className="xd-drill-head">
@@ -297,7 +319,6 @@ export const Sidebar: React.FC<{
           <span className="xd-drill-name" title={drillAgent.name}>
             {drillAgent.name}
           </span>
-          {newChatButton(drillAgent.id)}
         </div>
         <div className="xd-side-scroll" ref={listRef}>
           {drillItems && drillItems.length === 0 && <div className="muted small xd-side-empty">{LIST_TEXT.noChats}</div>}
@@ -310,56 +331,30 @@ export const Sidebar: React.FC<{
   } else {
     body = (
       <div className="xd-side-scroll" ref={listRef}>
-        <div className="xd-side-section">{LIST_TEXT.recent}</div>
-        {loaded && conversations.length === 0 && <div className="muted small xd-side-empty">아직 대화가 없습니다.</div>}
-        <div className="xd-conv-list" role="list" aria-label={LIST_TEXT.recent}>
-          {recent.rows.map((c) => conversationRow(c, c.agentName))}
+        <div className="xd-side-group">
+          {sectionHead('recent', LIST_TEXT.recent)}
+          {!collapsed.recent && (
+            <>
+              {loaded && conversations.length === 0 && <div className="muted small xd-side-empty">아직 대화가 없습니다.</div>}
+              <div className="xd-conv-list" role="list" aria-label={LIST_TEXT.recent}>
+                {recent.rows.map((c) => conversationRow(c, c.agentName))}
+              </div>
+              {moreRow(recent, setShown)}
+            </>
+          )}
         </div>
-        {(recent.canMore || recent.canCollapse) && (
-          <div className="xd-side-more">
-            {recent.canMore && (
-              <button type="button" className="xd-side-link" onClick={() => setShown((n) => n + RECENT_CONVERSATION_STEP)}>
-                {LIST_TEXT.more}
-              </button>
-            )}
-            {recent.canCollapse && (
-              <button type="button" className="xd-side-link" onClick={() => setShown(RECENT_CONVERSATION_STEP)}>
-                {LIST_TEXT.collapse}
-              </button>
-            )}
-          </div>
-        )}
-
-        <div className="xd-side-section">{LIST_TEXT.agents}</div>
-        <div className="xd-agent-list" role="list" aria-label={LIST_TEXT.agents}>
-          {agentGroups.map(agentRow)}
+        <div className="xd-side-group">
+          {sectionHead('agents', LIST_TEXT.agents)}
+          {!collapsed.agents && (
+            <>
+              {agentGroups.length === 0 && <div className="muted small pad">{LIST_TEXT.noAgents}</div>}
+              <div className="xd-agent-list" role="list" aria-label={LIST_TEXT.agents}>
+                {agentRows.rows.map(agentRow)}
+              </div>
+              {moreRow(agentRows, setAgentsShown)}
+            </>
+          )}
         </div>
-        <button
-          type="button"
-          className={`xd-others-toggle${othersOpen ? ' open' : ''}`}
-          aria-expanded={othersOpen}
-          onClick={() => setOthersOpen((o) => !o)}
-        >
-          <ChevronRightIcon size={12} className="xd-others-chevron" />
-          {othersLabel(others.length)}
-        </button>
-        {othersOpen &&
-          (others.length === 0 ? (
-            <div className="muted small xd-side-empty">{LIST_TEXT.noOthers}</div>
-          ) : (
-            <div className="xd-agent-list" role="list" aria-label={LIST_TEXT.others}>
-              {others.map((a) => (
-                <div key={a.id} role="listitem">
-                  <button type="button" className="xd-agent-row xd-agent-other" title={LIST_TEXT.newChatWith} onClick={() => onNewChat(a.id)}>
-                    <span className="xd-agent-body">
-                      <span className="xd-agent-name">{a.name}</span>
-                    </span>
-                    <PlusIcon size={14} className="xd-agent-chevron" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ))}
       </div>
     );
   }

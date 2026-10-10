@@ -23,6 +23,7 @@ import {
   START_TEXT,
   applyChatListChanges,
   applyConversationPage,
+  chatListItems,
   conversationRow,
   deleteResultNotice,
   dropConversation,
@@ -343,6 +344,37 @@ test('최근 채팅: 5개부터, [더 보기] 는 5개씩 늘리고 받아 둔 �
   assert.deepEqual(moreRecent(5, 40, 'c1'), { shown: 10, fetch: false });
   assert.deepEqual(moreRecent(40, 40, 'c1'), { shown: 45, fetch: true });
   assert.deepEqual(moreRecent(40, 40, null), { shown: 45, fetch: false });
+});
+
+test('에이전트: 최근 채팅처럼 5개부터 [더 보기]·[접기], 머리를 누르면 그 칸이 머리만 남는다', () => {
+  const agents = Array.from({ length: 7 }, (_, i): ConversationAgent => ({
+    workflowId: `wf-${i}`,
+    workflowName: `에이전트 ${i}`,
+    conversationCount: 1,
+    lastActivity: null,
+    lastTitle: '',
+    lastInteractionId: null,
+    agentDeleted: false,
+    agentOwnerId: null,
+  }));
+  const input = {
+    recent: { items: many(3), cursor: null, pages: 1, deletedCount: 0 },
+    recentError: '',
+    shown: RECENT_CONVERSATION_STEP,
+    agents,
+    agentsError: '',
+    agentsShown: RECENT_CONVERSATION_STEP,
+    closed: { recent: false, agents: false },
+  };
+  const kinds = (items: ReturnType<typeof chatListItems>) => items.map((x) => (x.kind === 'more' ? `more:${x.more}/${x.less}` : x.kind));
+  const first = chatListItems(input);
+  assert.equal(first.filter((x) => x.kind === 'agent').length, 5);
+  assert.equal(kinds(first).at(-1), 'more:true/false');
+  assert.equal(kinds(chatListItems({ ...input, agentsShown: 10 })).at(-1), 'more:false/true');
+  assert.deepEqual(kinds(chatListItems({ ...input, closed: { recent: true, agents: true } })), ['title', 'title']);
+  const [head, next] = chatListItems({ ...input, closed: { recent: true, agents: false } });
+  assert.ok(head.kind === 'title' && head.section === 'recent' && !head.open, '최근 채팅은 접혀 머리만');
+  assert.ok(next.kind === 'title' && next.section === 'agents' && next.open);
 });
 
 function threeLists(): ChatLists {

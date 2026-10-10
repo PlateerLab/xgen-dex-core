@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { dataDirectory } from '@dex/engine';
+import type { ListSection } from './conversation-list';
 
 /**
  * 터미널 UI 의 취향을 기억한다.
@@ -28,6 +29,8 @@ export interface LastChat {
 export interface TuiPreferences {
   hangulMode: boolean;
   lastChat?: LastChat;
+  /** 대화 목록에서 접어 둔 묶음(최근 채팅·에이전트). */
+  closedSections?: ListSection[];
 }
 
 export function preferencesPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -55,6 +58,11 @@ function cleanLastChat(raw: unknown): LastChat | undefined {
   return { workflowId, workflowName, interactionId };
 }
 
+function cleanSections(raw: unknown): ListSection[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return (['recent', 'agents'] as const).filter((section) => raw.includes(section));
+}
+
 export async function readPreferences(env: NodeJS.ProcessEnv = process.env): Promise<TuiPreferences> {
   const fallback: TuiPreferences = { hangulMode: localeDefaultHangul(env) };
   try {
@@ -62,6 +70,7 @@ export async function readPreferences(env: NodeJS.ProcessEnv = process.env): Pro
     return {
       hangulMode: typeof raw.hangulMode === 'boolean' ? raw.hangulMode : fallback.hangulMode,
       ...(cleanLastChat(raw.lastChat) ? { lastChat: cleanLastChat(raw.lastChat) } : {}),
+      ...(cleanSections(raw.closedSections) ? { closedSections: cleanSections(raw.closedSections) } : {}),
     };
   } catch {
     return fallback;

@@ -16,7 +16,6 @@ import {
   CONVERSATION_TAG_LABELS,
   RECENT_CONVERSATION_STEP,
   UNTITLED_CONVERSATION,
-  agentsWithoutConversations,
   conversationAgentLabel,
   conversationDisplayTitle,
   conversationKey,
@@ -61,8 +60,10 @@ import {
   fixedRowKey,
   nearestSelectable,
   rowKey,
+  sectionRowKey,
   stepSelectable,
   type ListRow,
+  type ListSection,
 } from './conversation-list';
 import { SEARCH_LIMIT, SearchPanel } from './conversation-search';
 import { ConversationManagerScreen, MANAGER_TITLE, type ManagerChange } from './conversation-manager';
@@ -212,6 +213,9 @@ export function Dashboard(props: {
     /** 지난 실행에서 마지막으로 보던 대화 — 아직 돌고 있으면 되찾는다. */
     lastChat?: LastChat;
     onLastChatChange?: (value: LastChat | undefined) => void;
+    /** 대화 목록에서 접어 둔 묶음. */
+    closedSections?: ListSection[];
+    onClosedSectionsChange?: (value: ListSection[]) => void;
   };
 }): React.ReactNode {
   const { exit } = useApp();
@@ -249,6 +253,10 @@ export function Dashboard(props: {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   /** [최근 채팅] 에 보이는 수. [더 보기] 가 5개씩 늘리고 [접기] 가 되돌린다. */
   const [recentShown, setRecentShown] = useState(RECENT_CONVERSATION_STEP);
+  /** [에이전트] 에 보이는 수. 늘리고 줄이는 것은 [최근 채팅] 과 같다. */
+  const [agentsShown, setAgentsShown] = useState(RECENT_CONVERSATION_STEP);
+  /** 접어 둔 묶음(묶음 머리에서 Enter). */
+  const [closedSections, setClosedSections] = useState<ListSection[]>(props.preferences?.closedSections ?? []);
   /** 에이전트가 사라진 대화 수(첫 쪽이 알려 준다). 0 이면 Ctrl+K 에 [제거] 가 없다. */
   const [deletedCount, setDeletedCount] = useState(0);
   const [listLoading, setListLoading] = useState(true);
@@ -272,7 +280,6 @@ export function Dashboard(props: {
   const fetchedAgentsRef = useRef<ConversationAgent[] | undefined>(undefined);
   const [agentsFailed, setAgentsFailed] = useState(false);
   const agentsSeq = useRef(0);
-  const [othersOpen, setOthersOpen] = useState(false);
   /** 에이전트 안으로 들어갔다(그 에이전트의 대화만 보인다). */
   const [drill, setDrill] = useState<Drill>();
   const drillRef = useRef(drill);
@@ -284,9 +291,6 @@ export function Dashboard(props: {
    * 여기서 지운 대화. 같은 지움이 목록 소켓으로 다시 오면 [에이전트] 수를 두 번 줄이지 않게 한 번 건너뛴다.
    */
   const locallyRemoved = useRef(new Set<string>());
-  /** 시작 화면에 미리 골라 둘 에이전트([＋ 이 에이전트로 새 채팅]·[다른 에이전트]). nonce 가 바뀌면 다시 고른다. */
-  const [startPreselect, setStartPreselect] = useState<{ workflowId: string; nonce: number }>();
-  const preselectNonce = useRef(0);
   const [manager, setManager] = useState(false);
   /** 시작 화면이 키를 쥐고 있다(에이전트 찾기 목록). */
   const [startCapture, setStartCapture] = useState(false);
@@ -572,7 +576,7 @@ export function Dashboard(props: {
     const fresh: Drill = { agent, items: [], nextCursor: null, pages: 0, loading: true };
     drillRef.current = fresh;
     setDrill(fresh);
-    setCursorKey(fixedRowKey(agent.agentDeleted ? 'back' : 'agentNew'));
+    setCursorKey(fixedRowKey('back'));
     void loadDrillPage(null);
   };
 
@@ -752,8 +756,6 @@ export function Dashboard(props: {
         : groupConversationsByAgent(conversations),
     [props.engine, agentsFailed, fetchedAgents, conversations],
   );
-  /** [다른 에이전트]: 쓸 수 있지만 아직 대화가 없는 에이전트. */
-  const otherAgents = useMemo(() => agentsWithoutConversations(chatAgents, agents), [chatAgents, agents]);
   const rows: ListRow[] = useMemo(
     () =>
       buildRows({
@@ -761,15 +763,15 @@ export function Dashboard(props: {
         recentShown,
         hasMore: nextCursor != null,
         agents: chatAgents,
-        others: otherAgents,
-        othersOpen,
+        agentsShown,
+        closed: closedSections,
         drill: drill && {
           agent: drill.agent,
           conversations: drill.items,
           done: drill.pages > 0 && !drill.nextCursor && !drill.loading,
         },
       }),
-    [conversations, recentShown, nextCursor, chatAgents, otherAgents, othersOpen, drill],
+    [conversations, recentShown, nextCursor, chatAgents, agentsShown, closedSections, drill],
   );
   // 커서는 열쇠로 붙든다. 그 줄이 사라졌으면(지움·접기) 같은 자리 근처의 고를 수 있는 줄에 선다.
   let rowIndex = rows.findIndex((row) => rowKey(row) === cursorKey);
@@ -793,8 +795,12 @@ export function Dashboard(props: {
     if (delta === 1 && next === rowIndex && drill?.nextCursor) void loadDrillPage(drill.nextCursor);
   };
 
-  /** [더 보기]: 5개 더. 받아 둔 것이 모자라면 다음 쪽을 받는다. 커서는 [더 보기] 에 남는다. */
-  const showMore = (): void => {
+  /** [더 보기]: 5개 더. 받아 둔 대화가 모자라면 다음 쪽을 받는다. 커서는 [더 보기] 에 남는다. */
+  const showMore = (section: ListSection): void => {
+    if (section === 'agents') {
+      setAgentsShown((count) => count + RECENT_CONVERSATION_STEP);
+      return;
+    }
     const next = recentShown + RECENT_CONVERSATION_STEP;
     setRecentShown(next);
     if (conversationsRef.current.length < next && nextCursor) {
@@ -803,10 +809,20 @@ export function Dashboard(props: {
     }
   };
 
-  /** [접기]: 처음 5개로. 커서는 [더 보기] 에 선다. */
-  const showLess = (): void => {
-    setRecentShown(RECENT_CONVERSATION_STEP);
-    setCursorKey(fixedRowKey('more'));
+  /** [접기]: 처음 5개로. 커서는 그 묶음의 [더 보기] 에 선다. */
+  const showLess = (section: ListSection): void => {
+    if (section === 'agents') setAgentsShown(RECENT_CONVERSATION_STEP);
+    else setRecentShown(RECENT_CONVERSATION_STEP);
+    setCursorKey(sectionRowKey('more', section));
+  };
+
+  /** 묶음 머리에서 Enter: 그 묶음을 접고 편다. 커서는 머리에 남는다. */
+  const toggleSection = (section: ListSection): void => {
+    const next = closedSections.includes(section)
+      ? closedSections.filter((item) => item !== section)
+      : [...closedSections, section];
+    setClosedSections(next);
+    props.preferences?.onClosedSectionsChange?.(next);
   };
 
   const openModelPicker = (): void => {
@@ -919,10 +935,9 @@ export function Dashboard(props: {
    * 시작 화면(새 채팅)을 연다: [＋ 새 채팅] · Ctrl+N · 팔레트.
    *
    * 지금 도는 턴이 있으면 손만 뗀다. 서버 실행은 계속되고, 그 대화를 목록에서 다시 열면
-   * [진행 중] 이 돌아온다. `agent` 가 있으면([＋ 이 에이전트로 새 채팅]·[다른 에이전트]) 시작 화면이
-   * 그 에이전트를 골라 둔다.
+   * [진행 중] 이 돌아온다.
    */
-  const openStart = (options: { focusMain?: boolean; agent?: AgentRef } = {}): void => {
+  const openStart = (options: { focusMain?: boolean } = {}): void => {
     if (chat.running) detachTurn();
     viewEpoch.current += 1;
     // 이미 시작 화면이면 번호를 지킨다: 거기서 Ctrl+O 로 고른 모델이 그 번호에 붙어 있다.
@@ -934,14 +949,7 @@ export function Dashboard(props: {
     setSelected(undefined);
     setOpened(undefined);
     setView('start');
-    if (options.agent) {
-      preselectNonce.current += 1;
-      setStartPreselect({ workflowId: options.agent.workflowId, nonce: preselectNonce.current });
-    } else {
-      // 그냥 새 채팅이면 미리 고른 것을 거둔다. 시작 화면에서 사람이 고른 것은 그대로 둔다.
-      setStartPreselect(undefined);
-      setCursorKey(fixedRowKey('new'));
-    }
+    setCursorKey(fixedRowKey('new'));
     if (options.focusMain !== false) setFocus('main');
   };
 
@@ -1347,23 +1355,17 @@ export function Dashboard(props: {
       case 'conversation':
         void openConversation(row.conversation);
         return;
+      case 'section':
+        toggleSection(row.section);
+        return;
       case 'more':
-        showMore();
+        showMore(row.section);
         return;
       case 'less':
-        showLess();
+        showLess(row.section);
         return;
       case 'agent':
         openDrill(row.agent);
-        return;
-      case 'others':
-        setOthersOpen((open) => !open);
-        return;
-      case 'other':
-        openStart({ agent: { workflowId: row.agent.workflowId, workflowName: row.agent.workflowName } });
-        return;
-      case 'agentNew':
-        openStart({ agent: { workflowId: row.agent.workflowId, workflowName: row.agent.workflowName } });
         return;
       case 'back':
         closeDrill();
@@ -1601,7 +1603,6 @@ export function Dashboard(props: {
         onHangulModeChange={changeHangulMode}
         onCapture={setStartCapture}
         onAgentChange={setStartAgent}
-        preselect={startPreselect}
         modelLabel={model.supported ? model.current?.label : undefined}
         onCreated={(agent) =>
           setAgents((current) =>

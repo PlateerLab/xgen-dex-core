@@ -9,6 +9,7 @@ import type { TuiEngine, TuiSession } from './model';
 import { ProfileScreen } from './profile-screen';
 import { ServerScreen } from './server-screen';
 import type { LastChat } from './preferences';
+import type { ListSection } from './conversation-list';
 
 type Route = 'boot' | 'server' | 'login' | 'dashboard' | 'profiles' | 'fatal';
 
@@ -29,6 +30,9 @@ export function App({
     /** 지난 실행에서 마지막으로 보던 대화 — 아직 돌고 있으면 되찾는다. */
     lastChat?: LastChat;
     onLastChatChange?: (value: LastChat | undefined) => void;
+    /** 대화 목록에서 접어 둔 묶음. */
+    closedSections?: ListSection[];
+    onClosedSectionsChange?: (value: ListSection[]) => void;
   };
 }): React.ReactNode {
   const { exit } = useApp();

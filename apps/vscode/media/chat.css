@@ -464,21 +464,57 @@ button:disabled {
   cursor: default;
 }
 
-/* [최근 채팅] · [에이전트] 두 묶음. 에이전트 줄을 누르면 그 에이전트의 대화(.agent-view)로 들어간다. */
+/* [최근 채팅] · [에이전트] 두 묶음. 머리를 누르면 접고 편다. 에이전트 줄을 누르면 그 에이전트의 대화(.agent-view)로 들어간다. */
 .list-main,
-.agent-view {
+.agent-view,
+.list-section,
+.list-section-body {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
 }
 
-.list-section-title {
+.list-main {
+  margin-top: 4px;
+}
+
+/* 두 묶음 사이는 줄을 긋고 띄운다. */
+.list-section + .list-section {
   margin-top: 8px;
-  padding: 2px 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dex-border);
+}
+
+.list-section-title {
+  display: flex;
+  width: 100%;
+  padding: 4px 8px;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
   color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-  font-weight: 650;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+
+.list-section-title:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+
+.list-section-caret {
+  display: grid;
+  place-items: center;
+  transition: transform 120ms ease;
+}
+
+.list-section-title[aria-expanded='false'] .list-section-caret {
+  transform: rotate(-90deg);
 }
 
 .list-paging {
@@ -498,36 +534,42 @@ button:disabled {
 }
 
 .agent-row {
-  display: flex;
   min-width: 0;
-  align-items: center;
-  gap: 4px;
-  padding-right: 6px;
-  border-radius: 6px;
-  cursor: pointer;
 }
 
-.agent-row:hover {
-  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
-}
-
+/* 줄 전체가 한 버튼: 올리면 바탕이 바뀌고, 키보드로 오면 테두리가 보인다. */
 .agent-open {
   display: flex;
+  width: 100%;
   min-width: 0;
-  flex: 1 1 auto;
   padding: 5px 8px;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 1px;
+  align-items: center;
+  gap: 6px;
   border: 0;
+  border-radius: 6px;
   color: var(--vscode-foreground);
   background: transparent;
   text-align: left;
+  cursor: pointer;
 }
 
-.agent-open:hover {
+.agent-open:hover,
+.agent-open:focus-visible {
   color: var(--vscode-foreground);
-  background: transparent;
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+
+.agent-open:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.agent-row-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .agent-row-top {
@@ -544,10 +586,6 @@ button:disabled {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-row.other .agent-row-name {
-  font-weight: 400;
 }
 
 .agent-row.deleted .agent-row-name,
@@ -572,20 +610,6 @@ button:disabled {
   text-align: right;
 }
 
-.agent-row-chevron {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  color: var(--vscode-descriptionForeground);
-}
-
-.agent-row [data-tip]::after {
-  top: calc(100% + 4px);
-  right: 0;
-  bottom: auto;
-  left: auto;
-}
-
 .agent-deleted-badge {
   flex: 0 0 auto;
   border: 1px solid color-mix(in srgb, var(--dex-danger) 40%, transparent);
@@ -594,34 +618,6 @@ button:disabled {
   color: var(--dex-danger);
   font-size: 8.5px;
   line-height: 14px;
-}
-
-.other-agents-toggle {
-  display: flex;
-  margin-top: 4px;
-  padding: 4px 8px;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  color: var(--vscode-descriptionForeground);
-  background: transparent;
-  font-size: 10px;
-  text-align: left;
-}
-
-.other-agents-toggle:hover {
-  color: var(--vscode-foreground);
-  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
-}
-
-.other-agents-chevron {
-  display: grid;
-  place-items: center;
-  transition: transform 120ms ease;
-}
-
-.other-agents-toggle.open .other-agents-chevron {
-  transform: rotate(90deg);
 }
 
 .agent-view-head {
@@ -656,7 +652,13 @@ button:disabled {
 }
 
 .conversation-row:hover {
-  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+
+/* 키보드로 줄에 오면 줄 전체에 테두리. */
+.conversation-row:has(> .conversation-open:focus-visible) {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .conversation-row.active {
@@ -680,6 +682,10 @@ button:disabled {
 .conversation-open:hover {
   color: var(--vscode-foreground);
   background: transparent;
+}
+
+.conversation-open:focus-visible {
+  outline: none;
 }
 
 .conversation-meta {

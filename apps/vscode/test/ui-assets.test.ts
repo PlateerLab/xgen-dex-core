@@ -134,6 +134,22 @@ test('첫 화면은 대화 목록, [+ 새 채팅] 은 시작 화면이다', asyn
   assert.match(script, /post\('loadMoreConversations'\)/);
 });
 
+test('목록: 새 채팅은 [+ 새 채팅] 하나뿐, 묶음 머리는 접고 펴며 그 상태를 웹뷰 상태에 남긴다', async () => {
+  const [script, provider] = await Promise.all([
+    readFile(path.join(extensionRoot, 'media', 'chat.js'), 'utf8'),
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+  ]);
+  // 에이전트 줄·에이전트 화면의 [+] 와 [다른 에이전트] 는 없다.
+  assert.doesNotMatch(script + provider, /startWithAgent|other-agents|agent-view-new/);
+  for (const name of ['recent', 'agents']) {
+    assert.match(provider, new RegExp(`id="${name}-toggle"[^>]*aria-expanded="true"[^>]*aria-controls="${name}-body"`));
+  }
+  assert.match(script, /vscode\.getState\(\)/);
+  assert.match(script, /vscode\.setState\(\{ \.\.\.savedViewState\(\), collapsed/);
+  assert.match(script, /post\('loadMoreAgents'\)/);
+  assert.match(script, /post\('lessAgents'\)/);
+});
+
 test('새로 쓴 대화 목록·시작 화면 글에는 줄표(U+2014)가 없다', async () => {
   const helper = await readFile(path.join(extensionRoot, 'src', 'conversation-view.ts'), 'utf8');
   assert.doesNotMatch(helper, /\u2014/);

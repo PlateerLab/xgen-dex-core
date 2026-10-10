@@ -5,17 +5,18 @@
  * 대화를 한 칸에 함께 둔다. 웹 사이드바와 같은 모양이다.
  *
  *   [+ 새 채팅]                       [검색] [⋯]   채팅 검색 창 · 메뉴([채팅 기록 관리] 탭 · [에이전트가 사라진 채팅 제거])
- *   최근 채팅                                      마지막으로 말한 대화 5개, [더 보기] 로 5개씩
+ *   ▾ 최근 채팅                                    머리를 누르면 접고 편다. 마지막으로 말한 대화 5개, [더 보기] 로 5개씩
  *     에이전트 이름 · 꼬리표
  *     대화 제목                              [⋯]   이름 바꾸기 · 삭제
- *   에이전트                                       대화가 있는 에이전트, 마지막으로 말한 순서
- *     에이전트 이름                     N [+] >    [+] 는 그 에이전트가 골라진 시작 화면
+ *   ─────────────
+ *   ▾ 에이전트                                     머리를 누르면 접고 편다. 최근에 쓴 에이전트 5개, [더 보기] 로 5개씩
+ *     에이전트 이름                          N
  *     마지막 대화 제목 · 날
- *   다른 에이전트 ▸                                 쓸 수 있지만 아직 대화가 없는 에이전트
  *
- * 에이전트 줄을 누르면 이 칸이 그 에이전트의 대화 목록이 된다([←] 로 돌아온다). 제목·꼬리표·순서·묶음은
- * 서버가 정하고(@dex/protocol conversation-list · conversation-agents), 다른 기기의 변화는 대화 목록 소켓으로,
- * 채팅 기록 관리 탭에서 한 일은 conversation-events 로 와서 세 목록에 함께 반영된다.
+ * 새 채팅은 위의 [+ 새 채팅] 으로만 연다(에이전트 줄에는 [+] 가 없다). 에이전트 줄을 누르면 이 칸이 그
+ * 에이전트의 대화 목록이 된다([←] 로 돌아온다). 줄에 올리면 바탕이 바뀐다. 제목·꼬리표·순서·묶음은 서버가
+ * 정하고(@dex/protocol conversation-list · conversation-agents), 다른 기기의 변화는 대화 목록 소켓으로, 채팅 기록
+ * 관리 탭에서 한 일은 conversation-events 로 와서 세 목록에 함께 반영된다.
  *
  * 패널은 뷰가 바뀌어도 언마운트되지 않고 숨겨질 뿐이다(예전 AgentPanel 과 같은 이유). 목록·스크롤·들어간
  * 에이전트가 전환 사이에 남는다.
@@ -26,7 +27,6 @@ import {
   DELETED_AGENT_LABEL,
   RECENT_CONVERSATION_STEP,
   SEARCH_RECENT_COUNT,
-  agentsWithoutConversations,
   conversationDayLabel,
   conversationDisplayTitle,
   conversationKey,
@@ -44,7 +44,7 @@ import {
 } from '@dex/protocol';
 import { xgen } from '../bridge';
 import { sessionStore, useSessions } from '../session';
-import { agentDirectory, agentForConversation, useAgentDirectory } from '../agent-directory';
+import { agentDirectory, agentForConversation } from '../agent-directory';
 import { BackIcon, ChevronRightIcon, MoreIcon, PlusIcon, RefreshIcon, SearchIcon } from '../brand/icons';
 import { ConversationSearchDialog, type ConversationSearchResultSet, type ConversationSearchRow } from './ConversationSearchDialog';
 import { onConversationListEvent } from '../conversation-events';
@@ -82,6 +82,32 @@ function searchRow(c: Conversation, match?: ConversationSearchMatch): Conversati
   };
 }
 
+/** 두 칸을 접어 둔 것을 기억하는 자리. */
+const SECTIONS_STORAGE_KEY = 'dex.conversationSections';
+
+interface SectionsOpen {
+  recent: boolean;
+  agents: boolean;
+}
+
+function readSectionsOpen(): SectionsOpen {
+  try {
+    const raw = window.localStorage.getItem(SECTIONS_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Partial<SectionsOpen>) : {};
+    return { recent: parsed.recent !== false, agents: parsed.agents !== false };
+  } catch {
+    return { recent: true, agents: true };
+  }
+}
+
+function writeSectionsOpen(open: SectionsOpen): void {
+  try {
+    window.localStorage.setItem(SECTIONS_STORAGE_KEY, JSON.stringify(open));
+  } catch {
+    /* 저장이 막혔다: 이번에만 접힌다 */
+  }
+}
+
 /** 소식이 몰려올 때 마지막 하나만 돌린다. */
 function schedule(timer: React.MutableRefObject<number | null>, run: () => void): void {
   if (timer.current != null) window.clearTimeout(timer.current);
@@ -92,8 +118,8 @@ function schedule(timer: React.MutableRefObject<number | null>, run: () => void)
 }
 
 export const ConversationPanel: React.FC<{
-  /** [+ 새 채팅]: 시작 화면("오늘은 무엇을 해볼까요?")을 메인에 연다. 에이전트를 주면 그 에이전트가 골라진 채로. */
-  onNewChat: (workflowId?: string) => void;
+  /** [+ 새 채팅]: 시작 화면("오늘은 무엇을 해볼까요?")을 메인에 연다. */
+  onNewChat: () => void;
   /** ⋯ 메뉴의 [채팅 기록 관리]: 채팅 기록 관리 탭을 연다. */
   onManageHistory: () => void;
 }> = ({ onNewChat, onManageHistory }) => {
@@ -108,7 +134,8 @@ export const ConversationPanel: React.FC<{
   const [deletedCount, setDeletedCount] = useState(0);
   // 에이전트
   const [agents, setAgents] = useState<ConversationAgent[]>([]);
-  const [othersOpen, setOthersOpen] = useState(false);
+  const [agentCount, setAgentCount] = useState(RECENT_CONVERSATION_STEP);
+  const [sectionsOpen, setSectionsOpen] = useState<SectionsOpen>(readSectionsOpen);
   // 에이전트를 눌러 들어간 목록
   const [view, setView] = useState<AgentView | null>(null);
   const [agentItems, setAgentItems] = useState<Conversation[]>([]);
@@ -126,7 +153,6 @@ export const ConversationPanel: React.FC<{
   /** 검색 창에 보인 대화(열 때 key 로 찾는다). */
   const searchFound = useRef(new Map<string, Conversation>());
 
-  const dir = useAgentDirectory();
   const { sessions, activeKey } = useSessions();
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -557,6 +583,14 @@ export const ConversationPanel: React.FC<{
     return () => window.clearTimeout(id);
   }, [notice]);
 
+  const toggleSection = useCallback((key: keyof SectionsOpen) => {
+    setSectionsOpen((cur) => {
+      const next = { ...cur, [key]: !cur[key] };
+      writeSectionsOpen(next);
+      return next;
+    });
+  }, []);
+
   // ── 그리기 ───────────────────────────────────────────────────
 
   /** 대화 한 줄(최근 채팅·에이전트의 대화). `showAgent` 면 위에 작은 에이전트 이름, 아니면 날. */
@@ -644,94 +678,82 @@ export const ConversationPanel: React.FC<{
 
   const recentShown = items.slice(0, recentCount);
   const canShowMore = items.length > recentCount || !!cursor;
-  const otherAgents = agentsWithoutConversations(agents, dir.agents);
+  const sectionHead = (key: keyof SectionsOpen, text: string) => (
+    <button className="conv-section-head" aria-expanded={sectionsOpen[key]} onClick={() => toggleSection(key)}>
+      <ChevronRightIcon size={12} className={sectionsOpen[key] ? 'open' : undefined} />
+      {text}
+    </button>
+  );
+  const moreLess = (canMore: boolean, canLess: boolean, onMore: () => void, onLess: () => void, busy = false) =>
+    canMore || canLess ? (
+      <div className="conv-more-row">
+        {canMore && (
+          <button className="conv-text-btn" disabled={busy} onClick={onMore}>
+            {busy ? '더 불러오는 중' : '더 보기'}
+          </button>
+        )}
+        {canLess && (
+          <button className="conv-text-btn" onClick={onLess}>
+            접기
+          </button>
+        )}
+      </div>
+    ) : null;
 
   const home = (
     <>
-      <div className="conv-section-title">최근 채팅</div>
-      {items.length === 0 && <div className="muted small pad">아직 대화가 없습니다</div>}
-      {recentShown.map((c) => conversationRow(c, true))}
-      {(canShowMore || recentCount > RECENT_CONVERSATION_STEP) && (
-        <div className="conv-more-row">
-          {canShowMore && (
-            <button
-              className="conv-text-btn"
-              disabled={loadingMore}
-              onClick={() => setRecentCount((n) => n + RECENT_CONVERSATION_STEP)}
-            >
-              {loadingMore ? '더 불러오는 중' : '더 보기'}
-            </button>
+      {sectionHead('recent', '최근 채팅')}
+      {sectionsOpen.recent && (
+        <>
+          {items.length === 0 && <div className="muted small pad">아직 대화가 없습니다</div>}
+          {recentShown.map((c) => conversationRow(c, true))}
+          {moreLess(
+            canShowMore,
+            recentCount > RECENT_CONVERSATION_STEP,
+            () => setRecentCount((n) => n + RECENT_CONVERSATION_STEP),
+            () => setRecentCount(RECENT_CONVERSATION_STEP),
+            loadingMore,
           )}
-          {recentCount > RECENT_CONVERSATION_STEP && (
-            <button className="conv-text-btn" onClick={() => setRecentCount(RECENT_CONVERSATION_STEP)}>
-              접기
-            </button>
-          )}
-        </div>
+        </>
       )}
 
-      <div className="conv-section-title">에이전트</div>
-      {agents.map((a) => {
-        const name = a.workflowName || a.workflowId;
-        return (
-          <div key={a.workflowId} className="conv-agent-row">
-            <button
-              className="conv-agent-main"
-              title={name}
-              onClick={() => openAgentView({ workflowId: a.workflowId, workflowName: name, agentDeleted: a.agentDeleted })}
-            >
-              <span className="conv-agent-name">
-                {a.agentDeleted && <span className="conv-tag deleted">{DELETED_AGENT_LABEL}</span>}
-                <span className={a.agentDeleted ? 'muted' : undefined}>{name}</span>
-              </span>
-              <span className="conv-agent-last">
-                {a.lastTitle || '새 대화'}
-                {a.lastActivity ? ` · ${conversationDayLabel(a.lastActivity)}` : ''}
-              </span>
-            </button>
-            <span className="conv-agent-side">
-              <span className="conv-agent-count">{a.conversationCount}</span>
-              {!a.agentDeleted && (
-                <button
-                  className="conv-agent-new"
-                  title="이 에이전트로 새 채팅"
-                  aria-label={`${name} 이 에이전트로 새 채팅`}
-                  onClick={() => onNewChat(a.workflowId)}
-                >
-                  <PlusIcon size={13} />
-                </button>
-              )}
-              <ChevronRightIcon size={13} className="conv-agent-chevron" />
-            </span>
-          </div>
-        );
-      })}
-      <button
-        className="conv-text-btn conv-others-toggle"
-        aria-expanded={othersOpen}
-        onClick={() => setOthersOpen((v) => !v)}
-      >
-        <ChevronRightIcon size={12} className={othersOpen ? 'open' : undefined} />
-        {dir.loaded ? `다른 에이전트 ${otherAgents.length}개` : '다른 에이전트'}
-      </button>
-      {othersOpen &&
-        (!dir.loaded ? (
-          <div className="muted small pad">불러오는 중…</div>
-        ) : otherAgents.length === 0 ? (
-          <div className="muted small pad">다른 에이전트가 없습니다</div>
-        ) : (
-          otherAgents.map((a) => (
-            <button
-              key={a.workflowId}
-              className="conv-other-agent"
-              title="이 에이전트로 새 채팅"
-              onClick={() => onNewChat(a.workflowId)}
-            >
-              <span className="conv-other-agent-name">{a.workflowName}</span>
-              <PlusIcon size={13} />
-            </button>
-          ))
-        ))}
+      <div className="conv-section-divider" aria-hidden />
+
+      {sectionHead('agents', '에이전트')}
+      {sectionsOpen.agents && (
+        <>
+          {agents.length === 0 && <div className="muted small pad">최근에 쓴 에이전트가 없습니다</div>}
+          {agents.slice(0, agentCount).map((a) => {
+            const name = a.workflowName || a.workflowId;
+            return (
+              <button
+                key={a.workflowId}
+                className="conv-agent-row"
+                title={name}
+                onClick={() => openAgentView({ workflowId: a.workflowId, workflowName: name, agentDeleted: a.agentDeleted })}
+              >
+                <span className="conv-agent-main">
+                  <span className="conv-agent-name">
+                    {a.agentDeleted && <span className="conv-tag deleted">{DELETED_AGENT_LABEL}</span>}
+                    <span className={a.agentDeleted ? 'muted' : undefined}>{name}</span>
+                  </span>
+                  <span className="conv-agent-last">
+                    {a.lastTitle || '새 대화'}
+                    {a.lastActivity ? ` · ${conversationDayLabel(a.lastActivity)}` : ''}
+                  </span>
+                </span>
+                <span className="conv-agent-count">{a.conversationCount}</span>
+              </button>
+            );
+          })}
+          {moreLess(
+            agents.length > agentCount,
+            agentCount > RECENT_CONVERSATION_STEP,
+            () => setAgentCount((n) => n + RECENT_CONVERSATION_STEP),
+            () => setAgentCount(RECENT_CONVERSATION_STEP),
+          )}
+        </>
+      )}
     </>
   );
 
@@ -745,16 +767,6 @@ export const ConversationPanel: React.FC<{
         <span className="conv-agent-head-name" title={view.workflowName}>
           {view.workflowName}
         </span>
-        {!view.agentDeleted && (
-          <button
-            className="icon-btn sm"
-            title="이 에이전트로 새 채팅"
-            aria-label="이 에이전트로 새 채팅"
-            onClick={() => onNewChat(view.workflowId)}
-          >
-            <PlusIcon size={14} />
-          </button>
-        )}
       </div>
       {agentLoading && agentItems.length === 0 && <div className="muted small pad">불러오는 중…</div>}
       {!agentLoading && agentError && (

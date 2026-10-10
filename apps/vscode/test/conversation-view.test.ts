@@ -4,10 +4,11 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { Agent, AgentCreateOptions, AgentCreateSetting, Conversation, ConversationAgent } from '@dex/protocol';
+import type { AgentCreateOptions, AgentCreateSetting, Conversation, ConversationAgent } from '@dex/protocol';
 import {
   START_TEXT,
   agentDrillView,
+  agentSection,
   applyFirstPage,
   conversationAgentRows,
   conversationRows,
@@ -16,7 +17,6 @@ import {
   historyPickItem,
   nextRecentCount,
   normalizeConversations,
-  otherAgentsView,
   prepareCreateOptions,
   purgeDeletedLabel,
   recentNeedsPage,
@@ -282,21 +282,6 @@ const group = (workflowId: string, rest: Partial<ConversationAgent> = {}): Conve
   ...rest,
 });
 
-const agentOf = (workflowId: string, workflowName = workflowId): Agent => ({
-  id: 1,
-  workflowId,
-  workflowName,
-  nodeCount: 1,
-  isShared: false,
-  isDeployed: false,
-  isCompleted: true,
-  description: '',
-  username: '',
-  fullName: '',
-  createdAt: '',
-  updatedAt: '',
-});
-
 test('[최근 채팅]: 처음 5개, 더 있으면 [더 보기], 5개보다 많이 보이면 [접기]. 모자라면 다음 쪽', () => {
   const list = Array.from({ length: 12 }, (_, i) => conv(`c${i}`));
   const first = recentSection(list, 5, { hasNextPage: false, running: new Set([key(list[1])]) });
@@ -312,26 +297,26 @@ test('[최근 채팅]: 처음 5개, 더 있으면 [더 보기], 5개보다 많�
   assert.equal(recentNeedsPage(8, 10, false), false);
 });
 
-test('[에이전트] 줄: 이름, "마지막 대화 제목 · 날", 대화 수, 사라진 에이전트는 [+] 없음. [다른 에이전트 N개]', () => {
+test('[에이전트] 줄: 이름, "마지막 대화 제목 · 날", 대화 수. 처음 5개, [더 보기] 로 5개씩, 5개보다 많으면 [접기]', () => {
   const rows = conversationAgentRows(
     [group('w1'), group('w2', { workflowName: '', agentDeleted: true, lastTitle: '', lastActivity: local(2025, 1, 2) })],
     NOW,
   );
   assert.deepEqual(rows, [
-    { workflowId: 'w1', name: 'W1', agentDeleted: false, detail: '마지막 제목 · 어제', count: 3, canStart: true },
-    { workflowId: 'w2', name: '', agentDeleted: true, detail: '새 대화 · 2025. 1. 2.', count: 3, canStart: false },
+    { workflowId: 'w1', name: 'W1', agentDeleted: false, detail: '마지막 제목 · 어제', count: 3 },
+    { workflowId: 'w2', name: '', agentDeleted: true, detail: '새 대화 · 2025. 1. 2.', count: 3 },
   ]);
-  const available = [agentOf('w1'), agentOf('w3', '리서치')];
-  assert.deepEqual(otherAgentsView([group('w1')], available, false), { open: false, label: '다른 에이전트', rows: [] });
-  assert.deepEqual(otherAgentsView([group('w1')], available, true), {
-    open: true,
-    label: '다른 에이전트 1개',
-    rows: [{ workflowId: 'w3', name: '리서치' }],
-  });
-  assert.equal(otherAgentsView([group('w1')], [agentOf('w1')], true).empty, '다른 에이전트가 없습니다');
+  const agents = Array.from({ length: 12 }, (_, i) => group(`w${i}`));
+  const first = agentSection(agents, 5, NOW);
+  assert.deepEqual([first.rows.map((r) => r.workflowId), first.more, first.less], [['w0', 'w1', 'w2', 'w3', 'w4'], true, false]);
+  const opened = agentSection(agents, nextRecentCount(5), NOW);
+  assert.deepEqual([opened.rows.length, opened.more, opened.less], [10, true, true]);
+  const all = agentSection(agents, 15, NOW);
+  assert.deepEqual([all.rows.length, all.more, all.less], [12, false, true]);
+  assert.deepEqual([agentSection(agents.slice(0, 5), 5).more, agentSection(agents.slice(0, 5), 5).less], [false, false]);
 });
 
-test('에이전트 화면: 작은 줄은 날, 없으면 "아직 채팅이 없습니다", 사라진 에이전트는 [+] 없음', () => {
+test('에이전트 화면: 작은 줄은 날, 없으면 "아직 채팅이 없습니다"', () => {
   const view = agentDrillView({
     workflowId: 'wf',
     workflowName: 'gitlab',
@@ -342,11 +327,11 @@ test('에이전트 화면: 작은 줄은 날, 없으면 "아직 채팅이 없습
     hasMore: true,
     now: NOW,
   });
-  assert.deepEqual([view.name, view.canStart, view.hasMore], ['gitlab', true, true]);
+  assert.deepEqual([view.name, view.hasMore], ['gitlab', true]);
   assert.deepEqual(view.rows.map((r) => [r.title, r.when]), [['첫 대화', '어제']]);
   const base = { workflowId: 'gone', workflowName: 'old', agentDeleted: true, list: [], loadingMore: false, hasMore: false };
   const empty = agentDrillView({ ...base, loading: false });
-  assert.deepEqual([empty.empty, empty.canStart], ['아직 채팅이 없습니다', false]);
+  assert.equal(empty.empty, '아직 채팅이 없습니다');
   assert.equal(agentDrillView({ ...base, loading: true }).empty, '불러오는 중...');
 });
 

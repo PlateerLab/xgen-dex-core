@@ -2,17 +2,16 @@
  * 사이드바 [최근 채팅] · [에이전트] (2026-10-10). 웹·Dex 전 표면이 같은 규칙을 쓴다.
  *
  *   [+ 새 채팅]                       [검색] [⋯]
- *   최근 채팅          ← 마지막으로 말한 대화 5개, [더 보기] 로 5개씩 늘린다
- *   에이전트           ← 대화가 있는 에이전트(대화 수, 마지막 대화의 제목·시각), 마지막으로 말한 순서
- *     [다른 에이전트 N개]  ← 쓸 수 있지만 아직 대화가 없는 에이전트(펼치면 보인다)
+ *   ▾ 최근 채팅        ← 마지막으로 말한 대화 5개, [더 보기] 로 5개씩
+ *   ▾ 에이전트         ← 최근에 쓴 에이전트 5개(대화 수, 마지막 대화의 제목·시각), [더 보기] 로 5개씩
  *
- * 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다(예전 Dex 의 에이전트 → 대화). [+] 는 그 에이전트가 골라진
- * 시작 화면이다. 묶음은 서버가 센다(conversations/agents). 아래 함수는 실시간 소식으로 묶음을 고치는 규칙과,
- * 그 API 가 없는 옛 서버에서 대화 목록으로 묶음을 만드는 규칙이다.
+ * 칸 머리를 누르면 접고 편다. 에이전트 줄을 누르면 그 에이전트의 대화로 들어간다(예전 Dex 의 에이전트 → 대화).
+ * 새 채팅은 위의 [+ 새 채팅] 으로만 연다. 묶음은 서버가 센다(conversations/agents). 아래 함수는 실시간 소식으로
+ * 묶음을 고치는 규칙과, 그 API 가 없는 옛 서버에서 대화 목록으로 묶음을 만드는 규칙이다.
  */
-import type { Agent, Conversation, ConversationAgent } from './types';
+import type { Conversation, ConversationAgent } from './types';
 
-/** [최근 채팅] 을 처음 보여 주는 수이자 [더 보기] 가 늘리는 수. */
+/** [최근 채팅]·[에이전트] 를 처음 보여 주는 수이자 [더 보기] 가 늘리는 수. */
 export const RECENT_CONVERSATION_STEP = 5;
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
@@ -143,23 +142,4 @@ export function dropFromConversationAgents(
   const next = [...agents];
   next[idx] = { ...prev, conversationCount: prev.conversationCount - 1 };
   return { agents: next, stale };
-}
-
-/**
- * 쓸 수 있지만 아직 대화가 없는 에이전트([다른 에이전트]). 받은 순서를 지킨다.
- * 에이전트 모양은 표면마다 다르다(서버 Agent, XD 의 제 에이전트). workflowId 만 본다.
- */
-export function agentsWithoutConversations<T extends Pick<Agent, 'workflowId'>>(
-  withChats: readonly Pick<ConversationAgent, 'workflowId'>[],
-  available: readonly T[],
-): T[] {
-  const has = new Set(withChats.map((a) => a.workflowId));
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const a of available) {
-    if (has.has(a.workflowId) || seen.has(a.workflowId)) continue;
-    seen.add(a.workflowId);
-    out.push(a);
-  }
-  return out;
 }

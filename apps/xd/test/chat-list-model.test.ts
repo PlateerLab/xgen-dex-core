@@ -1,17 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LIST_TEXT,
+  COLLAPSED_KEY,
   agentLastLine,
   deleteNotice,
   deleteQuestion,
   freshFound,
-  otherAgents,
-  othersLabel,
+  loadCollapsed,
   recentSlice,
+  saveCollapsed,
 } from '../src/renderer/src/chat-list-model';
 
-test('최근 채팅: 처음 5개, [더 보기] 마다 5개 더, [접기] 는 5개보다 많이 보일 때만', () => {
+test('최근 채팅·에이전트: 처음 5개, [더 보기] 마다 5개 더, [접기] 는 5개보다 많이 보일 때만', () => {
   const items = Array.from({ length: 12 }, (_, i) => i);
   assert.deepEqual(recentSlice(items, 5), { rows: [0, 1, 2, 3, 4], canMore: true, canCollapse: false });
   const ten = recentSlice(items, 10);
@@ -31,17 +31,19 @@ test('에이전트 줄의 둘째 줄: 마지막 대화 제목 · 날, 제목이 
   assert.equal(agentLastLine({ lastTitle: '옛 대화', lastActivity: new Date(2025, 0, 2).getTime() }, now), '옛 대화 · 2025. 1. 2.');
 });
 
-test('다른 에이전트: 대화가 없는 에이전트만, 받은 순서대로, 겹치면 한 번', () => {
-  const agents = [
-    { id: 'c', name: 'C' },
-    { id: 'a', name: 'A' },
-    { id: 'b', name: 'B' },
-    { id: 'c', name: 'C' },
-  ];
-  assert.deepEqual(otherAgents([{ agentId: 'a' }], agents).map((x) => x.name), ['C', 'B']);
-  assert.deepEqual(otherAgents([{ agentId: 'a' }, { agentId: 'b' }, { agentId: 'c' }], agents), []);
-  assert.equal(othersLabel(2), '다른 에이전트 2개');
-  assert.equal(LIST_TEXT.noOthers, '다른 에이전트가 없습니다');
+test('접은 칸은 기억했다가 다시 켜면 그대로, 못 읽거나 못 쓰면 펼친 채로 동작한다', () => {
+  const saved = new Map<string, string>();
+  const storage = () => ({ getItem: (k: string) => saved.get(k) ?? null, setItem: (k: string, v: string) => void saved.set(k, v) });
+  assert.deepEqual(loadCollapsed(storage), { recent: false, agents: false });
+  saveCollapsed({ recent: true, agents: false }, storage);
+  assert.deepEqual(loadCollapsed(storage), { recent: true, agents: false });
+  saved.set(COLLAPSED_KEY, '깨진 값');
+  assert.deepEqual(loadCollapsed(storage), { recent: false, agents: false });
+  const blocked = () => {
+    throw new Error('막힘');
+  };
+  assert.deepEqual(loadCollapsed(blocked), { recent: false, agents: false });
+  assert.doesNotThrow(() => saveCollapsed({ recent: false, agents: true }, blocked));
 });
 
 test('채팅 기록 관리: 삭제 확인과 알림 문구(Dex 와 같다), 답을 만드는 중이면 그 까닭', () => {

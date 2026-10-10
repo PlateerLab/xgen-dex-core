@@ -29,6 +29,8 @@ body {
 .xd-sidebar {
   width: 272px;
   overflow: hidden;
+  /* 줄에 올렸을 때의 바탕. Dex 의 --panel-2 는 흰 사이드바에서 거의 안 보여 글자색을 옅게 섞는다(밝게·어둡게 같이). */
+  --xd-row-hover: color-mix(in srgb, var(--text) 8%, transparent);
 }
 /* 사이드바: 맨 위 [새 채팅] [검색] [⋯], 그 아래 [최근 채팅] · [에이전트](둘이 한 칸에서 같이 스크롤된다). */
 .xd-side-top {
@@ -65,13 +67,45 @@ body {
   flex-direction: column;
   gap: 1px;
 }
-/* 칸 제목(최근 채팅 · 에이전트): 사이드바 제목과 같은 작은 글씨. */
+/* 두 칸(최근 채팅 · 에이전트) 사이는 줄 하나와 여백으로 나눈다. */
+.xd-side-group + .xd-side-group {
+  margin-top: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+/* 칸 제목: 누르면 그 칸을 접고 펼친다. 펼쳐 있으면 꺾쇠가 아래를 보고, 접으면 옆을 본다. */
+.xd-side-heading {
+  margin: 0;
+  font: inherit;
+}
 .xd-side-section {
-  padding: 10px 10px 4px;
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 8px 6px 6px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+}
+.xd-side-section:hover {
+  color: var(--text);
+}
+.xd-side-caret {
+  flex-shrink: 0;
   color: var(--muted);
+  transform: rotate(90deg);
+  transition: transform 0.12s ease;
+}
+.xd-side-section[aria-expanded='false'] .xd-side-caret {
+  transform: none;
 }
 .xd-side-empty {
   padding: 4px 10px 6px;
@@ -95,7 +129,7 @@ body {
   color: var(--text);
   text-decoration: underline;
 }
-/* 에이전트 줄: 이름, "마지막 대화 제목 · 날", 오른쪽에 대화 수 · [+] · 들어가기 표시. */
+/* 에이전트 줄: 이름, "마지막 대화 제목 · 날", 오른쪽에 대화 수. */
 .xd-agent-row {
   display: flex;
   align-items: center;
@@ -112,8 +146,21 @@ body {
   cursor: pointer;
   transition: background-color 0.12s ease;
 }
-.xd-agent-row:hover {
-  background: var(--panel-2);
+.xd-agent-row:hover,
+.xd-conv:not(.active):not(.editing):hover {
+  background: var(--xd-row-hover);
+}
+/* 키보드로 옮겨 온 줄·단추는 테두리로 보인다. */
+.xd-agent-row:focus-visible,
+.xd-conv:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.xd-side-section:focus-visible,
+.xd-side-link:focus-visible,
+.xd-conv-act:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 .xd-agent-body {
   flex: 1;
@@ -145,45 +192,7 @@ body {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.xd-agent-chevron {
-  flex-shrink: 0;
-  color: var(--muted);
-}
-/* [+] 는 늘 보인다(웹·Dex 데스크톱의 에이전트 줄과 같다). */
-.xd-agent-row .xd-agent-new {
-  flex-shrink: 0;
-}
-.xd-agent-other .xd-agent-name {
-  font-weight: 500;
-}
-/* [다른 에이전트 N개]: 펼치면 셰브런이 아래를 본다. */
-.xd-others-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  margin-top: 2px;
-  padding: 6px 10px;
-  border: none;
-  border-radius: var(--radius-md);
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.xd-others-toggle:hover {
-  background: var(--panel-2);
-  color: var(--text);
-}
-.xd-others-chevron {
-  transition: transform 0.12s ease;
-}
-.xd-others-toggle.open .xd-others-chevron {
-  transform: rotate(90deg);
-}
-/* 에이전트 안: [←] 이름 [+] */
+/* 에이전트 안: [←] 이름 */
 .xd-drill-head {
   flex-shrink: 0;
   display: flex;

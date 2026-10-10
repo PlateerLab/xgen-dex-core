@@ -15,8 +15,6 @@
     more: ['M3 8h1', 'M7.5 8h1', 'M12 8h1'],
     chat: ['M2.5 4A1.5 1.5 0 0 1 4 2.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7l-3 2.5V11A1.5 1.5 0 0 1 2.5 9.5z'],
     close: ['M4 4l8 8', 'M12 4l-8 8'],
-    plus: ['M8 3.5v9', 'M3.5 8h9'],
-    next: ['M6.5 4.5L10 8l-3.5 3.5'],
   };
   /** 에이전트가 사라진 대화의 표시(@dex/protocol DELETED_AGENT_LABEL 과 같은 글). */
   const DELETED_AGENT_LABEL = '지워짐';
@@ -71,21 +69,24 @@
     listManage: byId('list-manage'),
     listPurge: byId('list-purge'),
     listMain: byId('list-main'),
+    recentToggle: byId('recent-toggle'),
+    recentCaret: byId('recent-caret'),
+    recentBody: byId('recent-body'),
     conversationList: byId('conversation-list'),
     listStatus: byId('list-status'),
     listMore: byId('list-more'),
     listLess: byId('list-less'),
+    agentsToggle: byId('agents-toggle'),
+    agentsCaret: byId('agents-caret'),
+    agentsBody: byId('agents-body'),
     agentList: byId('agent-list'),
     agentListStatus: byId('agent-list-status'),
-    otherAgentsToggle: byId('other-agents-toggle'),
-    otherAgentsChevron: byId('other-agents-chevron'),
-    otherAgentsLabel: byId('other-agents-label'),
-    otherAgentList: byId('other-agent-list'),
+    agentMore: byId('agent-more'),
+    agentLess: byId('agent-less'),
     agentView: byId('agent-view'),
     agentViewBack: byId('agent-view-back'),
     agentViewDeleted: byId('agent-view-deleted'),
     agentViewName: byId('agent-view-name'),
-    agentViewNew: byId('agent-view-new'),
     agentConversationList: byId('agent-conversation-list'),
     agentViewStatus: byId('agent-view-status'),
     agentViewMore: byId('agent-view-more'),
@@ -674,14 +675,44 @@
   }
 
   // ── 대화 목록 ──────────────────────────────────────────────────────
-  // [최근 채팅] 5개(더 보기·접기) + [에이전트](대화가 있는 에이전트) + [다른 에이전트]. 에이전트 줄을 누르면 그
-  // 에이전트의 대화로 들어간다. 줄의 글(에이전트 이름·[지워짐]·꼬리표·제목·날·수)은 확장이 정해서 보낸다.
+  // [최근 채팅] 5개 + [에이전트](대화가 있는 에이전트) 5개, 둘 다 더 보기·접기. 에이전트 줄을 누르면 그 에이전트의
+  // 대화로 들어간다. 새 채팅은 [+ 새 채팅] 하나뿐이다. 줄의 글(에이전트 이름·[지워짐]·꼬리표·제목·날·수)은 확장이
+  // 정해서 보낸다.
 
   let listSignature = '';
   let agentsSignature = '';
-  let othersSignature = '';
   let agentViewSignature = '';
   let moreRequested = false;
+
+  // 묶음 머리를 누르면 그 묶음을 접고 편다. 웹뷰 상태에 남겨 창을 숨겼다 다시 열어도 그대로다.
+  const SECTIONS = [
+    { name: 'recent', toggle: elements.recentToggle, caret: elements.recentCaret, body: elements.recentBody },
+    { name: 'agents', toggle: elements.agentsToggle, caret: elements.agentsCaret, body: elements.agentsBody },
+  ];
+
+  function savedViewState() {
+    const saved = vscode.getState();
+    return saved && typeof saved === 'object' ? saved : {};
+  }
+
+  const collapsed = (() => {
+    const saved = savedViewState().collapsed || {};
+    return { recent: saved.recent === true, agents: saved.agents === true };
+  })();
+
+  function renderSections() {
+    for (const section of SECTIONS) {
+      const shut = collapsed[section.name];
+      section.toggle.setAttribute('aria-expanded', shut ? 'false' : 'true');
+      section.body.classList.toggle('hidden', shut);
+    }
+  }
+
+  function toggleSection(name) {
+    collapsed[name] = !collapsed[name];
+    vscode.setState({ ...savedViewState(), collapsed: { ...collapsed } });
+    renderSections();
+  }
 
   function rowAction(name, label, type, row) {
     const button = document.createElement('button');
@@ -749,21 +780,6 @@
     return item;
   }
 
-  /** [+]: 그 에이전트를 골라 둔 시작 화면. */
-  function startWithAgentButton(workflowId, name) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'row-action';
-    button.dataset.tip = '이 에이전트로 새 채팅';
-    button.setAttribute('aria-label', name ? `이 에이전트로 새 채팅: ${name}` : '이 에이전트로 새 채팅');
-    button.append(icon('plus', 13));
-    button.addEventListener('click', (event) => {
-      event.stopPropagation();
-      post('startWithAgent', { workflowId });
-    });
-    return button;
-  }
-
   function deletedBadge() {
     const badge = document.createElement('span');
     badge.className = 'agent-deleted-badge';
@@ -771,7 +787,7 @@
     return badge;
   }
 
-  /** 에이전트 한 줄: 이름, 아래에 "마지막 대화 제목 · 날". 오른쪽에 대화 수, [+], >. 누르면 그 에이전트의 대화. */
+  /** 에이전트 한 줄: 이름, 아래에 "마지막 대화 제목 · 날", 오른쪽에 대화 수. 줄 전체가 버튼이고 누르면 그 에이전트의 대화. */
   function agentRowElement(row) {
     const item = document.createElement('div');
     item.className = `agent-row${row.agentDeleted ? ' deleted' : ''}`;
@@ -779,6 +795,8 @@
     const open = document.createElement('button');
     open.type = 'button';
     open.className = 'agent-open';
+    const text = document.createElement('span');
+    text.className = 'agent-row-text';
     const top = document.createElement('span');
     top.className = 'agent-row-top';
     if (row.agentDeleted) top.append(deletedBadge());
@@ -789,38 +807,13 @@
     const detail = document.createElement('span');
     detail.className = 'agent-row-detail';
     detail.textContent = row.detail;
-    open.append(top, detail);
+    text.append(top, detail);
     const count = document.createElement('span');
     count.className = 'agent-row-count';
     count.textContent = String(row.count);
-    const chevron = document.createElement('span');
-    chevron.className = 'agent-row-chevron';
-    chevron.append(icon('next', 12));
-    item.append(open, count);
-    if (row.canStart) item.append(startWithAgentButton(row.workflowId, row.name));
-    item.append(chevron);
-    item.addEventListener('click', () => post('openAgent', { workflowId: row.workflowId }));
-    return item;
-  }
-
-  /** 다른 에이전트 한 줄: 아직 대화가 없다. 누르면 그 에이전트를 골라 둔 시작 화면. */
-  function otherAgentRowElement(row) {
-    const item = document.createElement('div');
-    item.className = 'agent-row other';
-    item.setAttribute('role', 'listitem');
-    const open = document.createElement('button');
-    open.type = 'button';
-    open.className = 'agent-open';
-    open.setAttribute('aria-label', `이 에이전트로 새 채팅: ${row.name}`);
-    const name = document.createElement('span');
-    name.className = 'agent-row-name';
-    name.textContent = row.name;
-    open.append(name);
-    const plus = document.createElement('span');
-    plus.className = 'agent-row-chevron';
-    plus.append(icon('plus', 12));
-    item.append(open, plus);
-    item.addEventListener('click', () => post('startWithAgent', { workflowId: row.workflowId }));
+    open.append(text, count);
+    open.addEventListener('click', () => post('openAgent', { workflowId: row.workflowId }));
+    item.append(open);
     return item;
   }
 
@@ -877,18 +870,8 @@
       ? `에이전트 목록을 불러오지 못했습니다. ${state.conversationAgentsError}`
       : '';
     elements.agentListStatus.classList.toggle('hidden', !state.conversationAgentsError);
-
-    const others = state.otherAgents || { open: false, label: '다른 에이전트', rows: [] };
-    elements.otherAgentsLabel.textContent = others.label;
-    elements.otherAgentsToggle.setAttribute('aria-expanded', others.open ? 'true' : 'false');
-    elements.otherAgentsToggle.classList.toggle('open', !!others.open);
-    const othersKey = JSON.stringify(others);
-    if (othersKey !== othersSignature) {
-      othersSignature = othersKey;
-      elements.otherAgentList.replaceChildren(...others.rows.map(otherAgentRowElement));
-      if (others.empty) elements.otherAgentList.append(emptyLine(others.empty));
-    }
-    elements.otherAgentList.classList.toggle('hidden', !others.open);
+    elements.agentMore.classList.toggle('hidden', !state.agentsMore);
+    elements.agentLess.classList.toggle('hidden', !state.agentsLess);
   }
 
   function renderAgentView(view) {
@@ -896,7 +879,6 @@
     elements.agentViewName.title = view.name;
     elements.agentViewName.classList.toggle('deleted', !!view.agentDeleted);
     elements.agentViewDeleted.classList.toggle('hidden', !view.agentDeleted);
-    elements.agentViewNew.classList.toggle('hidden', !view.canStart);
     const signature = JSON.stringify([view.workflowId, view.rows, view.empty || '', !!state.conversationActions]);
     if (signature !== agentViewSignature) {
       agentViewSignature = signature;
@@ -1635,14 +1617,16 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') setListMenu(false);
   });
+  for (const section of SECTIONS) {
+    section.caret.append(icon('chevron', 11));
+    section.toggle.addEventListener('click', () => toggleSection(section.name));
+  }
+  renderSections();
   elements.listMore.addEventListener('click', () => post('loadMoreConversations'));
   elements.listLess.addEventListener('click', () => post('lessConversations'));
-  elements.otherAgentsChevron.append(icon('next', 11));
-  elements.otherAgentsToggle.addEventListener('click', () => post('toggleOtherAgents'));
+  elements.agentMore.addEventListener('click', () => post('loadMoreAgents'));
+  elements.agentLess.addEventListener('click', () => post('lessAgents'));
   elements.agentViewBack.addEventListener('click', () => post('closeAgent'));
-  elements.agentViewNew.addEventListener('click', () => {
-    if (state.agentView) post('startWithAgent', { workflowId: state.agentView.workflowId });
-  });
   elements.agentViewMore.addEventListener('click', () => {
     moreRequested = true;
     post('loadMoreAgentConversations');

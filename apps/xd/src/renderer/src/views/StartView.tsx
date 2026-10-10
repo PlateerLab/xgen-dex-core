@@ -3,29 +3,26 @@
  *
  * 채팅과 같은 짜임(머리 · 기록 칸 · 바닥 입력창)이고, 비어 있는 기록 칸에 "오늘은 무엇을 해볼까요?" 와 에이전트
  * 고르기가 선다. 기본은 "새 에이전트로 시작": 이름·제공자·모델(과 접힌 세부 설정)을 적고 보내면 에이전트를 만들고
- * 그 에이전트의 새 대화로 첫 메시지를 보낸다. 있는 에이전트를 고르면 만들지 않고 바로 보낸다. 사이드바 에이전트 줄의
- * [+]·[다른 에이전트] 로 열면 그 에이전트가 골라져 있다.
+ * 그 에이전트의 새 대화로 첫 메시지를 보낸다. 있는 에이전트를 고르면 만들지 않고 바로 보낸다.
  * 보낼 수 없으면(이름 없음·이름 겹침·제공자나 모델 없음) 입력창이 잠기고, 누르면 까닭을 보이고 그 칸으로 옮긴다.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { xd } from '../bridge';
 import { errorText, KIND_LABEL, useData } from '../data';
 import { Selector, type SelectorOption } from '../dex';
-import { initialStartAgent, isExistingAgent, NEW_AGENT, START_TEXT, startLock, type AgentDraft } from '../start-model';
+import { isExistingAgent, NEW_AGENT, START_TEXT, startLock, type AgentDraft } from '../start-model';
 import { Composer } from './Composer';
 import { XdMark } from './XdMark';
 
 export const StartView: React.FC<{
-  /** 처음 골라 둘 에이전트(사이드바 [+]). 없거나 지워졌으면 "새 에이전트로 시작". */
-  agentId?: string;
   /** 이 에이전트의 새 대화로 첫 메시지를 보낸다. */
   onStart: (agentId: string, text: string) => void;
   onProviders: () => void;
   /** [모든 설정]: 적은 것을 들고 에이전트 만들기 화면으로. */
   onFullEditor: (draft: AgentDraft) => void;
-}> = ({ agentId: preselect, onStart, onProviders, onFullEditor }) => {
+}> = ({ onStart, onProviders, onFullEditor }) => {
   const { agents, accounts, reloadAgents } = useData();
-  const [agentId, setAgentId] = useState<string>(() => initialStartAgent(preselect, agents));
+  const [agentId, setAgentId] = useState<string>(NEW_AGENT);
   const [name, setName] = useState('');
   const [accountId, setAccountId] = useState<string>(accounts[0]?.id ?? '');
   const [model, setModel] = useState('');

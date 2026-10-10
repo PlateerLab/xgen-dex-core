@@ -510,7 +510,9 @@ test('목록에서 대화를 고르면 그 내용과 제목이 대화창에 올�
     await startScreenReady(view);
     view.stdin.write(TAB); // 목록으로
     await waitForSettled(view.lastFrame);
-    view.stdin.write(DOWN); // ＋ 새 채팅 아래가 그 대화
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // 그 아래가 그 대화
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
     // 질문과 답을 함께 기다린다. 느린 러너에서는 대화창 높이를 재기 전 한 장에 답 줄만 걸릴 수 있다.
@@ -582,7 +584,9 @@ test('에이전트가 지워진 대화는 지난 대화만 보이고 보낼 수 
     await startScreenReady(view);
     view.stdin.write(TAB);
     await waitForSettled(view.lastFrame);
-    view.stdin.write(DOWN); // ＋ 새 채팅 아래가 그 대화([최근 채팅] 머리는 건너뛴다)
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // 그 아래가 그 대화
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
     const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
@@ -681,6 +685,8 @@ test('목록에서 r 로 이름을 바꾼다 (순서는 그대로)', async () =>
     await startScreenReady(view);
     view.stdin.write(TAB);
     await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
     view.stdin.write(DOWN);
     await waitForSettled(view.lastFrame);
     view.stdin.write('r');
@@ -710,6 +716,8 @@ test('목록에서 d 로 지운다: 한 번 묻는다', async () => {
     await waitForFrame(view.lastFrame, (value) => value.includes('고객 문의 응대'));
     await startScreenReady(view);
     view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
     await waitForSettled(view.lastFrame);
     view.stdin.write(DOWN);
     await waitForSettled(view.lastFrame);
@@ -769,7 +777,7 @@ test('Ctrl+K 의 [에이전트가 사라진 채팅 제거] 는 묻고 나서 지
 
 // ── [최근 채팅] · [에이전트] · 채팅 기록 관리 (2026-10-10) ──────────────
 
-/** 목록에서 커서(›)가 `label` 줄에 설 때까지 ↓ 를 누른다. 묶음 이름 줄은 커서가 건너뛴다. */
+/** 목록에서 커서(›)가 `label` 줄에 설 때까지 ↓ 를 누른다. */
 async function moveTo(
   view: { lastFrame: () => string | undefined; stdin: { write: (data: string) => void } },
   label: string,
@@ -826,7 +834,6 @@ test('에이전트 줄에서 Enter 면 그 에이전트의 대화로 들어가�
       view.lastFrame,
       (value) => value.includes('← Sales Agent') && value.includes('고객 문의 응대'),
     );
-    assert.match(frame, /＋ 이 에이전트로 새 채팅/);
     assert.match(frame, /분기 매출 정리/);
     assert.doesNotMatch(frame, /지난 회의 정리/, '다른 에이전트의 대화는 없다');
     assert.doesNotMatch(frame, /최근 채팅/);
@@ -839,31 +846,47 @@ test('에이전트 줄에서 Enter 면 그 에이전트의 대화로 들어가�
   }
 });
 
-test('[＋ 이 에이전트로 새 채팅] 은 그 에이전트를 골라 둔 시작 화면을 연다', async () => {
-  const calls = newCalls();
-  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION], calls)} />);
+test('묶음 머리 Enter 로 접고 펴며(기억한다), [에이전트] 도 5개씩 [더 보기]·[접기]', async () => {
+  const seven = Array.from({ length: 7 }, (_, i) =>
+    conversation({
+      id: 200 + i,
+      interactionId: `int-a${i + 1}`,
+      workflowId: `wf_a${i + 1}`,
+      workflowName: `Agent ${i + 1}`,
+      title: `일 ${i + 1}`,
+      updatedAt: new Date(Date.UTC(2026, 7, 30, 12 - i)).toISOString(),
+    }),
+  );
+  const saved: string[][] = [];
+  const view = render(
+    <App
+      engine={fakeEngine(undefined, seven)}
+      preferences={{ hangulMode: false, onClosedSectionsChange: (value) => saved.push(value) }}
+    />,
+  );
   try {
-    await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    await waitForFrame(view.lastFrame, (value) => value.includes('▾ 최근 채팅'));
     await startScreenReady(view);
     view.stdin.write(TAB);
     await waitForSettled(view.lastFrame);
-    await moveTo(view, 'Sales Agent');
-    view.stdin.write('\r');
-    await waitForFrame(view.lastFrame, (value) => value.includes('› ＋ 이 에이전트로 새 채팅'));
+    view.stdin.write(DOWN); // [최근 채팅] 머리
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
-    const frame = await waitForFrame(
-      view.lastFrame,
-      (value) => value.includes('‹ Sales Agent ›') && !value.includes('잠김'),
-    );
-    assert.match(frame, new RegExp(START_HEADING));
-    await waitForSettled(view.lastFrame);
-    view.stdin.write('hello');
-    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('› ▸ 최근 채팅'));
+    // 접으면 대화 줄이 빠진다. 남는 '일 1' 은 에이전트 줄의 마지막 대화 제목뿐이다.
+    assert.equal(frame.split('일 1').length - 1, 1);
+    assert.deepEqual(saved, [['recent']], '접은 묶음을 기억한다');
+    assert.match(frame, /▾ 에이전트/);
+    assert.match(frame, /Agent 5/);
+    assert.doesNotMatch(frame, /Agent 6/, '에이전트도 처음엔 5개');
+    await moveTo(view, '더 보기');
     view.stdin.write('\r');
-    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
-    assert.equal(calls.sent[0]!.workflowId, 'wf_abc');
-    assert.deepEqual(calls.created, [], '있는 에이전트라 새로 세우지 않는다');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('Agent 7'));
+    assert.match(frame, /접기/);
+    await moveTo(view, '접기');
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => !value.includes('Agent 7'));
+    assert.match(frame, /› 더 보기/, '커서는 [더 보기] 로');
   } finally {
     view.cleanup();
   }

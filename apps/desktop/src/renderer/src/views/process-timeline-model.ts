@@ -16,6 +16,7 @@ export {
   buildSteps,
   describeTool,
   descriptionHeadline,
+  finalStepView,
   parseToolInput,
   resultView,
   splitFirstParagraph,

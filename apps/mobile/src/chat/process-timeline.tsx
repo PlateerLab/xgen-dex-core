@@ -21,8 +21,8 @@ import {
   describeTool,
   resultView,
   shortToolName,
+  finalStepView,
   splitFirstParagraph,
-  trimAnswer,
   type ResultView,
   type TimelineFlowItem,
   type TimelineRow,
@@ -414,12 +414,10 @@ export const ProcessTimeline: React.FC<{
     const last = i === steps.length - 1;
     let { title, body } = splitFirstParagraph(step.text);
     if (last && step.rows.length === 0) {
-      if (body) {
-        answer = trimAnswer(body);
-      } else if (!live) {
-        answer = trimAnswer(title);
-        title = '';
-      }
+      // 끝난 턴의 마지막 글은 전부 답이다(finalStepView).
+      const view = finalStepView(step.text, live);
+      title = view.title;
+      answer = view.answer;
     } else if (body) {
       title = `${title} ${body.replace(/\s+/g, ' ').trim()}`;
     }

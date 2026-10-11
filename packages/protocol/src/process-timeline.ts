@@ -121,6 +121,23 @@ export function trimAnswer(body: string): string {
   return lines.slice(start, end).join('\n');
 }
 
+/**
+ * 마지막 단계(뒤에 도구가 오지 않은 글)의 제목과 최종 답 — 데스크톱·모바일·웹이 같이 쓴다 (2026-10-11).
+ *
+ * 도는 중에는 첫 문단을 제목으로 세운다. 그 글 뒤에 도구가 오면 진행 문장("자료를 읽습니다")이었던
+ * 것이고, 그때는 그 단계의 제목이 된다. **끝난 턴의 마지막 글은 전부 답이다.** 예전에는 끝난 뒤에도
+ * 첫 문단을 단계 제목으로 떼어 접힌 타임라인에 넣었는데, 실제 답의 첫 문단은 대개 결론이었다
+ * ("**영상 연결은 통과했지만 드래그 정렬은 실패했습니다.**", "합계는 **6,500**"). dev 30일 도구를
+ * 쓴 턴 1,273개 중 1,147개가 두 문단 이상이라 첫 문단이 답에서 빠졌고, 표본 40개 중 33개가
+ * 진행 문장이 아니라 내용이었다. 첫 줄이 "정리해 드리겠습니다" 같은 말이면 그 말이 답 첫 줄에
+ * 남는 쪽이, 결론이 접힌 곳에 숨는 쪽보다 낫다.
+ */
+export function finalStepView(text: string, streaming: boolean): { title: string; answer: string } {
+  if (!streaming) return { title: '', answer: trimAnswer(text) };
+  const { title, body } = splitFirstParagraph(text);
+  return { title, answer: body ? trimAnswer(body) : '' };
+}
+
 export type ToolIcon = 'terminal' | 'package' | 'search' | 'file' | 'edit' | 'web' | 'list' | 'external';
 
 export function parseToolInput(input: unknown): Record<string, unknown> {

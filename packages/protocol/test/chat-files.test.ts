@@ -8,6 +8,7 @@ import {
   isChatImageName,
   mergeChatDownload,
   resolveArtifactCapability,
+  sharedNames,
   stripChatDownloadMarkers,
   withoutShownFiles,
 } from '../src/chat-files';
@@ -77,4 +78,14 @@ test('작업 공간에 같은 이름이 이미 보이면 그 다운로드는 뺀
   );
   assert.equal(isChatImageName('x.WEBP'), true);
   assert.equal(isChatImageName('x.svg'), false);
+});
+
+test('답이 건넨 결과물 이름은 파일 저장소 것만 — API 응답 임시 파일은 뺀다', () => {
+  assert.deepEqual(
+    sharedNames([
+      { name: '도면_표시.png', storageId: 123, fileId: 10707 },
+      { name: 'response.json', artifactId: 'a1', downloadUrl: '/api/agentflow/files/artifacts/a1' },
+    ]),
+    ['도면_표시.png'],
+  );
 });

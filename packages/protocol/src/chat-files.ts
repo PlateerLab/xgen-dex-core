@@ -176,6 +176,11 @@ export function withoutShownFiles(downloads: readonly ChatDownload[], shownNames
   return downloads.filter((d) => !names.has(fold(d.name)));
 }
 
+/** 답이 파일 저장소로 직접 건넨 결과물의 이름 — API 응답 임시 파일은 에이전트가 고른 결과물이 아니라 뺀다. */
+export function sharedNames(downloads: readonly ChatDownload[]): string[] {
+  return downloads.filter((d) => d.storageId && d.fileId).map((d) => d.name);
+}
+
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 
 /** 답 아래에 그림으로 바로 보일 파일인가(확장자). 웹의 이미지 카드와 같은 목록이다. */

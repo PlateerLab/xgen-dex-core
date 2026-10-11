@@ -12,6 +12,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   answerTurnFiles,
   isChatImageName,
+  sharedNames,
   sharedTreeFetch,
   shouldLookForTurnFiles,
   withoutShownFiles,
@@ -86,7 +87,12 @@ export const TurnFiles: React.FC<{
     };
   }, [finished, workflowId, startedAt, endedAt, answer, latest]);
 
-  const { requested, others } = useMemo(() => splitRequestedFiles(files, request, answer), [files, request, answer]);
+  // 이 답이 파일 저장소로 직접 건넨 결과물 — 같은 형식의 작업 공간 파일은 만드는 과정의 파일로 접는다.
+  const shared = useMemo(() => (done ? sharedNames(downloads) : []), [done, downloads]);
+  const { requested, others } = useMemo(
+    () => splitRequestedFiles(files, request, answer, shared),
+    [files, request, answer, shared],
+  );
   // 작업 공간에 같은 이름이 보이면 그 다운로드는 뺀다 — 같은 그림이 두 장 서지 않게.
   const extra = useMemo(
     () => (done ? withoutShownFiles(downloads, files.map((f) => f.name)) : []),

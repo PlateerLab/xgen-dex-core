@@ -100,11 +100,17 @@ const FILE_NAME_RE = /[\w가-힣.\-]+\.[A-Za-z0-9]{2,5}\b/g;
  *   2) 없으면 최종 답에 이름이 나온 파일 (에이전트가 사용자에게 알린 것)
  *   3) 둘 다 없으면 결과물로 단정하지 않는다 — 전부 "그 외" 로 접어 둔다
  * 요청 글에 적힌 파일 이름의 확장자는 형식 요청으로 치지 않는다 — "a.json 을 읽어서 엑셀로" 는 엑셀 요청이다.
+ *
+ * `shared` 는 이 답이 파일 저장소로 **직접 건넨** 파일 이름(다운로드)이다. 에이전트가 건넨 결과물이 있으면
+ * 그 형식의 작업 공간 파일은 결과물이 아니라 만드는 과정의 파일로 보고 "그 외" 로 접는다 — "빨간 표시 이미지도
+ * 만들어 줘" 에 건넨 그림 한 장 옆으로 잘라 본 그림·검증용 그림 6장이 같이 서던 것. 건넨 파일과 같은
+ * 이름의 작업 공간 파일은 그대로 둔다(그때는 다운로드 쪽이 빠진다).
  */
 export function splitRequestedFiles(
   files: readonly WsNode[],
   request: string,
   answer: string,
+  shared: readonly string[] = [],
 ): { requested: WsNode[]; others: WsNode[] } {
   const req = request.normalize('NFC');
   const names = new Set([...req.matchAll(FILE_NAME_RE)].map((m) => fold(m[0])));
@@ -114,6 +120,11 @@ export function splitRequestedFiles(
   if (requested.length === 0 && answer) {
     const lower = fold(answer);
     requested = files.filter((f) => lower.includes(fold(f.path)) || lower.includes(fold(f.name)));
+  }
+  if (shared.length > 0) {
+    const sharedNames = new Set(shared.map(fold));
+    const sharedExts = new Set(shared.map(extOf).filter(Boolean));
+    requested = requested.filter((f) => sharedNames.has(fold(f.name)) || !sharedExts.has(extOf(f.name)));
   }
   const picked = new Set(requested.map((f) => f.path));
   return { requested, others: files.filter((f) => !picked.has(f.path)) };

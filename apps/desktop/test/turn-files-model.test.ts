@@ -106,6 +106,27 @@ test('요청에 파일 언급이 없으면 답에 이름이 나온 파일, 그�
   assert.equal(none.others.length, 2);
 });
 
+test('답이 직접 건넨 결과물이 있으면 같은 형식의 작업 공간 파일은 그 외로 접는다', () => {
+  // "빨간 표시 이미지도 만들어 줘" — 건넨 그림 한 장 옆에 잘라 본 그림·검증 그림이 같이 서던 것.
+  const files = [
+    node('out/crop_front.png', 1),
+    node('out/verify_bolt.png', 1),
+    node('out/marked.png', 1),
+    node('out/report.xlsx', 1),
+  ];
+  const request = '안 맞는 항목을 엑셀로 정리하고, 빨간 표시로 짚은 이미지도 만들어줘.';
+  const { requested, others } = splitRequestedFiles(files, request, '', ['도면_불일치_표시.png']);
+  assert.deepEqual(requested.map((f) => f.name), ['report.xlsx']);
+  assert.deepEqual(others.map((f) => f.name), ['crop_front.png', 'verify_bolt.png', 'marked.png']);
+  // 건넨 파일과 같은 이름의 작업 공간 파일은 결과물로 남는다(그때는 다운로드가 빠진다).
+  assert.deepEqual(
+    splitRequestedFiles(files, request, '', ['marked.png']).requested.map((f) => f.name),
+    ['marked.png', 'report.xlsx'],
+  );
+  // 건넨 것이 없으면 예전과 같다.
+  assert.equal(splitRequestedFiles(files, request, '').requested.length, 4);
+});
+
 test('영어 단어 속 형식 이름을 오인하지 않는다 (keyword ≠ word)', () => {
   const files = [node('a/list.docx', 1)];
   assert.equal(splitRequestedFiles(files, '검색 keyword 를 정리해 주세요', '').requested.length, 0);

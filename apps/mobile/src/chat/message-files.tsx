@@ -16,6 +16,7 @@ import {
   chatDownloadRequest,
   formatFileSize,
   isChatImageName,
+  sharedNames,
   sharedTreeFetch,
   shouldLookForTurnFiles,
   splitRequestedFiles,
@@ -244,7 +245,11 @@ export const AnswerFiles: React.FC<{
     };
   }, [client, workflowId, look, startedAt, lastEventAt, text, latest]);
 
-  const { requested, others } = useMemo(() => splitRequestedFiles(files, request, text), [files, request, text]);
+  const shared = useMemo(() => (done ? sharedNames(downloads) : []), [done, downloads]);
+  const { requested, others } = useMemo(
+    () => splitRequestedFiles(files, request, text, shared),
+    [files, request, text, shared],
+  );
   const extra = useMemo(
     () => (done ? withoutShownFiles(downloads, files.map((f) => f.name)) : []),
     [done, downloads, files],

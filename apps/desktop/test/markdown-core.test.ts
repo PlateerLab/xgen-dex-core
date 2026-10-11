@@ -69,6 +69,24 @@ test('ungluMarkdownMarkers: 문장에 붙은 헤더/리스트를 분리한다', 
   assert.match(l, /\n[*+-] 항목/)
 })
 
+test('ungluMarkdownMarkers: 표 행 안에는 줄바꿈을 넣지 않는다', () => {
+  // `#` 열 머리가 헤더로 읽혀 표 위에 `|` 한 줄이 남던 것(dev 실답 2건).
+  const table = '| # | 사업명 | 신청기간 |\n|---|---|---|\n| 1 | 공고 | 2026.10.01 ~ 2026.10.23 |'
+  assert.equal(ungluMarkdownMarkers(table), table)
+  // 칸 안 날짜의 "31." 이 번호 목록으로 읽혀 행이 둘로 갈리던 것.
+  const cell = '| 3 | "국내 1위" | 출처·기준일(예: "2025.12.31. 기준, ○○평가사") 명시 |'
+  assert.equal(ungluMarkdownMarkers(cell), cell)
+  // 표 밖 문장 속 날짜도 목록으로 쪼개지 않는다.
+  assert.equal(ungluMarkdownMarkers('기준일은 2025.12.31. 기준입니다'), '기준일은 2025.12.31. 기준입니다')
+})
+
+test('ungluMarkdownMarkers: 표 밖의 붙은 번호 목록·헤더는 여전히 분리한다', () => {
+  assert.match(ungluMarkdownMarkers('다음과 같습니다.1. 첫째'), /\.\n1\. 첫째/)
+  assert.match(ungluMarkdownMarkers('표를 봅시다.\n| a | b |\n|---|---|\n정리.## 결론'), /\n\n## 결론/)
+  // 행 끝 `|` 뒤에 붙은 헤더는 칸 밖이라 분리한다.
+  assert.match(ungluMarkdownMarkers('| a | b |### 결론'), /\|\n\n### 결론/)
+})
+
 test('ungluMarkdownMarkers: 정상 볼드 스팬은 리스트로 오인·분리되지 않는다', () => {
   const s = ungluMarkdownMarkers('이것은 **중요 강조** 입니다')
   assert.match(s, /\*\*중요 강조\*\*/) // 마스킹으로 보존 — 내부 쪼갬 없음

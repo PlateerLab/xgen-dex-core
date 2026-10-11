@@ -9759,7 +9759,13 @@ button.sm {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative; /* 끌어다 놓기 덮개(.chat-drop)의 기준 */
   background: var(--app-bg);
+}
+.start-chat.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+  border-radius: 12px;
 }
 .start-chat-scroll {
   flex: 1;

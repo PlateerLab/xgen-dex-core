@@ -29,6 +29,14 @@ import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { DropTracker, dragHasFiles } from './chat-drop';
+import {
+  CHAT_IMAGE_ACCEPT,
+  CHAT_IMAGE_MAX_COUNT,
+  CHAT_IMAGE_MAX_TOTAL_BYTES,
+  pastedImageFiles,
+  stageChatFiles,
+  type StagedChatImage,
+} from './chat-attach';
 import { mcpChatStatus } from './mcp-status-model';
 import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
 import { ChatShareModal } from './ChatShareModal';
@@ -228,62 +236,6 @@ function sentenceCut(pending: string): number {
     if (end >= MIN_TTS_CHUNK) cut = end;
   }
   return cut;
-}
-
-const CHAT_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-const CHAT_IMAGE_ACCEPT = '*/*';
-const CHAT_IMAGE_MAX_COUNT = 10;
-const CHAT_IMAGE_MAX_BYTES = 100 * 1024 * 1024;
-const CHAT_IMAGE_MAX_TOTAL_BYTES = 250 * 1024 * 1024;
-
-interface StagedChatImage extends ChatImageAttachment {
-  id: string;
-}
-
-function fileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      typeof reader.result === 'string'
-        ? resolve(reader.result.replace(/^data:;base64,/, 'data:application/octet-stream;base64,'))
-        : reject(new Error('파일을 읽지 못했습니다.'));
-    reader.onerror = () => reject(reader.error ?? new Error('파일을 읽지 못했습니다.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function imageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => reject(new Error('지원하지 않거나 손상된 이미지입니다.'));
-    image.src = dataUrl;
-  });
-}
-
-function imageError(file: File): string | null {
-  if (file.size <= 0) return `${file.name || '파일'}: 빈 파일은 첨부할 수 없습니다.`;
-  if (file.size > CHAT_IMAGE_MAX_BYTES) {
-    return `${file.name || '파일'}: 파일 한 개는 100MiB까지 첨부할 수 있습니다.`;
-  }
-  return null;
-}
-
-async function prepareChatImage(file: File): Promise<StagedChatImage> {
-  const problem = imageError(file);
-  if (problem) throw new Error(problem);
-  const dataUrl = await fileAsDataUrl(file);
-  const isImage = CHAT_IMAGE_TYPES.has(file.type.toLowerCase());
-  const dimensions = isImage ? await imageDimensions(dataUrl) : {};
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    dataUrl,
-    name: file.name || `붙여넣은 이미지.${file.type.split('/')[1] || 'png'}`,
-    mime: file.type.toLowerCase() || 'application/octet-stream',
-    size: file.size,
-    kind: isImage ? 'image' : 'file',
-    ...dimensions,
-  };
 }
 
 /**
@@ -652,43 +604,24 @@ export const Chat: React.FC<{
 
   const addImageFiles = useCallback(
     async (files: File[]) => {
-      const candidates = files;
-
       setPreparingImages((count) => count + 1);
-      const problems: string[] = [];
+      let problem: string | null = null;
       try {
-        for (const file of candidates) {
-          const current = stagedImagesRef.current;
-          const selected = browserSelectionsRef.current;
-          if (current.length + selected.length >= CHAT_IMAGE_MAX_COUNT) {
-            problems.push(
-              `파일은 한 번에 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다.`,
-            );
-            break;
-          }
-          const problem = imageError(file);
-          if (problem) {
-            problems.push(problem);
-            continue;
-          }
-          const usedBytes =
-            current.reduce((sum, image) => sum + image.size, 0) +
-            selected.reduce((sum, selection) => sum + selection.image.size, 0);
-          if (usedBytes + file.size > CHAT_IMAGE_MAX_TOTAL_BYTES) {
-            problems.push('첨부 파일의 전체 크기는 250MiB를 넘을 수 없습니다.');
-            break;
-          }
-          try {
-            const image = await prepareChatImage(file);
-            replaceStagedImages([...stagedImagesRef.current, image]);
-          } catch (error) {
-            problems.push(error instanceof Error ? error.message : '파일을 읽지 못했습니다.');
-          }
-        }
+        // 브라우저 캡처도 같은 칸을 쓴다 — 개수·합계에 함께 센다.
+        problem = await stageChatFiles(
+          files,
+          () => ({
+            count: stagedImagesRef.current.length + browserSelectionsRef.current.length,
+            bytes:
+              stagedImagesRef.current.reduce((sum, image) => sum + image.size, 0) +
+              browserSelectionsRef.current.reduce((sum, selection) => sum + selection.image.size, 0),
+          }),
+          (image) => replaceStagedImages([...stagedImagesRef.current, image]),
+        );
       } finally {
         setPreparingImages((count) => Math.max(0, count - 1));
       }
-      setImageNotice(problems[0] ?? '');
+      setImageNotice(problem ?? '');
     },
     [replaceStagedImages],
   );
@@ -742,10 +675,7 @@ export const Chat: React.FC<{
 
   const handleImagePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const files = Array.from(event.clipboardData.items)
-        .filter((item) => item.kind === 'file' && item.type.toLowerCase().startsWith('image/'))
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => !!file);
+      const files = pastedImageFiles(event.clipboardData.items);
       if (files.length === 0) return;
       event.preventDefault();
       void addImageFiles(files);

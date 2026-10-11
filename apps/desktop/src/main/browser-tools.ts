@@ -71,7 +71,8 @@ export function browserToolSchemas(): LocalToolSchema[] {
           url: { type: 'string' },
           wait_for: {
             type: 'string',
-            description: 'wait: milliseconds, text, URL glob, selector, or load state.',
+            description:
+              'wait: milliseconds ("1500"), load state ("load" | "domcontentloaded" | "networkidle"), URL ("https://…" or "**/path"), visible text ("text:Welcome"), or a CSS selector.',
           },
           timeout_ms: { type: 'integer' },
         },
@@ -308,6 +309,23 @@ function appendValue(command: string[], value: unknown): void {
   command.push(typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+const LOAD_STATES = new Set(['load', 'domcontentloaded', 'networkidle']);
+
+/**
+ * BrowserNavigate `wait` → agent-browser `wait` 인자. agent-browser 는 위치 인자를 **밀리초 아니면 선택자**로만
+ * 읽어서, 도구 설명대로 `wait_for: "load"` 를 그대로 넘기면 `<load>` 요소를 25초 기다리다 실패했다(dev 30일
+ * `wait load` 10번 모두 실패). 로드 상태는 `--load`, URL 은 `--url`, `text:` 를 붙인 글은 `--text` 로 옮긴다.
+ */
+export function browserWaitCommand(waitFor: unknown): string[] {
+  const raw = waitFor === undefined ? '1000' : typeof waitFor === 'string' ? waitFor.trim() : JSON.stringify(waitFor);
+  const lower = raw.toLowerCase();
+  if (LOAD_STATES.has(lower)) return ['wait', '--load', lower];
+  if (/^text:/i.test(raw)) return ['wait', '--text', raw.slice(5).trim()];
+  if (/^url:/i.test(raw)) return ['wait', '--url', raw.slice(4).trim()];
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith('**')) return ['wait', '--url', raw];
+  return ['wait', raw];
+}
+
 /** 대화 → 파일을 읽고 쓸 수 있는 폴더(그 대화에 연결된 폴더). */
 export type BrowserFileRoots = (context?: LocalToolCallContext) => string[];
 
@@ -405,8 +423,7 @@ export class BrowserToolProvider {
       });
       return result(updated, { navigated: action });
     }
-    const command = ['wait'];
-    appendValue(command, args.wait_for ?? args.waitFor ?? '1000');
+    const command = browserWaitCommand(args.wait_for ?? args.waitFor);
     const run = await this.runtime.runAgentCommand(wid, page.info.pageId, command, timeout(args));
     return result(run.page, run.result);
   }

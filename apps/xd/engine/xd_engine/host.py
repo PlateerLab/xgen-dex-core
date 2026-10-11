@@ -202,6 +202,10 @@ class XdHostServices:
     def jobs_prompt_block(self) -> str:
         return ""
 
+    def turn_notes(self) -> List[str]:
+        # 런타임 4.88 의 선택 훅: 이번 요청에만 싣는 호스트 안내(서버는 기억 지도 블록을 넘긴다). XD 는 그런 안내가 없어 비어 있다.
+        return []
+
     # ── E. 도구 ──────────────────────────────────────────────────────
     def build_connector_mcp_tools(self, user_id: Any, client_surface: Any) -> List[Any]:
         # 사용자가 이 에이전트에 붙인 MCP 서버의 도구 — 런타임이 API 턴·CLI 턴(도구 다리) 모두에 싣는다.

@@ -8,16 +8,27 @@
  * 입력창은 보낼 수 있을 때만 열린다. 새 에이전트는 이름이 있고 겹치지 않아야 하며(적는 대로 서버에
  * 묻는다), 모델 목록이 와 있어야 한다. 잠긴 입력창을 누르면 무엇이 빠졌는지 알려 주고 이름 칸으로 간다.
  * 예전의 [새 에이전트] 화면(만들고 대화 시작)은 이 화면이 대신한다.
+ *
+ * 첫 메시지와 함께 파일을 줄 수 있다(2026-10-11): [+]·붙여넣기·끌어다 놓기. 검사는 대화 화면과
+ * 같은 곳(chat-attach)에서 하고, 올려 둔 파일은 첫 메시지와 함께 그 대화로 간다.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, AgentCreateOptions } from '@dex/protocol';
 import { xgen } from '../bridge';
 import { sessionStore } from '../session';
 import { agentDirectory, useAgentDirectory } from '../agent-directory';
-import { SendIcon } from '../brand/icons';
+import { CloseIcon, DocIcon, PlusIcon, SendIcon } from '../brand/icons';
 import { Selector, type SelectorOption } from './Selector';
 import { ordered, readPick, SettingField, writePick } from './agent-create-fields';
 import { lockedByName, NAME_REQUIRED, NAME_TAKEN, startChatLockReason } from './start-chat-model';
+import {
+  CHAT_IMAGE_ACCEPT,
+  CHAT_IMAGE_MAX_COUNT,
+  pastedImageFiles,
+  stageChatFiles,
+  type StagedChatImage,
+} from './chat-attach';
+import { DropTracker, dragHasFiles } from './chat-drop';
 
 /** 에이전트 고르기의 첫 칸(기본값). */
 const NEW_AGENT = '__new_agent__';
@@ -39,6 +50,12 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameAlert, setNameAlert] = useState(false);
+  const [staged, setStaged] = useState<StagedChatImage[]>([]);
+  const stagedRef = useRef<StagedChatImage[]>([]);
+  const [preparing, setPreparing] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(new DropTracker());
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const alive = useRef(true);
@@ -162,14 +179,71 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     if (!locked && (error === NAME_REQUIRED || error === NAME_TAKEN)) setError(null);
   }, [locked, error]);
 
+  const replaceStaged = useCallback((next: StagedChatImage[]) => {
+    stagedRef.current = next;
+    setStaged(next);
+  }, []);
+
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      setPreparing((count) => count + 1);
+      let problem: string | null = null;
+      try {
+        problem = await stageChatFiles(
+          files,
+          () => ({
+            count: stagedRef.current.length,
+            bytes: stagedRef.current.reduce((sum, image) => sum + image.size, 0),
+          }),
+          (image) => replaceStaged([...stagedRef.current, image]),
+        );
+      } finally {
+        if (alive.current) setPreparing((count) => Math.max(0, count - 1));
+      }
+      if (alive.current && problem) setError(problem);
+    },
+    [replaceStaged],
+  );
+
+  // 끌어다 놓기: 화면 어디에 놓아도 첨부된다(대화 화면과 같은 규칙).
+  const dragProps = {
+    onDragEnter: (event: DragEvent<HTMLDivElement>) => {
+      if (busy || !dragHasFiles(event.dataTransfer?.types)) return;
+      event.preventDefault();
+      if (dragDepth.current.enter()) setDragOver(true);
+    },
+    onDragOver: (event: DragEvent<HTMLDivElement>) => {
+      if (busy || !dragHasFiles(event.dataTransfer?.types)) return;
+      // preventDefault 가 없으면 창이 그 파일을 열어 버린다.
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    },
+    onDragLeave: (event: DragEvent<HTMLDivElement>) => {
+      if (!dragHasFiles(event.dataTransfer?.types)) return;
+      event.preventDefault();
+      if (dragDepth.current.leave()) setDragOver(false);
+    },
+    onDrop: (event: DragEvent<HTMLDivElement>) => {
+      if (!dragHasFiles(event.dataTransfer?.types)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragDepth.current.reset();
+      setDragOver(false);
+      if (busy) return;
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length > 0) void addFiles(files);
+    },
+  };
+
   const send = useCallback(async () => {
-    if (busy) return;
+    if (busy || preparing > 0) return;
     if (locked) {
       explainLock();
       return;
     }
     const text = input.trim();
-    if (!text) return;
+    const files = stagedRef.current;
+    if (!text && files.length === 0) return;
     setBusy(true);
     setError(null);
     try {
@@ -209,20 +283,29 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
         return;
       }
       const key = sessionStore.openNew(agent);
-      sessionStore.send(key, text);
+      sessionStore.send(key, text, null, files);
       onStarted();
     } catch (err: unknown) {
       if (alive.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (alive.current) setBusy(false);
     }
-  }, [busy, locked, explainLock, input, isNew, name, provider, model, settings, selectedAgent, onStarted]);
+  }, [busy, preparing, locked, explainLock, input, isNew, name, provider, model, settings, selectedAgent, onStarted]);
 
   const valueOf = (id: string, fallback: unknown) =>
     Object.prototype.hasOwnProperty.call(settings, id) ? settings[id] : fallback;
 
   return (
-    <div className="start-chat">
+    <div className={`start-chat${dragOver ? ' dropping' : ''}`} {...dragProps}>
+      {dragOver && (
+        <div className="chat-drop" role="status">
+          <div className="chat-drop-card">
+            <PlusIcon size={22} />
+            <span>여기에 놓으면 첫 메시지와 함께 보냅니다</span>
+            <em>이미지 · 문서 · 표 · 압축 파일</em>
+          </div>
+        </div>
+      )}
       <div className="start-chat-scroll">
         <div className="start-chat-center">
           <h1 className="start-chat-title">오늘은 무엇을 해볼까요?</h1>
@@ -314,6 +397,40 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
       </div>
 
       <div className="chat-input start-chat-input">
+        <input
+          ref={fileInputRef}
+          className="composer-image-input"
+          type="file"
+          accept={CHAT_IMAGE_ACCEPT}
+          multiple
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = '';
+            if (files.length > 0) void addFiles(files);
+          }}
+        />
+        {staged.length > 0 && (
+          <div className="composer-images" aria-label={`전송 대기 파일 ${staged.length}개`}>
+            {staged.map((image) => (
+              <div className="composer-image" key={image.id}>
+                {image.kind === 'image' ? <img src={image.dataUrl} alt="" /> : <DocIcon size={24} />}
+                <span className="composer-image-name" title={image.name}>
+                  {image.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => replaceStaged(stagedRef.current.filter((item) => item.id !== image.id))}
+                  title={`${image.name} 첨부 취소`}
+                  aria-label={`${image.name} 첨부 취소`}
+                >
+                  <CloseIcon size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className={`composer ${locked ? 'locked' : ''}`}>
           {locked && (
             // 잠긴 칸 위의 덮개가 누름을 받는다. 비활성 칸은 누름을 흘리지 않는다.
@@ -325,8 +442,14 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
             value={input}
             readOnly={locked}
             tabIndex={locked ? -1 : undefined}
-            placeholder="메시지를 입력하세요…"
+            placeholder={staged.length > 0 ? '첨부한 파일로 무엇을 할지 적어 주세요…' : '메시지를 입력하세요…'}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(event) => {
+              const files = pastedImageFiles(event.clipboardData.items);
+              if (files.length === 0) return;
+              event.preventDefault();
+              void addFiles(files);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
@@ -337,9 +460,25 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
             spellCheck={false}
           />
           <button
+            type="button"
+            className="composer-attach"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy || preparing > 0 || staged.length >= CHAT_IMAGE_MAX_COUNT}
+            title={
+              staged.length >= CHAT_IMAGE_MAX_COUNT
+                ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
+                : preparing > 0
+                  ? '파일을 준비하는 중…'
+                  : `파일 첨부 · 이미지는 붙여 넣어도 됩니다 (최대 ${CHAT_IMAGE_MAX_COUNT}개)`
+            }
+            aria-label="파일 첨부"
+          >
+            <PlusIcon size={17} />
+          </button>
+          <button
             className="composer-send"
             onClick={() => void send()}
-            disabled={busy || (!locked && !input.trim())}
+            disabled={busy || preparing > 0 || (!locked && !input.trim() && staged.length === 0)}
             title="전송"
             aria-label="전송"
           >

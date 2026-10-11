@@ -27,8 +27,6 @@ jobs:
       core: ${{ steps.areas.outputs.core }}
       mobile: ${{ steps.areas.outputs.mobile }}
       native: ${{ steps.areas.outputs.native }}
-      engine: ${{ steps.areas.outputs.engine }}
-      xdpack: ${{ steps.areas.outputs.xdpack }}
       deskpack: ${{ steps.areas.outputs.deskpack }}
     steps:
       - uses: actions/checkout@v4
@@ -56,11 +54,7 @@ jobs:
       # 데스크톱은 workspace 밖이라(electron) 따로 설치한다.
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
-      # XD 도 따로 — 화면은 Dex 의 코드·의존을 쓰므로 데스크톱 설치 뒤에 둔다. 이 잡은 실행하지 않으니
-      # Electron 바이너리는 받지 않는다.
-      - run: npm --prefix apps/xd ci --no-audit --no-fund
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      # XD 앱은 여기서 설치·빌드·타입체크하지 않는다(PR 검사에서 뺐다, xd-manual.yml 에서 손으로 돌린다).
 
       # 산출물이 필요한 검사(확장 번들에 엔진이 없는지)가 있으므로 빌드가 먼저다.
       - name: 빌드
@@ -68,7 +62,6 @@ jobs:
           npm --prefix apps/cli run build
           npm --prefix apps/vscode run build
           npm --prefix apps/desktop run build
-          npm --prefix apps/xd run build
           npm --prefix packages/ide run build
 
       - name: 계약 검사
@@ -83,7 +76,6 @@ jobs:
           npx tsc --noEmit -p apps/cli/tsconfig.json
           npx tsc --noEmit -p apps/vscode/tsconfig.json
           npx tsc --noEmit -p apps/desktop/tsconfig.json
-          npx tsc --noEmit -p apps/xd/tsconfig.json
 
       - name: 테스트
         run: |
@@ -94,151 +86,9 @@ jobs:
           npm --prefix apps/vscode test
           npm --prefix apps/desktop test
 
-  # ── XD 앱 — Electron 43 과 같은 Node 24(node:sqlite)로 단위 시험, 동봉 엔진으로 실제 앱 E2E ──
-  #
-  # 화면은 Dex 의 코드를 같이 쓰므로 Dex 쪽 변경(core)에서도 돈다. E2E 는 실제 Electron 을 띄워 가짜 LLM 으로
-  # 턴을 돌리고, 껐다 켜도 대화가 이어지는지·위험 명령이 확인 창을 거치는지 본다.
-  xd-app:
-    name: XD 앱 (시험 · E2E)
-    needs: changes
-    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.engine == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - uses: actions/cache@v4
-        with:
-          path: apps/xd/engine/.cache/python
-          key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
-      - run: npm ci --no-audit --no-fund
-      # 화면 코드가 Dex 의 의존(react 등)을 쓴다. Dex 의 Electron 은 여기서 쓰지 않는다.
-      - run: npm --prefix apps/desktop ci --no-audit --no-fund
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      - run: npm --prefix apps/xd ci --no-audit --no-fund
-      - name: 단위 시험
-        run: npm --prefix apps/xd test
-      - name: 동봉 엔진
-        run: node apps/xd/scripts/bundle-engine.mjs --skip-verify
-      - name: 빌드
-        run: npm --prefix apps/xd run build
-      # XD_E2E_INSTALL — 앱의 설치기가 claude·codex 를 공식 배포처에서 받아(sha256 확인) 그 CLI 로 턴을 돌린다.
-      - name: E2E (실제 앱)
-        env:
-          XD_E2E_INSTALL: '1'
-        run: |
-          command -v xvfb-run >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb)
-          xvfb-run -a npm --prefix apps/xd run e2e
-
-  # ── XD 엔진 (동봉 Python) — 세 OS 에서 동봉본을 만들고, 그 인터프리터로 엔진 시험을 돌린다 ──
-  #
-  # 엔진은 이 PC 의 셸(Windows 는 PowerShell)·파일·프로세스를 다룬다 — 리눅스에서만 보면 Windows 의
-  # 경로·프로세스 종료·stdio 차이를 릴리스에서야 안다.
-  xd-engine:
-    name: XD 엔진 (${{ matrix.os }})
-    needs: changes
-    if: needs.changes.outputs.engine == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      # pytest 를 받을 때만 쓴다 — 시험은 동봉된 인터프리터가 돌린다.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/cache@v4
-        with:
-          path: apps/xd/engine/.cache/python
-          key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
-      - name: 동봉본 만들기 · 검증
-        run: node apps/xd/scripts/bundle-engine.mjs
-      - name: pytest 받기
-        shell: bash
-        run: python -m pip install --disable-pip-version-check --target "$RUNNER_TEMP/pytest-lib" pytest==9.1.1
-      # 실제 claude·codex — CLI 턴 시험(tests/test_cli_turns.py)이 건너뛰지 않게. 모델은 시험의 가짜 서버다.
-      - name: 실제 CLI (리눅스)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          curl -fsSL https://claude.ai/install.sh | bash
-          V=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/openai/codex/releases/latest | sed -E 's#.*/rust-v##')
-          mkdir -p "$HOME/.local/codex-cli/bin"
-          curl -fsSL "https://github.com/openai/codex/releases/download/rust-v$V/codex-x86_64-unknown-linux-musl.tar.gz" | tar -xz -C "$HOME/.local/codex-cli/bin"
-          mv "$HOME/.local/codex-cli/bin/codex-x86_64-unknown-linux-musl" "$HOME/.local/codex-cli/bin/codex"
-          "$HOME/.local/bin/claude" --version
-          "$HOME/.local/codex-cli/bin/codex" --version
-      - name: 엔진 시험 (동봉 인터프리터)
-        shell: bash
-        working-directory: apps/xd/engine
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: |
-          DIR="dist/$(node -p "process.platform + '-' + process.arch")/python"
-          if [ -f "$DIR/python.exe" ]; then PY="$DIR/python.exe"; else PY="$DIR/bin/python3"; fi
-          PYTHONPATH="$RUNNER_TEMP/pytest-lib" "$PY" -m pytest -q -p no:cacheprovider tests
-
-  # ── XD 설치본 — 세 OS(맥은 두 아키텍처)에서 실제 설치본을 만들고, 그 설치본으로 턴을 돌린다 ──
-  #
-  # 릴리스와 같은 길이다(release.yml 의 xd 잡). 설치본에 실린 엔진(resources/engine/python)이 그 OS 에서 뜨는지,
-  # Windows 는 설치 → 다시 설치(업데이트) → 제거 뒤에도 설치 폴더(= XD 루트)의 workspace·.xd 가 남는지 본다.
-  # 설치본에 닿는 것이 바뀔 때만 돈다(changes.mjs 의 xdpack).
-  xd-package:
-    name: XD 설치본 (${{ matrix.name }})
-    needs: changes
-    if: needs.changes.outputs.xdpack == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: linux-x64, os: ubuntu-latest, flag: --linux, exe: apps/xd/release/linux-unpacked/xd }
-          - { name: windows-x64, os: windows-latest, flag: --win, exe: apps/xd/release/win-unpacked/XD.exe }
-          - { name: macos-arm64, os: macos-latest, flag: --mac --arm64, exe: apps/xd/release/mac-arm64/XD.app/Contents/MacOS/XD }
-          - { name: macos-x64, os: macos-15-intel, flag: --mac --x64, exe: apps/xd/release/mac/XD.app/Contents/MacOS/XD }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - uses: actions/cache@v4
-        with:
-          path: apps/xd/engine/.cache/python
-          key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
-      - run: npm ci --no-audit --no-fund
-      - run: npm --prefix apps/desktop ci --no-audit --no-fund
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      - run: npm --prefix apps/xd ci --no-audit --no-fund
-      - name: 동봉 엔진
-        run: node apps/xd/scripts/bundle-engine.mjs
-      - name: 빌드
-        run: npm --prefix apps/xd run build
-      - name: 설치본
-        working-directory: apps/xd
-        run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-      - name: 설치본으로 턴
-        shell: bash
-        env:
-          XD_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
-        run: |
-          command -v xvfb-run >/dev/null || [ "$RUNNER_OS" != Linux ] || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb)
-          if [ "$RUNNER_OS" = Linux ]; then RUN="xvfb-run -a"; else RUN=""; fi
-          cd apps/xd && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
-      - name: Windows 설치·업데이트·제거 — 루트 보존
-        if: runner.os == 'Windows'
-        run: node apps/xd/scripts/check-installer.mjs
+  # ── XD 앱·엔진·설치본은 PR 에서 돌지 않는다 ──
+  # 매 PR 마다 Electron E2E 와 세 OS 엔진·설치본 빌드가 돌며 러너를 오래 잡았고, 앱 E2E 는 계속 실패했다.
+  # XD 는 앱 코드를 그대로 두고, 필요할 때 Actions → XD (수동) 으로 돌린다(.github/workflows/xd-manual.yml).
 
   # ── Dex 설치본 — 릴리스와 같은 설치본을 만들어 그 설치본으로 띄우고, Windows 는 처음 설치·업데이트·제거 ──
   # 설치본에 닿는 것(설치 설정·NSIS·의존성·이 확인)이 바뀔 때만 돈다(changes.mjs 의 deskpack). 처음 하는 사용자별

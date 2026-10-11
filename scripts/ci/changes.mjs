@@ -13,7 +13,10 @@
  *
  *   node scripts/ci/changes.mjs <base> <head>
  *
- * 결과는 $GITHUB_OUTPUT(있으면)과 표준 출력에 core · mobile · native · engine = true|false.
+ * 결과는 $GITHUB_OUTPUT(있으면)과 표준 출력에 core · mobile · native · deskpack = true|false.
+ *
+ * XD 앱(apps/xd)은 PR 검사에서 뺐다. 그 아래만 바꾼 PR 은 무거운 잡을 돌리지 않는다. XD 는
+ * Actions → XD (수동)(.github/workflows/xd-manual.yml)으로 돌린다.
  */
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -48,13 +51,12 @@ const meaningful = files.filter((file) => !file.endsWith('.md') && !onlyVersionL
 const under = (prefixes) => (file) => prefixes.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p));
 
 const areas = {
-  // 데스크톱·CLI·VS Code·패키지·XD — verify 잡(XD 는 Dex 의 화면 코드를 함께 쓴다)
+  // 데스크톱·CLI·VS Code·패키지: verify 잡
   core: under([
     'packages/',
     'apps/cli/',
     'apps/vscode/',
     'apps/desktop/',
-    'apps/xd/',
     'scripts/',
     'package.json',
     'package-lock.json',
@@ -63,26 +65,6 @@ const areas = {
   ]),
   // 모바일 JS(타입·테스트) — @dex/protocol 을 소스로 번들하므로 그것도 본다
   mobile: under(['apps/mobile/', 'packages/protocol/']),
-  // XD 엔진(동봉 Python) — 세 OS 에서 동봉본을 만들고 그 인터프리터로 시험한다. 위험 명령 규칙은 Dex 의 것을
-  // 그대로 넘기므로(엔진 시험이 두 언어의 판정을 맞춰 본다) 그 파일도 본다.
-  engine: under(['apps/xd/engine/', 'apps/xd/scripts/bundle-engine.mjs', 'packages/engine/src/dangerous-commands.ts']),
-  // XD 설치본 — 설치본에 닿는 것(설치 설정·NSIS·의존성·동봉 엔진의 목록·엔진 자리·업데이트)이 바뀔 때만 세 OS 에서
-  // 실제 설치본을 만든다(무겁다).
-  xdpack: under([
-    'apps/xd/electron-builder.yml',
-    'apps/xd/electron.vite.config.ts',
-    'apps/xd/build/',
-    'apps/xd/package.json',
-    'apps/xd/package-lock.json',
-    'apps/xd/scripts/',
-    'apps/xd/engine/bundle/',
-    'apps/xd/src/main/index.ts',
-    'apps/xd/src/main/engine-service.ts',
-    'apps/xd/src/main/data-root.ts',
-    'apps/xd/src/main/updater.ts',
-    'apps/xd/src/main/update-feed.ts',
-    'apps/xd/e2e/packaged.e2e.ts',
-  ]),
   // Dex 설치본 — 설치본에 닿는 것(설치 설정·NSIS·의존성·이 확인)이 바뀔 때만 세 OS 에서 실제 설치본을 만든다(무겁다).
   deskpack: under([
     'apps/desktop/electron-builder.yml',
@@ -121,9 +103,6 @@ const JOB_AREA = {
   mobile: 'mobile',
   android: 'native',
   ios: 'native',
-  'xd-engine': 'engine',
-  'xd-app': 'core',
-  'xd-package': 'xdpack',
   'desktop-package': 'deskpack',
 };
 

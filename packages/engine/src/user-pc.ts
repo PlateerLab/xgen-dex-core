@@ -25,6 +25,8 @@ import { realpath } from 'node:fs/promises';
 import { basename, delimiter, isAbsolute, join, relative, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
+  USER_PC_JOB_TOOL,
+  USER_PC_RUN_TOOL,
   USER_PC_DEFAULT_MAX_RUNTIME_MS,
   USER_PC_DEFAULT_WAIT_MS,
   USER_PC_MAX_RUNTIME_MS,
@@ -33,6 +35,7 @@ import {
   userPcToolSchemas as userPcSchemasFor,
   type UserPcOutcome,
 } from '@dex/protocol/user-pc-shell';
+import type { McpToolAnnotations } from './mcp-manager';
 import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
 import {
   gitIdentityEnv,
@@ -138,8 +141,14 @@ export function setUserPcShellForTest(shell: UserPcShell | null): void {
   shellCache = shell;
 }
 
+/** 사용자 PC 셸 실행 · 작업 제어는 기기의 Shell · ShellJob 과 같은 성격이다: 읽기 전용이 아니고 바깥과 닿는다. */
+const USER_PC_ANNOTATIONS: Record<string, McpToolAnnotations> = {
+  [USER_PC_RUN_TOOL]: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  [USER_PC_JOB_TOOL]: { readOnlyHint: false, openWorldHint: true },
+};
+
 export function userPcToolSchemas(shell: UserPcShell = userPcShell()) {
-  return userPcSchemasFor(shell);
+  return userPcSchemasFor(shell).map((t) => ({ ...t, annotations: USER_PC_ANNOTATIONS[t.name] }));
 }
 
 // ── 출력 ───────────────────────────────────────────────────────────

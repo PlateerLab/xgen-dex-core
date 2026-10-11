@@ -37,6 +37,9 @@ import {
   FOLDER_TOOL_NAMES,
   COPY_TO_WORKSPACE_TOOL,
   COPY_FROM_WORKSPACE_TOOL,
+  READ_FILE_TOOL,
+  LIST_DIR_TOOL,
+  SEARCH_TOOL,
 } from '@dex/engine/local-tools';
 import { bindTestHost, recordingInteraction } from './_host';
 
@@ -139,6 +142,32 @@ test('폴더 도구는 늘 광고된다 — 쓸 수 있는지는 호출마다 �
   );
   p.configureWorkspaceTransfer({ upload: async () => ({ path: '', size: 0 }), download: async () => new Uint8Array() });
   assert.deepEqual(p.advertise().map((t) => t.name).slice(-4, -2), [COPY_TO_WORKSPACE_TOOL, COPY_FROM_WORKSPACE_TOOL]);
+});
+
+test('모든 로컬 도구는 읽기 전용 · 바깥 여부를 스스로 밝힌다', () => {
+  const { p } = provider();
+  p.configureWorkspaceTransfer({ upload: async () => ({ path: '', size: 0 }), download: async () => new Uint8Array() });
+  const tools = [...p.advertise(), mcpAddServerToolSchema(), mcpRemoveServerToolSchema(), mcpListServersToolSchema()];
+  for (const t of tools) {
+    assert.equal(typeof t.annotations?.readOnlyHint, 'boolean', `${t.name} readOnlyHint`);
+    assert.equal(typeof t.annotations?.openWorldHint, 'boolean', `${t.name} openWorldHint`);
+  }
+  const readOnly = tools.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name);
+  assert.deepEqual(readOnly, [LOCAL_CONTROL_TOOL, READ_FILE_TOOL, LIST_DIR_TOOL, SEARCH_TOOL]);
+  for (const t of tools.filter((x) => x.annotations?.readOnlyHint)) assert.equal(t.annotations?.openWorldHint, false, t.name);
+  // 목록 조회는 등록된 서버를 띄우고 붙으므로 읽기 전용이 아니다.
+  assert.deepEqual(mcpListServersToolSchema().annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  const byName = new Map(tools.map((t) => [t.name, t.annotations]));
+  assert.equal(byName.get(SHELL_TOOL)?.openWorldHint, true);
+  assert.equal(byName.get(OPEN_TOOL)?.destructiveHint, undefined, '실행 파일도 열 수 있어 기본값(파괴)으로 둔다');
+  assert.equal(byName.get(MCP_REMOVE_TOOL)?.openWorldHint, true);
+  assert.equal(byName.get(NOTIFY_TOOL)?.destructiveHint, false);
+  assert.equal(byName.get(COPY_FROM_WORKSPACE_TOOL)?.destructiveHint, true);
 });
 
 test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 구조째, 숨김·폴더 밖은 건너뛴다', async () => {

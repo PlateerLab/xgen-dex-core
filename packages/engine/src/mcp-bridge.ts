@@ -401,6 +401,7 @@ export class McpBridge {
             name: t.name,
             description: t.description,
             inputSchema: t.inputSchema,
+            annotations: t.annotations,
           })),
         );
       // Connector-hosted built-ins (local shell, …) ride the SAME catalog as
@@ -416,6 +417,7 @@ export class McpBridge {
           inputSchema: t.inputSchema,
           // 서버에 함께 알리는 사실(UserPc 셸 이름 등). 모델에게 가는 설명이 아니다.
           ...(t.meta ? { meta: t.meta } : {}),
+          annotations: t.annotations,
         }));
       tools.unshift(...builtins);
       if (this.ws?.readyState === WebSocket.OPEN) {

@@ -31,6 +31,7 @@ interface ToolSchema {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations: { readOnlyHint: boolean; destructiveHint?: boolean; openWorldHint: boolean };
 }
 
 /**
@@ -41,6 +42,7 @@ export function workspaceCopySchemas(device: 'computer' | 'phone'): ToolSchema[]
   return [
     {
       name: COPY_TO_WORKSPACE_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: false },
       description:
         `Copy files or folders from ${where} (inside the folders connected to this conversation) into YOUR ` +
         'workspace, so you can work on them with your own tools (Read, ParseDocument, Bash, ...). Folders are ' +
@@ -61,6 +63,7 @@ export function workspaceCopySchemas(device: 'computer' | 'phone'): ToolSchema[]
     },
     {
       name: COPY_FROM_WORKSPACE_TOOL,
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       description:
         `Save a file from YOUR workspace (sandbox) onto ${where}, inside a folder connected to this ` +
         'conversation. Use it to hand results (reports, spreadsheets, images) back to the user. Missing ' +

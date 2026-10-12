@@ -45,7 +45,7 @@ Usage:
   dex logout [--profile <name>]
   dex agents list [--search <text>] [--owner personal|shared] [--json]
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
-           [--folder <path,...> | --no-folder]
+           [--folder <path,...> | --no-folder] [--no-memory-map]
   dex history list [--json]          대화 목록 (마지막으로 말한 순서)
   dex history turns --workflow <id> --interaction <id> [--json]
   dex history rename --workflow <id> --interaction <id> --title <text>
@@ -75,6 +75,7 @@ Global options:
   대화를 시작한 폴더가 그 대화의 작업 공간입니다. 에이전트는 그 폴더 안에서만
   파일을 읽고 쓰고 명령을 실행합니다. 홈이나 드라이브 루트에서 시작하면 폴더를
   연결하지 않으니 --folder 로 고르세요. --no-folder 는 폴더 없이 대화합니다.
+  --no-memory-map 은 이 대화에서 에이전트의 기억 지도(지난 답의 근거 · 바뀐 것 안내)를 쓰지 않습니다.
 
 Examples:
   dex profile set corp --server https://xgen.example.com
@@ -284,6 +285,7 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
     // 이 대화의 작업 공간 — 시작한 폴더(또는 --folder). 에이전트의 파일·터미널
     // 도구는 이 폴더 안에서만 돈다.
     localFolders: chatFolders({ noFolder: flag(args, 'no-folder'), folders: csvOption(args, 'folder') }),
+    ...(flag(args, 'no-memory-map') ? { memoryMap: false } : {}),
   });
   const jsonl = flag(args, 'jsonl');
   if (jsonl) writeJson({ kind: 'start', ...resolved, input: undefined });

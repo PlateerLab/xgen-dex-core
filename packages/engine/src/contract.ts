@@ -66,6 +66,8 @@ export interface ChatInput {
   /** 이 대화에 연결할 이 기기의 폴더(절대 경로). CLI 는 시작한 폴더, VSCode 는
    *  작업 영역 폴더를 넘긴다. 비우면 폴더 도구를 쓸 수 없다. */
   localFolders?: string[];
+  /** false 면 이 대화에서 Agent Geny 기억 지도를 끈다. 없으면 에이전트 설정(기본 켜짐). */
+  memoryMap?: boolean;
 }
 
 export interface ChatAttachmentDescriptor {
@@ -86,6 +88,7 @@ export interface ResolvedChatInput {
   interactionId: string;
   attachments: ChatAttachmentDescriptor[];
   localFolders: string[];
+  memoryMap?: boolean;
 }
 
 export type {

@@ -1240,7 +1240,8 @@ export const Chat: React.FC<{
               aria-label="알림 설정"
               aria-expanded={notificationMenuOpen}
             >
-              {effectiveNotificationMuted ? <BellOffIcon size={14} /> : <BellIcon size={14} />} 알림
+              {effectiveNotificationMuted ? <BellOffIcon size={14} /> : <BellIcon size={14} />}{' '}
+              <span className="chat-hbtn-label">알림</span>
             </button>
             {notificationMenuOpen && (
               <>
@@ -1306,7 +1307,8 @@ export const Chat: React.FC<{
             aria-pressed={processView}
             title={processView ? '작업 과정을 숨기고 답만 봅니다' : '답마다 작업 과정을 함께 봅니다'}
           >
-            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업
+            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />}{' '}
+            <span className="chat-hbtn-label">작업</span>
           </button>
           {/* [상세] — 이 에이전트의 개요·메모리·작업·도구·스토리지·전체로그를 새 탭으로 연다
               (에이전트 관측 뷰어). */}
@@ -1316,7 +1318,7 @@ export const Chat: React.FC<{
               onClick={() => onOpenViewer('basic')}
               title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
-              <InfoIcon size={14} /> 상세
+              <InfoIcon size={14} /> <span className="chat-hbtn-label">상세</span>
             </button>
           )}
           {/* [채팅 | IDE] — 헤더 맨 오른쪽. 같은 대화를 두 가지로 본다. */}
@@ -1329,7 +1331,7 @@ export const Chat: React.FC<{
               onClick={() => setIdeMode(false)}
               title="채팅만 봅니다"
             >
-              <ChatIcon size={13} /> 채팅
+              <ChatIcon size={13} /> <span className="chat-hbtn-label">채팅</span>
             </button>
             <button
               type="button"
@@ -1339,7 +1341,7 @@ export const Chat: React.FC<{
               onClick={() => setIdeMode(true)}
               title="이 에이전트의 작업 공간을 편집기와 터미널로 봅니다"
             >
-              <CodeIcon size={13} /> IDE
+              <CodeIcon size={13} /> <span className="chat-hbtn-label">IDE</span>
             </button>
           </div>
           {/* [공유]: [채팅 | IDE] 오른쪽. 지금까지 끝난 대화를 이 시점 그대로 링크로 공유한다(웹과 같은 자리). */}

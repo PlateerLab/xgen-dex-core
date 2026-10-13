@@ -161,6 +161,7 @@ export const Settings: React.FC<{
   const [autostart, setAutostart] = useState(false);
   const [autostartRefused, setAutostartRefused] = useState(false);
   const [linuxClickThrough, setLinuxClickThrough] = useState(config.linuxClickThrough ?? false);
+  const [memoryMap, setMemoryMap] = useState(config.memoryMap !== false);
   const isLinux = /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent);
 
   const [browserOn, setBrowserOn] = useState(config.browser?.enabled === true);
@@ -413,6 +414,26 @@ export const Settings: React.FC<{
                   </label>
                 </div>
               )}
+
+              <div className="field-row">
+                <span>
+                  기억 지도
+                  <span className="small muted" style={{ marginLeft: 8 }}>
+                    같은 질문이 다시 오면 전에 답을 찾은 자리와 그 뒤 바뀐 것을 에이전트에게 알려 줍니다. 끄면 이 PC 에서 보내는 대화에는 쓰지 않습니다
+                  </span>
+                </span>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={memoryMap}
+                    onChange={(e) => {
+                      setMemoryMap(e.target.checked);
+                      void apply({ memoryMap: e.target.checked });
+                    }}
+                  />
+                  <span className="track" />
+                </label>
+              </div>
 
               <div className="field-row">
                 <span>창 위치 초기화</span>

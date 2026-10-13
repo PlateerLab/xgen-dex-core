@@ -206,6 +206,11 @@ export interface ChatRequest {
    * 없으면 옛 앱으로 읽혀 예전 규칙을 따른다.
    */
   localFolders?: ChatLocalFolder[];
+  /**
+   * Agent Geny 기억 지도를 이 턴만 끈다(false). 없거나 true 면 에이전트 설정을 따른다 —
+   * 서버의 기억 지도는 기본으로 켜져 있고, 이 값은 사용자가 이 기기에서 끈 선택을 실어 보낸다.
+   */
+  memoryMap?: boolean;
   includeLogs?: boolean;
   includeNodeStatus?: boolean;
   includeToolEvents?: boolean;

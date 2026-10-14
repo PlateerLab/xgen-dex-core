@@ -527,9 +527,10 @@ test('연결된 폴더는 local_folders 로 실리고, 빈 목록도 그대로 �
   assert.equal('local_folders' in (await sentBody(base)), false);
 });
 
-test('기억 지도를 끈 선택만 memory_map: false 로 실린다', async () => {
+test('기억 지도를 켜거나 끈 선택은 memory_map 으로 실리고, 고르지 않으면 보내지 않는다', async () => {
   const base = { workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' };
   assert.equal((await sentBody({ ...base, memoryMap: false })).memory_map, false);
-  assert.equal('memory_map' in (await sentBody({ ...base, memoryMap: true })), false, '켬은 서버 기본이라 보내지 않는다');
-  assert.equal('memory_map' in (await sentBody(base)), false);
+  assert.equal((await sentBody({ ...base, memoryMap: true })).memory_map, true);
+  assert.equal('memory_map' in (await sentBody(base)), false, '에이전트 설정을 따른다');
+  assert.equal('memory_map' in (await sentBody({ ...base, memoryMap: undefined })), false);
 });

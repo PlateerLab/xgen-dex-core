@@ -21,6 +21,13 @@ import { BrowserIcon, BellIcon, MonitorIcon, SpeakerIcon } from '../brand/icons'
 
 type Theme = NonNullable<ConnectorConfig['theme']>;
 
+/** 기억 지도 선택과 저장값(memoryMap). 미설정은 에이전트 설정대로. */
+const MEMORY_MAP_CHOICES: { value: string; label: string; setting: boolean | undefined }[] = [
+  { value: 'agent', label: '에이전트 설정대로', setting: undefined },
+  { value: 'on', label: '켜기', setting: true },
+  { value: 'off', label: '끄기', setting: false },
+];
+
 // 비슷한 기능끼리 탭으로 묶는다 — 세로로만 길어지던 설정을 폭을 넓혀 분류한다.
 // 업데이트는 일반의 한 섹션이다(따로 탭일 만큼 크지 않다). 옛 [로컬 컨트롤] 탭은
 // 없다: 이 PC 의 파일과 터미널을 쓸 범위는 설정이 아니라 대화마다 채팅 헤더의
@@ -161,7 +168,9 @@ export const Settings: React.FC<{
   const [autostart, setAutostart] = useState(false);
   const [autostartRefused, setAutostartRefused] = useState(false);
   const [linuxClickThrough, setLinuxClickThrough] = useState(config.linuxClickThrough ?? false);
-  const [memoryMap, setMemoryMap] = useState(config.memoryMap !== false);
+  const [memoryMap, setMemoryMap] = useState(
+    MEMORY_MAP_CHOICES.find((c) => c.setting === config.memoryMap)?.value ?? 'agent',
+  );
   const isLinux = /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent);
 
   const [browserOn, setBrowserOn] = useState(config.browser?.enabled === true);
@@ -419,20 +428,19 @@ export const Settings: React.FC<{
                 <span>
                   기억 지도
                   <span className="small muted" style={{ marginLeft: 8 }}>
-                    같은 질문이 다시 오면 전에 답을 찾은 자리와 그 뒤 바뀐 것을 에이전트에게 알려 줍니다. 끄면 이 PC 에서 보내는 대화에는 쓰지 않습니다
+                    같은 질문이 다시 오면 전에 답을 찾은 자리와 그 뒤 바뀐 것을 에이전트에게 알려 줍니다. 에이전트 설정대로면 새 에이전트는 켜져 있고 예전에 만든 에이전트는 꺼져 있습니다. 켜기 · 끄기는 이 PC 에서 보내는 대화에 적용됩니다
                   </span>
                 </span>
-                <label className="switch">
-                  <input
-                    type="checkbox"
-                    checked={memoryMap}
-                    onChange={(e) => {
-                      setMemoryMap(e.target.checked);
-                      void apply({ memoryMap: e.target.checked });
-                    }}
-                  />
-                  <span className="track" />
-                </label>
+                <Selector
+                  size="sm"
+                  value={memoryMap}
+                  onChange={(value) => {
+                    setMemoryMap(value);
+                    void apply({ memoryMap: MEMORY_MAP_CHOICES.find((c) => c.value === value)?.setting });
+                  }}
+                  options={MEMORY_MAP_CHOICES}
+                  ariaLabel="기억 지도 선택"
+                />
               </div>
 
               <div className="field-row">

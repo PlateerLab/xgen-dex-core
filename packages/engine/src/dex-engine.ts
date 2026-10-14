@@ -699,7 +699,7 @@ export class DexEngine {
       interactionId: input.interactionId?.trim() || randomUUID(),
       attachments: input.attachments ?? [],
       localFolders: input.localFolders ?? [],
-      ...(input.memoryMap === false ? { memoryMap: false } : {}),
+      memoryMap: input.memoryMap,
     };
   }
 
@@ -795,7 +795,7 @@ export class DexEngine {
             clientDeviceId: this.deviceId,
             // 이 대화에 연결된 폴더 — 없으면 빈 목록(서버가 폴더 도구를 감춘다).
             localFolders: localFoldersForRequest(folders),
-            ...(resolved.memoryMap === false ? { memoryMap: false } : {}),
+            memoryMap: resolved.memoryMap,
             // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같다. 서버는 이 표식으로
             // 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다.
             originId: DEX_ORIGIN_ID,

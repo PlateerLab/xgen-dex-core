@@ -104,6 +104,7 @@
     startMessage: byId('start-message'),
     startMessageText: byId('start-message-text'),
     startInput: byId('start-input'),
+    startInputPolicy: byId('start-input-policy'),
     startSend: byId('start-send'),
     chatBack: byId('chat-back'),
     chatTitle: byId('chat-title'),
@@ -121,6 +122,7 @@
     status: byId('status'),
     statusText: byId('status-text'),
     input: byId('input'),
+    inputPolicy: byId('input-policy'),
     attachments: byId('attachments'),
     attach: byId('attach'),
     modelChip: byId('model-chip'),
@@ -196,11 +198,49 @@
     for (const [key, element] of Object.entries(elements.screens)) element.classList.toggle('hidden', key !== name);
   }
 
+  // ── 통제 정책 입력창 사전 검사 ─────────────────────────────────────
+  // 입력이 멎으면 호스트에 묻는다(호스트는 엔진 → 서버). 서버가 보낼 때 막는 것과 같은 판정이다.
+  // 걸리면 작성기 아래에 이유를 두고 전송 단추를 끈다. Enter 도 send() 를 지나므로 같이 막힌다.
+  const policy = { chat: null, start: null };
+  const policyTimers = { chat: 0, start: 0 };
+
+  function policyInput(scope) {
+    return scope === 'start' ? elements.startInput : elements.input;
+  }
+
+  function policyBlocked(scope, text) {
+    const result = policy[scope];
+    return !!result && result.blocked && result.text === text;
+  }
+
+  function renderPolicy(scope) {
+    const element = scope === 'start' ? elements.startInputPolicy : elements.inputPolicy;
+    const text = policyInput(scope).value.trim();
+    const result = policy[scope];
+    const notice = result && result.text === text ? result.notice : null;
+    element.textContent = notice ? notice.text : '';
+    element.classList.toggle('hidden', !notice);
+    element.classList.toggle('blocked', !!notice && notice.tone === 'block');
+    if (scope === 'chat') elements.send.disabled = !!state.running || policyBlocked('chat', text);
+    else elements.startSend.disabled = !!state.start?.busy || policyBlocked('start', text);
+  }
+
+  function schedulePolicyCheck(scope) {
+    window.clearTimeout(policyTimers[scope]);
+    const text = policyInput(scope).value.trim();
+    renderPolicy(scope);
+    if (!text) return;
+    if (policy[scope] && policy[scope].text === text) return;
+    policyTimers[scope] = window.setTimeout(() => post('checkInput', { scope, text }), state.inputCheckDelayMs || 350);
+  }
+
   function send() {
     const text = elements.input.value.trim();
     if ((!text && !(state.attachments || []).length) || state.running || !state.agent || state.readOnly) return;
+    if (policyBlocked('chat', text)) return;
     post('send', { text });
     elements.input.value = '';
+    renderPolicy('chat');
   }
 
   function renderAttachments() {
@@ -1333,7 +1373,7 @@
     const locked = !start.lock || !start.lock.canSend;
     elements.startSend.classList.toggle('locked', locked);
     elements.startSend.setAttribute('aria-disabled', locked ? 'true' : 'false');
-    elements.startSend.disabled = busy;
+    elements.startSend.disabled = busy || policyBlocked('start', elements.startInput.value.trim());
     elements.startInput.disabled = busy;
     const picked = start.choices.find((choice) => choice.value && choice.value === elements.startAgent.value);
     elements.startInput.placeholder = picked ? `${picked.label}에게 메시지 보내기` : '메시지 보내기';
@@ -1342,6 +1382,7 @@
 
   function startSend() {
     if (state.start?.busy) return;
+    if (policyBlocked('start', elements.startInput.value.trim())) return;
     post('startSend', {
       text: elements.startInput.value.trim(),
       agentId: elements.startAgent.value,
@@ -1404,7 +1445,7 @@
     elements.status.classList.toggle('running', !!state.running);
     elements.input.disabled = !!state.running;
     elements.input.placeholder = `${agent.workflowName}에게 메시지 보내기`;
-    elements.send.disabled = !!state.running;
+    elements.send.disabled = !!state.running || policyBlocked('chat', elements.input.value.trim());
     elements.attach.disabled = !!state.running;
     renderModel();
     renderThinking();
@@ -1675,6 +1716,8 @@
     event.preventDefault();
     send();
   });
+  elements.input.addEventListener('input', () => schedulePolicyCheck('chat'));
+  elements.startInput.addEventListener('input', () => schedulePolicyCheck('start'));
   elements.settingsBack.addEventListener('click', () => post('back'));
   elements.settingsRefresh.addEventListener('click', () => post('refresh'));
   elements.accountAction.addEventListener('click', () =>
@@ -1700,6 +1743,15 @@
   window.addEventListener('message', (event) => {
     if (event.data?.type === 'searchResult') {
       onSearchResult(event.data);
+      return;
+    }
+    if (event.data?.type === 'inputCheck' || event.data?.type === 'inputBlocked') {
+      const scope = event.data.scope === 'start' ? 'start' : 'chat';
+      const input = policyInput(scope);
+      // 막혀 돌아온 글은 비운 입력창에 되돌린다(고쳐 보내게).
+      if (event.data.type === 'inputBlocked' && !input.value.trim()) input.value = event.data.text || '';
+      policy[scope] = { text: event.data.text || '', blocked: !!event.data.blocked || event.data.type === 'inputBlocked', notice: event.data.notice || null };
+      renderPolicy(scope);
       return;
     }
     if (event.data?.type !== 'state') return;

@@ -56,6 +56,7 @@ import {
 import { ConversationManagerPanel, type ConversationManagerHost } from './conversation-manager-panel';
 import { purgeQuestion } from './conversation-manager';
 import {
+  CHAT_INPUT_CHECK_DELAY_MS,
   MODEL_PICKER_TEXT,
   RECENT_CONVERSATION_STEP,
   SEARCH_DELAY_MS,
@@ -75,10 +76,12 @@ import {
   selectedThinking,
   thinkingChipLabel,
   thinkingValueLabel,
+  chatInputNotice,
   touchConversation,
   touchConversationAgent,
   searchConversationList,
   type AgentCreateOptions,
+  type ChatInputCheck,
   type ConversationAgent,
   type ConversationModelState,
   type ConversationPage,
@@ -185,6 +188,8 @@ interface ChatViewState {
   searchRecent: SearchResultRow[];
   /** 검색 창: 적기를 멈추고 이만큼 뒤에 묻는다(@dex/protocol SEARCH_DELAY_MS). */
   searchDelayMs: number;
+  /** 입력이 멎고 통제 정책 사전 검사를 묻기까지(ms). */
+  inputCheckDelayMs: number;
   /** 열린 대화의 제목. 첫 말을 보내기 전이면 없다. */
   conversationTitle?: string;
   /** 에이전트가 사라진 대화: 지난 대화만 보이고 입력창이 없다. */
@@ -290,6 +295,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private canSearchConversations = false;
   /** 엔진이 에이전트 묶음(history/conversationAgents)과 에이전트별 쪽(workflowId)을 아는가. */
   private canListConversationAgents = false;
+  /** chat/checkInput 을 아는 엔진인가. 옛 CLI 면 사전 검사 없이 보낼 때 서버 판정만 받는다. */
+  private canCheckChatInput = false;
   /** 대화 목록 소식이 몰려올 때 첫 쪽을 한 번만 다시 읽도록 모은다. */
   private conversationHeadTimer: NodeJS.Timeout | undefined;
   /** 모아 둔 다시 읽기에 에이전트 묶음·에이전트 화면도 함께 싣는가. */
@@ -690,6 +697,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.canWatchConversationList = capabilities?.conversationListWatch === true;
     this.canSearchConversations = capabilities?.conversationSearch === true;
     this.canListConversationAgents = capabilities?.conversationAgents === true;
+    this.canCheckChatInput = capabilities?.chatInputCheck === true;
+  }
+
+  // ── 통제 정책 입력창 사전 검사 ─────────────────────────────────────
+
+  /**
+   * 통제 정책(개인정보 · 금칙어) [채팅 입력시 차단] 사전 검사. 서버가 보낼 때 막는 것과 같은 규칙이다.
+   * 판정하지 못하면(옛 엔진 · 서버 오류) undefined: 막지 않는다. 보낼 때 서버가 다시 본다.
+   */
+  private async checkChatInput(text: string, workflowId: string | null): Promise<ChatInputCheck | undefined> {
+    if (!this.canCheckChatInput || !text.trim()) return undefined;
+    try {
+      return await this.service.request<ChatInputCheck>('chat/checkInput', {
+        text: text.trim(),
+        workflowId,
+        ...this.activeProfileParams(),
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 웹뷰가 입력 중에 묻는다(작성기 아래 안내 · 보내기 단추). scope 는 chat(대화) · start(시작 화면). */
+  private async answerInputCheck(raw: Record<string, unknown>): Promise<void> {
+    const scope = raw.scope === 'start' ? 'start' : 'chat';
+    const text = typeof raw.text === 'string' ? raw.text.trim() : '';
+    const workflowId = scope === 'start' ? this.start.agentId || null : this.selectedAgent?.workflowId ?? null;
+    const check = await this.checkChatInput(text, workflowId);
+    void this.view?.webview.postMessage({
+      type: 'inputCheck',
+      scope,
+      text,
+      blocked: check?.blocked === true,
+      notice: chatInputNotice(check),
+    });
   }
 
   /** 대화 목록 소켓을 연다(로그인한 프로필로). 옛 엔진이면 아무것도 하지 않는다. */
@@ -1351,6 +1393,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
     if (!text) return;
+    // 통제 정책: 첫 메시지가 막힐 글이면 에이전트를 만들지도, 대화를 열지도 않는다. 글은 입력창에 남는다.
+    const check = await this.checkChatInput(text, this.start.agentId || null);
+    if (check?.blocked) {
+      this.start.message = { text: check.message, tone: 'error' };
+      this.postState();
+      void this.view?.webview.postMessage({ type: 'inputCheck', scope: 'start', text, blocked: true, notice: chatInputNotice(check) });
+      return;
+    }
     const session = this.start.session;
     let agent = this.start.agentId ? this.agents.find((item) => item.workflowId === this.start.agentId) : undefined;
     if (!agent) {
@@ -1423,6 +1473,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
     const agent = this.selectedAgent;
+    // 통제 정책: 막힐 글이면 보내지 않는다. 웹뷰가 비운 입력창에 글을 되돌리고 이유를 아래에 둔다.
+    if (text) {
+      const check = await this.checkChatInput(text, agent.workflowId);
+      if (check?.blocked) {
+        void this.view?.webview.postMessage({ type: 'inputBlocked', scope: 'chat', text, notice: chatInputNotice(check) });
+        return;
+      }
+      if (this.streamId || this.selectedAgent !== agent) return; // 묻는 사이 다른 턴이 시작됐거나 대화를 옮겼다
+    }
     const streamId = randomUUID();
     this.streamId = streamId;
     this.status = '응답을 기다리는 중...';
@@ -1771,6 +1830,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const data = raw as Record<string, unknown>;
     if (data.type === 'ready') this.postState();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
+    else if (data.type === 'checkInput') void this.answerInputCheck(data);
     else if (data.type === 'attach') void this.attachFiles();
     else if (data.type === 'pickModel') void this.pickModel();
     else if (data.type === 'pickThinking') void this.pickThinking();
@@ -2015,6 +2075,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       agentView: this.agentViewState(activeKey, running, now),
       searchRecent: searchRecentRows(this.conversations, now),
       searchDelayMs: SEARCH_DELAY_MS,
+      inputCheckDelayMs: CHAT_INPUT_CHECK_DELAY_MS,
       conversationTitle: current ? conversationDisplayTitle(current) : undefined,
       readOnly: this.readOnly,
       start: this.startView(),
@@ -2299,6 +2360,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     <footer class="composer-shell">
       <div class="composer-card">
         <textarea id="start-input" rows="2" placeholder="메시지 보내기" aria-label="메시지"></textarea>
+        <div id="start-input-policy" class="input-policy hidden" role="status" aria-live="polite"></div>
         <div class="composer-actions">
           <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
           <button id="start-send" class="send-button" type="button"><span>전송</span><span class="send-icon" aria-hidden="true">↑</span></button>
@@ -2331,6 +2393,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <div class="composer-card">
         <div id="attachments" class="chat-attachments" aria-live="polite"></div>
         <textarea id="input" rows="2" placeholder="Agent에게 메시지 보내기" aria-label="메시지"></textarea>
+        <div id="input-policy" class="input-policy hidden" role="status" aria-live="polite"></div>
         <div class="composer-actions">
           <button id="model-chip" class="model-chip hidden" type="button" aria-haspopup="listbox"><span id="model-icon" class="model-chip-icon" aria-hidden="true"></span><span id="model-label" class="model-chip-label"></span><span id="model-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>
           <button id="thinking-chip" class="model-chip thinking-chip hidden" type="button" aria-haspopup="listbox"><span id="thinking-icon" class="model-chip-icon" aria-hidden="true"></span><span id="thinking-label" class="model-chip-label"></span><span id="thinking-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>

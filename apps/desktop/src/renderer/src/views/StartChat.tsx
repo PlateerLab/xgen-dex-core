@@ -29,6 +29,7 @@ import {
   type StagedChatImage,
 } from './chat-attach';
 import { DropTracker, dragHasFiles } from './chat-drop';
+import { useChatInputCheck } from './use-chat-input-check';
 
 /** 에이전트 고르기의 첫 칸(기본값). */
 const NEW_AGENT = '__new_agent__';
@@ -128,6 +129,8 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
 
   const nameTaken = isNew && !!nameCheck && nameCheck.name === name.trim() && nameCheck.taken;
   const selectedAgent = isNew ? null : (dir.agents.find((a) => a.workflowId === choice) ?? null);
+  // 통제 정책 입력창 사전 검사. 새 에이전트는 아직 id 가 없다(예외가 없으니 모든 정책으로 본다: 서버도 같다).
+  const policy = useChatInputCheck(input, selectedAgent?.workflowId ?? null);
   const lockReason = startChatLockReason({
     isNew,
     name,
@@ -244,6 +247,8 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     const text = input.trim();
     const files = stagedRef.current;
     if (!text && files.length === 0) return;
+    // 통제 정책: 첫 메시지가 막힐 글이면 에이전트를 만들지도, 대화를 열지도 않는다. 이유는 작성기 위에 선다.
+    if (text && !(await policy.confirm(text))) return;
     setBusy(true);
     setError(null);
     try {
@@ -290,7 +295,7 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     } finally {
       if (alive.current) setBusy(false);
     }
-  }, [busy, preparing, locked, explainLock, input, isNew, name, provider, model, settings, selectedAgent, onStarted]);
+  }, [busy, preparing, locked, explainLock, input, isNew, name, provider, model, settings, selectedAgent, onStarted, policy]);
 
   const valueOf = (id: string, fallback: unknown) =>
     Object.prototype.hasOwnProperty.call(settings, id) ? settings[id] : fallback;
@@ -431,6 +436,15 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
             ))}
           </div>
         )}
+        {policy.notice && (
+          <div
+            className={policy.notice.tone === 'block' ? 'sensitive-warn blocked' : 'sensitive-warn'}
+            role={policy.notice.tone === 'block' ? 'alert' : 'status'}
+          >
+            <strong>{policy.notice.tone === 'block' ? '보낼 수 없는 내용' : '민감한 내용 안내'}</strong>
+            <span>{policy.notice.text}</span>
+          </div>
+        )}
         <div className={`composer ${locked ? 'locked' : ''}`}>
           {locked && (
             // 잠긴 칸 위의 덮개가 누름을 받는다. 비활성 칸은 누름을 흘리지 않는다.
@@ -478,7 +492,7 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
           <button
             className="composer-send"
             onClick={() => void send()}
-            disabled={busy || preparing > 0 || (!locked && !input.trim() && staged.length === 0)}
+            disabled={busy || preparing > 0 || policy.blocked || (!locked && !input.trim() && staged.length === 0)}
             title="전송"
             aria-label="전송"
           >

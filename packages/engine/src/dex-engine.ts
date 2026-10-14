@@ -5,7 +5,7 @@ import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@de
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
-import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
+import { UNCHECKED_INPUT, XgenClient, type ChatInputCheck, type LiveTurnSnapshot } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
@@ -520,6 +520,21 @@ export class DexEngine {
    */
   async agentCreateOptions(requestedProfile?: string): Promise<AgentCreateOptions> {
     return this.withAuthRetry(requestedProfile, (client) => client.agents.createOptions());
+  }
+
+  /**
+   * 통제 정책(개인정보 · 금칙어) 입력창 사전 검사. 서버가 보낼 때 막는 것과 같은 규칙으로 판정한다.
+   * 판정하지 못하면(로그인 전 · 서버 오류 · 옛 서버) 막지 않는다(checked=false): 보낼 때 서버가 다시 본다.
+   */
+  async checkChatInput(input: { text: string; workflowId?: string | null; profile?: string }): Promise<ChatInputCheck> {
+    if (!input.text.trim()) return { ...UNCHECKED_INPUT, checked: true };
+    try {
+      return await this.withAuthRetry(input.profile, (client) =>
+        client.guardrails.checkInput(input.text.trim(), input.workflowId ?? null),
+      );
+    } catch {
+      return UNCHECKED_INPUT;
+    }
   }
 
   /** 이 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것·잠금 여부(@dex/protocol conversation-model). */

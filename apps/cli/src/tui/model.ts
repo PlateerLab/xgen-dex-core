@@ -1,5 +1,5 @@
 import type { ProfileSummary } from '@dex/engine';
-import type { ConversationModelState, ThinkingValue } from '@dex/protocol';
+import type { ChatInputCheck, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import type {
   AgentCreateOptions,
   AgentListQuery,
@@ -100,6 +100,8 @@ export interface TuiEngine {
    */
   stopChat(interactionId: string, profile?: string): Promise<ChatStopResult>;
   resolveChatInput(input: ChatInput): Promise<ResolvedChatInput>;
+  /** 통제 정책 입력창 사전 검사(보내기 전). 판정하지 못하면 막지 않는다. */
+  checkChatInput(input: { text: string; workflowId?: string | null; profile?: string }): Promise<ChatInputCheck>;
   uploadChatAttachment(input: {
     profile?: string; workflowId: string; interactionId: string; path: string;
   }): Promise<ChatAttachmentDescriptor>;

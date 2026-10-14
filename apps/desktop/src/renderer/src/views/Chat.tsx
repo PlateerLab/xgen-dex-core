@@ -14,6 +14,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
+import { useChatInputCheck } from './use-chat-input-check';
 import { sessionStore } from '../session';
 import { CONTEXT_LIMIT_CHOICES, teamsContextStore, useContextChip } from '../teams-context';
 import { browserSelectionStore, useBrowserSelections } from '../browser-selection-store';
@@ -369,8 +370,6 @@ export const Chat: React.FC<{
    */
   /** 답변 아래 면책 문구를 보일까 — 서버 설정(웹 채팅과 같은 칸). 기본은 보인다. */
   const [disclaimer, setDisclaimer] = useState(true);
-  /** 지금 작성기에 민감정보가 보이는가 — 보내기 전 경고(막지는 않는다). */
-  const [sensitive, setSensitive] = useState(false);
   const [feedbackByIo, setFeedbackByIo] = useState<Record<number, ChatFeedback>>({});
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
   /** 눌러서 펼친 출처 — 답변이 실제로 읽은 대목을 보여 준다. */
@@ -488,29 +487,11 @@ export const Chat: React.FC<{
   }, []);
 
   /**
-   * 작성기에 민감정보가 있는지 **서버 검사기**에 묻는다 — 타이핑이 멎은 뒤에.
-   *
-   * 앱이 스스로 정규식으로 판단하면 같은 문장이 웹에서는 걸리고 앱에서는 안 걸린다.
-   * 경고만 하고 보내는 것은 막지 않는다(웹과 같다).
+   * 작성기 통제 정책 사전 검사. 타이핑이 멎으면 **서버**에 묻는다(웹 채팅과 같은 판정).
+   * [채팅 입력시 차단] 에 걸리면 보내기를 막고 이유를 작성기 아래에 둔다. 막지는 않지만 모델에 가려 전달될
+   * 내용이면 그 안내만 둔다. 2026-10-14 전에는 경고만 하고(금융권 고정 문구) 보내기를 막지 않았다.
    */
-  useEffect(() => {
-    const text = input.trim();
-    if (!text) {
-      setSensitive(false);
-      return;
-    }
-    let alive = true;
-    const timer = window.setTimeout(() => {
-      void xgen.guardrails
-        .checkContent(text)
-        .then((res) => alive && setSensitive(res.flagged))
-        .catch(() => undefined);
-    }, 400);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [input]);
+  const policy = useChatInputCheck(input, agent.workflowId ?? null);
 
   // 이 대화의 답변들에 내가 남긴 평가 — 열 때 한 번, 그리고 새 답변이 끝날 때마다 맞춘다.
   // (실패는 조용히 지나간다: 평가는 대화의 곁가지라 못 읽었다고 대화를 막을 이유가 없다.)
@@ -861,6 +842,12 @@ export const Chat: React.FC<{
         images.reduce((sum, image) => sum + image.size, 0) +
         selections.reduce((sum, selection) => sum + selection.image.size, 0);
       if ((!text && attachmentCount === 0) || busy || preparingImages > 0) return;
+      // 통제 정책: 막힐 글은 보내지 않는다. Enter · 음성 · 빠른 채팅(override)도 이 길로 온다.
+      // override 로 온 글이 막히면 작성기에 옮겨 두어 이유를 보고 고쳐 보내게 한다.
+      if (text && !(await policy.confirm(text))) {
+        if (override !== undefined) setInput(text);
+        return;
+      }
       if (attachmentCount > CHAT_IMAGE_MAX_COUNT) {
         setImageNotice(
           `파일은 브라우저 캡처를 포함해 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 보낼 수 있습니다.`,
@@ -899,7 +886,7 @@ export const Chat: React.FC<{
       }
       await dispatch(text, images, selections);
     },
-    [input, busy, preparingImages, session.key, dispatch, replaceStagedImages],
+    [input, busy, preparingImages, session.key, dispatch, replaceStagedImages, policy],
   );
 
   /** 확인창의 [보내기] — 승인 기록을 남기고 그대로 이어서 보낸다. */
@@ -1731,11 +1718,13 @@ export const Chat: React.FC<{
             화면을 첨부하지 못했습니다: {captureNotice}
           </div>
         )}
-        {sensitive && (
-          <div className="sensitive-warn" role="alert">
-            <strong>🔒 민감정보 입력 안내</strong>
-            <span>입력하신 내용에 민감정보가 감지되었습니다. 보내기 전에 다시 한 번 확인해 주세요.</span>
-            <em>주민등록번호·여권번호 같은 고유식별정보, 계좌·카드번호·비밀번호 같은 금융정보</em>
+        {policy.notice && (
+          <div
+            className={policy.notice.tone === 'block' ? 'sensitive-warn blocked' : 'sensitive-warn'}
+            role={policy.notice.tone === 'block' ? 'alert' : 'status'}
+          >
+            <strong>{policy.notice.tone === 'block' ? '보낼 수 없는 내용' : '민감한 내용 안내'}</strong>
+            <span>{policy.notice.text}</span>
           </div>
         )}
         {imageNotice && (
@@ -1956,9 +1945,10 @@ export const Chat: React.FC<{
               onClick={() => void send()}
               disabled={
                 (!input.trim() && stagedImages.length === 0 && browserSelections.length === 0) ||
-                preparingImages > 0
+                preparingImages > 0 ||
+                policy.blocked
               }
-              title="전송"
+              title={policy.blocked ? '통제 정책에 걸려 보낼 수 없습니다' : '전송'}
               aria-label="전송"
             >
               <SendIcon size={17} />

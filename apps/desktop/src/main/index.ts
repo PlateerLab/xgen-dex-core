@@ -2599,10 +2599,10 @@ ipcMain.handle(CHANNELS.conversationThinkingSet, (_e, iid: string, wf: string, t
 ipcMain.handle(CHANNELS.conversationThinkingReset, (_e, iid: string, wf: string) =>
   getClient().conversationModel.resetThinking(String(iid ?? ''), String(wf ?? '')),
 );
-// 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
+// 채팅 안전 장치: 면책 문구 설정과 통제 정책 입력창 사전 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
 ipcMain.handle(CHANNELS.guardDisclaimer, () => getClient().guardrails.disclaimerEnabled());
-ipcMain.handle(CHANNELS.guardCheckContent, (_e, text: string) =>
-  getClient().guardrails.checkContent(text),
+ipcMain.handle(CHANNELS.guardCheckInput, (_e, text: string, workflowId?: string | null) =>
+  getClient().guardrails.checkInput(String(text ?? ''), workflowId ?? null),
 );
 // 답변 평가 — 화면은 값만 넘기고, 서버와 말하는 일은 여기 한 곳에서 한다(웹과 같은 엔드포인트).
 ipcMain.handle(

@@ -84,6 +84,8 @@ export interface InitializeResult {
     conversationSearch?: boolean;
     /** history/conversationAgents · history/conversationPage 의 workflowId (사이드바 [최근 채팅] · [에이전트]). */
     conversationAgents?: boolean;
+    /** chat/checkInput {text, workflowId?, profile?} → ChatInputCheck (통제 정책 입력창 사전 검사). */
+    chatInputCheck?: boolean;
   };
 }
 

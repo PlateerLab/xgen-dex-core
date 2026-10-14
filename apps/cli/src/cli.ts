@@ -287,6 +287,9 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
     localFolders: chatFolders({ noFolder: flag(args, 'no-folder'), folders: csvOption(args, 'folder') }),
     ...(flag(args, 'no-memory-map') ? { memoryMap: false } : {}),
   });
+  // 통제 정책 [채팅 입력시 차단]: 서버가 받지 않을 글은 보내기 전에 멈춘다(대화 화면 · 웹과 같은 판정).
+  const policy = await engine.checkChatInput({ text: input, workflowId: resolved.workflowId, profile: resolved.profile });
+  if (policy.blocked) throw new DexError('usage_error', policy.message);
   const jsonl = flag(args, 'jsonl');
   if (jsonl) writeJson({ kind: 'start', ...resolved, input: undefined });
   else {

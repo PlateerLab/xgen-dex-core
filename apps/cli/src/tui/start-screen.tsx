@@ -5,6 +5,7 @@ import type { Agent } from '@dex/engine';
 import type { TuiEngine } from './model';
 import { AgentFieldRow, FIELD_LABEL_WIDTH, useAgentForm, type AgentField } from './agent-create';
 import { Composer } from './components';
+import { useChatInputPolicy } from './chat-input-policy';
 import { windowRows } from './conversation-list';
 import { ImeTextInput } from './ime-text-input';
 
@@ -88,6 +89,8 @@ export function StartScreen(props: {
 
   const chosen = choice ? props.agents.find((agent) => agent.workflowId === choice) : undefined;
   const isNew = !chosen;
+  // 통제 정책 사전 검사. 새 에이전트는 아직 id 가 없다(예외가 없으니 모든 정책으로 본다: 서버도 같다).
+  const policy = useChatInputPolicy(props.engine, message, chosen?.workflowId, props.profile);
   const name = form.name;
 
   useEffect(() => {
@@ -187,6 +190,8 @@ export function StartScreen(props: {
       return;
     }
     if (!text) return;
+    // 첫 메시지가 막힐 글이면 에이전트를 만들지도, 대화를 열지도 않는다.
+    if (!(await policy.confirm(text))) return;
     setError(undefined);
     if (chosen) {
       latest.current.onStart({ workflowId: chosen.workflowId, workflowName: chosen.workflowName }, text);
@@ -396,6 +401,11 @@ export function StartScreen(props: {
         <Text color="yellow" wrap="truncate-end">
           {shownLock}
         </Text>
+      ) : policy.notice ? (
+        <Text color={policy.notice.tone === 'block' ? 'red' : 'yellow'}>
+          {policy.notice.tone === 'block' ? '⛔ ' : 'ℹ '}
+          {policy.notice.text}
+        </Text>
       ) : null}
       <Composer
         value={message}
@@ -404,7 +414,7 @@ export function StartScreen(props: {
         focused={props.focused && at === COMPOSER_ROW && !picker}
         disabled={!!busy}
         disabledText={busy}
-        locked={!!lockReason}
+        locked={!!lockReason || policy.blocked}
         nativeIme={props.nativeIme === true}
         hangulMode={props.hangulMode}
         onHangulModeChange={props.onHangulModeChange}

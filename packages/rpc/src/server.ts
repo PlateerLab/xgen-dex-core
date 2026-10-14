@@ -233,6 +233,8 @@ export class DexRpcServer {
             conversationSearch: true,
             // history/conversationAgents · history/conversationPage 의 workflowId (최근 채팅 · 에이전트).
             conversationAgents: true,
+            // chat/checkInput: 통제 정책(개인정보 · 금칙어) 입력창 사전 검사.
+            chatInputCheck: true,
           },
         };
       }
@@ -402,6 +404,12 @@ export class DexRpcServer {
           optionalString(params, 'workflowName'),
           optionalString(params, 'profile'),
         );
+      case 'chat/checkInput':
+        return this.engine.checkChatInput({
+          text: typeof params.text === 'string' ? params.text : '',
+          workflowId: optionalString(params, 'workflowId') ?? null,
+          profile: optionalString(params, 'profile'),
+        });
       case 'chat/start':
         return this.startChat(params);
       case 'chat/attachment/upload':

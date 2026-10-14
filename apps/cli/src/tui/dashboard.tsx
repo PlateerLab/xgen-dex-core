@@ -44,6 +44,7 @@ import { maximumScroll, renderTranscript, viewportOf } from './transcript';
 import { CommandPalette, type PaletteAction } from './command-palette';
 import { ModelPicker, ThinkingPicker } from './model-picker';
 import { Composer, Footer, Header } from './components';
+import { useChatInputPolicy } from './chat-input-policy';
 import { HistoryScreen } from './history-screen';
 import { StartScreen, type AgentRef } from './start-screen';
 import {
@@ -239,6 +240,8 @@ export function Dashboard(props: {
   const [attachments, setAttachments] = useState<ChatAttachmentDescriptor[]>([]);
   const [attachmentInteractionId, setAttachmentInteractionId] = useState<string>();
   const [attachmentNotice, setAttachmentNotice] = useState('');
+  // 통제 정책 [채팅 입력시 차단] 사전 검사. 걸리면 작성기가 잠기고 이유가 위에 선다.
+  const policy = useChatInputPolicy(props.engine, input, selected?.workflowId, props.session.profile);
   const [chat, dispatch] = useReducer(chatReducer, initialChatState);
   /**
    * 화면을 옮길 때마다(다른 대화를 열거나 새 채팅) 하나씩 오른다. 손을 뗀 턴의 스트림이 늦게
@@ -1152,6 +1155,8 @@ export function Dashboard(props: {
       return;
     }
     if (!text && attachments.length === 0) return;
+    // 통제 정책: 막힐 글이면 보내지 않고 글을 그대로 둔다(이유는 작성기 위 한 줄).
+    if (text && !(await policy.confirm(text))) return;
     const epoch = viewEpoch.current;
     /** 이 턴을 보낸 화면에 아직 있는가. 다른 대화로 옮겼으면 그 화면을 건드리지 않는다. */
     const here = (): boolean => viewEpoch.current === epoch;
@@ -1645,6 +1650,12 @@ export function Dashboard(props: {
           }}
         />
         {attachmentNotice ? <Text color="cyan">📎 {attachmentNotice}</Text> : null}
+        {policy.notice ? (
+          <Text color={policy.notice.tone === 'block' ? 'red' : 'yellow'}>
+            {policy.notice.tone === 'block' ? '⛔ ' : 'ℹ '}
+            {policy.notice.text}
+          </Text>
+        ) : null}
         {readOnly ? (
           // 지워진 에이전트의 대화: 지난 대화만 본다. 입력창이 없다.
           <Box borderStyle="round" borderColor="gray" paddingX={1}>
@@ -1659,6 +1670,7 @@ export function Dashboard(props: {
             onSubmit={(value) => void send(value)}
             focused={mainActive}
             disabled={chat.running || !selected}
+            locked={policy.blocked}
             nativeIme={nativeIme}
             hangulMode={hangulMode}
             onHangulModeChange={changeHangulMode}

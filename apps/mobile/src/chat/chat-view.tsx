@@ -63,6 +63,7 @@ import { wsBaseOf, type XgenMobileClient } from '../lib/xgen';
 import { TAP, useP } from '../theme';
 import { notifyAnswer } from './answer-notice';
 import { initialMessageGate, type InitialMessage } from './initial-message';
+import { useChatInputCheck } from './use-chat-input-check';
 import { CONVERSATION_TEXT } from '../conversations/conversation-model';
 import { MessageItem } from './message-item';
 import { ToolLogSheet } from './tool-log-sheet';
@@ -527,10 +528,22 @@ export function ChatView({
     listRef.current?.scrollToEnd({ animated: true });
   }, []);
 
+  // ── 통제 정책 입력창 사전 검사 ─────────────────────────────────
+  // 걸리면 보내기 단추가 꺼지고 이유가 작성기 위에 선다. 보내는 길(sendText)도 직전에 한 번 더 본다.
+  const policy = useChatInputCheck(client, input, readOnly ? null : (agent?.workflowId ?? null));
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
+
   // ── 보내기 ─────────────────────────────────────────────────
   /** 한 턴을 보낸다. 입력창에서도, 시작 화면의 첫 메시지에서도 이 길 하나로. */
   const sendText = useCallback(async (text: string, sending: MobileChatAttachment[]): Promise<void> => {
     if ((!text && sending.length === 0) || runningRef.current || uploadBusy.current || !chatRef.current) return;
+    // 통제 정책: 막힐 글이면 보내지 않고 입력창에 되돌린다(시작 화면에서 넘어온 첫 메시지도 이 길이다).
+    if (text && !(await policyRef.current.confirm(text))) {
+      setInput((cur) => (cur.trim() ? cur : text));
+      setAttachments((current) => [...sending, ...current]);
+      return;
+    }
     setRunning(true);
     stoppedRef.current = false;
     jumpToBottom();
@@ -558,6 +571,8 @@ export function ChatView({
   const send = useCallback(async (): Promise<void> => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || running || uploadBusy.current || !chatRef.current) return;
+    // 막힐 글은 입력창을 비우지 않는다(이유는 작성기 위에 이미 서 있다).
+    if (text && !(await policyRef.current.confirm(text))) return;
     const sending = [...attachments];
     setInput('');
     setAttachments([]);
@@ -742,7 +757,7 @@ export function ChatView({
     );
   }
 
-  const canSend = !uploading && wsState === 'connected' && (!!input.trim() || attachments.length > 0);
+  const canSend = !uploading && wsState === 'connected' && !policy.blocked && (!!input.trim() || attachments.length > 0);
   const placeholder =
     wsState === 'connected'
       ? running
@@ -974,6 +989,20 @@ export function ChatView({
           {!!attachmentStatus && (
             <Text style={{ color: p.muted, fontSize: 12, marginBottom: 5 }}>{attachmentStatus}</Text>
           )}
+          {policy.notice ? (
+            <Text
+              accessibilityRole={policy.notice.tone === 'block' ? 'alert' : 'text'}
+              style={{
+                color: policy.notice.tone === 'block' ? p.danger : p.muted,
+                fontSize: 12.5,
+                lineHeight: 18,
+                marginBottom: 5,
+                paddingHorizontal: 6,
+              }}
+            >
+              {policy.notice.text}
+            </Text>
+          ) : null}
           <View
             style={{
               flexDirection: 'row',

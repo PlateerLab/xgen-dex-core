@@ -5737,6 +5737,14 @@ button {
   font-size: 11px;
   color: var(--muted);
 }
+/* 통제 정책 [채팅 입력시 차단] 에 걸려 보내기가 막혔을 때. 막지 않는 안내(위 노랑)와 구별한다. */
+.sensitive-warn.blocked {
+  border-color: #e5484d;
+  background: color-mix(in srgb, #e5484d 10%, transparent);
+}
+.sensitive-warn.blocked strong {
+  color: #e5484d;
+}
 
 /* ── 출처 근거 ────────────────────────────────────────────────
    이름표를 누르면 답변이 실제로 읽은 대목이 열린다. */

@@ -32,6 +32,7 @@ import { alpha, TAP, useP, type Palette } from '../theme';
 import { friendlyError } from '../lib/errors';
 import { diagLog } from '../lib/diag';
 import type { XgenMobileClient } from '../lib/xgen';
+import { useChatInputCheck } from '../chat/use-chat-input-check';
 import {
   START_TEXT,
   isNumericSetting,
@@ -154,6 +155,8 @@ export function StartScreen({
     if (!selected) return null;
     return agents?.find((a) => a.workflowId === selected) ?? (preset.agent?.workflowId === selected ? preset.agent : null);
   }, [agents, selected, preset.agent]);
+  // 통제 정책 사전 검사. 새 에이전트는 아직 id 가 없다(예외가 없으니 모든 정책으로 본다: 서버도 같다).
+  const policy = useChatInputCheck(client, text, newAgent ? null : (selectedAgent?.workflowId ?? null));
 
   // 같은 이름이 있는가: 적다가 잠깐 멈추면 묻는다. 답은 이름별로 기억한다(늦게 온 앞 이름의 답이 지금 이름을 덮지 않는다).
   useEffect(() => {
@@ -189,6 +192,8 @@ export function StartScreen({
     }
     const body = text.trim();
     if (!body) return;
+    // 첫 메시지가 막힐 글이면 에이전트를 만들지도, 대화를 열지도 않는다.
+    if (!(await policy.confirm(body))) return;
     setError('');
     setShowLock(false);
     if (!newAgent) {
@@ -239,7 +244,7 @@ export function StartScreen({
     } finally {
       setBusy(false);
     }
-  }, [client, edits, lock, model, name, newAgent, onStart, options, provider, selectedAgent, text]);
+  }, [client, edits, lock, model, name, newAgent, onStart, options, policy, provider, selectedAgent, text]);
 
   const current = options?.providers.find((x) => x.value === provider);
   const filteredAgents = useMemo(() => {
@@ -255,7 +260,7 @@ export function StartScreen({
         ? options?.defaults[s.id]
         : s.default;
 
-  const canSend = !lock.locked && !!text.trim();
+  const canSend = !lock.locked && !policy.blocked && !!text.trim();
   // 입력창 위 한 줄: 만드는 중 > 잠금 이유(누른 뒤) > 실패. 확인·불러오는 중은 오류가 아니라 흐리게.
   // 모델 목록을 못 받았으면 "불러오는 중" 대신 그 실패를 댄다.
   const lockReason = lock.reason === START_TEXT.optionsLoading && optionsError ? optionsError : lock.reason;
@@ -265,7 +270,9 @@ export function StartScreen({
       ? { text: lockReason, muted: lockReason === START_TEXT.checking || lockReason === START_TEXT.optionsLoading }
       : error
         ? { text: error, muted: false }
-        : null;
+        : policy.notice
+          ? { text: policy.notice.text, muted: policy.notice.tone !== 'block' }
+          : null;
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>

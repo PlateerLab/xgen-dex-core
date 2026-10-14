@@ -2455,3 +2455,15 @@ kbd {
   color: inherit;
   background: var(--vscode-editor-findMatchHighlightBackground, color-mix(in srgb, var(--dex-accent) 30%, transparent));
 }
+
+/* 통제 정책 입력창 사전 검사 한 줄. 막지 않는 안내는 흐리게, 막을 때(보내기 꺼짐)는 오류 색으로. */
+.input-policy {
+  margin: 2px 10px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: keep-all;
+  color: var(--vscode-descriptionForeground);
+}
+.input-policy.blocked {
+  color: var(--vscode-errorForeground);
+}

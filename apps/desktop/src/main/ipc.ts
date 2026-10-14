@@ -143,7 +143,7 @@ export const CHANNELS = {
   conversationModelChanged: 'conversation-model:changed',
   /** 채팅 안전 장치 — 면책 문구 설정 · 민감정보 검사. */
   guardDisclaimer: 'guard:disclaimer',
-  guardCheckContent: 'guard:checkContent',
+  guardCheckInput: 'guard:checkInput',
   /** 답변 평가(별점·문제 유형) — 웹 채팅과 같은 서버 계약. */
   feedbackSubmit: 'feedback:submit',
   feedbackUpdate: 'feedback:update',

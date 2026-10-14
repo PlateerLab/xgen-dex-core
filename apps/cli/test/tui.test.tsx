@@ -224,6 +224,18 @@ function fakeEngine(
     async stopChat(): Promise<ChatStopResult> {
       return { stopped: true };
     },
+    // 통제 정책 사전 검사: 이 가짜 서버는 전화번호 모양(010-)이 든 글을 [채팅 입력시 차단] 으로 막는다.
+    async checkChatInput(input: { text: string }) {
+      const blocked = input.text.includes('010-');
+      return {
+        blocked,
+        kinds: blocked ? (['pii'] as const).slice() : [],
+        message: blocked ? '개인정보(전화번호)가 들어 있어 보낼 수 없습니다. 해당 내용을 지우거나 고친 뒤 보내 주세요.' : '',
+        maskedKinds: [],
+        notice: '',
+        checked: true,
+      };
+    },
     async resolveChatInput(input: ChatInput): Promise<ResolvedChatInput> {
       return {
         profile: input.profile ?? 'corp',
@@ -393,6 +405,24 @@ test('TUI boots an authenticated profile and streams a chat turn', async () => {
     view.stdin.write('\r');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
     assert.match(frame, /You said: hello/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('통제 정책에 걸린 첫 말은 보내지 않고 이유를 보이며 작성기를 잠근다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [], calls)} />);
+  try {
+    await chooseSalesAgent(view);
+    view.stdin.write('번호 010-1234-5678');
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('개인정보(전화번호)'));
+    assert.match(frame, /잠김/);
+    view.stdin.write('\r');
+    await waitForSettled(view.lastFrame);
+    frame = view.lastFrame() ?? '';
+    assert.match(frame, /보낼 수 없습니다/);
+    assert.deepEqual(calls.sent, [], '막힌 글은 서버로 가지 않는다');
   } finally {
     view.cleanup();
   }

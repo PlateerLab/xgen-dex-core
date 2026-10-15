@@ -26,7 +26,8 @@ import {
   type ElementRefs,
 } from './fast-act';
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
-import { decisionPost, originOf, visiblePage, waitSettled } from './fast-act-runner';
+import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
+import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
@@ -57,29 +58,11 @@ const isSearchField = (r: { role: string; name?: string }): boolean => r.role ==
 /** 누르기만 해서는 아무 일도 안 일어나는 입력칸. */
 const TEXT_FIELD = new Set(['textbox', 'searchbox']);
 /**
- * 누를 대상이 아닌 영역(랜드마크) — 영역 전체에 클릭 처리가 걸려 스냅샷에 잡혀도 후보에서 뺀다
- * ("뉴스 찾아보게 해줘" 에 navigation "main navigation", "뒤로 가봐" 에 이름 없는 Iframe 을 누르던 문제).
- */
-const LANDMARK = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary', 'region', 'form', 'search', 'iframe']);
-/**
  * 가린 팝업·배너를 닫는 요소의 이름 — 화면 일반 관례(닫기·오늘 하루 보지 않기·거부·×). 동의/수락은 넣지 않는다
  * (사용자 대신 동의하지 않는다).
  */
 const CLOSE_NAME = /(닫기|닫아|close|dismiss|오늘\s*(하루\s*)?(그만\s*)?(보지|열지)|다시\s*보지|그만\s*보기|나중에|no thanks|거부|reject)|^[x×✕✖]$/i;
 const CLOSE_ROLE = new Set(['button', 'link', 'checkbox', 'img', 'generic']);
-/**
- * 브라우저 자체 조작(뒤로·앞으로·새로고침·탭 고르기·탭 닫기·새 탭) — 페이지에는 없는 요소라 화면 맨 위(도구 막대·탭 줄 자리)에
- * 화면 요소처럼 붙여 결정 모델이 페이지 요소와 같은 질문으로 고르게 한다. 번호는 페이지 요소(e1…)와 겹치지 않게 e9001 부터.
- * 고른 확신이 이만큼은 돼야 하고, 탭 닫기는 말이 끝난 뒤 더 높은 확신에서만(팝업 닫기와 헷갈리면 탭이 통째로 닫힌다).
- */
-const CHROME_PICK = 0.8;
-const CHROME_CLOSE_PICK = 0.9;
-/**
- * 탭을 가리키는 말 — 탭 닫기는 말에 이게 있을 때만 후보로 둔다. "창" 은 팝업·광고 층을 가리키는 경우가 많아("광고 창 닫아"
- * 에 탭이 통째로 닫혔다) 넣지 않는다 — 그런 말은 페이지 안의 닫기 요소를 고른다.
- */
-const TAB_WORD = /(탭|페이지|tab|page)/i;
-type ChromeAction = { role: string; name: string; close?: boolean; run: () => Promise<void> };
 /** 누르려던 요소를 다른 요소가 가렸다는 브라우저 응답. */
 const COVERED = /is covered by/;
 
@@ -180,42 +163,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return buildScreen(origin, Object.entries(refs).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' })));
   }
 
-  /** 지금 탭에서 할 수 있는 브라우저 자체 조작. 탭 번호는 DeX 탭 줄의 순서(1부터). */
-  private chromeOf(page: NonNullable<ReturnType<typeof visiblePage>>): Record<string, ChromeAction> {
-    const runtime = getBrowserRuntime();
-    const tabs = runtime.state().pages.filter((p) => p.workflowId === this.workflowId && p.mode === 'shared');
-    const out: Record<string, ChromeAction> = {};
-    const add = (a: ChromeAction): void => void (out[`e${9001 + Object.keys(out).length}`] = a);
-    const nav = (action: 'back' | 'forward' | 'reload') => async (): Promise<void> => void (await runtime.navigate({ pageId: page.pageId, action }));
-    if (page.canGoBack) add({ role: 'button', name: '뒤로 (이전 페이지)', run: nav('back') });
-    if (page.canGoForward) add({ role: 'button', name: '앞으로 (다음 페이지)', run: nav('forward') });
-    add({ role: 'button', name: '새로고침', run: nav('reload') });
-    tabs.forEach((t, i) => {
-      if (t.pageId === page.pageId || tabs.length < 2) return;
-      add({ role: 'tab', name: `${i + 1}번째 탭: ${(t.title || t.url).slice(0, 30)}`, run: async () => void runtime.activate(t.pageId) });
-    });
-    add({
-      role: 'button',
-      name: `웹 페이지 탭 닫기 (지금 탭: ${(page.title || page.url).slice(0, 24)})`,
-      close: true,
-      run: async () => {
-        await runtime.close(page.pageId);
-        if (tabs.length === 1) await runtime.ensureShared(this.workflowId, page.workflowName);
-      },
-    });
-    add({
-      role: 'button',
-      name: '새 웹 페이지 탭 열기',
-      run: async () => void runtime.activate((await runtime.create({ workflowId: this.workflowId, workflowName: page.workflowName, mode: 'shared' })).pageId),
-    });
-    return out;
-  }
-
-  /** 페이지 요소 앞에 브라우저 자체 조작을 붙인 요소 목록. */
+  /** 페이지 요소 앞에 브라우저 자체 조작을 붙인 요소 목록(fast-act-chrome). */
   private withChrome(page: NonNullable<ReturnType<typeof visiblePage>>, refs: ElementRefs): { refs: ElementRefs; chrome: Record<string, ChromeAction> } {
-    const chrome = this.chromeOf(page);
-    const head = Object.fromEntries(Object.entries(chrome).map(([k, a]) => [k, { role: a.role, name: a.name }])) as ElementRefs;
-    return { refs: { ...head, ...refs }, chrome };
+    return withChrome(this.workflowId, page, refs);
   }
 
   /**
@@ -294,6 +244,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     let closed: string | null = null;
     if (ref) {
+      revealForAct(s.page);
       try {
         await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${ref}`], 10_000, s.snap.gen);
         closed = s.snap.refs[ref].name ?? ref;
@@ -354,6 +305,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!typed) return null;
     const action: ActionKind = SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : 'type';
     const runtime = getBrowserRuntime();
+    revealForAct(s.page);
     const tAct = now();
     try {
       await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['fill', `@${pick.ref}`, typed], 10_000, s.snap.gen);
@@ -422,6 +374,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (ch.close && (th.partial || pick.confidence < CHROME_CLOSE_PICK)) return no(`탭 닫기는 말이 끝난 뒤 확신 ${CHROME_CLOSE_PICK} 이상에서`);
     if (!(await guard(ch.name, 'press', pick.confidence))) return no(GUARDED);
     const decideMs = now() - t0;
+    revealForAct(page);
     const tAct = now();
     try {
       await ch.run();
@@ -547,6 +500,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
     const runtime = getBrowserRuntime();
     const ref = `@${pick.ref}`;
+    revealForAct(page);
     const tAct = now();
     try {
       if (action === 'click') {

@@ -166,6 +166,7 @@ import type {
   BrowserHistoryListRequest,
   BrowserHistoryRemoveRequest,
   BrowserHistorySuggestionsRequest,
+  BrowserPageInfo,
   BrowserPopupPermission,
   BrowserPopupResolveRequest,
 } from '@dex/protocol/browser';
@@ -1297,6 +1298,12 @@ function showMain(): void {
   mainWindow.focus();
 }
 
+/** 브라우저 탭을 그 대화 옆에 꺼낸다(렌더러 placeBrowserBesideChat) — 에이전트 도구·빠른 조작 공용. */
+function revealBrowserPage(page: BrowserPageInfo): void {
+  showMain();
+  safeSend(mainWindow, CHANNELS.browserRevealEvent, page);
+}
+
 function openMainSettings(): void {
   showMain();
   safeSend(mainWindow, CHANNELS.openSettingsModal);
@@ -2079,10 +2086,7 @@ function syncMcp(): void {
     cfg.browser?.enabled === true,
     // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
     (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
-    (page) => {
-      showMain();
-      safeSend(mainWindow, CHANNELS.browserRevealEvent, page);
-    },
+    revealBrowserPage,
   );
   getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
@@ -2567,6 +2571,7 @@ configureFastAct({
     // 고속 조작은 choice 질문만 보낸다.
     return res.answers as Record<string, ChoiceAnswer>;
   },
+  reveal: revealBrowserPage,
 });
 // 실험: 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다.
 const voiceStreams = new VoiceStreamHub(() =>

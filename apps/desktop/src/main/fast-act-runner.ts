@@ -31,6 +31,7 @@ import {
   type DecisionPost,
   type ElementRefs,
 } from './fast-act';
+import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeActions, chromeRefs } from './fast-act-chrome';
 import { FORMAT, buildScreen, setScreen } from './fast-act-e13';
 import { takeVoiceTurn, type VoiceTurn } from './voice-turns';
 
@@ -51,6 +52,11 @@ export interface FastActDeps {
   /** 설정이 켜져 있고 로그인돼 있는가 */
   enabled: () => boolean;
   post: DecisionPost;
+  /**
+   * 조작할 브라우저 탭을 화면에 꺼낸다 — 에이전트가 브라우저를 열 때와 같은 경로(채팅 옆 분할).
+   * 가려진 웹뷰는 그리기를 멈춰서 클릭이 5초 기다리다 효과 없이 끝난다(10/15 dev-xgen 실측).
+   */
+  reveal?: (page: BrowserPageInfo) => void;
 }
 let deps: FastActDeps | null = null;
 let direct: DecisionPost | null = null;
@@ -58,7 +64,16 @@ let warmed: DecisionPost | null = null;
 let unavailableUntil = 0;
 
 export function configureFastAct(d: FastActDeps): void {
-  deps = { enabled: d.enabled, post: withBackoff(d.post) };
+  deps = { enabled: d.enabled, post: withBackoff(d.post), reveal: d.reveal };
+}
+
+/** 조작 직전에 부른다 — 이미 보이면 배치는 그대로다. */
+export function revealForAct(page: BrowserPageInfo): void {
+  try {
+    deps?.reveal?.(page);
+  } catch (err) {
+    diag(SCOPE, 'reveal failed', String(err));
+  }
 }
 
 /** XGEN 쪽 호출이 503(판단 모델 미로드)이면 잠시 끈다. */
@@ -222,6 +237,9 @@ export async function tryFastAct(
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
   const origin = originOf(page.url);
   const runtime = getBrowserRuntime();
+  // 뒤로·앞으로·새로고침·탭 — 페이지 요소와 함께 고른다(fast-act-chrome). 한 번만 만들어 화면과 후보의 번호를 맞춘다.
+  const chrome = chromeActions(req.workflowId, page);
+  const head = chromeRefs(chrome);
   const id = `fast-${Date.now()}-${++seq}`;
   const row = (name: string, input: unknown, result: string, durationMs: number, n: number): void => {
     const toolUseId = `${id}-${n}`;
@@ -246,7 +264,7 @@ export async function tryFastAct(
       return false;
     }
     const r0 = ((early.run.result as { data?: { refs?: ElementRefs } } | undefined)?.data?.refs ?? {}) as ElementRefs;
-    setScreen(buildScreen(origin, Object.entries(r0).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' }))));
+    setScreen(buildScreen(origin, Object.entries({ ...head, ...r0 }).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' }))));
   } else setScreen(null);
   let cls;
   try {
@@ -272,9 +290,15 @@ export async function tryFastAct(
   }
   const data = (snap.run.result as { data?: { refs?: ElementRefs } } | undefined)?.data;
   const refs = data?.refs ?? {};
+  // 랜드마크(영역 전체)는 누를 대상이 아니고, 탭 닫기는 탭을 가리킨 말에서만 후보로 둔다.
+  const candidates = Object.fromEntries(
+    Object.entries({ ...head, ...refs }).filter(
+      ([k, r]) => !LANDMARK.has(r.role) && !(chrome[k]?.close && !TAB_WORD.test(text)),
+    ),
+  ) as ElementRefs;
   let pick;
   try {
-    pick = await pickElement(post, text, origin, refs);
+    pick = await pickElement(post, text, origin, candidates);
   } catch (err) {
     diag(SCOPE, 'skip: 결정 모델 오류', String(err));
     return false;
@@ -286,7 +310,14 @@ export async function tryFastAct(
     row('고속 조작 판별', { instruction: text }, `서버로 넘김 — ${why}`, now() - t0, 0);
     return false;
   }
-  const element = refs[pick.ref];
+  const ch = chrome[pick.ref];
+  if (ch && (pick.confidence < CHROME_PICK || (ch.close && pick.confidence < CHROME_CLOSE_PICK))) {
+    const why = `브라우저 조작 확신 낮음 (${pick.confidence.toFixed(2)})`;
+    diag(SCOPE, `to server: ${why}`, { text, top: pick.top });
+    row('고속 조작 판별', { instruction: text }, `서버로 넘김 — ${why}`, now() - t0, 0);
+    return false;
+  }
+  const element = candidates[pick.ref];
   const { action, text: typed } = resolveAction(cls, element);
   const decideMs = now() - t0;
 
@@ -308,9 +339,12 @@ export async function tryFastAct(
   );
   const gen = snap.run.page.generation;
   const ref = `@${pick.ref}`;
+  revealForAct(page);
   const actStart = now();
   try {
-    if (action === 'click') {
+    if (ch) {
+      await ch.run();
+    } else if (action === 'click') {
       await runtime.runAgentCommand(req.workflowId, page.pageId, ['click', ref], 10_000, gen);
     } else {
       await runtime.runAgentCommand(req.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, gen);

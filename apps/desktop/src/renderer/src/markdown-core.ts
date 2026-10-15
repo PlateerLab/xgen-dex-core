@@ -85,6 +85,13 @@ export function normalizeTableSeparators(text: string): string {
 // Sentinel to protect emphasis spans while separating glued lists/headers.
 const UNGLUE_SENTINEL = String.fromCharCode(0xe000);
 
+// "Not inside a table cell" (a line that starts AND ends with `|`): a newline inserted
+// there splits the row and breaks the table. Text glued after a row's closing `|` is
+// still separated. Two real cases: the `#` column header (`| # | 이름 |`) read as a glued
+// heading left a lone `|` line above the table, and a date cell ("2025.12.31. 기준") read
+// as a glued "31." list item split the row in two.
+const NOT_IN_TABLE_ROW = String.raw`(?!(?<=^[ \t]*\|[^\n]*)[^\n]*\|[ \t]*$)`;
+
 /**
  * Insert the newlines LLMs omit before block markers, so a header/list glued to
  * the previous sentence ("…다.### 제목", "…음* 항목") still parses. Emphasis is
@@ -108,11 +115,12 @@ export function ungluMarkdownMarkers(text: string): string {
   // header marker missing space: "###제목" → "### 제목"
   s = s.replace(/(#{2,6})([^\s#])/g, '$1 $2');
   // header glued mid-line → break before it
-  s = s.replace(/([^\n#])(#{1,6}[ \t]+\S)/g, '$1\n\n$2');
-  // ordered list glued (skip decimals like 3.14 and header-internal "1. ")
-  s = s.replace(/([^\n\d#\s])(\d+\.[ \t]+\S)/g, '$1\n$2');
+  s = s.replace(new RegExp(`${NOT_IN_TABLE_ROW}([^\\n#])(#{1,6}[ \\t]+\\S)`, 'gm'), '$1\n\n$2');
+  // ordered list glued (skip decimals like 3.14, header-internal "1. ", and the last
+  // part of a dotted date/version like "2025.12.31." — the "31." after "12.")
+  s = s.replace(new RegExp(`${NOT_IN_TABLE_ROW}([^\\n\\d#\\s])(?<!\\d\\.)(\\d+\\.[ \\t]+\\S)`, 'gm'), '$1\n$2');
   // unordered list glued (skip "**"/"---" and table cells "- |")
-  s = s.replace(/([^\n\s])([*+-][ \t]+\S)/g, (m: string, before: string, marker: string) => {
+  s = s.replace(new RegExp(`${NOT_IN_TABLE_ROW}([^\\n\\s])([*+-][ \\t]+\\S)`, 'gm'), (m: string, before: string, marker: string) => {
     if (/^([*+-])\1/.test(marker)) return m;
     if (marker.endsWith('|')) return m;
     if (before === ':' || before === '-') return m;

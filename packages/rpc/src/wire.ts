@@ -81,9 +81,27 @@ export interface InitializeResult {
     chatCancellation: boolean;
     history: boolean;
     localTools: boolean;
+    /** chat/start 가 localFolders(이 대화에 연결할 이 기기의 폴더)를 받는다. */
+    localFolders?: boolean;
     /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
     ssh?: boolean;
     nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software'; canonicalConversation?: true; canonicalLive?: true; canonicalTurns?: true; canonicalSessions?: true; canonicalAttachments?: true };
+    /** conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기(다음 답변부터). */
+    conversationModel?: boolean;
+    /** conversation/thinking/set(·/reset) — 대화 도중 생각(추론) 값 바꾸기(지금 모델이 받는 값만). */
+    conversationThinking?: boolean;
+    /** history/conversationPage · history/rename · history/delete · history/purgeDeletedAgents (대화 목록). */
+    conversationList?: boolean;
+    /** conversations/watch · conversations/unwatch → conversations/changed 알림(대화 목록 실시간). */
+    conversationListWatch?: boolean;
+    /** agents/createOptions · agents/nameTaken · agents/create (시작 화면의 새 에이전트). */
+    agentCreate?: boolean;
+    /** history/search (채팅 검색: 제목·에이전트 이름·대화 내용). */
+    conversationSearch?: boolean;
+    /** history/conversationAgents · history/conversationPage 의 workflowId (사이드바 [최근 채팅] · [에이전트]). */
+    conversationAgents?: boolean;
+    /** chat/checkInput {text, workflowId?, profile?} → ChatInputCheck (통제 정책 입력창 사전 검사). */
+    chatInputCheck?: boolean;
   };
 }
 

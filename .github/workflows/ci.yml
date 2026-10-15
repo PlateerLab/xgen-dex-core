@@ -1,18 +1,148 @@
 name: CI
 
-# 모든 PR 과 main push. 세 앱과 세 패키지를 **한 번에** 검사한다 — 코어를 고치면
-# 그 자리에서 세 표면이 같이 돌아야, 한쪽만 깨진 채로 머지되는 일이 없다.
+# PR 에서만 돈다. 그리고 **바뀐 영역의 잡만** 돈다.
+#
+# 예전에는 PR·main 푸시·태그마다 전부 돌았다. 기능 PR → 버전업 PR → main 푸시
+# (캐시 워밍 빌드) → 태그 릴리스로, 같은 데스크톱·안드로이드·iOS 빌드가 한
+# 릴리스에 네다섯 번 만들어졌다. 이제는:
+#   - main 푸시에는 돌지 않는다. PR 에서 검증된 코드가 그대로 들어간다.
+#   - 버전 숫자·문서만 바꾼 변경은 무거운 잡을 돌리지 않는다(scripts/ci/changes.mjs).
+#   - 버전 일치(version.mjs check)는 모든 PR 에서 본다 — 몇 초면 끝난다.
+#   - 이 파일을 고친 PR 은 **고친 잡만** 한 번 더 돈다(공통 부분을 고쳤을 때만 전부).
+#   - 같은 PR 에 새로 푸시하면 이전 실행은 취소된다.
+# 릴리스 빌드는 release.yml 한 곳에서 한 번만 만든다.
 
 on:
   pull_request:
-  push:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  # 모바일(React Native)은 별도 npm 프로젝트 — 다른 표면과 완전히 독립이라 잡도
-  # 분리한다 (여기 실패해도 verify 산출과 무관, verify 실패와도 무관).
+  changes:
+    name: 바뀐 영역 · 버전 일치
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.areas.outputs.core }}
+      mobile: ${{ steps.areas.outputs.mobile }}
+      native: ${{ steps.areas.outputs.native }}
+      deskpack: ${{ steps.areas.outputs.deskpack }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 모든 앱·패키지의 버전이 같은지
+        run: node scripts/version.mjs check
+      - name: 바뀐 영역
+        id: areas
+        run: node scripts/ci/changes.mjs ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+
+  # ── 데스크톱 · CLI · VS Code · 패키지 ──
+  verify:
+    name: 계약 · 타입 · 테스트
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # 데스크톱은 workspace 밖이라(electron) 따로 설치한다.
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+      # XD 앱은 여기서 설치·빌드·타입체크하지 않는다(PR 검사에서 뺐다, xd-manual.yml 에서 손으로 돌린다).
+
+      # 산출물이 필요한 검사(확장 번들에 엔진이 없는지)가 있으므로 빌드가 먼저다.
+      - name: 빌드
+        run: |
+          npm --prefix apps/cli run build
+          npm --prefix apps/vscode run build
+          npm --prefix apps/desktop run build
+          npm --prefix packages/ide run build
+
+      - name: 계약 검사
+        run: npm run contracts
+
+      - name: 타입체크
+        run: |
+          npx tsc --noEmit -p packages/protocol/tsconfig.json
+          npx tsc --noEmit -p packages/engine/tsconfig.json
+          npx tsc --noEmit -p packages/rpc/tsconfig.json
+          npx tsc --noEmit -p packages/ide/tsconfig.json
+          npx tsc --noEmit -p apps/cli/tsconfig.json
+          npx tsc --noEmit -p apps/vscode/tsconfig.json
+          npx tsc --noEmit -p apps/desktop/tsconfig.json
+
+      - name: 테스트
+        run: |
+          npm --prefix packages/protocol test
+          npm --prefix packages/engine test
+          npm --prefix packages/ide test
+          npm --prefix apps/cli test
+          npm --prefix apps/vscode test
+          npm --prefix apps/desktop test
+
+  # ── XD 앱·엔진·설치본은 PR 에서 돌지 않는다 ──
+  # 매 PR 마다 Electron E2E 와 세 OS 엔진·설치본 빌드가 돌며 러너를 오래 잡았고, 앱 E2E 는 계속 실패했다.
+  # XD 는 앱 코드를 그대로 두고, 필요할 때 Actions → XD (수동) 으로 돌린다(.github/workflows/xd-manual.yml).
+
+  # ── Dex 설치본 — 릴리스와 같은 설치본을 만들어 그 설치본으로 띄우고, Windows 는 처음 설치·업데이트·제거 ──
+  # 설치본에 닿는 것(설치 설정·NSIS·의존성·이 확인)이 바뀔 때만 돈다(changes.mjs 의 deskpack). 처음 하는 사용자별
+  # 설치는 Windows 11 24H2·Server 2025(windows-latest)에서 electron-builder 26.12 아래의 템플릿이 죽던 길이다.
+  desktop-package:
+    name: Dex 설치본 (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.deskpack == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest, flag: --linux, exe: apps/desktop/release/linux-unpacked/xgen-dex }
+          - { name: windows-x64, os: windows-latest, flag: --win, exe: apps/desktop/release/win-unpacked/XGen-Dex.exe }
+          - { name: macos-arm64, os: macos-latest, flag: --mac, exe: apps/desktop/release/mac-arm64/XGen-Dex.app/Contents/MacOS/XGen-Dex }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm --prefix apps/desktop ci --no-audit --no-fund
+      - name: 빌드
+        run: npm --prefix apps/desktop run build
+      - name: 설치본
+        working-directory: apps/desktop
+        run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: 설치본으로 띄우기
+        shell: bash
+        env:
+          DEX_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            # keytar 가 여는 libsecret(deb 의 depends 에 있다), 화면 없는 X
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libsecret-1-0
+            RUN="xvfb-run -a"
+          else
+            RUN=""
+          fi
+          cd apps/desktop && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
+      - name: Windows 처음 설치·업데이트·제거·이전 릴리스에서 올라오기
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/check-installer.mjs
+  # ── 모바일 JS (별도 npm 프로젝트) ──
   mobile:
     name: 모바일 (타입 · 테스트)
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,61 +155,15 @@ jobs:
       - run: npm --prefix apps/mobile test
       - run: npm --prefix apps/mobile run typecheck
 
-  mobile-native-key-android:
-    name: 모바일 기기 키 (Android 컴파일 · 서명)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
-      - run: npm --prefix apps/mobile ci --no-audit --no-fund
-      - name: 네이티브 모듈 및 실제 P-256 서명 검증
-        working-directory: apps/mobile/android
-        run: ./gradlew :xgen-native-device:compileDebugKotlin :xgen-native-device:testDebugUnitTest --console=plain
-
-  mobile-native-key-apple:
-    name: 모바일 기기 키 (iOS 타입 · 서명 · TLS)
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - run: npm --prefix apps/mobile ci --no-audit --no-fund
-      - name: 실제 iOS SDK 및 P-256 서명 검증
-        working-directory: apps/mobile
-        run: |
-          xcrun swiftc -typecheck -target arm64-apple-ios15.1 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" modules/xgen-native-device/ios/DeviceProof.swift modules/xgen-native-device/ios/HardwareDeviceKey.swift modules/xgen-native-device/ios/NativeEnrollmentTransport.swift modules/xgen-native-device/ios/NativeAgentSocket.swift
-          xcrun swiftc modules/xgen-native-device/ios/DeviceProof.swift verify/native-device-key-codec.swift -o "$RUNNER_TEMP/xgen-native-key-codec"
-          "$RUNNER_TEMP/xgen-native-key-codec"
-      - name: URLSession TLS 경계 검증 (테스트 인증서)
-        working-directory: apps/mobile
-        run: bash verify/run-native-enrollment-transport.sh
-      - name: URLSession 인증 WebSocket 수신 경계 검증 (테스트 인증서)
-        working-directory: apps/mobile
-        run: bash verify/run-native-agent-socket.sh
-
-  # ── 캐시 워밍 (main 푸시에서만) ──
+  # ── 모바일 네이티브 컴파일 — 로컬 모듈·android·ios·의존성이 바뀐 PR 만 ──
   #
-  # 태그(릴리스) 런은 **main 에 저장된 캐시만** 복원할 수 있다 — 태그 런이
-  # 스스로 저장한 캐시는 다음 태그가 못 쓴다. 그래서 릴리스가 빨라지려면
-  # main 푸시 시점에 gradle 의존성과 iOS 컴파일 캐시(ccache)를 미리 만들어
-  # 둬야 한다. PR 검증과 무관하게 병렬로 돌고, 실패해도 아무것도 막지 않는다.
-  warm-android:
-    name: 캐시 워밍 — 안드로이드
-    if: github.event_name == 'push'
+  # 네이티브 코드의 컴파일 오류가 릴리스 태그에서야 드러나지 않게 머지 전에 본다.
+  # 캐시는 릴리스(main 에서 실행)가 만든 것을 읽기만 한다.
+  android:
+    name: 안드로이드 컴파일
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -93,17 +177,22 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: false
+          cache-read-only: true
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
-      - name: APK 빌드 (debug 폴백 키 — 캐시 생성용)
+      # 서명 시크릿이 없으면 build.gradle 이 디버그 키로 폴백한다 — 컴파일 확인에는 충분하다.
+      - name: APK 빌드
         working-directory: apps/mobile/android
         run: ./gradlew assembleRelease
+      - name: 네이티브 기기 키 실제 P-256 서명 검증
+        working-directory: apps/mobile/android
+        run: ./gradlew :xgen-native-device:testDebugUnitTest --console=plain
 
-  warm-ios:
-    name: 캐시 워밍 — iOS
-    if: github.event_name == 'push'
+  ios:
+    name: iOS 컴파일
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    # Xcode 26(macos-latest)의 clang 은 RN 0.79 의 fmt 와 비호환 — Xcode 16 이 있는 macos-15.
     runs-on: macos-15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -119,87 +208,50 @@ jobs:
       - run: npm --prefix apps/mobile ci --no-audit --no-fund
       - name: ccache 설치
         run: brew install ccache || true
-      # ⚠ CCACHE_DIR env 는 쓰지 않는다 — xcodebuild 의 컴파일은 별도 빌드 서비스
-      # 프로세스에서 돌아 CLI env 를 물려받지 않는다(실측: 커스텀 디렉터리 0.0GiB).
-      # macOS 기본 캐시 디렉터리를 그대로 쓰고 그 경로를 저장한다.
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: ~/Library/Caches/ccache
           key: ios-ccache-${{ hashFiles('apps/mobile/package-lock.json') }}
           restore-keys: ios-ccache-
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: |
             apps/mobile/ios/Pods
             ~/Library/Caches/CocoaPods
           key: ios-pods-${{ hashFiles('apps/mobile/package-lock.json', 'apps/mobile/ios/Podfile', 'apps/mobile/ios/Podfile.properties.json') }}
           restore-keys: ios-pods-
+      # 로컬 모듈(modules/)은 여기서 Pods 에 잡힌다.
       - name: Pod install
         working-directory: apps/mobile/ios
         run: pod install
       - name: ccache 구성 (절대경로 래퍼)
         run: |
-          # RN 의 ccache 래퍼는 CCACHE_BINARY '빌드 설정'에 의존하는데, Xcode 가
-          # 컴파일러 프로세스에 이를 env 로 넘기지 않아 조용히 순정 clang 으로
-          # 폴백한다(실측: 캐시 활동 0). 절대경로를 박은 래퍼를 만들어
-          # xcodebuild CLI 인자(CC/CXX)로 전 타깃에 강제한다 — env 의존 0.
+          # RN 의 ccache 래퍼는 Xcode 가 컴파일러 프로세스에 CCACHE_BINARY 를 넘기지
+          # 않아 조용히 순정 clang 으로 폴백한다 — 절대경로 래퍼를 CC/CXX 로 강제한다.
           CCACHE=$(brew --prefix)/bin/ccache
           CLANG=$(xcrun -f clang); CLANGXX=$(xcrun -f clang++)
           printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANG"   > /tmp/ccache-clang.sh
           printf '#!/bin/sh\nexec %s %s "$@"\n' "$CCACHE" "$CLANGXX" > /tmp/ccache-clang++.sh
           chmod +x /tmp/ccache-clang.sh /tmp/ccache-clang++.sh
-          # RN 권장 sloppiness — 전역 설정에 기록해 래퍼/통계가 같은 구성을 본다.
           $CCACHE --set-config sloppiness=clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
           $CCACHE --set-config file_clone=true
           $CCACHE --set-config depend_mode=true
           $CCACHE --set-config inode_cache=true
-      - name: Xcode 빌드 (캐시 생성용)
+      - name: Xcode 빌드
         working-directory: apps/mobile/ios
         run: |
           xcodebuild -workspace XGENDex.xcworkspace -scheme XGENDex \
             -configuration Release -sdk iphoneos -derivedDataPath build \
             CC=/tmp/ccache-clang.sh CXX=/tmp/ccache-clang++.sh \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
-      - name: ccache 통계
-        run: ccache -s || true
-
-  verify:
-    name: 계약 · 타입 · 테스트
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      # 데스크톱은 workspace 밖이라(electron) 따로 설치한다.
-      - run: npm ci --no-audit --no-fund
-      - run: npm --prefix apps/desktop ci --no-audit --no-fund
-
-      # 산출물이 필요한 검사(확장 번들에 엔진이 없는지)가 있으므로 빌드가 먼저다.
-      - name: 빌드
+      - name: 실제 iOS P-256 서명 코덱 검증
+        working-directory: apps/mobile
         run: |
-          npm --prefix apps/cli run build
-          npm --prefix apps/vscode run build
-          npm --prefix apps/desktop run build
-
-      - name: 계약 검사
-        run: npm run contracts
-
-      - name: 타입체크
-        run: |
-          npx tsc --noEmit -p packages/protocol/tsconfig.json
-          npx tsc --noEmit -p packages/engine/tsconfig.json
-          npx tsc --noEmit -p packages/rpc/tsconfig.json
-          npx tsc --noEmit -p apps/cli/tsconfig.json
-          npx tsc --noEmit -p apps/vscode/tsconfig.json
-
-      - name: 테스트
-        run: |
-          npm --prefix packages/protocol test
-          npm --prefix packages/engine test
-          npm --prefix packages/rpc test
-          npm --prefix apps/cli test
-          npm --prefix apps/vscode test
-          npm --prefix apps/desktop test
+          xcrun swiftc modules/xgen-native-device/ios/DeviceProof.swift verify/native-device-key-codec.swift -o "$RUNNER_TEMP/xgen-native-key-codec"
+          "$RUNNER_TEMP/xgen-native-key-codec"
+      - name: URLSession TLS 경계 검증 (테스트 인증서)
+        working-directory: apps/mobile
+        run: bash verify/run-native-enrollment-transport.sh
+      - name: URLSession 인증 WebSocket 수신 경계 검증 (테스트 인증서)
+        working-directory: apps/mobile
+        run: bash verify/run-native-agent-socket.sh

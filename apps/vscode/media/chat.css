@@ -365,9 +365,10 @@ button:disabled {
   }
 }
 
-/* Agent selector */
+/* Screens with a header and a scrolling body */
 
-.agents-screen,
+.list-screen,
+.start-screen,
 .settings-screen,
 .chat-screen {
   display: flex;
@@ -375,7 +376,8 @@ button:disabled {
   flex-direction: column;
 }
 
-.agents-content,
+.list-content,
+.start-content,
 .settings-content {
   flex: 1 1 auto;
   min-height: 0;
@@ -385,41 +387,6 @@ button:disabled {
   scrollbar-width: thin;
 }
 
-.agents-content {
-  width: min(100%, 1040px);
-  margin: 0 auto;
-  padding: 12px 12px 18px;
-}
-
-.agents-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.agents-heading h1 {
-  margin: 3px 0 0;
-  font-size: 15px;
-  line-height: 1.3;
-}
-
-/* 고르는 법을 설명하는 문장은 한 번 읽으면 그만이다. 좁은 사이드바에서는
-   자리를 내주고, 넓을 때만 보여 준다. */
-.agents-heading p {
-  display: none;
-  margin: 4px 0 0;
-  color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-}
-
-@media (min-width: 620px) {
-  .agents-heading p {
-    display: block;
-  }
-}
-
-.count-badge,
 .state-pill {
   flex: 0 0 auto;
   border: 1px solid var(--dex-border);
@@ -430,200 +397,563 @@ button:disabled {
   font-size: 9px;
 }
 
-.agent-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 20px;
+/* Conversation list: 마지막으로 말한 순서. 한 줄 = 작은 에이전트 이름(+꼬리표) 위, 제목 아래. */
+
+.list-content {
+  padding: 10px 8px 18px;
 }
 
-.search-box {
+.list-inner {
   display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 34px;
+  width: min(100%, 820px);
+  margin: 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.new-chat-button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
   align-items: center;
   gap: 7px;
-  border: 1px solid var(--vscode-input-border, var(--dex-border));
-  border-radius: 7px;
-  padding: 0 9px;
-  color: var(--vscode-descriptionForeground);
-  background: var(--vscode-input-background);
-}
-
-.search-box:focus-within {
-  border-color: var(--vscode-focusBorder);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 26%, transparent);
-}
-
-.search-box input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  padding: 0;
-  color: var(--vscode-input-foreground);
-  outline: 0;
-  background: transparent;
-  font-size: 10px;
-}
-
-.search-box input::placeholder {
-  color: var(--vscode-input-placeholderForeground);
-}
-
-.filter-group {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 2px;
-  border: 1px solid var(--dex-border);
-  border-radius: 7px;
-  padding: 2px;
-  background: var(--dex-surface);
-}
-
-.filter {
-  min-height: 28px;
-  padding: 3px 9px;
-  color: var(--vscode-descriptionForeground);
-  border: 0;
-  background: transparent;
-  font-size: 9px;
-}
-
-.filter:hover,
-.filter.active {
-  color: var(--vscode-foreground);
-  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
-}
-
-.filter.active {
-  color: var(--dex-accent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dex-accent) 24%, transparent);
-}
-
-/* 사이드바에서는 한 줄에 하나씩이 가장 많이 보인다. 넓게 열어 두면 그때만
-   두 칸으로 벌어진다. */
-.agent-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 4px;
-  margin-top: 10px;
-}
-
-/* 예전에는 카드 하나가 154px 였다 — 장식 아이콘, 없는 설명 자리, '대화 시작 →'
-   안내가 각각 한 줄씩 먹은 결과다. 사이드바에서는 화면에 서너 개밖에 안 들어와
-   목록을 훑을 수가 없었다. 이제 이름 한 줄이 기본이고, 설명이 있을 때만 늘어난다. */
-.agent-card {
-  display: flex;
-  min-width: 0;
-  padding: 7px 9px;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--vscode-foreground);
-  border-color: transparent;
-  border-radius: 6px;
-  background: var(--dex-surface);
+  font-size: 11px;
+  font-weight: 600;
   text-align: left;
-  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
-.agent-card:hover {
-  color: var(--vscode-foreground);
-  border-color: color-mix(in srgb, var(--dex-accent) 48%, transparent);
-  background:
-    linear-gradient(var(--dex-accent-soft), var(--dex-accent-soft)),
-    var(--dex-surface);
+.new-chat-button > span:first-child {
+  font-size: 14px;
+  line-height: 1;
 }
 
-.agent-card-top,
-.agent-card-badges {
+/* 목록 머리: [+ 새 채팅] [검색] [⋯] (2026-10-10). ⋯ 메뉴에 [채팅 기록 관리] 와 [에이전트가 사라진 채팅 제거 (N)]. */
+.list-head {
   display: flex;
   align-items: center;
-}
-
-.agent-card-top {
-  gap: 6px;
-  justify-content: space-between;
-}
-
-.agent-card-badges {
   gap: 4px;
 }
 
-.card-badge {
-  border: 1px solid var(--dex-soft-border);
-  border-radius: 999px;
-  padding: 2px 6px;
+.list-head .new-chat-button {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.list-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.list-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  min-width: 210px;
+  padding: 4px;
+  flex-direction: column;
+  border: 1px solid var(--vscode-menu-border, var(--dex-border));
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+.list-menu-item {
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.list-menu-item:hover:not(:disabled) {
+  background: var(--vscode-menu-selectionBackground, var(--dex-accent-soft));
+}
+
+.list-menu-item.danger {
+  color: var(--dex-danger);
+}
+
+.list-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* [최근 채팅] · [에이전트] 두 묶음. 머리를 누르면 접고 편다. 에이전트 줄을 누르면 그 에이전트의 대화(.agent-view)로 들어간다. */
+.list-main,
+.agent-view,
+.list-section,
+.list-section-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list-main {
+  margin-top: 4px;
+}
+
+/* 두 묶음 사이는 줄을 긋고 띄운다. */
+.list-section + .list-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dex-border);
+}
+
+.list-section-title {
+  display: flex;
+  width: 100%;
+  padding: 4px 8px;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
   color: var(--vscode-descriptionForeground);
-  background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
-  font-size: 8px;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: left;
 }
 
-.card-badge.personal,
-.card-badge.shared {
-  color: var(--dex-accent);
-  border-color: color-mix(in srgb, var(--dex-accent) 24%, transparent);
-  background: var(--dex-accent-soft);
+.list-section-title:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
 }
 
-.card-badge.deployed {
-  color: var(--dex-success);
-  border-color: color-mix(in srgb, var(--dex-success) 26%, transparent);
-  background: color-mix(in srgb, var(--dex-success) 8%, transparent);
+.list-section-caret {
+  display: grid;
+  place-items: center;
+  transition: transform 120ms ease;
 }
 
-.agent-card > strong {
+.list-section-title[aria-expanded='false'] .list-section-caret {
+  transform: rotate(-90deg);
+}
+
+.list-paging {
+  display: flex;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.list-paging .text-button {
+  padding: 2px 6px;
+}
+
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agent-row {
+  min-width: 0;
+}
+
+/* 줄 전체가 한 버튼: 올리면 바탕이 바뀌고, 키보드로 오면 테두리가 보인다. */
+.agent-open {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-open:hover,
+.agent-open:focus-visible {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+
+.agent-open:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.agent-row-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agent-row-top {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.agent-row-name {
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-card > p {
-  display: -webkit-box;
-  margin: 0;
-  overflow: hidden;
+.agent-row.deleted .agent-row-name,
+.agent-view-name.deleted {
   color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
-.agent-card-meta {
+.agent-row-detail {
+  min-width: 0;
   overflow: hidden;
   color: var(--vscode-descriptionForeground);
-  font-size: 9px;
+  font-size: 9.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-empty {
-  display: flex;
-  grid-column: 1 / -1;
-  min-height: 220px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+.agent-row-count {
+  flex: 0 0 auto;
+  min-width: 16px;
   color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  text-align: right;
+}
+
+.agent-deleted-badge {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--dex-danger) 40%, transparent);
+  border-radius: 999px;
+  padding: 0 5px;
+  color: var(--dex-danger);
+  font-size: 8.5px;
+  line-height: 14px;
+}
+
+.agent-view-head {
+  display: flex;
+  min-width: 0;
+  margin: 6px 0 4px;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-view-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conversation-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+}
+
+.conversation-row:hover {
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+}
+
+/* 키보드로 줄에 오면 줄 전체에 테두리. */
+.conversation-row:has(> .conversation-open:focus-visible) {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.conversation-row.active {
+  background: var(--dex-accent-soft);
+}
+
+.conversation-open {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 5px 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  border: 0;
+  color: var(--vscode-foreground);
+  background: transparent;
+  text-align: left;
+}
+
+.conversation-open:hover {
+  color: var(--vscode-foreground);
+  background: transparent;
+}
+
+.conversation-open:focus-visible {
+  outline: none;
+}
+
+.conversation-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9px;
+}
+
+.conversation-agent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-row.deleted .conversation-agent {
+  color: var(--dex-danger);
+}
+
+.conversation-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 8.5px;
+  line-height: 14px;
+}
+
+.conversation-live {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dex-success);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.conversation-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  padding-right: 4px;
+}
+
+.row-action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+}
+
+.row-action:hover {
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+
+/* 줄 오른쪽 끝의 버튼이라 말풍선은 아래로, 오른쪽 맞춤. */
+.conversation-actions [data-tip]::after {
+  top: calc(100% + 4px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+}
+
+.list-empty {
+  padding: 28px 8px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
   text-align: center;
 }
 
-.agent-empty > span {
-  margin-bottom: 10px;
-  font-size: 25px;
+.list-status {
+  padding: 4px 8px;
+  color: var(--dex-danger);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
-.agent-empty strong {
+.list-more {
+  align-self: center;
+  margin-top: 4px;
+}
+
+/* Start screen: 에이전트를 고르거나 새로 만들고 첫 말을 보낸다. */
+
+.start-content {
+  padding: 18px 12px;
+}
+
+.start-inner {
+  display: flex;
+  width: min(100%, 560px);
+  margin: 0 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.start-heading {
+  margin: 6px 0 6px;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.start-create {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.start-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.start-field > span {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.start-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.start-control {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 29px;
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, var(--dex-border)));
+  border-radius: 5px;
+  padding: 4px 7px;
+  color: var(--vscode-input-foreground);
+  outline: none;
+  background: var(--vscode-input-background);
+  font: inherit;
+  font-size: 11px;
+}
+
+select.start-control {
+  color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+}
+
+textarea.start-control {
+  min-height: 70px;
+  max-height: 200px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.start-control:focus-visible {
+  border-color: var(--vscode-focusBorder);
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.start-control:disabled {
+  opacity: 0.55;
+}
+
+.start-control[aria-invalid='true'] {
+  border-color: var(--dex-danger);
+}
+
+.field-error {
+  margin-top: -5px;
+  color: var(--dex-danger);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.start-advanced > summary {
+  width: fit-content;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.start-advanced > summary:hover {
   color: var(--vscode-foreground);
-  font-size: 12px;
 }
 
-.agent-empty p {
-  margin: 5px 0 0;
-  font-size: 9px;
+.start-settings-fields {
+  display: flex;
+  margin-top: 8px;
+  padding: 10px;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 7px;
+  background: var(--dex-surface);
+}
+
+.start-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.start-check > input {
+  margin: 0;
+  accent-color: var(--vscode-button-background);
+}
+
+/* 잠긴 입력창의 보내기: 흐리게 보이지만 누를 수는 있다(누르면 까닭이 보인다). */
+.send-button.locked {
+  opacity: 0.48;
+}
+
+.status.error {
+  color: var(--dex-danger);
+  border-color: color-mix(in srgb, var(--dex-danger) 35%, transparent);
+}
+
+.status.error .status-dot {
+  background: var(--dex-danger);
 }
 
 /* Chat */
@@ -787,6 +1117,38 @@ button:disabled {
   font-size: 9px;
 }
 
+.agent-header > .icon-button {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+}
+
+/* 대화 제목: 이름 아래 줄. 있으면 아이디·설명 대신 이 줄을 쓴다. */
+.chat-title {
+  min-width: 0;
+  color: var(--vscode-foreground);
+  font-size: 10px;
+}
+
+.meta-badge.deleted {
+  color: var(--dex-danger);
+  border-color: color-mix(in srgb, var(--dex-danger) 30%, transparent);
+  background: color-mix(in srgb, var(--dex-danger) 9%, transparent);
+}
+
+/* 에이전트가 사라진 대화: 입력창 자리에 한 줄. */
+.readonly-notice {
+  flex: 0 0 auto;
+  margin: 0 12px 12px;
+  padding: 9px 11px;
+  border: 1px dashed var(--dex-border);
+  border-radius: 9px;
+  color: var(--vscode-descriptionForeground);
+  background: var(--dex-surface);
+  font-size: 10.5px;
+  text-align: center;
+}
+
 .messages {
   flex: 1 1 auto;
   min-height: 120px;
@@ -872,21 +1234,15 @@ button:disabled {
 }
 
 .copy-button {
-  width: 23px;
-  height: 20px;
+  display: inline-grid;
+  width: 24px;
+  height: 22px;
   padding: 0;
+  place-items: center;
+  border-radius: 5px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
-  font-family: var(--vscode-editor-font-family);
-  font-size: 11px;
-  opacity: 0;
-  transition: opacity 120ms ease, background-color 120ms ease;
-}
-
-.message-body:hover .copy-button,
-.message-body:focus-within .copy-button,
-.code-block .copy-button {
-  opacity: 1;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
 .copy-button:hover {
@@ -1209,8 +1565,110 @@ textarea:disabled {
 
 .hint {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--vscode-descriptionForeground);
   font-size: 9px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 모델 칩 — "제공자: 모델". 누르면 VS Code 빠른 선택이 뜬다. 좁으면 이름이 말줄임된다. */
+.model-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 62%;
+  margin-right: auto;
+  height: 24px;
+  padding: 0 7px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.model-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+}
+.model-chip:disabled {
+  cursor: default;
+}
+.model-chip.locked,
+.model-chip.saving {
+  color: var(--vscode-descriptionForeground);
+}
+.model-chip-icon,
+.model-chip-chevron {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  color: var(--vscode-descriptionForeground);
+}
+.model-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 생각 칩 — 모델 칩 오른쪽. 함께 있으면 둘이 줄을 나눠 쓴다. */
+.model-chip:has(+ .thinking-chip:not(.hidden)) {
+  max-width: 42%;
+  margin-right: 0;
+}
+.thinking-chip {
+  max-width: 30%;
+  margin-right: auto;
+}
+.thinking-chip.unsupported {
+  border-style: dashed;
+  color: var(--vscode-descriptionForeground);
+}
+
+/*
+ * 말풍선(data-tip) — 아이콘만 있는 버튼의 이름. 브라우저 기본 title 말풍선 대신
+ * VS Code 호버 위젯 색을 쓴다. 잠깐 머물러야 뜨고, 키보드 초점에도 뜬다.
+ */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 6px);
+  left: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--vscode-editorHoverWidget-border, var(--dex-border));
+  border-radius: 4px;
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 22%, transparent);
+  content: attr(data-tip);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 90ms ease 0ms, visibility 0ms linear 90ms;
+}
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 90ms ease 350ms, visibility 0ms linear 350ms;
+}
+/* 오른쪽 끝·위가 잘리는 자리(말풍선 머리줄, 코드 블록 머리줄)는 아래로, 오른쪽 맞춤. */
+.message-header [data-tip]::after,
+.code-header [data-tip]::after {
+  top: calc(100% + 4px);
+  right: 0;
+  bottom: auto;
+  left: auto;
 }
 
 kbd {
@@ -1486,6 +1944,39 @@ kbd {
   white-space: nowrap;
 }
 
+/* 대화에 연결되는 작업 영역 폴더 — 이름과 전체 경로 */
+.local-tools-folders {
+  display: flex;
+  margin: 0;
+  padding: 0 12px 10px;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.local-tools-folders > li {
+  display: flex;
+  min-width: 0;
+  padding: 6px 8px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 6px;
+}
+
+.local-tools-folders b {
+  font-size: 11px;
+}
+
+.local-tools-folders code {
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .switch-control {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1709,29 +2200,9 @@ kbd {
 }
 
 @media (max-width: 540px) {
-  .agents-content,
   .settings-content {
     padding-right: 12px;
     padding-left: 12px;
-  }
-
-  .agents-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .agent-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .filter-group {
-    align-self: flex-start;
-  }
-
-  .agent-grid {
-    grid-template-columns: 1fr;
   }
 
   .agent-actions .compact,
@@ -1777,6 +2248,10 @@ kbd {
 }
 
 @media (max-width: 340px) {
+  .start-row {
+    grid-template-columns: 1fr;
+  }
+
   .workspace-header {
     padding-right: 9px;
     padding-left: 9px;
@@ -1815,7 +2290,7 @@ kbd {
   }
 }
 
-/* ── 답변 푸터 한 줄 — 좌: 복사(호버), 우: 전체 로그(상시). 데스크톱과 동일 배치 ── */
+/* ── 답변 푸터 한 줄 — 좌: 복사(아이콘, 상시), 우: 전체 로그(상시). 데스크톱과 동일 배치 ── */
 .msg-footer {
   display: flex;
   align-items: center;
@@ -1825,16 +2300,6 @@ kbd {
 .msg-footer .msg-actions {
   display: flex;
   gap: 4px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.message:hover .msg-footer .msg-actions,
-.msg-footer .msg-actions:focus-within {
-  opacity: 1;
-}
-.msg-footer .copy-button.inline {
-  position: static;
-  opacity: 1;
 }
 .msg-footer .toollog-open {
   margin-left: auto;
@@ -1975,3 +2440,111 @@ kbd {
 .canonical-attachment-row.status-uncertain { border-color: color-mix(in srgb, var(--dex-danger) 48%, var(--dex-border)); }
 .canonical-attachment-discard { margin-left: auto; }
 .canonical-attachment-notice { width: 100%; margin: 0; color: var(--vscode-descriptionForeground); font-size: 9px; line-height: 1.4; }
+
+
+/* ── 채팅 검색 창: 데스크톱 ConversationSearchDialog 와 같은 짜임 ── */
+.conv-search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  padding: 36px 8px 8px;
+  align-items: flex-start;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+.conv-search {
+  display: flex;
+  width: min(560px, 100%);
+  max-height: 80vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+}
+.conv-search-head {
+  display: flex;
+  padding: 8px 8px 8px 10px;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.conv-search-glyph { display: grid; place-items: center; color: var(--vscode-descriptionForeground); }
+.conv-search-input {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 3px 2px;
+  border: 0;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  background: transparent;
+  font-size: 12.5px;
+}
+.conv-search-input:focus-visible { outline: none; }
+.conv-search-clear {
+  padding: 2px 6px;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font-size: 11px;
+}
+.conv-search-clear:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.conv-search-sep { width: 1px; height: 16px; background: var(--vscode-panel-border); }
+.conv-search-close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+}
+.conv-search-close:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.conv-search-body { overflow: auto; padding: 4px 4px 8px; }
+.conv-search-label { padding: 6px 8px 4px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 650; }
+.conv-search-status,
+.conv-search-note { padding: 10px 8px; color: var(--vscode-descriptionForeground); font-size: 11px; text-align: center; }
+.conv-search-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  align-items: flex-start;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  text-align: left;
+}
+.conv-search-row:hover { color: var(--vscode-foreground); background: transparent; }
+.conv-search-row.active { background: var(--vscode-list-activeSelectionBackground, var(--dex-accent-soft)); color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); }
+.conv-search-row-icon { display: grid; padding-top: 1px; place-items: center; color: var(--vscode-descriptionForeground); }
+.conv-search-row-main { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; }
+.conv-search-row-top { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.conv-search-row-title { min-width: 0; flex: 1 1 auto; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.conv-search-row-when { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 10px; }
+.conv-search-row-sub { display: flex; min-width: 0; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: 10.5px; white-space: nowrap; }
+.conv-search-row-agent { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conv-search-row-snippet { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.conv-search-tag { flex: 0 0 auto; border: 1px solid var(--dex-soft-border); border-radius: 999px; padding: 0 5px; font-size: 9px; line-height: 14px; }
+.conv-search-tag.deleted { border-color: color-mix(in srgb, var(--dex-danger) 40%, transparent); color: var(--dex-danger); }
+.conv-search mark {
+  border-radius: 2px;
+  color: inherit;
+  background: var(--vscode-editor-findMatchHighlightBackground, color-mix(in srgb, var(--dex-accent) 30%, transparent));
+}
+
+/* 통제 정책 입력창 사전 검사 한 줄. 막지 않는 안내는 흐리게, 막을 때(보내기 꺼짐)는 오류 색으로. */
+.input-policy {
+  margin: 2px 10px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: keep-all;
+  color: var(--vscode-descriptionForeground);
+}
+.input-policy.blocked {
+  color: var(--vscode-errorForeground);
+}

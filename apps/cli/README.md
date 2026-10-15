@@ -88,7 +88,7 @@ XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니�
 
 - `dex` 또는 `dex ui`로 실행하는 대화형 터미널 UI
 - 최초 서버 설정, 로그인, profile 전환을 포함한 온보딩
-- Agent 사이드바, History, 스트리밍 채팅과 도구 활동 표시
+- 대화 목록 사이드바(마지막으로 말한 순서, 이름 바꾸기·지우기), 시작 화면, History, 스트리밍 채팅과 도구 활동 표시
 - 명령 팔레트와 채팅 취소
 - 여러 XGEN 서버 profile 관리
 - OS keychain을 사용한 access/refresh token 저장
@@ -129,14 +129,26 @@ dex
 dex ui
 ```
 
+왼쪽은 대화 목록입니다. 웹과 같이 대화가 마지막으로 말한 순서로 한 줄씩 놓이고, 한 줄은
+작은 에이전트 이름(에이전트가 지워졌으면 `지워짐`)과 꼬리표(배포·Teams·스케줄 등), 그리고 대화
+제목(첫 메시지 또는 붙인 이름)입니다. 끝까지 내려가면 다음 쪽을 이어 받습니다. 에이전트가 지워진
+대화는 지난 대화만 볼 수 있고 보낼 수 없습니다.
+
+목록 맨 위의 `＋ 새 채팅`(또는 `Ctrl+N`)은 시작 화면을 엽니다. 에이전트 칸의 기본은
+`새 에이전트로 시작`이고, 이름(필수, 겹치면 안 됨)·AI 제공사·모델·세부설정을 정한 뒤 첫 말을
+보내면 에이전트를 만들고 그 에이전트와 새 대화를 엽니다. 있는 에이전트를 고르면(`←→` 또는
+`Enter`로 찾기) 바로 첫 말을 보냅니다. 이름이 없거나 겹치는 동안 입력창은 잠겨 있습니다.
+
 주요 키:
 
-- `Tab`: Agent 목록과 메시지 입력 사이 이동
-- `Enter`: Agent 선택 또는 메시지 전송
-- `Esc`: 실행 중인 채팅 취소
-- `Ctrl+K`: 명령 팔레트
-- `Ctrl+H`: 대화 기록
-- `Ctrl+N`: 새 대화
+- `Tab`: 대화 목록과 오른쪽(시작 화면·대화) 사이 이동
+- `Enter`: 목록에서는 대화 열기, 입력창에서는 메시지 전송
+- `r` / `d`: 목록에서 고른 대화의 이름 바꾸기(비우면 첫 메시지 제목) / 지우기(`y`로 확인)
+- `Esc`: 실행 중인 채팅 취소, 아니면 목록으로
+- `Ctrl+K`: 명령 팔레트(에이전트가 사라진 채팅 제거 포함)
+- `Ctrl+H`: 대화 기록(내 대화 전부)
+- `Ctrl+N`: 새 채팅(시작 화면)
+- `Ctrl+O`: 이 대화의 모델 바꾸기
 - `Ctrl+P`: profile 전환
 - `Ctrl+Q`: 종료
 
@@ -158,48 +170,53 @@ echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc
 echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc --jsonl
 ```
 
-## 로컬 도구
-
-로컬 도구는 기본적으로 꺼져 있습니다. 작업 폴더와 허용 경로를 명시해 켜면 `dex chat`, TUI,
-`dex serve --stdio`가 로그인 사용자의 XGEN 도구 bridge에 카탈로그를 광고합니다.
+대화 목록은 TUI 와 같은 순서(마지막으로 말한 순서)로 제목·에이전트·꼬리표를 보여 줍니다.
+`--json`에는 `title`, `customTitle`, `tag`, `agentDeleted` 등이 함께 실립니다.
 
 ```bash
-dex tools enable --cwd . --allow . --block sudo
+dex history list
+dex history rename --workflow wf_abc --interaction <id> --title '분기 보고'
+dex history rename --workflow wf_abc --interaction <id> --title ''   # 첫 메시지 제목으로
+dex history delete --workflow wf_abc --interaction <id>
+```
+
+## 이 PC의 파일과 터미널
+
+**대화를 시작한 폴더가 그 대화의 작업 공간입니다.** 에이전트는 그 폴더 안에서만 파일을
+읽고 쓰고 명령을 실행합니다. 켜고 끄는 설정은 없습니다 — 폴더가 곧 범위입니다.
+
+```bash
+cd ~/work/my-repo && dex chat --agent wf_abc     # my-repo 가 작업 공간
+dex chat --agent wf_abc --folder ~/work/a,~/work/b   # 폴더를 직접 고른다
+dex chat --agent wf_abc --no-folder              # 이 PC의 파일·터미널 없이
 dex tools list
 dex tools status
 ```
 
-기본 지원 도구는 `Shell`, `ShellJob`, `ReadFile`, `WriteFile`, `ListDir`, `Search`,
-`Open`입니다. 기본 셸은 허용 작업 공간의 파일만 읽고 쓰며, 명령의 자식 프로세스에도
-같은 범위를 적용합니다. 작업 폴더가 설정돼 있으면 허용 범위에 포함됩니다.
-`LocalControl`은 현재 사용 가능한 PC 도구와 접근 범위를 조회합니다.
+홈이나 드라이브 루트에서 시작하면 폴더를 연결하지 않습니다(홈 전체를 여는 것은 고른
+일이 아니므로). TUI 도 연 폴더를 같은 규칙으로 연결합니다.
 
-`dex tools configure --shell`은 **작업 공간 밖까지 셸 접근을 허용**합니다.
-`--no-shell`은 기본 작업 공간 제한으로 돌아갑니다. 셸 자체를 끄는 옵션이 아닙니다.
-파일 전용 도구는 전체 셸 접근과 무관하게 허용 폴더를 지킵니다.
+도구는 `Shell`, `ShellJob`, `ReadFile`, `WriteFile`, `ListDir`, `Search`, `Open`,
+`Clipboard`, `Notify`입니다. 상대 경로와 셸의 기본 작업 폴더는 첫 번째 연결 폴더이고,
+셸 작업 폴더는 연결 폴더 밖으로 나갈 수 없습니다. 백그라운드 작업(`ShellJob`)은 시작한
+대화에만 보입니다.
 
-작업 공간 제한 셸은 macOS 및 Linux(bubblewrap 설치 필요)에서 지원합니다.
-Windows에서는 아직 지원하지 않으며, 제한 없는 실행으로 자동 전환하지 않습니다.
-시스템 런타임은 읽기 전용으로 제공하고, 홈·임시 파일은 작업 공간 안의 명령별 임시
-폴더를 사용합니다. 해당 폴더는 명령 종료 시 정리됩니다.
+macOS와 Linux(bubblewrap 이 사용자 네임스페이스를 만들 수 있을 때)에서는 명령과 자식
+프로세스가 연결 폴더에만 쓸 수 있도록 가둡니다. 홈·임시 파일은 명령별 임시 폴더를 쓰고
+명령이 끝나면 지웁니다. 홈에 설치한 개발 도구(nvm·pyenv·cargo·uv 등)는 읽기 전용으로
+보이고, Git 커밋은 사용자 이름으로 됩니다. 가둘 수 없는 OS(Windows, 네임스페이스를 막은
+Linux)에서는 사용자 권한으로 돌되 작업 폴더를 연결 폴더 안으로 고정합니다.
 
-기본 작업 공간에서 실행을 검증하려면 다음과 같이 호출합니다.
+대화 없이 도구를 직접 확인하려면 `--folder`(기본은 현재 폴더)를 붙여 호출합니다.
 
 ```bash
 dex tools run ListDir --args '{"path":"."}'
-dex tools run Shell --args '{"command":"npm test","timeoutMs":120000}'
+dex tools run Shell --args '{"command":"npm test","timeout_ms":120000}'
 ```
 
-CLI 채팅이나 VS Code 엔진이 실행 중이면 bridge도 함께 유지됩니다. 다른 XGEN 클라이언트에서
-Agent를 사용하면서 로컬 도구 host만 계속 실행하려면 아래 명령을 사용합니다.
-
-```bash
-dex tools serve --profile corp
-```
-
-구조화된 파일 도구와 `Open`의 파일 경로는 `--allow` 범위로 제한됩니다. `Shell`은 로그인한 OS
-사용자 권한 전체로 실행되는 별도 opt-in 기능이며, `--block`의 명령과 파괴적 명령 패턴은 거부됩니다.
-파괴적 명령이 꼭 필요할 때만 `dex tools configure --allow-dangerous`를 명시적으로 실행하세요.
+되돌리기 어려운 명령(`rm -rf` 등)은 실행 전에 묻습니다. 물을 사람이 없는 파이프·스크립트
+실행에서는 거부되니, 꼭 필요할 때만 `dex tools configure --allow-dangerous`로 미리
+승인하세요.
 
 대화를 이어가려면 같은 interaction ID를 전달합니다.
 

@@ -149,3 +149,12 @@ test('반쪽짜리 기록은 없는 것으로 본다', async () => {
     assert.equal(saved.hangulMode, true);
   });
 });
+
+test('대화 목록에서 접어 둔 묶음을 기억하고, 모르는 이름은 버린다', async () => {
+  await withHome(async (env) => {
+    await writePreferences({ closedSections: ['agents'] }, env);
+    assert.deepEqual((await readPreferences(env)).closedSections, ['agents']);
+    await writeFile(preferencesPath(env), JSON.stringify({ closedSections: ['recent', 'others'] }), 'utf8');
+    assert.deepEqual((await readPreferences(env)).closedSections, ['recent']);
+  });
+});

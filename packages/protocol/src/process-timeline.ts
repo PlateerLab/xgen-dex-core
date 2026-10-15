@@ -3,7 +3,7 @@
  *
  * **특정 에이전트·도구·서비스를 이름으로 알아보지 않는다.** 이 화면은 어떤 에이전트의 어떤 도구에도 같은
  * 규칙으로 동작해야 한다.
- *   · 도구 이름표: XGeny 기본 도구(셸·파일·검색·웹)만 사람 말로 바꾼다. 나머지(MCP·API·커넥터 도구)는
+ *   · 도구 이름표: Geny 기본 도구(셸·파일·검색·웹)만 사람 말로 바꾼다. 나머지(MCP·API·커넥터 도구)는
  *     등록된 도구 설명의 첫 마디(있으면)나 도구 이름에 인자 두 개를 붙인다.
  *   · 셸 명령: 명령 내용으로 목적을 짐작하지 않는다 — 언어·줄 수·불러온 모듈까지만.
  *   · 결과: JSON 이면 모양으로 그린다(객체 목록 → 작은 표, 이름·제목이 있는 객체 → 카드, 그 밖 → 키·값).
@@ -41,6 +41,21 @@ export interface TimelineStep {
 }
 
 /** flow → 단계들. 텍스트는 도구가 한 번이라도 끼어든 뒤에 오면 새 단계를 연다. 호출은 id(없으면 이름)로 짝을 맞춘다. */
+/**
+ * 작업 과정에 한 칸 붙인다 — 연달아 온 글 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다.
+ * 스트림을 받는 모든 화면(데스크톱·모바일·웹, 내 턴과 다른 화면의 턴)이 같은 규칙으로 쌓는다.
+ */
+export function appendFlowItem(flow: readonly TimelineFlowItem[] | undefined, item: TimelineFlowItem): TimelineFlowItem[] {
+  const out = flow ? flow.slice() : [];
+  const tail = out[out.length - 1];
+  if (item.kind === 'text' && tail?.kind === 'text') {
+    out[out.length - 1] = { ...tail, text: tail.text + item.text };
+    return out;
+  }
+  out.push(item);
+  return out;
+}
+
 export function buildSteps(flow: readonly TimelineFlowItem[]): TimelineStep[] {
   const steps: TimelineStep[] = [];
   const rows: TimelineRow[] = [];
@@ -104,6 +119,23 @@ export function trimAnswer(body: string): string {
   while (start < end && (!lines[start].trim() || isRule(lines[start]))) start += 1;
   while (end > start && (!lines[end - 1].trim() || isRule(lines[end - 1]))) end -= 1;
   return lines.slice(start, end).join('\n');
+}
+
+/**
+ * 마지막 단계(뒤에 도구가 오지 않은 글)의 제목과 최종 답 — 데스크톱·모바일·웹이 같이 쓴다 (2026-10-11).
+ *
+ * 도는 중에는 첫 문단을 제목으로 세운다. 그 글 뒤에 도구가 오면 진행 문장("자료를 읽습니다")이었던
+ * 것이고, 그때는 그 단계의 제목이 된다. **끝난 턴의 마지막 글은 전부 답이다.** 예전에는 끝난 뒤에도
+ * 첫 문단을 단계 제목으로 떼어 접힌 타임라인에 넣었는데, 실제 답의 첫 문단은 대개 결론이었다
+ * ("**영상 연결은 통과했지만 드래그 정렬은 실패했습니다.**", "합계는 **6,500**"). dev 30일 도구를
+ * 쓴 턴 1,273개 중 1,147개가 두 문단 이상이라 첫 문단이 답에서 빠졌고, 표본 40개 중 33개가
+ * 진행 문장이 아니라 내용이었다. 첫 줄이 "정리해 드리겠습니다" 같은 말이면 그 말이 답 첫 줄에
+ * 남는 쪽이, 결론이 접힌 곳에 숨는 쪽보다 낫다.
+ */
+export function finalStepView(text: string, streaming: boolean): { title: string; answer: string } {
+  if (!streaming) return { title: '', answer: trimAnswer(text) };
+  const { title, body } = splitFirstParagraph(text);
+  return { title, answer: body ? trimAnswer(body) : '' };
 }
 
 export type ToolIcon = 'terminal' | 'package' | 'search' | 'file' | 'edit' | 'web' | 'list' | 'external';

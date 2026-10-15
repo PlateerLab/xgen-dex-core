@@ -15,11 +15,11 @@ export const AgentOverview: React.FC<{
   const memory = useLoader(() => xgen.agentData.memoryList(workflowId), [workflowId]);
   const tasks = useLoader(() => xgen.agentData.tasksList(workflowId), [workflowId]);
   const tools = useLoader(() => xgen.agentData.toolsList(workflowId), [workflowId]);
-  const artifacts = useLoader(() => xgen.artifacts.list(workflowId), [workflowId]);
+  const apps = useLoader(() => xgen.apps.list(workflowId), [workflowId]);
   const recent = useLoader(() => xgen.agentData.traceList(workflowId, 1, 5), [workflowId]);
   const [promptOpen, setPromptOpen] = useViewerState('overview.prompt', false);
   const [raw, setRaw] = useViewerState('overview.raw', false);
-  const loaders = [basic, memory, tasks, tools, artifacts, recent];
+  const loaders = [basic, memory, tasks, tools, apps, recent];
   const loading = loaders.some((loader) => loader.loading);
   const scroll = useViewerScroll('overview.scroll', !loading);
   const surface = basic.data?.surfaces?.connector;
@@ -69,11 +69,11 @@ export const AgentOverview: React.FC<{
       error: basic.error || tools.error,
     },
     {
-      sub: 'artifacts',
-      label: '아티팩트',
-      value: count(artifacts.loading, artifacts.error, artifacts.data?.artifacts.length),
+      sub: 'apps',
+      label: '앱',
+      value: count(apps.loading, apps.error, apps.data?.apps.length),
       note: '에이전트가 만든 결과물',
-      error: artifacts.error,
+      error: apps.error,
     },
   ];
 

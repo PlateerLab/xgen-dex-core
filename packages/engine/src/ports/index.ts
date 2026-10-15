@@ -78,17 +78,10 @@ export interface InteractionPort {
   openPath?(absolutePath: string): Promise<string>;
 }
 
-/** 어디에 무엇을 쓰는지 — 엔진이 파일을 두는 뿌리. */
-export interface PathsPort {
-  /** 사용자 데이터 루트 (workspace 레플리카·로그·캐시가 이 아래로). */
-  dataRoot(): string;
-}
-
 /** 엔진이 호스트에게 받는 전부. */
 export interface HostPorts<T = unknown> {
   secrets: SecretPort;
   config: ConfigPort<T>;
-  paths: PathsPort;
   /** 없으면 사용자와 주고받는 도구들이 전부 미지원으로 응답하고, 위험한 셸
    *  명령은 거부된다 — 그게 안전한 기본값이다. */
   interaction?: InteractionPort;
@@ -102,7 +95,6 @@ export interface HostPorts<T = unknown> {
  */
 export function memoryPorts<T extends object = Record<string, unknown>>(
   initial: Partial<T> = {},
-  root = '/tmp/dex-memory',
 ): HostPorts<T> {
   const secrets = new Map<string, string>();
   let config = { ...initial } as T;
@@ -124,7 +116,6 @@ export function memoryPorts<T extends object = Record<string, unknown>>(
         return config;
       },
     },
-    paths: { dataRoot: () => root },
     // interaction 은 일부러 비운다 — 테스트에서 위험한 명령이 통과하면
     // 프로덕션의 안전장치가 실제로 도는지 알 수 없다.
   };

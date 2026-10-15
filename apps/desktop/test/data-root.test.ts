@@ -5,16 +5,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
-  cloudDirOf,
   consumeInstallOptions,
   decodeInstallerLogLine,
   INSTALL_OPTIONS_FILE,
   readInstallLogText,
   resolveDataRoot,
-  runtimeDirOf,
   settleDataRoot,
-  agentWorkspaceDirOf,
-  workspaceDirOf,
 } from '../src/main/data-root';
 import type { ConnectorConfig } from '../src/main/config';
 
@@ -26,33 +22,28 @@ test('resolveDataRoot: 기본 ~/xgen-dex, 명시값 존중', () => {
   assert.equal(resolveDataRoot({ dataRoot: '/custom/place' }, HOME), resolve('/custom/place'));
 });
 
-test('settleDataRoot: 트리 생성 + 미설정 기본 채움, 명시 설정은 안 덮음', () => {
+test('settleDataRoot: 설치 폴더 생성 + 미설정 기본 채움, 명시 설정은 안 덮음', () => {
   const home = mkdtempSync(join(tmpdir(), 'dr-'));
   try {
     const cfg = { serverUrl: '' } as unknown as ConnectorConfig;
     const { root, patch } = settleDataRoot(cfg, home);
     assert.equal(root, join(home, 'xgen-dex'));
-    // 트리가 실제로 만들어졌다.
-    for (const d of [
-      root,
-      workspaceDirOf(root),
-      cloudDirOf(root),
-      agentWorkspaceDirOf(root),
-      runtimeDirOf(root),
-    ])
-      assert.ok(existsSync(d), d);
+    assert.ok(existsSync(root), root);
+    // 설치 폴더 아래에 작업 폴더를 만들지 않는다 — 이 PC 의 파일은 채팅에서 연결한 폴더로만 다룬다.
+    for (const d of ['workspace', 'local-runtime', 'cloud', 'agent_workspace'])
+      assert.equal(existsSync(join(root, d)), false, d);
     // 미설정 → dataRoot 파생 기본이 패치로.
     assert.equal(patch.dataRoot, root);
-    assert.equal(patch.localShell?.cwd, workspaceDirOf(root));
+    // 이 PC 도구의 작업 폴더는 설정이 아니라 대화에 연결한 폴더가 정한다 —
+    // 부팅이 옛 로컬 컨트롤 설정을 만들어 넣지 않는다.
+    assert.equal('localShell' in patch, false);
 
     // 명시 설정은 절대 덮지 않는다.
     const explicit = {
       dataRoot: join(home, 'else'),
-      localShell: { cwd: '/my/ws' },
     } as unknown as ConnectorConfig;
     const r2 = settleDataRoot(explicit, home);
     assert.equal(r2.root, join(home, 'else'));
-    assert.equal(r2.patch.localShell, undefined);
     assert.equal(r2.patch.dataRoot, undefined);
   } finally {
     rmSync(home, { recursive: true, force: true });

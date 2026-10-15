@@ -1,0 +1,2 @@
+# scripts/after-pack.cjs 가 설치본마다 만든다
+build/xd-app-files.nsh

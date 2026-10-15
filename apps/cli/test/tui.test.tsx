@@ -8,19 +8,62 @@ import type {
   ChatStopResult,
   Conversation,
   ConversationSnapshot,
+  CreateAgentInput,
   HistoryTurn,
   ResolvedChatInput,
 } from '@dex/engine';
+import { conversationMatchesKind, groupConversationsByAgent, searchConversationList } from '@dex/protocol';
 import { App } from '../src/tui/app';
 import { ImeTextInput } from '../src/tui/ime-text-input';
 import type { TuiEngine } from '../src/tui/model';
+import { DELETED_AGENT_NOTICE } from '../src/tui/conversation-list';
+import { SEARCH_TITLE } from '../src/tui/conversation-search';
+import { NAME_REQUIRED, NAME_TAKEN, START_HEADING } from '../src/tui/start-screen';
+
+/** 가짜 서버가 받은 것. 화면이 엔진을 어떻게 불렀는지 본다. */
+interface Calls {
+  created: CreateAgentInput[];
+  sent: ChatInput[];
+  nameChecks: string[];
+  renamed: Array<{ workflowId: string; interactionId: string; title: string }>;
+  deleted: Array<{ workflowId: string; interactionId: string }>;
+  purged: number;
+}
+
+function newCalls(): Calls {
+  return { created: [], sent: [], nameChecks: [], renamed: [], deleted: [], purged: 0 };
+}
+
+function conversation(over: Partial<Conversation> = {}): Conversation {
+  return {
+    id: 1,
+    interactionId: 'int-1',
+    workflowId: 'wf_abc',
+    workflowName: 'Sales Agent',
+    interactionCount: 4,
+    metadata: {},
+    createdAt: '2026-08-30T01:00:00.000Z',
+    updatedAt: '2026-08-30T02:00:00.000Z',
+    title: '분기 매출 정리',
+    customTitle: false,
+    tag: null,
+    agentDeleted: false,
+    agentOwnerId: 1,
+    compare: [],
+    ...over,
+  };
+}
 
 function fakeEngine(
   profileList: ProfileSummary[] = [
     { name: 'corp', serverUrl: 'https://xgen.example.com', current: true },
   ],
   conversations: Conversation[] = [],
+  calls: Calls = newCalls(),
 ): TuiEngine {
+  // 서버의 대화 목록(마지막으로 말한 순서). 이름 바꾸기·지우기·첫 말이 여기를 고친다.
+  let list = [...conversations];
+  const agentNames = new Set(['Sales Agent']);
   return {
     async listProfiles() {
       return profileList;
@@ -87,7 +130,13 @@ function fakeEngine(
       };
     },
     async createAgent(input) {
+      calls.created.push(input);
+      agentNames.add(input.name);
       return { workflowId: 'wf_new', workflowName: input.name };
+    },
+    async agentNameTaken(name) {
+      calls.nameChecks.push(name);
+      return agentNames.has(name.trim());
     },
     async listAgents() {
       return {
@@ -111,7 +160,47 @@ function fakeEngine(
       };
     },
     async listConversations() {
-      return conversations;
+      return list;
+    },
+    async conversationPage(opts) {
+      // 상태 필터(kind)와 에이전트(workflowId)로 거른 뒤 쪽을 나눈다(서버와 같은 판정).
+      const shown = list.filter(
+        (item) => conversationMatchesKind(item, opts.kind) && (!opts.workflowId || item.workflowId === opts.workflowId),
+      );
+      const offset = Number(opts.cursor ?? 0) || 0;
+      const limit = opts.limit ?? 40;
+      return {
+        conversations: shown.slice(offset, offset + limit),
+        nextCursor: offset + limit < shown.length ? String(offset + limit) : null,
+        ...(offset === 0
+          ? { agentDeletedCount: list.filter((item) => item.agentDeleted).length, total: shown.length }
+          : {}),
+      };
+    },
+    async conversationAgents() {
+      return groupConversationsByAgent(list);
+    },
+    async searchConversations(query, opts) {
+      // 서버 대신: 목록의 제목·에이전트 이름으로 찾는다(내용 검색은 서버 시험의 몫).
+      const shown = list.filter((item) => conversationMatchesKind(item, opts.kind));
+      return { ...searchConversationList(shown, query, opts.limit ?? 30), contentSearched: true };
+    },
+    async renameConversation(workflowId, interactionId, title) {
+      calls.renamed.push({ workflowId, interactionId, title });
+      const found = list.find((item) => item.workflowId === workflowId && item.interactionId === interactionId);
+      const next = title || '지난 질문';
+      if (found) list = list.map((item) => (item === found ? { ...item, title: next, customTitle: !!title } : item));
+      return { title: next, customTitle: !!title };
+    },
+    async deleteConversation(workflowId, interactionId) {
+      calls.deleted.push({ workflowId, interactionId });
+      list = list.filter((item) => !(item.workflowId === workflowId && item.interactionId === interactionId));
+    },
+    async purgeDeletedAgentConversations() {
+      const before = list.length;
+      list = list.filter((item) => !item.agentDeleted);
+      calls.purged += before - list.length;
+      return before - list.length;
     },
     async historyTurns(): Promise<HistoryTurn[]> {
       return [
@@ -135,6 +224,18 @@ function fakeEngine(
     async stopChat(): Promise<ChatStopResult> {
       return { stopped: true };
     },
+    // 통제 정책 사전 검사: 이 가짜 서버는 전화번호 모양(010-)이 든 글을 [채팅 입력시 차단] 으로 막는다.
+    async checkChatInput(input: { text: string }) {
+      const blocked = input.text.includes('010-');
+      return {
+        blocked,
+        kinds: blocked ? (['pii'] as const).slice() : [],
+        message: blocked ? '개인정보(전화번호)가 들어 있어 보낼 수 없습니다. 해당 내용을 지우거나 고친 뒤 보내 주세요.' : '',
+        maskedKinds: [],
+        notice: '',
+        checked: true,
+      };
+    },
     async resolveChatInput(input: ChatInput): Promise<ResolvedChatInput> {
       return {
         profile: input.profile ?? 'corp',
@@ -143,6 +244,7 @@ function fakeEngine(
         interactionId: input.interactionId ?? 'interaction-1',
         input: input.input,
         attachments: input.attachments ?? [],
+        localFolders: input.localFolders ?? [],
       };
     },
     async uploadChatAttachment() {
@@ -159,6 +261,22 @@ function fakeEngine(
       { kind: 'text'; content: string } | { kind: 'end' },
       ResolvedChatInput
     > {
+      calls.sent.push(input);
+      // 서버는 첫 말을 받으면 그 대화를 목록 맨 위에 적는다(제목 = 첫 말).
+      const id = input.interactionId ?? 'interaction-1';
+      if (!list.some((item) => item.interactionId === id)) {
+        list = [
+          conversation({
+            id: 100 + list.length,
+            interactionId: id,
+            workflowId: input.workflowId,
+            workflowName: input.workflowName ?? 'Agent',
+            title: String(input.input),
+            updatedAt: new Date().toISOString(),
+          }),
+          ...list,
+        ];
+      }
       yield { kind: 'text', content: `You said: ${String(input.input)}` };
       yield { kind: 'end' };
       return this.resolveChatInput(input);
@@ -249,19 +367,62 @@ test('TUI shows onboarding when no profile exists', async () => {
   }
 });
 
+const UP = '\u001B[A';
+const DOWN = '\u001B[B';
+const RIGHT = '\u001B[C';
+const TAB = '\t';
+
+/** 시작 화면이 다 그려졌다(새 에이전트 칸을 불러와 이름 칸에 커서가 있다). */
+async function startScreenReady(view: { lastFrame: () => string | undefined }): Promise<string> {
+  const frame = await waitForFrame(view.lastFrame, (value) => value.includes(START_HEADING) && value.includes('› 이름'));
+  await waitForSettled(view.lastFrame);
+  return frame;
+}
+
+/** 시작 화면에서 있는 에이전트(Sales Agent)를 고르고 입력창으로 간다. */
+async function chooseSalesAgent(view: {
+  lastFrame: () => string | undefined;
+  stdin: { write: (data: string) => void };
+}): Promise<void> {
+  await startScreenReady(view);
+  view.stdin.write(UP); // 에이전트 칸
+  await waitForSettled(view.lastFrame);
+  view.stdin.write(RIGHT); // 새 에이전트로 시작 → Sales Agent
+  await waitForFrame(view.lastFrame, (value) => value.includes('‹ Sales Agent ›'));
+  await waitForSettled(view.lastFrame);
+  view.stdin.write(DOWN); // 입력창
+  await waitForSettled(view.lastFrame);
+}
+
 test('TUI boots an authenticated profile and streams a chat turn', async () => {
   const view = render(<App engine={fakeEngine()} />);
   try {
-    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes(START_HEADING));
     assert.match(frame, /Connected/);
-    await waitForSettled(view.lastFrame);
-    view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+    await chooseSalesAgent(view);
     view.stdin.write('hello');
     await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     view.stdin.write('\r');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
     assert.match(frame, /You said: hello/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('통제 정책에 걸린 첫 말은 보내지 않고 이유를 보이며 작성기를 잠근다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [], calls)} />);
+  try {
+    await chooseSalesAgent(view);
+    view.stdin.write('번호 010-1234-5678');
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('개인정보(전화번호)'));
+    assert.match(frame, /잠김/);
+    view.stdin.write('\r');
+    await waitForSettled(view.lastFrame);
+    frame = view.lastFrame() ?? '';
+    assert.match(frame, /보낼 수 없습니다/);
+    assert.deepEqual(calls.sent, [], '막힌 글은 서버로 가지 않는다');
   } finally {
     view.cleanup();
   }
@@ -325,74 +486,486 @@ test('IME input edits by grapheme instead of UTF-16 code unit', async () => {
 });
 
 
-// ── 에이전트를 고른 뒤의 갈림길 ─────────────────────────────────────
+// ── 대화 목록 (2026-10-09) ─────────────────────────────────────────
 //
-// 예전에는 Enter 를 누르면 바로 빈 대화가 열렸고, 이어서 하려면 Ctrl+H 로 **모든**
-// 에이전트의 목록에서 찾아야 했다. 방금 고른 에이전트가 화면에 있는데도.
+// 에이전트를 먼저 고르던 사이드바가 웹·데스크톱과 같은 대화 목록이 됐다. 한 줄은 작은
+// 에이전트 이름(사라졌으면 [지워짐])과 꼬리표, 그리고 대화 제목이다.
 
-const CONVERSATION: Conversation = {
-  id: 1,
-  interactionId: 'int-1',
-  workflowId: 'wf_abc',
-  workflowName: 'Sales Agent',
-  interactionCount: 4,
-  metadata: {},
-  createdAt: '2026-08-30T01:00:00.000Z',
-  updatedAt: '2026-08-30T02:00:00.000Z',
-};
+const CONVERSATION = conversation();
+const DEPLOYED = conversation({
+  id: 2,
+  interactionId: 'deploy_abc',
+  title: '고객 문의 응대',
+  tag: 'deploy',
+  updatedAt: '2026-08-29T02:00:00.000Z',
+});
+const ORPHAN = conversation({
+  id: 3,
+  interactionId: 'int-3',
+  workflowId: 'wf_gone',
+  workflowName: 'Old Agent',
+  title: '지난 회의 정리',
+  agentDeleted: true,
+  updatedAt: '2026-08-28T02:00:00.000Z',
+});
 
-test('이전 대화가 있으면 [새 대화]와 함께 고를 수 있다', async () => {
-  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION])} />);
+const pause = (ms = SETTLE_MS): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('목록은 대화 제목·작은 에이전트 이름·꼬리표·[지워짐] 으로 보인다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN])} />);
   try {
-    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
-    await waitForSettled(view.lastFrame);
-    view.stdin.write('\r');
-    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('어떻게 시작할까요'));
-    assert.match(frame, /새 대화/);
-    assert.match(frame, /4턴/);
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    assert.match(frame, /＋ 새 채팅/);
+    assert.match(frame, /분기 매출 정리/);
+    assert.match(frame, /Sales Agent · 배포/);
+    assert.match(frame, /고객 문의 응대/);
+    assert.match(frame, /지워짐/);
+    // 대화 줄에는 사라진 에이전트의 이름 대신 [지워짐], 이름은 [에이전트] 줄에만 [지워짐] 과 함께 보인다.
+    assert.equal(frame.match(/Old Agent/g)?.length, 1);
+    assert.match(frame, /\[지워짐\] Old Agent\s+1/);
+    // [에이전트]: 대화가 있는 에이전트와 그 수.
+    assert.match(frame, /Sales Agent\s+2/);
+    // 마지막으로 말한 순서(서버 순서) 그대로.
+    assert.ok(frame.indexOf('분기 매출 정리') < frame.indexOf('고객 문의 응대'));
+    assert.ok(frame.indexOf('고객 문의 응대') < frame.indexOf('지난 회의 정리'));
   } finally {
     view.cleanup();
   }
 });
 
-test('이전 대화를 고르면 그 내용이 대화창에 올라온다', async () => {
+test('목록에서 대화를 고르면 그 내용과 제목이 대화창에 올라온다', async () => {
   const view = render(<App engine={fakeEngine(undefined, [CONVERSATION])} />);
   try {
-    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
+    await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB); // 목록으로
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // 그 아래가 그 대화
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
-    await waitForFrame(view.lastFrame, (value) => value.includes('어떻게 시작할까요'));
-    await waitForSettled(view.lastFrame);
-    view.stdin.write('\u001B[B'); // ↓ — [새 대화] 아래가 이전 대화다
-    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
-    view.stdin.write('\r');
-    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답') && value.includes('지난 질문'));
-    assert.match(frame, /지난 질문/);
-  } finally {
-    view.cleanup();
-  }
-});
-
-test('이전 대화가 없으면 갈림길을 띄우지 않고 바로 연다', async () => {
-  // 선택지가 하나뿐인 질문은 도움이 아니라 한 번 더 누르게 하는 일이다.
-  const view = render(<App engine={fakeEngine()} />);
-  try {
-    await waitForFrame(view.lastFrame, (value) => value.includes('Sales Agent'));
-    await waitForSettled(view.lastFrame);
-    view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS * 2));
-    assert.ok(
-      !(view.lastFrame() ?? '').includes('어떻게 시작할까요'),
-      '이력이 없는데 갈림길이 떴다',
+    // 질문과 답을 함께 기다린다. 느린 러너에서는 대화창 높이를 재기 전 한 장에 답 줄만 걸릴 수 있다.
+    const frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('지난 답') && value.includes('지난 질문'),
     );
-    // 그리고 바로 입력할 수 있어야 한다.
+    assert.doesNotMatch(frame, new RegExp(START_HEADING), '시작 화면은 닫힌다');
+    // 제목 줄: 대화 제목과 작은 에이전트 이름.
+    assert.match(frame, /분기 매출 정리 · Sales Agent/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('목록에서 / 를 누르면 채팅 검색이 뜨고, 고른 대화가 열린다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN])} />);
+  try {
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    assert.match(frame, /⌕ \//, '[＋ 새 채팅] 줄 오른쪽에 검색이 보인다');
+    await startScreenReady(view);
+    view.stdin.write(TAB); // 목록으로
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('/');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 검색') && value.includes('최근 채팅'));
+    assert.match(frame, /분기 매출 정리/, '검색어가 비면 최근 채팅');
+    // 검색칸의 키 처리기는 그린 뒤에 붙는다. 화면이 멈춘 뒤에 친다(다른 칸의 시험과 같다).
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('고객');
+    frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('고객 문의 응대') && !value.includes('최근 채팅') && !value.includes('분기 매출 정리'),
+    );
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답') && value.includes('지난 질문'));
+    assert.match(frame, /고객 문의 응대/);
+    assert.ok(!frame.includes(SEARCH_TITLE), '검색 칸은 닫힌다');
+  } finally {
+    view.unmount();
+    view.cleanup();
+  }
+});
+
+test('채팅 검색은 Esc 로 닫고 목록으로 돌아간다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION])} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('/');
+    await waitForFrame(view.lastFrame, (value) => value.includes('최근 채팅'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B');
+    const frame = await waitForFrame(view.lastFrame, (value) => !value.includes(SEARCH_TITLE) && value.includes('＋ 새 채팅'));
+    assert.match(frame, /분기 매출 정리/);
+  } finally {
+    view.unmount();
+    view.cleanup();
+  }
+});
+
+test('에이전트가 지워진 대화는 지난 대화만 보이고 보낼 수 없다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [ORPHAN], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // 그 아래가 그 대화
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
+    assert.match(frame, /지난 질문/);
+    assert.ok(frame.includes(DELETED_AGENT_NOTICE), '지워진 에이전트라고 알린다');
+    assert.doesNotMatch(frame, /메시지를 입력하세요/, '입력창이 없다');
+    view.stdin.write('hello');
+    await pause();
+    view.stdin.write('\r');
+    await pause();
+    assert.deepEqual(calls.sent, []);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('시작 화면: 기본은 [새 에이전트로 시작] 이고 이름이 없으면 입력창이 잠겨 있다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [], calls)} />);
+  try {
+    let frame = await startScreenReady(view);
+    assert.match(frame, /‹ 새 에이전트로 시작 ›/);
+    assert.match(frame, /잠김/);
+    view.stdin.write('\r'); // 이름 칸에서 Enter → 입력창
+    await waitForSettled(view.lastFrame);
     view.stdin.write('hello');
     await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes(NAME_REQUIRED));
+    assert.deepEqual(calls.created, []);
+    assert.deepEqual(calls.sent, []);
   } finally {
     view.cleanup();
   }
 });
 
+test('시작 화면: 이미 있는 이름이면 그렇다고 말하고 잠근 채 둔다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [], calls)} />);
+  try {
+    await startScreenReady(view);
+    view.stdin.write('Sales Agent');
+    await waitForFrame(view.lastFrame, (value) => value.includes(NAME_TAKEN));
+    view.stdin.write('\r'); // → 입력창
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    await pause();
+    const frame = view.lastFrame() ?? '';
+    assert.ok(frame.includes(NAME_TAKEN));
+    assert.match(frame, /잠김/);
+    assert.deepEqual(calls.created, []);
+    assert.deepEqual(calls.sent, []);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('시작 화면: 새 이름으로 보내면 에이전트를 세우고 새 대화를 열어 첫 말을 보낸다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [], calls)} />);
+  try {
+    await startScreenReady(view);
+    view.stdin.write('New Bot');
+    // 적는 대로 묻고(잠깐 멈추면), 겹치지 않으면 잠금이 풀린다.
+    await waitForFrame(view.lastFrame, (value) => value.includes('New Bot') && !value.includes('잠김'));
+    view.stdin.write('\r'); // → 입력창
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    assert.equal(calls.created.length, 1);
+    assert.equal(calls.created[0]!.name, 'New Bot');
+    assert.equal(calls.created[0]!.provider, 'openai');
+    assert.equal(calls.created[0]!.model, 'gpt-4o-mini');
+    assert.deepEqual(calls.created[0]!.settings, { tool_exposure: 'hierarchy', enable_self_evolution: true });
+    // 만들기 직전에 한 번 더 물었다.
+    assert.ok(calls.nameChecks.filter((name) => name === 'New Bot').length >= 2);
+    assert.equal(calls.sent.length, 1);
+    assert.equal(calls.sent[0]!.workflowId, 'wf_new');
+    assert.equal(calls.sent[0]!.input, 'hello');
+    // 새 대화는 목록 맨 위에 첫 말을 제목으로 선다. 제목 줄에는 새 에이전트 이름.
+    assert.match(frame, /hello · New Bot/);
+    assert.doesNotMatch(frame, new RegExp(START_HEADING));
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('목록에서 r 로 이름을 바꾼다 (순서는 그대로)', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('고객 문의 응대'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('Enter 저장'));
+    await waitForSettled(view.lastFrame);
+    for (let i = 0; i < 10; i += 1) view.stdin.write('\u007F');
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('Q3 report');
+    await waitForFrame(view.lastFrame, (value) => value.includes('Q3 report'));
+    view.stdin.write('\r');
+    const frame = await waitForFrame(
+      view.lastFrame,
+      (value) => !value.includes('Enter 저장') && value.includes('Q3 report'),
+    );
+    assert.deepEqual(calls.renamed, [{ workflowId: 'wf_abc', interactionId: 'int-1', title: 'Q3 report' }]);
+    assert.doesNotMatch(frame, /분기 매출 정리/);
+    assert.ok(frame.indexOf('Q3 report') < frame.indexOf('고객 문의 응대'), '이름을 바꿔도 순서는 그대로');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('목록에서 d 로 지운다: 한 번 묻는다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('고객 문의 응대'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('d');
+    await waitForFrame(view.lastFrame, (value) => value.includes('이 채팅을 지울까요?'));
+    await waitForSettled(view.lastFrame);
+    assert.deepEqual(calls.deleted, [], '묻기 전에는 지우지 않는다');
+    view.stdin.write('y');
+    const frame = await waitForFrame(
+      view.lastFrame,
+      (value) => !value.includes('이 채팅을 지울까요?') && !value.includes('분기 매출 정리'),
+    );
+    assert.deepEqual(calls.deleted, [{ workflowId: 'wf_abc', interactionId: 'int-1' }]);
+    assert.match(frame, /고객 문의 응대/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('Ctrl+K 의 [에이전트가 사라진 채팅 제거] 는 묻고 나서 지운다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, ORPHAN], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    await startScreenReady(view);
+    view.stdin.write('\u000b'); // Ctrl+K
+    // 'Enter 실행' 은 팔레트에만 있다('명령' 은 아래 안내줄에도 있다).
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Enter 실행'));
+    assert.match(frame, /에이전트가 사라진 채팅 제거 \(1\)/);
+    assert.match(frame, /채팅 기록 관리/, '채팅 기록 관리는 따로 있는 명령이다');
+    // 팔레트: 새 채팅 · 채팅 검색 · 채팅 기록 관리 · 대화 기록 · 에이전트가 사라진 채팅 제거
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    // 좁은 목록 자리에 뜨므로 묻는 글은 접혀 보인다.
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('지울까요?'));
+    assert.match(frame, /1개를/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('y');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('1개를 지웠습니다.'));
+    assert.equal(calls.purged, 1);
+    assert.doesNotMatch(frame, /지난 회의 정리/);
+    assert.doesNotMatch(frame, /에이전트가 사라진 채팅 제거/);
+    assert.match(frame, /분기 매출 정리/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+
+// ── [최근 채팅] · [에이전트] · 채팅 기록 관리 (2026-10-10) ──────────────
+
+/** 목록에서 커서(›)가 `label` 줄에 설 때까지 ↓ 를 누른다. */
+async function moveTo(
+  view: { lastFrame: () => string | undefined; stdin: { write: (data: string) => void } },
+  label: string,
+): Promise<void> {
+  for (let i = 0; i < 30; i += 1) {
+    if ((view.lastFrame() ?? '').includes(`› ${label}`)) return;
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+  }
+  throw new Error(`cursor never reached ${label}:\n${view.lastFrame() ?? ''}`);
+}
+
+test('최근 채팅은 5개, [더 보기] 가 5개 더 보여 준다(모자라면 다음 쪽을 받는다)', async () => {
+  const many = Array.from({ length: 12 }, (_, i) =>
+    conversation({
+      id: 100 + i,
+      interactionId: `int-m${i + 1}`,
+      title: `대화 ${String(i + 1).padStart(2, '0')}`,
+      updatedAt: new Date(Date.UTC(2026, 7, 30, 12 - i)).toISOString(),
+    }),
+  );
+  const engine = fakeEngine(undefined, many);
+  // 한 쪽을 5개로 줄여 [더 보기] 가 다음 쪽을 받게 한다.
+  const page = engine.conversationPage.bind(engine);
+  engine.conversationPage = (opts, profile) => page({ ...opts, limit: Math.min(opts.limit ?? 40, 5) }, profile);
+  const view = render(<App engine={engine} />);
+  try {
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('대화 05'));
+    assert.match(frame, /최근 채팅/);
+    assert.doesNotMatch(frame, /대화 06/);
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    await moveTo(view, '더 보기');
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('대화 10'));
+    assert.doesNotMatch(frame, /대화 11/);
+    assert.match(frame, /접기/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('에이전트 줄에서 Enter 면 그 에이전트의 대화로 들어가고 Esc 로 돌아온다', async () => {
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN])} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    await moveTo(view, 'Sales Agent');
+    view.stdin.write('\r');
+    let frame = await waitForFrame(
+      view.lastFrame,
+      (value) => value.includes('← Sales Agent') && value.includes('고객 문의 응대'),
+    );
+    assert.match(frame, /분기 매출 정리/);
+    assert.doesNotMatch(frame, /지난 회의 정리/, '다른 에이전트의 대화는 없다');
+    assert.doesNotMatch(frame, /최근 채팅/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('최근 채팅') && !value.includes('← Sales Agent'));
+    assert.match(frame, /› Sales Agent/, '커서는 그 에이전트 줄로 돌아온다');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('묶음 머리 Enter 로 접고 펴며(기억한다), [에이전트] 도 5개씩 [더 보기]·[접기]', async () => {
+  const seven = Array.from({ length: 7 }, (_, i) =>
+    conversation({
+      id: 200 + i,
+      interactionId: `int-a${i + 1}`,
+      workflowId: `wf_a${i + 1}`,
+      workflowName: `Agent ${i + 1}`,
+      title: `일 ${i + 1}`,
+      updatedAt: new Date(Date.UTC(2026, 7, 30, 12 - i)).toISOString(),
+    }),
+  );
+  const saved: string[][] = [];
+  const view = render(
+    <App
+      engine={fakeEngine(undefined, seven)}
+      preferences={{ hangulMode: false, onClosedSectionsChange: (value) => saved.push(value) }}
+    />,
+  );
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('▾ 최근 채팅'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // [최근 채팅] 머리
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('› ▸ 최근 채팅'));
+    // 접으면 대화 줄이 빠진다. 남는 '일 1' 은 에이전트 줄의 마지막 대화 제목뿐이다.
+    assert.equal(frame.split('일 1').length - 1, 1);
+    assert.deepEqual(saved, [['recent']], '접은 묶음을 기억한다');
+    assert.match(frame, /▾ 에이전트/);
+    assert.match(frame, /Agent 5/);
+    assert.doesNotMatch(frame, /Agent 6/, '에이전트도 처음엔 5개');
+    await moveTo(view, '더 보기');
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('Agent 7'));
+    assert.match(frame, /접기/);
+    await moveTo(view, '접기');
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => !value.includes('Agent 7'));
+    assert.match(frame, /› 더 보기/, '커서는 [더 보기] 로');
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('채팅 기록 관리: m 으로 열고, 고른 채팅을 묻고 나서 지우고, Esc 로 닫으면 목록에도 없다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [CONVERSATION, DEPLOYED, ORPHAN], calls)} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('지난 회의 정리'));
+    await startScreenReady(view);
+    view.stdin.write(TAB);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('m');
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 기록 관리') && value.includes('총 3개'));
+    assert.match(frame, /\[ \] 분기 매출 정리/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(' ');
+    await waitForFrame(view.lastFrame, (value) => value.includes('[x] 분기 매출 정리'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(' ');
+    await waitForFrame(view.lastFrame, (value) => value.includes('2개 선택'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('d');
+    await waitForFrame(view.lastFrame, (value) => value.includes('선택한 채팅 2개를 삭제할까요? 되돌릴 수 없습니다.'));
+    assert.deepEqual(calls.deleted, [], '묻기 전에는 지우지 않는다');
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('y');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('채팅 2개를 삭제했습니다.'));
+    assert.deepEqual(calls.deleted, [
+      { workflowId: 'wf_abc', interactionId: 'int-1' },
+      { workflowId: 'wf_abc', interactionId: 'deploy_abc' },
+    ]);
+    assert.match(frame, /총 1개/);
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B');
+    frame = await waitForFrame(
+      view.lastFrame,
+      (value) => !value.includes('채팅 기록 관리') && value.includes('＋ 새 채팅'),
+    );
+    assert.doesNotMatch(frame, /분기 매출 정리|고객 문의 응대/, '지운 것은 왼쪽 목록에서도 곧바로 빠진다');
+    assert.match(frame, /지난 회의 정리/);
+  } finally {
+    view.cleanup();
+  }
+});
 
 // ── 서버 주소를 잘못 쳤을 때 ────────────────────────────────────────
 //
@@ -438,6 +1011,156 @@ test('처음 설정 화면은 https 를 생략해도 된다고 말한다', async
   try {
     const frame = await waitForFrame(view.lastFrame, (value) => value.includes('처음 오셨군요'));
     assert.match(frame, /https:\/\/ 는 생략해도 됩니다/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+// ── 대화 도중 모델 바꾸기 (Ctrl+O · /model) ─────────────────────────
+//
+// 세션은 그대로다 — 다음 답변부터 고른 모델이 답한다. 지금 모델이 늘 맨 위이고,
+// 다른 화면에서 바꾸면 제목 줄이 곧바로 따라간다.
+
+function withModels(engine: TuiEngine): { engine: TuiEngine; picks: Array<{ interactionId: string; provider: string; model: string }> } {
+  const choices = [
+    { provider: 'anthropic', model: 'claude-sonnet-4-5', name: 'Sonnet 4.5', label: 'Anthropic: Sonnet 4.5', group: 'Anthropic' },
+    { provider: 'anthropic', model: 'claude-haiku-4-5', name: 'Haiku 4.5', label: 'Anthropic: Haiku 4.5', group: 'Anthropic' },
+    { provider: 'openai', model: 'gpt-4o', name: 'GPT-4o', label: 'OpenAI: GPT-4o', group: 'OpenAI' },
+  ];
+  const chosen = new Map<string, (typeof choices)[number]>();
+  const picks: Array<{ interactionId: string; provider: string; model: string }> = [];
+  const view = (id: string) => {
+    const current = chosen.get(id) ?? choices[0]!;
+    return {
+      supported: true,
+      locked: false,
+      current: { ...current, source: chosen.has(id) ? ('conversation' as const) : ('agent' as const) },
+      agent: { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Anthropic: Sonnet 4.5' },
+      choices: [current, ...choices.filter((c) => c !== current)],
+    };
+  };
+  engine.conversationModel = async (_wf, id) => view(id);
+  engine.setConversationModel = async (_wf, id, choice) => {
+    picks.push({ interactionId: id, ...choice });
+    chosen.set(id, choices.find((c) => c.provider === choice.provider && c.model === choice.model)!);
+    return view(id);
+  };
+  return { engine, picks };
+}
+
+test('Ctrl+O 로 지금 모델이 맨 위인 목록을 열고, 고르면 첫 턴이 그 대화 번호로 나간다', async () => {
+  const { engine, picks } = withModels(fakeEngine());
+  const sent: Array<string | undefined> = [];
+  const resolve = engine.resolveChatInput.bind(engine);
+  engine.resolveChatInput = async (input) => {
+    sent.push(input.interactionId);
+    return resolve(input);
+  };
+  const view = render(<App engine={engine} />);
+  try {
+    await startScreenReady(view);
+    view.stdin.write(UP); // 에이전트 칸
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(RIGHT); // Sales Agent: 그 에이전트의 모델이 칸 옆에 선다
+    let frame = await waitForFrame(view.lastFrame, (value) => value.includes('Anthropic: Sonnet 4.5'));
+    assert.match(frame, /Ctrl\+O 모델/);
+
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u000f'); // Ctrl+O
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('다음 답변부터'));
+    const lines = frame.split('\n');
+    const at = (label: string) => lines.findIndex((line) => line.includes(label));
+    assert.ok(at('Anthropic: Sonnet 4.5') < at('Anthropic: Haiku 4.5'), '지금 모델이 맨 위');
+    assert.match(lines[at('Anthropic: Sonnet 4.5')]!, /✓.*\(현재\)/);
+
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\u001B[B'); // ↓ Haiku
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('\r');
+    frame = await waitForFrame(view.lastFrame, (value) => value.includes('· Anthropic: Haiku 4.5'));
+    assert.equal(picks.length, 1);
+
+    // 첫 말이 모델을 고른 그 대화 번호로 나가야 고른 모델이 첫 턴부터 붙는다.
+    await waitForSettled(view.lastFrame);
+    view.stdin.write(DOWN); // 입력창
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    assert.equal(sent.at(-1), picks[0]!.interactionId);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('다른 화면에서 모델을 바꾸면 제목 줄이 곧바로 따라간다', async () => {
+  const { engine } = withModels(fakeEngine());
+  const sent: Array<string | undefined> = [];
+  const resolve = engine.resolveChatInput.bind(engine);
+  engine.resolveChatInput = async (input) => {
+    sent.push(input.interactionId);
+    return resolve(input);
+  };
+  const view = render(<App engine={engine} />);
+  try {
+    await chooseSalesAgent(view);
+    await waitForFrame(view.lastFrame, (value) => value.includes('· Anthropic: Sonnet 4.5'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('hello');
+    await waitForFrame(view.lastFrame, (value) => value.includes('hello'));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    await waitForSettled(view.lastFrame);
+    // 다른 대화의 소식은 이 화면과 상관없다.
+    engine.onConversationModel?.({
+      interactionId: 'someone-else',
+      notice: { current: { provider: 'anthropic', model: 'claude-haiku-4-5', label: 'Anthropic: Haiku 4.5', source: 'conversation' } },
+    });
+    engine.onConversationModel?.({
+      interactionId: sent.at(-1)!,
+      notice: { current: { provider: 'openai', model: 'gpt-4o', name: 'GPT-4o', label: 'OpenAI: GPT-4o', group: 'OpenAI', source: 'conversation' } },
+    });
+    await waitForFrame(view.lastFrame, (value) => value.includes('· OpenAI: GPT-4o'));
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('대화 목록 소켓: 다른 기기의 이름 바꾸기·지우기·새 대화가 곧바로 목록에 보인다', async () => {
+  const conversations = [CONVERSATION, DEPLOYED];
+  const engine = fakeEngine(undefined, conversations);
+  let watched = 0;
+  let unwatched = 0;
+  engine.watchConversationList = async () => {
+    watched += 1;
+  };
+  engine.unwatchConversationList = () => {
+    unwatched += 1;
+  };
+  const view = render(<App engine={engine} />);
+  try {
+    await waitForFrame(view.lastFrame, (value) => value.includes('분기 매출 정리'));
+    assert.equal(watched, 1, '목록이 서면 목록 소켓을 연다');
+    // 다른 기기에서 이름을 바꿨다: 제목만 바뀐다.
+    engine.onConversationListChange?.({
+      kind: 'conversation_updated',
+      interactionId: CONVERSATION.interactionId,
+      workflowId: CONVERSATION.workflowId,
+      data: { title: '바뀐 이름', custom_title: true },
+    });
+    await waitForFrame(view.lastFrame, (value) => value.includes('바뀐 이름'));
+    // 다른 기기에서 지웠다: 줄이 빠진다.
+    engine.onConversationListChange?.({
+      kind: 'conversation_deleted',
+      interactionId: DEPLOYED.interactionId,
+      workflowId: DEPLOYED.workflowId,
+      data: {},
+    });
+    await waitForFrame(view.lastFrame, (value) => !value.includes('고객 문의 응대'));
+    // 화면을 내리면 목록 소켓도 닫는다(cleanup 은 내리지 않고 정리만 한다).
+    view.unmount();
+    assert.equal(unwatched, 1, '화면을 닫으면 목록 소켓도 닫는다');
   } finally {
     view.cleanup();
   }

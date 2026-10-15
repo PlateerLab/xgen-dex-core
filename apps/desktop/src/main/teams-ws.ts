@@ -15,9 +15,9 @@
  *   · 사용자 소켓 `/api/teams/ws/user` — 로그인 동안 하나. 보고 있지 않은 방의
  *     새 메시지 알림(`message_notify`)과 초대/강퇴가 여기로 온다.
  *
- * 재연결·백오프·토큰 자가치유는 워크스페이스 동기화 소켓(`sync-transport.ts`)의
- * 검증된 형태를 그대로 따른다. 특히 `unexpected-response` 처리를 빼면 토큰이
- * 회전된 뒤 **폐기된 토큰으로 영원히 재시도**하는 상태에 갇힌다(실기 사례).
+ * 재연결·백오프·토큰 자가치유를 빠뜨리지 않는다. 특히 `unexpected-response`
+ * 처리를 빼면 토큰이 회전된 뒤 **폐기된 토큰으로 영원히 재시도**하는 상태에
+ * 갇힌다(실기 사례).
  */
 import WebSocket from 'ws';
 import { safeMapMessage, mapTeamsReactions } from '@dex/protocol/teams';

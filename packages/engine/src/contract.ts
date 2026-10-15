@@ -15,6 +15,13 @@ import type {
   ChatEvent,
   ChatStopResult,
   Conversation,
+  ConversationAgent,
+  ConversationKind,
+  ConversationPage,
+  ConversationSearchHit,
+  ConversationSearchMatch,
+  ConversationSearchPage,
+  SearchTextPart,
   ConversationSnapshot,
   CurrentUser,
   CreateAgentInput,
@@ -33,8 +40,6 @@ export interface DexConfig {
   currentProfile: string;
   profiles: Record<string, DexProfile>;
   localTools: LocalToolsConfig;
-  /** 이 설치의 안정적 기기 id — 커넥터 멀티 디바이스 슬롯 키 (최초 기동 시 생성). */
-  deviceId?: string;
 }
 
 export interface StoredSession {
@@ -58,6 +63,11 @@ export interface ChatInput {
   input: string | Record<string, unknown> | unknown[];
   interactionId?: string;
   attachments?: ChatAttachmentDescriptor[];
+  /** 이 대화에 연결할 이 기기의 폴더(절대 경로). CLI 는 시작한 폴더, VSCode 는
+   *  작업 영역 폴더를 넘긴다. 비우면 폴더 도구를 쓸 수 없다. */
+  localFolders?: string[];
+  /** false 면 이 대화에서 Agent Geny 기억 지도를 끈다. 없으면 에이전트 설정(기본 켜짐). */
+  memoryMap?: boolean;
 }
 
 export interface ChatAttachmentDescriptor {
@@ -77,6 +87,8 @@ export interface ResolvedChatInput {
   input: ChatInput['input'];
   interactionId: string;
   attachments: ChatAttachmentDescriptor[];
+  localFolders: string[];
+  memoryMap?: boolean;
 }
 
 export type {
@@ -88,6 +100,13 @@ export type {
   ChatEvent,
   ChatStopResult,
   Conversation,
+  ConversationAgent,
+  ConversationKind,
+  ConversationPage,
+  ConversationSearchHit,
+  ConversationSearchMatch,
+  ConversationSearchPage,
+  SearchTextPart,
   ConversationSnapshot,
   CreateAgentInput,
   HistoryTurn,

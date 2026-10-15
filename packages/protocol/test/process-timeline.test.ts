@@ -16,6 +16,7 @@ import type { ToolEvent } from '../src/types';
 import {
   buildSteps,
   describeTool,
+  finalStepView,
   resultView,
   splitFirstParagraph,
   summarizeCommand,
@@ -68,6 +69,24 @@ test('id 로 호출을 맞춘다 — 같은 이름의 동시 호출이 섞여도
 test('최종 답 앞뒤의 가로줄·빈 줄은 걷고 본문 중간과 표 구분 행은 그대로 둔다', () => {
   assert.equal(trimAnswer('\n---\n\n## 결과\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n끝\n\n***\n'), '## 결과\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n끝');
   assert.equal(trimAnswer('그냥 답'), '그냥 답');
+});
+
+test('끝난 턴의 마지막 글은 첫 문단까지 전부 답이다 — 결론이 접힌 타임라인에 숨지 않는다', () => {
+  const text = '\n\n**매출 합계:** 1,200 + 1,350 = **2,550**\n\n**주문번호:** **B-40917**';
+  assert.deepEqual(finalStepView(text, false), {
+    title: '',
+    answer: '**매출 합계:** 1,200 + 1,350 = **2,550**\n\n**주문번호:** **B-40917**',
+  });
+  assert.deepEqual(finalStepView('그냥 답', false), { title: '', answer: '그냥 답' });
+  assert.deepEqual(finalStepView('\n---\n\n정리합니다.\n\n## 결과\n본문\n\n---\n', false), {
+    title: '',
+    answer: '정리합니다.\n\n## 결과\n본문',
+  });
+});
+
+test('도는 중의 마지막 글은 첫 문단을 제목으로 세운다 — 뒤에 도구가 오면 진행 문장이다', () => {
+  assert.deepEqual(finalStepView('자료를 읽습니다.', true), { title: '자료를 읽습니다.', answer: '' });
+  assert.deepEqual(finalStepView('정리합니다.\n\n## 결과\n본문', true), { title: '정리합니다.', answer: '## 결과\n본문' });
 });
 
 // ── 이름표 ────────────────────────────────────────────────────────────

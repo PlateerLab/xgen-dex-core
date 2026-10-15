@@ -5,6 +5,7 @@ import { DexEngine, DexError, publicError } from '@dex/engine';
 import type {
   AgentListQuery,
   ChatInput,
+  ConversationKind,
   LocalToolsConfig,
   ResolvedChatInput,
 } from '@dex/engine';
@@ -67,6 +68,12 @@ function optionalBoolean(params: Record<string, unknown>, key: string): boolean 
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'boolean') throw new RpcFailure(-32602, `${key} must be a boolean`);
   return value;
+}
+
+/** 대화 상태 필터(history/conversationPage · history/search). 모르는 값은 전체로 본다. */
+function conversationKindParam(params: Record<string, unknown>): ConversationKind | undefined {
+  const value = params.kind;
+  return value === 'active' || value === 'deploy' || value === 'deleted' || value === 'all' ? value : undefined;
 }
 
 function optionalStringArray(params: Record<string, unknown>, key: string): string[] | undefined {
@@ -156,6 +163,7 @@ export class DexRpcServer {
     for (const active of this.activeChats.values()) active.controller.abort();
     this.activeChats.clear();
     this.engine.stopLocalTools();
+    this.engine.unwatchConversationList();
     this.removeLocalToolsListener();
     if (this.readline) {
       const readline = this.readline;
@@ -239,9 +247,26 @@ export class DexRpcServer {
             chatCancellation: true,
             history: true,
             localTools: true,
+            // chat/start 의 localFolders — 대화에 이 기기의 폴더를 연결한다.
+            localFolders: true,
             ssh: true,
             ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true,
               ...(this.trustedAttachmentPicker || this.attachmentPicker?.available ? { canonicalAttachments: true } : {}) } } : {}),
+            // conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기.
+            conversationModel: true,
+            conversationThinking: true,
+            // history/conversationPage · rename · delete · purgeDeletedAgents (대화 목록).
+            conversationList: true,
+            // conversations/watch · unwatch → conversations/changed 알림(대화 목록 실시간).
+            conversationListWatch: true,
+            // agents/createOptions · nameTaken · create (시작 화면의 새 에이전트).
+            agentCreate: true,
+            // history/search (채팅 검색).
+            conversationSearch: true,
+            // history/conversationAgents · history/conversationPage 의 workflowId (최근 채팅 · 에이전트).
+            conversationAgents: true,
+            // chat/checkInput: 통제 정책(개인정보 · 금칙어) 입력창 사전 검사.
+            chatInputCheck: true,
           },
         };
       }
@@ -249,6 +274,7 @@ export class DexRpcServer {
       case 'exit':
         this.nativeSessions?.close();
         this.engine.stopLocalTools();
+        this.engine.unwatchConversationList();
         return null;
       case 'health':
         return { ok: true, activeChats: this.activeChats.size };
@@ -317,31 +343,19 @@ export class DexRpcServer {
       case 'localTools/list':
         return (await this.engine.localToolsStatus()).tools;
       case 'localTools/configure': {
+        // 남은 설정은 위험 명령 사전 승인 하나다. 옛 확장이 보내는 켜기·허용 폴더
+        // 같은 키는 받기만 하고 버린다 — 범위는 대화에 연결한 폴더가 정한다.
         const patch: Partial<LocalToolsConfig> = {};
-        const enabled = optionalBoolean(params, 'enabled');
-        const shellEnabled = optionalBoolean(params, 'shellEnabled');
-        const cwd = optionalString(params, 'cwd');
-        const timeoutMs = optionalInteger(params, 'timeoutMs');
-        const allowedRoots = optionalStringArray(params, 'allowedRoots');
-        const blockedCommands = optionalStringArray(params, 'blockedCommands');
         const allowDangerous = optionalBoolean(params, 'allowDangerous');
-        if (enabled !== undefined) patch.enabled = enabled;
-        if (shellEnabled !== undefined) patch.shellEnabled = shellEnabled;
-        if (cwd !== undefined) patch.cwd = cwd;
-        if (timeoutMs !== undefined) patch.timeoutMs = timeoutMs;
-        if (allowedRoots !== undefined) patch.allowedRoots = allowedRoots;
-        if (blockedCommands !== undefined) patch.blockedCommands = blockedCommands;
         if (allowDangerous !== undefined) patch.allowDangerous = allowDangerous;
-        const status = await this.engine.configureLocalTools(patch);
-        if (status.config.enabled) {
-          void this.engine.startLocalTools(optionalString(params, 'profile')).catch((error: unknown) =>
-            this.log(`local tools: ${publicError(error).message}`),
-          );
-        }
-        return status;
+        return this.engine.configureLocalTools(patch);
       }
       case 'localTools/run':
-        return this.engine.runLocalTool(requiredString(params, 'tool'), params.args ?? {});
+        return this.engine.runLocalTool(
+          requiredString(params, 'tool'),
+          params.args ?? {},
+          optionalStringArray(params, 'folders') ?? [],
+        );
       case 'localTools/start':
         return this.engine.startLocalTools(optionalString(params, 'profile'), optionalInteger(params, 'waitMs') ?? 0);
       case 'localTools/stop':
@@ -363,6 +377,63 @@ export class DexRpcServer {
       }
       case 'history/conversations':
         return this.engine.listConversations(optionalString(params, 'profile'));
+      // 대화 목록(2026-10-09): 마지막으로 말한 순서로 한 쪽씩, 이름 바꾸기·지우기·사라진 에이전트 대화 정리.
+      case 'history/conversationPage':
+        return this.engine.conversationPage(
+          {
+            limit: optionalInteger(params, 'limit'),
+            cursor: optionalString(params, 'cursor') ?? null,
+            kind: conversationKindParam(params),
+            workflowId: optionalString(params, 'workflowId'),
+          },
+          optionalString(params, 'profile'),
+        );
+      // 사이드바 [에이전트](2026-10-10): 대화가 있는 에이전트마다 한 줄.
+      case 'history/conversationAgents':
+        return this.engine.conversationAgents({ limit: optionalInteger(params, 'limit') }, optionalString(params, 'profile'));
+      // 채팅 검색(2026-10-10): 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서.
+      case 'history/search':
+        return this.engine.searchConversations(
+          typeof params.query === 'string' ? params.query : '',
+          { limit: optionalInteger(params, 'limit'), kind: conversationKindParam(params) },
+          optionalString(params, 'profile'),
+        );
+      case 'history/rename':
+        return this.engine.renameConversation(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          typeof params.title === 'string' ? params.title : '',
+          optionalString(params, 'profile'),
+        );
+      case 'history/delete':
+        await this.engine.deleteConversation(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'workflowName'),
+          optionalString(params, 'profile'),
+        );
+        return { ok: true };
+      case 'history/purgeDeletedAgents':
+        return { deleted: await this.engine.purgeDeletedAgentConversations(optionalString(params, 'profile')) };
+      // 시작 화면의 새 에이전트(웹과 같은 칸: 이름·제공사·모델·설정, 이름은 적는 대로 겹치는지 묻는다).
+      case 'agents/createOptions':
+        return this.engine.agentCreateOptions(optionalString(params, 'profile'));
+      case 'agents/nameTaken':
+        return { taken: await this.engine.agentNameTaken(requiredString(params, 'name'), optionalString(params, 'profile')) };
+      case 'agents/create': {
+        const settings = params.settings;
+        return this.engine.createAgent(
+          {
+            name: requiredString(params, 'name'),
+            provider: requiredString(params, 'provider'),
+            model: optionalString(params, 'model'),
+            settings: settings && typeof settings === 'object' && !Array.isArray(settings)
+              ? (settings as Record<string, unknown>)
+              : undefined,
+          },
+          optionalString(params, 'profile'),
+        );
+      }
       case 'history/turns':
         return this.engine.historyTurns(
           requiredString(params, 'workflowId'),
@@ -370,6 +441,12 @@ export class DexRpcServer {
           optionalString(params, 'workflowName'),
           optionalString(params, 'profile'),
         );
+      case 'chat/checkInput':
+        return this.engine.checkChatInput({
+          text: typeof params.text === 'string' ? params.text : '',
+          workflowId: optionalString(params, 'workflowId') ?? null,
+          profile: optionalString(params, 'profile'),
+        });
       case 'chat/start':
         return this.startChat(params);
       case 'chat/attachment/upload':
@@ -388,6 +465,8 @@ export class DexRpcServer {
         // 히스토리를 부르는 순간의 running 만 알았고, 그 뒤 다른 기기에서
         // 시작된 턴은 완결까지 못 봤다.
         this.engine.onConversationRunning = (event) => this.notify('chat/running', event);
+        // 이 대화의 모델이 다른 화면에서 바뀌었다 — 선택기가 곧바로 따라간다.
+        this.engine.onConversationModel = (event) => this.notify('conversation/modelChanged', event);
         await this.engine.watchConversation(
           requiredString(params, 'workflowId'),
           optionalString(params, 'workflowName') ?? requiredString(params, 'workflowId'),
@@ -398,6 +477,15 @@ export class DexRpcServer {
       }
       case 'chat/unwatch':
         this.engine.unwatchConversation(requiredString(params, 'interactionId'));
+        return { ok: true };
+      // 대화 **목록** 감시(사용자당 소켓 하나). 소식은 conversations/changed 로 흐르고, 목록이 할 일은
+      // 받는 쪽이 @dex/protocol conversationListChange(kind, data) 로 정한다(데스크톱과 같다).
+      case 'conversations/watch':
+        this.engine.onConversationListChange = (event) => this.notify('conversations/changed', event);
+        await this.engine.watchConversationList(optionalString(params, 'profile'));
+        return { ok: true };
+      case 'conversations/unwatch':
+        this.engine.unwatchConversationList();
         return { ok: true };
       // 이 스트림을 **그만 본다**. 서버 실행은 건드리지 않는다 — 새 대화를
       // 열거나 화면을 닫는 것은 "멈춰 달라" 가 아니다. 멈추려면 chat/stop.
@@ -423,6 +511,40 @@ export class DexRpcServer {
         if (result.stopped || result.reason === 'not_running') active?.controller.abort();
         return { cancelled: !!active && active.controller.signal.aborted, ...result };
       }
+      // 대화의 모델 — 채팅 입력창 옆 선택기(VS Code)·Ctrl+O(CLI). 다음 답변부터, 세션 재시작 없음.
+      case 'conversation/model':
+        return this.engine.conversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
+      case 'conversation/model/set':
+        return this.engine.setConversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          { provider: requiredString(params, 'provider'), model: requiredString(params, 'model') },
+          optionalString(params, 'profile'),
+        );
+      case 'conversation/model/reset':
+        return this.engine.resetConversationModel(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
+      // 대화의 생각(추론) 값 — 모델 칩 오른쪽. 고를 수 있는 값은 지금 모델이 받는 것만(서버가 검사한다).
+      case 'conversation/thinking/set':
+        return this.engine.setConversationThinking(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          requiredString(params, 'thinking') as Parameters<DexEngine['setConversationThinking']>[2],
+          optionalString(params, 'profile'),
+        );
+      case 'conversation/thinking/reset':
+        return this.engine.resetConversationThinking(
+          requiredString(params, 'workflowId'),
+          requiredString(params, 'interactionId'),
+          optionalString(params, 'profile'),
+        );
       case 'history/snapshot':
         return this.engine.historySnapshot(
           requiredString(params, 'workflowId'),
@@ -459,6 +581,8 @@ export class DexRpcServer {
         ? params.attachments.filter((item): item is NonNullable<ChatInput['attachments']>[number] =>
             !!item && typeof item === 'object' && !Array.isArray(item)) as NonNullable<ChatInput['attachments']>
         : [],
+      // 이 대화에 연결할 폴더 — VSCode 는 열린 작업 영역 폴더를 보낸다. 없으면 폴더 없음.
+      localFolders: optionalStringArray(params, 'localFolders') ?? [],
     };
     const resolved = await this.engine.resolveChatInput(input);
     const streamId = optionalString(params, 'streamId') ?? randomUUID();

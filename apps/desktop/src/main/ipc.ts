@@ -39,6 +39,8 @@ export const CHANNELS = {
   agentsList: 'agents:list',
   agentsCreateOptions: 'agents:create-options',
   agentsCreate: 'agents:create',
+  /** 시작 화면의 새 에이전트 이름이 이미 있는가(적는 대로 묻는다). */
+  agentsNameTaken: 'agents:name-taken',
 
   // Voice (STT/TTS) — renderer captures audio, main proxies to the backend
   // (secrets stay server-side). Audio crosses IPC as Uint8Array + mime.
@@ -95,18 +97,33 @@ export const CHANNELS = {
   /** 임의 텍스트를 **main 의 clipboard 로** 복사. 렌더러의 navigator.clipboard 는
    *  Electron 에서 권한/보안 컨텍스트 때문에 조용히 실패할 수 있다. */
   clipboardWrite: 'clipboard:write',
+  /** main 의 clipboard 에서 글을 읽는다 — IDE 터미널 붙여넣기. */
+  clipboardRead: 'clipboard:read',
   teamsUploadAttachment: 'teams:uploadAttachment',
   teamsSaveAttachment: 'teams:saveAttachment',
   teamsOpenAttachment: 'teams:openAttachment',
   /** 첨부 원본 바이트 — 그림 미리보기용. 디스크를 거치지 않는다. */
   teamsReadAttachment: 'teams:readAttachment',
-  /** 워크스페이스(가상 드라이브)의 파일을 그대로 방에 올린다 — 에이전트 산출물 공유. */
+  /** 파일 저장소의 파일을 그대로 방에 올린다 — 탐색기에서 고른 파일 공유. */
   teamsShareWorkspaceFile: 'teams:shareWorkspaceFile',
 
   historyTurns: 'history:turns',
   /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 [진행 중] 복원. */
   historySnapshot: 'history:snapshot',
   historyConversations: 'history:conversations',
+  // 대화 목록(2026-10-09): 마지막으로 말한 순서로 한 쪽씩, 이름 바꾸기·지우기·사라진 에이전트 대화 정리.
+  historyConversationPage: 'history:conversation-page',
+  historyRename: 'history:rename',
+  historyDelete: 'history:delete',
+  historyPurgeDeletedAgents: 'history:purge-deleted-agents',
+  /** 채팅 검색(2026-10-10): 제목·에이전트 이름·대화 내용. */
+  historySearch: 'history:search',
+  /** 사이드바 [에이전트](2026-10-10): 대화가 있는 에이전트마다 한 줄. */
+  historyConversationAgents: 'history:conversation-agents',
+  // 채팅 공유: 대화를 그 시점까지 얼린 링크. 절대 주소는 main 이 붙인다(렌더러는 서버 주소를 모른다).
+  chatShareState: 'chatShare:state',
+  chatShareCreate: 'chatShare:create',
+  chatShareRevoke: 'chatShare:revoke',
 
   // Agent Viewer — 한 에이전트의 읽기 전용 관측 데이터 (메모리/작업/도구/스토리지/전체로그).
   // 전부 core 의 AgentDataApi(GET only) 에 위임한다.
@@ -118,9 +135,17 @@ export const CHANNELS = {
   agentTaskRuns: 'agent:taskRuns',
   agentTaskOutput: 'agent:taskOutput',
   agentBasicInfo: 'agent:basicInfo',
+  /** 대화의 모델 — 채팅 입력창 옆 선택기(다음 답변부터, 세션 재시작 없음). */
+  conversationModelGet: 'conversation-model:get',
+  conversationModelSet: 'conversation-model:set',
+  conversationModelReset: 'conversation-model:reset',
+  conversationThinkingSet: 'conversation-model:thinking-set',
+  conversationThinkingReset: 'conversation-model:thinking-reset',
+  /** 다른 화면이 이 대화의 모델을 바꿨다 — main → renderer (대화 id, 소식 원문). */
+  conversationModelChanged: 'conversation-model:changed',
   /** 채팅 안전 장치 — 면책 문구 설정 · 민감정보 검사. */
   guardDisclaimer: 'guard:disclaimer',
-  guardCheckContent: 'guard:checkContent',
+  guardCheckInput: 'guard:checkInput',
   /** 답변 평가(별점·문제 유형) — 웹 채팅과 같은 서버 계약. */
   feedbackSubmit: 'feedback:submit',
   feedbackUpdate: 'feedback:update',
@@ -131,22 +156,49 @@ export const CHANNELS = {
   agentWsTree: 'agent:wsTree',
   agentWsFile: 'agent:wsFile',
   agentWsBinary: 'agent:wsBinary',
+  agentWsDocPreview: 'agent:wsDocPreview',
+  agentWsPreviewPage: 'agent:wsPreviewPage',
   agentWsUpload: 'agent:wsUpload',
+  /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일)의 바이트. */
+  chatFileDownload: 'chat:fileDownload',
 
-  // 아티팩트 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
-  // gallery 는 **모든 에이전트**를 훑어 지금 열리는 것만 모아 준다(사이드바).
-  artifactList: 'artifact:list',
-  artifactGet: 'artifact:get',
-  artifactGallery: 'artifact:gallery',
+  // IDE — 채팅의 [IDE] 보기. 호출은 한 채널(허용된 메서드만)로 받아 결과를 봉투로 돌려준다
+  // (409 의 지금 sha 같은 상세가 IPC 오류 문자열로 뭉개지지 않게). 터미널은 main 이 소켓을 연다.
+  ideCall: 'ide:call',
+  ideDownload: 'ide:download',
+  ideTermOpen: 'ide:termOpen',
+  ideTermSend: 'ide:termSend', // renderer → main (fire-and-forget)
+  ideTermClose: 'ide:termClose', // renderer → main (fire-and-forget)
+  ideTermEvent: 'ide:termEvent', // main → renderer (프레임·닫힘)
+  ideWatch: 'ide:watch', // renderer → main — 스토리지 변경 알림 구독
+  ideUnwatch: 'ide:unwatch',
+  ideChanged: 'ide:changed', // main → renderer — 그 구독의 스토리지가 바뀌었다
+
+  // 앱 — 에이전트가 만든 화면. 목록·상세는 한 에이전트 단위이고,
+  // storeMine·storeList 는 [앱] 탭의 [내 앱]·[앱 스토어] 다(서버가 모아 준다).
+  appList: 'apps:list',
+  appGet: 'apps:get',
+  appStoreMine: 'apps:storeMine',
+  appStoreList: 'apps:storeList',
   /** 프레임이 부탁한 alias 를 사용자 권한으로 대신 호출한다. */
-  artifactCallApi: 'artifact:callApi',
-  artifactHttp: 'artifact:http',
-  artifactSetServing: 'artifact:setServing',
-  artifactSetShare: 'artifact:setShare',
-  artifactDelete: 'artifact:delete',
+  appCallApi: 'apps:callApi',
+  appHttp: 'apps:http',
+  appSetServing: 'apps:setServing',
+  appSetShare: 'apps:setShare',
+  /** 지금의 공유 상태와 링크(주인만). 공유 창을 다시 열 때 같은 링크. */
+  appGetShare: 'apps:getShare',
+  appDelete: 'apps:delete',
   // 웹의 같은 화면을 기본 브라우저로 연다. 주소를 렌더러가 조립하지 않는 이유는
   // 렌더러가 서버 주소를 모르기 때문이다 — 그건 main 의 설정이다.
-  artifactOpenWeb: 'artifact:openWeb',
+  appOpenWeb: 'apps:openWeb',
+  // [앱 스토어] 의 앱을 공개 링크로 연다 — 경로만 받고 절대 주소는 main 이 만든다.
+  appOpenPublic: 'apps:openPublic',
+  // 카드의 미리보기 — 그림을 data URL 로(렌더러의 CSP 는 서버 그림을 직접 받지 못한다), 앱을 찍어 올리기.
+  appPreviewImage: 'apps:previewImage',
+  appCapturePreview: 'apps:capturePreview',
+  // 앱 소식 — 서버가 주인의 목록 소켓으로 "이 에이전트의 앱이 바뀌었다" 를 알린다(생김·지움·배포·공유).
+  appsWatch: 'apps:watch', // 렌더러 → main: 목록 소켓을 열어 달라(이미 열려 있으면 그대로)
+  appsChanged: 'apps:changed', // main → 렌더러: 바뀐 에이전트(workflowId)
 
   chatStart: 'chat:start',
   //: 이 스트림을 그만 본다 — **서버 실행은 계속된다**(탭 정리·로그아웃 등).
@@ -157,6 +209,25 @@ export const CHANNELS = {
   chatEvent: 'chat:event',
   //: '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). 이력은 보존.
   chatEndSession: 'chat:end-session',
+  //: 대화별 폴더 연결 — 목록·추가(네이티브 선택 창)·해제·파일 관리자로 열기.
+  chatFoldersList: 'chat-folders:list',
+  chatFoldersAdd: 'chat-folders:add',
+  chatFoldersRemove: 'chat-folders:remove',
+  chatFoldersReveal: 'chat-folders:reveal',
+  //: main → 창: 한 대화의 폴더 목록이 바뀌었다 (interactionId, folders).
+  chatFoldersChanged: 'chat-folders:changed',
+  //: 이 대화의 서버 사본 — 다른 기기에 있는 폴더·켜짐 여부·최근 원격 조작.
+  chatFoldersRemote: 'chat-folders:remote',
+  //: [이 기기로 옮기기] — 다른 기기에 있는 이 대화의 폴더를 이 PC 폴더로 바꾼다.
+  chatFoldersMoveHere: 'chat-folders:move-here',
+  //: main → 창: 이 대화의 서버 사본이 바뀌었다(다른 기기가 연결·해제·옮김, 기기 켜짐/꺼짐).
+  chatFoldersRemoteChanged: 'chat-folders:remote-changed',
+  //: main → 창: 다른 화면에서 온 요청으로 이 PC 의 폴더를 조작했다.
+  chatFoldersRemoteUse: 'chat-folders:remote-use',
+  /** IDE 탐색기 [연결된 폴더] — 폴더 안 파일 읽기·쓰기·목록(main 이 디스크를 만진다). */
+  chatFoldersFs: 'chat-folders:fs',
+  /** 에이전트의 폴더 도구가 폴더를 바꿨다(셸·파일 쓰기) — main → renderer. 인자는 대화 id. */
+  chatFoldersTouched: 'chat-folders:touched',
 
   // Sandboxed browser pages + stable main-process runtime.
   browserState: 'browser:state',
@@ -214,8 +285,6 @@ export const CHANNELS = {
 
   // Window / app management (tray, autostart, reset, restart)
   openSettingsModal: 'app:openSettingsModal', // main → main-window (open settings modal)
-  /** 네이티브 폴더 선택 다이얼로그 — 고른 절대 경로 또는 null(취소). */
-  pickFolder: 'app:pickFolder',
   autostartGet: 'app:autostartGet',
   autostartSet: 'app:autostartSet',
   resetPositions: 'app:resetPositions',
@@ -245,16 +314,10 @@ export const CHANNELS = {
   mcpRenameSecrets: 'mcp:renameSecrets',
   diagText: 'diag:text',
   diagCopy: 'diag:copy',
-  // 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스) 로컬 동기화
-  fsStatus: 'fs:status',
-  fsStatusEvent: 'fs:statusEvent',
-  fsSetCloud: 'fs:setCloud',
-  fsSetAgents: 'fs:setAgents',
-  fsSyncNow: 'fs:syncNow',
-  fsRefreshAgents: 'fs:refreshAgents',
-  /** 동기화 폴더의 직계 자식 목록 — 인앱 탐색기용 (로컬 실파일). */
-  fsList: 'fs:list',
-  fsReadFile: 'fs:read-file',
+  /** 탐색기의 에이전트 섹션 — 이 계정의 개인 에이전트 (서버 목록). */
+  fsAgents: 'fs:agents',
+  /** 파일 저장소 한 폴더의 직계 자식 — 인앱 탐색기용 (서버 목록). */
+  fsCloudList: 'fs:cloud-list',
   chatWatchStart: 'chat:watch-start',
   connectorDevices: 'connector:devices',
   chatWatchStop: 'chat:watch-stop',
@@ -269,12 +332,6 @@ export const CHANNELS = {
   fsCloudReadRaw: 'fs:cloud-read-raw',
   fsCloudOfficePreview: 'fs:cloud-office-preview',
   fsCloudOfficePreviewPage: 'fs:cloud-office-preview-page',
-  fsCloudServerTree: 'fs:cloud-server-tree',
-  fsCloudReset: 'fs:cloud-reset',
-  /** 동기화 폴더 안 경로를 OS 파일 관리자/기본 앱으로 연다. */
-  fsOpenPath: 'fs:openPath',
-  /** 루트 폴더('cloud'|'agents'|'data')를 OS 로 연다. */
-  fsOpenRoot: 'fs:openRoot',
   mcpStatus: 'mcp:status',
   mcpStatusEvent: 'mcp:statusEvent',
 
@@ -293,31 +350,15 @@ export const CHANNELS = {
   // 로그인 시크릿 저장 상태 (키체인/암호화 저장 불가 표면화)
   secureStorageStatus: 'secure:storageStatus',
 
-  // 로컬 실행 환경(설치 폴더의 Python 런타임 + CLI) — 상태 조회 / 설치 / 진행 push /
-  // 서버 버전으로 수렴(sync). 커넥터-세션 턴은 chatStart 가 자동으로 이 환경(사이드카
-  // 데몬)에서 돌린다 — 별도 렌더러 IPC 없음.
-  // CLI 바이너리(codex / Claude Code) 프로비저닝 — 공식 배포처에서 로컬 설치.
   /** 설치 폴더 등 로컬 폴더를 OS 파일 관리자로 연다. */
   appOpenFolder: 'app:openFolder',
 } as const;
 
 /**
- * 아티팩트가 도는 문서의 주소 — main 이 `protocol.handle('xgenartifact')` 로 낸다.
+ * 앱이 도는 문서의 주소 — main 이 `protocol.handle('xgenartifact')` 로 낸다.
  *
  * 렌더러는 이 URL 을 `sandbox="allow-scripts"` iframe 의 src 로만 쓴다. 상수를
  * 여기 두는 이유는 이것이 main ↔ 렌더러의 약속이기 때문이다 — 채널 이름과 같은 종류.
  */
 export const ARTIFACT_FRAME_URL = 'xgenartifact://frame/';
 
-/**
- * 아티팩트 **사이트**(폴더가 곧 웹사이트인 것)의 주소.
- *
- * 경로는 서버의 경로를 그대로 쓴다 — main 의 핸들러가 그 경로에 자격만 붙여
- * 넘기므로, 서버가 문서에 넣어 준 base·상대 경로·API 호출이 웹과 **같은 모양**
- * 으로 동작한다. 호스트 이름(artifact)에는 뜻이 없다(오리진을 만들 뿐).
- */
-export function artifactSiteUrl(workflowId: string, slug: string): string {
-  const wf = encodeURIComponent(String(workflowId || ''));
-  const s = encodeURIComponent(String(slug || ''));
-  return `xgensite://artifact/api/agentflow/agent-artifacts/${wf}/${s}/app/`;
-}

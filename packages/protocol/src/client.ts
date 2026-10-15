@@ -193,7 +193,7 @@ export class HttpClient {
    */
   async getBinary(
     path: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; headers?: Record<string, string> },
   ): Promise<{ bytes: Uint8Array; contentType: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 120_000);
@@ -201,7 +201,7 @@ export class HttpClient {
     try {
       res = await this.fetchImpl(this.url(path), {
         method: 'GET',
-        headers: this.headers({ Accept: '*/*' }),
+        headers: this.headers({ Accept: '*/*', ...(opts?.headers ?? {}) }),
         signal: controller.signal,
       });
     } finally {
@@ -219,8 +219,8 @@ export class HttpClient {
   /**
    * 원시 요청 — 상태·헤더·본문을 그대로 돌려준다(JSON 으로 풀지 않는다).
    *
-   * 아티팩트 프레임의 fetch 를 대신 부르는 자리다: 그 응답이 JSON 일지 텍스트일지
-   * 바이너리일지는 아티팩트의 스크립트가 정한다. 우리가 미리 해석하면 틀린다.
+   * 앱 프레임의 fetch 를 대신 부르는 자리다: 그 응답이 JSON 일지 텍스트일지
+   * 바이너리일지는 앱의 스크립트가 정한다. 우리가 미리 해석하면 틀린다.
    */
   async raw(
     method: string,
@@ -257,6 +257,42 @@ export class HttpClient {
 
   put<T>(path: string, body?: unknown, opts?: { auth?: boolean; timeoutMs?: number }): Promise<T> {
     return this.json<T>('PUT', path, body, opts);
+  }
+
+  /** 바이트 본문을 그대로 PUT 한다(그림 한 장 같은 것). JSON 응답을 돌려준다. */
+  async putBytes<T>(
+    path: string,
+    bytes: Uint8Array,
+    contentType: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 60_000);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.url(path), {
+        method: 'PUT',
+        headers: this.headers({ 'Content-Type': contentType, Accept: 'application/json' }),
+        body: bytes as unknown as BodyInit,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await res.text();
+    let parsed: unknown = undefined;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
+    }
+    if (!res.ok) {
+      if (res.status === 401) this.onAuthFailure?.();
+      throw new ApiError(res.status, `PUT ${path} → ${res.status}`, parsed);
+    }
+    return parsed as T;
   }
 
   patch<T>(

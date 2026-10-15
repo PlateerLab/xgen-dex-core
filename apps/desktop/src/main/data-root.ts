@@ -1,21 +1,20 @@
 /**
- * data-root — 커넥터의 **통합 데이터 루트 폴더** (`~/xgen-dex`).
+ * data-root — 커넥터의 **설치 폴더** (`~/xgen-dex`).
  *
  * ⚠ 이 기본값은 새 설치에만 적용된다 — 이미 부팅한 적이 있는 기존 사용자는
  * settleDataRoot 가 첫 부팅에 dataRoot 를 config 에 못박아 둬서(아래 참고)
  * 이 문자열이 바뀌어도 기존 데이터 폴더(예: ~/xgen-connector)를 그대로 쓴다.
  *
- * 커넥터가 만드는 모든 작업 자산이 한 지붕 아래 모인다:
+ *   <dataRoot>/                ← 기본 ~/xgen-dex (인스톨러에서 변경 가능)
+ *     install.log              ← 인스톨러(NSIS)와 앱이 이어 쓰는 설치 로그
  *
- *   <dataRoot>/                ← 기본 ~/xgen-dex (인스톨러/설정에서 변경 가능)
- *     workspace/               ← PC 컨트롤 작업 폴더 + 에이전트 로컬 동기화 루트
- *     cloud/                   ← 스토리지(가상 드라이브) 마운트 루트
- *     local-runtime/           ← 에이전트 로컬 실행 런타임(Python) + bin/(codex·claude CLI)
+ * 이 PC 의 파일은 채팅에서 연결한 폴더로만 다룬다 — 이 폴더 아래에 작업
+ * 폴더를 만들지 않는다. 예전 버전이 만든 폴더와 그 안의 파일은 건드리지 않는다.
  *
- * 결정 규칙(체크 해제 = 수정 가능):
- *   · 사용자가 명시한 경로(localShell.cwd / workspace.root / dataRoot)는 항상 존중.
- *   · 미설정이면 dataRoot 파생 기본을 **첫 부팅에 config 에 채워** 이후에도
- *     안정적으로 같은 곳을 가리키게 한다(레이아웃이 조용히 이사하지 않게).
+ * 결정 규칙:
+ *   · 사용자가 명시한 경로(dataRoot)는 항상 존중.
+ *   · 미설정이면 기본을 **첫 부팅에 config 에 채워** 이후에도
+ *     안정적으로 같은 곳을 가리키게 한다(폴더가 조용히 이사하지 않게).
  *
  * Windows 인스톨러(NSIS custom page)는 선택 결과를
  *   <userData>/install-options.json  =  { dataRoot? }
@@ -110,30 +109,15 @@ export interface InstallOptions {
   dataRoot?: string;
 }
 
-/** 통합 루트 — config.dataRoot 존중, 기본 ~/xgen-dex(새 설치만 — 위 파일 docstring 참고). */
+/** 설치 폴더 — config.dataRoot 존중, 기본 ~/xgen-dex(새 설치만 — 위 파일 docstring 참고). */
 export function resolveDataRoot(cfg: Pick<ConnectorConfig, 'dataRoot'>, home = homedir()): string {
   const r = (cfg.dataRoot ?? '').trim();
   return r ? resolve(r) : join(home, 'xgen-dex');
 }
 
-export function workspaceDirOf(root: string): string {
-  return join(root, 'workspace');
-}
-/** 클라우드 동기화 폴더 — [XGen 클라우드 연결] 토글의 대상. */
-export function cloudDirOf(root: string): string {
-  return join(root, 'cloud');
-}
-export function runtimeDirOf(root: string): string {
-  return join(root, 'local-runtime');
-}
-/** 에이전트 워크스페이스 동기화 폴더 — [Agent Workspace 연결] 토글의 대상. */
-export function agentWorkspaceDirOf(root: string): string {
-  return join(root, 'agent_workspace');
-}
-
 /**
- * 첫 부팅 정착 — dataRoot 트리를 만들고, 미설정 경로들을 dataRoot 파생 기본으로
- * config 에 채운다. **명시 설정은 절대 덮지 않는다.** 반환: config 패치(변경분만).
+ * 첫 부팅 정착 — 설치 폴더를 만들고, 미설정이면 기본 경로를 config 에 채운다.
+ * **명시 설정은 절대 덮지 않는다.** 반환: config 패치(변경분만).
  */
 export function settleDataRoot(
   cfg: ConnectorConfig,
@@ -141,24 +125,12 @@ export function settleDataRoot(
 ): { root: string; patch: Partial<ConnectorConfig> } {
   const root = resolveDataRoot(cfg, home);
   const patch: Partial<ConnectorConfig> = {};
-  for (const d of [
-    root,
-    workspaceDirOf(root),
-    cloudDirOf(root),
-    agentWorkspaceDirOf(root),
-    runtimeDirOf(root),
-  ]) {
-    try {
-      mkdirSync(d, { recursive: true });
-    } catch {
-      /* 권한 문제 등 — 사용처에서 다시 드러난다 */
-    }
+  try {
+    mkdirSync(root, { recursive: true });
+  } catch {
+    /* 권한 문제 등 — 사용처에서 다시 드러난다 */
   }
   if (!(cfg.dataRoot ?? '').trim()) patch.dataRoot = root;
-  // PC 컨트롤 작업 폴더(=에이전트 로컬 동기화 루트) 기본.
-  if (!(cfg.localShell?.cwd ?? '').trim()) {
-    patch.localShell = { ...(cfg.localShell ?? {}), cwd: workspaceDirOf(root) };
-  }
   return { root, patch };
 }
 

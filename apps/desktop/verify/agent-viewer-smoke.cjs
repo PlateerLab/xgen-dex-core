@@ -42,7 +42,7 @@ window.xgen = {
    const result = {trace: traces.find(t => t.trace_id === id), spans: [{span_order: 2, span_type: 'tool_call', tool_name: 'read_file', input_data: 'path'}, {span_order: 1, span_type: 'llm_call'}, {span_order: 3, span_type: 'error', error_message: 'step failed'}]};
    return window.fixture.detailFail === id ? Promise.reject(Error('fixture detail error')) : window.fixture.slowTrace === id ? new Promise(resolve => {window.fixture.pending[id] = () => resolve(result);}) : Promise.resolve(result);
   },
- }, artifacts: {list: async () => ({artifacts: []})}
+ }, apps: {list: async () => ({apps: []})}
 };
 import('./src/renderer/src/views/AgentViewer').then(({AgentViewer}) => {
  const nav = {a: createAgentViewerState(), b: createAgentViewerState()};
@@ -71,6 +71,11 @@ async function main() {
     platform: 'browser',
     tsconfig: path.join(desktop, 'tsconfig.json'),
     define: { 'process.env.NODE_ENV': '"production"' },
+    // [스토리지] 가 IDE 의 탐색기(@dex/ide)를 쓴다 — 그 묶음의 Monaco CSS·글꼴은 앱 번들러의 몫이라 비우고,
+    // react 는 앱 번들러(dedupe)처럼 이 앱의 것 하나로 묶는다.
+    loader: { '.css': 'empty', '.ttf': 'empty' },
+    external: ['node:*'],
+    alias: { react: path.dirname(require.resolve('react/package.json', { paths: [desktop] })), 'react-dom': path.dirname(require.resolve('react-dom/package.json', { paths: [desktop] })) },
     logLevel: 'silent',
   });
   fs.writeFileSync(path.join(tmp, 'fixture.js'), bundled.outputFiles[0].text);

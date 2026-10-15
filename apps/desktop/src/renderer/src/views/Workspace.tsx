@@ -24,18 +24,20 @@ import type { ConnectorConfig } from '../../../main/config';
 import { Chat } from './Chat';
 import { CanonicalChat } from './CanonicalChat';
 import { useDesktopNativeSessionBinding } from '../native-session-binding';
+import { onIdeViewChange, onSidebarToggle } from './ide-sidebar';
 import { Settings } from './Settings';
-import { AvatarSettings } from './AvatarSettings';
 import { AgentViewer } from './AgentViewer';
 import { createAgentViewerState, type AgentViewerState } from './agent-viewer-state';
-import { AgentCreate } from './AgentCreate';
-import { ActivityBar, type SideView } from './ActivityBar';
-import { AgentPanel } from './AgentPanel';
+import { StartChat } from './StartChat';
+import { ActivityBar } from './ActivityBar';
+import { restoreSideView, type SideView } from './side-view';
+import { ConversationPanel } from './ConversationPanel';
+import { ConversationManager } from './ConversationManager';
 import { ExplorerPanel } from './ExplorerPanel';
 import { FileViewerPane } from './FileViewerPane';
 import { fileTabId } from './file-viewer-model';
 import { TeamsPanel } from './TeamsPanel';
-import { ArtifactsPanel } from '../artifacts/ArtifactsPanel';
+import { AgentAppsPage } from '../apps/AgentAppsPage';
 import { TeamsRoom } from './TeamsRoom';
 import { TabBar } from './TabBar';
 import { BrowserPane, type BrowserSurfaceRect } from './BrowserPane';
@@ -43,6 +45,7 @@ import { BrowserSurface } from './BrowserSurface';
 import { SystemMonitorFooter } from './SystemMonitorFooter';
 import { XgenMark } from '../brand/Logo';
 import { chatTabs } from './tab-model';
+import { peekIdeStore, useIdeStore, useIsIdeMode } from '../ide/ide-sessions';
 import {
   addWorkspaceTab,
   dropWorkspaceTab,
@@ -204,7 +207,7 @@ export const Workspace: React.FC<{
 }> = ({ user, config, onLogout, onConfigChange }) => {
   const nativeBinding = useDesktopNativeSessionBinding(config.serverUrl, user.userId);
   const [nativeSettingsRequest, setNativeSettingsRequest] = useState(0);
-  const [sideView, setSideView] = useState<SideView>(config.ui?.sideView ?? 'agent');
+  const [sideView, setSideView] = useState<SideView>(restoreSideView(config.ui?.sideView));
   const [collapsed, setCollapsed] = useState(config.ui?.sidebarCollapsed ?? false);
   const [sidebarWidth, setSidebarWidth] = useState(clampWidth(config.ui?.sidebarWidth ?? 300));
   const [layout, setLayout] = useState<WorkspaceLayout>(() =>
@@ -214,7 +217,6 @@ export const Workspace: React.FC<{
       user.userId,
     ),
   );
-  const [overlayOn, setOverlayOn] = useState(config.avatarOverlay ?? false);
   const [notice, setNotice] = useState('');
   const [browserConnection, setBrowserConnection] = useState<BrowserConnectionEvent | null>(null);
   const [openingBrowserAgent, setOpeningBrowserAgent] = useState(false);
@@ -326,14 +328,18 @@ export const Workspace: React.FC<{
   useEffect(() => {
     const visibleChats: string[] = [];
     const visibleTeamsRooms: string[] = [];
+    const visibleSessions: string[] = [];
     for (const group of layout.groups) {
       const tab = group.tabs.find((item) => item.id === group.activeTabId);
       if (tab?.kind === 'chat' && tab.workflowId && tab.sessionKey) {
         visibleChats.push(notificationChatKey(tab.workflowId, tab.sessionKey));
+        visibleSessions.push(tab.sessionKey);
       } else if (tab?.kind === 'teams' && tab.roomId) {
         visibleTeamsRooms.push(tab.roomId);
       }
     }
+    // 같은 사실을 대화 상태에도 — 보이지 않는 대화에서 끝난 턴에 탭 점을 붙인다.
+    sessionStore.setVisible(visibleSessions);
     const context = {
       visibleChats,
       visibleTeamsRooms,
@@ -548,29 +554,6 @@ export const Workspace: React.FC<{
     return () => clearTimeout(timer);
   }, [notice]);
 
-  const toggleOverlay = useCallback(async () => {
-    const next = !overlayOn;
-    setOverlayOn(next);
-    await xgen.overlay.setEnabled(next);
-    void onConfigChange();
-  }, [overlayOn, onConfigChange]);
-
-  useEffect(() => xgen.config.onChange((next) => setOverlayOn(!!next.avatarOverlay)), []);
-  const pressAvatar = useCallback(() => {
-    setLayout((current) => {
-      const existing = findTab(current, 'avatar');
-      if (
-        existing &&
-        current.focusedGroupId === existing.group.id &&
-        existing.group.activeTabId === 'avatar'
-      ) {
-        return removeWorkspaceTab(current, 'avatar');
-      }
-      if (existing) return selectWorkspaceTab(current, existing.group.id, 'avatar');
-      return addWorkspaceTab(current, current.focusedGroupId, { id: 'avatar', kind: 'avatar' });
-    });
-  }, []);
-
   // 설정은 모달이 아니라 **메인 영역 탭**이다 — 전체 영역을 쓰고, 다른 탭과
   // 같은 규칙(선택·닫기·분할 이동)을 따른다. 열려 있으면 포커스, 활성 상태에서
   // 다시 누르면 닫힘 (아바타 탭과 같은 토글 규칙).
@@ -586,6 +569,35 @@ export const Workspace: React.FC<{
       }
       if (existing) return selectWorkspaceTab(current, existing.group.id, 'settings');
       return addWorkspaceTab(current, current.focusedGroupId, { id: 'settings', kind: 'settings' });
+    });
+  }, []);
+
+  /**
+   * [앱] 탭 — 설정과 같은 토글 규칙이다. 열려 있으면 포커스, 보고 있을 때 다시 누르면 닫힌다.
+   * 예전에는 사이드바 목록이었는데, 내 앱 전부를 카드로 넓게 보여 주고 웹 [Agent APP] 과 같은
+   * 두 칸(내 앱·앱 스토어)을 두려면 메인 영역이 맞다.
+   */
+  const pressApps = useCallback(() => {
+    setLayout((current) => {
+      const existing = findTab(current, 'apps');
+      if (
+        existing &&
+        current.focusedGroupId === existing.group.id &&
+        existing.group.activeTabId === 'apps'
+      ) {
+        return removeWorkspaceTab(current, 'apps');
+      }
+      if (existing) return selectWorkspaceTab(current, existing.group.id, 'apps');
+      return addWorkspaceTab(current, current.focusedGroupId, { id: 'apps', kind: 'apps' });
+    });
+  }, []);
+
+  /** 채팅 기록 관리 탭을 연다(사이드바 [채팅] 목록 머리 ⋯). 하나뿐인 탭이다. 열려 있으면 앞으로 가져온다. */
+  const openHistoryManager = useCallback(() => {
+    setLayout((current) => {
+      const existing = findTab(current, 'history');
+      if (existing) return selectWorkspaceTab(current, existing.group.id, 'history');
+      return addWorkspaceTab(current, current.focusedGroupId, { id: 'history', kind: 'history' });
     });
   }, []);
 
@@ -666,8 +678,12 @@ export const Workspace: React.FC<{
     [setLayout],
   );
 
+  /**
+   * 에이전트 뷰어 탭을 연다(에이전트당 하나, 하위 탭만 바뀐다). `app` 을 주면 [앱] 하위 탭에서
+   * 그 앱을 고른다 — [앱] 탭의 [열기]. 주지 않으면 전에 고르던 앱을 그대로 둔다.
+   */
   const openAgentViewer = useCallback(
-    (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub) => {
+    (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub, app?: string) => {
       setLayout((current) => {
         const opened = addWorkspaceTab(current, current.focusedGroupId, {
           id: `viewer:${workflowId}`,
@@ -675,6 +691,7 @@ export const Workspace: React.FC<{
           workflowId,
           workflowName,
           viewerSub: sub,
+          viewerApp: app,
         });
         // Explicit links choose their destination even when the viewer is already open.
         return {
@@ -682,7 +699,9 @@ export const Workspace: React.FC<{
           groups: opened.groups.map((group) => ({
             ...group,
             tabs: group.tabs.map((tab) =>
-              tab.id === `viewer:${workflowId}` ? { ...tab, viewerSub: sub } : tab,
+              tab.id === `viewer:${workflowId}`
+                ? { ...tab, viewerSub: sub, viewerApp: app ?? tab.viewerApp }
+                : tab,
             ),
           })),
         };
@@ -691,22 +710,21 @@ export const Workspace: React.FC<{
     [],
   );
 
-  /** 새 에이전트 만들기 — 메인에 탭 하나. 이미 열려 있으면 그리로 간다. */
-  const openAgentCreate = useCallback(() => {
+  /**
+   * 새 채팅: 메인에 시작 화면("오늘은 무엇을 해볼까요?") 탭 하나. 이미 열려 있으면 그리로 간다.
+   * 탭 종류 이름 'agent-create' 는 저장된 배치와 맞추려고 그대로 둔다(예전의 새 에이전트 화면 자리다).
+   */
+  const openStartChat = useCallback(() => {
     setLayout((current) =>
       addWorkspaceTab(current, current.focusedGroupId, { id: 'agent-create', kind: 'agent-create' }),
     );
   }, []);
 
-  /** 만들어진 에이전트로 곧장 대화를 연다. */
-  const openAgentChat = useCallback((agent: { workflowId: string; workflowName: string }) => {
-    sessionStore.openNew({
-      workflowId: agent.workflowId,
-      workflowName: agent.workflowName,
-      // [+] 새 에이전트 화면은 Agent XGeny 하나만 만든다. 이 표시가 없으면 스토어가 첨부를 그림만 남기고
-      // 걸러, 만들자마자 올린 PDF·문서가 조용히 빠졌다(2026-09-16 대화로 에이전트 만들기 시험).
-      hasAgentGeny: true,
-    } as Agent);
+  // 처음 켰을 때 열린 탭이 하나도 없으면 시작 화면으로 들어선다. 예전에는 마지막 에이전트와의 새 대화를
+  // 열었다. 저장된 탭이 있으면(되살리는 중이어도) 그 배치를 그대로 둔다.
+  useEffect(() => {
+    if (layoutRef.current.groups.every((group) => group.tabs.length === 0)) openStartChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectTab = useCallback((groupId: string, tabId: string) => {
@@ -721,6 +739,13 @@ export const Workspace: React.FC<{
   }, []);
 
   const closeTab = useCallback((tab: WorkspaceTab) => {
+    // IDE 에서 고치고 저장하지 않은 파일이 있으면 묻는다(닫으면 그 편집기도 사라진다).
+    const unsaved = tab.kind === 'chat' && tab.sessionKey ? (peekIdeStore(tab.sessionKey)?.unsavedPaths() ?? []) : [];
+    if (
+      unsaved.length &&
+      !window.confirm(`IDE 에 저장하지 않은 파일이 ${unsaved.length}개 있습니다.\n닫으면 바뀐 내용이 사라집니다. 닫을까요?`)
+    )
+      return;
     setLayout((current) => removeWorkspaceTab(current, tab.id));
     if (tab.kind === 'chat' && tab.sessionKey) {
       // 사용자가 닫은 탭은 되살릴 대상이 아니다 — 대기표를 먼저 거둔다.
@@ -1037,12 +1062,48 @@ export const Workspace: React.FC<{
   }, [browserSelection, browserState.activeByWorkflow, browserState.pages]);
 
   const displayName = user.username || '사용자';
-  const avatarActive = layout.groups.some(
-    (group) => group.id === layout.focusedGroupId && group.activeTabId === 'avatar',
-  );
   const settingsActive = layout.groups.some(
     (group) => group.id === layout.focusedGroupId && group.activeTabId === 'settings',
   );
+  const appsActive = layout.groups.some(
+    (group) => group.id === layout.focusedGroupId && group.activeTabId === 'apps',
+  );
+  // 지금 보는 탭(초점 묶음의 활성 탭)이 IDE 로 보이는 채팅이면 그 IDE — 앱 사이드바가 IDE 단추를 그린다.
+  const focusedTab = (() => {
+    const group = layout.groups.find((g) => g.id === layout.focusedGroupId);
+    return group?.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
+  })();
+  const viewKey = focusedTab?.kind === 'chat' && focusedTab.sessionKey ? focusedTab.sessionKey : null;
+  const viewIsIde = useIsIdeMode(viewKey);
+  const viewIde = useIdeStore(viewKey);
+  const ideInView = viewIsIde ? viewIde : null;
+
+  // [IDE] 로 보는 동안 앱 사이드바(대화·탐색기·Teams…)를 접는다 — IDE 가 자기 사이드바를 갖는다.
+  // 채팅으로 돌아오면 우리가 접은 것만 다시 편다. 규칙은 ide-sidebar.ts.
+  const autoCollapsedRef = useRef(false);
+  const wasIdeRef = useRef(viewIsIde);
+  const prevCollapsedRef = useRef(collapsed);
+  useEffect(() => {
+    const wasIde = wasIdeRef.current;
+    wasIdeRef.current = viewIsIde;
+    if (wasIde === viewIsIde) return;
+    const next = onIdeViewChange(wasIde, viewIsIde, {
+      collapsed,
+      autoCollapsed: autoCollapsedRef.current,
+    });
+    autoCollapsedRef.current = next.autoCollapsed;
+    if (next.collapsed !== collapsed) setCollapsed(next.collapsed);
+  }, [viewIsIde, collapsed]);
+  useEffect(() => {
+    // IDE 안에서 사용자가 사이드바를 직접 열었다 — 그 뒤로는 사용자의 선택이다.
+    const changed = prevCollapsedRef.current !== collapsed;
+    prevCollapsedRef.current = collapsed;
+    if (!changed || !viewIsIde) return;
+    autoCollapsedRef.current = onSidebarToggle(true, collapsed, {
+      collapsed,
+      autoCollapsed: autoCollapsedRef.current,
+    }).autoCollapsed;
+  }, [collapsed, viewIsIde]);
 
   const renderGroupContent = (group: WorkspaceGroup) => {
     const active = group.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
@@ -1102,6 +1163,7 @@ export const Workspace: React.FC<{
             embedded
             nativeBinding={nativeBinding}
             nativeSessionPageRequest={nativeSettingsRequest}
+            user={user}
             config={config}
             onClose={() => closeTab(active)}
             onChanged={onConfigChange}
@@ -1109,29 +1171,31 @@ export const Workspace: React.FC<{
         </div>
       );
     }
-    if (active?.kind === 'avatar') {
+    if (active?.kind === 'apps') {
       return (
         <div className="pane-fill">
-          <AvatarSettings
-            user={user}
-            serverUrl={config.serverUrl}
-            onBack={() => closeTab(active)}
+          <AgentAppsPage
+            onOpenApp={(workflowId, workflowName, slug) =>
+              openAgentViewer(workflowId, workflowName, 'apps', slug)
+            }
           />
+        </div>
+      );
+    }
+    if (active?.kind === 'history') {
+      return (
+        <div className="pane-fill">
+          <ConversationManager />
         </div>
       );
     }
     if (active?.kind === 'agent-create') {
       return (
         <div className="pane-fill">
-          <AgentCreate
+          <StartChat
             key={active.id}
-            onCreated={(agent) => {
-              // 만들자마자 그 에이전트와 대화를 연다. 목록에서 다시 찾아 들어가야
-              // 한다면 "만들면 바로 쓸 수 있다"가 성립하지 않는다.
-              closeTab(active);
-              openAgentChat(agent);
-            }}
-            onClose={() => closeTab(active)}
+            // 대화가 열리고 첫 메시지가 갔다. 시작 화면 탭은 닫고 그 대화 탭이 앞에 선다.
+            onStarted={() => closeTab(active)}
           />
         </div>
       );
@@ -1159,6 +1223,7 @@ export const Workspace: React.FC<{
           workflowId={active.workflowId}
           workflowName={active.workflowName}
           initialSub={active.viewerSub}
+          initialApp={active.viewerApp}
           navigation={navigation}
           onSubChange={(viewerSub) =>
             setLayout((current) => ({
@@ -1168,6 +1233,19 @@ export const Workspace: React.FC<{
                 tabs: item.tabs.map((tab) => tab.id === active.id ? { ...tab, viewerSub } : tab),
               })),
             }))
+          }
+          onAppChange={(viewerApp) =>
+            setLayout((current) => {
+              // 같은 값이면 배치를 새로 만들지 않는다 — 고를 때마다 저장이 돌지 않게.
+              if (findTab(current, active.id)?.tab.viewerApp === viewerApp) return current;
+              return {
+                ...current,
+                groups: current.groups.map((item) => ({
+                  ...item,
+                  tabs: item.tabs.map((tab) => (tab.id === active.id ? { ...tab, viewerApp } : tab)),
+                })),
+              };
+            })
           }
           onClose={() => closeTab(active)}
         />
@@ -1196,10 +1274,9 @@ export const Workspace: React.FC<{
         collapsed={collapsed}
         onPressView={pressView}
         teamsUnread={teamsUnread}
-        overlayOn={overlayOn}
-        onToggleOverlay={() => void toggleOverlay()}
-        avatarActive={avatarActive}
-        onOpenAvatar={pressAvatar}
+        ide={ideInView}
+        appsActive={appsActive}
+        onOpenApps={pressApps}
         settingsActive={settingsActive}
         onOpenSettings={pressSettings}
         userName={displayName}
@@ -1212,14 +1289,13 @@ export const Workspace: React.FC<{
         style={{ width: sidebarWidth }}
       >
         <div className="panel-host" style={{ display: sideView === 'agent' ? undefined : 'none' }}>
-          <AgentPanel config={config} onCreateAgent={openAgentCreate} />
+          <ConversationPanel onNewChat={openStartChat} onManageHistory={openHistoryManager} />
         </div>
         <div
           className="panel-host"
           style={{ display: sideView === 'explorer' ? undefined : 'none' }}
         >
           <ExplorerPanel
-            onOpenSettings={openSettings}
             myName={user.username || '나'}
             onOpenFile={openFileViewer}
           />
@@ -1229,18 +1305,6 @@ export const Workspace: React.FC<{
             activeRoomId={activeRoomId}
             onOpenRoom={openRoomTab}
             onRoomRemoved={closeRoomTabs}
-          />
-        </div>
-        <div
-          className="panel-host"
-          style={{ display: sideView === 'artifacts' ? undefined : 'none' }}
-        >
-          {/* 모음에서 고른 아티팩트는 **그 에이전트의 [아티팩트] 탭**으로 연다 —
-              같은 화면을 두 벌 만들지 않고, 고른 것이 어디 사는지도 함께 보인다. */}
-          <ArtifactsPanel
-            onOpen={(workflowId, workflowName) =>
-              openAgentViewer(workflowId, workflowName, 'artifacts')
-            }
           />
         </div>
         <div className="sidebar-resize" onMouseDown={startSidebarResize} />

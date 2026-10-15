@@ -20,8 +20,11 @@
  * (keychain) and base-URL config are the host's concern (Electron main).
  */
 import { AgentDataApi } from './agent-data';
+import { ChatFilesApi } from './chat-files';
 import { FilestoreApi } from './filestore';
 import { ConnectorDevicesApi } from './connector-devices';
+import { ConversationFoldersApi } from './conversation-folders';
+import { ConversationModelApi } from './conversation-model';
 import { AgentsApi } from './agents';
 import { AuthApi } from './auth';
 import { AvatarsApi } from './avatars';
@@ -29,6 +32,8 @@ import { ChatApi } from './chat';
 import { ChatGuardrailsApi } from './chat-guardrails';
 import { FeedbackApi } from './feedback';
 import { HistoryApi } from './history';
+import { IdeApi } from './ide';
+import { ChatSharesApi } from './shares';
 import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
 import { TeamsApi } from './teams';
@@ -54,7 +59,7 @@ export interface XgenClientOptions {
    * 액세스 토큰이 **회전**될 때마다 호출된다 (로그인 / restore 의 validate 회전 /
    * ensureFreshAuth). 게이트웨이는 회전 시 **이전 토큰의 세션 키를 삭제**하므로,
    * 호스트는 이 콜백으로 keychain 을 즉시 갱신해야 다른 소비자(WS 브릿지·
-   * 워크스페이스 동기화)가 폐기된 토큰으로 접속하다 403 을 맞지 않는다.
+   * 대화 소켓)가 폐기된 토큰으로 접속하다 403 을 맞지 않는다.
    */
   onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
 }
@@ -74,7 +79,17 @@ export class XgenClient {
   readonly voice: VoiceApi;
   readonly agentData: AgentDataApi;
   readonly filestore: FilestoreApi;
+  /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일) 받기. */
+  readonly chatFiles: ChatFilesApi;
   readonly connectorDevices: ConnectorDevicesApi;
+  /** 대화의 폴더 — 서버 사본(어느 화면에서든 보이고 쓰인다). */
+  readonly conversationFolders: ConversationFoldersApi;
+  /** 대화의 모델 — 채팅 입력창 옆 선택기(다음 답변부터, 세션 재시작 없음). */
+  readonly conversationModel: ConversationModelApi;
+  /** 채팅의 [IDE] 보기 — 편집기·터미널·찾기·소스 제어. */
+  readonly ide: IdeApi;
+  /** 채팅 공유: 대화를 그 시점까지 얼린 링크(/api/chat/shares). */
+  readonly chatShares: ChatSharesApi;
 
   private refreshToken?: string;
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
@@ -104,7 +119,12 @@ export class XgenClient {
     this.voice = new VoiceApi(this.http);
     this.agentData = new AgentDataApi(this.http);
     this.filestore = new FilestoreApi(this.http);
+    this.chatFiles = new ChatFilesApi(this.http);
     this.connectorDevices = new ConnectorDevicesApi(this.http);
+    this.conversationFolders = new ConversationFoldersApi(this.http);
+    this.conversationModel = new ConversationModelApi(this.http);
+    this.ide = new IdeApi(this.http);
+    this.chatShares = new ChatSharesApi(this.http);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -211,7 +231,7 @@ export class XgenClient {
    * 액세스 토큰을 회전시키고 새 토큰을 돌려준다. 실패(refresh 토큰 없음/거부)면
    * null — 그때는 진짜 재로그인 대상이다.
    *
-   * single-flight: WS 브릿지·워크스페이스 동기화·HTTP 가 동시에 401 을 맞아도
+   * single-flight: WS 브릿지·대화 소켓·HTTP 가 동시에 401 을 맞아도
    * refresh 는 한 번만 나간다 (게이트웨이는 refresh 마다 이전 세션을 지우므로,
    * 동시 refresh 는 서로의 새 토큰을 폐기하는 경쟁이 된다).
    *
@@ -256,9 +276,26 @@ export class XgenClient {
 export * from './errors';
 export * from './types';
 export * from './agent-data';
+export * from './agent-inspect';
+export * from './file-view';
+export * from './chat-files';
+export * from './turn-files';
+export * from './workspace-copy';
+export * from './app-card';
+export * from './shares';
 export * from './filestore';
 export * from './agent-trigger';
 export * from './connector-devices';
+export * from './conversation-folders';
+export * from './conversation-folder-sync';
+// 사용자 PC 접속(UserPc)의 기기 쪽 약속과 휴대폰·브라우저의 내장 셸.
+export * from './user-pc-shell';
+export * from './connector-deadline';
+export * from './conversation-model';
+// 대화 목록(2026-10-09): 마지막으로 말한 순서, 제목·꼬리표, 목록 규칙. 모든 앱이 같은 모양으로 그린다.
+export * from './conversation-list';
+export * from './conversation-search';
+export * from './conversation-agents';
 export * from './notifications';
 // 도구 과정 표시 규칙(칩 단계 · 호출 한 건 한 행 · 건수) — 앱과 웹이 같은 답을 내도록.
 export * from './tool-activity';
@@ -273,8 +310,14 @@ export * from './chat-guardrails';
 export { ApiError } from './client';
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';
-export { TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';
+export { STREAM_IDLE_MS, TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';
 export type { LiveTurnSnapshot, SubscribedState } from './chat';
+// 다른 화면에서 도는 턴 — 질문 본문·첨부, 진행분의 작업 과정. 앱·웹이 같은 모양으로 그린다.
+export { liveTurnFlow, liveTurnProcess } from './chat';
+export type { LiveProcessItem } from './chat';
+// 서버가 실행 기록에서 되살린 작업 과정 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
+export { turnInputText, turnAttachments, toHistoryProcess, genyHistoryWorkspacePath } from './history';
+export type { TurnAttachment } from './history';
 export { sha256Hex } from './hash';
 export type { StoreAvatar } from './avatars';
 // Agent ↔ Teams 다리 — 컨텍스트 봉투와 공유 출처 표식. 렌더러와 메인이 같은
@@ -309,13 +352,20 @@ export type {
   ParsedSharedMessage,
 } from './teams-bridge';
 
-// ── 다운로드 센터 · 클라우드 링크 · Teams 소켓 주소 ──
+// ── 다운로드 센터 · Teams 소켓 주소 ──
 // 앱 안에 박혀 있던 경로들을 여기로 올렸다. 데스크톱만 쓰는 것도 있지만, 경로가
 // 앱에 있으면 다음 앱이 그것을 **복사**한다 — 이 저장소가 없애려는 바로 그 일이다.
 export { InstallersApi, installerListPath, installerDownloadPath } from './installers';
 export type { InstallerPackage, InstallerListResponse } from './installers';
-export { CloudLinksApi, CLOUD_LINKS_PATH, cloudLinkPath } from './cloud-links';
-export type { CloudLink, CloudLinksResponse } from './cloud-links';
+export { IdeApi, ideTerminalSocketPath, ideFailureOf, workspaceChangeSocketPath } from './ide';
+export type {
+  IdeSessionResponse,
+  IdeFileResponse,
+  IdeSaveRequest,
+  IdeSaveResponse,
+  IdeStorageEntry,
+  IdeFailure,
+} from './ide';
 export {
   teamsUserSocketUrl,
   teamsRoomSocketUrl,

@@ -17,7 +17,7 @@ import {
   type InteractionPort,
   type DexConfig,
 } from '@dex/engine';
-import { FileConfigStore, dataDirectory } from '@dex/engine';
+import { FileConfigStore } from '@dex/engine';
 import { SystemCredentialStore } from '@dex/engine';
 
 /** 한 줄 실행하고 (성공, 표준출력) 을 돌려준다. 없는 명령은 조용히 실패한다. */
@@ -67,7 +67,7 @@ async function confirmDangerous(command: string): Promise<'once' | 'session' | '
     stdout.write(`\n${DANGEROUS_COMMAND_PROMPT.title}\n${DANGEROUS_COMMAND_PROMPT.message}\n`);
     stdout.write(`  ${DANGEROUS_COMMAND_PROMPT.detail(command)}\n`);
     const answer = await new Promise<string>((resolve) =>
-      rl.question('허용하시겠습니까? [n=거부 / y=이번만 / a=이 세션 동안] ', resolve),
+      rl.question('허용하시겠습니까? [n=거부 / y=이번만 / a=이 대화에서 계속] ', resolve),
     );
     const a = answer.trim().toLowerCase();
     // 기본값은 거부다 — 엔터만 친 사용자가 승인한 것이 되면 안 된다.
@@ -150,7 +150,6 @@ export function bindCliHost(configStore: FileConfigStore): void {
         return next;
       },
     },
-    paths: { dataRoot: () => dataDirectory() },
     interaction: terminalInteraction,
   };
   bindHost(ports);

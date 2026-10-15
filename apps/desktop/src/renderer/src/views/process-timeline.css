@@ -806,3 +806,42 @@
     animation: none;
   }
 }
+
+/* [폴더 연결] — 연결된 폴더가 있으면 브랜드 색과 개수 배지 */
+.chat-hbtn.folder-connect.on {
+  color: var(--primary);
+}
+.chat-hbtn.folder-connect.on:hover:not(:disabled) {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+/* 이 대화의 폴더가 다른 기기에 있다 — 개수만 옅게 */
+.chat-hbtn.folder-connect.elsewhere .folder-connect-count {
+  background: var(--panel-2);
+  color: var(--text-secondary);
+}
+/* 다른 화면에서 온 요청으로 방금 이 PC 폴더를 썼다 — 작은 점 */
+.folder-connect-remote {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.folder-connect-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+/* [공유]: [채팅 | IDE] 오른쪽의 아이콘 단추. 알약과 붙지 않게 조금 띄운다. */
+.chat-hbtn.chat-share-btn {
+  margin-left: 4px;
+}

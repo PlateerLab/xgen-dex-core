@@ -16,7 +16,30 @@ export function chatTabs(sessions: SessionState[], activeKey: string | null): Se
   return sessions.filter((s) => isKeepable(s) || s.key === activeKey);
 }
 
-/** 탭 이름 — 에이전트 이름. 비어 있으면 자리표시. */
+/** 탭 이름에 쓰는 글 길이. 탭은 좁다(나머지는 툴팁이 보여 준다). */
+const TAB_TITLE_MAX = 40;
+
+function oneLine(text: string, limit: number): string {
+  const flat = text.split(/\s+/).filter(Boolean).join(' ');
+  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`;
+}
+
+/**
+ * 탭 이름은 대화 제목이다(2026-10-09). 대화 목록이 알려 준 제목(붙인 이름, 없으면 첫 메시지)이 먼저고,
+ * 모르면 이 대화의 첫 질문 한 줄이다. 아직 아무 말도 없으면 "새 대화".
+ * 예전에는 에이전트 이름이라 같은 에이전트와의 대화 탭이 모두 같은 이름이었다.
+ */
 export function tabTitle(s: SessionState): string {
-  return s.agent.workflowName || '대화';
+  const named = s.title?.trim();
+  if (named) return oneLine(named, TAB_TITLE_MAX);
+  const first = s.messages.find((m) => m.role === 'user' && typeof m.text === 'string' && m.text.trim());
+  if (first) return oneLine(first.text, TAB_TITLE_MAX);
+  return '새 대화';
+}
+
+/** 탭 툴팁: 에이전트 이름과 대화 제목. */
+export function tabTooltip(s: SessionState): string {
+  const title = tabTitle(s);
+  const agent = s.agent.workflowName;
+  return agent ? `${agent} · ${title}` : title;
 }

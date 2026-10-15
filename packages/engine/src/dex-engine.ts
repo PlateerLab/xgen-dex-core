@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import type { ConnectorDevice } from '@dex/protocol';
+import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
-import { XgenClient, type LiveTurnSnapshot } from '@dex/protocol';
+import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
+import { UNCHECKED_INPUT, XgenClient, type ChatInputCheck, type LiveTurnSnapshot } from '@dex/protocol';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
@@ -19,10 +20,15 @@ import {
 import {
   dangerousApprovalFromConfig,
   normalizeLocalToolsConfig,
-  toShellConfig,
   type LocalToolsConfig,
 } from './local-tools-config';
+import {
+  ConversationFolderBook,
+  localFoldersForRequest,
+  type LocalFolder,
+} from './local-folders';
 import { hostPorts, bindHost, isHostBound } from './host';
+import { clientWorkspaceTransfer } from './workspace-transfer';
 import type {
   Agent,
   AgentCreateOptions,
@@ -35,6 +41,10 @@ import type {
   ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
+  ConversationAgent,
+  ConversationKind,
+  ConversationPage,
+  ConversationSearchPage,
   ConversationSnapshot,
   DexProfile,
   HistoryTurn,
@@ -63,13 +73,21 @@ export interface ProfileSummary extends DexProfile {
 
 export interface LocalToolsStatus {
   config: LocalToolsConfig;
-  /** 지금 **에이전트에게 노출되는** 도구. 꺼져 있으면 비어 있다. */
+  /** 이 기기가 서버에 광고하는 도구 전부(폴더 도구 + MCP 등). */
   tools: LocalToolSchema[];
-  /** 이 기기가 제공할 수 있는 전체 목록 — 켜짐 여부와 무관. 사용자가
+  /** 폴더 도구 목록 — 대화에 폴더가 연결돼 있을 때 쓸 수 있는 것. 사용자가
    *  "뭘 할 수 있지"를 물을 때의 답이다. */
   catalog: LocalToolSchema[];
   bridge: McpBridgeStatus;
 }
+
+/** CLI·VSCode 대화에서 폴더 도구를 불렀는데 연결된 폴더가 없을 때 에이전트가 받는 문장. */
+export const NO_FOLDER_MESSAGE_TERMINAL =
+  '[NO_FOLDER] 이 대화에는 연결된 폴더가 없어 이 PC의 파일과 터미널을 쓸 수 없습니다. ' +
+  '사용자에게 작업할 폴더에서 대화를 시작해 달라고 요청하세요.';
+
+/** `dex tools run` 처럼 대화 없이 도구를 직접 부를 때 쓰는 대화 id. */
+const DIRECT_RUN_INTERACTION = 'dex-direct-run';
 
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
@@ -104,6 +122,13 @@ export class DexEngine {
   private clients = new Map<string, ClientRecord>();
   private readonly localTools: LocalToolProvider;
   private readonly localToolBridge: McpBridge;
+  /**
+   * 대화별 폴더 장부 — 이 프로세스가 사는 동안만. CLI 와 VSCode 는 대화를 시작할
+   * 때마다 지금 폴더를 다시 붙이므로 저장할 이유가 없다.
+   */
+  private readonly folders = new ConversationFolderBook();
+  /** 커넥터 기기 슬롯 키. 채팅과 브리지가 같은 값을 쓰고, 같은 PC 의 다른 프로세스와는 슬롯을 다투지 않는다. */
+  private readonly deviceId = randomUUID();
 
   constructor(
     private readonly configs: ConfigStore,
@@ -112,6 +137,15 @@ export class DexEngine {
   ) {
     this.localTools = options.localToolProvider ?? getLocalToolProvider();
     this.localToolBridge = options.localToolBridge ?? getMcpBridge();
+    this.localTools.configureFolders((context) => this.folders.list(context?.interactionId), {
+      missingMessage: NO_FOLDER_MESSAGE_TERMINAL,
+    });
+    this.folders.onChange((interactionId) => this.localTools.foldersChanged(interactionId));
+  }
+
+  /** 이 대화에 연결된 폴더. */
+  conversationFolders(interactionId: string): LocalFolder[] {
+    return this.folders.list(interactionId);
   }
 
   async listProfiles(): Promise<ProfileSummary[]> {
@@ -135,7 +169,6 @@ export class DexEngine {
    * 설정 하나로 잃지 않게).
    */
   private applyToolConfig(config: LocalToolsConfig): void {
-    this.localTools.configure(toShellConfig(config));
     const preApproved = dangerousApprovalFromConfig(config);
     if (!preApproved) return;
     const current = isHostBound() ? hostPorts() : null;
@@ -160,32 +193,30 @@ export class DexEngine {
   async configureLocalTools(patch: Partial<LocalToolsConfig>): Promise<LocalToolsStatus> {
     const config = await this.configs.read();
     const current = normalizeLocalToolsConfig(config.localTools);
-    config.localTools = normalizeLocalToolsConfig({
-      ...current,
-      ...patch,
-      allowedRoots: patch.allowedRoots ?? current.allowedRoots,
-      blockedCommands: patch.blockedCommands ?? current.blockedCommands,
-    });
+    config.localTools = normalizeLocalToolsConfig({ ...current, ...patch });
     await this.configs.write(config);
     this.applyToolConfig(config.localTools);
-    if (!config.localTools.enabled) this.localToolBridge.stop();
-    else this.localToolBridge.refreshCatalog();
     return this.localToolsStatus();
   }
 
-  async runLocalTool(tool: string, args: unknown): Promise<LocalToolResult> {
+  /**
+   * 대화 없이 도구 하나를 직접 부른다(`dex tools run`). 대화처럼 폴더가 있어야
+   * 하므로 넘겨받은 폴더를 이 호출 동안만 붙였다가 뗀다.
+   */
+  async runLocalTool(tool: string, args: unknown, folders: string[] = []): Promise<LocalToolResult> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
     this.applyToolConfig(config);
-    return this.localTools.callTool(tool, args);
+    this.folders.set(DIRECT_RUN_INTERACTION, folders);
+    try {
+      return await this.localTools.callTool(tool, args, { interactionId: DIRECT_RUN_INTERACTION });
+    } finally {
+      this.folders.forget(DIRECT_RUN_INTERACTION);
+    }
   }
 
   async startLocalTools(requestedProfile?: string, waitMs = 0): Promise<LocalToolsStatus> {
     const config = normalizeLocalToolsConfig((await this.configs.read()).localTools);
     this.applyToolConfig(config);
-    if (!config.enabled) {
-      this.localToolBridge.stop();
-      return this.localToolsStatus();
-    }
     const record = await this.authenticatedRecord(requestedProfile);
     const userId = record.client.user?.userId?.trim();
     if (!userId) throw new DexError('auth_invalid', '로컬 도구 연결에 필요한 사용자 ID가 없습니다.');
@@ -195,7 +226,7 @@ export class DexEngine {
       // CLI 는 사내 인증서를 아직 설정으로 받지 않는다 — 기본은 검증이다.
       allowPrivateCertificate: false,
       // 멀티 디바이스 — 데스크톱 앱과 같은 계정으로 붙어도 서로를 밀어내지 않는다.
-      deviceId: await this.ensureDeviceId(),
+      deviceId: this.deviceId,
       deviceName: `${hostname()} · CLI`,
       getToken: async () => {
         await this.flush(record);
@@ -208,18 +239,12 @@ export class DexEngine {
         return token;
       },
     });
+    // 연결한 폴더 ↔ 작업 공간 — 브리지와 같은 계정(이 프로필)으로 옮긴다.
+    this.localTools.configureWorkspaceTransfer(clientWorkspaceTransfer(() => record.client));
     if (waitMs > 0) await this.localToolBridge.waitUntilReady(waitMs);
     return this.localToolsStatus();
   }
 
-  /** 이 설치의 안정적 기기 id — 커넥터 멀티 디바이스 슬롯 키. 설정에 영속. */
-  private async ensureDeviceId(): Promise<string> {
-    const config = await this.configs.read();
-    if (config.deviceId) return config.deviceId;
-    const id = randomUUID();
-    await this.configs.write({ ...config, deviceId: id });
-    return id;
-  }
 
   /** 연결된 커넥터 기기 목록 — 로컬 컨트롤 상태 대시보드. */
   async listConnectorDevices(requestedProfile?: string): Promise<ConnectorDevice[]> {
@@ -249,6 +274,13 @@ export class DexEngine {
   onConversationRunning:
     | ((event: { interactionId: string; running: boolean; live?: LiveTurnSnapshot | null }) => void)
     | null = null;
+  /**
+   * 호스트가 설정 — 감시 중인 대화의 모델이 바뀌었다(다른 화면에서 골랐다).
+   * `notice.current` 가 새 지금 모델이다(@dex/protocol applyModelNotice).
+   */
+  onConversationModel:
+    | ((event: { interactionId: string; notice: Record<string, unknown> }) => void)
+    | null = null;
   private conversationHub: ConversationWatchHub | null = null;
 
   /** 대화 소켓 감시 시작 — Job/sub-agent 트리거의 반응 턴이 실시간으로
@@ -267,6 +299,10 @@ export class DexEngine {
         },
         (id, running, live) => {
           this.onConversationRunning?.({ interactionId: id, running, live });
+        },
+        undefined,
+        (id, notice) => {
+          this.onConversationModel?.({ interactionId: id, notice });
         },
       );
     }
@@ -287,6 +323,42 @@ export class DexEngine {
 
   unwatchConversation(interactionId: string): void {
     this.conversationHub?.unwatch(interactionId);
+  }
+
+  /**
+   * 호스트가 설정: 대화 **목록**의 소식(새 대화·방금 말한 대화·지운 대화·바뀐 이름·도는 대화).
+   * 무엇을 할지는 @dex/protocol `conversationListChange(kind, data)` 가 정한다(데스크톱과 같다).
+   */
+  onConversationListChange: ((event: ConversationListEvent) => void) | null = null;
+  private conversationList: ConversationsWatch | null = null;
+
+  /**
+   * 대화 목록 소켓을 연다(사용자당 하나). 데스크톱은 메인 프로세스가 같은 것을 직접 열고, CLI·VSCode 는
+   * 이 길로 연다. 이게 없으면 다른 기기에서 만든 대화가 목록을 다시 열 때까지 보이지 않는다.
+   */
+  async watchConversationList(requestedProfile?: string): Promise<void> {
+    const record = await this.authenticatedRecord(requestedProfile);
+    // 다른 프로필로 바뀌었으면 옛 소켓을 닫고 새로 연다(옛 토큰으로 남의 목록을 볼 일은 없지만 소식이 끊긴다).
+    this.conversationList?.stop();
+    this.conversationList = new ConversationsWatch((event) => this.onConversationListChange?.(event));
+    this.conversationList.setDeps({
+      baseUrl: () => record.serverUrl,
+      token: async () => {
+        await this.flush(record);
+        return (
+          record.client.getAccessTokenAfterRotation() ||
+          (await this.credentials.get(record.profile))?.accessToken ||
+          null
+        );
+      },
+      allowPrivateCertificate: () => false,
+    });
+    this.conversationList.start();
+  }
+
+  unwatchConversationList(): void {
+    this.conversationList?.stop();
+    this.conversationList = null;
   }
 
   // ── SSH ───────────────────────────────────────────────────────────
@@ -443,7 +515,7 @@ export class DexEngine {
   /**
    * 만들기 화면이 그릴 것 — 프로바이더·모델과 손댈 수 있는 설정.
    *
-   * 목록은 서버가 Agent XGeny 노드에서 읽어 내려 준다. 커넥터와 CLI 가 각자 적어
+   * 목록은 서버가 Agent Geny 노드에서 읽어 내려 준다. 커넥터와 CLI 가 각자 적어
    * 두면 노드가 바뀔 때마다 조용히 낡는다.
    */
   async agentCreateOptions(requestedProfile?: string): Promise<AgentCreateOptions> {
@@ -451,7 +523,61 @@ export class DexEngine {
   }
 
   /**
-   * 에이전트 하나를 세운다 — Agent XGeny 노드 하나짜리 워크플로우.
+   * 통제 정책(개인정보 · 금칙어) 입력창 사전 검사. 서버가 보낼 때 막는 것과 같은 규칙으로 판정한다.
+   * 판정하지 못하면(로그인 전 · 서버 오류 · 옛 서버) 막지 않는다(checked=false): 보낼 때 서버가 다시 본다.
+   */
+  async checkChatInput(input: { text: string; workflowId?: string | null; profile?: string }): Promise<ChatInputCheck> {
+    if (!input.text.trim()) return { ...UNCHECKED_INPUT, checked: true };
+    try {
+      return await this.withAuthRetry(input.profile, (client) =>
+        client.guardrails.checkInput(input.text.trim(), input.workflowId ?? null),
+      );
+    } catch {
+      return UNCHECKED_INPUT;
+    }
+  }
+
+  /** 이 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것·잠금 여부(@dex/protocol conversation-model). */
+  async conversationModel(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.get(interactionId, workflowId));
+  }
+
+  /** 이 대화의 모델을 바꾼다 — 다음 답변부터(세션 재시작 없음). */
+  async setConversationModel(
+    workflowId: string,
+    interactionId: string,
+    choice: { provider: string; model: string },
+    requestedProfile?: string,
+  ): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.conversationModel.set(interactionId, workflowId, choice),
+    );
+  }
+
+  /** 에이전트의 모델로 되돌린다. */
+  async resetConversationModel(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.reset(interactionId, workflowId));
+  }
+
+  /** 이 대화의 생각(추론) 값을 바꾼다 — 지금 모델이 받는 값만(상태의 `thinking.options`), 다음 답변부터. */
+  async setConversationThinking(
+    workflowId: string,
+    interactionId: string,
+    thinking: ThinkingValue,
+    requestedProfile?: string,
+  ): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.conversationModel.setThinking(interactionId, workflowId, thinking),
+    );
+  }
+
+  /** 에이전트의 생각 값으로 되돌린다. */
+  async resetConversationThinking(workflowId: string, interactionId: string, requestedProfile?: string): Promise<ConversationModelState> {
+    return this.withAuthRetry(requestedProfile, (client) => client.conversationModel.resetThinking(interactionId, workflowId));
+  }
+
+  /**
+   * 에이전트 하나를 세운다 — Agent Geny 노드 하나짜리 워크플로우.
    *
    * 엣지가 없는 것이 이 노드의 성질이다. 도구도 기억도 위임도 자기진화도 그 안에
    * 있어서 연결 없이 그대로 대화가 된다.
@@ -470,6 +596,68 @@ export class DexEngine {
 
   async listConversations(requestedProfile?: string): Promise<Conversation[]> {
     return this.withAuthRetry(requestedProfile, (client) => client.history.conversations());
+  }
+
+  /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(@dex/protocol conversation-list). */
+  async conversationPage(
+    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string } = {},
+    requestedProfile?: string,
+  ): Promise<ConversationPage> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.conversationPage(opts));
+  }
+
+  /** 사이드바 [에이전트]: 대화가 있는 에이전트마다 한 줄, 마지막으로 말한 순서(@dex/protocol conversation-agents). */
+  async conversationAgents(opts: { limit?: number } = {}, requestedProfile?: string): Promise<ConversationAgent[]> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.conversationAgents(opts));
+  }
+
+  /** 채팅 검색: 제목·에이전트 이름·대화 내용으로 찾는다(@dex/protocol conversation-search). */
+  async searchConversations(
+    query: string,
+    opts: { limit?: number; kind?: ConversationKind } = {},
+    requestedProfile?: string,
+  ): Promise<ConversationSearchPage> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.searchConversations(query, opts));
+  }
+
+  /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */
+  async renameConversation(
+    workflowId: string,
+    interactionId: string,
+    title: string,
+    requestedProfile?: string,
+  ): Promise<{ title: string; customTitle: boolean }> {
+    if (!workflowId || !interactionId) {
+      throw new DexError('usage_error', 'workflowId와 interactionId가 필요합니다.');
+    }
+    return this.withAuthRetry(requestedProfile, (client) =>
+      client.history.renameConversation(workflowId, interactionId, title),
+    );
+  }
+
+  /** 대화 지우기(비교 채팅의 파생 스레드까지). */
+  async deleteConversation(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+    requestedProfile?: string,
+  ): Promise<void> {
+    if (!workflowId || !interactionId) {
+      throw new DexError('usage_error', 'workflowId와 interactionId가 필요합니다.');
+    }
+    await this.withAuthRetry(requestedProfile, (client) =>
+      client.history.deleteConversation(workflowId, interactionId, workflowName),
+    );
+  }
+
+  /** 에이전트가 사라진 내 대화를 모두 지운다. 지운 수. */
+  async purgeDeletedAgentConversations(requestedProfile?: string): Promise<number> {
+    return this.withAuthRetry(requestedProfile, (client) => client.history.purgeDeletedAgentConversations());
+  }
+
+  /** 이 이름의 에이전트가 이미 있는가(시작 화면이 적는 대로 묻는다). */
+  async agentNameTaken(name: string, requestedProfile?: string): Promise<boolean> {
+    return this.withAuthRetry(requestedProfile, (client) => client.agents.nameTaken(name));
   }
 
   async historyTurns(
@@ -525,6 +713,8 @@ export class DexEngine {
       input: input.input,
       interactionId: input.interactionId?.trim() || randomUUID(),
       attachments: input.attachments ?? [],
+      localFolders: input.localFolders ?? [],
+      ...(input.memoryMap === false ? { memoryMap: false } : {}),
     };
   }
 
@@ -573,20 +763,25 @@ export class DexEngine {
     const resolved = await this.resolveChatInput(input);
     let record = await this.authenticatedRecord(resolved.profile);
     let emitted = false;
+    // 이번 턴의 폴더를 이 대화에 붙인다 — 지난 턴과 다르면 빠진 폴더의 작업은 멈춘다.
+    const folders = this.folders.set(resolved.interactionId, resolved.localFolders);
 
     try {
-      const local = await this.startLocalTools(resolved.profile, 3_000);
-      if (local.config.enabled) {
+      // 폴더가 연결된 대화만 브리지가 서버에 도구를 올릴 때까지 잠깐 기다린다 — 첫
+      // 턴부터 그 폴더를 쓸 수 있게. 폴더가 없으면 기다릴 이유가 없다.
+      const local = await this.startLocalTools(resolved.profile, folders.length ? 3_000 : 0);
+      if (folders.length) {
+        const names = folders.map((folder) => folder.name).join(', ');
         yield local.bridge.catalogSynced
           ? {
               kind: 'status',
               surface: 'connector_local',
-              detail: `로컬 도구 ${local.bridge.serverToolCount || local.tools.length}개 연결됨`,
+              detail: `연결된 폴더: ${names}`,
             }
           : {
               kind: 'status',
               surface: 'connector_local',
-              detail: local.bridge.error || '로컬 도구 카탈로그 연결 대기 중',
+              detail: local.bridge.error || '이 PC 도구 연결 대기 중',
               reason: 'bridge_not_ready',
             };
       }
@@ -594,7 +789,7 @@ export class DexEngine {
       yield {
         kind: 'status',
         surface: 'connector_local',
-        detail: `로컬 도구 연결 실패: ${error instanceof Error ? error.message : String(error)}`,
+        detail: `이 PC 도구 연결 실패: ${error instanceof Error ? error.message : String(error)}`,
         reason: 'bridge_error',
       };
     }
@@ -612,7 +807,10 @@ export class DexEngine {
               : resolved.input,
             interactionId: resolved.interactionId,
             // 이 표면(CLI/VSCode)의 기기 — 멀티 디바이스에서 내 도구가 주입되게.
-            clientDeviceId: await this.ensureDeviceId(),
+            clientDeviceId: this.deviceId,
+            // 이 대화에 연결된 폴더 — 없으면 빈 목록(서버가 폴더 도구를 감춘다).
+            localFolders: localFoldersForRequest(folders),
+            ...(resolved.memoryMap === false ? { memoryMap: false } : {}),
             // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같다. 서버는 이 표식으로
             // 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다.
             originId: DEX_ORIGIN_ID,

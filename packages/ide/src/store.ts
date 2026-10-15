@@ -1,0 +1,2526 @@
+/**
+ * IDE 한 개(에이전트 하나)의 상태 — 화면과 떨어져 산다.
+ *
+ * 채팅 탭은 전환할 때마다 다시 그려진다(데스크톱은 탭마다 `key` 가 바뀐다). 편집기의 버퍼·
+ * 되돌리기 기록·터미널 연결이 화면과 함께 사라지면 안 되므로, 상태는 여기 두고 화면은
+ * 구독만 한다. 호스트는 에이전트마다 이 저장소 하나를 만들어 탭이 닫힐 때까지 들고 있는다.
+ *
+ * 문서(편집기 버퍼)는 경로마다 하나다. 같은 파일을 두 편집기 묶음에서 열어도, 비교 화면의
+ * 오른쪽으로 열어도 같은 Monaco 모델을 쓴다 — 한쪽에서 고치면 다른 쪽에도 보인다.
+ */
+import type * as Monaco from 'monaco-editor';
+import {
+  IdeError,
+  type IdeFileEntry,
+  type IdeFolderRoot,
+  type IdeFsOp,
+  type IdeHost,
+  type IdeReadResult,
+  type IdeSaveResult,
+  type IdeStat,
+  type IdeSearchQuery,
+  type IdeSearchResult,
+  type IdeTerminalInfo,
+  type MonacoApi,
+} from './types';
+import { basename, dirname, invalidName, isWithin, join, normalize, uniqueCopyName } from './paths';
+import { folderPath, isFolderPath, parseFolderPath, sortEntries } from './folders';
+import { buildTree, ancestors, type TreeNode } from './tree';
+import { base64ToBytes, decodeText, encodeText, isImagePath, looksBinary, type Eol } from './text';
+import { lineChanges, splitLines, type QuickDiffKind } from './quick-diff';
+import { defineXgenThemes } from './monaco-theme';
+import {
+  gitErrorMessage,
+  toWorkspacePath,
+  type GitAccount,
+  type GitFileStatus,
+  type GitStatus,
+} from './git-model';
+
+// ── 모양 ──────────────────────────────────────────────────────────────
+
+export type SideViewId = 'explorer' | 'search' | 'scm' | (string & {});
+
+export interface Layout {
+  sideView: SideViewId | null;
+  sideWidth: number;
+  panelOpen: boolean;
+  panelHeight: number;
+  panelMaximized: boolean;
+  chatOpen: boolean;
+  chatWidth: number;
+  minimap: boolean;
+  wordWrap: boolean;
+  autoSave: boolean;
+  fontSize: number;
+}
+
+export const DEFAULT_LAYOUT: Layout = {
+  sideView: 'explorer',
+  sideWidth: 260,
+  panelOpen: false,
+  panelHeight: 240,
+  panelMaximized: false,
+  chatOpen: true,
+  chatWidth: 400,
+  minimap: true,
+  wordWrap: false,
+  autoSave: false,
+  fontSize: 13,
+};
+
+/** preview = 편집기 대신 호스트의 미리보기 부품이 그리는 탭(문서·PDF·소리·영상). */
+export type TabKind = 'file' | 'diff' | 'image' | 'preview';
+
+export interface DiffSpec {
+  repo: string;
+  /** 저장소 기준 경로. */
+  path: string;
+  /** true = 스테이지한 변경(HEAD ↔ 스테이지), false = 작업 트리(스테이지 ↔ 파일). */
+  staged: boolean;
+  status?: GitFileStatus;
+  /** 저장 충돌의 비교 — 왼쪽이 git 이 아니라 **디스크의 지금 판**이다. */
+  disk?: boolean;
+}
+
+export interface EditorTab {
+  id: string;
+  kind: TabKind;
+  /** workspace 기준 경로. */
+  path: string;
+  /** 미리보기 탭(기울임) — 다른 파일을 한 번 누르면 이 자리를 바꿔 쓴다. */
+  preview: boolean;
+  diff?: DiffSpec;
+}
+
+export interface EditorGroup {
+  id: string;
+  tabs: EditorTab[];
+  activeId: string | null;
+}
+
+export type DocStatus = 'loading' | 'ready' | 'binary' | 'too_large' | 'missing' | 'error';
+
+/** 저장하지 않은 버퍼의 보관본(hot exit). */
+interface Backup {
+  text: string;
+  /** 고치기 시작한 디스크 판 — 저장할 때 이 판을 조건으로 건다. */
+  baseSha: string;
+  eol: Eol;
+  bom: boolean;
+  at: number;
+}
+
+/** 여백 변경 표시의 개요 눈금자 색(캔버스에 그리므로 CSS 변수가 아닌 값). */
+const QUICK_DIFF_RULER: Record<QuickDiffKind, string> = {
+  added: 'rgba(88, 170, 96, 0.7)',
+  modified: 'rgba(32, 144, 211, 0.7)',
+  deleted: 'rgba(202, 75, 81, 0.7)',
+};
+
+/** 저장소 내용을 바꾸지 않는 git 동작 — 뒤에 여백 표시의 기준을 다시 읽지 않는다. */
+const READ_ONLY_GIT_OPS = new Set(['repos', 'status', 'show', 'branches', 'log', 'account', 'fetch']);
+
+/** 파일 하나·전체 보관 한도(글자 수) — 브라우저 저장 공간은 앱과 나눠 쓴다. */
+const BACKUP_FILE_MAX = 512 * 1024;
+const BACKUP_TOTAL_MAX = 2 * 1024 * 1024;
+
+export interface DocState {
+  path: string;
+  status: DocStatus;
+  message?: string;
+  /** 버퍼가 기대고 있는 디스크 판의 sha. `''` = 아직 없는 파일. */
+  sha: string;
+  size: number;
+  dirty: boolean;
+  eol: Eol;
+  bom: boolean;
+  saving: boolean;
+  /** 고치는 사이 디스크 판이 바뀌었다(저장하면 충돌). */
+  diskChanged: boolean;
+}
+
+/** `idle` = 서버에 있으나 아직 이 화면에 붙이지 않았다(보이면 붙는다). */
+export type TerminalStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'exited' | 'error';
+
+export interface TerminalState {
+  id: string;
+  title: string;
+  status: TerminalStatus;
+  exitCode?: number;
+  message?: string;
+  cwd?: string;
+}
+
+export interface SearchState {
+  query: string;
+  replace: string;
+  showReplace: boolean;
+  showDetails: boolean;
+  regex: boolean;
+  caseSensitive: boolean;
+  word: boolean;
+  include: string;
+  exclude: string;
+  running: boolean;
+  result: IdeSearchResult | null;
+  error: string | null;
+  collapsed: Set<string>;
+}
+
+export interface GitState {
+  repos: string[];
+  statuses: Record<string, GitStatus>;
+  loading: boolean;
+  loaded: boolean;
+  error: { code: string; message: string } | null;
+  account: GitAccount | null;
+  busy: string | null;
+  message: Record<string, string>;
+}
+
+export interface Notice {
+  kind: 'info' | 'success' | 'warning' | 'error';
+  message: string;
+  at: number;
+}
+
+export interface DialogButton {
+  id: string;
+  label: string;
+  primary?: boolean;
+  danger?: boolean;
+}
+
+export interface DialogRequest {
+  id: number;
+  title: string;
+  message?: string;
+  detail?: string;
+  buttons: DialogButton[];
+  /** 입력 한 칸을 받는 대화 상자. */
+  input?: { value: string; placeholder?: string; label?: string; password?: boolean; select?: [number, number] };
+  /** 입력 여러 칸(자격 등록). */
+  fields?: { id: string; label: string; value: string; placeholder?: string; password?: boolean }[];
+  validate?: (value: string) => string | null;
+  resolve: (result: { button: string; value: string; fields: Record<string, string> }) => void;
+}
+
+/**
+ * 샌드박스 연결 — `connecting` 처음 붙는 중, `online` 붙음, `retrying` 닿지 않아 다시 붙는 중(배포·
+ * 재시작 사이에도 스스로 돌아온다), `blocked` 열 수 없음(권한·에이전트 없음 — 다시 해도 같다).
+ */
+export type Connection = 'connecting' | 'online' | 'retrying' | 'blocked';
+
+export interface IdeState {
+  ready: boolean;
+  readonly: boolean;
+  connection: Connection;
+  /** 마지막 연결 실패의 이유(사용자 문구). 붙으면 비운다. */
+  sessionError: string | null;
+  files: IdeFileEntry[];
+  tree: TreeNode;
+  filesLoaded: boolean;
+  filesError: string | null;
+  expanded: ReadonlySet<string>;
+  selected: string | null;
+  /** 탐색기 안에서 새 파일·폴더 이름을 받는 줄. */
+  creating: { parent: string; kind: 'file' | 'dir' } | null;
+  renaming: string | null;
+  clipboard: { mode: 'copy' | 'cut'; paths: string[] } | null;
+  groups: EditorGroup[];
+  activeGroup: string;
+  docs: Record<string, DocState>;
+  terminals: TerminalState[];
+  activeTerminal: string | null;
+  layout: Layout;
+  git: GitState;
+  search: SearchState;
+  cursor: { line: number; col: number; selected: number } | null;
+  notice: Notice | null;
+  dialog: DialogRequest | null;
+  quickOpen: { mode: QuickOpenMode; initial: string } | null;
+  monacoReady: boolean;
+  monacoError: string | null;
+  /** 탐색기 아래 [연결된 폴더] 칸 — 이 대화에 연결한 기기의 폴더. */
+  folders: FoldersState;
+  /**
+   * md·csv 처럼 편집기와 미리보기를 오가는 파일의 지금 보기 — 경로 → true(미리보기)/false(편집기).
+   * 없으면 미리보기다: 에이전트가 만든 문서를 열었을 때 먼저 보고 싶은 것은 그려진 모습이다.
+   */
+  rendered: Readonly<Record<string, boolean>>;
+}
+
+export interface FoldersState {
+  /** 호스트가 연결된 폴더를 다룬다(없으면 칸이 없다). */
+  available: boolean;
+  loaded: boolean;
+  roots: IdeFolderRoot[];
+  /** 이 대화의 폴더가 다른 기기에 있다 — 이름만 보인다. */
+  elsewhere: { deviceName: string; online: boolean; folders: string[] } | null;
+  /** 펼쳐 둔 폴더(연결된 폴더 주소). 뿌리도 여기 든다. */
+  expanded: ReadonlySet<string>;
+  /** 읽어 둔 폴더의 한 단계 — 항목의 path 도 연결된 폴더 주소다. null = 읽는 중. */
+  dirs: Readonly<Record<string, IdeFileEntry[] | null>>;
+  /** 읽지 못한 폴더 → 사유. */
+  errors: Readonly<Record<string, string>>;
+}
+
+type Listener = () => void;
+
+const EMPTY_TREE: TreeNode = { path: '', name: '', isDir: true, children: [] };
+
+export function tabIdFor(kind: TabKind, path: string, diff?: DiffSpec): string {
+  if (kind === 'diff' && diff?.disk) return `disk:${path}`;
+  if (kind === 'diff' && diff) return `diff:${diff.staged ? 'staged' : 'work'}:${diff.repo}:${diff.path}`;
+  return `${kind}:${path}`;
+}
+
+export type QuickOpenMode = 'files' | 'commands' | 'line' | 'branches';
+
+export function diskUri(monaco: MonacoApi, workflowId: string, path: string): Monaco.Uri {
+  return monaco.Uri.from({ scheme: 'xide-disk', path: `/xgen/${workflowId}/${path}` });
+}
+
+let groupSeq = 0;
+function newGroupId(): string {
+  groupSeq += 1;
+  return `g${Date.now().toString(36)}${groupSeq}`;
+}
+
+let dialogSeq = 0;
+
+/** 다른 탭·다른 에이전트의 모델과 섞이지 않게 에이전트 id 를 주소에 넣는다. */
+export function modelUri(monaco: MonacoApi, workflowId: string, path: string): Monaco.Uri {
+  return monaco.Uri.from({ scheme: 'file', path: `/xgen/${workflowId}/${path}` });
+}
+
+export function originalUri(monaco: MonacoApi, workflowId: string, diff: DiffSpec): Monaco.Uri {
+  return monaco.Uri.from({
+    scheme: 'xide-git',
+    path: `/xgen/${workflowId}/${diff.repo ? diff.repo + '/' : ''}${diff.path}`,
+    query: diff.staged ? 'HEAD' : 'index',
+  });
+}
+
+export function stagedUri(monaco: MonacoApi, workflowId: string, diff: DiffSpec): Monaco.Uri {
+  return monaco.Uri.from({
+    scheme: 'xide-git',
+    path: `/xgen/${workflowId}/${diff.repo ? diff.repo + '/' : ''}${diff.path}`,
+    query: 'staged',
+  });
+}
+
+/** 터미널 하나의 화면·연결 — 상태 저장소 밖(React 상태가 아닌 것). */
+export interface TerminalRuntime {
+  id: string;
+  dispose(): void;
+}
+
+export class IdeStore {
+  /** 다시 연결 간격의 바탕(ms) — 1.5초에서 두 배씩, 30초까지. 테스트가 줄인다. */
+  static retryBaseMs = 1500;
+  private state: IdeState;
+  private readonly listeners = new Set<Listener>();
+  private monaco: MonacoApi | null = null;
+  private monacoLoading: Promise<MonacoApi> | null = null;
+  private readonly loads = new Map<string, Promise<void>>();
+  /** 문서마다 "저장된 판" 의 버전 — 되돌리기로 저장 판에 돌아오면 깨끗해진다. */
+  private readonly savedVersion = new Map<string, number>();
+  private readonly modelSubs = new Map<string, Monaco.IDisposable>();
+  private readonly autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 여백 변경 표시(quick diff) — 문서마다 index 판의 줄(null = 표시 안 함)과 그려 둔 장식. */
+  private readonly qdBase = new Map<string, string[] | null>();
+  private readonly qdDecos = new Map<string, string[]>();
+  private readonly qdTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly qdPending = new Set<string>();
+  private qdTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 저장하지 않은 버퍼를 보관해 두는 타이머(hot exit). */
+  private readonly backupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly closedTabs: EditorTab[] = [];
+  private unsubscribeChanges: (() => void) | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private gitTimer: ReturnType<typeof setTimeout> | null = null;
+  private filesTimer: ReturnType<typeof setTimeout> | null = null;
+  private searchSeq = 0;
+  private disposed = false;
+  /** 연결 고리 — 하나만 돈다. 기다리는 동안 [다시 연결] 로 깨운다. */
+  private connecting: Promise<void> | null = null;
+  private connectWake: (() => void) | null = null;
+  private filesRetry: ReturnType<typeof setTimeout> | null = null;
+  private filesAttempt = 0;
+  /** 서버 호출 — 실패를 지켜보다 연결이 끊긴 것이면 다시 붙는다(observeHost). */
+  readonly host: IdeHost;
+  /** 터미널 런타임(xterm·소켓)은 화면이 바뀌어도 산다 — terminal.ts 가 채운다. */
+  readonly terminalRuntimes = new Map<string, TerminalRuntime>();
+  /** 편집기 묶음마다 탭별 화면 상태(스크롤·커서). */
+  readonly viewStates = new Map<string, unknown>();
+  /** 명령 표(명령 팔레트·단축키) — IdeView 가 채운다. */
+  commands: IdeCommand[] = [];
+  /** 편집기 묶음 id → 그 묶음의 Monaco 편집기(찾기·줄 이동 같은 편집기 명령용). */
+  readonly editors = new Map<string, Monaco.editor.IStandaloneCodeEditor>();
+
+  constructor(host: IdeHost) {
+    this.host = observeHost(host, (err) => this.onHostError(err));
+    const firstGroup = newGroupId();
+    this.state = {
+      ready: false,
+      readonly: false,
+      connection: 'connecting',
+      sessionError: null,
+      files: [],
+      tree: EMPTY_TREE,
+      filesLoaded: false,
+      filesError: null,
+      expanded: new Set<string>(),
+      selected: null,
+      creating: null,
+      renaming: null,
+      clipboard: null,
+      groups: [{ id: firstGroup, tabs: [], activeId: null }],
+      activeGroup: firstGroup,
+      docs: {},
+      terminals: [],
+      activeTerminal: null,
+      layout: { ...DEFAULT_LAYOUT, ...this.readJson<Partial<Layout>>('layout', {}) },
+      git: {
+        repos: [],
+        statuses: {},
+        loading: false,
+        loaded: false,
+        error: null,
+        account: null,
+        busy: null,
+        message: {},
+      },
+      search: {
+        query: '',
+        replace: '',
+        showReplace: false,
+        showDetails: false,
+        regex: false,
+        caseSensitive: false,
+        word: false,
+        include: '',
+        exclude: '',
+        running: false,
+        result: null,
+        error: null,
+        collapsed: new Set<string>(),
+      },
+      cursor: null,
+      rendered: {},
+      notice: null,
+      dialog: null,
+      quickOpen: null,
+      monacoReady: false,
+      monacoError: null,
+      folders: {
+        available: !!host.folders,
+        loaded: false,
+        roots: [],
+        elsewhere: null,
+        expanded: new Set<string>(),
+        dirs: {},
+        errors: {},
+      },
+    };
+    const expanded = this.readJson<string[]>('expanded', []);
+    if (Array.isArray(expanded)) this.state.expanded = new Set(expanded);
+  }
+
+  // ── 구독 ──────────────────────────────────────────────────────────
+
+  getState = (): IdeState => this.state;
+
+  subscribe = (fn: Listener): (() => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+
+  private set(patch: Partial<IdeState> | ((s: IdeState) => Partial<IdeState>)): void {
+    if (this.disposed) return;
+    const next = typeof patch === 'function' ? patch(this.state) : patch;
+    this.state = { ...this.state, ...next };
+    for (const fn of [...this.listeners]) fn();
+  }
+
+  private patchDoc(path: string, patch: Partial<DocState>): void {
+    this.set((s) => {
+      const cur = s.docs[path];
+      if (!cur) return {};
+      return { docs: { ...s.docs, [path]: { ...cur, ...patch } } };
+    });
+  }
+
+  // ── 기억 ──────────────────────────────────────────────────────────
+
+  private key(name: string): string {
+    return `xide:${this.host.workflowId}:${name}`;
+  }
+
+  private readJson<T>(name: string, fallback: T): T {
+    try {
+      const raw = this.host.storage?.get(this.key(name));
+      return raw ? (JSON.parse(raw) as T) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private writeJson(name: string, value: unknown): void {
+    try {
+      this.host.storage?.set(this.key(name), JSON.stringify(value));
+    } catch {
+      /* 기억 실패는 기능을 막지 않는다 */
+    }
+  }
+
+  // ── 저장하지 않은 변경 지키기(hot exit) ──────────────────────────────
+  //
+  // 고치고 저장하지 않은 버퍼는 호스트의 저장 공간에 보관해 둔다. 탭·창을 닫았다가(또는 앱이
+  // 꺼졌다가) 다시 열면 그 파일이 저장 안 됨 상태로 돌아온다(VS Code 의 hot exit).
+  // 보관본은 **고치기 시작한 디스크 판(sha)** 을 함께 적는다 — 그사이 에이전트나 터미널이 파일을
+  // 바꿨으면 되살린 버퍼를 저장할 때 충돌로 잡혀 비교·덮어쓰기를 고르게 된다(조용히 덮지 않는다).
+  // 저장 공간(브라우저 localStorage)은 앱과 나눠 쓰므로 크기를 제한한다.
+
+  private backupIndex(): Record<string, number> {
+    const index = this.readJson<Record<string, number> | null>('backups', null);
+    return index && typeof index === 'object' ? index : {};
+  }
+
+  private readBackup(path: string): Backup | null {
+    const b = this.readJson<Backup | null>(`backup:${path}`, null);
+    return b && typeof b.text === 'string' && typeof b.baseSha === 'string' ? b : null;
+  }
+
+  private writeBackup(path: string): void {
+    clearTimeout(this.backupTimers.get(path));
+    this.backupTimers.delete(path);
+    const doc = this.state.docs[path];
+    const model = this.getModel(path);
+    if (!doc || !model || doc.status !== 'ready' || this.state.readonly) return;
+    if (!doc.dirty) return this.dropBackup(path);
+    const text = model.getValue();
+    const index = this.backupIndex();
+    delete index[path];
+    const others = Object.values(index).reduce((n, v) => n + v, 0);
+    if (text.length > BACKUP_FILE_MAX || others + text.length > BACKUP_TOTAL_MAX) return this.dropBackup(path);
+    const backup: Backup = { text, baseSha: doc.sha, eol: doc.eol, bom: doc.bom, at: Date.now() };
+    this.writeJson(`backup:${path}`, backup);
+    this.writeJson('backups', { ...index, [path]: text.length });
+  }
+
+  private dropBackup(path: string): void {
+    clearTimeout(this.backupTimers.get(path));
+    this.backupTimers.delete(path);
+    const index = this.backupIndex();
+    if (!(path in index)) return;
+    delete index[path];
+    this.writeJson('backups', index);
+    try {
+      this.host.storage?.set(this.key(`backup:${path}`), '');
+    } catch {
+      /* 기억 실패는 기능을 막지 않는다 */
+    }
+  }
+
+  private scheduleBackup(path: string): void {
+    clearTimeout(this.backupTimers.get(path));
+    this.backupTimers.set(
+      path,
+      setTimeout(() => this.writeBackup(path), 800),
+    );
+  }
+
+  /** 보관본이 있는데 탭으로 열려 있지 않은 파일을 연다(되살린 것을 사용자가 보게). */
+  private reopenBackups(): void {
+    if (this.state.readonly) return;
+    const open = new Set(this.state.groups.flatMap((g) => g.tabs.filter((t) => t.kind === 'file').map((t) => t.path)));
+    for (const path of Object.keys(this.backupIndex())) {
+      if (open.has(path)) continue;
+      if (this.exists(path)) void this.openFile(path, { preview: false });
+      else this.dropBackup(path);
+    }
+  }
+
+  private persistTabs(): void {
+    const s = this.state;
+    this.writeJson('tabs', {
+      groups: s.groups.map((g) => ({
+        tabs: g.tabs.filter((t) => !t.preview || t.id === g.activeId).map((t) => ({ kind: t.kind, path: t.path, diff: t.diff })),
+        active: g.tabs.find((t) => t.id === g.activeId)?.path ?? null,
+      })),
+      activeIndex: s.groups.findIndex((g) => g.id === s.activeGroup),
+    });
+  }
+
+  // ── 시작·끝 ───────────────────────────────────────────────────────
+
+  private started = false;
+
+  /** 화면이 여러 번 붙어도 시작은 한 번이다. */
+  /** 샌드박스에 붙는다. 닿지 않으면 간격을 늘려 가며(최대 30초) 다시 한다. */
+  private connect(): Promise<void> {
+    if (!this.connecting) {
+      this.connecting = this.connectLoop().finally(() => {
+        this.connecting = null;
+      });
+    }
+    return this.connecting;
+  }
+
+  private async connectLoop(): Promise<void> {
+    for (let attempt = 0; !this.disposed; attempt += 1) {
+      try {
+        const info = await this.host.session();
+        if (this.disposed) return;
+        this.set({
+          ready: true,
+          readonly: info.readonly,
+          connection: 'online',
+          sessionError: null,
+          terminals: this.state.terminals.length
+            ? this.state.terminals
+            : info.terminals.map((t, i) => ({
+                id: t.id,
+                title: terminalTitle(t, i + 1),
+                status: 'idle' as TerminalStatus,
+                cwd: t.cwd,
+              })),
+        });
+        if (!this.state.activeTerminal && this.state.terminals.length) {
+          this.set({ activeTerminal: this.state.terminals[0].id });
+        }
+        // 끊겨 있는 동안 열지 못한 파일은 다시 연다.
+        for (const doc of Object.values(this.state.docs)) {
+          if (doc.status === 'error') void this.ensureDoc(doc.path);
+        }
+        return;
+      } catch (err) {
+        if (this.disposed) return;
+        const code = err instanceof IdeError ? err.code : 'error';
+        if (BLOCKING_CODES.has(code)) {
+          this.set({ connection: 'blocked', sessionError: connectionMessage(code, err) });
+          return;
+        }
+        this.set({ connection: 'retrying', sessionError: connectionMessage(code, err) });
+        await this.pause(Math.min(30_000, IdeStore.retryBaseMs * 2 ** Math.min(attempt, 4)));
+      }
+    }
+  }
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        if (this.connectWake === done) this.connectWake = null;
+        resolve();
+      };
+      // unref 하지 않는다 — 기다리는 동안 프로세스(테스트)가 끝나면 안 된다. dispose 가 깨운다.
+      const timer = setTimeout(done, ms);
+      this.connectWake = done;
+    });
+  }
+
+  /** 지금 다시 연결한다(상태 표시줄·탐색기의 [다시 연결]). */
+  reconnect(): void {
+    if (this.disposed) return;
+    if (this.connecting) this.connectWake?.();
+    else {
+      if (this.state.connection !== 'online') this.set({ connection: 'connecting' });
+      void this.connect().then(() => this.afterReconnect());
+    }
+    this.filesAttempt = 0;
+    void this.refreshFiles();
+  }
+
+  /** 서버 호출이 실패했다 — 닿지 않은 것이면(배포·재시작·망) 다시 붙는다. */
+  private onHostError(err: unknown): void {
+    if (this.disposed || !isTransient(err) || this.state.connection !== 'online') return;
+    const code = err instanceof IdeError ? err.code : 'error';
+    this.set({ connection: 'retrying', sessionError: connectionMessage(code, err) });
+    void this.connect().then(() => this.afterReconnect());
+  }
+
+  private afterReconnect(): void {
+    if (this.disposed || this.state.connection !== 'online') return;
+    void this.refreshFiles();
+    void this.checkDisk('all');
+    this.scheduleGit(200);
+  }
+
+  startOnce(): void {
+    if (this.started) return;
+    this.started = true;
+    void this.start();
+  }
+
+  async start(): Promise<void> {
+    // 탐색기(스토리지 목록)는 샌드박스 없이도 보인다 — 연결을 기다리지 않고 함께 읽는다.
+    const files = this.refreshFiles();
+    // 연결된 폴더는 이 기기의 것이다 — 샌드박스 연결을 기다리지 않는다.
+    this.startFolders();
+    await this.connect();
+    await files;
+    if (this.disposed) return;
+    this.restoreTabs();
+    this.reopenBackups();
+    void this.refreshGit();
+    if (this.host.subscribeChanges) {
+      this.unsubscribeChanges = this.host.subscribeChanges(() => this.notifyRemoteChange());
+    }
+    // 열어 둔 파일이 바깥(에이전트·터미널)에서 바뀌었는지 — 보이는 탭은 자주, 나머지는 드물게.
+    let tick = 0;
+    this.pollTimer = setInterval(() => {
+      tick += 1;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void this.checkDisk(tick % 5 === 0 ? 'all' : 'visible');
+      if (!this.host.subscribeChanges && tick % 10 === 0) void this.refreshFiles();
+    }, 3000);
+    // 노드(테스트)에서 이 타이머 하나가 프로세스를 붙잡지 않게 — 브라우저에는 없는 메서드다.
+    (this.pollTimer as { unref?: () => void }).unref?.();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.connectWake?.();
+    if (this.filesRetry) clearTimeout(this.filesRetry);
+    this.unsubscribeChanges?.();
+    this.unsubscribeFolders?.();
+    if (this.foldersTimer) clearTimeout(this.foldersTimer);
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.gitTimer) clearTimeout(this.gitTimer);
+    if (this.filesTimer) clearTimeout(this.filesTimer);
+    for (const t of this.autoSaveTimers.values()) clearTimeout(t);
+    // 닫히는 순간 저장하지 않은 것을 보관한다(모델을 버리기 전에).
+    for (const doc of Object.values(this.state.docs)) if (doc.dirty) this.writeBackup(doc.path);
+    for (const t of this.backupTimers.values()) clearTimeout(t);
+    this.backupTimers.clear();
+    for (const t of this.qdTimers.values()) clearTimeout(t);
+    this.qdTimers.clear();
+    if (this.qdTimer) clearTimeout(this.qdTimer);
+    for (const rt of this.terminalRuntimes.values()) rt.dispose();
+    this.terminalRuntimes.clear();
+    for (const sub of this.modelSubs.values()) sub.dispose();
+    this.modelSubs.clear();
+    if (this.monaco) {
+      for (const path of Object.keys(this.state.docs)) {
+        this.monaco.editor.getModel(modelUri(this.monaco, this.host.workflowId, path))?.dispose();
+      }
+    }
+    this.listeners.clear();
+  }
+
+  /** 바깥(에이전트의 턴·다른 기기)에서 바뀌었다 — 목록·열린 파일·소스 제어를 다시 본다. */
+  notifyRemoteChange(): void {
+    if (this.filesTimer) clearTimeout(this.filesTimer);
+    this.filesTimer = setTimeout(() => {
+      void this.refreshFiles();
+      void this.checkDisk('all');
+      this.scheduleGit();
+      this.refreshQuickDiff();
+    }, 400);
+  }
+
+  // ── 알림·대화 상자 ────────────────────────────────────────────────
+
+  /**
+   * 알린다. 호스트가 알림(토스트)을 가지면 그쪽으로만 — 앱의 다른 알림과 같은 자리에 뜬다.
+   * 없으면 IDE 가 스스로 띄운다(`notice` → IdeToast).
+   */
+  notify(kind: Notice['kind'], message: string): void {
+    if (this.host.notify) {
+      this.host.notify(kind, message);
+      return;
+    }
+    this.set({ notice: { kind, message, at: Date.now() } });
+  }
+
+  clearNotice(): void {
+    this.set({ notice: null });
+  }
+
+  ask(req: Omit<DialogRequest, 'id' | 'resolve'>): Promise<{ button: string; value: string; fields: Record<string, string> }> {
+    return new Promise((resolve) => {
+      dialogSeq += 1;
+      this.set({
+        dialog: {
+          ...req,
+          id: dialogSeq,
+          resolve: (r) => {
+            this.set({ dialog: null });
+            resolve(r);
+          },
+        },
+      });
+    });
+  }
+
+  async confirm(title: string, message: string, ok: string, danger = false): Promise<boolean> {
+    const r = await this.ask({
+      title,
+      message,
+      buttons: [
+        { id: 'ok', label: ok, primary: !danger, danger },
+        { id: 'cancel', label: '취소' },
+      ],
+    });
+    return r.button === 'ok';
+  }
+
+  async prompt(
+    title: string,
+    options: { value?: string; placeholder?: string; ok?: string; validate?: (v: string) => string | null; select?: [number, number] } = {},
+  ): Promise<string | null> {
+    const r = await this.ask({
+      title,
+      buttons: [
+        { id: 'ok', label: options.ok ?? '확인', primary: true },
+        { id: 'cancel', label: '취소' },
+      ],
+      input: { value: options.value ?? '', placeholder: options.placeholder, select: options.select },
+      validate: options.validate,
+    });
+    return r.button === 'ok' ? r.value : null;
+  }
+
+  // ── 화면 배치 ─────────────────────────────────────────────────────
+
+  setLayout(patch: Partial<Layout>): void {
+    this.set((s) => ({ layout: { ...s.layout, ...patch } }));
+    this.writeJson('layout', this.state.layout);
+  }
+
+  toggleSideView(view: SideViewId): void {
+    const cur = this.state.layout.sideView;
+    this.setLayout({ sideView: cur === view ? null : view });
+  }
+
+  showSideView(view: SideViewId): void {
+    this.setLayout({ sideView: view });
+  }
+
+  openQuickOpen(mode: QuickOpenMode, initial = ''): void {
+    this.set({ quickOpen: { mode, initial } });
+  }
+
+  closeQuickOpen(): void {
+    this.set({ quickOpen: null });
+  }
+
+  setCursor(cursor: IdeState['cursor']): void {
+    const cur = this.state.cursor;
+    if (cur && cursor && cur.line === cursor.line && cur.col === cursor.col && cur.selected === cursor.selected) return;
+    this.set({ cursor });
+  }
+
+  // ── 파일 목록 ─────────────────────────────────────────────────────
+
+  async refreshFiles(): Promise<void> {
+    try {
+      const files = await this.host.listFiles();
+      if (this.disposed) return;
+      if (this.filesRetry) clearTimeout(this.filesRetry);
+      this.filesRetry = null;
+      this.filesAttempt = 0;
+      this.set({ files, tree: buildTree(files), filesLoaded: true, filesError: null });
+    } catch (err) {
+      if (this.disposed) return;
+      // 닿지 않은 것이면 스스로 다시 읽는다 — 배포 중에 연 IDE 가 빈 탐색기로 굳지 않게.
+      const transient = isTransient(err);
+      this.set({
+        filesLoaded: true,
+        filesError: transient
+          ? '파일 목록을 불러오지 못해 다시 시도하고 있습니다'
+          : errorMessage(err, '파일 목록을 불러오지 못했습니다'),
+      });
+      if (transient && !this.filesRetry) {
+        const delay = Math.min(30_000, IdeStore.retryBaseMs * 2 ** Math.min(this.filesAttempt, 4));
+        this.filesAttempt += 1;
+        this.filesRetry = setTimeout(() => {
+          this.filesRetry = null;
+          void this.refreshFiles();
+        }, delay);
+      }
+    }
+  }
+
+  isDir(path: string): boolean {
+    if (!path) return true;
+    const p = normalize(path);
+    return this.state.files.some((f) => (f.isDir && f.path === p) || f.path.startsWith(p + '/'));
+  }
+
+  exists(path: string): boolean {
+    const p = normalize(path);
+    return this.state.files.some((f) => f.path === p || f.path.startsWith(p + '/'));
+  }
+
+  setExpanded(path: string, open: boolean): void {
+    this.set((s) => {
+      const next = new Set(s.expanded);
+      if (open) next.add(path);
+      else next.delete(path);
+      return { expanded: next };
+    });
+    this.writeJson('expanded', [...this.state.expanded]);
+  }
+
+  collapseAll(): void {
+    this.set({ expanded: new Set() });
+    this.writeJson('expanded', []);
+  }
+
+  reveal(path: string): void {
+    if (isFolderPath(path)) {
+      this.revealFolderPath(path);
+      return;
+    }
+    const want = ancestors(path);
+    if (want.every((d) => this.state.expanded.has(d)) && this.state.selected === path) return;
+    this.set((s) => ({ expanded: new Set([...s.expanded, ...want]), selected: path }));
+    this.writeJson('expanded', [...this.state.expanded]);
+  }
+
+  select(path: string | null): void {
+    this.set({ selected: path });
+  }
+
+  startCreate(parent: string, kind: 'file' | 'dir'): void {
+    if (this.state.readonly) return;
+    if (parent) this.setExpanded(parent, true);
+    this.set({ creating: { parent, kind }, renaming: null });
+    this.showSideView('explorer');
+  }
+
+  cancelCreate(): void {
+    this.set({ creating: null });
+  }
+
+  startRename(path: string): void {
+    if (this.state.readonly) return;
+    this.set({ renaming: path, creating: null });
+  }
+
+  cancelRename(): void {
+    this.set({ renaming: null });
+  }
+
+  // ── 연결된 폴더 ──────────────────────────────────────────────────
+  //
+  // 이 대화에 연결한 기기의 폴더. 스토리지와 섞이지 않게 따로 된 주소(folders.ts)를 쓰고,
+  // 목록은 펼칠 때 한 단계씩 읽는다(연결한 폴더는 저장소 하나만큼 클 수 있다).
+
+  private unsubscribeFolders: (() => void) | null = null;
+  private foldersTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly pendingFolderRoots = new Set<string>();
+  private foldersWhole = false;
+
+  private startFolders(): void {
+    const src = this.host.folders;
+    if (!src || this.unsubscribeFolders) return;
+    this.unsubscribeFolders = src.subscribe((rootId) => this.notifyFolderChange(rootId));
+    void this.refreshFolders();
+  }
+
+  private setFolders(patch: Partial<FoldersState> | ((cur: FoldersState) => Partial<FoldersState>)): void {
+    this.set((s) => ({ folders: { ...s.folders, ...(typeof patch === 'function' ? patch(s.folders) : patch) } }));
+  }
+
+  /** 폴더가 바뀌었다 — 잠깐 모아 다시 읽는다(에이전트가 파일을 잇달아 쓰는 동안 한 번만). */
+  notifyFolderChange(rootId?: string): void {
+    if (rootId) this.pendingFolderRoots.add(rootId);
+    else this.foldersWhole = true;
+    if (this.foldersTimer) clearTimeout(this.foldersTimer);
+    this.foldersTimer = setTimeout(() => {
+      this.foldersTimer = null;
+      const whole = this.foldersWhole;
+      const roots = [...this.pendingFolderRoots];
+      this.foldersWhole = false;
+      this.pendingFolderRoots.clear();
+      if (whole) void this.refreshFolders();
+      else for (const r of roots) this.reloadFolderRoot(r);
+      void this.checkDisk('all');
+    }, 300);
+    (this.foldersTimer as { unref?: () => void }).unref?.();
+  }
+
+  /** 연결된 폴더(와 펼쳐 둔 폴더의 목록)를 다시 읽는다. */
+  async refreshFolders(): Promise<void> {
+    const src = this.host.folders;
+    if (!src) return;
+    let next;
+    try {
+      next = await src.state();
+    } catch {
+      if (!this.disposed) this.setFolders({ loaded: true });
+      return;
+    }
+    if (this.disposed) return;
+    const ids = new Set(next.roots.map((r) => r.id));
+    const keep = (p: string) => {
+      const f = parseFolderPath(p);
+      return !!f && ids.has(f.rootId);
+    };
+    this.setFolders((cur) => ({
+      loaded: true,
+      roots: next.roots,
+      elsewhere: next.elsewhere ?? null,
+      expanded: new Set([...cur.expanded].filter(keep)),
+      dirs: Object.fromEntries(Object.entries(cur.dirs).filter(([k]) => keep(k))),
+      errors: Object.fromEntries(Object.entries(cur.errors).filter(([k]) => keep(k))),
+    }));
+    for (const dir of this.state.folders.expanded) void this.loadFolderDir(dir);
+  }
+
+  private reloadFolderRoot(rootId: string): void {
+    for (const dir of this.state.folders.expanded) {
+      if (parseFolderPath(dir)?.rootId === rootId) void this.loadFolderDir(dir);
+    }
+  }
+
+  folderRoot(rootId: string): IdeFolderRoot | undefined {
+    return this.state.folders.roots.find((r) => r.id === rootId);
+  }
+
+  /** 화면에 보이는 경로 — 연결된 폴더의 파일은 `<폴더 이름>/<경로>`. */
+  displayPath(path: string): string {
+    const f = parseFolderPath(path);
+    if (!f) return path;
+    const name = this.folderRoot(f.rootId)?.name ?? '연결된 폴더';
+    return f.rel ? `${name}/${f.rel}` : name;
+  }
+
+  /** 복사할 경로 — 연결된 폴더의 파일은 이 기기의 경로(데스크톱) 또는 `<폴더 이름>/<경로>`. */
+  copyablePath(path: string): string {
+    const f = parseFolderPath(path);
+    if (!f) return path;
+    return this.host.folders?.pathOf?.(f.rootId, f.rel) ?? this.displayPath(path);
+  }
+
+  /** 폴더 한 단계를 읽는다(주소는 연결된 폴더 주소). */
+  async loadFolderDir(dir: string): Promise<void> {
+    const src = this.host.folders;
+    const f = parseFolderPath(dir);
+    if (!src || !f) return;
+    if (this.state.folders.dirs[dir] === undefined) this.setFolders((cur) => ({ dirs: { ...cur.dirs, [dir]: null } }));
+    try {
+      const entries = await src.list(f.rootId, f.rel);
+      if (this.disposed) return;
+      const mapped = sortEntries(entries.map((e) => ({ ...e, path: folderPath(f.rootId, e.path) })));
+      this.setFolders((cur) => {
+        const errors = { ...cur.errors };
+        delete errors[dir];
+        return { dirs: { ...cur.dirs, [dir]: mapped }, errors };
+      });
+    } catch (err) {
+      if (this.disposed) return;
+      this.setFolders((cur) => ({
+        dirs: { ...cur.dirs, [dir]: cur.dirs[dir] ?? [] },
+        errors: { ...cur.errors, [dir]: errorMessage(err, '폴더를 읽지 못했습니다') },
+      }));
+    }
+  }
+
+  /** 폴더를 펼치거나 접는다. 펼칠 때 목록을 읽는다. */
+  toggleFolderDir(dir: string, open?: boolean): void {
+    const isOpen = this.state.folders.expanded.has(dir);
+    const want = open ?? !isOpen;
+    if (want === isOpen) return;
+    this.setFolders((cur) => {
+      const expanded = new Set(cur.expanded);
+      if (want) expanded.add(dir);
+      else expanded.delete(dir);
+      return { expanded };
+    });
+    if (want) void this.loadFolderDir(dir);
+  }
+
+  /** 연결된 폴더 칸을 모두 접는다. */
+  collapseFolders(): void {
+    this.setFolders({ expanded: new Set() });
+  }
+
+  private revealFolderPath(path: string): void {
+    const f = parseFolderPath(path);
+    if (!f) return;
+    const parts = f.rel.split('/').slice(0, -1);
+    this.toggleFolderDir(folderPath(f.rootId), true);
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      this.toggleFolderDir(folderPath(f.rootId, acc), true);
+    }
+    this.set({ selected: path });
+  }
+
+  /** 이 창에서 폴더 접근을 허용받는다(웹). */
+  async grantFolder(rootId: string): Promise<void> {
+    const src = this.host.folders;
+    if (!src?.grant) return;
+    try {
+      await src.grant(rootId);
+    } catch (err) {
+      this.notify('error', errorMessage(err, '폴더 접근을 허용하지 못했습니다'));
+    }
+    await this.refreshFolders();
+  }
+
+  private folderTarget(path: string): { src: NonNullable<IdeHost['folders']>; rootId: string; rel: string } {
+    const f = parseFolderPath(path);
+    const src = this.host.folders;
+    if (!f || !src) throw new IdeError('not_found', '연결된 폴더를 찾을 수 없습니다');
+    return { src, rootId: f.rootId, rel: f.rel };
+  }
+
+  private readDocBytes(path: string): Promise<IdeReadResult> {
+    if (!isFolderPath(path)) return this.host.readFile(path);
+    try {
+      const t = this.folderTarget(path);
+      return t.src.read(t.rootId, t.rel);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  private writeDocBytes(path: string, bytes: Uint8Array, baseSha: string | null): Promise<IdeSaveResult> {
+    if (!isFolderPath(path)) return this.host.saveFile(path, bytes, baseSha);
+    try {
+      const t = this.folderTarget(path);
+      return t.src.save(t.rootId, t.rel, bytes, baseSha);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /** 그림 미리보기의 원바이트 — 스토리지든 연결된 폴더든. */
+  readRaw(path: string): Promise<Uint8Array> {
+    if (!isFolderPath(path)) return this.host.readRaw(path);
+    try {
+      const t = this.folderTarget(path);
+      return t.src.readRaw(t.rootId, t.rel);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /** 열어 둔 문서들의 디스크 판 — 스토리지와 연결된 폴더를 나눠 묻는다. 못 물은 것은 뺀다. */
+  private async statDocs(paths: string[]): Promise<Record<string, IdeStat>> {
+    const out: Record<string, IdeStat> = {};
+    const storage = paths.filter((p) => !isFolderPath(p));
+    const byRoot = new Map<string, { path: string; rel: string }[]>();
+    for (const p of paths) {
+      const f = parseFolderPath(p);
+      if (!f) continue;
+      const list = byRoot.get(f.rootId) ?? [];
+      list.push({ path: p, rel: f.rel });
+      byRoot.set(f.rootId, list);
+    }
+    if (storage.length) {
+      try {
+        Object.assign(out, await this.host.stat(storage));
+      } catch {
+        /* 닿지 않았다 — 다음에 다시 본다 */
+      }
+    }
+    const src = this.host.folders;
+    if (src) {
+      for (const [rootId, items] of byRoot) {
+        try {
+          const st = await src.stat(rootId, items.map((i) => i.rel));
+          for (const i of items) if (st[i.rel]) out[i.path] = st[i.rel];
+        } catch {
+          /* 폴더가 잠시 닿지 않는다(웹: 허용 전) — 다음에 다시 본다 */
+        }
+      }
+    }
+    return out;
+  }
+
+  /** 연결된 폴더에 새 파일·폴더를 만든다. */
+  async createFolderEntry(dir: string, name: string, kind: 'file' | 'dir'): Promise<boolean> {
+    if (this.state.readonly) return false;
+    const bad = invalidName(name);
+    if (bad) {
+      this.notify('warning', bad);
+      return false;
+    }
+    let t;
+    try {
+      t = this.folderTarget(dir);
+    } catch {
+      return false;
+    }
+    const rel = join(t.rel, name.trim());
+    const taken = (this.state.folders.dirs[dir] ?? []).some((e) => basename(e.path) === basename(rel));
+    if (taken) {
+      this.notify('warning', `${basename(rel)} 은(는) 이미 있습니다`);
+      return false;
+    }
+    try {
+      if (kind === 'dir') await t.src.fs(t.rootId, { op: 'mkdir', path: rel });
+      else await t.src.save(t.rootId, rel, new Uint8Array(), '');
+    } catch (err) {
+      this.notify('error', errorMessage(err, `${basename(rel)} 을(를) 만들지 못했습니다`));
+      return false;
+    }
+    this.toggleFolderDir(dir, true);
+    await this.loadFolderDir(dir);
+    if (kind === 'file') await this.openFile(folderPath(t.rootId, rel), { preview: false });
+    return true;
+  }
+
+  /** 연결된 폴더 안의 이름 바꾸기 — 열린 탭과 고친 버퍼도 따라간다. 폴더 자체는 바꾸지 않는다. */
+  async renameFolderEntry(path: string, newName: string): Promise<boolean> {
+    if (this.state.readonly) return false;
+    const bad = invalidName(newName);
+    if (bad) {
+      this.notify('warning', bad);
+      return false;
+    }
+    let t;
+    try {
+      t = this.folderTarget(path);
+    } catch {
+      return false;
+    }
+    if (!t.rel) return false;
+    const dstRel = join(dirname(t.rel), newName.trim());
+    if (dstRel === t.rel) return true;
+    const dst = folderPath(t.rootId, dstRel);
+    const dirtyInside = Object.values(this.state.docs).filter((d) => d.dirty && isWithin(d.path, path));
+    if (dirtyInside.length) {
+      const ok = await this.confirm('저장하지 않은 파일이 있습니다', '이름을 바꾸기 전에 저장합니다.', '저장하고 바꾸기');
+      if (!ok) return false;
+      for (const d of dirtyInside) if (!(await this.save(d.path, { quiet: true }))) return false;
+    }
+    try {
+      await t.src.fs(t.rootId, { op: 'rename', src: t.rel, dst: dstRel });
+    } catch (err) {
+      this.notify('error', errorMessage(err, '이름을 바꾸지 못했습니다'));
+      return false;
+    }
+    this.retargetTabs(path, dst);
+    this.setFolders((cur) => ({
+      expanded: new Set([...cur.expanded].map((d) => (isWithin(d, path) ? dst + d.slice(path.length) : d))),
+      dirs: Object.fromEntries(Object.entries(cur.dirs).filter(([k]) => !isWithin(k, path))),
+    }));
+    await this.loadFolderDir(dirname(path));
+    return true;
+  }
+
+  /** 연결된 폴더 안에서 지운다(되돌릴 수 없다). 폴더 자체는 지우지 않는다 — 연결 해제는 [폴더] 창에서. */
+  async deleteFolderEntries(paths: string[], isDir: (path: string) => boolean): Promise<boolean> {
+    if (this.state.readonly) return false;
+    const targets = paths.map((p) => ({ path: p, f: parseFolderPath(p) })).filter((x) => x.f && x.f.rel);
+    if (!targets.length || !this.host.folders) return false;
+    const label = targets.length === 1 ? basename(targets[0].path) : `${targets.length}개 항목`;
+    const ok = await this.confirm(
+      `${label} 을(를) 지울까요?`,
+      this.host.folders.trashes
+        ? '이 기기의 휴지통으로 옮깁니다.'
+        : targets.some((x) => isDir(x.path))
+          ? '이 기기의 폴더에서 폴더와 그 안의 모든 파일을 지우며 되돌릴 수 없습니다.'
+          : '이 기기의 폴더에서 지우며 되돌릴 수 없습니다.',
+      '지우기',
+      true,
+    );
+    if (!ok) return false;
+    const byRoot = new Map<string, string[]>();
+    for (const x of targets) byRoot.set(x.f!.rootId, [...(byRoot.get(x.f!.rootId) ?? []), x.f!.rel]);
+    for (const [rootId, rels] of byRoot) {
+      try {
+        await this.host.folders.fs(rootId, { op: 'delete', paths: rels });
+      } catch (err) {
+        this.notify('error', errorMessage(err, '지우지 못했습니다'));
+        return false;
+      }
+    }
+    for (const g of [...this.state.groups]) {
+      for (const tab of g.tabs) {
+        if (tab.kind !== 'diff' && targets.some((x) => isWithin(tab.path, x.path))) await this.closeTab(g.id, tab.id, { force: true });
+      }
+    }
+    for (const dir of new Set(targets.map((x) => dirname(x.path)))) await this.loadFolderDir(dir);
+    return true;
+  }
+
+  // ── Monaco ────────────────────────────────────────────────────────
+
+  loadMonaco(): Promise<MonacoApi> {
+    if (this.monaco) return Promise.resolve(this.monaco);
+    if (!this.monacoLoading) {
+      this.monacoLoading = this.host.loadMonaco().then(
+        (m) => {
+          this.monaco = m;
+          ignoreMonacoCancellation();
+          if (typeof m.editor?.defineTheme === 'function') defineXgenThemes(m);
+          this.set({ monacoReady: true, monacoError: null });
+          return m;
+        },
+        (err) => {
+          this.monacoLoading = null;
+          this.set({ monacoError: errorMessage(err, '편집기를 불러오지 못했습니다') });
+          throw err;
+        },
+      );
+    }
+    return this.monacoLoading;
+  }
+
+  /** 저장하지 않은 파일(호스트가 탭·창을 닫기 전에 묻는 데 쓴다). */
+  unsavedPaths(): string[] {
+    return Object.values(this.state.docs)
+      .filter((d) => d.dirty)
+      .map((d) => d.path);
+  }
+
+  getMonaco(): MonacoApi | null {
+    return this.monaco;
+  }
+
+  getModel(path: string): Monaco.editor.ITextModel | null {
+    if (!this.monaco) return null;
+    return this.monaco.editor.getModel(modelUri(this.monaco, this.host.workflowId, path));
+  }
+
+  // ── 문서 ──────────────────────────────────────────────────────────
+
+  /** 문서를 준비한다(이미 있으면 그대로). 텍스트면 Monaco 모델까지 만든다. */
+  ensureDoc(path: string, opts: { forceText?: boolean } = {}): Promise<void> {
+    const p = normalize(path);
+    const cur = this.state.docs[p];
+    if (cur && cur.status !== 'error' && cur.status !== 'missing' && !(opts.forceText && cur.status === 'binary')) {
+      return this.loads.get(p) ?? Promise.resolve();
+    }
+    const job = this.loadDoc(p, opts).finally(() => this.loads.delete(p));
+    this.loads.set(p, job);
+    return job;
+  }
+
+  private async loadDoc(path: string, opts: { forceText?: boolean }): Promise<void> {
+    this.set((s) => ({
+      docs: {
+        ...s.docs,
+        [path]: {
+          path,
+          status: 'loading',
+          sha: '',
+          size: 0,
+          dirty: false,
+          eol: 'LF',
+          bom: false,
+          saving: false,
+          diskChanged: false,
+        },
+      },
+    }));
+    let read;
+    try {
+      [read] = await Promise.all([this.readDocBytes(path), this.loadMonaco()]);
+    } catch (err) {
+      if (err instanceof IdeError && err.code === 'too_large') {
+        this.patchDoc(path, { status: 'too_large', message: err.message, size: Number(err.detail?.size ?? 0) });
+      } else if (err instanceof IdeError && err.code === 'not_found') {
+        this.patchDoc(path, { status: 'missing', message: '파일이 없습니다' });
+      } else {
+        this.patchDoc(path, { status: 'error', message: errorMessage(err, '파일을 열지 못했습니다') });
+      }
+      return;
+    }
+    if (!opts.forceText && looksBinary(read.bytes)) {
+      this.patchDoc(path, { status: 'binary', sha: read.sha, size: read.size });
+      return;
+    }
+    const decoded = decodeText(read.bytes);
+    const monaco = this.monaco!;
+    const uri = modelUri(monaco, this.host.workflowId, path);
+    let model = monaco.editor.getModel(uri);
+    if (model) model.setValue(decoded.text);
+    else model = monaco.editor.createModel(decoded.text, undefined, uri);
+    model.setEOL(decoded.eol === 'CRLF' ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    this.savedVersion.set(path, model.getAlternativeVersionId());
+    this.modelSubs.get(path)?.dispose();
+    this.modelSubs.set(
+      path,
+      model.onDidChangeContent(() => this.onModelChange(path)),
+    );
+    this.patchDoc(path, {
+      status: 'ready',
+      sha: read.sha,
+      size: read.size,
+      eol: decoded.eol,
+      bom: decoded.bom,
+      dirty: false,
+      diskChanged: false,
+      message: undefined,
+    });
+    // 저장하지 않고 닫았던 변경이 있으면 되살린다 — 되돌리기로 디스크 판에 돌아갈 수 있게 편집으로 얹는다.
+    const backup = this.state.readonly ? null : this.readBackup(path);
+    if (backup && backup.text !== decoded.text) {
+      model.pushStackElement();
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: backup.text }], () => null);
+      model.pushStackElement();
+      this.patchDoc(path, {
+        // 고치기 시작한 판을 기준으로 둔다 — 그사이 디스크가 바뀌었으면 저장이 충돌로 잡힌다.
+        sha: backup.baseSha,
+        eol: backup.eol,
+        bom: backup.bom,
+        dirty: true,
+        diskChanged: backup.baseSha !== read.sha,
+      });
+      this.pinPreviewTabsOf(path);
+      this.notify('info', `${basename(path)} 의 저장하지 않은 변경을 되살렸습니다`);
+    } else if (backup) {
+      this.dropBackup(path);
+    }
+    this.refreshQuickDiff([path]);
+  }
+
+  private onModelChange(path: string): void {
+    const model = this.getModel(path);
+    const doc = this.state.docs[path];
+    if (!model || !doc) return;
+    const dirty = model.getAlternativeVersionId() !== this.savedVersion.get(path);
+    if (dirty !== doc.dirty) this.patchDoc(path, { dirty });
+    if (dirty) this.pinPreviewTabsOf(path);
+    if (dirty) this.scheduleBackup(path);
+    else this.dropBackup(path);
+    this.scheduleQuickDiff(path);
+    if (dirty && this.state.layout.autoSave) {
+      clearTimeout(this.autoSaveTimers.get(path));
+      this.autoSaveTimers.set(
+        path,
+        setTimeout(() => {
+          this.autoSaveTimers.delete(path);
+          if (this.state.docs[path]?.dirty && !this.state.docs[path]?.diskChanged) void this.save(path, { quiet: true });
+        }, 1000),
+      );
+    }
+  }
+
+  /** 문서를 쓰는 탭이 하나도 없으면 버린다(모델까지). */
+  private releaseDocIfUnused(path: string): void {
+    const used = this.state.groups.some((g) =>
+      g.tabs.some((t) => t.path === path && (t.kind === 'file' || (t.kind === 'diff' && !t.diff?.staged))),
+    );
+    if (used) return;
+    this.modelSubs.get(path)?.dispose();
+    this.modelSubs.delete(path);
+    this.savedVersion.delete(path);
+    clearTimeout(this.autoSaveTimers.get(path));
+    this.autoSaveTimers.delete(path);
+    clearTimeout(this.qdTimers.get(path));
+    this.qdTimers.delete(path);
+    this.qdBase.delete(path);
+    this.qdDecos.delete(path);
+    this.getModel(path)?.dispose();
+    this.set((s) => {
+      const docs = { ...s.docs };
+      delete docs[path];
+      return { docs };
+    });
+  }
+
+  async save(path: string, opts: { force?: boolean; quiet?: boolean } = {}): Promise<boolean> {
+    const doc = this.state.docs[path];
+    const model = this.getModel(path);
+    if (!doc || !model || doc.status !== 'ready' || this.state.readonly) return false;
+    if (doc.saving) return false;
+    const version = model.getAlternativeVersionId();
+    const bytes = encodeText(model.getValue(), doc.eol, doc.bom);
+    this.patchDoc(path, { saving: true });
+    try {
+      const out = await this.writeDocBytes(path, bytes, opts.force ? null : doc.sha);
+      this.savedVersion.set(path, version);
+      this.patchDoc(path, {
+        saving: false,
+        sha: out.sha,
+        size: bytes.length,
+        dirty: model.getAlternativeVersionId() !== version,
+        diskChanged: false,
+      });
+      // 저장한 뒤에도 고친 것이 남아 있으면(저장 중에 타이핑) 그 판을 다시 보관한다.
+      if (this.state.docs[path]?.dirty) this.scheduleBackup(path);
+      else this.dropBackup(path);
+      if (isFolderPath(path)) {
+        if (this.state.folders.dirs[dirname(path)] !== undefined) void this.loadFolderDir(dirname(path));
+      } else {
+        if (!this.exists(path)) void this.refreshFiles();
+        this.scheduleGit();
+      }
+      // 저장은 따로 알리지 않는다 — 탭의 고친 표시가 사라지는 것이 곧 알림이다(VS Code 와 같다).
+      if (out.conflicts?.length) {
+        this.notify('warning', '다른 곳에서 같은 파일을 고쳐 두 판을 모두 남겼습니다. 탐색기에서 .conflict 파일을 확인하세요.');
+      }
+      return true;
+    } catch (err) {
+      this.patchDoc(path, { saving: false });
+      if (err instanceof IdeError && err.code === 'changed') {
+        this.patchDoc(path, { diskChanged: true });
+        return this.resolveSaveConflict(path);
+      }
+      this.notify('error', errorMessage(err, `${basename(path)} 을(를) 저장하지 못했습니다`));
+      return false;
+    }
+  }
+
+  /** 저장했더니 디스크 판이 그사이 바뀌었다 — 비교·덮어쓰기·되돌리기 중 고른다. */
+  private async resolveSaveConflict(path: string): Promise<boolean> {
+    const r = await this.ask({
+      title: `${basename(path)} 이(가) 그사이 바뀌었습니다`,
+      message: '에이전트나 터미널이 이 파일을 먼저 고쳤습니다. 어떻게 할까요?',
+      buttons: [
+        { id: 'compare', label: '비교', primary: true },
+        { id: 'overwrite', label: '내 판으로 덮어쓰기', danger: true },
+        { id: 'revert', label: '바뀐 판 불러오기' },
+        { id: 'cancel', label: '취소' },
+      ],
+    });
+    if (r.button === 'overwrite') return this.save(path, { force: true });
+    if (r.button === 'revert') {
+      await this.reloadFromDisk(path, { discard: true });
+      return false;
+    }
+    if (r.button === 'compare') await this.openDiskCompare(path);
+    return false;
+  }
+
+  /** 디스크 판(왼쪽)과 내 버퍼(오른쪽)를 나란히 본다. */
+  async openDiskCompare(path: string): Promise<void> {
+    const monaco = await this.loadMonaco();
+    let read;
+    try {
+      read = await this.readDocBytes(path);
+    } catch (err) {
+      this.notify('error', errorMessage(err, '디스크 판을 읽지 못했습니다'));
+      return;
+    }
+    const uri = diskUri(monaco, this.host.workflowId, path);
+    const text = decodeText(read.bytes).text;
+    const existing = monaco.editor.getModel(uri);
+    if (existing) existing.setValue(text);
+    else monaco.editor.createModel(text, undefined, uri);
+    const diff: DiffSpec = { repo: '', path, staged: false, status: 'modified', disk: true };
+    this.openTab({ id: tabIdFor('diff', path, diff), kind: 'diff', path, preview: false, diff });
+  }
+
+  /** 줄 끝을 바꿨다(상태 표시줄) — 다음 저장이 그 줄 끝으로 쓴다. */
+  setDocEol(path: string, eol: Eol): void {
+    this.patchDoc(path, { eol });
+    this.onModelChange(path);
+  }
+
+  async saveAll(): Promise<void> {
+    for (const doc of Object.values(this.state.docs)) {
+      if (doc.dirty && doc.status === 'ready') await this.save(doc.path, { quiet: true });
+    }
+  }
+
+  /** 디스크에서 다시 읽는다. `discard` 면 고친 것을 버린다(되돌리기 기록은 남긴다). */
+  async reloadFromDisk(path: string, opts: { discard?: boolean } = {}): Promise<void> {
+    const doc = this.state.docs[path];
+    const model = this.getModel(path);
+    if (!doc || !model) return;
+    if (doc.dirty && !opts.discard) return;
+    let read;
+    try {
+      read = await this.readDocBytes(path);
+    } catch (err) {
+      if (err instanceof IdeError && err.code === 'not_found') {
+        this.patchDoc(path, { diskChanged: true, message: '디스크에서 지워졌습니다' });
+      }
+      return;
+    }
+    const decoded = decodeText(read.bytes);
+    if (model.getValue() !== decoded.text) {
+      model.pushStackElement();
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: decoded.text }], () => null);
+      model.pushStackElement();
+    }
+    this.savedVersion.set(path, model.getAlternativeVersionId());
+    this.patchDoc(path, {
+      sha: read.sha,
+      size: read.size,
+      eol: decoded.eol,
+      bom: decoded.bom,
+      dirty: false,
+      diskChanged: false,
+      message: undefined,
+    });
+    this.dropBackup(path);
+  }
+
+  /** 열어 둔 파일의 디스크 판을 본다 — 바뀌었으면 깨끗한 버퍼는 조용히 다시 읽는다. */
+  async checkDisk(which: 'visible' | 'all'): Promise<void> {
+    const docs = Object.values(this.state.docs).filter((d) => d.status === 'ready' && d.sha);
+    const visible = new Set(
+      this.state.groups.map((g) => g.tabs.find((t) => t.id === g.activeId)?.path).filter(Boolean) as string[],
+    );
+    const paths = docs.map((d) => d.path).filter((p) => which === 'all' || visible.has(p));
+    if (!paths.length) return;
+    const stats = await this.statDocs(paths);
+    for (const path of paths) {
+      const st = stats[path];
+      const doc = this.state.docs[path];
+      if (!st || !doc || doc.saving) continue;
+      if (st.kind === 'file' && st.sha && st.sha !== doc.sha) {
+        if (doc.dirty) {
+          if (!doc.diskChanged) this.patchDoc(path, { diskChanged: true });
+        } else {
+          await this.reloadFromDisk(path);
+        }
+      } else if (st.kind === 'missing' && !doc.diskChanged) {
+        this.patchDoc(path, { diskChanged: true, message: '디스크에서 지워졌습니다' });
+      }
+    }
+  }
+
+  // ── 탭·편집기 묶음 ────────────────────────────────────────────────
+
+  activeGroup(): EditorGroup {
+    return this.state.groups.find((g) => g.id === this.state.activeGroup) ?? this.state.groups[0];
+  }
+
+  activeTab(): EditorTab | null {
+    const g = this.activeGroup();
+    return g.tabs.find((t) => t.id === g.activeId) ?? null;
+  }
+
+  setActiveGroup(id: string): void {
+    if (this.state.activeGroup !== id && this.state.groups.some((g) => g.id === id)) this.set({ activeGroup: id });
+  }
+
+  /** 탭을 연다. 미리보기 탭은 같은 묶음의 기존 미리보기 자리를 바꿔 쓴다. */
+  openTab(tab: EditorTab, opts: { groupId?: string; background?: boolean } = {}): void {
+    const groupId = opts.groupId ?? this.state.activeGroup;
+    this.set((s) => {
+      const groups = s.groups.map((g) => {
+        if (g.id !== groupId) return g;
+        const existing = g.tabs.find((t) => t.id === tab.id);
+        if (existing) {
+          const tabs = tab.preview ? g.tabs : g.tabs.map((t) => (t.id === tab.id ? { ...t, preview: false } : t));
+          return { ...g, tabs, activeId: opts.background ? g.activeId : tab.id };
+        }
+        let tabs = g.tabs;
+        if (tab.preview) {
+          const idx = tabs.findIndex((t) => t.preview);
+          if (idx >= 0) {
+            const replaced = tabs[idx];
+            tabs = [...tabs.slice(0, idx), tab, ...tabs.slice(idx + 1)];
+            queueMicrotask(() => this.releaseDocIfUnused(replaced.path));
+            return { ...g, tabs, activeId: opts.background ? g.activeId : tab.id };
+          }
+        }
+        const at = g.activeId ? tabs.findIndex((t) => t.id === g.activeId) + 1 : tabs.length;
+        tabs = [...tabs.slice(0, at), tab, ...tabs.slice(at)];
+        return { ...g, tabs, activeId: opts.background ? g.activeId : tab.id };
+      });
+      return { groups, activeGroup: groupId };
+    });
+    this.persistTabs();
+  }
+
+  /**
+   * 이 파일을 어떤 탭으로 여는가 — 그림은 그림으로, 호스트가 그려 주는 문서·PDF·소리·영상은 미리보기로,
+   * 나머지는 편집기로. `forceText` 는 [그래도 열기] — 무엇이든 편집기로.
+   */
+  tabKindFor(path: string, forceText = false): TabKind {
+    if (forceText) return 'file';
+    if (isImagePath(path)) return 'image';
+    return this.previewMode(path) === 'view' ? 'preview' : 'file';
+  }
+
+  /** 호스트가 이 파일을 그려 줄 수 있는가. 호스트의 판정이 던져도 편집기로 연다. */
+  previewMode(path: string): 'view' | 'toggle' | null {
+    try {
+      return this.host.preview?.mode(path) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** md·csv — 지금 그린 모습을 보는가(기본은 그렇다). */
+  isRendered(path: string): boolean {
+    return this.state.rendered[path] ?? true;
+  }
+
+  setRendered(path: string, on: boolean): void {
+    this.set((s) => ({ rendered: { ...s.rendered, [path]: on } }));
+  }
+
+  /** 편집기로 열었는데 글이 아닌 파일 — 호스트가 그릴 수 있으면 그 자리를 미리보기 탭으로 바꾼다. */
+  openAsPreview(path: string, opts: { groupId?: string } = {}): void {
+    const p = normalize(path);
+    if (!p || !this.host.preview) return;
+    const fileId = tabIdFor('file', p);
+    const groupId = opts.groupId ?? this.state.activeGroup;
+    this.set((s) => ({
+      groups: s.groups.map((g) =>
+        g.id !== groupId ? g : {
+          ...g,
+          tabs: g.tabs.map((t) => (t.id === fileId ? { ...t, id: tabIdFor('preview', p), kind: 'preview' as const } : t)),
+          activeId: g.activeId === fileId ? tabIdFor('preview', p) : g.activeId,
+        },
+      ),
+    }));
+    if (!this.state.groups.some((g) => g.tabs.some((t) => t.id === tabIdFor('preview', p)))) {
+      this.openTab({ id: tabIdFor('preview', p), kind: 'preview', path: p, preview: false }, { groupId });
+    }
+    this.releaseDocIfUnused(p);
+    this.persistTabs();
+  }
+
+  /** 파일을 연다 — 그림은 그림으로, 그려 볼 문서는 미리보기로, 나머지는 편집기로. */
+  async openFile(
+    path: string,
+    opts: { preview?: boolean; groupId?: string; line?: number; col?: number; length?: number; forceText?: boolean } = {},
+  ): Promise<void> {
+    const p = normalize(path);
+    if (!p) return;
+    const kind: TabKind = this.tabKindFor(p, !!opts.forceText);
+    this.openTab({ id: tabIdFor(kind, p), kind, path: p, preview: opts.preview ?? false }, { groupId: opts.groupId });
+    this.reveal(p);
+    if (kind === 'file') {
+      await this.ensureDoc(p, { forceText: opts.forceText });
+      if (opts.line) this.pendingReveal = { path: p, line: opts.line, col: opts.col ?? 1, length: opts.length ?? 0 };
+      this.set({});
+    }
+  }
+
+  /** 줄로 이동해야 하는 문서 — 편집기가 모델을 붙인 뒤 소비한다. */
+  pendingReveal: { path: string; line: number; col: number; length: number } | null = null;
+
+  openDiff(diff: DiffSpec, opts: { preview?: boolean } = {}): void {
+    const path = toWorkspacePath(diff.repo, diff.path);
+    this.openTab({ id: tabIdFor('diff', path, diff), kind: 'diff', path, preview: opts.preview ?? true, diff });
+    if (!diff.staged && diff.status !== 'deleted') void this.ensureDoc(path);
+  }
+
+  pinTab(groupId: string, tabId: string): void {
+    this.set((s) => ({
+      groups: s.groups.map((g) =>
+        g.id === groupId ? { ...g, tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, preview: false } : t)) } : g,
+      ),
+    }));
+    this.persistTabs();
+  }
+
+  private pinPreviewTabsOf(path: string): void {
+    if (!this.state.groups.some((g) => g.tabs.some((t) => t.path === path && t.preview && t.kind === 'file'))) return;
+    this.set((s) => ({
+      groups: s.groups.map((g) => ({
+        ...g,
+        tabs: g.tabs.map((t) => (t.path === path && t.preview && t.kind === 'file' ? { ...t, preview: false } : t)),
+      })),
+    }));
+    this.persistTabs();
+  }
+
+  activateTab(groupId: string, tabId: string): void {
+    this.set((s) => ({
+      activeGroup: groupId,
+      groups: s.groups.map((g) => (g.id === groupId ? { ...g, activeId: tabId } : g)),
+    }));
+    const tab = this.state.groups.find((g) => g.id === groupId)?.tabs.find((t) => t.id === tabId);
+    if (tab && tab.kind !== 'diff') this.reveal(tab.path);
+    this.persistTabs();
+  }
+
+  /** 탭을 닫는다. 고친 채면 먼저 묻는다(저장·저장 안 함·취소). */
+  async closeTab(groupId: string, tabId: string, opts: { force?: boolean } = {}): Promise<boolean> {
+    const group = this.state.groups.find((g) => g.id === groupId);
+    const tab = group?.tabs.find((t) => t.id === tabId);
+    if (!group || !tab) return true;
+    const doc = this.state.docs[tab.path];
+    // 이 탭이 그 문서를 보여 주는 **마지막** 탭인가(다른 묶음의 같은 파일·작업 트리 비교도 센다).
+    const viewsDoc = (t: EditorTab) =>
+      t.path === tab.path && (t.kind === 'file' || (t.kind === 'diff' && !t.diff?.staged));
+    const others = this.state.groups.reduce(
+      (n, g) => n + g.tabs.filter((t) => viewsDoc(t) && !(g.id === groupId && t.id === tabId)).length,
+      0,
+    );
+    const lastView = viewsDoc(tab) && others === 0;
+    if (!opts.force && lastView && doc?.dirty) {
+      const r = await this.ask({
+        title: `${basename(tab.path)} 의 변경 내용을 저장할까요?`,
+        message: '저장하지 않으면 변경 내용이 사라집니다.',
+        buttons: [
+          { id: 'save', label: '저장', primary: true },
+          { id: 'discard', label: '저장 안 함', danger: true },
+          { id: 'cancel', label: '취소' },
+        ],
+      });
+      if (r.button === 'cancel') return false;
+      if (r.button === 'save' && !(await this.save(tab.path))) return false;
+      if (r.button === 'discard') this.dropBackup(tab.path);
+    }
+    this.set((s) => {
+      let groups = s.groups.map((g) => {
+        if (g.id !== groupId) return g;
+        const idx = g.tabs.findIndex((t) => t.id === tabId);
+        const tabs = g.tabs.filter((t) => t.id !== tabId);
+        let activeId = g.activeId;
+        if (activeId === tabId) activeId = tabs[Math.min(idx, tabs.length - 1)]?.id ?? null;
+        return { ...g, tabs, activeId };
+      });
+      let activeGroup = s.activeGroup;
+      // 빈 묶음은 접는다(하나는 남긴다).
+      if (groups.length > 1) {
+        const emptied = groups.find((g) => g.id === groupId && g.tabs.length === 0);
+        if (emptied) {
+          const i = groups.indexOf(emptied);
+          groups = groups.filter((g) => g !== emptied);
+          if (activeGroup === groupId) activeGroup = groups[Math.max(0, i - 1)].id;
+          this.editors.delete(groupId);
+        }
+      }
+      return { groups, activeGroup };
+    });
+    this.closedTabs.push(tab);
+    if (this.closedTabs.length > 30) this.closedTabs.shift();
+    this.viewStates.delete(`${groupId}:${tabId}`);
+    this.releaseDocIfUnused(tab.path);
+    this.persistTabs();
+    return true;
+  }
+
+  async closeTabs(groupId: string, which: 'others' | 'right' | 'all' | 'saved', pivot?: string): Promise<void> {
+    const group = this.state.groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const idx = pivot ? group.tabs.findIndex((t) => t.id === pivot) : -1;
+    const targets = group.tabs.filter((t, i) => {
+      if (which === 'others') return t.id !== pivot;
+      if (which === 'right') return i > idx;
+      if (which === 'saved') return !this.state.docs[t.path]?.dirty;
+      return true;
+    });
+    for (const t of targets) {
+      if (!(await this.closeTab(groupId, t.id))) break;
+    }
+  }
+
+  async closeAllGroups(): Promise<void> {
+    for (const g of [...this.state.groups]) await this.closeTabs(g.id, 'all');
+  }
+
+  reopenClosedTab(): void {
+    const tab = this.closedTabs.pop();
+    if (!tab) return;
+    if (tab.kind === 'diff' && tab.diff) this.openDiff(tab.diff, { preview: false });
+    else void this.openFile(tab.path, { preview: false });
+  }
+
+  cycleTab(delta: 1 | -1): void {
+    const g = this.activeGroup();
+    if (!g.tabs.length) return;
+    const i = g.tabs.findIndex((t) => t.id === g.activeId);
+    const next = g.tabs[(i + delta + g.tabs.length) % g.tabs.length];
+    this.activateTab(g.id, next.id);
+  }
+
+  moveTab(fromGroup: string, tabId: string, toGroup: string, index: number): void {
+    const src = this.state.groups.find((g) => g.id === fromGroup);
+    const tab = src?.tabs.find((t) => t.id === tabId);
+    if (!src || !tab) return;
+    this.set((s) => {
+      let groups = s.groups.map((g) => {
+        if (g.id === fromGroup && g.id === toGroup) {
+          const tabs = g.tabs.filter((t) => t.id !== tabId);
+          const at = Math.max(0, Math.min(index, tabs.length));
+          return { ...g, tabs: [...tabs.slice(0, at), tab, ...tabs.slice(at)], activeId: tabId };
+        }
+        if (g.id === fromGroup) {
+          const tabs = g.tabs.filter((t) => t.id !== tabId);
+          const activeId = g.activeId === tabId ? tabs[0]?.id ?? null : g.activeId;
+          return { ...g, tabs, activeId };
+        }
+        if (g.id === toGroup) {
+          const tabs = g.tabs.filter((t) => t.id !== tabId);
+          const at = Math.max(0, Math.min(index, tabs.length));
+          return { ...g, tabs: [...tabs.slice(0, at), tab, ...tabs.slice(at)], activeId: tabId };
+        }
+        return g;
+      });
+      if (groups.length > 1) groups = groups.filter((g) => g.tabs.length > 0);
+      return { groups, activeGroup: toGroup };
+    });
+    this.persistTabs();
+  }
+
+  /**
+   * 편집기를 오른쪽으로 나눈다(최대 3묶음). 기본은 지금 탭을 새 묶음에도 연다(편집기의
+   * "나누기"). `empty` 면 빈 묶음을 만든다("옆에 열기"). 새(또는 오른쪽) 묶음 id 를 돌려준다.
+   */
+  splitRight(opts: { tabId?: string; empty?: boolean } = {}): string {
+    const g = this.activeGroup();
+    const tab = opts.empty ? undefined : g.tabs.find((t) => t.id === (opts.tabId ?? g.activeId));
+    const idx = this.state.groups.indexOf(g);
+    if (this.state.groups.length >= 3) {
+      const next = this.state.groups[Math.min(idx + 1, this.state.groups.length - 1)];
+      if (tab && next.id !== g.id) this.openTab({ ...tab, preview: false }, { groupId: next.id });
+      return next.id;
+    }
+    const id = newGroupId();
+    this.set((s) => {
+      const groups = [...s.groups];
+      groups.splice(idx + 1, 0, { id, tabs: tab ? [{ ...tab, preview: false }] : [], activeId: tab?.id ?? null });
+      return { groups, activeGroup: id };
+    });
+    this.persistTabs();
+    return id;
+  }
+
+  /** 옆 묶음에 연다 — 없으면 만든다. */
+  async openToSide(path: string): Promise<void> {
+    const groups = this.state.groups;
+    const idx = groups.findIndex((g) => g.id === this.state.activeGroup);
+    const target = groups[idx + 1]?.id ?? this.splitRight({ empty: true });
+    await this.openFile(path, { preview: false, groupId: target });
+  }
+
+  focusGroup(index: number): void {
+    const g = this.state.groups[index];
+    if (g) {
+      this.set({ activeGroup: g.id });
+      this.editors.get(g.id)?.focus();
+    }
+  }
+
+  private restoreTabs(): void {
+    const saved = this.readJson<{ groups?: { tabs: { kind: TabKind; path: string; diff?: DiffSpec }[]; active: string | null }[]; activeIndex?: number }>('tabs', {});
+    if (!saved.groups?.length) return;
+    const known = new Set(this.state.files.map((f) => f.path));
+    const groups: EditorGroup[] = [];
+    for (const sg of saved.groups.slice(0, 3)) {
+      const tabs: EditorTab[] = [];
+      for (const t of sg.tabs ?? []) {
+        if (t.kind !== 'diff' && !known.has(t.path)) continue;
+        // 미리보기 탭은 이 호스트가 지금도 그려 줄 때만 — 아니면 편집기로 되살린다.
+        const kind: TabKind = t.kind === 'preview' && this.previewMode(t.path) !== 'view' ? 'file' : t.kind;
+        tabs.push({ id: tabIdFor(kind, t.path, t.diff), kind, path: t.path, preview: false, diff: t.diff });
+      }
+      if (!tabs.length) continue;
+      const active = tabs.find((t) => t.path === sg.active && t.kind !== 'diff') ?? tabs[0];
+      groups.push({ id: newGroupId(), tabs, activeId: active.id });
+    }
+    if (!groups.length) return;
+    const activeGroup = groups[Math.max(0, Math.min(saved.activeIndex ?? 0, groups.length - 1))].id;
+    this.set({ groups, activeGroup });
+    for (const g of groups) {
+      for (const t of g.tabs) {
+        if (t.kind === 'file') void this.ensureDoc(t.path);
+        else if (t.kind === 'diff' && t.diff && !t.diff.staged) void this.ensureDoc(t.path);
+      }
+    }
+  }
+
+  // ── 파일 작업 ─────────────────────────────────────────────────────
+
+  /** 파일 조작 — 결과는 탐색기에 바로 보이므로 따로 알리지 않는다. 실패만 알린다. */
+  private async runFs(op: IdeFsOp): Promise<boolean> {
+    try {
+      await this.host.fs(op);
+      await this.refreshFiles();
+      this.scheduleGit();
+      return true;
+    } catch (err) {
+      this.notify('error', errorMessage(err, '작업을 마치지 못했습니다'));
+      return false;
+    }
+  }
+
+  async createEntry(parent: string, name: string, kind: 'file' | 'dir'): Promise<boolean> {
+    const path = join(parent, name);
+    this.set({ creating: null });
+    if (this.exists(path)) {
+      this.notify('warning', `${name} 은(는) 이미 있습니다`);
+      return false;
+    }
+    if (kind === 'dir') return this.runFs({ op: 'mkdir', path });
+    try {
+      await this.host.saveFile(path, new Uint8Array(), '');
+    } catch (err) {
+      this.notify('error', errorMessage(err, `${name} 을(를) 만들지 못했습니다`));
+      return false;
+    }
+    await this.refreshFiles();
+    this.scheduleGit();
+    await this.openFile(path, { preview: false });
+    return true;
+  }
+
+  async renameEntry(path: string, newName: string): Promise<boolean> {
+    this.set({ renaming: null });
+    const dst = join(dirname(path), newName);
+    if (dst === path) return true;
+    return this.moveEntry(path, dst);
+  }
+
+  /** 옮기기·이름 바꾸기 — 열린 탭과 고친 버퍼도 따라간다. */
+  async moveEntry(src: string, dst: string): Promise<boolean> {
+    if (isWithin(dst, src)) {
+      this.notify('warning', '폴더를 자기 안으로 옮길 수 없습니다');
+      return false;
+    }
+    const dirtyInside = Object.values(this.state.docs).filter((d) => d.dirty && isWithin(d.path, src));
+    if (dirtyInside.length) {
+      const ok = await this.confirm(
+        '저장하지 않은 파일이 있습니다',
+        '옮기기 전에 저장합니다.',
+        '저장하고 옮기기',
+      );
+      if (!ok) return false;
+      for (const d of dirtyInside) if (!(await this.save(d.path, { quiet: true }))) return false;
+    }
+    const ok = await this.runFs({ op: 'rename', src, dst });
+    if (!ok) return false;
+    this.retargetTabs(src, dst);
+    return true;
+  }
+
+  /** 옮긴 경로의 열린 탭을 새 경로로 옮긴다(문서는 새로 읽는다 — sha 는 같다). */
+  private retargetTabs(src: string, dst: string): void {
+    const moved = new Set<string>();
+    this.set((s) => ({
+      groups: s.groups.map((g) => {
+        let activeId = g.activeId;
+        const tabs = g.tabs.map((t) => {
+          if (t.kind === 'diff' || !isWithin(t.path, src)) return t;
+          const path = dst + t.path.slice(src.length);
+          moved.add(t.path);
+          const id = tabIdFor(t.kind, path);
+          if (activeId === t.id) activeId = id;
+          return { ...t, id, path };
+        });
+        return { ...g, tabs, activeId };
+      }),
+    }));
+    for (const old of moved) {
+      this.releaseDocIfUnused(old);
+      const next = dst + old.slice(src.length);
+      if (this.tabKindFor(next) === 'file') void this.ensureDoc(next);
+    }
+    if (this.state.selected && isWithin(this.state.selected, src)) this.select(dst + this.state.selected.slice(src.length));
+    this.persistTabs();
+  }
+
+  async deleteEntries(paths: string[]): Promise<boolean> {
+    if (!paths.length || this.state.readonly) return false;
+    const label = paths.length === 1 ? basename(paths[0]) : `${paths.length}개 항목`;
+    const hasDir = paths.some((p) => this.isDir(p));
+    const ok = await this.confirm(
+      `${label} 을(를) 지울까요?`,
+      hasDir ? '폴더와 그 안의 모든 파일을 지웁니다. 되돌릴 수 없습니다.' : '되돌릴 수 없습니다.',
+      '지우기',
+      true,
+    );
+    if (!ok) return false;
+    const done = await this.runFs({ op: 'delete', paths });
+    if (!done) return false;
+    for (const g of [...this.state.groups]) {
+      for (const t of g.tabs) {
+        if (t.kind !== 'diff' && paths.some((p) => isWithin(t.path, p))) await this.closeTab(g.id, t.id, { force: true });
+      }
+    }
+    return true;
+  }
+
+  async duplicateOrPaste(targetDir: string): Promise<void> {
+    const clip = this.state.clipboard;
+    if (!clip || this.state.readonly) return;
+    const taken = new Set(this.childNames(targetDir));
+    for (const src of clip.paths) {
+      const name = basename(src);
+      if (clip.mode === 'cut') {
+        if (dirname(src) === targetDir) continue;
+        let dst = join(targetDir, name);
+        if (taken.has(name)) {
+          const replace = await this.confirm(`${name} 이(가) 이미 있습니다`, '같은 이름이 있어 옮길 수 없습니다. 이름을 바꿔 옮길까요?', '이름 바꿔 옮기기');
+          if (!replace) continue;
+          dst = join(targetDir, uniqueCopyName(name, taken));
+        }
+        if (await this.moveEntry(src, dst)) taken.add(basename(dst));
+      } else {
+        const dstName = uniqueCopyName(name, taken);
+        taken.add(dstName);
+        await this.runFs({ op: 'copy', src, dst: join(targetDir, dstName) });
+      }
+    }
+    if (clip.mode === 'cut') this.set({ clipboard: null });
+  }
+
+  childNames(dir: string): string[] {
+    const prefix = dir ? dir + '/' : '';
+    const out = new Set<string>();
+    for (const f of this.state.files) {
+      if (!f.path.startsWith(prefix)) continue;
+      const rest = f.path.slice(prefix.length);
+      if (rest) out.add(rest.split('/')[0]);
+    }
+    return [...out];
+  }
+
+  setClipboard(mode: 'copy' | 'cut', paths: string[]): void {
+    this.set({ clipboard: paths.length ? { mode, paths } : null });
+  }
+
+  /** 운영체제에서 끌어다 놓은 파일을 올린다(같은 이름이 있으면 묻는다). */
+  async upload(targetDir: string, files: { name: string; bytes: Uint8Array }[]): Promise<void> {
+    if (this.state.readonly) return;
+    let done = 0;
+    for (const f of files) {
+      const path = join(targetDir, f.name);
+      let base: string | null = '';
+      if (this.exists(path)) {
+        const ok = await this.confirm(`${f.name} 이(가) 이미 있습니다`, '올린 파일로 바꿀까요?', '바꾸기', true);
+        if (!ok) continue;
+        base = null;
+      }
+      try {
+        await this.host.saveFile(path, f.bytes, base);
+        done += 1;
+        if (this.state.docs[path] && !this.state.docs[path].dirty) void this.reloadFromDisk(path);
+      } catch (err) {
+        this.notify('error', errorMessage(err, `${f.name} 을(를) 올리지 못했습니다`));
+      }
+    }
+    if (done) {
+      await this.refreshFiles();
+      this.scheduleGit();
+      this.notify('success', `${done}개 파일을 올렸습니다`);
+    }
+  }
+
+  // ── 찾기 ──────────────────────────────────────────────────────────
+
+  setSearch(patch: Partial<SearchState>): void {
+    this.set((s) => ({ search: { ...s.search, ...patch } }));
+  }
+
+  async runSearch(): Promise<void> {
+    const s = this.state.search;
+    const query = s.query;
+    if (!query) {
+      this.setSearch({ result: null, error: null, running: false });
+      return;
+    }
+    const seq = ++this.searchSeq;
+    this.setSearch({ running: true, error: null });
+    const q: IdeSearchQuery = {
+      query,
+      regex: s.regex,
+      case: s.caseSensitive,
+      word: s.word,
+      include: s.include,
+      exclude: s.exclude,
+    };
+    try {
+      const result = await this.host.search(q);
+      if (seq !== this.searchSeq) return;
+      this.setSearch({ result, running: false, collapsed: new Set() });
+    } catch (err) {
+      if (seq !== this.searchSeq) return;
+      this.setSearch({ running: false, error: errorMessage(err, '찾지 못했습니다'), result: null });
+    }
+  }
+
+  async replaceInFiles(files?: string[]): Promise<void> {
+    const s = this.state.search;
+    const targets = files ?? s.result?.files.map((f) => f.path) ?? [];
+    if (!targets.length || this.state.readonly) return;
+    const total = (s.result?.files ?? []).filter((f) => targets.includes(f.path)).reduce((n, f) => n + f.matches.length, 0);
+    const ok = await this.confirm(
+      '모두 바꿀까요?',
+      `${targets.length}개 파일의 ${total}개 결과를 "${s.replace}" (으)로 바꿉니다.`,
+      '바꾸기',
+      true,
+    );
+    if (!ok) return;
+    // 열려 있고 고친 파일은 먼저 저장한다 — 그대로 두면 바꾸기가 디스크를 고친 뒤 편집기 저장이 덮는다.
+    for (const p of targets) if (this.state.docs[p]?.dirty && !(await this.save(p, { quiet: true }))) return;
+    try {
+      const out = await this.host.replace({
+        query: s.query,
+        regex: s.regex,
+        case: s.caseSensitive,
+        word: s.word,
+        include: s.include,
+        exclude: s.exclude,
+        replacement: s.replace,
+        files: targets,
+      });
+      const n = out.changed.reduce((a, c) => a + c.count, 0);
+      this.notify('success', `${out.changed.length}개 파일에서 ${n}개를 바꿨습니다`);
+      for (const c of out.changed) if (this.state.docs[c.path]) await this.reloadFromDisk(c.path);
+      await this.runSearch();
+      this.scheduleGit();
+    } catch (err) {
+      this.notify('error', errorMessage(err, '바꾸지 못했습니다'));
+    }
+  }
+
+  // ── 여백의 변경 표시(quick diff) ──────────────────────────────────
+  //
+  // VS Code 처럼 스테이지(index) 판과 견준 줄을 편집기 여백에 막대로 그린다(초록 = 더함,
+  // 파랑 = 바꿈, 빨간 삼각형 = 지움). 기준은 문서를 열 때·git 동작 뒤·바깥 변경 뒤에만 다시
+  // 읽고(샌드박스 호출), 타이핑할 때는 가진 기준으로 다시 계산만 한다.
+
+  /** 이 경로가 들어 있는 저장소(가장 깊은 것)와 저장소 안의 경로. */
+  private repoOf(path: string): { repo: string; rel: string } | null {
+    // 연결된 폴더는 샌드박스의 git 밖이다.
+    if (isFolderPath(path)) return null;
+    let best: string | null = null;
+    for (const r of this.state.git.repos) {
+      if (r === '' || path === r || path.startsWith(`${r}/`)) {
+        if (best === null || r.length > best.length) best = r;
+      }
+    }
+    if (best === null) return null;
+    return { repo: best, rel: best ? path.slice(best.length + 1) : path };
+  }
+
+  private refreshQuickDiff(paths?: string[]): void {
+    for (const p of paths ?? Object.keys(this.state.docs)) this.qdPending.add(p);
+    if (this.qdTimer || this.disposed) return;
+    this.qdTimer = setTimeout(() => {
+      this.qdTimer = null;
+      const todo = [...this.qdPending];
+      this.qdPending.clear();
+      for (const p of todo) void this.loadQuickDiffBase(p);
+    }, 300);
+    (this.qdTimer as { unref?: () => void }).unref?.();
+  }
+
+  private async loadQuickDiffBase(path: string): Promise<void> {
+    const doc = this.state.docs[path];
+    if (!doc || doc.status !== 'ready' || this.disposed) return;
+    const where = this.repoOf(path);
+    let base: string[] | null = null;
+    if (where) {
+      try {
+        const out = await this.host.git<{ exists: boolean; content_b64?: string; too_large?: boolean }>({
+          op: 'show',
+          repo: where.repo,
+          path: where.rel,
+          ref: 'index',
+        });
+        if (out.exists && out.content_b64 && !out.too_large) {
+          base = splitLines(decodeText(base64ToBytes(out.content_b64)).text);
+        }
+      } catch {
+        base = null; // 표시는 보조다 — 못 읽으면 그리지 않는다
+      }
+    }
+    if (this.disposed || this.state.docs[path]?.status !== 'ready') return;
+    this.qdBase.set(path, base);
+    this.applyQuickDiff(path);
+  }
+
+  private scheduleQuickDiff(path: string): void {
+    if (!this.qdBase.has(path)) return;
+    clearTimeout(this.qdTimers.get(path));
+    const timer = setTimeout(() => {
+      this.qdTimers.delete(path);
+      this.applyQuickDiff(path);
+    }, 250);
+    (timer as { unref?: () => void }).unref?.();
+    this.qdTimers.set(path, timer);
+  }
+
+  private applyQuickDiff(path: string): void {
+    const monaco = this.monaco;
+    const model = this.getModel(path);
+    if (!monaco || !model || typeof model.deltaDecorations !== 'function') return;
+    const base = this.qdBase.get(path);
+    const changes = base ? lineChanges(base, splitLines(model.getValue())) : [];
+    const decorations = changes.map((c) => ({
+      range: new monaco.Range(c.start, 1, c.end, 1),
+      options: {
+        isWholeLine: true,
+        linesDecorationsClassName: `xide-qd xide-qd-${c.kind}`,
+        overviewRuler: { color: QUICK_DIFF_RULER[c.kind], position: monaco.editor.OverviewRulerLane.Left },
+      },
+    }));
+    this.qdDecos.set(path, model.deltaDecorations(this.qdDecos.get(path) ?? [], decorations));
+  }
+
+  /** 지금 그려 둔 여백 표시(테스트·상태 표시용). */
+  quickDiffOf(path: string): { kind: QuickDiffKind; start: number; end: number }[] {
+    const base = this.qdBase.get(path);
+    const model = this.getModel(path);
+    return base && model ? lineChanges(base, splitLines(model.getValue())) : [];
+  }
+
+  // ── 소스 제어 ─────────────────────────────────────────────────────
+
+  private setGit(patch: Partial<GitState>): void {
+    this.set((s) => ({ git: { ...s.git, ...patch } }));
+  }
+
+  scheduleGit(delay = 800): void {
+    if (this.gitTimer) clearTimeout(this.gitTimer);
+    this.gitTimer = setTimeout(() => void this.refreshGit(), delay);
+  }
+
+  async refreshGit(): Promise<void> {
+    if (this.state.git.loading) return;
+    this.setGit({ loading: true });
+    try {
+      const found = await this.host.git<{ repos: { path: string }[] }>({ op: 'repos' });
+      const repos = (found.repos ?? []).map((r) => r.path);
+      const statuses: Record<string, GitStatus> = {};
+      await Promise.all(
+        repos.map(async (repo) => {
+          try {
+            statuses[repo] = await this.host.git<GitStatus>({ op: 'status', repo });
+          } catch {
+            /* 한 저장소가 망가져도 나머지는 보인다 */
+          }
+        }),
+      );
+      this.setGit({ repos, statuses, loading: false, loaded: true, error: null });
+      const missing = Object.keys(this.state.docs).filter((p) => !this.qdBase.has(p) || (this.qdBase.get(p) === null && this.repoOf(p)));
+      if (missing.length) this.refreshQuickDiff(missing);
+    } catch (err) {
+      const code = err instanceof IdeError ? err.code : 'error';
+      this.setGit({ loading: false, loaded: true, error: { code, message: gitErrorMessage(code, errorMessage(err, '')) } });
+    }
+  }
+
+  async refreshAccount(): Promise<void> {
+    try {
+      const account = await this.host.git<GitAccount>({ op: 'account' });
+      this.setGit({ account });
+    } catch {
+      /* 계정 정보는 보조다 */
+    }
+  }
+
+  setCommitMessage(repo: string, message: string): void {
+    this.setGit({ message: { ...this.state.git.message, [repo]: message } });
+  }
+
+  /** git 동작 하나 — 실패는 알맞은 다음 행동과 함께 알린다. 성공하면 상태를 다시 본다. */
+  async gitRun<T = Record<string, unknown>>(args: Record<string, unknown>, label: string): Promise<T | null> {
+    if (this.state.git.busy) return null;
+    this.setGit({ busy: label });
+    try {
+      const out = await this.host.git<T>(args);
+      this.setGit({ busy: null });
+      await this.refreshGit();
+      if (!READ_ONLY_GIT_OPS.has(String(args.op))) this.refreshQuickDiff();
+      if (['checkout', 'pull', 'sync', 'merge', 'stash', 'discard', 'clone'].includes(String(args.op))) {
+        await this.refreshFiles();
+        await this.checkDisk('all');
+      }
+      // 원격을 오가는 일은 끝났다고 알린다 — 소스 제어 보기를 닫아 두었으면 달리 알 길이 없다.
+      if (['push', 'pull', 'sync', 'fetch', 'clone'].includes(String(args.op))) this.notify('success', `${label} 완료`);
+      return out;
+    } catch (err) {
+      this.setGit({ busy: null });
+      const code = err instanceof IdeError ? err.code : 'error';
+      const msg = gitErrorMessage(code, errorMessage(err, ''));
+      if (code === 'auth') {
+        const go = await this.confirm('로그인이 필요합니다', msg, '토큰 등록');
+        if (go) await this.promptCredential(this.remoteHostOf(String(args.repo ?? '')));
+      } else if (code === 'identity') {
+        const go = await this.confirm('커밋할 이름이 없습니다', msg, '이름과 메일 설정');
+        if (go) await this.promptIdentity();
+      } else {
+        this.notify('error', msg);
+      }
+      await this.refreshGit();
+      return null;
+    }
+  }
+
+  remoteHostOf(repo: string): string {
+    const st = this.state.git.statuses[repo];
+    const r = st?.remotes.find((x) => x.name === 'origin') ?? st?.remotes[0];
+    return r?.protocol === 'https' || r?.protocol === 'http' ? r.host : '';
+  }
+
+  async promptIdentity(): Promise<void> {
+    const cur = this.state.git.account?.identity ?? { name: '', email: '' };
+    const r = await this.ask({
+      title: '커밋할 이름과 메일',
+      message: '이 에이전트의 샌드박스에서 만드는 커밋에 쓰입니다.',
+      fields: [
+        { id: 'name', label: '이름', value: cur.name, placeholder: '홍길동' },
+        { id: 'email', label: '메일', value: cur.email, placeholder: 'name@example.com' },
+      ],
+      buttons: [
+        { id: 'ok', label: '저장', primary: true },
+        { id: 'cancel', label: '취소' },
+      ],
+    });
+    if (r.button !== 'ok') return;
+    const out = await this.gitRun<GitAccount>({ op: 'identity', name: r.fields.name, email: r.fields.email }, '이름 저장');
+    if (out) await this.refreshAccount();
+  }
+
+  async promptCredential(host = ''): Promise<void> {
+    const r = await this.ask({
+      title: '원격 저장소 토큰 등록',
+      message: 'HTTPS 로 푸시·풀할 때 쓰는 개인 액세스 토큰입니다. 이 에이전트도 같은 토큰으로 푸시할 수 있습니다.',
+      fields: [
+        { id: 'host', label: '호스트', value: host, placeholder: 'github.com' },
+        { id: 'username', label: '사용자 이름', value: '', placeholder: 'GitHub·GitLab 계정 이름' },
+        { id: 'token', label: '토큰', value: '', placeholder: '개인 액세스 토큰', password: true },
+      ],
+      buttons: [
+        { id: 'ok', label: '등록', primary: true },
+        { id: 'cancel', label: '취소' },
+      ],
+    });
+    if (r.button !== 'ok') return;
+    const out = await this.gitRun(
+      { op: 'credential_set', host: r.fields.host, username: r.fields.username, token: r.fields.token },
+      '토큰 등록',
+    );
+    if (out) {
+      await this.refreshAccount();
+      this.notify('success', '토큰을 등록했습니다');
+    }
+  }
+
+  async removeCredential(host: string, username: string): Promise<void> {
+    const ok = await this.confirm(`${host} 토큰을 지울까요?`, '이 에이전트의 샌드박스에서 이 호스트로 푸시할 수 없게 됩니다.', '지우기', true);
+    if (!ok) return;
+    const out = await this.gitRun({ op: 'credential_remove', host, username }, '토큰 삭제');
+    if (out) await this.refreshAccount();
+  }
+
+  // ── 터미널 ────────────────────────────────────────────────────────
+
+  addTerminal(info?: Partial<IdeTerminalInfo>): string {
+    const id = info?.id ?? `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const n = this.state.terminals.length + 1;
+    this.set((s) => ({
+      terminals: [...s.terminals, { id, title: `bash ${n}`, status: 'idle', cwd: info?.cwd }],
+      activeTerminal: id,
+      layout: { ...s.layout, panelOpen: true },
+    }));
+    this.writeJson('layout', this.state.layout);
+    return id;
+  }
+
+  setTerminal(id: string, patch: Partial<TerminalState>): void {
+    this.set((s) => ({ terminals: s.terminals.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
+  }
+
+  setActiveTerminal(id: string): void {
+    this.set({ activeTerminal: id });
+  }
+
+  async killTerminal(id: string): Promise<void> {
+    const rt = this.terminalRuntimes.get(id);
+    this.terminalRuntimes.delete(id);
+    rt?.dispose();
+    this.set((s) => {
+      const terminals = s.terminals.filter((t) => t.id !== id);
+      const activeTerminal = s.activeTerminal === id ? terminals[terminals.length - 1]?.id ?? null : s.activeTerminal;
+      // 마지막 터미널을 닫으면 패널도 닫는다(새 셸을 저절로 띄우지 않는다).
+      const layout = terminals.length ? s.layout : { ...s.layout, panelOpen: false, panelMaximized: false };
+      return { terminals, activeTerminal, layout };
+    });
+    this.writeJson('layout', this.state.layout);
+    try {
+      await this.host.closeTerminal(id);
+    } catch {
+      /* 이미 닫혔다 */
+    }
+  }
+
+  togglePanel(): void {
+    this.setLayout({ panelOpen: !this.state.layout.panelOpen });
+  }
+
+  /** 터미널을 보이게 — 없으면 하나 연다. */
+  showTerminal(newOne = false, cwd?: string): void {
+    if (this.state.readonly) return;
+    if (newOne || !this.state.terminals.length) this.addTerminal({ cwd });
+    else this.setLayout({ panelOpen: true });
+  }
+}
+
+export interface IdeCommand {
+  id: string;
+  title: string;
+  category?: string;
+  keybinding?: string;
+  when?: (s: IdeState) => boolean;
+  run: () => void | Promise<void>;
+}
+
+export function terminalTitle(t: IdeTerminalInfo, n: number): string {
+  return `${t.shell || 'bash'} ${n}`;
+}
+
+/** 다시 해도 같은 실패 — 연결을 되풀이하지 않는다. */
+const BLOCKING_CODES = new Set(['forbidden', 'unauthorized', 'not_found']);
+
+/** 닿지 않은 실패(망·배포·재시작·시간 초과) — 곧 돌아온다. */
+const TRANSIENT_CODES = new Set(['network', 'timeout', 'unavailable', 'sandbox_unavailable', 'server_error', 'unreachable']);
+
+export function isTransient(err: unknown): boolean {
+  if (err instanceof IdeError) return TRANSIENT_CODES.has(err.code) || err.status >= 500;
+  return false;
+}
+
+function connectionMessage(code: string, err: unknown): string {
+  if (code === 'forbidden') return '이 에이전트의 작업 공간을 열 권한이 없습니다';
+  if (code === 'not_found') return '에이전트를 찾지 못했습니다';
+  if (code === 'unauthorized') return '다시 로그인해야 합니다';
+  if (isTransient(err)) return '서버에 잠시 닿지 않습니다';
+  return errorMessage(err, '샌드박스에 연결하지 못했습니다');
+}
+
+/**
+ * 호스트의 모든 비동기 호출의 실패를 지켜본다 — 편집·저장·찾기 도중 연결이 끊기면(배포 중 파드 교체
+ * 등) 연결 상태가 그것을 알고 스스로 다시 붙는다. 실패 자체는 그대로 던진다.
+ */
+function observeHost(host: IdeHost, onError: (err: unknown) => void): IdeHost {
+  return new Proxy(host, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || prop === 'openTerminal' || prop === 'subscribeChanges' || prop === 'loadMonaco') {
+        return value;
+      }
+      return (...args: unknown[]) => {
+        const out = (value as (...a: unknown[]) => unknown).apply(target, args);
+        if (out && typeof (out as Promise<unknown>).then === 'function') {
+          return (out as Promise<unknown>).catch((err: unknown) => {
+            onError(err);
+            throw err;
+          });
+        }
+        return out;
+      };
+    },
+  });
+}
+
+export function errorMessage(err: unknown, fallback: string): string {
+  if (err instanceof IdeError) return err.message || fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
+let cancellationGuard = false;
+
+/**
+ * Monaco 는 편집기·모델을 치우며 진행 중이던 요청(단어 강조·언어 worker)을 취소하고, 그 취소를
+ * 잡히지 않은 거부(`Canceled`)로 흘린다. VS Code 는 이것을 오류로 치지 않는다 — 여기서도 그것 하나만
+ * 조용히 삼킨다(다른 오류는 그대로 보인다).
+ */
+function ignoreMonacoCancellation(): void {
+  if (cancellationGuard || typeof window === 'undefined') return;
+  cancellationGuard = true;
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason as { name?: unknown; message?: unknown } | null;
+    if (r && r.name === 'Canceled' && r.message === 'Canceled') e.preventDefault();
+  });
+}

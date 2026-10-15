@@ -10,6 +10,9 @@ packages/rpc        엔진을 다른 프로세스에 빌려주는 법 (JSON-RPC)
 apps/desktop        Electron. 창·트레이·오버레이·자동업데이트.
 apps/cli            터미널. Ink TUI + 일회성 명령.
 apps/vscode         편집기. 웹뷰 + apps/cli 를 RPC 로 띄운다.
+apps/xd             XD — 서버 없이 이 PC 에서 에이전트를 돌리는 로컬용 앱. Dex 의 화면 코드를 공유하고,
+                    동봉 런타임(Python)으로 실행한다. 서버와 말하지 않는다(계약 xd-no-server).
+                    설계는 apps/xd/DESIGN.md.
 ```
 
 ## 규칙

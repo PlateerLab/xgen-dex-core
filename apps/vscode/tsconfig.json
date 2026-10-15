@@ -42,6 +42,8 @@
     "src",
     "test",
     "build.mjs",
-    "../../packages/*/src"
+    "../../packages/protocol/src",
+    "../../packages/engine/src",
+    "../../packages/rpc/src"
   ]
 }

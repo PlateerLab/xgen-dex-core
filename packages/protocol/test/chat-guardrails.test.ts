@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ChatGuardrailsApi, coerceConfigBool } from '../src/chat-guardrails';
+import { ChatGuardrailsApi, ChatInputGate, chatInputNotice, coerceConfigBool } from '../src/chat-guardrails';
 
 const http = (impl: Partial<{ get: (p: string) => Promise<unknown>; post: (p: string, b?: unknown) => Promise<unknown> }>) =>
   ({
@@ -31,26 +31,47 @@ test('면책 문구는 설정을 읽어 정하고, 못 읽으면 보인다', asy
   assert.equal(await broken.disclaimerEnabled(), true, '못 읽었다고 안내를 빼지 않는다');
 });
 
-test('민감정보 검사는 서버 판정을 그대로 옮기고, 빈 글은 묻지 않는다', async () => {
-  let calls = 0;
+test('입력창 사전 검사는 서버 판정을 그대로 옮기고, 빈 글은 묻지 않는다', async () => {
+  const sent: Array<{ path: string; body: unknown }> = [];
   const api = new ChatGuardrailsApi(
     http({
-      post: async () => {
-        calls += 1;
-        return { pii: true, forbidden: false, flagged: true };
+      post: async (path, body) => {
+        sent.push({ path, body });
+        return {
+          blocked: true, kinds: ['pii'], message: '개인정보(전화번호)가 들어 있어 보낼 수 없습니다.',
+          masked_kinds: [], notice: '', checked: true,
+        };
       },
     }),
   );
-  assert.deepEqual(await api.checkContent('   '), { pii: false, forbidden: false, flagged: false });
-  assert.equal(calls, 0);
-  assert.deepEqual(await api.checkContent('주민등록번호 900101-1234567'), {
-    pii: true,
-    forbidden: false,
-    flagged: true,
-  });
+  assert.equal((await api.checkInput('   ', 'wf_1')).blocked, false);
+  assert.equal(sent.length, 0);
+  const res = await api.checkInput('번호 010-1234-5678', 'wf_1');
+  assert.equal(res.blocked, true);
+  assert.deepEqual(res.kinds, ['pii']);
+  assert.deepEqual(sent[0], { path: '/api/chat/input-check', body: { text: '번호 010-1234-5678', workflow_id: 'wf_1' } });
+  assert.deepEqual(chatInputNotice(res), { tone: 'block', text: '개인정보(전화번호)가 들어 있어 보낼 수 없습니다.' });
 });
 
-test('검사기가 없으면 경고하지 않는다 — 보내는 것을 막지 않는다', async () => {
+test('검사기가 없거나 실패하면 막지 않는다(보낼 때 서버가 다시 본다)', async () => {
   const api = new ChatGuardrailsApi(http({ post: async () => { throw new Error('404'); } }));
-  assert.equal((await api.checkContent('아무 말')).flagged, false);
+  const res = await api.checkInput('아무 말', 'wf_1');
+  assert.equal(res.blocked, false);
+  assert.equal(res.checked, false);
+});
+
+test('문지기는 글마다 판정을 기억하고, 판정하지 못한 결과는 기억하지 않는다', async () => {
+  let calls = 0;
+  let healthy = false;
+  const gate = new ChatInputGate(async (text) => {
+    calls += 1;
+    if (!healthy) return { blocked: false, kinds: [], message: '', maskedKinds: [], notice: '', checked: false };
+    return { blocked: text.includes('바보'), kinds: ['forbidden_word'], message: '금칙어(욕설)가 들어 있어 보낼 수 없습니다.',
+      maskedKinds: [], notice: '', checked: true };
+  });
+  assert.equal(await gate.allows('바보', 'wf'), true, '판정하지 못하면 막지 않는다');
+  healthy = true;
+  assert.equal(await gate.allows('바보', 'wf'), false, '못 한 판정은 기억하지 않아 다시 묻는다');
+  assert.equal(await gate.allows('바보', 'wf'), false);
+  assert.equal(calls, 2, '세 번째는 묻지 않고 기억을 쓴다');
 });

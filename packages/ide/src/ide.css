@@ -1,0 +1,2511 @@
+/*
+ * IDE 보기 — 배치는 VS Code(활동 막대·사이드바·편집기 탭·패널·상태 표시줄), 모양은 XGEN.
+ *
+ * 색·글꼴·모서리는 데스크톱 앱(dex)과 웹이 쓰는 XGEN 디자인 그대로다(흰 판·옅은 회색 바탕·
+ * #e4e7ec 선·파랑→보라 그라데이션 강조·Pretendard). VS Code 의 색을 가져오지 않는다.
+ *
+ * 모든 규칙은 .xide-root 아래로 가둔다(호스트 화면을 건드리지 않는다). 색은 --xide-* 변수로만
+ * 쓰고, 호스트는 이 변수만 덮어 자기 토큰에 맞춘다. 클래스 이름: 블록·요소는 xide-, 상태는
+ * xide--(active·danger·dot …) — 호스트 화면의 전역 규칙(.danger·.primary·.dot 같은 이름)이 IDE
+ * 안으로 새어 들지 않게 상태도 이름공간에 넣는다.
+ * 배포물(xgen-dex-ide)은 빌드가 아래 @import 를 펼쳐 한 파일로 낸다.
+ */
+@import '@xterm/xterm/css/xterm.css';
+
+/* ── 토큰 ────────────────────────────────────────────────────── */
+
+.xide-root {
+  /* 판·바탕 — dex --app-bg / --panel / --panel-2 */
+  --xide-app: #f7f8fa;
+  --xide-panel: #ffffff;
+  --xide-panel-2: #f8f9fa;
+  --xide-hover: #f2f4f7;
+  --xide-input: #f8f9fa;
+  /* 선 */
+  --xide-border: #e4e7ec;
+  --xide-border-strong: #d0d5dd;
+  --xide-border-soft: rgba(0, 0, 0, 0.06);
+  /* 글자 */
+  --xide-text: #1d1f23;
+  --xide-text-2: #40444d;
+  --xide-muted: #6b7280;
+  --xide-faint: #abb1ba;
+  /* 강조 — 브랜드 파랑→보라 */
+  --xide-primary: #305eeb;
+  --xide-primary-text: #305eeb;
+  --xide-primary-end: #783ced;
+  --xide-primary-grad: linear-gradient(90deg, #305eeb 0%, #783ced 100%);
+  --xide-primary-soft: rgba(48, 94, 235, 0.1);
+  --xide-primary-soft-2: rgba(48, 94, 235, 0.16);
+  --xide-primary-soft-border: rgba(48, 94, 235, 0.28);
+  --xide-ring: rgba(120, 60, 237, 0.14);
+  /* 상태 */
+  --xide-danger: #e03131;
+  --xide-danger-bg: #fdf3f3;
+  --xide-danger-border: #f6c1c1;
+  --xide-warning: #b77900;
+  --xide-warning-bg: #fff8e6;
+  --xide-warning-border: #f3dca2;
+  --xide-success: #2eb146;
+  /* 소스 제어 */
+  --xide-git-modified: #b7791f;
+  --xide-git-added: #23923a;
+  --xide-git-untracked: #23923a;
+  --xide-git-deleted: #e03131;
+  --xide-git-conflict: #d6336c;
+  --xide-git-renamed: #0c8599;
+  --xide-qd-added: #2eb146;
+  --xide-qd-modified: #305eeb;
+  --xide-qd-deleted: #e03131;
+  /* 찾기 */
+  --xide-hit: rgba(245, 159, 0, 0.26);
+  --xide-ins: rgba(46, 177, 70, 0.2);
+  --xide-del: rgba(224, 49, 49, 0.16);
+  /* 그림자·모서리 */
+  --xide-shadow-md: 0 2px 8px rgba(15, 23, 42, 0.08);
+  --xide-shadow-lg: 0 8px 28px rgba(15, 23, 42, 0.14);
+  --xide-scrim: rgba(15, 23, 42, 0.32);
+  --xide-radius-sm: 6px;
+  --xide-radius: 8px;
+  --xide-radius-lg: 12px;
+  /* 글꼴 — 앱과 같은 Pretendard, 코드는 앱의 고정폭 */
+  --xide-font: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo',
+    'Noto Sans KR', 'Malgun Gothic', sans-serif;
+  --xide-mono: 'Fira Code', 'D2Coding', 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  /* 폴더 */
+  --xide-folder: #e2a33b;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--xide-panel);
+  color: var(--xide-text);
+  font-family: var(--xide-font);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: light;
+}
+
+/* 어두운 테마 — dex 의 어두운 팔레트 그대로 */
+.xide-root.xide-theme-dark {
+  --xide-app: #16181d;
+  --xide-panel: #1d1f23;
+  --xide-panel-2: #22252b;
+  --xide-hover: #272a31;
+  --xide-input: #22252b;
+  --xide-border: #2b2f37;
+  --xide-border-strong: #3a3f49;
+  --xide-border-soft: rgba(255, 255, 255, 0.06);
+  --xide-text: #e7e9ee;
+  --xide-text-2: #b6bcc6;
+  --xide-muted: #9aa1ac;
+  --xide-faint: #6b7280;
+  --xide-primary-text: #7d9cff;
+  --xide-primary-soft: rgba(91, 130, 255, 0.14);
+  --xide-primary-soft-2: rgba(91, 130, 255, 0.22);
+  --xide-primary-soft-border: rgba(125, 156, 255, 0.36);
+  --xide-ring: rgba(150, 110, 255, 0.24);
+  --xide-danger: #ff6b6b;
+  --xide-danger-bg: #2a1c1c;
+  --xide-danger-border: #5a2b2b;
+  --xide-warning: #f2b441;
+  --xide-warning-bg: #2c2415;
+  --xide-warning-border: #5a4722;
+  --xide-git-modified: #e2b33c;
+  --xide-git-added: #5fcf73;
+  --xide-git-untracked: #5fcf73;
+  --xide-git-deleted: #ff6b6b;
+  --xide-git-conflict: #f06595;
+  --xide-git-renamed: #3bc9db;
+  --xide-qd-added: #3fb950;
+  --xide-qd-modified: #5b82ff;
+  --xide-qd-deleted: #ff6b6b;
+  --xide-hit: rgba(245, 159, 0, 0.3);
+  --xide-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --xide-shadow-lg: 0 10px 32px rgba(0, 0, 0, 0.5);
+  --xide-scrim: rgba(0, 0, 0, 0.5);
+  --xide-folder: #e8b04b;
+  color-scheme: dark;
+}
+
+.xide-root *,
+.xide-root *::before,
+.xide-root *::after {
+  box-sizing: border-box;
+}
+
+.xide-root button {
+  font: inherit;
+  color: inherit;
+}
+
+.xide-root:focus {
+  outline: none;
+}
+
+.xide-root :focus-visible {
+  outline: 2px solid var(--xide-primary-soft-border);
+  outline-offset: -2px;
+}
+
+/* 스크롤 막대 — 앱과 같은 가늘고 둥근 막대 */
+.xide-root ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.xide-root ::-webkit-scrollbar-thumb {
+  background: var(--xide-border);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.xide-root ::-webkit-scrollbar-thumb:hover {
+  background: var(--xide-faint);
+  background-clip: padding-box;
+}
+
+.xide-root ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── 편집기(Monaco) 안 ───────────────────────────────────────── */
+
+/* 여백 변경 표시(quick diff) — 줄 번호와 코드 사이 좁은 칸에 막대(더함·바꿈)와 삼각형(지움). */
+.xide-root .monaco-editor .xide-qd-added,
+.xide-root .monaco-editor .xide-qd-modified {
+  width: 3px !important;
+  margin-left: 3px;
+  border-radius: 2px;
+  background: var(--xide-qd-added);
+}
+
+.xide-root .monaco-editor .xide-qd-modified {
+  background: var(--xide-qd-modified);
+}
+
+.xide-root .monaco-editor .xide-qd-deleted::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 3px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--xide-qd-deleted);
+}
+
+/* Monaco 단독판 CSS 는 선택자 목록 실수로 `.monaco-editor` 자체에 1px 윤곽선을 건다. diff 편집기의
+   가운데 여백(gutter)이 그 클래스를 달고 있어 파란 테두리 칸으로 보인다 — 그 윤곽선만 걷는다. */
+.xide-root .monaco-diff-editor .gutter.monaco-editor {
+  outline: none;
+}
+
+/* ── 공통 부품 ───────────────────────────────────────────────── */
+
+.xide-icon {
+  flex: none;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.xide-icon.xide--spin {
+  animation: xide-spin 1s linear infinite;
+}
+
+@keyframes xide-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xide-icon.xide--spin,
+  .xide-spinner,
+  .xide-progress span {
+    animation: none !important;
+  }
+}
+
+.xide-ibtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--xide-radius-sm);
+  background: transparent;
+  color: var(--xide-muted) !important;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.xide-ibtn:hover:not(:disabled) {
+  background: var(--xide-hover);
+  color: var(--xide-text) !important;
+}
+
+.xide-ibtn.xide--active {
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text) !important;
+}
+
+.xide-ibtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.xide-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--xide-primary-grad);
+  color: #ffffff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+}
+
+.xide-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius);
+  background: var(--xide-panel);
+  color: var(--xide-text) !important;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    filter 0.12s ease;
+}
+
+.xide-btn:hover:not(:disabled) {
+  background: var(--xide-panel-2);
+  border-color: var(--xide-border-strong);
+}
+
+.xide-btn.xide--primary {
+  border-color: transparent;
+  background: var(--xide-primary-grad);
+  color: #ffffff !important;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(48, 94, 235, 0.25);
+}
+
+.xide-btn.xide--primary:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--xide-primary-grad);
+  filter: brightness(1.06);
+}
+
+.xide-btn.xide--danger {
+  border-color: var(--xide-danger-border);
+  background: var(--xide-danger-bg);
+  color: var(--xide-danger) !important;
+  font-weight: 600;
+}
+
+.xide-btn.xide--danger:hover:not(:disabled) {
+  border-color: var(--xide-danger-border);
+  background: var(--xide-danger-bg);
+  filter: brightness(0.97);
+}
+
+.xide-btn.xide--full {
+  width: 100%;
+}
+
+.xide-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.xide-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--xide-primary-text) !important;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.xide-link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.xide-link:disabled {
+  color: inherit !important;
+  cursor: default;
+}
+
+.xide-input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius);
+  background: var(--xide-input);
+  color: var(--xide-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+textarea.xide-input {
+  height: auto;
+  min-height: 30px;
+  padding: 7px 10px;
+  resize: none;
+  line-height: 18px;
+}
+
+.xide-input:focus {
+  border-color: var(--xide-primary-end);
+  background: var(--xide-panel);
+  box-shadow: 0 0 0 3px var(--xide-ring);
+}
+
+.xide-input.xide--invalid,
+.xide-input.xide--invalid:focus {
+  border-color: var(--xide-danger);
+  box-shadow: 0 0 0 3px var(--xide-danger-bg);
+}
+
+.xide-input::placeholder {
+  color: var(--xide-faint);
+}
+
+.xide-root select.xide-input {
+  padding-right: 6px;
+}
+
+.xide-dim {
+  color: var(--xide-muted);
+}
+
+.xide-small {
+  font-size: 12px;
+}
+
+.xide-spacer {
+  flex: 1 1 auto;
+}
+
+.xide-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.xide-row-actions {
+  display: none;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+}
+
+.xide-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 16px;
+  color: var(--xide-muted);
+  text-align: center;
+}
+
+.xide-empty p {
+  margin: 0;
+  max-width: 34em;
+}
+
+.xide-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.xide-progress {
+  flex: none;
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+}
+
+.xide-progress span {
+  position: absolute;
+  top: 0;
+  width: 30%;
+  height: 2px;
+  background: var(--xide-primary-grad);
+  animation: xide-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes xide-progress {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.xide-spinner {
+  display: inline-block;
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1.6px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: xide-spin 0.8s linear infinite;
+}
+
+.xide-warn-chip {
+  padding: 0 7px;
+  border: 1px solid var(--xide-warning-border);
+  border-radius: 999px;
+  background: var(--xide-warning-bg);
+  color: var(--xide-warning);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.xide-root kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--xide-border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--xide-panel);
+  color: var(--xide-text-2);
+  font-family: var(--xide-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── 틀 ─────────────────────────────────────────────────────── */
+
+.xide-main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* 활동 막대 — 앱 왼쪽 끝의 활동 막대와 같은 모양(흰 판·옅은 아이콘·활성은 브랜드 색과 2px 바). */
+.xide-activity {
+  flex: none;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 6px 0 8px;
+  background: var(--xide-panel);
+  border-right: 1px solid var(--xide-border);
+}
+
+.xide-activity-top,
+.xide-activity-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xide-activity-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--xide-muted) !important;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.xide-activity-btn:hover {
+  color: var(--xide-text) !important;
+}
+
+.xide-activity-btn.xide--active {
+  color: var(--xide-primary-text) !important;
+}
+
+.xide-activity-btn.xide--active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--xide-primary-grad);
+}
+
+/* 아이콘을 가리지 않게 오른쪽 위 모서리에 작게 */
+.xide-activity-badge {
+  position: absolute;
+  top: 6px;
+  left: 26px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border: 1.5px solid var(--xide-panel);
+  border-radius: 999px;
+  background: var(--xide-primary-grad);
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.xide-sidebar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--xide-panel);
+  border-right: 1px solid var(--xide-border);
+}
+
+.xide-center {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--xide-panel);
+}
+
+.xide-chat {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--xide-border);
+  background: var(--xide-panel);
+}
+
+.xide-chat > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.xide-split {
+  flex: none;
+  position: relative;
+  z-index: 3;
+  background: transparent;
+  touch-action: none;
+  transition: background-color 0.12s ease 0.15s;
+}
+
+.xide-split-x {
+  width: 6px;
+  margin: 0 -3px;
+  cursor: col-resize;
+}
+
+.xide-split-y {
+  height: 6px;
+  margin: -3px 0;
+  cursor: row-resize;
+}
+
+.xide-split:hover,
+.xide-split.xide--dragging,
+.xide-split:focus-visible {
+  background: var(--xide-primary-soft-border);
+}
+
+/* ── 사이드바 공통 ──────────────────────────────────────────── */
+
+.xide-side-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* 패널 제목 — 앱 사이드바 제목과 같은 작은 굵은 글자 */
+.xide-side-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 8px 0 16px;
+}
+
+.xide-side-title {
+  flex: 1 1 auto;
+  color: var(--xide-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-section-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin: 0 8px 2px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--xide-radius-sm);
+  color: var(--xide-text);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.xide-section-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 칸 머리의 단추(새 파일·새로 고침·모두 접기 …)는 늘 보인다 — 마우스를 올려야 나타나면 있는 줄 모른다. */
+.xide-section-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+/* ── 탐색기 ─────────────────────────────────────────────────── */
+
+/* 연결된 폴더 — 스토리지 아래 구분선으로 나뉜 칸. 자기 목록만 따로 굴린다. */
+.xide-folders {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 45%;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--xide-border);
+}
+
+.xide-folders.xide--collapsed {
+  flex: none;
+}
+
+.xide-folders-header {
+  padding-left: 0;
+}
+
+.xide-folders-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xide-folders-toggle .xide-icon {
+  flex: none;
+  color: var(--xide-muted);
+}
+
+.xide-folders-tree {
+  flex: 0 1 auto;
+}
+
+.xide-folders-root .xide-tree-name {
+  font-weight: 600;
+}
+
+.xide-tree-row.xide--blocked .xide-tree-name {
+  color: var(--xide-muted);
+}
+
+.xide-folders-note {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  color: var(--xide-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-folders-note.xide--error {
+  color: var(--xide-warning);
+}
+
+.xide-folders-grant {
+  flex: none;
+  font-size: 12px;
+}
+
+.xide-folders-elsewhere strong {
+  color: var(--xide-text);
+  font-weight: 600;
+}
+
+.xide-folders-remote-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--xide-text);
+}
+
+.xide-chip.xide--on {
+  color: var(--xide-primary);
+  background: var(--xide-primary-soft);
+}
+
+.xide-chip.xide--warn {
+  color: var(--xide-warning);
+  background: var(--xide-warning-bg);
+}
+
+.xide-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 12px;
+  outline: none;
+}
+
+.xide-tree.xide--drop-root {
+  background: var(--xide-primary-soft);
+  box-shadow: inset 0 0 0 2px var(--xide-primary-soft-border);
+}
+
+.xide-tree-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--xide-radius);
+  background: var(--xide-panel-2);
+  color: var(--xide-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.xide-tree-note:has(> .xide-spinner) {
+  flex-direction: row;
+  align-items: center;
+}
+
+.xide-tree-note.xide--error {
+  border: 1px solid var(--xide-warning-border);
+  background: var(--xide-warning-bg);
+  color: var(--xide-warning);
+}
+
+.xide-tree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding-right: 8px;
+  border-radius: var(--xide-radius-sm);
+  color: var(--xide-text);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.xide-tree-row:hover {
+  background: var(--xide-hover);
+}
+
+.xide-tree-row.xide--selected {
+  background: var(--xide-primary-soft);
+}
+
+.xide-tree-row.xide--active .xide-tree-name {
+  font-weight: 600;
+}
+
+.xide-tree:focus .xide-tree-row.xide--focused {
+  box-shadow: inset 0 0 0 1px var(--xide-primary-soft-border);
+}
+
+.xide-tree-row.xide--cut {
+  opacity: 0.5;
+}
+
+.xide-tree-row.xide--drop-target {
+  background: var(--xide-primary-soft-2);
+  box-shadow: inset 0 0 0 1px var(--xide-primary-soft-border);
+}
+
+.xide-tree-guides {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.xide-tree-chevron {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--xide-muted);
+}
+
+.xide-tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-tree-deco {
+  flex: none;
+  min-width: 12px;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+}
+
+/* 폴더의 변경 표시 — 글자(●)는 글꼴에 따라 그림 문자로 바뀌어 모양이 흔들린다. 직접 그린다. */
+.xide-tree-deco.xide--dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  align-self: stretch;
+}
+
+.xide-tree-deco.xide--dot i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.xide-folder-icon {
+  color: var(--xide-folder);
+}
+
+.xide-file-generic,
+.xide-file-image {
+  color: var(--xide-muted);
+}
+
+.xide-file-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  font-family: var(--xide-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.xide--git-modified .xide-tree-name,
+.xide--git-modified .xide-tree-deco,
+.xide--git-modified .xide-scm-letter,
+.xide--git-modified .xide-scm-change-name {
+  color: var(--xide-git-modified);
+}
+
+.xide--git-added .xide-tree-name,
+.xide--git-added .xide-tree-deco,
+.xide--git-added .xide-scm-letter,
+.xide--git-added .xide-scm-change-name {
+  color: var(--xide-git-added);
+}
+
+.xide--git-untracked .xide-tree-name,
+.xide--git-untracked .xide-tree-deco,
+.xide--git-untracked .xide-scm-letter,
+.xide--git-untracked .xide-scm-change-name {
+  color: var(--xide-git-untracked);
+}
+
+.xide--git-deleted .xide-tree-name,
+.xide--git-deleted .xide-tree-deco,
+.xide--git-deleted .xide-scm-letter,
+.xide--git-deleted .xide-scm-change-name {
+  color: var(--xide-git-deleted);
+}
+
+.xide--git-renamed .xide-tree-name,
+.xide--git-renamed .xide-tree-deco,
+.xide--git-renamed .xide-scm-letter,
+.xide--git-renamed .xide-scm-change-name {
+  color: var(--xide-git-renamed);
+}
+
+.xide--git-conflict .xide-tree-name,
+.xide--git-conflict .xide-tree-deco,
+.xide--git-conflict .xide-scm-letter,
+.xide--git-conflict .xide-scm-change-name {
+  color: var(--xide-git-conflict);
+}
+
+.xide-inline-input {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.xide-inline-input .xide-input {
+  height: 22px;
+  padding: 0 6px;
+  border-color: var(--xide-primary-end);
+  border-radius: 5px;
+  background: var(--xide-panel);
+  box-shadow: 0 0 0 2px var(--xide-ring);
+}
+
+.xide-inline-error {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 25px;
+  z-index: 5;
+  padding: 6px 8px;
+  border: 1px solid var(--xide-danger-border);
+  border-radius: var(--xide-radius-sm);
+  background: var(--xide-danger-bg);
+  color: var(--xide-danger);
+  font-size: 12px;
+  white-space: normal;
+  box-shadow: var(--xide-shadow-md);
+}
+
+/* ── 찾기 ───────────────────────────────────────────────────── */
+
+.xide-search-form {
+  flex: none;
+  position: relative;
+  padding: 0 12px 8px 8px;
+}
+
+.xide-search-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.xide-search-toggle-replace {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--xide-muted);
+  cursor: pointer;
+}
+
+.xide-search-toggle-replace:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+.xide-search-fields {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.xide-search-box {
+  position: relative;
+}
+
+.xide-search-box .xide-input {
+  padding-right: 80px;
+}
+
+.xide-search-flags {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 1px;
+}
+
+.xide-flag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--xide-muted);
+  cursor: pointer;
+}
+
+.xide-flag:hover:not(:disabled) {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+.xide-flag.xide--on {
+  border-color: var(--xide-primary-soft-border);
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text);
+}
+
+.xide-flag:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.xide-search-details-toggle {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.xide-search-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 20px;
+}
+
+.xide-search-details label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--xide-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.xide-search-summary {
+  flex: none;
+  padding: 2px 20px 8px;
+  color: var(--xide-muted);
+  font-size: 12px;
+}
+
+.xide-search-summary .xide--error {
+  color: var(--xide-danger);
+}
+
+.xide-search-summary .xide--warn {
+  color: var(--xide-warning);
+}
+
+.xide-search-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 12px;
+}
+
+.xide-search-file-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--xide-radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.xide-search-file-row:hover,
+.xide-search-match:hover {
+  background: var(--xide-hover);
+}
+
+.xide-search-file-row:hover .xide-row-actions {
+  display: flex;
+}
+
+.xide-search-file-row:hover .xide-search-count {
+  display: none;
+}
+
+.xide-search-file-name {
+  flex: none;
+  font-weight: 500;
+}
+
+.xide-search-file-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--xide-muted);
+  font-size: 12px;
+}
+
+.xide-search-count {
+  margin-left: auto;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.xide-search-match {
+  height: 24px;
+  padding: 0 8px 0 36px;
+  border-radius: var(--xide-radius-sm);
+  line-height: 24px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.xide-search-preview {
+  color: var(--xide-text-2);
+  font-size: 12.5px;
+}
+
+.xide-search-hit {
+  background: var(--xide-hit);
+  color: var(--xide-text);
+  border-radius: 3px;
+}
+
+del.xide-search-hit {
+  background: var(--xide-del);
+  text-decoration: line-through;
+}
+
+.xide-search-ins {
+  background: var(--xide-ins);
+  border-radius: 3px;
+  text-decoration: none;
+}
+
+/* ── 소스 제어 ───────────────────────────────────────────────── */
+
+.xide-scm-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 16px;
+}
+
+.xide-scm-repo-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 8px;
+  font-size: 12px;
+}
+
+.xide-scm-remote,
+.xide-scm-branch {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  min-height: 24px;
+  padding: 2px 16px;
+  color: var(--xide-text-2);
+  font-size: 12px;
+}
+
+.xide-scm-branch .xide-link {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-scm-upstream {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-scm-remote-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xide-scm-remote-none {
+  color: var(--xide-muted);
+}
+
+.xide-provider {
+  flex: none;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.xide-provider.xide--github {
+  background: #24292f;
+  color: #ffffff;
+}
+
+.xide-provider.xide--gitlab {
+  background: #fc6d26;
+  color: #ffffff;
+}
+
+.xide-provider.xide--bitbucket {
+  background: #2684ff;
+  color: #ffffff;
+}
+
+.xide-provider.xide--azure {
+  background: #0078d4;
+  color: #ffffff;
+}
+
+.xide-theme-dark .xide-provider.xide--github {
+  background: #e7e9ee;
+  color: #1d1f23;
+}
+
+.xide-scm-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 16px 12px;
+}
+
+.xide-split-button {
+  display: flex;
+}
+
+.xide-split-button .xide-btn:first-child {
+  flex: 1 1 auto;
+  border-radius: var(--xide-radius) 0 0 var(--xide-radius);
+}
+
+.xide-split-more {
+  width: 32px;
+  padding: 0 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.35) !important;
+  border-radius: 0 var(--xide-radius) var(--xide-radius) 0 !important;
+}
+
+.xide-scm-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  margin: 0 8px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--xide-radius-sm);
+  color: var(--xide-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.xide-scm-section-head:hover {
+  background: var(--xide-hover);
+}
+
+.xide-scm-section-head:hover .xide-row-actions {
+  display: flex;
+}
+
+.xide-scm-section-title {
+  flex: 1 1 auto;
+}
+
+.xide-scm-change {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  margin: 0 8px;
+  padding: 0 6px 0 22px;
+  border-radius: var(--xide-radius-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.xide-scm-change:hover {
+  background: var(--xide-hover);
+}
+
+.xide-scm-change:hover .xide-row-actions {
+  display: flex;
+}
+
+.xide-scm-change-name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-scm-change-name.xide--strike {
+  text-decoration: line-through;
+}
+
+.xide-scm-change-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--xide-muted);
+  font-size: 12px;
+}
+
+.xide-scm-letter {
+  flex: none;
+  width: 16px;
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.xide-scm-last {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 16px 4px;
+  padding: 8px 10px;
+  border-radius: var(--xide-radius);
+  background: var(--xide-panel-2);
+  color: var(--xide-text-2);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.xide-scm-account {
+  margin-top: 12px;
+  padding-top: 6px;
+  border-top: 1px solid var(--xide-border);
+}
+
+.xide-scm-account-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 16px 10px;
+  color: var(--xide-text-2);
+  font-size: 12px;
+}
+
+.xide-kv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.xide-kv > span:nth-child(2) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 편집기 ─────────────────────────────────────────────────── */
+
+.xide-editor-area {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.xide-editor-group-wrap {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.xide-editor-group {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--xide-border);
+}
+
+.xide-editor-group-wrap:first-child .xide-editor-group {
+  border-left: 0;
+}
+
+/* 탭 줄 — 앱의 탭 줄과 같다(옅은 바탕, 활성 탭은 흰 판 + 위쪽 2px 그라데이션). */
+.xide-tabbar {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  height: 38px;
+  /* 동작 칸이 탭 줄 너비에 맞춰 접힌다(.xide-view-switch). 편집기 본문은 담지 않는다. */
+  container: xide-tabbar / inline-size;
+  background: var(--xide-app);
+  border-bottom: 1px solid var(--xide-border);
+}
+
+.xide-tabs {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.xide-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.xide-tab {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  margin-bottom: -1px;
+  padding: 0 6px 0 12px;
+  border-right: 1px solid var(--xide-border);
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--xide-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+
+.xide-tab:hover {
+  color: var(--xide-text);
+}
+
+.xide-tab.xide--active {
+  background: var(--xide-panel);
+  border-bottom-color: var(--xide-panel);
+  color: var(--xide-text);
+}
+
+.xide-tab.xide--active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--xide-border-strong);
+}
+
+.xide-editor-group.xide--focused .xide-tab.xide--active::before {
+  background: var(--xide-primary-grad);
+}
+
+.xide-tab.xide--preview .xide-tab-label {
+  font-style: italic;
+}
+
+.xide-tab.xide--drop-before::after,
+.xide-tab.xide--drop-after::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--xide-primary);
+}
+
+.xide-tab.xide--drop-before::after {
+  left: -1px;
+}
+
+.xide-tab.xide--drop-after::after {
+  right: -1px;
+}
+
+.xide-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-tab-dir {
+  color: var(--xide-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xide-tab-diff {
+  color: var(--xide-git-modified);
+}
+
+.xide-tab-close {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--xide-muted);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.xide-tab.xide--active .xide-tab-close,
+.xide-tab:hover .xide-tab-close,
+.xide-tab.xide--dirty .xide-tab-close {
+  opacity: 1;
+}
+
+.xide-tab-close:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+.xide-tab-close-hover {
+  position: absolute;
+  display: none;
+}
+
+.xide-tab.xide--dirty .xide-tab-close:hover .xide-tab-close-icon {
+  display: none;
+}
+
+.xide-tab.xide--dirty .xide-tab-close:hover .xide-tab-close-hover {
+  position: static;
+  display: inline-block;
+}
+
+.xide-tabbar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+}
+
+.xide-breadcrumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--xide-muted);
+  font-size: 12px;
+  background: var(--xide-panel);
+}
+
+.xide-crumb {
+  display: inline-flex;
+  align-items: center;
+}
+
+.xide-crumb button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit !important;
+  cursor: pointer;
+}
+
+.xide-crumb button:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text) !important;
+}
+
+.xide-crumb-note {
+  margin-left: 12px;
+  color: var(--xide-faint);
+  font-style: italic;
+}
+
+.xide-editor-body {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+  background: var(--xide-panel);
+}
+
+.xide-code-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.xide-monaco {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.xide-pane-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--xide-muted);
+  pointer-events: none;
+}
+
+.xide-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 12px 4px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--xide-warning-border);
+  border-radius: var(--xide-radius);
+  background: var(--xide-warning-bg);
+  color: var(--xide-text);
+  font-size: 12.5px;
+}
+
+.xide-banner > span {
+  flex: 1 1 200px;
+}
+
+.xide-banner .xide-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* 알림이 아니라 안내 — 글 파일이 아니라 그려서 보여 준다 */
+.xide-banner.xide--info {
+  border-color: var(--xide-border);
+  background: var(--xide-panel-2);
+  color: var(--xide-text-2);
+}
+
+/* 그린 모습 — 문서·PDF·소리·영상·md·csv. 안의 내용은 호스트의 미리보기 부품이 그린다. */
+.xide-preview-pane {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: var(--xide-panel);
+  color: var(--xide-text);
+}
+
+/* 호스트가 그린 내용은 창 높이를 채운다: 자기 안에서 스크롤해야 가로 스크롤 막대가 창 아래에 붙는다 */
+.xide-preview-pane > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* md·csv: 미리보기 / 편집. 탭 줄의 동작 칸에 둔다(편집기 위에 떠 있으면 내용을 가리고, 좁으면 글자가 꺾였다). */
+.xide-view-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  margin-right: 4px;
+  padding: 2px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-sm);
+  background: var(--xide-panel);
+}
+
+.xide-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--xide-text-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.xide-view-switch button .xide-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.xide-view-switch button:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+.xide-view-switch button.xide--on {
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text);
+  font-weight: 600;
+}
+
+.xide-view-switch button:focus-visible {
+  outline: 2px solid var(--xide-focus, var(--xide-primary));
+  outline-offset: -2px;
+}
+
+/* 편집기 묶음이 좁으면 글자를 접고 아이콘만 남긴다(이름은 title·aria 로) */
+@container xide-tabbar (max-width: 460px) {
+  .xide-view-switch button span {
+    display: none;
+  }
+  .xide-view-switch button {
+    padding: 0 6px;
+  }
+}
+
+/* 읽기 전용 탐색기(FileTree) — IDE 탐색기와 같은 모양을 다른 화면에 그대로 */
+.xide-root.xide-filetree {
+  height: 100%;
+}
+
+.xide-filetree .xide-sidebar {
+  width: 100%;
+  height: 100%;
+  border-right: 0;
+}
+
+.xide-diff-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--xide-border);
+  color: var(--xide-text-2);
+  font-size: 12px;
+}
+
+.xide-diff-toolbar .xide-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* 빈 편집기 — 앱의 빈 화면(채팅의 빈 상태)과 같은 가운데 정렬·옅은 글자 */
+.xide-welcome {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  background: var(--xide-app);
+  color: var(--xide-muted);
+  text-align: center;
+}
+
+.xide-welcome-title {
+  color: var(--xide-text-2);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.xide-welcome-text {
+  max-width: 34em;
+  font-size: 13px;
+}
+
+.xide-welcome-keys {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin-top: 16px;
+  min-width: 280px;
+  padding: 6px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-md);
+}
+
+.xide-welcome-keys button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--xide-radius-sm);
+  background: transparent;
+  color: var(--xide-text-2) !important;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.xide-welcome-keys button:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text) !important;
+}
+
+.xide-image-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.xide-image-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background-color: var(--xide-app);
+  background-image: linear-gradient(45deg, var(--xide-hover) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--xide-hover) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--xide-hover) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--xide-hover) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  cursor: zoom-in;
+}
+
+.xide-image-pane.xide--fit .xide-image-scroll img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: var(--xide-shadow-md);
+}
+
+.xide-image-pane:not(.xide--fit) .xide-image-scroll {
+  align-items: flex-start;
+  justify-content: flex-start;
+  cursor: zoom-out;
+}
+
+.xide-image-info {
+  flex: none;
+  padding: 6px 14px;
+  color: var(--xide-muted);
+  font-size: 12px;
+  border-top: 1px solid var(--xide-border);
+}
+
+/* ── 패널(터미널) ───────────────────────────────────────────── */
+
+.xide-panel-wrap {
+  flex: none;
+  display: flex;
+  min-height: 0;
+  border-top: 1px solid var(--xide-border);
+}
+
+.xide-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--xide-panel);
+}
+
+.xide-panel-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 38px;
+  padding: 0 8px 0 12px;
+}
+
+.xide-panel-tab {
+  position: relative;
+  padding: 6px 4px;
+  color: var(--xide-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.xide-panel-tab.xide--active {
+  color: var(--xide-text);
+}
+
+.xide-panel-tab.xide--active::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--xide-primary-grad);
+}
+
+.xide-terms {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.xide-term-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--xide-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.xide-term-tab:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+.xide-term-tab.xide--active {
+  border-color: var(--xide-primary-soft-border);
+  background: var(--xide-primary-soft);
+  color: var(--xide-primary-text);
+}
+
+.xide-term-tab.xide--error,
+.xide-term-tab.xide--exited {
+  color: var(--xide-muted);
+  font-style: italic;
+}
+
+.xide-term-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.xide-term-tab:hover .xide-term-close,
+.xide-term-tab.xide--active .xide-term-close {
+  opacity: 1;
+}
+
+.xide-term-close:hover {
+  background: var(--xide-primary-soft-2);
+}
+
+.xide-panel-body {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
+.xide-term-body {
+  position: absolute;
+  inset: 0 0 0 14px;
+}
+
+.xide-term-host {
+  width: 100%;
+  height: 100%;
+  background: var(--xide-panel);
+}
+
+.xide-term-host .xterm {
+  height: 100%;
+  padding: 4px 0;
+}
+
+/* xterm.css 의 검은 바탕(#000)이 위아래 여백으로 새지 않게 — 바탕은 패널 색 하나다. */
+.xide-term-host .xterm-viewport {
+  scrollbar-width: thin;
+  background-color: transparent !important;
+}
+
+.xide-term-overlay {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
+  color: var(--xide-text-2);
+  font-size: 12.5px;
+}
+
+/* ── 하단 바 없이 알리는 자리 ───────────────────────────────────
+   연결이 끊겼을 때만 편집기 위에 한 줄, 알림은 오른쪽 아래 토스트. */
+
+.xide-connbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--xide-warning) 28%, var(--xide-border));
+  background: color-mix(in srgb, var(--xide-warning) 9%, var(--xide-panel));
+  color: var(--xide-text);
+  font-size: 12.5px;
+}
+
+.xide-connbar.xide--blocked {
+  border-bottom-color: color-mix(in srgb, var(--xide-danger) 28%, var(--xide-border));
+  background: color-mix(in srgb, var(--xide-danger) 8%, var(--xide-panel));
+}
+
+.xide-connbar > .xide-icon {
+  flex: none;
+  color: var(--xide-danger);
+}
+
+.xide-connbar .xide-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.xide-connbar-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xide-connbar-action {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-sm);
+  background: var(--xide-panel);
+  color: var(--xide-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.xide-connbar-action:hover {
+  background: var(--xide-hover);
+}
+
+.xide-toast {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100% - 32px));
+  padding: 9px 8px 9px 12px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
+  color: var(--xide-text);
+  font-size: 12.5px;
+  animation: xide-toast-in 0.16s ease-out;
+}
+
+.xide-toast > .xide-icon {
+  flex: none;
+}
+
+.xide-toast.xide--success > .xide-icon {
+  color: var(--xide-success);
+}
+
+.xide-toast.xide--warning > .xide-icon {
+  color: var(--xide-warning);
+}
+
+.xide-toast.xide--error > .xide-icon {
+  color: var(--xide-danger);
+}
+
+.xide-toast.xide--info > .xide-icon {
+  color: var(--xide-primary-text);
+}
+
+.xide-toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.xide-toast-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--xide-radius-sm);
+  background: transparent;
+  color: var(--xide-muted);
+  cursor: pointer;
+}
+
+.xide-toast-close:hover {
+  background: var(--xide-hover);
+  color: var(--xide-text);
+}
+
+@keyframes xide-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xide-toast {
+    animation: none;
+  }
+}
+
+/* 패널 제목 옆 작은 표시(읽기 전용 등) */
+.xide-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--xide-hover);
+  color: var(--xide-text-2);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── 떠 있는 것: 메뉴·대화 상자·빠른 열기 ─────────────────────── */
+
+.xide-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 210px;
+  max-width: 360px;
+  padding: 5px;
+  border: 1px solid var(--xide-border);
+  border-radius: 10px;
+  background: var(--xide-panel);
+  color: var(--xide-text);
+  box-shadow: var(--xide-shadow-lg);
+  font-family: var(--xide-font);
+  font-size: 13px;
+  outline: none;
+}
+
+.xide-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--xide-radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xide-menu-item.xide--active:not(:disabled) {
+  background: var(--xide-hover);
+}
+
+.xide-menu-item.xide--danger {
+  color: var(--xide-danger);
+}
+
+.xide-menu-item.xide--danger.xide--active:not(:disabled) {
+  background: var(--xide-danger-bg);
+}
+
+.xide-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.xide-menu-key {
+  color: var(--xide-faint);
+  font-size: 11.5px;
+}
+
+.xide-menu-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--xide-border);
+}
+
+.xide-dialog-scrim,
+.xide-qo-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.xide-dialog-scrim {
+  align-items: center;
+  background: var(--xide-scrim);
+  backdrop-filter: blur(2px);
+}
+
+.xide-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(460px, calc(100% - 32px));
+  padding: 20px 22px 18px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
+}
+
+.xide-dialog-title {
+  color: var(--xide-text);
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.xide-dialog-message,
+.xide-dialog-detail {
+  color: var(--xide-text-2);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.xide-dialog-detail {
+  color: var(--xide-muted);
+  font-size: 12px;
+}
+
+.xide-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--xide-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.xide-dialog-error {
+  color: var(--xide-danger);
+  font-size: 12px;
+}
+
+.xide-dialog-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* 빠른 열기·명령 보기 — 위에 뜨는 판 */
+.xide-qo {
+  width: min(620px, calc(100% - 32px));
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid var(--xide-border);
+  border-radius: var(--xide-radius-lg);
+  background: var(--xide-panel);
+  box-shadow: var(--xide-shadow-lg);
+}
+
+.xide-qo .xide-input {
+  height: 36px;
+  font-size: 14px;
+}
+
+.xide-qo-list {
+  max-height: 380px;
+  margin-top: 6px;
+  overflow: auto;
+}
+
+.xide-qo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--xide-radius-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.xide-qo-row.xide--active {
+  background: var(--xide-primary-soft);
+  color: var(--xide-text);
+}
+
+.xide-qo-label b {
+  color: var(--xide-primary-text);
+  font-weight: 700;
+}
+
+.xide-qo-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--xide-muted);
+  font-size: 12px;
+}
+
+.xide-qo-hint {
+  margin-left: auto;
+}
+
+.xide-qo-empty {
+  padding: 10px;
+  color: var(--xide-muted);
+}
+
+/* ── 좁은 화면 ──────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .xide-chat {
+    max-width: 45%;
+  }
+  .xide-sidebar {
+    max-width: 40%;
+  }
+}

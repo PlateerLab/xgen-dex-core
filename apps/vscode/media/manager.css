@@ -1,0 +1,345 @@
+/* 채팅 기록 관리 탭. 색은 chat.css 와 같은 토큰(VS Code 테마)을 쓴다. */
+
+:root {
+  color-scheme: light dark;
+  --dex-accent: var(--vscode-textLink-foreground);
+  --dex-border: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  --dex-soft-border: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  --dex-surface: color-mix(in srgb, var(--vscode-editorWidget-background) 82%, transparent);
+  --dex-raised: color-mix(in srgb, var(--vscode-editorWidget-background) 94%, var(--vscode-sideBar-background));
+  --dex-accent-soft: color-mix(in srgb, var(--dex-accent) 13%, transparent);
+  --dex-success: var(--vscode-testing-iconPassed, #73c991);
+  --dex-danger: var(--vscode-errorForeground);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.manager {
+  display: flex;
+  width: min(100%, 960px);
+  margin: 0 auto;
+  padding: 18px 16px 28px;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.manager-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manager-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.icon-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border-color: var(--dex-border);
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 14px;
+}
+
+.icon-button:hover {
+  border-color: color-mix(in srgb, var(--dex-accent) 38%, transparent);
+  background: var(--dex-accent-soft);
+}
+
+.manager-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.manager-kind,
+.manager-search input,
+.manager-rename {
+  min-height: 28px;
+  border: 1px solid var(--vscode-input-border, var(--dex-border));
+  border-radius: 6px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+}
+
+.manager-kind {
+  padding: 3px 6px;
+}
+
+.manager-search {
+  position: relative;
+  display: flex;
+  min-width: 180px;
+  flex: 1 1 260px;
+  align-items: center;
+}
+
+.manager-search-icon {
+  position: absolute;
+  left: 8px;
+  display: grid;
+  color: var(--vscode-descriptionForeground);
+  pointer-events: none;
+}
+
+.manager-search input {
+  width: 100%;
+  padding: 4px 8px 4px 28px;
+}
+
+.manager-purge,
+.manager-button {
+  min-height: 26px;
+  padding: 3px 10px;
+  border-color: var(--dex-border);
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.manager-purge:hover:not(:disabled),
+.manager-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dex-accent) 38%, transparent);
+  background: var(--dex-accent-soft);
+}
+
+.manager-purge,
+.manager-button.danger,
+.manager-delete {
+  color: var(--dex-danger);
+}
+
+.manager-bar {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.manager-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.manager-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manager-delete {
+  min-height: 24px;
+  padding: 2px 10px;
+  border-color: color-mix(in srgb, var(--dex-danger) 45%, transparent);
+  background: transparent;
+  font-size: 12px;
+}
+
+.manager-delete:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dex-danger) 12%, transparent);
+}
+
+.manager-muted {
+  color: var(--vscode-descriptionForeground);
+}
+
+.manager-pad {
+  padding: 18px 8px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.manager-notice {
+  padding: 6px 10px;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 6px;
+  background: var(--dex-surface);
+  font-size: 12px;
+}
+
+.manager-error {
+  padding: 14px 8px;
+  color: var(--dex-danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.manager-link {
+  padding: 0;
+  border: 0;
+  color: var(--dex-accent);
+  background: transparent;
+  text-decoration: underline;
+}
+
+.manager-link:hover {
+  background: transparent;
+}
+
+.manager-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dex-soft-border);
+}
+
+.manager-row {
+  display: flex;
+  min-width: 0;
+  padding: 8px 6px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--dex-soft-border);
+}
+
+.manager-row:hover {
+  background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+}
+
+.manager-row.selected {
+  background: var(--dex-accent-soft);
+}
+
+.manager-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.manager-row-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manager-rename {
+  width: 100%;
+  padding: 2px 6px;
+}
+
+.manager-row-agent {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.manager-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manager-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.manager-tag.deleted {
+  border-color: color-mix(in srgb, var(--dex-danger) 40%, transparent);
+  color: var(--dex-danger);
+}
+
+.manager-when {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.manager-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.manager-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0;
+}
+
+@media (max-width: 560px) {
+  .manager-row {
+    flex-wrap: wrap;
+  }
+
+  .manager-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

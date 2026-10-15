@@ -24,9 +24,14 @@
  */
 import {
   parseSubscribed,
+  toHistoryProcess,
+  turnAttachments,
   turnEventToChatEvent,
+  turnInputText,
+  type HistoryFlowItem,
   type LiveTurnSnapshot,
   type ToolEvent,
+  type TurnAttachment,
 } from '@dex/protocol';
 
 export type ChatWsState =
@@ -49,6 +54,13 @@ export interface ExecCallbacks {
    * 값을 좁혀서 넘길 이유가 없다.
    */
   onTool?: (ev: ToolEvent) => void;
+  /**
+   * 이 턴이 서버에 남은 실행 한 건의 id — 답에 붙여 둔다. 같은 턴이 다른 길(완결 행·이력)로 다시 와도 한 번만
+   * 그리고, 소켓 구멍을 이력으로 메울 때 "어디까지 그렸나" 를 이 id 로 안다(없으면 메우지 못한다).
+   */
+  onExecutionIo?: (ioId: number) => void;
+  /** 도구가 파일 저장소에 올린 결과물(`download_artifact`) — 답 아래에 그림·단추로 그린다. */
+  onDownload?: (data: Record<string, unknown>) => void;
   onEnd?: () => void;
   onError?: (message: string) => void;
   /**
@@ -67,6 +79,11 @@ export interface ServerTurn {
   input: string;
   output: string;
   source: string;
+  /**
+   * 이 턴의 작업 과정(글·도구 순서) — 도구를 쓴 턴에만, 서버가 실행 기록에서 되살린 것. 진행 프레임을
+   * 놓친 화면도 이것으로 같은 타임라인을 그린다. 옛 서버는 싣지 않는다.
+   */
+  process?: HistoryFlowItem[];
 }
 
 /**
@@ -75,6 +92,11 @@ export interface ServerTurn {
  *
  * 서버는 이 표식으로 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다 —
  * 자기 스트림으로 이미 받고 있으므로, 없으면 이 화면만 글자를 두 번 본다.
+ *
+ * 연결마다 새로 만드는 이유: 그 "자기 스트림" 은 그 연결에 매여 있다. 폰이 잠기거나 앱을 뒤로 보내 연결이
+ * 끊기면 스트림도 끝나는데, 다시 붙을 때 같은 표식을 쓰면 서버는 여전히 그 턴을 이 화면의 것으로 보고
+ * 진행·종료를 걸러 버린다. 화면은 끊긴 자리에서 멈춘 채 완결 행만 기다렸다(2026-10-02 사용자 보고).
+ * 새 표식으로 붙으면 그 턴은 다른 화면의 턴처럼 실시간으로 온다.
  */
 export function newOriginId(): string {
   return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -88,17 +110,40 @@ export function newOriginId(): string {
  * 기다려야 했다.
  */
 export type PeerTurnEvent =
-  | { kind: 'started'; input: string }
+  | { kind: 'started'; input: string; attachments: TurnAttachment[] }
   | { kind: 'exec'; event: string; data: unknown }
-  | { kind: 'ended'; ioId: number | null; input: string; output: string }
+  | { kind: 'ended'; ioId: number | null; input: string; output: string; attachments: TurnAttachment[] }
   /** 전파에 구멍이 났다 — 이때만 다시 맞추면 된다. */
   | { kind: 'gap' };
 
+/** 이 대화에 연결된 폴더 — 서버 요청의 local_folders 항목(path 는 가상 경로). */
+export interface ChatWsLocalFolder {
+  id: string;
+  name: string;
+  path: string;
+}
+
 export interface ChatWsHandle {
-  execute(input: string, attachments?: MobileChatAttachment[]): Promise<void>;
+  /**
+   * 한 턴을 보낸다. `localFolders` 는 이 대화에 연결된 휴대폰 폴더 — 빈 목록도
+   * 보낸다(= 폴더 없음, 서버가 파일 도구를 감춘다). 앱은 늘 보낸다.
+   */
+  execute(
+    input: string,
+    attachments?: MobileChatAttachment[],
+    localFolders?: ChatWsLocalFolder[],
+  ): Promise<void>;
   stop(): void;
   close(): void;
   state(): ChatWsState;
+  /**
+   * 앱이 다시 앞으로 왔다 — 지금 살아 있는지 확인한다.
+   *
+   * 뒤에 있는 동안 OS 가 소켓을 조용히 놓는 일이 흔하다(이쪽에서는 아직 열려 있다고 믿는다). 붙어 있지
+   * 않으면 백오프를 기다리지 않고 지금 다시 붙고, 붙어 있다고 믿는 소켓은 ping 으로 묻고 답이 없으면 새로 붙는다.
+   * 새로 붙으면 구독 확립이 "지금 도는가·어디까지 왔나" 와 구멍을 알려 화면이 스스로 맞춘다.
+   */
+  resume(): void;
 }
 
 export interface MobileChatAttachment {
@@ -121,6 +166,8 @@ export interface ChatWsOptions {
   onState?: (s: ChatWsState) => void;
   /** 테스트 주입용 — 기본은 전역 WebSocket. */
   wsFactory?: (url: string) => WebSocket;
+  /** 테스트 주입용 — 시각(ms). */
+  now?: () => number;
   /** 서버 push 완결 턴(트리거 반응 등) — 실시간 반영용. */
   onServerTurn?: (turn: ServerTurn) => void;
   /**
@@ -151,13 +198,29 @@ export interface ChatWsOptions {
    * 아직 한 글자도 안 나왔다".
    */
   onLiveTurn?: (live: LiveTurnSnapshot) => void;
+  /** 이 대화의 폴더가 바뀌었다(어느 기기에 있는가·폴더 이름) — 서버 사본의 알림 원문. */
+  onFolders?: (data: Record<string, unknown>) => void;
+  /** 다른 화면이 이 대화의 모델을 바꿨다 — 서버 소식의 원문(`current`). */
+  onModel?: (data: Record<string, unknown>) => void;
   /** 이 기기의 커넥터 슬롯 키 — 실행에 client_device_id 로 실린다. */
   clientDeviceId?: string;
 }
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
+/** 이만큼 실패하면 [연결 실패] 로 알린다 — 그래도 다시 붙기는 멈추지 않는다(최대 간격으로 계속). */
 const RECONNECT_MAX_ATTEMPTS = 8;
+/**
+ * 이만큼 아무 프레임도 없으면 소켓이 죽은 것이다. 서버는 10초마다 하트비트를 보낸다 — 반쯤 열린 연결은
+ * close 가 영영 오지 않으므로 이 침묵이 유일한 신호다.
+ */
+const SILENT_MS = 35_000;
+/** 침묵이 이만큼이면 ping 으로 깨워 본다. */
+const PING_AFTER_MS = 15_000;
+/** 감시 주기. */
+const WATCH_MS = 5_000;
+/** 앱 복귀 때 보낸 ping 의 답을 기다리는 시간. */
+const PROBE_MS = 4_000;
 
 /**
  * exec 프레임 1건 → 콜백. ``'end'``/``'error'`` 반환 시 실행 종료.
@@ -181,6 +244,12 @@ export function dispatchExec(
   switch (ev.kind) {
     case 'tool':
       cb.onTool?.(ev.event);
+      return null;
+    case 'execution_io':
+      if (ev.executionIoId > 0) cb.onExecutionIo?.(ev.executionIoId);
+      return null;
+    case 'download':
+      cb.onDownload?.(ev.data);
       return null;
     case 'text':
       // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면 절반이
@@ -235,13 +304,27 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     opts.interactionId,
   )}`;
 
+  const now = opts.now ?? (() => Date.now());
   let ws: WebSocket | null = null;
   let state: ChatWsState = 'connecting';
   let subscribed = false;
-  /** 이 화면의 표식 — 소켓과 실행 요청이 같은 값을 써야 짝이 맞는다. */
-  const originId = newOriginId();
+  /** 이 연결의 표식 — 소켓과 실행 요청이 같은 값을 써야 짝이 맞는다. 연결마다 새로(newOriginId 설명). */
+  let originId = newOriginId();
   /** 마지막으로 받은 전파 번호 — 간격이 곧 유실 신호다. */
   let lastSeq = 0;
+  /**
+   * 구독 확립 때 받은 번호 기준선. 이 번호까지의 진행은 구독 응답의 진행분(live)에 이미 들어 있다 — 그 뒤에
+   * 도착한 같은 번호의 진행 프레임을 또 이어 붙이면 글이 두 번 찍힌다.
+   */
+  let seqBaseline = 0;
+  /** 마지막으로 무엇이든 받은 시각. */
+  let lastFrameAt = now();
+  /** 받은 프레임 수 — 복귀 확인이 "물은 뒤 무엇이든 왔는가" 를 시계 없이 가른다. */
+  let frames = 0;
+  let watchTimer: ReturnType<typeof setInterval> | null = null;
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 한 번이라도 구독이 확립됐는가 — 그 뒤의 구독 확립은 끊겼다 다시 붙은 것이다. */
+  let subscribedOnce = false;
   let closedByUser = false;
   let attempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -279,18 +362,79 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
 
   const scheduleReconnect = (): void => {
     if (closedByUser || state === 'unsupported') return;
-    if (attempts >= RECONNECT_MAX_ATTEMPTS) {
-      setState('failed');
-      return;
-    }
-    setState('reconnecting');
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempts, RECONNECT_MAX_MS);
+    if (reconnectTimer != null) return;
+    // 여러 번 실패했다고 **그만두지 않는다.** 예전에는 8번 뒤 영영 [연결 실패] 로 남아, 지하철을 지나거나
+    // 화면이 오래 꺼져 있던 폰은 앱을 다시 켜기 전까지 대화가 멈춰 있었다. 알리기만 하고 최대 간격으로 계속 붙는다.
+    setState(attempts >= RECONNECT_MAX_ATTEMPTS ? 'failed' : 'reconnecting');
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** Math.min(attempts, 16), RECONNECT_MAX_MS);
     attempts += 1;
     reconnectTimer = setTimeout(connect, delay);
   };
 
+  const stopWatch = (): void => {
+    if (watchTimer != null) clearInterval(watchTimer);
+    watchTimer = null;
+    if (probeTimer != null) clearTimeout(probeTimer);
+    probeTimer = null;
+  };
+
+  /**
+   * 이 소켓을 버리고 지금 새로 붙는다 — 죽었는데 close 가 오지 않는 소켓(반쯤 열린 연결).
+   * 핸들러를 먼저 떼어 늦게 오는 close 가 재연결을 한 번 더 걸지 않게 한다.
+   */
+  const forceReconnect = (why: string): void => {
+    if (closedByUser || state === 'unsupported') return;
+    opts.log?.(`채팅 WS 응답 없음 — 다시 연결 (${why})`);
+    const old = ws;
+    ws = null;
+    subscribed = false;
+    stopWatch();
+    if (old) {
+      old.onopen = old.onmessage = old.onclose = old.onerror = null;
+      try {
+        old.close();
+      } catch {
+        /* noop */
+      }
+    }
+    if (pending) detachPending();
+    if (reconnectTimer != null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    attempts = 0;
+    setState('reconnecting');
+    connect();
+  };
+
+  /** 감시 타이머가 프로세스를 붙잡지 않게 한다(Node 시험). RN 타이머에는 없어 아무 일도 하지 않는다. */
+  const unref = <T,>(timer: T): T => {
+    (timer as { unref?: () => void }).unref?.();
+    return timer;
+  };
+
+  const ping = (socket: WebSocket): void => {
+    try {
+      socket.send(JSON.stringify({ type: 'ping' }));
+    } catch {
+      /* 감시가 끊는다 */
+    }
+  };
+
+  /** 구독이 선 동안 침묵을 지켜본다 — 길면 ping 으로 깨워 보고, 더 길면 버리고 새로 붙는다. */
+  const startWatch = (socket: WebSocket): void => {
+    stopWatch();
+    watchTimer = unref(setInterval(() => {
+      if (ws !== socket || !subscribed) return;
+      const silent = now() - lastFrameAt;
+      if (silent > SILENT_MS) forceReconnect('침묵');
+      else if (silent > PING_AFTER_MS) ping(socket);
+    }, WATCH_MS));
+  };
+
   const connect = (): void => {
     reconnectTimer = null;
+    if (closedByUser) return;
+    // 새 연결 = 새 표식(newOriginId 설명). 끊기기 전에 이 화면이 시작한 턴은 이제 다른 화면의 턴처럼 온다.
+    originId = newOriginId();
     try {
       ws = factory(url);
     } catch {
@@ -303,6 +447,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       opts.log?.(`채팅 WS 연결 (${opts.workflowId})`);
       attempts = 0;
       subscribed = false;
+      lastFrameAt = now();
       ws?.send(
         JSON.stringify({
           type: 'subscribe',
@@ -320,10 +465,22 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     };
     ws.onmessage = (evt: MessageEvent) => {
       if (ws !== socket || closedByUser) return;
+      lastFrameAt = now();
+      frames += 1;
       let frame: { type?: string; data?: Record<string, unknown> };
       try {
         frame = JSON.parse(String(evt.data));
       } catch {
+        return;
+      }
+      if (frame.type === 'folders') {
+        // 이 대화의 폴더가 바뀌었다(다른 기기가 연결·해제·옮김). 턴 번호가 없는 소식이다.
+        opts.onFolders?.(frame.data ?? {});
+        return;
+      }
+      if (frame.type === 'model') {
+        // 이 대화의 모델이 바뀌었다(다른 화면에서 골랐다). 턴 번호가 없는 소식이다.
+        opts.onModel?.(frame.data ?? {});
         return;
       }
       if (frame.type === 'heartbeat') {
@@ -345,19 +502,25 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         (frame.type === 'exec' && typeof (frame as { seq?: unknown }).seq === 'number')
       ) {
         const seq = (frame as { seq?: number }).seq;
+        // 구독 응답의 진행분에 이미 든 진행이다 — 다시 이어 붙이면 글이 두 번 찍힌다.
+        if (frame.type === 'exec' && typeof seq === 'number' && seqBaseline > 0 && seq <= seqBaseline) return;
         if (typeof seq === 'number') {
           if (!(lastSeq === 0 || seq === lastSeq + 1)) opts.onPeerTurn?.({ kind: 'gap' });
           lastSeq = seq;
         }
         const d = (frame.data ?? {}) as Record<string, unknown>;
+        // 질문은 본문만, 첨부는 따로 — 옛 서버는 `{input_str, attachments}` 를 JSON 으로 실어 보냈다
+        // (질문 말풍선에 JSON 이 통째로 보이던 자리). 해석은 정본이 한다.
+        const attachments = turnAttachments(Array.isArray(d.attachments) ? d.attachments : d.input);
         if (frame.type === 'turn_started') {
-          opts.onPeerTurn?.({ kind: 'started', input: String(d.input ?? '') });
+          opts.onPeerTurn?.({ kind: 'started', input: turnInputText(d.input), attachments });
         } else if (frame.type === 'turn_ended') {
           opts.onPeerTurn?.({
             kind: 'ended',
             ioId: typeof d.io_id === 'number' ? d.io_id : null,
-            input: String(d.input ?? ''),
+            input: turnInputText(d.input),
             output: String(d.output ?? ''),
+            attachments,
           });
         } else {
           opts.onPeerTurn?.({
@@ -376,6 +539,8 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         lastSeq = typeof (frame.data as { seq?: unknown } | undefined)?.seq === 'number'
           ? ((frame.data as { seq: number }).seq)
           : 0;
+        seqBaseline = lastSeq;
+        startWatch(socket);
         // 다른 기기에서 시작한 턴이 아직 도는가, 그리고 돈다면 **어디까지 왔나**.
         // 앞의 것이 없으면 폰에서는 대화가 끝난 것처럼 보여 그 위에 새 턴을 얹게
         // 되고, 뒤의 것이 없으면 "진행 중" 옆이 빈 말풍선으로 남는다.
@@ -383,6 +548,10 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         const state = parseSubscribed(frame.data);
         opts.onRunning?.(state.running);
         if (state.live) opts.onLiveTurn?.(state.live);
+        // 다시 붙었다 — 끊긴 사이에 시작해 끝난 턴은 어떤 프레임으로도 오지 않는다. 화면이 이력으로
+        // 메우도록 구멍을 알린다(휴대폰은 화면을 끄고 켤 때마다 끊긴다). 첫 구독은 화면이 막 이력을 읽었다.
+        if (subscribedOnce) opts.onPeerTurn?.({ kind: 'gap' });
+        subscribedOnce = true;
         return;
       }
       if (frame.type === 'unsupported') {
@@ -397,9 +566,10 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         const d = frame.data as Record<string, unknown>;
         opts.onServerTurn?.({
           ioId: Number(d.io_id ?? 0),
-          input: String(d.input_data ?? ''),
+          input: turnInputText(d.input_data),
           output: String(d.output_data ?? ''),
           source: String(d.source ?? 'user'),
+          process: toHistoryProcess(d.process),
         });
         return;
       }
@@ -449,6 +619,8 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     ws.onclose = (evt: CloseEvent) => {
       if (ws !== socket) return;
       opts.log?.(`채팅 WS 종료 code=${evt?.code ?? '?'} (${opts.workflowId})`);
+      subscribed = false;
+      stopWatch();
       // 소켓이 끊겼다고 **턴이 실패한 것이 아니다.** 서버 실행은 연결이 아니라
       // 대화에 매여 있어서 그 턴은 계속 돈다 — 사용자가 [정지] 를 누르지 않는 한.
       //
@@ -465,7 +637,11 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
   connect();
 
   return {
-    execute(input: string, attachments: MobileChatAttachment[] = []): Promise<void> {
+    execute(
+      input: string,
+      attachments: MobileChatAttachment[] = [],
+      localFolders: ChatWsLocalFolder[] = [],
+    ): Promise<void> {
       return new Promise<void>((resolve, reject) => {
         if (!(state === 'connected' && subscribed && ws?.readyState === WebSocket.OPEN)) {
           reject(new Error('서버 세션에 연결되지 않았습니다.'));
@@ -492,6 +668,12 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
                 ...(opts.clientDeviceId ? { client_device_id: opts.clientDeviceId } : {}),
                 // 실행은 항상 서버 sandbox — 모바일에는 로컬 실행이 없다.
                 execution_target: 'sandbox',
+                // 이 대화에 연결된 휴대폰 폴더(가상 경로). 파일 도구는 이 안에서만 돈다.
+                local_folders: localFolders.map((folder) => ({
+                  id: folder.id,
+                  name: folder.name,
+                  path: folder.path,
+                })),
               },
             }),
           );
@@ -510,7 +692,15 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
     close() {
       closedByUser = true;
       if (reconnectTimer != null) clearTimeout(reconnectTimer);
-      failPending('closed');
+      reconnectTimer = null;
+      stopWatch();
+      // 화면을 떠나는 것(다른 대화로 옮김)은 실패가 아니다 — 서버의 턴은 계속 돌고, 돌아오면 이어 본다.
+      // 예전에는 여기서 실패로 접어, 옮기는 순간 "closed" 오류가 그 턴의 답 자리에 섰다.
+      if (pending) {
+        const p = pending;
+        pending = null;
+        p.resolve();
+      }
       setState('closed');
       try {
         ws?.close();
@@ -519,6 +709,23 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       }
     },
     state: () => state,
+    resume() {
+      if (closedByUser || state === 'unsupported') return;
+      const socket = ws;
+      if (socket && subscribed && socket.readyState === WebSocket.OPEN) {
+        if (probeTimer != null) return;
+        const seen = frames;
+        ping(socket);
+        probeTimer = unref(setTimeout(() => {
+          probeTimer = null;
+          if (ws === socket && frames === seen) forceReconnect('복귀 확인');
+        }, PROBE_MS));
+        return;
+      }
+      // 붙는 중이면 그 시도를 기다린다. 기다리는 중(백오프)이거나 포기한 것처럼 보이면 지금 붙는다.
+      if (socket && socket.readyState === WebSocket.CONNECTING) return;
+      forceReconnect('복귀');
+    },
   } as ChatWsHandle & { _cb?: ExecCallbacks };
 }
 

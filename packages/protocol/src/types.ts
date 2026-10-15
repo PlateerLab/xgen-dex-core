@@ -144,14 +144,13 @@ export type ChatEvent =
   // detail 은 **원문 그대로** 유지한다(로그·디버깅). info 는 사용자에게 보여줄
   // 형태(코드·제목·안내) — 화면은 info 를, 로그는 detail 을 본다.
   | { kind: 'error'; detail: string; info?: XgenErrorInfo }
-  // 실행 환경 안내(커넥터 전용) — 이 턴이 어디서 도는지. connector_local = 이 PC 의
-  // 사이드카, server_sandbox = 서버 sandbox(로컬 불가 사유 reason 포함),
+  // 실행 환경 안내(커넥터 전용) — 이 턴이 어디서 도는지. connector_local = 이 PC 도구
+  // (채팅에서 연결한 폴더), server_sandbox = 서버 sandbox(사유 reason 포함),
   // blocked = 실행 자체가 차단됨(reason: 'quota_exceeded' 등 — 서버 폴백 없이 턴 종료).
   | {
       kind: 'status';
       surface: 'connector_local' | 'server_sandbox' | 'blocked';
       provider?: string;
-      workspaceDir?: string;
       reason?: string;
       detail?: string;
     }
@@ -173,6 +172,14 @@ export type ChatEvent =
    */
   | { kind: 'detached'; reason: 'stream_closed' | 'network' };
 
+/** 대화에 연결된 폴더 하나 — 서버 요청의 `local_folders` 항목. */
+export interface ChatLocalFolder {
+  id: string;
+  name: string;
+  /** 그 기기의 경로. 데스크톱은 절대 경로, 모바일은 `/<이름>` 가상 경로. */
+  path: string;
+}
+
 export interface ChatRequest {
   workflowId: string;
   workflowName: string;
@@ -193,6 +200,17 @@ export interface ChatRequest {
    * 되돌려 보내지 않는다(자기 스트림으로 이미 받고 있으므로).
    */
   originId?: string;
+  /**
+   * 이 대화에 연결된 이 기기의 폴더. 앱(데스크톱·모바일·CLI·VSCode)은 **늘**
+   * 보낸다 — 빈 목록은 "연결된 폴더 없음"이라 서버가 폴더 도구를 감추고, 필드가
+   * 없으면 옛 앱으로 읽혀 예전 규칙을 따른다.
+   */
+  localFolders?: ChatLocalFolder[];
+  /**
+   * Agent Geny 기억 지도를 이 턴만 끈다(false). 없거나 true 면 에이전트 설정을 따른다 —
+   * 서버의 기억 지도는 기본으로 켜져 있고, 이 값은 사용자가 이 기기에서 끈 선택을 실어 보낸다.
+   */
+  memoryMap?: boolean;
   includeLogs?: boolean;
   includeNodeStatus?: boolean;
   includeToolEvents?: boolean;
@@ -311,16 +329,115 @@ export interface ChatStopResult {
   detail?: string;
 }
 
-/** A past conversation (interaction) for the sidebar. */
+/** 일반 채팅이 아닌 대화의 꼬리표. 서버가 interaction_id 모양으로 정한다(conversation-list.ts). */
+export type ConversationTag = 'deploy' | 'teams' | 'schedule' | 'compare' | 'api' | 'test' | 'canvas';
+
+/** 비교 채팅의 파생 스레드. 부모 대화 한 줄로 보인다. */
+export interface ConversationCompareThread {
+  interactionId: string;
+  workflowId: string;
+  workflowName: string;
+}
+
+/**
+ * 대화 목록의 한 줄 (2026-10-09: ChatGPT·Claude 처럼 대화 단위, 마지막으로 말한 순서).
+ * 제목·꼬리표는 서버가 정한다. 옛 서버에서는 conversation-list.ts 가 같은 규칙으로 만든다.
+ */
 export interface Conversation {
   id: number;
   interactionId: string;
   workflowId: string;
   workflowName: string;
   interactionCount: number;
+  /** 옛 목록 API 의 원문 메타. 새 API 에서는 빈 객체다. 제목은 `title` 을 쓴다. */
   metadata: Record<string, unknown>;
   createdAt: string;
+  /** 마지막으로 말한 시각. 목록 순서의 기준이다. */
   updatedAt: string;
+  /** 붙인 이름, 없으면 첫 메시지 한 줄. 둘 다 없으면 빈 글(화면은 "새 대화"). */
+  title: string;
+  /** 사용자가 이름을 붙였는가. */
+  customTitle: boolean;
+  tag: ConversationTag | null;
+  /** 에이전트가 사라졌다: 이어 갈 수 없고 기록만 볼 수 있다. */
+  agentDeleted: boolean;
+  /** 에이전트 주인. 공유받은 에이전트로 이어 갈 때 쓴다. 모르면 null. */
+  agentOwnerId: number | null;
+  compare: ConversationCompareThread[];
+}
+
+/**
+ * 대화 상태 필터(채팅 기록 관리, 2026-10-10). 서버 /list 의 kind 와 같은 뜻이다.
+ * active = 에이전트가 있고 배포 채팅이 아님, deploy = 배포 채팅(SHA1), deleted = 에이전트가 사라짐.
+ */
+export type ConversationKind = 'all' | 'active' | 'deploy' | 'deleted';
+
+/** 대화 목록 한 쪽. */
+export interface ConversationPage {
+  conversations: Conversation[];
+  /** 다음 쪽을 받을 커서. 없으면 끝이다. */
+  nextCursor: string | null;
+  /** 첫 쪽에만 온다: 에이전트가 사라진 대화 수(목록 머리 [에이전트가 사라진 채팅 제거]). 필터와 상관없다. */
+  agentDeletedCount?: number;
+  /** 첫 쪽에만 온다: 이 상태 필터의 대화 수(필터를 모르는 옛 서버면 없다). */
+  total?: number;
+}
+
+/**
+ * 사이드바 [에이전트] 한 줄(2026-10-10): 대화가 있는 에이전트와 그 대화 수, 마지막으로 말한 대화.
+ * 서버 GET /api/interaction/conversations/agents 가 마지막으로 말한 순서로 준다.
+ */
+export interface ConversationAgent {
+  workflowId: string;
+  workflowName: string;
+  conversationCount: number;
+  /** 마지막으로 말한 시각. */
+  lastActivity: string | null;
+  /** 마지막으로 말한 대화의 제목(빈 글이면 "새 대화"). */
+  lastTitle: string;
+  lastInteractionId: string | null;
+  /** 에이전트가 사라졌다: 새 채팅은 못 열고 지난 대화만 볼 수 있다. */
+  agentDeleted: boolean;
+  agentOwnerId: number | null;
+}
+
+/**
+ * 채팅 검색의 강조 조각. 낱말이 든 자리는 `hit`. 번호가 아니라 조각인 까닭: 서버(파이썬)와
+ * 화면(자바스크립트)은 이모지 같은 글자의 길이를 다르게 센다.
+ */
+export interface SearchTextPart {
+  text: string;
+  hit: boolean;
+}
+
+/** 검색 결과 한 줄의 맞은 자리. */
+export interface ConversationSearchMatch {
+  /** 대화 제목의 조각(빈 제목이면 빈 배열). */
+  title: SearchTextPart[];
+  /** 에이전트 이름의 조각. */
+  agent: SearchTextPart[];
+  /** 맞은 턴의 한 줄 조각. 제목·이름으로만 맞았으면 null. */
+  snippet: SearchTextPart[] | null;
+  /** 조각이 사용자가 보낸 말(input)인가, 에이전트의 답(output)인가. */
+  snippetFrom: 'input' | 'output' | null;
+  /** 맞은 턴의 시각. */
+  matchedAt: string | null;
+}
+
+export interface ConversationSearchHit {
+  conversation: Conversation;
+  match: ConversationSearchMatch;
+}
+
+/** 채팅 검색 결과(마지막으로 말한 순서). */
+export interface ConversationSearchPage {
+  query: string;
+  terms: string[];
+  hits: ConversationSearchHit[];
+  /** 보낸 수보다 더 맞은 대화가 있다. */
+  hasMore: boolean;
+  /** 대화 내용까지 찾았는가. 검색 API 가 없는 옛 서버는 제목·에이전트 이름만 본다(false). */
+  contentSearched: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -471,7 +588,7 @@ export type TeamsEvent =
     };
 
 /**
- * 에이전트 만들기 — 이름과 모델만으로 XGeny 노드 하나짜리 워크플로우.
+ * 에이전트 만들기 — 이름과 모델만으로 Geny 노드 하나짜리 워크플로우.
  *
  * 프로바이더·모델·설정 목록을 여기 적지 않는다. 노드에는 파라미터가 28개 있고 같은
  * 화면이 웹·커넥터·CLI 세 곳에 있다. 세 곳이 각자 적어 두면 노드가 바뀔 때마다 세

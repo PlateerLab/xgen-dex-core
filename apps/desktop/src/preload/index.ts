@@ -8,15 +8,22 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { CHANNELS } from '../main/ipc';
 import type { DesktopNativeMethod, DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
+import type { ChatDownload } from '@dex/protocol/chat-files';
 import type {
   ChatEvent,
   ChatRequest,
-  ArtifactApiDeclaration,
-  ArtifactDetail,
-  ArtifactListResult,
-  ArtifactServingState,
-  ArtifactShareState,
-  ArtifactSummary,
+  AppApiDeclaration,
+  AppDetail,
+  AppListResult,
+  AppServingState,
+  AppShareState,
+  ChatShareInput,
+  ChatShareLink,
+  ChatShareState,
+  ShareAudience,
+  AppStoreListParams,
+  AppStoreListResult,
+  MyAppsResult,
   ChatStopResult,
   ConversationSnapshot,
   CurrentUser,
@@ -30,7 +37,12 @@ import type {
   AgentListQuery,
   AgentListResult,
   HistoryTurn,
+  HistoryFlowItem,
   Conversation,
+  ConversationAgent,
+  ConversationKind,
+  ConversationPage,
+  ConversationSearchPage,
   VoiceConfig,
   TtsSpeakOptions,
   TraceListResult,
@@ -47,6 +59,7 @@ import type {
   WorkspaceFile,
   WorkspaceBinary,
   WorkspaceBinaryPurpose,
+  WorkspaceDocPreview,
   WorkspaceUploadResult,
   NotificationPreferenceUpdate,
   NotificationProfile,
@@ -56,13 +69,17 @@ import type {
   NotificationSystemStatus,
   AgentCreateOptions,
   CreateAgentInput,
+  IdeFailure,
 } from '@dex/protocol';
 import type { ChatFeedback } from '@dex/protocol/feedback';
-import type { ContentFilterResult } from '@dex/protocol/chat-guardrails';
+import type { ConversationModelState } from '@dex/protocol/conversation-model';
+import type { ChatInputCheck } from '@dex/protocol/chat-guardrails';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
+import type { ChatFolderRemote, ChatFolderView } from '../main/chat-folders';
+import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
   BrowserConnectionEvent,
@@ -84,110 +101,7 @@ import type {
   BrowserState,
 } from '@dex/protocol/browser';
 
-/** 로컬 실행 환경 상태(설정 화면) — 메인의 localRuntimeStatus 응답. */
-export interface LocalExecStatus {
-  enabled: boolean;
-  installed: boolean;
-  pythonPath: string;
-  version?: string;
-  sidecarOk?: boolean;
-  runtimeDir: string;
-  daemon: {
-    running: boolean;
-    pid?: number;
-    protocol?: number;
-    runtimeVersion?: string;
-    activeTurns: number;
-    lastError?: string;
-  };
-  cli: {
-    codex: { installed: boolean; path: string; version?: string };
-    claude: { installed: boolean; path: string; version?: string };
-  };
-  /** 서버가 알려준 목표 버전(없으면 서버 v1/미로그인). */
-  server: {
-    runtime?: string;
-    claude?: string | null;
-    codex?: string | null;
-    claudeEnabled?: boolean;
-    codexEnabled?: boolean;
-    /** 서버가 커넥터에 줄 수 있는 CLI 인증(서버 일원화): 'api_key' | 'setup_token' | 'credentials' | null(없음→서버 실행) */
-    claudeAuth?: { mode?: string; ready?: boolean; source?: string | null } | null;
-    codexAuth?: { mode?: string; ready?: boolean; source?: string | null } | null;
-    manifestAt?: number;
-  } | null;
-  converge: { running: boolean; lastRunAt?: number; lastError?: string; summary?: string };
-  /** 부팅 배선 단계 실패(있으면). */
-  bootErrors?: string[];
-  /** 앱 내장 번들 경로(<resources>/python) — 진단 표시용. */
-  bundlePath?: string | null;
-  isPackaged?: boolean;
-  /** 설치 로그 꼬리(인스톨러 + 앱) — 왜 실패했는지 화면에서 바로 본다. */
-  logs?: { path: string; lines: string[] }[];
-  /** 런타임 자가치유 사다리 상태 — 지금 어떤 런타임을 쓰는지(active) + 후보별 진단. */
-  ensure: {
-    phase: 'idle' | 'checking' | 'copying' | 'downloading' | 'ready' | 'failed';
-    message?: string;
-    lastError?: string;
-    lastRunAt?: number;
-    active?: { source: 'install' | 'bundle' | 'legacy'; python: string; version?: string };
-    candidates: {
-      source: 'install' | 'bundle' | 'legacy';
-      runtimeDir: string;
-      python: string;
-      exists: boolean;
-      healthy?: boolean;
-      version?: string;
-      error?: string;
-    }[];
-  };
-}
-
-/** 파일 시스템 상태 (main file-system.FileSystemStatus 미러). */
-/** 동기화 사이클 진행률 — check(서버 확인)/scan(폴더 검사)/apply(파일 전송). */
-export interface SyncProgressLike {
-  phase: 'check' | 'scan' | 'apply';
-  done: number;
-  total: number;
-}
-
-export interface FileSystemStatusLike {
-  loggedIn: boolean;
-  dataRoot: string;
-  cloud: {
-    enabled: boolean;
-    dir: string;
-    /** 서버 소유 키 'user:<id>' — 탐색기가 서버 트리를 읽을 때 쓴다. */
-    owner: string | null;
-    synced: boolean;
-    /** 큐 상태 — 대기열에 서 있으면 'queued' + queuePosition(1-기반). */
-    state: 'idle' | 'queued' | 'syncing';
-    queuePosition?: number;
-    progress?: SyncProgressLike;
-    syncing: boolean;
-    lastSyncAt?: number;
-    lastError?: string;
-  };
-  agents: {
-    enabled: boolean;
-    root: string;
-    list: Array<{
-      workflowId: string;
-      label: string;
-      folder: string;
-      dir: string | null;
-      synced: boolean;
-      state: 'idle' | 'queued' | 'syncing';
-      queuePosition?: number;
-      progress?: SyncProgressLike;
-      syncing: boolean;
-      lastSyncAt?: number;
-      lastError?: string;
-    }>;
-  };
-}
-
-/** 인앱 탐색기 — 드라이브 폴더의 직계 자식 하나. */
+/** 인앱 탐색기 — 파일 저장소 폴더의 직계 자식 하나. */
 export interface WorkspaceEntryLike {
   name: string;
   isDir: boolean;
@@ -297,19 +211,15 @@ const api = {
   agents: {
     list: (query?: AgentListQuery): Promise<AgentListResult> =>
       ipcRenderer.invoke(CHANNELS.agentsList, query),
-    /** 만들기 화면이 그릴 것 — 서버가 Agent XGeny 노드에서 읽어 내려 준다. */
+    /** 만들기 화면이 그릴 것 — 서버가 Agent Geny 노드에서 읽어 내려 준다. */
     createOptions: (): Promise<AgentCreateOptions> =>
       ipcRenderer.invoke(CHANNELS.agentsCreateOptions),
     /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
     create: (input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> =>
       ipcRenderer.invoke(CHANNELS.agentsCreate, input),
+    /** 이 이름의 에이전트가 이미 있는가. 시작 화면이 적는 대로 묻는다. */
+    nameTaken: (name: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.agentsNameTaken, name),
   },
-
-  /**
-   * 로컬 실행 환경 — 설치 폴더의 Python 런타임(사이드카) + Claude Code / Codex CLI.
-   * 커넥터에서 시작한 Agent-XGeny 턴은 자동으로 이 환경에서 돈다(chatStart). 여기는
-   * 상태 표시·설치·서버 버전 수렴([설정 → 일반]).
-   */
 
   user: {
     /** The logged-in user's avatar config (preferences.avatar). Global default. */
@@ -371,13 +281,48 @@ const api = {
     ): Promise<ConversationSnapshot> =>
       ipcRenderer.invoke(CHANNELS.historySnapshot, workflowId, interactionId, name),
     conversations: (): Promise<Conversation[]> => ipcRenderer.invoke(CHANNELS.historyConversations),
+    /** 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다. */
+    conversationPage: (opts?: {
+      limit?: number;
+      cursor?: string | null;
+      kind?: ConversationKind;
+      workflowId?: string;
+    }): Promise<ConversationPage> =>
+      ipcRenderer.invoke(CHANNELS.historyConversationPage, opts ?? {}),
+    /** 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. 순서는 그대로다. */
+    rename: (workflowId: string, interactionId: string, title: string): Promise<{ title: string; customTitle: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.historyRename, workflowId, interactionId, title),
+    /** 대화 지우기(비교 채팅의 파생 스레드까지). */
+    remove: (workflowId: string, interactionId: string, workflowName?: string): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.historyDelete, workflowId, interactionId, workflowName),
+    /** 에이전트가 사라진 대화를 모두 지운다. 지운 수. */
+    purgeDeletedAgents: (): Promise<number> => ipcRenderer.invoke(CHANNELS.historyPurgeDeletedAgents),
+    /** 사이드바 [에이전트]: 대화가 있는 에이전트마다 한 줄, 마지막으로 말한 순서. */
+    conversationAgents: (opts?: { limit?: number }): Promise<ConversationAgent[]> =>
+      ipcRenderer.invoke(CHANNELS.historyConversationAgents, opts ?? {}),
+    /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. */
+    search: (query: string, opts?: { limit?: number; kind?: ConversationKind }): Promise<ConversationSearchPage> =>
+      ipcRenderer.invoke(CHANNELS.historySearch, query, opts ?? {}),
   },
 
-  /** 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 판정은 서버가 한다(웹과 같은 자리). */
+  /** 채팅 공유: 대화를 그 시점까지 얼린 링크. 링크에는 절대 주소(`url`)가 붙어 온다. */
+  chatShares: {
+    state: (
+      workflowId: string, interactionId: string,
+    ): Promise<Omit<ChatShareState, 'share' | 'previous'> & {
+      share: (ChatShareLink & { url: string }) | null;
+      previous: Array<ChatShareLink & { url: string }>;
+    }> => ipcRenderer.invoke(CHANNELS.chatShareState, workflowId, interactionId),
+    create: (input: ChatShareInput): Promise<{ share: ChatShareLink & { url: string }; reused: boolean }> =>
+      ipcRenderer.invoke(CHANNELS.chatShareCreate, input),
+    revoke: (token: string): Promise<void> => ipcRenderer.invoke(CHANNELS.chatShareRevoke, token),
+  },
+
+  /** 채팅 안전 장치: 면책 문구 설정과 통제 정책 입력창 사전 검사. 판정은 서버가 한다(웹과 같은 자리). */
   guardrails: {
     disclaimerEnabled: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.guardDisclaimer),
-    checkContent: (text: string): Promise<ContentFilterResult> =>
-      ipcRenderer.invoke(CHANNELS.guardCheckContent, text),
+    checkInput: (text: string, workflowId?: string | null): Promise<ChatInputCheck> =>
+      ipcRenderer.invoke(CHANNELS.guardCheckInput, text, workflowId ?? null),
   },
 
   /** 답변 평가 — 별점·문제 유형. 웹 채팅과 같은 서버 계약(execution_io 한 건에 하나). */
@@ -413,6 +358,32 @@ const api = {
       ipcRenderer.invoke(CHANNELS.agentTaskRuns, wf, sessionId),
     taskOutput: (wf: string, runId: string): Promise<TaskOutput> =>
       ipcRenderer.invoke(CHANNELS.agentTaskOutput, wf, runId),
+    /** 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것·잠금 여부. */
+    conversationModel: (iid: string, wf: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationModelGet, iid, wf),
+    /** 이 대화의 모델을 바꾼다 — 다음 답변부터. */
+    setConversationModel: (
+      iid: string,
+      wf: string,
+      choice: { provider: string; model: string },
+    ): Promise<ConversationModelState> => ipcRenderer.invoke(CHANNELS.conversationModelSet, iid, wf, choice),
+    /** 에이전트의 모델로 되돌린다. */
+    resetConversationModel: (iid: string, wf: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationModelReset, iid, wf),
+    /** 이 대화의 생각(추론) 값을 바꾼다 — 다음 답변부터. */
+    setConversationThinking: (iid: string, wf: string, thinking: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationThinkingSet, iid, wf, thinking),
+    /** 에이전트의 생각 값으로 되돌린다. */
+    resetConversationThinking: (iid: string, wf: string): Promise<ConversationModelState> =>
+      ipcRenderer.invoke(CHANNELS.conversationThinkingReset, iid, wf),
+    /** 다른 화면이 이 대화의 모델을 바꿨다. */
+    onConversationModelChanged: (
+      cb: (interactionId: string, notice: Record<string, unknown>) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, interactionId: string, notice: Record<string, unknown>) => cb(interactionId, notice);
+      ipcRenderer.on(CHANNELS.conversationModelChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.conversationModelChanged, h);
+    },
     basicInfo: (wf: string): Promise<AgentBasicInfo> =>
       ipcRenderer.invoke(CHANNELS.agentBasicInfo, wf),
     toolsList: (wf: string): Promise<ToolsResult> =>
@@ -428,6 +399,12 @@ const api = {
       path: string,
       purpose?: WorkspaceBinaryPurpose,
     ): Promise<WorkspaceBinary> => ipcRenderer.invoke(CHANNELS.agentWsBinary, wf, path, purpose),
+    /** 문서(docx·pptx·xlsx·hwp)의 서버 렌더 페이지 목록 — [파일 저장소] 와 같은 렌더러. */
+    workspaceDocPreview: (wf: string, path: string): Promise<WorkspaceDocPreview> =>
+      ipcRenderer.invoke(CHANNELS.agentWsDocPreview, wf, path),
+    /** 렌더된 페이지 한 장(`workspaceDocPreview` 가 준 경로 그대로). */
+    workspacePreviewPage: (wf: string, page: string): Promise<WorkspaceBinary> =>
+      ipcRenderer.invoke(CHANNELS.agentWsPreviewPage, wf, page),
     workspaceUpload: (
       wf: string,
       bytes: Uint8Array,
@@ -445,6 +422,49 @@ const api = {
         interactionId,
         attachmentId,
       ),
+  },
+
+  /**
+   * 채팅의 [IDE] 보기. `call` 은 @dex/protocol 의 IdeApi 메서드를 main 이 대신 부른다 —
+   * 실패는 던지지 않고 `{ok:false, …}` 로 온다(저장 충돌의 상세가 살아 있게).
+   * 터미널 소켓은 main 이 열고, 프레임은 `onTerminalEvent` 로 밀려온다.
+   */
+  ide: {
+    call: (
+      method: string,
+      workflowId: string,
+      ...args: unknown[]
+    ): Promise<{ ok: true; value: unknown } | ({ ok: false } & IdeFailure)> =>
+      ipcRenderer.invoke(CHANNELS.ideCall, method, workflowId, ...args),
+    download: (workflowId: string, path: string): Promise<string | null> =>
+      ipcRenderer.invoke(CHANNELS.ideDownload, workflowId, path),
+    terminalOpen: (
+      socket: string,
+      workflowId: string,
+      termId: string,
+      opts: { rows: number; cols: number; cwd?: string },
+    ): Promise<boolean> => ipcRenderer.invoke(CHANNELS.ideTermOpen, socket, workflowId, termId, opts),
+    terminalSend: (socket: string, frame: unknown): void => ipcRenderer.send(CHANNELS.ideTermSend, socket, frame),
+    terminalClose: (socket: string): void => ipcRenderer.send(CHANNELS.ideTermClose, socket),
+    onTerminalEvent: (
+      cb: (
+        event:
+          | { socket: string; type: 'frame'; frame: Record<string, unknown> }
+          | { socket: string; type: 'close'; code: number; reason: string },
+      ) => void,
+    ): (() => void) => {
+      const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
+      ipcRenderer.on(CHANNELS.ideTermEvent, h);
+      return () => ipcRenderer.removeListener(CHANNELS.ideTermEvent, h);
+    },
+    /** 스토리지 변경 알림 — main 이 workspace 소켓을 열고 바뀔 때마다 `onChanged(key)` 를 부른다. */
+    watch: (key: string, workflowId: string): void => ipcRenderer.send(CHANNELS.ideWatch, key, workflowId),
+    unwatch: (key: string): void => ipcRenderer.send(CHANNELS.ideUnwatch, key),
+    onChanged: (cb: (key: string) => void): (() => void) => {
+      const h = (_e: unknown, key: string) => cb(key);
+      ipcRenderer.on(CHANNELS.ideChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.ideChanged, h);
+    },
   },
 
   browser: {
@@ -502,6 +522,12 @@ const api = {
     },
   },
 
+  /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일). `preview` 는 그림을 화면에 그릴 때. */
+  chatFiles: {
+    download: (item: ChatDownload, opts?: { preview?: boolean }): Promise<WorkspaceBinary> =>
+      ipcRenderer.invoke(CHANNELS.chatFileDownload, item, opts),
+  },
+
   chat: {
     /**
      * Start a streamed chat turn. `onEvent` is called for each ChatEvent;
@@ -515,7 +541,8 @@ const api = {
       const h = (_e: unknown, id: string, ev: ChatEvent) => {
         if (id !== streamId) return;
         onEvent(ev);
-        if (ev.kind === 'end' || ev.kind === 'error') {
+        // 분리(detached)도 이 스트림의 마지막 사건이다 — 그 턴의 나머지는 대화 소켓으로 온다.
+        if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
           ipcRenderer.removeListener(CHANNELS.chatEvent, h);
         }
       };
@@ -545,9 +572,64 @@ const api = {
       ipcRenderer.invoke(CHANNELS.chatEndSession, workflowId, interactionId),
   },
 
+  /**
+   * 대화별 폴더 연결 — 그 대화에서 에이전트가 이 PC 의 파일과 터미널을 쓸 수 있는
+   * 범위. 폴더는 네이티브 선택 창으로만 더해진다(경로 문자열을 받지 않는다).
+   */
+  chatFolders: {
+    list: (interactionId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersList, interactionId),
+    /** 선택 창을 열어 고른 폴더를 더한다. 취소하면 목록이 그대로 돌아온다. */
+    add: (interactionId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersAdd, interactionId),
+    remove: (interactionId: string, folderId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersRemove, interactionId, folderId),
+    /** 폴더를 파일 관리자로 연다. */
+    reveal: (interactionId: string, folderId: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersReveal, interactionId, folderId),
+    onChanged: (cb: (interactionId: string, folders: ChatFolderView[]) => void): (() => void) => {
+      const h = (_e: unknown, interactionId: string, folders: ChatFolderView[]) =>
+        cb(interactionId, folders);
+      ipcRenderer.on(CHANNELS.chatFoldersChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersChanged, h);
+    },
+    /** 이 대화의 서버 사본 — 다른 기기에 있는 폴더·켜짐 여부, 이 PC 의 기기 id, 최근 원격 조작. */
+    remote: (interactionId: string): Promise<ChatFolderRemote> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersRemote, interactionId),
+    /** 선택 창을 열어 고른 폴더로 이 대화의 폴더를 옮겨 온다(다른 기기의 연결은 해제된다). */
+    moveHere: (interactionId: string): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersMoveHere, interactionId),
+    onRemoteChanged: (cb: (interactionId: string) => void): (() => void) => {
+      const h = (_e: unknown, interactionId: string) => cb(interactionId);
+      ipcRenderer.on(CHANNELS.chatFoldersRemoteChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersRemoteChanged, h);
+    },
+    onRemoteUse: (cb: (use: RemoteFolderUse) => void): (() => void) => {
+      const h = (_e: unknown, use: RemoteFolderUse) => cb(use);
+      ipcRenderer.on(CHANNELS.chatFoldersRemoteUse, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersRemoteUse, h);
+    },
+    /** IDE [연결된 폴더] — 폴더 안 파일 작업(list·read·save·stat·raw·fs·reveal). 실패는 봉투로 온다. */
+    fs: (
+      interactionId: string,
+      rootId: string,
+      op: string,
+      args: Record<string, unknown>,
+    ): Promise<{ ok: true; value: unknown } | { ok: false; code: string; message: string; detail: Record<string, unknown> }> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersFs, interactionId, rootId, op, args),
+    /** 에이전트의 폴더 도구가 폴더를 바꿨다(인자는 대화 id). */
+    onTouched: (cb: (interactionId: string) => void): (() => void) => {
+      const h = (_e: unknown, interactionId: string) => cb(interactionId);
+      ipcRenderer.on(CHANNELS.chatFoldersTouched, h);
+      return () => ipcRenderer.removeListener(CHANNELS.chatFoldersTouched, h);
+    },
+  },
+
   /** 클립보드 — main 경유. 렌더러 navigator.clipboard 는 조용히 실패할 수 있다. */
   clipboard: {
     write: (text: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.clipboardWrite, text),
+    /** 글만 읽는다(그림·파일은 빈 글). */
+    read: (): Promise<string> => ipcRenderer.invoke(CHANNELS.clipboardRead),
   },
 
   /**
@@ -619,7 +701,7 @@ const api = {
      */
     pickAndUpload: (roomId: string): Promise<TeamsAttachment[]> =>
       ipcRenderer.invoke(CHANNELS.teamsUploadAttachment, roomId),
-    /** 가상 드라이브의 파일(에이전트 산출물)을 그대로 방에 올린다. */
+    /** 파일 저장소의 파일을 그대로 방에 올린다 (drivePath = 저장소 상대 경로 `/폴더/파일`). */
     shareWorkspaceFile: (roomId: string, drivePath: string): Promise<TeamsAttachment> =>
       ipcRenderer.invoke(CHANNELS.teamsShareWorkspaceFile, roomId, drivePath),
     /** 다른 이름으로 저장. 사용자가 취소하면 null. */
@@ -793,8 +875,6 @@ const api = {
       ipcRenderer.on(CHANNELS.openSettingsModal, h);
       return () => ipcRenderer.removeListener(CHANNELS.openSettingsModal, h);
     },
-    /** 네이티브 폴더 선택 다이얼로그 — 절대 경로 또는 null(취소). */
-    pickFolder: (): Promise<string | null> => ipcRenderer.invoke(CHANNELS.pickFolder),
     /** 설치 폴더(생략 시) 또는 지정 폴더를 파일 관리자로 연다. */
     openFolder: (path?: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke(CHANNELS.appOpenFolder, path),
@@ -807,8 +887,7 @@ const api = {
     quit: (): void => ipcRenderer.send(CHANNELS.appQuit),
   },
 
-  /** 파일 시스템 — XGen 저장소(클라우드/에이전트 워크스페이스)를 로컬 폴더로. */
-  /** 같은 계정에 연결된 커넥터 기기 목록 (로컬 컨트롤 상태 패널). */
+  /** 같은 계정에 연결된 커넥터 기기 목록 (설정 > 일반 > 연결된 기기). */
   connectorDevices: (): Promise<{
     devices: Array<{
       deviceId: string;
@@ -821,47 +900,71 @@ const api = {
   }> => ipcRenderer.invoke(CHANNELS.connectorDevices),
 
   /**
-   * 아티팩트 — 에이전트가 만든 화면.
+   * 앱 — 에이전트가 만든 화면.
    *
    * 읽기만 한다. 만드는 것은 에이전트고(workspace 의 약속된 폴더), 파일을 손보는
    * 자리는 스토리지다. `callApi` 는 격리 프레임이 부탁한 alias 를 **사용자
    * 권한으로** 대신 호출하는 통로다 — 프레임 자신에게는 네트워크가 없다.
    */
-  artifacts: {
-    list: (workflowId: string): Promise<ArtifactListResult> =>
-      ipcRenderer.invoke(CHANNELS.artifactList, workflowId),
-    get: (workflowId: string, slug: string): Promise<ArtifactDetail> =>
-      ipcRenderer.invoke(CHANNELS.artifactGet, workflowId, slug),
-    /** 모든 에이전트의 **지금 열리는** 아티팩트 — 사이드바 [아티팩트 모음]. */
-    gallery: (): Promise<{
-      items: Array<ArtifactSummary & { workflowId: string; workflowName: string }>;
-      scanned: number;
-      failed: string[];
-      error?: string;
-    }> => ipcRenderer.invoke(CHANNELS.artifactGallery),
+  apps: {
+    list: (workflowId: string): Promise<AppListResult> =>
+      ipcRenderer.invoke(CHANNELS.appList, workflowId),
+    get: (workflowId: string, slug: string): Promise<AppDetail> =>
+      ipcRenderer.invoke(CHANNELS.appGet, workflowId, slug),
+    /** [앱] 탭의 [내 앱] — 내 에이전트 전부가 만든 앱(서버가 모아 준다). */
+    mine: (): Promise<MyAppsResult> => ipcRenderer.invoke(CHANNELS.appStoreMine),
+    /** [앱] 탭의 [앱 스토어] — 공개 링크로 공유된 앱. */
+    store: (params: AppStoreListParams): Promise<AppStoreListResult> =>
+      ipcRenderer.invoke(CHANNELS.appStoreList, params),
     callApi: (
-      apis: ArtifactApiDeclaration[],
+      apis: AppApiDeclaration[],
       alias: string,
       params?: Record<string, string | number | boolean | undefined> | null,
-    ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.artifactCallApi, apis, alias, params ?? null),
-    /** 프레임의 fetch 를 대신 부른다 — 아티팩트 주소 아래와 /api/ 만. */
+    ): Promise<unknown> => ipcRenderer.invoke(CHANNELS.appCallApi, apis, alias, params ?? null),
+    /** 프레임의 fetch 를 대신 부른다 — 앱 주소 아래와 /api/ 만. */
     http: (
       workflowId: string, slug: string,
       req: { url: string; method: string; headers: Record<string, string>; body: string | null },
     ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string | null; bodyB64?: string }> =>
-      ipcRenderer.invoke(CHANNELS.artifactHttp, workflowId, slug, req),
-    setServing: (workflowId: string, slug: string, serving: boolean): Promise<ArtifactServingState> =>
-      ipcRenderer.invoke(CHANNELS.artifactSetServing, workflowId, slug, serving),
-    /** 절대 주소(`url`)까지 붙여 돌아온다 — 렌더러는 서버 주소를 모른다. */
+      ipcRenderer.invoke(CHANNELS.appHttp, workflowId, slug, req),
+    setServing: (workflowId: string, slug: string, serving: boolean): Promise<AppServingState> =>
+      ipcRenderer.invoke(CHANNELS.appSetServing, workflowId, slug, serving),
+    /**
+     * 공유를 켜고 끄거나 공개 범위를 바꾼다. 이미 공유 중이면 같은 링크를 두고 범위만 바꾼다.
+     * 절대 주소(`url`)까지 붙여 돌아온다(렌더러는 서버 주소를 모른다).
+     */
     setShare: (
       workflowId: string, slug: string, shared: boolean,
-    ): Promise<ArtifactShareState & { url: string }> =>
-      ipcRenderer.invoke(CHANNELS.artifactSetShare, workflowId, slug, shared),
+      opts?: { audience?: ShareAudience; rotate?: boolean },
+    ): Promise<AppShareState & { url: string }> =>
+      ipcRenderer.invoke(CHANNELS.appSetShare, workflowId, slug, shared, opts ?? {}),
+    /** 지금의 공유 상태와 링크(주인만). 공유 창을 다시 열 때 같은 링크를 보여 준다. */
+    getShare: (workflowId: string, slug: string): Promise<AppShareState & { url: string }> =>
+      ipcRenderer.invoke(CHANNELS.appGetShare, workflowId, slug),
     remove: (workflowId: string, slug: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke(CHANNELS.artifactDelete, workflowId, slug),
+      ipcRenderer.invoke(CHANNELS.appDelete, workflowId, slug),
     /** 웹의 같은 화면을 기본 브라우저로 연다. 만들어진 주소를 돌려준다. */
     openWeb: (workflowId: string, slug: string): Promise<string> =>
-      ipcRenderer.invoke(CHANNELS.artifactOpenWeb, workflowId, slug),
+      ipcRenderer.invoke(CHANNELS.appOpenWeb, workflowId, slug),
+    /** 공개 링크(서버가 준 경로)를 기본 브라우저로 연다 — 절대 주소는 main 이 붙인다. */
+    openPublic: (path: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.appOpenPublic, path),
+    /** 카드의 미리보기 그림(서버가 준 `preview_url`) → data URL. 없거나 못 받으면 빈 문자열. */
+    previewImage: (previewUrl: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.appPreviewImage, previewUrl),
+    /** 앱을 띄워 미리보기를 찍어 올린다(사이트, 그리고 지금 도는 앱만). 한 번에 하나씩 main 이 줄 세운다. */
+    capturePreview: (target: {
+      workflow_id: string; slug: string; kind: string; app_url?: string; force?: boolean;
+    }): Promise<{ ok: boolean; preview_url?: string; reason?: string }> =>
+      ipcRenderer.invoke(CHANNELS.appCapturePreview, target),
+    /** 앱 소식을 받기 시작한다(서버의 목록 소켓). 여러 번 불러도 소켓은 하나다. */
+    watch: (): Promise<{ ok: boolean }> => ipcRenderer.invoke(CHANNELS.appsWatch),
+    /** 어느 에이전트의 앱이 바뀌었다(생김·지움·배포·공유) — 다른 기기·웹·에이전트가 바꾼 것도. */
+    onChanged: (cb: (workflowId: string) => void): (() => void) => {
+      const h = (_e: unknown, workflowId: string) => cb(String(workflowId ?? ''));
+      ipcRenderer.on(CHANNELS.appsChanged, h);
+      return () => ipcRenderer.removeListener(CHANNELS.appsChanged, h);
+    },
   },
 
   /** 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)의 실시간 수신. */
@@ -878,6 +981,8 @@ const api = {
         output: string;
         source: string;
         updatedAt: string;
+        /** 이 턴의 작업 과정(도구를 쓴 턴만) — 서버가 실행 기록에서 되살린 것. */
+        process?: HistoryFlowItem[];
       }) => void,
     ): (() => void) => {
       const h = (_e: unknown, turn: Parameters<typeof cb>[0]) => cb(turn);
@@ -890,7 +995,7 @@ const api = {
       cb: (state: {
         interactionId: string;
         running: boolean;
-        live?: { text: string; events: unknown[] } | null;
+        live?: { text: string; events: unknown[]; startedAt?: number; textTotal?: number } | null;
       }) => void,
     ): (() => void) => {
       const h = (_e: unknown, state: Parameters<typeof cb>[0]) => cb(state);
@@ -899,17 +1004,20 @@ const api = {
     },
     /**
      * **다른 화면**(다른 기기·웹 탭)이 돌리는 턴. 시작(질문 본문)·진행(토큰)·
-     * 종료(완결 본문)가 온다. 자기 턴은 서버가 걸러 준다.
+     * 종료(완결 본문)가 온다. 이 창의 턴도 온다(`originId` 가 이 창의 표식) — 스트림이 끊긴 뒤
+     * 그 턴의 나머지를 받는 길이라 서버가 거르지 않는다. 메아리는 화면이 거른다.
      */
     onPeer: (
       cb: (event: {
         kind: 'started' | 'exec' | 'ended' | 'gap';
         interactionId: string;
+        originId?: string;
         input?: string;
         output?: string;
         ioId?: number | null;
         event?: string;
         data?: unknown;
+        attachments?: Array<{ name: string; kind: 'image' | 'file'; mimeType?: string; size?: number; workspacePath?: string }>;
       }) => void,
     ): (() => void) => {
       const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
@@ -922,7 +1030,14 @@ const api = {
      * 다시 읽으면 대화 하나가 도는 동안 목록이 계속 깜빡인다.
      */
     onConversationsChanged: (
-      cb: (event: { kind: string; interactionId: string; workflowId: string; running?: boolean }) => void,
+      cb: (event: {
+        kind: string;
+        interactionId: string;
+        workflowId: string;
+        running?: boolean;
+        /** 목록 소식(touched·updated·deleted)의 원문. 할 일은 @dex/protocol conversationListChange 가 정한다. */
+        data?: Record<string, unknown>;
+      }) => void,
     ): (() => void) => {
       const h = (_e: unknown, event: Parameters<typeof cb>[0]) => cb(event);
       ipcRenderer.on(CHANNELS.conversationsChanged, h);
@@ -930,41 +1045,24 @@ const api = {
     },
   },
 
-  fileSystem: {
-    diagText: (): Promise<string> => ipcRenderer.invoke(CHANNELS.diagText),
+  /** 진단 로그 — 설정 [일반]의 [진단 로그 복사]. */
+  diag: {
+    text: (): Promise<string> => ipcRenderer.invoke(CHANNELS.diagText),
     /** 진단 로그를 **main 의 clipboard 로** 복사 (렌더러 clipboard 는 막힐 수 있다). */
-    diagCopy: (): Promise<{ ok: boolean; chars: number }> => ipcRenderer.invoke(CHANNELS.diagCopy),
+    copy: (): Promise<{ ok: boolean; chars: number }> => ipcRenderer.invoke(CHANNELS.diagCopy),
+  },
 
-    status: (): Promise<FileSystemStatusLike | null> => ipcRenderer.invoke(CHANNELS.fsStatus),
-    setCloudSync: (on: boolean): Promise<FileSystemStatusLike | null> =>
-      ipcRenderer.invoke(CHANNELS.fsSetCloud, on),
-    setAgentSync: (on: boolean): Promise<FileSystemStatusLike | null> =>
-      ipcRenderer.invoke(CHANNELS.fsSetAgents, on),
-    /** 지금 동기화 — workflowId 없으면 전부 ('user:<id>' 는 클라우드). */
-    syncNow: (workflowId?: string): Promise<FileSystemStatusLike | null> =>
-      ipcRenderer.invoke(CHANNELS.fsSyncNow, workflowId),
-    /** 서버 에이전트 목록을 다시 읽는다. */
-    refreshAgents: (): Promise<FileSystemStatusLike | null> =>
-      ipcRenderer.invoke(CHANNELS.fsRefreshAgents),
-    /** 동기화 폴더의 직계 자식 (로컬 실파일). */
-    list: (workflowId: string, rel?: string): Promise<WorkspaceEntryLike[]> =>
-      ipcRenderer.invoke(CHANNELS.fsList, workflowId, rel ?? ''),
-    /** [미러 재구성] — 로컬 클라우드 폴더를 비우고 저장소에서 새로 내려받는다
-     *  (로컬은 통로 — 손실 없음). 탐색기가 권한/사용 중으로 못 지울 때의 정석. */
-    cloudReset: (): Promise<FileSystemStatusLike | null> =>
-      ipcRenderer.invoke(CHANNELS.fsCloudReset),
-    /** 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료의 읽기 전용 관측.
-     *  geny 가 아니라 파일 저장소 스냅숏이다. */
-    cloudServerTree: (): Promise<
-      Array<{ name: string; path: string; is_dir: boolean; size?: number; modified_at?: string }>
-    > => ipcRenderer.invoke(CHANNELS.fsCloudServerTree),
-    /** 동기화 파일 바이트 읽기 — 파일 뷰어 (로컬 실파일). */
-    readFile: (
-      workflowId: string,
-      rel: string,
-    ): Promise<{ ok: boolean; bytes?: Uint8Array; size?: number; mtime?: number; error?: string }> =>
-      ipcRenderer.invoke(CHANNELS.fsReadFile, workflowId, rel),
-    /** 파일 저장소 원바이트 — 클라우드 동기화 OFF 일 때의 뷰어 경로. */
+  /** 파일 저장소 — 탐색기·파일 뷰어가 서버의 파일 저장소를 읽는다. */
+  storage: {
+    /** 탐색기의 에이전트 섹션 — 이 계정의 개인 에이전트. */
+    agents: (): Promise<Array<{ workflowId: string; label: string }>> =>
+      ipcRenderer.invoke(CHANNELS.fsAgents),
+    /** 한 폴더의 직계 자식 ('a/b' 는 저장소 상대 경로, '' 는 루트). */
+    cloudList: (
+      rel?: string,
+    ): Promise<{ ok: boolean; entries: WorkspaceEntryLike[]; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.fsCloudList, rel ?? ''),
+    /** 파일 원바이트 — 파일 뷰어. */
     cloudReadRaw: (
       path: string,
     ): Promise<{ ok: boolean; bytes?: Uint8Array; size?: number; contentType?: string; error?: string }> =>
@@ -979,17 +1077,6 @@ const api = {
       page: string,
     ): Promise<{ ok: boolean; bytes?: Uint8Array; contentType?: string; error?: string }> =>
       ipcRenderer.invoke(CHANNELS.fsCloudOfficePreviewPage, itemId, page),
-    /** 동기화 폴더 안 경로를 OS 로 연다. */
-    openPath: (workflowId: string, rel?: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke(CHANNELS.fsOpenPath, workflowId, rel ?? ''),
-    /** 루트 폴더 열기 — 'cloud' | 'agents' | 'data'. */
-    openRoot: (kind: 'cloud' | 'agents' | 'data'): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke(CHANNELS.fsOpenRoot, kind),
-    onStatus: (cb: (s: FileSystemStatusLike) => void): (() => void) => {
-      const h = (_e: unknown, s: FileSystemStatusLike) => cb(s);
-      ipcRenderer.on(CHANNELS.fsStatusEvent, h);
-      return () => ipcRenderer.removeListener(CHANNELS.fsStatusEvent, h);
-    },
   },
 
   /** Local MCP — host MCP servers here and bridge their tools to your agents. */

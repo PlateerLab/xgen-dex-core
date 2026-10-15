@@ -2,7 +2,7 @@
 // McpBridge 와 동일 프레임 — 서버 무변경으로 모바일 도구가 실린다).
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MobileToolBridge } from '../src/lib/tool-bridge';
+import { MobileToolBridge, toolCallContext } from '../src/lib/tool-bridge';
 import type { ToolAdvert } from '../src/lib/mobile-tools';
 
 class FakeWs {
@@ -42,13 +42,13 @@ const tick = () => new Promise((r) => setTimeout(r, 5));
 
 test('hello 광고 → ready ACK → mcp_call 실행 → mcp_result 응답', async () => {
   const statuses: string[] = [];
-  const calls: Array<{ tool: string; args: unknown }> = [];
+  const calls: Array<{ tool: string; args: unknown; context: unknown }> = [];
   const bridge = new MobileToolBridge({
     wsBase: 'wss://gw.example',
     userId: '7',
     catalog: () => CATALOG,
-    call: async (tool, args) => {
-      calls.push({ tool, args });
+    call: async (tool, args, context) => {
+      calls.push({ tool, args, context });
       return { content: [{ type: 'text', text: '완료' }] };
     },
     onStatus: (s) => statuses.push(`${s.state}:${s.toolCount}`),
@@ -77,9 +77,17 @@ test('hello 광고 → ready ACK → mcp_call 실행 → mcp_result 응답', asy
     server: 'mobile',
     tool: 'Notify',
     args: { title: '안녕', body: '테스트' },
+    // 서버가 보증하는 호출자 신원 — 도구가 어느 대화의 폴더를 쓸지 정한다.
+    context: { workflow_id: 'wf-1', interaction_id: 'chat-9' },
   });
   await tick();
-  assert.deepEqual(calls, [{ tool: 'Notify', args: { title: '안녕', body: '테스트' } }]);
+  assert.deepEqual(calls, [
+    {
+      tool: 'Notify',
+      args: { title: '안녕', body: '테스트' },
+      context: { workflowId: 'wf-1', interactionId: 'chat-9' },
+    },
+  ]);
   const result = ws.sent.find((f) => f.type === 'mcp_result');
   assert.deepEqual(result, {
     type: 'mcp_result',
@@ -279,5 +287,96 @@ test('hello 에 기기 식별이 실린다 — 멀티 디바이스 슬롯 키', 
   assert.equal(ws.sent[0].device_id, 'mob-abc');
   assert.equal(ws.sent[0].device_name, 'Galaxy · 모바일');
   assert.equal(ws.sent[0].device_platform, 'android');
+  bridge.stop();
+});
+
+test('다른 화면에서 온 호출이면 그 화면의 이름이 실린다 — 휴대폰이 알리고, 자리 도구는 막는다', () => {
+  assert.deepEqual(toolCallContext({ interaction_id: 'c1', remote: '1', origin_device_name: '사무실 PC' }), {
+    workflowId: undefined,
+    interactionId: 'c1',
+    remote: true,
+    originName: '사무실 PC',
+  });
+  assert.equal(toolCallContext({ interaction_id: 'c1', remote: '1' }).originName, '다른 기기');
+  assert.equal(toolCallContext({ interaction_id: 'c1' }).remote, undefined);
+});
+
+test('kick — 열려 있다고 믿는 소켓도 카탈로그를 다시 알려 살아 있는지 확인한다 (앱 복귀, 2026-10-02)', async () => {
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => ({ content: [{ type: 'text', text: '' }] }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  const hellos = () => first.sent.filter((f) => (f as { type: string }).type === 'hello').length;
+  assert.equal(hellos(), 1);
+  bridge.kick(); // 뒤에 있던 사이 OS 가 소켓을 놓았을 수 있다 — 이쪽에서는 아직 열려 있다
+  assert.equal(hellos(), 2, '다시 알린다 — 서버의 확인(ready)이 살아 있음을 증명한다');
+  const bridgeAny = bridge as unknown as { ackWatchdog: ReturnType<typeof setTimeout> | null };
+  assert.ok(bridgeAny.ackWatchdog, '확인이 오지 않으면 워치독이 새로 붙는다');
+  bridge.stop();
+});
+
+test('서버 시한(deadline_ms)보다 먼저 스스로 멈추고 사유를 돌려준다 — 도는 일도 끊긴다', async () => {
+  let aborted = false;
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: (_tool, _args, _context, signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener('abort', () => {
+          aborted = true;
+          resolve({ content: [{ type: 'text', text: 'late' }] });
+        });
+      }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'mcp_call', request_id: 'r-slow', server: 'mobile', tool: '_UserPcRun', args: {}, deadline_ms: 1_200 });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(ws.sent.some((f) => f.type === 'mcp_result'), false, '아직 시한 전');
+  // 이 기기의 시한은 서버 시한보다 1초 짧다(1.2초 → 1초).
+  await new Promise((r) => setTimeout(r, 800));
+  const result = ws.sent.find((f) => f.type === 'mcp_result') as { ok: boolean; error: string };
+  assert.equal(result.ok, false);
+  assert.match(result.error, /LOCAL_TIMEOUT.*_UserPcRun/);
+  assert.equal(aborted, true);
+  bridge.stop();
+});
+
+test('서버의 mcp_cancel 이 오면 그 호출을 끊는다', async () => {
+  let aborted = false;
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: (_tool, _args, _context, signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener('abort', () => {
+          aborted = true;
+          resolve({ content: [{ type: 'text', text: 'stopped' }], isError: true });
+        });
+      }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'mcp_call', request_id: 'r-c', server: 'mobile', tool: '_UserPcRun', args: {}, deadline_ms: 60_000 });
+  await tick();
+  ws.recv({ type: 'mcp_cancel', request_id: 'r-c', reason: 'timeout' });
+  await tick();
+  assert.equal(aborted, true);
+  assert.ok(ws.sent.some((f) => f.type === 'mcp_result' && f.request_id === 'r-c'));
   bridge.stop();
 });

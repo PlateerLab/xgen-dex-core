@@ -1,6 +1,12 @@
 #!/usr/bin/env node
-import { describeStreamError } from '@dex/protocol';
+import {
+  CONVERSATION_TAG_LABELS,
+  conversationAgentLabel,
+  conversationDisplayTitle,
+  describeStreamError,
+} from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
+import stringWidth from 'string-width';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
 import { SystemCredentialStore, credentialBackend } from '@dex/engine';
@@ -16,6 +22,7 @@ import { runDeviceCommand } from './device-command';
 import { runSessionCommand } from './session-command';
 import { runCanonicalChatCommand } from './canonical-chat-command';
 import { runCanonicalTuiCommand } from './canonical-tui-command';
+import { chatFolders } from './folders';
 
 /**
  * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
@@ -57,15 +64,17 @@ Usage:
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
   dex chat --canonical --user-id <id> --session-id <uuid> --expected-state-version <n>
            --idempotency-key <stable-key> [--profile <name>] (--message <text>|--stdin) [--json]
-  dex history list [--json]
+           [--folder <path,...> | --no-folder] [--no-memory-map]
+  dex history list [--json]          대화 목록 (마지막으로 말한 순서)
   dex history turns --workflow <id> --interaction <id> [--json]
+  dex history rename --workflow <id> --interaction <id> --title <text>
+                                     빈 제목이면 첫 메시지 제목으로 돌아갑니다
+  dex history delete --workflow <id> --interaction <id>
   dex tools list [--json]
   dex tools status [--profile <name>] [--json]
-  dex tools enable [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--shell] [--allow-dangerous]
-  dex tools configure [--cwd <path>] [--allow <path,...>] [--block <command,...>] [--timeout <ms>]
-                      [--shell|--no-shell] [--allow-dangerous|--no-allow-dangerous]
-  dex tools disable
-  dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>] [--json]
+  dex tools configure [--allow-dangerous|--no-allow-dangerous]
+  dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>]
+                [--folder <path,...>] [--json]
   dex ssh list [--json]
   dex ssh enable | dex ssh disable
   dex ssh test <name> [--json]
@@ -81,23 +90,38 @@ Global options:
   -h, --help        도움말
   -v, --version     버전
 
+이 PC의 파일과 터미널:
+  대화를 시작한 폴더가 그 대화의 작업 공간입니다. 에이전트는 그 폴더 안에서만
+  파일을 읽고 쓰고 명령을 실행합니다. 홈이나 드라이브 루트에서 시작하면 폴더를
+  연결하지 않으니 --folder 로 고르세요. --no-folder 는 폴더 없이 대화합니다.
+  --no-memory-map 은 이 대화에서 에이전트의 기억 지도(지난 답의 근거 · 바뀐 것 안내)를 쓰지 않습니다.
+
 Examples:
   dex profile set corp --server https://xgen.example.com
   dex login --email me@corp.com
   dex agents list
-  dex tools enable --cwd . --allow . --block sudo
-  echo '이 저장소를 설명해줘' | dex chat --agent wf_abc
   echo '계속 설명해줘' | dex chat --canonical --user-id 7 --session-id <uuid> \
     --expected-state-version 3 --idempotency-key terminal-request-1 --stdin
+  cd ~/work/my-repo && echo '이 저장소를 설명해줘' | dex chat --agent wf_abc
 `;
 
 function writeJson(value: unknown): void {
   stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/**
+ * 표 한 칸. 글자 수가 아니라 **화면 폭**으로 맞춘다: 한글은 한 글자가 두 칸이라, 길이로
+ * 자르면 제목(대개 한글)이 들어간 줄마다 다음 칸이 밀린다.
+ */
 function cell(value: unknown, width: number): string {
   const text = String(value ?? '');
-  return text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width);
+  if (stringWidth(text) <= width) return text + ' '.repeat(width - stringWidth(text));
+  let out = '';
+  for (const char of text) {
+    if (stringWidth(out + char) > width - 1) break;
+    out += char;
+  }
+  return out + '…' + ' '.repeat(Math.max(0, width - 1 - stringWidth(out)));
 }
 
 function printAgents(agents: Agent[]): void {
@@ -118,9 +142,13 @@ function printConversations(items: Conversation[]): void {
     stdout.write('대화 기록이 없습니다.\n');
     return;
   }
-  stdout.write(`${cell('INTERACTION ID', 38)}  ${cell('AGENT', 28)}  UPDATED\n`);
+  stdout.write(`${cell('TITLE', 36)}  ${cell('AGENT', 20)}  ${cell('TAG', 8)}  ${cell('UPDATED', 24)}  INTERACTION ID\n`);
   for (const item of items) {
-    stdout.write(`${cell(item.interactionId, 38)}  ${cell(item.workflowName, 28)}  ${item.updatedAt}\n`);
+    const tag = item.tag ? CONVERSATION_TAG_LABELS[item.tag] : '';
+    stdout.write(
+      `${cell(conversationDisplayTitle(item), 36)}  ${cell(conversationAgentLabel(item), 20)}  ${cell(tag, 8)}  ` +
+        `${cell(item.updatedAt, 24)}  ${item.interactionId}\n`,
+    );
   }
 }
 
@@ -144,11 +172,8 @@ function describeEvent(event: ChatEvent): string | null {
 }
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
-  stdout.write(`로컬 컨트롤: ${status.config.enabled ? '켜짐' : '꺼짐'}\n`);
-  stdout.write(`셸 범위: ${!status.config.enabled ? '로컬 컨트롤 꺼짐' : status.config.shellEnabled ? '전체 PC (작업 공간 밖까지 허용)' : '허용 작업 공간 안'}\n`);
-  stdout.write(`작업 폴더: ${status.config.cwd || '(미설정)'}\n`);
-  stdout.write(`허용 경로: ${status.config.allowedRoots.join(', ') || '(작업 폴더)'}\n`);
-  stdout.write(`위험 명령: ${status.config.allowDangerous ? '허용' : '차단'}\n`);
+  stdout.write('작업 범위: 대화를 시작한 폴더 (dex chat --folder 로 바꿀 수 있습니다)\n');
+  stdout.write(`위험 명령: ${status.config.allowDangerous ? '미리 승인됨' : '실행 전에 확인'}\n`);
   stdout.write(
     `브리지: ${
       status.bridge.catalogSynced
@@ -278,10 +303,24 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
     workflowName: option(args, 'name'),
     interactionId: option(args, 'interaction'),
     input,
+    // 이 대화의 작업 공간 — 시작한 폴더(또는 --folder). 에이전트의 파일·터미널
+    // 도구는 이 폴더 안에서만 돈다.
+    localFolders: chatFolders({ noFolder: flag(args, 'no-folder'), folders: csvOption(args, 'folder') }),
+    ...(flag(args, 'no-memory-map') ? { memoryMap: false } : {}),
   });
+  // 통제 정책 [채팅 입력시 차단]: 서버가 받지 않을 글은 보내기 전에 멈춘다(대화 화면 · 웹과 같은 판정).
+  const policy = await engine.checkChatInput({ text: input, workflowId: resolved.workflowId, profile: resolved.profile });
+  if (policy.blocked) throw new DexError('usage_error', policy.message);
   const jsonl = flag(args, 'jsonl');
   if (jsonl) writeJson({ kind: 'start', ...resolved, input: undefined });
-  else stderr.write(`interaction: ${resolved.interactionId}\n`);
+  else {
+    stderr.write(`interaction: ${resolved.interactionId}\n`);
+    stderr.write(
+      resolved.localFolders.length
+        ? `folder: ${resolved.localFolders.join(', ')}\n`
+        : 'folder: (없음 — 이 PC의 파일과 터미널을 쓰지 않습니다)\n',
+    );
+  }
 
   const controller = new AbortController();
   // Ctrl+C 는 사람이 누른 [정지]다 — 스트림을 끊는 것만으로는 서버가 멈추지
@@ -461,72 +500,50 @@ async function run(): Promise<void> {
     return;
   }
   if (command === 'tools' && action === 'list') {
-    // 전체 카탈로그를 보여 주되 **지금 노출 중인지**를 함께 말한다. 노출 목록만
-    // 보여 주면 꺼 둔 사용자에게는 빈 화면이라 "뭘 할 수 있는지" 알 수 없고,
-    // 카탈로그만 보여 주면 꺼 둔 줄 모르고 "왜 안 되지"를 묻게 된다.
+    // 이 PC 가 대화에 빌려 주는 도구. 쓸 수 있는 범위는 그 대화의 폴더다.
     const status = await engine.localToolsStatus();
-    const exposed = new Set(status.tools.map((t) => t.name));
-    if (asJson) writeJson({ enabled: status.config.enabled, catalog: status.catalog, exposed: [...exposed] });
+    if (asJson) writeJson({ catalog: status.catalog, tools: status.tools });
     else {
-      if (!status.config.enabled) {
-        stdout.write('로컬 도구가 꺼져 있습니다 — 아래는 켰을 때 쓸 수 있는 목록입니다.\n');
-        stdout.write('켜기: dex tools enable\n\n');
-      }
-      stdout.write(`${cell('TOOL', 14)}  ${cell('노출', 5)}  DESCRIPTION\n`);
+      stdout.write('대화를 시작한 폴더 안에서 에이전트가 쓸 수 있는 도구입니다.\n\n');
+      stdout.write(`${cell('TOOL', 14)}  DESCRIPTION\n`);
       for (const tool of status.catalog) {
         // 설명 첫 줄만 — 이 도구들의 description 은 모델을 위한 것이라 수십 줄이다.
         // 전문은 --json 으로 본다.
         const summary = String(tool.description ?? '').split('\n')[0] ?? '';
-        stdout.write(
-          `${cell(tool.name, 14)}  ${cell(exposed.has(tool.name) ? '●' : '·', 5)}  ${summary.slice(0, 96)}\n`,
-        );
+        stdout.write(`${cell(tool.name, 14)}  ${summary.slice(0, 96)}\n`);
       }
     }
     return;
   }
-  if (command === 'tools' && (action === 'enable' || action === 'configure')) {
+  if (command === 'tools' && action === 'configure') {
     const current = (await engine.localToolsStatus()).config;
-    const cwd = option(args, 'cwd') || current.cwd || process.cwd();
-    const timeoutRaw = option(args, 'timeout');
-    const timeoutMs = timeoutRaw === undefined ? current.timeoutMs : Number(timeoutRaw);
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {
-      throw new DexError('usage_error', '--timeout은 1000~3600000 사이의 밀리초여야 합니다.');
-    }
-    const allowedRoots = csvOption(args, 'allow') ?? (current.allowedRoots.length ? current.allowedRoots : [cwd]);
-    const blockedCommands = csvOption(args, 'block') ?? current.blockedCommands;
     const allowDangerous = flag(args, 'allow-dangerous')
       ? true
       : flag(args, 'no-allow-dangerous')
         ? false
         : current.allowDangerous;
-    const shellEnabled = flag(args, 'shell')
-      ? true
-      : flag(args, 'no-shell')
-        ? false
-        : current.shellEnabled;
-    const status = await engine.configureLocalTools({
-      enabled: action === 'enable' ? true : current.enabled,
-      shellEnabled,
-      cwd,
-      timeoutMs,
-      allowedRoots,
-      blockedCommands,
-      allowDangerous,
-    });
+    const status = await engine.configureLocalTools({ allowDangerous });
     if (asJson) writeJson(status);
     else printLocalToolsStatus(status);
     return;
   }
-  if (command === 'tools' && action === 'disable') {
-    const status = await engine.configureLocalTools({ enabled: false });
-    if (asJson) writeJson(status);
-    else printLocalToolsStatus(status);
+  if (command === 'tools' && (action === 'enable' || action === 'disable')) {
+    // 켜고 끄는 설정은 없어졌다 — 범위는 대화를 시작한 폴더가 정한다. 옛 스크립트가
+    // 깨지지 않도록 성공으로 끝내되 무엇이 바뀌었는지 알린다.
+    const note =
+      '이 PC의 도구는 더 이상 켜고 끄지 않습니다. 대화를 시작한 폴더(또는 dex chat --folder)가 작업 범위입니다.';
+    if (asJson) writeJson({ ok: true, note });
+    else stdout.write(`${note}\n`);
     return;
   }
   if (command === 'tools' && action === 'run') {
     const tool = args.positionals[2];
     if (!tool) throw new DexError('usage_error', '실행할 로컬 도구 이름이 필요합니다.');
-    const result = await engine.runLocalTool(tool, jsonObjectOption(args, 'args'));
+    const result = await engine.runLocalTool(
+      tool,
+      jsonObjectOption(args, 'args'),
+      chatFolders({ folders: csvOption(args, 'folder') }),
+    );
     if (asJson) writeJson(result);
     else for (const content of result.content) stdout.write(`${content.text}\n`);
     if (result.isError) process.exitCode = 1;
@@ -534,16 +551,14 @@ async function run(): Promise<void> {
   }
   if (command === 'tools' && (action === 'status' || action === 'serve')) {
     let status = await engine.localToolsStatus();
-    if (status.config.enabled) {
-      try {
-        status = await engine.startLocalTools(option(args, 'profile'), action === 'serve' ? 5_000 : 2_000);
-      } catch (error) {
-        if (action === 'serve') throw error;
-        status = {
-          ...status,
-          bridge: { ...status.bridge, error: error instanceof Error ? error.message : String(error) },
-        };
-      }
+    try {
+      status = await engine.startLocalTools(option(args, 'profile'), action === 'serve' ? 5_000 : 2_000);
+    } catch (error) {
+      if (action === 'serve') throw error;
+      status = {
+        ...status,
+        bridge: { ...status.bridge, error: error instanceof Error ? error.message : String(error) },
+      };
     }
     // 멀티 디바이스 — 같은 계정에 붙은 커넥터 기기 전부 (이 CLI 포함).
     let devices: Awaited<ReturnType<typeof engine.listConnectorDevices>> = [];
@@ -563,7 +578,6 @@ async function run(): Promise<void> {
       }
     }
     if (action === 'serve') {
-      if (!status.config.enabled) throw new DexError('local_tools_disabled', '먼저 dex tools enable을 실행하세요.');
       if (!asJson) stderr.write('로컬 도구 브리지가 실행 중입니다. 종료하려면 Ctrl+C를 누르세요.\n');
       try {
         await waitForStopSignal();
@@ -600,6 +614,30 @@ async function run(): Promise<void> {
     const conversations = await engine.listConversations(option(args, 'profile'));
     if (asJson) writeJson(conversations);
     else printConversations(conversations);
+    return;
+  }
+  if (command === 'history' && action === 'rename') {
+    // --title 은 비워도 된다(붙인 이름을 지워 첫 메시지 제목으로 돌아간다). 아예 없으면 실수다.
+    if (!args.options.has('title')) throw new DexError('usage_error', '--title 값이 필요합니다.');
+    const result = await engine.renameConversation(
+      requiredOption(args, 'workflow'),
+      requiredOption(args, 'interaction'),
+      option(args, 'title') ?? '',
+      option(args, 'profile'),
+    );
+    if (asJson) writeJson(result);
+    else stdout.write(`이름: ${conversationDisplayTitle(result)}\n`);
+    return;
+  }
+  if (command === 'history' && action === 'delete') {
+    await engine.deleteConversation(
+      requiredOption(args, 'workflow'),
+      requiredOption(args, 'interaction'),
+      option(args, 'name'),
+      option(args, 'profile'),
+    );
+    if (asJson) writeJson({ ok: true });
+    else stdout.write('대화를 지웠습니다.\n');
     return;
   }
   if (command === 'history' && action === 'turns') {

@@ -228,6 +228,13 @@ export const FilesIcon: React.FC<P> = ({ size = 18, className }) => (
     <path d="M5 8H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-1" />
   </svg>
 );
+/** 채팅 헤더의 [IDE] — 꺾쇠 한 쌍. */
+export const CodeIcon: React.FC<P> = ({ size = 15, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="m16 18 6-6-6-6" />
+    <path d="m8 6-6 6 6 6" />
+  </svg>
+);
 export const FolderIcon: React.FC<P> = ({ size = 15, className }) => (
   <svg {...base(size)} className={className}>
     <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
@@ -351,6 +358,36 @@ export const StarIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
+/** 채운 별 — 평가를 남긴 답변. */
+export const StarFilledIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className} fill="currentColor">
+    <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" />
+  </svg>
+);
+
+/** 확인 — 복사됨 등 끝난 일. */
+export const CheckIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M5 12.5l4.5 4.5L19 7.5" />
+  </svg>
+);
+
+/** 모델 — 칩(반도체) 모양. */
+export const ModelIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <rect x="7" y="7" width="10" height="10" rx="2" />
+    <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
+  </svg>
+);
+
+/** 생각(추론) — 전구. 모델 칩 오른쪽 생각 선택기. */
+export const ThinkingIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M9 18h6M10 21h4" />
+    <path d="M12 3a6 6 0 0 0-3.6 10.8c.4.3.6.8.6 1.2v1h6v-1c0-.4.2-.9.6-1.2A6 6 0 0 0 12 3z" />
+  </svg>
+);
+
 /** 더 보기 — 가로 점 셋. */
 export const MoreIcon: React.FC<P> = ({ size = 16, className }) => (
   <svg {...base(size)} className={className}>
@@ -378,12 +415,59 @@ export const BellOffIcon: React.FC<P> = ({ size = 14, className }) => (
   </svg>
 );
 
-/** 아티팩트 — 에이전트가 만든 화면. 창틀 안에 무언가 그려진 모양. */
-export const ArtifactIcon: React.FC<P> = ({ size = 18, className }) => (
+/** 상세 — 원 안의 i. 채팅 헤더 [상세](에이전트 상세 보기). */
+export const InfoIcon: React.FC<P> = ({ size = 14, className }) => (
+  <svg {...base(size)} className={className}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v5" />
+    <path d="M12 7.5h.01" />
+  </svg>
+);
+
+/** 앱 — 에이전트가 만든 화면. 창틀 안에 무언가 그려진 모양. */
+export const AppIcon: React.FC<P> = ({ size = 18, className }) => (
   <svg {...base(size)} className={className}>
     <rect x="3" y="4" width="18" height="16" rx="2" />
     <path d="M3 9h18" />
     <path d="M8 13h4" />
     <path d="M8 16.5h7" />
+  </svg>
+);
+
+// ── IDE 묶음 (앱 사이드바의 IDE 단추) ──────────────────────────────
+/** IDE 탐색기 — 코드가 든 폴더. 앱의 [탐색기](FilesIcon)와 구별한다. */
+export const FolderCodeIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="M10 10.5 8 13l2 2.5" />
+    <path d="m14 10.5 2 2.5-2 2.5" />
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+  </svg>
+);
+export const SearchIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.3-4.3" />
+  </svg>
+);
+export const GitBranchIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <line x1="6" x2="6" y1="3" y2="15" />
+    <circle cx="18" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M18 9a9 9 0 0 1-9 9" />
+  </svg>
+);
+export const TerminalIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <path d="m7 11 2-2-2-2" />
+    <path d="M11 13h4" />
+    <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+  </svg>
+);
+/** 오른쪽 칸(에이전트 채팅) 보이기·숨기기. */
+export const PanelRightIcon: React.FC<P> = ({ size = 18, className }) => (
+  <svg {...base(size)} className={className}>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M15 3v18" />
   </svg>
 );

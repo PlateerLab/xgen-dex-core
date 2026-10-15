@@ -29,7 +29,7 @@ XGEN 에이전트를 쓰는 세 가지 방법.
 
 | | 무엇 | 받는 것 |
 |---|---|---|
-| **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 워크스페이스 동기화 | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
+| **앱** | 데스크톱 앱. 대화 · 오버레이 아바타 · 브라우저 제어 · 파일 탐색기 · IDE | Windows `.exe` · macOS `.dmg` · Linux `.AppImage` / `.deb` |
 | **CLI** | 터미널. 대화형 UI 와 일회성 명령, 스크립트에서 쓰는 JSON 출력 | npm — [`xgen-dex-cli`](https://www.npmjs.com/package/xgen-dex-cli) |
 | **VSCode 확장** | 편집기 안에서 대화. 사이드바 + 명령 팔레트 | `.vsix` |
 
@@ -110,12 +110,14 @@ dex agents list
 dex chat --agent <workflow-id>
 ```
 
-에이전트에게 이 컴퓨터의 셸과 파일을 열어 주려면 로컬 도구를 켭니다. 기본은 꺼져
-있습니다.
+에이전트는 **대화에 연결한 폴더 안에서만** 이 컴퓨터의 파일과 터미널을 씁니다. 데스크톱
+앱은 채팅 헤더의 [폴더 연결]로, CLI 는 대화를 시작한 폴더로, VS Code 는 열린 작업 영역
+폴더로 연결합니다. 연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않습니다.
 
 ```bash
-dex tools enable --cwd ~/work --allow ~/work
-dex tools list                                   # 무엇이 노출되는지
+cd ~/work/my-repo && dex chat --agent <workflow-id>     # 이 폴더가 대화의 작업 공간
+dex chat --agent <workflow-id> --folder ~/work/a,~/work/b
+dex tools list                                   # 연결된 폴더에서 쓸 수 있는 도구
 ```
 
 새 버전이 나왔는지 확인하고 올립니다.
@@ -246,13 +248,7 @@ Node.js 20 이상.
 
 ```bash
 npm install                        # packages/* + apps/cli + apps/vscode
-npm --prefix apps/desktop install  # 데스크톱은 따로 (electron + 네이티브 FUSE)
-```
-
-리눅스에서 데스크톱을 빌드하려면 FUSE 헤더가 필요합니다(워크스페이스 가상 드라이브):
-
-```bash
-sudo apt-get install libfuse-dev fuse3 pkg-config
+npm --prefix apps/desktop install  # 데스크톱은 따로 (electron)
 ```
 
 `apps/desktop` 이 npm workspace 밖인 이유는 electron 과 네이티브 바인딩이 루트로
@@ -282,5 +278,20 @@ npm --prefix apps/desktop test
 
 ### 빌드와 배포
 
-[GitHub Actions](.github/workflows) 가 합니다. PR 마다 검사를 돌리고, 태그를 밀면 세
-산출물을 만들어 하나의 Release 에 올리고 CLI 를 npm 에 배포합니다.
+[GitHub Actions](.github/workflows) 가 합니다.
+
+- **PR** — 바뀐 영역의 잡만 돕니다(데스크톱·CLI·확장 / 모바일 JS / 모바일 네이티브).
+  문서와 버전 숫자만 바꾼 변경은 무거운 잡을 돌리지 않고, 새로 푸시하면 이전 실행은
+  취소됩니다. main 에 들어간 뒤에는 다시 돌지 않습니다.
+- **릴리스** — Actions → **Release** → Run workflow(main)에 `patch`·`minor`·`major` 또는
+  `x.y.z` 를 넣습니다. 모든 앱·패키지의 버전을 한 값으로 올려 main 에 커밋하고 태그를
+  단 뒤, 데스크톱(3 OS)·CLI·확장·안드로이드·iOS 를 한 번씩 만들어 하나의 Release 에
+  올리고 CLI 를 npm 에 배포합니다. 버전업 PR 은 만들지 않습니다.
+
+**버전은 하나입니다.** 데스크톱·CLI·확장·패키지·모바일(package.json·app.json·iOS
+Info.plist·빌드 번호)이 모두 루트 `package.json` 과 같아야 하고, PR 마다 확인합니다.
+
+```bash
+node scripts/version.mjs check        # 전부 같은지
+node scripts/version.mjs set 1.60.0   # 전부 바꾸기 (릴리스 워크플로가 부른다)
+```

@@ -1,18 +1,11 @@
 /**
  * 탐색기(사이드바) 순수 모델 — React 없이 단위 테스트되는 부분.
  *
- * 탐색기는 XGen 저장소들을 섹션으로 보여준다:
+ * 탐색기는 서버의 XGen 저장소들을 섹션으로 보여준다(이 PC 에 내려받아 두지 않는다):
  *
- *     [XgenCloud]            ← 사용자의 클라우드 저장소
- *     [<에이전트 이름>]        ← 각 에이전트의 자기 워크스페이스 (**전부** — 연결
- *                              여부와 무관하게 보인다)
- *
- * 읽기 경로는 동기화 여부가 정한다:
- *   · 동기화 ON  → 로컬 실파일 (fileSystem.list — <dataRoot>/cloud,
- *                  <dataRoot>/agent_workspace/<이름>)
- *   · 동기화 OFF → 서버 평면 트리 (agentData.workspaceTree — 읽기 전용 관측)
+ *     [파일 저장소]          ← 사용자의 파일 저장소 (fs:cloud-list 로 폴더 단위 조회)
+ *     [<에이전트 이름>]       ← 각 에이전트의 워크스페이스 (agentData.workspaceTree 평면 목록)
  */
-import type { FileSystemStatusLike } from '../../../preload/index';
 
 export interface ExplorerSection {
   /** 접힘 상태의 키 — 안정적이어야 한다. */
@@ -20,45 +13,30 @@ export interface ExplorerSection {
   /** 섹션 헤더에 보이는 이름. */
   title: string;
   kind: 'cloud' | 'agent';
-  /** 서버 소유 키 — cloud 는 'user:<id>', agent 는 workflowId. */
+  /** 캐시·탭 키 — cloud 는 'cloud', agent 는 workflowId. */
   workflowId: string;
-  /** 로컬로 동기화되어 있는가 (읽기 경로 + OS 열기 가능 여부). */
-  synced: boolean;
-  /** 로컬 절대 경로 (동기화 시). */
-  dir?: string | null;
-  syncing?: boolean;
-  lastError?: string;
 }
 
-/** 클라우드 + 모든 에이전트 → 섹션 목록. XgenCloud 가 항상 먼저다. */
-export function sectionsFor(status: FileSystemStatusLike | null): ExplorerSection[] {
-  if (!status) return [];
-  const out: ExplorerSection[] = [];
-  if (status.cloud.owner) {
-    out.push({
-      id: 'cloud',
-      title: '파일 저장소',
-      kind: 'cloud',
-      workflowId: status.cloud.owner,
-      synced: status.cloud.enabled && status.cloud.synced,
-      dir: status.cloud.enabled ? status.cloud.dir : null,
-      syncing: status.cloud.syncing,
-      lastError: status.cloud.lastError,
-    });
-  }
-  for (const a of status.agents.list) {
-    out.push({
+/** 탐색기에 보이는 에이전트 — 서버 목록의 이름만 쓴다. */
+export interface ExplorerAgent {
+  workflowId: string;
+  label: string;
+}
+
+/** 파일 저장소의 섹션 키. */
+export const CLOUD_SECTION_KEY = 'cloud';
+
+/** 파일 저장소 + 모든 에이전트 → 섹션 목록. 파일 저장소가 항상 먼저다. */
+export function sectionsFor(agents: ExplorerAgent[]): ExplorerSection[] {
+  return [
+    { id: 'cloud', title: '파일 저장소', kind: 'cloud', workflowId: CLOUD_SECTION_KEY },
+    ...agents.map((a) => ({
       id: `agent:${a.workflowId}`,
       title: a.label,
-      kind: 'agent',
+      kind: 'agent' as const,
       workflowId: a.workflowId,
-      synced: a.synced,
-      dir: a.dir,
-      syncing: a.syncing,
-      lastError: a.lastError,
-    });
-  }
-  return out;
+    })),
+  ];
 }
 
 export interface ExplorerEntry {
@@ -131,15 +109,4 @@ export function formatSize(bytes: number): string {
     i++;
   }
   return `${v >= 10 ? Math.round(v) : Math.round(v * 10) / 10}${units[i]}`;
-}
-
-/** 마지막 동기화 시각 표시. */
-export function syncedAgo(lastSyncAt: number | undefined, now: number): string {
-  if (!lastSyncAt) return '';
-  const s = Math.floor((now - lastSyncAt) / 1000);
-  if (s < 5) return '방금 동기화';
-  if (s < 60) return `${s}초 전 동기화`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}분 전 동기화`;
-  return `${Math.floor(m / 60)}시간 전 동기화`;
 }

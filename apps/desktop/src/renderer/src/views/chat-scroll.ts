@@ -124,7 +124,8 @@ export function useStickToBottom(
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, [ref]);
+    // resetKey — 같은 대화라도 로그 요소가 새로 그려지면(채팅 ↔ IDE) 새 요소에 다시 붙는다.
+  }, [ref, resetKey]);
 
   // 새 글·도구 결과가 붙을 때 — 붙어 있을 때만 따라 내려간다.
   useEffect(() => {

@@ -86,6 +86,8 @@ import {
 import type { AgentViewerSub } from './workspace-layout';
 import { IdeView } from '@dex/ide';
 import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
+import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
+import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
 
 /** [Trigger] 행 — Job/sub-agent 결과가 세션을 깨운 턴.
  *
@@ -228,13 +230,20 @@ function cleanForSpeech(text: string): string {
  *  문장부호(./!/?/…/。/！/？) + 공백/개행, 또는 빈 줄 경계. 너무 짧은 조각
  *  (MIN_TTS_CHUNK 미만)은 다음 경계까지 기다린다. */
 const MIN_TTS_CHUNK = 12;
-function sentenceCut(pending: string): number {
+/**
+ * 기본은 마지막 완결 문장의 끝. perSentence(미리 합성)면 첫 완결 문장의 끝 — 마지막 문장 끝에서
+ * 자르면 답이 빨리 쏟아질 때 여러 문장이 한 덩어리로 묶여 합성이 길어지고 첫 소리가 늦는다.
+ * 한 문장씩 잘라 문장마다 바로 합성을 시작한다.
+ */
+function sentenceCut(pending: string, perSentence = false): number {
   let cut = 0;
   const re = /[.!?…。！？](?=["')\]]?(\s|$))|\n{2,}/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(pending)) !== null) {
     const end = m.index + m[0].length;
-    if (end >= MIN_TTS_CHUNK) cut = end;
+    if (end < MIN_TTS_CHUNK) continue;
+    if (perSentence) return end;
+    cut = end;
   }
   return cut;
 }
@@ -420,11 +429,22 @@ export const Chat: React.FC<{
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  // 실험: 말하는 도중 실행 — 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 스트림으로 동작한다.
+  const streamVoice = useVoiceStreamAvailable();
+  // 켜면 끌 때까지 계속 듣는다 — 말할 때마다 조작하고, 화면 조작으로 끝난 말은 채팅·TTS 없이 기록만 남긴다.
+  const [voiceLoopOn, setVoiceLoopOn] = useState(false);
+  const [voiceLog, setVoiceLog] = useState<string[]>([]);
   // TTS playback refs — a simple serial queue so replies never overlap.
-  const ttsQueueRef = useRef<string[]>([]);
+  // 읽을 문장과 그 합성. 미리 합성(ttsAhead)이 켜져 있으면 넣는 즉시 합성을 시작해 두고 재생만 차례로
+  // 한다 — 합성을 재생 뒤에 줄 세우면 문장마다 합성 시간(0.7~1초)만큼 끊겨 텍스트보다 점점 늦어진다.
+  const ttsQueueRef = useRef<Array<{ text: string; audio?: Promise<Blob> }>>([]);
   const playingRef = useRef(false);
   // 기기 로컬 볼륨 (0~300%) — 100% 초과 부스트는 WebAudio GainNode 로.
   const volumeRef = useRef(100);
+  // 음성 대화 지침 — 음성으로 보낸 턴에만 붙인다(기기 설정, 기본 꺼짐, 빈 문자열이면 끔).
+  const voiceStyleRef = useRef<string>('');
+  // TTS 문장별 미리 합성(기기 설정, 기본 꺼짐).
+  const ttsAheadRef = useRef(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   const bufferSrcRef = useRef<AudioBufferSourceNode | null>(null);
@@ -677,12 +697,12 @@ export const Chat: React.FC<{
   // 직접 디코드하므로 CSP/MIME 과 무관하고, onended 단일 경로로 직렬이 보장된다.
   const playNext = useCallback(async () => {
     if (playingRef.current) return;
-    const text = ttsQueueRef.current.shift();
-    if (!text) return;
+    const item = ttsQueueRef.current.shift();
+    if (!item) return;
     playingRef.current = true;
     const epoch = ttsEpochRef.current;
     try {
-      const blob = await xgen.voice.speak(text);
+      const blob = await (item.audio ?? xgen.voice.speak(item.text));
       if (ttsEpochRef.current !== epoch) return;
       let ctx = audioCtxRef.current;
       if (!ctx || ctx.state === 'closed') {
@@ -740,7 +760,12 @@ export const Chat: React.FC<{
     (text: string) => {
       const t = text.trim();
       if (!t || mutedRef.current) return;
-      ttsQueueRef.current.push(t);
+      let audio: Promise<Blob> | undefined;
+      if (ttsAheadRef.current) {
+        audio = xgen.voice.speak(t);
+        audio.catch(() => undefined); // 중단(stopTts)으로 버려진 합성의 실패는 조용히
+      }
+      ttsQueueRef.current.push({ text: t, audio });
       void playNext();
     },
     [playNext],
@@ -790,6 +815,7 @@ export const Chat: React.FC<{
       text: string,
       images: StagedChatImage[] = [],
       selections: BrowserSelectionResult[] = [],
+      voice = false,
     ) => {
       let shot: { dataUrl?: string; sourceName?: string; width?: number; height?: number } | null =
         null;
@@ -820,18 +846,26 @@ export const Chat: React.FC<{
       jumpToBottom(false);
       // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
       // 답변은 백그라운드에서 계속 도착한다.
-      sessionStore.send(session.key, text, shot, [...images, ...selectionImages], selections, () => {
-        if (activeSessionKey.current !== session.key) return;
-        setInput((current) => current || text);
-        const existing = stagedImagesRef.current;
-        replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
-      });
+      sessionStore.send(
+        session.key,
+        text,
+        shot,
+        [...images, ...selectionImages],
+        selections,
+        () => {
+          if (activeSessionKey.current !== session.key) return;
+          setInput((current) => current || text);
+          const existing = stagedImagesRef.current;
+          replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
+        },
+        voice ? { voiceStyle: voiceStyleRef.current } : undefined,
+      );
     },
     [session.key, screenCaptureOn, jumpToBottom],
   );
 
   const send = useCallback(
-    async (override?: string) => {
+    async (override?: string, opts?: { voice?: boolean }) => {
       const text = (override ?? input).trim();
       // Quick Chat/STT 가 override 텍스트로 들어올 때 메인 작성기에 대기 중인 그림을
       // 몰래 가져가지 않는다. +/붙여넣기 그림은 해당 작성기에서 직접 보낼 때만 간다.
@@ -884,7 +918,7 @@ export const Chat: React.FC<{
         }
         // 실을 게 없으면 물을 것도 없다 — 그냥 보낸다.
       }
-      await dispatch(text, images, selections);
+      await dispatch(text, images, selections, !!opts?.voice);
     },
     [input, busy, preparingImages, session.key, dispatch, replaceStagedImages, policy],
   );
@@ -980,10 +1014,60 @@ export const Chat: React.FC<{
     setRecording(false);
   }, []);
 
+  // ── 실험: 계속 듣기 — 빠른 브라우저 조작이 켜져 있으면 마이크 버튼이 켜기/끄기다(voice-loop). 말이 시작되면 main 이
+  //    실시간 STT 로 듣고 말하는 도중에 조작한다. 말이 끝나면: 화면 조작으로 끝났으면 기록만(채팅·TTS 없음),
+  //    아니면(질문·여러 단계·못 한 말) 채팅으로 보낸다. 앱이 TTS 로 말하는 동안은 듣지 않는다.
+  const { state: loopState } = useVoiceLoop({
+    enabled: streamVoice && voiceLoopOn,
+    workflowId: agent.workflowId,
+    isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
+    onPartial: (t) => setInput(t),
+    onResult: async (r) => {
+      setInput('');
+      if (!r.text) return;
+      // 한두 글자짜리 처리 못 한 말("그.", "음")은 말버릇·잡음 — 채팅으로 보내지 않는다.
+      if (!r.actions.length && r.text.replace(/[\s.,!?。…]/g, '').length <= 2) {
+        setVoiceLog((log) => [...log.slice(-2), `무시: ${r.text}`]);
+        return;
+      }
+      if (r.actions.length && !r.unhandled) {
+        const line = r.actions.map((a) => (a.text ? `${a.display}에 "${a.text}"` : a.display)).join(' → ');
+        setVoiceLog((log) => [...log.slice(-2), `실행: ${line}`]);
+        return;
+      }
+      // 계속 듣기는 주변 소리도 듣는다 — 주변 소리·인식 환각으로 보이는 말은 채팅으로 보내지 않는다:
+      // 한글이 거의 없는 말(TV·영상의 외국어), 같은 문장을 세 번 이상 되풀이한 말(인식기 환각의 전형). 두 번은 사람도
+      // 한다("왜 무시했지? 왜 무시했지?") — 서버가 마지막 토막을 두 번 보내던 중복은 main 이 걸러 낸다.
+      const letters = r.text.replace(/[^\p{L}]/gu, '');
+      const hangul = r.text.replace(/[^가-힣]/g, '').length;
+      const sentences = r.text.split(/(?<=[.?!])\s+/).map((x) => x.replace(/[\s.,!?]+/g, '')).filter(Boolean);
+      const counts = new Map<string, number>();
+      for (const x of sentences) counts.set(x, (counts.get(x) ?? 0) + 1);
+      const repeated = [...counts.values()].some((n) => n >= 3);
+      if ((letters.length >= 6 && hangul / letters.length < 0.3) || repeated) {
+        setVoiceLog((log) => [...log.slice(-2), `무시(주변 소리로 보임): ${r.text}`]);
+        return;
+      }
+      if (busy) {
+        setVoiceLog((log) => [...log.slice(-2), `답하는 중이라 보내지 못함: ${r.text}`]);
+        return;
+      }
+      setVoiceLog((log) => [...log.slice(-2), `채팅으로: ${r.text}`]);
+      await send(r.text, { voice: true });
+    },
+  });
+  useEffect(() => {
+    if (!voiceLoopOn) setVoiceLog([]);
+  }, [voiceLoopOn]);
+
   const toggleMic = useCallback(() => {
+    if (streamVoice) {
+      setVoiceLoopOn((v) => !v);
+      return;
+    }
     if (recording) stopRecording();
     else void startRecording();
-  }, [recording, startRecording, stopRecording]);
+  }, [streamVoice, recording, startRecording, stopRecording]);
 
   // Load voice config (server hints) + device-local overrides; track live changes.
   useEffect(() => {
@@ -1015,11 +1099,15 @@ export const Chat: React.FC<{
         if (!alive) return;
         setLocalVoice({ input: cfg.voiceInput !== false, output: cfg.voiceOutput !== false });
         volumeRef.current = typeof cfg.voiceVolume === 'number' ? cfg.voiceVolume : 100;
+        voiceStyleRef.current = cfg.voiceReplyStyleOn === true ? (cfg.voiceReplyStyle ?? DEFAULT_VOICE_REPLY_STYLE) : '';
+        ttsAheadRef.current = cfg.voiceTtsAhead === true;
       })
       .catch(() => undefined);
     const off = xgen.config.onChange((cfg) => {
       setLocalVoice({ input: cfg.voiceInput !== false, output: cfg.voiceOutput !== false });
       volumeRef.current = typeof cfg.voiceVolume === 'number' ? cfg.voiceVolume : 100;
+      voiceStyleRef.current = cfg.voiceReplyStyleOn === true ? (cfg.voiceReplyStyle ?? DEFAULT_VOICE_REPLY_STYLE) : '';
+      ttsAheadRef.current = cfg.voiceTtsAhead === true;
       // 재생 중에도 즉시 반영
       if (gainRef.current)
         gainRef.current.gain.value = Math.max(0, Math.min(300, volumeRef.current)) / 100;
@@ -1062,11 +1150,14 @@ export const Chat: React.FC<{
     const pending = last.text.slice(spokenRef.current);
     if (!pending) return;
     if (last.streaming) {
-      const cut = sentenceCut(pending);
-      if (cut > 0) {
-        const chunk = cleanForSpeech(pending.slice(0, cut));
+      // 완결 문장까지 — 미리 합성이면 한 문장씩 잘라 각자 바로 합성을 시작한다.
+      let rest = pending;
+      const perSentence = ttsAheadRef.current;
+      for (let cut = sentenceCut(rest, perSentence); cut > 0; cut = sentenceCut(rest, perSentence)) {
+        const chunk = cleanForSpeech(rest.slice(0, cut));
         if (chunk) enqueueTts(chunk);
         spokenRef.current += cut;
+        rest = rest.slice(cut);
       }
     } else {
       const tail = cleanForSpeech(pending);
@@ -1110,7 +1201,7 @@ export const Chat: React.FC<{
   }, [avatarState]);
 
   // Quick-chat: a message from the global hotkey bar sends to this agent.
-  useEffect(() => xgen.quickChat.onQuickSend((t) => send(t)), [send]);
+  useEffect(() => xgen.quickChat.onQuickSend((t, o) => send(t, o?.voice ? { voice: true } : undefined)), [send]);
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
   // 작업 과정 표시는 답마다가 아니라 채팅 헤더의 [작업 과정] 한 곳에서 켜고 끈다(모든 대화에 적용)
@@ -1741,6 +1832,26 @@ export const Chat: React.FC<{
         {/* Teams 문맥 칩 — 켜져 있다는 사실이 **항상** 보여야 한다. 화면 캡처
             토글과 같은 원칙이다: 켜 둔 것을 잊고 남의 대화를 흘려보내는 것이
             이 기능의 유일한 위험이다. */}
+        {/* 실험: 계속 듣기 상태 — 듣는 중/처리 중과 최근 조작 기록 몇 줄 */}
+        {voiceLoopOn && (
+          <div className="voice-loop-status" role="status" aria-live="polite">
+            <div className="voice-loop-head">
+              <span className={`voice-loop-dot ${loopState}`} />
+              {loopState === 'hearing'
+                ? '듣는 중…'
+                : loopState === 'thinking'
+                  ? '처리 중…'
+                  : loopState === 'armed'
+                    ? '계속 듣기 — 말하면 바로 조작합니다'
+                    : '마이크 준비 중…'}
+            </div>
+            {voiceLog.map((line, i) => (
+              <div key={i} className="voice-loop-line" title={line}>
+                {line}
+              </div>
+            ))}
+          </div>
+        )}
         {/* 입력창 위 도구 줄 — [Teams 대화 붙이기] 와 그 오른쪽의 모델 선택기. */}
         <div className="composer-tools">
         {chip ? (
@@ -1921,12 +2032,23 @@ export const Chat: React.FC<{
           </button>
           {sttOn && (
             <button
-              className={`composer-mic${recording ? ' recording' : ''}`}
+              className={`composer-mic${recording || voiceLoopOn ? ' recording' : ''}`}
               onClick={toggleMic}
-              disabled={transcribing || busy}
-              title={transcribing ? '변환 중…' : recording ? '녹음 중지' : '음성 입력'}
+              disabled={streamVoice ? false : transcribing || busy}
+              title={
+                streamVoice
+                  ? voiceLoopOn
+                    ? '계속 듣기 끄기'
+                    : '계속 듣기 — 말할 때마다 바로 조작합니다'
+                  : transcribing
+                    ? '변환 중…'
+                    : recording
+                      ? '녹음 중지'
+                      : '음성 입력'
+              }
               aria-label="음성 입력"
             >
+              {/* 계속 듣기는 마이크 아이콘 그대로(켜짐은 색·맥박으로) — 정지 아이콘이면 옆의 답 중지 버튼과 구분이 안 된다 */}
               {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
             </button>
           )}

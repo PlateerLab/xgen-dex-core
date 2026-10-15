@@ -158,11 +158,15 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
+import { configureFastAct, fastActEnabled, tryFastAct } from './fast-act-runner';
+import type { ChoiceAnswer } from './fast-act';
+import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
 import { allowedBrowserUrl } from './browser-security';
 import type {
   BrowserHistoryListRequest,
   BrowserHistoryRemoveRequest,
   BrowserHistorySuggestionsRequest,
+  BrowserPageInfo,
   BrowserPopupPermission,
   BrowserPopupResolveRequest,
 } from '@dex/protocol/browser';
@@ -189,6 +193,15 @@ import {
 // keychain.ts 에서 별도로 'xgen-connector' 로 고정돼 있어 이 값과 무관하다).
 // app.getPath 를 부르는 어떤 코드보다도 먼저 실행돼야 하므로 파일 최상단에 둔다.
 app.setName('XGEN-Connector');
+// 실험용 별도 프로필 — 설치본과 데이터 폴더·단일 실행 잠금을 나눠 나란히 띄운다
+// (키체인 서비스 이름도 keychain.ts 에서 같은 값으로 나뉜다).
+if (process.env.DEX_PROFILE) app.setName(`XGEN-Connector-${process.env.DEX_PROFILE}`);
+// 시험 전용: 녹음 파일을 마이크로 (Chromium 가짜 장치) — 실시간 음성 경로를 마이크 버튼부터 끝까지 확인할 때.
+if (process.env.DEX_VOICE_TEST === '1' && process.env.DEX_FAKE_MIC) {
+  app.commandLine.appendSwitch('use-fake-device-for-media-stream');
+  app.commandLine.appendSwitch('use-file-for-fake-audio-capture', process.env.DEX_FAKE_MIC);
+  app.commandLine.appendSwitch('disable-features', 'AudioServiceSandbox'); // 가짜 장치가 파일을 읽게
+}
 // NSIS 가 만드는 Start Menu shortcut 의 AUMID(electron-builder appId)와 반드시
 // 같아야 Windows 알림 아이콘/클릭 활성화가 안정적으로 연결된다.
 if (process.platform === 'win32') app.setAppUserModelId('com.plateerlab.xgen.connector');
@@ -1237,14 +1250,14 @@ function toggleQuickChat(): void {
 }
 
 /** Relay a quick-chat message into the main window's active agent chat. */
-function deliverQuickChat(text: string): { ok: boolean; error?: string } {
+function deliverQuickChat(text: string, opts?: { voice?: boolean }): { ok: boolean; error?: string } {
   const body = (text ?? '').trim();
   if (!body) return { ok: false, error: '메시지를 입력하세요.' };
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: '앱 창을 열어주세요.' };
   // 퀵 챗은 퀵 챗일 뿐 — 메인 창의 상태(최소화/숨김/포커스)를 절대 건드리지
   // 않는다. 숨김/최소화 창에도 IPC 는 정상 전달되고 스트림은 main 프로세스가
   // 소유하므로, 대화는 뒤에서 진행되고 나중에 창을 열면 그대로 보인다.
-  mainWindow.webContents.send(CHANNELS.quickSend, body);
+  mainWindow.webContents.send(CHANNELS.quickSend, body, opts?.voice ? { voice: true } : undefined);
   return { ok: true };
 }
 
@@ -1283,6 +1296,12 @@ function showMain(): void {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+/** 브라우저 탭을 그 대화 옆에 꺼낸다(렌더러 placeBrowserBesideChat) — 에이전트 도구·빠른 조작 공용. */
+function revealBrowserPage(page: BrowserPageInfo): void {
+  showMain();
+  safeSend(mainWindow, CHANNELS.browserRevealEvent, page);
 }
 
 function openMainSettings(): void {
@@ -2067,10 +2086,7 @@ function syncMcp(): void {
     cfg.browser?.enabled === true,
     // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
     (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
-    (page) => {
-      showMain();
-      safeSend(mainWindow, CHANNELS.browserRevealEvent, page);
-    },
+    revealBrowserPage,
   );
   getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
@@ -2537,6 +2553,55 @@ ipcMain.handle(
     return getClient().voice.transcribe(blob, language);
   },
 );
+// 빠른 브라우저 조작(실험) — 설정 fastAct 를 켜고 로그인했을 때 XGEN 판단 API 로 묻는다.
+// 판단 결과로 바로 조작하고, 실패하면 늘 서버 에이전트로 넘어가므로 401 이 로그아웃으로 번지지 않게
+// auth: false 로 부르고, 인증 오류면 토큰을 한 번 회전해 다시 묻는다.
+configureFastAct({
+  enabled: () => loadConfig().fastAct === true && !!currentUserId(),
+  post: async (body) => {
+    const ask = () => getClient().decision.systemone(body.state, body.questions, { timeoutMs: 8_000, auth: false });
+    let res;
+    try {
+      res = await ask();
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if ((status !== 401 && status !== 403) || !(await refreshAuthToken())) throw err;
+      res = await ask();
+    }
+    // 고속 조작은 choice 질문만 보낸다.
+    return res.answers as Record<string, ChoiceAnswer>;
+  },
+  reveal: revealBrowserPage,
+});
+// 실험: 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다.
+const voiceStreams = new VoiceStreamHub(() =>
+  currentUserId()
+    ? {
+        baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+        token: async () => (await liveAccessToken()) || '',
+        allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+      }
+    : null,
+);
+const voiceStreamEmit =
+  (sender: Electron.WebContents) =>
+  (ev: VoiceStreamEvent): void => {
+    if (!sender.isDestroyed()) sender.send(CHANNELS.voiceStreamEvent, ev);
+  };
+ipcMain.handle(CHANNELS.voiceStreamAvailable, () => voiceStreamAvailable());
+ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string) =>
+  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? ''),
+);
+ipcMain.on(CHANNELS.voiceStreamAudio, (_e, sessionId: string, pcm: Uint8Array) => voiceStreams.audio(sessionId, pcm));
+ipcMain.handle(CHANNELS.voiceStreamEnd, (_e, sessionId: string) => voiceStreams.end(sessionId));
+ipcMain.on(CHANNELS.voiceStreamCancel, (_e, sessionId: string) => voiceStreams.cancel(sessionId));
+ipcMain.handle(CHANNELS.voiceStreamTestText, (e, workflowId: string, text: string) =>
+  voiceStreams.testText(workflowId, text, voiceStreamEmit(e.sender)),
+);
+ipcMain.handle(CHANNELS.voiceStreamTestFile, (e, workflowId: string, path: string, opts?: { sttOnly?: boolean }) =>
+  voiceStreams.testFile(workflowId, path, voiceStreamEmit(e.sender), 900, !!opts?.sttOnly),
+);
+
 ipcMain.handle(CHANNELS.voiceSpeak, async (_e, text: string, opts?: TtsSpeakOptions) => {
   const blob = await getClient().voice.speak(text, opts);
   const buf = Buffer.from(await blob.arrayBuffer());
@@ -3099,6 +3164,14 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 돌아, 모든 기능을 두 번 만들어야 했고 두 번째 구현은 늘 뒤처졌다.
       // 사용자 PC 는 이제 **도구**로만 참여한다(브라우저·Shell·로컬 MCP —
       // 서버 에이전트가 reverse-WS 카탈로그로 호출한다).
+      // 실험: 빠른 브라우저 조작 (설정 fastAct) — 단순한 브라우저 조작이면
+      // 이 PC 에서 끝내고 서버 턴을 만들지 않는다. 아니면 그대로 서버로.
+      if (fastActEnabled()) {
+        const emit = (ev: ChatEvent): void => {
+          if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);
+        };
+        if (await tryFastAct(serverReq, emit, controller.signal)) return;
+      }
       for await (const ev of getClient().chat.stream(serverReq, controller.signal)) {
         if (sender.isDestroyed()) break;
         if (ev.kind === 'text') preview = (preview + ev.content).slice(-2_000);
@@ -3859,8 +3932,8 @@ ipcMain.handle(
   CHANNELS.quickChatGetHotkey,
   () => loadConfig().quickChatHotkey ?? DEFAULT_QUICKCHAT,
 );
-ipcMain.handle(CHANNELS.quickChatSubmit, (_e, text: string) => {
-  const r = deliverQuickChat(text);
+ipcMain.handle(CHANNELS.quickChatSubmit, (_e, text: string, opts?: { voice?: boolean }) => {
+  const r = deliverQuickChat(text, opts);
   if (r.ok) dismissQuickChat();
   return r;
 });

@@ -41,8 +41,11 @@ export function LockIcon({ open }: { open: boolean }): React.ReactElement {
   );
 }
 
-/** 음성 관련 상태 — 두 창이 각자 구독한다 (설정은 main 이 단일 출처). */
-export function useVoiceControls(): {
+/**
+ * 음성 관련 상태 — 두 창이 각자 구독한다 (설정은 main 이 단일 출처).
+ * workflowId(지금 보이는 에이전트)를 주면 핸즈프리가 실시간 음성(말하는 도중 실행, 실험)으로 동작할 수 있다.
+ */
+export function useVoiceControls(workflowId?: string): {
   sttAvailable: boolean;
   ttsAvailable: boolean;
   voiceInputOn: boolean;
@@ -97,7 +100,7 @@ export function useVoiceControls(): {
   }, []);
 
   const handsfreeActive = handsfreeOn && sttAvailable && voiceInputOn;
-  const { state: hfState } = useHandsfree(handsfreeActive);
+  const { state: hfState } = useHandsfree(handsfreeActive, workflowId);
 
   return {
     sttAvailable,

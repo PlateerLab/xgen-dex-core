@@ -21,7 +21,7 @@ import { app, safeStorage } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SERVICE = 'xgen-connector';
+const SERVICE = process.env.DEX_PROFILE ? `xgen-connector-${process.env.DEX_PROFILE}` : 'xgen-connector';
 const ACCESS = 'xgen_access_token';
 const REFRESH = 'xgen_refresh_token';
 const CREDS = 'xgen_login_credentials';

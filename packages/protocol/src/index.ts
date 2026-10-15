@@ -25,6 +25,7 @@ import { FilestoreApi } from './filestore';
 import { ConnectorDevicesApi } from './connector-devices';
 import { ConversationFoldersApi } from './conversation-folders';
 import { ConversationModelApi } from './conversation-model';
+import { DecisionApi } from './decision';
 import { AgentsApi } from './agents';
 import { AuthApi } from './auth';
 import { AvatarsApi } from './avatars';
@@ -92,6 +93,8 @@ export class XgenClient {
   readonly ide: IdeApi;
   /** 채팅 공유: 대화를 그 시점까지 얼린 링크(/api/chat/shares). */
   readonly chatShares: ChatSharesApi;
+  /** 판단 모델(System One) — 선택지별 확률만 돌려주는 빠른 판단. */
+  readonly decision: DecisionApi;
 
   private refreshToken?: string;
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
@@ -127,6 +130,7 @@ export class XgenClient {
     this.conversationModel = new ConversationModelApi(this.http);
     this.ide = new IdeApi(this.http);
     this.chatShares = new ChatSharesApi(this.http);
+    this.decision = new DecisionApi(this.http);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -375,3 +379,10 @@ export {
   TEAMS_USER_SOCKET_PATH,
   teamsRoomSocketPath,
 } from './teams-ws';
+export {
+  DEFAULT_VOICE_REPLY_STYLE,
+  VOICE_CONTEXT_END,
+  VOICE_CONTEXT_START,
+  prependVoiceContext,
+  stripVoiceContext,
+} from './voice-context';

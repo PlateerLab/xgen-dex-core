@@ -1,3 +1,4 @@
+import { stripVoiceContext } from '@dex/protocol/voice-context';
 /**
  * SessionStore — the connector's multi-session runtime, lifted OUT of the React
  * tree so a conversation's live connection survives view switches.
@@ -265,7 +266,7 @@ function isTemporary(m: ChatMsg): boolean {
  * 본문만(정본 규칙), 그 위에 브라우저·Teams 컨텍스트를 벗긴다.
  */
 function plainInput(input: unknown): string {
-  return stripTeamsContext(stripBrowserContext(turnInputText(input)));
+  return stripVoiceContext(stripTeamsContext(stripBrowserContext(turnInputText(input))));
 }
 
 /**
@@ -530,7 +531,7 @@ export interface SessionTransport {
   stream(
     req: ChatRequest,
     onEvent: (e: ChatEvent) => void,
-    context?: { browserSelections?: BrowserSelectionResult[] },
+    context?: { browserSelections?: BrowserSelectionResult[]; voiceStyle?: string },
   ): {
     /** 이 스트림을 그만 본다 — 서버 실행은 계속된다. */
     cancel: () => void;
@@ -921,9 +922,11 @@ export class SessionStore {
         // 이미 문자열화하지만, 다른 주입 경로가 생겨도 여기서 못 뚫게 한다).
         // 봉투는 **두 겹**일 수 있다 — 브라우저 컨텍스트와 Teams 컨텍스트가 같은
         // 턴에 붙는다. 붙인 순서(teams → browser)의 역순으로 벗긴다.
-        const input = stripTeamsContext(
-          stripBrowserContext(
-            typeof tn.input === 'string' ? tn.input : tn.input == null ? '' : String(tn.input),
+        const input = stripVoiceContext(
+          stripTeamsContext(
+            stripBrowserContext(
+              typeof tn.input === 'string' ? tn.input : tn.input == null ? '' : String(tn.input),
+            ),
           ),
         );
         const output =
@@ -1084,6 +1087,8 @@ export class SessionStore {
     images: ChatImageAttachment[] = [],
     browserSelections: BrowserSelectionResult[] = [],
     onUploadError?: () => void,
+    /** 음성으로 보낸 턴이면 음성 대화 지침(사용자 문장 앞 봉투) — 비우면 붙이지 않는다. */
+    opts?: { voiceStyle?: string },
   ): void {
     const s = this.map.get(key);
     const rt = this.rt.get(key);
@@ -1166,7 +1171,7 @@ export class SessionStore {
           interactionId: s.interactionId,
         },
         (ev) => { if (rt.turnToken === turnToken) this.onEvent(key, ev); },
-        { browserSelections },
+        { browserSelections, voiceStyle: opts?.voiceStyle },
       );
       rt.cancel = handle.cancel;
       // 사람이 [정지] 를 누르면 이 길로 서버까지 닿는다. abort 만으로는 멈추지

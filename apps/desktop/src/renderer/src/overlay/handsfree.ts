@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { xgen } from '../bridge';
+import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
 
 export type HandsfreeState = 'idle' | 'armed' | 'hearing' | 'thinking';
 
@@ -24,17 +25,31 @@ const END_MS = 900; // 이 시간 이상 임계 미만 → 발화 종료
 const MIN_UTTERANCE_MS = 400; // 너무 짧은 캡처(잡음 클릭)는 버림
 const MAX_UTTERANCE_MS = 30_000; // 폭주 방지 상한
 
-export function useHandsfree(enabled: boolean): { state: HandsfreeState } {
+export function useHandsfree(enabled: boolean, workflowId?: string): { state: HandsfreeState } {
   const [state, setState] = useState<HandsfreeState>('idle');
   const stateRef = useRef<HandsfreeState>('idle');
   const set = useCallback((s: HandsfreeState) => {
     stateRef.current = s;
     setState(s);
   }, []);
+  // 실험: 빠른 브라우저 조작이 켜져 있으면 실시간 음성(말하는 도중 실행)으로 — main 의 voice-stream.
+  const streamAvail = useVoiceStreamAvailable();
+
+  // ── 실시간 음성 경로(voice-loop): 마이크를 계속 열어 두고 말할 때마다 main 이 말하는 도중에 조작한다.
+  //    화면 조작으로 끝난 말은 채팅으로 보내지 않고, 질문·여러 단계·못 한 말만 채팅으로 보낸다.
+  const streaming = enabled && streamAvail && !!workflowId;
+  const loop = useVoiceLoop({
+    enabled: streaming,
+    workflowId,
+    onResult: async (r) => {
+      const short = r.text.replace(/[\s.,!?。…]/g, '').length <= 2; // 말버릇·잡음
+      if (r.text && !short && !(r.actions.length && !r.unhandled)) await xgen.quickChat.submit(r.text, { voice: true });
+    },
+  });
 
   useEffect(() => {
-    if (!enabled) {
-      set('idle');
+    if (!enabled || (streamAvail && workflowId)) {
+      if (!enabled) set('idle');
       return;
     }
     let alive = true;
@@ -159,7 +174,7 @@ export function useHandsfree(enabled: boolean): { state: HandsfreeState } {
       set('idle');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+  }, [enabled, streamAvail, workflowId]);
 
-  return { state };
+  return { state: streaming ? loop.state : state };
 }

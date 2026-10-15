@@ -1,3 +1,5 @@
+import { prependVoiceContext } from '@dex/protocol/voice-context';
+import type { ChatRequest } from '@dex/protocol';
 /**
  * The renderer's single SessionStore instance + a React subscription hook.
  *
@@ -26,14 +28,34 @@ void xgen?.config
   })
   .catch(() => undefined);
 
+/** 음성으로 보낸 턴의 입력 앞에 음성 대화 지침을 붙인다(문자열 입력·첫 text 블록). */
+function withVoiceStyle(req: ChatRequest, style?: string): ChatRequest {
+  if (!style?.trim()) return req;
+  if (typeof req.input === 'string') return { ...req, input: prependVoiceContext(req.input, style) };
+  if (Array.isArray(req.input)) {
+    let applied = false;
+    const input = req.input.map((block) => {
+      const b = block as Record<string, unknown>;
+      if (!applied && b && b.type === 'text' && typeof b.text === 'string') {
+        applied = true;
+        return { ...b, text: prependVoiceContext(b.text, style) };
+      }
+      return block;
+    });
+    return applied ? { ...req, input } : req;
+  }
+  return req;
+}
+
 export const sessionStore = new SessionStore({
   // 컨텍스트 봉투는 **바깥쪽이 브라우저**가 되도록 겹친다. 히스토리를 다시 읽을 때
   // 벗기는 순서(`session-store.ts`: browser → teams)와 짝이 맞아야 한다.
+  // 음성 대화 지침 봉투는 가장 안쪽(사용자 문장 바로 앞) — 벗기는 순서 browser → teams → voice.
   stream: (req, onEvent, context) =>
     xgen.chat.stream(
       browserStateStore.contextualize(
         teamsContextStore.contextualize({
-          ...req,
+          ...withVoiceStyle(req, context?.voiceStyle),
           clientDeviceId: cachedDeviceId || undefined,
           // 이 **화면**이 보낸 턴의 표식. 대화 소켓으로 같은 표식의 프레임이 오면 이 창의 턴이다 —
           // 스트림이 살아 있는 동안은 메아리라 버리고, 끊긴 뒤에는 그 턴의 나머지로 받는다

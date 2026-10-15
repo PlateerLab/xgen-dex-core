@@ -1,0 +1,538 @@
+/**
+ * 말하는 도중 실행 (실험) — Segmenter 가 부르는 판단·실행기. 이 에이전트의 공유 브라우저 탭에서
+ * 스냅샷 → 결정 모델(E13: 실행 준비·동작 종류·요소) → 클릭/입력.
+ *
+ * 스냅샷은 실행이 일어날 때까지 재사용한다(말하는 동안 중간 결과가 여러 번 들어와도 화면은 그대로다).
+ * 실행 뒤에는 화면이 바뀌므로 버린다.
+ *
+ * 말로 하는 조작이라 채팅 고속 경로보다 보수적인 규칙을 더한다(mac-fastact 와 같은 규칙):
+ *   · 입력칸을 누르기만 하는 건 아무것도 이루지 못한다 — 하지 않는다.
+ *   · 중간 인식에서 글자 넣기는 넣을 글자 뒤에 글자 넣기 말("검색해", "입력해")이 온 뒤에만.
+ *   · 되돌릴 수 없을 수 있는 동작(삭제·로그아웃 …)은 여기서 하지 않고 서버(확인 절차가 있는 경로)로 넘긴다.
+ */
+import { getBrowserRuntime } from './browser-runtime';
+import { diag } from './diag-log';
+import {
+  classify,
+  decisionState,
+  elementDisplay,
+  elementLabel,
+  pickElement,
+  resolveAction,
+  textFromWordAnswers,
+  textWordQuestions,
+  quotedText,
+  type ActionKind,
+  type ElementRefs,
+} from './fast-act';
+import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
+import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
+import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
+import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
+
+const SCOPE = 'voice-act';
+/** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이. */
+const SNAP_TTL_MS = 3_000;
+const SNAP_REFRESH_MS = 1_000;
+/** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
+const NAMED_ONLY_PICK = 0.8;
+const now = (): number => performance.now();
+
+/** 글자 넣기를 시키는 말 — 중간 인식에서 넣을 글자가 끝났는지 볼 때 쓴다. */
+const TYPING_WORD = /(입력|검색|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
+/**
+ * 되돌릴 수 없을 수 있는 동작 — 말 자체가 시키거나 고른 대상의 이름이 이런 것이면 서버로.
+ * 명사가 아니라 동작으로 본다: "주문/결제" 메뉴·"결제 내역" 은 이동일 뿐이고 "결제하기" 버튼이 위험하다.
+ */
+const DANGEROUS =
+  /(삭제|지우기|비우기|제거|탈퇴|해지|로그아웃|초기화|영구|결제하기|구매하기|주문하기|delete|remove|erase|empty|log ?out|reset|uninstall|purchase|checkout|pay now)/i;
+const DANGEROUS_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
+/** 글자를 넣을 수 있는 역할 — 입력 요청이면 이것만 후보로 둔다(넣을 글자와 이름이 같은 버튼을 고르지 않게). */
+const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
+/**
+ * 검색칸에 "…검색해줘" 는 넣고 끝이 아니라 검색까지다 — 결정 모델이 '넣기만' 으로 답해도 검색칸이면 제출한다
+ * (검색칸은 제출해야 결과가 나온다는 화면 일반 규칙. 역할이 searchbox 이거나 이름에 검색/search 가 있는 칸).
+ */
+const SEARCH_WORD = /(검색|찾아|search|find|look up)/i;
+const isSearchField = (r: { role: string; name?: string }): boolean => r.role === 'searchbox' || /검색|search/i.test(r.name ?? '');
+/** 누르기만 해서는 아무 일도 안 일어나는 입력칸. */
+const TEXT_FIELD = new Set(['textbox', 'searchbox']);
+/**
+ * 가린 팝업·배너를 닫는 요소의 이름 — 화면 일반 관례(닫기·오늘 하루 보지 않기·거부·×). 동의/수락은 넣지 않는다
+ * (사용자 대신 동의하지 않는다).
+ */
+const CLOSE_NAME = /(닫기|닫아|close|dismiss|오늘\s*(하루\s*)?(그만\s*)?(보지|열지)|다시\s*보지|그만\s*보기|나중에|no thanks|거부|reject)|^[x×✕✖]$/i;
+const CLOSE_ROLE = new Set(['button', 'link', 'checkbox', 'img', 'generic']);
+/** 누르려던 요소를 다른 요소가 가렸다는 브라우저 응답. */
+const COVERED = /is covered by/;
+
+export type VoiceAction = {
+  said: string;
+  label: string;
+  /** 사용자에게 보이는 표기: `"장바구니" 링크`. */
+  display: string;
+  action: ActionKind;
+  text: string | null;
+  /** 말하는 도중(중간 인식)에 실행했는가. */
+  partial: boolean;
+  decideMs: number;
+  actMs: number;
+  /** 세션 시작부터 실행(클릭·입력 완료)까지. */
+  at: number;
+  url?: string;
+  navigated: boolean;
+  /** 누르려던 요소를 가린 팝업을 먼저 닫았으면 그 요소 이름(또는 Escape). */
+  dismissed?: string;
+};
+
+type Snap = { at: number; pageId: string; url: string; refs: ElementRefs; gen: number; ms: number };
+
+export class BrowserVoiceAgent implements VoiceAgent {
+  readonly actions: VoiceAction[] = [];
+  private snap: Snap | null = null;
+  private inflight: Promise<Snap | null> | null = null;
+  /** 실행할 때마다 오른다 — 실행 전에 시작한 스냅샷 결과는 화면 기억에 남기지 않는다. */
+  private version = 0;
+  /**
+   * 판단 중인 handle 수. 판단하는 동안에는 새 스냅샷을 뜨지 않는다 — 스냅샷마다 요소 번호(@eN)가 새로
+   * 매겨져, 판단에 쓴 스냅샷의 번호로 누르면 만료(browser_stale_ref)로 거절된다.
+   */
+  private deciding = 0;
+  private last: string | null = null;
+  /** 이번 판단 전에 닫은 팝업 — 다음 실행 기록에 붙인다. */
+  private dismissed: string | null = null;
+
+  constructor(
+    private workflowId: string,
+    private t0: number,
+    private onAct?: (a: VoiceAction) => void,
+  ) {}
+
+  get lastTarget(): string | null {
+    return this.last;
+  }
+
+  /**
+   * 화면을 미리 읽어 둔다 — 말을 듣기 시작할 때와 인식 결과가 올 때마다. 판단은 스냅샷(0.1~0.3초)을
+   * 기다리지 않고, 읽어 둔 화면은 1초가 지나면 뒤에서 새로 읽는다(펼치는 중이던 메뉴 등 주소는 같은데
+   * 화면이 바뀐 경우를 놓치지 않게).
+   */
+  prefetch(): void {
+    if (this.deciding > 0 || this.inflight || (this.snap && now() - this.snap.at < SNAP_REFRESH_MS)) return;
+    this.snap = this.snap && now() - this.snap.at < SNAP_TTL_MS ? this.snap : null;
+    void this.snapshot(true).catch(() => undefined);
+  }
+
+  /** 지금 보이는 탭의 스냅샷 — 같은 탭·같은 주소면 5초 동안 재사용한다. 읽는 중이면 그 결과를 같이 쓴다. */
+  private async snapshot(refresh = false): Promise<{ snap: Snap; page: NonNullable<ReturnType<typeof visiblePage>> } | null> {
+    const page = visiblePage(this.workflowId);
+    if (!page) return null;
+    const fresh = (s: Snap | null): s is Snap =>
+      !!s && s.pageId === page.pageId && s.url === page.url && now() - s.at < SNAP_TTL_MS;
+    // 읽는 중인 스냅샷이 있으면 그것이 가장 새것이다 — 그걸 쓴다(따로 또 뜨면 요소 번호가 바뀐다).
+    if (this.inflight) {
+      const s = await this.inflight;
+      if (fresh(s)) return { snap: s, page };
+    }
+    if (!refresh && fresh(this.snap)) return { snap: this.snap, page };
+    const t = now();
+    const v = this.version;
+    const p = getBrowserRuntime()
+      .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
+      .then((run): Snap => {
+        const refs = ((run.result as { data?: { refs?: ElementRefs } } | undefined)?.data?.refs ?? {}) as ElementRefs;
+        return { at: now(), pageId: page.pageId, url: page.url, refs, gen: run.page.generation, ms: now() - t };
+      });
+    this.inflight = p.catch(() => null);
+    let got: Snap;
+    try {
+      got = await p;
+    } finally {
+      this.inflight = null;
+    }
+    if (v === this.version) this.snap = got;
+    return { snap: got, page };
+  }
+
+  /**
+   * 이 스냅샷의 E13 화면 — 질문마다 직접 넘긴다. 전역 화면(setScreen)은 쓰지 않는다: 뒤에서 새로 읽은
+   * 스냅샷은 요소 번호가 새로 매겨지므로, 판단 도중 전역 화면이 바뀌면 다른 스냅샷의 번호와 섞인다.
+   */
+  private screenOf(origin: string, refs: ElementRefs): Screen13 | null {
+    if (FORMAT !== 'e13') return null;
+    return buildScreen(origin, Object.entries(refs).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' })));
+  }
+
+  /** 페이지 요소 앞에 브라우저 자체 조작을 붙인 요소 목록(fast-act-chrome). */
+  private withChrome(page: NonNullable<ReturnType<typeof visiblePage>>, refs: ElementRefs): { refs: ElementRefs; chrome: Record<string, ChromeAction> } {
+    return withChrome(this.workflowId, page, refs);
+  }
+
+  /**
+   * 다음 요청이 어디서 시작하나 — 이미 실행한 말(done) 뒤의 단어들(rest) 중 새 요청의 첫 단어.
+   * '없음'(꼬리말뿐)은 확신이 0.6 이상일 때만 믿는다.
+   */
+  async boundary(utterance: string, done: string, rest: string[]): Promise<{ start: number; conf: number }> {
+    const post = decisionPost();
+    if (!post) return { start: -1, conf: 0 };
+    const s = await this.snapshot().catch(() => null);
+    const origin = s ? originOf(s.page.url) : '';
+    const scr = s ? this.screenOf(origin, this.withChrome(s.page, s.snap.refs).refs) : null;
+    const criteria: Record<string, string> = {
+      none: 'there is no second request — the remaining words only finish the first one',
+    };
+    rest.forEach((w, i) => (criteria[`w${i}`] = `starts at "${w}"`));
+    const a = await post({
+      state: decisionState(utterance, origin, scr),
+      questions: {
+        q: {
+          type: 'choice',
+          instructions: `In "${utterance}", the first request ("${done}" …) is done. Where does a second, different request start?`,
+          criteria,
+        },
+      },
+    });
+    const probs = a.q?.probabilities ?? {};
+    const none = probs.none ?? 0;
+    let best = -1;
+    let bestP = -1;
+    rest.forEach((_, i) => {
+      const p = probs[`w${i}`] ?? 0;
+      if (p > bestP) [best, bestP] = [i, p];
+    });
+    if (a.q?.choice === 'none' && none >= 0.6) return { start: -1, conf: none };
+    return { start: best, conf: bestP };
+  }
+
+  async readiness(texts: string[]): Promise<Array<{ ready: string; p: number }>> {
+    const post = decisionPost();
+    const s = await this.snapshot().catch(() => null);
+    if (!post || !s) return texts.map(() => ({ ready: 'wait', p: 0 }));
+    const origin = originOf(s.page.url);
+    const scr = this.screenOf(origin, this.withChrome(s.page, s.snap.refs).refs);
+    return Promise.all(
+      texts.map(async (t) => {
+        const a = await post({
+          state: decisionState(t, origin, scr),
+          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS } },
+        }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
+        return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
+      }),
+    );
+  }
+
+  /**
+   * 누를 요소를 가린 팝업·배너를 닫는다 — 새 화면에서 닫기 요소(CLOSE_NAME)를 찾아 누르고, 여럿이면 결정
+   * 모델에 '팝업 닫기' 로 고르게 한다. 닫기 요소가 없으면 Escape. 닫은 것의 이름을 돌려준다.
+   */
+  private async dismissOverlay(): Promise<string | null> {
+    const runtime = getBrowserRuntime();
+    this.snap = null;
+    const s = await this.snapshot(true).catch(() => null);
+    if (!s) return null;
+    const closers = Object.entries(s.snap.refs).filter(
+      ([, r]) => CLOSE_ROLE.has(r.role) && CLOSE_NAME.test((r.name ?? '').trim()),
+    );
+    let ref = closers.length === 1 ? closers[0][0] : null;
+    if (closers.length > 1) {
+      const post = decisionPost();
+      const origin = originOf(s.page.url);
+      const pick = post
+        ? await pickElement(post, '팝업 닫아줘', origin, Object.fromEntries(closers), this.screenOf(origin, s.snap.refs)).catch(() => null)
+        : null;
+      ref = pick?.ref ?? closers[0][0];
+    }
+    let closed: string | null = null;
+    if (ref) {
+      revealForAct(s.page);
+      try {
+        await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${ref}`], 10_000, s.snap.gen);
+        closed = s.snap.refs[ref].name ?? ref;
+      } catch {
+        /* 닫기 요소도 가려졌다 — Escape 로 */
+      }
+    }
+    if (!closed) {
+      try {
+        await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['press', 'Escape'], 10_000);
+        closed = 'Escape';
+      } catch {
+        return null;
+      }
+    }
+    this.version++;
+    this.snap = null;
+    await waitSettled(s.page.pageId, s.page);
+    this.version++;
+    this.snap = null;
+    diag(SCOPE, 'dismiss-overlay', { closed, candidates: closers.map(([k, r]) => `${k}:${r.role}:${r.name ?? ''}`).slice(0, 8) });
+    return closed;
+  }
+
+  /** 넣을 글자 — 따옴표 문구, 아니면 발화 전체를 문맥으로 단어마다 묻는다(남은 조각만 주면 앞말에 걸친 글자를 놓친다). */
+  private async typedText(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, origin: string, scr: Screen13 | null, utterance?: string): Promise<string | null> {
+    const quoted = quotedText(text);
+    if (quoted) return quoted;
+    const whole = utterance && norm(utterance).endsWith(norm(text)) ? norm(utterance) : norm(text);
+    const offset = whole.split(' ').length - norm(text).split(' ').length;
+    const wa = await post({ state: decisionState(whole, origin, scr), questions: textWordQuestions(whole) });
+    // 인식기가 붙인 끝 문장부호("원피스.")는 넣을 글자가 아니다.
+    return textFromWordAnswers(whole, wa, offset)?.replace(/[.,!?。…]+$/, '') || null;
+  }
+
+  /**
+   * 입력 요청인데 입력칸이 접혀 있어 여는 버튼("검색창 열기", 돋보기)을 눌렀으면 — 열린 화면에서 입력칸을 골라
+   * 마저 넣는다. 열린 칸이 없거나 넣을 글자를 못 찾으면 아무것도 하지 않는다(누른 것은 이미 기록됨).
+   */
+  private async typeAfterOpen(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, th: Thresholds, utterance?: string): Promise<VoiceAction | null> {
+    const typableOf = (refs: ElementRefs): ElementRefs => Object.fromEntries(Object.entries(refs).filter(([, r]) => TYPABLE.has(r.role)));
+    let s = await this.snapshot(true).catch(() => null);
+    // 펼쳐지는 검색 층은 애니메이션이 끝나야 입력칸이 잡히기도 한다 — 없으면 잠깐 뒤 한 번 더 읽는다.
+    if (s && !Object.keys(typableOf(s.snap.refs)).length) {
+      await new Promise((r) => setTimeout(r, 400));
+      s = await this.snapshot(true).catch(() => null);
+    }
+    if (!s) return null;
+    const typable = typableOf(s.snap.refs);
+    if (!Object.keys(typable).length) return null;
+    const origin = originOf(s.page.url);
+    const scr = this.screenOf(origin, s.snap.refs);
+    const t0 = now();
+    const pick = await pickElement(post, text, origin, typable, scr);
+    if (!pick || pick.confidence < th.pick) return null;
+    const element = s.snap.refs[pick.ref];
+    const typed = await this.typedText(post, text, origin, scr, utterance);
+    if (!typed) return null;
+    const action: ActionKind = SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : 'type';
+    const runtime = getBrowserRuntime();
+    revealForAct(s.page);
+    const tAct = now();
+    try {
+      await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['fill', `@${pick.ref}`, typed], 10_000, s.snap.gen);
+      if (action === 'type_submit') await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['press', 'Enter'], 10_000);
+    } catch {
+      return null;
+    }
+    return this.record(text, element, action, typed, th, tAct - t0, now() - tAct, s.page, pick, s.snap.ms);
+  }
+
+  /** 실행을 기록한다 — 화면이 바뀌므로 스냅샷을 버리고 반영을 기다린다. */
+  private async record(
+    said: string,
+    element: ElementRefs[string],
+    action: ActionKind,
+    typed: string | null,
+    th: Thresholds,
+    decideMs: number,
+    actMs: number,
+    page: NonNullable<ReturnType<typeof visiblePage>>,
+    pick: { confidence: number; top?: unknown },
+    snapMs = 0,
+  ): Promise<VoiceAction> {
+    const at = now() - this.t0;
+    this.version++;
+    this.snap = null; // 화면이 바뀐다
+    const settled = await waitSettled(page.pageId, page);
+    this.version++;
+    this.snap = null; // 반영을 기다리는 사이 읽은 화면도 버린다
+    const label = elementLabel(element);
+    this.last = label;
+    const done: VoiceAction = {
+      said,
+      label,
+      display: elementDisplay(element),
+      action,
+      text: typed,
+      partial: th.partial,
+      decideMs: Math.round(decideMs),
+      actMs: Math.round(actMs),
+      at: Math.round(at),
+      url: settled.page?.url,
+      navigated: settled.navigated,
+      ...(this.dismissed ? { dismissed: this.dismissed } : {}),
+    };
+    this.dismissed = null;
+    this.actions.push(done);
+    this.onAct?.(done);
+    diag(SCOPE, 'act', { ...done, snapMs: Math.round(snapMs), pick: Number(pick.confidence.toFixed(3)), top: pick.top });
+    return done;
+  }
+
+  /** 브라우저 자체 조작 실행 — 페이지 클릭과 같은 기록·확인 절차, 확신 기준은 더 높게. */
+  private async runChrome(
+    ch: ChromeAction,
+    text: string,
+    th: Thresholds,
+    guard: Guard,
+    page: NonNullable<ReturnType<typeof visiblePage>>,
+    pick: { confidence: number; top?: unknown },
+    t0: number,
+    snapMs: number,
+  ): Promise<Outcome> {
+    const no = (reason: string): Outcome => ({ acted: false, reason, ms: now() - t0, detail: pick.top });
+    if (pick.confidence < CHROME_PICK) return no(`브라우저 조작 확신 낮음 ${pick.confidence.toFixed(2)}`);
+    if (ch.close && (th.partial || pick.confidence < CHROME_CLOSE_PICK)) return no(`탭 닫기는 말이 끝난 뒤 확신 ${CHROME_CLOSE_PICK} 이상에서`);
+    if (!(await guard(ch.name, 'press', pick.confidence))) return no(GUARDED);
+    const decideMs = now() - t0;
+    revealForAct(page);
+    const tAct = now();
+    try {
+      await ch.run();
+    } catch (err) {
+      this.version++;
+      this.snap = null;
+      return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const element = { role: ch.role, name: ch.name } as ElementRefs[string];
+    const done = await this.record(text, element, 'click', null, th, decideMs, now() - tAct, page, pick, snapMs);
+    return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
+  }
+
+  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
+    this.deciding++;
+    try {
+      const o = await this.handleOnce(text, th, guard, abort, utterance);
+      // 판단에 쓴 스냅샷이 그사이 바뀌었으면(요소 번호 만료) 화면을 새로 읽어 한 번만 다시 판단한다.
+      if (!o.acted && o.reason.includes('browser_stale_ref')) {
+        this.snap = null;
+        return await this.handleOnce(text, th, guard, abort, utterance);
+      }
+      // 팝업·배너가 누를 요소를 가렸으면 그것을 닫고 한 번만 다시 판단한다.
+      if (!o.acted && COVERED.test(o.reason)) {
+        this.dismissed = await this.dismissOverlay();
+        this.snap = null;
+        const again = await this.handleOnce(text, th, guard, abort, utterance);
+        this.dismissed = null;
+        return again;
+      }
+      return o;
+    } finally {
+      this.deciding--;
+    }
+  }
+
+  private async handleOnce(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
+    const t0 = now();
+    const no = (reason: string, detail?: unknown): Outcome => ({ acted: false, reason, ms: now() - t0, detail });
+    const post = decisionPost();
+    if (!post) return no('결정 모델 없음');
+    let s;
+    try {
+      s = await this.snapshot();
+    } catch (err) {
+      return no(`스냅샷 실패 ${String(err)}`);
+    }
+    if (!s) return no('열린 브라우저 탭 없음');
+    const { snap, page } = s;
+    const origin = originOf(page.url);
+    const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
+    const scr = this.screenOf(origin, allRefs);
+
+    const cls = await classify(post, text, origin, scr);
+    const rc = cls.gate.toFixed(2);
+    if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
+    // 말이 끝났는데 동사 없이 요소 이름만 말한 경우("이달의 블로그 탭", "검색 버튼") — 모델은 '기다림' 으로
+    // 답하지만, 더 올 말이 없으니 그 요소를 누르라는 뜻으로 본다. 대신 고른 확신이 높고 말이 그 이름을
+    // 가리킬 때만 한다(아래).
+    const namedOnly = !th.partial && cls.ready === 'wait';
+    // 중간 인식에서는 학습된 실행 준비 판단이 '지금' 이고 확신이 높을 때만, 최종에서는 기준을 낮춘다.
+    if ((th.partial && cls.ready !== 'act_now') || (cls.gate < th.intent && !namedOnly)) {
+      return no(`기다림 ${cls.ready} ${rc}`);
+    }
+    if (abort()) return no('판단 취소(새 인식)');
+
+    // 입력 요청(동작이 입력이고 글자가 있고 말에 글자 넣기 말이 있음)이면 입력칸만 후보로 — 검색 버튼 대신 검색창.
+    const wantsType = cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);
+    const typable = Object.fromEntries(Object.entries(snap.refs).filter(([, r]) => TYPABLE.has(r.role)));
+    // 입력칸이 접혀 있으면(입력 가능한 요소 없음) 여는 버튼을 골라야 한다 — 넣을 글자와 이름이 같은 링크·버튼은 넣을 대상이지
+    // 누를 대상이 아니다("검색창에 LG 그램 Pro AI 2026 입력해줘" 에 같은 이름의 상품 링크를 누르던 문제).
+    const typedKey = (cls.text ?? '').replace(/\s/g, '');
+    const pickable = Object.fromEntries(
+      Object.entries(allRefs).filter(
+        ([k, r]) =>
+          !LANDMARK.has(r.role) &&
+          !(wantsType && typedKey.length >= 2 && (r.name ?? '').replace(/\s/g, '').includes(typedKey)) &&
+          !(chrome[k]?.close && !TAB_WORD.test(text)),
+      ),
+    );
+    const candidates = wantsType && Object.keys(typable).length ? typable : pickable;
+    const pick = await pickElement(post, text, origin, candidates, scr);
+    if (process.env.DEX_VOICE_TEST === '1') {
+      diag(SCOPE, 'debug-screen', {
+        text,
+        url: page.url,
+        snapAgeMs: Math.round(now() - snap.at),
+        refs: Object.keys(snap.refs).length,
+        cands: Object.keys(candidates).length,
+        all: scr?.all.length,
+        names: Object.entries(snap.refs).map(([k, v]) => `${k}:${v.role}:${(v.name ?? '').slice(0, 14)}`).join(' | '),
+        top: pick?.top,
+      });
+    }
+    if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    const ch = chrome[pick.ref];
+    if (ch) return this.runChrome(ch, text, th, guard, page, pick, t0, snap.ms);
+    const element = snap.refs[pick.ref];
+    if (namedOnly && (pick.confidence < NAMED_ONLY_PICK || !mentions(text, element.name ?? ''))) {
+      return no(`기다림 wait ${rc} (이름만 — 확신 ${pick.confidence.toFixed(2)})`, pick.top);
+    }
+    const resolved = resolveAction(cls, element);
+    const action = resolved.action === 'type' && SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : resolved.action;
+    let typed = resolved.text;
+    if (action !== 'click') {
+      typed = await this.typedText(post, text, origin, scr, utterance);
+      if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);
+    }
+    if (action === 'click' && TEXT_FIELD.has(element.role)) return no('입력칸 클릭은 하지 않음', pick.top);
+    if (action !== 'click' && th.partial && typed) {
+      const lastWord = typed.split(' ').pop() ?? typed;
+      const after = text.slice(text.lastIndexOf(lastWord) + lastWord.length);
+      if (!TYPING_WORD.test(after)) return no('입력은 글자가 끝난 뒤', pick.top);
+    }
+    if (DANGEROUS_REQUEST.test(text) || DANGEROUS.test(element.name ?? '')) {
+      return no('되돌릴 수 없을 수 있는 동작 — 서버로', pick.top);
+    }
+    const label = elementLabel(element);
+    if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {
+      return no(GUARDED, pick.top);
+    }
+    const decideMs = now() - t0;
+
+    const runtime = getBrowserRuntime();
+    const ref = `@${pick.ref}`;
+    revealForAct(page);
+    const tAct = now();
+    try {
+      if (action === 'click') {
+        try {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+        } catch (err) {
+          // 위 메뉴에 숨은 하위 메뉴처럼 가려진 경우 — 그 자리에 마우스를 올려(메뉴가 펼쳐진다) 한 번 더 누른다.
+          // 그래도 가려져 있으면 handle() 이 팝업을 닫고 다시 판단한다.
+          if (!COVERED.test(err instanceof Error ? err.message : String(err))) throw err;
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['hover', ref], 10_000, snap.gen);
+          await new Promise((r) => setTimeout(r, 400));
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+        }
+      } else {
+        await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
+        if (action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
+      }
+    } catch (err) {
+      this.version++;
+      this.snap = null;
+      return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await this.record(text, element, action, typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.
+    const typedAfter = action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    return {
+      acted: true,
+      kind: typedAfter ? 'type' : action === 'click' ? 'press' : 'type',
+      target: typedAfter?.label ?? label,
+      text: (typedAfter?.text ?? typed) ?? undefined,
+      ms: now() - t0,
+      effect: 'ok',
+    };
+  }
+}

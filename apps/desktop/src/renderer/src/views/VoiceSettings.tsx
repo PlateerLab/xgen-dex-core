@@ -5,10 +5,11 @@
  * 서버가 켜준 기능을 이 기기에서 쓸지만 조정한다(로컬 override 는 connector.json).
  * 비밀(base_url/api_key)은 서버에만 있으며 여기로 오지 않는다.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useModalDismiss } from './use-modal-dismiss';
 import { xgen } from '../bridge';
 import type { VoiceConfig } from '@dex/protocol';
+import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
 
 export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // Esc 로도 닫힌다 (바깥 클릭은 backdrop 이 처리).
@@ -19,6 +20,17 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   const [input, setInput] = useState(true);
   const [output, setOutput] = useState(true);
   const [volume, setVolume] = useState(100);
+  // 음성 대화 지침 — 음성으로 보낸 말에만 붙는다(이 기기 설정, 기본 꺼짐).
+  const [styleOn, setStyleOn] = useState(false);
+  // TTS 문장별 미리 합성(이 기기 설정, 기본 꺼짐).
+  const [ttsAhead, setTtsAhead] = useState(false);
+  const [style, setStyle] = useState(DEFAULT_VOICE_REPLY_STYLE);
+  const styleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveStyle = (v: string): void => {
+    setStyle(v);
+    if (styleTimer.current) clearTimeout(styleTimer.current);
+    styleTimer.current = setTimeout(() => void xgen.config.set({ voiceReplyStyle: v }), 400);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -29,6 +41,9 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
         setInput(c.voiceInput !== false);
         setOutput(c.voiceOutput !== false);
         setVolume(typeof c.voiceVolume === 'number' ? c.voiceVolume : 100);
+        setStyleOn(c.voiceReplyStyleOn === true);
+        setTtsAhead(c.voiceTtsAhead === true);
+        setStyle(c.voiceReplyStyle ?? DEFAULT_VOICE_REPLY_STYLE);
       })
       .catch(() => undefined);
     xgen.voice
@@ -138,12 +153,70 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
               </div>
             )}
             {tts?.enabled && (
+              <div className="field-row">
+                <span>
+                  문장별 미리 합성
+                  <span className="small muted" style={{ marginLeft: 8 }}>
+                    답을 한 문장씩 바로 합성해 첫 소리가 빠릅니다
+                  </span>
+                </span>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={ttsAhead}
+                    onChange={(e) => {
+                      setTtsAhead(e.target.checked);
+                      void xgen.config.set({ voiceTtsAhead: e.target.checked });
+                    }}
+                  />
+                  <span className="track" />
+                </label>
+              </div>
+            )}
+            {tts?.enabled && (
               <div className="small muted" style={{ marginBottom: 8 }}>
                 목소리:{' '}
                 {activeProfile
                   ? `${activeProfile.name} (${activeProfile.voice_id})`
                   : '선택된 프로필 없음'}
                 {activeProfile?.language ? ` · ${activeProfile.language}` : ''}
+              </div>
+            )}
+
+            <div className="field-row">
+              <span>
+                음성 대화 지침
+                <span className="small muted" style={{ marginLeft: 8 }}>
+                  음성으로 보낸 말에만 붙습니다
+                </span>
+              </span>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={styleOn}
+                  onChange={(e) => {
+                    setStyleOn(e.target.checked);
+                    void xgen.config.set({ voiceReplyStyleOn: e.target.checked });
+                  }}
+                />
+                <span className="track" />
+              </label>
+            </div>
+            {styleOn && (
+              <div style={{ marginBottom: 10 }}>
+                <textarea
+                  className="voice-style-input"
+                  rows={7}
+                  value={style}
+                  onChange={(e) => saveStyle(e.target.value)}
+                  aria-label="음성 대화 지침"
+                />
+                <div className="small muted" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>답이 소리로 읽히니 짧고 말하듯이 — 비서의 말투·호칭을 여기서 정합니다.</span>
+                  <button className="link" onClick={() => saveStyle(DEFAULT_VOICE_REPLY_STYLE)}>
+                    기본값으로
+                  </button>
+                </div>
               </div>
             )}
 

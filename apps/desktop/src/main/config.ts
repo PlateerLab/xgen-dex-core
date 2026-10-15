@@ -91,8 +91,23 @@ export interface ConnectorConfig {
   voiceHandsfree?: boolean;
   /** TTS 재생 볼륨 % (0~300, 100 = 원음) — 이 기기 로컬, WebAudio 게인. */
   voiceVolume?: number;
+  /** 음성 대화 지침 — 음성으로 보낸 턴에만 사용자 문장 앞에 붙는다. 없으면 기본값, 빈 문자열이면 끔. */
+  voiceReplyStyle?: string;
+  /** 음성 대화 지침 사용 여부. 기본 false — 켜야 붙는다. 끄면 지침 글은 남겨 두고 붙이지만 않는다. */
+  voiceReplyStyleOn?: boolean;
+  /** TTS 문장별 미리 합성. 기본 false — 켜면 답을 한 문장씩 잘라 넣는 즉시 합성하고 재생만 차례로 한다
+   *  (첫 소리가 빠르고 문장 사이가 덜 끊기지만 합성 요청이 몰린다). */
+  voiceTtsAhead?: boolean;
   /** Device-local voice OUTPUT (TTS) toggle. Default true. Server gate applies. */
   voiceOutput?: boolean;
+  /**
+   * 빠른 브라우저 조작(실험). 기본 false.
+   *
+   * 켜면 "검색 눌러" 같은 단순한 브라우저 조작은 서버 에이전트를 거치지 않고 XGEN 판단 모델
+   * (`/api/base/v1/decision/systemone`)에 물어 이 PC 에서 바로 실행하고, 마이크는 말하는 도중에
+   * 조작한다. 판단 모델이 없는 서버면 503 이라 늘 서버 에이전트로 넘어간다.
+   */
+  fastAct?: boolean;
   // ── 화면 캡처 ──
   //
   // 채팅을 보낼 때 지금 화면을 함께 보낸다. 에이전트가 "지금 뭐가 보이냐" 를

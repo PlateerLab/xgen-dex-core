@@ -11,6 +11,7 @@
  */
 import type { ShareAudience } from './shares';
 import { HttpClient } from './client';
+import { toAgentWorkflow, type AgentWorkflow } from './agent-workflow';
 
 /** 에이전트 뷰어의 하위 탭 — **단일 정의**.
  *
@@ -19,6 +20,8 @@ import { HttpClient } from './client';
  * 안 맞고 레이아웃 복원에서 그 탭만 사라졌다. */
 export type AgentViewerSub =
   | 'basic'
+  // 저장된 워크플로우를 캔버스로 본다(모든 에이전트). 나머지 탭은 Agent Geny 의 것이다.
+  | 'workflow'
   | 'memory'
   | 'tasks'
   | 'tools'
@@ -717,6 +720,16 @@ export class AgentDataApi {
       `/api/agentflow/geny-agent/${encodeURIComponent(workflowId)}/end-session`,
       { interaction_id: interactionId },
     );
+  }
+
+  // ── 워크플로우 ────────────────────────────────────────────────
+  /**
+   * 저장된 워크플로우 정의: 노드 · 연결 · 주인 · 고정본 여부. Geny 인지, 그리고 Geny 가 아닐 때의
+   * [개요]를 이것으로 정한다(basic-info 는 Agent Geny 노드가 없으면 404 다).
+   */
+  async workflow(workflowId: string): Promise<AgentWorkflow> {
+    const raw = await this.http.get<unknown>(`/api/agentflow/load/${encodeURIComponent(workflowId)}`);
+    return toAgentWorkflow(workflowId, raw);
   }
 
   // ── 기본정보 ──────────────────────────────────────────────────

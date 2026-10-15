@@ -7,7 +7,7 @@
  * starting a chat. Node-agnostic: agent_geny / agent_xgen both
  * appear here and both chat through the same execute-stream endpoint.
  */
-import { HttpClient } from './client';
+import { ApiError, HttpClient } from './client';
 import type {
   Agent,
   AgentCreateOptions,
@@ -15,6 +15,7 @@ import type {
   AgentListResult,
   AgentCreateSetting,
   CreateAgentInput,
+  CreatedAgent,
 } from './types';
 
 interface RawAgent {
@@ -73,6 +74,7 @@ interface RawCreateOptions {
   default_provider?: string;
   settings?: Array<Record<string, unknown>>;
   defaults?: Record<string, unknown>;
+  agent_node_type?: string;
 }
 
 export class AgentsApi {
@@ -140,6 +142,7 @@ export class AgentsApi {
         step: raw.step as number | undefined,
       })),
       defaults: res.defaults ?? {},
+      agentNodeType: res.agent_node_type || undefined,
     };
   }
 
@@ -160,11 +163,17 @@ export class AgentsApi {
   /**
    * 에이전트 하나를 세우고 그 workflowId 를 돌려준다.
    *
-   * 만들어지는 것은 노드 하나짜리 워크플로우다. 엣지가 없는 것이 이 노드의 성질이라
-   * 연결 없이 그대로 대화가 된다.
+   * 기본은 Agent Geny 노드 하나짜리 워크플로우다(엣지가 없는 것이 이 노드의 성질이라 연결 없이 그대로
+   * 대화가 된다). 관리자가 Agent Geny 를 꺼 두면 서버가 Agent Xgen(입력 · 에이전트 · 출력 세 노드)으로
+   * 만든다. 무엇으로 만들었는지는 agentNodeType 이 말한다(옛 서버는 보내지 않는다).
    */
-  async create(input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> {
-    const res = await this.http.post<{ workflow_id?: string; workflow_name?: string }>(
+  async create(input: CreateAgentInput): Promise<CreatedAgent> {
+    const res = await this.http.post<{
+      workflow_id?: string;
+      workflow_name?: string;
+      agent_node_type?: string | null;
+      node_count?: number;
+    }>(
       '/api/agentflow/create',
       {
         workflow_name: input.name,
@@ -176,6 +185,30 @@ export class AgentsApi {
     return {
       workflowId: String(res.workflow_id ?? ''),
       workflowName: String(res.workflow_name ?? input.name),
+      agentNodeType: res.agent_node_type || undefined,
+      nodeCount: typeof res.node_count === 'number' ? res.node_count : undefined,
     };
+  }
+
+  /**
+   * 이름을 바꾼다: 웹 카드 [기본 설정] 과 같은 길(POST /api/agentflow/basic-info/{id}).
+   * 같은 이름 검사와 고정본 거절은 서버가 한다. 주인만 바꿀 수 있다.
+   */
+  async rename(workflowId: string, name: string): Promise<{ workflowId: string; workflowName: string }> {
+    let res: { workflow_id?: string; name?: string };
+    try {
+      res = await this.http.post<{ workflow_id?: string; name?: string }>(
+        `/api/agentflow/basic-info/${encodeURIComponent(workflowId)}`,
+        { name },
+      );
+    } catch (error) {
+      // 이유를 문장으로 옮긴다: 데스크톱은 IPC 를 건너며 본문을 잃고 메시지만 남는다.
+      const status = error instanceof ApiError ? error.status : 0;
+      const body = error instanceof ApiError ? JSON.stringify(error.body ?? '') : '';
+      if (status === 400 && /already exists/i.test(body)) throw new Error('같은 이름의 에이전트가 이미 있습니다.');
+      if (status === 409) throw new Error('고정된 Agent 는 이름을 바꿀 수 없습니다.');
+      throw error;
+    }
+    return { workflowId: String(res?.workflow_id ?? workflowId), workflowName: String(res?.name ?? name) };
   }
 }

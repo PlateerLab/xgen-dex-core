@@ -94,6 +94,7 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   // 조용히 기본 탭으로 돌아간다. ('basic' 이 실제로 그렇게 빠져 있었다.)
   const viewerSubs: AgentViewerSub[] = [
     'basic',
+    'workflow',
     'memory',
     'tasks',
     'tools',

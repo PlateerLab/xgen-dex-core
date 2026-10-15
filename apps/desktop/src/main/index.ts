@@ -146,6 +146,16 @@ import {
 } from '@dex/engine/connection-security';
 import { createSsoWindowOptions } from './sso-window-options';
 import { getBrowserRuntime } from './browser-runtime';
+import {
+  CANVAS_PARTITION,
+  canvasUrl,
+  clearCanvasAuth,
+  guardCanvasGuest,
+  isCanvasSession,
+  isCanvasUrl,
+  refreshCanvasAuth,
+  seedCanvasAuth,
+} from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
 import { allowedBrowserUrl } from './browser-security';
@@ -373,6 +383,8 @@ function getClient(): XgenClient {
         // 앱 요청에 붙일 토큰도 여기서 갱신한다 — 회전 뒤에도 옛 토큰을
         // 붙이면 그 화면만 403 에 갇힌다(다른 소비자들이 겪었던 그 실패다).
         lastAccessToken = access;
+        // 에이전트 뷰어의 캔버스(webview)가 들고 있는 쿠키도 같은 이유로 갈아 끼운다.
+        refreshCanvasAuth(normalizeServerUrl(loadConfig().serverUrl), access);
       },
     });
   } else {
@@ -381,9 +393,15 @@ function getClient(): XgenClient {
   return client;
 }
 
-/** 기본 세션의 인증서 정책을 현재 서버 설정에 맞춰 설치한다. */
+/**
+ * 기본 세션의 인증서 정책을 현재 서버 설정에 맞춰 설치한다. 에이전트 뷰어의 캔버스(webview)도 같은 서버를
+ * 자기 세션으로 열므로 같은 정책을 건다: 빠지면 사설 인증서 서버에서 캔버스만 열리지 않는다.
+ */
 function applyCertificatePolicy(): void {
-  session.defaultSession.setCertificateVerifyProc((request, callback) => {
+  const verify = (
+    request: Electron.Request,
+    callback: (verificationResult: number) => void,
+  ): void => {
     const cfg = loadConfig();
     const allowed = shouldAllowPrivateCertificate(
       normalizeServerUrl(cfg.serverUrl),
@@ -393,7 +411,9 @@ function applyCertificatePolicy(): void {
     );
     // 0은 이번 인증서를 승인하고, -3은 Chromium의 원래 판정을 사용한다.
     callback(allowed ? 0 : -3);
-  });
+  };
+  session.defaultSession.setCertificateVerifyProc(verify);
+  session.fromPartition(CANVAS_PARTITION).setCertificateVerifyProc(verify);
 }
 
 function createWindow(): void {
@@ -428,17 +448,25 @@ function createWindow(): void {
   });
 
   mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
-    const runtime = getBrowserRuntime();
-    const expectedPartition = runtime.partition();
-    const safeUrl = allowedBrowserUrl(params.src);
-    if (
-      !runtime.isEnabled() ||
-      !expectedPartition ||
-      params.partition !== expectedPartition ||
-      !safeUrl
-    ) {
-      event.preventDefault();
-      return;
+    // 에이전트 뷰어 [워크플로우] 탭의 캔버스: 자기 세션으로, 설정된 서버의 /canvas 만(canvas-embed).
+    if (params.partition === CANVAS_PARTITION) {
+      if (!isCanvasUrl(normalizeServerUrl(loadConfig().serverUrl), params.src)) {
+        event.preventDefault();
+        return;
+      }
+    } else {
+      const runtime = getBrowserRuntime();
+      const expectedPartition = runtime.partition();
+      const safeUrl = allowedBrowserUrl(params.src);
+      if (
+        !runtime.isEnabled() ||
+        !expectedPartition ||
+        params.partition !== expectedPartition ||
+        !safeUrl
+      ) {
+        event.preventDefault();
+        return;
+      }
     }
     // Never accept preferences supplied by page markup. The guest has no Node,
     // preload, unmanaged-popup or web-security escape hatch.
@@ -451,6 +479,13 @@ function createWindow(): void {
     webPreferences.allowRunningInsecureContent = false;
   });
   mainWindow.webContents.on('did-attach-webview', (_event, guest) => {
+    if (isCanvasSession(guest.session)) {
+      guardCanvasGuest(guest, {
+        server: () => normalizeServerUrl(loadConfig().serverUrl),
+        heal: () => refreshAuthToken(),
+      });
+      return;
+    }
     guest.setWindowOpenHandler(() => ({ action: 'deny' }));
     getBrowserRuntime().registerSharedGuest(guest);
   });
@@ -2399,6 +2434,7 @@ ipcMain.handle(CHANNELS.authLogout, async () => {
   ideWatches.closeAll();
   await getBrowserRuntime().closeAll();
   getBrowserRuntime().configure({ enabled: false });
+  await clearCanvasAuth();
   if (client) await client.logout();
   await tokenStore.clear();
   // An explicit logout also disables auto-login (else next launch signs right back in).
@@ -2577,6 +2613,19 @@ ipcMain.handle(CHANNELS.agentTaskOutput, (_e, wf: string, runId: string) =>
   getClient().agentData.taskOutput(wf, runId),
 );
 ipcMain.handle(CHANNELS.agentBasicInfo, (_e, wf: string) => getClient().agentData.basicInfo(wf));
+ipcMain.handle(CHANNELS.agentWorkflow, (_e, wf: string) => getClient().agentData.workflow(wf));
+ipcMain.handle(CHANNELS.agentsRename, (_e, wf: string, name: string) => getClient().agents.rename(wf, name));
+/**
+ * [워크플로우] 탭의 캔버스를 열 준비: 캔버스 세션에 지금 토큰을 심고 webview 가 붙일 주소를 준다.
+ * 토큰은 렌더러로 넘기지 않는다(쿠키는 main 이 세션에 직접 심는다).
+ */
+ipcMain.handle(CHANNELS.canvasPrepare, async (_e, wf: string, ownerUserId?: string | null) => {
+  const server = normalizeServerUrl(loadConfig().serverUrl);
+  const token = await liveAccessToken();
+  if (!server || !token) throw new Error('로그인이 필요합니다.');
+  await seedCanvasAuth(server, token);
+  return { src: canvasUrl(server, String(wf), ownerUserId ?? null), partition: CANVAS_PARTITION };
+});
 // 대화의 모델 — 채팅 입력창 옆 선택기. 서버가 들고 있다가 다음 턴 시작에 바꿔 끼운다.
 ipcMain.handle(CHANNELS.conversationModelGet, (_e, iid: string, wf: string) =>
   getClient().conversationModel.get(String(iid ?? ''), String(wf ?? '')),

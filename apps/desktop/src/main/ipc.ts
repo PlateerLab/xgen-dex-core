@@ -39,6 +39,8 @@ export const CHANNELS = {
   agentsCreate: 'agents:create',
   /** 시작 화면의 새 에이전트 이름이 이미 있는가(적는 대로 묻는다). */
   agentsNameTaken: 'agents:name-taken',
+  /** 에이전트 이름 바꾸기(뷰어 머리의 이름을 두 번 눌러). */
+  agentsRename: 'agents:rename',
 
   // Voice (STT/TTS) — renderer captures audio, main proxies to the backend
   // (secrets stay server-side). Audio crosses IPC as Uint8Array + mime.
@@ -133,6 +135,10 @@ export const CHANNELS = {
   agentTaskRuns: 'agent:taskRuns',
   agentTaskOutput: 'agent:taskOutput',
   agentBasicInfo: 'agent:basicInfo',
+  /** 저장된 워크플로우(노드 · 연결 · 주인 · 고정본). 뷰어가 Geny 인지와 Geny 가 아닐 때의 [개요]를 정한다. */
+  agentWorkflow: 'agent:workflow',
+  /** [워크플로우] 탭 캔버스: 캔버스 세션에 토큰을 심고 webview 주소를 준다. */
+  canvasPrepare: 'canvas:prepare',
   /** 대화의 모델 — 채팅 입력창 옆 선택기(다음 답변부터, 세션 재시작 없음). */
   conversationModelGet: 'conversation-model:get',
   conversationModelSet: 'conversation-model:set',

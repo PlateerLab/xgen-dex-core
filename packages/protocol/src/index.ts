@@ -269,6 +269,7 @@ export * from './errors';
 export * from './types';
 export * from './agent-data';
 export * from './agent-inspect';
+export * from './agent-workflow';
 export * from './file-view';
 export * from './chat-files';
 export * from './turn-files';

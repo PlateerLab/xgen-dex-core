@@ -38,7 +38,7 @@ import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
 import { TeamsApi } from './teams';
 import { VoiceApi } from './voice';
-import { HttpClient, type FetchLike } from './client';
+import { ApiError, HttpClient, type FetchLike } from './client';
 import type { CurrentUser, LoginResult } from './types';
 
 export interface XgenClientOptions {
@@ -54,6 +54,16 @@ export interface XgenClientOptions {
    * 대화 소켓)가 폐기된 토큰으로 접속하다 403 을 맞지 않는다.
    */
   onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
+}
+
+/**
+ * 서버가 **응답으로** 거부했는가 — 만료·위조 토큰이면 게이트웨이가 401/403 으로 답한다.
+ * 이것을 네트워크 오류로 치면 restore 가 'network' 를 돌려 앱이 오프라인으로 보고
+ * 자동 로그인도 건너뛴다(2026-10-15 dev-xgen 만료 토큰에서 재현). 408·429·5xx 는
+ * 일시 장애라 토큰을 지키도록 네트워크 쪽으로 둔다.
+ */
+function rejectedByServer(err: unknown): boolean {
+  return err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
 }
 
 export class XgenClient {
@@ -188,8 +198,8 @@ export class XgenClient {
         this.user = user;
         return 'valid';
       }
-    } catch {
-      sawNetworkError = true;
+    } catch (err) {
+      sawNetworkError = !rejectedByServer(err);
     }
     // Try an explicit refresh as a fallback.
     if (refreshToken) {
@@ -206,8 +216,8 @@ export class XgenClient {
         }
         // 서버가 응답했고 거부했다 — 명시적 invalid.
         sawNetworkError = false;
-      } catch {
-        sawNetworkError = true;
+      } catch (err) {
+        sawNetworkError = !rejectedByServer(err);
       }
     }
     return sawNetworkError ? 'network' : 'invalid';

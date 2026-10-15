@@ -12,6 +12,9 @@
  *
  * 켜는 조건: 빠른 브라우저 조작(설정 fastAct 또는 개발용 DEX_FAST_ACT_URL) + E13 형식, DEX_VOICE_STREAM=0 이면 끈다.
  * DEX_VOICE_TEST=1 이면 녹음 파일을 실제 말 속도로 흘려 넣는 시험 경로가 열린다.
+ *
+ * 호출어로만 듣기(설정 voiceWake)를 켜면 호출어를 듣기 전의 말은 판단·표시하지 않고 버린다. 호출어 뒤의 말만
+ * 조작·채팅으로 넘기고, 호출어만 말하고 멈추면 다음 말 하나는 호출어 없이 받는다(voice-wake.ts).
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -23,6 +26,7 @@ import { fastActEnabled } from './fast-act-runner';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, norm } from './voice-segmenter';
 import { rememberVoiceTurn } from './voice-turns';
+import { findWake, restAfter, WAKE_WINDOW_MS } from './voice-wake';
 
 const SCOPE = 'voice-stream';
 const FRAME = 640; // 20 ms @ 16 kHz PCM16
@@ -33,12 +37,15 @@ export type VoiceStreamDeps = {
   baseUrl: () => string;
   token: () => Promise<string>;
   allowPrivateCertificate: () => boolean;
+  /** 호출어 목록 — null 이면 호출어로만 듣기가 꺼져 있다. */
+  wakeWords: () => string[] | null;
 };
 
 export type VoiceStreamEvent =
   | { sessionId: string; type: 'ready' }
   | { sessionId: string; type: 'partial'; text: string }
   | { sessionId: string; type: 'act'; action: VoiceAction }
+  | { sessionId: string; type: 'wake' }
   | { sessionId: string; type: 'error'; error: string };
 
 export type TimelineEntry = { t: number; type: string; text?: string; detail?: string };
@@ -50,7 +57,15 @@ export type VoiceStreamResult = {
   /** 세션 시작부터 소리 끝(end 호출)까지. */
   audioEndMs: number | null;
   timeline: TimelineEntry[];
+  /**
+   * 호출어로만 듣기 — off: 꺼짐, ignored: 호출어 없는 말이라 버렸다(text 비움), called: 호출어만 들었다
+   * (다음 말 하나는 호출어 없이 받는다), heard: 호출어 뒤의 말(또는 호출어에 이어진 말)을 처리했다.
+   */
+  wake: 'off' | 'ignored' | 'called' | 'heard';
 };
+
+/** 호출어로만 듣기 — awake: 이 세션은 호출어 없이 받는다(호출어 직후의 말·앞 말에서 이어진 말). */
+type WakeGate = { words: string[]; awake: boolean };
 
 export function voiceStreamAvailable(): boolean {
   return fastActEnabled() && FORMAT === 'e13' && process.env.DEX_VOICE_STREAM !== '0';
@@ -68,6 +83,8 @@ class VoiceSession {
   /** 정지 뒤 서버가 같은 토막을 다시 확정해 보낸 것을 버렸다 — 서버 done 도 그 중복을 담고 있으니 쓰지 않는다. */
   private droppedRepeat = false;
   private lastText = '';
+  /** 서버가 적은 그대로의 마지막 글자(호출어 포함). */
+  private lastHeard = '';
   private doneText: string | null = null;
   private stopSent = false;
   private ended: Promise<VoiceStreamResult> | null = null;
@@ -78,6 +95,12 @@ class VoiceSession {
   private readonly seg: Segmenter;
   private readonly timeline: TimelineEntry[] = [];
   private audioEndMs: number | null = null;
+  /** 받는 중인가 — 호출어로만 듣기가 꺼져 있거나, 호출어를 들었거나, 호출어 없이 받는 세션. */
+  private woke: boolean;
+  /** 이 세션에서 호출어를 들었다. */
+  private heardWake = false;
+  /** 호출어가 끝난 글자 위치 — 인식기가 고쳐 써서 호출어를 못 찾을 때 이 뒤부터 쓴다. */
+  private wakeEnd = 0;
 
   constructor(
     readonly id: string,
@@ -88,9 +111,11 @@ class VoiceSession {
     private carry = '',
     /** 받아 적기만 한다(판단·조작 없음) — 시험 경로에서 STT 결과를 모을 때. */
     private sttOnly = false,
+    private wake: WakeGate | null = null,
   ) {
+    this.woke = !wake || wake.awake;
     this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }));
-    if (!sttOnly) this.agent.prefetch();
+    if (!sttOnly && this.woke) this.agent.prefetch();
     this.seg = new Segmenter(
       this.agent,
       (e) => {
@@ -128,6 +153,27 @@ class VoiceSession {
     });
   }
 
+  /**
+   * 호출어로 거른 말 — 받을 말이면 호출어 뒤(호출어가 없으면 그대로), 아직 호출어를 못 들었으면 null.
+   * 호출어 없이 받는 세션에서는 말머리의 호출어만 뗀다(되풀이해 부른 경우) — 말 중간의 것은 명령의 일부일 수 있다.
+   */
+  private gate(heard: string): string | null {
+    if (!this.wake) return heard;
+    const m = findWake(heard, this.wake.words);
+    if (m && (!this.wake.awake || m.start <= 3)) {
+      if (!this.heardWake) {
+        this.heardWake = true;
+        this.mark('wake', heard.slice(m.start, m.end));
+        this.emit({ sessionId: this.id, type: 'wake' });
+      }
+      this.woke = true;
+      this.wakeEnd = m.end;
+      return restAfter(heard, m.end);
+    }
+    if (!this.woke) return null;
+    return this.wakeEnd ? restAfter(heard, this.wakeEnd) : heard;
+  }
+
   private fail(error: string): void {
     this.mark('error', undefined, error);
     diag(SCOPE, 'error', { id: this.id, error });
@@ -160,7 +206,11 @@ class VoiceSession {
       if (m.type === 'final') this.lastFinal = m.text;
       // 서버의 partial 은 이 세션에서 들은 전체(누적), final 은 방금 끝난 토막만이다.
       const heard = m.type === 'partial' ? m.text.trim() : (this.closedText = `${this.closedText} ${m.text}`.trim());
-      const full = this.carry ? `${this.carry} ${heard}` : heard;
+      this.lastHeard = heard;
+      // 호출어 전의 말은 화면에도 내지 않는다(입력창에 사람에게 한 말이 적히지 않게).
+      const said = this.sttOnly ? heard : this.gate(heard);
+      if (said === null) return;
+      const full = this.carry ? (said ? `${this.carry} ${said}` : this.carry) : said;
       if (full !== this.lastText) {
         this.lastText = full;
         this.mark('partial', full);
@@ -215,7 +265,16 @@ class VoiceSession {
       this.wakeDone = resolve;
       setTimeout(resolve, DONE_WAIT_MS);
     });
-    const heard = (this.droppedRepeat ? this.closedText : this.doneText) || this.lastText.slice(this.carry ? this.carry.length + 1 : 0);
+    const raw = (this.droppedRepeat ? this.closedText : this.doneText) || this.lastHeard;
+    const heard = this.sttOnly ? raw : this.gate(raw);
+    if (heard === null) {
+      // 호출어 없는 말 — 판단·실행·기록 없이 버린다(글자도 돌려주지 않는다). 사람에게 한 말이라 로그에도
+      // 글자를 남기지 않는다 — 시험 빌드에서만 원문을 남긴다.
+      this.close();
+      const test = process.env.DEX_VOICE_TEST === '1' ? { heard: raw } : {};
+      diag(SCOPE, 'end', { id: this.id, wake: 'ignored', chars: raw.length, ...test });
+      return { text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
+    }
     const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : '');
     if (!this.sttOnly) await this.seg.final(text);
     this.close();
@@ -225,11 +284,13 @@ class VoiceSession {
       unhandled: this.seg.unhandled,
       audioEndMs: this.audioEndMs,
       timeline: this.timeline,
+      wake: !this.wake ? 'off' : this.heardWake && !text ? 'called' : 'heard',
     };
     if (text && !this.sttOnly) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
     diag(SCOPE, 'end', {
       id: this.id,
       text,
+      wake: result.wake,
       acted: result.actions.map((a) => `${a.label}@${a.at}${a.partial ? '(말하는 중)' : ''}`),
       unhandled: result.unhandled,
       audioEndMs: this.audioEndMs,
@@ -244,7 +305,8 @@ class VoiceSession {
     this.audioEndMs = 0;
     const t = norm(text);
     await this.seg.final(t);
-    return { text: t, actions: [...this.agent.actions], unhandled: this.seg.unhandled, audioEndMs: 0, timeline: this.timeline };
+    const actions = [...this.agent.actions];
+    return { text: t, actions, unhandled: this.seg.unhandled, audioEndMs: 0, timeline: this.timeline, wake: 'off' };
   }
 
   close(): void {
@@ -263,6 +325,8 @@ let seq = 0;
 
 export class VoiceStreamHub {
   private sessions = new Map<string, VoiceSession>();
+  /** 에이전트별 — 호출어만 들은 뒤 다음 말을 호출어 없이 받는 기한. */
+  private wakeUntil = new Map<string, number>();
 
   constructor(private deps: () => VoiceStreamDeps | null) {}
 
@@ -270,7 +334,10 @@ export class VoiceStreamHub {
     const deps = this.deps();
     if (!deps) throw new Error('XGEN 로그인이 필요합니다');
     const id = `${Date.now().toString(36)}-${++seq}`;
-    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly);
+    const words = sttOnly ? null : deps.wakeWords();
+    // 앞 말에서 이어진 말(carry 는 받은 말에서만 생긴다)과 호출어 직후의 말은 호출어 없이 받는다.
+    const awake = !!carry.trim() || Date.now() < (this.wakeUntil.get(workflowId) ?? 0);
+    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null);
     this.sessions.set(id, s);
     await s.open();
     diag(SCOPE, 'start', { id, workflowId });
@@ -285,7 +352,11 @@ export class VoiceStreamHub {
     const s = this.sessions.get(id);
     if (!s) return null;
     try {
-      return await s.end();
+      const r = await s.end();
+      // 호출어만 들었으면 다음 말 하나를 기다리고, 말을 하나 받았으면 닫는다. 버린 말·잡음(취소)은 기한을 쓰지 않는다.
+      if (r.wake === 'called') this.wakeUntil.set(s.workflowId, Date.now() + WAKE_WINDOW_MS);
+      else if (r.wake === 'heard' && r.text) this.wakeUntil.delete(s.workflowId);
+      return r;
     } finally {
       this.sessions.delete(id);
     }

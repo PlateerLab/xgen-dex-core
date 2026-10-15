@@ -9251,42 +9251,245 @@ button.sm {
   line-height: 1.5;
   resize: vertical;
 }
-/* 실험: 계속 듣기 상태 — 입력창 위 한두 줄 */
-.voice-loop-status {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--muted);
-  min-width: 0;
+/* 음성 설정 — 호출어 입력칸(한 줄) */
+.voice-style-input.voice-wake-input {
+  min-height: 0;
 }
-.voice-loop-head {
+/* 실험: 계속 듣기 상태 막대 — 입력창 위. 왼쪽 원(상태), 가운데 제목·안내, 오른쪽 마지막으로 한 일.
+   상태·종류 클래스는 is- 를 붙인다(.chat 같은 전역 클래스와 겹치지 않게). */
+.voice-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
+  gap: 10px;
+  min-width: 0;
+  margin: 0 0 8px;
+  padding: 7px 8px 7px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
 }
-.voice-loop-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
+.voice-bar.is-armed,
+.voice-bar.is-hearing,
+.voice-bar.is-thinking {
+  border-color: var(--primary-soft-border);
+  background:
+    linear-gradient(90deg, var(--primary-soft) 0%, rgba(120, 60, 237, 0.05) 60%, transparent 100%),
+    var(--panel);
+  box-shadow: 0 0 0 3px var(--violet-ring);
+}
+.voice-bar-orb {
+  position: relative;
   flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
 }
-.voice-loop-dot.armed {
+/* 마이크가 켜져 있다는 표시 — 대기 중에도 듣고 있음을 숨기지 않는다 */
+.voice-bar.is-standby .voice-bar-orb::before {
+  content: '';
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
   background: var(--success);
+  box-shadow: 0 0 0 2px var(--panel);
 }
-.voice-loop-dot.hearing {
-  background: var(--error);
+.voice-bar.is-armed .voice-bar-orb,
+.voice-bar.is-hearing .voice-bar-orb,
+.voice-bar.is-thinking .voice-bar-orb {
+  border-color: transparent;
+  background: var(--primary-grad);
+  color: #fff;
 }
-.voice-loop-dot.thinking {
-  background: var(--warning);
+.voice-bar-orb::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  pointer-events: none;
 }
-.voice-loop-line {
+.voice-bar.is-armed .voice-bar-orb::after {
+  border-color: rgba(120, 60, 237, 0.35);
+  animation: voice-bar-breathe 2.4s ease-in-out infinite;
+}
+.voice-bar.is-hearing .voice-bar-orb::after {
+  border-color: rgba(120, 60, 237, 0.5);
+  animation: voice-bar-pulse 1.2s ease-out infinite;
+}
+.voice-bar.is-thinking .voice-bar-orb::after {
+  border-color: var(--primary-end) transparent transparent transparent;
+  animation: voice-bar-spin 0.9s linear infinite;
+}
+.voice-bar-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+.voice-bar-wave i {
+  display: block;
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  animation: voice-bar-wave 0.9s ease-in-out infinite;
+}
+.voice-bar-wave i:nth-child(2) {
+  animation-delay: -0.6s;
+}
+.voice-bar-wave i:nth-child(3) {
+  animation-delay: -0.3s;
+}
+.voice-bar-wave i:nth-child(4) {
+  animation-delay: -0.75s;
+}
+.voice-bar-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.35;
+}
+.voice-bar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.voice-bar-sub {
   overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.voice-bar-key {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 8px;
+  border: 1px solid var(--primary-soft-border);
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+.voice-bar-event {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
+  max-width: 55%;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  animation: voice-bar-event-in 0.25s ease-out;
+}
+.voice-bar-event.is-act {
+  border-color: rgba(46, 177, 70, 0.3);
+  background: rgba(46, 177, 70, 0.08);
+}
+.voice-bar-event.is-act svg,
+.voice-bar-event.is-act .voice-bar-event-label {
+  color: var(--success);
+}
+.voice-bar-event.is-chat {
+  border-color: var(--primary-soft-border);
+  background: var(--primary-soft);
+}
+.voice-bar-event.is-chat svg,
+.voice-bar-event.is-chat .voice-bar-event-label {
+  color: var(--primary);
+}
+.voice-bar-event.is-busy .voice-bar-event-label {
+  color: var(--warning);
+}
+.voice-bar-event.is-skip,
+.voice-bar-event.is-noise {
+  opacity: 0.75;
+}
+.voice-bar-event svg {
+  flex: none;
+}
+.voice-bar-event-label {
+  flex: none;
+  font-weight: 600;
+}
+.voice-bar-event-text {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes voice-bar-pulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+@keyframes voice-bar-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+}
+@keyframes voice-bar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes voice-bar-wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes voice-bar-event-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-bar-orb::after,
+  .voice-bar-wave i,
+  .voice-bar-event {
+    animation: none;
+  }
 }
 .composer-tools {
   display: flex;

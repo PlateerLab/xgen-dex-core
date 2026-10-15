@@ -108,6 +108,13 @@ export interface ConnectorConfig {
    * 조작한다. 판단 모델이 없는 서버면 503 이라 늘 서버 에이전트로 넘어간다.
    */
   fastAct?: boolean;
+  /**
+   * 호출어로만 듣기. 기본 false. 켜면 계속 듣기(빠른 조작)가 호출어를 들은 말만 조작·채팅으로 넘기고
+   * 나머지 말은 버린다 — 발표·회의처럼 사람에게 하는 말이 섞이는 자리용(voice-wake.ts).
+   */
+  voiceWake?: boolean;
+  /** 호출어 목록(쉼표로 구분). 비우면 기본값 `DEFAULT_WAKE_WORDS`. */
+  voiceWakeWords?: string;
   // ── 화면 캡처 ──
   //
   // 채팅을 보낼 때 지금 화면을 함께 보낸다. 에이전트가 "지금 뭐가 보이냐" 를

@@ -87,7 +87,9 @@ import type { AgentViewerSub } from './workspace-layout';
 import { IdeView } from '@dex/ide';
 import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
 import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
+import { VoiceLoopBar, type VoiceLogEntry } from '../voice/VoiceLoopBar';
 import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
+import { parseWakeWords, WAKE_WINDOW_MS } from '../../../main/voice-wake';
 
 /** [Trigger] 행 — Job/sub-agent 결과가 세션을 깨운 턴.
  *
@@ -433,7 +435,20 @@ export const Chat: React.FC<{
   const streamVoice = useVoiceStreamAvailable();
   // 켜면 끌 때까지 계속 듣는다 — 말할 때마다 조작하고, 화면 조작으로 끝난 말은 채팅·TTS 없이 기록만 남긴다.
   const [voiceLoopOn, setVoiceLoopOn] = useState(false);
-  const [voiceLog, setVoiceLog] = useState<string[]>([]);
+  const [voiceLog, setVoiceLog] = useState<VoiceLogEntry[]>([]);
+  const logVoice = useCallback(
+    (kind: VoiceLogEntry['kind'], text: string) => setVoiceLog((log) => [...log.slice(-2), { kind, text, at: Date.now() }]),
+    [],
+  );
+  // 호출어로만 듣기(설정) — 켜져 있으면 호출어(첫 번째)를 안내하고, 부른 뒤 받는 동안만 '듣는 중' 으로 보인다.
+  const [wakeWord, setWakeWord] = useState<string | null>(null);
+  const [called, setCalled] = useState(false);
+  const calledTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markCalled = useCallback((on: boolean, ms = 0) => {
+    if (calledTimer.current) clearTimeout(calledTimer.current);
+    calledTimer.current = on && ms ? setTimeout(() => setCalled(false), ms) : null;
+    setCalled(on);
+  }, []);
   // TTS playback refs — a simple serial queue so replies never overlap.
   // 읽을 문장과 그 합성. 미리 합성(ttsAhead)이 켜져 있으면 넣는 즉시 합성을 시작해 두고 재생만 차례로
   // 한다 — 합성을 재생 뒤에 줄 세우면 문장마다 합성 시간(0.7~1초)만큼 끊겨 텍스트보다 점점 늦어진다.
@@ -1022,17 +1037,24 @@ export const Chat: React.FC<{
     workflowId: agent.workflowId,
     isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
     onPartial: (t) => setInput(t),
+    onWake: () => markCalled(true),
     onResult: async (r) => {
       setInput('');
+      if (r.wake === 'called') {
+        // 호출어만 들었다 — 다음 말 하나는 호출어 없이 받는다(main 이 같은 시간만큼 기다린다).
+        markCalled(true, WAKE_WINDOW_MS);
+        return;
+      }
+      if (r.wake !== 'off') markCalled(false);
       if (!r.text) return;
       // 한두 글자짜리 처리 못 한 말("그.", "음")은 말버릇·잡음 — 채팅으로 보내지 않는다.
       if (!r.actions.length && r.text.replace(/[\s.,!?。…]/g, '').length <= 2) {
-        setVoiceLog((log) => [...log.slice(-2), `무시: ${r.text}`]);
+        logVoice('skip', r.text);
         return;
       }
       if (r.actions.length && !r.unhandled) {
         const line = r.actions.map((a) => (a.text ? `${a.display}에 "${a.text}"` : a.display)).join(' → ');
-        setVoiceLog((log) => [...log.slice(-2), `실행: ${line}`]);
+        logVoice('act', line);
         return;
       }
       // 계속 듣기는 주변 소리도 듣는다 — 주변 소리·인식 환각으로 보이는 말은 채팅으로 보내지 않는다:
@@ -1045,20 +1067,23 @@ export const Chat: React.FC<{
       for (const x of sentences) counts.set(x, (counts.get(x) ?? 0) + 1);
       const repeated = [...counts.values()].some((n) => n >= 3);
       if ((letters.length >= 6 && hangul / letters.length < 0.3) || repeated) {
-        setVoiceLog((log) => [...log.slice(-2), `무시(주변 소리로 보임): ${r.text}`]);
+        logVoice('noise', r.text);
         return;
       }
       if (busy) {
-        setVoiceLog((log) => [...log.slice(-2), `답하는 중이라 보내지 못함: ${r.text}`]);
+        logVoice('busy', r.text);
         return;
       }
-      setVoiceLog((log) => [...log.slice(-2), `채팅으로: ${r.text}`]);
+      logVoice('chat', r.text);
       await send(r.text, { voice: true });
     },
   });
   useEffect(() => {
-    if (!voiceLoopOn) setVoiceLog([]);
-  }, [voiceLoopOn]);
+    if (!voiceLoopOn) {
+      setVoiceLog([]);
+      markCalled(false);
+    }
+  }, [voiceLoopOn, markCalled]);
 
   const toggleMic = useCallback(() => {
     if (streamVoice) {
@@ -1101,6 +1126,7 @@ export const Chat: React.FC<{
         volumeRef.current = typeof cfg.voiceVolume === 'number' ? cfg.voiceVolume : 100;
         voiceStyleRef.current = cfg.voiceReplyStyleOn === true ? (cfg.voiceReplyStyle ?? DEFAULT_VOICE_REPLY_STYLE) : '';
         ttsAheadRef.current = cfg.voiceTtsAhead === true;
+        setWakeWord(cfg.voiceWake === true ? (parseWakeWords(cfg.voiceWakeWords?.trim() || undefined)[0] ?? null) : null);
       })
       .catch(() => undefined);
     const off = xgen.config.onChange((cfg) => {
@@ -1108,6 +1134,7 @@ export const Chat: React.FC<{
       volumeRef.current = typeof cfg.voiceVolume === 'number' ? cfg.voiceVolume : 100;
       voiceStyleRef.current = cfg.voiceReplyStyleOn === true ? (cfg.voiceReplyStyle ?? DEFAULT_VOICE_REPLY_STYLE) : '';
       ttsAheadRef.current = cfg.voiceTtsAhead === true;
+      setWakeWord(cfg.voiceWake === true ? (parseWakeWords(cfg.voiceWakeWords?.trim() || undefined)[0] ?? null) : null);
       // 재생 중에도 즉시 반영
       if (gainRef.current)
         gainRef.current.gain.value = Math.max(0, Math.min(300, volumeRef.current)) / 100;
@@ -1832,25 +1859,9 @@ export const Chat: React.FC<{
         {/* Teams 문맥 칩 — 켜져 있다는 사실이 **항상** 보여야 한다. 화면 캡처
             토글과 같은 원칙이다: 켜 둔 것을 잊고 남의 대화를 흘려보내는 것이
             이 기능의 유일한 위험이다. */}
-        {/* 실험: 계속 듣기 상태 — 듣는 중/처리 중과 최근 조작 기록 몇 줄 */}
+        {/* 실험: 계속 듣기 상태 — 지금 상태(호출어 대기·듣는 중·처리 중)와 마지막으로 한 일 */}
         {voiceLoopOn && (
-          <div className="voice-loop-status" role="status" aria-live="polite">
-            <div className="voice-loop-head">
-              <span className={`voice-loop-dot ${loopState}`} />
-              {loopState === 'hearing'
-                ? '듣는 중…'
-                : loopState === 'thinking'
-                  ? '처리 중…'
-                  : loopState === 'armed'
-                    ? '계속 듣기 — 말하면 바로 조작합니다'
-                    : '마이크 준비 중…'}
-            </div>
-            {voiceLog.map((line, i) => (
-              <div key={i} className="voice-loop-line" title={line}>
-                {line}
-              </div>
-            ))}
-          </div>
+          <VoiceLoopBar state={loopState} wakeWord={wakeWord} called={called} last={voiceLog[voiceLog.length - 1]} />
         )}
         {/* 입력창 위 도구 줄 — [Teams 대화 붙이기] 와 그 오른쪽의 모델 선택기. */}
         <div className="composer-tools">

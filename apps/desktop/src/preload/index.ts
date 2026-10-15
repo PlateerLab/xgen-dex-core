@@ -67,7 +67,9 @@ import type {
   NotificationDeliveryResult,
   NotificationSystemStatus,
   AgentCreateOptions,
+  AgentWorkflow,
   CreateAgentInput,
+  CreatedAgent,
   IdeFailure,
 } from '@dex/protocol';
 import type { ChatFeedback } from '@dex/protocol/feedback';
@@ -198,15 +200,27 @@ const api = {
     },
   },
 
+  /**
+   * 에이전트 뷰어 [워크플로우] 탭의 캔버스. 토큰은 main 이 캔버스 세션에 직접 심고, 여기는 webview 가 붙일
+   * 주소와 세션 이름만 받는다.
+   */
+  canvas: {
+    prepare: (wf: string, ownerUserId?: string | null): Promise<{ src: string; partition: string }> =>
+      ipcRenderer.invoke(CHANNELS.canvasPrepare, wf, ownerUserId ?? null),
+  },
+
   agents: {
     list: (query?: AgentListQuery): Promise<AgentListResult> =>
       ipcRenderer.invoke(CHANNELS.agentsList, query),
     /** 만들기 화면이 그릴 것 — 서버가 Agent Geny 노드에서 읽어 내려 준다. */
     createOptions: (): Promise<AgentCreateOptions> =>
       ipcRenderer.invoke(CHANNELS.agentsCreateOptions),
-    /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
-    create: (input: CreateAgentInput): Promise<{ workflowId: string; workflowName: string }> =>
+    /** 에이전트 하나를 세운다. 기본은 Agent Geny 노드 하나, Agent Geny 가 꺼져 있으면 Agent Xgen(agentNodeType). */
+    create: (input: CreateAgentInput): Promise<CreatedAgent> =>
       ipcRenderer.invoke(CHANNELS.agentsCreate, input),
+    /** 이름을 바꾼다(주인만, 고정본은 서버가 거절). */
+    rename: (wf: string, name: string): Promise<{ workflowId: string; workflowName: string }> =>
+      ipcRenderer.invoke(CHANNELS.agentsRename, wf, name),
     /** 이 이름의 에이전트가 이미 있는가. 시작 화면이 적는 대로 묻는다. */
     nameTaken: (name: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.agentsNameTaken, name),
   },
@@ -376,6 +390,8 @@ const api = {
     },
     basicInfo: (wf: string): Promise<AgentBasicInfo> =>
       ipcRenderer.invoke(CHANNELS.agentBasicInfo, wf),
+    /** 저장된 워크플로우: 노드 · 연결 · 주인 · 고정본 여부. */
+    workflow: (wf: string): Promise<AgentWorkflow> => ipcRenderer.invoke(CHANNELS.agentWorkflow, wf),
     toolsList: (wf: string): Promise<ToolsResult> =>
       ipcRenderer.invoke(CHANNELS.agentToolsList, wf),
     toolGet: (wf: string, functionId: string): Promise<ForgedTool> =>

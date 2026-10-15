@@ -265,11 +265,14 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
         }
         const created = await xgen.agents.create({ name: trimmed, provider, model, settings });
         writePick(provider, model);
+        // 서버가 무엇으로 만들었는지 말한다. 관리자가 Agent Geny 를 꺼 두면 Agent Xgen(입력 · 에이전트 · 출력)이다.
+        // 옛 서버는 말하지 않는다: 그때는 예전처럼 Agent Geny 하나로 본다.
+        const genyCreated = !created.agentNodeType || created.agentNodeType.startsWith('agents/geny');
         agent = {
           id: 0,
           workflowId: created.workflowId,
           workflowName: created.workflowName,
-          nodeCount: 1,
+          nodeCount: created.nodeCount ?? 1,
           isShared: false,
           isDeployed: false,
           isCompleted: true,
@@ -278,8 +281,8 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
           fullName: '',
           createdAt: '',
           updatedAt: '',
-          // 이 화면이 만드는 것은 Agent Geny 하나다. 이 표시가 없으면 스토어가 첨부를 그림만 남기고 거른다.
-          hasAgentGeny: true,
+          // Agent Geny 면 이 표시가 있어야 스토어가 첨부를 그림만 남기고 거르지 않는다.
+          hasAgentGeny: genyCreated,
         };
         agentDirectory.add(agent);
       } else if (selectedAgent) {

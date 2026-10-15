@@ -620,6 +620,19 @@ export interface AgentCreateOptions {
   defaultProvider: string;
   settings: AgentCreateSetting[];
   defaults: Record<string, unknown>;
+  /**
+   * 무엇으로 만드는가: 기본 'agents/geny', 관리자가 Agent Geny 를 꺼 두면 'agents/xgen'.
+   * Agent Geny RSI 는 시험용이라 쓰지 않는다. 옛 서버는 보내지 않는다(undefined = Geny 로 본다).
+   */
+  agentNodeType?: string;
+}
+
+/** 만든 에이전트. agentNodeType · nodeCount 는 옛 서버가 보내지 않는다. */
+export interface CreatedAgent {
+  workflowId: string;
+  workflowName: string;
+  agentNodeType?: string;
+  nodeCount?: number;
 }
 
 export interface CreateAgentInput {

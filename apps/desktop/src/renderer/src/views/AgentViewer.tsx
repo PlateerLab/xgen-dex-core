@@ -1,5 +1,12 @@
-/** Read-only agent inspector. Persisted subtab keys remain compatible with saved layouts. */
-import React, { useEffect, useMemo, useState } from 'react';
+/**
+ * Agent inspector. Persisted subtab keys remain compatible with saved layouts.
+ *
+ * 2026-10-15: [개요] 오른쪽에 [워크플로우] 탭: 웹 캔버스 편집기를 그대로 띄운다(AgentWorkflowCanvas). 캔버스는
+ * 이제 에이전트 상세의 하위 화면이다. Geny 가 아닌 에이전트(Agent Xgen · 일반 워크플로우)는 탭이 [개요 /
+ * 워크플로우] 둘이다(메모리 · 작업 · 도구 · 앱 · 스토리지 · 실행 기록은 Agent Geny 의 것). Geny 인지는 저장된
+ * 워크플로우의 노드로 정한다. 이름은 머리의 이름을 두 번 눌러 바꾼다(주인만, 고정본 제외). 웹 에이전트 상세와 같다.
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
 import { BotIcon, CopyIcon } from '../brand/icons';
 import { FileTree, type IdeFileEntry } from '@dex/ide';
@@ -8,6 +15,9 @@ import { FileViewerPane, agentFileSource } from './FileViewerPane';
 import type { AgentViewerSub } from './workspace-layout';
 import { AppsView } from '../apps/AppsView';
 import { AgentOverview } from './AgentOverview';
+import { WorkflowOverview } from './WorkflowOverview';
+import { AgentWorkflowCanvas } from './AgentWorkflowCanvas';
+import { workflowHasGeny } from '@dex/protocol/agent-workflow';
 import { AgentExecutionView } from './AgentExecutionView';
 import { AgentToolsView } from './AgentToolsView';
 import { AgentMemoryView } from './AgentMemoryView';
@@ -33,10 +43,15 @@ interface Props {
   onAppChange?: (slug: string) => void;
   /** 닫기 — 지금은 탭 X 가 담당하므로 미사용(호환용 optional). */
   onClose?: () => void;
+  /** 로그인한 사람. 주인이면 머리의 이름을 두 번 눌러 바꿀 수 있다. */
+  currentUserId?: string | number | null;
+  /** 이름을 바꿨다: 탭 제목 등 같은 에이전트를 가리키는 곳을 새 이름으로. */
+  onRenamed?: (name: string) => void;
 }
 
 const SUBS: [AgentViewerSub, string][] = [
   ['basic', '개요'],
+  ['workflow', '워크플로우'],
   ['memory', '메모리'],
   ['tasks', '작업'],
   ['tools', '도구'],
@@ -44,6 +59,8 @@ const SUBS: [AgentViewerSub, string][] = [
   ['storage', '스토리지'],
   ['fulllog', '실행 기록'],
 ];
+/** Geny 가 아닌 에이전트에도 있는 탭. */
+const GENERAL_SUBS: ReadonlySet<AgentViewerSub> = new Set(['basic', 'workflow']);
 
 const TasksView: React.FC<{ workflowId: string }> = ({ workflowId }) => {
   const list = useLoader(() => xgen.agentData.tasksList(workflowId), [workflowId]);
@@ -291,9 +308,22 @@ export const AgentViewer: React.FC<Props> = ({
   navigation,
   onSubChange,
   onAppChange,
+  currentUserId,
+  onRenamed,
 }) => {
   const [fallbackNavigation] = useState(createAgentViewerState);
   const [sub, setSub] = useState<AgentViewerSub>(initialSub ?? 'basic');
+  // 저장된 워크플로우: Geny 인지(탭), Geny 가 아닐 때의 [개요], 주인 · 고정본(이름 바꾸기)을 여기서 정한다.
+  // 못 읽으면 예전처럼 Geny 로 본다(탭이 사라지는 것보다 낫다).
+  const workflow = useLoader(() => xgen.agentData.workflow(workflowId), [workflowId]);
+  const geny = workflow.data ? workflowHasGeny(workflow.data) : true;
+  const subs = useMemo(() => SUBS.filter(([key]) => geny || GENERAL_SUBS.has(key)), [geny]);
+  const shown: AgentViewerSub = geny || GENERAL_SUBS.has(sub) ? sub : 'basic';
+  // 캔버스는 한 번 연 뒤로는 하위 탭을 옮겨도 지우지 않고 숨긴다. 지우면 저장하지 않은 편집이 사라진다.
+  const [canvasOpened, setCanvasOpened] = useState(shown === 'workflow');
+  useEffect(() => {
+    if (shown === 'workflow') setCanvasOpened(true);
+  }, [shown]);
   useEffect(() => {
     setSub(initialSub ?? 'basic');
   }, [initialSub]);
@@ -315,6 +345,69 @@ export const AgentViewer: React.FC<Props> = ({
     state.scroll.set('log.scroll:1', 0);
     navigate('fulllog');
   };
+  // ── 이름 바꾸기: 머리의 이름을 두 번 누르면 입력칸. Enter · 칸 밖은 저장, Esc 는 그만둔다.
+  const [name, setName] = useState(workflowName || '');
+  useEffect(() => {
+    if (workflowName) setName(workflowName);
+  }, [workflowName]);
+  const displayName = name || workflow.data?.workflowName || '에이전트';
+  const renamable =
+    !!workflow.data &&
+    !workflow.data.isFrozen &&
+    currentUserId != null &&
+    workflow.data.ownerUserId === String(currentUserId);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState('');
+  const busyRef = useRef(false);
+  const cancelledRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const startRename = () => {
+    if (!renamable || busyRef.current) return;
+    cancelledRef.current = false;
+    setRenameError('');
+    setDraft(displayName);
+  };
+  const cancelRename = useCallback(() => {
+    cancelledRef.current = true;
+    setDraft(null);
+    setRenameError('');
+  }, []);
+  const commitRename = async () => {
+    if (draft === null || busyRef.current || cancelledRef.current) return;
+    const next = draft.trim();
+    if (!next || next === displayName) {
+      cancelRename();
+      return;
+    }
+    busyRef.current = true;
+    setRenaming(true);
+    try {
+      const saved = await xgen.agents.rename(workflowId, next);
+      cancelledRef.current = true;
+      setDraft(null);
+      setName(saved.workflowName || next);
+      onRenamed?.(saved.workflowName || next);
+    } catch (error) {
+      const text = errText(error);
+      setRenameError(
+        text.includes('같은 이름')
+          ? '같은 이름의 에이전트가 이미 있습니다.'
+          : text.includes('고정된')
+            ? '고정된 Agent 는 이름을 바꿀 수 없습니다.'
+            : '이름을 바꾸지 못했습니다.',
+      );
+    } finally {
+      busyRef.current = false;
+      setRenaming(false);
+    }
+  };
+  // 저장에 실패하면 칸이 남는다. 잠겼다 풀리며 잃은 초점을 돌려줘 바로 고치거나 Esc 로 그만두게 한다.
+  useEffect(() => {
+    if (!renaming && draft !== null) inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming]);
+
   return (
     <AgentViewerStateContext.Provider value={state}>
       <div className="agent-viewer">
@@ -322,15 +415,51 @@ export const AgentViewer: React.FC<Props> = ({
         <div className="viewer-header">
           <div className="viewer-title">
             <BotIcon size={16} />
-            <strong>{workflowName || '에이전트'}</strong>
+            {draft !== null ? (
+              <input
+                ref={inputRef}
+                className="viewer-title-input"
+                autoFocus
+                value={draft}
+                disabled={renaming}
+                aria-label="에이전트 이름"
+                onChange={(event) => setDraft(event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
+                onBlur={() => void commitRename()}
+                onKeyDown={(event) => {
+                  // 한글 조합 중의 Enter 는 글자를 끝내는 것이지 저장이 아니다.
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void commitRename();
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cancelRename();
+                  }
+                }}
+              />
+            ) : (
+              <strong
+                className={renamable ? 'viewer-title-renamable' : undefined}
+                onDoubleClick={renamable ? startRename : undefined}
+                title={renamable ? '두 번 눌러 이름 바꾸기' : undefined}
+              >
+                {displayName}
+              </strong>
+            )}
+            {renameError && (
+              <span className="viewer-title-error" role="alert">
+                {renameError}
+              </span>
+            )}
           </div>
           <div className="viewer-subtabs" role="tablist">
-            {SUBS.map(([s, label]) => (
+            {subs.map(([s, label]) => (
               <button
                 key={s}
                 role="tab"
-                aria-selected={sub === s}
-                className={`viewer-subtab ${sub === s ? 'active' : ''}`}
+                aria-selected={shown === s}
+                className={`viewer-subtab ${shown === s ? 'active' : ''}`}
                 onClick={() => navigate(s)}
               >
                 {label}
@@ -339,18 +468,38 @@ export const AgentViewer: React.FC<Props> = ({
           </div>
         </div>
         <div className="viewer-content">
-          {sub === 'basic' && (
-            <AgentOverview
-              workflowId={workflowId}
-              onNavigate={navigateFromOverview}
-              onOpenTrace={openTrace}
-            />
+          {canvasOpened && (
+            <div className={`agent-canvas-pane${shown === 'workflow' ? '' : ' hidden'}`}>
+              <AgentWorkflowCanvas
+                workflowId={workflowId}
+                workflowName={name}
+                ownerUserId={workflow.data?.ownerUserId ?? null}
+                active={shown === 'workflow'}
+              />
+            </div>
           )}
-          {sub === 'fulllog' && <AgentExecutionView workflowId={workflowId} />}
-          {sub === 'memory' && <AgentMemoryView workflowId={workflowId} />}
-          {sub === 'tasks' && <TasksView workflowId={workflowId} />}
-          {sub === 'tools' && <AgentToolsView workflowId={workflowId} />}
-          {sub === 'apps' && (
+          {shown === 'basic' &&
+            (workflow.loading && !workflow.data ? (
+              <ViewerEmpty title="에이전트를 불러오는 중…" loading />
+            ) : workflow.data && !geny ? (
+              <WorkflowOverview
+                workflow={workflow.data}
+                loading={workflow.loading}
+                onReload={workflow.reload}
+                onNavigate={navigate}
+              />
+            ) : (
+              <AgentOverview
+                workflowId={workflowId}
+                onNavigate={navigateFromOverview}
+                onOpenTrace={openTrace}
+              />
+            ))}
+          {shown === 'fulllog' && <AgentExecutionView workflowId={workflowId} />}
+          {shown === 'memory' && <AgentMemoryView workflowId={workflowId} />}
+          {shown === 'tasks' && <TasksView workflowId={workflowId} />}
+          {shown === 'tools' && <AgentToolsView workflowId={workflowId} />}
+          {shown === 'apps' && (
             <AppsView
               workflowId={workflowId}
               workflowName={workflowName}
@@ -358,7 +507,7 @@ export const AgentViewer: React.FC<Props> = ({
               onSlugChange={onAppChange}
             />
           )}
-          {sub === 'storage' && <StorageView workflowId={workflowId} workflowName={workflowName} />}
+          {shown === 'storage' && <StorageView workflowId={workflowId} workflowName={workflowName} />}
         </div>
       </div>
     </AgentViewerStateContext.Provider>

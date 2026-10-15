@@ -1303,7 +1303,7 @@ export const Chat: React.FC<{
             <button
               className="chat-hbtn"
               onClick={() => onOpenViewer('basic')}
-              title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
+              title="이 에이전트의 개요·워크플로우·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
               <InfoIcon size={14} /> <span className="chat-hbtn-label">상세</span>
             </button>

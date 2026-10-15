@@ -7280,6 +7280,76 @@ button.sm {
   min-width: 0;
   display: flex;
 }
+/* [워크플로우] 탭의 캔버스(webview). 한 번 연 뒤로는 다른 하위 탭 뒤에 숨겨 둔다(저장하지 않은 편집 보존).
+   display:none 이 아니라 보이지 않게만 한다: webview 는 크기를 잃으면 안의 페이지가 다시 그려진다. */
+.viewer-content:has(> .agent-canvas-pane) {
+  position: relative;
+}
+.agent-canvas-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.agent-canvas-pane.hidden {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.agent-canvas-host {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.agent-canvas-webview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+/* 머리의 이름: 주인이면 두 번 눌러 바꾼다. */
+.viewer-title-renamable {
+  cursor: text;
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+}
+.viewer-title-renamable:hover {
+  background: var(--panel-2);
+}
+.viewer-title-input {
+  height: 26px;
+  width: min(320px, 40vw);
+  padding: 0 8px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: var(--bg, var(--panel));
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+}
+.viewer-title-error {
+  font-size: 11.5px;
+  color: var(--error);
+  white-space: nowrap;
+}
+/* Geny 가 아닌 에이전트 [개요]: 연결된 노드 한 줄, 노드 이름 묶음. */
+.workflow-overview-row {
+  cursor: default;
+}
+.workflow-overview-row:hover {
+  background: none;
+}
+.workflow-overview-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .viewer-pane {
   flex: 1;
   min-width: 0;
@@ -8825,7 +8895,7 @@ button.sm {
   white-space: nowrap;
 }
 .apps-action:hover:not(:disabled) {
-  background: var(--hover, rgba(127, 127, 127, 0.12));
+  background: var(--panel-2);
 }
 .apps-action:disabled {
   opacity: 0.5;

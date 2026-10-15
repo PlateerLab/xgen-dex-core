@@ -43,6 +43,7 @@ import { BrowserSurface } from './BrowserSurface';
 import { SystemMonitorFooter } from './SystemMonitorFooter';
 import { XgenMark } from '../brand/Logo';
 import { chatTabs } from './tab-model';
+import { agentDirectory } from '../agent-directory';
 import { peekIdeStore, useIdeStore, useIsIdeMode } from '../ide/ide-sessions';
 import {
   addWorkspaceTab,
@@ -1233,6 +1234,20 @@ export const Workspace: React.FC<{
             })
           }
           onClose={() => closeTab(active)}
+          currentUserId={user.userId}
+          onRenamed={(workflowName) => {
+            // 같은 에이전트를 가리키는 탭(뷰어 · 채팅 · 브라우저) 제목과 에이전트 목록을 새 이름으로.
+            setLayout((current) => ({
+              ...current,
+              groups: current.groups.map((item) => ({
+                ...item,
+                tabs: item.tabs.map((tab) =>
+                  tab.workflowId === active.workflowId ? { ...tab, workflowName } : tab,
+                ),
+              })),
+            }));
+            void agentDirectory.load(true);
+          }}
         />
       );
     }

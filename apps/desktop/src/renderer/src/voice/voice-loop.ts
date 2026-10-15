@@ -56,6 +56,8 @@ export function useVoiceLoop(opts: {
   workflowId?: string;
   isPaused?: () => boolean;
   onPartial?: (text: string) => void;
+  /** 호출어로만 듣기에서 지금 말에 호출어를 들었다. */
+  onWake?: () => void;
   onResult: (r: VoiceStreamResult) => void | Promise<void>;
 }): { state: VoiceLoopState } {
   const [state, setState] = useState<VoiceLoopState>('idle');
@@ -165,6 +167,7 @@ export function useVoiceLoop(opts: {
     };
     const off = xgen.voiceStream.onEvent((ev) => {
       if (ev.type === 'partial' && ev.sessionId === sid) cb.current.onPartial?.(ev.text);
+      else if (ev.type === 'wake' && ev.sessionId === sid) cb.current.onWake?.();
     });
 
     void startPcmCapture((pcm, rms) => {

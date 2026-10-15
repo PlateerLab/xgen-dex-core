@@ -161,6 +161,7 @@ import { getBrowserToolProvider } from './browser-tools';
 import { configureFastAct, fastActEnabled, tryFastAct } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
+import { parseWakeWords } from './voice-wake';
 import { allowedBrowserUrl } from './browser-security';
 import type {
   BrowserHistoryListRequest,
@@ -2580,6 +2581,11 @@ const voiceStreams = new VoiceStreamHub(() =>
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+        wakeWords: () => {
+          const c = loadConfig();
+          const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
+          return words.length ? words : null;
+        },
       }
     : null,
 );

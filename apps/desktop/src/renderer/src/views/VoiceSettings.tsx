@@ -10,6 +10,7 @@ import { useModalDismiss } from './use-modal-dismiss';
 import { xgen } from '../bridge';
 import type { VoiceConfig } from '@dex/protocol';
 import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
+import { DEFAULT_WAKE_WORDS } from '../../../main/voice-wake';
 
 export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // Esc 로도 닫힌다 (바깥 클릭은 backdrop 이 처리).
@@ -25,6 +26,15 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   // TTS 문장별 미리 합성(이 기기 설정, 기본 꺼짐).
   const [ttsAhead, setTtsAhead] = useState(false);
   const [style, setStyle] = useState(DEFAULT_VOICE_REPLY_STYLE);
+  // 호출어로만 듣기 — 계속 듣기(빠른 조작)에서 호출어를 들은 말만 실행한다(이 기기 설정, 기본 꺼짐).
+  const [wakeOn, setWakeOn] = useState(false);
+  const [wakeWords, setWakeWords] = useState(DEFAULT_WAKE_WORDS);
+  const wakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveWakeWords = (v: string): void => {
+    setWakeWords(v);
+    if (wakeTimer.current) clearTimeout(wakeTimer.current);
+    wakeTimer.current = setTimeout(() => void xgen.config.set({ voiceWakeWords: v }), 400);
+  };
   const styleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveStyle = (v: string): void => {
     setStyle(v);
@@ -44,6 +54,8 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
         setStyleOn(c.voiceReplyStyleOn === true);
         setTtsAhead(c.voiceTtsAhead === true);
         setStyle(c.voiceReplyStyle ?? DEFAULT_VOICE_REPLY_STYLE);
+        setWakeOn(c.voiceWake === true);
+        setWakeWords(c.voiceWakeWords?.trim() || DEFAULT_WAKE_WORDS);
       })
       .catch(() => undefined);
     xgen.voice
@@ -109,6 +121,41 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 서비스: {stt.provider || '—'}
                 {stt.model_id ? ` · ${stt.model_id}` : ''}
                 {stt.language ? ` · ${stt.language}` : ' · 자동 언어'}
+              </div>
+            )}
+            {stt?.enabled && (
+              <div className="field-row">
+                <span>
+                  호출어로만 듣기
+                  <span className="small muted" style={{ marginLeft: 8 }}>
+                    계속 듣기에서 호출어를 부른 말만 실행합니다
+                  </span>
+                </span>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={wakeOn}
+                    onChange={(e) => {
+                      setWakeOn(e.target.checked);
+                      void xgen.config.set({ voiceWake: e.target.checked });
+                    }}
+                  />
+                  <span className="track" />
+                </label>
+              </div>
+            )}
+            {stt?.enabled && wakeOn && (
+              <div style={{ marginBottom: 10 }}>
+                <input
+                  className="voice-style-input voice-wake-input"
+                  value={wakeWords}
+                  onChange={(e) => saveWakeWords(e.target.value)}
+                  aria-label="호출어"
+                />
+                <div className="small muted">
+                  쉼표로 여러 개 — 인식기가 영어로 적는 경우까지 넣어 두세요. 호출어만 말하고 멈추면 다음 말
+                  하나는 호출어 없이 받습니다. 빠른 조작의 계속 듣기에만 적용됩니다.
+                </div>
               </div>
             )}
 

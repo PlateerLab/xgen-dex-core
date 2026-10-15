@@ -1,4 +1,5 @@
 import type { ProfileSummary } from '@dex/engine';
+import type { ChatInputCheck, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import type {
   AgentCreateOptions,
   AgentListQuery,
@@ -9,6 +10,10 @@ import type {
   ChatAttachmentDescriptor,
   ChatStopResult,
   Conversation,
+  ConversationAgent,
+  ConversationKind,
+  ConversationPage,
+  ConversationSearchPage,
   ConversationSnapshot,
   HistoryTurn,
   CreateAgentInput,
@@ -21,22 +26,60 @@ export interface TuiEngine {
   useProfile(name: string): Promise<ProfileSummary>;
   login(email: string, password: string, profile?: string): Promise<AuthStatus>;
   authStatus(profile?: string): Promise<AuthStatus>;
-  /** 로컬 컨트롤 — 로그인 완료 시 켜져 있으면 자동 기동한다 (선택 구현). */
+  /** 이 PC 브리지 — 로그인 완료 시 자동 기동한다 (선택 구현). 쓸 수 있는 범위는
+   *  대화를 시작한 폴더가 정한다. */
   startLocalTools?(profile?: string, waitMs?: number): Promise<{
-    config: { enabled: boolean };
     bridge: { connected: boolean; catalogSynced: boolean; serverToolCount: number; error?: string };
     tools: unknown[];
   }>;
   logout(profile?: string): Promise<void>;
   listAgents(query?: AgentListQuery, profile?: string): Promise<AgentListResult>;
-  /** 만들기 화면이 그릴 것 — 서버가 Agent XGeny 노드에서 읽어 내려 준다. */
+  /** 만들기 화면이 그릴 것 — 서버가 Agent Geny 노드에서 읽어 내려 준다. */
   agentCreateOptions(profile?: string): Promise<AgentCreateOptions>;
   /** 에이전트 하나를 세운다 — 노드 하나짜리 워크플로우. */
   createAgent(
     input: CreateAgentInput,
     profile?: string,
   ): Promise<{ workflowId: string; workflowName: string }>;
+  /** 이 이름의 에이전트가 이미 있는가(시작 화면이 적는 대로, 그리고 만들기 직전에 묻는다). */
+  agentNameTaken(name: string, profile?: string): Promise<boolean>;
+  /** 대화 목록 전부(쪽을 따라간다, 상한 있음). 기록 화면이 쓴다. */
   listConversations(profile?: string): Promise<Conversation[]>;
+  /**
+   * 대화 목록 한 쪽: 마지막으로 말한 순서, 커서로 이어 받는다(사이드바).
+   * kind 는 상태 필터(채팅 기록 관리), workflowId 는 한 에이전트의 대화만(에이전트 안으로 들어갔을 때).
+   */
+  conversationPage(
+    opts: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string },
+    profile?: string,
+  ): Promise<ConversationPage>;
+  /**
+   * 사이드바 [에이전트]: 대화가 있는 에이전트마다 한 줄, 마지막으로 말한 순서(선택 구현).
+   * 없는 엔진이면 받아 둔 대화 목록으로 묶는다(@dex/protocol groupConversationsByAgent).
+   */
+  conversationAgents?(opts: { limit?: number }, profile?: string): Promise<ConversationAgent[]>;
+  /** 채팅 검색: 제목·에이전트 이름·대화 내용, 마지막으로 말한 순서. kind 는 상태 필터. */
+  searchConversations(
+    query: string,
+    opts: { limit?: number; kind?: ConversationKind },
+    profile?: string,
+  ): Promise<ConversationSearchPage>;
+  /** 대화 이름 바꾸기. 빈 이름이면 첫 메시지 제목으로 돌아간다. */
+  renameConversation(
+    workflowId: string,
+    interactionId: string,
+    title: string,
+    profile?: string,
+  ): Promise<{ title: string; customTitle: boolean }>;
+  /** 대화 지우기(비교 채팅의 딸린 대화까지 서버가 함께 지운다). */
+  deleteConversation(
+    workflowId: string,
+    interactionId: string,
+    workflowName?: string,
+    profile?: string,
+  ): Promise<void>;
+  /** 에이전트가 사라진 내 대화를 모두 지운다. 지운 수. */
+  purgeDeletedAgentConversations(profile?: string): Promise<number>;
   historyTurns(
     workflowId: string,
     interactionId: string,
@@ -57,6 +100,8 @@ export interface TuiEngine {
    */
   stopChat(interactionId: string, profile?: string): Promise<ChatStopResult>;
   resolveChatInput(input: ChatInput): Promise<ResolvedChatInput>;
+  /** 통제 정책 입력창 사전 검사(보내기 전). 판정하지 못하면 막지 않는다. */
+  checkChatInput(input: { text: string; workflowId?: string | null; profile?: string }): Promise<ChatInputCheck>;
   uploadChatAttachment(input: {
     profile?: string; workflowId: string; interactionId: string; path: string;
   }): Promise<ChatAttachmentDescriptor>;
@@ -69,6 +114,21 @@ export interface TuiEngine {
     profile?: string,
   ): Promise<void>;
   unwatchConversation?(interactionId: string): void;
+  /**
+   * 대화 **목록** 소켓(선택 구현). 다른 기기의 새 대화·방금 말한 대화·지운 대화·바뀐 이름이 곧바로
+   * onConversationListChange 로 흐르고, 목록이 할 일은 @dex/protocol conversationListChange 가 정한다.
+   */
+  watchConversationList?(profile?: string): Promise<void>;
+  unwatchConversationList?(): void;
+  onConversationListChange?:
+    | ((event: {
+        kind: string;
+        interactionId: string;
+        workflowId: string;
+        running?: boolean;
+        data?: Record<string, unknown>;
+      }) => void)
+    | null;
   onConversationTurn?:
     | ((turn: {
         interactionId: string;
@@ -92,6 +152,26 @@ export interface TuiEngine {
         running: boolean;
         live?: { text: string; events: unknown[] } | null;
       }) => void)
+    | null;
+  /** 이 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것 (선택 구현, Ctrl+O). */
+  conversationModel?(workflowId: string, interactionId: string, profile?: string): Promise<ConversationModelState>;
+  /** 이 대화의 모델을 바꾼다 — 다음 답변부터, 세션 재시작 없음. */
+  setConversationModel?(
+    workflowId: string,
+    interactionId: string,
+    choice: { provider: string; model: string },
+    profile?: string,
+  ): Promise<ConversationModelState>;
+  /** 이 대화의 생각(추론) 값을 바꾼다 — 지금 모델이 받는 값만(/thinking), 다음 답변부터. */
+  setConversationThinking?(
+    workflowId: string,
+    interactionId: string,
+    thinking: ThinkingValue,
+    profile?: string,
+  ): Promise<ConversationModelState>;
+  /** 다른 화면(웹·앱·VS Code)에서 이 대화의 모델을 바꿨다. */
+  onConversationModel?:
+    | ((event: { interactionId: string; notice: Record<string, unknown> }) => void)
     | null;
 }
 

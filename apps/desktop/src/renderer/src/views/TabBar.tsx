@@ -1,28 +1,39 @@
 import React from 'react';
 import type { SessionState } from '../session-store';
 import {
+  AppIcon,
   AvatarIcon,
   BotIcon,
   BrowserIcon,
   ChatIcon,
   CloseIcon,
   DocIcon,
+  HistoryIcon,
   PlusIcon,
   SettingsIcon,
   TeamsIcon,
 } from '../brand/icons';
 import type { WorkspaceGroup, WorkspaceTab } from './workspace-layout';
+import { tabTitle, tabTooltip } from './tab-model';
 
 function label(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
   if (tab.kind === 'canonical-chat') return '공유 대화';
-  if (tab.kind === 'avatar') return '아바타 설정';
   if (tab.kind === 'teams') return tab.roomName || '대화';
   if (tab.kind === 'settings') return '설정';
-  if (tab.kind === 'agent-create') return '새 에이전트';
+  if (tab.kind === 'apps') return '앱';
+  if (tab.kind === 'history') return '채팅 기록';
+  // 'agent-create' 탭은 이제 새 채팅 시작 화면이다(저장된 배치와 맞추려고 종류 이름은 그대로 둔다).
+  if (tab.kind === 'agent-create') return '새 채팅';
   if (tab.kind === 'file-viewer') return tab.fileName || '파일';
   if (tab.kind === 'agent-viewer') return `${tab.workflowName || '에이전트'} 뷰어`;
   if (tab.kind === 'browser') return `${tab.workflowName || 'Agent'} 브라우저`;
-  return sessions.get(tab.sessionKey ?? '')?.agent.workflowName || tab.workflowName || '대화';
+  const session = sessions.get(tab.sessionKey ?? '');
+  return session ? tabTitle(session) : tab.workflowName || '대화';
+}
+
+function tooltip(tab: WorkspaceTab, sessions: Map<string, SessionState>): string {
+  const session = tab.kind === 'chat' ? sessions.get(tab.sessionKey ?? '') : undefined;
+  return session ? tabTooltip(session) : label(tab, sessions);
 }
 
 export const TabBar: React.FC<{
@@ -37,6 +48,8 @@ export const TabBar: React.FC<{
     <div className="tab-strip-scroll">
       {group.tabs.map((tab) => {
         const session = tab.kind === 'chat' ? sessions.get(tab.sessionKey ?? '') : undefined;
+        // 이 창의 스트림이 끊긴 뒤에도(remote) 그 턴은 서버에서 돈다 — 끝날 때까지 진행 중으로 보인다.
+        const live = !!session && (session.streaming || session.remote);
         const active = group.activeTabId === tab.id;
         return (
           <div
@@ -50,7 +63,7 @@ export const TabBar: React.FC<{
             onKeyDown={(event) => event.key === 'Enter' && onSelect(tab.id)}
             onPointerDown={(event) => onTabPointerDown(event, tab)}
             onAuxClick={(event) => event.button === 1 && onClose(tab)}
-            title={label(tab, sessions)}
+            title={tooltip(tab, sessions)}
           >
             <span className="tab-icon">
               {tab.kind === 'chat' || tab.kind === 'canonical-chat' ? (
@@ -65,13 +78,17 @@ export const TabBar: React.FC<{
                 <BotIcon size={13} />
               ) : tab.kind === 'file-viewer' ? (
                 <DocIcon size={13} />
+              ) : tab.kind === 'apps' ? (
+                <AppIcon size={13} />
+              ) : tab.kind === 'history' ? (
+                <HistoryIcon size={13} />
               ) : (
                 <AvatarIcon size={13} />
               )}
             </span>
             <span className="tab-label">{label(tab, sessions)}</span>
             <button
-              className={`tab-close ${session?.streaming ? 'live' : ''} ${session?.unseen ? 'unseen' : ''}`}
+              className={`tab-close ${live ? 'live' : ''} ${session?.unseen ? 'unseen' : ''}`}
               title={tab.kind === 'chat' ? '채팅 종료' : '닫기'}
               aria-label={tab.kind === 'chat' ? '채팅 종료' : '탭 닫기'}
               onPointerDown={(event) => event.stopPropagation()}
@@ -83,7 +100,7 @@ export const TabBar: React.FC<{
               <span className="tab-close-x">
                 <CloseIcon size={12} />
               </span>
-              {session?.streaming ? (
+              {live ? (
                 <span className="tab-live-dot" title="진행 중" />
               ) : session?.unseen ? (
                 <span

@@ -42,7 +42,7 @@ export function isHostBound(): boolean {
 function need(): Bound {
   if (!bound) {
     throw new Error(
-      '@dex/engine: 호스트가 붙지 않았습니다. 앱 시작 시 bindHost({ secrets, config, paths }) 를 한 번 호출하세요.',
+      '@dex/engine: 호스트가 붙지 않았습니다. 앱 시작 시 bindHost({ secrets, config }) 를 한 번 호출하세요.',
     );
   }
   return bound;

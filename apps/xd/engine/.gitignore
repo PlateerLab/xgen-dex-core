@@ -1,0 +1,3 @@
+# 동봉본(scripts/bundle-engine.mjs)과 내려받기 캐시
+.cache/
+__pycache__/

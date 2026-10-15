@@ -8,7 +8,7 @@
  * 쓰는 법: 앱이 시작할 때 포트를 한 번 붙이고, 그 뒤로는 그냥 부른다.
  *
  * ```ts
- * bindHost({ secrets, config, paths });
+ * bindHost({ secrets, config });
  * const bridge = getMcpBridge();
  * ```
  */
@@ -28,6 +28,7 @@ export type { McpSecretStore, McpOAuthStore } from './secret-stores';
 
 // ── 로컬 도구 — 에이전트가 이 기기에서 부를 수 있는 것 ──
 export * from './local-tools';
+export * from './workspace-transfer';
 export * from './exec-resolve';
 
 // ── MCP ──

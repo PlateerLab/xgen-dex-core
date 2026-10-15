@@ -2,7 +2,7 @@
   "name": "xgen-dex-vscode",
   "displayName": "XGEN Dex",
   "description": "Use XGEN Dex agents in Visual Studio Code through the dex-cli engine.",
-  "version": "1.56.0",
+  "version": "1.91.0",
   "publisher": "xgen",
   "license": "Apache-2.0",
   "engines": {
@@ -55,8 +55,13 @@
       },
       {
         "command": "xgenDex.showAgents",
-        "title": "XGEN Dex: Agent 변경",
+        "title": "XGEN Dex: Agent 골라 새 채팅",
         "icon": "$(hubot)"
+      },
+      {
+        "command": "xgenDex.showConversations",
+        "title": "XGEN Dex: 대화 목록",
+        "icon": "$(list-unordered)"
       },
       {
         "command": "xgenDex.showSettings",
@@ -65,7 +70,7 @@
       },
       {
         "command": "xgenDex.newChat",
-        "title": "XGEN Dex: 새 대화",
+        "title": "XGEN Dex: 새 채팅",
         "icon": "$(add)"
       },
       {

@@ -1,5 +1,5 @@
 /**
- * 아티팩트 격리의 **소스 계약** — 실행 테스트가 못 잡는 회귀를 여기서 잡는다.
+ * 앱 격리의 **소스 계약** — 실행 테스트가 못 잡는 회귀를 여기서 잡는다.
  *
  * verify/artifact-frame-smoke.cjs 는 진짜 Electron 에서 "렌더된다 · 오리진이 없다 ·
  * 네트워크가 없다 · alias 왕복이 된다" 를 확인한다. 그런데 실측해 보니 그 테스트는
@@ -40,13 +40,13 @@ const read = (p: string): string =>
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/^[ \t]*\/\/.*$/gm, ' ')
 
-const FRAME_COMPONENT = 'src/renderer/src/artifacts/ArtifactFrame.tsx'
+const FRAME_COMPONENT = 'src/renderer/src/apps/AppFrame.tsx'
 const MAIN = 'src/main/index.ts'
 const FRAME_DOC = 'src/main/artifact-frame.html'
 const FRAME_CSP = 'src/main/artifact-frame.ts'
 const RENDERER_HTML = 'src/renderer/index.html'
 
-test('아티팩트 iframe 에 allow-same-origin 이 없다 — 두 번째 자물쇠', () => {
+test('앱 iframe 에 allow-same-origin 이 없다 — 두 번째 자물쇠', () => {
   const src = read(FRAME_COMPONENT)
   assert.ok(
     src.includes('sandbox="allow-scripts"'),
@@ -58,7 +58,7 @@ test('아티팩트 iframe 에 allow-same-origin 이 없다 — 두 번째 자물
   )
 })
 
-test('아티팩트 스킴은 standard 도 bypassCSP 도 아니다 — 세 번째 자물쇠', () => {
+test('앱 스킴은 standard 도 bypassCSP 도 아니다 — 세 번째 자물쇠', () => {
   const src = read(MAIN)
   const at = src.indexOf("scheme: 'xgenartifact'")
   assert.ok(at > 0, 'xgenartifact 스킴 등록이 사라졌다')
@@ -98,7 +98,7 @@ test('렌더러 CSP 는 띄우는 것만 연다 — 프레임은 되고, 네트�
   // 에이전트가 띄운 앱은 **설정된 서버 주소 그대로** 연다. 정적 문서인 CSP 는 그
   // 오리진을 미리 적을 수 없어 스킴으로 연다. 이 줄이 없으면 요청조차 나가지 않고
   // 탭이 빈 화면이 된다(2026-09-18 실증).
-  assert.ok(frameSrc.includes('https:'), 'frame-src 에서 https 가 빠지면 [아티팩트] 탭이 빈다')
+  assert.ok(frameSrc.includes('https:'), 'frame-src 에서 https 가 빠지면 [앱] 탭이 빈다')
   assert.ok(frameSrc.includes('http:'), '사내망·IP·localhost 서버는 http 다')
   assert.ok(!frameSrc.includes('*'), '렌더러 frame-src 에 와일드카드가 들어왔다')
 
@@ -124,18 +124,18 @@ test('프레임은 호스트가 준 것만 실행한다 — alias 는 고르지 
   const api = readFileSync(join(root, '../../packages/protocol/src/agent-data.ts'), 'utf8')
   assert.ok(
     api.includes('선언되지 않은 alias 입니다'),
-    'artifactCallApi 의 선언 검사가 사라졌다',
+    'appCallApi 의 선언 검사가 사라졌다',
   )
-  assert.ok(api.includes("if (decl.method !== 'GET')"), 'artifactCallApi 가 GET 이외를 허용한다')
+  assert.ok(api.includes("if (decl.method !== 'GET')"), 'appCallApi 가 GET 이외를 허용한다')
 })
 
-// ── 사이트 아티팩트 (폴더가 곧 웹사이트인 것) ─────────────────────────
+// ── 사이트 앱 (폴더가 곧 웹사이트인 것) ─────────────────────────
 //
 // 프레임과 성질이 반대다. 프레임은 오리진도 네트워크도 없어야 하고, 사이트는
 // 진짜 웹사이트라 둘 다 필요하다. 그래서 스킴을 따로 판다 — 같은 스킴에 두
 // 성질을 섞으면 한쪽의 자물쇠가 다른 쪽에서 풀린다.
 
-test('아티팩트 요청에만 자격을 싣는다 — 다른 호스트로는 한 글자도 나가지 않는다', () => {
+test('앱 요청에만 자격을 싣는다 — 다른 호스트로는 한 글자도 나가지 않는다', () => {
   // 주석을 걷어낸 사본으로 보면 안 된다: URL 필터의 `//*` 가 블록 주석 시작으로
   // 읽혀 이 구간이 통째로 지워진다(같은 함정을 Accept 헤더에서 한 번 겪었다).
   const main = raw('src/main/index.ts')
@@ -147,23 +147,24 @@ test('아티팩트 요청에만 자격을 싣는다 — 다른 호스트로는 �
   assert.match(hook[0], /wss:\/\/\*\/api\/\*/, 'WebSocket 업그레이드에도 붙어야 실시간 앱이 산다')
 })
 
-test('회전한 토큰이 아티팩트 요청에도 반영된다', () => {
+test('회전한 토큰이 앱 요청에도 반영된다', () => {
   const main = read('src/main/index.ts')
   assert.match(main, /onTokensRotated:[\s\S]*?lastAccessToken = access/, '옛 토큰을 붙이면 그 화면만 403 에 갇힌다')
 })
 
-test('앱은 아티팩트를 서버 주소 그대로 연다 — 웹과 같은 base·같은 상대 경로', () => {
-  const frame = read('src/renderer/src/artifacts/ArtifactSiteFrame.tsx')
-  assert.match(frame, /\/api\/agentflow\/agent-artifacts\//)
+test('데스크톱은 앱을 서버가 준 주소 그대로 연다 — 웹과 같은 base·같은 상대 경로', () => {
+  const frame = read('src/renderer/src/apps/AppSiteFrame.tsx')
+  // 접두를 조립하지 않는다 — 서버마다 다르다(/agent-apps/… 와 이름을 바꾸기 전의 /agent-artifacts/…).
+  assert.doesNotMatch(frame, /\/api\/agentflow\/agent-/)
   assert.match(frame, /serverUrl/, '서버 주소를 모르면 열지 않는다')
-  const view = read('src/renderer/src/artifacts/ArtifactsView.tsx')
+  const view = read('src/renderer/src/apps/AppsView.tsx')
   assert.match(view, /kind === 'service'/, '에이전트가 띄운 앱을 열지 못하면 빈 화면이 된다')
-  assert.match(view, /ArtifactSiteFrame/)
+  assert.match(view, /<AppSiteFrame\s+url=\{detail\.app_url\}/)
 })
 
 // ── 부모가 렌더러라서 생기는 한 줄 (2026-09-18) ──────────────────────
 //
-// 앱의 [아티팩트] 탭이 **빈 화면**이었다. 새 창으로는 멀쩡히 열렸다. 서버는 사설
+// 데스크톱의 [앱] 탭이 **빈 화면**이었다. 새 창으로는 멀쩡히 열렸다. 서버는 사설
 // 앱에 `frame-ancestors 'self'` 를 붙이는데, 웹에서는 부모(웹 앱)와 오리진이 같아
 // 통과하고 앱에서는 부모가 렌더러라 오리진이 달라 브라우저가 프레임을 거부한다.
 // 전용 스킴으로 중계하던 시절에는 그 핸들러가 떼고 있었는데, WebSocket 때문에
@@ -201,7 +202,7 @@ test('응답 헤더에서도 같은 일을 한다 — 헤더 이름 대소문자
   assert.ok(!('content-security-policy' in gone), '빈 CSP 헤더가 남았다')
 })
 
-test('앱이 여는 아티팩트 응답에서 frame-ancestors 를 뗀다 — 안 떼면 빈 화면이다', () => {
+test('데스크톱이 여는 앱 응답에서 frame-ancestors 를 뗀다 — 안 떼면 빈 화면이다', () => {
   const main = raw('src/main/index.ts')
   const at = main.indexOf('onHeadersReceived')
   assert.ok(at > 0, 'onHeadersReceived 가 사라졌다 — 서버의 frame-ancestors 가 그대로 오면 탭이 빈다')
@@ -209,4 +210,77 @@ test('앱이 여는 아티팩트 응답에서 frame-ancestors 를 뗀다 — 안
   assert.match(hook, /WEBREQUEST_URL_FILTER/, '자격을 싣는 곳과 같은 범위여야 한다')
   assert.match(hook, /details\.url\.startsWith\(`\$\{server\}\/api\//, '설정된 서버의 응답에만 손댄다')
   assert.match(hook, /stripFrameAncestorsFromHeaders/)
+})
+
+test('격리된 문서가 낸 요청에는 사용자 자격을 붙이지 않는다', () => {
+  // 서버가 sandbox 를 씌운 앱(주인이 아닌 열람자·공개 링크)의 코드는 에이전트가 쓴
+  // 것이다. main 이 그 요청에도 토큰을 붙이면 그 코드가 이 사용자의 권한으로 플랫폼 API 를
+  // 부르고 응답까지 읽는다(서버 CORS 는 모든 오리진을 받는다).
+  // 원문으로 본다 — read() 의 주석 걷기는 'http://*/api/*' 같은 필터 문자열의 '/*' 를
+  // 주석 시작으로 읽어 이 블록을 통째로 삼킨다.
+  const src = raw(MAIN)
+  const at = src.indexOf('onBeforeSendHeaders(')
+  assert.ok(at > 0, '헤더 주입 필터가 사라졌다')
+  const block = src.slice(at, at + 700)
+  assert.ok(block.includes('!fromIsolatedDocument(details)'), '격리 문서 판정 없이 토큰을 붙인다')
+  const fn = src.slice(src.indexOf('function fromIsolatedDocument'))
+  const body = fn.slice(0, fn.indexOf('\n}\n'))
+  assert.ok(body.includes("origin === 'null'"), 'Origin: null 을 보지 않는다')
+  assert.ok(body.includes("frameOrigin === 'null'"), '요청한 프레임의 오리진을 보지 않는다')
+  // 앱 창 자신(최상위, file://)의 요청과, iframe 을 여는 GET 이동은 예전처럼 싣는다 —
+  // 새 iframe 은 서버 문서가 뜨기 전까지 부모의 'null' 오리진을 물려받아, 오리진만 보면
+  // 주인의 앱도 열리지 않는다.
+  assert.ok(body.includes('!frame.parent'), '앱 창 자신의 요청까지 끊는다')
+  assert.ok(
+    body.includes("details.resourceType === 'subFrame' && details.method === 'GET'"),
+    'iframe 을 여는 이동까지 끊는다 — 주인의 앱이 안 열린다',
+  )
+})
+
+test('임의 경로를 사용자 토큰으로 중계하던 xgensite 스킴은 없다', () => {
+  const src = read(MAIN)
+  assert.ok(!src.includes("scheme: 'xgensite'"), 'xgensite 스킴이 다시 등록됐다')
+  assert.ok(!src.includes("protocol.handle('xgensite'"), 'xgensite 핸들러가 다시 생겼다')
+})
+
+test('프레임의 fetch 다리는 그 앱의 주소 아래만 부른다', () => {
+  const proto = readFileSync(join(root, '..', '..', 'packages', 'protocol', 'src', 'agent-data.ts'), 'utf8')
+  const fn = proto.slice(proto.indexOf('appHttp('))
+  const body = fn.slice(0, fn.indexOf('appList('))
+  assert.ok(body.includes('target.pathname.startsWith(base)'), '앱 주소 밖(/api/…)까지 부른다')
+  assert.ok(!body.includes("startsWith('/api/')"), "'/api/' 전부를 부르던 조건이 남았다")
+})
+
+test('데스크톱 창 안의 앱은 그 창을 다른 페이지로 옮기지 못한다', () => {
+  // 에이전트가 쓴 앱이 클릭 한 번 뒤 top 을 옮기면, 옮겨 간 페이지가 preload 다리(window.xgen —
+  // 셸·파일·키체인)를 얻는다. 막는 자물쇠 둘: iframe sandbox 에 allow-top-navigation 없음 +
+  // 앱 창의 will-navigate 가 우리 렌더러 밖을 거절.
+  const frame = read('src/renderer/src/apps/AppSiteFrame.tsx')
+  const m = frame.match(/sandbox="([^"]+)"/)
+  assert.ok(m, '앱 사이트 iframe 에 sandbox 가 없다')
+  assert.ok(!/allow-top-navigation/.test(m![1]), 'allow-top-navigation 이 들어왔다')
+  assert.ok(m![1].includes('allow-same-origin'), '주인의 앱은 자기 오리진이 있어야 자격이 실린다')
+  const src = raw(MAIN)
+  const at = src.indexOf("mainWindow.webContents.on('will-navigate'")
+  assert.ok(at > 0, '앱 창에 will-navigate 가드가 없다')
+  const guard = src.slice(at, at + 300)
+  assert.ok(guard.includes('isRendererUrl(url)') && guard.includes('event.preventDefault()'))
+  // 앱 자신의 새로고침도 will-navigate 를 지난다(Electron 43 실측) — 문자열 접두 비교는 윈도 경로
+  // 표기 차이에 깨지므로 경로로 비교한다.
+  const fn = src.slice(src.indexOf('function isRendererUrl'))
+  const body = fn.slice(0, fn.indexOf('\n}\n'))
+  assert.ok(body.includes('fileURLToPath(u)') && body.includes('relative('), '렌더러 판정이 문자열 접두 비교다')
+})
+
+test('창 안의 웹 콘텐츠가 여는 주소는 웹 주소만 바깥으로 나간다', () => {
+  // shell.openExternal 은 file:// · smb:// · 앱 프로토콜도 OS 에 넘긴다(윈도에서 file:///…exe 는 실행된다).
+  const src = raw(MAIN)
+  for (const w of ['mainWindow', 'overlayWindow', 'overlayChip', 'quickChatWindow']) {
+    const at = src.indexOf(`${w}.webContents.setWindowOpenHandler(`)
+    assert.ok(at > 0, `${w} 의 창 열기 핸들러가 사라졌다`)
+    const body = src.slice(at, at + 160)
+    assert.ok(body.includes('openExternalSafe(url)'), `${w} 가 스킴을 거르지 않고 연다`)
+  }
+  const ext = readFileSync(join(root, 'src/main/external-url.ts'), 'utf8')
+  assert.ok(ext.includes("['http:', 'https:', 'mailto:']"))
 })

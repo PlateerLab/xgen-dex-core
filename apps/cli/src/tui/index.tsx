@@ -60,6 +60,9 @@ export async function runTui(engine: DexEngine): Promise<void> {
           // 대화만 자동으로 연다(끝난 대화를 멋대로 여는 것은 놀라운 일이다).
           lastChat: preferences.lastChat,
           onLastChatChange: (value) => void writePreferences({ lastChat: value }),
+          // 대화 목록에서 접어 둔 묶음. 다음 실행에서도 그대로다.
+          closedSections: preferences.closedSections,
+          onClosedSectionsChange: (value) => void writePreferences({ closedSections: value }),
           ...(ime.native
             ? {}
             : {

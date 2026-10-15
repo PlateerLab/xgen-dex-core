@@ -87,12 +87,18 @@ Response:
 }
 ```
 
+시작 화면의 새 에이전트(initialize 의 `capabilities.agentCreate`):
+
+- `agents/createOptions({profile?})`: 이름 밖의 칸(AI 제공사·모델·세부설정)과 기본값
+- `agents/nameTaken({profile?, name})` → `{taken}`: 이미 있는 이름인가
+- `agents/create({profile?, name, provider, model?, settings?})` → `{workflowId, workflowName}`
+
 ### Local tools
 
 - `localTools/status()`
 - `localTools/list()`
-- `localTools/configure({profile?, enabled?, cwd?, timeoutMs?, allowedRoots?, blockedCommands?, allowDangerous?})`
-- `localTools/run({tool, args})`
+- `localTools/configure({profile?, allowDangerous?})` — 옛 키(`enabled`·`cwd`·`allowedRoots` 등)는 받고 버린다.
+- `localTools/run({tool, args, folders?})` — `folders` 가 없으면 폴더 도구는 `[NO_FOLDER]` 로 거부된다.
 - `localTools/start({profile?, waitMs?})`
 - `localTools/stop()`
 
@@ -107,7 +113,13 @@ Bridge 연결 상태가 바뀌면 다음 notification을 전송합니다.
 
 ### History
 
-- `history/conversations({profile?})`
+- `history/conversations({profile?})`: 대화 목록 전부(쪽을 따라간다, 상한 있음)
+- `history/conversationPage({profile?, limit?, cursor?})` → `{conversations, nextCursor, agentDeletedCount?}`:
+  마지막으로 말한 순서로 한 쪽. 한 줄에 `title`·`customTitle`·`tag`·`agentDeleted`·`compare` 가 실린다.
+  `agentDeletedCount` 는 첫 쪽에만 온다.
+- `history/rename({profile?, workflowId, interactionId, title})` → `{title, customTitle}`: 빈 제목이면 첫 메시지 제목으로
+- `history/delete({profile?, workflowId, interactionId, workflowName?})` → `{ok}`: 비교 채팅의 딸린 대화까지
+- `history/purgeDeletedAgents({profile?})` → `{deleted}`: 에이전트가 사라진 내 대화를 모두 지운다
 - `history/turns({profile?, workflowId, workflowName?, interactionId})`
 - `history/snapshot({profile?, workflowId, workflowName?, interactionId})` → `{turns, running}`
 
@@ -130,10 +142,16 @@ Start request:
     "workflowId": "wf_abc",
     "workflowName": "Sales Agent",
     "interactionId": "optional-conversation-id",
-    "input": "hello"
+    "input": "hello",
+    "localFolders": ["/Users/me/work/my-repo"]
   }
 }
 ```
+
+`localFolders` 는 이 대화에 연결할 이 기기의 폴더(절대 경로)다. 에이전트의 파일·터미널
+도구는 이 폴더 안에서만 돈다. 없거나 빈 목록이면 폴더 도구를 쓸 수 없다. VS Code 확장은
+열린 작업 영역 폴더를 보낸다. `initialize` 의 `capabilities.localFolders` 가 `true` 인
+엔진만 이 필드를 안다.
 
 Start response:
 

@@ -22,27 +22,132 @@ import type {
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
-import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
 import type { NativeSessionController, NativeSessionViewState } from './native-session-controller';
+import { describeTool, historyTurnMessages, message, type ChatMessage } from './chat-messages';
+import {
+  CONVERSATION_PAGE_LIMIT,
+  SEARCH_LIMIT,
+  START_TEXT,
+  agentDrillView,
+  agentSection,
+  applyFirstPage,
+  conversationStub,
+  createdAgent,
+  historyPickItem,
+  nextRecentCount,
+  normalizeConversations,
+  prepareCreateOptions,
+  purgeDeletedLabel,
+  recentNeedsPage,
+  recentSection,
+  sanitizeCreateSettings,
+  searchFailedText,
+  searchRecentRows,
+  searchResultView,
+  startAgentChoices,
+  startComposerLock,
+  startSendBlocked,
+  touchAfterSend,
+  type AgentDrillView,
+  type AgentRow,
+  type ConversationRow,
+  type SearchResultRow,
+  type StartCreateOptions,
+  type StartLock,
+} from './conversation-view';
+import { ConversationManagerPanel, type ConversationManagerHost } from './conversation-manager-panel';
+import { purgeQuestion } from './conversation-manager';
+import {
+  CHAT_INPUT_CHECK_DELAY_MS,
+  MODEL_PICKER_TEXT,
+  RECENT_CONVERSATION_STEP,
+  SEARCH_DELAY_MS,
+  THINKING_PICKER_TEXT,
+  applyModelNotice,
+  conversationDisplayTitle,
+  conversationKey,
+  conversationListChange,
+  dropFromConversationAgents,
+  groupConversationsByAgent,
+  mergeConversationPage,
+  orderedChoices,
+  removeConversation,
+  renameConversationInList,
+  renameInConversationAgents,
+  sameModel,
+  selectedThinking,
+  thinkingChipLabel,
+  thinkingValueLabel,
+  chatInputNotice,
+  touchConversation,
+  touchConversationAgent,
+  searchConversationList,
+  type AgentCreateOptions,
+  type ChatInputCheck,
+  type ConversationAgent,
+  type ConversationModelState,
+  type ConversationPage,
+  type ConversationSearchPage,
+  type ModelChoice,
+  type ThinkingValue,
+} from '@dex/protocol';
 
 /** 창을 껐다 켠 뒤 되찾을 대화가 적히는 자리(globalState). */
 const LAST_CONVERSATION_KEY = 'xgenDex.lastConversation';
 
-type MessageRole = 'user' | 'assistant' | 'activity' | 'system';
-type ViewScreen = 'loading' | 'setup' | 'login' | 'offline' | 'agents' | 'chat' | 'settings' | 'error';
+/** 새 에이전트 이름을 적는 동안 기다렸다가 묻는 시간. 글자마다 묻지 않는다. */
+const NAME_CHECK_DELAY_MS = 300;
 
-interface ChatMessage {
-  id: string;
-  role: MessageRole;
-  label: string;
-  text: string;
-  /** user — 이 턴이 Job/sub-agent 트리거 주입이면 렌더용 파싱 결과.
-   *  webview 는 이 필드가 있으면 말풍선 대신 [Trigger] 행을 그린다. */
-  trigger?: AgentTrigger & { rowLabel: string };
-  /** assistant — 이 답변에서 쓴 도구 이벤트 전부 (전체 로그의 원천, 수신 순). */
-  tools?: ToolEvent[];
-  /** activity — 클릭하면 열 전체 로그의 위치 (assistant 메시지 id + tools 인덱스). */
-  toolRef?: { assistantId: string; index: number };
+/**
+ * 화면. 로그인한 뒤의 첫 화면은 대화 목록(conversations)이다. [+ 새 채팅] 은 시작 화면(start)에서
+ * 에이전트를 고르거나 새로 만들고 첫 말을 보낸다. 대화를 누르면 채팅(chat).
+ */
+type ViewScreen = 'loading' | 'setup' | 'login' | 'offline' | 'conversations' | 'start' | 'chat' | 'settings' | 'error';
+/** 설정 화면에서 [이전] 으로 돌아갈 자리. */
+type MainScreen = 'conversations' | 'start' | 'chat';
+
+/** 시작 화면이 그릴 것. 입력 칸의 글은 웹뷰가 쥐고, 잠금·검사 결과만 여기서 정한다. */
+interface StartViewState {
+  /** 바뀌면 웹뷰가 칸을 비운다(새 시작 화면). */
+  session: number;
+  /** 처음 골라 둘 에이전트. 빈 글이면 새 에이전트. */
+  agentId: string;
+  /** 엔진이 에이전트를 만들 수 있는가(옛 dex-cli 는 없다). */
+  canCreate: boolean;
+  choices: Array<{ value: string; label: string }>;
+  options?: StartCreateOptions;
+  optionsLoading: boolean;
+  /** 이름 칸 아래 글(겹치는 이름). */
+  nameError?: string;
+  lock: StartLock;
+  busy: boolean;
+  message?: { text: string; tone: 'error' | 'progress' };
+}
+
+/** 시작 화면의 상태. 이름은 겹치는지 묻기 위해서만 따라 적는다. */
+interface StartForm {
+  session: number;
+  agentId: string;
+  name: string;
+  /** 마지막으로 답을 받은 이름 검사. */
+  nameCheck?: { name: string; taken: boolean };
+  busy: boolean;
+  message?: { text: string; tone: 'error' | 'progress' };
+}
+
+/** 에이전트 줄을 눌러 들어간 화면: 그 에이전트의 대화를 쪽으로 받는다. */
+interface AgentDrill {
+  workflowId: string;
+  workflowName: string;
+  agentDeleted: boolean;
+  conversations: Conversation[];
+  cursor: string | null;
+  /** 받아 둔 쪽 수. 2 이상이면 첫 쪽을 다시 받을 때 뒤쪽을 지킨다. */
+  pages: number;
+  loading: boolean;
+  loadingMore: boolean;
+  error?: string;
+  version: number;
 }
 
 interface CanonicalAttachmentView {
@@ -58,15 +163,50 @@ interface ChatViewState {
   profiles: ProfileSummary[];
   auth?: AuthStatus;
   agents: Agent[];
-  agentTotal: number;
   agent?: Agent;
   messages: ChatMessage[];
   running: boolean;
   refreshing: boolean;
   status?: string;
   error?: string;
-  initialSearch?: string;
-  workspaceRoot?: string;
+  /** [최근 채팅]: 마지막으로 말한 순서로 5개, [더 보기] 로 5개씩. */
+  conversations: ConversationRow[];
+  conversationsLoading: boolean;
+  conversationsLoadingMore: boolean;
+  /** [최근 채팅] 의 [더 보기]. */
+  recentMore: boolean;
+  /** [최근 채팅] 의 [접기]. */
+  recentLess: boolean;
+  conversationsError?: string;
+  /** 이름 바꾸기·지우기와 ⋯ 메뉴를 쓸 수 있는가(엔진의 conversationList). */
+  conversationActions: boolean;
+  /** 에이전트가 사라진 대화 수(첫 쪽이 알려 준다). */
+  agentDeletedCount: number;
+  /** ⋯ 메뉴의 [에이전트가 사라진 채팅 제거 (N)]. 엔진이 모르면 없다(⋯ 도 없다). 0 이면 눌리지 않는다. */
+  purgeLabel?: string;
+  /** [에이전트]: 대화가 있는 에이전트, 마지막으로 말한 순서로 5개, [더 보기] 로 5개씩. */
+  conversationAgents: AgentRow[];
+  conversationAgentsLoading: boolean;
+  conversationAgentsError?: string;
+  /** [에이전트] 의 [더 보기]. */
+  agentsMore: boolean;
+  /** [에이전트] 의 [접기]. */
+  agentsLess: boolean;
+  /** 에이전트 줄을 눌러 들어간 화면. 없으면 목록 첫 화면. */
+  agentView?: AgentDrillView;
+  /** 채팅 검색 창이 검색어가 비었을 때 보이는 최근 채팅. */
+  searchRecent: SearchResultRow[];
+  /** 검색 창: 적기를 멈추고 이만큼 뒤에 묻는다(@dex/protocol SEARCH_DELAY_MS). */
+  searchDelayMs: number;
+  /** 입력이 멎고 통제 정책 사전 검사를 묻기까지(ms). */
+  inputCheckDelayMs: number;
+  /** 열린 대화의 제목. 첫 말을 보내기 전이면 없다. */
+  conversationTitle?: string;
+  /** 에이전트가 사라진 대화: 지난 대화만 보이고 입력창이 없다. */
+  readOnly: boolean;
+  start: StartViewState;
+  /** 열린 작업 영역 폴더 — 대화를 시작하면 그 대화의 작업 공간으로 연결된다. */
+  workspaceFolders: string[];
   localTools?: LocalToolsStatus;
   localToolsSaving: boolean;
   localToolsMessage?: string;
@@ -90,6 +230,10 @@ interface ChatViewState {
     createOpen: boolean;
     catalog?: NativeSessionViewState['catalog'];
   };
+  /** 이 대화의 지금 모델 — 입력창 아래 칩. 없으면(옛 서버·Geny 아닌 에이전트) 칩도 없다. */
+  model?: { label: string; locked: boolean; saving: boolean };
+  /** 모델 칩 오른쪽 생각 칩 — 이름표·조절 가능 여부. */
+  thinking?: { label: string; supported: boolean; locked: boolean; saving: boolean };
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -102,6 +246,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private selectedAgent: Agent | undefined;
   private messages: ChatMessage[] = [];
   private interactionId: string | undefined;
+  /**
+   * 첫 말을 보내기 전의 새 대화가 쓸 번호. 모델을 먼저 고를 수 있어야 하고, 그 선택은
+   * 대화 번호에 붙으므로 번호를 미리 정해 두고 첫 턴도 이 번호로 보낸다.
+   */
+  private draftInteractionId: string | undefined;
+  /** 이 대화의 모델 — `modelKey`(에이전트:대화) 가 바뀔 때만 다시 읽는다. */
+  private model: ConversationModelState | undefined;
+  private modelKey = '';
+  private modelSaving = false;
   private attachments: ChatAttachmentDescriptor[] = [];
   private uploadingAttachments = false;
   private streamId: string | undefined;
@@ -119,7 +272,70 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /** 다른 곳에서 도는 턴의 진행분을 담은 말풍선 — 매번 덮어쓸 대상. */
   private remotePartialId: string | undefined;
   private error: string | undefined;
-  private initialSearch: string | undefined;
+  /** 설정에서 [이전] 을 누르면 돌아갈 화면. */
+  private returnScreen: MainScreen = 'conversations';
+  /** 에이전트가 사라진 대화를 열었다: 기록만 보이고 보낼 수 없다. */
+  private readOnly = false;
+  /** 목록이나 대화 기록에서 연 대화. 목록에 없을 때 제목을 여기서 읽는다. */
+  private openedConversation: Conversation | undefined;
+  // ── 대화 목록 ──
+  private conversations: Conversation[] = [];
+  private conversationCursor: string | null = null;
+  /** 받아 둔 쪽 수. 2 이상이면 첫 쪽을 다시 받을 때 뒤쪽을 지킨다. */
+  private conversationPages = 0;
+  private conversationsLoading = false;
+  private conversationsLoadingMore = false;
+  private conversationsError: string | undefined;
+  private conversationsVersion = 0;
+  private agentDeletedCount = 0;
+  /** 이 창에서 방금 시작해 서버 목록에 아직 없는 대화. 첫 쪽을 다시 받아도 지우지 않는다. */
+  private readonly localConversations = new Set<string>();
+  /** [최근 채팅] 에 보이는 수. [더 보기] 로 5개씩 늘고 [접기] 로 5개로 돌아간다. */
+  private recentCount = RECENT_CONVERSATION_STEP;
+  /** [에이전트]: 서버가 센 묶음(history/conversationAgents). 옛 엔진이면 받은 목록으로 묶는다. */
+  private conversationAgents: ConversationAgent[] = [];
+  private conversationAgentsLoading = false;
+  private conversationAgentsError: string | undefined;
+  private conversationAgentsVersion = 0;
+  /** [에이전트] 에 보이는 수. [더 보기] 로 5개씩 늘고 [접기] 로 5개로 돌아간다. */
+  private agentCount = RECENT_CONVERSATION_STEP;
+  /** 에이전트 줄을 눌러 들어간 화면. */
+  private agentView: AgentDrill | undefined;
+  /** 지금 답이 도는 대화(대화 목록 소식). 줄에 진행 점을 그린다. */
+  private readonly runningConversations = new Set<string>();
+  /**
+   * 이 창에서 지운 대화. 서버의 지움 소식이 뒤따라 오면 에이전트 대화 수를 두 번 줄이지 않도록 한 번 건너뛴다.
+   * 소식을 받는 엔진(conversationListWatch)일 때만 적는다.
+   */
+  private readonly removedHere = new Set<string>();
+  /** 검색 창에 보인 대화(고르면 열 때 찾는다). */
+  private readonly searchFound = new Map<string, Conversation>();
+  /** 마지막으로 받은 검색 요청. 늦게 온 옛 답은 보내지 않는다. */
+  private searchSeq = 0;
+  /** 채팅 기록 관리 탭(⋯). 처음 열 때 만든다. */
+  private manager: ConversationManagerPanel | undefined;
+  /** 엔진이 대화 목록 쪽 나누기·이름 바꾸기·지우기를 아는가(옛 dex-cli 는 모른다). */
+  private canPageConversations = false;
+  /** 엔진이 에이전트를 만들 수 있는가. */
+  private canCreateAgent = false;
+  /** 엔진이 대화 목록 소켓(conversations/watch)을 열 수 있는가. 열면 다른 기기의 변화가 곧바로 보인다. */
+  private canWatchConversationList = false;
+  /** 엔진이 채팅 검색(history/search)을 아는가. 모르면 받아 둔 목록의 제목·이름으로 찾는다. */
+  private canSearchConversations = false;
+  /** 엔진이 에이전트 묶음(history/conversationAgents)과 에이전트별 쪽(workflowId)을 아는가. */
+  private canListConversationAgents = false;
+  /** chat/checkInput 을 아는 엔진인가. 옛 CLI 면 사전 검사 없이 보낼 때 서버 판정만 받는다. */
+  private canCheckChatInput = false;
+  /** 대화 목록 소식이 몰려올 때 첫 쪽을 한 번만 다시 읽도록 모은다. */
+  private conversationHeadTimer: NodeJS.Timeout | undefined;
+  /** 모아 둔 다시 읽기에 에이전트 묶음·에이전트 화면도 함께 싣는가. */
+  private pendingReload = { head: false, agents: false, agentView: false };
+  // ── 시작 화면 ──
+  private start: StartForm = { session: 0, agentId: '', name: '', busy: false };
+  private createOptions: StartCreateOptions | undefined;
+  private createOptionsLoading = false;
+  private createOptionsError: string | undefined;
+  private nameTimer: NodeJS.Timeout | undefined;
   private localTools: LocalToolsStatus | undefined;
   private localToolsSaving = false;
   private localToolsMessage: string | undefined;
@@ -162,6 +378,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     };
     webviewView.webview.html = this.html(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message: unknown) => this.onWebviewMessage(message), undefined, this.context.subscriptions);
+    // 작업 영역 폴더를 더하거나 빼면 화면의 폴더 표시도 바로 따라간다. 다음 요청부터
+    // 그 목록이 대화의 폴더로 실린다.
+    vscode.workspace.onDidChangeWorkspaceFolders(() => this.postState(), undefined, this.context.subscriptions);
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) this.view = undefined;
     });
@@ -196,6 +415,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.agents = [];
         this.agentTotal = 0;
         this.selectedAgent = undefined;
+        this.resetConversationList();
         this.screen = previousScreen === 'settings' ? 'settings' : 'setup';
         return;
       }
@@ -213,34 +433,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.agents = [];
         this.agentTotal = 0;
         this.selectedAgent = undefined;
+        this.resetConversationList();
+        // 로그아웃했다: 대화 목록 소켓도 닫는다(토큰 없이 다시 붙으려고 애쓰지 않게).
+        if (this.canWatchConversationList) void this.service.request('conversations/unwatch', {}).catch(() => undefined);
         this.screen = previousScreen === 'settings' ? 'settings' : auth.reason === 'network' ? 'offline' : 'login';
         return;
       }
 
-      const result = await this.service.request<AgentListResult>('agents/list', {
-        profile: auth.profile,
-        page: 1,
-        pageSize: 100,
-      });
+      await this.updateCapabilities();
+      if (version !== this.refreshVersion) return;
+      this.watchConversationList();
+      // 에이전트 목록, 대화 목록 첫 쪽, 에이전트 묶음을 함께 받는다. 목록을 못 받아도 화면은 연다(목록 자리에 오류).
+      const [result] = await Promise.all([
+        this.service.request<AgentListResult>('agents/list', {
+          profile: auth.profile,
+          page: 1,
+          pageSize: 100,
+        }),
+        this.loadConversations('replace'),
+        this.loadConversationAgents(),
+      ]);
       if (version !== this.refreshVersion) return;
       this.agents = result.items;
       this.agentTotal = result.pagination.totalCount;
       if (this.selectedAgent) {
         const updated = this.agents.find((agent) => agent.workflowId === this.selectedAgent?.workflowId);
         if (updated) this.selectedAgent = updated;
-        else {
+        // 목록을 끝까지 받았는데도 없으면 에이전트가 사라졌다. 지워진 에이전트의 대화를
+        // 일부러 열어 둔 것(readOnly)은 그대로 둔다.
+        else if (!this.readOnly && this.agents.length >= this.agentTotal) {
           this.selectedAgent = undefined;
           this.messages = [];
           this.interactionId = undefined;
+          this.draftInteractionId = undefined;
+          this.openedConversation = undefined;
         }
       }
       // 에이전트 목록까지 온 뒤에 되살린다 — 목록이 있어야 자리표시가 아닌
       // 진짜 에이전트로 붙는다. 화면 결정보다 **먼저** 와야 복원한 대화가
       // 곧바로 보인다.
-      await this.restoreLastConversation();
+      const restored = await this.restoreLastConversation();
       if (version !== this.refreshVersion) return;
       if (previousScreen === 'settings') this.screen = 'settings';
-      else this.screen = this.selectedAgent ? 'chat' : 'agents';
+      else if (previousScreen === 'start') {
+        this.screen = 'start';
+        void this.ensureCreateOptions();
+      } else if (this.selectedAgent && (restored || previousScreen === 'chat')) this.screen = 'chat';
+      else this.screen = 'conversations';
     } catch (error) {
       if (version !== this.refreshVersion) return;
       this.error = errorMessage(error);
@@ -253,29 +492,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  async selectAgent(agent: Agent): Promise<void> {
-    if (this.streamId) return;
-    const changed = this.selectedAgent?.workflowId !== agent.workflowId;
-    if (changed) await this.clearConversation();
-    this.selectedAgent = agent;
-    this.screen = 'chat';
-    this.status = undefined;
-    this.initialSearch = undefined;
-    this.postState();
-    await vscode.commands.executeCommand('xgenDex.chat.focus');
-  }
-
-  async showAgents(search?: string): Promise<void> {
-    if (this.streamId) return;
+  /**
+   * 대화 목록: 로그인한 뒤의 첫 화면. 돌아올 때마다 첫 쪽과 에이전트 묶음을 다시 받는다(다른 곳에서 말한
+   * 대화가 위로 온다). 에이전트 화면에 들어가 있었으면 그 화면으로 돌아오고 그 첫 쪽도 다시 받는다.
+   */
+  async showConversations(): Promise<void> {
     if (!this.auth?.authenticated) await this.refreshSession();
     if (!this.auth?.authenticated) return;
-    this.screen = 'agents';
-    this.initialSearch = search?.trim() || undefined;
+    this.screen = 'conversations';
+    this.postState();
+    this.view?.show(true);
+    void this.loadConversations('head');
+    void this.loadConversationAgents();
+    if (this.agentView) void this.loadAgentConversations('head');
+  }
+
+  /**
+   * 시작 화면: 에이전트를 고르거나(처음 값은 "새 에이전트로 시작") 새로 만들고 첫 말을 보낸다.
+   * `agentId` 를 주면 그 에이전트를 골라 둔 채 연다.
+   */
+  async showStart(agentId?: string): Promise<void> {
+    if (!this.auth?.authenticated) await this.refreshSession();
+    if (!this.auth?.authenticated) return;
+    // 만드는 중이면 칸을 비우지 않는다. 다 만들면 그 대화가 열린다.
+    if (!this.start.busy) {
+      const known = agentId && this.agents.some((agent) => agent.workflowId === agentId) ? agentId : '';
+      this.resetStart(known);
+    }
+    this.screen = 'start';
+    void this.ensureCreateOptions();
     this.postState();
     this.view?.show(true);
   }
 
+  /** 다른 곳(명령·트리 등)에서 에이전트를 골라 왔다: 그 에이전트를 골라 둔 시작 화면. */
+  async selectAgent(agent: Agent): Promise<void> {
+    if (!this.agents.some((item) => item.workflowId === agent.workflowId)) this.agents = [agent, ...this.agents];
+    await this.showStart(agent.workflowId);
+    await vscode.commands.executeCommand('xgenDex.chat.focus');
+  }
+
+  /** Agent 검색: VS Code 빠른 선택으로 골라 시작 화면에 골라 둔다. */
+  async pickAgent(): Promise<void> {
+    if (!this.auth?.authenticated) await this.refreshSession();
+    if (!this.auth?.authenticated) return;
+    if (this.agents.length === 0) {
+      void vscode.window.showInformationMessage('사용할 수 있는 Agent가 없습니다.');
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      this.agents.map((agent) => ({
+        label: agent.workflowName,
+        description: agent.isShared ? '공유' : '개인',
+        detail: agent.description?.trim() || undefined,
+        agent,
+      })),
+      { title: 'XGEN Dex Agent 검색', placeHolder: 'Agent 이름 또는 설명', matchOnDescription: true, matchOnDetail: true },
+    );
+    if (!picked) return;
+    await this.showStart(picked.agent.workflowId);
+  }
+
   async showSettings(): Promise<void> {
+    if (this.screen === 'conversations' || this.screen === 'start' || this.screen === 'chat') this.returnScreen = this.screen;
     this.screen = 'settings';
     this.postState();
     this.view?.show(true);
@@ -288,10 +567,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.auth = undefined;
     this.agents = [];
     this.agentTotal = 0;
+    this.resetConversationList();
+    this.createOptions = undefined;
+    this.createOptionsError = undefined;
+    this.resetStart();
     this.screen = 'loading';
     await this.refreshSession();
+    // 열려 있는 채팅 기록 관리 탭도 새 프로필로 다시 읽는다.
+    this.manager?.reload();
   }
 
+  /** [+ 새 채팅]: 시작 화면. 지금 대화는 목록에 남고, 도는 답변도 서버에서 계속된다. */
   async newChat(): Promise<void> {
     if (this.canonicalMode) {
       this.canonicalCreateOpen = true;
@@ -300,9 +586,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       void this.refreshCanonicalCatalog();
       return;
     }
-    await this.clearConversation();
-    this.screen = this.selectedAgent ? 'chat' : this.auth?.authenticated ? 'agents' : this.screen;
-    this.postState();
+    await this.showStart();
   }
 
   /**
@@ -345,24 +629,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  /** 채팅 기록 관리 탭(⋯ 메뉴): 편집기 자리에 연다. 이미 열려 있으면 앞으로 가져온다. */
+  showConversationManager(): void {
+    if (!this.auth?.authenticated || !this.canPageConversations) return;
+    this.manager ??= new ConversationManagerPanel(this.context, this.service, this.managerHost());
+    this.manager.show();
+  }
+
+  /** 대화 기록(빠른 선택): 제목으로 찾고, 옆에 에이전트 · 꼬리표 · 시각. */
   async openHistory(): Promise<void> {
     try {
-      const conversations = await this.service.request<Conversation[]>('history/conversations', this.activeProfileParams());
+      const conversations = normalizeConversations(
+        await this.service.request<unknown>('history/conversations', this.activeProfileParams()),
+      );
       if (conversations.length === 0) {
         await vscode.window.showInformationMessage('저장된 XGEN Dex 대화가 없습니다.');
         return;
       }
       const picked = await vscode.window.showQuickPick(
         conversations.map((conversation) => ({
-          label: conversation.workflowName,
-          description: new Date(conversation.updatedAt).toLocaleString(),
-          detail: `${conversation.interactionCount} turns · ${conversation.interactionId}`,
+          ...historyPickItem(conversation, (iso) => new Date(iso).toLocaleString()),
           conversation,
         })),
-        { placeHolder: '불러올 대화를 선택하세요', matchOnDescription: true, matchOnDetail: true },
+        { placeHolder: '불러올 대화를 선택하세요', matchOnDescription: true },
       );
       if (!picked) return;
-      const conversation = picked.conversation;
+      await this.openConversation(picked.conversation);
+    } catch (error) {
+      await vscode.window.showErrorMessage(`대화 기록을 불러오지 못했습니다: ${errorMessage(error)}`);
+    }
+  }
+
+  /**
+   * 대화 하나를 연다(목록·대화 기록). 에이전트가 사라진 대화는 기록만 보이고 입력창이 없다.
+   * 지금 열려 있는 대화면 다시 읽지 않고 채팅으로 돌아간다(도는 답변도 그대로 이어진다).
+   */
+  async openConversation(conversation: Conversation): Promise<void> {
+    if (this.isOpenConversation(conversation.workflowId, conversation.interactionId)) {
+      this.screen = 'chat';
+      this.postState();
+      return;
+    }
+    try {
       // 지난 턴과 함께 **지금 도는 턴이 있는가**도 읽는다 — 웹이나 앱에서
       // 시작한 턴이 아직 돌고 있을 수 있다. 이걸 모르면 끝난 대화처럼 보이고,
       // 그 위에 새 턴을 보내 같은 대화에서 두 실행이 겹친다.
@@ -375,13 +683,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const turns = snapshot.turns ?? [];
       await this.clearConversation();
       this.selectedAgent = this.agents.find((agent) => agent.workflowId === conversation.workflowId) ?? agentFromConversation(conversation);
+      this.readOnly = conversation.agentDeleted === true;
+      this.openedConversation = conversation;
       this.interactionId = conversation.interactionId;
       this.attachments = [];
       this.syncConversationWatch();
-      this.messages = turns.flatMap((turn) => [
-        message('user', '나', turn.input),
-        message('assistant', conversation.workflowName, turn.output),
-      ]);
+      this.messages = historyTurnMessages(turns, conversation.workflowName);
       this.status = snapshot.running
         ? '다른 곳에서 시작한 응답이 진행 중입니다.'
         : `${turns.length}개의 이전 대화를 불러왔습니다.`;
@@ -398,7 +705,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.leaveCanonical(false);
     this.stopWatchingRemoteRun();
     this.removeNotificationListener();
+    this.manager?.dispose();
     if (this.renderTimer) clearTimeout(this.renderTimer);
+    if (this.nameTimer) clearTimeout(this.nameTimer);
+    if (this.conversationHeadTimer) clearTimeout(this.conversationHeadTimer);
   }
 
   private async clearConversation(): Promise<void> {
@@ -407,6 +717,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.streamId = undefined;
     this.assistantMessageId = undefined;
     this.interactionId = undefined;
+    this.draftInteractionId = undefined;
+    this.readOnly = false;
+    this.openedConversation = undefined;
     this.attachments = [];
     this.messages = [];
     this.toolMessages.clear();
@@ -416,6 +729,801 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.syncConversationWatch();
     await this.setRunning(false);
     if (activeStream) await this.service.request('chat/cancel', { streamId: activeStream }).catch(() => undefined);
+  }
+
+  /** 열린 대화를 닫고(지웠다) 채팅 화면이었으면 목록으로. */
+  private async leaveConversation(): Promise<void> {
+    await this.clearConversation();
+    this.selectedAgent = undefined;
+    if (this.screen === 'chat') this.screen = 'conversations';
+  }
+
+  private isOpenConversation(workflowId: string, interactionId: string): boolean {
+    return this.selectedAgent?.workflowId === workflowId && this.interactionId === interactionId;
+  }
+
+  // ── 대화 목록 ────────────────────────────────────────────────────
+
+  private async updateCapabilities(): Promise<void> {
+    const capabilities = await this.service.capabilities().catch(() => undefined);
+    const canCreate = capabilities?.agentCreate === true;
+    if (canCreate !== this.canCreateAgent) {
+      this.createOptions = undefined;
+      this.createOptionsError = undefined;
+    }
+    this.canPageConversations = capabilities?.conversationList === true;
+    this.canCreateAgent = canCreate;
+    this.canWatchConversationList = capabilities?.conversationListWatch === true;
+    this.canSearchConversations = capabilities?.conversationSearch === true;
+    this.canListConversationAgents = capabilities?.conversationAgents === true;
+    this.canCheckChatInput = capabilities?.chatInputCheck === true;
+  }
+
+  // ── 통제 정책 입력창 사전 검사 ─────────────────────────────────────
+
+  /**
+   * 통제 정책(개인정보 · 금칙어) [채팅 입력시 차단] 사전 검사. 서버가 보낼 때 막는 것과 같은 규칙이다.
+   * 판정하지 못하면(옛 엔진 · 서버 오류) undefined: 막지 않는다. 보낼 때 서버가 다시 본다.
+   */
+  private async checkChatInput(text: string, workflowId: string | null): Promise<ChatInputCheck | undefined> {
+    if (!this.canCheckChatInput || !text.trim()) return undefined;
+    try {
+      return await this.service.request<ChatInputCheck>('chat/checkInput', {
+        text: text.trim(),
+        workflowId,
+        ...this.activeProfileParams(),
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 웹뷰가 입력 중에 묻는다(작성기 아래 안내 · 보내기 단추). scope 는 chat(대화) · start(시작 화면). */
+  private async answerInputCheck(raw: Record<string, unknown>): Promise<void> {
+    const scope = raw.scope === 'start' ? 'start' : 'chat';
+    const text = typeof raw.text === 'string' ? raw.text.trim() : '';
+    const workflowId = scope === 'start' ? this.start.agentId || null : this.selectedAgent?.workflowId ?? null;
+    const check = await this.checkChatInput(text, workflowId);
+    void this.view?.webview.postMessage({
+      type: 'inputCheck',
+      scope,
+      text,
+      blocked: check?.blocked === true,
+      notice: chatInputNotice(check),
+    });
+  }
+
+  /** 대화 목록 소켓을 연다(로그인한 프로필로). 옛 엔진이면 아무것도 하지 않는다. */
+  private watchConversationList(): void {
+    if (!this.canWatchConversationList || !this.auth?.authenticated) return;
+    void this.service.request('conversations/watch', this.activeProfileParams()).catch(() => undefined);
+  }
+
+  /**
+   * 조금 뒤에 한 번 다시 읽는다(소식이 몰려와도 한 번). `head` 는 대화 목록 첫 쪽, `agents` 는 에이전트 묶음,
+   * `agentView` 는 들어가 있는 에이전트 화면의 첫 쪽.
+   */
+  private scheduleReload(parts: { head?: boolean; agents?: boolean; agentView?: boolean }): void {
+    const pending = this.pendingReload;
+    this.pendingReload = {
+      head: pending.head || !!parts.head,
+      agents: pending.agents || !!parts.agents,
+      agentView: pending.agentView || !!parts.agentView,
+    };
+    if (this.conversationHeadTimer) clearTimeout(this.conversationHeadTimer);
+    this.conversationHeadTimer = setTimeout(() => {
+      this.conversationHeadTimer = undefined;
+      const due = this.pendingReload;
+      this.pendingReload = { head: false, agents: false, agentView: false };
+      if (due.head) void this.loadConversations('head');
+      if (due.agents) void this.loadConversationAgents();
+      if (due.agentView) void this.loadAgentConversations('head');
+    }, 400);
+  }
+
+  /**
+   * 대화 목록 소식(conversations/changed) → 목록이 할 일. 규칙은 데스크톱과 같다(@dex/protocol conversationListChange,
+   * conversation-agents): 아는 대화에서 방금 말했으면 맨 위로(에이전트 줄도), 모르는 대화면 첫 쪽과 에이전트 묶음을
+   * 다시 읽고(숨길 대화인지는 서버만 안다), 이름이 바뀌었으면 제목만, 지워졌으면 줄을 빼고 그 에이전트의 수를 줄인다.
+   * 들어가 있는 에이전트 화면도 같은 규칙으로 고친다.
+   */
+  private applyConversationListEvent(params: unknown): void {
+    if (!params || typeof params !== 'object') return;
+    const e = params as { kind?: string; interactionId?: string; workflowId?: string; running?: boolean; data?: Record<string, unknown> };
+    const change = conversationListChange(String(e.kind ?? ''), {
+      ...(e.data ?? {}),
+      interaction_id: e.interactionId ?? '',
+      workflow_id: e.workflowId ?? '',
+      ...(typeof e.running === 'boolean' ? { running: e.running } : {}),
+    });
+    switch (change.type) {
+      case 'running': {
+        const key = conversationKey(change);
+        if (change.running === this.runningConversations.has(key)) return;
+        if (change.running) this.runningConversations.add(key);
+        else this.runningConversations.delete(key);
+        this.postState();
+        return;
+      }
+      case 'touched': {
+        const conv = change.conversation;
+        const reload = { head: false, agents: false, agentView: false };
+        if (conv && this.conversations.some((c) => conversationKey(c) === conversationKey(conv))) {
+          this.conversations = touchConversation(this.conversations, conv).list;
+          if (this.canListConversationAgents) {
+            const touched = touchConversationAgent(this.conversationAgents, conv, false);
+            this.conversationAgents = touched.agents;
+            reload.agents = !touched.known;
+          }
+        } else {
+          reload.head = true;
+          reload.agents = true;
+        }
+        const view = this.agentView;
+        if (view && view.workflowId === (conv?.workflowId || e.workflowId)) {
+          if (conv && view.conversations.some((c) => conversationKey(c) === conversationKey(conv))) {
+            view.conversations = touchConversation(view.conversations, conv).list;
+          } else reload.agentView = true;
+        }
+        if (reload.head || reload.agents || reload.agentView) this.scheduleReload(reload);
+        this.postState();
+        return;
+      }
+      case 'renamed':
+        this.applyRename(change.workflowId, change.interactionId, change.title, change.customTitle);
+        this.postState();
+        return;
+      case 'removed': {
+        const key = conversationKey(change);
+        // 이 창에서 지운 대화면 목록과 수는 이미 맞춰 두었다.
+        if (this.removedHere.delete(key)) return;
+        const stale = this.dropConversation(change.workflowId, change.interactionId);
+        this.postState();
+        // 사라진 에이전트 대화 수도 함께 맞춘다.
+        this.scheduleReload({ head: true, agents: stale });
+        return;
+      }
+      case 'reload':
+        this.scheduleReload({ head: true, agents: true, agentView: true });
+        return;
+      default:
+    }
+  }
+
+  private resetConversationList(): void {
+    this.conversationsVersion += 1;
+    this.conversations = [];
+    this.conversationCursor = null;
+    this.conversationPages = 0;
+    this.conversationsLoading = false;
+    this.conversationsLoadingMore = false;
+    this.conversationsError = undefined;
+    this.agentDeletedCount = 0;
+    this.localConversations.clear();
+    this.recentCount = RECENT_CONVERSATION_STEP;
+    this.conversationAgentsVersion += 1;
+    this.conversationAgents = [];
+    this.conversationAgentsLoading = false;
+    this.conversationAgentsError = undefined;
+    this.agentCount = RECENT_CONVERSATION_STEP;
+    this.agentView = undefined;
+    this.runningConversations.clear();
+    this.removedHere.clear();
+    this.searchFound.clear();
+  }
+
+  private findConversation(workflowId: string, interactionId: string): Conversation | undefined {
+    const key = conversationKey({ workflowId, interactionId });
+    const listed =
+      this.conversations.find((c) => conversationKey(c) === key) ??
+      this.agentView?.conversations.find((c) => conversationKey(c) === key);
+    if (listed) return listed;
+    return this.openedConversation && conversationKey(this.openedConversation) === key ? this.openedConversation : undefined;
+  }
+
+  /** 대화가 있는 에이전트. 묶음 API 를 모르는 옛 엔진이면 받아 둔 대화 목록으로 묶는다. */
+  private agentsWithChats(): ConversationAgent[] {
+    return this.canListConversationAgents ? this.conversationAgents : groupConversationsByAgent(this.conversations);
+  }
+
+  /** [에이전트] 묶음을 다시 받는다. 옛 엔진이면 받을 것이 없다(목록에서 묶는다). */
+  private async loadConversationAgents(): Promise<void> {
+    if (!this.auth?.authenticated || !this.canListConversationAgents) return;
+    const version = ++this.conversationAgentsVersion;
+    this.conversationAgentsLoading = true;
+    try {
+      const list = await this.service.request<ConversationAgent[]>('history/conversationAgents', this.activeProfileParams());
+      if (version !== this.conversationAgentsVersion) return;
+      this.conversationAgents = Array.isArray(list) ? list : [];
+      this.conversationAgentsError = undefined;
+    } catch (error) {
+      if (version === this.conversationAgentsVersion) this.conversationAgentsError = errorMessage(error);
+    } finally {
+      if (version === this.conversationAgentsVersion) {
+        this.conversationAgentsLoading = false;
+        this.postState();
+      }
+    }
+  }
+
+  /** 에이전트 줄을 눌렀다: 그 에이전트의 대화로 들어간다. 받기 전에는 받아 둔 목록의 그 에이전트 대화를 먼저 보인다. */
+  private openAgentView(workflowId: string): void {
+    const group = this.agentsWithChats().find((a) => a.workflowId === workflowId);
+    const agent = this.agents.find((a) => a.workflowId === workflowId);
+    this.agentView = {
+      workflowId,
+      workflowName: group?.workflowName || agent?.workflowName || '',
+      agentDeleted: group?.agentDeleted === true,
+      conversations: this.conversations.filter((c) => c.workflowId === workflowId),
+      cursor: null,
+      pages: 0,
+      loading: false,
+      loadingMore: false,
+      version: 0,
+    };
+    this.postState();
+    void this.loadAgentConversations('replace');
+  }
+
+  /**
+   * 들어가 있는 에이전트 화면의 대화를 받는다(history/conversationPage 의 workflowId). 모드는 대화 목록과 같다.
+   * 에이전트별 쪽을 모르는 옛 엔진이면 받아 둔 대화 목록에서 그 에이전트 것만 보인다(postState).
+   */
+  private async loadAgentConversations(mode: 'replace' | 'head' | 'more'): Promise<void> {
+    const view = this.agentView;
+    if (!view || !this.auth?.authenticated || !this.canListConversationAgents) return;
+    const params = { ...this.activeProfileParams(), limit: CONVERSATION_PAGE_LIMIT, workflowId: view.workflowId };
+    const mine = (page: ConversationPage): Conversation[] =>
+      normalizeConversations(page.conversations).filter((c) => c.workflowId === view.workflowId);
+    if (mode === 'more') {
+      const cursor = view.cursor;
+      if (!cursor || view.loading || view.loadingMore) return;
+      const version = view.version;
+      view.loadingMore = true;
+      this.postState();
+      try {
+        const page = await this.service.request<ConversationPage>('history/conversationPage', { ...params, cursor });
+        if (this.agentView !== view || version !== view.version) return;
+        view.conversations = mergeConversationPage(view.conversations, mine(page), 'append');
+        view.cursor = page.nextCursor ?? null;
+        view.pages += 1;
+        view.error = undefined;
+      } catch (error) {
+        if (this.agentView === view && version === view.version) view.error = errorMessage(error);
+      } finally {
+        view.loadingMore = false;
+        this.postState();
+      }
+      return;
+    }
+    const version = ++view.version;
+    view.loading = true;
+    this.postState();
+    try {
+      const page = await this.service.request<ConversationPage>('history/conversationPage', params);
+      if (this.agentView !== view || version !== view.version) return;
+      const list = mine(page);
+      if (mode === 'head' && view.pages > 1) view.conversations = mergeConversationPage(view.conversations, list, 'head');
+      else {
+        view.conversations = list;
+        view.cursor = page.nextCursor ?? null;
+        view.pages = 1;
+      }
+      view.error = undefined;
+    } catch (error) {
+      if (this.agentView === view && version === view.version) view.error = errorMessage(error);
+    } finally {
+      if (this.agentView === view && version === view.version) {
+        view.loading = false;
+        this.postState();
+      }
+    }
+  }
+
+  /** [최근 채팅] 의 [더 보기]: 5개 더. 받아 둔 줄이 모자라고 다음 쪽이 있으면 다음 쪽을 받는다. */
+  private showMoreRecent(): void {
+    this.recentCount = nextRecentCount(this.recentCount);
+    this.postState();
+    const hasNextPage = this.canPageConversations && !!this.conversationCursor;
+    if (recentNeedsPage(this.conversations.length, this.recentCount, hasNextPage)) void this.loadConversations('more');
+  }
+
+  /** 대화의 이름이 바뀌었다: 목록·에이전트 화면·에이전트 줄·열린 대화의 제목을 함께 고친다. */
+  private applyRename(workflowId: string, interactionId: string, title: string, customTitle: boolean): void {
+    this.conversations = renameConversationInList(this.conversations, workflowId, interactionId, title, customTitle);
+    if (this.agentView) {
+      this.agentView.conversations = renameConversationInList(this.agentView.conversations, workflowId, interactionId, title, customTitle);
+    }
+    this.conversationAgents = renameInConversationAgents(this.conversationAgents, workflowId, interactionId, title);
+    if (this.openedConversation && conversationKey(this.openedConversation) === conversationKey({ workflowId, interactionId })) {
+      this.openedConversation = { ...this.openedConversation, title, customTitle };
+    }
+  }
+
+  /**
+   * 대화가 지워졌다: 목록·에이전트 화면에서 빼고 그 에이전트의 수를 줄인다. 지운 것이 그 에이전트의 마지막 대화였으면
+   * true(새 마지막 대화는 서버만 안다. 부르는 쪽이 묶음을 다시 읽는다).
+   */
+  private dropConversation(workflowId: string, interactionId: string): boolean {
+    const key = conversationKey({ workflowId, interactionId });
+    this.conversations = removeConversation(this.conversations, workflowId, interactionId);
+    if (this.agentView) this.agentView.conversations = removeConversation(this.agentView.conversations, workflowId, interactionId);
+    this.localConversations.delete(key);
+    this.runningConversations.delete(key);
+    if (!this.canListConversationAgents) return false;
+    const dropped = dropFromConversationAgents(this.conversationAgents, workflowId, interactionId);
+    this.conversationAgents = dropped.agents;
+    return dropped.stale;
+  }
+
+  /**
+   * 이 창(목록·채팅 기록 관리 탭)에서 대화를 지웠다. 목록과 수를 곧바로 맞추고, 열려 있던 대화면 닫는다.
+   * 뒤따라 올 서버의 지움 소식은 한 번 건너뛴다.
+   */
+  private async conversationsRemoved(list: Conversation[]): Promise<void> {
+    let stale = false;
+    for (const c of list) {
+      if (this.canWatchConversationList) this.rememberRemovedHere(conversationKey(c));
+      stale = this.dropConversation(c.workflowId, c.interactionId) || stale;
+      if (c.agentDeleted && this.agentDeletedCount > 0) this.agentDeletedCount -= 1;
+      if (this.isOpenConversation(c.workflowId, c.interactionId)) await this.leaveConversation();
+    }
+    this.postState();
+    if (stale) void this.loadConversationAgents();
+  }
+
+  private rememberRemovedHere(key: string): void {
+    this.removedHere.add(key);
+    // 소식이 끝내 오지 않은 것이 쌓이지 않게 오래된 것부터 버린다.
+    while (this.removedHere.size > 200) {
+      const oldest = this.removedHere.values().next().value;
+      if (oldest === undefined) break;
+      this.removedHere.delete(oldest);
+    }
+  }
+
+  /** ⋯ 메뉴의 [에이전트가 사라진 채팅 제거 (N)]: 확인 뒤 한 번에 지운다. 관리 탭이 열려 있으면 그 탭도 다시 읽는다. */
+  private async purgeDeletedAgents(): Promise<void> {
+    const count = this.agentDeletedCount;
+    if (!this.canPageConversations || count <= 0) return;
+    const choice = await vscode.window.showWarningMessage(purgeQuestion(count), { modal: true }, '제거');
+    if (choice !== '제거') return;
+    try {
+      await this.service.request<{ deleted: number }>('history/purgeDeletedAgents', this.activeProfileParams());
+    } catch (error) {
+      void vscode.window.showErrorMessage(`에이전트가 사라진 채팅을 지우지 못했습니다: ${errorMessage(error)}`);
+      return;
+    }
+    this.manager?.reload();
+    await this.conversationsPurged();
+  }
+
+  /** 사라진 에이전트의 대화를 정리했다(⋯ 메뉴·채팅 기록 관리 탭). 그 대화들을 빼고 목록과 묶음을 다시 받는다. */
+  private async conversationsPurged(): Promise<void> {
+    const openWasDeleted = this.readOnly && !!this.interactionId;
+    this.agentDeletedCount = 0;
+    this.conversations = this.conversations.filter((c) => !c.agentDeleted);
+    this.conversationAgents = this.conversationAgents.filter((a) => !a.agentDeleted);
+    if (this.agentView?.agentDeleted) this.agentView = undefined;
+    else if (this.agentView) this.agentView.conversations = this.agentView.conversations.filter((c) => !c.agentDeleted);
+    if (openWasDeleted) await this.leaveConversation();
+    this.postState();
+    await Promise.all([this.loadConversations('replace'), this.loadConversationAgents()]);
+  }
+
+  /** 채팅 기록 관리 탭이 기대는 것: 엔진은 탭이 직접 부르고, 바꾼 것은 여기 목록에 알린다. */
+  private managerHost(): ConversationManagerHost {
+    return {
+      profileParams: () => this.activeProfileParams(),
+      canSearch: () => this.canSearchConversations,
+      loadedConversations: () => this.conversations,
+      openConversation: async (conversation) => {
+        await this.openConversation(conversation);
+        await vscode.commands.executeCommand('xgenDex.chat.focus');
+      },
+      conversationsRemoved: (list) => this.conversationsRemoved(list),
+      conversationRenamed: (conversation, title, customTitle) => {
+        this.applyRename(conversation.workflowId, conversation.interactionId, title, customTitle);
+        this.postState();
+        // 붙인 이름을 지웠으면 서버가 정한 첫 메시지 제목을 다시 받는다.
+        if (!title.trim()) void this.loadConversations('head');
+      },
+      conversationsPurged: () => this.conversationsPurged(),
+    };
+  }
+
+  /**
+   * 채팅 검색 창이 물었다. 엔진이 검색을 알면 history/search, 모르면 받아 둔 목록의 제목·이름으로 찾는다.
+   * 답에는 창이 보낸 번호를 붙인다(창은 마지막으로 물은 것의 답만 그린다).
+   */
+  private async searchConversations(query: string, seq: number): Promise<void> {
+    this.searchSeq = Math.max(this.searchSeq, seq);
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    try {
+      const page = this.canSearchConversations
+        ? await this.service.request<ConversationSearchPage>('history/search', {
+            ...this.activeProfileParams(),
+            query: trimmed,
+            limit: SEARCH_LIMIT,
+          })
+        : searchConversationList(this.conversations, trimmed, SEARCH_LIMIT);
+      if (seq !== this.searchSeq) return;
+      this.searchFound.clear();
+      for (const hit of page.hits) this.searchFound.set(conversationKey(hit.conversation), hit.conversation);
+      void this.view?.webview.postMessage({ type: 'searchResult', seq, result: searchResultView(page) });
+    } catch (error) {
+      if (seq !== this.searchSeq) return;
+      void this.view?.webview.postMessage({ type: 'searchResult', seq, error: searchFailedText(errorMessage(error)) });
+    }
+  }
+
+  /** 검색 창에서 골랐다: 목록 줄을 누른 것과 똑같이 연다. */
+  private openSearchResult(workflowId: string, interactionId: string): void {
+    const conversation =
+      this.searchFound.get(conversationKey({ workflowId, interactionId })) ?? this.findConversation(workflowId, interactionId);
+    if (conversation) void this.openConversation(conversation);
+  }
+
+  /**
+   * 대화 목록을 받는다.
+   * - `replace`: 처음부터(로그인·새로 고침·정리 뒤).
+   * - `head`: 첫 쪽만 다시(목록으로 돌아올 때·답변이 끝났을 때). 받아 둔 뒤쪽은 지킨다.
+   * - `more`: 다음 쪽(더 보기·끝까지 내렸을 때).
+   * 옛 dex-cli 는 쪽 나누기가 없어 history/conversations 로 전부 받는다(더 보기 없음).
+   */
+  private async loadConversations(mode: 'replace' | 'head' | 'more'): Promise<void> {
+    if (!this.auth?.authenticated) return;
+    const params = this.activeProfileParams();
+    if (mode === 'more') {
+      const cursor = this.conversationCursor;
+      if (!this.canPageConversations || !cursor || this.conversationsLoadingMore || this.conversationsLoading) return;
+      const version = this.conversationsVersion;
+      this.conversationsLoadingMore = true;
+      this.postState();
+      try {
+        const page = await this.service.request<ConversationPage>('history/conversationPage', {
+          ...params,
+          limit: CONVERSATION_PAGE_LIMIT,
+          cursor,
+        });
+        if (version !== this.conversationsVersion) return;
+        this.conversations = mergeConversationPage(this.conversations, normalizeConversations(page.conversations), 'append');
+        this.conversationCursor = page.nextCursor ?? null;
+        this.conversationPages += 1;
+        this.conversationsError = undefined;
+      } catch (error) {
+        if (version === this.conversationsVersion) this.conversationsError = errorMessage(error);
+      } finally {
+        this.conversationsLoadingMore = false;
+        this.postState();
+      }
+      return;
+    }
+
+    const version = ++this.conversationsVersion;
+    this.conversationsLoading = true;
+    this.postState();
+    try {
+      let list: Conversation[];
+      if (this.canPageConversations) {
+        const page = await this.service.request<ConversationPage>('history/conversationPage', {
+          ...params,
+          limit: CONVERSATION_PAGE_LIMIT,
+        });
+        if (version !== this.conversationsVersion) return;
+        list = normalizeConversations(page.conversations);
+        const pagesLoaded = mode === 'head' ? this.conversationPages : 1;
+        this.conversations = applyFirstPage(this.conversations, list, { pagesLoaded, localKeys: this.localConversations });
+        if (pagesLoaded <= 1) {
+          this.conversationCursor = page.nextCursor ?? null;
+          this.conversationPages = 1;
+        }
+        this.agentDeletedCount =
+          typeof page.agentDeletedCount === 'number'
+            ? page.agentDeletedCount
+            : this.conversations.filter((c) => c.agentDeleted).length;
+      } else {
+        list = normalizeConversations(
+          await this.service.request<unknown>('history/conversations', params),
+        );
+        if (version !== this.conversationsVersion) return;
+        this.conversations = applyFirstPage(this.conversations, list, { pagesLoaded: 1, localKeys: this.localConversations });
+        this.conversationCursor = null;
+        this.conversationPages = 1;
+        this.agentDeletedCount = list.filter((c) => c.agentDeleted).length;
+      }
+      // 서버 목록에 나타난 대화는 더 이상 이 창만 아는 대화가 아니다.
+      for (const c of list) this.localConversations.delete(conversationKey(c));
+      this.conversationsError = undefined;
+    } catch (error) {
+      if (version === this.conversationsVersion) this.conversationsError = errorMessage(error);
+    } finally {
+      if (version === this.conversationsVersion) {
+        this.conversationsLoading = false;
+        this.postState();
+      }
+    }
+  }
+
+  private async openConversationByKey(workflowId: string, interactionId: string): Promise<void> {
+    const conversation = this.findConversation(workflowId, interactionId);
+    if (conversation) await this.openConversation(conversation);
+  }
+
+  /** 이름 바꾸기. 비우면 첫 메시지 제목으로 돌아간다. 목록 순서는 그대로다. */
+  private async renameConversation(workflowId: string, interactionId: string): Promise<void> {
+    const conversation = this.findConversation(workflowId, interactionId);
+    if (!conversation || !this.canPageConversations) return;
+    const value = await vscode.window.showInputBox({
+      title: '대화 이름 바꾸기',
+      value: conversation.title,
+      valueSelection: [0, conversation.title.length],
+    });
+    if (value === undefined) return;
+    try {
+      const result = await this.service.request<{ title: string; customTitle: boolean }>('history/rename', {
+        ...this.activeProfileParams(),
+        workflowId,
+        interactionId,
+        title: value.trim(),
+      });
+      this.applyRename(workflowId, interactionId, result.title, result.customTitle);
+      this.postState();
+      // 붙인 이름을 지웠는데 제목이 비어 왔으면 서버가 정한 첫 메시지 제목을 다시 받는다.
+      if (!result.title.trim()) void this.loadConversations('head');
+    } catch (error) {
+      void vscode.window.showErrorMessage(`대화 이름을 바꾸지 못했습니다: ${errorMessage(error)}`);
+    }
+  }
+
+  private async deleteConversation(workflowId: string, interactionId: string): Promise<void> {
+    const conversation = this.findConversation(workflowId, interactionId);
+    if (!conversation || !this.canPageConversations) return;
+    const choice = await vscode.window.showWarningMessage(
+      '이 대화를 지울까요?',
+      { modal: true, detail: conversationDisplayTitle(conversation) },
+      '지우기',
+    );
+    if (choice !== '지우기') return;
+    try {
+      await this.service.request('history/delete', {
+        ...this.activeProfileParams(),
+        workflowId,
+        interactionId,
+        ...(conversation.workflowName ? { workflowName: conversation.workflowName } : {}),
+      });
+    } catch (error) {
+      void vscode.window.showErrorMessage(`대화를 지우지 못했습니다: ${errorMessage(error)}`);
+      return;
+    }
+    await this.conversationsRemoved([conversation]);
+  }
+
+  /**
+   * 방금 보낸 대화를 목록 맨 위로. 목록에 없던 새 대화면 첫 말을 제목으로 한 줄을 만든다. 목록에는 없지만 열어 둔
+   * 옛 대화(검색·에이전트 화면에서 연 것)는 그 줄을 그대로 올린다. [에이전트] 줄과 들어가 있는 에이전트 화면도
+   * 같은 규칙으로 고친다.
+   */
+  private noteSent(agent: Agent, interactionId: string, text: string): void {
+    const key = conversationKey({ workflowId: agent.workflowId, interactionId });
+    const now = new Date().toISOString();
+    const opened = this.openedConversation && conversationKey(this.openedConversation) === key ? this.openedConversation : undefined;
+    const touch = (list: Conversation[]): { list: Conversation[]; created: boolean } => {
+      if (opened && !list.some((c) => conversationKey(c) === key)) {
+        return { list: [{ ...opened, updatedAt: now, interactionCount: opened.interactionCount + 1 }, ...list], created: false };
+      }
+      return touchAfterSend(list, { workflowId: agent.workflowId, workflowName: agent.workflowName, interactionId, text, now });
+    };
+    const touched = touch(this.conversations);
+    this.conversations = touched.list;
+    if (touched.created) this.localConversations.add(key);
+    // 에이전트 줄은 맨 위로, 새 대화면 수를 하나 늘린다. 묶음에 없는 에이전트의 옛 대화면 묶음을 다시 읽는다.
+    const conversation = touched.list[0];
+    if (this.canListConversationAgents && conversation) {
+      const moved = touchConversationAgent(this.conversationAgents, conversation, touched.created);
+      this.conversationAgents = moved.agents;
+      if (!moved.known) void this.loadConversationAgents();
+    }
+    const view = this.agentView;
+    if (view && view.workflowId === agent.workflowId) view.conversations = touch(view.conversations).list;
+  }
+
+  // ── 시작 화면 ────────────────────────────────────────────────────
+
+  private resetStart(agentId = ''): void {
+    if (this.nameTimer) clearTimeout(this.nameTimer);
+    this.nameTimer = undefined;
+    this.start = { session: this.start.session + 1, agentId, name: '', busy: false };
+  }
+
+  private startLock(): StartLock {
+    return startComposerLock({
+      canCreate: this.canCreateAgent,
+      agentId: this.start.agentId,
+      agentExists: this.agents.some((agent) => agent.workflowId === this.start.agentId),
+      name: this.start.name,
+      nameCheck: this.start.nameCheck,
+      optionsReady: !!this.createOptions,
+      optionsFailed: !!this.createOptionsError,
+      busy: this.start.busy,
+    });
+  }
+
+  private startView(): StartViewState {
+    const creating = !this.start.agentId && this.canCreateAgent;
+    const lock = this.startLock();
+    const optionsFailed =
+      creating && this.createOptionsError
+        ? { text: `${START_TEXT.optionsFailed} ${this.createOptionsError}`, tone: 'error' as const }
+        : undefined;
+    return {
+      session: this.start.session,
+      agentId: this.start.agentId,
+      canCreate: this.canCreateAgent,
+      choices: startAgentChoices(this.agents, this.canCreateAgent),
+      options: this.createOptions,
+      optionsLoading: this.createOptionsLoading,
+      nameError: creating && lock.reason === 'taken' ? START_TEXT.nameTaken : undefined,
+      lock,
+      busy: this.start.busy,
+      message: this.start.message ?? optionsFailed,
+    };
+  }
+
+  /** 새 에이전트의 제공사·모델·세부 설정(서버가 노드에서 읽어 준다). 한 번 받으면 프로필이 바뀔 때까지 쓴다. */
+  private async ensureCreateOptions(): Promise<void> {
+    if (!this.canCreateAgent || this.createOptions || this.createOptionsLoading) return;
+    const profile = this.auth?.profile;
+    this.createOptionsLoading = true;
+    this.createOptionsError = undefined;
+    this.postState();
+    try {
+      const options = await this.service.request<AgentCreateOptions>('agents/createOptions', this.activeProfileParams());
+      if (profile === this.auth?.profile) this.createOptions = prepareCreateOptions(options);
+    } catch (error) {
+      if (profile === this.auth?.profile) this.createOptionsError = errorMessage(error);
+    } finally {
+      this.createOptionsLoading = false;
+      this.postState();
+    }
+  }
+
+  private onStartAgent(agentId: string): void {
+    this.start.agentId = this.agents.some((agent) => agent.workflowId === agentId) ? agentId : '';
+    if (this.start.message?.tone === 'error') this.start.message = undefined;
+    if (!this.start.agentId) void this.ensureCreateOptions();
+    this.postState();
+  }
+
+  /** 이름을 적는 중. 잠깐 멈추면 그 이름이 겹치는지 묻는다. 잠금이 바뀔 때만 화면을 다시 그린다. */
+  private onStartName(name: string): void {
+    const lockKey = (): string => JSON.stringify([this.startLock(), this.start.message]);
+    const before = lockKey();
+    this.start.name = name;
+    if (this.start.message?.tone === 'error') this.start.message = undefined;
+    if (this.nameTimer) clearTimeout(this.nameTimer);
+    this.nameTimer = undefined;
+    const trimmed = name.trim();
+    if (trimmed && this.canCreateAgent && this.start.nameCheck?.name !== trimmed) {
+      this.nameTimer = setTimeout(() => {
+        this.nameTimer = undefined;
+        void this.checkStartName(trimmed);
+      }, NAME_CHECK_DELAY_MS);
+    }
+    if (lockKey() !== before) this.postState();
+  }
+
+  /** 이 이름이 겹치는가. 묻지 못했으면 undefined(겹치지 않는 것으로 두고, 만들기 직전에 한 번 더 묻는다). */
+  private async checkStartName(name: string): Promise<boolean | undefined> {
+    const session = this.start.session;
+    let taken: boolean | undefined;
+    try {
+      const result = await this.service.request<{ taken: boolean }>('agents/nameTaken', { ...this.activeProfileParams(), name });
+      taken = result.taken === true;
+    } catch {
+      taken = undefined;
+    }
+    // 그사이 이름이 바뀌었으면 이 답은 버린다. 늦게 온 옛 답이 새 이름의 검사를 덮지 않게.
+    if (session !== this.start.session || this.start.name.trim() !== name) return taken;
+    this.start.nameCheck = { name, taken: taken === true };
+    this.postState();
+    return taken;
+  }
+
+  /**
+   * 시작 화면에서 보내기. 잠겨 있으면 그 까닭을 보인다.
+   * - 있는 에이전트: 그 에이전트와 새 대화를 열고 보낸다.
+   * - 새 에이전트: 이름을 한 번 더 묻고 만든 뒤, 그 에이전트와 새 대화를 열고 보낸다.
+   */
+  private async startSend(raw: Record<string, unknown>): Promise<void> {
+    const text = typeof raw.text === 'string' ? raw.text.trim() : '';
+    if (this.start.busy || this.screen !== 'start') return;
+    if (typeof raw.agentId === 'string') {
+      const agentId = raw.agentId;
+      this.start.agentId = this.agents.some((agent) => agent.workflowId === agentId) ? agentId : '';
+    }
+    if (typeof raw.name === 'string') this.start.name = raw.name;
+    const lock = this.startLock();
+    if (startSendBlocked(lock)) {
+      // 이름이 겹치면 이름 칸 아래 글이 이미 말하고 있다.
+      this.start.message = lock.reason === 'taken' ? undefined : { text: lock.message ?? '', tone: 'error' };
+      this.postState();
+      return;
+    }
+    if (!text) return;
+    // 통제 정책: 첫 메시지가 막힐 글이면 에이전트를 만들지도, 대화를 열지도 않는다. 글은 입력창에 남는다.
+    const check = await this.checkChatInput(text, this.start.agentId || null);
+    if (check?.blocked) {
+      this.start.message = { text: check.message, tone: 'error' };
+      this.postState();
+      void this.view?.webview.postMessage({ type: 'inputCheck', scope: 'start', text, blocked: true, notice: chatInputNotice(check) });
+      return;
+    }
+    const session = this.start.session;
+    let agent = this.start.agentId ? this.agents.find((item) => item.workflowId === this.start.agentId) : undefined;
+    if (!agent) {
+      agent = await this.createStartAgent(raw);
+      if (!agent) return;
+      // 만드는 사이 다른 화면으로 옮겼으면 그 화면을 빼앗지 않는다. 에이전트는 목록에 남는다.
+      if (session !== this.start.session || this.screen !== 'start') return;
+    }
+    await this.clearConversation();
+    this.selectedAgent = agent;
+    this.screen = 'chat';
+    this.resetStart();
+    await this.send(text);
+  }
+
+  private async createStartAgent(raw: Record<string, unknown>): Promise<Agent | undefined> {
+    const options = this.createOptions;
+    const name = this.start.name.trim();
+    if (!options || !name) return undefined;
+    const provider =
+      options.providers.find((item) => item.value === raw.provider) ??
+      options.providers.find((item) => item.value === options.defaultProvider);
+    if (!provider) {
+      this.start.message = { text: START_TEXT.optionsFailed, tone: 'error' };
+      this.postState();
+      return undefined;
+    }
+    const model =
+      typeof raw.model === 'string' && provider.models.some((item) => item.value === raw.model) ? raw.model : provider.defaultModel;
+    const settings = sanitizeCreateSettings(options.settings, raw.settings);
+    this.start.busy = true;
+    this.start.message = { text: START_TEXT.checkingName, tone: 'progress' };
+    this.postState();
+    try {
+      // 적는 동안 물었더라도 만들기 직전에 한 번 더 묻는다. 그사이 같은 이름이 생겼을 수 있다.
+      if ((await this.checkStartName(name)) === true) {
+        this.start.message = undefined;
+        return undefined;
+      }
+      this.start.message = { text: START_TEXT.creating, tone: 'progress' };
+      this.postState();
+      const created = await this.service.request<{ workflowId: string; workflowName: string }>('agents/create', {
+        ...this.activeProfileParams(),
+        name,
+        provider: provider.value,
+        ...(model ? { model } : {}),
+        ...(settings ? { settings } : {}),
+      });
+      if (!created?.workflowId) throw new Error('서버가 에이전트 번호를 돌려주지 않았습니다.');
+      const agent = createdAgent(
+        { workflowId: created.workflowId, workflowName: created.workflowName || name },
+        new Date().toISOString(),
+      );
+      this.agents = [agent, ...this.agents.filter((item) => item.workflowId !== agent.workflowId)];
+      this.agentTotal += 1;
+      this.start.message = undefined;
+      return agent;
+    } catch (error) {
+      this.start.message = { text: `${START_TEXT.createFailed} ${errorMessage(error)}`, tone: 'error' };
+      return undefined;
+    } finally {
+      this.start.busy = false;
+      this.postState();
+    }
   }
 
   private async send(input: string): Promise<void> {
@@ -428,8 +1536,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
     const text = input.trim();
-    if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId || this.uploadingAttachments) return;
+    if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId || this.uploadingAttachments || this.readOnly) {
+      return;
+    }
     const agent = this.selectedAgent;
+    // 통제 정책: 막힐 글이면 보내지 않는다. 웹뷰가 비운 입력창에 글을 되돌리고 이유를 아래에 둔다.
+    if (text) {
+      const check = await this.checkChatInput(text, agent.workflowId);
+      if (check?.blocked) {
+        void this.view?.webview.postMessage({ type: 'inputBlocked', scope: 'chat', text, notice: chatInputNotice(check) });
+        return;
+      }
+      if (this.streamId || this.selectedAgent !== agent) return; // 묻는 사이 다른 턴이 시작됐거나 대화를 옮겼다
+    }
     const streamId = randomUUID();
     this.streamId = streamId;
     this.status = '응답을 기다리는 중...';
@@ -449,12 +1568,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         streamId,
         workflowId: agent.workflowId,
         workflowName: agent.workflowName,
-        ...(this.interactionId ? { interactionId: this.interactionId } : {}),
+        // 새 대화면 미리 정해 둔 번호 — 먼저 고른 모델이 첫 턴부터 붙는다.
+        ...(this.modelTarget() ? { interactionId: this.modelTarget() } : {}),
         input: text,
         attachments,
+        // 열린 작업 영역 폴더가 이 대화의 작업 공간이다. 에이전트의 파일·터미널
+        // 도구는 이 폴더 안에서만 돈다(폴더를 열지 않았으면 쓰지 않는다).
+        localFolders: this.workspaceFolders(),
       });
       if (this.streamId !== streamId) return;
       this.interactionId = started.interactionId;
+      this.noteSent(agent, started.interactionId, text);
       this.syncConversationWatch();
       this.status = '응답 생성 중...';
       this.postState();
@@ -472,9 +1596,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private async attachFiles(): Promise<void> {
     if (this.canonicalMode) return;
     const agent = this.selectedAgent;
-    if (!agent || this.streamId || this.uploadingAttachments) return;
+    if (!agent || this.streamId || this.uploadingAttachments || this.readOnly) return;
     this.uploadingAttachments = true;
-    this.interactionId ??= randomUUID();
+    this.interactionId ??= this.modelTarget() ?? randomUUID();
     const interactionId = this.interactionId;
     const profile = this.activeProfileParams();
     const isCurrent = () => this.selectedAgent?.workflowId === agent.workflowId && this.interactionId === interactionId;
@@ -512,7 +1636,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         .catch(() => undefined);
       this.watchedInteraction = undefined;
     }
-    if (next && agent && this.watchedInteraction !== next) {
+    // 에이전트가 사라진 대화는 기록만 본다. 이어질 턴이 없으니 지켜보지 않는다.
+    if (next && agent && !this.readOnly && this.watchedInteraction !== next) {
       this.watchedInteraction = next;
       void this.service
         .request('chat/watch', {
@@ -555,17 +1680,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * 실패는 조용히 삼킨다. 지워졌거나 남의 계정 대화일 수 있고, 그때 오류를
    * 띄우면 확장을 켤 때마다 사용자가 모르는 대화의 실패를 본다.
    */
-  private async restoreLastConversation(): Promise<void> {
-    if (this.restoredLastConversation) return;
+  private async restoreLastConversation(): Promise<boolean> {
+    if (this.restoredLastConversation) return false;
     this.restoredLastConversation = true;
-    if (this.interactionId) return; // 이미 대화 중 — 덮지 않는다
+    if (this.interactionId) return false; // 이미 대화 중이면 덮지 않는다
     const saved = this.context.globalState.get<{
       workflowId?: string;
       workflowName?: string;
       interactionId?: string;
     }>(LAST_CONVERSATION_KEY);
-    if (!saved?.interactionId || !saved.workflowId) return;
-    const name = saved.workflowName || saved.workflowId;
+    if (!saved?.interactionId || !saved.workflowId) return false;
+    // 대화 목록에 있으면 그 줄(제목·에이전트가 사라졌는가)을 쓴다.
+    const listed = this.findConversation(saved.workflowId, saved.interactionId);
+    const name = saved.workflowName || listed?.workflowName || saved.workflowId;
     const snapshot = await this.service
       .request<ConversationSnapshot>('history/snapshot', {
         ...this.activeProfileParams(),
@@ -574,34 +1701,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         interactionId: saved.interactionId,
       })
       .catch(() => undefined);
-    if (!snapshot) return;
+    if (!snapshot) return false;
     const turns = snapshot.turns ?? [];
     // 돌고 있지도 않고 남긴 것도 없는 대화는 되살릴 값이 없다.
-    if (!snapshot.running && turns.length === 0) return;
-    this.selectedAgent =
-      this.agents.find((agent) => agent.workflowId === saved.workflowId) ??
-      agentFromConversation({
+    if (!snapshot.running && turns.length === 0) return false;
+    const conversation =
+      listed ??
+      conversationStub({
         workflowId: saved.workflowId,
         workflowName: name,
         interactionId: saved.interactionId,
         interactionCount: turns.length,
-        createdAt: '',
-        updatedAt: '',
-      } as Conversation);
+      });
+    this.selectedAgent =
+      this.agents.find((agent) => agent.workflowId === saved.workflowId) ?? agentFromConversation(conversation);
+    this.readOnly = conversation.agentDeleted === true;
+    this.openedConversation = conversation;
     this.interactionId = saved.interactionId;
     this.syncConversationWatch();
-    this.messages = turns.flatMap((turn) => [
-      message('user', '나', turn.input),
-      message('assistant', name, turn.output),
-    ]);
+    this.messages = historyTurnMessages(turns, name);
     this.screen = 'chat';
     if (snapshot.running) {
       this.status = '다른 곳에서 시작한 응답이 진행 중입니다.';
       this.watchRemoteRun();
     }
+    return true;
   }
 
   private onNotification(notification: RpcNotification): void {
+    if (notification.method === 'conversations/changed') {
+      if (this.canPageConversations) this.applyConversationListEvent(notification.params);
+      return;
+    }
     if (notification.method === 'chat/serverTurn') {
       // 서버가 주입한 완결 턴(트리거 반응) — 새로고침 없이 흐른다.
       const p = notification.params as
@@ -642,6 +1773,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (text) this.showRemotePartial(text);
       return;
     }
+    if (notification.method === 'conversation/modelChanged') {
+      // 다른 화면(웹·앱·CLI)에서 이 대화의 모델을 바꿨다 — 칩이 곧바로 따라간다.
+      const p = notification.params as { interactionId?: string; notice?: Record<string, unknown> } | undefined;
+      if (!p || !this.model || p.interactionId !== this.modelTarget()) return;
+      this.model = applyModelNotice(this.model, p.notice);
+      this.postState();
+      return;
+    }
     if (notification.method === 'localTools/status') {
       if (this.localTools && isLocalToolBridgeStatus(notification.params)) {
         this.localTools = { ...this.localTools, bridge: notification.params };
@@ -666,6 +1805,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (assistant && !assistant.text) assistant.text = '응답 내용이 없습니다.';
       void this.setRunning(false);
       this.postState();
+      // 답이 끝났다: 서버가 정한 제목·순서로 목록 첫 쪽을 맞춘다(방금 만든 대화의 제목도 여기서 바로잡힌다).
+      if (this.canPageConversations) void this.loadConversations('head');
       return;
     }
     if (notification.method === 'chat/error') {
@@ -785,26 +1926,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
     else if (data.type === 'canonicalDiscardAttachments') void this.native?.discardAttachments();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
+    else if (data.type === 'checkInput') void this.answerInputCheck(data);
     else if (data.type === 'attach') void this.attachFiles();
+    else if (data.type === 'pickModel') void this.pickModel();
+    else if (data.type === 'pickThinking') void this.pickThinking();
     else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
       this.attachments = this.attachments.filter((item) => item.attachment_id !== data.id);
       this.postState();
     }
-    else if (data.type === 'selectAgent' && typeof data.workflowId === 'string') {
-      const agent = this.agents.find((item) => item.workflowId === data.workflowId);
-      if (agent) void this.selectAgent(agent);
-    } else if (data.type === 'showAgents') void this.showAgents();
+    else if (data.type === 'showConversations') void this.showConversations();
+    else if (data.type === 'openConversation' && typeof data.workflowId === 'string' && typeof data.interactionId === 'string') {
+      void this.openConversationByKey(data.workflowId, data.interactionId);
+    } else if (data.type === 'renameConversation' && typeof data.workflowId === 'string' && typeof data.interactionId === 'string') {
+      void this.renameConversation(data.workflowId, data.interactionId);
+    } else if (data.type === 'deleteConversation' && typeof data.workflowId === 'string' && typeof data.interactionId === 'string') {
+      void this.deleteConversation(data.workflowId, data.interactionId);
+    } else if (data.type === 'manageConversations') this.showConversationManager();
+    else if (data.type === 'purgeDeletedAgents') void this.purgeDeletedAgents();
+    else if (data.type === 'loadMoreConversations') this.showMoreRecent();
+    else if (data.type === 'lessConversations') {
+      this.recentCount = RECENT_CONVERSATION_STEP;
+      this.postState();
+    } else if (data.type === 'openAgent' && typeof data.workflowId === 'string') this.openAgentView(data.workflowId);
+    else if (data.type === 'closeAgent') {
+      this.agentView = undefined;
+      this.postState();
+    } else if (data.type === 'loadMoreAgentConversations') {
+      // 에이전트별 쪽을 모르는 옛 엔진은 대화 목록의 다음 쪽에서 그 에이전트 것을 보인다.
+      void (this.canListConversationAgents ? this.loadAgentConversations('more') : this.loadConversations('more'));
+    } else if (data.type === 'loadMoreAgents') {
+      this.agentCount = nextRecentCount(this.agentCount);
+      this.postState();
+    } else if (data.type === 'lessAgents') {
+      this.agentCount = RECENT_CONVERSATION_STEP;
+      this.postState();
+    } else if (data.type === 'searchConversations' && typeof data.query === 'string' && typeof data.seq === 'number') {
+      void this.searchConversations(data.query, data.seq);
+    } else if (data.type === 'openSearchResult' && typeof data.workflowId === 'string' && typeof data.interactionId === 'string') {
+      this.openSearchResult(data.workflowId, data.interactionId);
+    }
+    else if (data.type === 'startAgent' && typeof data.workflowId === 'string') this.onStartAgent(data.workflowId);
+    else if (data.type === 'startName' && typeof data.name === 'string') this.onStartName(data.name);
+    else if (data.type === 'startSend') void this.startSend(data);
     else if (data.type === 'showSettings') void this.showSettings();
     else if (data.type === 'back') {
-      this.screen = this.selectedAgent
-        ? 'chat'
-        : this.auth?.authenticated
-          ? 'agents'
-          : this.auth?.reason === 'network'
-            ? 'offline'
-            : this.profiles.length
-              ? 'login'
-              : 'setup';
+      if (this.auth?.authenticated) {
+        this.screen =
+          this.returnScreen === 'chat' && this.selectedAgent ? 'chat' : this.returnScreen === 'start' ? 'start' : 'conversations';
+      } else {
+        this.screen = this.auth?.reason === 'network' ? 'offline' : this.profiles.length ? 'login' : 'setup';
+      }
       this.postState();
     } else if (data.type === 'cancel') void this.cancel();
     else if (data.type === 'newChat') void this.newChat();
@@ -832,10 +2003,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private async configureLocalTools(raw: unknown): Promise<void> {
     if (this.localToolsSaving) return;
     try {
-      const patch = localToolsConfigInput(raw, this.localTools?.config, this.workspaceRoot());
+      const patch = localToolsConfigInput(raw, this.localTools?.config);
       if (patch.allowDangerous && !this.localTools?.config.allowDangerous) {
         const approved = await vscode.window.showWarningMessage(
-          '위험 명령 패턴 차단을 해제하면 Agent가 되돌리기 어려운 로컬 명령을 실행할 수 있습니다.',
+          '위험 명령을 미리 승인하면 Agent가 연결된 폴더에서 되돌리기 어려운 명령을 확인 없이 실행할 수 있습니다.',
           { modal: true },
           '위험 명령 허용',
         );
@@ -852,7 +2023,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         ...this.activeProfileParams(),
         ...patch,
       });
-      if (status.config.enabled && this.auth?.authenticated) {
+      if (this.auth?.authenticated) {
         status = await this.service.request<LocalToolsStatus>('localTools/start', {
           ...this.activeProfileParams(),
           waitMs: 3_000,
@@ -869,8 +2040,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private workspaceRoot(): string | undefined {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  /** 디스크에 있는 작업 영역 폴더(원격·가상 파일 시스템은 이 PC 의 폴더가 아니다). */
+  private workspaceFolders(): string[] {
+    return (vscode.workspace.workspaceFolders ?? [])
+      .filter((folder) => folder.uri.scheme === 'file')
+      .map((folder) => folder.uri.fsPath);
   }
 
   /**
@@ -914,10 +2088,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // 끝났다 — 이 대화가 화면에서 바뀌지 않았을 때만 다시 그린다.
       if (this.interactionId !== interactionId) return this.stopWatchingRemoteRun();
       this.stopWatchingRemoteRun();
-      this.messages = (snapshot.turns ?? []).flatMap((turn) => [
-        message('user', '나', turn.input),
-        message('assistant', agent.workflowName, turn.output),
-      ]);
+      this.messages = historyTurnMessages(snapshot.turns ?? [], agent.workflowName);
       this.status = undefined;
       this.postState();
     } catch {
@@ -937,22 +2108,75 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }, 33);
   }
 
+  /** 들어가 있는 에이전트 화면이 그릴 것. 에이전트별 쪽을 모르는 옛 엔진이면 받아 둔 대화 목록에서 거른다. */
+  private agentViewState(activeKey: string | undefined, running: ReadonlySet<string>, now: Date): AgentDrillView | undefined {
+    const view = this.agentView;
+    if (!view) return undefined;
+    const paged = this.canListConversationAgents;
+    return agentDrillView({
+      workflowId: view.workflowId,
+      workflowName: view.workflowName,
+      agentDeleted: view.agentDeleted,
+      list: paged ? view.conversations : this.conversations.filter((c) => c.workflowId === view.workflowId),
+      activeKey,
+      running,
+      loading: paged ? view.loading : this.conversationsLoading,
+      loadingMore: paged ? view.loadingMore : this.conversationsLoadingMore,
+      hasMore: paged ? !!view.cursor : this.canPageConversations && !!this.conversationCursor,
+      error: paged ? view.error : this.conversationsError,
+      now,
+    });
+  }
+
   private postState(): void {
     const canonicalConversation = this.canonicalMode ? this.nativeState?.conversation : null;
+    this.syncModel();
+    const agent = this.selectedAgent;
+    const activeKey = agent && this.interactionId ? conversationKey({ workflowId: agent.workflowId, interactionId: this.interactionId }) : undefined;
+    const current = agent && this.interactionId ? this.findConversation(agent.workflowId, this.interactionId) : undefined;
+    // 진행 점: 목록 소식이 알려 준 대화와, 여기서 답이 도는 열린 대화.
+    const running = new Set(this.runningConversations);
+    if (activeKey && (this.streamId || this.remoteRunning)) running.add(activeKey);
+    const now = new Date();
+    const recent = recentSection(this.conversations, this.recentCount, {
+      hasNextPage: this.canPageConversations && !!this.conversationCursor,
+      activeKey,
+      running,
+    });
+    const agents = agentSection(this.agentsWithChats(), this.agentCount, now);
     const state: ChatViewState = {
       screen: this.screen,
       profiles: this.profiles,
       auth: this.auth,
       agents: this.agents,
-      agentTotal: this.agentTotal,
-      agent: this.selectedAgent,
+      agent,
       messages: this.canonicalMode ? (canonicalConversation ? canonicalMessages(canonicalConversation) : []) : this.messages,
       running: this.canonicalMode ? !!this.nativeState?.turn?.canStop : !!this.streamId || this.remoteRunning,
       refreshing: this.refreshing,
       status: this.canonicalMode ? this.canonicalNotice : this.status,
       error: this.error,
-      initialSearch: this.initialSearch,
-      workspaceRoot: this.workspaceRoot(),
+      conversations: recent.rows,
+      conversationsLoading: this.conversationsLoading,
+      conversationsLoadingMore: this.conversationsLoadingMore,
+      recentMore: recent.more,
+      recentLess: recent.less,
+      conversationsError: this.conversationsError,
+      conversationActions: this.canPageConversations,
+      agentDeletedCount: this.agentDeletedCount,
+      purgeLabel: this.canPageConversations ? purgeDeletedLabel(this.agentDeletedCount) : undefined,
+      conversationAgents: agents.rows,
+      conversationAgentsLoading: this.conversationAgentsLoading,
+      conversationAgentsError: this.conversationAgentsError,
+      agentsMore: agents.more,
+      agentsLess: agents.less,
+      agentView: this.agentViewState(activeKey, running, now),
+      searchRecent: searchRecentRows(this.conversations, now),
+      searchDelayMs: SEARCH_DELAY_MS,
+      inputCheckDelayMs: CHAT_INPUT_CHECK_DELAY_MS,
+      conversationTitle: current ? conversationDisplayTitle(current) : undefined,
+      readOnly: this.readOnly,
+      start: this.startView(),
+      workspaceFolders: this.workspaceFolders(),
       localTools: this.localTools,
       localToolsSaving: this.localToolsSaving,
       localToolsMessage: this.localToolsMessage,
@@ -977,6 +2201,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         createOpen: this.canonicalCreateOpen,
         catalog: this.nativeState?.catalog,
       },
+      model:
+        !this.canonicalMode && this.model?.supported && this.model.current
+          ? { label: this.model.current.label, locked: this.model.locked, saving: this.modelSaving }
+          : undefined,
+      // 모델 칩 오른쪽 생각 칩 — 조절할 수 없는 모델은 눌리지 않는 "생각 조절 불가".
+      thinking:
+        !this.canonicalMode && this.model?.supported && this.model.current && this.model.thinking
+          ? {
+              label: thinkingChipLabel(this.model.thinking),
+              supported: this.model.thinking.supported,
+              locked: this.model.locked,
+              saving: this.modelSaving,
+            }
+          : undefined,
     };
     void this.view?.webview.postMessage({ type: 'state', state });
   }
@@ -1023,7 +2261,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.canonicalCreateOpen = false;
     this.canonicalNotice = undefined;
     if (stopWatch) void this.native?.stopWatch().catch(() => undefined);
-    this.screen = this.selectedAgent ? 'chat' : this.auth?.authenticated ? 'agents' : this.screen;
+    this.screen = this.selectedAgent ? 'chat' : this.auth?.authenticated ? 'conversations' : this.screen;
     void this.setRunning(!!this.streamId || this.remoteRunning);
     this.postState();
   }
@@ -1058,6 +2296,148 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (!this.native) return;
     try { await this.native.switchAgentFocus(agentSessionId); }
     catch (error) { this.canonicalNotice = errorMessage(error); this.postState(); }
+  }
+
+  // ── 이 대화의 모델 ────────────────────────────────────────────────
+  //
+  // 세션은 그대로다 — 서버가 다음 턴 시작에 바꿔 끼운다. 이름("제공자: 모델")과 순서
+  // (지금 모델이 맨 앞)는 서버가 정하고, 여기서는 VS Code 의 빠른 선택으로 보여 준다.
+
+  /** 모델이 붙는 대화 번호 — 진행 중인 대화, 없으면 새 대화용으로 미리 정한 번호. */
+  private modelTarget(): string | undefined {
+    if (!this.selectedAgent) return undefined;
+    return this.interactionId ?? (this.draftInteractionId ??= randomUUID());
+  }
+
+  private syncModel(): void {
+    // 에이전트가 사라진 대화는 이어 갈 수 없으니 모델도 묻지 않는다.
+    const agent = this.screen === 'chat' && !this.readOnly ? this.selectedAgent : undefined;
+    const target = agent ? this.modelTarget() : undefined;
+    const key = agent && target ? `${agent.workflowId}:${target}` : '';
+    if (key === this.modelKey) return;
+    // 같은 에이전트의 다른 대화로 넘어갈 때는 새 값이 올 때까지 칩을 그대로 둔다(깜빡임 방지).
+    if (!key || !this.modelKey.startsWith(`${agent?.workflowId}:`)) this.model = undefined;
+    this.modelKey = key;
+    if (!agent || !target) return;
+    void this.service
+      .request<ConversationModelState>('conversation/model', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        interactionId: target,
+      })
+      .then((next) => {
+        if (this.modelKey !== key) return;
+        this.model = next;
+        this.postState();
+      })
+      // 옛 엔진(메서드 없음)·옛 서버 — 칩 없이 예전처럼 쓴다.
+      .catch(() => {
+        if (this.modelKey === key) this.model = undefined;
+      });
+  }
+
+  private async pickModel(): Promise<void> {
+    if (this.canonicalMode) return;
+    const agent = this.selectedAgent;
+    const state = this.model;
+    const target = this.modelTarget();
+    if (!agent || !target || !state?.supported || !state.current || this.modelSaving) return;
+    if (state.locked) {
+      void vscode.window.showInformationMessage(MODEL_PICKER_TEXT.locked);
+      return;
+    }
+    type Item = vscode.QuickPickItem & { choice?: ModelChoice };
+    const current = state.current;
+    const choices = orderedChoices(state);
+    const items: Item[] = [];
+    choices.forEach((choice, index) => {
+      const isCurrent = sameModel(choice, current);
+      const prev = choices[index - 1];
+      // 지금 모델이 맨 위, 그 아래로 제공자 묶음마다 구분선.
+      if (index === 0 && isCurrent) items.push({ label: MODEL_PICKER_TEXT.current, kind: vscode.QuickPickItemKind.Separator });
+      else if (!prev || sameModel(prev, current) || prev.group !== choice.group) {
+        items.push({ label: choice.group, kind: vscode.QuickPickItemKind.Separator });
+      }
+      items.push({
+        label: isCurrent ? `$(check) ${choice.label}` : choice.label,
+        description: isCurrent ? MODEL_PICKER_TEXT.current : undefined,
+        choice,
+      });
+    });
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `${MODEL_PICKER_TEXT.title} · ${agent.workflowName}`,
+      placeHolder: MODEL_PICKER_TEXT.nextTurn,
+      matchOnDescription: true,
+    });
+    const choice = picked?.choice;
+    if (!choice || sameModel(choice, current)) return;
+    // 고르는 사이 다른 대화로 옮겼으면 그 대화에 붙이지 않는다.
+    if (this.selectedAgent?.workflowId !== agent.workflowId || this.modelTarget() !== target) return;
+    this.modelSaving = true;
+    this.postState();
+    try {
+      const next = await this.service.request<ConversationModelState>('conversation/model/set', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        interactionId: target,
+        provider: choice.provider,
+        model: choice.model,
+      });
+      if (this.modelKey === `${agent.workflowId}:${target}`) this.model = next;
+    } catch (error) {
+      void vscode.window.showErrorMessage(`${MODEL_PICKER_TEXT.failed}: ${errorMessage(error)}`);
+    } finally {
+      this.modelSaving = false;
+      this.postState();
+    }
+  }
+
+  /** 생각(추론) 값 고르기 — 지금 모델이 받는 값만(서버가 준 선택지), VS Code 빠른 선택. */
+  private async pickThinking(): Promise<void> {
+    if (this.canonicalMode) return;
+    const agent = this.selectedAgent;
+    const state = this.model;
+    const target = this.modelTarget();
+    const thinking = state?.thinking;
+    if (!agent || !target || !state?.supported || !thinking || this.modelSaving) return;
+    if (!thinking.supported) {
+      void vscode.window.showInformationMessage(THINKING_PICKER_TEXT.unsupportedHint);
+      return;
+    }
+    if (state.locked) {
+      void vscode.window.showInformationMessage(THINKING_PICKER_TEXT.locked);
+      return;
+    }
+    type Item = vscode.QuickPickItem & { value?: ThinkingValue };
+    const pressed = selectedThinking(thinking);
+    const items: Item[] = thinking.options.map((value) => ({
+      label: value === pressed ? `$(check) ${thinkingValueLabel(value)}` : thinkingValueLabel(value),
+      description: value === 'auto' ? THINKING_PICKER_TEXT.autoHint : undefined,
+      value,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `${THINKING_PICKER_TEXT.title} · ${agent.workflowName}`,
+      placeHolder: thinking.canDisable ? THINKING_PICKER_TEXT.nextTurn : `${THINKING_PICKER_TEXT.alwaysOn}. ${THINKING_PICKER_TEXT.nextTurn}`,
+    });
+    const value = picked?.value;
+    if (!value || value === pressed) return;
+    if (this.selectedAgent?.workflowId !== agent.workflowId || this.modelTarget() !== target) return;
+    this.modelSaving = true;
+    this.postState();
+    try {
+      const next = await this.service.request<ConversationModelState>('conversation/thinking/set', {
+        ...this.activeProfileParams(),
+        workflowId: agent.workflowId,
+        interactionId: target,
+        thinking: value,
+      });
+      if (this.modelKey === `${agent.workflowId}:${target}`) this.model = next;
+    } catch (error) {
+      void vscode.window.showErrorMessage(`${THINKING_PICKER_TEXT.failed}: ${errorMessage(error)}`);
+    } finally {
+      this.modelSaving = false;
+      this.postState();
+    }
   }
 
   private html(webview: vscode.Webview): string {
@@ -1096,43 +2476,112 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     </div>
   </section>
 
-  <section id="agents-screen" class="screen agents-screen hidden">
+  <section id="conversations-screen" class="screen list-screen hidden">
     <header class="workspace-header">
-      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">✦</span><div><b>XGEN Dex</b><small id="agents-connection"></small></div></div>
+      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">✦</span><div><b>XGEN Dex</b><small id="list-connection"></small></div></div>
       <div class="header-actions">
-        <button id="agents-refresh" class="icon-button" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
-        <button id="agents-settings" class="account-button" type="button" title="계정 및 연결 설정"><span id="account-avatar">?</span><span id="account-name"></span><i>›</i></button>
+        <button id="list-refresh" class="icon-button" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
+        <button id="list-settings" class="account-button" type="button" title="계정 및 연결 설정"><span id="account-avatar">?</span><span id="account-name"></span><i>›</i></button>
       </div>
     </header>
-    <main class="agents-content">
-      <div class="agents-heading">
-        <div><h1>어떤 Agent와 대화할까요?</h1><p>업무에 맞는 Agent를 선택하면 바로 새 대화를 시작합니다.</p></div>
-        <span id="agent-count" class="count-badge"></span>
-      </div>
-      <div class="agent-toolbar">
-        <label class="search-box"><span aria-hidden="true">⌕</span><input id="agent-search" type="search" placeholder="Agent 이름 또는 설명 검색" autocomplete="off"></label>
-        <div id="agent-filters" class="filter-group" role="group" aria-label="Agent 범위">
-          <button class="filter active" type="button" data-filter="all">전체</button>
-          <button class="filter" type="button" data-filter="personal">개인</button>
-          <button class="filter" type="button" data-filter="shared">공유</button>
+    <main id="list-content" class="list-content">
+      <div class="list-inner">
+        <div class="list-head">
+          <button id="list-new" class="new-chat-button" type="button"><span aria-hidden="true">+</span><span>새 채팅</span></button>
+          <button id="list-search" class="icon-button" type="button" title="채팅 검색" aria-label="채팅 검색" aria-haspopup="dialog"></button>
+          <div class="list-menu-wrap">
+            <button id="list-menu" class="icon-button hidden" type="button" title="채팅 목록 메뉴" aria-label="채팅 목록 메뉴" aria-haspopup="menu" aria-expanded="false"></button>
+            <div id="list-menu-panel" class="list-menu hidden" role="menu">
+              <button id="list-manage" class="list-menu-item" type="button" role="menuitem">채팅 기록 관리</button>
+              <button id="list-purge" class="list-menu-item danger" type="button" role="menuitem"></button>
+            </div>
+          </div>
+        </div>
+        <div id="list-main" class="list-main">
+          <div class="list-section">
+            <button id="recent-toggle" class="list-section-title" type="button" aria-expanded="true" aria-controls="recent-body"><span id="recent-caret" class="list-section-caret" aria-hidden="true"></span><span>최근 채팅</span></button>
+            <div id="recent-body" class="list-section-body">
+              <div id="conversation-list" class="conversation-list" role="list" aria-label="최근 채팅"></div>
+              <div id="list-status" class="list-status hidden" role="status"></div>
+              <div class="list-paging">
+                <button id="list-more" class="text-button hidden" type="button">더 보기</button>
+                <button id="list-less" class="text-button hidden" type="button">접기</button>
+              </div>
+            </div>
+          </div>
+          <div class="list-section">
+            <button id="agents-toggle" class="list-section-title" type="button" aria-expanded="true" aria-controls="agents-body"><span id="agents-caret" class="list-section-caret" aria-hidden="true"></span><span>에이전트</span></button>
+            <div id="agents-body" class="list-section-body">
+              <div id="agent-list" class="agent-list" role="list" aria-label="에이전트"></div>
+              <div id="agent-list-status" class="list-status hidden" role="status"></div>
+              <div class="list-paging">
+                <button id="agent-more" class="text-button hidden" type="button">더 보기</button>
+                <button id="agent-less" class="text-button hidden" type="button">접기</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="agent-view" class="agent-view hidden">
+          <div class="agent-view-head">
+            <button id="agent-view-back" class="icon-button" type="button" title="뒤로" aria-label="뒤로">‹</button>
+            <span id="agent-view-deleted" class="agent-deleted-badge hidden">지워짐</span>
+            <b id="agent-view-name" class="agent-view-name"></b>
+          </div>
+          <div id="agent-conversation-list" class="conversation-list" role="list" aria-label="이 에이전트의 채팅"></div>
+          <div id="agent-view-status" class="list-status hidden" role="status"></div>
+          <button id="agent-view-more" class="secondary-button list-more hidden" type="button">더 보기</button>
         </div>
       </div>
-      <div id="agent-list" class="agent-grid"></div>
     </main>
+  </section>
+
+  <section id="start-screen" class="screen start-screen hidden">
+    <header class="workspace-header">
+      <div class="header-title"><button id="start-back" class="icon-button" type="button" title="대화 목록" aria-label="대화 목록">‹</button><div><b>새 채팅</b><small id="start-connection"></small></div></div>
+      <button id="start-settings" class="icon-button" type="button" title="계정 및 연결 설정" aria-label="계정 및 연결 설정">⚙</button>
+    </header>
+    <main class="start-content">
+      <div class="start-inner">
+        <h1 class="start-heading">오늘은 무엇을 해볼까요?</h1>
+        <label class="start-field"><span>에이전트</span><select id="start-agent" class="start-control"></select></label>
+        <div id="start-create" class="start-create">
+          <label class="start-field"><span>이름</span><input id="start-name" class="start-control" type="text" autocomplete="off" spellcheck="false" placeholder="에이전트 이름"></label>
+          <div id="start-name-error" class="field-error hidden" role="alert"></div>
+          <div class="start-row">
+            <label class="start-field"><span>AI 제공사</span><select id="start-provider" class="start-control"></select></label>
+            <label class="start-field"><span>모델</span><select id="start-model" class="start-control"></select></label>
+          </div>
+          <details id="start-advanced" class="start-advanced"><summary>세부 설정</summary><div id="start-settings-fields" class="start-settings-fields"></div></details>
+        </div>
+      </div>
+    </main>
+    <div id="start-message" class="status hidden" role="status"><span class="status-dot" aria-hidden="true"></span><span id="start-message-text"></span></div>
+    <footer class="composer-shell">
+      <div class="composer-card">
+        <textarea id="start-input" rows="2" placeholder="메시지 보내기" aria-label="메시지"></textarea>
+        <div id="start-input-policy" class="input-policy hidden" role="status" aria-live="polite"></div>
+        <div class="composer-actions">
+          <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
+          <button id="start-send" class="send-button" type="button"><span>전송</span><span class="send-icon" aria-hidden="true">↑</span></button>
+        </div>
+      </div>
+    </footer>
   </section>
 
   <section id="chat-screen" class="screen chat-screen hidden">
     <header class="agent-header">
+      <button id="chat-back" class="icon-button" type="button" title="대화 목록" aria-label="대화 목록">‹</button>
       <div class="agent-copy">
         <div class="agent-line">
           <div id="agent-name" class="agent-name"></div>
           <span id="agent-scope" class="meta-badge"></span>
           <span id="agent-status" class="meta-badge subtle"></span>
+          <span id="agent-folders" class="meta-badge subtle"></span>
         </div>
-        <div class="agent-meta"><span id="agent-id" class="agent-id"></span><span id="agent-description" class="agent-description"></span></div>
+        <div class="agent-meta"><span id="chat-title" class="chat-title"></span><span id="agent-id" class="agent-id"></span><span id="agent-description" class="agent-description"></span></div>
       </div>
       <div class="agent-actions">
-        <button id="change-agent" class="secondary-button compact" type="button">Agent 변경</button>
+        <button id="chat-new" class="secondary-button compact" type="button">새 채팅</button>
         <button id="chat-settings" class="icon-button" type="button" title="계정 및 연결 설정" aria-label="계정 및 연결 설정">⚙</button>
       </div>
     </header>
@@ -1154,11 +2603,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     </section>
     <main id="messages" class="messages" aria-live="polite"></main>
     <div id="status" class="status hidden" role="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text"></span></div>
-    <footer class="composer-shell">
+    <div id="chat-readonly" class="readonly-notice hidden" role="note">지워진 에이전트입니다. 지난 대화만 볼 수 있습니다.</div>
+    <footer id="chat-composer" class="composer-shell">
       <div class="composer-card">
         <div id="attachments" class="chat-attachments" aria-live="polite"></div>
         <textarea id="input" rows="2" placeholder="Agent에게 메시지 보내기" aria-label="메시지"></textarea>
+        <div id="input-policy" class="input-policy hidden" role="status" aria-live="polite"></div>
         <div class="composer-actions">
+          <button id="model-chip" class="model-chip hidden" type="button" aria-haspopup="listbox"><span id="model-icon" class="model-chip-icon" aria-hidden="true"></span><span id="model-label" class="model-chip-label"></span><span id="model-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>
+          <button id="thinking-chip" class="model-chip thinking-chip hidden" type="button" aria-haspopup="listbox"><span id="thinking-icon" class="model-chip-icon" aria-hidden="true"></span><span id="thinking-label" class="model-chip-label"></span><span id="thinking-chevron" class="model-chip-chevron" aria-hidden="true"></span></button>
           <span class="hint"><kbd>Enter</kbd> 전송 <span aria-hidden="true">·</span> <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈</span>
           <button id="attach" class="secondary-button compact" type="button" title="파일 첨부">📎 첨부</button>
           <button id="canonical-retry" class="secondary-button hidden" type="button">같은 요청 다시 시도</button>
@@ -1196,22 +2649,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div id="profiles-list" class="profiles-list"></div>
       </section>
       <section class="settings-section">
-        <div class="section-heading"><div><span>로컬 컨트롤</span><small>서버에서 실행되는 Agent가 이 컴퓨터의 프로젝트 파일과 명령을 도구로 사용할 수 있게 합니다.</small></div><span id="local-tools-state" class="state-pill">꺼짐</span></div>
+        <div class="section-heading"><div><span>이 PC의 파일과 터미널</span><small>대화를 시작하면 열린 작업 영역 폴더가 그 대화의 작업 공간이 되고, Agent는 그 안에서만 파일과 터미널을 사용합니다.</small></div><span id="local-tools-state" class="state-pill">확인 필요</span></div>
         <div class="settings-card local-tools-card">
           <div class="local-tools-summary">
             <div class="local-tools-icon" aria-hidden="true">⌘</div>
-            <div><b>로컬 컨트롤 브리지</b><span id="local-tools-description">허용 작업 공간의 셸·파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.</span></div>
-            <label class="switch-control"><input id="local-tools-enabled" type="checkbox"><span aria-hidden="true"></span><em>사용</em></label>
+            <div><b>연결되는 폴더</b><span id="local-tools-description">작업 영역에 폴더를 열면 여기 표시됩니다.</span></div>
           </div>
+          <ul id="local-tools-folders" class="local-tools-folders"></ul>
           <div class="local-tools-form">
-            <label class="dangerous-setting field-wide"><input id="local-tools-shell" type="checkbox"><span><b>전체 셸 접근 — 작업 공간 밖까지 허용</b><small>꺼짐: 허용 작업 공간의 기본 셸. 켜짐: 작업 공간 밖에서도 로그인 사용자 권한으로 실행. 작업 공간 제한 셸은 macOS·Linux에서 지원하며, 시스템 파일 읽기와 작업 공간 안의 임시 홈을 사용합니다.</small></span></label>
-            <label class="settings-field field-wide"><span>작업 폴더</span><div class="field-with-action"><input id="local-tools-cwd" class="settings-input" type="text" spellcheck="false" placeholder="/path/to/project"><button id="use-workspace-root" class="secondary-button" type="button">현재 Workspace</button></div><small>Shell 명령의 기본 실행 위치입니다.</small></label>
-            <label class="settings-field field-wide"><span>허용 작업 공간</span><textarea id="local-tools-roots" class="settings-textarea" rows="2" spellcheck="false" placeholder="한 줄에 하나씩 입력"></textarea><small>기본 셸·파일 도구·Open의 접근 범위입니다. 비우면 작업 폴더, 작업 폴더도 없으면 홈을 사용합니다.</small></label>
-            <label class="settings-field"><span>명령 제한 시간</span><div class="input-suffix"><input id="local-tools-timeout" class="settings-input" type="number" min="1000" max="3600000" step="1000"><span>ms</span></div></label>
-            <label class="settings-field"><span>차단 명령</span><input id="local-tools-blocked" class="settings-input" type="text" spellcheck="false" placeholder="sudo, rm"><small>쉼표 또는 줄바꿈으로 구분합니다.</small></label>
-            <label class="dangerous-setting field-wide"><input id="local-tools-dangerous" type="checkbox"><span><b>위험 명령 패턴 허용</b><small>파괴적 명령 차단을 해제합니다. 필요한 경우에만 사용하세요.</small></span></label>
+            <label class="dangerous-setting field-wide"><input id="local-tools-dangerous" type="checkbox"><span><b>위험 명령 미리 승인</b><small>되돌리기 어려운 명령도 확인 없이 실행합니다. 필요한 경우에만 켜세요.</small></span></label>
           </div>
-          <div class="local-tools-footer"><span id="local-tools-message">로컬 도구는 기본적으로 꺼져 있습니다.</span><button id="save-local-tools" type="button">설정 저장</button></div>
+          <div class="local-tools-footer"><span id="local-tools-message">이 PC 연결 상태를 확인하고 있습니다.</span><button id="save-local-tools" type="button">설정 저장</button></div>
         </div>
       </section>
       <section class="settings-section">
@@ -1229,15 +2677,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 }
 
-function message(role: MessageRole, label: string, text: string): ChatMessage {
-  const item: ChatMessage = { id: randomUUID(), role, label, text };
-  if (role === 'user') {
-    // Job/sub-agent 트리거 주입 턴 — 사용자 발화가 아니므로 렌더가 다르다.
-    const trig = parseAgentTrigger(text);
-    if (trig) item.trigger = { ...trig, rowLabel: triggerRowLabel(trig) };
-  }
-  return item;
-}
 
 function canonicalMessages(conversation: NativeConversationView): ChatMessage[] {
   const title = conversation.snapshot?.title || '공유 Agent';
@@ -1284,43 +2723,15 @@ function agentFromConversation(conversation: Conversation): Agent {
   };
 }
 
-function describeTool(event: ToolEvent): string {
-  const name = event.toolName || 'tool';
-  if (event.eventType === 'tool_result') return `${name} · 완료${event.durationMs ? ` · ${event.durationMs}ms` : ''}`;
-  if (event.eventType === 'tool_error') return `${name} · 실패${event.error ? ` · ${event.error}` : ''}`;
-  return `${name} · 실행 중`;
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function localToolsConfigInput(
-  raw: unknown,
-  current: LocalToolsConfig | undefined,
-  workspaceRoot: string | undefined,
-): LocalToolsConfig {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('로컬 도구 설정이 올바르지 않습니다.');
+function localToolsConfigInput(raw: unknown, current: LocalToolsConfig | undefined): LocalToolsConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('설정 값이 올바르지 않습니다.');
   const value = raw as Record<string, unknown>;
-  const cwd = typeof value.cwd === 'string' ? value.cwd.trim() : current?.cwd || workspaceRoot || '';
-  if (!cwd) throw new Error('작업 폴더를 입력하세요.');
-  const timeoutMs = Number(value.timeoutMs ?? current?.timeoutMs ?? 120_000);
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {
-    throw new Error('명령 제한 시간은 1,000~3,600,000ms 사이여야 합니다.');
-  }
-  const stringList = (input: unknown, fallback: string[]): string[] => {
-    if (!Array.isArray(input)) return fallback;
-    return [...new Set(input.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))];
-  };
-  const allowedRoots = stringList(value.allowedRoots, current?.allowedRoots ?? []);
   return {
-    enabled: typeof value.enabled === 'boolean' ? value.enabled : current?.enabled === true,
-    shellEnabled:
-      typeof value.shellEnabled === 'boolean' ? value.shellEnabled : current?.shellEnabled === true,
-    cwd,
-    timeoutMs,
-    allowedRoots: allowedRoots.length ? allowedRoots : [cwd],
-    blockedCommands: stringList(value.blockedCommands, current?.blockedCommands ?? []),
     allowDangerous: typeof value.allowDangerous === 'boolean' ? value.allowDangerous : current?.allowDangerous === true,
   };
 }
@@ -1338,7 +2749,6 @@ function isLocalToolBridgeStatus(value: unknown): value is LocalToolBridgeStatus
 }
 
 function localToolsBridgeLabel(status: LocalToolsStatus): string {
-  if (!status.config.enabled) return '로컬 도구가 꺼져 있습니다.';
   if (status.bridge.catalogSynced) return `연결됨 · ${status.bridge.serverToolCount || status.tools.length}개 도구 사용 가능`;
   if (status.bridge.error) return `연결 확인 필요 · ${status.bridge.error}`;
   if (status.bridge.connected) return '서버와 도구 목록을 동기화하는 중입니다.';

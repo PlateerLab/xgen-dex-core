@@ -41,11 +41,14 @@ const violations = [];
 const add = (rule, file, line, detail) =>
   violations.push({ rule, file: relative(ROOT, file), line, detail });
 
+/** 앱들의 소스 — 규칙 1·2·4 가 본다. XD 는 서버에 붙지 않지만 같은 규칙을 지킨다. */
+const APP_SOURCES = ['apps/desktop/src', 'apps/cli/src', 'apps/vscode/src', 'apps/xd/src'];
+
 // ── 1·2. 앱은 서버와 직접 말하지 않는다 ─────────────────────────────
 //
 // 데스크톱 preload/renderer 는 예외가 아니다 — 거기서 호출해도 앱마다 갈라진다.
 // 유일한 예외는 프로토콜 자신과, URL 을 조립만 하고 부르지는 않는 곳이다.
-for (const app of ['apps/desktop/src', 'apps/cli/src', 'apps/vscode/src']) {
+for (const app of APP_SOURCES) {
   for (const file of walk(join(ROOT, app))) {
     const lines = readFileSync(file, 'utf8').split('\n');
     lines.forEach((text, i) => {
@@ -55,7 +58,7 @@ for (const app of ['apps/desktop/src', 'apps/cli/src', 'apps/vscode/src']) {
       // 로컬 devtools(크롬 디버깅 포트)는 XGEN 서버가 아니다 — 브릿지의 대상이
       // 아니고, 이 앱이 띄운 브라우저와 말하는 자기 일이다.
       // webRequest 필터는 **소켓을 여는 것이 아니라** 나가는 요청의 헤더를
-      // 손대는 자리다(아티팩트 앱의 업그레이드 요청에도 자격이 붙어야 한다).
+      // 손대는 자리다(앱의 업그레이드 요청에도 자격이 붙어야 한다).
       // 이 규칙이 막으려는 것은 앱이 자기 소켓을 직접 여는 일이다.
       const ws = text.match(/['"`]wss?:\/\//);
       if (ws && !/devtools|127\.0\.0\.1|localhost|WEBREQUEST_URL_FILTER/.test(text)) {
@@ -86,7 +89,7 @@ for (const file of walk(join(ROOT, 'packages/protocol/src'))) {
     protoTypes.add(m[1]);
   }
 }
-for (const app of ['apps/desktop/src', 'apps/cli/src', 'apps/vscode/src']) {
+for (const app of APP_SOURCES) {
   for (const file of walk(join(ROOT, app))) {
     const lines = readFileSync(file, 'utf8').split('\n');
     lines.forEach((text, i) => {
@@ -121,8 +124,9 @@ if (existsSync(vsix)) {
 // 앱이 스스로 되돌아가는 것을 봤다. 이건 사람이 기억할 일이 아니다.
 {
   const SELF = 'xgen-dex-core';
-  const ymlPath = join(ROOT, 'apps/desktop/electron-builder.yml');
-  if (existsSync(ymlPath)) {
+  for (const rel of ['apps/desktop/electron-builder.yml', 'apps/xd/electron-builder.yml']) {
+    const ymlPath = join(ROOT, rel);
+    if (!existsSync(ymlPath)) continue;
     const yml = readFileSync(ymlPath, 'utf8');
     const repo = yml.match(/^\s*repo:\s*(\S+)/m)?.[1];
     if (repo && repo !== SELF) {
@@ -149,7 +153,7 @@ if (existsSync(vsix)) {
 {
   const manifests = [
     'package.json',
-    'apps/desktop/package.json', 'apps/cli/package.json', 'apps/vscode/package.json',
+    'apps/desktop/package.json', 'apps/cli/package.json', 'apps/vscode/package.json', 'apps/xd/package.json',
     'packages/protocol/package.json', 'packages/engine/package.json', 'packages/rpc/package.json',
   ];
   const seen = new Map();
@@ -215,9 +219,24 @@ const RULES = {
   'update-feed-points-here':
     '자동 업데이트가 다른 저장소를 본다 — 그쪽 최신 릴리스가 이 앱을 덮어쓴다',
   'one-version': '버전이 갈라졌다 — 태그 하나는 검증된 조합 하나여야 한다',
+  'xd-no-server': 'XD 는 서버와 말하지 않는다 — 서버 클라이언트·브릿지를 들여오지 말 것',
   'cursor-is-measured':
     '커서 자리를 손으로 셌다 — 레이아웃이 바뀌면 어긋나고 IME 한글이 엉뚱한 데 나타난다',
 };
+
+// ── 9. XD 는 서버와 말하지 않는다 ───────────────────────────────────
+//
+// XD 는 이 PC 에서 에이전트를 돌리는 앱이다(2026-10-02). 서버 클라이언트나 서버 브릿지를 들여오는
+// 순간 "로컬 앱" 이 조용히 서버에 기대게 된다. XGEN 쪽의 반대 방향 원칙(에이전트는 언제나 서버에서
+// 돈다)과 섞이지 않게, 경계를 사람이 아니라 이 검사가 지킨다.
+for (const file of walk(join(ROOT, 'apps/xd/src'))) {
+  const lines = readFileSync(file, 'utf8').split('\n');
+  lines.forEach((text, i) => {
+    if (/^\s*(\/\/|\*|\/\*)/.test(text)) return;
+    const hit = text.match(/\b(XgenClient|McpBridge|getMcpBridge|ConversationWatchHub|ConversationsWatch|clientWorkspaceTransfer)\b/);
+    if (hit) add('xd-no-server', file, i + 1, hit[1]);
+  });
+}
 
 if (violations.length === 0) {
   console.log('계약 검사 통과 — 앱이 코어를 우회하는 곳이 없습니다.');

@@ -6,7 +6,7 @@ import assert from 'assert'
 import { test } from 'node:test'
 import { clearDiag, diag, diagEntries, diagHeader, diagText, onDiag, redact } from '../src/main/diag-log'
 
-test('WebDAV URL 의 접근 토큰을 가린다 (경로가 곧 비밀번호다)', () => {
+test('루프백 URL 경로의 접근 토큰을 가린다 (경로가 곧 비밀번호다)', () => {
   const url = 'http://127.0.0.1:51234/AbCdEfGhIjKlMnOpQr/폴더/파일.txt'
   const out = redact(url)
   assert.ok(!out.includes('AbCdEfGhIjKlMnOpQr'), `토큰이 그대로 남았다: ${out}`)
@@ -22,7 +22,7 @@ test('Bearer 토큰과 자격증명 필드를 가린다', () => {
 })
 
 test('평범한 로그는 건드리지 않는다', () => {
-  const s = 'exec /sbin/mount_webdav -S -i <url> /Users/me/XGEN-Workspace'
+  const s = 'exec /usr/bin/open -a Finder /Users/me/XGEN-Workspace'
   assert.equal(redact(s), s)
 })
 
@@ -37,7 +37,7 @@ test('링 버퍼가 최근 것을 남기고 오래된 것을 버린다', () => {
 
 test('구조화 데이터도 한 줄로 붙는다', () => {
   clearDiag()
-  diag('mount', 'exit=1', { stderr: 'No such file' })
+  diag('open', 'exit=1', { stderr: 'No such file' })
   assert.match(diagText(), /exit=1 .*No such file/)
 })
 
@@ -51,7 +51,7 @@ test('직렬화 불가 값이 로깅을 깨지 않는다', () => {
 
 test('로그를 통해 나가는 데이터도 마스킹된다 (diag 경유)', () => {
   clearDiag()
-  diag('mount', 'url', 'http://127.0.0.1:5000/SUPERSECRETTOKEN123/x')
+  diag('local', 'url', 'http://127.0.0.1:5000/SUPERSECRETTOKEN123/x')
   assert.ok(!diagText().includes('SUPERSECRETTOKEN123'))
 })
 
@@ -71,10 +71,10 @@ test('구독자는 새 줄을 받고, 하나가 던져도 로깅이 계속된다
 })
 
 test('머리말에 환경이 들어간다 (없으면 로그를 받아도 추측이 된다)', () => {
-  const h = diagHeader({ mount: 'webdav', root: '/Users/me/XGEN-Workspace' })
+  const h = diagHeader({ app: '1.65.0', root: '/Users/me/XGEN-Workspace' })
   assert.match(h, /platform :/)
   assert.match(h, /node     :/)
-  assert.match(h, /mount/)
+  assert.match(h, /1\.65\.0/)
   assert.match(h, /XGEN-Workspace/)
 })
 

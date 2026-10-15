@@ -6,6 +6,7 @@ import {
   dispatchExec,
   stripAgentMarkers,
   type PeerTurnEvent,
+  type ServerTurn,
 } from '../src/lib/chat-ws';
 
 class FakeWs {
@@ -45,7 +46,7 @@ class FakeWs {
 
 function makeChat(
   collect: { data: string[]; tools: string[]; errors: string[] },
-  extra: { onPeerTurn?: (event: PeerTurnEvent) => void } = {},
+  extra: { onPeerTurn?: (event: PeerTurnEvent) => void; onServerTurn?: (turn: ServerTurn) => void } = {},
 ) {
   return createChat({
     ...extra,
@@ -89,8 +90,10 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
     kind: 'file' as const, attachment_id: 'att-1', name: 'data.json',
     mime_type: 'application/json', size: 2, workspace_path: 'attachments/mob-wf-1-1/att-1/data.json',
   };
-  const done = chat.execute('안녕', [attachment]);
+  const done = chat.execute('안녕', [attachment], [{ id: 'f1', name: 'Notes', path: '/Notes' }]);
   const exec = ws.sent[1] as { type: string; data: Record<string, unknown> };
+  // 이 대화에 연결된 휴대폰 폴더 — 파일 도구는 이 안에서만 돈다.
+  assert.deepEqual(exec.data.local_folders, [{ id: 'f1', name: 'Notes', path: '/Notes' }]);
   assert.equal(exec.type, 'execute');
   assert.deepEqual(exec.data.input_data, { input_str: '안녕', attachments: [attachment] });
   // 모바일 도구 주입 게이트 + 서버 sandbox 강제 — 이 두 값이 제품 정의다.
@@ -109,6 +112,22 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   assert.deepEqual(got.data, ['안녕하', '세요']);
   assert.deepEqual(got.tools, ['mcp_mobile_Notify']);
   assert.deepEqual(got.errors, []);
+  chat.close();
+});
+
+test('폴더를 넘기지 않아도 local_folders 는 빈 목록으로 간다 — 앱은 늘 보낸다', async () => {
+  // 필드가 없으면 서버는 옛 앱으로 읽어 예전 규칙을 따른다. 빈 목록은 "폴더 없음"이다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  const done = chat.execute('폴더 없이');
+  const exec = ws.sent[1] as { type: string; data: Record<string, unknown> };
+  assert.deepEqual(exec.data.local_folders, []);
+  ws.recv({ type: 'exec', data: { event: 'message', data: { type: 'end' } } });
+  ws.recv({ type: 'exec_done' });
+  await done;
   chat.close();
 });
 
@@ -360,6 +379,38 @@ test('다른 화면의 질문이 곧바로 오고, 답이 토큰마다 자라고
   assert.equal((peer[3] as { ioId: number | null }).ioId, 42);
 });
 
+test('첨부를 함께 보낸 다른 화면의 질문 — 본문만 말풍선으로, 첨부는 따로 (2026-10-01)', () => {
+  // 옛 서버는 {input_str, attachments} 를 JSON 문자열로 실어 보냈다 — 폰은 그 JSON 을 통째로 그렸다.
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const turns: { input: string }[] = [];
+  makeChat(got, { onPeerTurn: (e) => peer.push(e), onServerTurn: (t) => turns.push(t) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 1 } });
+  const envelope = {
+    input_str: 'LLM 이 안 돼',
+    attachments: [{ kind: 'image', name: 'image.png', mime_type: 'image/png', size: 5, workspace_path: 'uploads/u/x.png' }],
+  };
+  ws.recv({ type: 'turn_started', seq: 2, data: { input: JSON.stringify(envelope, null, 2) } });
+  ws.recv({
+    type: 'turn_ended',
+    seq: 3,
+    data: { io_id: 9, input: 'LLM 이 안 돼', output: '답', attachments: [{ name: 'image.png', kind: 'image' }] },
+  });
+  ws.recv({ type: 'message', data: { io_id: 9, input_data: envelope, output_data: '답', source: 'user' } });
+
+  const started = peer[0] as Extract<PeerTurnEvent, { kind: 'started' }>;
+  assert.equal(started.input, 'LLM 이 안 돼');
+  assert.deepEqual(started.attachments, [
+    { name: 'image.png', kind: 'image', mimeType: 'image/png', size: 5, workspacePath: 'uploads/u/x.png' },
+  ]);
+  const ended = peer[1] as Extract<PeerTurnEvent, { kind: 'ended' }>;
+  assert.equal(ended.input, 'LLM 이 안 돼');
+  assert.deepEqual(ended.attachments, [{ name: 'image.png', kind: 'image' }]);
+  assert.equal(turns[0]?.input, 'LLM 이 안 돼', '완결 행의 dict 질문이 [object Object] 가 되지 않는다');
+});
+
 test('내 실행 스트림은 전파 경로로 새지 않는다', () => {
   // 자기 턴의 exec 에는 seq 가 없다 — 그것이 두 경로를 가르는 표식이다.
   const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
@@ -410,4 +461,252 @@ test('stop acknowledgement settles the turn and permits another turn on the same
   await next;
   assert.deepEqual(got.errors, []);
   chat.close();
+});
+
+test('folders 소식은 턴 번호 없이 폴더 알림으로만 간다 — 간격 감지를 건드리지 않는다', () => {
+  const folders: Array<Record<string, unknown>> = [];
+  const peer: PeerTurnEvent[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-1',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onFolders: (data) => folders.push(data),
+    onPeerTurn: (event) => peer.push(event),
+    callbacks: {},
+  });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { cursor: 0, seq: 4 } });
+  const data = {
+    interaction_id: 'mob-wf-1-1',
+    device: { device_id: 'pc-1', name: '사무실 PC', platform: 'win32', online: true },
+    folders: [{ id: 'f1', name: 'docs' }],
+  };
+  ws.recv({ type: 'folders', data, seq: null });
+  ws.recv({ type: 'turn_started', data: { input: 'x' }, seq: 5 });
+  assert.deepEqual(folders, [data]);
+  assert.equal(peer.filter((event) => event.kind === 'gap').length, 0, 'folders 소식이 유실로 오판됐다');
+  chat.close();
+});
+
+test('모델 소식은 턴 번호 없이 모델 알림으로만 간다', () => {
+  const models: Array<Record<string, unknown>> = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-wf-1-1',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    onModel: (data) => models.push(data),
+    callbacks: {},
+  });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  const data = { interaction_id: 'mob-wf-1-1', current: { provider: 'openai', model: 'gpt-4o', label: 'OpenAI: GPT-4o' } };
+  ws.recv({ type: 'model', data, seq: null });
+  assert.deepEqual(models, [data]);
+  chat.close();
+});
+
+// ── 다른 기기의 도구 턴이 결과만 남던 문제 (2026-10-01 사용자 보고) ──────────────
+
+test('완결 행이 실어 온 작업 과정을 화면에 넘긴다', () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const turns: ServerTurn[] = [];
+  makeChat(got, { onServerTurn: (t) => turns.push(t), onPeerTurn: () => {} });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 0 } });
+  ws.recv({
+    type: 'message',
+    data: {
+      io_id: 5, input_data: '앱 상태?', output_data: '정상입니다.', source: 'user',
+      process: [
+        { kind: 'tool', at: 1, event: { event_type: 'tool_call', tool_name: 'AppList', tool_use_id: 'a' } },
+        { kind: 'text', at: 2, text: '정상입니다.' },
+      ],
+    },
+  });
+  ws.recv({ type: 'message', data: { io_id: 6, input_data: 'q', output_data: 'a', source: 'user' } });
+  assert.deepEqual(turns[0].process?.map((p) => p.kind), ['tool', 'text']);
+  assert.equal(turns[1].process, undefined, '도구를 안 쓴 턴은 예전 모양 그대로');
+});
+
+test('끊겼다 다시 붙으면 구멍을 알린다 — 첫 구독은 알리지 않는다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const chat = makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 3 } });
+  assert.equal(peer.length, 0, '첫 구독은 화면이 막 이력을 읽었다');
+  first.close(); // 화면을 껐다 켰다
+  await new Promise((r) => setTimeout(r, 1600));
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first, '다시 붙었다');
+  second.open();
+  second.recv({ type: 'subscribed', data: { seq: 7 } });
+  assert.deepEqual(peer, [{ kind: 'gap' }]);
+  chat.close();
+});
+
+test('내 턴의 실행 id 를 알려 준다 — 같은 턴을 한 번만 그리고, 구멍을 메울 기준이 된다', () => {
+  const ids: number[] = [];
+  assert.equal(dispatchExec('execution_io', { execution_io_id: 49704 }, { onExecutionIo: (id) => ids.push(id) }), null);
+  assert.equal(dispatchExec('execution_io', { execution_io_id: 0 }, { onExecutionIo: (id) => ids.push(id) }), null);
+  assert.deepEqual(ids, [49704], '0 은 아직 행이 없다는 뜻이라 넘기지 않는다');
+});
+
+// ── 끊겼다 붙어도 "작업 완료" 를 놓치지 않는다 (2026-10-02) ─────────────────
+
+test('다시 붙을 때마다 새 표식으로 구독한다 — 끊긴 내 턴의 진행·종료를 서버가 거르지 않게', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got, { onPeerTurn: () => undefined });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  const firstOrigin = (first.sent[0] as { data: { origin_id: string } }).data.origin_id;
+  const turn = chat.execute('긴 작업');
+  const exec = first.sent[1] as { type: string; data: { origin_id: string } };
+  assert.equal(exec.type, 'execute');
+  assert.equal(exec.data.origin_id, firstOrigin, '같은 연결의 실행과 구독은 같은 표식이다');
+  first.close(); // 앱을 뒤로 보냈다
+  await turn;
+  chat.resume(); // 앱이 다시 앞으로 왔다 — 백오프를 기다리지 않는다
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first);
+  second.open();
+  const secondOrigin = (second.sent[0] as { data: { origin_id: string } }).data.origin_id;
+  assert.notEqual(secondOrigin, firstOrigin, '같은 표식이면 끊긴 턴의 진행이 메아리로 걸러진다');
+  chat.close();
+});
+
+test('끊긴 내 턴의 진행이 다시 붙은 소켓으로 다른 화면의 턴처럼 온다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  const chat = makeChat(got, { onPeerTurn: (e) => peer.push(e) });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 10 } });
+  const turn = chat.execute('질문');
+  first.close();
+  await turn;
+  chat.resume();
+  const second = FakeWs.last as FakeWs;
+  second.open();
+  second.recv({ type: 'subscribed', data: { seq: 20, running: true, live: { text: '여기까지', events: [] } } });
+  // 기준선 이하의 진행은 구독 응답의 진행분에 이미 들었다 — 다시 이어 붙이지 않는다.
+  second.recv({ type: 'exec', seq: 20, data: { event: 'message', data: { type: 'data', content: '중복' } } });
+  second.recv({ type: 'exec', seq: 21, data: { event: 'message', data: { type: 'data', content: ' 이어서' } } });
+  second.recv({ type: 'turn_ended', seq: 22, data: { io_id: 5, input: '질문', output: '여기까지 이어서' } });
+  const execs = peer.filter((e) => e.kind === 'exec');
+  assert.equal(execs.length, 1, '기준선 이하 진행은 버린다');
+  assert.ok(peer.some((e) => e.kind === 'ended'), '종료가 온다 — 서버가 거르지 않았다');
+  chat.close();
+});
+
+test('침묵이 길면 소켓을 버리고 새로 붙는다 — close 가 오지 않는 반쯤 열린 연결', async () => {
+  let clock = 1_000_000;
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const states: string[] = [];
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-silent',
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    now: () => clock,
+    onState: (s) => states.push(s),
+    callbacks: { onError: (m) => got.errors.push(m) },
+  });
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  clock += 40_000; // 하트비트 넷을 놓쳤다
+  await new Promise((r) => setTimeout(r, 5_200)); // 감시 한 바퀴
+  const second = FakeWs.last as FakeWs;
+  assert.notEqual(second, first, '죽은 소켓을 버리고 새로 붙었다');
+  assert.equal(first.onmessage, null, '버린 소켓의 늦은 프레임은 받지 않는다');
+  assert.deepEqual(got.errors, []);
+  assert.ok(states.includes('reconnecting'));
+  chat.close();
+});
+
+test('복귀 확인 — 열려 있다고 믿는 소켓이 ping 에 답하지 않으면 새로 붙는다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  chat.resume();
+  assert.deepEqual(first.sent.at(-1), { type: 'ping' }, '살아 있는지 묻는다');
+  await new Promise((r) => setTimeout(r, 4_200));
+  assert.notEqual(FakeWs.last, first, '답이 없어 새로 붙었다');
+  chat.close();
+});
+
+test('복귀 확인 — 답이 오면 그대로 둔다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const first = FakeWs.last as FakeWs;
+  first.open();
+  first.recv({ type: 'subscribed', data: { seq: 1 } });
+  chat.resume();
+  first.recv({ type: 'pong', data: { ts: 1 } });
+  await new Promise((r) => setTimeout(r, 4_200));
+  assert.equal(FakeWs.last, first, '살아 있는 소켓은 바꾸지 않는다');
+  chat.close();
+});
+
+test('여러 번 실패해도 다시 붙기를 그만두지 않는다 — [연결 실패] 는 알리기만 한다', () => {
+  // 백오프를 실제로 기다리지 않는다 — 예약된 재시도를 손으로 하나씩 돌린다.
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const due: Array<() => void> = [];
+  globalThis.setTimeout = ((fn: () => void) => {
+    due.push(fn);
+    return due.length;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = (() => undefined) as typeof clearTimeout;
+  const states: string[] = [];
+  let tries = 0;
+  const chat = createChat({
+    wsBase: 'wss://gw.example',
+    workflowId: 'wf-1',
+    workflowName: '리서치봇',
+    interactionId: 'mob-giveup',
+    wsFactory: () => {
+      tries += 1;
+      throw new Error('offline');
+    },
+    onState: (s) => states.push(s),
+    callbacks: {},
+  });
+  try {
+    for (let i = 0; i < 14 && due.length > 0; i += 1) due.shift()!();
+    assert.ok(states.includes('failed'), '여러 번 실패하면 알린다');
+    assert.ok(tries > 10, `예전에는 8번에서 멈췄다 (시도 ${tries}번)`);
+    assert.ok(due.length > 0, '다음 시도가 예약돼 있다');
+    const before = tries;
+    chat.resume(); // 복귀하면 대기 없이 지금 붙는다
+    assert.equal(tries, before + 1);
+  } finally {
+    chat.close();
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
+test('대화를 떠나는 것은 실패가 아니다 — 도는 턴에 오류를 세우지 않는다', async () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const chat = makeChat(got);
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed' });
+  const turn = chat.execute('질문');
+  chat.close();
+  await turn;
+  assert.deepEqual(got.errors, [], '예전에는 "closed" 가 답 자리에 섰다');
 });

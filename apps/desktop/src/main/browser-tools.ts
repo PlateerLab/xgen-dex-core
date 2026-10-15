@@ -40,6 +40,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
   return [
     {
       name: BROWSER_TABS_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
         'A missing page_id on other browser tools uses the workflow default background page.',
@@ -62,6 +63,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_NAVIGATE_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description: 'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait.',
       inputSchema: {
         type: 'object',
@@ -71,7 +73,8 @@ export function browserToolSchemas(): LocalToolSchema[] {
           url: { type: 'string' },
           wait_for: {
             type: 'string',
-            description: 'wait: milliseconds, text, URL glob, selector, or load state.',
+            description:
+              'wait: milliseconds ("1500"), load state ("load" | "domcontentloaded" | "networkidle"), URL ("https://…" or "**/path"), visible text ("text:Welcome"), or a CSS selector.',
           },
           timeout_ms: { type: 'integer' },
         },
@@ -80,6 +83,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_SNAPSHOT_TOOL,
+      annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Return the accessibility snapshot and fresh @eN refs for a page. Pass the returned generation to ref-based interactions so stale refs are rejected.',
       inputSchema: {
@@ -95,6 +99,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_INTERACT_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse.',
       inputSchema: {
@@ -137,6 +142,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_CAPTURE_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description: 'Capture screenshot/full screenshot/PDF or inspect console/page errors.',
       inputSchema: {
         type: 'object',
@@ -148,7 +154,9 @@ export function browserToolSchemas(): LocalToolSchema[] {
           },
           path: {
             type: 'string',
-            description: 'Local output path. Must be within configured allowedRoots.',
+            description:
+              'Output file on the user\'s computer, inside a folder connected to this conversation ' +
+              '(relative paths start from the first connected folder).',
           },
           clear: { type: 'boolean' },
           timeout_ms: { type: 'integer' },
@@ -158,6 +166,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
     },
     {
       name: BROWSER_ADVANCED_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
       inputSchema: {
@@ -306,20 +315,45 @@ function appendValue(command: string[], value: unknown): void {
   command.push(typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+const LOAD_STATES = new Set(['load', 'domcontentloaded', 'networkidle']);
+
+/**
+ * BrowserNavigate `wait` → agent-browser `wait` 인자. agent-browser 는 위치 인자를 **밀리초 아니면 선택자**로만
+ * 읽어서, 도구 설명대로 `wait_for: "load"` 를 그대로 넘기면 `<load>` 요소를 25초 기다리다 실패했다(dev 30일
+ * `wait load` 10번 모두 실패). 로드 상태는 `--load`, URL 은 `--url`, `text:` 를 붙인 글은 `--text` 로 옮긴다.
+ */
+export function browserWaitCommand(waitFor: unknown): string[] {
+  const raw = waitFor === undefined ? '1000' : typeof waitFor === 'string' ? waitFor.trim() : JSON.stringify(waitFor);
+  const lower = raw.toLowerCase();
+  if (LOAD_STATES.has(lower)) return ['wait', '--load', lower];
+  if (/^text:/i.test(raw)) return ['wait', '--text', raw.slice(5).trim()];
+  if (/^url:/i.test(raw)) return ['wait', '--url', raw.slice(4).trim()];
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith('**')) return ['wait', '--url', raw];
+  return ['wait', raw];
+}
+
+/** 대화 → 파일을 읽고 쓸 수 있는 폴더(그 대화에 연결된 폴더). */
+export type BrowserFileRoots = (context?: LocalToolCallContext) => string[];
+
 export class BrowserToolProvider {
   private enabled = false;
-  private allowedRoots: string[] = [];
+  private fileRoots: BrowserFileRoots = () => [];
   private revealSharedPage: (page: BrowserPageInfo) => void = () => {};
 
   constructor(private runtime: BrowserRuntime) {}
 
+  /**
+   * 브라우저 도구 자체는 자기 설정(`enabled`)이 켠다. 다만 스크린샷·PDF·업로드·
+   * 다운로드처럼 **이 PC 의 파일**을 만지는 동작은 파일 도구와 같은 범위 — 그
+   * 대화에 연결된 폴더 — 안에서만 된다.
+   */
   configure(
     enabled: boolean,
-    allowedRoots: string[] = [],
+    fileRoots: BrowserFileRoots = () => [],
     revealSharedPage: (page: BrowserPageInfo) => void = () => {},
   ): void {
     this.enabled = enabled;
-    this.allowedRoots = allowedRoots;
+    this.fileRoots = fileRoots;
     this.revealSharedPage = revealSharedPage;
   }
 
@@ -395,8 +429,7 @@ export class BrowserToolProvider {
       });
       return result(updated, { navigated: action });
     }
-    const command = ['wait'];
-    appendValue(command, args.wait_for ?? args.waitFor ?? '1000');
+    const command = browserWaitCommand(args.wait_for ?? args.waitFor);
     const run = await this.runtime.runAgentCommand(wid, page.info.pageId, command, timeout(args));
     return result(run.page, run.result);
   }
@@ -472,10 +505,17 @@ export class BrowserToolProvider {
     return result(run.page, run.result);
   }
 
-  private scopedPath(raw: unknown): string {
-    const path = browserPathWithinRoots(raw, this.allowedRoots);
+  private scopedPath(raw: unknown, context?: LocalToolCallContext): string {
+    const roots = this.fileRoots(context);
+    if (!roots.length) {
+      throw new BrowserRuntimeError(
+        'browser_denied',
+        '이 대화에 연결된 폴더가 없어 이 PC 에 파일을 저장하거나 올릴 수 없습니다.',
+      );
+    }
+    const path = browserPathWithinRoots(raw, roots);
     if (!path)
-      throw new BrowserRuntimeError('browser_denied', '파일 경로가 allowedRoots 범위 밖입니다.');
+      throw new BrowserRuntimeError('browser_denied', '파일 경로가 이 대화에 연결된 폴더 밖입니다.');
     return path;
   }
 
@@ -487,7 +527,7 @@ export class BrowserToolProvider {
     let command: string[];
     if (action === 'screenshot' || action === 'full_screenshot' || action === 'pdf') {
       const fallback = action === 'pdf' ? 'browser.pdf' : 'browser.png';
-      const path = this.scopedPath(args.path ?? fallback);
+      const path = this.scopedPath(args.path ?? fallback, context);
       command = [action === 'full_screenshot' ? 'screenshot' : action, path];
       if (action === 'full_screenshot') command.push('--full');
     } else if (action === 'console' || action === 'errors') {
@@ -523,9 +563,9 @@ export class BrowserToolProvider {
     if (action === 'upload') {
       const paths = Array.isArray(args.paths) ? args.paths : [args.path];
       command = ['upload', String(args.ref ?? '')];
-      for (const path of paths) command.push(this.scopedPath(path));
+      for (const path of paths) command.push(this.scopedPath(path, context));
     } else if (action === 'download') {
-      const path = this.scopedPath(args.path);
+      const path = this.scopedPath(args.path, context);
       const page = await this.runtime.resolvePage(workflow(args, context), pageId(args), true);
       this.runtime.allowNextDownload(page.info.pageId, path);
       command = ['download', String(args.ref ?? ''), path];
@@ -580,7 +620,7 @@ export class BrowserToolProvider {
       command = ['set', 'media', String(args.value ?? operation ?? '')];
     } else if (action === 'har') {
       command = ['network', operation || 'har'];
-      if (args.path !== undefined) command.push(this.scopedPath(args.path));
+      if (args.path !== undefined) command.push(this.scopedPath(args.path, context));
     } else if (action === 'intercept') {
       command = ['network', 'route'];
       appendValue(command, args.value ?? args.options);

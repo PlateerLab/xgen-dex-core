@@ -24,31 +24,41 @@ import {
   net,
   session,
   clipboard,
+  powerMonitor,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isSafeExternalUrl } from './external-url';
+import { publicAppUrl } from './app-links';
+import { AppPreviewService, type PreviewTarget } from './app-preview';
+import { shootAppPreview } from './app-preview-shot';
 import {
   XgenClient,
   TEAMS_ATTACHMENT_EXTENSIONS,
   teamsAttachmentRejectReason,
+  type ChatDownload,
   type ChatEvent,
   type ChatRequest,
   type TeamsAttachment,
   type TtsSpeakOptions,
   type SshServerInput,
   type ChatStopResult,
-  type Agent,
-  type ArtifactApiDeclaration,
-  type ArtifactGalleryItem,
+  type AppApiDeclaration,
+  type AppStoreListParams,
   describeError,
   applyNotificationPreferenceUpdate,
+  ideFailureOf,
   notificationProfileForAccount,
   shareBodyOf,
+  shareLinkUrl,
   withNotificationProfile,
+  type ChatShareInput,
+  type ConversationKind,
+  type ShareAudience,
   type NotificationEvent,
   type NotificationPreferenceUpdate,
   type NotificationProfile,
@@ -63,6 +73,7 @@ import {
   saveConfig,
   resetConfig,
   normalizeServerUrl,
+  accountKey,
   type ConnectorConfig,
   type McpServerConfig,
 } from './config';
@@ -84,29 +95,32 @@ import {
   checkForUpdatesAfterLogin,
   disposeUpdater,
 } from './updater';
+import { linuxRelaunchTarget, ownAppImage, relaunchAfterExitArgs } from './update-source';
 import { CHANNELS } from './ipc';
 import { ARTIFACT_FRAME_CSP, ARTIFACT_FRAME_HTML } from './artifact-frame';
-import { stripFrameAncestors, stripFrameAncestorsFromHeaders } from './artifact-csp';
+import { stripFrameAncestorsFromHeaders } from './artifact-csp';
 // ⚠ 정적 import 여야 한다. 런타임 require('./x') 는 번들러가 해석하지 않아
 // 패키징본에서 'Cannot find module' 로 죽고, UI 는 조용히 아무 일도 하지
 // 않는다 (v1.7.0 에서 에이전트 추가가 먹통이던 원인).
-import { FilestoreSyncTransport, HttpSyncTransport, fetchIndexSeqs, WorkspaceWsClient, authHeaders as syncAuthHeaders, transportFetch as syncTransportFetch, type TransportAuth } from './sync-transport';
-import { FileSystemController } from './file-system';
-import { WorkspaceBridge } from './workspace-bridge-tools';
+import { ChatFolderStore } from './chat-folders';
+import { localFoldersForRequest, normalizeLocalFolders } from '@dex/engine/local-folders';
+import { parseConversationFolders } from '@dex/protocol/conversation-folders';
+import type { ThinkingValue } from '@dex/protocol/conversation-model';
+import { ChatFolderSync } from './chat-folder-sync';
+import { FolderFsError, folderFsCall } from './folder-fs';
+import type { RemoteFolderUse } from '@dex/engine/local-tools';
+import { stopAllUserPcJobs } from '@dex/engine/user-pc';
 import {
   consumeInstallOptions,
   resolveDataRoot,
   settleDataRoot,
   writeDataRootMarker,
 } from './data-root';
-import type { SyncRemote } from './local-sync';
-import { isSafeRelPath } from './sync-plan';
-import { hostname, userInfo } from 'os';
-import { defaultDeviceName } from './device-name';
-import { accountKey } from './file-system';
+import { hostname } from 'os';
 import { TRAY_ICON_B64 } from './tray-icon';
 import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
+import { clientWorkspaceTransfer } from '@dex/engine/workspace-transfer';
 import {
   getLocalToolProvider,
   openWithDefaultApp,
@@ -145,6 +159,8 @@ import type {
 } from '@dex/protocol/browser';
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
+import { IdeTerminalHub, type IdeTerminalDeps } from './ide-terminal';
+import { IdeWatchHub } from './ide-watch';
 import { ConversationWatchHub } from '@dex/engine/conversation-watch';
 import { ConversationsWatch } from '@dex/engine/conversations-watch';
 import { NotificationCenter } from './notification-center';
@@ -158,7 +174,7 @@ import {
 // ⚠ 표시 이름(제품명/설치 파일/창 제목)은 "XGen Dex"로 바뀌었지만, Electron 은
 // app.getPath('userData') 등 기본 데이터 경로를 **app.name**(기본값 = package.json
 // productName)에서 파생시킨다 — 아무 조치 없이 productName 만 바꾸면 기존
-// 사용자의 로그인 세션·로컬 런타임·동기화 상태가 들어있는 데이터 폴더
+// 사용자의 로그인 세션·설정이 들어있는 데이터 폴더
 // (%APPDATA%\XGEN-Connector 등)를 잃어버리고 새 폴더로 조용히 갈라진다.
 // 여기서 옛 이름으로 고정해 데이터 연속성을 지킨다(keytar 서비스 이름도
 // keychain.ts 에서 별도로 'xgen-connector' 로 고정돼 있어 이 값과 무관하다).
@@ -213,26 +229,6 @@ protocol.registerSchemesAsPrivileged([
     scheme: 'xgenartifact',
     privileges: { secure: true },
   },
-  // 아티팩트 **사이트**(폴더가 곧 웹사이트인 것)를 앱 안에서 여는 스킴.
-  //
-  // 프레임 스킴과 성질이 반대다. 프레임은 문서 하나를 인라인으로 돌리는 자리라
-  // 오리진도 네트워크도 없어야 하지만, 사이트는 진짜 웹사이트다 — 자기 자산을
-  // 상대 경로로 끌어오고 서버 API 를 부른다. 그래서 standard(진짜 오리진 →
-  // 상대 경로가 풀린다)와 fetch 를 연다.
-  //
-  // 이 오리진은 렌더러(window.xgen 이 사는 곳)와 **다르다**. 그래서 사이트는
-  // 여전히 이 PC 의 셸·파일·키체인으로 이어지는 다리에 닿지 못한다. bypassCSP 는
-  // 주지 않는다 — 서버가 보낸 CSP(공개 사이트의 sandbox 등)를 그대로 받아야 한다.
-  {
-    scheme: 'xgensite',
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      stream: true,
-    },
-  },
   {
     scheme: 'xgenavatar',
     privileges: {
@@ -257,6 +253,72 @@ const aborters = new Map<string, AbortController>();
 /** The last avatar/chat state pushed from the main window, replayed to a
  * freshly-opened overlay so it isn't blank until the next stream event. */
 let lastOverlayState: unknown = null;
+
+/** 창 안의 웹 콘텐츠가 고른 주소를 바깥으로 연다 — 웹 주소만(external-url). */
+function openExternalSafe(url: string): void {
+  if (isSafeExternalUrl(url)) void shell.openExternal(url);
+}
+
+/**
+ * 앱 창이 머물러도 되는 주소인가 — 우리 렌더러(file:// 번들 또는 개발 서버)뿐.
+ *
+ * 데스크톱 창 안의 앱은 에이전트가 쓴 코드다. 클릭 한 번 뒤 그 코드가 top 을 다른 페이지로
+ * 옮기면, 옮겨 간 페이지가 preload 다리(window.xgen — 셸·파일·키체인)를 얻는다.
+ */
+function isRendererUrl(url: string): boolean {
+  const dev = process.env['ELECTRON_RENDERER_URL'];
+  if (dev && String(url).startsWith(dev)) return true;
+  try {
+    const u = new URL(String(url));
+    if (u.protocol !== 'file:') return false;
+    // 문자열이 아니라 **경로**로 비교한다 — 윈도의 드라이브 대소문자·짧은 경로·퍼센트 인코딩이
+    // 어긋나면 앱 자신의 새로고침(오류 화면의 [다시 시도])까지 막힌다. path.relative 는 윈도에서
+    // 대소문자를 가리지 않는다.
+    const rel = relative(join(__dirname, '../renderer'), fileURLToPath(u));
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 격리된 문서가 낸 요청인가 — 그런 요청에는 사용자 자격을 붙이지 않는다.
+ *
+ * 서버는 주인이 아닌 사람이 여는 앱과 공개 링크에 CSP sandbox 를 씌운다. 그
+ * 문서의 오리진은 'null' 이고, 그 안의 코드는 남(에이전트)이 쓴 것이다. 예전에는 main
+ * 이 서버의 /api/ 로 가는 요청이면 누가 보냈든 토큰을 붙여서, 그 코드가 이 사용자의
+ * 권한으로 플랫폼 API 를 부르고 응답까지 읽을 수 있었다(서버 CORS 가 모든 오리진을
+ * 받는다). 그 문서가 자기 화면에 필요한 자격은 서버가 주소(보기·공개 토큰)에 이미 실었다.
+ *
+ * 판정은 세 갈래다.
+ *   · 앱 창 자신(최상위 프레임)의 요청은 우리 코드다 — 예전처럼 싣는다.
+ *   · iframe 을 **여는** GET 이동은 싣는다. 누가 보는지는 서버가 판정해 주인에게는 그대로,
+ *     아니면 보기 주소로 보낸다. 앱 창은 file:// 이라 새 iframe 은 서버 문서가 뜨기 전까지
+ *     'null' 오리진을 물려받는다 — 여기서 끊으면 주인의 앱도 열리지 않는다.
+ *   · 그 밖에 오리진이 'null' 인 iframe 이 낸 요청(fetch·스크립트·이미지·폼 POST·소켓)은
+ *     싣지 않는다.
+ */
+function fromIsolatedDocument(details: Electron.OnBeforeSendHeadersListenerDetails): boolean {
+  let frame: Electron.WebFrameMain | null = null
+  try {
+    frame = details.frame ?? null
+  } catch {
+    frame = null
+  }
+  if (!frame || !frame.parent) return false
+  const origin = Object.entries(details.requestHeaders || {}).find(
+    ([k]) => k.toLowerCase() === 'origin',
+  )?.[1]
+  if (origin === 'null') return true
+  if (details.resourceType === 'subFrame' && details.method === 'GET') return false
+  let frameOrigin = ''
+  try {
+    frameOrigin = frame.origin
+  } catch {
+    // 프레임이 이미 사라졌다 — 판정할 문서가 없다.
+  }
+  return frameOrigin === 'null'
+}
 
 /** Send to a window's renderer only if it (and its webContents) are still
  * alive. During app quit / auto-update restart the window can be torn down
@@ -305,12 +367,12 @@ function getClient(): XgenClient {
       onAuthFailure: handleAuthFailure,
       // 토큰이 회전되는 **모든** 지점에서 keychain 을 즉시 갱신한다. 게이트웨이는
       // 회전 시 이전 토큰의 세션 키를 지우므로, 여기서 놓치면 keychain 을 읽는
-      // 장수명 소비자(WS 브릿지·워크스페이스 동기화)가 폐기된 토큰으로 접속하다
+      // 장수명 소비자(WS 브릿지·대화 소켓)가 폐기된 토큰으로 접속하다
       // 403(session revoked)에 갇힌다 — 실기에서 채팅은 되는데 WS 만 죽던 원인.
       onTokensRotated: (access, refresh) => {
         void tokenStore.setAccess(access);
         if (refresh) void tokenStore.setRefresh(refresh);
-        // 아티팩트 요청에 붙일 토큰도 여기서 갱신한다 — 회전 뒤에도 옛 토큰을
+        // 앱 요청에 붙일 토큰도 여기서 갱신한다 — 회전 뒤에도 옛 토큰을
         // 붙이면 그 화면만 403 에 갇힌다(다른 소비자들이 겪었던 그 실패다).
         lastAccessToken = access;
       },
@@ -430,6 +492,9 @@ function createWindow(): void {
   );
 
   mainWindow.on('ready-to-show', () => mainWindow?.show());
+  // 창이 다시 앞으로 왔다 — 숨어 있던 사이 끊긴 대화 소켓을 지금 확인한다(기다리면 백오프만큼 늦는다).
+  mainWindow.on('focus', () => conversationWatchHub.refresh());
+  mainWindow.on('show', () => conversationWatchHub.refresh());
   mainWindow.on('close', (e) => {
     if (!mainWindow) return;
     const b = mainWindow.getBounds();
@@ -443,8 +508,15 @@ function createWindow(): void {
     }
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
+  });
+  // 데스크톱 창은 우리 렌더러만 띄운다 — 그 밖으로 가려는 이동(창 안 앱이 top 을 옮기는 것
+  // 포함)은 막고, 웹 주소면 기본 브라우저로 넘긴다.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isRendererUrl(url)) return;
+    event.preventDefault();
+    openExternalSafe(url);
   });
 
   attachContentResilience(mainWindow, () => {
@@ -757,7 +829,7 @@ function createOverlay(): void {
   createOverlayChip();
 
   overlayWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
   // Per-monitor geometry: restore this display's remembered bounds, then on every
@@ -902,7 +974,7 @@ function createOverlayChip(): void {
     overlayChip = null;
   });
   overlayChip.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
   // 페이지가 그려진 뒤에 띄운다 — 그 전에 show 하면 투명한 빈 사각형이
@@ -1009,6 +1081,8 @@ let quickChatShownAt = 0;
 let quickChatPosTimer: ReturnType<typeof setTimeout> | null = null;
 let suppressQuickChatPosSave = false;
 let appQuitting = false;
+/** 끄기가 시작됐다(before-quit) — 업데이트 설치가 실패해 appQuitting 을 되돌릴 때 사용자의 끄기를 무르지 않게. */
+let quitRequested = false;
 
 function persistQuickChatPos(): void {
   if (suppressQuickChatPosSave) return;
@@ -1069,7 +1143,7 @@ function createQuickChat(): void {
     if (quickChatWindow) loadRendererPage(quickChatWindow, 'quickchat.html');
   });
   quickChatWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
   quickChatWindow.on('blur', () => {
@@ -1187,6 +1261,13 @@ function openMainSettings(): void {
   safeSend(mainWindow, CHANNELS.openSettingsModal);
 }
 
+/** 리눅스에서 이 앱을 다시 띄울 때 실행할 것 — AppImage 면 그 AppImage(영속 파일), deb 면 실행 시임(xgen-dex —
+ *  `app.getPath('exe')` 는 시임이 띄운 xgen-dex.bin 이다). update-source.ts 의 linuxRelaunchTarget. */
+function linuxLaunchTarget(): string {
+  const exe = app.getPath('exe');
+  return linuxRelaunchTarget(exe, ownAppImage(exe, process.env), existsSync);
+}
+
 /** 로그인 시 자동 시작 적용 — **실효 결과**를 반환한다 (UI 가 거짓 토글을
  *  보여주지 않도록; geny-connector 동형).
  *
@@ -1219,8 +1300,8 @@ function applyAutoLaunch(enabled: boolean): boolean {
     }
     return false;
   }
-  // AppImage 는 $APPIMAGE(영속 파일)를, 그 외는 실행 바이너리를 가리킨다.
-  const target = process.env.APPIMAGE || app.getPath('exe');
+  // AppImage 는 $APPIMAGE(영속 파일)를, deb 는 실행 시임(샌드박스 판단을 거치게)을 가리킨다.
+  const target = linuxLaunchTarget();
   if (!target || target.includes(`${sep}.mount_`) || target.startsWith('/tmp/')) {
     // 임시 마운트에서 실행 중 — 재부팅 후 깨진 경로가 된다. 등록 거부.
     return false;
@@ -1251,16 +1332,18 @@ function applyAutoLaunch(enabled: boolean): boolean {
 /** Linux-안전 재시작 (geny-connector 이식): `app.relaunch()` 는 리눅스에서
  *  `--type=relauncher` 헬퍼를 거치며 NoNewPrivs 를 설정한다 — 비가역이라
  *  재시작된 프로세스의 SUID chrome-sandbox 가 죽는다 (Ubuntu 24.04 SIGTRAP).
- *  리눅스는 분리된 셸로 1초 뒤 재실행; 그 외 플랫폼은 표준 relaunch. */
+ *  리눅스는 분리된 셸이 이 프로세스가 끝나길 기다렸다가(끌 때 MCP·브라우저 정리로 몇 초 걸릴 수 있다 — 먼저 뜨면
+ *  단일 실행 잠금에 걸려 바로 끝난다) 실행 시임/AppImage 로 다시 띄운다; 그 외 플랫폼은 표준 relaunch. */
 function relaunchSelf(): void {
   appQuitting = true;
   if (IS_LINUX) {
-    const target = process.env.APPIMAGE || app.getPath('exe');
     try {
-      spawn('/bin/sh', ['-c', 'sleep 1; exec "$@"', 'relaunch', target], {
+      spawn('/bin/sh', relaunchAfterExitArgs(process.pid, linuxLaunchTarget()), {
         detached: true,
         stdio: 'ignore',
-      }).unref();
+      })
+        .on('error', (e) => console.warn('[relaunch]', e))
+        .unref();
     } catch {
       app.relaunch(); // 폴백 — 없는 것보단 낫다
     }
@@ -1303,11 +1386,7 @@ async function resetStoredSettings(): Promise<void> {
   getMcpBridge().stop();
   void client?.logout().catch(() => undefined);
   client = null;
-  await Promise.allSettled([
-    tokenStore.clear(),
-    credentialStore.clear(),
-    Promise.resolve(fileSystem?.stop()),
-  ]);
+  await Promise.allSettled([tokenStore.clear(), credentialStore.clear()]);
   applyAutoLaunch(false);
   resetConfig();
   relaunchSelf();
@@ -1480,9 +1559,73 @@ getLocalToolProvider().configureNotificationHandler(async (title, body, context)
     target,
   }).shown;
 });
+
+// ── 대화별 폴더 연결 ──────────────────────────────────────────────
+// 채팅 헤더의 [폴더 연결]로 고른 폴더가 그 대화의 작업 공간이다. 이 PC 의 파일·
+// 터미널 도구는 호출마다 그 대화의 폴더를 여기서 찾고, 없으면 거부한다.
+// 채팅 요청에도 같은 목록을 실어 서버가 이번 턴의 도구와 안내를 정한다.
+const chatFolders = new ChatFolderStore(
+  join(app.getPath('userData'), 'chat-folders'),
+  () => currentAccountKey(),
+);
+getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
+// 연결한 폴더 ↔ 에이전트 작업 공간 — 복사 도구(CopyToWorkspace·CopyFromWorkspace)가 이 길로 옮긴다.
+// 올리는 자리는 그 대화의 첨부 폴더다(채팅 첨부와 같은 권한·같은 자리). 같은 파일은 덮어쓴다.
+getLocalToolProvider().configureWorkspaceTransfer(clientWorkspaceTransfer(getClient));
+/** 이 PC 의 기기 — 서버의 대화 폴더 사본에 "이 폴더는 이 PC 에 있다" 로 적힌다. */
+function thisDevice() {
+  return {
+    deviceId: ensureDeviceId(),
+    deviceName: `${hostname()} · 데스크톱`,
+    devicePlatform: process.platform,
+  };
+}
+/**
+ * 대화 폴더의 서버 사본 — 폴더는 대화에 붙고 이 PC 에 있다. 연결·해제를 올려 두면 웹·휴대폰·
+ * 다른 PC 에서도 보이고, 그 화면에서 보낸 턴도 이 PC 의 폴더 도구를 쓴다(이 PC 가 켜져 있는 동안).
+ */
+const chatFolderSync = new ChatFolderSync({
+  api: () => (client ? client.conversationFolders : null),
+  ledger: chatFolders,
+  device: thisDevice,
+  log: (message) => console.warn(message),
+});
+/** 다른 화면에서 온 요청으로 조작한 마지막 것 — 대화마다. [폴더] 창이 보여 준다. */
+const lastRemoteUse = new Map<string, RemoteFolderUse>();
+function notifyFolderRemote(interactionId: string): void {
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersRemoteChanged, interactionId);
+  }
+}
+// 에이전트가 이 PC 의 폴더를 바꿨다 — 그 대화의 IDE 탐색기 [연결된 폴더] 가 다시 읽는다.
+getLocalToolProvider().onFolderChange((interactionId) => {
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersTouched, interactionId);
+  }
+});
+getLocalToolProvider().onRemoteUse((use) => {
+  lastRemoteUse.set(use.interactionId, use);
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersRemoteUse, use);
+  }
+});
+chatFolders.onChange((interactionId) => {
+  // 빠진 폴더에서 돌던 백그라운드 작업을 멈추고, 열린 창들이 목록을 다시 그린다.
+  getLocalToolProvider().foldersChanged(interactionId);
+  for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
+    safeSend(w, CHANNELS.chatFoldersChanged, interactionId, chatFolders.view(interactionId));
+  }
+  // 이 PC 에서 바꾼 것만 서버에 올린다(서버가 시켜서 잊은 것은 메아리가 된다).
+  if (chatFolderSync.isQuiet(interactionId)) return;
+  void chatFolderSync.publish(interactionId).then((result) => {
+    // 대화당 기기 하나만 받는 서버에서 그 사이 다른 기기가 이 대화를 가져갔다 — 이 PC 는 잊는다.
+    if (result && !result.ok && result.code === 'other_device') chatFolderSync.onOtherDevice(result.state);
+    notifyFolderRemote(interactionId);
+  });
+});
 /**
  * 현재 유효한 액세스 토큰 — **라이브 클라이언트(회전 반영) 우선**, 없으면 keychain.
- * WS 브릿지·워크스페이스 동기화가 keychain 만 읽으면, 세션 중 회전 시점과
+ * WS 브릿지·대화 소켓이 keychain 만 읽으면, 세션 중 회전 시점과
  * keychain 기록 사이의 틈에서 폐기된 토큰을 집는다. 단일 소스로 그 틈을 없앤다.
  */
 //: webRequest 콜백은 **동기**라 그 자리에서 keychain 을 기다릴 수 없다. 마지막
@@ -1511,12 +1654,66 @@ async function refreshAuthToken(): Promise<string | null> {
  *
  * 토큰은 항상 **라이브 값**을 집는다(liveAccessToken). keychain 만 읽으면 세션
  * 중 회전 시점과 기록 사이의 틈에서 폐기된 토큰을 잡아 403 에 갇힌다 — MCP
- * 브릿지·워크스페이스 동기화가 같은 이유로 같은 규칙을 쓴다.
+ * 브릿지·대화 소켓이 같은 이유로 같은 규칙을 쓴다.
  */
 const teamsHub = new TeamsSocketHub();
+/** IDE 가 쓰는 서버 연결 — 로그인하지 않았으면 없다. */
+const ideDeps = (): IdeTerminalDeps | null =>
+  currentUserId()
+    ? {
+        baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+        token: async () => (await liveAccessToken()) || '',
+        refreshAuth: refreshAuthToken,
+        allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+      }
+    : null;
+/** 채팅 [IDE] 의 터미널 소켓 — 렌더러 대신 main 이 연다(ide-terminal.ts). */
+const ideTerminals = new IdeTerminalHub(ideDeps, (sender, event) => {
+  try {
+    if (!sender.isDestroyed()) sender.send(CHANNELS.ideTermEvent, event);
+  } catch {
+    /* 창이 닫히는 중 */
+  }
+});
+/** 채팅 [IDE] 의 스토리지 변경 알림 — 터미널에서 만든 파일이 곧바로 탐색기에 보이게(ide-watch.ts). */
+const ideWatches = new IdeWatchHub(ideDeps, (sender, key) => {
+  try {
+    if (!sender.isDestroyed()) sender.send(CHANNELS.ideChanged, key);
+  } catch {
+    /* 창이 닫히는 중 */
+  }
+});
+/**
+ * 스트림이 끊긴 채 서버에서 계속 도는 이 앱의 턴 — 대화 id → 알림에 쓸 이름.
+ *
+ * 끊긴 스트림은 "답변 완료" 를 말할 수 없다(아직 안 끝났다). 그 턴의 끝은 대화 소켓이 알려 주므로,
+ * 거기서 끝이 보이면 그때 완료를 알린다. 예전에는 끊기는 순간 완료 알림이 떴고, 정작 끝났을 때는
+ * 아무 알림도 없었다.
+ */
+const detachedChats = new Map<string, { workflowId: string; workflowName: string }>();
+
+function publishDetachedDone(interactionId: string, output: string): void {
+  const chat = detachedChats.get(interactionId);
+  if (!chat) return;
+  detachedChats.delete(interactionId);
+  notificationCenter.publish({
+    id: `chat-completed-${interactionId}-${Date.now()}`,
+    type: 'chat.completed',
+    title: `${chat.workflowName || '에이전트'} 답변 완료`,
+    body: output.trim().slice(-180) || '답변이 완료되었습니다.',
+    occurredAt: new Date().toISOString(),
+    workflowId: chat.workflowId,
+    workflowName: chat.workflowName,
+    interactionId,
+    groupKey: `chat:${chat.workflowId}:${interactionId}`,
+    target: { kind: 'chat', workflowId: chat.workflowId, workflowName: chat.workflowName, interactionId },
+  });
+}
+
 // 대화 소켓 감시 — 서버가 주입한 턴(트리거 반응)을 열린 채팅에 실시간 반영.
 const conversationWatchHub = new ConversationWatchHub(
   (turn) => {
+    if (turn.source !== 'subagent_report' && turn.output) publishDetachedDone(turn.interactionId, turn.output);
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.chatWatchTurn, turn);
     }
@@ -1533,6 +1730,7 @@ const conversationWatchHub = new ConversationWatchHub(
   // 다른 화면이 돌리는 턴을 그대로 흘린다. 이것이 없던 동안, 웹에서 던진 질문은
   // 이 앱 화면에 **턴이 끝날 때까지** 나타나지 않았다.
   (event) => {
+    if (event.kind === 'ended' && event.output) publishDetachedDone(event.interactionId, event.output);
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(CHANNELS.chatWatchPeer, event);
     }
@@ -1546,9 +1744,49 @@ const conversationWatchHub = new ConversationWatchHub(
  * **바뀌었다는 말을 들었을 때만** 다시 읽는다.
  */
 const conversationsWatch = new ConversationsWatch((event) => {
+  if (event.kind === 'folders') {
+    // 이 대화의 폴더가 어느 기기들에 있는가 — 규칙은 ConversationFolderSync.onServerFolders.
+    chatFolderSync.onServerFolders(parseConversationFolders(event.data ?? {}, event.interactionId));
+    notifyFolderRemote(event.interactionId);
+    return;
+  }
+  if (event.kind === 'devices') {
+    // 기기가 켜지고 꺼졌다 — 열린 [폴더] 창이 "켜짐/꺼짐" 을 다시 읽는다.
+    notifyFolderRemote('');
+    return;
+  }
+  if (event.kind === 'model') {
+    // 다른 화면(웹·휴대폰·다른 PC)이 이 대화의 모델을 바꿨다 — 선택기가 따라간다.
+    for (const win of BrowserWindow.getAllWindows()) {
+      safeSend(win, CHANNELS.conversationModelChanged, event.interactionId, event.data ?? {});
+    }
+    return;
+  }
+  if (event.kind === 'apps') {
+    // 이 에이전트의 앱이 생기거나 지워지거나 배포·공유가 바뀌었다 — [앱] 탭과 에이전트 [앱] 하위 탭이
+    // 다시 읽는다. 대화 목록 소식이 아니므로 그쪽으로는 보내지 않는다(목록을 괜히 다시 읽는다).
+    for (const win of BrowserWindow.getAllWindows()) {
+      safeSend(win, CHANNELS.appsChanged, event.workflowId);
+    }
+    return;
+  }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(CHANNELS.conversationsChanged, event);
   }
+});
+
+/** 목록 소켓을 연다 — 대화를 열 때와 앱 화면을 열 때. 이미 붙어 있으면 아무것도 하지 않는다. */
+function ensureConversationsWatch(): void {
+  conversationsWatch.setDeps({
+    baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
+    token: async () => liveAccessToken(),
+    allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+  });
+  conversationsWatch.start();
+}
+ipcMain.handle(CHANNELS.appsWatch, () => {
+  ensureConversationsWatch();
+  return { ok: true };
 });
 ipcMain.handle(
   CHANNELS.chatWatchStart,
@@ -1565,16 +1803,11 @@ ipcMain.handle(
       interactionId,
     );
     // 목록 소켓은 대화와 무관하게 하나면 된다 — 이미 붙어 있으면 no-op 이다.
-    conversationsWatch.setDeps({
-      baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
-      token: async () => liveAccessToken(),
-      allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
-    });
-    conversationsWatch.start();
+    ensureConversationsWatch();
     return { ok: true };
   },
 );
-/** 같은 계정에 연결된 커넥터 기기 목록 — 로컬 컨트롤 상태 패널. */
+/** 같은 계정에 연결된 커넥터 기기 목록 — 설정 > 일반 > 연결된 기기. */
 ipcMain.handle(CHANNELS.connectorDevices, async () => {
   if (!client) return { devices: [] };
   try {
@@ -1659,6 +1892,8 @@ function syncTeams(): void {
     // 로그아웃/서버 미설정 — 방 소켓까지 전부 접는다. 다른 계정의 방을
     // 물고 있는 상태가 남으면 안 된다.
     teamsHub.stopAll();
+    ideTerminals.closeAll();
+    ideWatches.closeAll();
   }
 }
 
@@ -1802,13 +2037,14 @@ function syncMcp(): void {
   const browserTools = getBrowserToolProvider(getBrowserRuntime());
   browserTools.configure(
     cfg.browser?.enabled === true,
-    cfg.localShell?.allowedRoots ?? [],
+    // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
+    (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
     (page) => {
       showMain();
       safeSend(mainWindow, CHANNELS.browserRevealEvent, page);
     },
   );
-  getLocalToolProvider().configure(cfg.localShell, browserTools);
+  getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
@@ -1821,12 +2057,14 @@ function syncMcp(): void {
     onMcpRuntimeLog((entry) => safeSend(mainWindow, CHANNELS.mcpRuntimeLogEvent, entry));
   }
   const userId = currentUserId();
-  // The bridge is the single conduit for BOTH external MCP servers and the
-  // connector's built-in local tools. Start it when EITHER is on — the local
-  // shell capability must reach the agent even if the user configured no MCP
-  // servers (it is the out-of-the-box default).
-  const builtinOn = getLocalToolProvider().advertise().length > 0;
-  if ((cfg.mcp || builtinOn) && userId) {
+  // 로그인한 계정의 폴더 장부를 서버 사본과 맞춘다(계정마다 한 번) — 꺼져 있는 동안 다른
+  // 기기로 옮겨 간 대화는 잊고, 이 기능 이전에 붙인 폴더는 올린다.
+  if (userId) void chatFolderSync.reconcile();
+  // The bridge is the single conduit for BOTH external MCP servers and this PC's
+  // folder tools. It runs whenever someone is logged in: which conversation may
+  // use the folder tools is decided per call by that conversation's folders,
+  // not by whether the bridge is up.
+  if (userId) {
     // start() is idempotent for the same target: it refreshes the catalog on a
     // live socket instead of tearing it down, so repeated syncMcp() (e.g. on
     // token refresh / restore) never flaps the connection status.
@@ -1851,22 +2089,7 @@ function setMcpEnabled(enabled: boolean): void {
   broadcastConfig(next);
 }
 
-// ── Workspace 동기화 (에이전트 workflow ↔ 로컬 폴더, Drive형) ─────
 /** 이 설치본의 안정 디바이스 id — 최초 1회 생성 후 config 에 영속. */
-/**
- * 이 PC 의 표시 이름.
- *
- * 로컬 로그인 이름은 클라우드 트리에서 아무것도 구분하지 않는다 — 클라우드는
- * 이미 XGEN 계정으로 갈린다. 그래서 호스트명 앞의 로그인 이름을 걷어낸다.
- *
- * **바꿀 수 있게 두지 않는다.** 이 이름은 서버가 이 기기를 **처음** 볼 때
- * 폴더 이름이 되고, 그 폴더는 이후 어떤 이름 변경에도 움직이지 않는다. 바꿀
- * 수 있게 하면 사용자는 주소를 옮기려 하고, 파일은 예전 자리에 남는다.
- */
-function deviceNameOf(): string {
-  return defaultDeviceName(hostname(), userInfo().username);
-}
-
 function ensureDeviceId(): string {
   const cfg = loadConfig();
   if (cfg.deviceId) return cfg.deviceId;
@@ -1928,14 +2151,12 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     // 폐기된 토큰으로 최대 60초 백오프까지 영원히 재시도한다 (로그아웃 경로에는
     // 있는데 여기만 없어서 생기던 누수).
     teamsHub.stopAll();
+    ideTerminals.closeAll();
+    ideWatches.closeAll();
     await getBrowserRuntime().closeAll();
     getBrowserRuntime().configure({ enabled: false });
     void client?.logout().catch(() => undefined); // 구 서버 세션 무효화 (rebind 전 호출)
     client = null; // in-memory user/token 을 남기지 않도록 새 인스턴스로
-    // ⚠ **client 를 비운 뒤에** 걷는다. 앞에서 부르면 아직 살아 있는
-    // `client.user` 때문에 리컨사일이 "로그인 중" 으로 판단해 구 서버의
-    // 마운트를 그대로 남긴다 (로그아웃 경로와 같은 함정).
-    fileSystem?.reconcile();
     await tokenStore.clear();
     await credentialStore.clear();
     patch = { ...patch, autoLogin: false }; // 저장된 자동 로그인은 구 서버 계정
@@ -1952,15 +2173,12 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     applyMcpHttpCertificatePolicy();
     await mcpHttpSession().closeAllConnections();
     syncMcp();
-    fileSystem?.reconcile();
   }
   if (patch.autoUpdate !== undefined) setAutoUpdate(!!patch.autoUpdate);
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
   // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.localShell !== undefined || patch.browser !== undefined) syncMcp();
-  // 기본 작업 폴더/토글 변경 → 에이전트 workspace 로컬 동기화도 따라간다.
-  if (patch.localShell !== undefined) fileSystem?.reconcile();
+  if (patch.browser !== undefined) syncMcp();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -1996,9 +2214,6 @@ async function afterAuthSuccess(refreshToken?: string): Promise<boolean> {
   syncMcp();
   syncTeams();
   safeSend(overlayWindow, CHANNELS.avatarRefresh); // client is now authed → overlay can load the avatar
-  // 파일 시스템 동기화는 로그인 상태에서만 대상이 생긴다 — 로그인이 끝난
-  // 지금 에이전트 목록을 읽고 리컨사일한다.
-  void fileSystem?.refreshAgents();
   checkForUpdatesAfterLogin();
   return persisted;
 }
@@ -2178,14 +2393,11 @@ ipcMain.handle(CHANNELS.authRestore, async () => {
     if (rotated && rotated !== access) await tokenStore.setAccess(rotated);
     const rotatedRefresh = c.getRefreshToken();
     if (rotatedRefresh && rotatedRefresh !== refresh) await tokenStore.setRefresh(rotatedRefresh);
-    // 세션 복원도 **로그인 성공과 같은 뒷정리**가 필요하다. 예전엔 여기서
-    // 같은 일을 손으로 되풀이했는데, 그러다 보니 afterAuthSuccess 에만 있는
-    // 워크스페이스 리컨사일이 빠져 **재시작할 때마다 드라이브가 안 붙었다**.
-    // 갈래가 둘이면 한쪽만 갱신되는 날이 온다 — 한 곳으로 모은다.
+    // 세션 복원도 **로그인 성공과 같은 뒷정리**가 필요하다(afterAuthSuccess 와
+    // 같은 목록) — 갈래가 둘이면 한쪽만 갱신되는 날이 온다.
     syncMcp();
     syncTeams();
     safeSend(overlayWindow, CHANNELS.avatarRefresh); // session restored → overlay can load the avatar
-    void fileSystem?.refreshAgents();
     return { user: c.user };
   }
   if (verdict === 'invalid') {
@@ -2200,14 +2412,12 @@ ipcMain.handle(CHANNELS.authLogout, async () => {
   desktopNativeSessions.reset();
   getMcpBridge().stop();
   teamsHub.stopAll();
+  ideTerminals.closeAll();
+  ideWatches.closeAll();
   await getBrowserRuntime().closeAll();
   getBrowserRuntime().configure({ enabled: false });
   if (client) await client.logout();
   await tokenStore.clear();
-  // 동기화 페어는 로그인 상태에서만 존재한다 — 로그아웃하면 걷어낸다.
-  // ⚠ **반드시 logout 뒤에.** 앞에서 부르면 그 시점의 `client.user` 가 아직
-  // 살아 있어 리컨사일이 "로그인 중" 으로 판단하고 페어를 그대로 둔다.
-  fileSystem?.reconcile();
   // An explicit logout also disables auto-login (else next launch signs right back in).
   await credentialStore.clear();
   saveConfig({ autoLogin: false });
@@ -2269,6 +2479,7 @@ ipcMain.handle(CHANNELS.avatarStoreUnpublish, (_e, storeId: string) =>
 ipcMain.handle(CHANNELS.agentsList, (_e, query) => getClient().agents.list(query ?? {}));
 ipcMain.handle(CHANNELS.agentsCreateOptions, () => getClient().agents.createOptions());
 ipcMain.handle(CHANNELS.agentsCreate, (_e, input) => getClient().agents.create(input));
+ipcMain.handle(CHANNELS.agentsNameTaken, (_e, name: string) => getClient().agents.nameTaken(String(name ?? '')));
 
 // ── IPC: voice (STT/TTS) ─────────────────────────────────────────
 // The renderer captures audio via getUserMedia and hands bytes to main; main
@@ -2325,6 +2536,44 @@ ipcMain.handle(
     getClient().history.snapshot(workflowId, interactionId, name),
 );
 ipcMain.handle(CHANNELS.historyConversations, () => getClient().history.conversations());
+ipcMain.handle(
+  CHANNELS.historyConversationPage,
+  (_e, opts?: { limit?: number; cursor?: string | null; kind?: ConversationKind; workflowId?: string }) => {
+    // 목록을 그리는 화면이 있으면 목록 소켓도 붙인다. 새 대화·방금 말한 대화가 곧바로 밀려온다.
+    ensureConversationsWatch();
+    return getClient().history.conversationPage(opts ?? {});
+  },
+);
+ipcMain.handle(CHANNELS.historyConversationAgents, (_e, opts?: { limit?: number }) => {
+  ensureConversationsWatch();
+  return getClient().history.conversationAgents(opts ?? {});
+});
+ipcMain.handle(CHANNELS.historyRename, (_e, workflowId: string, interactionId: string, title: string) =>
+  getClient().history.renameConversation(workflowId, interactionId, String(title ?? '')),
+);
+ipcMain.handle(CHANNELS.historyDelete, (_e, workflowId: string, interactionId: string, workflowName?: string) =>
+  getClient().history.deleteConversation(workflowId, interactionId, workflowName),
+);
+ipcMain.handle(CHANNELS.historyPurgeDeletedAgents, () => getClient().history.purgeDeletedAgentConversations());
+ipcMain.handle(CHANNELS.historySearch, (_e, query: string, opts?: { limit?: number; kind?: ConversationKind }) =>
+  getClient().history.searchConversations(String(query ?? ''), opts ?? {}),
+);
+
+// ── IPC: 채팅 공유 ─────────────────────────────────────────────────
+// 서버는 경로(/share/chat/<token>)만 준다. 절대 주소는 서버 주소를 아는 여기서 붙인다(appSetShare 와 같다).
+const withShareUrl = <T extends { path: string } | null>(link: T): (T & { url: string }) | null => {
+  if (!link) return null;
+  return { ...link, url: shareLinkUrl(normalizeServerUrl(loadConfig().serverUrl), link.path) };
+};
+ipcMain.handle(CHANNELS.chatShareState, async (_e, workflowId: string, interactionId: string) => {
+  const res = await getClient().chatShares.state(workflowId, interactionId);
+  return { ...res, share: withShareUrl(res.share), previous: res.previous.map((p) => withShareUrl(p)) };
+});
+ipcMain.handle(CHANNELS.chatShareCreate, async (_e, input: ChatShareInput) => {
+  const res = await getClient().chatShares.create(input);
+  return { ...res, share: withShareUrl(res.share) };
+});
+ipcMain.handle(CHANNELS.chatShareRevoke, (_e, token: string) => getClient().chatShares.revoke(token));
 
 // ── IPC: Agent Viewer (읽기 전용 관측 데이터) ───────────────────────
 ipcMain.handle(CHANNELS.agentTraceList, (_e, wf: string, page?: number, pageSize?: number) =>
@@ -2345,10 +2594,32 @@ ipcMain.handle(CHANNELS.agentTaskOutput, (_e, wf: string, runId: string) =>
   getClient().agentData.taskOutput(wf, runId),
 );
 ipcMain.handle(CHANNELS.agentBasicInfo, (_e, wf: string) => getClient().agentData.basicInfo(wf));
-// 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
+// 대화의 모델 — 채팅 입력창 옆 선택기. 서버가 들고 있다가 다음 턴 시작에 바꿔 끼운다.
+ipcMain.handle(CHANNELS.conversationModelGet, (_e, iid: string, wf: string) =>
+  getClient().conversationModel.get(String(iid ?? ''), String(wf ?? '')),
+);
+ipcMain.handle(
+  CHANNELS.conversationModelSet,
+  (_e, iid: string, wf: string, choice: { provider: string; model: string }) =>
+    getClient().conversationModel.set(String(iid ?? ''), String(wf ?? ''), {
+      provider: String(choice?.provider ?? ''),
+      model: String(choice?.model ?? ''),
+    }),
+);
+ipcMain.handle(CHANNELS.conversationModelReset, (_e, iid: string, wf: string) =>
+  getClient().conversationModel.reset(String(iid ?? ''), String(wf ?? '')),
+);
+// 대화의 생각(추론) 값 — 모델 칩 오른쪽 선택기. 고를 수 있는 값은 지금 모델이 받는 것만(서버가 준다).
+ipcMain.handle(CHANNELS.conversationThinkingSet, (_e, iid: string, wf: string, thinking: string) =>
+  getClient().conversationModel.setThinking(String(iid ?? ''), String(wf ?? ''), String(thinking ?? 'auto') as ThinkingValue),
+);
+ipcMain.handle(CHANNELS.conversationThinkingReset, (_e, iid: string, wf: string) =>
+  getClient().conversationModel.resetThinking(String(iid ?? ''), String(wf ?? '')),
+);
+// 채팅 안전 장치: 면책 문구 설정과 통제 정책 입력창 사전 검사. 실패해도 대화를 막지 않는다(정본이 기본값을 정한다).
 ipcMain.handle(CHANNELS.guardDisclaimer, () => getClient().guardrails.disclaimerEnabled());
-ipcMain.handle(CHANNELS.guardCheckContent, (_e, text: string) =>
-  getClient().guardrails.checkContent(text),
+ipcMain.handle(CHANNELS.guardCheckInput, (_e, text: string, workflowId?: string | null) =>
+  getClient().guardrails.checkInput(String(text ?? ''), workflowId ?? null),
 );
 // 답변 평가 — 화면은 값만 넘기고, 서버와 말하는 일은 여기 한 곳에서 한다(웹과 같은 엔드포인트).
 ipcMain.handle(
@@ -2371,26 +2642,16 @@ ipcMain.handle(CHANNELS.agentWsTree, (_e, wf: string, path?: string) =>
   getClient().agentData.workspaceTree(wf, path),
 );
 
-/** [아티팩트 모음] 의 응답 — 못 읽은 에이전트도 숨기지 않고 함께 돌려준다. */
-interface ArtifactGalleryResult {
-  items: ArtifactGalleryItem[];
-  /** 훑어본 에이전트 수 (XGeny 만). */
-  scanned: number;
-  /** 목록을 못 읽은 에이전트 이름들 — 조용히 빠뜨리지 않는다. */
-  failed: string[];
-  error?: string;
-}
-
-// ── 아티팩트 ──────────────────────────────────────────────────────
-ipcMain.handle(CHANNELS.artifactList, (_e, wf: string) => getClient().agentData.artifactList(wf));
-ipcMain.handle(CHANNELS.artifactGet, (_e, wf: string, slug: string) =>
-  getClient().agentData.artifactGet(wf, slug),
+// ── 앱 ──────────────────────────────────────────────────────
+ipcMain.handle(CHANNELS.appList, (_e, wf: string) => getClient().agentData.appList(wf));
+ipcMain.handle(CHANNELS.appGet, (_e, wf: string, slug: string) =>
+  getClient().agentData.appGet(wf, slug),
 );
-ipcMain.handle(CHANNELS.artifactSetServing, (_e, wf: string, slug: string, serving: boolean) =>
-  getClient().agentData.artifactSetServing(wf, slug, serving),
+ipcMain.handle(CHANNELS.appSetServing, (_e, wf: string, slug: string, serving: boolean) =>
+  getClient().agentData.appSetServing(wf, slug, serving),
 );
-ipcMain.handle(CHANNELS.artifactDelete, (_e, wf: string, slug: string) =>
-  getClient().agentData.artifactDelete(wf, slug),
+ipcMain.handle(CHANNELS.appDelete, (_e, wf: string, slug: string) =>
+  getClient().agentData.appDelete(wf, slug),
 );
 
 /**
@@ -2400,82 +2661,130 @@ ipcMain.handle(CHANNELS.artifactDelete, (_e, wf: string, slug: string) =>
  * 호스트로 보이는지 모른다. 둘을 아는 자리는 여기뿐이다.
  */
 ipcMain.handle(
-  CHANNELS.artifactSetShare,
-  async (_e, wf: string, slug: string, shared: boolean) => {
-    const res = await getClient().agentData.artifactSetShare(wf, slug, shared);
+  CHANNELS.appSetShare,
+  async (
+    _e, wf: string, slug: string, shared: boolean,
+    opts?: { audience?: ShareAudience; rotate?: boolean },
+  ) => {
+    const res = await getClient().agentData.appSetShare(wf, slug, shared, opts ?? {});
     const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
     return { ...res, url: res.shared && res.path ? `${base}${res.path}` : '' };
   },
 );
-
-/** 웹의 같은 아티팩트 화면을 기본 브라우저로 연다(사내 링크 — 로그인이 필요하다). */
-ipcMain.handle(CHANNELS.artifactOpenWeb, (_e, wf: string, slug: string) => {
+ipcMain.handle(CHANNELS.appGetShare, async (_e, wf: string, slug: string) => {
+  const res = await getClient().agentData.appGetShare(wf, slug);
   const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
-  const url = `${base}/artifact/${encodeURIComponent(wf)}/${encodeURIComponent(slug)}`;
+  return { ...res, url: res.shared && res.path ? `${base}${res.path}` : '' };
+});
+
+/** 웹의 같은 앱 화면을 기본 브라우저로 연다(사내 링크 — 로그인이 필요하다). */
+ipcMain.handle(CHANNELS.appOpenWeb, (_e, wf: string, slug: string) => {
+  const base = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
+  // 경로는 서버 세대를 아는 쪽이 정한다 — 옛 서버의 웹에는 /app/… 화면이 없다.
+  const url = `${base}${getClient().agentData.appWebPath(wf, slug)}`;
   void shell.openExternal(url);
   return url;
 });
 
+/**
+ * [앱 스토어] 의 앱을 공개 링크로 연다 — 로그인 없이 열리는 주소다.
+ *
+ * 렌더러는 서버가 준 경로만 넘긴다. 절대 주소는 appOpenWeb 과 같은 방식으로 여기서
+ * 만들고, 서버와 다른 곳을 가리키면 열지 않는다(app-links.ts).
+ */
+ipcMain.handle(CHANNELS.appOpenPublic, (_e, path: string) => {
+  const url = publicAppUrl(normalizeServerUrl(loadConfig().serverUrl), path);
+  if (!url) throw new Error('열 수 없는 주소입니다');
+  void shell.openExternal(url);
+  return url;
+});
+
+// 카드의 미리보기 그림 — 받기(data URL)·찍어 올리기. 판정은 app-preview.ts.
+const appPreviews = new AppPreviewService({
+  client: () => getClient(),
+  serverBase: () => normalizeServerUrl(loadConfig().serverUrl),
+  shoot: (url) => shootAppPreview(url),
+});
+ipcMain.handle(CHANNELS.appPreviewImage, (_e, previewUrl: string) =>
+  appPreviews.image(typeof previewUrl === 'string' ? previewUrl : ''),
+);
+ipcMain.handle(CHANNELS.appCapturePreview, (_e, target: PreviewTarget) => {
+  const t = target && typeof target === 'object' ? target : ({} as PreviewTarget);
+  return appPreviews.capture({
+    workflow_id: String(t.workflow_id ?? ''),
+    slug: String(t.slug ?? ''),
+    kind: String(t.kind ?? ''),
+    app_url: typeof t.app_url === 'string' ? t.app_url : undefined,
+    force: t.force === true,
+  });
+});
+
+// [앱] 탭 — [내 앱]·[앱 스토어]. 서버가 에이전트를 훑어 모아 주므로 여기서는 통과만 한다.
+ipcMain.handle(CHANNELS.appStoreMine, () => getClient().agentData.appStoreMine());
+ipcMain.handle(CHANNELS.appStoreList, (_e, params?: AppStoreListParams) => {
+  const p = params && typeof params === 'object' ? params : {};
+  return getClient().agentData.appStoreList({
+    search: typeof p.search === 'string' ? p.search : undefined,
+    scope: p.scope === 'mine' ? 'mine' : 'all',
+    page: typeof p.page === 'number' ? p.page : undefined,
+    pageSize: typeof p.pageSize === 'number' ? p.pageSize : undefined,
+  });
+});
+
 ipcMain.handle(
-  CHANNELS.artifactCallApi,
-  (_e, apis: ArtifactApiDeclaration[], alias: string, params?: Record<string, string>) =>
-    getClient().agentData.artifactCallApi(apis, alias, params ?? null),
+  CHANNELS.appCallApi,
+  (_e, apis: AppApiDeclaration[], alias: string, params?: Record<string, string>) =>
+    getClient().agentData.appCallApi(apis, alias, params ?? null),
 );
 ipcMain.handle(
-  CHANNELS.artifactHttp,
+  CHANNELS.appHttp,
   (_e, workflowId: string, slug: string, req: { url: string; method: string; headers: Record<string, string>; body: string | null }) =>
-    getClient().agentData.artifactHttp(workflowId, slug, req),
+    getClient().agentData.appHttp(workflowId, slug, req),
 );
 
-/**
- * [아티팩트 모음] — 모든 에이전트가 만든 것 중 **지금 열리는 것**만.
- *
- * 서버에 "전부 다오" 엔드포인트는 없다(아티팩트는 에이전트 workspace 안의
- * 폴더라, 소유자별로만 물어볼 수 있다). 그래서 여기서 훑는다 — 렌더러가 아니라
- * main 인 이유는 왕복이 에이전트 수만큼 생기기 때문이다. IPC 한 번으로 끝난다.
- *
- * XGeny 에이전트만 묻는다: workspace 가 있는 것이 그것뿐이라, 나머지에 물으면
- * 확실히 빈 목록을 받으려고 요청을 낭비하는 셈이다.
- */
-ipcMain.handle(CHANNELS.artifactGallery, async (): Promise<ArtifactGalleryResult> => {
-  const client = getClient();
-  let agents: Agent[];
-  try {
-    // listAll — 한 페이지만 읽으면 에이전트가 많은 계정에서 **조용히** 잘린다.
-    // 그건 이 화면이 가장 하지 말아야 할 실패다(빠진 줄을 아무도 모른다).
-    agents = await client.agents.listAll();
-  } catch (e) {
-    return { items: [], scanned: 0, failed: [], error: (e as Error).message };
+// ── IDE (채팅의 [IDE] 보기) ─────────────────────────────────────
+// 서버 경로는 @dex/protocol 의 IdeApi 에 있다. 여기서는 허용된 메서드만 부르고, 실패를
+// 봉투({ok:false, status, code, message, detail})로 돌려준다 — IPC 가 오류를 문자열로만
+// 넘겨서, 그대로 던지면 저장 충돌(409)의 지금 sha 가 사라진다.
+const IDE_METHODS = new Set([
+  'session', 'files', 'read', 'save', 'stat', 'raw', 'fs',
+  'search', 'replace', 'git', 'terminals', 'closeTerminal',
+]);
+ipcMain.handle(CHANNELS.ideCall, async (_e, method: string, workflowId: string, ...args: unknown[]) => {
+  if (!IDE_METHODS.has(String(method)) || typeof workflowId !== 'string' || !workflowId) {
+    return { ok: false, status: 400, code: 'bad_request', message: '알 수 없는 요청입니다', detail: {} };
   }
-  const targets = agents.filter((a) => a.hasAgentGeny);
-  const items: ArtifactGalleryItem[] = [];
-  const failed: string[] = [];
-  // 동시 요청은 묶어서 — 에이전트가 수십 개여도 서버를 한꺼번에 때리지 않는다.
-  const LANES = 6;
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(LANES, targets.length) }, async () => {
-      for (;;) {
-        const agent = targets[cursor++];
-        if (!agent) return;
-        try {
-          const res = await client.agentData.artifactList(agent.workflowId);
-          for (const a of res.artifacts) {
-            // "현재 serving 되고 있는 것만" — 열 수 없는 것은 그 에이전트의
-            // [아티팩트] 탭에서 이유와 함께 본다. 모음은 **여는 자리**다.
-            if (!a.ready) continue;
-            items.push({ ...a, workflowId: agent.workflowId, workflowName: agent.workflowName });
-          }
-        } catch {
-          // 한 에이전트를 못 읽는 것과 모음을 못 여는 것은 다른 일이다.
-          failed.push(agent.workflowName || agent.workflowId);
-        }
-      }
-    }),
-  );
-  items.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
-  return { items, scanned: targets.length, failed };
+  try {
+    const api = getClient().ide as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    return { ok: true, value: await api[method](workflowId, ...args) };
+  } catch (err) {
+    return { ok: false, ...ideFailureOf(err) };
+  }
 });
+ipcMain.handle(CHANNELS.ideDownload, async (_e, workflowId: string, path: string) => {
+  const bytes = await getClient().ide.raw(workflowId, path);
+  return saveAttachmentAs(mainWindow, String(path).split('/').pop() || 'file', bytes);
+});
+ipcMain.handle(
+  CHANNELS.ideTermOpen,
+  (e, socket: string, workflowId: string, termId: string, opts: { rows: number; cols: number; cwd?: string }) => {
+    ideTerminals.open(e.sender, String(socket), String(workflowId), String(termId), {
+      rows: Number(opts?.rows) || 24,
+      cols: Number(opts?.cols) || 80,
+      cwd: typeof opts?.cwd === 'string' ? opts.cwd : undefined,
+    });
+    return true;
+  },
+);
+ipcMain.on(CHANNELS.ideTermSend, (_e, socket: string, frame: unknown) => ideTerminals.send(String(socket), frame));
+ipcMain.on(CHANNELS.ideTermClose, (_e, socket: string) => ideTerminals.close(String(socket)));
+ipcMain.on(CHANNELS.ideWatch, (e, key: string, workflowId: string) => {
+  if (typeof key === 'string' && key && typeof workflowId === 'string' && workflowId) {
+    ideWatches.watch(e.sender, key, workflowId);
+  }
+});
+ipcMain.on(CHANNELS.ideUnwatch, (_e, key: string) => ideWatches.unwatch(String(key)));
+
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),
 );
@@ -2483,6 +2792,17 @@ ipcMain.handle(
   CHANNELS.agentWsBinary,
   (_e, wf: string, path: string, purpose?: 'chat_attachment') =>
     getClient().agentData.workspaceBinary(wf, path, purpose),
+);
+// 문서 미리보기 — [파일 저장소] 와 같은 렌더러(서버)가 그린 페이지 그림. 에이전트 작업 공간의 docx·pptx·xlsx·hwp.
+ipcMain.handle(CHANNELS.agentWsDocPreview, (_e, wf: string, path: string) =>
+  getClient().agentData.workspaceDocPreview(wf, path),
+);
+ipcMain.handle(CHANNELS.agentWsPreviewPage, (_e, wf: string, page: string) =>
+  getClient().agentData.workspacePreviewPage(wf, page),
+);
+// 답에 딸린 파일 — 웹 채팅의 다운로드 단추·그림 카드와 같은 것(파일 저장소의 결과물·API 응답 임시 파일).
+ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean }) =>
+  getClient().chatFiles.download(item, { preview: opts?.preview === true }),
 );
 ipcMain.handle(
   CHANNELS.agentWsUpload,
@@ -2621,6 +2941,12 @@ ipcMain.handle(CHANNELS.clipboardWrite, (_e, text: unknown) => {
   return true;
 });
 
+// 우리 렌더러만 읽는다 — 창 안의 앱(에이전트가 쓴 코드)은 이 다리를 받지 못한다.
+ipcMain.handle(CHANNELS.clipboardRead, (e) => {
+  if (!isRendererUrl(e.senderFrame?.url ?? '')) return '';
+  return clipboard.readText();
+});
+
 // ── IPC: Teams 첨부 ──────────────────────────────────────────────
 // 파일 경로는 **메인에만** 존재한다. 렌더러는 "고르기 → 올리기" 를 시킬 수만
 // 있고, 어떤 경로를 읽고 쓸지는 정하지 못한다.
@@ -2646,22 +2972,22 @@ ipcMain.handle(CHANNELS.teamsUploadAttachment, async (_e, roomId: string) => {
 });
 
 /**
- * 워크스페이스(가상 드라이브)의 파일을 그대로 방에 올린다 — 에이전트 산출물 공유.
+ * 파일 저장소의 파일을 그대로 방에 올린다 — 탐색기에서 고른 파일 공유.
  *
- * 렌더러는 **드라이브 상대 경로**(`/에이전트/…`)만 넘긴다. 절대 경로를 받아
- * "안에 있는지" 검사하는 방식은 심볼릭 링크·대소문자·UNC 로 뚫린다. 탐색기의
- * `workspaceOpenPath` 와 같은 규칙을 그대로 쓴다: 검증된 상대 경로를 마운트
- * 루트에 붙이는 것만 허용한다.
+ * 렌더러는 **저장소 상대 경로**(`/폴더/파일`)만 넘긴다. 바이트는 서버의 파일
+ * 저장소에서 받아 그대로 올린다.
  */
 ipcMain.handle(CHANNELS.teamsShareWorkspaceFile, async (_e, roomId: string, path: unknown) => {
-  const root = fileSystem?.cloudDir();
   const rel = safeDrivePath(path);
-  if (!root || !rel) throw new Error('클라우드 동기화 폴더 안의 파일만 공유할 수 있습니다.');
-  const target = join(root, ...rel.split('/').filter(Boolean));
-  const file = await readFileForUpload(target);
-  const reason = teamsAttachmentRejectReason(file.filename, file.bytes.byteLength);
+  if (!rel) throw new Error('파일 저장소 안의 파일만 공유할 수 있습니다.');
+  const c = getClient();
+  const item = await c.filestore.resolveItemByPath(rel);
+  if (!item) throw new Error('파일 저장소에서 파일을 찾지 못했습니다.');
+  const filename = item.file_name;
+  const reason = teamsAttachmentRejectReason(filename, Number(item.file_size) || 0);
   if (reason) throw new Error(reason);
-  return getClient().teams.uploadAttachment(roomId, file.bytes, file.filename);
+  const { bytes } = await c.filestore.download(item.id);
+  return c.teams.uploadAttachment(roomId, bytes, filename);
 });
 
 ipcMain.handle(CHANNELS.teamsSaveAttachment, async (_e, roomId: string, att: TeamsAttachment) => {
@@ -2694,9 +3020,18 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
   aborters.set(streamId, controller);
   const sender = e.sender;
   (async () => {
-    const serverReq: ChatRequest = { ...(req as ChatRequest) };
+    const serverReq: ChatRequest = {
+      ...(req as ChatRequest),
+      // 이 대화에 연결된 폴더 — 렌더러가 보낸 값이 아니라 main 의 장부가 정본이다.
+      // 빈 목록도 보낸다: 서버는 그것으로 "이 대화엔 폴더가 없다"를 안다.
+      localFolders: localFoldersForRequest(chatFolders.list((req as ChatRequest).interactionId)),
+      // 설정에서 기억 지도를 껐으면 이 턴도 끈다(렌더러가 아니라 main 의 설정이 정본).
+      ...(loadConfig().memoryMap === false ? { memoryMap: false } : {}),
+    };
     let preview = '';
     let terminal = false;
+    /** 스트림이 끊겼다 — 턴은 서버에서 계속 돈다. 끝난 것이 아니므로 완료로 접지 않는다. */
+    let detached = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
       const event: NotificationEvent = {
         id: `chat-${kind}-${streamId}`,
@@ -2747,9 +3082,21 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
           publishTerminal('failed', ev.detail);
           break;
         }
+        if (ev.kind === 'detached') {
+          // 끝이 아니라 분리다. 완료 알림은 대화 소켓이 그 턴의 끝을 알려 줄 때 띄운다.
+          detached = true;
+          if (serverReq.interactionId) {
+            detachedChats.set(serverReq.interactionId, {
+              workflowId: serverReq.workflowId,
+              workflowName: serverReq.workflowName || '',
+            });
+          }
+          break;
+        }
       }
       // 일부 서버는 end 프레임 없이 정상 EOF 로 닫는다. 취소가 아니라면 같은 완료다.
-      if (!terminal && !controller.signal.aborted && !sender.isDestroyed()) {
+      // (프로토콜은 그런 닫힘을 분리로 알려 준다 — 그때는 완료가 아니다.)
+      if (!terminal && !detached && !controller.signal.aborted && !sender.isDestroyed()) {
         sender.send(CHANNELS.chatEvent, streamId, { kind: 'end' });
         publishTerminal('completed');
       }
@@ -2803,6 +3150,8 @@ ipcMain.handle(
 // best-effort — 서버 미도달/미인증이어도 로컬 삭제 UX 는 막지 않는다.
 ipcMain.handle(CHANNELS.chatEndSession, async (_e, workflowId: string, interactionId: string) => {
   if (!workflowId || !interactionId) return false;
+  // 대화를 지우면 그 대화의 폴더 연결도 없앤다(돌던 작업도 함께 멈춘다).
+  chatFolders.forget(interactionId);
   try {
     await getClient().agentData.endSession(workflowId, interactionId);
     return true;
@@ -2898,6 +3247,8 @@ ipcMain.handle(CHANNELS.updaterSetEnabled, (_e, enabled: boolean) => {
   saveConfig({ autoUpdate: enabled });
   return enabled;
 });
+// 렌더러(우리 코드 — will-navigate 가 앱 창을 우리 렌더러에 묶는다)가 여는 주소는 스킴을 거르지
+// 않는다: macOS 알림 설정(x-apple.systempreferences:) 같은 OS 주소를 연다.
 ipcMain.handle(CHANNELS.openExternal, (_e, url: string) => shell.openExternal(url));
 ipcMain.handle(CHANNELS.appVersion, () => app.getVersion());
 ipcMain.handle(CHANNELS.systemMetrics, () =>
@@ -3037,16 +3388,109 @@ ipcMain.on(CHANNELS.overlayFocusMain, () => showMain());
 ipcMain.on(CHANNELS.overlayOpenSettings, () => openMainSettings());
 ipcMain.on(CHANNELS.overlayHide, () => setOverlayEnabled(false));
 
-// ── IPC: app / window management ─────────────────────────────────
-/** 네이티브 폴더 선택 — 설정 화면(기본 작업 폴더·허용 폴더)이 쓴다. 경로를
- *  타이핑하게 두면 오타 하나로 도구 스코프가 조용히 빗나간다 — 고르게 한다. */
-ipcMain.handle(CHANNELS.pickFolder, async () => {
-  const win = mainWindow;
-  const r = win
-    ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
-    : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] });
-  return r.canceled ? null : (r.filePaths[0] ?? null);
+// ── IPC: 대화별 폴더 연결 ────────────────────────────────────────
+ipcMain.handle(CHANNELS.chatFoldersList, (_e, interactionId: string) =>
+  chatFolders.view(String(interactionId ?? '')),
+);
+/** 네이티브 선택 창으로만 폴더가 들어온다 — 렌더러는 경로 문자열을 보낼 수 없다.
+ *  경로를 타이핑하게 두면 오타 하나로 범위가 조용히 빗나간다. */
+ipcMain.handle(CHANNELS.chatFoldersAdd, async (e, interactionId: string) => {
+  const id = String(interactionId ?? '').trim();
+  if (!id) throw new Error('대화를 찾지 못했습니다.');
+  const win = BrowserWindow.fromWebContents(e.sender) ?? mainWindow;
+  const options = {
+    title: '이 대화에 연결할 폴더',
+    buttonLabel: '연결',
+    properties: ['openDirectory', 'multiSelections', 'createDirectory'] as Array<
+      'openDirectory' | 'multiSelections' | 'createDirectory'
+    >,
+  };
+  const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  if (!r.canceled && r.filePaths.length) {
+    // 대화당 기기 하나만 받는 서버가 거절하면(다른 기기에 폴더가 있다) 더하지 않는다 — 창이
+    // [이 기기로 옮기기] 를 묻는다. 여러 기기를 받는 서버면 이 PC 의 폴더가 함께 붙는다.
+    const next = normalizeLocalFolders([
+      ...chatFolders.list(id),
+      ...r.filePaths.map((path) => ({ path })),
+    ]);
+    const out = await chatFolderSync.add(id, next);
+    if (!out.ok) notifyFolderRemote(id);
+  }
+  return chatFolders.view(id);
 });
+/** 이 대화의 서버 사본 — 다른 기기에 있는 폴더와 그 기기가 켜져 있는지. */
+ipcMain.handle(CHANNELS.chatFoldersRemote, async (_e, interactionId: string) => {
+  const id = String(interactionId ?? '').trim();
+  const state = id ? await chatFolderSync.state(id) : null;
+  return {
+    state,
+    deviceId: ensureDeviceId(),
+    exclusive: chatFolderSync.isExclusive(id, state),
+    lastRemoteUse: lastRemoteUse.get(id) ?? null,
+  };
+});
+/** [이 기기로 옮기기] — 고른 폴더가 이 대화의 폴더가 되고, 다른 기기의 연결은 해제된다. */
+ipcMain.handle(CHANNELS.chatFoldersMoveHere, async (e, interactionId: string) => {
+  const id = String(interactionId ?? '').trim();
+  if (!id) throw new Error('대화를 찾지 못했습니다.');
+  const win = BrowserWindow.fromWebContents(e.sender) ?? mainWindow;
+  const options = {
+    title: '이 대화에서 쓸 이 PC 의 폴더',
+    buttonLabel: '옮기기',
+    properties: ['openDirectory', 'multiSelections', 'createDirectory'] as Array<
+      'openDirectory' | 'multiSelections' | 'createDirectory'
+    >,
+  };
+  const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  if (!r.canceled && r.filePaths.length) {
+    const next = normalizeLocalFolders(r.filePaths.map((path) => ({ path })));
+    await chatFolderSync.add(id, next, { takeOver: true });
+    notifyFolderRemote(id);
+  }
+  return chatFolders.view(id);
+});
+ipcMain.handle(CHANNELS.chatFoldersRemove, (_e, interactionId: string, folderId: string) => {
+  const id = String(interactionId ?? '').trim();
+  if (id && folderId) chatFolders.remove(id, String(folderId));
+  return chatFolders.view(id);
+});
+ipcMain.handle(CHANNELS.chatFoldersReveal, async (_e, interactionId: string, folderId: string) => {
+  const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === folderId);
+  if (!folder) return { ok: false, error: '연결된 폴더가 아닙니다.' };
+  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (동기 확인·앱 종료 대기).
+  const err = await openWithDefaultApp(folder.path);
+  return { ok: !err, error: err || undefined };
+});
+
+/**
+ * IDE 탐색기 [연결된 폴더] — 이 대화에 연결한 폴더 안에서만 읽고 쓴다(폴더 밖·링크로 빠져나가는
+ * 경로는 folder-fs 가 거부한다). 실패는 봉투로 돌려 렌더러가 IdeError 로 되살린다.
+ */
+ipcMain.handle(
+  CHANNELS.chatFoldersFs,
+  async (_e, interactionId: unknown, rootId: unknown, op: unknown, args: unknown) => {
+    const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === String(rootId ?? ''));
+    if (!folder) return { ok: false, code: 'not_found', message: '연결된 폴더를 찾을 수 없습니다', detail: {} };
+    try {
+      const value = await folderFsCall(folder.path, String(op ?? ''), (args ?? {}) as Record<string, unknown>, {
+        trash: (abs) => shell.trashItem(abs),
+        reveal: (abs) => shell.showItemInFolder(abs),
+      });
+      return { ok: true, value };
+    } catch (err) {
+      if (err instanceof FolderFsError) return { ok: false, code: err.code, message: err.message, detail: err.detail };
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return {
+        ok: false,
+        code: code === 'EACCES' || code === 'EPERM' ? 'forbidden' : 'error',
+        message: code === 'EACCES' || code === 'EPERM' ? '이 파일에 접근할 권한이 없습니다' : String((err as Error)?.message ?? err),
+        detail: {},
+      };
+    }
+  },
+);
+
+// ── IPC: app / window management ─────────────────────────────────
 ipcMain.handle(CHANNELS.appOpenFolder, async (_e, p: unknown) => {
   const dir = typeof p === 'string' && p.trim() ? p : resolveDataRoot(loadConfig());
   try {
@@ -3055,7 +3499,7 @@ ipcMain.handle(CHANNELS.appOpenFolder, async (_e, p: unknown) => {
   } catch {
     /* 열기에서 드러남 */
   }
-  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (마운트 동기 확인 데드락).
+  // shell.openPath 금지 — dex-host.ts openPath 주석 참조 (동기 확인·앱 종료 대기).
   const err = await openWithDefaultApp(dir);
   return { ok: !err, error: err || undefined };
 });
@@ -3208,33 +3652,10 @@ ipcMain.handle(CHANNELS.mcpClearRuntimeLogs, () => {
   return true;
 });
 
-/**
- * 파일 관리자로 경로 열기 — **shell.openPath 를 쓰면 안 된다.**
- *
- * 우리 마운트는 이 프로세스의 이벤트 루프가 서빙한다. `shell.openPath` 는
- * 경로를 **동기적으로 확인**하므로, 그 대상이 우리 마운트면 루프가 막히고
- * FUSE 콜백이 응답하지 못해 **서로를 기다리는 데드락**이 된다 (실기: "폴더
- * 열기"를 누르는 순간 앱이 응답 없음).
- *
- * 자식 프로세스로 분리하면 우리 루프는 계속 돌고 마운트도 계속 응답한다.
- */
-function openInFileManager(target: string): void {
-  const cmd =
-    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-  try {
-    const child = spawn(cmd, [target], { detached: true, stdio: 'ignore' });
-    child.on('error', (e) => console.log(`[workspace] 폴더 열기 실패: ${e.message}`));
-    child.unref();
-  } catch (e) {
-    console.log(`[workspace] 폴더 열기 실패: ${(e as Error).message}`);
-  }
-}
-
-// ── 계정별 워크스페이스 ────────────────────────────────────────────
+// ── 계정 키 ──────────────────────────────────────────────────────
 //
-// 워크스페이스는 **로그인한 계정에 속한다**. 예전에는 전역 설정 하나여서,
-// 계정을 바꿔 로그인해도 이전 계정의 루트·부착 에이전트를 그대로 물었다.
-// 두 계정이 같은 폴더를 클라우드로 가리키면 서로의 파일을 덮어썼다.
+// 대화별 폴더 연결처럼 이 PC 에 남기는 설정은 **로그인한 계정에 속한다** —
+// 계정을 바꿔 로그인해도 이전 계정의 것을 물지 않게 키를 나눈다.
 
 /** 지금 로그인한 계정의 키. 로그아웃 상태면 null. */
 function currentAccountKey(): string | null {
@@ -3243,168 +3664,11 @@ function currentAccountKey(): string | null {
   return accountKey(normalizeServerUrl(loadConfig().serverUrl), String(uid));
 }
 
-// ── 파일 시스템 — XGen 저장소를 이 PC 의 실제 폴더로 (계정별 토글) ────
-//
-// [XGen 클라우드 연결]    <dataRoot>/cloud            ↔ user:<id> 저장소
-// [Agent Workspace 연결] <dataRoot>/agent_workspace/  ↔ 모든 에이전트 워크스페이스
-// 기본은 둘 다 OFF — 서버에서는 어차피 항상 실행되고, 이 토글은 그것을
-// 로컬 폴더로 보느냐만 정한다. 자세한 철학은 file-system.ts 참조.
-let fileSystem: FileSystemController | null = null;
-
-/** 동기화 엔진용 전송 — latest_seq 포함 타입. */
-function syncRemoteFor(workflowId: string): SyncRemote {
-  const auth = () => ({
-    baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-    token: liveAccessToken,
-    refreshAuth: refreshAuthToken,
-    workflowId,
-    deviceId: ensureDeviceId(),
-    fetch: (input: Parameters<typeof net.fetch>[0], init?: Parameters<typeof net.fetch>[1]) =>
-      net.fetch(input, init),
-    allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-  });
-  const staging = () => join(app.getPath('userData'), 'sync-staging');
-  if (workflowId.startsWith('user:')) {
-    // 사용자 클라우드 = **파일 저장소** — geny-workspace 가 아니라
-    // /api/filestore/sync/* 표면과 말한다 (rmdir: 빈 원격 폴더 정리 포함).
-    const transport = () => new FilestoreSyncTransport(auth(), staging());
-    return {
-      changes: (since) => transport().changes(since),
-      download: (path, toAbs) => transport().download(path, toAbs),
-      put: (path, fromAbs, baseSha) => transport().put(path, fromAbs, baseSha),
-      del: (path, baseSha, opts) => transport().del(path, baseSha, opts),
-      mkdir: (path) => transport().mkdir(path),
-      rmdir: (path) => transport().rmdir(path),
-    };
-  }
-  const transport = () => new HttpSyncTransport(auth(), staging());
-  return {
-    changes: (since) => transport().changes(since),
-    download: (path, toAbs) => transport().download(path, toAbs),
-    put: (path, fromAbs, baseSha) => transport().put(path, fromAbs, baseSha),
-    del: (path, baseSha, opts) => transport().del(path, baseSha, opts),
-    mkdir: (path) => transport().mkdir(path),
-  };
-}
-
-function wireFileSystem(): void {
-  fileSystem = new FileSystemController({
-    dataRoot: () => resolveDataRoot(loadConfig()),
-    loggedIn: () => !!client?.user,
-    userId: () => (client?.user?.userId != null ? String(client.user.userId) : null),
-    config: () => {
-      const key = currentAccountKey();
-      return key ? (loadConfig().fileSystems?.[key] ?? {}) : {};
-    },
-    persist: (next) => {
-      const key = currentAccountKey();
-      if (!key) return;
-      const cfg = loadConfig();
-      saveConfig({ fileSystems: { ...(cfg.fileSystems ?? {}), [key]: next } });
-    },
-    // "실행 세션" 에이전트 = 이 계정의 에이전트 전부 — 서버 목록이 원본이다.
-    listAgents: async () => {
-      const agents = await getClient().agents.listAll({ owner: 'personal' });
-      return agents.map((a) => ({
-        workflowId: a.workflowId,
-        label: a.workflowName || a.workflowId,
-      }));
-    },
-    remoteFor: syncRemoteFor,
-    // 벌크 인덱스 probe — 보험 주기가 저장소마다 changes 를 돌지 않고 요청
-    // 한 번으로 "변한 저장소"만 고른다 (구서버는 404 → 매니저가 전수 폴백).
-    indexSeqs: (owners: string[]) =>
-      fetchIndexSeqs(
-        {
-          baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-          token: liveAccessToken,
-          refreshAuth: refreshAuthToken,
-          workflowId: '',
-          deviceId: ensureDeviceId(),
-          fetch: (input, init) => net.fetch(input, init),
-          allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-        },
-        owners,
-      ),
-    presenceFor: (owner: string, onChanged: () => void) => {
-      if (owner.startsWith('user:')) {
-        // 파일 저장소에는 변경 WS 가 없다 — 인덱스 probe(5분)와 스윕이 담당.
-        // geny WS 를 붙이면 **다른 저장소**의 알림으로 엉뚱한 사이클만 돈다.
-        return { start: async () => undefined, stop: () => undefined };
-      }
-      return new WorkspaceWsClient(
-        {
-          baseUrl: normalizeServerUrl(loadConfig().serverUrl).replace(/\/$/, ''),
-          token: liveAccessToken,
-          refreshAuth: refreshAuthToken,
-          workflowId: owner,
-          deviceId: ensureDeviceId(),
-          deviceName: deviceNameOf(),
-          fetch: (input, init) => net.fetch(input, init),
-          allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-        },
-        deviceNameOf(),
-        () => onChanged(),
-        () => undefined,
-      );
-    },
-    // ⚠ 'fs' 하위로 **새 네임스페이스** — 옛 로컬 동기화(기본 작업 폴더 시절)의
-    // base 스냅숏을 새(빈) agent_workspace 루트에 재사용하면 3-way 가 "로컬
-    // 전체 삭제"로 오판해 서버 파일을 지운다. 루트가 바뀌었으니 base 도
-    // 처음부터다 (첫 사이클은 전부 다운로드 — 안전).
-    stateDir: () =>
-      join(
-        app.getPath('userData'),
-        'local-sync',
-        (currentAccountKey() ?? 'anon').replace(/[^A-Za-z0-9._-]/g, '_'),
-        'fs',
-      ),
-    deviceName: deviceNameOf(),
-    onStatus: (s) => safeSend(mainWindow, CHANNELS.fsStatusEvent, s),
-  });
-  fileSystem.reconcile();
-
-  // 워크스페이스 브리지 — 서버의 ConnectorLocalSandbox 가 이 PC 를 실행
-  // 환경으로 쓰는 내부 도구(_Exec 등). 토글과 무관하게 동작한다 — 커넥터
-  // 세션 실행의 전제는 로그인뿐이다. /cloud 가상 경로는 클라우드 동기화가
-  // 켜져 있을 때만 열린다.
-  getLocalToolProvider().configureWorkspaceBridge(
-    new WorkspaceBridge({
-      infoFor: (workflowId: string, workflowName?: string) => {
-        const dir = fileSystem?.ensurePair(workflowId, workflowName || workflowId) ?? null;
-        if (!dir) return null;
-        const agent = fileSystem
-          ?.status()
-          .agents.list.find((a) => a.workflowId === workflowId);
-        return { dir, label: agent?.label ?? workflowName ?? workflowId };
-      },
-      ensureSynced: async (workflowId: string, workflowName?: string) => {
-        const r = (await fileSystem?.ensureSynced(workflowId, workflowName || workflowId)) ?? {
-          dir: null,
-          synced: false,
-        };
-        if (!r.dir) return { info: null, synced: false };
-        const agent = fileSystem
-          ?.status()
-          .agents.list.find((a) => a.workflowId === workflowId);
-        return {
-          info: { dir: r.dir, label: agent?.label ?? workflowName ?? workflowId },
-          synced: r.synced,
-        };
-      },
-      flushSync: async (workflowId: string) => (await fileSystem?.flushSync(workflowId)) ?? false,
-      cloudDir: () => fileSystem?.cloudDir() ?? null,
-      poke: (workflowId: string) => fileSystem?.poke(workflowId),
-    }),
-  );
-}
-
-// ── 로컬 실행 v2: 사이드카 데몬 + 서버 버전 수렴 ──────────────────────
-/** 사이드카 데몬(상주) — 첫 턴에 기동, 유휴 15분 뒤 자가 종료, 앱 종료 시 내림. */
+// ── 설치 폴더 · 설치 로그 ─────────────────────────────────────────────
 /**
- * 통합 데이터 루트 정착(부팅 1회) — 인스톨러 선택(install-options.json)을 삼키고,
- * dataRoot 트리(workspace/·cloud/·local-runtime/)를 만들고, 미설정 경로 기본을
- * config 에 채운다. 명시 설정은 절대 덮지 않는다.
+ * 설치 폴더 정착(부팅 1회) — 인스톨러 선택(install-options.json)을 삼키고,
+ * 설치 폴더를 만들고, 미설정이면 기본 경로를 config 에 채운다.
+ * 명시 설정은 절대 덮지 않는다.
  */
 function settleDataRootOnBoot(): void {
   try {
@@ -3418,12 +3682,6 @@ function settleDataRootOnBoot(): void {
     console.error('[data-root] 정착 실패(무시):', e);
   }
 }
-/**
- * 런타임 자가치유 사다리(설치 폴더 → 내장 번들 복사 → 네트워크 설치) — 서버와 무관하게
- * "항상 쓸 수 있는 런타임"을 보장하고, 상태/원인을 설정 화면에 그대로 드러낸다.
- * 진행은 메인 창으로 push(localRuntimeProgress).
- */
-/** 부팅 배선 단계 실패(있으면) — 설정 화면에 그대로 드러낸다. */
 /** 설치 폴더의 install.log — 인스톨러(NSIS)와 앱이 **같은 파일**에 이어 쓴다. */
 function installLogPath(): string {
   return join(resolveDataRoot(loadConfig()), 'install.log');
@@ -3437,167 +3695,66 @@ function appendInstallLog(line: string): void {
   }
 }
 
-/** CLI 바이너리 자동 보장 — 도구별 single-flight(연타 턴이 중복 설치하지 않게). */
-ipcMain.handle(CHANNELS.fsStatus, () => fileSystem?.status() ?? null);
-ipcMain.handle(CHANNELS.fsSetCloud, async (_e, on: unknown) => {
-  await fileSystem?.setCloudSync(on === true);
-  return fileSystem?.status();
-});
-ipcMain.handle(CHANNELS.fsSetAgents, async (_e, on: unknown) => {
-  await fileSystem?.setAgentSync(on === true);
-  return fileSystem?.status();
-});
-ipcMain.handle(CHANNELS.fsSyncNow, async (_e, workflowId?: unknown) => {
-  await fileSystem?.syncNow(typeof workflowId === 'string' ? workflowId : undefined);
-  return fileSystem?.status();
-});
-ipcMain.handle(CHANNELS.fsRefreshAgents, async () => {
-  await fileSystem?.refreshAgents();
-  return fileSystem?.status();
-});
-/** [미러 재구성] — 로컬 클라우드 폴더를 앱이 비우고 저장소에서 새로 내려받는다. */
-ipcMain.handle(CHANNELS.fsCloudReset, async () => {
-  return (await fileSystem?.resetCloudMirror()) ?? null;
-});
-/** 탐색기의 클라우드(파일 저장소) 서버 트리 — 동기화 OFF/미완료 상태의
- *  읽기 전용 관측. ⚠ geny(agentData.workspaceTree)가 아니라 **파일 저장소**
- *  스냅숏을 읽는다 — 클라우드 섹션이 구 xgen-cloud 를 비추면 안 된다. */
-ipcMain.handle(CHANNELS.fsCloudServerTree, async () => {
-  const uid = client?.user?.userId != null ? String(client.user.userId) : null;
-  if (!uid) return [];
-  const transport = new FilestoreSyncTransport(
-    {
-      baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-      token: liveAccessToken,
-      refreshAuth: refreshAuthToken,
-      workflowId: `user:${uid}`,
-      deviceId: ensureDeviceId(),
-      fetch: (input, init) => net.fetch(input, init),
-      allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-    },
-    join(app.getPath('userData'), 'sync-staging'),
-  );
-  try {
-    const res = await transport.changes(0);
-    return (res.changes ?? [])
-      .filter((c) => !c.deleted)
-      .map((c) => ({
-        name: c.path.split('/').pop() ?? c.path,
-        path: c.path,
-        is_dir: !!c.is_dir,
-        size: c.size ?? 0,
-        modified_at: c.mtime_ns ? new Date(c.mtime_ns / 1e6).toISOString() : undefined,
-      }));
-  } catch (e) {
-    void import('./diag-log').then(({ diag }) =>
-      diag('file-system', `파일 저장소 서버 트리 조회 실패: ${(e as Error).message}`),
-    );
-    return [];
-  }
-});
-
-/** 동기화 폴더 나열 — 탐색기가 로컬 실파일을 그대로 본다.
- *  workflowId 'user:<id>' 는 클라우드 폴더다. */
-ipcMain.handle(CHANNELS.fsList, async (_e, workflowId: unknown, rel: unknown) => {
-  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
-  if (!dir) return [];
-  const relPath = typeof rel === 'string' ? rel : '';
-  if (relPath && !isSafeRelPath(relPath)) return [];
-  const abs = join(dir, ...relPath.split('/').filter(Boolean));
-  try {
-    const { readdir, stat } = await import('fs/promises');
-    const entries = await readdir(abs, { withFileTypes: true });
-    const out: Array<{ name: string; isDir: boolean; size: number; mtime: number }> = [];
-    for (const e of entries) {
-      if (e.name === '.xgeny-session') continue;
-      try {
-        const st = await stat(join(abs, e.name));
-        out.push({
-          name: e.name,
-          isDir: e.isDirectory(),
-          size: e.isFile() ? st.size : 0,
-          mtime: Math.floor(st.mtimeMs),
-        });
-      } catch {
-        /* 나열 도중 사라진 항목 */
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-});
-ipcMain.handle(CHANNELS.fsOpenPath, (_e, workflowId: unknown, rel: unknown) => {
-  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
-  if (!dir) return { ok: false };
-  const relPath = typeof rel === 'string' ? rel : '';
-  if (relPath && !isSafeRelPath(relPath)) return { ok: false };
-  openInFileManager(join(dir, ...relPath.split('/').filter(Boolean)));
-  return { ok: true };
-});
-/* ── 파일 뷰어 읽기 표면 ─────────────────────────────────────────
+/* ── 탐색기 · 파일 뷰어 — 파일 저장소 읽기 표면 ─────────────────────
  *
- * 탐색기에서 파일을 클릭하면 콘텐츠 영역 탭으로 여는 뷰어의 데이터 경로.
- *   · 동기화 ON  → fsReadFile  (로컬 실파일 바이트)
- *   · 클라우드 OFF → fsCloudReadRaw (파일 저장소 /sync/raw)
- *   · 에이전트 OFF → 기존 agentData.workspaceBinary 를 그대로 쓴다.
+ * 탐색기는 서버의 파일 저장소를 그대로 보여 준다(이 PC 에 내려받아 두지 않는다).
+ * 폴더는 펼칠 때 한 단계씩 읽고, 파일을 누르면 뷰어가 원바이트를 받는다.
  * 오피스 문서(docx/xlsx/pptx/hwp…)는 웹 [파일 저장소]와 같은 서버 렌더
  * (filestore-preview 페이지 이미지)를 쓴다 — 경로→항목 id 해석 포함.
+ * 경로 해석과 서버 호출은 전부 프로토콜(FilestoreApi) — 앱은 서버 경로를
+ * 직접 부르지 않는다 (계약 검사 no-direct-api).
  */
 
 /** 뷰어가 통으로 IPC 로 나를 수 있는 상한 — 이보다 크면 열지 않는다. */
 const VIEWER_MAX_BYTES = 64 * 1024 * 1024;
 
-function viewerCloudAuth(): TransportAuth | null {
-  const uid = client?.user?.userId != null ? String(client.user.userId) : null;
-  if (!uid) return null;
-  return {
-    baseUrl: normalizeServerUrl(loadConfig().serverUrl),
-    token: liveAccessToken,
-    refreshAuth: refreshAuthToken,
-    workflowId: `user:${uid}`,
-    deviceId: ensureDeviceId(),
-    fetch: (input, init) => net.fetch(input, init),
-    allowPrivateCertificate: loadConfig().allowPrivateCertificate === true,
-  };
-}
+/** 탐색기의 에이전트 섹션 — 이 계정의 개인 에이전트 전부(서버 목록 그대로). */
+ipcMain.handle(CHANNELS.fsAgents, async () => {
+  if (!client?.user) return [];
+  const agents = await getClient().agents.listAll({ owner: 'personal' });
+  return agents.map((a) => ({ workflowId: a.workflowId, label: a.workflowName || a.workflowId }));
+});
 
-ipcMain.handle(CHANNELS.fsReadFile, async (_e, workflowId: unknown, rel: unknown) => {
-  const dir = typeof workflowId === 'string' ? fileSystem?.dirFor(workflowId) : null;
+/** 파일 저장소 한 폴더의 직계 자식 — 'a/b' 는 저장소 상대 경로, '' 는 루트. */
+ipcMain.handle(CHANNELS.fsCloudList, async (_e, rel: unknown) => {
+  if (!client?.user) return { ok: false, error: '로그인이 필요합니다', entries: [] };
   const relPath = typeof rel === 'string' ? rel : '';
-  if (!dir || !relPath || !isSafeRelPath(relPath)) return { ok: false, error: '잘못된 경로' };
-  const abs = join(dir, ...relPath.split('/').filter(Boolean));
   try {
-    const { stat, readFile } = await import('fs/promises');
-    const st = await stat(abs);
-    if (!st.isFile()) return { ok: false, error: '파일이 아닙니다' };
-    if (st.size > VIEWER_MAX_BYTES)
-      return { ok: false, error: `파일이 너무 큽니다 (${Math.round(st.size / 1024 / 1024)}MB)` };
-    const buf = await readFile(abs);
-    return { ok: true, bytes: new Uint8Array(buf), size: st.size, mtime: st.mtimeMs };
+    const folder = await client.filestore.folderByPath(relPath);
+    if (folder === undefined) return { ok: true, entries: [] };
+    const { folders, items } = await client.filestore.list(folder?.id ?? null);
+    const mtimeOf = (v: string | null | undefined) => (v ? Date.parse(v) || 0 : 0);
+    return {
+      ok: true,
+      entries: [
+        ...folders.map((f) => ({ name: f.folder_name, isDir: true, size: 0, mtime: 0 })),
+        ...items.map((it) => ({
+          name: it.file_name,
+          isDir: false,
+          size: Number(it.file_size) || 0,
+          mtime: mtimeOf(it.updated_at ?? it.created_at),
+        })),
+      ],
+    };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return { ok: false, error: (e as Error).message, entries: [] };
   }
 });
 
 ipcMain.handle(CHANNELS.fsCloudReadRaw, async (_e, path: unknown) => {
-  const auth = viewerCloudAuth();
-  if (!auth || typeof path !== 'string' || !path) return { ok: false, error: '연결되지 않음' };
+  if (!client?.user || typeof path !== 'string' || !path)
+    return { ok: false, error: '연결되지 않음' };
   try {
-    const u = new URL(`${auth.baseUrl}/api/filestore/sync/raw`);
-    u.searchParams.set('path', path);
-    const res = await syncTransportFetch(auth, u.toString(), {
-      headers: await syncAuthHeaders(auth),
-    });
-    if (!res.ok) return { ok: false, error: `다운로드 실패 (${res.status})` };
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.byteLength > VIEWER_MAX_BYTES) return { ok: false, error: '파일이 너무 큽니다' };
-    return {
-      ok: true,
-      bytes: buf,
-      size: buf.byteLength,
-      contentType: res.headers.get('content-type') ?? '',
-    };
+    const item = await client.filestore.resolveItemByPath(path);
+    if (!item) return { ok: false, error: '파일 저장소에서 파일을 찾지 못했습니다' };
+    if (Number(item.file_size) > VIEWER_MAX_BYTES)
+      return {
+        ok: false,
+        error: `파일이 너무 큽니다 (${Math.round(Number(item.file_size) / 1024 / 1024)}MB)`,
+      };
+    const { bytes, contentType } = await client.filestore.download(item.id);
+    if (bytes.byteLength > VIEWER_MAX_BYTES) return { ok: false, error: '파일이 너무 큽니다' };
+    return { ok: true, bytes, size: bytes.byteLength, contentType };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -3628,16 +3785,6 @@ ipcMain.handle(CHANNELS.fsCloudOfficePreviewPage, async (_e, itemId: unknown, pa
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
-});
-
-/** 루트 폴더 열기 — 'cloud' | 'agents' | 'data'. 동기화 여부와 무관하게
- *  폴더 자체는 dataRoot 트리에 존재한다. */
-ipcMain.handle(CHANNELS.fsOpenRoot, (_e, kind: unknown) => {
-  const st = fileSystem?.status();
-  if (!st) return { ok: false };
-  const p = kind === 'cloud' ? st.cloud.dir : kind === 'agents' ? st.agents.root : st.dataRoot;
-  openInFileManager(p);
-  return { ok: true };
 });
 
 /** 탐색기/공유 경로 검증 — `/` 시작, `..` 세그먼트 금지. */
@@ -3730,6 +3877,11 @@ if (!gotLock) {
     // 던진다(조용히 메모리로 폴백해서 사용자의 MCP 인증을 매번 잃는 대신).
     bindDesktopHost();
 
+    // 절전에서 깨어났다 — 잠든 사이 서버가 놓은 대화 소켓은 이쪽에서 보기엔 아직 열려 있다.
+    // 지금 확인하고 다시 붙어야 그 사이 끝난 턴이 바로 보인다.
+    powerMonitor.on('resume', () => conversationWatchHub.refresh());
+    powerMonitor.on('unlock-screen', () => conversationWatchHub.refresh());
+
     const cfg = loadConfig();
     if (cfg.theme) nativeTheme.themeSource = cfg.theme;
     applyCertificatePolicy();
@@ -3738,10 +3890,25 @@ if (!gotLock) {
     // Voice input: the renderer calls navigator.mediaDevices.getUserMedia for the
     // push-to-talk mic. Electron denies media by default unless we approve it —
     // grant ONLY 'media', deny every other permission request.
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-      cb(permission === 'media');
+    //
+    // Clipboard: our own renderer frame (not the apps an agent wrote, shown in iframes) may read
+    // and write the clipboard — the IDE editor's context-menu paste goes through
+    // navigator.clipboard.readText, which Electron otherwise denies.
+    const clipboardPermission = (permission: string, url: string, mainFrame: boolean): boolean =>
+      (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') &&
+      mainFrame &&
+      isRendererUrl(url);
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => {
+      cb(
+        permission === 'media' ||
+          clipboardPermission(permission, details?.requestingUrl ?? '', details?.isMainFrame !== false),
+      );
     });
-    session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
+    session.defaultSession.setPermissionCheckHandler(
+      (_wc, permission, _origin, details) =>
+        permission === 'media' ||
+        clipboardPermission(permission, details?.requestingUrl ?? '', details?.isMainFrame !== false),
+    );
 
     // Avatar asset proxy: xgenavatar://a/<path> → <serverUrl>/<path>, fetched in
     // the main process (no CORS/CSP). The renderer points the Live2D/Spine loader
@@ -3760,13 +3927,13 @@ if (!gotLock) {
         });
       }
     });
-    // 아티팩트(사이트·앱)를 **서버 주소 그대로** 여는 길.
+    // 앱(정적 사이트든 에이전트가 띄운 서버든)을 **서버 주소 그대로** 여는 길.
     //
     // 웹에서는 브라우저가 쿠키를 싣는다. 앱에는 쿠키가 없고 토큰은 여기(main)에
     // 있으므로, 이 세션이 서버의 /api/ 로 보내는 요청에 자격을 실어 준다.
     // 문서·자산·fetch 뿐 아니라 **WebSocket 업스트림에도 같은 헤더가 붙는다** —
     // 전용 스킴으로 중계하던 예전 방식이 못 하던 일이고, 그래서 실시간으로 도는
-    // 아티팩트가 앱에서만 죽었다.
+    // 앱이 데스크톱에서만 죽었다.
     //
     // 붙이는 범위는 **설정된 서버의 /api/** 뿐이다. 다른 곳으로는 한 글자도
     // 나가지 않는다(토큰이 남의 호스트로 가는 것이 이 기능에서 가장 나쁜 실패다).
@@ -3785,7 +3952,12 @@ if (!gotLock) {
       (details, callback) => {
         const server = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
         const headers = { ...details.requestHeaders };
-        if (server && details.url.startsWith(`${server}/api/`) && lastAccessToken) {
+        if (
+          server &&
+          details.url.startsWith(`${server}/api/`) &&
+          lastAccessToken &&
+          !fromIsolatedDocument(details)
+        ) {
           headers.Authorization = `Bearer ${lastAccessToken}`;
         }
         callback({ requestHeaders: headers });
@@ -3793,10 +3965,10 @@ if (!gotLock) {
     );
     // 그리고 서버가 붙인 **frame-ancestors 는 떼어 낸다.**
     //
-    // 웹에서는 아티팩트와 그것을 감싸는 화면이 같은 오리진이라 `frame-ancestors
+    // 웹에서는 앱과 그것을 감싸는 화면이 같은 오리진이라 `frame-ancestors
     // 'self'` 로 충분하다. 앱에서는 부모가 렌더러(file://·개발 서버)라 오리진이
     // 다르므로, 그대로 두면 브라우저가 프레임을 **통째로 거부한다** — 새 창으로는
-    // 열리는데 [아티팩트] 탭만 빈 화면인 그 모양이다(실증 2026-09-18).
+    // 열리는데 [앱] 탭만 빈 화면인 그 모양이다(실증 2026-09-18).
     //
     // 전용 스킴으로 중계하던 시절에는 그 핸들러가 떼고 있었다. 서버 주소를 그대로
     // 여는 길(WebSocket 때문에)로 옮기면서 이 한 줄이 같이 오지 않았다.
@@ -3815,52 +3987,7 @@ if (!gotLock) {
         callback({ responseHeaders: stripFrameAncestorsFromHeaders(received) });
       },
     );
-    // 아티팩트 사이트 — xgensite://artifact/<서버 경로> 를 그대로 서버로 넘긴다.
-    //
-    // 웹에서는 브라우저가 쿠키를 싣고 같은 오리진으로 열어 끝나는 일인데, 앱에는
-    // 쿠키가 없고 토큰은 main 이 들고 있다. 그래서 main 이 자격을 붙여 대신
-    // 받아 온다 — 사이트가 자기 자산을 부르든 /api/… 를 부르든 같은 길이다.
-    //
-    // 서버가 붙인 frame-ancestors 는 떼어 낸다: 웹에서는 같은 오리진끼리의 규칙이
-    // 지만 앱에서는 부모(렌더러)와 오리진이 달라 그대로 두면 **화면이 통째로
-    // 막힌다.** 나머지 CSP(공개 사이트의 sandbox 등)는 손대지 않는다.
-    protocol.handle('xgensite', async (request) => {
-      try {
-        const u = new URL(request.url);
-        const serverUrl = normalizeServerUrl(loadConfig().serverUrl).replace(/\/+$/, '');
-        if (!serverUrl) return new Response('artifact site: no server URL', { status: 502 });
-        const token = await liveAccessToken();
-        const headers: Record<string, string> = {};
-        const accept = request.headers.get('accept');
-        if (accept) headers.Accept = accept;
-        const contentType = request.headers.get('content-type');
-        if (contentType) headers['Content-Type'] = contentType;
-        if (token) headers.Authorization = `Bearer ${token}`;
-        // **메서드와 본문을 그대로 넘긴다.** 사이트는 문서만 받아 가는 것이
-        // 아니라 앱 API 를 부른다(도구 실행·외부 요청은 POST 다). GET 으로
-        // 고정해 두면 웹에서는 되는 화면이 앱에서만 조용히 죽는다.
-        const method = request.method || 'GET';
-        const hasBody = method !== 'GET' && method !== 'HEAD';
-        const upstream = await net.fetch(`${serverUrl}${u.pathname}${u.search}`, {
-          method,
-          headers,
-          ...(hasBody ? { body: await request.arrayBuffer(), duplex: 'half' } : {}),
-        });
-        const out = new Headers(upstream.headers);
-        const csp = out.get('content-security-policy');
-        if (csp) {
-          const kept = stripFrameAncestors(csp);
-          if (kept) out.set('content-security-policy', kept);
-          else out.delete('content-security-policy');
-        }
-        return new Response(upstream.body, { status: upstream.status, headers: out });
-      } catch (e) {
-        return new Response(`artifact site error: ${e instanceof Error ? e.message : String(e)}`, {
-          status: 502,
-        });
-      }
-    });
-    // 아티팩트 실행 프레임 — 문서 하나. 응답 헤더로 CSP 를 붙여, 이 문서에는
+    // 앱 실행 프레임 — 문서 하나. 응답 헤더로 CSP 를 붙여, 이 문서에는
     // 네트워크가 전혀 남지 않게 한다(웹의 미들웨어와 같은 값).
     protocol.handle('xgenartifact', (request) => {
       const u = new URL(request.url);
@@ -3877,6 +4004,9 @@ if (!gotLock) {
         },
       });
     });
+    // 리눅스 자동 시작 항목을 지금 실행 중인 것으로 다시 쓴다 — 이름에 판이 든 AppImage 는 업데이트하면 새 이름이
+    // 되어 옛 항목이 사라진 파일을 가리키고, 예전 항목은 실행 시임 대신 xgen-dex.bin 을 가리켰다.
+    if (IS_LINUX && cfg.autoLaunch === true) applyAutoLaunch(true);
     // The install callback flips appQuitting so quitAndInstall isn't blocked by
     // the close-to-tray guard.
     initUpdater({
@@ -3887,6 +4017,10 @@ if (!gotLock) {
       xgenToken: async () => (await liveAccessToken()) || null,
       onWillInstall: () => {
         appQuitting = true;
+      },
+      onInstallAborted: () => {
+        // 그사이 사용자가 끄기를 시작했으면(트레이 [종료] 등) 되돌리지 않는다 — 창 닫기가 트레이로 숨겨 종료가 멈춘다.
+        if (!quitRequested) appQuitting = false;
       },
       onUpdateAvailable: (version, onAccept) => {
         notificationCenter.publish(
@@ -3910,7 +4044,7 @@ if (!gotLock) {
     const startHidden = process.argv.includes('--hidden') && trayOk;
     createWindow();
     if (startHidden) mainWindow?.removeAllListeners('ready-to-show');
-    // 부팅 배선 — 한 단계가 던져도 다음 단계(특히 로컬 실행 런타임 보장)가 멈추지 않게,
+    // 부팅 배선 — 한 단계가 던져도 다음 단계가 멈추지 않게,
     // 각 단계를 격리하고 실패를 install.log 에 남긴다.
     const bootErrors: string[] = [];
     const bootStep = (name: string, fn: () => void) => {
@@ -3925,8 +4059,7 @@ if (!gotLock) {
         console.error(`[boot] ${name} failed`, e);
       }
     };
-    bootStep('settleDataRoot', () => settleDataRootOnBoot()); // 통합 루트 정착 — 아래 배선들이 새 기본을 읽는다.
-    bootStep('wireFileSystem', () => wireFileSystem());
+    bootStep('settleDataRoot', () => settleDataRootOnBoot()); // 설치 폴더 정착 — install.log 가 이 경로를 쓴다.
     if (cfg.avatarOverlay) createOverlay();
     if (cfg.quickChat) {
       createQuickChat();
@@ -3955,6 +4088,7 @@ if (!gotLock) {
   });
   app.on('before-quit', () => {
     desktopNativeSessions.reset();
+    quitRequested = true;
     appQuitting = true;
     saveOverlayGeometry(true); // don't drop a pending move/resize on quit
     void browserHistoryStore?.flushAll().catch(() => undefined);
@@ -3963,8 +4097,9 @@ if (!gotLock) {
     globalShortcut.unregisterAll();
     disposeUpdater();
     getMcpBridge().stop();
+    // 사용자 PC 접속으로 돌던 명령(작업)을 끝낸다 — 따로 묶인 프로세스라 앱과 함께 끝나지 않는다.
+    stopAllUserPcJobs();
     void getBrowserRuntime().closeAll();
     void getMcpManager().closeAll();
-    fileSystem?.stop();
   });
 }

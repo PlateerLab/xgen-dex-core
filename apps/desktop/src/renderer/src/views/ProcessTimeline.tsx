@@ -13,14 +13,15 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { shortToolName, toolValueText } from '@dex/protocol/tool-activity';
+import { chatAnswerFiles } from '@dex/protocol/chat-files';
 import type { ChatMsg } from '../session-store';
 import { Markdown } from './Markdown';
 import {
   buildSteps,
   describeTool,
   resultView,
+  finalStepView,
   splitFirstParagraph,
-  trimAnswer,
   type ResultView,
   type TimelineRow,
   type ToolIcon,
@@ -257,12 +258,10 @@ export const ProcessTimeline: React.FC<{
     const last = i === visibleSteps - 1;
     let { title, body } = splitFirstParagraph(step.text);
     if (last && step.rows.length === 0) {
-      if (body) {
-        answer = trimAnswer(body);
-      } else if (!streaming) {
-        answer = trimAnswer(title);
-        title = '';
-      }
+      // 끝난 턴의 마지막 글은 전부 답이다(finalStepView). 최종 답의 파일 표식은 걷는다 — 파일은 답 아래 카드로 보인다(TurnFiles).
+      const view = finalStepView(step.text, streaming);
+      title = view.title;
+      if (view.answer) answer = chatAnswerFiles(view.answer).text;
     } else if (body) {
       title = `${title} ${body.replace(/\s+/g, ' ').trim()}`;
     }

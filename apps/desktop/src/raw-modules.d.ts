@@ -4,7 +4,7 @@
  * 이 저장소는 `vite/client` 타입을 깔지 않으므로(브라우저 전역이 통째로 딸려
  * 온다) 실제로 쓰는 두 종류만 여기서 선언한다.
  *
- * 어디에 쓰나: 아티팩트 실행 런타임(React·Babel)과 격리 프레임 문서. 셋 다
+ * 어디에 쓰나: 앱 실행 런타임(React·Babel)과 격리 프레임 문서. 셋 다
  * **코드가 아니라 payload** 다 — 우리가 읽어서 프레임에 건네주는 텍스트라
  * 번들러가 모듈로 해석하면 안 된다.
  */
@@ -16,4 +16,13 @@ declare module '*.txt?raw' {
 declare module '*.html?raw' {
   const content: string;
   export default content;
+}
+
+/**
+ * vite 의 `?worker` — 모듈을 **Web Worker 생성자**로 가져온다(IDE 의 Monaco worker).
+ * 같은 이유로 `vite/client` 대신 쓰는 것만 선언한다.
+ */
+declare module '*?worker' {
+  const WorkerFactory: new () => Worker;
+  export default WorkerFactory;
 }

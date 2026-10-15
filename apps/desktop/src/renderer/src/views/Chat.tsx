@@ -14,6 +14,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
+import { useChatInputCheck } from './use-chat-input-check';
 import { sessionStore } from '../session';
 import { CONTEXT_LIMIT_CHOICES, teamsContextStore, useContextChip } from '../teams-context';
 import { browserSelectionStore, useBrowserSelections } from '../browser-selection-store';
@@ -24,12 +25,25 @@ import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
 import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
-import { CHAT_AI_DISCLAIMER_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, describeError } from '@dex/protocol';
+import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
 import { DropTracker, dragHasFiles } from './chat-drop';
+import {
+  CHAT_IMAGE_ACCEPT,
+  CHAT_IMAGE_MAX_COUNT,
+  CHAT_IMAGE_MAX_TOTAL_BYTES,
+  pastedImageFiles,
+  stageChatFiles,
+  type StagedChatImage,
+} from './chat-attach';
 import { mcpChatStatus } from './mcp-status-model';
+import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
+import { ChatShareModal } from './ChatShareModal';
+import { ModelPicker } from './ModelPicker';
+import { Tooltip } from './Tooltip';
+import { OPEN_CHAT_FOLDERS_EVENT } from '../ide/dex-ide-host';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
@@ -49,11 +63,13 @@ import {
   BellOffIcon,
   ChatIcon,
   ChevronDownIcon,
+  CodeIcon,
   CloseIcon,
   CopyIcon,
   DocIcon,
   EyeIcon,
   EyeOffIcon,
+  InfoIcon,
   MicIcon,
   MonitorIcon,
   PlusIcon,
@@ -64,8 +80,12 @@ import {
   StarIcon,
   StopIcon,
   TeamsIcon,
+  CheckIcon,
+  StarFilledIcon,
 } from '../brand/icons';
 import type { AgentViewerSub } from './workspace-layout';
+import { IdeView } from '@dex/ide';
+import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
 
 /** [Trigger] 행 — Job/sub-agent 결과가 세션을 깨운 턴.
  *
@@ -219,62 +239,6 @@ function sentenceCut(pending: string): number {
   return cut;
 }
 
-const CHAT_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-const CHAT_IMAGE_ACCEPT = '*/*';
-const CHAT_IMAGE_MAX_COUNT = 10;
-const CHAT_IMAGE_MAX_BYTES = 100 * 1024 * 1024;
-const CHAT_IMAGE_MAX_TOTAL_BYTES = 250 * 1024 * 1024;
-
-interface StagedChatImage extends ChatImageAttachment {
-  id: string;
-}
-
-function fileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      typeof reader.result === 'string'
-        ? resolve(reader.result.replace(/^data:;base64,/, 'data:application/octet-stream;base64,'))
-        : reject(new Error('파일을 읽지 못했습니다.'));
-    reader.onerror = () => reject(reader.error ?? new Error('파일을 읽지 못했습니다.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function imageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => reject(new Error('지원하지 않거나 손상된 이미지입니다.'));
-    image.src = dataUrl;
-  });
-}
-
-function imageError(file: File): string | null {
-  if (file.size <= 0) return `${file.name || '파일'}: 빈 파일은 첨부할 수 없습니다.`;
-  if (file.size > CHAT_IMAGE_MAX_BYTES) {
-    return `${file.name || '파일'}: 파일 한 개는 100MiB까지 첨부할 수 있습니다.`;
-  }
-  return null;
-}
-
-async function prepareChatImage(file: File): Promise<StagedChatImage> {
-  const problem = imageError(file);
-  if (problem) throw new Error(problem);
-  const dataUrl = await fileAsDataUrl(file);
-  const isImage = CHAT_IMAGE_TYPES.has(file.type.toLowerCase());
-  const dimensions = isImage ? await imageDimensions(dataUrl) : {};
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    dataUrl,
-    name: file.name || `붙여넣은 이미지.${file.type.split('/')[1] || 'png'}`,
-    mime: file.type.toLowerCase() || 'application/octet-stream',
-    size: file.size,
-    kind: isImage ? 'image' : 'file',
-    ...dimensions,
-  };
-}
-
 /**
  * 실패한 답변 — 사용자가 읽을 수 있는 형태로.
  *
@@ -338,8 +302,18 @@ export const Chat: React.FC<{
   const remote = session.remote;
   /** 이 대화에 도는 턴이 있는가 — 여기서 시작했든 다른 곳에서 시작했든. */
   const busy = streaming || remote;
+  /**
+   * 에이전트가 지워진 대화(2026-10-09). 같은 채팅 화면이지만 지난 기록만 보인다: 머리 단추와
+   * 작성기 대신 안내 한 줄. 이어 갈 에이전트가 없다.
+   */
+  const readOnly = session.agentDeleted === true;
   const loadingHistory = session.loadingHistory;
   const notificationSnapshot = useNotifications();
+  useEffect(() => {
+    // 턴이 끝났다 — 에이전트가 만든 것이 방금 발행됐다. IDE 가 열려 있으면 탐색기·열린 파일·
+    // 소스 제어를 다시 본다(닫혀 있으면 다음에 열 때 읽는다).
+    if (!busy) peekIdeStore(session.key)?.notifyRemoteChange();
+  }, [busy, session.key]);
 
   const [input, setInput] = useState('');
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
@@ -396,8 +370,6 @@ export const Chat: React.FC<{
    */
   /** 답변 아래 면책 문구를 보일까 — 서버 설정(웹 채팅과 같은 칸). 기본은 보인다. */
   const [disclaimer, setDisclaimer] = useState(true);
-  /** 지금 작성기에 민감정보가 보이는가 — 보내기 전 경고(막지는 않는다). */
-  const [sensitive, setSensitive] = useState(false);
   const [feedbackByIo, setFeedbackByIo] = useState<Record<number, ChatFeedback>>({});
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
   /** 눌러서 펼친 출처 — 답변이 실제로 읽은 대목을 보여 준다. */
@@ -408,6 +380,24 @@ export const Chat: React.FC<{
   const [mcpLogs, setMcpLogs] = useState<McpRuntimeLogEntryLike[]>([]);
   const [mcpLogsOpen, setMcpLogsOpen] = useState(false);
   const [notificationMenuOpen, setNotificationMenuOpen] = useState(false);
+  // 이 대화에 연결된 이 PC 의 폴더 — 에이전트의 파일·터미널 도구가 닿는 범위.
+  const chatFolders = useChatFolders(session.interactionId);
+  // [채팅 | IDE] — 같은 에이전트의 workspace·샌드박스를 편집기로 본다. 선택과 편집기 상태는
+  // 탭을 바꿔도 남도록 화면 밖(ide-sessions)에 둔다.
+  const [ideMode, setIdeMode] = useIdeMode(session.key);
+  const ideTheme = useResolvedTheme();
+  const ideStore = ideMode ? ideStoreFor(session.key, agent) : null;
+  const [foldersOpen, setFoldersOpen] = useState(false);
+  /** [공유] 창: 지금까지의 대화를 이 시점 그대로 링크로. */
+  const [shareOpen, setShareOpen] = useState(false);
+  // IDE 탐색기의 [폴더 연결 관리] — 이 대화의 [폴더] 창을 연다.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === session.interactionId) setFoldersOpen(true);
+    };
+    window.addEventListener(OPEN_CHAT_FOLDERS_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_CHAT_FOLDERS_EVENT, onOpen);
+  }, [session.interactionId]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -497,29 +487,11 @@ export const Chat: React.FC<{
   }, []);
 
   /**
-   * 작성기에 민감정보가 있는지 **서버 검사기**에 묻는다 — 타이핑이 멎은 뒤에.
-   *
-   * 앱이 스스로 정규식으로 판단하면 같은 문장이 웹에서는 걸리고 앱에서는 안 걸린다.
-   * 경고만 하고 보내는 것은 막지 않는다(웹과 같다).
+   * 작성기 통제 정책 사전 검사. 타이핑이 멎으면 **서버**에 묻는다(웹 채팅과 같은 판정).
+   * [채팅 입력시 차단] 에 걸리면 보내기를 막고 이유를 작성기 아래에 둔다. 막지는 않지만 모델에 가려 전달될
+   * 내용이면 그 안내만 둔다. 2026-10-14 전에는 경고만 하고(금융권 고정 문구) 보내기를 막지 않았다.
    */
-  useEffect(() => {
-    const text = input.trim();
-    if (!text) {
-      setSensitive(false);
-      return;
-    }
-    let alive = true;
-    const timer = window.setTimeout(() => {
-      void xgen.guardrails
-        .checkContent(text)
-        .then((res) => alive && setSensitive(res.flagged))
-        .catch(() => undefined);
-    }, 400);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [input]);
+  const policy = useChatInputCheck(input, agent.workflowId ?? null);
 
   // 이 대화의 답변들에 내가 남긴 평가 — 열 때 한 번, 그리고 새 답변이 끝날 때마다 맞춘다.
   // (실패는 조용히 지나간다: 평가는 대화의 곁가지라 못 읽었다고 대화를 막을 이유가 없다.)
@@ -591,8 +563,13 @@ export const Chat: React.FC<{
     [feedbackByIo],
   );
 
-  // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll)
-  const { showJump, jumpToBottom } = useStickToBottom(scrollRef, messages, session.key);
+  // 스트리밍 중 스크롤: 맨 아래에 붙어 있으면 따라가고, 사용자가 위로 올리면 그대로 둔다(chat-scroll).
+  // 채팅 ↔ IDE 를 바꾸면 기록이 새 자리에 다시 그려진다 — 그때도 맨 아래에서 시작한다.
+  const { showJump, jumpToBottom } = useStickToBottom(
+    scrollRef,
+    messages,
+    `${session.key}:${ideMode ? 'ide' : 'chat'}`,
+  );
 
   useEffect(() => {
     const ta = taRef.current;
@@ -608,43 +585,24 @@ export const Chat: React.FC<{
 
   const addImageFiles = useCallback(
     async (files: File[]) => {
-      const candidates = files;
-
       setPreparingImages((count) => count + 1);
-      const problems: string[] = [];
+      let problem: string | null = null;
       try {
-        for (const file of candidates) {
-          const current = stagedImagesRef.current;
-          const selected = browserSelectionsRef.current;
-          if (current.length + selected.length >= CHAT_IMAGE_MAX_COUNT) {
-            problems.push(
-              `파일은 한 번에 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다.`,
-            );
-            break;
-          }
-          const problem = imageError(file);
-          if (problem) {
-            problems.push(problem);
-            continue;
-          }
-          const usedBytes =
-            current.reduce((sum, image) => sum + image.size, 0) +
-            selected.reduce((sum, selection) => sum + selection.image.size, 0);
-          if (usedBytes + file.size > CHAT_IMAGE_MAX_TOTAL_BYTES) {
-            problems.push('첨부 파일의 전체 크기는 250MiB를 넘을 수 없습니다.');
-            break;
-          }
-          try {
-            const image = await prepareChatImage(file);
-            replaceStagedImages([...stagedImagesRef.current, image]);
-          } catch (error) {
-            problems.push(error instanceof Error ? error.message : '파일을 읽지 못했습니다.');
-          }
-        }
+        // 브라우저 캡처도 같은 칸을 쓴다 — 개수·합계에 함께 센다.
+        problem = await stageChatFiles(
+          files,
+          () => ({
+            count: stagedImagesRef.current.length + browserSelectionsRef.current.length,
+            bytes:
+              stagedImagesRef.current.reduce((sum, image) => sum + image.size, 0) +
+              browserSelectionsRef.current.reduce((sum, selection) => sum + selection.image.size, 0),
+          }),
+          (image) => replaceStagedImages([...stagedImagesRef.current, image]),
+        );
       } finally {
         setPreparingImages((count) => Math.max(0, count - 1));
       }
-      setImageNotice(problems[0] ?? '');
+      setImageNotice(problem ?? '');
     },
     [replaceStagedImages],
   );
@@ -698,10 +656,7 @@ export const Chat: React.FC<{
 
   const handleImagePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const files = Array.from(event.clipboardData.items)
-        .filter((item) => item.kind === 'file' && item.type.toLowerCase().startsWith('image/'))
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => !!file);
+      const files = pastedImageFiles(event.clipboardData.items);
       if (files.length === 0) return;
       event.preventDefault();
       void addImageFiles(files);
@@ -887,6 +842,12 @@ export const Chat: React.FC<{
         images.reduce((sum, image) => sum + image.size, 0) +
         selections.reduce((sum, selection) => sum + selection.image.size, 0);
       if ((!text && attachmentCount === 0) || busy || preparingImages > 0) return;
+      // 통제 정책: 막힐 글은 보내지 않는다. Enter · 음성 · 빠른 채팅(override)도 이 길로 온다.
+      // override 로 온 글이 막히면 작성기에 옮겨 두어 이유를 보고 고쳐 보내게 한다.
+      if (text && !(await policy.confirm(text))) {
+        if (override !== undefined) setInput(text);
+        return;
+      }
       if (attachmentCount > CHAT_IMAGE_MAX_COUNT) {
         setImageNotice(
           `파일은 브라우저 캡처를 포함해 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 보낼 수 있습니다.`,
@@ -925,7 +886,7 @@ export const Chat: React.FC<{
       }
       await dispatch(text, images, selections);
     },
-    [input, busy, preparingImages, session.key, dispatch, replaceStagedImages],
+    [input, busy, preparingImages, session.key, dispatch, replaceStagedImages, policy],
   );
 
   /** 확인창의 [보내기] — 승인 기록을 남기고 그대로 이어서 보낸다. */
@@ -1183,14 +1144,14 @@ export const Chat: React.FC<{
     ];
   const effectiveNotificationMuted = agentNotificationMuted || chatNotificationMuted;
 
-  return (
-    <div
-      className={`chat${dragOver ? ' dropping' : ''}`}
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+  const dragProps = {
+    onDragEnter: handleDragEnter,
+    onDragOver: handleDragOver,
+    onDragLeave: handleDragLeave,
+    onDrop: handleDrop,
+  };
+  const dropOverlay = (
+    <>
       {dragOver && (
         <div className="chat-drop" role="status">
           <div className="chat-drop-card">
@@ -1200,13 +1161,23 @@ export const Chat: React.FC<{
           </div>
         </div>
       )}
+    </>
+  );
+  const header = (
+    <>
       <div className="chat-header">
         <div className="chat-title">
           <span className="agent-mark">
             <XgenMark height={18} variant="color" />
           </span>
           <div className="chat-title-text">
-            <strong>{agent.workflowName}</strong>
+            <strong>
+              {agent.workflowName}
+              {readOnly && <span className="chat-deleted-badge">지워짐</span>}
+            </strong>
+            {readOnly ? (
+              <div className="agent-meta">지워진 에이전트입니다</div>
+            ) : (
             <div className="agent-meta">
               Agent
               {agent.nodeCount ? ` · 노드 ${agent.nodeCount}개` : ''}
@@ -1219,18 +1190,45 @@ export const Chat: React.FC<{
                     ? ' · 이어보기'
                     : ''}
             </div>
+            )}
           </div>
         </div>
-        <div className="chat-header-actions">
-          <div className="teams-menu-wrap">
+        {/* 헤더 단추는 아이콘 + 두 글자: [알림] [폴더] [작업] [상세] [채팅 | IDE].
+            음성 출력·MCP 진단처럼 켜 둔 때만 보이는 단추는 그 앞에 둔다. */}
+        <div className="chat-header-actions" style={readOnly ? { display: 'none' } : undefined}>
+          {mcpDebug && (
+            <button
+              type="button"
+              className={`mcp-chat-status ${mcpIndicator.tone}`}
+              title={mcpIndicator.title}
+              aria-label={mcpIndicator.title}
+              aria-expanded={mcpLogsOpen}
+              onClick={() => setMcpLogsOpen((open) => !open)}
+            >
+              <span className="mcp-chat-status-dot" />
+              {mcpIndicator.label}
+            </button>
+          )}
+          {ttsOn && (
             <button
               className="chat-hbtn icon"
+              onClick={() => setMuted((v) => !v)}
+              title={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
+              aria-label={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
+            >
+              {muted ? <SpeakerOffIcon size={15} /> : <SpeakerIcon size={15} />}
+            </button>
+          )}
+          <div className="teams-menu-wrap">
+            <button
+              className="chat-hbtn"
               onClick={() => setNotificationMenuOpen((open) => !open)}
               title="이 에이전트와 대화의 알림 설정"
               aria-label="알림 설정"
               aria-expanded={notificationMenuOpen}
             >
-              {effectiveNotificationMuted ? <BellOffIcon size={15} /> : <BellIcon size={15} />}
+              {effectiveNotificationMuted ? <BellOffIcon size={14} /> : <BellIcon size={14} />}{' '}
+              <span className="chat-hbtn-label">알림</span>
             </button>
             {notificationMenuOpen && (
               <>
@@ -1275,53 +1273,89 @@ export const Chat: React.FC<{
               </>
             )}
           </div>
-          {mcpDebug && (
-            <button
-              type="button"
-              className={`mcp-chat-status ${mcpIndicator.tone}`}
-              title={mcpIndicator.title}
-              aria-label={mcpIndicator.title}
-              aria-expanded={mcpLogsOpen}
-              onClick={() => setMcpLogsOpen((open) => !open)}
-            >
-              <span className="mcp-chat-status-dot" />
-              {mcpIndicator.label}
-            </button>
-          )}
-          {ttsOn && (
-            <button
-              className="chat-hbtn icon"
-              onClick={() => setMuted((v) => !v)}
-              title={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
-              aria-label={muted ? '음성 출력 켜기' : '음성 출력 끄기'}
-            >
-              {muted ? <SpeakerOffIcon size={15} /> : <SpeakerIcon size={15} />}
-            </button>
-          )}
-          {/* 상단 탭은 [상세보기] [작업 과정] 둘만. 상세보기는 이 에이전트의 메모리·작업·
-              도구·스토리지·전체로그를 새 탭으로 연다(에이전트 관측 뷰어). '새 대화'는
-              에이전트를 다시 선택해 여는 흐름과 중복이라 제거. '대화 종료'는 탭 닫기와
-              겹쳐 필요 없다는 사용자 판단으로 [작업 과정] 토글로 바꿨다(2026-09-16). */}
+          <FolderConnectButton
+            count={
+              chatFolders.elsewhere
+                ? (chatFolders.remote?.state?.folders.length ?? 0)
+                : chatFolders.folders.length +
+                  chatFolders.others.reduce((n, other) => n + other.folders.length, 0)
+            }
+            otherCount={chatFolders.others.reduce((n, other) => n + other.folders.length, 0)}
+            elsewhereName={
+              chatFolders.elsewhere ? chatFolders.remote?.state?.device?.name : undefined
+            }
+            remoteNow={chatFolders.remoteNow}
+            onClick={() => setFoldersOpen(true)}
+          />
+          {/* [작업] — 작업 과정 타임라인 켜기/끄기. 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}
+          <button
+            className={`chat-hbtn process-toggle${processView ? ' on' : ''}`}
+            onClick={toggleProcessView}
+            aria-pressed={processView}
+            title={processView ? '작업 과정을 숨기고 답만 봅니다' : '답마다 작업 과정을 함께 봅니다'}
+          >
+            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />}{' '}
+            <span className="chat-hbtn-label">작업</span>
+          </button>
+          {/* [상세] — 이 에이전트의 개요·메모리·작업·도구·스토리지·전체로그를 새 탭으로 연다
+              (에이전트 관측 뷰어). */}
           {onOpenViewer && (
             <button
               className="chat-hbtn"
               onClick={() => onOpenViewer('basic')}
               title="이 에이전트의 개요·메모리·작업·도구·실행 기록을 새 탭으로 봅니다"
             >
-              상세보기
+              <InfoIcon size={14} /> <span className="chat-hbtn-label">상세</span>
             </button>
           )}
-          {/* 작업 과정 타임라인 켜기/끄기 — 답마다가 아니라 여기 한 곳. 모든 대화에 적용되고 앱을 다시 켜도 유지된다 */}
+          {/* [채팅 | IDE] — 헤더 맨 오른쪽. 같은 대화를 두 가지로 본다. */}
+          <div className="chat-view-switch" role="tablist" aria-label="보기">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!ideMode}
+              className={!ideMode ? 'on' : ''}
+              onClick={() => setIdeMode(false)}
+              title="채팅만 봅니다"
+            >
+              <ChatIcon size={13} /> <span className="chat-hbtn-label">채팅</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={ideMode}
+              className={ideMode ? 'on' : ''}
+              onClick={() => setIdeMode(true)}
+              title="이 에이전트의 작업 공간을 편집기와 터미널로 봅니다"
+            >
+              <CodeIcon size={13} /> <span className="chat-hbtn-label">IDE</span>
+            </button>
+          </div>
+          {/* [공유]: [채팅 | IDE] 오른쪽. 지금까지 끝난 대화를 이 시점 그대로 링크로 공유한다(웹과 같은 자리). */}
           <button
-            className={`chat-hbtn process-toggle${processView ? ' on' : ''}`}
-            onClick={toggleProcessView}
-            aria-pressed={processView}
-            title={processView ? '작업 과정 타임라인 켜짐 — 눌러서 답만 보기' : '작업 과정 타임라인 꺼짐 — 눌러서 켜기'}
+            className="chat-hbtn icon chat-share-btn"
+            onClick={() => setShareOpen(true)}
+            title={CHAT_SHARE_TEXT.buttonTitle}
+            aria-label={CHAT_SHARE_TEXT.button}
           >
-            {processView ? <EyeIcon size={14} /> : <EyeOffIcon size={14} />} 작업 과정
+            <ShareIcon size={15} />
           </button>
         </div>
       </div>
+    </>
+  );
+  const body = (
+    <>
+      {foldersOpen && (
+        <FolderConnectModal state={chatFolders} onClose={() => setFoldersOpen(false)} />
+      )}
+      {shareOpen && (
+        <ChatShareModal
+          workflowId={agent.workflowId}
+          interactionId={session.interactionId}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
 
       {mcpDebug && mcpLogsOpen && (
         <div className="mcp-runtime-log" role="log" aria-label="로컬 MCP 실행 로그">
@@ -1375,7 +1409,7 @@ export const Chat: React.FC<{
           <div className="chat-empty">
             <ChatIcon size={44} className="mark" />
             <h3>{agent.workflowName}</h3>
-            <p>이 에이전트와 대화를 시작하세요.</p>
+            <p>{readOnly ? '남아 있는 대화 내용이 없습니다' : '이 에이전트와 대화를 시작하세요.'}</p>
           </div>
         ) : (
           messages.map((m, i) => (
@@ -1392,6 +1426,8 @@ export const Chat: React.FC<{
               // 사용자 메시지의 첨부: 파일은 말풍선 위 카드(열기·저장), 그림은 말풍선 안 미리보기
               const files = m.role === 'user' ? (m.images ?? []).filter((image) => image.kind === 'file') : [];
               const pictures = (m.images ?? []).filter((image) => image.kind !== 'file');
+              // 답의 파일 저장소 결과물 — 스트림으로 받은 것 + 이력 본문의 표식. 본문에서는 그 표식을 걷는다.
+              const answerFiles = m.role === 'assistant' ? chatAnswerFiles(m.text, m.downloads) : null;
               return (
             <div key={i} className={`msg-row ${m.role}`}>
               {m.role === 'assistant' && (
@@ -1405,7 +1441,7 @@ export const Chat: React.FC<{
                     className={`exec-surface ${m.surface}`}
                     title={
                       m.surface === 'connector_local'
-                        ? `이 PC 의 로컬 실행 환경(커넥터 사이드카)에서 실행 중 — 기억·파일은 서버와 공유${m.surfaceNote ? ` (${m.surfaceNote})` : ''}`
+                        ? `에이전트는 서버에서 실행되고, 이 PC의 파일과 터미널은 연결한 폴더 안에서만 씁니다${m.surfaceNote ? ` (${m.surfaceNote})` : ''}`
                         : m.surface === 'blocked'
                           ? `실행이 차단되었습니다${m.surfaceNote ? ` — ${m.surfaceNote}` : ''}`
                           : `서버 sandbox 에서 실행${m.surfaceNote ? ` — ${m.surfaceNote}` : ''}`
@@ -1451,7 +1487,7 @@ export const Chat: React.FC<{
                     ) : processView && hasProcessFlow(m) ? (
                       <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
                     ) : m.text ? (
-                      <Markdown text={m.text} />
+                      <Markdown text={answerFiles?.text ?? m.text} />
                     ) : (
                       m.streaming && <span className="cursor" />
                     )
@@ -1496,6 +1532,10 @@ export const Chat: React.FC<{
                   <TurnFiles
                     workflowId={agent.workflowId}
                     msg={m}
+                    downloads={answerFiles?.downloads}
+                    onPreviewImage={(image) =>
+                      setPreviewImage({ name: image.name, dataUrl: image.url, mime: 'image/*', size: 0, kind: 'image' })
+                    }
                     request={requestBefore(messages, i)}
                     onOpenFile={onOpenFile}
                     latest={i === lastAssistantIndex}
@@ -1545,6 +1585,7 @@ export const Chat: React.FC<{
                     <div className="msg-footer">
                       {!!m.text && !m.error && (
                         <div className="msg-actions">
+                          <Tooltip label={copiedAt === i ? '복사됨' : '답변 복사'}>
                           <button
                             onClick={() => {
                               void copyText(m.text).then((ok) => {
@@ -1556,35 +1597,44 @@ export const Chat: React.FC<{
                                 );
                               });
                             }}
-                            title="답변 복사"
+                            aria-label={copiedAt === i ? '복사됨' : '답변 복사'}
                           >
-                            <CopyIcon size={13} /> {copiedAt === i ? '복사됨' : '복사'}
+                            {copiedAt === i ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
                           </button>
+                          </Tooltip>
+                          <Tooltip label="Teams 방에 공유">
                           <button
                             onClick={() => setShareBody(m.text)}
-                            title="이 답변을 Teams 방에 공유"
+                            aria-label="이 답변을 Teams 방에 공유"
                           >
-                            <ShareIcon size={13} /> Teams로 공유
+                            <ShareIcon size={14} />
                           </button>
+                          </Tooltip>
                           {/* 답변 평가 — 웹 채팅과 같은 별점·문제 유형이 같은 곳(관리자 [사용자 피드백])으로 간다.
                               이미 남겼으면 별점이 보이고 누르면 고칠 수 있다. */}
                           {m.executionIoId !== undefined && (
+                            <Tooltip
+                              label={
+                                feedbackByIo[m.executionIoId]
+                                  ? `평가 ${feedbackByIo[m.executionIoId].starRating}점 · 눌러서 고치기`
+                                  : '답변 평가'
+                              }
+                            >
                             <button
+                              className={feedbackByIo[m.executionIoId] ? 'rated' : undefined}
                               onClick={() => {
                                 setFeedbackError(null);
                                 setFeedbackFor(m.executionIoId ?? null);
                               }}
-                              title={
+                              aria-label={
                                 feedbackByIo[m.executionIoId]
-                                  ? '남긴 평가 고치기'
+                                  ? `평가 ${feedbackByIo[m.executionIoId].starRating}점, 고치기`
                                   : '이 답변을 평가합니다'
                               }
                             >
-                              <StarIcon size={13} />{' '}
-                              {feedbackByIo[m.executionIoId]
-                                ? `평가 ${feedbackByIo[m.executionIoId].starRating}점`
-                                : '평가'}
+                              {feedbackByIo[m.executionIoId] ? <StarFilledIcon size={14} /> : <StarIcon size={14} />}
                             </button>
+                            </Tooltip>
                           )}
                         </div>
                       )}
@@ -1668,11 +1718,13 @@ export const Chat: React.FC<{
             화면을 첨부하지 못했습니다: {captureNotice}
           </div>
         )}
-        {sensitive && (
-          <div className="sensitive-warn" role="alert">
-            <strong>🔒 민감정보 입력 안내</strong>
-            <span>입력하신 내용에 민감정보가 감지되었습니다. 보내기 전에 다시 한 번 확인해 주세요.</span>
-            <em>주민등록번호·여권번호 같은 고유식별정보, 계좌·카드번호·비밀번호 같은 금융정보</em>
+        {policy.notice && (
+          <div
+            className={policy.notice.tone === 'block' ? 'sensitive-warn blocked' : 'sensitive-warn'}
+            role={policy.notice.tone === 'block' ? 'alert' : 'status'}
+          >
+            <strong>{policy.notice.tone === 'block' ? '보낼 수 없는 내용' : '민감한 내용 안내'}</strong>
+            <span>{policy.notice.text}</span>
           </div>
         )}
         {imageNotice && (
@@ -1680,9 +1732,17 @@ export const Chat: React.FC<{
             {imageNotice}
           </div>
         )}
+        {readOnly ? (
+          <div className="chat-readonly-notice" role="status">
+            지워진 에이전트입니다. 지난 대화만 볼 수 있습니다.
+          </div>
+        ) : (
+        <>
         {/* Teams 문맥 칩 — 켜져 있다는 사실이 **항상** 보여야 한다. 화면 캡처
             토글과 같은 원칙이다: 켜 둔 것을 잊고 남의 대화를 흘려보내는 것이
             이 기능의 유일한 위험이다. */}
+        {/* 입력창 위 도구 줄 — [Teams 대화 붙이기] 와 그 오른쪽의 모델 선택기. */}
+        <div className="composer-tools">
         {chip ? (
           <div className="teams-ctx" role="status">
             <TeamsIcon size={13} />
@@ -1733,6 +1793,8 @@ export const Chat: React.FC<{
             <TeamsIcon size={12} /> Teams 대화 붙이기
           </button>
         )}
+        <ModelPicker interactionId={session.interactionId} workflowId={agent.workflowId} />
+        </div>
         <input
           ref={imageInputRef}
           className="composer-image-input"
@@ -1851,7 +1913,7 @@ export const Chat: React.FC<{
                 ? `파일은 최대 ${CHAT_IMAGE_MAX_COUNT}개까지 첨부할 수 있습니다`
                 : preparingImages > 0
                   ? '파일을 준비하는 중…'
-                  : '파일 첨부'
+                  : `파일 첨부 · 이미지는 붙여 넣어도 됩니다 (최대 ${CHAT_IMAGE_MAX_COUNT}개)`
             }
             aria-label="파일 첨부"
           >
@@ -1883,21 +1945,24 @@ export const Chat: React.FC<{
               onClick={() => void send()}
               disabled={
                 (!input.trim() && stagedImages.length === 0 && browserSelections.length === 0) ||
-                preparingImages > 0
+                preparingImages > 0 ||
+                policy.blocked
               }
-              title="전송"
+              title={policy.blocked ? '통제 정책에 걸려 보낼 수 없습니다' : '전송'}
               aria-label="전송"
             >
               <SendIcon size={17} />
             </button>
           )}
         </div>
+        {/* 좁은 칸(IDE 오른쪽 대화)에서는 줄을 접지 않고 통째로 감춘다 — styles.css 의 컨테이너 조건. */}
         <div className="composer-foot">
           <span className="kbd-hint">
             <kbd>Enter</kbd> 전송 · <kbd>Shift + Enter</kbd> 줄바꿈
           </span>
-          <span className="composer-image-hint">파일은 +로 첨부 · 이미지는 붙여넣기 가능 · 최대 10개</span>
         </div>
+        </>
+        )}
       </div>
 
       {previewImage && (
@@ -1994,6 +2059,48 @@ export const Chat: React.FC<{
           onClose={() => setShareBody(null)}
         />
       )}
+    </>
+  );
+
+  if (ideMode && ideStore && !readOnly) {
+    // IDE — 헤더는 그대로 위에, 그 아래를 편집기로. 대화(기록·작성기)는 오른쪽 칸이다.
+    // 파일을 끌어다 놓아 첨부하는 것은 대화 칸에서만 받는다(탐색기에 놓으면 올리기다).
+    return (
+      <div className="chat chat-ide">
+        {header}
+        <div className="chat-ide-body">
+          <IdeView
+            store={ideStore}
+            theme={ideTheme}
+            // IDE 단추는 앱 사이드바가 그린다(ActivityBar 의 IDE 묶음).
+            activityBar={false}
+            chat={
+              <div className={`chat chat-ide-column${dragOver ? ' dropping' : ''}`} {...dragProps}>
+                {dropOverlay}
+                {body}
+              </div>
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (readOnly) {
+    // 기록만 본다: 파일을 끌어 놓아도 받지 않는다(보낼 곳이 없다).
+    return (
+      <div className="chat chat-readonly">
+        {header}
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`chat${dragOver ? ' dropping' : ''}`} {...dragProps}>
+      {dropOverlay}
+      {header}
+      {body}
     </div>
   );
 };

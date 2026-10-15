@@ -15,6 +15,7 @@ import { describeStreamError } from './errors';
 import { ApiError, HttpClient } from './client';
 import { SseParser } from './sse';
 import type { ChatEvent, ChatRequest, ChatStopResult, ToolEvent } from './types';
+import type { TimelineFlowItem } from './process-timeline';
 
 function toRequestBody(req: ChatRequest): Record<string, unknown> {
   return {
@@ -45,6 +46,19 @@ function toRequestBody(req: ChatRequest): Record<string, unknown> {
     // 모든 글자를 두 번 본다. 기기(client_device_id)가 아니라 화면 단위다:
     // 같은 PC 에서 앱과 웹을 나란히 열면 기기는 하나지만 화면은 둘이다.
     ...(req.originId ? { origin_id: req.originId } : {}),
+    // 이 대화에 연결된 기기 폴더 — 빈 목록도 보낸다(= 폴더 없음). 서버는 이것으로
+    // 이번 턴의 폴더 도구를 정하고, 기기는 호출마다 자기 장부로 다시 확인한다.
+    ...(req.localFolders
+      ? {
+          local_folders: req.localFolders.map((folder) => ({
+            id: folder.id,
+            name: folder.name,
+            path: folder.path,
+          })),
+        }
+      : {}),
+    // 기억 지도를 끈 선택만 보낸다 — 없으면 서버가 에이전트 설정(기본 켜짐)을 따른다.
+    ...(req.memoryMap === false ? { memory_map: false } : {}),
   };
 }
 
@@ -130,8 +144,16 @@ export const TURN_MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
 export interface LiveTurnSnapshot {
   /** 지금까지의 답변 본문. 빈 문자열일 수 있다 — 아직 한 글자도 안 나온 턴이다. */
   text: string;
-  /** 본문이 아닌 진행(도구·노드 상태 등). 서버가 아직 안 실으면 빈 배열. */
+  /**
+   * 본문이 아닌 진행(도구·노드 상태 등). 서버가 아직 안 실으면 빈 배열.
+   * 한 칸은 `{event, data, text_at?, at?}` — `text_at` 은 그 사건이 났을 때까지 쌓인 본문 글자 수(누적),
+   * `at` 은 받은 시각(ms)이다. 둘로 "이 문장 다음에 이 도구" 순서를 되살린다({@link liveTurnFlow}).
+   */
   events: unknown[];
+  /** 턴이 시작된 시각(ms) — 경과 시간. 옛 서버는 싣지 않는다. */
+  startedAt?: number;
+  /** 지금까지 쌓인 본문 글자 수(누적) — `text` 가 상한으로 앞이 잘렸을 때 `text_at` 과 눈금을 맞춘다. */
+  textTotal?: number;
 }
 
 /** `subscribed` 프레임이 말하는 것 — 커서, 지금 도는 턴이 있는가, 그 진행분. */
@@ -166,6 +188,8 @@ export function parseSubscribed(data: unknown): SubscribedState {
     live = {
       text: typeof l.text === 'string' ? l.text : '',
       events: Array.isArray(l.events) ? l.events : [],
+      ...(typeof l.started_at === 'number' ? { startedAt: l.started_at } : {}),
+      ...(typeof l.text_total === 'number' ? { textTotal: l.text_total } : {}),
     };
   }
   return {
@@ -173,6 +197,63 @@ export function parseSubscribed(data: unknown): SubscribedState {
     running,
     live,
   };
+}
+
+/** 진행분 한 칸 — 서버 작업 과정(`process`)과 같은 모양. 도구 사건은 서버가 보낸 원문(snake_case) 그대로다. */
+export type LiveProcessItem =
+  | { kind: 'text'; text: string; at: number }
+  | { kind: 'tool'; event: Record<string, unknown>; at: number };
+
+/**
+ * 진행분 스냅샷 → 글·도구가 온 순서(서버 작업 과정과 같은 모양).
+ *
+ * 다시 접속한 화면이 **실행한 화면과 같은 타임라인**을 그리게 하는 자리다. 예전에는 스냅샷의 글만
+ * 말풍선에 넣고 도구(`events`)는 버렸다 — 웹에서 도구 24번을 부르며 7분째 도는 턴이 폰에서는
+ * 글 몇 줄로만 보였다(2026-10-01 사용자 지적).
+ *
+ * 순서는 각 사건의 `text_at`(그때까지의 본문 글자 수)으로 되살린다. 그 값이 없는 옛 서버는
+ * 도구를 먼저, 글을 뒤에 둔다 — 순서를 모르면 지금 쓰고 있는 글이 가장 최근 것이다.
+ * 도구 사건의 원문을 그대로 두므로 웹(서버 모양을 쓰는 화면)도 이것을 그대로 받는다.
+ */
+export function liveTurnProcess(live: LiveTurnSnapshot): LiveProcessItem[] {
+  // 서버(Python)의 글자 수는 코드 포인트다 — JS 문자열 길이(UTF-16)로 자르면 이모지 뒤에서 어긋난다.
+  const chars = Array.from(live.text ?? '');
+  const slice = (a: number, b?: number): string => chars.slice(a, b).join('');
+  const base = Math.max(0, (live.textTotal ?? chars.length) - chars.length);
+  const out: LiveProcessItem[] = [];
+  let cursor = 0;
+  let lastAt = live.startedAt ?? 0;
+  for (const raw of live.events ?? []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    if (item.event !== 'tool' || !item.data || typeof item.data !== 'object') continue;
+    const at = typeof item.at === 'number' ? item.at : lastAt;
+    lastAt = at;
+    if (typeof item.text_at === 'number') {
+      const offset = Math.min(chars.length, Math.max(0, item.text_at - base));
+      if (offset > cursor) {
+        out.push({ kind: 'text', text: slice(cursor, offset), at });
+        cursor = offset;
+      }
+    }
+    out.push({ kind: 'tool', event: item.data as Record<string, unknown>, at });
+  }
+  if (cursor < chars.length) out.push({ kind: 'text', text: slice(cursor), at: lastAt });
+  return out;
+}
+
+/** 진행분 스냅샷 → 작업 과정(화면 모양의 도구 사건). 순서 규칙은 {@link liveTurnProcess} 하나다. */
+export function liveTurnFlow(live: LiveTurnSnapshot): TimelineFlowItem[] {
+  const out: TimelineFlowItem[] = [];
+  for (const item of liveTurnProcess(live)) {
+    if (item.kind === 'text') {
+      out.push(item);
+      continue;
+    }
+    const ev = turnEventToChatEvent('tool', item.event);
+    if (ev?.kind === 'tool') out.push({ kind: 'tool', event: ev.event, at: item.at });
+  }
+  return out;
 }
 
 /**
@@ -282,6 +363,32 @@ export function turnEventToChatEvent(
   }
 }
 
+/**
+ * 턴 스트림이 이만큼 조용하면 끊긴 것이다. 서버는 보낼 것이 없는 동안에도 10초마다 keepalive 주석을
+ * 흘린다(execution.py `with_sse_keepalive`) — 그 넷을 연달아 놓쳤다는 뜻이다.
+ */
+export const STREAM_IDLE_MS = 45_000;
+
+/** 한 번 읽기 — `idleMs` 안에 아무것도 오지 않으면 'idle'. 0 이하면 기다리기만 한다. */
+async function readWithin(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array> | 'idle'> {
+  const read = reader.read();
+  if (!(idleMs > 0)) return read;
+  // 진 쪽 읽기는 나중에 취소로 끝난다 — 그 거절이 처리되지 않은 채 떠돌지 않게 붙잡아 둔다.
+  read.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const idle = new Promise<'idle'>((resolve) => {
+    timer = setTimeout(() => resolve('idle'), idleMs);
+  });
+  try {
+    return await Promise.race([read, idle]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class ChatApi {
   constructor(private http: HttpClient) {}
 
@@ -319,8 +426,14 @@ export class ChatApi {
   /**
    * Stream a chat turn. Yields normalized ChatEvents until the terminal `end`
    * (or the stream closes). Pass an AbortSignal to cancel mid-stream.
+   *
+   * `idleMs` — 이만큼 한 바이트도 오지 않으면 끊긴 것으로 본다(기본 {@link STREAM_IDLE_MS}, 0 이면 끈다).
    */
-  async *stream(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatEvent, void, void> {
+  async *stream(
+    req: ChatRequest,
+    signal?: AbortSignal,
+    opts?: { idleMs?: number },
+  ): AsyncGenerator<ChatEvent, void, void> {
     const res = await this.http.stream(
       '/api/agentflow/execute/based-id/stream',
       toRequestBody(req),
@@ -339,9 +452,19 @@ export class ChatApi {
      * 그때 받다 만 텍스트가 최종 답이 되거나 멀쩡히 도는 턴이 실패로 표시된다.
      */
     let terminal = false;
+    const idleMs = opts?.idleMs ?? STREAM_IDLE_MS;
     try {
       for (;;) {
-        const { value, done } = await reader.read();
+        const step = await readWithin(reader, idleMs);
+        if (step === 'idle') {
+          // 반쯤 열린 연결(절전·Wi-Fi 전환·프록시가 조용히 놓은 소켓) — 읽기가 영영 돌아오지 않는다.
+          // 서버는 조용한 동안에도 keepalive 를 흘리므로, 이만큼 아무것도 없으면 이 스트림은 죽었다.
+          // 그 턴은 서버에서 계속 돈다 — 끝이 아니라 분리다.
+          void reader.cancel().catch(() => undefined);
+          yield { kind: 'detached', reason: 'network' };
+          return;
+        }
+        const { value, done } = step;
         if (done) break;
         const frames = parser.push(decoder.decode(value, { stream: true }));
         for (const f of frames) {

@@ -12,7 +12,7 @@ import {
   type BrowserPageInfo,
 } from '@dex/protocol/browser';
 import { BrowserRuntime } from '../src/main/browser-runtime';
-import { BROWSER_TABS_TOOL, BrowserToolProvider } from '../src/main/browser-tools';
+import { BROWSER_TABS_TOOL, BrowserToolProvider, browserWaitCommand } from '../src/main/browser-tools';
 import {
   BROWSER_PARTITION_PREFIX,
   allowedBrowserUrl,
@@ -245,10 +245,14 @@ test('account partition is stable per server/user without exposing account ids',
   assert.ok(!one.includes('user-secret'));
 });
 
-test('upload/download paths stay inside allowedRoots', async () => {
+test('upload/download paths stay inside the conversation folders', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xgen-browser-'));
   assert.equal(browserPathWithinRoots(join(root, 'a.txt'), [root]), join(root, 'a.txt'));
   assert.equal(browserPathWithinRoots(join(root, '..', 'escape.txt'), [root]), null);
+  // 상대 경로는 첫 번째 폴더에서 시작한다(예전처럼 홈이 아니다).
+  assert.equal(browserPathWithinRoots('shot.png', [root]), join(root, 'shot.png'));
+  // 폴더가 없는 대화에서는 어떤 경로도 허락하지 않는다.
+  assert.equal(browserPathWithinRoots(join(root, 'a.txt'), []), null);
 });
 
 test('an agent-created shared page requests visible browser UI', async () => {
@@ -277,7 +281,7 @@ test('an agent-created shared page requests visible browser UI', async () => {
   } as unknown as BrowserRuntime;
   const provider = new BrowserToolProvider(fakeRuntime);
   const revealed: string[] = [];
-  provider.configure(true, [], (page) => revealed.push(page.pageId));
+  provider.configure(true, () => [], (page) => revealed.push(page.pageId));
 
   await provider.callTool(
     BROWSER_TABS_TOOL,
@@ -315,4 +319,18 @@ test('an agent-created shared page requests visible browser UI', async () => {
       ),
     /일치하지 않습니다/,
   );
+});
+
+test('BrowserNavigate wait: 로드 상태·URL·글을 agent-browser 플래그로 옮긴다', () => {
+  // 위치 인자는 밀리초 아니면 선택자 — "load" 를 그대로 넘기면 <load> 요소를 25초 기다리다 실패했다.
+  assert.deepEqual(browserWaitCommand('load'), ['wait', '--load', 'load']);
+  assert.deepEqual(browserWaitCommand('NetworkIdle'), ['wait', '--load', 'networkidle']);
+  assert.deepEqual(browserWaitCommand('https://www.bizinfo.go.kr/web/*'), ['wait', '--url', 'https://www.bizinfo.go.kr/web/*']);
+  assert.deepEqual(browserWaitCommand('**/search.do'), ['wait', '--url', '**/search.do']);
+  assert.deepEqual(browserWaitCommand('text: 검색 결과'), ['wait', '--text', '검색 결과']);
+  // 밀리초·선택자는 예전처럼 위치 인자, 값이 없으면 1초.
+  assert.deepEqual(browserWaitCommand('1500'), ['wait', '1500']);
+  assert.deepEqual(browserWaitCommand(1500), ['wait', '1500']);
+  assert.deepEqual(browserWaitCommand('#result-list'), ['wait', '#result-list']);
+  assert.deepEqual(browserWaitCommand(undefined), ['wait', '1000']);
 });

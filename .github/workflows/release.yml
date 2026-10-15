@@ -6,20 +6,82 @@ name: Release
 # 되는데 확장은 안 된다"가 되고, 그때 어느 조합이 검증된 것인지 아무도 모른다.
 # 태그 하나 = 검증된 조합 하나다.
 #
-# 트리거: v* 태그 push, 또는 수동.
+# 릴리스는 **이 워크플로 한 번**이다: Actions → Release → Run workflow(main) 에서
+# 버전(patch · minor · major 또는 x.y.z)을 넣으면
+#   1) prepare 가 모든 앱·패키지의 버전을 한 값으로 올려 main 에 커밋하고 태그를 단다
+#   2) 그 태그로 데스크톱·CLI·확장·안드로이드·iOS 를 **한 번씩** 만들어 발행한다.
+# 버전업 PR 도, main 푸시 CI 도 없다 — 같은 빌드를 여러 번 만들던 길을 없앴다.
+# (GITHUB_TOKEN 으로 푸시한 커밋·태그는 다른 워크플로를 깨우지 않는다.)
+#
+# main 에서 돌기 때문에 여기서 만든 캐시(gradle·ccache·Pods)는 다음 릴리스와
+# PR 의 네이티브 컴파일이 그대로 읽는다 — 캐시만 데우려는 별도 빌드가 필요 없다.
+#
+# 사람이 태그를 직접 올린 경우(v*)에도 돈다. 그때는 버전을 올리지 않고 태그의
+# 버전이 모든 앱·패키지에서 같은지만 확인한다.
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '새 버전 — patch · minor · major 또는 x.y.z'
+        required: true
+        default: minor
   push:
     tags: ['v*']
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # ── 버전 올리기 · 태그 (수동 실행) / 태그 확인 (태그 푸시) ──
+  prepare:
+    name: 버전 · 태그
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 버전 올리기 · 커밋 · 태그
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BUMP: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::릴리스는 main 에서만 실행합니다 (지금: $GITHUB_REF)"; exit 1
+          fi
+          VER=$(node scripts/version.mjs set "$BUMP")
+          node scripts/version.mjs check
+          if git rev-parse -q --verify "refs/tags/v$VER" >/dev/null; then
+            echo "::error::v$VER 태그가 이미 있습니다"; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "chore(release): $VER"
+          git tag -a "v$VER" -m "v$VER"
+          git push origin HEAD:main "v$VER"
+          echo "TAG=v$VER" >> "$GITHUB_ENV"
+      - name: 태그의 버전 확인
+        if: github.event_name == 'push'
+        run: |
+          node scripts/version.mjs check
+          VER=$(node -p "require('./package.json').version")
+          if [ "v$VER" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::태그($GITHUB_REF_NAME)와 버전(v$VER)이 다릅니다"; exit 1
+          fi
+          echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+      - id: tag
+        run: echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   # ── 데스크톱 설치본 (OS 별로 그 OS 에서 빌드해야 한다) ──
   desktop:
     name: 데스크톱 (${{ matrix.os }})
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -28,18 +90,21 @@ jobs:
           # 올려야 자동 업데이트가 새 버전을 찾는다.
           - os: ubuntu-latest
             flag: --linux
+            exe: apps/desktop/release/linux-unpacked/xgen-dex
             glob: |
               apps/desktop/release/*.AppImage
               apps/desktop/release/*.deb
               apps/desktop/release/latest-linux.yml
           - os: windows-latest
             flag: --win
+            exe: apps/desktop/release/win-unpacked/XGen-Dex.exe
             glob: |
               apps/desktop/release/*.exe
               apps/desktop/release/*.blockmap
               apps/desktop/release/latest.yml
           - os: macos-latest
             flag: --mac
+            exe: apps/desktop/release/mac-arm64/XGen-Dex.app/Contents/MacOS/XGen-Dex
             glob: |
               apps/desktop/release/*.dmg
               apps/desktop/release/*.blockmap
@@ -47,8 +112,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      # electron-builder 26 의 @electron/rebuild 는 Node 22.12 이상이 든다(keytar 를 Electron 에 맞춰 다시 짓는다).
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 24 }
 
       # 루트 install 은 packages/* 의 의존(ws · MCP SDK)을 놓는다 — 데스크톱이
       # 그것을 소스로 번들하므로 둘 다 필요하다.
@@ -65,18 +133,42 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # 발행 전에 CI(desktop-package)와 같은 확인 — 설치본으로 띄우기, Windows 처음 설치·업데이트·제거·이전 릴리스에서 올라오기.
+      - name: 설치본으로 띄우기
+        shell: bash
+        env:
+          DEX_E2E_PACKAGED: ${{ github.workspace }}/${{ matrix.exe }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libsecret-1-0
+            RUN="xvfb-run -a"
+          else
+            RUN=""
+          fi
+          cd apps/desktop && $RUN npx --no-install tsx --test e2e/packaged.e2e.ts
+      - name: Windows 처음 설치·업데이트·제거·올라오기
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node apps/desktop/scripts/check-installer.mjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}
           path: ${{ matrix.glob }}
           if-no-files-found: error
 
-  # ── CLI · VSCode 확장 (플랫폼 무관) ──
+  # XD 앱은 릴리스에 싣지 않는다(빌드 자원만 오래 잡았다). 설치본이 필요하면 Actions → XD (수동) 에서
+  # installers 를 켜고 돌려 아티팩트로 받는다(.github/workflows/xd-manual.yml).
+
   packages:
     name: CLI + 확장
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: npm ci --no-audit --no-fund
@@ -112,10 +204,13 @@ jobs:
   # 프로젝트(android/, ios/)는 prebuild 결과물을 커밋해 두었다 — CI 는 재생성
   # 없이 그대로 빌드한다(결정적).
   android:
+    needs: prepare
     name: 모바일 — 안드로이드 APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -185,6 +280,7 @@ jobs:
   # 자산으로 남긴다(사내 재서명/TestFlight 파이프라인의 입력). Apple 툴체인
   # 변동으로 릴리스 전체가 막히지 않도록 실패는 릴리스를 막지 않는다.
   ios:
+    needs: prepare
     name: 모바일 — iOS (무서명)
     # macos-latest(=Xcode 26)의 새 clang 은 RN 0.79 가 쓰는 fmt 의 consteval
     # 코드와 비호환(빌드 실패 실측). Xcode 16 이 실려 있는 macos-15 로 고정한다.
@@ -192,6 +288,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -279,7 +377,7 @@ jobs:
   # 확장은 VS Marketplace 가 자기 자리다.
   npm:
     name: npm 배포
-    needs: [packages]
+    needs: [prepare, packages]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -288,6 +386,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -329,9 +429,10 @@ jobs:
           # 넘어가면, publish 는 멀쩡한데 ETARGET 으로 릴리스가 빨개진다
           # (2026-09-17 v1.47.0: 60초로는 모자랐고 배포 자체는 정상이었다).
           # 그래서 (1) 캐시를 타지 않게 --prefer-online 으로 묻고, (2) 보일 때까지
-          # 최대 5분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다.
+          # 최대 10분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다
+          # (2026-09-28 v1.61.0: 프로토콜이 5분 넘게 안 보여 IDE 배포까지 멈췄다).
           seen=""
-          for i in $(seq 1 20); do
+          for i in $(seq 1 40); do
             if npm view --prefer-online "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}" version >/dev/null 2>&1; then
               seen=1
               echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
@@ -340,7 +441,7 @@ jobs:
             sleep 15
           done
           if [ -z "$seen" ]; then
-            echo "::error::${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            echo "::error::${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }} 가 10분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
             exit 1
           fi
           npm i -g "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}"
@@ -391,9 +492,10 @@ jobs:
           # 넘어가면, publish 는 멀쩡한데 ETARGET 으로 릴리스가 빨개진다
           # (2026-09-17 v1.47.0: 60초로는 모자랐고 배포 자체는 정상이었다).
           # 그래서 (1) 캐시를 타지 않게 --prefer-online 으로 묻고, (2) 보일 때까지
-          # 최대 5분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다.
+          # 최대 10분 기다리고, (3) 끝내 안 보이면 **그 사실을 말하고** 멈춘다
+          # (2026-09-28 v1.61.0: 프로토콜이 5분 넘게 안 보여 IDE 배포까지 멈췄다).
           seen=""
-          for i in $(seq 1 20); do
+          for i in $(seq 1 40); do
             if npm view --prefer-online "${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }}" version >/dev/null 2>&1; then
               seen=1
               echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
@@ -402,7 +504,7 @@ jobs:
             sleep 15
           done
           if [ -z "$seen" ]; then
-            echo "::error::${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }} 가 5분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            echo "::error::${{ steps.proto.outputs.name }}@${{ steps.proto.outputs.version }} 가 10분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
             exit 1
           fi
           TMP=$(mktemp -d); cd "$TMP"
@@ -416,18 +518,77 @@ jobs:
             console.log('root', Object.keys(root).length, '· browser', Object.keys(browser).length);
           "
 
+      # ── IDE 보기 (xgen-dex-ide) ─────────────────────────────────────
+      #
+      # 채팅 [IDE] 의 화면·상태를 웹(xgen-frontend)도 같은 코드로 쓴다. 데스크톱은 모노레포 안에서
+      # `@dex/ide` 소스를 그대로 번들하고, 웹은 이 배포물(JS + .d.ts + CSS 한 벌)을 받는다.
+      - name: IDE 빌드
+        run: npm --prefix packages/ide run build
+
+      - name: IDE — 이미 올라간 버전인지 확인
+        id: ide
+        run: |
+          NAME=$(node -p "require('./packages/ide/dist-pkg/package.json').name")
+          VER=$(node -p "require('./packages/ide/dist-pkg/package.json').version")
+          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VER 는 이미 npm 에 있습니다 — 배포를 건너뜁니다."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: IDE 배포
+        if: steps.ide.outputs.exists == 'false'
+        working-directory: packages/ide/dist-pkg
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: IDE — 설치해서 실제로 불러 본다
+        if: steps.ide.outputs.exists == 'false'
+        run: |
+          # 프로토콜과 같은 이유로 보일 때까지 기다린 뒤, 깨끗한 곳에 깔아 루트와 CSS 가 풀리는지 본다.
+          seen=""
+          for i in $(seq 1 40); do
+            if npm view --prefer-online "${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }}" version >/dev/null 2>&1; then
+              seen=1
+              echo "레지스트리 반영 확인 (약 $(( (i - 1) * 15 ))초 대기)"
+              break
+            fi
+            sleep 15
+          done
+          if [ -z "$seen" ]; then
+            echo "::error::${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }} 가 10분 안에 레지스트리에 보이지 않습니다. publish 는 성공했을 수 있으니 npm 쪽 상태를 확인하세요."
+            exit 1
+          fi
+          TMP=$(mktemp -d); cd "$TMP"
+          npm init -y >/dev/null
+          npm i "${{ steps.ide.outputs.name }}@${{ steps.ide.outputs.version }}" react@18 react-dom@18
+          node --input-type=module -e "
+            import * as ide from '${{ steps.ide.outputs.name }}';
+            import { createRequire } from 'node:module';
+            const require = createRequire(import.meta.url);
+            for (const k of ['IdeView', 'IdeStore', 'IdeError']) if (!(k in ide)) throw new Error(k + ' export 가 없다');
+            if (!require.resolve('${{ steps.ide.outputs.name }}/ide.css')) throw new Error('ide.css 가 없다');
+            console.log('exports', Object.keys(ide).length, '· css ok');
+          "
+
   publish:
     name: 릴리스 발행
     # ios 를 needs 에 넣되 결과는 보지 않는다 — ipa 가 나왔으면 릴리스에 싣고,
     # iOS 가 실패했어도(비차단 설계) 나머지 자산으로 릴리스는 발행한다.
     # ios 를 기다리지 않으면 ipa 아티팩트가 릴리스에 못 붙는다(v1.25.1 실측).
-    needs: [desktop, packages, android, ios]
+    needs: [prepare, desktop, packages, android, ios]
     if: >-
       always() && needs.desktop.result == 'success' &&
       needs.packages.result == 'success' && needs.android.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
 
@@ -455,7 +616,7 @@ jobs:
             |---|---|---|
             | Windows | `XGen-Dex-Setup-*.exe` | 실행 → SmartScreen 이 뜨면 **추가 정보 → 실행** |
             | macOS | `XGen-Dex-*.dmg` | 열어서 **XGen-Dex.app** 을 **응용 프로그램**으로 → 첫 실행은 **우클릭 → 열기** |
-            | Linux | `*.AppImage` / `*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
+            | Linux | `XGen-Dex-*.AppImage` / `XGen-Dex-*.deb` | AppImage: `chmod +x` 후 실행 / deb: `sudo dpkg -i` |
 
             > macOS 가 "손상됨" 이라고 하면:
             > `xattr -dr com.apple.quarantine "/Applications/XGen-Dex.app"`
@@ -463,9 +624,9 @@ jobs:
             ### 모바일 (React Native — 안드로이드 / iOS)
 
             모바일 앱은 **서버 세션 채팅 + 모바일 도구** 전용입니다 — 에이전트가
-            휴대폰의 파일·알림·클립보드·카메라·위치 등을 (설정에서 그룹별 승인 후)
-            도구로 사용할 수 있습니다. 데스크톱의 클라우드/브라우저 기능은
-            포함되지 않습니다.
+            대화에 연결한 휴대폰 폴더의 파일, 알림·클립보드·카메라·위치 등(설정에서
+            그룹별 승인 후)을 도구로 사용할 수 있습니다. 데스크톱의 클라우드/브라우저
+            기능은 포함되지 않습니다. 버전은 데스크톱·CLI·확장과 같습니다.
 
             - **안드로이드**: `XGen-Dex-*.apk` 를 받아 설치합니다 (알 수 없는 앱
               설치 허용 필요). 같은 서명 키로 릴리스되므로 **기존 설치 위에 바로

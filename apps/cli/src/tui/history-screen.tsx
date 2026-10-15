@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { conversationDisplayTitle } from '@dex/protocol';
 import { publicError } from '@dex/engine';
 import type { Conversation, ConversationSnapshot } from '@dex/engine';
 import type { TuiEngine } from './model';
 import { Footer, Loading, Notice } from './components';
+import { conversationCaption, when } from './conversation-list';
 
+/**
+ * 대화 기록(Ctrl+H): 내 대화 전부를 마지막으로 말한 순서로(서버가 정한 순서 그대로).
+ * 한 줄 = 제목 + 작은 에이전트 이름(사라졌으면 [지워짐])과 꼬리표 + 언제.
+ */
 export function HistoryScreen(props: {
   engine: TuiEngine;
   profile: string;
@@ -64,10 +70,15 @@ export function HistoryScreen(props: {
       {!loading
         ? items.slice(Math.max(0, cursor - 8), cursor + 9).map((item) => {
             const index = items.indexOf(item);
+            const active = index === cursor;
+            const stamp = when(item);
             return (
-              <Text key={item.interactionId} color={index === cursor ? 'cyan' : undefined}>
-                {index === cursor ? '›' : ' '} {item.workflowName} ·{' '}
-                <Text dimColor>{item.updatedAt || item.createdAt}</Text>
+              <Text key={`${item.workflowId}/${item.interactionId}`} color={active ? 'cyan' : undefined} wrap="truncate-end">
+                {active ? '›' : ' '} {conversationDisplayTitle(item)}{' '}
+                <Text dimColor color={item.agentDeleted ? 'red' : undefined}>
+                  · {conversationCaption(item)}
+                  {stamp ? ` · ${stamp}` : ''}
+                </Text>
               </Text>
             );
           })

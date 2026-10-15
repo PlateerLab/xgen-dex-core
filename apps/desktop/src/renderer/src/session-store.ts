@@ -23,14 +23,25 @@
  */
 import type {
   Agent,
+  ChatDownload,
   ChatEvent,
   ChatRequest,
   Citation,
   HistoryAttachment, HistoryFlowItem,
+  LiveTurnSnapshot,
   ToolEvent,
+  TurnAttachment,
   XgenErrorInfo,
 } from '@dex/protocol';
-import { INTERRUPTED_NOTE, describeStreamError } from '@dex/protocol';
+import {
+  INTERRUPTED_NOTE,
+  appendFlowItem,
+  describeStreamError,
+  liveTurnFlow,
+  mergeChatDownload,
+  turnEventToChatEvent,
+  turnInputText,
+} from '@dex/protocol';
 import { stripBrowserContext, type BrowserSelectionResult } from '@dex/protocol/browser';
 import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
@@ -64,16 +75,120 @@ export type FlowItem =
   | { kind: 'text'; text: string; at: number }
   | { kind: 'tool'; event: ToolEvent; at: number };
 
-/** flow 에 한 칸 붙인다 — 연달아 온 텍스트 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다. */
+/** flow 에 한 칸 붙인다 — 연달아 온 텍스트 조각은 한 칸으로 합쳐 배열이 토큰 수만큼 커지지 않게 한다(정본 규칙). */
 function appendFlow(flow: readonly FlowItem[] | undefined, item: FlowItem): FlowItem[] {
-  const out = flow ? flow.slice() : [];
-  const tail = out[out.length - 1];
-  if (item.kind === 'text' && tail?.kind === 'text') {
-    out[out.length - 1] = { ...tail, text: tail.text + item.text };
-    return out;
-  }
-  out.push(item);
+  return appendFlowItem(flow, item) as FlowItem[];
+}
+
+/**
+ * 도구 사건을 호출 목록에 합친다 — 같은 호출(tool_call→tool_result)은 한 줄. 기준은 정본과 같다:
+ * 호출 id 우선, 없으면 아직 안 끝난 같은 이름. 순서만 받은 턴(다른 화면의 진행분)의 [도구 기록] 이 여기서 나온다.
+ */
+function mergeToolEvent(tools: readonly ToolEvent[], ev: ToolEvent): ToolEvent[] {
+  const out = tools.slice();
+  const id = ev.toolUseId || ev.runId;
+  const at = id
+    ? out.findIndex((t) => (t.toolUseId || t.runId) === id)
+    : out.findIndex((t) => t.toolName === ev.toolName && t.eventType !== 'tool_result' && t.eventType !== 'tool_error');
+  if (at >= 0) out[at] = { ...out[at], ...ev };
+  else out.push(ev);
   return out;
+}
+
+function toolsOfFlow(flow: readonly FlowItem[]): ToolEvent[] {
+  let tools: ToolEvent[] = [];
+  for (const item of flow) if (item.kind === 'tool') tools = mergeToolEvent(tools, item.event);
+  return tools;
+}
+
+/** 작업 과정에 도구가 있는가 — 글 조각만 있는 과정으로는 타임라인을 그리지 않는다. */
+function hasToolFlow(m: Pick<ChatMsg, 'flow'> | undefined): boolean {
+  return !!m?.flow?.some((f) => f.kind === 'tool');
+}
+
+/**
+ * 서버가 실행 기록에서 되살린 작업 과정을 답에 붙인다 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
+ * 이미 도구 과정이 있으면(이 창이 진행 프레임으로 받았다) 그대로 둔다: 보던 그대로가 낫다. 붙일 것이
+ * 없으면 같은 객체를 돌려준다(바뀐 것이 없다는 표시).
+ */
+function withServerProcess(m: ChatMsg, process: readonly HistoryFlowItem[] | undefined): ChatMsg {
+  if (!process?.length || hasToolFlow(m)) return m;
+  const flow = process as FlowItem[];
+  return {
+    ...m,
+    flow: flow.slice(),
+    tools: m.tools?.length ? m.tools : flow.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
+    startedAt: m.startedAt ?? flow[0]?.at,
+    lastEventAt: m.lastEventAt ?? flow[flow.length - 1]?.at,
+  };
+}
+
+/** 작업 과정의 도구 호출 수. */
+function toolSteps(flow: readonly { kind: string }[] | undefined): number {
+  return flow?.filter((f) => f.kind === 'tool').length ?? 0;
+}
+
+/**
+ * 진행분이 쌓은 과정과 서버가 실행 기록에서 되살린 과정 중 무엇으로 답을 그리는가.
+ *
+ * 서버의 것이 정본이다 — 진행분은 이 창이 받은 프레임만 쌓았으므로 끊긴 사이(분리를 알아채기까지, 재연결
+ * 사이)의 도구가 빠질 수 있다. 예전에는 진행분에 도구가 하나라도 있으면 그것을 남겨, 빠진 단계가 그 답의
+ * 작업 과정에서 영영 사라졌다. 서버의 과정이 진행분보다 도구가 적을 때만(기록이 아직 덜 쓰였다) 진행분을 쓴다.
+ */
+function preferServerProcess(
+  partialFlow: readonly FlowItem[] | undefined,
+  process: readonly HistoryFlowItem[] | undefined,
+): boolean {
+  if (!process?.length || !process.some((f) => f.kind === 'tool')) return false;
+  return toolSteps(process) >= toolSteps(partialFlow);
+}
+
+/**
+ * 완결 본문에 작업 과정의 글을 맞춘다 — 다른 화면의 턴은 받은 조각을 쌓은 것이라 조각을 놓쳤으면 과정의
+ * 글이 본문보다 짧고, 타임라인은 마지막 단계의 글을 답으로 그린다. 마지막 도구까지의 글이 본문의 앞부분과
+ * 같으면 그 뒤를 본문으로 채운다. 맞출 수 없으면 그대로 둔다.
+ */
+export function reconcileFlow(flow: readonly FlowItem[], output: string): FlowItem[] {
+  const textOf = (items: readonly FlowItem[]): string => items.map((f) => (f.kind === 'text' ? f.text : '')).join('');
+  const all = textOf(flow);
+  if (all === output) return flow.slice();
+  const at = flow[flow.length - 1]?.at ?? 0;
+  if (output.startsWith(all)) return appendFlow(flow, { kind: 'text', text: output.slice(all.length), at });
+  let lastTool = -1;
+  for (let i = flow.length - 1; i >= 0; i -= 1) {
+    if (flow[i].kind === 'tool') {
+      lastTool = i;
+      break;
+    }
+  }
+  const head = flow.slice(0, lastTool + 1);
+  const before = textOf(head);
+  if (!output.startsWith(before)) return flow.slice();
+  const rest = output.slice(before.length);
+  return rest ? [...head, { kind: 'text', text: rest, at }] : head;
+}
+
+/** 다른 화면의 턴 질문에 붙은 파일 → 말풍선 위 파일 카드(작업 공간 자리로 열고 받는다). */
+function peerAttachments(items: readonly TurnAttachment[] | undefined): ChatImageAttachment[] | undefined {
+  if (!items || items.length === 0) return undefined;
+  return items.map((a) => ({
+    kind: 'file' as const,
+    name: a.name,
+    mime: a.mimeType ?? '',
+    size: a.size ?? 0,
+    dataUrl: '',
+    workspacePath: workspacePathOf(a.workspacePath),
+  }));
+}
+
+/**
+ * 지난 턴 질문에 붙은 파일 → 말풍선 위 파일 카드(작업 공간 자리로 열고 받는다). 그림은 미리보기를 따로 받아야
+ * 하므로(historyImage) 여기서 만들지 않는다 — 이력 불러오기와 구멍 메우기가 같은 규칙을 쓴다.
+ */
+function historyFileCards(items: readonly HistoryAttachment[] | undefined): ChatImageAttachment[] {
+  return (items ?? [])
+    .filter((a) => a.type === 'file')
+    .map((a) => ({ kind: 'file' as const, name: a.name, size: a.size, mime: a.contentType, dataUrl: '', workspacePath: workspacePathOf(a.path) }));
 }
 
 /** One rendered chat message (mirrors the old Chat.Msg shape). */
@@ -92,6 +207,11 @@ export interface ChatMsg {
   /** 마지막으로 텍스트·도구 이벤트를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 표시. */
   lastEventAt?: number;
   citations?: Citation[];
+  /**
+   * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact` 로 받은 것.
+   * 이력으로 되살린 답은 본문 표식에서 같은 것을 다시 읽는다(@dex/protocol chatAnswerFiles).
+   */
+  downloads?: ChatDownload[];
   /**
    * 이 답변이 서버에 남은 실행 한 건의 id.
    *
@@ -120,7 +240,7 @@ export interface ChatMsg {
   }>;
   /** 이 턴의 실행 환경(커넥터 전용 status 이벤트) — 이 PC / 서버 sandbox / 차단(blocked). */
   surface?: 'connector_local' | 'server_sandbox' | 'blocked';
-  /** 서버 폴백 사유·차단 사유·로컬 안내(동기화 미완료 등) — 있으면 배지 옆에 표시. */
+  /** 서버 폴백 사유·차단 사유·이 PC 도구 안내(연결된 폴더 등) — 있으면 배지 옆에 표시. */
   surfaceNote?: string;
   /**
    * 이 말풍선은 **다른 곳에서 도는 턴의 진행분**이다 — 우리가 받은 스트림이
@@ -128,6 +248,176 @@ export interface ChatMsg {
    * 턴이 끝나면 완결 턴이 이 자리를 대신한다.
    */
   remotePartial?: boolean;
+  /**
+   * 이 질문은 **다른 곳에서 도는 턴**의 것이다(대화 소켓의 turn_started 로 그렸다). 완결 턴이
+   * 도착하면 진행분 말풍선과 함께 그 턴으로 바뀐다 — 그대로 두면 질문이 두 번 보인다.
+   */
+  remoteQuestion?: boolean;
+}
+
+/** 다른 곳에서 도는 턴을 그리려고 세운 임시 말풍선(질문·진행분). */
+function isTemporary(m: ChatMsg): boolean {
+  return m.remotePartial === true || m.remoteQuestion === true;
+}
+
+/**
+ * 봉투를 벗긴 질문 — 이력이 그리는 모양과 같게. 첨부를 함께 보낸 턴의 `{input_str, attachments}` 는
+ * 본문만(정본 규칙), 그 위에 브라우저·Teams 컨텍스트를 벗긴다.
+ */
+function plainInput(input: unknown): string {
+  return stripTeamsContext(stripBrowserContext(turnInputText(input)));
+}
+
+/**
+ * 다른 곳에서 돈 턴이 **끝났다** — 완결 본문(대화 소켓의 message 행 또는 turn_ended)을 대화에
+ * 한 번만 넣는다. 어느 것이 먼저 와도, 둘 다 와도 결과는 같다.
+ *
+ *   이미 있다      같은 실행 id 의 답이 있으면 손대지 않는다(뒤에 온 쪽). 단 그 답에 도구 과정이 없고
+ *                  이 행이 서버의 과정을 실어 왔으면 그것만 붙인다.
+ *   임시를 바꾼다  진행분 말풍선과 그 턴의 임시 질문을 지우고 그 자리에 완결 턴을 넣는다.
+ *   질문은 있다    이력이 이미 질문을 그렸으면(도는 중에 연 대화) 답만 붙인다.
+ *
+ * 작업 과정: 서버가 완결 행에 실어 온 과정(`process`)이 정본이다(preferServerProcess). 그것이 없거나 아직
+ * 덜 쓰였으면 이 창이 진행 프레임으로 쌓은 과정을 쓴다 — 어느 쪽이든 결과만 남지 않는다(2026-10-01 사용자 보고).
+ *
+ * 바뀐 것이 없으면 null.
+ */
+export function mergeCompletedTurn(
+  messages: readonly ChatMsg[],
+  turn: {
+    ioId?: number | null;
+    input: string;
+    output: string;
+    attachments?: readonly TurnAttachment[];
+    process?: readonly HistoryFlowItem[];
+    /** 질문 말풍선의 첨부를 이미 화면 모양으로 가진 경우(이력에서 메운 턴). */
+    images?: ChatImageAttachment[];
+  },
+): ChatMsg[] | null {
+  const ioId = turn.ioId || undefined;
+  const input = plainInput(turn.input);
+  const output = String(turn.output ?? '');
+  if (ioId && messages.some((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial)) {
+    return attachProcessById(messages, ioId, turn.process);
+  }
+  const out = messages.filter((m) => !isTemporary(m));
+  const last = out[out.length - 1];
+  const prev = out[out.length - 2];
+  // 실행 id 없이 먼저 온 종료가 이미 같은 턴을 그렸다 — 뒤에 온 행은 id 만 채운다.
+  if (
+    last?.role === 'assistant' && last.text === output && prev?.role === 'user' && prev.text === input &&
+    out.length === messages.length
+  ) {
+    const filled = withServerProcess(ioId && !last.executionIoId ? { ...last, executionIoId: ioId } : last, turn.process);
+    if (filled === last) return null;
+    out[out.length - 1] = filled;
+    return out;
+  }
+  // 진행분이 쌓아 온 작업 과정은 답에 그대로 남긴다 — 끝난 뒤에도 다른 화면의 턴을 타임라인으로 펼쳐 본다.
+  // 진행분에 도구가 없으면(놓쳤다) 서버가 실어 온 과정으로 채운다.
+  const partial = messages.find((m) => m.remotePartial);
+  let answer: ChatMsg = { role: 'assistant', text: output, executionIoId: ioId };
+  if (partial?.flow?.length && !preferServerProcess(partial.flow, turn.process)) {
+    answer.flow = reconcileFlow(partial.flow, output);
+    answer.tools = partial.tools?.length ? partial.tools : toolsOfFlow(partial.flow);
+    answer.citations = partial.citations;
+    answer.startedAt = partial.startedAt;
+    answer.lastEventAt = partial.lastEventAt;
+  } else {
+    answer = withServerProcess({ ...answer, citations: partial?.citations }, turn.process);
+  }
+  if (last?.role === 'user' && last.text === input) out.push(answer);
+  else {
+    const question = messages.find((m) => m.remoteQuestion && m.text === input);
+    const images = question?.images ?? (turn.images?.length ? turn.images : peerAttachments(turn.attachments));
+    out.push({ role: 'user', text: input, ...(images ? { images } : {}) }, answer);
+  }
+  return out;
+}
+
+/** 이 실행 id 의 답에 도구 과정이 없으면 서버의 과정을 붙인다. 바뀐 것이 없으면 null. */
+function attachProcessById(
+  messages: readonly ChatMsg[],
+  ioId: number | null | undefined,
+  process: readonly HistoryFlowItem[] | undefined,
+): ChatMsg[] | null {
+  if (!ioId || !process?.length) return null;
+  const at = messages.findIndex((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial);
+  if (at < 0) return null;
+  const patched = withServerProcess(messages[at], process);
+  if (patched === messages[at]) return null;
+  const out = messages.slice();
+  out[at] = patched;
+  return out;
+}
+
+/** 마지막 턴이 이 행과 같은데 답에 실행 id 가 없으면 채운다. 아니면 null. */
+function fillExecutionIoId(
+  messages: readonly ChatMsg[],
+  turn: { ioId?: number | null; input: string; output: string },
+): ChatMsg[] | null {
+  if (!turn.ioId) return null;
+  const last = messages[messages.length - 1];
+  const prev = messages[messages.length - 2];
+  if (last?.role !== 'assistant' || last.executionIoId || last.text !== turn.output) return null;
+  if (prev?.role !== 'user' || prev.text !== plainInput(turn.input)) return null;
+  const out = messages.slice();
+  out[out.length - 1] = { ...last, executionIoId: turn.ioId };
+  return out;
+}
+
+/**
+ * 대화 소켓에 **구멍**이 났다(끊겼다 다시 붙었거나 번호가 건너뛰었다) — 히스토리로 메운다.
+ *
+ * 끊긴 사이에 시작해 끝난 다른 화면의 턴은 어떤 프레임으로도 오지 않는다. 그대로 두면 이 창에는 그 턴이
+ * 없거나(질문·답 모두), 진행분 몇 줄만 멈춘 채 남는다. 히스토리가 정답이다:
+ *
+ *   이미 그린 답   도구 과정이 없으면 서버의 과정을 붙인다.
+ *   놓친 턴        알고 있는 가장 새 턴보다 뒤의 끝난 턴을 넣는다. 지금 다른 곳에서 도는 턴이 있으면(`remote`)
+ *                  임시 말풍선은 그 턴의 것이라 그 앞에 끼우고, 없으면 임시는 놓친 턴의 남은 자리라
+ *                  완결 규칙(mergeCompletedTurn)으로 바꿔 끼운다.
+ *   덧붙이지 않음  마지막 답에 실행 id 가 없으면 어느 행이 그것인지 모른다 — 두 번 그리느니 다음 열기에 맡긴다.
+ *
+ * 바뀐 것이 없으면 null.
+ */
+export function mergeMissedTurns(
+  messages: readonly ChatMsg[],
+  turns: ReadonlyArray<{ input: string; output: string; ioId?: number; attachments?: readonly HistoryAttachment[]; process?: readonly HistoryFlowItem[] }>,
+  remote: boolean,
+): ChatMsg[] | null {
+  let changed = false;
+  const byIo = new Map<number, (typeof turns)[number]>();
+  for (const t of turns) if (t.ioId) byIo.set(t.ioId, t);
+  let out = messages.map((m) => {
+    if (m.role !== 'assistant' || !m.executionIoId || isTemporary(m)) return m;
+    const next = withServerProcess(m, byIo.get(m.executionIoId)?.process);
+    if (next !== m) changed = true;
+    return next;
+  });
+  const answered = out.filter((m) => m.role === 'assistant' && !isTemporary(m));
+  const lastAnswer = answered[answered.length - 1];
+  if (lastAnswer && !lastAnswer.executionIoId) return changed ? out : null;
+  const newest = answered.reduce((max, m) => Math.max(max, m.executionIoId ?? 0), 0);
+  const missed = turns.filter((t) => (t.ioId ?? 0) > newest && t.output);
+  if (missed.length === 0) return changed ? out : null;
+  if (remote) {
+    const at = out.findIndex(isTemporary);
+    const rows = missed.flatMap((t): ChatMsg[] => {
+      const images = historyFileCards(t.attachments);
+      return [
+        { role: 'user', text: plainInput(t.input), ...(images.length ? { images } : {}) },
+        withServerProcess({ role: 'assistant', text: t.output, executionIoId: t.ioId }, t.process),
+      ];
+    });
+    out = at >= 0 ? [...out.slice(0, at), ...rows, ...out.slice(at)] : [...out, ...rows];
+    return out;
+  }
+  for (const t of missed) {
+    out = mergeCompletedTurn(out, {
+      ioId: t.ioId, input: t.input, output: t.output, process: t.process, images: historyFileCards(t.attachments),
+    }) ?? out;
+  }
+  return out;
 }
 
 /** Public, immutable-per-change snapshot of one open session. */
@@ -163,6 +453,23 @@ export interface SessionState {
   unseen: boolean;
   createdAt: number;
   updatedAt: number;
+  /**
+   * 대화 제목: 대화 목록이 알려 준 것(붙인 이름, 없으면 첫 메시지 한 줄). 모르면 비어 있고,
+   * 탭은 첫 질문으로 이름을 짓는다(tab-model tabTitle).
+   */
+  title?: string;
+  /**
+   * 에이전트가 지워진 대화. 이어 갈 수 없어 같은 채팅 화면에서 지난 기록만 보인다
+   * (작성기 대신 안내, 보내기·대화 소켓 없음).
+   */
+  agentDeleted?: boolean;
+}
+
+/** 대화 목록이 알려 주는 대화의 사실. 열린 세션의 제목·지워짐 표시를 맞춘다. */
+export interface ConversationInfo {
+  interactionId: string;
+  title?: string;
+  agentDeleted?: boolean;
 }
 
 /**
@@ -182,7 +489,8 @@ export type SessionDotState = 'active' | 'idle' | 'error';
  */
 export function sessionDotState(s: SessionState, now: number): SessionDotState {
   if (s.error) return 'error';
-  if (s.streaming) return 'active';
+  // 이 창의 스트림이 끊긴 뒤에도(remote) 그 턴은 서버에서 돈다 — 끝날 때까지 살아 있는 대화다.
+  if (s.streaming || s.remote) return 'active';
   if (now - s.updatedAt >= CONNECTOR_SESSION_IDLE_MS) return 'idle';
   return 'active';
 }
@@ -267,13 +575,18 @@ export interface SessionTransport {
   }>;
   /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
   stopChat?: (interactionId: string) => Promise<unknown>;
-  /** Download one server-issued XGeny history reference into a renderer preview URL. */
+  /** Download one server-issued Geny history reference into a renderer preview URL. */
   historyImage?: (
     workflowId: string,
     attachment: HistoryAttachment,
   ) => Promise<ChatImageAttachment | null>;
   /** Release renderer resources created by historyImage (normally a blob: URL). */
   releaseHistoryImage?: (previewUrl: string) => void;
+  /**
+   * 이 창이 보내는 턴의 표식(실행 요청의 origin_id). 대화 소켓으로 같은 표식의 턴이 오면 그것은 이 창의 턴이다 —
+   * 스트림이 살아 있는 동안은 메아리라 버리고, 스트림이 끊긴 뒤에는 그 턴의 나머지로 받는다.
+   */
+  originId?: string;
   /** 대화 소켓 감시 시작/중지 — 서버 주입 턴(트리거 반응)의 실시간 수신.
    *  세션이 열릴 때 붙고 닫힐 때 떨어진다. 미구현(테스트)이면 no-op. */
   watchConversation?: (workflowId: string, workflowName: string, interactionId: string) => void;
@@ -301,6 +614,19 @@ interface Runtime {
   tools: ToolEvent[];
   /** 대화 소켓으로 이미 반영한 외부 턴의 io_id — push 중복 방지. */
   externalIoSeen?: Set<number>;
+  /**
+   * 완결 행이 실어 온 작업 과정 — 실행 id 별. 행이 종료 프레임보다 먼저 오는데, 그 순간 이 창이 그 턴을 다른
+   * 곳의 턴으로 모르고 있으면(시작·진행 프레임을 놓쳤다) 과정을 붙일 답이 아직 없다. 그때 종료 프레임이 답을
+   * 세우면서 여기서 과정을 꺼내 붙인다.
+   */
+  serverProcess?: Map<number, HistoryFlowItem[]>;
+  /**
+   * 이 창의 스트림이 끊겼고 그 턴이 아직 끝나지 않았다. 이 동안 대화 소켓으로 오는 자기 표식의 프레임은 메아리가
+   * 아니라 그 턴의 나머지다(applyPeerEvent).
+   */
+  ownDetached?: boolean;
+  /** 서버가 "도는 턴이 없다" 고 했는데 임시 말풍선이 남았다 — 잠깐 뒤 기록으로 맞춘다. */
+  settleTimer?: ReturnType<typeof setTimeout>;
   citations: Citation[];
   historyImageUrls: Set<string>;
 }
@@ -356,6 +682,13 @@ export class SessionStore {
   private map = new Map<string, SessionState>();
   private rt = new Map<string, Runtime>();
   private _active: string | null = null;
+  /**
+   * 지금 화면에 보이는 대화들 — 각 분할 칸의 활성 탭 중 채팅인 것. 모르면(null) 포커스된 대화 하나로 본다.
+   *
+   * 포커스(`_active`)만으로 "봤는가" 를 가르면 틀린다: 앱·뷰어 탭으로 옮겨도 포커스는 그 채팅에 남아 끝난 턴에
+   * 점이 붙지 않았고, 화면을 나눠 두 대화를 보면 보이는 쪽에도 점이 붙었다.
+   */
+  private visible: Set<string> | null = null;
   private listeners = new Set<() => void>();
   private snap: StoreSnapshot = { sessions: [], activeKey: null };
 
@@ -453,14 +786,33 @@ export class SessionStore {
    * Reopen a past conversation (이어보기). If it is already open we simply focus
    * it — keeping any in-flight stream — otherwise we create it and load history.
    */
-  openResume(agent: Agent, interactionId: string, workflowName?: string): string {
+  openResume(agent: Agent, interactionId: string, workflowName?: string, info?: Omit<ConversationInfo, 'interactionId'>): string {
     if (this.map.has(interactionId)) {
+      if (info) this.applyConversationInfo([{ interactionId, ...info }]);
       this.setActive(interactionId);
       return interactionId;
     }
     this.gcActiveIfEmpty();
-    this.spawnResume(agent, interactionId, workflowName, true);
+    this.spawnResume(agent, interactionId, workflowName, true, info);
     return interactionId;
+  }
+
+  /**
+   * 대화 목록이 알려 준 제목·지워짐 표시를 열린 세션에 맞춘다. 바뀐 것이 있을 때만 알린다.
+   * 다른 곳에서 이름을 바꾸거나, 앱을 다시 켜 되살린 탭이 제목을 모를 때 쓴다.
+   */
+  applyConversationInfo(list: readonly ConversationInfo[]): void {
+    let changed = false;
+    for (const info of list) {
+      const s = this.map.get(info.interactionId);
+      if (!s) continue;
+      const title = info.title !== undefined ? info.title : s.title;
+      const agentDeleted = info.agentDeleted !== undefined ? info.agentDeleted : s.agentDeleted;
+      if (title === s.title && agentDeleted === s.agentDeleted) continue;
+      this.map.set(s.key, { ...s, title, agentDeleted });
+      changed = true;
+    }
+    if (changed) this.emit();
   }
 
   /**
@@ -503,6 +855,7 @@ export class SessionStore {
     interactionId: string,
     workflowName: string | undefined,
     focus: boolean,
+    info?: Omit<ConversationInfo, 'interactionId'>,
   ): void {
     const t = this.now();
     this.map.set(interactionId, {
@@ -519,6 +872,8 @@ export class SessionStore {
       unseen: false,
       createdAt: t,
       updatedAt: t,
+      ...(info?.title !== undefined ? { title: info.title } : {}),
+      ...(info?.agentDeleted ? { agentDeleted: true } : {}),
     });
     this.rt.set(interactionId, {
       cancel: null,
@@ -527,11 +882,14 @@ export class SessionStore {
       citations: [],
       historyImageUrls: new Set(),
     });
-    this.transport.watchConversation?.(
-      agent.workflowId,
-      workflowName || agent.workflowName || agent.workflowId,
-      interactionId,
-    );
+    // 에이전트가 지워진 대화에는 새 턴이 생기지 않는다. 대화 소켓을 열지 않는다.
+    if (!info?.agentDeleted) {
+      this.transport.watchConversation?.(
+        agent.workflowId,
+        workflowName || agent.workflowName || agent.workflowId,
+        interactionId,
+      );
+    }
     if (focus) {
       this._active = interactionId;
       this.emit();
@@ -571,9 +929,7 @@ export class SessionStore {
         const output =
           typeof tn.output === 'string' ? tn.output : tn.output == null ? '' : String(tn.output);
         const images: ChatImageAttachment[] = [];
-        for (const attachment of tn.attachments ?? []) {
-          if (attachment.type === 'file') images.push({ kind: 'file', name: attachment.name, size: attachment.size, mime: attachment.contentType, dataUrl: '', workspacePath: workspacePathOf(attachment.path) });
-        }
+        images.push(...historyFileCards(tn.attachments));
         if (this.transport.historyImage) {
           for (const attachment of tn.attachments ?? []) {
             if (attachment.type !== 'picture') continue;
@@ -605,25 +961,37 @@ export class SessionStore {
       }
       // Only overwrite the transcript if a live turn hasn't started meanwhile.
       const current = this.map.get(key);
-      if (!current || current.streaming || current.messages.length > 0) {
+      // 이력보다 먼저 온 것이 **다른 곳에서 도는 턴의 임시 말풍선뿐**이면(도는 중에 연 대화 —
+      // 구독 확립의 진행분이 이력 응답보다 빨랐다) 이력을 버리지 않고 그 앞에 깐다. 예전에는
+      // 여기서 이력을 통째로 버려 지난 대화가 사라지고 진행분 하나만 남았다.
+      const onlyTemporary = !!current && !current.streaming && current.messages.length > 0 &&
+        current.messages.every(isTemporary);
+      // 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙이고, 없으면 서버가 실행 기록에서 되살린 과정을
+      // 쓴다 — 어느 기기에서 열어도 타임라인이 산다. 도는 중에 연 대화(아래 첫 갈래)도 같다.
+      const withProcesses = (interactionId: string): ChatMsg[] =>
+        attachTurnProcesses(this.processMemory, interactionId, msgs).map((m, i) => withServerProcess(m, serverProcess.get(i)));
+      if (onlyTemporary) {
+        const temps = current.messages.filter((m) => {
+          if (!m.remoteQuestion) return true;
+          // 이력이 이미 그 질문(아직 답이 없는 행)을 그렸다.
+          const tail = msgs[msgs.length - 1];
+          return !(tail?.role === 'user' && tail.text === m.text);
+        });
+        this.patch(key, (s) => ({
+          ...s,
+          messages: [...withProcesses(s.interactionId ?? key), ...temps],
+          loadingHistory: false,
+          historyLoaded: true,
+          remote: s.remote || snapshot.running,
+          updatedAt: this.now(),
+        }));
+      } else if (!current || current.streaming || current.messages.length > 0) {
         this.releaseLoadedHistoryUrls(key, loadedUrls);
         this.patch(key, (s) => ({ ...s, loadingHistory: false, historyLoaded: true }));
       } else {
         this.patch(key, (s) => ({
           ...s,
-          // 이 PC 에서 받았던 턴이면 남겨 둔 작업 과정을 되붙이고, 없으면 서버가 실행 기록에서
-          // 되살린 과정을 쓴다 — 어느 기기에서 열어도 타임라인이 산다.
-          messages: attachTurnProcesses(this.processMemory, s.interactionId ?? key, msgs).map((m, i) => {
-            const process = serverProcess.get(i);
-            if (m.flow || !process) return m;
-            return {
-              ...m,
-              flow: process as FlowItem[],
-              tools: m.tools ?? process.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
-              startedAt: process[0]?.at,
-              lastEventAt: process[process.length - 1]?.at,
-            };
-          }),
+          messages: withProcesses(s.interactionId ?? key),
           loadingHistory: false,
           historyLoaded: true,
           remote: snapshot.running,
@@ -656,6 +1024,28 @@ export class SessionStore {
   }
 
   // ── Focus / GC ─────────────────────────────────────────────────────
+
+  /** 이 대화를 사람이 지금 보고 있는가. */
+  private isVisible(key: string): boolean {
+    return this.visible ? this.visible.has(key) : this._active === key;
+  }
+
+  /** 지금 보이는 대화들을 알린다(작업 공간이 탭을 바꿀 때마다). 보이게 된 대화의 점은 지운다. */
+  setVisible(keys: readonly string[]): void {
+    const next = new Set(keys);
+    const prev = this.visible;
+    if (prev && prev.size === next.size && [...next].every((k) => prev.has(k))) return;
+    this.visible = next;
+    let changed = false;
+    for (const key of next) {
+      const s = this.map.get(key);
+      if (s?.unseen) {
+        this.patch(key, (cur) => ({ ...cur, unseen: false }));
+        changed = true;
+      }
+    }
+    if (changed) this.emit();
+  }
 
   setActive(key: string | null): void {
     if (this._active === key) return;
@@ -706,11 +1096,13 @@ export class SessionStore {
     );
     // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
     // 두 실행이 겹치고, 두 답이 서로를 덮어쓴다. 멈추려면 [정지] 를 눌러야 한다.
-    if (!s || !rt || rt.stopping || s.streaming || s.remote || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
+    // s.agentDeleted: 에이전트가 지워진 대화는 기록만 본다(작성기도 없지만 스토어도 막는다).
+    if (!s || !rt || rt.stopping || s.streaming || s.remote || s.agentDeleted || (!text.trim() && attached.length === 0 && !shot?.dataUrl)) return;
     const turnToken = {};
     rt.turnToken = turnToken;
     rt.tools = [];
     rt.citations = [];
+    rt.ownDetached = false;
     const userMsg: ChatMsg = {
       role: 'user',
       text,
@@ -891,7 +1283,7 @@ export class SessionStore {
       } else if (ev.kind === 'status') {
         nl.surface = ev.surface;
         // server_sandbox: 폴백 사유(reason 이 사람이 읽는 문장). blocked: 차단 메시지(detail).
-        // connector_local: 로컬 안내(detail — 동기화 미완료 등)만.
+        // connector_local: 이 PC 도구 안내(detail — 연결된 폴더·연결 대기 등)만.
         nl.surfaceNote =
           ev.surface === 'server_sandbox'
             ? (ev.reason ?? ev.detail)
@@ -901,6 +1293,9 @@ export class SessionStore {
       } else if (ev.kind === 'execution_io') {
         // 이 턴이 서버에 남은 자리 — 답변 평가가 이 id 로 붙는다.
         nl.executionIoId = ev.executionIoId;
+      } else if (ev.kind === 'download') {
+        // 도구가 파일 저장소에 올린 결과물 — 답이 끝나면 아래에 단추·그림으로 보인다(웹과 같다).
+        nl.downloads = mergeChatDownload(last.downloads ?? [], ev.data);
       } else if (ev.kind === 'summary' && !nl.text) nl.text = ev.text;
       else if (ev.kind === 'tool') {
         rt.tools = [...rt.tools, ev.event];
@@ -930,6 +1325,9 @@ export class SessionStore {
         streaming = false;
         remote = true;
         nl.streaming = false;
+        // 이제 이 말풍선은 다른 곳에서 도는 턴의 진행분이다 — 완결 턴이 도착하면 그 답으로
+        // 바뀐다(덧붙이면 같은 질문이 두 번 보인다).
+        nl.remotePartial = true;
         nl.surfaceNote = '연결이 끊겼습니다 — 서버에서 계속 진행 중입니다.';
       }
       if (ev.kind === 'end' || ev.kind === 'error') {
@@ -938,7 +1336,7 @@ export class SessionStore {
         if (ev.kind === 'error') error = (ev.info ?? describeStreamError(ev.detail)).title;
         // 이 세션이 지금 포커스된 탭이 아니면 결과를 아직 못 본 것 — 탭 강제 전환 대신
         // 점(dot)으로만 알린다. 포그라운드에서 끝났으면 이미 화면에 보이므로 표시 안 함.
-        unseen = this._active !== key;
+        unseen = !this.isVisible(key);
       }
       messages[messages.length - 1] = nl;
       return { ...s, messages, streaming, remote, error, unseen, updatedAt: this.now() };
@@ -947,6 +1345,7 @@ export class SessionStore {
       const done = this.map.get(key);
       rememberTurnProcess(this.processMemory, done?.interactionId ?? key, done?.messages[done.messages.length - 1], this.now());
     }
+    if (ev.kind === 'detached') rt.ownDetached = true;
     if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
       rt.cancel = null;
       // 분리된 턴을 멈추는 길은 남겨 둔다 — [정지] 는 스트림이 아니라 대화를 향한다.
@@ -1041,7 +1440,7 @@ export class SessionStore {
   setRemoteRunning(
     key: string,
     running: boolean,
-    live?: { text?: string } | null,
+    live?: Partial<LiveTurnSnapshot> | null,
   ): void {
     const s = this.map.get(key);
     if (!s) return;
@@ -1049,28 +1448,75 @@ export class SessionStore {
     // 우리 스트림이 이미 그리고 있으므로 덮어쓰면 안 된다.
     const next = running && !s.streaming;
     const partial = next && typeof live?.text === 'string' ? live.text : '';
-    const hadPartial = s.messages[s.messages.length - 1]?.remotePartial === true;
-    if (s.remote === next && !partial && !hadPartial) return;
+    // 글만이 아니라 **작업 과정**(도구)까지 — 예전에는 스냅샷의 도구를 버려, 다른 화면이 도구를 부르며 도는
+    // 턴이 이 창에는 글 몇 줄로만 보였다.
+    const flow: FlowItem[] = next && live
+      ? (liveTurnFlow({
+          text: partial,
+          events: Array.isArray(live.events) ? live.events : [],
+          startedAt: live.startedAt,
+          textTotal: live.textTotal,
+        }) as FlowItem[])
+      : [];
+    const hasLive = !!partial || flow.length > 0;
+    const tail = s.messages[s.messages.length - 1];
+    const hadPartial = tail?.remotePartial === true && (tail.streaming === true || !tail.text);
+    if (s.remote === next && !hasLive && !hadPartial) {
+      if (!running) this.settleSoon(key);
+      return;
+    }
     this.patch(key, (cur) => {
       const messages = [...cur.messages];
       const last = messages[messages.length - 1];
-      if (partial) {
+      if (hasLive) {
+        const process: Partial<ChatMsg> = flow.some((f) => f.kind === 'tool')
+          ? {
+              flow,
+              tools: toolsOfFlow(flow),
+              startedAt: live?.startedAt ?? flow[0]?.at,
+              lastEventAt: flow[flow.length - 1]?.at,
+            }
+          : {};
         if (last?.remotePartial) {
-          if (last.text === partial) return { ...cur, remote: next };
-          messages[messages.length - 1] = { ...last, text: partial };
+          if (last.text === partial && last.streaming && !process.flow) return { ...cur, remote: next };
+          messages[messages.length - 1] = { ...last, text: partial, streaming: true, ...process };
         } else {
           messages.push({
             role: 'assistant', text: partial, streaming: true, remotePartial: true,
             surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+            ...process,
           });
         }
       } else if (!next && last?.remotePartial) {
-        // 턴이 끝났다 — 완결 턴이 곧 온다. 진행분 말풍선은 놓는다.
-        messages.pop();
+        // 턴이 끝났다 — 완결 턴(message 행·turn_ended)이 곧 이 자리를 대신한다. 받은 글이 있으면
+        // 그때까지 멈춘 채로 둔다: 여기서 지우면 다른 파드의 하트비트가 종료 프레임보다 먼저
+        // 온 날 답이 사라진다. 빈 말풍선만 놓는다.
+        if (last.text) messages[messages.length - 1] = { ...last, streaming: false };
+        else messages.pop();
       }
       return { ...cur, messages, remote: next, updatedAt: this.now() };
     });
     this.emit();
+    if (!running) this.settleSoon(key);
+  }
+
+  /**
+   * 서버는 "도는 턴이 없다" 고 하는데 임시 말풍선(다른 곳의 턴·끊긴 이 창의 턴)이 남았다 — 그 턴의 끝을
+   * 알리는 프레임(완결 행·종료)을 놓쳤다(소켓이 끊긴 사이 끝났거나 전파가 유실됐다). 잠깐 기다려 그 프레임이
+   * 오면 그것으로 끝나고, 그래도 남았으면 기록을 다시 읽어 완결 턴으로 바꾼다. 예전에는 다음 새로고침까지
+   * 받다 만 진행분이 커서가 멈춘 채 남았다.
+   */
+  private settleSoon(key: string, delayMs = 1_500): void {
+    const rt = this.rt.get(key);
+    const s = this.map.get(key);
+    if (!rt || !s || s.streaming || !s.messages.some(isTemporary)) return;
+    if (rt.settleTimer) clearTimeout(rt.settleTimer);
+    rt.settleTimer = setTimeout(() => {
+      rt.settleTimer = undefined;
+      const cur = this.map.get(key);
+      if (this.rt.get(key) !== rt || !cur || cur.streaming || cur.remote || !cur.messages.some(isTemporary)) return;
+      void this.resync(key);
+    }, delayMs);
   }
 
 
@@ -1093,27 +1539,50 @@ export class SessionStore {
   applyPeerEvent(event: {
     kind: 'started' | 'exec' | 'ended' | 'gap';
     interactionId: string;
+    /** 그 턴을 시작한 화면의 표식 — 이 창의 것이면 이 창의 턴이다. */
+    originId?: string;
     input?: string;
     output?: string;
+    ioId?: number | null;
     event?: string;
     data?: unknown;
+    attachments?: TurnAttachment[];
   }): void {
     const key = event.interactionId;
     const s = this.map.get(key);
-    if (!s || s.streaming) return;
-    // 구멍(gap)은 여기서 따로 메우지 않는다 — 종료 프레임이 **완결 본문**을
-    // 통째로 싣고 오므로 마지막에는 반드시 맞는다.
-    if (event.kind === 'gap') return;
+    if (!s) return;
+    // 구멍(gap) — 번호가 건너뛰었거나 소켓이 끊겼다 다시 붙었다. 진행 중인 턴은 종료 프레임이 완결 본문을
+    // 싣고 오지만, **끊긴 사이에 시작해 끝난 턴**은 어떤 프레임으로도 오지 않는다. 히스토리로 메운다.
+    if (event.kind === 'gap') {
+      void this.resync(key);
+      return;
+    }
+    // 이 창의 스트림이 살아 있다 — 그 턴은 '다른 곳' 이 아니다(그 사이 다른 곳의 턴은 서버가 받지 않는다).
+    if (s.streaming) return;
+    // 이 창이 보낸 턴의 프레임이다. 스트림이 끝까지 그렸으면 늦게 온 메아리라 버린다 — 그리면 끝난 답 아래에
+    // 같은 턴의 진행분이 다시 선다. 스트림이 끊겼으면(ownDetached) 그 턴의 나머지이므로 받는다.
+    const rt = this.rt.get(key);
+    if (event.originId && event.originId === this.transport.originId && !rt?.ownDetached) return;
 
     if (event.kind === 'started') {
       this.patch(key, (cur) => ({
         ...cur,
         messages: [
-          ...cur.messages,
-          { role: 'user', text: String(event.input ?? '') },
+          // 앞선 턴의 임시 말풍선이 아직 남았다(그 턴의 완결을 놓쳤다) — 받은 만큼으로 굳힌다.
+          // 임시로 두면 이번 턴의 완결이 그것까지 지운다. 빈 진행분은 놓는다.
+          ...cur.messages.flatMap((m): ChatMsg[] => {
+            if (!isTemporary(m)) return [m];
+            if (m.remotePartial && !m.text) return [];
+            return [{ ...m, remotePartial: undefined, remoteQuestion: undefined, streaming: false, surfaceNote: undefined }];
+          }),
+          (() => {
+            const images = peerAttachments(event.attachments);
+            return { role: 'user' as const, text: plainInput(event.input), remoteQuestion: true, ...(images ? { images } : {}) };
+          })(),
           {
             role: 'assistant', text: '', streaming: true, remotePartial: true,
             surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+            startedAt: this.now(),
           },
         ],
         remote: true,
@@ -1124,39 +1593,60 @@ export class SessionStore {
     }
 
     if (event.kind === 'exec') {
-      // 본문 토큰만 이어붙인다. 진행 이벤트(도구·노드)는 이 창의 활동 표시가
-      // 자기 턴에서만 의미가 있으므로 여기서는 흘리지 않는다.
-      const d = event.data as { type?: string; content?: unknown } | undefined;
-      if (event.event !== 'message' || d?.type !== 'data') return;
-      const text = typeof d.content === 'string' ? d.content : '';
-      if (!text) return;
+      // 본문 토큰과 **도구**를 같은 규칙(정본 해석기)으로 — 예전에는 토큰만 받고 도구는 흘려서, 다른 화면이
+      // 도구를 부르는 동안 이 창에는 아무 일도 없어 보였다. 어디서 열어도 같은 작업 과정을 봐야 한다.
+      const ev = turnEventToChatEvent(
+        event.event,
+        event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null,
+      );
+      if (!ev || (ev.kind !== 'text' && ev.kind !== 'tool') || (ev.kind === 'text' && !ev.content)) return;
       this.patch(key, (cur) => {
         const messages = [...cur.messages];
-        const last = messages[messages.length - 1];
-        if (!last?.remotePartial) return cur;
-        messages[messages.length - 1] = { ...last, text: (last.text || '') + text };
-        return { ...cur, messages, updatedAt: this.now() };
+        let at = findLastIndex(messages, (m) => m.remotePartial === true);
+        if (at < 0) {
+          // 시작 프레임을 못 받은 채 연 대화 — 받을 자리를 임시로 세운다(완결 턴이 그 자리를 대신한다).
+          messages.push({
+            role: 'assistant', text: '', streaming: true, remotePartial: true,
+            surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+          });
+          at = messages.length - 1;
+        }
+        const partial = messages[at];
+        const now = this.now();
+        const base = { startedAt: partial.startedAt ?? now, lastEventAt: now, streaming: true };
+        messages[at] =
+          ev.kind === 'text'
+            ? { ...partial, ...base, text: (partial.text || '') + ev.content, flow: appendFlow(partial.flow, { kind: 'text', text: ev.content, at: now }) }
+            : {
+                ...partial,
+                ...base,
+                tools: mergeToolEvent(partial.tools ?? [], ev.event),
+                flow: appendFlow(partial.flow, { kind: 'tool', event: ev.event, at: now }),
+                citations: ev.event.citations?.length ? mergeCitations(partial.citations ?? [], ev.event.citations) : partial.citations,
+              };
+        return { ...cur, messages, remote: true, updatedAt: this.now() };
       });
       this.emit();
       return;
     }
 
-    // 종료 — 완결 본문으로 덮어쓴다. 중간에 한두 조각을 놓쳤어도 마지막이 맞는다.
+    // 종료 — 완결 본문으로 바꿔 끼운다. 중간에 한두 조각을 놓쳤어도 마지막이 맞는다. 완결 행
+    // (message)이 먼저 와서 이미 그렸으면 아무것도 하지 않는다 — 같은 실행 id 다.
+    const process = event.ioId ? this.rt.get(key)?.serverProcess?.get(event.ioId) : undefined;
     this.patch(key, (cur) => {
-      const messages = [...cur.messages];
-      const last = messages[messages.length - 1];
-      if (last?.remotePartial) {
-        messages[messages.length - 1] = {
-          ...last,
-          text: String(event.output ?? last.text ?? ''),
-          streaming: false,
-          remotePartial: false,
-          surfaceNote: undefined,
-        };
-      }
-      return { ...cur, messages, remote: false, updatedAt: this.now() };
+      const partial = cur.messages.find((m) => m.remotePartial);
+      const merged = mergeCompletedTurn(cur.messages, {
+        ioId: event.ioId,
+        input: String(event.input ?? cur.messages.find((m) => m.remoteQuestion)?.text ?? ''),
+        output: String(event.output ?? partial?.text ?? ''),
+        attachments: event.attachments,
+        process,
+      });
+      return { ...cur, messages: merged ?? cur.messages, remote: false, updatedAt: this.now() };
     });
+    if (rt) rt.ownDetached = false;
     this.emit();
+    this.settleSoon(key);
   }
 
   /** 채팅 종료 — cancel any stream and forget the session entirely. */
@@ -1201,6 +1691,34 @@ export class SessionStore {
   }
 
   /**
+   * 대화 소켓의 구멍을 히스토리로 메운다(규칙은 mergeMissedTurns). 이 창의 스트림이 도는 중이면 건너뛴다 —
+   * 그 턴은 스트림이 끝내고, 그 사이의 다른 턴은 다음 구멍이나 다음 열기가 맞춘다.
+   */
+  async resync(key: string): Promise<void> {
+    const s = this.map.get(key);
+    if (!s || s.loadingHistory || s.streaming || !this.transport.historySnapshot) return;
+    let turns: Awaited<ReturnType<NonNullable<SessionTransport['historySnapshot']>>>['turns'];
+    try {
+      turns = (await this.transport.historySnapshot(s.agent.workflowId, key, s.agent.workflowName)).turns;
+    } catch {
+      return; // 서버에 못 닿았다 — 다음 구멍이나 다음 열기가 맞춘다.
+    }
+    let changed = false;
+    this.patch(key, (cur) => {
+      if (cur.streaming || cur.loadingHistory) return cur;
+      const merged = mergeMissedTurns(cur.messages, turns, cur.remote);
+      if (!merged) return cur;
+      changed = true;
+      return { ...cur, messages: merged, updatedAt: this.now() };
+    });
+    // 끊겼던 이 창의 턴이 기록으로 메워졌다 — 이제 그 표식의 프레임은 다시 메아리다.
+    const after = this.map.get(key);
+    const rt = this.rt.get(key);
+    if (rt && after && !after.remote && !after.messages.some(isTemporary)) rt.ownDetached = false;
+    if (changed) this.emit();
+  }
+
+  /**
    * 대화 소켓이 push 한 **서버 주입 턴**(Job/sub-agent 트리거의 반응)을 열린
    * 세션에 실시간 반영한다 — 이게 없으면 새로고침해야 보였다.
    *
@@ -1214,10 +1732,18 @@ export class SessionStore {
     input: string;
     output: string;
     source: string;
+    /** 서버가 실행 기록에서 되살린 이 턴의 작업 과정(도구를 쓴 턴만). */
+    process?: HistoryFlowItem[];
   }): void {
     const s = this.map.get(turn.interactionId);
     const rt = this.rt.get(turn.interactionId);
     if (!s || !rt) return;
+    if (turn.ioId && turn.process?.length) {
+      rt.serverProcess = rt.serverProcess ?? new Map();
+      rt.serverProcess.set(turn.ioId, turn.process);
+      // 최근 몇 턴만 — 종료 프레임은 행 바로 뒤에 온다.
+      if (rt.serverProcess.size > 8) rt.serverProcess.delete(rt.serverProcess.keys().next().value as number);
+    }
     /**
      * 어떤 턴을 받아 그리는가.
      *
@@ -1227,21 +1753,57 @@ export class SessionStore {
      *   기기에서 시작한 턴(`remote`)은 이 창이 그린 적이 없다 — 그것까지 버리면
      *   웹에서 보낸 질문이 앱에서는 영영 안 보인다.
      */
-    const mine = !s.remote;
-    if (turn.source !== 'subagent_report' && mine) return;
+    const report = turn.source === 'subagent_report';
+    // 이 창의 스트림이 그리는 턴이면 스트림이 끝낸다. 다른 곳의 턴을 그리는 중(remote)이거나
+    // 그 턴의 임시 말풍선이 남아 있으면 이 행이 그 자리를 대신한다.
+    const mine = s.streaming || (!s.remote && !s.messages.some(isTemporary));
+    if (!report && mine) {
+      // 이미 그린 턴이다. 답에 실행 id 가 없으면(옛 서버의 종료·스트림이 id 를 못 받은 턴) 채운다 —
+      // 답변 평가가 이 id 로 붙는다.
+      // 그 답에 도구 과정이 없으면(스트림이 도구를 못 받은 채 끝났다) 서버의 과정도 붙인다.
+      const filled = s.streaming ? null : fillExecutionIoId(s.messages, turn);
+      const withProcess = s.streaming ? null : attachProcessById(filled ?? s.messages, turn.ioId, turn.process);
+      const next = withProcess ?? filled;
+      if (next) {
+        this.patch(turn.interactionId, (cur) => ({ ...cur, messages: next }));
+        this.emit();
+      }
+      return;
+    }
     if (!turn.output) return; // 미완결 — 완결 push 를 기다린다
     rt.externalIoSeen = rt.externalIoSeen ?? new Set<number>();
     if (turn.ioId && rt.externalIoSeen.has(turn.ioId)) return;
     if (turn.ioId) rt.externalIoSeen.add(turn.ioId);
-    s.messages = [
-      ...s.messages,
-      { role: 'user', text: turn.input },
-      { role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined },
-    ];
-    s.updatedAt = this.now();
-    // 다른 곳에서 돌던 턴이 끝났다 — 답이 여기 도착했으니 [진행 중] 을 내린다.
-    if (s.remote) s.remote = false;
-    if (this._active !== turn.interactionId) s.unseen = true;
+    // 예전에는 세션 객체를 제자리에서 고쳤다 — 스냅샷이 같은 참조를 들고 있어, 메모한 화면은 바뀐 줄 몰랐다.
+    this.patch(turn.interactionId, (cur) => {
+      let messages = cur.messages;
+      if (report) {
+        messages = [
+          ...cur.messages,
+          { role: 'user', text: turn.input },
+          { role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined },
+        ];
+      } else {
+        // 다른 곳에서 돈 턴 — 진행분 말풍선과 임시 질문을 이 행으로 바꿔 끼운다. 이 행은 늘
+        // turn_ended 보다 먼저 온다(서버가 행을 먼저 민다) — 예전에는 여기서 새로 덧붙여
+        // 질문과 답이 두 번, 그중 하나는 커서가 깜박이는 채로 남았다.
+        messages = mergeCompletedTurn(cur.messages, turn) ?? cur.messages;
+      }
+      return {
+        ...cur,
+        messages,
+        updatedAt: this.now(),
+        // 다른 곳에서 돌던 턴(끊긴 이 창의 턴 포함)이 끝났다 — 답이 여기 도착했으니 [진행 중] 을 내린다.
+        remote: false,
+        unseen: !this.isVisible(turn.interactionId) ? true : cur.unseen,
+      };
+    });
+    if (!report) rt.ownDetached = false;
     this.emit();
   }
+}
+
+function findLastIndex<T>(items: readonly T[], match: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) if (match(items[i])) return i;
+  return -1;
 }

@@ -9,9 +9,37 @@
  * 에이전트에 노출된다.
  */
 
+import { LocalDeadlineError, localDeadlineMs } from '@dex/protocol';
 import type { ToolAdvert, ToolResult } from './mobile-tools';
 
 export type BridgeState = 'off' | 'connecting' | 'connected' | 'error';
+
+/** 서버가 보증하는 호출자 신원 — 도구가 어느 대화의 폴더를 쓸지 정한다. */
+export interface ToolCallContext {
+  workflowId?: string;
+  interactionId?: string;
+  /** 다른 화면(웹·PC)에서 보낸 턴의 호출인가 — 이 대화의 폴더가 이 폰에 있으면 그렇다. */
+  remote?: boolean;
+  /** 그 요청을 보낸 화면의 이름. */
+  originName?: string;
+}
+
+/** mcp_call 의 context(snake/camel 모두) → 정규화. 값이 없으면 undefined. */
+export function toolCallContext(raw: unknown): ToolCallContext {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const text = (input: unknown): string | undefined => {
+    const normalized = String(input ?? '').trim();
+    return normalized || undefined;
+  };
+  const remote = String(value.remote ?? '').trim();
+  return {
+    workflowId: text(value.workflow_id ?? value.workflowId),
+    interactionId: text(value.interaction_id ?? value.interactionId),
+    ...(remote === '1' || remote === 'true'
+      ? { remote: true, originName: text(value.origin_device_name ?? value.originName) ?? '다른 기기' }
+      : {}),
+  };
+}
 
 export interface BridgeStatus {
   state: BridgeState;
@@ -24,7 +52,11 @@ export interface ToolBridgeOptions {
   wsBase: string;
   userId: string;
   catalog: () => ToolAdvert[];
-  call: (tool: string, args: unknown) => Promise<ToolResult>;
+  /**
+   * 도구 실행. context 는 서버가 실어 준 호출자 신원(어느 대화인지). signal 은 서버의 취소(`mcp_cancel`)나
+   * 감시 시한이 지나면 끊긴다 — 도는 일을 멈춘다.
+   */
+  call: (tool: string, args: unknown, context: ToolCallContext, signal: AbortSignal) => Promise<ToolResult>;
   onStatus?: (s: BridgeStatus) => void;
   wsFactory?: (url: string) => WebSocket;
   heartbeatMs?: number;
@@ -53,6 +85,8 @@ export class MobileToolBridge {
   private pendingCatalogId = '';
   private ackWatchdog: ReturnType<typeof setTimeout> | null = null;
   private status: BridgeStatus = { state: 'off', toolCount: 0 };
+  /** 도는 호출 — 서버의 `mcp_cancel` 이 끊는다. */
+  private inflight = new Map<string, AbortController>();
 
   constructor(private opts: ToolBridgeOptions) {}
 
@@ -95,10 +129,19 @@ export class MobileToolBridge {
     }
   }
 
-  /** 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다 (연결돼 있으면 no-op). */
+  /**
+   * 앱 복귀 등 — 백오프 대기를 건너뛰고 지금 재연결한다.
+   *
+   * 열려 있다고 믿는 소켓도 그냥 두지 않는다: 뒤에 있는 동안 OS 가 조용히 놓은 소켓은 이쪽에서 보기엔 아직
+   * 열려 있고, 그 사이 서버는 이 폰의 도구가 사라진 줄 안다. 카탈로그를 다시 알리면 서버의 확인(ready)이
+   * 살아 있음을 증명하고, 확인이 오지 않으면 워치독이 새로 붙는다.
+   */
   kick(): void {
     if (this.stopped) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendHello();
+      return;
+    }
     if (this.retry) {
       clearTimeout(this.retry);
       this.retry = null;
@@ -219,11 +262,15 @@ export class MobileToolBridge {
       this.ackWatchdog = null;
       if (this.stopped) return;
       this.opts.log?.('도구 카탈로그 ready 미수신 — 재연결로 재광고');
-      try {
-        this.ws?.close();
-      } catch {
-        /* onclose 가 재연결을 잡는다 */
+      // close() 에 맡기지 않는다 — 죽은 소켓은 close 가 오지 않아 재연결이 걸리지 않는다. 지금 새로 붙는다
+      // (connect 가 옛 소켓의 핸들러를 떼고 닫는다).
+      this.clearHeartbeat();
+      if (this.retry) {
+        clearTimeout(this.retry);
+        this.retry = null;
       }
+      this.backoff = RECONNECT_MIN_MS;
+      this.connect();
     }, READY_ACK_TIMEOUT_MS);
   }
 
@@ -234,8 +281,10 @@ export class MobileToolBridge {
       server?: string;
       tool?: string;
       args?: unknown;
+      context?: unknown;
       catalog_id?: string;
       tool_count?: number;
+      deadline_ms?: number;
     };
     try {
       msg = JSON.parse(text);
@@ -251,14 +300,35 @@ export class MobileToolBridge {
       });
       return;
     }
+    if (msg.type === 'mcp_cancel') {
+      // 서버가 이 호출을 더 기다리지 않는다(시한이 지났거나 턴이 취소됐다) — 도는 일을 멈춘다.
+      if (msg.request_id) this.inflight.get(String(msg.request_id))?.abort();
+      return;
+    }
     if (msg.type === 'mcp_call') {
       const { request_id, tool } = msg;
+      const controller = new AbortController();
+      if (request_id) this.inflight.set(String(request_id), controller);
+      // 서버보다 먼저 스스로 멈추고 사유를 돌려준다 — 답이 없는 호출로 턴이 묶이지 않게.
+      const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, true);
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
       let payload: Record<string, unknown>;
       try {
-        const result = await this.opts.call(String(tool), msg.args ?? {});
+        const work = this.opts.call(String(tool), msg.args ?? {}, toolCallContext(msg.context), controller.signal);
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          watchdog = setTimeout(() => {
+            // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
+            reject(new LocalDeadlineError(String(tool), deadlineMs));
+            controller.abort();
+          }, deadlineMs);
+        });
+        const result = await Promise.race([work, timedOut]);
         payload = { request_id, ok: true, result };
       } catch (e) {
         payload = { request_id, ok: false, error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+        if (request_id) this.inflight.delete(String(request_id));
       }
       try {
         this.ws?.send(JSON.stringify({ type: 'mcp_result', ...payload }));

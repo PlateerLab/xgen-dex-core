@@ -2,94 +2,34 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  CLOUD_SECTION_KEY,
   childPath,
   entriesAt,
   formatSize,
   sectionsFor,
   sortEntries,
-  syncedAgo,
 } from '../src/renderer/src/views/explorer-model';
-import type { FileSystemStatusLike } from '../src/preload/index';
 
-function status(over: Partial<FileSystemStatusLike> = {}): FileSystemStatusLike {
-  return {
-    loggedIn: true,
-    dataRoot: '/home/u/xgen-dex',
-    cloud: {
-      enabled: false,
-      dir: '/home/u/xgen-dex/cloud',
-      owner: 'user:7',
-      synced: false,
-      state: 'idle',
-      syncing: false,
-    },
-    agents: { enabled: false, root: '/home/u/xgen-dex/agent_workspace', list: [] },
-    ...over,
-  };
-}
-
-test('상태가 없으면 섹션도 없다 (로그인 전)', () => {
-  assert.deepEqual(sectionsFor(null), []);
-});
-
-test('XgenCloud 가 항상 먼저, 에이전트는 **동기화 여부와 무관하게 전부** 나온다', () => {
-  const s = sectionsFor(
-    status({
-      agents: {
-        enabled: false,
-        root: '/r',
-        list: [
-          { workflowId: 'wf-a', label: '에이전트A', folder: '', dir: null, synced: false, state: 'idle', syncing: false },
-          { workflowId: 'wf-b', label: '에이전트B', folder: '', dir: null, synced: false, state: 'idle', syncing: false },
-        ],
-      },
-    }),
-  );
-  assert.equal(s[0].id, 'cloud');
-  assert.equal(s[0].title, '파일 저장소');
-  assert.equal(s[0].workflowId, 'user:7'); // 서버 트리 읽기용 소유 키
-  assert.equal(s[0].synced, false); // 토글 OFF → 서버 보기
+test('파일 저장소가 항상 먼저, 에이전트는 서버 목록 그대로 전부 나온다', () => {
+  const s = sectionsFor([
+    { workflowId: 'wf-a', label: '에이전트A' },
+    { workflowId: 'wf-b', label: '에이전트B' },
+  ]);
   assert.deepEqual(
-    s.slice(1).map((x) => [x.title, x.synced]),
+    s.map((x) => [x.id, x.title, x.kind, x.workflowId]),
     [
-      ['에이전트A', false],
-      ['에이전트B', false],
+      ['cloud', '파일 저장소', 'cloud', CLOUD_SECTION_KEY],
+      ['agent:wf-a', '에이전트A', 'agent', 'wf-a'],
+      ['agent:wf-b', '에이전트B', 'agent', 'wf-b'],
     ],
   );
 });
 
-test('동기화가 켜지면 synced 와 로컬 dir 이 실린다', () => {
-  const s = sectionsFor(
-    status({
-      cloud: {
-        enabled: true,
-        dir: '/home/u/xgen-dex/cloud',
-        owner: 'user:7',
-        synced: true,
-        state: 'idle',
-        syncing: false,
-      },
-      agents: {
-        enabled: true,
-        root: '/r',
-        list: [
-          {
-            workflowId: 'wf-a',
-            label: 'A',
-            folder: 'A',
-            dir: '/r/A',
-            synced: true,
-            state: 'idle',
-            syncing: false,
-          },
-        ],
-      },
-    }),
+test('에이전트가 없어도 파일 저장소는 보인다', () => {
+  assert.deepEqual(
+    sectionsFor([]).map((x) => x.id),
+    ['cloud'],
   );
-  assert.equal(s[0].synced, true);
-  assert.equal(s[0].dir, '/home/u/xgen-dex/cloud');
-  assert.equal(s[1].synced, true);
-  assert.equal(s[1].dir, '/r/A');
 });
 
 test('entriesAt: 평면 서버 목록 → 한 디렉터리의 직계 자식 (중간 폴더 유도)', () => {
@@ -144,9 +84,7 @@ test('sortEntries — 폴더 먼저, 한국어 이름순', () => {
   );
 });
 
-test('formatSize / syncedAgo 표시', () => {
+test('formatSize 표시', () => {
   assert.equal(formatSize(512), '512B');
   assert.equal(formatSize(2048), '2KB');
-  assert.equal(syncedAgo(undefined, 1000), '');
-  assert.equal(syncedAgo(1000, 3000), '방금 동기화');
 });

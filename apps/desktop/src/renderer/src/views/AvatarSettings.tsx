@@ -1,7 +1,7 @@
 /**
- * AvatarSettings — 커넥터 안의 아바타 설정 화면 (웹 마이페이지 [아바타 설정]의
- * 커넥터 네이티브 구현). 사이드바 헤더의 아바타 버튼으로 진입, 메인 페인을
- * 통째로 전환한다 (채팅 세션은 뒤에 그대로 유지).
+ * AvatarSettings — 커넥터 안의 아바타 설정 (웹 마이페이지 [아바타 설정]의 커넥터
+ * 네이티브 구현). 설정의 [아바타 설정] 탭 안에 들어가 있다(`embedded`, 2026-09-29 —
+ * 예전에는 사이드바 단추로 여는 따로 된 탭이었다).
  *
  *  [설정] 아바타 기능 on/off · 업로드(모델 zip / 사진 크롭) → 미리보기(=로드
  *        테스트) → 이름 지정 → 추가 · 선택/이름 변경/삭제 · 인터랙티브
@@ -164,8 +164,11 @@ const PublishModal: React.FC<{
 export const AvatarSettings: React.FC<{
   user: CurrentUser;
   serverUrl: string;
-  onBack: () => void;
-}> = ({ user, serverUrl, onBack }) => {
+  /** 따로 된 화면일 때만 — 머리의 [돌아가기]. */
+  onBack?: () => void;
+  /** 설정 탭 안에 들어간다 — 머리(제목·돌아가기) 없이 [설정 | 스토어]만, 스크롤은 설정이 한다. */
+  embedded?: boolean;
+}> = ({ user, serverUrl, onBack, embedded }) => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<'settings' | 'store'>('settings');
   const [config, setConfig] = useState<AvatarConfig | null>(null);
@@ -417,27 +420,37 @@ export const AvatarSettings: React.FC<{
 
   const myUserId = Number(user.userId);
 
+  const seg = (
+    <div className="seg">
+      <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
+        내 아바타
+      </button>
+      <button className={tab === 'store' ? 'active' : ''} onClick={() => setTab('store')}>
+        스토어
+      </button>
+    </div>
+  );
+
   return (
-    <div className="avset">
-      <div className="avset-header">
-        <div className="avset-header-left">
-          <button className="icon-btn" title="채팅으로 돌아가기" onClick={onBack}>
-            <BackIcon size={17} />
-          </button>
-          <div>
-            <strong>아바타 설정</strong>
-            <div className="small muted">아바타를 등록·관리하고 오버레이에 표시합니다</div>
+    <div className={`avset${embedded ? ' embedded' : ''}`}>
+      {embedded ? (
+        <div className="avset-subnav">{seg}</div>
+      ) : (
+        <div className="avset-header">
+          <div className="avset-header-left">
+            {onBack && (
+              <button className="icon-btn" title="채팅으로 돌아가기" onClick={onBack}>
+                <BackIcon size={17} />
+              </button>
+            )}
+            <div>
+              <strong>아바타 설정</strong>
+              <div className="small muted">아바타를 등록·관리하고 오버레이에 표시합니다</div>
+            </div>
           </div>
+          {seg}
         </div>
-        <div className="seg">
-          <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
-            설정
-          </button>
-          <button className={tab === 'store' ? 'active' : ''} onClick={() => setTab('store')}>
-            스토어
-          </button>
-        </div>
-      </div>
+      )}
 
       {notice && <div className={`avset-notice ${notice.kind}`}>{notice.text}</div>}
 

@@ -9,6 +9,7 @@ import type { TuiEngine, TuiSession } from './model';
 import { ProfileScreen } from './profile-screen';
 import { ServerScreen } from './server-screen';
 import type { LastChat } from './preferences';
+import type { ListSection } from './conversation-list';
 
 type Route = 'boot' | 'server' | 'login' | 'dashboard' | 'profiles' | 'fatal';
 
@@ -29,6 +30,9 @@ export function App({
     /** 지난 실행에서 마지막으로 보던 대화 — 아직 돌고 있으면 되찾는다. */
     lastChat?: LastChat;
     onLastChatChange?: (value: LastChat | undefined) => void;
+    /** 대화 목록에서 접어 둔 묶음. */
+    closedSections?: ListSection[];
+    onClosedSectionsChange?: (value: ListSection[]) => void;
   };
 }): React.ReactNode {
   const { exit } = useApp();
@@ -86,9 +90,8 @@ export function App({
           agents: agents.items,
         });
         setRoute('dashboard');
-        // 로컬 컨트롤 — 켜져 있으면 TUI 세션과 함께 브리지를 올린다. 예전에는
-        // `dex local-tools serve` 를 따로 돌려야 채팅에 이 PC 도구가 광고됐다
-        // (VSCode rpc 경로만 자동 기동이던 갭). 실패는 채팅을 막지 않는다.
+        // 이 PC 브리지 — TUI 세션과 함께 올린다. 에이전트가 쓸 수 있는 범위는
+        // 대화를 시작한 폴더다. 실패는 채팅을 막지 않는다.
         void engine.startLocalTools?.(current.name, 0).catch(() => undefined);
       } catch (reason) {
         setError(publicError(reason).message);

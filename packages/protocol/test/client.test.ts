@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
 import { XgenClient } from '@dex/protocol';
-// 아티팩트 alias 실행 규칙은 AgentDataApi 안에 있다 — 클라이언트 전체를 세우지 않고
+// 앱 alias 실행 규칙은 AgentDataApi 안에 있다 — 클라이언트 전체를 세우지 않고
 // 그 계층만 직접 세워 본다(index 는 이 둘을 밖으로 내보내지 않는다).
 import { AgentDataApi } from '../src/agent-data';
 import { HttpClient } from '../src/client';
@@ -270,7 +270,7 @@ test('onAuthFailure fires on 401 for authed call', async () => {
   }
 });
 
-// ── 아티팩트 alias 호출 ────────────────────────────────────────────────
+// ── 앱 alias 호출 ────────────────────────────────────────────────
 //
 // 프레임에는 네트워크가 없다. 무엇을 부를지도 프레임이 고르지 못하고 alias 만
 // 말할 수 있으며, 그 alias 가 어떤 경로인지는 서버가 검증해 내려준 선언에만 있다.
@@ -279,7 +279,7 @@ test('onAuthFailure fires on 401 for authed call', async () => {
 test('선언되지 않은 alias 는 거절한다', async () => {
   const api = new AgentDataApi(new HttpClient({ baseUrl: 'https://x.example' }));
   await assert.rejects(
-    () => api.artifactCallApi([{ alias: 'rows', path: '/api/a', method: 'GET' }], 'other'),
+    () => api.appCallApi([{ alias: 'rows', path: '/api/a', method: 'GET' }], 'other'),
     /선언되지 않은 alias/,
   );
 });
@@ -288,14 +288,14 @@ test('GET 이 아니거나 /api/ 밖이면 거절한다', async () => {
   const api = new AgentDataApi(new HttpClient({ baseUrl: 'https://x.example' }));
   await assert.rejects(
     () =>
-      api.artifactCallApi(
+      api.appCallApi(
         [{ alias: 'w', path: '/api/a', method: 'POST' as 'GET' }],
         'w',
       ),
     /읽기\(GET\)만/,
   );
   await assert.rejects(
-    () => api.artifactCallApi([{ alias: 'x', path: '/etc/passwd', method: 'GET' }], 'x'),
+    () => api.appCallApi([{ alias: 'x', path: '/etc/passwd', method: 'GET' }], 'x'),
     /허용되지 않은 경로/,
   );
 });
@@ -310,19 +310,19 @@ test('선언된 path 에 이미 쿼리가 있으면 & 로 잇는다', async () =
     },
   });
   const api = new AgentDataApi(http);
-  await api.artifactCallApi(
+  await api.appCallApi(
     [{ alias: 'a', path: '/api/list?page_size=5', method: 'GET' }],
     'a',
     { limit: 3 },
   );
-  // '?' 를 한 번 더 붙이면 주소가 깨지고, 아티팩트는 이유 모를 실패를 본다.
+  // '?' 를 한 번 더 붙이면 주소가 깨지고, 앱은 이유 모를 실패를 본다.
   assert.ok(seen[0].endsWith('/api/list?page_size=5&limit=3'), seen[0]);
 
-  await api.artifactCallApi([{ alias: 'b', path: '/api/list', method: 'GET' }], 'b', { limit: 3 });
+  await api.appCallApi([{ alias: 'b', path: '/api/list', method: 'GET' }], 'b', { limit: 3 });
   assert.ok(seen[1].endsWith('/api/list?limit=3'), seen[1]);
 
   // 파라미터가 없으면 물음표도 붙이지 않는다.
-  await api.artifactCallApi([{ alias: 'c', path: '/api/list', method: 'GET' }], 'c');
+  await api.appCallApi([{ alias: 'c', path: '/api/list', method: 'GET' }], 'c');
   assert.ok(seen[2].endsWith('/api/list'), seen[2]);
 });
 
@@ -396,3 +396,140 @@ test('complete() 는 분리를 결과에 싣는다 — text 는 답이 아니라
   assert.equal(out.error, undefined, '끊김은 오류가 아니다');
   assert.equal(out.text, '조각');
 })
+
+/** 열린 채 아무것도 오지 않는 스트림 — 반쯤 열린 연결(절전에서 깨어남·Wi-Fi 전환). */
+function silentStream(chunks: string[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const c of chunks) controller.enqueue(enc.encode(c));
+      // 닫지 않는다 — 읽기가 영영 돌아오지 않는다.
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+test('한동안 아무것도 오지 않으면 분리다 — 반쯤 열린 연결에서 [진행 중] 이 영영 남지 않게 (2026-10-02)', async () => {
+  const api = chatApi(silentStream(['data: {"type":"data","content":"절반"}\n\n']));
+  const seen: string[] = [];
+  for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' }, undefined, { idleMs: 60 })) {
+    seen.push(e.kind);
+  }
+  assert.deepEqual(seen, ['text', 'detached'])
+})
+
+test('keepalive 가 오는 동안은 조용해도 끊지 않는다', async () => {
+  let push: ((s: string) => void) | null = null;
+  let close: (() => void) | null = null;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      push = (s) => controller.enqueue(enc.encode(s));
+      close = () => controller.close();
+    },
+  });
+  const api = chatApi(new Response(body, { status: 200 }));
+  const seen: string[] = [];
+  const run = (async () => {
+    for await (const e of api.stream({ workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' }, undefined, { idleMs: 80 })) {
+      seen.push(e.kind);
+    }
+  })();
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((r) => setTimeout(r, 40));
+    push!(': keepalive\n\n');
+  }
+  push!('data: {"type":"end"}\n\n');
+  close!();
+  await run;
+  assert.deepEqual(seen, ['end'])
+})
+
+// ── 앱 API 접두 — 이름을 앱으로 바꾸기 전(2026-09-28)의 서버에도 붙는다 ─────────
+//
+// 데스크톱 앱은 여러 버전의 서버에 붙는다. 새 서버는 /agent-apps 와 옛 /agent-artifacts 를 둘 다 알고,
+// 옛 서버는 옛 것만 안다. 새 주소로 먼저 묻고, 404 인데 옛 주소로는 되면 그 서버는 옛 서버다.
+
+function appsServer(opts: { legacyOnly: boolean }) {
+  const seen: string[] = [];
+  const api = new AgentDataApi(new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async (url: string) => {
+      const path = new URL(String(url)).pathname;
+      seen.push(path);
+      const legacy = path.startsWith('/api/agentflow/agent-artifacts/');
+      if (opts.legacyOnly && !legacy) return new Response('{"detail":"Not Found"}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+      if (path.endsWith('/missing')) return new Response('{"detail":"없음"}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+      const body = path.endsWith('/list')
+        ? (opts.legacyOnly
+            ? { workflow_id: 'wf', artifacts: [{ slug: 'old' }], total: 1, ready: 1 }
+            : { workflow_id: 'wf', apps: [{ slug: 'new' }], artifacts: [{ slug: 'new' }], total: 1, ready: 1 })
+        : { slug: 'x', app_url: '/x' };
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    },
+  }));
+  return { api, seen };
+}
+
+test('새 서버에는 새 주소로 묻고, 목록은 apps 로 읽는다', async () => {
+  const { api, seen } = appsServer({ legacyOnly: false });
+  const res = await api.appList('wf');
+  assert.deepEqual(res.apps.map((a) => a.slug), ['new']);
+  assert.equal(seen[0], '/api/agentflow/agent-apps/wf/list');
+  assert.equal(api.appWebPath('wf', 'new'), '/app/wf/new');
+});
+
+test('옛 서버면 옛 주소로 한 번 되묻고, 그 뒤로는 옛 주소를 쓴다', async () => {
+  const { api, seen } = appsServer({ legacyOnly: true });
+  const res = await api.appList('wf');
+  assert.deepEqual(res.apps.map((a) => a.slug), ['old'], '옛 키 artifacts 도 apps 로 읽는다');
+  assert.deepEqual(seen.splice(0), ['/api/agentflow/agent-apps/wf/list', '/api/agentflow/agent-artifacts/wf/list']);
+  await api.appGet('wf', 'old');
+  assert.deepEqual(seen, ['/api/agentflow/agent-artifacts/wf/old'], '한 번 정해지면 새 주소를 다시 두드리지 않는다');
+  assert.equal(api.appWebPath('wf', 'old'), '/artifact/wf/old', '옛 서버의 웹에는 /app/… 화면이 없다');
+});
+
+test('없는 앱 하나로 옛 서버라고 단정하지 않는다', async () => {
+  const { api, seen } = appsServer({ legacyOnly: false });
+  await assert.rejects(() => api.appGet('wf', 'missing'));
+  await api.appList('wf');
+  assert.equal(seen.at(-1), '/api/agentflow/agent-apps/wf/list');
+});
+
+// ── 대화에 연결된 폴더(local_folders) ────────────────────────────────
+//
+// 앱은 늘 보낸다: 빈 목록은 "연결된 폴더 없음"(서버가 폴더 도구를 감춘다)이고,
+// 필드가 없으면 옛 앱으로 읽혀 예전 규칙을 따른다. 둘을 섞으면 폴더를 끊은
+// 대화에 서버가 옛 규칙으로 기기 도구를 보여 준다.
+async function sentBody(req: Parameters<ChatApi['stream']>[0]): Promise<Record<string, unknown>> {
+  let body = '';
+  const http = new HttpClient({
+    baseUrl: 'https://x.example',
+    fetch: async (_url: string, init?: RequestInit) => {
+      body = String(init?.body ?? '');
+      return sseStream(['data: {"type":"end"}\n\n']);
+    },
+  });
+  for await (const _ of new ChatApi(http).stream(req)) {
+    /* drain */
+  }
+  return JSON.parse(body);
+}
+
+test('연결된 폴더는 local_folders 로 실리고, 빈 목록도 그대로 간다', async () => {
+  const base = { workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' };
+  const withFolders = await sentBody({
+    ...base,
+    localFolders: [{ id: 'f1', name: 'proj', path: '/Users/me/proj', extra: 'x' } as never],
+  });
+  assert.deepEqual(withFolders.local_folders, [{ id: 'f1', name: 'proj', path: '/Users/me/proj' }]);
+  assert.deepEqual((await sentBody({ ...base, localFolders: [] })).local_folders, []);
+  assert.equal('local_folders' in (await sentBody(base)), false);
+});
+
+test('기억 지도를 끈 선택만 memory_map: false 로 실린다', async () => {
+  const base = { workflowId: 'w', workflowName: 'n', input: 'hi', interactionId: 'i-1' };
+  assert.equal((await sentBody({ ...base, memoryMap: false })).memory_map, false);
+  assert.equal('memory_map' in (await sentBody({ ...base, memoryMap: true })), false, '켬은 서버 기본이라 보내지 않는다');
+  assert.equal('memory_map' in (await sentBody(base)), false);
+});

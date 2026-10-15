@@ -2,11 +2,52 @@
   const CANONICAL_INPUT_MAX_BYTES = 262144;
   const vscode = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
+  // 아이콘은 SVG 로 그린다(글자 기호는 글꼴마다 모양이 달라진다). 문자열 HTML 없이 노드로 만든다.
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const ICON_PATHS = {
+    copy: ['M5.5 5.5h7v7h-7z', 'M3.5 10.5v-7h7'],
+    check: ['M3.5 8.5l3 3 6-7'],
+    chevron: ['M4.5 6.5l3.5 3.5 3.5-3.5'],
+    model: ['M5 5h6v6H5z', 'M6.5 2.5v2M9.5 2.5v2M6.5 11.5v2M9.5 11.5v2M2.5 6.5h2M2.5 9.5h2M11.5 6.5h2M11.5 9.5h2'],
+    thinking: ['M6 12h4M6.7 14h2.6', 'M8 2a4 4 0 0 0-2.4 7.2c.3.2.4.5.4.8v.5h4V10c0-.3.1-.6.4-.8A4 4 0 0 0 8 2z'],
+    pencil: ['M10.5 3l2.5 2.5L6 12.5H3.5V10z', 'M9 4.5l2.5 2.5'],
+    trash: ['M3 4.5h10', 'M6.5 4.5V3h3v1.5', 'M4.5 4.5l.6 8.5h5.8l.6-8.5'],
+    search: ['M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z', 'M13.5 13.5l-3.3-3.3'],
+    more: ['M3 8h1', 'M7.5 8h1', 'M12 8h1'],
+    chat: ['M2.5 4A1.5 1.5 0 0 1 4 2.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7l-3 2.5V11A1.5 1.5 0 0 1 2.5 9.5z'],
+    close: ['M4 4l8 8', 'M12 4l-8 8'],
+  };
+  /** 에이전트가 사라진 대화의 표시(@dex/protocol DELETED_AGENT_LABEL 과 같은 글). */
+  const DELETED_AGENT_LABEL = '지워짐';
+  const icon = (name, size = 14) => {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.5');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    for (const d of ICON_PATHS[name] || []) {
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', d);
+      svg.append(path);
+    }
+    return svg;
+  };
+  /** 경로의 마지막 이름 — Windows·POSIX 구분자 모두. */
+  const folderName = (path) => {
+    const parts = String(path || '').split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(path || '');
+  };
   const elements = {
     screens: {
       loading: byId('loading-screen'),
       gate: byId('gate-screen'),
-      agents: byId('agents-screen'),
+      conversations: byId('conversations-screen'),
+      start: byId('start-screen'),
       chat: byId('chat-screen'),
       settings: byId('settings-screen'),
     },
@@ -16,28 +57,83 @@
     gateConnection: byId('gate-connection'),
     gatePrimary: byId('gate-primary'),
     gateSettings: byId('gate-settings'),
-    agentsConnection: byId('agents-connection'),
-    agentsRefresh: byId('agents-refresh'),
-    agentsSettings: byId('agents-settings'),
+    listConnection: byId('list-connection'),
+    listRefresh: byId('list-refresh'),
+    listSettings: byId('list-settings'),
     accountAvatar: byId('account-avatar'),
     accountName: byId('account-name'),
-    agentCount: byId('agent-count'),
-    agentSearch: byId('agent-search'),
-    agentFilters: byId('agent-filters'),
+    listContent: byId('list-content'),
+    listNew: byId('list-new'),
+    listSearch: byId('list-search'),
+    listMenu: byId('list-menu'),
+    listMenuPanel: byId('list-menu-panel'),
+    listManage: byId('list-manage'),
+    listPurge: byId('list-purge'),
+    listMain: byId('list-main'),
+    recentToggle: byId('recent-toggle'),
+    recentCaret: byId('recent-caret'),
+    recentBody: byId('recent-body'),
+    conversationList: byId('conversation-list'),
+    listStatus: byId('list-status'),
+    listMore: byId('list-more'),
+    listLess: byId('list-less'),
+    agentsToggle: byId('agents-toggle'),
+    agentsCaret: byId('agents-caret'),
+    agentsBody: byId('agents-body'),
     agentList: byId('agent-list'),
+    agentListStatus: byId('agent-list-status'),
+    agentMore: byId('agent-more'),
+    agentLess: byId('agent-less'),
+    agentView: byId('agent-view'),
+    agentViewBack: byId('agent-view-back'),
+    agentViewDeleted: byId('agent-view-deleted'),
+    agentViewName: byId('agent-view-name'),
+    agentConversationList: byId('agent-conversation-list'),
+    agentViewStatus: byId('agent-view-status'),
+    agentViewMore: byId('agent-view-more'),
+    startBack: byId('start-back'),
+    startConnection: byId('start-connection'),
+    startSettings: byId('start-settings'),
+    startAgent: byId('start-agent'),
+    startCreate: byId('start-create'),
+    startName: byId('start-name'),
+    startNameError: byId('start-name-error'),
+    startProvider: byId('start-provider'),
+    startModel: byId('start-model'),
+    startAdvanced: byId('start-advanced'),
+    startSettingsFields: byId('start-settings-fields'),
+    startMessage: byId('start-message'),
+    startMessageText: byId('start-message-text'),
+    startInput: byId('start-input'),
+    startInputPolicy: byId('start-input-policy'),
+    startSend: byId('start-send'),
+    chatBack: byId('chat-back'),
+    chatTitle: byId('chat-title'),
+    chatNew: byId('chat-new'),
+    chatReadonly: byId('chat-readonly'),
+    chatComposer: byId('chat-composer'),
     agentName: byId('agent-name'),
     agentDescription: byId('agent-description'),
     agentScope: byId('agent-scope'),
     agentStatus: byId('agent-status'),
+    agentFolders: byId('agent-folders'),
     agentId: byId('agent-id'),
-    changeAgent: byId('change-agent'),
     chatSettings: byId('chat-settings'),
     messages: byId('messages'),
     status: byId('status'),
     statusText: byId('status-text'),
     input: byId('input'),
+    inputPolicy: byId('input-policy'),
     attachments: byId('attachments'),
     attach: byId('attach'),
+    modelChip: byId('model-chip'),
+    modelIcon: byId('model-icon'),
+    modelLabel: byId('model-label'),
+    modelChevron: byId('model-chevron'),
+    thinkingChip: byId('thinking-chip'),
+    thinkingIcon: byId('thinking-icon'),
+    thinkingLabel: byId('thinking-label'),
+    thinkingChevron: byId('thinking-chevron'),
     send: byId('send'),
     cancel: byId('cancel'),
     canonicalMode: byId('canonical-mode'),
@@ -68,35 +164,28 @@
     profilesList: byId('profiles-list'),
     localToolsState: byId('local-tools-state'),
     localToolsDescription: byId('local-tools-description'),
-    localToolsEnabled: byId('local-tools-enabled'),
-    localToolsShell: byId('local-tools-shell'),
-    localToolsCwd: byId('local-tools-cwd'),
-    localToolsRoots: byId('local-tools-roots'),
-    localToolsTimeout: byId('local-tools-timeout'),
-    localToolsBlocked: byId('local-tools-blocked'),
+    localToolsFolders: byId('local-tools-folders'),
     localToolsDangerous: byId('local-tools-dangerous'),
     localToolsMessage: byId('local-tools-message'),
-    useWorkspaceRoot: byId('use-workspace-root'),
     saveLocalTools: byId('save-local-tools'),
     engineDescription: byId('engine-description'),
     showOutput: byId('show-output'),
     extensionSettings: byId('extension-settings'),
     restartEngine: byId('restart-engine'),
   };
-  const persisted = vscode.getState() || {};
   let state = {
     screen: 'loading',
     profiles: [],
     agents: [],
-    agentTotal: 0,
     messages: [],
+    conversations: [],
     running: false,
     refreshing: true,
+    readOnly: false,
     localToolsSaving: false,
     canonical: { active: false, available: false, omittedMessages: 0, hasMore: false, sessionStatus: 'idle',
       connectionVersion: 0, attachments: { items: [], busy: false } },
   };
-  let agentFilter = persisted.agentFilter || 'all';
   let composing = false;
   let previousAgentId;
   let gateAction = 'refresh';
@@ -109,10 +198,6 @@
 
   function post(type, extra) {
     vscode.postMessage({ type, ...(extra || {}) });
-  }
-
-  function persistUi() {
-    vscode.setState({ agentFilter, agentSearch: elements.agentSearch.value });
   }
 
   function textInitials(value) {
@@ -140,6 +225,42 @@
     for (const [key, element] of Object.entries(elements.screens)) element.classList.toggle('hidden', key !== name);
   }
 
+  // ── 통제 정책 입력창 사전 검사 ─────────────────────────────────────
+  // 입력이 멎으면 호스트에 묻는다(호스트는 엔진 → 서버). 서버가 보낼 때 막는 것과 같은 판정이다.
+  // 걸리면 작성기 아래에 이유를 두고 전송 단추를 끈다. Enter 도 send() 를 지나므로 같이 막힌다.
+  const policy = { chat: null, start: null };
+  const policyTimers = { chat: 0, start: 0 };
+
+  function policyInput(scope) {
+    return scope === 'start' ? elements.startInput : elements.input;
+  }
+
+  function policyBlocked(scope, text) {
+    const result = policy[scope];
+    return !!result && result.blocked && result.text === text;
+  }
+
+  function renderPolicy(scope) {
+    const element = scope === 'start' ? elements.startInputPolicy : elements.inputPolicy;
+    const text = policyInput(scope).value.trim();
+    const result = policy[scope];
+    const notice = result && result.text === text ? result.notice : null;
+    element.textContent = notice ? notice.text : '';
+    element.classList.toggle('hidden', !notice);
+    element.classList.toggle('blocked', !!notice && notice.tone === 'block');
+    if (scope === 'chat') elements.send.disabled = !!state.running || policyBlocked('chat', text);
+    else elements.startSend.disabled = !!state.start?.busy || policyBlocked('start', text);
+  }
+
+  function schedulePolicyCheck(scope) {
+    window.clearTimeout(policyTimers[scope]);
+    const text = policyInput(scope).value.trim();
+    renderPolicy(scope);
+    if (!text) return;
+    if (policy[scope] && policy[scope].text === text) return;
+    policyTimers[scope] = window.setTimeout(() => post('checkInput', { scope, text }), state.inputCheckDelayMs || 350);
+  }
+
   function send() {
     const raw = elements.input.value;
     if (state.canonical?.active) {
@@ -156,9 +277,11 @@
       return;
     }
     const text = raw.trim();
-    if ((!text && !(state.attachments || []).length) || state.running || !state.agent) return;
+    if ((!text && !(state.attachments || []).length) || state.running || !state.agent || state.readOnly) return;
+    if (policyBlocked('chat', text)) return;
     post('send', { text });
     elements.input.value = '';
+    renderPolicy('chat');
   }
 
   function renderAttachments() {
@@ -235,22 +358,28 @@
     return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
   }
 
+  /**
+   * 복사 버튼 — 아이콘만, 늘 보인다. 이름은 마우스를 올리면 뜨는 말풍선(data-tip)으로.
+   * 브라우저 기본 title 말풍선은 VS Code 테마를 따르지 않아 쓰지 않는다.
+   */
   function copyButton(text, label) {
     const button = document.createElement('button');
     button.className = 'copy-button';
     button.type = 'button';
-    button.title = label;
+    button.dataset.tip = label;
     button.setAttribute('aria-label', label);
-    button.textContent = '⧉';
+    button.append(icon('copy', 13));
     button.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(text);
-        button.textContent = '✓';
+        button.replaceChildren(icon('check', 13));
+        button.dataset.tip = '복사했습니다';
       } catch {
-        button.textContent = '!';
+        button.dataset.tip = '복사하지 못했습니다';
       }
       window.setTimeout(() => {
-        button.textContent = '⧉';
+        button.replaceChildren(icon('copy', 13));
+        button.dataset.tip = label;
       }, 1200);
     });
     return button;
@@ -570,7 +699,7 @@
     else if (item.role === 'assistant') renderRichText(content, item.text);
     else content.textContent = item.text;
     body.append(header, content);
-    // 답변 푸터 한 줄 — 좌: 복사(호버에만 드러남), 우: 전체 로그(상시).
+    // 답변 푸터 한 줄 — 좌: 복사(아이콘, 상시), 우: 전체 로그(상시).
     // 데스크톱 앱과 같은 배치 계약이다.
     if (item.role === 'assistant' && (item.text || (item.tools && item.tools.length))) {
       const footer = document.createElement('div');
@@ -684,114 +813,721 @@
     }
   }
 
-  function badge(label, className) {
-    const node = document.createElement('span');
-    node.className = `card-badge ${className || ''}`.trim();
-    node.textContent = label;
-    return node;
+  // ── 대화 목록 ──────────────────────────────────────────────────────
+  // [최근 채팅] 5개 + [에이전트](대화가 있는 에이전트) 5개, 둘 다 더 보기·접기. 에이전트 줄을 누르면 그 에이전트의
+  // 대화로 들어간다. 새 채팅은 [+ 새 채팅] 하나뿐이다. 줄의 글(에이전트 이름·[지워짐]·꼬리표·제목·날·수)은 확장이
+  // 정해서 보낸다.
+
+  let listSignature = '';
+  let agentsSignature = '';
+  let agentViewSignature = '';
+  let moreRequested = false;
+
+  // 묶음 머리를 누르면 그 묶음을 접고 편다. 웹뷰 상태에 남겨 창을 숨겼다 다시 열어도 그대로다.
+  const SECTIONS = [
+    { name: 'recent', toggle: elements.recentToggle, caret: elements.recentCaret, body: elements.recentBody },
+    { name: 'agents', toggle: elements.agentsToggle, caret: elements.agentsCaret, body: elements.agentsBody },
+  ];
+
+  function savedViewState() {
+    const saved = vscode.getState();
+    return saved && typeof saved === 'object' ? saved : {};
   }
 
-  function agentCard(agent) {
+  const collapsed = (() => {
+    const saved = savedViewState().collapsed || {};
+    return { recent: saved.recent === true, agents: saved.agents === true };
+  })();
+
+  function renderSections() {
+    for (const section of SECTIONS) {
+      const shut = collapsed[section.name];
+      section.toggle.setAttribute('aria-expanded', shut ? 'false' : 'true');
+      section.body.classList.toggle('hidden', shut);
+    }
+  }
+
+  function toggleSection(name) {
+    collapsed[name] = !collapsed[name];
+    vscode.setState({ ...savedViewState(), collapsed: { ...collapsed } });
+    renderSections();
+  }
+
+  function rowAction(name, label, type, row) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'agent-card';
-    button.addEventListener('click', () => post('selectAgent', { workflowId: agent.workflowId }));
-
-    // 이름과 배지를 한 줄에 둔다. 예전에는 장식용 ✦ 와 '대화 시작 →' 가 카드마다
-    // 두 줄을 더 먹었는데, 아이콘은 어느 카드나 같아서 고르는 데 도움이 안 되고
-    // 카드 전체가 이미 버튼이라 그 안내도 없어도 된다.
-    const top = document.createElement('div');
-    top.className = 'agent-card-top';
-    const name = document.createElement('strong');
-    name.textContent = agent.workflowName;
-    const badges = document.createElement('span');
-    badges.className = 'agent-card-badges';
-    badges.append(badge(agent.isShared ? '공유' : '개인', agent.isShared ? 'shared' : 'personal'));
-    // 배포 여부는 초안일 때만 말한다 — 대부분이 초안이라 둘 다 붙이면 소음이다.
-    if (agent.isDeployed) badges.append(badge('배포됨', 'deployed'));
-    top.append(name, badges);
-    button.append(top);
-
-    // 설명이 없는 Agent 가 대부분이다. '등록된 설명이 없습니다.' 로 한 줄을
-    // 채우느니 그 줄을 아예 없앤다.
-    const summary = (agent.description || '').trim();
-    const owner = agent.fullName || agent.username || '';
-    if (summary) {
-      const description = document.createElement('p');
-      description.textContent = summary;
-      button.append(description);
-    }
-    if (owner) {
-      const meta = document.createElement('span');
-      meta.className = 'agent-card-meta';
-      meta.textContent = owner;
-      button.append(meta);
-    }
+    button.className = 'row-action';
+    button.dataset.tip = label;
+    button.setAttribute('aria-label', `${label}: ${row.title}`);
+    button.append(icon(name, 13));
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      post(type, { workflowId: row.workflowId, interactionId: row.interactionId });
+    });
     return button;
   }
 
-  function renderAgentList() {
-    const query = elements.agentSearch.value.trim().toLocaleLowerCase();
-    const filtered = state.agents.filter((agent) => {
-      if (agentFilter === 'personal' && agent.isShared) return false;
-      if (agentFilter === 'shared' && !agent.isShared) return false;
-      if (!query) return true;
-      return [agent.workflowName, agent.description, agent.username, agent.fullName]
-        .filter(Boolean)
-        .some((value) => String(value).toLocaleLowerCase().includes(query));
-    });
-    elements.agentCount.textContent = `${filtered.length}${state.agentTotal > state.agents.length ? ` / ${state.agentTotal}` : ''} Agents`;
-    elements.agentList.replaceChildren();
-    if (!filtered.length) {
-      const empty = document.createElement('div');
-      empty.className = 'agent-empty';
-      const icon = document.createElement('span');
-      icon.textContent = '⌕';
-      const title = document.createElement('strong');
-      title.textContent = query ? '검색 결과가 없습니다' : '사용 가능한 Agent가 없습니다';
-      const description = document.createElement('p');
-      description.textContent = query ? '다른 이름이나 설명으로 검색해 보세요.' : '서버에서 Agent를 배포한 뒤 새로 고침해 주세요.';
-      empty.append(icon, title, description);
-      elements.agentList.append(empty);
-      return;
+  /**
+   * 대화 한 줄: 위에 작은 에이전트 이름(사라졌으면 [지워짐])과 꼬리표, 아래에 제목. 에이전트 안의 대화 목록은
+   * 에이전트 이름 대신 날(`when`)을 쓴다. 답이 도는 대화는 진행 점.
+   */
+  function conversationRowElement(row) {
+    const dated = typeof row.when === 'string';
+    const item = document.createElement('div');
+    item.className = `conversation-row${row.active ? ' active' : ''}${row.agentDeleted && !dated ? ' deleted' : ''}`;
+    item.setAttribute('role', 'listitem');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'conversation-open';
+    if (row.active) open.setAttribute('aria-current', 'true');
+    const meta = document.createElement('span');
+    meta.className = 'conversation-meta';
+    const agent = document.createElement('span');
+    agent.className = 'conversation-agent';
+    agent.textContent = dated ? row.when : row.agentLabel;
+    meta.append(agent);
+    if (row.tagLabel) {
+      const tag = document.createElement('span');
+      tag.className = 'conversation-tag';
+      tag.textContent = row.tagLabel;
+      meta.append(tag);
     }
-    for (const agent of filtered) elements.agentList.append(agentCard(agent));
+    if (row.running) {
+      const live = document.createElement('span');
+      live.className = 'conversation-live';
+      live.title = '진행 중';
+      live.setAttribute('aria-label', '진행 중');
+      meta.append(live);
+    }
+    const title = document.createElement('span');
+    title.className = 'conversation-title';
+    title.textContent = row.title;
+    open.append(meta, title);
+    open.addEventListener('click', () =>
+      post('openConversation', { workflowId: row.workflowId, interactionId: row.interactionId }),
+    );
+    item.append(open);
+    if (state.conversationActions) {
+      const actions = document.createElement('div');
+      actions.className = 'conversation-actions';
+      actions.append(
+        rowAction('pencil', '이름 바꾸기', 'renameConversation', row),
+        rowAction('trash', '지우기', 'deleteConversation', row),
+      );
+      item.append(actions);
+    }
+    return item;
   }
 
-  function renderAgents() {
-    showScreen('agents');
+  function deletedBadge() {
+    const badge = document.createElement('span');
+    badge.className = 'agent-deleted-badge';
+    badge.textContent = DELETED_AGENT_LABEL;
+    return badge;
+  }
+
+  /** 에이전트 한 줄: 이름, 아래에 "마지막 대화 제목 · 날", 오른쪽에 대화 수. 줄 전체가 버튼이고 누르면 그 에이전트의 대화. */
+  function agentRowElement(row) {
+    const item = document.createElement('div');
+    item.className = `agent-row${row.agentDeleted ? ' deleted' : ''}`;
+    item.setAttribute('role', 'listitem');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'agent-open';
+    const text = document.createElement('span');
+    text.className = 'agent-row-text';
+    const top = document.createElement('span');
+    top.className = 'agent-row-top';
+    if (row.agentDeleted) top.append(deletedBadge());
+    const name = document.createElement('span');
+    name.className = 'agent-row-name';
+    name.textContent = row.name;
+    top.append(name);
+    const detail = document.createElement('span');
+    detail.className = 'agent-row-detail';
+    detail.textContent = row.detail;
+    text.append(top, detail);
+    const count = document.createElement('span');
+    count.className = 'agent-row-count';
+    count.textContent = String(row.count);
+    open.append(text, count);
+    open.addEventListener('click', () => post('openAgent', { workflowId: row.workflowId }));
+    item.append(open);
+    return item;
+  }
+
+  function emptyLine(text) {
+    const empty = document.createElement('div');
+    empty.className = 'list-empty';
+    empty.textContent = text;
+    return empty;
+  }
+
+  /** 에이전트 화면에서 끝까지 내렸으면 다음 쪽을 부른다(한 번에 하나). */
+  function maybeLoadMore() {
+    const view = state.agentView;
+    if (state.screen !== 'conversations' || !view || !view.hasMore || view.loadingMore || moreRequested) return;
+    const list = elements.listContent;
+    if (list.scrollHeight - list.scrollTop - list.clientHeight > 160) return;
+    moreRequested = true;
+    post('loadMoreAgentConversations');
+  }
+
+  function setListMenu(open) {
+    elements.listMenuPanel.classList.toggle('hidden', !open);
+    elements.listMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function renderListMain() {
+    const rows = state.conversations || [];
+    // 답이 흐르는 동안에도 상태는 자주 온다. 목록이 그대로면 다시 그리지 않는다(스크롤·초점 유지).
+    const signature = JSON.stringify([rows, !!state.conversationActions, !!state.conversationsLoading, !!state.conversationsError]);
+    if (signature !== listSignature) {
+      listSignature = signature;
+      elements.conversationList.replaceChildren(...rows.map(conversationRowElement));
+      if (!rows.length && !state.conversationsError) {
+        elements.conversationList.append(emptyLine(state.conversationsLoading ? '대화를 불러오는 중...' : '아직 대화가 없습니다.'));
+      }
+    }
+    elements.listStatus.textContent = state.conversationsError
+      ? `대화 목록을 불러오지 못했습니다. ${state.conversationsError}`
+      : '';
+    elements.listStatus.classList.toggle('hidden', !state.conversationsError);
+    elements.listMore.classList.toggle('hidden', !state.recentMore);
+    elements.listMore.disabled = !!state.conversationsLoadingMore;
+    elements.listMore.textContent = state.conversationsLoadingMore ? '불러오는 중...' : '더 보기';
+    elements.listLess.classList.toggle('hidden', !state.recentLess);
+
+    const agents = state.conversationAgents || [];
+    const agentsKey = JSON.stringify([agents, !!state.conversationAgentsLoading]);
+    if (agentsKey !== agentsSignature) {
+      agentsSignature = agentsKey;
+      elements.agentList.replaceChildren(...agents.map(agentRowElement));
+      if (!agents.length && state.conversationAgentsLoading) elements.agentList.append(emptyLine('불러오는 중...'));
+    }
+    elements.agentListStatus.textContent = state.conversationAgentsError
+      ? `에이전트 목록을 불러오지 못했습니다. ${state.conversationAgentsError}`
+      : '';
+    elements.agentListStatus.classList.toggle('hidden', !state.conversationAgentsError);
+    elements.agentMore.classList.toggle('hidden', !state.agentsMore);
+    elements.agentLess.classList.toggle('hidden', !state.agentsLess);
+  }
+
+  function renderAgentView(view) {
+    elements.agentViewName.textContent = view.name;
+    elements.agentViewName.title = view.name;
+    elements.agentViewName.classList.toggle('deleted', !!view.agentDeleted);
+    elements.agentViewDeleted.classList.toggle('hidden', !view.agentDeleted);
+    const signature = JSON.stringify([view.workflowId, view.rows, view.empty || '', !!state.conversationActions]);
+    if (signature !== agentViewSignature) {
+      agentViewSignature = signature;
+      elements.agentConversationList.replaceChildren(...view.rows.map(conversationRowElement));
+      if (view.empty) elements.agentConversationList.append(emptyLine(view.empty));
+    }
+    elements.agentViewStatus.textContent = view.error ? `대화 목록을 불러오지 못했습니다. ${view.error}` : '';
+    elements.agentViewStatus.classList.toggle('hidden', !view.error);
+    elements.agentViewMore.classList.toggle('hidden', !view.hasMore);
+    elements.agentViewMore.disabled = !!view.loadingMore;
+    elements.agentViewMore.textContent = view.loadingMore ? '불러오는 중...' : '더 보기';
+    if (!view.loadingMore) moreRequested = false;
+  }
+
+  function renderConversations() {
+    showScreen('conversations');
     const user = state.auth?.user;
-    elements.agentsConnection.textContent = `${state.auth?.profile || ''} · ${hostOf(state.auth?.serverUrl)}`;
+    elements.listConnection.textContent = `${state.auth?.profile || ''} · ${hostOf(state.auth?.serverUrl)}`;
     elements.accountAvatar.textContent = textInitials(user?.username);
     elements.accountName.textContent = user?.username || '계정';
-    if (state.initialSearch && elements.agentSearch.value !== state.initialSearch) elements.agentSearch.value = state.initialSearch;
-    else if (!elements.agentSearch.value && persisted.agentSearch) elements.agentSearch.value = persisted.agentSearch;
-    for (const button of elements.agentFilters.querySelectorAll('[data-filter]')) {
-      button.classList.toggle('active', button.dataset.filter === agentFilter);
+    elements.listRefresh.classList.toggle('spinning', !!state.refreshing || !!state.conversationsLoading);
+    // 목록 머리: [+ 새 채팅] [검색] [⋯]. ⋯ 메뉴는 [채팅 기록 관리] 와 [에이전트가 사라진 채팅 제거 (N)].
+    // 제거는 0 이면 눌리지 않는다. 엔진이 대화 목록을 모르면 ⋯ 도 없다.
+    elements.listMenu.classList.toggle('hidden', !state.purgeLabel);
+    if (!state.purgeLabel) setListMenu(false);
+    elements.listPurge.textContent = state.purgeLabel || '';
+    elements.listPurge.disabled = !(state.agentDeletedCount > 0);
+    elements.listPurge.title = state.agentDeletedCount > 0 ? '' : '정리할 채팅이 없습니다.';
+    const view = state.agentView;
+    const drilling = !!view;
+    elements.listMain.classList.toggle('hidden', drilling);
+    elements.agentView.classList.toggle('hidden', !drilling);
+    if (view) renderAgentView(view);
+    else renderListMain();
+    if (searchBox) renderSearch();
+  }
+
+  // ── 채팅 검색 창 ────────────────────────────────────────────────────
+  // 데스크톱 ConversationSearchDialog 와 같은 모양·글. 비면 최근 채팅, 적으면 잠깐 뒤 확장에 묻는다(번호를 붙여,
+  // 마지막으로 물은 것의 답만 그린다). 줄과 안내 글은 확장이 만들어 보낸다. 여기서는 맞은 조각을 칠할 뿐이다.
+
+  let searchBox = null;
+  let searchSeq = 0;
+
+  function highlighted(parts) {
+    const fragment = document.createDocumentFragment();
+    for (const part of parts || []) {
+      if (part.hit) {
+        const mark = document.createElement('mark');
+        mark.textContent = part.text;
+        fragment.append(mark);
+      } else {
+        fragment.append(document.createTextNode(part.text));
+      }
     }
-    elements.agentsRefresh.classList.toggle('spinning', !!state.refreshing);
-    renderAgentList();
+    return fragment;
+  }
+
+  function searchRows() {
+    if (!searchBox) return [];
+    return searchBox.query.trim() ? (searchBox.result ? searchBox.result.rows : []) : state.searchRecent || [];
+  }
+
+  function setSearchActive(index) {
+    if (!searchBox) return;
+    searchBox.active = index;
+    for (const node of searchBox.body.querySelectorAll('.conv-search-row')) {
+      node.classList.toggle('active', Number(node.dataset.row) === index);
+    }
+    searchBox.body.querySelector(`[data-row="${index}"]`)?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function chooseSearchRow(row) {
+    if (!row) return;
+    closeSearch();
+    post('openSearchResult', { workflowId: row.workflowId, interactionId: row.interactionId });
+  }
+
+  function searchRowElement(row, index) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `conv-search-row${index === searchBox.active ? ' active' : ''}`;
+    button.dataset.row = String(index);
+    const glyph = document.createElement('span');
+    glyph.className = 'conv-search-row-icon';
+    glyph.append(icon('chat', 16));
+    const main = document.createElement('span');
+    main.className = 'conv-search-row-main';
+    const top = document.createElement('span');
+    top.className = 'conv-search-row-top';
+    const title = document.createElement('span');
+    title.className = 'conv-search-row-title';
+    title.append(highlighted(row.title));
+    const when = document.createElement('span');
+    when.className = 'conv-search-row-when';
+    when.textContent = row.day;
+    top.append(title, when);
+    const sub = document.createElement('span');
+    sub.className = 'conv-search-row-sub';
+    if (row.agentDeleted) {
+      const deleted = document.createElement('span');
+      deleted.className = 'conv-search-tag deleted';
+      deleted.textContent = DELETED_AGENT_LABEL;
+      sub.append(deleted);
+    }
+    if (row.agent && row.agent.length) {
+      const agent = document.createElement('span');
+      agent.className = 'conv-search-row-agent';
+      agent.append(highlighted(row.agent));
+      sub.append(agent);
+    }
+    if (row.tagLabel) {
+      const tag = document.createElement('span');
+      tag.className = 'conv-search-tag';
+      tag.textContent = row.tagLabel;
+      sub.append(tag);
+    }
+    if (row.snippet && row.snippet.length) {
+      const dot = document.createElement('span');
+      dot.setAttribute('aria-hidden', 'true');
+      dot.textContent = '·';
+      const snippet = document.createElement('span');
+      snippet.className = 'conv-search-row-snippet';
+      snippet.append(highlighted(row.snippet));
+      sub.append(dot, snippet);
+    }
+    main.append(top, sub);
+    button.append(glyph, main);
+    button.addEventListener('mousemove', () => {
+      if (searchBox && searchBox.active !== index) setSearchActive(index);
+    });
+    button.addEventListener('click', () => chooseSearchRow(row));
+    return button;
+  }
+
+  function searchNote(text, className) {
+    const node = document.createElement('div');
+    node.className = className;
+    node.textContent = text;
+    return node;
+  }
+
+  function renderSearch() {
+    if (!searchBox) return;
+    const trimmed = searchBox.query.trim();
+    const result = searchBox.result;
+    const rows = searchRows();
+    if (searchBox.active >= rows.length) searchBox.active = rows.length ? rows.length - 1 : 0;
+    searchBox.clear.classList.toggle('hidden', !searchBox.query);
+    let status = '';
+    if (trimmed) {
+      if (searchBox.failed) status = searchBox.failed;
+      else if (!result || (searchBox.searching && rows.length === 0)) status = '검색 중';
+      else if (rows.length === 0) status = result.status || '';
+    }
+    const children = [];
+    if (!trimmed && rows.length) children.push(searchNote('최근 채팅', 'conv-search-label'));
+    if (status) {
+      const node = searchNote(status, 'conv-search-status');
+      node.setAttribute('role', 'status');
+      children.push(node);
+    }
+    if (trimmed && result && result.titleOnly && !searchBox.failed) children.push(searchNote(result.titleOnly, 'conv-search-note'));
+    rows.forEach((row, index) => children.push(searchRowElement(row, index)));
+    if (trimmed && result && result.more && !searchBox.failed) children.push(searchNote(result.more, 'conv-search-note'));
+    searchBox.body.replaceChildren(...children);
+  }
+
+  function onSearchInput() {
+    if (!searchBox) return;
+    searchBox.query = searchBox.input.value;
+    const trimmed = searchBox.query.trim();
+    if (searchBox.timer) window.clearTimeout(searchBox.timer);
+    searchBox.timer = undefined;
+    if (trimmed === searchBox.asked) {
+      renderSearch();
+      return;
+    }
+    searchBox.asked = trimmed;
+    const seq = ++searchSeq;
+    searchBox.seq = seq;
+    if (!trimmed) {
+      searchBox.result = null;
+      searchBox.searching = false;
+      searchBox.failed = null;
+      renderSearch();
+      return;
+    }
+    searchBox.searching = true;
+    renderSearch();
+    searchBox.timer = window.setTimeout(() => {
+      if (searchBox && searchBox.seq === seq) post('searchConversations', { query: trimmed, seq });
+    }, state.searchDelayMs || 0);
+  }
+
+  function onSearchResult(message) {
+    if (!searchBox || message.seq !== searchBox.seq) return;
+    searchBox.searching = false;
+    if (message.error) searchBox.failed = message.error;
+    else {
+      searchBox.result = message.result;
+      searchBox.failed = null;
+      searchBox.active = 0;
+    }
+    renderSearch();
+  }
+
+  function closeSearch() {
+    if (!searchBox) return;
+    if (searchBox.timer) window.clearTimeout(searchBox.timer);
+    searchBox.backdrop.remove();
+    searchBox = null;
+    searchSeq += 1;
+    elements.listSearch.focus();
+  }
+
+  function openSearch() {
+    setListMenu(false);
+    if (searchBox) {
+      searchBox.input.focus();
+      return;
+    }
+    const backdrop = document.createElement('div');
+    backdrop.className = 'conv-search-backdrop';
+    backdrop.addEventListener('mousedown', (event) => {
+      if (event.target === backdrop) closeSearch();
+    });
+    const panel = document.createElement('div');
+    panel.className = 'conv-search';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', '채팅 검색');
+    const head = document.createElement('div');
+    head.className = 'conv-search-head';
+    const glyph = document.createElement('span');
+    glyph.className = 'conv-search-glyph';
+    glyph.append(icon('search', 16));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'conv-search-input';
+    input.placeholder = '검색...';
+    input.maxLength = 200;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.setAttribute('aria-label', '채팅 검색');
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'conv-search-clear hidden';
+    clear.textContent = '지우기';
+    const sep = document.createElement('span');
+    sep.className = 'conv-search-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'conv-search-close';
+    close.title = '닫기';
+    close.setAttribute('aria-label', '닫기');
+    close.append(icon('close', 14));
+    head.append(glyph, input, clear, sep, close);
+    const body = document.createElement('div');
+    body.className = 'conv-search-body';
+    panel.append(head, body);
+    backdrop.append(panel);
+    document.body.append(backdrop);
+    searchBox = { backdrop, input, clear, body, query: '', asked: '', result: null, searching: false, failed: null, active: 0, seq: 0, timer: undefined };
+    input.addEventListener('input', onSearchInput);
+    input.addEventListener('compositionstart', () => {
+      composing = true;
+    });
+    input.addEventListener('compositionend', () => {
+      composing = false;
+    });
+    clear.addEventListener('click', () => {
+      input.value = '';
+      onSearchInput();
+      input.focus();
+    });
+    close.addEventListener('click', closeSearch);
+    panel.addEventListener('keydown', (event) => {
+      if (event.isComposing || composing || !searchBox) return;
+      const rows = searchRows();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSearch();
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSearchActive(rows.length ? (searchBox.active + 1) % rows.length : 0);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSearchActive(rows.length ? (searchBox.active - 1 + rows.length) % rows.length : 0);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        chooseSearchRow(rows[searchBox.active]);
+      }
+    });
+    renderSearch();
+    input.focus();
+  }
+
+  // ── 시작 화면 ──────────────────────────────────────────────────────
+  // 칸의 글은 여기서 쥔다. 잠금·이름 검사·진행 글은 확장이 정해서 보낸다. 상태가 올 때마다 칸을
+  // 다시 채우면 적던 글과 고른 값이 날아가므로, 새 시작 화면(session)이거나 선택지가 바뀔 때만 채운다.
+
+  let startSession = -1;
+  let startChoicesKey = '';
+  let startOptionsKey = '';
+  /** 손댄 세부 설정. 손대지 않은 칸은 보내지 않아 서버 기본값이 쓰인다. */
+  const startDirty = new Set();
+
+  function fillSelect(select, items, value) {
+    select.replaceChildren(
+      ...items.map((item) => {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = item.label;
+        return option;
+      }),
+    );
+    if (items.some((item) => item.value === value)) select.value = value;
+  }
+
+  function fillModels(providerValue) {
+    const options = state.start?.options;
+    const provider = options?.providers.find((item) => item.value === providerValue);
+    fillSelect(elements.startModel, provider ? provider.models : [], provider ? provider.defaultModel : '');
+  }
+
+  /** 세부 설정 한 칸: 서버가 알려 준 타입대로(참거짓은 체크, 선택지는 선택 상자, 숫자는 숫자 칸). */
+  function settingField(setting) {
+    const type = String(setting.type || '').toUpperCase();
+    const value = setting.default;
+    const text = value === null || value === undefined ? '' : String(value);
+    const mark = (input) => {
+      input.dataset.setting = setting.id;
+      const eventName = input.type === 'checkbox' || input.tagName === 'SELECT' ? 'change' : 'input';
+      input.addEventListener(eventName, () => startDirty.add(setting.id));
+      return input;
+    };
+    if (type === 'BOOL' || type === 'BOOLEAN') {
+      const label = document.createElement('label');
+      label.className = 'start-check';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = value === true || value === 'true';
+      const name = document.createElement('span');
+      name.textContent = setting.label;
+      label.append(mark(input), name);
+      if (setting.description) label.title = setting.description;
+      return label;
+    }
+    const label = document.createElement('label');
+    label.className = 'start-field';
+    const name = document.createElement('span');
+    name.textContent = setting.label;
+    let input;
+    if (setting.options && setting.options.length) {
+      input = document.createElement('select');
+      fillSelect(
+        input,
+        setting.options.map((option) => ({ value: String(option.value), label: option.label || String(option.value) })),
+        text,
+      );
+    } else if (setting.id === 'system_prompt') {
+      // 시스템 프롬프트는 한 줄로 받으면 쓸 수가 없다.
+      input = document.createElement('textarea');
+      input.rows = 4;
+      input.value = text;
+    } else {
+      input = document.createElement('input');
+      const numeric = type === 'INT' || type === 'INTEGER' || type === 'FLOAT' || type === 'NUMBER';
+      input.type = numeric ? 'number' : 'text';
+      if (numeric && typeof setting.min === 'number') input.min = String(setting.min);
+      if (numeric && typeof setting.max === 'number') input.max = String(setting.max);
+      if (numeric && typeof setting.step === 'number') input.step = String(setting.step);
+      input.value = text;
+    }
+    input.classList.add('start-control');
+    label.append(name, mark(input));
+    if (setting.description) label.title = setting.description;
+    return label;
+  }
+
+  function collectSettings() {
+    const values = {};
+    for (const input of elements.startSettingsFields.querySelectorAll('[data-setting]')) {
+      const id = input.dataset.setting;
+      if (!startDirty.has(id)) continue;
+      values[id] = input.type === 'checkbox' ? input.checked : input.value;
+    }
+    return values;
+  }
+
+  function renderStart() {
+    showScreen('start');
+    const start = state.start;
+    if (!start) return;
+    elements.startConnection.textContent = `${state.auth?.profile || ''} · ${hostOf(state.auth?.serverUrl)}`;
+    const fresh = start.session !== startSession;
+    if (fresh) {
+      startSession = start.session;
+      elements.startName.value = '';
+      elements.startInput.value = '';
+      elements.startAdvanced.open = false;
+      startChoicesKey = '';
+      startOptionsKey = '';
+      startDirty.clear();
+    }
+    const choicesKey = JSON.stringify(start.choices);
+    if (choicesKey !== startChoicesKey) {
+      const keep = startChoicesKey ? elements.startAgent.value : start.agentId;
+      startChoicesKey = choicesKey;
+      fillSelect(elements.startAgent, start.choices, keep);
+      // 고른 에이전트가 목록에서 빠졌으면 첫 값으로 돌아간다. 확장도 같은 값을 알게 한다.
+      if (elements.startAgent.value !== start.agentId) post('startAgent', { workflowId: elements.startAgent.value });
+    }
+    const options = start.options;
+    const optionsKey = options
+      ? JSON.stringify([options.defaultProvider, options.providers, options.settings.map((setting) => setting.id)])
+      : `none:${!!start.optionsLoading}`;
+    if (optionsKey !== startOptionsKey) {
+      startOptionsKey = optionsKey;
+      startDirty.clear();
+      if (options) {
+        fillSelect(elements.startProvider, options.providers, options.defaultProvider);
+        fillModels(elements.startProvider.value);
+        elements.startSettingsFields.replaceChildren(...options.settings.map(settingField));
+      } else {
+        const placeholder = start.optionsLoading ? [{ value: '', label: '불러오는 중...' }] : [];
+        fillSelect(elements.startProvider, placeholder, '');
+        fillSelect(elements.startModel, placeholder, '');
+        elements.startSettingsFields.replaceChildren();
+      }
+    }
+    const busy = !!start.busy;
+    const creating = elements.startAgent.value === '' && !!start.canCreate;
+    elements.startCreate.classList.toggle('hidden', !creating);
+    elements.startAdvanced.classList.toggle('hidden', !(options && options.settings.length));
+    elements.startAgent.disabled = busy;
+    elements.startName.disabled = busy;
+    elements.startProvider.disabled = busy || !options || !options.providers.length;
+    elements.startModel.disabled = busy || !elements.startModel.options.length;
+    elements.startNameError.textContent = start.nameError || '';
+    elements.startNameError.classList.toggle('hidden', !start.nameError);
+    elements.startName.setAttribute('aria-invalid', start.nameError ? 'true' : 'false');
+    const message = start.message;
+    elements.startMessageText.textContent = message ? message.text : '';
+    elements.startMessage.classList.toggle('hidden', !message || !message.text);
+    elements.startMessage.classList.toggle('running', !!message && message.tone === 'progress');
+    elements.startMessage.classList.toggle('error', !!message && message.tone === 'error');
+    // 잠겨 있어도 누를 수는 있다. 누르면 왜 못 보내는지 보인다.
+    const locked = !start.lock || !start.lock.canSend;
+    elements.startSend.classList.toggle('locked', locked);
+    elements.startSend.setAttribute('aria-disabled', locked ? 'true' : 'false');
+    elements.startSend.disabled = busy || policyBlocked('start', elements.startInput.value.trim());
+    elements.startInput.disabled = busy;
+    const picked = start.choices.find((choice) => choice.value && choice.value === elements.startAgent.value);
+    elements.startInput.placeholder = picked ? `${picked.label}에게 메시지 보내기` : '메시지 보내기';
+    if (fresh) window.setTimeout(() => (creating ? elements.startName : elements.startInput).focus(), 0);
+  }
+
+  function startSend() {
+    if (state.start?.busy) return;
+    if (policyBlocked('start', elements.startInput.value.trim())) return;
+    post('startSend', {
+      text: elements.startInput.value.trim(),
+      agentId: elements.startAgent.value,
+      name: elements.startName.value,
+      provider: elements.startProvider.value,
+      model: elements.startModel.value,
+      settings: collectSettings(),
+    });
   }
 
   function renderChat() {
     showScreen('chat');
     const agent = state.agent;
-    const canonical = state.canonical?.active;
+    const canonical = !!state.canonical?.active;
     if (!agent && !canonical) {
-      post('showAgents');
+      post('showConversations');
       return;
     }
+    const readOnly = !canonical && !!state.readOnly;
     const wasNearBottom = elements.messages.scrollHeight - elements.messages.scrollTop - elements.messages.clientHeight < 100;
     const agentKey = canonical ? state.canonical.workflowId : agent.workflowId;
     const agentChanged = previousAgentId !== agentKey;
     previousAgentId = agentKey;
-    elements.agentName.textContent = canonical ? state.canonical.title || '현재 공유 대화' : agent.workflowName;
+    elements.agentName.textContent = canonical ? state.canonical.title || '현재 공유 대화' : agent.workflowName || DELETED_AGENT_LABEL;
     // 설명이 없으면 그 자리를 비운다. 헤더는 아이디와 한 줄을 나눠 쓰므로,
     // '없습니다' 를 채워 넣으면 진짜 정보가 밀린다.
     elements.agentDescription.textContent = canonical ? '다른 지원 클라이언트와 같은 대화를 봅니다.' : (agent.description || '').trim();
-    elements.agentScope.textContent = canonical ? 'Canonical 공유 대화' : agent.isShared ? '공유 Agent' : '개인 Agent';
+    elements.agentScope.textContent = canonical ? 'Canonical 공유 대화' : readOnly ? DELETED_AGENT_LABEL : agent.isShared ? '공유 Agent' : '개인 Agent';
+    elements.agentScope.classList.toggle('deleted', readOnly);
     elements.agentStatus.textContent = canonical ? canonicalStatusLabel(state.canonical.sessionStatus) : agent.isDeployed ? '배포됨' : '초안';
     elements.agentStatus.classList.toggle('deployed', canonical ? state.canonical.sessionStatus === 'connected' : !!agent.isDeployed);
+    elements.agentStatus.classList.toggle('hidden', readOnly);
+    elements.agentFolders.classList.toggle('hidden', canonical || readOnly);
+    const title = canonical ? '' : state.conversationTitle || '';
+    elements.chatTitle.textContent = title;
+    elements.chatTitle.title = title;
+    elements.chatTitle.classList.toggle('hidden', !title);
+    elements.agentId.classList.toggle('hidden', !!title);
+    elements.agentDescription.classList.toggle('hidden', !!title);
+    const folders = state.workspaceFolders || [];
+    elements.agentFolders.textContent = folders.length
+      ? `폴더 ${folders.map(folderName).join(', ')}`
+      : '폴더 없음';
+    elements.agentFolders.title = folders.length
+      ? `Agent가 이 폴더 안에서 파일과 터미널을 사용합니다.\n${folders.join('\n')}`
+      : '작업 영역에 폴더를 열면 그 폴더에서 파일과 터미널을 사용합니다.';
     elements.agentId.textContent = canonical ? state.canonical.workflowId || '' : agent.workflowId;
     elements.agentId.title = canonical ? state.canonical.workflowId || '' : agent.workflowId;
     elements.messages.replaceChildren();
@@ -805,19 +1541,23 @@
     elements.statusText.textContent = state.status || '';
     elements.status.classList.toggle('hidden', !state.status);
     elements.status.classList.toggle('running', canonical ? ['sending', 'stopping'].includes(state.canonical.turn?.status) : !!state.running);
-    elements.input.disabled = canonical ? !state.canonical.turn?.canSubmit : !!state.running;
+    elements.input.disabled = canonical ? !state.canonical.turn?.canSubmit : !!state.running || readOnly;
     elements.input.placeholder = canonical ? '현재 공유 대화에 메시지 보내기' : `${agent.workflowName}에게 메시지 보내기`;
     const canonicalAttachments = state.canonical?.attachments || { items: [], busy: false };
     const canonicalAttachmentsReady = !canonicalAttachments.busy
       && (canonicalAttachments.items || []).every((item) => item.status === 'ready');
-    elements.send.disabled = canonical ? !state.canonical.turn?.canSubmit || !canonicalAttachmentsReady : !!state.running;
+    elements.send.disabled = canonical
+      ? !state.canonical.turn?.canSubmit || !canonicalAttachmentsReady
+      : !!state.running || readOnly || policyBlocked('chat', elements.input.value.trim());
     elements.attach.disabled = canonical ? !state.canonical.turn?.canSubmit || !!canonicalAttachments.busy : !!state.running;
     elements.attach.classList.toggle('hidden', false);
     elements.attach.textContent = canonical ? (canonicalAttachments.busy ? '첨부 처리 중…' : '📎 파일 선택') : '📎 첨부';
+    renderModel();
+    renderThinking();
     elements.canonicalRetry.classList.toggle('hidden', !canonical || !state.canonical.turn?.canRetry);
     renderAttachments();
-    elements.changeAgent.disabled = canonical ? false : !!state.running;
-    elements.changeAgent.textContent = canonical ? '세션 선택' : 'Agent 변경';
+    elements.chatComposer.classList.toggle('hidden', readOnly);
+    elements.chatReadonly.classList.toggle('hidden', !readOnly);
     const catalog = state.canonical?.catalog;
     const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
     const catalogReady = !!catalog?.scope && !!catalog?.focus;
@@ -854,7 +1594,45 @@
     elements.canonicalTitle.disabled = sessionWriteDisabled;
     elements.cancel.classList.toggle('hidden', canonical ? !state.canonical.turn?.canStop : !state.running);
     if (wasNearBottom) elements.messages.scrollTop = elements.messages.scrollHeight;
-    if (agentChanged && !state.running) window.setTimeout(() => elements.input.focus(), 0);
+    if (agentChanged && !state.running && !readOnly) window.setTimeout(() => elements.input.focus(), 0);
+  }
+
+  /** 입력창 아래 모델 칩 — "제공자: 모델". 누르면 VS Code 빠른 선택으로 고른다. */
+  function renderModel() {
+    const model = state.model;
+    elements.modelChip.classList.toggle('hidden', !model);
+    if (!model) return;
+    if (!elements.modelIcon.firstChild) elements.modelIcon.append(icon('model', 12));
+    elements.modelLabel.textContent = model.label;
+    elements.modelChevron.replaceChildren(...(model.locked ? [] : [icon('chevron', 11)]));
+    elements.modelChip.disabled = !!model.locked || !!model.saving;
+    elements.modelChip.classList.toggle('locked', !!model.locked);
+    elements.modelChip.classList.toggle('saving', !!model.saving);
+    elements.modelChip.setAttribute('aria-label', `모델: ${model.label}`);
+    elements.modelChip.dataset.tip = model.locked
+      ? '고정된 에이전트는 모델을 바꿀 수 없습니다'
+      : '이 대화의 모델, 다음 답변부터 적용됩니다';
+  }
+
+  /** 모델 칩 오른쪽 생각 칩 — "생각: 높게". 조절할 수 없는 모델은 눌리지 않는 "생각 조절 불가". */
+  function renderThinking() {
+    const thinking = state.thinking;
+    elements.thinkingChip.classList.toggle('hidden', !thinking);
+    if (!thinking) return;
+    if (!elements.thinkingIcon.firstChild) elements.thinkingIcon.append(icon('thinking', 12));
+    elements.thinkingLabel.textContent = thinking.label;
+    const fixed = !thinking.supported || !!thinking.locked;
+    elements.thinkingChevron.replaceChildren(...(fixed ? [] : [icon('chevron', 11)]));
+    elements.thinkingChip.disabled = fixed || !!thinking.saving;
+    elements.thinkingChip.classList.toggle('locked', !!thinking.locked);
+    elements.thinkingChip.classList.toggle('unsupported', !thinking.supported);
+    elements.thinkingChip.classList.toggle('saving', !!thinking.saving);
+    elements.thinkingChip.setAttribute('aria-label', thinking.label);
+    elements.thinkingChip.dataset.tip = !thinking.supported
+      ? '이 모델은 생각을 조절할 수 없습니다'
+      : thinking.locked
+        ? '고정된 에이전트는 생각 설정을 바꿀 수 없습니다'
+        : '이 대화의 생각 정도, 다음 답변부터 적용됩니다';
   }
 
   function roleChip(label) {
@@ -936,52 +1714,42 @@
     const localConfig = localTools?.config;
     const bridge = localTools?.bridge;
     if (!localToolsDirty) {
-      elements.localToolsEnabled.checked = !!localConfig?.enabled;
-      elements.localToolsShell.checked = !!localConfig?.shellEnabled;
-      elements.localToolsCwd.value = localConfig?.cwd || state.workspaceRoot || '';
-      elements.localToolsRoots.value = (localConfig?.allowedRoots?.length
-        ? localConfig.allowedRoots
-        : state.workspaceRoot
-          ? [state.workspaceRoot]
-          : []
-      ).join('\n');
-      elements.localToolsTimeout.value = String(localConfig?.timeoutMs || 120000);
-      elements.localToolsBlocked.value = (localConfig?.blockedCommands || []).join(', ');
       elements.localToolsDangerous.checked = !!localConfig?.allowDangerous;
     }
+    const folders = state.workspaceFolders || [];
+    elements.localToolsFolders.replaceChildren();
+    for (const folder of folders) {
+      const item = document.createElement('li');
+      const name = document.createElement('b');
+      name.textContent = folderName(folder);
+      const path = document.createElement('code');
+      path.textContent = folder;
+      item.append(name, path);
+      elements.localToolsFolders.append(item);
+    }
+    elements.localToolsFolders.classList.toggle('hidden', !folders.length);
+    elements.localToolsDescription.textContent = folders.length
+      ? `대화를 시작하면 이 ${folders.length}개 폴더가 그 대화의 작업 공간이 됩니다.`
+      : '작업 영역에 폴더를 열면 여기 표시됩니다.';
     const localStateLabel = !localTools
       ? '확인 필요'
-      : !localConfig.enabled
-        ? '꺼짐'
-        : bridge.catalogSynced
-          ? '연결됨'
-          : bridge.error
-            ? '확인 필요'
-            : '연결 중';
+      : bridge.catalogSynced
+        ? '연결됨'
+        : bridge.error
+          ? '확인 필요'
+          : '연결 중';
     elements.localToolsState.textContent = localStateLabel;
-    elements.localToolsState.classList.toggle('connected', !!localConfig?.enabled && !!bridge?.catalogSynced);
-    elements.localToolsState.classList.toggle('warning', !!localConfig?.enabled && !!bridge?.error);
-    elements.localToolsDescription.textContent = localConfig?.enabled
-      ? `Shell (${localConfig.shellEnabled ? '전체 PC' : '허용 작업 공간'}), ReadFile, WriteFile, ListDir, Search, Open · ${bridge?.advertisedTools || localTools.tools.length}개 광고`
-      : '허용 작업 공간의 셸·파일 읽기·쓰기, 목록, 검색, 열기 도구를 제공합니다.';
-    elements.localToolsMessage.textContent = state.localToolsMessage || (!localConfig?.enabled
-      ? '로컬 도구는 기본적으로 꺼져 있습니다.'
+    elements.localToolsState.classList.toggle('connected', !!bridge?.catalogSynced);
+    elements.localToolsState.classList.toggle('warning', !!bridge?.error);
+    elements.localToolsMessage.textContent = state.localToolsMessage || (!localTools
+      ? '이 PC 연결 상태를 확인하고 있습니다.'
       : bridge?.catalogSynced
-        ? `${bridge.serverTools || localTools.tools.length}개 도구가 XGEN 서버에 연결되었습니다.`
+        ? '이 PC가 XGEN 서버에 연결되었습니다.'
         : bridge?.error
           ? `연결 확인 필요 · ${bridge.error}`
-        : '저장된 설정으로 브리지 연결을 준비하고 있습니다.');
+          : '이 PC를 XGEN 서버에 연결하는 중입니다.');
     const localToolsUnavailable = !localTools || !!state.localToolsSaving;
-    for (const control of [
-      elements.localToolsEnabled,
-      elements.localToolsShell,
-      elements.localToolsCwd,
-      elements.localToolsRoots,
-      elements.localToolsTimeout,
-      elements.localToolsBlocked,
-      elements.localToolsDangerous,
-    ]) control.disabled = localToolsUnavailable;
-    elements.useWorkspaceRoot.disabled = localToolsUnavailable || !state.workspaceRoot;
+    elements.localToolsDangerous.disabled = localToolsUnavailable;
     elements.saveLocalTools.disabled = localToolsUnavailable || !localToolsDirty;
     elements.saveLocalTools.textContent = state.localToolsSaving ? '저장 중...' : '설정 저장';
     elements.engineDescription.textContent = state.error
@@ -1019,37 +1787,34 @@
     elements.canonicalMode.textContent = canonical.active ? '공유 대화 나가기' : '공유 대화';
     if (state.screen === 'loading') showScreen('loading');
     else if (state.screen === 'setup' || state.screen === 'login' || state.screen === 'offline' || state.screen === 'error') renderGate();
-    else if (state.screen === 'agents') renderAgents();
+    else if (state.screen === 'conversations') renderConversations();
+    else if (state.screen === 'start') renderStart();
     else if (state.screen === 'chat') renderChat();
     else if (state.screen === 'settings') renderSettings();
   }
 
   elements.gatePrimary.addEventListener('click', () => post(gateAction));
   elements.gateSettings.addEventListener('click', () => post('showSettings'));
-  elements.agentsRefresh.addEventListener('click', () => post('refresh'));
-  elements.agentsSettings.addEventListener('click', () => post('showSettings'));
-  elements.agentSearch.addEventListener('input', () => {
-    persistUi();
-    renderAgentList();
+  elements.listRefresh.addEventListener('click', () => post('refresh'));
+  elements.listSettings.addEventListener('click', () => post('showSettings'));
+  elements.listNew.addEventListener('click', () => post('newChat'));
+  // 채팅 검색: 이 화면 위에 검색 창이 뜬다(제목·에이전트 이름·대화 내용).
+  elements.listSearch.append(icon('search', 14));
+  elements.listSearch.addEventListener('click', openSearch);
+  // ⋯ 메뉴: [채팅 기록 관리] 는 편집기 자리의 탭, [에이전트가 사라진 채팅 제거 (N)] 는 확인 뒤 정리.
+  elements.listMenu.append(icon('more', 14));
+  elements.listMenu.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setListMenu(elements.listMenuPanel.classList.contains('hidden'));
   });
-  elements.agentSearch.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      elements.agentSearch.value = '';
-      persistUi();
-      renderAgentList();
-    }
+  elements.listManage.addEventListener('click', () => {
+    setListMenu(false);
+    post('manageConversations');
   });
-  elements.agentFilters.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-filter]');
-    if (!button) return;
-    agentFilter = button.dataset.filter;
-    persistUi();
-    for (const item of elements.agentFilters.querySelectorAll('[data-filter]')) item.classList.toggle('active', item === button);
-    renderAgentList();
+  elements.listPurge.addEventListener('click', () => {
+    setListMenu(false);
+    post('purgeDeletedAgents');
   });
-  elements.changeAgent.addEventListener('click', () => post(state.canonical?.active ? 'canonicalControls' : 'showAgents'));
-  elements.chatSettings.addEventListener('click', () => post('showSettings'));
-  elements.send.addEventListener('click', send);
   elements.canonicalMode.addEventListener('click', () => post('canonicalMode'));
   elements.canonicalRetry.addEventListener('click', () => post('canonicalRetry'));
   elements.canonicalRefresh.addEventListener('click', () => post('canonicalCatalogRefresh'));
@@ -1074,18 +1839,72 @@
     elements.canonicalCreate.disabled = blocked || !elements.canonicalWorkflow.value;
   });
   elements.attach.addEventListener('click', () => post(state.canonical?.active ? 'canonicalPickAttachments' : 'attach'));
+  // 메뉴 바깥을 누르거나 Esc 면 닫는다.
+  document.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest('.list-menu-wrap')) setListMenu(false);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setListMenu(false);
+  });
+  for (const section of SECTIONS) {
+    section.caret.append(icon('chevron', 11));
+    section.toggle.addEventListener('click', () => toggleSection(section.name));
+  }
+  renderSections();
+  elements.listMore.addEventListener('click', () => post('loadMoreConversations'));
+  elements.listLess.addEventListener('click', () => post('lessConversations'));
+  elements.agentMore.addEventListener('click', () => post('loadMoreAgents'));
+  elements.agentLess.addEventListener('click', () => post('lessAgents'));
+  elements.agentViewBack.addEventListener('click', () => post('closeAgent'));
+  elements.agentViewMore.addEventListener('click', () => {
+    moreRequested = true;
+    post('loadMoreAgentConversations');
+  });
+  elements.listContent.addEventListener('scroll', maybeLoadMore, { passive: true });
+  elements.startBack.addEventListener('click', () => post('showConversations'));
+  elements.startSettings.addEventListener('click', () => post('showSettings'));
+  elements.startAgent.addEventListener('change', () => {
+    post('startAgent', { workflowId: elements.startAgent.value });
+    renderStart();
+  });
+  elements.startName.addEventListener('input', () => post('startName', { name: elements.startName.value }));
+  elements.startName.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing || composing) return;
+    event.preventDefault();
+    elements.startInput.focus();
+  });
+  elements.startProvider.addEventListener('change', () => {
+    fillModels(elements.startProvider.value);
+    elements.startModel.disabled = !elements.startModel.options.length;
+  });
+  elements.startSend.addEventListener('click', startSend);
+  for (const field of [elements.input, elements.startInput, elements.startName]) {
+    field.addEventListener('compositionstart', () => {
+      composing = true;
+    });
+    field.addEventListener('compositionend', () => {
+      composing = false;
+    });
+  }
+  elements.startInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || composing) return;
+    event.preventDefault();
+    startSend();
+  });
+  elements.chatBack.addEventListener('click', () => post(state.canonical?.active ? 'canonicalControls' : 'showConversations'));
+  elements.chatNew.addEventListener('click', () => post(state.canonical?.active ? 'canonicalControls' : 'newChat'));
+  elements.chatSettings.addEventListener('click', () => post('showSettings'));
+  elements.send.addEventListener('click', send);
+  elements.modelChip.addEventListener('click', () => post('pickModel'));
+  elements.thinkingChip.addEventListener('click', () => post('pickThinking'));
   elements.cancel.addEventListener('click', () => post('cancel'));
-  elements.input.addEventListener('compositionstart', () => {
-    composing = true;
-  });
-  elements.input.addEventListener('compositionend', () => {
-    composing = false;
-  });
   elements.input.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing || composing) return;
     event.preventDefault();
     send();
   });
+  elements.input.addEventListener('input', () => schedulePolicyCheck('chat'));
+  elements.startInput.addEventListener('input', () => schedulePolicyCheck('start'));
   elements.settingsBack.addEventListener('click', () => post('back'));
   elements.settingsRefresh.addEventListener('click', () => post('refresh'));
   elements.accountAction.addEventListener('click', () =>
@@ -1096,47 +1915,36 @@
     if (profile) post('editProfile', { profile: profile.name });
   });
   elements.addProfile.addEventListener('click', () => post('setupProfile'));
-  for (const control of [
-    elements.localToolsEnabled,
-    elements.localToolsShell,
-    elements.localToolsCwd,
-    elements.localToolsRoots,
-    elements.localToolsTimeout,
-    elements.localToolsBlocked,
-    elements.localToolsDangerous,
-  ]) {
-    control.addEventListener('input', () => {
-      localToolsDirty = true;
-      elements.saveLocalTools.disabled = false;
-    });
-  }
-  elements.useWorkspaceRoot.addEventListener('click', () => {
-    if (!state.workspaceRoot) return;
-    elements.localToolsCwd.value = state.workspaceRoot;
-    elements.localToolsRoots.value = state.workspaceRoot;
+  elements.localToolsDangerous.addEventListener('input', () => {
     localToolsDirty = true;
     elements.saveLocalTools.disabled = false;
   });
   elements.saveLocalTools.addEventListener('click', () => {
-    const splitList = (value) => [...new Set(value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean))];
     post('configureLocalTools', {
-      config: {
-        enabled: elements.localToolsEnabled.checked,
-        shellEnabled: elements.localToolsShell.checked,
-        cwd: elements.localToolsCwd.value.trim(),
-        timeoutMs: Number(elements.localToolsTimeout.value),
-        allowedRoots: splitList(elements.localToolsRoots.value),
-        blockedCommands: splitList(elements.localToolsBlocked.value),
-        allowDangerous: elements.localToolsDangerous.checked,
-      },
+      config: { allowDangerous: elements.localToolsDangerous.checked },
     });
   });
   elements.showOutput.addEventListener('click', () => post('showOutput'));
   elements.extensionSettings.addEventListener('click', () => post('openExtensionSettings'));
   elements.restartEngine.addEventListener('click', () => post('restartEngine'));
   window.addEventListener('message', (event) => {
+    if (event.data?.type === 'searchResult') {
+      onSearchResult(event.data);
+      return;
+    }
+    if (event.data?.type === 'inputCheck' || event.data?.type === 'inputBlocked') {
+      const scope = event.data.scope === 'start' ? 'start' : 'chat';
+      const input = policyInput(scope);
+      // 막혀 돌아온 글은 비운 입력창에 되돌린다(고쳐 보내게).
+      if (event.data.type === 'inputBlocked' && !input.value.trim()) input.value = event.data.text || '';
+      policy[scope] = { text: event.data.text || '', blocked: !!event.data.blocked || event.data.type === 'inputBlocked', notice: event.data.notice || null };
+      renderPolicy(scope);
+      return;
+    }
     if (event.data?.type !== 'state') return;
     state = event.data.state;
+    // 목록 화면을 떠나면 검색 창도 닫는다.
+    if (searchBox && state.screen !== 'conversations') closeSearch();
     render();
   });
 

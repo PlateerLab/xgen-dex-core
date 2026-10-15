@@ -25,7 +25,19 @@ import type {
   McpBridgeStatus,
   ProfileSummary,
   ToolEvent,
+  NativeSessionSummary,
+  NativeEnrollmentResult,
+  NativeAgentFocusUpdate,
+  NativeAgentConversationUpdate,
+  NativeConversationView,
 } from '@dex/engine';
+import type { SubmittedAgentTurn, StoppedAgentTurn } from '@dex/protocol/agent-session-mutation';
+import type { AgentFocus, parseAgentSessionList } from '@dex/protocol/agent-session';
+import type { CreatedAgentSession } from '@dex/protocol/agent-session-lifecycle';
+import type { NativeAttachmentDraftView } from './native-attachment-drafts';
+
+export type { NativeAttachmentDraftView, NativeAttachmentDraftStatus, NativeAttachmentSelectionLimits,
+  TrustedNativeAttachment } from './native-attachment-drafts';
 
 export type {
   Agent,
@@ -43,6 +55,9 @@ export type {
   McpBridgeStatus,
   ProfileSummary,
   ToolEvent,
+  NativeSessionSummary,
+  NativeEnrollmentResult,
+  NativeConversationView,
 };
 
 /** RPC 배선의 버전. 서버와 클라이언트가 initialize 에서 맞춰 본다. */
@@ -70,6 +85,7 @@ export interface InitializeResult {
     localFolders?: boolean;
     /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
     ssh?: boolean;
+    nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software'; canonicalConversation?: true; canonicalLive?: true; canonicalTurns?: true; canonicalSessions?: true; canonicalAttachments?: true };
     /** conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기(다음 답변부터). */
     conversationModel?: boolean;
     /** conversation/thinking/set(·/reset) — 대화 도중 생각(추론) 값 바꾸기(지금 모델이 받는 값만). */
@@ -88,6 +104,33 @@ export interface InitializeResult {
     chatInputCheck?: boolean;
   };
 }
+
+export interface NativeRpcResult {
+  focus?: AgentFocus;
+  sessions?: ReturnType<typeof parseAgentSessionList>;
+  created?: CreatedAgentSession;
+  agent_session_id?: string;
+  mutation?: SubmittedAgentTurn | StoppedAgentTurn;
+  workflow_id?: string;
+  attachments?: readonly NativeAttachmentDraftView[];
+  platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; user_id: string;
+  result?: NativeSessionSummary | NativeEnrollmentResult;
+  watch_id?: string;
+  view?: 'conversation';
+  conversation?: NativeConversationView;
+  has_more?: boolean;
+  server_revoked?: false;
+}
+export interface NativeFocusNotification {
+  platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; watch_id: string;
+  update: NativeAgentFocusUpdate;
+}
+export interface NativeConversationNotification {
+  platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; watch_id: string;
+  view: 'conversation';
+  update: NativeAgentConversationUpdate;
+}
+export type NativeSessionNotification = NativeFocusNotification | NativeConversationNotification;
 
 export interface ChatStartResult {
   streamId: string;

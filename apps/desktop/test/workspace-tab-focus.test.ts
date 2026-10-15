@@ -8,11 +8,12 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { layoutWithLiveSessions, layoutWithActiveSession } from '../src/renderer/src/views/Workspace';
+import { layoutWithLiveSessions, layoutWithActiveSession, layoutForOwner, restorableChats } from '../src/renderer/src/views/Workspace';
 import {
   addWorkspaceTab,
   findTab,
   newWorkspaceLayout,
+  openCanonicalChat,
   selectWorkspaceTab,
   type WorkspaceTab,
 } from '../src/renderer/src/views/workspace-layout';
@@ -52,6 +53,14 @@ function session(partial: Partial<SessionState> & { key: string }): SessionState
 function settingsTab(): WorkspaceTab {
   return { id: 'settings', kind: 'settings' };
 }
+
+test('Canonical pane survives legacy emissions, is never resumed as interactionId and disappears on account change', () => {
+  const original = openCanonicalChat(newWorkspaceLayout());
+  const next = layoutWithLiveSessions(original, []);
+  assert.equal(next, original);
+  assert.deepEqual(restorableChats(next), []);
+  assert.equal(findTab(layoutForOwner(next, '7', '8'), 'canonical-chat'), null);
+});
 
 test('layoutWithLiveSessions: 새 살아있는 세션은 탭을 만들고 포커스한다', () => {
   const layout = newWorkspaceLayout();

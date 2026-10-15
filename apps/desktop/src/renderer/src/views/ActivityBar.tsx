@@ -35,6 +35,7 @@ import {
   PanelRightIcon,
   SearchIcon,
   SettingsIcon,
+  ShareIcon,
   TeamsIcon,
   TerminalIcon,
 } from '../brand/icons';
@@ -101,6 +102,8 @@ export const ActivityBar: React.FC<{
   view: SideView;
   collapsed: boolean;
   onPressView: (v: SideView) => void;
+  onOpenSharedChat?: () => void;
+  sharedChatActive?: boolean;
   /** Teams 안 읽음 총합 — 0 이면 배지를 그리지 않는다. */
   teamsUnread: number;
   /** 지금 보는 탭이 IDE 로 보이면 그 IDE — 있을 때만 IDE 묶음을 그린다. */
@@ -118,6 +121,8 @@ export const ActivityBar: React.FC<{
   view,
   collapsed,
   onPressView,
+  onOpenSharedChat,
+  sharedChatActive,
   teamsUnread,
   ide,
   appsActive,
@@ -137,6 +142,10 @@ export const ActivityBar: React.FC<{
       </div>
 
       <div className="ab-top">
+        {onOpenSharedChat && <button id="canonical-chat-open" className={`ab-btn ${sharedChatActive ? 'active' : ''}`}
+          title="공유 대화" aria-label="공유 대화 열기" onClick={onOpenSharedChat}>
+          {sharedChatActive && <span className="ab-ind" />}<ShareIcon size={22} />
+        </button>}
         {VIEWS.map((v) => {
           const active = view === v.id && !collapsed;
           const Icon = v.icon;

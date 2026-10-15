@@ -620,6 +620,7 @@ test('에이전트가 지워진 대화는 지난 대화만 보이고 보낼 수 
     await waitForSettled(view.lastFrame);
     view.stdin.write('\r');
     const frame = await waitForFrame(view.lastFrame, (value) => value.includes('지난 답'));
+    assert.match(frame, /지난 질문/);
     assert.ok(frame.includes(DELETED_AGENT_NOTICE), '지워진 에이전트라고 알린다');
     assert.doesNotMatch(frame, /메시지를 입력하세요/, '입력창이 없다');
     view.stdin.write('hello');

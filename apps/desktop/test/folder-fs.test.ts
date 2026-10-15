@@ -1,14 +1,14 @@
 // IDE 탐색기 [연결된 폴더] 의 디스크 작업 — 폴더 밖으로 나가지 않고, 연 판을 조건으로 쓴다.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FolderFsError, folderFsCall, listFolder, readFolderFile, runFolderOp, saveFolderFile } from '../src/main/folder-fs'
 
 async function project() {
-  const root = await mkdtemp(join(tmpdir(), 'folder-fs-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'folder-fs-')))
   await mkdir(join(root, 'src'))
   await mkdir(join(root, '.git'))
   await writeFile(join(root, 'src', 'main.py'), 'print(1)')

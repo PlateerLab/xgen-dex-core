@@ -10,6 +10,9 @@ import type {
   ResolvedChatInput,
 } from '@dex/engine';
 import { DEX_PROTOCOL_VERSION } from './wire';
+import { NativeSessionRpcHost, type NativeSessionHostOptions } from './native-session-host';
+import type { ConfigStore } from '@dex/engine';
+import { NativeAttachmentPickerBroker } from './native-attachment-picker-server';
 
 type RpcId = string | number | null;
 
@@ -93,6 +96,9 @@ export interface RpcServerOptions {
   output?: Writable;
   log?: (message: string) => void;
   version?: string;
+  nativeSessions?: NativeSessionHostOptions & { configs: ConfigStore };
+  /** Opt-in private extension-host reverse chooser. Native params cannot contain paths. */
+  nativeAttachmentPicker?: boolean;
 }
 
 interface ActiveChat {
@@ -115,6 +121,9 @@ export class DexRpcServer {
   private readline: ReadlineInterface | null = null;
   private initialized = false;
   private closed = false;
+  private readonly nativeSessions?: NativeSessionRpcHost;
+  private readonly attachmentPicker?: NativeAttachmentPickerBroker;
+  private readonly trustedAttachmentPicker: boolean;
   private readonly removeLocalToolsListener: () => void;
 
   constructor(
@@ -125,6 +134,15 @@ export class DexRpcServer {
     this.output = options.output ?? process.stdout;
     this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.version = options.version ?? '0.1.0';
+    this.trustedAttachmentPicker = Boolean(options.nativeSessions?.attachmentPicker);
+    if (options.nativeSessions && options.nativeAttachmentPicker && !this.trustedAttachmentPicker) {
+      this.attachmentPicker = new NativeAttachmentPickerBroker((frame) => this.write(frame));
+    }
+    if (options.nativeSessions) this.nativeSessions = new NativeSessionRpcHost(options.nativeSessions.configs,
+      (value) => this.notify('view' in value ? 'native/conversation' : 'native/focus', value), {
+        ...options.nativeSessions,
+        ...(this.attachmentPicker ? { attachmentPicker: (signal, limits) => this.attachmentPicker!.pick(signal, limits) } : {}),
+      });
     this.removeLocalToolsListener = engine.onLocalToolsStatus((status) => {
       if (this.initialized && !this.closed) this.notify('localTools/status', status);
     });
@@ -140,6 +158,8 @@ export class DexRpcServer {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.nativeSessions?.close();
+    this.attachmentPicker?.close();
     for (const active of this.activeChats.values()) active.controller.abort();
     this.activeChats.clear();
     this.engine.stopLocalTools();
@@ -162,6 +182,7 @@ export class DexRpcServer {
       this.writeError(null, -32700, 'Parse error');
       return;
     }
+    if (this.attachmentPicker?.receive(value)) return;
     if (!isRequest(value)) {
       this.writeError(null, -32600, 'Invalid Request');
       return;
@@ -190,6 +211,10 @@ export class DexRpcServer {
 
   private async dispatch(method: string, rawParams: unknown): Promise<unknown> {
     const params = objectParams(rawParams);
+    if (method.startsWith('native/')) {
+      if (!this.nativeSessions) throw new DexError('protocol_mismatch', 'VSCode 네이티브 세션을 지원하는 엔진이 필요합니다.');
+      return this.nativeSessions.request(method, params);
+    }
     switch (method) {
       case 'initialize': {
         const requested = params.protocolVersion;
@@ -200,6 +225,11 @@ export class DexRpcServer {
             { supported: DEX_PROTOCOL_VERSION },
           );
         }
+        const client = params.client && typeof params.client === 'object' && !Array.isArray(params.client)
+          ? params.client as Record<string, unknown> : null;
+        const clientCapabilities = client?.capabilities && typeof client.capabilities === 'object' && !Array.isArray(client.capabilities)
+          ? client.capabilities as Record<string, unknown> : null;
+        this.attachmentPicker?.negotiate(clientCapabilities?.nativeAttachmentPicker === true);
         this.initialized = true;
         setImmediate(() => {
           void this.engine.startLocalTools().catch((error: unknown) =>
@@ -220,6 +250,8 @@ export class DexRpcServer {
             // chat/start 의 localFolders — 대화에 이 기기의 폴더를 연결한다.
             localFolders: true,
             ssh: true,
+            ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true,
+              ...(this.trustedAttachmentPicker || this.attachmentPicker?.available ? { canonicalAttachments: true } : {}) } } : {}),
             // conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기.
             conversationModel: true,
             conversationThinking: true,
@@ -240,6 +272,7 @@ export class DexRpcServer {
       }
       case 'shutdown':
       case 'exit':
+        this.nativeSessions?.close();
         this.engine.stopLocalTools();
         this.engine.unwatchConversationList();
         return null;
@@ -248,13 +281,16 @@ export class DexRpcServer {
       case 'profile/list':
         return this.engine.listProfiles();
       case 'profile/set':
+        this.nativeSessions?.cancel();
         return this.engine.setProfile(requiredString(params, 'name'), requiredString(params, 'serverUrl'));
       case 'profile/use': {
+        this.nativeSessions?.cancel();
         const profile = await this.engine.useProfile(requiredString(params, 'name'));
         void this.engine.startLocalTools(profile.name).catch((error: unknown) => this.log(`local tools: ${publicError(error).message}`));
         return profile;
       }
       case 'auth/login': {
+        this.nativeSessions?.cancel();
         const auth = await this.engine.login(
           requiredString(params, 'email'),
           requiredString(params, 'password'),
@@ -266,6 +302,7 @@ export class DexRpcServer {
       case 'auth/status':
         return this.engine.authStatus(optionalString(params, 'profile'));
       case 'auth/logout':
+        this.nativeSessions?.cancel();
         await this.engine.logout(optionalString(params, 'profile'));
         return { ok: true };
       // ── SSH ──

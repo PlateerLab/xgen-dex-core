@@ -18,6 +18,10 @@ import { DexRpcServer } from '@dex/rpc/server';
 import type { LocalToolsStatus } from '@dex/engine';
 import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
 import { bindCliHost } from './dex-host';
+import { runDeviceCommand } from './device-command';
+import { runSessionCommand } from './session-command';
+import { runCanonicalChatCommand } from './canonical-chat-command';
+import { runCanonicalTuiCommand } from './canonical-tui-command';
 import { chatFolders } from './folders';
 
 /**
@@ -37,14 +41,29 @@ const HELP = `XGEN Dex CLI ${VERSION}
 Usage:
   dex                     대화형 터미널 UI
   dex ui                  대화형 터미널 UI
+  dex ui --canonical --user-id <id> [--profile <name>]  공유 대화·세션·턴 TUI
   dex profile set [name] --server <url>
   dex profile use <name>
   dex profile list [--json]
   dex login --email <email> [--profile <name>] [--password-stdin]
   dex status [--profile <name>] [--json]
   dex logout [--profile <name>]
+  dex device register --email <email> [--name <name>] [--profile <name>] [--password-stdin]
+  dex device status --email <email> [--profile <name>] [--password-stdin]
+  dex device approvers --email <email> [--profile <name>] [--password-stdin]
+  dex device request-approval --email <email> --approver <device-id> [--profile <name>] [--password-stdin]
+  dex session login --email <email> [--profile <name>] [--password-stdin]
+  dex session status|refresh|focus|conversation --user-id <id> [--profile <name>] [--json]
+  dex session agent-sessions --user-id <id> [--limit <1..100>] [--before-id <uuid>] [--json]
+  dex session create-agent-session --user-id <id> --workflow-id <id> --expected-version <n> [--title <text>] [--json]
+  dex session switch-agent-focus --user-id <id> (--session-id <uuid>|--clear) --expected-version <n> [--json]
+  dex session watch-focus|watch-conversation|watch-live --user-id <id> [--profile <name>] [--interval-ms <200..60000>] [--jsonl]
+  dex session logout --user-id <id> [--profile <name>] [--password-stdin]
+  dex session forget-local --user-id <id> [--profile <name>] [--json]
   dex agents list [--search <text>] [--owner personal|shared] [--json]
   dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
+  dex chat --canonical --user-id <id> --session-id <uuid> --expected-state-version <n>
+           --idempotency-key <stable-key> [--profile <name>] (--message <text>|--stdin) [--json]
            [--folder <path,...> | --no-folder] [--no-memory-map]
   dex history list [--json]          대화 목록 (마지막으로 말한 순서)
   dex history turns --workflow <id> --interaction <id> [--json]
@@ -61,7 +80,7 @@ Usage:
   dex ssh test <name> [--json]
   dex tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
   dex tool ...                         dex tools ...의 단수형 별칭
-  dex serve --stdio
+  dex serve --stdio [--native-platform vscode]
   dex update [--check]    새 버전 확인 · 설치
 
 Global options:
@@ -81,6 +100,8 @@ Examples:
   dex profile set corp --server https://xgen.example.com
   dex login --email me@corp.com
   dex agents list
+  echo '계속 설명해줘' | dex chat --canonical --user-id 7 --session-id <uuid> \
+    --expected-state-version 3 --idempotency-key terminal-request-1 --stdin
   cd ~/work/my-repo && echo '이 저장소를 설명해줘' | dex chat --agent wf_abc
 `;
 
@@ -352,6 +373,31 @@ async function run(): Promise<void> {
     return;
   }
 
+  // Canonical 제출은 기존 로그인·도구 bridge를 만들기 전에 완전히 분리한다.
+  // 값이 잘못된 --canonical=<value>도 legacy chat으로 떨어지지 않게 presence로 분기한다.
+  if (args.positionals[0] === 'chat' && args.options.has('canonical')) {
+    const controller = new AbortController();
+    const interrupt = () => controller.abort();
+    process.on('SIGINT', interrupt);
+    process.on('SIGTERM', interrupt);
+    try {
+      await runCanonicalChatCommand(args, new FileConfigStore(), { signal: controller.signal });
+    } finally {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+    }
+    return;
+  }
+
+  // Presence dispatch keeps malformed Canonical flags out of the legacy TUI as well.
+  if (args.options.has('canonical')) {
+    await runCanonicalTuiCommand(args, new FileConfigStore(), {
+      terminal: { stdinIsTty: !!stdin.isTTY, stdoutIsTty: !!stdout.isTTY,
+        term: process.env.TERM, ci: process.env.CI },
+    });
+    return;
+  }
+
   // 엔진에 이 호스트를 붙인다 — **엔진을 만들기 전에**. 로컬 도구와 MCP 가 전부
   // 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히 던진다.
   const configStore = new FileConfigStore();
@@ -406,6 +452,17 @@ async function run(): Promise<void> {
         stdout.write(`${profile.current ? '*' : ' '} ${profile.name.padEnd(16)} ${profile.serverUrl}\n`);
       }
     }
+    return;
+  }
+  if (command === 'device' || command === 'session') {
+    const controller = new AbortController();
+    const interrupt = () => controller.abort();
+    process.on('SIGINT', interrupt);
+    try {
+      if (command === 'device') await runDeviceCommand(args, configStore, { signal: controller.signal });
+      else await runSessionCommand(args, configStore, { signal: controller.signal });
+    }
+    finally { process.off('SIGINT', interrupt); }
     return;
   }
   if (command === 'login') {
@@ -596,7 +653,10 @@ async function run(): Promise<void> {
   }
   if (command === 'serve') {
     if (!flag(args, 'stdio')) throw new DexError('usage_error', '현재는 serve --stdio만 지원합니다.');
-    const server = new DexRpcServer(engine, { version: VERSION });
+    const nativePlatform = option(args, 'native-platform');
+    if (nativePlatform !== undefined && nativePlatform !== 'vscode') throw new DexError('usage_error', 'stdio 네이티브 플랫폼은 vscode만 지원합니다.');
+    const server = new DexRpcServer(engine, { version: VERSION,
+      ...(nativePlatform ? { nativeSessions: { configs: configStore }, nativeAttachmentPicker: true } : {}) });
     server.start();
     return;
   }

@@ -33,6 +33,11 @@ import { StatusBar } from 'expo-status-bar';
 import { conversationKey, type Agent, type Conversation } from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
 import { ChatView } from './chat/chat-view';
+import { NativeDeviceKeyCard } from './NativeDeviceKeyCard';
+import { NativeDeviceEnrollmentCard } from './NativeDeviceEnrollmentCard';
+import { NativePlatformSessionCard } from './NativePlatformSessionCard';
+import { NativeAgentFocusCard } from './NativeAgentFocusCard';
+import { NativeAgentConversationCard } from './NativeAgentConversationCard';
 import { newInitialMessage, type InitialMessage } from './chat/initial-message';
 import { ConversationsSection } from './conversations/conversation-list';
 import { StartScreen, type StartPreset } from './conversations/start-screen';
@@ -511,6 +516,7 @@ export default function App(): React.ReactElement {
           </View>
           <View style={[st.section, section !== 'settings' && st.off]}>
             <SettingsSection
+              visible={section === 'settings'}
               client={client}
               bridgeStatus={bridgeStatus}
               toolsEnabled={toolsEnabled}
@@ -731,6 +737,7 @@ function Field({
 // ── 설정 ────────────────────────────────────────────────────────
 
 function SettingsSection({
+  visible,
   client,
   bridgeStatus,
   toolsEnabled,
@@ -740,6 +747,7 @@ function SettingsSection({
   onToggleGroup,
   onLogout,
 }: {
+  visible: boolean;
   client: XgenMobileClient;
   bridgeStatus: BridgeStatus;
   toolsEnabled: boolean;
@@ -762,6 +770,11 @@ function SettingsSection({
 
   return (
     <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 28 }}>
+      <NativeDeviceKeyCard client={client} visible={visible} />
+      <NativeDeviceEnrollmentCard client={client} visible={visible} />
+      <NativePlatformSessionCard client={client} visible={visible} />
+      <NativeAgentFocusCard client={client} visible={visible} />
+      <NativeAgentConversationCard client={client} visible={visible} />
       <View style={st.card}>
         <Text style={st.cardTitle}>모바일 도구</Text>
         <Pressable style={st.checkRow} onPress={() => onToggleTools(!toolsEnabled)}>

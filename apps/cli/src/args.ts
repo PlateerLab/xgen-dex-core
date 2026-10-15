@@ -1,7 +1,9 @@
 import { DexError } from '@dex/engine';
 
 const BOOLEAN_OPTIONS = new Set([
+  'clear',
   'allow-dangerous',
+  'canonical',
   'check',
   'help',
   // 더 이상 쓰지 않는 스위치다. 예전 스크립트가 값 누락 오류로 멈추지 않게 받기만 하고 버린다.

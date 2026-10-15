@@ -47,6 +47,15 @@ export * from './dex-engine';
 export * from './contract';
 export * from './config-store';
 export * from './credential-store';
+export * from './native-device-key-store';
+export * from './native-device-enrollment';
+export * from './native-platform-session';
+export * from './native-attachment-files';
+export * from './native-agent-focus-watch';
+export * from './native-agent-conversation-watch';
+export * from './native-agent-live-watch';
+export * from './native-agent-socket';
+export * from './native-agent-mutation-http';
 export * from './errors';
 export * from './local-tools-config';
 

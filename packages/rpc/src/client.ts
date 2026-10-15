@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import { DEX_PROTOCOL_VERSION, type InitializeResult, type RpcNotification } from './wire';
+import { NativeAttachmentPickerResponder } from './native-attachment-picker-client';
+import type { NativeAttachmentPicker } from './native-attachment-picker-wire';
 
 interface RpcResponse {
   jsonrpc: '2.0';
@@ -31,6 +33,8 @@ export interface DexRpcClientOptions {
   process: RpcProcessSpec;
   clientVersion: string;
   requestTimeoutMs?: number;
+  /** Trusted extension-host chooser; never supplied by a webview or ordinary request. */
+  nativeAttachmentPicker?: NativeAttachmentPicker;
   log?: (message: string) => void;
   spawnProcess?: (
     command: string,
@@ -70,12 +74,14 @@ export class DexRpcClient {
   private startPromise: Promise<InitializeResult> | undefined;
   private initializeResult: InitializeResult | undefined;
   private currentState: RpcClientState = 'stopped';
+  private readonly attachmentPicker: NativeAttachmentPickerResponder;
 
   constructor(private readonly options: DexRpcClientOptions) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.log = options.log ?? (() => undefined);
     this.spawnProcess = options.spawnProcess ?? ((command, args, processOptions) =>
       spawn(command, args, { ...processOptions, stdio: ['pipe', 'pipe', 'pipe'] }));
+    this.attachmentPicker = new NativeAttachmentPickerResponder(options.nativeAttachmentPicker, (frame) => this.write(frame));
   }
 
   get state(): RpcClientState {
@@ -177,9 +183,11 @@ export class DexRpcClient {
     try {
       const initialized = await this.sendRequest<InitializeResult>('initialize', {
         protocolVersion: DEX_PROTOCOL_VERSION,
-        client: { name: 'xgen-dex-vscode', version: this.options.clientVersion },
+        client: { name: 'xgen-dex-vscode', version: this.options.clientVersion,
+          ...(this.options.nativeAttachmentPicker ? { capabilities: { nativeAttachmentPicker: true } } : {}) },
       });
       this.initializeResult = initialized;
+      this.attachmentPicker.negotiate(initialized.capabilities.nativePlatformSession?.canonicalAttachments === true);
       this.setState('ready');
       this.log(`Connected to ${initialized.server.name} ${initialized.server.version}`);
       return initialized;
@@ -190,7 +198,9 @@ export class DexRpcClient {
     }
   }
 
-  private sendRequest<T>(method: string, params: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): Promise<T> {
+  private sendRequest<T>(method: string, params: Record<string, unknown>, timeoutMs =
+    this.options.requestTimeoutMs === undefined && ['native/pick-attachments', 'native/upload-attachment'].includes(method)
+      ? 125_000 : this.requestTimeoutMs): Promise<T> {
     const id = this.nextId;
     this.nextId += 1;
     return new Promise<T>((resolve, reject) => {
@@ -233,6 +243,7 @@ export class DexRpcClient {
     }
     if (!message || typeof message !== 'object' || Array.isArray(message)) return;
     const record = message as Record<string, unknown>;
+    if (this.attachmentPicker.handle(record)) return;
     if (typeof record.method === 'string' && !Object.prototype.hasOwnProperty.call(record, 'id')) {
       const notification = message as RpcNotification;
       for (const listener of this.notificationListeners) listener(notification);
@@ -253,6 +264,7 @@ export class DexRpcClient {
 
   private cleanupProcess(child: ChildProcessWithoutNullStreams, error: Error): void {
     if (this.child !== child) return;
+    this.attachmentPicker.reset();
     this.lineReader?.close();
     this.lineReader = undefined;
     this.child = undefined;

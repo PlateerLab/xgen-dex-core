@@ -2,6 +2,7 @@
 
 export type WorkspaceTabKind =
   | 'chat'
+  | 'canonical-chat'
   | 'browser'
   | 'teams'
   | 'settings'
@@ -84,12 +85,15 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
   if (
     typeof tab.id !== 'string' ||
     // 옛 [아바타 설정] 탭('avatar')은 설정의 [아바타 설정] 탭으로 들어갔다(2026-09-29) — 버린다.
-    !['chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer', 'apps', 'history'].includes(
+    !['chat', 'canonical-chat', 'browser', 'teams', 'settings', 'agent-viewer', 'file-viewer', 'apps', 'history'].includes(
       String(tab.kind),
     )
   ) {
     return null;
   }
+  // Only the pane's position is durable. Account focus, IDs and titles must be
+  // read from the native host again, never restored from local configuration.
+  if (tab.kind === 'canonical-chat') return { id: 'canonical-chat', kind: 'canonical-chat' };
   // AgentViewerSub 전부 — 하나라도 빠지면 그 탭으로 열려 있던 뷰어가 재시작 후
   // 조용히 기본 탭으로 돌아간다. ('basic' 이 실제로 그렇게 빠져 있었다.)
   const viewerSubs: AgentViewerSub[] = [
@@ -203,6 +207,11 @@ export function addWorkspaceTab(
       group.id === target ? { ...group, tabs: [...group.tabs, tab], activeTabId: tab.id } : group,
     ),
   };
+}
+
+/** One account-focus pane across both groups; opening it is a local UI action. */
+export function openCanonicalChat(layout: WorkspaceLayout): WorkspaceLayout {
+  return addWorkspaceTab(layout, layout.focusedGroupId, { id: 'canonical-chat', kind: 'canonical-chat' });
 }
 
 /**

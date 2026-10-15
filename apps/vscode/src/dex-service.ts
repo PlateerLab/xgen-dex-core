@@ -21,6 +21,24 @@ export class DexService implements vscode.Disposable {
       process: this.resolveProcess(),
       clientVersion: String(context.extension.packageJSON.version ?? '0.1.0'),
       log: (message) => this.output.appendLine(message),
+      nativeAttachmentPicker: async (signal, limits) => {
+        if (signal.aborted) throw new DOMException('Attachment selection cancelled', 'AbortError');
+        const selected = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectMany: true,
+          canSelectFolders: false,
+        });
+        if (signal.aborted) throw new DOMException('Attachment selection cancelled', 'AbortError');
+        if (!selected) return Object.freeze([]);
+        if (selected.length > limits.max_files) throw new Error(`파일은 최대 ${limits.max_files}개까지 선택할 수 있습니다.`);
+        const paths = selected.map((uri) => {
+          if (uri.scheme !== 'file' || !uri.fsPath || uri.fsPath.length > 4096) {
+            throw new Error('로컬 파일만 첨부할 수 있습니다.');
+          }
+          return uri.fsPath;
+        });
+        return Object.freeze(paths);
+      },
     });
   }
 
@@ -94,7 +112,7 @@ export class DexService implements vscode.Disposable {
     const configured = this.configuredCliPath();
     let cliPath = configured || this.located?.command || 'dex';
     if (cliPath === 'dex' && this.context.extensionMode === vscode.ExtensionMode.Development) {
-      const developmentCli = path.resolve(this.context.extensionPath, '..', 'dist', 'cli.js');
+      const developmentCli = path.resolve(this.context.extensionPath, '..', 'cli', 'dist', 'cli.js');
       if (fs.existsSync(developmentCli)) cliPath = developmentCli;
     }
     if (cliPath.startsWith('.')) {
@@ -105,13 +123,13 @@ export class DexService implements vscode.Disposable {
     if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
       return {
         command: 'node',
-        args: [cliPath, 'serve', '--stdio'],
+        args: [cliPath, 'serve', '--stdio', '--native-platform', 'vscode'],
         env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
       };
     }
     return {
       command: cliPath,
-      args: ['serve', '--stdio'],
+      args: ['serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
     };
   }

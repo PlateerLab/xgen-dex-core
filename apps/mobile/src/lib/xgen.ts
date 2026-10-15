@@ -13,6 +13,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { XgenClient } from '@dex/protocol';
 import { diagLog, loggingFetch } from './diag';
+import { createSessionStorage } from './session-storage';
+import type { MobileEnrollmentAccount } from './native-device-enrollment';
 
 export interface MobileSession {
   serverUrl: string;
@@ -22,8 +24,10 @@ export interface MobileSession {
   username: string;
 }
 
-const PREF_KEY = 'xgen-session';
 const CRED_KEY = 'xgen-credentials';
+const sessionStorage = createSessionStorage(SecureStore, AsyncStorage);
+let sessionGeneration = 0;
+let nativeAccountGeneration = 0;
 
 export interface SavedCredentials {
   serverUrl: string;
@@ -44,6 +48,8 @@ export function wsBaseOf(serverUrl: string): string {
 export interface XgenMobileClient {
   api: XgenClient;
   session: MobileSession;
+  /** Read-only account authority for native enrollment; invalidated synchronously on logout. */
+  nativeAccount(): MobileEnrollmentAccount | null;
   /** 인증 헤더를 실은 WebSocket 팩토리 — chat-ws/tool-bridge 에 주입한다.
    *  토큰 회전을 따라가도록 매 연결 시점의 세션 토큰을 읽는다. */
   wsFactory: (url: string) => WebSocket;
@@ -72,6 +78,8 @@ type RnWebSocketCtor = new (
 ) => WebSocket;
 
 export function buildClient(session: MobileSession, onAuthFailure?: () => void): XgenMobileClient {
+  const generation = sessionGeneration;
+  const authScope = `mobile-account-${++nativeAccountGeneration}`;
   const api = new XgenClient({
     baseUrl: session.serverUrl,
     accessToken: session.accessToken,
@@ -80,9 +88,13 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
     onAuthFailure,
     // 토큰 회전 시 저장분 갱신 — 다음 WS 연결이 새 토큰 헤더를 집는다.
     onTokensRotated: (accessToken, refreshToken) => {
+      if (generation !== sessionGeneration) return;
       session.accessToken = accessToken;
       if (refreshToken !== undefined) session.refreshToken = refreshToken;
-      void AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
+      void sessionStorage.save(session).catch(() => {
+        diagLog('회전된 세션 토큰의 보안 저장에 실패');
+        onAuthFailure?.();
+      });
     },
   });
   const wsFactory = (url: string): WebSocket => {
@@ -91,7 +103,8 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
   };
-  return { api, session, wsFactory };
+  return { api, session, wsFactory, nativeAccount: () => generation === sessionGeneration
+    ? { origin: session.serverUrl, userId: session.userId, authScope, accessToken: session.accessToken } : null };
 }
 
 export async function login(
@@ -110,24 +123,21 @@ export async function login(
     userId: String(r.userId),
     username: r.username,
   };
-  await AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
+  await sessionStorage.save(session);
   return session;
 }
 
 export async function restoreSession(): Promise<MobileSession | null> {
-  const v = await AsyncStorage.getItem(PREF_KEY).catch(() => null);
-  if (!v) return null;
   try {
-    const session = JSON.parse(v) as MobileSession;
-    if (!session.serverUrl || !session.accessToken) return null;
-    return session;
+    return await sessionStorage.restore();
   } catch {
     return null;
   }
 }
 
 export async function clearSession(): Promise<void> {
-  await AsyncStorage.removeItem(PREF_KEY);
+  sessionGeneration += 1;
+  await sessionStorage.clear();
 }
 
 export function newInteractionId(workflowId: string): string {

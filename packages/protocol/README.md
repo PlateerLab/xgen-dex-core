@@ -26,3 +26,7 @@ client.chat;    // 언제나
 client.ssh;     // 언제나
 client.teams;   // surface: 'desktop' 일 때만 — 아니면 접근 시 명확히 거절
 ```
+
+## Native 기기 인증
+
+`NativePlatformSessionClient`는 HTTPS Gateway의 기기 등록·상태 조회·선택 브라우저 승인 요청·로그인·refresh 회전 계약을 제공한다. 호스트는 검증한 계정의 현재 범위와 토큰, 고정 설치 ID·공개키 및 개인키 서명 공급자를 제공한다. `createNativeDeviceSigner`는 비추출 WebCrypto P-256 키를 사용하는 호스트를 위한 도우미다. 개인키나 회전 토큰의 저장, 앱 로그인 UI 및 DPoP access 공급자는 호스트가 구현한다. 상세 통신 경계와 로컬 Compose 검증 방법은 저장소의 `docs/cross-platform-session-integration.md`를 참고한다.

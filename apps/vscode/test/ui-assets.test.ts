@@ -18,6 +18,13 @@ test('chat webview script is valid, IME-aware, and avoids HTML injection', async
   assert.match(script, /showSettings/);
   assert.match(script, /useProfile/);
   assert.match(script, /configureLocalTools/);
+  assert.match(script, /canonicalMode/);
+  assert.match(script, /canonicalRetry/);
+  assert.match(script, /post\('send', \{ text: raw \}\)/, 'Canonical send must preserve the textarea value exactly');
+  assert.match(script, /new TextEncoder\(\)\.encode\(raw\)\.byteLength > CANONICAL_INPUT_MAX_BYTES/);
+  assert.match(script, /post\('canonicalInputRejected'\)/);
+  assert.ok(script.indexOf("post('canonicalInputRejected')") < script.indexOf("post('send', { text: raw })"),
+    'oversized Canonical input must be rejected before send or textarea clearing');
   // 작업 영역 폴더가 대화의 작업 공간 — 옛 로컬 컨트롤 입력(작업 폴더·허용 범위)은 없다.
   assert.match(script, /localToolsFolders/);
   assert.match(script, /workspaceFolders/);
@@ -54,6 +61,79 @@ test('workspace provider loads authentication, profiles, agents, and local tools
   assert.match(provider, /'localTools\/configure'/);
   assert.match(provider, /'localTools\/start'/);
   assert.match(provider, /screen: this\.screen/);
+});
+
+test('Canonical mode is an explicit native-only composer path with stable controls', async () => {
+  const [provider, script] = await Promise.all([
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'media', 'chat.js'), 'utf8'),
+  ]);
+  for (const id of ['canonical-mode', 'canonical-retry', 'input', 'send', 'cancel']) {
+    assert.match(provider, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(provider, /attachNative\(controller: NativeSessionController\)/);
+  assert.match(provider, /updateNative\(state: NativeSessionViewState\)/);
+  assert.match(provider, /this\.native\?\.submitTurn\(input\)/);
+  assert.match(provider, /catch \{\s*this\.canonicalNotice = '메시지를 보내지 못했습니다\./,
+    'the extension host must handle synchronous Canonical input failures with a static notice');
+  assert.match(provider, /data\.type === 'canonicalInputRejected'/);
+  assert.match(provider, /this\.native\?\.retryTurn\(\)/);
+  assert.match(provider, /this\.native\?\.stopTurn\(\)/);
+  assert.match(provider, /this\.native\?\.pickAttachments\(\)/,
+    'Canonical selection must use the native controller instead of the legacy uploader');
+  assert.match(provider, /첨부 파일을 모두 취소한 뒤 공유 대화를 나가세요/,
+    'Canonical drafts must stay visible until explicitly cleared');
+  assert.match(provider,
+    /messages: this\.canonicalMode \? \(canonicalConversation \? canonicalMessages\(canonicalConversation\) : \[\]\) : this\.messages/,
+    'a missing Canonical snapshot must never reveal the legacy transcript');
+  assert.match(script, /if \(state\.canonical\?\.active\)/);
+  assert.match(script, /elements\.attach\.disabled = canonical/);
+  assert.match(script, /canonical\.identity && canonicalIdentity && canonical\.identity !== canonicalIdentity/);
+  assert.match(script, /canonical\.connectionVersion/);
+  assert.match(script, /legacyDraft = elements\.input\.value/);
+  assert.match(script, /elements\.input\.value = ''/,
+    'scope/session/reset transitions must clear the Canonical textarea');
+  for (const id of ['canonical-session-older', 'canonical-session-refresh', 'canonical-session-page']) {
+    assert.match(provider, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(provider, /data\.type === 'canonicalCatalogOlder'/);
+  assert.match(provider, /loadOlderAgentSessions\(scope\.profile, scope\.user_id\)/);
+  assert.match(script, /post\('canonicalCatalogOlder'\)/);
+  assert.match(script, /catalog\.hasMore/);
+  assert.match(script, /catalog\?\.nextCursor/);
+  assert.match(script, /canonicalPickAttachments/);
+  assert.match(script, /canonicalUploadAttachment/);
+  assert.match(script, /canonicalRecoverAttachment/);
+  assert.match(script, /canonicalCancelAttachment/);
+  assert.match(script, /canonicalAttachmentsReady/);
+  assert.match(script, /item\.filename/);
+  assert.match(script, /item\.media_type/);
+  assert.match(script, /item\.status/);
+  const canonicalAttachmentRenderer = script.slice(script.indexOf('if (state.canonical?.active) {', script.indexOf('function renderAttachments')),
+    script.indexOf('for (const item of state.attachments || [])'));
+  assert.doesNotMatch(canonicalAttachmentRenderer, /item\.sha256|item\.attachment_id|item\.receipt/,
+    'Canonical attachment secrets and receipts must not be rendered');
+});
+
+test('VSCode registers a bounded local-file picker and sends only sanitized Canonical attachment state to the webview', async () => {
+  const [service, provider, fixture] = await Promise.all([
+    readFile(path.join(extensionRoot, 'src', 'dex-service.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'src', 'chat-view-provider.ts'), 'utf8'),
+    readFile(path.join(extensionRoot, 'verify', 'native-turn-webview.cjs'), 'utf8'),
+  ]);
+  assert.match(service, /nativeAttachmentPicker: async \(signal, limits\)/);
+  assert.match(service, /signal\.aborted/);
+  assert.match(service, /uri\.scheme !== 'file'/);
+  assert.match(service, /uri\.fsPath\.length > 4096/);
+  assert.match(service, /selected\.length > limits\.max_files/);
+  assert.doesNotMatch(provider, /items: this\.nativeState\.attachments\.items[,\s]/,
+    'raw attachment drafts must not cross into the webview');
+  assert.match(provider, /selection_id: item\.selection_id/);
+  assert.match(provider, /filename: item\.filename/);
+  assert.doesNotMatch(provider, /sha256: item\.sha256|receipt: item\.receipt|attachment_id: item\.attachment_id/);
+  assert.match(fixture, /verify\/attachment-ui/);
+  assert.match(fixture, /private_values_rendered: false/);
+  assert.match(fixture, /action\.method === 'submit' && action\.text === 'attachment-ui-submit'/);
 });
 
 test('every webview element referenced by the client script exists in the provider markup', async () => {

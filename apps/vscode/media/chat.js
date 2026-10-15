@@ -1,4 +1,5 @@
 (function () {
+  const CANONICAL_INPUT_MAX_BYTES = 262144;
   const vscode = acquireVsCodeApi();
   const byId = (id) => document.getElementById(id);
   // 아이콘은 SVG 로 그린다(글자 기호는 글꼴마다 모양이 달라진다). 문자열 HTML 없이 노드로 만든다.
@@ -135,6 +136,18 @@
     thinkingChevron: byId('thinking-chevron'),
     send: byId('send'),
     cancel: byId('cancel'),
+    canonicalMode: byId('canonical-mode'),
+    canonicalRetry: byId('canonical-retry'),
+    canonicalControls: byId('canonical-session-controls'),
+    canonicalWorkflow: byId('canonical-session-workflow'),
+    canonicalTitle: byId('canonical-session-title'),
+    canonicalCreate: byId('canonical-session-create'),
+    canonicalRefresh: byId('canonical-session-refresh'),
+    canonicalOlder: byId('canonical-session-older'),
+    canonicalPage: byId('canonical-session-page'),
+    canonicalSelect: byId('canonical-session-select'),
+    canonicalSwitch: byId('canonical-session-switch'),
+    canonicalClear: byId('canonical-session-clear'),
     settingsBack: byId('settings-back'),
     settingsRefresh: byId('settings-refresh'),
     accountState: byId('account-state'),
@@ -170,12 +183,18 @@
     refreshing: true,
     readOnly: false,
     localToolsSaving: false,
+    canonical: { active: false, available: false, omittedMessages: 0, hasMore: false, sessionStatus: 'idle',
+      connectionVersion: 0, attachments: { items: [], busy: false } },
   };
   let composing = false;
   let previousAgentId;
   let gateAction = 'refresh';
   let localToolsDirty = false;
   let wasLocalToolsSaving = false;
+  let canonicalActive = false;
+  let canonicalIdentity;
+  let canonicalConnectionVersion = 0;
+  let legacyDraft = '';
 
   function post(type, extra) {
     vscode.postMessage({ type, ...(extra || {}) });
@@ -192,6 +211,14 @@
     } catch {
       return value || '';
     }
+  }
+
+  function canonicalStatusLabel(status) {
+    if (status === 'connected') return '동기화됨';
+    if (status === 'waiting') return '확인 중';
+    if (status === 'reconnecting') return '재연결 중';
+    if (status === 'stopped') return '연결 중단';
+    return '공유 모드';
   }
 
   function showScreen(name) {
@@ -235,7 +262,21 @@
   }
 
   function send() {
-    const text = elements.input.value.trim();
+    const raw = elements.input.value;
+    if (state.canonical?.active) {
+      const attachmentState = state.canonical.attachments || { items: [], busy: false };
+      const attachmentsReady = !attachmentState.busy
+        && (attachmentState.items || []).every((item) => item.status === 'ready');
+      if (!raw.length || !state.canonical.turn?.canSubmit || !attachmentsReady) return;
+      if (new TextEncoder().encode(raw).byteLength > CANONICAL_INPUT_MAX_BYTES) {
+        post('canonicalInputRejected');
+        return;
+      }
+      post('send', { text: raw });
+      elements.input.value = '';
+      return;
+    }
+    const text = raw.trim();
     if ((!text && !(state.attachments || []).length) || state.running || !state.agent || state.readOnly) return;
     if (policyBlocked('chat', text)) return;
     post('send', { text });
@@ -245,6 +286,55 @@
 
   function renderAttachments() {
     elements.attachments.replaceChildren();
+    if (state.canonical?.active) {
+      const attachmentState = state.canonical.attachments || { items: [], busy: false };
+      const actionsDisabled = !!attachmentState.busy || !state.canonical.turn?.canSubmit;
+      const statusLabel = { selected: '선택됨', reserved: '업로드 준비됨', uncertain: '확인 필요', ready: '준비 완료' };
+      for (const item of attachmentState.items || []) {
+        const row = document.createElement('div');
+        row.className = `canonical-attachment-row status-${item.status}`;
+        const copy = document.createElement('div');
+        copy.className = 'canonical-attachment-copy';
+        const name = document.createElement('b');
+        name.textContent = item.filename;
+        const metadata = document.createElement('span');
+        metadata.textContent = `${formatBytes(item.size_bytes)} · ${item.media_type} · ${statusLabel[item.status] || '확인 필요'}`;
+        copy.append(name, metadata);
+        const actions = document.createElement('div');
+        actions.className = 'canonical-attachment-actions';
+        if (item.status === 'selected' || item.status === 'reserved') {
+          const upload = document.createElement('button');
+          upload.type = 'button'; upload.className = 'secondary-button compact'; upload.textContent = '업로드';
+          upload.disabled = actionsDisabled;
+          upload.addEventListener('click', () => post('canonicalUploadAttachment', { selectionId: item.selection_id }));
+          actions.append(upload);
+        } else if (item.status === 'uncertain') {
+          const recover = document.createElement('button');
+          recover.type = 'button'; recover.className = 'secondary-button compact'; recover.textContent = '상태 복구';
+          recover.disabled = actionsDisabled;
+          recover.addEventListener('click', () => post('canonicalRecoverAttachment', { selectionId: item.selection_id }));
+          actions.append(recover);
+        }
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.className = 'secondary-button compact'; cancel.textContent = '취소';
+        cancel.disabled = actionsDisabled;
+        cancel.addEventListener('click', () => post('canonicalCancelAttachment', { selectionId: item.selection_id }));
+        actions.append(cancel); row.append(copy, actions); elements.attachments.append(row);
+      }
+      if ((attachmentState.items || []).length > 1) {
+        const discard = document.createElement('button');
+        discard.type = 'button'; discard.className = 'text-button canonical-attachment-discard';
+        discard.textContent = '모두 지우기'; discard.disabled = actionsDisabled;
+        discard.addEventListener('click', () => post('canonicalDiscardAttachments'));
+        elements.attachments.append(discard);
+      }
+      if (attachmentState.notice) {
+        const notice = document.createElement('p'); notice.className = 'canonical-attachment-notice';
+        notice.setAttribute('role', 'status'); notice.textContent = attachmentState.notice; elements.attachments.append(notice);
+      }
+      elements.attachments.classList.toggle('hidden', !(attachmentState.items || []).length && !attachmentState.notice);
+      return;
+    }
     for (const item of state.attachments || []) {
       const chip = document.createElement('span');
       chip.className = 'chat-attachment-chip';
@@ -259,6 +349,13 @@
       elements.attachments.append(chip);
     }
     elements.attachments.classList.toggle('hidden', !(state.attachments || []).length);
+  }
+
+  function formatBytes(value) {
+    if (!Number.isFinite(value) || value < 0) return '크기 확인 필요';
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10240 ? 1 : 0)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
   }
 
   /**
@@ -652,16 +749,18 @@
     mark.className = 'empty-mark';
     mark.textContent = '✦';
     const title = document.createElement('h2');
-    title.textContent = `${state.agent.workflowName}와 대화하기`;
+    const canonical = state.canonical?.active;
+    title.textContent = canonical ? 'Canonical Agent 세션을 선택하세요' : `${state.agent.workflowName}와 대화하기`;
     const description = document.createElement('p');
-    description.textContent = '질문을 입력하거나 아래 예시로 대화를 시작해 보세요.';
+    description.textContent = canonical ? '새 대화를 만들거나 현재 계정의 활성 세션을 선택할 수 있습니다.'
+      : '질문을 입력하거나 아래 예시로 대화를 시작해 보세요.';
     const suggestions = document.createElement('div');
     suggestions.className = 'suggestions';
-    suggestions.append(
-      suggestion('무엇을 할 수 있나요?', '이 Agent가 할 수 있는 일을 간단히 알려줘.'),
-      suggestion('작업 계획 만들기', '내가 하려는 작업을 위한 단계별 계획을 만들어줘.'),
-      suggestion('프로젝트 설명하기', '현재 프로젝트를 이해하기 쉽게 설명해줘.'),
-    );
+    if (!canonical) suggestions.append(
+        suggestion('무엇을 할 수 있나요?', '이 Agent가 할 수 있는 일을 간단히 알려줘.'),
+        suggestion('작업 계획 만들기', '내가 하려는 작업을 위한 단계별 계획을 만들어줘.'),
+        suggestion('프로젝트 설명하기', '현재 프로젝트를 이해하기 쉽게 설명해줘.'),
+      );
     empty.append(mark, title, description, suggestions);
     return empty;
   }
@@ -1396,33 +1495,32 @@
   function renderChat() {
     showScreen('chat');
     const agent = state.agent;
-    if (!agent) {
+    const canonical = !!state.canonical?.active;
+    if (!agent && !canonical) {
       post('showConversations');
       return;
     }
-    const readOnly = !!state.readOnly;
+    const readOnly = !canonical && !!state.readOnly;
     const wasNearBottom = elements.messages.scrollHeight - elements.messages.scrollTop - elements.messages.clientHeight < 100;
-    const agentChanged = previousAgentId !== agent.workflowId;
-    previousAgentId = agent.workflowId;
-    elements.agentName.textContent = agent.workflowName || DELETED_AGENT_LABEL;
+    const agentKey = canonical ? state.canonical.workflowId : agent.workflowId;
+    const agentChanged = previousAgentId !== agentKey;
+    previousAgentId = agentKey;
+    elements.agentName.textContent = canonical ? state.canonical.title || '현재 공유 대화' : agent.workflowName || DELETED_AGENT_LABEL;
     // 설명이 없으면 그 자리를 비운다. 헤더는 아이디와 한 줄을 나눠 쓰므로,
     // '없습니다' 를 채워 넣으면 진짜 정보가 밀린다.
-    elements.agentDescription.textContent = (agent.description || '').trim();
-    // 에이전트가 사라진 대화: 범위·배포·폴더 대신 [지워짐] 하나.
-    elements.agentScope.textContent = readOnly ? DELETED_AGENT_LABEL : agent.isShared ? '공유 Agent' : '개인 Agent';
+    elements.agentDescription.textContent = canonical ? '다른 지원 클라이언트와 같은 대화를 봅니다.' : (agent.description || '').trim();
+    elements.agentScope.textContent = canonical ? 'Canonical 공유 대화' : readOnly ? DELETED_AGENT_LABEL : agent.isShared ? '공유 Agent' : '개인 Agent';
     elements.agentScope.classList.toggle('deleted', readOnly);
-    elements.agentStatus.textContent = agent.isDeployed ? '배포됨' : '초안';
-    elements.agentStatus.classList.toggle('deployed', !!agent.isDeployed);
+    elements.agentStatus.textContent = canonical ? canonicalStatusLabel(state.canonical.sessionStatus) : agent.isDeployed ? '배포됨' : '초안';
+    elements.agentStatus.classList.toggle('deployed', canonical ? state.canonical.sessionStatus === 'connected' : !!agent.isDeployed);
     elements.agentStatus.classList.toggle('hidden', readOnly);
-    elements.agentFolders.classList.toggle('hidden', readOnly);
-    // 대화 제목이 있으면 그 줄에 제목을 둔다(아이디·설명 대신).
-    const title = state.conversationTitle || '';
+    elements.agentFolders.classList.toggle('hidden', canonical || readOnly);
+    const title = canonical ? '' : state.conversationTitle || '';
     elements.chatTitle.textContent = title;
     elements.chatTitle.title = title;
     elements.chatTitle.classList.toggle('hidden', !title);
     elements.agentId.classList.toggle('hidden', !!title);
     elements.agentDescription.classList.toggle('hidden', !!title);
-    // 이 대화의 작업 공간 — 열린 작업 영역 폴더. 이름만 보이고 전체 경로는 툴팁으로.
     const folders = state.workspaceFolders || [];
     elements.agentFolders.textContent = folders.length
       ? `폴더 ${folders.map(folderName).join(', ')}`
@@ -1430,8 +1528,8 @@
     elements.agentFolders.title = folders.length
       ? `Agent가 이 폴더 안에서 파일과 터미널을 사용합니다.\n${folders.join('\n')}`
       : '작업 영역에 폴더를 열면 그 폴더에서 파일과 터미널을 사용합니다.';
-    elements.agentId.textContent = agent.workflowId;
-    elements.agentId.title = agent.workflowId;
+    elements.agentId.textContent = canonical ? state.canonical.workflowId || '' : agent.workflowId;
+    elements.agentId.title = canonical ? state.canonical.workflowId || '' : agent.workflowId;
     elements.messages.replaceChildren();
     if (!state.messages.length) elements.messages.append(emptyChatState());
     else {
@@ -1442,18 +1540,59 @@
     }
     elements.statusText.textContent = state.status || '';
     elements.status.classList.toggle('hidden', !state.status);
-    elements.status.classList.toggle('running', !!state.running);
-    elements.input.disabled = !!state.running;
-    elements.input.placeholder = `${agent.workflowName}에게 메시지 보내기`;
-    elements.send.disabled = !!state.running || policyBlocked('chat', elements.input.value.trim());
-    elements.attach.disabled = !!state.running;
+    elements.status.classList.toggle('running', canonical ? ['sending', 'stopping'].includes(state.canonical.turn?.status) : !!state.running);
+    elements.input.disabled = canonical ? !state.canonical.turn?.canSubmit : !!state.running || readOnly;
+    elements.input.placeholder = canonical ? '현재 공유 대화에 메시지 보내기' : `${agent.workflowName}에게 메시지 보내기`;
+    const canonicalAttachments = state.canonical?.attachments || { items: [], busy: false };
+    const canonicalAttachmentsReady = !canonicalAttachments.busy
+      && (canonicalAttachments.items || []).every((item) => item.status === 'ready');
+    elements.send.disabled = canonical
+      ? !state.canonical.turn?.canSubmit || !canonicalAttachmentsReady
+      : !!state.running || readOnly || policyBlocked('chat', elements.input.value.trim());
+    elements.attach.disabled = canonical ? !state.canonical.turn?.canSubmit || !!canonicalAttachments.busy : !!state.running;
+    elements.attach.classList.toggle('hidden', false);
+    elements.attach.textContent = canonical ? (canonicalAttachments.busy ? '첨부 처리 중…' : '📎 파일 선택') : '📎 첨부';
     renderModel();
     renderThinking();
+    elements.canonicalRetry.classList.toggle('hidden', !canonical || !state.canonical.turn?.canRetry);
     renderAttachments();
-    // 지워진 에이전트의 대화는 지난 대화만 보인다. 입력창 대신 안내 한 줄.
     elements.chatComposer.classList.toggle('hidden', readOnly);
     elements.chatReadonly.classList.toggle('hidden', !readOnly);
-    elements.cancel.classList.toggle('hidden', !state.running);
+    const catalog = state.canonical?.catalog;
+    const turnBlocksSessionWrite = ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
+    const catalogReady = !!catalog?.scope && !!catalog?.focus;
+    const sessionWriteDisabled = !canonical || !catalogReady || !!catalog?.busy || !!catalog?.writeBlocked || turnBlocksSessionWrite;
+    elements.canonicalControls.classList.toggle('hidden', !canonical || !state.canonical.createOpen);
+    const selectedValue = catalog?.focus?.active_agent_session_id || '';
+    elements.canonicalSelect.replaceChildren();
+    const clearOption = document.createElement('option');
+    clearOption.value = ''; clearOption.textContent = '포커스 없음'; elements.canonicalSelect.append(clearOption);
+    for (const session of catalog?.items || []) {
+      if (session.status !== 'active') continue;
+      const option = document.createElement('option'); option.value = session.id;
+      option.textContent = `${session.title || session.workflow_id} · ${session.id.slice(0, 8)}`;
+      elements.canonicalSelect.append(option);
+    }
+    const focusIsOnPage = (catalog?.items || []).some((item) => item.id === selectedValue && item.status === 'active');
+    if (selectedValue && !focusIsOnPage) {
+      const current = document.createElement('option');
+      current.value = selectedValue; current.disabled = true;
+      current.textContent = `현재 포커스 (이 페이지 외부) · ${selectedValue.slice(0, 8)}`;
+      elements.canonicalSelect.append(current);
+    }
+    elements.canonicalSelect.value = selectedValue && (focusIsOnPage || catalog?.focus) ? selectedValue : '';
+    elements.canonicalSelect.disabled = sessionWriteDisabled;
+    elements.canonicalSwitch.disabled = sessionWriteDisabled || !elements.canonicalSelect.value || !focusIsOnPage;
+    elements.canonicalClear.disabled = sessionWriteDisabled || selectedValue === '';
+    elements.canonicalRefresh.disabled = !canonical || !!catalog?.busy;
+    elements.canonicalOlder.disabled = !canonical || !!catalog?.busy || !catalog?.scope || !catalog?.hasMore || !catalog?.nextCursor;
+    elements.canonicalPage.textContent = catalog?.page
+      ? `페이지 ${catalog.page} · ${catalog.hasMore ? '일부 목록, 더 이전 항목 있음' : '마지막 목록'}`
+      : catalog?.scope ? '최신 목록을 다시 확인해야 함' : '목록을 확인하지 않음';
+    elements.canonicalCreate.disabled = sessionWriteDisabled || !elements.canonicalWorkflow.value;
+    elements.canonicalWorkflow.disabled = sessionWriteDisabled;
+    elements.canonicalTitle.disabled = sessionWriteDisabled;
+    elements.cancel.classList.toggle('hidden', canonical ? !state.canonical.turn?.canStop : !state.running);
     if (wasNearBottom) elements.messages.scrollTop = elements.messages.scrollHeight;
     if (agentChanged && !state.running && !readOnly) window.setTimeout(() => elements.input.focus(), 0);
   }
@@ -1621,6 +1760,31 @@
   }
 
   function render() {
+    const canonical = state.canonical || {};
+    if (canonical.active) {
+      if (!canonicalActive) {
+        legacyDraft = elements.input.value;
+        elements.input.value = '';
+        canonicalIdentity = canonical.identity;
+        canonicalConnectionVersion = canonical.connectionVersion || 0;
+      } else if ((canonical.connectionVersion || 0) !== canonicalConnectionVersion
+        || (canonical.identity && canonicalIdentity && canonical.identity !== canonicalIdentity)) {
+        elements.input.value = '';
+        legacyDraft = '';
+      }
+      canonicalActive = true;
+      if (canonical.identity) canonicalIdentity = canonical.identity;
+      canonicalConnectionVersion = canonical.connectionVersion || 0;
+    } else if (canonicalActive) {
+      elements.input.value = legacyDraft;
+      legacyDraft = '';
+      canonicalActive = false;
+      canonicalIdentity = undefined;
+      canonicalConnectionVersion = canonical.connectionVersion || 0;
+    }
+    elements.canonicalMode.classList.toggle('hidden', !canonical.available && !canonical.active);
+    elements.canonicalMode.classList.toggle('active', !!canonical.active);
+    elements.canonicalMode.textContent = canonical.active ? '공유 대화 나가기' : '공유 대화';
     if (state.screen === 'loading') showScreen('loading');
     else if (state.screen === 'setup' || state.screen === 'login' || state.screen === 'offline' || state.screen === 'error') renderGate();
     else if (state.screen === 'conversations') renderConversations();
@@ -1651,6 +1815,30 @@
     setListMenu(false);
     post('purgeDeletedAgents');
   });
+  elements.canonicalMode.addEventListener('click', () => post('canonicalMode'));
+  elements.canonicalRetry.addEventListener('click', () => post('canonicalRetry'));
+  elements.canonicalRefresh.addEventListener('click', () => post('canonicalCatalogRefresh'));
+  elements.canonicalOlder.addEventListener('click', () => post('canonicalCatalogOlder'));
+  elements.canonicalCreate.addEventListener('click', () => post('canonicalCreate', {
+    workflowId: elements.canonicalWorkflow.value,
+    title: elements.canonicalTitle.value,
+  }));
+  elements.canonicalSwitch.addEventListener('click', () => post('canonicalSwitch', { agentSessionId: elements.canonicalSelect.value }));
+  elements.canonicalClear.addEventListener('click', () => post('canonicalSwitch', { agentSessionId: '' }));
+  elements.canonicalSelect.addEventListener('change', () => {
+    const catalog = state.canonical?.catalog;
+    const selected = (catalog?.items || []).some((item) => item.id === elements.canonicalSelect.value && item.status === 'active');
+    elements.canonicalSwitch.disabled = !selected || !catalog?.scope || !catalog?.focus
+      || catalog.busy || catalog.writeBlocked
+      || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
+  });
+  elements.canonicalWorkflow.addEventListener('input', () => {
+    const catalog = state.canonical?.catalog;
+    const blocked = !catalog?.scope || !catalog?.focus || catalog.busy || catalog.writeBlocked
+      || ['unknown', 'sending', 'stopping', 'accepted', 'stop-requested'].includes(state.canonical?.turn?.status);
+    elements.canonicalCreate.disabled = blocked || !elements.canonicalWorkflow.value;
+  });
+  elements.attach.addEventListener('click', () => post(state.canonical?.active ? 'canonicalPickAttachments' : 'attach'));
   // 메뉴 바깥을 누르거나 Esc 면 닫는다.
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element) || !event.target.closest('.list-menu-wrap')) setListMenu(false);
@@ -1703,11 +1891,10 @@
     event.preventDefault();
     startSend();
   });
-  elements.chatBack.addEventListener('click', () => post('showConversations'));
-  elements.chatNew.addEventListener('click', () => post('newChat'));
+  elements.chatBack.addEventListener('click', () => post(state.canonical?.active ? 'canonicalControls' : 'showConversations'));
+  elements.chatNew.addEventListener('click', () => post(state.canonical?.active ? 'canonicalControls' : 'newChat'));
   elements.chatSettings.addEventListener('click', () => post('showSettings'));
   elements.send.addEventListener('click', send);
-  elements.attach.addEventListener('click', () => post('attach'));
   elements.modelChip.addEventListener('click', () => post('pickModel'));
   elements.thinkingChip.addEventListener('click', () => post('pickThinking'));
   elements.cancel.addEventListener('click', () => post('cancel'));

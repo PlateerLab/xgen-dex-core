@@ -13,6 +13,8 @@ import { SettingsSection } from './SettingsSection';
 import { SshSettings } from './SshSettings';
 import { McpSettings } from './McpSettings';
 import { VoiceSettings } from './VoiceSettings';
+import { NativeSessionSettings } from './NativeSessionSettings';
+import type { DesktopNativeSessionBinding } from '../native-session-binding';
 import { AvatarSettings } from './AvatarSettings';
 import { Selector } from './Selector';
 import { notificationStore, useNotifications } from '../notifications';
@@ -27,7 +29,7 @@ type Theme = NonNullable<ConnectorConfig['theme']>;
 // [폴더 연결]로 정한다.
 type Tab =
   | 'general' | 'notifications' | 'avatar'
-  | 'browser' | 'mcp' | 'ssh';
+  | 'browser' | 'mcp' | 'ssh' | 'sessions';
 /** [연결된 기기] — 같은 계정의 커넥터(이 PC·폰·CLI/VSCode) 현황. 멀티 디바이스
  *  커넥터의 상태 대시보드: 어느 기기의 어떤 도구가 몇 개 광고 중인지 한눈에. */
 const ConnectorDevicesCard: React.FC = () => {
@@ -94,6 +96,7 @@ const ConnectorDevicesCard: React.FC = () => {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: '일반' },
+  { id: 'sessions', label: '기기·세션' },
   { id: 'notifications', label: '알림' },
   { id: 'avatar', label: '아바타 설정' },
   { id: 'browser', label: '브라우저' },
@@ -134,11 +137,16 @@ export const Settings: React.FC<{
   onChanged: () => Promise<ConnectorConfig>;
   /** true 면 모달이 아니라 메인 영역의 [설정] 탭 본문으로 렌더링된다. */
   embedded?: boolean;
-}> = ({ user, config, onClose, onChanged, embedded }) => {
+  nativeBinding?: DesktopNativeSessionBinding;
+  nativeSessionPageRequest?: number;
+}> = ({ user, config, onClose, onChanged, embedded, nativeBinding, nativeSessionPageRequest }) => {
   // 탭으로 박혀 있을 때(embedded)는 Esc 로 닫을 대상이 아니다.
   useModalDismiss(onClose, !embedded);
   const [tab, setTab] = useState<Tab>('general');
   const [diagCopied, setDiagCopied] = useState(false);
+  useEffect(() => {
+    if (nativeSessionPageRequest) setTab('sessions');
+  }, [nativeSessionPageRequest]);
   const [serverUrl, setServerUrl] = useState(config.serverUrl);
   const [allowPrivateCertificate, setAllowPrivateCertificate] = useState(
     config.allowPrivateCertificate ?? false,
@@ -322,6 +330,7 @@ export const Settings: React.FC<{
       </div>
 
       <div className="settings-panel">
+        {tab === 'sessions' && <NativeSessionSettings origin={config.serverUrl} binding={nativeBinding} />}
         {/* ─── 연결 ─── */}
         {/* ─── 일반 — [일반][업데이트][설치][서버] 네 분류(공통 SettingsSection).
              서버(연결)를 맨 아래 두는 이유: 한 번 정하면 거의 안 건드리는 값인데

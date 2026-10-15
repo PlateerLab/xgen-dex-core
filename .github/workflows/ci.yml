@@ -183,6 +183,9 @@ jobs:
       - name: APK 빌드
         working-directory: apps/mobile/android
         run: ./gradlew assembleRelease
+      - name: 네이티브 기기 키 실제 P-256 서명 검증
+        working-directory: apps/mobile/android
+        run: ./gradlew :xgen-native-device:testDebugUnitTest --console=plain
 
   ios:
     name: iOS 컴파일
@@ -241,3 +244,14 @@ jobs:
             -configuration Release -sdk iphoneos -derivedDataPath build \
             CC=/tmp/ccache-clang.sh CXX=/tmp/ccache-clang++.sh \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: 실제 iOS P-256 서명 코덱 검증
+        working-directory: apps/mobile
+        run: |
+          xcrun swiftc modules/xgen-native-device/ios/DeviceProof.swift verify/native-device-key-codec.swift -o "$RUNNER_TEMP/xgen-native-key-codec"
+          "$RUNNER_TEMP/xgen-native-key-codec"
+      - name: URLSession TLS 경계 검증 (테스트 인증서)
+        working-directory: apps/mobile
+        run: bash verify/run-native-enrollment-transport.sh
+      - name: URLSession 인증 WebSocket 수신 경계 검증 (테스트 인증서)
+        working-directory: apps/mobile
+        run: bash verify/run-native-agent-socket.sh

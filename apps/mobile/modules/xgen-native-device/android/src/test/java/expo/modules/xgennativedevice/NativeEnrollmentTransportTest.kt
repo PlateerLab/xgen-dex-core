@@ -1,0 +1,613 @@
+package expo.modules.xgennativedevice
+
+import okhttp3.Authenticator
+import okhttp3.CookieJar
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher as MockDispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
+import okhttp3.tls.HandshakeCertificates
+import okhttp3.tls.HeldCertificate
+import okio.Buffer
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+
+class NativeEnrollmentTransportTest {
+  private lateinit var server: MockWebServer
+  private lateinit var client: OkHttpClient
+  private lateinit var origin: String
+
+  @Before fun setUp() {
+    val certificate = HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
+    val serverCertificates = HandshakeCertificates.Builder().heldCertificate(certificate).build()
+    val clientCertificates = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
+    server = MockWebServer()
+    server.useHttps(serverCertificates.sslSocketFactory(), false)
+    server.start()
+    origin = server.url("/").toString().removeSuffix("/")
+    client = OkHttpClient.Builder()
+      .sslSocketFactory(clientCertificates.sslSocketFactory(), clientCertificates.trustManager)
+      .retryOnConnectionFailure(false)
+      .followRedirects(false)
+      .followSslRedirects(false)
+      .cookieJar(CookieJar.NO_COOKIES)
+      .authenticator(Authenticator.NONE)
+      .proxyAuthenticator(Authenticator.NONE)
+      .cache(null)
+      .callTimeout(2, TimeUnit.SECONDS)
+      .build()
+  }
+
+  @After fun tearDown() { server.shutdown() }
+
+  private fun execute(path: String, method: String = "GET", body: String? = null): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    val reserved = transport.newRequestId()
+    transport.request(reserved, origin, path, method, "token.safe-123", body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
+  private fun executeSession(path: String, method: String = "POST", authorization: String? = null, dpop: String? = null, body: String? = "{}"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.sessionRequest(transport.newRequestId(), origin, path, method, authorization, dpop, body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("session request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
+  private fun executeRead(pathWithQuery: String, accessToken: String = "access.safe.jwt", dpop: String = "proof.safe.jwt"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.readRequest(transport.newRequestId(), origin, pathWithQuery, accessToken, dpop) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("read request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
+  private fun executeTurn(path: String, body: String, accessToken: String = "access.safe.jwt", dpop: String = "proof.safe.jwt"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.turnRequest(transport.newRequestId(), origin, path, accessToken, dpop, body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("turn request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
+  private fun executeLifecycle(path: String, method: String, body: String,
+    accessToken: String = "access.safe.jwt", dpop: String = "proof.safe.jwt"): Result<MobileTransportResponse> {
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    val transport = NativeEnrollmentTransport(client)
+    transport.lifecycleRequest(transport.newRequestId(), origin, path, method, accessToken, dpop, body) {
+      result.set(it); latch.countDown()
+    }
+    assertTrue("lifecycle request did not complete", latch.await(4, TimeUnit.SECONDS))
+    return result.get()
+  }
+
+  @Test fun sendsOnlyFixedHeadersAndJsonOverFixtureTls() {
+    server.enqueue(MockResponse().setResponseCode(201).setBody("{\"ok\":true}"))
+    val result = execute("/api/auth/platform-devices/native/mobile/registration/challenge", "POST", "{\"nested\":[true,1,null,\"ok\"]}").getOrThrow()
+    assertEquals(201, result.status)
+    assertEquals("{\"ok\":true}", result.body)
+    val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertEquals("POST", request.method)
+    assertEquals("application/json", request.getHeader("Accept"))
+    assertEquals("application/json", request.getHeader("Content-Type"))
+    assertEquals("Bearer token.safe-123", request.getHeader("Authorization"))
+    assertEquals("{\"nested\":[true,1,null,\"ok\"]}", request.body.readUtf8())
+  }
+
+  @Test fun blocksUnsafeInputsBeforeOpeningAConnection() {
+    val transport = NativeEnrollmentTransport(client)
+    fun invalid(originValue: String = origin, path: String = "/api/auth/platform-devices/trust-overview", method: String = "GET", token: String = "safe", body: String? = null, id: String? = null) {
+      val requestId = id ?: transport.newRequestId()
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.request(requestId, originValue, path, method, token, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid(originValue = origin.replace("https://", "http://"))
+    invalid(originValue = "$origin/path")
+    invalid(path = "/api/auth/platform-devices/native/mobile/registration/challenge%2f..", method = "POST", body = "{}")
+    invalid(path = "/api/auth/platform-devices/trust-overview?x=1")
+    invalid(method = "get")
+    invalid(token = "safe\nunsafe")
+    invalid(token = "unsafe+")
+    invalid(body = "{}")
+    invalid(method = "POST", path = "/api/auth/platform-devices/native/mobile/registration/challenge", body = "[]")
+    invalid(method = "POST", path = "/api/auth/platform-devices/native/mobile/registration/challenge", body = "{'not':'json'}")
+    invalid(method = "POST", path = "/api/auth/platform-devices/native/mobile/registration/challenge", body = "{\"x\":\"\\uD800\"}")
+    invalid(id = UUID.randomUUID().toString().uppercase())
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun productionClientHasNoImplicitCredentialOrRetryMechanisms() {
+    val transport = NativeEnrollmentTransport.production()
+    val field = NativeEnrollmentTransport::class.java.getDeclaredField("client").apply { isAccessible = true }
+    val configured = field.get(transport) as OkHttpClient
+    assertFalse(configured.retryOnConnectionFailure)
+    assertFalse(configured.followRedirects)
+    assertFalse(configured.followSslRedirects)
+    assertSame(CookieJar.NO_COOKIES, configured.cookieJar)
+    assertSame(Authenticator.NONE, configured.authenticator)
+    assertSame(Authenticator.NONE, configured.proxyAuthenticator)
+    assertNull(configured.cache)
+    assertTrue(configured.interceptors.isEmpty())
+    assertTrue(configured.networkInterceptors.isEmpty())
+    assertEquals(10_000, configured.callTimeoutMillis)
+  }
+
+  @Test fun rejectsRedirectWithoutFollowingAndDoesNotStoreCookiesOrAuthenticate() {
+    server.dispatcher = object : MockDispatcher() {
+      override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+        "/api/auth/platform-devices/native/mobile/registration/challenge" -> MockResponse().setResponseCode(200).addHeader("Set-Cookie", "secret=stored").setBody("{}")
+        "/api/auth/platform-devices/native/mobile/registration/complete" -> {
+          assertNull(request.getHeader("Cookie"))
+          MockResponse().setResponseCode(401).addHeader("WWW-Authenticate", "Basic realm=test").setBody("denied")
+        }
+        "/api/auth/platform-devices/trust-overview" -> MockResponse().setResponseCode(302).addHeader("Location", "/escaped").setBody("redirect")
+        else -> MockResponse().setResponseCode(500)
+      }
+    }
+    assertTrue(execute("/api/auth/platform-devices/native/mobile/registration/challenge", "POST", "{}").isSuccess)
+    val unauthorized = execute("/api/auth/platform-devices/native/mobile/registration/complete", "POST", "{}").getOrThrow()
+    assertEquals(401, unauthorized.status)
+    val redirect = execute("/api/auth/platform-devices/trust-overview")
+    assertTrue(redirect.exceptionOrNull() is MobileTransportFailure)
+    assertEquals(3, server.requestCount)
+  }
+
+  @Test fun capsStreamingResponseAndRequiresStrictUtf8() {
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(65_537), 1024))
+    assertEquals("mobile_transport_unavailable", (execute("/api/auth/platform-devices/trust-overview").exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertEquals("mobile_transport_unavailable", (execute("/api/auth/platform-devices/trust-overview").exceptionOrNull() as MobileTransportFailure).code)
+  }
+
+  @Test fun rejectsDuplicateActiveIdAndCancelInterruptsTheCall() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val requestId = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.request(requestId, origin, "/api/auth/platform-devices/trust-overview", "GET", "safe", null) {
+      result.set(it); latch.countDown()
+    }
+    val duplicate = assertThrows(MobileTransportFailure::class.java) {
+      transport.request(requestId, origin, "/api/auth/platform-devices/trust-overview", "GET", "safe", null) {}
+    }
+    assertEquals("mobile_transport_busy", duplicate.code)
+    transport.cancelRequest(requestId)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+  }
+
+  @Test fun cancelBeforeRequestPreventsAnyConnection() {
+    val transport = NativeEnrollmentTransport(client)
+    val requestId = transport.newRequestId()
+    transport.cancelRequest(requestId)
+    val error = assertThrows(MobileTransportFailure::class.java) {
+      transport.request(requestId, origin, "/api/auth/platform-devices/trust-overview", "GET", "safe", null) {}
+    }
+    assertEquals("mobile_transport_unavailable", error.code)
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun requestAndCancelRequireAnUnexpiredReservation() {
+    val transport = NativeEnrollmentTransport(client)
+    val unknown = UUID.randomUUID().toString()
+    assertEquals("mobile_transport_invalid", assertThrows(MobileTransportFailure::class.java) {
+      transport.request(unknown, origin, "/api/auth/platform-devices/trust-overview", "GET", "safe", null) {}
+    }.code)
+    assertEquals("mobile_transport_invalid", assertThrows(MobileTransportFailure::class.java) {
+      transport.cancelRequest(unknown)
+    }.code)
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun retryIsDisabledForDroppedConnections() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    assertTrue(execute("/api/auth/platform-devices/native/mobile/registration/complete", "POST", "{}").isFailure)
+    assertEquals(1, server.requestCount)
+  }
+
+  @Test fun sessionRoutesUseExactAuthenticationPolicies() {
+    repeat(3) { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+    assertTrue(executeSession("/api/auth/platform-sessions/native/login-key/begin", authorization = "Bearer login.safe").isSuccess)
+    assertTrue(executeSession("/api/auth/platform-sessions/native/refresh/complete").isSuccess)
+    val proof = "a.b.c"
+    assertTrue(executeSession("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP access.safe.jwt", proof, "{\"password\":\"pw\"}").isSuccess)
+
+    val login = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertEquals("Bearer login.safe", login.getHeader("Authorization")); assertNull(login.getHeader("DPoP"))
+    assertEquals("application/json", login.getHeader("Content-Type"))
+    val refresh = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertNull(refresh.getHeader("Authorization")); assertNull(refresh.getHeader("DPoP"))
+    val delete = server.takeRequest(1, TimeUnit.SECONDS)!!
+    assertEquals("DELETE", delete.method); assertEquals("DPoP access.safe.jwt", delete.getHeader("Authorization"))
+    assertEquals(proof, delete.getHeader("DPoP")); assertEquals("application/json", delete.getHeader("Content-Type")); assertEquals("{\"password\":\"pw\"}", delete.body.readUtf8())
+  }
+
+  @Test fun sessionRequestRejectsWrongRouteAuthenticationAndBodyBeforeNetwork() {
+    val transport = NativeEnrollmentTransport(client)
+    fun invalid(path: String, method: String = "POST", authorization: String? = null, dpop: String? = null, body: String? = "{}") {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.sessionRequest(transport.newRequestId(), origin, path, method, authorization, dpop, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid("/api/auth/platform-sessions/native/login-key/begin")
+    invalid("/api/auth/platform-sessions/native/login-key/complete", authorization = "Bearer unsafe+")
+    invalid("/api/auth/platform-sessions/native/login-key/begin", authorization = "Bearer safe", dpop = "a.b.c")
+    invalid("/api/auth/platform-sessions/native/refresh/begin", authorization = "Bearer safe")
+    invalid("/api/auth/platform-sessions/native/refresh/complete", dpop = "a.b.c")
+    invalid("/api/auth/platform-sessions/native/refresh/begin", body = "{\"x\":\"\uD800\"}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "Bearer safe.jwt", "a.b.c", "{}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "bad", "{}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP opaque-safe", "a.b.c", "{}")
+    invalid("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", null)
+    invalid("/api/me/platform-sessions/00000000-0000-0000-0000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", "{}")
+    invalid("/api/agentflow/me/agent-state", "GET", "DPoP safe", "a.b.c", null)
+    invalid("/api/auth/platform-sessions/native/refresh/begin?x=1")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun enrollmentAndSessionRequestsShareReservationsAndCancellation() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val latch = CountDownLatch(1)
+    transport.request(id, origin, "/api/auth/platform-devices/trust-overview", "GET", "safe", null) { latch.countDown() }
+    val duplicate = assertThrows(MobileTransportFailure::class.java) {
+      transport.sessionRequest(id, origin, "/api/auth/platform-sessions/native/refresh/begin", "POST", null, null, "{}") {}
+    }
+    assertEquals("mobile_transport_busy", duplicate.code)
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+
+    val cancelled = transport.newRequestId()
+    transport.cancelRequest(cancelled)
+    assertEquals("mobile_transport_unavailable", assertThrows(MobileTransportFailure::class.java) {
+      transport.sessionRequest(cancelled, origin, "/api/auth/platform-sessions/native/refresh/begin", "POST", null, null, "{}") {}
+    }.code)
+  }
+
+  @Test fun sessionPostAndDeleteDroppedConnectionsAreNotRetried() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    assertTrue(executeSession("/api/auth/platform-sessions/native/login-key/complete", authorization = "Bearer safe").isFailure)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    assertTrue(executeSession("/api/me/platform-sessions/00000000-0000-4000-8000-000000000001", "DELETE", "DPoP safe.jwt.token", "a.b.c", "{\"password\":\"pw\"}").isFailure)
+    assertEquals(2, server.requestCount)
+  }
+
+  @Test fun canonicalReadsPreserveExactQueriesAndSendOnlyDpopHeaders() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val routes = listOf(
+      "/api/agentflow/me/agent-state",
+      "/api/agentflow/me/agent-events?after_sequence=9007199254740991&limit=200",
+      "/api/agentflow/me/agent-sessions?limit=100",
+      "/api/agentflow/me/agent-sessions?limit=20&before_id=$session",
+      "/api/agentflow/agent-sessions/$session/snapshot",
+      "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=9007199254740991&limit=20"
+    )
+    routes.forEach { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+    routes.forEach { assertTrue(executeRead(it).isSuccess) }
+    routes.forEach { expected ->
+      val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+      assertEquals("GET", request.method)
+      assertEquals(expected, request.path)
+      assertEquals("application/json", request.getHeader("Accept"))
+      assertEquals("DPoP access.safe.jwt", request.getHeader("Authorization"))
+      assertEquals("proof.safe.jwt", request.getHeader("DPoP"))
+      assertNull(request.getHeader("Content-Type"))
+      assertEquals(0L, request.bodySize)
+    }
+  }
+
+  @Test fun canonicalReadsRejectRewrittenQueriesBoundsAndCredentialsBeforeNetwork() {
+    val transport = NativeEnrollmentTransport(client)
+    val session = "00000000-0000-4000-8000-000000000001"
+    fun invalid(path: String, token: String = "access.safe.jwt", proof: String = "proof.safe.jwt", originValue: String = origin) {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.readRequest(transport.newRequestId(), originValue, path, token, proof) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    listOf(
+      "/api/agentflow/me/agent-state?x=1",
+      "/api/agentflow/me/agent-events",
+      "/api/agentflow/me/agent-events?limit=1&after_sequence=0",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=1&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=01&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=9007199254740992&limit=1",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=0",
+      "/api/agentflow/me/agent-events?after_sequence=0&limit=201",
+      "/api/agentflow/me/agent-sessions?limit=101",
+      "/api/agentflow/me/agent-sessions?before_id=$session&limit=1",
+      "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-0000-0000-000000000001",
+      "/api/agentflow/me/agent-sessions?limit=1&before_id=00000000-0000-4000-8000-00000000000A",
+      "/api/agentflow/agent-sessions/$session/events?after_sequence=0&limit=01",
+      "/api/agentflow/agent-sessions/$session/messages",
+      "/api/agentflow/agent-sessions/$session/messages?limit=1&after_sequence=0",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=0&limit=1&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=01&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=9007199254740992&limit=1",
+      "/api/agentflow/agent-sessions/$session/messages?after_sequence=0&limit=21",
+      "/api/agentflow/agent-sessions/$session/snapshot?x=1",
+      "/api/agentflow/me/agent-events?after_sequence=0%26limit=1&limit=1",
+      "/api/agentflow/me/agent-state#fragment",
+      "/api/agentflow/me\\agent-state"
+    ).forEach(::invalid)
+    invalid("/api/agentflow/me/agent-state", token = "access.safe.jwt\n")
+    invalid("/api/agentflow/me/agent-state", proof = "proof.safe.jwt\n")
+    invalid("/api/agentflow/me/agent-state", token = "opaque-token")
+    invalid("/api/agentflow/me/agent-state", proof = "opaque-proof")
+    invalid("/api/agentflow/me/agent-state", token = "a".repeat(8_189) + ".b.c")
+    invalid("/api/agentflow/me/agent-state", originValue = origin.replace("localhost", "LOCALHOST"))
+    invalid("/api/agentflow/me/agent-state", originValue = "https://localhost:443")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun canonicalReadUsesRouteSpecificCapsAndPermanentMalformedResponseCode() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val messages = "/api/agentflow/agent-sessions/$session/messages?after_sequence=0&limit=20"
+    server.enqueue(MockResponse().setBody("x".repeat(70_000)))
+    assertEquals(70_000, executeRead(messages).getOrThrow().body.length)
+
+    fun assertResponseInvalid(result: Result<MobileTransportResponse>) {
+      assertEquals("mobile_transport_response_invalid", (result.exceptionOrNull() as MobileTransportFailure).code)
+    }
+    server.enqueue(MockResponse().setBody("x".repeat(65_537)))
+    assertResponseInvalid(executeRead("/api/agentflow/me/agent-state"))
+    server.enqueue(MockResponse().setBody("x".repeat(1_048_577)))
+    assertResponseInvalid(executeRead(messages))
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(1_048_577), 16_384))
+    assertResponseInvalid(executeRead(messages))
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertResponseInvalid(executeRead(messages))
+    server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/escaped"))
+    assertResponseInvalid(executeRead(messages))
+  }
+
+  @Test fun canonicalReadSharesReservationAndCancellationWithMutationTransports() {
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.readRequest(id, origin,
+      "/api/agentflow/agent-sessions/00000000-0000-4000-8000-000000000001/messages?after_sequence=0&limit=1",
+      "access.safe.jwt", "proof.safe.jwt") {
+      result.set(it); latch.countDown()
+    }
+    assertEquals("mobile_transport_busy", assertThrows(MobileTransportFailure::class.java) {
+      transport.sessionRequest(id, origin, "/api/auth/platform-sessions/native/refresh/begin", "POST", null, null, "{}") {}
+    }.code)
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+
+    val cancelled = transport.newRequestId()
+    transport.cancelRequest(cancelled)
+    assertEquals("mobile_transport_unavailable", assertThrows(MobileTransportFailure::class.java) {
+      transport.readRequest(cancelled, origin, "/api/agentflow/me/agent-state", "access.safe.jwt", "proof.safe.jwt") {}
+    }.code)
+  }
+
+  @Test fun canonicalTurnsPostExactBodiesWithOnlyDpopHeaders() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val turn = "00000000-0000-4000-8000-000000000002"
+    val submit = "{\"input_text\":\"hello\\nworld\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\",\"origin_id\":\"mobile-1\"}"
+    val stop = "{\"turn_id\":\"$turn\",\"expected_state_version\":2}"
+    server.enqueue(MockResponse().setResponseCode(202).setBody("{\"accepted\":true}"))
+    server.enqueue(MockResponse().setResponseCode(200).setBody("{\"requested\":true}"))
+    assertEquals(202, executeTurn("/api/agentflow/agent-sessions/$session/turns", submit).getOrThrow().status)
+    assertEquals(200, executeTurn("/api/agentflow/agent-sessions/$session/stop", stop).getOrThrow().status)
+    listOf(submit, stop).forEach { expectedBody ->
+      val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+      assertEquals("POST", request.method)
+      assertEquals("application/json", request.getHeader("Accept"))
+      assertEquals("application/json", request.getHeader("Content-Type"))
+      assertEquals("DPoP access.safe.jwt", request.getHeader("Authorization"))
+      assertEquals("proof.safe.jwt", request.getHeader("DPoP"))
+      assertNull(request.getHeader("Origin")); assertNull(request.getHeader("Cookie"))
+      assertEquals(expectedBody, request.body.readUtf8())
+    }
+  }
+
+  @Test fun canonicalTurnsRejectInvalidRouteCredentialsAndBodiesBeforeWire() {
+    val transport = NativeEnrollmentTransport(client)
+    val session = "00000000-0000-4000-8000-000000000001"
+    val turns = "/api/agentflow/agent-sessions/$session/turns"
+    val stop = "/api/agentflow/agent-sessions/$session/stop"
+    val validSubmit = "{\"input_text\":\"hello\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}"
+    fun invalid(path: String = turns, body: String = validSubmit, token: String = "access.safe.jwt", proof: String = "proof.safe.jwt", originValue: String = origin) {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.turnRequest(transport.newRequestId(), originValue, path, token, proof, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid(path = "/api/agentflow/agent-sessions/$session/messages")
+    invalid(path = turns + "?x=1")
+    invalid(path = "/api/agentflow/agent-sessions/ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF/turns")
+    invalid(token = "opaque-token")
+    invalid(proof = "opaque-proof")
+    invalid(originValue = origin.replace("localhost", "LOCALHOST"))
+    invalid(body = "{\"input_text\":\"x\",\"input_text\":\"y\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"\\u0069nput_text\":\"y\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\",\"private\":true}")
+    invalid(body = "{\"input_text\":\"\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"expected_state_version\":0,\"idempotency_key\":\"request-1\"}")
+    invalid(body = "{\"input_text\":\"x\",\"expected_state_version\":1,\"idempotency_key\":\"bad key\"}")
+    invalid(body = "{\"input_text\":\"${"x".repeat(262_145)}\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}")
+    invalid(path = stop, body = "{\"turn_id\":\"not-a-turn\",\"expected_state_version\":1}")
+    invalid(path = stop, body = "{\"turn_id\":\"00000000-0000-0000-0000-000000000002\",\"expected_state_version\":1}")
+    invalid(path = stop, body = "{\"turn_id\":\"00000000-0000-4000-8000-000000000002\",\"expected_state_version\":9007199254740992}")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun canonicalTurnAcceptsWorstCaseEscapedInputWithinTwoMiBEnvelope() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val body = "{\"input_text\":\"${"\\u0000".repeat(262_144)}\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}"
+    assertTrue(body.toByteArray().size < 2_097_152)
+    server.enqueue(MockResponse().setResponseCode(202).setBody("{}"))
+    assertEquals(202, executeTurn("/api/agentflow/agent-sessions/$session/turns", body).getOrThrow().status)
+  }
+
+  @Test fun canonicalTurnAckFailuresArePermanentAndLostAckIsNeverReplayed() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val path = "/api/agentflow/agent-sessions/$session/turns"
+    val body = "{\"input_text\":\"hello\",\"expected_state_version\":1,\"idempotency_key\":\"request-1\"}"
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(65_537), 1024))
+    assertEquals("mobile_transport_response_invalid", (executeTurn(path, body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertEquals("mobile_transport_response_invalid", (executeTurn(path, body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/escaped"))
+    assertEquals("mobile_transport_response_invalid", (executeTurn(path, body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+    assertTrue(executeTurn(path, body).isFailure)
+    assertEquals(4, server.requestCount)
+  }
+
+  @Test fun canonicalTurnCancellationSettlesBeforeItsReservationCannotBeReused() {
+    val session = "00000000-0000-4000-8000-000000000001"
+    val path = "/api/agentflow/agent-sessions/$session/turns"
+    val body = "{\"input_text\":\"hello\",\"expected_state_version\":1,\"idempotency_key\":\"request-cancel\"}"
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.turnRequest(id, origin, path, "access.safe.jwt", "proof.safe.jwt", body) {
+      result.set(it); latch.countDown()
+    }
+    assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+    assertEquals("mobile_transport_invalid", assertThrows(MobileTransportFailure::class.java) {
+      transport.turnRequest(id, origin, path, "access.safe.jwt", "proof.safe.jwt", body) {}
+    }.code)
+    assertEquals(1, server.requestCount)
+  }
+
+  @Test fun lifecycleWritesUseExactMethodsBodiesHeadersAndFixtureTls() {
+    val create = "{\"workflow_id\":\"workflow-😀\",\"expected_version\":0,\"title\":\"\",\"origin_id\":\"mobile-1\"}"
+    val focus = "{\"active_agent_session_id\":\"00000000-0000-4000-8000-000000000001\",\"expected_version\":1}"
+    server.enqueue(MockResponse().setResponseCode(201).addHeader("Set-Cookie", "secret=never-return").setBody("{\"created\":true}"))
+    server.enqueue(MockResponse().setResponseCode(200).setBody("{\"focused\":true}"))
+    assertEquals(201, executeLifecycle("/api/agentflow/agent-sessions", "POST", create).getOrThrow().status)
+    assertEquals(200, executeLifecycle("/api/agentflow/me/agent-state", "PUT", focus).getOrThrow().status)
+    listOf("POST" to create, "PUT" to focus).forEach { (method, expectedBody) ->
+      val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+      assertEquals(method, request.method)
+      assertEquals("application/json", request.getHeader("Accept"))
+      assertEquals("application/json", request.getHeader("Content-Type"))
+      assertEquals("DPoP access.safe.jwt", request.getHeader("Authorization"))
+      assertEquals("proof.safe.jwt", request.getHeader("DPoP"))
+      assertNull(request.getHeader("Cookie")); assertNull(request.getHeader("Origin"))
+      assertEquals(expectedBody, request.body.readUtf8())
+    }
+  }
+
+  @Test fun lifecycleWritesRejectRoutesCredentialsAndNoncanonicalBodiesBeforeWire() {
+    val transport = NativeEnrollmentTransport(client)
+    val create = "/api/agentflow/agent-sessions"
+    val focus = "/api/agentflow/me/agent-state"
+    val validCreate = "{\"workflow_id\":\"workflow\",\"expected_version\":0}"
+    fun invalid(path: String = create, method: String = "POST", body: String = validCreate,
+      token: String = "access.safe.jwt", proof: String = "proof.safe.jwt", originValue: String = origin) {
+      val error = assertThrows(MobileTransportFailure::class.java) {
+        transport.lifecycleRequest(transport.newRequestId(), originValue, path, method, token, proof, body) { fail("must not complete") }
+      }
+      assertEquals("mobile_transport_invalid", error.code)
+    }
+    invalid(method = "PUT"); invalid(path = focus, method = "POST")
+    invalid(path = "$create?x=1"); invalid(path = "$create/extra")
+    invalid(token = "opaque-token"); invalid(proof = "opaque-proof")
+    invalid(originValue = origin.replace("localhost", "LOCALHOST"))
+    invalid(body = "{\"workflow_id\":\"a\",\"workflow_id\":\"b\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"a\",\"\\u0077orkflow_id\":\"b\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"\\uD800\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"\uD800\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":0,\"unknown\":true}")
+    invalid(body = "{\"workflow_id\":\"\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"${"😀".repeat(257)}\",\"expected_version\":0}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":9007199254740991}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":-1}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":0,\"origin_id\":\"\"}")
+    invalid(body = "{\"workflow_id\":\"a\",\"expected_version\":0,\"title\":\"${"x".repeat(32_769)}\"}")
+    invalid(body = " ".repeat(32_768) + validCreate)
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":false,\"expected_version\":0}")
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":\"00000000-0000-0000-0000-000000000001\",\"expected_version\":0}")
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":\"00000000-0000-4000-8000-00000000000A\",\"expected_version\":0}")
+    invalid(path = focus, method = "PUT", body = "{\"active_agent_session_id\":null,\"expected_version\":0,\"origin_id\":null}")
+    assertEquals(0, server.requestCount)
+  }
+
+  @Test fun lifecycleWritesAcceptBoundariesAndNullFocus() {
+    val workflow = "😀".repeat(256)
+    val title = "é".repeat(256)
+    val originId = "界".repeat(128)
+    val create = "{\"workflow_id\":\"$workflow\",\"expected_version\":9007199254740990,\"title\":\"$title\",\"origin_id\":\"$originId\"}"
+    val focus = "{\"active_agent_session_id\":null,\"expected_version\":0}"
+    server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+    server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+    assertTrue(executeLifecycle("/api/agentflow/agent-sessions", "POST", create).isSuccess)
+    assertTrue(executeLifecycle("/api/agentflow/me/agent-state", "PUT", focus).isSuccess)
+  }
+
+  @Test fun lifecycleWriteAckFailuresCancellationAndLostAckAreNeverRetried() {
+    val path = "/api/agentflow/agent-sessions"
+    val body = "{\"workflow_id\":\"workflow\",\"expected_version\":0}"
+    server.enqueue(MockResponse().setChunkedBody("x".repeat(65_537), 1024))
+    assertEquals("mobile_transport_response_invalid", (executeLifecycle(path, "POST", body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setBody(Buffer().write(byteArrayOf(0xc3.toByte(), 0x28))))
+    assertEquals("mobile_transport_response_invalid", (executeLifecycle(path, "POST", body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setResponseCode(302).addHeader("Location", "/escaped"))
+    assertEquals("mobile_transport_response_invalid", (executeLifecycle(path, "POST", body).exceptionOrNull() as MobileTransportFailure).code)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+    assertTrue(executeLifecycle(path, "POST", body).isFailure)
+    repeat(4) { assertNotNull(server.takeRequest(1, TimeUnit.SECONDS)) }
+    assertNull(server.takeRequest(250, TimeUnit.MILLISECONDS))
+
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+    val transport = NativeEnrollmentTransport(client)
+    val id = transport.newRequestId()
+    val result = AtomicReference<Result<MobileTransportResponse>>()
+    val latch = CountDownLatch(1)
+    transport.lifecycleRequest(id, origin, path, "POST", "access.safe.jwt", "proof.safe.jwt", body) {
+      result.set(it); latch.countDown()
+    }
+    assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+    transport.cancelRequest(id)
+    assertTrue(latch.await(2, TimeUnit.SECONDS))
+    assertEquals("mobile_transport_unavailable", (result.get().exceptionOrNull() as MobileTransportFailure).code)
+    assertEquals("mobile_transport_invalid", assertThrows(MobileTransportFailure::class.java) {
+      transport.lifecycleRequest(id, origin, path, "POST", "access.safe.jwt", "proof.safe.jwt", body) {}
+    }.code)
+    assertNull(server.takeRequest(250, TimeUnit.MILLISECONDS))
+  }
+}

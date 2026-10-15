@@ -41,14 +41,14 @@ test('RPC client initializes, handles notifications and exposes engine errors', 
   assert.equal(client.state, 'stopped');
 });
 
-const realCli = path.resolve(testDirectory, '..', '..', 'dist', 'cli.js');
+const realCli = path.resolve(testDirectory, '..', '..', 'cli', 'dist', 'cli.js');
 
 test('RPC client connects to the built dex-cli engine', { skip: !existsSync(realCli) }, async () => {
   const isolatedHome = await mkdtemp(path.join(tmpdir(), 'xgen-dex-vscode-'));
   const client = new DexRpcClient({
     process: {
       command: process.execPath,
-      args: [realCli, 'serve', '--stdio'],
+      args: [realCli, 'serve', '--stdio', '--native-platform', 'vscode'],
       env: { ...process.env, DEX_CLI_HOME: isolatedHome },
     },
     clientVersion: 'test',
@@ -56,6 +56,7 @@ test('RPC client connects to the built dex-cli engine', { skip: !existsSync(real
   try {
     const initialized = await client.start();
     assert.equal(initialized.server.name, 'dex-cli');
+    assert.equal(initialized.capabilities.nativePlatformSession?.platform, 'vscode');
     assert.deepEqual(await client.request('health'), { ok: true, activeChats: 0 });
   } finally {
     await client.stop();

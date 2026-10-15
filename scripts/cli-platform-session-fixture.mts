@@ -1,0 +1,865 @@
+/** Opt-in HTTPS protocol fixture, not an ACTIVE Gateway or deployment test. Uses disposable OS-keychain slots. */
+import assert from 'node:assert/strict';
+import { spawn, execFileSync } from 'node:child_process';
+import { createHash, createHmac, randomBytes, randomInt, randomUUID, webcrypto } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:https';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import type { IncomingMessage } from 'node:http';
+import { WebSocketServer, type WebSocket } from 'ws';
+import { NativeDeviceKeyStore, NativeDeviceOperationBusy } from '../packages/engine/src/native-device-key-store';
+import { nativeKeyThumbprint } from '../packages/engine/src/native-dpop';
+import { DexRpcClient, DexRpcError } from '../packages/rpc/src/client';
+
+const platform = process.argv.includes('--desktop') ? 'desktop' as const : process.argv.includes('--vscode') ? 'vscode' as const : 'cli' as const;
+const testTui = process.argv.includes('--tui');
+const testTuiChat = process.argv.includes('--tui-chat');
+if ((testTui || testTuiChat) && platform !== 'cli') throw new Error('TUI verification requires the CLI platform.');
+const testLive = process.argv.includes('--live') || testTui || testTuiChat;
+const testCatalogPages = process.argv.includes('--catalog-pages');
+const testWorkspaceUi = process.argv.includes('--workspace-ui');
+if (testWorkspaceUi && platform !== 'desktop') throw new Error('Workspace UI verification requires --desktop.');
+const testTurnUi = process.argv.includes('--turn-ui') || testWorkspaceUi;
+const testSessionUi = process.argv.includes('--session-ui') || testWorkspaceUi;
+const testSessions = process.argv.includes('--sessions') || testSessionUi || testCatalogPages || testTuiChat;
+const testConversation = process.argv.includes('--conversation') || testLive || testTurnUi || testSessionUi;
+const testTurns = process.argv.includes('--turns') || testTurnUi || testTuiChat;
+const turnUiBehavior = testTurnUi || testTuiChat;
+const sessionUiBehavior = testSessionUi || testTuiChat;
+if (testTurnUi && platform === 'cli') throw new Error('Turn UI verification requires --vscode or --desktop.');
+if (testSessionUi && platform === 'cli') throw new Error('Session UI verification requires --vscode or --desktop.');
+const desktopElectron: string | null = platform === 'desktop' || testTurnUi || testSessionUi ? createRequire(import.meta.url)('../apps/desktop/node_modules/electron') : null;
+
+const directory = mkdtempSync(join(tmpdir(), 'dex-cli-session-fixture-'));
+const certificates = resolve('../xgen-infra/compose/full-stack/.local-certs');
+const caRoot = execFileSync('mkcert', ['-CAROOT'], { encoding: 'utf8' }).trim();
+const password = randomBytes(32).toString('base64url');
+const email = `fixture-${randomUUID()}@example.invalid`;
+const userId = String(randomInt(1_000_000_000, 2_000_000_000));
+const deviceId = randomUUID();
+const signingSecret = randomBytes(32);
+const keys = new NativeDeviceKeyStore();
+const subtle = webcrypto.subtle as unknown as SubtleCrypto;
+const contexts = new Set<string>();
+const secrets = new Set<string>([password]);
+const flows = new Map<string, { challenge: string; purpose: string }>();
+const seenProofs = new Set<string>();
+let publicKey: JsonWebKey;
+let origin = '';
+let sid: string | null = null;
+let refresh: string | null = null;
+let loseCompletion = false;
+let requests = 0;
+let errors = 0;
+const rejectedPaths: string[] = [];
+let keyCreated = false;
+let desktopRegistered = false;
+const enrollmentChallenge = randomBytes(32).toString('base64url');
+let cleanupDesktop: (() => Promise<void>) | null = null;
+async function cleanDesktop() { if (cleanupDesktop) await cleanupDesktop(); }
+const agentId = randomUUID(); const recoveredId = randomUUID();
+const event1 = randomUUID(); const event3 = randomUUID(); const event4 = randomUUID();
+let focus = { active_agent_session_id: null as string | null, version: 0, event_id: null as string | null };
+const ownedSessions = new Map<string, { title: string; status: 'active' | 'archived' }>([
+  [agentId, { title: 'Native shared conversation', status: 'active' }],
+  [recoveredId, { title: 'Archived conversation', status: 'archived' }],
+]);
+if (testCatalogPages) for (let index = 0; index < 205; index++) ownedSessions.set(randomUUID(), { title: `Catalog older session ${index + 1}`, status: 'active' });
+const catalogPagesRead: Array<{ before: string | null; count: number }> = [];
+let sessionRequests = 0; let sessionCreations = 0; let loseSessionAck = sessionUiBehavior;
+const sessionWriteBodies: unknown[] = [];
+const freshSession = () => sessionUiBehavior && focus.active_agent_session_id !== null
+  && focus.active_agent_session_id !== agentId && focus.active_agent_session_id !== recoveredId;
+let watching = false; let disconnected = false; let rotatedDuringWatch = false;
+const watchCursors: number[] = [];
+const messageAccesses = new Set<string>(); const messageTurns = [randomUUID(), randomUUID()];
+const messageText = `native-message-answer ${'가'.repeat(24000)}`;
+let liveSequence = 4; const liveEvent = randomUUID();
+const liveSockets = new Set<WebSocket>(); const liveAccesses = new Set<string>();
+let turnVersion = turnUiBehavior ? 4 : 1; let executions = 0; let turnRequests = 0; let loseUiAck = turnUiBehavior;
+let uiTurn: { id: string; status: 'running' | 'cancelled'; sequence: number; input: string } | null = null;
+const uiEvents: Array<{ event_id: string; sequence: number; event_type: string; created_at: string }> = [];
+const turnBodies = new Map<string, { serialized: string; ack: { turn_id: string; status: string; accepted_sequence: number; state_version: number; replayed: boolean } }>();
+async function verifyProof(req: IncomingMessage): Promise<string> {
+  assert.equal(req.headers.cookie, undefined); assert.equal(req.headers.origin, undefined);
+  assert.ok(req.headers.authorization?.startsWith('DPoP '));
+  const access = req.headers.authorization!.slice(5); const [ah, ap, signature] = access.split('.');
+  assert.equal(signature, createHmac('sha256', signingSecret).update(`${ah}.${ap}`).digest('base64url'));
+  const claims = JSON.parse(Buffer.from(ap!, 'base64url').toString());
+  assert.equal(claims.sid, sid); assert.equal(claims.sub, userId); assert.equal(claims.platform_type, platform);
+  const [h, p, s] = String(req.headers.dpop).split('.');
+  const header = JSON.parse(Buffer.from(h!, 'base64url').toString()); const proof = JSON.parse(Buffer.from(p!, 'base64url').toString());
+  assert.equal(header.typ, 'dpop+jwt'); assert.equal(header.alg, 'ES256');
+  assert.equal(nativeKeyThumbprint(header.jwk), nativeKeyThumbprint(publicKey as any));
+  assert.equal(proof.htm, 'GET'); assert.equal(proof.htu, `${origin}${req.url!.split('?')[0]}`);
+  assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url'));
+  assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
+  const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s!, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+  return access;
+}
+function eventPage(after: number) {
+  if (freshSession()) return { type: 'agent_session.events', events: [], next_cursor: 0, snapshot_sequence: 0,
+    state_version: 1, has_more: false };
+  if (turnUiBehavior) return { type: 'agent_session.events', events: uiEvents.filter((e) => e.sequence > after),
+    next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: turnVersion, has_more: false };
+  return { type: 'agent_session.events', events: after < liveSequence ? [{ event_id: liveEvent, sequence: 5,
+    event_type: 'agent_session.turn_completed', created_at: new Date().toISOString() }] : [],
+    next_cursor: liveSequence, snapshot_sequence: liveSequence, state_version: liveSequence, has_more: false };
+}
+function wakeLive() { liveSequence = 5; for (const peer of liveSockets) peer.send(JSON.stringify(eventPage(4))); }
+async function untilLive(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 300 && !predicate(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(predicate(), 'Native WSS fixture did not reach the expected connection state');
+}
+const server = createServer({ cert: readFileSync(join(certificates, 'localhost.pem')), key: readFileSync(join(certificates, 'localhost-key.pem')) }, (req, res) => {
+  void (async () => {
+    requests++;
+    assert.equal(req.headers.origin, undefined); assert.equal(req.headers.cookie, undefined);
+    const path = req.url!; const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+    const reply = (value: unknown) => { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
+    if (path === '/api/auth/login') {
+      assert.equal(body.email, email); assert.equal(body.password, createHash('sha256').update(password).digest('hex'));
+      const token = `e30.e30.${randomBytes(32).toString('base64url')}`; contexts.add(token); secrets.add(token);
+      reply({ success: true, user_id: userId, access_token: token }); return;
+    }
+    if (path === '/api/auth/logout') { assert.equal(contexts.delete(body.token), true); reply({ success: true }); return; }
+    const account = req.headers.authorization?.replace(/^Bearer /, '');
+    if (path.includes('/registration/status/')) { assert.ok(account && contexts.has(account)); reply(platform !== 'desktop' || desktopRegistered ? { device_id: deviceId, state: 'trusted' } : null); return; }
+    if (path.endsWith('/registration/challenge')) { assert.ok(account && contexts.has(account)); publicKey = body.public_key_jwk; reply({ challenge: enrollmentChallenge, expires_in_seconds: 300 }); return; }
+    if (path.endsWith('/registration/complete')) { assert.ok(account && contexts.has(account)); desktopRegistered = true; reply({ device_id: deviceId, state: 'pending' }); return; }
+    if (path.endsWith('/begin')) {
+      const isRefresh = path.includes('/native/refresh/');
+      if (isRefresh) { assert.equal(req.headers.authorization, undefined); assert.equal(body.refresh_token, refresh); }
+      else assert.ok(account && contexts.has(account));
+      assert.equal(body.device_id, deviceId);
+      const flow = randomUUID(); const challenge = randomBytes(32).toString('base64url');
+      flows.set(flow, { challenge, purpose: isRefresh ? 'native_refresh' : 'login' });
+      reply({ flow_id: flow, device_id: deviceId, challenge, expires_in_seconds: 300 }); return;
+    }
+    if (path.endsWith('/complete')) {
+      const isRefresh = path.includes('/native/refresh/');
+      if (isRefresh) { assert.equal(req.headers.authorization, undefined); assert.equal(body.refresh_token, refresh); }
+      else { assert.ok(account && contexts.has(account)); assert.equal(body.password, password); }
+      const flow = flows.get(body.flow_id)!; assert.ok(flow); flows.delete(body.flow_id);
+      assert.equal(body.device_id, deviceId); assert.equal(body.challenge, flow.challenge);
+      const [h, p, s] = body.proof_jwt.split('.');
+      const claims = JSON.parse(Buffer.from(p, 'base64url').toString());
+      assert.equal(claims.purpose, flow.purpose); assert.equal(claims.challenge, flow.challenge);
+      const key = await subtle.importKey('jwk', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+      assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+      sid ??= randomUUID(); refresh = randomBytes(32).toString('base64url');
+      secrets.add(refresh);
+      if (isRefresh && loseCompletion) { loseCompletion = false; req.socket.destroy(); return; }
+      const exp = Math.floor(Date.now() / 1000) + 600;
+      const input = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'platform-access+jwt' })).toString('base64url')}.${Buffer.from(JSON.stringify({
+        sub: userId, sid, device_id: deviceId, platform_type: platform, token_use: 'platform_access', exp, jti: randomUUID(),
+        cnf: { jkt: nativeKeyThumbprint(publicKey as any) } })).toString('base64url')}`;
+      const access = `${input}.${createHmac('sha256', signingSecret).update(input).digest('base64url')}`;
+      secrets.add(access);
+      reply({ session_id: sid, ...(isRefresh ? { refreshed: true, access_ready: true } : { state: 'active' }),
+        token_type: 'DPoP', access_token: access, access_expires_at: new Date(exp * 1000 + 123).toISOString(), refresh_token: refresh }); return;
+    }
+    assert.ok(req.headers.authorization?.startsWith('DPoP '));
+    const access = req.headers.authorization!.slice(5); const [ah, ap, signature] = access.split('.');
+    assert.equal(signature, createHmac('sha256', signingSecret).update(`${ah}.${ap}`).digest('base64url'));
+    const accessClaims = JSON.parse(Buffer.from(ap, 'base64url').toString()); assert.equal(accessClaims.sid, sid);
+    const [h, p, s] = String(req.headers.dpop).split('.');
+    const header = JSON.parse(Buffer.from(h, 'base64url').toString()); const proof = JSON.parse(Buffer.from(p, 'base64url').toString());
+    assert.equal(header.typ, 'dpop+jwt'); assert.equal(header.alg, 'ES256');
+    assert.equal(nativeKeyThumbprint(header.jwk), nativeKeyThumbprint(publicKey as any));
+    assert.equal(proof.htm, req.method); assert.equal(proof.htu, `${origin}${path.split('?')[0]}`);
+    assert.equal(proof.ath, createHash('sha256').update(access).digest('base64url')); assert.equal(seenProofs.has(proof.jti), false); seenProofs.add(proof.jti);
+    const key = await subtle.importKey('jwk', header.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    assert.equal(await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(s, 'base64url'), Buffer.from(`${h}.${p}`)), true);
+    if (testSessions && ((path === '/api/agentflow/agent-sessions' && req.method === 'POST')
+      || (path === '/api/agentflow/me/agent-state' && req.method === 'PUT'))) {
+      sessionRequests++; sessionWriteBodies.push(body);
+      const send = (status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+      if (body.expected_version !== focus.version) { send(409, { detail: { code: 'FOCUS_VERSION_CONFLICT', current: focus, raw: 'private-server-secret' } }); return; }
+      assert.equal(body.origin_id, undefined); assert.equal(body.idempotency_key, undefined);
+      if (req.method === 'POST') {
+        assert.equal(body.workflow_id, 'native-fixture');
+        const id = randomUUID(); const previous = [...ownedSessions];
+        ownedSessions.clear(); ownedSessions.set(id, { title: body.title, status: 'active' });
+        for (const [ownedId, value] of previous) ownedSessions.set(ownedId, value);
+        sessionCreations++;
+        focus = { active_agent_session_id: id, version: focus.version + 1, event_id: randomUUID() };
+        if (loseSessionAck) { loseSessionAck = false; req.socket.destroy(); return; }
+        send(201, { id, workflow_id: body.workflow_id, focus, raw: 'private-server-secret' }); return;
+      }
+      const target = body.active_agent_session_id;
+      if (target !== null && ownedSessions.get(target)?.status !== 'active') { send(404, { raw: 'private-server-secret' }); return; }
+      if (target !== focus.active_agent_session_id) focus = { active_agent_session_id: target, version: focus.version + 1, event_id: randomUUID() };
+      send(200, { ...focus, raw: 'private-server-secret' }); return;
+    }
+    if (testSessions && path.startsWith('/api/agentflow/me/agent-sessions?')) {
+      assert.equal(req.method, 'GET'); const query = new URL(path, origin).searchParams;
+      const limit = Number(query.get('limit')); assert.ok(limit >= 1 && limit <= 100);
+      const entries = [...ownedSessions]; const before = query.get('before_id');
+      const start = before ? entries.findIndex(([id]) => id === before) + 1 : 0;
+      assert.ok(before === null || start > 0);
+      const items = entries.slice(start, start + limit).map(([id, value]) => ({ id, workflow_id: 'native-fixture', ...value,
+        current_sequence: id === agentId || id === recoveredId ? 4 : 0, state_version: id === agentId || id === recoveredId ? 4 : 1,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), raw: 'private-server-secret' }));
+      const hasMore = start + items.length < entries.length;
+      catalogPagesRead.push({ before, count: items.length });
+      reply({ items, has_more: hasMore, next_cursor: hasMore ? items.at(-1)!.id : null }); return;
+    }
+    const mutationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(turns|stop)$/.exec(path);
+    if (testTurns && mutationRoute) {
+      turnRequests++; assert.equal(req.method, 'POST'); assert.equal(mutationRoute[1], agentId);
+      const send = (status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+      const conflict = (code: string) => send(409, { detail: { code, current_state_version: turnVersion, raw: 'private-server-secret' } });
+      if (mutationRoute[2] === 'stop') {
+        const last = [...turnBodies.values()].at(-1)!.ack;
+        if (body.turn_id !== last.turn_id) { conflict('TURN_ID_CONFLICT'); return; }
+        if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
+        const requestedVersion = turnVersion;
+        if (turnUiBehavior && uiTurn) {
+          uiTurn.status = 'cancelled'; uiTurn.sequence = ++liveSequence; turnVersion++;
+          uiEvents.push({ event_id: randomUUID(), sequence: liveSequence, event_type: 'agent_session.turn_cancelled', created_at: new Date().toISOString() });
+        }
+        send(202, { turn_id: body.turn_id, state_version: requestedVersion, requested: true, raw: 'private-server-secret' }); return;
+      }
+      assert.equal(body.origin_id, undefined); // A process restart must not silently change the retry hash.
+      const previous = turnBodies.get(body.idempotency_key); const serialized = JSON.stringify(body);
+      if (previous) {
+        if (previous.serialized !== serialized) { conflict('IDEMPOTENCY_KEY_REUSED'); return; }
+        send(202, { ...previous.ack, ...(turnUiBehavior ? { status: uiTurn?.status ?? 'running' } : {}), replayed: true }); return;
+      }
+      if (body.expected_state_version !== turnVersion) { conflict('STATE_VERSION_CONFLICT'); return; }
+      if (body.idempotency_key === 'unauthorized') { send(401, { raw: 'private-server-secret' }); return; }
+      executions++; turnVersion++;
+      const ack = { turn_id: randomUUID(), status: 'accepted', accepted_sequence: turnUiBehavior ? ++liveSequence : executions, state_version: turnVersion, replayed: false };
+      turnBodies.set(body.idempotency_key, { serialized, ack });
+      if (turnUiBehavior) {
+        uiTurn = { id: ack.turn_id, status: 'running', sequence: ack.accepted_sequence, input: body.input_text };
+        uiEvents.push({ event_id: randomUUID(), sequence: liveSequence, event_type: 'agent_session.turn_accepted', created_at: new Date().toISOString() });
+        if (loseUiAck) { loseUiAck = false; req.socket.destroy(); return; }
+      }
+      if (body.idempotency_key === 'lost-ack') { req.socket.destroy(); return; }
+      send(202, { ...ack, raw: 'private-server-secret' }); return;
+    }
+    const conversationRoute = /^\/api\/agentflow\/agent-sessions\/([0-9a-f-]+)\/(snapshot|events|messages)(?:\?(.*))?$/.exec(path);
+    if (testConversation && conversationRoute) {
+      assert.equal(conversationRoute[1], focus.active_agent_session_id); messageAccesses.add(access);
+      if (freshSession()) {
+        if (conversationRoute[2] === 'snapshot') reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture',
+          title: ownedSessions.get(focus.active_agent_session_id!)!.title, current_sequence: 0, state_version: 1,
+          message_history_complete: true, latest_turn: null });
+        else {
+          const query = new URLSearchParams(conversationRoute[3]); assert.equal(query.get('after_sequence'), '0');
+          if (conversationRoute[2] === 'events') reply(eventPage(0));
+          else reply({ messages: [], next_cursor: 0, snapshot_sequence: 0, state_version: 1, has_more: false });
+        }
+        return;
+      }
+      if (conversationRoute[2] === 'snapshot') {
+        reply({ id: focus.active_agent_session_id, workflow_id: 'native-fixture', title: testSessions ? ownedSessions.get(focus.active_agent_session_id!)?.title : 'Native shared conversation',
+          current_sequence: liveSequence, state_version: turnUiBehavior ? turnVersion : liveSequence, message_history_complete: false,
+          latest_turn: uiTurn ? { id: uiTurn.id, status: uiTurn.status, accepted_sequence: turnBodies.values().next().value!.ack.accepted_sequence }
+            : { id: messageTurns[1], status: 'completed', accepted_sequence: 3 } }); return;
+      }
+      const query = new URLSearchParams(conversationRoute[3]); const after = Number(query.get('after_sequence'));
+      if (conversationRoute[2] === 'events') {
+        assert.equal(query.get('limit'), '100'); assert.ok(after >= 4 && after <= liveSequence);
+        reply(eventPage(after)); return;
+      }
+      assert.equal(query.get('limit'), '1'); assert.ok(turnUiBehavior ? [0, 2, 4, 6].includes(after) : [0, 2, 4].includes(after));
+      if (turnUiBehavior) {
+        const messages = [
+          ...messageTurns.map((id, index) => ({ turn_id: id, sequence: index === 0 ? 2 : 4, status: 'completed', input_text: 'native-message-question',
+            output_text: messageText, content_complete: true, source: 'user' })),
+          ...(uiTurn?.status === 'cancelled' ? [{ turn_id: uiTurn.id, sequence: uiTurn.sequence, status: 'cancelled', input_text: uiTurn.input,
+            output_text: 'native-ui-answer', content_complete: true, source: 'user' }] : []),
+        ].filter((message) => message.sequence > after);
+        reply({ messages: messages.slice(0, 1), next_cursor: messages[0]?.sequence ?? after, snapshot_sequence: liveSequence,
+          state_version: turnVersion, has_more: messages.length > 1 }); return;
+      }
+      const index = after === 0 ? 0 : 1;
+      reply({ messages: after === 4 ? [] : [{ turn_id: messageTurns[index], sequence: index === 0 ? 2 : 4, status: 'completed',
+        input_text: 'native-message-question', output_text: messageText, content_complete: true, source: 'user', raw_execution: 'private-server-secret' }],
+        next_cursor: after === 0 ? 2 : 4, snapshot_sequence: liveSequence, state_version: liveSequence, has_more: after === 0 }); return;
+    }
+    if (path === '/api/agentflow/me/agent-state') { reply(focus); return; }
+    if (path.startsWith('/api/agentflow/me/agent-events?')) {
+      const query = new URL(path, origin).searchParams; assert.equal(query.get('limit'), '100');
+      const cursor = Number(query.get('after_sequence')); watchCursors.push(cursor);
+      if (watching && !disconnected) { assert.equal(cursor, 0); disconnected = true; req.socket.destroy(); return; }
+      if (watching && cursor === 1) {
+        focus = { active_agent_session_id: recoveredId, version: 3, event_id: event3 };
+        res.writeHead(409); res.end('private-server-secret'); return;
+      }
+      if (watching && cursor === 4) { watching = false; res.writeHead(401); res.end('private-server-secret'); return; }
+      const next = watching && cursor === 0 ? { active_agent_session_id: agentId, version: 1, event_id: event1 }
+        : watching && cursor === 3 && rotatedDuringWatch ? { active_agent_session_id: agentId, version: 4, event_id: event4 } : null;
+      const events = next ? [{ event_id: next.event_id, sequence: next.version, event_type: 'agent_session.focus_changed',
+        previous_agent_session_id: focus.active_agent_session_id, active_agent_session_id: next.active_agent_session_id,
+        origin_id: 'fixture-peer', created_at: new Date().toISOString() }] : [];
+      if (next) focus = next;
+      reply({ events, next_cursor: focus.version, snapshot_version: focus.version, has_more: false }); return;
+    }
+    assert.equal(path, `/api/me/platform-sessions/${sid}`); assert.equal(req.method, 'DELETE'); assert.equal(body.password, password);
+    sid = null; refresh = null; res.writeHead(204); res.end();
+  })().catch(() => { errors++; rejectedPaths.push(`${req.method} ${req.url}`); res.writeHead(500); res.end(); });
+});
+const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+server.on('upgrade', (req, socket, head) => { void (async () => {
+  assert.equal(testLive || testTurnUi || testSessionUi, true);
+  const sequence = freshSession() ? 0 : liveSequence;
+  assert.equal(req.url, `/api/agentflow/agent-sessions/${focus.active_agent_session_id}/events?after_seq=${sequence}`);
+  assert.equal(req.headers['sec-websocket-protocol'], undefined); assert.equal(req.headers['sec-websocket-extensions'], undefined);
+  const token = await verifyProof(req);
+  wss.handleUpgrade(req, socket, head, (peer) => {
+    liveSockets.add(peer); liveAccesses.add(token);
+    peer.on('error', () => {}); peer.on('close', () => liveSockets.delete(peer));
+    peer.send(JSON.stringify(eventPage(sequence)));
+  });
+})().catch(() => { errors++; rejectedPaths.push('GET native event upgrade'); socket.destroy(); }); });
+async function cli(action: string, expectedExit = 0) {
+  const secret = action === 'login' || action === 'logout';
+  const args = ['apps/cli/dist/cli.js', 'session', action, '--json',
+    ...(action === 'login' ? ['--email', email] : ['--user-id', userId]), ...(secret ? ['--password-stdin'] : [])];
+  return new Promise<any>((resolveResult, reject) => {
+    const child = spawn(process.execPath, args, { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = ''; let stderr = '';
+    child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', () => reject(new Error('Fixture CLI failed to start')));
+    child.on('close', (code) => {
+      try {
+        assert.equal(code, expectedExit);
+        for (const forbidden of [...secrets, 'privateKeyPkcs8', 'accessToken', 'refreshToken']) {
+          assert.equal(output.includes(forbidden), false); assert.equal(stderr.includes(forbidden), false);
+        }
+        resolveResult(expectedExit ? null : JSON.parse(output).result);
+      } catch { reject(new Error(`Fixture CLI ${action} validation failed; output withheld`)); }
+    });
+    child.stdin.end(secret ? password : '');
+  });
+}
+async function canonicalCli(input: string, version: number, key: string, expectedExit = 0): Promise<any> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'chat', '--canonical', '--user-id', userId,
+      '--session-id', agentId, '--expected-state-version', String(version), '--idempotency-key', key, '--stdin', '--json'],
+      { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = ''; let stderr = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', () => { clearTimeout(timer); reject(new Error('Canonical fixture CLI failed to start')); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      try {
+        assert.equal(code, expectedExit);
+        for (const forbidden of [...secrets, input, 'private-server-secret', 'accessToken', 'refreshToken', 'privateKeyPkcs8']) {
+          assert.equal(output.includes(forbidden), false); assert.equal(stderr.includes(forbidden), false);
+        }
+        resolveResult(JSON.parse(expectedExit ? stderr : output));
+      } catch { reject(new Error('Canonical fixture CLI validation failed; output withheld')); }
+    });
+    child.stdin.end(input);
+  });
+}
+/** Launch the built command on a real terminal with the same OS vault and trusted TLS. */
+async function tuiFixture(): Promise<void> {
+  focus = { active_agent_session_id: agentId, version: 1, event_id: event1 };
+  for (const termination of ['q', 'SIGINT', 'SIGTERM'] as const) {
+    const bridge = spawn('python3', ['scripts/fixtures/canonical-tui-pty.py', process.execPath,
+      resolve('apps/cli/dist/cli.js'), userId], {
+      env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let pending = ''; let output = ''; let stderr = ''; let exit: number | null = null;
+    const done = new Promise<void>((resolveDone, reject) => {
+      bridge.on('error', reject);
+      bridge.on('close', (code) => code === 0 ? resolveDone() : reject(new Error('PTY bridge failed; output withheld')));
+    });
+    // A failure is awaited below; avoid an unhandled rejection while observing the terminal.
+    void done.catch(() => undefined);
+    bridge.stderr.on('data', (chunk) => { stderr += chunk; });
+    bridge.stdout.on('data', (chunk) => {
+      pending += chunk;
+      for (;;) {
+        const end = pending.indexOf('\n'); if (end < 0) break;
+        const event = JSON.parse(pending.slice(0, end)); pending = pending.slice(end + 1);
+        if (event.data) output += Buffer.from(event.data, 'base64').toString('utf8');
+        if ('exit' in event) exit = event.exit;
+      }
+      if (output.length > 8 * 1024 * 1024) bridge.kill();
+    });
+    const command = (value: object) => bridge.stdin.write(`${JSON.stringify(value)}\n`);
+    const until = async (condition: () => boolean) => {
+      for (let i = 0; i < 1000 && !condition() && exit === null; i++) await new Promise((r) => setTimeout(r, 10));
+      assert.ok(condition(), 'Product Canonical TUI did not reach expected state; output withheld');
+    };
+    try {
+      await until(() => output.includes('실행 completed'));
+      await until(() => output.includes('일부 기록만 표시'));
+      if (termination === 'q') {
+        command({ key: '\u001b[H' }); await until(() => output.includes('native-message-question'));
+        command({ key: 'w' }); await until(() => liveSockets.size === 1);
+        wakeLive(); await until(() => output.includes('버전 5'));
+        const before = liveAccesses.size; await cli('refresh');
+        await until(() => liveAccesses.size > before);
+        command({ key: 's' }); await until(() => liveSockets.size === 0 && output.includes('stopped'));
+        const readStart = output.length;
+        command({ key: 'r' }); await until(() => output.slice(readStart).includes('실행 completed'));
+        command({ key: 'q' });
+      } else {
+        command({ key: 'w' }); await until(() => liveSockets.size === 1);
+        command({ signal: termination });
+      }
+      await done;
+      assert.equal(exit, 0); assert.equal(stderr, '');
+      await untilLive(() => liveSockets.size === 0);
+      assert.equal(output.split('\u001b[?1049h').length - 1, 1);
+      assert.equal(output.split('\u001b[?1049l').length - 1, 1);
+      for (const forbidden of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken']) {
+        assert.equal(output.includes(forbidden), false, 'Sensitive native data escaped to TUI');
+      }
+    } finally { bridge.kill(); await done.catch(() => undefined); }
+  }
+  focus = { active_agent_session_id: null, version: 0, event_id: null }; liveSequence = 4; watchCursors.length = 0;
+  console.log('CLI built Canonical TUI / real PTY and Ink / OS keychain / trusted HTTPS and WSS fresh DPoP / completed messages and partial notice / token rotation / stop and explicit reread / Q SIGINT SIGTERM actual drain and screen restore PASS');
+}
+/** Interactive writes use the real product, terminal, vault and native signed transport. */
+async function tuiChatFixture(): Promise<void> {
+  for (const termination of ['q', 'SIGINT', 'SIGTERM'] as const) {
+    const bridge = spawn('python3', ['scripts/fixtures/canonical-tui-pty.py', process.execPath,
+      resolve('apps/cli/dist/cli.js'), userId, '--chat-fixture'], {
+      env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let pending = ''; let output = ''; let stderr = ''; let exit: number | null = null;
+    const done = new Promise<void>((yes, no) => {
+      bridge.on('error', no);
+      bridge.on('close', (code) => code === 0 ? yes() : no(new Error('Chat PTY bridge failed; output withheld')));
+    });
+    void done.catch(() => undefined);
+    bridge.stderr.on('data', (chunk) => { stderr += chunk; });
+    bridge.stdout.on('data', (chunk) => {
+      pending += chunk;
+      for (;;) {
+        const end = pending.indexOf('\n'); if (end < 0) break;
+        const value = JSON.parse(pending.slice(0, end)); pending = pending.slice(end + 1);
+        if (value.data) output += Buffer.from(value.data, 'base64').toString('utf8');
+        if ('exit' in value) exit = value.exit;
+      }
+      if (output.length > 8 * 1024 * 1024) bridge.kill();
+    });
+    const key = (value: string) => bridge.stdin.write(`${JSON.stringify({ key: value })}\n`);
+    const until = async (condition: () => boolean, stage: string) => {
+      for (let i = 0; i < 1000 && !condition() && exit === null; i++) await new Promise(r => setTimeout(r, 10));
+      assert.ok(condition(), `Chat PTY did not reach ${stage}; catalog=${catalogPagesRead.length}, lifecycle=${sessionRequests}, turn=${turnRequests}, selected=${focus.active_agent_session_id===agentId}; output withheld`);
+    };
+    const since = () => { const start = output.length; return () => output.slice(start); };
+    try {
+      if (termination === 'q') {
+        await until(() => output.includes('현재 대화: 없음') && output.includes('connected'), 'empty focus');
+        key('l'); await until(() => output.includes('Native shared conversation') && catalogPagesRead.length > 0, 'catalog');
+        if (testCatalogPages) {
+          key('p'); await until(() => catalogPagesRead.length === 2, 'second bounded page');
+          await until(() => output.includes('Catalog older session 100'), 'second page display');
+          key('p'); await until(() => catalogPagesRead.length === 3, 'last bounded page');
+          assert.deepEqual(catalogPagesRead.map(p => p.count), [100, 100, 7]);
+          assert.ok(catalogPagesRead.slice(1).every(p => p.before !== null));
+          const latest = since(); key('l'); await until(() => catalogPagesRead.length === 4 && latest().includes('N 생성'), 'latest bounded replacement');
+        }
+        await until(() => output.includes('N 생성'), 'verified creation controls');
+        key('n'); await until(() => output.includes('workflow ID:'), 'create workflow editor');
+        key('native-fixture'); await until(() => output.includes('workflow ID: native-fixture'), 'visible workflow');
+        key('\r'); await until(() => output.includes('새 대화 제목:'), 'create title editor');
+        key('CLI new 대화'); await until(() => output.includes('CLI new 대화'), 'visible title');
+        key('\r'); await until(() => sessionCreations === 1 && output.includes('작업 완료 여부'), 'lost creation receipt');
+        key('n'); await new Promise(r => setTimeout(r, 60)); assert.equal(sessionRequests, 1);
+        const afterRead = since(); key('r'); await until(() => afterRead().includes('CLI new 대화') && afterRead().includes('최신 목록'), 'unknown create reread remains locked');
+        assert.equal(sessionRequests, 1);
+        const afterLatest = since(); key('l'); await until(() => afterLatest().includes('N 생성') && afterLatest().includes('Native shared conversation'), 'explicit creation recovery');
+        assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 1);
+        const moved = since(); key('\u001b[B'); await until(() => moved().includes('> Native shared conversation'), 'owned active row');
+        const selected = since(); key('\r'); await until(() => focus.active_agent_session_id === agentId && selected().includes('버전 4'), 'selected conversation');
+        key('i'); await until(() => output.includes('메시지:'), 'message editor');
+        const prompt = 'CLI 한글 original rwysqnt';
+        key(prompt); await until(() => output.includes(prompt), 'visible exact prompt');
+        assert.equal(turnRequests, 0);
+        key('\r'); await until(() => turnRequests === 1 && output.includes('턴 unknown'), 'unknown turn');
+        assert.equal(executions, 1);
+        const original = [...turnBodies.values()][0]!.serialized;
+        assert.equal(JSON.parse(original).input_text, prompt);
+        assert.equal(JSON.parse(original).expected_state_version, 4);
+        const retryRead = since(); key('r'); await until(() => retryRead().includes('실행 running') && retryRead().includes('턴 unknown'), 'verified original retry context');
+        const retried = since(); key('y'); await until(() => turnRequests === 2 && retried().includes('실행 running') && retried().includes('draft 0 bytes'), 'exact explicit replay');
+        assert.equal(executions, 1); assert.equal(turnBodies.size, 1); assert.equal([...turnBodies.values()][0]!.serialized, original);
+        const stopped = since(); key('t'); await until(() => turnRequests === 3 && stopped().includes('native-ui-answer'), 'exact stop and completed transcript');
+        assert.equal(uiTurn?.status, 'cancelled');
+        key('x'); await until(() => output.includes('해제할까요?'), 'clear confirmation');
+        const cleared = since(); key('\r'); await until(() => focus.active_agent_session_id === null && cleared().includes('현재 대화: 없음'), 'clear focus');
+        assert.equal(sessionRequests, 3); assert.equal(sessionCreations, 1);
+        key('q');
+      } else {
+        focus = { active_agent_session_id: agentId, version: focus.version + 1, event_id: randomUUID() };
+        await until(() => output.includes('실행 cancelled'), 'terminal reread');
+        key('w'); await until(() => liveSockets.size === 1, 'actual WSS open');
+        bridge.stdin.write(`${JSON.stringify({ signal: termination })}\n`);
+      }
+      await done; assert.equal(exit, 0); assert.equal(stderr, '');
+      await untilLive(() => liveSockets.size === 0);
+      assert.equal(output.split('\u001b[?1049h').length - 1, 1);
+      assert.equal(output.split('\u001b[?1049l').length - 1, 1);
+      for (const forbidden of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken']) {
+        assert.equal(output.includes(forbidden), false, 'Sensitive native data escaped to chat TUI');
+      }
+    } finally { bridge.kill(); await done.catch(() => undefined); }
+  }
+  focus = { active_agent_session_id: null, version: 0, event_id: null };
+  liveSequence = 4; turnVersion = 4; uiTurn = null; uiEvents.length = 0; turnBodies.clear(); watchCursors.length = 0;
+  console.log('CLI built chat TUI / actual PTY and Ink / OS keychain / trusted HTTPS native P-256 writes / bounded catalog / lost create ACK once and explicit latest recovery / exact original turn replay once / exact stop and verified transcript / clear confirmation / no legacy dispatch / Q SIGINT SIGTERM actual socket drain and screen restore PASS');
+}
+async function sessionCli(action: string, extra: string[] = [], expectedExit = 0): Promise<any> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', action, '--user-id', userId, '--json', ...extra],
+      { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = ''; let stderr = ''; const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', () => { clearTimeout(timer); reject(new Error('Session fixture CLI failed to start')); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      try {
+        assert.equal(code, expectedExit);
+        for (const secret of [...secrets, 'private-server-secret', 'accessToken', 'refreshToken', 'privateKeyPkcs8']) {
+          assert.equal(output.includes(secret), false); assert.equal(stderr.includes(secret), false);
+        }
+        resolveResult(expectedExit ? JSON.parse(stderr).error.details : JSON.parse(output).result);
+      } catch { reject(new Error(`Session fixture ${action} validation failed; output withheld`)); }
+    });
+  });
+}
+async function sessionFixture(): Promise<void> {
+  const catalog = await sessionCli('agent-sessions', ['--limit', '1']);
+  assert.equal(catalog.focus.version, 0); assert.equal(catalog.sessions.items.length, 1); assert.equal(catalog.sessions.has_more, true);
+  const page = await sessionCli('agent-sessions', ['--before-id', catalog.sessions.next_cursor]);
+  assert.equal(page.sessions.items[0].status, 'archived');
+  const created = await sessionCli('create-agent-session', ['--workflow-id', 'native-fixture', '--title', 'CLI created conversation', '--expected-version', '0']);
+  assert.equal(created.focus.active_agent_session_id, created.id); assert.equal(created.focus.version, 1); assert.equal(sessionCreations, 1);
+  const conflict = await sessionCli('switch-agent-focus', ['--session-id', agentId, '--expected-version', '0'], 2);
+  assert.equal(conflict.conflict.code, 'FOCUS_VERSION_CONFLICT'); assert.equal(conflict.conflict.current.version, 1);
+  assert.equal(sessionRequests, 2); assert.equal(sessionCreations, 1);
+  await sessionCli('switch-agent-focus', ['--session-id', recoveredId, '--expected-version', '1'], 2);
+  const switched = await sessionCli('switch-agent-focus', ['--session-id', agentId, '--expected-version', '1']);
+  assert.equal(switched.active_agent_session_id, agentId); assert.equal(switched.version, 2);
+  assert.deepEqual(await sessionCli('switch-agent-focus', ['--session-id', agentId, '--expected-version', '2']), switched);
+  const cleared = await sessionCli('switch-agent-focus', ['--clear', '--expected-version', '2']);
+  assert.equal(cleared.active_agent_session_id, null); assert.equal(cleared.version, 3);
+  loseSessionAck = true; const before = sessionRequests;
+  const unknown = await sessionCli('create-agent-session', ['--workflow-id', 'native-fixture', '--title', 'Unknown CLI conversation', '--expected-version', '3'], 4);
+  assert.equal(unknown.outcome, 'unknown'); assert.equal(sessionRequests, before + 1); assert.equal(sessionCreations, 2);
+  const recovered = await sessionCli('agent-sessions');
+  assert.equal(recovered.focus.version, 4); assert.equal(recovered.focus.active_agent_session_id, focus.active_agent_session_id);
+  assert.equal(recovered.sessions.items.some((item: { id: string }) => item.id === recovered.focus.active_agent_session_id), true);
+  assert.equal(sessionRequests, before + 1); assert.equal(sessionCreations, 2);
+  console.log('cli: built commands / HTTPS signed POST + PUT / server UUID / owned pagination / focus CAS / no-op / archived rejection / lost create ACK once / explicit catalog recovery PASS');
+  focus = { active_agent_session_id: null, version: 0, event_id: null };
+}
+async function turnFixture(client?: DexRpcClient): Promise<void> {
+  const prompt = `${'한'.repeat(24000)}\nintentional trailing newline\n`; secrets.add(prompt);
+  const submit = async (text: string, version: number, key: string, exit = 0) => {
+    if (!client) return canonicalCli(text, version, key, exit);
+    try {
+      const value = await client.request<any>('native/submit-turn', { user_id: userId, agent_session_id: agentId,
+        input_text: text, expected_state_version: version, idempotency_key: key });
+      for (const secret of [...secrets, 'private-server-secret']) assert.equal(JSON.stringify(value).includes(secret), false);
+      assert.equal(exit, 0); assert.equal(value.platform_type, platform); return { result: value.mutation };
+    } catch (error) {
+      assert.notEqual(exit, 0); assert.ok(error instanceof DexRpcError);
+      for (const secret of [...secrets, 'private-server-secret']) assert.equal(JSON.stringify(error.data).includes(secret), false);
+      assert.equal(error.engineCode, exit === 2 ? 'usage_error' : exit === 3 ? 'auth_required' : 'network_error');
+      return { error: { details: (error.data as { details?: unknown })?.details } };
+    }
+  };
+  const first = await submit(prompt, 1, 'first'); assert.equal(first.result.replayed, false);
+  assert.equal(JSON.parse(turnBodies.get('first')!.serialized).input_text, prompt);
+  const replay = await submit(prompt, 1, 'first'); assert.equal(replay.result.replayed, true);
+  assert.equal(replay.result.turn_id, first.result.turn_id); assert.equal(executions, 1);
+  await submit(`${prompt}changed`, 1, 'first', 2); await submit(prompt, 1, 'stale', 2); assert.equal(executions, 1);
+  const before = turnRequests;
+  const uncertain = await submit(prompt, 2, 'lost-ack', 4);
+  assert.equal(uncertain.error.details.outcome, 'unknown'); assert.equal(turnRequests, before + 1); assert.equal(executions, 2);
+  const recovered = await submit(prompt, 2, 'lost-ack'); assert.equal(recovered.result.replayed, true); assert.equal(executions, 2);
+  const authorization = await submit(prompt, 3, 'unauthorized', 3);
+  assert.equal(authorization.error.details.outcome, 'rejected'); assert.equal(turnRequests, before + 3);
+  if (client) {
+    const stopped = await client.request<any>('native/stop-turn', { user_id: userId, agent_session_id: agentId,
+      turn_id: recovered.result.turn_id, expected_state_version: 3 });
+    assert.deepEqual(stopped.mutation, { turn_id: recovered.result.turn_id, state_version: 3, requested: true });
+    await assert.rejects(client.request('native/stop-turn', { user_id: userId, agent_session_id: agentId,
+      turn_id: randomUUID(), expected_state_version: 3 }), (e: unknown) => e instanceof DexRpcError && e.engineCode === 'usage_error');
+  }
+  console.log(`${platform}: built CLI/RPC / real HTTPS P-256 DPoP / exact multiline >64KiB input / replay once / CAS conflict / lost ack explicit retry / 401 no refresh${client ? ' / stop request binding' : ''} PASS`);
+}
+function watch(expectedExit: number, action = 'watch-focus') {
+  const child = spawn(process.execPath, ['apps/cli/dist/cli.js', 'session', action, '--user-id', userId, '--jsonl', '--interval-ms', '200'],
+    { env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const updates: any[] = []; let output = ''; let pending = ''; let stderr = ''; let failed = false;
+  const listeners = new Set<() => void>(); let finished = false;
+  const timeout = setTimeout(() => { failed = true; child.kill('SIGKILL'); }, 15000);
+  child.stdout.on('data', (chunk) => {
+    output += chunk; pending += chunk;
+    while (pending.includes('\n')) {
+      const index = pending.indexOf('\n');
+      try { updates.push(JSON.parse(pending.slice(0, index))); } catch { failed = true; }
+      pending = pending.slice(index + 1);
+    }
+    for (const listener of listeners) listener();
+  });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const done = new Promise<void>((resolveDone, reject) => {
+    child.on('error', () => { clearTimeout(timeout); finished = true; reject(new Error('Fixture watcher failed to start')); for (const listener of listeners) listener(); });
+    child.on('close', (code) => {
+      clearTimeout(timeout); finished = true;
+      try {
+        assert.equal(failed, false); assert.equal(code, expectedExit); assert.equal(pending, '');
+        for (const forbidden of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken', 'authScope']) {
+          assert.equal(output.includes(forbidden), false); assert.equal(stderr.includes(forbidden), false);
+        }
+        resolveDone();
+      } catch { reject(new Error('Fixture watcher validation failed; output withheld')); }
+      for (const listener of listeners) listener();
+    });
+  });
+  const until = (matches: (e: any) => boolean) => new Promise<void>((resolveUpdate, reject) => {
+    const check = () => {
+      if (updates.some(matches)) { listeners.delete(check); resolveUpdate(); }
+      else if (finished) { listeners.delete(check); reject(new Error('Fixture watcher ended before expected progress')); }
+    };
+    listeners.add(check); check();
+  });
+  // Attach immediately so an early child failure is never an unhandled rejection.
+  void done.catch(() => {});
+  return { updates, done, until, stop: () => { child.kill('SIGINT'); }, kill: () => { child.kill('SIGKILL'); } };
+}
+function assertConversation(value: any): void {
+  assert.equal(value.has_more, false); assert.equal(value.conversation.snapshot.title, 'Native shared conversation');
+  assert.deepEqual(value.conversation.messages.map((m: any) => m.sequence), [2, 4]);
+  assert.equal(value.conversation.messages[0].output_text, messageText);
+  assert.equal(JSON.stringify(value).includes('private-server-secret'), false);
+}
+async function untilMessageRotation(before: number): Promise<void> {
+  for (let i = 0; i < 200 && messageAccesses.size <= before; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(messageAccesses.size > before, 'The next bounded conversation read must use the rotated vault token');
+}
+async function vscodeFixture() {
+  const logs: string[] = []; const replies: unknown[] = []; const clients: DexRpcClient[] = [];
+  const client = () => {
+    const c = new DexRpcClient({ process: { command: desktopElectron ?? process.execPath, args: platform === 'desktop'
+      ? ['-r', 'tsx/cjs', 'apps/desktop/verify/native-session-host.cjs', `--origin=${origin}`, `--user-id=${userId}`,
+        ...(testWorkspaceUi ? ['--workspace-ui=1'] : []),
+        ...(testCatalogPages ? ['--catalog-pages=1'] : []),
+        `--screenshot=${testCatalogPages ? '/tmp/cross-sync-catalog-pages-desktop.png' : testWorkspaceUi ? '/tmp/cross-sync-desktop-shared-chat.png' : testSessionUi ? '/tmp/cross-sync-native-session-ui-desktop.png' : testTurnUi ? '/tmp/cross-sync-native-turn-ui-desktop.png' : testLive ? '/tmp/cross-sync-native-ws-desktop-ui.png' : testConversation ? '/tmp/cross-sync-native-conversation-desktop-ui.png' : '/tmp/cross-sync-desktop-native-ui.png'}`]
+      : testTurnUi || testSessionUi ? ['-r', 'tsx/cjs', 'apps/vscode/verify/native-turn-webview.cjs', `--origin=${origin}`, `--user-id=${userId}`, `--node=${process.execPath}`,
+        ...(testCatalogPages ? ['--catalog-pages=1'] : []),
+        `--screenshot=${testCatalogPages ? '/tmp/cross-sync-catalog-pages-vscode.png' : `/tmp/cross-sync-native-${testSessionUi ? 'session' : 'turn'}-ui-vscode.png`}`]
+      : ['apps/cli/dist/cli.js', 'serve', '--stdio', '--native-platform', 'vscode'],
+      env: { ...process.env, DEX_CLI_HOME: directory, NODE_EXTRA_CA_CERTS: join(caRoot, 'rootCA.pem') } }, clientVersion: 'fixture', log: (v) => logs.push(v) });
+    clients.push(c); return c;
+  };
+  if (platform === 'desktop') cleanupDesktop = async () => {
+    const cleanup = client();
+    try { await cleanup.start(); await cleanup.request('verify/cleanup-key'); }
+    finally { await cleanup.stop(); }
+  };
+  const session = async (c: DexRpcClient, action: string) => {
+    // Only local pre-wire lock contention may be retried; journals/HTTP/transport failures remain final.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await c.request<any>('native/session', { action, ...(action === 'login' ? { email } : { user_id: userId }),
+          ...(['login', 'logout'].includes(action) ? { password } : {}) }); replies.push(r); return r;
+      } catch (error) {
+        if (!(error instanceof DexRpcError) || error.engineCode !== 'credential_store_unavailable'
+          || error.message !== new NativeDeviceOperationBusy().message || attempt === 9) throw error;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+  };
+  const notifications: any[] = []; const listeners = new Set<() => void>();
+  const until = (predicate: (v: any) => boolean) => new Promise<void>((resolveUpdate, reject) => {
+    const timer = setTimeout(() => { listeners.delete(check); reject(new Error('VSCode fixture progress deadline')); }, 10000);
+    const check = () => { if (notifications.some(predicate)) { clearTimeout(timer); listeners.delete(check); resolveUpdate(); } };
+    listeners.add(check); check();
+  });
+  try {
+    const first = client(); assert.equal((await first.start()).capabilities.nativePlatformSession?.platform, platform);
+    if (platform === 'desktop') await first.request('native/device', { action: 'register', email, password });
+    assert.equal((await session(first, 'login')).result.state, 'active');
+    if (platform === 'desktop') {
+      assert.equal((await first.request<any>('verify/ui')).ui, 'passed');
+      await session(first, 'status'); // Observe that cancelled native work released its OS lock before process exit.
+      console.log('Desktop production component / preload / IPC sender isolation / native-only TLS / UI subscription and cancellation PASS');
+    }
+    await first.stop();
+    const restored = client(); assert.equal((await session(restored, 'status')).result.state, 'active');
+    await session(restored, 'refresh');
+    if (testTurns && !testTurnUi) await turnFixture(restored);
+    restored.onNotification((n) => { if (n.method === 'native/focus' || n.method === 'native/conversation') { replies.push(n.params); notifications.push(n.params); for (const listener of listeners) listener(); } });
+    watching = true;
+    const started = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 }); replies.push(started);
+    await until((n) => n.watch_id === started.watch_id && n.update.type === 'focus' && n.update.focus.version === 3);
+    const rotation = client(); await session(rotation, 'refresh'); rotatedDuringWatch = true; await rotation.stop();
+    await until((n) => n.watch_id === started.watch_id && n.update.type === 'stopped');
+    assert.deepEqual(notifications.filter((n) => n.watch_id === started.watch_id && n.update.type === 'focus').map((n) => [n.update.focus.version, n.update.source]),
+      [[0, 'snapshot'], [1, 'replay'], [3, 'recovered'], [4, 'replay']]);
+    assert.equal(notifications.at(-1).update.reason, 'authentication');
+    const second = await restored.request<any>('native/watch', { user_id: userId, interval_ms: 200 });
+    await until((n) => n.watch_id === second.watch_id && n.update.type === 'focus');
+    replies.push(await restored.request('native/unwatch', { watch_id: second.watch_id }));
+    const count = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, count);
+    if (testConversation) {
+      const read = await restored.request<any>('native/conversation', { user_id: userId }); replies.push(read); assertConversation(read);
+      const live = await restored.request<any>('native/watch-conversation', { user_id: userId, interval_ms: 200 }); replies.push(live);
+      await until((n) => n.watch_id === live.watch_id && n.update.type === 'conversation');
+      assertConversation(notifications.find((n) => n.watch_id === live.watch_id && n.update.type === 'conversation').update);
+      const before = messageAccesses.size; const rotation = client(); await session(rotation, 'refresh'); await rotation.stop();
+      await untilMessageRotation(before); await restored.request('native/unwatch', { watch_id: live.watch_id });
+      const stoppedAt = requests; await new Promise((r) => setTimeout(r, 250)); assert.equal(requests, stoppedAt);
+      if (platform === 'desktop' && !testWorkspaceUi) assert.equal((await restored.request<any>('verify/conversation-ui')).ui, 'passed');
+      console.log(`${platform}: actual TLS / >64KiB messages / sparse cursors / conversation RPC projection / cross-process rotation / unwatch PASS`);
+      if (testTurnUi && !testWorkspaceUi) {
+        const verified = await restored.request<any>('verify/turn-ui');
+        assert.equal(verified.ui, 'passed'); assert.equal(executions, 1); assert.equal(turnRequests, 3);
+        const body = JSON.parse([...turnBodies.values()][0]!.serialized);
+        assert.equal(body.input_text, 'native-ui-question\nexact tail\n'); assert.equal(body.expected_state_version, 4);
+        assert.equal(uiTurn?.status, 'cancelled'); assert.equal(turnVersion, 6);
+        console.log(`${platform}: production composer / one dispatch / lost ack explicit same-body retry / exact verified stop / terminal HTTP recovery PASS`);
+      }
+      if (testLive) {
+        const live = await restored.request<any>('native/watch-live', { user_id: userId, interval_ms: 200 }); replies.push(live);
+        await until((n) => n.watch_id === live.watch_id && n.update.type === 'conversation');
+        await untilLive(() => liveSockets.size === 1); wakeLive();
+        await until((n) => n.watch_id === live.watch_id && n.update.conversation?.snapshot?.current_sequence === 5);
+        const before = liveAccesses.size; const rotation = client(); await session(rotation, 'refresh'); await rotation.stop();
+        await untilLive(() => liveAccesses.size > before); await restored.request('native/unwatch', { watch_id: live.watch_id });
+        await untilLive(() => liveSockets.size === 0);
+        if (platform === 'desktop') assert.equal((await restored.request<any>('verify/live-ui')).ui, 'passed');
+        await session(restored, 'status');
+        console.log(`${platform}: native WSS DPoP / events wake verified HTTP / cross-process token rotation / actual close / live UI PASS`);
+      }
+    }
+    if (testSessionUi && !testWorkspaceUi) {
+      focus = { active_agent_session_id: null, version: 0, event_id: null };
+      const verified = await restored.request<any>('verify/session-ui');
+      assert.equal(verified.ui, 'passed'); assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 3);
+      assert.equal(focus.active_agent_session_id, null); assert.equal(focus.version, 3);
+      assert.equal((sessionWriteBodies[0] as { title: string }).title, 'Native created conversation');
+      console.log(`${platform}: production session controls / empty initial focus / server UUID / lost create ACK once / explicit catalog recovery / owned switch / clear focus PASS`);
+    }
+    if (testWorkspaceUi) {
+      focus = { active_agent_session_id: null, version: 0, event_id: null };
+      const verified = await restored.request<any>('verify/workspace-ui');
+      assert.equal(verified.ui, 'passed'); assert.equal(verified.legacy_dispatches, 0);
+      assert.equal(sessionCreations, 1); assert.equal(sessionRequests, 3);
+      assert.equal(executions, 1); assert.equal(turnRequests, 3);
+      assert.equal(focus.active_agent_session_id, null); assert.equal(focus.version, 3);
+      assert.equal(JSON.parse([...turnBodies.values()][0]!.serialized).input_text, 'native-ui-question\nexact tail\n');
+      assert.equal(uiTurn?.status, 'cancelled'); assert.equal(turnVersion, 6);
+      console.log('Desktop production Workspace / shared Settings model / tab close and reopen / uncertain create and turn preservation / exact retry and stop / focus clear / no legacy dispatch or private persistence PASS');
+    }
+    if (testCatalogPages && testSessionUi) {
+      const older = catalogPagesRead.filter((page) => page.before !== null);
+      assert.deepEqual(older.map((page) => page.count), [100, 8]);
+      assert(catalogPagesRead.every((page) => page.count <= 100));
+      console.log(`${platform}: production catalog pagination UI / 208 owned sessions / bounded100→100→8→latest100 / opaque cursors / unchanged focus and draft / no lifecycle or turn dispatch from browsing PASS`);
+    }
+    assert.equal((await session(restored, 'logout')).result.state, 'signed_out'); await restored.stop();
+    const restarted = client(); await session(restarted, 'login'); loseCompletion = true;
+    await assert.rejects(session(restarted, 'refresh')); assert.equal((await session(restarted, 'status')).result.state, 'refreshing');
+    const before = requests; await assert.rejects(session(restarted, 'refresh')); assert.equal(requests, before);
+    assert.equal((await session(restarted, 'forget-local')).server_revoked, false);
+    assert.equal(requests, before); assert.equal(contexts.size, 0);
+    if (errors) console.error('Rejected fixture request paths (no credential data):', rejectedPaths);
+    assert.equal(errors, 0);
+    const visible = JSON.stringify([replies, logs]);
+    for (const secret of [...secrets, 'private-server-secret', 'privateKeyPkcs8', 'accessToken', 'refreshToken', 'authScope']) assert.equal(visible.includes(secret), false);
+    console.log(`${platform} host HTTPS / OS-keychain restore / platform isolation / cursor replay and reconnect / 409 recovery / another process rotation / 401 stop / unwatch / lost rotation journal PASS`);
+  } finally { for (const c of clients) await c.stop(); }
+}
+try {
+  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  const address = server.address(); assert.ok(address && typeof address !== 'string'); origin = `https://localhost:${address.port}`;
+  const scope = { origin, platform, userId };
+  if (platform !== 'desktop') { keyCreated = true; await keys.withIdentity(scope, true, async (identity) => { publicKey = identity.publicKey; }); }
+  writeFileSync(join(directory, 'config.json'), JSON.stringify({ version: 1, currentProfile: 'fixture', profiles: { fixture: { serverUrl: origin } } }), { mode: 0o600 });
+  if (platform !== 'cli') await vscodeFixture();
+  else {
+  const loggedIn = await cli('login'); assert.equal(loggedIn.state, 'active');
+  assert.deepEqual(await cli('status'), loggedIn);
+  await cli('focus'); await cli('refresh'); await cli('focus');
+  if (testTui) await tuiFixture();
+  if (testTuiChat) await tuiChatFixture();
+  if (testSessions && !testTuiChat) await sessionFixture();
+  if (testTurns && !testTuiChat) await turnFixture();
+  watching = true;
+  const subscriber = watch(3);
+  try {
+    await subscriber.until((e) => e.type === 'focus' && e.focus.version === 3);
+    await cli('refresh'); rotatedDuringWatch = true;
+    await subscriber.done;
+    assert.deepEqual(subscriber.updates.filter((e) => e.type === 'focus').map((e) => [e.focus.version, e.source]),
+      [[0, 'snapshot'], [1, 'replay'], [3, 'recovered'], [4, 'replay']]);
+    assert.equal(subscriber.updates.at(-1).reason, 'authentication');
+    assert.deepEqual(watchCursors.slice(0, 3), [0, 0, 1]);
+    assert.ok(watchCursors.includes(3)); assert.equal(watchCursors.at(-1), 4);
+  } finally { subscriber.kill(); await subscriber.done.catch(() => {}); }
+  const cancelled = watch(0);
+  try { await cancelled.until((e) => e.type === 'focus'); cancelled.stop(); await cancelled.done; assert.equal(cancelled.updates.at(-1).reason, 'cancelled'); }
+  finally { cancelled.kill(); await cancelled.done.catch(() => {}); }
+  console.log('HTTPS watcher: cursor replay / disconnect reconnect / 409 snapshot / concurrent process rotation / permission stop / Ctrl+C PASS');
+  if (testConversation) {
+    assertConversation(await cli('conversation'));
+    const live = watch(0, 'watch-conversation');
+    try {
+      await live.until((e) => e.type === 'conversation'); assertConversation(live.updates.find((e) => e.type === 'conversation'));
+      const before = messageAccesses.size; await cli('refresh'); await untilMessageRotation(before);
+      live.stop(); await live.done; assert.equal(live.updates.at(-1).reason, 'cancelled');
+    } finally { live.kill(); await live.done.catch(() => {}); }
+    console.log('CLI: actual TLS / >64KiB messages / sparse cursors / display-only JSONL / cross-process rotation / Ctrl+C PASS');
+    if (testLive) {
+      const live = watch(0, 'watch-live');
+      try {
+        await live.until((e) => e.type === 'conversation'); await untilLive(() => liveSockets.size === 1); wakeLive();
+        await live.until((e) => e.conversation?.snapshot?.current_sequence === 5);
+        const before = liveAccesses.size; await cli('refresh'); await untilLive(() => liveAccesses.size > before);
+        live.stop(); await live.done; await untilLive(() => liveSockets.size === 0);
+      } finally { live.kill(); await live.done.catch(() => {}); }
+      console.log('CLI: native WSS DPoP / verified HTTP wakeup / cross-process rotation / Ctrl+C actual close PASS');
+    }
+  }
+  assert.equal((await cli('logout')).state, 'signed_out'); assert.equal((await cli('status')).state, 'signed_out');
+  console.log('HTTPS fixture: separate built CLI processes / OS-keychain restore / rotation / Canonical DPoP / password logout PASS');
+  await cli('login'); loseCompletion = true; await cli('refresh', 1);
+  assert.equal((await cli('status')).state, 'refreshing'); const count = requests;
+  await cli('refresh', 3); assert.equal(requests, count);
+  assert.equal((await cli('forget-local')).state, 'signed_out'); assert.equal(requests, count);
+  assert.equal(contexts.size, 0); assert.equal(errors, 0);
+  console.log('Lost refresh completion: restart refuses reuse/retry; explicit local-only recovery PASS. ACTIVE Gateway remains untested.');
+  }
+} catch (error) {
+  if (platform === 'desktop') console.error('Desktop fixture failed:', error instanceof Error ? error.message : 'Unknown fixture error');
+  throw error;
+} finally {
+  for (const peer of liveSockets) peer.terminate();
+  await new Promise<void>((resolveClose) => wss.close(() => resolveClose()));
+  server.closeAllConnections();
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  try {
+    await cleanDesktop();
+    if (keyCreated) {
+      const scope = { origin, platform, userId };
+      await keys.withSession(scope, async (_identity, _sign, vault) => { await vault.clear(); });
+      await keys.remove(scope);
+    }
+  } finally { signingSecret.fill(0); rmSync(directory, { recursive: true, force: true }); }
+  console.log('Disposable fixture keychain slots and profile folder removed.');
+}

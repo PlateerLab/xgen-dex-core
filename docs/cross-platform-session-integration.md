@@ -1,0 +1,1009 @@
+# Cross-Platform Session 통합 브랜치
+
+- 기준 브랜치: `main` (`e0ceb040bf2c2722bfd306d046cc7f3c46706503`)
+- 상태: 구현 중. 모든 클라이언트 동기화와 검증 전까지 상위 PR은 Draft로 유지한다.
+
+## 현재 변경 묶음
+
+Mobile 하드웨어 P-256 키 공급자에 이어 설정 화면에 서버 기기 등록·조회·선택 브라우저 승인 요청을 연결했다. 세션 발급·보관·DPoP 및 Canonical 구독은 후속 연결이다. 아래 Mobile 절에 검증 범위와 실제 기기 관문을 기록한다.
+
+## 이후 통합 관문
+
+Platform Session의 sid, trust 및 revoke 계약이 준비되면 Desktop·Mobile·CLI·VSCode의 공통 session 동기화로 확장한다. Mobile 테스트와 typecheck를 별도로 실행하고 실제 기기에서 OS 보안 저장소 동작을 확인한다.
+
+`@dex/protocol/agent-session`에는 공통 Canonical Agent Session 읽기 클라이언트와 이벤트 cursor 검사를 추가했다. 계정 포커스, 본인 세션 목록, snapshot, 이벤트 페이지를 Gateway 경로에서 읽으며, 매 요청에 **ACTIVE Platform Session** access token과 해당 기기 키의 새 DPoP 증명을 요구한다. 서명할 `htu`에서는 query를 제외하고 HTTP 요청에는 cursor query를 포함한다. 기존 `XgenClient`의 Bearer 토큰을 재사용하거나 인증 실패 시 fallback하지 않는다. 연속되지 않은 sequence, 충돌한 중복 이벤트 또는 잘못된 cursor는 적용하지 않고 snapshot 재조정을 호출자에게 맡긴다.
+
+`GET /api/agentflow/me/agent-events`도 같은 DPoP 경계로 읽고, `applyAccountEventPage`로 계정 포커스 변경을 순서대로 적용한다. 재연결 시 마지막으로 적용한 계정 version을 `after_sequence`에 전달한다. 이벤트의 이전 포인터가 로컬 포커스와 다르거나 이벤트가 누락·충돌하면 적용을 중단하고 `GET /api/agentflow/me/agent-state`로 포커스를 다시 읽는다. 이 공통 계약은 Desktop·CLI·VSCode의 인증된 watcher가 사용할 기반이다. CLI의 OS 키체인 공급자와 폴링 watcher에는 아래와 같이 연결했고 VSCode의 stdio 호스트와 명령 메뉴, Desktop 설정의 기기·세션 메뉴에도 연결했다. Mobile 앱 연결은 남아 있다.
+
+공통 `reconcileAgentFocus`는 watcher의 한 번의 동기화 작업이다. 호출자는 검증된 계정·Platform Session이 바뀔 때 달라지는 비밀이 아닌 `authScope`를 제공하고, 이전 결과를 다음 호출에 전달한다. 범위가 바뀌면 이전 cursor를 버리고 포커스 스냅샷부터 읽는다. 같은 범위에서는 계정 이벤트를 최대 10페이지씩 재생해 남은 페이지가 있으면 `hasMore`를 반환한다. 409나 잘못된 이벤트 페이지는 스냅샷으로 복구하고, 인증·네트워크·취소 오류는 호출자에게 그대로 전달한다. 호출자는 폴링과 취소를 관리하며 계정 전환 시 이전 요청을 취소해야 한다.
+
+이 공통 패키지는 자격증명을 발급·보관하지 않는다. CLI는 아래 OS 키체인 공급자로 일회성 Canonical 읽기와 폴링 구독을 연결했다. VSCode는 아래 stdio 호스트, Desktop은 메인 프로세스 IPC와 설정 화면에 연결했고 Mobile의 공급자 및 앱 watcher 연결은 남아 있다. 현재 Compose는 `enrollment` 모드이므로 실제 Canonical API의 양성 경로는 HTTPS `active` 환경에서 검증한다.
+
+## Native Platform Session 공통 클라이언트
+
+`@dex/protocol/native-platform-session`의 `NativePlatformSessionClient`는 Desktop·Mobile·CLI·VSCode에서 사용할 등록, 등록 상태, 신뢰 기기 목록, 선택한 브라우저에 대한 승인 요청, 비밀번호·기기 키 로그인 및 refresh 회전 API를 제공한다. CLI 등록·세션 명령, VSCode와 Desktop 기기·세션 메뉴는 아래 OS 키체인 경로를 사용하고 Mobile 앱 연결은 남아 있다. `@dex/protocol/native-device-proof`는 호스트가 보유한 비추출 WebCrypto P-256 개인키로 Gateway의 ES256 challenge JWT를 서명하는 선택적 도우미다. 네이티브 OS 키 공급자도 동일한 `signChallenge` 인터페이스를 구현할 수 있다.
+
+- 클라이언트 인스턴스는 HTTPS origin·플랫폼·설치 ID·공개키를 고정한다. URL 경로·query·userinfo, `web` 플랫폼 및 개인키가 포함된 JWK는 받지 않는다. 네이티브 호스트의 HTTP transport에서 실행해야 하며 브라우저가 자동으로 보내는 Origin은 Gateway에서 거절한다.
+- 등록과 승인 요청은 현재 계정 Bearer를 사용한다. 등록은 `pending`만 반환하고, 승인 요청은 선택한 웹 기기와 일치하는 응답 및 6자리 비교 코드만 반환한다. 조회 결과나 기본 승인 기기 표시만으로 신뢰를 결정하지 않는다.
+- 호스트는 `account.current()`에 검증한 현재 계정의 `authScope`와 계정 access token을 제공한다. 로그아웃·재로그인·계정 전환 시 동일 계정이어도 범위를 바꾸고 이전 요청을 취소한다. Bearer가 바뀌거나 범위가 바뀌면 진행 중인 등록·승인·로그인 완료 및 응답 사용을 중단한다.
+- 로그인 `pending_takeover`에는 자격증명이 없어야 한다. `active`인데 access 서명에 실패한 경우에는 refresh만 반환될 수 있으며, 호스트가 이를 보안 저장소에 보관한 뒤 새 challenge를 통한 refresh로 access를 받을 수 있다.
+- refresh에는 Authorization·Origin·쿠키를 보내지 않는다. 계정 Bearer 없이도 현재 `authScope`로 실행할 수 있다. 응답의 sid, 회전된 refresh 및 access 준비 상태를 검사한다. 새 refresh는 다음 사용 전 저장해야 한다. 완료 결과를 모르는 네트워크 실패에서 옛 refresh를 다시 사용하면 서버가 전체 family를 폐기할 수 있으므로 자동 재시도하지 않는다.
+- HTTP 응답 본문과 transport·키 공급자의 오류 원문은 오류 객체에 넣지 않는다. 비밀번호는 로그인 완료 본문에만 보내고 디스크에 쓰지 않는다. 동일 인스턴스의 쓰기 ceremony를 겹쳐 실행하지 않으며, 여러 프로세스·인스턴스의 회전 직렬화는 호스트 책임이다.
+
+다음 앱 연결 작업에는 **파일 fallback 없는 기기 키 공급자**, 계정·origin·install별 보안 저장, 회전 결과 저장, 계정 전환·로그아웃 시 취소/삭제 및 ACTIVE access의 DPoP 공급자가 필요하다. 브라우저는 비추출 키, Mobile은 OS의 secure hardware key 저장을 사용하며 CLI 소프트웨어 키의 보관 방식은 아래에 설명한다. 기존 `SystemCredentialStore`의 평문 파일 fallback을 이 자격증명 저장소로 재사용하지 않는다. 공통 클라이언트 추가로 `active` 모드 관문이 열리지는 않는다.
+
+### 로컬 Compose 실사용 계약 검증
+
+```sh
+# 저장소 루트에서 실행. Docker Compose 전체 스택 및 mkcert localhost 인증서가 먼저 준비되어야 한다.
+node --import tsx scripts/native-platform-session-compose.mts
+```
+
+이 스크립트는 `https://localhost:3443`을 사용하고 mkcert root CA로 인증서를 검증한다. `full-stack-postgresql-1`에 임시 일반 계정과 사전 신뢰 브라우저 fixture를 만든 뒤, 네 플랫폼 각각의 등록 → 상태 조회 → 승인 브라우저 선택 → 실제 브라우저 키·비밀번호 승인 → trusted 상태 조회를 검증한다. 실제 기존 사용자와 기기는 변경하지 않는다. 종료 시 임시 계정의 legacy 세션을 로그아웃하고 계정·기기·승인 요청·DB 보안 이벤트·outbox·로그인 로그를 제거한다. 계정별 횟수 제한 Redis 키는 짧은 TTL로 만료된다. fixture의 사전 신뢰 브라우저는 최초 기기 bootstrap 검증을 대체하지 않는다.
+
+현재 `enrollment` 환경에서는 세션이 발급되지 않고 native login/refresh가 503으로 차단되는지 확인한다. ACTIVE 로그인·takeover·refresh 성공 응답, 오류·계정 전환·취소·서명 경계는 `packages/protocol/test/native-platform-session.test.ts`에서 검증한다. 실제 ACTIVE 발급과 CLI 외 앱의 영속 키 저장은 후속 검증으로 남는다. SDK와 agent-runtime은 기존 Workflow 로컬 overlay 연결을 유지하며 이 작업에서 패키지를 배포하지 않는다.
+
+2026-09-30 검증: Gateway 통합 브랜치 `ea1290464dc9f827661e44029c3e68a1db368254`, `PLATFORM_SESSION_MODE=enrollment`, 기본 Compose 서비스와 `workflow`·`frontend` 프로필 및 localhost HTTPS 프록시에서 네 플랫폼의 실서버 계약 검증을 통과했다. 이 검증은 변경한 DEX 소스에서 실행하며 Gateway·Core·Workflow 소스를 변경하지 않는다. ACTIVE 발급 또는 Workflow의 후속 변경을 검증한 것으로 취급하지 않는다.
+
+## CLI 기기 등록·승인 연결
+
+```sh
+dex profile set corp --server https://xgen.example.com
+dex device register --email me@example.com --profile corp --name "PC CLI"
+dex device approvers --email me@example.com --profile corp
+dex device request-approval --email me@example.com --profile corp --approver <browser-device-id>
+dex device status --email me@example.com --profile corp
+```
+
+각 명령은 터미널 비밀 입력 또는 `--password-stdin`으로 현재 비밀번호를 확인한다. 비밀번호·Bearer·refresh를 명령 인자로 받지 않는다. 임시 legacy account login으로 받은 실제 사용자 ID에 CLI 키를 바인딩하고, native 요청에만 해당 Bearer를 사용한 뒤 account context를 logout한다. 이 임시 로그인은 기존 CLI credential 파일에서 읽거나 쓰지 않는다. logout 실패가 성공한 기기 작업 뒤에 발생하면 그 상태를 오류로 알리며, 기기 등록 자체는 이미 완료됐을 수 있으므로 상태를 조회한다. 기존 CLI/TUI `dex login`, 채팅 및 도구 브릿지의 인증 경로는 이 단계에서 바뀌지 않는다.
+
+`NativeDeviceKeyStore`는 **OS 키체인으로 보호하는 소프트웨어 P-256 키**다. 최초 생성 시 PKCS#8 개인키를 OS 키체인에 한번 저장하고, 프로세스마다 비추출 WebCrypto 서명 handle로 import한다. 저장·복원 과정에는 메모리에 개인키 인코딩이 존재하며 OS 키체인 접근자는 이를 읽을 수 있다. 하드웨어 고정 키 또는 OS 저장소에서의 추출 불가를 주장하지 않는다. 서버에는 공개키와 서명만 보낸다. 키체인 계정은 HTTPS origin·플랫폼·서버의 실제 사용자 ID의 해시로 구분하고 같은 계정의 별도 CLI 프로필은 같은 설치 키를 복원한다. private PKCS#8을 callback이나 CLI 결과에 반환하지 않는다.
+
+- 새 키가 저장된 내용을 다시 읽어 검증하고, 개인키와 공개키의 서명을 대조한 뒤에만 서버 등록을 시작한다. 기록이 손상되거나 범위·키가 맞지 않으면 새 키로 덮어쓰지 않는다.
+- 키체인 부재·잠김·읽기/쓰기 실패·2초 timeout 또는 `DEX_NO_KEYCHAIN=1`은 기기 작업을 차단한다. 기존 plain-file fallback은 사용하지 않는다.
+- OS 키체인 서비스는 `xgen-dex-native-device`. 사용자 홈 `.xgen-dex-native-device-locks`에는 PID·작업 시작 시각만 저장한다. CLI 설정 폴더와 무관한 동일 계정 잠금으로 프로세스 간 생성·등록을 직렬화한다. timeout은 OS 작업을 취소하지 않으므로 실제 완료까지 잠금을 유지한다. 강제 종료로 남은 `.lock`은 기록된 프로세스의 종료를 확인한 뒤 해당 파일만 제거한다. 개인키가 지워진 경우 새 키가 기존 승인 기기를 대신한다고 취급하지 않고 기기 폐기·복구 절차를 따른다.
+- `register` 재실행은 같은 설치 ID의 기존 상태를 반환한다. 승인 요청은 pending 기기만 만들 수 있고, 선택한 브라우저가 현재 신뢰 상태인지 서버에서 다시 확인한다. 출력하는 6자리 코드는 양쪽 화면 대조용이며 승인 인증 수단이 아니다.
+- 등록 명령은 Platform Session을 발급하지 않는다. 별도의 CLI 세션 명령을 아래에 연결했으며 실제 ACTIVE 발급·Canonical watcher 양성 검증은 후속 관문이다.
+
+로컬 실사용 검증은 CLI 빌드 뒤 `node --import tsx scripts/native-platform-session-compose.mts --cli`로 실행한다. `--cli`는 CLI 플랫폼 테스트를 빌드한 CLI의 별도 프로세스로 바꾸고 실제 OS 키체인 저장·재실행 복원·중복 등록 방지·브라우저 승인·trusted 조회를 검증한다. 공개 mkcert root CA만 자식 Node의 `NODE_EXTRA_CA_CERTS`로 전달하며 TLS 검증은 유지한다. 임시 계정·서버 자료·OS 키체인 키·CLI 프로필 폴더는 종료 시 정리한다.
+
+2026-09-30 CLI 검증: Gateway 통합 브랜치 `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, `PLATFORM_SESSION_MODE=enrollment`, `workflow`·`frontend` 프로필과 HTTPS 프록시에서 위 흐름을 통과했다. 임시 CLI 로그인·로그아웃 이후에도 기존 승인 브라우저의 Bearer가 유효했고 CLI 기기·승인 요청이 각 1개인 것을 DB로 확인했다. 이 검증에는 같은 초의 legacy 토큰 충돌을 막는 Gateway `jti` 수정이 필요하다. SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`와 agent-runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`은 Workflow 로컬 overlay로 연결한 상태였으며 패키지 배포나 실제 ACTIVE 세션 사용은 수행하지 않았다.
+
+## CLI Platform Session 자격증명 수명주기
+
+```sh
+dex session login --email me@example.com --profile corp
+# 로그인 응답의 실제 계정 ID를 이후 명령에 사용한다.
+dex session status --user-id <id> --profile corp --json
+dex session refresh --user-id <id> --profile corp
+dex session focus --user-id <id> --profile corp
+dex session logout --user-id <id> --profile corp
+# 중단된 서버 세션을 내 페이지에서 폐기한 뒤 로컬 기록만 정리한다.
+dex session forget-local --user-id <id> --profile corp
+```
+
+`NativeCliSession`은 승인된 CLI 설치 키와 별도 OS 키체인 서비스 `xgen-dex-native-session`을 사용한다. origin·실제 계정 ID·플랫폼으로 슬롯을 분리하고 install ID·device ID·sid·세대와 refresh/access를 결합한다. access의 계정·sid·기기·플랫폼·`cnf.jkt`·용도·만료를 대조하되 로컬 claim 파싱을 서버의 서명·현재 신뢰 검증으로 취급하지 않는다. Gateway 응답의 소수점 만료 시각과 JWT의 초 단위 `exp`를 일치시키고, 실제 사용 가능 시각은 JWT의 초 단위 만료를 따른다. JSON·터미널 출력에는 비밀번호·키·Bearer·refresh를 넣지 않는다. 기존 CLI/TUI 로그인·채팅 경로는 유지한다.
+
+- login은 임시 계정 인증과 trusted 설치 상태를 확인한 뒤 비밀번호·키 증명 ceremony를 진행한다. `pending_takeover`에는 토큰을 저장하지 않는다. access 발급 실패로 refresh만 받은 경우 보관 후 명시적인 `refresh`를 요구한다.
+- login·refresh·logout은 OS 키체인에 각각 `login_pending`·`refreshing`·`logout_pending`을 저장·재조회한 뒤 서버를 호출한다. 작업 중 기록에는 토큰이 없다. 완료 응답의 새 자격증명이 저장·재조회되기 전에는 사용하지 않는다. 등록과 같은 계정 잠금을 사용하여 여러 CLI 프로세스의 등록·갱신·읽기·삭제를 직렬화한다.
+- 통신 중단·취소·잘못된 완료 응답·결과 저장 실패에는 이전 refresh/access를 복원하거나 자동 재시도하지 않는다. 다음 프로세스도 남은 작업 상태에서 회전·읽기를 거절한다. 서버 세션을 내 페이지에서 폐기하고 `forget-local` 후 다시 로그인한다. 현재 Compose의 503 차단에서도 보수적으로 `login_pending`을 남긴다.
+- `status`는 **로컬 보관 상태**다. `active` 출력은 access를 사용할 수 있다는 뜻이며 서버의 현재 sid·기기 신뢰를 확인한 결과가 아니다. `focus`는 고정된 HTTPS origin의 Canonical 읽기에만 새 ES256 DPoP를 보낸다. method·query 없는 `htu`·access `ath`·매회 새 `jti`를 묶으며 공급자는 현재 계정 잠금 callback 안에서만 사용할 수 있다. 만료·취소·다른 토큰/경로·callback 종료 이후에는 서명을 거절한다. 폴링 watcher는 아래 명령으로 연결했고 WebSocket과 기존 TUI 채팅의 이행은 남아 있다.
+- `logout`은 유효한 access의 기기 DPoP와 현재 계정 비밀번호로 자기 sid의 `DELETE /api/me/platform-sessions/{sid}`를 호출하고 204 이후 세션 키체인 기록만 삭제한다. 설치 키는 보존한다. access가 만료되면 먼저 명시적인 refresh가 필요하다. 실패 시 토큰 없는 `logout_pending`이 남으며 서버 폐기를 완료한 것으로 보고하지 않는다. `forget-local`은 네트워크 호출 없이 로컬 기록만 지우고 JSON에 `server_revoked=false`를 표시한다.
+- 키체인 부재·잠김·오류·timeout·`DEX_NO_KEYCHAIN=1`에서는 세션 작업도 차단한다. plain-file fallback을 사용하지 않는다. 키 공급자의 기존 timeout과 프로세스 잠금 경계가 세션 읽기·쓰기·삭제에도 적용된다.
+
+### 검증 범위
+
+2026-09-30: 엔진 133 통과·플랫폼 조건 제외 2, CLI 146 통과. 신규 엔진 17개·CLI 2개는 회전 전 저장 실패, 회전 결과 분실/저장 실패, 재실행 시 재사용 거절, 취소, 계정·기기·키 결합, provider 수명, access 부재·만료, takeover, 서버 폐기와 로컬 삭제를 검증했다.
+
+`npm --prefix apps/cli run build` 후 `node --import tsx scripts/cli-platform-session-fixture.mts`는 통제된 HTTPS 서버와 실제 OS 키체인에서 별도 CLI 프로세스의 로그인·복원·회전·Canonical DPoP 서명·비밀번호 로그아웃을 검증했다. 서버가 회전 완료 후 연결을 끊으면 다음 CLI 프로세스는 옛 토큰을 재전송하지 않고 로컬 복구만 가능했다. fixture의 TLS는 기존 localhost 인증서와 공개 mkcert CA로 검증하며 임시 키체인 슬롯과 프로필을 정리했다. **이 검증은 실제 ACTIVE Gateway·Workflow 성공 검증이 아니다.**
+
+실제 `scripts/native-platform-session-compose.mts --cli`도 같은 Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`와 Core `c9125cfd2302d28a44512b836b9340439142685e`, `feat/cross-platform-session`, `workflow`·`frontend` 프로필, HTTPS 3443, `enrollment`에서 등록·선택 브라우저 승인과 CLI ACTIVE 로그인 503·안전한 작업 기록·명시적 로컬 복구를 통과했다. ACTIVE 모드 관문, 다른 앱의 키 공급자, takeover 완료 자격증명 수령과 Canonical watcher의 실제 서버 양성 검증은 남아 있다. SDK/runtime 패키지는 배포하지 않는다.
+
+
+## CLI Canonical focus watcher
+
+```sh
+dex session watch-focus --user-id <id> --profile corp --jsonl
+# interval-ms: 정수 200~60000, 기본 2000. 환경변수를 추가하지 않는다.
+dex session watch-focus --user-id <id> --profile corp --interval-ms 1000
+```
+
+`NativeCliSession.reconcileFocus`는 매 작업마다 OS 키체인에서 현재 자격증명을 복원하고 같은 계정 잠금 안에서 최대 10페이지를 재조정한다. origin·실제 사용자·플랫폼·install·device·sid 해시를 비밀이 아닌 cursor 범위로 쓰며 token/write generation은 포함하지 않는다. 따라서 정상 refresh 회전은 cursor를 유지하고 새 sid·기기·서버는 snapshot부터 읽는다. 로컬 저장/claim 확인을 서버 검증으로 취급하지 않고, 인증된 HTTP가 성공한 결과만 구독에 적용한다. 이전 범위는 출력하지 않는다.
+
+`NativeAgentFocusWatcher`는 한 번에 한 작업만 진행한다. 요청 제한 시간은 전체 작업 10초이고 대기 시 계정 잠금을 해제한다. 네트워크·408·429·5xx·timeout에는 최대 30초 backoff로 GET만 재시도한다. busy 잠금은 최대 3회 대기하며 키체인 장애·손상·인증 만료·401·403·잘못된 snapshot에는 중단한다. refresh·logout·legacy Bearer fallback을 자동 호출하지 않는다. 같은 범위의 409·잘못된 JSON/sequence 페이지는 새 snapshot으로 복구하며 backlog는 작업 사이 이벤트 루프를 양보해 계속 읽는다.
+
+엔진의 `select(source, userId)`는 계정·origin 교체와 같은 계정 재선택 시 즉시 reset을 출력하고 기존 요청·대기를 취소한다. 취소를 무시한 이전 응답도 새 범위에 적용하지 않는다. CLI 프로세스는 시작 시 선택한 계정·프로필을 고정하므로 다른 계정이나 서버를 보려면 해당 옵션으로 재실행한다. `--jsonl` 소비자는 reset·stopped에서 이전 대화 표시를 비워야 한다. 변경 없는 폴링은 출력하지 않으며 연결 복구 시에는 최신 focus를 다시 출력한다. Ctrl+C는 취소 후 정상 종료한다. 토큰·키·DPoP·오류 응답 원문은 출력하지 않고, CLI TUI 채팅·WebSocket·원격 도구를 이 명령에 연결한 것은 아니다.
+
+### 이번 검증
+
+- 신규 엔진 회귀 14개: cursor 보존/범위 초기화, 재연결/backoff, 계정 전환 중 늦은 응답, 즉시 reset, 요청 취소/timeout, bounded backlog, 인증 중단, busy 잠금 최대 재시도/잠금 폴더 장애 분류, 실제 공급자 refresh/logout 직렬화 및 JSON/409 snapshot 복구.
+- `scripts/cli-platform-session-fixture.mts`: 실제 OS 키체인과 빌드된 별도 CLI 프로세스에서 HTTPS/새 DPoP, 연결 단절 후 같은 cursor 재생, 409 후 snapshot, 다른 CLI 프로세스의 refresh, 401 중단 및 Ctrl+C 정상 종료를 통과했다. 임시 키체인 슬롯·프로필은 정리했다. 통제된 fixture이며 실제 ACTIVE Gateway 성공 검증이 아니다.
+- 실제 Compose의 `scripts/native-platform-session-compose.mts --cli`: login 503 뒤 남은 token-free login_pending에서 watch-focus가 auth_required/exit 3으로 종료하고 로컬 복구하는 검증을 통과했다. Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`의 실제 소스/실행 브랜치를 확인했다. 모든 서비스는 `feat/cross-platform-session`, 기본 인프라·Core·Gateway에 workflow/frontend 프로필과 HTTPS 3443을 사용했고 ACTIVE 발급 관문은 열지 않았다. Workflow overlay의 SDK/runtime import 위치도 확인했다. 다른 서비스의 최신 로컬 Head를 검증한 것으로 취급하지 않는다.
+- 환경변수는 추가하지 않았고 기존 키체인/프로필/공개 CA 변수의 watcher 사용 범위는 Infra 참조 문서에 반영한다. SDK·agent-runtime은 Workflow 로컬 overlay로 사용하고 배포하지 않는다.
+
+2026-09-30 전체 로컬 검사: 엔진 147 통과·플랫폼 조건 제외 2, CLI 146 통과, 엔진/CLI 타입 검사·계약 검사·CLI 빌드·두 opt-in 스크립트 타입 검사 통과. CLI 첫 실행의 기존 TUI `이전 대화를 고르면 그 내용이 대화창에 올라온다`는 답변이 먼저 렌더된 중간 frame에서 질문을 확인하여 실패했다. 해당 파일의 변경 없이 동일 코드 전체 테스트 한 번 재실행은 통과했으며 첫 실패와 재실행을 PR #129에 기록한다. 브라우저 화면과 실제 ACTIVE Gateway 양성 검증은 이번 검증 범위에 포함되지 않는다.
+
+
+## VSCode native 호스트와 Canonical focus
+
+`NativeHostSession`은 생성 시 플랫폼을 고정하며 `NativeCliSession`은 CLI 호환 래퍼다. VSCode는 `dex serve --stdio --native-platform vscode`를 실행한다. `initialize.capabilities.nativePlatformSession`으로 지원 여부를 확인하고, 구 엔진에는 native 요청을 보내지 않는다. 기본 `serve --stdio`는 기존 계약을 유지한다. Desktop은 아래 메인 프로세스 IPC와 기기·세션 메뉴에 연결했으며 같은 공급자의 별도 desktop 슬롯을 사용한다.
+
+RPC의 `native/device`, `native/session`, `native/watch`, `native/unwatch`, `native/cancel`은 엄격한 입력 필드를 받는다. 플랫폼·토큰·키 재정의는 허용하지 않는다. 자식 엔진이 고정된 HTTPS origin·실제 계정 ID·`vscode`로 OS 키체인 키/세션을 분리한다. 공개 상태 및 scope 정보만 응답하며 비밀번호는 비밀 입력에서 RPC 요청으로만 전달한다. CLI의 기존 sid를 VSCode에서 사용하지 않는다. 기존 키체인·회전 journal·DPoP 경계를 그대로 사용한다.
+
+VSCode 명령 **XGEN Dex: 기기 및 플랫폼 세션**은 등록, 등록 상태, 신뢰 브라우저 선택 승인, 로그인, 세션 상태·갱신, 포커스 구독, 서버 로그아웃과 명시적 로컬 정리를 제공한다. 엔진 재시작 이후 계정 식별자는 현재 비밀번호 확인으로 다시 조회한다. 정상 active 상태에서 구독을 자동 시작하며 상태 표시줄은 연결된 포커스, 재연결, 인증 중단을 표시한다. 프로필/계정 변경·취소·엔진 종료에서는 즉시 이전 포커스를 지우고 늦은 결과를 버린다. 구독 ACK와 같은 stdout chunk에 온 notification은 ACK 이후 scope를 확인한 뒤 적용한다. 잘못된 focus는 표시하지 않고 해당 watch ID만 종료한다.
+
+호스트는 한 번에 한 native 작업만 허용한다. 기기/세션 작업 전에 기존 watcher를 취소하고 완료를 기다린다. 구독 중 다른 프로세스의 정상 refresh는 현재 키체인을 다시 읽어 같은 cursor를 유지한다. 같은 호스트의 세션 갱신 후에는 새 watcher가 snapshot부터 시작한다. 정확한 watch ID로 unwatch하여 이전 UI 작업이 새 구독을 종료하지 않는다. 종료·취소는 서버 logout이나 자동 자격증명 삭제로 취급하지 않으며 미완료 회전은 journal을 보존한다. 기존 Workspace 채팅은 아직 이 PlatformSession/Canonical 경로로 이행하지 않았다.
+
+### 검증 및 제한 (2026-09-30)
+
+- 신규 회귀 11개: 엔진 플랫폼 분리 1개, stdio RPC 5개, VSCode controller 5개. 기존 built-CLI RPC 테스트도 올바른 `apps/cli/dist/cli.js` 경로로 실제 실행한다.
+- 엔진 148 통과·플랫폼 조건 제외 2, protocol 201 통과, VSCode 23 통과. CLI 전체 첫 실행은 이전 PR에서도 확인한 기존 TUI 중간 렌더 frame 검사에서 1개 실패했다. 동일 코드 전체 한 번 재실행에서 151개 모두 통과했으며 첫 실패 로그와 재실행을 PR에 함께 기록한다. 타입/계약 검사와 CLI/VSCode 빌드 및 두 opt-in 스크립트 타입 검사를 실행한다.
+- `scripts/cli-platform-session-fixture.mts --vscode`: 실제 빌드된 stdio 엔진·HTTPS 인증서·OS 키체인으로 로그인/재시작 복원/refresh, 다른 프로세스 회전 중 cursor 유지, 연결 단절 replay, 409 snapshot, 401 중단, unwatch, 회전 결과 분실 journal/로컬 복구와 비밀 미노출을 통과했다. 통제된 fixture이며 실제 ACTIVE 서버 검증은 아니다. CLI 기본 모드도 공통 공급자 회귀로 실행한다.
+- `scripts/native-platform-session-compose.mts --cli --vscode`: 실제 HTTPS 3443의 등록·엔진 재시작 후 키 복원·중복 방지·선택 브라우저 승인·trusted 조회, 로그인 503·안전한 login_pending·구독 거절·로컬 복구를 통과했다. 임시 계정·기기·요청·보안 이벤트와 키체인 슬롯을 정리했다. fixture는 기존 신뢰 브라우저를 준비하므로 최초 기기 bootstrap UI 검증으로 취급하지 않는다.
+- Compose 기본 인프라·Core·Gateway, workflow/frontend 프로필과 HTTPS 프록시를 사용했다. `.env`의 서비스별 브랜치와 실제 깨끗한 소스/컨테이너 SHA: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway mode는 `enrollment`. 다른 저장소 최신 로컬 Head의 검증으로 보고하지 않는다.
+- Workflow는 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` 로컬 overlay를 사용했고 실제 import 경로를 확인했다. 패키지 배포는 하지 않았다. 새 환경변수 없이 기존 세 변수의 VSCode 자식 엔진 사용 범위를 Infra 환경변수 참조에 갱신한다.
+- VSCode 직접 화면 검증은 Orca 제어 런타임이 `runtime_unavailable`로 시작되지 않아 완료하지 못했다. 명령 등록·상태 제어·실제 엔진 검증과 구분한다. 실제 ACTIVE 서버와 Desktop·Mobile 앱, takeover 결과 수령, Workspace 채팅 이행은 후속 관문이다.
+
+
+## Desktop 기기·세션 설정과 Canonical focus (2026-09-30)
+
+**설정 → 기기·세션**에서 현재 Desktop 계정의 기기 등록·상태, 승인할 신뢰 브라우저 선택과 비교 코드, PlatformSession 로그인·상태·갱신·로그아웃 및 Canonical 포커스 구독을 제공한다. 정상 active 상태 조회/갱신 뒤 구독을 자동 시작하며 연결·재연결·인증 중단을 표시한다. 중단된 로컬 기록 삭제는 별도 확인을 받고 `server_revoked=false`로 처리한다. 서버 세션 폐기는 브라우저 내 페이지에서 먼저 수행한다. 기존 Workspace 채팅·WebSocket 경로의 전환과 takeover 완료 자격증명 수령은 남아 있다.
+
+- `native-session-ipc.ts`가 현재 메인 창의 최상위 frame만 허용한다. 추가 창·webview·하위 frame 및 다른 주소로 이동한 메인 창은 native 자격증명 경계에 접근하지 못한다. 빌드된 index.html 또는 개발 Vite의 고정 index.html 주소를 대조한다. Renderer는 서버·사용자 ID·프로필·플랫폼·토큰·키를 재정의할 수 없다.
+- `DesktopNativeSessions`가 현재 설정의 HTTPS origin과 메인 프로세스의 실제 로그인 사용자에 작업을 고정한다. 일회성 비밀번호 로그인 결과가 현재 계정과 다르면 **키 접근 전** 중단하고 임시 인증을 로그아웃한다. CLI 프로필과 legacy 파일 fallback을 사용하지 않는다.
+- P-256 소프트웨어 키와 refresh/access는 OS 키체인의 `desktop` 슬롯에만 보관한다. 기존 CLI·VSCode 슬롯과 분리하며 공통 잠금·토큰 없는 회전 journal·새 DPoP·결과 저장 확인 규칙을 적용한다. 키체인 장애와 `DEX_NO_KEYCHAIN=1`은 native 작업을 차단한다.
+- 계정/서버 변경·로그아웃·인증 실패·메인 navigation·renderer 종료·앱 종료에서 진행 중 작업과 watcher를 취소한다. 세대 및 계정·origin·watch ID 검사가 늦은 결과를 버린다. 화면을 떠날 때 listener와 구독을 정리하며 비밀번호 입력은 요청 직후 지운다. Renderer에는 공개 상태/포커스만 반환한다.
+- Native 전송은 `native-session-network.ts`의 **자동 재시도 없는 Node HTTPS** 요청이다. 실제 Electron 검증에서 Chromium fetch가 단절된 GET DPoP 및 POST 회전 완료를 투명 재전송하는 문제가 발견되어 수정했다. DELETE 비밀번호 본문도 명시적인 Content-Length로 전송한다. 쿠키·Origin·redirect는 차단하고 인증서를 기본 및 OS 신뢰 CA로 검증한다. 기존 사설 인증서 예외를 적용하지 않는다. Chromium의 자동 프록시 설정은 연결하지 않아 프록시가 필수인 배포 환경 검증이 남아 있다.
+
+### 실행과 검증 증거
+
+```sh
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run typecheck
+npm --prefix apps/desktop test
+npm --prefix apps/desktop run build
+# 공개 localhost CA가 OS 신뢰 저장소에 등록된 개발 PC에서, 실제 Electron/키체인 사용
+node --import tsx scripts/cli-platform-session-fixture.mts --desktop
+# 기본 인프라·Core·Gateway 및 workflow/frontend 프로필, HTTPS 3443과 CLI 빌드 필요
+node --import tsx scripts/native-platform-session-compose.mts --cli --vscode --desktop
+```
+
+- Desktop 전체 회귀 **527 통과**, 새 main/renderer/TLS 회귀 **11개**. 계정 오입력, scope 재정의 거절, IPC sender, 취소 후 journal 보존, ACK 앞 알림, 늦은 계정 응답, 잘못된 포커스, 구독 정리, DELETE 본문 및 전송 자동 재시도/redirect/쿠키/미신뢰 TLS/응답 크기 제한을 검증했다. Desktop 타입·빌드, 공통 계약 검사와 두 opt-in 스크립트 타입 검사도 통과했다.
+- `--desktop` HTTPS fixture는 **실제 Electron 메인 factory·빌드 preload·production 설정 컴포넌트**를 사용한다. 다른 창 및 다른 주소로 이동한 메인 창의 IPC 거절, 실제 버튼으로 상태 조회·자동 구독·중단, 빈 비밀번호 입력과 화면 캡처를 확인했다. 별도 Electron 재실행으로 키체인 복원·플랫폼 분리, cursor 재생/재연결, 409 복구, 다른 프로세스 회전, 401 중단, 정확한 unwatch, 회전 완료 유실 뒤 옛 refresh 재사용 거절을 통과했다. **통제된 ACTIVE fixture이며 실제 ACTIVE Gateway 양성 검증은 아니다.** 임시 키는 Electron이 생성·삭제한다.
+- 실제 Compose `--cli --vscode --desktop`에서 Desktop·CLI·VSCode의 별도 호스트 재실행, 멱등 등록, 선택 브라우저 키/비밀번호 승인, trusted 조회, 실제 ACTIVE login 503, token-free login_pending, Canonical 구독 거절과 로컬 복구를 통과했다. Mobile은 공통 프로토콜만 검증했다. 임시 계정·기기·승인 요청·DB 이벤트·키체인·프로필을 정리했다.
+- 실행 소스: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`; 네 서비스 모두 `feat/cross-platform-session`, `PLATFORM_SESSION_MODE=enrollment`. 컨테이너 Git/소스 마운트, `.env` 서비스별 브랜치와 실제 실행 모드를 확인했다. Workflow의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`·runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` 로컬 overlay import 경로도 확인했으며 패키지는 배포하지 않았다.
+- 공통 엔진 150 통과·플랫폼 조건 제외 2, protocol 201 통과, VSCode 23 통과. CLI 전체는 150 통과·기존 TUI 중간 frame 타이밍 테스트 1개 실패했고, 동일 코드 한 번의 재실행에서도 같은 실패가 발생했다. 테스트/화면 코드를 이번 기능 변경에 섞지 않았으며 첫 실패와 재실행을 PR에 기록한다. 최신 Head CI에서 필수 검사를 확인한 뒤 통합한다.
+- 새 환경변수는 없다. 기존 Desktop `XGEN_SERVER_URL`·개발용 `ELECTRON_RENDERER_URL` 및 native 키체인/CA 사용 범위를 Infra 환경변수 참조 문서에 반영했다.
+
+### 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 8% | 실제 ACTIVE·takeover 수령, Mobile 연결 및 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+비율은 남은 설계 항목에 대한 추정이며 테스트 통과율이나 일정 보장이 아니다.
+
+## Mobile 하드웨어 기기 키 기반 (2026-09-30)
+
+설정 → **기기 보안**에서 `기기 키 상태 확인` 또는 `인증 키 준비`를 실행한다. HTTPS 서버에 로그인한 실제 사용자별로 키와 설치 ID를 준비한다. 로컬 준비 성공은 서버 등록·신뢰 승인·Platform Session 발급을 의미하지 않는다. 기존 로그인·채팅은 현재 인증 경로를 사용한다.
+
+`apps/mobile/modules/xgen-native-device`는 로컬 Expo 모듈이다. iOS는 Secure Enclave의 P-256 `SecKey`로 서명하며 키와 설치 ID를 `WhenPasscodeSetThisDeviceOnly`로 보관한다. Android 28 이상은 화면 잠금이 설정되고 해제된 상태에서 AndroidKeyStore 키를 사용한다. StrongBox를 우선 요청하고 StrongBox를 사용할 수 없는 경우 TEE로 생성하며, `KeyInfo`의 실제 하드웨어 보호 및 256비트 키를 확인한다. 소프트웨어 키, SecureStore에 개인키 인코딩 저장, 개인키 export/import API는 제공하지 않는다. Expo Go·웹·iOS 시뮬레이터·지원하지 않는 기기는 키 작업을 거절한다. 공급자 설계는 [Apple Secure Enclave](https://developer.apple.com/documentation/security/protecting-keys-with-the-secure-enclave), [Android Keystore](https://developer.android.com/privacy-and-security/keystore), [Expo Modules](https://docs.expo.dev/modules/module-api/) API를 따른다.
+
+- 키와 공개 설치 ID는 `mobile + HTTPS origin + 실제 사용자 ID`의 SHA-256 범위로 구분한다. 한쪽 기록이 없거나 손상되면 새 키로 자동 교체하지 않는다. 기존 승인 기기에 대한 관리자 복구·폐기 절차를 요구하며 아직 앱에 그 절차를 연결하지 않았다.
+- JS에는 공개 JWK·설치 ID·저장소 분류와 서명만 반환한다. 네이티브는 `register`·`approval_request`·`login`·`native_refresh`와 32바이트 canonical base64url challenge만 서명한다. 현재 설치 ID와 공개키 thumbprint를 대조하고 ES256 JWT를 네이티브에서 조립하며 DER 서명을 P1363으로 엄격하게 변환한다. 하드웨어 분류는 앱의 로컬 검증 결과이며 서버에 대한 원격 attestation이 아니다.
+- `native-device-key.ts`는 비밀키 없는 공급자다. HTTPS origin·실제 사용자 ID·로그인 수명에 묶이고 응답의 공개키·설치 ID·JWT 형식과 목적·challenge·발급 시각을 확인한다. 계정/서버 변경·같은 계정 재로그인·화면 이탈·백그라운드·취소 이후 결과를 적용하지 않는다. 이미 시작한 OS 키 생성을 취소할 수 없는 경우 생성된 키는 원래 계정 범위에만 남으며 서버 신뢰를 부여하지 않는다.
+- 앱 오류에는 정해진 오류 코드의 메시지만 표시하고 OS 예외·응답 원문을 노출하지 않는다. Face ID/Touch ID/passkey ceremony나 비밀번호·Bearer·refresh 저장을 이번 공급자에 추가하지 않았다.
+
+### 검증 범위와 다음 관문
+
+검증 브랜치 `feat/cross-platform-mobile-native-key`, 기준 통합 SHA `b2b285642e878b88446d71ab059bad452d32a867`. 최신 PR Head의 CI도 통합 전 확인한다.
+
+- Mobile TypeScript **57/57** 및 typecheck, 저장소 계약 검사 통과. 신규 8개는 실제 테스트 P-256 서명, 안전하지 않은 네이티브 응답/소프트웨어 저장소 거절, 손상 복원, 계정·서버·재로그인, 취소와 늦은 결과, 잘못된 proof 경계를 검증한다.
+- Android 로컬 Expo 모듈 `compileDebugKotlin`과 JUnit **4/4** 통과. Swift 실제 iOS SDK typecheck 및 CryptoKit codec 통과. 두 codec은 각 400개의 실제 테스트 P-256 서명, 공통 scope·공개키 지문, 잘못된 DER·서명 목적·challenge를 검증한다. 테스트의 소프트웨어 키는 생산 공급자로 연결되지 않는다.
+- Expo apple/android autolinking, iOS 앱 전체 Simulator Debug 빌드, iOS/Android Metro export 통과. CocoaPods가 생성한 프로젝트 변경은 검증 산출물로 보관하며 변경 묶음에 포함하지 않는다.
+- 별도 Simulator 검증 앱에서 **생성·조회·서명 3개 모두 거절**을 직접 실행하고 결과 JSON `passed=true, rejected=3, software_fallback=false`와 화면을 확인했다. 임시 앱을 제거하고 이번에 시작한 시뮬레이터를 종료했다. 이 검증은 생산 앱 설정 화면이나 실제 Secure Enclave/TEE/StrongBox 키 성공 검증을 대체하지 않는다.
+- CI에 Android 모듈 컴파일·JUnit과 Apple iOS SDK·codec 검사를 추가했다. 실제 iPhone/Android 기기가 연결되어 있지 않아 키 생성·앱 재실행 복원·잠금·백그라운드·서명 성공의 실기기 검증은 남는다.
+- 다음은 Mobile의 HTTPS native 전송 경계, 기기 등록·선택한 승인 브라우저 연결, 계정별 세션 vault/journal·DPoP와 Canonical watcher다. 현재 범위에는 HTTP 호출이 없으며 기존 React Native fetch를 검증된 native 인증 전송으로 취급하지 않는다. 이번에는 Compose 서비스를 변경하거나 서버 통합 검증을 실행하지 않았다. SDK/runtime Workflow 로컬 overlay와 패키지 배포 상태도 변경하지 않았다.
+- 환경변수 추가·변경·삭제가 없으므로 Infra 환경변수 참조 문서는 변경하지 않는다. 기존 Mobile 서버 URL의 HTTPS 요구는 새 키 준비 기능의 입력 검증이다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 7% | Mobile 서버 연결·실기기, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These percentages estimate remaining design work, not test coverage or a delivery schedule. This increment adds a local hardware-key provider and readiness controls. It does not grant device trust or issue a server session. iOS Secure Enclave and Android hardware-backed P-256 keys remain inside their native providers; JavaScript receives public metadata and fixed ceremony proofs only. Missing or inconsistent key/identity records require explicit recovery. Simulator creation, lookup and signing are verified to fail closed. Physical-device success, Mobile HTTPS enrollment/session storage/DPoP, and Canonical subscriptions remain integration gates. The SDK/runtime Workflow overlay stays unchanged; no package release or Compose server validation was performed in this increment.
+
+## Mobile 서버 기기 등록과 선택 브라우저 승인 (2026-10-01)
+
+Mobile 설정 → **기기 보안**에서 로컬 키를 준비한 뒤 **휴대폰 기기 등록**에서 이름을 입력하고 등록한다. `등록·승인 상태 확인`은 자신의 설치 키에 바인딩된 서버 상태와 승인 가능한 신뢰 브라우저를 조회한다. 기본 승인 브라우저가 하나면 최초 조회에 선택해 표시하고, 기본값이 없으면 사용자가 직접 고른다. 선택한 브라우저가 현재 신뢰 목록에서 사라지면 다른 기기로 자동 전환하지 않는다. 신뢰 browser가 없거나 최초 등록·복구·이관이 필요한 경우 PC 브라우저에서 그 절차를 완료하도록 표시한다.
+
+- 기존 Mobile 로그인 결과의 실제 사용자 ID·HTTPS origin·로그인 수명에 공급자를 바인딩한다. `buildClient.nativeAccount`는 logout 시작 시 동기적으로 무효화되며 같은 계정 재로그인도 별도 수명이다. 각 작업은 시작할 때의 Bearer를 고정하고, 중간 회전이나 계정 변경은 완료를 중단한다. 같은 로그인에서 토큰이 정상 회전한 뒤에는 새 토큰으로 명시적 상태 조회가 가능하다. 새 비밀번호 입력·자동 임시 로그인·legacy refresh fallback·자격증명 저장을 이 등록 기능에 추가하지 않았다.
+- `native-device-enrollment.ts`는 공통 `NativePlatformSessionClient`를 사용한다. 기존 등록 상태가 있으면 등록 complete를 반복하지 않는다. pending 상태에서만 승인 요청을 만들고, 직전 신뢰 목록에서 선택한 web browser를 다시 확인한다. 서버는 별도로 현재 trust·기기 키·challenge를 검증한다. 새 요청은 이전 pending 선택을 대체할 수 있으므로 UI에 안내하고 6자리 대조 코드·만료 시각을 표시한다. 이 코드는 양쪽 화면 대조용이며 인증 수단이 아니다.
+- 등록·승인·조회는 서버 session을 발급하거나 Canonical history를 읽지 않는다. 승인 브라우저에서 비밀번호·브라우저 키 검증을 완료한 뒤 Mobile에서 다시 조회해야 trusted로 표시된다. 응답 분실·잘못된 응답·timeout에는 이전 승인 코드를 지우고 결과 불확실 상태를 표시하며 자동 재시도하지 않는다. 사용자가 상태와 브라우저의 요청을 확인한 뒤 새 요청을 명시적으로 보낼 수 있다.
+- 작업은 동시에 하나만 실행하고 전체 10초 제한을 둔다. 화면 이탈·백그라운드·로그아웃·계정/서버 변경 시 controller와 OS 요청을 취소하며 늦은 결과로 이전 화면 상태를 복원하지 않는다. foreground 복귀는 새 owner를 준비할 뿐 HTTP 요청을 자동 실행하지 않는다. snapshot에는 공개 등록/신뢰/승인 상태만 포함하고 Bearer·refresh·개인키·OS 오류 원문을 표시하지 않는다.
+
+### Native TLS 전송과 재전송 경계
+
+`native-enrollment-http.ts`는 enrollment 경로만 허용하는 fetch 어댑터이며 RN/global fetch를 호출하지 않는다. 로컬 Expo 모듈의 별도 전송은 HTTPS origin, GET/POST별 경로, 안전한 Bearer, JSON object와 요청 32 KiB/응답 64 KiB 제한을 OS 계층에서도 다시 확인한다. 잘못된 UTF-8과 3xx를 거절한다. Cookie/Origin/임의 사용자 헤더를 받지 않고, Cookie·캐시·기존 credential storage를 사용하지 않는다. 각 요청 ID는 OS가 예약한 UUID이며 만료/없는 예약·중복 실행·시작 전 취소는 socket 전에 거절한다. 시스템 TLS 신뢰·호스트 검증을 유지한다. 테스트 CA는 fixture에서만 사용한다.
+
+- Android는 별도 OkHttp client의 connection retry/redirect/SSL redirect를 끄고 CookieJar·authenticator·proxy authenticator·cache를 비운다. 실제 TLS fixture에서 연결 분실 시 요청 1회, redirect·Set-Cookie·HTTP 인증·stream cap·취소 경계를 확인한다. 버전 4.9.2는 현재 React Native 0.79의 기존 OkHttp 계약과 동일하며 [OkHttp 공식 설정](https://github.com/square/okhttp/blob/parent-4.9.2/okhttp/src/main/kotlin/okhttp3/OkHttpClient.kt)을 사용한다.
+- iOS는 요청마다 [ephemeral URLSession](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/ephemeral)을 만들고 Cookie/credential/cache를 비운다. redirect를 거절하고 기본 server trust 처리만 허용한다. POST는 one-shot body stream이며 [새 body stream 요청](https://developer.apple.com/documentation/foundation/urlsessiontaskdelegate/urlsession(_:task:neednewbodystream:))을 거절하고 앱 코드에서 자동 반복하지 않는다. **URLSession 공개 API는 OS 내부 재시도 전체를 끄는 보장을 제공하지 않으므로 exactly-once 네트워크 전달을 주장하지 않는다.** 서버의 1회 challenge/flow 소비와 설치 ID별 등록 상태 조회가 중복 부작용을 제한하고, 완료 결과 분실은 성공으로 처리하지 않는다. 이 공급자의 allowlist에는 login/refresh/logout/session/Canonical API가 없으며 세션 회전에 확장하기 전에 해당 전송 경계를 별도 검토해야 한다.
+
+### 검증 증거와 남은 관문
+
+작업 브랜치 `feat/cross-platform-mobile-enrollment`, 기준 통합 SHA `3dff400be278910f41855cc6e06cacf780254838`. 최신 Head CI 통과 후 하위 PR을 통합한다.
+
+- Android production release AAR 빌드와 native JUnit **13/13**(키 codec 4 + TLS 전송 9), iPhoneOS 실제 SDK/deployment target 15.1 production typecheck, 새 HTTP Promise bridge를 포함한 iOS 앱 전체 Simulator Debug 빌드가 통과했다. 별도 실제 macOS URLSession TLS fixture는 고정 헤더·POST body, Cookie 미재사용, 302·chunked 65537·잘못된 UTF-8 거절, 활성 취소와 시작 전 취소, 연결 절단 POST 수신 1회를 확인했다. 테스트 TLS leaf anchor는 `NATIVE_ENROLLMENT_TRANSPORT_TESTING`으로 컴파일한 임시 verifier에만 주입하며 production 앱의 기본 TLS 신뢰를 변경하지 않는다. 검증 스크립트는 **apps/mobile에서** `bash verify/run-native-enrollment-transport.sh`로 실행하고 CI에서도 같은 TLS 경계를 검사한다.
+- Mobile **70/70**, typecheck, 전체 계약 검사, iOS/Android Metro 번들 통과. 신규 13개는 멱등 등록·브라우저 선택·default 부재·신뢰 변경·작업 사이/진행 중 계정 변경·토큰 회전·취소·중복 실행·늦은 응답·크기/헤더/경로 경계와 비밀 미노출을 검증한다.
+- 실제 Compose `scripts/native-platform-session-compose.mts --mobile-controller`에서 생산 Mobile controller와 JS 어댑터의 등록 → 같은 설치 재등록 조회 → 선택 브라우저 키/비밀번호 승인 → trusted 재조회 및 옛 대조 코드 삭제가 통과했다. Mobile 기기·승인 요청 각 1개, Platform Session 0개, ACTIVE login/refresh 503을 확인했다. 임시 일반 계정·기기·승인 요청·보안 이벤트/outbox·로그인 로그를 정리했다. **키는 소프트웨어 fixture이고 HTTP bridge는 검증된 Node TLS이므로 실기기 하드웨어·OS 전송·생산 Mobile UI의 성공 검증으로 취급하지 않는다.**
+- 서비스별 `.env` override와 소스/실행 컨테이너의 통합 브랜치를 확인했다. Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`; 기본 인프라·core/gateway와 `workflow`·`frontend` 프로필, `xgen-local-https` 3443, `PLATFORM_SESSION_MODE=enrollment`. Frontend는 git 실행 파일이 없어 실제 `/app/.git/HEAD`와 branch ref 및 소스 bind mount로 확인했다. 이번 변경은 DEX Mobile 소스이며 서버 코드/브랜치를 새로 바꾸지 않았다.
+- Workflow의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`·runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` 임시 source snapshot mount와 실제 import 경로(`/opt/xgen-local-sdk/src/xgen_sdk`, `/opt/xgen-local-runtime/src/xgen_agent_runtime`)를 확인했다. 패키지/앱 배포는 수행하지 않았다.
+- 환경변수 추가·변경·삭제가 없어 Infra 참조 문서는 변경하지 않는다. 로컬 native 모듈이 없는 Expo Go/web와 Secure Enclave 없는 Simulator는 이전과 같이 키 작업을 차단한다. 실제 iPhone/Android 등록·복원·잠금·브라우저 승인과 Mobile UI 검증, ACTIVE/takeover 수령, Mobile vault/journal·DPoP·Canonical watcher가 남는다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 6% | Mobile 실기기·세션 보관/DPoP, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These percentages estimate remaining design work rather than coverage or a delivery schedule. Mobile Settings now connects native enrollment, status reconciliation and an explicitly selected trusted browser through the common protocol. Account lifetime and cancellation boundaries discard stale results; enrollment neither issues a Platform Session nor grants trust automatically. The actual Compose test uses a software fixture key and a Node TLS bridge, so it does not prove physical-device hardware, native OS transport or production UI success. Android disables implicit connection retries; iOS refuses replacement POST streams and app retries, but URLSession does not guarantee exactly-once delivery. The narrow enrollment allowlist does not permit session rotation or Canonical access. Physical-device verification and Mobile session vault/DPoP/subscription wiring remain gates. Workflow SDK/runtime stays on its temporary local overlay without release.
+
+## Mobile 세션 보관·회전 journal과 하드웨어 DPoP (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-session`, 기준 통합 SHA `63b40a5aca4e124119a4cc613c9cd97fef11e312`. 하위 PR137을 통합 브랜치에 반영하며 main 대상 상위 PR90은 Draft로 유지한다. 새로운 환경변수·패키지/앱 배포는 없다.
+
+설정 → **휴대폰 세션**에서 등록·승인된 휴대폰을 현재 계정 비밀번호로 발급한다. 저장 상태 확인은 로컬 조회이며 서버의 현재 trust/sid 유효성 증거가 아니다. 수동 갱신과 비밀번호·기기 키를 사용한 서버 폐기, 경고 후 로컬 기록 삭제를 제공한다. 기존 로그인·채팅 자격증명과 분리했으며 자동 발급/갱신/재시도 및 Canonical watcher는 연결하지 않았다. 비밀번호 입력은 작업 시작·화면 이탈·백그라운드에서 지우고 오류/진단/저장소에 추가하지 않는다. JS 문자열 메모리 삭제를 보장하지 않는다.
+
+### 보관과 중단 복구
+
+- `native-session-vault-expo.ts`: 별도 `xgen-mobile-platform-v1` SecureStore service. iOS는 `WHEN_PASSCODE_SET_THIS_DEVICE_ONLY`, Android는 Expo SecureStore의 Keystore 암호화 저장을 사용한다. 하드웨어 서명 키는 이 저장소에 인코딩하지 않는다. 보관 키는 mobile/HTTPS origin/실제 사용자별 SHA-256이며 legacy SecureStore와 AsyncStorage를 읽거나 대체하지 않는다. 실기기 잠금·복원·OS 저장 장애는 최종 검증 관문이다.
+- 공개 설치 ID/키 thumbprint, mobile slot, device/sid, JWT의 sub/platform/token_use/cnf/expiry를 대조한다. 이는 로컬 구조 검사이며 JWT 서명·현재 신뢰·권한·sid는 서버가 검증한다. 손상·불일치·보안 저장 실패는 자동 삭제·재등록·기존 토큰 복원으로 처리하지 않는다.
+- 같은 앱의 모든 controller가 계정별 공통 JS lock을 사용한다. 발급/갱신/폐기 전 **토큰 없는 journal 저장 → readback → 기존 credential record 삭제·readback**을 완료해야 wire를 시작한다. 완료는 **새 record 저장 → readback → journal 삭제·readback** 순서다. 취소·응답 유실·완료 저장 실패·앱 종료로 journal이 남으면 다음 owner/앱 실행도 옛 토큰이나 미확정 새 토큰을 사용하지 않는다. 보안 저장 오류 시 cached active 화면을 미확인 상태로 지운다. 서버 성공 응답과 새 record 검증·저장·readback 및 현재 권한 확인이 끝난 뒤 **OS journal 삭제 시작을 취소 불가 commit 지점**으로 정의한다. 삭제 중 화면/로그인 수명이 변경되면 옛 owner/UI 결과는 폐기하지만 원래 계정의 검증된 새 record는 다음 명시적 조회에서 복원할 수 있다. 다른 origin/사용자는 별도 vault다. 삭제 성공 후 최종 readback만 실패한 경우에도 같은 정책이며 옛 refresh로 되돌아가지 않는다.
+- `pending_takeover`는 토큰 없이 저장한다. 중단/인계 대기 기록은 PC 내 페이지에서 서버 세션 확인·폐기 후 로컬 삭제로 복구한다. 로컬 삭제는 서버를 호출하지 않고 기기 등록/키를 유지하며, 현재 계정의 키가 없어도 기록 삭제는 가능하다. 계정/서버/같은 계정 재로그인·화면 이탈·백그라운드·timeout 이후 결과는 적용하지 않는다.
+
+### DPoP와 별도 세션 전송
+
+하드웨어 공급자는 현재 account/install/thumbprint를 다시 확인하고 네이티브에서 ES256 `dpop+jwt`를 조립한다. public JWK와 OS UUID jti/현재 iat, 고정 GET 또는 DELETE htm/동일 HTTPS htu, access SHA-256 ath를 포함한다. 임의 원본 바이트/개인키 반환 API는 없다. JS에서도 반환 claims/JWK/hash/시각/서명 크기를 대조한다. Canonical GET 서명 경계는 준비했지만 GET HTTP/watcher는 아직 연결하지 않았다.
+
+enrollment의 `request`는 이전 allowlist를 유지하고, 별도 `sessionRequest`는 native login-key/refresh POST 및 세션 폐기 DELETE만 허용한다. login에는 계정 Bearer, refresh에는 Authorization 없음, DELETE에는 현재 Platform access의 DPoP와 JSON password를 요구한다. OS와 JS에서 origin/path/method/header/body를 확인하며 native 예약 ID·취소·TLS·Cookie/redirect/cache·요청 32 KiB/응답 64 KiB 경계를 공유한다. trailing newline이 regex anchor로 통과하지 않도록 전체 문자열도 검사한다.
+
+서버 소스 `platform_native_login.rs`와 `platform_native_refresh.rs`에서 완료 flow/challenge를 Redis GETDEL로 소비한 뒤 proof/세션 발급·회전을 수행하는 것을 확인했다. DB 회전은 소비된 refresh 재사용을 거절하고 family를 폐기한다. Android는 connection retry를 끄고, iOS는 POST/DELETE one-shot stream과 replacement 거절을 유지한다. **URLSession 내부 재전송을 모두 끄거나 exactly-once 전달을 보장하지 않는다.** 결과 유실 시 journal을 유지하며 동일 completion/옛 refresh를 앱에서 재시도하지 않는다. 서버 DPoP replay 검증도 폐기 요청의 중복 수락을 제한한다.
+
+### 검증과 한계
+
+- Mobile **96/96** 및 typecheck, 계약 검사, strict/bundler Compose opt-in harness 타입 검사 통과. 발급·rotation·takeover 무토큰·DPoP 폐기·복원, 저장/삭제/readback 장애와 미확인 화면, 오래된 token 잔존 시 journal 우선, account/취소/늦은 응답·동시 owner·취소 불가 commit, JWT/key/sid binding과 경로/auth/헤더/크기 경계를 검증한다. 긍정 발급/회전/폐기는 통제된 software-key/HTTP fixture이며 실제 ACTIVE 서버 성공 증거가 아니다.
+- Android production release AAR와 native JUnit **19/19**(device codec4, DPoP2, TLS13), 실제 iPhoneOS SDK/iOS15.1 production typecheck, 새 8인자 Expo session bridge를 포함한 전체 iOS Simulator Debug 앱 빌드 및 iOS/Android Metro 번들 통과. 실제 macOS URLSession TLS fixture는 login Bearer·refresh 무인증·DELETE DPoP/password body, Cookie 미재사용·취소·부적절한 auth/UUID/Canonical 경로 거절과 실제 P-256 DPoP 서명을 확인한다. 테스트 인증서는 verifier에만 주입하며 시스템/production trust를 변경하지 않는다. 최신 PR Head CI도 머지 전 확인한다.
+- 실제 Compose `node --import tsx scripts/native-platform-session-compose.mts --mobile-session`: 임시 계정의 멱등 등록·선택 브라우저 승인·trusted → 생산 Mobile session controller login **503** → token-free `login_pending` → 새 owner의 조회/중복 발급·refresh 차단 → 명시적 로컬 복구를 통과했다. 로컬 삭제 후 trusted 기기는 유지되고 Platform Session 0개이며 임시 계정·기기·요청·DB 이벤트를 정리했다. **메모리 vault·소프트웨어 fixture 키·Node TLS bridge를 사용하므로 Expo SecureStore/물리 하드웨어/생산 Mobile UI의 결합 성공으로 보고하지 않는다.**
+- Compose는 기본 인프라/core/gateway 및 workflow/frontend 프로필, `xgen-local-https`3443, `PLATFORM_SESSION_MODE=enrollment`. `.env` per-service branch와 clean source/실행 container를 대조했다. 모두 `feat/cross-platform-session`: Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`(실제 /app/.git/HEAD/ref와 source bind mount). 서버 코드를 바꾸거나 ACTIVE gate를 우회하지 않았다.
+- Workflow의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`·runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` snapshot mounts/import 경로를 확인했다. 임시 overlay를 유지하고 패키지를 배포하지 않았다. 환경변수 변경이 없어 Infra 참조 문서도 변경하지 않는다.
+- 로그: `/tmp/cross-sync-mobile-session-tests.log`, `-types.log`, `-android-native-final.log`, `-native-transport-final.log`, `-iphoneos.log`, `-ios-build.log`, `-metro.log`, `-compose.log`. Android JUnit XML은 모듈의 `android/build/test-results/testDebugUnitTest/TEST-*.xml`에 있다. CocoaPods 생성물은 검증 산출물이며 커밋에서 제외한다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 5% | Mobile 실기기 보관/서명/UI, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 25% | Mobile 구독, 기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+Percentages estimate remaining design work, not test coverage or delivery dates. Mobile Settings now supports explicit session issuance, local inspection, rotation, password/DPoP server revocation and local recovery through a separate SecureStore vault. A durable token-free journal gates every credential read; new verified records precede journal removal. Existing chat remains unchanged. Dedicated native session transport enforces Bearer-only login, authorization-free refresh and DPoP/password DELETE while sharing reservation/cancellation/TLS boundaries with enrollment. Native DPoP stays within the hardware key provider. URLSession does not guarantee exactly-once delivery; server flow consumption and local interruption markers prevent old credential fallback. Tests/typechecks, Android release AAR/native TLS, iOS full Simulator build/real iPhoneOS SDK, Metro and enrollment-mode Compose rejection/recovery pass. Compose uses memory storage/software key/Node TLS seams, so physical SecureStore/hardware/UI and real ACTIVE/takeover positive verification remain gates. Canonical watcher is next. SDK/runtime continues as an unreleased Workflow source overlay and parent PR90 remains Draft.
+
+## Mobile Canonical 포커스 조회·foreground 구독 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-canonical`, 기준 통합 SHA `4a5befc07851f247f9311421c266d3c8f35e0676`, 하위 PR138 → `feat/cross-platform-session`. main 대상 상위 PR90은 Draft로 유지한다. 환경변수·SDK/runtime 배포 변경은 없다.
+
+### 구현과 동작
+
+- `NativeAgentFocusCard`는 설정에서 현재 Agent 포커스의 ID/version 조회와 명시적 구독 시작·중단을 제공한다. 화면 이탈/계정 변경/백그라운드에서 owner를 폐기하고 요청·대기·포커스를 지우며 자동 재시작하지 않는다. 기존 메시지/WS는 후속 이행 작업이다.
+- `native-agent-focus.ts`는 공통 `AgentSessionReadClient`/`reconcileAgentFocus`를 사용한다. bounded step마다 하드웨어 identity 및 vault record/journal을 새로 확인하고 현재 계정별 공통 lock 안에서 서명·요청·응답을 검사한다. callback 종료 후 proof source를 무효화하고 로컬 record 참조를 버린다. JWT 서명/현재 권한/trust/sid는 서버가 검증한다.
+- cursor scope는 mobile/HTTPS origin/실제 user/로그인 수명/install/key/device/Platform sid의 hash다. access/refresh token과 회전 generation은 포함하지 않으므로 같은 sid의 명시적 갱신 뒤 새 access로 replay를 계속한다. sid 교체/재로그인은 snapshot부터 다시 조회한다. scope/cursor는 실행 동안만 유지하고 UI/진단에는 자격증명 없이 focus/source만 공개한다.
+- `native-agent-focus-watch.ts`는 RN timer 기반 2초 polling, step 전체 10초 deadline, 최대 10페이지 후 yield, 갭/409 snapshot 복구를 연결한다. 정상 step은 lock을 놓은 뒤 대기한다. transport/408/429/5xx/timeout 읽기만 1·2·4·8·16·30초 backoff하고 unchanged poll은 반복 표시하지 않는다. 인증/만료/journal/키/저장소/protocol 오류는 중단한다. 모든 재연결·중단 표시에서 오래된 focus를 지우며 자동 refresh/변경 작업 retry/legacy Bearer fallback은 없다.
+- 전송 취소가 OS 완료 확인은 아니다. 실제 native Promise가 settle될 때까지 module/origin별 public request ID latch를 남겨 새 GET과 기기 proof 준비를 거절한다. UI owner/adapter를 바꿔도 같은 module latch를 사용한다. source settling 또는 native reservation cap busy가 연속 4회면 구독을 중단한다. vault lock을 무한히 유지하지 않아 명시적 갱신·폐기/로컬 복구를 허용하며, 취소된 OS 요청 내부의 기존 헤더는 완료까지 남을 수 있다. late response는 cursor/UI에 적용하지 않는다. 새 bridge 함수가 없는 구형 native 앱과 native contract-invalid는 permanent failure로 처리한다.
+
+### 고정 Canonical GET 전송
+
+별도 `readRequest(id, origin, pathWithQuery, accessToken, dpop)`가 GET/body 없음/JSON Accept/DPoP Authorization/DPoP만 구성한다. JS와 양 OS에서 같은 경로·query 순서를 검사하며 서명 `htu`는 query를 제외한다. 허용 경로는 아래 다섯 가지다.
+
+| 경로 | 허용 query |
+|---|---|
+| `/api/agentflow/me/agent-state` | 없음 |
+| `/api/agentflow/me/agent-events` | `after_sequence=N&limit=N` |
+| `/api/agentflow/me/agent-sessions` | `limit=N` 뒤 선택적 `&before_id=UUID` |
+| `/api/agentflow/agent-sessions/UUID/snapshot` | 없음 |
+| `/api/agentflow/agent-sessions/UUID/events` | `after_sequence=N&limit=N` |
+
+seq는 0..9007199254740991, limit은 1..200(list는 1..100), decimal의 leading zero 없음, UUID는 lowercase version1..8/variant다. duplicate/unknown/reordered/encoded query, hash/backslash/URL rewrite/foreign 또는 noncanonical origin, JWT newline/oversize를 거절한다. list/session snapshot/event 경계는 공통 read client용으로 준비했으며 Mobile UI는 이번에 account focus만 연결했다. 기존 enrollment/session mutation allowlist는 유지하고 shared 예약·취소·기본 시스템 TLS·Cookie/redirect/cache 거절·64 KiB UTF-8 응답을 재사용한다. 앱 retry와 URLSession exactly-once는 별개이며 내부 OS 재전송의 완전 차단을 보장하지 않는다.
+
+### 검증과 제한
+
+- Mobile **118/118** tests 및 typecheck, 공통 계약 검사와 strict/bundler Compose harness 타입 검사 통과. 실제 ES256/ath/GET htu·fresh jti, snapshot/replay/gap·409/invalid JSON 복구, token rotation/sid·로그인 수명 변경, journal/expiry/corruption, lock을 놓은 대기 중 rotation, background/dispose/cancel·late 결과, whole-step deadline, capped backoff/unchanged suppression, 실제 adapter의 미정 OS call·새 owner·명시적 복구, 구형 bridge/permanent invalid와 native reservation cap busy를 검증했다. ACTIVE record/read 양성 테스트는 software-key/HTTP fixture이며 생산 서버 성공으로 취급하지 않는다.
+- Android release AAR와 native JUnit **22/22**(device4/DPoP2/TLS16), 실제 iPhoneOS SDK/deployment15.1 typecheck, 새 5인자 Expo GET bridge를 포함한 전체 iOS Simulator Debug 앱 빌드 및 iOS/Android Metro 번들 통과. macOS 실제 URLSession `::1` TLS fixture는 고정 GET/query/DPoP headers/body 없음/Cookie 미재사용/취소/invalid 경계를 확인했다. verifier의 임시 인증서는 production/system trust에 추가하지 않는다.
+- 실제 Compose `node --import tsx scripts/native-platform-session-compose.mts --mobile-focus`: 임시 일반 계정 등록·선택 브라우저 승인/trusted → login **503** → token-free `login_pending` → 생산 source와 watcher의 wire 이전 인증 중단(Canonical GET 0회) → owner 복원/중복 발급·refresh 차단/명시적 로컬 복구·trusted 유지 및 임시 DB 자료 정리를 통과했다. memory vault/software key/Node TLS seams이므로 실제 SecureStore/hardware/production Mobile UI 성공 증거는 아니다.
+- Compose 기본 인프라/core/gateway, workflow/frontend 및 local HTTPS3443, `PLATFORM_SESSION_MODE=enrollment`을 유지했다. clean source와 실행 container branch/ref/SHA 및 /app mounts를 직접 대조했다. 모두 `feat/cross-platform-session`: Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Core `c9125cfd2302d28a44512b836b9340439142685e`, Workflow `02bb512bba00908cc648dceaa6b1b12caf7313fd`, Frontend `7944120b99e8909f09100c802912839a19359589`. Mobile 자체는 Compose 서비스가 아니며 이 하위 브랜치의 실제 native/JS 빌드로 별도 검증했다. ACTIVE parser gate를 우회하지 않았다.
+- Workflow snapshot mounts와 실제 import는 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`(`/opt/xgen-local-sdk/src/xgen_sdk/__init__.py`), runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`(`/opt/xgen-local-runtime/src/xgen_agent_runtime/__init__.py`)이며 임시 overlay를 유지한다. 환경변수 변경이 없어 Infra 참조 문서는 변경하지 않는다.
+- 증거 로그: `/tmp/cross-sync-mobile-canonical-tests.log`, `-types.log`, `-android.log`, `-swift-fixture.log`, `-iphoneos.log`, `-ios-build.log`, `-metro.log`, `-contracts.log`, `-compose-types.log`, `-compose.log`. Pod/Metro 생성물은 커밋에서 제외한다. 최종 PR Head CI와 diff/review를 통합 직전에 확인한다.
+
+### Remaining work estimate / 남은 작업 추정
+
+| Phase | 남은 비율 | 주요 잔여 항목 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 전체 이행 계약 및 최종 보안 검증 |
+| 1 PlatformSession | 5% | Mobile 실기기 보관/서명/UI, 실제 ACTIVE·takeover 수령과 다중 클라이언트 검증 |
+| 2 CanonicalSession | 23% | Mobile 메시지 snapshot/event·기존 채팅/WS 이행 및 실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 설정 | 95% | 개인 설정 동기화·충돌 처리 |
+| 5 시크릿·Claude/Codex | 90% | 개인 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Mobile Settings now explicitly reads and polls the canonical account focus through ready, scoped Platform credentials and native GET DPoP. Shared reconciliation preserves same-sid cursors across token rotation and recovers gaps/409 with a snapshot. Every bounded step reloads the vault; waits release the lock. Authentication, interrupted journals, key/vault/protocol failures stop, while read-only transient failures use capped backoff. Account/screen/background changes discard the cursor and require explicit restart. Cancelled native reads remain busy across owners until OS completion; persistent source/reservation busy stops, while local recovery remains available. Exact routes/ordered queries use the existing system TLS/cookie/redirect/UTF-8/cancel boundaries. Tests/native builds/Metro and enrollment-mode Compose rejection pass. Real ACTIVE/takeover, physical SecureStore/hardware/UI and message/WS integration remain gates. Parent PR90 stays Draft and SDK/runtime stays on the unreleased Workflow overlay.
+
+
+## Mobile 공유 대화 snapshot·event·완결 메시지 조회 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-messages`, 기준 통합 SHA `1bef897b0f9f73441a88358b3608e8acc7c5fd56`, 하위 [PR140](https://github.com/PlateerLab/xgen-dex-core/pull/140) → `feat/cross-platform-session`. main 대상 상위 PR90은 Draft로 유지한다.
+
+### 범위와 통신
+
+```text
+Mobile Settings 공유 대화 보기
+  → 계정 수명 + hardware identity + SecureStore vault/journal 확인
+  → native GET /me/agent-state · /me/agent-events (query-free DPoP)
+  → 선택된 Agent /snapshot (latest_turn)
+  → /events (연속 실행 커서) + /messages (독립 sparse 커서)
+  → 최신 snapshot + account focus 재확인
+  → 완료 메시지/실행 상태 메모리 표시
+```
+
+- 공통 protocol에 메시지 display projection과 latest_turn parser, bounded conversation recovery를 추가했다. raw ExecutionIO/tool 값은 전달하지 않는다. snapshot의 `message_history_complete=false`를 유지하며 전체 과거 이력 완성을 주장하지 않는다. 진행 중 출력은 완료 후 journal-linked 메시지로 확인한다.
+- 단계당 이벤트 최대 2페이지×100, 메시지 최대 2페이지×1, 단계 deadline 10초다. 단발 조회는 최대 10단계 뒤 남은 기록을 일부 조회로 표시한다. 명시적 polling은 backlog를 이어 읽고 안정화 후 2초 간격으로 확인한다. 최대 100턴/본문 UTF8 4MiB를 보관하며 오래된 턴 생략 개수를 표시한다.
+- 같은 sid의 token rotation은 두 커서를 유지하고 다음 단계에서 vault를 다시 읽어 새 proof를 만든다. focus/auth scope 변경은 이전 본문을 폐기한다. 본문 요청 뒤 final focus를 확인하고 concurrent 변경 시 빈 화면 상태와 새 pointer를 반환하여 다음 단계에서 재조회한다.
+- 이벤트 gap/409는 한 번 재수화한다. 메시지 무결성 실패/409는 중단하여 첫 정상 페이지와 잘못된 후속 페이지의 반복 재조회를 막는다. native redirect/UTF8/응답 크기 실패는 protocol recovery와 구분하는 영구 오류다. 네트워크/서버 임시 실패만 기존 capped backoff를 사용한다. 계정/화면/백그라운드/취소·늦은 결과 폐기와 실제 OS completion 이전 새 GET 차단은 기존 경계를 유지한다.
+- 두 OS/JS에 `/messages?after_sequence=N&limit=N` exact route를 추가했다. limit 1..20, sequence 0..9007199254740991, canonical decimal/lowercase UUID를 대조한다. query는 DPoP htu에서 제외한다. 해당 응답만 1MiB, 나머지 GET와 enrollment/session mutation은 기존 64KiB로 제한한다. 인증·Cookie·TLS·redirect·예약/취소 경계는 유지한다.
+
+### 검증과 실제 실행 환경
+
+- Mobile **125/125**, protocol **210/210**, 각 타입 검사·계약 검사·strict/bundler Compose harness 타입 검사 통과. sparse/빈 페이지/중복·잘못된 본문·UTF8 제한, event/message 독립 커서, bounded paging·100턴/4MiB retention, focus 변경, rotation, callback mutation isolation, journal 차단, account/background/cancel·late 결과, 메시지 무결성 실패 중단을 검증했다.
+- Android release AAR와 native tests **23/23**(device4/DPoP2/TLS17), 실제 iPhoneOS SDK typecheck(deployment target15.1), 전체 iOS Simulator Debug 앱 빌드, iOS/Android Metro export 통과. 실제 URLSession `::1` TLS fixture에서 messages >64KiB 성공, 다른 경로 64KiB 거절, 1MiB 초과 fixed/chunked 응답·invalid UTF8·redirect 거절과 취소를 검증했다. 임시 인증서는 테스트 verifier에만 주입한다.
+- 실제 Compose opt-in `--mobile-messages`: 임시 계정 등록·선택 브라우저 승인·trusted, login **503**과 durable token-free login_pending, 생산 focus/conversation source와 watcher의 인증 중단(Canonical GET **0회**), 재시작 후 중복 발급/refresh 차단, 명시적 로컬 복구와 임시 DB 자료 정리 통과. **memory vault/software key/Node TLS seams**이며 실제 ACTIVE 양성·SecureStore/hardware/production Mobile UI 결합 성공 증거는 아니다.
+- `.env` 서비스별 branch override와 clean source/container HEAD/ref·`/app` mount를 확인했다. 전부 `feat/cross-platform-session`: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`. Workflow는 기존 `02bb512b`에서 최신 integration으로 fast-forward하고 기존 Compose container/overlay 설정을 유지하여 재시작했다. 기본 인프라/core/gateway, workflow/frontend 프로필과 local HTTPS3443, enrollment mode를 사용했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`와 runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 snapshot marker·실제 `/opt/xgen-local-sdk` 및 `/opt/xgen-local-runtime` import를 확인했다. 배포는 하지 않았다. 환경변수 추가·변경·삭제가 없어 Infra 참조 문서 변경은 없다.
+- 증거: `/tmp/cross-sync-mobile-messages-{mobile,protocol,types,protocol-types,android,iphoneos,swift-fixture,ios-build,metro,compose-types,compose}.log`. Pod/Metro 생성물은 커밋에서 제외한다. 통합 전 최종 Head CI와 diff/review를 확인한다.
+
+### 잔여 추정치
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 기반/계약 | 22% | 운영 계약·보안 관문·통합 검증 |
+| 1 PlatformSession | 5% | Mobile 실기기·UI, 실제 ACTIVE/takeover 수령 |
+| 2 CanonicalSession | 21% | Native WS ticket/socket·기존 채팅 송신 이행·실서버 양성 검증 |
+| 3 Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 시크릿 전달과 외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 검증 후 단계적 제거 |
+
+These percentages estimate remaining work, not coverage or delivery dates. Mobile now explicitly reads and polls session snapshots, contiguous execution events and sparse linked terminal messages using scoped native DPoP. Bounded paging/retention, final focus checks, callback isolation, journal/expiry/cancellation and permanent native response failures protect the display. Invalid message links stop instead of replaying earlier pages repeatedly. JS/protocol tests, Android native release tests/AAR, real iPhoneOS typecheck, full iOS Simulator build, Metro exports and enrollment-mode Compose rejection/cleanup pass. All actual server branches/mounts were verified; Workflow advanced to ee007d09 while preserving unreleased SDK/runtime source overlays. Real ACTIVE/takeover, physical SecureStore/hardware/UI, native WS and existing chat send migration remain gates. Parent PR90 stays Draft.
+
+## Mobile 인증 WebSocket 수신 및 HTTP 재조회 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-ws`, 기준 통합 SHA `37e25740b47ad6debe5ed8981a925351a5b4b26b`, 하위 [PR143](https://github.com/PlateerLab/xgen-dex-core/pull/143) → `feat/cross-platform-session`. 상위 PR90은 Draft 유지.
+
+```text
+Mobile Settings 대화 변경 구독 시작
+  → 계정/hardware identity/SecureStore journal 확인
+  → bounded HTTP snapshot/events/messages 및 최종 focus 확인
+  → native WSS /agent-sessions/{UUID}/events?after_seq=N
+      Authorization: DPoP + 새 GET proof (HTTPS/query-free htu)
+  → 연속 프레임 검증 → HTTP 재조회 → 검증된 대화 표시
+  → 조용할 때도 기본 2초 HTTP 확인
+  → focus/vault 세대 변경은 종료 확인 후 최신 연결
+```
+
+### 구현과 복구 경계
+
+- iOS URLSessionWebSocketTask/Android OkHttp + Expo 6인자 open/pull next/close를 추가했다. canonical HTTPS origin/lowercase UUID/safe decimal cursor/JWT 형식을 검증하고 native가 exact WSS route를 구성한다. 브라우저 전용 WS ticket을 Mobile에 사용하지 않는다. Cookie/Origin/subprotocol/cache/ambient authenticator/redirect/app retry 및 앱 데이터 송신은 제공하지 않는다. OS TLS/hostname 검증은 유지한다.
+- JS와 native가 같은 서버의 연결 종료를 확인할 때까지 새 연결을 차단한다. 예약/active/closing은 OS별 최대 64개다. 예약 TTL60초, 확인된 종료 tombstone도 제한/정리한다. native close 실패에는 JS latch를 해제하지 않으며 OS 완료 대신 timeout을 종료 증거로 취급하지 않는다. Android graceful close는 peer 무응답 시 약 60초 취소 대기가 가능하고 watcher의 반복 busy는 bounded 중단한다.
+- text UTF8 1MiB, iOS 단일 pending receive/maximumMessageSize, Android 8프레임/2MiB 전달 queue를 적용했다. Android frame 검사는 OkHttp 디코딩 후 적용되므로 OS 내부 할당 전 상한을 보장하지 않는다. U+FFFD도 보수적으로 거절한다. binary/잘못된 UTF8/queue overflow/protocol close는 영구 오류로 중단한다.
+- WS는 receive-only wakeup이며 화면 본문/상태는 기존 HTTP 검증 projection을 사용한다. 한 번의 pending next를 quiet timer 이후에도 유지해 중복 pull을 막는다. 단발 조회는 WS를 열지 않는다. HTTP backlog는 먼저 읽고 focus/account 변경, 화면 이탈/백그라운드, 취소, 늦은 프레임은 이전 연결과 표시를 폐기한다. vault lock은 연결 수명 동안 보유하지 않는다.
+- HTTP마다 vault를 다시 읽고 token generation이 바뀌면 연결을 교체한다. 기존 WS의 인증 종료가 회전과 겹치면 기존 vault/HTTP를 한 번 확인하며 자동 발급/refresh는 하지 않는다. 인증 실패/진전 없는 반복 종료는 중단한다. handshake와 live cursor 충돌 모두 한 번 snapshot 복구를 거치고 반복 no-progress 충돌은 중단한다. HTTP/WS 커서 진전 또는 scope/session 변경은 복구 예산을 갱신한다. HTTP408/429/5xx·네트워크는 기존 capped backoff를 사용한다.
+
+### 검증과 실제 환경
+
+- Mobile **144/144** 및 타입 검사, strict/bundler Compose harness 타입 검사 통과. 실제 소프트웨어 P-256 DPoP의 HTTPS query-free htu/ath 서명, 연결 중 vault lock 해제, generation rotation, journal pre-wire 차단, 중복/늦은 결과와 실제 close ack, WS wakeup/quiet checks, transient reconnect, handshake/live conflict 복구, close 지연 중 snapshot 의도 유지, HTTP 진전·focus 해제/재연결, 인증 회전 경쟁·반복 실패를 검증했다.
+- Android release native **36/36**(device4/DPoP2/HTTP17/WS13) 및 AAR, 실제 iPhoneOS SDK typecheck(deployment target15.1), 전체 iOS Simulator Debug 앱 빌드 통과. iOS/Android Metro export도 확인한다. iOS TLS fixture는 실제 `::1`에서 canonical URL/header, cookie/origin/protocol 부재, 101/redirect·401/403/408/409/429/5xx, close codes/terminal 오류 보존, network disconnect, binary/oversize/invalid UTF8/정확1MiB, cap/예약/취소·late callback/origin latch/idempotent close/teardown을 검증한다. 인증서 주입은 테스트 컴파일에만 존재한다.
+- 실제 Compose `--mobile-ws`: 임시 계정 등록·선택 브라우저 승인/trusted → login503 → durable token-free login_pending → 생산 source/live watcher의 인증 중단과 Canonical GET **0회**, native socket 예약/handshake **0회** → 명시적 로컬 복구·trusted 유지 및 임시 DB 자료 정리 통과. **memory vault/software key/Node TLS seams**이며 ACTIVE 서버의 WSS 성공이나 물리 기기 결합 검증으로 보고하지 않는다.
+- `.env` branch overrides, clean source/container HEAD/ref와 `/app` mount를 직접 확인했다. 모두 `feat/cross-platform-session`: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`. 기본 인프라/core/gateway + workflow/frontend 프로필, HTTPS3443, enrollment mode를 사용했고 이 작업은 서비스 소스를 변경하지 않는다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`/runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` snapshot과 실제 `/opt/xgen-local-sdk`/`/opt/xgen-local-runtime` import를 재확인했다. 패키지 배포 및 환경변수 변경은 없다.
+- 증거: `/tmp/cross-sync-mobile-ws-{tests,types,android,iphoneos,swift-fixture,ios-build,metro,compose-types,compose,environment,overlay}.log`. Pod/Metro 생성물 제외. 최종 Head CI와 diff/review 확인 후 하위 PR만 통합한다.
+
+### 잔여 추정치 (설계 11절의 Phase 기준)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover 수령·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 19% | 기존 채팅 송신 이행·다른 native WS·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These estimates describe remaining design work, not test coverage or delivery dates. Mobile now receives DPoP-authenticated native WSS notifications and wakes bounded HTTP conversation recovery, with periodic focus/vault checks. Reserved IDs, bounded native state, exact routes, system TLS, receive-only APIs and actual terminal acknowledgements constrain the transport. Snapshot recovery covers upgrade and live cursor conflicts; an old socket authentication close rechecks existing credentials once to handle rotation without automatic session issuance. JS/native fixtures, iOS full build and enrollment-mode Compose rejection validate their seams. Real ACTIVE/takeover, physical SecureStore/hardware/UI, other native WS surfaces and existing chat send migration remain gates. Parent PR90 stays Draft; SDK/runtime remain unreleased Workflow overlays. Phase names follow design section11.
+
+## CLI·VSCode·Desktop 공유 대화 조회 기반 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-messages`, 기준 통합 SHA `5cbabb5f93e4f1e227eb1d75a3ce71eca03b5d21`, 하위 [PR144](https://github.com/PlateerLab/xgen-dex-core/pull/144) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+CLI conversation/watch-conversation
+VSCode native/conversation · native/watch-conversation → 읽기 전용 가상 문서
+Desktop 공유 대화 읽기·폴링·중단 → main 전용 계정/origin → OS keychain
+  → ready vault/journal/account/access 확인
+  → GET DPoP /me/agent-state · /me/agent-events
+  → 선택된 /snapshot · /events · /messages → 최종 focus 재확인
+  → 표시 projection만 전달 → bounded HTTP polling
+```
+
+### 구현과 경계
+
+- 다른 native 표면은 포커스만 조회하고 있어, WS 연결에 앞서 대화 조회 선행 조건을 보완했다. Mobile의 공통 protocol recovery를 사용하며 snapshot/latest_turn, 연속 실행 이벤트, sparse 완결 메시지의 두 커서를 유지한다. 단계당 이벤트 2×100/메시지 2×1, deadline 10초, 단발 최대 10단계, retention 최대 100턴/본문 UTF8 4MiB다. 같은 sid의 rotation은 커서를 유지하고 다음 단계에서 새 vault/proof를 사용한다.
+- native HTTP read adapter는 canonical HTTPS origin/exact GET route/ordered query를 제한하며 query-free htu·ath를 서명한다. Cookie/ambient credentials/redirect를 사용하지 않는다. messages 1MiB, 그 외 64KiB, fatal UTF8과 stream 크기를 제한한다. 응답 헤더 이후·본문 진입·chunk마다 인증/취소를 확인하며 실패 시 unread body를 취소한다. 이벤트 gap/409 복구는 기존 bounded snapshot 경로를 사용하고 메시지 무결성 실패는 중단한다.
+- RPC는 `canonicalConversation:true` capability와 별도 conversation 알림을 추가했다. 표시 snapshot/messages/omittedMessages와 has_more만 전달하며 credential/authScope/cursor/raw tool 값은 제외한다. watch 간격 오류는 ACK 전에 거절한다. VSCode/Desktop은 malformed projection을 중단하고 pending 취소·late ACK의 정확한 watch ID 정리로 새 watch를 보존한다. Desktop renderer는 raw ACK를 먼저 게시하지 않는다.
+- VSCode의 가상 plain-text 문서는 명시적으로 열고 폴링 결과를 갱신한다. 파일/로그 저장은 없으며 표시 문자열은 5×1024×1024자 상한을 둔다. Desktop 버튼은 완결 메시지·최신 턴·생략/불완전/추가 조회 상태를 표시한다. 계정/서버 변경, 취소, 중단·재연결은 이전 본문을 비운다. 기존 채팅 송신 이행과 다른 native WS는 다음 작업이다.
+
+### 검증과 실행 환경
+
+- Protocol **212/212**, engine 초기 전체 **161 pass / 2 skip**와 후속 응답 취소·has_more 회귀를 포함한 대상 **33/33**, VSCode 전체 **30/30**, Desktop 초기 전체 **530/530**와 후속 renderer 대상 **7/7** 통과. 관련 타입 검사·계약 검사·CLI/VSCode/Desktop 빌드와 두 opt-in harness strict 타입 검사 통과. Engine 두 skip은 OS별 지원 조건이다.
+- 로컬 Node24 CLI 전체는 최종 **153/153** 통과했다. 기존 TUI 이력 표시 테스트가 답변만 먼저 그려진 중간 frame을 읽어 실패하던 조건을 질문·답변이 함께 그려진 실제 frame을 기다리도록 좁혔다. 임의 sleep이나 TUI 구현 변경은 없다. 최종 Head CI 전체 테스트 결과도 별도 확인한다.
+- 초기 Head CI에서 Android WS test의 client onOpen 완료와 MockWebServer peer onOpen 완료 사이 경쟁 조건으로 null peer close가 발견됐다. peer의 실제 onOpen을 latch로 확인한 뒤 close하도록 테스트만 수정했고 대상 Gradle test 통과. native 제품 코드는 변경하지 않았다.
+- 실제 HTTPS fixture `scripts/cli-platform-session-fixture.mts --conversation` 및 `--vscode`/`--desktop`: 별도 빌드 CLI/RPC/Electron main·preload·renderer, 일회용 OS keychain, 실제 P-256 proof 검증, >64KiB 메시지 두 개의 sparse 커서(2/4), 표시 projection, 다른 프로세스 rotation과 다음 GET의 새 token, Ctrl+C/unwatch·요청 중단 통과. Desktop 실제 컴포넌트의 읽기·폴링·본문 표시·중단 후 제거와 screenshot을 확인했다. 하네스는 local pre-wire busy만 최대 10회×100ms 대기하며 HTTP/journal/transport 실패는 재시도하지 않는다. **ACTIVE Gateway 성공 증거는 아니다.**
+- 실제 Compose `--cli --vscode --desktop --native-messages`: 임시 계정·기기 등록/신뢰 브라우저 승인 → login503 → durable login_pending → 각 conversation read/poll auth_required → 명시적 로컬 복구·DB/키체인 정리 통과. enrollment 모드를 유지했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env`의 서비스별 override, clean source/container HEAD/ref와 `/app` mount 확인: 모두 `feat/cross-platform-session`. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment`을 확인했다. DEX 클라이언트 검증은 이 하위 브랜치의 빌드/소스를 사용한다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`/runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` snapshot marker와 실제 `/opt/xgen-local-sdk`/`/opt/xgen-local-runtime` import 확인. 배포 및 환경변수 변경은 없다.
+- 증거: `/tmp/cross-sync-native-messages-*.log`, `/tmp/cross-sync-native-conversation-desktop-ui.png`. 최종 Head CI/review를 확인한 뒤 하위 PR만 통합한다. 실제 ACTIVE/takeover·Mobile 물리 기기·전 표면 송수신 검증은 후속 관문으로 유지한다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 18% | CLI/VSCode/Desktop native WS·기존 채팅 송신 이행·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode and Desktop now read and explicitly poll bounded canonical conversation snapshots, execution events and sparse linked terminal messages. The common OS-vault engine validates exact read routes, scoped DPoP and bounded UTF8 streams; cancellation and credential loss cancel unread bodies. RPC/UI boundaries project display fields, stop stale watch acknowledgements by exact ID, and clear transcripts on scope/connection changes. Actual HTTPS/software-key OS-keychain fixtures and Electron UI verify positive client contracts; enrollment-mode Compose verifies rejection and recovery on the actual integration branches. The CLI suite passes 153/153 after its existing history assertion waits for both question and answer instead of an intermediate frame. Final Head CI remains a gate. ACTIVE Gateway, physical Mobile, other native WebSocket and chat-send integration remain pending. SDK/runtime stay as unreleased Workflow overlays and PR90 remains Draft.
+
+## CLI·VSCode·Desktop 네이티브 실시간 연결 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-ws`, 기준 통합 SHA `ec516b8d655add02f83754ffa122fbce58438832`, 하위 [PR145](https://github.com/PlateerLab/xgen-dex-core/pull/145) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+CLI session watch-live
+VSCode native/watch-live → 읽기 전용 대화 문서
+Desktop 공유 대화 실시간 연결 → main의 계정/origin·OS CA
+  → ready OS vault/journal/access 확인 → GET DPoP (query-free HTTPS htu)
+  → WSS /api/agentflow/agent-sessions/{id}/events?after_seq=N
+  → 연속 이벤트 검증 → bounded HTTP 대화 복구 → 표시 projection
+  → 조용한 연결도 vault/focus 재확인 → 새 generation이면 소켓 교체
+  → 취소·인증 상실·기기/계정 변경 → 실제 close 확인 후 종료
+```
+
+### 구현과 경계
+
+- 공통 엔진에 receive-only native WSS 전송과 `NativeAgentLiveWatcher`를 추가했다. browser ticket을 사용하지 않고 OS vault의 Platform access와 실제 P-256 GET DPoP로 인증한다. 전송은 canonical HTTPS origin/lowercase UUID/safe cursor/JWT·query-free proof 경로를 확인하며 Cookie/Origin/subprotocol/redirect/compression/앱 데이터 송신을 제공하지 않는다. 인증서/hostname 검증은 항상 활성화하며 기본 Node 신뢰와 Desktop main의 시스템 CA를 사용한다.
+- 프레임 1MiB, 대기 큐 8프레임/2MiB, 단일 pending receive, handshake 10초로 제한한다. 신뢰된 호스트 CA provider는 최대 2048개·각128KiB·전체16MiB이며 renderer/RPC로 전달하지 않는다. 정상 OS 인증서 목록이 64개를 넘는 실제 Electron 실패를 발견해 수정하고 TLS 회귀로 검증했다.
+- 이벤트는 HTTP 복구를 깨우는 용도이며 메시지/화면의 권위는 기존 bounded HTTP parser/recovery에 둔다. 빈·중복 프레임은 HTTP 주기를 앞당기지 않고 backlog를 HTTP로 비운 뒤 연결한다. quiet timer는 기본2초, CLI interval은200..60000ms다. 매 단계 새 vault를 읽고 대기 중 키체인 잠금을 보유하지 않는다.
+- 같은 sid의 token generation 변경은 두 커서를 보존하고 이전 소켓을 닫는다. 동일 host의 로그인 journal·refresh·logout·로컬 삭제는 자격증명 변경 전에 소켓을 즉시 닫으며 다른 프로세스의 변경은 다음 주기에서 재확인한다. account/sid 전환과 HTTP recovered 결과는 이전 연결을 폐기하고 새 after_seq로 연결한다. 취소된 늦은 open/frame은 표시하지 않는다.
+- upgrade/peer cursor conflict는 snapshot으로 한 번 복구하고, 이전 소켓 인증 실패는 새 자격증명 발급 없이 vault를 한 번 재확인한다. 같은 scope/sid/sequence에서 반복하면 중단한다. WSS 전송 실패도 진행 없는 세 번 재시도 뒤 중단해 HTTP 성공마다 실패 예산이 초기화되는 반복 연결을 막았다. 정상 이벤트·HTTP cursor 진행 또는 범위 변경 때 예산을 초기화한다.
+- 같은 프로세스의 factory 간 origin latch를 공유하며 실제 underlying close 전에는 해제하지 않는다. 명시적 close는 큐를 즉시 비우고 ACK 없는 peer를1초 뒤 terminate하되 실제 close event까지 기다린다. 실패/취소된 handshake도 실제 close 뒤 거절하며 watcher 종료는 진행 중 close를 기다린다.
+- RPC `canonicalLive:true`와 별도 `native/watch-live`를 추가했다. CLI JSONL/SIGINT, VSCode capability gate·가상 문서, Desktop main-only TLS와 실시간 연결·중단 UI를 연결했다. 기존 HTTP 읽기/폴링은 선택할 수 있다. ACK 전 account/interval 검증, pending 취소, exact watch ID의 stale ACK 정리, 표시 필드 projection과 stopped/reset 본문 삭제를 유지했다.
+
+### 검증과 실행 환경
+
+- 제품 코드 검증 SHA `29987932779c9633dc3f64065ce565b940fe35de`. 최종 엔진 전체 **191 pass / 2 OS 조건 skip**, CLI **153/153**, VSCode **31/31**, Desktop **531/531** 통과. native transport 실제 TLS 대상 **13/13**, live/session 후속 회귀 **42/42** 통과. engine/RPC/CLI/VSCode/Desktop 타입 검사, 계약 검사와 CLI/VSCode/Desktop 빌드, 두 opt-in harness strict 타입 검사 통과. 최종 Head CI 결과는 PR145에서 확인한 뒤 병합한다.
+- 실제 HTTPS fixture `scripts/cli-platform-session-fixture.mts --live` 및 `--vscode --live`/`--desktop --live`: 빌드된 CLI/RPC/Electron, 일회용 OS keychain, 실제 P-256 proof/ath와 query-free htu, 이벤트로 HTTP 갱신, >64KiB 메시지와 sparse 커서, 다른 프로세스 rotation 후 새 WSS 인증, Ctrl+C/unwatch·actual close 통과. 실제 Electron 컴포넌트의 실시간 연결/메시지 표시/중단 후 본문 제거와 screenshot을 확인했다. **실제 ACTIVE Gateway 성공 증거는 아니다.**
+- 실제 Compose `--cli --vscode --desktop --native-ws`: 일회용 계정/기기 등록 → 신뢰 브라우저 승인 → enrollment login503과 login_pending journal → HTTP read/poll 및 native live auth_required → 명시적 로컬 복구·DB/키체인 정리 통과. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용하며 enrollment를 유지했다.
+- `.env`의 서비스별 override와 clean source/container branch/HEAD·`/app` mount 확인: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment`을 읽어 확인했다. DEX는 이 하위 브랜치의 제품 코드 빌드를 사용한다.
+- Workflow overlay의 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`/runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` marker 및 실제 `/opt/xgen-local-sdk`/`/opt/xgen-local-runtime` import를 재확인했다. 패키지 배포·환경변수 추가/변경/삭제는 없다.
+- 증거: `/tmp/cross-sync-native-ws-{engine-tests,cli-tests,vscode-tests,desktop-tests,cli-fixture,vscode-fixture,desktop-fixture,compose,environment,overlay}.log`, `/tmp/cross-sync-native-ws-desktop-ui.png`. 실제 ACTIVE/takeover, Mobile 실기기와 기존 채팅 송신 이행은 후속 관문이다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 16% | 기존 채팅 송신 이행·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode and Desktop now use receive-only native GET DPoP WSS to wake authoritative HTTP conversation recovery, with periodic scoped vault/focus checks. Same-session token rotation preserves cursors and replaces the socket; local credential mutations immediately stop existing sockets. Recovered HTTP snapshots replace old streams, no-progress socket failures have finite budgets, and cancellation awaits actual teardown. Frame/queue/CA bounds, default/system TLS and a shared origin latch constrain the transport. Real HTTPS/software-key OS-keychain and Electron UI fixtures pass, while integration-branch enrollment-mode Compose verifies rejection and recovery. Actual ACTIVE/takeover, physical Mobile and migration of existing chat sends remain gates. SDK/runtime remain unreleased Workflow overlays; PR90 stays Draft.
+
+## CLI Canonical 턴 송신·공통 RPC 기반 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-cli-canonical-turns`, 기준 통합 SHA `52a6efc5f7b81b9ea9ab8fc54581f9cc36617f4a`, 하위 [PR146](https://github.com/PlateerLab/xgen-dex-core/pull/146) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+dex chat --canonical (기존 server-issued session ID + snapshot version + stable key)
+  → UTF-8 메시지 그대로 검증·복사 → scoped ready OS vault
+  → POST DPoP /api/agentflow/agent-sessions/{id}/turns
+  → bounded 202 접수 ACK (AI 완료 아님) → 별도 conversation/watch-live에서 확인
+  → 응답 유실/dispatch 후 취소: unknown + 안전한 요청 식별 정보
+  → 사용자가 동일 메시지·원래 버전·key로 다시 실행 → 서버 replay ACK
+
+native/submit-turn, native/stop-turn → 공통 native host (VSCode/Desktop 기반)
+  → stop ACK는 requested:true → 실제 종료는 대화 이벤트/메시지로 확인
+```
+
+### 구현과 경계
+
+- `AgentSessionMutationClient`는 정확한 HTTPS origin과 lowercase UUID, safe version, printable ASCII idempotency key 1..128, 선택적 origin ID 1..128 codepoint를 검증한다. 메시지는 정상 Unicode·UTF-8 최대262144바이트이며, async credential 조회 전에 primitive body를 복사·직렬화한다. `--stdin`은 BOM·개행·끝 공백까지 보존한다. 임의의 origin ID를 실행마다 생성하지 않아 명시적 재시도의 요청 해시가 바뀌지 않는다.
+- OS vault의 ready/현재 계정/access 만료를 확인하고 현재 token·정확한 `/turns` 또는 `/stop` 경로에만 POST proof를 허용한다. 외부 read-only proof callback은 POST를 서명할 수 없다. 네이티브 전송은 정확한 네 헤더, query-free URL, no Cookie/Origin/redirect를 확인하고 async vault check 전에 init/header/body를 복사한다. 키·토큰·비밀번호·메시지는 ACK/오류에 포함하지 않는다.
+- ACK는64KiB, fatal UTF-8 및 필드 불변식으로 제한한다. 접수 state version은 원래 expected+1이고 replay에서도 유지한다. fresh ACK는 accepted만 허용하며 stop ACK는 요청한 turn ID·version·requested:true와 일치해야 한다. 추가 서버 필드는 제거한다. redirect/URL 변경은 4xx 판정보다 먼저 확인한다.
+- 수신된4xx(408 제외)는 명시적 거절로 처리하며409의 code/current version/turn ID만 allowlist로 노출한다. fetch loss·408·5xx·잘못된 ACK·dispatch 후 취소/timeout은 unknown이다. 자동 재전송·갱신·새 key 생성·legacy fallback을 하지 않는다. abort를 무시하는 fetch와 멈춘 reader도 취소 시 unknown으로 끝내고 늦은 본문/reader를 정리한다. 호스트 요청 제한은10초다.
+- `dex chat --canonical`은 기존 chat entry에서 legacy engine 생성 전에 분기한다. `--user-id`, `--session-id`, `--expected-state-version`, `--idempotency-key`와 `--message`/`--stdin` 중 하나가 필수다. `--json`은 안전한 요청 식별 정보와 접수 결과만 출력한다. SIGINT/SIGTERM은 진행 중 HTTP만 취소하며 서버 턴 stop을 의미하지 않는다.
+- RPC는 flat `native/submit-turn`/`native/stop-turn`과 `canonicalTurns:true` capability를 추가했다. `mutation` envelope를 사용해 기존 `result`의 session/enrollment 타입을 유지한다. 계정/origin/platform은 기존 host 경계를 따른다. 새 작업은 기존 watch를 중단하므로 소비자는 접수 뒤 별도 watch를 다시 시작해야 한다. VSCode/Desktop 채팅 입력 UI·Mobile 송신 이행, 새 Canonical session 생성, 첨부/로컬 도구/TUI 전환은 후속 작업이다.
+
+### 검증과 실행 환경
+
+- 제품 코드 SHA `b791cbc8d4fbbae5e49067d780615986c24956b7`. 엔진 전체 **201 pass / 2 OS 조건 skip**, protocol **228/228**, CLI **161/161**(RPC 회귀 포함), VSCode **31/31**, Desktop **531/531** 통과. 전체 workspace와 Desktop 타입 검사, 계약 검사, CLI/VSCode/Desktop 빌드 및 opt-in harness strict 타입 검사 통과. 최종 Head CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `scripts/cli-platform-session-fixture.mts --turns` / `--vscode --turns`: 빌드된 별도 CLI/stdio 프로세스와 일회용 OS keychain, 실제 TLS/P-256 POST DPoP·ath, >64KiB 다국어 stdin과 끝 개행 보존, 동일 key 한 번 실행/replay, 다른 메시지 동일 key·stale version409, 서버 접수 후 응답 유실·명시적 원래 body/key/version 복구,401 자동 갱신 없음, RPC stop 요청 바인딩·안전한 ACK/오류를 검증했다. **실제 ACTIVE Gateway 성공 검증은 아니다.**
+- `scripts/native-platform-session-compose.mts --cli --vscode --native-turns`: 실제 Gateway enrollment 모드의 일회용 계정·기기 등록/브라우저 승인, login503·login_pending journal, CLI submit/VSCode submit·stop auth_required, Canonical session 미생성·journal 유지·명시적 로컬 복구 및 DB/키체인 정리를 확인했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env` 서비스별 override·clean source/container HEAD/ref·`/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX는 이 하위 브랜치의 제품 코드를 빌드했다.
+- Workflow overlay SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` / runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` marker 및 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` 실제 import를 확인했다. 패키지 배포와 환경변수 추가·변경·삭제는 없다.
+- 증거: `/tmp/cross-sync-canonical-turns-{tests,engine-tests,desktop-tests,check,desktop-check,build,desktop-build,contracts,harness-check,cli-fixture,vscode-fixture,compose,environment,overlay}.log`. 실제 ACTIVE/takeover와 Web↔native 실행 성공, UI 송신 및 Mobile 물리 기기 검증은 후속 관문이다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 15% | UI 송신·session 생성 연결·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. The existing CLI chat entry now supports explicit Canonical turn submission for an existing server-issued session. Native OS-vault POST DPoP and shared submit/stop RPC validate copied inputs and bounded acknowledgements without retries, refresh or legacy fallback. Lost acknowledgements and post-dispatch cancellation expose an unknown outcome with safe explicit-retry identifiers; stop acknowledgements only confirm a request. Actual HTTPS/software-key OS-keychain CLI/VSCode fixtures verify replay, CAS and loss recovery. Integration-branch enrollment-mode Compose verifies rejection and recovery. ACTIVE Gateway success, session creation and UI/Mobile chat migration remain gates. SDK/runtime stay as unreleased Workflow overlays and PR90 stays Draft.
+
+## VSCode·Desktop Canonical 턴 입력 UI (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-turn-ui`, 기준 통합 SHA `dcdac7b86267ea410f6104f450f53287fa1a2912`, 하위 [PR147](https://github.com/PlateerLab/xgen-dex-core/pull/147) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+VSCode 현재 공유 대화 읽기 → Workspace '공유 대화' → 기존 입력창
+Desktop 설정 → 기기·세션 → 공유 대화 읽기 → 턴 입력창
+  → 검증된 native scope + server-issued snapshot ID/version
+  → 공통 AgentTurnComposer → native submit/stop RPC → OS vault + POST DPoP
+  → 접수 ACK → authoritative HTTP 읽기 → 기존 구독 재개
+  → 응답 유실: unknown → 동일 본문·원래 version/key로 사용자 재확인
+  → stop requested ACK → 최신 snapshot의 실제 terminal 상태 확인
+```
+
+### 구현과 경계
+
+- UI 공통 상태 모델은 한 번에 하나의 쓰기만 허용하며 원래 입력·scope·버전·중복 방지 키를 메모리에 보존한다. 표시 상태에는 입력·키 소재·토큰을 넣지 않는다. 결과가 불명확하면 새 요청을 막고 명시적 재시도만 허용한다. 일시적 연결 실패·구독 중단·동일 범위 재조회는 원래 요청을 유지한다. 실제 계정/프로필/대화 변경과 disposal은 이전 요청 및 늦은 ACK를 폐기한다.
+- submit/stop 결과는 정확한 native envelope와 기존 bounded ACK parser로 검증한다. stop ACK는 중단 요청 접수이며 AI 완료/실제 취소로 표시하지 않는다. 최신 authoritative snapshot의 terminal 또는 엄격히 더 최신인 다른 턴이 이전 접수 상태를 해제한다. 같은 버전의 다른 턴·역행 버전은 새 송신을 허용하지 않는다.
+- VSCode는 CLI native controller가 읽은 대화에 명시적 공유 모드로 진입한다. 레거시 로그인/Agent 선택과 별개로 진입할 수 있으며 원래 textarea의 공백·줄바꿈을 그대로 전송한다. 대화가 없거나 재연결 중이면 Canonical 본문에 레거시 기록을 섞지 않는다. 계정/대화 변경 시 draft를 비우고 새 대화 버튼은 현재 구현이 새 Canonical 대화를 만들지 못함을 안내한다.
+- Desktop은 기존 기기·세션 설정의 공유 대화 영역에 입력/재확인/최신 턴 중단을 연결했다. 계정·origin·플랫폼은 main이 지정하며 sender/frame 검증과 시스템 CA를 유지한다. IPC 오류는 closed outcome/status/allowlisted conflict만 추가로 노출한다. 진행 중 작업 취소는 unknown으로 남겨 늦은 성공 ACK가 새 화면을 덮지 않게 한다.
+- 두 UI는 UTF-8 최대262144바이트, 첨부/로컬 도구 없음, 입력 로컬 영속 저장 없음의 공통 계약을 따른다. 쓰기 후 자동 처리는 읽기·구독 복구이며 새 쓰기/새 키 발급 재전송을 하지 않는다. 기존 server-issued 활성 대화가 필요하다. Desktop Workspace 주 채팅 이행, 새 세션 생성/선택, Mobile 송신과 실제 ACTIVE 서버의 표면 간 실행 성공은 남아 있다.
+
+### 검증과 실행 환경
+
+- 제품 코드 SHA `f36fdda315c17ad7cb6d11b511a0b6f99518f53a`. 공통 composer focused 테스트14/14, protocol242/242, engine201 pass/2 OS 조건 skip, CLI161/161, VSCode38/38, Desktop541/541을 통과했다. workspace/별도 Desktop 타입 검사·빌드, 계약 검사, opt-in harness strict 타입 검사도 통과했다.
+- `scripts/cli-platform-session-fixture.mts --vscode --turn-ui` 및 `--desktop --turn-ui`: 실제 TLS/P-256 POST DPoP, 별도 CLI/OS keychain 또는 Electron main/preload/IPC, 제품 UI 입력을 사용한다. 이중 클릭 한 번 실행, 접수 후 ACK 유실, 구독 중단/재조회 후 원래 body/key/version 명시적 재확인, 정확한 최신 턴 중단, terminal HTTP 복구와 입력 원문/끝 개행 보존을 검증한다. Desktop은 실제 제품 component이고 VSCode는 제품 provider/controller/webview를 Electron의 최소 VSCode API 어댑터로 띄운다. **설치된 VSCode extension host 검증이나 실제 ACTIVE Gateway 성공 검증은 아니다.**
+- `scripts/native-platform-session-compose.mts --cli --vscode --desktop --native-turns`: 실제 Gateway enrollment 모드에서 일회용 계정·신뢰 기기 승인·login503/login_pending, 세 플랫폼의 submit 및 native stop 차단, Canonical session 미생성·journal 유지·명시적 복구, DB/OS keychain 정리를 검증했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env`의 서비스별 통합 브랜치 override와 clean source/container HEAD/ref·실제 `/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX는 하위 브랜치 제품 코드를 빌드했다.
+- Workflow overlay SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` / runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` marker와 실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 확인했다. 패키지 배포와 환경변수 추가·변경·삭제는 없다.
+- 증거: `/tmp/cross-sync-native-turn-ui-{tests,composer-tests,desktop-tests,check,desktop-check,build,desktop-build,contracts,harness-check,vscode,desktop,compose,environment,overlay}.log`, `/tmp/cross-sync-native-turn-ui-{vscode,desktop}.png`. CI는 최종 Head에서 확인한 뒤 하위 PR만 통합한다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 13% | session 생성/선택·Desktop 주 채팅/Mobile 송신·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. VSCode has explicit Shared conversation mode in its existing chat composer; Desktop has a composer in native session settings. Both use verified server snapshots and a shared scoped state machine, preserve uncertain requests through same-scope reconnection, and retry only the original body/key/version on explicit user action. Submit and stop receipts are separate from authoritative completion. Real HTTPS/software-key OS-keychain and product Electron component fixtures verify loss recovery and exact stop binding; VSCode uses a minimal Electron shell adapter, not an installed extension host. Enrollment-mode integration-branch Compose verifies rejection and recovery. ACTIVE Gateway success, new session creation/selection, Desktop primary chat migration and Mobile sends remain gates. SDK/runtime remain unreleased Workflow overlays and PR90 stays Draft.
+
+
+## CLI·VSCode·Desktop Canonical 세션 생성·선택 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-native-session-selection`, 기준 통합 SHA `6c0ed3ed9d0c78a5c5eba57619ef0393790e9c93`, 하위 [PR148](https://github.com/PlateerLab/xgen-dex-core/pull/148) → `feat/cross-platform-session`. 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지. 제품 코드 SHA `1f5dc1572ca2eb47ed30534a48a305c9ae3285fb`.
+
+```text
+CLI session agent-sessions / create-agent-session / switch-agent-focus
+VSCode 공유 대화 → 새 대화 / 세션 선택
+Desktop 설정 → 기기·세션 → Canonical Agent 세션
+  → ready OS vault + 고정된 계정/프로필/HTTPS origin
+  → GET 현재 focus + 소유한 세션 목록 (독립 조회; CAS가 경쟁을 검사)
+  → POST 새 세션 생성 / PUT 활성 focus 선택 또는 해제
+  → expected_version CAS → 서버 발급 UUID·검증된 ACK
+  → authoritative conversation read → 기존 live 구독 재개
+  → 응답 유실·잘못된 ACK: unknown → 다음 쓰기 차단 → 명시적 목록 재확인
+```
+
+### 구현과 경계
+
+- Workflow의 기존 생성 API는 workflow 소유권 검사·세션 생성·계정 focus 변경을 한 트랜잭션에서 수행한다. 전환은 소유한 활성 세션 또는 null만 허용하고, 같은 target의 정상 CAS는 버전을 올리지 않는다. 생성 API에는 idempotency key가 없으므로 클라이언트는 유실된 생성 요청을 자동으로 다시 보내거나 새 버전으로 재작성하지 않는다. 목록 재확인은 현재 상태를 표시하며 이전 unknown 요청의 성공 판정으로 취급하지 않는다.
+- 공통 lifecycle protocol은 exact 입력 필드, 정상 Unicode/codepoint 길이, lowercase UUID, safe version을 검증하고 async 인증 조회 전에 body를 복사한다. HTTPS origin·정확한 POST/PUT 경로·현재 Platform token에 한 번만 서명하며 외부 read-only callback은 쓰기를 서명할 수 없다. ACK는64KiB/fatal UTF8와 요청 ID/workflow/버전 불변식으로 검증하고, 추가 서버 필드를 제거한다.
+- 수신된4xx(408 제외)는 거절,409는 allowlisted `FOCUS_VERSION_CONFLICT`의 current focus만 전달한다. dispatch 후 취소·응답 유실·잘못된 ACK·408·5xx는 unknown이다. HTTP 재전송·자동 갱신·legacy fallback이 없고 쓰기 deadline은10초다. Cookie/Origin/redirect와 임의 경로는 허용하지 않는다. focus/list GET도 bounded native adapter를 사용한다.
+- CLI의 생성/전환에는 사용자가 확인한 `--expected-version`이 필수다. `--clear`와 `--session-id`는 하나만 선택하며 boolean 옵션에 값을 붙이면 거절한다. 목록은 `--limit 1..100`과 `--before-id`로 조회한다. 생성·전환·목록 결과를 출력 전에 안전한 공유 parser로 다시 투영한다.
+- UI는 서버에서 확인한 목록의 focus version만 사용하며 계정 소유 활성 세션만 선택한다. Workflow ID·선택 제목으로 새 대화를 만들고, 포커스 해제도 명시적 버튼으로 수행한다. VSCode는 기존 New Chat을 생성 컨트롤에 연결한다. unknown/409는 직접 목록을 새로 확인하기 전까지 lifecycle 쓰기를 막으며, 미확정·진행 중인 turn도 세션 쓰기를 막는다. 최신 페이지는 최대100개이며 CLI는 이전 페이지 커서를 지원한다.
+- 계정/프로필/origin 변경은 이전 catalog와 turn intent를 폐기한다. 바뀐/null focus는 이전 본문을 즉시 비우고, non-null focus는 authoritative snapshot을 읽는다. lifecycle ACK는 원래 scope의 정확한 origin/account/platform과 일치해야 하며 늦은 이전 scope 결과는 표시하지 않는다. 입력·비밀키·토큰·원본 오류는 영속화하지 않는다. Desktop main/frame/TLS 경계를 유지한다.
+- 실제 VSCode 검증에서 watch ACK 직후 catalog 조회가 키체인 lock 해제보다 먼저 실행되는 경쟁을 발견했다. RPC는 예약된 watcher의 done을 ACK 전에 등록한다. 엔진은 scoped proof 작업을 실제 `keys.withSession` 완료까지 추적하고, RPC는 watcher 취소와 단발 conversation 취소 후에도 drain barrier를 보존한다. 후속 요청은 실제 lock 해제를 기다리며15초 요청 취소 시 fail closed한다. 원래 HTTP를 다시 보내거나 lock을 우회하지 않는다.
+
+### 검증과 실행 환경
+
+- Protocol lifecycle 대상8/8, 기존 mutation16/16 통과. 엔진 초기 전체208 pass/2 OS 조건 skip 및 후속 안전 오류 처리·실제 proof drain 회귀 통과. CLI 전체172/172 후 추가된 RPC 경쟁 회귀 포함 대상18/18, CLI lifecycle 대상6/6 통과. VSCode 전체43/43, Desktop 관련 model/main27/27와 실제 HTTPS network1/1 통과. Desktop network의 첫 샌드박스 실행은 listen EPERM이어서 해당 테스트만 소켓 권한으로 재실행했다. workspace/별도 Desktop 타입 검사와 빌드, 계약 검사, 두 opt-in harness strict 타입 검사 통과. 최신 Head의 필수 CI·리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `scripts/cli-platform-session-fixture.mts --sessions`: 별도 빌드 CLI·일회용 OS keychain·실제 TLS/P-256 POST/PUT DPoP, 서버 UUID, 소유 목록 pagination, stale focus409, same-target no-op, archived target 거절, clear, 서버 생성 후 ACK 유실1회와 명시적 catalog 복구를 검증했다.
+- 같은 fixture의 `--vscode --session-ui` / `--desktop --session-ui`: 제품 버튼을 눌러 최초 empty focus에서 생성, 이중 클릭1회 전송, ACK 유실 후 쓰기 잠금, 목록 새로 확인→새 UUID·빈 새 대화 snapshot, 기존 활성 세션 선택, focus 해제를 검증했다. Desktop은 실제 main/preload/IPC/renderer이며 VSCode는 제품 provider/controller/webview를 최소 Electron shell API 어댑터로 실행한다. 화면 screenshot도 검토했다. 설치된 VSCode extension host 및 실제 ACTIVE Gateway 성공 검증은 후속 관문이다.
+- `scripts/native-platform-session-compose.mts --cli --vscode --desktop --native-sessions`: 일회용 계정·기기 등록/신뢰 브라우저 승인 후 enrollment login503/login_pending에서 catalog/create/switch를 auth_required로 거절하고, Canonical session 미생성·journal 유지·명시적 로컬 복구와 DB/키체인 정리를 검증했다. 기본 인프라/core/gateway와 workflow/frontend 프로필, HTTPS3443을 사용했다.
+- `.env` 서비스별 통합 브랜치 override, clean source/container HEAD/ref와 실제 `/app` mount를 재확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 확인. DEX는 하위 브랜치 제품 코드/빌드를 사용한다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` / runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` overlay marker와 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` 실제 import를 확인했다. 패키지 배포·환경변수 추가/변경/삭제는 없다.
+- 증거: `/tmp/cross-sync-session-selection-{cli-tests,vscode-tests,desktop-tests,desktop-network-tests,cli-fixture,vscode-fixture,desktop-fixture,compose,check,desktop-check,build,desktop-build,contracts,harness-check,environment,overlay}.log`, `/tmp/cross-sync-native-session-ui-{vscode,desktop}.png`. 세션 catalog 전체 페이지 UI, Desktop Workspace 주 채팅 이행·Mobile 송신, 첨부/로컬 도구·TUI 이행과 실제 ACTIVE 표면 간 실행 성공은 남아 있다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 11% | Desktop 주 채팅/Mobile 송신·TUI/첨부·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. CLI, VSCode shared chat and Desktop native settings now create server-issued Canonical sessions, select owned active sessions and explicitly clear account focus with verified CAS versions. There is no creation idempotency key: uncertain writes are never replayed or rebased, and the UI requires an explicit catalog recheck after unknown outcomes or version conflicts. Results, scopes and bounded acknowledgements are validated before display. Credential changes discard catalogs; changed focus clears stale transcripts. The actual Electron fixture exposed a native vault race: RPC now tracks scheduled watchers before ACK and waits for underlying scoped proof operations to release the vault even after watcher or standalone-read cancellation. Focused deferred-transport regressions and real HTTPS/OS-keychain product UI fixtures pass. Enrollment-mode integration-branch Compose verifies rejection and cleanup; installed VSCode, ACTIVE Gateway cross-surface success, Mobile sending and Desktop primary chat migration remain gates. SDK/runtime stay as unreleased Workflow overlays and PR90 stays Draft.
+
+## Desktop 작업 공간 Canonical 공유 채팅 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-desktop-shared-chat`, 기준 통합 SHA `6390c2f1ea94c53f4bf5df59b6589260afa53f19`, 제품 코드 SHA `4b9bafcf925d912520478fe04353a43d70638d1c`. 하위 [PR149](https://github.com/PlateerLab/xgen-dex-core/pull/149) → `feat/cross-platform-session`, 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지.
+
+```text
+Desktop 왼쪽 활동 표시줄 / 시작 화면 → 공유 대화 탭
+  → 계정·HTTPS origin별 Workspace 수명의 native 모델
+  ↔ 기기·세션 설정 (같은 모델, 독립 owner/취소 없음)
+  → verified session status → owned catalog/focus → authoritative snapshot + live watch
+  → 세션 생성·선택·해제 / 텍스트 submit·명시적 retry·최신 turn stop
+  → 탭 닫기·재열기 / 설정 이동: 미확정 intent·catalog 쓰기 잠금 유지
+  → 계정·origin·실제 focus 변경: 이전 draft·본문 폐기
+```
+
+### 구현과 경계
+
+- 작업 공간의 공유 대화는 두 pane 사이에서 옮길 수 있는 singleton 탭이다. 기존 로컬 interactionId 복원·레거시 SessionStore의 갱신 대상에 포함하지 않는다. 로컬 배치는 고정된 `canonical-chat` 표시와 위치만 저장하며 서버 ID·제목·본문·prompt·토큰을 복원하지 않는다. 계정 변경 시 탭과 bound 모델·draft를 폐기한다.
+- Workspace 수명으로 모델을 올려 공유 채팅과 설정이 동일한 composer/catalog/watch를 사용한다. 탭 닫기는 서버 focus 해제나 턴 중단이 아니며, 미확정 요청을 없애거나 새 요청을 허용하지 않는다. 앱/계정 수명이 끝날 때 모델을 dispose한다. `기기·세션 설정` 버튼은 해당 설정 항목으로 바로 이동한다.
+- binding은 main/preload의 성공 envelope와 notice를 실제 Workspace의 origin·user·desktop scope로 다시 검사한다. 다른 범위의 읽기는 표시하지 않고, 이미 dispatch된 쓰기의 잘못된 범위 응답은 unknown으로 유지한다. authoritative conversation/focus를 이전 catalog보다 우선해 draft identity를 갱신하고 transient read/watch에서는 이전 intent와 입력을 유지한다.
+- 주 채팅은 완전한 메시지만 표시하며 생략·미완전·부분 이력 표시를 유지한다. 현재 owned catalog focus와 authoritative snapshot이 일치해야 새 전송·재확인·중단이 가능하다. 다른 표면에서 focus가 바뀌면 목록 재확인을 안내한다. 생성·선택·해제와 turn mutation은 기존 공통 CAS/중복 방지/unknown 경계를 사용하며 legacy 경로로 전환하지 않는다.
+- UTF-8 262144바이트까지 공백과 끝 줄바꿈을 그대로 보낸다. 미확정 submit은 원래 본문·version·idempotency key로 명시적 재확인만 제공하며, 생성은 재전송하지 않는다. ACK 접수와 실제 terminal 상태를 구분하고 최신 verified running turn만 중단한다. 새 쓰기 없이 HTTP 재조회와 live 구독을 복구한다. 같은 대화 다시 읽기도 live 구독을 재개한다.
+- 실제 화면 검토에서 성공 ACK 뒤 live watch의 첫 snapshot이 오기 전 입력 정리를 놓치는 상태를 확인했다. 입력 정리는 현재 계정/모델·확인된 대화 identity·원래 draft 일치로 보호하고 transient snapshot 부재와 실제 focus 변경을 구분했다. 탭/계정 변경 뒤의 늦은 ACK는 새 draft를 지우지 않는다.
+- 기존 Agent 목록의 로컬 채팅·첨부·로컬 도구는 별도 경로로 남아 있다. 전체 Legacy 제거, UI catalog 전체 pagination, Mobile 송신 및 실제 ACTIVE Gateway 서비스 간 실행 성공은 후속 관문이다. 환경변수 추가·변경·삭제와 SDK/runtime 패키지 배포는 없다.
+
+### 검증과 실행 환경
+
+- Desktop 전체 회귀 **549/549**(실제 로컬 HTTPS network 포함), 최종 binding/Workspace 대상 **10/10**, 별도 Desktop 타입 검사·빌드, 계약 검사, 두 opt-in harness strict 타입 검사 통과. 최종 Head 필수 CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --desktop --workspace-ui`: 실제 제품 Workspace·설정·renderer, production main/preload/native IPC, OS keychain, TLS/P-256 proof를 사용한다. 비활성 기존 부가기능(Agent 목록/Teams/browser/알림/config) API만 테스트 대체값으로 제공하며 Canonical 네트워크·키·인증은 대체하지 않는다. 처음 발생한 browser harness의 Node crypto fallback 번들 실패를 수정했다.
+- 해당 fixture는 empty focus에서 서버 생성 후 ACK 유실, 이중 클릭 한 번 dispatch, 설정 이동 후 생성 쓰기 잠금, 명시적 catalog 복구, 소유 세션 전환, 같은 대화 재조회 동안 draft 보존, turn 실행 후 ACK 유실, 탭 닫기·재열기/설정 이동 뒤 원래 요청 재확인, exact verified stop, terminal HTTP 복구, 성공 ACK 뒤 draft 정리 및 focus 해제를 검증한다. 생성1회·실행1회, lifecycle write3회·turn write3회, legacy chat dispatch0회를 확인했다. 개인 데이터의 config 영속 저장 없음·sender/frame 격리·키체인/임시 profile 정리를 확인하고 화면을 직접 검토했다. 통제된 HTTPS 서버의 양성 fixture이며 실제 ACTIVE Gateway 성공 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --desktop --desktop-workspace --native-turns --native-sessions`: 실제 Gateway enrollment에서 일회용 계정·Desktop 등록·신뢰 브라우저 승인을 사용했다. login503/login_pending의 주 공유 채팅 입력·생성·선택·중단 차단, native catalog/create/switch/submit/stop auth_required, Canonical session0개, journal 유지·명시적 로컬 복구, DB/키체인 정리를 검증했다. 기본 infra/core/gateway 및 workflow/frontend 프로필, HTTPS3443 환경이다.
+- `.env`의 서비스별 통합 브랜치 override, clean source/container HEAD/ref·실제 `/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX 제품은 이 하위 브랜치를 빌드·검증했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 Workflow overlay marker와 실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 재확인했다. 미배포 overlay 환경을 유지했다.
+- 증거: `/tmp/cross-sync-desktop-shared-chat-{all-tests,final-target-tests,check,build,contracts,harness-check,fixture,compose,environment,overlay}.log`, `/tmp/cross-sync-desktop-shared-chat.png`.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 9% | Mobile 송신·TUI/첨부·catalog pagination·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Desktop's primary Workspace now provides an explicit Canonical Shared conversation pane with owned-session creation/selection/clear, verified complete messages and plain-text submit/retry/stop. Workspace and device settings share one account/origin-scoped model; tab switches, closing and reopening preserve unknown turn intent and lifecycle locks. Cross-scope replies are rejected, dispatched writes with invalid scope remain unknown, and actual focus/account changes clear old drafts. Local layout persists a static pane marker only. Production Electron/OS-keychain HTTPS fixtures verify one creation/execution despite lost receipts, exact retry/stop binding, draft recovery, no legacy dispatch and no private configuration persistence; unrelated inactive legacy APIs are test stubs. Integration-branch enrollment Compose verifies closed login_pending UI and native rejection/cleanup, not ACTIVE Gateway success. Mobile sending, full catalog UI pagination, attachments/TUI and legacy migration remain gates. SDK/runtime remain unreleased Workflow source overlays; PR90 remains Draft.
+
+## Mobile Canonical 턴 전송·재확인·중단 (2026-10-01)
+
+작업 브랜치 `feat/cross-platform-mobile-turns`, 기준 통합 SHA `1a0105c735fe76201b74525f420aa750d519d75c`, 제품 코드 SHA `ca74a1f063306b7dd57cf3be292e2b6e31b3229d`. 하위 [PR150](https://github.com/PlateerLab/xgen-dex-core/pull/150) → `feat/cross-platform-session`, 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지한다.
+
+```text
+Mobile 설정 → 공유 대화 → 현재 focus/snapshot 조회
+  → 로그인 수명 모델 + 공통 AgentTurnComposer
+  → ready vault + origin/account/login/install/device/key/Platform sid 공개 binding
+  → native POST DPoP → exact turns / stop → bounded 검증 ACK
+  → ACK 유실/dispatch 후 취소/잘못된 ACK: unknown → 새 전송 차단
+  → 명시적 조회 → 원래 본문/key/CAS 재확인 (fresh token/proof, 같은 logical request)
+  → verified latest turn stop → 접수와 terminal HTTP 상태 구분
+화면 이탈/백그라운드 → 대기·표시 취소, 메모리 intent 유지 → 복귀 후 직접 조회
+계정/실제 focus/Platform sid 변경 → 이전 draft·intent 폐기
+```
+
+### 구현과 경계
+
+- 기존 Mobile 공유 대화 읽기 화면에 multiline 텍스트 전송, 원래 요청 재확인, 최신 실행 중단을 연결했다. 다른 표면에서 생성·선택한 Canonical focus를 사용한다. 공백·끝 줄바꿈을 그대로 유지하고 UTF8 262144바이트까지 허용한다. 첨부/로컬 도구·모바일 생성/선택과 전체 catalog UI는 후속 단계다. 과거 로컬 chat 경로는 남아 있으며 Canonical 오류가 legacy dispatch를 발생시키지 않는다.
+- `AgentTurnComposer`의 platform scope에 mobile을 추가하고 모바일 전용 token-free hash를 read/writer가 공유한다. hash에는 origin/user/login lifetime/install/key/device/Platform sid만 포함하고 access/refresh token·token generation은 제외한다. 같은 sid의 토큰 회전은 intent를 유지한다. ready vault·expiry·journal·hardware key를 각 요청 직전에 다시 검사하며 외부 read callback은 쓰기 인증을 제공하지 않는다. 계정 vault lock 안에서 POST proof와 응답 scope를 검사하며 async await 전 primitive body를 복사한다.
+- unknown submit/stop은 새로운 logical request와 stop을 막고 직접 조회 후 원래 body/version/key로만 재확인한다. 409는 allowlisted conflict만 전달하며 새 snapshot version으로 원래 요청을 재작성하지 않는다. ACK는 접수/중단 요청일 뿐 완료로 표시하지 않는다. 성공 ACK 뒤에도 authoritative terminal 상태가 필요하다. POST timeout은10초이며 자동 전송 재시도·session refresh·Bearer fallback이 없다.
+- 로그인 수명의 모델은 화면 숨김/백그라운드 동안 private 표시와 네트워크를 취소하면서 draft/unknown intent를 메모리로 유지한다. 복귀는 직접 조회해야 하며 빠른 background→foreground 경쟁도 자동 재시작하지 않는다. 조회 reset/reconnect·partial empty snapshot은 실제 focus 해제와 구분한다. 실제 focus/scope 변경은 이전 draft/intent를 폐기하고 늦은 응답은 원래 generation에만 반영한다. 로그아웃/앱 종료 후 메모리 intent는 복원하지 않으므로 이전 전송 결과는 서버 기록에서 확인해야 한다. 본문/intent를 디스크·진단에 저장하지 않는다.
+- 전용 Expo `turnRequest`는 exact HTTPS origin·lowercase UUID의 POST turns/stop만 허용한다. `newTurnKey`는 request 예약을 만들지 않는 OS UUID다. JS·두 OS가 fixed header·JWT·strict RFC8259/decoded 중복 key·safe version·Unicode/본문/key/origin bound·2MiB serialized body·64KiB fatal UTF8 ACK를 검사한다. 기존 native GET와 login/refresh/logout 경로를 generic write로 확장하지 않는다. 시스템 TLS·Cookie/Origin/redirect·one-shot/no replay 경계를 유지한다. native module이 없는 Expo Go/웹 또는 구형 앱은 fail closed하므로 새 앱 빌드가 필요하다.
+- 추가 리뷰의3건을 수정했다. 알려진 native pre-enqueue busy/invalid는 unavailable로 분류한다. GET/POST는 module/origin의 실제 native Promise latch를 공유하여 취소된 GET이 정리되기 전에 새 proof/POST를 만들지 않는다. iOS 취소와 invalid status/size/redirect는 `didCompleteWithError`까지 예약/Promise를 유지하며 원래 responseInvalid 분류를 보존한다. Android는 기존 OkHttp onFailure 완료까지 유지한다. JS watcher의 취소 완료 자체가 OS drain 또는 서버 turn stop을 의미하지 않는다.
+
+### 검증과 실행 환경
+
+- Mobile 전체 회귀163/163 후 최종 writer/model/adapter 대상20/20 통과. 공통 composer14/14, Mobile/workspace 타입 검사·workspace 빌드·계약 검사·세 opt-in harness strict 타입 검사 통과. 샌드박스의 `npm test`는 tsx IPC listen EPERM이므로 같은 전체 테스트를 `node --import tsx --test apps/mobile/test/*.test.ts`로 실행했다. 최종 Head 필수 CI·리뷰를 확인하고 하위 PR만 통합한다.
+- Android transport22 + 실제 P-256 DPoP2 테스트(0 failure/error/skip)와 Swift native 타입/TLS fixture 통과. iOS fixture는 enrollment/session/read/turn 취소 및 oversize/invalid UTF8/redirect ACK가 각 요청 ID의 실제 URLSession didComplete 뒤에 종료되는지 확인한다. 실제 hardware key/기기 UI를 소프트웨어 fixture로 대체해 성공했다고 판단하지 않는다.
+- `node --import tsx scripts/mobile-agent-turn-fixture.mts`: production Mobile read source·scoped writer·JS native adapters·composer/model, trusted localhost TLS·실제 P-256 POST/GET DPoP를 사용한다. software key·memory vault·Node native bridge·HTTP watcher는 명시적 test seams다. ACK 유실 후 screen hide/resume, 직접 snapshot 재조회와 원래 body/key/version 재확인, 정확한 최신 turn stop, terminal 복구를 검증했다. 실행1회/명시적 POST3회/fresh ES256 proof28개, raw Cookie/Origin/legacy 경로 없음, vault 불변과 자격증명 UI 미노출·자료 정리를 확인했다. RN 화면 또는 실제 ACTIVE Gateway 양성 성공 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --mobile-turns --mobile-ws`: 실제 Gateway enrollment·일회용 계정/신뢰 브라우저 승인·Mobile 등록을 사용한다. 로그인503/login_pending journal이 Mobile read/WSS와 submit/stop을 proof/wire 이전에 막고 model의 전송·중단·재확인도 비활성화함을 검증했다. Canonical session0개, token-free journal 유지·명시적 local recovery·일회용 DB 자료 정리를 확인했다. memory vault/software key/Node TLS bridge seams가 있으며 실제 ACTIVE 실행 성공은 별도 관문이다.
+- 기본 infra/core/gateway 및 workflow/frontend 프로필, HTTPS3443 환경이다. `.env` 서비스별 override와 clean source/container HEAD/ref 및 실제 `/app` mount를 재확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`. Gateway `PLATFORM_SESSION_MODE=enrollment` 유지. DEX는 이 하위 브랜치 제품 코드로 검증했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` Workflow overlay marker와 실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 확인했다. 패키지 배포와 환경변수 추가/변경/삭제가 없다.
+- 증거: `/tmp/cross-sync-mobile-turns-{all-tests,final-target-tests,protocol-tests,check,workspace-check,workspace-build,contracts,harness-check,tls-fixture,compose,environment,overlay}.log`. Android JUnit: `apps/mobile/modules/xgen-native-device/android/build/test-results/testDebugUnitTest/TEST-expo.modules.xgennativedevice.{NativeEnrollmentTransportTest,DpopProofTest}.xml`. Swift TLS runner의 임시 산출물은 정리된다. physical RN UI/SecureStore/hardware와 실제 ACTIVE Gateway 양성 결합 검증은 남아 있다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 7% | Mobile 생성/선택·TUI/첨부·catalog pagination·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Mobile's existing shared conversation now uses the shared scoped composer for plain-text submit, explicit original-request retry and exact verified latest-turn stop. Unknown intent and drafts survive same-login screen/background suspension in memory; returning requires a read, and actual scope/focus changes discard stale data. Dedicated native POST DPoP is tied to the ready vault and public read binding, with bounded strict transport and no automatic refresh/replay/rebase or legacy fallback. Review exposed three settling/classification gaps: known pre-enqueue failures are unavailable, GET/POST share the actual native completion latch, and iOS cancellation/rejected responses wait for didComplete while retaining responseInvalid. JS/native regressions and production trusted-HTTPS seams verify one execution despite lost receipt and three explicit writes; enrollment-mode integration Compose verifies pre-wire rejection and cleanup. Physical RN UI/hardware/SecureStore and ACTIVE Gateway success remain gates. Mobile session creation/selection, TUI/attachments and full catalog pagination follow. SDK/runtime remain unreleased Workflow overlays and PR90 stays Draft.
+
+## Mobile Canonical 공유 세션 생성·선택 (2026-10-02)
+
+작업 브랜치 `feat/cross-platform-mobile-session-selection`, 기준 통합 SHA `c7c228e0065377565b320456ff60af629de80cf5`, 제품·검증 코드 SHA `105c62d1e787cf0f2bc1ec81943ce693abb496af`. 하위 [PR151](https://github.com/PlateerLab/xgen-dex-core/pull/151) → `feat/cross-platform-session`, 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지한다.
+
+```text
+Mobile 설정 → 공유 대화 → 내 목록 + 현재 account focus 조회
+  → 동일 ready vault scope 안에서 GET focus / GET owned sessions(limit=100)
+  → Workflow ID·선택 제목 입력 → POST create(expected focus version)
+  → 조회된 내 active 세션 선택 / 선택 해제 → PUT focus(expected version)
+  → 성공 ACK 검증 → 실제 선택 변경 시 이전 draft·본문 폐기
+  → authoritative selected snapshot + watch → 텍스트 submit/retry/stop
+생성 ACK 유실 / dispatch 후 취소 / 잘못된 scope·ACK / 409 focus conflict
+  → 생성·선택·turn 쓰기 잠금 → 직접 catalog 재확인 → 현재 선택만 복구
+숨김·백그라운드 → 요청 취소·private 표시 제거 → 복귀 후 직접 조회
+```
+
+### 구현과 경계
+
+- 기존 설정의 공유 대화 카드에 owned catalog, 새 공유 대화 생성, 내 활성 세션 선택, 현재 선택 해제를 연결했다. Workflow ID는 서버에서 사용할 실제 workflow의 ID이며 title은 선택 입력이다. archived/조회되지 않은 세션은 선택하지 못한다. 서버 선택은 계정 공통이고 CAS에는 방금 조회한 focus version만 사용한다. 같은 대상 선택은 서버의 동일 version no-op ACK도 검증하며 기존 draft를 유지하고 대화를 다시 조회한다.
+- 목록은 최신100개로 제한하고 `has_more`를 표시한다. 이전 페이지 탐색은 후속 작업이며 전체 목록으로 표시하지 않는다. 생성 ACK의 신규 ID·workflow·focus·version을 검사한 뒤 목록에 포함하고 실제 snapshot으로 실행 상태를 확인한다. focus와 list는 동일 vault 범위의 순차 REST 조회이며 원자적 DB snapshot이라고 주장하지 않는다. 그 사이의 다른 기기 변경은 서버 CAS 충돌 또는 후속 대화/focus 불일치로 차단한다.
+- login 수명 모델이 catalog/turn/watch를 함께 소유한다. catalog 또는 lifecycle 작업 전에 기존 watcher를 취소·대기하고, GET/turn/lifecycle JS adapter가 같은 native module/origin의 실제 완료 latch를 공유한다. 취소된 OS 요청이 아직 정리 중이면 신규 key/proof를 만들기 전에 차단한다. ready vault·기기 키·expiry·journal·account/login lifetime·Platform sid 공개 hash를 매 요청 직전에 다시 검사하며 자격증명·signer는 vault callback 안에서만 사용한다.
+- 생성에는 idempotency key가 없으므로 ACK 유실을 재전송하거나 새 version으로 재작성하지 않는다. unknown 생성/선택 및 focus409 뒤에는 사용자가 목록을 직접 재조회하기 전까지 lifecycle과 turn 쓰기를 모두 막는다. 목록 재확인은 현재 서버 선택을 보여줄 뿐 이전 요청 성공을 확정하지 않는다. unknown/미확정/접수된 turn은 결과가 확인될 때까지 lifecycle 변경을 막으며, 같은 focus 목록 재조회는 원래 turn intent를 없애지 않는다.
+- 다른 표면에서 focus가 바뀌면 이전 draft·본문을 폐기하고 stale catalog와 새 snapshot을 혼합해 전송하지 않는다. 다시 목록을 확인해야 한다. 같은 Platform sid의 token rotation은 scope/intent를 유지하고, 실제 sid/account 변경은 이전 범위를 폐기한다. 화면 숨김/백그라운드는 표시와 요청을 취소하지만 unknown 잠금을 메모리에 유지하며 빠른 hide→resume 후 늦은 ACK도 자동 조회/쓰기나 private 표시를 복구하지 않는다. 앱 종료/로그아웃 시 모델·draft·catalog를 폐기하며 디스크에 저장하지 않는다.
+- Expo 전용 `lifecycleRequest(id,origin,path,method,accessToken,dpop,body)`는 exact POST `/api/agentflow/agent-sessions`, PUT `/api/agentflow/me/agent-state`만 허용한다. 기존 GET·turn-only POST·enrollment/session API를 generic write로 확장하지 않는다. JS와 두 OS에서 unknown/중복/잘못된 JSON field·Unicode·UUID·safe version·origin과 method/path를 검사하며 body32KiB·fatal UTF8 ACK64KiB를 제한한다. 시스템 TLS·고정 DPoP header·cookie/redirect/retry 차단과 실제 OS completion 이후 취소 완료를 유지한다. 구형 native 앱/Expo Go는 새 native bridge가 없어 fail closed하므로 앱을 다시 빌드해야 한다.
+- 환경변수 추가·변경·삭제와 SDK/runtime 패키지 배포는 없다. 기존 password + browser key 인증 정책을 유지한다.
+
+### 검증과 실행 환경
+
+- Mobile 전체 회귀182/182 후 focus/catalog/model/lifecycle 최종 대상42/42 통과(두 추가 catalog source 회귀 포함). focus 다음 list GET 실패·취소·계정 변경 시 부분 결과 미노출, 별도 scope/unknown/409/이중 클릭/선택 변경/숨김·복귀/원래 turn intent 유지/키와 journal 차단을 검증했다. Mobile/workspace 타입 검사·workspace 빌드·계약 검사와 세 opt-in harness strict 타입 검사 통과. 최종 Head 필수 CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- Android transport26 + 실제 P-256 DPoP2 테스트, Swift 타입·actual URLSession TLS fixture 및 native module export syntax 검증 통과. exact create/focus route·method·body bounds와 malformed/decoded duplicate fields, lost ACK·response limits·redirect·취소·fresh signed proof를 포함한다. Android JUnit의 failure/error/skip은 모두0이다.
+- `node --import tsx scripts/mobile-agent-turn-fixture.mts --sessions`: production Mobile read/catalog source·scoped lifecycle/turn writer·JS native adapter·composer/model에 실제 trusted localhost TLS/P-256 proof를 연결했다. software key·memory vault·Node bridge·HTTP watcher는 명시적인 테스트 대체 구현이다. 생성 ACK 유실·이중 클릭에도 생성1회, 직접 catalog 복구, 같은 focus draft 보존, 소유 세션 전환·해제, unknown turn의 lifecycle 차단, 원래 turn retry/stop·terminal 복구를 검증했다. lifecycle write5회·turn write3회·실행1회·fresh ES256 proof59개, vault 불변·credential 표시 없음·legacy dispatch 없음·자료 정리를 확인했다. RN 화면/physical hardware/SecureStore 또는 실제 ACTIVE Gateway 성공 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --mobile-sessions --mobile-ws`: 실제 Gateway enrollment에서 일회용 계정·Mobile 등록과 선택한 trusted browser 승인을 사용했다. login503/login_pending journal이 catalog/create/focus-clear와 read/WSS/submit/stop을 proof/wire 이전에 차단하며 모델의 생성·선택·turn 버튼이 비활성화됨을 확인했다. Canonical session0개, token-free journal 유지·명시적 local recovery·DB/자료 정리를 검증했다. memory vault/software key/Node TLS bridge 대체 구현이 포함되며 실제 ACTIVE 양성 실행은 별도 관문이다.
+- 기본 infra/core/gateway 및 workflow/frontend 프로필, HTTPS3443 환경이다. `.env`의 서비스별 branch override와 clean source/container HEAD/ref·실제 `/app` mount를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`, 모두 `feat/cross-platform-session`이다. 실제 Gateway `PLATFORM_SESSION_MODE=enrollment`를 확인했다. DEX는 이 하위 브랜치 제품·검증 코드로 실행했다.
+- SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` Workflow overlay marker·실제 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` import를 재확인했다. 미배포 임시 연결을 유지했다.
+- 증거: `/tmp/cross-sync-mobile-sessions-{all-tests,final-target-tests,check,workspace-check,workspace-build,contracts,harness-check,tls-fixture,compose,environment,overlay}.log`, `/tmp/cross-sync-mobile-session-native-transport-final.log`; Android JUnit은 `apps/mobile/modules/xgen-native-device/android/build/test-results/testDebugUnitTest/TEST-expo.modules.xgennativedevice.{NativeEnrollmentTransportTest,DpopProofTest}.xml`이다. Swift runner의 임시 자료는 정리된다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 6% | TUI/첨부·catalog pagination·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Mobile's shared conversation card now connects bounded owned-session catalog reads, creation, active-session selection and explicit focus clearing to the existing scoped turn model. Dedicated native POST/PUT lifecycle transport and fresh DPoP stay inside ready account vault ownership; cancelled reads and all writes share the actual native completion latch. Unknown lifecycle results and focus conflicts lock writes until an explicit catalog recheck, with no creation replay or CAS rebase. Unknown turn intent blocks lifecycle changes and survives same-focus reads; actual scope/focus changes clear stale drafts and content. JS and native regressions plus a production trusted-HTTPS fixture verify one creation/execution despite lost receipts, exact retry/stop, owned selection/clear and unchanged vault. Integration-branch enrollment Compose verifies pre-proof/pre-wire denial and cleanup. Full catalog pagination, TUI/attachments, physical Mobile UI/hardware/SecureStore and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.
+
+## Desktop·VS Code·Mobile 소유 세션 목록 페이지 탐색 (2026-10-02)
+
+작업 브랜치 `feat/cross-platform-session-catalog-pages`, 기준 통합 SHA `620abb6b29dabef17d489ccca135912f24a1fc95`, 제품·검증 코드 SHA `d349b3014f5e6786477f50dc62161ecceee530ff`. 하위 [PR152](https://github.com/PlateerLab/xgen-dex-core/pull/152) → `feat/cross-platform-session`; 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90) → main은 Draft 유지한다.
+
+```text
+최신 목록: 동일 로그인 범위의 현재 focus + owned sessions(limit=100)
+  → 이전 목록: 방금 검증한 next_cursor를 before_id로 전달 → 최대100개 교체
+  → 마지막 페이지: next_cursor=null → 추가 조회 차단
+  → 최신 목록 버튼: before_id 없이 조회 → 최신 페이지로 교체
+탐색은 현재 대화·draft·미확정 turn을 유지하며 생성/선택/turn을 보내지 않음
+계정·실시간 선택 변경 / 화면 숨김 → 오래된 표시·커서 폐기 → 직접 최신 조회
+```
+
+### 구현과 리뷰
+
+- Desktop의 Workspace 공유 대화와 기기·세션 설정, VS Code webview, Mobile 공유 대화 카드에 이전 목록과 최신 목록 복귀를 연결했다. 현재 focus가 표시 페이지 밖에 있어도 별도로 표시하며 빈 선택으로 오인하지 않는다. 목록은 페이지당 최대100개를 교체하고 자동 탐색·전체 목록 누적·디스크 저장을 하지 않는다.
+- Workflow의 기존 keyset은 `(created_at,id)` 내림차순이며 cursor UUID는 불투명한 위치 표식이다. 공통 검증기가 canonical UUID·페이지 크기·중복 항목·`has_more/next_cursor`와 마지막 표시 ID의 일치·직전 페이지 중복과 정지 cursor를 검사한다. UUID 문자열 크기로 시간 순서를 추정하지 않는다. 새 세션 생성 후에는 과거 페이지에 신규 항목을 섞어 유효한 continuation으로 사용하지 않고 cursor와 페이지 상태를 무효화한다.
+- Desktop/VS Code는 검증된 계정·HTTPS origin과 현재 cursor를 고정하고 이중 클릭·끝 페이지·reset/dispose·늦은 응답을 차단한다. Mobile은 ready vault의 동일 Platform sid 공개 scope hash를 focus/list GET 전에 확인하고 query 없는 경로에 fresh DPoP를 서명한다. 같은 로그인 token rotation은 유지하고 실제 sid/account 변경은 이전 페이지 요청을 차단한다. focus/list는 같은 owner의 순차 조회이며 원자적 DB snapshot은 아니다.
+- 페이지 탐색은 현재 대화·draft·unknown turn intent를 유지한다. 이전 페이지 조회는 unknown lifecycle 쓰기 잠금을 해제하지 않는다. 부분 조회 실패는 검증된 이전 페이지를 유지하고 안전한 오류를 표시한다. Mobile은 실패 후 최신 목록을 다시 조회해야 한다. 실제 focus 변경 응답이나 live 선택 변경은 오래된 page/cursor를 폐기하고 직접 최신 조회를 요구한다. 최신 조회의 기존 생성 ACK 유실 복구도 유지한다.
+- 주 에이전트 리뷰와 실제 UI 검증에서 VS Code 최신 조회의 생성 ACK 유실 복구 회귀, Desktop의 페이지 조회 전 live 선택 변경, Mobile hide→show 및 live 선택 변경 후 오래된 catalog 표시를 발견해 고쳤다. Desktop은 새 authoritative conversation을 유지하며 이전 catalog를 즉시 폐기한다. Mobile은 숨김·live 선택 변경 때 이전 focus/rows/cursor/marker를 지우며 동일 로그인에 속한 unknown intent와 lifecycle 잠금은 유지한다. Mobile 최종 diff의 두 표시 수정은 독립 소스 리뷰로 재확인했다.
+- 환경변수와 인증 정책 변경은 없다. password + browser key를 유지하며 SDK/runtime 패키지는 배포하지 않는다.
+
+### 검증과 실행 환경
+
+- 공통 protocol253/253, Desktop 전체559/559, VS Code 전체50/50, Mobile 전체191/191 회귀 통과. Desktop 최종 model/binding30/30, Mobile/VS Code/Desktop 타입 검사, workspace 타입·빌드·계약 검사와 세 opt-in harness strict 타입 검사 통과. 마지막 페이지·이중 클릭·모호한 cursor·scope/focus 변경·late reply·unknown intent/lock·생성 후 cursor 무효화를 포함한다. 최종 Head의 필수 CI와 리뷰를 확인한 뒤 하위 PR만 통합한다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --desktop --workspace-ui --catalog-pages`: 실제 production Workspace/Settings 공유 모델·preload·IPC·engine·OS keychain과 trusted HTTPS를 연결했다. 생성 ACK 유실 복구 후208개 목록의 `100→100→8→최신100`, 이전 GET 정확히2회, 마지막 비활성 버튼·현재 대화/draft 유지·목록 밖 focus 표시를 검증했다. 기존 생성1회·lifecycle write3회·turn write3회·실행1회와 원래 요청 retry/stop·tab close/reopen도 통과했다. 선택 목록의 archived 항목은 표시 대상이지만 선택할 수 없다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --vscode --session-ui --catalog-pages`: production provider HTML·webview JS·controller와 실제 CLI/OS keychain을 Electron adapter에서 실행했다. 같은208개 페이지 탐색·정확한 이전 GET2회·끝 페이지의 추가 요청0·현재 identity/draft 유지·생성 ACK 유실 최신 복구·소유 세션 선택/해제가 통과했다. 설치된 VS Code extension host의 실사용 검증을 대체하지 않는다.
+- `node --import tsx scripts/mobile-agent-turn-fixture.mts --catalog-pages`: production Mobile read/lifecycle/turn source·JS adapter·composer/model과 실제 trusted TLS/P-256 proof를 연결했다.207개 목록 `100→100→7→최신100`, 이중 클릭1GET·끝 페이지0GET·동일 focus/draft 유지·탐색 쓰기0을 검증했다. 생성1회·lifecycle write5회·turn write3회·실행1회·fresh ES256 proof80개, ACK 유실·화면 숨김·원래 요청 retry/stop·자료 정리가 통과했다. software key/memory vault/Node bridge/HTTP watcher 대체 구현을 사용하며 RN UI·실기기·SecureStore 증거는 아니다.
+- `node --import tsx scripts/native-platform-session-compose.mts --mobile-sessions --mobile-ws`와 `--desktop --desktop-workspace --vscode --native-sessions`: 실제 Compose Gateway enrollment의 일회용 계정과 trusted browser 승인으로 검증했다. login503/login_pending이 최신/이전 catalog와 lifecycle/turn을 proof/wire 이전에 차단하며 Canonical session0·token-free journal·명시적 local recovery·DB/keychain 정리를 확인했다. 실제 ACTIVE 양성 탐색·실행은 별도 관문이다.
+- 기본 infra/core/gateway 및 workflow/frontend 프로필과 HTTPS3443을 사용했다. `.env` 서비스별 override, clean source/container ref·HEAD·실제 `/app` mount와 Gateway `PLATFORM_SESSION_MODE=enrollment`를 재확인했다. 모든 서비스는 `feat/cross-platform-session`: Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`이다. 서버 소스는 이번 작업에서 변경하지 않았고 DEX는 위 제품 SHA로 실행했다.
+- Workflow 임시 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540` 및 runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 overlay marker와 `/opt/xgen-local-sdk`·`/opt/xgen-local-runtime` 실제 import를 재확인했다. 미배포 연결을 유지한다.
+- 증거: `/tmp/cross-sync-catalog-pages-{protocol-tests,desktop-all-tests,vscode-all-tests,mobile-all-tests,mobile-check,workspace-check,workspace-build,desktop-build,contracts,harness-check,desktop-tls,vscode-tls,mobile-tls,compose-mobile,compose-native,environment,overlay}.log`. 화면은 `/tmp/cross-sync-catalog-pages-{desktop,vscode}-catalog.png`와 최종 UI PNG이며 주 에이전트가 직접 확인했다. 임시 fixture 계정·키·자료는 정리된다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 5% | TUI/첨부·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. Desktop, VS Code and Mobile now browse owned sessions in bounded replacement pages using the server's opaque keyset cursor, with explicit return to latest and no automatic paging or write dispatch. Current conversation and same-focus drafts/unknown turn intent survive paging; older reads cannot unlock an uncertain lifecycle write. Creation invalidates the old boundary, scope/live selection changes discard stale pages, and Mobile hide/resume no longer republishes an old private catalog. Review and actual UI checks caught and fixed latest create-ACK recovery and stale-display races. Protocol/Desktop/VS Code/Mobile regressions, trusted-HTTPS product fixtures and integration-branch enrollment Compose passed with explicit test seams and cleanup. Installed VS Code, physical Mobile UI/hardware/SecureStore, TUI/attachments and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow source overlays and parent PR90 stays Draft.
+
+## CLI Canonical 공유 대화 조회 전용 TUI (2026-10-02)
+
+- 기준 통합 브랜치: `feat/cross-platform-session` / `ab1869cd1edce422860e2076fd6eda3163975217`.
+- 하위 브랜치·PR: `feat/cross-platform-canonical-tui-read` / [PR154](https://github.com/PlateerLab/xgen-dex-core/pull/154). 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90)은 `main` 대상 Draft를 유지한다.
+- 제품·실사용 검증 SHA: `d9fb1761a9f1b07ffd2640f3d8adb6102635abac`. 이후 증거 문서만 추가하며 최종 Head CI·리뷰를 확인한 뒤 하위 PR을 통합한다.
+
+```text
+dex ui --canonical --user-id <id> --profile <HTTPS profile>
+  → 고정 CLI 계정·OS vault → Canonical GET DPoP → 검증된 snapshot/완결 메시지 → Ink
+W → receive-only WSS 알림 → authoritative HTTP 재조회 → 실행 상태/본문 갱신
+R/W 전환·S·Q·SIGINT·SIGTERM → 오래된 표시 폐기 → 실제 요청/vault/소켓 drain
+```
+
+### 구현과 리뷰
+
+- `ui`의 `--canonical` 존재 여부로 legacy engine/로그인/local-tool host 초기화 전에 분기한다. 값을 가진 잘못된 플래그·지원하지 않는 옵션·잘못된 user ID·HTTP origin·비대화형 터미널을 차단한다. profile/origin/user는 실행 시 고정되며 변경은 종료 후 재실행한다. TUI가 login·refresh·계정 선택을 자동 수행하지 않는다.
+- 화면은 진입 시 한 번 조회하고 R로 재조회, W로 native 실시간 연결, S로 중단, Q/Ctrl+Q로 종료한다. 현재 공유 대화 ID·workflow·실행 상태, 완료되고 검증된 메시지를 표시하며 ↑↓/PgUp/PgDn/Home/End로 줄 단위 스크롤한다. 긴 본문과 작은 터미널에서도 viewport·footer를 제한한다. 일부 조회·생략·불완전 이력을 안내하고 불완전한 본문을 표시하지 않는다.
+- controller는 read/watch 중복과 전환을 직렬화한다. 취소 즉시 표시를 지우고 늦은 결과를 버리며 이전 실제 작업과 native `settleProofOperations()`가 끝난 뒤 다음 작업을 시작한다. stopped/authentication 이후 지연 callback을 수용하지 않도록 리뷰에서 수정했다. reset/reconnect/인증 실패 때 오래된 대화를 지운다. 추가 리뷰에서 명령 없는 Canonical marker의 legacy 진입을 차단하고 subprocess 회귀를 추가했다. PTY 제한 시간은 graceful SIGTERM으로 정상 종료를 대신하지 않고 실패/강제 정리로 처리한다.
+- Ink에는 재검증·복제한 snapshot/messages/omittedMessages와 고정 표시 계정만 전달한다. 토큰·서명·키·내부 auth scope·cursor·raw 실행 결과는 전달하지 않는다. 제목·본문·profile의 ANSI/OSC·개행 외 C0/C1·방향 제어 문자를 제거하고 탭을 공백으로 바꾼다. 대화나 마지막 선택을 파일에 저장하지 않는다.
+- 새 대화 생성·선택·송신·첨부는 TUI의 후속 구현이다. 기존 명령의 Canonical 생성·선택·턴 제출은 그대로 사용 가능하다. 환경변수·서버 정책 변경은 없으며 SDK/runtime은 배포하지 않는다.
+
+### 검증과 실행 환경
+
+- CLI 전체188/188 및 후속 리뷰 수정 뒤 Canonical 집중25/25 회귀 통과. CLI/workspace 타입·빌드·계약 검사 및 opt-in harness strict 타입 검사 통과. 인증 거부·중복 작업·취소와 실제 drain·지연 응답·사용자 불일치·malformed projection·terminal stopped 이후 callback·터미널 제어 문자·긴 Unicode 본문·8행 terminal·실제 Ink 키 조작·명령 없는 Canonical marker를 포함한다. Ink 테스트는 CLI 프로젝트의 `react-jsx` tsconfig를 사용하는 `npm --prefix apps/cli test` 또는 CLI 디렉터리의 `node --import tsx --test`로 실행했다. 샌드박스의 tsx IPC/localhost listen 차단은 로컬 테스트 권한으로 해결했다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --tui`: 빌드된 `dex ui --canonical`을 실제 POSIX PTY에서 실행했다. 실제 Ink·OS keychain·trusted localhost TLS·P-256 GET DPoP·receive-only WSS를 사용해 완료 본문/부분 기록 안내·스크롤·token rotation·명시적 stop/reread·Q/SIGINT/SIGTERM 종료 후 실제 소켓 정리와 대체 화면 복원을 확인했다. 이후 기존 CLI cursor replay/reconnect/409 recovery/authentication stop·>64KiB 메시지·vault journal·logout 검증도 통과했다. 통제된 HTTPS fixture의 양성 증거이며 실제 ACTIVE Gateway 성공을 대체하지 않는다.
+- `node --import tsx scripts/native-platform-session-compose.mts --cli --cli-tui`: 실제 enrollment Gateway에서 일회용 계정의 CLI 기기 등록·브라우저 승인·login503/login_pending을 만들었다. production TUI source/controller가 read/live를 proof/wire 전에 차단하며 안전한 빈 인증 안내, 변경 없는 token-free journal, Canonical session0과 명시적 복구·DB/keychain 정리를 확인했다. pending 이후 fetch는 호출0을 검증하는 실패 대체 구현으로, ACTIVE 서버 통신의 증거로 사용하지 않는다.
+- Compose 기본 infra/core/gateway + workflow/frontend 프로필과 HTTPS3443을 사용했다. `.env` 서비스별 override, clean source/container ref·HEAD·실제 `/app` mount, Gateway `PLATFORM_SESSION_MODE=enrollment`를 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589` 모두 `feat/cross-platform-session`이다. 이번 단계는 서버 소스를 변경하지 않았다.
+- Workflow 임시 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`와 runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 marker 및 실제 `/opt/xgen-local-sdk/src/xgen_sdk/__init__.py`, `/opt/xgen-local-runtime/src/xgen_agent_runtime/__init__.py` import를 확인했다. 미배포 source overlay를 유지한다.
+- 증거: `/tmp/cross-sync-canonical-tui-{target-tests,final-target-tests,screen,all-tests,check,final-check,workspace-check,workspace-build,cli-build,contracts,harness-check,tls-fixture,compose,environment,overlay}.log`. fixture 계정·키·자료는 정리했다. CLI 통합 검증에 프론트 변경은 없으며 실제 ACTIVE cross-surface 성공과 설치 클라이언트/물리 Mobile 검증은 남아 있다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 4% | TUI 생성/선택/송신·첨부·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. The explicit CLI Canonical TUI now reads the current shared conversation and displays bounded complete messages and execution status using its fixed native Platform Session, OS vault and DPoP. WSS only wakes authoritative HTTP recovery. Read/watch transitions wait for actual task/vault settlement; cancellation, resets, reconnects and terminal authentication events discard old private content and late callbacks. Untrusted terminal controls are removed and no conversation state is persisted. CLI regressions, actual built-command POSIX PTY/trusted-HTTPS/WSS/keychain fixtures and integration-branch enrollment Compose denial/cleanup passed. The controlled TLS server and pending-mode failed-fetch seam are explicit test boundaries, not ACTIVE Gateway success. TUI creation/selection/sending, attachments, installed VS Code, physical Mobile UI/hardware/SecureStore and real ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.
+
+## CLI Canonical TUI 생성·선택·턴 송신 (2026-10-02)
+
+- 기준 통합 브랜치: `feat/cross-platform-session` / `3c30ea6f1779b4db5898b0327ee3890a47dd8524`.
+- 하위 브랜치·PR: `feat/cross-platform-canonical-tui-chat` / [PR155](https://github.com/PlateerLab/xgen-dex-core/pull/155). 상위 [PR90](https://github.com/PlateerLab/xgen-dex-core/pull/90)은 `main` 대상 Draft를 유지한다.
+- 제품·실사용 검증 SHA: `159276a269bc75db831f9812090c0a0747006011`. 동일 제품 코드에서 검증했으며 이후 증거 문서와 UI 테스트의 렌더 동기화만 보완한다. 최종 Head CI와 리뷰를 확인한 뒤 하위 PR을 통합한다.
+
+```text
+dex ui --canonical --user-id <id> --profile <HTTPS profile>
+  L 최신 소유 목록 / P 이전 100개 페이지 → ↑↓ Enter 활성 세션 선택
+  N workflow ID·제목 → 현재 focus version CAS → 서버 세션 생성·선택
+  I 보이는 한 줄 입력 / Enter → 검증된 snapshot version·고정 중복 방지 키로 턴 접수
+  결과 불명확 → 자동 재전송 없음 → R 같은 대화 검증 → Y 원래 요청 재확인
+  T 현재 실행 ID·version 중단 → authoritative HTTP 조회 → 완료 본문
+  X Enter 선택 해제 / S 연결 중단 / Q·SIGINT·SIGTERM 실제 drain·화면 복원
+```
+
+### 구현과 리뷰
+
+- 기존 read/watch controller와 공통 `AgentTurnComposer`를 TUI 모델에 연결했다. CLI platform scope를 추가하고 lifecycle·catalog·turn을 단일 작업으로 직렬화한다. 실제 읽기/소켓 작업과 native proof operation이 정리된 뒤 쓰기 요청을 시작한다. UI는 복제된 표시 상태와 safe notice만 받으며 native binding·키·토큰·raw ACK·오류 세부정보를 받지 않는다.
+- 목록은 현재 소유 페이지를 최대100개로 교체한다. cursor 진행·중복·malformed 항목을 검증하고 보관/목록 밖 세션을 선택하지 않는다. 생성/선택/해제는 조회한 focus version CAS와 정확한 workflow/focus ACK를 검사한다. 생성 ACK 유실·focus 충돌은 명시적 **최신** L 조회 전까지 쓰기를 잠그며 R 또는 이전 P 페이지가 잠금을 풀지 않는다. 생성 요청을 자동 반복하거나 새 버전으로 재작성하지 않는다.
+- 메시지 편집은 시스템 IME를 사용하는 기존 한 줄 입력이다. 붙여넣은 개행은 공백으로 표시하며 그 보이는 본문만 Enter에서 보낸다. UTF-8 262144 bytes 상한을 적용하고 터미널 제어 문자를 제거한다. 입력 모드의 navigation 문자는 글자로 처리한다. 불명확한 턴은 같은 계정·대화에서 원래 본문/version/idempotency key로 Y 재시도만 허용한다. 검증된 현재 실행의 ID/version으로 T 중단하며 접수 ACK를 답변 완료로 표시하지 않는다.
+- 실제 focus/binding 변경은 draft·목록·private retry intent·늦은 응답을 폐기한다. 일시적 읽기 실패에는 같은 로그인 범위의 draft/unknown intent를 메모리에 보존하지만 authoritative read 전까지 쓰기를 막는다. native host는 ready vault를 읽는 같은 잠금 안에서 원래 `expectedAuthScope`를 비교하여 다른 로그인 sid로 이전 의도가 전송되지 않게 한다. 같은 sid의 정상 token rotation은 허용한다. 새 옵션은 TUI host-only 계약이며 기존 호출은 호환된다.
+- 직접 diff와 별도 보안·경합 검토를 수행했다. UI 검증에서 intent 없는 `unavailable`가 첫 대화 생성까지 막는 문제를 수정했다. 실제 PTY 검증에서 임시 empty read가 목록 화면을 닫는 문제를 수정하고 지연 HTTP 회귀를 추가했다. 첫 CI에서는 모델 값만 기다리고 렌더 완료 전에 키를 입력한 UI 테스트가 실패했다. 화면의 확인 가능한 상태까지 기다린 뒤 입력하도록 테스트를 수정했으며 제품 코드는 바뀌지 않았다. unknown 작업의 자동 재전송·scope를 벗어난 ACK 반영·비밀/원시 데이터 저장은 없다. 환경변수나 서버 정책은 변경하지 않았고 SDK/runtime을 배포하지 않았다.
+
+### 검증과 실행 환경
+
+- CLI 전체200/200, 모델8/8 및 최종 UI3/3 통과. UI 회귀는 실제 Ink 키로 메시지/nav/paste 분리·명시적 retry/stop·보관 세션 선택 거부·clear 확인·첫 대화 생성·지연 read 중 목록 유지·same-session credential replacement·8행 authentication 화면을 확인한다. native binding/공통 composer 집중56/56은 모든 bound create/select/submit/stop의 같은 sid rotation 허용과 다른 sid·malformed binding의 proof/wire 전 차단을 확인한다. workspace/CLI 타입·빌드·계약 검사와 opt-in harness strict 타입 검사를 통과했다.
+- `node --import tsx scripts/cli-platform-session-fixture.mts --tui-chat --catalog-pages`: 빌드된 제품을 실제 POSIX PTY·Ink·OS keychain·trusted localhost HTTPS/WSS·P-256 DPoP로 실행했다. 소유207개를100/100/7 페이지로 교체하고, 생성 ACK 유실 뒤 한 번 생성·R에서 잠금 유지·L로 명시적 복구·owned selection·한글 원문 turn ACK 유실·원래 body/key/version exact replay와 실행1회·현재 실행 중단 후 검증 본문·선택 해제·legacy dispatch0·Q/SIGINT/SIGTERM 실제 socket drain/화면 복원을 확인했다. 후속 기존 focus cursor replay/reconnect/409/authentication stop·>64KiB 메시지·token rotation·logout·lost refresh journal/local recovery도 통과했다. 통제된 HTTPS 서버의 양성 증거이며 실제 ACTIVE Gateway 성공을 대체하지 않는다.
+- `node --import tsx scripts/native-platform-session-compose.mts --cli --cli-tui`: 실제 enrollment Gateway의 일회용 계정 CLI 등록·브라우저 승인·login503/login_pending을 사용했다. production chat source/model의 read/live/catalog와 create/select/submit/retry/stop이 proof/wire 전에 차단되고 disabled UI·안전한 빈 표시·journal 유지·Canonical session0을 확인했다. pending 상태 이후 fetch는 호출0을 검증하는 실패 대체 구현이며 ACTIVE 서버 송신 증거가 아니다. fixture 계정·기기·승인·DB 이벤트·OS keychain을 정리했다.
+- Compose 기본 infra/core/gateway + workflow/frontend 프로필과 HTTPS3443이다. `.env` 서비스별 branch override, clean source/container ref·HEAD·실제 `/app` mount 및 Gateway `PLATFORM_SESSION_MODE=enrollment`를 다시 확인했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589` 모두 `feat/cross-platform-session`이다. 프론트 변경은 없으며 앱 미리보기 로그인은 이 CLI 검증에 사용하지 않았다.
+- Workflow의 미배포 SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06` source overlay marker와 실제 `/opt/xgen-local-sdk/src/xgen_sdk/__init__.py`, `/opt/xgen-local-runtime/src/xgen_agent_runtime/__init__.py` import를 확인했다.
+- 증거: `/tmp/cross-sync-canonical-tui-chat-{native-tests,cli-tests,tls-fixture,compose,environment,overlay}.log` 및 이 작업의 최종 UI/type/contract tool 출력. 필수 최신 Head CI·리뷰는 PR155에 기록한다. 남은 관문은 첨부, 설치된 VS Code, 물리 Mobile UI/hardware/SecureStore 및 실제 ACTIVE cross-surface 성공이다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 3% | 첨부·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+These are remaining-work estimates, not coverage or delivery dates. The explicit Canonical CLI TUI now supports bounded owned catalog pagination, session creation/selection/clear, visible plain-text submission, original-request retry and exact current-turn stop through its native session. A single model owns drain and write ordering; unknown lifecycle results require explicit latest catalog recovery, and unknown turns cannot change lifecycle scope. Original binding is rechecked under the actual vault lock before native proof/wire, allowing same-sid rotation and rejecting changed login ownership. Parent and independent review plus CLI/native/protocol regressions, actual built-product POSIX PTY/trusted HTTPS/WSS/keychain fixtures and integration-branch enrollment Compose denial/cleanup passed. Review and real UI checks fixed empty-focus creation and catalog loss during transient reads. The HTTPS server and pending-mode failed-fetch seam are explicit test boundaries, not ACTIVE Gateway success. Attachments, installed VS Code, physical Mobile UI/hardware/SecureStore and actual ACTIVE cross-surface success remain gates. SDK/runtime remain unreleased Workflow overlays and parent PR90 remains Draft.
+
+## Canonical 첨부 메타데이터 계약 (2026-10-06)
+
+- 기준 통합 Head: DEX `9eba2fd854ca1511d55e1cecc3daf801e12e46cb`, SDK `e4c8f032b7cb69a72a7450791db7bb84dd1e6540`. 각각 최신 `feat/cross-platform-session`에서 하위 `feat/cross-platform-attachment-contract`를 만들었다.
+- DEX 하위 [PR172](https://github.com/PlateerLab/xgen-dex-core/pull/172), SDK 하위 [PR60](https://github.com/PlateerLab/xgen-sdk/pull/60)은 별도 관리한다. 상위 DEX PR90·SDK PR53은 `main` 대상 Draft를 유지한다.
+- [첨부 참조 계약](canonical-attachment-reference-contract.md)에 scope/receipt/reference의 타입·Unicode·origin·크기·MIME·checksum 규칙과 서버 연결 순서를 한·영으로 정리했다. DEX와 SDK에 같은 JSON 벡터를 적용한다.
+- 서버 origin·사용자·Canonical 세션·workflow가 정확히 일치하는 receipt만 받아 opaque ID/checksum의 순서가 고정된 불변 참조를 만든다. 중복 ID, 잘못된 Unicode, 경로·URL·raw bytes·신뢰 주장과 상한 초과를 거부한다. MIME은 내용 검증 결과로 취급하지 않는다. 파싱은 인증을 대신하지 않으며 향후 서버 저장 checksum·소유권 검사가 필수다.
+- 현재 text-only API는 `attachments`를 token/proof/wire 전에 거부한다. 업로드·저장소·저널 연결·첨부 UI는 후속 작업이며 이번 계약으로 활성화하지 않았다. 환경변수 변경은 없다. SDK/runtime은 미배포 Workflow source overlay로 검증한다.
+
+### 검증과 실제 테스트 환경
+
+- 제품 검증 SHA: DEX `473d621094750d50671b53a14021c6152b89dc2f`, SDK 최종 Head `308594b15e2d09ee3d64660b0880a90bc1d6319d`. SDK PR60 통합 SHA는 `2d646dcf8ff2e32f75c75d6d859dd1981f864fba`이며 tested Head와 전체 tree가 같다. 이후 DEX에는 증거 문서만 추가하며 최신 Head CI를 확인한다.
+- DEX 첨부 집중96/96, 전체 protocol350/350 및 workspace 타입·protocol 빌드·앱 우회 계약 검사 통과. 빌드된 ESM root export에서 실제 import 및 immutable reference 준비를 확인했다. 추가 `attachments` 입력은 현재 native transport의 token/proof/wire 호출0으로 거부한다.
+- SDK Python3.11 및 기존3.13에서 Agent Session 전체172/172 통과. Python3.11/3.12의 최신 Head CI(run37406432772 및 push run37406430220) 모두 성공이다. 모델 전용 CI는 관계없는 approval registry conftest를 로드하지 않으며 패키지 배포를 실행하지 않는다. 기존3.13 환경에서는 해당 conftest를 포함해 실행했다.
+- 직접 diff 및 독립 보안 리뷰에서 IPv4-mapped IPv6·bare `0x` host·IDN A-label·런타임 Unicode 표 차이·Pydantic 모델 구성 우회·raw exception context를 보완했다. Python IPv6는 packed hextet으로 같은 WHATWG 문자열을 만들며 IDN은 공통 정규화 계약 전까지 거부한다. Unicode 원문을 보존하고 scope를 정확히 비교한다. public helper 예외에서 원시 Pydantic 입력을 보유한 `__context__`까지 제거했다. 추가 blocking 리뷰 문제는 없다.
+- 양쪽 공통 fixture90건의 SHA-256은 `ab4ec79013c8c37a67b8379fb3b16d444c9f25d4215f1eb3fd1ddd7162a47ffa`다. 계약 문서도 한·영 동일 사본이다.
+- Compose 기본 infra/core/gateway + workflow/frontend 및 기존 HTTPS3443 환경이다. `.env` 기본 `GIT_BRANCH=develop`에 대한 서비스별 `feat/cross-platform-session` override를 실제 clean source·container ref/SHA·정확한 `/app` bind와 비교했다. Core `c9125cfd2302d28a44512b836b9340439142685e`, Gateway `e2eb9cbe13c2cefc9420b1cfa2e85b115ce71c78`, Workflow `ee007d09c0f5548d6a069648a655ef70ecfcf3db`, Frontend `7944120b99e8909f09100c802912839a19359589`다. 프론트에는 Git binary가 없어 Node로 실제 mount의 HEAD/ref를 읽고 clean host source와 비교했다. Gateway는 실제 `PLATFORM_SESSION_MODE=enrollment`이며 이번 검증을 ACTIVE 성공으로 보고하지 않는다.
+- `bash local-python-packages.sh start/verify`로 SDK 통합 SHA `2d646dcf8ff2e32f75c75d6d859dd1981f864fba`, runtime `ddbd581e013e5c57cfe0819bb7ae8ce565cfaf06`의 fresh snapshot/marker와 실제 `/opt/xgen-local-sdk/src/xgen_sdk`, `/opt/xgen-local-runtime/src/xgen_agent_runtime` import를 확인했다. 새 SDK 첨부 모델을 **실행 중인 Workflow Python3.14 컨테이너**에서 불러 공통90벡터·불변 복사·generic detached error를 통과했다. 실행 중인 OpenAPI와 실제 `SubmitTurnBody`에서 text-only/extra-forbidden도 확인했다. 업로드·턴 실행·DB write·SDK/runtime 배포는 수행하지 않았다. frontend/UI 변경이 없어 앱 미리보기 로그인은 사용하지 않았다.
+- 증거: `/tmp/cross-sync-attachment-{target-tests,protocol-final,check,protocol-check-final,contracts,build-final,sdk-py311,sdk-py313,environment,overlay,overlay-verify,workflow}.log`. fixture90건과 컨테이너 검사 스크립트는 검사 후 컨테이너에서 제거했다. DEX 필수 최신 Head CI·최종 리뷰 결론은 PR172에 기록한다.
+
+### 잔여 추정치 (설계 11절)
+
+| Phase | 남은 비율 | 주요 잔여 |
+|---|---:|---|
+| 0 계약·보안 | 22% | 운영 계약·최종 보안 관문·통합 검증 |
+| 1 Platform Session | 5% | 실제 ACTIVE/takeover·Mobile 실기기/UI |
+| 2 Canonical Agent Session | 3% | 첨부 서버/저널/클라이언트 연결·설치 클라이언트·실서버 양성 검증 |
+| 3 Global Capability Registry | 95% | 등록·검색·lease·호출 경계 |
+| 4 비시크릿 개인 설정 | 95% | 동기화·충돌 처리 |
+| 5 개인 시크릿·Claude/Codex | 90% | 개인 시크릿 전달·외부 도구 연결 |
+| 6 Legacy 제거 | 100% | 새 경로 전체 검증 후 단계적 제거 |
+
+Remaining-work estimates are unchanged because only the attachment metadata foundation is completed. Server-owned upload/storage, journal/hash linking, native/client integration and actual ACTIVE validation are still required. Parent main PRs remain Draft and no SDK/runtime release is performed.

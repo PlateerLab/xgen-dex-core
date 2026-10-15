@@ -41,6 +41,14 @@ import { VoiceApi } from './voice';
 import { HttpClient, type FetchLike } from './client';
 import type { CurrentUser, LoginResult } from './types';
 
+export * from './agent-session';
+export * from './agent-session-focus-recovery';
+export * from './agent-session-attachments';
+export * from './agent-session-attachment-client';
+export * from './agent-session-mutation';
+export * from './native-platform-session';
+export * from './native-device-proof';
+
 export interface XgenClientOptions {
   baseUrl: string;
   fetch?: FetchLike;

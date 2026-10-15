@@ -597,6 +597,20 @@ function restoreWinBounds(saved: WinBounds | undefined, defaults: WinBounds): Wi
   return { x, y, width, height };
 }
 
+/**
+ * macOS 에서 다른 앱의 전체 화면 위에 띄울 창(아바타 오버레이·빠른 채팅)은 panel 창으로 만든다.
+ * panel 은 앱을 Dock 에서 빼지 않고도 전체 화면 위·모든 데스크톱에 뜬다. 예전처럼 보통 창에
+ * `setVisibleOnAllWorkspaces(…, { visibleOnFullScreen: true })` 만 부르면 Electron 이 앱 전체를
+ * UIElement(Dock·Cmd+Tab 에 안 보이는 앱)로 바꿔, 빠른 채팅을 켠 사용자는 DeX 가 메뉴 막대에만 보였다.
+ */
+const FLOAT_ABOVE_FULLSCREEN = process.platform === 'darwin' ? ({ type: 'panel' } as const) : {};
+
+/** 전체 화면 위·모든 데스크톱에 보이게 — 앱 종류는 바꾸지 않는다(panel 창이라 필요 없다, 위 참고). */
+function showOnAllSpaces(win: BrowserWindow): void {
+  if (process.platform !== 'darwin') return;
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+}
+
 /** Keep a top-most window truly top-most for its lifetime (Geny 0.16.1 port).
  *
  * A one-shot `setAlwaysOnTop(true, 'screen-saver')` decays under z-order churn:
@@ -610,9 +624,7 @@ function armAlwaysOnTop(win: BrowserWindow): void {
     if (win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
     try {
       win.setAlwaysOnTop(true, 'screen-saver');
-      if (process.platform === 'darwin') {
-        win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      }
+      showOnAllSpaces(win);
       win.moveTop(); // top of the topmost band — above later-created topmost peers
     } catch {
       /* window mid-teardown */
@@ -837,6 +849,7 @@ function createOverlay(): void {
   const y = saved?.y ?? wa.y + wa.height - height - 28;
 
   overlayWindow = new BrowserWindow({
+    ...FLOAT_ABOVE_FULLSCREEN,
     width,
     height,
     x,
@@ -1162,6 +1175,7 @@ function positionQuickChat(): void {
 function createQuickChat(): void {
   if (quickChatWindow && !quickChatWindow.isDestroyed()) return;
   quickChatWindow = new BrowserWindow({
+    ...FLOAT_ABOVE_FULLSCREEN,
     width: QUICKCHAT_W,
     height: QUICKCHAT_H,
     show: false,
@@ -1227,9 +1241,7 @@ function showQuickChatOnTop(): void {
   quickChatOpen = true;
   quickChatShownAt = Date.now();
   quickChatWindow.setAlwaysOnTop(true, 'screen-saver');
-  if (process.platform === 'darwin') {
-    quickChatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  }
+  showOnAllSpaces(quickChatWindow);
   quickChatWindow.setIgnoreMouseEvents(false);
   quickChatWindow.moveTop();
   quickChatWindow.webContents.send(CHANNELS.quickChatOpened);

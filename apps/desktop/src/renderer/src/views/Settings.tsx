@@ -166,6 +166,8 @@ export const Settings: React.FC<{
 
   const [browserOn, setBrowserOn] = useState(config.browser?.enabled === true);
   const [browserNewTabUrl, setBrowserNewTabUrl] = useState(config.browser?.newTabUrl ?? '');
+  // 빠른 브라우저 조작(실험) — 단순한 조작은 XGEN 판단 모델로 이 PC 에서 바로 실행.
+  const [fastActOn, setFastActOn] = useState(config.fastAct === true);
   const savedBrowserNewTabUrl = useRef(config.browser?.newTabUrl ?? '');
   const [browserNewTabUrlError, setBrowserNewTabUrlError] = useState('');
   const [browserSearchOn, setBrowserSearchOn] = useState(
@@ -1037,6 +1039,33 @@ export const Settings: React.FC<{
                         ariaLabel="검색 엔진 선택"
                       />
                     </div>
+                  )}
+                  <div className="field-row">
+                    <span>
+                      빠른 조작 (실험)
+                      <span className="small muted" style={{ marginLeft: 8 }}>
+                        단순한 조작은 서버 에이전트 없이 바로 실행
+                      </span>
+                    </span>
+                    <label className="switch">
+                      <input
+                        type="checkbox"
+                        checked={fastActOn}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFastActOn(enabled);
+                          void apply({ fastAct: enabled });
+                        }}
+                      />
+                      <span className="track" />
+                    </label>
+                  </div>
+                  {fastActOn && (
+                    <p className="settings-hint">
+                      "검색 눌러", "로그인 버튼 클릭" 처럼 지금 화면에서 한 번에 끝나는 말은 XGEN 판단
+                      모델이 누를 곳을 골라 바로 실행합니다. 마이크는 말하는 도중에 조작합니다. 판단이
+                      애매하거나 서버에 판단 모델이 없으면 평소처럼 에이전트가 처리합니다.
+                    </p>
                   )}
                   <p className="settings-hint warn">
                     페이지 내용은 신뢰하지 않는 데이터로 처리됩니다. 쿠키·스토리지, 업로드·다운로드,

@@ -9235,6 +9235,59 @@ button.sm {
 }
 
 /* ── 입력창 위 도구 줄 — [Teams 대화 붙이기] · 모델 선택기 ───────── */
+/* 음성 설정 — 음성 대화 지침 입력칸 */
+.voice-style-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 120px;
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+/* 실험: 계속 듣기 상태 — 입력창 위 한두 줄 */
+.voice-loop-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+.voice-loop-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.voice-loop-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.voice-loop-dot.armed {
+  background: var(--success);
+}
+.voice-loop-dot.hearing {
+  background: var(--error);
+}
+.voice-loop-dot.thinking {
+  background: var(--warning);
+}
+.voice-loop-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .composer-tools {
   display: flex;
   align-items: center;

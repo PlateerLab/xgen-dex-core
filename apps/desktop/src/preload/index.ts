@@ -80,6 +80,7 @@ import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
 import type { ChatFolderRemote, ChatFolderView } from '../main/chat-folders';
+import type { VoiceStreamEvent, VoiceStreamResult } from '../main/voice-stream';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
@@ -770,6 +771,28 @@ const api = {
     },
   },
 
+  /** 실험: 말하는 도중 실행 — 마이크 소리를 실시간으로 보내면 main 이 중간 결과로 브라우저를 조작한다. */
+  voiceStream: {
+    available: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.voiceStreamAvailable),
+    /** carry: 앞 발화에서 처리 못 한 말 — 잠깐 쉬어 끊긴 말을 이어 붙여 판단한다. */
+    start: (workflowId: string, carry?: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry),
+    audio: (sessionId: string, pcm: Uint8Array): void => ipcRenderer.send(CHANNELS.voiceStreamAudio, sessionId, pcm),
+    end: (sessionId: string): Promise<VoiceStreamResult | null> => ipcRenderer.invoke(CHANNELS.voiceStreamEnd, sessionId),
+    cancel: (sessionId: string): void => ipcRenderer.send(CHANNELS.voiceStreamCancel, sessionId),
+    /** 시험 전용(DEX_VOICE_TEST=1): STT 없이 글자로 판단·실행. */
+    testText: (workflowId: string, text: string): Promise<VoiceStreamResult> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamTestText, workflowId, text),
+    /** 시험 전용(DEX_VOICE_TEST=1): 녹음 파일을 마이크 대신. sttOnly 면 받아 적기만(판단·조작 없음). */
+    testFile: (workflowId: string, path: string, opts?: { sttOnly?: boolean }): Promise<VoiceStreamResult | null> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamTestFile, workflowId, path, opts),
+    onEvent: (cb: (e: VoiceStreamEvent) => void): (() => void) => {
+      const h = (_e: Electron.IpcRendererEvent, ev: VoiceStreamEvent): void => cb(ev);
+      ipcRenderer.on(CHANNELS.voiceStreamEvent, h);
+      return () => ipcRenderer.removeListener(CHANNELS.voiceStreamEvent, h);
+    },
+  },
+
   /**
    * SSH — the per-user server list, shared with the web mypage screen.
    *
@@ -1153,8 +1176,8 @@ const api = {
     setHotkey: (acc: string): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.quickChatSetHotkey, acc),
     /** Quick-chat window → send the typed text to the active agent chat. */
-    submit: (text: string): Promise<{ ok: boolean; error?: string }> =>
-      ipcRenderer.invoke(CHANNELS.quickChatSubmit, text),
+    submit: (text: string, opts?: { voice?: boolean }): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.quickChatSubmit, text, opts),
     /** Quick-chat window → dismiss the bar. */
     close: (): void => ipcRenderer.send(CHANNELS.quickChatClose),
     /** Quick-chat window: fired each time the bar is summoned. */
@@ -1170,8 +1193,8 @@ const api = {
       return () => ipcRenderer.removeListener(CHANNELS.quickChatDismissed, h);
     },
     /** Main window: subscribe to quick-chat relays → send into the active chat. */
-    onQuickSend: (cb: (text: string) => void): (() => void) => {
-      const h = (_e: unknown, text: string) => cb(text);
+    onQuickSend: (cb: (text: string, opts?: { voice?: boolean }) => void): (() => void) => {
+      const h = (_e: unknown, text: string, opts?: { voice?: boolean }) => cb(text, opts);
       ipcRenderer.on(CHANNELS.quickSend, h);
       return () => ipcRenderer.removeListener(CHANNELS.quickSend, h);
     },

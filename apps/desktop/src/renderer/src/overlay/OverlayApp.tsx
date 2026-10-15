@@ -230,7 +230,7 @@ export function OverlayApp(): React.ReactElement {
   const [subtitleSize, setSubtitleSize] = useState<'sm' | 'md' | 'lg'>('sm');
   const [avatarHidden, setAvatarHidden] = useState(false);
   // 핸즈프리 음성 대화 (Geny 방식): 로컬 토글 + 서버 STT 게이트
-  const voice = useVoiceControls();
+  const voice = useVoiceControls(state.workflowId || undefined);
   const dragging = useRef(false);
   const hasAvatar = hasAvatarRenderer();
 

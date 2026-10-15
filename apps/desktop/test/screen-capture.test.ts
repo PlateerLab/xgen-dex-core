@@ -103,10 +103,9 @@ test('디스플레이 배율을 반영한다', () => {
 // send 는 "물어볼 것이 있으면 멈추는" 관문이 되었고, **실제 전송 직전**의 자리가
 // dispatch 로 내려갔기 때문이다. 지키려는 것은 그대로다: 확인이 끝나고 진짜로
 // 보내는 그 순간에 찍고, 못 찍어도 질문은 나간다.
-const DISPATCH = CHAT.slice(
-  CHAT.indexOf('const dispatch = useCallback'),
-  CHAT.indexOf('sessionStore.send(session.key'),
-);
+// dispatch 시작부터 그 안의 sessionStore.send( 까지 — 인자는 줄바꿈될 수 있어 함수 이름까지만 찾는다.
+const DISPATCH_START = CHAT.indexOf('const dispatch = useCallback');
+const DISPATCH = CHAT.slice(DISPATCH_START, CHAT.indexOf('sessionStore.send(', DISPATCH_START));
 
 test('전송 직전에 찍는다', () => {
   // 주기적으로 올리지 않는다 — 사용자가 언제 무엇이 나갔는지 알아야 한다.

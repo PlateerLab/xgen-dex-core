@@ -500,7 +500,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
         ([k, r]) =>
           !LANDMARK.has(r.role) &&
           !(wantsType && typedKey.length >= 2 && (r.name ?? '').replace(/\s/g, '').includes(typedKey)) &&
-          !(chrome[k]?.close && !TAB_WORD.test(text)),
+          !(chrome[k]?.close && !TAB_WORD.test(text)) &&
+          // 입력 요청은 브라우저 자체 조작(뒤로·새로고침·새 탭)으로 풀지 않는다 — 입력칸이 안 보일 때 새로고침을 골라
+          // 채우던 폼이 지워졌다(10/16 BO).
+          !(wantsType && chrome[k]),
       ),
     );
     const candidates = wantsType && Object.keys(typable).length ? typable : pickable;

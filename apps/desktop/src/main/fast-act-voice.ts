@@ -110,12 +110,15 @@ const isSearchField = (r: { role: string; name?: string }): boolean => r.role ==
 const TEXT_FIELD = new Set(['textbox', 'searchbox']);
 /**
  * 가린 팝업·배너를 닫는 요소의 이름 — 화면 일반 관례(닫기·오늘 하루 보지 않기·거부·×). 동의/수락은 넣지 않는다
- * (사용자 대신 동의하지 않는다).
+ * (사용자 대신 동의하지 않는다). 글자 하나는 닫기 기호(×✕✖)만 — 영문 X 는 계정 버튼의 이름 첫 글자이기도 하다
+ * (10/16 BO: 머리글 계정 버튼 "X" 를 눌러 계정 메뉴가 열렸고, 다음 지시가 그 메뉴로 다른 화면에 갔다).
  */
-const CLOSE_NAME = /(닫기|닫아|close|dismiss|오늘\s*(하루\s*)?(그만\s*)?(보지|열지)|다시\s*보지|그만\s*보기|나중에|no thanks|거부|reject)|^[x×✕✖]$/i;
+const CLOSE_NAME = /(닫기|닫아|close|dismiss|오늘\s*(하루\s*)?(그만\s*)?(보지|열지)|다시\s*보지|그만\s*보기|나중에|no thanks|거부|reject)|^[×✕✖]$/i;
 const CLOSE_ROLE = new Set(['button', 'link', 'checkbox', 'img', 'generic']);
 /** 누르려던 요소를 다른 요소가 가렸다는 브라우저 응답. */
 const COVERED = /is covered by/;
+/** 가려서 못 눌렀을 때 다시 해 보기 전 기다림. */
+const COVER_WAIT_MS = 600;
 
 export type VoiceAction = {
   said: string;
@@ -599,6 +602,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
       }
       // 팝업·배너가 누를 요소를 가렸으면 그것을 닫고 한 번만 다시 판단한다.
       if (!o.acted && COVERED.test(o.reason)) {
+        diag(SCOPE, 'covered', { text, reason: o.reason.slice(0, 300) });
+        // 잠깐 덮었다 걷히는 막(불러오는 중 표시·화면 전환)일 수 있다 — 기다렸다 그대로 한 번 더 해 보고, 그래도 가리면 닫는다.
+        // 바로 닫으려다 엉뚱한 것을 눌렀다(10/16 BO: 협력사 [적용] 직후 가림 → 머리글의 계정 버튼 "X").
+        await new Promise((r) => setTimeout(r, COVER_WAIT_MS));
+        this.snap = null;
+        const retry = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+        if (retry.acted || !COVERED.test(retry.reason)) return retry;
         this.dismissed = await this.dismissOverlay();
         this.snap = null;
         const again = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { labelFields, refOrder, withoutLabel } from '../src/main/fast-act-labels';
+import {
+  labelFields,
+  refOrder,
+  withoutLabel,
+  withoutLeadingLabel,
+} from '../src/main/fast-act-labels';
 import type { ElementRefs } from '../src/main/fast-act';
 
 // BO 상품 등록 화면처럼 칸 이름이 입력칸과 떨어진 글자로만 있는 폼 — refs 키 순서는 문서 순서가 아니다.
@@ -96,4 +101,17 @@ test('검색 의도는 말에서 붙인 칸 이름을 빼고 본다', () => {
   assert.equal(withoutLabel('검색어에 노트북 넣고 검색해줘', '검색어').includes('검색'), true);
   assert.equal(withoutLabel('검색에 노트북 넣고 검색해줘', '검색').includes('검색'), true);
   assert.equal(withoutLabel('xgen 검색해줘', undefined), 'xgen 검색해줘');
+});
+
+test('넣을 글자 앞의 칸 이름(조사 포함)을 뗀다 — 남는 글자가 있을 때만', () => {
+  assert.equal(withoutLeadingLabel('원산지에 대한민국', '원산지'), '대한민국');
+  assert.equal(
+    withoutLeadingLabel('검색키워드에 노트북, 데스크', '검색키워드 내용'),
+    '노트북, 데스크',
+  );
+  assert.equal(withoutLeadingLabel('상품명은 xgen', '상품명'), 'xgen');
+  assert.equal(withoutLeadingLabel('대한민국', '원산지'), '대한민국');
+  assert.equal(withoutLeadingLabel('원산지', '원산지'), '원산지');
+  assert.equal(withoutLeadingLabel('원산지표시 없음', '원산지'), '원산지표시 없음');
+  assert.equal(withoutLeadingLabel('원산지에 대한민국', undefined), '원산지에 대한민국');
 });

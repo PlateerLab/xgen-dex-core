@@ -134,3 +134,19 @@ export function withoutLabel(text: string, label?: string): string {
     .filter(Boolean)
     .reduce((said, word) => said.replace(word, ' '), text);
 }
+
+/**
+ * 넣을 글자 앞에 붙은 칸 이름을 뗀다 — "원산지에 대한민국 넣어줘." 에 판단 모델이 넣을 글자를 "원산지에 대한민국"
+ * 으로 답했다(10/16 BO). 붙인 칸 이름(또는 그 첫 단어)에 조사가 이어지고 뒤에 글자가 남을 때만.
+ */
+export function withoutLeadingLabel(typed: string, label?: string): string {
+  if (!label) return typed;
+  for (const head of new Set([label, label.split(' ')[0]])) {
+    if (!typed.startsWith(head)) continue;
+    const rest = typed
+      .slice(head.length)
+      .match(/^(?:칸)?(?:에다가|에다|에|은|는|을|를|이|가|란|으로|로)?\s+(\S.*)$/u);
+    if (rest) return rest[1];
+  }
+  return typed;
+}

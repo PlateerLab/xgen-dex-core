@@ -29,7 +29,7 @@ import {
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
-import { FIELD_LABEL_SCRIPT, labelFields, refOrder, withoutLabel, type FieldLabel } from './fast-act-labels';
+import { FIELD_LABEL_SCRIPT, labelFields, refOrder, withoutLabel, withoutLeadingLabel, type FieldLabel } from './fast-act-labels';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
@@ -343,7 +343,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const pick = await pickElement(post, text, origin, typable, scr);
     if (!pick || pick.confidence < th.pick) return null;
     const element = s.snap.refs[pick.ref];
-    const typed = await this.typedText(post, text, origin, scr, utterance);
+    const found = await this.typedText(post, text, origin, scr, utterance);
+    const typed = found && withoutLeadingLabel(found, s.snap.labels[pick.ref]);
     if (!typed) return null;
     const action: ActionKind = SEARCH_WORD.test(withoutLabel(text, s.snap.labels[pick.ref])) && isSearchField(element) ? 'type_submit' : 'type';
     const runtime = getBrowserRuntime();
@@ -533,7 +534,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const action = resolved.action === 'type' && searching && isSearchField(element) ? 'type_submit' : resolved.action;
     let typed = resolved.text;
     if (action !== 'click') {
-      typed = await this.typedText(post, text, origin, scr, utterance);
+      const found = await this.typedText(post, text, origin, scr, utterance);
+      typed = found && withoutLeadingLabel(found, snap.labels[pick.ref]);
       if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);
     }
     if (action === 'click' && TEXT_FIELD.has(element.role)) return no('입력칸 클릭은 하지 않음', pick.top);

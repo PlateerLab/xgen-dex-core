@@ -98,6 +98,7 @@ import type {
   BrowserSelectionCompleteRequest,
   BrowserSelectionInspectRequest,
   BrowserSelectionPreview,
+  BrowserSelectionRect,
   BrowserSelectionResult,
   BrowserSelectionSession,
   BrowserState,
@@ -482,6 +483,8 @@ const api = {
       ipcRenderer.invoke(CHANNELS.browserEnsureShared, workflowId, workflowName),
     bindShared: (pageId: string, webContentsId: number): Promise<BrowserPageInfo> =>
       ipcRenderer.invoke(CHANNELS.browserBindShared, pageId, webContentsId),
+    popupSurface: (pageId: string, rect: BrowserSelectionRect | null): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.browserPopupSurface, pageId, rect),
     navigate: (request: BrowserNavigateRequest): Promise<BrowserPageInfo> =>
       ipcRenderer.invoke(CHANNELS.browserNavigate, request),
     activate: (pageId: string): Promise<BrowserPageInfo> =>

@@ -43,6 +43,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
+        'Site popups appear in list as mode popup with their own page_id; target that page_id to interact with them. ' +
         'A missing page_id on other browser tools uses the workflow default background page.',
       inputSchema: {
         type: 'object',

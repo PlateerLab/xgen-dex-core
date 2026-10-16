@@ -28,7 +28,7 @@ export type ChromeAction = { role: string; name: string; close?: boolean; run: (
 /** 지금 탭에서 할 수 있는 브라우저 자체 조작. 탭 번호는 DeX 탭 줄의 순서(1부터). */
 export function chromeActions(workflowId: string, page: BrowserPageInfo): Record<string, ChromeAction> {
   const runtime = getBrowserRuntime();
-  const tabs = runtime.state().pages.filter((p) => p.workflowId === workflowId && p.mode === 'shared');
+  const tabs = runtime.state().pages.filter((p) => p.workflowId === workflowId && p.mode !== 'background');
   const out: Record<string, ChromeAction> = {};
   const add = (a: ChromeAction): void => void (out[`e${9001 + Object.keys(out).length}`] = a);
   const nav = (action: 'back' | 'forward' | 'reload') => async (): Promise<void> => void (await runtime.navigate({ pageId: page.pageId, action }));

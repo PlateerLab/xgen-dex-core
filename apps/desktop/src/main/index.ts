@@ -462,6 +462,7 @@ function createWindow(): void {
     },
   });
 
+  getBrowserRuntime().setPopupHostWindow(mainWindow);
   mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     // 에이전트 뷰어 [워크플로우] 탭의 캔버스: 자기 세션으로, 설정된 서버의 /canvas 만(canvas-embed).
     if (params.partition === CANVAS_PARTITION) {
@@ -3297,6 +3298,12 @@ ipcMain.handle(CHANNELS.browserBindShared, (_e, pageId: string, webContentsId: n
   getBrowserRuntime().bindSharedPage(pageId, webContentsId),
 );
 ipcMain.handle(CHANNELS.browserNavigate, (_e, request) => getBrowserRuntime().navigate(request));
+ipcMain.handle(CHANNELS.browserPopupSurface, (event, pageId: string, rect) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('browser_denied: 허용되지 않은 브라우저 표시 요청입니다.');
+  }
+  getBrowserRuntime().updatePopupSurface(pageId, rect);
+});
 ipcMain.handle(CHANNELS.browserActivate, (_e, pageId: string) =>
   getBrowserRuntime().activate(pageId),
 );

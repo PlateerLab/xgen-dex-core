@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:teams": "electron verify/teams-smoke.cjs",
     "verify:browser-selection": "electron -r tsx/cjs verify/browser-selection-smoke.cjs",
+    "verify:browser-popup": "electron -r tsx/cjs verify/browser-popup-smoke.cjs",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
     "dev": "electron-vite dev",

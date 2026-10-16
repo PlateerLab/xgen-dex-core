@@ -251,6 +251,7 @@ export const CHANNELS = {
   browserCreate: 'browser:create',
   browserEnsureShared: 'browser:ensureShared',
   browserBindShared: 'browser:bindShared',
+  browserPopupSurface: 'browser:popupSurface',
   browserNavigate: 'browser:navigate',
   browserActivate: 'browser:activate',
   browserSelectionBegin: 'browser:selectionBegin',

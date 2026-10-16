@@ -60,7 +60,8 @@ export const BrowserPane: React.FC<{
 }> = ({ workflowId, workflowName, addressSearch, selection, onStartSelection, onSurface }) => {
   const state = useBrowserState();
   const pages = useMemo(
-    () => state.pages.filter((page) => page.workflowId === workflowId && page.mode === 'shared'),
+    () =>
+      state.pages.filter((page) => page.workflowId === workflowId && page.mode !== 'background'),
     [state.pages, workflowId],
   );
   const preferred = state.activeByWorkflow[workflowId];
@@ -70,6 +71,7 @@ export const BrowserPane: React.FC<{
   const [popupExpanded, setPopupExpanded] = useState(false);
   const [popupBusy, setPopupBusy] = useState<BrowserPopupDecision | null>(null);
   const [popupError, setPopupError] = useState('');
+  const [popupNotice, setPopupNotice] = useState('');
   const [addressFocused, setAddressFocused] = useState(false);
   const [suggestions, setSuggestions] = useState<BrowserHistorySuggestion[]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -86,8 +88,8 @@ export const BrowserPane: React.FC<{
   const suggestionRequest = useRef(0);
   const clearConfirmationTimer = useRef<number | null>(null);
   const popupRequests = useMemo(
-    () => state.popupRequests.filter((request) => request.pageId === active?.pageId),
-    [active?.pageId, state.popupRequests],
+    () => state.popupRequests.filter((request) => request.workflowId === workflowId),
+    [workflowId, state.popupRequests],
   );
   const popupRequest = popupRequests[0] ?? null;
 
@@ -103,6 +105,7 @@ export const BrowserPane: React.FC<{
     setNavigationError('');
     setPopupExpanded(false);
     setPopupError('');
+    setPopupNotice('');
   }, [active?.pageId, active?.url, addressFocused]);
 
   useEffect(() => {
@@ -112,7 +115,7 @@ export const BrowserPane: React.FC<{
   }, [popupRequest]);
 
   useEffect(() => {
-    if (historyOpen) {
+    if (historyOpen || (active?.mode === 'popup' && (suggestionsOpen || popupExpanded))) {
       if (active) onSurface(active.pageId, null);
       return;
     }
@@ -136,7 +139,7 @@ export const BrowserPane: React.FC<{
       window.removeEventListener('resize', report);
       onSurface(active.pageId, null);
     };
-  }, [active?.pageId, historyOpen, onSurface]);
+  }, [active?.pageId, active?.mode, historyOpen, suggestionsOpen, popupExpanded, onSurface]);
 
   const navigate = useCallback(
     async (action: 'goto' | 'back' | 'forward' | 'reload' | 'stop', url?: string) => {
@@ -291,12 +294,18 @@ export const BrowserPane: React.FC<{
       if (!popupRequest || popupBusy) return;
       setPopupBusy(decision);
       setPopupError('');
+      setPopupNotice('');
       try {
         const handled = await xgen.browser.resolvePopup({
           requestId: popupRequest.requestId,
           decision,
         });
         if (!handled) setPopupError('팝업 요청이 만료되었거나 페이지가 변경되었습니다.');
+        else if (decision !== 'block') {
+          setPopupNotice(
+            '팝업을 허용했습니다. 원래 페이지에서 팝업을 여는 버튼을 다시 눌러 주세요.',
+          );
+        }
         setPopupExpanded(false);
       } catch (error) {
         setPopupError(error instanceof Error ? error.message : String(error));
@@ -487,7 +496,7 @@ export const BrowserPane: React.FC<{
               ? 'active'
               : ''
           }
-          disabled={!active || active.loading === 'loading'}
+          disabled={!active || active.mode === 'popup' || active.loading === 'loading'}
           aria-label="요소를 채팅 컨텍스트로 선택"
           title="요소 선택 후 채팅에 첨부"
           onClick={() => active && onStartSelection(active, 'element')}
@@ -501,7 +510,7 @@ export const BrowserPane: React.FC<{
               ? 'active'
               : ''
           }
-          disabled={!active || active.loading === 'loading'}
+          disabled={!active || active.mode === 'popup' || active.loading === 'loading'}
           aria-label="영역을 채팅 컨텍스트로 선택"
           title="영역을 드래그하여 채팅에 첨부"
           onClick={() => active && onStartSelection(active, 'region')}
@@ -558,6 +567,11 @@ export const BrowserPane: React.FC<{
         </div>
       )}
       {navigationError && <div className="browser-error">{navigationError}</div>}
+      {popupNotice && (
+        <div className="browser-popup-notice browser-popup-detail" role="status">
+          {popupNotice}
+        </div>
+      )}
       {active?.error && <div className="browser-error">{active.error}</div>}
       {historyOpen ? (
         <section className="browser-history" aria-label="방문 기록">

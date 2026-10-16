@@ -71,12 +71,30 @@ const PersistentWebview: React.FC<{
     src: initial.current.src,
     partition: initial.current.partition,
     // Electron disables popup requests before they reach setWindowOpenHandler
-    // unless this attribute is present. The main process still returns `deny`
-    // for every request and replays only user-approved URLs as managed tabs.
+    // unless this attribute is present. The main process checks popup permissions
+    // and preserves the original opener for allowed windows.
     allowpopups: 'true',
     webpreferences: 'sandbox=yes,contextIsolation=yes,nodeIntegration=no,webSecurity=yes',
     style,
   });
+};
+
+const PopupSurface: React.FC<{
+  pageId: string;
+  rect?: BrowserSurfaceRect;
+  dragging: boolean;
+}> = ({ pageId, rect, dragging }) => {
+  useEffect(() => {
+    const bounds =
+      rect && !dragging
+        ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+        : null;
+    void xgen.browser.popupSurface(pageId, bounds).catch(() => undefined);
+    return () => {
+      void xgen.browser.popupSurface(pageId, null).catch(() => undefined);
+    };
+  }, [pageId, rect, dragging]);
+  return null;
 };
 
 const SelectionOverlay: React.FC<{
@@ -284,6 +302,16 @@ export const BrowserSurface: React.FC<{
   onSelectionError,
 }) => (
   <div className={`browser-surface-layer ${dragging ? 'dragging' : ''}`} aria-hidden>
+    {pages
+      .filter((page) => page.mode === 'popup')
+      .map((page) => (
+        <PopupSurface
+          key={page.pageId}
+          pageId={page.pageId}
+          rect={rects[page.pageId]}
+          dragging={dragging}
+        />
+      ))}
     {pages
       .filter((page) => page.mode === 'shared')
       .map((page) => (

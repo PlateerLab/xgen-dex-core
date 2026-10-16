@@ -85,12 +85,12 @@ export function fastActEnabled(): boolean {
   return !!decisionPost();
 }
 
-/** 이 에이전트의 화면에 보이는 브라우저 탭 — BrowserPane 과 같은 규칙. */
+/** 이 에이전트의 활성 팝업 또는 브라우저 탭. */
 export function visiblePage(workflowId: string): BrowserPageInfo | null {
   const runtime = getBrowserRuntime();
   if (!runtime.isEnabled()) return null;
   const state = runtime.state();
-  const pages = state.pages.filter((p) => p.workflowId === workflowId && p.mode === 'shared');
+  const pages = state.pages.filter((p) => p.workflowId === workflowId && p.mode !== 'background');
   return pages.find((p) => p.pageId === state.activeByWorkflow[workflowId]) ?? pages[0] ?? null;
 }
 

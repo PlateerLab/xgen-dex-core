@@ -12,7 +12,16 @@ import {
   type BrowserPageInfo,
 } from '@dex/protocol/browser';
 import { BrowserRuntime } from '../src/main/browser-runtime';
-import { BROWSER_TABS_TOOL, BrowserToolProvider, browserWaitCommand } from '../src/main/browser-tools';
+import { EventEmitter } from 'node:events';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { BrowserPane } from '../src/renderer/src/views/BrowserPane';
+import { browserStateStore } from '../src/renderer/src/browser-state';
+import {
+  BROWSER_TABS_TOOL,
+  BrowserToolProvider,
+  browserWaitCommand,
+} from '../src/main/browser-tools';
 import {
   BROWSER_PARTITION_PREFIX,
   allowedBrowserUrl,
@@ -41,13 +50,12 @@ test('popup permission keys use exact normalized http(s) origins', () => {
   assert.equal(browserOrigin('javascript:alert(1)'), null);
 });
 
-test('shared webviews forward popup requests to the denying main-process handler', async () => {
+test('shared webviews forward popup requests to the main-process permission handler', async () => {
   const source = await readFile(
     new URL('../src/renderer/src/views/BrowserSurface.tsx', import.meta.url),
     'utf8',
   );
   assert.match(source, /allowpopups:\s*['"]true['"]/);
-  assert.match(source, /user-approved URLs as managed tabs/);
 });
 
 test('address search falls back to Google only when enabled', () => {
@@ -120,7 +128,7 @@ test('shared navigation asks for its agent and resumes after the webview connect
   );
 });
 
-test('page popups stay denied and an approved request opens as a managed shared tab', async () => {
+test('popup approval preserves the next original window.open instead of replaying its URL', async () => {
   const runtime = new BrowserRuntime();
   const page = {
     info: {
@@ -142,7 +150,11 @@ test('page popups stay denied and an approved request opens as a managed shared 
     automationReset: null,
   };
   let popupHandler:
-    ((details: { url: string; postBody?: object | null }) => { action: string }) | undefined;
+    | ((details: { url: string; postBody?: object | null }) => {
+        action: string;
+        overrideBrowserWindowOptions?: { webPreferences: Record<string, unknown> };
+      })
+    | undefined;
   const contents = {
     id: 77,
     isDestroyed: () => false,
@@ -164,9 +176,12 @@ test('page popups stay denied and an approved request opens as a managed shared 
     pages: Map<string, typeof page>;
     popupPermissions: Map<string, 'allow' | 'block'>;
     sessionPopupPermissions: Set<string>;
+    agentGestureUntil: Map<string, number>;
+    popupHostWindow: { isDestroyed: () => boolean };
     bindContents: (runtimePage: typeof page, webContents: unknown) => void;
   };
   internals.enabled = true;
+  internals.popupHostWindow = { isDestroyed: () => false };
   internals.accountPartition = 'persist:test';
   internals.pages.set(page.info.pageId, page);
   internals.bindContents(page, contents);
@@ -195,16 +210,26 @@ test('page popups stay denied and an approved request opens as a managed shared 
   );
   assert.deepEqual(persisted, ['persist:test|https://source.example.com|allow']);
   assert.equal(runtime.state().popupRequests.length, 0);
-  assert.ok(
-    runtime
-      .list('workflow-popup')
-      .some((item) => item.url.includes('labs.plateer.com/path?token=secret')),
-  );
+  assert.equal(runtime.list('workflow-popup').length, 1, 'approval must not replay a detached URL');
 
-  popupHandler({ url: 'https://labs.plateer.com/second' });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  const allowed = popupHandler({ url: 'https://labs.plateer.com/second' });
+  assert.equal(allowed.action, 'allow');
+  assert.deepEqual(allowed.overrideBrowserWindowOptions?.webPreferences, {
+    partition: 'persist:test',
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    nodeIntegrationInSubFrames: false,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+    webviewTag: false,
+  });
   assert.equal(runtime.state().popupRequests.length, 0);
-  assert.ok(runtime.list('workflow-popup').some((item) => item.url.endsWith('/second')));
+  assert.equal(runtime.list('workflow-popup').length, 1);
+  for (const url of ['about:blank', 'file:///tmp/secret', 'javascript:alert(1)']) {
+    assert.equal(popupHandler({ url }).action, 'deny');
+  }
+  assert.equal(popupHandler({ url: 'https://post.example.com/', postBody: {} }).action, 'deny');
 
   internals.popupPermissions.clear();
   const beforeBlock = runtime.list('workflow-popup').length;
@@ -216,7 +241,13 @@ test('page popups stay denied and an approved request opens as a managed shared 
   );
   assert.equal(runtime.list('workflow-popup').length, beforeBlock);
   assert.equal(persisted.at(-1), 'persist:test|https://source.example.com|block');
+  internals.agentGestureUntil.set(page.info.pageId, Date.now() + 3000);
+  assert.equal(popupHandler({ url: 'https://blocked.example.com/' }).action, 'deny');
 
+  await runtime.resolvePopup({
+    requestId: runtime.state().popupRequests[0].requestId,
+    decision: 'block',
+  });
   internals.popupPermissions.clear();
   internals.sessionPopupPermissions.clear();
   popupHandler({ url: 'https://temporary.example.com/first' });
@@ -227,14 +258,217 @@ test('page popups stay denied and an approved request opens as a managed shared 
     true,
   );
   assert.equal(persisted.length, persistedCount);
-  popupHandler({ url: 'https://temporary.example.com/second' });
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(popupHandler({ url: 'https://temporary.example.com/second' }).action, 'allow');
   assert.equal(runtime.state().popupRequests.length, 0);
-  assert.ok(
-    runtime
-      .list('workflow-popup')
-      .some((item) => item.url === 'https://temporary.example.com/second'),
+  assert.equal(runtime.list('workflow-popup').length, 1);
+});
+
+test('popup tabs keep their WebContents, agent ownership and parent lifecycle', async () => {
+  class Contents extends EventEmitter {
+    navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+    destroyed = false;
+    session = 'test-session';
+    handler?: (request: { url: string }) => { action: string };
+    focused = false;
+    constructor(
+      readonly id: number,
+      readonly url: string,
+    ) {
+      super();
+    }
+    isDestroyed = () => this.destroyed;
+    getURL = () => this.url;
+    getTitle = () => 'Vendor';
+    close = () => {
+      this.destroyed = true;
+      this.emit('destroyed');
+    };
+    focus = () => {
+      this.focused = true;
+    };
+    setWindowOpenHandler = (handler: typeof this.handler) => {
+      this.handler = handler;
+    };
+  }
+  class PopupView {
+    visible = false;
+    bounds = { x: 0, y: 0, width: 0, height: 0 };
+    constructor(readonly webContents: Contents) {}
+    setVisible = (visible: boolean) => {
+      this.visible = visible;
+    };
+    setBounds = (bounds: typeof this.bounds) => {
+      this.bounds = bounds;
+    };
+  }
+  const views = new Set<PopupView>();
+  const host = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    webContents: { getZoomFactor: () => 2 },
+    getContentBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+    contentView: {
+      addChildView: (view: PopupView) => views.add(view),
+      removeChildView: (view: PopupView) => views.delete(view),
+    },
+  });
+  const runtime = new BrowserRuntime();
+  const contents = new Contents(10, 'https://example.com/form');
+  const page = {
+    info: {
+      pageId: 'parent',
+      workflowId: 'workflow',
+      workflowName: 'Agent',
+      mode: 'shared',
+      url: contents.url,
+      title: 'Form',
+      partition: 'persist:test',
+      generation: 0,
+      loading: 'idle',
+      canGoBack: false,
+      canGoForward: false,
+    } satisfies BrowserPageInfo,
+    contents: null,
+    window: null,
+    proxy: null,
+    automationReset: null,
+  };
+  const internals = runtime as unknown as {
+    enabled: boolean;
+    accountPartition: string;
+    pages: Map<string, { contents: unknown; info: BrowserPageInfo }>;
+    agentGestureUntil: Map<string, number>;
+    bindContents: (page: unknown, contents: unknown) => void;
+    bindPopupView: (page: unknown, view: unknown, url: string) => void;
+  };
+  runtime.setPopupHostWindow(
+    host as unknown as Parameters<BrowserRuntime['setPopupHostWindow']>[0],
   );
+  internals.enabled = true;
+  internals.accountPartition = 'persist:test';
+  internals.pages.set('parent', page);
+  internals.bindContents(page, contents);
+  internals.agentGestureUntil.set('parent', Date.now() + 3000);
+  assert.equal(contents.handler?.({ url: 'https://example.com/vendors' }).action, 'allow');
+
+  const child = new PopupView(new Contents(11, 'https://example.com/vendors'));
+  internals.bindPopupView(page, child, child.webContents.url);
+  const popup = runtime.list('workflow').find((item) => item.mode === 'popup')!;
+  assert.ok(popup);
+  assert.equal(popup.openerPageId, 'parent');
+  assert.equal(internals.pages.get(popup.pageId)?.contents, child.webContents);
+  assert.equal(
+    (await runtime.resolvePage('workflow', popup.pageId, false)).contents,
+    child.webContents,
+  );
+  await assert.rejects(
+    () => runtime.resolvePage('other-workflow', popup.pageId, false),
+    /browser_page_not_found/,
+  );
+  assert.equal(runtime.state().activeByWorkflow.workflow, popup.pageId);
+  assert.ok(child.webContents.focused);
+  assert.equal(views.has(child), true);
+  runtime.updatePopupSurface(popup.pageId, { x: 10, y: 20, width: 500, height: 300 });
+  assert.deepEqual(child.bounds, { x: 20, y: 40, width: 780, height: 560 });
+  assert.equal(child.visible, true);
+  assert.throws(
+    () => runtime.updatePopupSurface(popup.pageId, { x: NaN, y: 0, width: 1, height: 1 }),
+    /browser_denied/,
+  );
+  runtime.updatePopupSurface(popup.pageId, null);
+  assert.equal(child.visible, false);
+  runtime.activate('parent');
+  child.webContents.emit('focus');
+  assert.equal(runtime.state().activeByWorkflow.workflow, popup.pageId);
+
+  const agent = (runtime as unknown as { runner: { run: () => Promise<unknown> } }).runner;
+  const originalRun = agent.run;
+  agent.run = async () => {
+    child.webContents.close();
+    throw new Error('Target closed during click');
+  };
+  try {
+    const clicked = await runtime.runAgentCommand('workflow', popup.pageId, ['click', '#confirm']);
+    assert.equal(clicked.page.pageId, 'parent');
+    assert.equal((clicked.result as { popup_closed: boolean }).popup_closed, true);
+  } finally {
+    agent.run = originalRun;
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(runtime.get(popup.pageId), null);
+  assert.equal(runtime.state().activeByWorkflow.workflow, 'parent');
+  assert.equal(contents.focused, true);
+
+  const second = new PopupView(new Contents(12, 'https://example.com/vendors'));
+  internals.bindPopupView(page, second, second.webContents.url);
+  const nested = new PopupView(new Contents(13, 'https://example.com/nested'));
+  const secondPage = await runtime.resolvePage(
+    'workflow',
+    runtime.state().activeByWorkflow.workflow,
+    false,
+  );
+  internals.bindPopupView(secondPage, nested, nested.webContents.url);
+  assert.equal(runtime.list('workflow').length, 3);
+  await runtime.close('parent');
+  assert.ok(second.webContents.destroyed && nested.webContents.destroyed);
+  assert.equal(views.size, 0);
+  assert.equal(runtime.list('workflow').length, 0);
+  assert.equal(runtime.state().activeByWorkflow.workflow, undefined);
+
+  const stale = new PopupView(new Contents(14, 'https://example.com/stale'));
+  assert.throws(
+    () => internals.bindPopupView(page, stale, stale.webContents.url),
+    /browser_stale_ref/,
+  );
+  assert.equal(stale.webContents.destroyed, true);
+});
+
+test('nested popup pages are displayed as browser tabs', () => {
+  const previous = browserStateStore.getSnapshot();
+  const base: BrowserPageInfo = {
+    pageId: 'first',
+    workflowId: 'workflow',
+    workflowName: 'Agent',
+    mode: 'shared',
+    url: 'https://example.com/first',
+    title: 'First',
+    partition: 'persist:test',
+    generation: 0,
+    loading: 'idle',
+    canGoBack: false,
+    canGoForward: false,
+  };
+  const store = browserStateStore as unknown as { set: (state: typeof previous) => void };
+  store.set({
+    enabled: true,
+    activeByWorkflow: { workflow: 'nested' },
+    popupRequests: [],
+    pages: [
+      base,
+      { ...base, pageId: 'second', url: 'https://example.com/second', title: 'Second' },
+      { ...base, pageId: 'popup', mode: 'popup', openerPageId: 'second' },
+      {
+        ...base,
+        pageId: 'nested',
+        mode: 'popup',
+        openerPageId: 'popup',
+        url: 'https://example.com/nested',
+      },
+    ],
+  });
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(BrowserPane, {
+        workflowId: 'workflow',
+        workflowName: 'Agent',
+        selection: null,
+        onStartSelection: () => {},
+        onSurface: () => {},
+      }),
+    );
+    assert.match(html, /value="https:\/\/example.com\/nested"/);
+  } finally {
+    store.set(previous);
+  }
 });
 
 test('account partition is stable per server/user without exposing account ids', () => {
@@ -281,7 +515,11 @@ test('an agent-created shared page requests visible browser UI', async () => {
   } as unknown as BrowserRuntime;
   const provider = new BrowserToolProvider(fakeRuntime);
   const revealed: string[] = [];
-  provider.configure(true, () => [], (page) => revealed.push(page.pageId));
+  provider.configure(
+    true,
+    () => [],
+    (page) => revealed.push(page.pageId),
+  );
 
   await provider.callTool(
     BROWSER_TABS_TOOL,
@@ -325,7 +563,11 @@ test('BrowserNavigate wait: 로드 상태·URL·글을 agent-browser 플래그�
   // 위치 인자는 밀리초 아니면 선택자 — "load" 를 그대로 넘기면 <load> 요소를 25초 기다리다 실패했다.
   assert.deepEqual(browserWaitCommand('load'), ['wait', '--load', 'load']);
   assert.deepEqual(browserWaitCommand('NetworkIdle'), ['wait', '--load', 'networkidle']);
-  assert.deepEqual(browserWaitCommand('https://www.bizinfo.go.kr/web/*'), ['wait', '--url', 'https://www.bizinfo.go.kr/web/*']);
+  assert.deepEqual(browserWaitCommand('https://www.bizinfo.go.kr/web/*'), [
+    'wait',
+    '--url',
+    'https://www.bizinfo.go.kr/web/*',
+  ]);
   assert.deepEqual(browserWaitCommand('**/search.do'), ['wait', '--url', '**/search.do']);
   assert.deepEqual(browserWaitCommand('text: 검색 결과'), ['wait', '--text', '검색 결과']);
   // 밀리초·선택자는 예전처럼 위치 인자, 값이 없으면 1초.

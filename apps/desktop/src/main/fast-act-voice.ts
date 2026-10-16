@@ -51,6 +51,22 @@ const PAGE_SCRIPT_MS = 1_500;
 const NOTICE_SETTLE_MS = 250;
 /** 한 지시에서 닫는 알림창 수 상한 — 닫을 때마다 새 알림이 뜨는 화면에서 멈추지 않게. */
 const NOTICE_MAX = 3;
+/** 열린 선택 목록의 항목 — 목록을 연 뒤의 지시는 이 중에서 고른다. */
+const OPTION_ROLES = new Set(['option', 'menuitem', 'menuitemradio', 'menuitemcheckbox']);
+const LIST_LAYER_ROLES = new Set([...OPTION_ROLES, 'listbox', 'menu', 'group', 'separator', 'presentation', 'none']);
+/**
+ * 화면에 열린 선택 목록만 남았나 — 선택 상자(MUI Select 등)가 목록을 열면 나머지 화면을 aria-hidden 으로 가려
+ * 스냅샷에 목록과 항목만 남는다(10/16 BO: 이 상태로 다음 지시 2개가 목록 자체를 눌렀다).
+ */
+const listLayer = (refs: ElementRefs): boolean => {
+  const roles = Object.values(refs).map((r) => r.role);
+  return roles.some((r) => OPTION_ROLES.has(r)) && roles.every((r) => LIST_LAYER_ROLES.has(r));
+};
+/**
+ * 선택 상자를 연 뒤 목록 항목을 고르는 확신 하한 — 값을 말하지 않은 지시("구매연령 선택해줘")에도 모델은 아무
+ * 항목에나 0.36~0.61 을 준다(10/16 BO). 값을 말한 지시는 0.99 이상("성인으로" → 만 19세 이상 0.989, "5일로" 0.999).
+ */
+const CHOOSE_PICK = 0.85;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
@@ -130,6 +146,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private dismissed: string | null = null;
   /** 이번 지시에서 닫은 알림창 문구 — 다음 실행 기록에 붙인다. */
   private noticed: string[] = [];
+  /** 이번 지시에서 열린 선택 목록을 이미 닫았나 — 한 번만. */
+  private listClosed = false;
   /** 실행 직전 이 에이전트의 탭 — 누른 링크가 새 탭을 열었는지 볼 때 쓴다. */
   private tabsAtAct = new Set<string>();
 
@@ -358,6 +376,52 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return textFromWordAnswers(whole, wa, offset)?.replace(/[.,!?。…]+$/, '') || null;
   }
 
+  /** 열린 선택 목록을 닫는다(Escape) — 닫았으면 화면을 다시 읽게 한다. */
+  private async closeList(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<boolean> {
+    try {
+      await getBrowserRuntime().runAgentCommand(this.workflowId, page.pageId, ['press', 'Escape'], 10_000);
+    } catch {
+      return false;
+    }
+    this.version++;
+    this.snap = null;
+    await waitSettled(page.pageId, page);
+    this.version++;
+    this.snap = null;
+    this.dismissed = 'Escape';
+    diag(SCOPE, 'dismiss-overlay', { closed: 'Escape', list: true });
+    return true;
+  }
+
+  /**
+   * 선택 상자를 눌러 열린 목록에서 말한 값의 항목을 누른다("구매연령 성인으로 바꿔줘"). 목록이 안 열렸거나 고를 확신이
+   * 낮으면(값을 말하지 않음) null — 목록은 열어 두고, 다음 지시가 항목을 고르거나 목록을 닫는다.
+   */
+  private async chooseAfterOpen(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, th: Thresholds): Promise<VoiceAction | null> {
+    let s = await this.snapshot(true).catch(() => null);
+    // 목록은 펼치는 애니메이션 뒤에 잡히기도 한다 — 없으면 잠깐 뒤 한 번 더 읽는다.
+    if (s && !listLayer(s.snap.refs)) {
+      await new Promise((r) => setTimeout(r, 300));
+      s = await this.snapshot(true).catch(() => null);
+    }
+    if (!s || !listLayer(s.snap.refs)) return null;
+    const options = Object.fromEntries(Object.entries(s.snap.refs).filter(([, r]) => OPTION_ROLES.has(r.role)));
+    const origin = originOf(s.page.url);
+    const t0 = now();
+    const pick = await pickElement(post, text, origin, options, this.screenOf(origin, s.snap.refs));
+    diag(SCOPE, 'choose-after-open', { text, pick: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
+    if (!pick || pick.confidence < Math.max(th.pick, CHOOSE_PICK)) return null;
+    const element = s.snap.refs[pick.ref];
+    this.beforeAct(s.page);
+    const tAct = now();
+    try {
+      await getBrowserRuntime().runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${pick.ref}`], 10_000, s.snap.gen);
+    } catch {
+      return null;
+    }
+    return this.record(text, element, 'click', null, th, tAct - t0, now() - tAct, s.page, pick, s.snap.ms);
+  }
+
   /**
    * 입력 요청인데 입력칸이 접혀 있어 여는 버튼("검색창 열기", 돋보기)을 눌렀으면 — 열린 화면에서 입력칸을 골라
    * 마저 넣는다. 열린 칸이 없거나 넣을 글자를 못 찾으면 아무것도 하지 않는다(누른 것은 이미 기록됨).
@@ -480,6 +544,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
     this.deciding++;
     this.noticed = [];
+    this.listClosed = false;
+    this.dismissed = null;
     try {
       const o = await this.handleOnce(text, th, guard, abort, utterance);
       // 판단에 쓴 스냅샷이 그사이 바뀌었으면(요소 번호 만료) 화면을 새로 읽어 한 번만 다시 판단한다.
@@ -563,7 +629,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
         all: scr?.all.length,
         names: Object.entries(snap.refs).map(([k, v]) => `${k}:${v.role}:${(v.name ?? '').slice(0, 14)}`).join(' | '),
         top: pick?.top,
+        cls: { action: cls.action, text: cls.text },
       });
+    }
+    // 앞 지시가 연 선택 목록만 보이는데 이 지시는 목록 항목을 고르지 않는다 — 목록을 닫고 뒤 화면으로 다시 판단한다.
+    const option = !!pick && pick.confidence >= th.pick && OPTION_ROLES.has(snap.refs[pick.ref]?.role ?? '');
+    if (!th.partial && !option && !this.listClosed && listLayer(snap.refs)) {
+      this.listClosed = true;
+      if (await this.closeList(page)) return this.handleOnce(text, th, guard, abort, utterance);
     }
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     const ch = chrome[pick.ref];
@@ -600,6 +673,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const ref = `@${pick.ref}`;
     this.beforeAct(page);
     const tAct = now();
+    let opened = false;
     try {
       if (action === 'click') {
         try {
@@ -613,22 +687,33 @@ export class BrowserVoiceAgent implements VoiceAgent {
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
         }
       } else {
-        await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
-        if (action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
+        try {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
+        } catch (err) {
+          // 글자를 받지 않는 선택 상자(목록이나 찾기 팝업을 여는 상자) — 눌러 열고 아래에서 값을 고른다.
+          if (element.role !== 'combobox') throw err;
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+          opened = true;
+        }
+        if (!opened && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
       }
     } catch (err) {
       this.version++;
       this.snap = null;
       return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
     }
-    await this.record(text, element, action, typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    const done = opened ? 'click' : action;
+    await this.record(text, element, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    // 선택 상자를 열었고 말에 고를 값이 있다("구매연령 성인으로 바꿔줘") — 열린 목록에서 그 항목을 누른다.
+    const chosen = done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th) : null;
     // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.
-    const typedAfter = action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    const typedAfter = !chosen && action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    const after = chosen ?? typedAfter;
     return {
       acted: true,
-      kind: typedAfter ? 'type' : action === 'click' ? 'press' : 'type',
-      target: typedAfter?.label ?? label,
-      text: (typedAfter?.text ?? typed) ?? undefined,
+      kind: typedAfter ? 'type' : done === 'click' ? 'press' : 'type',
+      target: after?.label ?? label,
+      text: (typedAfter?.text ?? (opened ? null : typed)) ?? undefined,
       ms: now() - t0,
       effect: 'ok',
     };

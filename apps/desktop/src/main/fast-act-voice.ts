@@ -33,6 +33,7 @@ import {
   FIELD_LABEL_SCRIPT,
   editableAsTextbox,
   checkOf,
+  itemOf,
   labelClickables,
   labelFields,
   refOrder,
@@ -79,6 +80,16 @@ const squash = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const currentValue = (name: string, label?: string): string => {
   const n = squash(name);
   return label && n.startsWith(label) ? n.slice(label.length).trim() : n;
+};
+/**
+ * 같은 항목(표 행과 그 셀)인 상위 후보의 확률을 합친다(itemOf) — 고른 것이 항목·셀이 아니거나 확신도를 믿을 근거가
+ * 없으면(0) 그대로.
+ */
+const pooledPick = <P extends { ref: string; confidence: number; top: Array<[string, number]> }>(pick: P, items: Record<string, string>): P => {
+  const item = items[pick.ref];
+  if (!item || pick.confidence <= 0) return pick;
+  const confidence = pick.top.reduce((sum, [label, p]) => (items[label.split(' ')[0]] === item ? sum + p : sum), 0);
+  return confidence > pick.confidence ? { ...pick, confidence: Math.min(1, confidence) } : pick;
 };
 /** 탭이 닫혔나 — 닫히는 중이면 잠깐 기다려 한 번 더 본다. */
 const closedTab = async (pageId: string): Promise<boolean> => {
@@ -160,6 +171,8 @@ type Snap = {
   labels: Record<string, string>;
   /** 항목(트리 항목·행)별 그 항목을 고르는 체크박스(checkOf). */
   checks: Record<string, { ref: string; checked: boolean }>;
+  /** 항목과 그 안의 셀 → 항목(itemOf). */
+  items: Record<string, string>;
 };
 
 export class BrowserVoiceAgent implements VoiceAgent {
@@ -254,7 +267,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const boxes = labelClickables(named.refs, data?.snapshot ?? '');
         const labels = { ...named.labels, ...boxes.labels };
         const checks = checkOf(data?.snapshot ?? '');
-        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels, checks };
+        const items = itemOf(data?.snapshot ?? '');
+        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;
@@ -674,7 +688,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       ),
     );
     const candidates = wantsType && Object.keys(typable).length ? typable : pickable;
-    const pick = await pickElement(post, text, origin, candidates, scr);
+    const picked = await pickElement(post, text, origin, candidates, scr);
+    const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {
       diag(SCOPE, 'debug-screen', {
         text,
@@ -686,6 +701,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
         all: scr?.all.length,
         names: Object.entries(snap.refs).map(([k, v]) => `${k}:${v.role}:${(v.name ?? '').slice(0, 14)}`).join(' | '),
         top: pick?.top,
+        ...(pick && picked && pick.confidence !== picked.confidence ? { pooled: Number(pick.confidence.toFixed(3)) } : {}),
         cls: { action: cls.action, text: cls.text },
       });
     }
@@ -720,10 +736,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (DANGEROUS_REQUEST.test(text) || DANGEROUS.test(element.name ?? '')) {
       return no('되돌릴 수 없을 수 있는 동작 — 서버로', pick.top);
     }
-    // 항목을 고르라는(고른 것을 풀라는) 말인데 그 항목 안에 고르는 체크박스가 있으면 체크박스를 누른다 — 항목 이름은
-    // 펼치기만 하는 트리가 있다(10/16 BO 전시카테고리 찾기, checkOf).
+    // 항목(또는 그 셀)을 고르라는(고른 것을 풀라는) 말인데 그 항목 안에 고르는 체크박스가 있으면 체크박스를 누른다 —
+    // 항목 이름은 펼치기만 하는 트리가 있다(10/16 BO 전시카테고리 찾기, checkOf·itemOf).
     const said = withoutLabel(text, snap.labels[pick.ref]);
-    const check = action === 'click' ? snap.checks[pick.ref] : undefined;
+    const check = action === 'click' ? snap.checks[snap.items[pick.ref] ?? pick.ref] : undefined;
     const toggles = !!check && (UNSELECT_WORD.test(said) ? check.checked : !check.checked && SELECT_WORD.test(said));
     const acted = toggles && check ? { role: snap.refs[check.ref]?.role ?? 'checkbox', name: element.name } : element;
     const label = elementLabel(acted);

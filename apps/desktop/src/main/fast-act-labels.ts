@@ -211,6 +211,32 @@ export function checkOf(snapshotText: string): Record<string, { ref: string; che
   return out;
 }
 
+/** 항목 안에서 항목 자체를 가리키는 칸 — 표의 셀(누르는 버튼·링크는 항목과 다른 일을 한다). */
+const ITEM_PARTS = new Set(['gridcell', 'cell', 'rowheader']);
+
+/**
+ * 항목(트리 항목·표 행·목록 항목)과 그 안의 셀을 항목 번호로 — 스냅샷 글만으로. 하위 항목 줄이 나오기 전까지.
+ *
+ * 둘은 같은 것을 가리킨다. "삼성전자 골라줘" 에 판단 모델이 행 "1 11371 삼성전자 사용" 과 그 행의 셀 "삼성전자"
+ * 에 확률을 0.49·0.51 로 나눠 어느 쪽도 확신 하한을 못 넘었다(10/16 BO 브랜드 찾기). 빠른 조작은 같은 항목의
+ * 확률을 합치고, 항목을 고르라는 말이면 셀을 골랐어도 그 항목의 체크박스(checkOf)를 누른다.
+ */
+export function itemOf(snapshotText: string): Record<string, string> {
+  const parsed = snapshotText.split('\n').map(snapLine);
+  const out: Record<string, string> = {};
+  parsed.forEach((l, i) => {
+    if (!l?.ref || !CHECK_HOLDERS.has(l.role)) return;
+    out[l.ref] = l.ref;
+    for (let j = i + 1; j < parsed.length; j++) {
+      const d = parsed[j];
+      if (!d) continue;
+      if (d.depth <= l.depth || CHECK_HOLDERS.has(d.role)) break;
+      if (d.ref && ITEM_PARTS.has(d.role)) out[d.ref] = l.ref;
+    }
+  });
+  return out;
+}
+
 /**
  * 글 편집 영역(contenteditable)을 입력칸(textbox)으로 — 상품상세 같은 편집기 본문은 스냅샷에
  * `generic [ref=e353] editable [contenteditable]` 로만 나와 입력 요청의 후보에서 빠졌다(10/16 BO Jodit).

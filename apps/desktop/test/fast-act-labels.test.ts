@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   editableAsTextbox,
   checkOf,
+  itemOf,
   labelClickables,
   labelFields,
   refOrder,
@@ -220,4 +221,34 @@ test('항목마다 그 항목을 고르는 체크박스 — 하위 항목 전까
     e47: { ref: 'e66', checked: true },
   });
   assert.deepEqual(checkOf(''), {});
+});
+
+test('표 행과 그 행의 셀은 같은 항목 번호로 — 셀 안의 고르는 상자나 다음 행은 넣지 않는다', () => {
+  const snapshot = [
+    '- grid [ref=e1]',
+    '  - columnheader "브랜드명" [ref=e20] clickable [cursor:pointer, onclick]',
+    '  - row "1 11371 삼성전자 사용" [ref=e22] clickable [onclick]',
+    '    - gridcell "1" [ref=e45] clickable [onclick]',
+    '    - gridcell [ref=e46] clickable [onclick]',
+    '      - generic [ref=e120] clickable [cursor:pointer, onclick]',
+    '        - radio [checked=false, ref=e135]',
+    '    - gridcell "삼성전자" [ref=e48] clickable [onclick]',
+    '    - button "수정" [ref=e60]',
+    '  - row "2 11372 삼성카드 사용" [ref=e23] clickable [onclick]',
+    '    - gridcell "삼성카드" [ref=e53] clickable [onclick]',
+    '- treeitem "가전디지털" [ref=e17]',
+    '  - checkbox [checked=false, ref=e44]',
+    '  - treeitem "TV" [ref=e18]',
+  ].join('\n');
+  assert.deepEqual(itemOf(snapshot), {
+    e22: 'e22',
+    e45: 'e22',
+    e46: 'e22',
+    e48: 'e22',
+    e23: 'e23',
+    e53: 'e23',
+    e17: 'e17',
+    e18: 'e18',
+  });
+  assert.deepEqual(checkOf(snapshot), { e22: { ref: 'e135', checked: false }, e17: { ref: 'e44', checked: false } });
 });

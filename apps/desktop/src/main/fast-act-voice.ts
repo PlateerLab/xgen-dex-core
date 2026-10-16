@@ -438,7 +438,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
    * 선택 상자를 눌러 열린 목록에서 말한 값의 항목을 누른다("구매연령 성인으로 바꿔줘"). 목록이 안 열렸거나 고를 확신이
    * 낮으면(값을 말하지 않음) null — 목록은 열어 두고, 다음 지시가 항목을 고르거나 목록을 닫는다.
    */
-  private async chooseAfterOpen(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, th: Thresholds): Promise<VoiceAction | null> {
+  private async chooseAfterOpen(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, th: Thresholds, current: string): Promise<VoiceAction | null> {
     let s = await this.snapshot(true).catch(() => null);
     // 목록은 펼치는 애니메이션 뒤에 잡히기도 한다 — 없으면 잠깐 뒤 한 번 더 읽는다.
     if (s && !listLayer(s.snap.refs)) {
@@ -453,6 +453,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     diag(SCOPE, 'choose-after-open', { text, pick: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
     if (!pick || pick.confidence < Math.max(th.pick, CHOOSE_PICK)) return null;
     const element = s.snap.refs[pick.ref];
+    // 지금 값을 다시 고르는 것은 할 일이 아니다 — "배송비정책 선택해줘" 의 '선택' 은 자리표시 항목 "선택" 과 글자가 같을
+    // 뿐 고르라는 값이 아니었다(10/16 BO: 1.0). 목록은 열어 둔다.
+    if (squash(element.name ?? '') === current) return null;
     this.beforeAct(s.page);
     const tAct = now();
     try {
@@ -763,7 +766,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const done = opened ? 'click' : action;
     await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
     // 선택 상자를 열었고 말에 고를 값이 있다("구매연령 성인으로 바꿔줘") — 열린 목록에서 그 항목을 누른다.
-    const chosen = done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th) : null;
+    const chosen =
+      done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th, currentValue(element.name ?? '', snap.labels[pick.ref])) : null;
     // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.
     const typedAfter = !chosen && action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
     const after = chosen ?? typedAfter;

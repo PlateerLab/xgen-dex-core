@@ -73,6 +73,18 @@ const CHOOSE_PICK = 0.85;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
+const squash = (s: string): string => s.replace(/\s+/g, ' ').trim();
+/** 선택 상자의 지금 값 — 이름에서 앞의 칸 이름을 뗀 것(labelFields 는 "칸 이름 값" 으로 붙인다). */
+const currentValue = (name: string, label?: string): string => {
+  const n = squash(name);
+  return label && n.startsWith(label) ? n.slice(label.length).trim() : n;
+};
+/** 탭이 닫혔나 — 닫히는 중이면 잠깐 기다려 한 번 더 본다. */
+const closedTab = async (pageId: string): Promise<boolean> => {
+  if (!getBrowserRuntime().get(pageId)) return true;
+  await new Promise((r) => setTimeout(r, 300));
+  return !getBrowserRuntime().get(pageId);
+};
 
 /** 글자 넣기를 시키는 말 — 중간 인식에서 넣을 글자가 끝났는지 볼 때 쓴다. */
 const TYPING_WORD = /(입력|검색|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
@@ -744,7 +756,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     } catch (err) {
       this.version++;
       this.snap = null;
-      return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
+      // 누른 것이 그 탭을 닫았다(새 탭으로 뜬 팝업의 [닫기] → window.close) — 명령 도구가 탭과 같이 끝나 실패로
+      // 돌아온다(10/16 BO 브랜드 찾기: "agent-browser exited null"). 눌렀으니 실행한 것으로 친다.
+      if (action !== 'click' || !(await closedTab(page.pageId))) return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
     }
     const done = opened ? 'click' : action;
     await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);

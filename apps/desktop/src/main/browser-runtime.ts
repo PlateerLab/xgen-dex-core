@@ -96,12 +96,13 @@ const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown
 async function focusGuest(contents: WebContents): Promise<void> {
   const host = (contents as WebContents & { hostWebContents?: WebContents }).hostWebContents;
   if (host && !host.isDestroyed()) {
-    // 임베더 초점이 이미 이 <webview> 여도 게스트 초점은 다른 탭에 남아 있을 수 있다 — 새 탭(페이지가 연 팝업)은
-    // 붙기 전에 초점을 받아, 숨은 원래 탭이 초점을 쥔 채 입력이 사라졌다(10/16 BO 브랜드 찾기 팝업). 그러면 다시 준다.
+    // 임베더 초점을 이 <webview> 로 옮겨도 게스트 초점은 다른 탭에 남을 수 있다 — 페이지가 연 새 탭(팝업)이 뜨면
+    // 숨은 원래 탭이 게스트 초점을 쥔 채 남아 입력이 사라졌다(10/16 BO 브랜드 찾기 팝업). focus() 만으로는 안 넘어가고
+    // blur() 뒤 focus() 를 해야 넘어갔다(실측). 게스트에 초점이 없으면 그렇게 한다.
     const guestFocused = await contents.executeJavaScript('document.hasFocus()', true).catch(() => true);
     await host
       .executeJavaScript(
-        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (!w) return false; if (document.activeElement !== w) w.focus(); else if (${!guestFocused}) { w.blur(); w.focus(); } return true; })()`,
+        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (!w) return false; if (document.activeElement !== w) w.focus(); if (${!guestFocused}) { w.blur(); w.focus(); } return true; })()`,
         true,
       )
       .catch(() => false);
@@ -1143,13 +1144,6 @@ export class BrowserRuntime {
       this.popupLinks.delete(id);
       this.closePopupPeer(this.pages.get(link.popupPageId === pageId ? link.openerPageId : link.popupPageId), id);
     }
-    await runtime.automationReset;
-    await this.runner.cancelPage(pageId);
-    await runtime.proxy?.stop();
-    runtime.proxy = null;
-    const win = runtime.window;
-    runtime.window = null;
-    if (win && !win.isDestroyed()) win.destroy();
     const next = [...this.pages.values()].find(
       (page) => page.info.workflowId === runtime.info.workflowId,
     );
@@ -1157,7 +1151,17 @@ export class BrowserRuntime {
       if (next) this.activeByWorkflow.set(runtime.info.workflowId, next.info.pageId);
       else this.activeByWorkflow.delete(runtime.info.workflowId);
     }
+    // 화면에는 바로 알린다 — 아래 정리(명령 도구·CDP 프록시 종료)는 1초 가까이 걸려, 그동안 앱 화면은 닫힌 탭을
+    // 두고 다음 탭은 숨긴(1×1) 채였다. 그 사이 자동 조작이 읽은 화면은 배치가 무너져 칸 이름이 빠졌다(10/16 BO
+    // 찾기 팝업 [적용] 직후).
     this.emit();
+    await runtime.automationReset;
+    await this.runner.cancelPage(pageId);
+    await runtime.proxy?.stop();
+    runtime.proxy = null;
+    const win = runtime.window;
+    runtime.window = null;
+    if (win && !win.isDestroyed()) win.destroy();
   }
 
   allowNextDownload(pageId: string, path: string): void {

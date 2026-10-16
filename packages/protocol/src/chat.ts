@@ -57,8 +57,8 @@ function toRequestBody(req: ChatRequest): Record<string, unknown> {
           })),
         }
       : {}),
-    // 기억 지도를 끈 선택만 보낸다 — 없으면 서버가 에이전트 설정(기본 켜짐)을 따른다.
-    ...(req.memoryMap === false ? { memory_map: false } : {}),
+    // 기억 지도를 켜거나 끈 선택만 보낸다 — 없으면 서버가 에이전트 설정을 따른다.
+    ...(typeof req.memoryMap === 'boolean' ? { memory_map: req.memoryMap } : {}),
   };
 }
 

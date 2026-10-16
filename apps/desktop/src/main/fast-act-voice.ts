@@ -29,12 +29,15 @@ import {
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
+import { FIELD_LABEL_SCRIPT, labelFields, refOrder, withoutLabel, type FieldLabel } from './fast-act-labels';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
 /** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이. */
 const SNAP_TTL_MS = 3_000;
 const SNAP_REFRESH_MS = 1_000;
+/** 칸 이름 읽기(페이지 스크립트) 한도 — 보통 수 ms(BO 상품 등록 31칸 1ms), 알림창이 페이지를 막으면 포기하고 이름 없이 간다. */
+const LABEL_TIMEOUT_MS = 1_500;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
@@ -93,7 +96,8 @@ export type VoiceAction = {
   dismissed?: string;
 };
 
-type Snap = { at: number; pageId: string; url: string; refs: ElementRefs; gen: number; ms: number };
+/** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
+type Snap = { at: number; pageId: string; url: string; refs: ElementRefs; gen: number; ms: number; labels: Record<string, string> };
 
 export class BrowserVoiceAgent implements VoiceAgent {
   readonly actions: VoiceAction[] = [];
@@ -167,11 +171,19 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!refresh && fresh(this.snap)) return { snap: this.snap, page };
     const t = now();
     const v = this.version;
-    const p = getBrowserRuntime()
+    const runtime = getBrowserRuntime();
+    // 칸 이름이 연결되지 않은 입력칸의 칸 이름 — 스냅샷과 같이 읽는다(수 ms 라 스냅샷 시간 안에 끝난다).
+    const fields = runtime
+      .pageScript<FieldLabel[]>(this.workflowId, page.pageId, FIELD_LABEL_SCRIPT, LABEL_TIMEOUT_MS)
+      .catch(() => null);
+    const p = runtime
       .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
-      .then((run): Snap => {
-        const refs = ((run.result as { data?: { refs?: ElementRefs } } | undefined)?.data?.refs ?? {}) as ElementRefs;
-        return { at: now(), pageId: page.pageId, url: page.url, refs, gen: run.page.generation, ms: now() - t };
+      .then(async (run): Promise<Snap> => {
+        const data = (run.result as { data?: { refs?: ElementRefs; snapshot?: string } } | undefined)?.data;
+        const raw = (data?.refs ?? {}) as ElementRefs;
+        const found = await fields;
+        const named = Array.isArray(found) ? labelFields(raw, refOrder(data?.snapshot ?? ''), found) : { refs: raw, labels: {} };
+        return { at: now(), pageId: page.pageId, url: page.url, refs: named.refs, gen: run.page.generation, ms: now() - t, labels: named.labels };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;
@@ -333,7 +345,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const element = s.snap.refs[pick.ref];
     const typed = await this.typedText(post, text, origin, scr, utterance);
     if (!typed) return null;
-    const action: ActionKind = SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : 'type';
+    const action: ActionKind = SEARCH_WORD.test(withoutLabel(text, s.snap.labels[pick.ref])) && isSearchField(element) ? 'type_submit' : 'type';
     const runtime = getBrowserRuntime();
     this.beforeAct(s.page);
     const tAct = now();
@@ -499,6 +511,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
         url: page.url,
         snapAgeMs: Math.round(now() - snap.at),
         refs: Object.keys(snap.refs).length,
+        labeled: Object.keys(snap.labels).length,
         cands: Object.keys(candidates).length,
         all: scr?.all.length,
         names: Object.entries(snap.refs).map(([k, v]) => `${k}:${v.role}:${(v.name ?? '').slice(0, 14)}`).join(' | '),
@@ -513,7 +526,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return no(`기다림 wait ${rc} (이름만 — 확신 ${pick.confidence.toFixed(2)})`, pick.top);
     }
     const resolved = resolveAction(cls, element);
-    const action = resolved.action === 'type' && SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : resolved.action;
+    const searching = SEARCH_WORD.test(withoutLabel(text, snap.labels[pick.ref]));
+    const action = resolved.action === 'type' && searching && isSearchField(element) ? 'type_submit' : resolved.action;
     let typed = resolved.text;
     if (action !== 'click') {
       typed = await this.typedText(post, text, origin, scr, utterance);

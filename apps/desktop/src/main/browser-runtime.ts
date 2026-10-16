@@ -937,6 +937,29 @@ export class BrowserRuntime {
     return { ...runtime.info };
   }
 
+  /**
+   * 페이지에서 읽기 전용 스크립트를 실행한다(빠른 조작의 칸 이름 읽기). 알림창 등으로 페이지가 멈추면
+   * timeoutMs 뒤 포기한다.
+   */
+  async pageScript<T>(workflowId: string, pageId: string, code: string, timeoutMs: number): Promise<T> {
+    const runtime = await this.resolvePage(workflowId, pageId, false);
+    const contents = await this.requireConnectedContents(runtime);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        contents.executeJavaScript(code) as Promise<T>,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new BrowserRuntimeError('browser_timeout', '페이지 스크립트가 시간 안에 끝나지 않았습니다.')),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async runAgentCommand(
     workflowId: string,
     pageId: string | undefined,

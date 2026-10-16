@@ -458,8 +458,9 @@ export class ResumableUploader {
               : { name: p.name, value: p.value }),
           };
       const res = await this.dispatch({ method: target.method ?? 'POST', path, query, keep: !!opts.keep, ...req }, opts);
+      // A cross-origin page cannot read the marker unless the gateway exposes it — then the body tells.
       const marker = res.headers.get('x-upload-dispatch');
-      if (marker === 'error' && round === 0) {
+      if ((marker === 'error' || (marker === null && !res.ok)) && round === 0) {
         const code = errorCode(await res.clone().json().catch(() => undefined));
         if (code === 'UPLOAD_NOT_FOUND' || code === 'UPLOAD_INCOMPLETE' || code === 'DISPATCH_INTERRUPTED') {
           // Staged chunks expired (or the gateway restarted mid-dispatch): upload again and resend once.
@@ -507,13 +508,21 @@ export class ResumableUploader {
     }
     if (!res) throw new UploadFailedError('dispatch request failed');
 
-    while (res.status === 202 && res.headers.get('x-upload-dispatch') === 'running') {
+    while (res.status === 202 && (await isRunning(res))) {
       if (opts.signal?.aborted) throw abortError();
       await this.sleep(500);
       res = await this.call(`/api/uploads/dispatch/${dispatchId}?wait=30`, { method: 'GET', headers: { ...this.headers(), ...extra, Accept: accept } }, opts.signal, this.timeouts.dispatch);
     }
     return res;
   }
+}
+
+/** The gateway's "still running" answer — by its marker header, or (header hidden by CORS) by its body. */
+async function isRunning(res: Response): Promise<boolean> {
+  const marker = res.headers.get('x-upload-dispatch');
+  if (marker !== null) return marker === 'running';
+  const body = (await res.clone().json().catch(() => undefined)) as { state?: unknown; dispatch_id?: unknown } | undefined;
+  return body?.state === 'running' && typeof body.dispatch_id === 'string';
 }
 
 function splitPath(pathWithQuery: string): [string, string | undefined] {

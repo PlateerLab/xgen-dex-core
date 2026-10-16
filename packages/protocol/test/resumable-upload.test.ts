@@ -103,7 +103,7 @@ function fakeGateway(opts: FakeOpts = {}) {
       if (running > 0) {
         running--;
         results.set(req.dispatch_id, done);
-        return json(202, { state: 'running' }, { 'x-upload-dispatch': 'running' });
+        return json(202, { dispatch_id: req.dispatch_id, state: 'running' }, { 'x-upload-dispatch': 'running' });
       }
       return done;
     }
@@ -343,4 +343,19 @@ test('the caller can still cancel while a request is waiting', async () => {
   const p = up.send({ path: '/api/a/b' }, { parts: [{ name: 'file', source: bytesSource(new Uint8Array(1)) }] }, { signal: ctl.signal });
   setTimeout(() => ctl.abort(), 10);
   await assert.rejects(p, (e: Error) => e.name === 'AbortError');
+});
+
+test('cross-origin: the "running" marker header is hidden, the 202 body still says so', async () => {
+  const gw = fakeGateway({ dispatchRunning: 1 });
+  // A browser hides non-exposed headers on cross-origin responses.
+  const hide = async (u: string, i?: RequestInit) => {
+    const r = await gw.fetchImpl(u, i);
+    const h = new Headers(r.headers);
+    h.delete('x-upload-dispatch');
+    return new Response(r.body, { status: r.status, headers: h });
+  };
+  const up = new ResumableUploader({ baseUrl: 'http://gw', fetch: hide, sleep: noSleep });
+  const res = await up.send({ path: '/api/x/y' }, { parts: [{ name: 'file', source: bytesSource(new Uint8Array(3)) }] });
+  assert.equal(res.status, 200);
+  assert.ok(gw.log.some((l) => l.startsWith('GET /api/uploads/dispatch/')));
 });

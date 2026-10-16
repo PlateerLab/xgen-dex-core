@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { textFromWordAnswers } from '../src/main/fast-act';
 import { plainNumber } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
@@ -13,6 +14,22 @@ test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () =>
   assert.equal(plainNumber(' 15% '), '15');
   assert.equal(plainNumber('100개'), '100');
   assert.equal(plainNumber('2.5kg'), '2.5');
+  assert.equal(plainNumber('5일'), '5');
+});
+
+test('한글 숫자는 자릿수와 함께일 때 숫자로 바꾼다', () => {
+  assert.equal(plainNumber('이만 원'), '20000');
+  assert.equal(plainNumber('만 팔천 원'), '18000');
+  assert.equal(plainNumber('만 원'), '10000');
+  assert.equal(plainNumber('오천원'), '5000');
+  assert.equal(plainNumber('2만 오천'), '25000');
+  assert.equal(plainNumber('십만'), '100000');
+  assert.equal(plainNumber('1억 2천만'), '120000000');
+  assert.equal(plainNumber('삼백 개'), '300');
+  assert.equal(plainNumber('삼성'), null);
+  assert.equal(plainNumber('삼'), null);
+  assert.equal(plainNumber('이삼만'), null);
+  assert.equal(plainNumber('구매'), null);
 });
 
 test('숫자만이거나 숫자 말이 아니면 null', () => {
@@ -21,7 +38,21 @@ test('숫자만이거나 숫자 말이 아니면 null', () => {
   assert.equal(plainNumber('아이폰 15'), null);
   assert.equal(plainNumber('10 20'), null);
   assert.equal(plainNumber('15일 이내 배송'), null);
-  assert.equal(plainNumber('만 원'), null);
   assert.equal(plainNumber(''), null);
   assert.equal(plainNumber('1만만'), null);
+  assert.equal(plainNumber('1만 2만'), null);
+  assert.equal(plainNumber('3천 2천'), null);
+});
+
+/** 어절마다 두 질문의 '예' 확률 — textWordQuestions 의 답 꼴. */
+const wordAnswers = (ps: number[]) =>
+  Object.fromEntries(ps.flatMap((p, i) => [0, 1].map((j) => [`w${i}_${j}`, { choice: p >= 0.5 ? 'yes' : 'no', probabilities: { yes: p, no: 1 - p } }])));
+
+test('넣을 글자는 수 말과 그 단위를 함께 — 단위만 골랐어도 앞의 수 말까지, 조사는 뗀다', () => {
+  assert.equal(textFromWordAnswers('정상가 이만 원으로 해줘', wordAnswers([0.01, 0.4, 0.95, 0])), '이만 원');
+  assert.equal(textFromWordAnswers('판매가 만 팔천 원으로 해줘', wordAnswers([0.01, 0.3, 0.6, 0.97, 0])), '만 팔천 원');
+  assert.equal(textFromWordAnswers('정상가 20000원으로 해줘', wordAnswers([0.01, 0.97, 0])), '20000원');
+  assert.equal(textFromWordAnswers('집에서 입력해줘', wordAnswers([0.97, 0])), '집');
+  assert.equal(textFromWordAnswers('도로 입력해줘', wordAnswers([0.97, 0])), '도로');
+  assert.equal(textFromWordAnswers('아이폰 15 입력해줘', wordAnswers([0.2, 0.97, 0])), '15');
 });

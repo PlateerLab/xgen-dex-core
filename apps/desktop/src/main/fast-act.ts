@@ -17,6 +17,7 @@
  * state 형식은 학습 데이터와 글자 하나까지 같아야 정확도가 유지된다.
  */
 
+import { plainNumber } from './fast-act-number';
 import {
   MAX_LINES,
   PICK_Q13,
@@ -172,7 +173,10 @@ const TYPED_PARTICLES = PARTICLES.filter((p) => p !== '이' && p !== '가');
 
 function stripParticle(word: string, particles: string[] = PARTICLES): string {
   for (const p of particles) {
-    if (word.length > p.length + 1 && word.endsWith(p)) return word.slice(0, -p.length);
+    if (!word.endsWith(p)) continue;
+    // 한 글자 조사는 두 글자 넘는 말에서만("도로"·"가을" 은 그대로), 두 글자 넘는 조사는 한 글자 말에도 붙는다
+    // ("원으로" → "원"). 긴 조사가 맞는데 못 떼면 그 꼬리('으로' 의 '로')도 떼지 않는다 — "원으로" 를 "원으" 로 넣었다.
+    return word.length > p.length + (p.length === 1 ? 1 : 0) ? word.slice(0, -p.length) : word;
   }
   return word;
 }
@@ -241,6 +245,9 @@ export function textFromWordAnswers(instruction: string, answers: Record<string,
   const quoteEnd = (w: string): boolean => /(이라고|라고)$/.test(w);
   while (s > 0 && p[s - 1] >= SPAN_MIN && !quoteEnd(ws[s - 1])) s--;
   while (e < ws.length && p[e] >= SPAN_MIN && !quoteEnd(ws[e - 1])) e++;
+  // 수 말과 그 단위는 한 덩어리다 — 모델이 "이만 원으로" 에서 "원으로" 만 고르기도 했다(10/16 BO 정상가). 앞 어절과
+  // 합쳐 수 말이 되면 넓힌다(plainNumber 가 읽는 꼴).
+  while (s > 0 && plainNumber(stripParticle([ws[s - 1], ...ws.slice(s, e)].join(' '), TYPED_PARTICLES)) !== null) s--;
   const span = ws.slice(s, e);
   span[span.length - 1] = stripParticle(span[span.length - 1], TYPED_PARTICLES);
   return span.join(' ') || null;

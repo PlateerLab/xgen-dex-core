@@ -314,3 +314,33 @@ test('a React Native {uri} file uses the host source, or goes direct without one
   await noSource.upload('/api/a/b', [{ name: 'file', file: { uri: 'file:///cache/v.mov' }, filename: 'v.mov', type: 'video/quicktime' }]);
   assert.equal(direct.length, 1, 'no chunk protocol without a ranged-read source');
 });
+
+test('a request whose response never starts is abandoned and retried (a stalled link does not hang the upload)', async () => {
+  const gw = fakeGateway({ chunk: 4 });
+  let stalls = 1;
+  const fetchImpl = (url: string, init: RequestInit = {}) => {
+    if (stalls > 0 && (init.method ?? 'GET') === 'PUT') {
+      stalls--;
+      // Never answers; only the abort ends it.
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      });
+    }
+    return gw.fetchImpl(url, init);
+  };
+  const up = new ResumableUploader({ baseUrl: 'http://gw', fetch: fetchImpl, sleep: noSleep, timeouts: { chunk: 20 } });
+  const res = await up.send({ path: '/api/a/b' }, { parts: [{ name: 'file', source: bytesSource(new Uint8Array(6)) }] });
+  assert.equal(res.status, 200);
+  assert.equal(stalls, 0);
+});
+
+test('the caller can still cancel while a request is waiting', async () => {
+  const fetchImpl = (_url: string, init: RequestInit = {}) => new Promise<Response>((_resolve, reject) => {
+    init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  });
+  const up = new ResumableUploader({ baseUrl: 'http://gw-stall', fetch: fetchImpl, sleep: noSleep });
+  const ctl = new AbortController();
+  const p = up.send({ path: '/api/a/b' }, { parts: [{ name: 'file', source: bytesSource(new Uint8Array(1)) }] }, { signal: ctl.signal });
+  setTimeout(() => ctl.abort(), 10);
+  await assert.rejects(p, (e: Error) => e.name === 'AbortError');
+});

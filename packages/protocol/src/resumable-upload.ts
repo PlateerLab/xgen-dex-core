@@ -102,6 +102,13 @@ export interface ResumableUploaderOptions {
   retries?: number;
   /** Test hook: how to wait between retries. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * How long one request may wait for its response **headers** before it is abandoned and retried
+   * (a stalled connection must not hang a 1 GiB upload forever). Bodies (SSE) are never cut.
+   * Defaults: JSON calls 60 s, a chunk 10 min (slow links), the dispatch 5 min (the gateway answers
+   * 202 after its own wait, `UPLOAD_DISPATCH_WAIT_SECS` 120 s).
+   */
+  timeouts?: { call?: number; chunk?: number; dispatch?: number };
 }
 
 export interface ResumableSendOptions {
@@ -184,6 +191,7 @@ export class ResumableUploader {
   private readonly store?: ResumeStore;
   private readonly retries: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly timeouts: { call: number; chunk: number; dispatch: number };
 
   constructor(opts: ResumableUploaderOptions) {
     this.base = (opts.baseUrl || '').replace(/\/+$/, '');
@@ -193,6 +201,11 @@ export class ResumableUploader {
     this.store = opts.store;
     this.retries = Math.max(1, opts.retries ?? 6);
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.timeouts = {
+      call: opts.timeouts?.call ?? 60_000,
+      chunk: opts.timeouts?.chunk ?? 600_000,
+      dispatch: opts.timeouts?.dispatch ?? 300_000,
+    };
     if (!this.fetchImpl) throw new Error('ResumableUploader: no fetch implementation available');
   }
 
@@ -206,13 +219,35 @@ export class ResumableUploader {
     return `${this.base}${path}`;
   }
 
-  /** fetch with retries for transient failures (network, 5xx, 429). Non-transient responses are returned. */
-  private async call(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+  /**
+   * One fetch that gives up if the response headers do not arrive within `timeoutMs` (the body is
+   * not timed — streamed answers keep going). The caller's `signal` still aborts it.
+   */
+  private async fetchWithin(url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    signal?.addEventListener('abort', onAbort);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    try {
+      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (e) {
+      if (timedOut && !signal?.aborted) throw new Error(`request timed out after ${timeoutMs} ms`);
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** fetch with retries for transient failures (network, timeout, 5xx, 429). Non-transient responses are returned. */
+  private async call(path: string, init: RequestInit, signal?: AbortSignal, timeoutMs = this.timeouts.call): Promise<Response> {
     let lastErr: unknown;
     for (let attempt = 0; attempt < this.retries; attempt++) {
       if (signal?.aborted) throw abortError();
       try {
-        const res = await this.fetchImpl(this.url(path), { ...init, signal });
+        const res = await this.fetchWithin(this.url(path), init, timeoutMs, signal);
         const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
         // 502/503 from a gateway without the feature mean "unsupported", not "retry".
         if (transient && !(await this.isUnsupportedResponse(res.clone()))) {
@@ -372,7 +407,7 @@ export class ResumableUploader {
         method: 'PUT',
         headers: { ...this.headers(), 'Content-Type': 'application/octet-stream', 'X-Chunk-Sha256': sha },
         body: bytes as unknown as BodyInit,
-      }, signal);
+      }, signal, this.timeouts.chunk);
       if (res.ok) return;
       const body = await res.json().catch(() => undefined);
       const code = errorCode(body);
@@ -463,7 +498,7 @@ export class ResumableUploader {
     for (let attempt = 0; attempt < this.retries && !res; attempt++) {
       if (opts.signal?.aborted) throw abortError();
       try {
-        res = await this.fetchImpl(target, { method: 'POST', headers, body: payload, signal: opts.signal });
+        res = await this.fetchWithin(target, { method: 'POST', headers, body: payload }, this.timeouts.dispatch, opts.signal);
       } catch (e) {
         if ((e as Error)?.name === 'AbortError' || opts.signal?.aborted) throw abortError();
         // The request may or may not have reached the gateway — the dispatch id makes the retry safe.
@@ -475,7 +510,7 @@ export class ResumableUploader {
     while (res.status === 202 && res.headers.get('x-upload-dispatch') === 'running') {
       if (opts.signal?.aborted) throw abortError();
       await this.sleep(500);
-      res = await this.call(`/api/uploads/dispatch/${dispatchId}?wait=30`, { method: 'GET', headers: { ...this.headers(), ...extra, Accept: accept } }, opts.signal);
+      res = await this.call(`/api/uploads/dispatch/${dispatchId}?wait=30`, { method: 'GET', headers: { ...this.headers(), ...extra, Accept: accept } }, opts.signal, this.timeouts.dispatch);
     }
     return res;
   }

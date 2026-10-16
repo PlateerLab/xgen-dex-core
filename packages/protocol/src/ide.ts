@@ -146,8 +146,10 @@ export class IdeApi {
     return this.http.get(`${base(workflowId)}/ide/file?${new URLSearchParams({ path })}`, { timeoutMs: 60_000 });
   }
 
+  /** 저장 — 본문(base64)이 커질 수 있어 조각 업로드로 보낸다(서버가 받는 요청은 같은 JSON). */
   save(workflowId: string, body: IdeSaveRequest): Promise<IdeSaveResponse> {
-    return this.http.json('PUT', `${base(workflowId)}/ide/file`, body, { timeoutMs: 120_000 });
+    return this.http.uploadBody('PUT', `${base(workflowId)}/ide/file`,
+      new TextEncoder().encode(JSON.stringify(body)), 'application/json', { timeoutMs: 120_000 });
   }
 
   stat(workflowId: string, paths: string[]): Promise<{ entries: Record<string, { kind: string; size?: number; mtime?: number; sha?: string }> }> {

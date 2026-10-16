@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { XgenClient } from '@dex/protocol';
 import { diagLog, loggingFetch } from './diag';
+import { uriSource } from './upload-source';
 
 export interface MobileSession {
   serverUrl: string;
@@ -78,6 +79,8 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
     refreshToken: session.refreshToken,
     fetch: loggingFetch,
     onAuthFailure,
+    // 첨부(`{ uri }`)는 조각으로 올린다 — 1GiB 동영상도 끊기면 이어 올린다.
+    uriSource,
     // 토큰 회전 시 저장분 갱신 — 다음 WS 연결이 새 토큰 헤더를 집는다.
     onTokensRotated: (accessToken, refreshToken) => {
       session.accessToken = accessToken;

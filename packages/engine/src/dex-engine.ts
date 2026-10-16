@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
-import { UNCHECKED_INPUT, XgenClient, type ChatInputCheck, type LiveTurnSnapshot } from '@dex/protocol';
+import { UNCHECKED_INPUT, UPLOAD_MAX_BYTES, XgenClient, type ChatInputCheck, type LiveTurnSnapshot } from '@dex/protocol';
+import { fileSource, readFileHead } from './file-source';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
@@ -727,15 +728,16 @@ export class DexEngine {
     const filePath = resolve(input.path);
     const info = await stat(filePath);
     if (!info.isFile()) throw new DexError('usage_error', `파일이 아닙니다: ${input.path}`);
-    if (info.size > 100 * 1024 * 1024) throw new DexError('usage_error', '첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
-    const bytes = new Uint8Array(await readFile(filePath));
+    if (info.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
     const name = basename(filePath);
-    const detected = detectAttachment(bytes, name);
+    // 형식은 앞부분만 보고 정하고, 본문은 조각 업로드가 범위로 읽는다(통째로 메모리에 올리지 않는다).
+    const detected = detectAttachment(await readFileHead(filePath, 16), name);
+    const source = await fileSource(filePath, { name, type: detected.mimeType });
     const attachmentId = `att-${randomUUID()}`;
     const uploaded = await this.withAuthRetry(input.profile, (client) =>
       client.agentData.workspaceUpload(
         input.workflowId,
-        bytes,
+        source,
         name,
         detected.mimeType,
         input.interactionId,
@@ -753,7 +755,7 @@ export class DexEngine {
       attachment_id: attachmentId,
       name,
       mime_type: detected.mimeType,
-      size: uploaded.size ?? bytes.byteLength,
+      size: uploaded.size ?? source.size,
       sha256: uploaded.sha256,
       workspace_path: uploaded.workspace_path,
     };

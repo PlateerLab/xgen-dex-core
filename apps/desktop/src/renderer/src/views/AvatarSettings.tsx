@@ -239,8 +239,12 @@ export const AvatarSettings: React.FC<{
     async (file: File) => {
       setUploading(true);
       try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const descriptor = await xgen.avatars.uploadAsset(bytes, file.name);
+        // 디스크의 파일(모델 zip)은 main 이 디스크에서 조각으로 올린다 — 큰 zip 을 렌더러 메모리에
+        // 올려 IPC 로 넘기지 않는다. 잘라 낸 사진처럼 메모리에만 있는 파일은 바이트로 보낸다.
+        const ref = xgen.files?.stage?.(file) ?? null;
+        const descriptor = ref && xgen.avatars.uploadStaged
+          ? await xgen.avatars.uploadStaged(ref, file.name).finally(() => xgen.files.release(ref))
+          : await xgen.avatars.uploadAsset(new Uint8Array(await file.arrayBuffer()), file.name);
         setPendingAdd(descriptor); // → 이름 모달 (미리보기 = 로드 테스트)
       } catch {
         say('err', '아바타 업로드에 실패했습니다.');

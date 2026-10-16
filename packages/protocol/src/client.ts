@@ -12,6 +12,18 @@
  * renderer, the main process (electron `net`/undici), Node tests, or a browser.
  */
 
+import {
+  ResumableUploader,
+  UploadFailedError,
+  UploadUnsupportedError,
+  blobSource,
+  bytesSource,
+  type ResumableSource,
+  type ResumeStore,
+  type UploadPart,
+  type UploadProgress,
+} from './resumable-upload';
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -32,6 +44,47 @@ export interface HttpClientOptions {
   onAuthFailure?: () => void;
   /** Default per-request timeout (ms) for non-streaming calls. */
   timeoutMs?: number;
+  /** Remembers chunked-upload ids so an upload cut off by a restart continues where it stopped. */
+  uploadStore?: ResumeStore;
+  /**
+   * React Native: turn a `{ uri }` file reference into a ranged-read source. Without it a
+   * `{ uri }` file is sent as one direct request (RN FormData streams it from disk).
+   */
+  uriSource?: (ref: { uri: string }, filename: string, type: string) =>
+    ResumableSource | null | Promise<ResumableSource | null>;
+}
+
+/** One file of an upload: bytes, a Blob/File, a React Native file reference, or a ranged-read source. */
+export type UploadFileData = Uint8Array | Blob | { uri: string } | ResumableSource;
+
+/** One multipart part, in order: a text field or a file. */
+export type UploadFormPart =
+  | { name: string; value: string }
+  | { name: string; file: UploadFileData; filename: string; type?: string };
+
+export interface UploadOptions {
+  method?: 'POST' | 'PUT' | 'PATCH';
+  /** Timeout of the single-request fallback (old gateways). Chunked uploads have no overall deadline. */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onProgress?: (p: UploadProgress) => void;
+  /** Extra headers for the service request (sent along by the gateway). */
+  headers?: Record<string, string>;
+  /** Keep the staged chunks after success (the same file is sent again right after). */
+  keep?: boolean;
+}
+
+function isResumableSource(x: unknown): x is ResumableSource {
+  const s = x as ResumableSource;
+  return !!s && typeof s.read === 'function' && typeof s.size === 'number';
+}
+
+function isUriRef(x: unknown): x is { uri: string } {
+  return !!x && typeof (x as { uri?: unknown }).uri === 'string' && !isResumableSource(x);
+}
+
+function isBlob(x: unknown): x is Blob {
+  return typeof Blob !== 'undefined' && x instanceof Blob;
 }
 
 export class HttpClient {
@@ -40,12 +93,17 @@ export class HttpClient {
   private readonly fetchImpl: FetchLike;
   private readonly onAuthFailure?: () => void;
   private readonly timeoutMs: number;
+  private readonly uploadStore?: ResumeStore;
+  private readonly uriSource?: HttpClientOptions['uriSource'];
+  private uploaderFor: { base: string; uploader: ResumableUploader } | null = null;
 
   constructor(opts: HttpClientOptions) {
     this.baseUrl = normalizeBaseUrl(opts.baseUrl);
     this.fetchImpl = opts.fetch ?? (globalThis.fetch as FetchLike);
     this.onAuthFailure = opts.onAuthFailure;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
+    this.uploadStore = opts.uploadStore;
+    this.uriSource = opts.uriSource;
     if (!this.fetchImpl) {
       throw new Error('HttpClient: no fetch implementation available');
     }
@@ -116,22 +174,169 @@ export class HttpClient {
     return this.json<T>('GET', path, undefined, opts);
   }
 
-  /** Multipart upload (아바타 에셋 등). Content-Type 은 fetch 가 boundary 와
-   *  함께 자동 설정하므로 지정하지 않는다. 대용량(모델 zip) 대비 긴 타임아웃. */
-  async upload<T>(path: string, form: FormData, opts?: { timeoutMs?: number }): Promise<T> {
+  /**
+   * Multipart upload — every file upload goes through here.
+   *
+   * Files are sent in verified chunks through the gateway's resumable upload (up to 1 GiB, survives
+   * dropped connections), then the gateway sends the original multipart request to the service and
+   * returns its response unchanged. A gateway without `/api/uploads` gets the old single request.
+   * `form` is a FormData, or ordered parts (which also take ranged-read sources and RN `{ uri }`).
+   */
+  async upload<T>(path: string, form: FormData | UploadFormPart[], opts: UploadOptions = {}): Promise<T> {
+    const method = opts.method ?? 'POST';
+    const res = await this.sendUpload(method, path, form, opts);
+    return this.readJson<T>(res, method, path);
+  }
+
+  /** Like `upload` but returns the raw Response (SSE, binary or status-specific handling). */
+  async sendUpload(
+    method: 'POST' | 'PUT' | 'PATCH',
+    path: string,
+    form: FormData | UploadFormPart[],
+    opts: UploadOptions = {},
+  ): Promise<Response> {
+    const headers = { Accept: 'application/json', ...opts.headers };
+    if (!ResumableUploader.knownUnsupported(this.baseUrl)) {
+      const parts = await this.chunkedParts(form);
+      if (parts) {
+        try {
+          return await this.uploader().send({ method, path }, { parts },
+            { headers, signal: opts.signal, onProgress: opts.onProgress, keep: opts.keep });
+        } catch (e) {
+          if (!(e instanceof UploadUnsupportedError)) throw this.uploadFailure(e, method, path);
+        }
+      }
+    }
+    return this.directRequest(method, path, await this.toFormData(form), headers, opts);
+  }
+
+  /**
+   * Send a request body that carries file content (bytes, or JSON with base64 inside) the same
+   * chunked way — the gateway sends it to the service as the raw body with `contentType`.
+   */
+  async uploadBody<T>(
+    method: 'POST' | 'PUT' | 'PATCH',
+    path: string,
+    body: Uint8Array,
+    contentType: string,
+    opts: UploadOptions = {},
+  ): Promise<T> {
+    const headers = { Accept: 'application/json', ...opts.headers };
+    if (!ResumableUploader.knownUnsupported(this.baseUrl)) {
+      try {
+        const res = await this.uploader().send({ method, path },
+          { raw: bytesSource(body, 'body', contentType), contentType },
+          { headers, signal: opts.signal, onProgress: opts.onProgress, keep: opts.keep });
+        return await this.readJson<T>(res, method, path);
+      } catch (e) {
+        if (!(e instanceof UploadUnsupportedError)) throw this.uploadFailure(e, method, path);
+      }
+    }
+    const res = await this.directRequest(method, path, body as unknown as BodyInit,
+      { ...headers, 'Content-Type': contentType }, opts);
+    return this.readJson<T>(res, method, path);
+  }
+
+  private uploader(): ResumableUploader {
+    if (!this.uploaderFor || this.uploaderFor.base !== this.baseUrl) {
+      this.uploaderFor = {
+        base: this.baseUrl,
+        uploader: new ResumableUploader({
+          baseUrl: this.baseUrl,
+          fetch: this.fetchImpl,
+          store: this.uploadStore,
+          headers: () => this.headers(),
+        }),
+      };
+    }
+    return this.uploaderFor.uploader;
+  }
+
+  /** Parts for the chunked path, or null when a file can only go as a direct request (RN `{uri}` without a host source). */
+  private async chunkedParts(form: FormData | UploadFormPart[]): Promise<UploadPart[] | null> {
+    if (!Array.isArray(form)) {
+      // React Native's FormData cannot be enumerated — and its files are `{uri}` refs anyway.
+      if (typeof (form as { forEach?: unknown }).forEach !== 'function') return null;
+      const parts: UploadPart[] = [];
+      let ok = true;
+      form.forEach((value, name) => {
+        if (typeof value === 'string') parts.push({ name, value });
+        else if (isBlob(value)) parts.push({ name, source: blobSource(value), filename: (value as File).name });
+        else ok = false;
+      });
+      return ok ? parts : null;
+    }
+    const parts: UploadPart[] = [];
+    for (const p of form) {
+      if ('value' in p) { parts.push({ name: p.name, value: p.value }); continue; }
+      const type = p.type || (isBlob(p.file) || isResumableSource(p.file) ? p.file.type : '') || 'application/octet-stream';
+      let source: ResumableSource | null;
+      if (isResumableSource(p.file)) source = p.file;
+      else if (p.file instanceof Uint8Array) source = bytesSource(p.file, p.filename, type);
+      else if (isBlob(p.file)) source = blobSource(p.file, p.filename);
+      else source = this.uriSource ? await this.uriSource(p.file, p.filename, type) : null;
+      if (!source) return null;
+      parts.push({ name: p.name, source, filename: p.filename, contentType: type });
+    }
+    return parts;
+  }
+
+  /** The same parts as one FormData (single-request fallback). */
+  private async toFormData(form: FormData | UploadFormPart[]): Promise<FormData> {
+    if (!Array.isArray(form)) return form;
+    const out = new FormData();
+    for (const p of form) {
+      if ('value' in p) { out.append(p.name, p.value); continue; }
+      const type = p.type || (isBlob(p.file) || isResumableSource(p.file) ? p.file.type : '') || 'application/octet-stream';
+      if (isUriRef(p.file)) {
+        // RN FormData streams `{ uri, name, type }` from disk.
+        out.append(p.name, { uri: p.file.uri, name: p.filename, type } as unknown as Blob);
+      } else if (isBlob(p.file)) {
+        out.append(p.name, p.file, p.filename);
+      } else {
+        const bytes = p.file instanceof Uint8Array ? p.file : await p.file.read(0, p.file.size);
+        // The bytes may be a view over a larger (IPC) buffer — copy exactly this file's bytes.
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        out.append(p.name, new Blob([buf], { type }), p.filename);
+      }
+    }
+    return out;
+  }
+
+  private async directRequest(
+    method: string,
+    path: string,
+    body: BodyInit | FormData,
+    headers: Record<string, string>,
+    opts: UploadOptions,
+  ): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 120_000);
-    let res: Response;
+    const onAbort = () => controller.abort();
+    if (opts.signal?.aborted) controller.abort();
+    opts.signal?.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 600_000);
     try {
-      res = await this.fetchImpl(this.url(path), {
-        method: 'POST',
-        headers: this.headers({ Accept: 'application/json' }),
-        body: form as unknown as BodyInit,
+      // multipart: fetch sets Content-Type with the boundary itself.
+      return await this.fetchImpl(this.url(path), {
+        method,
+        headers: this.headers(headers),
+        body: body as unknown as BodyInit,
         signal: controller.signal,
       });
     } finally {
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  private uploadFailure(e: unknown, method: string, path: string): unknown {
+    if (!(e instanceof UploadFailedError)) return e;
+    if (e.status === 401) this.onAuthFailure?.();
+    return new ApiError(e.status ?? 0, `${method} ${path} → ${e.status ?? 'upload failed'}`,
+      e.body ?? { detail: { code: e.code, message: e.message } });
+  }
+
+  private async readJson<T>(res: Response, method: string, path: string): Promise<T> {
     const text = await res.text();
     let parsed: unknown = undefined;
     if (text) {
@@ -143,7 +348,7 @@ export class HttpClient {
     }
     if (!res.ok) {
       if (res.status === 401) this.onAuthFailure?.();
-      throw new ApiError(res.status, `POST ${path} → ${res.status}`, parsed);
+      throw new ApiError(res.status, `${method} ${path} → ${res.status}`, parsed);
     }
     return parsed as T;
   }
@@ -260,39 +465,13 @@ export class HttpClient {
   }
 
   /** 바이트 본문을 그대로 PUT 한다(그림 한 장 같은 것). JSON 응답을 돌려준다. */
-  async putBytes<T>(
+  putBytes<T>(
     path: string,
     bytes: Uint8Array,
     contentType: string,
     opts?: { timeoutMs?: number },
   ): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 60_000);
-    let res: Response;
-    try {
-      res = await this.fetchImpl(this.url(path), {
-        method: 'PUT',
-        headers: this.headers({ 'Content-Type': contentType, Accept: 'application/json' }),
-        body: bytes as unknown as BodyInit,
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    const text = await res.text();
-    let parsed: unknown = undefined;
-    if (text) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
-      }
-    }
-    if (!res.ok) {
-      if (res.status === 401) this.onAuthFailure?.();
-      throw new ApiError(res.status, `PUT ${path} → ${res.status}`, parsed);
-    }
-    return parsed as T;
+    return this.uploadBody<T>('PUT', path, bytes, contentType, { timeoutMs: opts?.timeoutMs ?? 60_000 });
   }
 
   patch<T>(

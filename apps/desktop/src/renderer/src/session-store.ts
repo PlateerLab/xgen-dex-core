@@ -48,6 +48,7 @@ import { stripTeamsContext } from '@dex/protocol/teams-bridge';
 import { xgen } from './bridge';
 import { attachTurnProcesses, browserStorage, rememberTurnProcess, type KeyValueStorage } from './turn-process-memory';
 import { workspaceFileName, workspacePathOf } from './views/attachment-model';
+import { CHAT_IMAGE_MAX_BYTES, CHAT_MEMORY_MAX_BYTES, fileTooLargeText } from './views/chat-attach';
 
 /**
  * 복원한 대화의 자리표시 에이전트.
@@ -207,6 +208,8 @@ export interface ChatMsg {
   startedAt?: number;
   /** 마지막으로 텍스트·도구 이벤트를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 표시. */
   lastEventAt?: number;
+  /** 첨부를 올리는 동안의 진행(보낸 바이트/전체) — 답이 시작되기 전 말풍선에 보인다. 다 올리면 지운다. */
+  uploadProgress?: { loaded: number; total: number };
   citations?: Citation[];
   /**
    * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact` 로 받은 것.
@@ -522,6 +525,11 @@ export interface ChatAttachment {
   height?: number;
   /** 에이전트 작업 공간에 올라간 자리(작업 공간 기준 경로) — 대화에서 이 파일을 다시 열고 받는 근거. */
   workspacePath?: string;
+  /**
+   * 디스크의 파일이면 preload 가 준 표(`xgen.files.stage`). 있으면 main 이 디스크에서 조각으로
+   * 올린다(1GiB) — 이때 큰 파일은 `dataUrl` 이 비어 있다(메모리에 올리지 않는다).
+   */
+  fileRef?: string;
 }
 
 export type ChatImageAttachment = ChatAttachment;
@@ -544,7 +552,13 @@ export interface SessionTransport {
     attachmentId: string;
     name: string;
     mimeType: string;
-    bytes: Uint8Array;
+    /** 메모리에 있는 첨부(붙여 넣은 그림·화면 캡처). */
+    bytes?: Uint8Array;
+    /** 디스크의 첨부 — `ChatAttachment.fileRef`. 있으면 `bytes` 대신 이것으로 올린다. */
+    fileRef?: string;
+    /** 진행률·취소를 잇는 id(fileRef 업로드). */
+    uploadId?: string;
+    onProgress?: (loaded: number, total: number) => void;
   }) => Promise<{
     workspace_path?: string;
     size?: number;
@@ -553,6 +567,8 @@ export interface SessionTransport {
   }>;
   /** @deprecated compatibility with older preload/test transports. */
   uploadWorkspaceImage?: SessionTransport['uploadWorkspaceAttachment'];
+  /** 디스크 첨부 업로드를 멈춘다([정지]). 옛 preload 면 없다 — 그때는 결과를 버리기만 한다. */
+  cancelWorkspaceUpload?: (uploadId: string) => void;
   historyTurns(
     workflowId: string,
     interactionId: string,
@@ -1096,7 +1112,7 @@ export class SessionStore {
     // SVG·임의 data URL 은 모델 입력과 <img> 미리보기에 싣지 않는다.
     const attached = images.filter((item) =>
       s?.agent.hasAgentGeny
-        ? /^data:[^;,]+;base64,/i.test(item.dataUrl)
+        ? /^data:[^;,]+;base64,/i.test(item.dataUrl) || !!item.fileRef
         : CHAT_IMAGE_DATA_URL_RE.test(item.dataUrl),
     );
     // s.remote — 다른 곳에서 시작한 턴이 아직 돈다. 그 위에 얹으면 같은 대화에서
@@ -1149,7 +1165,8 @@ export class SessionStore {
     this.emit();
     const visual = attached.filter(
       (item) =>
-        item.kind === 'image' || /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(item.dataUrl),
+        !!item.dataUrl &&
+        (item.kind === 'image' || /^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(item.dataUrl)),
     );
     const multimodal = visual.length > 0 || !!shot?.dataUrl;
     const content: unknown[] = [{ type: 'text', text }];
@@ -1188,54 +1205,96 @@ export class SessionStore {
     }
     if ((attached.length > 0 || !!shot?.dataUrl) && s.agent.hasAgentGeny && workspaceUploader) {
       let cancelled = false;
+      const running = new Set<string>();
       rt.cancel = () => {
         cancelled = true;
+        // 디스크 첨부는 main 에서 조각으로 올라가는 중이다 — [정지] 면 그 업로드도 멈춘다.
+        for (const uploadId of running) this.transport.cancelWorkspaceUpload?.(uploadId);
       };
       // 업로드 단계에서는 아직 서버 실행이 없다 — 스트림이 열리면 위에서 채운다.
       rt.stopServer = null;
       const pending = [
         ...attached.map((image) => ({
           dataUrl: image.dataUrl,
+          fileRef: image.fileRef,
           name: image.name,
+          mime: image.mime,
+          size: image.size,
           kind: image.kind ?? (CHAT_IMAGE_DATA_URL_RE.test(image.dataUrl) ? 'image' : 'file'),
         })),
         ...(shot?.dataUrl
-          ? [{ dataUrl: shot.dataUrl, name: `${shot.sourceName || 'screen'}.png`, kind: 'image' as const }]
+          ? [{ dataUrl: shot.dataUrl, fileRef: undefined, name: `${shot.sourceName || 'screen'}.png`, mime: 'image/png', size: 0, kind: 'image' as const }]
           : []),
       ];
+      // 디스크 첨부는 바이트를 만들지 않는다(1GiB 를 메모리에 올리지 않는다). 메모리 첨부만 풀어 둔다.
+      const decodedAll = pending.map((image) => (image.fileRef ? null : attachmentBytes(image.dataUrl)));
+      const sizes = pending.map((image, i) => decodedAll[i]?.bytes.byteLength ?? image.size);
+      const sent = sizes.map(() => 0);
+      const total = sizes.reduce((a, b) => a + b, 0);
+      const showProgress = (): void => {
+        if (cancelled) return;
+        const loaded = sent.reduce((a, b) => a + b, 0);
+        this.patch(key, (st) => {
+          const last = st.messages[st.messages.length - 1];
+          if (!last || last.role !== 'assistant' || !last.streaming) return st;
+          const messages = st.messages.slice();
+          messages[messages.length - 1] = { ...last, uploadProgress: { loaded, total } };
+          return { ...st, messages };
+        });
+        this.emit();
+      };
       void Promise.all(
         pending.map(async (image, index) => {
-          const decoded = attachmentBytes(image.dataUrl);
-          if (decoded.bytes.byteLength > 100 * 1024 * 1024) {
-            throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
-          }
+          const decoded = decodedAll[index];
+          const limit = decoded ? CHAT_MEMORY_MAX_BYTES : CHAT_IMAGE_MAX_BYTES;
+          if (sizes[index] > limit) throw new Error(fileTooLargeText(image.name, !decoded));
           const attachmentId = `conn-${crypto.randomUUID()}`;
-          const result = await workspaceUploader({
-            workflowId: s.agent.workflowId,
-            interactionId: s.interactionId,
-            attachmentId,
-            // 맥이 준 NFD 이름 그대로 올리면 에이전트가 같은 이름을 다시 적었을 때 못 찾는다
-            name: workspaceFileName(image.name || `image-${index + 1}.png`),
-            mimeType: decoded.mimeType,
-            bytes: decoded.bytes,
-          });
-          if (result.status === 'pending_approval') {
-            throw new Error('파일 업로드가 승인 대기 중입니다. 승인 후 다시 시도해 주세요.');
+          const uploadId = image.fileRef ? `up-${crypto.randomUUID()}` : undefined;
+          const mimeType = decoded?.mimeType ?? (image.mime || 'application/octet-stream');
+          if (uploadId) running.add(uploadId);
+          try {
+            const result = await workspaceUploader({
+              workflowId: s.agent.workflowId,
+              interactionId: s.interactionId,
+              attachmentId,
+              // 맥이 준 NFD 이름 그대로 올리면 에이전트가 같은 이름을 다시 적었을 때 못 찾는다
+              name: workspaceFileName(image.name || `image-${index + 1}.png`),
+              mimeType,
+              ...(decoded ? { bytes: decoded.bytes } : { fileRef: image.fileRef, uploadId }),
+              onProgress: (loaded) => {
+                sent[index] = loaded;
+                showProgress();
+              },
+            });
+            if (result.status === 'pending_approval') {
+              throw new Error('파일 업로드가 승인 대기 중입니다. 승인 후 다시 시도해 주세요.');
+            }
+            if (!result.workspace_path) throw new Error('Workspace 업로드 경로가 없습니다.');
+            sent[index] = sizes[index];
+            showProgress();
+            return {
+              kind: image.kind,
+              attachment_id: attachmentId,
+              name: image.name,
+              mime_type: mimeType,
+              size: result.size ?? sizes[index],
+              sha256: result.sha256,
+              workspace_path: result.workspace_path,
+            };
+          } finally {
+            if (uploadId) running.delete(uploadId);
           }
-          if (!result.workspace_path) throw new Error('Workspace 업로드 경로가 없습니다.');
-          return {
-            kind: image.kind,
-            attachment_id: attachmentId,
-            name: image.name,
-            mime_type: decoded.mimeType,
-            size: result.size ?? decoded.bytes.byteLength,
-            sha256: result.sha256,
-            workspace_path: result.workspace_path,
-          };
         }),
       )
         .then((attachments) => {
           if (cancelled) return;
+          this.patch(key, (st) => {
+            const last = st.messages[st.messages.length - 1];
+            if (!last || last.role !== 'assistant' || !last.uploadProgress) return st;
+            const messages = st.messages.slice();
+            messages[messages.length - 1] = { ...last, uploadProgress: undefined };
+            return { ...st, messages };
+          });
           // 올라간 자리를 말풍선의 첨부에 적어 둔다 — 대화에서 바로 열고 받을 수 있게.
           // (첨부 순서 = 업로드 순서, 화면 캡처는 맨 뒤라 앞쪽 인덱스가 그대로 맞는다)
           if (userMsg.images?.length) {

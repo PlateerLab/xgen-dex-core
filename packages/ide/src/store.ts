@@ -344,6 +344,8 @@ export class IdeStore {
   private filesTimer: ReturnType<typeof setTimeout> | null = null;
   private searchSeq = 0;
   private disposed = false;
+  /** 서버 편집기 저장 상한(바이트) — 세션이 알려 준다. 0 = 모름(서버가 413 으로 다시 본다). */
+  private rawMaxBytes = 0;
   /** 연결 고리 — 하나만 돈다. 기다리는 동안 [다시 연결] 로 깨운다. */
   private connecting: Promise<void> | null = null;
   private connectWake: (() => void) | null = null;
@@ -575,6 +577,7 @@ export class IdeStore {
       try {
         const info = await this.host.session();
         if (this.disposed) return;
+        this.rawMaxBytes = info.limits?.rawMaxBytes ?? 0;
         this.set({
           ready: true,
           readonly: info.readonly,
@@ -2066,12 +2069,29 @@ export class IdeStore {
     this.set({ clipboard: paths.length ? { mode, paths } : null });
   }
 
-  /** 운영체제에서 끌어다 놓은 파일을 올린다(같은 이름이 있으면 묻는다). */
-  async upload(targetDir: string, files: { name: string; bytes: Uint8Array }[]): Promise<void> {
+  /**
+   * 운영체제에서 끌어다 놓은 파일을 올린다(같은 이름이 있으면 묻는다).
+   *
+   * 편집기 저장은 서버의 편집기 상한(`limits.rawMaxBytes`, 서버 기본 32MiB) 안의 파일만 받는다 — 넘는
+   * 파일은 **읽기 전에** 거절한다(1GiB 동영상을 메모리에 다 읽고 나서 413 을 받지 않게). 큰 파일은 에이전트
+   * Storage 나 채팅 첨부(조각 업로드, 1GiB)로 올린다. 파일은 하나씩 읽는다(한꺼번에 읽지 않는다).
+   */
+  async upload(
+    targetDir: string,
+    files: Array<{ name: string; bytes?: Uint8Array; file?: Blob }>,
+  ): Promise<void> {
     if (this.state.readonly) return;
     let done = 0;
     for (const f of files) {
       const path = join(targetDir, f.name);
+      const size = f.bytes?.byteLength ?? f.file?.size ?? 0;
+      if (this.rawMaxBytes > 0 && size > this.rawMaxBytes) {
+        this.notify(
+          'error',
+          `${f.name}: 편집기로는 ${Math.floor(this.rawMaxBytes / (1024 * 1024))}MB 까지 올릴 수 있습니다. 큰 파일은 Storage 나 채팅 첨부로 올려 주세요.`,
+        );
+        continue;
+      }
       let base: string | null = '';
       if (this.exists(path)) {
         const ok = await this.confirm(`${f.name} 이(가) 이미 있습니다`, '올린 파일로 바꿀까요?', '바꾸기', true);
@@ -2079,7 +2099,8 @@ export class IdeStore {
         base = null;
       }
       try {
-        await this.host.saveFile(path, f.bytes, base);
+        const bytes = f.bytes ?? new Uint8Array(await (f.file as Blob).arrayBuffer());
+        await this.host.saveFile(path, bytes, base);
         done += 1;
         if (this.state.docs[path] && !this.state.docs[path].dirty) void this.reloadFromDisk(path);
       } catch (err) {

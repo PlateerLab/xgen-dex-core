@@ -10,7 +10,7 @@
  * 렌더러가 서버 필드명을 그대로 읽는다.
  */
 import type { ShareAudience } from './shares';
-import { HttpClient } from './client';
+import { HttpClient, type UploadFileData, type UploadOptions } from './client';
 import { toAgentWorkflow, type AgentWorkflow } from './agent-workflow';
 
 /** 에이전트 뷰어의 하위 탭 — **단일 정의**.
@@ -56,6 +56,10 @@ export interface WorkspaceUploadOptions {
   relDir?: string;
   /** 같은 이름이 있으면 덮어쓴다(기본은 `이름(1)` 로 비켜 쓴다). 같은 파일을 다시 옮길 때 쓴다. */
   replace?: boolean;
+  /** 올리기 취소. */
+  signal?: AbortSignal;
+  /** 보낸 바이트 — 큰 파일(최대 1GiB)의 진행률. */
+  onProgress?: UploadOptions['onProgress'];
 }
 
 /** 하위 폴더 값 정리 — 빈 칸·`.`·`..` 을 버린다(서버도 다시 검사한다). */
@@ -1046,18 +1050,18 @@ export class AgentDataApi {
    * 바이트로 만들 수 없다("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not
    * supported") — 모바일의 사진·파일 첨부가 전부 여기서 실패했다(2026-10-02). RN 의 FormData 는
    * `{ uri, name, type }` 을 받아 파일을 디스크에서 그대로 흘려보낸다(본문을 JS 메모리에 올리지 않음).
+   * 데스크톱·CLI 는 디스크의 파일을 범위로 읽는 `ResumableSource` 를 넘긴다 — 1GiB 파일도 메모리에 다 올리지 않는다.
+   * 전송은 `HttpClient.upload` 의 조각 업로드(재개 가능)다.
    */
   workspaceUpload(
     workflowId: string,
-    source: UploadSource,
+    source: UploadFileData,
     filename: string,
     mimeType: string,
     interactionId: string,
     attachmentId: string,
     opts: WorkspaceUploadOptions = {},
   ): Promise<WorkspaceUploadResult> {
-    const form = new FormData();
-    appendUploadFile(form, 'file', source, filename, mimeType);
     const query = new URLSearchParams({
       subdir: 'uploads',
       purpose: 'chat_attachment',
@@ -1069,8 +1073,8 @@ export class AgentDataApi {
     if (opts.replace) query.set('replace', '1');
     return this.http.upload<WorkspaceUploadResult>(
       `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage/upload?${query}`,
-      form,
-      { timeoutMs: 300_000 },
+      [{ name: 'file', file: source, filename, type: mimeType }],
+      { timeoutMs: 600_000, signal: opts.signal, onProgress: opts.onProgress },
     );
   }
 }

@@ -227,7 +227,7 @@ test('이미지만 있는 메시지도 전송하고 허용하지 않은 data URL
 
 test('Geny 이미지는 에이전트 workspace 업로드 후 참조로 실행한다', async () => {
   const streams: FakeStream[] = []
-  const uploads: Array<{ attachmentId: string; workflowId: string; interactionId: string; name: string; bytes: Uint8Array }> = []
+  const uploads: Array<{ attachmentId: string; workflowId: string; interactionId: string; name: string; bytes?: Uint8Array }> = []
   const transport: SessionTransport = {
     stream(req, onEvent) {
       const stream: FakeStream = {
@@ -244,7 +244,7 @@ test('Geny 이미지는 에이전트 workspace 업로드 후 참조로 실행한
       uploads.push(request)
       return {
         workspace_path: `uploads/${request.interactionId}/${request.name}`,
-        size: request.bytes.byteLength,
+        size: request.bytes?.byteLength,
         sha256: 'abc123',
       }
     },
@@ -288,7 +288,7 @@ test('Geny 일반 파일은 이미지로 변환하지 않고 workspace 참조로
     },
     async uploadWorkspaceAttachment(request) {
       uploadedId = request.attachmentId;
-      return { workspace_path: `uploads/${request.interactionId}/${request.name}`, size: request.bytes.byteLength }
+      return { workspace_path: `uploads/${request.interactionId}/${request.name}`, size: request.bytes?.byteLength }
     },
     async historyTurns() { return [] },
   }
@@ -308,6 +308,65 @@ test('Geny 일반 파일은 이미지로 변환하지 않고 workspace 참조로
       workspace_path: `uploads/${key}/data.json`,
     }],
   })
+})
+
+test('Geny 디스크 첨부(1GiB 동영상)는 바이트 없이 표로 올리고, 진행률을 보이고, [정지] 면 업로드를 멈춘다', async () => {
+  const streams: FakeStream[] = []
+  const requests: Array<{ fileRef?: string; uploadId?: string; bytes?: Uint8Array; mimeType: string }> = []
+  const cancelled: string[] = []
+  let progress: ((loaded: number, total: number) => void) | undefined
+  let finish: (() => void) | undefined
+  const big = 1024 * 1024 * 1024
+  const transport: SessionTransport = {
+    stream(req, onEvent) {
+      const stream: FakeStream = { interactionId: req.interactionId, input: req.input, onEvent, cancelled: false, stopped: false }
+      streams.push(stream)
+      return { cancel: () => { stream.cancelled = true } }
+    },
+    uploadWorkspaceAttachment(request) {
+      requests.push(request)
+      progress = request.onProgress
+      return new Promise((resolve) => {
+        finish = () => resolve({ workspace_path: `uploads/${request.interactionId}/${request.name}`, size: big, sha256: 'h' })
+      })
+    },
+    cancelWorkspaceUpload: (uploadId) => { cancelled.push(uploadId) },
+    async historyTurns() { return [] },
+  }
+  const store = new SessionStore(transport, () => 1234)
+  const key = store.openNew({ ...agent('geny'), hasAgentGeny: true })
+  store.send(key, '회의 영상 요약해줘', null, [
+    { dataUrl: '', fileRef: 'file-1', name: '회의.mp4', mime: 'video/mp4', size: big, kind: 'file' },
+  ])
+  await flush()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].fileRef, 'file-1')
+  assert.equal(requests[0].bytes, undefined, '1GiB 를 메모리에 만들지 않는다')
+  assert.equal(requests[0].mimeType, 'video/mp4')
+  assert.ok(requests[0].uploadId)
+
+  progress?.(big / 4, big)
+  const asst = store.getSnapshot().sessions.find((x) => x.key === key)!.messages.at(-1)!
+  assert.deepEqual(asst.uploadProgress, { loaded: big / 4, total: big })
+
+  finish?.()
+  await flush()
+  assert.equal(streams.length, 1)
+  assert.equal((streams[0].input as { attachments: Array<{ size: number }> }).attachments[0].size, big)
+  assert.equal(store.getSnapshot().sessions.find((x) => x.key === key)!.messages.at(-1)!.uploadProgress, undefined)
+
+  // 두 번째 턴: 올리는 중에 [정지] → 그 업로드를 멈추고, 실행은 시작하지 않는다.
+  streams[0].onEvent({ kind: 'end' })
+  store.send(key, '다시', null, [
+    { dataUrl: '', fileRef: 'file-2', name: '두번째.mp4', mime: 'video/mp4', size: 10, kind: 'file' },
+  ])
+  await flush()
+  assert.equal(requests.length, 2)
+  store.stop(key)
+  assert.deepEqual(cancelled, [requests[1].uploadId])
+  finish?.()
+  await flush()
+  assert.equal(streams.length, 1, '멈춘 업로드 뒤에는 실행하지 않는다')
 })
 
 test('스트림 이벤트가 텍스트·도구·출처를 누적하고 end 에서 멈춘다', () => {

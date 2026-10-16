@@ -436,10 +436,11 @@ test('teamsAttachmentRejectReason: 허용되지 않은 형식과 확장자 없�
   assert.ok(teamsAttachmentRejectReason('확장자없음', 10)?.includes('확장자 없음'));
 });
 
-test('teamsAttachmentRejectReason: 서버 상한(50MB)을 넘으면 올리기 전에 막는다', () => {
-  const over = 50 * 1024 * 1024 + 1;
-  assert.ok(teamsAttachmentRejectReason('큰파일.pdf', over)?.includes('50MB'));
-  assert.strictEqual(teamsAttachmentRejectReason('딱맞음.pdf', 50 * 1024 * 1024), null);
+test('teamsAttachmentRejectReason: 서버 상한(1GB, 조각 업로드)을 넘으면 올리기 전에 막는다', () => {
+  const over = 1024 * 1024 * 1024 + 1;
+  assert.ok(teamsAttachmentRejectReason('큰영상.pdf', over)?.includes('1GB'));
+  assert.strictEqual(teamsAttachmentRejectReason('딱맞음.pdf', 1024 * 1024 * 1024), null);
+  assert.strictEqual(teamsAttachmentRejectReason('예전상한넘음.pdf', 50 * 1024 * 1024 + 1), null);
 });
 
 // ── 편집 반영은 "패치" 여야 한다 ─────────────────────────────────

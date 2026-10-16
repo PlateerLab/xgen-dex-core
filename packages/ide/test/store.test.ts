@@ -122,8 +122,9 @@ class FakeHost implements IdeHost {
   storageMap = new Map<string, string>();
   storage = { get: (k: string) => this.storageMap.get(k) ?? null, set: (k: string, v: string) => void this.storageMap.set(k, v) };
 
+  rawMaxBytes = 0;
   async session() {
-    return { readonly: this.readonly, terminals: [] };
+    return { readonly: this.readonly, terminals: [], ...(this.rawMaxBytes ? { limits: { rawMaxBytes: this.rawMaxBytes } } : {}) };
   }
   async listFiles() {
     return [...this.files.keys()].map((path) => ({ path, isDir: false }));
@@ -891,4 +892,16 @@ test('되살린 미리보기 탭 — 호스트가 더는 그려 주지 않으면
   live.push(second);
   await second.start();
   assert.deepEqual(second.activeGroup().tabs.map((t) => t.kind), ['file']);
+});
+
+test('끌어다 놓은 파일: 편집기 상한을 넘으면 읽지 않고 알리고, 나머지는 하나씩 읽어 올린다', async () => {
+  const host = new FakeHost();
+  host.rawMaxBytes = 8;
+  const { store } = await started(host);
+  let readBig = false;
+  const big = { size: 9, arrayBuffer: async () => { readBig = true; return new ArrayBuffer(9); } } as unknown as Blob;
+  const small = new Blob(['hello']);
+  await store.upload('docs', [{ name: 'big.mp4', file: big }, { name: 'a.txt', file: small }]);
+  assert.equal(readBig, false, '상한을 넘는 파일은 메모리로 읽지 않는다');
+  assert.deepEqual(host.saves.map((x) => [x.path, x.text]), [['docs/a.txt', 'hello']]);
 });

@@ -107,3 +107,50 @@ test('판단 중 오류가 나도 final 은 끝나고 그 말은 서버로 넘�
   assert.equal(seg.acted, false);
   assert.equal(seg.unhandled, '블로그 탭 눌러줘 그리고 첫 글');
 });
+
+test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 분명하면 누르고, 아니면 서버로 넘기지 않는다', async () => {
+  const run = async (tailPick: { target: string; conf: number } | null) => {
+    const handled: string[] = [];
+    let pressed: string | null = null;
+    let lastTarget: string | null = null;
+    const agent: VoiceAgent = {
+      get lastTarget() {
+        return lastTarget;
+      },
+      boundary: async () => ({ start: -1, conf: 0.999 }),
+      readiness: async (texts) =>
+        texts.map((t) => ({ ready: t === '브랜드명에 삼성 입력하고' ? 'act_now' : 'wait', p: 0.9 })),
+      handle: async (text, _th, guard) => {
+        handled.push(text);
+        if (text === '브랜드명에 삼성 입력하고') {
+          if (!(await guard('textbox ""', 'type', 0.99))) return { acted: false, reason: 'guarded', ms: 0 };
+          lastTarget = 'textbox ""';
+          return { acted: true, kind: 'type', target: 'textbox ""', text: '삼성', ms: 0, effect: 'ok' };
+        }
+        if (!tailPick || !(await guard(tailPick.target, 'press', tailPick.conf)))
+          return { acted: false, reason: 'guarded', ms: 0 };
+        pressed = tailPick.target;
+        return { acted: true, kind: 'press', target: tailPick.target, ms: 0, effect: 'ok' };
+      },
+    };
+    const seg = new Segmenter(agent, () => undefined);
+    await seg.final('브랜드명에 삼성 입력하고 검색해줘');
+    return { handled, pressed, unhandled: seg.unhandled };
+  };
+  assert.deepEqual(await run({ target: 'button "조회"', conf: 0.97 }), {
+    handled: ['브랜드명에 삼성 입력하고', '검색해줘'],
+    pressed: 'button "조회"',
+    unhandled: null,
+  });
+  // 확신이 낮거나 이름을 가리키지 않으면 꼬리말로 친다 — 서버로 넘기지 않는다
+  assert.deepEqual(await run({ target: 'button "닫기"', conf: 0.6 }), {
+    handled: ['브랜드명에 삼성 입력하고', '검색해줘'],
+    pressed: null,
+    unhandled: null,
+  });
+  assert.deepEqual(await run(null), {
+    handled: ['브랜드명에 삼성 입력하고', '검색해줘'],
+    pressed: null,
+    unhandled: null,
+  });
+});

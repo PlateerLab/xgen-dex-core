@@ -297,6 +297,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const p = probs[`w${i}`] ?? 0;
       if (p > bestP) [best, bestP] = [i, p];
     });
+    diag(SCOPE, 'boundary', { done, rest, none: Number(none.toFixed(3)), best, p: Number(bestP.toFixed(3)) });
     if (a.q?.choice === 'none' && none >= 0.6) return { start: -1, conf: none };
     return { start: best, conf: bestP };
   }
@@ -569,23 +570,23 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
   }
 
-  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
+  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string, pressOnly = false): Promise<Outcome> {
     this.deciding++;
     this.noticed = [];
     this.listClosed = false;
     this.dismissed = null;
     try {
-      const o = await this.handleOnce(text, th, guard, abort, utterance);
+      const o = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
       // 판단에 쓴 스냅샷이 그사이 바뀌었으면(요소 번호 만료) 화면을 새로 읽어 한 번만 다시 판단한다.
       if (!o.acted && o.reason.includes('browser_stale_ref')) {
         this.snap = null;
-        return await this.handleOnce(text, th, guard, abort, utterance);
+        return await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
       }
       // 팝업·배너가 누를 요소를 가렸으면 그것을 닫고 한 번만 다시 판단한다.
       if (!o.acted && COVERED.test(o.reason)) {
         this.dismissed = await this.dismissOverlay();
         this.snap = null;
-        const again = await this.handleOnce(text, th, guard, abort, utterance);
+        const again = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
         this.dismissed = null;
         return again;
       }
@@ -595,7 +596,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
   }
 
-  private async handleOnce(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
+  /** pressOnly = 누를 것만 고른다(입력칸은 후보에서 뺀다) — 앞 요청의 꼬리말만으로 실행할 때(voice-segmenter). */
+  private async handleOnce(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string, pressOnly = false): Promise<Outcome> {
     const t0 = now();
     const no = (reason: string, detail?: unknown): Outcome => ({ acted: false, reason, ms: now() - t0, detail });
     const post = decisionPost();
@@ -625,10 +627,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     if (abort()) return no('판단 취소(새 인식)');
     // 화면 조작 지시인데 알림창이 화면을 막고 있다 — 닫고 새 화면으로 다시 판단한다.
-    if (this.noticed.length < NOTICE_MAX && (await this.closeNotice(page))) return this.handleOnce(text, th, guard, abort, utterance);
+    if (this.noticed.length < NOTICE_MAX && (await this.closeNotice(page))) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
 
     // 입력 요청(동작이 입력이고 글자가 있고 말에 글자 넣기 말이 있음)이면 입력칸만 후보로 — 검색 버튼 대신 검색창.
-    const wantsType = cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);
+    const wantsType = !pressOnly && cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);
     const typable = Object.fromEntries(Object.entries(snap.refs).filter(([, r]) => TYPABLE.has(r.role)));
     // 입력칸이 접혀 있으면(입력 가능한 요소 없음) 여는 버튼을 골라야 한다 — 넣을 글자와 이름이 같은 링크·버튼은 넣을 대상이지
     // 누를 대상이 아니다("검색창에 LG 그램 Pro AI 2026 입력해줘" 에 같은 이름의 상품 링크를 누르던 문제).
@@ -641,7 +643,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
           !(chrome[k]?.close && !TAB_WORD.test(text)) &&
           // 입력 요청은 브라우저 자체 조작(뒤로·새로고침·새 탭)으로 풀지 않는다 — 입력칸이 안 보일 때 새로고침을 골라
           // 채우던 폼이 지워졌다(10/16 BO).
-          !(wantsType && chrome[k]),
+          !(wantsType && chrome[k]) &&
+          !(pressOnly && TYPABLE.has(r.role)),
       ),
     );
     const candidates = wantsType && Object.keys(typable).length ? typable : pickable;
@@ -664,7 +667,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const option = !!pick && pick.confidence >= th.pick && OPTION_ROLES.has(snap.refs[pick.ref]?.role ?? '');
     if (!th.partial && !option && !this.listClosed && listLayer(snap.refs)) {
       this.listClosed = true;
-      if (await this.closeList(page)) return this.handleOnce(text, th, guard, abort, utterance);
+      if (await this.closeList(page)) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
     }
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     const ch = chrome[pick.ref];
@@ -673,7 +676,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (namedOnly && (pick.confidence < NAMED_ONLY_PICK || !mentions(text, element.name ?? ''))) {
       return no(`기다림 wait ${rc} (이름만 — 확신 ${pick.confidence.toFixed(2)})`, pick.top);
     }
-    const resolved = resolveAction(cls, element);
+    const resolved = pressOnly ? { action: 'click' as const, text: null } : resolveAction(cls, element);
     const searching = SEARCH_WORD.test(withoutLabel(text, snap.labels[pick.ref]));
     const action = resolved.action === 'type' && searching && isSearchField(element) ? 'type_submit' : resolved.action;
     let typed = resolved.text;

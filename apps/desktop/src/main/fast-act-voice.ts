@@ -41,6 +41,7 @@ import {
   type FieldLabel,
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
+import { plainNumber } from './fast-act-number';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
@@ -392,6 +393,17 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return textFromWordAnswers(whole, wa, offset)?.replace(/[.,!?。…]+$/, '') || null;
   }
 
+  /** 입력칸의 지금 값 — 못 읽으면 null. */
+  private async valueOf(pageId: string, ref: string, generation: number): Promise<string | null> {
+    try {
+      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', 'value', ref], 5_000, generation);
+      const value = (run.result as { data?: { value?: unknown } } | undefined)?.data?.value;
+      return typeof value === 'string' ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 열린 선택 목록을 닫는다(Escape) — 닫았으면 화면을 다시 읽게 한다. */
   private async closeList(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<boolean> {
     try {
@@ -716,6 +728,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
           if (element.role !== 'combobox') throw err;
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
           opened = true;
+        }
+        // 숫자 칸이 단위 붙은 말("20000원", "2만 원")을 통째로 거부했으면 숫자만 다시 넣는다.
+        const number = !opened && typed ? plainNumber(typed) : null;
+        const kept = number ? await this.valueOf(page.pageId, ref, snap.gen) : null;
+        if (number && kept !== null && kept !== typed) {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, number], 10_000, snap.gen);
+          typed = number;
         }
         if (!opened && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
       }

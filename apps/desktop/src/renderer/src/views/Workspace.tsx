@@ -51,6 +51,7 @@ import {
   findTab,
   newWorkspaceLayout,
   normalizeWorkspaceLayout,
+  openBrowserTab,
   placeBrowserBesideChat,
   removeWorkspaceTab,
   selectWorkspaceTab,
@@ -778,17 +779,15 @@ export const Workspace: React.FC<{
         openSettings();
         return;
       }
-      const tabId = `browser:${workflow.id}`;
-      setLayout((current) => {
-        const existing = findTab(current, tabId);
-        if (existing) return selectWorkspaceTab(current, existing.group.id, tabId);
-        return addWorkspaceTab(current, group.id, {
-          id: tabId,
+      // 채팅이 열려 있으면 그 옆에 — 에이전트가 브라우저를 열 때와 같은 자리(openBrowserTab).
+      setLayout((current) =>
+        openBrowserTab(current, group.id, {
+          id: `browser:${workflow.id}`,
           kind: 'browser',
           workflowId: workflow.id,
           workflowName: workflow.name,
-        });
-      });
+        }),
+      );
       void xgen.browser.ensureShared(workflow.id, workflow.name);
     },
     [activeWorkflowFor, browserState.enabled],

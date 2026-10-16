@@ -6,6 +6,7 @@ import {
   findTab,
   newWorkspaceLayout,
   normalizeWorkspaceLayout,
+  openBrowserTab,
   placeBrowserBesideChat,
   removeWorkspaceTab,
   setWorkspaceRatio,
@@ -118,6 +119,35 @@ test('agent browser reuses the group opposite its chat', () => {
     findTab(layout, 'chat:a')?.group.id,
     findTab(layout, 'browser:workflow-a')?.group.id,
   );
+});
+
+test('탭 줄 [+] 는 같은 에이전트의 채팅 옆에 브라우저를 연다', () => {
+  let layout = addWorkspaceTab(newWorkspaceLayout(), 'group-a', workflowChat('chat:a', 'workflow-a'));
+  layout = openBrowserTab(layout, 'group-a', browser('workflow-a'));
+
+  assert.equal(layout.groups.length, 2);
+  assert.equal(layout.direction, 'horizontal');
+  assert.equal(layout.groups[0].activeTabId, 'chat:a');
+  assert.equal(layout.groups[1].activeTabId, 'browser:workflow-a');
+});
+
+test('탭 줄 [+] 는 채팅과 같은 그룹에 쌓인 브라우저를 옆으로 꺼낸다', () => {
+  let layout = addWorkspaceTab(newWorkspaceLayout(), 'group-a', workflowChat('chat:a', 'workflow-a'));
+  layout = addWorkspaceTab(layout, 'group-a', browser('workflow-a'));
+  assert.equal(layout.groups.length, 1);
+  layout = openBrowserTab(layout, 'group-a', browser('workflow-a'));
+
+  assert.equal(layout.groups.length, 2);
+  assert.notEqual(findTab(layout, 'chat:a')?.group.id, findTab(layout, 'browser:workflow-a')?.group.id);
+  assert.equal(findTab(layout, 'chat:a')?.group.activeTabId, 'chat:a');
+});
+
+test('탭 줄 [+] 는 그 에이전트의 채팅이 없으면 누른 그룹에 탭으로 연다', () => {
+  let layout = addWorkspaceTab(newWorkspaceLayout(), 'group-a', { id: 'settings', kind: 'settings' });
+  layout = openBrowserTab(layout, 'group-a', browser('workflow-a'));
+
+  assert.equal(layout.groups.length, 1);
+  assert.equal(layout.groups[0].activeTabId, 'browser:workflow-a');
 });
 
 test('file-viewer 탭은 파일 필드와 함께 영속을 통과한다', () => {

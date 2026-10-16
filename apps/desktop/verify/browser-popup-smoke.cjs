@@ -5,6 +5,8 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const { BrowserRuntime } = require('../src/main/browser-runtime.ts');
+const { executeBrowserStep } = require('../src/main/browser-step.ts');
+const { allowsDeciderAction } = require('../src/main/fast-act.ts');
 
 app.setPath('userData', mkdtempSync(join(tmpdir(), 'dex-popup-smoke-')));
 app.commandLine.appendSwitch('disable-gpu');
@@ -23,13 +25,13 @@ async function main() {
   const server = createServer((request, response) => {
     response.setHeader('content-type', 'text/html; charset=utf-8');
     if (request.url === '/vendor') {
-      response.end(`<!doctype html><button id="validate">확인</button><button id="confirm" onclick="
+      response.end(`<!doctype html><button id="validate">검증</button><button id="confirm" onclick="
         window.opener.pickVendor('플래티어');
         window.opener.postMessage('vendor-selected', location.origin);
         window.close();">확인</button>`);
     } else {
       response.setHeader('set-cookie', 'smoke=present; Path=/; SameSite=Lax');
-      response.end(`<!doctype html><input id="vendor"><button id="open" onclick="
+      response.end(`<!doctype html><input id="vendor" aria-label="협력사"><input type="checkbox" aria-label="사용"><button id="open" onclick="
         window.vendorWindow = window.open('/vendor', 'vendor', 'width=420,height=300');">협력사</button>
         <a id="link" href="/vendor" target="_blank" rel="noopener">새 탭 링크</a>
         <script>
@@ -66,6 +68,22 @@ async function main() {
     await host.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(hostHtml)}`);
     await waitFor(() => guest && !guest.isLoading() && guest.getURL() === `${origin}/`);
 
+    // The fixture chooses the model's answer; snapshot/ref execution and readback use real CDP.
+    const post = async ({ state, questions }) => {
+      const name = state.endsWith('검증 클릭') ? '검증' : '확인';
+      const chosen = state.match(new RegExp(`^(e\\d+) \\| button \\| "${name}"`, 'm'))?.[1];
+      assert.ok(chosen, state);
+      return Object.fromEntries(Object.entries(questions).map(([key, q]) => [key, {
+        choice: chosen,
+        probabilities: Object.fromEntries(Object.keys(q.criteria).map(ref => [ref, ref === chosen ? 0.99 : 0.005])),
+      }]));
+    };
+    const step = (page, args) => executeBrowserStep(runtime, post, page, args, () => {}, allowsDeciderAction);
+    const filled = await step(parent, { operation: 'fill', instruction: '협력사 입력', text: '한글 "정확한 입력"', expect: [{ kind: 'value', target: '협력사', value: '한글 "정확한 입력"' }] });
+    assert.equal(filled.result.status, 'completed', JSON.stringify(filled.result));
+    const checked = await step(runtime.get(parent.pageId), { operation: 'check', instruction: '사용 체크', expect: [{ kind: 'checked', target: '사용', checked: true }] });
+    assert.equal(checked.result.status, 'completed', JSON.stringify(checked.result));
+
     await guest.executeJavaScript("document.querySelector('#open').click()");
     await waitFor(() => runtime.state().popupRequests.length === 1);
     assert.equal(runtime.list('smoke').length, 1);
@@ -100,13 +118,15 @@ async function main() {
 
     const snapshot = await runtime.runAgentCommand('smoke', popup.pageId, ['snapshot', '-i']);
     assert.match(JSON.stringify(snapshot.result), /확인/);
-    await runtime.runAgentCommand('smoke', popup.pageId, ['click', '#validate']);
+    const unchanged = await step(popup, { operation: 'click', instruction: '검증 클릭', expect: [{ kind: 'popup_closed' }] });
+    assert.equal(unchanged.result.status, 'needs_replan', JSON.stringify(unchanged.result));
     assert.ok(
       runtime.get(popup.pageId),
       'a confirmation button that keeps the page open must not close its tab',
     );
     assert.equal(runtime.state().activeByWorkflow.smoke, popup.pageId);
-    await runtime.runAgentCommand('smoke', popup.pageId, ['click', '#confirm']);
+    const confirmed = await step(runtime.get(popup.pageId), { operation: 'click', instruction: '확인 클릭', expect: [{ kind: 'popup_closed' }, { kind: 'value', target: '협력사', value: '플래티어' }] });
+    assert.equal(confirmed.result.status, 'completed', JSON.stringify(confirmed.result));
     await waitFor(() => runtime.get(popup.pageId) === null);
     await waitFor(() => runtime.state().activeByWorkflow.smoke === parent.pageId);
     assert.equal(host.contentView.children.includes(popupRuntime.view), false);
@@ -138,7 +158,7 @@ async function main() {
     await waitFor(() => secondContents.isDestroyed());
     assert.equal(runtime.list('smoke').length, 0);
     process.stdout.write(
-      'browser popup tab smoke ok: single OS window, embedded view, opener, callback, postMessage, close, session, sandbox, agent control, parent cleanup\n',
+      'browser popup tab smoke ok: exact fill, checkbox readback, unchanged step rejection, verified parent callback, single OS window, embedded view, session, sandbox, parent cleanup\n',
     );
   } finally {
     await runtime.closeAll();

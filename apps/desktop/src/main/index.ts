@@ -158,8 +158,7 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
-import { tryFastAct } from './fast-act-chat';
-import { configureFastAct, fastActEnabled } from './fast-act-runner';
+import { configureFastAct, decisionPost } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
 import { parseWakeWords } from './voice-wake';
@@ -2102,6 +2101,7 @@ function syncMcp(): void {
     // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
     (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
     revealBrowserPage,
+    decisionPost,
   );
   getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
@@ -2568,9 +2568,8 @@ ipcMain.handle(
     return getClient().voice.transcribe(blob, language);
   },
 );
-// 빠른 브라우저 조작(실험) — 설정 fastAct 를 켜고 로그인했을 때 XGEN 판단 API 로 묻는다.
-// 판단 결과로 바로 조작하고, 실패하면 늘 서버 에이전트로 넘어가므로 401 이 로그아웃으로 번지지 않게
-// auth: false 로 부르고, 인증 오류면 토큰을 한 번 회전해 다시 묻는다.
+// 단계별 브라우저 조작 — 현재 채팅 모델이 계획하고 이 판단 API로 실행 대상을 고른다.
+// 도구 오류가 로그아웃으로 번지지 않게 auth: false로 부르고 인증 오류는 토큰 회전 뒤 한 번 재시도한다.
 configureFastAct({
   enabled: () => loadConfig().fastAct === true && !!currentUserId(),
   post: async (body) => {
@@ -2588,13 +2587,14 @@ configureFastAct({
   },
   reveal: revealBrowserPage,
 });
-// 실험: 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다.
+// 실시간 음성 인식은 유지하되, 조작은 최종 발화를 받은 채팅 모델이 계획한 뒤 실행한다.
 const voiceStreams = new VoiceStreamHub(() =>
   currentUserId()
     ? {
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+        planBeforeAct: () => true,
         wakeWords: () => {
           const c = loadConfig();
           const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
@@ -3184,14 +3184,7 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 돌아, 모든 기능을 두 번 만들어야 했고 두 번째 구현은 늘 뒤처졌다.
       // 사용자 PC 는 이제 **도구**로만 참여한다(브라우저·Shell·로컬 MCP —
       // 서버 에이전트가 reverse-WS 카탈로그로 호출한다).
-      // 실험: 빠른 브라우저 조작 (설정 fastAct) — 단순한 브라우저 조작이면
-      // 이 PC 에서 끝내고 서버 턴을 만들지 않는다. 아니면 그대로 서버로.
-      if (fastActEnabled()) {
-        const emit = (ev: ChatEvent): void => {
-          if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);
-        };
-        if (await tryFastAct(serverReq, emit, controller.signal)) return;
-      }
+      // 현재 대화 모델이 계획을 맡는다. decider 실행·검증은 BrowserInteract(step) 도구로 돌아온다.
       for await (const ev of getClient().chat.stream(serverReq, controller.signal)) {
         if (sender.isDestroyed()) break;
         if (ev.kind === 'text') preview = (preview + ev.content).slice(-2_000);

@@ -1,6 +1,5 @@
 /**
- * 고속(빠른) 조작 공통 — 결정 모델 연결과 브라우저 탭 헬퍼. 채팅으로 시킨 것(fast-act-chat)과 말로 시킨 것
- * (voice-stream → fast-act-voice)이 같이 쓴다.
+ * 결정 모델 연결과 브라우저 탭 헬퍼. 단계별 BrowserInteract와 기존 음성 판단기가 같이 쓴다.
  *
  * 설정 `fastAct`(기본 꺼짐)를 켜고 로그인했을 때 켜진다. 결정 모델은 XGEN 판단 API
  * (`/api/base/v1/decision/systemone`)로 부른다. 개발 중에는 `DEX_FAST_ACT_URL` 로 판단 모델

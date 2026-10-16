@@ -21,6 +21,8 @@ import {
   BROWSER_TABS_TOOL,
   BrowserToolProvider,
   browserWaitCommand,
+  browserToolSchemas,
+  BROWSER_INTERACT_TOOL,
 } from '../src/main/browser-tools';
 import {
   BROWSER_PARTITION_PREFIX,
@@ -28,6 +30,47 @@ import {
   browserPartition,
   browserPathWithinRoots,
 } from '../src/main/browser-security';
+
+test('step execution is advertised only with a decider and dispatched with trusted workflow context', async () => {
+  const page: BrowserPageInfo = { pageId: 'step-page', workflowId: 'step-workflow', workflowName: 'Step', mode: 'shared', url: 'https://example.com/', title: 'Step', loading: 'idle', canGoBack: false, canGoForward: false, partition: 'test', generation: 1 };
+  let pending: Promise<void> | null = null;
+  const runtime = {
+    state: () => ({ pages: [page], activeByWorkflow: { 'step-workflow': page.pageId } }),
+    get: (id: string) => id === page.pageId ? page : null,
+    resolvePage: async (wid: string, id: string, create: boolean) => {
+      assert.equal(wid, page.workflowId);
+      assert.equal(id, page.pageId);
+      assert.equal(create, false);
+      if (pending) await pending;
+      return { info: page };
+    },
+    runAgentCommand: async () => ({ page, result: { data: { refs: {}, snapshot: 'Step page' } } }),
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true);
+  const disabled = browserToolSchemas().find((t) => t.name === BROWSER_INTERACT_TOOL)!;
+  assert.doesNotMatch(disabled.description!, /action="step"/);
+  await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { action: 'step' }, { workflowId: page.workflowId }), /decider/);
+  provider.configure(true, () => [], () => {}, () => async () => ({}));
+  const schema = provider.advertise().find((t) => t.name === BROWSER_INTERACT_TOOL)!;
+  assert.match(schema.description!, /current conversation model/);
+  const properties = schema.inputSchema!.properties as Record<string, { enum?: string[] }>;
+  assert.ok(properties.action.enum!.includes('step'));
+  assert.ok(properties.operation.enum!.includes('move'), 'legacy mouse operations stay valid');
+  const args = { action: 'step', operation: 'observe', instruction: '주소 확인', expect: [{ kind: 'url', value: page.url }] };
+  const output = await provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId });
+  assert.match(JSON.stringify(output), /completed/);
+  await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { ...args, workflow_id: 'other' }, { workflowId: page.workflowId }), /일치하지/);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId, signal: controller.signal }), /cancelled/);
+  let release!: () => void;
+  pending = new Promise<void>((resolve) => { release = resolve; });
+  const first = provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId });
+  await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId }), /이전 단계/);
+  release();
+  await first;
+});
 
 test('browser scheme allowlist normalizes host input and blocks privileged schemes', () => {
   assert.equal(allowedBrowserUrl('example.com')?.startsWith('https://example.com'), true);

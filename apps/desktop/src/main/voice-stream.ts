@@ -1,5 +1,5 @@
 /**
- * 실시간 음성 → 말하는 도중 실행 (실험).
+ * 실시간 음성 인식. 데스크톱은 planBeforeAct로 최종 발화 뒤의 채팅 계획을 기다린다.
  *
  * 렌더러가 마이크 소리(PCM16 16 kHz 모노)를 보내면 XGEN 실시간 STT(`WS /api/audio/stt/stream`,
  * 서버가 슬라이딩 창으로 다시 받아 적고 Silero VAD 로 토막을 끊는다)로 흘리고, 중간 결과를
@@ -39,6 +39,8 @@ export type VoiceStreamDeps = {
   allowPrivateCertificate: () => boolean;
   /** 호출어 목록 — null 이면 호출어로만 듣기가 꺼져 있다. */
   wakeWords: () => string[] | null;
+  /** 현재 채팅 모델이 계획한 뒤 실행하도록 중간 인식의 조작을 보류한다. */
+  planBeforeAct?: () => boolean;
 };
 
 export type VoiceStreamEvent =
@@ -93,6 +95,7 @@ class VoiceSession {
   private readonly t0 = now();
   private readonly agent: BrowserVoiceAgent;
   private readonly seg: Segmenter;
+  private readonly deferActions: boolean;
   private readonly timeline: TimelineEntry[] = [];
   private audioEndMs: number | null = null;
   /** 받는 중인가 — 호출어로만 듣기가 꺼져 있거나, 호출어를 들었거나, 호출어 없이 받는 세션. */
@@ -114,8 +117,9 @@ class VoiceSession {
     private wake: WakeGate | null = null,
   ) {
     this.woke = !wake || wake.awake;
+    this.deferActions = sttOnly || deps.planBeforeAct?.() === true;
     this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }));
-    if (!sttOnly && this.woke) this.agent.prefetch();
+    if (!this.deferActions && this.woke) this.agent.prefetch();
     this.seg = new Segmenter(
       this.agent,
       (e) => {
@@ -216,7 +220,7 @@ class VoiceSession {
         this.mark('partial', full);
         this.emit({ sessionId: this.id, type: 'partial', text: full });
       }
-      if (this.sttOnly) return;
+      if (this.deferActions) return;
       this.agent.prefetch(); // 화면을 뒤에서 새로 읽어 둔다(1초 지났으면)
       // 토막 끝(final)은 마지막 단어까지 확정 — 글자가 같아도 확정 신호로 넘긴다.
       if (m.type === 'final') this.seg.confirm(full);
@@ -276,7 +280,7 @@ class VoiceSession {
       return { text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
     }
     const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : '');
-    if (!this.sttOnly) await this.seg.final(text);
+    if (!this.deferActions) await this.seg.final(text);
     this.close();
     const result: VoiceStreamResult = {
       text,
@@ -286,7 +290,7 @@ class VoiceSession {
       timeline: this.timeline,
       wake: !this.wake ? 'off' : this.heardWake && !text ? 'called' : 'heard',
     };
-    if (text && !this.sttOnly) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
+    if (text && !this.deferActions) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
     diag(SCOPE, 'end', {
       id: this.id,
       text,
@@ -304,7 +308,7 @@ class VoiceSession {
   async decideText(text: string): Promise<VoiceStreamResult> {
     this.audioEndMs = 0;
     const t = norm(text);
-    await this.seg.final(t);
+    if (!this.deferActions) await this.seg.final(t);
     const actions = [...this.agent.actions];
     return { text: t, actions, unhandled: this.seg.unhandled, audioEndMs: 0, timeline: this.timeline, wake: 'off' };
   }

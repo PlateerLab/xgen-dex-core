@@ -158,7 +158,8 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
-import { configureFastAct, fastActEnabled, tryFastAct } from './fast-act-runner';
+import { tryFastAct } from './fast-act-chat';
+import { configureFastAct, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
 import { parseWakeWords } from './voice-wake';

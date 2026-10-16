@@ -115,8 +115,29 @@ export const sessionStore = new SessionStore({
     name,
     mimeType,
     bytes,
-  }) =>
-    xgen.agentData.workspaceUpload(workflowId, bytes, name, mimeType, interactionId, attachmentId),
+    fileRef,
+    uploadId,
+    onProgress,
+  }) => {
+    // 디스크의 파일 — main 이 디스크에서 조각으로 올린다(1GiB, 진행률·취소).
+    if (fileRef && xgen.agentData.workspaceUploadStaged) {
+      return xgen.agentData.workspaceUploadStaged(
+        uploadId ?? `up-${crypto.randomUUID()}`,
+        fileRef,
+        workflowId,
+        name,
+        mimeType,
+        interactionId,
+        attachmentId,
+        onProgress,
+      );
+    }
+    if (!bytes) throw new Error('첨부 파일을 읽지 못했습니다. 파일을 다시 첨부해 주세요.');
+    return xgen.agentData.workspaceUpload(workflowId, bytes, name, mimeType, interactionId, attachmentId);
+  },
+  cancelWorkspaceUpload: (uploadId) => {
+    void xgen.agentData.cancelWorkspaceUpload?.(uploadId).catch(() => undefined);
+  },
 });
 
 /** Subscribe a component to the whole session snapshot. */

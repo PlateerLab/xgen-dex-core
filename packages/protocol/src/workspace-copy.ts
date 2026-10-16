@@ -21,9 +21,10 @@ export const COPY_FROM_WORKSPACE_TOOL = 'CopyFromWorkspace';
 /** 한 번의 복사가 옮길 수 있는 양. 넘는 것은 건너뛰고 결과에 이유를 적는다. */
 export const WORKSPACE_COPY_LIMITS = {
   maxFiles: 300,
-  /** 서버 채팅 첨부 한도(GENY_CHAT_ATTACHMENT_MAX_BYTES 기본)와 같다. */
-  maxFileBytes: 100 * 1024 * 1024,
-  maxTotalBytes: 1024 * 1024 * 1024,
+  /** 플랫폼 업로드 상한(조각 업로드 1GiB) — 서버 채팅 첨부 한도(GENY_CHAT_ATTACHMENT_MAX_BYTES 기본)와 같다. */
+  maxFileBytes: 1024 * 1024 * 1024,
+  /** 한 번의 복사 총량 — 서버의 파일 저장소 → 작업 공간 복사(filestore_copy)와 같다. */
+  maxTotalBytes: 4 * 1024 * 1024 * 1024,
   maxDepth: 8,
 } as const;
 

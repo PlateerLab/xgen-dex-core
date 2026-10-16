@@ -39,7 +39,7 @@ import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
 import { TeamsApi } from './teams';
 import { VoiceApi } from './voice';
-import { ApiError, HttpClient, type FetchLike } from './client';
+import { ApiError, HttpClient, type FetchLike, type HttpClientOptions } from './client';
 import type { CurrentUser, LoginResult } from './types';
 
 export interface XgenClientOptions {
@@ -55,6 +55,10 @@ export interface XgenClientOptions {
    * 대화 소켓)가 폐기된 토큰으로 접속하다 403 을 맞지 않는다.
    */
   onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
+  /** 조각 업로드의 이어 올리기 기록(재시작 후에도 이어 올린다). 없으면 프로세스 안에서만. */
+  uploadStore?: HttpClientOptions['uploadStore'];
+  /** React Native: `{ uri }` 파일을 범위로 읽는 소스로 바꾼다 — 있으면 큰 파일도 조각으로 올린다. */
+  uriSource?: HttpClientOptions['uriSource'];
 }
 
 /**
@@ -107,6 +111,8 @@ export class XgenClient {
       baseUrl: opts.baseUrl,
       fetch: opts.fetch,
       onAuthFailure: opts.onAuthFailure,
+      uploadStore: opts.uploadStore,
+      uriSource: opts.uriSource,
     });
     if (opts.accessToken) this.http.setToken(opts.accessToken);
     this.refreshToken = opts.refreshToken;
@@ -288,6 +294,8 @@ export * from './file-view';
 export * from './chat-files';
 export * from './turn-files';
 export * from './workspace-copy';
+export * from './resumable-upload';
+export * from './sha256';
 export * from './app-card';
 export * from './shares';
 export * from './filestore';
@@ -315,6 +323,7 @@ export * from './feedback';
 // 채팅 안전 장치 — 면책 문구 설정과 민감정보 검사(둘 다 서버가 정한다).
 export * from './chat-guardrails';
 export { ApiError } from './client';
+export type { HttpClientOptions, UploadFileData, UploadFormPart, UploadOptions } from './client';
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';
 export { STREAM_IDLE_MS, TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';

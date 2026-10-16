@@ -90,6 +90,7 @@ import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
 import { VoiceLoopBar, type VoiceLogEntry } from '../voice/VoiceLoopBar';
 import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
 import { parseWakeWords, WAKE_WINDOW_MS } from '../../../main/voice-wake';
+import { formatBytes } from './teams-store';
 
 /** [Trigger] 행 — Job/sub-agent 결과가 세션을 깨운 턴.
  *
@@ -215,6 +216,11 @@ const ToolActivity: React.FC<{
     </div>
   );
 };
+
+/** 첨부 업로드 진행률(0~100). 전체가 0 이면(빈 목록) 100 으로 본다. */
+function uploadPercent(p: { loaded: number; total: number }): number {
+  return p.total > 0 ? Math.min(100, Math.floor((p.loaded / p.total) * 100)) : 100;
+}
 
 /** TTS 용 텍스트 정리 — 코드블록/마크다운 기호/링크를 걷어내 읽을 문장만 남긴다. */
 function cleanForSpeech(text: string): string {
@@ -904,7 +910,7 @@ export const Chat: React.FC<{
         return;
       }
       if (attachmentBytes > CHAT_IMAGE_MAX_TOTAL_BYTES) {
-        setImageNotice('브라우저 캡처를 포함한 첨부 파일 전체 크기는 250MiB를 넘을 수 없습니다.');
+        setImageNotice('브라우저 캡처를 포함한 첨부 파일 전체 크기는 4GiB를 넘을 수 없습니다.');
         return;
       }
       if (override === undefined) {
@@ -1606,6 +1612,14 @@ export const Chat: React.FC<{
                       <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
                     ) : m.text ? (
                       <Markdown text={answerFiles?.text ?? m.text} />
+                    ) : m.streaming && m.uploadProgress ? (
+                      // 큰 첨부(최대 1GiB)를 올리는 동안 — 답은 다 올린 뒤에 시작된다.
+                      <span className="chat-upload-progress" role="status">
+                        파일을 올리는 중… {uploadPercent(m.uploadProgress)}%
+                        <span className="chat-upload-bytes">
+                          {' '}({formatBytes(m.uploadProgress.loaded)} / {formatBytes(m.uploadProgress.total)})
+                        </span>
+                      </span>
                     ) : (
                       m.streaming && <span className="cursor" />
                     )

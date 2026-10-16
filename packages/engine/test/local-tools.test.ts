@@ -178,12 +178,14 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   await writeFile(join(dir, 'docs', 'sub', 'c.hwp'), 'CCC');
   await writeFile(join(dir, 'docs', '.hidden'), 'x');
   const { p } = provider({ c: [dir] });
-  const uploads: Array<{ name: string; relDir: string; size: number; wf: string; conv: string }> = [];
+  const uploads: Array<{ name: string; relDir: string; size: number; wf: string; conv: string; text: string }> = [];
   p.configureWorkspaceTransfer({
     upload: async (input) => {
-      uploads.push({ name: input.name, relDir: input.relDir, size: input.bytes.byteLength, wf: input.workflowId, conv: input.interactionId });
+      // 파일은 디스크를 범위로 읽는 소스로 온다(통째로 읽지 않는다).
+      const text = new TextDecoder().decode(await input.file.read(0, input.file.size));
+      uploads.push({ name: input.name, relDir: input.relDir, size: input.file.size, wf: input.workflowId, conv: input.interactionId, text });
       const rel = [input.relDir, input.name].filter(Boolean).join('/');
-      return { path: `uploads/users_1/c/${rel}`, size: input.bytes.byteLength, sha256: 'h' };
+      return { path: `uploads/users_1/c/${rel}`, size: input.file.size, sha256: 'h' };
     },
     download: async () => new Uint8Array(),
   });
@@ -194,8 +196,8 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   );
   assert.equal(r.isError, undefined);
   assert.deepEqual(
-    uploads.map((u) => `${u.relDir}|${u.name}|${u.size}|${u.wf}|${u.conv}`),
-    ['|a.docx|1|wf-1|c', 'docs|b.pdf|2|wf-1|c', 'docs/sub|c.hwp|3|wf-1|c'],
+    uploads.map((u) => `${u.relDir}|${u.name}|${u.size}|${u.wf}|${u.conv}|${u.text}`),
+    ['|a.docx|1|wf-1|c|A', 'docs|b.pdf|2|wf-1|c|BB', 'docs/sub|c.hwp|3|wf-1|c|CCC'],
   );
   assert.deepEqual(
     (r.structuredContent?.workspaceFiles as Array<{ path: string }>).map((f) => f.path),

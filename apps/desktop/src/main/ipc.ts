@@ -21,6 +21,8 @@ export const CHANNELS = {
   userSaveAvatarTransform: 'user:saveAvatarTransform', // per-avatar transform patch (read-modify-write)
   // 아바타 설정 뷰 (등록/이름/선택/삭제 + 스토어) — 전부 main 의 XgenClient 경유
   avatarUploadAsset: 'avatar:uploadAsset',
+  /** 디스크의 아바타 zip 을 경로로(통째로 읽어 넘기지 않는다). */
+  avatarUploadFile: 'avatar:uploadFile',
   avatarDeleteAsset: 'avatar:deleteAsset',
   avatarSetEnabled: 'avatar:setEnabled',
   avatarSelect: 'avatar:select',
@@ -173,6 +175,11 @@ export const CHANNELS = {
   agentWsDocPreview: 'agent:wsDocPreview',
   agentWsPreviewPage: 'agent:wsPreviewPage',
   agentWsUpload: 'agent:wsUpload',
+  /** 디스크의 파일을 조각 업로드로(1GiB) — 경로는 preload 가 고른 파일에서만 얻는다. */
+  agentWsUploadFile: 'agent:wsUploadFile',
+  agentWsUploadCancel: 'agent:wsUploadCancel',
+  /** main → renderer: (uploadId, loaded, total) */
+  agentWsUploadProgress: 'agent:wsUploadProgress',
   /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일)의 바이트. */
   chatFileDownload: 'chat:fileDownload',
 

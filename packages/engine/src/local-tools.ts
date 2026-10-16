@@ -66,8 +66,10 @@ import {
   workspaceCopySchemas,
   workspaceDownloadOf,
   type CopiedFile,
+  type ResumableSource,
   type SkippedFile,
 } from '@dex/protocol';
+import { fileSource } from './file-source';
 import { dangerousCommandPrompt, isDangerousShellCommand } from './dangerous-commands';
 import {
   USER_PC_JOB_TOOL,
@@ -135,11 +137,14 @@ export const FOLDER_TOOL_NAMES: ReadonlySet<string> = new Set([
  * 엔진은 서버 주소도 토큰도 모르므로 이 포트가 없으면 복사 도구를 광고하지 않는다.
  */
 export interface WorkspaceTransfer {
-  /** 이 대화의 첨부 폴더(하위 폴더 `relDir`)로 올린다. 같은 이름은 덮어쓴다. */
+  /**
+   * 이 대화의 첨부 폴더(하위 폴더 `relDir`)로 올린다. 같은 이름은 덮어쓴다.
+   * `file` 은 디스크를 범위로 읽는 소스(`fileSource`)다 — 1GiB 파일도 통째로 읽지 않는다.
+   */
   upload(input: {
     workflowId: string;
     interactionId: string;
-    bytes: Uint8Array;
+    file: ResumableSource;
     name: string;
     relDir: string;
     mimeType: string;
@@ -1599,11 +1604,10 @@ export class LocalToolProvider {
     const copied: CopiedFile[] = [];
     for (const item of plan) {
       try {
-        const bytes = await fsReadFile(item.abs);
         const res = await transfer.upload({
           workflowId,
           interactionId,
-          bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          file: await fileSource(item.abs),
           name: basename(item.abs),
           relDir: item.relDir,
           mimeType: 'application/octet-stream',

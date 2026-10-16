@@ -163,7 +163,7 @@ export class Segmenter {
     const prefixes: string[] = [];
     for (let k = w.length - 1; k >= 2 && prefixes.length < 3; k--) prefixes.push(w.slice(0, k).join(' '));
     if (!prefixes.length) return null;
-    const r = await this.agent.readiness(prefixes);
+    const r = await this.agent.readiness(prefixes).catch(() => []);
     for (let i = 0; i < prefixes.length; i++) if (r[i]?.ready === 'act_now' && r[i].p >= th.intent) return prefixes[i];
     return null;
   }
@@ -252,7 +252,8 @@ export class Segmenter {
         let outcome: Outcome | undefined;
         let cand = rest;
         if (after) {
-          const b = await this.agent.boundary(text, this.lastSeg, words(rest));
+          // 결정 모델 오류면 남은 말 전체를 새 요청으로 본다 — 못 하면 최종에서 서버로 간다(꼬리말로 치면 버려진다).
+          const b = await this.agent.boundary(text, this.lastSeg, words(rest)).catch(() => ({ start: 0, conf: 0 }));
           if (my !== this.epoch) return;
           if (b.start < 0) {
             // 중간 인식에서는 자르지 않는다 — 뒷말이 아직 안 들어와서 꼬리말처럼 보일 수 있다.
@@ -293,6 +294,9 @@ export class Segmenter {
             let o: Outcome | undefined;
             try {
               o = await this.agent.handle(target, th, guard, abort, text);
+            } catch (err) {
+              // 판단·실행 중 오류(결정 모델 응답 없음 등) — 못 한 것으로 친다. 던지면 final() 이 끝나지 않는다.
+              o = { acted: false, reason: `오류 ${err instanceof Error ? err.message : String(err)}`, ms: 0 };
             } finally {
               // 실행했으면 세대가 바뀌었어도 기록한다 — 화면은 이미 바뀌었다.
               if (o?.acted) {

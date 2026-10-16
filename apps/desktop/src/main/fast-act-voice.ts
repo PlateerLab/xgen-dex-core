@@ -5,7 +5,8 @@
  * 스냅샷은 실행이 일어날 때까지 재사용한다(말하는 동안 중간 결과가 여러 번 들어와도 화면은 그대로다).
  * 실행 뒤에는 화면이 바뀌므로 버린다.
  *
- * 말로 하는 조작이라 채팅 고속 경로보다 보수적인 규칙을 더한다(mac-fastact 와 같은 규칙):
+ * 채팅으로 시킨 빠른 조작(fast-act-chat)도 이 판단·실행기를 쓴다 — 같은 말에 같은 일을 하도록.
+ * 결정 모델 답 위에 보수적인 규칙을 더한다(mac-fastact 와 같은 규칙):
  *   · 입력칸을 누르기만 하는 건 아무것도 이루지 못한다 — 하지 않는다.
  *   · 중간 인식에서 글자 넣기는 넣을 글자 뒤에 글자 넣기 말("검색해", "입력해")이 온 뒤에만.
  *   · 되돌릴 수 없을 수 있는 동작(삭제·로그아웃 …)은 여기서 하지 않고 서버(확인 절차가 있는 경로)로 넘긴다.
@@ -80,7 +81,14 @@ export type VoiceAction = {
   /** 세션 시작부터 실행(클릭·입력 완료)까지. */
   at: number;
   url?: string;
+  /** 실행 전 페이지 주소 — 답에서 다른 사이트로 갔는지 볼 때 쓴다. */
+  from?: string;
+  /** 이동한 페이지의 새 제목 — 주소만 바뀌고 제목은 아직 이전 페이지 것이면 없다. */
+  title?: string;
+  /** 다른 페이지가 열렸는가(같은 탭 이동 또는 새 탭). */
   navigated: boolean;
+  /** 누른 링크가 새 탭으로 열렸다 — url·title 은 새 탭의 것. */
+  newTab?: boolean;
   /** 누르려던 요소를 가린 팝업을 먼저 닫았으면 그 요소 이름(또는 Escape). */
   dismissed?: string;
 };
@@ -101,6 +109,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private last: string | null = null;
   /** 이번 판단 전에 닫은 팝업 — 다음 실행 기록에 붙인다. */
   private dismissed: string | null = null;
+  /** 실행 직전 이 에이전트의 탭 — 누른 링크가 새 탭을 열었는지 볼 때 쓴다. */
+  private tabsAtAct = new Set<string>();
 
   constructor(
     private workflowId: string,
@@ -110,6 +120,26 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
   get lastTarget(): string | null {
     return this.last;
+  }
+
+  /** 실행 직전 — 조작할 탭을 화면에 꺼내고, 지금 있는 탭을 기억한다. */
+  private beforeAct(page: NonNullable<ReturnType<typeof visiblePage>>): void {
+    this.tabsAtAct = new Set(getBrowserRuntime().state().pages.filter((p) => p.workflowId === this.workflowId).map((p) => p.pageId));
+    revealForAct(page);
+  }
+
+  /**
+   * 누른 링크가 새 탭을 열었으면 그 탭 — 새 탭은 빈 주소(about:blank)로 생겼다가 이동하므로 잠깐 기다린다.
+   * 원래 탭의 주소가 바뀌었으면(같은 탭 이동) 보지 않는다.
+   */
+  private async openedTab(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<ReturnType<typeof visiblePage>> {
+    const t = now();
+    for (;;) {
+      const front = visiblePage(this.workflowId);
+      if (!front || front.pageId === page.pageId || this.tabsAtAct.has(front.pageId)) return null;
+      if ((front.url && front.url !== 'about:blank') || now() - t > 1_500) return front;
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 
   /**
@@ -244,7 +274,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     let closed: string | null = null;
     if (ref) {
-      revealForAct(s.page);
+      this.beforeAct(s.page);
       try {
         await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${ref}`], 10_000, s.snap.gen);
         closed = s.snap.refs[ref].name ?? ref;
@@ -305,7 +335,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!typed) return null;
     const action: ActionKind = SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : 'type';
     const runtime = getBrowserRuntime();
-    revealForAct(s.page);
+    this.beforeAct(s.page);
     const tAct = now();
     try {
       await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['fill', `@${pick.ref}`, typed], 10_000, s.snap.gen);
@@ -333,10 +363,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.version++;
     this.snap = null; // 화면이 바뀐다
     const settled = await waitSettled(page.pageId, page);
+    const opened = settled.navigated ? null : await this.openedTab(page);
     this.version++;
     this.snap = null; // 반영을 기다리는 사이 읽은 화면도 버린다
     const label = elementLabel(element);
     this.last = label;
+    const after = opened ?? (settled.navigated ? settled.page : null);
+    const title = after?.title?.trim();
     const done: VoiceAction = {
       said,
       label,
@@ -347,8 +380,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
       decideMs: Math.round(decideMs),
       actMs: Math.round(actMs),
       at: Math.round(at),
-      url: settled.page?.url,
-      navigated: settled.navigated,
+      url: after?.url ?? settled.page?.url,
+      from: page.url,
+      ...(title && title !== page.title && !/^[a-z]+:\/\//i.test(title) ? { title } : {}),
+      navigated: !!after,
+      ...(opened ? { newTab: true } : {}),
       ...(this.dismissed ? { dismissed: this.dismissed } : {}),
     };
     this.dismissed = null;
@@ -374,7 +410,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (ch.close && (th.partial || pick.confidence < CHROME_CLOSE_PICK)) return no(`탭 닫기는 말이 끝난 뒤 확신 ${CHROME_CLOSE_PICK} 이상에서`);
     if (!(await guard(ch.name, 'press', pick.confidence))) return no(GUARDED);
     const decideMs = now() - t0;
-    revealForAct(page);
+    this.beforeAct(page);
     const tAct = now();
     try {
       await ch.run();
@@ -500,7 +536,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
     const runtime = getBrowserRuntime();
     const ref = `@${pick.ref}`;
-    revealForAct(page);
+    this.beforeAct(page);
     const tAct = now();
     try {
       if (action === 'click') {

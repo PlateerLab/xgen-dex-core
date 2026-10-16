@@ -260,6 +260,26 @@ export function placeBrowserBesideChat(
   return next;
 }
 
+/**
+ * 탭 줄의 [+](브라우저 열기) — 에이전트가 연 브라우저와 같은 자리에 둔다: 같은 에이전트의 채팅이 열려 있으면
+ * 그 채팅 옆(placeBrowserBesideChat), 없으면 누른 그룹에 탭으로. 채팅과 같은 그룹에 쌓여 있던 브라우저도 옆으로 꺼낸다.
+ * 같은 자리에 겹쳐 두고 싶으면 탭을 끌어 그룹 가운데에 놓는다.
+ */
+export function openBrowserTab(
+  layout: WorkspaceLayout,
+  groupId: string,
+  browserTab: WorkspaceTab,
+): WorkspaceLayout {
+  const hasChat = layout.groups.some((group) =>
+    group.tabs.some((tab) => tab.kind === 'chat' && !!browserTab.workflowId && tab.workflowId === browserTab.workflowId),
+  );
+  if (hasChat) return placeBrowserBesideChat(layout, browserTab);
+  const existing = findTab(layout, browserTab.id);
+  return existing
+    ? selectWorkspaceTab(layout, existing.group.id, browserTab.id)
+    : addWorkspaceTab(layout, groupId, browserTab);
+}
+
 export function removeWorkspaceTab(layout: WorkspaceLayout, tabId: string): WorkspaceLayout {
   const groups = layout.groups
     .map((group) => {

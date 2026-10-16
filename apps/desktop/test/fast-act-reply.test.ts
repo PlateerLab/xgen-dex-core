@@ -74,6 +74,14 @@ test('입력은 칸과 글자로 — 검색칸 제출은 검색했다고', () =>
   );
 });
 
+test('닫은 알림창 문구는 답에 그대로 전한다', () => {
+  assert.equal(
+    actionSentence(act({ display: '"판매가" 입력칸', action: 'type', text: '15000', notices: ['가격정보 입력전에 협력사를 먼저 입력해 주세요.'] })),
+    '"판매가" 입력칸에 "15000"을 입력했어요. 화면에 뜬 알림 "가격정보 입력전에 협력사를 먼저 입력해 주세요."를 닫았어요.',
+  );
+  assert.equal(actionRow(act({ notices: ['a'] }), false), '"블로그" 탭 · 클릭 · 알림 닫음(1) · 판단 672ms · 실행 64ms');
+});
+
 test('답에는 시간·판단 점수가 없고, 작업 과정 줄에만 있다', () => {
   const actions = [act({}), act({ display: '"첫 글" 링크', said: '첫 글 열어' })];
   const reply = replyFor(actions);

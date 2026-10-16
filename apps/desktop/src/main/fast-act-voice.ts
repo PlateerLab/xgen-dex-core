@@ -30,14 +30,19 @@ import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
 import { FIELD_LABEL_SCRIPT, labelFields, refOrder, withoutLabel, withoutLeadingLabel, type FieldLabel } from './fast-act-labels';
+import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
 /** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이. */
 const SNAP_TTL_MS = 3_000;
 const SNAP_REFRESH_MS = 1_000;
-/** 칸 이름 읽기(페이지 스크립트) 한도 — 보통 수 ms(BO 상품 등록 31칸 1ms), 알림창이 페이지를 막으면 포기하고 이름 없이 간다. */
-const LABEL_TIMEOUT_MS = 1_500;
+/** 페이지 스크립트(칸 이름 읽기·알림창 닫기) 한도 — 보통 수 ms(BO 상품 등록 31칸 1ms), 페이지가 멈추면 포기한다. */
+const PAGE_SCRIPT_MS = 1_500;
+/** 알림창을 닫고 화면이 돌아올 때까지 — 닫힘 애니메이션. */
+const NOTICE_SETTLE_MS = 250;
+/** 한 지시에서 닫는 알림창 수 상한 — 닫을 때마다 새 알림이 뜨는 화면에서 멈추지 않게. */
+const NOTICE_MAX = 3;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
@@ -94,6 +99,8 @@ export type VoiceAction = {
   newTab?: boolean;
   /** 누르려던 요소를 가린 팝업을 먼저 닫았으면 그 요소 이름(또는 Escape). */
   dismissed?: string;
+  /** 판단 전·실행 뒤에 닫은 알림창의 문구(fast-act-notice) — 답에서 사용자에게 전한다. */
+  notices?: string[];
 };
 
 /** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
@@ -113,6 +120,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private last: string | null = null;
   /** 이번 판단 전에 닫은 팝업 — 다음 실행 기록에 붙인다. */
   private dismissed: string | null = null;
+  /** 이번 지시에서 닫은 알림창 문구 — 다음 실행 기록에 붙인다. */
+  private noticed: string[] = [];
   /** 실행 직전 이 에이전트의 탭 — 누른 링크가 새 탭을 열었는지 볼 때 쓴다. */
   private tabsAtAct = new Set<string>();
 
@@ -174,7 +183,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const runtime = getBrowserRuntime();
     // 칸 이름이 연결되지 않은 입력칸의 칸 이름 — 스냅샷과 같이 읽는다(수 ms 라 스냅샷 시간 안에 끝난다).
     const fields = runtime
-      .pageScript<FieldLabel[]>(this.workflowId, page.pageId, FIELD_LABEL_SCRIPT, LABEL_TIMEOUT_MS)
+      .pageScript<FieldLabel[]>(this.workflowId, page.pageId, FIELD_LABEL_SCRIPT, PAGE_SCRIPT_MS)
       .catch(() => null);
     const p = runtime
       .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
@@ -261,6 +270,22 @@ export class BrowserVoiceAgent implements VoiceAgent {
         return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
+  }
+
+  /** 확인 하나뿐인 알림창이 떠 있으면 닫는다(fast-act-notice) — 닫았으면 화면을 다시 읽게 하고 문구를 남긴다. */
+  private async closeNotice(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<Notice | null> {
+    const notice = await getBrowserRuntime()
+      .pageScript<Notice | null>(this.workflowId, page.pageId, NOTICE_SCRIPT, PAGE_SCRIPT_MS)
+      .catch(() => null);
+    if (!notice) return null;
+    this.version++;
+    this.snap = null;
+    await new Promise((r) => setTimeout(r, NOTICE_SETTLE_MS));
+    this.version++;
+    this.snap = null; // 닫히는 사이 읽은 화면도 버린다
+    this.noticed.push(notice.text);
+    diag(SCOPE, 'notice', notice);
+    return notice;
   }
 
   /**
@@ -376,6 +401,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.version++;
     this.snap = null; // 화면이 바뀐다
     const settled = await waitSettled(page.pageId, page);
+    // 실행이 띄운 알림(입력 검사 등) — 닫고 문구를 답에 붙인다.
+    if (!settled.navigated) await this.closeNotice(page);
     const opened = settled.navigated ? null : await this.openedTab(page);
     this.version++;
     this.snap = null; // 반영을 기다리는 사이 읽은 화면도 버린다
@@ -399,8 +426,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
       navigated: !!after,
       ...(opened ? { newTab: true } : {}),
       ...(this.dismissed ? { dismissed: this.dismissed } : {}),
+      ...(this.noticed.length ? { notices: [...this.noticed] } : {}),
     };
     this.dismissed = null;
+    this.noticed = [];
     this.actions.push(done);
     this.onAct?.(done);
     diag(SCOPE, 'act', { ...done, snapMs: Math.round(snapMs), pick: Number(pick.confidence.toFixed(3)), top: pick.top });
@@ -439,6 +468,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
     this.deciding++;
+    this.noticed = [];
     try {
       const o = await this.handleOnce(text, th, guard, abort, utterance);
       // 판단에 쓴 스냅샷이 그사이 바뀌었으면(요소 번호 만료) 화면을 새로 읽어 한 번만 다시 판단한다.
@@ -489,6 +519,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return no(`기다림 ${cls.ready} ${rc}`);
     }
     if (abort()) return no('판단 취소(새 인식)');
+    // 화면 조작 지시인데 알림창이 화면을 막고 있다 — 닫고 새 화면으로 다시 판단한다.
+    if (this.noticed.length < NOTICE_MAX && (await this.closeNotice(page))) return this.handleOnce(text, th, guard, abort, utterance);
 
     // 입력 요청(동작이 입력이고 글자가 있고 말에 글자 넣기 말이 있음)이면 입력칸만 후보로 — 검색 버튼 대신 검색창.
     const wantsType = cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);

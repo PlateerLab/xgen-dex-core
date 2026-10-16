@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  labelClickables,
   labelFields,
   refOrder,
   withoutLabel,
@@ -114,4 +115,58 @@ test('넣을 글자 앞의 칸 이름(조사 포함)을 뗀다 — 남는 글자
   assert.equal(withoutLeadingLabel('원산지', '원산지'), '원산지');
   assert.equal(withoutLeadingLabel('원산지표시 없음', '원산지'), '원산지표시 없음');
   assert.equal(withoutLeadingLabel('원산지에 대한민국', undefined), '원산지에 대한민국');
+});
+
+// 관리자 폼의 찾기 칸 — 제목 아래 역할 없는 누름 상자(빈 칸 / 고른 값이 든 칸)와 칸이 아닌 것들.
+const BOX_SNAPSHOT = [
+  '- region "scrollable content" [ref=e1] focusable [tabindex]',
+  '  - button "협력사" [ref=e2]',
+  '- heading "협력사 *" [level=6, ref=e3]',
+  '- generic [ref=e4] clickable [cursor:pointer]',
+  '  - generic [ref=e5] clickable [cursor:pointer, onclick]',
+  '  - generic [ref=e6] clickable [cursor:pointer, onclick]',
+  '- heading "브랜드 *" [level=6, ref=e7]',
+  '- generic "LA5298   모디바" [ref=e8] clickable [cursor:pointer]',
+  '  - generic [ref=e9] clickable [cursor:pointer, onclick]',
+  '  - generic "LA5298   모디바" [ref=e10] clickable [cursor:pointer, onclick]',
+  '    - generic "LA5298" [ref=e11] clickable [cursor:pointer, tabindex]',
+  '  - button [ref=e12]',
+  '- heading "업체상품번호" [level=6, ref=e13]',
+  '- generic "" [ref=e14] clickable [onclick]',
+  '  - textbox [ref=e15]',
+  '- heading "동영상" [level=6, ref=e16]',
+  '- generic "업로드할 파일을 드래그 하거나 선택해 주세요" [ref=e17] clickable [cursor:pointer, onclick, tabindex]',
+  '- heading "추천 상품" [level=3, ref=e18]',
+  '- generic [ref=e19] clickable [cursor:pointer]',
+  '- generic [ref=e20] clickable [cursor:pointer]',
+  '- button [ref=e21]',
+  '- generic [ref=e22] clickable [cursor:pointer]',
+].join('\n');
+const boxRefs = (): ElementRefs => {
+  const refs: ElementRefs = {};
+  for (const m of BOX_SNAPSHOT.matchAll(/- (\w+)(?: "([^"]*)")?[^\n]*?ref=(e\d+)/g))
+    refs[m[3]] = { role: m[1], name: m[2] ?? '' };
+  return refs;
+};
+
+test('제목 아래 하나뿐인 누름 상자는 그 제목을 이름으로 한 선택 상자다 — 고른 값은 이름 뒤에', () => {
+  const { refs, labels } = labelClickables(boxRefs(), BOX_SNAPSHOT);
+  assert.deepEqual(labels, { e4: '협력사', e8: '브랜드' });
+  assert.deepEqual(refs.e4, { role: 'combobox', name: '협력사' });
+  assert.deepEqual(refs.e8, { role: 'combobox', name: '브랜드 LA5298 모디바' });
+  // 메뉴 버튼·입력칸을 감싼 상자·제 글이 있는 끌어 놓기 칸·제목 아래 여러 장(카드)은 그대로.
+  assert.deepEqual(refs.e2, { role: 'button', name: '협력사' });
+  assert.deepEqual(refs.e14, { role: 'generic', name: '' });
+  assert.deepEqual(refs.e17.role, 'generic');
+  assert.deepEqual(
+    [refs.e19.role, refs.e20.role, refs.e22.role],
+    ['generic', 'generic', 'generic'],
+  );
+});
+
+test('스냅샷 글이 비거나 요소 목록에 없는 번호면 붙이지 않는다', () => {
+  assert.deepEqual(labelClickables(boxRefs(), '').labels, {});
+  const refs = boxRefs();
+  delete refs.e4;
+  assert.deepEqual(labelClickables(refs, BOX_SNAPSHOT).labels, { e8: '브랜드' });
 });

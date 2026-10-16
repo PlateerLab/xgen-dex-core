@@ -161,6 +161,70 @@ export function labelFields(
   return { refs: out, labels };
 }
 
+type SnapLine = { depth: number; role: string; name: string; ref: string | null; pointer: boolean };
+
+/** 스냅샷 글 한 줄 — `  - role "name" [..., ref=eN] clickable [cursor:pointer, onclick]`. */
+function snapLine(line: string): SnapLine | null {
+  const m = line.match(/^(\s*)- (\w+)(?: "((?:[^"\\]|\\.)*)")?(.*)$/);
+  if (!m) return null;
+  return {
+    depth: m[1].length,
+    role: m[2],
+    name: (m[3] ?? '').replace(/\\(.)/g, '$1'),
+    ref: m[4].match(/\bref=(e\d+)\b/)?.[1] ?? null,
+    pointer: /\bclickable \[[^\]]*cursor:pointer/.test(m[4]),
+  };
+}
+
+/**
+ * 제목 아래 누름 상자에 그 제목을 칸 이름으로 붙인다 — 스냅샷 글만으로.
+ *
+ * 관리자 화면의 "찾기" 칸(협력사·브랜드·카테고리: 누르면 검색 팝업이 뜨는 상자)은 역할 없는 div 라 스냅샷에
+ * `generic [ref=e26] clickable [cursor:pointer]` 로만 나온다(값을 고른 뒤에는 이름이 값 "1001269 협력사_위_단").
+ * 칸 이름이 없어 판단 모델이 고를 수 없었고, "협력사 찾아줘" 는 왼쪽 메뉴의 "협력사" 를 눌렀다(10/16 BO).
+ * 화면 낭독기처럼 같은 깊이 바로 앞 줄이 제목이면 그 제목을 칸 이름으로 본다 — 제목과 다음 제목 사이에 이 상자
+ * 하나뿐일 때만(제목 아래 카드 여러 장은 칸이 아니다). 안에 입력칸이나 상자 글 밖의 이름이 있으면 건드리지 않는다.
+ */
+export function labelClickables(
+  refs: ElementRefs,
+  snapshotText: string,
+): { refs: ElementRefs; labels: Record<string, string> } {
+  const lines = snapshotText.split('\n').map(snapLine);
+  const out: ElementRefs = { ...refs };
+  const labels: Record<string, string> = {};
+  lines.forEach((l, i) => {
+    if (!l?.ref || l.role !== 'generic' || !l.pointer || !refs[l.ref]) return;
+    const value = squash(l.name);
+    let next = i + 1;
+    let pieces = 0;
+    for (; next < lines.length; next++) {
+      const c = lines[next];
+      if (!c) continue;
+      if (c.depth <= l.depth) break;
+      // 안에는 값 조각(상자 글의 일부)과 이름 없는 아이콘 버튼만.
+      if (c.role === 'generic' ? !value.includes(squash(c.name)) : c.role !== 'button' || c.name) return;
+      if (c.role === 'generic' && c.name) pieces++;
+    }
+    // 이름이 있으면 안쪽 값 조각으로 된 것(고른 값)만 — 제 글을 가진 상자(파일 끌어 놓기 칸 안내문 등)는 칸이 아니다.
+    if (value && !pieces) return;
+    const after = lines.slice(next).find((c) => c && c.depth <= l.depth);
+    if (after && (after.depth < l.depth || after.role !== 'heading')) return;
+    let before: SnapLine | null = null;
+    for (let j = i - 1; j >= 0 && !before; j--) {
+      const p = lines[j];
+      if (p && p.depth <= l.depth) before = p;
+    }
+    if (!before || before.depth < l.depth || before.role !== 'heading') return;
+    const label = before.name.replace(/[*:：]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!label || label.length > 30) return;
+    // 값을 고르는 칸이다 — 판단 모델은 이름 없는 상자(generic)는 거의 고르지 않아서(같은 이름의 메뉴 버튼이 1.0)
+    // 선택 상자로 보인다(누르면 목록·찾기 창이 열리는 칸, ARIA combobox 와 같은 뜻). 고른 값은 이름 뒤에.
+    out[l.ref] = { ...out[l.ref], role: 'combobox', name: value ? `${label} ${value}` : label };
+    labels[l.ref] = label;
+  });
+  return { refs: out, labels };
+}
+
 /**
  * 말에서 붙인 칸 이름을 뺀다(단어마다 처음 한 번) — "검색키워드에 노트북 넣어줘" 의 "검색"은 칸을 가리킨 말이지
  * 검색하라는 말이 아니다(검색칸으로 보고 Enter 를 누르면 폼이 제출될 수 있다).

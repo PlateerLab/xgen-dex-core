@@ -29,7 +29,15 @@ import {
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
-import { FIELD_LABEL_SCRIPT, labelFields, refOrder, withoutLabel, withoutLeadingLabel, type FieldLabel } from './fast-act-labels';
+import {
+  FIELD_LABEL_SCRIPT,
+  labelClickables,
+  labelFields,
+  refOrder,
+  withoutLabel,
+  withoutLeadingLabel,
+  type FieldLabel,
+} from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
@@ -192,7 +200,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const raw = (data?.refs ?? {}) as ElementRefs;
         const found = await fields;
         const named = Array.isArray(found) ? labelFields(raw, refOrder(data?.snapshot ?? ''), found) : { refs: raw, labels: {} };
-        return { at: now(), pageId: page.pageId, url: page.url, refs: named.refs, gen: run.page.generation, ms: now() - t, labels: named.labels };
+        // 이름 없는 누름 영역(검색 팝업을 여는 상자 등)은 바로 앞 제목으로.
+        const boxes = labelClickables(named.refs, data?.snapshot ?? '');
+        const labels = { ...named.labels, ...boxes.labels };
+        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;

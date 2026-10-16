@@ -72,6 +72,8 @@ const listLayer = (refs: ElementRefs): boolean => {
  * 항목에나 0.36~0.61 을 준다(10/16 BO). 값을 말한 지시는 0.99 이상("성인으로" → 만 19세 이상 0.989, "5일로" 0.999).
  */
 const CHOOSE_PICK = 0.85;
+/** 목록에서 자리로 고르는 말. */
+const POSITION_WORD = /(첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+)\s*번째|맨\s*(위|아래|앞|뒤|처음|끝)|마지막|first|second|third|last/i;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
@@ -465,6 +467,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     if (!s || !listLayer(s.snap.refs)) return null;
     const options = Object.fromEntries(Object.entries(s.snap.refs).filter(([, r]) => OPTION_ROLES.has(r.role)));
+    // 지금 값 말고는 항목이 없다(앞 칸에 따라 채워지는 목록) — 고를 것이 없으니 닫는다. 열어 두면 다음 지시가 그 하나를
+    // 골랐다(10/16 BO: 협력사 없이 연 배송비정책 목록은 "선택" 하나뿐 → "구매연령 19세 이상으로 해줘" 가 "선택" 을 누름).
+    if (Object.values(options).every((o) => squash(o.name ?? '') === current)) {
+      await this.closeList(s.page);
+      return null;
+    }
     const origin = originOf(s.page.url);
     const t0 = now();
     const pick = await pickElement(post, text, origin, options, this.screenOf(origin, s.snap.refs));
@@ -706,8 +714,16 @@ export class BrowserVoiceAgent implements VoiceAgent {
       });
     }
     // 앞 지시가 연 선택 목록만 보이는데 이 지시는 목록 항목을 고르지 않는다 — 목록을 닫고 뒤 화면으로 다시 판단한다.
-    const option = !!pick && pick.confidence >= th.pick && OPTION_ROLES.has(snap.refs[pick.ref]?.role ?? '');
-    if (!th.partial && !option && !this.listClosed && listLayer(snap.refs)) {
+    // 목록만 보이면 모델은 무슨 말에나 항목 하나를 고른다(다른 칸 지시에 "선택" 1.0) — 항목 이름이나 자리("첫 번째")를
+    // 말했을 때만 항목을 고른 것으로 본다.
+    const option =
+      !!pick &&
+      pick.confidence >= th.pick &&
+      OPTION_ROLES.has(snap.refs[pick.ref]?.role ?? '') &&
+      (mentions(text, snap.refs[pick.ref]?.name ?? '') || POSITION_WORD.test(text));
+    if (!option && !this.listClosed && listLayer(snap.refs)) {
+      // 중간 인식이면 항목 이름을 아직 말하는 중일 수 있다 — 닫지도 고르지도 않고 말이 끝나길 기다린다.
+      if (th.partial) return no('열린 목록 — 말이 끝난 뒤', pick?.top);
       this.listClosed = true;
       if (await this.closeList(page)) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
     }

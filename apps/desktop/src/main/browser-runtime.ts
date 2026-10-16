@@ -96,9 +96,12 @@ const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown
 async function focusGuest(contents: WebContents): Promise<void> {
   const host = (contents as WebContents & { hostWebContents?: WebContents }).hostWebContents;
   if (host && !host.isDestroyed()) {
+    // 임베더 초점이 이미 이 <webview> 여도 게스트 초점은 다른 탭에 남아 있을 수 있다 — 새 탭(페이지가 연 팝업)은
+    // 붙기 전에 초점을 받아, 숨은 원래 탭이 초점을 쥔 채 입력이 사라졌다(10/16 BO 브랜드 찾기 팝업). 그러면 다시 준다.
+    const guestFocused = await contents.executeJavaScript('document.hasFocus()', true).catch(() => true);
     await host
       .executeJavaScript(
-        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (w && document.activeElement !== w) w.focus(); return !!w; })()`,
+        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (!w) return false; if (document.activeElement !== w) w.focus(); else if (${!guestFocused}) { w.blur(); w.focus(); } return true; })()`,
         true,
       )
       .catch(() => false);

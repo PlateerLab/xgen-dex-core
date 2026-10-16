@@ -351,6 +351,20 @@ function argmax(probs: Record<string, number>): [string, number] | null {
   return best;
 }
 
+/** 한 방향으로만 물은 묶음에서 2등이 이만큼 받았으면 결승에도 올린다 — 편향은 0.98 → 0.2 까지 뒤집었다(아래). */
+const RUNNER_UP = 0.1;
+
+/**
+ * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 근소한 2등도. 한 방향
+ * 질문은 앞자리 편향이 있어 근소한 차이는 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼
+ * "협력사" 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98).
+ */
+function contenders(probs: Record<string, number>, oneWay: boolean): string[] {
+  const [first, second] = Object.entries(probs).sort((a, b) => b[1] - a[1]);
+  if (!first) return [];
+  return oneWay && second && second[1] >= RUNNER_UP ? [first[0], second[0]] : [first[0]];
+}
+
 /**
  * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). 표기가 같은
  * 요소를 합친 뒤 25개씩 묶어 묶음마다 승자를 뽑고(한 요청), 승자가 여럿이면
@@ -387,9 +401,7 @@ export async function pickElement(
   const first = Object.keys(questions).length ? await post({ state, questions }) : {};
   let calls = Object.keys(questions).length ? 1 : 0;
   const chunkProbs = chunks.map((c, i) => (c.length > 1 ? pairProbs(first, `c${i}`) : { [c[0]]: 1 }));
-  const winners = chunkProbs
-    .map((p) => argmax(p)?.[0])
-    .filter((k): k is string => !!k && k in refs);
+  const winners = chunkProbs.flatMap((p) => contenders(p, !pairChunks)).filter((k) => k in refs);
   if (winners.length === 0) return null;
   if (winners.length === 1) {
     // 묶음이 하나면 그 묶음의 확률이 곧 확신도. 묶음이 여럿인데 승자가 하나만
@@ -468,15 +480,21 @@ async function pickWindowed(
         }
       });
       const a = Object.keys(questions).length ? await post({ state, questions }) : {};
-      return chunks.map((c, i) => (c.length > 1 ? pairProbs(a, `c${i}`) : { [c[0]]: 1 }));
+      return chunks.map((c, i) => ({ oneWay: !pair, probs: c.length > 1 ? pairProbs(a, `c${i}`) : { [c[0]]: 1 } }));
     }),
   );
   const order = new Map(keys.map((k, i) => [k, i]));
-  const winners = [...new Set(rounds.flat().map((p) => argmax(p)?.[0]))]
-    .filter((k): k is string => !!k && k in refs)
+  const winners = [...new Set(rounds.flat().flatMap((r) => contenders(r.probs, r.oneWay)))]
+    .filter((k) => k in refs)
     .sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
   if (winners.length === 0) return null;
   if (winners.length === 1) {
+    // 후보가 한 창·한 묶음에 다 들었으면(화면은 커도 후보가 적은 입력 요청) 그 묶음의 확률이 곧 확신도 — 0 으로
+    // 두면 결과 표가 뜬 팝업에서 "삼성 입력해줘" 가 입력칸 0.99 인데도 넘어갔다(10/16 BO 브랜드 조회).
+    if (rounds.length === 1 && rounds[0].length === 1) {
+      const probs = rounds[0][0].probs;
+      return { ref: winners[0], confidence: probs[winners[0]] ?? 0, top: topOf(refs, probs), calls: 1, ms: now() - t0 };
+    }
     // 후보가 하나뿐이면 그것이 답이다. 창이 여럿인데 승자가 하나만 남은 경우(나머지 답이 목록 밖)는 믿을 근거가 없다.
     const confidence = keys.length === 1 ? 1 : 0;
     return { ref: winners[0], confidence, top: [], calls: windows.length, ms: now() - t0 };

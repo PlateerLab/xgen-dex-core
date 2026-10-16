@@ -31,6 +31,8 @@ import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from '
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
 import {
   FIELD_LABEL_SCRIPT,
+  editableAsTextbox,
+  checkOf,
   labelClickables,
   labelFields,
   refOrder,
@@ -87,6 +89,9 @@ const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
  * (검색칸은 제출해야 결과가 나온다는 화면 일반 규칙. 역할이 searchbox 이거나 이름에 검색/search 가 있는 칸).
  */
 const SEARCH_WORD = /(검색|찾아|search|find|look up)/i;
+/** 항목을 고르라는 말·고른 것을 풀라는 말 — 항목 안의 체크박스를 누를지(checkOf). */
+const SELECT_WORD = /(선택|체크|고르|골라|check|select)/i;
+const UNSELECT_WORD = /(해제|풀어|uncheck|deselect)/i;
 const isSearchField = (r: { role: string; name?: string }): boolean => r.role === 'searchbox' || /검색|search/i.test(r.name ?? '');
 /** 누르기만 해서는 아무 일도 안 일어나는 입력칸. */
 const TEXT_FIELD = new Set(['textbox', 'searchbox']);
@@ -128,7 +133,17 @@ export type VoiceAction = {
 };
 
 /** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
-type Snap = { at: number; pageId: string; url: string; refs: ElementRefs; gen: number; ms: number; labels: Record<string, string> };
+type Snap = {
+  at: number;
+  pageId: string;
+  url: string;
+  refs: ElementRefs;
+  gen: number;
+  ms: number;
+  labels: Record<string, string>;
+  /** 항목(트리 항목·행)별 그 항목을 고르는 체크박스(checkOf). */
+  checks: Record<string, { ref: string; checked: boolean }>;
+};
 
 export class BrowserVoiceAgent implements VoiceAgent {
   readonly actions: VoiceAction[] = [];
@@ -215,13 +230,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
       .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
       .then(async (run): Promise<Snap> => {
         const data = (run.result as { data?: { refs?: ElementRefs; snapshot?: string } } | undefined)?.data;
-        const raw = (data?.refs ?? {}) as ElementRefs;
+        const raw = editableAsTextbox((data?.refs ?? {}) as ElementRefs, data?.snapshot ?? '');
         const found = await fields;
         const named = Array.isArray(found) ? labelFields(raw, refOrder(data?.snapshot ?? ''), found) : { refs: raw, labels: {} };
         // 이름 없는 누름 영역(검색 팝업을 여는 상자 등)은 바로 앞 제목으로.
         const boxes = labelClickables(named.refs, data?.snapshot ?? '');
         const labels = { ...named.labels, ...boxes.labels };
-        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels };
+        const checks = checkOf(data?.snapshot ?? '');
+        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels, checks };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;
@@ -663,14 +679,20 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (DANGEROUS_REQUEST.test(text) || DANGEROUS.test(element.name ?? '')) {
       return no('되돌릴 수 없을 수 있는 동작 — 서버로', pick.top);
     }
-    const label = elementLabel(element);
+    // 항목을 고르라는(고른 것을 풀라는) 말인데 그 항목 안에 고르는 체크박스가 있으면 체크박스를 누른다 — 항목 이름은
+    // 펼치기만 하는 트리가 있다(10/16 BO 전시카테고리 찾기, checkOf).
+    const said = withoutLabel(text, snap.labels[pick.ref]);
+    const check = action === 'click' ? snap.checks[pick.ref] : undefined;
+    const toggles = !!check && (UNSELECT_WORD.test(said) ? check.checked : !check.checked && SELECT_WORD.test(said));
+    const acted = toggles && check ? { role: snap.refs[check.ref]?.role ?? 'checkbox', name: element.name } : element;
+    const label = elementLabel(acted);
     if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {
       return no(GUARDED, pick.top);
     }
     const decideMs = now() - t0;
 
     const runtime = getBrowserRuntime();
-    const ref = `@${pick.ref}`;
+    const ref = `@${toggles && check ? check.ref : pick.ref}`;
     this.beforeAct(page);
     const tAct = now();
     let opened = false;
@@ -703,7 +725,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
     }
     const done = opened ? 'click' : action;
-    await this.record(text, element, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
     // 선택 상자를 열었고 말에 고를 값이 있다("구매연령 성인으로 바꿔줘") — 열린 목록에서 그 항목을 누른다.
     const chosen = done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th) : null;
     // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.

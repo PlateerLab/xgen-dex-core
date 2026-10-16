@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  editableAsTextbox,
+  checkOf,
   labelClickables,
   labelFields,
   refOrder,
@@ -169,4 +171,53 @@ test('스냅샷 글이 비거나 요소 목록에 없는 번호면 붙이지 않
   const refs = boxRefs();
   delete refs.e4;
   assert.deepEqual(labelClickables(refs, BOX_SNAPSHOT).labels, { e8: '브랜드' });
+});
+
+test('글 편집 영역(contenteditable)은 입력칸이다 — 칸 이름은 labelFields 가 붙인다', () => {
+  const snapshot = [
+    '- heading "상품상세 내용 *" [level=6, ref=e107]',
+    '- button [ref=e362]',
+    '- generic [ref=e368] clickable [cursor:pointer]',
+    '- generic [ref=e353] editable [contenteditable]: ',
+    '- link "POWERED BY JODIT" [ref=e355]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e107: { role: 'heading', name: '상품상세 내용 *' },
+    e362: { role: 'button', name: '' },
+    e368: { role: 'generic', name: '' },
+    e353: { role: 'generic', name: '' },
+    e355: { role: 'link', name: 'POWERED BY JODIT' },
+  };
+  const out = editableAsTextbox(refs, snapshot);
+  assert.deepEqual(out.e353, { role: 'textbox', name: '' });
+  assert.equal(out.e368.role, 'generic');
+  assert.equal(refs.e353.role, 'generic', '원래 목록은 그대로');
+  const named = labelFields(out, refOrder(snapshot), [
+    { role: 'textbox', hint: '', label: '상품상세 내용' },
+  ]);
+  assert.equal(named.refs.e353.name, '상품상세 내용');
+});
+
+test('항목마다 그 항목을 고르는 체크박스 — 하위 항목 전까지 하나뿐일 때만', () => {
+  const snapshot = [
+    '- treeitem "가전디지털" [level=1, expanded=true, ref=e17]',
+    '  - generic "가전디지털" [ref=e25] clickable [cursor:pointer, onclick]',
+    '    - generic [ref=e43] clickable [cursor:pointer, onclick]',
+    '    - checkbox [checked=false, ref=e44]',
+    '    - generic "가전디지털" [ref=e45] clickable [cursor:pointer, onclick]',
+    '  - treeitem "냉장고" [level=2, expanded=false, ref=e47]',
+    '    - generic "냉장고" [ref=e58] clickable [cursor:pointer, onclick]',
+    '      - checkbox [checked=true, ref=e66]',
+    '- row "1 11371 삼성전자 사용" [ref=e80]',
+    '  - gridcell [ref=e81]',
+    '    - checkbox [checked=false, ref=e82]',
+    '  - gridcell [ref=e83]',
+    '    - checkbox [checked=false, ref=e84]',
+    '- treeitem "빈 항목" [ref=e90]',
+  ].join('\n');
+  assert.deepEqual(checkOf(snapshot), {
+    e17: { ref: 'e44', checked: false },
+    e47: { ref: 'e66', checked: true },
+  });
+  assert.deepEqual(checkOf(''), {});
 });

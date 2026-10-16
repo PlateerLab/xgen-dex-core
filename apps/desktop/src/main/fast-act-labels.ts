@@ -27,7 +27,7 @@ export type FieldLabel = { role: string; hint: string; label: string | null };
  * 역할·이름 판정은 접근성 트리와 같게 맞춘 근사치다. 어긋나면 수가 달라져 붙이지 않는다(labelFields).
  */
 export const FIELD_LABEL_SCRIPT = `(() => {
-  const FIELD = 'input:not([type=hidden]),textarea,select,[role=textbox],[role=searchbox],[role=spinbutton],[role=combobox]';
+  const FIELD = 'input:not([type=hidden]),textarea,select,[role=textbox],[role=searchbox],[role=spinbutton],[role=combobox],[contenteditable]:not([contenteditable=false])';
   const TEXT_TYPES = ['', 'text', 'email', 'tel', 'url', 'password'];
   const squash = (s) => (s || '').replace(/\\s+/g, ' ').trim();
   const visible = (el) => {
@@ -37,7 +37,8 @@ export const FIELD_LABEL_SCRIPT = `(() => {
   const roleOf = (el) => {
     const explicit = (el.getAttribute('role') || '').trim();
     if (explicit) return explicit;
-    if (el.tagName === 'TEXTAREA') return 'textbox';
+    // 글 편집 영역(contenteditable — 상품상세 같은 편집기 본문)은 입력칸이다(editableAsTextbox 와 같게).
+    if (el.tagName === 'TEXTAREA' || el.isContentEditable) return 'textbox';
     if (el.tagName === 'SELECT') return el.multiple || el.size > 1 ? null : 'combobox';
     if (el.tagName !== 'INPUT') return null;
     const type = (el.getAttribute('type') || '').toLowerCase();
@@ -58,7 +59,8 @@ export const FIELD_LABEL_SCRIPT = `(() => {
   };
   const clean = (s) => s.replace(/[*:：]/g, ' ').replace(/\\s+/g, ' ').trim();
   const fieldsIn = (node) => [...node.querySelectorAll(FIELD)].filter(visible).length + (node.matches(FIELD) ? 1 : 0);
-  const isField = (n) => n.nodeType === 1 && (n.matches(FIELD) || !!n.querySelector(FIELD));
+  // 안 보이는 입력칸은 건너온 칸으로 치지 않는다 — 편집기 도구줄의 숨은 입력칸 때문에 옆 칸 이름을 버렸다.
+  const isField = (n) => n.nodeType === 1 && ((n.matches(FIELD) && visible(n)) || [...n.querySelectorAll(FIELD)].some(visible));
   const rectOf = (t) => {
     const r = document.createRange();
     r.selectNodeContents(t);
@@ -93,7 +95,8 @@ export const FIELD_LABEL_SCRIPT = `(() => {
     const fr = el.getBoundingClientRect();
     let node = el;
     let crossed = false;
-    for (let depth = 0; depth < 8 && node.parentElement; depth++) {
+    // 편집기처럼 겹겹이 싼 칸은 칸 이름 묶음과 9단계 위에서 만난다(10/16 BO 상품상세 Jodit).
+    for (let depth = 0; depth < 12 && node.parentElement; depth++) {
       if (depth > 0 && fieldsIn(node) > 1) crossed = true;
       for (let sib = node.previousSibling; sib; sib = sib.previousSibling) {
         if (isField(sib)) {
@@ -161,7 +164,7 @@ export function labelFields(
   return { refs: out, labels };
 }
 
-type SnapLine = { depth: number; role: string; name: string; ref: string | null; pointer: boolean };
+type SnapLine = { depth: number; role: string; name: string; ref: string | null; pointer: boolean; editable: boolean };
 
 /** 스냅샷 글 한 줄 — `  - role "name" [..., ref=eN] clickable [cursor:pointer, onclick]`. */
 function snapLine(line: string): SnapLine | null {
@@ -173,7 +176,52 @@ function snapLine(line: string): SnapLine | null {
     name: (m[3] ?? '').replace(/\\(.)/g, '$1'),
     ref: m[4].match(/\bref=(e\d+)\b/)?.[1] ?? null,
     pointer: /\bclickable \[[^\]]*cursor:pointer/.test(m[4]),
+    editable: /\beditable \[[^\]]*contenteditable/.test(m[4]),
   };
+}
+
+/** 고르는 상자를 품는 항목 — 트리 항목·표 행·목록 항목(checkOf). */
+const CHECK_HOLDERS = new Set(['treeitem', 'row', 'listitem']);
+const CHECK_ROLES = new Set(['checkbox', 'radio']);
+
+/**
+ * 항목(트리 항목·표 행·목록 항목)마다 그 항목을 고르는 체크박스·라디오 — 스냅샷 글만으로. 하위 항목 줄이 나오기
+ * 전까지 자기 줄 안에 하나뿐일 때만.
+ *
+ * 트리는 `treeitem "냉장고"` 안에 이름 없는 `checkbox` 와 이름 글자를 나란히 두고, 항목 이름을 누르면 펼치기만
+ * 한다(10/16 BO 전시카테고리 찾기: 고르기는 체크박스). 체크박스에 항목 이름을 붙이면 판단 모델이 "가전디지털
+ * 펼쳐줘" 에도 체크박스를 골랐다(0.999 — "가전디지털 선택" 으로 붙여도 같음). 그래서 이름은 그대로 두고, 항목을
+ * 고르라는 말일 때 그 항목의 체크박스를 누른다(fast-act-voice).
+ */
+export function checkOf(snapshotText: string): Record<string, { ref: string; checked: boolean }> {
+  const lines = snapshotText.split('\n');
+  const parsed = lines.map(snapLine);
+  const out: Record<string, { ref: string; checked: boolean }> = {};
+  parsed.forEach((l, i) => {
+    if (!l?.ref || !CHECK_HOLDERS.has(l.role)) return;
+    const found: Array<{ ref: string; checked: boolean }> = [];
+    for (let j = i + 1; j < parsed.length; j++) {
+      const d = parsed[j];
+      if (!d) continue;
+      if (d.depth <= l.depth || CHECK_HOLDERS.has(d.role)) break;
+      if (d.ref && CHECK_ROLES.has(d.role)) found.push({ ref: d.ref, checked: /\bchecked=true\b/.test(lines[j]) });
+    }
+    if (found.length === 1) out[l.ref] = found[0];
+  });
+  return out;
+}
+
+/**
+ * 글 편집 영역(contenteditable)을 입력칸(textbox)으로 — 상품상세 같은 편집기 본문은 스냅샷에
+ * `generic [ref=e353] editable [contenteditable]` 로만 나와 입력 요청의 후보에서 빠졌다(10/16 BO Jodit).
+ * 화면 낭독기도 편집 영역은 입력칸으로 읽는다. 칸 이름은 labelFields 가 붙인다(FIELD_LABEL_SCRIPT 도 같은 칸을 센다).
+ */
+export function editableAsTextbox(refs: ElementRefs, snapshotText: string): ElementRefs {
+  const out: ElementRefs = { ...refs };
+  for (const l of snapshotText.split('\n').map(snapLine)) {
+    if (l?.ref && l.editable && l.role === 'generic' && out[l.ref]) out[l.ref] = { ...out[l.ref], role: 'textbox' };
+  }
+  return out;
 }
 
 /**

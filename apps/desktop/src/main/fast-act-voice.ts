@@ -42,6 +42,7 @@ import {
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
 import { plainNumber } from './fast-act-number';
+import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
@@ -738,6 +739,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     let opened = false;
     try {
       if (action === 'click') {
+        const watched = await runtime.pageScript<boolean>(this.workflowId, page.pageId, PRESS_WATCH_SCRIPT, PAGE_SCRIPT_MS).catch(() => false);
         try {
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
         } catch (err) {
@@ -746,6 +748,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
           if (!COVERED.test(err instanceof Error ? err.message : String(err))) throw err;
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['hover', ref], 10_000, snap.gen);
           await new Promise((r) => setTimeout(r, 400));
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+        }
+        // 입력칸 초점이 빠지며 화면이 다시 그려져 누른 것이 버려졌다(fast-act-press) — 다시 그려진 요소를 한 번 더 누른다.
+        if (watched && (await runtime.pageScript<boolean>(this.workflowId, page.pageId, PRESS_LOST_SCRIPT, PAGE_SCRIPT_MS).catch(() => false))) {
+          diag(SCOPE, 'press-lost', { text, ref });
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
         }
       } else {

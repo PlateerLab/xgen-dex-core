@@ -79,6 +79,12 @@ const POSITION_WORD = /(첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
 const squash = (s: string): string => s.replace(/\s+/g, ' ').trim();
+/** 말이 요소 이름으로 끝나나 — 띄어쓰기·문장부호는 보지 않고, 두 글자 이상인 이름만. */
+const endsWithName = (text: string, name = ''): boolean => {
+  const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const n = bare(name);
+  return n.length >= 2 && bare(text).endsWith(n);
+};
 /** 선택 상자의 지금 값 — 이름에서 앞의 칸 이름을 뗀 것(labelFields 는 "칸 이름 값" 으로 붙인다). */
 const currentValue = (name: string, label?: string): string => {
   const n = squash(name);
@@ -770,6 +776,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const ch = chrome[pick.ref];
     if (ch) return this.runChrome(ch, text, th, guard, page, pick, t0, snap.ms);
     const element = snap.refs[pick.ref];
+    // 말하는 중인데 고른 요소 이름으로 말이 끝난다 — 그 끝 어절은 아직 자라는 중일 수 있다("…선택." → "…선택해 줘.").
+    // 10/18 BO 협력사 찾기: 중간 결과 "첫 번째 협력사 선택." 에 표 머리글 "선택" 0.96 을 눌렀다(끝난 말로는 행). 기다리면
+    // 늦어질 뿐이라 다음 말이나 최종에서 다시 본다.
+    if (th.partial && endsWithName(text, element.name)) return no('말하는 중 — 끝 어절이 요소 이름', pick.top);
     if (namedOnly && (pick.confidence < NAMED_ONLY_PICK || !mentions(text, element.name ?? ''))) {
       return no(`기다림 wait ${rc} (이름만 — 확신 ${pick.confidence.toFixed(2)})`, pick.top);
     }

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
 const { mkdtempSync } = require('node:fs');
+const { buildSync } = require('esbuild');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { app, BrowserWindow } = require('electron');
@@ -22,8 +23,20 @@ async function waitFor(predicate) {
 
 async function main() {
   await app.whenReady();
+  let hostHtml = '';
   const server = createServer((request, response) => {
     response.setHeader('content-type', 'text/html; charset=utf-8');
+    if (request.url === '/host') return response.end(hostHtml);
+    if (request.url === '/surface') {
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        const { pageId, rect } = JSON.parse(body);
+        runtime.updatePopupSurface(pageId, rect);
+        response.end('{}');
+      });
+      return;
+    }
     if (request.url === '/vendor') {
       response.end(`<!doctype html><button id="validate">검증</button><button id="confirm" onclick="
         window.opener.pickVendor('플래티어');
@@ -64,8 +77,8 @@ async function main() {
       runtime.registerSharedGuest(guest);
       runtime.bindSharedPage(parent.pageId, guest.id);
     });
-    const hostHtml = `<webview allowpopups partition="${runtime.partition()}" src="${origin}"></webview>`;
-    await host.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(hostHtml)}`);
+    hostHtml = `<webview allowpopups partition="${runtime.partition()}" src="${origin}"></webview><div id="popup-ui"></div>`;
+    await host.loadURL(`${origin}/host`);
     await waitFor(() => guest && !guest.isLoading() && guest.getURL() === `${origin}/`);
 
     // The fixture chooses the model's answer; snapshot/ref execution and readback use real CDP.
@@ -116,6 +129,38 @@ async function main() {
     assert.equal(prefs.webviewTag, false);
     assert.equal(await child.executeJavaScript('typeof require'), 'undefined');
 
+    const ui = buildSync({
+      stdin: { contents: `
+        import { createRoot } from 'react-dom/client';
+        window.xgen = { browser: { popupSurface: (pageId, rect) =>
+          fetch('/surface', {method: 'POST', body: JSON.stringify({pageId, rect})}) } };
+        import('./src/renderer/src/views/BrowserSurface').then(({BrowserSurface}) => {
+          const root = createRoot(document.getElementById('popup-ui')), noop = () => {};
+          window.renderPopup = page => root.render(<BrowserSurface pages={[page]}
+            rects={{[page.pageId]: {left:0,top:50,width:600,height:400}}} dragging={false} selection={null}
+            onFocusPage={noop} onSelectionComplete={noop} onSelectionCancel={noop} onSelectionError={noop} />);
+        });`, resolveDir: join(__dirname, '..'), loader: 'tsx' },
+      bundle: true, platform: 'browser', write: false, tsconfig: join(__dirname, '../tsconfig.json'),
+    }).outputFiles[0].text;
+    await host.webContents.executeJavaScript(ui);
+    await waitFor(async () => host.webContents.executeJavaScript('typeof window.renderPopup === "function"'));
+    await host.webContents.executeJavaScript(`window.renderPopup(${JSON.stringify(popup)})`);
+    await waitFor(() => popupRuntime.view.getVisible());
+    await host.webContents.executeJavaScript(`document.body.insertAdjacentHTML('beforeend', '<div id="outer" class="modal-backdrop" style="position:fixed;inset:0"></div>')`);
+    await waitFor(() => !popupRuntime.view.getVisible());
+    await host.webContents.executeJavaScript(`
+      document.body.insertAdjacentHTML('beforeend', '<div id="nested" class="modal-backdrop" style="position:fixed;inset:0"></div>');
+      document.getElementById('outer').remove();
+    `);
+    assert.equal(popupRuntime.view.getVisible(), false, 'closing one of two dialogs must keep the popup hidden');
+    await host.webContents.executeJavaScript('document.getElementById("nested").hidden = true');
+    await waitFor(() => popupRuntime.view.getVisible());
+    await host.webContents.executeJavaScript('document.getElementById("nested").hidden = false');
+    await waitFor(() => !popupRuntime.view.getVisible());
+    await host.webContents.executeJavaScript('document.getElementById("nested").remove()');
+    await waitFor(() => popupRuntime.view.getVisible());
+    assert.equal(child.isDestroyed(), false, 'hide/show must preserve popup contents and opener');
+
     const snapshot = await runtime.runAgentCommand('smoke', popup.pageId, ['snapshot', '-i']);
     assert.match(JSON.stringify(snapshot.result), /확인/);
     const unchanged = await step(popup, { operation: 'click', instruction: '검증 클릭', expect: [{ kind: 'popup_closed' }] });
@@ -158,7 +203,7 @@ async function main() {
     await waitFor(() => secondContents.isDestroyed());
     assert.equal(runtime.list('smoke').length, 0);
     process.stdout.write(
-      'browser popup tab smoke ok: exact fill, checkbox readback, unchanged step rejection, verified parent callback, single OS window, embedded view, session, sandbox, parent cleanup\n',
+      'browser popup tab smoke ok: exact fill, checkbox readback, unchanged step rejection, verified parent callback, modal stacking, nested dialogs, hidden dialogs, popup restoration, single OS window, embedded view, opener, postMessage, close, session, sandbox, agent control, parent cleanup\n',
     );
   } finally {
     await runtime.closeAll();

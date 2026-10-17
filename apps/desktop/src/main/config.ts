@@ -87,6 +87,10 @@ export interface ConnectorConfig {
   /** Device-local voice INPUT (STT) toggle. Default true. The server gate still
    *  applies — voice input works only when preferences.stt.enabled is also on. */
   voiceInput?: boolean;
+  /** 로컬 RNNoise 소음 제거. 다음 마이크 캡처부터 적용, 기본 false. */
+  voiceNoiseReduction?: boolean;
+  /** 로컬 Silero 발화 감지. 기본 false. 파일 핸즈프리는 OFF일 때 RMS 감지 유지. 서버 설정은 변경하지 않음. */
+  voiceLocalVad?: boolean;
   /** 아바타 오버레이 핸즈프리 음성 대화 (VAD 마이크 → STT → 자동 전송). */
   voiceHandsfree?: boolean;
   /** TTS 재생 볼륨 % (0~300, 100 = 원음) — 이 기기 로컬, WebAudio 게인. */

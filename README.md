@@ -304,3 +304,7 @@ Info.plist·빌드 번호)이 모두 루트 `package.json` 과 같아야 하고,
 node scripts/version.mjs check        # 전부 같은지
 node scripts/version.mjs set 1.60.0   # 전부 바꾸기 (릴리스 워크플로가 부른다)
 ```
+
+### 로컬 음성 전처리
+
+음성 설정에서 RNNoise 소음 제거와 로컬 Silero VAD를 각각 켜고 끌 수 있습니다. 개발 런타임 설치·실행, 서버 연결 경로와 실제 STT 검증 범위는 [음성 전처리 문서](apps/desktop/docs/audio-preprocessing.md)를 참조하세요.

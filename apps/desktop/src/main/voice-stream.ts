@@ -3,7 +3,7 @@
  *
  * 렌더러가 마이크 소리(PCM16 16 kHz 모노)를 보내면 XGEN 실시간 STT(`WS /api/audio/stt/stream`,
  * 서버가 슬라이딩 창으로 다시 받아 적고 Silero VAD 로 토막을 끊는다)로 흘리고, 중간 결과를
- * Segmenter 에 넣어 말하는 도중에 브라우저 조작을 실행한다. 끝나면 최종 글자·실행 목록·못 한
+ * Segmenter에 전달한다. 현재 데스크톱은 planBeforeAct로 중간 조작을 보류한다. 끝나면 최종 글자·실행 목록·못 한
  * 부분을 돌려주고 장부(voice-turns)에 남긴다 — 그 글자가 채팅으로 들어오면 고속 경로가 이어받는다.
  *
  * 서버 계약 (xgen-core): → {"type":"start","format":"pcm16","sample_rate":16000,"language":"ko","mode":"partials"}
@@ -45,6 +45,7 @@ export type VoiceStreamDeps = {
 
 export type VoiceStreamEvent =
   | { sessionId: string; type: 'ready' }
+  | { sessionId: string; type: 'utterance_end' }
   | { sessionId: string; type: 'partial'; text: string }
   | { sessionId: string; type: 'act'; action: VoiceAction }
   | { sessionId: string; type: 'wake' }
@@ -194,6 +195,9 @@ class VoiceSession {
     if (m.type === 'ready') {
       this.ready = true;
       this.mark('ready');
+      // shortcut: 500ms 무음을 앞에 붙여 테스트 녹음의 첫 인사말 누락을 우회한다. 서버 시작 구간 원인 해결 후 제거를 검토한다.
+      // 서버 VAD가 원인인지는 미확인이고 실제 마이크에서의 필요성도 미검증이다. 대기 없이 무음 PCM을 먼저 전송한다.
+      for (let i = 0; i < 25; i++) this.ws?.send(Buffer.alloc(FRAME));
       for (const b of this.early.splice(0)) this.ws?.send(b); // 준비 전에 들어온 소리부터 (버리면 첫 단어가 잘린다)
       this.emit({ sessionId: this.id, type: 'ready' });
       if (this.ended) this.sendStop();
@@ -213,13 +217,17 @@ class VoiceSession {
       this.lastHeard = heard;
       // 호출어 전의 말은 화면에도 내지 않는다(입력창에 사람에게 한 말이 적히지 않게).
       const said = this.sttOnly ? heard : this.gate(heard);
-      if (said === null) return;
+      if (said === null) {
+        if (m.type === 'final') this.emit({ sessionId: this.id, type: 'utterance_end' });
+        return;
+      }
       const full = this.carry ? (said ? `${this.carry} ${said}` : this.carry) : said;
       if (full !== this.lastText) {
         this.lastText = full;
         this.mark('partial', full);
         this.emit({ sessionId: this.id, type: 'partial', text: full });
       }
+      if (m.type === 'final') this.emit({ sessionId: this.id, type: 'utterance_end' });
       if (this.deferActions) return;
       this.agent.prefetch(); // 화면을 뒤에서 새로 읽어 둔다(1초 지났으면)
       // 토막 끝(final)은 마지막 단어까지 확정 — 글자가 같아도 확정 신호로 넘긴다.
@@ -248,7 +256,9 @@ class VoiceSession {
 
   private sendStop(): void {
     if (this.stopSent || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    // 말 끝 무음을 조금 붙여 서버 VAD 가 마지막 토막을 끊게 한다.
+    // The processor can end on any sample boundary; send its tail before stop.
+    if (this.pending.length) { this.ws.send(this.pending); this.pending = Buffer.alloc(0); }
+    // shortcut: 기존 300ms 종료 무음을 유지한다. 뒤의 stop과 별개로 필요한지는 미검증이며 분리 검증 후 제거를 검토한다.
     for (let i = 0; i < 15; i++) this.ws.send(Buffer.alloc(FRAME));
     this.ws.send(JSON.stringify({ type: 'stop' }));
     this.stopSent = true;
@@ -343,7 +353,8 @@ export class VoiceStreamHub {
     const awake = !!carry.trim() || Date.now() < (this.wakeUntil.get(workflowId) ?? 0);
     const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null);
     this.sessions.set(id, s);
-    await s.open();
+    try { await s.open(); }
+    catch (error) { s.close(); this.sessions.delete(id); throw error; }
     diag(SCOPE, 'start', { id, workflowId });
     return id;
   }

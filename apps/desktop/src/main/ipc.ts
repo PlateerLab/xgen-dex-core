@@ -46,6 +46,11 @@ export const CHANNELS = {
 
   // Voice (STT/TTS) — renderer captures audio, main proxies to the backend
   // (secrets stay server-side). Audio crosses IPC as Uint8Array + mime.
+  audioProcessStart: 'voice:process:start',
+  audioProcessPush: 'voice:process:push',
+  audioProcessFinish: 'voice:process:finish',
+  audioProcessCancel: 'voice:process:cancel',
+  audioProcessStatus: 'voice:process:status',
   voiceConfig: 'voice:config', // GET /api/admin/user → preferences.stt/tts (hints)
   voiceTranscribe: 'voice:transcribe', // audio bytes → POST /api/audio/stt/transcribe → text
   voiceSpeak: 'voice:speak', // text → POST /api/audio/tts/speak → audio bytes

@@ -12,6 +12,12 @@ import type { VoiceConfig } from '@dex/protocol';
 import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
 import { DEFAULT_WAKE_WORDS } from '../../../main/voice-wake';
 
+// HF 캐시 경로(.../models--Org--Name/snapshots/<hash>)는 Org/Name 으로 줄여 보인다. 전체 경로는 title 로.
+const modelLabel = (id: string): string => {
+  const m = /models--([^/]+?)--([^/]+)/.exec(id);
+  return m ? `${m[1]}/${m[2]}` : id;
+};
+
 export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // Esc 로도 닫힌다 (바깥 클릭은 backdrop 이 처리).
   useModalDismiss(onClose);
@@ -20,6 +26,11 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   const [err, setErr] = useState<string | null>(null);
   const [input, setInput] = useState(true);
   const [output, setOutput] = useState(true);
+  const [noise, setNoise] = useState(false);
+  const [localVad, setLocalVad] = useState(false);
+  const [audioReady, setAudioReady] = useState(false);
+  const [audioError, setAudioError] = useState('');
+  const [audioSaving, setAudioSaving] = useState(false);
   const [volume, setVolume] = useState(100);
   // 음성 대화 지침 — 음성으로 보낸 말에만 붙는다(이 기기 설정, 기본 꺼짐).
   const [styleOn, setStyleOn] = useState(false);
@@ -49,6 +60,8 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       .then((c) => {
         if (!alive) return;
         setInput(c.voiceInput !== false);
+        setNoise(c.voiceNoiseReduction === true);
+        setLocalVad(c.voiceLocalVad === true);
         setOutput(c.voiceOutput !== false);
         setVolume(typeof c.voiceVolume === 'number' ? c.voiceVolume : 100);
         setStyleOn(c.voiceReplyStyleOn === true);
@@ -58,6 +71,10 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
         setWakeWords(c.voiceWakeWords?.trim() || DEFAULT_WAKE_WORDS);
       })
       .catch(() => undefined);
+    xgen.audioProcessor.status().then(status => {
+      if (!alive) return;
+      setAudioReady(status.available); setAudioError(status.error);
+    }).catch(error => { if (alive) setAudioError(String(error)); });
     xgen.voice
       .getConfig()
       .then((c) => alive && setCfg(c))
@@ -72,6 +89,16 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     if (patch.voiceInput !== undefined) setInput(patch.voiceInput);
     if (patch.voiceOutput !== undefined) setOutput(patch.voiceOutput);
     await xgen.config.set(patch);
+  };
+
+  const saveAudio = async (key: 'voiceNoiseReduction' | 'voiceLocalVad', enabled: boolean): Promise<void> => {
+    setAudioSaving(true);
+    try {
+      await xgen.config.set({ [key]: enabled });
+      if (audioReady) setAudioError('');
+      if (key === 'voiceNoiseReduction') setNoise(enabled); else setLocalVad(enabled);
+    } catch (error) { setAudioError(String(error)); }
+    finally { setAudioSaving(false); }
   };
 
   const stt = cfg?.stt ?? null;
@@ -105,6 +132,13 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 <span className="small muted" style={{ marginLeft: 8 }}>
                   {stt?.enabled ? '서버 활성' : '서버 비활성'}
                 </span>
+                {stt?.enabled && (
+                  <span className="small muted notification-event-hint" title={stt.model_id || undefined}>
+                    {stt.provider || '—'}
+                    {stt.model_id ? ` · ${modelLabel(stt.model_id)}` : ''}
+                    {stt.language ? ` · ${stt.language}` : ' · 자동 언어'}
+                  </span>
+                )}
               </span>
               <label className="switch">
                 <input
@@ -116,18 +150,36 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 <span className="track" />
               </label>
             </div>
-            {stt?.enabled && (
-              <div className="small muted" style={{ marginBottom: 8 }}>
-                서비스: {stt.provider || '—'}
-                {stt.model_id ? ` · ${stt.model_id}` : ''}
-                {stt.language ? ` · ${stt.language}` : ' · 자동 언어'}
-              </div>
-            )}
+            <div className="field-row">
+              <span>
+                <span id="voice-noise-label">DEX 소음 제거</span>
+                <span className="small muted notification-event-hint">보내기 전에 주변 소음을 줄입니다. 작은 목소리는 인식이 나빠질 수 있습니다.</span>
+              </span>
+              <label className="switch">
+                <input type="checkbox" aria-labelledby="voice-noise-label" checked={noise}
+                  disabled={audioSaving || (!audioReady && !noise)}
+                  onChange={e => void saveAudio('voiceNoiseReduction', e.target.checked)} />
+                <span className="track" />
+              </label>
+            </div>
+            <div className="field-row">
+              <span>
+                <span id="voice-vad-label">DEX Silero 발화 감지 (VAD)</span>
+                <span className="small muted notification-event-hint">끄면 일반 핸즈프리는 기존 RMS 감지를 유지합니다. 실시간 음성은 서버가 발화 구간을 나눕니다. 변경은 마이크를 다시 켜면 적용됩니다.</span>
+              </span>
+              <label className="switch">
+                <input type="checkbox" aria-labelledby="voice-vad-label" checked={localVad}
+                  disabled={audioSaving || (!audioReady && !localVad)}
+                  onChange={e => void saveAudio('voiceLocalVad', e.target.checked)} />
+                <span className="track" />
+              </label>
+            </div>
+            {audioError && <p className="small notice-warn" role="alert">{audioError}</p>}
             {stt?.enabled && (
               <div className="field-row">
                 <span>
                   호출어로만 듣기
-                  <span className="small muted" style={{ marginLeft: 8 }}>
+                  <span className="small muted notification-event-hint">
                     계속 듣기에서 호출어를 부른 말만 실행합니다
                   </span>
                 </span>
@@ -165,6 +217,15 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 <span className="small muted" style={{ marginLeft: 8 }}>
                   {tts?.enabled ? '서버 활성' : '서버 비활성'}
                 </span>
+                {tts?.enabled && (
+                  <span className="small muted notification-event-hint">
+                    목소리:{' '}
+                    {activeProfile
+                      ? `${activeProfile.name} (${activeProfile.voice_id})`
+                      : '선택된 프로필 없음'}
+                    {activeProfile?.language ? ` · ${activeProfile.language}` : ''}
+                  </span>
+                )}
               </span>
               <label className="switch">
                 <input
@@ -203,7 +264,7 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
               <div className="field-row">
                 <span>
                   문장별 미리 합성
-                  <span className="small muted" style={{ marginLeft: 8 }}>
+                  <span className="small muted notification-event-hint">
                     답을 한 문장씩 바로 합성해 첫 소리가 빠릅니다
                   </span>
                 </span>
@@ -220,20 +281,11 @@ export const VoiceSettings: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 </label>
               </div>
             )}
-            {tts?.enabled && (
-              <div className="small muted" style={{ marginBottom: 8 }}>
-                목소리:{' '}
-                {activeProfile
-                  ? `${activeProfile.name} (${activeProfile.voice_id})`
-                  : '선택된 프로필 없음'}
-                {activeProfile?.language ? ` · ${activeProfile.language}` : ''}
-              </div>
-            )}
 
             <div className="field-row">
               <span>
                 음성 대화 지침
-                <span className="small muted" style={{ marginLeft: 8 }}>
+                <span className="small muted notification-event-hint">
                   음성으로 보낸 말에만 붙습니다
                 </span>
               </span>

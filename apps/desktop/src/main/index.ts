@@ -8,6 +8,8 @@
  * transport lives here in the main process (Node fetch), so tokens stay out of
  * the renderer.
  */
+import { AudioProcessor, audioRuntime } from './audio-preprocessor';
+import { diag } from './diag-log';
 import {
   app,
   BrowserWindow,
@@ -2548,6 +2550,69 @@ ipcMain.handle(CHANNELS.agentsNameTaken, (_e, name: string) => getClient().agent
 // The renderer captures audio via getUserMedia and hands bytes to main; main
 // proxies to the backend with the Bearer token. Secrets never reach here.
 ipcMain.handle(CHANNELS.voiceConfig, () => getClient().voice.getVoiceConfig());
+const audioProcessors = new Map<number, { id: string; processor: AudioProcessor; cleanup: () => void }>();
+const audioLogged = new WeakSet<AudioProcessor>();
+const audioSettings = () => ({ noise: loadConfig().voiceNoiseReduction === true, vad: loadConfig().voiceLocalVad === true });
+ipcMain.handle(CHANNELS.audioProcessStatus, async () => {
+  const probe = new AudioProcessor({ noise: true, vad: true }, audioRuntime(app.getAppPath(), process.resourcesPath));
+  try { await probe.open(); await probe.finish(); return { available: true, error: '' }; }
+  catch (error) { probe.cancel(); return { available: false, error: String(error) }; }
+});
+ipcMain.handle(CHANNELS.audioProcessStart, async (e) => {
+  const owner = e.sender.id;
+  audioProcessors.get(owner)?.cleanup();
+  const id = crypto.randomUUID();
+  const settings = audioSettings();
+  const processor = new AudioProcessor(settings, audioRuntime(app.getAppPath(), process.resourcesPath));
+  const cleanup = () => {
+    e.sender.removeListener('destroyed', cleanup);
+    if (audioProcessors.get(owner)?.id === id) {
+      diag('audio-preprocess', 'capture-closed', { id });
+      processor.cancel(); audioProcessors.delete(owner);
+    }
+  };
+  audioProcessors.set(owner, { id, processor, cleanup });
+  e.sender.once('destroyed', cleanup);
+  try {
+    await processor.open();
+    if (e.sender.isDestroyed() || audioProcessors.get(owner)?.id !== id) throw new Error('음성 캡처가 취소됐습니다.');
+    diag('audio-preprocess', 'ready', { id, noise: settings.noise ? 'rnnoise' : 'off', vad: settings.vad ? 'silero' : 'off', mode: settings.noise || settings.vad ? 'python' : 'bypass' });
+    return { id, ...settings };
+  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); cleanup(); throw error; }
+});
+const ownedAudio = (owner: number, id: string) => {
+  const entry = audioProcessors.get(owner);
+  if (!entry || entry.id !== id) throw new Error('음성 캡처가 종료됐습니다.');
+  return entry.processor;
+};
+ipcMain.handle(CHANNELS.audioProcessPush, async (e, id: string, pcm: Uint8Array) => {
+  const processor = ownedAudio(e.sender.id, id);
+  try {
+    const result = await processor.push(pcm);
+    if (result.pcm.byteLength && !audioLogged.has(processor)) {
+      audioLogged.add(processor);
+      diag('audio-preprocess', 'pcm-active', { id, noise: processor.settings.noise, vad: processor.settings.vad, inputBytes: pcm.byteLength, outputBytes: result.pcm.byteLength });
+    }
+    for (const event of result.events) diag('audio-preprocess', event.type, { id, offsetBytes: event.offset_bytes });
+    return result;
+  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); throw error; }
+});
+ipcMain.handle(CHANNELS.audioProcessFinish, async (e, id: string) => {
+  const processor = ownedAudio(e.sender.id, id);
+  try {
+    const result = await processor.finish();
+    diag('audio-preprocess', 'drained', { id, tailBytes: result.pcm.byteLength });
+    for (const event of result.events) diag('audio-preprocess', event.type, { id, offsetBytes: event.offset_bytes });
+    return result;
+  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); throw error; }
+  finally { if (audioProcessors.get(e.sender.id)?.id === id) audioProcessors.get(e.sender.id)?.cleanup(); }
+});
+ipcMain.on(CHANNELS.audioProcessCancel, (e, id: string) => {
+  if (audioProcessors.get(e.sender.id)?.id !== id) return;
+  audioProcessors.get(e.sender.id)?.cleanup();
+});
+app.on('before-quit', () => { for (const entry of audioProcessors.values()) entry.cleanup(); audioProcessors.clear(); });
+
 
 // ── SSH (개인별 서버) ──────────────────────────────────────────────
 // 얇은 통과 계층이다. 서버가 검증하고(이름 규칙·점프 그래프·자격증명 유무),

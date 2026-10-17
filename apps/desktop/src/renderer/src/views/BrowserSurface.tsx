@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   BrowserPageInfo,
   BrowserSelectionPoint,
@@ -84,13 +84,38 @@ const PopupSurface: React.FC<{
   rect?: BrowserSurfaceRect;
   dragging: boolean;
 }> = ({ pageId, rect, dragging }) => {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const bounds =
       rect && !dragging
         ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
         : null;
-    void xgen.browser.popupSurface(pageId, bounds).catch(() => undefined);
+    let blocked: boolean | undefined;
+    const sync = (): void => {
+      // Native WebContentsViews sit above renderer CSS, including modal backdrops.
+      const next = Array.from(
+        document.querySelectorAll('.modal-backdrop, [aria-modal="true"], dialog[open]'),
+      ).some(
+        (modal) =>
+          !modal.closest('[hidden]') &&
+          modal.getClientRects().length > 0 &&
+          getComputedStyle(modal).visibility !== 'hidden',
+      );
+      if (next === blocked) return;
+      blocked = next;
+      void xgen.browser.popupSurface(pageId, next ? null : bounds).catch(() => undefined);
+    };
+    const observer = new MutationObserver(sync);
+    if (bounds) {
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style', 'hidden', 'open', 'aria-modal'],
+      });
+    }
+    sync();
     return () => {
+      observer.disconnect();
       void xgen.browser.popupSurface(pageId, null).catch(() => undefined);
     };
   }, [pageId, rect, dragging]);

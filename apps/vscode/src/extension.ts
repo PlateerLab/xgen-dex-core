@@ -4,7 +4,8 @@ import { DexService } from './dex-service';
 import type { Agent, AuthStatus, ProfileSummary } from '@dex/rpc';
 import { DexRpcError } from '@dex/rpc/client';
 import { NativeSessionController } from './native-session-controller';
-import { nativeSessionCommand } from './native-session-command';
+import { confirmNativeCapability, nativeSessionCommand } from './native-session-command';
+import { NativeCapabilityController } from './native-capability-controller';
 import { NATIVE_CONVERSATION_SCHEME, NativeConversationDocument } from './native-conversation-document';
 
 let activeService: DexService | undefined;
@@ -30,6 +31,7 @@ export function activate(context: vscode.ExtensionContext): void {
       : state.status === 'stopped' ? '$(key) Dex 세션 확인 필요' : '$(shield) Dex 기기·세션';
     nativeStatus.tooltip = 'VSCode 기기 등록·승인 요청·플랫폼 세션과 현재 대화 구독'; nativeStatus.show();
   });
+  const nativeCapabilities = new NativeCapabilityController(service.rpc, confirmNativeCapability);
   chat.attachNative(native);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.name = 'XGEN Dex';
@@ -94,7 +96,8 @@ export function activate(context: vscode.ExtensionContext): void {
     conversationDocument,
     conversationProvider,
     native,
-    vscode.commands.registerCommand('xgenDex.nativeSession', () => nativeSessionCommand(service, native, conversationDocument)),
+    nativeCapabilities,
+    vscode.commands.registerCommand('xgenDex.nativeSession', () => nativeSessionCommand(service, native, conversationDocument, nativeCapabilities)),
     vscode.window.registerWebviewViewProvider('xgenDex.chat', chat, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -114,28 +117,28 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('xgenDex.openHistory', () => chat.openHistory()),
     vscode.commands.registerCommand('xgenDex.setupProfile', async (value?: unknown) => {
       if (await setupProfile(service, profileNameOf(value))) {
-        native.reset();
+        native.reset(); nativeCapabilities.reset();
         await chat.connectionChanged();
         await refreshAll();
       }
     }),
     vscode.commands.registerCommand('xgenDex.login', async () => {
       if (await login(service)) {
-        native.reset();
+        native.reset(); nativeCapabilities.reset();
         await chat.connectionChanged();
         await refreshAll();
       }
     }),
     vscode.commands.registerCommand('xgenDex.switchProfile', async (value?: unknown) => {
       if (await switchProfile(service, profileNameOf(value))) {
-        native.reset();
+        native.reset(); nativeCapabilities.reset();
         await chat.connectionChanged();
         await refreshAll();
       }
     }),
     vscode.commands.registerCommand('xgenDex.logout', async () => {
       if (await logout(service)) {
-        native.reset();
+        native.reset(); nativeCapabilities.reset();
         await chat.connectionChanged();
         await refreshAll();
       }
@@ -152,7 +155,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await service.restart().catch((error: unknown) => showError(service, 'CLI 엔진을 다시 시작하지 못했습니다.', error));
       }
       if (event.affectsConfiguration('xgenDex.cliPath') || event.affectsConfiguration('xgenDex.profile')) {
-        native.reset();
+        native.reset(); nativeCapabilities.reset();
         await chat.connectionChanged();
         await refreshAll();
       }

@@ -1,3 +1,4 @@
+import { NativeCapabilities } from './NativeCapabilities';
 import React, { useEffect, useRef, useState } from 'react';
 import type { NativeSessionSummary } from '@dex/rpc';
 import type { DesktopNativeSessionModel } from '../native-session-model';
@@ -307,6 +308,8 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
       </p>}
     </div>
 
+    <NativeCapabilities origin={view.result?.server_url ?? ''} userId={view.result?.user_id ?? ''}
+      sessionId={ready ? activeSessionId : null} enabled={ready} />
     <div className="canonical-chat__messages" aria-label="공유 대화 메시지">
       {view.conversation?.snapshot && <div className="canonical-chat__conversation-heading">
         <h3>{view.conversation.snapshot.title || view.conversation.snapshot.workflow_id}</h3>

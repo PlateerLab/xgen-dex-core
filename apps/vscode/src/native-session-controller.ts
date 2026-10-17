@@ -135,6 +135,14 @@ export class NativeSessionController {
     this.publish();
   }
   get connectionVersion(): number { return this.connection; }
+  capabilityTarget(): { profile: string; userId: string; agentSessionId: string } | null {
+    const selected = this.selected;
+    const agentSessionId = this.verifiedSnapshot?.id;
+    if (!selected || !agentSessionId || this.sessionState.status !== 'connected'
+      || this.sessionState.conversation?.snapshot?.id !== agentSessionId
+      || !this.verifiedScope || !this.sameScope(selected, this.verifiedScope)) return null;
+    return { profile: selected.profile, userId: selected.user_id, agentSessionId };
+  }
   account(profile: string, origin: string): string | null {
     return this.selected?.profile === profile && this.selected.server_url === new URL(origin).origin ? this.selected.user_id : null;
   }

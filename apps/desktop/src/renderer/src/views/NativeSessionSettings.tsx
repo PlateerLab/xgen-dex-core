@@ -1,3 +1,4 @@
+import { NativeCapabilities } from './NativeCapabilities';
 import React, { useEffect, useRef, useState } from 'react';
 import type { NativeTrustOverview } from '@dex/protocol/native-platform-session';
 import type { AgentTurnComposerView } from '@dex/protocol/agent-turn-composer';
@@ -282,5 +283,7 @@ export const NativeSessionSettings: React.FC<{ origin: string; binding?: Desktop
       {view.error && <p className="settings-hint warn" role="alert">{view.error}</p>}
       {message && <p role="status">{message}</p>}
     </SettingsSection>
+    <NativeCapabilities origin={origin} userId={view.result?.user_id ?? ''}
+      sessionId={observedSession ?? null} enabled={summary?.state === 'active'} />
   </>;
 };

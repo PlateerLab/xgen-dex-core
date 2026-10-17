@@ -122,17 +122,17 @@ test('Desktop binds conversation reads and polling to the main-process account s
     const read = await f.value('conversation');
     assert.equal(read.view, 'conversation'); assert.deepEqual(read.conversation, { snapshot: null, messages: [], omittedMessages: 0 });
     const watched = await f.value('watch-conversation'); assert.equal(watched.view, 'conversation');
-    for (let i = 0; i < 40 && !f.notices.some((n) => n.type === 'update' && 'view' in n.value
+    for (let i = 0; i < 40 && !f.notices.some((n) => n.type === 'update' && 'view' in n.value && n.value.view === 'conversation'
       && n.value.watch_id === watched.watch_id && n.value.update.type === 'conversation'); i++) await new Promise((r) => setTimeout(r, 5));
-    const notice = f.notices.find((n) => n.type === 'update' && 'view' in n.value
+    const notice = f.notices.find((n) => n.type === 'update' && 'view' in n.value && n.value.view === 'conversation'
       && n.value.watch_id === watched.watch_id && n.value.update.type === 'conversation');
     assert.ok(notice && notice.type === 'update' && 'view' in notice.value); assert.equal(notice.value.view, 'conversation');
     assert.equal(JSON.stringify([read, notice]).includes('authScope'), false);
     await f.value('unwatch', { watch_id: watched.watch_id });
     const live = await f.value('watch-live'); assert.equal(live.view, 'conversation');
-    for (let i = 0; i < 40 && !f.notices.some((n) => n.type === 'update' && 'view' in n.value
+    for (let i = 0; i < 40 && !f.notices.some((n) => n.type === 'update' && 'view' in n.value && n.value.view === 'conversation'
       && n.value.watch_id === live.watch_id && n.value.update.type === 'conversation'); i++) await new Promise((r) => setTimeout(r, 5));
-    assert.ok(f.notices.some((n) => n.type === 'update' && 'view' in n.value
+    assert.ok(f.notices.some((n) => n.type === 'update' && 'view' in n.value && n.value.view === 'conversation'
       && n.value.watch_id === live.watch_id && n.value.update.type === 'conversation'));
     await f.value('unwatch', { watch_id: live.watch_id });
   } finally { await f.cleanup(); }
@@ -245,5 +245,22 @@ test('cancelling rotation preserves a token-free journal and local recovery decl
     assert.equal((await f.value('session', { action: 'status' })).result.state, 'refreshing');
     const count = f.calls.length; assert.equal((await f.request('watch')).ok, false); assert.equal(f.calls.length, count);
     assert.equal((await f.value('session', { action: 'forget-local' })).server_revoked, false); assert.equal(f.calls.length, count);
+  } finally { await f.cleanup(); }
+});
+
+test('Desktop confirmation keeps its closed one-use request shape inside the current main account', async () => {
+  const f = await fixture();
+  try {
+    await f.login();
+    const result = await f.request('confirm-capability', {
+      request_id: '00000000-0000-4000-8000-000000000001', confirmed: false,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'not_found');
+    const foreign = await f.request('confirm-capability', {
+      request_id: '00000000-0000-4000-8000-000000000001', confirmed: true, user_id: '8',
+    });
+    assert.equal(foreign.ok, false);
+    if (!foreign.ok) assert.equal(foreign.code, 'usage_error');
   } finally { await f.cleanup(); }
 });

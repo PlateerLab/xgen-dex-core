@@ -81,3 +81,22 @@ test('attachment signing admits only exact reservation, content and cancellation
     await assert.rejects(f.sign(method, origin + path, token), TypeError);
   }
 });
+
+test('capability signing admits only exact selection and approval adoption routes', async () => {
+  const f = await fixture();
+  const session = '018f1240-0000-7000-8000-000000000001';
+  const selection = `${origin}/api/agentflow/agent-sessions/${session}/capabilities`;
+  const adoption = `${origin}/api/agentflow/agent-sessions/${session}/capability-approvals/42/adopt`;
+  assert.equal(JSON.parse(Buffer.from((await f.sign('PUT', selection, token)).split('.')[1]!, 'base64url').toString()).htu, selection);
+  assert.equal(JSON.parse(Buffer.from((await f.sign('POST', adoption, token)).split('.')[1]!, 'base64url').toString()).htu, adoption);
+  for (const [method, path] of [
+    ['POST', `/api/agentflow/agent-sessions/${session}/capabilities`],
+    ['PUT', `/api/agentflow/agent-sessions/${session}/capability-approvals/42/adopt`],
+    ['POST', `/api/agentflow/agent-sessions/${session}/capability-approvals/0/adopt`],
+    ['POST', `/api/agentflow/agent-sessions/${session}/capability-approvals/042/adopt`],
+    ['POST', `/api/agentflow/agent-sessions/${session}/capability-approvals/-1/adopt`],
+    ['POST', `/api/agentflow/agent-sessions/${session}/capability-approvals/42/adopt/`],
+    ['PUT', `/api/agentflow/agent-sessions/${session.toUpperCase()}/capabilities`],
+    ['PUT', `/api/agentflow/agent-sessions/${session}/capabilities?alias=true`],
+  ] as const) await assert.rejects(f.sign(method, `${origin}${path}`, token), TypeError);
+});

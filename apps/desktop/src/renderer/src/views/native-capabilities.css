@@ -1,0 +1,12 @@
+.native-capabilities { border: 1px solid var(--border-color, #d1d5db); border-radius: 10px; padding: 16px; margin: 16px 0; }
+.native-capabilities h3, .native-capabilities h4 { margin: 0 0 10px; }
+.native-capabilities p { font-size: 13px; line-height: 1.6; }
+.native-capabilities__toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.native-capabilities__targets fieldset { border: 1px solid var(--border-color, #d1d5db); border-radius: 6px; margin: 12px 0; }
+.native-capabilities__tool { display: flex; gap: 10px; align-items: flex-start; padding: 8px; }
+.native-capabilities__tool input { width: auto; margin-top: 4px; }
+.native-capabilities__tool small { display: block; font-size: 12px; opacity: .8; }
+.native-capabilities__approvals article { padding: 10px 0; border-bottom: 1px solid var(--border-color, #d1d5db); }
+.native-capabilities__confirmation { border: 2px solid #c98024; border-radius: 8px; padding: 16px; margin-top: 16px; }
+.native-capabilities__confirmation pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: rgba(127, 127, 127, .12); }
+.native-capabilities__error { color: var(--danger-color, #c13c3c); }

@@ -30,11 +30,18 @@ import type {
   NativeAgentFocusUpdate,
   NativeAgentConversationUpdate,
   NativeConversationView,
+  NativeCapabilitySnapshot,
 } from '@dex/engine';
 import type { SubmittedAgentTurn, StoppedAgentTurn } from '@dex/protocol/agent-session-mutation';
 import type { AgentFocus, parseAgentSessionList } from '@dex/protocol/agent-session';
 import type { CreatedAgentSession } from '@dex/protocol/agent-session-lifecycle';
 import type { NativeAttachmentDraftView } from './native-attachment-drafts';
+import type {
+  AdoptedCapabilityApproval,
+  CapabilityApprovalPage,
+  CapabilityCatalog,
+  CapabilitySelection,
+} from '@dex/protocol/agent-capabilities';
 
 export type { NativeAttachmentDraftView, NativeAttachmentDraftStatus, NativeAttachmentSelectionLimits,
   TrustedNativeAttachment } from './native-attachment-drafts';
@@ -58,6 +65,11 @@ export type {
   NativeSessionSummary,
   NativeEnrollmentResult,
   NativeConversationView,
+  NativeCapabilitySnapshot,
+  AdoptedCapabilityApproval,
+  CapabilityApprovalPage,
+  CapabilityCatalog,
+  CapabilitySelection,
 };
 
 /** RPC 배선의 버전. 서버와 클라이언트가 initialize 에서 맞춰 본다. */
@@ -85,7 +97,7 @@ export interface InitializeResult {
     localFolders?: boolean;
     /** SSH 서버 관리. Teams · 음성은 아직 열지 않았다 — 타입은 있고 표면만 없다. */
     ssh?: boolean;
-    nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software'; canonicalConversation?: true; canonicalLive?: true; canonicalTurns?: true; canonicalSessions?: true; canonicalAttachments?: true };
+    nativePlatformSession?: { platform: 'vscode'; storage: 'os-keychain-software'; canonicalConversation?: true; canonicalLive?: true; canonicalTurns?: true; canonicalSessions?: true; canonicalAttachments?: true; canonicalCapabilities?: true };
     /** conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기(다음 답변부터). */
     conversationModel?: boolean;
     /** conversation/thinking/set(·/reset) — 대화 도중 생각(추론) 값 바꾸기(지금 모델이 받는 값만). */
@@ -113,6 +125,11 @@ export interface NativeRpcResult {
   mutation?: SubmittedAgentTurn | StoppedAgentTurn;
   workflow_id?: string;
   attachments?: readonly NativeAttachmentDraftView[];
+  capability_catalog?: CapabilityCatalog & { authScope: string };
+  capability_approvals?: CapabilityApprovalPage;
+  capability_connection?: NativeCapabilitySnapshot;
+  capability_selection?: CapabilitySelection;
+  capability_adoption?: AdoptedCapabilityApproval;
   platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; user_id: string;
   result?: NativeSessionSummary | NativeEnrollmentResult;
   watch_id?: string;
@@ -130,7 +147,12 @@ export interface NativeConversationNotification {
   view: 'conversation';
   update: NativeAgentConversationUpdate;
 }
-export type NativeSessionNotification = NativeFocusNotification | NativeConversationNotification;
+export interface NativeCapabilityNotification {
+  platform_type: 'vscode' | 'desktop'; profile: string; server_url: string; user_id: string;
+  view: 'capabilities';
+  snapshot: NativeCapabilitySnapshot;
+}
+export type NativeSessionNotification = NativeFocusNotification | NativeConversationNotification | NativeCapabilityNotification;
 
 export interface ChatStartResult {
   streamId: string;

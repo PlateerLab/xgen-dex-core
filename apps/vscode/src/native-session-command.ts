@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 import type { NativeTrustOverview } from '@dex/protocol/native-platform-session';
-import type { ProfileSummary } from '@dex/rpc';
+import { parseCapabilityApprovals, parseCapabilityCatalog } from '@dex/protocol/agent-capabilities';
+import type { NativeRpcResult, ProfileSummary } from '@dex/rpc';
 import { NativeSessionController, nativeSessionSummary } from './native-session-controller';
+import { NativeCapabilityController, nativeCapabilityArgumentDisplay,
+  type NativeCapabilityConfirmation } from './native-capability-controller';
 import type { NativeConversationDocument } from './native-conversation-document';
 import type { DexService } from './dex-service';
 
@@ -13,6 +16,11 @@ const actions = [
   { label: '현재 공유 대화 읽기', action: 'conversation', device: false },
   { label: '현재 공유 대화 HTTP 폴링', action: 'watch-conversation', device: false },
   { label: '현재 공유 대화 실시간 연결', action: 'watch-live', device: false },
+  { label: '현재 Agent Session capability 선택', action: 'select-capabilities', device: false },
+  { label: '현재 Agent Session capability 승인 가져오기', action: 'adopt-capability', device: false },
+  { label: '이 기기의 capability 연결 시작', action: 'connect-capabilities', device: false },
+  { label: '이 기기의 capability 연결 상태', action: 'capability-status', device: false },
+  { label: '이 기기의 capability 연결 중단', action: 'disconnect-capabilities', device: false },
   { label: '대화 연결·폴링 중단', action: 'stop-conversation', device: false },
   { label: '플랫폼 로그아웃', action: 'logout', device: false },
   { label: '중단된 로컬 세션 기록 삭제', action: 'forget-local', device: false },
@@ -24,7 +32,8 @@ async function credentials(email = true): Promise<{ email?: string; password: st
   return password ? { ...(address ? { email: address.trim() } : {}), password } : null;
 }
 export async function nativeSessionCommand(service: DexService, controller: NativeSessionController,
-  conversationDocument: Pick<NativeConversationDocument, 'show'>): Promise<void> {
+  conversationDocument: Pick<NativeConversationDocument, 'show'>,
+  capabilities: NativeCapabilityController): Promise<void> {
   const connection = controller.connectionVersion;
   const current = () => connection === controller.connectionVersion;
   const perform = async (method: 'native/device' | 'native/session', params: Record<string, unknown>) => current() ? controller.perform(method, params) : null;
@@ -74,6 +83,86 @@ export async function nativeSessionCommand(service: DexService, controller: Nati
         if (current()) await controller.watchLive(profile.name, userId);
         return;
       }
+      if (choice.action === 'select-capabilities' || choice.action === 'adopt-capability') {
+        const target = controller.capabilityTarget();
+        if (!target || target.profile !== profile.name || target.userId !== userId) {
+          throw new Error('먼저 이 프로필의 현재 공유 대화를 읽거나 연결해 정확한 Agent Session을 확인하세요.');
+        }
+        const targetCurrent = () => {
+          const latest = controller.capabilityTarget();
+          return current() && latest?.profile === target.profile && latest.userId === target.userId
+            && latest.agentSessionId === target.agentSessionId;
+        };
+        if (choice.action === 'select-capabilities') {
+          const result = await service.request<NativeRpcResult>('native/capabilities', {
+            profile: profile.name, user_id: userId, agent_session_id: target.agentSessionId,
+          });
+          if (!targetCurrent() || !result.capability_catalog) return;
+          const catalog = parseCapabilityCatalog(result.capability_catalog);
+          const selected = new Set(catalog.selected_capability_ids);
+          const picks = await vscode.window.showQuickPick(catalog.capabilities.map((item) => ({
+            label: `${item.server} · ${item.name}`,
+            description: item.device_id,
+            detail: item.description,
+            picked: selected.has(item.capability_id),
+            capabilityId: item.capability_id,
+          })), { title: '현재 Agent Session에서 사용할 capability', canPickMany: true });
+          if (!picks || !targetCurrent()) return;
+          await service.request('native/select-capabilities', {
+            profile: profile.name, user_id: userId, agent_session_id: target.agentSessionId,
+            expected_auth_scope: result.capability_catalog.authScope,
+            capability_ids: picks.map((item) => item.capabilityId), expected_version: catalog.version,
+          });
+          if (!targetCurrent()) return;
+          await vscode.window.showInformationMessage('현재 Agent Session의 capability 선택을 저장했습니다.');
+          return;
+        }
+        const scoped = await service.request<NativeRpcResult>('native/capabilities', {
+          profile: profile.name, user_id: userId, agent_session_id: target.agentSessionId,
+        });
+        if (!targetCurrent() || !scoped.capability_catalog) return;
+        const result = await service.request<NativeRpcResult>('native/capability-approvals', {
+          profile: profile.name, user_id: userId, agent_session_id: target.agentSessionId,
+          expected_auth_scope: scoped.capability_catalog.authScope,
+        });
+        if (!targetCurrent() || !result.capability_approvals) return;
+        const approvals = parseCapabilityApprovals(result.capability_approvals).approvals
+          .filter((item) => item.status === 'approved');
+        if (!approvals.length) {
+          await vscode.window.showInformationMessage('이 Agent Session에서 가져올 승인된 capability 요청이 없습니다.');
+          return;
+        }
+        const approval = await vscode.window.showQuickPick(approvals.map((item) => ({
+          label: item.tool_name,
+          description: `요청 ${item.approval_id}`,
+          detail: `${item.capability_id}\nargs sha256: ${item.args_sha256}`,
+          approval: item,
+        })), { title: '현재 Agent Session으로 가져올 승인 요청' });
+        if (!approval || !targetCurrent()) return;
+        await service.request('native/adopt-capability-approval', {
+          profile: profile.name, user_id: userId, agent_session_id: target.agentSessionId,
+          approval_id: approval.approval.approval_id, expected_version: approval.approval.intent_version,
+          expected_auth_scope: scoped.capability_catalog.authScope,
+        });
+        if (!targetCurrent()) return;
+        await vscode.window.showInformationMessage('선택한 capability 승인을 현재 Agent Session으로 가져왔습니다.');
+        return;
+      }
+      if (choice.action === 'connect-capabilities') {
+        const snapshot = await capabilities.connect(profile.name, userId);
+        if (snapshot && current()) await vscode.window.showInformationMessage(`이 기기의 capability 연결: ${snapshot.state}`);
+        return;
+      }
+      if (choice.action === 'capability-status') {
+        const snapshot = await capabilities.status(profile.name, userId);
+        if (snapshot && current()) await vscode.window.showInformationMessage(`이 기기의 capability 연결: ${snapshot.state}`);
+        return;
+      }
+      if (choice.action === 'disconnect-capabilities') {
+        await capabilities.disconnect(profile.name, userId);
+        if (current()) await vscode.window.showInformationMessage('이 기기의 capability 연결을 중단했습니다.');
+        return;
+      }
       if (choice.action === 'logout') { const secret = await credentials(false); if (!secret) return; params.password = secret.password; }
       if (choice.action === 'forget-local' && await vscode.window.showWarningMessage('로컬 기록만 삭제합니다. 먼저 내 페이지에서 해당 서버 세션을 폐기했는지 확인하세요.',
         { modal: true }, '로컬 기록 삭제') !== '로컬 기록 삭제') return;
@@ -84,6 +173,7 @@ export async function nativeSessionCommand(service: DexService, controller: Nati
       finally { listener.dispose(); }
     });
     if (!result || !current()) return;
+    if (['login', 'logout', 'refresh', 'forget-local'].includes(choice.action)) capabilities.reset(false);
     const summary = nativeSessionSummary(result);
     if (summary?.state === 'active') await controller.watch(result.profile, result.user_id);
     if (result.result && 'confirmation_code' in result.result) {
@@ -95,4 +185,21 @@ export async function nativeSessionCommand(service: DexService, controller: Nati
   } catch (error) {
     await vscode.window.showErrorMessage(error instanceof Error ? error.message : 'VSCode 기기·세션 작업을 완료하지 못했습니다.');
   }
+}
+
+export async function confirmNativeCapability(request: NativeCapabilityConfirmation): Promise<boolean> {
+  const maximum = 6000;
+  const encoded = nativeCapabilityArgumentDisplay(request.args, maximum);
+  if (encoded === null) {
+    await vscode.window.showWarningMessage(`${request.server} · ${request.tool} 요청을 확인할 수 없어 거부했습니다.`,
+      { modal: true, detail: `인수를 안전하게 전부 표시할 수 없거나 ${maximum}자 표시 한도를 초과했습니다. 요청을 거부합니다.\nsha256 ${request.argsSha256}` });
+    return false;
+  }
+  const allow = '이번 요청 허용';
+  const answer = await vscode.window.showWarningMessage(
+    `${request.server} · ${request.tool} 실행을 허용할까요?`,
+    { modal: true, detail: `도구: ${request.server}.${request.tool}\n인수:\n${encoded}` },
+    allow,
+  );
+  return answer === allow;
 }

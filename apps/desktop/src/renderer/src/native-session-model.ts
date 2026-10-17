@@ -355,6 +355,7 @@ export class DesktopNativeSessionModel {
   private notice(notice: DesktopNativeNotice): void {
     if (this.disposed) return;
     if (notice.type === 'cleared') { this.clear(); return; }
+    if ('view' in notice.value && notice.value.view === 'capabilities') return;
     if (this.waiting) { this.buffered = notice; return; }
     const value = notice.value; const selected = this.state.result;
     if (!this.watchId || value.watch_id !== this.watchId || value.platform_type !== 'desktop' || value.profile !== 'desktop'

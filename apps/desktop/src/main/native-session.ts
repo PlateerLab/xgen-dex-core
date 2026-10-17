@@ -83,7 +83,9 @@ export class DesktopNativeSessions {
     try {
       if (typeof rawMethod !== 'string' || !['device', 'session', 'watch', 'conversation', 'watch-conversation', 'watch-live',
         'submit-turn', 'stop-turn', 'agent-sessions', 'create-agent-session', 'switch-agent-focus', 'unwatch', 'cancel',
-        'pick-attachments', 'attachments', 'upload-attachment', 'recover-attachment', 'cancel-attachment', 'discard-attachments'].includes(rawMethod)) {
+        'pick-attachments', 'attachments', 'upload-attachment', 'recover-attachment', 'cancel-attachment', 'discard-attachments',
+        'capabilities', 'select-capabilities', 'capability-approvals', 'adopt-capability-approval',
+        'connect-capabilities', 'capability-status', 'confirm-capability', 'disconnect-capabilities'].includes(rawMethod)) {
         throw new DexError('usage_error', '지원하지 않는 기기·세션 작업입니다.');
       }
       const params = object(rawParams);
@@ -106,13 +108,15 @@ export class DesktopNativeSessions {
         }, { ...this.options, expectedUserId: scope.userId }, 'desktop');
       }
       const generation = this.generation;
-      const scoped = rawMethod === 'unwatch' ? params : { ...params, profile: 'desktop',
+      const scoped = rawMethod === 'unwatch' || rawMethod === 'confirm-capability' ? params : { ...params, profile: 'desktop',
         ...(rawMethod === 'device' || (rawMethod === 'session' && params.action === 'login') ? {} : { user_id: scope.userId }) };
       const value = await this.host!.request(`native/${rawMethod}`, scoped);
       if (generation !== this.generation || this.current().key !== scope.key) {
         this.discardStaleOwner();
         if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn' || rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus'
-          || rawMethod === 'upload-attachment' || rawMethod === 'cancel-attachment') {
+          || rawMethod === 'upload-attachment' || rawMethod === 'cancel-attachment'
+          || rawMethod === 'select-capabilities' || rawMethod === 'adopt-capability-approval'
+          || rawMethod === 'connect-capabilities' || rawMethod === 'confirm-capability') {
           throw new DexError('network_error', rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus'
             ? '작업 완료 여부를 확인할 수 없습니다. 현재 포커스와 세션 목록을 다시 확인하세요.'
             : '송신 완료 여부를 확인할 수 없습니다. 대화 상태를 확인하고 같은 요청으로 재확인하세요.',

@@ -6,6 +6,7 @@ import { DexError } from './errors';
 import { NativeDeviceOperationBusy } from './native-device-key-store';
 
 const MAX_FRAME_BYTES = 1024 * 1024;
+const MAX_CAPABILITY_FRAME_BYTES = 64 * 1024;
 const MAX_QUEUE_FRAMES = 8;
 const MAX_QUEUE_BYTES = 2 * 1024 * 1024;
 const MAX_CERTIFICATES = 2048;
@@ -62,10 +63,17 @@ export interface NativeAgentSocket {
   close(): Promise<void>;
 }
 
+export interface NativeAgentCapabilitySocket extends NativeAgentSocket {
+  /** Sends one bounded JSON object. Credentials never enter application frames. */
+  send(value: Readonly<Record<string, unknown>>): Promise<void>;
+}
+
 export interface NativeAgentSocketTransport {
   assertAvailable(): void;
   open(sessionId: string, afterSequence: number, token: string, proof: string,
     signal: AbortSignal): Promise<NativeAgentSocket>;
+  /** Optional for injected legacy/test transports. The built-in transport always provides it. */
+  openCapabilities?(token: string, proof: string, signal: AbortSignal): Promise<NativeAgentCapabilitySocket>;
 }
 
 export interface NativeAgentSocketTransportOptions {
@@ -183,6 +191,56 @@ function rawBytes(data: RawData): Buffer {
   return Buffer.concat(data);
 }
 
+function parseCapabilityFrame(text: string): unknown {
+  let offset = 0;
+  const whitespace = () => { while (/[\x20\t\r\n]/.test(text[offset] ?? '')) offset++; };
+  const string = (): string => {
+    const start = offset++; let escaped = false;
+    while (offset < text.length) {
+      const code = text.charCodeAt(offset++);
+      if (!escaped && code === 0x22) return JSON.parse(text.slice(start, offset)) as string;
+      if (!escaped && code === 0x5c) escaped = true; else escaped = false;
+    }
+    throw invalid();
+  };
+  const value = (depth = 0): unknown => {
+    whitespace(); if (depth >= 32 || offset >= text.length) throw invalid();
+    const code = text.charCodeAt(offset);
+    if (code === 0x22) return string();
+    if (code === 0x7b) {
+      offset++; whitespace(); const out: Record<string, unknown> = {}; const seen = new Set<string>();
+      if (text.charCodeAt(offset) === 0x7d) { offset++; return out; }
+      for (;;) {
+        if (text.charCodeAt(offset) !== 0x22) throw invalid();
+        const key = string(); if (seen.has(key)) throw invalid(); seen.add(key); whitespace();
+        if (text.charCodeAt(offset++) !== 0x3a) throw invalid();
+        Object.defineProperty(out, key, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });
+        whitespace();
+        const delimiter = text.charCodeAt(offset++);
+        if (delimiter === 0x7d) return out;
+        if (delimiter !== 0x2c) throw invalid(); whitespace();
+      }
+    }
+    if (code === 0x5b) {
+      offset++; whitespace(); const out: unknown[] = [];
+      if (text.charCodeAt(offset) === 0x5d) { offset++; return out; }
+      for (;;) {
+        out.push(value(depth + 1)); whitespace();
+        const delimiter = text.charCodeAt(offset++);
+        if (delimiter === 0x5d) return out;
+        if (delimiter !== 0x2c || out.length > 4096) throw invalid();
+      }
+    }
+    for (const [raw, parsed] of [['true', true], ['false', false], ['null', null]] as const) {
+      if (text.startsWith(raw, offset)) { offset += raw.length; return parsed; }
+    }
+    const match = text.slice(offset).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (!match) throw invalid(); offset += match[0].length;
+    const number = Number(match[0]); if (!Number.isFinite(number)) throw invalid(); return number;
+  };
+  const result = value(); whitespace(); if (offset !== text.length) throw invalid(); return result;
+}
+
 class NodeNativeAgentSocket implements NativeAgentSocket {
   private readonly owner = Object.freeze({});
   private readonly frames: Frame[] = [];
@@ -204,10 +262,12 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
 
   constructor(
     private readonly origin: string,
+    private readonly purpose: 'events' | 'capabilities',
     address: string,
     headers: Record<string, string>,
     options: Pick<ClientOptions, 'ca'>,
     private readonly signal: AbortSignal,
+    private readonly maximumFrameBytes = MAX_FRAME_BYTES,
   ) {
     this.openedPromise = new Promise<void>((resolve, reject) => {
       this.openResolve = resolve;
@@ -215,7 +275,7 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
     });
     this.closedPromise = new Promise<void>((resolve) => { this.closeResolve = resolve; });
     this.onAbort = () => this.fail(abortError());
-    claimedOrigins.set(origin, this.owner);
+    claimedOrigins.set(this.claimKey(), this.owner);
 
     try {
       const socket = new WebSocket(address, {
@@ -223,7 +283,7 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
         headers,
         followRedirects: false,
         handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
-        maxPayload: MAX_FRAME_BYTES,
+        maxPayload: maximumFrameBytes,
         perMessageDeflate: false,
         rejectUnauthorized: true,
         skipUTF8Validation: false,
@@ -241,7 +301,7 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
     } catch {
       delete headers.Authorization;
       delete headers.DPoP;
-      claimedOrigins.delete(origin);
+      claimedOrigins.delete(this.claimKey());
       this.openSettled = true;
       this.openReject(new NativeSocketUnavailable());
       this.actuallyClosed = true;
@@ -274,6 +334,21 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
     if (this.terminalFailure !== null) return Promise.reject(this.terminalFailure);
     if (!this.opened || this.closing || this.actuallyClosed) return Promise.reject(new NativeSocketUnavailable());
     return new Promise<unknown>((resolve, reject) => { this.pendingNext = { resolve, reject }; });
+  }
+
+  send(value: Readonly<Record<string, unknown>>): Promise<void> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return Promise.reject(invalid());
+    let encoded: string;
+    try { encoded = JSON.stringify(value); } catch { return Promise.reject(invalid()); }
+    if (!encoded || Buffer.byteLength(encoded) > this.maximumFrameBytes) return Promise.reject(invalid());
+    const socket = this.socket;
+    if (!this.opened || this.closing || this.actuallyClosed || this.terminalFailure !== null
+      || socket?.readyState !== WebSocket.OPEN) return Promise.reject(this.terminalFailure ?? new NativeSocketUnavailable());
+    return new Promise<void>((resolve, reject) => {
+      socket.send(encoded, { binary: false, compress: false }, (error) => {
+        if (error) reject(websocketErrorFailure(error)); else resolve();
+      });
+    });
   }
 
   close(): Promise<void> {
@@ -334,12 +409,14 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
   private readonly handleMessage = (data: RawData, isBinary: boolean): void => {
     if (this.closing || this.terminalFailure !== null) return;
     const bytes = rawBytes(data);
-    if (isBinary || bytes.byteLength > MAX_FRAME_BYTES) {
+    if (isBinary || bytes.byteLength > this.maximumFrameBytes) {
       this.fail(new NativeSocketInvalid());
       return;
     }
     let value: unknown;
-    try { value = JSON.parse(bytes.toString('utf8')) as unknown; }
+    try { value = this.purpose === 'capabilities'
+      ? parseCapabilityFrame(bytes.toString('utf8'))
+      : JSON.parse(bytes.toString('utf8')) as unknown; }
     catch { this.fail(new NativeSocketInvalid()); return; }
     const pending = this.pendingNext;
     if (pending) {
@@ -385,7 +462,7 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
     if (this.closeTimer) clearTimeout(this.closeTimer);
     this.closeTimer = null;
     this.signal.removeEventListener('abort', this.onAbort);
-    if (claimedOrigins.get(this.origin) === this.owner) claimedOrigins.delete(this.origin);
+    if (claimedOrigins.get(this.claimKey()) === this.owner) claimedOrigins.delete(this.claimKey());
     const socket = this.socket;
     if (socket) {
       socket.off('open', this.handleOpen);
@@ -399,6 +476,8 @@ class NodeNativeAgentSocket implements NativeAgentSocket {
     }
     this.closeResolve();
   };
+
+  private claimKey(): string { return `${this.origin}\u0000${this.purpose}`; }
 }
 
 /** Creates a receive-only native WebSocket transport pinned to one canonical HTTPS origin. */
@@ -418,15 +497,28 @@ export function createNativeAgentSocketTransport(
       proofMatches(proof, htu);
       if (!(signal instanceof AbortSignal)) throw invalid();
       if (signal.aborted) throw abortError();
-      if (claimedOrigins.has(origin)) throw new NativeSocketBusy();
+      if (claimedOrigins.has(`${origin}\u0000events`)) throw new NativeSocketBusy();
       const wss = new URL(htu);
       wss.protocol = 'wss:';
       wss.search = `after_seq=${afterSequence}`;
       const expected = `${origin.replace(/^https:/, 'wss:')}/api/agentflow/agent-sessions/${sessionId}/events?after_seq=${afterSequence}`;
       if (wss.toString() !== expected) throw invalid();
-      const socket = new NodeNativeAgentSocket(origin, expected,
+      const socket = new NodeNativeAgentSocket(origin, 'events', expected,
         { Authorization: `DPoP ${token}`, DPoP: proof }, tlsOptions(options.certificates), signal);
       return socket.ready();
+    },
+    async openCapabilities(token, proof, signal): Promise<NativeAgentCapabilitySocket> {
+      credential(token);
+      const htu = `${origin}/api/agentflow/capabilities/connector`;
+      proofMatches(proof, htu);
+      if (!(signal instanceof AbortSignal)) throw invalid();
+      if (signal.aborted) throw abortError();
+      if (claimedOrigins.has(`${origin}\u0000capabilities`)) throw new NativeSocketBusy();
+      const expected = `${origin.replace(/^https:/, 'wss:')}/api/agentflow/capabilities/connector`;
+      const socket = new NodeNativeAgentSocket(origin, 'capabilities', expected,
+        { Authorization: `DPoP ${token}`, DPoP: proof }, tlsOptions(options.certificates), signal,
+        MAX_CAPABILITY_FRAME_BYTES);
+      return socket.ready() as Promise<NativeAgentCapabilitySocket>;
     },
   };
 }

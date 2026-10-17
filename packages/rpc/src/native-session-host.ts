@@ -6,6 +6,8 @@ import { validateSubmitAgentTurn } from '@dex/protocol/agent-session-mutation';
 import { NativeAttachmentDraftRegistry, type NativeAttachmentDraftScope, type NativeAttachmentSelectionLimits,
   type TrustedNativeAttachment } from './native-attachment-drafts';
 import { parseAgentAttachmentScope, validateAgentAttachmentId } from '@dex/protocol/agent-session-attachments';
+import { validateSelectCapabilities } from '@dex/protocol/agent-capabilities';
+import { NativeCapabilityRpcHost, type TrustedNativeCapabilityTools } from './native-capability-host';
 
 function text(p: Record<string, unknown>, key: string, required = true): string | undefined {
   const value = p[key];
@@ -40,6 +42,8 @@ export interface NativeSessionHostOptions {
   socket?: (origin: string) => NativeAgentSocketTransport;
   /** Trusted host picker; returned byte arrays transfer ownership and are wiped after bounded private copies are made. */
   attachmentPicker?: (signal: AbortSignal, limits: Readonly<NativeAttachmentSelectionLimits>) => Promise<readonly TrustedNativeAttachment[]>;
+  /** Optional trusted replacement for the built-in local capability catalog and dispatcher. */
+  capabilityTools?: TrustedNativeCapabilityTools;
 }
 
 /** Host owns all credentials. Request bodies cannot change the constructor's platform. */
@@ -50,14 +54,21 @@ export class NativeSessionRpcHost {
   private draining: Promise<void> = Promise.resolve();
   private readonly attachmentDrafts = new NativeAttachmentDraftRegistry();
   private pendingAttachedTurn: PendingAttachedTurn | null = null;
+  private readonly capabilities: NativeCapabilityRpcHost;
   private closed = false;
   constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeSessionNotification) => void,
-    private readonly options: NativeSessionHostOptions = {}, readonly platform: 'vscode' | 'desktop' = 'vscode') { this.keys = options.keys ?? new NativeDeviceKeyStore(); }
-  cancel(): void {
-    this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort();
-    this.attachmentDrafts.clearDrafts();
+    private readonly options: NativeSessionHostOptions = {}, readonly platform: 'vscode' | 'desktop' = 'vscode') {
+    this.keys = options.keys ?? new NativeDeviceKeyStore();
+    this.capabilities = new NativeCapabilityRpcHost(configs, notify, { ...options, keys: this.keys }, platform);
   }
-  close(): void { this.closed = true; this.cancel(); this.attachmentDrafts.clear(); this.pendingAttachedTurn = null; }
+  async cancel(): Promise<void> {
+    this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort();
+    this.attachmentDrafts.clearDrafts(); await this.capabilities.stop();
+  }
+  close(): void {
+    this.closed = true; this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort();
+    this.capabilities.close(); this.attachmentDrafts.clear(); this.pendingAttachedTurn = null;
+  }
   private async stopWatch(signal: AbortSignal = AbortSignal.timeout(15000)): Promise<void> {
     const watch = this.watch; this.watch = null; watch?.controller.abort();
     signal.throwIfAborted();
@@ -73,14 +84,16 @@ export class NativeSessionRpcHost {
   async request(method: string, p: Record<string, unknown>): Promise<NativeRpcResult | { watching: false }> {
     p = { ...p };
     if (this.closed) throw new DexError('auth_required', '네이티브 호스트가 종료되었습니다.');
+    if (this.capabilities.handles(method)) return this.capabilities.request(method, p);
     if (method === 'native/unwatch') {
       fields(p, ['watch_id']); const id = text(p, 'watch_id');
       if (this.watch?.id === id) await this.stopWatch(); return { watching: false };
     }
-    if (method === 'native/cancel') { fields(p, []); this.cancel(); return { watching: false }; }
+    if (method === 'native/cancel') { fields(p, []); await this.cancel(); return { watching: false }; }
     if (!['native/device', 'native/session', 'native/watch', 'native/conversation', 'native/watch-conversation', 'native/watch-live', 'native/submit-turn', 'native/stop-turn',
       'native/agent-sessions', 'native/create-agent-session', 'native/switch-agent-focus', 'native/pick-attachments', 'native/attachments',
-      'native/upload-attachment', 'native/recover-attachment', 'native/cancel-attachment', 'native/discard-attachments'].includes(method)) {
+      'native/upload-attachment', 'native/recover-attachment', 'native/cancel-attachment', 'native/discard-attachments',
+      'native/capabilities', 'native/select-capabilities', 'native/capability-approvals', 'native/adopt-capability-approval'].includes(method)) {
       throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
     }
     if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
@@ -106,16 +119,23 @@ export class NativeSessionRpcHost {
       const mutation = method === 'native/submit-turn' || method === 'native/stop-turn';
       const catalog = method === 'native/agent-sessions';
       const lifecycle = method === 'native/create-agent-session' || method === 'native/switch-agent-focus';
+      const capability = ['native/capabilities', 'native/select-capabilities', 'native/capability-approvals',
+        'native/adopt-capability-approval'].includes(method);
       const attachment = ['native/pick-attachments', 'native/attachments', 'native/upload-attachment', 'native/recover-attachment',
         'native/cancel-attachment', 'native/discard-attachments'].includes(method);
       const attachmentIndividual = ['native/upload-attachment', 'native/recover-attachment', 'native/cancel-attachment'].includes(method);
-      const action = mutation || catalog || lifecycle || attachment ? method.slice(7) : watching ? 'watch' : conversation ? 'conversation' : text(p, 'action')!;
+      const action = mutation || catalog || lifecycle || attachment || capability ? method.slice(7) : watching ? 'watch' : conversation ? 'conversation' : text(p, 'action')!;
       const device = method === 'native/device'; const passwordAction = device || ['login', 'logout'].includes(action);
+      if (!device && ['login', 'logout', 'refresh', 'forget-local'].includes(action)) await this.capabilities.stop();
       const accountField = device || action === 'login' ? 'email' : 'user_id';
       fields(p, ['profile', ...(mutation ? ['user_id', 'agent_session_id', 'expected_state_version',
         ...(method === 'native/submit-turn' ? ['input_text', 'idempotency_key', 'origin_id', 'attachments'] : ['turn_id'])]
         : catalog ? ['user_id', 'limit', 'before_id']
         : lifecycle ? ['user_id', 'expected_version', 'origin_id', ...(method === 'native/create-agent-session' ? ['workflow_id', 'title'] : ['active_agent_session_id'])]
+        : capability ? ['user_id', 'agent_session_id',
+          ...(method === 'native/select-capabilities' ? ['expected_auth_scope', 'capability_ids', 'expected_version'] : []),
+          ...(method === 'native/capability-approvals' ? ['expected_auth_scope'] : []),
+          ...(method === 'native/adopt-capability-approval' ? ['approval_id', 'expected_version', 'expected_auth_scope'] : [])]
         : attachment ? ['user_id', 'agent_session_id', 'workflow_id', ...(attachmentIndividual ? ['selection_id'] : [])]
         : watching ? ['user_id', 'interval_ms'] : conversation ? ['user_id'] : ['action', accountField]),
         ...(passwordAction ? ['password'] : []), ...(device && action === 'register' ? ['device_name'] : []),
@@ -142,6 +162,29 @@ export class NativeSessionRpcHost {
       const session = new NativeHostSession(scope.origin, this.platform, this.keys, this.options.fetch, this.options.expectedUserId,
         live ? this.options.socket?.(scope.origin) : undefined);
       sessionForDrain = session;
+      if (capability) {
+        const agentSessionId = text(p, 'agent_session_id')!;
+        if (method === 'native/capabilities') {
+          const capability_catalog = await session.capabilityCatalog(account, agentSessionId, signal);
+          return { ...envelope, user_id: account, agent_session_id: agentSessionId, capability_catalog };
+        }
+        const expectedAuthScope = text(p, 'expected_auth_scope')!;
+        if (method === 'native/select-capabilities') {
+          const input = validateSelectCapabilities({ capability_ids: p.capability_ids, expected_version: p.expected_version });
+          const capability_selection = await session.selectCapabilities(account, agentSessionId, input, signal, expectedAuthScope);
+          return { ...envelope, user_id: account, agent_session_id: agentSessionId, capability_selection };
+        }
+        if (method === 'native/capability-approvals') {
+          const capability_approvals = await session.capabilityApprovals(account, agentSessionId, signal, expectedAuthScope);
+          return { ...envelope, user_id: account, agent_session_id: agentSessionId, capability_approvals };
+        }
+        if (!Number.isSafeInteger(p.approval_id) || Number(p.approval_id) < 1) {
+          throw new DexError('usage_error', 'capability 승인 ID를 확인하세요.');
+        }
+        const capability_adoption = await session.adoptCapabilityApproval(account, agentSessionId, Number(p.approval_id),
+          text(p, 'expected_version')!, signal, expectedAuthScope);
+        return { ...envelope, user_id: account, agent_session_id: agentSessionId, capability_adoption };
+      }
       if (attachment) {
         const agentSessionId = text(p, 'agent_session_id')!;
         const workflowId = text(p, 'workflow_id')!;

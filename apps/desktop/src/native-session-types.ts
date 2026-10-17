@@ -5,7 +5,9 @@ import type { AgentSessionLifecycleConflict } from '@dex/protocol/agent-session-
 export type DesktopNativeMethod = 'device' | 'session' | 'watch' | 'conversation' | 'watch-conversation' | 'watch-live'
   | 'submit-turn' | 'stop-turn' | 'agent-sessions' | 'create-agent-session' | 'switch-agent-focus'
   | 'pick-attachments' | 'attachments' | 'upload-attachment' | 'recover-attachment' | 'cancel-attachment'
-  | 'discard-attachments' | 'unwatch' | 'cancel';
+  | 'discard-attachments' | 'unwatch' | 'cancel'
+  | 'capabilities' | 'select-capabilities' | 'capability-approvals' | 'adopt-capability-approval'
+  | 'connect-capabilities' | 'capability-status' | 'confirm-capability' | 'disconnect-capabilities';
 export type DesktopNativeMutationFailure = {
   outcome: 'rejected'; status: number; conflict?: AgentSessionMutationConflict | AgentSessionLifecycleConflict;
 } | { outcome: 'unknown' };

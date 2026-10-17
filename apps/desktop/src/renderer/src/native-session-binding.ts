@@ -80,7 +80,8 @@ function belongsToScope(notice: DesktopNativeNotice, origin: string, userId: str
   return notice.value.platform_type === 'desktop'
     && notice.value.profile === 'desktop'
     && notice.value.server_url === origin
-    && notice.value.update.user_id === userId;
+    && ('view' in notice.value && notice.value.view === 'capabilities'
+      ? notice.value.user_id === userId : notice.value.update.user_id === userId);
 }
 
 export function createDesktopScopedBridge(bridge: DesktopNativeBridge, origin: string, userId: string): DesktopNativeBridge {
@@ -102,7 +103,8 @@ export function createDesktopScopedBridge(bridge: DesktopNativeBridge, origin: s
           code: 'scope_mismatch',
           message: '현재 계정과 서버에 맞는 Desktop 세션이 아닙니다.',
           ...(['submit-turn', 'stop-turn', 'create-agent-session', 'switch-agent-focus', 'pick-attachments',
-            'upload-attachment', 'recover-attachment', 'cancel-attachment', 'discard-attachments'].includes(method)
+            'upload-attachment', 'recover-attachment', 'cancel-attachment', 'discard-attachments',
+            'select-capabilities', 'adopt-capability-approval', 'connect-capabilities', 'confirm-capability'].includes(method)
             ? { outcome: 'unknown' as const } : {}),
         };
       }

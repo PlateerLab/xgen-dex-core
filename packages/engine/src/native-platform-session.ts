@@ -6,7 +6,7 @@ import { reconcileAgentConversation, type ScopedAgentConversation, type AgentCon
 import { readNativeAgentConversation } from './native-agent-conversation-watch';
 import { nativeConversationFetch } from './native-agent-conversation-http';
 import { withNativeAccount } from './native-account';
-import { NativeDeviceKeyStore, nativeKeyScope, type NativeKeyScope } from './native-device-key-store';
+import { NativeDeviceKeyStore, NativeDeviceOperationBusy, nativeKeyScope, type NativeKeyScope } from './native-device-key-store';
 import type { NativeSessionRecord, NativeSessionPhase } from './native-session-record';
 import { DexError } from './errors';
 import { createNativeAgentSocketTransport, type NativeAgentSocket, type NativeAgentSocketTransport } from './native-agent-socket';
@@ -55,6 +55,19 @@ function requireReady(record: NativeSessionRecord | null): NativeSessionRecord {
 function requireAccess(record: NativeSessionRecord): string {
   if (!accessReady(record)) throw new DexError('auth_required', '네이티브 access 자격증명이 없습니다. 먼저 세션 갱신을 실행하세요.');
   return record.accessToken!;
+}
+// A bounded conversation read can own the same account lock for 10 seconds. Wait for that
+// read to drain, then re-read the actual vault; never retry execution or extend socket authority.
+const CAPABILITY_GUARD_BUSY_DELAYS_MS: readonly number[] = Object.freeze(Array(240).fill(50));
+async function waitForCapabilityGuard(delay: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(done, delay);
+    function done() { signal?.removeEventListener('abort', aborted); resolve(); }
+    function aborted() { clearTimeout(timer); signal?.removeEventListener('abort', aborted); reject(signal!.reason); }
+    signal?.addEventListener('abort', aborted, { once: true });
+  });
+  signal?.throwIfAborted();
 }
 
 /** Host fixes the platform at construction. No automatic refresh/retry or legacy credential fallback. */
@@ -569,14 +582,23 @@ export class NativeHostSession {
     this.sockets.set(wrapped, { scope: prepared.authScope, generation: prepared.generation });
     const assertCurrent = async (): Promise<void> => {
       try {
-        await this.keys.withSession(scope, async (_identity, _sign, vault) => {
-          const current = requireReady(await vault.read()); requireAccess(current); signal?.throwIfAborted();
-          const authScope = createHash('sha256').update(JSON.stringify([current.origin, current.platform, current.userId,
-            current.installId, current.deviceId, current.sessionId])).digest('hex');
-          if (authScope !== prepared.authScope || current.generation !== prepared.generation) {
-            throw new DexError('auth_required', '네이티브 세션이 바뀌어 기기 기능 연결을 종료했습니다.');
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await this.keys.withSession(scope, async (_identity, _sign, vault) => {
+              const current = requireReady(await vault.read()); requireAccess(current); signal?.throwIfAborted();
+              const authScope = createHash('sha256').update(JSON.stringify([current.origin, current.platform, current.userId,
+                current.installId, current.deviceId, current.sessionId])).digest('hex');
+              if (authScope !== prepared.authScope || current.generation !== prepared.generation) {
+                throw new DexError('auth_required', '네이티브 세션이 바뀌어 기기 기능 연결을 종료했습니다.');
+              }
+            });
+            break;
+          } catch (error) {
+            const pause = CAPABILITY_GUARD_BUSY_DELAYS_MS[attempt];
+            if (!(error instanceof NativeDeviceOperationBusy) || pause === undefined) throw error;
+            await waitForCapabilityGuard(pause, signal);
           }
-        });
+        }
       } catch (error) { void wrapped.close().catch(() => undefined); throw error; }
     };
     try {

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, createHmac, webcrypto } from 'node:crypto';
 import { test } from 'node:test';
-import { NativeDeviceKeyStore } from '../src/native-device-key-store';
+import { NativeDeviceKeyStore, NativeDeviceOperationBusy } from '../src/native-device-key-store';
 import { NativeCliSession, NativeHostSession } from '../src/native-platform-session';
 import { nativeKeyThumbprint } from '../src/native-dpop';
 import type { NativeSessionRecord } from '../src/native-session-record';
@@ -29,6 +29,25 @@ const REFRESH2 = Buffer.alloc(32, 2).toString('base64url');
 const ACCOUNT = 'e30.e30.c2ln';
 const scope = { origin: ORIGIN, platform: 'cli' as const, userId: '7' };
 const unavailable = (e: unknown) => e instanceof DexError && ['auth_required', 'credential_store_unavailable'].includes(e.code);
+class CapabilitySocket implements NativeAgentCapabilitySocket {
+  closed = false; sent: Array<Record<string, unknown>> = []; frames: unknown[] = [];
+  waiting: { resolve(value: unknown): void; reject(error: unknown): void } | null = null;
+  next(): Promise<unknown> {
+    if (this.frames.length) return Promise.resolve(this.frames.shift());
+    return new Promise((resolve, reject) => { this.waiting = { resolve, reject }; });
+  }
+  async send(value: Readonly<Record<string, unknown>>) { this.sent.push({ ...value }); }
+  async close() { this.closed = true; this.waiting?.reject(new Error('closed')); this.waiting = null; }
+  push(value: unknown) { if (this.waiting) { const wait = this.waiting; this.waiting = null; wait.resolve(value); } else this.frames.push(value); }
+}
+const capabilityReady = {
+  type: 'ready', protocol: 'canonical-capabilities-v1', connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`,
+  descriptors: [{ server: 'local', name: 'Read', description: 'Read', inputSchema: { type: 'object' },
+    risk: 'high', approval_mode: 'per_call', required_scope: ['tool.execute'],
+    capability_id: `cap://device/${DEVICE}/mcp/local/Read`, device_id: DEVICE, platform_session_id: SID,
+    connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`, descriptor_version: 1, descriptor_hash: 'a'.repeat(64) }],
+  expires_at: Date.now() / 1000 + 60,
+};
 async function fixture(platform: 'cli' | 'desktop' | 'vscode' = 'cli') {
   const accountScope = { ...scope, platform };
   const directory = await mkdtemp(join(tmpdir(), 'dex-native-session-'));
@@ -72,9 +91,9 @@ async function fixture(platform: 'cli' | 'desktop' | 'vscode' = 'cli') {
     assert.fail(`unexpected request: ${path}`);
   }) as typeof fetch;
   const keys = () => new NativeDeviceKeyStore(options);
-  const client = (socketTransport?: NativeAgentSocketTransport) => platform === 'cli'
-    ? new NativeCliSession(ORIGIN, keys(), fetchImpl, socketTransport)
-    : new NativeHostSession(ORIGIN, platform, keys(), fetchImpl, undefined, socketTransport);
+  const client = (socketTransport?: NativeAgentSocketTransport, store = keys()) => platform === 'cli'
+    ? new NativeCliSession(ORIGIN, store, fetchImpl, socketTransport)
+    : new NativeHostSession(ORIGIN, platform, store, fetchImpl, undefined, socketTransport);
   return { directory, records, phases, keychain, keys, client, stored, access, calls, identity,
     custom: (value: typeof custom) => { custom = value; }, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
@@ -820,17 +839,6 @@ test('native capability HTTP uses exact DPoP routes, closed projections and auth
 });
 
 test('native capability bridge releases the vault during ready wait and refresh closes its controller', async () => {
-  class CapabilitySocket implements NativeAgentCapabilitySocket {
-    closed = false; sent: Array<Record<string, unknown>> = []; frames: unknown[] = [];
-    waiting: { resolve(value: unknown): void; reject(error: unknown): void } | null = null;
-    next(): Promise<unknown> {
-      if (this.frames.length) return Promise.resolve(this.frames.shift());
-      return new Promise((resolve, reject) => { this.waiting = { resolve, reject }; });
-    }
-    async send(value: Readonly<Record<string, unknown>>) { this.sent.push({ ...value }); }
-    async close() { this.closed = true; this.waiting?.reject(new Error('closed')); this.waiting = null; }
-    push(value: unknown) { if (this.waiting) { const wait = this.waiting; this.waiting = null; wait.resolve(value); } else this.frames.push(value); }
-  }
   const f = await fixture('desktop'); const socket = new CapabilitySocket(); let opened!: () => void;
   const opening = new Promise<void>((resolve) => { opened = resolve; });
   const transport: NativeAgentSocketTransport = {
@@ -845,18 +853,101 @@ test('native capability bridge releases the vault during ready wait and refresh 
     await opening;
     assert.equal((await session.status('7')).state, 'active');
     assert.equal(snapshots.length, 0);
-    socket.push({ type: 'ready', protocol: 'canonical-capabilities-v1', connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`,
-      descriptors: [{ server: 'local', name: 'Read', description: 'Read', inputSchema: { type: 'object' },
-        risk: 'high', approval_mode: 'per_call', required_scope: ['tool.execute'],
-        capability_id: `cap://device/${DEVICE}/mcp/local/Read`, device_id: DEVICE, platform_session_id: SID,
-        connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`, descriptor_version: 1, descriptor_hash: 'a'.repeat(64) }],
-      expires_at: Date.now() / 1000 + 60 });
+    socket.push(capabilityReady);
     const controller = await connecting;
     assert.equal(controller.snapshot().state, 'ready'); assert.equal(snapshots[0]?.state, 'ready');
     const proof = socket.sent[0]; assert.equal(proof?.type, 'hello');
     await session.refresh('7');
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(socket.closed, true); assert.equal(controller.snapshot().state, 'closed');
+  } finally { await f.cleanup(); }
+});
+
+test('native capability guard waits through transient account-lock contention and then validates the vault', async () => {
+  const f = await fixture('desktop'); const socket = new CapabilitySocket(); const store = f.keys();
+  const original = store.withSession.bind(store); let armed = false; let busy = 0; let vaultChecks = 0;
+  store.withSession = (async (targetScope, work) => {
+    if (armed && busy++ < 2) throw new NativeDeviceOperationBusy();
+    return original(targetScope, async (...args) => { if (armed) vaultChecks++; return work(...args); });
+  }) as NativeDeviceKeyStore['withSession'];
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => {}, open: async () => { throw new Error('events unavailable'); },
+    openCapabilities: async () => { armed = true; return socket; },
+  };
+  try {
+    const session = f.client(transport, store); await session.login('a', 'p');
+    const connecting = session.connectCapabilities('7', { tools: [{ server: 'local', name: 'Read', description: 'Read',
+      inputSchema: { type: 'object' } }], call: async () => ({ ok: true }), onChange: () => {} });
+    socket.push(capabilityReady);
+    const controller = await connecting;
+    assert.equal(controller.snapshot().state, 'ready'); assert.equal(busy, 3); assert.equal(vaultChecks, 1);
+    assert.equal(socket.closed, false); await controller.close();
+  } finally { await f.cleanup(); }
+});
+
+test('native capability guard waits for a real long conversation lock then rechecks the vault', async () => {
+  const f = await fixture('desktop'); const socket = new CapabilitySocket(); const store = f.keys();
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => {}, open: async () => { throw new Error('events unavailable'); },
+    openCapabilities: async () => socket,
+  };
+  try {
+    const session = f.client(transport, store); await session.login('a', 'p');
+    const connecting = session.connectCapabilities('7', { tools: [{ server: 'local', name: 'Read', description: 'Read',
+      inputSchema: { type: 'object' } }], call: async () => ({ ok: true }), onChange: () => {} });
+    while (!socket.sent.length) await new Promise(resolve => setImmediate(resolve));
+    let release!: () => void; let entered!: () => void;
+    const locked = new Promise<void>(resolve => { entered = resolve; });
+    const held = f.keys().withSession({ ...scope, platform: 'desktop' }, async () => {
+      entered(); await new Promise<void>(resolve => { release = resolve; });
+    });
+    await locked; socket.push(capabilityReady);
+    const timer = setTimeout(() => release(), 3000);
+    try { const controller = await connecting; assert.equal(controller.snapshot().state, 'ready');
+      assert.equal(socket.closed, false); await controller.close(); }
+    finally { clearTimeout(timer); release(); await held; }
+  } finally { await f.cleanup(); }
+});
+
+test('native capability guard fails closed after bounded persistent account-lock contention', async () => {
+  const f = await fixture('desktop'); const socket = new CapabilitySocket(); const store = f.keys();
+  const original = store.withSession.bind(store); let armed = false; let busy = 0;
+  store.withSession = (async (targetScope, work) => {
+    if (armed) { busy++; throw new NativeDeviceOperationBusy(); }
+    return original(targetScope, work);
+  }) as NativeDeviceKeyStore['withSession'];
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => {}, open: async () => { throw new Error('events unavailable'); },
+    openCapabilities: async () => { armed = true; return socket; },
+  };
+  try {
+    const session = f.client(transport, store); await session.login('a', 'p');
+    const connecting = session.connectCapabilities('7', { tools: [{ server: 'local', name: 'Read', description: 'Read',
+      inputSchema: { type: 'object' } }], call: async () => ({ ok: true }), onChange: () => {} });
+    socket.push(capabilityReady);
+    await assert.rejects(connecting, (error: unknown) => error instanceof NativeDeviceOperationBusy);
+    assert.equal(busy, 241); assert.equal(socket.closed, true);
+  } finally { await f.cleanup(); }
+});
+
+test('native capability guard does not retry a non-contention credential failure', async () => {
+  const f = await fixture('desktop'); const socket = new CapabilitySocket(); const store = f.keys();
+  const original = store.withSession.bind(store); let armed = false; let checks = 0;
+  store.withSession = (async (targetScope, work) => {
+    if (armed) { checks++; throw new DexError('auth_required', 'changed'); }
+    return original(targetScope, work);
+  }) as NativeDeviceKeyStore['withSession'];
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => {}, open: async () => { throw new Error('events unavailable'); },
+    openCapabilities: async () => { armed = true; return socket; },
+  };
+  try {
+    const session = f.client(transport, store); await session.login('a', 'p');
+    const connecting = session.connectCapabilities('7', { tools: [{ server: 'local', name: 'Read', description: 'Read',
+      inputSchema: { type: 'object' } }], call: async () => ({ ok: true }), onChange: () => {} });
+    socket.push(capabilityReady);
+    await assert.rejects(connecting, (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    assert.equal(checks, 1); assert.equal(socket.closed, true);
   } finally { await f.cleanup(); }
 });
 

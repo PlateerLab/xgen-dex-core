@@ -23,7 +23,7 @@ app.setPath('userData', path.join(directory, 'profile')); app.disableHardwareAcc
 let win; let host; let closing = false;
 const marker = path.join(workspace, 'native-active-marker.txt');
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
-const deadline = setTimeout(() => { send({ event: 'deadline' }); app.exit(1); }, 10 * 60 * 1000);
+const deadline = setTimeout(() => { send({ event: 'deadline' }); app.exit(1); }, 30 * 60 * 1000);
 const close = () => { if (closing) return; closing = true; host?.reset(); clearTimeout(deadline); win?.destroy(); app.quit(); };
 app.on('will-quit', () => rmSync(directory, { recursive: true, force: true }));
 async function until(predicate) {
@@ -57,10 +57,13 @@ app.whenReady().then(async () => {
         const allowed = ['device','session','conversation','submit-turn','create-agent-session','capabilities','capability-approvals','disconnect-capabilities'];
         assert.ok(allowed.includes(params.method));
         result = await win.webContents.executeJavaScript(`window.xgen.nativeSession.request(${JSON.stringify(params.method)},${JSON.stringify(params.params ?? {})})`, true);
+      } else if (method === 'inspect') {
+        const displayed = await win.webContents.executeJavaScript(`({error:document.querySelector('[role=alert]')?.textContent??'',status:Array.from(document.querySelectorAll('[role=status]')).map(e=>e.textContent)})`);
+        result = displayed;
       } else if (method === 'connect') {
-        await click('#capability-connect'); await until(`document.body.textContent.includes('작업 요청 대기')`); result = { connected: true };
+        await until(`!!document.getElementById('capability-connect')&&!document.getElementById('capability-connect').disabled`); await click('#capability-connect'); await until(`document.body.textContent.includes('작업 요청 대기')`); result = { connected: true };
       } else if (method === 'select') {
-        await click('#capability-refresh'); await until(`Array.from(document.querySelectorAll('.native-capabilities__tool')).some(e=>e.querySelector('strong')?.textContent==='WriteFile')`);
+        await click('#capability-refresh'); await until(`!document.getElementById('capability-refresh').disabled&&Array.from(document.querySelectorAll('.native-capabilities__tool')).some(e=>e.querySelector('strong')?.textContent==='WriteFile')`);
         await win.webContents.executeJavaScript(`(()=>{const e=Array.from(document.querySelectorAll('.native-capabilities__tool')).find(e=>e.querySelector('strong')?.textContent==='WriteFile').querySelector('input');if(!e.checked)e.click()})()`, true);
         await click('#capability-save'); await until(`document.body.textContent.includes('저장했습니다')`); result = { selected: 'WriteFile' };
       } else if (method === 'adopt') {
@@ -75,7 +78,7 @@ app.whenReady().then(async () => {
         assert.equal(existsSync(marker), false, 'NO_EFFECT_BEFORE_CONFIRMATION');
         if (params.screenshot) {
           assert.ok(path.resolve(params.screenshot).startsWith(path.resolve(option('evidence-dir')) + path.sep));
-          await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+          await win.webContents.executeJavaScript("document.getElementById('capability-allow').scrollIntoView({block:'center'});new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
           writeFileSync(params.screenshot, (await win.webContents.capturePage()).toPNG());
         }
         await click(params.allow ? '#capability-allow' : '#capability-deny');

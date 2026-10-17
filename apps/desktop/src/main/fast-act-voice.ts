@@ -796,6 +796,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
           opened = true;
         }
+        // 글자를 받지 않는데 넣기가 오류 없이 끝나는 선택 상자도 있다 — div 로 그린 선택 상자(MUI Select)는 값이 그대로다
+        // (10/16 BO 구매연령 "구매 연령 성인으로 바꿔줘" → 넣기 성공, 값은 '전체'). 넣은 글자가 칸에 없으면 눌러 연다.
+        if (!opened && element.role === 'combobox' && (await this.valueOf(page.pageId, ref, snap.gen))?.trim() !== typed?.trim()) {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+          opened = true;
+        }
         // 숫자 칸이 단위 붙은 말("20000원", "2만 원")을 통째로 거부했으면 숫자만 다시 넣는다.
         const number = !opened && typed ? plainNumber(typed) : null;
         const kept = number ? await this.valueOf(page.pageId, ref, snap.gen) : null;

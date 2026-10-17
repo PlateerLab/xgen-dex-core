@@ -14,7 +14,7 @@ import { NativeAgentConversationWatcher } from '../src/native-agent-conversation
 import { nativeConversationFetch } from '../src/native-agent-conversation-http';
 import { NativePlatformTransportError, type NativeDeviceIdentity } from '@dex/protocol/native-platform-session';
 import { DexError } from '../src/errors';
-import type { NativeAgentSocket, NativeAgentSocketTransport } from '../src/native-agent-socket';
+import type { NativeAgentCapabilitySocket, NativeAgentSocket, NativeAgentSocketTransport } from '../src/native-agent-socket';
 
 const ORIGIN = 'https://app.example.test';
 const DEVICE = '018f1240-0000-7000-8000-000000000001';
@@ -761,6 +761,102 @@ test('proof operation drain waits for an aborted read to settle and release its 
     await assert.rejects(reading, (error: unknown) => error instanceof Error && error.name === 'AbortError');
     await drain; assert.equal(drained, true);
     assert.equal((await session.status('7')).state, 'active');
+  } finally { await f.cleanup(); }
+});
+
+test('native capability HTTP uses exact DPoP routes, closed projections and auth-scope binding', async () => {
+  const f = await fixture('desktop');
+  const capability = `cap://device/${DEVICE}/mcp/local/Read`;
+  const version = '018f1240-0000-7000-8000-000000000010';
+  const intent = '018f1240-0000-7000-8000-000000000011';
+  try {
+    const session = f.client(); await session.login('a', 'p');
+    f.custom((path, init) => {
+      if (path.endsWith('/capabilities') && init.method === 'GET') return Response.json({ capabilities: [{
+        capability_id: capability, server: 'local', name: 'Read', description: 'Read', inputSchema: { type: 'object' },
+        risk: 'high', approval_mode: 'per_call', device_id: DEVICE, connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`,
+        descriptor_hash: 'a'.repeat(64),
+      }], version, selected_capability_ids: [capability], expires_at: 2_000_000_000 });
+      if (path.endsWith('/capabilities') && init.method === 'PUT') return Response.json({
+        version, selected_capability_ids: [capability], expires_at: 2_000_000_000,
+      });
+      if (path.endsWith('/capability-approvals')) return Response.json({ approvals: [{ approval_id: 9,
+        intent_version: intent, status: 'pending', capability_id: capability, tool_name: 'Read', target_device_id: DEVICE,
+        args_sha256: 'b'.repeat(64), source_turn_id: TURN1, expires_at: 2_000_000_000 }] });
+      if (path.endsWith('/capability-approvals/9/adopt')) return Response.json({ approval_id: 9,
+        intent_version: version, status: 'armed', expires_at: 2_000_000_000 });
+      return undefined;
+    });
+    const catalog = await session.capabilityCatalog('7', SID);
+    assert.equal(catalog.capabilities[0]?.capability_id, capability); assert.match(catalog.authScope, /^[a-f0-9]{64}$/);
+    assert.equal((await session.selectCapabilities('7', SID, { capability_ids: [capability], expected_version: version },
+      undefined, catalog.authScope)).version, version);
+    assert.equal((await session.capabilityApprovals('7', SID, undefined, catalog.authScope)).approvals[0]?.approval_id, 9);
+    assert.equal((await session.adoptCapabilityApproval('7', SID, 9, intent, undefined, catalog.authScope)).status, 'armed');
+    const requests = f.calls.filter(({ path }) => path.includes('/capabilit'));
+    assert.deepEqual(requests.map(({ path, init }) => `${init.method} ${path}`), [
+      `GET /api/agentflow/agent-sessions/${SID}/capabilities`,
+      `PUT /api/agentflow/agent-sessions/${SID}/capabilities`,
+      `GET /api/agentflow/agent-sessions/${SID}/capability-approvals`,
+      `POST /api/agentflow/agent-sessions/${SID}/capability-approvals/9/adopt`,
+    ]);
+    for (const request of requests) {
+      const headers = request.init.headers as Record<string, string>;
+      assert.equal(headers.Authorization, `DPoP ${f.stored()!.accessToken}`);
+      const claims = JSON.parse(Buffer.from(headers.DPoP.split('.')[1], 'base64url').toString()) as Record<string, string>;
+      assert.equal(claims.htm, request.init.method); assert.equal(claims.htu, `${ORIGIN}${request.path}`);
+      assert.equal(request.init.credentials, 'omit'); assert.equal(request.init.redirect, 'error');
+    }
+    const count = f.calls.length;
+    await f.keys().withSession({ ...scope, platform: 'desktop' }, async (_identity, _sign, vault) => {
+      const current = (await vault.read())!; const access = f.access({ sid: FLOW });
+      await vault.write({ ...current, sessionId: FLOW, generation: FLOW,
+        accessToken: access.access_token, accessExpiresAt: access.access_expires_at });
+    });
+    await assert.rejects(session.capabilityCatalog('7', SID, undefined, catalog.authScope),
+      (error: unknown) => error instanceof DexError && error.code === 'auth_required');
+    assert.equal(f.calls.length, count);
+  } finally { await f.cleanup(); }
+});
+
+test('native capability bridge releases the vault during ready wait and refresh closes its controller', async () => {
+  class CapabilitySocket implements NativeAgentCapabilitySocket {
+    closed = false; sent: Array<Record<string, unknown>> = []; frames: unknown[] = [];
+    waiting: { resolve(value: unknown): void; reject(error: unknown): void } | null = null;
+    next(): Promise<unknown> {
+      if (this.frames.length) return Promise.resolve(this.frames.shift());
+      return new Promise((resolve, reject) => { this.waiting = { resolve, reject }; });
+    }
+    async send(value: Readonly<Record<string, unknown>>) { this.sent.push({ ...value }); }
+    async close() { this.closed = true; this.waiting?.reject(new Error('closed')); this.waiting = null; }
+    push(value: unknown) { if (this.waiting) { const wait = this.waiting; this.waiting = null; wait.resolve(value); } else this.frames.push(value); }
+  }
+  const f = await fixture('desktop'); const socket = new CapabilitySocket(); let opened!: () => void;
+  const opening = new Promise<void>((resolve) => { opened = resolve; });
+  const transport: NativeAgentSocketTransport = {
+    assertAvailable: () => {}, open: async () => { throw new Error('events unavailable'); },
+    openCapabilities: async () => { opened(); return socket; },
+  };
+  const snapshots: Array<{ state: string }> = [];
+  try {
+    const session = f.client(transport); await session.login('a', 'p');
+    const connecting = session.connectCapabilities('7', { tools: [{ server: 'local', name: 'Read', description: 'Read',
+      inputSchema: { type: 'object' } }], call: async () => ({ ok: true }), onChange: (value) => snapshots.push(value) });
+    await opening;
+    assert.equal((await session.status('7')).state, 'active');
+    assert.equal(snapshots.length, 0);
+    socket.push({ type: 'ready', protocol: 'canonical-capabilities-v1', connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`,
+      descriptors: [{ server: 'local', name: 'Read', description: 'Read', inputSchema: { type: 'object' },
+        risk: 'high', approval_mode: 'per_call', required_scope: ['tool.execute'],
+        capability_id: `cap://device/${DEVICE}/mcp/local/Read`, device_id: DEVICE, platform_session_id: SID,
+        connection_id: `conn_${'c'.repeat(32)}`, epoch: `epoch_${'e'.repeat(32)}`, descriptor_version: 1, descriptor_hash: 'a'.repeat(64) }],
+      expires_at: Date.now() / 1000 + 60 });
+    const controller = await connecting;
+    assert.equal(controller.snapshot().state, 'ready'); assert.equal(snapshots[0]?.state, 'ready');
+    const proof = socket.sent[0]; assert.equal(proof?.type, 'hello');
+    await session.refresh('7');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(socket.closed, true); assert.equal(controller.snapshot().state, 'closed');
   } finally { await f.cleanup(); }
 });
 

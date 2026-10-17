@@ -57,6 +57,13 @@ Usage:
   dex session agent-sessions --user-id <id> [--limit <1..100>] [--before-id <uuid>] [--json]
   dex session create-agent-session --user-id <id> --workflow-id <id> --expected-version <n> [--title <text>] [--json]
   dex session switch-agent-focus --user-id <id> (--session-id <uuid>|--clear) --expected-version <n> [--json]
+  dex session capabilities --profile <name> --user-id <id> --session-id <uuid> [--auth-scope <sha256>] [--json]
+  dex session select-capabilities --profile <name> --user-id <id> --session-id <uuid>
+           --capability-ids <json-array> --expected-version <uuid|null> --auth-scope <sha256> [--json]
+  dex session capability-approvals --profile <name> --user-id <id> --session-id <uuid> --auth-scope <sha256> [--json]
+  dex session adopt-capability-approval --profile <name> --user-id <id> --session-id <uuid>
+           --approval-id <id> --expected-version <uuid> --auth-scope <sha256> [--json]
+  dex session connect-capabilities --profile <name> --user-id <id>
   dex session watch-focus|watch-conversation|watch-live --user-id <id> [--profile <name>] [--interval-ms <200..60000>] [--jsonl]
   dex session logout --user-id <id> [--profile <name>] [--password-stdin]
   dex session forget-local --user-id <id> [--profile <name>] [--json]

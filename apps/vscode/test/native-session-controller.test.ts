@@ -93,6 +93,18 @@ test('conversation read and buffered polling publish only validated display fiel
   await f.controller.stopWatch(); assert.equal(f.calls.at(-1), 'native/unwatch');
   assert.deepEqual(session(f.states.at(-1)!), { status: 'idle', focus: null, conversation: null, hasMore: false });
 });
+test('capability selection target is only the exact verified current Agent Session scope', async () => {
+  const f = fixture();
+  f.respond(async (method) => method === 'native/conversation'
+    ? { ...context, view: 'conversation', conversation, has_more: false }
+    : context);
+  await f.controller.conversation('corp', '7');
+  assert.deepEqual(f.controller.capabilityTarget(), {
+    profile: 'corp', userId: '7', agentSessionId: conversation.snapshot.id,
+  });
+  f.controller.reset(false);
+  assert.equal(f.controller.capabilityTarget(), null);
+});
 test('stopping a pending live watch cancels it and exact stale ACK cleanup leaves a newer live watch active', async () => {
   const f = fixture(); let resolveOld!: (value: NativeRpcResult) => void; let entered!: () => void; let first = true;
   const started = new Promise<void>((resolve) => { entered = resolve; });

@@ -279,6 +279,43 @@ test('shares the origin latch across factories and releases it after actual clos
   await second.close();
 }));
 
+test('capability and event sockets use independent origin claims and the exact authenticated route', async () => withFixture(async (f) => {
+  const capabilityHtu = `${f.origin}/api/agentflow/capabilities/connector`;
+  const capabilityProof = jwt({ htm: 'GET', htu: capabilityHtu });
+  const received: string[] = [];
+  f.wss.on('connection', (peer, request) => {
+    if (request.url === '/api/agentflow/capabilities/connector') {
+      peer.on('message', (data) => received.push(data.toString()));
+    }
+  });
+  const event = await f.open();
+  assert.ok(f.transport.openCapabilities);
+  const capability = await f.transport.openCapabilities(TOKEN, capabilityProof, new AbortController().signal);
+  await capability.send({ type: 'hello', descriptor_version: 1, tools: [] });
+  await waitFor(() => received.length === 1);
+  assert.deepEqual(JSON.parse(received[0]!), { type: 'hello', descriptor_version: 1, tools: [] });
+  const request = f.requests.find((item) => item.url === '/api/agentflow/capabilities/connector')!;
+  assert.equal(request.headers.authorization, `DPoP ${TOKEN}`); assert.equal(request.headers.dpop, capabilityProof);
+  assert.equal(request.headers.cookie, undefined); assert.equal(request.headers.origin, undefined);
+  const other = createNativeAgentSocketTransport(f.origin, { certificates: () => [CERT] });
+  await assert.rejects(other.openCapabilities!(TOKEN, capabilityProof, new AbortController().signal), NativeSocketBusy);
+  await capability.close(); await event.close();
+}));
+
+test('capability socket rejects a proof for the event route before wire I/O', async () => withFixture(async (f) => {
+  assert.ok(f.transport.openCapabilities);
+  await assert.rejects(f.transport.openCapabilities(TOKEN, f.proof(), new AbortController().signal), NativeSocketInvalid);
+  assert.equal(f.requests.length, 0);
+}));
+
+test('capability socket rejects duplicate JSON members before bridge dispatch', async () => withFixture(async (f) => {
+  const htu = `${f.origin}/api/agentflow/capabilities/connector`;
+  f.wss.once('connection', (peer) => peer.send('{"type":"ready","type":"mcp_call"}'));
+  const socket = await f.transport.openCapabilities!(TOKEN, jwt({ htm: 'GET', htu }), new AbortController().signal);
+  await assert.rejects(socket.next(), NativeSocketInvalid);
+  await waitFor(() => socket.closed);
+}));
+
 test('explicit close terminates a peer that never acknowledges and holds the origin until actual close', async () => withFixture(async (f) => {
   const socket = await f.open();
   const peerSocket = (f.peers[0] as unknown as { _socket: Duplex })._socket;

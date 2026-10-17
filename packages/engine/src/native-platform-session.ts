@@ -21,6 +21,13 @@ import { parseAgentAttachmentScope, validateReserveAgentAttachment, validateAgen
   type AgentAttachmentReceipt, type ReserveAgentAttachment as ReserveAgentAttachmentInput } from '@dex/protocol/agent-session-attachments';
 import { AgentSessionAttachmentClient, AgentAttachmentHttpError, AgentAttachmentOutcomeUnknown,
   type AgentSessionAttachmentProofSource, type ReservedAgentAttachment } from '@dex/protocol/agent-session-attachment-client';
+import { AgentCapabilitiesClient, AgentCapabilitiesHttpError, AgentCapabilitiesOutcomeUnknown,
+  AgentCapabilitiesProtocolError, AgentCapabilitiesTransportError, validateSelectCapabilities,
+  type AgentCapabilitiesProofSource, type CapabilityCatalog, type CapabilityApprovalPage,
+  type CapabilitySelection, type SelectCapabilitiesInput, type AdoptedCapabilityApproval } from '@dex/protocol/agent-capabilities';
+import { connectNativeCapabilityBridge, validateNativeCapabilityOptions,
+  type NativeCapabilityController, type NativeCapabilityOptions } from './native-capability-bridge';
+import type { NativeAgentCapabilitySocket } from './native-agent-socket';
 
 export interface NativeSessionSummary {
   user_id: string;
@@ -56,6 +63,7 @@ export class NativeHostSession {
   private readonly fetchImpl: typeof fetch;
   private socketTransport: NativeAgentSocketTransport | undefined;
   private readonly sockets = new Map<NativeAgentSocket, { scope: string; generation: string }>();
+  private readonly capabilityControllers = new Set<NativeCapabilityController>();
   private readonly proofOperations = new Set<Promise<unknown>>();
   constructor(origin: string, readonly platform: NativeKeyScope['platform'], private readonly keys = new NativeDeviceKeyStore(), fetchImpl?: typeof fetch,
     private readonly expectedUserId?: string, socketTransport?: NativeAgentSocketTransport) {
@@ -68,6 +76,8 @@ export class NativeHostSession {
     return nativeKeyScope({ origin: this.origin, platform: this.platform, userId });
   }
   private closeSockets(): void {
+    const controllers = [...this.capabilityControllers]; this.capabilityControllers.clear();
+    for (const controller of controllers) void controller.close().catch(() => undefined);
     const sockets = [...this.sockets.keys()]; this.sockets.clear();
     for (const socket of sockets) void socket.close().catch(() => undefined);
   }
@@ -123,7 +133,7 @@ export class NativeHostSession {
     while (this.proofOperations.size) await Promise.allSettled([...this.proofOperations]);
   }
   private async withScopedProofSource<T>(userId: string,
-    work: (proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource & AgentSessionAttachmentProofSource,
+    work: (proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource & AgentSessionAttachmentProofSource & AgentCapabilitiesProofSource,
       authScope: string, generation: string) => Promise<T>,
     signal?: AbortSignal, writeScope?: { method: 'GET' | 'POST' | 'PUT'; path: string; expectedAuthScope?: string }): Promise<T> {
     if (writeScope?.expectedAuthScope !== undefined && !/^[a-f0-9]{64}$/.test(writeScope.expectedAuthScope)) {
@@ -133,12 +143,12 @@ export class NativeHostSession {
       const record = requireReady(await vault.read()); const token = requireAccess(record); let live = true; let writeAvailable = true;
       const pendingProofs = new Set<Promise<string>>();
       const check = () => { signal?.throwIfAborted(); if (!live || !accessReady(record)) throw new DexError('auth_required', '네이티브 세션 사용 범위가 종료되었습니다.'); };
-      const proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource & AgentSessionAttachmentProofSource = {
+      const proof: AgentSessionProofSource & AgentSessionMutationProofSource & AgentSessionLifecycleProofSource & AgentSessionAttachmentProofSource & AgentCapabilitiesProofSource = {
         accessToken: async () => { check(); return token; },
         signProof: async (method, htu, expected) => {
           check();
           const url = new URL(htu);
-          const read = method === 'GET' && /^\/api\/agentflow\/(?:me\/(?:agent-state|agent-events|agent-sessions)|agent-sessions\/[0-9a-f-]{36}\/(?:snapshot|events|messages))$/.test(url.pathname);
+          const read = method === 'GET' && /^\/api\/agentflow\/(?:me\/(?:agent-state|agent-events|agent-sessions)|agent-sessions\/[0-9a-f-]{36}\/(?:snapshot|events|messages|capabilities|capability-approvals))$/.test(url.pathname);
           const write = writeAvailable && writeScope !== undefined && method === writeScope.method && url.pathname === writeScope.path;
           if ((!read && !write) || url.origin !== this.origin || url.username || url.password || url.search || url.hash
             || htu !== `${this.origin}${url.pathname}` || expected !== token) {
@@ -268,6 +278,64 @@ export class NativeHostSession {
   }
   async conversation(userId: string, signal?: AbortSignal) {
     return readNativeAgentConversation(this, userId, signal);
+  }
+  async capabilityCatalog(userId: string, sessionId: string, signal?: AbortSignal,
+    expectedAuthScope?: string): Promise<CapabilityCatalog & { authScope: string }> {
+    return this.capabilityOperation(userId, 'GET', `/api/agentflow/agent-sessions/${sessionId}/capabilities`,
+      async (client, control, authScope) => ({ ...(await client.catalog(sessionId, control)), authScope }),
+      signal, expectedAuthScope);
+  }
+  async selectCapabilities(userId: string, sessionId: string, input: SelectCapabilitiesInput,
+    signal?: AbortSignal, expectedAuthScope?: string): Promise<CapabilitySelection> {
+    let body: SelectCapabilitiesInput;
+    try { body = validateSelectCapabilities(input); }
+    catch { throw new DexError('usage_error', '선택할 기기 기능과 현재 버전을 확인하세요.'); }
+    return this.capabilityOperation(userId, 'PUT', `/api/agentflow/agent-sessions/${sessionId}/capabilities`,
+      (client, control) => client.select(sessionId, body, control), signal, expectedAuthScope);
+  }
+  async capabilityApprovals(userId: string, sessionId: string, signal?: AbortSignal,
+    expectedAuthScope?: string): Promise<CapabilityApprovalPage> {
+    return this.capabilityOperation(userId, 'GET', `/api/agentflow/agent-sessions/${sessionId}/capability-approvals`,
+      (client, control) => client.approvals(sessionId, control), signal, expectedAuthScope);
+  }
+  async adoptCapabilityApproval(userId: string, sessionId: string, approvalId: number, expectedVersion: string,
+    signal?: AbortSignal, expectedAuthScope?: string): Promise<AdoptedCapabilityApproval> {
+    return this.capabilityOperation(userId, 'POST',
+      `/api/agentflow/agent-sessions/${sessionId}/capability-approvals/${approvalId}/adopt`,
+      (client, control) => client.adopt(sessionId, approvalId, expectedVersion, control), signal, expectedAuthScope);
+  }
+  private async capabilityOperation<T>(userId: string, method: 'GET' | 'PUT' | 'POST', path: string,
+    work: (client: AgentCapabilitiesClient, signal: AbortSignal, authScope: string) => Promise<T>,
+    signal?: AbortSignal, expectedAuthScope?: string): Promise<T> {
+    signal?.throwIfAborted();
+    const control = new AbortController(); const cancel = () => control.abort(signal?.reason);
+    signal?.addEventListener('abort', cancel, { once: true }); if (signal?.aborted) cancel();
+    const timer = setTimeout(() => control.abort(), 10000);
+    try {
+      return await this.withScopedProofSource(userId, (proof, authScope) =>
+        work(new AgentCapabilitiesClient(this.origin, proof, this.fetchImpl), control.signal, authScope),
+      control.signal, { method, path, expectedAuthScope });
+    } catch (error) {
+      if (error instanceof AgentCapabilitiesOutcomeUnknown) {
+        throw new DexError('network_error', '기기 기능 변경 결과를 확인할 수 없습니다. 현재 상태를 다시 조회하세요.', { outcome: 'unknown' });
+      }
+      control.signal.throwIfAborted();
+      if (error instanceof DexError) throw error;
+      if (error instanceof AgentCapabilitiesHttpError) {
+        throw new DexError([401, 403].includes(error.status) ? 'auth_required'
+          : error.status >= 500 ? 'network_error' : 'usage_error',
+        method === 'GET' ? '기기 기능 상태를 읽을 수 없습니다.' : '기기 기능 변경 요청이 거절되었습니다.',
+        { status: error.status, ...(method === 'GET' ? {} : { outcome: 'rejected' }) });
+      }
+      if (error instanceof AgentCapabilitiesProtocolError) {
+        throw new DexError('protocol_mismatch', '기기 기능 응답을 확인할 수 없습니다.');
+      }
+      if (error instanceof AgentCapabilitiesTransportError) {
+        throw new DexError('network_error', '기기 기능 서비스에 연결할 수 없습니다.');
+      }
+      if (error instanceof TypeError) throw new DexError('usage_error', 'Agent 세션과 기기 기능 입력을 확인하세요.');
+      throw new DexError('network_error', '기기 기능 요청을 완료할 수 없습니다.');
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
   }
   /** Metadata and bytes are captured before any vault wait; local paths never cross this boundary. */
   async reserveAttachment(userId: string, sessionId: string, workflowId: string, input: ReserveAgentAttachmentInput,
@@ -470,6 +538,55 @@ export class NativeHostSession {
         close: () => socket.close().finally(() => this.sockets.delete(wrapped)) };
       this.sockets.set(wrapped, { scope, generation }); return wrapped;
     }, signal);
+  }
+  /** Advertise local tools over one authenticated, generation-bound native target socket. */
+  async connectCapabilities(userId: string, options: NativeCapabilityOptions,
+    signal?: AbortSignal): Promise<NativeCapabilityController> {
+    const safe = validateNativeCapabilityOptions(options);
+    this.socketTransport ??= createNativeAgentSocketTransport(this.origin);
+    this.socketTransport.assertAvailable();
+    if (!this.socketTransport.openCapabilities) throw new NativePlatformTransportError();
+    const scope = this.scope(userId);
+    const prepared = await this.keys.withSession(scope, async (_identity, sign, vault) => {
+      const record = requireReady(await vault.read()); const token = requireAccess(record); signal?.throwIfAborted();
+      const authScope = createHash('sha256').update(JSON.stringify([record.origin, record.platform, record.userId,
+        record.installId, record.deviceId, record.sessionId])).digest('hex');
+      const htu = `${this.origin}/api/agentflow/capabilities/connector`;
+      const proof = await sign('GET', htu, token, signal); signal?.throwIfAborted();
+      return { token, proof, authScope, generation: record.generation,
+        accessExpiresAt: Date.parse(record.accessExpiresAt!) / 1000 };
+    });
+    let socket: NativeAgentCapabilitySocket;
+    try { socket = await this.socketTransport.openCapabilities(prepared.token, prepared.proof, signal ?? new AbortController().signal); }
+    catch (error) { signal?.throwIfAborted(); throw error; }
+    let exposed: NativeCapabilityController | undefined;
+    const wrapped: NativeAgentCapabilitySocket = {
+      get closed() { return socket.closed; }, next: () => socket.next(), send: (value) => socket.send(value),
+      close: () => socket.close().finally(() => {
+        this.sockets.delete(wrapped); if (exposed) this.capabilityControllers.delete(exposed);
+      }),
+    };
+    this.sockets.set(wrapped, { scope: prepared.authScope, generation: prepared.generation });
+    const assertCurrent = async (): Promise<void> => {
+      try {
+        await this.keys.withSession(scope, async (_identity, _sign, vault) => {
+          const current = requireReady(await vault.read()); requireAccess(current); signal?.throwIfAborted();
+          const authScope = createHash('sha256').update(JSON.stringify([current.origin, current.platform, current.userId,
+            current.installId, current.deviceId, current.sessionId])).digest('hex');
+          if (authScope !== prepared.authScope || current.generation !== prepared.generation) {
+            throw new DexError('auth_required', '네이티브 세션이 바뀌어 기기 기능 연결을 종료했습니다.');
+          }
+        });
+      } catch (error) { void wrapped.close().catch(() => undefined); throw error; }
+    };
+    try {
+      const controller = await connectNativeCapabilityBridge(wrapped, safe,
+        { accessExpiresAt: prepared.accessExpiresAt, assertCurrent }, signal);
+      exposed = { snapshot: () => controller.snapshot(), confirm: (requestId, confirmed) => controller.confirm(requestId, confirmed),
+        close: () => controller.close().finally(() => this.capabilityControllers.delete(exposed!)) };
+      this.capabilityControllers.add(exposed);
+      return exposed;
+    } catch (error) { await wrapped.close().catch(() => undefined); throw error; }
   }
   /** Password step-up and device DPoP revoke the current server sid before local credential deletion. */
   async logout(userId: string, password: string, signal?: AbortSignal): Promise<NativeSessionSummary> {

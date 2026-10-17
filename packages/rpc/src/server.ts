@@ -139,7 +139,8 @@ export class DexRpcServer {
       this.attachmentPicker = new NativeAttachmentPickerBroker((frame) => this.write(frame));
     }
     if (options.nativeSessions) this.nativeSessions = new NativeSessionRpcHost(options.nativeSessions.configs,
-      (value) => this.notify('view' in value ? 'native/conversation' : 'native/focus', value), {
+      (value) => this.notify('view' in value && value.view === 'conversation' ? 'native/conversation'
+        : 'view' in value && value.view === 'capabilities' ? 'native/capabilities' : 'native/focus', value), {
         ...options.nativeSessions,
         ...(this.attachmentPicker ? { attachmentPicker: (signal, limits) => this.attachmentPicker!.pick(signal, limits) } : {}),
       });
@@ -251,7 +252,8 @@ export class DexRpcServer {
             localFolders: true,
             ssh: true,
             ...(this.nativeSessions ? { nativePlatformSession: { platform: 'vscode', storage: 'os-keychain-software', canonicalConversation: true, canonicalLive: true, canonicalTurns: true, canonicalSessions: true,
-              ...(this.trustedAttachmentPicker || this.attachmentPicker?.available ? { canonicalAttachments: true } : {}) } } : {}),
+              ...(this.trustedAttachmentPicker || this.attachmentPicker?.available ? { canonicalAttachments: true } : {}),
+              canonicalCapabilities: true } } : {}),
             // conversation/model(·/set·/reset) — 대화 도중 모델 바꾸기.
             conversationModel: true,
             conversationThinking: true,
@@ -281,16 +283,16 @@ export class DexRpcServer {
       case 'profile/list':
         return this.engine.listProfiles();
       case 'profile/set':
-        this.nativeSessions?.cancel();
+        await this.nativeSessions?.cancel();
         return this.engine.setProfile(requiredString(params, 'name'), requiredString(params, 'serverUrl'));
       case 'profile/use': {
-        this.nativeSessions?.cancel();
+        await this.nativeSessions?.cancel();
         const profile = await this.engine.useProfile(requiredString(params, 'name'));
         void this.engine.startLocalTools(profile.name).catch((error: unknown) => this.log(`local tools: ${publicError(error).message}`));
         return profile;
       }
       case 'auth/login': {
-        this.nativeSessions?.cancel();
+        await this.nativeSessions?.cancel();
         const auth = await this.engine.login(
           requiredString(params, 'email'),
           requiredString(params, 'password'),
@@ -302,7 +304,7 @@ export class DexRpcServer {
       case 'auth/status':
         return this.engine.authStatus(optionalString(params, 'profile'));
       case 'auth/logout':
-        this.nativeSessions?.cancel();
+        await this.nativeSessions?.cancel();
         await this.engine.logout(optionalString(params, 'profile'));
         return { ok: true };
       // ── SSH ──

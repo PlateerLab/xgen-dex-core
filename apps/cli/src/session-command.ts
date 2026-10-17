@@ -5,8 +5,9 @@ import { flag, option, requiredOption } from './args';
 import { promptSecret, readStdin } from './io';
 import { stdin, stdout } from 'node:process';
 import { canonicalSessionActions, runCanonicalSessionCommand } from './canonical-session-command';
+import { nativeCapabilityActions, runNativeCapabilityCommand, type NativeCapabilityCommandDependencies } from './native-capability-command';
 
-export interface SessionCommandDependencies {
+export interface SessionCommandDependencies extends NativeCapabilityCommandDependencies {
   keys?: NativeDeviceKeyStore;
   fetch?: typeof fetch;
   readPassword?: () => Promise<string>;
@@ -17,6 +18,7 @@ export interface SessionCommandDependencies {
 export async function runSessionCommand(args: ParsedArgs, configs: ConfigStore, dependencies: SessionCommandDependencies = {}): Promise<void> {
   const action = args.positionals[1];
   if (canonicalSessionActions.some((value) => value === action)) return runCanonicalSessionCommand(args, configs, dependencies);
+  if (nativeCapabilityActions.some((value) => value === action)) return runNativeCapabilityCommand(args, configs, dependencies);
   const actions = ['login', 'status', 'refresh', 'focus', 'watch-focus', 'conversation', 'watch-conversation', 'watch-live', 'logout', 'forget-local'];
   const watching = action === 'watch-focus' || action === 'watch-conversation' || action === 'watch-live';
   const needsPassword = action === 'login' || action === 'logout';

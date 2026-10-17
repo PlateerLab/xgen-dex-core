@@ -103,6 +103,8 @@ test('런타임은 보이는 메인 프레임의 성공한 이동만 기록한�
       canGoForward: () => false,
     },
     setWindowOpenHandler: () => undefined,
+    executeJavaScript: async () => true,
+    mainFrame: { frameTreeNodeId: 1 },
     on: (name: string, handler: (...args: unknown[]) => void) => handlers.set(name, handler),
     once: (name: string, handler: (...args: unknown[]) => void) => handlers.set(name, handler),
   };

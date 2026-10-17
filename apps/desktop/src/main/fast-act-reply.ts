@@ -54,7 +54,10 @@ export function actionSentence(a: VoiceAction): string {
   else did = `${a.display}에 ${josa(q, '을', '를')} 입력하고 Enter 키를 눌렀어요.`;
   if (a.dismissed) did = `가리던 팝업을 닫고 ${did}`;
   const page = a.navigated ? pageName(a) : null;
-  return page ? `${did} ${page} 페이지가 ${a.newTab ? '새 탭에서 ' : ''}열렸어요.` : did;
+  const sentence = page ? `${did} ${page} 페이지가 ${a.newTab ? '새 탭에서 ' : ''}열렸어요.` : did;
+  // 화면이 띄운 알림(입력 검사 등)은 닫았어도 사용자가 알아야 한다 — 문구 그대로.
+  const notices = (a.notices ?? []).filter(Boolean).map((n) => `화면에 뜬 알림 ${josa(`"${n}"`, '을', '를')} 닫았어요.`);
+  return [sentence, ...notices].join(' ');
 }
 
 /** 빠른 조작으로 끝낸 턴의 답 — 한 문단으로(문단을 나누면 채팅은 마지막 문단만 답으로 보여 준다). */
@@ -69,6 +72,7 @@ export function actionRow(a: VoiceAction, voice: boolean): string {
     a.display,
     how,
     ...(a.dismissed ? [`가린 팝업 닫음(${a.dismissed})`] : []),
+    ...(a.notices?.length ? [`알림 닫음(${a.notices.length})`] : []),
     ...(voice ? [a.partial ? '말하는 도중' : '말이 끝난 뒤'] : []),
     `판단 ${a.decideMs}ms`,
     `실행 ${a.actMs}ms`,

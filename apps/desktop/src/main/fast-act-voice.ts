@@ -29,15 +29,83 @@ import {
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
+import {
+  FIELD_LABEL_SCRIPT,
+  editableAsTextbox,
+  checkOf,
+  itemOf,
+  labelClickables,
+  labelFields,
+  locativeAfterLabel,
+  refOrder,
+  withoutLabel,
+  withoutLeadingLabel,
+  type FieldLabel,
+} from './fast-act-labels';
+import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
+import { plainNumber } from './fast-act-number';
+import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
 /** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이. */
 const SNAP_TTL_MS = 3_000;
 const SNAP_REFRESH_MS = 1_000;
+/** 페이지 스크립트(칸 이름 읽기·알림창 닫기) 한도 — 보통 수 ms(BO 상품 등록 31칸 1ms), 페이지가 멈추면 포기한다. */
+const PAGE_SCRIPT_MS = 1_500;
+/** 알림창을 닫고 화면이 돌아올 때까지 — 닫힘 애니메이션. */
+const NOTICE_SETTLE_MS = 250;
+/** 한 지시에서 닫는 알림창 수 상한 — 닫을 때마다 새 알림이 뜨는 화면에서 멈추지 않게. */
+const NOTICE_MAX = 3;
+/** 열린 선택 목록의 항목 — 목록을 연 뒤의 지시는 이 중에서 고른다. */
+const OPTION_ROLES = new Set(['option', 'menuitem', 'menuitemradio', 'menuitemcheckbox']);
+const LIST_LAYER_ROLES = new Set([...OPTION_ROLES, 'listbox', 'menu', 'group', 'separator', 'presentation', 'none']);
+/**
+ * 화면에 열린 선택 목록만 남았나 — 선택 상자(MUI Select 등)가 목록을 열면 나머지 화면을 aria-hidden 으로 가려
+ * 스냅샷에 목록과 항목만 남는다(10/16 BO: 이 상태로 다음 지시 2개가 목록 자체를 눌렀다).
+ */
+const listLayer = (refs: ElementRefs): boolean => {
+  const roles = Object.values(refs).map((r) => r.role);
+  return roles.some((r) => OPTION_ROLES.has(r)) && roles.every((r) => LIST_LAYER_ROLES.has(r));
+};
+/**
+ * 선택 상자를 연 뒤 목록 항목을 고르는 확신 하한 — 값을 말하지 않은 지시("구매연령 선택해줘")에도 모델은 아무
+ * 항목에나 0.36~0.61 을 준다(10/16 BO). 값을 말한 지시는 0.99 이상("성인으로" → 만 19세 이상 0.989, "5일로" 0.999).
+ */
+const CHOOSE_PICK = 0.85;
+/** 목록에서 자리로 고르는 말. */
+const POSITION_WORD = /(첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+)\s*번째|맨\s*(위|아래|앞|뒤|처음|끝)|마지막|first|second|third|last/i;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
 const NAMED_ONLY_PICK = 0.8;
 const now = (): number => performance.now();
+const squash = (s: string): string => s.replace(/\s+/g, ' ').trim();
+/** 말이 요소 이름으로 끝나나 — 띄어쓰기·문장부호는 보지 않고, 두 글자 이상인 이름만. */
+const endsWithName = (text: string, name = ''): boolean => {
+  const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const n = bare(name);
+  return n.length >= 2 && bare(text).endsWith(n);
+};
+/** 선택 상자의 지금 값 — 이름에서 앞의 칸 이름을 뗀 것(labelFields 는 "칸 이름 값" 으로 붙인다). */
+const currentValue = (name: string, label?: string): string => {
+  const n = squash(name);
+  return label && n.startsWith(label) ? n.slice(label.length).trim() : n;
+};
+/**
+ * 같은 항목(표 행과 그 셀)인 상위 후보의 확률을 합친다(itemOf) — 고른 것이 항목·셀이 아니거나 확신도를 믿을 근거가
+ * 없으면(0) 그대로.
+ */
+const pooledPick = <P extends { ref: string; confidence: number; top: Array<[string, number]> }>(pick: P, items: Record<string, string>): P => {
+  const item = items[pick.ref];
+  if (!item || pick.confidence <= 0) return pick;
+  const confidence = pick.top.reduce((sum, [label, p]) => (items[label.split(' ')[0]] === item ? sum + p : sum), 0);
+  return confidence > pick.confidence ? { ...pick, confidence: Math.min(1, confidence) } : pick;
+};
+/** 탭이 닫혔나 — 닫히는 중이면 잠깐 기다려 한 번 더 본다. */
+const closedTab = async (pageId: string): Promise<boolean> => {
+  if (!getBrowserRuntime().get(pageId)) return true;
+  await new Promise((r) => setTimeout(r, 300));
+  return !getBrowserRuntime().get(pageId);
+};
 
 /** 글자 넣기를 시키는 말 — 중간 인식에서 넣을 글자가 끝났는지 볼 때 쓴다. */
 const TYPING_WORD = /(입력|검색|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
@@ -55,17 +123,25 @@ const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
  * (검색칸은 제출해야 결과가 나온다는 화면 일반 규칙. 역할이 searchbox 이거나 이름에 검색/search 가 있는 칸).
  */
 const SEARCH_WORD = /(검색|찾아|search|find|look up)/i;
+/** 검색 버튼 이름 — 이름이 이것뿐인 버튼만(pressSearch). */
+const SEARCH_BUTTON = /^(검색|조회|찾기|search|find|go)$/i;
+/** 항목을 고르라는 말·고른 것을 풀라는 말 — 항목 안의 체크박스를 누를지(checkOf). */
+const SELECT_WORD = /(선택|체크|고르|골라|check|select)/i;
+const UNSELECT_WORD = /(해제|풀어|uncheck|deselect)/i;
 const isSearchField = (r: { role: string; name?: string }): boolean => r.role === 'searchbox' || /검색|search/i.test(r.name ?? '');
 /** 누르기만 해서는 아무 일도 안 일어나는 입력칸. */
 const TEXT_FIELD = new Set(['textbox', 'searchbox']);
 /**
  * 가린 팝업·배너를 닫는 요소의 이름 — 화면 일반 관례(닫기·오늘 하루 보지 않기·거부·×). 동의/수락은 넣지 않는다
- * (사용자 대신 동의하지 않는다).
+ * (사용자 대신 동의하지 않는다). 글자 하나는 닫기 기호(×✕✖)만 — 영문 X 는 계정 버튼의 이름 첫 글자이기도 하다
+ * (10/16 BO: 머리글 계정 버튼 "X" 를 눌러 계정 메뉴가 열렸고, 다음 지시가 그 메뉴로 다른 화면에 갔다).
  */
-const CLOSE_NAME = /(닫기|닫아|close|dismiss|오늘\s*(하루\s*)?(그만\s*)?(보지|열지)|다시\s*보지|그만\s*보기|나중에|no thanks|거부|reject)|^[x×✕✖]$/i;
+const CLOSE_NAME = /(닫기|닫아|close|dismiss|오늘\s*(하루\s*)?(그만\s*)?(보지|열지)|다시\s*보지|그만\s*보기|나중에|no thanks|거부|reject)|^[×✕✖]$/i;
 const CLOSE_ROLE = new Set(['button', 'link', 'checkbox', 'img', 'generic']);
 /** 누르려던 요소를 다른 요소가 가렸다는 브라우저 응답. */
 const COVERED = /is covered by/;
+/** 가려서 못 눌렀을 때 다시 해 보기 전 기다림. */
+const COVER_WAIT_MS = 600;
 
 export type VoiceAction = {
   said: string;
@@ -91,9 +167,24 @@ export type VoiceAction = {
   newTab?: boolean;
   /** 누르려던 요소를 가린 팝업을 먼저 닫았으면 그 요소 이름(또는 Escape). */
   dismissed?: string;
+  /** 판단 전·실행 뒤에 닫은 알림창의 문구(fast-act-notice) — 답에서 사용자에게 전한다. */
+  notices?: string[];
 };
 
-type Snap = { at: number; pageId: string; url: string; refs: ElementRefs; gen: number; ms: number };
+/** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
+type Snap = {
+  at: number;
+  pageId: string;
+  url: string;
+  refs: ElementRefs;
+  gen: number;
+  ms: number;
+  labels: Record<string, string>;
+  /** 항목(트리 항목·행)별 그 항목을 고르는 체크박스(checkOf). */
+  checks: Record<string, { ref: string; checked: boolean }>;
+  /** 항목과 그 안의 셀 → 항목(itemOf). */
+  items: Record<string, string>;
+};
 
 export class BrowserVoiceAgent implements VoiceAgent {
   readonly actions: VoiceAction[] = [];
@@ -107,8 +198,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
    */
   private deciding = 0;
   private last: string | null = null;
+  /** 마지막 실행의 동작 — 검색어를 넣고 바로 제출(type_submit)했는지 본다. */
+  private lastAction: ActionKind | null = null;
   /** 이번 판단 전에 닫은 팝업 — 다음 실행 기록에 붙인다. */
   private dismissed: string | null = null;
+  /** 이번 지시에서 닫은 알림창 문구 — 다음 실행 기록에 붙인다. */
+  private noticed: string[] = [];
+  /** 이번 지시에서 열린 선택 목록을 이미 닫았나 — 한 번만. */
+  private listClosed = false;
   /** 실행 직전 이 에이전트의 탭 — 누른 링크가 새 탭을 열었는지 볼 때 쓴다. */
   private tabsAtAct = new Set<string>();
 
@@ -167,11 +264,24 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!refresh && fresh(this.snap)) return { snap: this.snap, page };
     const t = now();
     const v = this.version;
-    const p = getBrowserRuntime()
+    const runtime = getBrowserRuntime();
+    // 칸 이름이 연결되지 않은 입력칸의 칸 이름 — 스냅샷과 같이 읽는다(수 ms 라 스냅샷 시간 안에 끝난다).
+    const fields = runtime
+      .pageScript<FieldLabel[]>(this.workflowId, page.pageId, FIELD_LABEL_SCRIPT, PAGE_SCRIPT_MS)
+      .catch(() => null);
+    const p = runtime
       .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
-      .then((run): Snap => {
-        const refs = ((run.result as { data?: { refs?: ElementRefs } } | undefined)?.data?.refs ?? {}) as ElementRefs;
-        return { at: now(), pageId: page.pageId, url: page.url, refs, gen: run.page.generation, ms: now() - t };
+      .then(async (run): Promise<Snap> => {
+        const data = (run.result as { data?: { refs?: ElementRefs; snapshot?: string } } | undefined)?.data;
+        const raw = editableAsTextbox((data?.refs ?? {}) as ElementRefs, data?.snapshot ?? '');
+        const found = await fields;
+        const named = Array.isArray(found) ? labelFields(raw, refOrder(data?.snapshot ?? ''), found) : { refs: raw, labels: {} };
+        // 이름 없는 누름 영역(검색 팝업을 여는 상자 등)은 바로 앞 제목으로.
+        const boxes = labelClickables(named.refs, data?.snapshot ?? '');
+        const labels = { ...named.labels, ...boxes.labels };
+        const checks = checkOf(data?.snapshot ?? '');
+        const items = itemOf(data?.snapshot ?? '');
+        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;
@@ -230,6 +340,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const p = probs[`w${i}`] ?? 0;
       if (p > bestP) [best, bestP] = [i, p];
     });
+    diag(SCOPE, 'boundary', { done, rest, none: Number(none.toFixed(3)), best, p: Number(bestP.toFixed(3)) });
     if (a.q?.choice === 'none' && none >= 0.6) return { start: -1, conf: none };
     return { start: best, conf: bestP };
   }
@@ -249,6 +360,22 @@ export class BrowserVoiceAgent implements VoiceAgent {
         return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
+  }
+
+  /** 확인 하나뿐인 알림창이 떠 있으면 닫는다(fast-act-notice) — 닫았으면 화면을 다시 읽게 하고 문구를 남긴다. */
+  private async closeNotice(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<Notice | null> {
+    const notice = await getBrowserRuntime()
+      .pageScript<Notice | null>(this.workflowId, page.pageId, NOTICE_SCRIPT, PAGE_SCRIPT_MS)
+      .catch(() => null);
+    if (!notice) return null;
+    this.version++;
+    this.snap = null;
+    await new Promise((r) => setTimeout(r, NOTICE_SETTLE_MS));
+    this.version++;
+    this.snap = null; // 닫히는 사이 읽은 화면도 버린다
+    this.noticed.push(notice.text);
+    diag(SCOPE, 'notice', notice);
+    return notice;
   }
 
   /**
@@ -300,14 +427,110 @@ export class BrowserVoiceAgent implements VoiceAgent {
   }
 
   /** 넣을 글자 — 따옴표 문구, 아니면 발화 전체를 문맥으로 단어마다 묻는다(남은 조각만 주면 앞말에 걸친 글자를 놓친다). */
-  private async typedText(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, origin: string, scr: Screen13 | null, utterance?: string): Promise<string | null> {
+  private async typedText(
+    post: NonNullable<ReturnType<typeof decisionPost>>,
+    text: string,
+    origin: string,
+    scr: Screen13 | null,
+    utterance?: string,
+    label?: string,
+  ): Promise<string | null> {
     const quoted = quotedText(text);
     if (quoted) return quoted;
-    const whole = utterance && norm(utterance).endsWith(norm(text)) ? norm(utterance) : norm(text);
+    const whole = locativeAfterLabel(utterance && norm(utterance).endsWith(norm(text)) ? norm(utterance) : norm(text), label);
     const offset = whole.split(' ').length - norm(text).split(' ').length;
     const wa = await post({ state: decisionState(whole, origin, scr), questions: textWordQuestions(whole) });
     // 인식기가 붙인 끝 문장부호("원피스.")는 넣을 글자가 아니다.
     return textFromWordAnswers(whole, wa, offset)?.replace(/[.,!?。…]+$/, '') || null;
+  }
+
+  /** 입력칸의 지금 값 — 못 읽으면 null. */
+  private async valueOf(pageId: string, ref: string, generation: number): Promise<string | null> {
+    try {
+      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', 'value', ref], 5_000, generation);
+      const value = (run.result as { data?: { value?: unknown } } | undefined)?.data?.value;
+      return typeof value === 'string' ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 열린 선택 목록을 닫는다(Escape) — 닫았으면 화면을 다시 읽게 한다. */
+  private async closeList(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<boolean> {
+    try {
+      await getBrowserRuntime().runAgentCommand(this.workflowId, page.pageId, ['press', 'Escape'], 10_000);
+    } catch {
+      return false;
+    }
+    this.version++;
+    this.snap = null;
+    await waitSettled(page.pageId, page);
+    this.version++;
+    this.snap = null;
+    this.dismissed = 'Escape';
+    diag(SCOPE, 'dismiss-overlay', { closed: 'Escape', list: true });
+    return true;
+  }
+
+  /**
+   * 검색 말("브랜드명 삼성으로 검색해줘")로 검색칸이 아닌 칸에 넣었다 — 화면에 검색 버튼이 하나뿐이면 누른다(10/18 BO 브랜드
+   * 찾기 팝업: 넣기만 하고 [조회]를 안 눌렀다). Enter 는 폼 전체를 제출할 수 있어 쓰지 않는다. 누르면 꼬리말 "검색해줘" 가
+   * 또 누르지 않게 검색한 것으로 적어 둔다(lastAction).
+   */
+  private async pressSearch(text: string, th: Thresholds): Promise<VoiceAction | null> {
+    const s = await this.snapshot(true).catch(() => null);
+    if (!s) return null;
+    const buttons = Object.entries(s.snap.refs).filter(([, r]) => r.role === 'button' && SEARCH_BUTTON.test(squash(r.name ?? '')));
+    if (buttons.length !== 1) return null;
+    const [ref, element] = buttons[0];
+    this.beforeAct(s.page);
+    const tAct = now();
+    try {
+      await getBrowserRuntime().runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${ref}`], 10_000, s.snap.gen);
+    } catch {
+      return null;
+    }
+    const done = await this.record(text, element, 'click', null, th, 0, now() - tAct, s.page, { confidence: 1 }, s.snap.ms);
+    this.lastAction = 'type_submit';
+    return done;
+  }
+
+  /**
+   * 선택 상자를 눌러 열린 목록에서 말한 값의 항목을 누른다("구매연령 성인으로 바꿔줘"). 목록이 안 열렸거나 고를 확신이
+   * 낮으면(값을 말하지 않음) null — 목록은 열어 두고, 다음 지시가 항목을 고르거나 목록을 닫는다.
+   */
+  private async chooseAfterOpen(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, th: Thresholds, current: string): Promise<VoiceAction | null> {
+    let s = await this.snapshot(true).catch(() => null);
+    // 목록은 펼치는 애니메이션 뒤에 잡히기도 한다 — 없으면 잠깐 뒤 한 번 더 읽는다.
+    if (s && !listLayer(s.snap.refs)) {
+      await new Promise((r) => setTimeout(r, 300));
+      s = await this.snapshot(true).catch(() => null);
+    }
+    if (!s || !listLayer(s.snap.refs)) return null;
+    const options = Object.fromEntries(Object.entries(s.snap.refs).filter(([, r]) => OPTION_ROLES.has(r.role)));
+    // 지금 값 말고는 항목이 없다(앞 칸에 따라 채워지는 목록) — 고를 것이 없으니 닫는다. 열어 두면 다음 지시가 그 하나를
+    // 골랐다(10/16 BO: 협력사 없이 연 배송비정책 목록은 "선택" 하나뿐 → "구매연령 19세 이상으로 해줘" 가 "선택" 을 누름).
+    if (Object.values(options).every((o) => squash(o.name ?? '') === current)) {
+      await this.closeList(s.page);
+      return null;
+    }
+    const origin = originOf(s.page.url);
+    const t0 = now();
+    const pick = await pickElement(post, text, origin, options, this.screenOf(origin, s.snap.refs));
+    diag(SCOPE, 'choose-after-open', { text, pick: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
+    if (!pick || pick.confidence < Math.max(th.pick, CHOOSE_PICK)) return null;
+    const element = s.snap.refs[pick.ref];
+    // 지금 값을 다시 고르는 것은 할 일이 아니다 — "배송비정책 선택해줘" 의 '선택' 은 자리표시 항목 "선택" 과 글자가 같을
+    // 뿐 고르라는 값이 아니었다(10/16 BO: 1.0). 목록은 열어 둔다.
+    if (squash(element.name ?? '') === current) return null;
+    this.beforeAct(s.page);
+    const tAct = now();
+    try {
+      await getBrowserRuntime().runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${pick.ref}`], 10_000, s.snap.gen);
+    } catch {
+      return null;
+    }
+    return this.record(text, element, 'click', null, th, tAct - t0, now() - tAct, s.page, pick, s.snap.ms);
   }
 
   /**
@@ -331,9 +554,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const pick = await pickElement(post, text, origin, typable, scr);
     if (!pick || pick.confidence < th.pick) return null;
     const element = s.snap.refs[pick.ref];
-    const typed = await this.typedText(post, text, origin, scr, utterance);
+    const found = await this.typedText(post, text, origin, scr, utterance, s.snap.labels[pick.ref] || element.name);
+    const typed = found && withoutLeadingLabel(found, s.snap.labels[pick.ref]);
     if (!typed) return null;
-    const action: ActionKind = SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : 'type';
+    const action: ActionKind = SEARCH_WORD.test(withoutLabel(text, s.snap.labels[pick.ref])) && isSearchField(element) ? 'type_submit' : 'type';
     const runtime = getBrowserRuntime();
     this.beforeAct(s.page);
     const tAct = now();
@@ -363,11 +587,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.version++;
     this.snap = null; // 화면이 바뀐다
     const settled = await waitSettled(page.pageId, page);
+    // 실행이 띄운 알림(입력 검사 등) — 닫고 문구를 답에 붙인다.
+    if (!settled.navigated) await this.closeNotice(page);
     const opened = settled.navigated ? null : await this.openedTab(page);
     this.version++;
     this.snap = null; // 반영을 기다리는 사이 읽은 화면도 버린다
     const label = elementLabel(element);
     this.last = label;
+    this.lastAction = action;
     const after = opened ?? (settled.navigated ? settled.page : null);
     const title = after?.title?.trim();
     const done: VoiceAction = {
@@ -386,8 +613,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
       navigated: !!after,
       ...(opened ? { newTab: true } : {}),
       ...(this.dismissed ? { dismissed: this.dismissed } : {}),
+      ...(this.noticed.length ? { notices: [...this.noticed] } : {}),
     };
     this.dismissed = null;
+    this.noticed = [];
     this.actions.push(done);
     this.onAct?.(done);
     diag(SCOPE, 'act', { ...done, snapMs: Math.round(snapMs), pick: Number(pick.confidence.toFixed(3)), top: pick.top });
@@ -424,20 +653,30 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
   }
 
-  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
+  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string, pressOnly = false): Promise<Outcome> {
     this.deciding++;
+    this.noticed = [];
+    this.listClosed = false;
+    this.dismissed = null;
     try {
-      const o = await this.handleOnce(text, th, guard, abort, utterance);
+      const o = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
       // 판단에 쓴 스냅샷이 그사이 바뀌었으면(요소 번호 만료) 화면을 새로 읽어 한 번만 다시 판단한다.
       if (!o.acted && o.reason.includes('browser_stale_ref')) {
         this.snap = null;
-        return await this.handleOnce(text, th, guard, abort, utterance);
+        return await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
       }
       // 팝업·배너가 누를 요소를 가렸으면 그것을 닫고 한 번만 다시 판단한다.
       if (!o.acted && COVERED.test(o.reason)) {
+        diag(SCOPE, 'covered', { text, reason: o.reason.slice(0, 300) });
+        // 잠깐 덮었다 걷히는 막(불러오는 중 표시·화면 전환)일 수 있다 — 기다렸다 그대로 한 번 더 해 보고, 그래도 가리면 닫는다.
+        // 바로 닫으려다 엉뚱한 것을 눌렀다(10/16 BO: 협력사 [적용] 직후 가림 → 머리글의 계정 버튼 "X").
+        await new Promise((r) => setTimeout(r, COVER_WAIT_MS));
+        this.snap = null;
+        const retry = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+        if (retry.acted || !COVERED.test(retry.reason)) return retry;
         this.dismissed = await this.dismissOverlay();
         this.snap = null;
-        const again = await this.handleOnce(text, th, guard, abort, utterance);
+        const again = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
         this.dismissed = null;
         return again;
       }
@@ -447,9 +686,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
   }
 
-  private async handleOnce(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string): Promise<Outcome> {
+  /** pressOnly = 누를 것만 고른다(입력칸은 후보에서 뺀다) — 앞 요청의 꼬리말만으로 실행할 때(voice-segmenter). */
+  private async handleOnce(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string, pressOnly = false): Promise<Outcome> {
     const t0 = now();
     const no = (reason: string, detail?: unknown): Outcome => ({ acted: false, reason, ms: now() - t0, detail });
+    // 앞 토막이 검색어를 넣고 이미 제출했다 — 꼬리말 "검색해줘" 로 검색 버튼을 또 누르지 않는다(10/18 유튜브 "검색창에
+    // xgen 입력하고 검색해줘" → Enter 제출 뒤 [Search] 를 한 번 더 눌렀다).
+    if (pressOnly && this.lastAction === 'type_submit' && SEARCH_WORD.test(text)) return no('앞 토막에서 이미 검색함');
     const post = decisionPost();
     if (!post) return no('결정 모델 없음');
     let s;
@@ -476,9 +719,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return no(`기다림 ${cls.ready} ${rc}`);
     }
     if (abort()) return no('판단 취소(새 인식)');
+    // 화면 조작 지시인데 알림창이 화면을 막고 있다 — 닫고 새 화면으로 다시 판단한다.
+    if (this.noticed.length < NOTICE_MAX && (await this.closeNotice(page))) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
 
     // 입력 요청(동작이 입력이고 글자가 있고 말에 글자 넣기 말이 있음)이면 입력칸만 후보로 — 검색 버튼 대신 검색창.
-    const wantsType = cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);
+    const wantsType = !pressOnly && cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);
     const typable = Object.fromEntries(Object.entries(snap.refs).filter(([, r]) => TYPABLE.has(r.role)));
     // 입력칸이 접혀 있으면(입력 가능한 요소 없음) 여는 버튼을 골라야 한다 — 넣을 글자와 이름이 같은 링크·버튼은 넣을 대상이지
     // 누를 대상이 아니다("검색창에 LG 그램 Pro AI 2026 입력해줘" 에 같은 이름의 상품 링크를 누르던 문제).
@@ -488,38 +733,70 @@ export class BrowserVoiceAgent implements VoiceAgent {
         ([k, r]) =>
           !LANDMARK.has(r.role) &&
           !(wantsType && typedKey.length >= 2 && (r.name ?? '').replace(/\s/g, '').includes(typedKey)) &&
-          !(chrome[k]?.close && !TAB_WORD.test(text)),
+          !(chrome[k]?.close && !TAB_WORD.test(text)) &&
+          // 입력 요청은 브라우저 자체 조작(뒤로·새로고침·새 탭)으로 풀지 않는다 — 입력칸이 안 보일 때 새로고침을 골라
+          // 채우던 폼이 지워졌다(10/16 BO).
+          !(wantsType && chrome[k]) &&
+          !(pressOnly && TYPABLE.has(r.role)),
       ),
     );
     const candidates = wantsType && Object.keys(typable).length ? typable : pickable;
-    const pick = await pickElement(post, text, origin, candidates, scr);
+    const picked = await pickElement(post, text, origin, candidates, scr);
+    const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {
       diag(SCOPE, 'debug-screen', {
         text,
         url: page.url,
         snapAgeMs: Math.round(now() - snap.at),
         refs: Object.keys(snap.refs).length,
+        labeled: Object.keys(snap.labels).length,
         cands: Object.keys(candidates).length,
         all: scr?.all.length,
         names: Object.entries(snap.refs).map(([k, v]) => `${k}:${v.role}:${(v.name ?? '').slice(0, 14)}`).join(' | '),
         top: pick?.top,
+        ...(pick && picked && pick.confidence !== picked.confidence ? { pooled: Number(pick.confidence.toFixed(3)) } : {}),
+        cls: { action: cls.action, text: cls.text },
       });
+    }
+    // 앞 지시가 연 선택 목록만 보이는데 이 지시는 목록 항목을 고르지 않는다 — 목록을 닫고 뒤 화면으로 다시 판단한다.
+    // 목록만 보이면 모델은 무슨 말에나 항목 하나를 고른다(다른 칸 지시에 "선택" 1.0) — 항목 이름이나 자리("첫 번째")를
+    // 말했을 때만 항목을 고른 것으로 본다.
+    const option =
+      !!pick &&
+      pick.confidence >= th.pick &&
+      OPTION_ROLES.has(snap.refs[pick.ref]?.role ?? '') &&
+      (mentions(text, snap.refs[pick.ref]?.name ?? '') || POSITION_WORD.test(text));
+    if (!option && !this.listClosed && listLayer(snap.refs)) {
+      // 중간 인식이면 항목 이름을 아직 말하는 중일 수 있다 — 닫지도 고르지도 않고 말이 끝나길 기다린다.
+      if (th.partial) return no('열린 목록 — 말이 끝난 뒤', pick?.top);
+      this.listClosed = true;
+      if (await this.closeList(page)) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
     }
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     const ch = chrome[pick.ref];
     if (ch) return this.runChrome(ch, text, th, guard, page, pick, t0, snap.ms);
     const element = snap.refs[pick.ref];
+    // 말하는 중인데 고른 요소 이름으로 말이 끝난다 — 그 끝 어절은 아직 자라는 중일 수 있다("…선택." → "…선택해 줘.").
+    // 10/18 BO 협력사 찾기: 중간 결과 "첫 번째 협력사 선택." 에 표 머리글 "선택" 0.96 을 눌렀다(끝난 말로는 행). 기다리면
+    // 늦어질 뿐이라 다음 말이나 최종에서 다시 본다.
+    if (th.partial && endsWithName(text, element.name)) return no('말하는 중 — 끝 어절이 요소 이름', pick.top);
     if (namedOnly && (pick.confidence < NAMED_ONLY_PICK || !mentions(text, element.name ?? ''))) {
       return no(`기다림 wait ${rc} (이름만 — 확신 ${pick.confidence.toFixed(2)})`, pick.top);
     }
-    const resolved = resolveAction(cls, element);
-    const action = resolved.action === 'type' && SEARCH_WORD.test(text) && isSearchField(element) ? 'type_submit' : resolved.action;
+    const resolved = pressOnly ? { action: 'click' as const, text: null } : resolveAction(cls, element);
+    const searching = SEARCH_WORD.test(withoutLabel(text, snap.labels[pick.ref]));
+    // 입력칸을 골랐는데 누르기로 분류됐다 — 입력칸은 누를 일이 없으니 말에 넣을 글자가 있으면 넣는다(10/18 BO "안전재고
+    // 열 개로 바꿔줘" → 분류 click, 고른 칸은 안전재고수량). 넣을 글자가 없으면("검색창 눌러줘") 지금처럼 하지 않는다.
+    const clickedField = resolved.action === 'click' && !pressOnly && TEXT_FIELD.has(element.role);
+    const typing = clickedField ? 'type' : resolved.action;
+    const action: ActionKind = typing === 'type' && searching && isSearchField(element) ? 'type_submit' : typing;
     let typed = resolved.text;
     if (action !== 'click') {
-      typed = await this.typedText(post, text, origin, scr, utterance);
+      const found = await this.typedText(post, text, origin, scr, utterance, snap.labels[pick.ref] || element.name);
+      typed = found && withoutLeadingLabel(found, snap.labels[pick.ref]);
+      if (!typed && clickedField) return no('입력칸 클릭은 하지 않음', pick.top);
       if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);
     }
-    if (action === 'click' && TEXT_FIELD.has(element.role)) return no('입력칸 클릭은 하지 않음', pick.top);
     if (action !== 'click' && th.partial && typed) {
       const lastWord = typed.split(' ').pop() ?? typed;
       const after = text.slice(text.lastIndexOf(lastWord) + lastWord.length);
@@ -528,18 +805,28 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (DANGEROUS_REQUEST.test(text) || DANGEROUS.test(element.name ?? '')) {
       return no('되돌릴 수 없을 수 있는 동작 — 서버로', pick.top);
     }
-    const label = elementLabel(element);
+    // 항목(또는 그 셀)을 고르라는(고른 것을 풀라는) 말인데 그 항목 안에 고르는 체크박스가 있으면 체크박스를 누른다 —
+    // 항목 이름은 펼치기만 하는 트리가 있다(10/16 BO 전시카테고리 찾기, checkOf·itemOf).
+    const said = withoutLabel(text, snap.labels[pick.ref]);
+    const check = action === 'click' ? snap.checks[snap.items[pick.ref] ?? pick.ref] : undefined;
+    const toggles = !!check && (UNSELECT_WORD.test(said) ? check.checked : !check.checked && SELECT_WORD.test(said));
+    // 셀을 골라 항목의 고르는 상자를 누르면 답에는 항목 이름을 쓴다("사용" 셀 → "1 11371 삼성전자 사용" 행).
+    const itemName = snap.refs[snap.items[pick.ref] ?? pick.ref]?.name || element.name;
+    const acted = toggles && check ? { role: snap.refs[check.ref]?.role ?? 'checkbox', name: itemName } : element;
+    const label = elementLabel(acted);
     if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {
       return no(GUARDED, pick.top);
     }
     const decideMs = now() - t0;
 
     const runtime = getBrowserRuntime();
-    const ref = `@${pick.ref}`;
+    const ref = `@${toggles && check ? check.ref : pick.ref}`;
     this.beforeAct(page);
     const tAct = now();
+    let opened = false;
     try {
       if (action === 'click') {
+        const watched = await runtime.pageScript<boolean>(this.workflowId, page.pageId, PRESS_WATCH_SCRIPT, PAGE_SCRIPT_MS).catch(() => false);
         try {
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
         } catch (err) {
@@ -550,23 +837,57 @@ export class BrowserVoiceAgent implements VoiceAgent {
           await new Promise((r) => setTimeout(r, 400));
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
         }
+        // 입력칸 초점이 빠지며 화면이 다시 그려져 누른 것이 버려졌다(fast-act-press) — 다시 그려진 요소를 한 번 더 누른다.
+        if (watched && (await runtime.pageScript<boolean>(this.workflowId, page.pageId, PRESS_LOST_SCRIPT, PAGE_SCRIPT_MS).catch(() => false))) {
+          diag(SCOPE, 'press-lost', { text, ref });
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+        }
       } else {
-        await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
-        if (action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
+        try {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
+        } catch (err) {
+          // 글자를 받지 않는 선택 상자(목록이나 찾기 팝업을 여는 상자) — 눌러 열고 아래에서 값을 고른다.
+          if (element.role !== 'combobox') throw err;
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+          opened = true;
+        }
+        // 글자를 받지 않는데 넣기가 오류 없이 끝나는 선택 상자도 있다 — div 로 그린 선택 상자(MUI Select)는 값이 그대로다
+        // (10/16 BO 구매연령 "구매 연령 성인으로 바꿔줘" → 넣기 성공, 값은 '전체'). 넣은 글자가 칸에 없으면 눌러 연다.
+        if (!opened && element.role === 'combobox' && (await this.valueOf(page.pageId, ref, snap.gen))?.trim() !== typed?.trim()) {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+          opened = true;
+        }
+        // 숫자 칸이 단위 붙은 말("20000원", "2만 원")을 통째로 거부했으면 숫자만 다시 넣는다.
+        const number = !opened && typed ? plainNumber(typed) : null;
+        const kept = number ? await this.valueOf(page.pageId, ref, snap.gen) : null;
+        if (number && kept !== null && kept !== typed) {
+          await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, number], 10_000, snap.gen);
+          typed = number;
+        }
+        if (!opened && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
       }
     } catch (err) {
       this.version++;
       this.snap = null;
-      return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
+      // 누른 것이 그 탭을 닫았다(새 탭으로 뜬 팝업의 [닫기] → window.close) — 명령 도구가 탭과 같이 끝나 실패로
+      // 돌아온다(10/16 BO 브랜드 찾기: "agent-browser exited null"). 눌렀으니 실행한 것으로 친다.
+      if (action !== 'click' || !(await closedTab(page.pageId))) return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
     }
-    await this.record(text, element, action, typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    const done = opened ? 'click' : action;
+    await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    // 선택 상자를 열었고 말에 고를 값이 있다("구매연령 성인으로 바꿔줘") — 열린 목록에서 그 항목을 누른다.
+    const chosen =
+      done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th, currentValue(element.name ?? '', snap.labels[pick.ref])) : null;
     // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.
-    const typedAfter = action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    const typedAfter = !chosen && action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    // 검색하라는 입력인데 칸이 검색칸이 아니라 제출하지 않았다 — 검색 버튼이 하나뿐이면 누른다.
+    if (done === 'type' && searching) await this.pressSearch(text, th);
+    const after = chosen ?? typedAfter;
     return {
       acted: true,
-      kind: typedAfter ? 'type' : action === 'click' ? 'press' : 'type',
-      target: typedAfter?.label ?? label,
-      text: (typedAfter?.text ?? typed) ?? undefined,
+      kind: typedAfter ? 'type' : done === 'click' ? 'press' : 'type',
+      target: after?.label ?? label,
+      text: (typedAfter?.text ?? (opened ? null : typed)) ?? undefined,
       ms: now() - t0,
       effect: 'ok',
     };

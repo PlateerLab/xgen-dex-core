@@ -74,6 +74,14 @@ test('입력은 칸과 글자로 — 검색칸 제출은 검색했다고', () =>
   );
 });
 
+test('닫은 알림창 문구는 답에 그대로 전한다', () => {
+  assert.equal(
+    actionSentence(act({ display: '"판매가" 입력칸', action: 'type', text: '15000', notices: ['가격정보 입력전에 협력사를 먼저 입력해 주세요.'] })),
+    '"판매가" 입력칸에 "15000"을 입력했어요. 화면에 뜬 알림 "가격정보 입력전에 협력사를 먼저 입력해 주세요."를 닫았어요.',
+  );
+  assert.equal(actionRow(act({ notices: ['a'] }), false), '"블로그" 탭 · 클릭 · 알림 닫음(1) · 판단 672ms · 실행 64ms');
+});
+
 test('답에는 시간·판단 점수가 없고, 작업 과정 줄에만 있다', () => {
   const actions = [act({}), act({ display: '"첫 글" 링크', said: '첫 글 열어' })];
   const reply = replyFor(actions);
@@ -98,4 +106,51 @@ test('판단 중 오류가 나도 final 은 끝나고 그 말은 서버로 넘�
   await seg.final('블로그 탭 눌러줘 그리고 첫 글');
   assert.equal(seg.acted, false);
   assert.equal(seg.unhandled, '블로그 탭 눌러줘 그리고 첫 글');
+});
+
+test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 분명하면 누르고, 아니면 서버로 넘기지 않는다', async () => {
+  const run = async (tailPick: { target: string; conf: number } | null) => {
+    const handled: string[] = [];
+    let pressed: string | null = null;
+    let lastTarget: string | null = null;
+    const agent: VoiceAgent = {
+      get lastTarget() {
+        return lastTarget;
+      },
+      boundary: async () => ({ start: -1, conf: 0.999 }),
+      readiness: async (texts) =>
+        texts.map((t) => ({ ready: t === '브랜드명에 삼성 입력하고' ? 'act_now' : 'wait', p: 0.9 })),
+      handle: async (text, _th, guard) => {
+        handled.push(text);
+        if (text === '브랜드명에 삼성 입력하고') {
+          if (!(await guard('textbox ""', 'type', 0.99))) return { acted: false, reason: 'guarded', ms: 0 };
+          lastTarget = 'textbox ""';
+          return { acted: true, kind: 'type', target: 'textbox ""', text: '삼성', ms: 0, effect: 'ok' };
+        }
+        if (!tailPick || !(await guard(tailPick.target, 'press', tailPick.conf)))
+          return { acted: false, reason: 'guarded', ms: 0 };
+        pressed = tailPick.target;
+        return { acted: true, kind: 'press', target: tailPick.target, ms: 0, effect: 'ok' };
+      },
+    };
+    const seg = new Segmenter(agent, () => undefined);
+    await seg.final('브랜드명에 삼성 입력하고 검색해줘');
+    return { handled, pressed, unhandled: seg.unhandled };
+  };
+  assert.deepEqual(await run({ target: 'button "조회"', conf: 0.97 }), {
+    handled: ['브랜드명에 삼성 입력하고', '검색해줘'],
+    pressed: 'button "조회"',
+    unhandled: null,
+  });
+  // 확신이 낮거나 이름을 가리키지 않으면 꼬리말로 친다 — 서버로 넘기지 않는다
+  assert.deepEqual(await run({ target: 'button "닫기"', conf: 0.6 }), {
+    handled: ['브랜드명에 삼성 입력하고', '검색해줘'],
+    pressed: null,
+    unhandled: null,
+  });
+  assert.deepEqual(await run(null), {
+    handled: ['브랜드명에 삼성 입력하고', '검색해줘'],
+    pressed: null,
+    unhandled: null,
+  });
 });

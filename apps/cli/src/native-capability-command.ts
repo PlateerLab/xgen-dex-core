@@ -10,6 +10,7 @@ import {
   type ConfigStore,
   type LocalToolSchema,
   type NativeAgentSocketTransport,
+  type NativeCapabilityCallContext,
   type NativeCapabilityConfirmation,
   type NativeCapabilityController,
   type NativeCapabilitySnapshot,
@@ -26,7 +27,8 @@ type CapabilitySession = Pick<NativeCliSession, 'capabilityCatalog' | 'selectCap
 
 export interface TrustedCliCapabilityTools {
   catalog(): readonly LocalToolSchema[];
-  call(tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown>;
+  call(tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal,
+    context: NativeCapabilityCallContext): Promise<unknown>;
 }
 
 export interface NativeCapabilityCommandDependencies {
@@ -116,7 +118,8 @@ async function terminalConfirmation(confirmation: NativeCapabilityConfirmation, 
   const rl = createInterface({ input: stdin, output: stdout });
   try {
     const review = capabilityArgumentReview(confirmation.args);
-    stdout.write(`\n기기 기능 실행 요청\nServer: ${safeControlText(confirmation.server)}\nTool: ${safeControlText(confirmation.tool)}\n`);
+    stdout.write(`\n기기 기능 실행 요청\nAgent Session: ${confirmation.agentSessionId}\n`
+      + `Server: ${safeControlText(confirmation.server)}\nTool: ${safeControlText(confirmation.tool)}\n`);
     stdout.write(`Arguments:\n${review.text}\nSHA-256: ${confirmation.argsSha256}\n`);
     if (!review.confirmable) return false;
     const answer = await rl.question('이 요청 한 번만 허용하시겠습니까? [y/N] ', { signal });
@@ -127,7 +130,8 @@ async function terminalConfirmation(confirmation: NativeCapabilityConfirmation, 
 
 function defaultTools(): TrustedCliCapabilityTools {
   const provider = getLocalToolProvider();
-  return { catalog: () => provider.catalog(), call: (tool, args, signal) => provider.callTool(tool, args, { signal }) };
+  return { catalog: () => provider.catalog(), call: (tool, args, signal, context) => provider.callTool(tool, args,
+    { interactionId: context.agentSessionId, remote: true, originName: 'XGEN Agent Session', signal }) };
 }
 
 function advertisedTools(port: TrustedCliCapabilityTools) {
@@ -201,9 +205,9 @@ async function connect(session: CapabilitySession, userId: string, dependencies:
   try {
     controller = await session.connectCapabilities(userId, {
       tools: advertisedTools(tools),
-      call: (server, tool, args, callSignal) => {
+      call: (server, tool, args, callSignal, context) => {
         if (server !== LOCAL_SERVER) throw new DexError('usage_error', '허용되지 않은 기기 기능 서버입니다.');
-        return tools.call(tool, args, callSignal);
+        return tools.call(tool, args, callSignal, context);
       },
       onChange: observe,
     }, signal);

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  getLocalToolProvider,
   validateNativeCapabilityOptions,
   MemoryConfigStore,
   NativeDeviceKeyStore,
@@ -9,11 +13,13 @@ import {
   type NativeCapabilityOptions,
   type NativeCapabilitySnapshot,
 } from '@dex/engine';
+import { normalizeLocalFolders } from '@dex/engine/local-folders';
 import { NativeCapabilityRpcHost } from '../src/native-capability-host';
 
 const origin = 'https://app.example.test';
 const confirmation = {
   requestId: '018f1240-0000-7000-8000-000000000001',
+  agentSessionId: '018f1240-0000-7000-8000-000000000002',
   server: 'local',
   tool: 'ReadFile',
   args: Object.freeze({ path: 'README.md' }),
@@ -149,4 +155,45 @@ test('actual built-in catalog can connect within the server description and hell
   }));
   await host.request('native/connect-capabilities', { profile: 'corp', user_id: '7' });
   assert.ok(advertised > 0); await host.stop();
+});
+
+test('actual built-in provider scopes a native call to the server-attested agent session folder', async () => {
+  const agentSessionId = '018f1240-0000-7000-8000-000000000010';
+  const otherSessionId = '018f1240-0000-7000-8000-000000000011';
+  const root = await mkdtemp(join(tmpdir(), 'xgen-native-context-'));
+  const output = join(root, 'native-context.txt');
+  const provider = getLocalToolProvider();
+  provider.configureFolders((context) => context?.interactionId === agentSessionId ? normalizeLocalFolders([root]) : []);
+  const remoteUses: Array<{ interactionId: string; originName: string }> = [];
+  const stopRemoteUses = provider.onRemoteUse((use) => remoteUses.push({
+    interactionId: use.interactionId, originName: use.originName,
+  }));
+  const configs = new MemoryConfigStore({ ...defaultConfig(), currentProfile: 'corp',
+    profiles: { corp: { serverUrl: origin } } });
+  const snapshot: NativeCapabilitySnapshot = { state: 'ready', confirmation: null };
+  const controller: NativeCapabilityController = { snapshot: () => snapshot, confirm: async () => {}, close: async () => {} };
+  const socket = { assertAvailable() {}, open: async () => { throw new Error('unused'); },
+    openCapabilities: async () => { throw new Error('fake session owns transport'); } };
+  let options!: NativeCapabilityOptions;
+  const host = new NativeCapabilityRpcHost(configs, () => {}, {
+    keys: new NativeDeviceKeyStore(), socket: () => socket,
+  }, 'desktop', () => ({
+    connectCapabilities: async (_userId, value) => { options = value; return controller; },
+    settleProofOperations: async () => {},
+  }));
+  try {
+    await host.request('native/connect-capabilities', { profile: 'corp', user_id: '7' });
+    await assert.rejects(options.call('local', 'WriteFile', { path: 'native-context.txt', content: 'wrong' },
+      new AbortController().signal, { agentSessionId: otherSessionId }), /NO_FOLDER/);
+    await assert.rejects(readFile(output, 'utf8'), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+    await options.call('local', 'WriteFile', { path: 'native-context.txt', content: 'session-bound' },
+      new AbortController().signal, { agentSessionId });
+    assert.equal(await readFile(output, 'utf8'), 'session-bound');
+    assert.deepEqual(remoteUses, [{ interactionId: agentSessionId, originName: 'XGEN Agent Session' }]);
+  } finally {
+    await host.stop();
+    stopRemoteUses();
+    provider.configureFolders(() => []);
+    await rm(root, { recursive: true, force: true });
+  }
 });

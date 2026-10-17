@@ -17,7 +17,7 @@
  * state 형식은 학습 데이터와 글자 하나까지 같아야 정확도가 유지된다.
  */
 
-import { plainNumber } from './fast-act-number';
+import { isUnitWord, plainNumber } from './fast-act-number';
 import {
   MAX_LINES,
   PICK_Q13,
@@ -248,6 +248,14 @@ export function textFromWordAnswers(instruction: string, answers: Record<string,
   // 수 말과 그 단위는 한 덩어리다 — 모델이 "이만 원으로" 에서 "원으로" 만 고르기도 했다(10/16 BO 정상가). 앞 어절과
   // 합쳐 수 말이 되면 넓힌다(plainNumber 가 읽는 꼴).
   while (s > 0 && plainNumber(stripParticle([ws[s - 1], ...ws.slice(s, e)].join(' '), TYPED_PARTICLES)) !== null) s--;
+  // 단위가 오른쪽에 남기도 했다("안전재고 수량 열 개" 에서 "열" 만 — '개' 0.49). 뒤 어절이 단위 말이고 합쳐 수 말이
+  // 되면 넓힌다(단위 말일 때만 — "15 해줘" 의 '해줘' 는 넓히지 않는다).
+  while (
+    e < ws.length &&
+    isUnitWord(stripParticle(ws[e], TYPED_PARTICLES)) &&
+    plainNumber(stripParticle(ws.slice(s, e + 1).join(' '), TYPED_PARTICLES)) !== null
+  )
+    e++;
   const span = ws.slice(s, e);
   span[span.length - 1] = stripParticle(span[span.length - 1], TYPED_PARTICLES);
   return span.join(' ') || null;

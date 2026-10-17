@@ -32,6 +32,24 @@ test('한글 숫자는 자릿수와 함께일 때 숫자로 바꾼다', () => {
   assert.equal(plainNumber('구매'), null);
 });
 
+test('고유어 수는 셈 단위 말이 뒤따를 때만 숫자로 바꾼다', () => {
+  assert.equal(plainNumber('열 개'), '10');
+  assert.equal(plainNumber('열개'), '10');
+  assert.equal(plainNumber('열두 개'), '12');
+  assert.equal(plainNumber('열 두 개'), '12');
+  assert.equal(plainNumber('스물다섯 장'), '25');
+  assert.equal(plainNumber('스무 개'), '20');
+  assert.equal(plainNumber('세 개'), '3');
+  assert.equal(plainNumber('한 번'), '1');
+  assert.equal(plainNumber('하나'), null);
+  assert.equal(plainNumber('네'), null);
+  assert.equal(plainNumber('열'), null);
+  assert.equal(plainNumber('열한'), null);
+  assert.equal(plainNumber('열어'), null);
+  assert.equal(plainNumber('세탁기'), null);
+  assert.equal(plainNumber('한국 상품'), null);
+});
+
 test('숫자만이거나 숫자 말이 아니면 null', () => {
   assert.equal(plainNumber('20000'), null);
   assert.equal(plainNumber('3.5'), null);
@@ -55,4 +73,8 @@ test('넣을 글자는 수 말과 그 단위를 함께 — 단위만 골랐어�
   assert.equal(textFromWordAnswers('집에서 입력해줘', wordAnswers([0.97, 0])), '집');
   assert.equal(textFromWordAnswers('도로 입력해줘', wordAnswers([0.97, 0])), '도로');
   assert.equal(textFromWordAnswers('아이폰 15 입력해줘', wordAnswers([0.2, 0.97, 0])), '15');
+  assert.equal(textFromWordAnswers('안전재고 수량 열 개 입력해줘', wordAnswers([0.01, 0.05, 0.3, 0.9, 0])), '열 개');
+  assert.equal(textFromWordAnswers('안전재고 수량 열 개 입력해줘', wordAnswers([0, 0, 0.53, 0.49, 0])), '열 개');
+  assert.equal(textFromWordAnswers('정상가 2만 원으로 해줘', wordAnswers([0, 0.97, 0.3, 0])), '2만 원');
+  assert.equal(textFromWordAnswers('정상가 15 해줘', wordAnswers([0, 0.97, 0])), '15');
 });

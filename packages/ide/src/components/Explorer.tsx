@@ -287,8 +287,8 @@ export function Explorer() {
     }
     const files = Array.from(e.dataTransfer.files ?? []);
     if (!files.length) return;
-    const loaded = await Promise.all(files.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
-    await store.upload(dir, loaded);
+    // 바이트는 store 가 파일마다 차례로 읽는다(상한을 넘는 파일은 읽지 않는다).
+    await store.upload(dir, files.map((f) => ({ name: f.name, file: f })));
   };
 
   const createRow =

@@ -13,7 +13,8 @@
  * 실을 수 없어 인증이 불가능하므로, WS 는 메인 프로세스 전용
  * (`src/main/teams-ws.ts`)이다.
  */
-import { HttpClient } from './client';
+import { HttpClient, type UploadFileData, type UploadOptions } from './client';
+import { UPLOAD_MAX_BYTES } from './resumable-upload';
 import type {
   TeamsAttachment,
   TeamsMember,
@@ -240,12 +241,12 @@ export const TEAMS_ATTACHMENT_EXTENSIONS = [
   'svg',
 ] as const;
 
-/** 서버 업로드 상한. 넘으면 413 이므로 올리기 전에 여기서 막는다. */
-export const TEAMS_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
+/** 서버 업로드 상한(플랫폼 업로드 상한과 같은 1GiB). 넘으면 413 이므로 올리기 전에 여기서 막는다. */
+export const TEAMS_ATTACHMENT_MAX_BYTES = UPLOAD_MAX_BYTES;
 
 /**
  * 올릴 수 없는 파일이면 사용자에게 보여줄 이유를, 올릴 수 있으면 null.
- * 서버에 던져 보고 실패를 번역하는 대신 미리 판정한다 — 50MB 를 다 올린 뒤에
+ * 서버에 던져 보고 실패를 번역하는 대신 미리 판정한다 — 1GB 를 다 올린 뒤에
  * 거절당하는 것이 가장 나쁜 경험이다.
  */
 export function teamsAttachmentRejectReason(filename: string, size: number): string | null {
@@ -255,11 +256,15 @@ export function teamsAttachmentRejectReason(filename: string, size: number): str
     return `${filename}: 올릴 수 없는 형식입니다 (${ext ? `.${ext}` : '확장자 없음'}).`;
   }
   if (size > TEAMS_ATTACHMENT_MAX_BYTES) {
-    return `${filename}: 파일이 너무 큽니다 (최대 ${Math.floor(
-      TEAMS_ATTACHMENT_MAX_BYTES / 1024 / 1024,
-    )}MB).`;
+    return `${filename}: 파일이 너무 큽니다 (최대 ${formatLimit(TEAMS_ATTACHMENT_MAX_BYTES)}).`;
   }
   return null;
+}
+
+/** `1GB` · `50MB` — 상한 안내 문구용. */
+function formatLimit(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 && Number.isInteger(gb) ? `${gb}GB` : `${Math.floor(bytes / 1024 / 1024)}MB`;
 }
 
 export interface CreateRoomOptions {
@@ -504,23 +509,16 @@ export class TeamsApi {
    */
   async uploadAttachment(
     roomId: string,
-    bytes: Uint8Array,
+    file: UploadFileData,
     filename: string,
     mime?: string,
+    opts: Pick<UploadOptions, 'signal' | 'onProgress'> = {},
   ): Promise<TeamsAttachment> {
-    const form = new FormData();
-    // Uint8Array 가 더 큰 버퍼 위의 뷰일 수 있다(IPC 를 건너온 경우) — 정확히 이
-    // 파일의 바이트만 담기도록 독립 ArrayBuffer 로 복사한다 (아바타 업로드와 같은 이유).
-    const buf = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength,
-    ) as ArrayBuffer;
-    form.append('file', new Blob([buf], mime ? { type: mime } : undefined), filename);
+    // 조각 업로드(1GiB 까지). 바이트·Blob·디스크 파일 소스 모두 받는다.
     const res = await this.http.upload<Envelope<unknown>>(
       `/api/teams/rooms/${encodeURIComponent(roomId)}/attachments/upload`,
-      form,
-      // 50MB 까지 받는 엔드포인트라 기본 타임아웃으로는 큰 파일이 끊긴다.
-      { timeoutMs: 300_000 },
+      [{ name: 'file', file, filename, type: mime }],
+      { timeoutMs: 600_000, ...opts },
     );
     const mapped = mapAttachment(res.data);
     if (!mapped.storageKey) throw new Error('첨부를 올렸지만 서버 응답을 해석하지 못했습니다.');

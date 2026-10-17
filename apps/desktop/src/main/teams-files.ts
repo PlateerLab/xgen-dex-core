@@ -12,8 +12,8 @@
  *   dex-host.ts openPath 주석 참고).
  */
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { extname, join } from 'node:path';
 import { app, dialog, type BrowserWindow } from 'electron';
 
 /** 파일 이름으로 못 쓰는 문자를 지운다. 서버가 준 이름을 그대로 믿지 않는다. */
@@ -113,20 +113,4 @@ export async function pickFilesToAttach(
     ? await dialog.showOpenDialog(win, options)
     : await dialog.showOpenDialog(options);
   return res.canceled ? [] : res.filePaths;
-}
-
-/** 업로드 대상으로 읽은 로컬 파일 한 개. */
-export interface LocalFileBytes {
-  filename: string;
-  bytes: Uint8Array;
-}
-
-/**
- * 로컬 경로를 읽어 업로드용 바이트로 만든다.
- *
- * 비동기 `readFile` 인 것이 중요하다 — 파일 맨 위 주석 참고.
- */
-export async function readFileForUpload(path: string): Promise<LocalFileBytes> {
-  const bytes = await readFile(path);
-  return { filename: basename(path), bytes: new Uint8Array(bytes) };
 }

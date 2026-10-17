@@ -2,18 +2,25 @@
  * 대화 첨부 파일의 순수 규칙 — 종류(내용으로)·이름. RN 없이 시험할 수 있게 화면에서 떼어 둔다.
  */
 
-/** base64 → 바이트. RN 에는 atob 가 없다. */
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** 글자 코드 → 6비트 값(알파벳 밖은 255). 조각 업로드가 8MiB 조각마다 부르므로 표로 찾는다. */
+const B64_VALUE = (() => {
+  const table = new Uint8Array(256).fill(255);
+  for (let i = 0; i < B64_ALPHABET.length; i++) table[B64_ALPHABET.charCodeAt(i)] = i;
+  return table;
+})();
+
+/** base64 → 바이트. RN 에는 atob 가 없다. 알파벳 밖의 글자(=·줄바꿈)는 건너뛴다. */
 export function base64Bytes(value: string): Uint8Array {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const clean = value.replace(/[^A-Za-z0-9+/]/g, '');
-  const out = new Uint8Array(Math.floor((clean.length * 6) / 8));
+  const out = new Uint8Array(Math.floor((value.length * 6) / 8));
   let buffer = 0;
   let bits = 0;
   let offset = 0;
-  for (const char of clean) {
-    const n = alphabet.indexOf(char);
-    if (n < 0) continue;
-    buffer = (buffer << 6) | n;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    const n = code < 256 ? B64_VALUE[code] : 255;
+    if (n === 255) continue;
+    buffer = ((buffer << 6) | n) & 0xffffff;
     bits += 6;
     if (bits >= 8) {
       bits -= 8;

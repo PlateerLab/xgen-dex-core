@@ -37,7 +37,7 @@ import * as FileSystem from 'expo-file-system';
 import { attachmentName, base64Bytes, imageMime } from '../lib/attachment-file';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import type { Agent, HistoryFlowItem, ToolEvent } from '@dex/protocol';
+import { UPLOAD_MAX_BYTES, type Agent, type HistoryFlowItem, type ToolEvent } from '@dex/protocol';
 import {
   CHAT_SHARE_TEXT,
   UNTITLED_CONVERSATION,
@@ -95,7 +95,8 @@ import {
   type ChatMessage,
 } from './message-model';
 
-const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+/** 플랫폼 업로드 상한(1GiB) — 조각 업로드라 큰 문서·동영상도 올린다. */
+const MAX_ATTACHMENT_BYTES = UPLOAD_MAX_BYTES;
 
 /** 파일 크기 — 고른 쪽이 알려 주지 않을 때. 알 수 없으면 undefined(서버가 상한을 다시 본다). */
 async function fileSize(uri: string): Promise<number | undefined> {
@@ -619,7 +620,7 @@ export function ChatView({
           // 읽어 바이트로)은 모든 첨부가 업로드 직전에 실패했다. 크기·종류만 앞에서 확인한다.
           const size = file.size ?? (await fileSize(file.uri));
           if ((size ?? 0) > MAX_ATTACHMENT_BYTES) {
-            throw new Error('첨부 파일 한 개는 100MiB를 넘을 수 없습니다.');
+            throw new Error('첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
           }
           const head = await FileSystem.readAsStringAsync(file.uri, {
             encoding: FileSystem.EncodingType.Base64,
@@ -638,6 +639,13 @@ export function ChatView({
             mime,
             interactionId,
             attachmentId,
+            {
+              onProgress: ({ loaded, total }) => {
+                if (isCurrent() && total > 0) {
+                  setAttachmentStatus(`파일을 올리는 중… ${Math.min(100, Math.floor((loaded / total) * 100))}%`);
+                }
+              },
+            },
           );
           if (!isCurrent()) return;
           if (result.status === 'pending_approval') throw new Error('파일 업로드가 승인 대기 중입니다.');

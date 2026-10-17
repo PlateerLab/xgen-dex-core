@@ -36,3 +36,12 @@ test('앱 주소는 서버가 준 경로만 서버 주소에 붙인다', () => {
     assert.equal(serverLink(base, bad), '', bad)
   }
 })
+
+test('base64 풀기는 조각 크기(8MiB)에서도 정확하다 — 조각 업로드가 이것으로 파일을 읽는다', () => {
+  for (const n of [0, 1, 2, 3, 4, 5, 255, 8 * 1024 * 1024 + 1]) {
+    const bytes = new Uint8Array(n).map((_, i) => (i * 131 + 7) & 0xff)
+    const b64 = Buffer.from(bytes).toString('base64')
+    assert.deepEqual(base64Bytes(b64), bytes, `length ${n}`)
+  }
+  assert.deepEqual(base64Bytes('QU\nJD'), new Uint8Array([0x41, 0x42, 0x43]), '줄바꿈·= 은 건너뛴다')
+})

@@ -7,7 +7,7 @@
  *  - 스토어: publish / list / download / rate / unpublish
  * per-user config (선택/이름/변형)는 PreferencesApi 가 담당한다.
  */
-import { HttpClient } from './client';
+import { HttpClient, type UploadFileData, type UploadOptions } from './client';
 import type { AvatarDescriptor, AvatarRuntime } from './preferences';
 
 export interface StoreAvatar {
@@ -29,13 +29,17 @@ export class AvatarsApi {
   constructor(private http: HttpClient) {}
 
   /** Upload one avatar file (model zip or photo) → parsed descriptor. */
-  async uploadAsset(bytes: Uint8Array, filename: string): Promise<AvatarDescriptor> {
-    const form = new FormData();
-    // Uint8Array may be a view over a larger/shared buffer (IPC) — copy to a
-    // standalone ArrayBuffer so Blob captures exactly the file bytes.
-    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-    form.append('file', new Blob([buf]), filename);
-    const res = await this.http.upload<{ avatar: AvatarDescriptor }>('/api/storage/avatar/upload', form);
+  async uploadAsset(
+    file: UploadFileData,
+    filename: string,
+    opts: Pick<UploadOptions, 'signal' | 'onProgress'> = {},
+  ): Promise<AvatarDescriptor> {
+    // Chunked upload (model zips can be large) — bytes, a Blob or a file-backed source.
+    const res = await this.http.upload<{ avatar: AvatarDescriptor }>(
+      '/api/storage/avatar/upload',
+      [{ name: 'file', file, filename }],
+      { timeoutMs: 600_000, ...opts },
+    );
     return res.avatar;
   }
 

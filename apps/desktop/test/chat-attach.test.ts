@@ -7,7 +7,9 @@ import {
   CHAT_IMAGE_MAX_TOTAL_BYTES,
   TOO_LARGE_TOTAL,
   TOO_MANY_FILES,
+  CHAT_MEMORY_MAX_BYTES,
   pastedImageFiles,
+  prepareChatImage,
   stageChatFiles,
   type StagedChatImage,
 } from '../src/renderer/src/views/chat-attach';
@@ -59,16 +61,35 @@ test('개수는 이미 올려 둔 것까지 세어 최대에서 멈춘다', asyn
 });
 
 test('합계가 넘으면 그 파일부터 멈춘다', async () => {
-  const half = Math.floor(CHAT_IMAGE_MAX_TOTAL_BYTES / 2);
+  const fit = Math.floor(CHAT_IMAGE_MAX_TOTAL_BYTES / CHAT_IMAGE_MAX_BYTES);
+  const h = harness();
+  const files = Array.from({ length: fit + 2 }, (_, i) => fakeFile(`v${i}.mp4`, CHAT_IMAGE_MAX_BYTES));
+  const problem = await stageChatFiles(files, h.used, h.add, h.prepare);
+  assert.equal(problem, TOO_LARGE_TOTAL);
+  assert.equal(h.staged.length, fit);
+});
+
+test('파일 한 개는 1GiB(동영상)까지, 넘으면 이유를 알린다', async () => {
+  assert.equal(CHAT_IMAGE_MAX_BYTES, 1024 * 1024 * 1024);
   const h = harness();
   const problem = await stageChatFiles(
-    [fakeFile('a.mp4', Math.min(half, CHAT_IMAGE_MAX_BYTES)), fakeFile('b.mp4', CHAT_IMAGE_MAX_BYTES), fakeFile('c.mp4', CHAT_IMAGE_MAX_BYTES)],
+    [fakeFile('ok.mp4', CHAT_IMAGE_MAX_BYTES, 'video/mp4'), fakeFile('over.mp4', CHAT_IMAGE_MAX_BYTES + 1, 'video/mp4')],
     h.used,
     h.add,
     h.prepare,
   );
-  assert.equal(problem, TOO_LARGE_TOTAL);
-  assert.deepEqual(h.staged.map((image) => image.name), ['a.mp4', 'b.mp4']);
+  assert.match(problem ?? '', /over\.mp4: 파일 한 개는 1GiB/);
+  assert.deepEqual(h.staged.map((image) => image.name), ['ok.mp4']);
+});
+
+test('디스크의 큰 파일은 데이터 URL 없이 표만 든다 — 디스크 경로가 없으면 100MiB 까지만', async () => {
+  const video = fakeFile('회의.mp4', 500 * 1024 * 1024, 'video/mp4');
+  const staged = await prepareChatImage(video, () => 'file-7');
+  assert.equal(staged.fileRef, 'file-7');
+  assert.equal(staged.dataUrl, '');
+  assert.equal(staged.kind, 'file');
+  assert.equal(staged.size, video.size);
+  await assert.rejects(prepareChatImage(fakeFile('붙여넣음.bin', CHAT_MEMORY_MAX_BYTES + 1), () => null), /100MiB/);
 });
 
 test('읽기에 실패한 파일은 알리고 다음 파일로 간다', async () => {

@@ -5,7 +5,7 @@
  * callback), and updater. Tokens and network calls stay in the main process;
  * the renderer only ever sees typed results and streamed ChatEvents.
  */
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { CHANNELS } from '../main/ipc';
 import type { ChatDownload } from '@dex/protocol/chat-files';
 import type {
@@ -153,7 +153,42 @@ export interface OverlayState {
 
 let streamSeq = 0;
 
+/**
+ * 사용자가 끌어 놓거나 고른 파일의 디스크 경로 — **preload 안에만** 둔다.
+ *
+ * 렌더러는 불투명한 표(`files.stage`)만 받고, 업로드할 때 그 표를 돌려준다. 그래서 렌더러가
+ * 임의 경로를 읽어 올리라고 시킬 수 없다(contextIsolation 으로 이 Map 에 닿지 못한다).
+ * 경로가 있으면 큰 파일(1GiB)도 메모리에 올리지 않고 main 이 디스크에서 조각으로 올린다.
+ */
+const stagedFiles = new Map<string, string>();
+let stagedSeq = 0;
+
+function stagedPath(ref: string): string {
+  const path = stagedFiles.get(ref);
+  if (!path) throw new Error('첨부한 파일을 찾지 못했습니다. 파일을 다시 첨부해 주세요.');
+  return path;
+}
+
 const api = {
+  files: {
+    /** 디스크에 있는 File 이면 표를 돌려준다(붙여 넣은 그림처럼 메모리에만 있으면 null). */
+    stage: (file: File): string | null => {
+      let path = '';
+      try {
+        path = webUtils.getPathForFile(file);
+      } catch {
+        path = '';
+      }
+      if (!path) return null;
+      const ref = `file-${Date.now().toString(36)}-${(stagedSeq += 1)}`;
+      stagedFiles.set(ref, path);
+      return ref;
+    },
+    release: (ref: string): void => {
+      stagedFiles.delete(ref);
+    },
+  },
+
   config: {
     get: (): Promise<ConnectorConfig> => ipcRenderer.invoke(CHANNELS.configGet),
     set: (patch: Partial<ConnectorConfig>): Promise<ConnectorConfig> =>
@@ -251,6 +286,9 @@ const api = {
   avatars: {
     uploadAsset: (bytes: Uint8Array, filename: string): Promise<AvatarDescriptor> =>
       ipcRenderer.invoke(CHANNELS.avatarUploadAsset, bytes, filename),
+    /** `files.stage` 로 받은 표의 파일(모델 zip)을 디스크에서 조각으로 올린다. */
+    uploadStaged: async (ref: string, filename: string): Promise<AvatarDescriptor> =>
+      ipcRenderer.invoke(CHANNELS.avatarUploadFile, stagedPath(ref), filename),
     deleteAsset: (avatarId: string): Promise<void> =>
       ipcRenderer.invoke(CHANNELS.avatarDeleteAsset, avatarId),
     setEnabled: (enabled: boolean): Promise<AvatarConfig> =>
@@ -430,6 +468,42 @@ const api = {
         interactionId,
         attachmentId,
       ),
+    /**
+     * `files.stage` 로 받은 표의 파일을 작업 공간으로(1GiB, 조각 업로드). `uploadId` 는 호출자가 정한다 —
+     * 진행률(`onProgress`)과 취소(`cancelWorkspaceUpload`)가 그 id 로 이어진다.
+     */
+    workspaceUploadStaged: async (
+      uploadId: string,
+      ref: string,
+      wf: string,
+      filename: string,
+      mimeType: string,
+      interactionId: string,
+      attachmentId: string,
+      onProgress?: (loaded: number, total: number) => void,
+    ): Promise<WorkspaceUploadResult> => {
+      const path = stagedPath(ref);
+      const listener = (_e: unknown, id: string, loaded: number, total: number): void => {
+        if (id === uploadId) onProgress?.(loaded, total);
+      };
+      ipcRenderer.on(CHANNELS.agentWsUploadProgress, listener);
+      try {
+        return await ipcRenderer.invoke(
+          CHANNELS.agentWsUploadFile,
+          uploadId,
+          wf,
+          path,
+          filename,
+          mimeType,
+          interactionId,
+          attachmentId,
+        );
+      } finally {
+        ipcRenderer.removeListener(CHANNELS.agentWsUploadProgress, listener);
+      }
+    },
+    cancelWorkspaceUpload: (uploadId: string): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.agentWsUploadCancel, uploadId),
   },
 
   /**

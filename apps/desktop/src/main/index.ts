@@ -120,6 +120,8 @@ import { TRAY_ICON_B64 } from './tray-icon';
 import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
 import { clientWorkspaceTransfer } from '@dex/engine/workspace-transfer';
+import { fileSource } from '@dex/engine/file-source';
+import { fileResumeStore } from './upload-resume-store';
 import {
   getLocalToolProvider,
   openWithDefaultApp,
@@ -181,7 +183,6 @@ import { NotificationCenter } from './notification-center';
 import {
   openAttachmentTemp,
   pickFilesToAttach,
-  readFileForUpload,
   saveAttachmentAs,
 } from './teams-files';
 
@@ -379,6 +380,12 @@ function handleAuthFailure(): void {
   safeSend(mainWindow, CHANNELS.authFailed);
 }
 
+let resumeStore: ReturnType<typeof fileResumeStore> | null = null;
+function uploadResumeStore(): ReturnType<typeof fileResumeStore> {
+  resumeStore ??= fileResumeStore(join(app.getPath('userData'), 'upload-resume.json'));
+  return resumeStore;
+}
+
 function getClient(): XgenClient {
   const cfg = loadConfig();
   if (!client) {
@@ -387,6 +394,8 @@ function getClient(): XgenClient {
       // Chromium 네트워크 스택을 사용해 OS 프록시·인증서 정책을 공유한다.
       fetch: (input, init) => net.fetch(input, init),
       onAuthFailure: handleAuthFailure,
+      // 큰 파일(1GiB)은 조각으로 올린다 — 앱을 다시 켜도 같은 파일은 이어 올린다.
+      uploadStore: uploadResumeStore(),
       // 토큰이 회전되는 **모든** 지점에서 keychain 을 즉시 갱신한다. 게이트웨이는
       // 회전 시 이전 토큰의 세션 키를 지우므로, 여기서 놓치면 keychain 을 읽는
       // 장수명 소비자(WS 브릿지·대화 소켓)가 폐기된 토큰으로 접속하다
@@ -2493,6 +2502,10 @@ function avatarConfigChanged<T>(result: T): T {
 ipcMain.handle(CHANNELS.avatarUploadAsset, (_e, bytes: Uint8Array, filename: string) =>
   getClient().avatars.uploadAsset(bytes, filename),
 );
+// 고른 zip 을 디스크에서 조각으로 올린다 — 경로는 preload 가 사용자가 고른 파일에서만 얻는다.
+ipcMain.handle(CHANNELS.avatarUploadFile, async (_e, path: string, filename: string) =>
+  getClient().avatars.uploadAsset(await fileSource(path, { name: filename }), filename),
+);
 ipcMain.handle(CHANNELS.avatarDeleteAsset, (_e, avatarId: string) =>
   getClient().avatars.deleteAsset(avatarId),
 );
@@ -2941,6 +2954,42 @@ ipcMain.handle(
       attachmentId,
     ),
 );
+/**
+ * 디스크의 파일을 작업 공간으로 — 채팅 첨부(1GiB). 파일을 통째로 읽지 않고 조각마다 그 범위만 읽는다.
+ * 경로는 preload 가 사용자가 끌어 놓거나 고른 File 에서만 얻어 넘긴다(렌더러는 경로를 정하지 못한다).
+ * 진행률은 렌더러로 흘려보내고, [정지] 는 agentWsUploadCancel 로 이 업로드를 멈춘다.
+ */
+const workspaceUploads = new Map<string, AbortController>();
+ipcMain.handle(
+  CHANNELS.agentWsUploadFile,
+  async (
+    e,
+    uploadId: string,
+    wf: string,
+    path: string,
+    filename: string,
+    mimeType: string,
+    interactionId: string,
+    attachmentId: string,
+  ) => {
+    const controller = new AbortController();
+    workspaceUploads.set(uploadId, controller);
+    try {
+      const source = await fileSource(path, { name: filename, type: mimeType });
+      return await getClient().agentData.workspaceUpload(wf, source, filename, mimeType, interactionId, attachmentId, {
+        signal: controller.signal,
+        onProgress: (p) => {
+          if (!e.sender.isDestroyed()) e.sender.send(CHANNELS.agentWsUploadProgress, uploadId, p.loaded, p.total);
+        },
+      });
+    } finally {
+      workspaceUploads.delete(uploadId);
+    }
+  },
+);
+ipcMain.handle(CHANNELS.agentWsUploadCancel, (_e, uploadId: string) => {
+  workspaceUploads.get(uploadId)?.abort();
+});
 
 // ── IPC: Teams (사람 사이의 대화) ────────────────────────────────
 // REST 는 전부 core 의 TeamsApi 에 위임한다 — 이 파일에는 매핑 로직이 없다.
@@ -3074,16 +3123,17 @@ ipcMain.handle(CHANNELS.teamsUploadAttachment, async (_e, roomId: string) => {
   // **전부 먼저 검사한다.** 하나씩 올리다 중간에서 멈추면 앞의 파일은 이미 서버에
   // 올라갔는데 호출자는 오류만 받아, 올라간 파일을 알 수도 지울 수도 없게 된다
   // (서버에 첨부 삭제 API 가 없다).
+  // 파일은 통째로 읽지 않는다 — 조각 업로드가 디스크에서 범위로 읽는다(1GB 까지).
   const files = [];
   for (const path of paths) {
-    const file = await readFileForUpload(path);
-    const reason = teamsAttachmentRejectReason(file.filename, file.bytes.byteLength);
+    const source = await fileSource(path);
+    const reason = teamsAttachmentRejectReason(source.name, source.size);
     if (reason) throw new Error(reason);
-    files.push(file);
+    files.push(source);
   }
   const uploaded: TeamsAttachment[] = [];
   for (const file of files) {
-    uploaded.push(await getClient().teams.uploadAttachment(roomId, file.bytes, file.filename));
+    uploaded.push(await getClient().teams.uploadAttachment(roomId, file, file.name));
   }
   return uploaded;
 });

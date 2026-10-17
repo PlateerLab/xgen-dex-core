@@ -155,6 +155,8 @@ test('page popups stay denied and an approved request opens as a managed shared 
     setWindowOpenHandler: (handler: typeof popupHandler) => {
       popupHandler = handler;
     },
+    executeJavaScript: async () => true,
+    mainFrame: { frameTreeNodeId: 1 },
     on: () => undefined,
     once: () => undefined,
   };
@@ -235,6 +237,114 @@ test('page popups stay denied and an approved request opens as a managed shared 
       .list('workflow-popup')
       .some((item) => item.url === 'https://temporary.example.com/second'),
   );
+});
+
+test('a same-origin popup opened from the window.open bridge talks to its opener through DeX only', async () => {
+  const runtime = new BrowserRuntime();
+  const ID = '7c1f5d2e-9a4b-4c3d-8e2f-0a1b2c3d4e5f';
+  type Handler = (...args: unknown[]) => void;
+  const fakeContents = (id: number, url: () => string) => {
+    const handlers = new Map<string, Handler[]>();
+    const scripts: string[] = [];
+    let popupHandler: ((details: { url: string; frameName?: string }) => { action: string }) | undefined;
+    const contents = {
+      id,
+      isDestroyed: () => false,
+      getURL: url,
+      getTitle: () => 'page',
+      navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+      setWindowOpenHandler: (handler: typeof popupHandler) => {
+        popupHandler = handler;
+      },
+      executeJavaScript: async (code: string) => {
+        scripts.push(code);
+        return true;
+      },
+      mainFrame: { frameTreeNodeId: 1 },
+      on: (event: string, handler: Handler) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      },
+      once: () => undefined,
+    };
+    const say = (message: unknown, frameTreeNodeId = 1) =>
+      handlers.get('console-message')?.forEach((h) =>
+        h({ message: `⁣dex-popup ${JSON.stringify(message)}`, frame: { frameTreeNodeId } }),
+      );
+    return { contents, scripts, say, open: (details: { url: string; frameName?: string }) => popupHandler!(details) };
+  };
+  const pageOf = (pageId: string, url: string) => ({
+    info: {
+      pageId,
+      workflowId: 'workflow-bridge',
+      workflowName: 'Bridge',
+      mode: 'shared',
+      url,
+      title: 'page',
+      loading: 'idle',
+      canGoBack: false,
+      canGoForward: false,
+      partition: 'persist:test',
+      generation: 0,
+    } as BrowserPageInfo,
+    contents: null,
+    window: null,
+    proxy: null,
+    automationReset: null,
+  });
+  const internals = runtime as unknown as {
+    enabled: boolean;
+    accountPartition: string;
+    pages: Map<string, ReturnType<typeof pageOf>>;
+    sessionPopupPermissions: Set<string>;
+    activeByWorkflow: Map<string, string>;
+    bindContents: (runtimePage: unknown, webContents: unknown) => void;
+  };
+  internals.enabled = true;
+  internals.accountPartition = 'persist:test';
+  internals.sessionPopupPermissions.add('https://bo.example.com');
+
+  const opener = pageOf('opener', 'https://bo.example.com/goods/reg');
+  const a = fakeContents(10, () => opener.info.url);
+  internals.pages.set(opener.info.pageId, opener);
+  internals.bindContents(opener, a.contents);
+  // Every shared document gets the window.open wrapper.
+  assert.ok(a.scripts.some((code) => code.includes('__dexPopupBridge')));
+
+  assert.equal(a.open({ url: 'https://bo.example.com/popup/partner', frameName: `__dexpopup:${ID}:etEntrListPopup` }).action, 'deny');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const popupInfo = runtime.list('workflow-bridge').find((item) => item.url.endsWith('/popup/partner'));
+  assert.ok(popupInfo);
+  assert.equal(internals.activeByWorkflow.get('workflow-bridge'), popupInfo.pageId);
+  const popup = internals.pages.get(popupInfo.pageId)!;
+  const b = fakeContents(11, () => popup.info.url);
+  internals.bindContents(popup, b.contents);
+  // The popup gets window.opener and its window name.
+  assert.ok(b.scripts.some((code) => code.includes(`.opener("${ID}", "etEntrListPopup")`)));
+
+  const delivered = () => a.scripts.filter((code) => code.includes('.deliver('));
+  b.say({ k: 'msg', id: ID, data: JSON.stringify({ type: 'popup', winName: 'etEntrListPopup' }), target: 'https://bo.example.com' });
+  assert.equal(delivered().length, 1);
+  assert.ok(delivered()[0].includes('"https://bo.example.com"'));
+  // targetOrigin mismatch, a subframe, or an unrelated page cannot use the link.
+  b.say({ k: 'msg', id: ID, data: '1', target: 'https://evil.example' });
+  b.say({ k: 'msg', id: ID, data: '1', target: '*' }, 2);
+  const stranger = pageOf('stranger', 'https://bo.example.com/other');
+  const c = fakeContents(12, () => stranger.info.url);
+  internals.pages.set(stranger.info.pageId, stranger);
+  internals.bindContents(stranger, c.contents);
+  c.say({ k: 'msg', id: ID, data: '1', target: '*' });
+  c.say({ k: 'close', id: ID, self: true });
+  assert.equal(delivered().length, 1);
+  // A popup cannot close its opener; its own window.close() closes the tab and returns to the opener.
+  b.say({ k: 'close', id: ID });
+  assert.ok(runtime.get(popupInfo.pageId));
+  b.say({ k: 'close', id: ID, self: true });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(runtime.get(popupInfo.pageId), null);
+  assert.equal(internals.activeByWorkflow.get('workflow-bridge'), 'opener');
+  assert.ok(a.scripts.some((code) => code.includes(`.closed("${ID}")`)));
 });
 
 test('account partition is stable per server/user without exposing account ids', () => {

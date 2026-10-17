@@ -75,6 +75,10 @@ export const CHANNELS = {
   sshDeleteServer: 'ssh:deleteServer',
   sshTestServer: 'ssh:testServer',
 
+  // 판단 모델(System One) — 서버 설정 DECISION_MODEL. 관리자만 조회·변경된다.
+  decisionModel: 'decision:model',
+  decisionSetModel: 'decision:setModel',
+
   // Teams — 사람 사이의 대화. REST 는 요청/응답, 실시간은 teamsEvent push.
   teamsRooms: 'teams:rooms',
   teamsCreateRoom: 'teams:createRoom',

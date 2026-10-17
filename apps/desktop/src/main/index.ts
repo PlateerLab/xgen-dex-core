@@ -2634,6 +2634,20 @@ ipcMain.handle(CHANNELS.sshDeleteServer, (_e, name: string) =>
 ipcMain.handle(CHANNELS.sshTestServer, (_e, name: string) =>
   getClient().ssh.testServer(name),
 );
+// 판단 모델 선택기 — 권한이 없거나 옛 서버면 null 이라 화면은 선택기를 그리지 않는다.
+ipcMain.handle(CHANNELS.decisionModel, () =>
+  getClient()
+    .decision.model()
+    .then((state) => {
+      diag('decision', 'model', { current: state.current, choices: state.choices.map((c) => c.value) });
+      return state;
+    })
+    .catch((err) => {
+      diag('decision', 'model unavailable', String(err));
+      return null;
+    }),
+);
+ipcMain.handle(CHANNELS.decisionSetModel, (_e, value: string) => getClient().decision.setModel(value));
 ipcMain.handle(
   CHANNELS.voiceTranscribe,
   (_e, bytes: Uint8Array, mime: string, language?: string) => {

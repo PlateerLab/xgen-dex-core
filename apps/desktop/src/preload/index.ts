@@ -77,6 +77,7 @@ import type { ChatFeedback } from '@dex/protocol/feedback';
 import type { ConversationModelState } from '@dex/protocol/conversation-model';
 import type { ChatInputCheck } from '@dex/protocol/chat-guardrails';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
+import type { DecisionModelState } from '@dex/protocol/decision';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
@@ -901,6 +902,12 @@ const api = {
     /** Dialled by the XGEN server (that is where the agent runs), through the jump path. */
     testServer: (name: string): Promise<SshTestResult> =>
       ipcRenderer.invoke(CHANNELS.sshTestServer, name),
+  },
+
+  /** 판단 모델(System One) — 서버 전체 설정. 관리자가 아니면 model() 이 null. */
+  decision: {
+    model: (): Promise<DecisionModelState | null> => ipcRenderer.invoke(CHANNELS.decisionModel),
+    setModel: (value: string): Promise<void> => ipcRenderer.invoke(CHANNELS.decisionSetModel, value),
   },
 
   /** Floating avatar overlay (Geny-style). Used by the main window

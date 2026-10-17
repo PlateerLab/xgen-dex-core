@@ -8,6 +8,7 @@ import {
 } from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
 import type { CurrentUser } from '@dex/protocol';
+import type { DecisionModelState } from '@dex/protocol/decision';
 import { HotkeyCapture } from './HotkeyCapture';
 import { SettingsSection } from './SettingsSection';
 import { SshSettings } from './SshSettings';
@@ -168,6 +169,12 @@ export const Settings: React.FC<{
   const [browserNewTabUrl, setBrowserNewTabUrl] = useState(config.browser?.newTabUrl ?? '');
   // 채팅 모델의 단계 계획을 XGEN 판단 모델로 실행·검증한다.
   const [fastActOn, setFastActOn] = useState(config.fastAct === true);
+  // 판단 모델은 서버 전체 설정(DECISION_MODEL) — 관리자에게만 보인다(아니면 null).
+  const [decisionModel, setDecisionModel] = useState<DecisionModelState | null>(null);
+  const [decisionModelError, setDecisionModelError] = useState('');
+  useEffect(() => {
+    if (fastActOn) void xgen.decision.model().then(setDecisionModel);
+  }, [fastActOn]);
   const savedBrowserNewTabUrl = useRef(config.browser?.newTabUrl ?? '');
   const [browserNewTabUrlError, setBrowserNewTabUrlError] = useState('');
   const [browserSearchOn, setBrowserSearchOn] = useState(
@@ -1067,6 +1074,34 @@ export const Settings: React.FC<{
                       단계로 진행하며, 확인이 실패하면 채팅 모델이 남은 계획을 수정합니다.
                       음성 요청도 인식이 끝난 뒤 같은 순서로 처리합니다.
                     </p>
+                  )}
+                  {fastActOn && decisionModel && decisionModel.choices.length > 1 && (
+                    <div className="field">
+                      <span>
+                        판단 모델
+                        <span className="small muted" style={{ marginLeft: 8 }}>
+                          서버 전체에 적용 · 관리자
+                        </span>
+                      </span>
+                      <Selector
+                        value={decisionModel.current}
+                        onChange={(value) => {
+                          const previous = decisionModel;
+                          setDecisionModel({ ...decisionModel, current: value });
+                          setDecisionModelError('');
+                          xgen.decision.setModel(value).catch(() => {
+                            setDecisionModel(previous);
+                            setDecisionModelError('판단 모델을 바꾸지 못했습니다.');
+                          });
+                        }}
+                        options={decisionModel.choices.map((choice) => ({
+                          value: choice.value,
+                          label: choice.label,
+                        }))}
+                        ariaLabel="판단 모델 선택"
+                      />
+                      {decisionModelError && <p className="settings-hint">{decisionModelError}</p>}
+                    </div>
                   )}
                   <p className="settings-hint warn">
                     페이지 내용은 신뢰하지 않는 데이터로 처리됩니다. 쿠키·스토리지, 업로드·다운로드,

@@ -190,6 +190,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
    */
   private deciding = 0;
   private last: string | null = null;
+  /** 마지막 실행의 동작 — 검색어를 넣고 바로 제출(type_submit)했는지 본다. */
+  private lastAction: ActionKind | null = null;
   /** 이번 판단 전에 닫은 팝업 — 다음 실행 기록에 붙인다. */
   private dismissed: string | null = null;
   /** 이번 지시에서 닫은 알림창 문구 — 다음 실행 기록에 붙인다. */
@@ -561,6 +563,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.snap = null; // 반영을 기다리는 사이 읽은 화면도 버린다
     const label = elementLabel(element);
     this.last = label;
+    this.lastAction = action;
     const after = opened ?? (settled.navigated ? settled.page : null);
     const title = after?.title?.trim();
     const done: VoiceAction = {
@@ -656,6 +659,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private async handleOnce(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance?: string, pressOnly = false): Promise<Outcome> {
     const t0 = now();
     const no = (reason: string, detail?: unknown): Outcome => ({ acted: false, reason, ms: now() - t0, detail });
+    // 앞 토막이 검색어를 넣고 이미 제출했다 — 꼬리말 "검색해줘" 로 검색 버튼을 또 누르지 않는다(10/18 유튜브 "검색창에
+    // xgen 입력하고 검색해줘" → Enter 제출 뒤 [Search] 를 한 번 더 눌렀다).
+    if (pressOnly && this.lastAction === 'type_submit' && SEARCH_WORD.test(text)) return no('앞 토막에서 이미 검색함');
     const post = decisionPost();
     if (!post) return no('결정 모델 없음');
     let s;

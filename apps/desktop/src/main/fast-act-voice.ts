@@ -117,6 +117,8 @@ const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
  * (검색칸은 제출해야 결과가 나온다는 화면 일반 규칙. 역할이 searchbox 이거나 이름에 검색/search 가 있는 칸).
  */
 const SEARCH_WORD = /(검색|찾아|search|find|look up)/i;
+/** 검색 버튼 이름 — 이름이 이것뿐인 버튼만(pressSearch). */
+const SEARCH_BUTTON = /^(검색|조회|찾기|search|find|go)$/i;
 /** 항목을 고르라는 말·고른 것을 풀라는 말 — 항목 안의 체크박스를 누를지(checkOf). */
 const SELECT_WORD = /(선택|체크|고르|골라|check|select)/i;
 const UNSELECT_WORD = /(해제|풀어|uncheck|deselect)/i;
@@ -465,6 +467,29 @@ export class BrowserVoiceAgent implements VoiceAgent {
   }
 
   /**
+   * 검색 말("브랜드명 삼성으로 검색해줘")로 검색칸이 아닌 칸에 넣었다 — 화면에 검색 버튼이 하나뿐이면 누른다(10/18 BO 브랜드
+   * 찾기 팝업: 넣기만 하고 [조회]를 안 눌렀다). Enter 는 폼 전체를 제출할 수 있어 쓰지 않는다. 누르면 꼬리말 "검색해줘" 가
+   * 또 누르지 않게 검색한 것으로 적어 둔다(lastAction).
+   */
+  private async pressSearch(text: string, th: Thresholds): Promise<VoiceAction | null> {
+    const s = await this.snapshot(true).catch(() => null);
+    if (!s) return null;
+    const buttons = Object.entries(s.snap.refs).filter(([, r]) => r.role === 'button' && SEARCH_BUTTON.test(squash(r.name ?? '')));
+    if (buttons.length !== 1) return null;
+    const [ref, element] = buttons[0];
+    this.beforeAct(s.page);
+    const tAct = now();
+    try {
+      await getBrowserRuntime().runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${ref}`], 10_000, s.snap.gen);
+    } catch {
+      return null;
+    }
+    const done = await this.record(text, element, 'click', null, th, 0, now() - tAct, s.page, { confidence: 1 }, s.snap.ms);
+    this.lastAction = 'type_submit';
+    return done;
+  }
+
+  /**
    * 선택 상자를 눌러 열린 목록에서 말한 값의 항목을 누른다("구매연령 성인으로 바꿔줘"). 목록이 안 열렸거나 고를 확신이
    * 낮으면(값을 말하지 않음) null — 목록은 열어 두고, 다음 지시가 항목을 고르거나 목록을 닫는다.
    */
@@ -750,14 +775,18 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     const resolved = pressOnly ? { action: 'click' as const, text: null } : resolveAction(cls, element);
     const searching = SEARCH_WORD.test(withoutLabel(text, snap.labels[pick.ref]));
-    const action = resolved.action === 'type' && searching && isSearchField(element) ? 'type_submit' : resolved.action;
+    // 입력칸을 골랐는데 누르기로 분류됐다 — 입력칸은 누를 일이 없으니 말에 넣을 글자가 있으면 넣는다(10/18 BO "안전재고
+    // 열 개로 바꿔줘" → 분류 click, 고른 칸은 안전재고수량). 넣을 글자가 없으면("검색창 눌러줘") 지금처럼 하지 않는다.
+    const clickedField = resolved.action === 'click' && !pressOnly && TEXT_FIELD.has(element.role);
+    const typing = clickedField ? 'type' : resolved.action;
+    const action: ActionKind = typing === 'type' && searching && isSearchField(element) ? 'type_submit' : typing;
     let typed = resolved.text;
     if (action !== 'click') {
       const found = await this.typedText(post, text, origin, scr, utterance, snap.labels[pick.ref] || element.name);
       typed = found && withoutLeadingLabel(found, snap.labels[pick.ref]);
+      if (!typed && clickedField) return no('입력칸 클릭은 하지 않음', pick.top);
       if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);
     }
-    if (action === 'click' && TEXT_FIELD.has(element.role)) return no('입력칸 클릭은 하지 않음', pick.top);
     if (action !== 'click' && th.partial && typed) {
       const lastWord = typed.split(' ').pop() ?? typed;
       const after = text.slice(text.lastIndexOf(lastWord) + lastWord.length);
@@ -771,7 +800,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const said = withoutLabel(text, snap.labels[pick.ref]);
     const check = action === 'click' ? snap.checks[snap.items[pick.ref] ?? pick.ref] : undefined;
     const toggles = !!check && (UNSELECT_WORD.test(said) ? check.checked : !check.checked && SELECT_WORD.test(said));
-    const acted = toggles && check ? { role: snap.refs[check.ref]?.role ?? 'checkbox', name: element.name } : element;
+    // 셀을 골라 항목의 고르는 상자를 누르면 답에는 항목 이름을 쓴다("사용" 셀 → "1 11371 삼성전자 사용" 행).
+    const itemName = snap.refs[snap.items[pick.ref] ?? pick.ref]?.name || element.name;
+    const acted = toggles && check ? { role: snap.refs[check.ref]?.role ?? 'checkbox', name: itemName } : element;
     const label = elementLabel(acted);
     if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {
       return no(GUARDED, pick.top);
@@ -839,6 +870,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th, currentValue(element.name ?? '', snap.labels[pick.ref])) : null;
     // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.
     const typedAfter = !chosen && action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    // 검색하라는 입력인데 칸이 검색칸이 아니라 제출하지 않았다 — 검색 버튼이 하나뿐이면 누른다.
+    if (done === 'type' && searching) await this.pressSearch(text, th);
     const after = chosen ?? typedAfter;
     return {
       acted: true,

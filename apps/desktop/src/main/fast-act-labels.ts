@@ -66,13 +66,18 @@ export const FIELD_LABEL_SCRIPT = `(() => {
     r.selectNodeContents(t);
     return r.getBoundingClientRect();
   };
-  // 칸 이름은 같은 줄 왼쪽이나 같은 열 바로 위에 있다 — 앞 형제라도 자리가 안 맞으면 남의 칸 이름이다.
+  // 칸 이름은 같은 줄 왼쪽이나 같은 열 바로 위에 있다 — 앞 형제라도 자리가 안 맞으면 남의 칸 이름이다. 위의 칸 이름은
+  // 칸 왼쪽 끝 가까이에서 시작한다(BO 24~34px) — 칸 위 오른쪽 끝의 광고 글(네이버 검색 결과 "현재 PC에 최적화된
+  // 브라우저", 326px)은 아니다.
   const place = (lr, fr) => {
     if (!lr.width || !lr.height) return null;
     if (lr.right <= fr.left + 4 && lr.bottom > fr.top - 4 && lr.top < fr.bottom + 4 && fr.left - lr.right < 400) return 'left';
-    if (lr.bottom <= fr.top + 4 && lr.right > fr.left && lr.left < fr.right && fr.top - lr.bottom < 80) return 'above';
+    if (lr.bottom <= fr.top + 4 && lr.right > fr.left && lr.left < fr.left + 80 && fr.top - lr.bottom < 80) return 'above';
     return null;
   };
+  // 링크·버튼·메뉴의 글자는 칸 이름이 아니다 — 머리글의 로고 옆 글자·메뉴·광고 띠가 같은 줄 왼쪽에 있어 검색칸에
+  // 붙었다(유튜브 "KR", 네이버 검색 결과 "웨일을 설치하세요", ant.design "Resources").
+  const INTERACTIVE = 'a[href],button,[role=button],[role=link],[role=menuitem],[role=tab],[role=option]';
   // 앞 형제 안의 글자 조각을 뒤에서부터 본다 — 자리가 맞는 첫 조각의 글.
   const textIn = (sib, fr, aboveOnly) => {
     const texts = [];
@@ -83,7 +88,7 @@ export const FIELD_LABEL_SCRIPT = `(() => {
     }
     for (const t of texts.reverse()) {
       const text = clean(t.textContent || '');
-      if (!text) continue;
+      if (!text || t.parentElement?.closest(INTERACTIVE)) continue;
       const where = place(rectOf(t), fr);
       if (where && (!aboveOnly || where === 'above')) return text;
     }

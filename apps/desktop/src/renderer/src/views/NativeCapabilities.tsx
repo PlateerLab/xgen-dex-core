@@ -76,6 +76,7 @@ export const NativeCapabilities: React.FC<{ origin: string; userId: string; sess
     {pending && <div className="native-capabilities__confirmation" role="region" aria-label="이 PC의 작업 실행 확인">
       <h4>{view.connection?.state === 'executing' ? '이 PC에서 실행 중' : '이 PC에서 실행할 작업을 확인하세요'}</h4>
       <p><strong>{pending.tool}</strong> · {pending.server}</p>
+      <p>Agent 세션 {pending.agentSessionId.slice(0, 8)}</p>
       <pre aria-label="실행 인자">{JSON.stringify(pending.args, null, 2)}</pre>
       <p role="status">{expired ? '확인 시간이 만료되었습니다.' : `남은 확인 시간 ${Math.max(0, Math.ceil(pending.expiresAt - Date.now() / 1000))}초`}</p>
       {view.connection?.state === 'confirmation_required' && <div className="native-capabilities__toolbar">

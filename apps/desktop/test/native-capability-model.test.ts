@@ -68,7 +68,8 @@ test('confirmation defaults to no acknowledgement and consumes the visible reque
   const { model, calls, emit } = fixture();
   const notice = { type: 'update' as const, value: { ...envelope, view: 'capabilities' as const,
     snapshot: { state: 'confirmation_required' as const, confirmation: { requestId: version,
-      server: 'local', tool: 'Shell', args: { command: 'echo fixture' }, expiresAt: expires, argsSha256: 'd'.repeat(64) } } } };
+      agentSessionId: session, server: 'local', tool: 'Shell', args: { command: 'echo fixture' },
+      expiresAt: expires, argsSha256: 'd'.repeat(64) } } } };
   emit(notice); assert.equal(calls.length, 0);
   await Promise.all([model.confirm(true), model.confirm(true)]);
   assert.deepEqual(calls.filter((c) => c.method === 'confirm-capability').map((c) => c.params), [{ request_id: version, confirmed: true }]);
@@ -80,7 +81,8 @@ test('confirmation defaults to no acknowledgement and consumes the visible reque
 test('expired confirmation is sent as rejection and account reset clears all pending UI state', async () => {
   const { model, calls, emit } = fixture();
   emit({ type: 'update', value: { ...envelope, view: 'capabilities', snapshot: { state: 'confirmation_required',
-    confirmation: { requestId: version, server: 'local', tool: 'Shell', args: {}, expiresAt: 1, argsSha256: 'd'.repeat(64) } } } });
+    confirmation: { requestId: version, agentSessionId: session, server: 'local', tool: 'Shell', args: {},
+      expiresAt: 1, argsSha256: 'd'.repeat(64) } } } });
   await model.confirm(true);
   assert.equal(calls.find((c) => c.method === 'confirm-capability')?.params.confirmed, false);
   await model.refresh(); emit({ type: 'cleared' });

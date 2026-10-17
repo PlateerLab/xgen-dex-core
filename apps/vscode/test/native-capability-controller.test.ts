@@ -12,6 +12,7 @@ const envelope = {
 };
 const confirmation = {
   requestId: '018f1240-0000-7000-8000-000000000001',
+  agentSessionId: '018f1240-0000-7000-8000-000000000002',
   server: 'local',
   tool: 'ReadFile',
   args: { path: 'README.md' },

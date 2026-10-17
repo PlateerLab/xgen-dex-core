@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { NativeSessionSummary } from '@dex/rpc';
 import type { DesktopNativeSessionModel } from '../native-session-model';
 import { observedDesktopAgentSession, type DesktopNativeSessionBinding } from '../native-session-binding';
+import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
 
 const sessionStates: Record<string, string> = {
   signed_out: '로그아웃됨',
@@ -42,6 +43,7 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
   const [workflowId, setWorkflowId] = useState('');
   const [title, setTitle] = useState('');
   const [selectedSession, setSelectedSession] = useState('');
+  const [foldersOpen, setFoldersOpen] = useState(false);
   const initializedModel = useRef<DesktopNativeSessionModel | null>(null);
   const currentBinding = useRef(binding);
   currentBinding.current = binding;
@@ -51,6 +53,11 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
     && summary.user_id === view.result?.user_id;
   const observedSession = observedDesktopAgentSession(view);
   const activeSessionId = observedSession === undefined ? null : observedSession;
+  const chatFolders = useChatFolders(activeSessionId ?? '');
+  const otherFolderCount = chatFolders.others.reduce((count, other) => count + other.folders.length, 0);
+  const folderCount = chatFolders.elsewhere
+    ? (chatFolders.remote?.state?.folders.length ?? 0)
+    : chatFolders.folders.length + otherFolderCount;
   const conversationSessionId = view.conversation?.snapshot?.id ?? null;
   const authoritativeConversation = ready
     && activeSessionId !== null
@@ -93,6 +100,8 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
         : '',
     );
   }, [view.catalog.focus?.active_agent_session_id, view.catalog.items]);
+
+  useEffect(() => { setFoldersOpen(false); }, [activeSessionId, ready]);
 
   useEffect(() => {
     const model = binding.model;
@@ -185,6 +194,8 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
   ].filter(Boolean);
 
   return <section className="canonical-chat" aria-labelledby="canonical-chat-heading">
+    {foldersOpen && ready && activeSessionId
+      && <FolderConnectModal state={chatFolders} onClose={() => setFoldersOpen(false)} />}
     <header className="canonical-chat__header">
       <div>
         <h2 id="canonical-chat-heading">공유 Agent 대화</h2>
@@ -296,6 +307,13 @@ export const CanonicalChat: React.FC<CanonicalChatProps> = ({ binding, onOpenSet
     </details>
 
     <div className="canonical-chat__toolbar">
+      {ready && activeSessionId && <FolderConnectButton
+        count={folderCount}
+        otherCount={otherFolderCount}
+        elsewhereName={chatFolders.elsewhere ? chatFolders.remote?.state?.device?.name : undefined}
+        remoteNow={chatFolders.remoteNow}
+        onClick={() => setFoldersOpen(true)}
+      />}
       <button
         id="canonical-chat-read"
         type="button"

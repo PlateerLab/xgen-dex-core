@@ -20,6 +20,7 @@ export interface NativeCapabilityTool {
 
 export interface NativeCapabilityConfirmation {
   requestId: string;
+  agentSessionId: string;
   server: string;
   tool: string;
   args: Readonly<Record<string, unknown>>;
@@ -34,9 +35,14 @@ export interface NativeCapabilitySnapshot {
   confirmation: NativeCapabilityConfirmation | null;
 }
 
+export interface NativeCapabilityCallContext {
+  agentSessionId: string;
+}
+
 export interface NativeCapabilityOptions {
   tools: readonly NativeCapabilityTool[];
-  call(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown>;
+  call(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal,
+    context: NativeCapabilityCallContext): Promise<unknown>;
   onChange(snapshot: NativeCapabilitySnapshot): void;
 }
 
@@ -70,6 +76,7 @@ interface Pending {
   readonly connectionId: string;
   readonly epoch: string;
   readonly nonce: string;
+  readonly agentSessionId: string;
   confirmed: boolean;
   confirmationSent: boolean;
   dispatched: boolean;
@@ -477,11 +484,12 @@ class CapabilityBridge implements NativeCapabilityController {
 
   private receiveConfirmation(frame: Record<string, unknown>): void {
     exact(frame, ['type', 'request_id', 'operation', 'args', 'args_canonical', 'expires_at', 'connection_id', 'epoch',
-      'capability_id', 'args_sha256', 'confirmation_nonce']);
+      'capability_id', 'args_sha256', 'confirmation_nonce', 'agent_session_id']);
     if (this.pending || typeof frame.request_id !== 'string' || !UUID.test(frame.request_id) || this.used.has(frame.request_id)
       || frame.operation !== 'mcp.call' || frame.connection_id !== this.connectionId || frame.epoch !== this.epoch
       || typeof frame.capability_id !== 'string' || typeof frame.args_sha256 !== 'string' || !HEX64.test(frame.args_sha256)
       || typeof frame.confirmation_nonce !== 'string' || !NONCE.test(frame.confirmation_nonce)
+      || typeof frame.agent_session_id !== 'string' || !UUID.test(frame.agent_session_id)
       || typeof frame.expires_at !== 'number' || !Number.isFinite(frame.expires_at)) invalid();
     const descriptor = this.descriptors.get(frame.capability_id); if (!descriptor) invalid();
     const args = cloneJson(frame.args) as Readonly<Record<string, unknown>>; plain(args);
@@ -492,11 +500,13 @@ class CapabilityBridge implements NativeCapabilityController {
       || !schemaMatches(args, descriptor.inputSchema)
       || createHash('sha256').update(argsCanonical).digest('hex') !== frame.args_sha256
       || frame.expires_at > this.socketExpiresAt || frame.expires_at <= Date.now() / 1000) invalid();
-    const view = frozenConfirmation({ requestId: frame.request_id, server: descriptor.server, tool: descriptor.name,
+    const view = frozenConfirmation({ requestId: frame.request_id, agentSessionId: frame.agent_session_id,
+      server: descriptor.server, tool: descriptor.name,
       args, expiresAt: frame.expires_at, argsSha256: frame.args_sha256 });
     this.pending = { public: view, requestId: frame.request_id, operation: 'mcp.call', args,
       argsCanonical, capabilityId: descriptor.capabilityId, connectionId: this.connectionId,
-      epoch: this.epoch, nonce: frame.confirmation_nonce, confirmed: false, confirmationSent: false,
+      epoch: this.epoch, nonce: frame.confirmation_nonce, agentSessionId: frame.agent_session_id,
+      confirmed: false, confirmationSent: false,
       dispatched: false, abort: null, expiryTimer: null, callTimer: null };
     this.pending.expiryTimer = setTimeout(() => { if (this.pending?.requestId === frame.request_id) void this.fail(); },
       Math.max(0, Math.floor((frame.expires_at - Date.now() / 1000) * 1000)));
@@ -508,13 +518,14 @@ class CapabilityBridge implements NativeCapabilityController {
 
   private async receiveCall(frame: Record<string, unknown>): Promise<void> {
     exact(frame, ['type', 'request_id', 'server', 'tool', 'operation', 'args', 'args_canonical', 'deadline_ms', 'connection_id', 'epoch',
-      'capability_id', 'args_sha256', 'confirmation_nonce']);
+      'capability_id', 'args_sha256', 'confirmation_nonce', 'agent_session_id']);
     const pending = this.pending;
     if (!pending || !pending.confirmed || !pending.confirmationSent || pending.dispatched || frame.request_id !== pending.requestId
       || frame.server !== pending.public.server || frame.tool !== pending.public.tool || frame.operation !== pending.operation
       || frame.connection_id !== pending.connectionId || frame.epoch !== pending.epoch
       || frame.capability_id !== pending.capabilityId || frame.args_sha256 !== pending.public.argsSha256
-      || frame.confirmation_nonce !== pending.nonce || !Number.isSafeInteger(frame.deadline_ms) || (frame.deadline_ms as number) < 0) invalid();
+      || frame.confirmation_nonce !== pending.nonce || frame.agent_session_id !== pending.agentSessionId
+      || !Number.isSafeInteger(frame.deadline_ms) || (frame.deadline_ms as number) < 0) invalid();
     const args = cloneJson(frame.args) as Readonly<Record<string, unknown>>;
     if (frame.args_canonical !== pending.argsCanonical || !equalJson(parseClosedJson(pending.argsCanonical), args)) invalid();
     pending.dispatched = true;
@@ -528,7 +539,8 @@ class CapabilityBridge implements NativeCapabilityController {
     pending.callTimer.unref();
     let result: Readonly<Record<string, unknown>>;
     try {
-      const value = await this.options.call(pending.public.server, pending.public.tool, pending.args, control.signal);
+      const value = await this.options.call(pending.public.server, pending.public.tool, pending.args, control.signal,
+        Object.freeze({ agentSessionId: pending.agentSessionId }));
       if (control.signal.aborted || this.pending !== pending) return;
       await this.guard.assertCurrent(); this.assertPendingLive(pending);
       const safe = cloneJson(value);

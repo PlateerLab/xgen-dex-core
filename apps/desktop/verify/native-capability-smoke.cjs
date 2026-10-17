@@ -61,7 +61,8 @@ app.whenReady().then(async () => {
     await click('.native-capabilities__approvals button'); await until(`document.body.textContent.includes('다음 턴에 연결했습니다')`);
     assert.equal(calls.filter((c) => c.method === 'adopt-capability-approval').length, 1);
     await click('#capability-connect'); await until(`document.body.textContent.includes('작업 요청 대기')`);
-    const pending = { state: 'confirmation_required', confirmation: { requestId: version, server: 'local', tool: 'Shell',
+    const pending = { state: 'confirmation_required', confirmation: { requestId: version, agentSessionId: session,
+      server: 'local', tool: 'Shell',
       args: { command: 'echo "확인한 작업만 실행"', data: '<script>window.injected=true</script>' }, expiresAt: expires, argsSha256: 'd'.repeat(64) } };
     notice(pending, '8'); await new Promise((r) => setTimeout(r, 50));
     assert.equal(await win.webContents.executeJavaScript(`!!document.querySelector('#capability-allow')`), false);

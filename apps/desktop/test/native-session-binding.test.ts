@@ -98,3 +98,22 @@ test('Canonical chat visibly blocks an unready attachment and exposes its upload
   const submit = html.match(/<button id="canonical-chat-submit"[^>]*>/)?.[0];
   assert.ok(submit); assert.equal(submit.includes('disabled'), true);
 });
+
+test('Canonical chat exposes the existing folder picker only for the server-observed active session', () => {
+  const active = canonicalAttachmentBinding('ready');
+  const html = renderToStaticMarkup(createElement(CanonicalChat, { binding: active, onOpenSettings: () => {} }));
+  assert.match(html, /aria-haspopup="dialog"/);
+  assert.match(html, /이 대화에서 작업할 이 PC의 폴더를 연결합니다/);
+
+  const inactive = canonicalAttachmentBinding('ready');
+  inactive.view.conversation = { snapshot: null, messages: [], omittedMessages: 0 };
+  const inactiveHtml = renderToStaticMarkup(createElement(CanonicalChat,
+    { binding: inactive, onOpenSettings: () => {} }));
+  assert.doesNotMatch(inactiveHtml, /aria-haspopup="dialog"/);
+
+  const signedOut = canonicalAttachmentBinding('ready');
+  (signedOut.view.result!.result as any).state = 'signed_out';
+  const signedOutHtml = renderToStaticMarkup(createElement(CanonicalChat,
+    { binding: signedOut, onOpenSettings: () => {} }));
+  assert.doesNotMatch(signedOutHtml, /aria-haspopup="dialog"/);
+});

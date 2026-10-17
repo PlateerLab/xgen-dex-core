@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DexError, MemoryConfigStore, defaultConfig, type NativeCapabilitySnapshot } from '@dex/engine';
+import { DexError, MemoryConfigStore, defaultConfig, type NativeCapabilityOptions,
+  type NativeCapabilitySnapshot } from '@dex/engine';
 import { parseArgs } from '../src/args';
 import { capabilityArgumentText } from '../src/native-capability-command';
 import { runSessionCommand } from '../src/session-command';
@@ -113,6 +114,30 @@ test('headless connect is rejected before opening a capability socket', async ()
   assert.equal(connects, 0);
 });
 
+test('interactive capability dispatch preserves the server-attested agent session context', async () => {
+  let received: unknown;
+  let current: NativeCapabilitySnapshot = { state: 'ready', confirmation: null };
+  const controller = { snapshot: () => current, confirm: async () => {}, close: async () => {} };
+  await runSessionCommand(parseArgs(['session', 'connect-capabilities', '--profile', 'corp', '--user-id', '7']), configs(), {
+    isTTY: () => true,
+    capabilityTools: {
+      catalog: () => [{ name: 'ReadFile', inputSchema: { type: 'object' } }],
+      call: async (_tool, _args, _signal, context) => { received = context; return { content: [] }; },
+    },
+    capabilitySessionFactory: () => session({
+      async connectCapabilities(_userId: string, options: NativeCapabilityOptions) {
+        await options.call('local', 'ReadFile', { path: 'README.md' }, new AbortController().signal,
+          { agentSessionId: SESSION });
+        current = { state: 'closed', confirmation: null };
+        options.onChange(current);
+        return controller;
+      },
+    }),
+    write: () => undefined,
+  });
+  assert.deepEqual(received, { agentSessionId: SESSION });
+});
+
 test('dismissed confirmation is denied exactly once and pre-return ready is buffered', async () => {
   const confirmations: Array<{ id: string; allowed: boolean }> = [];
   let current: NativeCapabilitySnapshot = { state: 'ready', confirmation: null };
@@ -137,7 +162,8 @@ test('dismissed confirmation is denied exactly once and pre-return ready is buff
         change = options.onChange;
         change(current);
         queueMicrotask(() => {
-          current = { state: 'confirmation_required', confirmation: { requestId: 'request_1', server: 'local', tool: 'ReadFile',
+          current = { state: 'confirmation_required', confirmation: { requestId: 'request_1', agentSessionId: SESSION,
+            server: 'local', tool: 'ReadFile',
             args: { path: '/tmp/file' }, expiresAt: Math.floor(Date.now() / 1000) + 60, argsSha256: 'b'.repeat(64) } };
           change?.(current);
           change?.(current);
@@ -162,7 +188,8 @@ test('approval that arrives after expiry is never confirmed and closes the conne
     async confirm() { confirms++; },
     async close() { current = { state: 'closed', confirmation: null }; change?.(current); },
   };
-  current = { state: 'confirmation_required', confirmation: { requestId: 'request_late', server: 'local', tool: 'ReadFile',
+  current = { state: 'confirmation_required', confirmation: { requestId: 'request_late', agentSessionId: SESSION,
+    server: 'local', tool: 'ReadFile',
     args: {}, expiresAt: Math.floor(base / 1000) + 30, argsSha256: 'c'.repeat(64) } };
   await runSessionCommand(parseArgs(['session', 'connect-capabilities', '--profile', 'corp', '--user-id', '7']), configs(), {
     isTTY: () => true,
@@ -192,7 +219,8 @@ test('over-bound arguments are denied without offering the approval callback', a
     },
     async close() {},
   };
-  current = { state: 'confirmation_required', confirmation: { requestId: 'request_large', server: 'local', tool: 'ReadFile',
+  current = { state: 'confirmation_required', confirmation: { requestId: 'request_large', agentSessionId: SESSION,
+    server: 'local', tool: 'ReadFile',
     args: { value: 'x'.repeat(20_000) }, expiresAt: Math.floor(Date.now() / 1000) + 60, argsSha256: 'd'.repeat(64) } };
   await runSessionCommand(parseArgs(['session', 'connect-capabilities', '--profile', 'corp', '--user-id', '7']), configs(), {
     isTTY: () => true,
@@ -213,7 +241,7 @@ test('connection failure aborts an open prompt and drains without a confirmation
   let promptAborted = false;
   let confirms = 0;
   let current: NativeCapabilitySnapshot = { state: 'confirmation_required', confirmation: {
-    requestId: 'request_rotated', server: 'local', tool: 'ReadFile', args: {},
+    requestId: 'request_rotated', agentSessionId: SESSION, server: 'local', tool: 'ReadFile', args: {},
     expiresAt: Math.floor(Date.now() / 1000) + 60, argsSha256: 'e'.repeat(64),
   } };
   let change: ((snapshot: NativeCapabilitySnapshot) => void) | undefined;

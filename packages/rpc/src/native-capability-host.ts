@@ -7,6 +7,7 @@ import {
   type ConfigStore,
   type NativeAgentSocketTransport,
   type NativeCapabilityController,
+  type NativeCapabilityCallContext,
   type NativeCapabilitySnapshot,
   type NativeCapabilityTool,
   type NativeDeviceKeyStore,
@@ -15,7 +16,8 @@ import type { NativeCapabilityNotification, NativeRpcResult } from './wire';
 
 export interface TrustedNativeCapabilityTools {
   tools: readonly NativeCapabilityTool[] | (() => readonly NativeCapabilityTool[]);
-  call(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown>;
+  call(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal,
+    context: NativeCapabilityCallContext): Promise<unknown>;
 }
 
 export interface NativeCapabilityHostOptions {
@@ -192,10 +194,11 @@ export class NativeCapabilityRpcHost {
       if (!schema || schema.type !== 'object') return [];
       return [{ server: LOCAL_SERVER, name: tool.name, ...(tool.description ? { description: Array.from(tool.description).slice(0, 1200).join('') } : {}), inputSchema: schema }];
     });
-    return { tools, call: async (server, tool, args, signal) => {
+    return { tools, call: async (server, tool, args, signal, context) => {
       if (server !== LOCAL_SERVER) throw new DexError('usage_error', '광고하지 않은 capability 서버입니다.');
       signal.throwIfAborted();
-      return provider.callTool(tool, args, { signal });
+      return provider.callTool(tool, args, { interactionId: context.agentSessionId, remote: true,
+        originName: 'XGEN Agent Session', signal });
     } };
   }
 

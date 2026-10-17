@@ -36,6 +36,7 @@ import {
   itemOf,
   labelClickables,
   labelFields,
+  locativeAfterLabel,
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
@@ -416,10 +417,17 @@ export class BrowserVoiceAgent implements VoiceAgent {
   }
 
   /** 넣을 글자 — 따옴표 문구, 아니면 발화 전체를 문맥으로 단어마다 묻는다(남은 조각만 주면 앞말에 걸친 글자를 놓친다). */
-  private async typedText(post: NonNullable<ReturnType<typeof decisionPost>>, text: string, origin: string, scr: Screen13 | null, utterance?: string): Promise<string | null> {
+  private async typedText(
+    post: NonNullable<ReturnType<typeof decisionPost>>,
+    text: string,
+    origin: string,
+    scr: Screen13 | null,
+    utterance?: string,
+    label?: string,
+  ): Promise<string | null> {
     const quoted = quotedText(text);
     if (quoted) return quoted;
-    const whole = utterance && norm(utterance).endsWith(norm(text)) ? norm(utterance) : norm(text);
+    const whole = locativeAfterLabel(utterance && norm(utterance).endsWith(norm(text)) ? norm(utterance) : norm(text), label);
     const offset = whole.split(' ').length - norm(text).split(' ').length;
     const wa = await post({ state: decisionState(whole, origin, scr), questions: textWordQuestions(whole) });
     // 인식기가 붙인 끝 문장부호("원피스.")는 넣을 글자가 아니다.
@@ -513,7 +521,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const pick = await pickElement(post, text, origin, typable, scr);
     if (!pick || pick.confidence < th.pick) return null;
     const element = s.snap.refs[pick.ref];
-    const found = await this.typedText(post, text, origin, scr, utterance);
+    const found = await this.typedText(post, text, origin, scr, utterance, s.snap.labels[pick.ref] || element.name);
     const typed = found && withoutLeadingLabel(found, s.snap.labels[pick.ref]);
     if (!typed) return null;
     const action: ActionKind = SEARCH_WORD.test(withoutLabel(text, s.snap.labels[pick.ref])) && isSearchField(element) ? 'type_submit' : 'type';
@@ -739,7 +747,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const action = resolved.action === 'type' && searching && isSearchField(element) ? 'type_submit' : resolved.action;
     let typed = resolved.text;
     if (action !== 'click') {
-      const found = await this.typedText(post, text, origin, scr, utterance);
+      const found = await this.typedText(post, text, origin, scr, utterance, snap.labels[pick.ref] || element.name);
       typed = found && withoutLeadingLabel(found, snap.labels[pick.ref]);
       if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);
     }

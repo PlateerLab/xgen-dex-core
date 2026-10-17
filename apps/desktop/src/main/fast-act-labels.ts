@@ -311,6 +311,17 @@ export function withoutLabel(text: string, label?: string): string {
 }
 
 /**
+ * 칸 이름 바로 뒤의 조사 '의' 를 '에' 로 — '의' 는 [에] 로 소리 나 받아쓰기가 "상품상세 내용에" 를 "상품 상세 내용의" 로
+ * 적는다. 그러면 결정 모델은 칸 이름부터 넣을 글자까지를 한 명사구로 읽어 끝 어절을 뺐다(10/16 BO 상품상세: "…테스트
+ * 상품입니다" → "…테스트", '에' 로는 0.96). 칸 이름은 띄어쓰기를 보지 않고 찾는다.
+ */
+export function locativeAfterLabel(text: string, label?: string): string {
+  const chars = [...(label ?? '').replace(/[^\p{L}\p{N}]/gu, '')];
+  if (chars.length < 2) return text;
+  return text.replace(new RegExp(`(${chars.join('\\s*')})의(?=\\s)`, 'u'), '$1에');
+}
+
+/**
  * 넣을 글자 앞에 붙은 칸 이름을 뗀다 — "원산지에 대한민국 넣어줘." 에 판단 모델이 넣을 글자를 "원산지에 대한민국"
  * 으로 답했다(10/16 BO). 붙인 칸 이름(또는 그 첫 단어)에 조사가 이어지고 뒤에 글자가 남을 때만.
  */

@@ -6,6 +6,7 @@ import {
   itemOf,
   labelClickables,
   labelFields,
+  locativeAfterLabel,
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
@@ -251,4 +252,16 @@ test('표 행과 그 행의 셀은 같은 항목 번호로 — 셀 안의 고르
     e18: 'e18',
   });
   assert.deepEqual(checkOf(snapshot), { e22: { ref: 'e135', checked: false }, e17: { ref: 'e44', checked: false } });
+});
+
+test("칸 이름 바로 뒤의 '의' 는 '에' 로 — 띄어쓰기는 보지 않고, 칸 이름이 아니면 그대로", () => {
+  assert.equal(
+    locativeAfterLabel('상품 상세 내용의 삼성 노트북 테스트 상품입니다. 입력해줘', '상품상세 내용'),
+    '상품 상세 내용에 삼성 노트북 테스트 상품입니다. 입력해줘',
+  );
+  assert.equal(locativeAfterLabel('재고수량 *의 100 넣어줘', '재고수량 *'), '재고수량 *의 100 넣어줘');
+  assert.equal(locativeAfterLabel('재고수량의 100 넣어줘', '재고수량 *'), '재고수량에 100 넣어줘');
+  assert.equal(locativeAfterLabel('삼성의 노트북 입력해줘', '상품명'), '삼성의 노트북 입력해줘');
+  assert.equal(locativeAfterLabel('상품명의미 입력해줘', '상품명'), '상품명의미 입력해줘');
+  assert.equal(locativeAfterLabel('상품명의 삼성 입력해줘', undefined), '상품명의 삼성 입력해줘');
 });

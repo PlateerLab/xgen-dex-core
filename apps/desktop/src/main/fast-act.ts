@@ -230,6 +230,16 @@ export function textWordQuestions(instruction: string): Record<string, ChoiceQue
   return qs;
 }
 
+/**
+ * 단위 말이면 조사 뗀 꼴 — 아니면 null. 두 글자 어절의 한 글자 조사("개로", "원에")는 stripParticle 이 떼지 않는다
+ * ("도로"·"통로" 를 지키려고) — 단위 말에 붙은 것만 여기서 뗀다(10/18 BO "안전재고 열 개로 바꿔줘" 를 "… 개로" 로 넣었다).
+ */
+function unitStem(word: string): string | null {
+  const t = stripParticle(word, TYPED_PARTICLES);
+  if (isUnitWord(t)) return t;
+  return TYPED_PARTICLES.includes(word.slice(-1)) && isUnitWord(word.slice(0, -1)) ? word.slice(0, -1) : null;
+}
+
 /** from 앞 단어는 이미 처리한 앞 명령이다 — 구간에 넣지 않는다. */
 export function textFromWordAnswers(instruction: string, answers: Record<string, ChoiceAnswer>, from = 0): string | null {
   const ws = instruction.split(/\s+/).filter(Boolean);
@@ -250,14 +260,13 @@ export function textFromWordAnswers(instruction: string, answers: Record<string,
   while (s > 0 && plainNumber(stripParticle([ws[s - 1], ...ws.slice(s, e)].join(' '), TYPED_PARTICLES)) !== null) s--;
   // 단위가 오른쪽에 남기도 했다("안전재고 수량 열 개" 에서 "열" 만 — '개' 0.49). 뒤 어절이 단위 말이고 합쳐 수 말이
   // 되면 넓힌다(단위 말일 때만 — "15 해줘" 의 '해줘' 는 넓히지 않는다).
-  while (
-    e < ws.length &&
-    isUnitWord(stripParticle(ws[e], TYPED_PARTICLES)) &&
-    plainNumber(stripParticle(ws.slice(s, e + 1).join(' '), TYPED_PARTICLES)) !== null
-  )
-    e++;
+  const unitAt = (i: number): string | null => {
+    const unit = i > 0 ? unitStem(ws[i]) : null;
+    return unit && plainNumber(`${ws[i - 1]} ${unit}`) !== null ? unit : null;
+  };
+  while (e < ws.length && unitAt(e) && plainNumber([...ws.slice(s, e), unitAt(e)].join(' ')) !== null) e++;
   const span = ws.slice(s, e);
-  span[span.length - 1] = stripParticle(span[span.length - 1], TYPED_PARTICLES);
+  span[span.length - 1] = (e - 1 > s && unitAt(e - 1)) || stripParticle(span[span.length - 1], TYPED_PARTICLES);
   return span.join(' ') || null;
 }
 

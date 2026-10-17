@@ -332,7 +332,13 @@ export function locativeAfterLabel(text: string, label?: string): string {
  */
 export function withoutLeadingLabel(typed: string, label?: string): string {
   if (!label) return typed;
-  for (const head of new Set([label, label.split(' ')[0]])) {
+  // 칸 이름을 줄여 말한 것도 칸 이름이다 — 칸 "안전재고수량" 에 "안전재고 열 개"(10/18 BO). 띄어쓰기 없이 비교해 칸 이름의
+  // 절반 넘게 덮는 앞부분만.
+  const bare = label.replace(/\s+/g, '');
+  let n = 0;
+  while (n < bare.length && typed[n] === bare[n]) n++;
+  const part = n >= 2 && n * 2 >= bare.length ? bare.slice(0, n) : label;
+  for (const head of new Set([label, label.split(' ')[0], part])) {
     if (!typed.startsWith(head)) continue;
     const rest = typed
       .slice(head.length)

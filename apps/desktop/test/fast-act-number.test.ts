@@ -77,4 +77,10 @@ test('넣을 글자는 수 말과 그 단위를 함께 — 단위만 골랐어�
   assert.equal(textFromWordAnswers('안전재고 수량 열 개 입력해줘', wordAnswers([0, 0, 0.53, 0.49, 0])), '열 개');
   assert.equal(textFromWordAnswers('정상가 2만 원으로 해줘', wordAnswers([0, 0.97, 0.3, 0])), '2만 원');
   assert.equal(textFromWordAnswers('정상가 15 해줘', wordAnswers([0, 0.97, 0])), '15');
+  assert.equal(textFromWordAnswers('안전재고 열 개로 바꿔줘', wordAnswers([0, 0.9, 0.9, 0])), '열 개');
+  assert.equal(textFromWordAnswers('안전재고 열 개로 바꿔줘', wordAnswers([0, 0.9, 0.3, 0])), '열 개');
+  assert.equal(textFromWordAnswers('재고 백 개로 해줘', wordAnswers([0, 0.97, 0, 0])), '백 개');
+  assert.equal(textFromWordAnswers('도로 입력해줘', wordAnswers([0.97, 0])), '도로');
+  assert.equal(textFromWordAnswers('통로 입력해줘', wordAnswers([0.97, 0])), '통로');
+  assert.equal(textFromWordAnswers('지하 통로 입력해줘', wordAnswers([0.97, 0.97, 0])), '지하 통로');
 });

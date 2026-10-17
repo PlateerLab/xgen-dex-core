@@ -119,6 +119,10 @@ test('넣을 글자 앞의 칸 이름(조사 포함)을 뗀다 — 남는 글자
   assert.equal(withoutLeadingLabel('원산지', '원산지'), '원산지');
   assert.equal(withoutLeadingLabel('원산지표시 없음', '원산지'), '원산지표시 없음');
   assert.equal(withoutLeadingLabel('원산지에 대한민국', undefined), '원산지에 대한민국');
+  assert.equal(withoutLeadingLabel('안전재고 열 개', '안전재고수량'), '열 개');
+  assert.equal(withoutLeadingLabel('안전재고를 열 개', '안전재고 수량'), '열 개');
+  assert.equal(withoutLeadingLabel('삼성 갤럭시북', '삼성전자 모델명'), '삼성 갤럭시북');
+  assert.equal(withoutLeadingLabel('안전 장치', '안전재고수량'), '안전 장치');
 });
 
 // 관리자 폼의 찾기 칸 — 제목 아래 역할 없는 누름 상자(빈 칸 / 고른 값이 든 칸)와 칸이 아닌 것들.

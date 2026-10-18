@@ -80,7 +80,7 @@ export function chromeActions(
   return out;
 }
 
-/** 브라우저 자체 조작을 화면 요소 모양으로. */
+/** 브라우저 자체 조작을 화면 요소 모양으로 — 판단기가 페이지 요소 앞에 붙인다(fast-act-voice). */
 export function chromeRefs(chrome: Record<string, ChromeAction>): ElementRefs {
   return Object.fromEntries(Object.entries(chrome).map(([k, a]) => [k, { role: a.role, name: a.name }])) as ElementRefs;
 }
@@ -93,15 +93,4 @@ export function chromeRefs(chrome: Record<string, ChromeAction>): ElementRefs {
 export function chromeAllowed(action: ChromeAction, text: string, wantsType: boolean): boolean {
   if (action.layer) return true;
   return !(action.word && !action.word.test(text)) && !wantsType;
-}
-
-/** 페이지 요소 앞에 브라우저 자체 조작을 붙인 요소 목록. */
-export function withChrome(
-  workflowId: string,
-  page: BrowserPageInfo,
-  refs: ElementRefs,
-  closeLayer?: { name: string; run: () => Promise<void> },
-): { refs: ElementRefs; chrome: Record<string, ChromeAction> } {
-  const chrome = chromeActions(workflowId, page, closeLayer);
-  return { refs: { ...chromeRefs(chrome), ...refs }, chrome };
 }

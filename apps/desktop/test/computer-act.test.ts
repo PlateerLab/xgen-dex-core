@@ -3,11 +3,12 @@
  *   · 발표(앱 창이 화면 하나를 덮음) 중이면 발표 끝내기·다음·이전을 붙인다 — 없으면 "장표 내려줘" 에 `파일 > 닫기` 를 고른다.
  *   · 되돌릴 수 없을 수 있는 항목(닫기·저장·종료·삭제 …)과 누를 수 없는 입력칸은 후보에서 뺀다.
  *   · 시스템 후보는 화면 줄 맨 앞(60줄 안)에 둔다 — 요소가 많은 앱에서도 보이게.
+ *   · 다른 맥 앱 후보(fast-act-desktop): 실행 중인 앱은 시스템 후보 뒤, 설치된 앱은 맨 끝 — 앱 이름이 앱 요소를 가로채지 않게.
  * 예시 이름은 PowerPoint(맥) 메뉴 그대로다.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { appRefs, systemActions } from '../src/main/fast-act-computer';
+import { appRefs, buildSnap, systemActions } from '../src/main/fast-act-computer';
 import { buildScreen } from '../src/main/fast-act-e13';
 
 const names = (o: Record<string, { name: string }>): string[] => Object.values(o).map((a) => a.name);
@@ -78,4 +79,25 @@ test('시스템 후보는 정렬하지 않고 화면 줄 맨 앞에 — 요소�
   assert.equal(scr.ids.length, 60);
   assert.match(scr.text.split('\n')[0], /^e9001 \| button \| "발표\(전체 화면\) 끝내기 \(Esc 키\)"$/);
   assert.match(scr.text.split('\n')[5], /^e1 \| button \| "버튼 1" \| 왼쪽 위$/);
+});
+
+test('다른 맥 앱 후보 — 실행 중인 앱은 시스템 후보 뒤(맨 위), 설치된 앱은 앱 요소 뒤(맨 끝)', () => {
+  const desk = {
+    head: { e9011: { role: 'button', name: '카카오톡 앱으로 전환 (맥 데스크탑 앱)' } },
+    tail: { e8001: { role: 'button', name: '계산기 (Calculator) 앱 실행 (맥 데스크탑 앱)' } },
+    apps: { e9011: { name: '카카오톡', label: '카카오톡', path: '/Applications/KakaoTalk.app', pid: 20 }, e8001: { name: '계산기', label: '계산기 (Calculator)', path: '/System/Applications/Calculator.app' } },
+  };
+  const ax = {
+    gen: 1, app: 'Microsoft PowerPoint', bundleId: '', pid: 30, presenting: false, window: '프레젠테이션1', windowFrame: [0, 0, 800, 600],
+    windowCount: 2, ms: 1,
+    refs: [
+      { ref: 'e2', role: 'button', name: '새 슬라이드', frame: [100, 300, 50, 20] },
+      { ref: 'e1', role: 'button', name: '홈', frame: [10, 10, 50, 20] },
+      { ref: 'e3', role: 'menuitem', name: '삽입 > 새 슬라이드' },
+    ],
+  };
+  const s = buildSnap(ax, desk);
+  assert.deepEqual(s.scr.ids, ['e9001', 'e9002', 'e9003', 'e9011', 'e1', 'e2', 'e3', 'e8001']);
+  assert.equal(s.refs.e8001.name, '계산기 (Calculator) 앱 실행 (맥 데스크탑 앱)');
+  assert.equal(s.desk.apps.e9011.pid, 20);
 });

@@ -42,7 +42,8 @@ import {
 } from './fast-act';
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
-import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeAllowed, withChrome, type ChromeAction } from './fast-act-chrome';
+import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeActions, chromeAllowed, chromeRefs, type ChromeAction } from './fast-act-chrome';
+import { NO_DESKTOP, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
 import {
   FIELD_LABEL_SCRIPT,
   checkOf,
@@ -241,6 +242,8 @@ export type VoiceAction = {
   sentence?: string;
   /** 실행 뒤 칸에서 읽은 값(입력) 또는 선택 상태(선택지) — 못 읽었으면 null. BrowserFill 결과의 관측값. */
   observed?: string | null;
+  /** 연 맥 앱(fast-act-desktop) — 페이지 요소가 아니라 앱을 열거나 앞으로 가져왔다. */
+  app?: string;
 };
 
 /** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
@@ -326,6 +329,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     this.version++;
     this.snap = null;
+  }
+
+  /** 이 판단기가 보는 에이전트(대화) — 그 에이전트의 공유 브라우저 탭을 조작한다. */
+  get workflow(): string {
+    return this.workflowId;
   }
 
   /** 실행 직전 — 조작할 탭을 화면에 꺼내고, 지금 있는 탭을 기억한다. */
@@ -451,13 +459,18 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return buildScreen(origin, Object.entries(refs).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' })));
   }
 
-  /** 페이지 요소 앞에 브라우저 자체 조작을 붙인 요소 목록(fast-act-chrome). */
-  private withChrome(
+  /**
+   * 판단에 쓰는 요소 목록 — 페이지 요소 앞에 브라우저 자체 조작(fast-act-chrome)과 실행 중인 맥 앱, 뒤에 설치된 맥 앱
+   * (fast-act-desktop — 다른 앱 조작이 켜져 있을 때만). BrowserFill 줄은 서버가 이 폼의 칸으로 나눈 지시라 앱 후보를 붙이지 않는다.
+   */
+  private async withChrome(
     page: NonNullable<ReturnType<typeof visiblePage>>,
     refs: ElementRefs,
     closeLayer?: { name: string; run: () => Promise<void> },
-  ): { refs: ElementRefs; chrome: Record<string, ChromeAction> } {
-    return withChrome(this.workflowId, page, refs, closeLayer);
+  ): Promise<{ refs: ElementRefs; chrome: Record<string, ChromeAction>; desk: DesktopCands }> {
+    const chrome = chromeActions(this.workflowId, page, closeLayer);
+    const desk = this.oneStep ? NO_DESKTOP : await desktopCands(null, 9001 + Object.keys(chrome).length);
+    return { refs: { ...chromeRefs(chrome), ...desk.head, ...refs, ...desk.tail }, chrome, desk };
   }
 
   /**
@@ -484,7 +497,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!post) return { start: -1, conf: 0 };
     const s = await this.snapshot().catch(() => null);
     const origin = s ? originOf(s.page.url) : '';
-    const scr = s ? this.screenOf(origin, this.withChrome(s.page, s.snap.refs).refs) : null;
+    const scr = s ? this.screenOf(origin, (await this.withChrome(s.page, s.snap.refs)).refs) : null;
     const criteria: Record<string, string> = {
       none: 'there is no second request — the remaining words only finish the first one',
     };
@@ -517,7 +530,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const s = await this.snapshot().catch(() => null);
     if (!post || !s) return texts.map(() => ({ ready: 'wait', p: 0 }));
     const origin = originOf(s.page.url);
-    const scr = this.screenOf(origin, this.withChrome(s.page, s.snap.refs).refs);
+    const scr = this.screenOf(origin, (await this.withChrome(s.page, s.snap.refs)).refs);
     return Promise.all(
       texts.map(async (t) => {
         const a = await post({
@@ -1259,7 +1272,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     // 말이라 닫고 끝낸다(runChrome). 다른 것을 고르면 목록은 아래 listLayer 가 닫고 다시 판단한다.
     const layer = !this.layerClosed && (await this.layerOpen(page.pageId));
     const closeName = listLayer(snap.refs) ? '열린 목록 닫기 (Esc 키)' : '열린 창 닫기 (Esc 키)';
-    const { refs: allRefs, chrome } = this.withChrome(page, snap.refs, layer ? { name: closeName, run: () => this.closeLayer(page) } : undefined);
+    const { refs: allRefs, chrome, desk } = await this.withChrome(page, snap.refs, layer ? { name: closeName, run: () => this.closeLayer(page) } : undefined);
     const scr = this.screenOf(origin, allRefs);
 
     if (needsSequentialPlan(text)) return no('순서가 있는 여러 요청은 서버에서 이어서 처리');
@@ -1313,7 +1326,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
     );
     // 입력 요청이어도 열린 층 닫기는 후보에 둔다 — 층이 입력칸을 가렸으면 닫아야 넣을 수 있다.
     const layerRefs = Object.fromEntries(Object.entries(pickable).filter(([k]) => chrome[k]?.layer));
-    const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? { ...layerRefs, ...typable } : pickable, snap.disabled);
+    // 입력 요청이라도 앱 후보는 남긴다 — "PPT 열어서 제목에 … 입력해줘" 의 앞 요청이 앱 열기다(앱 화면에서 이어 한다).
+    const candidates = withoutDisabledTwins(
+      wantsType && Object.keys(typable).length ? { ...layerRefs, ...desk.head, ...typable, ...desk.tail } : pickable,
+      snap.disabled,
+    );
     const retry = this.namedRetry && this.namedRetry in snap.refs ? this.namedRetry : null;
     const picked = retry ? { ref: retry, confidence: 1, top: [], calls: 0, ms: 0 } : await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
@@ -1388,6 +1405,16 @@ export class BrowserVoiceAgent implements VoiceAgent {
     // 높은 확신으로 눌렀다(10/22 BO, 판단 모델은 "해당 없음" 을 고르지 못한다). 입력만 이어서 한다.
     if (ch && this.afterClose) return no('닫은 뒤 누르기는 서버에서 화면을 보고', pick.top);
     if (ch) return this.runChrome(ch, text, th, guard, abort, page, pick, t0, snap.ms);
+    if (desk.apps[pick.ref]) {
+      return runOpen(post, text, th, guard, pick, allRefs[pick.ref].name ?? '', t0, this.t0, (a) => {
+        this.version++;
+        this.snap = null;
+        this.last = a.label;
+        this.lastAction = 'click';
+        this.actions.push(a);
+        this.onAct?.(a);
+      });
+    }
     const fileField = snap.files[pick.ref];
     if (fileField) return this.upload(text, fileField, th, guard, page, t0);
     const element = snap.refs[pick.ref];

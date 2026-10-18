@@ -7,6 +7,8 @@
  *     다음/이전(Esc·→·← 키, 앱 창이 화면 하나를 통째로 덮을 때만), 앱 숨기기, 창 최소화, DeX 앞으로.
  *     이것이 없으면 "장표 내려줘" 에 `파일 > 닫기` 를 0.95 로 고른다(10/16 측정).
  *   · 되돌릴 수 없을 수 있는 항목(닫기·종료·저장·휴지통·삭제 …)은 후보에서 뺀다 — 남는 후보는 모두 되돌릴 수 있다.
+ *   · 다른 맥 앱으로 전환·실행도 같은 화면 후보로 고른다(fast-act-desktop) — 실행 중인 앱은 시스템 후보 뒤, 설치된 앱은
+ *     맨 끝. "PPT 열어서 새 프레젠테이션 만들어줘" 는 브라우저 칸에서 PowerPoint 를 열고, 남은 말은 PowerPoint 화면에서.
  *   · 글자 입력은 하지 않는다(누르기만). 입력 요청은 서버 에이전트로 넘어간다.
  *
  * 켜는 조건: 맥 + 설정 computerAct(기본 꺼짐) + 빠른 조작 + 접근성 도우미(mac-ax). 접근성 권한은 DeX 가 받는다.
@@ -25,7 +27,8 @@ import {
 } from './fast-act';
 import { CHROME_PICK } from './fast-act-chrome';
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13, type ScreenRef } from './fast-act-e13';
-import { decisionPost } from './fast-act-runner';
+import { LauncherVoiceAgent, NO_DESKTOP, configureDesktopAct, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
+import { decisionPost, visiblePage } from './fast-act-runner';
 import { TYPING_WORD, type BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import {
   AX_STALE,
@@ -75,6 +78,7 @@ let helperFound = false;
 
 export function configureComputerAct(d: ComputerActDeps): void {
   deps = d;
+  configureDesktopAct(computerActEnabled);
 }
 
 export function computerActEnabled(): boolean {
@@ -96,6 +100,8 @@ export async function externalFront(): Promise<AxFront | null> {
 }
 
 type SystemAction = { role: string; name: string; run: () => Promise<void> };
+/** 시스템 후보 수의 상한 — 다른 앱 후보 번호를 그 뒤(e9001 + 이것)부터 매긴다. */
+const SYSTEM_MAX = 10;
 
 /** 화면 밖 조작 — 번호는 앱 요소(e1…)와 겹치지 않게 e9001 부터. */
 export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' | 'window'>, showDex: () => void): Record<string, SystemAction> {
@@ -154,6 +160,8 @@ type MacSnap = {
   origin: string;
   refs: ElementRefs;
   system: Record<string, SystemAction>;
+  /** 다른 맥 앱 전환·실행 후보(fast-act-desktop). */
+  desk: DesktopCands;
   scr: Screen13;
 };
 
@@ -162,9 +170,11 @@ function originOf(ax: AxSnapshot): string {
   return `${ax.app}${win}${ax.presenting ? ' (전체 화면)' : ''}`;
 }
 
-function buildSnap(ax: AxSnapshot): MacSnap {
+/** 화면 — 시스템 후보·실행 중인 다른 앱(맨 위, 정렬 안 함), 앱 요소(읽는 순서), 설치된 앱(틀이 없어 맨 끝). */
+export function buildSnap(ax: AxSnapshot, desk: DesktopCands = NO_DESKTOP): MacSnap {
   const system = systemActions(ax, () => deps?.showDex());
-  const head = Object.entries(system).map(([ref, a]) => ({ ref, role: a.role, name: a.name }));
+  const toRefs = (r: ElementRefs) => Object.entries(r).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' }));
+  const head = [...Object.entries(system).map(([ref, a]) => ({ ref, role: a.role, name: a.name })), ...toRefs(desk.head)];
   const { refs, list, size } = appRefs(ax);
   const origin = originOf(ax);
   return {
@@ -173,9 +183,10 @@ function buildSnap(ax: AxSnapshot): MacSnap {
     gen: ax.gen,
     ax,
     origin,
-    refs: { ...Object.fromEntries(head.map((h) => [h.ref, { role: h.role, name: h.name }])), ...refs },
+    refs: { ...Object.fromEntries(head.map((h) => [h.ref, { role: h.role, name: h.name }])), ...refs, ...desk.tail },
     system,
-    scr: buildScreen(origin, list, size, head),
+    desk,
+    scr: buildScreen(origin, [...list, ...toRefs(desk.tail)], size, head),
   };
 }
 
@@ -212,7 +223,7 @@ export class ComputerVoiceAgent implements VoiceAgent {
     }
     if (!refresh && fresh(this.snap)) return this.snap;
     const v = this.version;
-    const p = axSnapshot(front.pid).then(buildSnap);
+    const p = Promise.all([axSnapshot(front.pid), desktopCands(front.pid, 9001 + SYSTEM_MAX)]).then(([ax, desk]) => buildSnap(ax, desk));
     this.inflight = p.catch(() => null);
     let got: MacSnap;
     try {
@@ -335,6 +346,13 @@ export class ComputerVoiceAgent implements VoiceAgent {
       });
     }
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    if (s.desk.apps[pick.ref]) {
+      return runOpen(post, text, th, guard, pick, s.refs[pick.ref].name ?? '', t0, this.t0, (a) => {
+        this.forget();
+        this.actions.push(a);
+        this.onAct?.(a);
+      });
+    }
     const sys = s.system[pick.ref];
     if (sys && pick.confidence < CHROME_PICK) return no(`시스템 조작 확신 낮음 ${pick.confidence.toFixed(2)}`, pick.top);
     const element = s.refs[pick.ref];
@@ -390,12 +408,14 @@ export class ComputerVoiceAgent implements VoiceAgent {
 
 /**
  * 맨 앞 앱으로 판단기를 고른다 — DeX 가 아닌 앱이 맨 앞이고 다른 앱 조작이 켜져 있으면 그 앱(ComputerVoiceAgent),
- * 아니면 이 에이전트의 브라우저 칸(BrowserVoiceAgent). 판단 호출마다 다시 본다(앞 조작으로 맨 앞 앱이 바뀐다).
- * 실행 기록은 두 판단기가 같은 배열에 모은다.
+ * 아니면 이 에이전트의 브라우저 칸(BrowserVoiceAgent), 브라우저 탭도 없으면 맥 앱 후보만 있는 화면(LauncherVoiceAgent).
+ * 판단 호출마다 다시 본다(앞 조작으로 맨 앞 앱이 바뀐다 — 앱을 연 뒤 남은 말은 그 앱 화면에서). 실행 기록은 판단기들이
+ * 같은 배열에 모은다.
  */
 export class RoutedVoiceAgent implements VoiceAgent {
   readonly actions: VoiceAction[];
   private computer: ComputerVoiceAgent;
+  private launcher: LauncherVoiceAgent;
 
   constructor(
     private browser: BrowserVoiceAgent,
@@ -404,6 +424,7 @@ export class RoutedVoiceAgent implements VoiceAgent {
   ) {
     this.actions = browser.actions;
     this.computer = new ComputerVoiceAgent(t0, browser.actions, onAct);
+    this.launcher = new LauncherVoiceAgent(t0, browser.actions, onAct);
   }
 
   get lastTarget(): string | null {
@@ -411,7 +432,8 @@ export class RoutedVoiceAgent implements VoiceAgent {
   }
 
   private async route(): Promise<VoiceAgent> {
-    return (await externalFront()) ? this.computer : this.browser;
+    if (await externalFront()) return this.computer;
+    return computerActEnabled() && !visiblePage(this.browser.workflow) ? this.launcher : this.browser;
   }
 
   prefetch(): void {
@@ -427,7 +449,10 @@ export class RoutedVoiceAgent implements VoiceAgent {
     return (await this.route()).readiness(texts);
   }
 
-  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string): Promise<Outcome> {
-    return (await this.route()).handle(text, th, guard, abort, utterance);
+  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome> {
+    const o = await (await this.route()).handle(text, th, guard, abort, utterance, pressOnly);
+    // 실행은 맨 앞 앱을 바꿀 수 있다(앱 열기·숨기기) — 다음 판단이 옛 맨 앞 앱을 보지 않게.
+    if (o.acted) frontCache = null;
+    return o;
   }
 }

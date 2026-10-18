@@ -14,7 +14,7 @@
  * 접근성 도우미(mac-ax). 되돌릴 수 없을 수 있는 항목(닫기·종료·저장·삭제·보내기 …)과 그런 단축키는 누르지 않는다 —
  * 말로 하는 조작(fast-act-computer)과 같은 기준. 다른 기기에서 온 턴은 거부한다(이 PC 앞에 사람이 있어야 한다).
  */
-import { listInstalledApps, matchApp, type InstalledApp } from '@dex/engine/app-launch';
+import { matchApp, type InstalledApp } from '@dex/engine/app-launch';
 import {
   openWithDefaultApp,
   type LocalToolCallContext,
@@ -24,6 +24,7 @@ import {
 } from '@dex/engine/local-tools';
 import { DANGEROUS_BROWSER_TARGET as DANGEROUS } from './fast-act';
 import { MAC_DANGEROUS } from './fast-act-computer';
+import { installedApps } from './fast-act-desktop';
 import {
   axActivate,
   axApps,
@@ -163,6 +164,9 @@ export function formatSnapshot(ax: AxSnapshot, front: boolean, filter = ''): str
 
 /** 실행 중인 앱의 이름들 — 보이는 이름("카카오톡")과 번들 파일 이름("KakaoTalk"). */
 const runningNames = (a: AxApp) => [a.app, a.path.split('/').pop()?.replace(/\.app$/i, '') ?? ''];
+/** 설치된 앱의 이름들 — 번들 이름("Calculator")과 사용자 언어로 보이는 이름("계산기"). */
+const installedNames = (a: InstalledApp) => [a.name, a.displayName ?? ''];
+const installedLabel = (a: InstalledApp) => (a.displayName ? `${a.displayName} (${a.name})` : a.name);
 
 /** 도구가 쓰는 맥 기능 — 테스트가 바꿔 끼운다. */
 export interface DesktopPort {
@@ -185,7 +189,7 @@ export interface DesktopPort {
 const realPort: DesktopPort = {
   trusted: () => axTrusted(false),
   apps: axApps,
-  installed: () => listInstalledApps(),
+  installed: installedApps,
   front: axFront,
   open: (path) => openWithDefaultApp(path),
   activate: axActivate,
@@ -264,7 +268,7 @@ export class DesktopToolProvider implements LocalToolDelegate {
       const [running, installed] = await Promise.all([this.port.apps(), this.port.installed()]);
       const shown = running.filter((a) => a.pid !== this.selfPid);
       const run = shown.map((a) => `${a.app}${a.front ? ' (front)' : ''}${a.hidden ? ' (hidden)' : ''}`).join(', ');
-      return text(`Running: ${run || '(none)'}\nInstalled: ${installed.map((a) => a.name).join(', ')}`);
+      return text(`Running: ${run || '(none)'}\nInstalled: ${installed.map(installedLabel).join(', ')}`);
     }
     if (!app.trim()) throw new Error('app 이 필요합니다.');
     if (action === 'open') return this.open(app);
@@ -289,13 +293,13 @@ export class DesktopToolProvider implements LocalToolDelegate {
       name = hit.app.app;
     } else {
       const installed = await this.port.installed();
-      const found = matchApp(app, installed, (a) => [a.name]);
-      if (found.kind === 'many') throw new Error(`'${app}' 에 맞는 앱이 여럿입니다: ${found.apps.map((a) => a.name).join(', ')}`);
+      const found = matchApp(app, installed, installedNames);
+      if (found.kind === 'many') throw new Error(`'${app}' 에 맞는 앱이 여럿입니다: ${found.apps.map(installedLabel).join(', ')}`);
       if (found.kind === 'none') {
-        return text(`'${app}' 앱을 찾지 못했습니다. 실행 중: ${running.map((a) => a.app).join(', ')}\n설치됨: ${installed.map((a) => a.name).join(', ')}`, true);
+        return text(`'${app}' 앱을 찾지 못했습니다. 실행 중: ${running.map((a) => a.app).join(', ')}\n설치됨: ${installed.map(installedLabel).join(', ')}`, true);
       }
       path = found.app.path;
-      name = found.app.name;
+      name = found.app.displayName ?? found.app.name;
     }
     // `open <번들>` — 실행하거나, 떠 있으면(숨김 포함) 앞으로. LaunchServices 를 거쳐 다른 앱이 앞에 있어도 온다.
     // 번들 경로를 모르는 실행 중인 앱만 접근성으로 앞으로 가져온다.

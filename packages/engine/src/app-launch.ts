@@ -10,6 +10,8 @@ export interface InstalledApp {
   /** 번들 이름에서 `.app` 을 뗀 것 — "Microsoft PowerPoint". */
   name: string;
   path: string;
+  /** 사용자 언어로 보이는 이름이 번들 이름과 다르면 — "계산기"(Calculator). 채우는 쪽은 apps/desktop(Spotlight). */
+  displayName?: string;
 }
 
 /** 앱 번들을 찾는 폴더 — 앞쪽이 이긴다(같은 이름이면 /Applications 의 것). */

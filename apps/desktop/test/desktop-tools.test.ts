@@ -1,6 +1,6 @@
 /**
  * 데스크탑 앱 도구 — 에이전트가 맥 앱을 열고·읽고·조작한다. 맥 기능은 가짜로 바꿔 끼워 규칙만 본다:
- *   · 열기: 실행 중이면 그 앱을 앞으로, 아니면 설치된 앱을 실행. 한국어 이름("카카오톡")으로도 찾는다.
+ *   · 열기: 실행 중이면 그 앱을 앞으로, 아니면 설치된 앱을 실행. 한국어 이름("카카오톡", "메모")으로도 찾는다.
  *   · 입력·키·누르기는 대상 앱을 맨 앞으로 가져와 확인한 뒤에만 — 못 가져오면 보내지 않는다. DeX 자신은 대상이 아니다.
  *   · 되돌릴 수 없을 수 있는 항목·단축키는 누르지 않는다. 다른 기기에서 온 턴은 거부한다.
  */
@@ -52,6 +52,7 @@ function fakeMac(opts: { frontStuck?: boolean } = {}) {
       { name: 'Microsoft Excel', path: '/Applications/Microsoft Excel.app' },
       { name: 'Microsoft PowerPoint', path: '/Applications/Microsoft PowerPoint.app' },
       { name: 'Calculator', path: '/System/Applications/Calculator.app' },
+      { name: 'Notes', path: '/System/Applications/Notes.app', displayName: '메모' },
     ],
     front: async () => {
       const f = running.find((a) => a.front)!;
@@ -100,7 +101,7 @@ test('설정이 꺼져 있으면 광고하지 않는다', () => {
 test('목록에는 DeX 자신이 없고, 실행 중·설치된 앱을 함께 보인다', async () => {
   const { call } = provider();
   const out = await call(DESKTOP_APPS_TOOL, { action: 'list' });
-  assert.match(out, /^Running: 카카오톡, Microsoft PowerPoint\nInstalled: Microsoft Excel, Microsoft PowerPoint, Calculator$/);
+  assert.match(out, /^Running: 카카오톡, Microsoft PowerPoint\nInstalled: Microsoft Excel, Microsoft PowerPoint, Calculator, 메모 \(Notes\)$/);
 });
 
 test('열기 — 실행 중이면 앞으로(한국어·번들 이름 모두), 아니면 설치된 앱을 실행, 못 찾으면 목록', async () => {
@@ -109,10 +110,13 @@ test('열기 — 실행 중이면 앞으로(한국어·번들 이름 모두), �
   assert.match(await call(DESKTOP_APPS_TOOL, { action: 'open', app: 'PowerPoint' }), /열었습니다: Microsoft PowerPoint/);
   assert.match(await call(DESKTOP_APPS_TOOL, { action: 'open', app: '계산기 앱' }), /찾지 못했습니다.*\n설치됨: .*Calculator/);
   assert.match(await call(DESKTOP_APPS_TOOL, { action: 'open', app: 'calculator' }), /열었습니다: Calculator \(맨 앞\)/);
+  // 사용자 언어로 보이는 이름으로도 찾는다
+  assert.match(await call(DESKTOP_APPS_TOOL, { action: 'open', app: '메모 앱' }), /열었습니다: 메모 \(맨 앞\)/);
   assert.deepEqual(calls, [
     'open /Applications/KakaoTalk.app',
     'open /Applications/Microsoft PowerPoint.app',
     'open /System/Applications/Calculator.app',
+    'open /System/Applications/Notes.app',
   ]);
 });
 

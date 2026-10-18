@@ -9,6 +9,9 @@
  * 못 한 말은 서버로 넘긴다(false) — 앞부분을 이미 했으면 요청을 남은 말로 바꿔서. 실행이 실패한 조작도 화면을
  * 바꾸지 않았으므로 서버로 간다. 답은 서버 에이전트처럼 한 일을 문장으로 쓴다(fast-act-reply).
  *
+ * 다른 앱 조작(computerAct)이 켜져 있으면 말로 시킨 것과 같이 맨 앞 앱으로 판단기를 고른다(RoutedVoiceAgent) — 맥 앱을
+ * 열고 남은 말("PPT 열어서 새 프레젠테이션 만들어줘")은 그 앱 화면에서 한다. 브라우저 탭이 없어도 앱 열기는 한다.
+ *
  * 한계 (실험이라 그대로 둔다):
  *   · 로컬 턴은 서버 기록에 남지 않는다 — 대화를 다시 열면 사라지고, 서버 LLM 도 다음 턴에서 이 조작을 모른다.
  *   · 현재 대화 에이전트의 '공유' 브라우저 탭만 본다.
@@ -20,6 +23,7 @@ import { stripVoiceContext } from '@dex/protocol/voice-context';
 import { diag } from './diag-log';
 import { actionRow, replyFor } from './fast-act-reply';
 import { decisionPost, visiblePage } from './fast-act-runner';
+import { RoutedVoiceAgent, computerActEnabled } from './fast-act-computer';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, type Outcome, type VoiceAgent } from './voice-segmenter';
 import { takeVoiceTurn } from './voice-turns';
@@ -116,12 +120,14 @@ export async function tryFastAct(
   // 말하는 도중 실행한 발화 — 이미 한 조작은 다시 하지 않는다(판단도 최종 기준으로 이미 해 봤다).
   const voice = takeVoiceTurn(req.workflowId, text);
   if (voice) return finishLocal(req, text, voice.actions, voice.unhandled, emit, true);
-  if (!visiblePage(req.workflowId)) {
+  const desktop = computerActEnabled();
+  if (!desktop && !visiblePage(req.workflowId)) {
     diag(SCOPE, 'skip: 열린 브라우저 탭 없음');
     return false;
   }
   const t0 = now();
-  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
+  const browser = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
+  const inner: VoiceAgent & { actions: VoiceAction[] } = desktop ? new RoutedVoiceAgent(browser, t0) : browser;
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
   const agent: VoiceAgent = {
@@ -130,7 +136,7 @@ export async function tryFastAct(
     },
     boundary: (utterance, done, rest) => inner.boundary(utterance, done, rest),
     readiness: (texts) => inner.readiness(texts),
-    handle: (said, th, guard, abort, utterance) =>
+    handle: (said, th, guard, abort, utterance, pressOnly) =>
       // DEX_FAST_ACT_DRY=1(개발용) — 판단까지만 하고 실행하지 않는다. 판단 점수를 잴 때 화면·데이터를 바꾸지 않으려고.
       inner.handle(
         said,
@@ -141,6 +147,7 @@ export async function tryFastAct(
         },
         () => signal.aborted || abort(),
         utterance,
+        pressOnly,
       ),
   };
   const decided: Array<{ text: string; outcome: Outcome }> = [];

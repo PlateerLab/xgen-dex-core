@@ -50,6 +50,7 @@ function pageName(a: VoiceAction): string | null {
 /** 조작 하나의 답 문장. forAgent = BrowserFill 을 부른 LLM 이 읽는다 — 사용자에게 묻는 말(ask)은 넣지 않는다. */
 export function actionSentence(a: VoiceAction, forAgent = false): string {
   const q = a.text !== null ? `"${a.text}"` : '';
+  if (a.app) return `${josa(a.display, '을', '를')} 열었어요.`;
   let did: string;
   if (a.sentence) did = a.sentence;
   else if (a.action === 'click' || a.text === null) did = `${josa(a.display, '을', '를')} 눌렀어요.`;
@@ -74,7 +75,7 @@ export function replyFor(actions: VoiceAction[], forAgent = false): string {
 
 /** 작업 과정 한 줄 — 무엇을 어떻게, 걸린 시간. 음성이면 말하는 도중이었는지도. */
 export function actionRow(a: VoiceAction, voice: boolean): string {
-  const how = a.action === 'click' ? '클릭' : `${a.action === 'type' ? '입력' : '입력 후 Enter'} "${a.text ?? ''}"`;
+  const how = a.app ? '열기' : a.action === 'click' ? '클릭' : `${a.action === 'type' ? '입력' : '입력 후 Enter'} "${a.text ?? ''}"`;
   return [
     a.display,
     how,

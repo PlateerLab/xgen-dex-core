@@ -37,6 +37,8 @@ import {
   labelClickables,
   labelFields,
   locativeAfterLabel,
+  inDocOrder,
+  labelChoices,
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
@@ -273,15 +275,18 @@ export class BrowserVoiceAgent implements VoiceAgent {
       .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
       .then(async (run): Promise<Snap> => {
         const data = (run.result as { data?: { refs?: ElementRefs; snapshot?: string } } | undefined)?.data;
-        const raw = editableAsTextbox((data?.refs ?? {}) as ElementRefs, data?.snapshot ?? '');
+        const order = refOrder(data?.snapshot ?? '');
+        const raw = editableAsTextbox(inDocOrder((data?.refs ?? {}) as ElementRefs, order), data?.snapshot ?? '');
         const found = await fields;
-        const named = Array.isArray(found) ? labelFields(raw, refOrder(data?.snapshot ?? ''), found) : { refs: raw, labels: {} };
+        const named = Array.isArray(found) ? labelFields(raw, order, found) : { refs: raw, labels: {} };
         // 이름 없는 누름 영역(검색 팝업을 여는 상자 등)은 바로 앞 제목으로.
         const boxes = labelClickables(named.refs, data?.snapshot ?? '');
-        const labels = { ...named.labels, ...boxes.labels };
+        // 제목 아래 선택지는 제목을 이름 앞에.
+        const choices = labelChoices(boxes.refs, data?.snapshot ?? '');
+        const labels = { ...named.labels, ...boxes.labels, ...choices.labels };
         const checks = checkOf(data?.snapshot ?? '');
         const items = itemOf(data?.snapshot ?? '');
-        return { at: now(), pageId: page.pageId, url: page.url, refs: boxes.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
+        return { at: now(), pageId: page.pageId, url: page.url, refs: choices.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;

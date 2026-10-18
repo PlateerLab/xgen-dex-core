@@ -329,16 +329,14 @@ export type Pick = {
 };
 
 /**
- * 표기가 같은 요소는 하나만 남긴다 (앞쪽 것). 같은 이름의 링크가 여럿이면
- * (아이콘 링크 + 글자 링크 등) 확률이 그 사이에 나뉘어 확신도가 낮게 나오는데,
- * 어느 것을 눌러도 같은 곳이라 나눌 이유가 없다.
+ * 같은 ref만 중복이다. 이름과 역할이 같아도 서로 다른 칸·팝업·링크일 수 있으므로
+ * 이름 없는 요소를 포함해 서로 다른 ref는 모두 유지한다. 기존 호출부를 위해 함수 이름은 유지한다.
  */
 export function dedupeByLabel(refs: ElementRefs, keys: string[]): string[] {
   const seen = new Set<string>();
   return keys.filter((k) => {
-    const l = elementLabel(refs[k]);
-    if (seen.has(l)) return false;
-    seen.add(l);
+    if (!Object.hasOwn(refs, k) || seen.has(k)) return false;
+    seen.add(k);
     return true;
   });
 }
@@ -375,24 +373,22 @@ function argmax(probs: Record<string, number>): [string, number] | null {
   return best;
 }
 
-/** 한 방향으로만 물은 묶음에서 2등이 이만큼 받았으면 결승에도 올린다 — 편향은 0.98 → 0.2 까지 뒤집었다(아래). */
-const RUNNER_UP = 0.1;
-
 /**
- * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 근소한 2등도. 한 방향
- * 질문은 앞자리 편향이 있어 근소한 차이는 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼
- * "협력사" 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98).
+ * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 2등도. 한 방향 질문은
+ * 앞자리 편향이 있어 차이를 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼 "협력사"
+ * 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98). 2등 확률에 문턱을
+ * 두지 않는다: 10/19 BO "반품기능 제공안함으로 해줘" 에 앞의 "취소기능 제공안함" 0.926, 맞는 칸 0.071 이었다.
  */
 function contenders(probs: Record<string, number>, oneWay: boolean): string[] {
   const [first, second] = Object.entries(probs).sort((a, b) => b[1] - a[1]);
   if (!first) return [];
-  return oneWay && second && second[1] >= RUNNER_UP ? [first[0], second[0]] : [first[0]];
+  return oneWay && second && second[1] > 0 ? [first[0], second[0]] : [first[0]];
 }
 
 /**
- * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). 표기가 같은
- * 요소를 합친 뒤 25개씩 묶어 묶음마다 승자를 뽑고(한 요청), 승자가 여럿이면
- * 승자끼리 한 번 더 고른다. 묶음·결승 모두 순서를 뒤집은 질문과 평균한다.
+ * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). ref 중복만
+ * 제거한 뒤 25개씩 묶는다. 한 방향 묶음의 1등과 기준을 넘긴 2등을 결승에 올리고,
+ * 결승에서는 순서를 뒤집은 질문과 평균한다. 묶음이 하나면 그것이 결승이다.
  */
 export async function pickElement(
   post: DecisionPost,
@@ -523,7 +519,21 @@ async function pickWindowed(
     const confidence = keys.length === 1 ? 1 : 0;
     return { ref: winners[0], confidence, top: [], calls: windows.length, ms: now() - t0 };
   }
-  const state = stateWith(buildScreen(scr.origin, winners.map((k) => byRef.get(k)!), scr.size), instruction);
+  // 결승 화면에는 승자마다 바로 앞 제목도 싣는다(후보는 아니다) — 승자만 실으면 이름이 같은 선택지가 똑같은 줄이
+  // 된다(10/19 BO 상품 등록 "반품기능 제공안함으로 해줘" 에 결승 화면이 "제공안함" 두 줄이라 취소기능 것을 골랐다).
+  const pos = new Map(scr.all.map((r, i) => [r.ref, i]));
+  const lines = new Set<string>();
+  for (const k of winners) {
+    const i = pos.get(k) ?? -1;
+    for (let j = i - 1; j >= 0; j--) {
+      if (scr.all[j].role === 'heading') {
+        lines.add(scr.all[j].ref);
+        break;
+      }
+    }
+    lines.add(k);
+  }
+  const state = stateWith(buildScreen(scr.origin, [...lines].map((k) => byRef.get(k)!), scr.size), instruction);
   const fin = await post({ state, questions: pairQuestions(refs, winners, 'q', true) });
   const finProbs = pairProbs(fin, 'q');
   const best = argmax(finProbs);

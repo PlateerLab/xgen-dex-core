@@ -3,7 +3,9 @@ import test from 'node:test';
 import {
   editableAsTextbox,
   checkOf,
+  inDocOrder,
   itemOf,
+  labelChoices,
   labelClickables,
   labelFields,
   locativeAfterLabel,
@@ -268,4 +270,46 @@ test("칸 이름 바로 뒤의 '의' 는 '에' 로 — 띄어쓰기는 보지 �
   assert.equal(locativeAfterLabel('삼성의 노트북 입력해줘', '상품명'), '삼성의 노트북 입력해줘');
   assert.equal(locativeAfterLabel('상품명의미 입력해줘', '상품명'), '상품명의미 입력해줘');
   assert.equal(locativeAfterLabel('상품명의 삼성 입력해줘', undefined), '상품명의 삼성 입력해줘');
+});
+
+test('요소 목록을 문서 순서로 — 제목 바로 뒤에 그 제목의 선택지가 오게, 스냅샷에 없는 요소는 뒤에', () => {
+  // refs 키는 e1, e10, e100… 순이다(10/19 BO 상품 등록: "선물하기 해당" 이 직구상품 여부의 "해당" 으로 눌렸다).
+  const refs: ElementRefs = {
+    e100: { role: 'radio', name: '해당' },
+    e101: { role: 'radio', name: '해당' },
+    e38: { role: 'heading', name: '직구상품 여부' },
+    e39: { role: 'heading', name: '선물하기' },
+    c1: { role: 'button', name: '뒤로' },
+  };
+  const ordered = inDocOrder(refs, ['e38', 'e100', 'e39', 'e101', 'e7']);
+  assert.deepEqual(Object.keys(ordered), ['e38', 'e100', 'e39', 'e101', 'c1']);
+  assert.equal(ordered.e39, refs.e39);
+});
+
+test('제목 아래 선택지(radio)는 이름 앞에 그 제목을 — 이름이 같은 선택지를 이름만으로 가른다', () => {
+  // 10/19 BO 상품 등록 "반품기능 제공안함으로 해줘": 한 방향으로 묻는 창에서 앞의 취소기능 "제공안함" 이 1.0 이라 반품기능 것은 결승에도 못 갔다.
+  const snapshot = [
+    '- heading "취소기능" [level=6, ref=e71]',
+    '- LabelText "제공" [ref=e208] clickable [cursor:pointer]',
+    '  - radio "제공" [checked=true, ref=e270]',
+    '- LabelText "제공안함" [ref=e209] clickable [cursor:pointer]',
+    '  - radio "제공안함" [checked=false, ref=e271]',
+    '- heading "반품기능" [level=6, ref=e73]',
+    '- LabelText "제공안함" [ref=e213] clickable [cursor:pointer]',
+    '  - radio "제공안함" [checked=false, ref=e275]',
+    '- button "저장" [ref=e3]',
+    '- radio "따로" [checked=false, ref=e9]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e270: { role: 'radio', name: '제공' },
+    e271: { role: 'radio', name: '제공안함' },
+    e275: { role: 'radio', name: '제공안함' },
+    e9: { role: 'radio', name: '따로' },
+  };
+  const { refs: out, labels } = labelChoices(refs, snapshot);
+  assert.equal(out.e270.name, '취소기능 제공');
+  assert.equal(out.e271.name, '취소기능 제공안함');
+  assert.equal(out.e275.name, '반품기능 제공안함');
+  assert.equal(out.e9.name, '따로'); // 바로 앞이 제목이 아니면 그대로
+  assert.deepEqual(labels, { e270: '취소기능', e271: '취소기능', e275: '반품기능' });
 });

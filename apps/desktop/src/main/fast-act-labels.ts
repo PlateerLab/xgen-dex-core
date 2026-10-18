@@ -129,6 +129,18 @@ export function refOrder(snapshotText: string): string[] {
   return [...seen];
 }
 
+/**
+ * 요소 목록을 문서 순서로 다시 담는다(스냅샷에 없는 요소는 뒤에). 화면 줄은 요소 목록 순서로 실리는데 refs 키는
+ * e1, e10, e100… 순이라 칸 제목과 그 칸이 수백 줄 떨어졌다 — 10/19 BO 상품 등록 "선물하기 해당으로 해줘" 에
+ * 이름이 같은 "직구상품 여부" 의 "해당" 이 눌렸다.
+ */
+export function inDocOrder(refs: ElementRefs, order: string[]): ElementRefs {
+  const out: ElementRefs = {};
+  for (const k of order) if (Object.hasOwn(refs, k)) out[k] = refs[k];
+  for (const k of Object.keys(refs)) if (!Object.hasOwn(out, k)) out[k] = refs[k];
+  return out;
+}
+
 const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /**
@@ -308,6 +320,35 @@ export function labelClickables(
  * 말에서 붙인 칸 이름을 뺀다(단어마다 처음 한 번) — "검색키워드에 노트북 넣어줘" 의 "검색"은 칸을 가리킨 말이지
  * 검색하라는 말이 아니다(검색칸으로 보고 Enter 를 누르면 폼이 제출될 수 있다).
  */
+/** 선택지 묶음 안에서 제목까지 건너뛰는 줄 — 다른 선택지와 그 글자 상자. */
+const CHOICE_GROUP = new Set(['radio', 'LabelText', 'generic', 'StaticText']);
+
+/**
+ * 제목 아래 선택지(radio)는 이름 앞에 그 제목을 붙인다("제공안함" → "반품기능 제공안함"). 폼은 같은 선택지 이름을
+ * 칸마다 되풀이하는데(해당/해당없음, 제공/제공안함), 창이 여럿이라 한 방향으로만 묻는 묶음에서는 이름이 같은 앞
+ * 선택지가 1.0 을 받아 뒤 것은 결승에도 못 갔다(10/19 BO 상품 등록 "반품기능 제공안함으로 해줘" → 취소기능).
+ */
+export function labelChoices(
+  refs: ElementRefs,
+  snapshotText: string,
+): { refs: ElementRefs; labels: Record<string, string> } {
+  const lines = snapshotText.split('\n').map(snapLine);
+  const out: ElementRefs = { ...refs };
+  const labels: Record<string, string> = {};
+  lines.forEach((l, i) => {
+    if (!l?.ref || l.role !== 'radio' || !refs[l.ref]) return;
+    let j = i - 1;
+    while (j >= 0 && (!lines[j] || CHOICE_GROUP.has(lines[j]!.role))) j--;
+    const head = lines[j];
+    if (head?.role !== 'heading') return;
+    const label = head.name.replace(/[*:：]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!label || label.length > 30) return;
+    out[l.ref] = { ...out[l.ref], name: `${label} ${squash(l.name)}`.trim() };
+    labels[l.ref] = label;
+  });
+  return { refs: out, labels };
+}
+
 export function withoutLabel(text: string, label?: string): string {
   return (label ?? '')
     .split(' ')

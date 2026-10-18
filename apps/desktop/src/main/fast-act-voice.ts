@@ -39,6 +39,7 @@ import {
   locativeAfterLabel,
   inDocOrder,
   labelChoices,
+  labelSearchTerms,
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
@@ -110,7 +111,7 @@ const closedTab = async (pageId: string): Promise<boolean> => {
 };
 
 /** 글자 넣기를 시키는 말 — 중간 인식에서 넣을 글자가 끝났는지 볼 때 쓴다. */
-const TYPING_WORD = /(입력|검색|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
+const TYPING_WORD = /(입력|검색|조회|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
 /**
  * 되돌릴 수 없을 수 있는 동작 — 말 자체가 시키거나 고른 대상의 이름이 이런 것이면 서버로.
  * 명사가 아니라 동작으로 본다: "주문/결제" 메뉴·"결제 내역" 은 이동일 뿐이고 "결제하기" 버튼이 위험하다.
@@ -124,7 +125,7 @@ const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
  * 검색칸에 "…검색해줘" 는 넣고 끝이 아니라 검색까지다 — 결정 모델이 '넣기만' 으로 답해도 검색칸이면 제출한다
  * (검색칸은 제출해야 결과가 나온다는 화면 일반 규칙. 역할이 searchbox 이거나 이름에 검색/search 가 있는 칸).
  */
-const SEARCH_WORD = /(검색|찾아|search|find|look up)/i;
+const SEARCH_WORD = /(검색|조회|찾아|search|find|look up)/i;
 /** 검색 버튼 이름 — 이름이 이것뿐인 버튼만(pressSearch). */
 const SEARCH_BUTTON = /^(검색|조회|찾기|search|find|go)$/i;
 /** 항목을 고르라는 말·고른 것을 풀라는 말 — 항목 안의 체크박스를 누를지(checkOf). */
@@ -283,10 +284,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const boxes = labelClickables(named.refs, data?.snapshot ?? '');
         // 제목 아래 선택지는 제목을 이름 앞에.
         const choices = labelChoices(boxes.refs, data?.snapshot ?? '');
-        const labels = { ...named.labels, ...boxes.labels, ...choices.labels };
+        // 검색 기준 상자 뒤의 이름 없는 입력칸은 "기준 검색어".
+        const terms = labelSearchTerms(choices.refs, data?.snapshot ?? '');
+        const labels = { ...named.labels, ...boxes.labels, ...choices.labels, ...terms.labels };
         const checks = checkOf(data?.snapshot ?? '');
         const items = itemOf(data?.snapshot ?? '');
-        return { at: now(), pageId: page.pageId, url: page.url, refs: choices.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
+        return { at: now(), pageId: page.pageId, url: page.url, refs: terms.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;

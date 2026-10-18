@@ -6,6 +6,7 @@ import {
   inDocOrder,
   itemOf,
   labelChoices,
+  labelSearchTerms,
   labelClickables,
   labelFields,
   locativeAfterLabel,
@@ -312,4 +313,31 @@ test('제목 아래 선택지(radio)는 이름 앞에 그 제목을 — 이름�
   assert.equal(out.e275.name, '반품기능 제공안함');
   assert.equal(out.e9.name, '따로'); // 바로 앞이 제목이 아니면 그대로
   assert.deepEqual(labels, { e270: '취소기능', e271: '취소기능', e275: '반품기능' });
+});
+
+test('검색 기준 선택 상자 바로 뒤의 이름 없는 입력칸은 "기준 검색어" — 기준 상자와 가른다', () => {
+  // 10/19 BO 협력사 조회 팝업: [협력사명 ▾][      ] 의 입력칸이 이름이 없어 "플래티어로 조회해줘" 에 협력사구분 상자를 눌렀다.
+  const snapshot = [
+    '- heading "협력사정보" [level=6, ref=e8]',
+    '- generic "협력사명" [ref=e17] clickable [onclick]',
+    '  - combobox "협력사명" [expanded=false, ref=e24]',
+    '- generic "" [ref=e18] clickable [onclick]',
+    '  - textbox [ref=e25]',
+    '- button "조회" [ref=e10]',
+    '- textbox [ref=e30]',
+    '- combobox "전체" [ref=e31]',
+    '- textbox "메모" [ref=e32]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e24: { role: 'combobox', name: '협력사명' },
+    e25: { role: 'textbox', name: '' },
+    e30: { role: 'textbox' },
+    e31: { role: 'combobox', name: '전체' },
+    e32: { role: 'textbox', name: '메모' },
+  };
+  const { refs: out, labels } = labelSearchTerms(refs, snapshot);
+  assert.equal(out.e25.name, '협력사명 검색어');
+  assert.equal(out.e30.name, undefined); // 앞이 선택 상자가 아니면 그대로
+  assert.equal(out.e32.name, '메모'); // 이름이 있으면 그대로
+  assert.deepEqual(labels, { e25: '협력사명' });
 });

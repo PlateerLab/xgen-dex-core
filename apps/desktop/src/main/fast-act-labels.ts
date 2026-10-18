@@ -349,6 +349,34 @@ export function labelChoices(
   return { refs: out, labels };
 }
 
+/**
+ * 검색 기준 선택 상자 바로 뒤의 이름 없는 입력칸은 "기준 검색어"로 부른다("협력사명 ▾" + [ ] → "협력사명 검색어").
+ * 관리자 조회 폼은 기준 상자와 검색어 칸을 한 칸 이름 아래 나란히 두어 labelFields 가 이름을 못 붙인다(다른 칸을
+ * 건너오면 바로 위 글자만 받는다). 이름이 없으면 판단 모델은 입력칸 대신 다른 선택 상자를 골랐다(10/19 BO 협력사 조회
+ * 팝업 "플래티어로 조회해줘" → 협력사구분). "검색" 이 들어가 검색칸으로도 보인다(입력 뒤 조회 버튼).
+ */
+export function labelSearchTerms(
+  refs: ElementRefs,
+  snapshotText: string,
+): { refs: ElementRefs; labels: Record<string, string> } {
+  const lines = snapshotText.split('\n').map(snapLine);
+  const out: ElementRefs = { ...refs };
+  const labels: Record<string, string> = {};
+  lines.forEach((l, i) => {
+    if (!l?.ref || l.role !== 'textbox' || !refs[l.ref] || squash(refs[l.ref].name ?? '')) return;
+    let j = i - 1;
+    // 사이에는 두 칸을 싼 상자(generic)만.
+    while (j >= 0 && (!lines[j] || lines[j]!.role === 'generic')) j--;
+    const box = lines[j];
+    if (box?.role !== 'combobox' || !box.ref) return;
+    const criterion = squash(refs[box.ref]?.name ?? box.name);
+    if (!criterion || criterion.length > 20) return;
+    out[l.ref] = { ...out[l.ref], name: `${criterion} 검색어` };
+    labels[l.ref] = criterion;
+  });
+  return { refs: out, labels };
+}
+
 export function withoutLabel(text: string, label?: string): string {
   return (label ?? '')
     .split(' ')

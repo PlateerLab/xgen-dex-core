@@ -23,6 +23,7 @@ import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/conne
 import { diag } from './diag-log';
 import { FORMAT } from './fast-act-e13';
 import { fastActEnabled } from './fast-act-runner';
+import { RoutedVoiceAgent } from './fast-act-computer';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, norm } from './voice-segmenter';
 import { rememberVoiceTurn } from './voice-turns';
@@ -113,7 +114,7 @@ class VoiceSession {
   private closed = false;
   private wakeDone: (() => void) | null = null;
   private readonly t0 = now();
-  private readonly agent: BrowserVoiceAgent;
+  private readonly agent: RoutedVoiceAgent;
   private readonly seg: Segmenter;
   private readonly deferActions: boolean;
   private readonly timeline: TimelineEntry[] = [];
@@ -139,7 +140,9 @@ class VoiceSession {
   ) {
     this.woke = !wake || wake.awake;
     this.deferActions = sttOnly || deps.planBeforeAct?.(interactionId) === true;
-    this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }), interactionId);
+    // 맨 앞 앱이 DeX 가 아니고 다른 앱 조작(computerAct)이 켜져 있으면 그 앱을, 아니면 이 에이전트의 브라우저 칸을 조작한다.
+    const onAct = (action: VoiceAction): void => emit({ sessionId: id, type: 'act', action });
+    this.agent = new RoutedVoiceAgent(new BrowserVoiceAgent(workflowId, this.t0, onAct, interactionId), this.t0, onAct);
     if (!this.deferActions && this.woke) this.agent.prefetch();
     this.seg = new Segmenter(
       this.agent,

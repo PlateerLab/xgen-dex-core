@@ -29,8 +29,11 @@ export function position(f: number[], size: number[]): string {
   return v === '가운데' && h === '가운데' ? '가운데' : `${h} ${v}`;
 }
 
-/** 화면 줄 — rows13.Screen 과 같은 규칙. visible 이 있는 요소는 보이는 것만, 틀(frame)이 있으면 읽는 순서로. */
-export function buildScreen(origin: string, refs: ScreenRef[], size?: number[]): Screen13 {
+/**
+ * 화면 줄 — rows13.Screen 과 같은 규칙. visible 이 있는 요소는 보이는 것만, 틀(frame)이 있으면 읽는 순서로.
+ * head 는 정렬하지 않고 맨 앞에 둔다(화면 밖 조작 — 맥 앱 숨기기·발표 끝내기 같은 시스템 후보).
+ */
+export function buildScreen(origin: string, refs: ScreenRef[], size?: number[], head: ScreenRef[] = []): Screen13 {
   let keys = refs.filter((r) => r.visible !== false);
   const framed = size && keys.some((r) => r.frame);
   if (framed) {
@@ -40,6 +43,7 @@ export function buildScreen(origin: string, refs: ScreenRef[], size?: number[]):
       return fa[1] - fb[1] || fa[0] - fb[0];
     });
   }
+  keys = [...head, ...keys];
   const listed = keys.slice(0, MAX_LINES);
   const lines = listed.map((r) => {
     let name = `"${r.name ?? ''}"`;

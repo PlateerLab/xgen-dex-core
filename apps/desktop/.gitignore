@@ -9,3 +9,6 @@ dist/
 # 로컬 실행 사이드카 번들(빌드 아티팩트) — scripts/bundle-python-sidecar.mjs 가
 # prepackage 로 조립한다. 이식형 Python + 런타임/host(~1GB+). 절대 커밋하지 않는다.
 resources/python-sidecar/
+
+# 맥 접근성 도우미 개발 빌드(npm run build:mac-ax) — 설치본은 afterPack 이 앱 안에 빌드한다.
+native/mac-ax/bin/

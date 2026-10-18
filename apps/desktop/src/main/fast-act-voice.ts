@@ -160,7 +160,7 @@ const closedTab = async (pageId: string): Promise<boolean> => {
 };
 
 /** 글자 넣기를 시키는 말 — 중간 인식에서 넣을 글자가 끝났는지 볼 때 쓴다. */
-const TYPING_WORD = /(입력|검색|조회|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
+export const TYPING_WORD = /(입력|검색|조회|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
 /** 글자를 넣을 수 있는 역할 — 입력 요청이면 이것만 후보로 둔다(넣을 글자와 이름이 같은 버튼을 고르지 않게). */
 const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
 const CHECKABLE = new Set(['checkbox', 'radio', 'switch']);

@@ -117,6 +117,13 @@ export interface ConnectorConfig {
    */
   fastAct?: boolean;
   /**
+   * 말로 다른 앱도 조작(맥, 실험). 기본 false. 빠른 조작을 켰을 때만 쓴다.
+   *
+   * 켜면 맨 앞 앱이 DeX 가 아닐 때 말하는 도중 조작이 그 앱(접근성 화면 + 앱 숨기기·발표 끝내기 같은 시스템 조작)을
+   * 대상으로 한다(fast-act-computer.ts). 접근성 권한이 필요해 켤 때 시스템 권한 창을 띄운다.
+   */
+  computerAct?: boolean;
+  /**
    * 호출어로만 듣기. 기본 false. 켜면 계속 듣기(빠른 조작)가 호출어를 들은 말만 조작·채팅으로 넘기고
    * 나머지 말은 버린다 — 발표·회의처럼 사람에게 하는 말이 섞이는 자리용(voice-wake.ts).
    */

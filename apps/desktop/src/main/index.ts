@@ -28,6 +28,7 @@ import {
   session,
   clipboard,
   powerMonitor,
+  systemPreferences,
 } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -166,6 +167,8 @@ import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
 import { BrowserConfirmCenter } from './browser-confirm';
 import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
+import { configureComputerAct } from './fast-act-computer';
+import { stopMacAx } from './mac-ax';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
@@ -2352,6 +2355,8 @@ ipcMain.handle(CHANNELS.configSet, async (event, patch: Partial<ConnectorConfig>
     await mcpHttpSession().closeAllConnections();
     syncMcp();
   }
+  // 다른 앱 조작은 접근성 권한이 있어야 한다 — 켤 때 시스템 권한 창을 띄운다(이미 있으면 아무것도 안 뜬다).
+  if (patch.computerAct === true && process.platform === 'darwin') systemPreferences.isTrustedAccessibilityClient(true);
   if (patch.autoUpdate !== undefined) setAutoUpdate(!!patch.autoUpdate);
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
@@ -2800,6 +2805,14 @@ configureFastAct({
     return res.answers as Record<string, ChoiceAnswer>;
   },
   reveal: revealBrowserPage,
+});
+// 실험: 말로 다른 맥 앱 조작 — 맨 앞 앱이 DeX 가 아니면 말하는 도중 조작이 그 앱을 대상으로 한다(fast-act-computer.ts).
+configureComputerAct({
+  enabled: () => loadConfig().computerAct === true,
+  showDex: () => {
+    showMain();
+    app.focus({ steal: true });
+  },
 });
 // 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>
@@ -4609,5 +4622,6 @@ if (!gotLock) {
     stopAllUserPcJobs();
     void getBrowserRuntime().closeAll();
     void getMcpManager().closeAll();
+    stopMacAx();
   });
 }

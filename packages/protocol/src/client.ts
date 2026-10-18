@@ -99,7 +99,10 @@ export class HttpClient {
 
   constructor(opts: HttpClientOptions) {
     this.baseUrl = normalizeBaseUrl(opts.baseUrl);
-    this.fetchImpl = opts.fetch ?? (globalThis.fetch as FetchLike);
+    // Call fetch without a receiver: a browser's fetch throws "Illegal invocation" when `this` is not the window
+    // (here it would be this client). Same for a host that passes `window.fetch` itself.
+    const fetchFn = opts.fetch ?? (globalThis.fetch as FetchLike);
+    this.fetchImpl = fetchFn && ((input, init) => fetchFn(input, init));
     this.onAuthFailure = opts.onAuthFailure;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.uploadStore = opts.uploadStore;

@@ -26,7 +26,7 @@ import { fastActEnabled } from './fast-act-runner';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, norm } from './voice-segmenter';
 import { rememberVoiceTurn } from './voice-turns';
-import { findWake, restAfter, WAKE_WINDOW_MS } from './voice-wake';
+import { findWake, restAfter, sttHint, WAKE_WINDOW_MS } from './voice-wake';
 
 const SCOPE = 'voice-stream';
 const FRAME = 640; // 20 ms @ 16 kHz PCM16
@@ -166,8 +166,19 @@ class VoiceSession {
       ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
     });
     this.ws = ws;
+    // 호출어로만 듣기면 호출어를 인식 힌트로 준다 — 힌트를 모르는 서버는 이 키를 무시한다.
+    const context = this.wake ? sttHint(this.wake.words) : '';
     ws.on('open', () =>
-      ws.send(JSON.stringify({ type: 'start', format: 'pcm16', sample_rate: 16000, language: 'ko', mode: 'partials' })),
+      ws.send(
+        JSON.stringify({
+          type: 'start',
+          format: 'pcm16',
+          sample_rate: 16000,
+          language: 'ko',
+          mode: 'partials',
+          ...(context && { context }),
+        }),
+      ),
     );
     ws.on('message', (raw) => this.onMessage(String(raw)));
     ws.on('error', (err) => this.fail(String(err)));
@@ -206,7 +217,7 @@ class VoiceSession {
   }
 
   private onMessage(raw: string): void {
-    let m: { type?: string; text?: string; code?: string; message?: string };
+    let m: { type?: string; text?: string; code?: string; message?: string; context?: string };
     try {
       m = JSON.parse(raw);
     } catch {
@@ -214,7 +225,8 @@ class VoiceSession {
     }
     if (m.type === 'ready') {
       this.ready = true;
-      this.mark('ready');
+      // 서버가 적용한 인식 힌트 — 키가 없으면 힌트를 모르는 서버다.
+      this.mark('ready', undefined, m.context === undefined ? undefined : `힌트 "${m.context}"`);
       // shortcut: 500ms 무음을 앞에 붙여 테스트 녹음의 첫 인사말 누락을 우회한다. 서버 시작 구간 원인 해결 후 제거를 검토한다.
       // 서버 VAD가 원인인지는 미확인이고 실제 마이크에서의 필요성도 미검증이다. 대기 없이 무음 PCM을 먼저 전송한다.
       for (let i = 0; i < 25; i++) this.ws?.send(Buffer.alloc(FRAME));

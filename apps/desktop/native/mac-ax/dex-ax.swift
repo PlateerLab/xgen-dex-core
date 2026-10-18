@@ -1,4 +1,5 @@
-// dex-ax — macOS 접근성(AX) 도우미. 말로 다른 앱을 조작하는 빠른 조작(fast-act-computer.ts)이 쓴다.
+// dex-ax — macOS 접근성(AX) 도우미. 말로 다른 앱을 조작하는 빠른 조작(fast-act-computer.ts)과 에이전트의 데스크탑 앱
+// 도구(desktop-tools.ts)가 쓴다.
 // stdin 으로 JSON 한 줄씩 명령을 받아 stdout 에 JSON 한 줄로 답한다. 띄워 둔 채로 쓰므로 명령마다 기동 비용이
 // 없고, 스냅샷의 요소 핸들을 ref 로 들고 있는다(다음 스냅샷까지).
 //
@@ -11,6 +12,10 @@
 //   {"cmd":"hide","pid":123}              앱 숨기기
 //   {"cmd":"minimize","pid":123}          그 앱의 초점 창 최소화
 //   {"cmd":"activate","pid":123}          앱을 앞으로
+//   {"cmd":"apps"}                        실행 중인 일반 앱 [{app,bundleId,pid,path,front,hidden}]
+//   {"cmd":"focus","ref":"e3"}            요소에 초점 (입력 전에)
+//   {"cmd":"setvalue","ref":"e3","text":"…"}  입력칸 값 바꾸기 (AXValue, 다시 읽어 확인)
+//   {"cmd":"type","text":"…"}             글자 입력 (맨 앞 앱의 초점 요소로 간다)
 //
 // 접근성 권한은 이 도우미를 띄운 앱(설치본은 XGen Dex, 개발 실행은 터미널)이 받는다.
 // 원본: mac-fastact 프로토타입의 fastact-ax (10/3 실측으로 다듬은 요소 이름·역할 규칙).
@@ -145,7 +150,12 @@ final class Collector {
       let name = elementName(el, role: role)
       if enabled && (!name.isEmpty || wr == "textbox" || wr == "searchbox") {
         if let f = frame(el), f.width > 1, f.height > 1 {
-          add(el, role: wr, name: name, extra: ["frame": [f.minX, f.minY, f.width, f.height]])
+          var extra: [String: Any] = ["frame": [f.minX, f.minY, f.width, f.height]]
+          // 입력칸은 지금 값도 — 에이전트가 무엇이 적혀 있는지 보고 고친다.
+          if wr == "textbox" || wr == "searchbox" || wr == "combobox", let v = str(el, kAXValueAttribute), !v.isEmpty {
+            extra["value"] = String(v.prefix(200))
+          }
+          add(el, role: wr, name: name, extra: extra)
         }
       }
       if role == "AXRow" || role == "AXButton" { return }
@@ -333,6 +343,55 @@ func activate(_ pid: pid_t?) -> [String: Any] {
   return ["ok": a.activate()]
 }
 
+func runningApps() -> [String: Any] {
+  // 런루프 없이 도는 이 도우미에서 NSWorkspace 목록은 실행·종료 알림을 받지 못해 낡는다 — 잠깐 돌려 갱신한다.
+  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+  let frontPid = frontApp()?.processIdentifier
+  let list: [[String: Any]] = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.map { a in
+    let axApp = AXUIElementCreateApplication(a.processIdentifier)
+    return [
+      "app": a.localizedName ?? "", "bundleId": a.bundleIdentifier ?? "", "pid": a.processIdentifier,
+      "path": a.bundleURL?.path ?? "", "front": a.processIdentifier == frontPid,
+      "hidden": (attr(axApp, kAXHiddenAttribute) as? Bool) ?? a.isHidden,
+    ]
+  }
+  return ["ok": true, "apps": list]
+}
+
+func focus(_ ref: String) -> [String: Any] {
+  guard let el = handles[ref] else { return ["ok": false, "error": "ref 없음: \(ref)"] }
+  let err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+  return err == .success ? ["ok": true] : ["ok": false, "error": "초점 실패 (\(err.rawValue))"]
+}
+
+func setValue(_ ref: String, _ text: String) -> [String: Any] {
+  guard let el = handles[ref] else { return ["ok": false, "error": "ref 없음: \(ref)"] }
+  let err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, text as CFString)
+  if err != .success { return ["ok": false, "error": "값 바꾸기 실패 (\(err.rawValue)) — 초점을 주고 type 으로 입력"] }
+  return (str(el, kAXValueAttribute) ?? "") == text ? ["ok": true] : ["ok": false, "error": "값이 바뀌지 않음 — 초점을 주고 type 으로 입력"]
+}
+
+/// 글자를 유니코드 키 이벤트로 보낸다(자판 배치와 무관). 줄바꿈은 return 키로.
+func typeText(_ text: String) -> [String: Any] {
+  let src = CGEventSource(stateID: .hidSystemState)
+  let lines = text.components(separatedBy: "\n")
+  for (i, line) in lines.enumerated() {
+    if i > 0 { _ = keys("return"); usleep(10_000) }
+    var rest = Substring(line)
+    while !rest.isEmpty {
+      let chunk = Array(String(rest.prefix(16)).utf16)
+      rest = rest.dropFirst(16)
+      for down in [true, false] {
+        let e = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: down)
+        chunk.withUnsafeBufferPointer { e?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: $0.baseAddress) }
+        e?.post(tap: .cghidEventTap)
+      }
+      usleep(10_000)
+    }
+  }
+  return ["ok": true]
+}
+
 // MARK: - 루프
 
 while let line = readLine() {
@@ -357,6 +416,10 @@ while let line = readLine() {
   case "hide": res = hide(pid)
   case "minimize": res = minimize(pid)
   case "activate": res = activate(pid)
+  case "apps": res = runningApps()
+  case "focus": res = focus((req["ref"] as? String) ?? "")
+  case "setvalue": res = setValue((req["ref"] as? String) ?? "", (req["text"] as? String) ?? "")
+  case "type": res = typeText((req["text"] as? String) ?? "")
   default: res = ["ok": false, "error": "모르는 명령"]
   }
   res["id"] = id

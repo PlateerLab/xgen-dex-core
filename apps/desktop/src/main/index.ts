@@ -166,6 +166,7 @@ import { BrowserHistoryStore } from './browser-history';
 import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
 import { BrowserConfirmCenter } from './browser-confirm';
 import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
+import { DesktopToolProvider } from './desktop-tools';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureComputerAct } from './fast-act-computer';
 import { stopMacAx } from './mac-ax';
@@ -2162,6 +2163,14 @@ const mcpAdminDelegate: LocalToolDelegate = {
   },
 };
 
+let desktopTools: DesktopToolProvider | null = null;
+
+/** DeX 메인 창을 보이고 다른 앱보다 앞으로. */
+function showDexFront(): void {
+  showMain();
+  app.focus({ steal: true });
+}
+
 /** Reconcile MCP manager + bridge with config + login state. */
 function syncMcp(): void {
   const account = currentAccountKey();
@@ -2202,7 +2211,9 @@ function syncMcp(): void {
     decisionPost,
     browserConfirms.ask,
   );
-  getLocalToolProvider().configureDelegate(joinDelegates(browserTools, userConfirmTools));
+  // 데스크탑 앱 도구(DesktopApps·Snapshot·Interact) — 말로 다른 앱 조작과 같은 설정(computerAct)이 켠다.
+  desktopTools ??= new DesktopToolProvider({ enabled: () => loadConfig().computerAct === true, showDex: showDexFront });
+  getLocalToolProvider().configureDelegate(joinDelegates(browserTools, userConfirmTools, desktopTools));
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
@@ -2360,8 +2371,8 @@ ipcMain.handle(CHANNELS.configSet, async (event, patch: Partial<ConnectorConfig>
   if (patch.autoUpdate !== undefined) setAutoUpdate(!!patch.autoUpdate);
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
-  // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.browser !== undefined || patch.fastAct !== undefined) syncMcp();
+  // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다). 데스크탑 앱 도구는 computerAct 를 따른다.
+  if (patch.browser !== undefined || patch.fastAct !== undefined || patch.computerAct !== undefined) syncMcp();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -2809,10 +2820,7 @@ configureFastAct({
 // 실험: 말로 다른 맥 앱 조작 — 맨 앞 앱이 DeX 가 아니면 말하는 도중 조작이 그 앱을 대상으로 한다(fast-act-computer.ts).
 configureComputerAct({
   enabled: () => loadConfig().computerAct === true,
-  showDex: () => {
-    showMain();
-    app.focus({ steal: true });
-  },
+  showDex: showDexFront,
 });
 // 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>

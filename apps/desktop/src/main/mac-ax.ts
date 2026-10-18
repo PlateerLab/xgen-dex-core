@@ -1,5 +1,6 @@
 /**
- * dex-ax(맥 접근성 도우미) 클라이언트 — 말로 다른 앱을 조작하는 빠른 조작(fast-act-computer)이 쓴다.
+ * dex-ax(맥 접근성 도우미) 클라이언트 — 말로 다른 앱을 조작하는 빠른 조작(fast-act-computer)과 에이전트의 데스크탑 앱
+ * 도구(desktop-tools)가 쓴다.
  *
  * 도우미는 처음 쓸 때 띄워 두고 JSON 한 줄씩 주고받는다(명령마다 기동 비용이 없고, 스냅샷의 요소 핸들을 들고 있다).
  * 설치본은 Contents/Resources/mac-ax/dex-ax(afterPack 이 빌드), 개발 실행은 native/mac-ax/bin/dex-ax
@@ -16,7 +17,8 @@ const TIMEOUT_MS = 4_000;
 
 export type AxFront = { app: string; bundleId: string; pid: number; presenting: boolean };
 /** frame 은 화면 전역 좌표 [x, y, w, h](왼쪽 위 원점). 메뉴 항목에는 없다. */
-export type AxRef = { ref: string; role: string; name: string; frame?: number[] };
+export type AxRef = { ref: string; role: string; name: string; frame?: number[]; /** 입력칸의 지금 값(200자까지). */ value?: string };
+export type AxApp = { app: string; bundleId: string; pid: number; path: string; front: boolean; hidden: boolean };
 export type AxSnapshot = AxFront & {
   /** 스냅샷 번호 — 도우미는 마지막 스냅샷의 요소만 들고 있어 그 뒤 스냅샷이 오면 번호(e1…)가 다른 요소를 가리킨다. */
   gen: number;
@@ -146,7 +148,7 @@ export async function axSnapshot(pid: number, budgetMs = 1_500): Promise<AxSnaps
 /** 스냅샷 gen 의 요소를 누른다 — 그 뒤 다른 스냅샷을 떴으면 거절한다(STALE). */
 export const AX_STALE = 'ax_stale_ref';
 export async function axPress(ref: string, gen: number): Promise<void> {
-  if (gen !== snapGen) throw new Error(`${AX_STALE}: 화면을 새로 읽어 번호가 바뀜`);
+  fresh(gen);
   await call('press', { ref });
 }
 
@@ -165,6 +167,32 @@ export async function axMinimize(pid: number): Promise<void> {
 
 export async function axActivate(pid: number): Promise<void> {
   await call('activate', { pid });
+}
+
+/** 실행 중인 일반 앱(Dock 에 보이는 앱). */
+export async function axApps(): Promise<AxApp[]> {
+  const r = await call('apps');
+  return Array.isArray(r.apps) ? (r.apps as AxApp[]) : [];
+}
+
+function fresh(gen: number): void {
+  if (gen !== snapGen) throw new Error(`${AX_STALE}: 화면을 새로 읽어 번호가 바뀜`);
+}
+
+export async function axFocus(ref: string, gen: number): Promise<void> {
+  fresh(gen);
+  await call('focus', { ref });
+}
+
+/** 입력칸 값을 통째로 바꾼다 — 다시 읽어 같지 않으면 실패. */
+export async function axSetValue(ref: string, gen: number, text: string): Promise<void> {
+  fresh(gen);
+  await call('setvalue', { ref, text });
+}
+
+/** 글자 입력 — 맨 앞 앱의 초점 요소로 간다. 16자씩 보내므로 긴 글은 시간이 걸린다. */
+export async function axType(text: string): Promise<void> {
+  await call('type', { text }, TIMEOUT_MS + Math.ceil(text.length / 16) * 30);
 }
 
 export function stopMacAx(): void {

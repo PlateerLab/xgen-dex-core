@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView, session, webContents, type WebContents } from 'electron';
+import { app, BrowserWindow, WebContentsView, session, webContents, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type {
   BrowserConnectionEvent,
@@ -28,6 +28,7 @@ import {
 import { CdpPageProxy } from './cdp-page-proxy';
 import { allowedBrowserUrl, browserPartition } from './browser-security';
 import type { BrowserHistoryRuntimeEvent } from './browser-history';
+import { BrowserSessionStore } from './browser-session';
 
 interface BrowserPageRuntime {
   info: BrowserPageInfo;
@@ -102,6 +103,16 @@ export class BrowserRuntimeError extends Error {
 }
 
 export class BrowserRuntime {
+  private sessionPersistence = false;
+
+  constructor(private readonly sessionStore?: BrowserSessionStore) {}
+
+  suspendSessionPersistence(): void {
+    if (this.sessionPersistence && this.accountPartition)
+      this.sessionStore?.save(this.accountPartition, this.state());
+    this.sessionPersistence = false;
+  }
+
   private enabled = false;
   private accountPartition = '';
   private sharedNewTabUrl = 'about:blank';
@@ -214,10 +225,25 @@ export class BrowserRuntime {
       this.clearPendingPopups(false);
       void this.closeAll();
     }
+    const restoreSession = this.accountPartition !== partition || !this.sessionPersistence;
     this.enabled = true;
     this.accountPartition = partition;
     this.popupPermissions = this.normalizedPopupPermissions(options.popupPermissions?.[partition]);
     this.hardenPartition(partition);
+    if (restoreSession) {
+      const saved = this.sessionStore?.load(partition);
+      for (const info of saved?.pages ?? []) {
+        this.pages.set(info.pageId, {
+          info,
+          contents: null,
+          window: null,
+          proxy: null,
+          automationReset: null,
+        });
+      }
+      this.activeByWorkflow = new Map(Object.entries(saved?.activeByWorkflow ?? {}));
+    }
+    this.sessionPersistence = true;
     this.emit();
   }
 
@@ -252,7 +278,10 @@ export class BrowserRuntime {
   }
 
   private emit(): void {
-    this.notify(this.state());
+    const state = this.state();
+    if (this.sessionPersistence && this.accountPartition)
+      this.sessionStore?.save(this.accountPartition, state);
+    this.notify(state);
   }
 
   private requireEnabled(): void {
@@ -1164,6 +1193,7 @@ export class BrowserRuntime {
   }
 
   async closeAll(): Promise<void> {
+    this.suspendSessionPersistence();
     const pages = [...this.pages.values()];
     for (const runtime of pages) this.rejectPendingConnection(runtime);
     this.pages.clear();
@@ -1196,6 +1226,6 @@ export class BrowserRuntime {
 let runtime: BrowserRuntime | null = null;
 
 export function getBrowserRuntime(): BrowserRuntime {
-  if (!runtime) runtime = new BrowserRuntime();
+  if (!runtime) runtime = new BrowserRuntime(new BrowserSessionStore(app.getPath('userData')));
   return runtime;
 }

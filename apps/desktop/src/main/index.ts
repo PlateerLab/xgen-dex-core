@@ -4340,6 +4340,7 @@ if (!gotLock) {
     /* stay resident in the tray */
   });
   app.on('before-quit', () => {
+    getBrowserRuntime().suspendSessionPersistence();
     quitRequested = true;
     appQuitting = true;
     saveOverlayGeometry(true); // don't drop a pending move/resize on quit

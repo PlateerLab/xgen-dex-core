@@ -307,7 +307,15 @@ func keys(_ combo: String) -> [String: Any] {
 
 func hide(_ pid: pid_t?) -> [String: Any] {
   guard let a = app(pid) else { return ["ok": false, "error": "앱을 찾지 못함"] }
-  return ["ok": a.hide()]
+  // NSRunningApplication.hide() 는 런루프 없는 이 도우미에서 숨기고도 false 를 돌려줬다(10/18 PowerPoint 슬라이드 쇼 —
+  // 실패로 알고 DeX 를 앞으로 안 가져와 뒤의 다른 앱이 앞에 왔다). 접근성 속성으로 숨기고, 그 속성을 다시 읽어 확인한다.
+  let axApp = AXUIElementCreateApplication(a.processIdentifier)
+  if AXUIElementSetAttributeValue(axApp, kAXHiddenAttribute as CFString, kCFBooleanTrue) != .success { _ = a.hide() }
+  for _ in 0..<20 {
+    if (attr(axApp, kAXHiddenAttribute) as? Bool) == true { return ["ok": true] }
+    usleep(50_000)
+  }
+  return ["ok": false, "error": "숨겨지지 않음"]
 }
 
 func minimize(_ pid: pid_t?) -> [String: Any] {

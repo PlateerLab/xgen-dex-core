@@ -18,7 +18,7 @@ test('발표 중이면 발표 끝내기·다음·이전을 붙이고, 창 최소
     '발표(전체 화면) 끝내기 (Esc 키)',
     '다음 슬라이드·장 (→ 키)',
     '이전 슬라이드·장 (← 키)',
-    'PowerPoint 앱 숨기기',
+    'PowerPoint 내리기 (앱 숨기기)',
     'XGen Dex 앞으로 가져오기',
   ]);
   assert.deepEqual(Object.keys(sys), ['e9001', 'e9002', 'e9003', 'e9004', 'e9005']);
@@ -26,10 +26,10 @@ test('발표 중이면 발표 끝내기·다음·이전을 붙이고, 창 최소
 
 test('발표 중이 아니면 키 조작 없이 숨기기·최소화·DeX 앞으로', () => {
   const sys = systemActions({ app: 'Finder', pid: 1, presenting: false, window: '다운로드' }, () => undefined);
-  assert.deepEqual(names(sys), ['Finder 앱 숨기기', 'Finder 창 최소화', 'XGen Dex 앞으로 가져오기']);
+  assert.deepEqual(names(sys), ['Finder 내리기 (앱 숨기기)', 'Finder 창 최소화', 'XGen Dex 앞으로 가져오기']);
   // 창이 없으면 최소화할 것도 없다
   assert.deepEqual(names(systemActions({ app: 'Finder', pid: 1, presenting: false }, () => undefined)), [
-    'Finder 앱 숨기기',
+    'Finder 내리기 (앱 숨기기)',
     'XGen Dex 앞으로 가져오기',
   ]);
 });

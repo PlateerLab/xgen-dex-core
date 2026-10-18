@@ -108,7 +108,17 @@ export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' 
     add({ role: 'button', name: '다음 슬라이드·장 (→ 키)', run: key('right') });
     add({ role: 'button', name: '이전 슬라이드·장 (← 키)', run: key('left') });
   }
-  add({ role: 'button', name: `${ax.app} 앱 숨기기`, run: () => axHide(ax.pid) });
+  // "내리기" 를 이름에 둔다 — "앱 숨기기" 만이면 "ppt 내려줘" 가 발표 끝내기(Esc)로 가서 앱 창이 앞에 남았다
+  // (10/18 dev 판단 모델: 내려줘류 7문장 0/7 → 7/7, 발표 끝내기·다음·이전·DeX 앞으로 문장은 그대로). 숨긴 뒤에는
+  // 말을 듣는 DeX 를 앞으로 — 다음 말이 뒤에 있던 아무 앱이 아니라 DeX 로 간다.
+  add({
+    role: 'button',
+    name: `${ax.app} 내리기 (앱 숨기기)`,
+    run: async () => {
+      await axHide(ax.pid);
+      showDex();
+    },
+  });
   if (ax.window !== undefined && !ax.presenting) add({ role: 'button', name: `${ax.app} 창 최소화`, run: () => axMinimize(ax.pid) });
   add({ role: 'button', name: `${DEX_NAME} 앞으로 가져오기`, run: async () => showDex() });
   return out;

@@ -121,7 +121,8 @@ test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 
       get lastTarget() {
         return lastTarget;
       },
-      boundary: async () => ({ start: -1, conf: 0.999 }),
+      // 앞부분을 실행하기 전 확인에는 새 요청(검색해줘), 실행한 뒤에는 꼬리말로 답한다 — 꼬리말 처리를 보려고.
+      boundary: async () => (lastTarget ? { start: -1, conf: 0.999 } : { start: 0, conf: 0.9 }),
       readiness: async (texts) =>
         texts.map((t) => ({ ready: t === '브랜드명에 삼성 입력하고' ? 'act_now' : 'wait', p: 0.9 })),
       handle: async (text, _th, guard) => {
@@ -197,4 +198,21 @@ test('말 전체가 여러 단계 작업이면 앞부분만 떼어 실행하지 
   await seg.final('PDF에 있는 상품 설명으로 상품상세 써서 넣어줘');
   assert.deepEqual(handled, ['PDF에 있는 상품 설명으로 상품상세 써서 넣어줘']);
   assert.equal(seg.unhandled, 'PDF에 있는 상품 설명으로 상품상세 써서 넣어줘');
+});
+
+test('앞부분만 떼면 완결된 말이라도 남은 말이 그 꼬리면 쪼개지 않고 통째로 판단한다', async () => {
+  const handled: string[] = [];
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: -1, conf: 0.97 }),
+    readiness: async (texts) => texts.map((t) => ({ ready: t === '임시저장한 상품 확인' || t.endsWith('이동해줘') ? 'act_now' : 'wait', p: 0.98 })),
+    handle: async (text) => {
+      handled.push(text);
+      return { acted: false, reason: '요소 확신 낮음 0.4', ms: 0 };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  await seg.final('임시저장한 상품 확인 페이지로 이동해줘');
+  assert.deepEqual(handled, ['임시저장한 상품 확인 페이지로 이동해줘']);
+  assert.equal(seg.unhandled, '임시저장한 상품 확인 페이지로 이동해줘');
 });

@@ -108,6 +108,14 @@ function platformText(value: string, maxCharacters: number, macMaxBytes: number)
   return out;
 }
 
+const publishListeners = new Set<(event: NotificationEvent) => void>();
+
+/** 알림이 나갈 때마다(보이든 말든) 듣는다 — 빠른 조작이 서버 답의 끝을 기억할 때(fast-act-chat). 끄는 함수를 돌려준다. */
+export function onNotificationPublished(listener: (event: NotificationEvent) => void): () => void {
+  publishListeners.add(listener);
+  return () => publishListeners.delete(listener);
+}
+
 export class NotificationCenter {
   private context: NotificationRendererContext = {
     visibleChats: [],
@@ -155,6 +163,13 @@ export class NotificationCenter {
     event: NotificationEvent,
     options: NotificationPublishOptions = {},
   ): NotificationPublishResult {
+    for (const listener of publishListeners) {
+      try {
+        listener(event);
+      } catch {
+        // 듣는 쪽 오류로 알림을 막지 않는다.
+      }
+    }
     if (!Notification.isSupported()) return { shown: false, reason: 'unsupported' };
     const profile = this.deps.profile();
     if (!options.bypassPolicy && !notificationAllowed(profile, event)) {

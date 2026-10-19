@@ -18,13 +18,24 @@ import { stripBrowserContext } from '@dex/protocol/browser';
 import { stripVoiceContext } from '@dex/protocol/voice-context';
 import { diag } from './diag-log';
 import { actionRow, replyFor } from './fast-act-reply';
+import { askedProbability } from './fast-act';
 import { decisionPost, visiblePage } from './fast-act-runner';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, type Outcome, type VoiceAgent } from './voice-segmenter';
+import { onNotificationPublished } from './notification-center';
 import { takeVoiceTurn } from './voice-turns';
 
 const SCOPE = 'fast-act';
+const DRY = process.env.DEX_FAST_ACT_DRY === '1';
 const now = (): number => performance.now();
+/** 직전 서버 답이 이 확률 이상으로 묻는 답이면 다음 말은 서버로 넘긴다(askedProbability). */
+const ASKED_MIN = 0.5;
+
+/** 대화별 직전 서버 답의 끝(알림 본문, 180자) — 바로 다음 말이 그 답에 대한 대답인지 한 번 본다. */
+const lastServerReply = new Map<string, string>();
+onNotificationPublished((e) => {
+  if (e.type === 'chat.completed' && e.interactionId && e.body) lastServerReply.set(e.interactionId, e.body);
+});
 
 /** 렌더러가 붙인 봉투(브라우저·Teams 컨텍스트)를 떼고 사용자 원문만 남긴다. */
 function userText(req: ChatRequest): string | null {
@@ -95,6 +106,14 @@ export async function tryFastAct(
     return false;
   }
   const t0 = now();
+  // 직전 턴을 서버가 묻는 말로 끝냈다 — 이 말은 그 물음에 대한 대답이라 서버로. 대화 맥락은 서버 LLM 만 안다.
+  const reply = lastServerReply.get(req.interactionId);
+  lastServerReply.delete(req.interactionId);
+  if (reply) {
+    const p = await askedProbability(decisionPost()!, reply).catch(() => 0);
+    diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3) });
+    if (p >= ASKED_MIN) return false;
+  }
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
   const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
@@ -105,13 +124,20 @@ export async function tryFastAct(
     boundary: (utterance, done, rest) => inner.boundary(utterance, done, rest),
     readiness: (texts) => inner.readiness(texts),
     handle: (said, th, guard, abort, utterance) =>
-      inner.handle(said, th, async (...a) => !signal.aborted && (await guard(...a)), () => signal.aborted || abort(), utterance),
+      // DEX_FAST_ACT_DRY=1(개발용) — 판단까지만 하고 실행하지 않는다. 판단 점수를 잴 때 화면·데이터를 바꾸지 않으려고.
+      inner.handle(said, th, async (...a) => !DRY && !signal.aborted && (await guard(...a)), () => signal.aborted || abort(), utterance),
   };
   const decided: Array<{ text: string; outcome: Outcome }> = [];
   const seg = new Segmenter(agent, (e) => {
     if (e.type === 'decide') decided.push({ text: e.text, outcome: e.outcome });
   });
   await seg.final(text);
+  if (DRY) {
+    diag(SCOPE, 'dry', { text, decisions: decided.map((d) => `${d.text} → ${d.outcome.acted ? `실행 ${d.outcome.target}` : d.outcome.reason}`) });
+    emit({ kind: 'text', content: '(판단만 했어요 — DEX_FAST_ACT_DRY)' });
+    emit({ kind: 'end' });
+    return true;
+  }
   if (signal.aborted && inner.actions.length === 0) return true;
   const ms = Math.round(now() - t0);
   diag(SCOPE, inner.actions.length ? 'done' : 'to server', {

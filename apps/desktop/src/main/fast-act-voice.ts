@@ -103,6 +103,8 @@ const SMALL_VIEW = 100;
 /** 숨은 탭을 꺼낸 뒤 배치가 끝나길 기다리는 한도. */
 /** 클릭·입력 하나로 끝나는 일일 확률이 이보다 낮으면 여러 단계·글쓰기 작업으로 보고 서버로 넘긴다(classify 의 single). */
 const SINGLE_MIN = 0.5;
+/** 말한 대상이 이 화면에 있을 확률이 이보다 낮으면 서버로 넘긴다(classify 의 onscreen). */
+const ONSCREEN_MIN = 0.5;
 const REVEAL_WAIT_MS = 1_500;
 /** 조회 팝업의 적용 버튼 이름(pickInPopup) — 이름이 이것뿐인 버튼만. */
 const APPLY_BUTTON = /^(적용|선택|확인)$/;
@@ -446,6 +448,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
           questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }, gate_intent: GATE_INTENT_Q },
         }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
         const multi = (a.gate_intent?.probabilities?.act ?? 1) < SINGLE_MIN;
+        if (process.env.DEX_VOICE_TEST === '1')
+          diag(SCOPE, 'readiness', { text: t, ready: a.ready?.choice, act_now: +(a.ready?.probabilities?.act_now ?? 0).toFixed(3), act: +(a.gate_intent?.probabilities?.act ?? 0).toFixed(3) });
         return { ready: multi ? 'multi' : (a.ready?.choice ?? 'wait'), p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
@@ -1085,11 +1089,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (text.length > LONG_INSTRUCTION && !quotedText(text)) return no('지시가 너무 김 — 넣을 글은 「」로 감싸 주세요');
     const cls = await classify(post, judgedText(text), origin, scr);
     const rc = cls.gate.toFixed(2);
-    diag(SCOPE, 'classify', { text, ready: cls.ready, gate: +rc, intent: cls.intent });
+    diag(SCOPE, 'classify', { text, ready: cls.ready, gate: +rc, intent: cls.intent, onscreen: cls.onscreen });
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
     // 여러 단계 작업("자료 읽고 … 화면에 입력해줘")·글쓰기("상품상세 써서 넣어줘")는 서버로 — ready 가 act_now 라도.
     // 10/19 BO: 칸 지시 71개는 act 최저 0.94, 자료를 읽고 채우라는 말·글쓰기는 0.33 이하.
     if ((cls.single ?? 1) < SINGLE_MIN) return no(`여러 단계·글쓰기 작업 ${cls.single!.toFixed(2)}`);
+    // 말한 대상이 화면에 없다(다른 페이지로 가야 함) — 서버로. 10/19 BO: 칸 지시 29개는 0.977 이상, 화면에 없는 페이지로 가라는
+    // 말("임시저장한 상품 확인 페이지로", "상품 승인 관리 페이지로", "대시보드로")은 0.01~0.04.
+    if ((cls.onscreen ?? 1) < ONSCREEN_MIN) return no(`화면에 없는 대상 ${cls.onscreen!.toFixed(2)}`);
     // 말이 끝났는데 동사 없이 요소 이름만 말한 경우("이달의 블로그 탭", "검색 버튼") — 모델은 '기다림' 으로
     // 답하지만, 더 올 말이 없으니 그 요소를 누르라는 뜻으로 본다. 대신 고른 확신이 높고 말이 그 이름을
     // 가리킬 때만 한다(아래).

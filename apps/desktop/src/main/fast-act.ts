@@ -85,6 +85,12 @@ function gateScore(answers: Record<string, ChoiceAnswer>): number {
   return ps.reduce((a, b) => a + b, 0) / ps.length;
 }
 
+const ONSCREEN_Q: ChoiceQuestion = {
+  type: 'choice',
+  instructions: 'Is the thing the user wants to click, choose or type into shown on this screen, so that one action on it finishes the request?',
+  criteria: { yes: 'yes, it is on this screen', no: 'no, it is not on this screen (needs navigation, search or more steps)' },
+};
+
 /** 클릭·입력 하나(act)인지, 글쓰기(answer)·여러 단계(multi)인지 — E13 의 학습된 ready 에는 뒤 둘이 없어 같이 묻는다. */
 export const GATE_INTENT_Q = GATE_QUESTIONS.gate_intent.q;
 
@@ -317,6 +323,8 @@ export type Classification = {
   single?: number;
   /** gate_intent 의 확률 전체(act·answer·multi) — 로그용. */
   intent?: Record<string, number>;
+  /** 말한 대상이 이 화면에 있어 한 번에 끝날 확률(onscreen). */
+  onscreen?: number;
   ms: number;
 };
 
@@ -339,6 +347,9 @@ export async function classify(
   const e13 = scr !== null;
   // ready 에는 여러 단계·글쓰기 선택지가 없어 "자료 읽고 … 화면에 입력해줘" 도 act_now 였다(10/19) — 같이 묻는다.
   if (e13) (questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }), (questions.gate_intent = GATE_INTENT_Q);
+  // 말한 대상이 이 화면에 있나 — ready 는 할 일이 분명하면 act_now 라, 화면에 없는 페이지로 가라는 말도 비슷한 이름의 버튼을
+  // 눌렀다("임시저장한 상품 확인 페이지로 이동해줘" → 임시저장 버튼). 학습되지 않은 질문이다.
+  if (e13) questions.onscreen = ONSCREEN_Q;
   else for (const [k, g] of Object.entries(GATE_QUESTIONS)) questions[k] = g.q;
   if (candidates.length > 1) {
     const criteria: Record<string, string> = {};
@@ -354,7 +365,26 @@ export async function classify(
     if (!text && picked) text = candidates[Number(picked.slice(1))] ?? null;
   }
   const gate = e13 ? (a.ready?.probabilities?.act_now ?? 0) : gateScore(a);
-  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, ms: now() - t0 };
+  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, onscreen: a.onscreen?.probabilities?.yes, ms: now() - t0 };
+}
+
+/**
+ * 직전 서버 답이 사용자에게 묻거나 고르라며 끝나는가 — 그 확률. 그렇다면 바로 다음 말은 그 물음에 대한 대답이라 빠른 조작이 새
+ * 지시로 실행하면 안 된다(10/19 BO: "어느 상품에 작성할까요?" 다음의 "001 데스크 정리함으로 써서 넣어줘" 를 업체상품번호에
+ * 넣음). "사용자 말이 대답인가" 로 물으면 판단 모델이 0.006 으로 답했다 — 서버 답만 보고 묻는다.
+ */
+export async function askedProbability(post: DecisionPost, assistant: string): Promise<number> {
+  const a = await post({
+    state: `Assistant: ${assistant}`,
+    questions: {
+      asked: {
+        type: 'choice',
+        instructions: "Does the assistant's message end by asking the user a question or asking the user to choose something?",
+        criteria: { asks: 'yes, it asks the user', done: 'no, it reports what was done' },
+      },
+    },
+  });
+  return a.asked?.probabilities?.asks ?? 0;
 }
 
 export type Pick = {

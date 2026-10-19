@@ -168,7 +168,15 @@ export class Segmenter {
     // 써서 넣어줘" 의 "… 써서" 를 따로 실행해 상품상세에 "상품" 을 넣음). 그러면 말 전체가 handle 로 가서 서버로 넘어간다.
     const r = await this.agent.readiness([cand, ...prefixes]).catch(() => []);
     if (r[0]?.ready === 'multi') return null;
-    for (let i = 0; i < prefixes.length; i++) if (r[i + 1]?.ready === 'act_now' && r[i + 1].p >= th.intent) return prefixes[i];
+    // 남은 말이 새 요청인지 실행 전에 묻는다 — 앞부분만 떼어 보면 완결된 말이라도("임시저장한 상품 확인" 0.98) 남은 말이 그
+    // 꼬리면("페이지로 이동해줘") 한 요청이다. 실행한 뒤에 물으면 이미 엉뚱한 것(임시저장 버튼)을 누른 뒤다(10/19 BO). 긴 앞부분부터
+    // 보고, 남은 말이 꼬리면 더 짧은 앞부분을 본다("전시안함 선택하고 선물하기 해당없음으로 | 해줘" → "전시안함 선택하고 | …").
+    for (let i = 0; i < prefixes.length; i++) {
+      if (r[i + 1]?.ready !== 'act_now' || r[i + 1].p < th.intent) continue;
+      const rest = w.slice(words(prefixes[i]).length);
+      const b = await this.agent.boundary(cand, prefixes[i], rest).catch(() => ({ start: 0, conf: 0 }));
+      if (b.start >= 0) return prefixes[i];
+    }
     return null;
   }
 

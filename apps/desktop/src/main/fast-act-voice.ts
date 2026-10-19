@@ -42,6 +42,7 @@ import {
   inDocOrder,
   labelChoices,
   labelSearchTerms,
+  labelToggles,
   nearNames,
   rowsNamed,
   valueToPick,
@@ -149,6 +150,9 @@ const SEARCH_BUTTON = /^(검색|조회|찾기|search|find|go)$/i;
 /** 항목을 고르라는 말·고른 것을 풀라는 말 — 항목 안의 체크박스를 누를지(checkOf). */
 const SELECT_WORD = /(선택|체크|고르|골라|check|select)/i;
 const UNSELECT_WORD = /(해제|풀어|uncheck|deselect)/i;
+/** 접기·펼치기 버튼(labelToggles)에 바라는 상태 — 펼치라는 말, 접으라는 말. */
+const OPEN_WORD = /(펼|열어|열기|expand|open)/i;
+const CLOSE_WORD = /(접|닫|collapse|close)/i;
 const isSearchField = (r: { role: string; name?: string }): boolean => r.role === 'searchbox' || /검색|search/i.test(r.name ?? '');
 /** 누르기만 해서는 아무 일도 안 일어나는 입력칸. */
 const TEXT_FIELD = new Set(['textbox', 'searchbox']);
@@ -215,6 +219,8 @@ type Snap = {
   states: Record<string, boolean>;
   /** 화면 줄로 넣은 숨은 파일 칸(줄 번호별, withFileFields). */
   files: Record<string, FileField>;
+  /** 접기·펼치기 버튼이 지금 펼쳐져 있는가(labelToggles). */
+  open: Record<string, boolean>;
 };
 
 export class BrowserVoiceAgent implements VoiceAgent {
@@ -318,12 +324,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const choices = labelChoices(boxes.refs, data?.snapshot ?? '');
         // 검색 기준 상자 뒤의 이름 없는 입력칸은 "기준 검색어".
         const terms = labelSearchTerms(choices.refs, data?.snapshot ?? '');
-        const labels = { ...named.labels, ...boxes.labels, ...choices.labels, ...terms.labels };
+        // 이름 없는 접기·펼치기 버튼은 "제목 펼치기/접기".
+        const toggles = labelToggles(terms.refs, data?.snapshot ?? '');
+        const labels = { ...named.labels, ...boxes.labels, ...choices.labels, ...terms.labels, ...toggles.labels };
         const checks = checkOf(data?.snapshot ?? '');
         const items = itemOf(data?.snapshot ?? '');
         const disabled = disabledOf(data?.snapshot ?? '');
         const states = checkStates(data?.snapshot ?? '');
-        const withFiles = withFileFields(terms.refs, (await fileFields) ?? []);
+        const withFiles = withFileFields(toggles.refs, (await fileFields) ?? []);
         return {
           at: now(),
           pageId: page.pageId,
@@ -337,6 +345,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           disabled,
           states,
           files: withFiles.files,
+          open: toggles.open,
         };
       });
     this.inflight = p.catch(() => null);
@@ -506,6 +515,18 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['is', 'checked', ref], 5_000, generation);
       const checked = (run.result as { data?: { checked?: unknown } } | undefined)?.data?.checked;
       return typeof checked === 'boolean' ? checked : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 접기·펼치기 버튼이 지금 펼쳐져 있나(aria-expanded) — 못 읽으면 null. */
+  private async openOf(pageId: string, ref: string, generation: number): Promise<boolean | null> {
+    try {
+      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', 'attr', ref, 'aria-expanded'], 5_000, generation);
+      const data = (run.result as { data?: Record<string, unknown> } | undefined)?.data ?? {};
+      const value = Object.values(data).find((v) => v === 'true' || v === 'false');
+      return value === undefined ? null : value === 'true';
     } catch {
       return null;
     }
@@ -1086,6 +1107,15 @@ export class BrowserVoiceAgent implements VoiceAgent {
       skipped.sentence = `${josa(skipped.display, '은', '는')} 이미 ${want ? '체크돼' : '해제돼'} 있어요.`;
       return { acted: true, kind: 'press', target: skipped.label, ms: now() - t0, effect: 'ok' };
     }
+    // 접기·펼치기 버튼도 같다 — 이미 펼쳐진 구역을 "펼쳐줘" 하면 누르지 않는다(누르면 접힌다).
+    const section = pick.ref in snap.open ? snap.labels[pick.ref] : undefined;
+    const wantOpen = section === undefined ? undefined : CLOSE_WORD.test(said) ? false : OPEN_WORD.test(said) ? true : undefined;
+    if (section !== undefined && wantOpen !== undefined && snap.open[pick.ref] === wantOpen) {
+      if (th.partial) return no('이미 그 상태 — 말이 끝난 뒤', pick.top);
+      const skipped = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
+      skipped.sentence = `${josa(`"${section}"`, '은', '는')} 이미 ${wantOpen ? '펼쳐져' : '접혀'} 있어요.`;
+      return { acted: true, kind: 'press', target: skipped.label, ms: now() - t0, effect: 'ok' };
+    }
     if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {
       return no(GUARDED, pick.top);
     }
@@ -1158,6 +1188,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
       recorded.tell = `${josa(recorded.display, '이', '가')} 선택되지 않았어요. 지금은 고를 수 없는 상태인 것 같아요.`;
       diag(SCOPE, 'choice-missed', { text, ref, role: choiceRole });
     }
+    // 접기·펼치기 — 눌러서 바뀐 상태로 답한다("\"부가 정보\"를 펼쳤어요"). 그대로면 안 바뀌었다고 알린다.
+    const nowOpen = section !== undefined && done === 'click' ? await this.openOf(page.pageId, ref, snap.gen) : null;
+    const toggleMissed = nowOpen !== null && nowOpen === snap.open[pick.ref];
+    if (section !== undefined && nowOpen !== null) {
+      recorded.sentence = toggleMissed
+        ? `${josa(`"${section}"`, '을', '를')} ${nowOpen ? '접으려고' : '펼치려고'} 눌렀는데 그대로예요.`
+        : `${josa(`"${section}"`, '을', '를')} ${nowOpen ? '펼쳤어요' : '접었어요'}.`;
+    }
     // 선택 상자를 열었고 말에 고를 값이 있다("구매연령 성인으로 바꿔줘") — 열린 목록에서 그 항목을 누른다.
     const chosen =
       done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th, currentValue(element.name ?? '', snap.labels[pick.ref])) : null;
@@ -1177,7 +1215,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       target: after?.label ?? label,
       text: (typedAfter?.text ?? (opened ? null : typed)) ?? undefined,
       ms: now() - t0,
-      effect: missed ? 'none' : 'ok',
+      effect: missed || toggleMissed ? 'none' : 'ok',
     };
   }
 }

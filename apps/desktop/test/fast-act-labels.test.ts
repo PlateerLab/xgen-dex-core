@@ -7,6 +7,7 @@ import {
   itemOf,
   labelChoices,
   labelSearchTerms,
+  labelToggles,
   nearNames,
   rowsNamed,
   valueToPick,
@@ -411,3 +412,34 @@ test('스냅샷에서 체크박스·선택지의 지금 상태 — checked 표�
   ].join('\n');
   assert.deepEqual(checkStates(snapshot), { e257: true, e259: false, e243: true });
 });
+
+test('labelToggles: 제목 바로 뒤 이름 없는 접기·펼치기 버튼에 제목으로 이름, 상태는 따로(10/19 BO)', () => {
+  const snapshot = [
+    '      - heading "부가 정보" [level=3, ref=e18]',
+    '      - generic',
+    '        - button [expanded=false, ref=e92]',
+    '      - heading "상품이미지 정보" [level=3, ref=e19]',
+    '      - generic',
+    '        - button [expanded=true, ref=e93]',
+    '      - button "AI입력" [ref=e6]',
+    '      - button [expanded=false, ref=e7]',
+    '      - button [ref=e8]',
+  ].join('\n');
+  const refs = {
+    e18: { role: 'heading', name: '부가 정보' },
+    e92: { role: 'button', name: '' },
+    e19: { role: 'heading', name: '상품이미지 정보' },
+    e93: { role: 'button', name: '' },
+    e6: { role: 'button', name: 'AI입력' },
+    e7: { role: 'button', name: '' },
+    e8: { role: 'button', name: '' },
+  } as ElementRefs;
+  const { refs: out, labels, open } = labelToggles(refs, snapshot);
+  assert.equal(out.e92.name, '부가 정보 펼치기·접기');
+  assert.equal(out.e93.name, '상품이미지 정보 펼치기·접기');
+  assert.deepEqual(open, { e92: false, e93: true });
+  assert.equal(out.e7.name, ''); // 앞이 제목이 아니다
+  assert.equal(out.e8.name, ''); // 펼침 상태가 없다
+  assert.deepEqual(labels, { e92: '부가 정보', e93: '상품이미지 정보' });
+});
+

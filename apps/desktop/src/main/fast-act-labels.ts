@@ -330,6 +330,42 @@ export function editableAsTextbox(refs: ElementRefs, snapshotText: string): Elem
 }
 
 /**
+ * 이름 없는 접기·펼치기 버튼에 바로 앞 제목으로 이름을 붙인다 — `"부가 정보 펼치기·접기"`. open = 버튼별 지금 펼쳐져 있는가.
+ *
+ * 관리자 화면의 구역 머리는 제목 옆 ⌄ 아이콘 버튼으로 여닫는데 버튼에는 이름이 없고 `button [expanded=false]` 상태만 있다.
+ * 그래서 "부가 정보 펼쳐줘" 에 판단 모델은 제목 글자를 1.0 으로 눌렀고(제목은 눌러도 안 열린다) "눌렀어요" 로 답했다(10/19 BO).
+ * 버튼 바로 앞(이름 없는 감싸개는 건너뛴다)이 제목일 때만 붙인다. 이름에 지금 상태("펼치기"/"접기" 하나)를 넣으면 판단 모델이 구역
+ * 대신 동사를 따라간다 — 펼쳐진 "부가 정보 접기" 옆의 "SEO 정보 펼치기" 를 "부가 정보 펼쳐줘" 에 골랐다(10/19). 그래서 이름은 구역만
+ * 가리키고, 이미 그 상태인지는 open 으로 실행하는 쪽이 본다(체크박스와 같다).
+ */
+export function labelToggles(
+  refs: ElementRefs,
+  snapshotText: string,
+): { refs: ElementRefs; labels: Record<string, string>; open: Record<string, boolean> } {
+  const raw = snapshotText.split('\n');
+  const lines = raw.map(snapLine);
+  const out: ElementRefs = { ...refs };
+  const labels: Record<string, string> = {};
+  const states: Record<string, boolean> = {};
+  lines.forEach((l, i) => {
+    const open = raw[i].match(/\bexpanded=(true|false)\b/)?.[1];
+    if (!l?.ref || l.role !== 'button' || l.name || !open || !refs[l.ref] || refs[l.ref].name) return;
+    let before: SnapLine | null = null;
+    for (let j = i - 1; j >= 0 && !before; j--) {
+      const p = lines[j];
+      if (p && (p.ref || p.name)) before = p;
+    }
+    if (!before || before.role !== 'heading') return;
+    const label = before.name.replace(/[*:：]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!label || label.length > 30) return;
+    out[l.ref] = { ...out[l.ref], name: `${label} 펼치기·접기` };
+    labels[l.ref] = label;
+    states[l.ref] = open === 'true';
+  });
+  return { refs: out, labels, open: states };
+}
+
+/**
  * 제목 아래 누름 상자에 그 제목을 칸 이름으로 붙인다 — 스냅샷 글만으로.
  *
  * 관리자 화면의 "찾기" 칸(협력사·브랜드·카테고리: 누르면 검색 팝업이 뜨는 상자)은 역할 없는 div 라 스냅샷에

@@ -354,6 +354,7 @@ export class DesktopNativeSessionModel {
   }
   private notice(notice: DesktopNativeNotice): void {
     if (this.disposed) return;
+    if (notice.type === 'capability-presence') return;
     if (notice.type === 'cleared') { this.clear(); return; }
     if ('view' in notice.value && notice.value.view === 'capabilities') return;
     if (this.waiting) { this.buffered = notice; return; }

@@ -76,7 +76,7 @@ export function expectedDesktopNativeOrigin(value: string): string | null {
 }
 
 function belongsToScope(notice: DesktopNativeNotice, origin: string, userId: string): boolean {
-  if (notice.type === 'cleared') return true;
+  if (notice.type === 'cleared' || notice.type === 'capability-presence') return true;
   return notice.value.platform_type === 'desktop'
     && notice.value.profile === 'desktop'
     && notice.value.server_url === origin

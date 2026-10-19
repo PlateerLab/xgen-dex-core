@@ -51,6 +51,7 @@ export class NativeCapabilityRpcHost {
   private readonly connections = new Map<string, Connection>();
   private readonly pending = new Map<string, PendingConnection>();
   private generation = 0;
+  private lifecycleGeneration = 0;
   private closed = false;
   private draining: Promise<void> = Promise.resolve();
 
@@ -70,9 +71,11 @@ export class NativeCapabilityRpcHost {
   async request(method: string, params: Record<string, unknown>): Promise<NativeRpcResult> {
     if (this.closed) throw new DexError('auth_required', '네이티브 호스트가 종료되었습니다.');
     if (method === 'native/confirm-capability') return this.confirm(params);
+    const lifecycleGeneration = this.lifecycleGeneration;
     exactFields(params, ['profile', 'user_id']);
     const target = await this.target(params);
-    if (method === 'native/connect-capabilities') return this.connect(target);
+    this.assertLifecycle(lifecycleGeneration);
+    if (method === 'native/connect-capabilities') return this.connect(target, lifecycleGeneration);
     if (method === 'native/capability-status') return this.result(target, this.connections.get(target.key)?.controller.snapshot() ?? CLOSED);
     if (method === 'native/disconnect-capabilities') {
       await this.disconnect(target.key);
@@ -84,6 +87,7 @@ export class NativeCapabilityRpcHost {
   cancel(): void { void this.stop(); }
 
   async stop(): Promise<void> {
+    this.lifecycleGeneration++;
     const pending = [...this.pending.values()];
     for (const item of pending) item.control.abort();
     this.pending.clear();
@@ -100,12 +104,13 @@ export class NativeCapabilityRpcHost {
 
   close(): void { this.closed = true; this.cancel(); }
 
-  private async connect(target: Target): Promise<NativeRpcResult> {
+  private async connect(target: Target, lifecycleGeneration: number): Promise<NativeRpcResult> {
     const socket = this.options.socket?.(target.origin);
     if (socket && !socket.openCapabilities) {
       throw new DexError('protocol_mismatch', '이 네이티브 호스트는 capability 연결을 지원하지 않습니다.');
     }
     await this.disconnect(target.key);
+    this.assertLifecycle(lifecycleGeneration);
     const generation = ++this.generation;
     const control = new AbortController();
     let finish!: () => void;
@@ -180,6 +185,12 @@ export class NativeCapabilityRpcHost {
     const closing = connection.controller.close().catch(() => undefined);
     this.draining = Promise.all([this.draining, closing]).then(() => undefined);
     await closing;
+  }
+
+  private assertLifecycle(generation: number): void {
+    if (this.closed || generation !== this.lifecycleGeneration) {
+      throw new DexError('auth_required', 'capability 연결 상태가 변경되었습니다. 다시 연결하세요.');
+    }
   }
 
   private tools(): { tools: readonly NativeCapabilityTool[]; call: TrustedNativeCapabilityTools['call'] } {

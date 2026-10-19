@@ -4,7 +4,7 @@ import type { AgentSessionMutationConflict, AgentSessionMutationConflictCode } f
 import { parseAgentFocus } from '@dex/protocol/agent-session';
 import type { AgentSessionLifecycleConflict } from '@dex/protocol/agent-session-lifecycle';
 import { NativeSessionRpcHost, type NativeSessionHostOptions } from '@dex/rpc/native-session-host';
-import type { DesktopNativeMutationFailure, DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
+import type { DesktopCapabilityPresence, DesktopNativeMutationFailure, DesktopNativeReply, DesktopNativeNotice } from '../native-session-types';
 
 export interface DesktopNativeContext { origin: string; userId: string | null }
 export interface DesktopNativeOptions extends NativeSessionHostOptions {
@@ -63,10 +63,35 @@ export class DesktopNativeSessions {
   private host: NativeSessionRpcHost | null = null;
   private scope: string | null = null;
   private generation = 0;
+  private capabilityGeneration = 0;
+  private readonly presenceBlocks = new Set<'locked' | 'suspended' | 'inactive'>();
+  private capabilityClosing = 0;
   constructor(private readonly options: DesktopNativeOptions) {}
+  capabilityPresence(): DesktopCapabilityPresence {
+    const reason = (['suspended', 'locked', 'inactive'] as const).find((value) => this.presenceBlocks.has(value))
+      ?? (this.capabilityClosing ? 'closing' : null);
+    return { available: reason === null, reason };
+  }
+  private publishPresence(): void {
+    this.options.notify({ type: 'capability-presence', presence: this.capabilityPresence() });
+  }
+  /** Only the main-process OS observer calls this; renderer requests cannot set presence. */
+  setCapabilityPresence(reason: 'locked' | 'suspended' | 'inactive', blocked: boolean): void {
+    if (this.presenceBlocks.has(reason) === blocked) return;
+    if (blocked) this.presenceBlocks.add(reason); else this.presenceBlocks.delete(reason);
+    this.capabilityGeneration++;
+    if (blocked && this.host) {
+      this.capabilityClosing++;
+      // stopCapabilities synchronously removes pending/owned connections before yielding.
+      const closing = this.host.stopCapabilities();
+      void closing.finally(() => { this.capabilityClosing--; this.publishPresence(); }).catch(() => {});
+    }
+    this.publishPresence();
+  }
   reset(): void {
-    this.generation++; this.host?.close(); this.host = null; this.scope = null;
+    this.generation++; this.capabilityGeneration++; this.host?.close(); this.host = null; this.scope = null;
     this.options.notify({ type: 'cleared' });
+    this.publishPresence();
   }
   private current() {
     const current = this.options.current();
@@ -91,6 +116,12 @@ export class DesktopNativeSessions {
       const params = object(rawParams);
       // Renderer cannot select another origin/profile/account or make a host platform override.
       if (['profile', 'user_id', 'platform', 'platform_type', 'server_url', 'origin'].some((key) => key in params)) throw new DexError('usage_error', '기기·세션 계정과 서버는 앱이 지정합니다.');
+      const capabilityMethod = ['capabilities', 'select-capabilities', 'capability-approvals', 'adopt-capability-approval',
+        'connect-capabilities', 'capability-status', 'confirm-capability', 'disconnect-capabilities'].includes(rawMethod);
+      if (capabilityMethod && !['capability-status', 'disconnect-capabilities'].includes(rawMethod)
+        && !this.capabilityPresence().available) {
+        throw new DexError('usage_error', 'PC 잠금·절전 또는 연결 정리가 끝난 뒤 기기 도구를 다시 연결하세요.');
+      }
       if (rawMethod === 'cancel') {
         if (Object.keys(params).length) throw new DexError('usage_error', '취소 요청에는 추가 항목을 넣을 수 없습니다.');
         this.generation++;
@@ -108,10 +139,12 @@ export class DesktopNativeSessions {
         }, { ...this.options, expectedUserId: scope.userId }, 'desktop');
       }
       const generation = this.generation;
+      const capabilityGeneration = this.capabilityGeneration;
       const scoped = rawMethod === 'unwatch' || rawMethod === 'confirm-capability' ? params : { ...params, profile: 'desktop',
         ...(rawMethod === 'device' || (rawMethod === 'session' && params.action === 'login') ? {} : { user_id: scope.userId }) };
       const value = await this.host!.request(`native/${rawMethod}`, scoped);
-      if (generation !== this.generation || this.current().key !== scope.key) {
+      if (generation !== this.generation || this.current().key !== scope.key
+        || (capabilityMethod && capabilityGeneration !== this.capabilityGeneration)) {
         this.discardStaleOwner();
         if (rawMethod === 'submit-turn' || rawMethod === 'stop-turn' || rawMethod === 'create-agent-session' || rawMethod === 'switch-agent-focus'
           || rawMethod === 'upload-attachment' || rawMethod === 'cancel-attachment'
@@ -124,7 +157,7 @@ export class DesktopNativeSessions {
         }
         throw new DOMException('Cancelled', 'AbortError');
       }
-      return { ok: true, value };
+      return { ok: true, value: capabilityMethod ? { ...value, capability_presence: this.capabilityPresence() } : value };
     } catch (error) { this.discardStaleOwner(); return safeError(error); }
   }
 }

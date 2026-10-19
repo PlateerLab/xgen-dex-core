@@ -47,6 +47,16 @@ test('main reset clears scope and prevents a delayed account reply from restorin
   f.respond(() => new Promise((r) => { done = r; })); const pending = f.model.execute('session', { action: 'login' });
   f.notify({ type: 'cleared' }); done({ ok: true, value: context }); assert.equal(await pending, null); assert.equal(f.model.state.result, null);
 });
+test('OS capability presence does not reset the canonical conversation or its live watcher', async () => {
+  const f = fixture();
+  f.respond(async () => ({ ok: true, value: { ...context, view: 'conversation', conversation, has_more: false } }));
+  await f.model.execute('watch-conversation');
+  const before = structuredClone(f.model.state); const count = f.calls.length;
+  for (const presence of [{ available: false, reason: 'locked' as const }, { available: true, reason: null }]) {
+    f.notify({ type: 'capability-presence', presence });
+    assert.deepEqual(f.model.state, before); assert.equal(f.calls.length, count);
+  }
+});
 test('malformed focus stops the acknowledged watch and does not render raw server data', async () => {
   const f = fixture(); await f.model.execute('watch');
   f.notify({ type: 'update', value: { ...context, update: { type: 'focus', user_id: '7', focus: { version: -1, active_agent_session_id: 'private-server-secret' } } } } as any);

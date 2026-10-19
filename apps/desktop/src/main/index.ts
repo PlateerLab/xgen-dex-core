@@ -68,6 +68,7 @@ import {
 } from '@dex/protocol';
 import { bindDesktopHost } from './dex-host';
 import { bindDesktopNativeSessions } from './native-session-ipc';
+import { bindNativeCapabilityPresence } from './native-capability-presence';
 import {
   loadConfig,
   saveConfig,
@@ -3881,6 +3882,8 @@ if (!gotLock) {
     // 지금 확인하고 다시 붙어야 그 사이 끝난 턴이 바로 보인다.
     powerMonitor.on('resume', () => conversationWatchHub.refresh());
     powerMonitor.on('unlock-screen', () => conversationWatchHub.refresh());
+    const removeNativePresence = bindNativeCapabilityPresence(powerMonitor, desktopNativeSessions);
+    app.once('will-quit', removeNativePresence);
 
     const cfg = loadConfig();
     if (cfg.theme) nativeTheme.themeSource = cfg.theme;

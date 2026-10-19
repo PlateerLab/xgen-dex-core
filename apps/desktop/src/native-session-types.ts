@@ -11,9 +11,14 @@ export type DesktopNativeMethod = 'device' | 'session' | 'watch' | 'conversation
 export type DesktopNativeMutationFailure = {
   outcome: 'rejected'; status: number; conflict?: AgentSessionMutationConflict | AgentSessionLifecycleConflict;
 } | { outcome: 'unknown' };
-export type DesktopNativeReply = { ok: true; value: NativeRpcResult | { watching: false } }
+export interface DesktopCapabilityPresence {
+  available: boolean;
+  reason: 'checking' | 'locked' | 'suspended' | 'inactive' | 'closing' | null;
+}
+export type DesktopNativeReply = { ok: true; value: (NativeRpcResult | { watching: false }) & { capability_presence?: DesktopCapabilityPresence } }
   | ({ ok: false; code: string; message: string } & (DesktopNativeMutationFailure | { outcome?: never }));
-export type DesktopNativeNotice = { type: 'cleared' } | { type: 'update'; value: NativeSessionNotification };
+export type DesktopNativeNotice = { type: 'cleared' } | { type: 'update'; value: NativeSessionNotification }
+  | { type: 'capability-presence'; presence: DesktopCapabilityPresence };
 
 export interface DesktopNativeBridge {
   request(method: DesktopNativeMethod, params?: Record<string, unknown>): Promise<DesktopNativeReply>;

@@ -8,7 +8,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
-import { BotIcon, CopyIcon } from '../brand/icons';
+import { BackIcon, BotIcon, CopyIcon } from '../brand/icons';
 import { FileTree, type IdeFileEntry } from '@dex/ide';
 import { useResolvedTheme } from '../ide/ide-sessions';
 import { FileViewerPane, agentFileSource } from './FileViewerPane';
@@ -43,6 +43,13 @@ interface Props {
   onAppChange?: (slug: string) => void;
   /** 닫기 — 지금은 탭 X 가 담당하므로 미사용(호환용 optional). */
   onClose?: () => void;
+  /**
+   * ← : 이 상세를 연 탭(대개 채팅)으로 돌아간다(2026-10-19). 연 탭이 남아 있을 때만 주어지고, 없으면
+   * 머리에 ← 가 없다. 상세 탭은 닫지 않는다(탭의 X 가 닫는다).
+   */
+  onReturn?: () => void;
+  /** ← 의 이름(툴팁 · 읽어 주기). 연 탭이 채팅이면 '채팅으로'. */
+  returnLabel?: string;
   /** 로그인한 사람. 주인이면 머리의 이름을 두 번 눌러 바꿀 수 있다. */
   currentUserId?: string | number | null;
   /** 이름을 바꿨다: 탭 제목 등 같은 에이전트를 가리키는 곳을 새 이름으로. */
@@ -308,6 +315,8 @@ export const AgentViewer: React.FC<Props> = ({
   navigation,
   onSubChange,
   onAppChange,
+  onReturn,
+  returnLabel = '돌아가기',
   currentUserId,
   onRenamed,
 }) => {
@@ -414,6 +423,17 @@ export const AgentViewer: React.FC<Props> = ({
         {/* 한 줄 헤더 — [아이콘 이름] ──────── [탭]. 닫기(X)는 탭에 이미 있으므로 생략. */}
         <div className="viewer-header">
           <div className="viewer-title">
+            {onReturn && (
+              <button
+                type="button"
+                className="viewer-back"
+                onClick={onReturn}
+                title={returnLabel}
+                aria-label={returnLabel}
+              >
+                <BackIcon size={16} />
+              </button>
+            )}
             <BotIcon size={16} />
             {draft !== null ? (
               <input

@@ -7250,6 +7250,24 @@ button.sm {
   gap: 8px;
   min-width: 0;
 }
+/* 상세 머리의 ← (상세를 연 채팅으로). 아이콘 단추, 테두리 없이 머리 색에 묻는다. */
+.viewer-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: -6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim, #8a8f98);
+  cursor: pointer;
+}
+.viewer-back:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
 .viewer-title strong {
   font-size: 14px;
   overflow: hidden;

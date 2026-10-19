@@ -10,14 +10,37 @@ interface PresenceMonitor {
 
 /** Bind after app.ready. Each OS cause is independent; resume is never an unlock or reconnect. */
 export function bindNativeCapabilityPresence(monitor: PresenceMonitor, host: DesktopNativeSessions): () => void {
+  let unlockProbe: ReturnType<typeof setTimeout> | undefined;
+  let generation = 0;
+  const cancelUnlock = () => { generation++; clearTimeout(unlockProbe); unlockProbe = undefined; };
+  const idleState = () => {
+    try { return monitor.getSystemIdleState(1); } catch { return 'unknown'; }
+  };
   const observeLock = () => {
     // Unsupported/unknown idle state is not evidence that a known lock has ended.
-    try { if (monitor.getSystemIdleState(1) === 'locked') host.setCapabilityPresence('locked', true); }
-    catch { /* Keep the last observed OS state; no authority is opened by a failed probe. */ }
+    if (idleState() === 'locked') host.setCapabilityPresence('locked', true);
+  };
+  const settleUnlock = () => {
+    cancelUnlock();
+    const current = generation;
+    const probe = (remaining: number) => {
+      if (current !== generation) return;
+      const state = idleState();
+      if (state === 'active' || state === 'idle') {
+        host.setCapabilityPresence('locked', false); unlockProbe = undefined; return;
+      }
+      // macOS can report the previous locked state inside unlock-screen. Keep closed
+      // until a fresh OS observation confirms unlock; a later lock cancels this intent.
+      if (remaining > 0) {
+        unlockProbe = setTimeout(() => probe(remaining - 1), 250);
+        unlockProbe.unref();
+      } else unlockProbe = undefined;
+    };
+    probe(48); // Bounded 12-second observation, never a connection or effect retry.
   };
   const listeners: Record<PresenceEvent, () => void> = {
-    'lock-screen': () => host.setCapabilityPresence('locked', true),
-    'unlock-screen': () => { host.setCapabilityPresence('locked', false); observeLock(); },
+    'lock-screen': () => { cancelUnlock(); host.setCapabilityPresence('locked', true); },
+    'unlock-screen': settleUnlock,
     suspend: () => host.setCapabilityPresence('suspended', true),
     resume: () => { observeLock(); host.setCapabilityPresence('suspended', false); },
     'user-did-resign-active': () => host.setCapabilityPresence('inactive', true),
@@ -25,5 +48,5 @@ export function bindNativeCapabilityPresence(monitor: PresenceMonitor, host: Des
   };
   for (const event of Object.keys(listeners) as PresenceEvent[]) monitor.on(event, listeners[event]);
   observeLock();
-  return () => { for (const event of Object.keys(listeners) as PresenceEvent[]) monitor.removeListener(event, listeners[event]); };
+  return () => { cancelUnlock(); for (const event of Object.keys(listeners) as PresenceEvent[]) monitor.removeListener(event, listeners[event]); };
 }

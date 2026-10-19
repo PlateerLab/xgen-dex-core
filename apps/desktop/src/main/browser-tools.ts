@@ -219,6 +219,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
         'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
+        'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
         'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +

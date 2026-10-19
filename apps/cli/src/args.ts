@@ -8,6 +8,7 @@ const BOOLEAN_OPTIONS = new Set([
   'include-harness',
   'json',
   'jsonl',
+  'memory-map',
   'no-allow-dangerous',
   'no-folder',
   'no-memory-map',

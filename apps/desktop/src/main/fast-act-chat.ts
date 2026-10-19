@@ -22,7 +22,6 @@ import { askedProbability } from './fast-act';
 import { decisionPost, visiblePage } from './fast-act-runner';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, type Outcome, type VoiceAgent } from './voice-segmenter';
-import { onNotificationPublished } from './notification-center';
 import { takeVoiceTurn } from './voice-turns';
 
 const SCOPE = 'fast-act';
@@ -31,11 +30,13 @@ const now = (): number => performance.now();
 /** 직전 서버 답이 이 확률 이상으로 묻는 답이면 다음 말은 서버로 넘긴다(askedProbability). */
 const ASKED_MIN = 0.5;
 
-/** 대화별 직전 서버 답의 끝(알림 본문, 180자) — 바로 다음 말이 그 답에 대한 대답인지 한 번 본다. */
+/** 대화별 직전 서버 답(끝 2,000자) — 바로 다음 말이 그 답에 대한 대답인지 한 번 본다. */
 const lastServerReply = new Map<string, string>();
-onNotificationPublished((e) => {
-  if (e.type === 'chat.completed' && e.interactionId && e.body) lastServerReply.set(e.interactionId, e.body);
-});
+
+/** 서버 턴이 끝났다 — 그 답을 기억한다(index.ts 가 서버 스트림을 다 받은 뒤 부른다). */
+export function rememberServerReply(interactionId: string | undefined, reply: string): void {
+  if (interactionId && reply.trim()) lastServerReply.set(interactionId, reply.trim());
+}
 
 /** 렌더러가 붙인 봉투(브라우저·Teams 컨텍스트)를 떼고 사용자 원문만 남긴다. */
 function userText(req: ChatRequest): string | null {

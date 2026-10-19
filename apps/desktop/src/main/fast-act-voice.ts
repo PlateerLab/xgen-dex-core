@@ -40,6 +40,12 @@ import {
   inDocOrder,
   labelChoices,
   labelSearchTerms,
+  nearNames,
+  rowsNamed,
+  valueToPick,
+  choiceMissed,
+  disabledOf,
+  checkStates,
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
@@ -47,6 +53,7 @@ import {
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
 import { plainNumber } from './fast-act-number';
+import { josa } from './fast-act-reply';
 import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
@@ -76,6 +83,12 @@ const listLayer = (refs: ElementRefs): boolean => {
  * 항목에나 0.36~0.61 을 준다(10/16 BO). 값을 말한 지시는 0.99 이상("성인으로" → 만 19세 이상 0.989, "5일로" 0.999).
  */
 const CHOOSE_PICK = 0.85;
+/** 페이지 요소가 하나도 없을 때(아직 안 불린 탭) 다시 읽기 전에 기다리는 시간. */
+const EMPTY_PAGE_WAIT_MS = 800;
+/** 조회 팝업에서 결과 표가 그려지기를 기다리는 한도(pickInPopup). */
+const ROWS_WAIT_MS = 2_500;
+/** 조회 팝업의 적용 버튼 이름(pickInPopup) — 이름이 이것뿐인 버튼만. */
+const APPLY_BUTTON = /^(적용|선택|확인)$/;
 /** 목록에서 자리로 고르는 말. */
 const POSITION_WORD = /(첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+)\s*번째|맨\s*(위|아래|앞|뒤|처음|끝)|마지막|first|second|third|last/i;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
@@ -172,6 +185,10 @@ export type VoiceAction = {
   dismissed?: string;
   /** 판단 전·실행 뒤에 닫은 알림창의 문구(fast-act-notice) — 답에서 사용자에게 전한다. */
   notices?: string[];
+  /** 사용자에게 전할 말 — 이어서 할 일을 고르지 못해 묻거나(pickInPopup), 눌렀는데 선택되지 않았음을 알린다. 답 끝에 그대로 붙인다. */
+  tell?: string;
+  /** 고른 요소를 누르지 않은 까닭(비활성, 이미 그 상태) — 답은 "눌렀어요" 대신 이 문장이다. */
+  skipped?: string;
 };
 
 /** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
@@ -187,6 +204,10 @@ type Snap = {
   checks: Record<string, { ref: string; checked: boolean }>;
   /** 항목과 그 안의 셀 → 항목(itemOf). */
   items: Record<string, string>;
+  /** 비활성 요소(disabledOf). */
+  disabled: Set<string>;
+  /** 체크박스·선택지의 지금 상태(checkStates). */
+  states: Record<string, boolean>;
 };
 
 export class BrowserVoiceAgent implements VoiceAgent {
@@ -289,7 +310,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const labels = { ...named.labels, ...boxes.labels, ...choices.labels, ...terms.labels };
         const checks = checkOf(data?.snapshot ?? '');
         const items = itemOf(data?.snapshot ?? '');
-        return { at: now(), pageId: page.pageId, url: page.url, refs: terms.refs, gen: run.page.generation, ms: now() - t, labels, checks, items };
+        const disabled = disabledOf(data?.snapshot ?? '');
+        const states = checkStates(data?.snapshot ?? '');
+        return { at: now(), pageId: page.pageId, url: page.url, refs: terms.refs, gen: run.page.generation, ms: now() - t, labels, checks, items, disabled, states };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;
@@ -452,6 +475,17 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return textFromWordAnswers(whole, wa, offset)?.replace(/[.,!?。…]+$/, '') || null;
   }
 
+  /** 선택지·체크박스가 지금 골라져 있나 — 못 읽으면 null. */
+  private async checkedOf(pageId: string, ref: string, generation: number): Promise<boolean | null> {
+    try {
+      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['is', 'checked', ref], 5_000, generation);
+      const checked = (run.result as { data?: { checked?: unknown } } | undefined)?.data?.checked;
+      return typeof checked === 'boolean' ? checked : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 입력칸의 지금 값 — 못 읽으면 null. */
   private async valueOf(pageId: string, ref: string, generation: number): Promise<string | null> {
     try {
@@ -576,6 +610,95 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return null;
     }
     return this.record(text, element, action, typed, th, tAct - t0, now() - tAct, s.page, pick, s.snap.ms);
+  }
+
+  /**
+   * 선택 상자를 눌러 조회 팝업(새 탭)이 열렸고 말에 고를 값이 있다("협력사를 플래티어 협력사로 지정해줘") — 팝업에서 그 값으로
+   * 조회하고, 셀 글자가 값과 정확히 같은 행을 골라 적용 버튼을 누른다. 행은 판단 모델이 아니라 글자로 고른다: "플래티어 2"·
+   * "플래티어" 행을 고르면 다른 협력사가 들어간다. 정확히 같은 행이 하나가 아니거나 적용 버튼이 분명하지 않으면 고르지 않고
+   * 묻는다(조회 결과는 띄워 두어 다음 말이 이어서 고른다). 묻는 말은 마지막 조작의 답 끝에 붙는다(tell).
+   */
+  private async pickInPopup(
+    post: NonNullable<ReturnType<typeof decisionPost>>,
+    text: string,
+    th: Thresholds,
+    utterance: string | undefined,
+    label: string,
+  ): Promise<VoiceAction | null> {
+    let s = await this.snapshot(true).catch(() => null);
+    if (!s) return null;
+    const origin = originOf(s.page.url);
+    const t0 = now();
+    const found = await this.typedText(post, text, origin, this.screenOf(origin, s.snap.refs), utterance, label);
+    const value = found && valueToPick(found, label);
+    if (!value) return null;
+    const runtime = getBrowserRuntime();
+    const popup = s.page;
+    let last: VoiceAction | null = null;
+    const ask = (question: string): VoiceAction | null => {
+      const target = this.actions.at(-1);
+      if (target) target.tell = question;
+      diag(SCOPE, 'popup-ask', { value, question });
+      return last;
+    };
+    // 검색칸이 있으면 값으로 조회한다.
+    const field = Object.entries(s.snap.refs).find(([, r]) => TYPABLE.has(r.role) && isSearchField(r));
+    if (field) {
+      this.beforeAct(popup);
+      const tAct = now();
+      try {
+        await runtime.runAgentCommand(this.workflowId, popup.pageId, ['fill', `@${field[0]}`, value], 10_000, s.snap.gen);
+        await runtime.runAgentCommand(this.workflowId, popup.pageId, ['press', 'Enter'], 10_000);
+      } catch {
+        return null;
+      }
+      last = await this.record(text, field[1], 'type_submit', value, th, tAct - t0, now() - tAct, popup, { confidence: 1 }, s.snap.ms);
+    }
+    // 결과 표가 그려지기를 기다린다 — 정확히 같은 행이 보이면 바로, 아니면 ROWS_WAIT_MS 까지.
+    let rows: string[] = [];
+    for (const until = now() + ROWS_WAIT_MS; ; ) {
+      s = await this.snapshot(true).catch(() => null);
+      rows = s ? rowsNamed(s.snap.refs, s.snap.items, value) : [];
+      if (rows.length || now() > until) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!s) return last;
+    if (rows.length !== 1) {
+      const near = nearNames(s.snap.refs, s.snap.items, value);
+      if (rows.length > 1) return ask(`${josa(`"${value}"`, '과', '와')} 이름이 같은 항목이 ${rows.length}개예요. 어느 것을 고를까요?`);
+      if (near.length) return ask(`${josa(`"${value}"`, '과', '와')} 정확히 같은 항목이 없어요. ${near.join(', ')} 중 어느 것을 고를까요?`);
+      return ask(`${josa(`"${value}"`, '으로', '로')} 찾은 항목이 없어요. 어떤 이름으로 찾을까요?`);
+    }
+    // 그 행을 고른다 — 행 안에 고르는 상자가 하나 있으면 그것을, 없으면 행을.
+    const row = rows[0];
+    const check = s.snap.checks[row];
+    const picked = { role: check ? (s.snap.refs[check.ref]?.role ?? 'radio') : 'row', name: s.snap.refs[row]?.name ?? value };
+    this.beforeAct(s.page);
+    let tAct = now();
+    try {
+      await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${check?.ref ?? row}`], 10_000, s.snap.gen);
+    } catch {
+      return last;
+    }
+    last = await this.record(text, picked, 'click', null, th, 0, now() - tAct, s.page, { confidence: 1 }, s.snap.ms);
+    // 적용 — 이름이 정확히 적용·선택·확인인 버튼이 하나일 때만.
+    s = await this.snapshot(true).catch(() => null);
+    const apply = s ? Object.entries(s.snap.refs).filter(([, r]) => r.role === 'button' && APPLY_BUTTON.test(squash(r.name ?? ''))) : [];
+    if (!s || apply.length !== 1) return ask(`${josa(`"${value}"`, '을', '를')} 골랐어요. 어느 버튼으로 적용할까요?`);
+    this.beforeAct(s.page);
+    tAct = now();
+    try {
+      await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${apply[0][0]}`], 10_000, s.snap.gen);
+    } catch {
+      // 적용하면 팝업이 스스로 닫힌다 — 명령 도구가 탭과 같이 끝나 실패로 돌아온다(handleOnce 와 같다).
+      if (!(await closedTab(s.page.pageId))) return last;
+    }
+    last = await this.record(text, apply[0][1], 'click', null, th, 0, now() - tAct, s.page, { confidence: 1 }, s.snap.ms);
+    // 원래 화면의 칸에 값이 들어갔는지 본다.
+    const back = await this.snapshot(true).catch(() => null);
+    const filled = !!back && Object.values(back.snap.refs).some((r) => squash(r.name ?? '').includes(squash(value)));
+    if (!filled) return ask(`적용했는데 화면에서 ${josa(`"${value}"`, '이', '가')} 보이지 않아요. 확인해 주실래요?`);
+    return last;
   }
 
   /** 실행을 기록한다 — 화면이 바뀌므로 스냅샷을 버리고 반영을 기다린다. */
@@ -706,10 +829,18 @@ export class BrowserVoiceAgent implements VoiceAgent {
     let s;
     try {
       s = await this.snapshot();
+      // 페이지가 아직 안 불렸다(앱을 켠 직후 되살린 탭은 about:blank) — 잠깐 뒤 새로 읽는다. 그대로 판단하면 후보가 브라우저
+      // 버튼뿐이라 "교환기능 제공안함으로 해줘" 에 [새로고침]을 눌렀다(10/19).
+      if (s && !Object.keys(s.snap.refs).length) {
+        await new Promise((r) => setTimeout(r, EMPTY_PAGE_WAIT_MS));
+        this.snap = null;
+        s = await this.snapshot();
+      }
     } catch (err) {
       return no(`스냅샷 실패 ${String(err)}`);
     }
     if (!s) return no('열린 브라우저 탭 없음');
+    if (!Object.keys(s.snap.refs).length) return no('페이지 요소를 읽지 못함');
     const { snap, page } = s;
     const origin = originOf(page.url);
     const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
@@ -791,6 +922,15 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (namedOnly && (pick.confidence < NAMED_ONLY_PICK || !mentions(text, element.name ?? ''))) {
       return no(`기다림 wait ${rc} (이름만 — 확신 ${pick.confidence.toFixed(2)})`, pick.top);
     }
+    // 고른 요소가 비활성이다(앞 칸에 따라 풀리는 상자 등) — 누르지 않고 그렇다고 알린다. 눌러 놓고 "눌렀어요" 로 답하면
+    // 바뀐 줄 안다(10/19 BO: 협력사를 정하기 전 부가세·배송수단 상자).
+    if (snap.disabled.has(pick.ref)) {
+      if (th.partial) return no('비활성 요소 — 말이 끝난 뒤', pick.top);
+      const skipped = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
+      skipped.skipped = `${josa(skipped.display, '은', '는')} 지금 비활성이라 누르지 않았어요.`;
+      diag(SCOPE, 'blocked', { text, ref: pick.ref });
+      return { acted: true, kind: 'press', target: skipped.label, ms: now() - t0, effect: 'none' };
+    }
     const resolved = pressOnly ? { action: 'click' as const, text: null } : resolveAction(cls, element);
     const searching = SEARCH_WORD.test(withoutLabel(text, snap.labels[pick.ref]));
     // 입력칸을 골랐는데 누르기로 분류됐다 — 입력칸은 누를 일이 없으니 말에 넣을 글자가 있으면 넣는다(10/18 BO "안전재고
@@ -822,6 +962,16 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const itemName = snap.refs[snap.items[pick.ref] ?? pick.ref]?.name || element.name;
     const acted = toggles && check ? { role: snap.refs[check.ref]?.role ?? 'checkbox', name: itemName } : element;
     const label = elementLabel(acted);
+    // 체크박스를 체크(해제)하라는데 이미 그 상태다 — 누르면 거꾸로 된다(10/19 BO: 처음부터 체크된 결제가능수단 "네이버페이
+    // 체크해줘" 가 풀었다). 누르지 않고 그렇다고 답한다.
+    const want =
+      action === 'click' && !toggles && element.role === 'checkbox' ? (UNSELECT_WORD.test(said) ? false : SELECT_WORD.test(said) ? true : undefined) : undefined;
+    if (want !== undefined && snap.states[pick.ref] === want) {
+      if (th.partial) return no('이미 그 상태 — 말이 끝난 뒤', pick.top);
+      const skipped = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
+      skipped.skipped = `${josa(skipped.display, '은', '는')} 이미 ${want ? '체크돼' : '해제돼'} 있어요.`;
+      return { acted: true, kind: 'press', target: skipped.label, ms: now() - t0, effect: 'ok' };
+    }
     if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {
       return no(GUARDED, pick.top);
     }
@@ -882,22 +1032,38 @@ export class BrowserVoiceAgent implements VoiceAgent {
       if (action !== 'click' || !(await closedTab(page.pageId))) return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`);
     }
     const done = opened ? 'click' : action;
-    await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    const recorded = await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    // 누른 선택지가 고른 상태가 되지 않았다(다른 칸 값에 막힌 선택지) — "눌렀어요" 로 끝내지 않고 알린다.
+    const choiceRole = toggles && check ? (snap.refs[check.ref]?.role ?? 'checkbox') : element.role;
+    const before = toggles && check ? check.checked : choiceRole === 'checkbox' ? snap.states[pick.ref] : undefined;
+    const missed =
+      done === 'click' &&
+      (choiceRole === 'radio' || (choiceRole === 'checkbox' && before !== undefined)) &&
+      choiceMissed(choiceRole, before, await this.checkedOf(page.pageId, ref, snap.gen));
+    if (missed) {
+      recorded.tell = `${josa(recorded.display, '이', '가')} 선택되지 않았어요. 지금은 고를 수 없는 상태인 것 같아요.`;
+      diag(SCOPE, 'choice-missed', { text, ref, role: choiceRole });
+    }
     // 선택 상자를 열었고 말에 고를 값이 있다("구매연령 성인으로 바꿔줘") — 열린 목록에서 그 항목을 누른다.
     const chosen =
       done === 'click' && element.role === 'combobox' ? await this.chooseAfterOpen(post, text, th, currentValue(element.name ?? '', snap.labels[pick.ref])) : null;
     // 입력 요청인데 입력칸이 아닌 것(여는 버튼)을 눌렀다 — 열린 입력칸에 마저 넣는다.
     const typedAfter = !chosen && action === 'click' && wantsType && !TYPABLE.has(element.role) ? await this.typeAfterOpen(post, text, th, utterance) : null;
+    // 선택 상자가 조회 팝업(새 탭)을 열었고 말에 고를 값이 있다 — 팝업에서 그 값을 찾아 고르고 적용한다.
+    const popped =
+      !chosen && !typedAfter && done === 'click' && element.role === 'combobox' && this.actions.at(-1)?.newTab
+        ? await this.pickInPopup(post, text, th, utterance, snap.labels[pick.ref] || element.name || '')
+        : null;
     // 검색하라는 입력인데 칸이 검색칸이 아니라 제출하지 않았다 — 검색 버튼이 하나뿐이면 누른다.
     if (done === 'type' && searching) await this.pressSearch(text, th);
-    const after = chosen ?? typedAfter;
+    const after = chosen ?? typedAfter ?? popped;
     return {
       acted: true,
       kind: typedAfter ? 'type' : done === 'click' ? 'press' : 'type',
       target: after?.label ?? label,
       text: (typedAfter?.text ?? (opened ? null : typed)) ?? undefined,
       ms: now() - t0,
-      effect: 'ok',
+      effect: missed ? 'none' : 'ok',
     };
   }
 }

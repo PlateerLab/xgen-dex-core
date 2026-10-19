@@ -7,6 +7,12 @@ import {
   itemOf,
   labelChoices,
   labelSearchTerms,
+  nearNames,
+  rowsNamed,
+  valueToPick,
+  choiceMissed,
+  disabledOf,
+  checkStates,
   labelClickables,
   labelFields,
   locativeAfterLabel,
@@ -340,4 +346,68 @@ test('검색 기준 선택 상자 바로 뒤의 이름 없는 입력칸은 "기�
   assert.equal(out.e30.name, undefined); // 앞이 선택 상자가 아니면 그대로
   assert.equal(out.e32.name, '메모'); // 이름이 있으면 그대로
   assert.deepEqual(labels, { e25: '협력사명' });
+});
+
+// 10/19 BO 협력사 조회 팝업에서 "플래티어" 로 조회한 결과.
+const PARTNER_ROWS: ElementRefs = {
+  e33: { role: 'row', name: '1 1000401 플래티어' },
+  e45: { role: 'gridcell', name: '플래티어 2' },
+  e34: { role: 'row', name: '2 1000002 플래티어' },
+  e51: { role: 'gridcell', name: '플래티어  협력사' },
+  e35: { role: 'row', name: '3 1000001 플래티어' },
+  e57: { role: 'gridcell', name: '플래티어' },
+  e58: { role: 'gridcell', name: '상품공급업자' },
+};
+const PARTNER_ITEMS = { e33: 'e33', e45: 'e33', e34: 'e34', e51: 'e34', e35: 'e35', e57: 'e35', e58: 'e35' };
+
+test('셀 글자가 고를 값과 정확히 같은 행만 — 공백만 정리하고, 앞부분이 같은 이름은 아니다', () => {
+  assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 협력사'), ['e34']);
+  assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어'), ['e35']);
+  assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), []);
+});
+
+test('정확히 같은 행이 없을 때 물어볼 후보 — 고를 값과 낱말이 겹치는 셀 글자, 중복 없이', () => {
+  assert.deepEqual(nearNames(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), ['플래티어 2', '플래티어 협력사', '플래티어']);
+  assert.deepEqual(nearNames(PARTNER_ROWS, PARTNER_ITEMS, '삼성'), []);
+});
+
+test('조회 팝업에서 고를 값 — 칸 이름을 떼고, 칸 이름뿐이면 고를 값이 없다', () => {
+  // 10/19 BO: "협력사 눌러줘" 에서 칸 이름 "협력사" 를 고를 값으로 뽑아 팝업에서 "협력사" 로 조회했다.
+  assert.equal(valueToPick('협력사', '협력사'), null);
+  assert.equal(valueToPick('협력사 플래티어 협력사', '협력사'), '플래티어 협력사');
+  assert.equal(valueToPick('플래티어 협력사', '협력사'), '플래티어 협력사');
+  assert.equal(valueToPick('', '협력사'), null);
+});
+
+test('누른 선택지가 고른 상태가 되지 않았나 — 선택지는 눌러서 선택돼야, 체크박스는 전 상태를 알 때 바뀌어야', () => {
+  // 10/19 BO: 직구상품 여부가 "해당" 이면 선물하기를 고를 수 없는데, 누르고 "눌렀어요" 로 성공이라 답했다.
+  assert.equal(choiceMissed('radio', undefined, false), true);
+  assert.equal(choiceMissed('radio', undefined, true), false);
+  assert.equal(choiceMissed('checkbox', false, false), true);
+  assert.equal(choiceMissed('checkbox', false, true), false);
+  assert.equal(choiceMissed('checkbox', undefined, false), false); // 전 상태를 모르면 판단하지 않는다
+  assert.equal(choiceMissed('radio', undefined, null), false); // 못 읽었으면 판단하지 않는다
+  assert.equal(choiceMissed('button', undefined, false), false);
+});
+
+test('스냅샷에서 비활성 요소 — 괄호 안 disabled 표시만, 이름에 든 글자는 아니다', () => {
+  // 10/19 BO 상품 등록: 협력사를 정하기 전에는 부가세·배송수단 상자가 잠겨 있는데, 눌러 놓고 "눌렀어요" 라 답했다.
+  const snapshot = [
+    '- combobox "과세" [expanded=false, disabled, ref=e181]',
+    '- textbox [disabled, ref=e153]: 0',
+    '- combobox "구매연령 전체" [expanded=false, ref=e169]',
+    '- button "disabled 안내" [ref=e9]',
+  ].join('\n');
+  assert.deepEqual([...disabledOf(snapshot)], ['e181', 'e153']);
+});
+
+test('스냅샷에서 체크박스·선택지의 지금 상태 — checked 표시가 있는 요소만', () => {
+  // 10/19 BO: 결제가능수단은 처음부터 모두 체크돼 있어 "네이버페이 체크해줘" 가 오히려 풀었다.
+  const snapshot = [
+    '- checkbox "네이버페이" [checked=true, ref=e257]',
+    '- checkbox "페이코" [checked=false, ref=e259]',
+    '- radio "해당" [checked=true, disabled, ref=e243]',
+    '- button "저장" [ref=e3]',
+  ].join('\n');
+  assert.deepEqual(checkStates(snapshot), { e257: true, e259: false, e243: true });
 });

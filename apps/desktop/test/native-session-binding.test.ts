@@ -45,7 +45,8 @@ test('Workspace binding filters foreign notices while account reset still clears
   }
   assert.equal(shown.length, 0);
   receive(notice as DesktopNativeNotice); receive({ type: 'cleared' });
-  assert.equal(shown.length, 2); off(); assert.ok(unsubscribed);
+  receive({ type: 'capability-presence', presence: { available: false, reason: 'locked' } });
+  assert.equal(shown.length, 3); off(); assert.ok(unsubscribed);
 });
 
 test('authoritative focus and empty conversation replace stale catalog identity; transient reads retain it', () => {

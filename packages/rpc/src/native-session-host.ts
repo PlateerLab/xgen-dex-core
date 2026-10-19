@@ -34,6 +34,11 @@ interface PendingAttachedTurn {
   readonly digest: string;
   readonly authScope: string;
 }
+interface ActiveCapabilityRest {
+  readonly controller: AbortController;
+  readonly done: Promise<void>;
+  finish(): void;
+}
 export interface NativeSessionHostOptions {
   keys?: NativeDeviceKeyStore;
   fetch?: typeof fetch;
@@ -55,6 +60,7 @@ export class NativeSessionRpcHost {
   private readonly attachmentDrafts = new NativeAttachmentDraftRegistry();
   private pendingAttachedTurn: PendingAttachedTurn | null = null;
   private readonly capabilities: NativeCapabilityRpcHost;
+  private readonly activeCapabilityRest = new Set<ActiveCapabilityRest>();
   private closed = false;
   constructor(private readonly configs: ConfigStore, private readonly notify: (value: NativeSessionNotification) => void,
     private readonly options: NativeSessionHostOptions = {}, readonly platform: 'vscode' | 'desktop' = 'vscode') {
@@ -64,6 +70,12 @@ export class NativeSessionRpcHost {
   async cancel(): Promise<void> {
     this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort();
     this.attachmentDrafts.clearDrafts(); await this.capabilities.stop();
+  }
+  /** Trusted host lifecycle hook: stop target capabilities without cancelling conversation reads or credentials. */
+  async stopCapabilities(): Promise<void> {
+    const active = [...this.activeCapabilityRest];
+    for (const operation of active) operation.controller.abort();
+    await Promise.all([this.capabilities.stop(), ...active.map((operation) => operation.done)]);
   }
   close(): void {
     this.closed = true; this.active?.abort(); const watch = this.watch; this.watch = null; watch?.controller.abort();
@@ -97,6 +109,8 @@ export class NativeSessionRpcHost {
       throw new DexError('usage_error', '지원하지 않는 네이티브 요청입니다.');
     }
     if (this.active) throw new DexError('usage_error', '이전 네이티브 작업이 끝난 뒤 다시 실행하세요.');
+    const capability = ['native/capabilities', 'native/select-capabilities', 'native/capability-approvals',
+      'native/adopt-capability-approval'].includes(method);
     if (method === 'native/submit-turn' && p.attachments !== undefined) {
       // Nested references must be copied before stopWatch/config/vault can yield.
       try {
@@ -108,6 +122,13 @@ export class NativeSessionRpcHost {
       } catch { throw new DexError('usage_error', '첨부 참조와 원래 턴 입력을 확인하세요.'); }
     }
     const controller = new AbortController(); this.active = controller;
+    let capabilityRest: ActiveCapabilityRest | null = null;
+    if (capability) {
+      let finish!: () => void;
+      const done = new Promise<void>((resolve) => { finish = resolve; });
+      capabilityRest = { controller, done, finish };
+      this.activeCapabilityRest.add(capabilityRest);
+    }
     const signal = controller.signal;
     const timeout = setTimeout(() => controller.abort(), method === 'native/upload-attachment' || method === 'native/pick-attachments' ? 120000 : 15000);
     let sessionForDrain: NativeHostSession | null = null;
@@ -119,8 +140,6 @@ export class NativeSessionRpcHost {
       const mutation = method === 'native/submit-turn' || method === 'native/stop-turn';
       const catalog = method === 'native/agent-sessions';
       const lifecycle = method === 'native/create-agent-session' || method === 'native/switch-agent-focus';
-      const capability = ['native/capabilities', 'native/select-capabilities', 'native/capability-approvals',
-        'native/adopt-capability-approval'].includes(method);
       const attachment = ['native/pick-attachments', 'native/attachments', 'native/upload-attachment', 'native/recover-attachment',
         'native/cancel-attachment', 'native/discard-attachments'].includes(method);
       const attachmentIndividual = ['native/upload-attachment', 'native/recover-attachment', 'native/cancel-attachment'].includes(method);
@@ -442,7 +461,13 @@ export class NativeSessionRpcHost {
       }
       throw error;
     } finally {
-      if (sessionForDrain) this.draining = Promise.all([this.draining, sessionForDrain.settleProofOperations()]).then(() => undefined);
+      const settling = sessionForDrain ? sessionForDrain.settleProofOperations() : Promise.resolve();
+      if (sessionForDrain) this.draining = Promise.all([this.draining, settling]).then(() => undefined);
+      if (capabilityRest) {
+        void settling.then(capabilityRest.finish, capabilityRest.finish).finally(() => {
+          this.activeCapabilityRest.delete(capabilityRest);
+        });
+      }
       clearTimeout(timeout); this.active = null;
     }
   }

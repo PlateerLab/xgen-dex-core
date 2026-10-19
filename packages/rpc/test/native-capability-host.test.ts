@@ -8,13 +8,16 @@ import {
   validateNativeCapabilityOptions,
   MemoryConfigStore,
   NativeDeviceKeyStore,
+  NativeHostSession,
   defaultConfig,
   type NativeCapabilityController,
   type NativeCapabilityOptions,
   type NativeCapabilitySnapshot,
 } from '@dex/engine';
+import { nativeKeyThumbprint } from '@dex/engine/native-dpop';
 import { normalizeLocalFolders } from '@dex/engine/local-folders';
 import { NativeCapabilityRpcHost } from '../src/native-capability-host';
+import { NativeSessionRpcHost } from '../src/native-session-host';
 
 const origin = 'https://app.example.test';
 const confirmation = {
@@ -26,6 +29,58 @@ const confirmation = {
   expiresAt: Math.floor(Date.now() / 1000) + 60,
   argsSha256: 'a'.repeat(64),
 };
+
+async function sessionHostFixture() {
+  const dir = await mkdtemp(join(tmpdir(), 'rpc-native-capability-'));
+  const values = new Map<string, string>();
+  const keys = new NativeDeviceKeyStore({ env: {}, lockDirectory: dir, keychain: async () => ({
+    getPassword: async (service, account) => values.get(`${service}:${account}`) ?? null,
+    setPassword: async (service, account, value) => { values.set(`${service}:${account}`, value); },
+    deletePassword: async (service, account) => values.delete(`${service}:${account}`),
+  }) });
+  const deviceId = '018f1240-0000-7000-8000-000000000021';
+  const sessionId = '018f1240-0000-7000-8000-000000000022';
+  const challenge = Buffer.alloc(32, 7).toString('base64url');
+  let publicKey!: Parameters<typeof nativeKeyThumbprint>[0];
+  let trusted = false;
+  let custom: ((path: string, init: RequestInit) => Promise<Response> | undefined) | undefined;
+  const fetchImpl = (async (input, init: RequestInit = {}) => {
+    const path = new URL(String(input)).pathname;
+    const intercepted = custom?.(path, init);
+    if (intercepted) return intercepted;
+    const body = JSON.parse(String(init.body ?? '{}'));
+    if (path === '/api/auth/login') return Response.json({ success: true, user_id: '7', access_token: 'e30.e30.c2ln' });
+    if (path === '/api/auth/logout') return Response.json({ success: true });
+    if (path.includes('/registration/status/')) {
+      return Response.json(publicKey ? { device_id: deviceId, state: trusted ? 'trusted' : 'pending' } : null);
+    }
+    if (path.endsWith('/registration/challenge')) {
+      publicKey = body.public_key_jwk as Parameters<typeof nativeKeyThumbprint>[0];
+      return Response.json({ challenge, expires_in_seconds: 300 });
+    }
+    if (path.endsWith('/registration/complete')) return Response.json({ device_id: deviceId, state: 'pending' });
+    if (path.endsWith('/begin')) return Response.json({ flow_id: sessionId, device_id: deviceId, challenge, expires_in_seconds: 300 });
+    if (path.endsWith('/complete')) {
+      const exp = Math.floor(Date.now() / 1000) + 600;
+      const access = `e30.${Buffer.from(JSON.stringify({ sub: '7', sid: sessionId, device_id: deviceId,
+        platform_type: 'desktop', token_use: 'platform_access', exp,
+        cnf: { jkt: nativeKeyThumbprint(publicKey) } })).toString('base64url')}.c2ln`;
+      return Response.json({ session_id: sessionId, state: 'active', token_type: 'DPoP', access_token: access,
+        refresh_token: Buffer.alloc(32, 8).toString('base64url'), access_expires_at: new Date(exp * 1000).toISOString() });
+    }
+    assert.fail(`Unexpected native session fixture request: ${path}`);
+  }) as typeof fetch;
+  const configs = new MemoryConfigStore({ ...defaultConfig(), currentProfile: 'corp', profiles: { corp: { serverUrl: origin } } });
+  const host = new NativeSessionRpcHost(configs, () => {}, { keys, fetch: fetchImpl, expectedUserId: '7' }, 'desktop');
+  await host.request('native/device', { profile: 'corp', action: 'register', email: 'person@example.test',
+    password: 'private-password', device_name: 'Desktop' });
+  trusted = true;
+  await host.request('native/session', { profile: 'corp', action: 'login', email: 'person@example.test',
+    password: 'private-password' });
+  return { host, setFetch: (next: typeof custom) => { custom = next; }, cleanup: async () => {
+    host.close(); await rm(dir, { recursive: true, force: true });
+  } };
+}
 
 function fixture() {
   const configs = new MemoryConfigStore({ ...defaultConfig(), currentProfile: 'corp', profiles: { corp: { serverUrl: origin } } });
@@ -121,6 +176,110 @@ test('cancel waits for an aborted in-flight capability connection to settle', as
   assert.equal(settled, false);
   release(); await Promise.all([connecting, stopping]);
   assert.equal(settled, true);
+});
+
+test('stop invalidates a connect request still resolving its target', async () => {
+  const f = fixture();
+  let connects = 0;
+  f.connect(async (_userId, next) => { connects++; next.onChange({ state: 'ready', confirmation: null }); return f.controller; });
+  const connecting = f.host.request('native/connect-capabilities', { profile: 'corp', user_id: '7' });
+  await f.host.stop();
+  await assert.rejects(connecting, /\uc0c1\ud0dc\uac00 \ubcc0\uacbd/);
+  assert.equal(connects, 0);
+});
+
+test('stop invalidates a replacement connect while its previous controller drains', async () => {
+  const f = fixture();
+  let connects = 0;
+  f.connect(async (_userId, next) => { connects++; next.onChange({ state: 'ready', confirmation: null }); return f.controller; });
+  await f.host.request('native/connect-capabilities', { profile: 'corp', user_id: '7' });
+  const replacing = f.host.request('native/connect-capabilities', { profile: 'corp', user_id: '7' });
+  for (let count = 0; count < 20 && f.closeEntered() === 0; count++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.closeEntered(), 1);
+  const stopping = f.host.stop();
+  f.finishClose();
+  await stopping;
+  await assert.rejects(replacing, /\uc0c1\ud0dc\uac00 \ubcc0\uacbd/);
+  assert.equal(connects, 1);
+});
+
+test('session host capability stop aborts active capability REST and waits for its proof drain', async () => {
+  const f = await sessionHostFixture();
+  let entered!: (signal: AbortSignal) => void;
+  let release!: () => void;
+  const started = new Promise<AbortSignal>((resolve) => { entered = resolve; });
+  try {
+    f.setFetch((path, init) => path.endsWith('/capabilities') ? new Promise<Response>((_resolve, reject) => {
+      release = () => reject(init.signal?.reason ?? new DOMException('cancelled', 'AbortError'));
+      entered(init.signal!);
+    }) : undefined);
+    const reading = f.host.request('native/capabilities', { profile: 'corp', user_id: '7',
+      agent_session_id: confirmation.agentSessionId }).catch((error) => error);
+    const signal = await started;
+    let stopped = false;
+    const stopping = f.host.stopCapabilities().then(() => { stopped = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(signal.aborted, true);
+    assert.equal(stopped, false);
+    release();
+    const [error] = await Promise.all([reading, stopping]);
+    assert.equal(error instanceof Error && error.name === 'AbortError', true);
+    assert.equal(stopped, true);
+  } finally { await f.cleanup(); }
+});
+
+test('session host capability stop waits for every retained capability proof drain', async () => {
+  const f = await sessionHostFixture();
+  const original = NativeHostSession.prototype.settleProofOperations;
+  let entered!: () => void;
+  let release!: () => void;
+  const settling = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    NativeHostSession.prototype.settleProofOperations = async function () {
+      await original.call(this); entered(); await blocked;
+    };
+    f.setFetch((path) => path.endsWith('/capabilities') ? Promise.resolve(Response.json({
+      version: confirmation.agentSessionId, expires_at: Math.floor(Date.now() / 1000) + 60,
+      selected_capability_ids: [], capabilities: [],
+    })) : undefined);
+    await f.host.request('native/capabilities', { profile: 'corp', user_id: '7',
+      agent_session_id: confirmation.agentSessionId });
+    await settling;
+    const next = f.host.request('native/capabilities', { profile: 'corp', user_id: '7',
+      agent_session_id: confirmation.agentSessionId }).catch((error) => error);
+    let stopped = false;
+    const stopping = f.host.stopCapabilities().then(() => { stopped = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stopped, false);
+    release();
+    await Promise.all([next, stopping]);
+    assert.equal(stopped, true);
+  } finally {
+    NativeHostSession.prototype.settleProofOperations = original;
+    release();
+    await f.cleanup();
+  }
+});
+
+test('session host capability stop preserves an ordinary conversation watch', async () => {
+  const f = await sessionHostFixture();
+  let entered!: (signal: AbortSignal) => void;
+  const started = new Promise<AbortSignal>((resolve) => { entered = resolve; });
+  try {
+    f.setFetch((path, init) => path.endsWith('/agent-state') ? new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal!;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      entered(signal);
+    }) : undefined);
+    const result = await f.host.request('native/watch', { profile: 'corp', user_id: '7', interval_ms: 200 });
+    assert.ok('watch_id' in result && typeof result.watch_id === 'string');
+    const signal = await started;
+    await f.host.stopCapabilities();
+    assert.equal(signal.aborted, false);
+    await f.host.request('native/unwatch', { watch_id: result.watch_id });
+    assert.equal(signal.aborted, true);
+  } finally { await f.cleanup(); }
 });
 
 test('profile origin replacement invalidates a pending confirmation owner', async () => {

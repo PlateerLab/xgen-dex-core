@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NativeDeviceKeyStore, NativeCliSession } from '@dex/engine';
 import { nativeKeyThumbprint } from '@dex/engine/native-dpop';
 import { DesktopNativeSessions, isNativeSessionSender } from '../src/main/native-session';
+import { bindNativeCapabilityPresence } from '../src/main/native-capability-presence';
 import type { DesktopNativeNotice, DesktopNativeReply } from '../src/native-session-types';
 import type { NativeSessionHostOptions } from '@dex/rpc/native-session-host';
 
@@ -231,7 +233,7 @@ test('account reset aborts an active read and suppresses old-scope notifications
     await f.value('watch'); const signal = await ready;
     const before = f.notices.length; f.change({ origin, userId: '8' }); f.host.reset(); assert.equal(signal.aborted, true);
     await new Promise((r) => setImmediate(r)); assert.equal(f.notices.slice(before).some((n) => n.type === 'update'), false);
-    assert.equal(f.notices.at(-1)!.type, 'cleared');
+    assert.deepEqual(f.notices.slice(before).map((n) => n.type), ['cleared', 'capability-presence']);
   } finally { await f.cleanup(); }
 });
 test('cancelling rotation preserves a token-free journal and local recovery declares no server revoke', async () => {
@@ -263,4 +265,68 @@ test('Desktop confirmation keeps its closed one-use request shape inside the cur
     assert.equal(foreign.ok, false);
     if (!foreign.ok) assert.equal(foreign.code, 'usage_error');
   } finally { await f.cleanup(); }
+});
+
+test('OS lock, suspend and inactive causes overlap without cancelling the login or conversation watcher', async () => {
+  const f = await fixture();
+  const monitor = Object.assign(new EventEmitter(), { getSystemIdleState: () => 'active' });
+  const off = bindNativeCapabilityPresence(monitor, f.host);
+  let start!: (signal: AbortSignal) => void; const started = new Promise<AbortSignal>((resolve) => { start = resolve; });
+  try {
+    await f.login(); const credentials = [...f.values];
+    f.custom((path, init) => path.endsWith('/agent-state') ? new Promise((_resolve, reject) => {
+      start(init.signal!); init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    }) : undefined);
+    await f.value('watch'); const signal = await started;
+    monitor.emit('lock-screen'); monitor.emit('suspend'); monitor.emit('user-did-resign-active');
+    monitor.emit('resume'); assert.equal(f.host.capabilityPresence().available, false);
+    monitor.emit('unlock-screen'); assert.equal(f.host.capabilityPresence().reason, 'inactive');
+    const count = f.calls.length;
+    for (const method of ['capabilities', 'select-capabilities', 'capability-approvals', 'adopt-capability-approval',
+      'connect-capabilities', 'confirm-capability']) assert.equal((await f.request(method)).ok, false);
+    assert.equal(f.calls.length, count); assert.equal(signal.aborted, false);
+    assert.deepEqual([...f.values], credentials);
+    f.host.reset(); assert.equal(f.host.capabilityPresence().reason, 'inactive');
+    monitor.emit('user-did-become-active');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.host.capabilityPresence().available, true);
+    assert.equal(f.calls.length, count); // Return never opens a target connection.
+    off(); monitor.emit('lock-screen'); assert.equal(f.host.capabilityPresence().available, true);
+  } finally { off(); await f.cleanup(); }
+});
+
+test('startup and resume lock probes cannot clear a known lock with an unknown OS state', async () => {
+  const f = await fixture(); let idle = 'locked';
+  const monitor = Object.assign(new EventEmitter(), { getSystemIdleState: () => idle });
+  const off = bindNativeCapabilityPresence(monitor, f.host);
+  try {
+    assert.equal(f.host.capabilityPresence().reason, 'locked');
+    idle = 'unknown'; monitor.emit('suspend'); monitor.emit('resume');
+    assert.equal(f.host.capabilityPresence().reason, 'locked');
+    monitor.emit('unlock-screen'); assert.equal(f.host.capabilityPresence().available, true);
+  } finally { off(); await f.cleanup(); }
+});
+
+test('a capability REST result cannot revive after a lock cycle and new connects wait for proof drain', async () => {
+  const f = await fixture(); let start!: (signal: AbortSignal) => void;
+  const started = new Promise<AbortSignal>((resolve) => { start = resolve; });
+  let finish!: () => void;
+  try {
+    await f.login();
+    f.custom((path, init) => path.endsWith('/capabilities') ? new Promise((resolve) => {
+      start(init.signal!); finish = () => resolve(Response.json({ version: agentSid, expires_at: Date.now() / 1000 + 60,
+        selected_capability_ids: [], capabilities: [] }));
+    }) : undefined);
+    const reading = f.request('capabilities', { agent_session_id: agentSid }); const signal = await started;
+    f.host.setCapabilityPresence('locked', true); assert.equal(signal.aborted, true);
+    f.host.setCapabilityPresence('locked', false);
+    assert.equal(f.host.capabilityPresence().reason, 'closing');
+    assert.equal((await f.request('connect-capabilities')).ok, false);
+    finish();
+    const reply = await reading; assert.equal(reply.ok, false);
+    for (let i = 0; i < 50 && !f.host.capabilityPresence().available; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(f.host.capabilityPresence().available, true);
+    assert.equal((await f.value('capability-status')).capability_connection.state, 'closed');
+    assert.equal(f.notices.some((n) => n.type === 'cleared'), false);
+  } finally { finish?.(); await f.cleanup(); }
 });

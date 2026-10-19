@@ -214,12 +214,13 @@ export function browserToolSchemas(): LocalToolSchema[] {
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Fill many fields of a form on the visible (shared) browser tab fast: each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
-        '(e.g. "판매가 12900원 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
+        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
         'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
-        'A step naming two fields fills only one of them: write "공급원가 17430원 입력해줘" and "정상가 29900원 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
+        'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
-        'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간 2026.11.10. – 2027.03.31. 입력해줘"). ' +
+        'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
+        'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
         'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
         'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +

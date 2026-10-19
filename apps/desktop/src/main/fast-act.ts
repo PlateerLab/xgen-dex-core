@@ -172,6 +172,15 @@ export function quotedText(instruction: string): string | null {
 }
 
 /**
+ * 판단에 쓸 말 — 따옴표 안이 길면(40자 넘게·여러 줄) "…" 로 줄인다. 넣을 글자(따옴표 안)는 그대로 쓰고, 무엇을 할지·어느
+ * 칸인지는 줄인 말로 묻는다 — 상품상세 소개글 안의 "원산지: 대한민국" 때문에 칸을 원산지로 골랐다(10/19 BO).
+ */
+export function judgedText(instruction: string): string {
+  const q = quotedText(instruction);
+  return q && (q.length > 40 || q.includes('\n')) ? instruction.replace(q, '…') : instruction;
+}
+
+/**
  * 어절 끝 조사 — 한국어 문법 규칙이다 (특정 사이트·문구와 무관).
  * 길이가 긴 것부터 떼야 '으로' 를 '로' 로 잘못 떼지 않는다.
  */

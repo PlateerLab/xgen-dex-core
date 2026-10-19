@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { quotedText, textFromWordAnswers } from '../src/main/fast-act';
+import { judgedText, quotedText, textFromWordAnswers } from '../src/main/fast-act';
 import { maskedDate, plainNumber } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
@@ -111,4 +111,10 @@ test('quotedText: 짝 맞는 따옴표 안 — 「」 안의 다른 따옴표·�
   assert.equal(quotedText('상품상세 내용에 「첫 문단 "강조" 는 그대로\n\n둘째 문단 it\'s」 입력해줘'), '첫 문단 "강조" 는 그대로\n\n둘째 문단 it\'s');
   assert.equal(quotedText('따옴표 없음'), null);
   assert.equal(quotedText('닫지 않은 "따옴표'), null);
+});
+
+test('judgedText: 따옴표 안이 길거나 여러 줄이면 판단에는 줄여서', () => {
+  assert.equal(judgedText('제조사에 「이노데모 제조사 (가상)」 입력해줘'), '제조사에 「이노데모 제조사 (가상)」 입력해줘');
+  assert.equal(judgedText('상품상세 내용에 「[상품 소개]\n원산지: 대한민국」 입력해줘'), '상품상세 내용에 「…」 입력해줘');
+  assert.equal(judgedText(`상품상세 내용에 「${'가'.repeat(41)}」 입력해줘`), '상품상세 내용에 「…」 입력해줘');
 });

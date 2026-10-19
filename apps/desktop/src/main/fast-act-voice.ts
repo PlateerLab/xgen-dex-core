@@ -18,6 +18,7 @@ import { diag } from './diag-log';
 import {
   GATE_INTENT_Q,
   classify,
+  judgedText,
   decisionState,
   elementDisplay,
   elementLabel,
@@ -522,6 +523,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const whole = locativeAfterLabel(utterance && norm(utterance).endsWith(norm(text)) ? norm(utterance) : norm(text), label);
     const offset = whole.split(' ').length - norm(text).split(' ').length;
     const wa = await post({ state: decisionState(whole, origin, scr), questions: textWordQuestions(whole) });
+    if (process.env.DEX_VOICE_TEST === '1')
+      diag(SCOPE, 'typed-words', whole.split(/\s+/).map((w, i) => `${w}:${[0, 1].map((j) => (wa[`w${i}_${j}`]?.probabilities?.yes ?? 0).toFixed(2)).join('/')}`).join(' '));
     // 인식기가 붙인 끝 문장부호("원피스.")는 넣을 글자가 아니다.
     return textFromWordAnswers(whole, wa, offset)?.replace(/[.,!?。…]+$/, '') || null;
   }
@@ -626,7 +629,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     const origin = originOf(s.page.url);
     const t0 = now();
-    const pick = await pickElement(post, text, origin, options, this.screenOf(origin, s.snap.refs));
+    const pick = await pickElement(post, judgedText(text), origin, options, this.screenOf(origin, s.snap.refs));
     diag(SCOPE, 'choose-after-open', { text, pick: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
     if (!pick || pick.confidence < Math.max(th.pick, CHOOSE_PICK)) return null;
     const element = s.snap.refs[pick.ref];
@@ -661,7 +664,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const origin = originOf(s.page.url);
     const scr = this.screenOf(origin, s.snap.refs);
     const t0 = now();
-    const pick = await pickElement(post, text, origin, typable, scr);
+    const pick = await pickElement(post, judgedText(text), origin, typable, scr);
     if (!pick || pick.confidence < th.pick) return null;
     const element = s.snap.refs[pick.ref];
     const found = await this.typedText(post, text, origin, scr, utterance, s.snap.labels[pick.ref] || element.name);
@@ -1008,7 +1011,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
     const scr = this.screenOf(origin, allRefs);
 
-    const cls = await classify(post, text, origin, scr);
+    const cls = await classify(post, judgedText(text), origin, scr);
     const rc = cls.gate.toFixed(2);
     diag(SCOPE, 'classify', { text, ready: cls.ready, gate: +rc, intent: cls.intent });
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
@@ -1064,7 +1067,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       ),
     );
     const candidates = wantsType && Object.keys(typable).length ? typable : pickable;
-    const picked = await pickElement(post, text, origin, candidates, scr);
+    const picked = await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {
       diag(SCOPE, 'debug-screen', {

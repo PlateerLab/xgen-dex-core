@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { browserPathWithinRoots } from './browser-security';
 import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
+import { fastActConfigured } from './fast-act-runner';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -399,7 +400,9 @@ export class BrowserToolProvider {
   }
 
   advertise(): LocalToolSchema[] {
-    return this.enabled ? browserToolSchemas() : [];
+    if (!this.enabled) return [];
+    // BrowserFill 은 빠른 조작(설정 fastAct·판단 모델)이 켜졌을 때만 — 꺼져 있으면 LLM 이 불렀다가 '판단 모델을 쓸 수 없다' 만 받는다.
+    return fastActConfigured() ? browserToolSchemas() : browserToolSchemas().filter((t) => t.name !== BROWSER_FILL_TOOL);
   }
 
   owns(tool: string): boolean {

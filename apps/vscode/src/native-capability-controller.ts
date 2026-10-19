@@ -9,6 +9,7 @@ interface CapabilityScope {
 
 export interface NativeCapabilityConfirmation {
   requestId: string;
+  agentSessionId: string;
   server: string;
   tool: string;
   args: unknown;
@@ -177,14 +178,17 @@ function parseSnapshot(value: unknown): NativeCapabilitySnapshot {
   }
   if (!raw.confirmation || typeof raw.confirmation !== 'object' || Array.isArray(raw.confirmation)) throw new TypeError();
   const confirmation = raw.confirmation as Record<string, unknown>;
-  if (typeof confirmation.requestId !== 'string' || typeof confirmation.server !== 'string'
+  if (typeof confirmation.requestId !== 'string' || typeof confirmation.agentSessionId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(confirmation.agentSessionId)
+    || typeof confirmation.server !== 'string'
     || typeof confirmation.tool !== 'string' || typeof confirmation.expiresAt !== 'number'
     || !Number.isFinite(confirmation.expiresAt) || typeof confirmation.argsSha256 !== 'string'
     || !/^[0-9a-f]{64}$/.test(confirmation.argsSha256)) throw new TypeError();
   const encoded = JSON.stringify(confirmation.args);
   if (encoded === undefined || encoded.length > 32 * 1024) throw new TypeError();
   return { state: raw.state as NativeCapabilitySnapshot['state'], confirmation: {
-    requestId: confirmation.requestId, server: confirmation.server, tool: confirmation.tool,
+    requestId: confirmation.requestId, agentSessionId: confirmation.agentSessionId,
+    server: confirmation.server, tool: confirmation.tool,
     args: JSON.parse(encoded), expiresAt: confirmation.expiresAt, argsSha256: confirmation.argsSha256,
   } };
 }

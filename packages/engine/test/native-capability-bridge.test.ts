@@ -10,6 +10,7 @@ import { NativeSocketUnavailable, type NativeAgentCapabilitySocket } from '../sr
 
 const DEVICE = '018f1240-0000-7000-8000-000000000002';
 const SID = '018f1240-0000-7000-8000-000000000003';
+const AGENT_SESSION = '018f1240-0000-7000-8000-000000000004';
 const CONNECTION = `conn_${'c'.repeat(32)}`;
 const EPOCH = `epoch_${'e'.repeat(32)}`;
 const CAPABILITY = `cap://device/${DEVICE}/mcp/local/Read`;
@@ -51,13 +52,15 @@ function confirmation(args: Record<string, unknown> = { path: 'README.md' }, pat
   canonical = JSON.stringify(args, Object.keys(args).sort())) {
   return { type: 'capability_confirm', request_id: randomUUID(), operation: 'mcp.call', args,
     args_canonical: canonical, expires_at: Date.now() / 1000 + 30, connection_id: CONNECTION, epoch: EPOCH, capability_id: CAPABILITY,
-    args_sha256: createHash('sha256').update(canonical).digest('hex'), confirmation_nonce: NONCE, ...patch };
+    args_sha256: createHash('sha256').update(canonical).digest('hex'), confirmation_nonce: NONCE,
+    agent_session_id: AGENT_SESSION, ...patch };
 }
 
 function call(confirm: ReturnType<typeof confirmation>, patch: Record<string, unknown> = {}) {
   return { type: 'mcp_call', request_id: confirm.request_id, server: 'local', tool: 'Read', operation: 'mcp.call',
     args: confirm.args, deadline_ms: 20_000, connection_id: CONNECTION, epoch: EPOCH, capability_id: CAPABILITY,
-    args_canonical: confirm.args_canonical, args_sha256: confirm.args_sha256, confirmation_nonce: NONCE, ...patch };
+    args_canonical: confirm.args_canonical, args_sha256: confirm.args_sha256, confirmation_nonce: NONCE,
+    agent_session_id: confirm.agent_session_id, ...patch };
 }
 
 async function waitFor(check: () => boolean): Promise<void> {
@@ -67,9 +70,13 @@ async function waitFor(check: () => boolean): Promise<void> {
 
 async function connected(overrides: Partial<NativeCapabilityOptions> = {}, guard = async () => {}, readyFrame = ready()) {
   const socket = new FakeSocket(); const snapshots: NativeCapabilitySnapshot[] = [];
-  const calls: Array<{ server: string; tool: string; args: Readonly<Record<string, unknown>>; signal: AbortSignal }> = [];
+  const calls: Array<{ server: string; tool: string; args: Readonly<Record<string, unknown>>; signal: AbortSignal;
+    context: { agentSessionId: string } }> = [];
   const options: NativeCapabilityOptions = { tools: [tool],
-    call: async (server, name, args, signal) => { calls.push({ server, tool: name, args, signal }); return { content: [{ type: 'text', text: 'ok' }] }; },
+    call: async (server, name, args, signal, context) => {
+      calls.push({ server, tool: name, args, signal, context });
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
     onChange: (snapshot) => snapshots.push(snapshot), ...overrides };
   socket.push(readyFrame);
   const controller = await connectNativeCapabilityBridge(socket, options,
@@ -102,7 +109,8 @@ test('requires explicit confirmation, then dispatches the one exactly matching c
   const confirm = confirmation(); f.socket.push(confirm);
   await waitFor(() => f.controller.snapshot().state === 'confirmation_required');
   const view = f.controller.snapshot().confirmation!;
-  assert.deepEqual(view, { requestId: confirm.request_id, server: 'local', tool: 'Read', args: confirm.args,
+  assert.deepEqual(view, { requestId: confirm.request_id, agentSessionId: AGENT_SESSION,
+    server: 'local', tool: 'Read', args: confirm.args,
     expiresAt: confirm.expires_at, argsSha256: confirm.args_sha256 });
   assert.equal(JSON.stringify(view).includes(NONCE), false);
   await f.controller.confirm(confirm.request_id, true);
@@ -110,6 +118,7 @@ test('requires explicit confirmation, then dispatches the one exactly matching c
   f.socket.push(call(confirm));
   await waitFor(() => f.socket.sent.some((frame) => frame.type === 'mcp_result'));
   assert.equal(f.calls.length, 1); assert.equal(checks, 4);
+  assert.deepEqual(f.calls[0]!.context, { agentSessionId: AGENT_SESSION });
   const result = f.socket.sent.find((frame) => frame.type === 'mcp_result')!;
   assert.equal(result.ok, true); assert.deepEqual(result.result, { content: [{ type: 'text', text: 'ok' }] });
   assert.equal(f.controller.snapshot().state, 'ready');
@@ -125,6 +134,28 @@ test('forged arguments, unconfirmed calls and duplicate confirmations fail close
     else f.socket.push(call(confirm, mode === 'mutated' ? { args: { path: 'OTHER' } } : {}));
     await waitFor(() => f.controller.snapshot().state === 'failed');
     assert.equal(f.calls.length, 0, mode); assert.equal(f.socket.closed, true, mode);
+  }
+});
+
+test('missing, malformed or call-mismatched agent session authority fails closed without dispatch', async () => {
+  for (const patch of [{ agent_session_id: undefined }, { agent_session_id: 'not-a-session' }] as const) {
+    const f = await connected(); const confirm = confirmation();
+    const frame = { ...confirm, ...patch } as Record<string, unknown>;
+    if (patch.agent_session_id === undefined) delete frame.agent_session_id;
+    f.socket.push(frame);
+    await waitFor(() => f.controller.snapshot().state === 'failed');
+    assert.equal(f.calls.length, 0); assert.equal(f.socket.closed, true);
+  }
+
+  for (const agentSessionId of [undefined, '018f1240-0000-7000-8000-000000000005'] as const) {
+    const f = await connected(); const confirm = confirmation(); f.socket.push(confirm);
+    await waitFor(() => f.controller.snapshot().state === 'confirmation_required');
+    await f.controller.confirm(confirm.request_id, true);
+    const frame = call(confirm, { agent_session_id: agentSessionId }) as Record<string, unknown>;
+    if (agentSessionId === undefined) delete frame.agent_session_id;
+    f.socket.push(frame);
+    await waitFor(() => f.controller.snapshot().state === 'failed');
+    assert.equal(f.calls.length, 0); assert.equal(f.socket.closed, true);
   }
 });
 

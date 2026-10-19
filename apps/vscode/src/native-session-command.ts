@@ -198,7 +198,7 @@ export async function confirmNativeCapability(request: NativeCapabilityConfirmat
   const allow = '이번 요청 허용';
   const answer = await vscode.window.showWarningMessage(
     `${request.server} · ${request.tool} 실행을 허용할까요?`,
-    { modal: true, detail: `도구: ${request.server}.${request.tool}\n인수:\n${encoded}` },
+    { modal: true, detail: `Agent 세션: ${request.agentSessionId}\n도구: ${request.server}.${request.tool}\n인수:\n${encoded}` },
     allow,
   );
   return answer === allow;

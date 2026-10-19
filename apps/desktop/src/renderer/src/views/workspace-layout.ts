@@ -40,6 +40,11 @@ export interface WorkspaceTab {
   fileRel?: string;
   fileName?: string;
   fileSection?: 'cloud' | 'agent';
+  /**
+   * kind==='agent-viewer' 를 연 탭(대개 채팅의 [상세]). 상세 탭을 닫거나 머리의 ← 를 누르면 그 탭으로
+   * 돌아간다(2026-10-19). 예전에는 닫으면 자리상 옆 탭으로 가서, 상세를 연 대화가 아닌 곳에 떨어졌다.
+   */
+  openerTabId?: string;
 }
 
 export interface WorkspaceGroup {
@@ -116,6 +121,8 @@ function cleanTab(raw: unknown): WorkspaceTab | null {
     // 이름을 앱으로 바꾸기 전(2026-09-28)에 저장된 탭은 'artifacts' 다 — 같은 탭으로 연다.
     viewerSub: viewerSubs.includes(restoredSub(tab.viewerSub)) ? restoredSub(tab.viewerSub) : undefined,
     viewerApp: typeof tab.viewerApp === 'string' && tab.viewerApp ? tab.viewerApp : undefined,
+    // 다시 켜도 상세의 ← 가 연 대화로 돌아가게(그 탭이 되살아나지 않았으면 openerOf 가 null 이다).
+    openerTabId: typeof tab.openerTabId === 'string' && tab.openerTabId ? tab.openerTabId : undefined,
   };
 }
 
@@ -280,13 +287,59 @@ export function openBrowserTab(
     : addWorkspaceTab(layout, groupId, browserTab);
 }
 
+/** 지금 포커스된 묶음에서 보이는 탭. 새 탭(상세 등)을 연 탭이다. */
+export function focusedTabId(layout: WorkspaceLayout): string | null {
+  return layout.groups.find((group) => group.id === layout.focusedGroupId)?.activeTabId ?? null;
+}
+
+/**
+ * 탭을 열면서 그 탭을 연 탭을 적어 둔다. 이미 열려 있으면 그리로 가고, 연 탭을 지금 탭으로 바꾼다
+ * (다른 대화의 [상세] 로 같은 에이전트의 상세에 다시 왔으면 이번에는 그 대화로 돌아간다).
+ */
+export function openWorkspaceTabFrom(
+  layout: WorkspaceLayout,
+  groupId: string,
+  tab: WorkspaceTab,
+): WorkspaceLayout {
+  const from = focusedTabId(layout);
+  const openerTabId = from && from !== tab.id ? from : undefined;
+  const opened = addWorkspaceTab(layout, groupId, { ...tab, openerTabId: openerTabId ?? tab.openerTabId });
+  if (!openerTabId) return opened;
+  return {
+    ...opened,
+    groups: opened.groups.map((group) => ({
+      ...group,
+      tabs: group.tabs.map((item) => (item.id === tab.id ? { ...item, openerTabId } : item)),
+    })),
+  };
+}
+
+/** 이 탭을 연 탭이 아직 있으면 그 탭(과 묶음). 없으면 null. */
+export function openerOf(layout: WorkspaceLayout, tabId: string): { groupId: string; tabId: string } | null {
+  const openerTabId = findTab(layout, tabId)?.tab.openerTabId;
+  if (!openerTabId) return null;
+  const found = findTab(layout, openerTabId);
+  return found ? { groupId: found.group.id, tabId: openerTabId } : null;
+}
+
+/** ← : 이 탭을 연 탭으로 간다(이 탭은 그대로 둔다). 연 탭이 없으면 바꾸지 않는다. */
+export function returnToOpener(layout: WorkspaceLayout, tabId: string): WorkspaceLayout {
+  const opener = openerOf(layout, tabId);
+  if (!opener) return layout;
+  return { ...selectWorkspaceTab(layout, opener.groupId, opener.tabId), focusedGroupId: opener.groupId };
+}
+
 export function removeWorkspaceTab(layout: WorkspaceLayout, tabId: string): WorkspaceLayout {
   const groups = layout.groups
     .map((group) => {
       const index = group.tabs.findIndex((tab) => tab.id === tabId);
       if (index < 0) return group;
       const tabs = group.tabs.filter((tab) => tab.id !== tabId);
-      const fallback = tabs[Math.min(index, tabs.length - 1)]?.id ?? null;
+      // 이 탭을 연 탭이 같은 묶음에 있으면 그리로 돌아간다. 없으면 자리상 옆 탭.
+      const openerTabId = group.tabs[index].openerTabId;
+      const fallback = (openerTabId && tabs.some((tab) => tab.id === openerTabId) ? openerTabId : null)
+        ?? tabs[Math.min(index, tabs.length - 1)]?.id
+        ?? null;
       return {
         ...group,
         tabs,

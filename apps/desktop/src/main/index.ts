@@ -3271,8 +3271,8 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 이 대화에 연결된 폴더 — 렌더러가 보낸 값이 아니라 main 의 장부가 정본이다.
       // 빈 목록도 보낸다: 서버는 그것으로 "이 대화엔 폴더가 없다"를 안다.
       localFolders: localFoldersForRequest(chatFolders.list((req as ChatRequest).interactionId)),
-      // 설정에서 기억 지도를 껐으면 이 턴도 끈다(렌더러가 아니라 main 의 설정이 정본).
-      ...(loadConfig().memoryMap === false ? { memoryMap: false } : {}),
+      // 기억 지도 켜기 · 끄기는 main 의 설정이 정본(렌더러 값은 쓰지 않는다). 미설정이면 보내지 않는다.
+      memoryMap: loadConfig().memoryMap,
     };
     let preview = '';
     let terminal = false;

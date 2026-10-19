@@ -195,7 +195,11 @@ export class ResumableUploader {
 
   constructor(opts: ResumableUploaderOptions) {
     this.base = (opts.baseUrl || '').replace(/\/+$/, '');
-    this.fetchImpl = opts.fetch ?? (globalThis.fetch as UploadFetch);
+    // Call fetch without a receiver. As a method (`this.fetchImpl(...)`) its `this` would be this object, and a
+    // browser's fetch refuses that ("Failed to execute 'fetch' on 'Window': Illegal invocation"), which the
+    // retry loop then reports as a network error after six tries: every web upload failed that way.
+    const fetchFn = opts.fetch ?? (globalThis.fetch as UploadFetch);
+    this.fetchImpl = fetchFn && ((input, init) => fetchFn(input, init));
     this.headers = opts.headers ?? (() => ({}));
     this.concurrency = Math.max(1, opts.concurrency ?? 3);
     this.store = opts.store;

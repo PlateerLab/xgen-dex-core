@@ -43,7 +43,8 @@ export interface VoiceAgent {
   boundary(utterance: string, done: string, rest: string[]): Promise<{ start: number; conf: number }>;
   /** 말 여러 개의 실행 준비 판단을 한 번에 — 학습된 질문(act_now / wait / not_ui)과 act_now 확률. */
   readiness(texts: string[]): Promise<Array<{ ready: string; p: number }>>;
-  handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string): Promise<Outcome>;
+  /** pressOnly = 누를 것만 고른다(입력칸은 후보에서 뺀다). */
+  handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome>;
 }
 
 export type SegmentEvent =
@@ -251,6 +252,8 @@ export class Segmenter {
         const th = isFinal ? FINAL : PARTIAL;
         let outcome: Outcome | undefined;
         let cand = rest;
+        /** 남은 말이 앞 요청의 꼬리라는데, 그 말만으로 누를 것이 분명한지 본다(아래). */
+        let tail = false;
         if (after) {
           // 결정 모델 오류면 남은 말 전체를 새 요청으로 본다 — 못 하면 최종에서 서버로 간다(꼬리말로 치면 버려진다).
           const b = await this.agent.boundary(text, this.lastSeg, words(rest)).catch(() => ({ start: 0, conf: 0 }));
@@ -258,7 +261,10 @@ export class Segmenter {
           if (b.start < 0) {
             // 중간 인식에서는 자르지 않는다 — 뒷말이 아직 안 들어와서 꼬리말처럼 보일 수 있다.
             if (!isFinal) break;
-            outcome = { acted: false, reason: CONTINUATION, ms: 0 };
+            // 꼬리말이라도 앞에서 실행한 토막에 그 뜻이 빠졌을 수 있다 — "삼성 입력하고 검색해줘" 는 한 요청으로
+            // 읽히지만(10/16 BO 브랜드 찾기: none 0.999) 실행한 것은 "삼성 입력하고" 까지였다. 남은 말만으로 누를
+            // 대상이 분명할 때만 누르고, 아니면 꼬리말로 친다(서버로 넘기지 않는다).
+            tail = true;
           } else cand = words(rest).slice(b.start).join(' ');
         }
         let used = cand;
@@ -278,6 +284,8 @@ export class Segmenter {
             // 판단하는 사이 인식 결과가 바뀌었으면(오인식 정정) 실행하지 않는다.
             if (!this.stillHeard(cand)) return false;
             if (!after) return pass(true);
+            // 꼬리말만으로는 누르기만 — 넣을 글자는 앞 토막의 몫이다.
+            if (tail && kind !== 'press') return false;
             // 두 번째 요청의 누르기는 말이 대상 이름을 가리키거나 고른 확신이 높아야 하고,
             // 방금 누른 것을 또 누르지 않는다(입력은 넣을 글자를 말하므로 이름 겹침을 보지 않는다).
             return pass(
@@ -293,7 +301,7 @@ export class Segmenter {
           const run = async (target: string): Promise<Outcome> => {
             let o: Outcome | undefined;
             try {
-              o = await this.agent.handle(target, th, guard, abort, text);
+              o = await this.agent.handle(target, th, guard, abort, text, tail);
             } catch (err) {
               // 판단·실행 중 오류(결정 모델 응답 없음 등) — 못 한 것으로 친다. 던지면 final() 이 끝나지 않는다.
               o = { acted: false, reason: `오류 ${err instanceof Error ? err.message : String(err)}`, ms: 0 };
@@ -314,7 +322,7 @@ export class Segmenter {
             return o;
           };
           // 최종이고 말이 길면(네 단어 이상) 두 요청을 이어 말했을 수 있다 — 앞부분이 이미 요청이면 그것부터.
-          const first = isFinal && words(cand).length >= 4 ? await this.readyPrefix(cand, th) : null;
+          const first = isFinal && !tail && words(cand).length >= 4 ? await this.readyPrefix(cand, th) : null;
           if (my !== this.epoch) return;
           if (first) {
             outcome = await run(first);
@@ -331,6 +339,7 @@ export class Segmenter {
               }
             }
           }
+          if (tail && !outcome.acted) outcome = { acted: false, reason: CONTINUATION, ms: outcome.ms };
         }
         if (my !== this.epoch) return;
         this.onEvent({ type: 'decide', text: used, partial: !isFinal, outcome, t: this.clock() });

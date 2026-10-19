@@ -7,8 +7,12 @@ import {
   newWorkspaceLayout,
   normalizeWorkspaceLayout,
   openBrowserTab,
+  openerOf,
+  openWorkspaceTabFrom,
   placeBrowserBesideChat,
   removeWorkspaceTab,
+  returnToOpener,
+  selectWorkspaceTab,
   setWorkspaceRatio,
 } from '../src/renderer/src/views/workspace-layout';
 import { restoreSideView } from '../src/renderer/src/views/side-view';
@@ -303,4 +307,64 @@ test('채팅 기록 관리 탭(history)은 껐다 켜도 그 자리에 다시 �
     ],
   );
   assert.equal(restored.groups[0].activeTabId, 'history');
+});
+
+// ── 상세 탭은 연 탭을 기억한다 (2026-10-19) ─────────────────────────────
+
+const viewer = (workflowId: string) => ({
+  id: `viewer:${workflowId}`,
+  kind: 'agent-viewer' as const,
+  workflowId,
+  workflowName: workflowId,
+});
+
+function threeChats() {
+  let layout = addWorkspaceTab(newWorkspaceLayout(), 'group-a', chat('chat:a'));
+  layout = addWorkspaceTab(layout, 'group-a', chat('chat:b'));
+  layout = addWorkspaceTab(layout, 'group-a', chat('chat:c'));
+  return layout;
+}
+
+test('상세 탭을 닫으면 자리상 옆 탭이 아니라 상세를 연 대화로 돌아간다', () => {
+  let layout = threeChats();
+  layout = selectWorkspaceTab(layout, 'group-a', 'chat:a');
+  layout = openWorkspaceTabFrom(layout, layout.focusedGroupId, viewer('W'));
+  assert.equal(findTab(layout, 'viewer:W')?.tab.openerTabId, 'chat:a');
+  layout = removeWorkspaceTab(layout, 'viewer:W');
+  assert.equal(layout.groups[0].activeTabId, 'chat:a', '예전에는 맨 끝의 chat:c 로 갔다');
+});
+
+test('상세의 ← 는 연 대화로 가고 상세 탭은 그대로 둔다', () => {
+  let layout = threeChats();
+  layout = selectWorkspaceTab(layout, 'group-a', 'chat:b');
+  layout = openWorkspaceTabFrom(layout, layout.focusedGroupId, viewer('W'));
+  layout = returnToOpener(layout, 'viewer:W');
+  assert.equal(layout.groups[0].activeTabId, 'chat:b');
+  assert.ok(findTab(layout, 'viewer:W'), '상세 탭은 닫지 않는다');
+});
+
+test('다른 대화의 [상세] 로 같은 상세에 다시 오면 이번에는 그 대화로 돌아간다', () => {
+  let layout = threeChats();
+  layout = selectWorkspaceTab(layout, 'group-a', 'chat:a');
+  layout = openWorkspaceTabFrom(layout, layout.focusedGroupId, viewer('W'));
+  layout = selectWorkspaceTab(layout, 'group-a', 'chat:c');
+  layout = openWorkspaceTabFrom(layout, layout.focusedGroupId, viewer('W'));
+  assert.deepEqual(openerOf(layout, 'viewer:W'), { groupId: 'group-a', tabId: 'chat:c' });
+});
+
+test('연 대화를 닫았으면 상세의 ← 는 없고(openerOf null) 닫을 때는 자리상 옆 탭으로 간다', () => {
+  let layout = threeChats();
+  layout = selectWorkspaceTab(layout, 'group-a', 'chat:a');
+  layout = openWorkspaceTabFrom(layout, layout.focusedGroupId, viewer('W'));
+  layout = removeWorkspaceTab(layout, 'chat:a');
+  assert.equal(openerOf(layout, 'viewer:W'), null);
+  assert.equal(returnToOpener(layout, 'viewer:W'), layout, '갈 곳이 없으면 바꾸지 않는다');
+});
+
+test('다시 켜도 상세가 연 대화를 기억한다(저장된 배치를 읽을 때 openerTabId 를 남긴다)', () => {
+  let layout = threeChats();
+  layout = selectWorkspaceTab(layout, 'group-a', 'chat:b');
+  layout = openWorkspaceTabFrom(layout, layout.focusedGroupId, viewer('W'));
+  const restored = normalizeWorkspaceLayout(JSON.parse(JSON.stringify(layout)));
+  assert.equal(findTab(restored, 'viewer:W')?.tab.openerTabId, 'chat:b');
 });

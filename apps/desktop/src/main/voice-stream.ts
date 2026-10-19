@@ -76,6 +76,22 @@ export function voiceStreamAvailable(): boolean {
 
 const now = (): number => performance.now();
 
+const SEP = /[\s.,!?。…]/;
+/**
+ * short 가 full 의 잘린 앞 토막인가 — full 의 어절 가운데서 끊겼거나, 문장 끝 부호 없이 끝났다. 띄어쓰기·문장부호는
+ * 보지 않고 맞춘다. 문장을 맺고 끝난 앞 토막은 서버가 끝의 환청을 걷어낸 것일 수 있어 잘린 것으로 보지 않는다.
+ */
+const truncated = (short: string, full: string): boolean => {
+  const s = bare(short);
+  const f = bare(full);
+  if (!s || s.length >= f.length || !f.startsWith(s)) return false;
+  if (!/[.?!。…]$/.test(short.trim())) return true;
+  let n = 0;
+  let i = 0;
+  for (; i < full.length && n < s.length; i++) if (!SEP.test(full[i])) n++;
+  return i < full.length && !SEP.test(full[i]);
+};
+
 class VoiceSession {
   private ws: WebSocket | null = null;
   private ready = false;
@@ -88,6 +104,8 @@ class VoiceSession {
   private lastText = '';
   /** 서버가 적은 그대로의 마지막 글자(호출어 포함). */
   private lastHeard = '';
+  /** 가장 많이 들은 중간 결과(누적) — 뒤 중간 결과가 그 잘린 앞 토막으로 줄면 그대로 둔다(truncated). */
+  private fullPartial = '';
   private doneText: string | null = null;
   private stopSent = false;
   private ended: Promise<VoiceStreamResult> | null = null;
@@ -211,7 +229,16 @@ class VoiceSession {
         this.mark('repeat_final_dropped', m.text);
         return;
       }
+      // 서버가 말 끝을 잃기도 한다 — 중간 결과는 "해이엑스젠 가전 디지털 펼쳐줘." 까지 들었는데 확정·done 은 "해",
+      // "…테스트 상품입니다. 입력해줘." 가 "…테스트 상", "헤이 엑스젠 전시 카테고리 추가해줘." 가 "헤이 엑스젠"
+      // 이었다(10/16 합성 음성 24문장 중 5개 — 모두 문장 끝 부호 없이 끝났고, 온전한 확정 19개는 모두 부호로 맺었다).
+      // 가장 많이 들은 중간 결과의 잘린 앞 토막인 확정·중간 결과는 버리고, 끝에는 그 중간 결과를 쓴다.
+      if (truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial)) {
+        this.mark(`cut_${m.type}_dropped`, m.text);
+        return;
+      }
       if (m.type === 'final') this.lastFinal = m.text;
+      else this.fullPartial = m.text.trim();
       // 서버의 partial 은 이 세션에서 들은 전체(누적), final 은 방금 끝난 토막만이다.
       const heard = m.type === 'partial' ? m.text.trim() : (this.closedText = `${this.closedText} ${m.text}`.trim());
       this.lastHeard = heard;
@@ -279,7 +306,8 @@ class VoiceSession {
       this.wakeDone = resolve;
       setTimeout(resolve, DONE_WAIT_MS);
     });
-    const raw = (this.droppedRepeat ? this.closedText : this.doneText) || this.lastHeard;
+    const done = this.droppedRepeat ? this.closedText : this.doneText;
+    const raw = (truncated(done ?? '', this.fullPartial) ? this.fullPartial : done) || this.lastHeard;
     const heard = this.sttOnly ? raw : this.gate(raw);
     if (heard === null) {
       // 호출어 없는 말 — 판단·실행·기록 없이 버린다(글자도 돌려주지 않는다). 사람에게 한 말이라 로그에도

@@ -52,8 +52,11 @@ import {
   newWorkspaceLayout,
   normalizeWorkspaceLayout,
   openBrowserTab,
+  openerOf,
+  openWorkspaceTabFrom,
   placeBrowserBesideChat,
   removeWorkspaceTab,
+  returnToOpener,
   selectWorkspaceTab,
   setWorkspaceRatio,
   type DropEdge,
@@ -293,7 +296,7 @@ export const Workspace: React.FC<{
     [sidebarWidth],
   );
 
-  const { sessions, activeKey } = useSessions();
+  const { sessions, activeKey, focusSeq } = useSessions();
   const visibleSessions = useMemo(() => chatTabs(sessions, activeKey), [sessions, activeKey]);
   const sessionMap = useMemo(
     () => new Map(sessions.map((session) => [session.key, session])),
@@ -517,7 +520,8 @@ export const Workspace: React.FC<{
 
   useEffect(() => {
     setLayout((current) => layoutWithActiveSession(current, activeKey));
-  }, [activeKey]);
+    // focusSeq: 이미 포커스인 대화를 사이드바에서 다시 눌렀다(상세 탭을 보던 중 등). 그 대화 탭을 앞에 세운다.
+  }, [activeKey, focusSeq]);
 
   // An agent may explicitly create a shared page through BrowserTabs. Surface
   // it in the workspace exactly once, using the currently focused group.
@@ -677,7 +681,8 @@ export const Workspace: React.FC<{
   const openAgentViewer = useCallback(
     (workflowId: string, workflowName: string | undefined, sub: AgentViewerSub, app?: string) => {
       setLayout((current) => {
-        const opened = addWorkspaceTab(current, current.focusedGroupId, {
+        // 연 탭(대개 채팅)을 적어 둔다: 상세 탭을 닫거나 ← 를 누르면 그 탭으로 돌아간다.
+        const opened = openWorkspaceTabFrom(current, current.focusedGroupId, {
           id: `viewer:${workflowId}`,
           kind: 'agent-viewer',
           workflowId,
@@ -738,7 +743,11 @@ export const Workspace: React.FC<{
       !window.confirm(`IDE 에 저장하지 않은 파일이 ${unsaved.length}개 있습니다.\n닫으면 바뀐 내용이 사라집니다. 닫을까요?`)
     )
       return;
+    // 상세 탭을 닫으면 그 탭을 연 대화로 돌아간다(removeWorkspaceTab). 그 대화를 포커스로도 맞춘다.
+    const opener = tab.kind === 'agent-viewer' ? openerOf(layoutRef.current, tab.id) : null;
     setLayout((current) => removeWorkspaceTab(current, tab.id));
+    const openerTab = opener ? findTab(layoutRef.current, opener.tabId)?.tab : null;
+    if (openerTab?.kind === 'chat' && openerTab.sessionKey) sessionStore.setActive(openerTab.sessionKey);
     if (tab.kind === 'chat' && tab.sessionKey) {
       // 사용자가 닫은 탭은 되살릴 대상이 아니다 — 대기표를 먼저 거둔다.
       pendingRestoreRef.current.delete(tab.sessionKey);
@@ -1233,6 +1242,19 @@ export const Workspace: React.FC<{
             })
           }
           onClose={() => closeTab(active)}
+          {...(() => {
+            // ← : 이 상세를 연 탭이 아직 있으면 그리로(상세 탭은 그대로 둔다). 채팅이면 "채팅으로".
+            const opener = openerOf(layout, active.id);
+            const openerTab = opener ? findTab(layout, opener.tabId)?.tab : null;
+            if (!opener || !openerTab) return {};
+            return {
+              returnLabel: openerTab.kind === 'chat' ? '채팅으로' : '돌아가기',
+              onReturn: () => {
+                setLayout((current) => returnToOpener(current, active.id));
+                if (openerTab.kind === 'chat' && openerTab.sessionKey) sessionStore.setActive(openerTab.sessionKey);
+              },
+            };
+          })()}
           currentUserId={user.userId}
           onRenamed={(workflowName) => {
             // 같은 에이전트를 가리키는 탭(뷰어 · 채팅 · 브라우저) 제목과 에이전트 목록을 새 이름으로.

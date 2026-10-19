@@ -265,6 +265,36 @@ test('HttpClient.upload sends files chunked with auth and returns the service JS
   assert.equal((gw.dispatched[0] as { headers: Record<string, string> }).headers['authorization'], 'Bearer tok');
 });
 
+test('fetch is called without a receiver (a browser fetch throws Illegal invocation otherwise)', async () => {
+  // A browser's fetch only works with the window (or nothing) as `this`. Stand one in for the global fetch,
+  // then use the defaults (no `fetch` option) and also hand that fetch over directly, as a host might.
+  const gw = fakeGateway({ chunk: 4 });
+  const strictFetch = function (this: unknown, input: string, init?: RequestInit) {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+    }
+    return gw.fetchImpl(input.replace('http://gw-http', 'http://gw'), init);
+  };
+  const saved = globalThis.fetch;
+  globalThis.fetch = strictFetch as typeof fetch;
+  try {
+    const up = new ResumableUploader({ baseUrl: 'http://gw', sleep: noSleep });
+    const res = await up.send({ path: '/api/retrieval/file/upload' }, { raw: bytesSource(new Uint8Array(10), 'a.bin') });
+    assert.equal(res.status, 200);
+
+    const http = new HttpClient({ baseUrl: 'http://gw-http' });
+    const out = await http.upload<{ parts: string[][] }>('/api/retrieval/file/upload',
+      [{ name: 'file', file: new Uint8Array(10), filename: '광고시안.mp4', type: 'video/mp4' }]);
+    assert.equal(out.parts[0][1], '광고시안.mp4');
+  } finally {
+    globalThis.fetch = saved;
+  }
+  const passed = new HttpClient({ baseUrl: 'http://gw-http', fetch: strictFetch as typeof fetch });
+  const out = await passed.upload<{ parts: string[][] }>('/api/retrieval/file/upload',
+    [{ name: 'file', file: new Uint8Array(10), filename: 'b.bin' }]);
+  assert.equal(out.parts[0][1], 'b.bin');
+});
+
 test('HttpClient falls back to one direct request on a gateway without /api/uploads', async () => {
   const calls: Array<{ url: string; body: unknown; type: string | null }> = [];
   const fetchImpl = async (url: string, init: RequestInit = {}) => {

@@ -210,6 +210,8 @@ test('popup approval preserves the next original window.open instead of replayin
     setWindowOpenHandler: (handler: typeof popupHandler) => {
       popupHandler = handler;
     },
+    executeJavaScript: async () => true,
+    mainFrame: { frameTreeNodeId: 1 },
     on: () => undefined,
     once: () => undefined,
   };
@@ -618,4 +620,41 @@ test('BrowserNavigate wait: 로드 상태·URL·글을 agent-browser 플래그�
   assert.deepEqual(browserWaitCommand(1500), ['wait', '1500']);
   assert.deepEqual(browserWaitCommand('#result-list'), ['wait', '#result-list']);
   assert.deepEqual(browserWaitCommand(undefined), ['wait', '1000']);
+});
+
+test('closing a popup publishes parent selection before automation cleanup completes', async () => {
+  const runtime = new BrowserRuntime();
+  const internals = runtime as any;
+  internals.enabled = true;
+  internals.accountPartition = 'persist:test';
+  const parent = await runtime.create({ workflowId: 'workflow', url: 'https://example.com/' });
+  const child = await runtime.create({ workflowId: 'workflow', url: 'https://example.com/popup' });
+  Object.assign(internals.pages.get(child.pageId).info, { mode: 'popup', openerPageId: parent.pageId });
+  let release!: () => void;
+  const cleanup = new Promise<void>((resolve) => { release = resolve; });
+  internals.runner.cancelPage = () => cleanup;
+  let observed = runtime.state();
+  runtime.setStateListener(state => { observed = state; });
+  const closing = runtime.close(child.pageId);
+  try {
+    assert.equal(observed.activeByWorkflow.workflow, parent.pageId);
+    assert.deepEqual(observed.pages.map(page => page.pageId), [parent.pageId]);
+  } finally {
+    release();
+    await closing;
+  }
+});
+
+test('pageScript uses the main frame and times out without waiting for page load', async () => {
+  const runtime = new BrowserRuntime();
+  const internals = runtime as any;
+  internals.resolvePage = async () => ({});
+  const contents = {
+    executeJavaScript: () => { throw new Error('must not wait for load'); },
+    mainFrame: { executeJavaScript: async (_code: string): Promise<unknown> => 'ready' },
+  };
+  internals.requireConnectedContents = async () => contents;
+  assert.equal(await runtime.pageScript('workflow', 'page', 'document.title', 100), 'ready');
+  contents.mainFrame.executeJavaScript = () => new Promise(() => {});
+  await assert.rejects(runtime.pageScript('workflow', 'page', 'document.title', 10), /browser_timeout/);
 });

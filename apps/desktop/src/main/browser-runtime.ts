@@ -66,6 +66,7 @@ const BROWSER_SELECTION_TTL_MS = 60_000;
 /** 사용자 대신 누르는 명령 직후의 새 창은 팝업 차단 없이 연다. */
 const GESTURE_COMMANDS = new Set(['click', 'press', 'dblclick']);
 const AGENT_POPUP_WINDOW_MS = 3_000;
+const FOCUS_PROBE_MS = 500;
 /** 키보드 초점으로 전달되는 agent-browser 명령. */
 const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown', 'keyup']);
 
@@ -76,9 +77,18 @@ const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown
 async function focusGuest(contents: WebContents): Promise<void> {
   const host = (contents as WebContents & { hostWebContents?: WebContents }).hostWebContents;
   if (host && !host.isDestroyed()) {
+    // 임베더 초점을 이 <webview> 로 옮겨도 게스트 초점은 다른 탭에 남을 수 있다 — 페이지가 연 새 탭(팝업)이 뜨면
+    // 숨은 원래 탭이 게스트 초점을 쥔 채 남아 입력이 사라졌다(10/16 BO 브랜드 찾기 팝업). focus() 만으로는 안 넘어가고
+    // blur() 뒤 focus() 를 해야 넘어갔다(실측). 게스트에 초점이 없으면 그렇게 한다.
+    // 메인 프레임에 묻는다 — contents.executeJavaScript 는 로딩이 끝나길 기다려, 끝나지 않는 요청이 남은 페이지에서
+    // 글자 넣기가 100초 넘게 멈췄다(10/18 element.eleme.io). 알림창으로 멈춘 페이지도 오래 기다리지 않는다.
+    const guestFocused = await Promise.race([
+      contents.mainFrame.executeJavaScript('document.hasFocus()', true) as Promise<boolean>,
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), FOCUS_PROBE_MS)),
+    ]).catch(() => true);
     await host
       .executeJavaScript(
-        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (w && document.activeElement !== w) w.focus(); return !!w; })()`,
+        `(() => { const w = [...document.querySelectorAll('webview')].find((v) => v.getWebContentsId && v.getWebContentsId() === ${contents.id}); if (!w) return false; if (document.activeElement !== w) w.focus(); if (${!guestFocused}) { w.blur(); w.focus(); } return true; })()`,
         true,
       )
       .catch(() => false);
@@ -1045,6 +1055,33 @@ export class BrowserRuntime {
     return { ...runtime.info };
   }
 
+  /**
+   * 페이지에서 읽기 전용 스크립트를 실행한다(빠른 조작의 칸 이름 읽기). 알림창 등으로 페이지가 멈추면
+   * timeoutMs 뒤 포기한다.
+   *
+   * contents.executeJavaScript 는 페이지가 로딩 중이면 로딩이 끝날 때까지 기다린다. 끝나지 않는 요청이 남은
+   * 페이지(10/18 element.eleme.io 폼 문서)에서는 매번 timeoutMs 를 넘겨 칸 이름이 하나도 붙지 않았다. 메인 프레임에
+   * 바로 실행한다.
+   */
+  async pageScript<T>(workflowId: string, pageId: string, code: string, timeoutMs: number): Promise<T> {
+    const runtime = await this.resolvePage(workflowId, pageId, false);
+    const contents = await this.requireConnectedContents(runtime);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        contents.mainFrame.executeJavaScript(code) as Promise<T>,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new BrowserRuntimeError('browser_timeout', '페이지 스크립트가 시간 안에 끝나지 않았습니다.')),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async runAgentCommand(
     workflowId: string,
     pageId: string | undefined,
@@ -1147,6 +1184,18 @@ export class BrowserRuntime {
         this.popupHostWindow.contentView.removeChildView(runtime.view);
       }
     }
+    const next =
+      this.pages.get(runtime.info.openerPageId ?? '') ??
+      [...this.pages.values()].find((page) => page.info.workflowId === runtime.info.workflowId);
+    if (this.activeByWorkflow.get(runtime.info.workflowId) === pageId) {
+      if (next) this.activeByWorkflow.set(runtime.info.workflowId, next.info.pageId);
+      else this.activeByWorkflow.delete(runtime.info.workflowId);
+      if (next?.contents && runtime.info.mode === 'popup') {
+        if (next.window) next.window.focus();
+        else void focusGuest(next.contents).catch(() => undefined);
+      }
+    }
+    this.emit();
     await Promise.all(
       [...this.pages.values()]
         .filter((page) => page.info.openerPageId === pageId)
@@ -1161,18 +1210,6 @@ export class BrowserRuntime {
     if (win && !win.isDestroyed()) win.destroy();
     if (runtime.view && runtime.contents && !runtime.contents.isDestroyed())
       runtime.contents.close();
-    const next =
-      this.pages.get(runtime.info.openerPageId ?? '') ??
-      [...this.pages.values()].find((page) => page.info.workflowId === runtime.info.workflowId);
-    if (this.activeByWorkflow.get(runtime.info.workflowId) === pageId) {
-      if (next) this.activeByWorkflow.set(runtime.info.workflowId, next.info.pageId);
-      else this.activeByWorkflow.delete(runtime.info.workflowId);
-      if (next?.contents && runtime.info.mode === 'popup') {
-        if (next.window) next.window.focus();
-        else void focusGuest(next.contents).catch(() => undefined);
-      }
-    }
-    this.emit();
   }
 
   allowNextDownload(pageId: string, path: string): void {

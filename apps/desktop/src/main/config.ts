@@ -144,7 +144,7 @@ export interface ConnectorConfig {
   deviceId?: string;
   /** Linux 전용: 오버레이 클릭 통과 옵트인 ({forward:true} 미지원 플랫폼 안전장치). */
   linuxClickThrough?: boolean;
-  /** Agent Geny 기억 지도. 미설정 = 켜짐(에이전트 설정을 따름). false 면 이 PC 에서 보내는 턴은 기억 지도를 끈다. */
+  /** Agent Geny 기억 지도. 미설정 = 에이전트 설정대로, true · false 면 이 PC 에서 보내는 턴은 기억 지도를 켜거나 끈다. */
   memoryMap?: boolean;
   /** 메인 창 크롬 상태와 두 패널 탭 배치. */
   ui?: {

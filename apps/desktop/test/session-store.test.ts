@@ -526,6 +526,17 @@ test('openResume 는 히스토리를 불러오고, 이미 열려 있으면 다�
   assert.equal(historyCalls(), 1, '히스토리는 한 번만 로드')
 })
 
+test('이미 포커스인 대화를 다시 열면 focusSeq 가 오른다 (상세 탭을 보다가 사이드바에서 그 대화를 누른 경우)', async () => {
+  const { store } = makeStore({ 'iid-1': [{ input: 'u', output: 'a' }] })
+  store.openResume(agent('A'), 'iid-1')
+  await flush()
+  const before = store.getSnapshot().focusSeq
+  // 포커스(activeKey)는 이미 이 대화다. 예전에는 아무것도 바뀌지 않아 작업 공간이 탭을 옮기지 않았다.
+  store.openResume(agent('A'), 'iid-1')
+  assert.equal(store.activeKey, 'iid-1')
+  assert.equal(store.getSnapshot().focusSeq, before + 1)
+})
+
 test('openResume 는 서버가 되살린 작업 과정을 답에 붙인다 — 이 PC 기록이 없어도', async () => {
   const process: HistoryFlowItem[] = [
     { kind: 'text', text: '읽습니다.\n', at: 1000 },

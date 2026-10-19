@@ -207,8 +207,8 @@ export interface ChatRequest {
    */
   localFolders?: ChatLocalFolder[];
   /**
-   * Agent Geny 기억 지도를 이 턴만 끈다(false). 없거나 true 면 에이전트 설정을 따른다 —
-   * 서버의 기억 지도는 기본으로 켜져 있고, 이 값은 사용자가 이 기기에서 끈 선택을 실어 보낸다.
+   * Agent Geny 기억 지도를 이 턴에 켜거나(true) 끈다(false). 없으면 에이전트 설정을 따른다 —
+   * 새 에이전트는 켜져 있고 설정이 생기기 전에 저장된 에이전트는 꺼져 있다. 이 값은 사용자가 이 기기에서 고른 것을 실어 보낸다.
    */
   memoryMap?: boolean;
   includeLogs?: boolean;

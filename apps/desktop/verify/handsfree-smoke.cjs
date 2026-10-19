@@ -150,7 +150,7 @@ async function main() {
   }
   await until(() => run('window.testReady===true'));
   console.log('harness ready');
-  const wav = readFileSync(join(root, 'tests/fixtures/speech.wav'));
+  const wav = readFileSync(process.env.DEX_AUDIO_FIXTURE || join(root, 'tests/fixtures/speech.wav'));
   let speech;
   for (let p = 12; p + 8 <= wav.length;) {
     const n = wav.readUInt32LE(p + 4);

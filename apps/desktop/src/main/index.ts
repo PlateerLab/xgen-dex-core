@@ -8,7 +8,8 @@
  * transport lives here in the main process (Node fetch), so tokens stay out of
  * the renderer.
  */
-import { AudioProcessor, audioRuntime } from './audio-preprocessor';
+import { AudioProcessor } from './audio-preprocessor';
+import { AudioRuntimeManager } from './audio-runtime-manager';
 import { diag } from './diag-log';
 import {
   app,
@@ -2553,17 +2554,22 @@ ipcMain.handle(CHANNELS.voiceConfig, () => getClient().voice.getVoiceConfig());
 const audioProcessors = new Map<number, { id: string; processor: AudioProcessor; cleanup: () => void }>();
 const audioLogged = new WeakSet<AudioProcessor>();
 const audioSettings = () => ({ noise: loadConfig().voiceNoiseReduction === true, vad: loadConfig().voiceLocalVad === true });
-ipcMain.handle(CHANNELS.audioProcessStatus, async () => {
-  const probe = new AudioProcessor({ noise: true, vad: true }, audioRuntime(app.getAppPath(), process.resourcesPath));
-  try { await probe.open(); await probe.finish(); return { available: true, error: '' }; }
-  catch (error) { probe.cancel(); return { available: false, error: String(error) }; }
-});
+let audioRuntimeManager: AudioRuntimeManager | undefined;
+const getAudioRuntime = () => audioRuntimeManager ??= new AudioRuntimeManager(
+  join(app.getPath('userData'), 'audio-runtimes'), app.getAppPath(), process.resourcesPath,
+  (url, options) => net.fetch(url, options),
+);
+ipcMain.handle(CHANNELS.audioProcessStatus, () => getAudioRuntime().status());
+ipcMain.handle(CHANNELS.audioRuntimeCheck, () => getAudioRuntime().check());
+ipcMain.handle(CHANNELS.audioRuntimeInstall, (event) => getAudioRuntime().install(progress => {
+  if (!event.sender.isDestroyed()) event.sender.send(CHANNELS.audioRuntimeProgress, progress);
+}));
 ipcMain.handle(CHANNELS.audioProcessStart, async (e) => {
   const owner = e.sender.id;
   audioProcessors.get(owner)?.cleanup();
   const id = crypto.randomUUID();
   const settings = audioSettings();
-  const processor = new AudioProcessor(settings, audioRuntime(app.getAppPath(), process.resourcesPath));
+  const processor = new AudioProcessor(settings, getAudioRuntime().runtime());
   const cleanup = () => {
     e.sender.removeListener('destroyed', cleanup);
     if (audioProcessors.get(owner)?.id === id) {

@@ -16,16 +16,18 @@ export function audioRuntime(appPath: string, resourcesPath: string): AudioRunti
     [
       join(resourcesPath, 'audio-preprocessing'),
       resolve(appPath, '../../../xgen-audio-preprecessing'),
-    ].find((p) => existsSync(join(p, '.venv'))) ||
+    ].find((p) => existsSync(join(p, 'python')) || existsSync(join(p, '.venv'))) ||
     join(resourcesPath, 'audio-preprocessing');
   const python =
     process.env.DEX_AUDIO_PYTHON ||
-    join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+    (existsSync(join(root, 'python/bin/python3.11'))
+      ? join(root, 'python/bin/python3.11')
+      : join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'));
   const library =
     process.env.XGEN_RNNOISE_LIBRARY ||
     join(
       root,
-      '.local/rnnoise',
+      existsSync(join(root, 'lib')) ? 'lib' : '.local/rnnoise',
       process.platform === 'darwin'
         ? 'librnnoise.dylib'
         : process.platform === 'win32'
@@ -69,6 +71,8 @@ export class AudioProcessor {
     }
     const ready = this.waitReply();
     const args = [
+      '-I',
+      '-B',
       '-m',
       'xgen_audio.cli',
       '--jsonl',

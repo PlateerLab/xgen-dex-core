@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { AudioProcessor, audioRuntime } from '../src/main/audio-preprocessor';
 import { pcmWav } from '../src/renderer/src/voice/processed-capture';
@@ -9,6 +10,24 @@ const root =
   process.env.DEX_AUDIO_ROOT || resolve(__dirname, '../../../../xgen-audio-preprecessing');
 const runtime = audioRuntime(resolve(__dirname, '..'), '/nonexistent');
 const ready = existsSync(runtime.python) && existsSync(runtime.library);
+test('packaged runtime resolves from Resources after relocation, ahead of a development venv', () => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'dex-audio-path-'));
+  const keys = ['DEX_AUDIO_ROOT', 'DEX_AUDIO_PYTHON', 'XGEN_RNNOISE_LIBRARY'] as const;
+  const saved = keys.map(k => process.env[k]);
+  try {
+    for (const key of keys) delete process.env[key];
+    const root = resolve(dir, 'Resources/audio-preprocessing');
+    mkdirSync(resolve(root, 'python/bin'), { recursive: true });
+    mkdirSync(resolve(root, 'lib'), { recursive: true });
+    writeFileSync(resolve(root, 'python/bin/python3.11'), '');
+    const actual = audioRuntime(resolve(dir, 'Resources/app.asar'), resolve(dir, 'Resources'));
+    assert.equal(actual.python, resolve(root, 'python/bin/python3.11'));
+    assert.equal(actual.library, resolve(root, 'lib', process.platform === 'darwin' ? 'librnnoise.dylib' : process.platform === 'win32' ? 'rnnoise.dll' : 'librnnoise.so'));
+  } finally {
+    keys.forEach((key, i) => saved[i] === undefined ? delete process.env[key] : process.env[key] = saved[i]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 function speech(): Buffer {
   const wav = readFileSync(resolve(root, 'tests/fixtures/speech.wav'));
   for (let p = 12; p + 8 <= wav.length;) {

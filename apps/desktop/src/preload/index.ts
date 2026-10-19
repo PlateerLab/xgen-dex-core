@@ -1,3 +1,4 @@
+import type { AudioAsset, AudioInstallProgress, AudioRuntimeStatus } from '../main/audio-runtime-manager';
 import type { ProcessedAudio } from '../main/audio-preprocessor';
 /**
  * Preload — the ONLY bridge between the sandboxed renderer and the native shell.
@@ -852,7 +853,14 @@ const api = {
 
   /** 캡처 중 로컬 음성 전처리. */
   audioProcessor: {
-    status: (): Promise<{ available: boolean; error: string }> => ipcRenderer.invoke(CHANNELS.audioProcessStatus),
+    status: (): Promise<AudioRuntimeStatus> => ipcRenderer.invoke(CHANNELS.audioProcessStatus),
+    checkUpdate: (): Promise<AudioAsset> => ipcRenderer.invoke(CHANNELS.audioRuntimeCheck),
+    install: (): Promise<AudioRuntimeStatus> => ipcRenderer.invoke(CHANNELS.audioRuntimeInstall),
+    onProgress: (callback: (progress: AudioInstallProgress) => void): (() => void) => {
+      const listener = (_event: unknown, progress: AudioInstallProgress) => callback(progress);
+      ipcRenderer.on(CHANNELS.audioRuntimeProgress, listener);
+      return () => { ipcRenderer.removeListener(CHANNELS.audioRuntimeProgress, listener); };
+    },
     start: (): Promise<{ id: string; noise: boolean; vad: boolean }> => ipcRenderer.invoke(CHANNELS.audioProcessStart),
     push: (id: string, pcm: Uint8Array): Promise<ProcessedAudio> => ipcRenderer.invoke(CHANNELS.audioProcessPush, id, pcm),
     finish: (id: string): Promise<ProcessedAudio> => ipcRenderer.invoke(CHANNELS.audioProcessFinish, id),

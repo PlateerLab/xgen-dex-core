@@ -51,6 +51,9 @@ export const CHANNELS = {
   audioProcessFinish: 'voice:process:finish',
   audioProcessCancel: 'voice:process:cancel',
   audioProcessStatus: 'voice:process:status',
+  audioRuntimeCheck: 'voice:runtime:check',
+  audioRuntimeInstall: 'voice:runtime:install',
+  audioRuntimeProgress: 'voice:runtime:progress',
   voiceConfig: 'voice:config', // GET /api/admin/user → preferences.stt/tts (hints)
   voiceTranscribe: 'voice:transcribe', // audio bytes → POST /api/audio/stt/transcribe → text
   voiceSpeak: 'voice:speak', // text → POST /api/audio/tts/speak → audio bytes

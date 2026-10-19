@@ -50,6 +50,18 @@ flowchart LR
 
 ## 실행·설정·로그
 
+macOS ARM64 설치 앱에는 Python·RNNoise·Silero와 라이선스 고지를 포함하도록 패키징했다. 설치 앱은 아래 개발 환경 설치 없이 내장 런타임을 사용한다. 빌드 전제·실제 DMG 검증 결과·지원하지 않는 플랫폼은 [오디오 패키징](audio-packaging.md)을 참조한다.
+
+다른 개발자는 라이브러리 소스의 `scripts/install.py --target <새 폴더>`로 전용 런타임을 설치한 뒤, 생성된 `env.sh`를 읽은 터미널에서 DEX를 실행한다. Python 3.11.8+ 또는 3.12와 C 컴파일러가 필요하며 상세 절차는 라이브러리의 `docs/DEVELOPER_INSTALL.md`에 있다. 설치 target에는 `.venv`와 RNNoise가 생성되고 기존 폴더는 덮어쓰지 않는다.
+
+```sh
+source "$HOME/.local/share/xgen-audio/0.1.1/env.sh"
+cd /path/to/xgen-dex-core/apps/desktop
+npm run dev
+```
+
+아래는 기존 인접 소스 폴더의 `.venv`를 사용하는 개발 방식이다.
+
 ```sh
 cd /Users/somin/Desktop/plateer/xgen-dex-core/apps/desktop
 DEX_AUDIO_ROOT=/Users/somin/Desktop/plateer/xgen-audio-preprecessing npm run dev
@@ -60,6 +72,8 @@ DEX_AUDIO_ROOT=/Users/somin/Desktop/plateer/xgen-audio-preprecessing npm run dev
 터미널의 `[audio-preprocess] ready`는 선택된 옵션, `pcm-active`는 첫 PCM 처리 성공을 나타낸다. 로그의 `vad:false`는 **Silero OFF**이며 일반 핸즈프리의 RMS까지 꺼졌다는 뜻이 아니다. `speech_start`/`speech_end`는 Silero 이벤트다. 설정 → 일반 → 설치 → 진단 로그 복사에서도 볼 수 있다.
 
 ## 확인한 범위
+
+2026-10-18 개발자 설치 검증: 기존 `.venv`/`.local`을 복사하지 않은 새 macOS ARM64 환경에서 설치 스크립트를 실행했다. 새 Python 런타임으로 실제 DEX 전송 코드의 WebSocket 4회·파일 STT 4회, 실제 handsfree 훅의 모의 마이크→파일 STT 4회가 모두 같은 한국어 문장으로 통과했다. 새 OS/VM 검증은 아니며 기존 DEX Node 환경과 로그인을 사용했다. 재현 시 `DEX_AUDIO_ROOT`는 설치 target, `DEX_AUDIO_FIXTURE`는 소스 폴더의 `tests/fixtures/speech.wav`로 별도 지정한다. WebSocket 검증은 renderer 구간 판단을 우회하므로 전체 앱 UI·물리 마이크 E2E는 아니다.
 
 2026-10-17 기준. 이전 전처리→Core 검증에서는 깨끗한 한국어와 공개 행사장 소음 0dB 혼합을 네 조합으로 전송하여 WS 8회 + 파일 8회 모두 `안녕하세요. 오늘 날씨가 정말 좋네요.`로 일치했다. 이 테스트는 `voice-loop`의 구간 판단을 우회하므로 실시간 마이크 전체 경로 검증은 아니다. 소음 제거 OFF도 맞았기 때문에 인식률 향상을 입증한 결과도 아니다.
 
@@ -85,4 +99,6 @@ DEX_AUDIO_REAL_STT=1 ./node_modules/.bin/electron -r tsx/cjs verify/handsfree-sm
 
 실시간 전송 시작의 500ms 무음은 테스트 파일의 첫 인사말 누락을 막은 우회책이다. 서버 VAD가 원인인지, 실제 마이크에서도 필요한지는 미확인이다. 기존 종료 무음 300ms도 뒤의 stop과 별개로 필요한지 분리 검증하지 않았다. **두 무음 보정은 일반 핸즈프리의 파일 업로드에는 적용되지 않는다.**
 
-물리 마이크·스피커, COEX 현장, 30분 상시청취, OS/CPU별 배포 런타임·패키징·서명은 미검증이다. 기존 RMS는 작은 목소리를 놓칠 수 있고 RNNoise가 이를 더 작게 만들 수도 있다. 배포 앱에는 Python·RNNoise 및 라이선스를 별도로 포함해야 한다. 현재 변경은 개발 작업 트리이며 설치 앱 교체·커밋·푸시는 하지 않았다.
+COEX 현장, 30분 상시청취, 다른 OS/CPU의 배포 런타임은 미검증이다. 기존 RMS는 작은 목소리를 놓칠 수 있고 RNNoise가 이를 더 작게 만들 수도 있다. macOS ARM64의 내장 런타임과 실제 DMG STT는 별도 패키징 검증을 완료했다. Developer ID 서명·공증과 사용자 설치 앱 교체·공개 게시는 하지 않았다.
+
+다운로드형 설치·GitHub 업데이트·검증 범위는 [audio-runtime-download.md](audio-runtime-download.md)를 참고한다. 기본 앱 빌드는 전처리를 동봉하지 않는다.

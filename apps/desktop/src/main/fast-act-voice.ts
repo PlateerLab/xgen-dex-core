@@ -16,6 +16,7 @@ import { getBrowserRuntime } from './browser-runtime';
 import { BROWSER_ADVANCED_TOOL, getBrowserToolProvider } from './browser-tools';
 import { diag } from './diag-log';
 import {
+  GATE_INTENT_Q,
   classify,
   decisionState,
   elementDisplay,
@@ -96,6 +97,8 @@ const UPLOAD_WAIT_MS = 3_000;
 /** 이보다 좁거나 낮은 화면은 숨은 탭이다(앱은 숨은 탭을 1×1 로 둔다) — 꺼내서 다시 읽는다. */
 const SMALL_VIEW = 100;
 /** 숨은 탭을 꺼낸 뒤 배치가 끝나길 기다리는 한도. */
+/** 클릭·입력 하나로 끝나는 일일 확률이 이보다 낮으면 여러 단계·글쓰기 작업으로 보고 서버로 넘긴다(classify 의 single). */
+const SINGLE_MIN = 0.5;
 const REVEAL_WAIT_MS = 1_500;
 /** 조회 팝업의 적용 버튼 이름(pickInPopup) — 이름이 이것뿐인 버튼만. */
 const APPLY_BUTTON = /^(적용|선택|확인)$/;
@@ -433,9 +436,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
       texts.map(async (t) => {
         const a = await post({
           state: decisionState(t, origin, scr),
-          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS } },
+          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }, gate_intent: GATE_INTENT_Q },
         }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
-        return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
+        const multi = (a.gate_intent?.probabilities?.act ?? 1) < SINGLE_MIN;
+        return { ready: multi ? 'multi' : (a.ready?.choice ?? 'wait'), p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
   }
@@ -535,8 +539,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
   /** 접기·펼치기 버튼이 지금 펼쳐져 있나(aria-expanded) — 못 읽으면 null. */
   private async openOf(pageId: string, ref: string, generation: number): Promise<boolean | null> {
+    return this.flagOf(pageId, ref, generation, 'aria-expanded');
+  }
+
+  /** 'true'/'false' 속성 — 없거나 못 읽으면 null. */
+  private async flagOf(pageId: string, ref: string, generation: number, attr: string): Promise<boolean | null> {
     try {
-      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', 'attr', ref, 'aria-expanded'], 5_000, generation);
+      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', 'attr', ref, attr], 5_000, generation);
       const data = (run.result as { data?: Record<string, unknown> } | undefined)?.data ?? {};
       const value = Object.values(data).find((v) => v === 'true' || v === 'false');
       return value === undefined ? null : value === 'true';
@@ -1001,7 +1010,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
     const cls = await classify(post, text, origin, scr);
     const rc = cls.gate.toFixed(2);
+    diag(SCOPE, 'classify', { text, ready: cls.ready, gate: +rc, intent: cls.intent });
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
+    // 여러 단계 작업("자료 읽고 … 화면에 입력해줘")·글쓰기("상품상세 써서 넣어줘")는 서버로 — ready 가 act_now 라도.
+    // 10/19 BO: 칸 지시 71개는 act 최저 0.94, 자료를 읽고 채우라는 말·글쓰기는 0.33 이하.
+    if ((cls.single ?? 1) < SINGLE_MIN) return no(`여러 단계·글쓰기 작업 ${cls.single!.toFixed(2)}`);
     // 말이 끝났는데 동사 없이 요소 이름만 말한 경우("이달의 블로그 탭", "검색 버튼") — 모델은 '기다림' 으로
     // 답하지만, 더 올 말이 없으니 그 요소를 누르라는 뜻으로 본다. 대신 고른 확신이 높고 말이 그 이름을
     // 가리킬 때만 한다(아래).
@@ -1186,7 +1199,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
         }
       } else {
         try {
-          await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
+          // 서식 편집기(contenteditable — 상품상세)는 fill 이 지우지 않고 커서 자리에 끼워 넣었다(10/19 BO Jodit). 눌러서
+          // 전체를 고르고 글자를 넣는다 — 줄바꿈은 문단이 된다.
+          if (await this.flagOf(page.pageId, ref, snap.gen, 'contenteditable')) {
+            await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+            await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', process.platform === 'darwin' ? 'Meta+a' : 'Control+a'], 10_000);
+            await runtime.runAgentCommand(this.workflowId, page.pageId, ['keyboard', 'inserttext', typed ?? ''], 10_000);
+          } else await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
         } catch (err) {
           // 글자를 받지 않는 선택 상자(목록이나 찾기 팝업을 여는 상자) — 눌러 열고 아래에서 값을 고른다.
           if (element.role !== 'combobox') throw err;

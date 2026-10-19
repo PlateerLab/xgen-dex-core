@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { textFromWordAnswers } from '../src/main/fast-act';
+import { quotedText, textFromWordAnswers } from '../src/main/fast-act';
 import { maskedDate, plainNumber } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
@@ -103,4 +103,12 @@ test('maskedDate: 칸 형식의 자리에 말의 날짜·시각을 차례로', (
   assert.equal(maskedDate('시각 HH:mm', '오후 3시 5분'), '15:05');
   assert.equal(maskedDate('발행일 YY.MM.DD', '2026.11.05'), '26.11.05');
   assert.equal(maskedDate('시작 YYYY-MM-DD HH:mm', '2026.11.05'), null); // 시각이 없다
+});
+
+test('quotedText: 짝 맞는 따옴표 안 — 「」 안의 다른 따옴표·줄바꿈은 글자다', () => {
+  assert.equal(quotedText('"원피스" 검색해줘'), '원피스');
+  assert.equal(quotedText('“여름 원피스” 입력해줘'), '여름 원피스');
+  assert.equal(quotedText('상품상세 내용에 「첫 문단 "강조" 는 그대로\n\n둘째 문단 it\'s」 입력해줘'), '첫 문단 "강조" 는 그대로\n\n둘째 문단 it\'s');
+  assert.equal(quotedText('따옴표 없음'), null);
+  assert.equal(quotedText('닫지 않은 "따옴표'), null);
 });

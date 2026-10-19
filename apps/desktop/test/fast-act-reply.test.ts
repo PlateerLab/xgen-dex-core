@@ -177,3 +177,20 @@ test('누르지 않은 요소는 그 까닭만 답한다 — 한 일처럼 "눌�
   });
   assert.equal(actionSentence(skipped), '"네이버페이" 체크박스는 이미 체크돼 있어요.');
 });
+
+test('말 전체가 여러 단계 작업이면 앞부분만 떼어 실행하지 않고 통째로 판단한다', async () => {
+  const handled: string[] = [];
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: -1, conf: 0 }),
+    readiness: async (texts) => texts.map((t) => ({ ready: t.endsWith('넣어줘') ? 'multi' : 'act_now', p: 0.96 })),
+    handle: async (text) => {
+      handled.push(text);
+      return { acted: false, reason: '여러 단계 작업 0.94', ms: 0 };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  await seg.final('PDF에 있는 상품 설명으로 상품상세 써서 넣어줘');
+  assert.deepEqual(handled, ['PDF에 있는 상품 설명으로 상품상세 써서 넣어줘']);
+  assert.equal(seg.unhandled, 'PDF에 있는 상품 설명으로 상품상세 써서 넣어줘');
+});

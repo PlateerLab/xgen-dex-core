@@ -223,7 +223,9 @@ export function browserToolSchemas(): LocalToolSchema[] {
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
         'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
         'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
-        'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. Long rich text (product detail) and category trees are better done yourself.',
+        'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
+        'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」: "상품상세 내용에 「첫 문단\\n\\n둘째 문단」 입력해줘" — ' +
+        'it replaces the editor content and newlines become paragraphs. Category trees are better done yourself.',
       inputSchema: {
         type: 'object',
         properties: {

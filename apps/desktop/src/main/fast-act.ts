@@ -85,6 +85,9 @@ function gateScore(answers: Record<string, ChoiceAnswer>): number {
   return ps.reduce((a, b) => a + b, 0) / ps.length;
 }
 
+/** 클릭·입력 하나(act)인지, 글쓰기(answer)·여러 단계(multi)인지 — E13 의 학습된 ready 에는 뒤 둘이 없어 같이 묻는다. */
+export const GATE_INTENT_Q = GATE_QUESTIONS.gate_intent.q;
+
 const ACTION_QUESTION: ChoiceQuestion = {
   type: 'choice',
   instructions: "What kind of single page action does the user's message ask for?",
@@ -156,9 +159,16 @@ export function chunkKeys(keys: string[], size = CHUNK): string[][] {
 }
 
 /** 따옴표로 감싼 문구 — 있으면 입력할 글자로 그대로 쓴다. */
+/** 여는 따옴표별 닫는 따옴표 — 짝이 맞는 것만 닫는다(「…」 안의 "…" 는 글자다). */
+const QUOTE_CLOSE: Record<string, string> = { '"': '"“”', '“': '"“”', '”': '"“”', "'": "'‘’", '‘': "'‘’", '’': "'‘’", '「': '」', '『': '』' };
+
 export function quotedText(instruction: string): string | null {
-  const m = instruction.match(/["“”'‘’「『]([^"“”'‘’」』]+)["“”'‘’」』]/);
-  return m ? m[1].trim() || null : null;
+  const at = instruction.search(/["“”'‘’「『]/);
+  if (at < 0) return null;
+  const close = QUOTE_CLOSE[instruction[at]];
+  let end = at + 1;
+  while (end < instruction.length && !close.includes(instruction[end])) end++;
+  return end < instruction.length ? instruction.slice(at + 1, end).trim() || null : null;
 }
 
 /**
@@ -281,6 +291,10 @@ export type Classification = {
   text: string | null;
   /** E13 실행 준비 판단의 선택 (act_now | wait | not_ui). E10 이면 없음. */
   ready?: string;
+  /** 클릭·입력 하나로 끝나는 일일 확률(gate_intent 의 act) — E13 의 ready 에는 여러 단계·글쓰기 선택지가 없다. */
+  single?: number;
+  /** gate_intent 의 확률 전체(act·answer·multi) — 로그용. */
+  intent?: Record<string, number>;
   ms: number;
 };
 
@@ -301,7 +315,8 @@ export async function classify(
   const questions: Record<string, ChoiceQuestion> = { action: ACTION_QUESTION };
   // E13: 학습된 실행 준비 판단(act_now / wait / not_ui)이 판별을 맡는다. E10 은 학습 안 된 판별 질문 두 개.
   const e13 = scr !== null;
-  if (e13) questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS };
+  // ready 에는 여러 단계·글쓰기 선택지가 없어 "자료 읽고 … 화면에 입력해줘" 도 act_now 였다(10/19) — 같이 묻는다.
+  if (e13) (questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }), (questions.gate_intent = GATE_INTENT_Q);
   else for (const [k, g] of Object.entries(GATE_QUESTIONS)) questions[k] = g.q;
   if (candidates.length > 1) {
     const criteria: Record<string, string> = {};
@@ -317,7 +332,7 @@ export async function classify(
     if (!text && picked) text = candidates[Number(picked.slice(1))] ?? null;
   }
   const gate = e13 ? (a.ready?.probabilities?.act_now ?? 0) : gateScore(a);
-  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, ms: now() - t0 };
+  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, ms: now() - t0 };
 }
 
 export type Pick = {

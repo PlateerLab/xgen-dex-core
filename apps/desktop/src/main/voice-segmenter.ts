@@ -41,7 +41,7 @@ export interface VoiceAgent {
   /** 같은 발화 안에서 마지막으로 실행한 대상 표기 (같은 걸 두 번 누르지 않게). */
   readonly lastTarget: string | null;
   boundary(utterance: string, done: string, rest: string[]): Promise<{ start: number; conf: number }>;
-  /** 말 여러 개의 실행 준비 판단을 한 번에 — 학습된 질문(act_now / wait / not_ui)과 act_now 확률. */
+  /** 말 여러 개의 실행 준비 판단을 한 번에 — 학습된 질문(act_now / wait / not_ui, 여러 단계·글쓰기 작업이면 multi)과 act_now 확률. */
   readiness(texts: string[]): Promise<Array<{ ready: string; p: number }>>;
   /** pressOnly = 누를 것만 고른다(입력칸은 후보에서 뺀다). */
   handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome>;
@@ -164,8 +164,11 @@ export class Segmenter {
     const prefixes: string[] = [];
     for (let k = w.length - 1; k >= 2 && prefixes.length < 3; k--) prefixes.push(w.slice(0, k).join(' '));
     if (!prefixes.length) return null;
-    const r = await this.agent.readiness(prefixes).catch(() => []);
-    for (let i = 0; i < prefixes.length; i++) if (r[i]?.ready === 'act_now' && r[i].p >= th.intent) return prefixes[i];
+    // 말 전체도 묻는다 — 여러 단계·글쓰기 작업이면 앞부분만 떼어 실행하지 않는다(10/19 BO: "PDF에 있는 상품 설명으로 상품상세
+    // 써서 넣어줘" 의 "… 써서" 를 따로 실행해 상품상세에 "상품" 을 넣음). 그러면 말 전체가 handle 로 가서 서버로 넘어간다.
+    const r = await this.agent.readiness([cand, ...prefixes]).catch(() => []);
+    if (r[0]?.ready === 'multi') return null;
+    for (let i = 0; i < prefixes.length; i++) if (r[i + 1]?.ready === 'act_now' && r[i + 1].p >= th.intent) return prefixes[i];
     return null;
   }
 

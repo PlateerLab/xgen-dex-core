@@ -51,8 +51,10 @@ AbortSignal 전달·local socket drain은 원격 부작용의 rollback/cleanup �
 
 ## 완료와 남은 작업
 
-이번 범위는 Desktop presence 구현과 후보 검증이다. 실제 물리 OS 잠금/절전·다른 OS·실 CLI/VSCode
-presence 수용은 별도 관문이다. cookie-only browser adapter, 외부 MCP 취소/remote cleanup 증명,
+이번 범위는 Desktop presence 구현과 후보 검증이다. 후속 물리 macOS 수용에서 stale unlock 조회를
+수정하고 실제 suspend/lock/resume/unlock·명시 재연결·effect1을 검증했다. DEX의
+`native-capability-physical-presence.md` / Infra의 `cross-platform-session-native-physical-presence.md`를 따른다.
+독립 active socket 화면잠금도 후속 물리 수용에서 통과했다. deep sleep·다른 OS·실 CLI/VSCode presence는 별도 관문이다. cookie-only browser adapter, 외부 MCP 취소/remote cleanup 증명,
 감사 outbox/상태 UI, low-risk/step-up, 운영 Core catalog rollout·Kubernetes chaos/SLO,
 개인 설정·시크릿 및 legacy 종료도 남는다. 전체 Phase 완료율로 환산하지 않는다.
 
@@ -64,3 +66,5 @@ capability stop preserves credentials and conversation watches, and epoch checks
 Resume requires explicit reconnect and reselection. An interrupted effect remains uncertain; local abort
 is not remote cleanup proof. Real Electron synthetic-event verification is separate from physical OS
 and end-to-end ACTIVE acceptance.
+
+후속 수정: unlock 직후 stale locked는 main에서250ms 간격 최대12초 재관측하며 fresh active/idle일 때만 한 번에 해제한다. 새 lock/unlock/dispose는 이전 timer를 무효화한다. 자동 연결/실행은 없다.

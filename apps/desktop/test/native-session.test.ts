@@ -295,15 +295,52 @@ test('OS lock, suspend and inactive causes overlap without cancelling the login 
   } finally { off(); await f.cleanup(); }
 });
 
-test('startup and resume lock probes cannot clear a known lock with an unknown OS state', async () => {
+test('startup and resume lock probes cannot clear a known lock with an unknown OS state', async (t) => {
   const f = await fixture(); let idle = 'locked';
   const monitor = Object.assign(new EventEmitter(), { getSystemIdleState: () => idle });
   const off = bindNativeCapabilityPresence(monitor, f.host);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
     assert.equal(f.host.capabilityPresence().reason, 'locked');
     idle = 'unknown'; monitor.emit('suspend'); monitor.emit('resume');
     assert.equal(f.host.capabilityPresence().reason, 'locked');
+    monitor.emit('unlock-screen'); assert.equal(f.host.capabilityPresence().available, false);
+    idle = 'active'; t.mock.timers.tick(250);
+    assert.equal(f.host.capabilityPresence().available, true);
+  } finally { off(); await f.cleanup(); }
+});
+
+test('physical unlock waits for fresh OS state atomically and a later lock invalidates the probe', async (t) => {
+  const f = await fixture(); let idle = 'locked';
+  const monitor = Object.assign(new EventEmitter(), { getSystemIdleState: () => idle });
+  const off = bindNativeCapabilityPresence(monitor, f.host);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const count = f.notices.length;
+    monitor.emit('unlock-screen');
+    assert.equal(f.host.capabilityPresence().reason, 'locked');
+    assert.equal(f.notices.slice(count).some((n) => n.type === 'capability-presence' && n.presence.available), false);
+    idle = 'idle'; t.mock.timers.tick(250);
+    assert.equal(f.host.capabilityPresence().available, true);
+    monitor.emit('lock-screen'); idle = 'locked'; monitor.emit('unlock-screen');
+    monitor.emit('lock-screen'); idle = 'active'; t.mock.timers.tick(13000);
+    assert.equal(f.host.capabilityPresence().reason, 'locked');
     monitor.emit('unlock-screen'); assert.equal(f.host.capabilityPresence().available, true);
+  } finally { off(); await f.cleanup(); }
+});
+
+test('unlock observation is bounded and disposal never clears a pending OS lock', async (t) => {
+  const f = await fixture(); let reads = 0; let idle = 'locked';
+  const monitor = Object.assign(new EventEmitter(), { getSystemIdleState: () => { reads++; return idle; } });
+  const off = bindNativeCapabilityPresence(monitor, f.host);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    monitor.emit('unlock-screen');
+    for (let i = 0; i < 48; i++) t.mock.timers.tick(250);
+    const stopped = reads; t.mock.timers.tick(13000); assert.equal(reads, stopped);
+    assert.equal(f.host.capabilityPresence().reason, 'locked');
+    monitor.emit('unlock-screen'); off(); idle = 'active'; t.mock.timers.tick(13000);
+    assert.equal(f.host.capabilityPresence().reason, 'locked');
   } finally { off(); await f.cleanup(); }
 });
 

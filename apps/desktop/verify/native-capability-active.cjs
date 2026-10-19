@@ -1,5 +1,5 @@
 /** Opt-in live acceptance driver. Only a disposable account and mkdtemp folder are permitted. */
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, powerMonitor } = require('electron');
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -8,6 +8,7 @@ const { createInterface } = require('node:readline');
 const assert = require('node:assert/strict');
 const { buildSync } = require('esbuild');
 const { bindDesktopNativeSessions } = require('../src/main/native-session-ipc.ts');
+const { bindNativeCapabilityPresence } = require('../src/main/native-capability-presence.ts');
 const { NativeDeviceKeyStore } = require('@dex/engine/native-device-key-store');
 const { getLocalToolProvider } = require('@dex/engine/local-tools');
 const { ChatFolderStore } = require('../src/main/chat-folders.ts');
@@ -21,10 +22,14 @@ const directory = mkdtempSync(path.join(tmpdir(), 'dex-native-active-'));
 const workspace = path.join(directory, 'workspace'); mkdirSync(workspace);
 app.setPath('userData', path.join(directory, 'profile')); app.disableHardwareAcceleration();
 let win; let host; let closing = false;
+const physicalPresence = option('presence') === 'physical';
+const osEvents = [];
+let removePresence = () => {};
+let lastConnection = null;
 const marker = path.join(workspace, 'native-active-marker.txt');
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const deadline = setTimeout(() => { send({ event: 'deadline' }); app.exit(1); }, 30 * 60 * 1000);
-const close = () => { if (closing) return; closing = true; host?.reset(); clearTimeout(deadline); win?.destroy(); app.quit(); };
+const close = () => { if (closing) return; closing = true; removePresence(); host?.reset(); clearTimeout(deadline); win?.destroy(); app.quit(); };
 app.on('will-quit', () => rmSync(directory, { recursive: true, force: true }));
 async function until(predicate) {
   for (let i = 0; i < 300; i++) { if (await win.webContents.executeJavaScript(predicate, true)) return; await new Promise(resolve => setTimeout(resolve, 50)); }
@@ -45,21 +50,62 @@ app.whenReady().then(async () => {
   const trustedUrl = new URL(pathToFileURL(path.join(directory, 'index.html'))); Object.entries(query).forEach(([k,v]) => trustedUrl.searchParams.set(k,v));
   win = new BrowserWindow({ width: 1100, height: 1000, show: true, webPreferences: { contextIsolation: true, sandbox: false,
     backgroundThrottling: false, preload: path.join(__dirname, '../out/preload/index.js') } });
+  win.setTitle(physicalPresence ? 'XGEN — 실제 PC 잠금·절전 검증' : 'XGEN — Native ACTIVE 검증');
+  // Observe only public notification metadata. Never capture args, tokens, key material or arbitrary IPC payloads.
+  const originalSend = win.webContents.send.bind(win.webContents);
+  win.webContents.send = (channel, notice, ...rest) => {
+    if (physicalPresence && notice?.type === 'update' && notice.value?.view === 'capabilities') {
+      lastConnection = notice.value.snapshot.state;
+      send({ event: 'capability-state', state: lastConnection, at: new Date().toISOString() });
+    }
+    if (physicalPresence && notice?.type === 'capability-presence') send({ event: 'presence',
+      presence: notice.presence, at: new Date().toISOString() });
+    return originalSend(channel, notice, ...rest);
+  };
   host = bindDesktopNativeSessions(() => win.webContents, () => ({ origin, userId }), trustedUrl.href);
+  if (physicalPresence) {
+    const events = ['lock-screen', 'unlock-screen', 'suspend', 'resume', 'user-did-resign-active', 'user-did-become-active'];
+    const before = new Map();
+    for (const event of events) {
+      const listener = () => {
+        const row = { event, at: new Date().toISOString(), prior_connection: lastConnection };
+        osEvents.push(row); send({ event: 'physical-os', os_event: row.event, at: row.at,
+          prior_connection: row.prior_connection, source: 'electron-power-monitor' });
+      };
+      before.set(event, listener); powerMonitor.on(event, listener);
+    }
+    const unbind = bindNativeCapabilityPresence(powerMonitor, host);
+    removePresence = () => { unbind(); for (const [event, listener] of before) powerMonitor.removeListener(event, listener); };
+    // No synthetic emit or automatic OS action is exposed by this physical acceptance mode.
+  }
   await win.loadFile(path.join(directory, 'index.html'), { query }); await until(`!!document.getElementById('capability-connect')`);
-  send({ event: 'ready', user_id: userId, agent_session_id: sessionId, real_rpc: true, real_provider: true });
+  send({ event: 'ready', user_id: userId, agent_session_id: sessionId, real_rpc: true, real_provider: true,
+    physical_presence: physicalPresence });
   const lines = createInterface({ input: process.stdin }); let queue = Promise.resolve();
   lines.on('line', line => { queue = queue.then(async () => {
     let request;
     try {
       request = JSON.parse(line); const { method, params = {} } = request; let result;
       if (method === 'rpc') {
-        const allowed = ['device','session','conversation','submit-turn','create-agent-session','capabilities','capability-approvals','disconnect-capabilities'];
+        const allowed = ['device','session','conversation','submit-turn','create-agent-session','capabilities','capability-approvals','disconnect-capabilities','capability-status'];
         assert.ok(allowed.includes(params.method));
         result = await win.webContents.executeJavaScript(`window.xgen.nativeSession.request(${JSON.stringify(params.method)},${JSON.stringify(params.params ?? {})})`, true);
       } else if (method === 'inspect') {
         const displayed = await win.webContents.executeJavaScript(`({error:document.querySelector('[role=alert]')?.textContent??'',status:Array.from(document.querySelectorAll('[role=status]')).map(e=>e.textContent)})`);
         result = displayed;
+      } else if (method === 'presence') {
+        assert.equal(physicalPresence, true);
+        const current = await win.webContents.executeJavaScript(`window.xgen.nativeSession.request('capability-status')`, true);
+        result = { presence: host.capabilityPresence(), idle_state: powerMonitor.getSystemIdleState(1),
+          os_events: [...osEvents], last_connection: lastConnection,
+          status_reply: current,
+          connect_enabled: await win.webContents.executeJavaScript(`document.querySelector('#capability-connect')?.disabled===false`),
+          confirmation_visible: await win.webContents.executeJavaScript(`!!document.querySelector('#capability-allow')`),
+          selections_visible: await win.webContents.executeJavaScript(`document.querySelectorAll('input[type=checkbox]').length`) };
+      } else if (method === 'screenshot') {
+        assert.ok(path.resolve(params.path).startsWith(path.resolve(option('evidence-dir')) + path.sep));
+        await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        writeFileSync(params.path, (await win.webContents.capturePage()).toPNG()); result = { captured: true };
       } else if (method === 'connect') {
         await until(`!!document.getElementById('capability-connect')&&!document.getElementById('capability-connect').disabled`); await click('#capability-connect'); await until(`document.body.textContent.includes('작업 요청 대기')`); result = { connected: true };
       } else if (method === 'select') {

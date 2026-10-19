@@ -24,6 +24,10 @@ test('조사는 받침을 따르고, 모르면 둘 다 적는다', () => {
   assert.equal(josa('"xgen"', '을', '를'), '"xgen"을');
   assert.equal(josa('"naver"', '을', '를'), '"naver"를');
   assert.equal(josa('"3"', '을', '를'), '"3"을');
+  assert.equal(josa('"3일"', '으로', '로'), '"3일"로');
+  assert.equal(josa('"일반상품"', '으로', '로'), '"일반상품"으로');
+  assert.equal(josa('"전체"', '으로', '로'), '"전체"로');
+  assert.equal(josa('"7"', '으로', '로'), '"7"로');
   assert.equal(josa('"2"', '을', '를'), '"2"를');
   assert.equal(josa('"google"', '을', '를'), '"google"을(를)');
 });

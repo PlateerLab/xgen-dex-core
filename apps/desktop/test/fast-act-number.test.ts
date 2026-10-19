@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { judgedText, quotedText, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
+import { judgedText, quotedText, saysValue, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
 import { maskedDate, plainNumber } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
@@ -111,6 +111,8 @@ test('quotedText: 짝 맞는 따옴표 안 — 「」 안의 다른 따옴표·�
   assert.equal(quotedText('상품상세 내용에 「첫 문단 "강조" 는 그대로\n\n둘째 문단 it\'s」 입력해줘'), '첫 문단 "강조" 는 그대로\n\n둘째 문단 it\'s');
   assert.equal(quotedText('따옴표 없음'), null);
   assert.equal(quotedText('닫지 않은 "따옴표'), null);
+  assert.equal(quotedText('상품상세 내용에 「첫 문단\n둘째 문단» 입력해줘'), '첫 문단\n둘째 문단');
+  assert.equal(quotedText('상품상세 내용에 「닫지 않음 입력해줘'), null);
 });
 
 test('judgedText: 따옴표 안이 길거나 여러 줄이면 판단에는 줄여서', () => {
@@ -127,4 +129,13 @@ test('withoutDisabledTwins: 같은 이름의 활성 요소가 있으면 비활�
   };
   assert.deepEqual(Object.keys(withoutDisabledTwins(refs, new Set(['e238', 'e184']))), ['e28', 'e184']);
   assert.deepEqual(Object.keys(withoutDisabledTwins(refs, new Set())), ['e28', 'e238', 'e184']);
+});
+
+test('saysValue: 말에 그 값이 그대로 — 앞이 띄어쓰기·따옴표일 때만', () => {
+  assert.ok(saysValue('배송상품구분을 일반상품으로 설정해줘', '일반상품'));
+  assert.ok(!saysValue('배송상품구분을 비일반상품으로 설정해줘', '일반상품'));
+  assert.ok(saysValue('출고소요일 3일로 해줘', '3일'));
+  assert.ok(!saysValue('출고소요일 13일로 해줘', '3일'));
+  assert.ok(saysValue('구매연령을 「만 19세 이상」으로', '만 19세 이상'));
+  assert.ok(saysValue('배송비정책을 배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)으로', '배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)'));
 });

@@ -21,6 +21,10 @@ function hasBatchim(word: string): boolean | null {
 
 /** 말 + 조사 — josa('"블로그" 탭', '을', '를') → '"블로그" 탭을'. 받침을 모르면 '을(를)'. */
 export function josa(word: string, withBatchim: string, without: string): string {
+  // ㄹ 받침 뒤에는 '으로' 가 아니라 '로'다 — "3일로", "서울로"(숫자는 1·7·8 이 일·칠·팔).
+  const ch = word.replace(/["'“”‘’)\]\s.,!?…]+$/u, '').slice(-1);
+  const code = ch.charCodeAt(0) - 0xac00;
+  if (withBatchim === '으로' && ((code >= 0 && code <= 11171 && code % 28 === 8) || /[178]/.test(ch))) return `${word}${without}`;
   const b = hasBatchim(word);
   return `${word}${b === null ? `${withBatchim}(${without})` : b ? withBatchim : without}`;
 }

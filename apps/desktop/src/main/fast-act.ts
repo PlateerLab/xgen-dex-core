@@ -168,8 +168,21 @@ export function quotedText(instruction: string): string | null {
   const close = QUOTE_CLOSE[instruction[at]];
   let end = at + 1;
   while (end < instruction.length && !close.includes(instruction[end])) end++;
-  return end < instruction.length ? instruction.slice(at + 1, end).trim() || null : null;
+  // 「…」 를 다른 따옴표로 닫기도 한다(10/19 LLM: 「… » 입력해줘) — 짝이 없으면 마지막 닫는 꼴 따옴표까지.
+  if (end >= instruction.length && '「『'.includes(instruction[at])) end = Math.max(...[...'」』»”"’'].map((c) => instruction.lastIndexOf(c)));
+  return end > at && end < instruction.length ? instruction.slice(at + 1, end).trim() || null : null;
 }
+
+/**
+ * 말에 그 값이 그대로 있나 — 값 앞이 말 처음·띄어쓰기·따옴표·괄호일 때만("출고소요일 13일로" 에 "3일" 은 아니다).
+ */
+export function saysValue(instruction: string, value: string): boolean {
+  const v = value.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+  return !!v && new RegExp(`(?:^|[\\s「『"“'‘(])${v}`).test(instruction);
+}
+
+/** 이보다 긴 지시는 따옴표 안 글이 없으면 판단 모델에 보내지 않는다 — 판단 서버가 422 로 거절했다(10/19, 594자). */
+export const LONG_INSTRUCTION = 300;
 
 /**
  * 판단에 쓸 말 — 따옴표 안이 길면(40자 넘게·여러 줄) "…" 로 줄인다. 넣을 글자(따옴표 안)는 그대로 쓰고, 무엇을 할지·어느

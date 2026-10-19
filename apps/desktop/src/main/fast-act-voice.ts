@@ -19,6 +19,8 @@ import {
   GATE_INTENT_Q,
   classify,
   judgedText,
+  saysValue,
+  LONG_INSTRUCTION,
   withoutDisabledTwins,
   decisionState,
   elementDisplay,
@@ -1080,6 +1082,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
     const scr = this.screenOf(origin, allRefs);
 
+    if (text.length > LONG_INSTRUCTION && !quotedText(text)) return no('지시가 너무 김 — 넣을 글은 「」로 감싸 주세요');
     const cls = await classify(post, judgedText(text), origin, scr);
     const rc = cls.gate.toFixed(2);
     diag(SCOPE, 'classify', { text, ready: cls.ready, gate: +rc, intent: cls.intent });
@@ -1182,6 +1185,14 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     // 고른 요소가 비활성이다(앞 칸에 따라 풀리는 상자 등) — 누르지 않고 그렇다고 알린다. 눌러 놓고 "눌렀어요" 로 답하면
     // 바뀐 줄 안다(10/19 BO: 협력사를 정하기 전 부가세·배송수단 상자).
+    // 선택 상자가 이미 말한 값이다("배송상품구분 (현재: 일반상품)" 에 "배송상품구분을 일반상품으로 설정해줘") — 누르지 않고 그렇다고
+    // 답한다. 이미 정해진 값의 칸은 대개 비활성이라 '못 함' 으로 끝나 LLM 이 다시 시도했다(10/19 BO, BrowserFill 58줄 중 3줄).
+    const already = element.role === 'combobox' ? (element.name ?? '').match(/\(현재: (.+)\)$/)?.[1] : undefined;
+    if (already && !th.partial && saysValue(text, already)) {
+      const kept = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
+      kept.sentence = `${josa(kept.display, '은', '는')} 이미 ${josa(`"${already}"`, '으로', '로')} 되어 있어요.`;
+      return { acted: true, kind: 'press', target: kept.label, ms: now() - t0, effect: 'ok' };
+    }
     if (snap.disabled.has(pick.ref)) {
       if (th.partial) return no('비활성 요소 — 말이 끝난 뒤', pick.top);
       const skipped = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
@@ -1276,7 +1287,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
           if (await this.flagOf(page.pageId, ref, snap.gen, 'contenteditable')) {
             await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
             await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', process.platform === 'darwin' ? 'Meta+a' : 'Control+a'], 10_000);
-            await runtime.runAgentCommand(this.workflowId, page.pageId, ['keyboard', 'inserttext', typed ?? ''], 10_000);
+            // LLM 이 줄바꿈을 "\n" 두 글자로 적기도 했다(10/19) — 편집기에는 줄바꿈으로.
+            await runtime.runAgentCommand(this.workflowId, page.pageId, ['keyboard', 'inserttext', (typed ?? '').replace(/\\n/g, '\n')], 10_000);
           } else await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, typed ?? ''], 10_000, snap.gen);
         } catch (err) {
           // 글자를 받지 않는 선택 상자(목록이나 찾기 팝업을 여는 상자) — 눌러 열고 아래에서 값을 고른다.

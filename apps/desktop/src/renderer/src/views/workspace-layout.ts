@@ -287,7 +287,7 @@ export function openBrowserTab(
     : addWorkspaceTab(layout, groupId, browserTab);
 }
 
-/** 지금 포커스된 묶음에서 보이는 탭 — 새 탭(상세 등)을 연 탭이다. */
+/** 지금 포커스된 묶음에서 보이는 탭. 새 탭(상세 등)을 연 탭이다. */
 export function focusedTabId(layout: WorkspaceLayout): string | null {
   return layout.groups.find((group) => group.id === layout.focusedGroupId)?.activeTabId ?? null;
 }

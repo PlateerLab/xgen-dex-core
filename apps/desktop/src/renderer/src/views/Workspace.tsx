@@ -520,7 +520,7 @@ export const Workspace: React.FC<{
 
   useEffect(() => {
     setLayout((current) => layoutWithActiveSession(current, activeKey));
-    // focusSeq: 이미 포커스인 대화를 사이드바에서 다시 눌렀다(상세 탭을 보던 중 등) — 그 대화 탭을 앞에 세운다.
+    // focusSeq: 이미 포커스인 대화를 사이드바에서 다시 눌렀다(상세 탭을 보던 중 등). 그 대화 탭을 앞에 세운다.
   }, [activeKey, focusSeq]);
 
   // An agent may explicitly create a shared page through BrowserTabs. Surface

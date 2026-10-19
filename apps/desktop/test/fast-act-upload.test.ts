@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { ElementRefs } from '../src/main/fast-act';
-import { accepts, fileNameIn, listFiles, uploadLanded, withFileFields, type FileField } from '../src/main/fast-act-upload';
+import { accepts, fileNameIn, listFiles, namesFile, uploadLanded, withFileFields, type FileField } from '../src/main/fast-act-upload';
 
 const field = (n: number, label: string, over: Partial<FileField> = {}): FileField => ({
   n,
@@ -21,8 +21,17 @@ const BO = [field(0, '대표이미지'), field(1, '동영상'), field(2, '추가
 test('fileNameIn: 말에 든 파일 이름, 뒤 조사는 뺀다', () => {
   assert.equal(fileNameIn('대표이미지를 INNO-20261016-001_대표이미지.png로 업로드해줘'), 'INNO-20261016-001_대표이미지.png');
   assert.equal(fileNameIn('"a.JPG" 올려줘'), 'a.JPG');
+  assert.equal(fileNameIn('대표이미지에 상품이미지/a.png를 올려줘'), '상품이미지/a.png');
   assert.equal(fileNameIn('대표이미지 올려줘'), null);
   assert.equal(fileNameIn('버전 1.5로 바꿔줘'), null);
+});
+
+test('namesFile: 이름만 또는 연결 폴더 안 경로로', () => {
+  const p = '/Users/x/신제품/상품이미지/INNO-001_대표이미지.png';
+  assert.ok(namesFile(p, 'INNO-001_대표이미지.png'));
+  assert.ok(namesFile(p, '상품이미지/INNO-001_대표이미지.png'));
+  assert.ok(!namesFile(p, '다른폴더/INNO-001_대표이미지.png'));
+  assert.ok(!namesFile(p, '001_대표이미지.png'));
 });
 
 test('uploadLanded: 미리보기·파일 이름·보이는 칸만 올라간 것으로 본다', () => {

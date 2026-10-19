@@ -14,6 +14,7 @@ export const BROWSER_SNAPSHOT_TOOL = 'BrowserSnapshot';
 export const BROWSER_INTERACT_TOOL = 'BrowserInteract';
 export const BROWSER_CAPTURE_TOOL = 'BrowserCapture';
 export const BROWSER_ADVANCED_TOOL = 'BrowserAdvanced';
+export const BROWSER_FILL_TOOL = 'BrowserFill';
 
 export const BROWSER_TOOL_NAMES = new Set([
   BROWSER_TABS_TOOL,
@@ -22,6 +23,7 @@ export const BROWSER_TOOL_NAMES = new Set([
   BROWSER_INTERACT_TOOL,
   BROWSER_CAPTURE_TOOL,
   BROWSER_ADVANCED_TOOL,
+  BROWSER_FILL_TOOL,
 ]);
 
 const commonPageProperties = {
@@ -207,6 +209,28 @@ export function browserToolSchemas(): LocalToolSchema[] {
         required: ['action'],
       },
     },
+    {
+      name: BROWSER_FILL_TOOL,
+      annotations: { readOnlyHint: false, openWorldHint: true },
+      description:
+        'Fill many fields of a form on the visible (shared) browser tab fast: each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
+        '(e.g. "판매가 12900원 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
+        'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
+        'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
+        'A step naming two fields fills only one of them: write "공급원가 17430원 입력해줘" and "정상가 29900원 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
+        'for checkbox groups, one step per box. ' +
+        'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
+        'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
+        'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
+        'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. Long rich text (product detail) and category trees are better done yourself.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          steps: { type: 'array', items: { type: 'string' }, description: 'One instruction per field, in order.' },
+        },
+        required: ['steps'],
+      },
+    },
   ];
 }
 
@@ -384,6 +408,7 @@ export class BrowserToolProvider {
     if (tool === BROWSER_INTERACT_TOOL) return this.interact(args, context);
     if (tool === BROWSER_CAPTURE_TOOL) return this.capture(args, context);
     if (tool === BROWSER_ADVANCED_TOOL) return this.advanced(args, context);
+    if (tool === BROWSER_FILL_TOOL) return this.fill(args, context);
     throw new Error(`unknown browser tool: ${tool}`);
   }
 
@@ -551,6 +576,19 @@ export class BrowserToolProvider {
       timeout(args),
     );
     return result(run.page, run.result);
+  }
+
+  private async fill(
+    args: Record<string, unknown>,
+    context?: LocalToolCallContext,
+  ): Promise<LocalToolResult> {
+    const steps = (Array.isArray(args.steps) ? args.steps : []).map((s) => String(s).trim()).filter(Boolean);
+    if (!steps.length) throw new BrowserRuntimeError('browser_denied', 'steps 가 비었습니다.');
+    // fast-act-voice 가 이 파일을 가져다 쓰므로 부를 때 가져온다(순환 참조).
+    const { runSteps } = await import('./fast-act-batch');
+    const wid = workflow(args, context);
+    const results = await runSteps(wid, context?.interactionId, steps, context?.signal);
+    return result(null, results);
   }
 
   private async advanced(

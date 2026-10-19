@@ -42,6 +42,12 @@ export function fileNameIn(text: string): string | null {
   return m ? m[0] : null;
 }
 
+/** 말한 파일 이름이 그 파일인가 — 이름만("a.png") 또는 연결 폴더 안 경로("상품이미지/a.png")로. */
+export function namesFile(path: string, named: string): boolean {
+  const p = `/${path.replace(/\\/g, '/')}`;
+  return p.endsWith(`/${named.replace(/\\/g, '/').replace(/^\/+/, '')}`);
+}
+
 const squash = (s: string): string => s.replace(/\s+/g, '').toLowerCase();
 
 const KIND: Record<string, string> = {

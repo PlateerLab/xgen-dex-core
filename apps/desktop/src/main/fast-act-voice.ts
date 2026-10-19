@@ -58,7 +58,7 @@ import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
 import { plainNumber } from './fast-act-number';
 import { josa } from './fast-act-reply';
 import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
-import { FILE_FIELDS_SCRIPT, accepts, fileNameIn, listFiles, uploadLanded, withFileFields, type FileField, type Landed } from './fast-act-upload';
+import { FILE_FIELDS_SCRIPT, accepts, fileNameIn, listFiles, namesFile, uploadLanded, withFileFields, type FileField, type Landed } from './fast-act-upload';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
@@ -794,7 +794,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const all = await listFiles(roots);
     // 말에 파일 이름이 그대로 있으면 그 파일 — 고를 것이 없다.
     const named = fileNameIn(text);
-    const same = named ? all.filter((p) => basename(p) === named) : [];
+    const same = named ? all.filter((p) => namesFile(p, named)) : [];
     if (named && same.length !== 1) {
       return say(same.length ? `연결된 폴더에 ${josa(`"${named}"`, '이', '가')} ${same.length}개 있어요. 어느 것을 올릴까요?` : `연결된 폴더에서 ${josa(`"${named}"`, '을', '를')} 찾지 못했어요.`);
     }
@@ -807,9 +807,16 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const root = roots.find((r) => p.startsWith(r));
         return root ? p.slice(root.length).replace(/^[\\/]+/, '') : basename(p);
       };
-      const refs = Object.fromEntries(cands.map((p, i) => [`e${i + 1}`, { role: 'option', name: rel(p) }])) as ElementRefs;
+      // 맞는 파일이 없다는 줄도 둔다 — 없으면 파일과 상관없는 말("모델명 ID-ORG-04-IV를 입력해줘")에도 어느 파일이든 골랐다(10/19:
+      // 입력칸이 가려진 화면에서 파일 칸만 남아 browser.png 를 0.8 로 올림).
+      const NONE = `e${cands.length + 1}`;
+      const refs = Object.fromEntries([
+        ...cands.map((p, i) => [`e${i + 1}`, { role: 'option', name: rel(p) }]),
+        [NONE, { role: 'option', name: '말한 파일 없음' }],
+      ]) as ElementRefs;
       const picked = await pickElement(post, text, 'file://연결된 폴더', refs, this.screenOf('file://연결된 폴더', refs));
       diag(SCOPE, 'upload-pick', { text, top: picked?.top });
+      if (picked?.ref === NONE) return no('말에 올릴 파일이 없음');
       if (!picked || picked.confidence < th.pick) {
         const top = (picked?.top ?? []).map(([label]) => String(label).replace(/^e\d+ option "(.*)"$/, '$1')).slice(0, 3);
         return say(`어느 파일을 올릴까요?${top.length ? ` ${top.join(', ')}` : ''}`);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { textFromWordAnswers } from '../src/main/fast-act';
-import { plainNumber } from '../src/main/fast-act-number';
+import { maskedDate, plainNumber } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
   assert.equal(plainNumber('20000원'), '20000');
@@ -83,4 +83,24 @@ test('넣을 글자는 수 말과 그 단위를 함께 — 단위만 골랐어�
   assert.equal(textFromWordAnswers('도로 입력해줘', wordAnswers([0.97, 0])), '도로');
   assert.equal(textFromWordAnswers('통로 입력해줘', wordAnswers([0.97, 0])), '통로');
   assert.equal(textFromWordAnswers('지하 통로 입력해줘', wordAnswers([0.97, 0.97, 0])), '지하 통로');
+});
+
+test('maskedDate: 칸 형식의 자리에 말의 날짜·시각을 차례로', () => {
+  const name = '판매기간 YYYY.MM.DD. – YYYY.MM.DD.';
+  assert.equal(maskedDate(name, '2026.10.19부터 2026.12.31까지'), '2026.10.19. – 2026.12.31.');
+  assert.equal(maskedDate(name, '2026-10-20 ~ 2026-12-31'), '2026.10.20. – 2026.12.31.');
+  assert.equal(maskedDate(name, '2026년 11월 1일부터 2027년 1월 5일'), '2026.11.01. – 2027.01.05.');
+  assert.equal(maskedDate(name, '2026.10.19'), null); // 자리는 둘인데 날짜는 하나
+  assert.equal(maskedDate('시작일 YYYY-MM-DD', '2026.10.19'), '2026-10-19');
+  assert.equal(maskedDate('상품명', '2026.10.19'), null);
+  // 시각·순서·대소문자·년월만
+  assert.equal(maskedDate('시작 YYYY-MM-DD HH:mm', '2026.11.05 14:30'), '2026-11-05 14:30');
+  assert.equal(maskedDate('시작 YYYY-MM-DD HH:mm', '2026년 11월 5일 오후 2시 30분'), '2026-11-05 14:30');
+  assert.equal(maskedDate('시작 YYYY-MM-DD HH:mm', '2026년 11월 5일 오전 9시'), '2026-11-05 09:00');
+  assert.equal(maskedDate('Start MM/DD/YYYY', '2026-11-05'), '11/05/2026');
+  assert.equal(maskedDate('기준일 yyyy-mm-dd', '2026.3.7'), '2026-03-07');
+  assert.equal(maskedDate('정산월 YYYY.MM', '2026년 11월'), '2026.11');
+  assert.equal(maskedDate('시각 HH:mm', '오후 3시 5분'), '15:05');
+  assert.equal(maskedDate('발행일 YY.MM.DD', '2026.11.05'), '26.11.05');
+  assert.equal(maskedDate('시작 YYYY-MM-DD HH:mm', '2026.11.05'), null); // 시각이 없다
 });

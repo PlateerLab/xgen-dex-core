@@ -219,6 +219,7 @@ export function browserToolSchemas(): LocalToolSchema[] {
         'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
         'A step naming two fields fills only one of them: write "공급원가 17430원 입력해줘" and "정상가 29900원 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
+        'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간 2026.11.10. – 2027.03.31. 입력해줘"). ' +
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
         'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
         'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +

@@ -55,7 +55,7 @@ import {
   type FieldLabel,
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
-import { plainNumber } from './fast-act-number';
+import { maskedDate, plainNumber } from './fast-act-number';
 import { josa } from './fast-act-reply';
 import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
 import { FILE_FIELDS_SCRIPT, accepts, fileNameIn, listFiles, namesFile, uploadLanded, withFileFields, type FileField, type Landed } from './fast-act-upload';
@@ -1117,6 +1117,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       typed = found && withoutLeadingLabel(found, snap.labels[pick.ref]);
       if (!typed && clickedField) return no('입력칸 클릭은 하지 않음', pick.top);
       if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);
+      // 년·월·일 칸으로 나뉜 날짜 칸은 칸 형식 그대로만 받는다. 뽑은 글자에 날짜가 모자라면(구간의 시작일만) 말 전체에서.
+      typed = maskedDate(element.name ?? '', typed) ?? maskedDate(element.name ?? '', text) ?? typed;
     }
     if (action !== 'click' && th.partial && typed) {
       const lastWord = typed.split(' ').pop() ?? typed;

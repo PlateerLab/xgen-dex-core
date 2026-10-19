@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { judgedText, quotedText, textFromWordAnswers } from '../src/main/fast-act';
+import { judgedText, quotedText, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
 import { maskedDate, plainNumber } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
@@ -117,4 +117,14 @@ test('judgedText: 따옴표 안이 길거나 여러 줄이면 판단에는 줄�
   assert.equal(judgedText('제조사에 「이노데모 제조사 (가상)」 입력해줘'), '제조사에 「이노데모 제조사 (가상)」 입력해줘');
   assert.equal(judgedText('상품상세 내용에 「[상품 소개]\n원산지: 대한민국」 입력해줘'), '상품상세 내용에 「…」 입력해줘');
   assert.equal(judgedText(`상품상세 내용에 「${'가'.repeat(41)}」 입력해줘`), '상품상세 내용에 「…」 입력해줘');
+});
+
+test('withoutDisabledTwins: 같은 이름의 활성 요소가 있으면 비활성 쪽을 뺀다', () => {
+  const refs = {
+    e28: { role: 'combobox', name: '표준카테고리' },
+    e238: { role: 'textbox', name: '표준 카테고리' },
+    e184: { role: 'textbox', name: '공급원가' },
+  };
+  assert.deepEqual(Object.keys(withoutDisabledTwins(refs, new Set(['e238', 'e184']))), ['e28', 'e184']);
+  assert.deepEqual(Object.keys(withoutDisabledTwins(refs, new Set())), ['e28', 'e238', 'e184']);
 });

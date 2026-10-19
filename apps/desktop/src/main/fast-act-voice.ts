@@ -19,6 +19,7 @@ import {
   GATE_INTENT_Q,
   classify,
   judgedText,
+  withoutDisabledTwins,
   decisionState,
   elementDisplay,
   elementLabel,
@@ -103,6 +104,9 @@ const SINGLE_MIN = 0.5;
 const REVEAL_WAIT_MS = 1_500;
 /** 조회 팝업의 적용 버튼 이름(pickInPopup) — 이름이 이것뿐인 버튼만. */
 const APPLY_BUTTON = /^(적용|선택|확인)$/;
+/** 트리 팝업에서 내려갈 단계 수 한도, 펼친 뒤 하위 항목을 기다리는 시간. */
+const TREE_DEPTH_MAX = 6;
+const TREE_EXPAND_MS = 400;
 /** 목록에서 자리로 고르는 말. */
 const POSITION_WORD = /(첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+)\s*번째|맨\s*(위|아래|앞|뒤|처음|끝)|마지막|first|second|third|last/i;
 /** 말이 끝났는데 요소 이름만 말했을 때 누르는 확신 하한. */
@@ -700,6 +704,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!s) return (diag(SCOPE, 'popup-skip', { why: '팝업 화면 못 읽음' }), null);
     const origin = originOf(s.page.url);
     const t0 = now();
+    // 검색칸 없이 트리만 있는 팝업(표준카테고리) — 단계마다 판단 모델이 항목을 고른다.
+    const field = Object.entries(s.snap.refs).find(([, r]) => TYPABLE.has(r.role) && isSearchField(r));
+    if (!field && Object.values(s.snap.refs).some((r) => r.role === 'treeitem')) return this.pickInTree(post, text, th, s);
     const found = await this.typedText(post, text, origin, this.screenOf(origin, s.snap.refs), utterance, label);
     const value = found && valueToPick(found, label);
     if (!value) return (diag(SCOPE, 'popup-skip', { why: '고를 값 없음', found, label, refs: Object.keys(s.snap.refs).length, url: s.page.url }), null);
@@ -713,7 +720,6 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return last;
     };
     // 검색칸이 있으면 값으로 조회한다.
-    const field = Object.entries(s.snap.refs).find(([, r]) => TYPABLE.has(r.role) && isSearchField(r));
     if (field) {
       this.beforeAct(popup);
       const tAct = now();
@@ -745,19 +751,32 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const check = s.snap.checks[row];
     const picked = { role: check ? (s.snap.refs[check.ref]?.role ?? 'radio') : 'row', name: s.snap.refs[row]?.name ?? value };
     this.beforeAct(s.page);
-    let tAct = now();
+    const tAct = now();
     try {
       await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${check?.ref ?? row}`], 10_000, s.snap.gen);
     } catch {
       return last;
     }
     last = await this.record(text, picked, 'click', null, th, 0, now() - tAct, s.page, { confidence: 1 }, s.snap.ms);
-    // 적용 — 이름이 정확히 적용·선택·확인인 버튼이 하나일 때만.
-    s = await this.snapshot(true).catch(() => null);
+    return this.applyInPopup(text, th, value, last, ask);
+  }
+
+  /**
+   * 팝업에서 고른 뒤 적용한다 — 이름이 정확히 적용·선택·확인인 버튼이 하나일 때만. 적용한 뒤 원래 화면에 값이 보이는지 본다.
+   */
+  private async applyInPopup(
+    text: string,
+    th: Thresholds,
+    value: string,
+    last: VoiceAction | null,
+    ask: (question: string) => VoiceAction | null,
+  ): Promise<VoiceAction | null> {
+    const runtime = getBrowserRuntime();
+    const s = await this.snapshot(true).catch(() => null);
     const apply = s ? Object.entries(s.snap.refs).filter(([, r]) => r.role === 'button' && APPLY_BUTTON.test(squash(r.name ?? ''))) : [];
     if (!s || apply.length !== 1) return ask(`${josa(`"${value}"`, '을', '를')} 골랐어요. 어느 버튼으로 적용할까요?`);
     this.beforeAct(s.page);
-    tAct = now();
+    const tAct = now();
     try {
       await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${apply[0][0]}`], 10_000, s.snap.gen);
     } catch {
@@ -770,6 +789,56 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const filled = !!back && Object.values(back.snap.refs).some((r) => squash(r.name ?? '').includes(squash(value)));
     if (!filled) return ask(`적용했는데 화면에서 ${josa(`"${value}"`, '이', '가')} 보이지 않아요. 확인해 주실래요?`);
     return last;
+  }
+
+  /**
+   * 검색칸 없이 트리만 있는 조회 팝업(BO 표준카테고리: 문구/오피스 > 사무용품 전문관) — 보이는 트리 항목 가운데 판단 모델이
+   * 말에 맞는 것을 골라 누른다. 펼쳐지면 그 아래 항목에서 다시 고르고, 펼칠 것 없는 항목(맨 끝)을 누르면 적용한다.
+   */
+  private async pickInTree(
+    post: NonNullable<ReturnType<typeof decisionPost>>,
+    text: string,
+    th: Thresholds,
+    first: NonNullable<Awaited<ReturnType<BrowserVoiceAgent['snapshot']>>>,
+  ): Promise<VoiceAction | null> {
+    const runtime = getBrowserRuntime();
+    let s: typeof first | null = first;
+    let last: VoiceAction | null = null;
+    const ask = (question: string): VoiceAction | null => {
+      const target = this.actions.at(-1);
+      if (target) target.tell = question;
+      diag(SCOPE, 'tree-ask', { question });
+      return last;
+    };
+    const path: string[] = [];
+    for (let depth = 0; depth < TREE_DEPTH_MAX && s; depth++) {
+      const items = Object.fromEntries(Object.entries(s.snap.refs).filter(([, r]) => r.role === 'treeitem' && !path.includes(r.name ?? '')));
+      const origin = originOf(s.page.url);
+      const pick = Object.keys(items).length ? await pickElement(post, judgedText(text), origin, items, this.screenOf(origin, s.snap.refs)) : null;
+      diag(SCOPE, 'tree-pick', { path, top: pick?.top });
+      if (!pick || pick.confidence < th.pick) {
+        const top = (pick?.top ?? []).map(([label]) => String(label).replace(/^e\d+ treeitem "(.*)"$/, '$1')).slice(0, 3);
+        return ask(`어느 항목을 고를까요?${top.length ? ` ${top.join(', ')}` : ''}`);
+      }
+      const item = s.snap.refs[pick.ref];
+      this.beforeAct(s.page);
+      const tAct = now();
+      try {
+        await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['click', `@${pick.ref}`], 10_000, s.snap.gen);
+      } catch {
+        return last;
+      }
+      last = await this.record(text, item, 'click', null, th, 0, now() - tAct, s.page, pick, s.snap.ms);
+      path.push(item.name ?? '');
+      // 누른 뒤 새 트리 항목이 나타났으면 펼친 것이고, 없으면 맨 끝 항목을 고른 것이다 — 요소 번호가 가리키는 것이 항목 안
+      // 글자라 aria-expanded 로는 알 수 없었다(10/19 BO). 하위를 불러오는 사이를 잠깐 기다린다.
+      const seen = new Set(Object.values(s.snap.refs).filter((r) => r.role === 'treeitem').map((r) => r.name ?? ''));
+      await new Promise((r) => setTimeout(r, TREE_EXPAND_MS));
+      s = await this.snapshot(true).catch(() => null);
+      const opened = !!s && Object.values(s.snap.refs).some((r) => r.role === 'treeitem' && !seen.has(r.name ?? ''));
+      if (!opened) return this.applyInPopup(text, th, item.name ?? '', last, ask);
+    }
+    return ask(`${path.join(' > ')} 까지 펼쳤어요. 어느 항목을 고를까요?`);
   }
 
   /**
@@ -1066,7 +1135,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           !(pressOnly && TYPABLE.has(r.role)),
       ),
     );
-    const candidates = wantsType && Object.keys(typable).length ? typable : pickable;
+    const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled);
     const picked = await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {

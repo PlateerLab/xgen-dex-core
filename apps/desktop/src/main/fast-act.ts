@@ -354,6 +354,17 @@ export type Pick = {
 };
 
 /**
+ * 같은 이름의 활성 요소가 있는 비활성 요소를 뺀다 — 고른 값을 보여만 주는 칸이다. BO 표준카테고리는 고르는 선택 상자와
+ * 같은 이름의 비활성 입력칸(상품속성 정보)이 있어, "표준카테고리를 … 지정해줘" 에 판단 모델이 비활성 칸을 0.997 로 골랐다(10/19).
+ * 같은 이름이 없는 비활성 요소는 남긴다 — 고르면 "비활성이라 누르지 않았어요" 로 답한다.
+ */
+export function withoutDisabledTwins(refs: ElementRefs, disabled: Set<string>): ElementRefs {
+  const key = (r: ElementRef): string => (r.name ?? '').replace(/\s+/g, '');
+  const enabled = new Set(Object.entries(refs).filter(([k, r]) => !disabled.has(k) && key(r)).map(([, r]) => key(r)));
+  return Object.fromEntries(Object.entries(refs).filter(([k, r]) => !disabled.has(k) || !enabled.has(key(r))));
+}
+
+/**
  * 같은 ref만 중복이다. 이름과 역할이 같아도 서로 다른 칸·팝업·링크일 수 있으므로
  * 이름 없는 요소를 포함해 서로 다른 ref는 모두 유지한다. 기존 호출부를 위해 함수 이름은 유지한다.
  */

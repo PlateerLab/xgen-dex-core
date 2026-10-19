@@ -227,7 +227,8 @@ export function browserToolSchemas(): LocalToolSchema[] {
         'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
         'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
         'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」: "상품상세 내용에 「첫 문단\\n\\n둘째 문단」 입력해줘" — ' +
-        'it replaces the editor content and newlines become paragraphs. Category trees are better done yourself.',
+        'it replaces the editor content and newlines become paragraphs. ' +
+        'Category trees are steps too, with the full path: "표준카테고리를 「문구/오피스 > 사무용품 전문관」으로 지정해줘" — the step opens the tree, expands each level and applies.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -504,6 +504,12 @@ export interface StoreSnapshot {
   /** Insertion order. */
   sessions: SessionState[];
   activeKey: string | null;
+  /**
+   * 사용자가 대화를 다시 열었다(사이드바 · 기록 관리에서 이어보기). activeKey 가 그대로여도(이미 그 대화가
+   * 포커스) 오른다. 작업 공간이 이 값으로 그 대화의 탭을 앞에 세운다: 상세 탭을 보다가 사이드바에서 그
+   * 대화를 누르면 아무 일도 없던 것을 고친다(2026-10-19). 스트리밍 사건은 이 값을 건드리지 않는다.
+   */
+  focusSeq: number;
 }
 
 /** A screen capture attached to an outgoing message. */
@@ -707,7 +713,8 @@ export class SessionStore {
    */
   private visible: Set<string> | null = null;
   private listeners = new Set<() => void>();
-  private snap: StoreSnapshot = { sessions: [], activeKey: null };
+  private snap: StoreSnapshot = { sessions: [], activeKey: null, focusSeq: 0 };
+  private _focusSeq = 0;
 
   constructor(
     private transport: SessionTransport,
@@ -728,7 +735,7 @@ export class SessionStore {
   private emit(): void {
     // Rebuild the snapshot only here → getSnapshot returns a stable reference
     // between mutations (required by useSyncExternalStore).
-    this.snap = { sessions: [...this.map.values()], activeKey: this._active };
+    this.snap = { sessions: [...this.map.values()], activeKey: this._active, focusSeq: this._focusSeq };
     for (const l of this.listeners) l();
   }
 
@@ -806,7 +813,13 @@ export class SessionStore {
   openResume(agent: Agent, interactionId: string, workflowName?: string, info?: Omit<ConversationInfo, 'interactionId'>): string {
     if (this.map.has(interactionId)) {
       if (info) this.applyConversationInfo([{ interactionId, ...info }]);
-      this.setActive(interactionId);
+      if (this._active === interactionId) {
+        // 이미 포커스다. setActive 는 아무것도 하지 않으니, 탭을 그 대화로 옮기라는 신호만 올린다.
+        this._focusSeq += 1;
+        this.emit();
+      } else {
+        this.setActive(interactionId);
+      }
       return interactionId;
     }
     this.gcActiveIfEmpty();

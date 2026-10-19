@@ -93,6 +93,10 @@ const EMPTY_PAGE_WAIT_MS = 800;
 const ROWS_WAIT_MS = 2_500;
 /** 파일을 넣은 뒤 그 칸이 바뀌기를(미리보기·파일 이름) 기다리는 한도(upload). */
 const UPLOAD_WAIT_MS = 3_000;
+/** 이보다 좁거나 낮은 화면은 숨은 탭이다(앱은 숨은 탭을 1×1 로 둔다) — 꺼내서 다시 읽는다. */
+const SMALL_VIEW = 100;
+/** 숨은 탭을 꺼낸 뒤 배치가 끝나길 기다리는 한도. */
+const REVEAL_WAIT_MS = 1_500;
 /** 조회 팝업의 적용 버튼 이름(pickInPopup) — 이름이 이것뿐인 버튼만. */
 const APPLY_BUTTON = /^(적용|선택|확인)$/;
 /** 목록에서 자리로 고르는 말. */
@@ -218,6 +222,8 @@ type Snap = {
   disabled: Set<string>;
   /** 체크박스·선택지의 지금 상태(checkStates). */
   states: Record<string, boolean>;
+  /** 페이지가 숨어 화면 크기가 거의 없다(SMALL_VIEW) — 위치로 찾는 칸 이름이 틀린다. */
+  hidden: boolean;
   /** 화면 줄로 넣은 숨은 파일 칸(줄 번호별, withFileFields). */
   files: Record<string, FileField>;
   /** 접기·펼치기 버튼이 지금 펼쳐져 있는가(labelToggles). */
@@ -244,6 +250,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private noticed: string[] = [];
   /** 이번 지시에서 열린 선택 목록을 이미 닫았나 — 한 번만. */
   private listClosed = false;
+  /** 이번 지시에서 숨은 탭을 이미 꺼내 다시 읽었나 — 한 번만. */
+  private revealed = false;
   /** 실행 직전 이 에이전트의 탭 — 누른 링크가 새 탭을 열었는지 볼 때 쓴다. */
   private tabsAtAct = new Set<string>();
 
@@ -309,6 +317,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const fields = runtime
       .pageScript<FieldLabel[]>(this.workflowId, page.pageId, FIELD_LABEL_SCRIPT, PAGE_SCRIPT_MS)
       .catch(() => null);
+    const view = runtime.pageScript<number[]>(this.workflowId, page.pageId, '[innerWidth, innerHeight]', PAGE_SCRIPT_MS).catch(() => null);
     // 숨은 파일 칸 — 스냅샷에 없어서 따로 읽어 화면 줄로 넣는다(fast-act-upload).
     const fileFields = runtime.pageScript<FileField[]>(this.workflowId, page.pageId, FILE_FIELDS_SCRIPT, PAGE_SCRIPT_MS).catch(() => []);
     const p = runtime
@@ -349,6 +358,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           states,
           files: withFiles.files,
           open: toggles.open,
+          hidden: ((await view) ?? [SMALL_VIEW]).some((n) => n < SMALL_VIEW),
         };
       });
     this.inflight = p.catch(() => null);
@@ -923,6 +933,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.deciding++;
     this.noticed = [];
     this.listClosed = false;
+    this.revealed = false;
     this.dismissed = null;
     try {
       const o = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
@@ -995,6 +1006,23 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (abort()) return no('판단 취소(새 인식)');
     // 화면 조작 지시인데 알림창이 화면을 막고 있다 — 닫고 새 화면으로 다시 판단한다.
     if (this.noticed.length < NOTICE_MAX && (await this.closeNotice(page))) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+    // 화면 조작 지시인데 탭이 숨어 있다(채팅이 앞에 있으면 페이지가 1×1) — 칸 이름은 화면 자리로 찾아서 1×1 에서는 구역 제목이
+    // 붙는다(10/19 BO 앱을 켠 직후: 출고소요일 상자가 "배송 정보", 구매연령은 이름 없음 → 첫 요청이 서버로). 탭을 꺼내 배치가
+    // 끝나길 기다렸다 다시 읽고 판단한다. 판단 전이라 말이 화면 조작일 때만 꺼낸다.
+    if (snap.hidden && !this.revealed && !th.partial) {
+      this.revealed = true;
+      revealForAct(page);
+      const runtime = getBrowserRuntime();
+      for (const until = now() + REVEAL_WAIT_MS; now() < until; ) {
+        await new Promise((r) => setTimeout(r, 100));
+        const size = await runtime.pageScript<number[]>(this.workflowId, page.pageId, '[innerWidth, innerHeight]', PAGE_SCRIPT_MS).catch(() => null);
+        if (size && size.every((n) => n >= SMALL_VIEW)) break;
+      }
+      this.version++;
+      this.snap = null;
+      diag(SCOPE, 'revealed-hidden-tab', { text });
+      return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+    }
 
     // 입력 요청(동작이 입력이고 글자가 있고 말에 글자 넣기 말이 있음)이면 입력칸만 후보로 — 검색 버튼 대신 검색창.
     const wantsType = !pressOnly && cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);

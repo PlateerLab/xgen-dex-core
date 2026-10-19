@@ -90,3 +90,51 @@ export function plainNumber(text: string): string | null {
   }
   return null;
 }
+
+/** 형식 글자 하나 — 년(4·2자리)·월·일·시·분. */
+const MASK_TOKEN = /YYYY|yyyy|YY|yy|MM|mm|DD|dd|HH|hh/g;
+/** 칸 이름 속 형식 — 형식 글자 둘 이상이 구분 글자로 이어진 곳(영문 단어 속은 빼고). */
+const MASK = /(?<![A-Za-z])(?:YYYY|yyyy|YY|yy|MM|mm|DD|dd|HH|hh)(?:[\s.\-/:–~T년월일시분]{0,4}(?:YYYY|yyyy|YY|yy|MM|mm|DD|dd|HH|hh))+(?![A-Za-z])[.일분]?/;
+/** 말 속 날짜·시각 — "2026.11.05", "2026년 11월 5일 오후 2시 30분", "2026-11", "14:30". */
+const MOMENT =
+  /(\d{4})\s*[.\-/년]\s*(\d{1,2})(?:\s*[.\-/월]\s*(\d{1,2}))?\s*[일.]?(?:\s*T?\s*(오전|오후)?\s*(\d{1,2})\s*(?::|시)\s*(\d{1,2})?)?|(오전|오후)?\s*(\d{1,2})\s*(?::|시)\s*(\d{1,2})?/g;
+
+type Moment = Partial<Record<'Y' | 'M' | 'D' | 'h' | 'm', string>>;
+
+function moments(text: string): Moment[] {
+  return [...text.matchAll(MOMENT)].map((g) => {
+    const [Y, M, D, ampm, h, m] = g[1] ? g.slice(1, 7) : [undefined, undefined, undefined, g[7], g[8], g[9]];
+    let hour = h === undefined ? undefined : Number(h);
+    if (hour !== undefined && ampm === '오후' && hour < 12) hour += 12;
+    if (hour !== undefined && ampm === '오전' && hour === 12) hour = 0;
+    return { Y, M, D, h: hour === undefined ? undefined : String(hour), m: h === undefined ? undefined : (m ?? '0') };
+  });
+}
+
+/**
+ * 형식이 있는 칸에 맞춘 글자 — 칸 이름에 붙은 형식("판매기간 YYYY.MM.DD. – YYYY.MM.DD.", "시작 YYYY-MM-DD HH:mm",
+ * "MM/DD/YYYY")의 자리에 말의 날짜·시각을 차례로 넣는다. 같은 형식 글자가 다시 나오면 다음 날짜다(구간). 형식이 없거나
+ * 말의 날짜·시각이 자리와 맞지 않으면 null.
+ *
+ * 년·월·일 칸으로 나뉜 날짜 칸(MUI X)은 형식 그대로의 글자만 받는다 — "2026.10.19부터 2026.12.31까지" 를 넣으면
+ * 일부만 읽어 "YYYY.10.19." 가 됐다(10/19 BO 판매기간). 한 자씩 치면 중간 값(2026.10.02)에 BO 가 지난 날짜라며 칸을 비웠다.
+ * mm 는 ':' 뒤면 분, 아니면 월(yyyy-mm-dd)이다.
+ */
+export function maskedDate(name: string, text: string): string | null {
+  const mask = name.match(MASK)?.[0];
+  if (!mask) return null;
+  const points = moments(text);
+  let i = 0;
+  let ok = true;
+  const used = new Set<string>();
+  const out = mask.replace(MASK_TOKEN, (tok: string, at: number) => {
+    const t = tok.toUpperCase();
+    const kind = t[0] === 'Y' ? 'Y' : t === 'DD' ? 'D' : t === 'HH' ? 'h' : mask[at - 1] === ':' ? 'm' : 'M';
+    if (used.has(kind)) (i++, used.clear());
+    used.add(kind);
+    const v = points[i]?.[kind];
+    if (v === undefined) return ((ok = false), tok);
+    return kind === 'Y' ? v.slice(-tok.length) : v.padStart(2, '0');
+  });
+  return ok && i + 1 === points.length ? out : null;
+}

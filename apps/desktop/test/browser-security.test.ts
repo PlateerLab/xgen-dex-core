@@ -12,6 +12,7 @@ import {
   type BrowserPageInfo,
 } from '@dex/protocol/browser';
 import { BrowserRuntime } from '../src/main/browser-runtime';
+import { configureFastAct } from '../src/main/fast-act-runner';
 import { EventEmitter } from 'node:events';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -19,6 +20,7 @@ import { BrowserPane } from '../src/renderer/src/views/BrowserPane';
 import { browserStateStore } from '../src/renderer/src/browser-state';
 import {
   BROWSER_TABS_TOOL,
+  BROWSER_FILL_TOOL,
   BrowserToolProvider,
   browserWaitCommand,
   browserToolSchemas,
@@ -657,4 +659,33 @@ test('pageScript uses the main frame and times out without waiting for page load
   assert.equal(await runtime.pageScript('workflow', 'page', 'document.title', 100), 'ready');
   contents.mainFrame.executeJavaScript = () => new Promise(() => {});
   await assert.rejects(runtime.pageScript('workflow', 'page', 'document.title', 10), /browser_timeout/);
+});
+
+
+test('BrowserFill setting and step decider independently control advertised tools', () => {
+  const savedUrl = process.env.DEX_FAST_ACT_URL;
+  delete process.env.DEX_FAST_ACT_URL;
+  let enabled = false;
+  const post = async () => ({});
+  configureFastAct({ enabled: () => enabled, post });
+  const provider = new BrowserToolProvider(new BrowserRuntime());
+  try {
+    for (const steps of [false, true]) {
+      provider.configure(true, () => [], () => {}, () => steps ? post : null);
+      for (const fastAct of [false, true]) {
+        enabled = fastAct;
+        const schemas = provider.advertise();
+        assert.equal(schemas.some(tool => tool.name === BROWSER_FILL_TOOL), fastAct);
+        const interact = schemas.find(tool => tool.name === BROWSER_INTERACT_TOOL)!;
+        const properties = interact.inputSchema!.properties as Record<string, { enum?: string[] }>;
+        assert.equal(properties.action.enum!.includes('step'), steps);
+      }
+    }
+    provider.configure(false);
+    assert.deepEqual(provider.advertise(), []);
+  } finally {
+    configureFastAct({ enabled: () => false, post });
+    if (savedUrl === undefined) delete process.env.DEX_FAST_ACT_URL;
+    else process.env.DEX_FAST_ACT_URL = savedUrl;
+  }
 });

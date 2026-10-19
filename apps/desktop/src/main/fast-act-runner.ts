@@ -107,6 +107,11 @@ export function fastActEnabled(): boolean {
   return !!decisionPost();
 }
 
+/** 빠른 조작이 설정상 켜져 있나 — 판단 모델이 잠시 쉬는 중(503 뒤)이어도 true. 도구 광고처럼 한 번 정해지면 오래 가는 곳에 쓴다. */
+export function fastActConfigured(): boolean {
+  return !!process.env.DEX_FAST_ACT_URL?.trim() || !!deps?.enabled();
+}
+
 /** 이 에이전트의 활성 팝업 또는 브라우저 탭. */
 export function visiblePage(workflowId: string): BrowserPageInfo | null {
   const runtime = getBrowserRuntime();

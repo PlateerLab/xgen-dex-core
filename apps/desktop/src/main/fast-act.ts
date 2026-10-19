@@ -117,6 +117,7 @@ const ROLE_KO: Record<string, string> = {
   textbox: '입력칸',
   searchbox: '검색칸',
   combobox: '선택 상자',
+  file: '파일 칸',
   checkbox: '체크박스',
   radio: '선택지',
   tab: '탭',

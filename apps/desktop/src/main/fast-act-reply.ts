@@ -47,7 +47,7 @@ function pageName(a: VoiceAction): string | null {
 export function actionSentence(a: VoiceAction): string {
   const q = a.text !== null ? `"${a.text}"` : '';
   let did: string;
-  if (a.skipped) did = a.skipped;
+  if (a.sentence) did = a.sentence;
   else if (a.action === 'click' || a.text === null) did = `${josa(a.display, '을', '를')} 눌렀어요.`;
   else if (a.action === 'type') did = `${a.display}에 ${josa(q, '을', '를')} 입력했어요.`;
   // 검색칸의 이름은 대개 안내 문구("검색어를 입력하고 버튼을 누르세요")라 답에 옮기지 않는다.

@@ -96,7 +96,7 @@ export async function tryFastAct(
   }
   const t0 = now();
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
-  const inner = new BrowserVoiceAgent(req.workflowId, t0);
+  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
   const agent: VoiceAgent = {
     get lastTarget() {

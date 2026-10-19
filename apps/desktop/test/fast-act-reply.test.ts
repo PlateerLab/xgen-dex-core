@@ -173,7 +173,7 @@ test('누르지 않은 요소는 그 까닭만 답한다 — 한 일처럼 "눌�
   const skipped = act({
     label: 'checkbox "네이버페이"',
     display: '"네이버페이" 체크박스',
-    skipped: '"네이버페이" 체크박스는 이미 체크돼 있어요.',
+    sentence: '"네이버페이" 체크박스는 이미 체크돼 있어요.',
   });
   assert.equal(actionSentence(skipped), '"네이버페이" 체크박스는 이미 체크돼 있어요.');
 });

@@ -357,6 +357,11 @@ export class BrowserToolProvider {
     this.revealSharedPage = revealSharedPage;
   }
 
+  /** 그 대화에 연결된 폴더 — 빠른 조작이 올릴 파일을 찾을 때(fast-act-upload). */
+  roots(context?: LocalToolCallContext): string[] {
+    return this.fileRoots(context);
+  }
+
   advertise(): LocalToolSchema[] {
     return this.enabled ? browserToolSchemas() : [];
   }

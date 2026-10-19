@@ -11,7 +11,9 @@
  *   · 중간 인식에서 글자 넣기는 넣을 글자 뒤에 글자 넣기 말("검색해", "입력해")이 온 뒤에만.
  *   · 되돌릴 수 없을 수 있는 동작(삭제·로그아웃 …)은 여기서 하지 않고 서버(확인 절차가 있는 경로)로 넘긴다.
  */
+import { basename } from 'node:path';
 import { getBrowserRuntime } from './browser-runtime';
+import { BROWSER_ADVANCED_TOOL, getBrowserToolProvider } from './browser-tools';
 import { diag } from './diag-log';
 import {
   classify,
@@ -55,6 +57,7 @@ import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
 import { plainNumber } from './fast-act-number';
 import { josa } from './fast-act-reply';
 import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
+import { FILE_FIELDS_SCRIPT, accepts, fileNameIn, listFiles, uploadLanded, withFileFields, type FileField, type Landed } from './fast-act-upload';
 import { GUARDED, mentions, norm, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
 const SCOPE = 'voice-act';
@@ -87,6 +90,8 @@ const CHOOSE_PICK = 0.85;
 const EMPTY_PAGE_WAIT_MS = 800;
 /** 조회 팝업에서 결과 표가 그려지기를 기다리는 한도(pickInPopup). */
 const ROWS_WAIT_MS = 2_500;
+/** 파일을 넣은 뒤 그 칸이 바뀌기를(미리보기·파일 이름) 기다리는 한도(upload). */
+const UPLOAD_WAIT_MS = 3_000;
 /** 조회 팝업의 적용 버튼 이름(pickInPopup) — 이름이 이것뿐인 버튼만. */
 const APPLY_BUTTON = /^(적용|선택|확인)$/;
 /** 목록에서 자리로 고르는 말. */
@@ -187,8 +192,8 @@ export type VoiceAction = {
   notices?: string[];
   /** 사용자에게 전할 말 — 이어서 할 일을 고르지 못해 묻거나(pickInPopup), 눌렀는데 선택되지 않았음을 알린다. 답 끝에 그대로 붙인다. */
   tell?: string;
-  /** 고른 요소를 누르지 않은 까닭(비활성, 이미 그 상태) — 답은 "눌렀어요" 대신 이 문장이다. */
-  skipped?: string;
+  /** 답 문장을 정해 둔 경우(누르지 않은 까닭, 파일 올린 결과) — 답은 "눌렀어요" 대신 이 문장이다. */
+  sentence?: string;
 };
 
 /** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
@@ -208,6 +213,8 @@ type Snap = {
   disabled: Set<string>;
   /** 체크박스·선택지의 지금 상태(checkStates). */
   states: Record<string, boolean>;
+  /** 화면 줄로 넣은 숨은 파일 칸(줄 번호별, withFileFields). */
+  files: Record<string, FileField>;
 };
 
 export class BrowserVoiceAgent implements VoiceAgent {
@@ -237,6 +244,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     private workflowId: string,
     private t0: number,
     private onAct?: (a: VoiceAction) => void,
+    /** 채팅 턴의 대화 — 올릴 파일을 그 대화에 연결된 폴더에서 찾는다. 없으면(음성) 파일 올리기는 서버로 넘긴다. */
+    private interactionId?: string,
   ) {}
 
   get lastTarget(): string | null {
@@ -293,6 +302,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const fields = runtime
       .pageScript<FieldLabel[]>(this.workflowId, page.pageId, FIELD_LABEL_SCRIPT, PAGE_SCRIPT_MS)
       .catch(() => null);
+    // 숨은 파일 칸 — 스냅샷에 없어서 따로 읽어 화면 줄로 넣는다(fast-act-upload).
+    const fileFields = runtime.pageScript<FileField[]>(this.workflowId, page.pageId, FILE_FIELDS_SCRIPT, PAGE_SCRIPT_MS).catch(() => []);
     const p = runtime
       .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
       .then(async (run): Promise<Snap> => {
@@ -312,7 +323,21 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const items = itemOf(data?.snapshot ?? '');
         const disabled = disabledOf(data?.snapshot ?? '');
         const states = checkStates(data?.snapshot ?? '');
-        return { at: now(), pageId: page.pageId, url: page.url, refs: terms.refs, gen: run.page.generation, ms: now() - t, labels, checks, items, disabled, states };
+        const withFiles = withFileFields(terms.refs, (await fileFields) ?? []);
+        return {
+          at: now(),
+          pageId: page.pageId,
+          url: page.url,
+          refs: withFiles.refs,
+          gen: run.page.generation,
+          ms: now() - t,
+          labels,
+          checks,
+          items,
+          disabled,
+          states,
+          files: withFiles.files,
+        };
       });
     this.inflight = p.catch(() => null);
     let got: Snap;
@@ -701,6 +726,92 @@ export class BrowserVoiceAgent implements VoiceAgent {
     return last;
   }
 
+  /**
+   * 판단 모델이 파일 칸 줄("대표이미지 파일 올리기")을 골랐다 — 그 칸에 파일을 올린다(fast-act-upload). 파일은 대화에 연결된
+   * 폴더에서 칸이 받는 형식의 것 가운데 판단 모델이 고른다(말에 파일 이름이 그대로 있으면 그 파일). 올리기는 브라우저 도구
+   * upload 로 한다(같은 폴더 범위·같은 확인 창 — 세션에 한 번 허용하면 그 뒤로는 묻지 않는다). 파일을 정하지 못하면 묻는다.
+   */
+  private async upload(
+    text: string,
+    field: FileField,
+    th: Thresholds,
+    guard: Guard,
+    page: NonNullable<ReturnType<typeof visiblePage>>,
+    origin: string,
+    t0: number,
+  ): Promise<Outcome> {
+    const no = (reason: string): Outcome => ({ acted: false, reason, ms: now() - t0 });
+    if (th.partial) return no('파일 올리기는 말이 끝난 뒤');
+    if (!this.interactionId) return no('대화 폴더를 모름');
+    const post = decisionPost();
+    if (!post) return no('결정 모델 없음');
+    const runtime = getBrowserRuntime();
+    const read = (): Promise<FileField[]> =>
+      runtime.pageScript<FileField[]>(this.workflowId, page.pageId, FILE_FIELDS_SCRIPT, PAGE_SCRIPT_MS).catch(() => []);
+    let file: string | null = null;
+    const say = async (sentence: string, landed = true): Promise<Outcome> => {
+      const a = await this.record(text, { role: 'file', name: field.label }, 'type', file, th, 0, now() - t0, page, { confidence: 1 });
+      a.sentence = sentence;
+      return { acted: true, kind: 'type', target: a.label, ms: now() - t0, effect: landed ? 'ok' : 'none' };
+    };
+    const tools = getBrowserToolProvider(runtime);
+    const context = { workflowId: this.workflowId, interactionId: this.interactionId };
+    const roots = tools.roots(context);
+    const all = await listFiles(roots);
+    // 말에 파일 이름이 그대로 있으면 그 파일 — 고를 것이 없다.
+    const named = fileNameIn(text);
+    const same = named ? all.filter((p) => basename(p) === named) : [];
+    if (named && same.length !== 1) {
+      return say(same.length ? `연결된 폴더에 ${josa(`"${named}"`, '이', '가')} ${same.length}개 있어요. 어느 것을 올릴까요?` : `연결된 폴더에서 ${josa(`"${named}"`, '을', '를')} 찾지 못했어요.`);
+    }
+    let path = same[0];
+    if (!path) {
+      // 칸이 받는 형식의 파일을 화면 줄처럼 늘어놓고 판단 모델이 고른다 — 폴더 안 경로(하위 폴더 이름도 단서다)로.
+      const cands = all.filter((p) => accepts(field.accept, p));
+      if (!cands.length) return say(`연결된 폴더에 ${field.label ? `${field.label} 칸에 ` : ''}올릴 만한 파일이 없어요.`);
+      const rel = (p: string): string => {
+        const root = roots.find((r) => p.startsWith(r));
+        return root ? p.slice(root.length).replace(/^[\\/]+/, '') : basename(p);
+      };
+      const refs = Object.fromEntries(cands.map((p, i) => [`e${i + 1}`, { role: 'option', name: rel(p) }])) as ElementRefs;
+      const picked = await pickElement(post, text, 'file://연결된 폴더', refs, this.screenOf('file://연결된 폴더', refs));
+      diag(SCOPE, 'upload-pick', { text, top: picked?.top });
+      if (!picked || picked.confidence < th.pick) {
+        const top = (picked?.top ?? []).map(([label]) => String(label).replace(/^e\d+ option "(.*)"$/, '$1')).slice(0, 3);
+        return say(`어느 파일을 올릴까요?${top.length ? ` ${top.join(', ')}` : ''}`);
+      }
+      path = cands[Number(picked.ref.slice(1)) - 1];
+    }
+    file = basename(path);
+    const paths = [path];
+    if (!(await guard(field.label, 'type', 1))) return no(GUARDED);
+    this.beforeAct(page);
+    try {
+      // 칸을 비우고 넣는다 — 지운 사진의 파일이 칸에 남아 있으면 같은 파일을 넣어도 바뀐 것이 없어 페이지가 모른다(10/19 BO:
+      // 지우고 다시 올린 001 이 미리보기 없이 끝났다).
+      await runtime.pageScript(this.workflowId, page.pageId, `(() => { const i = document.querySelector('[data-dex-file="${field.n}"]'); if (i) i.value = ''; })()`, PAGE_SCRIPT_MS);
+      await tools.callTool(BROWSER_ADVANCED_TOOL, { action: 'upload', page_id: page.pageId, ref: `[data-dex-file="${field.n}"]`, path: paths[0] }, context);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      diag(SCOPE, 'upload-failed', { file, why });
+      return say(`${josa(`"${file}"`, '을', '를')} 올리지 못했어요. ${/거부/.test(why) ? '올리기를 허용하지 않으셨어요.' : why.slice(0, 120)}`);
+    }
+    // 올라갔는지 — 그 칸 영역이 바뀌기를 기다린다.
+    let landed: Landed | null = null;
+    for (const until = now() + UPLOAD_WAIT_MS; !landed && now() < until; ) {
+      await new Promise((r) => setTimeout(r, 250));
+      const after = (await read()).find((f) => f.n === field.n);
+      landed = after ? uploadLanded(field, after, file) : null;
+    }
+    diag(SCOPE, 'upload', { file, field: field.label, landed });
+    // 파일 이름은 끝 글자로 받침을 알 수 없다("…png") — "파일을" 로 받는다.
+    const into = `${field.label ? `${field.label} 칸에 ` : ''}"${file}" 파일을`;
+    if (landed === 'preview') return say(`${into} 올렸어요. 미리보기가 보여요.`);
+    if (landed === 'name') return say(`${into} 올렸어요. 칸에 파일 이름이 보여요.`);
+    if (landed === 'picked') return say(`${into} 골라 두었어요.`);
+    return say(`${into} 넣었는데 화면에 바뀐 것이 없어 올라갔는지 모르겠어요. 확인해 주실래요?`, false);
+  }
+
   /** 실행을 기록한다 — 화면이 바뀌므로 스냅샷을 버리고 반영을 기다린다. */
   private async record(
     said: string,
@@ -863,7 +974,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
     // 입력 요청(동작이 입력이고 글자가 있고 말에 글자 넣기 말이 있음)이면 입력칸만 후보로 — 검색 버튼 대신 검색창.
     const wantsType = !pressOnly && cls.action !== 'click' && !!cls.text && TYPING_WORD.test(text);
-    const typable = Object.fromEntries(Object.entries(snap.refs).filter(([, r]) => TYPABLE.has(r.role)));
+    // 파일 칸 줄도 넣는 대상이다 — 빠지면 "대표이미지 칸에 a.png 넣어줘" 에 파일 이름을 다른 입력칸에 글자로 넣었다(10/19 BO).
+    const typable = Object.fromEntries(Object.entries(snap.refs).filter(([k, r]) => TYPABLE.has(r.role) || k in snap.files));
     // 입력칸이 접혀 있으면(입력 가능한 요소 없음) 여는 버튼을 골라야 한다 — 넣을 글자와 이름이 같은 링크·버튼은 넣을 대상이지
     // 누를 대상이 아니다("검색창에 LG 그램 Pro AI 2026 입력해줘" 에 같은 이름의 상품 링크를 누르던 문제).
     const typedKey = (cls.text ?? '').replace(/\s/g, '');
@@ -914,6 +1026,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     const ch = chrome[pick.ref];
     if (ch) return this.runChrome(ch, text, th, guard, page, pick, t0, snap.ms);
+    const fileField = snap.files[pick.ref];
+    if (fileField) return this.upload(text, fileField, th, guard, page, origin, t0);
     const element = snap.refs[pick.ref];
     // 말하는 중인데 고른 요소 이름으로 말이 끝난다 — 그 끝 어절은 아직 자라는 중일 수 있다("…선택." → "…선택해 줘.").
     // 10/18 BO 협력사 찾기: 중간 결과 "첫 번째 협력사 선택." 에 표 머리글 "선택" 0.96 을 눌렀다(끝난 말로는 행). 기다리면
@@ -927,7 +1041,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (snap.disabled.has(pick.ref)) {
       if (th.partial) return no('비활성 요소 — 말이 끝난 뒤', pick.top);
       const skipped = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
-      skipped.skipped = `${josa(skipped.display, '은', '는')} 지금 비활성이라 누르지 않았어요.`;
+      skipped.sentence = `${josa(skipped.display, '은', '는')} 지금 비활성이라 누르지 않았어요.`;
       diag(SCOPE, 'blocked', { text, ref: pick.ref });
       return { acted: true, kind: 'press', target: skipped.label, ms: now() - t0, effect: 'none' };
     }
@@ -969,7 +1083,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (want !== undefined && snap.states[pick.ref] === want) {
       if (th.partial) return no('이미 그 상태 — 말이 끝난 뒤', pick.top);
       const skipped = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
-      skipped.skipped = `${josa(skipped.display, '은', '는')} 이미 ${want ? '체크돼' : '해제돼'} 있어요.`;
+      skipped.sentence = `${josa(skipped.display, '은', '는')} 이미 ${want ? '체크돼' : '해제돼'} 있어요.`;
       return { acted: true, kind: 'press', target: skipped.label, ms: now() - t0, effect: 'ok' };
     }
     if (!(await guard(element.name ?? '', action === 'click' ? 'press' : 'type', pick.confidence))) {

@@ -107,10 +107,11 @@ const endsWithName = (text: string, name = ''): boolean => {
   const n = bare(name);
   return n.length >= 2 && bare(text).endsWith(n);
 };
-/** 선택 상자의 지금 값 — 이름에서 앞의 칸 이름을 뗀 것(labelFields 는 "칸 이름 값" 으로 붙인다). */
+/** 선택 상자의 지금 값 — 이름에서 앞의 칸 이름을 뗀 것(labelFields 는 "칸 이름 (현재: 값)" 으로 붙인다, boxName). */
 const currentValue = (name: string, label?: string): string => {
   const n = squash(name);
-  return label && n.startsWith(label) ? n.slice(label.length).trim() : n;
+  const rest = label && n.startsWith(label) ? n.slice(label.length).trim() : n;
+  return rest.match(/^\(현재: (.*)\)$/)?.[1] ?? rest;
 };
 /**
  * 같은 항목(표 행과 그 셀)인 상위 후보의 확률을 합친다(itemOf) — 고른 것이 항목·셀이 아니거나 확신도를 믿을 근거가
@@ -331,7 +332,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
         const items = itemOf(data?.snapshot ?? '');
         const disabled = disabledOf(data?.snapshot ?? '');
         const states = checkStates(data?.snapshot ?? '');
-        const withFiles = withFileFields(toggles.refs, (await fileFields) ?? []);
+        // 열린 목록만 보이는 화면(listLayer)에는 붙이지 않는다 — 붙이면 목록 화면으로 보지 못해 항목을 고르지도(chooseAfterOpen),
+        // 다음 지시 전에 닫지도 못했다(10/19 BO: 연 채 남은 배송가능지역 목록 → "출고소요일 2일로 해줘" 가 서버로).
+        const withFiles = listLayer(toggles.refs) ? { refs: toggles.refs, files: {} } : withFileFields(toggles.refs, (await fileFields) ?? []);
         return {
           at: now(),
           pageId: page.pageId,
@@ -672,12 +675,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
     label: string,
   ): Promise<VoiceAction | null> {
     let s = await this.snapshot(true).catch(() => null);
-    if (!s) return null;
+    if (!s) return (diag(SCOPE, 'popup-skip', { why: '팝업 화면 못 읽음' }), null);
     const origin = originOf(s.page.url);
     const t0 = now();
     const found = await this.typedText(post, text, origin, this.screenOf(origin, s.snap.refs), utterance, label);
     const value = found && valueToPick(found, label);
-    if (!value) return null;
+    if (!value) return (diag(SCOPE, 'popup-skip', { why: '고를 값 없음', found, label, refs: Object.keys(s.snap.refs).length, url: s.page.url }), null);
     const runtime = getBrowserRuntime();
     const popup = s.page;
     let last: VoiceAction | null = null;

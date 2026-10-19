@@ -68,8 +68,8 @@ test('빈 이름은 칸 이름으로, 안내문·값 이름은 칸 이름을 앞
   assert.equal(refs.e1.name, '모델명');
   assert.equal(refs.e6.name, '제조사');
   assert.equal(refs.e5.name, '검색키워드 내용 ‘,(쉼표)’로 구분하여 입력해 주세요.');
-  assert.equal(refs.e2.name, '구매연령 전체');
-  assert.equal(refs.e8.name, '계약형태 전체');
+  assert.equal(refs.e2.name, '구매연령 (현재: 전체)');
+  assert.equal(refs.e8.name, '계약형태 (현재: 전체)');
   assert.equal(labels.e5, '검색키워드 내용');
   // 다른 역할은 그대로, 원본은 바꾸지 않는다
   assert.equal(refs.e7.name, '상품명');
@@ -98,8 +98,8 @@ test('스냅샷과 페이지의 수가 다른 묶음은 붙이지 않는다', ()
   assert.equal(Object.keys(labels).length, 2);
   assert.equal(refs.e3.name, '');
   assert.equal(refs.e1.name, '');
-  assert.equal(refs.e2.name, '구매연령 전체');
-  assert.equal(refs.e8.name, '계약형태 전체');
+  assert.equal(refs.e2.name, '구매연령 (현재: 전체)');
+  assert.equal(refs.e8.name, '계약형태 (현재: 전체)');
 });
 
 test('스냅샷 글이 없으면 아무것도 붙이지 않는다', () => {
@@ -171,7 +171,7 @@ test('제목 아래 하나뿐인 누름 상자는 그 제목을 이름으로 한
   const { refs, labels } = labelClickables(boxRefs(), BOX_SNAPSHOT);
   assert.deepEqual(labels, { e4: '협력사', e8: '브랜드' });
   assert.deepEqual(refs.e4, { role: 'combobox', name: '협력사' });
-  assert.deepEqual(refs.e8, { role: 'combobox', name: '브랜드 LA5298 모디바' });
+  assert.deepEqual(refs.e8, { role: 'combobox', name: '브랜드 (현재: LA5298 모디바)' });
   // 메뉴 버튼·입력칸을 감싼 상자·제 글이 있는 끌어 놓기 칸·제목 아래 여러 장(카드)은 그대로.
   assert.deepEqual(refs.e2, { role: 'button', name: '협력사' });
   assert.deepEqual(refs.e14, { role: 'generic', name: '' });
@@ -320,6 +320,27 @@ test('제목 아래 선택지(radio)는 이름 앞에 그 제목을 — 이름�
   assert.equal(out.e275.name, '반품기능 제공안함');
   assert.equal(out.e9.name, '따로'); // 바로 앞이 제목이 아니면 그대로
   assert.deepEqual(labels, { e270: '취소기능', e271: '취소기능', e275: '반품기능' });
+});
+
+test('labelChoices: 제목 아래 체크박스도 제목을 이름 앞에(10/19 BO "구매연령 전체로" → 결제수단 "전체")', () => {
+  const snapshot = [
+    '- heading "결제가능수단 *" [level=6, ref=e62]',
+    '- LabelText [ref=e136] clickable [cursor:pointer]',
+    '  - checkbox "전체" [checked=false, ref=e188]',
+    '- LabelText [ref=e189] clickable [cursor:pointer]',
+    '  - checkbox "신용카드" [checked=true, ref=e258]',
+    '- row "1 플래티어" [ref=e30]',
+    '  - checkbox [checked=false, ref=e31]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e188: { role: 'checkbox', name: '전체' },
+    e258: { role: 'checkbox', name: '신용카드' },
+    e31: { role: 'checkbox', name: '' },
+  };
+  const { refs: out } = labelChoices(refs, snapshot);
+  assert.equal(out.e188.name, '결제가능수단 전체');
+  assert.equal(out.e258.name, '결제가능수단 신용카드');
+  assert.equal(out.e31.name, ''); // 표 행의 체크박스는 그대로
 });
 
 test('검색 기준 선택 상자 바로 뒤의 이름 없는 입력칸은 "기준 검색어" — 기준 상자와 가른다', () => {

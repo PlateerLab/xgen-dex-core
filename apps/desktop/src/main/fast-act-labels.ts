@@ -144,6 +144,12 @@ export function inDocOrder(refs: ElementRefs, order: string[]): ElementRefs {
 const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /**
+ * 선택 상자 이름 — 칸 이름 뒤에 지금 값을 `(현재: …)` 로 가른다. "구매연령 전체" 처럼 붙여 두면 판단 모델이 칸 이름과 지금 값을
+ * 가리지 못해, "구매연령 전체로 바꿔줘" 에 지금 값이 "전체" 인 "계약형태 전체" 를 골랐다(10/19 BO).
+ */
+export const boxName = (label: string, value: string): string => (value ? `${label} (현재: ${value})` : label);
+
+/**
  * 칸 이름을 붙인 새 요소 목록과 붙인 칸 이름(요소 번호별). 역할과 원래 이름(빈 이름·안내문·값)이 같은 칸끼리 순서대로 맞추고, 스냅샷과
  * 페이지의 수가 다른 묶음은 건드리지 않는다(어긋나면 남의 칸 이름이 붙는다).
  */
@@ -174,7 +180,7 @@ export function labelFields(
       const label = page[i].label;
       const hint = squash(page[i].hint);
       if (!label || hint.includes(label)) return;
-      out[ref] = { ...out[ref], name: hint ? `${label} ${hint}` : label };
+      out[ref] = { ...out[ref], name: page[i].role === 'combobox' ? boxName(label, hint) : hint ? `${label} ${hint}` : label };
       labels[ref] = label;
     });
   }
@@ -408,7 +414,7 @@ export function labelClickables(
     if (!label || label.length > 30) return;
     // 값을 고르는 칸이다 — 판단 모델은 이름 없는 상자(generic)는 거의 고르지 않아서(같은 이름의 메뉴 버튼이 1.0)
     // 선택 상자로 보인다(누르면 목록·찾기 창이 열리는 칸, ARIA combobox 와 같은 뜻). 고른 값은 이름 뒤에.
-    out[l.ref] = { ...out[l.ref], role: 'combobox', name: value ? `${label} ${value}` : label };
+    out[l.ref] = { ...out[l.ref], role: 'combobox', name: boxName(label, value) };
     labels[l.ref] = label;
   });
   return { refs: out, labels };
@@ -418,13 +424,14 @@ export function labelClickables(
  * 말에서 붙인 칸 이름을 뺀다(단어마다 처음 한 번) — "검색키워드에 노트북 넣어줘" 의 "검색"은 칸을 가리킨 말이지
  * 검색하라는 말이 아니다(검색칸으로 보고 Enter 를 누르면 폼이 제출될 수 있다).
  */
-/** 선택지 묶음 안에서 제목까지 건너뛰는 줄 — 다른 선택지와 그 글자 상자. */
-const CHOICE_GROUP = new Set(['radio', 'LabelText', 'generic', 'StaticText']);
+/** 선택지 묶음 안에서 제목까지 건너뛰는 줄 — 다른 선택지·체크박스와 그 글자 상자. */
+const CHOICE_GROUP = new Set(['radio', 'checkbox', 'LabelText', 'generic', 'StaticText']);
 
 /**
  * 제목 아래 선택지(radio)는 이름 앞에 그 제목을 붙인다("제공안함" → "반품기능 제공안함"). 폼은 같은 선택지 이름을
  * 칸마다 되풀이하는데(해당/해당없음, 제공/제공안함), 창이 여럿이라 한 방향으로만 묻는 묶음에서는 이름이 같은 앞
  * 선택지가 1.0 을 받아 뒤 것은 결승에도 못 갔다(10/19 BO 상품 등록 "반품기능 제공안함으로 해줘" → 취소기능).
+ * 체크박스도 같다 — 제목 없는 "전체" 가 "구매연령 전체로 바꿔줘" 에 0.98 로 뽑혀 결제가능수단이 모두 체크됐다(10/19).
  */
 export function labelChoices(
   refs: ElementRefs,
@@ -434,7 +441,7 @@ export function labelChoices(
   const out: ElementRefs = { ...refs };
   const labels: Record<string, string> = {};
   lines.forEach((l, i) => {
-    if (!l?.ref || l.role !== 'radio' || !refs[l.ref]) return;
+    if (!l?.ref || (l.role !== 'radio' && l.role !== 'checkbox') || !refs[l.ref]) return;
     let j = i - 1;
     while (j >= 0 && (!lines[j] || CHOICE_GROUP.has(lines[j]!.role))) j--;
     const head = lines[j];

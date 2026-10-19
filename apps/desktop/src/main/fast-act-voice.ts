@@ -858,7 +858,6 @@ export class BrowserVoiceAgent implements VoiceAgent {
     th: Thresholds,
     guard: Guard,
     page: NonNullable<ReturnType<typeof visiblePage>>,
-    origin: string,
     t0: number,
   ): Promise<Outcome> {
     const no = (reason: string): Outcome => ({ acted: false, reason, ms: now() - t0 });
@@ -1181,7 +1180,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const ch = chrome[pick.ref];
     if (ch) return this.runChrome(ch, text, th, guard, page, pick, t0, snap.ms);
     const fileField = snap.files[pick.ref];
-    if (fileField) return this.upload(text, fileField, th, guard, page, origin, t0);
+    if (fileField) return this.upload(text, fileField, th, guard, page, t0);
     const element = snap.refs[pick.ref];
     // 말하는 중인데 고른 요소 이름으로 말이 끝난다 — 그 끝 어절은 아직 자라는 중일 수 있다("…선택." → "…선택해 줘.").
     // 10/18 BO 협력사 찾기: 중간 결과 "첫 번째 협력사 선택." 에 표 머리글 "선택" 0.96 을 눌렀다(끝난 말로는 행). 기다리면

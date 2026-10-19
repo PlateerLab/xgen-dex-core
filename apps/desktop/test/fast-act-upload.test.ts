@@ -16,7 +16,6 @@ const field = (n: number, label: string, over: Partial<FileField> = {}): FileFie
   text: '',
   ...over,
 });
-const BO = [field(0, '대표이미지'), field(1, '동영상'), field(2, '추가이미지')];
 
 test('fileNameIn: 말에 든 파일 이름, 뒤 조사는 뺀다', () => {
   assert.equal(fileNameIn('대표이미지를 INNO-20261016-001_대표이미지.png로 업로드해줘'), 'INNO-20261016-001_대표이미지.png');

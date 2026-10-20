@@ -6,7 +6,7 @@ import { DexRpcClient, type RpcProcessSpec } from '@dex/rpc/client';
 import { installCli, locateCli, type CliLocation, type InstallOutcome } from './cli-installer';
 
 export class DexService implements vscode.Disposable {
-  readonly output = vscode.window.createOutputChannel('XGEN Dex');
+  readonly output = vscode.window.createOutputChannel('XGEN DexOn');
   readonly rpc: DexRpcClient;
   /**
    * 찾아 둔 `dex` 의 절대 경로.

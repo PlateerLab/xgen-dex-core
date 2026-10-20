@@ -863,7 +863,7 @@ export class DexEngine {
     const { name, profile } = await this.resolveProfile(requestedProfile);
     const session = await this.credentials.get(name);
     if (!session || session.serverUrl !== profile.serverUrl) {
-      throw new DexError('auth_required', `로그인이 필요합니다: dex login --profile ${name}`);
+      throw new DexError('auth_required', `로그인이 필요합니다: dexon login --profile ${name}`);
     }
     return this.ensureAuthenticated(name, profile.serverUrl, session);
   }
@@ -885,7 +885,7 @@ export class DexEngine {
     if (state === 'invalid') {
       await this.credentials.delete(name);
       this.clients.delete(name);
-      throw new DexError('auth_invalid', `세션이 만료되었습니다: dex login --profile ${name}`);
+      throw new DexError('auth_invalid', `세션이 만료되었습니다: dexon login --profile ${name}`);
     }
     throw new DexError('network_error', `XGEN 서버에 연결할 수 없습니다: ${serverUrl}`);
   }
@@ -919,7 +919,7 @@ export class DexEngine {
     if (!accessToken) {
       await this.credentials.delete(record.profile);
       record.authenticated = false;
-      throw new DexError('auth_invalid', `세션이 만료되었습니다: dex login --profile ${record.profile}`);
+      throw new DexError('auth_invalid', `세션이 만료되었습니다: dexon login --profile ${record.profile}`);
     }
     record.authenticated = true;
   }
@@ -935,7 +935,7 @@ export class DexEngine {
     if (!profile) {
       throw new DexError(
         'config_invalid',
-        `XGEN 서버 프로필이 없습니다. 먼저 실행하세요: dex profile set ${name} --server <URL>`,
+        `XGEN 서버 프로필이 없습니다. 먼저 실행하세요: dexon profile set ${name} --server <URL>`,
       );
     }
     return { name, profile };

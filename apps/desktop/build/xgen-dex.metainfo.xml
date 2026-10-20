@@ -13,7 +13,7 @@
 <component type="desktop-application">
   <id>com.plateerlab.xgen.dex</id>
 
-  <name>XGen Dex</name>
+  <name>XGEN DexOn</name>
   <summary>XGEN 에이전트를 쓰는 데스크톱 앱</summary>
   <summary xml:lang="en">Desktop app for your XGEN agents</summary>
 

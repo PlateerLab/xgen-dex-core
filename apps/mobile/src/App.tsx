@@ -440,7 +440,7 @@ export default function App(): React.ReactElement {
   if (booting) {
     body = (
       <View style={st.boot}>
-        <Text style={st.bootLogo}>XGEN Dex</Text>
+        <Text style={st.bootLogo}>XGEN DexOn</Text>
         <Text style={st.mutedText}>자동 로그인 확인 중…</Text>
       </View>
     );
@@ -527,7 +527,7 @@ export default function App(): React.ReactElement {
           <Pressable style={st.scrim} onPress={() => setDrawer(false)} />
           <View style={st.drawer}>
             <View style={st.drawerHead}>
-              <Text style={st.drawerApp}>XGEN Dex</Text>
+              <Text style={st.drawerApp}>XGEN DexOn</Text>
               <Text style={st.mutedSmall} numberOfLines={1}>
                 {client.session.username} · {shortHost(client.session.serverUrl)}
               </Text>
@@ -671,7 +671,7 @@ function LoginScreen({
 
   return (
     <ScrollView contentContainerStyle={st.loginWrap} keyboardShouldPersistTaps="handled">
-      <Text style={st.bootLogo}>XGEN Dex</Text>
+      <Text style={st.bootLogo}>XGEN DexOn</Text>
       <Text style={[st.mutedText, { marginBottom: 14 }]}>서버 세션 채팅 · 모바일 도구</Text>
       <Field label="서버 주소" value={server} onChange={setServer} placeholder="dev-xgen.x2bee.com" />
       <Field label="이메일" value={email} onChange={setEmail} placeholder="you@company.com" keyboard="email-address" />
@@ -801,7 +801,7 @@ function SettingsSection({
                 <Text style={st.mutedSmall}>{g.description}</Text>
                 {permStates[g.id] === 'denied' ? (
                   <Text style={{ fontSize: 11, color: p.danger, marginTop: 3 }}>
-                    권한이 거부되었습니다 — 휴대폰 설정 &gt; 앱 &gt; XGEN Dex 에서 허용하세요.
+                    권한이 거부되었습니다 — 휴대폰 설정 &gt; 앱 &gt; XGEN DexOn 에서 허용하세요.
                   </Text>
                 ) : null}
               </View>
@@ -830,7 +830,7 @@ function SettingsSection({
       <View style={st.card}>
         <Text style={st.cardTitle}>정보</Text>
         <Text style={st.cardSub}>
-          XGEN Dex Mobile — React Native 크로스플랫폼(Android/iOS). 서버 세션 채팅 + 모바일 도구.
+          XGEN DexOn Mobile — React Native 크로스플랫폼(Android/iOS). 서버 세션 채팅 + 모바일 도구.
           클라우드/브라우저 등 데스크톱 특수 기능은 포함하지 않습니다.
         </Text>
       </View>

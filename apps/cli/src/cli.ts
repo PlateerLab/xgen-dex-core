@@ -33,37 +33,37 @@ import { chatFolders } from './folders';
 declare const __DEX_VERSION__: string | undefined;
 const VERSION = typeof __DEX_VERSION__ === 'string' ? __DEX_VERSION__ : 'dev';
 
-const HELP = `XGEN Dex CLI ${VERSION}
+const HELP = `XGEN DexOn CLI ${VERSION}
 
 Usage:
-  dex                     대화형 터미널 UI
-  dex ui                  대화형 터미널 UI
-  dex profile set [name] --server <url>
-  dex profile use <name>
-  dex profile list [--json]
-  dex login --email <email> [--profile <name>] [--password-stdin]
-  dex status [--profile <name>] [--json]
-  dex logout [--profile <name>]
-  dex agents list [--search <text>] [--owner personal|shared] [--json]
-  dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
-           [--folder <path,...> | --no-folder] [--memory-map | --no-memory-map]
-  dex history list [--json]          대화 목록 (마지막으로 말한 순서)
-  dex history turns --workflow <id> --interaction <id> [--json]
-  dex history rename --workflow <id> --interaction <id> --title <text>
-                                     빈 제목이면 첫 메시지 제목으로 돌아갑니다
-  dex history delete --workflow <id> --interaction <id>
-  dex tools list [--json]
-  dex tools status [--profile <name>] [--json]
-  dex tools configure [--allow-dangerous|--no-allow-dangerous]
-  dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>]
-                [--folder <path,...>] [--json]
-  dex ssh list [--json]
-  dex ssh enable | dex ssh disable
-  dex ssh test <name> [--json]
-  dex tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
-  dex tool ...                         dex tools ...의 단수형 별칭
-  dex serve --stdio
-  dex update [--check]    새 버전 확인 · 설치
+  dexon                     대화형 터미널 UI
+  dexon ui                  대화형 터미널 UI
+  dexon profile set [name] --server <url>
+  dexon profile use <name>
+  dexon profile list [--json]
+  dexon login --email <email> [--profile <name>] [--password-stdin]
+  dexon status [--profile <name>] [--json]
+  dexon logout [--profile <name>]
+  dexon agents list [--search <text>] [--owner personal|shared] [--json]
+  dexon chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
+             [--folder <path,...> | --no-folder] [--memory-map | --no-memory-map]
+  dexon history list [--json]          대화 목록 (마지막으로 말한 순서)
+  dexon history turns --workflow <id> --interaction <id> [--json]
+  dexon history rename --workflow <id> --interaction <id> --title <text>
+                                       빈 제목이면 첫 메시지 제목으로 돌아갑니다
+  dexon history delete --workflow <id> --interaction <id>
+  dexon tools list [--json]
+  dexon tools status [--profile <name>] [--json]
+  dexon tools configure [--allow-dangerous|--no-allow-dangerous]
+  dexon tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>]
+                  [--folder <path,...>] [--json]
+  dexon ssh list [--json]
+  dexon ssh enable | dexon ssh disable
+  dexon ssh test <name> [--json]
+  dexon tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
+  dexon tool ...                         dexon tools ...의 단수형 별칭
+  dexon serve --stdio
+  dexon update [--check]    새 버전 확인 · 설치
 
 Global options:
   --profile <name>  사용할 서버 프로필
@@ -80,10 +80,10 @@ Global options:
   없으면 에이전트 설정을 따릅니다(새 에이전트는 켜짐, 예전에 만든 에이전트는 꺼짐).
 
 Examples:
-  dex profile set corp --server https://xgen.example.com
-  dex login --email me@corp.com
-  dex agents list
-  cd ~/work/my-repo && echo '이 저장소를 설명해줘' | dex chat --agent wf_abc
+  dexon profile set corp --server https://xgen.example.com
+  dexon login --email me@corp.com
+  dexon agents list
+  cd ~/work/my-repo && echo '이 저장소를 설명해줘' | dexon chat --agent wf_abc
 `;
 
 function writeJson(value: unknown): void {
@@ -157,7 +157,7 @@ function describeEvent(event: ChatEvent): string | null {
 }
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
-  stdout.write('작업 범위: 대화를 시작한 폴더 (dex chat --folder 로 바꿀 수 있습니다)\n');
+  stdout.write('작업 범위: 대화를 시작한 폴더 (dexon chat --folder 로 바꿀 수 있습니다)\n');
   stdout.write(`위험 명령: ${status.config.allowDangerous ? '미리 승인됨' : '실행 전에 확인'}\n`);
   stdout.write(
     `브리지: ${
@@ -338,7 +338,7 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
       // 아니다 — 그걸 말해 주지 않으면 잘린 답을 최종 답으로 읽는다.
       stderr.write(
         `\n[연결이 끊겼습니다 — 서버에서 계속 진행 중입니다]\n` +
-          `  결과 보기: dex chat --agent ${resolved.workflowId} --interaction ${resolved.interactionId}\n`,
+          `  결과 보기: dexon chat --agent ${resolved.workflowId} --interaction ${resolved.interactionId}\n`,
       );
     }
   } finally {
@@ -480,7 +480,7 @@ async function run(): Promise<void> {
     // 켜고 끄는 설정은 없어졌다 — 범위는 대화를 시작한 폴더가 정한다. 옛 스크립트가
     // 깨지지 않도록 성공으로 끝내되 무엇이 바뀌었는지 알린다.
     const note =
-      '이 PC의 도구는 더 이상 켜고 끄지 않습니다. 대화를 시작한 폴더(또는 dex chat --folder)가 작업 범위입니다.';
+      '이 PC의 도구는 더 이상 켜고 끄지 않습니다. 대화를 시작한 폴더(또는 dexon chat --folder)가 작업 범위입니다.';
     if (asJson) writeJson({ ok: true, note });
     else stdout.write(`${note}\n`);
     return;
@@ -661,6 +661,6 @@ run().catch((error: unknown) => {
   const exposed = publicError(error);
   const machine = process.argv.includes('--json') || process.argv.includes('--jsonl');
   if (machine) stderr.write(`${JSON.stringify({ error: exposed })}\n`);
-  else stderr.write(`dex: ${exposed.message}\n`);
+  else stderr.write(`dexon: ${exposed.message}\n`);
   process.exitCode = exitCode(error);
 });

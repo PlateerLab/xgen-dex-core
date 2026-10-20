@@ -501,7 +501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         detail: agent.description?.trim() || undefined,
         agent,
       })),
-      { title: 'XGEN Dex Agent 검색', placeHolder: 'Agent 이름 또는 설명', matchOnDescription: true, matchOnDetail: true },
+      { title: 'XGEN DexOn Agent 검색', placeHolder: 'Agent 이름 또는 설명', matchOnDescription: true, matchOnDetail: true },
     );
     if (!picked) return;
     await this.showStart(picked.agent.workflowId);
@@ -585,7 +585,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await this.service.request<unknown>('history/conversations', this.activeProfileParams()),
       );
       if (conversations.length === 0) {
-        await vscode.window.showInformationMessage('저장된 XGEN Dex 대화가 없습니다.');
+        await vscode.window.showInformationMessage('저장된 XGEN DexOn 대화가 없습니다.');
         return;
       }
       const picked = await vscode.window.showQuickPick(
@@ -2288,12 +2288,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${styleUri}">
-  <title>XGEN Dex</title>
+  <title>XGEN DexOn</title>
 </head>
 <body>
   <section id="loading-screen" class="screen loading-screen">
     <div class="brand-mark large" aria-hidden="true">✦</div>
-    <strong>XGEN Dex를 준비하는 중</strong>
+    <strong>XGEN DexOn을 준비하는 중</strong>
     <span>CLI 엔진과 연결 정보를 확인하고 있습니다.</span>
     <div class="loading-bar" aria-hidden="true"><i></i></div>
   </section>
@@ -2301,7 +2301,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <section id="gate-screen" class="screen gate-screen hidden">
     <div class="gate-card">
       <div id="gate-icon" class="brand-mark large" aria-hidden="true">✦</div>
-      <div class="eyebrow">XGEN DEX FOR VS CODE</div>
+      <div class="eyebrow">XGEN DEXON FOR VS CODE</div>
       <h1 id="gate-title"></h1>
       <p id="gate-description"></p>
       <div id="gate-connection" class="gate-connection hidden"></div>
@@ -2314,7 +2314,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   <section id="conversations-screen" class="screen list-screen hidden">
     <header class="workspace-header">
-      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">✦</span><div><b>XGEN Dex</b><small id="list-connection"></small></div></div>
+      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">✦</span><div><b>XGEN DexOn</b><small id="list-connection"></small></div></div>
       <div class="header-actions">
         <button id="list-refresh" class="icon-button" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
         <button id="list-settings" class="account-button" type="button" title="계정 및 연결 설정"><span id="account-avatar">?</span><span id="account-name"></span><i>›</i></button>
@@ -2443,7 +2443,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   <section id="settings-screen" class="screen settings-screen hidden">
     <header class="workspace-header">
-      <div class="header-title"><button id="settings-back" class="icon-button" type="button" aria-label="이전 화면">‹</button><div><b>계정 및 연결 설정</b><small>XGEN Dex가 사용하는 회사 환경과 계정을 관리합니다.</small></div></div>
+      <div class="header-title"><button id="settings-back" class="icon-button" type="button" aria-label="이전 화면">‹</button><div><b>계정 및 연결 설정</b><small>XGEN DexOn이 사용하는 회사 환경과 계정을 관리합니다.</small></div></div>
       <button id="settings-refresh" class="icon-button" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
     </header>
     <main class="settings-content">
@@ -2482,9 +2482,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </div>
       </section>
       <section class="settings-section">
-        <div class="section-heading"><div><span>CLI 엔진</span><small>확장은 dex-cli를 백그라운드 엔진으로 사용합니다.</small></div></div>
+        <div class="section-heading"><div><span>CLI 엔진</span><small>확장은 DexOn CLI를 백그라운드 엔진으로 사용합니다.</small></div></div>
         <div class="settings-card engine-card">
-          <div><b>dex-cli 연결</b><span id="engine-description">프로세스 및 확장 설정을 관리합니다.</span></div>
+          <div><b>DexOn CLI 연결</b><span id="engine-description">프로세스 및 확장 설정을 관리합니다.</span></div>
           <div class="inline-actions"><button id="show-output" class="secondary-button" type="button">로그 보기</button><button id="extension-settings" class="secondary-button" type="button">확장 설정</button><button id="restart-engine" type="button">엔진 재시작</button></div>
         </div>
       </section>

@@ -33,7 +33,7 @@ const options = {
 if (process.argv.includes('--watch')) {
   const buildContext = await context(options);
   await buildContext.watch();
-  console.log('Watching XGEN Dex VS Code extension sources...');
+  console.log('Watching XGEN DexOn VS Code extension sources...');
 } else {
   await build(options);
 }

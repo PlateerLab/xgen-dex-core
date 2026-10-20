@@ -5,7 +5,7 @@ import { platform, homedir, tmpdir } from 'os';
 import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'fs/promises';
 import { join, resolve } from 'path';
 import { normalizeLocalFolders } from '@dex/engine/local-folders';
-import { setWorkspaceShellSupportForTest } from '@dex/engine/workspace-shell';
+import { workspaceShellSupported } from '@dex/engine/workspace-shell';
 import {
   LOCAL_SERVER,
   LOCAL_CONTROL_TOOL,
@@ -46,9 +46,11 @@ import { bindTestHost, recordingInteraction } from './_host';
 // 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
 const host = recordingInteraction('session');
 bindTestHost({ interaction: host.port });
-// 셸 실행 테스트는 OS 가두기 여부와 무관하게 같은 것을 본다 — 가두기 자체는
-// workspace-shell.test.ts 가 지원하는 OS 에서 따로 검증한다.
-setWorkspaceShellSupportForTest(false);
+// Native command controls run only with an actual working OS confinement backend.
+const confinementAvailable = await workspaceShellSupported();
+function confinedTest(name: string, body: () => Promise<void>) {
+  test(name, { skip: !confinementAvailable && 'OS filesystem confinement unavailable' }, body);
+}
 
 const isWin = platform() === 'win32';
 
@@ -505,6 +507,10 @@ test('셸 작업 폴더는 연결된 폴더 안이어야 한다', async () => {
     /PATH_DOMAIN_MISMATCH/,
   );
   const cmd = isWin ? '(Get-Location).Path' : 'pwd';
+  if (!confinementAvailable) {
+    await assert.rejects(p.callTool(SHELL_TOOL, { command: cmd }, inChat('c')), /WORKSPACE_SHELL_UNAVAILABLE/);
+    return;
+  }
   const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
   assert.equal(res.isError, false, JSON.stringify(res));
   assert.ok(res.content[0].text.includes(dir), res.content[0].text);
@@ -531,7 +537,7 @@ test('파일 도구는 연결 폴더 안의 심볼릭 링크 탈출을 거절한
   );
 });
 
-test('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', async () => {
+confinedTest('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Start-Sleep -Seconds 2' : 'sleep 2';
   const started = Date.now();
@@ -548,7 +554,7 @@ test('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', asyn
   await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId }, inChat('c'));
 });
 
-test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
+confinedTest('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Write-Output hello-xgen' : 'echo hello-xgen';
   const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
@@ -556,7 +562,7 @@ test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
   assert.match(res.content[0].text, /hello-xgen/);
 });
 
-test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
+confinedTest('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'exit 3' : 'exit 3';
   const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
@@ -565,7 +571,7 @@ test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
 
 // ── 강건성: 대화형 hang 방지 · background · 타임아웃 tree-kill ──
 
-test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝난다 (EOF)', async () => {
+confinedTest('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝난다 (EOF)', async () => {
   // stdin 이 열려 있으면 이 명령은 영원히 매달린다 — stdio ignore 로 EOF 를 받아
   // 곧바로 끝나야 한다. 넉넉한 timeout(8s)을 줘도 훨씬 빨리 반환되면 통과.
   const { p } = provider({ c: [await folder()] });
@@ -577,7 +583,7 @@ test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝�
   assert.notEqual(res.isError, true, JSON.stringify(res));
 });
 
-test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 안내가 붙는다', async () => {
+confinedTest('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 안내가 붙는다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Start-Sleep -Seconds 5' : 'sleep 5';
   const started = Date.now();
@@ -588,7 +594,7 @@ test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 �
   assert.match(res.content[0].text, /background/, '중단 안내가 background 대안을 알려주지 않는다');
 });
 
-test('E2E: background 는 즉시 반환하고, 그 프로세스는 타임아웃에 죽지 않는다', async () => {
+confinedTest('E2E: background 는 즉시 반환하고, 그 프로세스는 타임아웃에 죽지 않는다', async () => {
   const { p } = provider({ c: [await folder()] });
   // 3초 자는 프로세스를 백그라운드로 — 1초 타임아웃보다 오래 살아야 한다.
   const cmd = isWin ? 'Start-Sleep -Seconds 3' : 'sleep 3';
@@ -644,7 +650,7 @@ test('Open 은 위험 스킴을 throw 없이 거절한다', async () => {
   assert.match(res.content[0].text, /스킴|열 수 없습니다/);
 });
 
-test('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async () => {
+confinedTest('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin
     ? 'Write-Output started-xgen; Start-Sleep -Seconds 3'
@@ -679,7 +685,7 @@ test('ShellJob: 없는 job_id 는 오류', async () => {
   assert.equal(r.isError, true);
 });
 
-test('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 해제하면 멈춘다', async () => {
+confinedTest('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 해제하면 멈춘다', async () => {
   const a = await folder('xgen-job-a-');
   const b = await folder('xgen-job-b-');
   const { p, book } = provider({ 'chat-a': [a, b], 'chat-b': [b] });
@@ -704,7 +710,7 @@ test('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 
   assert.match(poll.content[0].text, /연결이 해제된 폴더/);
 });
 
-test('위험 명령 승인은 대화 단위다 — "계속 허용"이 다른 대화로 번지지 않는다', async () => {
+confinedTest('위험 명령 승인은 대화 단위다 — "계속 허용"이 다른 대화로 번지지 않는다', async () => {
   const dir = await folder('xgen-danger-');
   const { p } = provider({ 'chat-a': [dir], 'chat-b': [dir] });
   const before = host.asked.length;

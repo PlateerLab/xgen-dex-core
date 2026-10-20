@@ -5,7 +5,7 @@ import { platform, tmpdir } from 'os';
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { normalizeLocalFolders } from '@dex/engine/local-folders';
-import { setWorkspaceShellSupportForTest } from '@dex/engine/workspace-shell';
+import { workspaceShellSupported } from '@dex/engine/workspace-shell';
 import { LocalToolProvider, NO_FOLDER_MESSAGE } from '@dex/engine/local-tools';
 import {
   USER_PC_JOB_TOOL,
@@ -24,7 +24,7 @@ import { bindTestHost, recordingInteraction } from './_host';
 
 const host = recordingInteraction('deny');
 bindTestHost({ interaction: host.port });
-setWorkspaceShellSupportForTest(false);
+const confinementAvailable = await workspaceShellSupported();
 const isWin = platform() === 'win32';
 
 async function folder(prefix = 'xgen-pc-'): Promise<string> {
@@ -43,11 +43,12 @@ test('Windows 는 Git Bash 가 있으면 그것, WSL 의 bash 는 쓰지 않는�
   assert.deepEqual([shell.kind, shell.label], ['git-bash', 'Git Bash']);
 });
 
-test('Git Bash 가 없는 Windows 는 내장 해석기이고 프로그램을 넘기는 법을 알린다', () => {
+test('Windows 셸 메타데이터는 native 실행 미지원과 격리 요구를 알린다', () => {
   const shell = detectUserPcShell('win32', {}, () => false);
   assert.equal(shell.kind, 'builtin');
-  assert.match(shell.note, /powershell -NoProfile -Command/);
-  assert.match(shell.note, /\/<folder name>/);
+  assert.match(shell.note, /unavailable/);
+  assert.match(shell.note, /OS filesystem confinement/);
+  assert.doesNotMatch(shell.note, /powershell -NoProfile -Command|cmd \/c/);
 });
 
 test('macOS·Linux 는 bash, 가두는 macOS 는 그 사실을 알린다', () => {
@@ -55,7 +56,8 @@ test('macOS·Linux 는 bash, 가두는 macOS 는 그 사실을 알린다', () =>
   assert.deepEqual([mac.kind, mac.file, mac.label], ['posix', '/bin/bash', 'bash']);
   assert.match(mac.note, /only inside the connected folders/);
   const linux = detectUserPcShell('linux', { SHELL: '/usr/bin/fish' }, () => false);
-  assert.deepEqual([linux.file, linux.label, linux.note], ['/usr/bin/fish', 'fish', '']);
+  assert.deepEqual([linux.file, linux.label], ['/usr/bin/fish', 'fish']);
+  assert.match(linux.note, /OS filesystem confinement probe/);
 });
 
 test('실행 도구는 셸 이름을 meta 로 서버에 알린다(모델에게는 숨는 _ 도구)', () => {
@@ -69,7 +71,7 @@ test('실행 도구는 셸 이름을 meta 로 서버에 알린다(모델에게�
 
 const posix = { kind: 'posix' as const, file: '/bin/bash', label: 'bash', note: '' };
 
-test('명령은 폴더에서 돌고 종료 코드·표준 출력·표준 오류를 따로 돌려준다', { skip: isWin }, async () => {
+test('명령은 폴더에서 돌고 종료 코드·표준 출력·표준 오류를 따로 돌려준다', { skip: (isWin || !confinementAvailable) && "OS filesystem confinement unavailable" }, async () => {
   const dir = await folder();
   const out = await runUserPcCommand(
     { command: 'pwd; echo 한글 출력; echo oops >&2; exit 3', cwd: dir, roots: [dir], names: ['proj'], key: 'c1', waitMs: 10_000 },
@@ -82,7 +84,7 @@ test('명령은 폴더에서 돌고 종료 코드·표준 출력·표준 오류�
   assert.equal(out.shell, 'bash');
 });
 
-test('기다리는 시간을 넘긴 명령은 작업으로 이어지고 확인·멈춤이 된다', { skip: isWin }, async () => {
+test('기다리는 시간을 넘긴 명령은 작업으로 이어지고 확인·멈춤이 된다', { skip: (isWin || !confinementAvailable) && "OS filesystem confinement unavailable" }, async () => {
   const dir = await folder();
   const started = await runUserPcCommand(
     { command: 'echo start; sleep 2; echo end', cwd: dir, roots: [dir], names: ['p'], key: 'c2', waitMs: 1_000 },
@@ -105,7 +107,7 @@ test('기다리는 시간을 넘긴 명령은 작업으로 이어지고 확인·
   assert.match(stopped.stderr, /stopped/);
 });
 
-test('취소 신호가 오면 기다리지 않고 프로세스를 끝낸다', { skip: isWin }, async () => {
+test('취소 신호가 오면 기다리지 않고 프로세스를 끝낸다', { skip: (isWin || !confinementAvailable) && "OS filesystem confinement unavailable" }, async () => {
   const dir = await folder();
   const abort = new AbortController();
   const t0 = Date.now();
@@ -118,7 +120,7 @@ test('취소 신호가 오면 기다리지 않고 프로세스를 끝낸다', { 
   assert.equal(out.running, false);
 });
 
-test('폴더 연결을 끊으면 그 폴더에서 돌던 작업이 멈춘다', { skip: isWin }, async () => {
+test('폴더 연결을 끊으면 그 폴더에서 돌던 작업이 멈춘다', { skip: (isWin || !confinementAvailable) && "OS filesystem confinement unavailable" }, async () => {
   const dir = await folder();
   const job = await runUserPcCommand(
     { command: 'sleep 30', cwd: dir, roots: [dir], names: ['p'], key: 'c4', waitMs: 1_000 },
@@ -141,28 +143,10 @@ test('내장 해석기 경로 대응: 폴더는 /<이름>, 겹치면 번호', ()
   assert.equal(toReal('/elsewhere'), null);
 });
 
-test('내장 해석기로 bash 명령이 실제 폴더에서 돈다', async () => {
+test('내장 해석기는 OS 격리 없는 native command 대체 경로가 아니다', async () => {
   const dir = await folder();
-  await mkdir(join(dir, 'sub', '깊은폴더'), { recursive: true });
-  await writeFile(join(dir, 'notes.txt'), 'hello\nTODO: 제목\n');
-  await writeFile(join(dir, 'sub', '깊은폴더', '결과발표_1장.pptx'), Buffer.from([0x50, 0x4b, 3, 4]));
-  const builtin = { kind: 'builtin' as const, label: 'bash (built in: file and text commands)', note: '' };
-  const run = (command: string) =>
-    runUserPcCommand({ command, cwd: dir, roots: [dir], names: ['proj'], key: 'c5', waitMs: 10_000 }, builtin);
-  const found = await run("find . -iname '*결과발표*'");
-  assert.equal(found.stdout, './sub/깊은폴더/결과발표_1장.pptx\n');
-  assert.equal((await run('pwd')).stdout, '/proj\n');
-  const edited = await run("sed -i 's/hello/HELLO/' notes.txt && grep -n TODO notes.txt");
-  assert.equal(edited.exit_code, 0);
-  assert.equal(edited.stdout, '2:TODO: 제목\n');
-  assert.equal(await readFile(join(dir, 'notes.txt'), 'utf8'), 'HELLO\nTODO: 제목\n');
-  // 해석기의 가상 /bin·/usr 말고는 붙인 폴더만 보인다 — 실제 PC 의 다른 폴더는 보이지 않는다.
-  const root = (await run('ls ../..')).stdout.split('\n');
-  assert.ok(root.includes('proj'));
-  assert.ok(!root.includes('etc') && !root.includes('home') && !root.includes('tmp'), root.join(','));
+  await assert.rejects(runUserPcCommand({ command: 'echo unsafe', cwd: dir, roots: [dir], names: ['proj'], key: 'c5' }, { kind: 'builtin', label: 'builtin', note: 'test' }), /WORKSPACE_SHELL_UNAVAILABLE/);
 });
-
-// ── 도구 제공자 ─────────────────────────────────────────────────────
 
 function provider(book: Record<string, string[]>) {
   const p = new LocalToolProvider();
@@ -170,7 +154,7 @@ function provider(book: Record<string, string[]>) {
   return p;
 }
 
-test('실행 도구는 그 대화의 연결 폴더 안에서만 돈다', { skip: isWin }, async () => {
+test('실행 도구는 그 대화의 연결 폴더 안에서만 돈다', { skip: (isWin || !confinementAvailable) && "OS filesystem confinement unavailable" }, async () => {
   setUserPcShellForTest(posix);
   try {
     const dir = await folder();

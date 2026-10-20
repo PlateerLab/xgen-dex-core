@@ -80,7 +80,7 @@ import {
   userPcJob,
   userPcToolSchemas,
 } from './user-pc';
-import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
+import { buildChildEnv, commonBinDirs } from './exec-resolve';
 import { interaction } from './host';
 import type { LocalFolder } from './local-folders';
 import type { McpToolAnnotations } from './mcp-manager';
@@ -88,7 +88,7 @@ import {
   gitIdentityEnv,
   prepareWorkspaceShell,
   userToolchains,
-  workspaceShellSupported,
+  requireWorkspaceShellSupport,
 } from './workspace-shell';
 
 /** Reserved MCP "server" name for connector-hosted built-ins. Agents see the
@@ -588,7 +588,7 @@ export function shellToolSchema(): LocalToolSchema {
       `through its native shell (${nativeShellLabel()}), as the logged-in user. It works only ` +
       `inside the folders the user connected to THIS conversation: the working directory must be ` +
       `one of them (default: the first connected folder). On macOS and Linux the command and ` +
-      `its child processes can only write inside those folders when the OS supports it; HOME and ` +
+      `its child processes run with OS filesystem confinement; unsupported confinement returns an explicit error. HOME and ` +
       `temporary files then live in a scratch folder removed after the command. This is the ` +
       `user's physical machine, NOT your server sandbox: never pass these paths to the server's ` +
       `Read/Write/Bash tools.` +
@@ -1372,6 +1372,7 @@ export class LocalToolProvider {
           `연결된 폴더 안에서 실행하세요 (${scope.roots.join(', ')}).`,
       );
     }
+    await requireWorkspaceShellSupport();
     if (!(await ensureDangerousApproval(command, scope.key))) {
       return { content: [{ type: 'text', text: DANGEROUS_COMMAND_DENIED }], isError: true };
     }
@@ -1813,6 +1814,7 @@ export class LocalToolProvider {
       );
     }
     // 되돌리기 어려운 명령은 사용자 승인을 받는다 (위험 패턴만 — 일반 명령은 확인 없이).
+    await requireWorkspaceShellSupport();
     if (!(await ensureDangerousApproval(command, scope.key))) {
       return {
         content: [
@@ -1823,11 +1825,7 @@ export class LocalToolProvider {
     }
     const userShellBin = IS_WIN ? null : process.env.SHELL || null;
     const { file, args: argv } = shellInvocation(command, userShellBin, shell);
-    const launch = (await workspaceShellSupported())
-      ? await this.confinedLaunch(file, argv, runCwd, scope)
-      : // 이 OS 에는 쓸 수 있는 가두기 수단이 없다(Windows, 네임스페이스를 못 만드는
-        // Linux). 사용자 권한으로 돌리되 작업 폴더는 연결된 폴더 안으로 고정한다.
-        { file, args: argv, env: buildChildEnv(await augmentedPath()), cleanup: async () => {} };
+    const launch = await this.confinedLaunch(file, argv, runCwd, scope);
     const owner = { key: scope.key, roots: scope.roots };
 
     if (background) {

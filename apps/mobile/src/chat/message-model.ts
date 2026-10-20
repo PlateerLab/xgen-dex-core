@@ -8,7 +8,7 @@
  * 규칙은 데스크톱 SessionStore 와 같다 — 도구·출처·오류는 **그 답변의 것**이고,
  * 말풍선 사이에 따로 떠다니는 줄이 아니다.
  */
-import { appendFlowItem, genyHistoryWorkspacePath, liveTurnFlow, mergeChatDownload } from '@dex/protocol';
+import { appendFlowItem, applyTurnPhase, genyHistoryWorkspacePath, liveTurnFlow, mergeChatDownload } from '@dex/protocol';
 import type {
   ChatDownload,
   ChatDownloadPayload,
@@ -19,6 +19,8 @@ import type {
   TimelineFlowItem,
   ToolEvent,
   TurnAttachment,
+  TurnPhaseRow,
+  TurnPhaseSignal,
   XgenErrorInfo,
 } from '@dex/protocol';
 
@@ -50,6 +52,11 @@ export interface ChatMessage {
   startedAt?: number;
   /** 마지막으로 글·도구를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 와 끝난 턴의 걸린 시간. */
   lastEventAt?: number;
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 캐럿 자리에
+   * 도구 줄 모양으로 그린다. 서버가 기록하지 않는 알림이라 이 화면에만 있다.
+   */
+  phases?: TurnPhaseRow[];
   citations?: Citation[];
   /**
    * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact`. 이력의 답은 본문 표식에서
@@ -195,6 +202,17 @@ export function appendAssistantText(list: readonly ChatMessage[], chunk: string,
     return [...list, { ...fresh, ...withFlow(fresh, item) }];
   }
   return patchAt(list, i, { text: list[i].text + chunk, ...withFlow(list[i], item) });
+}
+
+/** 준비 단계 알림을 **그 답변에** 붙인다. 받을 자리가 없으면 새 답변을 세운다(다른 화면의 턴도 같다). */
+export function attachPhase(list: readonly ChatMessage[], signal: TurnPhaseSignal, now = Date.now()): ChatMessage[] {
+  let i = streamingIndex(list);
+  let base = list as ChatMessage[];
+  if (i < 0) {
+    base = [...list, assistantPlaceholder()];
+    i = base.length - 1;
+  }
+  return patchAt(base, i, { phases: applyTurnPhase(base[i].phases ?? [], signal, now) });
 }
 
 /**

@@ -48,7 +48,7 @@ import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
 import { CitationPanel } from './CitationPanel';
-import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
+import { ProcessTimeline, TurnPhaseCard, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
 import { requestBefore } from './turn-files-model';
@@ -1620,6 +1620,10 @@ export const Chat: React.FC<{
                           {' '}({formatBytes(m.uploadProgress.loaded)} / {formatBytes(m.uploadProgress.total)})
                         </span>
                       </span>
+                    ) : m.streaming && m.phases?.length && !m.tools?.length ? (
+                      // 답이 시작되기 전 서버의 준비 단계(Sandbox·워크스페이스·패키지·기억). 0.7초 넘게 걸린
+                      // 단계가 없으면 커서 그대로다(빠른 턴은 예전과 같다).
+                      <TurnPhaseCard rows={m.phases} fallback={<span className="cursor" />} />
                     ) : (
                       m.streaming && <span className="cursor" />
                     )

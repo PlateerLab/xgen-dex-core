@@ -32,11 +32,13 @@ import type {
   LiveTurnSnapshot,
   ToolEvent,
   TurnAttachment,
+  TurnPhaseRow,
   XgenErrorInfo,
 } from '@dex/protocol';
 import {
   INTERRUPTED_NOTE,
   appendFlowItem,
+  applyTurnPhase,
   describeStreamError,
   liveTurnFlow,
   mergeChatDownload,
@@ -210,6 +212,11 @@ export interface ChatMsg {
   lastEventAt?: number;
   /** 첨부를 올리는 동안의 진행(보낸 바이트/전체) — 답이 시작되기 전 말풍선에 보인다. 다 올리면 지운다. */
   uploadProgress?: { loaded: number; total: number };
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 커서 자리에
+   * 도구 줄 모양으로 그린다(@dex/protocol turn-phases). 서버가 기록하지 않는 알림이라 이 창에만 있다.
+   */
+  phases?: TurnPhaseRow[];
   citations?: Citation[];
   /**
    * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact` 로 받은 것.
@@ -1357,6 +1364,9 @@ export class SessionStore {
       if (ev.kind === 'text') {
         nl.text = nl.text + ev.content;
         nl.flow = appendFlow(last.flow, { kind: 'text', text: ev.content, at });
+      } else if (ev.kind === 'phase') {
+        // 첫 글자 전의 준비 단계. 커서 대신 무엇을 기다리는지 보인다.
+        nl.phases = applyTurnPhase(last.phases ?? [], ev, at);
       } else if (ev.kind === 'status') {
         nl.surface = ev.surface;
         // server_sandbox: 폴백 사유(reason 이 사람이 읽는 문장). blocked: 차단 메시지(detail).
@@ -1676,7 +1686,7 @@ export class SessionStore {
         event.event,
         event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null,
       );
-      if (!ev || (ev.kind !== 'text' && ev.kind !== 'tool') || (ev.kind === 'text' && !ev.content)) return;
+      if (!ev || (ev.kind !== 'text' && ev.kind !== 'tool' && ev.kind !== 'phase') || (ev.kind === 'text' && !ev.content)) return;
       this.patch(key, (cur) => {
         const messages = [...cur.messages];
         let at = findLastIndex(messages, (m) => m.remotePartial === true);
@@ -1692,7 +1702,9 @@ export class SessionStore {
         const now = this.now();
         const base = { startedAt: partial.startedAt ?? now, lastEventAt: now, streaming: true };
         messages[at] =
-          ev.kind === 'text'
+          ev.kind === 'phase'
+            ? { ...partial, streaming: true, startedAt: partial.startedAt ?? now, phases: applyTurnPhase(partial.phases ?? [], ev, now) }
+            : ev.kind === 'text'
             ? { ...partial, ...base, text: (partial.text || '') + ev.content, flow: appendFlow(partial.flow, { kind: 'text', text: ev.content, at: now }) }
             : {
                 ...partial,

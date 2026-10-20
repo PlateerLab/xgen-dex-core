@@ -1,4 +1,4 @@
-# XGEN Dex Mobile (React Native)
+# XGEN DexOn Mobile (React Native)
 
 **서버 세션 채팅 + 모바일 도구** 전용 크로스플랫폼(안드로이드/iOS) 앱 —
 데스크톱/CLI/VSCode 와 완전히 독립적으로 동작한다 (공유하는 것은

@@ -1,4 +1,4 @@
-; XGen Dex — NSIS 설치 커스터마이즈
+; XGEN DexOn — NSIS 설치 커스터마이즈
 ;
 ; ⚠ %APPDATA%\XGEN-Connector\... 경로들은 브랜드명이 아니라 Electron 의
 ; userData 폴더 이름이다 — src/main/index.ts 최상단의 app.setName('XGEN-Connector')
@@ -218,7 +218,7 @@
   Function XgenInstFilesShow
     SetDetailsView show
     SetDetailsPrint both
-    DetailPrint "XGen Dex ${VERSION} 설치를 시작합니다."
+    DetailPrint "XGEN DexOn ${VERSION} 설치를 시작합니다."
     DetailPrint "1/3 앱 파일 압축 해제 — 진행 막대를 확인하세요 (이 단계는 줄 단위 로그가 없습니다)."
     DetailPrint "설치 로그 파일: $APPDATA\XGEN-Connector\install.log"
   FunctionEnd
@@ -252,7 +252,7 @@
   ${If} $installMode == "all"
     SetShellVarContext current
   ${EndIf}
-  !insertmacro XgenLog "==== XGen Dex ${VERSION} install start ===="
+  !insertmacro XgenLog "==== XGEN DexOn ${VERSION} install start ===="
   !insertmacro XgenLog "INSTDIR=$INSTDIR installMode=$installMode"
   ; ── 데이터 폴더 선택을 앱에 전달 ──────────────────────────────────────
   ; 첫 부팅(consumeInstallOptions)이 한 번 읽고 지운다. 페이지를 안 거친 경우

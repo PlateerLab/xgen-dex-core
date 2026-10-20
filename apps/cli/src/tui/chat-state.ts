@@ -1,4 +1,4 @@
-import { INTERRUPTED_NOTE, describeStreamError, formatErrorLine } from '@dex/protocol';
+import { AWAITING_ANSWER_LABEL, INTERRUPTED_NOTE, applyTurnPhase, describeStreamError, formatErrorLine, phaseLabel, type TurnPhaseRow } from '@dex/protocol';
 import type { ChatEvent, HistoryTurn, ToolEvent } from '@dex/engine';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'activity' | 'system';
@@ -24,6 +24,11 @@ export interface ChatState {
    */
   remote: boolean;
   status?: string;
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 상태 줄에
+   * 지금 무엇을 기다리는지 보이고, 답이나 도구가 오면 지운다(@dex/protocol turn-phases, 웹·앱과 같은 문구).
+   */
+  phases?: TurnPhaseRow[];
 }
 
 export type ChatAction =
@@ -99,8 +104,26 @@ function upsertActivity(messages: ChatMessage[], key: string, text: string): Cha
   return next;
 }
 
+/** 준비 단계 상태 줄. 하는 중·다시 시도·실패한 마지막 단계, 다 끝났으면 답변을 기다린다는 줄. */
+function phaseStatusLine(rows: readonly TurnPhaseRow[]): string {
+  // 하는 중·다시 시도·실패한 단계가 먼저, 없으면 첫 실행 알림(새 에이전트), 그것도 없으면 답변을 기다린다.
+  const live = [...rows].reverse().find((r) => r.phase !== 'assemble' && r.state !== 'ok');
+  if (live) return phaseLabel(live);
+  const assemble = rows.find((r) => r.phase === 'assemble' && r.state === 'run');
+  return assemble ? phaseLabel(assemble) : AWAITING_ANSWER_LABEL;
+}
+
+/** 답이 시작됐다. 준비 단계 줄을 걷는다. */
+function clearPhases(state: ChatState): ChatState {
+  return state.phases ? { ...state, phases: undefined, status: undefined } : state;
+}
+
 function eventState(state: ChatState, event: ChatEvent): ChatState {
-  if (event.kind === 'text') return { ...state, messages: appendAssistant(state.messages, event.content) };
+  if (event.kind === 'phase') {
+    const phases = applyTurnPhase(state.phases ?? [], event, Date.now());
+    return { ...state, phases, status: phaseStatusLine(phases) };
+  }
+  if (event.kind === 'text') return { ...clearPhases(state), messages: appendAssistant(state.messages, event.content) };
   if (event.kind === 'summary') {
     const assistantIndex = lastMessageIndex(state.messages, (message) => message.role === 'assistant');
     const assistant = assistantIndex >= 0 ? state.messages[assistantIndex] : undefined;
@@ -108,7 +131,7 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
   }
   if (event.kind === 'tool') {
     const key = event.event.runId ?? event.event.toolName ?? 'tool';
-    return { ...state, messages: upsertActivity(state.messages, key, toolActivityText(event.event)) };
+    return { ...clearPhases(state), messages: upsertActivity(state.messages, key, toolActivityText(event.event)) };
   }
   if (event.kind === 'node_status') {
     return { ...state, status: `${event.event.nodeId} · ${event.event.status}` };
@@ -152,7 +175,7 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
       status: '연결이 끊겼습니다 — 서버에서 계속 진행 중',
     };
   }
-  if (event.kind === 'end') return { ...state, running: false, remote: false, status: undefined };
+  if (event.kind === 'end') return { ...state, running: false, remote: false, status: undefined, phases: undefined };
   return state;
 }
 

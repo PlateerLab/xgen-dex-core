@@ -1,4 +1,4 @@
-import { describeStreamError, formatErrorLine } from '@dex/protocol';
+import { applyTurnPhase, describeStreamError, formatErrorLine, type TurnPhaseRow } from '@dex/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { DexService } from './dex-service';
@@ -21,7 +21,7 @@ import type {
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
-import { describeTool, historyTurnMessages, message, type ChatMessage } from './chat-messages';
+import { describeTool, historyTurnMessages, message, phaseLines, type ChatMessage } from './chat-messages';
 import {
   CONVERSATION_PAGE_LIMIT,
   SEARCH_LIMIT,
@@ -501,7 +501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         detail: agent.description?.trim() || undefined,
         agent,
       })),
-      { title: 'XGEN Dex Agent 검색', placeHolder: 'Agent 이름 또는 설명', matchOnDescription: true, matchOnDetail: true },
+      { title: 'XGEN DexOn Agent 검색', placeHolder: 'Agent 이름 또는 설명', matchOnDescription: true, matchOnDetail: true },
     );
     if (!picked) return;
     await this.showStart(picked.agent.workflowId);
@@ -585,7 +585,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await this.service.request<unknown>('history/conversations', this.activeProfileParams()),
       );
       if (conversations.length === 0) {
-        await vscode.window.showInformationMessage('저장된 XGEN Dex 대화가 없습니다.');
+        await vscode.window.showInformationMessage('저장된 XGEN DexOn 대화가 없습니다.');
         return;
       }
       const picked = await vscode.window.showQuickPick(
@@ -644,6 +644,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   dispose(): void {
+    this.clearPhases();
     this.stopWatchingRemoteRun();
     this.removeNotificationListener();
     this.manager?.dispose();
@@ -1485,6 +1486,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const streamId = randomUUID();
     this.streamId = streamId;
     this.status = '응답을 기다리는 중...';
+    this.clearPhases();
     const attachments = [...this.attachments];
     this.attachments = [];
     this.messages.push(message('user', '나', text || `첨부 파일 ${attachments.length}개`));
@@ -1733,6 +1735,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.interactionId = params.interactionId;
       this.streamId = undefined;
       this.status = undefined;
+      this.clearPhases();
       const assistant = this.messages.find((item) => item.id === this.assistantMessageId);
       if (assistant && !assistant.text) assistant.text = '응답 내용이 없습니다.';
       void this.setRunning(false);
@@ -1746,13 +1749,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (params?.streamId !== this.streamId) return;
       this.streamId = undefined;
       this.status = undefined;
+      this.clearPhases();
       this.updateAssistant(`오류: ${params.error.message}`);
       void this.setRunning(false);
       this.postState();
     }
   }
 
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 점 대신 도구 줄
+   * 모양으로 보인다. 경과 초와 0.7초 규칙 때문에 기다리는 동안 짧게 다시 그린다.
+   */
+  private phaseRows: TurnPhaseRow[] = [];
+  private phaseTicker: ReturnType<typeof setInterval> | undefined;
+
+  private notePhase(event: Extract<ChatEvent, { kind: 'phase' }>): void {
+    this.phaseRows = applyTurnPhase(this.phaseRows, event, Date.now());
+    if (!this.phaseTicker) this.phaseTicker = setInterval(() => this.scheduleState(), 500);
+  }
+
+  /** 답이 시작됐거나 턴이 끝났다. 준비 줄을 걷는다. */
+  private clearPhases(): void {
+    this.phaseRows = [];
+    if (this.phaseTicker) clearInterval(this.phaseTicker);
+    this.phaseTicker = undefined;
+  }
+
+  /** 웹뷰에 보낼 메시지. 답이 시작되기 전의 답변 말풍선에만 준비 줄을 싣는다(원본은 건드리지 않는다). */
+  private messagesForView(): ChatMessage[] {
+    if (this.phaseRows.length === 0) return this.messages;
+    const lines = phaseLines(this.phaseRows, Date.now());
+    if (lines.length === 0) return this.messages;
+    return this.messages.map((item) =>
+      item.id === this.assistantMessageId && !item.text && !item.tools?.length ? { ...item, phaseLines: lines } : item,
+    );
+  }
+
   private applyEvent(event: ChatEvent): void {
+    if (event.kind === 'phase') this.notePhase(event);
+    else if (event.kind === 'text' || event.kind === 'tool') this.clearPhases();
     if (event.kind === 'text') this.updateAssistant(event.content);
     else if (event.kind === 'summary') this.updateAssistant(event.text);
     else if (event.kind === 'tool') this.updateTool(event.event);
@@ -2053,7 +2088,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       auth: this.auth,
       agents: this.agents,
       agent,
-      messages: this.messages,
+      messages: this.messagesForView(),
       running: !!this.streamId || this.remoteRunning,
       refreshing: this.refreshing,
       status: this.status,
@@ -2253,12 +2288,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${styleUri}">
-  <title>XGEN Dex</title>
+  <title>XGEN DexOn</title>
 </head>
 <body>
   <section id="loading-screen" class="screen loading-screen">
     <div class="brand-mark large" aria-hidden="true">✦</div>
-    <strong>XGEN Dex를 준비하는 중</strong>
+    <strong>XGEN DexOn을 준비하는 중</strong>
     <span>CLI 엔진과 연결 정보를 확인하고 있습니다.</span>
     <div class="loading-bar" aria-hidden="true"><i></i></div>
   </section>
@@ -2266,7 +2301,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <section id="gate-screen" class="screen gate-screen hidden">
     <div class="gate-card">
       <div id="gate-icon" class="brand-mark large" aria-hidden="true">✦</div>
-      <div class="eyebrow">XGEN DEX FOR VS CODE</div>
+      <div class="eyebrow">XGEN DEXON FOR VS CODE</div>
       <h1 id="gate-title"></h1>
       <p id="gate-description"></p>
       <div id="gate-connection" class="gate-connection hidden"></div>
@@ -2279,7 +2314,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   <section id="conversations-screen" class="screen list-screen hidden">
     <header class="workspace-header">
-      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">✦</span><div><b>XGEN Dex</b><small id="list-connection"></small></div></div>
+      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">✦</span><div><b>XGEN DexOn</b><small id="list-connection"></small></div></div>
       <div class="header-actions">
         <button id="list-refresh" class="icon-button" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
         <button id="list-settings" class="account-button" type="button" title="계정 및 연결 설정"><span id="account-avatar">?</span><span id="account-name"></span><i>›</i></button>
@@ -2408,7 +2443,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   <section id="settings-screen" class="screen settings-screen hidden">
     <header class="workspace-header">
-      <div class="header-title"><button id="settings-back" class="icon-button" type="button" aria-label="이전 화면">‹</button><div><b>계정 및 연결 설정</b><small>XGEN Dex가 사용하는 회사 환경과 계정을 관리합니다.</small></div></div>
+      <div class="header-title"><button id="settings-back" class="icon-button" type="button" aria-label="이전 화면">‹</button><div><b>계정 및 연결 설정</b><small>XGEN DexOn이 사용하는 회사 환경과 계정을 관리합니다.</small></div></div>
       <button id="settings-refresh" class="icon-button" type="button" title="새로 고침" aria-label="새로 고침">↻</button>
     </header>
     <main class="settings-content">
@@ -2447,9 +2482,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </div>
       </section>
       <section class="settings-section">
-        <div class="section-heading"><div><span>CLI 엔진</span><small>확장은 dex-cli를 백그라운드 엔진으로 사용합니다.</small></div></div>
+        <div class="section-heading"><div><span>CLI 엔진</span><small>확장은 DexOn CLI를 백그라운드 엔진으로 사용합니다.</small></div></div>
         <div class="settings-card engine-card">
-          <div><b>dex-cli 연결</b><span id="engine-description">프로세스 및 확장 설정을 관리합니다.</span></div>
+          <div><b>DexOn CLI 연결</b><span id="engine-description">프로세스 및 확장 설정을 관리합니다.</span></div>
           <div class="inline-actions"><button id="show-output" class="secondary-button" type="button">로그 보기</button><button id="extension-settings" class="secondary-button" type="button">확장 설정</button><button id="restart-engine" type="button">엔진 재시작</button></div>
         </div>
       </section>

@@ -181,6 +181,16 @@ test('실행 중 연결 단절 — 실패가 아니라 분리다 (턴은 서버�
   chat.close();
 });
 
+test('dispatchExec: 첫 글자 전의 준비 단계(turn_phase)는 onPhase 로, 답 본문에는 섞이지 않는다', () => {
+  const phases: unknown[] = [];
+  const got: string[] = [];
+  const cb = { onPhase: (sig: unknown) => phases.push(sig), onData: (t: string) => got.push(t) };
+  assert.equal(dispatchExec('turn_phase', { phase: 'sandbox', state: 'done', elapsed_ms: 12300 }, cb), null);
+  assert.equal(dispatchExec('turn_phase', { phase: 'secrets', state: 'start' }, cb), null);
+  assert.deepEqual(phases, [{ kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 12300 }]);
+  assert.deepEqual(got, []);
+});
+
 test('dispatchExec — summary/quota/error 이벤트 매핑', () => {
   const got: string[] = [];
   const errs: string[] = [];

@@ -1,7 +1,7 @@
-# XGEN Dex for Visual Studio Code
+# XGEN DexOn for Visual Studio Code
 
-XGEN Dex Agent를 Visual Studio Code 사이드바에서 사용하는 확장입니다. 확장은 XGEN 서버에
-직접 연결하지 않고 `dex serve --stdio` 프로세스와 JSON-RPC로만 통신합니다.
+XGEN DexOn Agent를 Visual Studio Code 사이드바에서 사용하는 확장입니다. 확장은 XGEN 서버에
+직접 연결하지 않고 `dexon serve --stdio` 프로세스와 JSON-RPC로만 통신합니다.
 
 ## 현재 기능
 
@@ -31,8 +31,8 @@ npm run build
 npm link
 ```
 
-전역 `dex` 명령 대신 특정 엔트리를 사용하려면 VS Code 설정의
-`XGEN Dex: Cli Path`에 실행 파일 또는 `dist/cli.js` 경로를 지정하세요.
+전역 `dexon` 명령 대신 특정 엔트리를 사용하려면 VS Code 설정의
+`XGEN DexOn: Cli Path`에 실행 파일 또는 `dist/cli.js` 경로를 지정하세요.
 
 ## 개발 실행
 
@@ -43,12 +43,12 @@ npm run verify
 code .
 ```
 
-VS Code에서 `F5`를 누르고 **Run XGEN Dex Extension**을 선택합니다. Development 모드에서는
+VS Code에서 `F5`를 누르고 **Run XGEN DexOn Extension**을 선택합니다. Development 모드에서는
 상위 `dist/cli.js`를 자동으로 찾아 사용합니다.
 
 ## 사용
 
-1. Activity Bar에서 **XGEN Dex**를 엽니다.
+1. Activity Bar에서 **XGEN DexOn**을 엽니다.
 2. Workspace 안내 화면에서 회사/환경 Gateway를 등록합니다.
 3. 로그인하면 대화 목록이 열립니다. 대화를 누르면 이어서 대화합니다.
 4. **+ 새 채팅**을 누르면 시작 화면이 열립니다. Agent를 고르거나(처음 값은 **새 에이전트로 시작**)

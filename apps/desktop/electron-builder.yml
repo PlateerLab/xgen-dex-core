@@ -59,7 +59,7 @@ linux:
     - deb
   category: Utility
   maintainer: PlateerLab <noreply@plateerlab.dev>
-  synopsis: XGen Dex desktop connector - log in, browse your agents, chat
+  synopsis: XGEN DexOn desktop connector - log in, browse your agents, chat
   artifactName: XGen-Dex-${version}.${ext}
   # 창 ↔ .desktop 매칭 (GNOME 독 아이콘 중복/무명 창 방지). Electron 의
   # WM_CLASS 는 package.json name("xgen-dex")에서 온다 — 브랜드명과
@@ -71,7 +71,7 @@ linux:
     entry:
       StartupWMClass: xgen-dex
       # 설치 경로는 공백이 없어야 하지만(위 참조) 런처에 보이는 이름은 예쁘게.
-      Name: XGen Dex
+      Name: XGEN DexOn
 deb:
   # 커스텀 postinst: chrome-sandbox 를 **무조건** SUID-root 로 만든다. 기본
   # 템플릿의 `unshare --user` 프로브는 root 로 돌아 항상 성공하지만, Ubuntu
@@ -126,7 +126,7 @@ nsis:
   # 바탕화면/시작 메뉴 바로가기 라벨 — productName(XGen-Dex, 하이픈)과 별개로
   # 지정한다. 미지정 시 기본값은 sanitizedProductName(=productName 그대로,
   # 하이픈 포함)이라 바로가기가 "XGen-Dex"로 보인다.
-  shortcutName: XGen Dex
+  shortcutName: XGEN DexOn
   # 설치 화면 로그·데이터 폴더 선택 (NSIS 사용자 정의 단계).
   include: build/installer.nsh
 mac:
@@ -138,4 +138,4 @@ mac:
   # 지정한다. macPackager 가 CFBundleName/CFBundleDisplayName 을 기본
   # productName 으로 채운 뒤 extendInfo 를 덮어써 여기 값이 이긴다.
   extendInfo:
-    CFBundleDisplayName: XGen Dex
+    CFBundleDisplayName: XGEN DexOn

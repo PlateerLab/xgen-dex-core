@@ -21,6 +21,7 @@ import { FINAL } from './voice-segmenter';
 
 const SCOPE = 'fast-act';
 const now = (): number => performance.now();
+export const MAX_FILL_STEPS = 50;
 
 export type StepResult = {
   step: string;
@@ -36,7 +37,9 @@ export async function runSteps(
   interactionId: string | undefined,
   steps: string[],
   signal?: AbortSignal,
+  deadlineAt = Date.now() + 112_000,
 ): Promise<StepResult[]> {
+  if (steps.length > MAX_FILL_STEPS) throw new Error(`BrowserFill 은 한 번에 ${MAX_FILL_STEPS}줄까지 실행할 수 있습니다.`);
   if (!decisionPost()) throw new Error('빠른 조작(판단 모델)을 쓸 수 없습니다 — BrowserInteract 로 채우세요.');
   const runtime = getBrowserRuntime();
   const start = runtime.get(pageId);
@@ -45,27 +48,47 @@ export async function runSteps(
   const t0 = now();
   // 한 에이전트로 — 읽어 둔 화면을 다음 줄이 이어 쓴다.
   const agent = new BrowserVoiceAgent(workflowId, t0, undefined, interactionId);
-  const out: StepResult[] = [];
-  for (const step of steps) {
-    if (signal?.aborted) {
-      out.push({ step, status: 'skipped', note: '중단됨', ms: 0 });
-      continue;
-    }
-    if (visiblePage(workflowId)?.pageId !== start.pageId) {
-      if (!runtime.get(start.pageId)) throw new Error('폼 탭이 닫혔습니다.');
-      runtime.activate(start.pageId);
-    }
-    const t = now();
-    const before = agent.actions.length;
-    const last = await agent.handle(step, FINAL, async () => !signal?.aborted, () => !!signal?.aborted).catch(
-      (err: Error) => ({ acted: false as const, reason: err.message, ms: 0 }),
-    );
-    const acted = agent.actions.slice(before);
-    const ok = last.acted && last.effect !== 'none';
-    const note = acted.length ? replyFor(acted, true) : last.acted ? '했지만 화면이 바뀌지 않음' : last.reason;
-    out.push({ step, status: ok ? 'done' : 'failed', note, ms: Math.round(now() - t) });
-    diag(SCOPE, 'batch-step', out.at(-1));
+  const out: StepResult[] = steps.map(step => ({ step, status: 'skipped', note: '아직 실행하지 않음', ms: 0 }));
+  const controller = new AbortController();
+  let stop!: () => void;
+  let reason = '중단됨';
+  const stopped = new Promise<void>(resolve => { stop = resolve; });
+  const cancel = () => { controller.abort(); stop(); };
+  const timer = setTimeout(() => { reason = '시간 한도 도달'; cancel(); }, Math.max(0, deadlineAt - Date.now() - 2_000));
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (Date.now() >= deadlineAt - 2_000) { reason = '시간 한도 도달'; cancel(); }
+  if (signal?.aborted) cancel();
+  try {
+    const work = runtime.withPageScope(start.pageId, controller.signal, async () => {
+      for (let i = 0; i < steps.length && !controller.signal.aborted; i++) {
+        const step = steps[i];
+        const t = now();
+        const before = agent.actions.length;
+        if (!runtime.get(start.pageId)) { reason = '폼 탭이 닫혔습니다.'; break; }
+        // A deadline may arrive during an upload or click. Never label that step safe to replay.
+        out[i] = { step, status: 'failed', note: '실행 중 중단됨. 일부 반영됐을 수 있으므로 현재 값을 확인한 뒤 남은 작업만 수행하세요.', ms: 0 };
+        try {
+          if (visiblePage(workflowId)?.pageId !== start.pageId) runtime.activate(start.pageId);
+          const last = await agent.handle(step, FINAL, async () => !controller.signal.aborted, () => controller.signal.aborted);
+          if (controller.signal.aborted) break;
+          const acted = agent.actions.slice(before);
+          const ok = last.acted && last.effect === 'ok';
+          const note = acted.length ? replyFor(acted, true) : last.acted ? ok ? '요청한 상태를 확인함' : '실행 결과를 확인하지 못함' : last.reason;
+          out[i] = { step, status: ok ? 'done' : 'failed', note, ms: Math.round(now() - t) };
+        } catch (err) {
+          if (controller.signal.aborted) break;
+          out[i] = { step, status: 'failed', note: `${err instanceof Error ? err.message : String(err)}. 현재 값을 확인한 뒤 남은 작업만 수행하세요.`, ms: Math.round(now() - t) };
+        }
+        diag(SCOPE, 'batch-step', out[i]);
+      }
+    });
+    await Promise.race([work, stopped]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
+    controller.abort();
   }
+  for (const row of out) if (row.status === 'skipped') row.note = reason;
   diag(SCOPE, 'batch', { steps: steps.length, done: out.filter((r) => r.status === 'done').length, ms: Math.round(now() - t0) });
-  return out;
+  return out.map(row => ({ ...row }));
 }

@@ -733,9 +733,31 @@ test('BrowserFill and BrowserFormValues act on a shared tab only by explicit pag
     // page_id 가 없으면 보이는 탭을 짐작하지 않고 거절한다.
     await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { workflow_id: 'w', steps: ['상품명에 「a」 입력해줘'] }), /page_id 가 필요합니다/);
     await assert.rejects(provider.callTool(BROWSER_FORM_VALUES_TOOL, { workflow_id: 'w' }), /page_id 가 필요합니다/);
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { page_id: 'p', steps: ['메모 입력'] }, { workflowId: 'w', remote: true }), /이 PC에서/);
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { page_id: 'p', steps: Array(51).fill('메모 입력') }, { workflowId: 'w' }), /50줄/);
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { page_id: 'p', steps: [{}] }, { workflowId: 'w' }), /문자열 배열/);
   } finally {
     configureFastAct({ enabled: () => false, post });
   }
+});
+
+test('a fill scope rejects other shared tabs and all access after cancellation', async () => {
+  const runtime = new BrowserRuntime();
+  const internals = runtime as unknown as { enabled: boolean; accountPartition: string; pages: Map<string, { info: BrowserPageInfo }> };
+  internals.enabled = true;
+  internals.accountPartition = 'test';
+  for (const [id, mode, opener] of [['a', 'shared', undefined], ['b', 'shared', undefined], ['popup', 'popup', 'a']] as const) {
+    internals.pages.set(id, { info: { pageId: id, workflowId: 'w', mode, openerPageId: opener } as BrowserPageInfo });
+  }
+  const controller = new AbortController();
+  await runtime.withPageScope('a', controller.signal, async () => {
+    assert.equal((await runtime.resolvePage('w', 'a', false)).info.pageId, 'a');
+    assert.equal((await runtime.resolvePage('w', 'popup', false)).info.pageId, 'popup');
+    await assert.rejects(runtime.resolvePage('w', 'b', false), /대상 폼/);
+    controller.abort();
+    await assert.rejects(runtime.resolvePage('w', 'a', false), /중단/);
+  });
+  assert.equal((await runtime.resolvePage('w', 'b', false)).info.pageId, 'b');
 });
 
 test('BrowserSnapshot gives the server LLM the snapshot text without the duplicate refs map', async () => {

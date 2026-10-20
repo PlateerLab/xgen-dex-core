@@ -498,7 +498,7 @@ export class McpBridge {
       const controller = new AbortController();
       const requestKey = String(request_id ?? '');
       if (requestKey) this.inflight.set(requestKey, controller);
-      const context = { ...localToolCallContext(msg.context), signal: controller.signal };
+      const context: import('./local-tools').LocalToolCallContext = { ...localToolCallContext(msg.context), signal: controller.signal };
       const startedAt = Date.now();
       appendMcpRuntimeLog({
         kind: 'call',
@@ -513,6 +513,7 @@ export class McpBridge {
       // 감시 시한 — 이 호출은 반드시 이 안에 답한다. 도구 안의 어느 단계(폴더 확인·실행 준비·확인 창…)가
       // 멈춰도 서버가 끝없이 기다리지 않게(2026-10-07: 결과 없는 Shell 호출 다섯 번).
       const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, isLocal);
+      context.deadlineAt = Date.now() + deadlineMs;
       let watchdog: NodeJS.Timeout | null = null;
       try {
         // Built-in (connector-hosted) tools dispatch locally; everything else

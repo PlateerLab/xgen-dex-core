@@ -10,6 +10,7 @@ import { diag } from './diag-log';
 import { BROWSER_COMMIT_GUIDE } from './browser-action-guard';
 import { fastActConfigured } from './fast-act-runner';
 import { FORM_VALUES_SCRIPT } from './fast-act-labels';
+import { MAX_FILL_STEPS } from './fast-act-batch';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -243,7 +244,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
         '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
-        'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
+        `search popups, collapsed sections and file uploads from the connected folders. Use at most ${MAX_FILL_STEPS} steps per call. ` +
         'Use it to put values into fields of the page that is open now — not for going to another page, pressing buttons that are not a field value, or reading the page. ' +
         'Every step names the field and the exact value, never a vague one ("자료에 맞는 것", "적절한 값"). ' +
         'If you need to look at the choices to decide a value (a list, popup or tree), look first with the other browser tools, then put the decided value in a step — the step makes the pick itself. ' +
@@ -265,7 +266,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         type: 'object',
         properties: {
           ...sharedPageProperties,
-          steps: { type: 'array', items: { type: 'string' }, description: 'One instruction per field, in order.' },
+          steps: { type: 'array', minItems: 1, maxItems: MAX_FILL_STEPS, items: { type: 'string' }, description: 'One instruction per field, in order.' },
         },
         required: ['page_id', 'steps'],
       },
@@ -686,6 +687,9 @@ export class BrowserToolProvider {
     args: Record<string, unknown>,
     context?: LocalToolCallContext,
   ): Promise<LocalToolResult> {
+    if (context?.remote) throw new BrowserRuntimeError('browser_denied', 'BrowserFill 은 이 PC에서 보낸 요청에서만 실행할 수 있습니다.');
+    if (!Array.isArray(args.steps) || args.steps.some(s => typeof s !== 'string') || args.steps.length > MAX_FILL_STEPS)
+      throw new BrowserRuntimeError('browser_denied', `steps 는 ${MAX_FILL_STEPS}줄 이하의 문자열 배열이어야 합니다.`);
     const steps = (Array.isArray(args.steps) ? args.steps : []).map((s) => String(s).trim()).filter(Boolean);
     if (!steps.length) throw new BrowserRuntimeError('browser_denied', 'steps 가 비었습니다.');
     // fast-act-voice 가 이 파일을 가져다 쓰므로 부를 때 가져온다(순환 참조).
@@ -694,9 +698,19 @@ export class BrowserToolProvider {
     // 공유 탭은 page_id 를 밝혀야만 다룬다(formValues 와 같다) — 보이는 탭을 짐작해 바꾸지 않는다.
     const id = pageId(args);
     if (!id) throw new BrowserRuntimeError('browser_no_page', 'page_id 가 필요합니다 — BrowserTabs list 로 폼이 열린 공유 탭의 page_id 를 확인하세요.');
-    const results = await runSteps(wid, id, context?.interactionId, steps, context?.signal);
+    const originalPage = this.runtime.get(id);
+    if (this.stepping.has(wid)) throw new BrowserRuntimeError('browser_denied', '이 브라우저의 이전 단계 결과를 기다린 뒤 다음 단계를 호출하세요.');
+    this.stepping.add(wid);
+    let results;
+    try {
+      results = await runSteps(wid, id, context?.interactionId, steps, context?.signal, context?.deadlineAt);
+    } finally {
+      this.stepping.delete(wid);
+    }
     // 요청 전체는 모든 줄이 done 일 때만 마친 것이다 — 한 줄이라도 못 했으면 LLM 이 마저 해야 한다.
-    return result(this.runtime.get(id) ?? null, { complete: results.every((r) => r.status === 'done'), results });
+    const page = this.runtime.get(id);
+    return result(page ?? originalPage ?? null, { complete: results.every((r) => r.status === 'done'), results,
+      recovery: 'done 줄은 반복하지 마세요. failed 줄은 일부 반영됐을 수 있으므로 현재 값을 먼저 읽고, failed·skipped의 남은 작업만 BrowserSnapshot과 BrowserInteract로 완료하세요.' });
   }
 
   private async formValues(

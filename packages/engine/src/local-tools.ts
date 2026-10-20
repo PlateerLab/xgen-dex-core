@@ -189,6 +189,8 @@ export interface LocalToolCallContext {
   originName?: string;
   /** 서버가 그 호출을 그만뒀다(시한 초과·사용자 [정지]) — 하던 일을 멈춘다. */
   signal?: AbortSignal;
+  /** Local watchdog deadline; multi-step tools return partial results before it. */
+  deadlineAt?: number;
 }
 
 /** 다른 화면에서 온 요청으로 이 PC 의 폴더를 조작했다 — 앱이 사용자에게 보여 준다. */

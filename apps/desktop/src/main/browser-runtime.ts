@@ -1,5 +1,6 @@
 import { app, BrowserWindow, WebContentsView, session, webContents, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   BrowserConnectionEvent,
   BrowserCreateRequest,
@@ -119,6 +120,25 @@ export class BrowserRuntimeError extends Error {
 }
 
 export class BrowserRuntime {
+  private pageScope = new AsyncLocalStorage<{ pageId: string; signal: AbortSignal }>();
+
+  /** A fill may touch its form and its popups, never a different visible tab. */
+  withPageScope<T>(pageId: string, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+    return this.pageScope.run({ pageId, signal }, run);
+  }
+
+  private assertPageScope(pageId?: string): void {
+    const scope = this.pageScope.getStore();
+    if (!scope) return;
+    if (scope.signal.aborted) throw new BrowserRuntimeError('browser_denied', '폼 입력이 중단되었습니다.');
+    let page = pageId ? this.pages.get(pageId)?.info : undefined;
+    for (let depth = 0; page && depth <= this.pages.size; depth++) {
+      if (page.pageId === scope.pageId && this.pages.has(scope.pageId)) return;
+      page = page.mode === 'popup' && page.openerPageId ? this.pages.get(page.openerPageId)?.info : undefined;
+    }
+    throw new BrowserRuntimeError('browser_denied', 'BrowserFill 대상 폼과 그 팝업만 조작할 수 있습니다.');
+  }
+
   private sessionPersistence = false;
   private actionApprovals = new Map<string, { id: string; pageId: string; expires: number; frameCount?: number; signal?: AbortSignal }>();
   private pendingActions = new Map<string, { pageId: string; action: BrowserCommitAction; offered: boolean }>();
@@ -1067,6 +1087,7 @@ export class BrowserRuntime {
     createBackground = true,
   ): Promise<BrowserPageRuntime> {
     this.requireEnabled();
+    this.assertPageScope(pageId);
     if (pageId) {
       const exact = this.pages.get(pageId);
       if (!exact || (workflowId && exact.info.workflowId !== workflowId)) {
@@ -1126,6 +1147,7 @@ export class BrowserRuntime {
     const contents = await this.requireConnectedContents(runtime);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      this.assertPageScope(pageId);
       return await Promise.race([
         contents.mainFrame.executeJavaScript(code) as Promise<T>,
         new Promise<never>((_, reject) => {
@@ -1197,6 +1219,7 @@ export class BrowserRuntime {
     };
     const send = (method: string, params?: Record<string, unknown>) => contents.debugger.sendCommand(method, params);
     const execute = async () => {
+      this.assertPageScope(runtime.info.pageId);
       if (command[0] !== 'snapshot' && generation !== undefined && generation !== runtime.info.generation)
         throw new BrowserRuntimeError('browser_stale_ref', '페이지가 변경되어 snapshot ref가 만료되었습니다.');
       const proxy = runtime.proxy!;

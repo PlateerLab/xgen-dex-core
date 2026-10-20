@@ -35,7 +35,12 @@ const lastServerReply = new Map<string, string>();
 
 /** 서버 턴이 끝났다 — 그 답을 기억한다(index.ts 가 서버 스트림을 다 받은 뒤 부른다). */
 export function rememberServerReply(interactionId: string | undefined, reply: string): void {
-  if (interactionId && reply.trim()) lastServerReply.set(interactionId, reply.trim());
+  if (interactionId && reply.trim()) lastServerReply.set(interactionId, reply.trim().slice(-2_000));
+}
+
+/** Voice must check a preceding server reply through the same chat routing gate. */
+export function voiceNeedsChatContext(interactionId?: string): boolean {
+  return !interactionId || lastServerReply.has(interactionId);
 }
 
 /** 렌더러가 붙인 봉투(브라우저·Teams 컨텍스트)를 떼고 사용자 원문만 남긴다. */

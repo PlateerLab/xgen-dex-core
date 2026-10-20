@@ -1037,6 +1037,7 @@ export const Chat: React.FC<{
   const { state: loopState, error: loopError } = useVoiceLoop({
     enabled: streamVoice && voiceLoopOn,
     workflowId: agent.workflowId,
+    interactionId: session.interactionId,
     isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
     onPartial: (t) => setInput(t),
     onWake: () => markCalled(true),

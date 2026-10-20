@@ -40,7 +40,7 @@ export type VoiceStreamDeps = {
   /** 호출어 목록 — null 이면 호출어로만 듣기가 꺼져 있다. */
   wakeWords: () => string[] | null;
   /** 중간 인식의 조작을 보류하고 최종 글자만 돌려준다(시험용 — 데스크톱은 말하는 도중 실행한다). */
-  planBeforeAct?: () => boolean;
+  planBeforeAct?: (interactionId?: string) => boolean;
 };
 
 export type VoiceStreamEvent =
@@ -134,10 +134,11 @@ class VoiceSession {
     /** 받아 적기만 한다(판단·조작 없음) — 시험 경로에서 STT 결과를 모을 때. */
     private sttOnly = false,
     private wake: WakeGate | null = null,
+    interactionId?: string,
   ) {
     this.woke = !wake || wake.awake;
-    this.deferActions = sttOnly || deps.planBeforeAct?.() === true;
-    this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }));
+    this.deferActions = sttOnly || deps.planBeforeAct?.(interactionId) === true;
+    this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }), interactionId);
     if (!this.deferActions && this.woke) this.agent.prefetch();
     this.seg = new Segmenter(
       this.agent,
@@ -372,14 +373,14 @@ export class VoiceStreamHub {
 
   constructor(private deps: () => VoiceStreamDeps | null) {}
 
-  async start(workflowId: string, emit: (e: VoiceStreamEvent) => void, carry = '', sttOnly = false): Promise<string> {
+  async start(workflowId: string, emit: (e: VoiceStreamEvent) => void, carry = '', sttOnly = false, interactionId?: string): Promise<string> {
     const deps = this.deps();
     if (!deps) throw new Error('XGEN 로그인이 필요합니다');
     const id = `${Date.now().toString(36)}-${++seq}`;
     const words = sttOnly ? null : deps.wakeWords();
     // 앞 말에서 이어진 말(carry 는 받은 말에서만 생긴다)과 호출어 직후의 말은 호출어 없이 받는다.
     const awake = !!carry.trim() || Date.now() < (this.wakeUntil.get(workflowId) ?? 0);
-    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null);
+    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null, interactionId);
     this.sessions.set(id, s);
     try { await s.open(); }
     catch (error) { s.close(); this.sessions.delete(id); throw error; }

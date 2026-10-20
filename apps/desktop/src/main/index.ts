@@ -163,7 +163,7 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
-import { rememberServerReply, tryFastAct } from './fast-act-chat';
+import { rememberServerReply, tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
@@ -2692,6 +2692,7 @@ configureFastAct({
 const voiceStreams = new VoiceStreamHub(() =>
   currentUserId()
     ? {
+        planBeforeAct: voiceNeedsChatContext,
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
@@ -2709,8 +2710,8 @@ const voiceStreamEmit =
     if (!sender.isDestroyed()) sender.send(CHANNELS.voiceStreamEvent, ev);
   };
 ipcMain.handle(CHANNELS.voiceStreamAvailable, () => voiceStreamAvailable());
-ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string) =>
-  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? ''),
+ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string) =>
+  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId),
 );
 ipcMain.on(CHANNELS.voiceStreamAudio, (_e, sessionId: string, pcm: Uint8Array) => voiceStreams.audio(sessionId, pcm));
 ipcMain.handle(CHANNELS.voiceStreamEnd, (_e, sessionId: string) => voiceStreams.end(sessionId));

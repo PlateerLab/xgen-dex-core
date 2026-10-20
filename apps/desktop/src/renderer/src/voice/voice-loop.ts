@@ -49,6 +49,7 @@ export function useVoiceStreamAvailable(): boolean {
 export function useVoiceLoop(opts: {
   enabled: boolean;
   workflowId?: string;
+  interactionId?: string;
   isPaused?: () => boolean;
   onPartial?: (text: string) => void;
   /** 호출어로만 듣기에서 지금 말에 호출어를 들었다. */
@@ -118,7 +119,7 @@ export function useVoiceLoop(opts: {
       belowSince = 0;
       set('hearing');
       void xgen.voiceStream
-        .start(workflowId, carryText)
+        .start(workflowId, carryText, cb.current.interactionId)
         .then((id) => {
           starting = false;
           if (!alive) return void xgen.voiceStream.cancel(id);
@@ -220,7 +221,7 @@ export function useVoiceLoop(opts: {
       setState('idle');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts.enabled, opts.workflowId]);
+  }, [opts.enabled, opts.workflowId, opts.interactionId]);
 
   return { state, error };
 }

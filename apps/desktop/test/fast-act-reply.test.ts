@@ -112,6 +112,45 @@ test('판단 중 오류가 나도 final 은 끝나고 그 말은 서버로 넘�
   assert.equal(seg.unhandled, '블로그 탭 눌러줘 그리고 첫 글');
 });
 
+test('확인하지 못한 조작과 남은 요청은 버리지 않고 서버로 넘긴다', async () => {
+  let calls = 0;
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: 0, conf: 1 }),
+    readiness: async (texts) => texts.map(() => ({ ready: 'multi', p: 1 })),
+    handle: async () => {
+      calls++;
+      return { acted: true, kind: 'type', target: '제목', ms: 0, effect: 'none' };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  const text = '제목 입력하고 배송도 선택해줘';
+  await seg.final(text);
+  assert.equal(seg.unhandled, text);
+  assert.equal(calls, 1);
+});
+
+test('음성 중간 조작 실패 뒤 최종 인식도 끝나고 뒷말까지 서버로 넘긴다', async () => {
+  let calls = 0;
+  let failed!: () => void;
+  const failure = new Promise<void>((resolve) => { failed = resolve; });
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: 0, conf: 1 }),
+    readiness: async (texts) => texts.map(() => ({ ready: 'act_now', p: 1 })),
+    handle: async () => {
+      calls++;
+      return { acted: true, kind: 'type', target: '제목', ms: 0, effect: 'none' };
+    },
+  };
+  const seg = new Segmenter(agent, (event) => { if (event.type === 'decide') failed(); });
+  seg.partial('제목 입력해줘');
+  await failure;
+  await seg.final('제목 입력해줘 그리고 배송도 선택해줘');
+  assert.equal(seg.unhandled, '제목 입력해줘 그리고 배송도 선택해줘');
+  assert.equal(calls, 1);
+});
+
 test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 분명하면 누르고, 아니면 서버로 넘기지 않는다', async () => {
   const run = async (tailPick: { target: string; conf: number } | null) => {
     const handled: string[] = [];

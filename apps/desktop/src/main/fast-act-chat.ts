@@ -77,10 +77,10 @@ function finishLocal(
     emit({ kind: 'end' });
     return true;
   }
-  // 이미 한 조작은 "지금 화면 상태" 로만 알린다 — "다시 하지 마라" 식 지시를 붙이면 LLM 이 그 말을 답에
-  // 옮긴다("앞서 실행했다고 하신 동작은 다시 실행하지 않았습니다").
-  const already = actions.map((a) => a.display).join(', ');
-  const rest = `${unhandled}\n\n(현재 화면: 방금 빠른 조작으로 ${already} 을(를) 눌러 둔 상태)`;
+  // 실패한 시도도 기록해, 서버가 이미 반영된 업로드나 토글을 반복하지 않게 한다.
+  const rest = `${unhandled}\n\n(빠른 조작 기록: ${replyFor(actions, true)}\n` +
+    '위 기록에는 완료되지 않은 시도도 있습니다. 현재 화면 값을 확인하고 남은 요청을 브라우저 도구로 마저 수행하세요. ' +
+    '이미 반영된 입력·업로드·선택은 반복하지 마세요.)';
   if (typeof req.input === 'string' && req.input.includes(text)) req.input = req.input.replace(text, rest);
   else req.input = rest;
   diag(SCOPE, '남은 말 서버로', { unhandled, acted: actions.length, voice });
@@ -113,7 +113,11 @@ export async function tryFastAct(
   const reply = lastServerReply.get(req.interactionId);
   lastServerReply.delete(req.interactionId);
   if (reply) {
-    const p = await askedProbability(decisionPost()!, reply).catch(() => 0);
+    const p = await askedProbability(decisionPost()!, reply).catch(() => null);
+    if (p === null || !Number.isFinite(p)) {
+      diag(SCOPE, 'reply-check failed: to server');
+      return false;
+    }
     // 칸 이름은 물었을 때만 본다 — 숨은 탭이면 꺼내야 해서.
     const named = p >= ASKED_MIN ? await inner.namesField(text) : null;
     diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3), named });

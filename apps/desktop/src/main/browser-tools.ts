@@ -253,7 +253,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
         'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
-        'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
+        'Returns complete (true only when every step is done — a step is done only when the value was read back on the page) and per-step status: done / failed / skipped (with the reason). Unless complete, the request is not finished — finish the failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
         'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
         'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」 ("상품상세 내용에 「…」 입력해줘"), ' +
         'using real line breaks between paragraphs (not the two characters \\ and n) — it replaces the editor content and each line becomes a paragraph. ' +
@@ -680,7 +680,8 @@ export class BrowserToolProvider {
     const id = pageId(args);
     if (!id) throw new BrowserRuntimeError('browser_no_page', 'page_id 가 필요합니다 — BrowserTabs list 로 폼이 열린 공유 탭의 page_id 를 확인하세요.');
     const results = await runSteps(wid, id, context?.interactionId, steps, context?.signal);
-    return result(this.runtime.get(id) ?? null, results);
+    // 요청 전체는 모든 줄이 done 일 때만 마친 것이다 — 한 줄이라도 못 했으면 LLM 이 마저 해야 한다.
+    return result(this.runtime.get(id) ?? null, { complete: results.every((r) => r.status === 'done'), results });
   }
 
   private async formValues(

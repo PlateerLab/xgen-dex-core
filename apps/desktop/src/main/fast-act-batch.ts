@@ -62,7 +62,7 @@ export async function runSteps(
     );
     const acted = agent.actions.slice(before);
     const ok = last.acted && last.effect !== 'none';
-    const note = acted.length ? replyFor(acted) : last.acted ? '했지만 화면이 바뀌지 않음' : last.reason;
+    const note = acted.length ? replyFor(acted, true) : last.acted ? '했지만 화면이 바뀌지 않음' : last.reason;
     out.push({ step, status: ok ? 'done' : 'failed', note, ms: Math.round(now() - t) });
     diag(SCOPE, 'batch-step', out.at(-1));
   }

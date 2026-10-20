@@ -545,6 +545,22 @@ export function withoutLabel(text: string, label?: string): string {
     .reduce((said, word) => said.replace(word, ' '), text);
 }
 
+/** Keep the same field context for the form runner and individual decider steps. */
+export function labelSnapshot(refs: ElementRefs, snapshotText: string, fields: FieldLabel[] = []) {
+  const order = refOrder(snapshotText);
+  const raw = editableAsTextbox(inDocOrder(refs, order), snapshotText);
+  const named = labelFields(raw, order, fields);
+  const boxes = labelClickables(named.refs, snapshotText);
+  const choices = labelChoices(boxes.refs, snapshotText);
+  const terms = labelSearchTerms(choices.refs, snapshotText);
+  const toggles = labelToggles(terms.refs, snapshotText);
+  return {
+    refs: toggles.refs,
+    labels: { ...named.labels, ...boxes.labels, ...choices.labels, ...terms.labels, ...toggles.labels },
+    open: toggles.open,
+  };
+}
+
 /**
  * 칸 이름 바로 뒤의 조사 '의' 를 '에' 로 — '의' 는 [에] 로 소리 나 받아쓰기가 "상품상세 내용에" 를 "상품 상세 내용의" 로
  * 적는다. 그러면 결정 모델은 칸 이름부터 넣을 글자까지를 한 명사구로 읽어 끝 어절을 뺐다(10/16 BO 상품상세: "…테스트

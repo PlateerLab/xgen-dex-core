@@ -19,6 +19,7 @@ import {
   checkStates,
   labelClickables,
   labelFields,
+  labelSnapshot,
   locativeAfterLabel,
   refOrder,
   withoutLabel,
@@ -62,6 +63,15 @@ test('요소 번호 순서는 스냅샷 글 순서 그대로, 중복 없이', ()
   assert.deepEqual(refOrder(SNAPSHOT), ['e3', 'e4', 'e1', 'e5', 'e2', 'e6', 'e8', 'e7']);
   assert.deepEqual(refOrder('- link "a" [ref=e2]\n- link "a" [ref=e2]\n- ref=e10x'), ['e2']);
   assert.deepEqual(refOrder(''), []);
+});
+
+test('shared snapshot enrichment preserves field labels and document order for both decider paths', () => {
+  const got = labelSnapshot(REFS, SNAPSHOT, PAGE);
+  assert.equal(got.refs.e3.name, '상품명');
+  assert.equal(got.refs.e1.name, '모델명');
+  assert.equal(got.labels.e1, '모델명');
+  assert.deepEqual(Object.keys(got.refs), refOrder(SNAPSHOT));
+  assert.equal(REFS.e1.name, '', 'the raw snapshot remains unchanged');
 });
 
 test('빈 이름은 칸 이름으로, 안내문·값 이름은 칸 이름을 앞에 붙인다 — 같은 이름끼리 문서 순서로', () => {

@@ -40,25 +40,19 @@ import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from '
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
 import {
   FIELD_LABEL_SCRIPT,
-  editableAsTextbox,
   checkOf,
   itemOf,
-  labelClickables,
-  labelFields,
+  labelSnapshot,
   locativeAfterLabel,
-  inDocOrder,
-  labelChoices,
-  labelSearchTerms,
-  labelToggles,
   nearNames,
   rowsNamed,
   valueToPick,
   choiceMissed,
   disabledOf,
   checkStates,
-  refOrder,
   withoutLabel,
   withoutLeadingLabel,
+  NAME_ICON_BUTTONS_SCRIPT,
   type FieldLabel,
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
@@ -394,30 +388,22 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const view = runtime.pageScript<number[]>(this.workflowId, page.pageId, '[innerWidth, innerHeight]', PAGE_SCRIPT_MS).catch(() => null);
     // 숨은 파일 칸 — 스냅샷에 없어서 따로 읽어 화면 줄로 넣는다(fast-act-upload).
     const fileFields = runtime.pageScript<FileField[]>(this.workflowId, page.pageId, FILE_FIELDS_SCRIPT, PAGE_SCRIPT_MS).catch(() => []);
+    // 이름 없는 아이콘 버튼(햄버거 등)에 속성으로 이름을 단 뒤 스냅샷을 찍는다.
     const p = runtime
-      .runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000)
+      .pageScript<number>(this.workflowId, page.pageId, NAME_ICON_BUTTONS_SCRIPT, PAGE_SCRIPT_MS)
+      .catch(() => 0)
+      .then(() => runtime.runAgentCommand(this.workflowId, page.pageId, ['snapshot', '-i'], 10_000))
       .then(async (run): Promise<Snap> => {
         const data = (run.result as { data?: { refs?: ElementRefs; snapshot?: string } } | undefined)?.data;
-        const order = refOrder(data?.snapshot ?? '');
-        const raw = editableAsTextbox(inDocOrder((data?.refs ?? {}) as ElementRefs, order), data?.snapshot ?? '');
         const found = await fields;
-        const named = Array.isArray(found) ? labelFields(raw, order, found) : { refs: raw, labels: {} };
-        // 이름 없는 누름 영역(검색 팝업을 여는 상자 등)은 바로 앞 제목으로.
-        const boxes = labelClickables(named.refs, data?.snapshot ?? '');
-        // 제목 아래 선택지는 제목을 이름 앞에.
-        const choices = labelChoices(boxes.refs, data?.snapshot ?? '');
-        // 검색 기준 상자 뒤의 이름 없는 입력칸은 "기준 검색어".
-        const terms = labelSearchTerms(choices.refs, data?.snapshot ?? '');
-        // 이름 없는 접기·펼치기 버튼은 "제목 펼치기/접기".
-        const toggles = labelToggles(terms.refs, data?.snapshot ?? '');
-        const labels = { ...named.labels, ...boxes.labels, ...choices.labels, ...terms.labels, ...toggles.labels };
+        const named = labelSnapshot(data?.refs ?? {}, data?.snapshot ?? '', Array.isArray(found) ? found : []);
         const checks = checkOf(data?.snapshot ?? '');
         const items = itemOf(data?.snapshot ?? '');
         const disabled = disabledOf(data?.snapshot ?? '');
         const states = checkStates(data?.snapshot ?? '');
         // 열린 목록만 보이는 화면(listLayer)에는 붙이지 않는다 — 붙이면 목록 화면으로 보지 못해 항목을 고르지도(chooseAfterOpen),
         // 다음 지시 전에 닫지도 못했다(10/19 BO: 연 채 남은 배송가능지역 목록 → "출고소요일 2일로 해줘" 가 서버로).
-        const withFiles = listLayer(toggles.refs) ? { refs: toggles.refs, files: {} } : withFileFields(toggles.refs, (await fileFields) ?? []);
+        const withFiles = listLayer(named.refs) ? { refs: named.refs, files: {} } : withFileFields(named.refs, (await fileFields) ?? []);
         return {
           at: now(),
           pageId: page.pageId,
@@ -425,13 +411,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
           refs: withFiles.refs,
           gen: run.page.generation,
           ms: now() - t,
-          labels,
+          labels: named.labels,
           checks,
           items,
           disabled,
           states,
           files: withFiles.files,
-          open: toggles.open,
+          open: named.open,
           hidden: ((await view) ?? [SMALL_VIEW]).some((n) => n < SMALL_VIEW),
         };
       });

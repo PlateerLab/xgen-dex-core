@@ -1,6 +1,6 @@
 /** Shared browser contracts used by the main process, preload and renderer. */
 
-export type BrowserPageMode = 'shared' | 'background' | 'popup';
+export type BrowserPageMode = 'shared' | 'background';
 
 export type BrowserLoadingState = 'idle' | 'loading' | 'error';
 
@@ -80,8 +80,6 @@ export interface BrowserPageInfo {
   partition: string;
   /** Changes when navigation/process replacement invalidates snapshot refs. */
   generation: number;
-  /** Original parent page of a popup tab. */
-  openerPageId?: string;
 }
 
 export interface BrowserState {
@@ -140,7 +138,7 @@ export interface BrowserConnectionEvent {
 export interface BrowserCreateRequest {
   workflowId: string;
   workflowName?: string;
-  mode?: 'shared' | 'background';
+  mode?: BrowserPageMode;
   url?: string;
 }
 

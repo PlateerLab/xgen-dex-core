@@ -4,9 +4,6 @@ import { dirname } from 'node:path';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { browserPathWithinRoots } from './browser-security';
 import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
-import { allowsDeciderAction, type DecisionPost } from './fast-act';
-import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
-import { diag } from './diag-log';
 import { fastActConfigured } from './fast-act-runner';
 import type {
   LocalToolCallContext,
@@ -46,14 +43,13 @@ const commonPageProperties = {
   },
 };
 
-export function browserToolSchemas(steps = false): LocalToolSchema[] {
+export function browserToolSchemas(): LocalToolSchema[] {
   return [
     {
       name: BROWSER_TABS_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
-        'Site popups appear in list as mode popup with their own page_id; target that page_id to interact with them. ' +
         'A missing page_id on other browser tools uses the workflow default background page.',
       inputSchema: {
         type: 'object',
@@ -112,7 +108,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       name: BROWSER_INTERACT_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse.',
       inputSchema: {
         type: 'object',
@@ -121,7 +116,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           action: {
             type: 'string',
             enum: [
-              ...(steps ? ['step'] : []),
               'click',
               'double_click',
               'fill',
@@ -149,7 +143,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           y: { type: 'number' },
           button: { type: 'string' },
           operation: { type: 'string', description: 'mouse: move/down/up/wheel.' },
-          ...(steps ? browserStepProperties : {}),
         },
         required: ['action'],
       },
@@ -383,8 +376,6 @@ export class BrowserToolProvider {
   private enabled = false;
   private fileRoots: BrowserFileRoots = () => [];
   private revealSharedPage: (page: BrowserPageInfo) => void = () => {};
-  private stepPost: () => DecisionPost | null = () => null;
-  private stepping = new Set<string>();
 
   constructor(private runtime: BrowserRuntime) {}
 
@@ -397,12 +388,10 @@ export class BrowserToolProvider {
     enabled: boolean,
     fileRoots: BrowserFileRoots = () => [],
     revealSharedPage: (page: BrowserPageInfo) => void = () => {},
-    stepPost: () => DecisionPost | null = () => null,
   ): void {
     this.enabled = enabled;
     this.fileRoots = fileRoots;
     this.revealSharedPage = revealSharedPage;
-    this.stepPost = stepPost;
   }
 
   /** 그 대화에 연결된 폴더 — 빠른 조작이 올릴 파일을 찾을 때(fast-act-upload). */
@@ -412,8 +401,8 @@ export class BrowserToolProvider {
 
   advertise(): LocalToolSchema[] {
     if (!this.enabled) return [];
-    const schemas = browserToolSchemas(!!this.stepPost());
-    return fastActConfigured() ? schemas : schemas.filter((tool) => tool.name !== BROWSER_FILL_TOOL);
+    // BrowserFill 은 빠른 조작(설정 fastAct·판단 모델)이 켜졌을 때만 — 꺼져 있으면 LLM 이 불렀다가 '판단 모델을 쓸 수 없다' 만 받는다.
+    return fastActConfigured() ? browserToolSchemas() : browserToolSchemas().filter((t) => t.name !== BROWSER_FILL_TOOL);
   }
 
   owns(tool: string): boolean {
@@ -431,10 +420,7 @@ export class BrowserToolProvider {
     if (tool === BROWSER_TABS_TOOL) return this.tabs(args, context);
     if (tool === BROWSER_NAVIGATE_TOOL) return this.navigate(args, context);
     if (tool === BROWSER_SNAPSHOT_TOOL) return this.snapshot(args, context);
-    if (tool === BROWSER_INTERACT_TOOL) {
-      if (args.action === 'step') return this.step(args, context);
-      return this.interact(args, context);
-    }
+    if (tool === BROWSER_INTERACT_TOOL) return this.interact(args, context);
     if (tool === BROWSER_CAPTURE_TOOL) return this.capture(args, context);
     if (tool === BROWSER_ADVANCED_TOOL) return this.advanced(args, context);
     if (tool === BROWSER_FILL_TOOL) return this.fill(args, context);
@@ -562,25 +548,6 @@ export class BrowserToolProvider {
       generation,
     );
     return result(run.page, run.result);
-  }
-
-  private async step(args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {
-    const wid = workflow(args, context);
-    const post = this.stepPost();
-    if (!post) throw new BrowserRuntimeError('browser_disabled', '단계 실행에 사용할 decider가 없습니다. 단계별 브라우저 조작 설정과 판단 API를 확인하세요.');
-    if (this.stepping.has(wid)) throw new BrowserRuntimeError('browser_denied', '이 브라우저의 이전 단계 결과를 기다린 뒤 다음 단계를 호출하세요.');
-    this.stepping.add(wid);
-    try {
-      if (context?.signal?.aborted) throw new Error('Browser step cancelled.');
-      const state = this.runtime.state();
-      const id = pageId(args) ?? state.activeByWorkflow[wid];
-      const page = await this.runtime.resolvePage(wid, id, false);
-      const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal);
-      diag('browser-step', 'result', { operation: args.operation, status: done.result.status, mutation_attempted: done.result.mutation_attempted });
-      return result(done.page, done.result);
-    } finally {
-      this.stepping.delete(wid);
-    }
   }
 
   private scopedPath(raw: unknown, context?: LocalToolCallContext): string {

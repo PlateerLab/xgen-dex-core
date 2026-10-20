@@ -46,8 +46,10 @@ function fakeContents(debuggerApi: FakeDebugger): WebContents {
 test('debugger detach keeps the page CDP port and reattaches in place', async () => {
   const debuggerApi = new FakeDebugger();
   const detachReasons: string[] = [];
-  const proxy = new CdpPageProxy('stable-page', fakeContents(debuggerApi), (reason) =>
-    detachReasons.push(reason),
+  const proxy = new CdpPageProxy(
+    'stable-page',
+    fakeContents(debuggerApi),
+    (reason) => detachReasons.push(reason),
   );
   try {
     const port = await proxy.start();
@@ -69,19 +71,4 @@ test('debugger detach keeps the page CDP port and reattaches in place', async ()
   } finally {
     await proxy.stop();
   }
-});
-
-test('stopping after WebContents destruction still closes the CDP port', async () => {
-  const contents = fakeContents(new FakeDebugger());
-  const proxy = new CdpPageProxy('closed-popup', contents, () => {});
-  const port = await proxy.start();
-  Object.defineProperty(contents, 'debugger', {
-    get() {
-      throw new Error('Object has been destroyed');
-    },
-  });
-  await proxy.stop();
-  assert.equal(proxy.port, 0);
-  await assert.rejects(() => fetch(`http://127.0.0.1:${port}/json/version`));
-  await proxy.stop();
 });

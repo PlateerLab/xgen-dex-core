@@ -10795,8 +10795,3 @@ button.sm {
   font-weight: 700;
   color: var(--text);
 }
-
-/* Audio options share field-row spacing without internal separators. */
-.field-row.audio-option-row { border-top: none; }
-.audio-runtime-row, .audio-runtime-actions { flex-wrap: wrap; }
-.audio-runtime-actions { margin-left: auto; justify-content: flex-end; }

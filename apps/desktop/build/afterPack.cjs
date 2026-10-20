@@ -118,16 +118,6 @@ exit $STATUS
 }
 
 module.exports = async function afterPack(context) {
-  if (context.electronPlatformName === 'darwin' && process.env.DEX_BUNDLE_AUDIO === '1') {
-    if (context.arch !== 3) throw new Error('Bundled audio currently supports macOS ARM64 only.');
-    const appName = context.packager.appInfo.productFilename;
-    const resources = path.join(context.appOutDir, `${appName}.app`, 'Contents', 'Resources');
-    execFileSync(process.env.DEX_BUILD_PYTHON || 'python3.11', [
-      path.join(__dirname, 'prepare-audio-runtime.py'),
-      '--source', process.env.DEX_AUDIO_SOURCE || path.resolve(__dirname, '../../../../xgen-audio-preprecessing'),
-      '--output', path.join(resources, 'audio-preprocessing'),
-    ], { stdio: 'inherit' });
-  }
   pruneAgentBrowser(context);
   if (context.electronPlatformName === 'linux') {
     wrapLinuxExecutable(context);

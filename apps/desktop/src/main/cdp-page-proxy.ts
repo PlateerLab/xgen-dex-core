@@ -134,7 +134,9 @@ export class CdpPageProxy {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     const detail = lastError instanceof Error ? lastError.message : this.lastDetachReason;
-    throw new Error(`Electron debugger 재연결 실패${detail ? `: ${detail}` : ''}`);
+    throw new Error(
+      `Electron debugger 재연결 실패${detail ? `: ${detail}` : ''}`,
+    );
   }
 
   private scheduleDebuggerReattach(): void {
@@ -263,16 +265,16 @@ export class CdpPageProxy {
     this.stopping = true;
     if (this.reattachTimer) clearTimeout(this.reattachTimer);
     this.reattachTimer = null;
+    if (this.debuggerListenersInstalled) {
+      this.contents.debugger.removeListener('message', this.forwardEvent);
+      this.contents.debugger.removeListener('detach', this.detached);
+      this.debuggerListenersInstalled = false;
+    }
     try {
-      if (this.debuggerListenersInstalled) {
-        this.contents.debugger.removeListener('message', this.forwardEvent);
-        this.contents.debugger.removeListener('detach', this.detached);
-      }
       if (this.contents.debugger.isAttached()) this.contents.debugger.detach();
     } catch {
       /* page already destroyed */
     }
-    this.debuggerListenersInstalled = false;
     // terminate (not graceful close): agent-browser keeps the external-CDP
     // socket open between commands, and a close handshake can otherwise hold
     // app shutdown until the TCP timeout.

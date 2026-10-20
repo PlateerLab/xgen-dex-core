@@ -140,11 +140,8 @@ import {
   onMcpRuntimeLog,
   setMcpRuntimeLogEnabled,
 } from '@dex/engine/mcp-runtime-log';
-import {
-  buildSsoUrl,
-  parseSsoLoginResponse,
-  shouldAllowPrivateCertificate,
-} from '@dex/engine/connection-security';
+import { shouldAllowPrivateCertificate } from '@dex/engine/connection-security';
+import { buildSsoUrl, parseSsoLoginResponse } from '@dex/engine/connection-sso';
 import { createSsoWindowOptions } from './sso-window-options';
 import { getBrowserRuntime } from './browser-runtime';
 import {

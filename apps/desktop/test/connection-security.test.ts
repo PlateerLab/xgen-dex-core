@@ -8,11 +8,10 @@ import { X509Certificate } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  buildSsoUrl,
-  parseSsoLoginResponse,
   shouldAllowPrivateCertificate,
   xgenWebSocketTlsOptions,
 } from '@dex/engine/connection-security';
+import { buildSsoUrl, parseSsoLoginResponse } from '@dex/engine/connection-sso';
 import { MCPManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import type { McpServerConfig } from '@dex/engine';
 import { bindHost, memoryPorts } from '@dex/engine';

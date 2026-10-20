@@ -145,7 +145,7 @@ export async function executeBrowserStep(
   const pagesBefore = new Set(runtime.state().pages.map((p) => p.pageId));
   let attempted = false;
   let executionError: string | undefined;
-  let observation: Snapshot | null = null;
+  let observation = null as Snapshot | null; // snapshot() 이 채운다 — as 로 써야 null 로 좁혀지지 않는다
   const cancelled = (): void => {
     if (signal?.aborted) throw new Error('Browser step cancelled.');
   };
@@ -153,8 +153,9 @@ export async function executeBrowserStep(
     cancelled();
     return runtime.runAgentCommand(p.workflowId, p.pageId, command, 5_000, generation);
   };
+  // 요소만(-i) 읽는다 — 판단 모델 후보도, LLM 에 돌려주는 observation 도 빠른 조작·BrowserSnapshot 과 같은 화면이다.
   const snapshot = async (p: BrowserPageInfo): Promise<Snapshot> => {
-    const got = await run(p, ['snapshot']);
+    const got = await run(p, ['snapshot', '-i']);
     const refs = (dataValue(got.result, 'refs') ?? {}) as ElementRefs;
     return (observation = {
       page: got.page,
@@ -251,7 +252,9 @@ export async function executeBrowserStep(
         } else if (check.kind === 'text') {
           actual = dataValue((await run(after.page, ['get', 'text', 'body'])).result, 'text');
           passed = typeof actual === 'string' && actual.includes(check.value!);
-          if (typeof actual === 'string') actual = actual.slice(0, 12_000);
+          // 찾았으면 찾은 글만 — 통과해도 페이지 글 전체(최대 12,000자)를 LLM 에 돌려주고 있었다.
+          if (passed) actual = check.value;
+          else if (typeof actual === 'string') actual = actual.slice(0, 2_000);
         } else {
           const chosen = await pick(
             after,
@@ -278,7 +281,7 @@ export async function executeBrowserStep(
             status: 'completed',
             mutation_attempted: attempted,
             checks,
-            observation: after,
+            observation: after.snapshot, // LLM 에는 스냅샷 글만 — page 는 결과 머리에, refs 는 글의 [ref=eN] 를 다시 적은 것이다
             ...(executionError ? { execution_error: executionError } : {}),
             next: 'Plan the next step from this observation, or report the verified final result.',
           },
@@ -292,7 +295,7 @@ export async function executeBrowserStep(
         status: 'needs_replan',
         mutation_attempted: attempted,
         checks,
-        observation,
+        observation: observation?.snapshot,
         ...(executionError ? { execution_error: executionError } : {}),
         next: 'Inspect the observation and revise the remaining plan. Do not repeat the mutation automatically.',
       },
@@ -312,7 +315,7 @@ export async function executeBrowserStep(
         status: signal?.aborted || !attempted ? 'blocked' : 'needs_replan',
         mutation_attempted: attempted,
         error: error instanceof Error ? error.message : String(error),
-        observation,
+        observation: observation?.snapshot,
         next: 'Observe the actual page state before retrying. No mutation was replayed.',
       },
     };

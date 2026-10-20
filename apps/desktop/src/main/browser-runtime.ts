@@ -29,6 +29,8 @@ import { CdpPageProxy } from './cdp-page-proxy';
 import { allowedBrowserUrl, browserPartition } from './browser-security';
 import type { BrowserHistoryRuntimeEvent } from './browser-history';
 import { BrowserSessionStore } from './browser-session';
+import { runFrameCommand, snapshotFrames } from './browser-frames';
+import { diag } from './diag-log';
 
 interface BrowserPageRuntime {
   info: BrowserPageInfo;
@@ -37,6 +39,8 @@ interface BrowserPageRuntime {
   proxy: CdpPageProxy | null;
   automationReset: Promise<void> | null;
   view?: WebContentsView;
+  /** 마지막 스냅샷이 iframe 요소에 매긴 번호 → DOM 노드(browser-frames). */
+  frameRefs?: Map<string, number>;
 }
 
 interface PendingBrowserConnection {
@@ -1136,6 +1140,18 @@ export class BrowserRuntime {
         },
       };
     };
+    const send = (method: string, params?: Record<string, unknown>) => contents.debugger.sendCommand(method, params);
+    const frameRef = command.find((arg) => /^@e\d+$/.test(arg))?.slice(1);
+    const frameNode = frameRef ? runtime.frameRefs?.get(frameRef) : undefined;
+    if (frameNode !== undefined) {
+      await runtime.proxy.start(); // debugger 를 붙인다(이미 붙었으면 그대로)
+      const result = await runFrameCommand(send, frameNode, command).catch((error) => {
+        throw new BrowserRuntimeError('browser_denied', `iframe 요소 조작 실패: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      if (result === null)
+        throw new BrowserRuntimeError('browser_denied', `iframe 안 요소에는 ${command[0]} 를 쓸 수 없습니다(click·fill·type·get value 만).`);
+      return { page: { ...runtime.info }, result };
+    }
     try {
       const result = await this.runner.run(
         runtime.info.pageId,
@@ -1147,6 +1163,7 @@ export class BrowserRuntime {
           this.emit();
         },
       );
+      if (command[0] === 'snapshot') await this.addFrameElements(runtime, send, result);
       return closedPopupResult() ?? { page: { ...runtime.info }, result };
     } catch (error) {
       // window.close() can cancel the CLI before its successful click response exits.
@@ -1166,6 +1183,29 @@ export class BrowserRuntime {
         throw new BrowserRuntimeError('browser_no_page', message);
       }
       throw new BrowserRuntimeError('browser_denied', message);
+    }
+  }
+
+  /** 스냅샷 끝에 iframe 속 요소 줄을 붙인다 — 번호는 agent-browser 가 매긴 마지막 번호 다음부터. */
+  private async addFrameElements(
+    runtime: BrowserPageRuntime,
+    send: (method: string, params?: Record<string, unknown>) => Promise<any>,
+    result: unknown,
+  ): Promise<void> {
+    runtime.frameRefs = new Map();
+    const data = (result as { data?: { refs?: Record<string, unknown>; snapshot?: string } } | undefined)?.data;
+    if (!data) return;
+    try {
+      const last = Math.max(0, ...Object.keys(data.refs ?? {}).map((k) => Number(k.slice(1)) || 0));
+      const frames = await snapshotFrames(send, last + 1);
+      if (!frames.lines.length) return;
+      // 요소가 없으면 agent-browser 는 "(no interactive elements)" 한 줄만 준다.
+      const text = (data.snapshot ?? '').trim();
+      data.snapshot = [...(text && !/^\(.*\)$/.test(text) ? [text] : []), ...frames.lines].join('\n');
+      data.refs = { ...data.refs, ...frames.refs };
+      runtime.frameRefs = frames.targets;
+    } catch (error) {
+      diag('browser-frames', 'snapshot-failed', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 

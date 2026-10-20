@@ -26,6 +26,7 @@ import {
   browserWaitCommand,
   browserToolSchemas,
   BROWSER_INTERACT_TOOL,
+  BROWSER_SNAPSHOT_TOOL,
 } from '../src/main/browser-tools';
 import {
   BROWSER_PARTITION_PREFIX,
@@ -707,4 +708,16 @@ test('BrowserFill and BrowserFormValues act on a shared tab only by explicit pag
   } finally {
     configureFastAct({ enabled: () => false, post });
   }
+});
+
+test('BrowserSnapshot gives the server LLM the snapshot text without the duplicate refs map', async () => {
+  const page = { pageId: 'p', workflowId: 'w' } as BrowserPageInfo;
+  const runtime = {
+    runAgentCommand: async () => ({ page, result: { success: true, data: { refs: { e1: { role: 'button', name: '저장' } }, snapshot: '- button "저장" [ref=e1]' } } }),
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true);
+  const output = JSON.stringify(await provider.callTool(BROWSER_SNAPSHOT_TOOL, {}, { workflowId: 'w' }));
+  assert.match(output, /\[ref=e1\]/);
+  assert.doesNotMatch(output, /refs/);
 });

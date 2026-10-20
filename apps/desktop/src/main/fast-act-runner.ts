@@ -97,7 +97,8 @@ export function decisionPost(): DecisionPost | null {
       .then(() => diag(SCOPE, 'warm-up ok'))
       .catch((err) => {
         warmed = null;
-        diag(SCOPE, 'warm-up failed', String(err));
+        // 서버가 준 이유(본문)도 남긴다 — 404 만으로는 경로가 없는지, 판단 모델이 없는지 알 수 없었다(10/20).
+        diag(SCOPE, 'warm-up failed', { error: String(err), body: (err as { body?: unknown }).body });
       });
   }
   return post;

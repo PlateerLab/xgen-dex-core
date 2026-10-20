@@ -542,6 +542,10 @@ export class BrowserToolProvider {
       command,
       timeout(args),
     );
+    // refs 는 스냅샷 글의 [ref=eN] 줄을 역할·이름과 함께 한 번 더 적은 것이다 — 서버 LLM 에는 글만 준다.
+    // 네이버 메일쓰기 화면 한 번에 15,000자 중 8,700자였고, 한 차례에 스냅샷이 여섯 번 쌓였다(10/20).
+    const data = (run.result as { data?: Record<string, unknown> } | undefined)?.data;
+    if (data && typeof data.snapshot === 'string') delete data.refs;
     return result(run.page, run.result);
   }
 

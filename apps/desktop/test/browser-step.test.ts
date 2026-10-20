@@ -281,6 +281,10 @@ test('final verification never performs an action and checks actual text', async
   assert.equal(done.result.status, 'completed');
   assert.equal(done.result.mutation_attempted, false);
   assert.ok(f.commands.every((c) => ['snapshot', 'get'].includes(c[0])));
+  // LLM 에 돌려주는 결과: 요소만 읽은 스냅샷 글, refs 없음, 통과한 글 검사는 찾은 글만.
+  assert.ok(f.commands.filter((c) => c[0] === 'snapshot').every((c) => c[1] === '-i'));
+  assert.equal(typeof done.result.observation, 'string');
+  assert.deepEqual((done.result.checks as Array<{ actual: unknown }>).map((c) => c.actual), ['플래티어']);
 });
 
 test('voice requests wait for the conversation planner without speculative browser actions', async () => {

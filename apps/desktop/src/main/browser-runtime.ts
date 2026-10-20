@@ -1,4 +1,4 @@
-import { BrowserWindow, session, webContents, type WebContents } from 'electron';
+import { app, BrowserWindow, WebContentsView, session, webContents, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type {
   BrowserConnectionEvent,
@@ -13,6 +13,7 @@ import type {
   BrowserSelectionCompleteRequest,
   BrowserSelectionInspectRequest,
   BrowserSelectionPreview,
+  BrowserSelectionRect,
   BrowserSelectionResult,
   BrowserSelectionSession,
   BrowserState,
@@ -25,19 +26,9 @@ import {
   inspectBrowserSelection,
 } from './browser-selection';
 import { CdpPageProxy } from './cdp-page-proxy';
-import {
-  BRIDGE_SCRIPT,
-  BRIDGE_TAG,
-  closedScript,
-  deliverScript,
-  openerScript,
-  parseBridgeFrameName,
-  parseBridgeMessage,
-  targetAllowed,
-  type BridgeMessage,
-} from './browser-popup-bridge';
 import { allowedBrowserUrl, browserPartition } from './browser-security';
 import type { BrowserHistoryRuntimeEvent } from './browser-history';
+import { BrowserSessionStore } from './browser-session';
 
 interface BrowserPageRuntime {
   info: BrowserPageInfo;
@@ -45,6 +36,7 @@ interface BrowserPageRuntime {
   window: BrowserWindow | null;
   proxy: CdpPageProxy | null;
   automationReset: Promise<void> | null;
+  view?: WebContentsView;
 }
 
 interface PendingBrowserConnection {
@@ -61,18 +53,6 @@ interface PendingBrowserPopup {
   openerGeneration: number;
   openerContentsId: number;
   timeoutTimer: ReturnType<typeof setTimeout>;
-  /** 연 페이지의 window.open 이 돌려받은 짝 창(browser-popup-bridge) — 열리면 잇는다. */
-  bridge: PopupBridge | null;
-}
-
-/** 브리지가 연 창 요청의 짝 번호와 원래 창 이름. */
-type PopupBridge = { id: string; name: string };
-
-/** 열린 짝 — 연 탭과 새 탭(browser-popup-bridge). */
-interface PopupLink {
-  openerPageId: string;
-  popupPageId: string;
-  name: string;
 }
 
 interface PendingBrowserSelection extends BrowserSelectionSession {
@@ -83,10 +63,9 @@ const POPUP_REQUEST_TTL_MS = 60_000;
 const MAX_PENDING_POPUPS = 12;
 const BROWSER_SELECTION_TTL_MS = 60_000;
 
-/** 사용자 대신 누르는 명령 — 직후의 새 창(target=_blank 링크 등)은 팝업 차단 없이 새 탭으로 연다. */
+/** 사용자 대신 누르는 명령 직후의 새 창은 팝업 차단 없이 연다. */
 const GESTURE_COMMANDS = new Set(['click', 'press', 'dblclick']);
 const AGENT_POPUP_WINDOW_MS = 3_000;
-/** 게스트 초점 확인을 기다리는 시간 — 넘기면 초점이 있는 것으로 친다(예전처럼 focus() 만). */
 const FOCUS_PROBE_MS = 500;
 /** 키보드 초점으로 전달되는 agent-browser 명령. */
 const KEYBOARD_COMMANDS = new Set(['fill', 'type', 'press', 'keyboard', 'keydown', 'keyup']);
@@ -134,6 +113,16 @@ export class BrowserRuntimeError extends Error {
 }
 
 export class BrowserRuntime {
+  private sessionPersistence = false;
+
+  constructor(private readonly sessionStore?: BrowserSessionStore) {}
+
+  suspendSessionPersistence(): void {
+    if (this.sessionPersistence && this.accountPartition)
+      this.sessionStore?.save(this.accountPartition, this.state());
+    this.sessionPersistence = false;
+  }
+
   private enabled = false;
   private accountPartition = '';
   private sharedNewTabUrl = 'about:blank';
@@ -156,14 +145,49 @@ export class BrowserRuntime {
   private popupPermissions = new Map<string, BrowserPopupPermission>();
   private sessionPopupPermissions = new Set<string>();
   private pendingPopups = new Map<string, PendingBrowserPopup>();
-  /** 짝 번호별 열린 짝 — window.opener·postMessage 를 이어 준다(browser-popup-bridge). */
-  private popupLinks = new Map<string, PopupLink>();
   /**
-   * 에이전트가 사용자 대신 누른 직후(페이지별 시각까지)의 새 창은 막지 않고 새 탭으로 연다 — 사용자가 시킨
+   * 에이전트가 사용자 대신 누른 직후(페이지별 시각까지)의 새 창은 막지 않고 연다 — 사용자가 시킨
    * 조작이다("블로그 들어가 봐" → 네이버 메뉴 링크는 새 창으로 열려 팝업 차단에 걸렸다, 10/5).
    */
   private agentGestureUntil = new Map<string, number>();
   private pendingSelections = new Map<string, PendingBrowserSelection>();
+  private popupHostWindow: BrowserWindow | null = null;
+
+  setPopupHostWindow(window: BrowserWindow): void {
+    this.popupHostWindow = window;
+    window.once('closed', () => {
+      if (this.popupHostWindow !== window) return;
+      this.popupHostWindow = null;
+      for (const page of this.pages.values()) {
+        if (page.view) void this.close(page.info.pageId);
+      }
+    });
+  }
+
+  updatePopupSurface(pageId: string, rect: BrowserSelectionRect | null): void {
+    const page = this.pages.get(pageId);
+    const host = this.popupHostWindow;
+    if (!page?.view || !host || host.isDestroyed()) return;
+    if (!rect || this.activeByWorkflow.get(page.info.workflowId) !== pageId) {
+      page.view.setVisible(false);
+      return;
+    }
+    if (
+      ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
+      rect.width < 0 ||
+      rect.height < 0
+    ) {
+      throw new BrowserRuntimeError('browser_denied', '올바른 브라우저 표시 영역이 필요합니다.');
+    }
+    const zoom = host.webContents.getZoomFactor();
+    const bounds = host.getContentBounds();
+    const x = Math.max(0, Math.min(bounds.width, Math.round(rect.x * zoom)));
+    const y = Math.max(0, Math.min(bounds.height, Math.round(rect.y * zoom)));
+    const width = Math.max(0, Math.min(bounds.width - x, Math.round(rect.width * zoom)));
+    const height = Math.max(0, Math.min(bounds.height - y, Math.round(rect.height * zoom)));
+    page.view.setBounds({ x, y, width, height });
+    page.view.setVisible(width > 0 && height > 0);
+  }
 
   setStateListener(listener: (state: BrowserState) => void): void {
     this.notify = listener;
@@ -211,10 +235,25 @@ export class BrowserRuntime {
       this.clearPendingPopups(false);
       void this.closeAll();
     }
+    const restoreSession = this.accountPartition !== partition || !this.sessionPersistence;
     this.enabled = true;
     this.accountPartition = partition;
     this.popupPermissions = this.normalizedPopupPermissions(options.popupPermissions?.[partition]);
     this.hardenPartition(partition);
+    if (restoreSession) {
+      const saved = this.sessionStore?.load(partition);
+      for (const info of saved?.pages ?? []) {
+        this.pages.set(info.pageId, {
+          info,
+          contents: null,
+          window: null,
+          proxy: null,
+          automationReset: null,
+        });
+      }
+      this.activeByWorkflow = new Map(Object.entries(saved?.activeByWorkflow ?? {}));
+    }
+    this.sessionPersistence = true;
     this.emit();
   }
 
@@ -249,7 +288,10 @@ export class BrowserRuntime {
   }
 
   private emit(): void {
-    this.notify(this.state());
+    const state = this.state();
+    if (this.sessionPersistence && this.accountPartition)
+      this.sessionStore?.save(this.accountPartition, state);
+    this.notify(state);
   }
 
   private requireEnabled(): void {
@@ -524,22 +566,7 @@ export class BrowserRuntime {
       runtime.info.generation += 1;
       updateLocation();
     };
-    // 연 창·새 창 사이 길(browser-popup-bridge) — 문서가 바뀔 때마다(앱 스크립트가 받아 오기 전) 다시 둔다.
-    const bridge = () => {
-      if (isCurrent()) this.injectPopupBridge(runtime, contents);
-    };
-    contents.on('did-navigate', () => {
-      navigated();
-      bridge();
-    });
-    contents.on('dom-ready', bridge);
-    contents.on('console-message', (details) => {
-      if (!isCurrent() || !details.message.startsWith(BRIDGE_TAG)) return;
-      if (details.frame?.frameTreeNodeId !== contents.mainFrame.frameTreeNodeId) return;
-      const message = parseBridgeMessage(details.message);
-      if (message) this.onPopupBridgeMessage(runtime, message);
-    });
-    if (browserOrigin(contents.getURL())) bridge();
+    contents.on('did-navigate', navigated);
     contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
       if (!isMainFrame) return;
       navigated();
@@ -572,26 +599,26 @@ export class BrowserRuntime {
       runtime.info.generation += 1;
       runtime.contents = null;
       void this.resetAutomation(runtime);
-      if (runtime.info.mode === 'background') void this.close(runtime.info.pageId);
+      if (runtime.info.mode !== 'shared') void this.close(runtime.info.pageId);
       else this.emit();
     });
     updateLocation();
     this.emit();
   }
 
-  /**
-   * Page-created windows never become native Electron children. A permitted
-   * request is replayed through create(), which gives it the normal sandbox,
-   * account partition, workflow ownership and renderer binding.
-   */
+  // Let Chromium keep the original WindowProxy/opener; replaying only the URL breaks selection dialogs.
   private installPopupHandler(runtime: BrowserPageRuntime, contents: WebContents): void {
-    contents.setWindowOpenHandler(({ url, postBody, frameName }) => {
-      const bridge = parseBridgeFrameName(frameName ?? '');
+    contents.setWindowOpenHandler(({ url, postBody, referrer }) => {
       const targetUrl = allowedBrowserUrl(url);
       const openerOrigin = browserOrigin(contents.getURL());
       const targetOrigin = browserOrigin(targetUrl);
       if (
-        runtime.info.mode !== 'shared' ||
+        !this.enabled ||
+        !this.popupHostWindow ||
+        this.popupHostWindow.isDestroyed() ||
+        this.pages.get(runtime.info.pageId) !== runtime ||
+        runtime.info.partition !== this.accountPartition ||
+        runtime.info.mode === 'background' ||
         runtime.contents?.id !== contents.id ||
         Boolean(postBody) ||
         !targetUrl ||
@@ -599,28 +626,92 @@ export class BrowserRuntime {
         !openerOrigin ||
         !targetOrigin
       ) {
-        if (bridge) this.closePopupPeer(runtime, bridge.id);
         return { action: 'deny' };
       }
 
       const byAgent = (this.agentGestureUntil.get(runtime.info.pageId) ?? 0) > Date.now();
       if (byAgent) this.agentGestureUntil.delete(runtime.info.pageId); // 누름 한 번에 새 창 하나
+      const permission = this.popupPermissions.get(openerOrigin);
       if (
-        byAgent ||
-        this.popupPermissions.get(openerOrigin) === 'allow' ||
-        this.sessionPopupPermissions.has(openerOrigin)
+        permission !== 'block' &&
+        (byAgent || permission === 'allow' || this.sessionPopupPermissions.has(openerOrigin))
       ) {
-        const generation = runtime.info.generation;
-        setImmediate(() => {
-          void this.openManagedPopup(runtime, targetUrl, generation, contents.id, bridge).catch(
-            () => bridge && this.closePopupPeer(runtime, bridge.id),
-          );
-        });
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            webPreferences: {
+              partition: runtime.info.partition,
+              sandbox: true,
+              contextIsolation: true,
+              nodeIntegration: false,
+              nodeIntegrationInSubFrames: false,
+              webSecurity: true,
+              allowRunningInsecureContent: false,
+              webviewTag: false,
+            },
+          },
+          createWindow: (options) => {
+            const view = new WebContentsView(options);
+            this.bindPopupView(runtime, view, targetUrl);
+            // Noopener links may arrive without an existing WebContents to adopt.
+            if (!('webContents' in options) || !options.webContents) {
+              void view.webContents
+                .loadURL(targetUrl, { httpReferrer: referrer })
+                .catch(() => undefined);
+            }
+            return view.webContents;
+          },
+        };
       } else {
-        this.queueBlockedPopup(runtime, contents, openerOrigin, targetOrigin, targetUrl, bridge);
+        this.queueBlockedPopup(runtime, contents, openerOrigin, targetOrigin, targetUrl);
       }
       return { action: 'deny' };
     });
+  }
+
+  private bindPopupView(runtime: BrowserPageRuntime, view: WebContentsView, url: string): void {
+    const host = this.popupHostWindow;
+    if (
+      !host ||
+      host.isDestroyed() ||
+      !this.enabled ||
+      this.pages.get(runtime.info.pageId) !== runtime ||
+      view.webContents.session !== runtime.contents?.session
+    ) {
+      view.webContents.close();
+      throw new BrowserRuntimeError('browser_stale_ref', '팝업을 요청한 페이지가 변경되었습니다.');
+    }
+    const pageId = randomUUID();
+    const popup: BrowserPageRuntime = {
+      info: {
+        ...runtime.info,
+        pageId,
+        mode: 'popup',
+        url,
+        title: '팝업',
+        loading: 'loading',
+        error: undefined,
+        canGoBack: false,
+        canGoForward: false,
+        generation: 0,
+        openerPageId: runtime.info.pageId,
+      },
+      contents: null,
+      window: null,
+      view,
+      proxy: null,
+      automationReset: null,
+    };
+    view.setVisible(false);
+    host.contentView.addChildView(view);
+    this.pages.set(pageId, popup);
+    this.bindContents(popup, view.webContents);
+    view.webContents.on('focus', () => {
+      if (this.pages.get(pageId) !== popup) return;
+      this.activeByWorkflow.set(popup.info.workflowId, pageId);
+      this.emit();
+    });
+    this.activate(pageId);
   }
 
   private queueBlockedPopup(
@@ -629,7 +720,6 @@ export class BrowserRuntime {
     openerOrigin: string,
     targetOrigin: string,
     targetUrl: string,
-    bridge: PopupBridge | null,
   ): void {
     const duplicate = [...this.pendingPopups.values()].find(
       (pending) =>
@@ -657,7 +747,6 @@ export class BrowserRuntime {
     };
     const timeoutTimer = setTimeout(() => {
       this.removePendingPopup(requestId, true);
-      if (bridge) this.closePopupPeer(runtime, bridge.id);
     }, POPUP_REQUEST_TTL_MS);
     (timeoutTimer as NodeJS.Timeout).unref?.();
     this.pendingPopups.set(requestId, {
@@ -666,7 +755,6 @@ export class BrowserRuntime {
       openerGeneration: runtime.info.generation,
       openerContentsId: contents.id,
       timeoutTimer,
-      bridge,
     });
     this.emit();
   }
@@ -695,81 +783,6 @@ export class BrowserRuntime {
     for (const pending of this.pendingPopups.values()) clearTimeout(pending.timeoutTimer);
     this.pendingPopups.clear();
     if (emit) this.emit();
-  }
-
-  private async openManagedPopup(
-    opener: BrowserPageRuntime,
-    targetUrl: string,
-    openerGeneration: number,
-    openerContentsId: number,
-    bridge: PopupBridge | null,
-  ): Promise<BrowserPageInfo> {
-    if (
-      !this.enabled ||
-      this.pages.get(opener.info.pageId) !== opener ||
-      opener.info.generation !== openerGeneration ||
-      opener.contents?.id !== openerContentsId ||
-      opener.contents.isDestroyed()
-    ) {
-      throw new BrowserRuntimeError('browser_stale_ref', '팝업을 요청한 페이지가 변경되었습니다.');
-    }
-    const popup = await this.create({
-      workflowId: opener.info.workflowId,
-      workflowName: opener.info.workflowName,
-      mode: 'shared',
-      url: targetUrl,
-    });
-    if (bridge) {
-      this.popupLinks.set(bridge.id, {
-        openerPageId: opener.info.pageId,
-        popupPageId: popup.pageId,
-        name: bridge.name,
-      });
-    }
-    return popup;
-  }
-
-  /**
-   * 문서에 연 창·새 창 사이 길을 둔다(browser-popup-bridge) — 모든 공유 탭은 window.open 을 감싸고, 짝으로 열린
-   * 새 탭은 window.opener 도 받는다.
-   */
-  private injectPopupBridge(runtime: BrowserPageRuntime, contents: WebContents): void {
-    if (runtime.info.mode !== 'shared' || contents.isDestroyed()) return;
-    const link = [...this.popupLinks].find(([, l]) => l.popupPageId === runtime.info.pageId);
-    const code = link ? `${BRIDGE_SCRIPT}, ${openerScript(link[0], link[1].name)}` : BRIDGE_SCRIPT;
-    void contents.executeJavaScript(code).catch(() => undefined);
-  }
-
-  /** 짝 창이 보낸 글 — postMessage 는 짝 탭에 넣고, close·focus 는 새 탭을 닫거나 앞으로. */
-  private onPopupBridgeMessage(sender: BrowserPageRuntime, message: BridgeMessage): void {
-    const link = this.popupLinks.get(message.id);
-    if (!link) return;
-    const fromOpener = link.openerPageId === sender.info.pageId;
-    if (!fromOpener && link.popupPageId !== sender.info.pageId) return;
-    const other = this.pages.get(fromOpener ? link.popupPageId : link.openerPageId);
-    if (message.k === 'focus') {
-      if (other) this.activate(other.info.pageId);
-      return;
-    }
-    if (message.k === 'close') {
-      // 연 쪽의 popup.close(), 새 탭 자신의 window.close() 만 — 새 탭이 연 쪽을 닫을 수는 없다(브라우저와 같다).
-      if (!fromOpener && !message.self) return;
-      if (this.pages.has(link.openerPageId)) this.activeByWorkflow.set(sender.info.workflowId, link.openerPageId);
-      void this.close(link.popupPageId);
-      return;
-    }
-    const to = other?.contents;
-    const senderOrigin = browserOrigin(sender.contents?.getURL());
-    const destOrigin = browserOrigin(to?.getURL());
-    if (!to || to.isDestroyed() || !senderOrigin || !destOrigin) return;
-    if (!targetAllowed(message.target, senderOrigin, destOrigin)) return;
-    void to.executeJavaScript(deliverScript(message.id, message.data, senderOrigin)).catch(() => undefined);
-  }
-
-  /** 짝 창이 닫혔거나 열리지 않았다 — 남은 쪽 창 객체의 closed 를 참으로. */
-  private closePopupPeer(runtime: BrowserPageRuntime | undefined, id: string): void {
-    const contents = runtime?.contents;
-    if (contents && !contents.isDestroyed()) void contents.executeJavaScript(closedScript(id)).catch(() => undefined);
   }
 
   async resolvePopup(request: BrowserPopupResolveRequest): Promise<boolean> {
@@ -806,17 +819,7 @@ export class BrowserRuntime {
 
     this.removePendingPopup(requestId, false);
     this.emit();
-    if (decision === 'block') {
-      if (pending.bridge) this.closePopupPeer(opener, pending.bridge.id);
-      return true;
-    }
-    await this.openManagedPopup(
-      opener,
-      pending.targetUrl,
-      pending.openerGeneration,
-      pending.openerContentsId,
-      pending.bridge,
-    );
+    // A denied window.open() cannot be resumed with its opener intact. The user must retry it.
     return true;
   }
 
@@ -862,6 +865,9 @@ export class BrowserRuntime {
         `페이지 ${pageId}를 찾지 못했습니다.`,
       );
     this.activeByWorkflow.set(runtime.info.workflowId, pageId);
+    if (runtime.view && runtime.contents && !runtime.contents.isDestroyed()) {
+      runtime.contents.focus();
+    }
     this.emit();
     return { ...runtime.info };
   }
@@ -1101,7 +1107,8 @@ export class BrowserRuntime {
     // 글자 넣기·키 누르기는 키보드 초점을 따라간다 — 앱 창의 채팅 입력창에 초점이 있으면 CDP 로 보낸
     // 글자와 Enter 가 웹뷰가 아니라 채팅 입력창으로 들어가 그대로 전송된다(10/5 실측: 검색어 "원피스" 가
     // 채팅 메시지로 나감). 키보드 명령 전에는 이 탭(게스트)에 초점을 준다.
-    if (KEYBOARD_COMMANDS.has(command[0] ?? '') && !contents.isDestroyed()) await focusGuest(contents);
+    if (KEYBOARD_COMMANDS.has(command[0] ?? '') && !contents.isDestroyed())
+      await focusGuest(contents);
     if (GESTURE_COMMANDS.has(command[0] ?? '')) {
       this.agentGestureUntil.set(runtime.info.pageId, Date.now() + AGENT_POPUP_WINDOW_MS);
     }
@@ -1111,6 +1118,24 @@ export class BrowserRuntime {
       runtime.info.generation += 1;
       this.emit();
     }
+    const closedPopupResult = () => {
+      const opener = this.pages.get(runtime.info.openerPageId ?? '');
+      if (
+        runtime.info.mode !== 'popup' ||
+        !GESTURE_COMMANDS.has(command[0] ?? '') ||
+        this.pages.has(runtime.info.pageId) ||
+        !opener
+      )
+        return null;
+      return {
+        page: { ...opener.info },
+        result: {
+          popup_closed: true,
+          message:
+            'Popup closed during the interaction. Inspect the parent page to verify the result.',
+        },
+      };
+    };
     try {
       const result = await this.runner.run(
         runtime.info.pageId,
@@ -1122,8 +1147,11 @@ export class BrowserRuntime {
           this.emit();
         },
       );
-      return { page: { ...runtime.info }, result };
+      return closedPopupResult() ?? { page: { ...runtime.info }, result };
     } catch (error) {
+      // window.close() can cancel the CLI before its successful click response exits.
+      const closed = closedPopupResult();
+      if (closed) return closed;
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith('browser_timeout:')) {
         throw new BrowserRuntimeError(
@@ -1150,22 +1178,29 @@ export class BrowserRuntime {
     this.rejectPendingConnection(runtime);
     this.clearPendingPopupsForPage(pageId, false);
     this.pages.delete(pageId);
-    for (const [id, link] of this.popupLinks) {
-      if (link.popupPageId !== pageId && link.openerPageId !== pageId) continue;
-      this.popupLinks.delete(id);
-      this.closePopupPeer(this.pages.get(link.popupPageId === pageId ? link.openerPageId : link.popupPageId), id);
+    if (runtime.view) {
+      if (this.popupHostWindow && !this.popupHostWindow.isDestroyed()) {
+        runtime.view.setVisible(false);
+        this.popupHostWindow.contentView.removeChildView(runtime.view);
+      }
     }
-    const next = [...this.pages.values()].find(
-      (page) => page.info.workflowId === runtime.info.workflowId,
-    );
+    const next =
+      this.pages.get(runtime.info.openerPageId ?? '') ??
+      [...this.pages.values()].find((page) => page.info.workflowId === runtime.info.workflowId);
     if (this.activeByWorkflow.get(runtime.info.workflowId) === pageId) {
       if (next) this.activeByWorkflow.set(runtime.info.workflowId, next.info.pageId);
       else this.activeByWorkflow.delete(runtime.info.workflowId);
+      if (next?.contents && runtime.info.mode === 'popup') {
+        if (next.window) next.window.focus();
+        else void focusGuest(next.contents).catch(() => undefined);
+      }
     }
-    // 화면에는 바로 알린다 — 아래 정리(명령 도구·CDP 프록시 종료)는 1초 가까이 걸려, 그동안 앱 화면은 닫힌 탭을
-    // 두고 다음 탭은 숨긴(1×1) 채였다. 그 사이 자동 조작이 읽은 화면은 배치가 무너져 칸 이름이 빠졌다(10/16 BO
-    // 찾기 팝업 [적용] 직후).
     this.emit();
+    await Promise.all(
+      [...this.pages.values()]
+        .filter((page) => page.info.openerPageId === pageId)
+        .map((page) => this.close(page.info.pageId)),
+    );
     await runtime.automationReset;
     await this.runner.cancelPage(pageId);
     await runtime.proxy?.stop();
@@ -1173,6 +1208,8 @@ export class BrowserRuntime {
     const win = runtime.window;
     runtime.window = null;
     if (win && !win.isDestroyed()) win.destroy();
+    if (runtime.view && runtime.contents && !runtime.contents.isDestroyed())
+      runtime.contents.close();
   }
 
   allowNextDownload(pageId: string, path: string): void {
@@ -1193,6 +1230,7 @@ export class BrowserRuntime {
   }
 
   async closeAll(): Promise<void> {
+    this.suspendSessionPersistence();
     const pages = [...this.pages.values()];
     for (const runtime of pages) this.rejectPendingConnection(runtime);
     this.pages.clear();
@@ -1211,6 +1249,12 @@ export class BrowserRuntime {
         const win = runtime.window;
         runtime.window = null;
         if (win && !win.isDestroyed()) win.destroy();
+        if (runtime.view) {
+          if (this.popupHostWindow && !this.popupHostWindow.isDestroyed()) {
+            this.popupHostWindow.contentView.removeChildView(runtime.view);
+          }
+          if (runtime.contents && !runtime.contents.isDestroyed()) runtime.contents.close();
+        }
       }),
     );
   }
@@ -1219,6 +1263,6 @@ export class BrowserRuntime {
 let runtime: BrowserRuntime | null = null;
 
 export function getBrowserRuntime(): BrowserRuntime {
-  if (!runtime) runtime = new BrowserRuntime();
+  if (!runtime) runtime = new BrowserRuntime(new BrowserSessionStore(app.getPath('userData')));
   return runtime;
 }

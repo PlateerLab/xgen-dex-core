@@ -463,4 +463,3 @@ test('labelToggles: 제목 바로 뒤 이름 없는 접기·펼치기 버튼에 
   assert.equal(out.e8.name, ''); // 펼침 상태가 없다
   assert.deepEqual(labels, { e92: '부가 정보', e93: '상품이미지 정보' });
 });
-

@@ -12,6 +12,7 @@
  * Node-agnostic: works for agent_geny / agent_xgen because the
  * store drives the single execute-stream endpoint.
  */
+import { startProcessedCapture, pcmWav, type ProcessedCapture } from '../voice/processed-capture';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
 import { useChatInputCheck } from './use-chat-input-check';
@@ -434,10 +435,10 @@ export const Chat: React.FC<{
   const ttsOn = !!voiceCfg?.tts?.enabled && localVoice.output;
 
   // Mic capture refs.
-  const mediaRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const streamRef = useRef<MediaStream | null>(null);
-  // 실험: 말하는 도중 실행 — 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 스트림으로 동작한다.
+  const mediaRef = useRef<ProcessedCapture | null>(null);
+  const recordingGeneration = useRef(0);
+  const finishRecordingRef = useRef<(() => Promise<void>) | null>(null);
+  // 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 STT 스트림으로 동작한다.
   const streamVoice = useVoiceStreamAvailable();
   // 켜면 끌 때까지 계속 듣는다 — 말할 때마다 조작하고, 화면 조작으로 끝난 말은 채팅·TTS 없이 기록만 남긴다.
   const [voiceLoopOn, setVoiceLoopOn] = useState(false);
@@ -989,56 +990,51 @@ export const Chat: React.FC<{
     sessionStore.stop(session.key);
   }, [session.key, session.messages, stopTts]);
 
-  // ── STT: push-to-talk mic capture (getUserMedia + MediaRecorder) ──
+  // PCM is processed locally before the ordinary WAV transcription API too.
+  useEffect(() => () => { recordingGeneration.current++; mediaRef.current?.cancel(); }, []);
   const startRecording = useCallback(async () => {
     if (recording || transcribing) return;
+    const generation = ++recordingGeneration.current;
+    const chunks: Uint8Array[] = [];
+    let heard = false;
+    let vad = false;
+    let durationBytes = 0;
+    setRecording(true);
+    setVoiceError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      chunksRef.current = [];
-      const mr = new MediaRecorder(stream);
-      mr.ondataavailable = (e) => {
-        if (e.data && e.data.size) chunksRef.current.push(e.data);
-      };
-      mr.onstop = async () => {
-        streamRef.current?.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-        const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' });
-        chunksRef.current = [];
-        if (!blob.size) return;
-        setTranscribing(true);
+      const capture = await startProcessedCapture((chunk) => {
+        chunks.push(chunk.pcm); vad = chunk.vad;
+        heard ||= chunk.events.some(event => event.type === 'speech_start');
+        durationBytes += chunk.pcm.length;
+        if (durationBytes >= 32000 * 30) void finishRecordingRef.current?.();
+      }, (error) => { setVoiceError(error.message); setRecording(false); });
+      if (generation !== recordingGeneration.current) { capture.cancel(); return; }
+      mediaRef.current = capture;
+      finishRecordingRef.current = async () => {
+        finishRecordingRef.current = null;
+        setRecording(false); setTranscribing(true);
         try {
-          const lang = voiceCfg?.stt?.language || undefined;
-          const t = (await xgen.voice.transcribe(blob, lang)).trim();
-          if (t) send(t);
-        } catch {
-          /* transcription failed — leave the input untouched */
-        } finally {
-          setTranscribing(false);
-        }
+          await capture.stop();
+          mediaRef.current = null;
+          if (generation !== recordingGeneration.current || (vad && !heard)) return;
+          const blob = pcmWav(chunks);
+          if (blob.size <= 44) return;
+          const text = (await xgen.voice.transcribe(blob, voiceCfg?.stt?.language || undefined)).trim();
+          if (generation === recordingGeneration.current && text) send(text);
+        } catch (error) { setVoiceError(String(error)); }
+        finally { setTranscribing(false); }
       };
-      mr.start();
-      mediaRef.current = mr;
-      setRecording(true);
-    } catch {
-      // Permission denied / no mic — reset state.
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-      setRecording(false);
-    }
+    } catch (error) { setVoiceError(String(error)); setRecording(false); }
   }, [recording, transcribing, voiceCfg, send]);
 
   const stopRecording = useCallback(() => {
-    const mr = mediaRef.current;
-    if (mr && mr.state !== 'inactive') mr.stop();
-    mediaRef.current = null;
-    setRecording(false);
+    if (finishRecordingRef.current) void finishRecordingRef.current();
+    else { recordingGeneration.current++; setRecording(false); }
   }, []);
 
-  // ── 실험: 계속 듣기 — 빠른 브라우저 조작이 켜져 있으면 마이크 버튼이 켜기/끄기다(voice-loop). 말이 시작되면 main 이
-  //    실시간 STT 로 듣고 말하는 도중에 조작한다. 말이 끝나면: 화면 조작으로 끝났으면 기록만(채팅·TTS 없음),
-  //    아니면(질문·여러 단계·못 한 말) 채팅으로 보낸다. 앱이 TTS 로 말하는 동안은 듣지 않는다.
-  const { state: loopState } = useVoiceLoop({
+  // 계속 듣기: 빠른 브라우저 조작 설정에서 실시간 STT를 사용한다.
+  // 현재 main은 최종 발화 뒤 채팅 계획까지 조작을 보류하며, TTS 재생 중에는 입력 전송을 쉰다.
+  const { state: loopState, error: loopError } = useVoiceLoop({
     enabled: streamVoice && voiceLoopOn,
     workflowId: agent.workflowId,
     isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
@@ -1084,6 +1080,7 @@ export const Chat: React.FC<{
       await send(r.text, { voice: true });
     },
   });
+  useEffect(() => { if (loopError) { setVoiceError(loopError); setVoiceLoopOn(false); } }, [loopError]);
   useEffect(() => {
     if (!voiceLoopOn) {
       setVoiceLog([]);

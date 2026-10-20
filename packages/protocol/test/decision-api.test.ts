@@ -68,3 +68,45 @@ test('auth: false 면 401 이 로그아웃 처리로 번지지 않는다', async
   await assert.rejects(loud.api.systemone('화면', QUESTIONS))
   assert.equal(loud.authFailures(), 1)
 })
+
+test('판단 모델 선택지는 카탈로그의 켜진 판단 모델만, 지금 값은 DECISION_MODEL 에서', async () => {
+  const seen: string[] = []
+  const http = new HttpClient({
+    baseUrl: 'https://xgen.example.com',
+    fetch: async (url, init) => {
+      seen.push(`${init?.method ?? 'GET'} ${url} ${init?.body ?? ''}`)
+      const body = url.endsWith('/api/admin/llm-catalog')
+        ? {
+            items: [
+              { provider: 'openrouter', model_id: 'typesafe/jev-1.14', display_name: 'Jev 1.14', enabled: true, capabilities: { kind: 'decision' } },
+              { provider: 'openrouter', model_id: 'typesafe/jev-1.13', enabled: false, capabilities: { kind: 'decision' } },
+              { provider: 'openai', model_id: 'gpt-4o', enabled: true, capabilities: {} },
+            ],
+          }
+        : url.endsWith('/api/config/persistent')
+          ? { persistent_summary: { configs: [{ env_name: 'DECISION_MODEL', current_value: 'openrouter/typesafe/jev-1.14' }] } }
+          : {}
+      return new Response(JSON.stringify(body), { status: 200 })
+    },
+  })
+  const api = new DecisionApi(http)
+  const state = await api.model()
+  assert.equal(state.current, 'openrouter/typesafe/jev-1.14')
+  assert.deepEqual(state.choices.map((c) => c.value), ['', 'openrouter/typesafe/jev-1.14'])
+  assert.deepEqual((await new DecisionApi(new HttpClient({
+    baseUrl: 'https://x',
+    fetch: async (url) => new Response(JSON.stringify(url.endsWith('persistent')
+      ? { persistent_summary: { configs: [{ env_name: 'DECISION_MODEL', current_value: 'openrouter/typesafe/jev-1.13' }] } }
+      : { items: [] })),
+  })).model()).choices.map((c) => c.value), ['', 'openrouter/typesafe/jev-1.13'])
+  await api.setModel('')
+  assert.equal(seen.at(-1), 'PUT https://xgen.example.com/api/config/persistent/DECISION_MODEL {"value":""}')
+})
+
+test('권한이 없으면 던지고 로그아웃으로 번지지 않는다', async () => {
+  const c = client(403, { detail: 'Permission denied' })
+  await assert.rejects(c.api.model(), (err: unknown) => err instanceof ApiError && err.status === 403)
+  const u = client(401, { detail: 'Unauthorized' })
+  await assert.rejects(u.api.model())
+  assert.equal(u.authFailures(), 0)
+})

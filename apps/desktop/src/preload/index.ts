@@ -1,3 +1,5 @@
+import type { AudioAsset, AudioInstallProgress, AudioRuntimeStatus } from '../main/audio-runtime-manager';
+import type { ProcessedAudio } from '../main/audio-preprocessor';
 /**
  * Preload — the ONLY bridge between the sandboxed renderer and the native shell.
  *
@@ -76,6 +78,7 @@ import type { ChatFeedback } from '@dex/protocol/feedback';
 import type { ConversationModelState } from '@dex/protocol/conversation-model';
 import type { ChatInputCheck } from '@dex/protocol/chat-guardrails';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
+import type { DecisionModelState } from '@dex/protocol/decision';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
@@ -98,6 +101,7 @@ import type {
   BrowserSelectionCompleteRequest,
   BrowserSelectionInspectRequest,
   BrowserSelectionPreview,
+  BrowserSelectionRect,
   BrowserSelectionResult,
   BrowserSelectionSession,
   BrowserState,
@@ -556,6 +560,8 @@ const api = {
       ipcRenderer.invoke(CHANNELS.browserEnsureShared, workflowId, workflowName),
     bindShared: (pageId: string, webContentsId: number): Promise<BrowserPageInfo> =>
       ipcRenderer.invoke(CHANNELS.browserBindShared, pageId, webContentsId),
+    popupSurface: (pageId: string, rect: BrowserSelectionRect | null): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.browserPopupSurface, pageId, rect),
     navigate: (request: BrowserNavigateRequest): Promise<BrowserPageInfo> =>
       ipcRenderer.invoke(CHANNELS.browserNavigate, request),
     activate: (pageId: string): Promise<BrowserPageInfo> =>
@@ -845,7 +851,21 @@ const api = {
     },
   },
 
-  /** 실험: 말하는 도중 실행 — 마이크 소리를 실시간으로 보내면 main 이 중간 결과로 브라우저를 조작한다. */
+  /** 캡처 중 로컬 음성 전처리. */
+  audioProcessor: {
+    status: (): Promise<AudioRuntimeStatus> => ipcRenderer.invoke(CHANNELS.audioProcessStatus),
+    checkUpdate: (): Promise<AudioAsset> => ipcRenderer.invoke(CHANNELS.audioRuntimeCheck),
+    install: (): Promise<AudioRuntimeStatus> => ipcRenderer.invoke(CHANNELS.audioRuntimeInstall),
+    onProgress: (callback: (progress: AudioInstallProgress) => void): (() => void) => {
+      const listener = (_event: unknown, progress: AudioInstallProgress) => callback(progress);
+      ipcRenderer.on(CHANNELS.audioRuntimeProgress, listener);
+      return () => { ipcRenderer.removeListener(CHANNELS.audioRuntimeProgress, listener); };
+    },
+    start: (): Promise<{ id: string; noise: boolean; vad: boolean }> => ipcRenderer.invoke(CHANNELS.audioProcessStart),
+    push: (id: string, pcm: Uint8Array): Promise<ProcessedAudio> => ipcRenderer.invoke(CHANNELS.audioProcessPush, id, pcm),
+    finish: (id: string): Promise<ProcessedAudio> => ipcRenderer.invoke(CHANNELS.audioProcessFinish, id),
+    cancel: (id: string): void => ipcRenderer.send(CHANNELS.audioProcessCancel, id),
+  },
   voiceStream: {
     available: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.voiceStreamAvailable),
     /** carry: 앞 발화에서 처리 못 한 말 — 잠깐 쉬어 끊긴 말을 이어 붙여 판단한다. */
@@ -890,6 +910,12 @@ const api = {
     /** Dialled by the XGEN server (that is where the agent runs), through the jump path. */
     testServer: (name: string): Promise<SshTestResult> =>
       ipcRenderer.invoke(CHANNELS.sshTestServer, name),
+  },
+
+  /** 판단 모델(System One) — 서버 전체 설정. 관리자가 아니면 model() 이 null. */
+  decision: {
+    model: (): Promise<DecisionModelState | null> => ipcRenderer.invoke(CHANNELS.decisionModel),
+    setModel: (value: string): Promise<void> => ipcRenderer.invoke(CHANNELS.decisionSetModel, value),
   },
 
   /** Floating avatar overlay (Geny-style). Used by the main window

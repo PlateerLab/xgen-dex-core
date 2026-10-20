@@ -18,6 +18,7 @@ import { diag } from './diag-log';
 import {
   GATE_INTENT_Q,
   classify,
+  allowsDeciderAction,
   judgedText,
   saysValue,
   LONG_INSTRUCTION,
@@ -148,13 +149,6 @@ const closedTab = async (pageId: string): Promise<boolean> => {
 
 /** 글자 넣기를 시키는 말 — 중간 인식에서 넣을 글자가 끝났는지 볼 때 쓴다. */
 const TYPING_WORD = /(입력|검색|조회|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
-/**
- * 되돌릴 수 없을 수 있는 동작 — 말 자체가 시키거나 고른 대상의 이름이 이런 것이면 서버로.
- * 명사가 아니라 동작으로 본다: "주문/결제" 메뉴·"결제 내역" 은 이동일 뿐이고 "결제하기" 버튼이 위험하다.
- */
-const DANGEROUS =
-  /(삭제|지우기|비우기|제거|탈퇴|해지|로그아웃|초기화|영구|결제하기|구매하기|주문하기|delete|remove|erase|empty|log ?out|reset|uninstall|purchase|checkout|pay now)/i;
-const DANGEROUS_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
 /** 글자를 넣을 수 있는 역할 — 입력 요청이면 이것만 후보로 둔다(넣을 글자와 이름이 같은 버튼을 고르지 않게). */
 const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
 /**
@@ -1227,7 +1221,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const after = text.slice(text.lastIndexOf(lastWord) + lastWord.length);
       if (!TYPING_WORD.test(after)) return no('입력은 글자가 끝난 뒤', pick.top);
     }
-    if (DANGEROUS_REQUEST.test(text) || DANGEROUS.test(element.name ?? '')) {
+    if (!allowsDeciderAction(text, element.name ?? '')) {
       return no('되돌릴 수 없을 수 있는 동작 — 서버로', pick.top);
     }
     // 항목(또는 그 셀)을 고르라는(고른 것을 풀라는) 말인데 그 항목 안에 고르는 체크박스가 있으면 체크박스를 누른다 —

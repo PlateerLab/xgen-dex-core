@@ -14,6 +14,31 @@ PYTHON_URL = 'https://github.com/astral-sh/python-build-standalone/releases/down
 PYTHON_SHA256 = '19b8d2af1719e3fe8cd4edfa2e5030dab776233c05044f4348dbe3c0af7d1b2f'
 
 
+# Build-time and GUI parts the worker never loads; the smoke test below runs after pruning.
+PRUNE = [
+    'lib/libpython3.11.a', 'lib/python3.11/config-3.11-darwin', 'lib/pkgconfig', 'include', 'share',
+    'lib/python3.11/test', 'lib/python3.11/ensurepip', 'lib/python3.11/idlelib', 'lib/python3.11/tkinter',
+    'lib/python3.11/turtledemo', 'lib/python3.11/lib-dynload/_tkinter*', 'lib/libtcl*', 'lib/libtk*',
+    'lib/tcl9*', 'lib/tk9*', 'lib/itcl*', 'lib/thread*', 'bin/idle3*', 'bin/pip*', 'bin/2to3*', 'bin/python3*-config',
+    'lib/python3.11/site-packages/pip', 'lib/python3.11/site-packages/pip-*',
+    'lib/python3.11/site-packages/setuptools', 'lib/python3.11/site-packages/setuptools-*',
+    'lib/python3.11/site-packages/_distutils_hack', 'lib/python3.11/site-packages/pkg_resources',
+    'lib/python3.11/site-packages/distutils-precedence.pth',
+    'lib/python3.11/site-packages/onnxruntime/transformers', 'lib/python3.11/site-packages/onnxruntime/quantization',
+    'lib/python3.11/site-packages/onnxruntime/tools', 'lib/python3.11/site-packages/numpy/f2py',
+    'lib/python3.11/site-packages/numpy/distutils', 'lib/python3.11/site-packages/numpy/**/tests',
+]
+
+
+def prune(root):
+    for pattern in PRUNE:
+        for path in sorted(root.glob(pattern), reverse=True):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            elif path.exists() or path.is_symlink():
+                path.unlink()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True, type=Path)
@@ -54,6 +79,8 @@ def main():
         shutil.copytree(source / 'src/xgen_audio/licenses', output / 'licenses/audio')
         shutil.copytree(source / 'src/xgen_audio/models', output / 'licenses/models', ignore=shutil.ignore_patterns('*.onnx'))
         run(python, '-I', '-m', 'pip', 'check')
+        versions = subprocess.check_output([str(python), '-I', '-m', 'pip', 'list', '--format=json'], env=env, text=True)
+        prune(output / 'python')
         env['XGEN_RNNOISE_LIBRARY'] = str(output / 'lib/librnnoise.dylib')
         run(python, '-I', '-c', '''
 from xgen_audio import AudioPreprocessor
@@ -66,7 +93,6 @@ for noise in ('none','rnnoise'):
    assert not any(c.events for c in chunks)
 print('Bundled audio runtime: four combinations passed')
 ''')
-        versions = subprocess.check_output([str(python), '-I', '-m', 'pip', 'list', '--format=json'], env=env, text=True)
         (output / 'manifest.json').write_text(json.dumps({
             'platform': 'darwin', 'arch': 'arm64', 'pythonArchive': PYTHON_URL,
             'pythonSha256': PYTHON_SHA256, 'packages': json.loads(versions),

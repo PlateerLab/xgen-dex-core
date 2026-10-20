@@ -78,3 +78,15 @@ test('준비가 다 끝났는데 답이 아직이면 답변 준비 줄을 잇는
   const more = run(rows, [5_100, { phase: 'memory', state: 'start' }]);
   assert.equal(awaitingAnswer(more, 6_000), false, '하는 중인 단계가 있으면 잇지 않는다');
 });
+
+test('새 에이전트의 첫 실행(assemble)은 기다리지 않고 바로 머리 줄로 서고, 그동안 답변 준비 줄은 겹치지 않는다', () => {
+  let rows = run([], [0, { phase: 'assemble', state: 'start' }]);
+  assert.equal(visiblePhaseRows(rows, 10).length, 1, '0.7초를 기다리지 않는다');
+  assert.deepEqual(phaseHeadline(rows, 3_000), { label: 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!', sinceMs: 3_000 });
+  rows = run(rows, [100, { phase: 'sandbox', state: 'start' }]);
+  assert.equal(phaseHeadline(rows, 3_000)?.label, 'Sandbox를 불러오고 있습니다', '한 줄 화면은 지금 하는 단계를 먼저 말한다');
+  rows = run(rows, [9_000, { phase: 'sandbox', state: 'done', elapsedMs: 8_900 }]);
+  assert.deepEqual(visiblePhaseRows(rows, 20_000).map((r) => r.phase), ['assemble', 'sandbox']);
+  assert.equal(awaitingAnswer(rows, 20_000), false, '조립 줄이 이미 기다리는 중을 말한다');
+  assert.equal(phaseHeadline(rows, 20_000)?.label, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
+});

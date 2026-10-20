@@ -115,3 +115,13 @@ test('첫 글자 전의 준비 단계는 상태 줄에 보이고, 답이 시작�
   assert.equal(state.status, undefined);
   assert.equal(state.phases, undefined);
 });
+
+test('새 에이전트의 첫 실행이면 상태 줄이 조립 중이라고 말하고, 단계가 돌면 그 단계를 먼저 말한다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'assemble', state: 'start' } });
+  assert.equal(state.status, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'start' } });
+  assert.equal(state.status, 'Sandbox를 불러오고 있습니다');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 9000 } });
+  assert.equal(state.status, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
+});

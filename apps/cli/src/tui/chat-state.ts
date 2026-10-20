@@ -106,8 +106,11 @@ function upsertActivity(messages: ChatMessage[], key: string, text: string): Cha
 
 /** 준비 단계 상태 줄. 하는 중·다시 시도·실패한 마지막 단계, 다 끝났으면 답변을 기다린다는 줄. */
 function phaseStatusLine(rows: readonly TurnPhaseRow[]): string {
-  const live = [...rows].reverse().find((r) => r.state !== 'ok');
-  return live ? phaseLabel(live) : AWAITING_ANSWER_LABEL;
+  // 하는 중·다시 시도·실패한 단계가 먼저, 없으면 첫 실행 알림(새 에이전트), 그것도 없으면 답변을 기다린다.
+  const live = [...rows].reverse().find((r) => r.phase !== 'assemble' && r.state !== 'ok');
+  if (live) return phaseLabel(live);
+  const assemble = rows.find((r) => r.phase === 'assemble' && r.state === 'run');
+  return assemble ? phaseLabel(assemble) : AWAITING_ANSWER_LABEL;
 }
 
 /** 답이 시작됐다. 준비 단계 줄을 걷는다. */

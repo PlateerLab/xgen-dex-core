@@ -1,4 +1,4 @@
-import { describeStreamError, formatErrorLine } from '@dex/protocol';
+import { applyTurnPhase, describeStreamError, formatErrorLine, type TurnPhaseRow } from '@dex/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { DexService } from './dex-service';
@@ -21,7 +21,7 @@ import type {
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
-import { describeTool, historyTurnMessages, message, type ChatMessage } from './chat-messages';
+import { describeTool, historyTurnMessages, message, phaseLines, type ChatMessage } from './chat-messages';
 import {
   CONVERSATION_PAGE_LIMIT,
   SEARCH_LIMIT,
@@ -644,6 +644,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   dispose(): void {
+    this.clearPhases();
     this.stopWatchingRemoteRun();
     this.removeNotificationListener();
     this.manager?.dispose();
@@ -1485,6 +1486,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const streamId = randomUUID();
     this.streamId = streamId;
     this.status = '응답을 기다리는 중...';
+    this.clearPhases();
     const attachments = [...this.attachments];
     this.attachments = [];
     this.messages.push(message('user', '나', text || `첨부 파일 ${attachments.length}개`));
@@ -1733,6 +1735,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.interactionId = params.interactionId;
       this.streamId = undefined;
       this.status = undefined;
+      this.clearPhases();
       const assistant = this.messages.find((item) => item.id === this.assistantMessageId);
       if (assistant && !assistant.text) assistant.text = '응답 내용이 없습니다.';
       void this.setRunning(false);
@@ -1746,13 +1749,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (params?.streamId !== this.streamId) return;
       this.streamId = undefined;
       this.status = undefined;
+      this.clearPhases();
       this.updateAssistant(`오류: ${params.error.message}`);
       void this.setRunning(false);
       this.postState();
     }
   }
 
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 점 대신 도구 줄
+   * 모양으로 보인다. 경과 초와 0.7초 규칙 때문에 기다리는 동안 짧게 다시 그린다.
+   */
+  private phaseRows: TurnPhaseRow[] = [];
+  private phaseTicker: ReturnType<typeof setInterval> | undefined;
+
+  private notePhase(event: Extract<ChatEvent, { kind: 'phase' }>): void {
+    this.phaseRows = applyTurnPhase(this.phaseRows, event, Date.now());
+    if (!this.phaseTicker) this.phaseTicker = setInterval(() => this.scheduleState(), 500);
+  }
+
+  /** 답이 시작됐거나 턴이 끝났다. 준비 줄을 걷는다. */
+  private clearPhases(): void {
+    this.phaseRows = [];
+    if (this.phaseTicker) clearInterval(this.phaseTicker);
+    this.phaseTicker = undefined;
+  }
+
+  /** 웹뷰에 보낼 메시지. 답이 시작되기 전의 답변 말풍선에만 준비 줄을 싣는다(원본은 건드리지 않는다). */
+  private messagesForView(): ChatMessage[] {
+    if (this.phaseRows.length === 0) return this.messages;
+    const lines = phaseLines(this.phaseRows, Date.now());
+    if (lines.length === 0) return this.messages;
+    return this.messages.map((item) =>
+      item.id === this.assistantMessageId && !item.text && !item.tools?.length ? { ...item, phaseLines: lines } : item,
+    );
+  }
+
   private applyEvent(event: ChatEvent): void {
+    if (event.kind === 'phase') this.notePhase(event);
+    else if (event.kind === 'text' || event.kind === 'tool') this.clearPhases();
     if (event.kind === 'text') this.updateAssistant(event.content);
     else if (event.kind === 'summary') this.updateAssistant(event.text);
     else if (event.kind === 'tool') this.updateTool(event.event);
@@ -2053,7 +2088,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       auth: this.auth,
       agents: this.agents,
       agent,
-      messages: this.messages,
+      messages: this.messagesForView(),
       running: !!this.streamId || this.remoteRunning,
       refreshing: this.refreshing,
       status: this.status,

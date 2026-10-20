@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { HistoryTurn } from '@dex/protocol';
-import { historyTurnMessages } from '../src/chat-messages';
+import { historyTurnMessages, phaseLines } from '../src/chat-messages';
 
 const turn = (rest: Partial<HistoryTurn>): HistoryTurn => ({
   logId: 1, ioId: 1, interactionId: 'c', workflowId: 'wf', workflowName: 'gitlab',
@@ -60,4 +60,15 @@ test('호출 id 가 없는 도구도 호출 하나에 한 줄 — "실행 중" �
     'gitlab',
   );
   assert.deepEqual(rows.filter((r) => r.role === 'activity').map((r) => r.text), ['Read · 완료', 'Read · 실패 · 없음']);
+});
+
+test('준비 단계 줄: 0.7초 넘은 단계만, 다 끝났는데 답이 아직이면 답변 준비 줄을 잇는다', () => {
+  // 서버가 Sandbox·워크스페이스를 불러오는 동안 점 대신 무엇을 기다리는지 보인다(turn_phase).
+  const rows = [
+    { phase: 'sandbox' as const, state: 'ok' as const, startedAt: 0, durationMs: 12_300 },
+    { phase: 'memory' as const, state: 'ok' as const, startedAt: 12_300, durationMs: 100 },
+  ];
+  assert.deepEqual(phaseLines(rows, 12_500), [{ label: 'Sandbox를 불러왔습니다', state: 'ok', time: '12.3초' }]);
+  assert.deepEqual(phaseLines(rows, 15_400).at(-1), { label: '답변을 준비하고 있습니다', state: 'run', time: '3초' });
+  assert.deepEqual(phaseLines([{ phase: 'workspace', state: 'run', startedAt: 0 }], 300), [], '빠른 단계는 보이지 않는다');
 });

@@ -22,7 +22,7 @@ import { alpha, useP } from '../theme';
 import { AssistantMarkdown } from './markdown';
 import { ToolActivity } from './tool-activity';
 import { TriggerRow } from './trigger-row';
-import { ProcessTimeline, hasProcessFlow } from './process-timeline';
+import { ProcessTimeline, TurnPhaseCard, hasProcessFlow } from './process-timeline';
 import type { ChatMessage } from './message-model';
 
 /** 답변이 도는 동안 깜빡이는 자리 — 본문 문자열에 ▍를 섞으면 마크다운이 깨진다. */
@@ -249,6 +249,10 @@ export const MessageItem: React.FC<{
           timelineView
         ) : text ? (
           <AssistantMarkdown text={text} />
+        ) : live && m.phases?.length && tools.length === 0 ? (
+          // 답이 시작되기 전 서버의 준비 단계(Sandbox·워크스페이스·패키지·기억). 0.7초 넘게 걸린 단계가 없으면
+          // 캐럿 그대로다(빠른 턴은 예전과 같다).
+          <TurnPhaseCard rows={m.phases} fallback={<Caret />} />
         ) : (
           <Caret />
         )}

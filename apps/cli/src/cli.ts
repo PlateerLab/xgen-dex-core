@@ -4,6 +4,7 @@ import {
   conversationAgentLabel,
   conversationDisplayTitle,
   describeStreamError,
+  phaseLabel,
 } from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
 import stringWidth from 'string-width';
@@ -142,6 +143,10 @@ function printTurns(items: HistoryTurn[]): void {
 function describeEvent(event: ChatEvent): string | null {
   if (event.kind === 'status') return `${event.surface}: ${event.detail ?? event.reason ?? '상태 변경'}`;
   if (event.kind === 'tool') return `tool: ${event.event.toolName ?? event.event.eventType}`;
+  // 답의 첫 글자 전 준비 단계. 시작·다시 시도·실패만 한 줄씩(끝난 단계는 다음 줄이 말한다).
+  if (event.kind === 'phase' && event.state !== 'done') {
+    return `준비: ${phaseLabel({ phase: event.phase, state: event.state === 'start' ? 'run' : event.state === 'retry' ? 'retry' : 'err', startedAt: 0, attempt: event.attempt, attempts: event.attempts })}`;
+  }
   if (event.kind === 'node_status') return `node: ${event.event.nodeId} ${event.event.status}`;
   if (event.kind === 'quota') return `quota: ${event.level}`;
   if (event.kind === 'error') {

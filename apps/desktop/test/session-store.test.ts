@@ -388,6 +388,22 @@ test('스트림 이벤트가 텍스트·도구·출처를 누적하고 end 에�
   assert.equal(store.get(k)!.streaming, false)
 })
 
+test('첫 글자 전의 준비 단계(phase)는 그 답에 줄로 쌓이고, 본문·도구에는 섞이지 않는다', () => {
+  // 서버가 Sandbox·워크스페이스를 불러오는 동안 커서 대신 무엇을 기다리는지 보인다(turn_phase).
+  const { store, streams } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, 'q')
+  streams[0].onEvent({ kind: 'phase', phase: 'sandbox', state: 'start', attempt: 1 })
+  streams[0].onEvent({ kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 12_300 })
+  streams[0].onEvent({ kind: 'phase', phase: 'workspace', state: 'start', attempt: 1 })
+  const last = store.get(k)!.messages.at(-1)!
+  assert.deepEqual(last.phases?.map((r) => [r.phase, r.state]), [['sandbox', 'ok'], ['workspace', 'run']])
+  assert.equal(last.phases?.[0].durationMs, 12_300)
+  assert.equal(last.text, '')
+  assert.equal(last.flow, undefined, '준비 단계는 작업 과정(flow)에 들어가지 않는다(서버도 기록하지 않는다)')
+  assert.equal(last.streaming, true)
+})
+
 test('도구가 파일 저장소에 올린 결과물(download)은 그 답에 한 번만 쌓인다 — 웹과 같은 단추가 된다', () => {
   const { store, streams } = makeStore()
   const k = store.openNew(agent('A'))

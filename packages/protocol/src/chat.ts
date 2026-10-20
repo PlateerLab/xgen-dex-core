@@ -16,6 +16,7 @@ import { ApiError, HttpClient } from './client';
 import { SseParser } from './sse';
 import type { ChatEvent, ChatRequest, ChatStopResult, ToolEvent } from './types';
 import type { TimelineFlowItem } from './process-timeline';
+import { parseTurnPhase } from './turn-phases';
 
 function toRequestBody(req: ChatRequest): Record<string, unknown> {
   return {
@@ -125,6 +126,7 @@ export const TURN_EVENT_NAMES = [
   'quota_warning',
   'execution_suspended',
   'turn_queued',
+  'turn_phase',
 ] as const;
 
 /**
@@ -314,6 +316,9 @@ export function turnEventToChatEvent(
     case 'turn_queued':
       // 실행 자리가 모두 차 이 턴이 차례를 기다린다 — 실패가 아니다.
       return { kind: 'queued', reason: String(d?.reason ?? 'busy') };
+    case 'turn_phase':
+      // 답의 첫 글자 전에 서버가 하는 준비(Sandbox·워크스페이스·패키지·기억). 그릴 수 없는 값은 버린다.
+      return parseTurnPhase(d);
     case 'execution_suspended':
       return {
         kind: 'error',

@@ -7,6 +7,7 @@ import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
 import { allowsDeciderAction, type DecisionPost } from './fast-act';
 import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
 import { diag } from './diag-log';
+import { BROWSER_COMMIT_GUIDE } from './browser-action-guard';
 import { fastActConfigured } from './fast-act-runner';
 import { FORM_VALUES_SCRIPT } from './fast-act-labels';
 import type {
@@ -65,6 +66,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
         'Site popups appear in list as mode popup with their own page_id; target that page_id to interact with them. ' +
+        'For the currently visible page use the entry with active=true, especially when multiple tabs have the same title and URL. ' +
         'A missing page_id on other browser tools uses the workflow default background page.',
       inputSchema: {
         type: 'object',
@@ -124,7 +126,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
-        'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse.',
+        'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' + BROWSER_COMMIT_GUIDE,
       inputSchema: {
         type: 'object',
         properties: {
@@ -194,7 +196,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       name: BROWSER_ADVANCED_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
+        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation. ' + BROWSER_COMMIT_GUIDE,
       inputSchema: {
         type: 'object',
         properties: {
@@ -483,7 +485,10 @@ export class BrowserToolProvider {
   ): Promise<LocalToolResult> {
     const action = String(args.action ?? 'list');
     const wid = workflow(args, context);
-    if (action === 'list') return result(null, this.runtime.list(wid || undefined));
+    if (action === 'list') {
+      const active = this.runtime.state().activeByWorkflow;
+      return result(null, this.runtime.list(wid || undefined).map(page => ({ ...page, active: active[page.workflowId] === page.pageId })));
+    }
     if (action === 'create') {
       const mode = args.mode === 'shared' ? 'shared' : 'background';
       const page = await this.runtime.create({
@@ -569,7 +574,9 @@ export class BrowserToolProvider {
       command = [action === 'double_click' ? 'dblclick' : action, ref];
     } else if (action === 'fill' || action === 'type') {
       if (!ref) throw new BrowserRuntimeError('browser_stale_ref', 'ref가 필요합니다.');
-      command = [action, ref, String(args.text ?? '')];
+      const text = args.text ?? args.value;
+      if (typeof text !== 'string') throw new BrowserRuntimeError('browser_denied', `${action}: 입력할 문자열을 text에 지정하세요.`);
+      command = [action, ref, text];
     } else if (action === 'keypress') {
       command = ['press', String(args.key ?? args.value ?? '')];
     } else if (action === 'select') {
@@ -600,6 +607,7 @@ export class BrowserToolProvider {
       command,
       timeout(args),
       generation,
+      { interactionId: context?.interactionId, signal: context?.signal },
     );
     return result(run.page, run.result);
   }
@@ -615,9 +623,9 @@ export class BrowserToolProvider {
       const state = this.runtime.state();
       const id = pageId(args) ?? state.activeByWorkflow[wid];
       const page = await this.runtime.resolvePage(wid, id, false);
-      const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal);
+      const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal, context?.interactionId);
       diag('browser-step', 'result', { operation: args.operation, status: done.result.status, mutation_attempted: done.result.mutation_attempted });
-      return result(done.page, done.result);
+      return { ...result(done.page, done.result), isError: done.result.status !== 'completed' };
     } finally {
       this.stepping.delete(wid);
     }

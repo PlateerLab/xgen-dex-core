@@ -18,6 +18,7 @@
  */
 
 import { isUnitWord, plainNumber } from './fast-act-number';
+export { allowsBrowserAction as allowsDeciderAction } from './browser-action-guard';
 import {
   MAX_LINES,
   PICK_Q13,
@@ -32,14 +33,6 @@ import {
 
 export type ElementRef = { role: string; name?: string };
 export type ElementRefs = Record<string, ElementRef>;
-
-const DANGEROUS_BROWSER_TARGET =
-  /(삭제|지우기|비우기|제거|탈퇴|해지|로그아웃|초기화|영구|결제하기|구매하기|주문하기|delete|remove|erase|empty|log ?out|reset|uninstall|purchase|checkout|pay now)/i;
-const DANGEROUS_BROWSER_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
-
-export function allowsDeciderAction(instruction: string, target: string): boolean {
-  return !DANGEROUS_BROWSER_REQUEST.test(instruction) && !DANGEROUS_BROWSER_TARGET.test(target);
-}
 
 export type ChoiceQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> };
 export type ChoiceAnswer = {

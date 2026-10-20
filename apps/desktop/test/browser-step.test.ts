@@ -3,6 +3,8 @@ import test from 'node:test';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { executeBrowserStep } from '../src/main/browser-step';
 import { allowsDeciderAction, type DecisionPost, type ElementRefs } from '../src/main/fast-act';
+import { BROWSER_ACTION_BLOCKED } from '../src/main/browser-action-guard';
+import { FIELD_LABEL_SCRIPT, type FieldLabel } from '../src/main/fast-act-labels';
 
 function fixture() {
   const page: BrowserPageInfo = {
@@ -22,9 +24,13 @@ function fixture() {
   const commands: string[][] = [];
   let refs: ElementRefs = {};
   let fieldValue = '';
+  let bodyText = '검색 결과 플래티어';
+  let fields: FieldLabel[] = [];
+  let checked = false;
+  let snapshotText: ((refs: ElementRefs) => string) = JSON.stringify;
   let applyFill = true;
   let onClick = () => {};
-  let onSnapshot = () => {};
+  let onSnapshot = (_refs: ElementRefs) => {};
   let onDecide = () => {};
   const runtime = {
     get: (id: string) => pages.get(id) ?? null,
@@ -34,6 +40,8 @@ function fixture() {
       activeByWorkflow: { w: 'parent' },
       popupRequests: [],
     }),
+    pageScript: async <T>(_wid: string, _id: string, code: string): Promise<T> =>
+      (code === FIELD_LABEL_SCRIPT ? fields : 0) as T,
     runAgentCommand: async (
       _wid: string,
       id: string | undefined,
@@ -54,14 +62,16 @@ function fixture() {
           [`e${p.generation * 10 + 1}`]: { role: 'textbox', name: '상품명' },
           [`e${p.generation * 10 + 2}`]: { role: 'button', name: '확인' },
         };
-        onSnapshot();
-        data = { refs, snapshot: JSON.stringify(refs) };
+        onSnapshot(refs);
+        data = { refs, snapshot: snapshotText(refs) };
       } else if (command[0] === 'fill') {
         assert.ok(refs[command[1].slice(1)]);
         if (applyFill) fieldValue = command[2];
       } else if (command[0] === 'click') onClick();
+      else if (command[0] === 'check' || command[0] === 'uncheck') checked = command[0] === 'check';
+      else if (command[0] === 'is' && command[1] === 'checked') data = { checked };
       else if (command[0] === 'get' && command[1] === 'value') data = { value: fieldValue };
-      else if (command[0] === 'get' && command[1] === 'text') data = { text: '검색 결과 플래티어' };
+      else if (command[0] === 'get' && command[1] === 'text') data = { text: bodyText };
       else throw new Error(`Unexpected command ${command.join(' ')}`);
       return { page: { ...(pages.get(id!) ?? page) }, result: { success: true, data } };
     },
@@ -91,13 +101,16 @@ function fixture() {
     setValue: (v: string) => {
       fieldValue = v;
     },
+    setBodyText: (text: string) => { bodyText = text; },
+    setFields: (value: FieldLabel[]) => { fields = value; },
+    setSnapshotText: (render: (refs: ElementRefs) => string) => { snapshotText = render; },
     ignoreFill: () => {
       applyFill = false;
     },
     onClick: (fn: () => void) => {
       onClick = fn;
     },
-    onSnapshot: (fn: () => void) => {
+    onSnapshot: (fn: (refs: ElementRefs) => void) => {
       onSnapshot = fn;
     },
     onDecide: (fn: () => void) => {
@@ -133,6 +146,204 @@ test('planner text is filled exactly once and verified using a fresh ref and act
     false,
     'fill does not silently submit',
   );
+});
+
+test('step decider receives the same unnamed field context as the form runner', async () => {
+  const f = fixture();
+  f.setFields([{ role: 'textbox', hint: '', label: '업체상품번호' }, { role: 'textbox', hint: '', label: '모델명' }]);
+  f.onSnapshot(refs => { for (const ref of Object.values(refs)) if (ref.role === 'textbox') ref.name = ''; });
+  f.setSnapshotText(refs => Object.entries(refs).map(([ref, el]) => `- ${el.role} "${el.name}" [ref=${ref}]`).join('\n'));
+  const post: DecisionPost = async body => {
+    assert.match(body.state, /업체상품번호/);
+    assert.match(body.state, /모델명/);
+    const ref = `e${f.page.generation * 10 + 1}`;
+    return Object.fromEntries(Object.keys(body.questions).map(key => [key, { choice: ref, probabilities: { [ref]: 0.99 } }]));
+  };
+  const done = await executeBrowserStep(f.runtime, post, { ...f.page }, {
+    operation: 'fill', instruction: '모델명 입력', text: 'ID-ORG-04-IV',
+    expect: [{ kind: 'value', target: '모델명', value: 'ID-ORG-04-IV' }],
+  }, () => {}, allowsDeciderAction);
+  assert.equal(done.result.status, 'completed', JSON.stringify(done.result));
+  assert.deepEqual(f.commands.filter(c => c[0] === 'fill'), [['fill', '@e11', 'ID-ORG-04-IV']]);
+  assert.ok(f.commands.some(c => c.join(' ') === 'get value @e21'));
+});
+
+test('an unnamed supplier radio is identified by its row instead of a neighbouring supplier', async () => {
+  const f = fixture();
+  f.onSnapshot(refs => {
+    const keys = Object.keys(refs);
+    refs[keys[0]] = { role: 'row', name: '1000001 플래티어' };
+    refs[keys[1]] = { role: 'radio', name: '' };
+  });
+  f.setSnapshotText(refs => {
+    const [row, radio, button] = Object.keys(refs);
+    return `- row "1000001 플래티어" [ref=${row}]\n  - radio [ref=${radio}]\n- button "확인" [ref=${button}]`;
+  });
+  const post: DecisionPost = async body => {
+    const ref = `e${f.page.generation * 10 + 1}`;
+    assert.match(body.state, /radio.*1000001 플래티어/);
+    return Object.fromEntries(Object.keys(body.questions).map(key => [key, { choice: ref, probabilities: { [ref]: 0.99 } }]));
+  };
+  const done = await executeBrowserStep(f.runtime, post, { ...f.page }, {
+    operation: 'check', instruction: '협력사 플래티어 선택',
+    expect: [{ kind: 'checked', target: '1000001 플래티어', checked: true }],
+  }, () => {}, allowsDeciderAction);
+  assert.equal(done.result.status, 'completed');
+  assert.deepEqual(f.commands.filter(c => c[0] === 'check'), [['check', '@e11']]);
+});
+
+test('failed decisions and verification return the generation of the latest observation', async () => {
+  const f = fixture();
+  f.onDecide(() => { throw new Error('No confident target'); });
+  const blocked = await execute(f);
+  assert.equal(blocked.result.status, 'blocked');
+  assert.equal(blocked.page.generation, f.page.generation);
+  f.onDecide(() => {});
+  f.ignoreFill();
+  const unverified = await execute(f);
+  assert.equal(unverified.result.status, 'needs_replan');
+  assert.equal(unverified.page.generation, f.page.generation);
+  await f.runtime.runAgentCommand('w', unverified.page.pageId, ['get', 'value', '@e0'], 5000, unverified.page.generation);
+});
+
+test('fill uses quoted instruction text when text is omitted', async () => {
+  const f = fixture();
+  const done = await execute(f, {
+    operation: 'fill',
+    instruction: '협력사 칸에 「안녕」을 입력해줘',
+    expect: [{ kind: 'value', target: '협력사', value: '안녕' }],
+  });
+  assert.equal(done.result.status, 'completed');
+  assert.deepEqual(f.commands.filter((c) => c[0] === 'fill'), [['fill', '@e10', '안녕']]);
+});
+
+test('explicit fill text takes precedence over quoted instruction text, including an empty value', async () => {
+  for (const text of ['직접 전달한 값', '']) {
+    const f = fixture();
+    const done = await execute(f, {
+      operation: 'fill', instruction: '협력사에 「다른 값」 입력해줘', text,
+      expect: [{ kind: 'value', target: '협력사', value: text }],
+    });
+    assert.equal(done.result.status, 'completed');
+    assert.deepEqual(f.commands.filter((c) => c[0] === 'fill'), [['fill', '@e10', text]]);
+  }
+});
+
+test('fill rejects missing text and unusable quotes before any browser command', async () => {
+  const f = fixture();
+  for (const instruction of ['협력사 입력해줘', '협력사에 「」 입력해줘', '협력사에 「안녕 입력해줘']) {
+    await assert.rejects(execute(f, { ...fill, instruction, text: undefined }), /put the exact text in `text`/);
+  }
+  assert.equal(f.commands.length, 0);
+});
+
+test('quoted fill text still requires a matching value check and does not replace invalid text', async () => {
+  const f = fixture();
+  const args = { ...fill, instruction: '협력사에 「안녕」 입력해줘', text: undefined };
+  await assert.rejects(execute(f, args), /value check matching the exact text/);
+  for (const text of [null, 123]) {
+    await assert.rejects(execute(f, { ...args, text }), /text must be a string/);
+  }
+  assert.equal(f.commands.length, 0);
+});
+
+test('quoted action words in a field value do not block an exact fill', async () => {
+  const f = fixture();
+  const text = '삭제 금지 상품, 승인요청 문구';
+  const done = await execute(f, {
+    operation: 'fill', instruction: `협력사에 「${text}」 입력해줘`, text,
+    expect: [{ kind: 'value', target: '협력사', value: text }],
+  });
+  assert.equal(done.result.status, 'completed');
+  assert.equal(f.commands.filter(c => c[0] === 'fill').length, 1);
+});
+
+test('commit requests delegate to the runtime guard; planner confirmed=true grants nothing', async () => {
+  for (const name of ['저장', '임시저장', '등록', '승인요청']) {
+    const f = fixture();
+    f.onClick(() => { throw new Error(BROWSER_ACTION_BLOCKED); });
+    const done = await execute(f, {
+      operation: 'click', instruction: `「${name}」 버튼 눌러줘`, confirmed: true,
+      expect: [{ kind: 'text', value: '완료' }],
+    });
+    assert.equal(done.result.status, 'blocked', name);
+    assert.equal(done.result.mutation_attempted, true);
+    assert.equal(f.commands.filter(c => c[0] === 'click').length, 1);
+  }
+});
+
+test('a runtime safety block cannot be reported completed from an already satisfied check', async () => {
+  const f = fixture();
+  f.onClick(() => { throw new Error(BROWSER_ACTION_BLOCKED); });
+  const done = await execute(f, {
+    operation: 'click', instruction: '확인 클릭',
+    expect: [{ kind: 'text', value: '검색 결과 플래티어' }],
+  });
+  assert.equal(done.result.status, 'blocked');
+  assert.equal(done.result.mutation_attempted, true);
+});
+
+test('a guard inspection failure cannot become success from existing page text', async () => {
+  const f = fixture();
+  f.onClick(() => { throw new Error('browser_denied: 브라우저 동작 안전 검사 시간 초과.'); });
+  const done = await execute(f, {
+    operation: 'click', instruction: '확인 클릭',
+    expect: [{ kind: 'text', value: '검색 결과 플래티어' }],
+  });
+  assert.equal(done.result.status, 'blocked');
+  assert.equal(done.result.mutation_attempted, true);
+});
+
+test('pre-existing menu text cannot verify a click, and the click is never replayed', async () => {
+  const f = fixture();
+  f.setBodyText('메일쓰기 임시보관함');
+  const done = await execute(f, {
+    operation: 'click', instruction: '확인 클릭',
+    expect: [{ kind: 'text', value: '임시보관함' }],
+  });
+  assert.equal(done.result.status, 'needs_replan');
+  assert.equal(f.commands.filter(c => c[0] === 'click').length, 1);
+  assert.equal((done.result.checks as Array<{ changed: boolean }>)[0].changed, false);
+});
+
+test('a new completion notice verifies a click while an unchanged URL does not', async () => {
+  const f = fixture();
+  f.onClick(() => f.setBodyText('메일이 임시저장되었습니다.'));
+  const done = await execute(f, {
+    operation: 'click', instruction: '확인 클릭',
+    expect: [{ kind: 'text', value: '메일이 임시저장되었습니다.' }],
+  });
+  assert.equal(done.result.status, 'completed');
+  const unchanged = await execute(f, {
+    operation: 'click', instruction: '확인 클릭',
+    expect: [{ kind: 'url', value: f.page.url }],
+  });
+  assert.equal(unchanged.result.status, 'needs_replan');
+  f.setBodyText('메일쓰기');
+  f.onClick(() => f.setBodyText('메일쓰기 메일이 임시저장되었습니다.'));
+  const mixed = await execute(f, {
+    operation: 'click', instruction: '확인 클릭',
+    expect: [{ kind: 'text', value: '메일쓰기' }, { kind: 'text', value: '메일이 임시저장되었습니다.' }],
+  });
+  assert.equal(mixed.result.status, 'completed');
+});
+
+test('navigation to a registration page reaches runtime inspection instead of a keyword block', async () => {
+  const f = fixture();
+  f.onClick(() => { f.page.url = 'https://example.test/register'; });
+  f.onSnapshot(refs => {
+    for (const ref of Object.values(refs)) {
+      if (ref.role === 'button') Object.assign(ref, { role: 'link', name: '상품 등록' });
+    }
+  });
+  const post: DecisionPost = async body => Object.fromEntries(Object.keys(body.questions).map(key =>
+    [key, { choice: 'e12', probabilities: { e12: 0.99 } }]));
+  const done = await executeBrowserStep(f.runtime, post, { ...f.page }, {
+    operation: 'click', instruction: '상품 등록 페이지로 이동해줘',
+    expect: [{ kind: 'url', value: 'https://example.test/register' }],
+  }, () => {}, allowsDeciderAction);
+  assert.equal(done.result.status, 'completed');
+  assert.equal(f.commands.filter(c => c[0] === 'click').length, 1);
 });
 
 test('a successful command with an unchanged field needs replanning and is never replayed', async () => {
@@ -246,18 +457,16 @@ test('cancellation during a decision prevents the mutation', async () => {
   );
 });
 
-test('dangerous requests keep their existing confirmation path', async () => {
+test('dangerous requests reach the shared runtime guard without replay', async () => {
   const f = fixture();
+  f.onClick(() => { throw new Error(BROWSER_ACTION_BLOCKED); });
   const done = await execute(f, {
     operation: 'click',
     instruction: '모두 삭제해',
     expect: [{ kind: 'text', value: '완료' }],
   });
   assert.equal(done.result.status, 'blocked');
-  assert.equal(
-    f.commands.some((c) => c[0] === 'click'),
-    false,
-  );
+  assert.equal(f.commands.filter((c) => c[0] === 'click').length, 1);
 });
 
 test('malformed and missing completion checks are rejected before any browser command', async () => {

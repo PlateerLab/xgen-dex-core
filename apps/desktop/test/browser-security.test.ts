@@ -49,6 +49,7 @@ test('step execution is not advertised but still dispatches with a decider and t
       return { info: page };
     },
     runAgentCommand: async () => ({ page, result: { data: { refs: {}, snapshot: 'Step page' } } }),
+    pageScript: async () => [],
   } as unknown as BrowserRuntime;
   const provider = new BrowserToolProvider(runtime);
   provider.configure(true);
@@ -64,6 +65,9 @@ test('step execution is not advertised but still dispatches with a decider and t
   const args = { action: 'step', operation: 'observe', instruction: '주소 확인', expect: [{ kind: 'url', value: page.url }] };
   const output = await provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId });
   assert.match(JSON.stringify(output), /completed/);
+  assert.equal(output.isError, false);
+  const failed = await provider.callTool(BROWSER_INTERACT_TOOL, { ...args, expect: [{ kind: 'url', value: 'https://example.com/other' }] }, { workflowId: page.workflowId });
+  assert.equal(failed.isError, true);
   await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { ...args, workflow_id: 'other' }, { workflowId: page.workflowId }), /일치하지/);
   const controller = new AbortController();
   controller.abort();
@@ -74,6 +78,24 @@ test('step execution is not advertised but still dispatches with a decider and t
   await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId }), /이전 단계/);
   release();
   await first;
+});
+
+test('legacy fill accepts a string value alias and never silently clears a field for missing text', async () => {
+  const commands: string[][] = [];
+  const runtime = {
+    runAgentCommand: async (_wid: string, _id: string, command: string[]) => {
+      commands.push(command);
+      return { page: null, result: { success: true } };
+    },
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true);
+  const args = { action: 'fill', page_id: 'p', ref: '@e25', value: '플래티어' };
+  await provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: 'w' });
+  await provider.callTool(BROWSER_INTERACT_TOOL, { ...args, text: '' }, { workflowId: 'w' });
+  assert.deepEqual(commands, [['fill', '@e25', '플래티어'], ['fill', '@e25', '']]);
+  await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { ...args, value: undefined }, { workflowId: 'w' }), /입력할 문자열/);
+  assert.equal(commands.length, 2);
 });
 
 test('browser scheme allowlist normalizes host input and blocks privileged schemes', () => {
@@ -314,6 +336,10 @@ test('popup approval preserves the next original window.open instead of replayin
 
 test('popup tabs keep their WebContents, agent ownership and parent lifecycle', async () => {
   class Contents extends EventEmitter {
+    mainFrame = {
+      executeJavaScript: async (code: string) => code.includes('const allowed ='),
+      get framesInSubtree() { return [this]; },
+    };
     navigationHistory = { canGoBack: () => false, canGoForward: () => false };
     destroyed = false;
     session = 'test-session';
@@ -324,6 +350,8 @@ test('popup tabs keep their WebContents, agent ownership and parent lifecycle', 
       readonly url: string,
     ) {
       super();
+      const owner = this;
+      Object.defineProperty(this.mainFrame, 'detached', { get: () => owner.destroyed });
     }
     isDestroyed = () => this.destroyed;
     getURL = () => this.url;

@@ -1276,8 +1276,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const after = text.slice(text.lastIndexOf(lastWord) + lastWord.length);
       if (!TYPING_WORD.test(after)) return no('입력은 글자가 끝난 뒤', pick.top);
     }
-    if (!allowsDeciderAction(text, element.name ?? '')) {
-      return no('되돌릴 수 없을 수 있는 동작 — 서버로', pick.top);
+    if (!allowsDeciderAction(action === 'click' ? 'click' : 'fill', element, '', text)) {
+      return no('저장·등록·승인요청·삭제 등은 자동 실행할 수 없음 — 사용자 확인 필요', pick.top);
     }
     // 항목(또는 그 셀)을 고르라는(고른 것을 풀라는) 말인데 그 항목 안에 고르는 체크박스가 있으면 체크박스를 누른다 —
     // 항목 이름은 펼치기만 하는 트리가 있다(10/16 BO 전시카테고리 찾기, checkOf·itemOf).

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dedupeByLabel, pickElement, type DecisionPost, type DecisionRequest, type ElementRefs } from '../src/main/fast-act';
+import { dedupeByLabel, pickElement, withoutValueEchoes, namedField, mentionsAnyName, type DecisionPost, type DecisionRequest, type ElementRefs } from '../src/main/fast-act';
 import { buildScreen, PICK_Q13, stateWith } from '../src/main/fast-act-e13';
 
 test('같은 이름과 이름 없는 서로 다른 ref를 유지한다', () => {
@@ -85,4 +85,42 @@ test('한 방향으로 물은 묶음의 2등은 확률이 낮아도 결승에 �
     }));
   const result = await pickElement(post, '반품기능 제공안함으로 해줘', origin, refs, scr);
   assert.equal(result?.ref, 'r2');
+});
+
+test('칸 이름을 부른 지시에서 넣을 값과 이름만 같은 표 칸은 후보에서 뺀다', () => {
+  const refs: ElementRefs = {
+    e25: { role: 'combobox', name: '협력사' },
+    e37: { role: 'combobox', name: '브랜드' },
+    e376: { role: 'gridcell', name: '플래티어' },
+    e9: { role: 'option', name: '플래티어' },
+    e5: { role: 'file', name: '대표이미지' },
+    e6: { role: 'treeitem', name: '가전디지털' },
+    e7: { role: 'link', name: '플래티어' },
+    e364: { role: 'row', name: '행 선택 create 플래티어 통합몰 패션의류/잡화>남성패션>가방/잡화 해당' },
+    e8: { role: 'row', name: '1000002 플래티어 협력사 상품공급업자' },
+  };
+  const all = Object.keys(refs);
+  const keys = (text: string) => Object.keys(withoutValueEchoes(refs, {}, text));
+  const noCell = all.filter((k) => k !== 'e376' && k !== 'e364');
+  assert.deepEqual(keys('협력사를 플래티어 협력사로 지정해줘'), noCell);
+  assert.deepEqual(keys('협력사에 「플래티어 협력사」 지정해줘'), noCell);
+  // 줄 이름에 부른 칸 이름(협력사)이 있으면 남긴다 — 브랜드를 부르면 협력사 줄도 값의 메아리다.
+  assert.deepEqual(keys('브랜드를 플래티어로 지정해줘'), noCell.filter((k) => k !== 'e8'));
+  // 칸 이름을 부르지 않았거나(따옴표 안의 칸 이름은 값), 표 칸이 아니면 그대로.
+  assert.deepEqual(keys('플래티어 눌러줘'), all);
+  assert.deepEqual(keys('「플래티어 협력사」 눌러줘'), all);
+  assert.deepEqual(keys('대표이미지에 「상품이미지/003_대표이미지.png」 올려줘'), all);
+});
+
+test('팝업이 말과 상관없고 연 탭의 칸을 부르면 연 탭에서 판단한다 — 판정 함수', () => {
+  const category: ElementRefs = { e4: { role: 'button', name: '적용' }, e6: { role: 'treeitem', name: '패션의류/잡화' }, e9: { role: 'textbox', name: '카테고리명 검색어' } };
+  const partner: ElementRefs = { e2: { role: 'textbox', name: '협력사명 검색어' }, e5: { role: 'radio', name: '1 1000002 플래티어 협력사' }, e7: { role: 'button', name: '적용' } };
+  const form: ElementRefs = { e25: { role: 'combobox', name: '협력사' }, e234: { role: 'combobox', name: '출고소요일 (현재: 3일)' } };
+  assert.equal(mentionsAnyName(category, '협력사를 플래티어 협력사로 지정해줘'), false);
+  assert.equal(mentionsAnyName(partner, '출고소요일을 2일로 변경해줘'), false);
+  assert.equal(namedField(form, {}, '출고소요일을 2일로 변경해줘'), '출고소요일');
+  // 팝업 안의 일은 팝업에서 — 줄 이름·버튼·검색칸 낱말이 말에 있다.
+  assert.equal(mentionsAnyName(partner, '플래티어 협력사 선택해줘'), true);
+  assert.equal(mentionsAnyName(partner, '적용 눌러줘'), true);
+  assert.equal(mentionsAnyName(category, '패션의류/잡화 펼쳐줘'), true);
 });

@@ -24,6 +24,9 @@ import {
   saysValue,
   LONG_INSTRUCTION,
   withoutDisabledTwins,
+  withoutValueEchoes,
+  namedField,
+  mentionsAnyName,
   decisionState,
   elementDisplay,
   elementLabel,
@@ -264,6 +267,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private listClosed = false;
   /** 이번 지시에서 숨은 탭을 이미 꺼내 다시 읽었나 — 한 번만. */
   private revealed = false;
+  private leftPopup = false;
   /** 실행 직전 이 에이전트의 탭과 그 세대 — 누른 것이 새 탭을 열었는지, 열려 있던 팝업을 다시 불렀는지 볼 때 쓴다. */
   private tabsAtAct = new Map<string, number>();
 
@@ -291,17 +295,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       await this.reveal(got.page);
       got = await this.snapshot().catch(() => null);
     }
-    if (!got) return null;
-    const said = text.replace(/\s+/g, '');
-    for (const [ref, el] of Object.entries(got.snap.refs)) {
-      if (!TYPABLE.has(el.role) && el.role !== 'checkbox' && el.role !== 'radio') continue;
-      // 선택 상자 이름 뒤의 지금 값(boxName "출고소요일 (현재: 3일)")은 떼고 본다.
-      for (const raw of [el.name, got.snap.labels[ref]]) {
-        const name = (raw ?? '').replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
-        if (name.length >= 2 && said.includes(name)) return name;
-      }
-    }
-    return null;
+    return got && namedField(got.snap.refs, got.snap.labels, text);
   }
 
   /** 숨은 탭을 화면에 꺼내 크기가 잡힐 때까지 기다리고, 화면 기억을 비운다 — 한 지시에 한 번만. */
@@ -1082,6 +1076,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.noticed = [];
     this.listClosed = false;
     this.revealed = false;
+    this.leftPopup = false;
     const from = this.actions.length;
     // 되물었으면(팝업·트리에서 고르지 못함, 선택되지 않음 — tell) 실행은 했어도 요청을 마친 것이 아니다.
     const asked = (o: Outcome): Outcome => (o.acted && this.actions.slice(from).some((a) => a.tell) ? { ...o, effect: 'none' } : o);
@@ -1139,6 +1134,28 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (!s) return no('열린 브라우저 탭 없음');
     if (!Object.keys(s.snap.refs).length) return no('페이지 요소를 읽지 못함');
     const { snap, page } = s;
+    // 팝업이 앞에 있는데 말이 팝업의 어떤 이름도 부르지 않고 팝업을 연 탭의 칸을 부른다 — 그 탭에서 판단한다. 팝업만 보면 모델은
+    // 무슨 말에나 팝업 요소를 골랐다(10/21 BO: 표준카테고리 조회가 열린 채 "협력사를 플래티어 협력사로 지정해줘" → 팝업의 [적용],
+    // 10/20 협력사 조회가 열린 채 "출고소요일을 2일로 변경해줘" → 이름 없는 radio). 연 탭에도 그 칸이 없으면 팝업으로 돌아간다.
+    if (page.mode === 'popup' && page.openerPageId && !this.leftPopup && !th.partial && !mentionsAnyName(snap.refs, text)) {
+      this.leftPopup = true;
+      const runtime = getBrowserRuntime();
+      if (runtime.get(page.openerPageId)) {
+        runtime.activate(page.openerPageId);
+        this.snap = null;
+        let opener = await this.snapshot().catch(() => null);
+        // 숨은 탭(1×1)은 칸 이름이 구역 제목으로 붙는다 — 꺼내서 다시 읽는다(namesField 와 같다).
+        if (opener?.snap.hidden && !this.revealed) {
+          await this.reveal(opener.page);
+          opener = await this.snapshot().catch(() => null);
+        }
+        const field = opener && namedField(opener.snap.refs, opener.snap.labels, text);
+        diag(SCOPE, 'opener-tab', { text, field, popup: page.url });
+        if (field) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+        runtime.activate(page.pageId);
+        this.snap = null;
+      }
+    }
     const origin = originOf(page.url);
     const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
     const scr = this.screenOf(origin, allRefs);
@@ -1193,7 +1210,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           !(pressOnly && TYPABLE.has(r.role)),
       ),
     );
-    const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled);
+    const candidates = withoutValueEchoes(withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled), snap.labels, text);
     const picked = await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {

@@ -45,7 +45,7 @@
 - 이름·메모·수량·배송·알림·상세 설명 여섯 항목: 서버 브라우저 경로 34.4초, 전부 정확히 반영. **이 요청에서 모델은 BrowserFill 대신 BrowserInteract를 선택했다.** [화면](evidence/bulk.png)
 - 최종 빌드에서 `알림 받기 체크해줘` 두 번: 2초/1.5초, 두 번째는 이미 체크됨으로 처리하며 체크 유지. 다른 탭은 체크되지 않았다. [화면](evidence/check-repeat.png)
 
-[요청·응답](evidence/requests.txt), [빠른 실행 라우팅 로그](evidence/routing.log), [실제 서버 도구 호출](evidence/server-tools.json), [도구 목록 토글 결과](evidence/mcp-toggle-verified.json). 체크 반복은 `86d2f45` 빌드, 앞선 입력·복구는 `ee99b56` 빌드에서 확인했다.
+[요청·응답](evidence/requests.txt), [빠른 실행 라우팅 로그](evidence/routing.txt), [실제 서버 도구 호출](evidence/server-tools.json), [도구 목록 토글 결과](evidence/mcp-toggle-verified.json). 체크 반복은 `86d2f45` 빌드, 앞선 입력·복구는 `ee99b56` 빌드에서 확인했다.
 
 ## BO 전체 입력이 아직 완료가 아닌 이유
 

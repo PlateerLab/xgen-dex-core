@@ -1,9 +1,9 @@
 # XD
 
-서버 없이 **이 PC 에서** 에이전트를 돌리는 로컬용 XGEN Dex. Dex 와 같은 버전으로 같은 릴리스에 나간다.
+서버 없이 **이 PC 에서** 에이전트를 돌리는 로컬용 XGEN DexOn. DexOn 과 같은 버전으로 같은 릴리스에 나간다.
 
 - 설계·단계: [DESIGN.md](DESIGN.md)
-- 화면은 XD 전용이고, Dex 와 같은 기본 부품(마크다운·작업 과정·아이콘·스타일)만 `src/renderer/src/dex.ts` 로
+- 화면은 XD 전용이고, DexOn 과 같은 기본 부품(마크다운·작업 과정·아이콘·스타일)만 `src/renderer/src/dex.ts` 로
   가져온다(DESIGN.md §8) — 빌드 전에 `npm --prefix apps/desktop ci`.
 
 ```bash

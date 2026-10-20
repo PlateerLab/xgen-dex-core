@@ -10,7 +10,7 @@ export function Header(props: {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text bold color="blueBright">
-        XGEN Dex
+        XGEN DexOn
       </Text>
       {props.profile ? (
         <Text>

@@ -450,7 +450,7 @@ function createWindow(): void {
     minWidth: 860,
     minHeight: 600,
     show: false,
-    title: 'XGen Dex',
+    title: 'XGEN DexOn',
     // Hide the generic File/Edit/View/Window/Help bar (Alt still reveals it on
     // Win/Linux) so the app doesn't read as a raw Electron shell.
     autoHideMenuBar: true,
@@ -1385,7 +1385,7 @@ function applyAutoLaunch(enabled: boolean): boolean {
       [
         '[Desktop Entry]',
         'Type=Application',
-        'Name=XGen Dex',
+        'Name=XGEN DexOn',
         `Exec=${exec}`,
         'X-GNOME-Autostart-enabled=true',
         'NoDisplay=false',
@@ -1471,7 +1471,7 @@ function createTray(): boolean {
   try {
     const icon = nativeImage.createFromDataURL(`data:image/png;base64,${TRAY_ICON_B64}`);
     tray = new Tray(icon);
-    tray.setToolTip('XGen Dex');
+    tray.setToolTip('XGEN DexOn');
     rebuildTrayMenu();
     tray.on('click', () => showMain());
     return true;
@@ -4201,7 +4201,7 @@ if (!gotLock) {
           {
             id: `update-ready-${version}`,
             type: 'system.update_ready',
-            title: 'XGen Dex 업데이트',
+            title: 'XGEN DexOn 업데이트',
             body: `새 버전 v${version} — 클릭하면 지금 업데이트합니다.`,
             occurredAt: new Date().toISOString(),
             groupKey: 'system:update',

@@ -1,4 +1,4 @@
-# XGEN Dex
+# XGEN DexOn
 
 XGEN 에이전트를 쓰는 세 가지 방법.
 
@@ -6,17 +6,17 @@ XGEN 에이전트를 쓰는 세 가지 방법.
   <tr>
     <td width="33%" valign="top">
       <a href="images/2026-08-31_14-22.png">
-        <img src="images/2026-08-31_14-22.png" alt="XGEN Dex 데스크톱 앱 — 왼쪽에 대화 목록, 가운데에 답변" width="100%">
+        <img src="images/2026-08-31_14-22.png" alt="XGEN DexOn 데스크톱 앱 — 왼쪽에 대화 목록, 가운데에 답변" width="100%">
       </a>
     </td>
     <td width="33%" valign="top">
       <a href="images/2026-08-31_14-08.png">
-        <img src="images/2026-08-31_14-08.png" alt="XGEN Dex CLI — 터미널에서 Agent 목록과 대화" width="100%">
+        <img src="images/2026-08-31_14-08.png" alt="XGEN DexOn CLI — 터미널에서 Agent 목록과 대화" width="100%">
       </a>
     </td>
     <td width="33%" valign="top">
       <a href="images/2026-08-31_14-07.png">
-        <img src="images/2026-08-31_14-07.png" alt="XGEN Dex VS Code 확장 — 사이드바에서 Agent와 대화" width="100%">
+        <img src="images/2026-08-31_14-07.png" alt="XGEN DexOn VS Code 확장 — 사이드바에서 Agent와 대화" width="100%">
       </a>
     </td>
   </tr>
@@ -91,7 +91,7 @@ Node.js 20 이상이 필요합니다.
 npm i -g xgen-dex-cli
 ```
 
-`dex` 와 `xgen-dex` 두 이름으로 설치됩니다.
+`dexon` · `dex` · `xgen-dex` 세 이름으로 설치됩니다(셋 다 같은 명령입니다).
 
 npm 레지스트리에 나갈 수 없는 사내망이라면 Releases 의 `xgen-dex-cli-<버전>.tgz` 를
 받아 설치합니다:
@@ -103,11 +103,11 @@ npm i -g ./xgen-dex-cli-<버전>.tgz
 ### 쓰기
 
 ```bash
-dex                                              # 대화형 터미널 UI
-dex profile set corp --server https://xgen.example.com
-dex login --email me@corp.com
-dex agents list
-dex chat --agent <workflow-id>
+dexon                                              # 대화형 터미널 UI
+dexon profile set corp --server https://xgen.example.com
+dexon login --email me@corp.com
+dexon agents list
+dexon chat --agent <workflow-id>
 ```
 
 에이전트는 **대화에 연결한 폴더 안에서만** 이 컴퓨터의 파일과 터미널을 씁니다. 데스크톱
@@ -115,20 +115,20 @@ dex chat --agent <workflow-id>
 폴더로 연결합니다. 연결을 해제하면 다음 요청부터 그 폴더를 쓰지 않습니다.
 
 ```bash
-cd ~/work/my-repo && dex chat --agent <workflow-id>     # 이 폴더가 대화의 작업 공간
-dex chat --agent <workflow-id> --folder ~/work/a,~/work/b
-dex tools list                                   # 연결된 폴더에서 쓸 수 있는 도구
+cd ~/work/my-repo && dexon chat --agent <workflow-id>     # 이 폴더가 대화의 작업 공간
+dexon chat --agent <workflow-id> --folder ~/work/a,~/work/b
+dexon tools list                                   # 연결된 폴더에서 쓸 수 있는 도구
 ```
 
 새 버전이 나왔는지 확인하고 올립니다.
 
 ```bash
-dex update            # 있으면 설치, 없으면 최신이라고 알려 줍니다
-dex update --check    # 확인만
+dexon update            # 있으면 설치, 없으면 최신이라고 알려 줍니다
+dexon update --check    # 확인만
 ```
 
 스크립트에서 쓸 때는 `--json`(단일 결과) 또는 `--jsonl`(채팅 이벤트 스트림)을 붙입니다.
-전체 명령은 `dex --help`.
+전체 명령은 `dexon --help`.
 
 ### 한글 입력
 
@@ -171,7 +171,7 @@ macOS처럼 OS 입력기를 쓰는 경우, 입력기가 만들어 준 한글은 
 
 OS 키체인이 있으면 거기, 없으면 사용자 데이터 폴더의 소유자 전용(0600) 파일입니다.
 헤드리스 서버나 컨테이너처럼 키링이 없는 곳에서도 그대로 동작합니다. 지금 어느 쪽인지는
-`dex status` 가 알려 줍니다.
+`dexon status` 가 알려 줍니다.
 
 키링이 매번 암호를 물어 성가시면 `DEX_NO_KEYCHAIN=1` 로 파일 저장을 강제할 수 있습니다.
 
@@ -195,14 +195,14 @@ VS Code 1.95 이상이 필요합니다.
 
 ### 쓰기
 
-명령 팔레트(`Ctrl/Cmd+Shift+P`)에서 **XGEN Dex** 로 시작하는 명령을 씁니다 —
+명령 팔레트(`Ctrl/Cmd+Shift+P`)에서 **XGEN DexOn** 으로 시작하는 명령을 씁니다 —
 `서버 프로필 설정` → `로그인` → `Agent와 대화` 순서입니다.
 
-`dex` 가 `PATH` 에 없거나 다른 위치에 있으면 설정에서 지정합니다:
+`dexon` 이 `PATH` 에 없거나 다른 위치에 있으면 설정에서 지정합니다:
 
 | 설정 | 뜻 |
 |---|---|
-| `xgenDex.cliPath` | `dex` 실행 파일 경로. 비우면 `PATH` 와 npm 전역 폴더에서 찾습니다 |
+| `xgenDex.cliPath` | `dexon` 실행 파일 경로. 비우면 `PATH` 와 npm 전역 폴더에서 찾습니다 |
 | `xgenDex.profile` | 쓸 서버 프로필. 비우면 CLI 의 현재 프로필 |
 
 ---
@@ -216,7 +216,7 @@ VS Code 1.95 이상이 필요합니다.
 기본은 이 저장소의 Releases 를 보지만, 사내망처럼 GitHub 에 나갈 수 없는 곳에서는
 같은 화면에서 **XGEN** 으로 바꿔 자기 서버의 다운로드 센터를 보게 할 수 있습니다.
 
-CLI 는 `dex update` 로 확인하고 올립니다 — 최신이면 그렇다고만 말합니다. 전역 npm
+CLI 는 `dexon update` 로 확인하고 올립니다 — 최신이면 그렇다고만 말합니다. 전역 npm
 설치가 아니면 자동으로 올리지 않고 무엇을 하면 되는지 알려 줍니다.
 
 확장은 자동 업데이트가 없으니 새 `.vsix` 로 다시 설치하세요.

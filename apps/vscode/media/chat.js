@@ -705,7 +705,7 @@
       login: {
         icon: '↗',
         title: `${profile?.name || 'XGEN'}에 로그인하세요`,
-        description: '로그인 정보는 dex-cli가 안전하게 처리하며 비밀번호는 저장하지 않습니다.',
+        description: '로그인 정보는 DexOn CLI가 안전하게 처리하며 비밀번호는 저장하지 않습니다.',
         action: 'login',
         label: '로그인',
       },
@@ -718,7 +718,7 @@
       },
       error: {
         icon: '!',
-        title: 'XGEN Dex를 불러오지 못했습니다',
+        title: 'XGEN DexOn을 불러오지 못했습니다',
         description: state.error || 'CLI 엔진 상태를 확인한 다음 다시 시도해 주세요.',
         action: 'refresh',
         label: '다시 시도',

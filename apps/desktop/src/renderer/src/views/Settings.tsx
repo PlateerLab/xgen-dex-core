@@ -710,7 +710,7 @@ export const Settings: React.FC<{
                         } else if (result.reason === 'macos-unsigned-app') {
                           setNotificationTest('이 앱은 임시/미서명 상태라 알림을 표시할 수 없습니다.');
                         } else if (result.reason === 'os-denied') {
-                          setNotificationTest('macOS 설정에서 XGen Dex 알림을 켜 주세요.');
+                          setNotificationTest('macOS 설정에서 XGEN DexOn 알림을 켜 주세요.');
                           setNotificationNeedsSystemSettings(true);
                         } else if (result.reason === 'unsupported') {
                           setNotificationTest('이 환경은 데스크톱 알림을 지원하지 않습니다.');
@@ -726,7 +726,7 @@ export const Settings: React.FC<{
               </div>
               {notificationNeedsSystemSettings && notifications.platform === 'darwin' && (
                 <div className="field-row">
-                  <span className="small muted">시스템 설정 › 알림 › XGen Dex를 확인하세요.</span>
+                  <span className="small muted">시스템 설정 › 알림 › XGEN DexOn을 확인하세요.</span>
                   <button
                     className="secondary"
                     onClick={() =>

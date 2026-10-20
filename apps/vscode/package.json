@@ -1,7 +1,7 @@
 {
   "name": "xgen-dex-vscode",
-  "displayName": "XGEN Dex",
-  "description": "Use XGEN Dex agents in Visual Studio Code through the dex-cli engine.",
+  "displayName": "XGEN DexOn",
+  "description": "Use XGEN DexOn agents in Visual Studio Code through the DexOn CLI engine.",
   "version": "1.98.0",
   "publisher": "xgen",
   "license": "Apache-2.0",
@@ -39,89 +39,89 @@
     "commands": [
       {
         "command": "xgenDex.refresh",
-        "title": "XGEN Dex: 새로 고침",
+        "title": "XGEN DexOn: 새로 고침",
         "icon": "$(refresh)"
       },
       {
         "command": "xgenDex.searchAgents",
-        "title": "XGEN Dex: Agent 검색",
+        "title": "XGEN DexOn: Agent 검색",
         "icon": "$(search)"
       },
       {
         "command": "xgenDex.openAgent",
-        "title": "XGEN Dex: Agent와 대화",
+        "title": "XGEN DexOn: Agent와 대화",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "xgenDex.showAgents",
-        "title": "XGEN Dex: Agent 골라 새 채팅",
+        "title": "XGEN DexOn: Agent 골라 새 채팅",
         "icon": "$(hubot)"
       },
       {
         "command": "xgenDex.showConversations",
-        "title": "XGEN Dex: 대화 목록",
+        "title": "XGEN DexOn: 대화 목록",
         "icon": "$(list-unordered)"
       },
       {
         "command": "xgenDex.showSettings",
-        "title": "XGEN Dex: 계정 및 연결 설정",
+        "title": "XGEN DexOn: 계정 및 연결 설정",
         "icon": "$(settings-gear)"
       },
       {
         "command": "xgenDex.newChat",
-        "title": "XGEN Dex: 새 채팅",
+        "title": "XGEN DexOn: 새 채팅",
         "icon": "$(add)"
       },
       {
         "command": "xgenDex.cancelChat",
-        "title": "XGEN Dex: 응답 취소",
+        "title": "XGEN DexOn: 응답 취소",
         "icon": "$(debug-stop)"
       },
       {
         "command": "xgenDex.openHistory",
-        "title": "XGEN Dex: 대화 기록",
+        "title": "XGEN DexOn: 대화 기록",
         "icon": "$(history)"
       },
       {
         "command": "xgenDex.setupProfile",
-        "title": "XGEN Dex: 서버 프로필 설정"
+        "title": "XGEN DexOn: 서버 프로필 설정"
       },
       {
         "command": "xgenDex.login",
-        "title": "XGEN Dex: 로그인"
+        "title": "XGEN DexOn: 로그인"
       },
       {
         "command": "xgenDex.logout",
-        "title": "XGEN Dex: 로그아웃"
+        "title": "XGEN DexOn: 로그아웃"
       },
       {
         "command": "xgenDex.switchProfile",
-        "title": "XGEN Dex: 프로필 전환"
+        "title": "XGEN DexOn: 프로필 전환"
       },
       {
         "command": "xgenDex.restartEngine",
-        "title": "XGEN Dex: CLI 엔진 다시 시작"
+        "title": "XGEN DexOn: CLI 엔진 다시 시작"
       },
       {
         "command": "xgenDex.installCli",
         "title": "CLI 설치 / 복구",
-        "category": "XGEN Dex"
+        "category": "XGEN DexOn"
       }
     ],
     "configuration": {
-      "title": "XGEN Dex",
+      "title": "XGEN DexOn",
       "properties": {
         "xgenDex.cliPath": {
           "type": "string",
           "default": "dex",
           "scope": "application",
-          "description": "dex-cli 실행 파일 경로입니다. JavaScript 엔트리를 지정하면 node로 실행합니다."
+          "description": "DexOn CLI 실행 파일 경로입니다. JavaScript 엔트리를 지정하면 node로 실행합니다."
         },
         "xgenDex.profile": {
           "type": "string",
           "default": "",
           "scope": "application",
-          "description": "확장에서 사용할 프로필입니다. 비어 있으면 dex-cli의 현재 프로필을 사용합니다."
+          "description": "확장에서 사용할 프로필입니다. 비어 있으면 DexOn CLI의 현재 프로필을 사용합니다."
         }
       }
     },
@@ -129,7 +129,7 @@
       "activitybar": [
         {
           "id": "xgenDex",
-          "title": "XGEN Dex",
+          "title": "XGEN DexOn",
           "icon": "resources/xgen-dex.svg"
         }
       ]

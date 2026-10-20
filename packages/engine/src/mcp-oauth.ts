@@ -40,7 +40,7 @@ type OAuthClientProviderLike = {
   invalidateCredentials?(scope: 'all' | 'client' | 'tokens' | 'verifier'): Promise<void> | void;
 };
 
-const CLIENT_NAME = 'XGen Dex';
+const CLIENT_NAME = 'XGEN DexOn';
 const AUTH_TIMEOUT_MS = 5 * 60_000;
 
 /** An OAuthClientProvider backed by the encrypted keychain. */
@@ -174,7 +174,7 @@ function startLoopback(expectedState: string): Promise<Loopback> {
       const stateOk = gotState === expectedState;
       const ok = !!authCode && !err && stateOk;
       const message = ok
-        ? '이 창을 닫고 XGen Dex로 돌아가세요.'
+        ? '이 창을 닫고 XGEN DexOn으로 돌아가세요.'
         : !stateOk
           ? '보안 검증(state)에 실패했습니다. 다시 시도하세요.'
           : escapeHtml(err || '인가 코드가 없습니다.');

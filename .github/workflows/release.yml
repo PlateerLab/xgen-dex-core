@@ -445,6 +445,7 @@ jobs:
             exit 1
           fi
           npm i -g "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}"
+          dexon --version
           dex --version
           xgen-dex --version
 
@@ -603,11 +604,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
-          name: XGEN Dex v${{ steps.ver.outputs.version }}
+          name: XGEN DexOn v${{ steps.ver.outputs.version }}
           files: artifacts/**/*
           fail_on_unmatched_files: true
           body: |
-            **XGEN Dex** — 데스크톱 · CLI · VSCode 확장. 셋 다 같은 코어에서 나왔고,
+            **XGEN DexOn** (예전 이름 XGEN Dex) — 데스크톱 · CLI · VSCode 확장. 셋 다 같은 코어에서 나왔고,
             이 태그는 **함께 검증된 조합**입니다.
 
             ### 데스크톱
@@ -639,8 +640,8 @@ jobs:
 
             ```
             npm i -g xgen-dex-cli
-            dex            # 대화형 터미널 UI
-            dex --help
+            dexon          # 대화형 터미널 UI (dex · xgen-dex 도 그대로 됩니다)
+            dexon --help
             ```
 
             npm 을 쓸 수 없는 환경이면 아래 `xgen-dex-cli-*.tgz` 를 받아

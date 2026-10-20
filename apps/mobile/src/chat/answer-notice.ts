@@ -37,7 +37,7 @@ export async function notifyAnswer(agentName: string, text: string): Promise<voi
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: agentName || 'XGEN Dex',
+        title: agentName || 'XGEN DexOn',
         body: body.length > 140 ? `${body.slice(0, 140)}…` : body || '답변이 도착했습니다.',
       },
       trigger: null, // 즉시

@@ -132,7 +132,7 @@ export class DexRpcClient {
       ]);
     }
     if (child.exitCode === null && !child.killed) child.kill();
-    this.cleanupProcess(child, new DexRpcError('dex-cli engine stopped'));
+    this.cleanupProcess(child, new DexRpcError('DexOn CLI engine stopped'));
   }
 
   async restart(processSpec?: RpcProcessSpec): Promise<InitializeResult> {
@@ -144,7 +144,7 @@ export class DexRpcClient {
   private async startProcess(): Promise<InitializeResult> {
     this.setState('starting');
     const spec = this.options.process;
-    this.log(`Starting dex-cli: ${spec.command} ${spec.args.join(' ')}`);
+    this.log(`Starting DexOn CLI: ${spec.command} ${spec.args.join(' ')}`);
     const child = this.spawnProcess(spec.command, spec.args, {
       cwd: spec.cwd,
       env: spec.env ?? process.env,
@@ -162,7 +162,7 @@ export class DexRpcClient {
     });
     child.once('close', (code, signal) => {
       const suffix = signal ? `signal ${signal}` : `code ${String(code)}`;
-      this.cleanupProcess(child, new DexRpcError(`dex-cli engine exited with ${suffix}`));
+      this.cleanupProcess(child, new DexRpcError(`DexOn CLI engine exited with ${suffix}`));
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -170,8 +170,8 @@ export class DexRpcClient {
       child.once('error', reject);
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      this.cleanupProcess(child, new DexRpcError(`dex-cli를 시작할 수 없습니다: ${message}`));
-      throw new DexRpcError(`dex-cli를 시작할 수 없습니다: ${message}`);
+      this.cleanupProcess(child, new DexRpcError(`DexOn CLI를 시작할 수 없습니다: ${message}`));
+      throw new DexRpcError(`DexOn CLI를 시작할 수 없습니다: ${message}`);
     });
 
     try {
@@ -217,7 +217,7 @@ export class DexRpcClient {
   private write(message: unknown): void {
     const child = this.child;
     if (!child || child.stdin.destroyed || child.exitCode !== null) {
-      throw new DexRpcError('dex-cli engine is not running');
+      throw new DexRpcError('DexOn CLI engine is not running');
     }
     child.stdin.write(`${JSON.stringify(message)}\n`);
   }

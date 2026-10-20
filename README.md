@@ -271,20 +271,6 @@ npm --prefix apps/desktop test
 섞이는 일. 규칙과 그 이유는 [scripts/contracts/check.mjs](./scripts/contracts/check.mjs)
 안에 적혀 있습니다.
 
-### 단계별 브라우저 조작 (실험)
-
-데스크톱 설정의 **단계별 브라우저 조작**(`fastAct`)을 켜면, 현재 대화에 선택된
-채팅 모델이 작업을 나누고 `BrowserInteract(action: "step")`으로 한 단계씩 실행합니다.
-decider는 최신 화면에서 확신도 **0.8 이상**인 대상을 고릅니다. 입력 문구는 채팅 모델이 지정한 문자열을
-그대로 사용하고, 완료 조건(`expect`, 1–3개)의 실제 입력값·체크 상태·화면 문구·URL·
-팝업 닫힘을 다시 읽어 확인합니다. 팝업 선택은 닫힘과 부모 화면의 값까지 확인합니다.
-
-도구는 `completed` / `needs_replan` / `blocked`와 관찰 결과를 반환합니다.
-검증이 실패해도 조작을 자동 반복하지 않으며, 채팅 모델이 관찰 결과로 남은 계획을
-수정합니다. 마지막 확인에는 `operation: "observe"`를 씁니다. 음성도 인식이 끝난 뒤
-같은 서버 대화로 처리하므로, 말하는 도중에 계획보다 먼저 조작하지 않습니다.
-decider가 없거나 지원하지 않는 조작은 기존 브라우저 도구를 사용합니다.
-
 ### 빌드와 배포
 
 [GitHub Actions](.github/workflows) 가 합니다.
@@ -304,7 +290,3 @@ Info.plist·빌드 번호)이 모두 루트 `package.json` 과 같아야 하고,
 node scripts/version.mjs check        # 전부 같은지
 node scripts/version.mjs set 1.60.0   # 전부 바꾸기 (릴리스 워크플로가 부른다)
 ```
-
-### 로컬 음성 전처리
-
-음성 설정에서 RNNoise 소음 제거와 로컬 Silero VAD를 각각 켜고 끌 수 있습니다. 개발 런타임 설치·실행, 서버 연결 경로와 실제 STT 검증 범위는 [음성 전처리 문서](apps/desktop/docs/audio-preprocessing.md)를 참조하세요.

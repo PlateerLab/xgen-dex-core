@@ -53,7 +53,6 @@ export function useVoiceControls(workflowId?: string): {
   handsfreeOn: boolean;
   handsfreeActive: boolean;
   hfState: string;
-  hfError: string | null;
   toggleVoiceInput: () => void;
   toggleVoiceOutput: () => void;
   toggleHandsfree: () => void;
@@ -101,7 +100,7 @@ export function useVoiceControls(workflowId?: string): {
   }, []);
 
   const handsfreeActive = handsfreeOn && sttAvailable && voiceInputOn;
-  const { state: hfState, error: hfError } = useHandsfree(handsfreeActive, workflowId);
+  const { state: hfState } = useHandsfree(handsfreeActive, workflowId);
 
   return {
     sttAvailable,
@@ -111,7 +110,6 @@ export function useVoiceControls(workflowId?: string): {
     handsfreeOn,
     handsfreeActive,
     hfState,
-    hfError,
     toggleVoiceInput: () => void xgen.config.set({ voiceInput: !voiceInputOn }),
     toggleVoiceOutput: () => void xgen.config.set({ voiceOutput: !voiceOutputOn }),
     toggleHandsfree: () => void xgen.config.set({ voiceHandsfree: !handsfreeOn }),
@@ -131,14 +129,12 @@ export function VoiceButtons({ voice }: VoiceButtonsProps): React.ReactElement {
     voiceOutputOn,
     handsfreeActive,
     hfState,
-    hfError,
     toggleVoiceInput,
     toggleVoiceOutput,
     toggleHandsfree,
   } = voice;
   return (
     <>
-      {hfError && <span role="alert" title={hfError}>음성 오류: {hfError}</span>}
       {sttAvailable && (
         <button
           className={`ov-icon-btn ov-voice ${voiceInputOn ? 'stt-on' : ''}`}

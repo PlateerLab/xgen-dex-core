@@ -8,9 +8,6 @@
  * transport lives here in the main process (Node fetch), so tokens stay out of
  * the renderer.
  */
-import { AudioProcessor } from './audio-preprocessor';
-import { AudioRuntimeManager } from './audio-runtime-manager';
-import { diag } from './diag-log';
 import {
   app,
   BrowserWindow,
@@ -163,8 +160,8 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
-import { rememberServerReply } from './fast-act-chat';
-import { configureFastAct, decisionPost } from './fast-act-runner';
+import { tryFastAct } from './fast-act-chat';
+import { configureFastAct, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
 import { parseWakeWords } from './voice-wake';
@@ -474,7 +471,6 @@ function createWindow(): void {
     },
   });
 
-  getBrowserRuntime().setPopupHostWindow(mainWindow);
   mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     // 에이전트 뷰어 [워크플로우] 탭의 캔버스: 자기 세션으로, 설정된 서버의 /canvas 만(canvas-embed).
     if (params.partition === CANVAS_PARTITION) {
@@ -1770,7 +1766,6 @@ function publishDetachedDone(interactionId: string, output: string): void {
   const chat = detachedChats.get(interactionId);
   if (!chat) return;
   detachedChats.delete(interactionId);
-  rememberServerReply(interactionId, output);
   notificationCenter.publish({
     id: `chat-completed-${interactionId}-${Date.now()}`,
     type: 'chat.completed',
@@ -2115,7 +2110,6 @@ function syncMcp(): void {
     // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
     (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
     revealBrowserPage,
-    decisionPost,
   );
   getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
@@ -2553,74 +2547,6 @@ ipcMain.handle(CHANNELS.agentsNameTaken, (_e, name: string) => getClient().agent
 // The renderer captures audio via getUserMedia and hands bytes to main; main
 // proxies to the backend with the Bearer token. Secrets never reach here.
 ipcMain.handle(CHANNELS.voiceConfig, () => getClient().voice.getVoiceConfig());
-const audioProcessors = new Map<number, { id: string; processor: AudioProcessor; cleanup: () => void }>();
-const audioLogged = new WeakSet<AudioProcessor>();
-const audioSettings = () => ({ noise: loadConfig().voiceNoiseReduction === true, vad: loadConfig().voiceLocalVad === true });
-let audioRuntimeManager: AudioRuntimeManager | undefined;
-const getAudioRuntime = () => audioRuntimeManager ??= new AudioRuntimeManager(
-  join(app.getPath('userData'), 'audio-runtimes'), app.getAppPath(), process.resourcesPath,
-  (url, options) => net.fetch(url, options),
-);
-ipcMain.handle(CHANNELS.audioProcessStatus, () => getAudioRuntime().status());
-ipcMain.handle(CHANNELS.audioRuntimeCheck, () => getAudioRuntime().check());
-ipcMain.handle(CHANNELS.audioRuntimeInstall, (event) => getAudioRuntime().install(progress => {
-  if (!event.sender.isDestroyed()) event.sender.send(CHANNELS.audioRuntimeProgress, progress);
-}));
-ipcMain.handle(CHANNELS.audioProcessStart, async (e) => {
-  const owner = e.sender.id;
-  audioProcessors.get(owner)?.cleanup();
-  const id = crypto.randomUUID();
-  const settings = audioSettings();
-  const processor = new AudioProcessor(settings, getAudioRuntime().runtime());
-  const cleanup = () => {
-    e.sender.removeListener('destroyed', cleanup);
-    if (audioProcessors.get(owner)?.id === id) {
-      diag('audio-preprocess', 'capture-closed', { id });
-      processor.cancel(); audioProcessors.delete(owner);
-    }
-  };
-  audioProcessors.set(owner, { id, processor, cleanup });
-  e.sender.once('destroyed', cleanup);
-  try {
-    await processor.open();
-    if (e.sender.isDestroyed() || audioProcessors.get(owner)?.id !== id) throw new Error('음성 캡처가 취소됐습니다.');
-    diag('audio-preprocess', 'ready', { id, noise: settings.noise ? 'rnnoise' : 'off', vad: settings.vad ? 'silero' : 'off', mode: settings.noise || settings.vad ? 'python' : 'bypass' });
-    return { id, ...settings };
-  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); cleanup(); throw error; }
-});
-const ownedAudio = (owner: number, id: string) => {
-  const entry = audioProcessors.get(owner);
-  if (!entry || entry.id !== id) throw new Error('음성 캡처가 종료됐습니다.');
-  return entry.processor;
-};
-ipcMain.handle(CHANNELS.audioProcessPush, async (e, id: string, pcm: Uint8Array) => {
-  const processor = ownedAudio(e.sender.id, id);
-  try {
-    const result = await processor.push(pcm);
-    if (result.pcm.byteLength && !audioLogged.has(processor)) {
-      audioLogged.add(processor);
-      diag('audio-preprocess', 'pcm-active', { id, noise: processor.settings.noise, vad: processor.settings.vad, inputBytes: pcm.byteLength, outputBytes: result.pcm.byteLength });
-    }
-    for (const event of result.events) diag('audio-preprocess', event.type, { id, offsetBytes: event.offset_bytes });
-    return result;
-  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); throw error; }
-});
-ipcMain.handle(CHANNELS.audioProcessFinish, async (e, id: string) => {
-  const processor = ownedAudio(e.sender.id, id);
-  try {
-    const result = await processor.finish();
-    diag('audio-preprocess', 'drained', { id, tailBytes: result.pcm.byteLength });
-    for (const event of result.events) diag('audio-preprocess', event.type, { id, offsetBytes: event.offset_bytes });
-    return result;
-  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); throw error; }
-  finally { if (audioProcessors.get(e.sender.id)?.id === id) audioProcessors.get(e.sender.id)?.cleanup(); }
-});
-ipcMain.on(CHANNELS.audioProcessCancel, (e, id: string) => {
-  if (audioProcessors.get(e.sender.id)?.id !== id) return;
-  audioProcessors.get(e.sender.id)?.cleanup();
-});
-app.on('before-quit', () => { for (const entry of audioProcessors.values()) entry.cleanup(); audioProcessors.clear(); });
-
 
 // ── SSH (개인별 서버) ──────────────────────────────────────────────
 // 얇은 통과 계층이다. 서버가 검증하고(이름 규칙·점프 그래프·자격증명 유무),
@@ -2642,20 +2568,6 @@ ipcMain.handle(CHANNELS.sshDeleteServer, (_e, name: string) =>
 ipcMain.handle(CHANNELS.sshTestServer, (_e, name: string) =>
   getClient().ssh.testServer(name),
 );
-// 판단 모델 선택기 — 권한이 없거나 옛 서버면 null 이라 화면은 선택기를 그리지 않는다.
-ipcMain.handle(CHANNELS.decisionModel, () =>
-  getClient()
-    .decision.model()
-    .then((state) => {
-      diag('decision', 'model', { current: state.current, choices: state.choices.map((c) => c.value) });
-      return state;
-    })
-    .catch((err) => {
-      diag('decision', 'model unavailable', String(err));
-      return null;
-    }),
-);
-ipcMain.handle(CHANNELS.decisionSetModel, (_e, value: string) => getClient().decision.setModel(value));
 ipcMain.handle(
   CHANNELS.voiceTranscribe,
   (_e, bytes: Uint8Array, mime: string, language?: string) => {
@@ -2668,8 +2580,9 @@ ipcMain.handle(
     return getClient().voice.transcribe(blob, language);
   },
 );
-// 단계별 브라우저 조작 — 현재 채팅 모델이 계획하고 이 판단 API로 실행 대상을 고른다.
-// 도구 오류가 로그아웃으로 번지지 않게 auth: false로 부르고 인증 오류는 토큰 회전 뒤 한 번 재시도한다.
+// 빠른 브라우저 조작(실험) — 설정 fastAct 를 켜고 로그인했을 때 XGEN 판단 API 로 묻는다.
+// 판단 결과로 바로 조작하고, 실패하면 늘 서버 에이전트로 넘어가므로 401 이 로그아웃으로 번지지 않게
+// auth: false 로 부르고, 인증 오류면 토큰을 한 번 회전해 다시 묻는다.
 configureFastAct({
   enabled: () => loadConfig().fastAct === true && !!currentUserId(),
   post: async (body) => {
@@ -2687,14 +2600,13 @@ configureFastAct({
   },
   reveal: revealBrowserPage,
 });
-// 실시간 음성 인식은 유지하되, 조작은 최종 발화를 받은 채팅 모델이 계획한 뒤 실행한다.
+// 실험: 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다.
 const voiceStreams = new VoiceStreamHub(() =>
   currentUserId()
     ? {
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
-        planBeforeAct: () => true,
         wakeWords: () => {
           const c = loadConfig();
           const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
@@ -3287,7 +3199,6 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
     /** 스트림이 끊겼다 — 턴은 서버에서 계속 돈다. 끝난 것이 아니므로 완료로 접지 않는다. */
     let detached = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
-      if (kind === 'completed') rememberServerReply(serverReq.interactionId, preview); // 빠른 조작이 다음 말이 이 답에 대한 대답인지 본다
       const event: NotificationEvent = {
         id: `chat-${kind}-${streamId}`,
         type: kind === 'completed' ? 'chat.completed' : 'chat.failed',
@@ -3322,7 +3233,14 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 돌아, 모든 기능을 두 번 만들어야 했고 두 번째 구현은 늘 뒤처졌다.
       // 사용자 PC 는 이제 **도구**로만 참여한다(브라우저·Shell·로컬 MCP —
       // 서버 에이전트가 reverse-WS 카탈로그로 호출한다).
-      // 현재 대화 모델이 계획을 맡는다. decider 실행·검증은 BrowserInteract(step) 도구로 돌아온다.
+      // 실험: 빠른 브라우저 조작 (설정 fastAct) — 단순한 브라우저 조작이면
+      // 이 PC 에서 끝내고 서버 턴을 만들지 않는다. 아니면 그대로 서버로.
+      if (fastActEnabled()) {
+        const emit = (ev: ChatEvent): void => {
+          if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);
+        };
+        if (await tryFastAct(serverReq, emit, controller.signal)) return;
+      }
       for await (const ev of getClient().chat.stream(serverReq, controller.signal)) {
         if (sender.isDestroyed()) break;
         if (ev.kind === 'text') preview = (preview + ev.content).slice(-2_000);
@@ -3429,12 +3347,6 @@ ipcMain.handle(CHANNELS.browserBindShared, (_e, pageId: string, webContentsId: n
   getBrowserRuntime().bindSharedPage(pageId, webContentsId),
 );
 ipcMain.handle(CHANNELS.browserNavigate, (_e, request) => getBrowserRuntime().navigate(request));
-ipcMain.handle(CHANNELS.browserPopupSurface, (event, pageId: string, rect) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) {
-    throw new Error('browser_denied: 허용되지 않은 브라우저 표시 요청입니다.');
-  }
-  getBrowserRuntime().updatePopupSurface(pageId, rect);
-});
 ipcMain.handle(CHANNELS.browserActivate, (_e, pageId: string) =>
   getBrowserRuntime().activate(pageId),
 );
@@ -4349,7 +4261,6 @@ if (!gotLock) {
     /* stay resident in the tray */
   });
   app.on('before-quit', () => {
-    getBrowserRuntime().suspendSessionPersistence();
     quitRequested = true;
     appQuitting = true;
     saveOverlayGeometry(true); // don't drop a pending move/resize on quit

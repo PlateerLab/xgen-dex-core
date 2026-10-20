@@ -1,5 +1,6 @@
 /**
- * 결정 모델 연결과 브라우저 탭 헬퍼. 단계별 BrowserInteract와 기존 음성 판단기가 같이 쓴다.
+ * 고속(빠른) 조작 공통 — 결정 모델 연결과 브라우저 탭 헬퍼. 채팅으로 시킨 것(fast-act-chat)과 말로 시킨 것
+ * (voice-stream → fast-act-voice)이 같이 쓴다.
  *
  * 설정 `fastAct`(기본 꺼짐)를 켜고 로그인했을 때 켜진다. 결정 모델은 XGEN 판단 API
  * (`/api/base/v1/decision/systemone`)로 부른다. 개발 중에는 `DEX_FAST_ACT_URL` 로 판단 모델
@@ -7,8 +8,7 @@
  */
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { getBrowserRuntime } from './browser-runtime';
-import { appendFile } from 'node:fs/promises';
-import { diag, redact } from './diag-log';
+import { diag } from './diag-log';
 import { decisionClient, type DecisionPost } from './fast-act';
 
 const SCOPE = 'fast-act';
@@ -36,29 +36,7 @@ let warmed: DecisionPost | null = null;
 let unavailableUntil = 0;
 
 export function configureFastAct(d: FastActDeps): void {
-  deps = { enabled: d.enabled, post: withLog(withBackoff(d.post)), reveal: d.reveal };
-}
-
-/**
- * 개발용: `DEX_SEV_LOG=<파일.jsonl>` 이면 판단 호출마다 입력(state·questions)·출력(answers)·시간을 한 줄씩 붙인다.
- * 화면 글자와 사용자 말이 그대로 남으므로 기본 꺼짐이고, 진단 링 버퍼(diag)가 아닌 지정한 파일에만 쓴다.
- */
-const SEV_LOG = process.env.DEX_SEV_LOG?.trim();
-function withLog(post: DecisionPost): DecisionPost {
-  if (!SEV_LOG) return post;
-  const write = (rec: object): void =>
-    void appendFile(SEV_LOG, `${redact(JSON.stringify({ at: new Date().toISOString(), ...rec }))}\n`).catch(() => undefined);
-  return async (body) => {
-    const t = performance.now();
-    try {
-      const answers = await post(body);
-      write({ ms: Math.round(performance.now() - t), state: body.state, questions: body.questions, answers });
-      return answers;
-    } catch (err) {
-      write({ ms: Math.round(performance.now() - t), state: body.state, questions: body.questions, error: String(err) });
-      throw err;
-    }
-  };
+  deps = { enabled: d.enabled, post: withBackoff(d.post), reveal: d.reveal };
 }
 
 /** 조작 직전에 부른다 — 이미 보이면 배치는 그대로다. */
@@ -88,7 +66,7 @@ function withBackoff(post: DecisionPost): DecisionPost {
 export function decisionPost(): DecisionPost | null {
   let post: DecisionPost | null = null;
   const url = process.env.DEX_FAST_ACT_URL?.trim();
-  if (url) post = direct ??= withLog(decisionClient(url, 8_000));
+  if (url) post = direct ??= decisionClient(url, 8_000);
   else if (deps?.enabled() && Date.now() >= unavailableUntil) post = deps.post;
   if (post && post !== warmed) {
     warmed = post;
@@ -107,17 +85,12 @@ export function fastActEnabled(): boolean {
   return !!decisionPost();
 }
 
-/** 빠른 조작이 설정상 켜져 있나 — 판단 모델이 잠시 쉬는 중(503 뒤)이어도 true. 도구 광고처럼 한 번 정해지면 오래 가는 곳에 쓴다. */
-export function fastActConfigured(): boolean {
-  return !!process.env.DEX_FAST_ACT_URL?.trim() || !!deps?.enabled();
-}
-
-/** 이 에이전트의 활성 팝업 또는 브라우저 탭. */
+/** 이 에이전트의 화면에 보이는 브라우저 탭 — BrowserPane 과 같은 규칙. */
 export function visiblePage(workflowId: string): BrowserPageInfo | null {
   const runtime = getBrowserRuntime();
   if (!runtime.isEnabled()) return null;
   const state = runtime.state();
-  const pages = state.pages.filter((p) => p.workflowId === workflowId && p.mode !== 'background');
+  const pages = state.pages.filter((p) => p.workflowId === workflowId && p.mode === 'shared');
   return pages.find((p) => p.pageId === state.activeByWorkflow[workflowId]) ?? pages[0] ?? null;
 }
 

@@ -1,13 +1,7 @@
 import { BrowserWindow, dialog } from 'electron';
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { browserPathWithinRoots } from './browser-security';
 import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
-import { allowsDeciderAction, type DecisionPost } from './fast-act';
-import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
-import { diag } from './diag-log';
-import { fastActConfigured } from './fast-act-runner';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -20,9 +14,6 @@ export const BROWSER_SNAPSHOT_TOOL = 'BrowserSnapshot';
 export const BROWSER_INTERACT_TOOL = 'BrowserInteract';
 export const BROWSER_CAPTURE_TOOL = 'BrowserCapture';
 export const BROWSER_ADVANCED_TOOL = 'BrowserAdvanced';
-export const BROWSER_FILL_TOOL = 'BrowserFill';
-/** 경로 없이 캡처하면 저장하는 곳 — 연결 폴더 안의 숨은 폴더(파일 올리기 후보에서도 빠진다). */
-const CAPTURE_DIR = '.xgen-captures';
 
 export const BROWSER_TOOL_NAMES = new Set([
   BROWSER_TABS_TOOL,
@@ -31,7 +22,6 @@ export const BROWSER_TOOL_NAMES = new Set([
   BROWSER_INTERACT_TOOL,
   BROWSER_CAPTURE_TOOL,
   BROWSER_ADVANCED_TOOL,
-  BROWSER_FILL_TOOL,
 ]);
 
 const commonPageProperties = {
@@ -46,14 +36,13 @@ const commonPageProperties = {
   },
 };
 
-export function browserToolSchemas(steps = false): LocalToolSchema[] {
+export function browserToolSchemas(): LocalToolSchema[] {
   return [
     {
       name: BROWSER_TABS_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
-        'Site popups appear in list as mode popup with their own page_id; target that page_id to interact with them. ' +
         'A missing page_id on other browser tools uses the workflow default background page.',
       inputSchema: {
         type: 'object',
@@ -112,7 +101,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       name: BROWSER_INTERACT_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse.',
       inputSchema: {
         type: 'object',
@@ -121,7 +109,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           action: {
             type: 'string',
             enum: [
-              ...(steps ? ['step'] : []),
               'click',
               'double_click',
               'fill',
@@ -149,7 +136,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           y: { type: 'number' },
           button: { type: 'string' },
           operation: { type: 'string', description: 'mouse: move/down/up/wheel.' },
-          ...(steps ? browserStepProperties : {}),
         },
         required: ['action'],
       },
@@ -170,8 +156,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
             type: 'string',
             description:
               'Output file on the user\'s computer, inside a folder connected to this conversation ' +
-              '(relative paths start from the first connected folder). Omit it for a quick look: the capture goes to a new file ' +
-              'under the hidden .xgen-captures folder and never overwrites the user\'s files.',
+              '(relative paths start from the first connected folder).',
           },
           clear: { type: 'boolean' },
           timeout_ms: { type: 'integer' },
@@ -220,35 +205,6 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           timeout_ms: { type: 'integer' },
         },
         required: ['action'],
-      },
-    },
-    {
-      name: BROWSER_FILL_TOOL,
-      annotations: { readOnlyHint: false, openWorldHint: true },
-      description:
-        'Fill many fields of a form on the visible (shared) browser tab fast: each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
-        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
-        'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
-        'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
-        'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
-        'for checkbox groups, one step per box. ' +
-        'Skip fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") — each step costs seconds. ' +
-        'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
-        'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
-        'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
-        'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
-        'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
-        'Returns per-step status: done / failed / skipped (with the reason) — finish failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
-        'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
-        'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」 ("상품상세 내용에 「…」 입력해줘"), ' +
-        'using real line breaks between paragraphs (not the two characters \\ and n) — it replaces the editor content and each line becomes a paragraph. ' +
-        'Category trees are steps too, with the full path: "표준카테고리를 「문구/오피스 > 사무용품 전문관」으로 지정해줘" — the step opens the tree, expands each level and applies.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          steps: { type: 'array', items: { type: 'string' }, description: 'One instruction per field, in order.' },
-        },
-        required: ['steps'],
       },
     },
   ];
@@ -383,8 +339,6 @@ export class BrowserToolProvider {
   private enabled = false;
   private fileRoots: BrowserFileRoots = () => [];
   private revealSharedPage: (page: BrowserPageInfo) => void = () => {};
-  private stepPost: () => DecisionPost | null = () => null;
-  private stepping = new Set<string>();
 
   constructor(private runtime: BrowserRuntime) {}
 
@@ -397,23 +351,14 @@ export class BrowserToolProvider {
     enabled: boolean,
     fileRoots: BrowserFileRoots = () => [],
     revealSharedPage: (page: BrowserPageInfo) => void = () => {},
-    stepPost: () => DecisionPost | null = () => null,
   ): void {
     this.enabled = enabled;
     this.fileRoots = fileRoots;
     this.revealSharedPage = revealSharedPage;
-    this.stepPost = stepPost;
-  }
-
-  /** 그 대화에 연결된 폴더 — 빠른 조작이 올릴 파일을 찾을 때(fast-act-upload). */
-  roots(context?: LocalToolCallContext): string[] {
-    return this.fileRoots(context);
   }
 
   advertise(): LocalToolSchema[] {
-    if (!this.enabled) return [];
-    const schemas = browserToolSchemas(!!this.stepPost());
-    return fastActConfigured() ? schemas : schemas.filter((tool) => tool.name !== BROWSER_FILL_TOOL);
+    return this.enabled ? browserToolSchemas() : [];
   }
 
   owns(tool: string): boolean {
@@ -431,13 +376,9 @@ export class BrowserToolProvider {
     if (tool === BROWSER_TABS_TOOL) return this.tabs(args, context);
     if (tool === BROWSER_NAVIGATE_TOOL) return this.navigate(args, context);
     if (tool === BROWSER_SNAPSHOT_TOOL) return this.snapshot(args, context);
-    if (tool === BROWSER_INTERACT_TOOL) {
-      if (args.action === 'step') return this.step(args, context);
-      return this.interact(args, context);
-    }
+    if (tool === BROWSER_INTERACT_TOOL) return this.interact(args, context);
     if (tool === BROWSER_CAPTURE_TOOL) return this.capture(args, context);
     if (tool === BROWSER_ADVANCED_TOOL) return this.advanced(args, context);
-    if (tool === BROWSER_FILL_TOOL) return this.fill(args, context);
     throw new Error(`unknown browser tool: ${tool}`);
   }
 
@@ -564,25 +505,6 @@ export class BrowserToolProvider {
     return result(run.page, run.result);
   }
 
-  private async step(args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {
-    const wid = workflow(args, context);
-    const post = this.stepPost();
-    if (!post) throw new BrowserRuntimeError('browser_disabled', '단계 실행에 사용할 decider가 없습니다. 단계별 브라우저 조작 설정과 판단 API를 확인하세요.');
-    if (this.stepping.has(wid)) throw new BrowserRuntimeError('browser_denied', '이 브라우저의 이전 단계 결과를 기다린 뒤 다음 단계를 호출하세요.');
-    this.stepping.add(wid);
-    try {
-      if (context?.signal?.aborted) throw new Error('Browser step cancelled.');
-      const state = this.runtime.state();
-      const id = pageId(args) ?? state.activeByWorkflow[wid];
-      const page = await this.runtime.resolvePage(wid, id, false);
-      const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal);
-      diag('browser-step', 'result', { operation: args.operation, status: done.result.status, mutation_attempted: done.result.mutation_attempted });
-      return result(done.page, done.result);
-    } finally {
-      this.stepping.delete(wid);
-    }
-  }
-
   private scopedPath(raw: unknown, context?: LocalToolCallContext): string {
     const roots = this.fileRoots(context);
     if (!roots.length) {
@@ -604,15 +526,8 @@ export class BrowserToolProvider {
     const action = String(args.action ?? 'screenshot');
     let command: string[];
     if (action === 'screenshot' || action === 'full_screenshot' || action === 'pdf') {
-      // 경로를 안 주면 숨은 폴더에 새 이름으로 — 예전 기본값 browser.png 는 연결 폴더 맨 위의 같은 파일을 캡처마다 덮어썼다(10/19).
-      // LLM 은 결과로 이미지를 받지 못해 그 파일을 가져가 보므로 연결 폴더 안이어야 한다.
-      // ponytail: 캡처가 쌓이기만 한다 — 많아지면 오래된 것을 지운다.
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const fallback = `${CAPTURE_DIR}/${action}-${stamp}.${action === 'pdf' ? 'pdf' : 'png'}`;
-      let path = this.scopedPath(args.path ?? fallback, context);
-      // 있는 파일은 덮어쓰지 않는다 — LLM 이 경로를 browser.png 로 정해 캡처마다 같은 파일을 덮어썼다(10/19). 결과의 path 로 알린다.
-      if (existsSync(path)) path = path.replace(/(\.[^./\\]+)?$/, `-${stamp}$1`);
-      mkdirSync(dirname(path), { recursive: true });
+      const fallback = action === 'pdf' ? 'browser.pdf' : 'browser.png';
+      const path = this.scopedPath(args.path ?? fallback, context);
       command = [action === 'full_screenshot' ? 'screenshot' : action, path];
       if (action === 'full_screenshot') command.push('--full');
     } else if (action === 'console' || action === 'errors') {
@@ -630,20 +545,7 @@ export class BrowserToolProvider {
       command,
       timeout(args),
     );
-    return result(run.page, command[1] && action !== 'console' && action !== 'errors' ? { path: command[1], ...objectArgs(run.result) } : run.result);
-  }
-
-  private async fill(
-    args: Record<string, unknown>,
-    context?: LocalToolCallContext,
-  ): Promise<LocalToolResult> {
-    const steps = (Array.isArray(args.steps) ? args.steps : []).map((s) => String(s).trim()).filter(Boolean);
-    if (!steps.length) throw new BrowserRuntimeError('browser_denied', 'steps 가 비었습니다.');
-    // fast-act-voice 가 이 파일을 가져다 쓰므로 부를 때 가져온다(순환 참조).
-    const { runSteps } = await import('./fast-act-batch');
-    const wid = workflow(args, context);
-    const results = await runSteps(wid, context?.interactionId, steps, context?.signal);
-    return result(null, results);
+    return result(run.page, run.result);
   }
 
   private async advanced(

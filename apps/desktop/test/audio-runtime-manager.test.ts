@@ -18,11 +18,13 @@ test('archive paths reject traversal, devices and external links', () => {
   for(const args of [['../outside','File',''],['/outside','File',''],['python/link','SymbolicLink','../../outside'],['python/link','Link','../outside'],['device','CharacterDevice','']])
     assert.throws(()=>validateAudioEntry(...args as [string,string,string]));
 });
-test('checksum failure keeps the previous activation pointer', async () => {
+test('checksum failure keeps the previous activation pointer', async (t) => {
   const dir=await mkdtemp(join(tmpdir(),'audio-failed-'));
   try {
     const before=JSON.stringify({version:'0.0.1'});await writeFile(join(dir,'current.json'),before);
     const manager=new AudioRuntimeManager(dir,'/missing','/missing',async address=>address.includes('api.github.com')?Response.json({assets:[asset()]}):new Response('bad'));
+    // Isolate checksum handling from the host platform's release eligibility.
+    t.mock.method(manager, 'check', async () => selectAudioAsset({ assets: [asset()] }));
     await assert.rejects(manager.install(()=>{}),/무결성/);
     assert.equal(await readFile(join(dir,'current.json'),'utf8'),before);
   } finally {await rm(dir,{recursive:true,force:true});}

@@ -54,9 +54,10 @@ export async function runSteps(
   let reason = '중단됨';
   const stopped = new Promise<void>(resolve => { stop = resolve; });
   const cancel = () => { controller.abort(); stop(); };
-  const timer = setTimeout(() => { reason = '시간 한도 도달'; cancel(); }, Math.max(0, deadlineAt - Date.now() - 2_000));
+  const stopAt = Math.min(deadlineAt - 2_000, Date.now() + 110_000);
+  const timer = setTimeout(() => { reason = '시간 한도 도달'; cancel(); }, Math.max(0, stopAt - Date.now()));
   signal?.addEventListener('abort', cancel, { once: true });
-  if (Date.now() >= deadlineAt - 2_000) { reason = '시간 한도 도달'; cancel(); }
+  if (Date.now() >= stopAt) { reason = '시간 한도 도달'; cancel(); }
   if (signal?.aborted) cancel();
   try {
     const work = runtime.withPageScope(start.pageId, controller.signal, async () => {

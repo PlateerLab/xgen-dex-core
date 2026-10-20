@@ -127,6 +127,10 @@ export class BrowserRuntime {
     return this.pageScope.run({ pageId, signal }, run);
   }
 
+  get actionSignal(): AbortSignal | undefined {
+    return this.pageScope.getStore()?.signal;
+  }
+
   private assertPageScope(pageId?: string): void {
     const scope = this.pageScope.getStore();
     if (!scope) return;

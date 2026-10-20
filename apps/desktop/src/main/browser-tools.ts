@@ -302,7 +302,8 @@ const sensitive = new Set([
   'eval',
 ]);
 
-async function approve(action: string, detail: string): Promise<boolean> {
+async function approve(action: string, detail: string, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
   if (!sensitive.has(action) || sensitiveSessionApprovals.has(action)) return true;
   const options = {
     type: 'warning' as const,
@@ -313,9 +314,13 @@ async function approve(action: string, detail: string): Promise<boolean> {
     title: '브라우저 민감 작업 확인',
     message: `XGEN 에이전트가 브라우저의 ${action} 기능을 사용하려 합니다.`,
     detail: detail.slice(0, 1_000),
+    signal,
   };
   const win = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed() && item.isVisible());
+  // macOS cannot cancel an unparented message box.
+  if (signal && !win && process.platform === 'darwin') return false;
   const result = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+  if (signal?.aborted) return false;
   if (result.response === 2) sensitiveSessionApprovals.add(action);
   return result.response === 1 || result.response === 2;
 }
@@ -731,7 +736,7 @@ export class BrowserToolProvider {
     context?: LocalToolCallContext,
   ): Promise<LocalToolResult> {
     const action = String(args.action ?? '');
-    if (!(await approve(action, JSON.stringify(args)))) {
+    if (!(await approve(action, JSON.stringify(args), this.runtime.actionSignal ?? context?.signal))) {
       throw new BrowserRuntimeError('browser_denied', `사용자가 ${action} 작업을 거부했습니다.`);
     }
     const operation = String(args.operation ?? '').trim();

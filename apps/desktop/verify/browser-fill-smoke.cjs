@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { mock } = require('node:test');
-const { app } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
+const { BrowserToolProvider } = require('../src/main/browser-tools.ts');
 const { runSteps, MAX_FILL_STEPS } = require('../src/main/fast-act-batch.ts');
 const { BrowserVoiceAgent } = require('../src/main/fast-act-voice.ts');
 const { getBrowserRuntime } = require('../src/main/browser-runtime.ts');
@@ -75,6 +76,27 @@ async function main() {
     assert.equal(calls, 0);
     await assert.rejects(runSteps('w', 'form', 'i', Array(MAX_FILL_STEPS + 1).fill('메모 입력')), /50줄/);
     assert.equal(calls, 0);
+    const window = new BrowserWindow({ show: false });
+    try {
+      t.mock.method(window, 'isVisible', () => true);
+      let shown;
+      const showing = new Promise(resolve => { shown = resolve; });
+      t.mock.method(dialog, 'showMessageBox', async (_window, options) => {
+        assert.ok(options.signal);
+        shown();
+        await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }));
+        return { response: 0, checkboxChecked: false };
+      });
+      const provider = new BrowserToolProvider(runtime);
+      provider.configure(true);
+      const cancelDialog = new AbortController();
+      const uploading = runtime.withPageScope('form', cancelDialog.signal,
+        () => provider.callTool('BrowserAdvanced', { action: 'upload' }, { workflowId: 'w' }));
+      const denied = assert.rejects(uploading, /거부/);
+      await showing;
+      cancelDialog.abort();
+      await denied;
+    } finally { window.destroy(); }
   } finally {
     configureFastAct({ enabled: () => false, post: async () => ({}) });
     if (savedUrl === undefined) delete process.env.DEX_FAST_ACT_URL;

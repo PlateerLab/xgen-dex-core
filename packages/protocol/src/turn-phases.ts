@@ -14,7 +14,12 @@
  */
 import type { ToolIcon } from './process-timeline';
 
-export type TurnPhaseName = 'sandbox' | 'workspace' | 'packages' | 'memory';
+/**
+ * assemble 은 새로 만든 Agent Geny 의 **첫 실행** 알림이다(서버가 턴 시작에 한 번 보낸다, xgen-workflow 2026-10-20).
+ * 첫 대화는 실행 환경·작업 공간·도구를 처음 세우고 모델도 캐시 없이 시작해 오래 걸린다. 이 줄은 기다리지 않고
+ * 바로 서고, 답이 시작될 때까지 머리 줄로 남는다(그 아래 단계 줄이 이어진다).
+ */
+export type TurnPhaseName = 'assemble' | 'sandbox' | 'workspace' | 'packages' | 'memory';
 export type TurnPhaseState = 'start' | 'done' | 'retry' | 'error';
 
 /** 서버가 보낸 준비 단계 알림 하나. */
@@ -40,7 +45,7 @@ export interface TurnPhaseRow {
   attempts?: number;
 }
 
-const PHASES: readonly TurnPhaseName[] = ['sandbox', 'workspace', 'packages', 'memory'];
+const PHASES: readonly TurnPhaseName[] = ['assemble', 'sandbox', 'workspace', 'packages', 'memory'];
 const STATES: readonly TurnPhaseState[] = ['start', 'done', 'retry', 'error'];
 
 /**
@@ -96,9 +101,10 @@ export function applyTurnPhase(
   return out;
 }
 
-/** 지금 보일 줄. 빨리 끝난 단계·막 시작한 단계는 뺀다. 다시 시도·실패는 늘 보인다. */
+/** 지금 보일 줄. 빨리 끝난 단계·막 시작한 단계는 뺀다. 다시 시도·실패, 첫 실행 알림(assemble)은 늘 보인다. */
 export function visiblePhaseRows(rows: readonly TurnPhaseRow[], now: number): TurnPhaseRow[] {
   return rows.filter((r) => {
+    if (r.phase === 'assemble') return true;
     if (r.state === 'retry' || r.state === 'err') return true;
     if (r.state === 'run') return now - r.startedAt >= PHASE_VISIBLE_MS;
     return (r.durationMs ?? 0) >= PHASE_VISIBLE_MS;
@@ -109,7 +115,7 @@ export function visiblePhaseRows(rows: readonly TurnPhaseRow[], now: number): Tu
 export function nextPhaseReveal(rows: readonly TurnPhaseRow[], now: number): number | null {
   let soonest: number | null = null;
   for (const r of rows) {
-    if (r.state !== 'run') continue;
+    if (r.state !== 'run' || r.phase === 'assemble') continue;
     const left = r.startedAt + PHASE_VISIBLE_MS - now;
     if (left > 0 && (soonest === null || left < soonest)) soonest = left;
   }
@@ -121,17 +127,27 @@ export function nextPhaseReveal(rows: readonly TurnPhaseRow[], now: number): num
  * 끝난 지 {@link PHASE_VISIBLE_MS} 가 지났을 때다. 단계 사이의 짧은 틈에 줄이 번쩍이지 않게 한다.
  */
 export function awaitingAnswer(rows: readonly TurnPhaseRow[], now: number): boolean {
-  if (rows.length === 0 || rows.some((r) => r.state === 'run' || r.state === 'retry')) return false;
-  return now - phasesSettledAt(rows) >= PHASE_VISIBLE_MS;
+  // 첫 실행 알림이 도는 동안은 그 줄이 이미 "기다리는 중" 을 말한다(겹쳐 띄우지 않는다).
+  if (rows.some((r) => r.phase === 'assemble' && r.state === 'run')) return false;
+  const steps = rows.filter((r) => r.phase !== 'assemble');
+  if (steps.length === 0 || steps.some((r) => r.state === 'run' || r.state === 'retry')) return false;
+  return now - phasesSettledAt(steps) >= PHASE_VISIBLE_MS;
 }
 
-/** 마지막 단계가 끝난 시각("답변을 준비하고 있습니다" 줄의 경과를 여기서 센다). */
+/** 마지막 단계가 끝난 시각("답변을 준비하고 있습니다" 줄의 경과를 여기서 센다). 첫 실행 알림 줄은 빼고 센다. */
 export function phasesSettledAt(rows: readonly TurnPhaseRow[]): number {
-  return rows.length ? Math.max(...rows.map((r) => r.startedAt + (r.durationMs ?? 0))) : 0;
+  const steps = rows.filter((r) => r.phase !== 'assemble');
+  return steps.length ? Math.max(...steps.map((r) => r.startedAt + (r.durationMs ?? 0))) : 0;
 }
 
 /** 준비 단계마다의 이름표(하는 중 · 끝남 · 다시 시도 · 못 함). 웹과 같은 문구다. */
 const LABELS: Record<TurnPhaseName, Record<TurnPhaseRow['state'], string>> = {
+  assemble: {
+    run: 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!',
+    ok: 'Geny를 조립했어요',
+    retry: 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!',
+    err: 'Geny를 조립하지 못했어요',
+  },
   sandbox: {
     run: 'Sandbox를 불러오고 있습니다',
     ok: 'Sandbox를 불러왔습니다',
@@ -172,6 +188,7 @@ export const AWAITING_ANSWER_LABEL = '답변을 준비하고 있습니다';
 
 /** 준비 단계별 아이콘. 도구 줄과 같은 색 배지를 쓴다. "답변을 준비" 줄은 list 다. */
 export const PHASE_ICON: Readonly<Record<TurnPhaseName, ToolIcon>> = {
+  assemble: 'external',
   sandbox: 'terminal',
   workspace: 'file',
   packages: 'package',
@@ -185,8 +202,12 @@ export const PHASE_ICON: Readonly<Record<TurnPhaseName, ToolIcon>> = {
 export function phaseHeadline(rows: readonly TurnPhaseRow[], now: number): { label: string; sinceMs: number } | null {
   const visible = visiblePhaseRows(rows, now);
   if (visible.length === 0) return null;
-  const live = [...visible].reverse().find((r) => r.state === 'run' || r.state === 'retry' || r.state === 'err');
+  const live = [...visible]
+    .reverse()
+    .find((r) => r.phase !== 'assemble' && (r.state === 'run' || r.state === 'retry' || r.state === 'err'));
   if (live) return { label: phaseLabel(live), sinceMs: Math.max(0, now - live.startedAt) };
+  const assemble = visible.find((r) => r.phase === 'assemble' && r.state === 'run');
+  if (assemble) return { label: phaseLabel(assemble), sinceMs: Math.max(0, now - assemble.startedAt) };
   if (awaitingAnswer(rows, now)) return { label: AWAITING_ANSWER_LABEL, sinceMs: Math.max(0, now - phasesSettledAt(rows)) };
   return null;
 }

@@ -116,6 +116,7 @@ test('준비 단계(turn_phase)는 phase 로, 그릴 수 없는 값은 버린다
     turnEventToChatEvent('turn_phase', { phase: 'workspace', state: 'retry', elapsed_ms: 4321.6, attempt: 1, attempts: 3, error: 'http://10.0.0.1' }),
     { kind: 'phase', phase: 'workspace', state: 'retry', elapsedMs: 4321, attempt: 1, attempts: 3 },
   );
+  assert.deepEqual(turnEventToChatEvent('turn_phase', { phase: 'assemble', state: 'start' }), { kind: 'phase', phase: 'assemble', state: 'start' });
   assert.equal(turnEventToChatEvent('turn_phase', { phase: 'secrets', state: 'start' }), null);
   assert.equal(turnEventToChatEvent('turn_phase', { phase: 'sandbox', state: 'boom' }), null);
   assert.equal(turnEventToChatEvent('turn_phase', null), null);

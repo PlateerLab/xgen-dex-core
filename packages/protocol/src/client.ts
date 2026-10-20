@@ -74,6 +74,14 @@ export interface UploadOptions {
   keep?: boolean;
 }
 
+export interface BinaryOptions {
+  timeoutMs?: number;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  /** Byte ceiling applied while streaming, including missing/false Content-Length. */
+  maxBytes?: number;
+}
+
 function isResumableSource(x: unknown): x is ResumableSource {
   const s = x as ResumableSource;
   return !!s && typeof s.read === 'function' && typeof s.size === 'number';
@@ -188,7 +196,7 @@ export class HttpClient {
   async upload<T>(path: string, form: FormData | UploadFormPart[], opts: UploadOptions = {}): Promise<T> {
     const method = opts.method ?? 'POST';
     const res = await this.sendUpload(method, path, form, opts);
-    return this.readJson<T>(res, method, path);
+    return this.readJson<T>(res, method, path, opts);
   }
 
   /** Like `upload` but returns the raw Response (SSE, binary or status-specific handling). */
@@ -230,14 +238,14 @@ export class HttpClient {
         const res = await this.uploader().send({ method, path },
           { raw: bytesSource(body, 'body', contentType), contentType },
           { headers, signal: opts.signal, onProgress: opts.onProgress, keep: opts.keep });
-        return await this.readJson<T>(res, method, path);
+        return await this.readJson<T>(res, method, path, opts);
       } catch (e) {
         if (!(e instanceof UploadUnsupportedError)) throw this.uploadFailure(e, method, path);
       }
     }
     const res = await this.directRequest(method, path, body as unknown as BodyInit,
       { ...headers, 'Content-Type': contentType }, opts);
-    return this.readJson<T>(res, method, path);
+    return this.readJson<T>(res, method, path, opts);
   }
 
   private uploader(): ResumableUploader {
@@ -339,8 +347,42 @@ export class HttpClient {
       e.body ?? { detail: { code: e.code, message: e.message } });
   }
 
-  private async readJson<T>(res: Response, method: string, path: string): Promise<T> {
-    const text = await res.text();
+  private async readJson<T>(res: Response, method: string, path: string, opts: UploadOptions): Promise<T> {
+    // sendUpload also serves streaming callers. The JSON consumer owns its body
+    // deadline and keeps the caller's cancellation active after headers arrive.
+    let rejectStop: (error: Error) => void = () => {};
+    const stopped = new Promise<never>((_resolve, reject) => { rejectStop = reject; });
+    const onAbort = () => rejectStop(new DOMException('Upload response aborted', 'AbortError'));
+    const timer = setTimeout(onAbort, opts.timeoutMs ?? 600_000);
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let complete = false;
+    let text: string;
+    try {
+      if (opts.signal?.aborted) throw new DOMException('Upload response aborted', 'AbortError');
+      if (res.body) {
+        reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        const parts: string[] = [];
+        while (true) {
+          const next = await Promise.race([reader.read(), stopped]);
+          if (next.done) break;
+          parts.push(decoder.decode(next.value, { stream: true }));
+        }
+        parts.push(decoder.decode());
+        text = parts.join('');
+      } else text = await Promise.race([res.text(), stopped]);
+      if (opts.signal?.aborted) throw new DOMException('Upload response aborted', 'AbortError');
+      complete = true;
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      if (!complete) {
+        if (reader) void reader.cancel().catch(() => {});
+        else void res.body?.cancel().catch(() => {});
+      }
+      reader?.releaseLock();
+    }
     let parsed: unknown = undefined;
     if (text) {
       try {
@@ -366,62 +408,96 @@ export class HttpClient {
    * correctly-typed Blob (audio/wav|mpeg|ogg). Throws ApiError on non-2xx.
    */
   async postBinary(
-    path: string,
-    body: unknown,
-    opts?: { timeoutMs?: number },
+    path: string, body: unknown, opts: BinaryOptions = {},
   ): Promise<{ bytes: Uint8Array; contentType: string }> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? this.timeoutMs);
-    let res: Response;
-    try {
-      res = await this.fetchImpl(this.url(path), {
-        method: 'POST',
-        headers: this.headers({ 'Content-Type': 'application/json', Accept: 'audio/*' }),
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) {
-      if (res.status === 401) this.onAuthFailure?.();
-      const text = await res.text().catch(() => '');
-      throw new ApiError(res.status, `POST ${path} → ${res.status}`, text);
-    }
-    const ab = await res.arrayBuffer();
-    return { bytes: new Uint8Array(ab), contentType: res.headers.get('content-type') ?? '' };
+    return this.binaryRequest('POST', path, body, { timeoutMs: this.timeoutMs, ...opts });
   }
 
-  /**
-   * GET a raw BINARY response (Teams 첨부 다운로드 등). `postBinary` 의 GET 짝.
-   *
-   * 파일명은 응답 헤더가 아니라 **호출자가 이미 아는 값**을 쓴다 —
-   * Content-Disposition 의 RFC 5987 인코딩을 여기서 되풀이 파싱할 이유가 없고,
-   * 서버도 우리가 쿼리로 넘긴 이름을 그대로 되돌려줄 뿐이다.
-   */
+  /** GET bytes with one deadline covering both headers and the complete body. */
   async getBinary(
-    path: string,
-    opts?: { timeoutMs?: number; headers?: Record<string, string> },
+    path: string, opts: BinaryOptions = {},
   ): Promise<{ bytes: Uint8Array; contentType: string }> {
+    return this.binaryRequest('GET', path, undefined, { timeoutMs: 120_000, ...opts });
+  }
+
+  private async binaryRequest(
+    method: 'GET' | 'POST', path: string, body: unknown, opts: BinaryOptions,
+  ): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const maximum = opts.maxBytes;
+    const timeout = opts.timeoutMs ?? this.timeoutMs;
+    if ((maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 0)) || !Number.isFinite(timeout) || timeout <= 0) {
+      throw new TypeError('Invalid binary response limits');
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 120_000);
-    let res: Response;
+    let rejectAbort: (reason: Error) => void = () => {};
+    const interrupted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const onInternalAbort = () => rejectAbort(new DOMException('Binary response aborted', 'AbortError'));
+    const onCallerAbort = () => controller.abort();
+    controller.signal.addEventListener('abort', onInternalAbort, { once: true });
+    opts.signal?.addEventListener('abort', onCallerAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(), timeout);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let response: Response | undefined;
+    let complete = false;
     try {
-      res = await this.fetchImpl(this.url(path), {
-        method: 'GET',
-        headers: this.headers({ Accept: '*/*', ...(opts?.headers ?? {}) }),
+      if (opts.signal?.aborted) throw new DOMException('Binary response aborted', 'AbortError');
+      const pending = this.fetchImpl(this.url(path), {
+        method,
+        headers: this.headers({ ...(method === 'POST' ? { 'Content-Type': 'application/json', Accept: 'audio/*' } : { Accept: '*/*' }), ...(opts.headers ?? {}) }),
+        ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,
       });
+      // A host-supplied transport may resolve after cancellation; dispose its
+      // late body rather than allowing it to outlive the request owner.
+      void pending.then((late) => {
+        if (controller.signal.aborted) void late.body?.cancel().catch(() => {});
+      }, () => {});
+      response = await Promise.race([pending, interrupted]);
+      if (!response.ok && response.status === 401) this.onAuthFailure?.();
+      const limit = response.ok ? maximum : 16 * 1024;
+      const tooLarge = () => new ApiError(response!.ok ? 413 : response!.status,
+        response!.ok ? 'Binary response exceeded byte limit' : `${method} ${path} → ${response!.status}`,
+        { code: response!.ok ? 'BINARY_RESPONSE_TOO_LARGE' : 'BINARY_ERROR_BODY_TOO_LARGE' });
+      const announced = response.headers.get('content-length');
+      if (limit !== undefined && announced && /^\d+$/.test(announced) && Number(announced) > limit) throw tooLarge();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      if (response.body) {
+        reader = response.body.getReader();
+        while (true) {
+          const next = await Promise.race([reader.read(), interrupted]);
+          if (controller.signal.aborted) throw new DOMException('Binary response aborted', 'AbortError');
+          if (next.done) break;
+          length += next.value.byteLength;
+          if (!Number.isSafeInteger(length) || (limit !== undefined && length > limit)) throw tooLarge();
+          chunks.push(new Uint8Array(next.value));
+        }
+      } else {
+        // React Native's fetch can provide arrayBuffer() without ReadableStream.
+        // Workspace copies use the native, cancellable disk download on that platform.
+        const buffer = await Promise.race([response.arrayBuffer(), interrupted]);
+        if (controller.signal.aborted) throw new DOMException('Binary response aborted', 'AbortError');
+        length = buffer.byteLength;
+        if (limit !== undefined && length > limit) throw tooLarge();
+        chunks.push(new Uint8Array(buffer));
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      if (!response.ok) throw new ApiError(response.status, `${method} ${path} → ${response.status}`, new TextDecoder().decode(bytes));
+      complete = true;
+      return { bytes, contentType: response.headers.get('content-type') ?? '' };
     } finally {
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onCallerAbort);
+      controller.signal.removeEventListener('abort', onInternalAbort);
+      controller.abort();
+      if (!complete) {
+        if (reader) void reader.cancel().catch(() => {});
+        else void response?.body?.cancel().catch(() => {});
+      }
+      reader?.releaseLock();
     }
-    if (!res.ok) {
-      if (res.status === 401) this.onAuthFailure?.();
-      const text = await res.text().catch(() => '');
-      throw new ApiError(res.status, `GET ${path} → ${res.status}`, text);
-    }
-    const ab = await res.arrayBuffer();
-    return { bytes: new Uint8Array(ab), contentType: res.headers.get('content-type') ?? '' };
   }
 
   /**

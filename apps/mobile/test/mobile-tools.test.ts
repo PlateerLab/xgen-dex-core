@@ -359,6 +359,42 @@ test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 두고, 있는 
   assert.equal(transfer.discarded.length, 3, '받은 사본은 폴더에 넣은 뒤 지운다');
 });
 
+test('mobile copy cancellation never imports a late download or starts the next upload', async () => {
+  const s = scope();
+  s.fs.files.set(notes.uri, new Map([['a.txt', 'a'], ['b.txt', 'b']]));
+  const controller = new AbortController();
+  const transfer = fakeTransfer();
+  let calls = 0;
+  const result = await callMobileTool(fakePort(), 'CopyToWorkspace', { paths: ['/Notes/a.txt', '/Notes/b.txt'] }, undefined, {
+    ...s, signal: controller.signal, workspace: {
+      ...transfer,
+      async upload(_uri, _name, _dir, signal) {
+        assert.equal(signal, controller.signal); calls++; controller.abort();
+        return { path: 'owned/a.txt', size: 1 };
+      },
+    },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(calls, 1);
+  assert.equal(transfer.discarded.length, 1);
+  const downloadAbort = new AbortController();
+  const received = await callMobileTool(fakePort(), 'CopyFromWorkspace', {
+    path: '/Notes/a.txt', overwrite: true,
+    download: { url: '/api/agentflow/files/artifacts/abc/download', name: 'a.txt' },
+  }, undefined, {
+    ...s, signal: downloadAbort.signal, workspace: {
+      ...transfer,
+      async download(_url, _token, _name, signal) {
+        assert.equal(signal, downloadAbort.signal); downloadAbort.abort();
+        return 'file:///private-cache/late.bin';
+      },
+    },
+  });
+  assert.equal(received.isError, true);
+  assert.equal(s.fs.files.get(notes.uri)?.get('a.txt'), 'a');
+  assert.ok(transfer.discarded.includes('file:///private-cache/late.bin'));
+});
+
 // ── 사용자 PC 접속(UserPc) — 서버의 내부 호출로 연결 폴더에서 bash 명령을 돌린다 ─────────────
 
 test('사용자 PC 접속: 실행 통로가 카탈로그에 서고(숨는 이름) 셸 정보가 붙는다', () => {

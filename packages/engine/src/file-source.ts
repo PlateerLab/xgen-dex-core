@@ -11,8 +11,9 @@ import type { ResumableSource } from '@dex/protocol';
 
 export async function fileSource(
   path: string,
-  opts: { name?: string; type?: string } = {},
+  opts: { name?: string; type?: string; signal?: AbortSignal } = {},
 ): Promise<ResumableSource> {
+  opts.signal?.throwIfAborted();
   const info = await stat(path);
   if (!info.isFile()) throw new Error(`파일이 아닙니다: ${path}`);
   const size = info.size;
@@ -23,6 +24,7 @@ export async function fileSource(
     type: opts.type || 'application/octet-stream',
     lastModified: Math.floor(mtime),
     async read(offset, length) {
+      opts.signal?.throwIfAborted();
       const fh = await open(path, 'r');
       try {
         const now = await fh.stat();
@@ -31,10 +33,12 @@ export async function fileSource(
         const buf = Buffer.allocUnsafe(want);
         let got = 0;
         while (got < want) {
+          opts.signal?.throwIfAborted();
           const { bytesRead } = await fh.read(buf, got, want - got, offset + got);
           if (bytesRead === 0) break;
           got += bytesRead;
         }
+        opts.signal?.throwIfAborted();
         return new Uint8Array(buf.buffer, buf.byteOffset, got);
       } finally {
         await fh.close();

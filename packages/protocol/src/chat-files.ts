@@ -220,11 +220,12 @@ export class ChatFilesApi {
   }
 
   /** 서버가 내어 준 임시 파일(작업 공간 → 기기 폴더 복사의 받을 거리)의 바이트. */
-  artifactBytes(url: string, token?: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+  artifactBytes(url: string, token?: string, opts: { signal?: AbortSignal; maxBytes?: number } = {}): Promise<{ bytes: Uint8Array; contentType: string }> {
     if (!url.startsWith('/api/agentflow/files/artifacts/')) return Promise.reject(new Error('임시 파일 주소가 아닙니다.'));
     return this.http.getBinary(url, {
       headers: token ? { 'X-XGEN-Artifact-Token': token } : {},
       timeoutMs: 600_000,
+      ...opts,
     });
   }
 }

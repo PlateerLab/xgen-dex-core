@@ -148,9 +148,10 @@ export interface WorkspaceTransfer {
     name: string;
     relDir: string;
     mimeType: string;
+    signal?: AbortSignal;
   }): Promise<{ path: string; size: number; sha256?: string }>;
   /** 서버가 내어 준 임시 파일의 바이트. */
-  download(input: { url: string; token?: string }): Promise<Uint8Array>;
+  download(input: { url: string; token?: string; signal?: AbortSignal }): Promise<Uint8Array>;
 }
 
 /** A folder tool was called from a conversation with no connected folder. */
@@ -1317,7 +1318,7 @@ export class LocalToolProvider {
       tool === SHELL_TOOL || tool === SHELL_JOB_TOOL || tool === WRITE_FILE_TOOL || tool === COPY_FROM_WORKSPACE_TOOL;
     try {
       if (tool === COPY_TO_WORKSPACE_TOOL) return await this.copyToWorkspace(args, scope, context);
-      if (tool === COPY_FROM_WORKSPACE_TOOL) return await this.copyFromWorkspace(args, scope);
+      if (tool === COPY_FROM_WORKSPACE_TOOL) return await this.copyFromWorkspace(args, scope, context);
       if (tool === SHELL_TOOL) return await this.shell(args, scope);
       if (tool === SHELL_JOB_TOOL) return await this.shellJob(args, scope);
       if (tool === OPEN_TOOL) return await this.open(args, scope);
@@ -1540,6 +1541,7 @@ export class LocalToolProvider {
   ): Promise<LocalToolResult> {
     const transfer = this.workspaceTransfer;
     if (!transfer) throw new Error('이 앱에서는 작업 공간으로 파일을 옮길 수 없습니다.');
+    context?.signal?.throwIfAborted();
     const workflowId = context?.workflowId;
     const interactionId = context?.interactionId;
     if (!workflowId || !interactionId) throw new Error('어느 대화의 작업 공간인지 알 수 없어 옮기지 못했습니다.');
@@ -1567,6 +1569,7 @@ export class LocalToolProvider {
     };
     const skipDirs = new Set(['node_modules', '.git', '.venv', '__pycache__']);
     const walk = async (root: string, dir: string, depth: number): Promise<void> => {
+      context?.signal?.throwIfAborted();
       let names: string[];
       try {
         names = await readdir(dir);
@@ -1575,6 +1578,7 @@ export class LocalToolProvider {
         return;
       }
       for (const name of names.sort()) {
+        context?.signal?.throwIfAborted();
         if (name.startsWith('.')) continue;
         const full = pathJoin(dir, name);
         let s;
@@ -1595,6 +1599,7 @@ export class LocalToolProvider {
       }
     };
     for (const input of inputs) {
+      context?.signal?.throwIfAborted();
       let abs: string;
       try {
         abs = await this.guardPath(input, scope);
@@ -1607,23 +1612,28 @@ export class LocalToolProvider {
         if (s.isDirectory()) await walk(abs, abs, 0);
         else take(abs, '', s.size);
       } catch {
+        context?.signal?.throwIfAborted();
         skipped.push({ source: input, reason: 'not found' });
       }
     }
 
     const copied: CopiedFile[] = [];
     for (const item of plan) {
+      context?.signal?.throwIfAborted();
       try {
         const res = await transfer.upload({
           workflowId,
           interactionId,
-          file: await fileSource(item.abs),
+          file: await fileSource(item.abs, { signal: context?.signal }),
           name: basename(item.abs),
           relDir: item.relDir,
           mimeType: 'application/octet-stream',
+          signal: context?.signal,
         });
+        context?.signal?.throwIfAborted();
         copied.push({ source: item.abs, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
       } catch (e) {
+        context?.signal?.throwIfAborted();
         skipped.push({ source: item.abs, reason: (e as Error).message || 'upload failed' });
       }
     }
@@ -1631,9 +1641,10 @@ export class LocalToolProvider {
   }
 
   /** 서버가 실어 준 작업 공간 파일 → 이 PC 의 연결된 폴더. */
-  private async copyFromWorkspace(args: unknown, scope: FolderScope): Promise<LocalToolResult> {
+  private async copyFromWorkspace(args: unknown, scope: FolderScope, context?: LocalToolCallContext): Promise<LocalToolResult> {
     const transfer = this.workspaceTransfer;
     if (!transfer) throw new Error('이 앱에서는 작업 공간의 파일을 받을 수 없습니다.');
+    context?.signal?.throwIfAborted();
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
     const download = workspaceDownloadOf(a);
     if (!download) return { content: [{ type: 'text', text: NO_DOWNLOAD_MESSAGE }], isError: true };
@@ -1659,15 +1670,21 @@ export class LocalToolProvider {
         isError: true,
       };
     }
-    const bytes = await transfer.download(download);
+    const bytes = await transfer.download({ ...download, ...(context?.signal ? { signal: context.signal } : {}) });
+    context?.signal?.throwIfAborted();
+    if (bytes.byteLength > 100 * 1024 * 1024) throw new Error('WORKSPACE_DOWNLOAD_TOO_LARGE');
     await mkdir(dirname(target), { recursive: true });
     if (!(await resolveWithinRootsReal(dirname(target), scope.roots))) {
       throw new Error('[PATH_DOMAIN_MISMATCH] 생성된 상위 폴더가 허용 범위 밖입니다.');
     }
+    context?.signal?.throwIfAborted();
     // 옆 이름에 다 쓴 뒤 바꿔 끼운다 — 쓰다 끊겨도 있던 파일이 반쪽이 되지 않는다.
     const staging = `${target}.xgen-${process.pid}-${Date.now()}`;
     try {
       await fsWriteFile(staging, bytes);
+      context?.signal?.throwIfAborted();
+      // Rename is the local commit point. Cancellation before dispatch preserves
+      // the target; an already-dispatched kernel rename cannot be undone safely.
       await rename(staging, target);
     } catch (e) {
       await rm(staging, { force: true }).catch(() => undefined);

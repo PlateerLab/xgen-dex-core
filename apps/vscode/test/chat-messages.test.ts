@@ -72,3 +72,8 @@ test('준비 단계 줄: 0.7초 넘은 단계만, 다 끝났는데 답이 아직
   assert.deepEqual(phaseLines(rows, 15_400).at(-1), { label: '답변을 준비하고 있습니다', state: 'run', time: '3초' });
   assert.deepEqual(phaseLines([{ phase: 'workspace', state: 'run', startedAt: 0 }], 300), [], '빠른 단계는 보이지 않는다');
 });
+
+test('답 뒤의 단계 줄: 답변 준비 줄을 잇지 않고 걸린 시간을 보인다', () => {
+  const rows = [{ phase: 'publish' as const, state: 'ok' as const, startedAt: 0, durationMs: 41_200 }];
+  assert.deepEqual(phaseLines(rows, 60_000), [{ label: '작업 폴더를 저장했습니다', state: 'ok', time: '41.2초' }]);
+});

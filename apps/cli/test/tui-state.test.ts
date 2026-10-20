@@ -125,3 +125,14 @@ test('새 에이전트의 첫 실행이면 상태 줄이 조립 중이라고 말
   state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 9000 } });
   assert.equal(state.status, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
 });
+
+test('답이 다 나온 뒤의 단계는 상태 줄에 보이고, 턴이 끝나면 걷힌다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: '끝났습니다' } });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'publish', state: 'start' } });
+  assert.equal(state.status, '작업 폴더를 저장하고 있습니다');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'publish', state: 'done', elapsedMs: 40_000 } });
+  assert.equal(state.status, '작업 폴더를 저장했습니다');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'end' } });
+  assert.equal(state.status, undefined);
+});

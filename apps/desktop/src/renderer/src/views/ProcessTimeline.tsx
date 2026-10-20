@@ -277,12 +277,16 @@ const PhaseLine: React.FC<{
  * 0.7초 넘게 걸린 단계가 없으면 `fallback`(커서)을 그대로 그린다. 준비가 다 끝났는데 답이 아직이면
  * "답변을 준비하고 있습니다" 를 잇는다.
  */
-export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?: React.ReactNode }> = ({ rows, fallback = null }) => {
+export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?: React.ReactNode; tail?: boolean }> = ({
+  rows,
+  fallback = null,
+  tail = false,
+}) => {
   const now = useNow(true);
   const visible = visiblePhaseRows(rows, now);
   if (visible.length === 0) return <>{fallback}</>;
   return (
-    <div className="ptl-tools" style={{ marginTop: 0 }} role="status" aria-live="polite">
+    <div className="ptl-tools" style={{ marginTop: tail ? 8 : 0 }} role="status" aria-live="polite">
       {visible.map((r) => (
         <PhaseLine
           key={r.phase}
@@ -294,7 +298,7 @@ export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?:
           durationMs={r.durationMs}
         />
       ))}
-      {awaitingAnswer(rows, now) && (
+      {!tail && awaitingAnswer(rows, now) && (
         <PhaseLine icon="list" label={AWAITING_ANSWER_LABEL} state="run" since={phasesSettledAt(rows)} now={now} />
       )}
     </div>

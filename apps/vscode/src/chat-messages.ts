@@ -36,6 +36,8 @@ export interface ChatMessage {
    * (:func:`phaseLines`). 있으면 웹뷰가 점 대신 도구 줄 모양으로 그린다.
    */
   phaseLines?: PhaseLine[];
+  /** assistant. 답이 다 나온 뒤의 단계 줄(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리). 답 아래에 그린다. */
+  tailLines?: PhaseLine[];
 }
 
 /** 준비 단계 한 줄. 웹뷰가 그대로 그린다. */

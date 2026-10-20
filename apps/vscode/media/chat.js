@@ -626,6 +626,8 @@
     if (!item.text && item.role === 'assistant') content.append(item.phaseLines && item.phaseLines.length ? phaseBlock(item.phaseLines) : typingIndicator());
     else if (item.role === 'assistant') renderRichText(content, item.text);
     else content.textContent = item.text;
+    // 답이 다 나온 뒤의 기다림(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리). 답 아래에 같은 줄 모양으로.
+    if (item.role === 'assistant' && item.text && item.tailLines && item.tailLines.length) content.append(phaseBlock(item.tailLines));
     body.append(header, content);
     // 답변 푸터 한 줄 — 좌: 복사(아이콘, 상시), 우: 전체 로그(상시).
     // 데스크톱 앱과 같은 배치 계약이다.

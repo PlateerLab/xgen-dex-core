@@ -25,7 +25,7 @@ import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
 import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
-import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError } from '@dex/protocol';
+import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError, startPhaseRows, tailPhaseRows } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
@@ -1620,10 +1620,10 @@ export const Chat: React.FC<{
                           {' '}({formatBytes(m.uploadProgress.loaded)} / {formatBytes(m.uploadProgress.total)})
                         </span>
                       </span>
-                    ) : m.streaming && m.phases?.length && !m.tools?.length ? (
+                    ) : m.streaming && m.phases && startPhaseRows(m.phases).length && !m.tools?.length ? (
                       // 답이 시작되기 전 서버의 준비 단계(Sandbox·워크스페이스·패키지·기억). 0.7초 넘게 걸린
                       // 단계가 없으면 커서 그대로다(빠른 턴은 예전과 같다).
-                      <TurnPhaseCard rows={m.phases} fallback={<span className="cursor" />} />
+                      <TurnPhaseCard rows={startPhaseRows(m.phases)} fallback={<span className="cursor" />} />
                     ) : (
                       m.streaming && <span className="cursor" />
                     )
@@ -1660,6 +1660,11 @@ export const Chat: React.FC<{
                   )}
                   {m.role === 'assistant' && m.text && m.streaming && !(processView && hasProcessFlow(m)) && (
                     <span className="cursor" />
+                  )}
+                  {/* 답이 다 나온 뒤의 기다림(답에 쓴 파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리). 턴이
+                      끝나면 물러난다. 0.7초 안에 끝나는 단계는 보이지 않는다(웹과 같은 규칙). */}
+                  {m.role === 'assistant' && m.streaming && m.phases && tailPhaseRows(m.phases).length > 0 && (
+                    <TurnPhaseCard rows={tailPhaseRows(m.phases)} tail />
                   )}
                 </div>
                 {/* 사용자가 [정지]로 끊은 턴 — 받다 만 글 아래에 사실을 남긴다.

@@ -1,4 +1,4 @@
-import { applyTurnPhase, describeStreamError, formatErrorLine, type TurnPhaseRow } from '@dex/protocol';
+import { applyTurnPhase, describeStreamError, formatErrorLine, startPhaseRows, tailPhaseRows, type TurnPhaseRow } from '@dex/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { DexService } from './dex-service';
@@ -1778,11 +1778,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /** 웹뷰에 보낼 메시지. 답이 시작되기 전의 답변 말풍선에만 준비 줄을 싣는다(원본은 건드리지 않는다). */
   private messagesForView(): ChatMessage[] {
     if (this.phaseRows.length === 0) return this.messages;
-    const lines = phaseLines(this.phaseRows, Date.now());
-    if (lines.length === 0) return this.messages;
-    return this.messages.map((item) =>
-      item.id === this.assistantMessageId && !item.text && !item.tools?.length ? { ...item, phaseLines: lines } : item,
-    );
+    const now = Date.now();
+    // 답 전의 단계는 점 대신, 답 뒤의 단계(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리)는 답 아래에.
+    const lines = phaseLines(startPhaseRows(this.phaseRows), now);
+    const tail = phaseLines(tailPhaseRows(this.phaseRows), now);
+    if (lines.length === 0 && tail.length === 0) return this.messages;
+    return this.messages.map((item) => {
+      if (item.id !== this.assistantMessageId) return item;
+      if (!item.text && !item.tools?.length && lines.length > 0) return { ...item, phaseLines: lines };
+      if (item.text && tail.length > 0) return { ...item, tailLines: tail };
+      return item;
+    });
   }
 
   private applyEvent(event: ChatEvent): void {

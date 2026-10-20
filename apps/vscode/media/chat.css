@@ -1302,6 +1302,11 @@ textarea.start-control {
   gap: 4px;
 }
 
+/* 답 아래의 마무리 줄. 본문과 띄운다. */
+.message-content > .phase-lines:not(:first-child) {
+  margin-top: 8px;
+}
+
 .phase-line {
   display: flex;
   width: fit-content;

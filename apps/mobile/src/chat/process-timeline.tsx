@@ -409,15 +409,16 @@ const PhaseLineView: React.FC<{
  * 같은 모양으로 보인다(웹·데스크톱과 같은 규칙·같은 문구, @dex/protocol turn-phases). 캐럿 자리에 선다.
  * 0.7초 넘게 걸린 단계가 없으면 `fallback`(캐럿)을 그대로 그린다.
  */
-export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?: React.ReactNode }> = ({
+export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?: React.ReactNode; tail?: boolean }> = ({
   rows,
   fallback = null,
+  tail = false,
 }) => {
   const p = useP();
   const now = useNow(true);
   const visible = visiblePhaseRows(rows, now);
   if (visible.length === 0) return <>{fallback}</>;
-  const waiting = awaitingAnswer(rows, now);
+  const waiting = !tail && awaitingAnswer(rows, now);
   return (
     <View
       accessibilityRole="summary"

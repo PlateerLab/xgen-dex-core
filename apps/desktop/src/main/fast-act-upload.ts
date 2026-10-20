@@ -38,7 +38,7 @@ const FILE_EXT = 'png|jpe?g|gif|webp|bmp|svg|heic|mp4|mov|avi|webm|pdf|xlsx?|csv
 
 /** 말에 든 파일 이름 — 공백 없는 `이름.확장자` 하나. 뒤에 붙은 조사("…png로")는 뺀다. */
 export function fileNameIn(text: string): string | null {
-  const m = text.match(new RegExp(`[^\\s"'“”‘’]+\\.(?:${FILE_EXT})(?![A-Za-z0-9])`, 'i'));
+  const m = text.match(new RegExp(`[^\\s"'“”‘’「」『』]+\\.(?:${FILE_EXT})(?![A-Za-z0-9])`, 'i'));
   return m ? m[0] : null;
 }
 

@@ -173,6 +173,12 @@ test('XGEN WebSocket trust는 항상 표준 검증을 유지하고 exact origin�
   assert.equal(scoped.rejectUnauthorized, true);
   assert.deepEqual(scoped.ca, ['CA']);
   assert.equal(typeof scoped.checkServerIdentity, 'function');
+  assert.deepEqual(xgenWebSocketTlsOptions('wss://xgen.internal/socket', [{
+    origin: 'https://xgen.internal', ca: ['CA'], expiresAt: Date.now() + 60_000,
+  }]).ca, ['CA']);
+  assert.equal(xgenWebSocketTlsOptions('wss://xgen.internal:8443/socket', [{
+    origin: 'https://xgen.internal', ca: ['CA'], expiresAt: Date.now() + 60_000,
+  }]).ca, undefined);
 });
 
 test('실제 TLS handshake는 승인 CA+pin만 통과하고 hostname/origin/pin 오류를 거부한다', async () => {
@@ -189,6 +195,7 @@ test('실제 TLS handshake는 승인 CA+pin만 통과하고 hostname/origin/pin 
   const trust = [{ origin, ca: [ca], certificateSha256: [fingerprint], expiresAt: Date.now() + 60_000 }];
   try {
     await tlsGet(port, 'localhost', xgenWebSocketTlsOptions(origin, trust));
+    await tlsGet(port, 'localhost', xgenWebSocketTlsOptions(`wss://localhost:${port}/socket`, trust));
     await assert.rejects(
       () => tlsGet(
         port,

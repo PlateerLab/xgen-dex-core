@@ -21,16 +21,23 @@ function normalizedFingerprint(value: string): string {
   return value.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
 }
 
+function serverOrigin(value: string): string {
+  const url = new URL(value);
+  if (url.protocol === 'wss:') url.protocol = 'https:';
+  else if (url.protocol === 'ws:') url.protocol = 'http:';
+  return url.origin;
+}
+
 function trustFor(serverUrl: string, records?: readonly XgenServerTrust[]): XgenServerTrust | undefined {
   let origin: string;
   try {
-    origin = new URL(serverUrl).origin;
+    origin = serverOrigin(serverUrl);
   } catch {
     return undefined;
   }
   return records?.find((record) => {
     try {
-      return new URL(record.origin).origin === origin && record.expiresAt > Date.now();
+      return serverOrigin(record.origin) === origin && record.expiresAt > Date.now();
     } catch {
       return false;
     }

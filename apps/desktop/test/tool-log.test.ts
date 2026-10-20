@@ -77,3 +77,7 @@ test('복사 실패를 성공이라 하지 않는다', () => {
 test('Esc 로 닫힌다', () => {
   assert.match(MODAL, /key === 'Escape'/);
 });
+
+test('로그 창은 입력 영역의 레이어를 벗어나 브라우저 위에 표시한다', () => {
+  assert.match(CHAT, /<ModalPortal onClose=\{[^\n]+\}>\s*<ToolLogModal/);
+});

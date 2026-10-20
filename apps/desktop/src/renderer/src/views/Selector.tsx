@@ -116,11 +116,12 @@ export const Selector: React.FC<SelectorProps> = ({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
     };
-    window.addEventListener('pointerdown', onDown, true);
-    window.addEventListener('keydown', onKey);
+    const ownerWindow = rootRef.current?.ownerDocument.defaultView ?? window;
+    ownerWindow.addEventListener('pointerdown', onDown, true);
+    ownerWindow.addEventListener('keydown', onKey);
     return () => {
-      window.removeEventListener('pointerdown', onDown, true);
-      window.removeEventListener('keydown', onKey);
+      ownerWindow.removeEventListener('pointerdown', onDown, true);
+      ownerWindow.removeEventListener('keydown', onKey);
     };
   }, [open]);
 

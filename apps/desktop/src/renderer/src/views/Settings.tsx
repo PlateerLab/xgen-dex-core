@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useModalDismiss } from './use-modal-dismiss';
+import { ModalPortal } from './ModalPortal';
 import { xgen } from '../bridge';
 import {
   BROWSER_SEARCH_PROVIDERS,
@@ -1137,14 +1138,20 @@ export const Settings: React.FC<{
     return (
       <div className="settings-page">
         <div className="settings-page-inner">{body}</div>
-        {voiceModal}
+        {voiceModal && <ModalPortal onClose={() => setShowVoice(false)}>{voiceModal}</ModalPortal>}
       </div>
     );
   }
   return (
-    <>
+    <ModalPortal onClose={onClose}>
       <div className="modal-backdrop" onClick={onClose}>
-        <div className="modal wide settings-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal wide settings-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="설정"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-head">
             <h2>설정</h2>
             <button className="link" onClick={onClose}>
@@ -1155,6 +1162,6 @@ export const Settings: React.FC<{
         </div>
       </div>
       {voiceModal}
-    </>
+    </ModalPortal>
   );
 };

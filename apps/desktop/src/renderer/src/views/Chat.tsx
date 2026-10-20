@@ -47,6 +47,7 @@ import { Tooltip } from './Tooltip';
 import { OPEN_CHAT_FOLDERS_EVENT } from '../ide/dex-ide-host';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
+import { ModalPortal } from './ModalPortal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
 import { CitationPanel } from './CitationPanel';
 import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
@@ -1825,11 +1826,13 @@ export const Chat: React.FC<{
           </div>
         )}
         {logFor && (
-          <ToolLogModal
-            events={logFor.events}
-            initialOpen={logFor.initialOpen}
-            onClose={() => setLogFor(null)}
-          />
+          <ModalPortal onClose={() => setLogFor(null)}>
+            <ToolLogModal
+              events={logFor.events}
+              initialOpen={logFor.initialOpen}
+              onClose={() => setLogFor(null)}
+            />
+          </ModalPortal>
         )}
         {citationFor && <CitationPanel citation={citationFor} onClose={() => setCitationFor(null)} />}
         {feedbackFor !== null && (

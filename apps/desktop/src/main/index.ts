@@ -36,6 +36,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeExternalUrl } from './external-url';
+import { installModalOverlay } from './modal-overlay';
 import { publicAppUrl } from './app-links';
 import { AppPreviewService, type PreviewTarget } from './app-preview';
 import { shootAppPreview } from './app-preview-shot';
@@ -564,10 +565,7 @@ function createWindow(): void {
       mainWindow.hide();
     }
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    openExternalSafe(url);
-    return { action: 'deny' };
-  });
+  installModalOverlay(mainWindow, openExternalSafe);
   // 데스크톱 창은 우리 렌더러만 띄운다 — 그 밖으로 가려는 이동(창 안 앱이 top 을 옮기는 것
   // 포함)은 막고, 웹 주소면 기본 브라우저로 넘긴다.
   mainWindow.webContents.on('will-navigate', (event, url) => {

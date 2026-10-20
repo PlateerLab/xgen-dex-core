@@ -1257,7 +1257,9 @@ export class LocalToolProvider {
       ...this.catalog(),
       ...(this.delegate?.advertise() ?? []),
       // MCP 자기관리 도구는 로컬 MCP 스위치로 게이트된다(delegate 가 스스로 판단).
-      ...(this.mcpAdmin?.advertise() ?? []),
+      ...(this.mcpAdmin?.advertise() ?? []).filter(
+        (tool) => tool.name !== MCP_ADD_TOOL && tool.name !== MCP_REMOVE_TOOL,
+      ),
     ];
   }
 
@@ -1280,7 +1282,14 @@ export class LocalToolProvider {
   ): Promise<LocalToolResult> {
     if (tool === LOCAL_CONTROL_TOOL) return this.localControl(context);
     if (this.delegate?.owns(tool)) return this.delegate.callTool(tool, args, context);
-    if (this.mcpAdmin?.owns(tool)) return this.mcpAdmin.callTool(tool, args);
+    if (this.mcpAdmin?.owns(tool)) {
+      if (tool === MCP_ADD_TOOL || tool === MCP_REMOVE_TOOL) {
+        throw new Error(
+          'MCP 설정 변경은 모델/원격 호출에서 허용되지 않습니다. 이 PC의 설정 화면에서 직접 변경하세요.',
+        );
+      }
+      return this.mcpAdmin.callTool(tool, args, context);
+    }
     if (USER_PC_TOOL_NAMES.has(tool)) return this.userPc(tool, args, context);
     if (!FOLDER_TOOL_NAMES.has(tool)) throw new Error(`unknown local tool: ${tool}`);
     if (context?.remote && PRESENCE_TOOLS.has(tool)) {

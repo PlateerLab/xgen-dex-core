@@ -224,8 +224,8 @@ export class DexEngine {
     this.localToolBridge.start({
       serverUrl: record.serverUrl,
       userId,
-      // CLI 는 사내 인증서를 아직 설정으로 받지 않는다 — 기본은 검증이다.
-      allowPrivateCertificate: false,
+      // CLI 는 사내 trust material을 아직 설정으로 받지 않는다 — 표준 검증만 사용한다.
+      serverTrust: [],
       // 멀티 디바이스 — 데스크톱 앱과 같은 계정으로 붙어도 서로를 밀어내지 않는다.
       deviceId: this.deviceId,
       deviceName: `${hostname()} · CLI`,

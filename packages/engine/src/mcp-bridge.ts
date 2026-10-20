@@ -28,7 +28,7 @@ import {
   LOCAL_SERVER,
 } from './local-tools';
 import { appendMcpRuntimeLog } from './mcp-runtime-log';
-import { xgenWebSocketTlsOptions } from './connection-security';
+import { xgenWebSocketTlsOptions, type XgenServerTrust } from './connection-security';
 
 // 감시 시한 규칙은 휴대폰·브라우저와 같다(@dex/protocol/connector-deadline).
 export { LocalDeadlineError, localDeadlineMs };
@@ -50,6 +50,19 @@ export interface McpBridgeStatus {
   servers: McpServerAdvert[];
 }
 
+interface McpCorrelation {
+  requestId: string;
+  protocolVersion: 2;
+  connectionGeneration: number;
+  requestNonce: string;
+}
+
+interface InflightCall extends McpCorrelation {
+  socket: WebSocket;
+  controller: AbortController;
+  terminal: boolean;
+}
+
 export class McpBridge {
   private ws: WebSocket | null = null;
   private hb: ReturnType<typeof setInterval> | null = null;
@@ -66,11 +79,13 @@ export class McpBridge {
   private pendingCatalogId = '';
   private serverUrl = '';
   private userId = '';
-  private allowPrivateCertificate = false;
+  private serverTrust: readonly XgenServerTrust[] = [];
   private getToken: () => Promise<string | null> = async () => null;
   private refreshAuth: () => Promise<string | null> = async () => null;
   private lastServers: McpServerAdvert[] = [];
   private lastError: string | undefined;
+  private protocolReady = false;
+  private connectionGeneration: number | null = null;
   private lastEmit = '';
   private onStatus: (s: McpBridgeStatus) => void = () => {};
 
@@ -119,7 +134,7 @@ export class McpBridge {
   start(opts: {
     serverUrl: string;
     userId: string;
-    allowPrivateCertificate: boolean;
+    serverTrust?: readonly XgenServerTrust[];
     getToken: () => Promise<string | null>;
     /** 핸드셰이크 401/403 자가치유 — refresh 로 토큰 회전(single-flight). */
     refreshAuth?: () => Promise<string | null>;
@@ -133,10 +148,10 @@ export class McpBridge {
     const sameTarget =
       this.serverUrl === opts.serverUrl &&
       this.userId === opts.userId &&
-      this.allowPrivateCertificate === opts.allowPrivateCertificate;
+      JSON.stringify(this.serverTrust) === JSON.stringify(opts.serverTrust ?? []);
     this.serverUrl = opts.serverUrl;
     this.userId = opts.userId;
-    this.allowPrivateCertificate = opts.allowPrivateCertificate;
+    this.serverTrust = opts.serverTrust ?? [];
     this.getToken = opts.getToken;
     if (opts.refreshAuth) this.refreshAuth = opts.refreshAuth;
     if (opts.deviceId) this.deviceId = opts.deviceId;
@@ -156,6 +171,7 @@ export class McpBridge {
     try {
       const ws = this.ws;
       if (ws) {
+        this.abortInflight(ws);
         ws.removeAllListeners();
         // 연결 중인 소켓을 닫으면 ws 가 'error' 를 낸다("WebSocket was closed
         // before the connection was established"). 리스너를 모두 뗀 뒤라 받을
@@ -172,6 +188,9 @@ export class McpBridge {
     this.catalogSynced = false;
     this.serverToolCount = 0;
     this.pendingCatalogId = '';
+    this.protocolReady = false;
+    this.connectionGeneration = null;
+    this.abortInflight();
     this.lastError = undefined;
     this.emit();
   }
@@ -179,6 +198,15 @@ export class McpBridge {
   private clearTimers(): void {
     for (const t of [this.retry, this.hb, this.settle, this.grace]) if (t) clearTimeout(t as never);
     this.retry = this.hb = this.settle = this.grace = null;
+  }
+
+  private abortInflight(socket?: WebSocket): void {
+    for (const [key, call] of this.inflight) {
+      if (socket && call.socket !== socket) continue;
+      call.terminal = true;
+      call.controller.abort(new DOMException('MCP bridge connection ended', 'AbortError'));
+      this.inflight.delete(key);
+    }
   }
 
   /**
@@ -258,6 +286,7 @@ export class McpBridge {
     try {
       const ws = this.ws;
       if (ws) {
+        this.abortInflight(ws);
         ws.removeAllListeners();
         // 연결 중인 소켓을 닫으면 ws 가 'error' 를 낸다("WebSocket was closed
         // before the connection was established"). 리스너를 모두 뗀 뒤라 받을
@@ -270,16 +299,31 @@ export class McpBridge {
       /* ignore */
     }
     this.ws = null;
-    const token = await this.getToken();
+    let token: string | null;
+    try {
+      token = await this.getToken();
+    } catch {
+      token = null;
+    }
     if (this.stopped || !this.serverUrl || !this.userId) {
       if (!this.stopped) this.scheduleRetry();
+      return;
+    }
+    if (!token || !token.trim()) {
+      this.lastError = 'auth_required';
+      this.uiConnected = false;
+      this.catalogSynced = false;
+      this.protocolReady = false;
+      this.connectionGeneration = null;
+      this.abortInflight();
+      this.emit();
       return;
     }
     let ws: WebSocket;
     try {
       ws = new WebSocket(this.wsUrl(), {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        ...xgenWebSocketTlsOptions(this.allowPrivateCertificate),
+        headers: { Authorization: `Bearer ${token}` },
+        ...xgenWebSocketTlsOptions(this.serverUrl, this.serverTrust),
       });
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
@@ -321,7 +365,8 @@ export class McpBridge {
         }
         if (fresh) this.backoff = RECONNECT_MIN_MS;
         this.emit();
-        this.scheduleRetry();
+        if (fresh) void this.reconnect(true);
+        else if (sc !== 401 && sc !== 403) this.scheduleRetry();
       });
     });
 
@@ -356,6 +401,11 @@ export class McpBridge {
     ws.on('message', (raw: WebSocket.RawData) => void this.onMessage(String(raw), ws));
 
     ws.on('close', () => {
+      this.abortInflight(ws);
+      if (this.ws === ws) {
+        this.protocolReady = false;
+        this.connectionGeneration = null;
+      }
       if (this.settle) {
         clearTimeout(this.settle);
         this.settle = null;
@@ -454,7 +504,7 @@ export class McpBridge {
   }
 
   /** 기기에서 돌고 있는 호출 — 서버가 `mcp_cancel` 을 보내거나 시한이 지나면 멈춘다. */
-  private inflight = new Map<string, AbortController>();
+  private inflight = new Map<string, InflightCall>();
 
   private async onMessage(text: string, from?: WebSocket): Promise<void> {
     let msg: {
@@ -467,6 +517,9 @@ export class McpBridge {
       catalog_id?: string;
       tool_count?: number;
       deadline_ms?: number;
+      protocol_version?: number;
+      connection_generation?: number;
+      request_nonce?: string;
     };
     try {
       msg = JSON.parse(text);
@@ -475,6 +528,21 @@ export class McpBridge {
     }
     if (msg.type === 'ready') {
       if (msg.catalog_id !== this.pendingCatalogId) return;
+      if (
+        msg.protocol_version !== 2 ||
+        !Number.isSafeInteger(msg.connection_generation) ||
+        Number(msg.connection_generation) < 1 ||
+        from !== this.ws
+      ) {
+        this.catalogSynced = false;
+        this.protocolReady = false;
+        this.connectionGeneration = null;
+        this.lastError = 'unsupported_mcp_protocol';
+        this.emit();
+        return;
+      }
+      this.protocolReady = true;
+      this.connectionGeneration = Number(msg.connection_generation);
       this.catalogSynced = true;
       this.serverToolCount = Number.isFinite(msg.tool_count)
         ? Math.max(0, Math.trunc(msg.tool_count as number))
@@ -489,15 +557,61 @@ export class McpBridge {
       return;
     }
     if (msg.type === 'mcp_cancel') {
-      // 서버가 그 호출을 그만뒀다(시한 초과·사용자 [정지]) — 하던 일을 멈춘다. 결과는 보내지 않아도 된다.
-      this.inflight.get(String(msg.request_id ?? ''))?.abort();
+      const requestId = String(msg.request_id ?? '');
+      const call = this.inflight.get(requestId);
+      if (
+        !call ||
+        call.terminal ||
+        call.socket !== from ||
+        msg.protocol_version !== 2 ||
+        msg.connection_generation !== call.connectionGeneration ||
+        msg.request_nonce !== call.requestNonce
+      ) return;
+      call.terminal = true;
+      this.inflight.delete(requestId);
+      call.controller.abort(new DOMException('MCP call cancelled', 'AbortError'));
       return;
     }
     if (msg.type === 'mcp_call') {
       const { request_id, server, tool, args } = msg;
-      const controller = new AbortController();
       const requestKey = String(request_id ?? '');
-      if (requestKey) this.inflight.set(requestKey, controller);
+      const generation = Number(msg.connection_generation);
+      const nonce = String(msg.request_nonce ?? '');
+      const validCorrelation =
+        from !== undefined &&
+        from === this.ws &&
+        this.protocolReady &&
+        msg.protocol_version === 2 &&
+        Number.isSafeInteger(generation) &&
+        generation === this.connectionGeneration &&
+        requestKey.length > 0 &&
+        nonce.length > 0;
+      if (!validCorrelation) return;
+      if (this.inflight.has(requestKey)) {
+        try {
+          from.send(JSON.stringify({
+            type: 'mcp_result',
+            request_id: requestKey,
+            protocol_version: 2,
+            connection_generation: generation,
+            request_nonce: nonce,
+            ok: false,
+            error: 'duplicate_request',
+          }));
+        } catch { /* socket gone */ }
+        return;
+      }
+      const controller = new AbortController();
+      const call: InflightCall = {
+        requestId: requestKey,
+        protocolVersion: 2,
+        connectionGeneration: generation,
+        requestNonce: nonce,
+        socket: from,
+        controller,
+        terminal: false,
+      };
+      this.inflight.set(requestKey, call);
       const context = { ...localToolCallContext(msg.context), signal: controller.signal };
       const startedAt = Date.now();
       appendMcpRuntimeLog({
@@ -519,7 +633,7 @@ export class McpBridge {
         // goes to the configured MCP server via MCPManager. Same wire contract.
         const work = isLocal
           ? local.callTool(String(tool), args ?? {}, context)
-          : getMcpManager().callTool(String(server), String(tool), args ?? {});
+          : getMcpManager().callTool(String(server), String(tool), args ?? {}, controller.signal);
         const timedOut = new Promise<never>((_resolve, reject) => {
           watchdog = setTimeout(() => {
             // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
@@ -529,13 +643,27 @@ export class McpBridge {
           (watchdog as unknown as { unref?: () => void }).unref?.();
         });
         const result = await Promise.race([work, timedOut]);
-        payload = { request_id, ok: true, result };
+        payload = { request_id, ok: true, result: getMcpManager().sanitizeOutput(String(server), result) };
       } catch (e) {
-        payload = { request_id, ok: false, error: e instanceof Error ? e.message : String(e) };
+        payload = {
+          request_id,
+          ok: false,
+          error: getMcpManager().sanitizeError(String(server), e),
+        };
       } finally {
         if (watchdog) clearTimeout(watchdog);
-        if (requestKey) this.inflight.delete(requestKey);
       }
+      const current = this.inflight.get(requestKey);
+      const mayReply =
+        current === call &&
+        !call.terminal &&
+        !controller.signal.aborted &&
+        this.ws === from &&
+        from.readyState === WebSocket.OPEN &&
+        this.protocolReady &&
+        this.connectionGeneration === generation;
+      call.terminal = true;
+      this.inflight.delete(requestKey);
       appendMcpRuntimeLog({
         kind: 'result',
         message: payload.ok
@@ -547,10 +675,17 @@ export class McpBridge {
         ok: payload.ok === true,
         durationMs: Date.now() - startedAt,
       });
+      if (!mayReply) return;
       try {
-        // 호출을 받은 소켓으로 답한다 — 그사이 다시 붙었으면 지금 소켓으로.
-        const target = from && from.readyState === WebSocket.OPEN ? from : this.ws;
-        target?.send(JSON.stringify({ type: 'mcp_result', ...payload }));
+        from.send(JSON.stringify({
+          type: 'mcp_result',
+          request_id: requestKey,
+          protocol_version: 2,
+          connection_generation: generation,
+          request_nonce: nonce,
+          ok: payload.ok,
+          ...(payload.ok ? { result: payload.result } : { error: payload.error }),
+        }));
       } catch {
         /* socket gone */
       }

@@ -52,7 +52,7 @@ export class IdeWatchHub {
       if (!base || !token || w.closed) return;
       ws = new WebSocket(`${base}${workspaceChangeSocketPath(w.workflowId)}`, {
         headers: { Authorization: `Bearer ${token}` },
-        ...xgenWebSocketTlsOptions(deps.allowPrivateCertificate()),
+        ...xgenWebSocketTlsOptions(base, deps.serverTrust?.()),
       });
     } catch {
       this.again(key, w);

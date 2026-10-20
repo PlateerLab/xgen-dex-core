@@ -30,6 +30,10 @@ interface RawValidateResponse {
   new_access_token?: string | null;
 }
 
+interface RawCliTokenResponse extends RawLoginResponse {
+  state?: string;
+}
+
 export class AuthApi {
   constructor(private http: HttpClient) {}
 
@@ -65,6 +69,29 @@ export class AuthApi {
     if (!res.success || !res.access_token) {
       throw new Error(res.message || 'SSO 로그인에 실패했습니다.');
     }
+    return {
+      accessToken: res.access_token,
+      refreshToken: res.refresh_token ?? undefined,
+      tokenType: res.token_type ?? 'bearer',
+      userId: res.user_id ?? '',
+      username: res.username ?? '',
+    };
+  }
+
+  /** Native CLI PKCE exchange. State is mandatory and must be echoed exactly. */
+  async exchangeCliCode(
+    authorizationCode: string,
+    codeVerifier: string,
+    state: string,
+  ): Promise<LoginResult> {
+    if (!state) throw new Error('CLI 인증 state가 없습니다.');
+    const res = await this.http.post<RawCliTokenResponse>(
+      '/api/auth/cli/token',
+      { authorization_code: authorizationCode, code_verifier: codeVerifier, state },
+      { auth: false },
+    );
+    if (res.state !== state) throw new Error('CLI 인증 state가 일치하지 않습니다.');
+    if (!res.success || !res.access_token) throw new Error(res.message || 'CLI 인증에 실패했습니다.');
     return {
       accessToken: res.access_token,
       refreshToken: res.refresh_token ?? undefined,

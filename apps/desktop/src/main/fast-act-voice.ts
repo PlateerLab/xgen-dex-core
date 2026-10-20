@@ -103,8 +103,11 @@ const UPLOAD_WAIT_MS = 3_000;
 /** 이보다 좁거나 낮은 화면은 숨은 탭이다(앱은 숨은 탭을 1×1 로 둔다) — 꺼내서 다시 읽는다. */
 const SMALL_VIEW = 100;
 /** 숨은 탭을 꺼낸 뒤 배치가 끝나길 기다리는 한도. */
-/** 클릭·입력 하나로 끝나는 일일 확률이 이보다 낮으면 여러 단계·글쓰기 작업으로 보고 서버로 넘긴다(classify 의 single). */
-const SINGLE_MIN = 0.5;
+/**
+ * 클릭·입력 하나로 끝나는 일일 확률이 이보다 낮으면 여러 단계·글쓰기 작업으로 보고 서버로 넘긴다(classify 의 single).
+ * 10/20 BO: 0.5 일 때 "폴더 보고 002 신상품 등록해줘"(0.75)가 넘어 업체상품번호에 "002 신상품" 을 넣었다 — 칸 지시는 0.94 이상이었다.
+ */
+const SINGLE_MIN = 0.9;
 /** 말한 대상이 이 화면에 있을 확률이 이보다 낮으면 서버로 넘긴다(classify 의 onscreen). */
 const ONSCREEN_MIN = 0.5;
 const REVEAL_WAIT_MS = 1_500;
@@ -280,6 +283,45 @@ export class BrowserVoiceAgent implements VoiceAgent {
 
   get lastTarget(): string | null {
     return this.last;
+  }
+
+  /**
+   * 말이 부른 지금 화면의 칸 이름(없으면 null) — 그러면 직전 서버 답이 질문이었어도 그 자체로 알아들을 수 있는 새 지시다
+   * (10/20 BO: "임시저장할까요?" 다음의 "출고소요일을 2일로 변경해줘" 가 서버로 갔다). "응"·"001로 해줘" 는 칸을 부르지 않는다.
+   * 버튼은 보지 않는다 — "확인"·"적용" 같은 짧은 이름이 대답에도 들어간다. 스냅샷은 뒤따르는 판단이 그대로 쓴다.
+   */
+  async namesField(text: string): Promise<string | null> {
+    let got = await this.snapshot().catch(() => null);
+    // 숨은 탭(1×1)은 칸 이름이 구역 제목으로 붙는다 — 꺼내서 다시 읽는다(handle 과 같이 한 번만).
+    if (got?.snap.hidden && !this.revealed) {
+      await this.reveal(got.page);
+      got = await this.snapshot().catch(() => null);
+    }
+    if (!got) return null;
+    const said = text.replace(/\s+/g, '');
+    for (const [ref, el] of Object.entries(got.snap.refs)) {
+      if (!TYPABLE.has(el.role) && el.role !== 'checkbox' && el.role !== 'radio') continue;
+      // 선택 상자 이름 뒤의 지금 값(boxName "출고소요일 (현재: 3일)")은 떼고 본다.
+      for (const raw of [el.name, got.snap.labels[ref]]) {
+        const name = (raw ?? '').replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
+        if (name.length >= 2 && said.includes(name)) return name;
+      }
+    }
+    return null;
+  }
+
+  /** 숨은 탭을 화면에 꺼내 크기가 잡힐 때까지 기다리고, 화면 기억을 비운다 — 한 지시에 한 번만. */
+  private async reveal(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<void> {
+    this.revealed = true;
+    revealForAct(page);
+    const runtime = getBrowserRuntime();
+    for (const until = now() + REVEAL_WAIT_MS; now() < until; ) {
+      await new Promise((r) => setTimeout(r, 100));
+      const size = await runtime.pageScript<number[]>(this.workflowId, page.pageId, '[innerWidth, innerHeight]', PAGE_SCRIPT_MS).catch(() => null);
+      if (size && size.every((n) => n >= SMALL_VIEW)) break;
+    }
+    this.version++;
+    this.snap = null;
   }
 
   /** 실행 직전 — 조작할 탭을 화면에 꺼내고, 지금 있는 탭을 기억한다. */
@@ -1141,16 +1183,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     // 붙는다(10/19 BO 앱을 켠 직후: 출고소요일 상자가 "배송 정보", 구매연령은 이름 없음 → 첫 요청이 서버로). 탭을 꺼내 배치가
     // 끝나길 기다렸다 다시 읽고 판단한다. 판단 전이라 말이 화면 조작일 때만 꺼낸다.
     if (snap.hidden && !this.revealed && !th.partial) {
-      this.revealed = true;
-      revealForAct(page);
-      const runtime = getBrowserRuntime();
-      for (const until = now() + REVEAL_WAIT_MS; now() < until; ) {
-        await new Promise((r) => setTimeout(r, 100));
-        const size = await runtime.pageScript<number[]>(this.workflowId, page.pageId, '[innerWidth, innerHeight]', PAGE_SCRIPT_MS).catch(() => null);
-        if (size && size.every((n) => n >= SMALL_VIEW)) break;
-      }
-      this.version++;
-      this.snap = null;
+      await this.reveal(page);
       diag(SCOPE, 'revealed-hidden-tab', { text });
       return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
     }

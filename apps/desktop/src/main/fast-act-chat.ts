@@ -107,16 +107,19 @@ export async function tryFastAct(
     return false;
   }
   const t0 = now();
+  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   // 직전 턴을 서버가 묻는 말로 끝냈다 — 이 말은 그 물음에 대한 대답이라 서버로. 대화 맥락은 서버 LLM 만 안다.
+  // 다만 화면의 칸 이름을 직접 부른 말은 그 자체로 알아들을 수 있는 새 지시라 여기서 한다(namesField).
   const reply = lastServerReply.get(req.interactionId);
   lastServerReply.delete(req.interactionId);
   if (reply) {
     const p = await askedProbability(decisionPost()!, reply).catch(() => 0);
-    diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3) });
-    if (p >= ASKED_MIN) return false;
+    // 칸 이름은 물었을 때만 본다 — 숨은 탭이면 꺼내야 해서.
+    const named = p >= ASKED_MIN ? await inner.namesField(text) : null;
+    diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3), named });
+    if (p >= ASKED_MIN && !named) return false;
   }
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
-  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
   const agent: VoiceAgent = {
     get lastTarget() {

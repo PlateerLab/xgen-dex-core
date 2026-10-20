@@ -35,7 +35,7 @@ import {
   browserPathWithinRoots,
 } from '../src/main/browser-security';
 
-test('step execution is advertised only with a decider and dispatched with trusted workflow context', async () => {
+test('step execution is not advertised but still dispatches with a decider and trusted workflow context', async () => {
   const page: BrowserPageInfo = { pageId: 'step-page', workflowId: 'step-workflow', workflowName: 'Step', mode: 'shared', url: 'https://example.com/', title: 'Step', loading: 'idle', canGoBack: false, canGoForward: false, partition: 'test', generation: 1 };
   let pending: Promise<void> | null = null;
   const runtime = {
@@ -56,11 +56,11 @@ test('step execution is advertised only with a decider and dispatched with trust
   assert.doesNotMatch(disabled.description!, /action="step"/);
   await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { action: 'step' }, { workflowId: page.workflowId }), /decider/);
   provider.configure(true, () => [], () => {}, () => async () => ({}));
+  // 9d39783 처럼 LLM 은 BrowserFill 을 먼저 쓴다 — step 은 광고하지 않는다.
   const schema = provider.advertise().find((t) => t.name === BROWSER_INTERACT_TOOL)!;
-  assert.match(schema.description!, /current conversation model/);
+  assert.doesNotMatch(schema.description!, /action="step"/);
   const properties = schema.inputSchema!.properties as Record<string, { enum?: string[] }>;
-  assert.ok(properties.action.enum!.includes('step'));
-  assert.ok(properties.operation.enum!.includes('move'), 'legacy mouse operations stay valid');
+  assert.ok(!properties.action.enum!.includes('step'));
   const args = { action: 'step', operation: 'observe', instruction: '주소 확인', expect: [{ kind: 'url', value: page.url }] };
   const output = await provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId });
   assert.match(JSON.stringify(output), /completed/);
@@ -664,7 +664,7 @@ test('pageScript uses the main frame and times out without waiting for page load
 });
 
 
-test('BrowserFill setting and step decider independently control advertised tools', () => {
+test('BrowserFill follows the fast-act setting and step is never advertised', () => {
   const savedUrl = process.env.DEX_FAST_ACT_URL;
   delete process.env.DEX_FAST_ACT_URL;
   let enabled = false;
@@ -680,7 +680,7 @@ test('BrowserFill setting and step decider independently control advertised tool
         assert.equal(schemas.some(tool => tool.name === BROWSER_FILL_TOOL), fastAct);
         const interact = schemas.find(tool => tool.name === BROWSER_INTERACT_TOOL)!;
         const properties = interact.inputSchema!.properties as Record<string, { enum?: string[] }>;
-        assert.equal(properties.action.enum!.includes('step'), steps);
+        assert.equal(properties.action.enum!.includes('step'), false);
       }
     }
     provider.configure(false);

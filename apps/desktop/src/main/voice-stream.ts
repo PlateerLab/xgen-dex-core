@@ -1,9 +1,9 @@
 /**
- * 실시간 음성 인식. 데스크톱은 planBeforeAct로 최종 발화 뒤의 채팅 계획을 기다린다.
+ * 실시간 음성 → 말하는 도중 실행 (실험).
  *
  * 렌더러가 마이크 소리(PCM16 16 kHz 모노)를 보내면 XGEN 실시간 STT(`WS /api/audio/stt/stream`,
  * 서버가 슬라이딩 창으로 다시 받아 적고 Silero VAD 로 토막을 끊는다)로 흘리고, 중간 결과를
- * Segmenter에 전달한다. 현재 데스크톱은 planBeforeAct로 중간 조작을 보류한다. 끝나면 최종 글자·실행 목록·못 한
+ * Segmenter에 전달한다. 끝나면 최종 글자·실행 목록·못 한
  * 부분을 돌려주고 장부(voice-turns)에 남긴다 — 그 글자가 채팅으로 들어오면 고속 경로가 이어받는다.
  *
  * 서버 계약 (xgen-core): → {"type":"start","format":"pcm16","sample_rate":16000,"language":"ko","mode":"partials"}
@@ -39,7 +39,7 @@ export type VoiceStreamDeps = {
   allowPrivateCertificate: () => boolean;
   /** 호출어 목록 — null 이면 호출어로만 듣기가 꺼져 있다. */
   wakeWords: () => string[] | null;
-  /** 현재 채팅 모델이 계획한 뒤 실행하도록 중간 인식의 조작을 보류한다. */
+  /** 중간 인식의 조작을 보류하고 최종 글자만 돌려준다(시험용 — 데스크톱은 말하는 도중 실행한다). */
   planBeforeAct?: () => boolean;
 };
 

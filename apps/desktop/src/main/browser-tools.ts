@@ -445,7 +445,9 @@ export class BrowserToolProvider {
     // BrowserFill·BrowserFormValues 는 빠른 조작(설정 fastAct·판단 모델)이 켜졌을 때만 — 꺼져 있으면 LLM 이 불렀다가 '판단 모델을 쓸 수 없다' 만 받는다.
     // BrowserFormValues 는 모델이 필요 없지만 BrowserFill 결과 확인용이라 같이 켜고 끈다.
     const fastOnly = [BROWSER_FILL_TOOL, BROWSER_FORM_VALUES_TOOL];
-    const schemas = browserToolSchemas(!!this.stepPost());
+    // 단계 실행(step)은 광고하지 않는다 — 광고하면 LLM 이 BrowserFill 전에 step 으로 화면을 먼저 눌러 바꿨다(10/20 BO: 전시카테고리에
+    // "플래티어" 줄이 생겨 협력사 지정이 그 칸을 눌렀다). 9d39783 처럼 BrowserFill 을 먼저 쓰게 한다.
+    const schemas = browserToolSchemas();
     return fastActConfigured() ? schemas : schemas.filter((tool) => !fastOnly.includes(tool.name));
   }
 

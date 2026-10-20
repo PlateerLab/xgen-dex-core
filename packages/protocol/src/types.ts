@@ -8,6 +8,7 @@
  */
 
 import type { XgenErrorInfo } from './errors';
+import type { TurnPhaseSignal } from './turn-phases';
 
 export interface ServerConfig {
   /** Gateway origin, e.g. "https://xgen.example.com" or "http://localhost:8000". */
@@ -141,6 +142,14 @@ export type ChatEvent =
    * 순서를 기다리고 있습니다" 같은 한 줄을 보여 줄 수 있다. 모르는 화면은 무시해도 된다.
    */
   | { kind: 'queued'; reason: string }
+  /**
+   * 답의 첫 글자 전에 서버가 하는 **준비 단계** 하나(xgen-workflow turn_phase, 2026-10-20). 채팅을
+   * 보내면 서버는 런타임을 부르기 전에 Sandbox 워커를 확보하고, 워크스페이스를 붙이고, 설치했던
+   * 패키지를 다시 깔고, 기억을 연다. 워커 파드를 새로 띄우면 수십 초인데 그동안 화면에는 커서만
+   * 있었다. 화면은 이 알림으로 무엇을 기다리는지 보인다(규칙과 문구는 turn-phases.ts).
+   * 서버가 기록하지 않는 알림이라 히스토리·스냅샷에는 없다.
+   */
+  | ({ kind: 'phase' } & TurnPhaseSignal)
   // detail 은 **원문 그대로** 유지한다(로그·디버깅). info 는 사용자에게 보여줄
   // 형태(코드·제목·안내) — 화면은 info 를, 로그는 detail 을 본다.
   | { kind: 'error'; detail: string; info?: XgenErrorInfo }

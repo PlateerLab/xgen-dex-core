@@ -39,6 +39,7 @@ function payloadFor(name: string): Record<string, unknown> {
   if (name === 'execution_io') return { execution_io_id: 7 };
   if (name === 'node_status') return { node_id: 'n1', status: 'running' };
   if (name === 'tool') return { event_type: 'tool_call', tool_name: 'Bash' };
+  if (name === 'turn_phase') return { phase: 'sandbox', state: 'start', attempt: 1 };
   return { k: 'v' };
 }
 
@@ -107,6 +108,17 @@ test('payload 가 없으면 터지지 않는다', () => {
     // 던지지 않으면 통과 — execution_suspended 처럼 payload 없이도 뜻이 있는 것도 있다.
     turnEventToChatEvent(name, null);
   }
+});
+
+test('준비 단계(turn_phase)는 phase 로, 그릴 수 없는 값은 버린다', () => {
+  // 답의 첫 글자 전에 서버가 Sandbox·워크스페이스·패키지·기억을 준비한다(xgen-workflow 2026-10-20).
+  assert.deepEqual(
+    turnEventToChatEvent('turn_phase', { phase: 'workspace', state: 'retry', elapsed_ms: 4321.6, attempt: 1, attempts: 3, error: 'http://10.0.0.1' }),
+    { kind: 'phase', phase: 'workspace', state: 'retry', elapsedMs: 4321, attempt: 1, attempts: 3 },
+  );
+  assert.equal(turnEventToChatEvent('turn_phase', { phase: 'secrets', state: 'start' }), null);
+  assert.equal(turnEventToChatEvent('turn_phase', { phase: 'sandbox', state: 'boom' }), null);
+  assert.equal(turnEventToChatEvent('turn_phase', null), null);
 });
 
 test('차례를 기다리는 턴(turn_queued)은 실패가 아니라 대기다', () => {

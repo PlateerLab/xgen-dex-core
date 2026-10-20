@@ -535,6 +535,31 @@
     return indicator;
   }
 
+  // 답의 첫 글자 전 준비 단계(Sandbox·워크스페이스·패키지·기억). 점 대신 도구 줄(⌁) 모양으로.
+  // 줄과 문구는 확장이 정본 규칙(@dex/protocol turn-phases)으로 계산해 보낸다. 여기는 그리기만 한다.
+  function phaseBlock(lines) {
+    const block = document.createElement('div');
+    block.className = 'phase-lines';
+    block.setAttribute('role', 'status');
+    block.setAttribute('aria-live', 'polite');
+    for (const line of lines) {
+      const row = document.createElement('div');
+      row.className = `phase-line ${line.state}`;
+      const icon = document.createElement('span');
+      icon.className = 'activity-icon';
+      icon.textContent = '⌁';
+      const label = document.createElement('span');
+      label.className = 'phase-label';
+      label.textContent = line.label;
+      const time = document.createElement('span');
+      time.className = 'phase-time';
+      time.textContent = line.time;
+      row.append(icon, label, time);
+      block.append(row);
+    }
+    return block;
+  }
+
   function messageElement(item) {
     const article = document.createElement('article');
     article.className = `message ${item.role}`;
@@ -598,7 +623,7 @@
     if (item.text && item.role !== 'assistant') header.append(copyButton(item.text, '메시지 복사'));
     const content = document.createElement('div');
     content.className = 'message-content';
-    if (!item.text && item.role === 'assistant') content.append(typingIndicator());
+    if (!item.text && item.role === 'assistant') content.append(item.phaseLines && item.phaseLines.length ? phaseBlock(item.phaseLines) : typingIndicator());
     else if (item.role === 'assistant') renderRichText(content, item.text);
     else content.textContent = item.text;
     body.append(header, content);

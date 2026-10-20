@@ -32,6 +32,7 @@ import {
   type LiveTurnSnapshot,
   type ToolEvent,
   type TurnAttachment,
+  type TurnPhaseSignal,
 } from '@dex/protocol';
 
 export type ChatWsState =
@@ -61,6 +62,11 @@ export interface ExecCallbacks {
   onExecutionIo?: (ioId: number) => void;
   /** 도구가 파일 저장소에 올린 결과물(`download_artifact`) — 답 아래에 그림·단추로 그린다. */
   onDownload?: (data: Record<string, unknown>) => void;
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(`turn_phase`: Sandbox·워크스페이스·패키지·기억). 캐럿 자리에
+   * 도구 줄 모양으로 그린다(@dex/protocol turn-phases, 웹·데스크톱과 같은 규칙).
+   */
+  onPhase?: (signal: TurnPhaseSignal) => void;
   onEnd?: () => void;
   onError?: (message: string) => void;
   /**
@@ -250,6 +256,9 @@ export function dispatchExec(
       return null;
     case 'download':
       cb.onDownload?.(ev.data);
+      return null;
+    case 'phase':
+      cb.onPhase?.(ev);
       return null;
     case 'text':
       // ⚠ 청크 단위로 마커를 지우면 안 된다 — 마커가 청크 경계에서 잘리면 절반이

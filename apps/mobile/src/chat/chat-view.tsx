@@ -78,6 +78,7 @@ import {
   assistantPlaceholder,
   attachDownload,
   attachProcessById,
+  attachPhase,
   attachTool,
   completeRemoteTurn,
   dropRemotePartials,
@@ -401,6 +402,9 @@ export function ChatView({
             setMessages((prev) => attachTool(ensureRemotePartial(prev), ev.event));
           } else if (ev?.kind === 'download') {
             setMessages((prev) => attachDownload(ensureRemotePartial(prev), ev.data));
+          } else if (ev?.kind === 'phase') {
+            // 다른 화면이 시작한 턴의 준비 단계도 같은 줄로 보인다.
+            setMessages((prev) => attachPhase(ensureRemotePartial(prev), ev));
           }
           return;
         }
@@ -450,6 +454,8 @@ export function ChatView({
         onData: (text) => setMessages((prev) => appendAssistantText(prev, text)),
         onTool: (ev) => setMessages((prev) => attachTool(prev, ev)),
         onDownload: (data) => setMessages((prev) => attachDownload(prev, data)),
+        // 첫 글자 전의 준비 단계(Sandbox·워크스페이스·패키지·기억). 캐럿 대신 무엇을 기다리는지 보인다.
+        onPhase: (signal) => setMessages((prev) => attachPhase(prev, signal)),
         // 이 턴의 실행 id — 같은 턴이 완결 행·이력으로 다시 와도 한 번만, 소켓 구멍도 이것으로 메운다.
         onExecutionIo: (ioId) => setMessages((prev) => markExecutionIo(prev, ioId) ?? prev),
         onEnd: () => {

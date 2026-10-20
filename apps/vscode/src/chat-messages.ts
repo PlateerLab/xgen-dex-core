@@ -4,7 +4,17 @@
  * vscode 모듈에 기대지 않는 순수한 부분만 여기 둔다(웹뷰 공급자에서 떼어 냄) — 그래야 테스트가 직접 부른다.
  */
 import { randomUUID } from 'node:crypto';
-import { parseAgentTrigger, triggerRowLabel, type AgentTrigger } from '@dex/protocol';
+import {
+  AWAITING_ANSWER_LABEL,
+  awaitingAnswer,
+  parseAgentTrigger,
+  phaseLabel,
+  phasesSettledAt,
+  triggerRowLabel,
+  visiblePhaseRows,
+  type AgentTrigger,
+  type TurnPhaseRow,
+} from '@dex/protocol';
 import type { ConversationSnapshot, ToolEvent } from '@dex/rpc';
 
 export type MessageRole = 'user' | 'assistant' | 'activity' | 'system';
@@ -21,6 +31,49 @@ export interface ChatMessage {
   tools?: ToolEvent[];
   /** activity — 클릭하면 열 전체 로그의 위치 (assistant 메시지 id + tools 인덱스). */
   toolRef?: { assistantId: string; index: number };
+  /**
+   * assistant. 답의 첫 글자 전에 서버가 하는 준비 단계 줄(turn_phase). 그릴 때마다 확장이 계산해 싣는다
+   * (:func:`phaseLines`). 있으면 웹뷰가 점 대신 도구 줄 모양으로 그린다.
+   */
+  phaseLines?: PhaseLine[];
+}
+
+/** 준비 단계 한 줄. 웹뷰가 그대로 그린다. */
+export interface PhaseLine {
+  label: string;
+  state: 'run' | 'ok' | 'err';
+  /** 하는 중이면 경과 초, 끝났으면 걸린 시간, 실패면 "실패 · 걸린 시간". */
+  time: string;
+}
+
+const fmtSec = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s}초` : `${Math.floor(s / 60)}분 ${s % 60}초`;
+};
+const fmtDuration = (ms?: number): string =>
+  ms === undefined ? '' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}초`;
+
+/**
+ * 준비 단계 → 웹뷰가 그릴 줄(웹·앱과 같은 규칙, @dex/protocol turn-phases). 0.7초 넘게 걸린 단계만,
+ * 준비가 다 끝났는데 답이 아직이면 "답변을 준비하고 있습니다" 를 잇는다. 그릴 줄이 없으면 빈 목록.
+ */
+export function phaseLines(rows: readonly TurnPhaseRow[], now: number): PhaseLine[] {
+  const visible = visiblePhaseRows(rows, now);
+  if (visible.length === 0) return [];
+  const out: PhaseLine[] = visible.map((r) => {
+    const state = r.state === 'retry' ? 'run' : r.state;
+    const time =
+      state === 'run'
+        ? fmtSec(now - r.startedAt)
+        : state === 'err'
+          ? `실패${r.durationMs !== undefined ? ` · ${fmtDuration(r.durationMs)}` : ''}`
+          : fmtDuration(r.durationMs);
+    return { label: phaseLabel(r), state, time };
+  });
+  if (awaitingAnswer(rows, now)) {
+    out.push({ label: AWAITING_ANSWER_LABEL, state: 'run', time: fmtSec(now - phasesSettledAt(rows)) });
+  }
+  return out;
 }
 
 /**

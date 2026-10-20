@@ -14,6 +14,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { shortToolName, toolValueText } from '@dex/protocol/tool-activity';
 import { chatAnswerFiles } from '@dex/protocol/chat-files';
+import {
+  AWAITING_ANSWER_LABEL,
+  PHASE_ICON,
+  awaitingAnswer,
+  phaseLabel,
+  phasesSettledAt,
+  visiblePhaseRows,
+  type TurnPhaseRow,
+} from '@dex/protocol';
 import type { ChatMsg } from '../session-store';
 import { Markdown } from './Markdown';
 import {
@@ -224,6 +233,69 @@ const ToolRow: React.FC<{
             </>
           )}
         </div>
+      )}
+    </div>
+  );
+};
+
+/** 준비 줄 하나. 도구 줄(ToolRow)과 같은 마크업이다. 누를 것이 없어 머리는 단추가 아니다. */
+const PhaseLine: React.FC<{
+  icon: ToolIcon;
+  label: string;
+  state: 'run' | 'ok' | 'err';
+  since: number;
+  now: number;
+  durationMs?: number;
+}> = ({ icon, label, state, since, now, durationMs }) => {
+  const status =
+    state === 'run' ? (
+      <span className="ptl-live">
+        <span className="ptl-spin" />
+        {fmtSec(now - since)}
+      </span>
+    ) : state === 'err' ? (
+      <span className="ptl-dur err">실패{durationMs !== undefined ? ` · ${fmtDuration(durationMs)}` : ''}</span>
+    ) : durationMs !== undefined ? (
+      <span className={`ptl-dur${durationMs >= SLOW_TOOL_MS ? ' slow' : ''}`}>{fmtDuration(durationMs)}</span>
+    ) : null;
+  return (
+    <div className={`ptl-tool ${state} ptl-kind-${icon}`}>
+      <div className="ptl-tool-head" style={{ cursor: 'default' }}>
+        <span className="ptl-ico">
+          <Icon kind={icon} />
+        </span>
+        <span className="ptl-sum">{label}</span>
+        {status}
+      </div>
+    </div>
+  );
+};
+
+/**
+ * 턴 준비 카드. 답의 첫 글자 전에 서버가 하는 준비(Sandbox·워크스페이스·패키지·기억)를 도구 줄과
+ * 같은 모양으로 보인다(웹 채팅과 같은 규칙·같은 문구, @dex/protocol turn-phases). 커서 자리에 선다.
+ * 0.7초 넘게 걸린 단계가 없으면 `fallback`(커서)을 그대로 그린다. 준비가 다 끝났는데 답이 아직이면
+ * "답변을 준비하고 있습니다" 를 잇는다.
+ */
+export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?: React.ReactNode }> = ({ rows, fallback = null }) => {
+  const now = useNow(true);
+  const visible = visiblePhaseRows(rows, now);
+  if (visible.length === 0) return <>{fallback}</>;
+  return (
+    <div className="ptl-tools" style={{ marginTop: 0 }} role="status" aria-live="polite">
+      {visible.map((r) => (
+        <PhaseLine
+          key={r.phase}
+          icon={PHASE_ICON[r.phase]}
+          label={phaseLabel(r)}
+          state={r.state === 'retry' ? 'run' : r.state}
+          since={r.startedAt}
+          now={now}
+          durationMs={r.durationMs}
+        />
+      ))}
+      {awaitingAnswer(rows, now) && (
+        <PhaseLine icon="list" label={AWAITING_ANSWER_LABEL} state="run" since={phasesSettledAt(rows)} now={now} />
       )}
     </div>
   );

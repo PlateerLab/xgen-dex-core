@@ -2247,7 +2247,7 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
   // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.browser !== undefined) syncMcp();
+  if (patch.browser !== undefined || patch.fastAct !== undefined) syncMcp();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아

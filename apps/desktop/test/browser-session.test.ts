@@ -128,3 +128,25 @@ test('popup and background pages are excluded', async (t) => {
   );
   assert.equal(restored.activeByWorkflow.agent, shared.pageId);
 });
+
+test('a popup in front at shutdown restores its opener as the selected tab', async (t) => {
+  const { dir, makeRuntime, config } = setup(t);
+  const runtime = makeRuntime();
+  runtime.configure(config);
+  const first = await runtime.create({ workflowId: 'agent' });
+  const opener = await runtime.create({ workflowId: 'agent' });
+  const state = runtime.state();
+  state.pages.push(
+    { ...opener, pageId: 'popup', mode: 'popup', openerPageId: opener.pageId },
+    { ...opener, pageId: 'popup-of-popup', mode: 'popup', openerPageId: 'popup' },
+  );
+  state.activeByWorkflow.agent = 'popup-of-popup';
+  const store = new BrowserSessionStore(dir);
+  store.save(opener.partition, state);
+  const restored = store.load(opener.partition);
+  assert.deepEqual(
+    restored.pages.map((p) => p.pageId),
+    [first.pageId, opener.pageId],
+  );
+  assert.equal(restored.activeByWorkflow.agent, opener.pageId);
+});

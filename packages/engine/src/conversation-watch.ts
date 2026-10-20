@@ -23,7 +23,7 @@ import {
   type TurnAttachment,
 } from '@dex/protocol';
 import WebSocket from 'ws';
-import { xgenWebSocketTlsOptions } from './connection-security';
+import { xgenWebSocketTlsOptions, type XgenServerTrust } from './connection-security';
 
 const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 60_000;
@@ -40,6 +40,7 @@ export interface WatchDeps {
   baseUrl: () => string;
   token: () => Promise<string | null>;
   allowPrivateCertificate: () => boolean;
+  serverTrust?: () => readonly XgenServerTrust[];
 }
 
 /**
@@ -266,7 +267,7 @@ export class ConversationWatchHub {
         `${base}/api/agentflow/ws/geny-chat/${encodeURIComponent(interactionId)}`,
         {
           headers: { Authorization: `Bearer ${token}` },
-          ...xgenWebSocketTlsOptions(this.deps.allowPrivateCertificate()),
+          ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
         },
       );
     } catch {

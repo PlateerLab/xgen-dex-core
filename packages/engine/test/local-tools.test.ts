@@ -726,12 +726,12 @@ test('E2E: Open 은 존재하지 않는 opener 여도 앱 실행 실패를 보�
   assert.ok(Array.isArray(res.content) && typeof res.content[0].text === 'string');
 });
 
-test('MCP 자기관리 delegate — 폴더와 무관하게 노출·라우팅되고, 미배선이면 안 뜬다', async () => {
+test('MCP 자기관리 delegate — 모델에는 조회만 노출하고 설정 변경은 presence UI로 제한한다', async () => {
   const { p } = provider();
   const base = p.advertise().map((t) => t.name);
   assert.ok(!base.includes(MCP_ADD_TOOL));
 
-  const seen: Array<[string, unknown]> = [];
+  const seen: Array<[string, unknown, unknown]> = [];
   const admin = {
     advertise: () => [
       mcpAddServerToolSchema(),
@@ -739,22 +739,24 @@ test('MCP 자기관리 delegate — 폴더와 무관하게 노출·라우팅되�
       mcpListServersToolSchema(),
     ],
     owns: (t: string) => t === MCP_ADD_TOOL || t === MCP_REMOVE_TOOL || t === MCP_LIST_TOOL,
-    callTool: async (t: string, a: unknown) => {
-      seen.push([t, a]);
+    callTool: async (t: string, a: unknown, context: unknown) => {
+      seen.push([t, a, context]);
       return { content: [{ type: 'text' as const, text: 'ok' }] };
     },
   };
   p.configureMcpAdmin(admin);
   const names = p.advertise().map((t) => t.name);
-  assert.ok(
-    names.includes(MCP_ADD_TOOL) &&
-      names.includes(MCP_REMOVE_TOOL) &&
-      names.includes(MCP_LIST_TOOL),
+  assert.equal(names.includes(MCP_ADD_TOOL), false);
+  assert.equal(names.includes(MCP_REMOVE_TOOL), false);
+  assert.equal(names.includes(MCP_LIST_TOOL), true);
+  await assert.rejects(
+    () => p.callTool(MCP_ADD_TOOL, { name: 'x' }, inChat('no-folder')),
+    /설정 화면에서 직접 변경/,
   );
-  // 연결된 폴더가 없는 대화에서도 MCP 관리 도구는 호출된다 — 폴더 게이트 이전에 라우팅.
-  const r = await p.callTool(MCP_ADD_TOOL, { name: 'x' }, inChat('no-folder'));
+  const context = inChat('no-folder');
+  const r = await p.callTool(MCP_LIST_TOOL, {}, context);
   assert.equal(r.content[0].text, 'ok');
-  assert.deepEqual(seen, [[MCP_ADD_TOOL, { name: 'x' }]]);
+  assert.deepEqual(seen, [[MCP_LIST_TOOL, {}, context]]);
 
   p.configureMcpAdmin(null);
   assert.deepEqual(p.advertise().map((t) => t.name), base);

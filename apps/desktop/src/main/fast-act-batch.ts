@@ -7,11 +7,11 @@
  * 칸당 수 초 — LLM 이 BrowserInteract 로 칸마다 하는 15~50초보다 빠르다. 못 한 줄은 서버로 넘기지 않고 결과에 남긴다 — 부른 LLM 이 자기 도구로 처리한다.
  * 칸은 서로 따로라 못 한 줄이 있어도 다음 줄로 간다.
  *
- * 줄은 팝업 창이 아니라 그 창을 연 폼에서 판단해야 한다. 앞 탭이 팝업(window.opener 가 있는 창)이면 연 쪽 탭을 앞으로
- * 꺼내고 시작하고, 줄을 하고 나서 팝업이 남았으면(고르다 만 조회 팝업) 다시 폼 탭을 꺼낸다 — 안 그러면 뒤 줄이 팝업
- * 안에서 실행된다(10/19: LLM 이 미리 열어 둔 협력사 팝업에서 "모델명 … 입력해줘" 가 "협력사명 검색어" 칸에 들어감).
+ * 채울 폼 탭은 LLM 이 page_id 로 밝힌 공유 탭이다 — 공유 탭은 page_id 를 밝혀야만 다룬다(browser-runtime resolvePage).
+ * 보이는 탭을 짐작하면 다른 턴·다른 기기의 요청이 사용자가 지금 보는 탭을 바꾼다. 빠른 조작은 보이는 탭에서 일하므로
+ * 줄마다 그 탭을 앞으로 꺼낸다 — 줄을 하고 나서 팝업이 남았으면(고르다 만 조회 팝업) 뒤 줄이 팝업 안에서 실행되지 않게
+ * (10/19: LLM 이 미리 열어 둔 협력사 팝업에서 "모델명 … 입력해줘" 가 "협력사명 검색어" 칸에 들어감).
  */
-import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { getBrowserRuntime } from './browser-runtime';
 import { diag } from './diag-log';
 import { replyFor } from './fast-act-reply';
@@ -32,14 +32,16 @@ export type StepResult = {
 
 export async function runSteps(
   workflowId: string,
+  pageId: string,
   interactionId: string | undefined,
   steps: string[],
   signal?: AbortSignal,
 ): Promise<StepResult[]> {
   if (!decisionPost()) throw new Error('빠른 조작(판단 모델)을 쓸 수 없습니다 — BrowserInteract 로 채우세요.');
-  const start = await formPage(workflowId);
-  if (!start) throw new Error('열린(공유) 브라우저 탭이 없습니다.');
   const runtime = getBrowserRuntime();
+  const start = runtime.get(pageId);
+  if (!start || start.workflowId !== workflowId || start.mode !== 'shared')
+    throw new Error(`page_id ${pageId} 는 이 대화의 공유 탭이 아닙니다 — BrowserTabs list 에서 폼이 열린 공유 탭(mode shared)의 page_id 를 주세요.`);
   const t0 = now();
   // 한 에이전트로 — 읽어 둔 화면을 다음 줄이 이어 쓴다.
   const agent = new BrowserVoiceAgent(workflowId, t0, undefined, interactionId);
@@ -66,19 +68,4 @@ export async function runSteps(
   }
   diag(SCOPE, 'batch', { steps: steps.length, done: out.filter((r) => r.status === 'done').length, ms: Math.round(now() - t0) });
   return out;
-}
-
-/** 줄을 실행할 폼 탭 — 앞 탭이 팝업이면 팝업이 아닌 공유 탭(연 쪽)을 앞으로 꺼낸다. */
-async function formPage(workflowId: string): Promise<BrowserPageInfo | null> {
-  const runtime = getBrowserRuntime();
-  const front = visiblePage(workflowId);
-  const popup = (p: BrowserPageInfo): Promise<boolean> =>
-    runtime.pageScript<boolean>(workflowId, p.pageId, '!!window.opener', 2_000).catch(() => false);
-  if (!front || !(await popup(front))) return front;
-  for (const p of runtime.state().pages) {
-    if (p.workflowId !== workflowId || p.mode !== 'shared' || p.pageId === front.pageId || (await popup(p))) continue;
-    diag(SCOPE, 'batch-form-page', { from: front.url, to: p.url });
-    return runtime.activate(p.pageId);
-  }
-  return front;
 }

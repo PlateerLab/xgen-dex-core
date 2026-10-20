@@ -26,7 +26,8 @@ export type FieldLabel = { role: string; hint: string; label: string | null };
  * 페이지에서 실행한다 — 보이는 입력칸 중 접근성 이름이 칸 이름에서 오지 않은 것을 문서 순서로.
  * 역할·이름 판정은 접근성 트리와 같게 맞춘 근사치다. 어긋나면 수가 달라져 붙이지 않는다(labelFields).
  */
-export const FIELD_LABEL_SCRIPT = `(() => {
+/** 페이지 스크립트가 함께 쓰는 칸 판정·칸 이름 찾기(FIELD_LABEL_SCRIPT·FORM_VALUES_SCRIPT). */
+const FIELD_HELPERS = `
   const FIELD = 'input:not([type=hidden]),textarea,select,[role=textbox],[role=searchbox],[role=spinbutton],[role=combobox],[contenteditable]:not([contenteditable=false])';
   const TEXT_TYPES = ['', 'text', 'email', 'tel', 'url', 'password'];
   const squash = (s) => (s || '').replace(/\\s+/g, ' ').trim();
@@ -115,11 +116,66 @@ export const FIELD_LABEL_SCRIPT = `(() => {
     }
     return null;
   };
+`;
+
+export const FIELD_LABEL_SCRIPT = `(() => {
+${FIELD_HELPERS}
   return [...document.querySelectorAll(FIELD)]
     .filter(visible)
     .map((el) => ({ el, role: roleOf(el), hint: hintOf(el) }))
     .filter((f) => f.hint !== null && f.role && ${JSON.stringify([...FIELD_ROLES])}.includes(f.role))
     .map((f) => ({ role: f.role, hint: f.hint, label: labelOf(f.el) }));
+})()`;
+
+/**
+ * 페이지에서 실행한다 — 보이는 입력칸 전부의 칸 이름·지금 값·체크·비활성(읽기만 한다). 서버 LLM 의 BrowserFormValues.
+ *
+ * 관리자 화면은 칸 이름을 입력칸과 연결하지 않아서 스냅샷에 `textbox` 만 나온다. 그래서 서버 LLM 은 입력한 값을 확인하려고
+ * BrowserAdvanced eval 로 DOM 을 직접 읽었다(10/19~20 세션의 eval 31번 중 절반 넘게). 정해진 코드로 같은 것을 읽어 준다.
+ * 라디오·체크박스는 고른 것만, 무리 이름(무리 바로 앞 제목)을 칸 이름으로 단다.
+ */
+export const FORM_VALUES_SCRIPT = `(() => {
+${FIELD_HELPERS}
+  const ALL = 'input:not([type=hidden]),textarea,select,[contenteditable]:not([contenteditable=false]),[role=combobox]:not(input)';
+  const own = (el) => squash(el.getAttribute('aria-label')) || squash([...(el.labels || [])].map((l) => l.textContent).join(' '));
+  // 무리 이름은 무리 바로 앞 제목 — 관리자 화면은 "상품유형" 제목 아래 라디오를 둔다(labelChoices 와 같다).
+  const heads = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading]')].filter(visible);
+  const groupOf = (el) => {
+    const before = heads.filter((h) => h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING).pop();
+    return before ? clean(before.textContent || '') : null;
+  };
+  const seen = new Set();
+  const out = [];
+  for (const el of document.querySelectorAll(ALL)) {
+    // 라디오·체크박스는 입력칸을 숨기고 옆 그림을 보이는 화면이 많다 — 감싼 label 이 보이면 보이는 칸이다.
+    if (!visible(el) && !((el.type === 'radio' || el.type === 'checkbox') && visible(el.closest('label') || el.parentElement))) continue;
+    const box = el.tagName !== 'INPUT' && el.getAttribute('role') === 'combobox'; // div 로 그린 선택 상자(MUI Select)
+    const type = el.isContentEditable ? 'editor' : el.tagName === 'SELECT' || box ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text');
+    if (type === 'file' || type === 'submit' || type === 'button') continue;
+    const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true';
+    if (type === 'radio' || type === 'checkbox') {
+      if (!el.checked) continue;
+      const option = own(el) || squash(el.closest('label')?.textContent) || el.value;
+      if (seen.has(el.name + '|' + option)) continue; // 같은 무리를 두 벌 그린 화면(숨은 쌍둥이)
+      seen.add(el.name + '|' + option);
+      out.push({ field: groupOf(el) || el.name || '', type, value: option, disabled });
+      continue;
+    }
+    const value = type === 'editor' ? (el.innerText || '').slice(0, 2000) : box ? squash(el.textContent) : type === 'select' ? [...el.selectedOptions].map((o) => o.text).join(', ') : el.value;
+    out.push({ field: own(el) || labelOf(el) || hintOf(el) || el.name || '', type, value, placeholder: el.placeholder || undefined, disabled });
+  }
+  // 검색 팝업으로 고르는 칸(협력사·브랜드)은 입력칸이 아니라 name·value 속성을 단 글자 상자다(10/20 BO <span name="entrNm">).
+  // 한 칸이 번호·이름 상자 여럿이라 칸마다 한 줄로 모은다. 상자의 disabled 는 늘 붙어 있어(보여 주기만 하는 상자) 뺀다.
+  const picked = new Map();
+  for (const el of document.querySelectorAll('span[name],div[name]')) {
+    if (!el.parentElement || !visible(el.parentElement) || el.closest('[aria-hidden="true"],[inert]')) continue;
+    const field = labelOf(el.parentElement) || el.getAttribute('name');
+    const value = el.getAttribute('value') || squash(el.textContent);
+    if (!picked.has(field)) picked.set(field, []);
+    if (value) picked.get(field).push(value);
+  }
+  for (const [field, values] of picked) out.push({ field, type: 'picked', value: values.join(' ') });
+  return out;
 })()`;
 
 /** 스냅샷 글(snapshot -i 출력)에 나온 요소 번호의 순서 — 문서 순서다(refs 객체 키 순서는 아니다). */
@@ -521,3 +577,26 @@ export function withoutLeadingLabel(typed: string, label?: string): string {
   }
   return typed;
 }
+
+/**
+ * 페이지에서 실행한다 — 글자도 aria-label·title 도 없는 아이콘 버튼에 개발자가 붙인 속성(data-slot·data-testid·
+ * 아이콘의 data-testid·id)으로 aria-label 을 붙인다("menu-button" → "menu button"). 붙인 수를 돌려준다.
+ *
+ * 시연 BO 의 햄버거(왼쪽 메뉴 열기)는 `<button data-slot="menu-button"><svg/></button>` 라 스냅샷에 `button ""` 로만
+ * 나온다. 빠른 조작이 메뉴를 열 버튼을 못 찾아서, 화면에 없는 페이지("상품 임시저장 관리")로 가지 못했다(10/20).
+ * 빠른 조작 스냅샷 전에 페이지에 이름을 단다(fast-act-voice). 쓸 속성이 없으면 그대로 둔다.
+ */
+export const NAME_ICON_BUTTONS_SCRIPT = `(() => {
+  const words = (s) => (s || '').replace(/Icon$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_.:]+/g, ' ').trim().toLowerCase();
+  let n = 0;
+  for (const el of document.querySelectorAll('button,[role=button],a[href]')) {
+    if ((el.textContent || '').trim() || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.title) continue;
+    if (el.querySelector('img[alt]:not([alt=""]),svg title')) continue;
+    const svg = el.querySelector('svg');
+    const name = words(el.dataset.slot || el.dataset.testid || (svg && svg.dataset.testid) || el.id);
+    if (!name || /^\\d+$/.test(name)) continue;
+    el.setAttribute('aria-label', name);
+    n++;
+  }
+  return n;
+})()`;

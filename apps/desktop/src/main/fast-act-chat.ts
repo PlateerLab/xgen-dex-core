@@ -126,7 +126,16 @@ export async function tryFastAct(
     readiness: (texts) => inner.readiness(texts),
     handle: (said, th, guard, abort, utterance) =>
       // DEX_FAST_ACT_DRY=1(개발용) — 판단까지만 하고 실행하지 않는다. 판단 점수를 잴 때 화면·데이터를 바꾸지 않으려고.
-      inner.handle(said, th, async (...a) => !DRY && !signal.aborted && (await guard(...a)), () => signal.aborted || abort(), utterance),
+      inner.handle(
+        said,
+        th,
+        async (...a) => {
+          if (DRY) diag(SCOPE, 'dry-target', { said, target: a[0], kind: a[1], conf: a[2] });
+          return !DRY && !signal.aborted && (await guard(...a));
+        },
+        () => signal.aborted || abort(),
+        utterance,
+      ),
   };
   const decided: Array<{ text: string; outcome: Outcome }> = [];
   const seg = new Segmenter(agent, (e) => {

@@ -21,6 +21,7 @@ import { browserStateStore } from '../src/renderer/src/browser-state';
 import {
   BROWSER_TABS_TOOL,
   BROWSER_FILL_TOOL,
+  BROWSER_FORM_VALUES_TOOL,
   BrowserToolProvider,
   browserWaitCommand,
   browserToolSchemas,
@@ -687,5 +688,23 @@ test('BrowserFill setting and step decider independently control advertised tool
     configureFastAct({ enabled: () => false, post });
     if (savedUrl === undefined) delete process.env.DEX_FAST_ACT_URL;
     else process.env.DEX_FAST_ACT_URL = savedUrl;
+  }
+});
+
+test('BrowserFill and BrowserFormValues act on a shared tab only by explicit page_id', async () => {
+  const post = async () => ({});
+  configureFastAct({ enabled: () => true, post });
+  const provider = new BrowserToolProvider(new BrowserRuntime());
+  provider.configure(true);
+  try {
+    for (const name of [BROWSER_FILL_TOOL, BROWSER_FORM_VALUES_TOOL]) {
+      const schema = provider.advertise().find((tool) => tool.name === name)!;
+      assert.ok((schema.inputSchema!.required as string[]).includes('page_id'), name);
+    }
+    // page_id 가 없으면 보이는 탭을 짐작하지 않고 거절한다.
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { workflow_id: 'w', steps: ['상품명에 「a」 입력해줘'] }), /page_id 가 필요합니다/);
+    await assert.rejects(provider.callTool(BROWSER_FORM_VALUES_TOOL, { workflow_id: 'w' }), /page_id 가 필요합니다/);
+  } finally {
+    configureFastAct({ enabled: () => false, post });
   }
 });

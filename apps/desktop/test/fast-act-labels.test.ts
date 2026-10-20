@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  FIELD_LABEL_SCRIPT,
+  FORM_VALUES_SCRIPT,
+  NAME_ICON_BUTTONS_SCRIPT,
   editableAsTextbox,
   checkOf,
   inDocOrder,
@@ -462,4 +465,11 @@ test('labelToggles: 제목 바로 뒤 이름 없는 접기·펼치기 버튼에 
   assert.equal(out.e7.name, ''); // 앞이 제목이 아니다
   assert.equal(out.e8.name, ''); // 펼침 상태가 없다
   assert.deepEqual(labels, { e92: '부가 정보', e93: '상품이미지 정보' });
+});
+
+
+test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 안 이스케이프 실수를 잡는다', () => {
+  for (const code of [FIELD_LABEL_SCRIPT, FORM_VALUES_SCRIPT, NAME_ICON_BUTTONS_SCRIPT]) {
+    assert.doesNotThrow(() => new Function(`return ${code}`));
+  }
 });

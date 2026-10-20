@@ -8,6 +8,7 @@ import { allowsDeciderAction, type DecisionPost } from './fast-act';
 import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
 import { diag } from './diag-log';
 import { fastActConfigured } from './fast-act-runner';
+import { FORM_VALUES_SCRIPT } from './fast-act-labels';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -21,6 +22,7 @@ export const BROWSER_INTERACT_TOOL = 'BrowserInteract';
 export const BROWSER_CAPTURE_TOOL = 'BrowserCapture';
 export const BROWSER_ADVANCED_TOOL = 'BrowserAdvanced';
 export const BROWSER_FILL_TOOL = 'BrowserFill';
+export const BROWSER_FORM_VALUES_TOOL = 'BrowserFormValues';
 /** 경로 없이 캡처하면 저장하는 곳 — 연결 폴더 안의 숨은 폴더(파일 올리기 후보에서도 빠진다). */
 const CAPTURE_DIR = '.xgen-captures';
 
@@ -32,7 +34,16 @@ export const BROWSER_TOOL_NAMES = new Set([
   BROWSER_CAPTURE_TOOL,
   BROWSER_ADVANCED_TOOL,
   BROWSER_FILL_TOOL,
+  BROWSER_FORM_VALUES_TOOL,
 ]);
+
+/** 공유 탭을 다루는 도구(BrowserFill·BrowserFormValues)의 필수 page_id — 백그라운드로 대신하지 않는다. */
+const sharedPageProperties = {
+  page_id: {
+    type: 'string',
+    description: 'page_id of the shared (visible) tab holding the form — from BrowserTabs list (mode shared).',
+  },
+};
 
 const commonPageProperties = {
   workflow_id: {
@@ -226,10 +237,14 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       name: BROWSER_FILL_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        'Fill many fields of a form on the visible (shared) browser tab fast: each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
+        'Fill many fields of a form on a shared browser tab fast — pass that tab\'s page_id (BrowserTabs list, mode shared); it is brought to the front while filling. ' +
+        'Each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
         '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
         'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
+        'Use it ONLY to put values you have already decided into fields of the page that is open now. ' +
+        'Not for going to another page or menu, pressing buttons that are not a field value, searching the site, reading the page, or anything you would need to look at first — use the other browser tools. ' +
+        'Every step names the field and the exact value: never "자료에 맞는 것", "적절한 카테고리", "조회해 지정" — work out the value yourself first (read the material, look up the exact path with BrowserSnapshot), then write the step. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
         'Skip fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") — each step costs seconds. ' +
@@ -246,9 +261,24 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       inputSchema: {
         type: 'object',
         properties: {
+          ...sharedPageProperties,
           steps: { type: 'array', items: { type: 'string' }, description: 'One instruction per field, in order.' },
         },
-        required: ['steps'],
+        required: ['page_id', 'steps'],
+      },
+    },
+    {
+      name: BROWSER_FORM_VALUES_TOOL,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+      description:
+        'Read every field of the form on a page: field label, current value, chosen radio/checkbox/option, placeholder and disabled state, ' +
+        'plus fields picked in a search popup (협력사, 브랜드 …). Read-only. ' +
+        'Use it to see what a form holds before deciding steps, and to check the result after BrowserFill — instead of BrowserAdvanced eval. ' +
+        'Pass the page_id of the tab to read (BrowserTabs list shows it).',
+      inputSchema: {
+        type: 'object',
+        properties: { ...sharedPageProperties },
+        required: ['page_id'],
       },
     },
   ];
@@ -412,8 +442,11 @@ export class BrowserToolProvider {
 
   advertise(): LocalToolSchema[] {
     if (!this.enabled) return [];
+    // BrowserFill·BrowserFormValues 는 빠른 조작(설정 fastAct·판단 모델)이 켜졌을 때만 — 꺼져 있으면 LLM 이 불렀다가 '판단 모델을 쓸 수 없다' 만 받는다.
+    // BrowserFormValues 는 모델이 필요 없지만 BrowserFill 결과 확인용이라 같이 켜고 끈다.
+    const fastOnly = [BROWSER_FILL_TOOL, BROWSER_FORM_VALUES_TOOL];
     const schemas = browserToolSchemas(!!this.stepPost());
-    return fastActConfigured() ? schemas : schemas.filter((tool) => tool.name !== BROWSER_FILL_TOOL);
+    return fastActConfigured() ? schemas : schemas.filter((tool) => !fastOnly.includes(tool.name));
   }
 
   owns(tool: string): boolean {
@@ -438,6 +471,7 @@ export class BrowserToolProvider {
     if (tool === BROWSER_CAPTURE_TOOL) return this.capture(args, context);
     if (tool === BROWSER_ADVANCED_TOOL) return this.advanced(args, context);
     if (tool === BROWSER_FILL_TOOL) return this.fill(args, context);
+    if (tool === BROWSER_FORM_VALUES_TOOL) return this.formValues(args, context);
     throw new Error(`unknown browser tool: ${tool}`);
   }
 
@@ -642,8 +676,24 @@ export class BrowserToolProvider {
     // fast-act-voice 가 이 파일을 가져다 쓰므로 부를 때 가져온다(순환 참조).
     const { runSteps } = await import('./fast-act-batch');
     const wid = workflow(args, context);
-    const results = await runSteps(wid, context?.interactionId, steps, context?.signal);
-    return result(null, results);
+    // 공유 탭은 page_id 를 밝혀야만 다룬다(formValues 와 같다) — 보이는 탭을 짐작해 바꾸지 않는다.
+    const id = pageId(args);
+    if (!id) throw new BrowserRuntimeError('browser_no_page', 'page_id 가 필요합니다 — BrowserTabs list 로 폼이 열린 공유 탭의 page_id 를 확인하세요.');
+    const results = await runSteps(wid, id, context?.interactionId, steps, context?.signal);
+    return result(this.runtime.get(id) ?? null, results);
+  }
+
+  private async formValues(
+    args: Record<string, unknown>,
+    context?: LocalToolCallContext,
+  ): Promise<LocalToolResult> {
+    const wid = workflow(args, context);
+    // 공유 탭은 page_id 를 밝혀야만 읽는다(browser-runtime resolvePage 와 같은 원칙) — 보이는 탭을 짐작해 읽지 않는다.
+    const id = pageId(args);
+    if (!id) throw new BrowserRuntimeError('browser_no_page', 'page_id 가 필요합니다 — BrowserTabs list 로 읽을 탭의 page_id 를 확인하세요.');
+    const page = await this.runtime.resolvePage(wid, id, false);
+    const fields = await this.runtime.pageScript(wid, page.info.pageId, FORM_VALUES_SCRIPT, timeout(args) ?? 5_000);
+    return result(page.info, fields);
   }
 
   private async advanced(

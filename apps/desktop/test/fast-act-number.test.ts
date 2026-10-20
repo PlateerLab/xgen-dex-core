@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { judgedText, quotedText, saysValue, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
-import { maskedDate, plainNumber } from '../src/main/fast-act-number';
+import { maskedDate, plainNumber, matchesInputValue } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
   assert.equal(plainNumber('20000원'), '20000');
@@ -138,4 +138,13 @@ test('saysValue: 말에 그 값이 그대로 — 앞이 띄어쓰기·따옴표�
   assert.ok(!saysValue('출고소요일 13일로 해줘', '3일'));
   assert.ok(saysValue('구매연령을 「만 19세 이상」으로', '만 19세 이상'));
   assert.ok(saysValue('배송비정책을 배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)으로', '배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)'));
+});
+
+test('읽기 실패·텍스트 구두점·숫자 부호 차이는 성공으로 숨기지 않는다', () => {
+  assert.equal(matchesInputValue(null, 'hello', 'textbox', ''), false);
+  assert.equal(matchesInputValue('AB', 'A-B', 'textbox', ''), false);
+  assert.equal(matchesInputValue('15', '1.5', 'spinbutton', ''), false);
+  assert.equal(matchesInputValue('15', '-15', 'spinbutton', ''), false);
+  assert.equal(matchesInputValue('20,000', '20000', 'spinbutton', ''), true);
+  assert.equal(matchesInputValue('a\r\nb', 'a\nb', 'textbox', ''), true);
 });

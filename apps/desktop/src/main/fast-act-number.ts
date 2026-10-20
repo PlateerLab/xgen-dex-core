@@ -138,3 +138,14 @@ export function maskedDate(name: string, text: string): string | null {
   });
   return ok && i + 1 === points.length ? out : null;
 }
+
+/** 숫자·날짜 칸의 표시 형식만 허용한다. 일반 글의 부호나 구두점은 값의 일부다. */
+export function matchesInputValue(actual: string | null, expected: string, role: string, name: string): boolean {
+  if (actual === null) return false;
+  const clean = (v: string): string => v.replace(/\r\n/g, '\n').trim();
+  if (clean(actual) === clean(expected)) return true;
+  const date = maskedDate(name, expected);
+  if (date !== null && maskedDate(name, actual) === date) return true;
+  const number = (v: string): string => v.replace(/,/g, '').trim();
+  return role === 'spinbutton' && /^-?\d+(?:\.\d+)?$/.test(number(actual)) && /^-?\d+(?:\.\d+)?$/.test(number(expected)) && Number(number(actual)) === Number(number(expected));
+}

@@ -358,7 +358,10 @@ export async function classify(
     questions.text = { type: 'choice', instructions: TEXT_INSTR, criteria };
   }
   const a = await post({ state: decisionState(instruction, origin, scr), questions });
-  const action = (a.action?.choice ?? 'click') as ActionKind;
+  if (!['click', 'type', 'type_submit'].includes(a.action?.choice)) throw new Error('조작 판단 응답이 없거나 잘못됐어요.');
+  if (e13 && [a.ready?.probabilities?.act_now, a.gate_intent?.probabilities?.act, a.onscreen?.probabilities?.yes].some((p) => p === undefined || !Number.isFinite(p) || p < 0 || p > 1))
+    throw new Error('빠른 조작 판단 확률을 확인하지 못했어요.');
+  const action = a.action.choice as ActionKind;
   let text: string | null = null;
   if (action !== 'click') {
     text = quoted ?? (candidates.length === 1 ? candidates[0] : null);
@@ -385,7 +388,9 @@ export async function askedProbability(post: DecisionPost, assistant: string): P
       },
     },
   });
-  return a.asked?.probabilities?.asks ?? 0;
+  const p = a.asked?.probabilities?.asks;
+  if (p === undefined || !Number.isFinite(p) || p < 0 || p > 1) throw new Error('직전 답의 질문 여부를 확인하지 못했어요.');
+  return p;
 }
 
 export type Pick = {
@@ -696,4 +701,15 @@ export function decisionClient(baseUrl: string, timeoutMs = 5000): DecisionPost 
     const data = (await res.json()) as { answers: Record<string, ChoiceAnswer> };
     return data.answers;
   };
+}
+
+/** shortcut: 명시적인 순서 연결어만 보류한다. 암묵적 복합 지시는 판단 모델 보정이 필요하다. */
+export function needsSequentialPlan(text: string): boolean {
+  const instruction = text.replace(/「[^」]*」|“[^”]*”|"[^"]*"|'[^']*'/g, '');
+  return /(?:그\s*다음|그\s*후|한\s*다음|한\s*뒤|그리고|\bthen\b)/i.test(instruction);
+}
+
+/** 이름 붙은 다른 탭 닫기는 서버가 탭 목록을 확인하도록 넘긴다. */
+export function closesCurrentTab(text: string): boolean {
+  return /^(?:(?:이|현재|지금)\s*)?(?:탭|페이지)(?:을|를)?\s*닫(?:아(?:\s*줘|주세요)?|기)(?:요)?[.!]?$/i.test(text.trim()) || /^(?:please\s+)?close (?:the |this |current )?tab[.!]?$/i.test(text.trim());
 }

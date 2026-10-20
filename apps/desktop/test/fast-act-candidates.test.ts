@@ -131,3 +131,23 @@ test('큰 화면을 줄일 때 남긴 요소의 구역 제목도 남긴다', () 
   const kept = narrowLarge(keys, refs, '협력사를 플래티어 협력사로 지정해줘');
   assert.deepEqual(kept.slice(60), ['h2', 'r1', 'c1']);
 });
+
+test('판단 응답 누락은 클릭이나 질문 아님으로 간주하지 않는다', async () => {
+  const { classify, askedProbability } = await import('../src/main/fast-act');
+  const scr = buildScreen('https://example.test', [{ ref: 'e1', role: 'textbox', name: '이름' }]);
+  await assert.rejects(classify(async () => ({}), '이름에 봄 입력해줘', '', scr));
+  await assert.rejects(classify(async () => ({ action: { choice: 'type' }, ready: { choice: 'act_now', probabilities: { act_now: 1 } } }), '이름에 봄 입력해줘', '', scr));
+  for (const p of [undefined, NaN, -1, 2]) {
+    await assert.rejects(askedProbability(async () => ({ asked: { choice: 'done', probabilities: p === undefined ? undefined : { asks: p } } }), '어느 상품인가요?'));
+  }
+  assert.equal(await askedProbability(async () => ({ asked: { choice: 'done', probabilities: { asks: 0 } } }), '입력했어요.'), 0);
+});
+
+test('순서 요청과 이름 붙은 탭 닫기를 한 번의 현재 화면 조작으로 끝내지 않는다', async () => {
+  const { needsSequentialPlan, closesCurrentTab } = await import('../src/main/fast-act');
+  assert.equal(needsSequentialPlan('카테고리 지정하고, 그다음에 협력사 지정해줘'), true);
+  assert.equal(needsSequentialPlan('메모에 「그리고 다음 날」 입력해줘'), false);
+  assert.equal(closesCurrentTab('협력사 조회 탭 닫아줘'), false);
+  assert.equal(closesCurrentTab('지금 탭 닫아줘'), true);
+  assert.equal(closesCurrentTab('탭 닫아줘'), true);
+});

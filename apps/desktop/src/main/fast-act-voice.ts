@@ -19,6 +19,8 @@ import { diag } from './diag-log';
 import {
   GATE_INTENT_Q,
   classify,
+  needsSequentialPlan,
+  closesCurrentTab,
   allowsDeciderAction,
   judgedText,
   saysValue,
@@ -60,7 +62,7 @@ import {
   type FieldLabel,
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
-import { maskedDate, plainNumber } from './fast-act-number';
+import { maskedDate, plainNumber, matchesInputValue } from './fast-act-number';
 import { josa } from './fast-act-reply';
 import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
 import { FILE_FIELDS_SCRIPT, accepts, fileNameIn, listFiles, namesFile, uploadLanded, withFileFields, type FileField, type Landed } from './fast-act-upload';
@@ -493,7 +495,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           state: decisionState(t, origin, scr),
           questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }, gate_intent: GATE_INTENT_Q },
         }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
-        const multi = (a.gate_intent?.probabilities?.act ?? 1) < SINGLE_MIN;
+        const multi = (a.gate_intent?.probabilities?.act ?? 0) < SINGLE_MIN;
         if (process.env.DEX_VOICE_TEST === '1')
           diag(SCOPE, 'readiness', { text: t, ready: a.ready?.choice, act_now: +(a.ready?.probabilities?.act_now ?? 0).toFixed(3), act: +(a.gate_intent?.probabilities?.act ?? 0).toFixed(3) });
         return { ready: multi ? 'multi' : (a.ready?.choice ?? 'wait'), p: a.ready?.probabilities?.act_now ?? 0 };
@@ -632,10 +634,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
   }
 
   /** 입력칸의 지금 값 — 못 읽으면 null. */
-  private async valueOf(pageId: string, ref: string, generation: number): Promise<string | null> {
+  private async valueOf(pageId: string, ref: string, generation: number, rich = false): Promise<string | null> {
     try {
-      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', 'value', ref], 5_000, generation);
-      const value = (run.result as { data?: { value?: unknown } } | undefined)?.data?.value;
+      const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, ['get', rich ? 'text' : 'value', ref], 5_000, generation);
+      const data = (run.result as { data?: { value?: unknown; text?: unknown } } | undefined)?.data;
+      const value = rich ? data?.text : data?.value;
       return typeof value === 'string' ? value : null;
     } catch {
       return null;
@@ -750,6 +753,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const tAct = now();
     try {
       await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['fill', `@${pick.ref}`, typed], 10_000, s.snap.gen);
+      const value = await this.valueOf(s.page.pageId, `@${pick.ref}`, s.snap.gen);
+      if (!matchesInputValue(value, typed, element.role, element.name ?? '')) {
+        const missed = await this.record(text, element, action, typed, th, tAct - t0, now() - tAct, s.page, pick, s.snap.ms);
+        missed.tell = `${missed.display}에 넣은 값을 확인하지 못했어요.`;
+        return missed;
+      }
       if (action === 'type_submit') await runtime.runAgentCommand(this.workflowId, s.page.pageId, ['press', 'Enter'], 10_000);
     } catch {
       return null;
@@ -1183,6 +1192,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
     const scr = this.screenOf(origin, allRefs);
 
+    if (needsSequentialPlan(text)) return no('순서가 있는 여러 요청은 서버에서 이어서 처리');
+    if (TAB_WORD.test(text) && CLOSE_WORD.test(text) && !closesCurrentTab(text)) return no('이름을 지정한 탭 닫기는 서버에서 대상 확인');
     if (text.length > LONG_INSTRUCTION && !quotedText(text)) return no('지시가 너무 김 — 넣을 글은 「」로 감싸 주세요');
     const cls = await classify(post, judgedText(text), origin, scr);
     const rc = cls.gate.toFixed(2);
@@ -1190,10 +1201,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
     // 여러 단계 작업("자료 읽고 … 화면에 입력해줘")·글쓰기("상품상세 써서 넣어줘")는 서버로 — ready 가 act_now 라도.
     // 10/19 BO: 칸 지시 71개는 act 최저 0.94, 자료를 읽고 채우라는 말·글쓰기는 0.33 이하.
-    if ((cls.single ?? 1) < SINGLE_MIN) return no(`여러 단계·글쓰기 작업 ${cls.single!.toFixed(2)}`);
+    if (FORMAT === 'e13' && !(cls.single! >= SINGLE_MIN)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
     // 말한 대상이 화면에 없다(다른 페이지로 가야 함) — 서버로. 10/19 BO: 칸 지시 29개는 0.977 이상, 화면에 없는 페이지로 가라는
     // 말("임시저장한 상품 확인 페이지로", "상품 승인 관리 페이지로", "대시보드로")은 0.01~0.04.
-    if ((cls.onscreen ?? 1) < ONSCREEN_MIN) return no(`화면에 없는 대상 ${cls.onscreen!.toFixed(2)}`);
+    if (FORMAT === 'e13' && !(cls.onscreen! >= ONSCREEN_MIN)) return no(`화면에 없는 대상 ${cls.onscreen}`);
     // 말이 끝났는데 동사 없이 요소 이름만 말한 경우("이달의 블로그 탭", "검색 버튼") — 모델은 '기다림' 으로
     // 답하지만, 더 올 말이 없으니 그 요소를 누르라는 뜻으로 본다. 대신 고른 확신이 높고 말이 그 이름을
     // 가리킬 때만 한다(아래).
@@ -1431,14 +1442,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
           await runtime.runAgentCommand(this.workflowId, page.pageId, ['fill', ref, number], 10_000, snap.gen);
           typed = number;
         }
-        // 넣은 값을 다시 읽어 칸에 들어갔는지 본다 — 마스크·천 단위 쉼표처럼 모양만 바뀐 것은 같은 값으로 친다. 서식 편집기는
-        // 값이 없어 보지 않는다. 못 읽으면 확인하지 못한 것이다.
-        if (!opened && !rich) {
-          const bare = (v: string): string => v.replace(/[\s,.\-/:()]/g, '');
-          const inField = await this.valueOf(page.pageId, ref, snap.gen);
-          unfilled = inField === null || bare(inField) !== bare(typed ?? '');
+        // 읽을 수 없는 값과 구두점·부호가 달라진 값은 완료로 보지 않는다.
+        if (!opened) {
+          const inField = await this.valueOf(page.pageId, ref, snap.gen, rich);
+          unfilled = !matchesInputValue(inField, rich ? (typed ?? '').replace(/\\n/g, '\n') : typed ?? '', element.role, element.name ?? '');
         }
-        if (!opened && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
+        if (!opened && !unfilled && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
       }
     } catch (err) {
       this.version++;

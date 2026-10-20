@@ -353,11 +353,11 @@ export function checkStates(snapshotText: string): Record<string, boolean> {
 
 /**
  * 누른 선택지·체크박스가 고른 상태가 되지 않았나 — 선택지(radio)는 누르면 선택돼야 하고, 체크박스는 전 상태(before)를 알 때만
- * 바뀌었는지 본다. 지금 상태(after)를 못 읽었으면 판단하지 않는다. 다른 칸 값에 따라 막힌 선택지(10/19 BO: 직구상품 여부가
+ * 바뀌었는지 본다. 지금 상태(after)를 못 읽었으면 완료로 보지 않는다. 다른 칸 값에 따라 막힌 선택지(10/19 BO: 직구상품 여부가
  * "해당" 이면 선물하기)는 눌러도 그대로라, 성공으로 답하면 안 된다.
  */
 export function choiceMissed(role: string, before: boolean | undefined, after: boolean | null): boolean {
-  if (after === null) return false;
+  if (after === null) return role === 'radio' || role === 'checkbox';
   if (role === 'radio') return !after;
   if (role === 'checkbox' && before !== undefined) return after === before;
   return false;

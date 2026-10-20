@@ -359,7 +359,7 @@ export function checkStates(snapshotText: string): Record<string, boolean> {
 export function choiceMissed(role: string, before: boolean | undefined, after: boolean | null): boolean {
   if (after === null) return role === 'radio' || role === 'checkbox';
   if (role === 'radio') return !after;
-  if (role === 'checkbox' && before !== undefined) return after === before;
+  if (role === 'checkbox') return before === undefined || after === before;
   return false;
 }
 

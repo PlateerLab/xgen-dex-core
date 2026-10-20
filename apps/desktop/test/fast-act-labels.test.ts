@@ -420,7 +420,7 @@ test('누른 선택지가 고른 상태가 되지 않았나 — 선택지는 눌
   assert.equal(choiceMissed('radio', undefined, true), false);
   assert.equal(choiceMissed('checkbox', false, false), true);
   assert.equal(choiceMissed('checkbox', false, true), false);
-  assert.equal(choiceMissed('checkbox', undefined, false), false); // 전 상태를 모르면 판단하지 않는다
+  assert.equal(choiceMissed('checkbox', undefined, false), true); // 전 상태를 모르면 변경 완료를 입증할 수 없다
   assert.equal(choiceMissed('radio', undefined, null), true); // 못 읽었으면 완료가 아니다
   assert.equal(choiceMissed('button', undefined, false), false);
 });

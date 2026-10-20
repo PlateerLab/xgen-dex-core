@@ -1463,7 +1463,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const before = toggles && check ? check.checked : choiceRole === 'checkbox' ? snap.states[pick.ref] : undefined;
     const missed =
       done === 'click' &&
-      (choiceRole === 'radio' || (choiceRole === 'checkbox' && before !== undefined)) &&
+      (choiceRole === 'radio' || choiceRole === 'checkbox') &&
       choiceMissed(choiceRole, before, await this.checkedOf(page.pageId, ref, snap.gen));
     if (missed) {
       recorded.tell = `${josa(recorded.display, '이', '가')} 선택되지 않았어요. 지금은 고를 수 없는 상태인 것 같아요.`;
@@ -1476,7 +1476,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     // 접기·펼치기 — 눌러서 바뀐 상태로 답한다("\"부가 정보\"를 펼쳤어요"). 그대로면 안 바뀌었다고 알린다.
     const nowOpen = section !== undefined && done === 'click' ? await this.openOf(page.pageId, ref, snap.gen) : null;
-    const toggleMissed = nowOpen !== null && nowOpen === snap.open[pick.ref];
+    const toggleMissed = section !== undefined && done === 'click' && (nowOpen === null || nowOpen === snap.open[pick.ref]);
+    if (toggleMissed && nowOpen === null) recorded.tell = `${section}의 펼침 상태를 확인하지 못했어요.`;
     if (section !== undefined && nowOpen !== null) {
       recorded.sentence = toggleMissed
         ? `${josa(`"${section}"`, '을', '를')} ${nowOpen ? '접으려고' : '펼치려고'} 눌렀는데 그대로예요.`

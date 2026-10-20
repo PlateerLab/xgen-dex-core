@@ -129,25 +129,7 @@ export function refOrder(snapshotText: string): string[] {
   return [...seen];
 }
 
-/**
- * 요소 목록을 문서 순서로 다시 담는다(스냅샷에 없는 요소는 뒤에). 화면 줄은 요소 목록 순서로 실리는데 refs 키는
- * e1, e10, e100… 순이라 칸 제목과 그 칸이 수백 줄 떨어졌다 — 10/19 BO 상품 등록 "선물하기 해당으로 해줘" 에
- * 이름이 같은 "직구상품 여부" 의 "해당" 이 눌렸다.
- */
-export function inDocOrder(refs: ElementRefs, order: string[]): ElementRefs {
-  const out: ElementRefs = {};
-  for (const k of order) if (Object.hasOwn(refs, k)) out[k] = refs[k];
-  for (const k of Object.keys(refs)) if (!Object.hasOwn(out, k)) out[k] = refs[k];
-  return out;
-}
-
 const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
-
-/**
- * 선택 상자 이름 — 칸 이름 뒤에 지금 값을 `(현재: …)` 로 가른다. "구매연령 전체" 처럼 붙여 두면 판단 모델이 칸 이름과 지금 값을
- * 가리지 못해, "구매연령 전체로 바꿔줘" 에 지금 값이 "전체" 인 "계약형태 전체" 를 골랐다(10/19 BO).
- */
-export const boxName = (label: string, value: string): string => (value ? `${label} (현재: ${value})` : label);
 
 /**
  * 칸 이름을 붙인 새 요소 목록과 붙인 칸 이름(요소 번호별). 역할과 원래 이름(빈 이름·안내문·값)이 같은 칸끼리 순서대로 맞추고, 스냅샷과
@@ -180,7 +162,7 @@ export function labelFields(
       const label = page[i].label;
       const hint = squash(page[i].hint);
       if (!label || hint.includes(label)) return;
-      out[ref] = { ...out[ref], name: page[i].role === 'combobox' ? boxName(label, hint) : hint ? `${label} ${hint}` : label };
+      out[ref] = { ...out[ref], name: hint ? `${label} ${hint}` : label };
       labels[ref] = label;
     });
   }
@@ -260,68 +242,6 @@ export function itemOf(snapshotText: string): Record<string, string> {
   return out;
 }
 
-/** 항목(itemOf) 안 셀(행 자신은 뺀다)과 그 글자. */
-function cellsOf(refs: ElementRefs, items: Record<string, string>): Array<{ row: string; name: string }> {
-  return Object.entries(items)
-    .filter(([cell, row]) => cell !== row && refs[cell])
-    .map(([cell, row]) => ({ row, name: squash(refs[cell].name ?? '') }));
-}
-
-/**
- * 셀 글자가 고를 값과 정확히 같은 항목(행) — 공백만 정리해 비교한다. 조회 팝업에서 "플래티어 협력사" 를 고르라면
- * "플래티어"·"플래티어 2" 행은 아니다(앞부분이 같다고 고르면 다른 협력사가 들어간다).
- */
-export function rowsNamed(refs: ElementRefs, items: Record<string, string>, value: string): string[] {
-  const want = squash(value);
-  return [...new Set(cellsOf(refs, items).filter((c) => c.name === want).map((c) => c.row))];
-}
-
-/** 스냅샷 글에서 비활성 요소 번호 — 줄 뒤 괄호 안의 disabled 표시(`[expanded=false, disabled, ref=e181]`)만 본다. */
-export function disabledOf(snapshotText: string): Set<string> {
-  const out = new Set<string>();
-  for (const m of snapshotText.matchAll(/\[([^\]"]*\bref=(e\d+)[^\]"]*)\]/g)) {
-    if (/(^|,\s*)disabled(\s*,|$)/.test(m[1])) out.add(m[2]);
-  }
-  return out;
-}
-
-/** 스냅샷 글에서 체크박스·선택지의 지금 상태 — 괄호 안 checked 표시가 있는 요소만(`[checked=true, ref=e257]`). */
-export function checkStates(snapshotText: string): Record<string, boolean> {
-  const out: Record<string, boolean> = {};
-  for (const m of snapshotText.matchAll(/\[([^\]"]*\bref=(e\d+)[^\]"]*)\]/g)) {
-    const c = m[1].match(/\bchecked=(true|false)\b/);
-    if (c) out[m[2]] = c[1] === 'true';
-  }
-  return out;
-}
-
-/**
- * 누른 선택지·체크박스가 고른 상태가 되지 않았나 — 선택지(radio)는 누르면 선택돼야 하고, 체크박스는 전 상태(before)를 알 때만
- * 바뀌었는지 본다. 지금 상태(after)를 못 읽었으면 판단하지 않는다. 다른 칸 값에 따라 막힌 선택지(10/19 BO: 직구상품 여부가
- * "해당" 이면 선물하기)는 눌러도 그대로라, 성공으로 답하면 안 된다.
- */
-export function choiceMissed(role: string, before: boolean | undefined, after: boolean | null): boolean {
-  if (after === null) return false;
-  if (role === 'radio') return !after;
-  if (role === 'checkbox' && before !== undefined) return after === before;
-  return false;
-}
-
-/** 조회 팝업에서 고를 값 — 말에서 뽑은 글자에서 칸 이름을 뗀 것. 칸 이름뿐이면("협력사 눌러줘" → "협력사") 고를 값이 없다. */
-export function valueToPick(typed: string, label: string): string | null {
-  const value = squash(withoutLeadingLabel(typed, label));
-  return value && value !== squash(label) ? value : null;
-}
-
-/** 정확히 같은 항목이 없을 때 물어볼 후보 — 고를 값과 낱말(두 글자 이상)이 겹치는 셀 글자, 앞에서부터. */
-export function nearNames(refs: ElementRefs, items: Record<string, string>, value: string, max = 5): string[] {
-  const words = new Set(squash(value).split(' ').filter((w) => w.length >= 2));
-  const near = cellsOf(refs, items)
-    .map((c) => c.name)
-    .filter((n) => n.split(' ').some((w) => words.has(w)));
-  return [...new Set(near)].slice(0, max);
-}
-
 /**
  * 글 편집 영역(contenteditable)을 입력칸(textbox)으로 — 상품상세 같은 편집기 본문은 스냅샷에
  * `generic [ref=e353] editable [contenteditable]` 로만 나와 입력 요청의 후보에서 빠졌다(10/16 BO Jodit).
@@ -333,42 +253,6 @@ export function editableAsTextbox(refs: ElementRefs, snapshotText: string): Elem
     if (l?.ref && l.editable && l.role === 'generic' && out[l.ref]) out[l.ref] = { ...out[l.ref], role: 'textbox' };
   }
   return out;
-}
-
-/**
- * 이름 없는 접기·펼치기 버튼에 바로 앞 제목으로 이름을 붙인다 — `"부가 정보 펼치기·접기"`. open = 버튼별 지금 펼쳐져 있는가.
- *
- * 관리자 화면의 구역 머리는 제목 옆 ⌄ 아이콘 버튼으로 여닫는데 버튼에는 이름이 없고 `button [expanded=false]` 상태만 있다.
- * 그래서 "부가 정보 펼쳐줘" 에 판단 모델은 제목 글자를 1.0 으로 눌렀고(제목은 눌러도 안 열린다) "눌렀어요" 로 답했다(10/19 BO).
- * 버튼 바로 앞(이름 없는 감싸개는 건너뛴다)이 제목일 때만 붙인다. 이름에 지금 상태("펼치기"/"접기" 하나)를 넣으면 판단 모델이 구역
- * 대신 동사를 따라간다 — 펼쳐진 "부가 정보 접기" 옆의 "SEO 정보 펼치기" 를 "부가 정보 펼쳐줘" 에 골랐다(10/19). 그래서 이름은 구역만
- * 가리키고, 이미 그 상태인지는 open 으로 실행하는 쪽이 본다(체크박스와 같다).
- */
-export function labelToggles(
-  refs: ElementRefs,
-  snapshotText: string,
-): { refs: ElementRefs; labels: Record<string, string>; open: Record<string, boolean> } {
-  const raw = snapshotText.split('\n');
-  const lines = raw.map(snapLine);
-  const out: ElementRefs = { ...refs };
-  const labels: Record<string, string> = {};
-  const states: Record<string, boolean> = {};
-  lines.forEach((l, i) => {
-    const open = raw[i].match(/\bexpanded=(true|false)\b/)?.[1];
-    if (!l?.ref || l.role !== 'button' || l.name || !open || !refs[l.ref] || refs[l.ref].name) return;
-    let before: SnapLine | null = null;
-    for (let j = i - 1; j >= 0 && !before; j--) {
-      const p = lines[j];
-      if (p && (p.ref || p.name)) before = p;
-    }
-    if (!before || before.role !== 'heading') return;
-    const label = before.name.replace(/[*:：]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!label || label.length > 30) return;
-    out[l.ref] = { ...out[l.ref], name: `${label} 펼치기·접기` };
-    labels[l.ref] = label;
-    states[l.ref] = open === 'true';
-  });
-  return { refs: out, labels, open: states };
 }
 
 /**
@@ -414,7 +298,7 @@ export function labelClickables(
     if (!label || label.length > 30) return;
     // 값을 고르는 칸이다 — 판단 모델은 이름 없는 상자(generic)는 거의 고르지 않아서(같은 이름의 메뉴 버튼이 1.0)
     // 선택 상자로 보인다(누르면 목록·찾기 창이 열리는 칸, ARIA combobox 와 같은 뜻). 고른 값은 이름 뒤에.
-    out[l.ref] = { ...out[l.ref], role: 'combobox', name: boxName(label, value) };
+    out[l.ref] = { ...out[l.ref], role: 'combobox', name: value ? `${label} ${value}` : label };
     labels[l.ref] = label;
   });
   return { refs: out, labels };
@@ -424,64 +308,6 @@ export function labelClickables(
  * 말에서 붙인 칸 이름을 뺀다(단어마다 처음 한 번) — "검색키워드에 노트북 넣어줘" 의 "검색"은 칸을 가리킨 말이지
  * 검색하라는 말이 아니다(검색칸으로 보고 Enter 를 누르면 폼이 제출될 수 있다).
  */
-/** 선택지 묶음 안에서 제목까지 건너뛰는 줄 — 다른 선택지·체크박스와 그 글자 상자. */
-const CHOICE_GROUP = new Set(['radio', 'checkbox', 'LabelText', 'generic', 'StaticText']);
-
-/**
- * 제목 아래 선택지(radio)는 이름 앞에 그 제목을 붙인다("제공안함" → "반품기능 제공안함"). 폼은 같은 선택지 이름을
- * 칸마다 되풀이하는데(해당/해당없음, 제공/제공안함), 창이 여럿이라 한 방향으로만 묻는 묶음에서는 이름이 같은 앞
- * 선택지가 1.0 을 받아 뒤 것은 결승에도 못 갔다(10/19 BO 상품 등록 "반품기능 제공안함으로 해줘" → 취소기능).
- * 체크박스도 같다 — 제목 없는 "전체" 가 "구매연령 전체로 바꿔줘" 에 0.98 로 뽑혀 결제가능수단이 모두 체크됐다(10/19).
- */
-export function labelChoices(
-  refs: ElementRefs,
-  snapshotText: string,
-): { refs: ElementRefs; labels: Record<string, string> } {
-  const lines = snapshotText.split('\n').map(snapLine);
-  const out: ElementRefs = { ...refs };
-  const labels: Record<string, string> = {};
-  lines.forEach((l, i) => {
-    if (!l?.ref || (l.role !== 'radio' && l.role !== 'checkbox') || !refs[l.ref]) return;
-    let j = i - 1;
-    while (j >= 0 && (!lines[j] || CHOICE_GROUP.has(lines[j]!.role))) j--;
-    const head = lines[j];
-    if (head?.role !== 'heading') return;
-    const label = head.name.replace(/[*:：]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!label || label.length > 30) return;
-    out[l.ref] = { ...out[l.ref], name: `${label} ${squash(l.name)}`.trim() };
-    labels[l.ref] = label;
-  });
-  return { refs: out, labels };
-}
-
-/**
- * 검색 기준 선택 상자 바로 뒤의 이름 없는 입력칸은 "기준 검색어"로 부른다("협력사명 ▾" + [ ] → "협력사명 검색어").
- * 관리자 조회 폼은 기준 상자와 검색어 칸을 한 칸 이름 아래 나란히 두어 labelFields 가 이름을 못 붙인다(다른 칸을
- * 건너오면 바로 위 글자만 받는다). 이름이 없으면 판단 모델은 입력칸 대신 다른 선택 상자를 골랐다(10/19 BO 협력사 조회
- * 팝업 "플래티어로 조회해줘" → 협력사구분). "검색" 이 들어가 검색칸으로도 보인다(입력 뒤 조회 버튼).
- */
-export function labelSearchTerms(
-  refs: ElementRefs,
-  snapshotText: string,
-): { refs: ElementRefs; labels: Record<string, string> } {
-  const lines = snapshotText.split('\n').map(snapLine);
-  const out: ElementRefs = { ...refs };
-  const labels: Record<string, string> = {};
-  lines.forEach((l, i) => {
-    if (!l?.ref || l.role !== 'textbox' || !refs[l.ref] || squash(refs[l.ref].name ?? '')) return;
-    let j = i - 1;
-    // 사이에는 두 칸을 싼 상자(generic)만.
-    while (j >= 0 && (!lines[j] || lines[j]!.role === 'generic')) j--;
-    const box = lines[j];
-    if (box?.role !== 'combobox' || !box.ref) return;
-    const criterion = squash(refs[box.ref]?.name ?? box.name);
-    if (!criterion || criterion.length > 20) return;
-    out[l.ref] = { ...out[l.ref], name: `${criterion} 검색어` };
-    labels[l.ref] = criterion;
-  });
-  return { refs: out, labels };
-}
-
 export function withoutLabel(text: string, label?: string): string {
   return (label ?? '')
     .split(' ')

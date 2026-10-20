@@ -85,15 +85,6 @@ function gateScore(answers: Record<string, ChoiceAnswer>): number {
   return ps.reduce((a, b) => a + b, 0) / ps.length;
 }
 
-const ONSCREEN_Q: ChoiceQuestion = {
-  type: 'choice',
-  instructions: 'Is the thing the user wants to click, choose or type into shown on this screen, so that one action on it finishes the request?',
-  criteria: { yes: 'yes, it is on this screen', no: 'no, it is not on this screen (needs navigation, search or more steps)' },
-};
-
-/** 클릭·입력 하나(act)인지, 글쓰기(answer)·여러 단계(multi)인지 — E13 의 학습된 ready 에는 뒤 둘이 없어 같이 묻는다. */
-export const GATE_INTENT_Q = GATE_QUESTIONS.gate_intent.q;
-
 const ACTION_QUESTION: ChoiceQuestion = {
   type: 'choice',
   instructions: "What kind of single page action does the user's message ask for?",
@@ -126,7 +117,6 @@ const ROLE_KO: Record<string, string> = {
   textbox: '입력칸',
   searchbox: '검색칸',
   combobox: '선택 상자',
-  file: '파일 칸',
   checkbox: '체크박스',
   radio: '선택지',
   tab: '탭',
@@ -165,38 +155,9 @@ export function chunkKeys(keys: string[], size = CHUNK): string[][] {
 }
 
 /** 따옴표로 감싼 문구 — 있으면 입력할 글자로 그대로 쓴다. */
-/** 여는 따옴표별 닫는 따옴표 — 짝이 맞는 것만 닫는다(「…」 안의 "…" 는 글자다). */
-const QUOTE_CLOSE: Record<string, string> = { '"': '"“”', '“': '"“”', '”': '"“”', "'": "'‘’", '‘': "'‘’", '’': "'‘’", '「': '」', '『': '』' };
-
 export function quotedText(instruction: string): string | null {
-  const at = instruction.search(/["“”'‘’「『]/);
-  if (at < 0) return null;
-  const close = QUOTE_CLOSE[instruction[at]];
-  let end = at + 1;
-  while (end < instruction.length && !close.includes(instruction[end])) end++;
-  // 「…」 를 다른 따옴표로 닫기도 한다(10/19 LLM: 「… » 입력해줘) — 짝이 없으면 마지막 닫는 꼴 따옴표까지.
-  if (end >= instruction.length && '「『'.includes(instruction[at])) end = Math.max(...[...'」』»”"’'].map((c) => instruction.lastIndexOf(c)));
-  return end > at && end < instruction.length ? instruction.slice(at + 1, end).trim() || null : null;
-}
-
-/**
- * 말에 그 값이 그대로 있나 — 값 앞이 말 처음·띄어쓰기·따옴표·괄호일 때만("출고소요일 13일로" 에 "3일" 은 아니다).
- */
-export function saysValue(instruction: string, value: string): boolean {
-  const v = value.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
-  return !!v && new RegExp(`(?:^|[\\s「『"“'‘(])${v}`).test(instruction);
-}
-
-/** 이보다 긴 지시는 따옴표 안 글이 없으면 판단 모델에 보내지 않는다 — 판단 서버가 422 로 거절했다(10/19, 594자). */
-export const LONG_INSTRUCTION = 300;
-
-/**
- * 판단에 쓸 말 — 따옴표 안이 길면(40자 넘게·여러 줄) "…" 로 줄인다. 넣을 글자(따옴표 안)는 그대로 쓰고, 무엇을 할지·어느
- * 칸인지는 줄인 말로 묻는다 — 상품상세 소개글 안의 "원산지: 대한민국" 때문에 칸을 원산지로 골랐다(10/19 BO).
- */
-export function judgedText(instruction: string): string {
-  const q = quotedText(instruction);
-  return q && (q.length > 40 || q.includes('\n')) ? instruction.replace(q, '…') : instruction;
+  const m = instruction.match(/["“”'‘’「『]([^"“”'‘’」』]+)["“”'‘’」』]/);
+  return m ? m[1].trim() || null : null;
 }
 
 /**
@@ -319,12 +280,6 @@ export type Classification = {
   text: string | null;
   /** E13 실행 준비 판단의 선택 (act_now | wait | not_ui). E10 이면 없음. */
   ready?: string;
-  /** 클릭·입력 하나로 끝나는 일일 확률(gate_intent 의 act) — E13 의 ready 에는 여러 단계·글쓰기 선택지가 없다. */
-  single?: number;
-  /** gate_intent 의 확률 전체(act·answer·multi) — 로그용. */
-  intent?: Record<string, number>;
-  /** 말한 대상이 이 화면에 있어 한 번에 끝날 확률(onscreen). */
-  onscreen?: number;
   ms: number;
 };
 
@@ -345,11 +300,7 @@ export async function classify(
   const questions: Record<string, ChoiceQuestion> = { action: ACTION_QUESTION };
   // E13: 학습된 실행 준비 판단(act_now / wait / not_ui)이 판별을 맡는다. E10 은 학습 안 된 판별 질문 두 개.
   const e13 = scr !== null;
-  // ready 에는 여러 단계·글쓰기 선택지가 없어 "자료 읽고 … 화면에 입력해줘" 도 act_now 였다(10/19) — 같이 묻는다.
-  if (e13) (questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }), (questions.gate_intent = GATE_INTENT_Q);
-  // 말한 대상이 이 화면에 있나 — ready 는 할 일이 분명하면 act_now 라, 화면에 없는 페이지로 가라는 말도 비슷한 이름의 버튼을
-  // 눌렀다("임시저장한 상품 확인 페이지로 이동해줘" → 임시저장 버튼). 학습되지 않은 질문이다.
-  if (e13) questions.onscreen = ONSCREEN_Q;
+  if (e13) questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS };
   else for (const [k, g] of Object.entries(GATE_QUESTIONS)) questions[k] = g.q;
   if (candidates.length > 1) {
     const criteria: Record<string, string> = {};
@@ -365,26 +316,7 @@ export async function classify(
     if (!text && picked) text = candidates[Number(picked.slice(1))] ?? null;
   }
   const gate = e13 ? (a.ready?.probabilities?.act_now ?? 0) : gateScore(a);
-  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, onscreen: a.onscreen?.probabilities?.yes, ms: now() - t0 };
-}
-
-/**
- * 직전 서버 답이 사용자에게 묻거나 고르라며 끝나는가 — 그 확률. 그렇다면 바로 다음 말은 그 물음에 대한 대답이라 빠른 조작이 새
- * 지시로 실행하면 안 된다(10/19 BO: "어느 상품에 작성할까요?" 다음의 "001 데스크 정리함으로 써서 넣어줘" 를 업체상품번호에
- * 넣음). "사용자 말이 대답인가" 로 물으면 판단 모델이 0.006 으로 답했다 — 서버 답만 보고 묻는다.
- */
-export async function askedProbability(post: DecisionPost, assistant: string): Promise<number> {
-  const a = await post({
-    state: `Assistant: ${assistant}`,
-    questions: {
-      asked: {
-        type: 'choice',
-        instructions: "Does the assistant's message end by asking the user a question or asking the user to choose something?",
-        criteria: { asks: 'yes, it asks the user', done: 'no, it reports what was done' },
-      },
-    },
-  });
-  return a.asked?.probabilities?.asks ?? 0;
+  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, ms: now() - t0 };
 }
 
 export type Pick = {
@@ -397,25 +329,16 @@ export type Pick = {
 };
 
 /**
- * 같은 이름의 활성 요소가 있는 비활성 요소를 뺀다 — 고른 값을 보여만 주는 칸이다. BO 표준카테고리는 고르는 선택 상자와
- * 같은 이름의 비활성 입력칸(상품속성 정보)이 있어, "표준카테고리를 … 지정해줘" 에 판단 모델이 비활성 칸을 0.997 로 골랐다(10/19).
- * 같은 이름이 없는 비활성 요소는 남긴다 — 고르면 "비활성이라 누르지 않았어요" 로 답한다.
- */
-export function withoutDisabledTwins(refs: ElementRefs, disabled: Set<string>): ElementRefs {
-  const key = (r: ElementRef): string => (r.name ?? '').replace(/\s+/g, '');
-  const enabled = new Set(Object.entries(refs).filter(([k, r]) => !disabled.has(k) && key(r)).map(([, r]) => key(r)));
-  return Object.fromEntries(Object.entries(refs).filter(([k, r]) => !disabled.has(k) || !enabled.has(key(r))));
-}
-
-/**
- * 같은 ref만 중복이다. 이름과 역할이 같아도 서로 다른 칸·팝업·링크일 수 있으므로
- * 이름 없는 요소를 포함해 서로 다른 ref는 모두 유지한다. 기존 호출부를 위해 함수 이름은 유지한다.
+ * 표기가 같은 요소는 하나만 남긴다 (앞쪽 것). 같은 이름의 링크가 여럿이면
+ * (아이콘 링크 + 글자 링크 등) 확률이 그 사이에 나뉘어 확신도가 낮게 나오는데,
+ * 어느 것을 눌러도 같은 곳이라 나눌 이유가 없다.
  */
 export function dedupeByLabel(refs: ElementRefs, keys: string[]): string[] {
   const seen = new Set<string>();
   return keys.filter((k) => {
-    if (!Object.hasOwn(refs, k) || seen.has(k)) return false;
-    seen.add(k);
+    const l = elementLabel(refs[k]);
+    if (seen.has(l)) return false;
+    seen.add(l);
     return true;
   });
 }
@@ -452,22 +375,24 @@ function argmax(probs: Record<string, number>): [string, number] | null {
   return best;
 }
 
+/** 한 방향으로만 물은 묶음에서 2등이 이만큼 받았으면 결승에도 올린다 — 편향은 0.98 → 0.2 까지 뒤집었다(아래). */
+const RUNNER_UP = 0.1;
+
 /**
- * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 2등도. 한 방향 질문은
- * 앞자리 편향이 있어 차이를 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼 "협력사"
- * 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98). 2등 확률에 문턱을
- * 두지 않는다: 10/19 BO "반품기능 제공안함으로 해줘" 에 앞의 "취소기능 제공안함" 0.926, 맞는 칸 0.071 이었다.
+ * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 근소한 2등도. 한 방향
+ * 질문은 앞자리 편향이 있어 근소한 차이는 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼
+ * "협력사" 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98).
  */
 function contenders(probs: Record<string, number>, oneWay: boolean): string[] {
   const [first, second] = Object.entries(probs).sort((a, b) => b[1] - a[1]);
   if (!first) return [];
-  return oneWay && second && second[1] > 0 ? [first[0], second[0]] : [first[0]];
+  return oneWay && second && second[1] >= RUNNER_UP ? [first[0], second[0]] : [first[0]];
 }
 
 /**
- * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). ref 중복만
- * 제거한 뒤 25개씩 묶는다. 한 방향 묶음의 1등과 기준을 넘긴 2등을 결승에 올리고,
- * 결승에서는 순서를 뒤집은 질문과 평균한다. 묶음이 하나면 그것이 결승이다.
+ * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). 표기가 같은
+ * 요소를 합친 뒤 25개씩 묶어 묶음마다 승자를 뽑고(한 요청), 승자가 여럿이면
+ * 승자끼리 한 번 더 고른다. 묶음·결승 모두 순서를 뒤집은 질문과 평균한다.
  */
 export async function pickElement(
   post: DecisionPost,
@@ -598,21 +523,7 @@ async function pickWindowed(
     const confidence = keys.length === 1 ? 1 : 0;
     return { ref: winners[0], confidence, top: [], calls: windows.length, ms: now() - t0 };
   }
-  // 결승 화면에는 승자마다 바로 앞 제목도 싣는다(후보는 아니다) — 승자만 실으면 이름이 같은 선택지가 똑같은 줄이
-  // 된다(10/19 BO 상품 등록 "반품기능 제공안함으로 해줘" 에 결승 화면이 "제공안함" 두 줄이라 취소기능 것을 골랐다).
-  const pos = new Map(scr.all.map((r, i) => [r.ref, i]));
-  const lines = new Set<string>();
-  for (const k of winners) {
-    const i = pos.get(k) ?? -1;
-    for (let j = i - 1; j >= 0; j--) {
-      if (scr.all[j].role === 'heading') {
-        lines.add(scr.all[j].ref);
-        break;
-      }
-    }
-    lines.add(k);
-  }
-  const state = stateWith(buildScreen(scr.origin, [...lines].map((k) => byRef.get(k)!), scr.size), instruction);
+  const state = stateWith(buildScreen(scr.origin, winners.map((k) => byRef.get(k)!), scr.size), instruction);
   const fin = await post({ state, questions: pairQuestions(refs, winners, 'q', true) });
   const finProbs = pairProbs(fin, 'q');
   const best = argmax(finProbs);

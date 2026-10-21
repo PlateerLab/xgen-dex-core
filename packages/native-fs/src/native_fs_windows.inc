@@ -972,24 +972,74 @@ napi_value WriteExpected(napi_env env, napi_callback_info info) {
 napi_value SetMode(napi_env env, napi_callback_info) {
   return Throw(env, "ENOTSUP", "POSIX file mode is unsupported on Windows");
 }
-bool SameAclEntries(PACL left, PACL right) {
-  if (!left || !right) return left == right;
-  if (!IsValidAcl(left) || !IsValidAcl(right) || left->AceCount != right->AceCount)
-    return false;
-  for (DWORD index = 0; index < left->AceCount; ++index) {
+std::string AceSummary(const ACE_HEADER* ace) {
+  if (!ace) return "absent";
+  std::ostringstream out;
+  out << "type=" << static_cast<unsigned>(ace->AceType)
+      << ",flags=" << static_cast<unsigned>(ace->AceFlags)
+      << ",bytes=" << ace->AceSize;
+  if (ace->AceSize >= sizeof(ACE_HEADER) + sizeof(ACCESS_MASK)) {
+    ACCESS_MASK mask = 0;
+    std::memcpy(&mask, reinterpret_cast<const uint8_t*>(ace) + sizeof(ACE_HEADER), sizeof(mask));
+    out << ",mask=" << std::hex << mask;
+  }
+  return out.str();
+}
+PSID SimpleAceSid(const ACE_HEADER* ace) {
+  if (!ace || ace->AceSize < offsetof(ACCESS_ALLOWED_ACE, SidStart) + sizeof(DWORD)) return nullptr;
+  if (ace->AceType != ACCESS_ALLOWED_ACE_TYPE && ace->AceType != ACCESS_DENIED_ACE_TYPE &&
+      ace->AceType != SYSTEM_AUDIT_ACE_TYPE && ace->AceType != SYSTEM_ALARM_ACE_TYPE)
+    return nullptr;
+  PSID sid = const_cast<DWORD*>(&reinterpret_cast<const ACCESS_ALLOWED_ACE*>(ace)->SidStart);
+  size_t sid_bytes = ace->AceSize - offsetof(ACCESS_ALLOWED_ACE, SidStart);
+  if (sid_bytes < 8) return nullptr;
+  auto sid_header = reinterpret_cast<const uint8_t*>(sid);
+  if (8 + static_cast<size_t>(sid_header[1]) * sizeof(DWORD) > sid_bytes) return nullptr;
+  return IsValidSid(sid) ? sid : nullptr;
+}
+bool SameAclEntries(PACL left, PACL right, std::string* difference) {
+  if (!left || !right) {
+    if (left == right) return true;
+    *difference = "one DACL is null"; return false;
+  }
+  if (!IsValidAcl(left) || !IsValidAcl(right)) {
+    *difference = "invalid DACL"; return false;
+  }
+  std::ostringstream report;
+  report << "target ACE count=" << left->AceCount << ", staged ACE count=" << right->AceCount;
+  bool equal = left->AceCount == right->AceCount;
+  DWORD common = std::min<DWORD>(left->AceCount, right->AceCount);
+  for (DWORD index = 0; index < common; ++index) {
     void* left_ace = nullptr;
     void* right_ace = nullptr;
-    if (!GetAce(left, index, &left_ace) || !GetAce(right, index, &right_ace)) return false;
+    if (!GetAce(left, index, &left_ace) || !GetAce(right, index, &right_ace)) {
+      *difference = report.str() + ", ACE lookup failed"; return false;
+    }
     auto left_header = static_cast<const ACE_HEADER*>(left_ace);
     auto right_header = static_cast<const ACE_HEADER*>(right_ace);
     if (left_header->AceSize != right_header->AceSize ||
-        std::memcmp(left_ace, right_ace, left_header->AceSize) != 0) return false;
+        std::memcmp(left_ace, right_ace, left_header->AceSize) != 0) {
+      PSID left_sid = SimpleAceSid(left_header);
+      PSID right_sid = SimpleAceSid(right_header);
+      report << ", first difference at ACE " << index << ": target{" << AceSummary(left_header)
+             << "}, staged{" << AceSummary(right_header) << "}, SID equal="
+             << (left_sid && right_sid && EqualSid(left_sid, right_sid) ? "true" : "false/unknown");
+      *difference = report.str(); return false;
+    }
   }
-  return true;
+  if (!equal) {
+    void* extra = nullptr;
+    PACL longer = left->AceCount > right->AceCount ? left : right;
+    if (GetAce(longer, common, &extra))
+      report << ", first extra " << (longer == left ? "target" : "staged")
+             << " ACE{" << AceSummary(static_cast<const ACE_HEADER*>(extra)) << "}";
+    *difference = report.str();
+  }
+  return equal;
 }
 // Preserve the target file's owner, DACL, and inheritance controls before the
 // staged file becomes visible. A same-volume rename keeps its descriptor.
-bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error) {
+bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string* difference) {
   PSID target_owner = nullptr;
   PACL target_dacl = nullptr;
   PSECURITY_DESCRIPTOR target_descriptor = nullptr;
@@ -1045,7 +1095,7 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error) {
   bool control_ok = GetSecurityDescriptorControl(final_descriptor, &final_control, &final_revision);
   constexpr SECURITY_DESCRIPTOR_CONTROL relevant_control =
       SE_DACL_PRESENT | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED;
-  bool dacl_equal = SameAclEntries(target_dacl, final_dacl);
+  bool dacl_equal = SameAclEntries(target_dacl, final_dacl, difference);
   bool owner_equal = final_owner && EqualSid(target_owner, final_owner);
   bool inheritance_equal = (target_control & relevant_control) ==
       (final_control & relevant_control);
@@ -1290,6 +1340,14 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
   if (!parent) return ThrowWin(env, "open atomic target parent", error);
   Identity parent_id{};
   if (!QueryIdentity(parent.h, &parent_id)) return ThrowWin(env, "stat atomic target parent");
+  if (expected_present) {
+    Handle initial_target = OpenAt(parent.h, parts.back(), FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, &error);
+    Identity initial_id{};
+    if (!initial_target || !QueryIdentity(initial_target.h, &initial_id) ||
+        !IsRegular(initial_id) || !ExpectedMatches(initial_id, dev, ino, size, mtime, ctime))
+      return Throw(env, "FILE_SOURCE_CHANGED", "atomic target identity changed");
+  }
   std::shared_ptr<Stage> private_stage = StageForVolume(*root, parent_id, &error);
   if (!private_stage) return ThrowWin(env, "select private stage for target volume", error);
   std::wstring name; Handle source;
@@ -1339,12 +1397,16 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
       if (!QueryIdentity(target.h, &target_id)) {
         error = GetLastError(); cleanup(); return ThrowWin(env, "stat atomic target security", error);
       }
-      if (expected_present && !ExpectedMatches(target_id, dev, ino, size, mtime, ctime)) {
+      if (expected_present && (!IsRegular(target_id) ||
+          !ExpectedMatches(target_id, dev, ino, size, mtime, ctime))) {
         cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "atomic target identity changed");
       }
+      std::string security_difference;
       if (overwrite && IsRegular(target_id) &&
-          !CopyTargetSecurity(target.h, source.h, &error)) {
-        cleanup(); return ThrowWin(env, "preserve atomic target security", error);
+          !CopyTargetSecurity(target.h, source.h, &error, &security_difference)) {
+        cleanup();
+        return Throw(env, WinCode(error), "preserve atomic target security: Windows error " +
+            std::to_string(error) + (security_difference.empty() ? "" : ": " + security_difference));
       }
     }
   }

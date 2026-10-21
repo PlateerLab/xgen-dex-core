@@ -1233,8 +1233,30 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
   // not guaranteed, so the exact readback below remains the commit gate.
   SECURITY_INFORMATION inheritance = (target_control & SE_DACL_PROTECTED)
       ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION;
+  // GetSecurityInfo returns a self-relative descriptor. Build a separate
+  // absolute input when the target uses modern automatic inheritance: the
+  // request bit asks the file system to retain that model, while the original
+  // descriptor remains untouched for the exact readback comparison below.
+  SECURITY_DESCRIPTOR requested_descriptor{};
+  PSECURITY_DESCRIPTOR descriptor_for_set = target_descriptor;
+  if (target_control & SE_DACL_AUTO_INHERITED) {
+    SECURITY_DESCRIPTOR_CONTROL requested_control =
+        static_cast<SECURITY_DESCRIPTOR_CONTROL>(
+            (target_control & (SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED)) |
+            SE_DACL_AUTO_INHERIT_REQ);
+    if (!InitializeSecurityDescriptor(&requested_descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorOwner(&requested_descriptor, target_owner, FALSE) ||
+        !SetSecurityDescriptorDacl(&requested_descriptor,
+            (target_control & SE_DACL_PRESENT) != 0, target_dacl, FALSE) ||
+        !SetSecurityDescriptorControl(&requested_descriptor,
+            SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED,
+            requested_control)) {
+      *error = GetLastError(); LocalFree(target_descriptor); return false;
+    }
+    descriptor_for_set = &requested_descriptor;
+  }
   NTSTATUS status = nt_set_security ?
-      nt_set_security(staged, DACL_SECURITY_INFORMATION | inheritance, target_descriptor) :
+      nt_set_security(staged, DACL_SECURITY_INFORMATION | inheritance, descriptor_for_set) :
       static_cast<NTSTATUS>(0xC00000BB); // STATUS_NOT_SUPPORTED
   bool used_win32_setter = false;
   if (status != kStatusSuccess) {

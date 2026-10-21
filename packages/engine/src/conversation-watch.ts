@@ -15,9 +15,12 @@
 
 import {
   parseSubscribed,
+  parseStoredGeneratedContent,
   toHistoryProcess,
+  turnEventToChatEvent,
   turnAttachments,
   turnInputText,
+  type GeneratedContentProvenance,
   type HistoryFlowItem,
   type LiveTurnSnapshot,
   type TurnAttachment,
@@ -59,6 +62,8 @@ export type PeerTurnEvent =
       ioId: number | null;
       input: string;
       output: string;
+      generatedContent?: GeneratedContentProvenance[];
+      malformedGeneratedContent?: boolean;
       attachments: TurnAttachment[];
       originId?: string;
     }
@@ -80,6 +85,36 @@ export interface ConversationTurn {
    * 놓친 화면도 이것으로 같은 타임라인을 그린다. 옛 서버는 싣지 않는다.
    */
   process?: HistoryFlowItem[];
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
+}
+
+export interface ConversationLiveTurn extends LiveTurnSnapshot {
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
+}
+
+export function sanitizeConversationLiveTurn(live: LiveTurnSnapshot | null): ConversationLiveTurn | null {
+  if (!live) return null;
+  const stored = parseStoredGeneratedContent(live.text);
+  const generatedContent = [...stored.text, ...stored.media];
+  for (const raw of live.events ?? []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const event = turnEventToChatEvent(
+      String(item.event ?? ''),
+      item.data && typeof item.data === 'object' ? item.data as Record<string, unknown> : null,
+    );
+    if (event?.kind === 'generated_content' && !generatedContent.some((p) => p.source_id === event.data.source_id)) {
+      generatedContent.push(event.data);
+    }
+  }
+  return {
+    ...live,
+    text: stored.visibleText,
+    ...(generatedContent.length ? { generatedContent } : {}),
+    ...(stored.malformed ? { malformedGeneratedContent: true } : {}),
+  };
 }
 
 interface WatchEntry {
@@ -138,7 +173,7 @@ export class ConversationWatchHub {
     private onRunning?: (
       interactionId: string,
       running: boolean,
-      live?: LiveTurnSnapshot | null,
+      live?: ConversationLiveTurn | null,
     ) => void,
     /** 다른 화면이 돌리는 턴 — 시작·진행·종료·구멍. */
     private onPeer?: (event: PeerTurnEvent) => void,
@@ -335,12 +370,15 @@ export class ConversationWatchHub {
         if (frame.type === 'turn_started') {
           this.onPeer?.({ kind: 'started', interactionId, input: turnInputText(d.input), attachments, originId });
         } else if (frame.type === 'turn_ended') {
+          const stored = parseStoredGeneratedContent(d.output);
           this.onPeer?.({
             kind: 'ended',
             interactionId,
             ioId: typeof d.io_id === 'number' ? d.io_id : null,
             input: turnInputText(d.input),
-            output: String(d.output ?? ''),
+            output: stored.visibleText,
+            ...((stored.text.length || stored.media.length) ? { generatedContent: [...stored.text, ...stored.media] } : {}),
+            ...(stored.malformed ? { malformedGeneratedContent: true } : {}),
             attachments,
             originId,
           });
@@ -382,7 +420,7 @@ export class ConversationWatchHub {
         // 번호 기준선. 재연결마다 다시 받으므로 끊긴 사이의 유실은 여기서
         // 조용히 지나간다 — 그 구간은 히스토리 재조회가 메운다.
         entry.lastSeq = typeof frame.data?.seq === 'number' ? (frame.data.seq as number) : 0;
-        this.onRunning?.(interactionId, state.running, state.live);
+        this.onRunning?.(interactionId, state.running, sanitizeConversationLiveTurn(state.live));
         // 다시 붙었다 — 끊긴 사이에 시작해 끝난 턴은 어떤 프레임으로도 오지 않는다(완결 행도 구독 시점의
         // 기준선에 묻힌다). 화면이 히스토리로 메우도록 구멍을 알린다. 첫 구독은 화면이 막 히스토리를 읽었다.
         if (entry.subscribedOnce) this.onPeer?.({ kind: 'gap', interactionId });
@@ -396,14 +434,17 @@ export class ConversationWatchHub {
       }
       if (frame?.type !== 'message' || !frame.data) return;
       const d = frame.data;
+      const stored = parseStoredGeneratedContent(d.output_data);
       this.onTurn({
         interactionId,
         ioId: Number(d.io_id ?? 0),
         input: turnInputText(d.input_data),
-        output: String(d.output_data ?? ''),
+        output: stored.visibleText,
         source: String(d.source ?? 'user'),
         updatedAt: String(d.updated_at ?? ''),
         process: toHistoryProcess(d.process),
+        ...((stored.text.length || stored.media.length) ? { generatedContent: [...stored.text, ...stored.media] } : {}),
+        ...(stored.malformed ? { malformedGeneratedContent: true } : {}),
       });
     });
 

@@ -14,7 +14,13 @@ import { Animated, Easing, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { chatAnswerFiles, parseAgentTrigger, INTERRUPTED_TEXT, type ToolEvent } from '@dex/protocol';
+import {
+  chatAnswerFiles,
+  parseAgentTrigger,
+  INTERRUPTED_TEXT,
+  type GeneratedContentVerificationStatus,
+  type ToolEvent,
+} from '@dex/protocol';
 import type { XgenMobileClient } from '../lib/xgen';
 import type { PreviewFile } from '../files/file-preview';
 import { AnswerFiles, AttachmentChips } from './message-files';
@@ -23,7 +29,7 @@ import { AssistantMarkdown } from './markdown';
 import { ToolActivity } from './tool-activity';
 import { TriggerRow } from './trigger-row';
 import { ProcessTimeline, TurnPhaseCard, hasProcessFlow } from './process-timeline';
-import type { ChatMessage } from './message-model';
+import { generatedVerificationInputKey, type ChatMessage } from './message-model';
 
 /** 답변이 도는 동안 깜빡이는 자리 — 본문 문자열에 ▍를 섞으면 마크다운이 깨진다. */
 const Caret: React.FC = () => {
@@ -148,6 +154,67 @@ const FooterButton: React.FC<{ label: string; onPress: () => void; tone?: 'muted
   );
 };
 
+type ProofState = 'idle' | 'checking' | 'error' | GeneratedContentVerificationStatus;
+
+function proofLabel(state: ProofState): string {
+  switch (state) {
+    case 'verified': return '검증됨';
+    case 'changed': return '본문 변경됨';
+    case 'other_actor': return '다른 생성자';
+    case 'invalid': return '증명 무효';
+    case 'unsigned_legacy': return '서명 없는 이전 답변';
+    case 'unavailable': return '검증 일시 불가';
+    case 'checking': return '검증 중…';
+    case 'error': return '검증 실패';
+    default: return '확인 전';
+  }
+}
+
+const GeneratedContentStatus: React.FC<{
+  client: XgenMobileClient;
+  message: ChatMessage;
+  text: string;
+}> = ({ client, message, text }) => {
+  const p = useP();
+  const proof = message.malformedGeneratedContent
+    ? null
+    : message.generatedContent?.find((item) => item.content_type?.toLowerCase() === 'text/plain')?.proof ?? null;
+  const indication = message.malformedGeneratedContent ? '출처 정보 손상' : proof ? 'AI 생성' : '출처/서명 정보 없음';
+  const authScope = `${client.session.serverUrl}\u0000${client.session.userId}`;
+  const initial = (): ProofState => message.malformedGeneratedContent ? 'invalid' : proof ? 'idle' : 'unsigned_legacy';
+  const [state, setState] = useState<ProofState>(initial);
+  const request = useRef(0);
+  const currentInput = useRef('');
+  currentInput.current = `${message.id}\u0000${generatedVerificationInputKey(client.session, proof, text)}`;
+  useEffect(() => {
+    request.current += 1;
+    setState(initial());
+  }, [message.id, message.malformedGeneratedContent, proof, text, authScope]);
+  const verify = async (): Promise<void> => {
+    if (!proof || state === 'checking') return;
+    const id = ++request.current;
+    const input = currentInput.current;
+    setState('checking');
+    try {
+      const result = await client.api.generatedContent.verifyText(proof, text);
+      if (request.current === id && currentInput.current === input) setState(result.status);
+    } catch {
+      if (request.current === id && currentInput.current === input) setState('error');
+    }
+  };
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }} accessibilityLabel={`${indication} · ${proofLabel(state)}`}>
+      <Text style={{ color: p.muted, fontSize: 11, fontWeight: '700' }}>{indication}</Text>
+      <Text style={{ color: state === 'verified' ? p.primary : p.muted, fontSize: 11 }}>{proofLabel(state)}</Text>
+      {proof && state !== 'checking' ? (
+        <Pressable onPress={() => void verify()} accessibilityRole="button" accessibilityLabel="현재 답변 검증">
+          <Text style={{ color: p.primary, fontSize: 11, fontWeight: '700' }}>검증</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+};
+
 export const MessageItem: React.FC<{
   message: ChatMessage;
   /** 본문 표시용 정리(마커 제거)를 마친 글. */
@@ -269,6 +336,8 @@ export const MessageItem: React.FC<{
         latest={latest}
         onOpen={onOpenFile}
       />
+
+      {!live && !!text && !m.errorInfo ? <GeneratedContentStatus client={client} message={m} text={text} /> : null}
 
       {m.interrupted ? (
         <Text style={{ color: p.muted, fontSize: 11.5, marginTop: 2 }}>{INTERRUPTED_TEXT}</Text>

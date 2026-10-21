@@ -2949,10 +2949,25 @@ ipcMain.on(CHANNELS.ideUnwatch, (_e, key: string) => ideWatches.unwatch(String(k
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),
 );
+const GENERATED_CONTENT_TEXT_MAX_BYTES = 4 * 1024 * 1024;
+const GENERATED_CONTENT_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
+const ipcBinaryMaxBytes = (opts: unknown): number | undefined => {
+  if (opts === undefined) return undefined;
+  if (!opts || typeof opts !== 'object' || Array.isArray(opts)) throw new Error('invalid binary read options');
+  const maxBytes = (opts as { maxBytes?: unknown }).maxBytes;
+  if (maxBytes === undefined) return undefined;
+  if (
+    typeof maxBytes !== 'number' || !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 || maxBytes > GENERATED_CONTENT_MEDIA_MAX_BYTES
+  ) {
+    throw new Error('invalid binary byte limit');
+  }
+  return Number(maxBytes);
+};
 ipcMain.handle(
   CHANNELS.agentWsBinary,
-  (_e, wf: string, path: string, purpose?: 'chat_attachment') =>
-    getClient().agentData.workspaceBinary(wf, path, purpose),
+  (_e, wf: string, path: string, purpose?: 'chat_attachment', opts?: { maxBytes?: number }) =>
+    getClient().agentData.workspaceBinary(wf, path, purpose, { maxBytes: ipcBinaryMaxBytes(opts) }),
 );
 // 문서 미리보기 — [파일 저장소] 와 같은 렌더러(서버)가 그린 페이지 그림. 에이전트 작업 공간의 docx·pptx·xlsx·hwp.
 ipcMain.handle(CHANNELS.agentWsDocPreview, (_e, wf: string, path: string) =>
@@ -2962,9 +2977,30 @@ ipcMain.handle(CHANNELS.agentWsPreviewPage, (_e, wf: string, page: string) =>
   getClient().agentData.workspacePreviewPage(wf, page),
 );
 // 답에 딸린 파일 — 웹 채팅의 다운로드 단추·그림 카드와 같은 것(파일 저장소의 결과물·API 응답 임시 파일).
-ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean }) =>
-  getClient().chatFiles.download(item, { preview: opts?.preview === true }),
+ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean; maxBytes?: number }) =>
+  getClient().chatFiles.download(item, {
+    preview: opts?.preview === true,
+    maxBytes: ipcBinaryMaxBytes(opts),
+  }),
 );
+// 생성물 증명은 렌더러가 가진 현재 본문을 main의 인증된 클라이언트로 검증한다.
+// proof/본문 상한을 IPC 경계에서도 지켜 거대한 값이 프로세스 사이를 오가지 않게 한다.
+ipcMain.handle(CHANNELS.generatedContentVerifyText, (_e, proof: string | null, text: string) => {
+  if (proof !== null && (typeof proof !== 'string' || proof.length > 8_192)) throw new Error('invalid generated-content proof');
+  if (
+    typeof text !== 'string' || text.length > GENERATED_CONTENT_TEXT_MAX_BYTES ||
+    Buffer.byteLength(text, 'utf8') > GENERATED_CONTENT_TEXT_MAX_BYTES
+  ) {
+    throw new Error('generated content text is too large');
+  }
+  return getClient().generatedContent.verifyText(proof, text);
+});
+ipcMain.handle(CHANNELS.generatedContentVerifyBytes, (_e, proof: string | null, bytes: Uint8Array, contentType: string) => {
+  if (proof !== null && (typeof proof !== 'string' || proof.length > 8_192)) throw new Error('invalid generated-content proof');
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > GENERATED_CONTENT_MEDIA_MAX_BYTES) throw new Error('invalid generated-content bytes');
+  if (typeof contentType !== 'string' || contentType.length > 128) throw new Error('invalid generated-content content type');
+  return getClient().generatedContent.verifyBytes(proof, bytes, contentType);
+});
 ipcMain.handle(
   CHANNELS.agentWsUpload,
   (

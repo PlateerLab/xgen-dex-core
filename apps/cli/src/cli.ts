@@ -4,7 +4,9 @@ import {
   conversationAgentLabel,
   conversationDisplayTitle,
   describeStreamError,
+  mergeGeneratedContentProvenance,
   phaseLabel,
+  type GeneratedContentVerification,
 } from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
 import stringWidth from 'string-width';
@@ -20,6 +22,11 @@ import type { LocalToolsStatus } from '@dex/engine';
 import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
 import { bindCliHost } from './dex-host';
 import { chatFolders } from './folders';
+import {
+  provenanceLabel,
+  textVerificationCandidate,
+  type ProvenanceMessageState,
+} from './tui/provenance';
 
 /**
  * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
@@ -46,9 +53,10 @@ Usage:
   dexon logout [--profile <name>]
   dexon agents list [--search <text>] [--owner personal|shared] [--json]
   dexon chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
+             [--verify-provenance]
              [--folder <path,...> | --no-folder] [--memory-map | --no-memory-map]
   dexon history list [--json]          대화 목록 (마지막으로 말한 순서)
-  dexon history turns --workflow <id> --interaction <id> [--json]
+  dexon history turns --workflow <id> --interaction <id> [--json] [--verify-provenance]
   dexon history rename --workflow <id> --interaction <id> --title <text>
                                        빈 제목이면 첫 메시지 제목으로 돌아갑니다
   dexon history delete --workflow <id> --interaction <id>
@@ -69,6 +77,7 @@ Global options:
   --profile <name>  사용할 서버 프로필
   --json            단일 JSON 결과
   --jsonl           채팅 이벤트를 NDJSON으로 출력
+  --verify-provenance  화면에 보인 답변 본문으로 생성 출처 확인
   -h, --help        도움말
   -v, --version     버전
 
@@ -133,11 +142,56 @@ function printConversations(items: Conversation[]): void {
   }
 }
 
-function printTurns(items: HistoryTurn[]): void {
+function printTurns(items: Array<HistoryTurn & { provenanceVerification?: ProvenanceVerificationOutput }>): void {
   for (const item of items) {
     stdout.write(`\n[You]\n${item.input}\n\n[${item.workflowName}]\n${item.output}\n`);
+    const label = item.provenanceVerification
+      ? verificationOutputLabel(item.provenanceVerification)
+      : provenanceLabel({
+          text: item.output,
+          generatedContent: item.generatedContent,
+          malformedGeneratedContent: item.malformedGeneratedContent,
+          provenanceFinal: true,
+        });
+    if (label) stdout.write(`[${label}]\n`);
   }
   if (items.length === 0) stdout.write('대화 turn이 없습니다.\n');
+}
+
+type ProvenanceVerificationOutput =
+  | ({ target: 'assistant_text' } & GeneratedContentVerification)
+  | { target: 'assistant_text'; status: 'malformed_metadata' | 'media_only' | 'ambiguous' | 'incomplete' | 'failed' };
+
+function verificationOutputLabel(output: ProvenanceVerificationOutput): string {
+  if (output.status === 'malformed_metadata') return '출처 정보 손상';
+  if (output.status === 'media_only') return 'AI 생성 표시(미디어) · 본문 확인 불가';
+  if (output.status === 'ambiguous') return 'AI 생성 표시 · 본문 서명이 여러 개라 확인하지 않음';
+  if (output.status === 'incomplete') return '진행 중인 답변 · 출처 확인 안 함';
+  if (output.status === 'failed') return '출처 확인 실패';
+  return provenanceLabel({ text: '', provenanceCheck: output.status }) ?? '출처 확인 실패';
+}
+
+async function verifyProvenance(
+  engine: DexEngine,
+  message: ProvenanceMessageState,
+  profile: string | undefined,
+): Promise<ProvenanceVerificationOutput> {
+  const candidate = textVerificationCandidate(message);
+  if (!candidate.ok) {
+    return {
+      target: 'assistant_text',
+      status:
+        candidate.reason === 'malformed'
+          ? 'malformed_metadata'
+          : candidate.reason,
+    };
+  }
+  try {
+    const result = await engine.verifyGeneratedText(candidate.proof, candidate.text, profile);
+    return { target: 'assistant_text', ...result };
+  } catch {
+    return { target: 'assistant_text', status: 'failed' };
+  }
 }
 
 function describeEvent(event: ChatEvent): string | null {
@@ -297,6 +351,7 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
   const policy = await engine.checkChatInput({ text: input, workflowId: resolved.workflowId, profile: resolved.profile });
   if (policy.blocked) throw new DexError('usage_error', policy.message);
   const jsonl = flag(args, 'jsonl');
+  const shouldVerifyProvenance = flag(args, 'verify-provenance');
   if (jsonl) writeJson({ kind: 'start', ...resolved, input: undefined });
   else {
     stderr.write(`interaction: ${resolved.interactionId}\n`);
@@ -318,9 +373,15 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
   };
   process.once('SIGINT', onInterrupt);
   let detached = false;
+  const provenance: ProvenanceMessageState = { text: '' };
   try {
     for await (const event of engine.chat(resolved, controller.signal)) {
       if (event.kind === 'detached') detached = true;
+      if (event.kind === 'text') provenance.text += event.content;
+      else if (event.kind === 'summary') provenance.text += event.text;
+      else if (event.kind === 'generated_content') {
+        provenance.generatedContent = mergeGeneratedContentProvenance(provenance.generatedContent, event.data);
+      }
       if (jsonl) {
         stdout.write(`${JSON.stringify(event)}\n`);
       } else if (event.kind === 'text') {
@@ -333,6 +394,17 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
       }
     }
     if (!jsonl) stdout.write('\n');
+    provenance.provenanceFinal = !detached;
+    if (shouldVerifyProvenance) {
+      const result = detached
+        ? { target: 'assistant_text' as const, status: 'incomplete' as const }
+        : await verifyProvenance(engine, provenance, resolved.profile);
+      if (jsonl) stdout.write(`${JSON.stringify({ kind: 'provenance_verification', ...result })}\n`);
+      else stderr.write(`[${verificationOutputLabel(result)}]\n`);
+    } else if (!jsonl) {
+      const label = provenanceLabel(provenance);
+      if (label) stderr.write(`[${label}]\n`);
+    }
     if (detached && !jsonl) {
       // 끊겼을 뿐 서버의 턴은 계속 돈다. 위에 찍힌 것은 받다 만 조각이지 답이
       // 아니다 — 그걸 말해 주지 않으면 잘린 답을 최종 답으로 읽는다.
@@ -596,8 +668,25 @@ async function run(): Promise<void> {
       option(args, 'name'),
       option(args, 'profile'),
     );
-    if (asJson) writeJson(turns);
-    else printTurns(turns);
+    const withVerification = flag(args, 'verify-provenance')
+      ? await Promise.all(
+          turns.map(async (turn) => ({
+            ...turn,
+            provenanceVerification: await verifyProvenance(
+              engine,
+              {
+                text: turn.output,
+                generatedContent: turn.generatedContent,
+                malformedGeneratedContent: turn.malformedGeneratedContent,
+                provenanceFinal: true,
+              },
+              option(args, 'profile'),
+            ),
+          })),
+        )
+      : turns;
+    if (asJson) writeJson(withVerification);
+    else printTurns(withVerification);
     return;
   }
   if (command === 'serve') {

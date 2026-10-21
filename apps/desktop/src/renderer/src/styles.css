@@ -5726,6 +5726,25 @@ button {
   line-height: 1.5;
   color: var(--muted);
 }
+.generated-content-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.generated-content-status button {
+  all: unset;
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+.generated-content-status button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 /* 보내기 전 민감정보 경고 — 막지 않고 알린다. */
 .sensitive-warn {
   display: flex;

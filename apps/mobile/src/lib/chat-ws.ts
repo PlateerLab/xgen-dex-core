@@ -24,11 +24,13 @@
  */
 import {
   parseSubscribed,
+  parseStoredGeneratedContent,
   toHistoryProcess,
   turnAttachments,
   turnEventToChatEvent,
   turnInputText,
   type HistoryFlowItem,
+  type GeneratedContentProvenance,
   type LiveTurnSnapshot,
   type ToolEvent,
   type TurnAttachment,
@@ -62,6 +64,8 @@ export interface ExecCallbacks {
   onExecutionIo?: (ioId: number) => void;
   /** 도구가 파일 저장소에 올린 결과물(`download_artifact`) — 답 아래에 그림·단추로 그린다. */
   onDownload?: (data: Record<string, unknown>) => void;
+  /** 서명된 생성물 선언. 실제 본문/바이트 검증 전에는 표시 정보일 뿐이다. */
+  onGeneratedContent?: (data: GeneratedContentProvenance) => void;
   /**
    * 답의 첫 글자 전에 서버가 하는 준비 단계(`turn_phase`: Sandbox·워크스페이스·패키지·기억). 캐럿 자리에
    * 도구 줄 모양으로 그린다(@dex/protocol turn-phases, 웹·데스크톱과 같은 규칙).
@@ -90,6 +94,8 @@ export interface ServerTurn {
    * 놓친 화면도 이것으로 같은 타임라인을 그린다. 옛 서버는 싣지 않는다.
    */
   process?: HistoryFlowItem[];
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
 }
 
 /**
@@ -118,7 +124,7 @@ export function newOriginId(): string {
 export type PeerTurnEvent =
   | { kind: 'started'; input: string; attachments: TurnAttachment[] }
   | { kind: 'exec'; event: string; data: unknown }
-  | { kind: 'ended'; ioId: number | null; input: string; output: string; attachments: TurnAttachment[] }
+  | { kind: 'ended'; ioId: number | null; input: string; output: string; attachments: TurnAttachment[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }
   /** 전파에 구멍이 났다 — 이때만 다시 맞추면 된다. */
   | { kind: 'gap' };
 
@@ -203,7 +209,7 @@ export interface ChatWsOptions {
    * `text` 가 빈 문자열인 것과 아예 안 불리는 것은 다르다: 전자는 "돌고 있는데
    * 아직 한 글자도 안 나왔다".
    */
-  onLiveTurn?: (live: LiveTurnSnapshot) => void;
+  onLiveTurn?: (live: LiveTurnSnapshot & { generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }) => void;
   /** 이 대화의 폴더가 바뀌었다(어느 기기에 있는가·폴더 이름) — 서버 사본의 알림 원문. */
   onFolders?: (data: Record<string, unknown>) => void;
   /** 다른 화면이 이 대화의 모델을 바꿨다 — 서버 소식의 원문(`current`). */
@@ -227,6 +233,31 @@ const PING_AFTER_MS = 15_000;
 const WATCH_MS = 5_000;
 /** 앱 복귀 때 보낸 ping 의 답을 기다리는 시간. */
 const PROBE_MS = 4_000;
+
+function sanitizeLiveTurn(live: LiveTurnSnapshot): LiveTurnSnapshot & {
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
+} {
+  const stored = parseStoredGeneratedContent(live.text);
+  const generatedContent = [...stored.text, ...stored.media];
+  for (const raw of live.events ?? []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const event = turnEventToChatEvent(
+      String(item.event ?? ''),
+      item.data && typeof item.data === 'object' ? item.data as Record<string, unknown> : null,
+    );
+    if (event?.kind === 'generated_content' && !generatedContent.some((p) => p.source_id === event.data.source_id)) {
+      generatedContent.push(event.data);
+    }
+  }
+  return {
+    ...live,
+    text: stored.visibleText,
+    ...(generatedContent.length ? { generatedContent } : {}),
+    ...(stored.malformed ? { malformedGeneratedContent: true } : {}),
+  };
+}
 
 /**
  * exec 프레임 1건 → 콜백. ``'end'``/``'error'`` 반환 시 실행 종료.
@@ -256,6 +287,9 @@ export function dispatchExec(
       return null;
     case 'download':
       cb.onDownload?.(ev.data);
+      return null;
+    case 'generated_content':
+      cb.onGeneratedContent?.(ev.data);
       return null;
     case 'phase':
       cb.onPhase?.(ev);
@@ -524,11 +558,14 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         if (frame.type === 'turn_started') {
           opts.onPeerTurn?.({ kind: 'started', input: turnInputText(d.input), attachments });
         } else if (frame.type === 'turn_ended') {
+          const stored = parseStoredGeneratedContent(d.output);
           opts.onPeerTurn?.({
             kind: 'ended',
             ioId: typeof d.io_id === 'number' ? d.io_id : null,
             input: turnInputText(d.input),
-            output: String(d.output ?? ''),
+            output: stored.visibleText,
+            ...((stored.text.length || stored.media.length) ? { generatedContent: [...stored.text, ...stored.media] } : {}),
+            ...(stored.malformed ? { malformedGeneratedContent: true } : {}),
             attachments,
           });
         } else {
@@ -556,7 +593,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         // 꺼내는 자리는 정본 파서 하나다 (@dex/protocol parseSubscribed).
         const state = parseSubscribed(frame.data);
         opts.onRunning?.(state.running);
-        if (state.live) opts.onLiveTurn?.(state.live);
+        if (state.live) opts.onLiveTurn?.(sanitizeLiveTurn(state.live));
         // 다시 붙었다 — 끊긴 사이에 시작해 끝난 턴은 어떤 프레임으로도 오지 않는다. 화면이 이력으로
         // 메우도록 구멍을 알린다(휴대폰은 화면을 끄고 켤 때마다 끊긴다). 첫 구독은 화면이 막 이력을 읽었다.
         if (subscribedOnce) opts.onPeerTurn?.({ kind: 'gap' });
@@ -573,12 +610,15 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       if (frame.type === 'message' && frame.data) {
         // 대화 소켓 push — 서버가 주입한 완결 턴(트리거 반응 등).
         const d = frame.data as Record<string, unknown>;
+        const stored = parseStoredGeneratedContent(d.output_data);
         opts.onServerTurn?.({
           ioId: Number(d.io_id ?? 0),
           input: turnInputText(d.input_data),
-          output: String(d.output_data ?? ''),
+          output: stored.visibleText,
           source: String(d.source ?? 'user'),
           process: toHistoryProcess(d.process),
+          ...((stored.text.length || stored.media.length) ? { generatedContent: [...stored.text, ...stored.media] } : {}),
+          ...(stored.malformed ? { malformedGeneratedContent: true } : {}),
         });
         return;
       }

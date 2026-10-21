@@ -25,6 +25,40 @@ test('chat reducer accumulates streamed text and updates tool activity in place'
   );
 });
 
+test('생성 표시는 검증과 분리되고 본문이 바뀌면 검증 결과를 지운다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: '답' } });
+  state = chatReducer(state, {
+    type: 'event_received',
+    event: {
+      kind: 'generated_content',
+      data: {
+        indication: 'ai_generated', proof: 'a.b.c', sha256: 'a'.repeat(64),
+        content_type: 'text/plain', byte_length: 3,
+        source_id: '123e4567-e89b-42d3-a456-426614174000',
+      },
+    },
+  });
+  state = chatReducer(state, { type: 'turn_completed' });
+  const answer = state.messages.find((message) => message.role === 'assistant')!;
+  assert.equal(answer.generatedContent?.length, 1);
+  assert.equal(answer.provenanceCheck, undefined, '선언 수신만으로 검증됐다고 표시하지 않는다');
+
+  state = chatReducer(state, { type: 'verification_started', messageId: answer.id, expectedText: '답' });
+  state = chatReducer(state, { type: 'verification_finished', messageId: answer.id, expectedText: '답', status: 'verified' });
+  assert.equal(state.messages.find((message) => message.id === answer.id)?.provenanceCheck, 'verified');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: ' 변경' } });
+  assert.equal(state.messages.find((message) => message.id === answer.id)?.provenanceCheck, undefined);
+});
+
+test('늦게 도착한 검증 결과는 본문 snapshot이 달라지면 버린다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: '현재' } });
+  const answer = state.messages.find((message) => message.role === 'assistant')!;
+  state = chatReducer(state, { type: 'verification_finished', messageId: answer.id, expectedText: '예전', status: 'verified' });
+  assert.equal(state.messages.find((message) => message.id === answer.id)?.provenanceCheck, undefined);
+});
+
 test('history is converted into reusable chat state', () => {
   const state = chatReducer(initialChatState, {
     type: 'history_loaded',

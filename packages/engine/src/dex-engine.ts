@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { basename, extname, resolve } from 'node:path';
-import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
+import type { ConnectorDevice, ConversationModelState, GeneratedContentVerification, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
@@ -668,6 +668,20 @@ export class DexEngine {
   ): Promise<HistoryTurn[]> {
     return (await this.historySnapshot(workflowId, interactionId, workflowName, requestedProfile))
       .turns;
+  }
+
+  async verifyGeneratedText(
+    proof: string | null,
+    text: string,
+    requestedProfile?: string,
+  ): Promise<GeneratedContentVerification> {
+    const maxTextBytes = 4 * 1024 * 1024;
+    if ((proof !== null && (typeof proof !== 'string' || proof.length > 8192)) ||
+        typeof text !== 'string' || text.length > maxTextBytes ||
+        Buffer.byteLength(text, 'utf8') > maxTextBytes) {
+      throw new DexError('usage_error', '출처 검증 입력이 유효하지 않거나 너무 큽니다.');
+    }
+    return this.withAuthRetry(requestedProfile, (client) => client.generatedContent.verifyText(proof, text));
   }
 
   /**

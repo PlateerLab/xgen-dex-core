@@ -115,6 +115,20 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   chat.close();
 });
 
+test('turn_ended 저장 marker는 숨기고 proof를 별도 메타데이터로 넘긴다', () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  makeChat(got, { onPeerTurn: (event) => peer.push(event) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 0, running: false } });
+  const marker = `<!--XGEN_GENERATED_CONTENT_V1 proof=a.b.c sha256=${'a'.repeat(64)} content_type=text/plain byte_length=2 source_id=123e4567-e89b-42d3-a456-426614174000-->`;
+  ws.recv({ type: 'turn_ended', seq: 1, data: { io_id: 1, input: 'q', output: `답\n${marker}` } });
+  const ended = peer.find((event) => event.kind === 'ended');
+  assert.equal(ended?.kind === 'ended' ? ended.output : '', '답');
+  assert.equal(ended?.kind === 'ended' ? ended.generatedContent?.[0].proof : '', 'a.b.c');
+});
+
 test('폴더를 넘기지 않아도 local_folders 는 빈 목록으로 간다 — 앱은 늘 보낸다', async () => {
   // 필드가 없으면 서버는 옛 앱으로 읽어 예전 규칙을 따른다. 빈 목록은 "폴더 없음"이다.
   const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };

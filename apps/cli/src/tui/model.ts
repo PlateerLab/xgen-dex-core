@@ -1,5 +1,5 @@
 import type { ProfileSummary } from '@dex/engine';
-import type { ChatInputCheck, ConversationModelState, ThinkingValue } from '@dex/protocol';
+import type { ChatInputCheck, ConversationModelState, GeneratedContentProvenance, GeneratedContentVerification, ThinkingValue } from '@dex/protocol';
 import type {
   AgentCreateOptions,
   AgentListQuery,
@@ -93,6 +93,12 @@ export interface TuiEngine {
     workflowName?: string,
     profile?: string,
   ): Promise<ConversationSnapshot>;
+  /** 현재 화면에 보이는 실제 본문으로 생성 출처를 확인한다. */
+  verifyGeneratedText(
+    proof: string | null,
+    text: string,
+    profile?: string,
+  ): Promise<GeneratedContentVerification>;
   /**
    * 사람이 누른 [정지]. 스트림 abort 만으로는 서버가 멈추지 않는다 — 서버는
    * 연결 끊김을 취소로 읽지 않기 때문에(화면 잠금·기기 이동이 실행 중단이 되던
@@ -137,6 +143,8 @@ export interface TuiEngine {
         output: string;
         source: string;
         updatedAt: string;
+        generatedContent?: GeneratedContentProvenance[];
+        malformedGeneratedContent?: boolean;
       }) => void)
     | null;
   /**
@@ -150,7 +158,12 @@ export interface TuiEngine {
     | ((event: {
         interactionId: string;
         running: boolean;
-        live?: { text: string; events: unknown[] } | null;
+        live?: {
+          text: string;
+          events: unknown[];
+          generatedContent?: GeneratedContentProvenance[];
+          malformedGeneratedContent?: boolean;
+        } | null;
       }) => void)
     | null;
   /** 이 대화의 모델 — 지금 모델(맨 앞)·고를 수 있는 것 (선택 구현, Ctrl+O). */

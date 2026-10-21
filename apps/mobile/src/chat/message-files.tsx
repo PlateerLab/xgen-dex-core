@@ -11,6 +11,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system';
 import {
   answerTurnFiles,
   chatDownloadRequest,
@@ -22,11 +23,15 @@ import {
   splitRequestedFiles,
   withoutShownFiles,
   type ChatDownload,
+  type GeneratedContentProvenance,
+  type GeneratedContentVerificationStatus,
   type WsNode,
 } from '@dex/protocol';
 import { alpha, useP } from '../theme';
 import type { XgenMobileClient } from '../lib/xgen';
 import { serverLink } from '../lib/links';
+import { base64Bytes } from '../lib/attachment-file';
+import { boundedDownload } from '../lib/bounded-download';
 import type { PreviewFile } from '../files/file-preview';
 import type { ChatAttachmentMark, ChatMessage } from './message-model';
 
@@ -45,6 +50,8 @@ function workspaceTree(client: XgenMobileClient, workflowId: string): Promise<{ 
 
 /** 답 아래에 바로 그릴 그림의 크기 상한 — 이보다 크면 카드로만 둔다(대화가 무거워지지 않게). */
 const IMAGE_INLINE_MAX_BYTES = 12 * 1024 * 1024;
+/** 검증은 실제 파일 bytes를 JS에서 hash하므로 모바일 메모리 안에서 다룰 수 있는 크기로 제한한다. */
+const MEDIA_VERIFY_MAX_BYTES = 12 * 1024 * 1024;
 
 type Source = { uri: string; headers: Record<string, string> };
 
@@ -66,7 +73,8 @@ const InlineImage: React.FC<{
   size?: number | null;
   onPress: () => void;
   fallback: React.ReactNode;
-}> = ({ source, name, size, onPress, fallback }) => {
+  footerAction?: React.ReactNode;
+}> = ({ source, name, size, onPress, fallback, footerAction }) => {
   const p = useP();
   const { width } = useWindowDimensions();
   const box = Math.min(width - 48, 320);
@@ -95,6 +103,7 @@ const InlineImage: React.FC<{
           {name}
         </Text>
         {size ? <Text style={{ color: p.muted, fontSize: 11 }}>{formatFileSize(size)}</Text> : null}
+        {footerAction}
         <Ionicons name="expand-outline" size={15} color={p.muted} />
       </View>
     </Pressable>
@@ -102,11 +111,12 @@ const InlineImage: React.FC<{
 };
 
 /** 파일 카드 — 형식 이름표·이름·크기. 누르면 폰 안에서 연다. */
-const FileCard: React.FC<{ name: string; size?: number | null; minor?: boolean; onPress: () => void }> = ({
+const FileCard: React.FC<{ name: string; size?: number | null; minor?: boolean; onPress: () => void; proofAction?: React.ReactNode }> = ({
   name,
   size,
   minor,
   onPress,
+  proofAction,
 }) => {
   const p = useP();
   const dot = name.lastIndexOf('.');
@@ -150,9 +160,107 @@ const FileCard: React.FC<{ name: string; size?: number | null; minor?: boolean; 
         {size ? <Text style={{ color: p.muted, fontSize: 11 }}>{formatFileSize(size)}</Text> : null}
       </View>
       <Ionicons name="chevron-forward" size={15} color={p.muted} />
+      {proofAction}
     </Pressable>
   );
 };
+
+type MediaProofState = 'idle' | 'checking' | 'error' | GeneratedContentVerificationStatus;
+
+const MediaProofAction: React.FC<{
+  client: XgenMobileClient;
+  source: Source;
+  provenance: GeneratedContentProvenance;
+}> = ({ client, source, provenance }) => {
+  const p = useP();
+  const [state, setState] = useState<MediaProofState>('idle');
+  const request = React.useRef(0);
+  const activeDownload = React.useRef<AbortController | undefined>(undefined);
+  const authScope = `${client.session.serverUrl}\u0000${client.session.userId}`;
+  const currentInput = React.useRef('');
+  currentInput.current = `${authScope}\u0000${provenance.proof ?? ''}\u0000${source.uri}`;
+  useEffect(() => {
+    request.current += 1;
+    activeDownload.current?.abort();
+    setState('idle');
+    return () => activeDownload.current?.abort();
+  }, [provenance.proof, source.uri, authScope]);
+  const verify = async (): Promise<void> => {
+    if (!provenance.proof || state === 'checking') return;
+    const id = ++request.current;
+    const input = currentInput.current;
+    const controller = new AbortController();
+    activeDownload.current?.abort();
+    activeDownload.current = controller;
+    setState('checking');
+    let destination: string | undefined;
+    try {
+      if ((provenance.byte_length ?? 0) > MEDIA_VERIFY_MAX_BYTES) throw new Error('media too large to verify');
+      const root = FileSystem.cacheDirectory;
+      if (!root) throw new Error('private cache unavailable');
+      const dir = `${root}xgen-provenance/`;
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => undefined);
+      destination = `${dir}${Date.now()}-${Math.random().toString(36).slice(2)}.bin`;
+      let contentType = '';
+      const uri = await boundedDownload({
+        create(progress) {
+          const task = FileSystem.createDownloadResumable(
+            source.uri,
+            destination!,
+            { headers: source.headers },
+            (event) => progress(event.totalBytesWritten, event.totalBytesExpectedToWrite),
+          );
+          return {
+            async downloadAsync() {
+              const result = await task.downloadAsync();
+              if (result) {
+                const header = Object.entries(result.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+                contentType = header || result.mimeType || '';
+              }
+              return result;
+            },
+            async cancelAsync() { await task.cancelAsync(); },
+          };
+        },
+        async size(fileUri) {
+          const info = await FileSystem.getInfoAsync(fileUri);
+          return info.exists && !info.isDirectory ? info.size : -1;
+        },
+        remove: () => FileSystem.deleteAsync(destination!, { idempotent: true }),
+      }, { signal: controller.signal, maxBytes: MEDIA_VERIFY_MAX_BYTES, timeoutMs: 120_000 });
+      const encoded = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      const bytes = base64Bytes(encoded);
+      if (bytes.byteLength > MEDIA_VERIFY_MAX_BYTES) throw new Error('media too large to verify');
+      const result = await client.api.generatedContent.verifyBytes(provenance.proof, bytes, contentType);
+      if (request.current === id && currentInput.current === input) setState(result.status);
+    } catch {
+      if (request.current === id && currentInput.current === input) setState('error');
+    } finally {
+      if (activeDownload.current === controller) activeDownload.current = undefined;
+      if (destination) await FileSystem.deleteAsync(destination, { idempotent: true }).catch(() => undefined);
+    }
+  };
+  const label = state === 'verified' ? '검증됨' : state === 'checking' ? '검증 중…' : state === 'idle' ? '검증' : state === 'changed' ? '파일 변경됨' : state === 'unavailable' ? '검증 불가' : '검증 실패';
+  return (
+    <Pressable
+      onPress={(event) => { event.stopPropagation(); void verify(); }}
+      accessibilityRole="button"
+      accessibilityLabel={`AI 생성 파일 ${label}`}
+      disabled={state === 'checking'}
+    >
+      <Text style={{ color: state === 'verified' ? p.primary : p.muted, fontSize: 10.5, fontWeight: '700' }}>AI 생성 · {label}</Text>
+    </Pressable>
+  );
+};
+
+function mediaProofFor(message: ChatMessage, artifactPath: string | undefined): GeneratedContentProvenance | undefined {
+  if (!artifactPath || message.malformedGeneratedContent) return undefined;
+  const normalized = artifactPath.replace(/^\/+/, '');
+  return message.generatedContent?.find((item) =>
+    item.content_type?.toLowerCase() !== 'text/plain'
+    && item.artifact_path?.replace(/^\/+/, '') === normalized,
+  );
+}
 
 /** 질문에 붙인 파일 — 말풍선 안. 작업 공간에 올라간 것은 그림은 작게 보이고, 누르면 연다. */
 export const AttachmentChips: React.FC<{
@@ -258,20 +366,25 @@ export const AnswerFiles: React.FC<{
 
   const openNode = (node: WsNode) => onOpen({ name: node.name, path: node.path, size: node.size });
   const openDownload = (item: ChatDownload) => onOpen({ name: item.name, size: item.size, download: item });
-  const nodeCard = (node: WsNode, minor = false) => (
-    <FileCard key={node.path} name={node.name} size={node.size} minor={minor} onPress={() => openNode(node)} />
-  );
-  const downloadCard = (item: ChatDownload) => (
-    <FileCard key={item.artifactId ?? `${item.storageId}:${item.fileId}`} name={item.name} size={item.size} onPress={() => openDownload(item)} />
-  );
+  const nodeCard = (node: WsNode, minor = false) => {
+    const source = workspaceSource(client, workflowId, node.path);
+    const provenance = mediaProofFor(message, node.path);
+    return <FileCard key={node.path} name={node.name} size={node.size} minor={minor} onPress={() => openNode(node)} proofAction={source && provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />;
+  };
+  const downloadCard = (item: ChatDownload) => {
+    const source = downloadSource(client, item);
+    const provenance = mediaProofFor(message, item.path ?? item.downloadUrl);
+    return <FileCard key={item.artifactId ?? `${item.storageId}:${item.fileId}`} name={item.name} size={item.size} onPress={() => openDownload(item)} proofAction={source && provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />;
+  };
 
   const images: React.ReactNode[] = [];
   const cards: React.ReactNode[] = [];
   for (const node of requested) {
     const source = isChatImageName(node.name) && (node.size ?? 0) <= IMAGE_INLINE_MAX_BYTES ? workspaceSource(client, workflowId, node.path) : null;
     if (source) {
+      const provenance = mediaProofFor(message, node.path);
       images.push(
-        <InlineImage key={node.path} source={source} name={node.name} size={node.size} onPress={() => openNode(node)} fallback={nodeCard(node)} />,
+        <InlineImage key={node.path} source={source} name={node.name} size={node.size} onPress={() => openNode(node)} fallback={nodeCard(node)} footerAction={provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />,
       );
     } else cards.push(nodeCard(node));
   }
@@ -279,8 +392,9 @@ export const AnswerFiles: React.FC<{
     const source = isChatImageName(item.name) ? downloadSource(client, item) : null;
     const key = item.artifactId ?? `${item.storageId}:${item.fileId}`;
     if (source) {
+      const provenance = mediaProofFor(message, item.path ?? item.downloadUrl);
       images.push(
-        <InlineImage key={key} source={source} name={item.name} size={item.size} onPress={() => openDownload(item)} fallback={downloadCard(item)} />,
+        <InlineImage key={key} source={source} name={item.name} size={item.size} onPress={() => openDownload(item)} fallback={downloadCard(item)} footerAction={provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />,
       );
     } else cards.push(downloadCard(item));
   }

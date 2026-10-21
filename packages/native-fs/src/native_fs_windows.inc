@@ -423,7 +423,7 @@ Handle OpenLeaf(const Root& root, const std::vector<std::wstring>& parts,
 bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* canonical, Identity* identity, DWORD* error, bool stage_access = false, Handle* write_handle = nullptr, bool share_delete = true, bool allow_stage_final = false) {
   // The one approved absolute path may resolve aliases. Reopen its canonical
   // target from a volume/share anchor and verify the object identity.
-  Handle original(CreateFileW(input.c_str(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | SYNCHRONIZE | (stage_access ? WRITE_DAC | READ_CONTROL : 0),
+  Handle original(CreateFileW(input.c_str(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | SYNCHRONIZE | (stage_access ? WRITE_DAC | WRITE_OWNER | READ_CONTROL : 0),
       FILE_SHARE_READ | FILE_SHARE_WRITE | (share_delete ? FILE_SHARE_DELETE : 0), nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
   if (!original) { *error = GetLastError(); return false; }
   Identity before{};
@@ -459,7 +459,7 @@ bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* cano
     Handle next;
     if (stage_access && end == canonical->size()) {
       next = OpenAt(current.h, canonical->substr(position, end - position),
-          FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE | WRITE_DAC | READ_CONTROL |
+          FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE | WRITE_DAC | WRITE_OWNER | READ_CONTROL |
             FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
           FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, error,
           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
@@ -574,7 +574,22 @@ bool PrivatizeStage(HANDLE handle, DWORD* error) {
   if (result != ERROR_SUCCESS) { *error = result; return false; }
   bool own = EqualSid(owner, sid.data()) != 0;
   LocalFree(descriptor);
-  if (!own) { *error = ERROR_ACCESS_DENIED; return false; }
+  if (!own) {
+    // Elevated tokens can create directories with Administrators as their
+    // default owner. Make the trusted stage's owner the actual process user
+    // before removing inherited grants; otherwise another administrator
+    // could change its DACL later.
+    result = SetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                             sid.data(), nullptr, nullptr, nullptr);
+    if (result != ERROR_SUCCESS) { *error = result; return false; }
+    owner = nullptr; descriptor = nullptr;
+    result = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                             &owner, nullptr, nullptr, nullptr, &descriptor);
+    if (result != ERROR_SUCCESS) { *error = result; return false; }
+    own = owner && EqualSid(owner, sid.data());
+    LocalFree(descriptor);
+    if (!own) { *error = ERROR_ACCESS_DENIED; return false; }
+  }
   SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
   PSID system = nullptr;
   if (!AllocateAndInitializeSid(&nt_authority, 1, SECURITY_LOCAL_SYSTEM_RID, 0, 0, 0, 0, 0, 0, 0, &system)) {
@@ -1108,7 +1123,7 @@ std::shared_ptr<Stage> CreatePrivateStageAt(HANDLE parent, DWORD* error) {
   for (int attempt = 0; attempt < 16; ++attempt) {
     if (!RandomName(&name)) { *error = ERROR_GEN_FAILURE; break; }
     directory = OpenAt(parent, name,
-      DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC |
+      DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | WRITE_OWNER |
         FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | SYNCHRONIZE,
       FILE_CREATE, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, error,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

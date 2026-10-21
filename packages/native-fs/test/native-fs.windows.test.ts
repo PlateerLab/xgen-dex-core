@@ -36,6 +36,30 @@ test('Windows root and source handles stay bound across pathname moves', { skip:
   assert.throws(() => source.read(0, 1), { code: 'FILE_SOURCE_CHANGED' });
 });
 
+test('Windows configured stage is owned by the current user with a protected private DACL', { skip: platform !== 'win32' }, async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'dex-native-win-stage-acl-'));
+  const stagePath = join(base, 'stage');
+  await mkdir(stagePath);
+  t.after(async () => { await rm(base, { recursive: true, force: true }); });
+  configureNativeFsStage(stagePath);
+  const script = join(base, 'stage-security.ps1');
+  await writeFile(script, `
+param([string]$Folder)
+$acl = Get-Acl -LiteralPath $Folder
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$owner = ([System.Security.Principal.NTAccount]$acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
+$trustees = @($acl.Access | ForEach-Object {
+  $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+})
+$private = @($trustees | Where-Object { $_ -ne $current -and $_ -ne 'S-1-5-18' }).Count -eq 0
+Write-Output "$($acl.AreAccessRulesProtected)|$($owner -eq $current)|$private"
+`);
+  const actual = execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, stagePath,
+  ], { encoding: 'utf8' }).trim();
+  assert.equal(actual, 'True|True|True');
+});
+
 test('Windows source change time rejects restored-mtime mutation', { skip: platform !== 'win32' }, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'dex-native-win-source-'));
   const rootPath = join(base, 'root');

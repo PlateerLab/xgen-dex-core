@@ -244,9 +244,10 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
         'search popups, collapsed sections and file uploads from the connected folders. Put ALL steps in ONE call. ' +
-        'Use it ONLY to put values you have already decided into fields of the page that is open now. ' +
-        'Not for going to another page or menu, pressing buttons that are not a field value, searching the site, reading the page, or anything you would need to look at first — use the other browser tools. ' +
-        'Every step names the field and the exact value: never "자료에 맞는 것", "적절한 카테고리", "조회해 지정" — work out the value yourself first (read the material, look up the exact path with BrowserSnapshot), then write the step. ' +
+        'Use it to put values into fields of the page that is open now — not for going to another page, pressing buttons that are not a field value, or reading the page. ' +
+        'Every step names the field and the exact value, never a vague one ("자료에 맞는 것", "적절한 값"). ' +
+        'If you need to look at the choices to decide a value (a list, popup or tree), look first with the other browser tools, then put the decided value in a step — the step makes the pick itself. ' +
+        'Put the remaining fields in this call too rather than filling them one by one with BrowserInteract. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
         'Skip fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") — each step costs seconds. ' +
@@ -254,7 +255,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
-        'do not open those popups or upload with BrowserAdvanced yourself; the step opens the popup, searches, picks and applies. ' +
+        'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
         'Returns complete (true only when every step is done — a step is done only when the value was read back on the page) and per-step status: done / failed / skipped (with the reason). Unless complete, the request is not finished — finish the failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
         'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
         'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」 ("상품상세 내용에 「…」 입력해줘"), ' +

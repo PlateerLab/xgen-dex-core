@@ -1229,9 +1229,14 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
   if (result != ERROR_SUCCESS) {
     LocalFree(target_descriptor); *error = result; return false;
   }
+  // SECURITY_INFORMATION defines both protection flags. Native support is
+  // not guaranteed, so the exact readback below remains the commit gate.
+  SECURITY_INFORMATION inheritance = (target_control & SE_DACL_PROTECTED)
+      ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION;
   NTSTATUS status = nt_set_security ?
-      nt_set_security(staged, DACL_SECURITY_INFORMATION, target_descriptor) :
+      nt_set_security(staged, DACL_SECURITY_INFORMATION | inheritance, target_descriptor) :
       static_cast<NTSTATUS>(0xC00000BB); // STATUS_NOT_SUPPORTED
+  bool used_win32_setter = false;
   if (status != kStatusSuccess) {
     std::ostringstream detail;
     if (nt_set_security)
@@ -1240,8 +1245,6 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
     // The Win32 setter is supported for files. With the stage's current DACL
     // protected, Windows can accept the target's concrete inherited ACEs.
     // Exact owner, ACE, and control-bit readback still gates the rename.
-    SECURITY_INFORMATION inheritance = (target_control & SE_DACL_PROTECTED)
-        ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION;
     result = SetSecurityInfo(staged, SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION | inheritance, nullptr, nullptr, target_dacl, nullptr);
     if (result != ERROR_SUCCESS) {
@@ -1249,6 +1252,7 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
       *difference = detail.str();
       LocalFree(target_descriptor); *error = result; return false;
     }
+    used_win32_setter = true;
   }
   PSID final_owner = nullptr;
   PACL final_dacl = nullptr;
@@ -1269,6 +1273,17 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
   bool inheritance_equal = (target_control & relevant_control) ==
       (final_control & relevant_control);
   bool same = control_ok && owner_equal && dacl_equal && inheritance_equal;
+  if (!same) {
+    std::ostringstream detail;
+    detail << "targetControl=0x" << std::hex << (target_control & relevant_control)
+           << ", stagedControl=0x" << (final_control & relevant_control)
+           << ", ntStatus=0x" << static_cast<uint32_t>(status) << std::dec
+           << ", usedWin32=" << used_win32_setter
+           << ", ownerEqual=" << owner_equal << ", aclEqual=" << dacl_equal
+           << ", controlRead=" << control_ok;
+    if (!difference->empty()) difference->append("; ");
+    difference->append(detail.str());
+  }
   if (!control_ok) *error = GetLastError();
   LocalFree(final_descriptor);
   LocalFree(target_descriptor);

@@ -107,9 +107,16 @@ struct Identity {
   FILETIME changed{};
   DWORD attributes = 0;
 };
-struct Root { Handle handle; Handle write_handle; std::wstring canonical; Identity identity; };
+struct Ancestor { Handle handle; Handle writable; Identity identity; };
+struct Root {
+  Handle handle; Handle write_handle; std::wstring canonical; Identity identity;
+  std::vector<Ancestor> ancestors;
+};
 struct Source { Handle handle; Identity initial; };
-struct Stage { Handle handle; std::wstring canonical; Identity identity; };
+struct Stage {
+  Handle handle; std::wstring canonical; Identity identity;
+  std::vector<Ancestor> ancestors;
+};
 struct Quarantine {
   Handle source;
   Handle original_parent;
@@ -362,43 +369,6 @@ Handle Duplicate(HANDLE handle, DWORD* error) {
   }
   return Handle(copy);
 }
-enum class Ancestry { Yes, No, Unknown };
-bool IsVolumeAnchor(HANDLE directory);
-Handle OpenParent(HANDLE directory, DWORD* error, bool writable = false) {
-  ACCESS_MASK access = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE |
-      (writable ? FILE_ADD_SUBDIRECTORY : 0);
-  Handle parent = OpenAt(directory, L"..", access, FILE_OPEN,
-      FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, error);
-  if (!parent) return {};
-  Identity id{};
-  if (!QueryIdentity(parent.h, &id)) { *error = GetLastError(); return {}; }
-  if (!IsDirectory(id) || IsReparse(id)) { *error = ERROR_ACCESS_DENIED; return {}; }
-  return parent;
-}
-Ancestry ContainsObject(HANDLE ancestor, HANDLE child) {
-  Identity ancestor_id{};
-  if (!QueryIdentity(ancestor, &ancestor_id)) return Ancestry::Unknown;
-  DWORD error = 0;
-  Handle current = Duplicate(child, &error);
-  if (!current) return Ancestry::Unknown;
-  for (int depth = 0; depth < 256; ++depth) {
-    Identity current_id{};
-    if (!QueryIdentity(current.h, &current_id)) return Ancestry::Unknown;
-    if (SameObject(ancestor_id, current_id)) return Ancestry::Yes;
-    if (ancestor_id.file_id.VolumeSerialNumber != current_id.file_id.VolumeSerialNumber)
-      return Ancestry::No;
-    if (IsVolumeAnchor(current.h)) return Ancestry::No;
-    Handle parent = OpenParent(current.h, &error);
-    if (!parent) return Ancestry::Unknown;
-    Identity parent_id{};
-    if (!QueryIdentity(parent.h, &parent_id)) return Ancestry::Unknown;
-    if (SameObject(parent_id, current_id) ||
-        parent_id.file_id.VolumeSerialNumber != current_id.file_id.VolumeSerialNumber)
-      return Ancestry::No;
-    current = std::move(parent);
-  }
-  return Ancestry::Unknown;
-}
 Handle OpenDirectory(const Root& root, const std::vector<std::wstring>& parts, size_t count, DWORD* error, bool writable = false) {
   if (writable && count == 0 && !root.write_handle) { *error = ERROR_ACCESS_DENIED; return {}; }
   Handle current = Duplicate(writable && count == 0 ? root.write_handle.h : root.handle.h, error);
@@ -420,7 +390,11 @@ Handle OpenLeaf(const Root& root, const std::vector<std::wstring>& parts,
   return OpenAt(parent.h, parts.back(), access, disposition, options, error, share);
 }
 
-bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* canonical, Identity* identity, DWORD* error, bool stage_access = false, Handle* write_handle = nullptr, bool share_delete = true, bool allow_stage_final = false) {
+bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* canonical, Identity* identity,
+                   DWORD* error, bool stage_access = false, Handle* write_handle = nullptr,
+                   bool share_delete = true, bool allow_stage_final = false,
+                   std::vector<Ancestor>* root_ancestors = nullptr,
+                   std::vector<Ancestor>* stage_ancestors = nullptr) {
   // The one approved absolute path may resolve aliases. Reopen its canonical
   // target from a volume/share anchor and verify the object identity.
   Handle original(CreateFileW(input.c_str(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | SYNCHRONIZE | (stage_access ? WRITE_DAC | WRITE_OWNER | READ_CONTROL : 0),
@@ -451,14 +425,28 @@ bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* cano
   Handle current(CreateFileW(anchor.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   if (!current) { *error = GetLastError(); return false; }
+  Identity anchor_id{};
+  if (!QueryIdentity(current.h, &anchor_id) || !IsDirectory(anchor_id) || IsReparse(anchor_id)) {
+    *error = ERROR_ACCESS_DENIED; return false;
+  }
+  Handle current_writable;
+  if (root_ancestors) {
+    Handle candidate(CreateFileW(anchor.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES |
+        FILE_ADD_SUBDIRECTORY | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    Identity writable_id{};
+    if (candidate && QueryIdentity(candidate.h, &writable_id) && SameObject(anchor_id, writable_id) &&
+        IsDirectory(writable_id) && !IsReparse(writable_id)) current_writable = std::move(candidate);
+  }
   size_t position = anchor_end;
   while (position < canonical->size()) {
     size_t end = canonical->find(L'\\', position);
     if (end == std::wstring::npos) end = canonical->size();
     if (end == position) { *error = ERROR_INVALID_NAME; return false; }
+    std::wstring component = canonical->substr(position, end - position);
     Handle next;
     if (stage_access && end == canonical->size()) {
-      next = OpenAt(current.h, canonical->substr(position, end - position),
+      next = OpenAt(current.h, component,
           FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE | WRITE_DAC | WRITE_OWNER | READ_CONTROL |
             FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
           FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, error,
@@ -468,7 +456,6 @@ bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* cano
         *error = ERROR_ACCESS_DENIED; return false;
       }
     } else {
-      std::wstring component = canonical->substr(position, end - position);
       if ((!share_delete || allow_stage_final) && end == canonical->size()) {
         next = OpenAt(current.h, component, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, error,
@@ -488,7 +475,27 @@ bool CanonicalRoot(const std::wstring& input, Handle* rooted, std::wstring* cano
       }
     }
     if (!next) return false;
+    Handle next_writable;
+    if (root_ancestors && end != canonical->size()) {
+      DWORD write_error = 0;
+      Handle candidate = OpenDirAt(current.h, component, &write_error, FILE_ADD_SUBDIRECTORY);
+      Identity next_id{}, writable_id{};
+      if (candidate && QueryIdentity(next.h, &next_id) &&
+          QueryIdentity(candidate.h, &writable_id) && SameObject(next_id, writable_id))
+        next_writable = std::move(candidate);
+    }
+    if (root_ancestors || stage_ancestors) {
+      Identity ancestor_id{};
+      if (!QueryIdentity(current.h, &ancestor_id)) { *error = GetLastError(); return false; }
+      Ancestor ancestor;
+      ancestor.handle = std::move(current);
+      ancestor.writable = std::move(current_writable);
+      ancestor.identity = ancestor_id;
+      if (root_ancestors) root_ancestors->push_back(std::move(ancestor));
+      else stage_ancestors->push_back(std::move(ancestor));
+    }
     current = std::move(next);
+    current_writable = std::move(next_writable);
     position = end + 1;
   }
   if (!QueryIdentity(current.h, identity)) { *error = GetLastError(); return false; }
@@ -530,22 +537,13 @@ bool CurrentCanonical(HANDLE handle, std::wstring* path) {
   path->assign(buffer.data(), got);
   return true;
 }
-bool IsVolumeAnchor(HANDLE directory) {
-  std::wstring path;
-  if (!CurrentCanonical(directory, &path)) return false;
-  if (path.size() == 7 && path.compare(0, 4, L"\\\\?\\") == 0 &&
-      path[5] == L':' && path[6] == L'\\') return true;
-  if (path.compare(0, 8, L"\\\\?\\UNC\\") != 0) return false;
-  size_t server_end = path.find(L'\\', 8);
-  if (server_end == std::wstring::npos) return false;
-  size_t share_end = path.find(L'\\', server_end + 1);
-  return share_end == std::wstring::npos || share_end + 1 == path.size();
-}
 bool ConflictsStage(const Root& root, const Stage& value) {
-  Ancestry stage_under_root = ContainsObject(root.handle.h, value.handle.h);
-  Ancestry root_under_stage = ContainsObject(value.handle.h, root.handle.h);
-  // An uncertain ancestry check cannot authorize a grant or stage.
-  return stage_under_root != Ancestry::No || root_under_stage != Ancestry::No;
+  if (SameObject(root.identity, value.identity)) return true;
+  for (const auto& ancestor : root.ancestors)
+    if (SameObject(ancestor.identity, value.identity)) return true;
+  for (const auto& ancestor : value.ancestors)
+    if (SameObject(ancestor.identity, root.identity)) return true;
+  return false;
 }
 
 bool CurrentUserSid(std::vector<uint8_t>* sid) {
@@ -600,8 +598,10 @@ bool PrivatizeStage(HANDLE handle, DWORD* error) {
   std::vector<uint8_t> memory(acl_bytes);
   PACL acl = reinterpret_cast<PACL>(memory.data());
   bool ok = InitializeAcl(acl, acl_bytes, ACL_REVISION) &&
-    AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sid.data()) &&
-    AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, system);
+    AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                          FILE_ALL_ACCESS, sid.data()) &&
+    AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                          FILE_ALL_ACCESS, system);
   FreeSid(system);
   if (!ok) { *error = GetLastError(); return false; }
   result = SetSecurityInfo(handle, SE_FILE_OBJECT,
@@ -663,7 +663,9 @@ napi_value OpenRoot(napi_env env, napi_callback_info info) {
   if (!GetString(env, args[0], &input) || !Utf8ToWide(input, &path)) return Throw(env, "EINVAL", "root path must be UTF-8");
   if (!NativeReady()) return Throw(env, "NATIVE_ROOTED_FS_UNAVAILABLE", "Windows native APIs are unavailable");
   auto root = std::make_shared<Root>(); DWORD error = 0;
-  if (!CanonicalRoot(path, &root->handle, &root->canonical, &root->identity, &error, false, &root->write_handle)) return ThrowWin(env, "open root", error);
+  if (!CanonicalRoot(path, &root->handle, &root->canonical, &root->identity, &error,
+                     false, &root->write_handle, true, false, &root->ancestors))
+    return ThrowWin(env, "open root", error);
   std::string canonical;
   if (!WideToUtf8(JsPath(root->canonical), &canonical)) return Throw(env, "EINVAL", "root path conversion failed");
   uint64_t id = 0;
@@ -886,7 +888,8 @@ napi_value ConfigureStage(napi_env env, napi_callback_info info) {
   if (!GetString(env, args[0], &input) || !Utf8ToWide(input, &path)) return Throw(env, "EINVAL", "stage path must be UTF-8");
   if (!NativeReady()) return Throw(env, "NATIVE_ROOTED_FS_UNAVAILABLE", "Windows native APIs are unavailable");
   auto value = std::make_shared<Stage>(); DWORD error = 0;
-  if (!CanonicalRoot(path, &value->handle, &value->canonical, &value->identity, &error, true))
+  if (!CanonicalRoot(path, &value->handle, &value->canonical, &value->identity, &error,
+                     true, nullptr, true, false, nullptr, &value->ancestors))
     return ThrowWin(env, "open stage", error);
   {
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -1112,8 +1115,10 @@ std::shared_ptr<Stage> CreatePrivateStageAt(HANDLE parent, DWORD* error) {
   PACL acl = reinterpret_cast<PACL>(acl_memory.data());
   SECURITY_DESCRIPTOR descriptor{};
   bool security_ok = InitializeAcl(acl, acl_bytes, ACL_REVISION) &&
-      AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, user.data()) &&
-      AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, system) &&
+      AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                            FILE_ALL_ACCESS, user.data()) &&
+      AddAccessAllowedAceEx(acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                            FILE_ALL_ACCESS, system) &&
       InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) &&
       SetSecurityDescriptorOwner(&descriptor, user.data(), FALSE) &&
       SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) &&
@@ -1156,25 +1161,33 @@ std::shared_ptr<Stage> CreatePrivateStageAt(HANDLE parent, DWORD* error) {
   }
   return value;
 }
-std::shared_ptr<Stage> StageForVolume(HANDLE target_parent, const Identity& target_id,
-                                      bool starting_writable, DWORD* error) {
+std::shared_ptr<Stage> StageForVolume(const Root& root, const Identity& target_id, DWORD* error) {
   // Serializes provisioning; grants still race safely with the final registry
   // insertion because both additions verify disjointness under state_mutex.
   std::lock_guard<std::mutex> create_lock(stage_creation_mutex);
+  std::vector<std::shared_ptr<Stage>> existing;
   {
     std::lock_guard<std::mutex> lock(state_mutex);
-    for (const auto& item : stages) {
-      if (item->identity.file_id.VolumeSerialNumber == target_id.file_id.VolumeSerialNumber)
-        return item;
-    }
+    existing = stages;
   }
-  Handle current = Duplicate(target_parent, error);
-  if (!current) return nullptr;
-  bool writable = starting_writable;
-  for (int depth = 0; depth < 256; ++depth) {
-    Identity current_id{};
-    if (!QueryIdentity(current.h, &current_id)) { *error = GetLastError(); return nullptr; }
-    if (current_id.file_id.VolumeSerialNumber != target_id.file_id.VolumeSerialNumber) break;
+  // Prefer the latest configured stage and never reuse a deleted or replaced
+  // directory. The pathname verifier takes state_mutex while traversing, so
+  // it must run outside the registry lock.
+  for (auto item = existing.rbegin(); item != existing.rend(); ++item) {
+    DWORD verify_error = 0;
+    if ((*item)->identity.file_id.VolumeSerialNumber == target_id.file_id.VolumeSerialNumber &&
+        VerifyPinnedStagePath(**item, &verify_error)) return *item;
+  }
+  if (root.identity.file_id.VolumeSerialNumber != target_id.file_id.VolumeSerialNumber) {
+    *error = ERROR_NOT_SAME_DEVICE; return nullptr;
+  }
+  // These ancestor handles were pinned while the approved root was opened
+  // from its volume anchor. No parent pathname is resolved during staging.
+  for (size_t depth = root.ancestors.size(); depth > 0; --depth) {
+    size_t index = depth - 1;
+    const Ancestor& candidate_parent = root.ancestors[index];
+    if (candidate_parent.identity.file_id.VolumeSerialNumber != target_id.file_id.VolumeSerialNumber)
+      continue;
     std::vector<std::shared_ptr<Root>> active_roots;
     {
       std::lock_guard<std::mutex> lock(state_mutex);
@@ -1182,13 +1195,31 @@ std::shared_ptr<Stage> StageForVolume(HANDLE target_parent, const Identity& targ
     }
     bool inside_grant = false;
     for (const auto& grant : active_roots) {
-      Ancestry relation = ContainsObject(grant->handle.h, current.h);
-      if (relation == Ancestry::Unknown) { *error = ERROR_NOT_SUPPORTED; return nullptr; }
-      if (relation == Ancestry::Yes) { inside_grant = true; break; }
+      if (SameObject(grant->identity, candidate_parent.identity)) {
+        inside_grant = true; break;
+      }
+      for (size_t earlier = 0; earlier < index; ++earlier) {
+        if (SameObject(grant->identity, root.ancestors[earlier].identity)) {
+          inside_grant = true; break;
+        }
+      }
+      if (inside_grant) break;
     }
-    if (!inside_grant && writable) {
-      auto candidate = CreatePrivateStageAt(current.h, error);
+    if (!inside_grant && candidate_parent.writable) {
+      Identity pinned{};
+      if (!QueryIdentity(candidate_parent.writable.h, &pinned) ||
+          !SameObject(pinned, candidate_parent.identity) || !IsDirectory(pinned) || IsReparse(pinned)) {
+        *error = ERROR_ACCESS_DENIED; return nullptr;
+      }
+      auto candidate = CreatePrivateStageAt(candidate_parent.writable.h, error);
       if (candidate) {
+        for (size_t earlier = 0; earlier <= index; ++earlier) {
+          Ancestor retained;
+          retained.handle = Duplicate(root.ancestors[earlier].handle.h, error);
+          if (!retained.handle) { DeleteEmptyStage(candidate->handle.h); return nullptr; }
+          retained.identity = root.ancestors[earlier].identity;
+          candidate->ancestors.push_back(std::move(retained));
+        }
         std::lock_guard<std::mutex> lock(state_mutex);
         bool conflicts = false;
         for (const auto& item : roots) {
@@ -1205,18 +1236,6 @@ std::shared_ptr<Stage> StageForVolume(HANDLE target_parent, const Identity& targ
       if (*error != ERROR_ACCESS_DENIED && *error != ERROR_PRIVILEGE_NOT_HELD)
         return nullptr;
     }
-    if (IsVolumeAnchor(current.h)) break;
-    DWORD parent_error = 0;
-    Handle parent = OpenParent(current.h, &parent_error, true);
-    bool parent_writable = static_cast<bool>(parent);
-    if (!parent) parent = OpenParent(current.h, &parent_error);
-    if (!parent) { *error = ERROR_NOT_SUPPORTED; return nullptr; }
-    Identity parent_id{};
-    if (!QueryIdentity(parent.h, &parent_id)) { *error = GetLastError(); return nullptr; }
-    if (SameObject(parent_id, current_id) ||
-        parent_id.file_id.VolumeSerialNumber != target_id.file_id.VolumeSerialNumber) break;
-    current = std::move(parent);
-    writable = parent_writable;
   }
   *error = ERROR_NOT_SUPPORTED;
   return nullptr;
@@ -1252,7 +1271,7 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
   if (!parent) return ThrowWin(env, "open atomic target parent", error);
   Identity parent_id{};
   if (!QueryIdentity(parent.h, &parent_id)) return ThrowWin(env, "stat atomic target parent");
-  std::shared_ptr<Stage> private_stage = StageForVolume(parent.h, parent_id, true, &error);
+  std::shared_ptr<Stage> private_stage = StageForVolume(*root, parent_id, &error);
   if (!private_stage) return ThrowWin(env, "select private stage for target volume", error);
   std::wstring name; Handle source;
   for (int attempt = 0; attempt < 16; ++attempt) {
@@ -1359,7 +1378,7 @@ napi_value MoveToStage(napi_env env, napi_callback_info info) {
   if (!QueryIdentity(source.h, &source_id)) return ThrowWin(env, "stat rooted stage source");
   if (IsReparse(source_id) || IsStage(source_id))
     return Throw(env, "ELOOP", "stage source is a reparse point or private stage");
-  std::shared_ptr<Stage> private_stage = StageForVolume(source_parent.h, source_id, false, &error);
+  std::shared_ptr<Stage> private_stage = StageForVolume(*root, source_id, &error);
   if (!private_stage) return ThrowWin(env, "select private stage for source volume", error);
   if (!VerifyPinnedStagePath(*private_stage, &error)) return ThrowWin(env, "verify private stage directory", error);
   std::wstring name;
@@ -1402,7 +1421,7 @@ napi_value BeginQuarantine(napi_env env, napi_callback_info info) {
   if (!QueryIdentity(source.h, &source_id)) return ThrowWin(env, "stat quarantine source");
   if (IsReparse(source_id) || IsStage(source_id))
     return Throw(env, "ELOOP", "quarantine source is a reparse point or private stage");
-  auto private_stage = StageForVolume(parent.h, source_id, true, &error);
+  auto private_stage = StageForVolume(*root, source_id, &error);
   if (!private_stage) return ThrowWin(env, "select private quarantine stage", error);
   if (!VerifyPinnedStagePath(*private_stage, &error))
     return ThrowWin(env, "verify private quarantine stage", error);
@@ -1500,7 +1519,7 @@ napi_value CopyFileNoReplace(napi_env env, napi_callback_info info) {
   if (!parent) return ThrowWin(env, "open rooted copy target", error);
   Identity parent_id{};
   if (!QueryIdentity(parent.h, &parent_id)) return ThrowWin(env, "stat rooted copy target", error);
-  std::shared_ptr<Stage> private_stage = StageForVolume(parent.h, parent_id, true, &error);
+  std::shared_ptr<Stage> private_stage = StageForVolume(*root, parent_id, &error);
   if (!private_stage) return ThrowWin(env, "select private stage for target volume", error);
   if (!VerifyPinnedStagePath(*private_stage, &error)) return ThrowWin(env, "verify private stage directory", error);
   std::wstring name; Handle temporary;

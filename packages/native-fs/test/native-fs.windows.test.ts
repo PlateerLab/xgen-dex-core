@@ -3,9 +3,16 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { platform } from 'node:process';
+import { env as processEnv, platform } from 'node:process';
 import { test } from 'node:test';
 import { configureNativeFsStage, openNativeRoot, openPrivateStageSource } from '../src/index';
+
+function securityScript(script: string, target: string): string {
+  const modulePath = join(processEnv.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+  return execFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, target,
+  ], { encoding: 'utf8', env: { ...processEnv, PSModulePath: modulePath } }).trim();
+}
 
 test('Windows root and source handles stay bound across pathname moves', { skip: platform !== 'win32' }, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'dex-native-win-move-'));
@@ -45,6 +52,7 @@ test('Windows configured stage is owned by the current user with a protected pri
   const script = join(base, 'stage-security.ps1');
   await writeFile(script, `
 param([string]$Folder)
+$ErrorActionPreference = 'Stop'
 $acl = Get-Acl -LiteralPath $Folder
 $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $owner = ([System.Security.Principal.NTAccount]$acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
@@ -54,9 +62,7 @@ $trustees = @($acl.Access | ForEach-Object {
 $private = @($trustees | Where-Object { $_ -ne $current -and $_ -ne 'S-1-5-18' }).Count -eq 0
 Write-Output "$($acl.AreAccessRulesProtected)|$($owner -eq $current)|$private"
 `);
-  const actual = execFileSync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, stagePath,
-  ], { encoding: 'utf8' }).trim();
+  const actual = securityScript(script, stagePath);
   assert.equal(actual, 'True|True|True');
 });
 
@@ -125,6 +131,7 @@ test('Windows atomic replacement preserves an existing custom DACL', { skip: pla
   const aclScript = join(base, 'acl.ps1');
   await writeFile(aclScript, `
 param([string]$File)
+$ErrorActionPreference = 'Stop'
 $acl = Get-Acl -LiteralPath $File
 $owner = ([System.Security.Principal.NTAccount]$acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
 $grants = @($acl.Access | Where-Object {
@@ -132,9 +139,7 @@ $grants = @($acl.Access | Where-Object {
 } | ForEach-Object { "$( $_.FileSystemRights ):$( $_.AccessControlType ):$( $_.IsInherited )" })
 Write-Output "$owner|$($grants -join ';')"
 `);
-  const security = (): string => execFileSync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', aclScript, target,
-  ], { encoding: 'utf8' }).trim();
+  const security = (): string => securityScript(aclScript, target);
   const before = security();
   assert.match(before, /\|[^|]+/);
   root.atomicWrite('shared.txt', Buffer.from('after'), true);
@@ -163,6 +168,7 @@ test('Windows atomic replacement retains DACL inheritance from the target parent
   const aclScript = join(base, 'inheritance.ps1');
   await writeFile(aclScript, `
 param([string]$File)
+$ErrorActionPreference = 'Stop'
 $acl = Get-Acl -LiteralPath $File
 $inheritedEveryone = @($acl.Access | Where-Object {
   $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq 'S-1-1-0' -and
@@ -170,9 +176,7 @@ $inheritedEveryone = @($acl.Access | Where-Object {
 })
 Write-Output "$($acl.AreAccessRulesProtected)|$($inheritedEveryone.Count)"
 `);
-  const security = (): string => execFileSync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', aclScript, target,
-  ], { encoding: 'utf8' }).trim();
+  const security = (): string => securityScript(aclScript, target);
   const before = security();
   assert.match(before, /^False\|[1-9]\d*$/);
 

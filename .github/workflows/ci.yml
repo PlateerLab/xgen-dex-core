@@ -149,7 +149,9 @@ jobs:
         if: runner.os == 'Windows'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node apps/desktop/scripts/check-installer.mjs
+        run: |
+          node --test apps/desktop/test/installer-release.test.mjs
+          node apps/desktop/scripts/check-installer.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: dex-package-${{ matrix.name }}

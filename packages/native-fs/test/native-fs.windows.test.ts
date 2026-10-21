@@ -89,6 +89,28 @@ test('Windows source change time rejects restored-mtime mutation', { skip: platf
   assert.throws(() => source.read(0, 1), { code: 'FILE_SOURCE_CHANGED' });
 });
 
+test('Windows same-size rooted rewrite invalidates a captured source identity', { skip: platform !== 'win32' }, async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'dex-native-win-rewrite-'));
+  const rootPath = join(base, 'root');
+  const stagePath = join(base, 'stage');
+  await mkdir(rootPath);
+  await mkdir(stagePath);
+  configureNativeFsStage(stagePath);
+  await writeFile(join(rootPath, 'edited.txt'), 'first');
+  const root = openNativeRoot(rootPath);
+  t.after(async () => { root.close(); await rm(base, { recursive: true, force: true }); });
+  const beforeSource = root.openSource('edited.txt');
+  const before = beforeSource.identity();
+  beforeSource.close();
+  root.write('edited.txt', Buffer.from('other'));
+  const afterSource = root.openSource('edited.txt');
+  const after = afterSource.identity();
+  afterSource.close();
+  assert.equal(await readFile(join(rootPath, 'edited.txt'), 'utf8'), 'other');
+  assert.ok(before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs,
+    `same-size rewrite kept both timestamps (devSame=${before.dev === after.dev}, inoSame=${before.ino === after.ino}, sizeSame=${before.size === after.size}, mtimeSame=${before.mtimeNs === after.mtimeNs}, ctimeSame=${before.ctimeNs === after.ctimeNs})`);
+});
+
 test('Windows rooted copy, move, stage, and conditional atomic write use pinned objects', { skip: platform !== 'win32' }, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'dex-native-win-atomic-'));
   const rootPath = join(base, 'root');

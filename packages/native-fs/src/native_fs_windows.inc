@@ -57,6 +57,7 @@ namespace {
 using NtCreateFileFn = NTSTATUS (NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
     PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 using NtSetInformationFileFn = NTSTATUS (NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, int);
+using NtSetSecurityObjectFn = NTSTATUS (NTAPI*)(HANDLE, SECURITY_INFORMATION, PSECURITY_DESCRIPTOR);
 using RtlNtStatusToDosErrorFn = ULONG (NTAPI*)(NTSTATUS);
 using BCryptGenRandomFn = NTSTATUS (WINAPI*)(void*, unsigned char*, ULONG, ULONG);
 constexpr ULONG kBcryptUseSystemPreferredRng = 0x00000002;
@@ -66,6 +67,7 @@ constexpr NTSTATUS kStatusPending = 0x00000103;
 
 NtCreateFileFn nt_create = nullptr;
 NtSetInformationFileFn nt_set_info = nullptr;
+NtSetSecurityObjectFn nt_set_security = nullptr;
 RtlNtStatusToDosErrorFn nt_to_dos = nullptr;
 BCryptGenRandomFn bcrypt_random = nullptr;
 
@@ -76,6 +78,7 @@ bool NativeReady() {
   if (!ntdll || !bcrypt) return false;
   nt_create = reinterpret_cast<NtCreateFileFn>(GetProcAddress(ntdll, "NtCreateFile"));
   nt_set_info = reinterpret_cast<NtSetInformationFileFn>(GetProcAddress(ntdll, "NtSetInformationFile"));
+  nt_set_security = reinterpret_cast<NtSetSecurityObjectFn>(GetProcAddress(ntdll, "NtSetSecurityObject"));
   nt_to_dos = reinterpret_cast<RtlNtStatusToDosErrorFn>(GetProcAddress(ntdll, "RtlNtStatusToDosError"));
   bcrypt_random = reinterpret_cast<BCryptGenRandomFn>(GetProcAddress(bcrypt, "BCryptGenRandom"));
   return nt_create && nt_set_info && nt_to_dos && bcrypt_random;
@@ -1071,15 +1074,32 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
       LocalFree(target_descriptor); *error = result; return false;
     }
   }
-  // The stage file is already unprotected. Explicitly requesting UNPROTECTED
-  // would recompute inherited ACEs from the private stage parent instead of
-  // preserving the target's concrete ACEs and its future inheritance state.
-  SECURITY_INFORMATION inheritance = (target_control & SE_DACL_PROTECTED)
-      ? PROTECTED_DACL_SECURITY_INFORMATION : 0;
-  result = SetSecurityInfo(staged, SE_FILE_OBJECT,
-      DACL_SECURITY_INFORMATION | inheritance, nullptr, nullptr, target_dacl, nullptr);
+  // SetSecurityInfo on an unprotected stage file retains/recomputes ACEs
+  // inherited from the private stage directory. First protect that temporary
+  // DACL, then apply the complete target descriptor with NtSetSecurityObject.
+  // For a protected current DACL and an unprotected input DACL, Windows'
+  // SeSetSecurityDescriptorInfoEx rules copy the input inherited ACEs as-is.
+  // The exact readback below is mandatory before the staged file is visible.
+  PACL stage_dacl = nullptr;
+  PSECURITY_DESCRIPTOR stage_dacl_descriptor = nullptr;
+  result = GetSecurityInfo(staged, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                           nullptr, nullptr, &stage_dacl, nullptr, &stage_dacl_descriptor);
   if (result != ERROR_SUCCESS) {
     LocalFree(target_descriptor); *error = result; return false;
+  }
+  result = SetSecurityInfo(staged, SE_FILE_OBJECT,
+      DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+      nullptr, nullptr, stage_dacl, nullptr);
+  LocalFree(stage_dacl_descriptor);
+  if (result != ERROR_SUCCESS) {
+    LocalFree(target_descriptor); *error = result; return false;
+  }
+  if (!nt_set_security) {
+    LocalFree(target_descriptor); *error = ERROR_NOT_SUPPORTED; return false;
+  }
+  NTSTATUS status = nt_set_security(staged, DACL_SECURITY_INFORMATION, target_descriptor);
+  if (status != kStatusSuccess) {
+    LocalFree(target_descriptor); *error = DosError(status); return false;
   }
   PSID final_owner = nullptr;
   PACL final_dacl = nullptr;

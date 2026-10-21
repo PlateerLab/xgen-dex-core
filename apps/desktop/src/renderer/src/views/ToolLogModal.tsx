@@ -86,6 +86,7 @@ export const ToolLogModal: React.FC<Props> = ({ events, onClose, initialOpen }) 
       <div
         className="toollog"
         role="dialog"
+        aria-modal="true"
         aria-label="도구 실행 기록"
         onMouseDown={(e) => e.stopPropagation()}
       >

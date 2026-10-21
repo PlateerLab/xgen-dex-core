@@ -275,7 +275,14 @@ test('데스크톱 창 안의 앱은 그 창을 다른 페이지로 옮기지 �
 test('창 안의 웹 콘텐츠가 여는 주소는 웹 주소만 바깥으로 나간다', () => {
   // shell.openExternal 은 file:// · smb:// · 앱 프로토콜도 OS 에 넘긴다(윈도에서 file:///…exe 는 실행된다).
   const src = raw(MAIN)
-  for (const w of ['mainWindow', 'overlayWindow', 'overlayChip', 'quickChatWindow']) {
+  assert.ok(src.includes("import { installModalOverlay } from './modal-overlay'"))
+  assert.ok(src.includes('installModalOverlay(mainWindow, openExternalSafe)'))
+  const modal = read('src/main/modal-overlay.ts')
+  assert.ok(modal.includes('host.webContents.setWindowOpenHandler('))
+  assert.ok(modal.includes("new URL('modal.html', host.webContents.getURL()).href"))
+  assert.match(modal, /if \(url !== modalUrl \|\| frameName !== 'xgen-modal-overlay'\) \{\s*openExternal\(url\);\s*return \{ action: 'deny' \};\s*\}/)
+  assert.match(modal, /overlay\.webContents\.setWindowOpenHandler\(\(\{ url: target \}\) => \{\s*openExternal\(target\);\s*return \{ action: 'deny' \};/)
+  for (const w of ['overlayWindow', 'overlayChip', 'quickChatWindow']) {
     const at = src.indexOf(`${w}.webContents.setWindowOpenHandler(`)
     assert.ok(at > 0, `${w} 의 창 열기 핸들러가 사라졌다`)
     const body = src.slice(at, at + 160)

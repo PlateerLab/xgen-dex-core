@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
-const { mkdtempSync } = require('node:fs');
+const { mkdtempSync, readFileSync, writeFileSync } = require('node:fs');
 const { buildSync } = require('esbuild');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -8,6 +8,7 @@ const { app, BrowserWindow } = require('electron');
 const { BrowserRuntime } = require('../src/main/browser-runtime.ts');
 const { executeBrowserStep } = require('../src/main/browser-step.ts');
 const { allowsDeciderAction } = require('../src/main/fast-act.ts');
+const { installModalOverlay } = require('../src/main/modal-overlay.ts');
 
 app.setPath('userData', mkdtempSync(join(tmpdir(), 'dex-popup-smoke-')));
 app.commandLine.appendSwitch('disable-gpu');
@@ -27,6 +28,8 @@ async function main() {
   const server = createServer((request, response) => {
     response.setHeader('content-type', 'text/html; charset=utf-8');
     if (request.url === '/host') return response.end(hostHtml);
+    if (request.url === '/modal.html')
+      return response.end('<!doctype html><body><script>window.opener.postMessage("xgen-modal-ready", "*")</script>');
     if (request.url === '/surface') {
       let body = '';
       request.on('data', chunk => { body += chunk; });
@@ -63,13 +66,14 @@ async function main() {
   const host = new BrowserWindow({
     show: false,
     webPreferences: {
-      sandbox: true,
+      sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
     },
   });
   runtime.setPopupHostWindow(host);
+  installModalOverlay(host, () => {});
   try {
     let guest;
     host.webContents.once('did-attach-webview', (_event, contents) => {
@@ -77,7 +81,7 @@ async function main() {
       runtime.registerSharedGuest(guest);
       runtime.bindSharedPage(parent.pageId, guest.id);
     });
-    hostHtml = `<webview allowpopups partition="${runtime.partition()}" src="${origin}"></webview><div id="popup-ui"></div>`;
+    hostHtml = `<style>${readFileSync(join(__dirname, '../src/renderer/src/styles.css'), 'utf8')}</style><webview allowpopups webpreferences="sandbox=yes,contextIsolation=yes,nodeIntegration=no" partition="${runtime.partition()}" src="${origin}"></webview><div id="popup-ui"></div>`;
     await host.loadURL(`${origin}/host`);
     await waitFor(() => guest && !guest.isLoading() && guest.getURL() === `${origin}/`);
 
@@ -134,8 +138,25 @@ async function main() {
         import { createRoot } from 'react-dom/client';
         window.xgen = { browser: { popupSurface: (pageId, rect) =>
           fetch('/surface', {method: 'POST', body: JSON.stringify({pageId, rect})}) } };
-        import('./src/renderer/src/views/BrowserSurface').then(({BrowserSurface}) => {
+        Promise.all([
+          import('./src/renderer/src/views/BrowserSurface'),
+          import('./src/renderer/src/views/ToolLogModal'),
+          import('./src/renderer/src/views/ModalPortal'),
+          import('./src/renderer/src/views/use-modal-dismiss'),
+          import('./src/renderer/src/views/Selector'),
+        ]).then(([{BrowserSurface}, {ToolLogModal}, {ModalPortal}, {useModalDismiss}, {Selector}]) => {
           const root = createRoot(document.getElementById('popup-ui')), noop = () => {};
+          const modalRoot = createRoot(document.body.appendChild(document.createElement('div')));
+          const close = () => modalRoot.render(null);
+          const SettingsFixture = () => {
+            useModalDismiss(close);
+            return <ModalPortal onClose={close}><div className="modal-backdrop"><div className="modal">
+              <Selector value="one" options={[{value:'one',label:'첫 번째'},{value:'two',label:'두 번째'}]}
+                onChange={value => window.selectedSetting = value} />
+            </div></div></ModalPortal>;
+          };
+          window.renderModal = settings => modalRoot.render(settings ? <SettingsFixture /> :
+            <ModalPortal onClose={close}><ToolLogModal events={[]} onClose={close} /></ModalPortal>);
           window.renderPopup = page => root.render(<BrowserSurface pages={[page]}
             rects={{[page.pageId]: {left:0,top:50,width:600,height:400}}} dragging={false} selection={null}
             onFocusPage={noop} onSelectionComplete={noop} onSelectionCancel={noop} onSelectionError={noop} />);
@@ -199,11 +220,55 @@ async function main() {
     await waitFor(() => runtime.list('smoke').some((page) => page.mode === 'popup'));
     const second = runtime.list('smoke').find((page) => page.mode === 'popup');
     const secondContents = (await runtime.resolvePage('smoke', second.pageId, false)).contents;
+    const modalPopupRuntime = await runtime.resolvePage('smoke', second.pageId, false);
+    await secondContents.executeJavaScript('document.body.insertAdjacentHTML("beforeend", \'<input id="draft" value="작성 중인 내용">\')');
+    await host.webContents.executeJavaScript(`window.renderPopup(${JSON.stringify(second)})`);
+    await waitFor(() => modalPopupRuntime.view.getVisible());
+    await host.webContents.executeJavaScript('window.renderModal(false)');
+    await waitFor(() => BrowserWindow.getAllWindows().length === 2);
+    let overlay = BrowserWindow.getAllWindows().find(window => window !== host);
+    await waitFor(async () => overlay.webContents.executeJavaScript('!!document.querySelector(".toollog")'));
+    assert.equal(overlay.getParentWindow(), host);
+    assert.equal(overlay.isVisible(), false, 'hidden host must not expose a modal window');
+    assert.equal(modalPopupRuntime.view.getVisible(), true, 'modal must keep the popup visible');
+    assert.deepEqual(modalPopupRuntime.view.getBounds(), { x: 0, y: 50, width: 600, height: 400 });
+    assert.equal(overlay.webContents.getLastWebPreferences().preload, undefined);
+    assert.equal(overlay.webContents.getLastWebPreferences().sandbox, true);
+    host.showInactive();
+    await waitFor(() => overlay.isVisible());
+    const image = await overlay.webContents.capturePage();
+    writeFileSync(join(app.getPath('userData'), 'modal-overlay.png'), image.toPNG());
+    assert.ok(image.toBitmap()[3] < 255, 'modal background must remain translucent');
+    host.setContentSize(820, 620);
+    await waitFor(() => overlay.getBounds().width === host.getContentBounds().width);
+    host.hide();
+    await waitFor(() => !overlay.isVisible());
+    await overlay.webContents.executeJavaScript('document.querySelector(\'[aria-label="닫기"]\').click()');
+    await waitFor(() => BrowserWindow.getAllWindows().length === 1);
+    await host.webContents.executeJavaScript('window.renderModal(true)');
+    await waitFor(() => BrowserWindow.getAllWindows().length === 2);
+    overlay = BrowserWindow.getAllWindows().find(window => window !== host);
+    await waitFor(async () => overlay.webContents.executeJavaScript('!!document.querySelector(".selector-trigger")'));
+    await overlay.webContents.executeJavaScript('document.querySelector(".selector-trigger").click()');
+    await waitFor(async () => overlay.webContents.executeJavaScript('!!document.querySelector(\'[role="option"]\')'));
+    await overlay.webContents.executeJavaScript('document.querySelectorAll(\'[role="option"]\')[1].click()');
+    assert.equal(await host.webContents.executeJavaScript('window.selectedSetting'), 'two');
+    await overlay.webContents.executeJavaScript('document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape",bubbles:true,cancelable:true}))');
+    await waitFor(() => BrowserWindow.getAllWindows().length === 1);
+    assert.equal(modalPopupRuntime.view.getVisible(), true);
+    await host.webContents.executeJavaScript('window.renderModal(false)');
+    await waitFor(() => BrowserWindow.getAllWindows().length === 2);
+    overlay = BrowserWindow.getAllWindows().find(window => window !== host);
+    await waitFor(async () => overlay.webContents.executeJavaScript('!!document.querySelector(".toollog")'));
+    overlay.close();
+    await waitFor(() => BrowserWindow.getAllWindows().length === 1);
+    assert.equal(runtime.state().activeByWorkflow.smoke, second.pageId);
+    assert.equal(await secondContents.executeJavaScript('document.querySelector("#draft").value'), '작성 중인 내용');
     await runtime.close(parent.pageId);
     await waitFor(() => secondContents.isDestroyed());
     assert.equal(runtime.list('smoke').length, 0);
     process.stdout.write(
-      'browser popup tab smoke ok: exact fill, checkbox readback, unchanged step rejection, verified parent callback, modal stacking, nested dialogs, hidden dialogs, popup restoration, single OS window, embedded view, opener, postMessage, close, session, sandbox, agent control, parent cleanup\n',
+      'browser popup tab smoke ok: exact fill, checkbox readback, unchanged step rejection, verified parent callback, native modal layering without hiding popup, transparent backdrop, modal close and Escape, settings selector, resize and host visibility, modal stacking, nested dialogs, hidden dialogs, popup restoration, single OS window, embedded view, opener, postMessage, close, session, sandbox, agent control, parent cleanup\n',
     );
   } finally {
     await runtime.closeAll();

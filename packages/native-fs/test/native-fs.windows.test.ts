@@ -28,12 +28,17 @@ test('Windows root and source handles stay bound across pathname moves', { skip:
   const nodeStat = await stat(rootPath, { bigint: true });
   assert.equal(root.dev, nodeStat.dev.toString());
   assert.equal(root.ino, nodeStat.ino.toString());
-  const source = root.openSource('source.txt');
-  t.after(async () => { source.close(); root.close(); await rm(base, { recursive: true, force: true }); });
+  let source: ReturnType<typeof root.openSource> | undefined = root.openSource('source.txt');
+  t.after(async () => { source?.close(); root.close(); await rm(base, { recursive: true, force: true }); });
 
+  await assert.rejects(rename(rootPath, movedPath), (error: unknown) =>
+    ['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? ''));
+  source.close();
+  source = undefined;
   await rename(rootPath, movedPath);
   await mkdir(rootPath);
   await writeFile(join(rootPath, 'source.txt'), 'outside');
+  source = root.openSource('source.txt');
   assert.equal(Buffer.from(source.read(0, source.size)).toString(), 'inside');
   root.write('created.txt', Buffer.from('created'));
   assert.equal(await readFile(join(movedPath, 'created.txt'), 'utf8'), 'created');

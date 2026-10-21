@@ -213,7 +213,7 @@ test('conditional replace, native copy, rename and quarantine stay rooted', asyn
   assert.throws(() => value.root.renameNoReplace('source.bin', 'nested/renamed.bin'), { code: 'EEXIST' });
 
   const quarantined = value.root.moveToStage('nested');
-  assert.equal(quarantined.startsWith(`${value.stagePath}/`), true);
+  assert.equal(dirname(quarantined), value.stagePath);
   await assert.rejects(readFile(join(value.rootPath, 'nested', 'renamed.bin')), { code: 'ENOENT' });
   assert.equal((await readFile(join(quarantined, 'renamed.bin'))).byteLength, 2 * 1024 * 1024);
 });

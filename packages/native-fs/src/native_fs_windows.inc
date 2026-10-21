@@ -972,6 +972,21 @@ napi_value WriteExpected(napi_env env, napi_callback_info info) {
 napi_value SetMode(napi_env env, napi_callback_info) {
   return Throw(env, "ENOTSUP", "POSIX file mode is unsupported on Windows");
 }
+bool SameAclEntries(PACL left, PACL right) {
+  if (!left || !right) return left == right;
+  if (!IsValidAcl(left) || !IsValidAcl(right) || left->AceCount != right->AceCount)
+    return false;
+  for (DWORD index = 0; index < left->AceCount; ++index) {
+    void* left_ace = nullptr;
+    void* right_ace = nullptr;
+    if (!GetAce(left, index, &left_ace) || !GetAce(right, index, &right_ace)) return false;
+    auto left_header = static_cast<const ACE_HEADER*>(left_ace);
+    auto right_header = static_cast<const ACE_HEADER*>(right_ace);
+    if (left_header->AceSize != right_header->AceSize ||
+        std::memcmp(left_ace, right_ace, left_header->AceSize) != 0) return false;
+  }
+  return true;
+}
 // Preserve the target file's owner, DACL, and inheritance controls before the
 // staged file becomes visible. A same-volume rename keeps its descriptor.
 bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error) {
@@ -1006,8 +1021,11 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error) {
       LocalFree(target_descriptor); *error = result; return false;
     }
   }
+  // The stage file is already unprotected. Explicitly requesting UNPROTECTED
+  // would recompute inherited ACEs from the private stage parent instead of
+  // preserving the target's concrete ACEs and its future inheritance state.
   SECURITY_INFORMATION inheritance = (target_control & SE_DACL_PROTECTED)
-      ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION;
+      ? PROTECTED_DACL_SECURITY_INFORMATION : 0;
   result = SetSecurityInfo(staged, SE_FILE_OBJECT,
       DACL_SECURITY_INFORMATION | inheritance, nullptr, nullptr, target_dacl, nullptr);
   if (result != ERROR_SUCCESS) {
@@ -1027,16 +1045,17 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error) {
   bool control_ok = GetSecurityDescriptorControl(final_descriptor, &final_control, &final_revision);
   constexpr SECURITY_DESCRIPTOR_CONTROL relevant_control =
       SE_DACL_PRESENT | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED;
-  bool dacl_equal = (!target_dacl && !final_dacl) ||
-      (target_dacl && final_dacl && target_dacl->AclSize == final_dacl->AclSize &&
-       std::memcmp(target_dacl, final_dacl, target_dacl->AclSize) == 0);
-  bool same = control_ok && final_owner && EqualSid(target_owner, final_owner) &&
-      dacl_equal && (target_control & relevant_control) == (final_control & relevant_control);
+  bool dacl_equal = SameAclEntries(target_dacl, final_dacl);
+  bool owner_equal = final_owner && EqualSid(target_owner, final_owner);
+  bool inheritance_equal = (target_control & relevant_control) ==
+      (final_control & relevant_control);
+  bool same = control_ok && owner_equal && dacl_equal && inheritance_equal;
   if (!control_ok) *error = GetLastError();
   LocalFree(final_descriptor);
   LocalFree(target_descriptor);
   if (!same) {
-    if (control_ok) *error = ERROR_NOT_SUPPORTED;
+    if (control_ok) *error = !owner_equal ? ERROR_INVALID_OWNER :
+        !dacl_equal ? ERROR_INVALID_ACL : ERROR_NOT_SUPPORTED;
     return false;
   }
   return true;

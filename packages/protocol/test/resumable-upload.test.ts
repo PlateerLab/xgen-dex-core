@@ -137,18 +137,23 @@ test('multipart send keeps field/file order, filenames and reports byte progress
   form.append('file', file);
   form.append('user_id', '7');
   const progress: number[] = [];
-  const res = await up.send({ path: '/api/retrieval/documents/upload-sse?x=1' }, { parts: partsFromFormData(form) },
-    { headers: { 'X-Approval-Line': '{"line_id":1}', 'content-type': 'multipart/form-data' }, onProgress: (p) => progress.push(p.loaded) });
+  const res = await up.send({ path: '/api/retrieval/documents/upload-sse?x=1&workspace_transfer=1' }, { parts: partsFromFormData(form) },
+    { headers: {
+      'X-Approval-Line': '{"line_id":1}',
+      'X-XGEN-Workspace-Transfer': 'opaque-token',
+      'content-type': 'multipart/form-data',
+    }, onProgress: (p) => progress.push(p.loaded) });
   assert.equal(res.status, 200);
   const j = await res.json();
   assert.equal(j.path, '/api/retrieval/documents/upload-sse');
-  assert.equal(j.query, 'x=1');
+  assert.equal(j.query, 'x=1&workspace_transfer=1');
   assert.deepEqual(j.parts.map((p: string[]) => p[0]), ['collection_name', 'file', 'user_id']);
   assert.equal(j.parts[1][1], '보고서 "최종".pdf');
   assert.equal(j.parts[1][2], createHash('sha256').update(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])).digest('hex'));
   assert.equal(progress.at(-1), 10);
   const d = gw.dispatched[0] as { headers: Record<string, string> };
   assert.equal(d.headers['x-approval-line'], '{"line_id":1}', 'original headers ride along');
+  assert.equal(d.headers['x-xgen-workspace-transfer'], 'opaque-token', 'workspace transfer header rides the final dispatch');
   assert.equal(d.headers['content-type'], 'application/json', 'no duplicated multipart content-type');
   assert.equal(d.headers['authorization'], 'Bearer t');
 });

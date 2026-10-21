@@ -20,6 +20,7 @@
  * (grace). Reconnect uses exponential backoff; status emits are de-duplicated.
  */
 import WebSocket from 'ws';
+import { WORKSPACE_TRANSFER_FEATURE } from '@dex/protocol';
 import { LocalDeadlineError, localDeadlineMs } from '@dex/protocol/connector-deadline';
 import { getMcpManager, type McpServerAdvert } from './mcp-manager';
 import {
@@ -471,6 +472,11 @@ export class McpBridge {
         }));
       tools.unshift(...builtins);
       if (this.ws?.readyState === WebSocket.OPEN) {
+        // A hello starts a fresh protocol generation even on the same socket.
+        // Stop work tied to the previous generation before advertising it away.
+        this.abortInflight(this.ws);
+        this.protocolReady = false;
+        this.connectionGeneration = null;
         const catalogId = `${Date.now()}-${++this.catalogSeq}`;
         this.pendingCatalogId = catalogId;
         this.catalogSynced = false;
@@ -479,6 +485,7 @@ export class McpBridge {
           JSON.stringify({
             type: 'hello',
             catalog_id: catalogId,
+            features: [WORKSPACE_TRANSFER_FEATURE],
             tools,
             // 멀티 디바이스 — 같은 계정의 데스크톱/CLI/VSCode/모바일이 공존한다.
             ...(this.deviceId
@@ -612,7 +619,15 @@ export class McpBridge {
         terminal: false,
       };
       this.inflight.set(requestKey, call);
-      const context = { ...localToolCallContext(msg.context), signal: controller.signal };
+      const context = {
+        ...localToolCallContext(msg.context),
+        deviceId: this.deviceId || 'legacy',
+        requestId: requestKey,
+        requestNonce: nonce,
+        connectionGeneration: generation,
+        protocol: 2 as const,
+        signal: controller.signal,
+      };
       const startedAt = Date.now();
       appendMcpRuntimeLog({
         kind: 'call',
@@ -663,7 +678,7 @@ export class McpBridge {
         this.protocolReady &&
         this.connectionGeneration === generation;
       call.terminal = true;
-      this.inflight.delete(requestKey);
+      if (current === call) this.inflight.delete(requestKey);
       appendMcpRuntimeLog({
         kind: 'result',
         message: payload.ok

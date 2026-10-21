@@ -293,10 +293,19 @@ export default function App(): React.ReactElement {
           fs: folderFs,
           interactionId: context.interactionId,
           signal,
+          transferContext: {
+            workflowId: context.workflowId,
+            interactionId: context.interactionId,
+            deviceId: context.device_id,
+            requestId: context.request_id,
+            requestNonce: context.request_nonce,
+            connectionGeneration: context.connection_generation,
+            protocol: context.protocol,
+          },
           ...(context.remote ? { remoteFrom: context.originName ?? '' } : {}),
           // 복사 도구의 길 — 서버가 보증한 이 호출의 에이전트·대화로 묶는다.
           ...(context.workflowId && context.interactionId
-            ? { workspace: mobileWorkspaceTransfer(client, context.workflowId, context.interactionId) }
+            ? { workspace: mobileWorkspaceTransfer(client) }
             : {}),
         });
       },

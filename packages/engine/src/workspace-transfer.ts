@@ -10,22 +10,27 @@ import type { WorkspaceTransfer } from './local-tools';
 
 export function clientWorkspaceTransfer(client: () => XgenClient): WorkspaceTransfer {
   return {
-    async upload({ workflowId, interactionId, file, name, relDir, mimeType, signal }) {
+    async upload({ transfer, file, name, relDir, mimeType, signal }) {
       const res = await client().agentData.workspaceUpload(
-        workflowId,
+        transfer.workflow_id,
         file,
         name,
         mimeType,
-        interactionId,
+        transfer.interaction_id,
         `dex-copy-${randomUUID()}`,
-        { relDir, replace: true, signal },
+        { relDir, replace: true, signal, transfer },
       );
       if (res.status === 'pending_approval') throw new Error('업로드가 승인 대기 중입니다.');
       if (!res.workspace_path) throw new Error('작업 공간 경로를 받지 못했습니다.');
       return { path: res.workspace_path, size: res.size ?? file.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) };
     },
-    async download({ url, token, signal }) {
-      return (await client().chatFiles.artifactBytes(url, token, { signal, maxBytes: 100 * 1024 * 1024 })).bytes;
+    async download({ url, token, transfer, signal }) {
+      if (token !== transfer.token) throw new Error('WORKSPACE_TRANSFER_CAPABILITY_REQUIRED');
+      return (await client().chatFiles.artifactBytes(url, token, {
+        signal,
+        maxBytes: 100 * 1024 * 1024,
+        workspaceTransferToken: transfer.token,
+      })).bytes;
     },
   };
 }

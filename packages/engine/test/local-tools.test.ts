@@ -66,6 +66,26 @@ async function folder(prefix = 'xgen-lt-'): Promise<string> {
 }
 
 const inChat = (interactionId: string) => ({ interactionId });
+const transferContext = {
+  workflowId: 'wf-1',
+  interactionId: 'c',
+  deviceId: 'device-1',
+  requestId: 'request-1',
+  requestNonce: 'nonce-1',
+  connectionGeneration: 7,
+  protocol: 2 as const,
+};
+const transferArg = (direction: 'to_workspace' | 'from_workspace', token = 'transfer-token') => ({
+  token,
+  direction,
+  workflow_id: transferContext.workflowId,
+  interaction_id: transferContext.interactionId,
+  device_id: transferContext.deviceId,
+  request_id: transferContext.requestId,
+  request_nonce: transferContext.requestNonce,
+  connection_generation: transferContext.connectionGeneration,
+  protocol: 2 as const,
+});
 
 test('MCP 호출 컨텍스트는 도구 호출 시점의 workflow 식별자를 정규화한다', () => {
   assert.deepEqual(
@@ -185,7 +205,14 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
     upload: async (input) => {
       // 파일은 디스크를 범위로 읽는 소스로 온다(통째로 읽지 않는다).
       const text = new TextDecoder().decode(await input.file.read(0, input.file.size));
-      uploads.push({ name: input.name, relDir: input.relDir, size: input.file.size, wf: input.workflowId, conv: input.interactionId, text });
+      uploads.push({
+        name: input.name,
+        relDir: input.relDir,
+        size: input.file.size,
+        wf: input.transfer.workflow_id,
+        conv: input.transfer.interaction_id,
+        text,
+      });
       const rel = [input.relDir, input.name].filter(Boolean).join('/');
       return { path: `uploads/users_1/c/${rel}`, size: input.file.size, sha256: 'h' };
     },
@@ -193,8 +220,8 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   });
   const r = await p.callTool(
     COPY_TO_WORKSPACE_TOOL,
-    { paths: ['a.docx', join(dir, 'docs'), '/etc/hostname'] },
-    { interactionId: 'c', workflowId: 'wf-1' },
+    { paths: ['a.docx', join(dir, 'docs'), '/etc/hostname'], _workspace_transfer: transferArg('to_workspace') },
+    transferContext,
   );
   assert.equal(r.isError, undefined);
   assert.deepEqual(
@@ -207,9 +234,11 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   );
   assert.match(r.content[0].text, /Skipped 1:\n- \/etc\/hostname: \[PATH_DOMAIN_MISMATCH\]/);
   await assert.rejects(
-    () => p.callTool(COPY_TO_WORKSPACE_TOOL, { paths: ['a.docx'] }, inChat('c')),
-    /어느 대화의 작업 공간/,
-    '호출 문맥에 에이전트가 없으면 옮기지 않는다',
+    () => p.callTool(COPY_TO_WORKSPACE_TOOL, {
+      paths: ['a.docx'], _workspace_transfer: transferArg('to_workspace'),
+    }, inChat('c')),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+    '예약 인자와 실제 frame 문맥이 모두 맞아야 옮긴다',
   );
 });
 
@@ -224,22 +253,66 @@ test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 쓰고, 있는 
       return new TextEncoder().encode('REPORT');
     },
   });
-  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 'tok', name: 'report.docx' };
-  const saved = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'out/report.docx', path: dir, download }, inChat('c'));
+  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 'transfer-token', name: 'report.docx' };
+  const fromArgs = { download, _workspace_transfer: transferArg('from_workspace') };
+  const saved = await p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    source: 'out/report.docx', path: dir, ...fromArgs,
+  }, transferContext);
   assert.equal(saved.isError, undefined);
   assert.equal(await readFile(join(dir, 'report.docx'), 'utf8'), 'REPORT');
-  assert.deepEqual(asked, [{ url: download.url, token: 'tok', name: 'report.docx' }]);
-  const again = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: join(dir, 'report.docx'), download }, inChat('c'));
+  assert.deepEqual(asked, [{
+    url: download.url, token: 'transfer-token', transfer: transferArg('from_workspace'),
+  }]);
+  const again = await p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    source: 'x', path: join(dir, 'report.docx'), ...fromArgs,
+  }, transferContext);
   assert.equal(again.isError, true);
-  const nested = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: 'new/dir/', download }, inChat('c'));
+  const nested = await p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    source: 'x', path: 'new/dir/', ...fromArgs,
+  }, transferContext);
   assert.equal(nested.isError, undefined);
   assert.equal(await readFile(join(dir, 'new', 'dir', 'report.docx'), 'utf8'), 'REPORT');
-  const old = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: dir }, inChat('c'));
-  assert.equal(old.isError, true, '서버가 받을 거리를 싣지 않았다(옛 서버)');
   await assert.rejects(
-    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: '/tmp/out.docx', download }, inChat('c')),
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: dir }, transferContext),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
+  await assert.rejects(
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+      source: 'x', path: '/tmp/out.docx', ...fromArgs,
+    }, transferContext),
     /PATH_DOMAIN_MISMATCH/,
   );
+});
+
+test('작업 공간 복사는 reserved capability와 실제 MCP frame이 다르면 전송 전에 거부한다', async () => {
+  const dir = await folder();
+  await writeFile(join(dir, 'a.txt'), 'A');
+  const { p } = provider({ c: [dir] });
+  let transfers = 0;
+  p.configureWorkspaceTransfer({
+    upload: async () => { transfers++; return { path: 'unexpected', size: 1 }; },
+    download: async () => { transfers++; return new Uint8Array(); },
+  });
+  await assert.rejects(
+    () => p.callTool(COPY_TO_WORKSPACE_TOOL, {
+      paths: ['a.txt'],
+      _workspace_transfer: { ...transferArg('to_workspace'), request_nonce: 'forged' },
+    }, transferContext),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
+  await assert.rejects(
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+      path: dir,
+      download: {
+        url: '/api/agentflow/files/artifacts/abc/download',
+        token: 'different-token',
+        name: 'a.txt',
+      },
+      _workspace_transfer: transferArg('from_workspace'),
+    }, transferContext),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
+  assert.equal(transfers, 0);
 });
 
 test('ListDir 은 수정 시각(기기 현지 시각)을 함께 보여 준다', async () => {

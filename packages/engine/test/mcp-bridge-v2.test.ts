@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import WebSocket from 'ws';
+import { WORKSPACE_TRANSFER_FEATURE } from '@dex/protocol';
 import { getMcpBridge } from '../src/mcp-bridge';
 import { getMcpManager } from '../src/mcp-manager';
+import { getLocalToolProvider, LOCAL_SERVER } from '../src/local-tools';
 
 type BridgeInternals = {
   ws: WebSocket;
   pendingCatalogId: string;
   protocolReady: boolean;
   connectionGeneration: number | null;
+  deviceId: string;
   onMessage(text: string, from: WebSocket): Promise<void>;
   inflight: Map<string, unknown>;
 };
@@ -117,4 +120,124 @@ test('old socket completion is never forwarded to a replacement socket', async (
   assert.equal(replacement.sent.length, 0);
   (manager as unknown as { callTool: typeof manager.callTool }).callTool = originalCall;
   bridge.stop();
+});
+
+test('fresh hello advertises workspace transfer and aborts the previous generation', async () => {
+  const bridge = getMcpBridge();
+  bridge.stop();
+  const internal = bridge as unknown as BridgeInternals;
+  const ws = socket();
+  internal.ws = ws;
+  internal.protocolReady = true;
+  internal.connectionGeneration = 11;
+
+  const manager = getMcpManager();
+  const originalCall = manager.callTool.bind(manager);
+  const finishes: Array<(value: unknown) => void> = [];
+  const signals: Array<AbortSignal | undefined> = [];
+  (manager as unknown as { callTool: typeof manager.callTool }).callTool = async (
+    _server,
+    _tool,
+    _args,
+    nextSignal,
+  ) => {
+    signals.push(nextSignal);
+    return new Promise((resolve) => { finishes.push(resolve); });
+  };
+  try {
+    const running = internal.onMessage(JSON.stringify({
+      type: 'mcp_call', request_id: 'before-hello', server: 'fake', tool: 'slow', args: {},
+      protocol_version: 2, connection_generation: 11, request_nonce: 'nonce-before',
+    }), ws);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await bridge.refreshCatalog();
+    assert.equal(signals[0]?.aborted, true, 'fresh hello must stop calls from the previous generation');
+    assert.equal(internal.protocolReady, false);
+    assert.equal(internal.connectionGeneration, null);
+    const hello = JSON.parse(ws.sent.at(-1) ?? '{}') as { type?: string; features?: string[] };
+    assert.equal(hello.type, 'hello');
+    assert.deepEqual(hello.features, [WORKSPACE_TRANSFER_FEATURE]);
+
+    await internal.onMessage(JSON.stringify({
+      type: 'ready', catalog_id: internal.pendingCatalogId, tool_count: 1,
+      protocol_version: 2, connection_generation: 12,
+    }), ws);
+    const replacement = internal.onMessage(JSON.stringify({
+      type: 'mcp_call', request_id: 'before-hello', server: 'fake', tool: 'slow', args: {},
+      protocol_version: 2, connection_generation: 12, request_nonce: 'nonce-after',
+    }), ws);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finishes.length, 2);
+
+    finishes[0]({ value: 'stale' });
+    await running;
+    assert.equal(ws.sent.some((frame) => frame.includes('stale')), false);
+    assert.equal(internal.inflight.has('before-hello'), true, 'stale callback must not delete a reused request id');
+    finishes[1]({ value: 'fresh' });
+    await replacement;
+    assert.equal(ws.sent.some((frame) => frame.includes('fresh')), true);
+  } finally {
+    (manager as unknown as { callTool: typeof manager.callTool }).callTool = originalCall;
+    bridge.stop();
+  }
+});
+
+test('local dispatch receives trusted frame correlation for transfer validation', async () => {
+  const bridge = getMcpBridge();
+  bridge.stop();
+  const internal = bridge as unknown as BridgeInternals;
+  const ws = socket();
+  internal.ws = ws;
+  internal.protocolReady = true;
+  internal.connectionGeneration = 12;
+  internal.deviceId = 'desktop-device';
+
+  const provider = getLocalToolProvider();
+  const originalCall = provider.callTool.bind(provider);
+  let captured: Parameters<typeof provider.callTool>[2];
+  (provider as unknown as { callTool: typeof provider.callTool }).callTool = async (
+    _tool,
+    _args,
+    context,
+  ) => {
+    captured = context;
+    return { content: [{ type: 'text', text: 'ok' }] };
+  };
+  try {
+    await internal.onMessage(JSON.stringify({
+      type: 'mcp_call',
+      request_id: 'trusted-request',
+      request_nonce: 'trusted-nonce',
+      protocol_version: 2,
+      connection_generation: 12,
+      server: LOCAL_SERVER,
+      tool: 'test-local',
+      args: {},
+      context: { workflow_id: 'workflow-1', interaction_id: 'interaction-1' },
+    }), ws);
+    assert.deepEqual(
+      {
+        workflowId: captured?.workflowId,
+        interactionId: captured?.interactionId,
+        deviceId: captured?.deviceId,
+        requestId: captured?.requestId,
+        requestNonce: captured?.requestNonce,
+        connectionGeneration: captured?.connectionGeneration,
+        protocol: captured?.protocol,
+      },
+      {
+        workflowId: 'workflow-1',
+        interactionId: 'interaction-1',
+        deviceId: 'desktop-device',
+        requestId: 'trusted-request',
+        requestNonce: 'trusted-nonce',
+        connectionGeneration: 12,
+        protocol: 2,
+      },
+    );
+  } finally {
+    (provider as unknown as { callTool: typeof provider.callTool }).callTool = originalCall;
+    bridge.stop();
+  }
 });

@@ -24,10 +24,13 @@ import {
   copyTargetDir,
   copyToWorkspaceResult,
   deviceTimeText,
+  requireWorkspaceTransfer,
   workspaceCopySchemas,
   workspaceDownloadOf,
   type CopiedFile,
   type SkippedFile,
+  type WorkspaceTransferCapability,
+  type WorkspaceTransferContext,
 } from '@dex/protocol';
 import { USER_PC_TOOL_NAMES, callUserPc, userPcSchemas } from './user-pc';
 import {
@@ -141,9 +144,21 @@ export interface FolderEntry {
  */
 export interface WorkspaceTransfer {
   /** 폰의 로컬 파일(file://)을 이 대화의 첨부 폴더(하위 `relDir`)로 올린다. 같은 이름은 덮어쓴다. */
-  upload(localUri: string, name: string, relDir: string, signal?: AbortSignal): Promise<{ path: string; size: number; sha256?: string }>;
+  upload(
+    localUri: string,
+    name: string,
+    relDir: string,
+    transfer: WorkspaceTransferCapability,
+    signal?: AbortSignal,
+  ): Promise<{ path: string; size: number; sha256?: string }>;
   /** 서버가 내어 준 임시 파일을 로컬 파일(file://)로 받는다. */
-  download(url: string, token: string | undefined, name: string, signal?: AbortSignal): Promise<string>;
+  download(
+    url: string,
+    token: string,
+    name: string,
+    transfer: WorkspaceTransferCapability,
+    signal?: AbortSignal,
+  ): Promise<string>;
   /** 다 쓴 로컬 사본을 지운다. 실패해도 조용히. */
   discard(localUri: string): Promise<void>;
 }
@@ -177,6 +192,8 @@ export interface FolderScope {
   remoteFrom?: string;
   /** 이 호출의 대화 작업 공간(복사 도구). 호출 문맥에 에이전트·대화가 없으면 없다. */
   workspace?: WorkspaceTransfer;
+  /** 인증된 mcp_call frame에서 온 전송 correlation. 모델 인자와 대조할 때만 쓴다. */
+  transferContext?: WorkspaceTransferContext;
   /** 이 호출의 대화 — 사용자 PC 접속의 작업은 그 대화에서만 보인다. */
   interactionId?: string;
   /** 서버의 취소·감시 시한. */
@@ -416,6 +433,7 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
   checkCopySignal(scope.signal);
   const transfer = scope.workspace;
   if (!transfer) return err('어느 대화의 작업 공간인지 알 수 없어 옮기지 못했습니다.');
+  const capability = requireWorkspaceTransfer(args, 'to_workspace', scope.transferContext);
   const { folders, fs } = scope;
   const inputs = (Array.isArray(args.paths) ? args.paths : [args.paths ?? args.path])
     .map((p) => String(p ?? '').trim())
@@ -491,7 +509,7 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
       local = await fs.exportFile(item.folder, item.rel);
       checkCopySignal(scope.signal);
       const name = pathSegments(item.rel).at(-1) ?? 'file';
-      const res = await transfer.upload(local, name, item.relDir, scope.signal);
+      const res = await transfer.upload(local, name, item.relDir, capability, scope.signal);
       checkCopySignal(scope.signal);
       copied.push({ source, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
     } catch (e) {
@@ -509,8 +527,12 @@ async function copyFromWorkspace(args: Record<string, unknown>, scope: FolderSco
   checkCopySignal(scope.signal);
   const transfer = scope.workspace;
   if (!transfer) return err('어느 대화의 작업 공간인지 알 수 없어 받지 못했습니다.');
+  const capability = requireWorkspaceTransfer(args, 'from_workspace', scope.transferContext);
   const download = workspaceDownloadOf(args);
   if (!download) return err(NO_DOWNLOAD_MESSAGE);
+  if (!download.token || download.token !== capability.token) {
+    throw new Error('WORKSPACE_TRANSFER_CAPABILITY_REQUIRED');
+  }
   const raw = String(args.path ?? '').trim();
   const at = resolveFolderPath(scope.folders, raw);
   let rel = at.rel;
@@ -523,7 +545,13 @@ async function copyFromWorkspace(args: Record<string, unknown>, scope: FolderSco
     return err(`${shown} already exists. Pass overwrite=true to replace it, or choose another path.`);
   }
   checkCopySignal(scope.signal);
-  const local = await transfer.download(download.url, download.token, download.name, scope.signal);
+  const local = await transfer.download(
+    download.url,
+    download.token,
+    download.name,
+    capability,
+    scope.signal,
+  );
   try {
     checkCopySignal(scope.signal);
     // 있던 파일은 지우지 않고 그 자리에 쓴다 — 먼저 지우면 쓰기가 실패할 때 사용자의 파일이 사라진다.

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { HttpClient, ApiError } from '../src/client';
+import { AgentDataApi } from '../src/agent-data';
+import { ChatFilesApi } from '../src/chat-files';
 
 test('GET and POST preserve exact binary bytes, MIME, and empty files', async () => {
   const bytes = Uint8Array.from([0, 255, 128, 1]);
@@ -25,6 +27,34 @@ test('actual byte cap covers absent and misleading Content-Length and cancels th
     await assert.rejects(client.getBinary('/large', { maxBytes: 3 }), (error: unknown) => error instanceof ApiError && error.status === 413);
     assert.equal(cancelled, true);
   }
+});
+
+test('workspace and chat-file readers carry their optional cap to the streaming transport', async () => {
+  const client = new HttpClient({ baseUrl: 'https://example.test', fetch: async (url) => {
+    const path = new URL(url).pathname;
+    if (path.includes('announced')) {
+      return new Response(Uint8Array.from([1, 2, 3, 4, 5]), { headers: { 'Content-Length': '5' } });
+    }
+    if (path.includes('/api/storage/file/')) {
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(Uint8Array.from([1, 2]));
+        controller.enqueue(Uint8Array.from([3, 4, 5]));
+        controller.close();
+      } }), { headers: { 'Content-Length': '1' } });
+    }
+    return new Response(null);
+  } });
+  const workspace = new AgentDataApi(client);
+  const chatFiles = new ChatFilesApi(client);
+  await assert.rejects(
+    workspace.workspaceBinary('wf', 'announced', undefined, { maxBytes: 4 }),
+    (error: unknown) => error instanceof ApiError && error.status === 413,
+  );
+  await assert.rejects(
+    chatFiles.download({ name: 'chunked', storageId: 1, fileId: 2 }, { maxBytes: 4 }),
+    (error: unknown) => error instanceof ApiError && error.status === 413,
+  );
+  assert.equal((await workspace.workspaceBinary('wf', 'empty', undefined, { maxBytes: 0 })).bytes.length, 0);
 });
 
 test('non-streaming native fetch preserves binary bytes and still checks final size', async () => {

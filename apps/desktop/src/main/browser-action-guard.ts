@@ -95,11 +95,17 @@ const commitAction = (word: string) =>
 /** Only the host calls this with a real user message, never with tool arguments. */
 export function requestedBrowserCommit(input: unknown, pageTitle = ''): BrowserCommitAction | 'confirm' | null {
   const plain = stripVoiceContext(stripTeamsContext(stripBrowserContext(turnInputText(input))));
-  const text = plain.trim()
+  const full = plain.trim()
     .replace(new RegExp(`[「『"“‘'](${COMMIT_WORDS.source})[」』"”’']`, 'g'), '$1')
     .replace(/(?<!내)보내\s*(?=줘|주세요)/g, '보내기 해');
-  if (/^(?:네|넵|예|응|좋아|진행해줘|진행해주세요|확인했어|확인했습니다|허용|yes|ok|okay)[.!\s]*$/i.test(text))
+  if (/^(?:네|넵|예|응|좋아|진행해줘|진행해주세요|확인했어|확인했습니다|허용|yes|ok|okay)[.!\s]*$/i.test(full))
     return 'confirm';
+  // 동작 단어가 나온 마지막 문장부터 끝까지만 본다 — 앞 문장의 사정 설명은 요청이 아니다("전시여부가 전시 안함이니까 안 뜨는게
+  // 맞아. 임시 저장해줘" 의 "안" 이 요청을 막았다, 10/21 BO). 뒤에서 거두는 말("… 해줘. 아니 하지 마")은 그대로 막는다.
+  const sentences = full.split(/(?<=[.!。])\s+/);
+  let from = sentences.length - 1;
+  while (from > 0 && !new RegExp(COMMIT_WORDS.source).test(sentences[from])) from--;
+  const text = sentences.slice(from).join(' ');
   // Quoted data, conditions and multi-action requests do not confer execution permission.
   if (/[「」『』"“”‘’'`\n?？]/.test(text) || /하지|말고|말아|금지|(?:^|\s)안(?:\s|돼)|못|않|취소|보류|중지|그만|아니|전에|전까지|나중|후에|하면|되면|가능|방법|테스트|차단|확인해|어떻게/.test(text)) return null;
   const actions = text.match(COMMIT_WORDS);
@@ -122,9 +128,10 @@ export function requestedBrowserCommit(input: unknown, pageTitle = ''): BrowserC
 /** A bare yes is consent only after the assistant actually asked about one named action. */
 export function browserCommitQuestion(reply: string): BrowserCommitAction | null {
   const question = (reply.trim().split('\n').at(-1) ?? '').replace(/(?<!내)보낼까요/g, '보내기할까요');
-  const actions = question.match(COMMIT_WORDS);
-  return actions?.length === 1 && /할까요|될까요|누를까요|하시겠어요|하시겠습니까/.test(question)
-    ? commitAction(actions[0]) : null;
+  const words = (question.match(COMMIT_WORDS) ?? []).map(commitAction);
+  // "「임시저장」 버튼으로 저장할까요?" 의 저장은 임시저장을 가리키는 동사다 — 둘로 세면 확인 질문으로 보지 않아 "응" 이 막혔다(10/21 BO).
+  const actions = [...new Set(words.includes('임시저장') ? words.filter((w) => w !== '저장') : words)];
+  return actions.length === 1 && /할까요|될까요|누를까요|하시겠어요|하시겠습니까/.test(question) ? actions[0] : null;
 }
 
 export function browserCommitConfirmationAsked(reply: string, action: BrowserCommitAction): boolean {

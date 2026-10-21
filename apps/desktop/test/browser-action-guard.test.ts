@@ -271,3 +271,12 @@ test('confirmation needs a question naming the exact pending action', () => {
   for (const reply of ['저장했습니다.', '계속 진행할까요?', '승인요청할까요?', '저장하고 승인요청할까요?'])
     assert.equal(browserCommitConfirmationAsked(reply, '저장'), false, reply);
 });
+
+test('앞 문장의 사정 설명은 요청을 막지 않고, "임시저장 … 저장할까요?" 는 임시저장 하나를 묻는다', () => {
+  assert.equal(requestedBrowserCommit('전시여부가 전시 안함이니까 안 뜨는게 맞아. 임시 저장해줘'), '임시저장');
+  assert.equal(requestedBrowserCommit('임시저장해줘. 아니 하지 마'), null);
+  assert.equal(requestedBrowserCommit('확인했어. 저장하지 마'), null);
+  assert.equal(browserCommitConfirmationAsked('현재 상품을 **「임시저장」** 버튼으로 저장할까요?', '임시저장'), true);
+  assert.equal(browserCommitConfirmationAsked('차단되어 저장되지 않았습니다. **현재 003 상품을 「임시저장」 버튼으로 저장할까요?**', '임시저장'), true);
+  assert.equal(browserCommitConfirmationAsked('저장하고 승인요청할까요?', '저장'), false);
+});

@@ -320,9 +320,9 @@ export const MessageItem: React.FC<{
           // 답이 시작되기 전 서버의 준비 단계(Sandbox·워크스페이스·패키지·기억). 0.7초 넘게 걸린 단계가 없으면
           // 캐럿 그대로다(빠른 턴은 예전과 같다).
           <TurnPhaseCard rows={m.phases} fallback={<Caret />} />
-        ) : (
+        ) : live ? (
           <Caret />
-        )}
+        ) : null}
         {!!text && live && !timeline ? <Caret /> : null}
       </Pressable>
 
@@ -337,7 +337,8 @@ export const MessageItem: React.FC<{
         onOpen={onOpenFile}
       />
 
-      {!live && !!text && !m.errorInfo ? <GeneratedContentStatus client={client} message={m} text={text} /> : null}
+      {!live && !m.errorInfo && (text || m.generatedContent?.some((item) => item.content_type?.toLowerCase() === 'text/plain'))
+        ? <GeneratedContentStatus client={client} message={m} text={text} /> : null}
 
       {m.interrupted ? (
         <Text style={{ color: p.muted, fontSize: 11.5, marginTop: 2 }}>{INTERRUPTED_TEXT}</Text>

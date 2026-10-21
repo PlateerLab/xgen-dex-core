@@ -1767,7 +1767,8 @@ export const Chat: React.FC<{
                 {disclaimer && m.role === 'assistant' && !m.streaming && !!m.text && !m.error && (
                   <p className="ai-disclaimer">{CHAT_AI_DISCLAIMER_TEXT}</p>
                 )}
-                {m.role === 'assistant' && !m.streaming && !!(answerFiles?.text ?? m.text) && !m.error && (
+                {m.role === 'assistant' && !m.streaming && !m.error &&
+                  (!!(answerFiles?.text ?? m.text) || m.generatedContent?.some((item) => item.content_type?.toLowerCase() === 'text/plain')) && (
                   <GeneratedContentStatus message={m} text={answerFiles?.text ?? m.text} />
                 )}
                 {/* 푸터 한 줄 — 좌: 복사/공유(호버에만), 우: 전체 로그(상시).

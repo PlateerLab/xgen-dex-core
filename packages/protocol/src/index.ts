@@ -1,3 +1,4 @@
+import { GeneratedContentApi } from './generated-content';
 /**
  * XgenClient — the single entry point for the XGen Dex transport layer.
  *
@@ -76,6 +77,7 @@ export class XgenClient {
   readonly auth: AuthApi;
   readonly agents: AgentsApi;
   readonly chat: ChatApi;
+  readonly generatedContent: GeneratedContentApi;
   readonly guardrails: ChatGuardrailsApi;
   readonly feedback: FeedbackApi;
   readonly history: HistoryApi;
@@ -120,6 +122,7 @@ export class XgenClient {
     this.auth = new AuthApi(this.http);
     this.agents = new AgentsApi(this.http);
     this.chat = new ChatApi(this.http);
+    this.generatedContent = new GeneratedContentApi(this.http);
     this.guardrails = new ChatGuardrailsApi(this.http);
     this.feedback = new FeedbackApi(this.http);
     this.history = new HistoryApi(this.http);
@@ -397,3 +400,5 @@ export {
   prependVoiceContext,
   stripVoiceContext,
 } from './voice-context';
+
+export * from './generated-content';

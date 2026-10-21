@@ -33,6 +33,8 @@ export interface NativeFileIdentity {
   size: string;
   mtimeNs: string;
   ctimeNs: string;
+  /** Windows only: content snapshot required for conditional writes. */
+  contentSha256?: string;
 }
 
 export interface NativeSourceInfo extends NativeEntryStat {
@@ -57,6 +59,7 @@ interface NativeBinding {
   openStageSource(relativePath: string): NativeSourceInfo;
   readSource(source: bigint, offset: number, length: number): Uint8Array;
   statSource(source: bigint): NativeEntryStat;
+  sourceIdentity?(source: bigint): NativeFileIdentity;
   closeSource(source: bigint): void;
   configureStage(path: string): string;
   atomicWrite(
@@ -248,6 +251,11 @@ export class NativeSource {
   }
 
   identity(): NativeFileIdentity {
+    if (platform === 'win32') {
+      const nativeIdentity = binding().sourceIdentity;
+      if (!nativeIdentity) throw Object.assign(new Error('Windows source digest is unavailable'), { code: 'ENOTSUP' });
+      return nativeIdentity(this.id());
+    }
     return {
       dev: this.dev,
       ino: this.ino,

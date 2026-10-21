@@ -107,8 +107,54 @@ test('Windows same-size rooted rewrite invalidates a captured source identity', 
   const after = afterSource.identity();
   afterSource.close();
   assert.equal(await readFile(join(rootPath, 'edited.txt'), 'utf8'), 'other');
-  assert.ok(before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs,
-    `same-size rewrite kept both timestamps (devSame=${before.dev === after.dev}, inoSame=${before.ino === after.ino}, sizeSame=${before.size === after.size}, mtimeSame=${before.mtimeNs === after.mtimeNs}, ctimeSame=${before.ctimeNs === after.ctimeNs})`);
+  assert.notEqual(before.contentSha256, after.contentSha256);
+  assert.throws(() => root.atomicWrite('edited.txt', Buffer.from('saved'), true, before),
+    { code: 'FILE_SOURCE_CHANGED' });
+});
+
+test('Windows expected writes reject same-size changes even when timestamps match', { skip: platform !== 'win32' }, async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'dex-native-win-digest-'));
+  const rootPath = join(base, 'root');
+  const stagePath = join(base, 'stage');
+  await mkdir(rootPath);
+  await mkdir(stagePath);
+  configureNativeFsStage(stagePath);
+  const target = join(rootPath, 'edited.txt');
+  await writeFile(target, 'first');
+  const root = openNativeRoot(rootPath);
+  t.after(async () => { root.close(); await rm(base, { recursive: true, force: true }); });
+
+  for (let index = 0; index < 8; ++index) {
+    const source = root.openSource('edited.txt');
+    const expected = source.identity();
+    source.close();
+    root.write('edited.txt', Buffer.from(index % 2 ? 'first' : 'other'));
+    assert.throws(() => root.atomicWrite('edited.txt', Buffer.from('saved'), true, expected),
+      { code: 'FILE_SOURCE_CHANGED' });
+  }
+
+  const source = root.openSource('edited.txt');
+  const initial = source.identity();
+  const originalStat = await stat(target);
+  await writeFile(target, 'third');
+  await utimes(target, originalStat.atime, originalStat.mtime);
+  assert.throws(() => source.read(0, 1), { code: 'FILE_SOURCE_CHANGED' });
+  assert.throws(() => source.stat(), { code: 'FILE_SOURCE_CHANGED' });
+  source.close();
+
+  const current = root.openSource('edited.txt');
+  const afterExternal = current.identity();
+  current.close();
+  const matchingMetadataWithOldContent = { ...afterExternal, contentSha256: initial.contentSha256 };
+  assert.throws(() => root.atomicWrite('edited.txt', Buffer.from('saved'), true, matchingMetadataWithOldContent),
+    { code: 'FILE_SOURCE_CHANGED' });
+  assert.throws(() => root.writeExpected('edited.txt', Buffer.from('saved'), matchingMetadataWithOldContent),
+    { code: 'FILE_SOURCE_CHANGED' });
+  assert.throws(() => root.atomicWrite('edited.txt', Buffer.from('saved'), true,
+    { ...afterExternal, contentSha256: undefined }), { code: 'EINVAL' });
+  assert.throws(() => root.writeExpected('edited.txt', Buffer.from('saved'),
+    { ...afterExternal, contentSha256: 'invalid' }), { code: 'EINVAL' });
+  assert.equal(await readFile(target, 'utf8'), 'third');
 });
 
 test('Windows rooted copy, move, stage, and conditional atomic write use pinned objects', { skip: platform !== 'win32' }, async (t) => {

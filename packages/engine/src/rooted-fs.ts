@@ -163,10 +163,16 @@ export class RootedSource {
     this.native = native;
     this.size = native.size;
     this.mtimeMs = native.mtimeMs;
-    this.identity = native.identity();
+    try {
+      this.identity = native.identity();
+    } catch (error) {
+      native.close();
+      throw error;
+    }
     this.resumeIdentity = createHash('sha256')
       .update(JSON.stringify([
-        'native-file-v2', native.dev, native.ino, native.size, native.mtimeNs, native.ctimeNs,
+        'native-file-v3', native.dev, native.ino, native.size, native.mtimeNs, native.ctimeNs,
+        this.identity.contentSha256 ?? null,
       ]))
       .digest('hex');
   }

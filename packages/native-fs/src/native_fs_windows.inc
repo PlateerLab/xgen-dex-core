@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include <aclapi.h>
+#include <bcrypt.h>
 #include <algorithm>
 #include <climits>
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include <limits>
 #include <sstream>
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 #ifndef ERROR_STOPPED_ON_SYMLINK
 #define ERROR_STOPPED_ON_SYMLINK 681
@@ -115,7 +117,7 @@ struct Root {
   Handle handle; Handle write_handle; std::wstring canonical; Identity identity;
   std::vector<Ancestor> ancestors;
 };
-struct Source { Handle handle; Identity initial; };
+struct Source { Handle handle; Identity initial; std::string digest; };
 struct Stage {
   Handle handle; std::wstring canonical; Identity identity;
   std::vector<Ancestor> ancestors;
@@ -231,6 +233,91 @@ bool QueryIdentity(HANDLE handle, Identity* out) {
   out->changed.dwLowDateTime = basic.ChangeTime.LowPart;
   out->changed.dwHighDateTime = basic.ChangeTime.HighPart;
   out->attributes = basic.FileAttributes;
+  return true;
+}
+// Hash a held regular file in bounded memory. A synchronous target handle uses
+// its file pointer; source handles stay positional so parallel reads are safe.
+bool HashHeldFile(HANDLE handle, uint64_t size, bool positional, std::string* digest, DWORD* error) {
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  std::vector<uint8_t> hash_object;
+  auto close = [&]() {
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+  };
+  NTSTATUS status = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+  if (status < 0) { *error = ERROR_NOT_SUPPORTED; return false; }
+  DWORD object_bytes = 0, value_bytes = 0, output_bytes = 0;
+  status = BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH,
+      reinterpret_cast<PUCHAR>(&object_bytes), sizeof(object_bytes), &value_bytes, 0);
+  if (status >= 0) status = BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
+      reinterpret_cast<PUCHAR>(&output_bytes), sizeof(output_bytes), &value_bytes, 0);
+  if (status < 0 || !object_bytes || object_bytes > 1024 * 1024 || output_bytes != 32) {
+    close(); *error = ERROR_NOT_SUPPORTED; return false;
+  }
+  hash_object.resize(object_bytes);
+  status = BCryptCreateHash(algorithm, &hash, hash_object.data(), object_bytes, nullptr, 0, 0);
+  if (status < 0) { close(); *error = ERROR_NOT_SUPPORTED; return false; }
+  if (!positional) {
+    LARGE_INTEGER start{};
+    if (!SetFilePointerEx(handle, start, nullptr, FILE_BEGIN)) {
+      *error = GetLastError(); close(); return false;
+    }
+  }
+  std::vector<uint8_t> bytes(1024 * 1024);
+  for (uint64_t offset = 0; offset < size;) {
+    DWORD requested = static_cast<DWORD>(std::min<uint64_t>(size - offset, bytes.size()));
+    DWORD got = 0;
+    if (positional) {
+      OVERLAPPED overlapped{};
+      overlapped.Offset = static_cast<DWORD>(offset);
+      overlapped.OffsetHigh = static_cast<DWORD>(offset >> 32);
+      Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+      if (!event) { *error = GetLastError(); close(); return false; }
+      overlapped.hEvent = event.h;
+      BOOL read = ReadFile(handle, bytes.data(), requested, nullptr, &overlapped);
+      if (!read && GetLastError() != ERROR_IO_PENDING) {
+        *error = GetLastError(); close(); return false;
+      }
+      if (!GetOverlappedResult(handle, &overlapped, &got, TRUE)) {
+        *error = GetLastError(); close(); return false;
+      }
+    } else if (!ReadFile(handle, bytes.data(), requested, &got, nullptr)) {
+      *error = GetLastError(); close(); return false;
+    }
+    if (!got) { *error = ERROR_HANDLE_EOF; close(); return false; }
+    status = BCryptHashData(hash, bytes.data(), got, 0);
+    if (status < 0) { close(); *error = ERROR_NOT_SUPPORTED; return false; }
+    offset += got;
+  }
+  std::array<uint8_t, 32> result{};
+  status = BCryptFinishHash(hash, result.data(), static_cast<ULONG>(result.size()), 0);
+  close();
+  if (status < 0) { *error = ERROR_NOT_SUPPORTED; return false; }
+  static const char hex[] = "0123456789abcdef";
+  digest->clear(); digest->reserve(result.size() * 2);
+  for (uint8_t byte : result) { digest->push_back(hex[byte >> 4]); digest->push_back(hex[byte & 15]); }
+  return true;
+}
+bool CheckSourceSnapshot(const Source& source, DWORD* error, bool* changed) {
+  *changed = false;
+  Identity before{};
+  if (!QueryIdentity(source.handle.h, &before)) { *error = GetLastError(); return false; }
+  if (!SameSource(before, source.initial) ||
+      (before.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE))) {
+    *changed = true; return false;
+  }
+  std::string digest;
+  if (!HashHeldFile(source.handle.h, before.size, true, &digest, error)) {
+    if (*error == ERROR_HANDLE_EOF) *changed = true;
+    return false;
+  }
+  Identity after{};
+  if (!QueryIdentity(source.handle.h, &after)) { *error = GetLastError(); return false; }
+  if (!SameSource(after, source.initial) || digest != source.digest ||
+      (after.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE))) {
+    *changed = true; return false;
+  }
   return true;
 }
 bool IsDirectory(const Identity& id) { return (id.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0; }
@@ -821,6 +908,13 @@ napi_value OpenSource(napi_env env, napi_callback_info info) {
   if (IsStage(id)) return Throw(env, "EACCES", "private stage is inaccessible");
   auto source = std::make_shared<Source>();
   source->handle = std::move(file); source->initial = id;
+  if (!HashHeldFile(source->handle.h, id.size, true, &source->digest, &error))
+    return error == ERROR_HANDLE_EOF ?
+      Throw(env, "FILE_SOURCE_CHANGED", "source changed during initial digest") :
+      ThrowWin(env, "digest rooted source", error);
+  Identity after_digest{};
+  if (!QueryIdentity(source->handle.h, &after_digest) || !SameSource(after_digest, id))
+    return Throw(env, "FILE_SOURCE_CHANGED", "source changed while opening");
   uint64_t source_id = 0;
   {
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -839,9 +933,10 @@ napi_value ReadSource(napi_env env, napi_callback_info info) {
     return Throw(env, "EINVAL", "invalid source read range");
   auto source = FindSource(id);
   if (!source) return Throw(env, "NATIVE_SOURCE_CLOSED", "source handle is closed");
-  Identity before{};
-  if (!QueryIdentity(source->handle.h, &before) || !SameSource(before, source->initial))
-    return Throw(env, "FILE_SOURCE_CHANGED", "source identity changed before read");
+  DWORD snapshot_error = 0; bool changed = false;
+  if (!CheckSourceSnapshot(*source, &snapshot_error, &changed))
+    return changed ? Throw(env, "FILE_SOURCE_CHANGED", "source changed before read") :
+      ThrowWin(env, "verify source before read", snapshot_error);
   uint64_t available = static_cast<uint64_t>(offset) >= source->initial.size ? 0 : source->initial.size - static_cast<uint64_t>(offset);
   size_t length = static_cast<size_t>(std::min<uint64_t>(available, static_cast<uint64_t>(requested)));
   void* raw = nullptr; napi_value buffer;
@@ -863,9 +958,10 @@ napi_value ReadSource(napi_env env, napi_callback_info info) {
     if (!got) break;
     done += got;
   }
-  Identity after{};
-  if (!QueryIdentity(source->handle.h, &after) || !SameSource(after, source->initial) || done != length)
+  if (done != length || !CheckSourceSnapshot(*source, &snapshot_error, &changed)) {
+    if (done == length && !changed) return ThrowWin(env, "verify source after read", snapshot_error);
     return Throw(env, "FILE_SOURCE_CHANGED", "source identity changed during read");
+  }
   return buffer;
 }
 napi_value StatSource(napi_env env, napi_callback_info info) {
@@ -874,10 +970,33 @@ napi_value StatSource(napi_env env, napi_callback_info info) {
   if (!GetId(env, args[0], &id)) return Throw(env, "EINVAL", "invalid source id");
   auto source = FindSource(id);
   if (!source) return Throw(env, "NATIVE_SOURCE_CLOSED", "source handle is closed");
-  Identity current{};
-  if (!QueryIdentity(source->handle.h, &current) || !SameSource(current, source->initial))
-    return Throw(env, "FILE_SOURCE_CHANGED", "source identity changed");
-  return StatObject(env, current);
+  DWORD error = 0; bool changed = false;
+  if (!CheckSourceSnapshot(*source, &error, &changed))
+    return changed ? Throw(env, "FILE_SOURCE_CHANGED", "source identity changed") :
+      ThrowWin(env, "verify source", error);
+  return StatObject(env, source->initial);
+}
+napi_value SourceIdentity(napi_env env, napi_callback_info info) {
+  std::vector<napi_value> args; if (!Args(env, info, 1, &args)) return nullptr;
+  uint64_t id = 0;
+  if (!GetId(env, args[0], &id)) return Throw(env, "EINVAL", "invalid source id");
+  auto source = FindSource(id);
+  if (!source) return Throw(env, "NATIVE_SOURCE_CLOSED", "source handle is closed");
+  DWORD error = 0; bool changed = false;
+  if (!CheckSourceSnapshot(*source, &error, &changed))
+    return changed ? Throw(env, "FILE_SOURCE_CHANGED", "source identity changed") :
+      ThrowWin(env, "verify source identity", error);
+  napi_value result; napi_create_object(env, &result);
+  constexpr uint64_t epoch = 116444736000000000ULL;
+  uint64_t modified = FileTimeTicks(source->initial.modified);
+  uint64_t changed_ticks = FileTimeTicks(source->initial.changed);
+  SetString(env, result, "dev", PublicDev(source->initial));
+  SetString(env, result, "ino", PublicIno(source->initial));
+  SetString(env, result, "size", std::to_string(source->initial.size));
+  SetString(env, result, "mtimeNs", std::to_string(modified >= epoch ? (modified - epoch) * 100 : 0));
+  SetString(env, result, "ctimeNs", std::to_string(changed_ticks >= epoch ? (changed_ticks - epoch) * 100 : 0));
+  SetString(env, result, "contentSha256", source->digest);
+  return result;
 }
 napi_value CloseSource(napi_env env, napi_callback_info info) {
   std::vector<napi_value> args; if (!Args(env, info, 1, &args)) return nullptr;
@@ -923,7 +1042,8 @@ napi_value ConfigureStage(napi_env env, napi_callback_info info) {
 }
 
 bool ParseExpected(napi_env env, napi_value value, bool* present, std::string* dev,
-                   std::string* ino, std::string* size, std::string* mtime, std::string* ctime) {
+                   std::string* ino, std::string* size, std::string* mtime,
+                   std::string* ctime, std::string* digest) {
   napi_valuetype type = napi_undefined;
   if (napi_typeof(env, value, &type) != napi_ok) return false;
   if (type == napi_undefined || type == napi_null) { *present = false; return true; }
@@ -933,9 +1053,12 @@ bool ParseExpected(napi_env env, napi_value value, bool* present, std::string* d
     return napi_get_named_property(env, value, name, &property) == napi_ok && GetString(env, property, out);
   };
   *present = true;
-  return read_string("dev", dev) && read_string("ino", ino) &&
+  bool valid = read_string("dev", dev) && read_string("ino", ino) &&
     read_string("size", size) && read_string("mtimeNs", mtime) &&
-    read_string("ctimeNs", ctime);
+    read_string("ctimeNs", ctime) && read_string("contentSha256", digest);
+  return valid && digest->size() == 64 && std::all_of(digest->begin(), digest->end(), [](char byte) {
+    return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f');
+  });
 }
 bool ExpectedMatches(const Identity& id, const std::string& dev, const std::string& ino,
                      const std::string& size, const std::string& mtime, const std::string& ctime) {
@@ -953,18 +1076,30 @@ napi_value WriteExpected(napi_env env, napi_callback_info info) {
   if (!RootAndPath(env, args, false, &root, &parts)) return nullptr;
   uint8_t* data = nullptr; size_t length = 0;
   if (!GetUint8(env, args[2], &data, &length)) return Throw(env, "EINVAL", "invalid expected write data");
-  bool expected_present = false; std::string dev, ino, size, mtime, ctime;
-  if (!ParseExpected(env, args[3], &expected_present, &dev, &ino, &size, &mtime, &ctime) ||
+  bool expected_present = false; std::string dev, ino, size, mtime, ctime, digest;
+  if (!ParseExpected(env, args[3], &expected_present, &dev, &ino, &size, &mtime, &ctime, &digest) ||
       !expected_present) return Throw(env, "EINVAL", "expected write requires a file identity");
   DWORD error = 0;
+  // Conditional writes require read access to compare the captured content.
+  // A write-only target fails before mutation rather than trusting timestamps.
   Handle file = OpenLeaf(*root, parts,
-      FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-      FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &error);
+      FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+      FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &error,
+      FILE_SHARE_READ | FILE_SHARE_DELETE);
   if (!file) return ThrowWin(env, "open expected write target", error);
   Identity before{};
   if (!QueryIdentity(file.h, &before)) return ThrowWin(env, "stat expected write target");
   if (IsStage(before) || !ExpectedMatches(before, dev, ino, size, mtime, ctime))
     return Throw(env, "FILE_SOURCE_CHANGED", "expected write target identity changed");
+  std::string actual_digest;
+  if (!HashHeldFile(file.h, before.size, false, &actual_digest, &error))
+    return error == ERROR_HANDLE_EOF ?
+      Throw(env, "FILE_SOURCE_CHANGED", "expected write target changed during digest") :
+      ThrowWin(env, "digest expected write target", error);
+  Identity after_digest{};
+  if (!QueryIdentity(file.h, &after_digest) ||
+      !SameSource(before, after_digest) || actual_digest != digest)
+    return Throw(env, "FILE_SOURCE_CHANGED", "expected write target content changed");
   LARGE_INTEGER start{};
   if (!SetFilePointerEx(file.h, start, nullptr, FILE_BEGIN) || !SetEndOfFile(file.h))
     return ThrowWin(env, "truncate expected write target");
@@ -1094,12 +1229,26 @@ bool CopyTargetSecurity(HANDLE target, HANDLE staged, DWORD* error, std::string*
   if (result != ERROR_SUCCESS) {
     LocalFree(target_descriptor); *error = result; return false;
   }
-  if (!nt_set_security) {
-    LocalFree(target_descriptor); *error = ERROR_NOT_SUPPORTED; return false;
-  }
-  NTSTATUS status = nt_set_security(staged, DACL_SECURITY_INFORMATION, target_descriptor);
+  NTSTATUS status = nt_set_security ?
+      nt_set_security(staged, DACL_SECURITY_INFORMATION, target_descriptor) :
+      static_cast<NTSTATUS>(0xC00000BB); // STATUS_NOT_SUPPORTED
   if (status != kStatusSuccess) {
-    LocalFree(target_descriptor); *error = DosError(status); return false;
+    std::ostringstream detail;
+    if (nt_set_security)
+      detail << "NtSetSecurityObject NTSTATUS 0x" << std::hex << static_cast<uint32_t>(status);
+    else detail << "NtSetSecurityObject export unavailable";
+    // The Win32 setter is supported for files. With the stage's current DACL
+    // protected, Windows can accept the target's concrete inherited ACEs.
+    // Exact owner, ACE, and control-bit readback still gates the rename.
+    SECURITY_INFORMATION inheritance = (target_control & SE_DACL_PROTECTED)
+        ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION;
+    result = SetSecurityInfo(staged, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | inheritance, nullptr, nullptr, target_dacl, nullptr);
+    if (result != ERROR_SUCCESS) {
+      detail << "; SetSecurityInfo Windows error " << std::dec << result;
+      *difference = detail.str();
+      LocalFree(target_descriptor); *error = result; return false;
+    }
   }
   PSID final_owner = nullptr;
   PACL final_dacl = nullptr;
@@ -1175,6 +1324,13 @@ napi_value OpenStageSource(napi_env env, napi_callback_info info) {
   auto source = std::make_shared<Source>();
   source->handle = std::move(file);
   source->initial = id;
+  if (!HashHeldFile(source->handle.h, id.size, true, &source->digest, &error))
+    return error == ERROR_HANDLE_EOF ?
+      Throw(env, "FILE_SOURCE_CHANGED", "private stage source changed during initial digest") :
+      ThrowWin(env, "digest private stage source", error);
+  Identity after_digest{};
+  if (!QueryIdentity(source->handle.h, &after_digest) || !SameSource(after_digest, id))
+    return Throw(env, "FILE_SOURCE_CHANGED", "private stage source changed while opening");
   uint64_t source_id = 0;
   {
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -1344,13 +1500,13 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
   uint8_t* data = nullptr; size_t length = 0; bool overwrite = false;
   if (!GetUint8(env, args[2], &data, &length) || !GetBool(env, args[3], &overwrite))
     return Throw(env, "EINVAL", "invalid atomic write data");
-  bool expected_present = false; std::string dev, ino, size, mtime, ctime;
+  bool expected_present = false; std::string dev, ino, size, mtime, ctime, digest;
   size_t count = 5; napi_value full[5]{};
   if (napi_get_cb_info(env, info, &count, full, nullptr, nullptr) != napi_ok)
     return Throw(env, "EINVAL", "invalid expected target");
   if (count >= 5) {
     napi_value expected = full[4];
-    if (!ParseExpected(env, expected, &expected_present, &dev, &ino, &size, &mtime, &ctime))
+    if (!ParseExpected(env, expected, &expected_present, &dev, &ino, &size, &mtime, &ctime, &digest))
       return Throw(env, "EINVAL", "invalid expected target");
   }
   { std::lock_guard<std::mutex> lock(state_mutex);
@@ -1361,12 +1517,21 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
   Identity parent_id{};
   if (!QueryIdentity(parent.h, &parent_id)) return ThrowWin(env, "stat atomic target parent");
   if (expected_present) {
-    Handle initial_target = OpenAt(parent.h, parts.back(), FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, &error);
+    Handle initial_target = OpenAt(parent.h, parts.back(), FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, &error, FILE_SHARE_READ | FILE_SHARE_DELETE);
     Identity initial_id{};
     if (!initial_target || !QueryIdentity(initial_target.h, &initial_id) ||
         !IsRegular(initial_id) || !ExpectedMatches(initial_id, dev, ino, size, mtime, ctime))
       return Throw(env, "FILE_SOURCE_CHANGED", "atomic target identity changed");
+    std::string actual_digest;
+    if (!HashHeldFile(initial_target.h, initial_id.size, false, &actual_digest, &error))
+      return error == ERROR_HANDLE_EOF ?
+        Throw(env, "FILE_SOURCE_CHANGED", "atomic target changed during digest") :
+        ThrowWin(env, "digest atomic target", error);
+    Identity after_digest{};
+    if (!QueryIdentity(initial_target.h, &after_digest) ||
+        !SameSource(initial_id, after_digest) || actual_digest != digest)
+      return Throw(env, "FILE_SOURCE_CHANGED", "atomic target content changed");
   }
   std::shared_ptr<Stage> private_stage = StageForVolume(*root, parent_id, &error);
   if (!private_stage) return ThrowWin(env, "select private stage for target volume", error);
@@ -1401,10 +1566,13 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
   if (!VerifyPinnedStagePath(*private_stage, &error)) {
     cleanup(); return ThrowWin(env, "verify private stage directory", error);
   }
+  Handle target;
   if (overwrite || expected_present) {
-    Handle target = OpenAt(parent.h, parts.back(),
-        READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, &error);
+    target = OpenAt(parent.h, parts.back(),
+        READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE | (expected_present ? FILE_READ_DATA : 0),
+        FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, &error,
+        expected_present ? FILE_SHARE_READ | FILE_SHARE_DELETE :
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
     if (!target) {
       if (expected_present) {
         cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "atomic target identity changed");
@@ -1420,6 +1588,19 @@ napi_value AtomicWrite(napi_env env, napi_callback_info info) {
       if (expected_present && (!IsRegular(target_id) ||
           !ExpectedMatches(target_id, dev, ino, size, mtime, ctime))) {
         cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "atomic target identity changed");
+      }
+      if (expected_present) {
+        std::string actual_digest;
+        if (!HashHeldFile(target.h, target_id.size, false, &actual_digest, &error)) {
+          cleanup(); return error == ERROR_HANDLE_EOF ?
+            Throw(env, "FILE_SOURCE_CHANGED", "atomic target changed during digest") :
+            ThrowWin(env, "digest atomic target before commit", error);
+        }
+        Identity after_digest{};
+        if (!QueryIdentity(target.h, &after_digest) ||
+            !SameSource(target_id, after_digest) || actual_digest != digest) {
+          cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "atomic target content changed");
+        }
       }
       std::string security_difference;
       if (overwrite && IsRegular(target_id) &&
@@ -1616,6 +1797,17 @@ napi_value CopyFileNoReplace(napi_env env, napi_callback_info info) {
   if (!QueryIdentity(source.h, &original)) return ThrowWin(env, "stat rooted copy source");
   if (!IsRegular(original) || IsStage(original))
     return Throw(env, "EINVAL", "copy source is not a regular file");
+  std::string original_digest;
+  if (!HashHeldFile(source.h, original.size, false, &original_digest, &error))
+    return error == ERROR_HANDLE_EOF ?
+      Throw(env, "FILE_SOURCE_CHANGED", "copy source changed during initial digest") :
+      ThrowWin(env, "digest rooted copy source", error);
+  Identity after_initial_digest{};
+  if (!QueryIdentity(source.h, &after_initial_digest) || !SameSource(original, after_initial_digest))
+    return Throw(env, "FILE_SOURCE_CHANGED", "copy source changed during initial digest");
+  LARGE_INTEGER start{};
+  if (!SetFilePointerEx(source.h, start, nullptr, FILE_BEGIN))
+    return ThrowWin(env, "seek rooted copy source");
   Handle parent = OpenDirectory(*root, target_parts, target_parts.size() - 1, &error, true);
   if (!parent) return ThrowWin(env, "open rooted copy target", error);
   Identity parent_id{};
@@ -1627,7 +1819,8 @@ napi_value CopyFileNoReplace(napi_env env, napi_callback_info info) {
   for (int attempt = 0; attempt < 16; ++attempt) {
     if (!RandomName(&name)) return Throw(env, "EIO", "generate private stage name");
     temporary = OpenAt(private_stage->handle.h, name,
-      DELETE | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE,
+      DELETE | FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES |
+      READ_CONTROL | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE,
       FILE_CREATE, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &error,
       FILE_SHARE_READ | FILE_SHARE_WRITE);
     if (temporary || error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) break;
@@ -1653,11 +1846,32 @@ napi_value CopyFileNoReplace(napi_env env, napi_callback_info info) {
   if (!QueryIdentity(source.h, &after) || !SameSource(original, after)) {
     cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "copy source identity changed");
   }
+  std::string final_source_digest;
+  if (!HashHeldFile(source.h, original.size, false, &final_source_digest, &error)) {
+    cleanup(); return error == ERROR_HANDLE_EOF ?
+      Throw(env, "FILE_SOURCE_CHANGED", "copy source changed during digest") :
+      ThrowWin(env, "digest rooted copy source after copy", error);
+  }
+  if (!QueryIdentity(source.h, &after) || !SameSource(original, after) ||
+      final_source_digest != original_digest) {
+    cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "copy source content changed");
+  }
   if (!FlushFileBuffers(temporary.h)) { error = GetLastError(); cleanup(); return ThrowWin(env, "flush private stage", error); }
   if (!QueryIdentity(temporary.h, &staged_id) || !IsRegular(staged_id) ||
       !VerifyStageName(*private_stage, name, staged_id, &error)) {
     if (!error) error = GetLastError();
     cleanup(); return ThrowWin(env, "verify private stage file", error);
+  }
+  std::string staged_digest;
+  if (!HashHeldFile(temporary.h, staged_id.size, false, &staged_digest, &error)) {
+    cleanup(); return error == ERROR_HANDLE_EOF ?
+      Throw(env, "FILE_SOURCE_CHANGED", "copied stage changed during digest") :
+      ThrowWin(env, "digest copied private stage", error);
+  }
+  Identity staged_after_digest{};
+  if (!QueryIdentity(temporary.h, &staged_after_digest) ||
+      !SameSource(staged_id, staged_after_digest) || staged_digest != original_digest) {
+    cleanup(); return Throw(env, "FILE_SOURCE_CHANGED", "copied stage content differs from source");
   }
   if (!VerifyPinnedStagePath(*private_stage, &error)) {
     cleanup(); return ThrowWin(env, "verify private stage directory", error);
@@ -1678,7 +1892,8 @@ napi_value Init(napi_env env, napi_value exports) {
     {"openRoot", OpenRoot}, {"closeRoot", CloseRoot}, {"stat", Stat}, {"list", List},
     {"mkdirs", Mkdirs}, {"write", Write}, {"openSource", OpenSource},
     {"openStageSource", OpenStageSource},
-    {"readSource", ReadSource}, {"statSource", StatSource}, {"closeSource", CloseSource},
+    {"readSource", ReadSource}, {"statSource", StatSource}, {"sourceIdentity", SourceIdentity},
+    {"closeSource", CloseSource},
     {"configureStage", ConfigureStage}, {"atomicWrite", AtomicWrite},
     {"writeExpected", WriteExpected}, {"setMode", SetMode},
     {"renameNoReplace", RenameNoReplace}, {"moveToStage", MoveToStage},

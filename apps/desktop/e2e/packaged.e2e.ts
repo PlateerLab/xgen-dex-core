@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { _electron } from 'playwright-core';
@@ -248,7 +248,8 @@ test(
           workflowName: stringField(conversation.workflow_name, 'conversation.workflow_name'),
           visibleText: signedFixtureText(turn.output_data),
         };
-        break;
+        // The fixture can gain another signed turn during peer-sync E2E.
+        // Compare the renderer's last assistant bubble with the latest signed turn.
       }
       if (selected) break;
     }
@@ -338,6 +339,54 @@ test(
         (await win.locator('#root').textContent()) ?? '',
         /XGEN_GENERATED_(?:CONTENT|MEDIA)_V1/,
       );
+
+      // Exercise the installed renderer -> preload -> host grant ledger -> native
+      // boundary. Only the native chooser is supplied a temporary test folder.
+      const folderRoot = join(home, 'ipc-folder');
+      const movedRoot = join(home, 'ipc-folder-moved');
+      mkdirSync(folderRoot);
+      writeFileSync(join(folderRoot, 'value.txt'), 'pinned-original');
+      writeFileSync(join(home, 'outside.txt'), 'outside-sentinel');
+      const folderInteraction = `native-e2e-${process.pid}-${Date.now()}`;
+      await app.evaluate(({ dialog }, folder) => {
+        const original = dialog.showOpenDialog;
+        dialog.showOpenDialog = (async () => {
+          dialog.showOpenDialog = original;
+          return { canceled: false, filePaths: [folder] };
+        }) as typeof dialog.showOpenDialog;
+      }, folderRoot);
+      const folders = await win.evaluate(async (interaction) => {
+        const api = (window as unknown as { xgen: {
+          chatFolders: { add(id: string): Promise<Array<{ id: string }>> };
+        } }).xgen;
+        return api.chatFolders.add(interaction);
+      }, folderInteraction);
+      assert.equal(folders.length, 1);
+      const folderId = folders[0]!.id;
+      const folderCall = (op: string, args: JsonObject) => win.evaluate(async (input) => {
+        const api = (window as unknown as { xgen: { chatFolders: {
+          fs(id: string, root: string, op: string, args: JsonObject): Promise<{ ok: boolean; value?: { bytes?: number[] }; code?: string }>;
+        } } }).xgen;
+        return api.chatFolders.fs(input.interaction, input.folderId, input.op, input.args);
+      }, { interaction: folderInteraction, folderId, op, args });
+      const initial = await folderCall('read', { path: 'value.txt' });
+      assert.equal(initial.ok, true);
+      assert.equal(Buffer.from(initial.value!.bytes!).toString(), 'pinned-original');
+      assert.equal((await folderCall('read', { path: '../outside.txt' })).ok, false);
+      renameSync(folderRoot, movedRoot);
+      mkdirSync(folderRoot);
+      writeFileSync(join(folderRoot, 'value.txt'), 'replacement-object');
+      const pinned = await folderCall('read', { path: 'value.txt' });
+      assert.equal(pinned.ok, true);
+      assert.equal(Buffer.from(pinned.value!.bytes!).toString(), 'pinned-original');
+      await win.evaluate(async (input) => {
+        const api = (window as unknown as { xgen: { chatFolders: {
+          remove(id: string, folder: string): Promise<unknown>;
+        } } }).xgen;
+        await api.chatFolders.remove(input.interaction, input.folderId);
+      }, { interaction: folderInteraction, folderId });
+      assert.equal((await folderCall('read', { path: 'value.txt' })).code, 'not_found');
+      assert.equal(readFileSync(join(home, 'outside.txt'), 'utf8'), 'outside-sentinel');
 
       // 실제 계정 메뉴의 로그아웃 경로로 auth context 를 없앤다. 검증 badge 와 대화
       // 본문은 로그인 화면에 남지 않아야 하며 임시 서버 세션도 폐기된다.

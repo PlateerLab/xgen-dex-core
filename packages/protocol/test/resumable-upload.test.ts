@@ -191,6 +191,83 @@ test('transient chunk failures are retried and a reload resumes from the stored 
   assert.equal(puts() - putsBefore, 5 - before, 'only the missing chunks were sent');
 });
 
+test('persisted resume never mixes chunks from different source identities with identical metadata', async () => {
+  const gw = fakeGateway({ chunk: 4 });
+  const store = memoryStore();
+  const source = (bytes: Uint8Array, resumeIdentity: string) => ({
+    ...bytesSource(bytes, 'same.bin', 'application/octet-stream'),
+    lastModified: 1234,
+    resumeIdentity,
+  });
+  const a = new Uint8Array(8).fill(1);
+  const b = new Uint8Array(8).fill(2);
+
+  const ctl = new AbortController();
+  const first = new ResumableUploader({ baseUrl: 'http://gw', fetch: gw.fetchImpl, sleep: noSleep, store, concurrency: 1 });
+  await assert.rejects(
+    first.upload(source(a, 'disk:v1:inode-a'), {
+      signal: ctl.signal,
+      onProgress: (loaded) => { if (loaded >= 4) ctl.abort(); },
+    }),
+    (error: Error) => error.name === 'AbortError',
+  );
+  const [firstId] = [...store.data.values()];
+
+  const second = new ResumableUploader({ baseUrl: 'http://gw', fetch: gw.fetchImpl, sleep: noSleep, store, concurrency: 1 });
+  const resumed = await second.upload(source(b, 'disk:v1:inode-b'));
+  assert.notEqual(resumed.upload_id, firstId, 'a different disk identity starts a new upload session');
+  const chunks = [...gw.sessions.get(resumed.upload_id)!.chunks.entries()]
+    .sort(([aIndex], [bIndex]) => aIndex - bIndex)
+    .flatMap(([, bytes]) => [...bytes]);
+  assert.deepEqual(chunks, [...b], 'the completed session contains only the retry source bytes');
+});
+
+test('persisted resume keeps the session for a recreated source with the same stable identity', async () => {
+  const gw = fakeGateway({ chunk: 4 });
+  const store = memoryStore();
+  const bytes = new Uint8Array(9).map((_, index) => index);
+  const source = () => ({
+    ...bytesSource(bytes, 'same.bin', 'application/octet-stream'),
+    lastModified: 1234,
+    resumeIdentity: 'disk:v1:unchanged-inode',
+  });
+  const ctl = new AbortController();
+  const first = new ResumableUploader({ baseUrl: 'http://gw', fetch: gw.fetchImpl, sleep: noSleep, store, concurrency: 1 });
+  await assert.rejects(
+    first.upload(source(), {
+      signal: ctl.signal,
+      onProgress: (loaded) => { if (loaded >= 4) ctl.abort(); },
+    }),
+    (error: Error) => error.name === 'AbortError',
+  );
+  const [firstId] = [...store.data.values()];
+  const receivedBefore = gw.sessions.get(firstId)!.chunks.size;
+
+  const second = new ResumableUploader({ baseUrl: 'http://gw', fetch: gw.fetchImpl, sleep: noSleep, store, concurrency: 1 });
+  const resumed = await second.upload(source());
+  assert.equal(resumed.upload_id, firstId);
+  assert.equal(gw.sessions.get(firstId)!.chunks.size, 3);
+  assert.ok(receivedBefore >= 1);
+});
+
+test('resume fingerprint fields cannot collide through separator characters', async () => {
+  const gw = fakeGateway({ chunk: 4 });
+  const store = memoryStore();
+  const first = {
+    ...bytesSource(new Uint8Array([1]), 'a|1', 'x'),
+    lastModified: 2,
+  };
+  const collidingUnderV1 = {
+    ...bytesSource(new Uint8Array([2]), 'a', '2|x'),
+    lastModified: 1,
+  };
+  const uploader = new ResumableUploader({ baseUrl: 'http://gw', fetch: gw.fetchImpl, sleep: noSleep, store });
+  const firstSession = await uploader.upload(first);
+  const secondSession = await uploader.upload(collidingUnderV1);
+  assert.notEqual(secondSession.upload_id, firstSession.upload_id);
+  assert.equal(store.data.size, 2);
+});
+
 test('the same file object is not sent again after a 409/428 retry', async () => {
   const gw = fakeGateway({ chunk: 4 });
   const up = new ResumableUploader({ baseUrl: 'http://gw', fetch: gw.fetchImpl, sleep: noSleep });

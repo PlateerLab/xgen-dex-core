@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
 import { UNCHECKED_INPUT, UPLOAD_MAX_BYTES, XgenClient, type ChatInputCheck, type LiveTurnSnapshot } from '@dex/protocol';
-import { fileSource, readFileHead } from './file-source';
+import { FileSourceNotRegularError, fileSource } from './file-source';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
@@ -726,13 +725,18 @@ export class DexEngine {
     path: string;
   }): Promise<ChatAttachmentDescriptor> {
     const filePath = resolve(input.path);
-    const info = await stat(filePath);
-    if (!info.isFile()) throw new DexError('usage_error', `파일이 아닙니다: ${input.path}`);
-    if (info.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
     const name = basename(filePath);
-    // 형식은 앞부분만 보고 정하고, 본문은 조각 업로드가 범위로 읽는다(통째로 메모리에 올리지 않는다).
-    const detected = detectAttachment(await readFileHead(filePath, 16), name);
-    const source = await fileSource(filePath, { name, type: detected.mimeType });
+    const source = await fileSource(filePath, { name }).catch((error: unknown) => {
+      if (error instanceof FileSourceNotRegularError) {
+        throw new DexError('usage_error', `파일이 아닙니다: ${input.path}`);
+      }
+      throw error;
+    });
+    if (source.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
+    // 형식 판별과 본문 업로드가 같은 source identity 를 읽는다. 경로를 두 번 열어
+    // 서로 다른 파일의 head/body 를 합치는 일을 허용하지 않는다.
+    const detected = detectAttachment(await source.read(0, 16), name);
+    source.type = detected.mimeType;
     const attachmentId = `att-${randomUUID()}`;
     const uploaded = await this.withAuthRetry(input.profile, (client) =>
       client.agentData.workspaceUpload(

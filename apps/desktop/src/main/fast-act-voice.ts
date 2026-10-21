@@ -26,6 +26,8 @@ import {
   withoutDisabledTwins,
   namedField,
   mentionsAnyName,
+  saidField,
+  sameField,
   decisionState,
   elementDisplay,
   elementLabel,
@@ -153,6 +155,7 @@ const closedTab = async (pageId: string): Promise<boolean> => {
 const TYPING_WORD = /(입력|검색|조회|써|쓰고|쓰기|쳐|적어|적고|넣어|넣고|넣기|라고|type|search|enter|write)/i;
 /** 글자를 넣을 수 있는 역할 — 입력 요청이면 이것만 후보로 둔다(넣을 글자와 이름이 같은 버튼을 고르지 않게). */
 const TYPABLE = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
+const CHECKABLE = new Set(['checkbox', 'radio', 'switch']);
 /**
  * 검색칸에 "…검색해줘" 는 넣고 끝이 아니라 검색까지다 — 결정 모델이 '넣기만' 으로 답해도 검색칸이면 제출한다
  * (검색칸은 제출해야 결과가 나온다는 화면 일반 규칙. 역할이 searchbox 이거나 이름에 검색/search 가 있는 칸).
@@ -267,6 +270,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   /** 이번 지시에서 숨은 탭을 이미 꺼내 다시 읽었나 — 한 번만. */
   private revealed = false;
   private leftPopup = false;
+  /** 이름 확인으로 막은 뒤 다시 고를 칸 — 말한 칸 이름과 맞는 칸이 화면에 하나뿐일 때(한 지시에 한 번). */
+  private namedRetry: string | null | undefined;
   /** 실행 직전 이 에이전트의 탭과 그 세대 — 누른 것이 새 탭을 열었는지, 열려 있던 팝업을 다시 불렀는지 볼 때 쓴다. */
   private tabsAtAct = new Map<string, number>();
 
@@ -606,6 +611,24 @@ export class BrowserVoiceAgent implements VoiceAgent {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 글자를 받는 칸인지 — 안에 내용이 있는 요소(div 로 그린 선택 상자, "3일")나 읽기 전용 칸은 아니다. 못 읽으면 받는다고 본다(전처럼).
+   * 그런 상자에 fill 하면 글자가 초점이 남아 있던 앞 칸으로 들어갔다(10/21 BO 002: 안전재고수량 "15" → "153", 업체상품번호 끝에 "플래티어").
+   */
+  private async takesText(pageId: string, ref: string, generation: number): Promise<boolean> {
+    const data = async (command: string[]): Promise<Record<string, unknown> | null> => {
+      try {
+        const run = await getBrowserRuntime().runAgentCommand(this.workflowId, pageId, command, 5_000, generation);
+        return (run.result as { data?: Record<string, unknown> } | undefined)?.data ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const html = (await data(['get', 'html', ref]))?.html;
+    const readonly = (await data(['get', 'attr', ref, 'readonly']))?.value;
+    return !(typeof html === 'string' && html.trim()) && typeof readonly !== 'string';
   }
 
   /** 입력칸의 지금 값 — 못 읽으면 null. */
@@ -1076,6 +1099,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.listClosed = false;
     this.revealed = false;
     this.leftPopup = false;
+    this.namedRetry = undefined;
     const from = this.actions.length;
     // 되물었으면(팝업·트리에서 고르지 못함, 선택되지 않음 — tell) 실행은 했어도 요청을 마친 것이 아니다.
     const asked = (o: Outcome): Outcome => (o.acted && this.actions.slice(from).some((a) => a.tell) ? { ...o, effect: 'none' } : o);
@@ -1210,7 +1234,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
       ),
     );
     const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled);
-    const picked = await pickElement(post, judgedText(text), origin, candidates, scr);
+    const retry = this.namedRetry && this.namedRetry in snap.refs ? this.namedRetry : null;
+    const picked = retry ? { ref: retry, confidence: 1, top: [], calls: 0, ms: 0 } : await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {
       diag(SCOPE, 'debug-screen', {
@@ -1292,6 +1317,26 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const after = text.slice(text.lastIndexOf(lastWord) + lastWord.length);
       if (!TYPING_WORD.test(after)) return no('입력은 글자가 끝난 뒤', pick.top);
     }
+    // 지시가 부른 칸 이름과 고른 요소가 맞지 않으면 넣지도 누르지도 않는다 — 넣고 나서 알아채면 이미 다른 칸 값을 덮어쓴 뒤다.
+    // 열린 목록의 항목·말한 값 이름의 선택지(선물하기 → radio "해당없음")는 그 칸의 값이고, 팝업은 팝업 자체가 그 칸을 고르는
+    // 화면이라(표준카테고리 조회의 트리 항목) 보지 않는다. 팝업과 무관한 칸 지시는 위에서 연 탭으로 옮겨 판단한다.
+    const valueChoice = ['radio', 'checkbox', 'switch', 'tab'].includes(element.role) && mentions(text, element.name ?? '');
+    const field = OPTION_ROLES.has(element.role) || valueChoice || page.mode === 'popup' ? null : saidField(text);
+    // 화면에 없는 칸("규격", "무게", "구성품")을 부르면 모델은 비슷해 보이는 다른 칸(상품상세·치수·대체 텍스트)을 골라 값을 덮어썼다
+    // (10/21 BO 002 BrowserFill). "협력사를 …로 지정해줘" 에 표 칸 "플래티어" 를 고른 것도 같다.
+    if (field && ![element.name, snap.labels[pick.ref]].some((n) => sameField(field, n ?? ''))) {
+      // 말한 칸 이름과 맞는 칸이 화면에 하나뿐이면 그 칸으로 다시 한다(한 번만) — 협력사 상자는 앞 창에서 0.996 으로 이겼는데
+      // 결승에서 표 칸 "플래티어"(0.997)에 졌다(10/21 BO, DEX_SEV_LOG).
+      const named = Object.keys(snap.refs).filter(
+        (k) => k !== pick.ref && (TYPABLE.has(snap.refs[k].role) || CHECKABLE.has(snap.refs[k].role)) && [snap.refs[k].name, snap.labels[k]].some((n) => sameField(field, n ?? '')),
+      );
+      diag(SCOPE, 'field-mismatch', { text, field, picked: elementLabel(element), retry: named.length === 1 ? elementLabel(snap.refs[named[0]]) : null });
+      if (named.length === 1 && this.namedRetry === undefined) {
+        this.namedRetry = named[0];
+        return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+      }
+      return no(`말한 칸 "${field}" 과 고른 요소가 다름 — ${elementLabel(element)}`, pick.top);
+    }
     if (!allowsDeciderAction(action === 'click' ? 'click' : 'fill', element, '', text)) {
       return no('저장·등록·승인요청·삭제 등은 자동 실행할 수 없음 — 사용자 확인 필요', pick.top);
     }
@@ -1327,13 +1372,6 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return no(GUARDED, pick.top);
     }
     const decideMs = now() - t0;
-    // 값을 넣으라는 말이 부른 칸이 아닌 다른 요소를 골랐다 — 누른 뒤 그 칸 값을 다시 읽어 바뀌지 않았으면 마친 것이 아니다.
-    // 10/21 BO: 전시카테고리 표의 "플래티어" 칸을 협력사 상자 대신 눌러 놓고 완료로 답했다. 칸 이름을 자리로만 부른 말
-    // ("협력사 옆 조회 눌러줘")은 값을 넣으라는 말이 아니라 보지 않는다. 열린 목록의 항목은 그 칸의 값이라 보지 않는다.
-    const setsValue = action !== 'click' || PICK_VALUE_WORD.test(said) || !!quotedText(text);
-    const named = setsValue && !OPTION_ROLES.has(element.role) ? namedField(snap.refs, snap.labels, text) : null;
-    const elsewhere = named && named.ref !== pick.ref ? named : null;
-    const namedBefore = elsewhere ? await this.valueOf(page.pageId, `@${elsewhere.ref}`, snap.gen) : null;
 
     const runtime = getBrowserRuntime();
     const ref = `@${toggles && check ? check.ref : pick.ref}`;
@@ -1364,7 +1402,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
         try {
           // 서식 편집기(contenteditable — 상품상세)는 fill 이 지우지 않고 커서 자리에 끼워 넣었다(10/19 BO Jodit). 눌러서
           // 전체를 고르고 글자를 넣는다 — 줄바꿈은 문단이 된다.
-          if ((rich = !!(await this.flagOf(page.pageId, ref, snap.gen, 'contenteditable')))) {
+          // 글자를 받지 않는 선택 상자 — 넣지 않고 눌러 열고 아래에서 값을 고른다.
+          if (element.role === 'combobox' && !(await this.takesText(page.pageId, ref, snap.gen))) {
+            await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
+            opened = true;
+          } else if ((rich = !!(await this.flagOf(page.pageId, ref, snap.gen, 'contenteditable')))) {
             await runtime.runAgentCommand(this.workflowId, page.pageId, ['click', ref], 10_000, snap.gen);
             await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', process.platform === 'darwin' ? 'Meta+a' : 'Control+a'], 10_000);
             // LLM 이 줄바꿈을 "\n" 두 글자로 적기도 했다(10/19) — 편집기에는 줄바꿈으로.
@@ -1418,12 +1460,6 @@ export class BrowserVoiceAgent implements VoiceAgent {
       recorded.tell = `${josa(recorded.display, '이', '가')} 선택되지 않았어요. 지금은 고를 수 없는 상태인 것 같아요.`;
       diag(SCOPE, 'choice-missed', { text, ref, role: choiceRole });
     }
-    const namedAfter = elsewhere ? await this.valueOf(page.pageId, `@${elsewhere.ref}`, snap.gen) : null;
-    const offTarget = !!elsewhere && (namedAfter === null || namedAfter === namedBefore);
-    if (offTarget) {
-      recorded.tell = `말한 칸 "${elsewhere!.name}" 대신 ${josa(recorded.display, '을', '를')} 눌렀고, "${elsewhere!.name}" 값이 바뀐 것을 확인하지 못했어요.`;
-      diag(SCOPE, 'off-target', { text, field: elsewhere!.name, picked: label, before: namedBefore, after: namedAfter });
-    }
     if (unfilled) {
       recorded.tell = `${recorded.display}에 ${josa(`"${typed}"`, '을', '를')} 넣었는데 칸에서 그 값을 확인하지 못했어요.`;
       recorded.ask = '확인해 주실래요?';
@@ -1464,7 +1500,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       target: after?.label ?? label,
       text: (typedAfter?.text ?? (opened ? null : typed)) ?? undefined,
       ms: now() - t0,
-      effect: missed || toggleMissed || unfilled || unpicked || offTarget ? 'none' : 'ok',
+      effect: missed || toggleMissed || unfilled || unpicked ? 'none' : 'ok',
     };
   }
 }

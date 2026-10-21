@@ -421,6 +421,33 @@ export function namedField(refs: ElementRefs, labels: Record<string, string>, te
   return null;
 }
 
+/**
+ * 지시가 부른 칸 이름 — "X에 「…」 입력해줘", "X를 …로 지정해줘" 의 X(띄어쓰기 없이). 그런 꼴이 아니면 null.
+ * 「」 안은 값이라 보지 않는다.
+ */
+export function saidField(text: string): string | null {
+  const outside = text.replace(/「[^」]*」/g, '「」');
+  const m =
+    outside.match(/^\s*(.+?)\s*(?:에|에서|을|를|은|는)\s*「」/) ??
+    outside.match(/^\s*(.+?)\s*(?:을|를|은|는)\s+.+?(?:으로|로)\s*(?:지정|선택|바꾸|바꿔|변경|설정)/);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+/**
+ * 고른 요소 이름이 지시가 부른 칸 이름과 같은 칸인지 — 한쪽이 다른 쪽을 품거나, 세 글자 이상 이어서 겹치거나, 부른 이름의 두 글자 조각
+ * 절반 이상이 요소 이름에 있다.
+ * 조각 하나만 겹치는 것은 다른 칸이다("고객센터 전화번호" 를 "업체상품번호" 에 넣었다 — "번호" 만 겹침, 10/21 BO 002).
+ */
+export function sameField(said: string, name: string): boolean {
+  const key = name.replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
+  if (!key || !said) return false;
+  if (key.includes(said) || said.includes(key)) return true;
+  // 세 글자 이상 이어서 겹치면 같은 칸("대표이미지 대체 텍스트" ~ "대체 텍스트를 입력해주세요").
+  if ([...said].slice(0, -2).some((_, i) => key.includes(said.slice(i, i + 3)))) return true;
+  const pairs = [...said].slice(0, -1).map((_, i) => said.slice(i, i + 2));
+  return pairs.length > 0 && pairs.filter((p) => key.includes(p)).length * 2 >= pairs.length;
+}
+
 /** 화면의 어떤 요소 이름의 낱말(2자 이상)이라도 말에 나오는지 — 팝업이 이 말과 상관있는지 본다. */
 export function mentionsAnyName(refs: ElementRefs, text: string): boolean {
   const said = text.replace(/\s+/g, '');
@@ -548,7 +575,7 @@ const bigramsOf = (s: string): Set<string> => {
  * 화면 앞쪽(머리·메뉴) 60개와 말과 글자(두 글자 묶음)가 많이 겹치는 60개만 후보로 남긴다 — 읽는 순서는 지킨다.
  * 앞쪽을 남기는 건 이름이 안 겹치는 간접 표현("인기 상품 순위" → 랭킹존)이 대개 메뉴를 가리키기 때문이다.
  */
-function narrowLarge(keys: string[], refs: ElementRefs, instruction: string): string[] {
+export function narrowLarge(keys: string[], refs: ElementRefs, instruction: string): string[] {
   if (keys.length <= 2 * MAX_LINES) return keys;
   const said = bigramsOf(instruction);
   const score = (k: string): number => {
@@ -564,7 +591,13 @@ function narrowLarge(keys: string[], refs: ElementRefs, instruction: string): st
     .sort((a, b) => b.s - a.s || a.i - b.i)
     .slice(0, MAX_LINES)
     .map((x) => x.k);
-  const keep = new Set([...head, ...matched]);
+  // 남긴 요소마다 바로 앞 구역 제목도 남긴다 — 제목이 빠지면 뒤쪽 표의 칸이 앞 구역 아래 붙어 보였다
+  // (10/21 BO: 전시카테고리 표의 "플래티어" 칸이 "브랜드 *" 제목 아래에 놓였다).
+  const titles = matched.flatMap((k) => {
+    for (let i = keys.indexOf(k) - 1; i >= 0; i--) if (refs[keys[i]]?.role === 'heading') return [keys[i]];
+    return [];
+  });
+  const keep = new Set([...head, ...matched, ...titles]);
   return keys.filter((k) => keep.has(k));
 }
 

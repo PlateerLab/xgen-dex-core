@@ -408,14 +408,14 @@ export function withoutDisabledTwins(refs: ElementRefs, disabled: Set<string>): 
   return Object.fromEntries(Object.entries(refs).filter(([k, r]) => !disabled.has(k) || !enabled.has(key(r))));
 }
 
-/** 말이 부른 칸 이름 — 입력칸·선택 상자·체크·라디오의 이름이나 칸 이름표 전체가 말에 있으면. 선택 상자 이름 뒤의 지금 값(" (현재: 3일)")은 뗀다. */
-export function namedField(refs: ElementRefs, labels: Record<string, string>, text: string): string | null {
+/** 말이 부른 칸 — 입력칸·선택 상자·체크·라디오의 이름이나 칸 이름표 전체가 말에 있으면. 선택 상자 이름 뒤의 지금 값(" (현재: 3일)")은 뗀다. */
+export function namedField(refs: ElementRefs, labels: Record<string, string>, text: string): { ref: string; name: string } | null {
   const said = text.replace(/\s+/g, '');
   for (const [ref, el] of Object.entries(refs)) {
     if (!TYPABLE_ROLES.has(el.role) && el.role !== 'checkbox' && el.role !== 'radio') continue;
     for (const raw of [el.name, labels[ref]]) {
       const name = (raw ?? '').replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
-      if (name.length >= 2 && said.includes(name)) return name;
+      if (name.length >= 2 && said.includes(name)) return { ref, name };
     }
   }
   return null;
@@ -425,33 +425,6 @@ export function namedField(refs: ElementRefs, labels: Record<string, string>, te
 export function mentionsAnyName(refs: ElementRefs, text: string): boolean {
   const said = text.replace(/\s+/g, '');
   return Object.values(refs).some((r) => (r.name ?? '').split(/\s+/).some((w) => w.length >= 2 && said.includes(w)));
-}
-
-/**
- * 칸 이름을 부른 지시에서, 말에 나온 이름(넣을 값)일 뿐 그 칸 이름은 없는 표 칸은 뺀다 — 넣을 값이지 누를 대상이 아니다.
- * 10/21 BO: 표준카테고리를 고르면 전시카테고리 표에 "플래티어 통합몰" 줄이 생기고, 그 뒤 "협력사를 플래티어 협력사로 지정해줘" 가
- * 협력사 상자(0.015) 대신 gridcell "플래티어"(0.98~0.996)를, 그 칸을 빼자 줄 "행 선택 create 플래티어 통합몰 …"(0.87)을 눌렀다.
- * 표 칸만 — 링크("검색창 옆 상세검색 링크")·파일 칸("…_대표이미지.png")·트리 항목("가전디지털 > …")은 값의 일부가 이름이어도 누를 대상이다.
- */
-const TABLE_ROLES = new Set(['gridcell', 'cell', 'row', 'rowheader', 'columnheader']);
-export function withoutValueEchoes(refs: ElementRefs, labels: Record<string, string>, text: string): ElementRefs {
-  const said = text.replace(/\s+/g, '');
-  const outside = text.replace(/「[^」]*」/g, ' ').replace(/\s+/g, '');
-  const key = (name?: string): string => (name ?? '').replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
-  const field = (r: ElementRef): boolean => TYPABLE_ROLES.has(r.role) || r.role === 'checkbox' || r.role === 'radio';
-  const named = Object.entries(refs)
-    .filter(([, r]) => field(r))
-    .flatMap(([k, r]) => [key(r.name), key(labels[k])])
-    .filter((name) => name.length >= 2 && outside.includes(name));
-  if (!named.length) return refs;
-  return Object.fromEntries(
-    Object.entries(refs).filter(([, r]) => {
-      if (!TABLE_ROLES.has(r.role)) return true;
-      // 줄 이름은 길다("행 선택 create 플래티어 통합몰 …") — 이름의 낱말 하나라도 말에 나오면 값의 메아리로 본다.
-      const words = (r.name ?? '').split(/\s+/).filter((w) => w.length >= 2);
-      return !(words.some((w) => said.includes(w)) && !named.some((n) => key(r.name).includes(n)));
-    }),
-  );
 }
 
 /**

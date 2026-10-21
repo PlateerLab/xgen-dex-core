@@ -24,7 +24,6 @@ import {
   saysValue,
   LONG_INSTRUCTION,
   withoutDisabledTwins,
-  withoutValueEchoes,
   namedField,
   mentionsAnyName,
   decisionState,
@@ -295,7 +294,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       await this.reveal(got.page);
       got = await this.snapshot().catch(() => null);
     }
-    return got && namedField(got.snap.refs, got.snap.labels, text);
+    return (got && namedField(got.snap.refs, got.snap.labels, text)?.name) ?? null;
   }
 
   /** 숨은 탭을 화면에 꺼내 크기가 잡힐 때까지 기다리고, 화면 기억을 비운다 — 한 지시에 한 번만. */
@@ -1149,7 +1148,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           await this.reveal(opener.page);
           opener = await this.snapshot().catch(() => null);
         }
-        const field = opener && namedField(opener.snap.refs, opener.snap.labels, text);
+        const field = opener && namedField(opener.snap.refs, opener.snap.labels, text)?.name;
         diag(SCOPE, 'opener-tab', { text, field, popup: page.url });
         if (field) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
         runtime.activate(page.pageId);
@@ -1210,7 +1209,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
           !(pressOnly && TYPABLE.has(r.role)),
       ),
     );
-    const candidates = withoutValueEchoes(withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled), snap.labels, text);
+    const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled);
     const picked = await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
     if (process.env.DEX_VOICE_TEST === '1') {
@@ -1328,6 +1327,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
       return no(GUARDED, pick.top);
     }
     const decideMs = now() - t0;
+    // 값을 넣으라는 말이 부른 칸이 아닌 다른 요소를 골랐다 — 누른 뒤 그 칸 값을 다시 읽어 바뀌지 않았으면 마친 것이 아니다.
+    // 10/21 BO: 전시카테고리 표의 "플래티어" 칸을 협력사 상자 대신 눌러 놓고 완료로 답했다. 칸 이름을 자리로만 부른 말
+    // ("협력사 옆 조회 눌러줘")은 값을 넣으라는 말이 아니라 보지 않는다. 열린 목록의 항목은 그 칸의 값이라 보지 않는다.
+    const setsValue = action !== 'click' || PICK_VALUE_WORD.test(said) || !!quotedText(text);
+    const named = setsValue && !OPTION_ROLES.has(element.role) ? namedField(snap.refs, snap.labels, text) : null;
+    const elsewhere = named && named.ref !== pick.ref ? named : null;
+    const namedBefore = elsewhere ? await this.valueOf(page.pageId, `@${elsewhere.ref}`, snap.gen) : null;
 
     const runtime = getBrowserRuntime();
     const ref = `@${toggles && check ? check.ref : pick.ref}`;
@@ -1412,6 +1418,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
       recorded.tell = `${josa(recorded.display, '이', '가')} 선택되지 않았어요. 지금은 고를 수 없는 상태인 것 같아요.`;
       diag(SCOPE, 'choice-missed', { text, ref, role: choiceRole });
     }
+    const namedAfter = elsewhere ? await this.valueOf(page.pageId, `@${elsewhere.ref}`, snap.gen) : null;
+    const offTarget = !!elsewhere && (namedAfter === null || namedAfter === namedBefore);
+    if (offTarget) {
+      recorded.tell = `말한 칸 "${elsewhere!.name}" 대신 ${josa(recorded.display, '을', '를')} 눌렀고, "${elsewhere!.name}" 값이 바뀐 것을 확인하지 못했어요.`;
+      diag(SCOPE, 'off-target', { text, field: elsewhere!.name, picked: label, before: namedBefore, after: namedAfter });
+    }
     if (unfilled) {
       recorded.tell = `${recorded.display}에 ${josa(`"${typed}"`, '을', '를')} 넣었는데 칸에서 그 값을 확인하지 못했어요.`;
       recorded.ask = '확인해 주실래요?';
@@ -1452,7 +1464,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       target: after?.label ?? label,
       text: (typedAfter?.text ?? (opened ? null : typed)) ?? undefined,
       ms: now() - t0,
-      effect: missed || toggleMissed || unfilled || unpicked ? 'none' : 'ok',
+      effect: missed || toggleMissed || unfilled || unpicked || offTarget ? 'none' : 'ok',
     };
   }
 }

@@ -11,7 +11,8 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
+import { nativeFsStagePath } from './rooted-fs';
 
 export interface WorkspaceShellLaunch {
   file: string;
@@ -346,6 +347,14 @@ export async function prepareWorkspaceShell(
     const toolchains = (await existing(readOnly)).filter(
       (dir) => !roots.some((root) => dir === root || dir.startsWith(`${root}/`)),
     );
+    const stage = nativeFsStagePath();
+    const stageInsideRoot = stage && roots.some((root) => {
+      const rel = relative(root, stage);
+      return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`));
+    });
+    if (stageInsideRoot && roots.includes(stage)) {
+      throw new Error('[WORKSPACE_SHELL_UNAVAILABLE] private transfer stage cannot be a workspace root.');
+    }
     if (mac) {
       const subpath = (p: string) => `(subpath ${JSON.stringify(p)})`;
       const literal = (p: string) => `(literal ${JSON.stringify(p)})`;
@@ -379,6 +388,11 @@ export async function prepareWorkspaceShell(
         '(allow file-read* (literal "/dev/urandom") (literal "/dev/random") (literal "/dev/zero"))',
         '(allow file-read* file-write-data file-ioctl (literal "/dev/null"))',
         `(allow file-write* ${[...roots, scratch].map(subpath).join(' ')})`,
+        // Keep the private native stage unreadable even through a symlink that
+        // lives below an allowed workspace root. Native grants already require
+        // the stage itself to be outside every root; this explicit deny closes
+        // the pathname alias in the shell's broader OS policy.
+        ...(stage ? [`(deny file-read* file-write* ${subpath(stage)})`] : []),
       ].join('\n');
       return {
         file: launcher,
@@ -409,6 +423,7 @@ export async function prepareWorkspaceShell(
     argv.push('--proc', '/proc', '--dev', '/dev');
     for (const dir of toolchains) argv.push('--ro-bind', dir, dir);
     for (const root of roots) argv.push('--bind', root, root);
+    if (stageInsideRoot) argv.push('--tmpfs', stage);
     argv.push('--bind', scratch, scratch);
     argv.push('--chdir', cwd, '--', file, ...commandArgs);
     return { file: launcher, args: argv, env: childEnv, cleanup };

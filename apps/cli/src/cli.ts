@@ -10,6 +10,11 @@ import {
 } from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
 import stringWidth from 'string-width';
+import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dataDirectory } from '@dex/engine/config-store';
+import { configureNativeFsBinding, configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
 import { SystemCredentialStore, credentialBackend } from '@dex/engine';
@@ -433,6 +438,16 @@ async function run(): Promise<void> {
   // 엔진에 이 호스트를 붙인다 — **엔진을 만들기 전에**. 로컬 도구와 MCP 가 전부
   // 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히 던진다.
   const configStore = new FileConfigStore();
+  if (VERSION !== 'dev') {
+    configureNativeFsBinding(join(dirname(fileURLToPath(import.meta.url)), 'native', `${process.platform}-${process.arch}`, 'native-fs.node'));
+  }
+  try {
+    const stage = join(dataDirectory(), 'native-stage');
+    mkdirSync(stage, { recursive: true, mode: 0o700 });
+    configureNativeFsStage(stage);
+  } catch {
+    // File tools report the precise native-boundary error when used; chat remains available.
+  }
   bindCliHost(configStore);
   const engine = new DexEngine(configStore, new SystemCredentialStore());
   const terminal = {

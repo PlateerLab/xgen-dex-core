@@ -746,37 +746,41 @@ export class DexEngine {
       }
       throw error;
     });
-    if (source.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
-    // 형식 판별과 본문 업로드가 같은 source identity 를 읽는다. 경로를 두 번 열어
-    // 서로 다른 파일의 head/body 를 합치는 일을 허용하지 않는다.
-    const detected = detectAttachment(await source.read(0, 16), name);
-    source.type = detected.mimeType;
-    const attachmentId = `att-${randomUUID()}`;
-    const uploaded = await this.withAuthRetry(input.profile, (client) =>
-      client.agentData.workspaceUpload(
-        input.workflowId,
-        source,
+    try {
+      if (source.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
+      // 형식 판별과 본문 업로드가 같은 open native handle 을 읽는다. 경로를
+      // 다시 열어 서로 다른 파일의 head/body 를 합치는 일을 허용하지 않는다.
+      const detected = detectAttachment(await source.read(0, 16), name);
+      source.type = detected.mimeType;
+      const attachmentId = `att-${randomUUID()}`;
+      const uploaded = await this.withAuthRetry(input.profile, (client) =>
+        client.agentData.workspaceUpload(
+          input.workflowId,
+          source,
+          name,
+          detected.mimeType,
+          input.interactionId,
+          attachmentId,
+        ),
+      );
+      if (uploaded.status === 'pending_approval') {
+        throw new DexError('usage_error', '파일 업로드가 승인 대기 중입니다. 승인 후 다시 첨부해 주세요.');
+      }
+      if (!uploaded.workspace_path) {
+        throw new DexError('protocol_mismatch', 'Workspace 업로드 응답에 경로가 없습니다.');
+      }
+      return {
+        kind: detected.kind,
+        attachment_id: attachmentId,
         name,
-        detected.mimeType,
-        input.interactionId,
-        attachmentId,
-      ),
-    );
-    if (uploaded.status === 'pending_approval') {
-      throw new DexError('usage_error', '파일 업로드가 승인 대기 중입니다. 승인 후 다시 첨부해 주세요.');
+        mime_type: detected.mimeType,
+        size: uploaded.size ?? source.size,
+        sha256: uploaded.sha256,
+        workspace_path: uploaded.workspace_path,
+      };
+    } finally {
+      await source.close();
     }
-    if (!uploaded.workspace_path) {
-      throw new DexError('protocol_mismatch', 'Workspace 업로드 응답에 경로가 없습니다.');
-    }
-    return {
-      kind: detected.kind,
-      attachment_id: attachmentId,
-      name,
-      mime_type: detected.mimeType,
-      size: uploaded.size ?? source.size,
-      sha256: uploaded.sha256,
-      workspace_path: uploaded.workspace_path,
-    };
   }
 
   async *chat(input: ChatInput, signal?: AbortSignal): AsyncGenerator<ChatEvent, ResolvedChatInput> {

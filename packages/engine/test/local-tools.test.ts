@@ -471,7 +471,7 @@ test('파일 도구 end-to-end: write→read→list→search + 폴더 밖 거부
   const l = await p.callTool('ListDir', {}, inChat('c'));
   assert.ok(l.content[0].text.includes('a.txt'));
   const sr = await p.callTool('Search', { query: 'NEEDLE', path: dir }, inChat('c'));
-  assert.ok(sr.content[0].text.includes('a.txt:2'));
+  assert.ok(sr.content[0].text.includes('a.txt:2'), sr.content[0].text);
   await assert.rejects(() => p.callTool('ReadFile', { path: '/etc/hostname' }, inChat('c')), /PATH_DOMAIN_MISMATCH/);
   await assert.rejects(() => p.callTool('ReadFile', { path: '~/.bashrc' }, inChat('c')), /PATH_DOMAIN_MISMATCH/);
 });

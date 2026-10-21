@@ -47,6 +47,40 @@ test('aborted download never commits target bytes even when the adapter returns 
   assert.deepEqual(await readdir(root), ['result.txt']);
 });
 
+test('disconnecting a folder revokes an in-flight download target before commit', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'p2-copy-disconnect-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const target = join(root, 'result.txt');
+  await writeFile(target, 'original target');
+  let folders = normalizeLocalFolders([root]);
+  const provider = new LocalToolProvider();
+  provider.configureFolders(() => folders);
+  let resolveDownload: (bytes: Uint8Array) => void = () => {};
+  let started: () => void = () => {};
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  provider.configureWorkspaceTransfer({
+    upload: async () => ({ path: '', size: 0 }),
+    download: () => {
+      started();
+      return new Promise((resolve) => { resolveDownload = resolve; });
+    },
+  });
+  const pending = provider.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    path: target,
+    overwrite: true,
+    download: {
+      url: '/api/agentflow/files/artifacts/owned/download', token: 'synthetic', name: 'result.txt',
+    },
+    _workspace_transfer: capability('from_workspace'),
+  }, context);
+  await ready;
+  folders = [];
+  provider.foldersChanged(context.interactionId);
+  resolveDownload(new TextEncoder().encode('new bytes'));
+  await assert.rejects(pending, /NATIVE_ROOT_CLOSED/);
+  assert.equal(await readFile(target, 'utf8'), 'original target');
+});
+
 test('upload cancellation stops subsequent files and range reads', async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'p2-copy-upload-cancel-')));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -84,10 +118,15 @@ test('host transfer adapter forwards the same signal and bounded response size',
     } },
   } as unknown as XgenClient;
   const transfer = clientWorkspaceTransfer(() => client);
-  await transfer.upload({
-    transfer: capability('to_workspace'), file: await fileSource(path), name: 'a.txt',
-    relDir: '', mimeType: 'text/plain', signal,
-  });
+  const source = await fileSource(path);
+  try {
+    await transfer.upload({
+      transfer: capability('to_workspace'), file: source, name: 'a.txt',
+      relDir: '', mimeType: 'text/plain', signal,
+    });
+  } finally {
+    await source.close();
+  }
   assert.equal((await transfer.download({
     url: '/api/agentflow/files/artifacts/owned/download', token: 'synthetic',
     transfer: capability('from_workspace'), signal,

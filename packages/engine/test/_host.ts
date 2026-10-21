@@ -12,6 +12,20 @@
 // initializes MCP/network dependencies that local-tool unit tests do not use.
 import { bindHost } from '../src/host';
 import { memoryPorts, type InteractionPort } from '../src/ports/index';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { configureNativeFsStage } from '../src/rooted-fs';
+
+let nativeStage = '';
+
+function ensureNativeStage(): void {
+  if (nativeStage) return;
+  nativeStage = mkdtempSync(join(tmpdir(), 'dex-native-test-stage-'));
+  chmodSync(nativeStage, 0o700);
+  configureNativeFsStage(nativeStage);
+  process.once('exit', () => rmSync(nativeStage, { recursive: true, force: true }));
+}
 
 export interface TestHostOptions {
   /** 기본은 거부 — 안전장치가 실제로 도는지 보려면 명시적으로 켜야 한다. */
@@ -19,6 +33,7 @@ export interface TestHostOptions {
 }
 
 export function bindTestHost(options: TestHostOptions = {}): void {
+  ensureNativeStage();
   const ports = memoryPorts();
   bindHost({ ...ports, interaction: options.interaction });
 }

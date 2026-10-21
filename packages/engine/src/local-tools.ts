@@ -33,16 +33,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir, platform } from 'node:os';
-import {
-  readFile as fsReadFile,
-  writeFile as fsWriteFile,
-  appendFile as fsAppendFile,
-  readdir,
-  stat,
-  lstat,
-  realpath,
-  mkdir,
-} from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import {
   resolve as pathResolve,
   relative as pathRelative,
@@ -70,8 +61,15 @@ import {
   type WorkspaceTransferCapability,
   type WorkspaceTransferContext,
 } from '@dex/protocol';
-import { fileSource } from './file-source';
+import { fileSourceFromRooted } from './file-source';
 import { atomicWorkspaceWrite } from './atomic-workspace-write';
+import {
+  RootGrant,
+  closeRootGrants,
+  resolveRootedPath,
+  type RootedResolvedPath,
+  type RootedSource,
+} from './rooted-fs';
 import { dangerousCommandPrompt, isDangerousShellCommand } from './dangerous-commands';
 import {
   USER_PC_JOB_TOOL,
@@ -1166,6 +1164,7 @@ interface FolderScope {
   /** The conversation id: approvals and jobs are kept per conversation. */
   key: string;
   roots: string[];
+  grants: RootGrant[];
   /** Default working directory and base for relative paths: the first folder. */
   cwd: string;
 }
@@ -1177,6 +1176,8 @@ export class LocalToolProvider {
   private notificationHandler: LocalNotificationHandler | null = null;
   private remoteUseListeners = new Set<(use: RemoteFolderUse) => void>();
   private folderChangeListeners = new Set<(interactionId: string) => void>();
+  /** Conversation roots stay pinned until the resolver removes/regrants them. */
+  private rootedScopes = new Map<string, Map<string, RootGrant>>();
 
   /**
    * 폴더를 바꿀 수 있는 도구(셸·파일 쓰기)가 끝날 때마다 부른다 — 그 대화의 IDE 탐색기가
@@ -1224,6 +1225,8 @@ export class LocalToolProvider {
     resolver: LocalFolderResolver | null,
     options: { missingMessage?: string } = {},
   ): void {
+    for (const grants of this.rootedScopes.values()) closeRootGrants([...grants.values()]);
+    this.rootedScopes.clear();
     this.resolveFolders = resolver ?? (() => []);
     this.missingFolderMessage = options.missingMessage || NO_FOLDER_MESSAGE;
   }
@@ -1278,6 +1281,16 @@ export class LocalToolProvider {
   foldersChanged(interactionId: string): number {
     const key = String(interactionId ?? '').trim();
     if (!key) return 0;
+    // Revoke the conversation's directory capabilities immediately. A source
+    // already opened for an admitted upload owns an independent file handle and
+    // may finish; an in-flight download still holding only a target grant fails
+    // before it can create directories or commit bytes. The next call reopens
+    // only the roots currently returned by the host resolver.
+    const cached = this.rootedScopes.get(key);
+    if (cached) {
+      closeRootGrants([...cached.values()]);
+      this.rootedScopes.delete(key);
+    }
     const roots = this.resolveFolders({ interactionId: key }).map((folder) => folder.path);
     return stopJobsOutside(key, roots) + stopUserPcJobsOutside(key, roots);
   }
@@ -1412,10 +1425,28 @@ export class LocalToolProvider {
   /** 이 호출의 대화에 연결된 폴더. 없으면 던진다 — 폴더 밖의 기본값은 없다. */
   private scopeFor(context?: LocalToolCallContext): FolderScope {
     const folders = this.resolveFolders(context);
-    if (!folders.length) throw new Error(this.missingFolderMessage);
+    const key = context?.interactionId ?? '';
+    let existing = this.rootedScopes.get(key) ?? new Map<string, RootGrant>();
+    if (!folders.length) {
+      closeRootGrants([...existing.values()]);
+      this.rootedScopes.delete(key);
+      throw new Error(this.missingFolderMessage);
+    }
+    const requested = folders.map((folder) => pathResolve(folder.path));
+    const next = new Map<string, RootGrant>();
+    try {
+      for (const root of requested) next.set(root, existing.get(root) ?? new RootGrant(root));
+    } catch (error) {
+      for (const [root, grant] of next) if (!existing.has(root)) grant.close();
+      throw error;
+    }
+    for (const [root, grant] of existing) if (!next.has(root)) grant.close();
+    existing = next;
+    this.rootedScopes.set(key, existing);
     return {
-      key: context?.interactionId ?? '',
-      roots: folders.map((folder) => folder.path),
+      key,
+      roots: requested,
+      grants: [...existing.values()],
       cwd: folders[0].path,
     };
   }
@@ -1461,43 +1492,54 @@ export class LocalToolProvider {
     return abs;
   }
 
+  private guardRooted(
+    p: unknown,
+    scope: FolderScope,
+    options: { allowMissing?: boolean } = {},
+  ): Promise<RootedResolvedPath> {
+    // Preserve the public path syntax used by the previous lexical guard: `~`
+    // names the user's home and relative paths start at the connected-folder
+    // cwd. The rooted resolver then binds the result to a pinned native grant.
+    const absolute = resolveOne(String(p ?? ''), scope.cwd);
+    return resolveRootedPath(absolute, scope.cwd, scope.grants, options);
+  }
+
   private async readFile(args: unknown, scope: FolderScope): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = await this.guardPath(a.path, scope);
+    const rooted = await this.guardRooted(a.path, scope);
     const maxBytes = Math.max(1, Math.min(OUTPUT_CAP, Number(a.maxBytes) || OUTPUT_CAP));
+    let source: RootedSource | undefined;
     try {
-      const buf = await fsReadFile(abs);
-      const text = buf.subarray(0, maxBytes).toString('utf8');
+      source = rooted.grant.openSource(rooted.relativePath);
+      const buf = source.read(0, Math.min(source.size, maxBytes));
+      const text = Buffer.from(buf).toString('utf8');
       const suffix =
-        buf.byteLength > maxBytes ? `\n…(truncated, ${buf.byteLength} bytes total)` : '';
+        source.size > maxBytes ? `\n…(truncated, ${source.size} bytes total)` : '';
       return { content: [{ type: 'text', text: (text || '(empty file)') + suffix }] };
     } catch (e) {
       return {
         content: [{ type: 'text', text: `읽기 실패: ${(e as Error).message}` }],
         isError: true,
       };
+    } finally {
+      source?.close();
     }
   }
 
   private async writeFile(args: unknown, scope: FolderScope): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = await this.guardPath(a.path, scope);
+    const rooted = await this.guardRooted(a.path, scope, { allowMissing: true });
     const content = typeof a.content === 'string' ? a.content : String(a.content ?? '');
     const append = a.mode === 'append' || a.append === true;
     try {
-      await mkdir(dirname(abs), { recursive: true });
-      // Re-check after mkdir so an existing parent symlink cannot carry the
-      // write outside an allowed root.
-      if (!(await resolveWithinRootsReal(dirname(abs), scope.roots))) {
-        throw new Error('[PATH_DOMAIN_MISMATCH] 생성된 상위 폴더가 허용 범위 밖입니다.');
-      }
-      if (append) await fsAppendFile(abs, content, 'utf8');
-      else await fsWriteFile(abs, content, 'utf8');
+      const parts = rooted.relativePath.split('/');
+      rooted.grant.mkdirs(parts.slice(0, -1).join('/'));
+      rooted.grant.write(rooted.relativePath, Buffer.from(content, 'utf8'), append);
       return {
         content: [
           {
             type: 'text',
-            text: `${append ? '이어썼습니다' : '저장했습니다'}: ${abs} (${Buffer.byteLength(content)} bytes)`,
+            text: `${append ? '이어썼습니다' : '저장했습니다'}: ${rooted.displayPath} (${Buffer.byteLength(content)} bytes)`,
           },
         ],
       };
@@ -1511,22 +1553,17 @@ export class LocalToolProvider {
 
   private async listDir(args: unknown, scope: FolderScope): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-    const abs = await this.guardPath(a.path ?? '', scope);
+    const rooted = await this.guardRooted(a.path ?? '', scope);
     try {
-      const names = await readdir(abs);
+      const entries = rooted.grant.list(rooted.relativePath);
       const rows: string[] = [];
-      for (const name of names.slice(0, 1000)) {
-        try {
-          const s = await stat(pathJoin(abs, name));
-          // 수정 시각 — "오늘 받은 파일" 같은 요청은 이것 없이는 고를 수 없다.
-          rows.push(`${s.isDirectory() ? 'd' : '-'} ${String(s.size).padStart(10)}  ${deviceTimeText(s.mtimeMs)}  ${name}`);
-        } catch {
-          rows.push(`?          ?  ${''.padEnd(16)}  ${name}`);
-        }
+      for (const entry of entries.slice(0, 1000)) {
+        const marker = entry.type === 'directory' ? 'd' : entry.type === 'file' ? '-' : 'l';
+        rows.push(`${marker} ${String(entry.size).padStart(10)}  ${deviceTimeText(entry.mtimeMs)}  ${entry.name}`);
       }
       if (rows.length === 0) return { content: [{ type: 'text', text: '(empty directory)' }] };
-      const head = `type size modified(local time) name — ${abs}`;
-      const more = names.length > 1000 ? `\n…(${names.length} entries, first 1000 shown)` : '';
+      const head = `type size modified(local time) name — ${rooted.displayPath}`;
+      const more = entries.length > 1000 ? `\n…(${entries.length} entries, first 1000 shown)` : '';
       return { content: [{ type: 'text', text: `${head}\n${rows.join('\n')}${more}` }] };
     } catch (e) {
       return {
@@ -1557,64 +1594,64 @@ export class LocalToolProvider {
 
     const limits = WORKSPACE_COPY_LIMITS;
     const skipped: SkippedFile[] = [];
-    const plan: Array<{ abs: string; relDir: string; size: number }> = [];
+    const plan: Array<{ rooted: RootedResolvedPath; relDir: string; size: number }> = [];
     let planned = 0;
-    const take = (abs: string, relDir: string, size: number): void => {
+    const take = (rooted: RootedResolvedPath, relDir: string, size: number): void => {
       if (size > limits.maxFileBytes) {
-        skipped.push({ source: abs, reason: `larger than ${limits.maxFileBytes / (1024 * 1024)}MB` });
+        skipped.push({ source: rooted.displayPath, reason: `larger than ${limits.maxFileBytes / (1024 * 1024)}MB` });
       } else if (plan.length >= limits.maxFiles) {
-        skipped.push({ source: abs, reason: `more than ${limits.maxFiles} files in one copy` });
+        skipped.push({ source: rooted.displayPath, reason: `more than ${limits.maxFiles} files in one copy` });
       } else if (planned + size > limits.maxTotalBytes) {
-        skipped.push({ source: abs, reason: 'total size limit for one copy reached' });
+        skipped.push({ source: rooted.displayPath, reason: 'total size limit for one copy reached' });
       } else {
-        plan.push({ abs, relDir, size });
+        plan.push({ rooted, relDir, size });
         planned += size;
       }
     };
     const skipDirs = new Set(['node_modules', '.git', '.venv', '__pycache__']);
-    const walk = async (root: string, dir: string, depth: number): Promise<void> => {
+    const walk = (rooted: RootedResolvedPath, baseName: string, dir: string, depth: number): void => {
       context?.signal?.throwIfAborted();
-      let names: string[];
+      let entries: ReturnType<RootGrant['list']>;
       try {
-        names = await readdir(dir);
+        entries = rooted.grant.list(dir);
       } catch (e) {
-        skipped.push({ source: dir, reason: (e as Error).message });
+        skipped.push({ source: rooted.displayPath, reason: (e as Error).message });
         return;
       }
-      for (const name of names.sort()) {
+      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
         context?.signal?.throwIfAborted();
-        if (name.startsWith('.')) continue;
-        const full = pathJoin(dir, name);
-        let s;
-        try {
-          s = await lstat(full);
-        } catch {
-          continue;
-        }
-        if (s.isSymbolicLink()) continue;
-        if (s.isDirectory()) {
-          if (skipDirs.has(name)) continue;
-          if (depth >= limits.maxDepth) skipped.push({ source: full, reason: 'folder nested too deep' });
-          else await walk(root, full, depth + 1);
-        } else if (s.isFile()) {
-          const rel = pathRelative(root, full).split(/[\\/]+/).join('/');
-          take(full, copyTargetDir(basename(root), rel), s.size);
+        if (entry.name.startsWith('.') || entry.type === 'symlink') continue;
+        const child = dir ? `${dir}/${entry.name}` : entry.name;
+        const childDisplay = pathJoin(rooted.grant.canonicalPath, ...child.split('/'));
+        if (entry.type === 'directory') {
+          if (skipDirs.has(entry.name)) continue;
+          if (depth >= limits.maxDepth) skipped.push({ source: childDisplay, reason: 'folder nested too deep' });
+          else walk(rooted, baseName, child, depth + 1);
+        } else if (entry.type === 'file') {
+          const prefix = rooted.relativePath ? `${rooted.relativePath}/` : '';
+          const rel = child.startsWith(prefix) ? child.slice(prefix.length) : entry.name;
+          take(
+            { grant: rooted.grant, relativePath: child, displayPath: childDisplay },
+            copyTargetDir(baseName, rel),
+            entry.size,
+          );
         }
       }
     };
     for (const input of inputs) {
       context?.signal?.throwIfAborted();
-      let abs: string;
+      let rooted: RootedResolvedPath;
       try {
-        abs = await this.guardPath(input, scope);
+        rooted = await this.guardRooted(input, scope);
       } catch (e) {
         skipped.push({ source: input, reason: (e as Error).message });
         continue;
       }
       try {
-        const s = await stat(abs);
-        if (s.isDirectory()) await walk(abs, abs, 0);
-        else take(abs, '', s.size);
+        const entry = rooted.grant.stat(rooted.relativePath);
+        if (entry.type === 'directory') walk(rooted, basename(input), rooted.relativePath, 0);
+        else if (entry.type === 'file') take(rooted, '', entry.size);
+        else skipped.push({ source: rooted.displayPath, reason: 'not a regular file or directory' });
       } catch {
         context?.signal?.throwIfAborted();
         skipped.push({ source: input, reason: 'not found' });
@@ -1624,20 +1661,28 @@ export class LocalToolProvider {
     const copied: CopiedFile[] = [];
     for (const item of plan) {
       context?.signal?.throwIfAborted();
+      let source: ReturnType<typeof fileSourceFromRooted> | undefined;
       try {
+        source = fileSourceFromRooted(item.rooted, {
+          name: basename(item.rooted.displayPath),
+          signal: context?.signal,
+        });
+        if (source.size !== item.size) throw new Error('FILE_SOURCE_CHANGED');
         const res = await transfer.upload({
           transfer: capability,
-          file: await fileSource(item.abs, { signal: context?.signal }),
-          name: basename(item.abs),
+          file: source,
+          name: basename(item.rooted.displayPath),
           relDir: item.relDir,
           mimeType: 'application/octet-stream',
           signal: context?.signal,
         });
         context?.signal?.throwIfAborted();
-        copied.push({ source: item.abs, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
+        copied.push({ source: item.rooted.displayPath, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
       } catch (e) {
         context?.signal?.throwIfAborted();
-        skipped.push({ source: item.abs, reason: (e as Error).message || 'upload failed' });
+        skipped.push({ source: item.rooted.displayPath, reason: (e as Error).message || 'upload failed' });
+      } finally {
+        await source?.close();
       }
     }
     return copyToWorkspaceResult(copied, skipped);
@@ -1656,24 +1701,28 @@ export class LocalToolProvider {
       throw new Error('WORKSPACE_TRANSFER_CAPABILITY_REQUIRED');
     }
     const raw = String(a.path ?? '').trim();
-    const dest = await this.guardPath(raw, scope);
+    const dest = await this.guardRooted(raw, scope, { allowMissing: true });
     let target = dest;
     try {
-      if ((await stat(dest)).isDirectory()) target = pathJoin(dest, download.name);
-    } catch {
-      if (/[\\/]$/.test(raw)) target = pathJoin(dest, download.name);
+      if (dest.grant.stat(dest.relativePath).type === 'directory') {
+        target = await this.guardRooted(pathJoin(raw, download.name), scope, { allowMissing: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (/[\\/]$/.test(raw)) {
+        target = await this.guardRooted(pathJoin(raw, download.name), scope, { allowMissing: true });
+      }
     }
-    target = await this.guardPath(target, scope);
     let exists = false;
     try {
-      await stat(target);
+      target.grant.stat(target.relativePath);
       exists = true;
-    } catch {
-      exists = false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     if (exists && a.overwrite !== true) {
       return {
-        content: [{ type: 'text', text: `${target} already exists. Pass overwrite=true to replace it, or choose another path.` }],
+        content: [{ type: 'text', text: `${target.displayPath} already exists. Pass overwrite=true to replace it, or choose another path.` }],
         isError: true,
       };
     }
@@ -1685,10 +1734,8 @@ export class LocalToolProvider {
     });
     context?.signal?.throwIfAborted();
     if (bytes.byteLength > 100 * 1024 * 1024) throw new Error('WORKSPACE_DOWNLOAD_TOO_LARGE');
-    await mkdir(dirname(target), { recursive: true });
-    if (!(await resolveWithinRootsReal(dirname(target), scope.roots))) {
-      throw new Error('[PATH_DOMAIN_MISMATCH] 생성된 상위 폴더가 허용 범위 밖입니다.');
-    }
+    const parent = target.relativePath.split('/').slice(0, -1).join('/');
+    target.grant.mkdirs(parent);
     context?.signal?.throwIfAborted();
     try {
       await atomicWorkspaceWrite(target, bytes, {
@@ -1698,20 +1745,20 @@ export class LocalToolProvider {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'EEXIST' && a.overwrite !== true) {
         return {
-          content: [{ type: 'text', text: `${target} already exists. Pass overwrite=true to replace it, or choose another path.` }],
+          content: [{ type: 'text', text: `${target.displayPath} already exists. Pass overwrite=true to replace it, or choose another path.` }],
           isError: true,
         };
       }
       throw e;
     }
-    return { content: [{ type: 'text', text: `Saved ${download.name} to ${target} (${bytes.byteLength} bytes).` }] };
+    return { content: [{ type: 'text', text: `Saved ${download.name} to ${target.displayPath} (${bytes.byteLength} bytes).` }] };
   }
 
   private async search(args: unknown, scope: FolderScope): Promise<LocalToolResult> {
     const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
     const query = String(a.query ?? '');
     if (!query) throw new Error('query must not be empty');
-    const abs = await this.guardPath(a.path ?? '', scope);
+    const rooted = await this.guardRooted(a.path ?? '', scope);
     const maxResults = Math.max(1, Math.min(500, Number(a.maxResults) || 100));
     const hits: string[] = [];
     const skipDirs = new Set([
@@ -1723,48 +1770,47 @@ export class LocalToolProvider {
       '.next',
       '__pycache__',
     ]);
-    const walk = async (dir: string, depth: number): Promise<void> => {
+    const walk = (dir: string, depth: number): void => {
       if (hits.length >= maxResults || depth > 8) return;
-      let entries: string[];
+      let entries: ReturnType<RootGrant['list']>;
       try {
-        entries = await readdir(dir);
+        entries = rooted.grant.list(dir);
       } catch {
         return;
       }
-      for (const name of entries) {
+      for (const entry of entries) {
         if (hits.length >= maxResults) return;
-        const full = pathJoin(dir, name);
-        let s;
-        try {
-          s = await lstat(full);
-        } catch {
-          continue;
-        }
-        if (s.isSymbolicLink()) continue;
-        if (s.isDirectory()) {
-          if (!skipDirs.has(name) && !name.startsWith('.')) await walk(full, depth + 1);
-        } else if (s.size <= 2_000_000 && !BINARY_EXT.has(extname(name).toLowerCase())) {
+        const child = dir ? `${dir}/${entry.name}` : entry.name;
+        const display = pathJoin(rooted.grant.canonicalPath, ...child.split('/'));
+        if (entry.type === 'symlink') continue;
+        if (entry.type === 'directory') {
+          if (!skipDirs.has(entry.name) && !entry.name.startsWith('.')) walk(child, depth + 1);
+        } else if (entry.type === 'file' && entry.size <= 2_000_000 && !BINARY_EXT.has(extname(entry.name).toLowerCase())) {
+          let source: RootedSource | undefined;
           try {
-            const text = await fsReadFile(full, 'utf8');
+            source = rooted.grant.openSource(child);
+            const text = Buffer.from(source.read(0, source.size)).toString('utf8');
             const lines = text.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
               if (lines[i].includes(query)) {
-                hits.push(`${full}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+                hits.push(`${display}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
                 if (hits.length >= maxResults) return;
               }
             }
           } catch {
             /* unreadable/binary — skip */
+          } finally {
+            source?.close();
           }
         }
       }
     };
-    await walk(abs, 0);
+    walk(rooted.relativePath, 0);
     return {
       content: [
         {
           type: 'text',
-          text: hits.length ? hits.join('\n') : `'${query}' 를 찾지 못했습니다 (${abs}).`,
+          text: hits.length ? hits.join('\n') : `'${query}' 를 찾지 못했습니다 (${rooted.displayPath}).`,
         },
       ],
     };

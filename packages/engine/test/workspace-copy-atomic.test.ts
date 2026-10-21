@@ -1,199 +1,121 @@
 import assert from 'node:assert/strict';
-import { link, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { platform, tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { atomicWorkspaceWrite } from '@dex/engine/atomic-workspace-write';
 import {
-  atomicWorkspaceWrite,
-  type AtomicWorkspaceWriteDependencies,
-} from '@dex/engine/atomic-workspace-write';
+  RootGrant,
+  configureNativeFsStage,
+  resolveRootedPath,
+} from '@dex/engine/rooted-fs';
 
-async function fixture(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'xgen-atomic-workspace-'));
+async function fixture(): Promise<{ base: string; root: string; stage: string; grant: RootGrant }> {
+  const base = await mkdtemp(join(tmpdir(), 'xgen-native-atomic-'));
+  const root = join(base, 'root');
+  const stage = join(base, 'stage');
+  await mkdir(root);
+  await mkdir(stage);
+  await chmod(stage, 0o700);
+  configureNativeFsStage(stage);
+  return { base, root, stage, grant: new RootGrant(root) };
 }
 
-async function assertNoStagingFiles(dir: string): Promise<void> {
-  assert.equal((await readdir(dir)).some((name) => /^\.xgen-[0-9a-f]{32}\.tmp$/i.test(name)), false);
+async function target(grant: RootGrant, root: string, name = 'saved.txt') {
+  return resolveRootedPath(name, root, [grant], { allowMissing: true });
 }
 
-test('exclusive random staging skips a preclaimed name', async () => {
-  const dir = await fixture();
-  try {
-    const target = join(dir, 'saved.txt');
-    const claimedNonce = 'a'.repeat(32);
-    const claimed = join(dir, `.xgen-${claimedNonce}.tmp`);
-    await writeFile(claimed, 'CLAIMED');
-    const nonces = [claimedNonce, 'b'.repeat(32)];
+async function childReady(child: ReturnType<typeof spawn>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.stdout?.once('data', () => resolve());
+    child.once('exit', (code) => reject(new Error(`racer exited before ready (${code})`)));
+  });
+}
 
-    await atomicWorkspaceWrite(
-      target,
-      new TextEncoder().encode('PAYLOAD'),
-      { overwrite: false },
-      { randomNonce: () => nonces.shift() ?? 'c'.repeat(32) },
-    );
-
-    assert.equal(await readFile(claimed, 'utf8'), 'CLAIMED');
-    assert.equal(await readFile(target, 'utf8'), 'PAYLOAD');
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test('native private stage commits without exposing staging names in the grant', async (t) => {
+  const value = await fixture();
+  t.after(async () => { value.grant.close(); await rm(value.base, { recursive: true, force: true }); });
+  await atomicWorkspaceWrite(await target(value.grant, value.root), Buffer.from('PAYLOAD'), { overwrite: false });
+  assert.equal(await readFile(join(value.root, 'saved.txt'), 'utf8'), 'PAYLOAD');
+  assert.deepEqual(await readdir(value.stage), []);
+  assert.deepEqual(value.grant.list('').map((entry) => entry.name), ['saved.txt']);
 });
 
-test('exclusive staging never follows a preclaimed symlink', { skip: platform() === 'win32' }, async () => {
-  const dir = await fixture();
-  try {
-    const outside = join(dir, 'outside.txt');
-    const target = join(dir, 'saved.txt');
-    const claimedNonce = 'a'.repeat(32);
-    const claimed = join(dir, `.xgen-${claimedNonce}.tmp`);
-    await writeFile(outside, 'SAFE');
-    await symlink(outside, claimed, 'file');
-    const nonces = [claimedNonce, 'b'.repeat(32)];
-
-    await atomicWorkspaceWrite(
-      target,
-      new TextEncoder().encode('PAYLOAD'),
-      { overwrite: false },
-      { randomNonce: () => nonces.shift() ?? 'c'.repeat(32) },
-    );
-
-    assert.equal(await readFile(outside, 'utf8'), 'SAFE');
-    assert.equal(await readFile(target, 'utf8'), 'PAYLOAD');
-    assert.equal((await lstat(claimed)).isSymbolicLink(), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test('native no-replace preserves an existing target', async (t) => {
+  const value = await fixture();
+  t.after(async () => { value.grant.close(); await rm(value.base, { recursive: true, force: true }); });
+  await writeFile(join(value.root, 'saved.txt'), 'EXISTING');
+  await assert.rejects(
+    atomicWorkspaceWrite(await target(value.grant, value.root), Buffer.from('PAYLOAD'), { overwrite: false }),
+    (error: NodeJS.ErrnoException) => error.code === 'EEXIST',
+  );
+  assert.equal(await readFile(join(value.root, 'saved.txt'), 'utf8'), 'EXISTING');
+  assert.deepEqual(await readdir(value.stage), []);
 });
 
-test('no-replace commit preserves a target created after staging', async () => {
-  const dir = await fixture();
-  try {
-    const target = join(dir, 'saved.txt');
-    const createThenLink: AtomicWorkspaceWriteDependencies['linkNoReplace'] = async (source, destination) => {
-      await writeFile(destination, 'RACER', { flag: 'wx' });
-      await link(source, destination);
-    };
-
-    await assert.rejects(
-      atomicWorkspaceWrite(target, new TextEncoder().encode('PAYLOAD'), { overwrite: false }, {
-        linkNoReplace: createThenLink,
-      }),
-      (error: NodeJS.ErrnoException) => error.code === 'EEXIST',
-    );
-    assert.equal(await readFile(target, 'utf8'), 'RACER');
-    await assertNoStagingFiles(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test('existing targets are preserved by the atomic no-replace primitive', async () => {
-  const dir = await fixture();
-  try {
-    const target = join(dir, 'saved.txt');
-    await writeFile(target, 'EXISTING');
-    await assert.rejects(
-      atomicWorkspaceWrite(target, new TextEncoder().encode('PAYLOAD'), { overwrite: false }),
-      (error: NodeJS.ErrnoException) => error.code === 'EEXIST',
-    );
-    assert.equal(await readFile(target, 'utf8'), 'EXISTING');
-    await assertNoStagingFiles(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test('unsupported hard links fail closed without replacing the target', async () => {
-  const dir = await fixture();
-  try {
-    const target = join(dir, 'saved.txt');
-    const unsupported: AtomicWorkspaceWriteDependencies['linkNoReplace'] = async () => {
-      throw Object.assign(new Error('unsupported'), { code: 'ENOTSUP' });
-    };
-    await assert.rejects(
-      atomicWorkspaceWrite(target, new TextEncoder().encode('PAYLOAD'), { overwrite: false }, {
-        linkNoReplace: unsupported,
-      }),
-      /WORKSPACE_ATOMIC_COMMIT_UNSUPPORTED/,
-    );
-    await assert.rejects(readFile(target), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
-    await assertNoStagingFiles(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test('unusable or changed staging identities fail closed and clean up', async () => {
-  for (const candidate of [
-    {
-      expected: /WORKSPACE_ATOMIC_STAGE_IDENTITY_UNAVAILABLE/,
-      overrides: {
-        handleIdentity: async () => ({ dev: 1n, ino: 0n, regular: true }),
-      },
-    },
-    {
-      expected: /WORKSPACE_ATOMIC_STAGE_CHANGED/,
-      overrides: {
-        pathIdentity: async (path: string) => {
-          const value = await lstat(path, { bigint: true });
-          return { dev: value.dev, ino: value.ino + 1n, regular: value.isFile() };
-        },
-      },
-    },
-  ] as const) {
-    const dir = await fixture();
-    try {
-      const target = join(dir, 'saved.txt');
-      await assert.rejects(
-        atomicWorkspaceWrite(
-          target,
-          new TextEncoder().encode('PAYLOAD'),
-          { overwrite: false },
-          candidate.overrides,
-        ),
-        candidate.expected,
-      );
-      await assert.rejects(readFile(target), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
-      await assertNoStagingFiles(dir);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
+test('native no-replace loses safely to a target racer', async (t) => {
+  const value = await fixture();
+  t.after(async () => { value.grant.close(); await rm(value.base, { recursive: true, force: true }); });
+  const targetPath = join(value.root, 'saved.txt');
+  const racer = spawn(process.execPath, ['-e', `
+    const fs=require('fs');
+    const stage=${JSON.stringify(value.stage)};
+    const target=${JSON.stringify(targetPath)};
+    process.stdout.write('ready\\n');
+    const end=Date.now()+5000;
+    while(Date.now()<end){
+      if(fs.readdirSync(stage).length){
+        try{fs.writeFileSync(target,'RACER',{flag:'wx'});}catch{}
+        process.exit(0);
+      }
     }
-  }
+    process.exit(2);
+  `], { stdio: ['ignore', 'pipe', 'ignore'] });
+  await childReady(racer);
+  const payload = Buffer.alloc(64 * 1024 * 1024, 7);
+  await assert.rejects(
+    atomicWorkspaceWrite(await target(value.grant, value.root), payload, { overwrite: false }),
+    (error: NodeJS.ErrnoException) => error.code === 'EEXIST',
+  );
+  assert.equal(await new Promise<number | null>((resolve) => racer.on('exit', resolve)), 0);
+  assert.equal(await readFile(targetPath, 'utf8'), 'RACER');
+  assert.deepEqual(await readdir(value.stage), []);
 });
 
-test('cancellation before commit removes staging and leaves the target absent', async () => {
-  const dir = await fixture();
-  try {
-    const target = join(dir, 'saved.txt');
-    const abort = new AbortController();
-    const handleIdentity: AtomicWorkspaceWriteDependencies['handleIdentity'] = async (handle) => {
-      const value = await handle.stat({ bigint: true });
-      abort.abort();
-      return { dev: value.dev, ino: value.ino, regular: value.isFile() };
-    };
-    await assert.rejects(
-      atomicWorkspaceWrite(target, new TextEncoder().encode('PAYLOAD'), {
-        overwrite: false,
-        signal: abort.signal,
-      }, { handleIdentity }),
-      (error: Error) => error.name === 'AbortError',
-    );
-    await assert.rejects(readFile(target), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
-    await assertNoStagingFiles(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test('tampering with the private stage name fails closed', async (t) => {
+  const value = await fixture();
+  t.after(async () => { value.grant.close(); await rm(value.base, { recursive: true, force: true }); });
+  const targetPath = join(value.root, 'saved.txt');
+  const racer = spawn(process.execPath, ['-e', `
+    const fs=require('fs'),p=require('path');
+    const stage=${JSON.stringify(value.stage)};
+    process.stdout.write('ready\\n');
+    const end=Date.now()+5000;
+    while(Date.now()<end){
+      const names=fs.readdirSync(stage);
+      if(names.length){
+        const original=p.join(stage,names[0]);
+        try{fs.renameSync(original,p.join(stage,'moved-by-racer'));fs.writeFileSync(original,'REPLACEMENT',{flag:'wx'});process.exit(0);}catch{}
+      }
+    }
+    process.exit(2);
+  `], { stdio: ['ignore', 'pipe', 'ignore'] });
+  await childReady(racer);
+  await assert.rejects(
+    atomicWorkspaceWrite(await target(value.grant, value.root), Buffer.alloc(64 * 1024 * 1024, 9), { overwrite: true }),
+    (error: NodeJS.ErrnoException) => error.code === 'EIO',
+  );
+  assert.equal(await new Promise<number | null>((resolve) => racer.on('exit', resolve)), 0);
+  await assert.rejects(readFile(targetPath), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
 });
 
-test('overwrite atomically replaces the target after staging and sync', async () => {
-  const dir = await fixture();
-  try {
-    const target = join(dir, 'saved.txt');
-    await writeFile(target, 'OLD');
-    await atomicWorkspaceWrite(target, new TextEncoder().encode('NEW'), { overwrite: true });
-    assert.equal(await readFile(target, 'utf8'), 'NEW');
-    await assertNoStagingFiles(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test('native overwrite consumes the private stage name and replaces the target', async (t) => {
+  const value = await fixture();
+  t.after(async () => { value.grant.close(); await rm(value.base, { recursive: true, force: true }); });
+  await writeFile(join(value.root, 'saved.txt'), 'OLD');
+  await atomicWorkspaceWrite(await target(value.grant, value.root), Buffer.from('NEW'), { overwrite: true });
+  assert.equal(await readFile(join(value.root, 'saved.txt'), 'utf8'), 'NEW');
+  assert.deepEqual(await readdir(value.stage), []);
 });

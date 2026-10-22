@@ -15,6 +15,7 @@
  * 그대로 보였고 받을 단추는 없었다.
  */
 import type { HttpClient } from './client';
+import { WORKSPACE_TRANSFER_HEADER } from './workspace-copy';
 
 export interface ChatDownload {
   name: string;
@@ -213,18 +214,40 @@ export class ChatFilesApi {
   constructor(private readonly http: HttpClient) {}
 
   /** 답의 파일 바이트. `preview` 는 그림을 화면에 그릴 때(파일 저장소의 미리보기 길) 쓴다. */
-  download(item: ChatDownload, opts: { preview?: boolean } = {}): Promise<{ bytes: Uint8Array; contentType: string }> {
+  download(
+    item: ChatDownload,
+    opts: { preview?: boolean; maxBytes?: number; signal?: AbortSignal } = {},
+  ): Promise<{ bytes: Uint8Array; contentType: string }> {
     const req = chatDownloadRequest(item, opts);
     if (!req) return Promise.reject(new Error('받을 수 없는 파일입니다.'));
-    return this.http.getBinary(req.path, { headers: req.headers, timeoutMs: 300_000 });
+    return this.http.getBinary(req.path, {
+      headers: req.headers,
+      timeoutMs: 300_000,
+      maxBytes: opts.maxBytes,
+      signal: opts.signal,
+    });
   }
 
   /** 서버가 내어 준 임시 파일(작업 공간 → 기기 폴더 복사의 받을 거리)의 바이트. */
-  artifactBytes(url: string, token?: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+  artifactBytes(
+    url: string,
+    token?: string,
+    opts: { signal?: AbortSignal; maxBytes?: number; workspaceTransferToken?: string } = {},
+  ): Promise<{ bytes: Uint8Array; contentType: string }> {
     if (!url.startsWith('/api/agentflow/files/artifacts/')) return Promise.reject(new Error('임시 파일 주소가 아닙니다.'));
+    const { workspaceTransferToken, ...binary } = opts;
+    if (workspaceTransferToken && workspaceTransferToken !== token) {
+      return Promise.reject(new Error('WORKSPACE_TRANSFER_CAPABILITY_REQUIRED'));
+    }
     return this.http.getBinary(url, {
-      headers: token ? { 'X-XGEN-Artifact-Token': token } : {},
+      headers: token
+        ? {
+            'X-XGEN-Artifact-Token': token,
+            ...(workspaceTransferToken ? { [WORKSPACE_TRANSFER_HEADER]: workspaceTransferToken } : {}),
+          }
+        : {},
       timeoutMs: 600_000,
+      ...binary,
     });
   }
 }

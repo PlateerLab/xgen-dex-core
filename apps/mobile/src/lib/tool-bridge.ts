@@ -15,7 +15,7 @@ import type { ToolAdvert, ToolResult } from './mobile-tools';
 export type BridgeState = 'off' | 'connecting' | 'connected' | 'error';
 
 /** 서버가 보증하는 호출자 신원 — 도구가 어느 대화의 폴더를 쓸지 정한다. */
-export interface ToolCallContext {
+export interface ToolCallOriginContext {
   workflowId?: string;
   interactionId?: string;
   /** 다른 화면(웹·PC)에서 보낸 턴의 호출인가 — 이 대화의 폴더가 이 폰에 있으면 그렇다. */
@@ -24,8 +24,18 @@ export interface ToolCallContext {
   originName?: string;
 }
 
+/** 서버가 protocol v2 호출마다 보증한 상관관계. workspace transfer 권한에도 그대로 묶는다. */
+export interface ToolCallContext extends ToolCallOriginContext {
+  request_id: string;
+  request_nonce: string;
+  connection_generation: number;
+  protocol: 2;
+  /** hello 에 광고한 기기 id. 생략한 구형 설정은 서버와 같은 legacy 슬롯이다. */
+  device_id: string;
+}
+
 /** mcp_call 의 context(snake/camel 모두) → 정규화. 값이 없으면 undefined. */
-export function toolCallContext(raw: unknown): ToolCallContext {
+export function toolCallContext(raw: unknown): ToolCallOriginContext {
   const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const text = (input: unknown): string | undefined => {
     const normalized = String(input ?? '').trim();
@@ -74,6 +84,18 @@ const RECONNECT_MAX_MS = 60_000;
 /** hello 후 이 시간 안에 매칭 ready 가 없으면 연결이 죽었거나 서버가 hello 를
  *  놓친 것 — 소켓을 끊고 재연결해 반드시 fresh hello 로 수렴시킨다. */
 const READY_ACK_TIMEOUT_MS = 6_000;
+const MCP_PROTOCOL_VERSION = 2;
+const WORKSPACE_TRANSFER_FEATURE = 'workspace_transfer_cap_v1';
+
+interface InflightCall {
+  requestId: string;
+  protocolVersion: 2;
+  connectionGeneration: number;
+  requestNonce: string;
+  socket: WebSocket;
+  controller: AbortController;
+  terminal: boolean;
+}
 
 export class MobileToolBridge {
   private ws: WebSocket | null = null;
@@ -85,8 +107,10 @@ export class MobileToolBridge {
   private pendingCatalogId = '';
   private ackWatchdog: ReturnType<typeof setTimeout> | null = null;
   private status: BridgeStatus = { state: 'off', toolCount: 0 };
+  private protocolReady = false;
+  private connectionGeneration: number | null = null;
   /** 도는 호출 — 서버의 `mcp_cancel` 이 끊는다. */
-  private inflight = new Map<string, AbortController>();
+  private inflight = new Map<string, InflightCall>();
 
   constructor(private opts: ToolBridgeOptions) {}
 
@@ -104,11 +128,18 @@ export class MobileToolBridge {
     this.clearHeartbeat();
     this.clearAckWatchdog();
     try {
-      this.ws?.close();
+      const ws = this.ws;
+      if (ws) {
+        this.abortInflight(ws);
+        ws.close();
+      }
     } catch {
       /* noop */
     }
     this.ws = null;
+    this.protocolReady = false;
+    this.connectionGeneration = null;
+    this.abortInflight();
     this.emit({ state: 'off', toolCount: 0 });
   }
 
@@ -165,6 +196,15 @@ export class MobileToolBridge {
     this.ackWatchdog = null;
   }
 
+  private abortInflight(socket?: WebSocket): void {
+    for (const [requestId, call] of this.inflight) {
+      if (socket && call.socket !== socket) continue;
+      call.terminal = true;
+      call.controller.abort();
+      this.inflight.delete(requestId);
+    }
+  }
+
   private scheduleRetry(): void {
     if (this.stopped || this.retry) return;
     const delay = this.backoff;
@@ -187,6 +227,7 @@ export class MobileToolBridge {
     if (this.ws) {
       const prev = this.ws;
       this.ws = null;
+      this.abortInflight(prev);
       prev.onopen = prev.onmessage = prev.onclose = prev.onerror = null;
       try {
         prev.close();
@@ -194,6 +235,8 @@ export class MobileToolBridge {
         /* noop */
       }
     }
+    this.protocolReady = false;
+    this.connectionGeneration = null;
     const factory = this.opts.wsFactory ?? ((url: string) => new WebSocket(url));
     let ws: WebSocket;
     try {
@@ -219,13 +262,18 @@ export class MobileToolBridge {
       }
     };
     ws.onmessage = (evt: MessageEvent) => {
-      void this.onMessage(String(evt.data));
+      void this.onMessage(String(evt.data), ws);
     };
     ws.onclose = (evt: CloseEvent) => {
       this.opts.log?.(`도구 브리지 WS 종료 code=${evt?.code ?? '?'}`);
+      this.abortInflight(ws);
       this.clearHeartbeat();
       this.clearAckWatchdog();
-      if (this.ws === ws) this.ws = null;
+      if (this.ws === ws) {
+        this.ws = null;
+        this.protocolReady = false;
+        this.connectionGeneration = null;
+      }
       if (!this.stopped) {
         this.emit({ state: 'connecting', toolCount: 0, error: this.status.error });
         this.scheduleRetry();
@@ -238,14 +286,20 @@ export class MobileToolBridge {
 
   private sendHello(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
+    // 서버는 hello 마다 같은 소켓에도 새 connection_generation 을 부여한다.
+    // 이전 세대 호출은 더 이상 안전하게 답할 수 없으므로 로컬 작업도 즉시 끊는다.
+    this.abortInflight(this.ws);
     const tools = this.opts.catalog();
     const catalogId = `${Date.now()}-${++this.catalogSeq}`;
     this.pendingCatalogId = catalogId;
+    this.protocolReady = false;
+    this.connectionGeneration = null;
     this.ws.send(
       JSON.stringify({
         type: 'hello',
         catalog_id: catalogId,
         tools,
+        features: [WORKSPACE_TRANSFER_FEATURE],
         ...(this.opts.deviceId
           ? {
               device_id: this.opts.deviceId,
@@ -274,7 +328,7 @@ export class MobileToolBridge {
     }, READY_ACK_TIMEOUT_MS);
   }
 
-  private async onMessage(text: string): Promise<void> {
+  private async onMessage(text: string, from?: WebSocket): Promise<void> {
     let msg: {
       type?: string;
       request_id?: string;
@@ -285,15 +339,33 @@ export class MobileToolBridge {
       catalog_id?: string;
       tool_count?: number;
       deadline_ms?: number;
+      protocol_version?: number;
+      connection_generation?: number;
+      request_nonce?: unknown;
     };
     try {
-      msg = JSON.parse(text);
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      msg = parsed as typeof msg;
     } catch {
       return;
     }
     if (msg.type === 'ready') {
       if (msg.catalog_id !== this.pendingCatalogId) return;
+      if (
+        from !== this.ws ||
+        msg.protocol_version !== MCP_PROTOCOL_VERSION ||
+        !Number.isSafeInteger(msg.connection_generation) ||
+        Number(msg.connection_generation) < 1
+      ) {
+        this.protocolReady = false;
+        this.connectionGeneration = null;
+        this.emit({ state: 'error', toolCount: 0, error: 'unsupported_mcp_protocol' });
+        return;
+      }
       this.clearAckWatchdog();
+      this.protocolReady = true;
+      this.connectionGeneration = Number(msg.connection_generation);
       this.emit({
         state: 'connected',
         toolCount: Number.isFinite(msg.tool_count) ? Math.max(0, Math.trunc(msg.tool_count as number)) : 0,
@@ -302,19 +374,82 @@ export class MobileToolBridge {
     }
     if (msg.type === 'mcp_cancel') {
       // 서버가 이 호출을 더 기다리지 않는다(시한이 지났거나 턴이 취소됐다) — 도는 일을 멈춘다.
-      if (msg.request_id) this.inflight.get(String(msg.request_id))?.abort();
+      const requestId = typeof msg.request_id === 'string' ? msg.request_id : '';
+      const call = this.inflight.get(requestId);
+      if (
+        !call ||
+        call.terminal ||
+        call.socket !== from ||
+        msg.protocol_version !== call.protocolVersion ||
+        msg.connection_generation !== call.connectionGeneration ||
+        msg.request_nonce !== call.requestNonce
+      ) return;
+      call.terminal = true;
+      this.inflight.delete(requestId);
+      call.controller.abort();
       return;
     }
     if (msg.type === 'mcp_call') {
-      const { request_id, tool } = msg;
+      const { server, tool } = msg;
+      const requestId = typeof msg.request_id === 'string' ? msg.request_id : '';
+      const nonce = typeof msg.request_nonce === 'string' ? msg.request_nonce : '';
+      const generation = msg.connection_generation;
+      const validCorrelation =
+        from !== undefined &&
+        from === this.ws &&
+        this.protocolReady &&
+        msg.protocol_version === MCP_PROTOCOL_VERSION &&
+        Number.isSafeInteger(generation) &&
+        Number(generation) > 0 &&
+        generation === this.connectionGeneration &&
+        requestId.trim().length > 0 &&
+        nonce.trim().length > 0 &&
+        typeof server === 'string' &&
+        server.trim().length > 0 &&
+        typeof tool === 'string' &&
+        tool.trim().length > 0;
+      if (!validCorrelation) return;
+      if (this.inflight.has(requestId)) {
+        try {
+          from.send(JSON.stringify({
+            type: 'mcp_result',
+            request_id: requestId,
+            protocol_version: MCP_PROTOCOL_VERSION,
+            connection_generation: generation,
+            request_nonce: nonce,
+            ok: false,
+            error: 'duplicate_request',
+          }));
+        } catch {
+          /* socket gone */
+        }
+        return;
+      }
       const controller = new AbortController();
-      if (request_id) this.inflight.set(String(request_id), controller);
+      const call: InflightCall = {
+        requestId,
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        connectionGeneration: Number(generation),
+        requestNonce: nonce,
+        socket: from,
+        controller,
+        terminal: false,
+      };
+      this.inflight.set(requestId, call);
       // 서버보다 먼저 스스로 멈추고 사유를 돌려준다 — 답이 없는 호출로 턴이 묶이지 않게.
       const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, true);
       let watchdog: ReturnType<typeof setTimeout> | null = null;
       let payload: Record<string, unknown>;
       try {
-        const work = this.opts.call(String(tool), msg.args ?? {}, toolCallContext(msg.context), controller.signal);
+        const context: ToolCallContext = {
+          ...toolCallContext(msg.context),
+          request_id: requestId,
+          request_nonce: nonce,
+          connection_generation: Number(generation),
+          protocol: MCP_PROTOCOL_VERSION,
+          device_id: this.opts.deviceId || 'legacy',
+        };
+        const work = this.opts.call(String(tool), msg.args ?? {}, context, controller.signal);
         const timedOut = new Promise<never>((_resolve, reject) => {
           watchdog = setTimeout(() => {
             // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
@@ -323,15 +458,31 @@ export class MobileToolBridge {
           }, deadlineMs);
         });
         const result = await Promise.race([work, timedOut]);
-        payload = { request_id, ok: true, result };
+        payload = { ok: true, result };
       } catch (e) {
-        payload = { request_id, ok: false, error: e instanceof Error ? e.message : String(e) };
+        payload = { ok: false, error: e instanceof Error ? e.message : String(e) };
       } finally {
         if (watchdog) clearTimeout(watchdog);
-        if (request_id) this.inflight.delete(String(request_id));
       }
+      const mayReply =
+        this.inflight.get(requestId) === call &&
+        !call.terminal &&
+        this.ws === from &&
+        from.readyState === WebSocket.OPEN &&
+        this.protocolReady &&
+        this.connectionGeneration === generation;
+      call.terminal = true;
+      if (this.inflight.get(requestId) === call) this.inflight.delete(requestId);
+      if (!mayReply) return;
       try {
-        this.ws?.send(JSON.stringify({ type: 'mcp_result', ...payload }));
+        from.send(JSON.stringify({
+          type: 'mcp_result',
+          request_id: requestId,
+          protocol_version: MCP_PROTOCOL_VERSION,
+          connection_generation: generation,
+          request_nonce: nonce,
+          ...payload,
+        }));
       } catch {
         /* socket gone */
       }

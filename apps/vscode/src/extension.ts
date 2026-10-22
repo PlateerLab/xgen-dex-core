@@ -11,10 +11,10 @@ export function activate(context: vscode.ExtensionContext): void {
   activeService = service;
   const chat = new ChatViewProvider(context, service);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  status.name = 'XGEN Dex';
+  status.name = 'XGEN DexOn';
   status.command = 'xgenDex.login';
-  status.text = '$(loading~spin) Dex';
-  status.tooltip = 'XGEN Dex CLI 엔진에 연결하는 중입니다.';
+  status.text = '$(loading~spin) DexOn';
+  status.tooltip = 'XGEN DexOn CLI 엔진에 연결하는 중입니다.';
   status.show();
 
   const refreshAll = async (): Promise<void> => {
@@ -36,7 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const install = '지금 설치';
     const answer = await vscode.window.showInformationMessage(
-      'XGEN Dex CLI가 필요합니다.',
+      'XGEN DexOn CLI가 필요합니다.',
       {
         modal: true,
         detail:
@@ -48,7 +48,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (answer !== install) return false;
 
     const outcome = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'XGEN Dex CLI를 설치하는 중...' },
+      { location: vscode.ProgressLocation.Notification, title: 'XGEN DexOn CLI를 설치하는 중...' },
       () => service.installCli(),
     );
     if (!outcome.ok) {
@@ -60,7 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
         });
       return false;
     }
-    void vscode.window.showInformationMessage(`XGEN Dex CLI를 설치했습니다 (${outcome.location.command}).`);
+    void vscode.window.showInformationMessage(`XGEN DexOn CLI를 설치했습니다 (${outcome.location.command}).`);
     await service.restart().catch(() => undefined);
     return true;
   };
@@ -114,7 +114,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (await ensureCli(true)) await refreshAll();
     }),
     vscode.commands.registerCommand('xgenDex.restartEngine', async () => {
-      await withProgress('dex-cli 엔진을 다시 시작하는 중...', () => service.restart());
+      await withProgress('DexOn CLI 엔진을 다시 시작하는 중...', () => service.restart());
       await refreshAll();
     }),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
@@ -140,12 +140,12 @@ export async function deactivate(): Promise<void> {
 }
 
 async function updateStatus(service: DexService, status: vscode.StatusBarItem): Promise<void> {
-  status.text = '$(loading~spin) Dex';
-  status.tooltip = 'XGEN Dex 상태를 확인하는 중입니다.';
+  status.text = '$(loading~spin) DexOn';
+  status.tooltip = 'XGEN DexOn 상태를 확인하는 중입니다.';
   try {
     const profiles = await service.request<ProfileSummary[]>('profile/list');
     if (profiles.length === 0) {
-      status.text = '$(tools) Dex 설정';
+      status.text = '$(tools) DexOn 설정';
       status.tooltip = 'XGEN 서버 프로필을 설정하세요.';
       status.command = 'xgenDex.setupProfile';
       return;
@@ -156,23 +156,23 @@ async function updateStatus(service: DexService, status: vscode.StatusBarItem): 
       status.tooltip = `${auth.profile} · ${auth.serverUrl}`;
       status.command = 'xgenDex.showSettings';
     } else if (auth.reason === 'network') {
-      status.text = '$(cloud-off) Dex 오프라인';
+      status.text = '$(cloud-off) DexOn 오프라인';
       status.tooltip = `${auth.serverUrl}에 연결할 수 없습니다.`;
       status.command = 'xgenDex.restartEngine';
     } else {
-      status.text = '$(key) Dex 로그인';
+      status.text = '$(key) DexOn 로그인';
       status.tooltip = `${auth.profile} 프로필에 로그인이 필요합니다.`;
       status.command = 'xgenDex.login';
     }
   } catch (error) {
     // CLI 자체가 없는 것과 서버가 대답을 안 하는 것은 고치는 방법이 다르다.
     if (!(await service.findCli())) {
-      status.text = '$(cloud-download) Dex CLI 설치';
-      status.tooltip = 'XGEN Dex CLI가 없습니다. 눌러서 설치하세요.';
+      status.text = '$(cloud-download) DexOn CLI 설치';
+      status.tooltip = 'XGEN DexOn CLI가 없습니다. 눌러서 설치하세요.';
       status.command = 'xgenDex.installCli';
       return;
     }
-    status.text = '$(error) Dex CLI';
+    status.text = '$(error) DexOn CLI';
     status.tooltip = errorMessage(error);
     status.command = 'xgenDex.restartEngine';
   }
@@ -184,7 +184,7 @@ async function setupProfile(service: DexService, requestedProfile?: string): Pro
   const name =
     existing?.name ??
     (await vscode.window.showInputBox({
-      title: 'XGEN Dex 회사 / 환경 프로필',
+      title: 'XGEN DexOn 회사 / 환경 프로필',
       prompt: '회사 또는 연결 환경을 구분할 프로필 이름을 입력하세요.',
       value: 'default',
       validateInput: (value) => (/^[A-Za-z0-9._-]{1,64}$/.test(value) ? undefined : '영문, 숫자, ., _, -만 사용할 수 있습니다.'),
@@ -231,7 +231,7 @@ async function login(service: DexService, requestedProfile?: string): Promise<bo
           detail: profile.serverUrl,
           profile,
         })),
-        { title: '로그인할 XGEN Dex 프로필' },
+        { title: '로그인할 XGEN DexOn 프로필' },
       );
       if (!selected) return false;
       profiles = [selected.profile];
@@ -249,7 +249,7 @@ async function login(service: DexService, requestedProfile?: string): Promise<bo
     if (!email?.trim()) return false;
     let password = await vscode.window.showInputBox({
       title: `${profile.name} 로그인`,
-      prompt: '비밀번호는 dex-cli 프로세스로만 전달되고 저장되지 않습니다.',
+      prompt: '비밀번호는 DexOn CLI 프로세스로만 전달되고 저장되지 않습니다.',
       password: true,
       ignoreFocusOut: true,
     });
@@ -296,14 +296,14 @@ async function switchProfile(service: DexService, requestedProfile?: string): Pr
 
 async function logout(service: DexService): Promise<boolean> {
   const choice = await vscode.window.showWarningMessage(
-    '현재 XGEN Dex 프로필에서 로그아웃할까요?',
+    '현재 XGEN DexOn 프로필에서 로그아웃할까요?',
     { modal: true },
     '로그아웃',
   );
   if (choice !== '로그아웃') return false;
   try {
     await service.request('auth/logout', service.profileParams());
-    await vscode.window.showInformationMessage('XGEN Dex에서 로그아웃했습니다.');
+    await vscode.window.showInformationMessage('XGEN DexOn에서 로그아웃했습니다.');
     return true;
   } catch (error) {
     await showError(service, '로그아웃하지 못했습니다.', error);

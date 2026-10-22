@@ -4,10 +4,13 @@ import test from 'node:test';
 import {
   COPY_FROM_WORKSPACE_TOOL,
   COPY_TO_WORKSPACE_TOOL,
+  AgentDataApi,
+  ChatFilesApi,
   answerTurnFiles,
   copyTargetDir,
   copyToWorkspaceResult,
   deviceTimeText,
+  requireWorkspaceTransfer,
   shouldLookForTurnFiles,
   workspaceCopySchemas,
   workspaceDownloadOf,
@@ -52,6 +55,76 @@ test('받을 거리 — 서버가 실은 임시 파일 주소만 믿는다', () 
   );
   assert.equal(workspaceDownloadOf({ download: { url: 'https://evil/x' } }), null);
   assert.equal(workspaceDownloadOf({}), null);
+});
+
+test('workspace transfer capability는 예약 인자 전체가 실제 frame correlation과 같아야 한다', () => {
+  const context = {
+    workflowId: 'wf-1', interactionId: 'conv-1', deviceId: 'device-1', requestId: 'request-1',
+    requestNonce: 'nonce-1', connectionGeneration: 7, protocol: 2,
+  };
+  const capability = {
+    token: 'opaque-token', direction: 'to_workspace', workflow_id: 'wf-1', interaction_id: 'conv-1',
+    device_id: 'device-1', request_id: 'request-1', request_nonce: 'nonce-1',
+    connection_generation: 7, protocol: 2,
+  };
+  assert.deepEqual(
+    requireWorkspaceTransfer({ _workspace_transfer: capability }, 'to_workspace', context),
+    capability,
+  );
+  for (const forged of [
+    {},
+    { ...capability, direction: 'from_workspace' },
+    { ...capability, workflow_id: 'other' },
+    { ...capability, request_nonce: 'other' },
+    { ...capability, token: 'bad\nheader' },
+  ]) {
+    assert.throws(
+      () => requireWorkspaceTransfer({ _workspace_transfer: forged }, 'to_workspace', context),
+      /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+    );
+  }
+});
+
+test('CopyTo upload만 marker query와 transfer header를 보내고 artifact download는 두 token을 함께 보낸다', async () => {
+  const calls: Array<{ path: string; headers?: Record<string, string> }> = [];
+  const http = {
+    async upload(_path: string, _form: unknown, opts: { headers?: Record<string, string> }) {
+      calls.push({ path: _path, headers: opts.headers });
+      return { workspace_path: 'uploads/conv/a.txt' };
+    },
+    async getBinary(path: string, opts: { headers?: Record<string, string> }) {
+      calls.push({ path, headers: opts.headers });
+      return { bytes: new Uint8Array(), contentType: 'application/octet-stream' };
+    },
+  };
+  const capability = {
+    token: 'opaque-token', direction: 'to_workspace' as const,
+    workflow_id: 'wf-1', interaction_id: 'conv-1', device_id: 'device-1',
+    request_id: 'request-1', request_nonce: 'nonce-1', connection_generation: 7, protocol: 2 as const,
+  };
+  const agent = new AgentDataApi(http as never);
+  await agent.workspaceUpload('wf-1', new Uint8Array([1]), 'a.txt', 'text/plain', 'conv-1', 'a-1');
+  await agent.workspaceUpload(
+    'wf-1', new Uint8Array([1]), 'a.txt', 'text/plain', 'conv-1', 'a-2', { transfer: capability },
+  );
+  assert.equal(new URL(calls[0].path, 'https://x').searchParams.has('workspace_transfer'), false);
+  assert.equal(new URL(calls[1].path, 'https://x').searchParams.get('workspace_transfer'), '1');
+  assert.deepEqual(calls[1].headers, { 'X-XGEN-Workspace-Transfer': 'opaque-token' });
+
+  const files = new ChatFilesApi(http as never);
+  await files.artifactBytes('/api/agentflow/files/artifacts/a/download', 'opaque-token', {
+    workspaceTransferToken: 'opaque-token',
+  });
+  assert.deepEqual(calls[2].headers, {
+    'X-XGEN-Artifact-Token': 'opaque-token',
+    'X-XGEN-Workspace-Transfer': 'opaque-token',
+  });
+  await assert.rejects(
+    () => files.artifactBytes('/api/agentflow/files/artifacts/a/download', 'artifact', {
+      workspaceTransferToken: 'different',
+    }),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
 });
 
 test('수정 시각은 기기 현지 시각 한 줄로', () => {

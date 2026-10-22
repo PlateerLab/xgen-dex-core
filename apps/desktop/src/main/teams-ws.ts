@@ -22,7 +22,7 @@
 import WebSocket from 'ws';
 import { safeMapMessage, mapTeamsReactions } from '@dex/protocol/teams';
 import type { TeamsEvent } from '@dex/protocol/types';
-import { xgenWebSocketTlsOptions } from '@dex/engine/connection-security';
+import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/connection-security';
 import { TEAMS_USER_SOCKET_PATH, teamsRoomSocketPath } from '@dex/protocol';
 
 /** 방 소켓이 유휴일 때 서버에 보내는 ping 주기. 서버는 pong 으로 답한다. */
@@ -39,6 +39,7 @@ export interface TeamsSocketDeps {
   refreshAuth: () => Promise<string | null>;
   /** 사설 CA 를 신뢰하도록 설정된 서버인지. */
   allowPrivateCertificate: () => boolean;
+  serverTrust?: () => readonly XgenServerTrust[];
   /** 정규화된 이벤트를 렌더러로 밀어 준다. */
   emit: (event: TeamsEvent) => void;
 }
@@ -98,7 +99,7 @@ class Socket {
       if (!token) throw new Error('no access token');
       ws = new WebSocket(`${base}${this.path}`, {
         headers: { Authorization: `Bearer ${token}` },
-        ...xgenWebSocketTlsOptions(this.deps.allowPrivateCertificate()),
+        ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
       });
     } catch {
       // 토큰/키체인 문제로 시작조차 못 해도 재연결 루프는 살아 있어야 한다.

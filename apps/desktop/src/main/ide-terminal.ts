@@ -13,13 +13,14 @@
 import WebSocket from 'ws';
 import type { WebContents } from 'electron';
 import { ideTerminalSocketPath } from '@dex/protocol';
-import { xgenWebSocketTlsOptions } from '@dex/engine/connection-security';
+import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/connection-security';
 
 export interface IdeTerminalDeps {
   baseUrl: () => string;
   token: () => Promise<string>;
   refreshAuth: () => Promise<string | null>;
   allowPrivateCertificate: () => boolean;
+  serverTrust?: () => readonly XgenServerTrust[];
 }
 
 export type IdeTerminalEvent =
@@ -79,7 +80,7 @@ export class IdeTerminalHub {
       ws = new WebSocket(`${base}${ideTerminalSocketPath(workflowId, termId, options)}`, {
         headers: { Authorization: `Bearer ${token}` },
         maxPayload: FRAME_MAX,
-        ...xgenWebSocketTlsOptions(deps.allowPrivateCertificate()),
+        ...xgenWebSocketTlsOptions(base, deps.serverTrust?.()),
       });
     } catch (err) {
       this.finish(socket, entry, 1011, err instanceof Error ? err.message : '연결하지 못했습니다');

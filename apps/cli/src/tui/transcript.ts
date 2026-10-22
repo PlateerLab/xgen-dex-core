@@ -1,6 +1,7 @@
 import stringWidth from 'string-width';
 import { parseAgentTrigger, triggerRowLabel } from '@dex/protocol';
 import type { ChatMessage } from './chat-state';
+import { provenanceLabel } from './provenance';
 
 /**
  * 대화를 **줄 단위로** 펼친다.
@@ -174,6 +175,17 @@ export function renderTranscript(
         role: message.role === 'system' ? 'system' : 'text',
         color: message.role === 'system' ? color : undefined,
       });
+    }
+    if (message.role === 'assistant') {
+      const provenance = provenanceLabel(message);
+      if (provenance) {
+        lines.push({
+          key: `${message.id}:provenance`,
+          text: `${INDENT}[${provenance}]`,
+          role: 'activity',
+          color: message.provenanceCheck === 'verified' ? 'green' : 'yellow',
+        });
+      }
     }
   }
   return lines;

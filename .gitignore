@@ -4,3 +4,6 @@ out/
 release/
 *.tsbuildinfo
 .DS_Store
+packages/native-fs/build/
+packages/native-fs/prebuilds/
+packages/native-fs/downloaded/

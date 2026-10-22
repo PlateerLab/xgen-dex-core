@@ -28,7 +28,7 @@ test('ConnectorOAuthProvider: redirectUrl 과 clientMetadata 형태', () => {
   assert.deepEqual(meta.grant_types, ['authorization_code', 'refresh_token'])
   assert.deepEqual(meta.response_types, ['code'])
   assert.equal(meta.token_endpoint_auth_method, 'none')
-  assert.equal(meta.client_name, 'XGen Dex')
+  assert.equal(meta.client_name, 'XGEN DexOn')
 })
 
 test('redirectToAuthorization: silent 은 브라우저를 안 연다, interactive 는 콜백 호출', async () => {

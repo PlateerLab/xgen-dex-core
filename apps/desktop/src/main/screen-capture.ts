@@ -102,7 +102,7 @@ export async function captureScreen(sourceId?: string): Promise<CaptureResult> {
       ok: false,
       error:
         'macOS 화면 기록 권한이 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > ' +
-        '화면 기록 에서 XGen Dex 를 허용한 뒤 앱을 다시 시작하세요.',
+        '화면 기록 에서 XGEN DexOn 을 허용한 뒤 앱을 다시 시작하세요.',
     };
   }
 

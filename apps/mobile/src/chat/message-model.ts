@@ -8,17 +8,20 @@
  * 규칙은 데스크톱 SessionStore 와 같다 — 도구·출처·오류는 **그 답변의 것**이고,
  * 말풍선 사이에 따로 떠다니는 줄이 아니다.
  */
-import { appendFlowItem, genyHistoryWorkspacePath, liveTurnFlow, mergeChatDownload } from '@dex/protocol';
+import { appendFlowItem, applyTurnPhase, genyHistoryWorkspacePath, liveTurnFlow, mergeChatDownload, mergeGeneratedContentProvenance } from '@dex/protocol';
 import type {
   ChatDownload,
   ChatDownloadPayload,
   Citation,
+  GeneratedContentProvenance,
   HistoryAttachment,
   HistoryFlowItem,
   LiveTurnSnapshot,
   TimelineFlowItem,
   ToolEvent,
   TurnAttachment,
+  TurnPhaseRow,
+  TurnPhaseSignal,
   XgenErrorInfo,
 } from '@dex/protocol';
 
@@ -50,6 +53,11 @@ export interface ChatMessage {
   startedAt?: number;
   /** 마지막으로 글·도구를 받은 시각(ms) — "다음 단계를 준비하고 있어요" 와 끝난 턴의 걸린 시간. */
   lastEventAt?: number;
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 캐럿 자리에
+   * 도구 줄 모양으로 그린다. 서버가 기록하지 않는 알림이라 이 화면에만 있다.
+   */
+  phases?: TurnPhaseRow[];
   citations?: Citation[];
   /**
    * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact`. 이력의 답은 본문 표식에서
@@ -72,12 +80,24 @@ export interface ChatMessage {
   ioId?: number;
   /** 표시용 시각(ms). */
   at: number;
+  /** 생성 주체 표시용 선언. 검증 결과와 별개이며, proof는 현재 본문/바이트로 다시 확인해야 한다. */
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
 }
 
 let seq = 0;
 export function newMessageId(): string {
   seq += 1;
   return `m${Date.now().toString(36)}-${seq}`;
+}
+
+/** 비밀 토큰 없이 검증 요청을 현재 로그인 범위와 본문에 묶는 키. */
+export function generatedVerificationInputKey(
+  auth: { serverUrl: string; userId: string },
+  proof: string | null,
+  text: string,
+): string {
+  return `${auth.serverUrl}\u0000${auth.userId}\u0000${proof ?? ''}\u0000${text}`;
 }
 
 function make(role: ChatRole, text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
@@ -137,7 +157,8 @@ export function toolsFromFlow(flow: readonly TimelineFlowItem[]): ToolEvent[] {
  * 다른 화면의 턴은 전파로 받은 조각을 쌓은 것이라, 재연결 사이에 조각을 놓쳤거나 스냅샷이 늦었으면
  * 과정의 글이 완결 본문보다 짧다. 타임라인은 마지막 단계의 글을 답으로 그리므로, 그대로 두면 끝난 답이
  * 잘려 보인다. 마지막 도구까지의 글이 본문의 앞부분과 같으면 그 뒤를 본문으로 채운다. 맞출 수 없으면
- * (본문이 과정과 다르게 시작한다) 과정을 그대로 둔다.
+ * 오래된 글은 버리고 도구 사건만 보존한 뒤 정본을 답으로 붙인다. 그래야 타임라인이 보여 주는 답과 생성물
+ * 검증이 해시하는 `text`가 달라지지 않는다.
  */
 export function reconcileFlow(flow: readonly TimelineFlowItem[], output: string): TimelineFlowItem[] {
   const textOf = (items: readonly TimelineFlowItem[]): string =>
@@ -155,7 +176,10 @@ export function reconcileFlow(flow: readonly TimelineFlowItem[], output: string)
   }
   const head = flow.slice(0, lastTool + 1);
   const before = textOf(head);
-  if (!output.startsWith(before)) return flow.slice();
+  if (!output.startsWith(before)) {
+    const tools = flow.filter((item) => item.kind === 'tool');
+    return output ? [...tools, { kind: 'text', text: output, at }] : tools;
+  }
   const rest = output.slice(before.length);
   return rest ? [...head, { kind: 'text', text: rest, at }] : head;
 }
@@ -195,6 +219,33 @@ export function appendAssistantText(list: readonly ChatMessage[], chunk: string,
     return [...list, { ...fresh, ...withFlow(fresh, item) }];
   }
   return patchAt(list, i, { text: list[i].text + chunk, ...withFlow(list[i], item) });
+}
+
+/** 생성물 선언을 현재 답에 붙인다. 이 함수는 선언을 검증된 것으로 승격하지 않는다. */
+export function attachGeneratedContent(
+  list: readonly ChatMessage[],
+  provenance: GeneratedContentProvenance,
+): ChatMessage[] {
+  let i = streamingIndex(list);
+  let base = list as ChatMessage[];
+  if (i < 0) {
+    base = [...list, assistantPlaceholder()];
+    i = base.length - 1;
+  }
+  return patchAt(base, i, {
+    generatedContent: mergeGeneratedContentProvenance(base[i].generatedContent, provenance),
+  });
+}
+
+/** 준비 단계 알림을 **그 답변에** 붙인다. 받을 자리가 없으면 새 답변을 세운다(다른 화면의 턴도 같다). */
+export function attachPhase(list: readonly ChatMessage[], signal: TurnPhaseSignal, now = Date.now()): ChatMessage[] {
+  let i = streamingIndex(list);
+  let base = list as ChatMessage[];
+  if (i < 0) {
+    base = [...list, assistantPlaceholder()];
+    i = base.length - 1;
+  }
+  return patchAt(base, i, { phases: applyTurnPhase(base[i].phases ?? [], signal, now) });
 }
 
 /**
@@ -254,7 +305,10 @@ function mergeCitations(prev: Citation[] | undefined, next: Citation[]): Citatio
  * 스냅샷은 재연결마다 처음부터 다시 온다. 이어붙이면 같은 글이 여러 번 쌓이므로 덮어쓴다.
  * 예전에는 글만 넣고 도구는 버렸다 — 웹에서 도구를 24번 부르며 도는 턴이 폰에서는 글 몇 줄로만 보였다.
  */
-export function setRemoteLive(list: readonly ChatMessage[], live: LiveTurnSnapshot): ChatMessage[] {
+export function setRemoteLive(
+  list: readonly ChatMessage[],
+  live: LiveTurnSnapshot & { generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean },
+): ChatMessage[] {
   const flow = liveTurnFlow(live);
   const patch: Partial<ChatMessage> = {
     text: live.text,
@@ -262,6 +316,8 @@ export function setRemoteLive(list: readonly ChatMessage[], live: LiveTurnSnapsh
     tools: toolsFromFlow(flow),
     startedAt: live.startedAt ?? flow[0]?.at,
     lastEventAt: flow[flow.length - 1]?.at ?? live.startedAt,
+    generatedContent: live.generatedContent,
+    malformedGeneratedContent: live.malformedGeneratedContent,
   };
   const i = remotePartialIndex(list);
   if (i >= 0) return patchAt(list, i, patch);
@@ -356,17 +412,24 @@ export function preferServerProcess(
 
 /**
  * 서버가 실행 기록에서 되살린 작업 과정을 답에 붙인다 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
- * 이미 도구 과정이 있으면(이 폰이 진행 프레임으로 받았다) 그대로 둔다. 붙일 것이 없으면 같은 객체를 돌려준다.
+ * 이미 도구 과정이 있으면(이 폰이 진행 프레임으로 받았다) 도구는 유지하되 글은 완결 본문과 맞춘다.
+ * 붙일 것이 없으면 같은 객체를 돌려준다.
  */
 function withServerProcess(m: ChatMessage, process: readonly HistoryFlowItem[] | undefined): ChatMessage {
-  if (!process?.length || hasToolFlow(m)) return m;
-  const flow = process as TimelineFlowItem[];
+  if (hasToolFlow(m) && m.flow) {
+    const flowText = m.flow.filter((item) => item.kind === 'text').map((item) => item.text).join('');
+    if (flowText === m.text) return m;
+    return { ...m, flow: reconcileFlow(m.flow, m.text) };
+  }
+  if (!process?.length) return m;
+  const sourceFlow = process as TimelineFlowItem[];
+  const flow = reconcileFlow(sourceFlow, m.text);
   return {
     ...m,
-    flow: flow.slice(),
-    tools: m.tools?.length ? m.tools : toolsFromFlow(flow),
-    startedAt: m.startedAt ?? flow[0].at,
-    lastEventAt: m.lastEventAt ?? flow[flow.length - 1].at,
+    flow,
+    tools: m.tools?.length ? m.tools : toolsFromFlow(sourceFlow),
+    startedAt: m.startedAt ?? sourceFlow[0].at,
+    lastEventAt: m.lastEventAt ?? sourceFlow[sourceFlow.length - 1].at,
   };
 }
 
@@ -404,11 +467,19 @@ export function completeRemoteTurn(
     output: string;
     attachments?: readonly (TurnAttachment | HistoryAttachment)[];
     process?: readonly HistoryFlowItem[];
+    generatedContent?: readonly GeneratedContentProvenance[];
+    malformedGeneratedContent?: boolean;
   },
 ): ChatMessage[] | null {
   const ioId = turn.ioId || undefined;
   if (ioId && list.some((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial)) {
-    return attachProcessById(list, ioId, turn.process);
+    const processed = attachProcessById(list, ioId, turn.process) ?? (list as ChatMessage[]);
+    const at = processed.findIndex((m) => m.role === 'assistant' && m.ioId === ioId && !m.remotePartial);
+    if (at < 0 || (!turn.generatedContent && turn.malformedGeneratedContent === undefined)) return processed === list ? null : processed;
+    return patchAt(processed, at, {
+      generatedContent: turn.generatedContent ? [...turn.generatedContent] : undefined,
+      malformedGeneratedContent: turn.malformedGeneratedContent,
+    });
   }
   const out = list.filter((m) => !isTemporary(m));
   const last = out[out.length - 1];
@@ -417,7 +488,11 @@ export function completeRemoteTurn(
     last?.role === 'assistant' && last.text === turn.output && prev?.role === 'user' && prev.text === turn.input &&
     out.length === list.length
   ) {
-    const filled = withServerProcess(ioId && !last.ioId ? { ...last, ioId } : last, turn.process);
+    const filled = withServerProcess({
+      ...(ioId && !last.ioId ? { ...last, ioId } : last),
+      generatedContent: turn.generatedContent ? [...turn.generatedContent] : last.generatedContent,
+      malformedGeneratedContent: turn.malformedGeneratedContent,
+    }, turn.process);
     if (filled === last) return null;
     return patchAt(out, out.length - 1, filled);
   }
@@ -425,6 +500,8 @@ export function completeRemoteTurn(
   // 진행분에 도구가 없으면(놓쳤다) 서버가 실어 온 과정으로 채운다.
   const partial = list[remotePartialIndex(list)];
   const question = list.find((m) => m.remoteQuestion && m.text === turn.input);
+  const completedGenerated = turn.generatedContent ?? partial?.generatedContent;
+  const completedMalformed = turn.malformedGeneratedContent ?? partial?.malformedGeneratedContent;
   const live = !!partial?.flow?.length && !preferServerProcess(partial.flow, turn.process);
   const process: Partial<ChatMessage> = live && partial?.flow
     ? {
@@ -435,7 +512,12 @@ export function completeRemoteTurn(
         lastEventAt: partial.lastEventAt,
       }
     : { citations: partial?.citations };
-  let answer = make('assistant', turn.output, { ...process, ...(ioId ? { ioId } : {}) });
+  let answer = make('assistant', turn.output, {
+    ...process,
+    ...(ioId ? { ioId } : {}),
+    ...(completedGenerated?.length ? { generatedContent: [...completedGenerated] } : {}),
+    ...(completedMalformed ? { malformedGeneratedContent: true } : {}),
+  });
   if (!live) answer = withServerProcess(answer, turn.process);
   if (last?.role === 'user' && last.text === turn.input) return [...out, answer];
   const marks = question?.attachments ?? attachmentMarks(turn.attachments);
@@ -464,6 +546,8 @@ export function mergeMissedTurns(
     output: string;
     attachments?: readonly HistoryAttachment[];
     process?: readonly HistoryFlowItem[];
+    generatedContent?: readonly GeneratedContentProvenance[];
+    malformedGeneratedContent?: boolean;
   }[],
   remote: boolean,
 ): ChatMessage[] | null {
@@ -472,7 +556,15 @@ export function mergeMissedTurns(
   for (const t of turns) if (t.ioId) byIo.set(t.ioId, t);
   let out = list.map((m) => {
     if (m.role !== 'assistant' || !m.ioId || isTemporary(m)) return m;
-    const next = withServerProcess(m, byIo.get(m.ioId)?.process);
+    const turn = byIo.get(m.ioId);
+    let next = withServerProcess(m, turn?.process);
+    if (turn && (turn.generatedContent !== undefined || turn.malformedGeneratedContent !== undefined)) {
+      next = {
+        ...next,
+        generatedContent: turn.generatedContent ? [...turn.generatedContent] : undefined,
+        malformedGeneratedContent: turn.malformedGeneratedContent,
+      };
+    }
     if (next !== m) changed = true;
     return next;
   });
@@ -490,6 +582,7 @@ export function mergeMissedTurns(
   for (const t of missed) {
     out = completeRemoteTurn(out, {
       ioId: t.ioId, input: t.input, output: t.output, process: t.process, attachments: t.attachments,
+      generatedContent: t.generatedContent, malformedGeneratedContent: t.malformedGeneratedContent,
     }) ?? out;
   }
   return out;
@@ -539,6 +632,8 @@ export function historyMessages(
     output: string;
     attachments?: readonly HistoryAttachment[];
     process?: readonly HistoryFlowItem[];
+    generatedContent?: readonly GeneratedContentProvenance[];
+    malformedGeneratedContent?: boolean;
   }[],
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
@@ -546,13 +641,16 @@ export function historyMessages(
     const marks = attachmentMarks(t.attachments);
     if (t.input || marks) out.push(make('user', t.input, marks ? { attachments: marks } : {}));
     if (!t.output) continue;
-    const flow = t.process?.length ? (t.process as TimelineFlowItem[]) : undefined;
+    const sourceFlow = t.process?.length ? (t.process as TimelineFlowItem[]) : undefined;
+    const flow = sourceFlow ? reconcileFlow(sourceFlow, t.output) : undefined;
     out.push(
       make('assistant', t.output, {
         ...(t.ioId ? { ioId: t.ioId } : {}),
         ...(flow
-          ? { flow, tools: toolsFromFlow(flow), startedAt: flow[0].at, lastEventAt: flow[flow.length - 1].at }
+          ? { flow, tools: toolsFromFlow(sourceFlow!), startedAt: sourceFlow![0].at, lastEventAt: sourceFlow![sourceFlow!.length - 1].at }
           : {}),
+        ...(t.generatedContent?.length ? { generatedContent: [...t.generatedContent] } : {}),
+        ...(t.malformedGeneratedContent ? { malformedGeneratedContent: true } : {}),
       }),
     );
   }

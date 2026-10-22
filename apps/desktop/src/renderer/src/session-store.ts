@@ -28,18 +28,22 @@ import type {
   ChatEvent,
   ChatRequest,
   Citation,
+  GeneratedContentProvenance,
   HistoryAttachment, HistoryFlowItem,
   LiveTurnSnapshot,
   ToolEvent,
   TurnAttachment,
+  TurnPhaseRow,
   XgenErrorInfo,
 } from '@dex/protocol';
 import {
   INTERRUPTED_NOTE,
   appendFlowItem,
+  applyTurnPhase,
   describeStreamError,
   liveTurnFlow,
   mergeChatDownload,
+  mergeGeneratedContentProvenance,
   turnEventToChatEvent,
   turnInputText,
 } from '@dex/protocol';
@@ -110,18 +114,24 @@ function hasToolFlow(m: Pick<ChatMsg, 'flow'> | undefined): boolean {
 
 /**
  * 서버가 실행 기록에서 되살린 작업 과정을 답에 붙인다 — 이력과 대화 소켓의 완결 행이 같은 모양으로 싣는다.
- * 이미 도구 과정이 있으면(이 창이 진행 프레임으로 받았다) 그대로 둔다: 보던 그대로가 낫다. 붙일 것이
- * 없으면 같은 객체를 돌려준다(바뀐 것이 없다는 표시).
+ * 이미 도구 과정이 있으면(이 창이 진행 프레임으로 받았다) 도구는 유지하되 글은 완결 본문과 맞춘다.
+ * 붙일 것이 없으면 같은 객체를 돌려준다(바뀐 것이 없다는 표시).
  */
 function withServerProcess(m: ChatMsg, process: readonly HistoryFlowItem[] | undefined): ChatMsg {
-  if (!process?.length || hasToolFlow(m)) return m;
-  const flow = process as FlowItem[];
+  if (hasToolFlow(m) && m.flow) {
+    const flowText = m.flow.filter((item) => item.kind === 'text').map((item) => item.text).join('');
+    if (flowText === m.text) return m;
+    return { ...m, flow: reconcileFlow(m.flow, m.text) };
+  }
+  if (!process?.length) return m;
+  const sourceFlow = process as FlowItem[];
+  const flow = reconcileFlow(sourceFlow, m.text);
   return {
     ...m,
-    flow: flow.slice(),
-    tools: m.tools?.length ? m.tools : flow.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
-    startedAt: m.startedAt ?? flow[0]?.at,
-    lastEventAt: m.lastEventAt ?? flow[flow.length - 1]?.at,
+    flow,
+    tools: m.tools?.length ? m.tools : sourceFlow.flatMap((item) => (item.kind === 'tool' ? [item.event] : [])),
+    startedAt: m.startedAt ?? sourceFlow[0]?.at,
+    lastEventAt: m.lastEventAt ?? sourceFlow[sourceFlow.length - 1]?.at,
   };
 }
 
@@ -148,7 +158,8 @@ function preferServerProcess(
 /**
  * 완결 본문에 작업 과정의 글을 맞춘다 — 다른 화면의 턴은 받은 조각을 쌓은 것이라 조각을 놓쳤으면 과정의
  * 글이 본문보다 짧고, 타임라인은 마지막 단계의 글을 답으로 그린다. 마지막 도구까지의 글이 본문의 앞부분과
- * 같으면 그 뒤를 본문으로 채운다. 맞출 수 없으면 그대로 둔다.
+ * 같으면 그 뒤를 본문으로 채운다. 맞출 수 없으면 오래된 글은 버리고 도구 사건만 보존한 뒤 정본을 답으로
+ * 붙인다. 그래야 타임라인이 보여 주는 답과 생성물 검증이 해시하는 `text`가 달라지지 않는다.
  */
 export function reconcileFlow(flow: readonly FlowItem[], output: string): FlowItem[] {
   const textOf = (items: readonly FlowItem[]): string => items.map((f) => (f.kind === 'text' ? f.text : '')).join('');
@@ -165,7 +176,10 @@ export function reconcileFlow(flow: readonly FlowItem[], output: string): FlowIt
   }
   const head = flow.slice(0, lastTool + 1);
   const before = textOf(head);
-  if (!output.startsWith(before)) return flow.slice();
+  if (!output.startsWith(before)) {
+    const tools = flow.filter((item) => item.kind === 'tool');
+    return output ? [...tools, { kind: 'text', text: output, at }] : tools;
+  }
   const rest = output.slice(before.length);
   return rest ? [...head, { kind: 'text', text: rest, at }] : head;
 }
@@ -210,6 +224,11 @@ export interface ChatMsg {
   lastEventAt?: number;
   /** 첨부를 올리는 동안의 진행(보낸 바이트/전체) — 답이 시작되기 전 말풍선에 보인다. 다 올리면 지운다. */
   uploadProgress?: { loaded: number; total: number };
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 커서 자리에
+   * 도구 줄 모양으로 그린다(@dex/protocol turn-phases). 서버가 기록하지 않는 알림이라 이 창에만 있다.
+   */
+  phases?: TurnPhaseRow[];
   citations?: Citation[];
   /**
    * 이 답의 파일 저장소 결과물·API 응답 임시 파일 — 스트림의 `download_artifact` 로 받은 것.
@@ -257,6 +276,9 @@ export interface ChatMsg {
    * 도착하면 진행분 말풍선과 함께 그 턴으로 바뀐다 — 그대로 두면 질문이 두 번 보인다.
    */
   remoteQuestion?: boolean;
+  /** 생성 주체 표시용 선언. 검증 상태와 분리하며 현재 본문/실제 바이트로만 검증한다. */
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
 }
 
 /** 다른 곳에서 도는 턴을 그리려고 세운 임시 말풍선(질문·진행분). */
@@ -296,13 +318,16 @@ export function mergeCompletedTurn(
     process?: readonly HistoryFlowItem[];
     /** 질문 말풍선의 첨부를 이미 화면 모양으로 가진 경우(이력에서 메운 턴). */
     images?: ChatImageAttachment[];
+    generatedContent?: readonly GeneratedContentProvenance[];
+    malformedGeneratedContent?: boolean;
   },
 ): ChatMsg[] | null {
   const ioId = turn.ioId || undefined;
   const input = plainInput(turn.input);
   const output = String(turn.output ?? '');
   if (ioId && messages.some((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial)) {
-    return attachProcessById(messages, ioId, turn.process);
+    const processed = attachProcessById(messages, ioId, turn.process) ?? (messages as ChatMsg[]);
+    return attachGeneratedById(processed, ioId, turn.generatedContent, turn.malformedGeneratedContent);
   }
   const out = messages.filter((m) => !isTemporary(m));
   const last = out[out.length - 1];
@@ -312,7 +337,11 @@ export function mergeCompletedTurn(
     last?.role === 'assistant' && last.text === output && prev?.role === 'user' && prev.text === input &&
     out.length === messages.length
   ) {
-    const filled = withServerProcess(ioId && !last.executionIoId ? { ...last, executionIoId: ioId } : last, turn.process);
+    const filled = withServerProcess({
+      ...(ioId && !last.executionIoId ? { ...last, executionIoId: ioId } : last),
+      generatedContent: turn.generatedContent ? [...turn.generatedContent] : last.generatedContent,
+      malformedGeneratedContent: turn.malformedGeneratedContent,
+    }, turn.process);
     if (filled === last) return null;
     out[out.length - 1] = filled;
     return out;
@@ -320,7 +349,13 @@ export function mergeCompletedTurn(
   // 진행분이 쌓아 온 작업 과정은 답에 그대로 남긴다 — 끝난 뒤에도 다른 화면의 턴을 타임라인으로 펼쳐 본다.
   // 진행분에 도구가 없으면(놓쳤다) 서버가 실어 온 과정으로 채운다.
   const partial = messages.find((m) => m.remotePartial);
-  let answer: ChatMsg = { role: 'assistant', text: output, executionIoId: ioId };
+  const completedGenerated = turn.generatedContent ?? partial?.generatedContent;
+  const completedMalformed = turn.malformedGeneratedContent ?? partial?.malformedGeneratedContent;
+  let answer: ChatMsg = {
+    role: 'assistant', text: output, executionIoId: ioId,
+    ...(completedGenerated?.length ? { generatedContent: [...completedGenerated] } : {}),
+    ...(completedMalformed ? { malformedGeneratedContent: true } : {}),
+  };
   if (partial?.flow?.length && !preferServerProcess(partial.flow, turn.process)) {
     answer.flow = reconcileFlow(partial.flow, output);
     answer.tools = partial.tools?.length ? partial.tools : toolsOfFlow(partial.flow);
@@ -355,6 +390,24 @@ function attachProcessById(
   return out;
 }
 
+function attachGeneratedById(
+  messages: readonly ChatMsg[],
+  ioId: number | null | undefined,
+  generatedContent: readonly GeneratedContentProvenance[] | undefined,
+  malformedGeneratedContent: boolean | undefined,
+): ChatMsg[] | null {
+  if (!ioId || (!generatedContent && malformedGeneratedContent === undefined)) return null;
+  const at = messages.findIndex((m) => m.role === 'assistant' && m.executionIoId === ioId && !m.remotePartial);
+  if (at < 0) return null;
+  const out = messages.slice();
+  out[at] = {
+    ...out[at],
+    generatedContent: generatedContent ? [...generatedContent] : undefined,
+    malformedGeneratedContent,
+  };
+  return out;
+}
+
 /** 마지막 턴이 이 행과 같은데 답에 실행 id 가 없으면 채운다. 아니면 null. */
 function fillExecutionIoId(
   messages: readonly ChatMsg[],
@@ -386,7 +439,7 @@ function fillExecutionIoId(
  */
 export function mergeMissedTurns(
   messages: readonly ChatMsg[],
-  turns: ReadonlyArray<{ input: string; output: string; ioId?: number; attachments?: readonly HistoryAttachment[]; process?: readonly HistoryFlowItem[] }>,
+  turns: ReadonlyArray<{ input: string; output: string; ioId?: number; attachments?: readonly HistoryAttachment[]; process?: readonly HistoryFlowItem[]; generatedContent?: readonly GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }>,
   remote: boolean,
 ): ChatMsg[] | null {
   let changed = false;
@@ -394,7 +447,15 @@ export function mergeMissedTurns(
   for (const t of turns) if (t.ioId) byIo.set(t.ioId, t);
   let out = messages.map((m) => {
     if (m.role !== 'assistant' || !m.executionIoId || isTemporary(m)) return m;
-    const next = withServerProcess(m, byIo.get(m.executionIoId)?.process);
+    const turn = byIo.get(m.executionIoId);
+    let next = withServerProcess(m, turn?.process);
+    if (turn && (turn.generatedContent !== undefined || turn.malformedGeneratedContent !== undefined)) {
+      next = {
+        ...next,
+        generatedContent: turn.generatedContent ? [...turn.generatedContent] : undefined,
+        malformedGeneratedContent: turn.malformedGeneratedContent,
+      };
+    }
     if (next !== m) changed = true;
     return next;
   });
@@ -410,7 +471,11 @@ export function mergeMissedTurns(
       const images = historyFileCards(t.attachments);
       return [
         { role: 'user', text: plainInput(t.input), ...(images.length ? { images } : {}) },
-        withServerProcess({ role: 'assistant', text: t.output, executionIoId: t.ioId }, t.process),
+        withServerProcess({
+          role: 'assistant', text: t.output, executionIoId: t.ioId,
+          generatedContent: t.generatedContent ? [...t.generatedContent] : undefined,
+          malformedGeneratedContent: t.malformedGeneratedContent,
+        }, t.process),
       ];
     });
     out = at >= 0 ? [...out.slice(0, at), ...rows, ...out.slice(at)] : [...out, ...rows];
@@ -419,6 +484,7 @@ export function mergeMissedTurns(
   for (const t of missed) {
     out = mergeCompletedTurn(out, {
       ioId: t.ioId, input: t.input, output: t.output, process: t.process, images: historyFileCards(t.attachments),
+      generatedContent: t.generatedContent, malformedGeneratedContent: t.malformedGeneratedContent,
     }) ?? out;
   }
   return out;
@@ -580,7 +646,7 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
     // ioId — 그 답변이 서버에 남은 실행 한 건. 답변 평가가 이 값을 키로 쓴다(옛 preload 는 안 준다).
-  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>>;
+  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }>>;
   /**
    * 지난 턴 + **지금 도는 턴이 있는가** — 창을 연 첫 순간의 상태.
    *
@@ -593,7 +659,7 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
   ) => Promise<{
-    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>;
+    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }>;
     running: boolean;
   }>;
   /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
@@ -988,7 +1054,13 @@ export class SessionStore {
         // 지난 대화의 답변에도 실행 id 를 실어 둔다 — 다시 열어도 평가하거나 고칠 수 있다.
         // 서버가 되살린 작업 과정(process)은 잠시 옆에 둔다 — 이 PC 가 남긴 기록이 있으면 그것이
         // 우선이고(입력·결과가 잘리지 않았다), 없을 때 서버 것으로 채운다.
-        if (output) msgs.push({ role: 'assistant', text: output, executionIoId: tn.ioId });
+        if (output) msgs.push({
+          role: 'assistant',
+          text: output,
+          executionIoId: tn.ioId,
+          generatedContent: tn.generatedContent,
+          malformedGeneratedContent: tn.malformedGeneratedContent,
+        });
         if (output && tn.process) serverProcess.set(msgs.length - 1, tn.process);
       }
       // Only overwrite the transcript if a live turn hasn't started meanwhile.
@@ -1357,6 +1429,9 @@ export class SessionStore {
       if (ev.kind === 'text') {
         nl.text = nl.text + ev.content;
         nl.flow = appendFlow(last.flow, { kind: 'text', text: ev.content, at });
+      } else if (ev.kind === 'phase') {
+        // 첫 글자 전의 준비 단계. 커서 대신 무엇을 기다리는지 보인다.
+        nl.phases = applyTurnPhase(last.phases ?? [], ev, at);
       } else if (ev.kind === 'status') {
         nl.surface = ev.surface;
         // server_sandbox: 폴백 사유(reason 이 사람이 읽는 문장). blocked: 차단 메시지(detail).
@@ -1373,6 +1448,8 @@ export class SessionStore {
       } else if (ev.kind === 'download') {
         // 도구가 파일 저장소에 올린 결과물 — 답이 끝나면 아래에 단추·그림으로 보인다(웹과 같다).
         nl.downloads = mergeChatDownload(last.downloads ?? [], ev.data);
+      } else if (ev.kind === 'generated_content') {
+        nl.generatedContent = mergeGeneratedContentProvenance(last.generatedContent, ev.data);
       } else if (ev.kind === 'summary' && !nl.text) nl.text = ev.text;
       else if (ev.kind === 'tool') {
         rt.tools = [...rt.tools, ev.event];
@@ -1535,6 +1612,12 @@ export class SessionStore {
           textTotal: live.textTotal,
         }) as FlowItem[])
       : [];
+    const liveGenerated = live && 'generatedContent' in live
+      ? (live as LiveTurnSnapshot & { generatedContent?: GeneratedContentProvenance[] }).generatedContent
+      : undefined;
+    const liveMalformed = live && 'malformedGeneratedContent' in live
+      ? (live as LiveTurnSnapshot & { malformedGeneratedContent?: boolean }).malformedGeneratedContent
+      : undefined;
     const hasLive = !!partial || flow.length > 0;
     const tail = s.messages[s.messages.length - 1];
     const hadPartial = tail?.remotePartial === true && (tail.streaming === true || !tail.text);
@@ -1556,11 +1639,17 @@ export class SessionStore {
           : {};
         if (last?.remotePartial) {
           if (last.text === partial && last.streaming && !process.flow) return { ...cur, remote: next };
-          messages[messages.length - 1] = { ...last, text: partial, streaming: true, ...process };
+          messages[messages.length - 1] = {
+            ...last, text: partial, streaming: true, ...process,
+            generatedContent: liveGenerated,
+            malformedGeneratedContent: liveMalformed,
+          };
         } else {
           messages.push({
             role: 'assistant', text: partial, streaming: true, remotePartial: true,
             surfaceNote: '다른 곳에서 시작한 응답이 진행 중입니다.',
+            generatedContent: liveGenerated,
+            malformedGeneratedContent: liveMalformed,
             ...process,
           });
         }
@@ -1624,6 +1713,8 @@ export class SessionStore {
     event?: string;
     data?: unknown;
     attachments?: TurnAttachment[];
+    generatedContent?: GeneratedContentProvenance[];
+    malformedGeneratedContent?: boolean;
   }): void {
     const key = event.interactionId;
     const s = this.map.get(key);
@@ -1676,7 +1767,7 @@ export class SessionStore {
         event.event,
         event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null,
       );
-      if (!ev || (ev.kind !== 'text' && ev.kind !== 'tool') || (ev.kind === 'text' && !ev.content)) return;
+      if (!ev || (ev.kind !== 'text' && ev.kind !== 'tool' && ev.kind !== 'phase' && ev.kind !== 'generated_content') || (ev.kind === 'text' && !ev.content)) return;
       this.patch(key, (cur) => {
         const messages = [...cur.messages];
         let at = findLastIndex(messages, (m) => m.remotePartial === true);
@@ -1692,7 +1783,11 @@ export class SessionStore {
         const now = this.now();
         const base = { startedAt: partial.startedAt ?? now, lastEventAt: now, streaming: true };
         messages[at] =
-          ev.kind === 'text'
+          ev.kind === 'phase'
+            ? { ...partial, streaming: true, startedAt: partial.startedAt ?? now, phases: applyTurnPhase(partial.phases ?? [], ev, now) }
+            : ev.kind === 'generated_content'
+            ? { ...partial, streaming: true, generatedContent: mergeGeneratedContentProvenance(partial.generatedContent, ev.data) }
+            : ev.kind === 'text'
             ? { ...partial, ...base, text: (partial.text || '') + ev.content, flow: appendFlow(partial.flow, { kind: 'text', text: ev.content, at: now }) }
             : {
                 ...partial,
@@ -1718,6 +1813,8 @@ export class SessionStore {
         output: String(event.output ?? partial?.text ?? ''),
         attachments: event.attachments,
         process,
+        generatedContent: event.generatedContent,
+        malformedGeneratedContent: event.malformedGeneratedContent,
       });
       return { ...cur, messages: merged ?? cur.messages, remote: false, updatedAt: this.now() };
     });
@@ -1811,6 +1908,8 @@ export class SessionStore {
     source: string;
     /** 서버가 실행 기록에서 되살린 이 턴의 작업 과정(도구를 쓴 턴만). */
     process?: HistoryFlowItem[];
+    generatedContent?: GeneratedContentProvenance[];
+    malformedGeneratedContent?: boolean;
   }): void {
     const s = this.map.get(turn.interactionId);
     const rt = this.rt.get(turn.interactionId);
@@ -1840,7 +1939,8 @@ export class SessionStore {
       // 그 답에 도구 과정이 없으면(스트림이 도구를 못 받은 채 끝났다) 서버의 과정도 붙인다.
       const filled = s.streaming ? null : fillExecutionIoId(s.messages, turn);
       const withProcess = s.streaming ? null : attachProcessById(filled ?? s.messages, turn.ioId, turn.process);
-      const next = withProcess ?? filled;
+      const withGenerated = s.streaming ? null : attachGeneratedById(withProcess ?? filled ?? s.messages, turn.ioId, turn.generatedContent, turn.malformedGeneratedContent);
+      const next = withGenerated ?? withProcess ?? filled;
       if (next) {
         this.patch(turn.interactionId, (cur) => ({ ...cur, messages: next }));
         this.emit();
@@ -1858,7 +1958,11 @@ export class SessionStore {
         messages = [
           ...cur.messages,
           { role: 'user', text: turn.input },
-          { role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined },
+          {
+            role: 'assistant', text: turn.output, executionIoId: turn.ioId || undefined,
+            generatedContent: turn.generatedContent,
+            malformedGeneratedContent: turn.malformedGeneratedContent,
+          },
         ];
       } else {
         // 다른 곳에서 돈 턴 — 진행분 말풍선과 임시 질문을 이 행으로 바꿔 끼운다. 이 행은 늘

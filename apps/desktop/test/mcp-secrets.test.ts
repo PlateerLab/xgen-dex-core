@@ -7,7 +7,9 @@ import {
   resolveSecretKv,
   splitServerSecrets,
   withResolvedSecrets,
+  persistServerSecretsVerified,
 } from '@dex/engine/mcp-secrets'
+import { McpSecretRedactor } from '@dex/engine/mcp-redaction'
 import type { McpServerConfig } from '../src/main/config'
 
 test('redactKv: 키는 남기고 값만 비운다', () => {
@@ -68,4 +70,47 @@ test('withResolvedSecrets: connect 용으로 실제값 채워 넣는다', () => 
   // 시크릿 없고 env 도 비면 env 제거
   const bare = withResolvedSecrets({ name: 's', transport: 'stdio', command: 'x', env: { API: '' } }, null)
   assert.equal(bare.env, undefined)
+})
+
+test('키체인 write/readback 검증 실패 시 평문 config를 반환하지 않는다', async () => {
+  const cfg: McpServerConfig = {
+    name: 'migrate', transport: 'stdio', command: '/bin/echo', env: { CANARY: 'plain-secret' },
+  }
+  const failing = {
+    save: async () => true,
+    get: async () => ({ env: { CANARY: 'different' } }),
+    clear: async () => undefined,
+  }
+  await assert.rejects(() => persistServerSecretsVerified(failing, cfg), /검증에 실패/)
+
+  let stored: string | null = null
+  const ok = {
+    save: async (_name: string, secrets: unknown) => {
+      stored = JSON.stringify(secrets)
+      return true
+    },
+    get: async () => stored ? JSON.parse(stored) : null,
+    clear: async () => undefined,
+  }
+  const redacted = await persistServerSecretsVerified(ok, cfg)
+  assert.deepEqual(redacted.env, { CANARY: '' })
+})
+
+test('비밀 redactor는 중첩/순환/과대 결과와 stderr canary를 bounded 값으로 만든다', () => {
+  const secret = 'CANARY-secret-value'
+  const redactor = new McpSecretRedactor({
+    env: { API_TOKEN: secret },
+    headers: { Authorization: `Bearer ${secret}` },
+  })
+  const cyclic: Record<string, unknown> = {
+    stderr: `failed with ${secret}`,
+    nested: { header: `Bearer ${secret}` },
+  }
+  cyclic.self = cyclic
+  const safe = redactor.value(cyclic, { maxDepth: 5, maxNodes: 20 })
+  const wire = JSON.stringify(safe)
+  assert.equal(wire.includes(secret), false)
+  assert.match(wire, /\[REDACTED\]/)
+  assert.match(wire, /\[CIRCULAR\]/)
+  assert.equal(redactor.text(`stderr ${secret}`).includes(secret), false)
 })

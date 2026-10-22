@@ -54,6 +54,10 @@ jobs:
       # 데스크톱은 workspace 밖이라(electron) 따로 설치한다.
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
+      - name: 네이티브 파일 경계 빌드·검증
+        run: |
+          npm --workspace @dex/native-fs run build
+          npm --workspace @dex/native-fs test
       # XD 앱은 여기서 설치·빌드·타입체크하지 않는다(PR 검사에서 뺐다, xd-manual.yml 에서 손으로 돌린다).
 
       # 산출물이 필요한 검사(확장 번들에 엔진이 없는지)가 있으므로 빌드가 먼저다.
@@ -113,8 +117,16 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
+      - name: 네이티브 파일 경계 빌드·검증
+        run: |
+          npm --workspace @dex/native-fs run build
+          npm --workspace @dex/native-fs test
       - name: 빌드
         run: npm --prefix apps/desktop run build
+      - name: 설치한 CLI 파일 경계
+        run: |
+          npm --prefix apps/cli run build
+          npx --no-install tsx --test scripts/ci/installed-cli-native.test.mts
       - name: 설치본
         working-directory: apps/desktop
         run: npx --no-install electron-builder ${{ matrix.flag }} --publish never
@@ -137,7 +149,18 @@ jobs:
         if: runner.os == 'Windows'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node apps/desktop/scripts/check-installer.mjs
+        run: |
+          node --test apps/desktop/test/installer-release.test.mjs
+          node apps/desktop/scripts/check-installer.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dex-package-${{ matrix.name }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.AppImage
+          if-no-files-found: error
   # ── 모바일 JS (별도 npm 프로젝트) ──
   mobile:
     name: 모바일 (타입 · 테스트)

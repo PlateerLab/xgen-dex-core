@@ -4,9 +4,17 @@ import {
   conversationAgentLabel,
   conversationDisplayTitle,
   describeStreamError,
+  mergeGeneratedContentProvenance,
+  phaseLabel,
+  type GeneratedContentVerification,
 } from '@dex/protocol';
 import { stdin, stdout, stderr } from 'node:process';
 import stringWidth from 'string-width';
+import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dataDirectory } from '@dex/engine/config-store';
+import { configureNativeFsBinding, configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { parseArgs, flag, option, positiveIntegerOption, requiredOption } from './args';
 import { FileConfigStore } from '@dex/engine';
 import { SystemCredentialStore, credentialBackend } from '@dex/engine';
@@ -19,6 +27,11 @@ import type { LocalToolsStatus } from '@dex/engine';
 import type { Agent, AgentListQuery, ChatEvent, Conversation, HistoryTurn } from '@dex/engine';
 import { bindCliHost } from './dex-host';
 import { chatFolders } from './folders';
+import {
+  provenanceLabel,
+  textVerificationCandidate,
+  type ProvenanceMessageState,
+} from './tui/provenance';
 
 /**
  * 배포 버전 — **빌드가 package.json 에서 주입한다** (build.mjs 의 define).
@@ -32,42 +45,44 @@ import { chatFolders } from './folders';
 declare const __DEX_VERSION__: string | undefined;
 const VERSION = typeof __DEX_VERSION__ === 'string' ? __DEX_VERSION__ : 'dev';
 
-const HELP = `XGEN Dex CLI ${VERSION}
+const HELP = `XGEN DexOn CLI ${VERSION}
 
 Usage:
-  dex                     대화형 터미널 UI
-  dex ui                  대화형 터미널 UI
-  dex profile set [name] --server <url>
-  dex profile use <name>
-  dex profile list [--json]
-  dex login --email <email> [--profile <name>] [--password-stdin]
-  dex status [--profile <name>] [--json]
-  dex logout [--profile <name>]
-  dex agents list [--search <text>] [--owner personal|shared] [--json]
-  dex chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
-           [--folder <path,...> | --no-folder] [--memory-map | --no-memory-map]
-  dex history list [--json]          대화 목록 (마지막으로 말한 순서)
-  dex history turns --workflow <id> --interaction <id> [--json]
-  dex history rename --workflow <id> --interaction <id> --title <text>
-                                     빈 제목이면 첫 메시지 제목으로 돌아갑니다
-  dex history delete --workflow <id> --interaction <id>
-  dex tools list [--json]
-  dex tools status [--profile <name>] [--json]
-  dex tools configure [--allow-dangerous|--no-allow-dangerous]
-  dex tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>]
-                [--folder <path,...>] [--json]
-  dex ssh list [--json]
-  dex ssh enable | dex ssh disable
-  dex ssh test <name> [--json]
-  dex tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
-  dex tool ...                         dex tools ...의 단수형 별칭
-  dex serve --stdio
-  dex update [--check]    새 버전 확인 · 설치
+  dexon                     대화형 터미널 UI
+  dexon ui                  대화형 터미널 UI
+  dexon profile set [name] --server <url>
+  dexon profile use <name>
+  dexon profile list [--json]
+  dexon login --email <email> [--profile <name>] [--password-stdin]
+  dexon status [--profile <name>] [--json]
+  dexon logout [--profile <name>]
+  dexon agents list [--search <text>] [--owner personal|shared] [--json]
+  dexon chat --agent <workflow-id> [--name <workflow-name>] [--interaction <id>] [--jsonl]
+             [--verify-provenance]
+             [--folder <path,...> | --no-folder] [--memory-map | --no-memory-map]
+  dexon history list [--json]          대화 목록 (마지막으로 말한 순서)
+  dexon history turns --workflow <id> --interaction <id> [--json] [--verify-provenance]
+  dexon history rename --workflow <id> --interaction <id> --title <text>
+                                       빈 제목이면 첫 메시지 제목으로 돌아갑니다
+  dexon history delete --workflow <id> --interaction <id>
+  dexon tools list [--json]
+  dexon tools status [--profile <name>] [--json]
+  dexon tools configure [--allow-dangerous|--no-allow-dangerous]
+  dexon tools run <Shell|ShellJob|ReadFile|WriteFile|ListDir|Search|Open|Clipboard|Notify> [--args <json>]
+                  [--folder <path,...>] [--json]
+  dexon ssh list [--json]
+  dexon ssh enable | dexon ssh disable
+  dexon ssh test <name> [--json]
+  dexon tools serve [--profile <name>]   로컬 도구 브리지만 계속 실행
+  dexon tool ...                         dexon tools ...의 단수형 별칭
+  dexon serve --stdio
+  dexon update [--check]    새 버전 확인 · 설치
 
 Global options:
   --profile <name>  사용할 서버 프로필
   --json            단일 JSON 결과
   --jsonl           채팅 이벤트를 NDJSON으로 출력
+  --verify-provenance  화면에 보인 답변 본문으로 생성 출처 확인
   -h, --help        도움말
   -v, --version     버전
 
@@ -79,10 +94,10 @@ Global options:
   없으면 에이전트 설정을 따릅니다(새 에이전트는 켜짐, 예전에 만든 에이전트는 꺼짐).
 
 Examples:
-  dex profile set corp --server https://xgen.example.com
-  dex login --email me@corp.com
-  dex agents list
-  cd ~/work/my-repo && echo '이 저장소를 설명해줘' | dex chat --agent wf_abc
+  dexon profile set corp --server https://xgen.example.com
+  dexon login --email me@corp.com
+  dexon agents list
+  cd ~/work/my-repo && echo '이 저장소를 설명해줘' | dexon chat --agent wf_abc
 `;
 
 function writeJson(value: unknown): void {
@@ -132,16 +147,65 @@ function printConversations(items: Conversation[]): void {
   }
 }
 
-function printTurns(items: HistoryTurn[]): void {
+function printTurns(items: Array<HistoryTurn & { provenanceVerification?: ProvenanceVerificationOutput }>): void {
   for (const item of items) {
     stdout.write(`\n[You]\n${item.input}\n\n[${item.workflowName}]\n${item.output}\n`);
+    const label = item.provenanceVerification
+      ? verificationOutputLabel(item.provenanceVerification)
+      : provenanceLabel({
+          text: item.output,
+          generatedContent: item.generatedContent,
+          malformedGeneratedContent: item.malformedGeneratedContent,
+          provenanceFinal: true,
+        });
+    if (label) stdout.write(`[${label}]\n`);
   }
   if (items.length === 0) stdout.write('대화 turn이 없습니다.\n');
+}
+
+type ProvenanceVerificationOutput =
+  | ({ target: 'assistant_text' } & GeneratedContentVerification)
+  | { target: 'assistant_text'; status: 'malformed_metadata' | 'media_only' | 'ambiguous' | 'incomplete' | 'failed' };
+
+function verificationOutputLabel(output: ProvenanceVerificationOutput): string {
+  if (output.status === 'malformed_metadata') return '출처 정보 손상';
+  if (output.status === 'media_only') return 'AI 생성 표시(미디어) · 본문 확인 불가';
+  if (output.status === 'ambiguous') return 'AI 생성 표시 · 본문 서명이 여러 개라 확인하지 않음';
+  if (output.status === 'incomplete') return '진행 중인 답변 · 출처 확인 안 함';
+  if (output.status === 'failed') return '출처 확인 실패';
+  return provenanceLabel({ text: '', provenanceCheck: output.status }) ?? '출처 확인 실패';
+}
+
+async function verifyProvenance(
+  engine: DexEngine,
+  message: ProvenanceMessageState,
+  profile: string | undefined,
+): Promise<ProvenanceVerificationOutput> {
+  const candidate = textVerificationCandidate(message);
+  if (!candidate.ok) {
+    return {
+      target: 'assistant_text',
+      status:
+        candidate.reason === 'malformed'
+          ? 'malformed_metadata'
+          : candidate.reason,
+    };
+  }
+  try {
+    const result = await engine.verifyGeneratedText(candidate.proof, candidate.text, profile);
+    return { target: 'assistant_text', ...result };
+  } catch {
+    return { target: 'assistant_text', status: 'failed' };
+  }
 }
 
 function describeEvent(event: ChatEvent): string | null {
   if (event.kind === 'status') return `${event.surface}: ${event.detail ?? event.reason ?? '상태 변경'}`;
   if (event.kind === 'tool') return `tool: ${event.event.toolName ?? event.event.eventType}`;
+  // 답의 첫 글자 전 준비 단계. 시작·다시 시도·실패만 한 줄씩(끝난 단계는 다음 줄이 말한다).
+  if (event.kind === 'phase' && event.state !== 'done') {
+    return `준비: ${phaseLabel({ phase: event.phase, state: event.state === 'start' ? 'run' : event.state === 'retry' ? 'retry' : 'err', startedAt: 0, attempt: event.attempt, attempts: event.attempts })}`;
+  }
   if (event.kind === 'node_status') return `node: ${event.event.nodeId} ${event.event.status}`;
   if (event.kind === 'quota') return `quota: ${event.level}`;
   if (event.kind === 'error') {
@@ -152,7 +216,7 @@ function describeEvent(event: ChatEvent): string | null {
 }
 
 function printLocalToolsStatus(status: LocalToolsStatus): void {
-  stdout.write('작업 범위: 대화를 시작한 폴더 (dex chat --folder 로 바꿀 수 있습니다)\n');
+  stdout.write('작업 범위: 대화를 시작한 폴더 (dexon chat --folder 로 바꿀 수 있습니다)\n');
   stdout.write(`위험 명령: ${status.config.allowDangerous ? '미리 승인됨' : '실행 전에 확인'}\n`);
   stdout.write(
     `브리지: ${
@@ -292,6 +356,7 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
   const policy = await engine.checkChatInput({ text: input, workflowId: resolved.workflowId, profile: resolved.profile });
   if (policy.blocked) throw new DexError('usage_error', policy.message);
   const jsonl = flag(args, 'jsonl');
+  const shouldVerifyProvenance = flag(args, 'verify-provenance');
   if (jsonl) writeJson({ kind: 'start', ...resolved, input: undefined });
   else {
     stderr.write(`interaction: ${resolved.interactionId}\n`);
@@ -313,9 +378,15 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
   };
   process.once('SIGINT', onInterrupt);
   let detached = false;
+  const provenance: ProvenanceMessageState = { text: '' };
   try {
     for await (const event of engine.chat(resolved, controller.signal)) {
       if (event.kind === 'detached') detached = true;
+      if (event.kind === 'text') provenance.text += event.content;
+      else if (event.kind === 'summary') provenance.text += event.text;
+      else if (event.kind === 'generated_content') {
+        provenance.generatedContent = mergeGeneratedContentProvenance(provenance.generatedContent, event.data);
+      }
       if (jsonl) {
         stdout.write(`${JSON.stringify(event)}\n`);
       } else if (event.kind === 'text') {
@@ -328,12 +399,23 @@ async function runChat(engine: DexEngine, args: ReturnType<typeof parseArgs>): P
       }
     }
     if (!jsonl) stdout.write('\n');
+    provenance.provenanceFinal = !detached;
+    if (shouldVerifyProvenance) {
+      const result = detached
+        ? { target: 'assistant_text' as const, status: 'incomplete' as const }
+        : await verifyProvenance(engine, provenance, resolved.profile);
+      if (jsonl) stdout.write(`${JSON.stringify({ kind: 'provenance_verification', ...result })}\n`);
+      else stderr.write(`[${verificationOutputLabel(result)}]\n`);
+    } else if (!jsonl) {
+      const label = provenanceLabel(provenance);
+      if (label) stderr.write(`[${label}]\n`);
+    }
     if (detached && !jsonl) {
       // 끊겼을 뿐 서버의 턴은 계속 돈다. 위에 찍힌 것은 받다 만 조각이지 답이
       // 아니다 — 그걸 말해 주지 않으면 잘린 답을 최종 답으로 읽는다.
       stderr.write(
         `\n[연결이 끊겼습니다 — 서버에서 계속 진행 중입니다]\n` +
-          `  결과 보기: dex chat --agent ${resolved.workflowId} --interaction ${resolved.interactionId}\n`,
+          `  결과 보기: dexon chat --agent ${resolved.workflowId} --interaction ${resolved.interactionId}\n`,
       );
     }
   } finally {
@@ -356,6 +438,16 @@ async function run(): Promise<void> {
   // 엔진에 이 호스트를 붙인다 — **엔진을 만들기 전에**. 로컬 도구와 MCP 가 전부
   // 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히 던진다.
   const configStore = new FileConfigStore();
+  if (VERSION !== 'dev') {
+    configureNativeFsBinding(join(dirname(fileURLToPath(import.meta.url)), 'native', `${process.platform}-${process.arch}`, 'native-fs.node'));
+  }
+  try {
+    const stage = join(dataDirectory(), 'native-stage');
+    mkdirSync(stage, { recursive: true, mode: 0o700 });
+    configureNativeFsStage(stage);
+  } catch {
+    // File tools report the precise native-boundary error when used; chat remains available.
+  }
   bindCliHost(configStore);
   const engine = new DexEngine(configStore, new SystemCredentialStore());
   const terminal = {
@@ -475,7 +567,7 @@ async function run(): Promise<void> {
     // 켜고 끄는 설정은 없어졌다 — 범위는 대화를 시작한 폴더가 정한다. 옛 스크립트가
     // 깨지지 않도록 성공으로 끝내되 무엇이 바뀌었는지 알린다.
     const note =
-      '이 PC의 도구는 더 이상 켜고 끄지 않습니다. 대화를 시작한 폴더(또는 dex chat --folder)가 작업 범위입니다.';
+      '이 PC의 도구는 더 이상 켜고 끄지 않습니다. 대화를 시작한 폴더(또는 dexon chat --folder)가 작업 범위입니다.';
     if (asJson) writeJson({ ok: true, note });
     else stdout.write(`${note}\n`);
     return;
@@ -591,8 +683,25 @@ async function run(): Promise<void> {
       option(args, 'name'),
       option(args, 'profile'),
     );
-    if (asJson) writeJson(turns);
-    else printTurns(turns);
+    const withVerification = flag(args, 'verify-provenance')
+      ? await Promise.all(
+          turns.map(async (turn) => ({
+            ...turn,
+            provenanceVerification: await verifyProvenance(
+              engine,
+              {
+                text: turn.output,
+                generatedContent: turn.generatedContent,
+                malformedGeneratedContent: turn.malformedGeneratedContent,
+                provenanceFinal: true,
+              },
+              option(args, 'profile'),
+            ),
+          })),
+        )
+      : turns;
+    if (asJson) writeJson(withVerification);
+    else printTurns(withVerification);
     return;
   }
   if (command === 'serve') {
@@ -656,6 +765,6 @@ run().catch((error: unknown) => {
   const exposed = publicError(error);
   const machine = process.argv.includes('--json') || process.argv.includes('--jsonl');
   if (machine) stderr.write(`${JSON.stringify({ error: exposed })}\n`);
-  else stderr.write(`dex: ${exposed.message}\n`);
+  else stderr.write(`dexon: ${exposed.message}\n`);
   process.exitCode = exitCode(error);
 });

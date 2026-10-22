@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
+import { copyNativeAssets } from '../../scripts/native-assets.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -44,3 +45,4 @@ await build({
 });
 
 await chmod('dist/cli.js', 0o755);
+await copyNativeAssets(resolve(here, 'dist/native'));

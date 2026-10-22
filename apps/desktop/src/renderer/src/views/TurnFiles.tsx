@@ -17,6 +17,8 @@ import {
   shouldLookForTurnFiles,
   withoutShownFiles,
   type ChatDownload,
+  type GeneratedContentProvenance,
+  type GeneratedContentVerificationStatus,
   type WsNode,
 } from '@dex/protocol';
 import { xgen } from '../bridge';
@@ -28,6 +30,7 @@ import { isImageFile } from './attachment-model';
 
 /** 미리보기로 그릴 그림의 크기 상한 — 이보다 크면 칩으로만 둔다(대화창이 무거워지지 않게). */
 const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
+const GENERATED_CONTENT_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
 
 function blobOf(bytes: Uint8Array, contentType: string): Blob {
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -39,6 +42,47 @@ const workspaceTree = sharedTreeFetch((workflowId: string) => xgen.agentData.wor
 
 /** 다운로드 한 개의 열쇠 — 같은 파일이면 같다. */
 const downloadKey = (d: ChatDownload): string => d.artifactId ?? `${d.storageId}:${d.fileId}`;
+
+function mediaProofFor(msg: ChatMsg, artifactPath: string | undefined): GeneratedContentProvenance | undefined {
+  if (!artifactPath || msg.malformedGeneratedContent) return undefined;
+  const normalized = artifactPath.replace(/^\/+/, '');
+  return msg.generatedContent?.find((item) =>
+    item.content_type?.toLowerCase() !== 'text/plain'
+    && item.artifact_path?.replace(/^\/+/, '') === normalized,
+  );
+}
+
+type MediaProofState = 'idle' | 'checking' | 'error' | GeneratedContentVerificationStatus;
+
+const MediaProofButton: React.FC<{
+  provenance: GeneratedContentProvenance;
+  read: () => Promise<{ bytes: Uint8Array; contentType: string }>;
+  revision: ChatMsg;
+}> = ({ provenance, read, revision }) => {
+  const [state, setState] = useState<MediaProofState>('idle');
+  const request = React.useRef(0);
+  const currentRevision = React.useRef(revision);
+  currentRevision.current = revision;
+  useEffect(() => {
+    request.current += 1;
+    setState('idle');
+  }, [provenance.proof, revision]);
+  const verify = async (): Promise<void> => {
+    if (!provenance.proof || state === 'checking') return;
+    const id = ++request.current;
+    const startedFor = revision;
+    setState('checking');
+    try {
+      const observed = await read();
+      const result = await xgen.generatedContent.verifyBytes(provenance.proof, observed.bytes, observed.contentType);
+      if (request.current === id && currentRevision.current === startedFor) setState(result.status as GeneratedContentVerificationStatus);
+    } catch {
+      if (request.current === id && currentRevision.current === startedFor) setState('error');
+    }
+  };
+  const label = state === 'verified' ? '검증됨' : state === 'checking' ? '검증 중…' : state === 'idle' ? '검증' : state === 'changed' ? '파일 변경됨' : state === 'unavailable' ? '검증 불가' : '검증 실패';
+  return <button className="generated-media-proof" type="button" onClick={() => void verify()} disabled={state === 'checking'} aria-label={`AI 생성 파일 ${label}`}>AI 생성 · {label}</button>;
+};
 
 export const TurnFiles: React.FC<{
   workflowId: string;
@@ -207,6 +251,36 @@ export const TurnFiles: React.FC<{
     }
   };
 
+  const workspaceProof = (node: WsNode) => {
+    const provenance = mediaProofFor(msg, node.path);
+    return provenance ? (
+      <MediaProofButton
+        provenance={provenance}
+        read={() => xgen.agentData.workspaceBinary(
+          workflowId,
+          node.path,
+          undefined,
+          { maxBytes: GENERATED_CONTENT_MEDIA_MAX_BYTES },
+        )}
+        revision={msg}
+      />
+    ) : null;
+  };
+
+  const downloadProof = (item: ChatDownload) => {
+    const provenance = mediaProofFor(msg, item.path ?? item.downloadUrl);
+    return provenance ? (
+      <MediaProofButton
+        provenance={provenance}
+        read={() => xgen.chatFiles.download(item, {
+          preview: !item.artifactId,
+          maxBytes: GENERATED_CONTENT_MEDIA_MAX_BYTES,
+        })}
+        revision={msg}
+      />
+    ) : null;
+  };
+
   const chip = (node: WsNode, minor: boolean) => (
     <span
       key={node.path}
@@ -224,6 +298,7 @@ export const TurnFiles: React.FC<{
         <span className="turn-file-name">{node.name}</span>
         <span className="turn-file-size">{formatFileSize(node.size)}</span>
       </button>
+      {workspaceProof(node)}
       <button
         type="button"
         className="turn-file-dl"
@@ -252,6 +327,7 @@ export const TurnFiles: React.FC<{
           <span className="turn-file-name">{item.name}</span>
           <span className="turn-file-size">{formatFileSize(item.size)}</span>
         </button>
+        {downloadProof(item)}
         <button
           type="button"
           className="turn-file-dl"
@@ -298,6 +374,7 @@ export const TurnFiles: React.FC<{
                 >
                   {busy === node.path ? <span className="ptl-spin" /> : <DownloadIcon size={13} />}
                 </button>
+                {workspaceProof(node)}
               </figcaption>
             </figure>
           ))}
@@ -330,6 +407,7 @@ export const TurnFiles: React.FC<{
                   >
                     {busy === key ? <span className="ptl-spin" /> : <DownloadIcon size={13} />}
                   </button>
+                  {downloadProof(item)}
                 </figcaption>
               </figure>
             );

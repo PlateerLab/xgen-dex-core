@@ -144,10 +144,139 @@ export async function stageChatFiles(
   return problems[0] ?? null;
 }
 
-/** 붙여 넣은 것 중 그림 파일만. 글을 붙여 넣으면 빈 목록이라 기본 동작(글 붙이기)이 그대로 간다. */
-export function pastedImageFiles(items: DataTransferItemList | readonly DataTransferItem[]): File[] {
-  return Array.from(items)
-    .filter((item) => item.kind === 'file' && item.type.toLowerCase().startsWith('image/'))
+// ── 붙여넣기 (2026-10-22, 웹 채팅 입력창 packages/ui chat-paste.ts 와 같은 규칙) ─────────────────────
+//
+// 예전에는 그림 파일만 보고 그림이 하나라도 있으면 글 대신 그림을 붙였다. 엑셀 셀·워드 문단을 복사하면 클립보드에
+// 그 내용을 그린 그림도 함께 실려, 표 대신 사진이 붙었다. 탐색기에서 복사한 문서는 파일 대신 이름 글자가 붙었다.
+
+/** 붙여넣기 이벤트의 ``clipboardData`` 중 여기서 읽는 부분(시험에서 흉내 낼 수 있게). */
+export interface ClipboardLike {
+  files?: ArrayLike<File> | null;
+  items?: ArrayLike<{ kind: string; type: string; getAsFile(): File | null }> | null;
+  getData(format: string): string;
+}
+
+/** 브라우저가 클립보드의 그림에 붙이는 이름(``image.png``). 여러 장이 모두 같은 이름이 되지 않게 바꾼다. */
+const GENERIC_IMAGE_NAME = /^image\.(png|jpe?g|gif|webp|bmp|tiff?|heic|avif)$/i;
+const SINGLE_LINK = /^(https?|file|data|blob):\S+$/i;
+
+function clipboardText(data: ClipboardLike): string {
+  try {
+    return String(data.getData('text/plain') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function clipboardFiles(data: ClipboardLike): File[] {
+  const listed = Array.from(data.files ?? []).filter((f): f is File => !!f);
+  if (listed.length > 0) return listed;
+  return Array.from(data.items ?? [])
+    .filter((item) => item.kind === 'file')
     .map((item) => item.getAsFile())
-    .filter((file): file is File => !!file);
+    .filter((f): f is File => !!f);
+}
+
+function baseName(line: string): string {
+  let raw = line.replace(/^file:\/\//i, '');
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // 잘못 인코딩된 경로면 그대로 비교한다.
+  }
+  const parts = raw.split(/[\\/]/);
+  return parts[parts.length - 1] || raw;
+}
+
+/** 함께 온 글이 파일 이름·경로 목록이거나 주소 한 줄뿐인가(그러면 파일 붙여넣기다). */
+function textOnlyNamesFiles(text: string, files: File[]): boolean {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 1 && SINGLE_LINK.test(lines[0])) return true;
+  const names = new Set(files.map((f) => f.name).filter(Boolean));
+  return names.size > 0 && lines.every((l) => names.has(l) || names.has(baseName(l)));
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+function extensionOf(file: File): string {
+  const fromName = /\.([a-z0-9]{1,5})$/i.exec(file.name || '');
+  if (fromName) return fromName[1].toLowerCase();
+  const sub = (file.type.split('/')[1] || '').split(/[+;]/)[0].toLowerCase();
+  if (sub === 'jpeg') return 'jpg';
+  return sub || 'bin';
+}
+
+/** 이름이 없거나 ``image.png`` 인 파일(클립보드의 그림)에 붙여 넣은 시각으로 이름을 준다. */
+function pastedName(file: File, index: number, count: number, text: string, now: Date): File {
+  const generic = !file.name || (GENERIC_IMAGE_NAME.test(file.name) && text !== file.name);
+  if (!generic) return file;
+  const stamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} `
+    + `${pad2(now.getHours())}.${pad2(now.getMinutes())}.${pad2(now.getSeconds())}`;
+  const label = file.type.toLowerCase().startsWith('image/') ? '붙여넣은 이미지' : '붙여넣은 파일';
+  const suffix = count > 1 ? ` (${index + 1})` : '';
+  return new File([file], `${label} ${stamp}${suffix}.${extensionOf(file)}`, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
+}
+
+/**
+ * 붙여 넣은 것 중 첨부할 파일. 빈 목록이면 붙여넣기는 기본 동작(글 붙이기)대로 둔다.
+ *
+ * 그림만이 아니라 탐색기에서 복사한 파일도 받는다. **글이 함께 오면 글이 이긴다**(엑셀 셀·워드 문단). 함께 온 글이
+ * 파일 이름·경로나 주소 한 줄뿐이면(Finder 복사, 이미지 복사) 파일로 본다.
+ */
+export function pastedFiles(data: ClipboardLike | null | undefined, now: Date = new Date()): File[] {
+  if (!data) return [];
+  const files = clipboardFiles(data);
+  if (files.length === 0) return [];
+  const text = clipboardText(data);
+  if (text && !textOnlyNamesFiles(text, files)) return [];
+  return files.map((file, index) => pastedName(file, index, files.length, text, now));
+}
+
+/** :func:`ownsDocumentPaste` 가 보는 요소의 모양(DOM 요소가 그대로 맞는다). */
+export interface PasteNode {
+  readonly isConnected: boolean;
+  readonly tagName: string;
+  readonly isContentEditable?: boolean;
+  readonly offsetParent?: unknown;
+  closest(selector: string): PasteNode | null;
+  contains(other: unknown): boolean;
+}
+
+/** 대화 화면의 뿌리(입력창이 있는 칸). 나눠 본 화면에서 붙여넣기가 어느 대화의 것인지 가른다. */
+export const PASTE_ROOT_ATTR = 'data-paste-root';
+
+/**
+ * 입력창에 포커스가 없을 때의 붙여넣기를 이 입력창이 받는가.
+ *
+ * 다른 입력칸·편집기·이 입력창이 없는 대화 상자에 붙여 넣는 것은 받지 않는다. 단추 등에 포커스가 있으면 그것이
+ * 든 대화가, 아무것도 포커스되지 않았으면 마지막으로 누른 곳(없으면 마지막으로 쓴 입력창)의 대화가 받는다.
+ * 나눠 본 두 대화가 같은 붙여넣기를 함께 가져가지 않고, 대화 밖(사이드바·탐색기)을 누른 뒤의 붙여넣기도 받지 않는다.
+ */
+export function ownsDocumentPaste(
+  target: PasteNode | null,
+  input: PasteNode,
+  recent: { pointer: PasteNode | null; input: PasteNode | null },
+): boolean {
+  if (!input.isConnected || input.offsetParent === null) return false;
+  const root = input.closest(`[${PASTE_ROOT_ATTR}]`);
+  if (!root) return false;
+  const onPage = !target || target.tagName === 'BODY' || target.tagName === 'HTML';
+  if (target && !onPage) {
+    if (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return false;
+    const dialog = target.closest('[role="dialog"], [aria-modal="true"]');
+    if (dialog && !dialog.contains(input)) return false;
+  }
+  const probe = !onPage
+    ? target
+    : recent.pointer?.isConnected
+      ? recent.pointer
+      : recent.input?.isConnected
+        ? recent.input
+        : null;
+  // 이 창에서 처음 붙여 넣는다(누른 곳도 쓴 입력창도 없다): 보이는 입력창이 받는다.
+  if (!probe) return true;
+  return probe.closest(`[${PASTE_ROOT_ATTR}]`) === root;
 }

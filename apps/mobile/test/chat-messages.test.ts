@@ -12,6 +12,7 @@ import {
   attachTool,
   dropRemotePartials,
   finishStreaming,
+  generatedVerificationInputKey,
   historyMessages,
   ensureRemotePartial,
   mergeHistory,
@@ -25,7 +26,7 @@ import {
   mergeMissedTurns,
   startRemoteTurn,
 } from '../src/chat/message-model';
-import { attachDownload, attachmentMarks } from '../src/chat/message-model';
+import { attachDownload, attachGeneratedContent, attachmentMarks } from '../src/chat/message-model';
 import { dispatchExec } from '../src/lib/chat-ws';
 
 const live = (text: string, events: unknown[] = []) => ({ text, events });
@@ -291,8 +292,47 @@ test('놓친 조각이 있어도 끝난 답은 완결 본문으로 채운다', (
     reconcileFlow(flow, '봅니다.\n\n결론: Y').map((f) => (f.kind === 'text' ? f.text : 'T')),
     ['봅니다.\n\n', 'T', '결론: Y'],
   );
-  // 맞출 수 없으면 그대로
-  assert.deepEqual(reconcileFlow(flow, '전혀 다른 글'), flow);
+  // 맞출 수 없으면 오래된 글을 버리고 도구 사건 + 정본으로 바꾼다
+  assert.deepEqual(
+    reconcileFlow(flow, '  전혀 다른 글\n').map((f) => (f.kind === 'text' ? f.text : 'T')),
+    ['T', '  전혀 다른 글\n'],
+    '정본의 공백과 줄바꿈도 그대로 보존한다',
+  );
+  assert.deepEqual(
+    reconcileFlow(flow, '').map((f) => (f.kind === 'text' ? f.text : 'T')),
+    ['T'],
+    '빈 정본이면 오래된 글을 남기지 않는다',
+  );
+});
+
+test('signed reconnect와 history는 다른 진행 글 대신 검증할 정본을 타임라인에 표시한다', () => {
+  const provenance = {
+    indication: 'ai_generated' as const,
+    proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain', byte_length: 8,
+    source_id: '123e4567-e89b-42d3-a456-426614174000',
+  };
+  const canonical = '  정본 답\n';
+  let reconnect = startRemoteTurn([], 'q');
+  reconnect = appendAssistantText(reconnect, '오래된 답', 1);
+  reconnect = attachTool(reconnect, bash('u1', 'tool_call'), 2);
+  reconnect = attachGeneratedContent(reconnect, provenance);
+  reconnect = completeRemoteTurn(reconnect, { input: 'q', output: canonical })!;
+  assert.equal(reconnect[1].text, canonical);
+  assert.equal(reconnect[1].flow?.filter((f) => f.kind === 'text').map((f) => f.text).join(''), canonical);
+  assert.deepEqual(reconnect[1].flow?.map((f) => f.kind), ['tool', 'text']);
+  assert.equal(reconnect[1].generatedContent?.[0].proof, provenance.proof);
+
+  const history = historyMessages([{
+    input: 'q', output: canonical, generatedContent: [provenance],
+    process: [
+      { kind: 'text', text: '오래된 이력 답', at: 1 },
+      { kind: 'tool', event: bash('u2', 'tool_call'), at: 2 },
+    ],
+  }]);
+  assert.equal(history[1].text, canonical);
+  assert.equal(history[1].flow?.filter((f) => f.kind === 'text').map((f) => f.text).join(''), canonical);
+  assert.deepEqual(history[1].flow?.map((f) => f.kind), ['tool', 'text']);
+  assert.equal(history[1].generatedContent?.[0].proof, provenance.proof);
 });
 
 // ── 다른 기기의 도구 턴이 결과만 남던 문제 (2026-10-01 사용자 보고) ──────────────
@@ -445,4 +485,29 @@ test('첨부 이름표는 작업 공간 자리를 함께 싣는다 — 눌러서
     [{ name: 'old.pdf', kind: 'file' }],
     '옛 웹 첨부는 자리가 없다 — 이름표만',
   );
+});
+
+test('generated_content는 AI 표시용 선언으로 답에 붙고 검증됨으로 자동 승격되지 않는다', () => {
+  const provenance = {
+    indication: 'ai_generated' as const,
+    proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain', byte_length: 3,
+    source_id: '123e4567-e89b-42d3-a456-426614174000',
+  };
+  const list = attachGeneratedContent(start(), provenance);
+  assert.equal(list[1].generatedContent?.[0].proof, provenance.proof);
+  let remote = startRemoteTurn([], 'q');
+  remote = attachGeneratedContent(remote, provenance);
+  remote = completeRemoteTurn(remote, { input: 'q', output: '답' }) ?? remote;
+  assert.equal(remote[1].generatedContent?.[0].proof, provenance.proof, '종료 프레임에 선언이 없어도 진행 중 proof를 보존한다');
+  const got: unknown[] = [];
+  dispatchExec('generated_content', provenance, { onGeneratedContent: (data) => got.push(data) });
+  assert.equal((got[0] as { proof?: string })?.proof, provenance.proof);
+});
+
+test('계정이나 서버가 바뀌면 이전 검증 요청 결과를 현재 답에 적용하지 않는다', () => {
+  const oldRequest = generatedVerificationInputKey({ serverUrl: 'https://one.example', userId: '1' }, 'a.b.c', '답');
+  const currentAccount = generatedVerificationInputKey({ serverUrl: 'https://one.example', userId: '2' }, 'a.b.c', '답');
+  const currentServer = generatedVerificationInputKey({ serverUrl: 'https://two.example', userId: '1' }, 'a.b.c', '답');
+  assert.notEqual(oldRequest, currentAccount, '늦게 끝난 이전 계정 요청은 거부한다');
+  assert.notEqual(oldRequest, currentServer, '늦게 끝난 이전 서버 요청은 거부한다');
 });

@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -21,6 +22,7 @@ import {
   userToolchains,
   workspaceShellSupported,
 } from '../src/workspace-shell';
+import { nativeFsStagePath } from '../src/rooted-fs';
 import { bindTestHost } from './_host';
 
 bindTestHost();
@@ -194,6 +196,38 @@ test(
       assert.equal(await readFile(join(workspace, 'job.txt'), 'utf8'), 'inside');
       assert.deepEqual(await readdir(outside), ['private.txt']);
     }
+  },
+);
+
+test(
+  '백그라운드 셸은 root 이동과 내부 alias 뒤에도 private stage를 읽지 못한다',
+  { skip: !supported },
+  async (t) => {
+    const { provider, workspace } = await fixture(t);
+    const stage = nativeFsStagePath();
+    assert.ok(stage);
+    const secret = `shell-stage-${process.pid}-${Date.now()}.txt`;
+    await writeFile(join(stage, secret), 'private-stage-marker');
+    t.after(() => rm(join(stage, secret), { force: true }));
+    await symlink(stage, join(workspace, 'stage-alias'), 'dir');
+    const result = await provider.callTool('Shell', {
+      command: `sleep 1; cat stage-alias/${secret}`,
+      background: true,
+    });
+    const id = result.content[0].text.match(/job_id:\s*(\S+)/)?.[1];
+    assert.ok(id, result.content[0].text);
+    const moved = `${workspace}-moved`;
+    t.after(() => rm(moved, { recursive: true, force: true }));
+    await rename(workspace, moved);
+    let poll;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      poll = await provider.callTool('ShellJob', { action: 'poll', job_id: id });
+      if (poll.structuredContent?.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.notEqual(poll?.structuredContent?.status, 'running');
+    assert.doesNotMatch(poll?.content[0].text ?? '', /private-stage-marker/);
+    assert.match(poll?.content[0].text ?? '', /not permitted|Permission denied|denied/i);
   },
 );
 

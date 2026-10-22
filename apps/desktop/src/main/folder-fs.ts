@@ -1,24 +1,25 @@
 /**
- * 이 대화에 연결한 폴더의 파일 — IDE 탐색기 [연결된 폴더] 와 편집기가 쓴다.
- *
- * 경로는 모두 **폴더 안** 기준(`/` 구분, `''` = 폴더 자체)이고, 디스크에 닿기 전에 폴더 밖으로
- * 나가지 않는지 확인한다(심볼릭 링크를 따라가도 폴더 밖이면 거부 — 에이전트의 폴더 도구와 같은
- * 경계). 저장은 연 판(sha)을 조건으로 건다. 지우면 운영체제의 휴지통으로 간다.
- *
- * Electron 을 모른다 — 휴지통·파일 관리자는 호출부가 넣어 준다(단위 테스트가 그대로 돈다).
+ * IDE folder operations through the same pinned native boundary as local tools.
+ * File data and mutations are handle-relative. Only `reveal` returns a pathname
+ * to the OS UI, and deleted entries are quarantined into the private stage
+ * before a trusted path is handed to the OS trash service.
  */
 import { createHash } from 'node:crypto';
-import { promises as fsp, type Dirent } from 'node:fs';
-import { join } from 'node:path';
-import { resolveWithinRootsReal } from '@dex/engine/local-tools';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { rm } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { platform } from 'node:process';
+import {
+  RootGrant,
+  resolveRootedPath,
+  type RootedResolvedPath,
+  type RootedSource,
+} from '@dex/engine/rooted-fs';
+import { atomicWorkspaceWrite } from '@dex/engine/atomic-workspace-write';
 
-/** 편집기로 여는 파일의 상한 — 넘으면 too_large(편집기가 "너무 크다" 를 보인다). */
 export const FOLDER_READ_MAX = 10 * 1024 * 1024;
-/** 그림 미리보기의 상한. */
 export const FOLDER_RAW_MAX = 50 * 1024 * 1024;
-/** 한 폴더에서 보여 주는 항목 수. */
 export const FOLDER_LIST_MAX = 5000;
-/** VS Code 가 기본으로 감추는 것과 같다. */
 const HIDDEN = new Set(['.git', '.svn', '.hg', 'CVS', '.DS_Store', 'Thumbs.db']);
 
 export class FolderFsError extends Error {
@@ -33,9 +34,9 @@ export class FolderFsError extends Error {
 }
 
 export interface FolderFsDeps {
-  /** 지우기 — 휴지통으로. 없으면 바로 지운다. */
-  trash?(abs: string): Promise<void>;
-  /** 파일 관리자로 보기. */
+  /** Receives only a verified path inside the private native stage. */
+  trash?(trustedStagePath: string): Promise<void>;
+  /** UI-only pathname handoff; no file bytes or mutations use this path. */
   reveal?(abs: string): void;
 }
 
@@ -53,12 +54,53 @@ export interface FolderStat {
   sha?: string;
 }
 
+const grants = new Map<string, Map<string, RootGrant>>();
+const grantScope = new AsyncLocalStorage<string>();
+const DEFAULT_SCOPE = '';
+
+function grantFor(root: string): RootGrant {
+  const key = resolve(root);
+  const scope = grantScope.getStore() ?? DEFAULT_SCOPE;
+  let byScope = grants.get(key);
+  if (!byScope) {
+    byScope = new Map();
+    grants.set(key, byScope);
+  }
+  let grant = byScope.get(scope);
+  if (!grant) {
+    grant = new RootGrant(key);
+    byScope.set(scope, grant);
+  }
+  return grant;
+}
+
+/** Revoke a folder object capability when the host removes or re-grants it. */
+export function closeFolderFsRoot(root: string, scopeKey?: string): void {
+  const key = resolve(root);
+  const byScope = grants.get(key);
+  if (!byScope) return;
+  if (scopeKey === undefined) {
+    for (const grant of byScope.values()) grant.close();
+    grants.delete(key);
+  } else {
+    byScope.get(scopeKey)?.close();
+    byScope.delete(scopeKey);
+    if (byScope.size === 0) grants.delete(key);
+  }
+}
+
+/** Close every IDE folder capability on account/session shutdown. */
+export function closeAllFolderFsRoots(): void {
+  for (const byScope of grants.values()) for (const grant of byScope.values()) grant.close();
+  grants.clear();
+}
+
 function cleanRel(rel: unknown): string {
   const parts: string[] = [];
-  for (const seg of String(rel ?? '').replace(/\\/g, '/').split('/')) {
-    if (!seg || seg === '.') continue;
-    if (seg === '..') throw new FolderFsError('forbidden', '폴더 밖의 경로입니다');
-    parts.push(seg);
+  for (const segment of String(rel ?? '').replace(/\\/g, '/').split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') throw new FolderFsError('forbidden', '폴더 밖의 경로입니다');
+    parts.push(segment);
   }
   return parts.join('/');
 }
@@ -67,72 +109,102 @@ function joinRel(dir: string, name: string): string {
   return dir ? `${dir}/${name}` : name;
 }
 
-/** 폴더 안의 절대 경로 — 밖이면 던진다. */
-async function inside(root: string, rel: string): Promise<string> {
-  const r = cleanRel(rel);
-  const target = r ? join(root, ...r.split('/')) : root;
-  const abs = await resolveWithinRootsReal(target, [root]);
-  if (!abs) throw new FolderFsError('forbidden', '연결한 폴더 밖의 경로입니다');
-  return abs;
+function errorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as NodeJS.ErrnoException).code ?? '')
+    : '';
+}
+
+function notFound(error: unknown): boolean {
+  return errorCode(error) === 'ENOENT' || errorCode(error) === 'ENOTDIR';
+}
+
+function folderError(error: unknown, fallback = '파일 작업에 실패했습니다'): Error {
+  if (error instanceof FolderFsError) return error;
+  const code = errorCode(error);
+  if (notFound(error)) return new FolderFsError('not_found', '파일 또는 폴더가 없습니다');
+  if (code === 'EEXIST') return new FolderFsError('exists', '같은 이름이 이미 있습니다');
+  if (code === 'FILE_SOURCE_CHANGED') return new FolderFsError('changed', '그사이 파일이 바뀌었습니다');
+  if (code === 'PATH_DOMAIN_MISMATCH' || code === 'ELOOP' || code === 'EACCES' || code === 'EPERM') {
+    return new FolderFsError('forbidden', '연결한 폴더 밖의 경로입니다');
+  }
+  return error instanceof Error ? error : new FolderFsError('io_error', fallback);
+}
+
+async function rooted(root: string, path: unknown, allowMissing = false): Promise<RootedResolvedPath> {
+  const rel = cleanRel(path);
+  try {
+    return await resolveRootedPath(rel, resolve(root), [grantFor(root)], { allowMissing });
+  } catch (error) {
+    throw folderError(error);
+  }
 }
 
 const sha1 = (bytes: Uint8Array): string => createHash('sha1').update(bytes).digest('hex');
 
-function notFound(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException)?.code;
-  return code === 'ENOENT' || code === 'ENOTDIR';
+function readAll(source: RootedSource): Uint8Array {
+  return source.read(0, source.size);
 }
 
-async function statOrNull(abs: string) {
+async function currentSha(path: RootedResolvedPath): Promise<{ sha: string; source: RootedSource | null }> {
+  let source: RootedSource;
   try {
-    return await fsp.stat(abs);
-  } catch (err) {
-    if (notFound(err)) return null;
-    throw err;
+    source = path.grant.openSource(path.relativePath);
+  } catch (error) {
+    if (notFound(error)) return { sha: '', source: null };
+    if (errorCode(error) === 'EINVAL' || errorCode(error) === 'EISDIR') {
+      throw new FolderFsError('not_file', '파일이 아닙니다');
+    }
+    throw folderError(error);
   }
-}
-
-async function currentSha(abs: string): Promise<string> {
-  const st = await statOrNull(abs);
-  if (!st) return '';
-  if (!st.isFile()) throw new FolderFsError('not_file', '파일이 아닙니다');
-  if (st.size > FOLDER_READ_MAX) return `mtime:${st.mtimeMs}:${st.size}`;
-  return sha1(await fsp.readFile(abs));
+  try {
+    const sha = source.size > FOLDER_READ_MAX
+      ? `mtime:${source.mtimeMs}:${source.size}`
+      : sha1(readAll(source));
+    return { sha, source };
+  } catch (error) {
+    source.close();
+    throw folderError(error);
+  }
 }
 
 export async function listFolder(root: string, dir: string): Promise<FolderEntry[]> {
   const rel = cleanRel(dir);
-  const abs = await inside(root, rel);
-  let entries: Dirent[];
+  const path = await rooted(root, rel);
   try {
-    entries = await fsp.readdir(abs, { withFileTypes: true });
-  } catch (err) {
-    if (notFound(err)) throw new FolderFsError('not_found', '폴더가 없습니다');
-    throw err;
+    return path.grant.list(path.relativePath)
+      .filter((entry) => !HIDDEN.has(entry.name))
+      .slice(0, FOLDER_LIST_MAX)
+      .map((entry) => ({
+        path: joinRel(rel, entry.name),
+        isDir: entry.type === 'directory',
+        size: entry.type === 'file' ? entry.size : null,
+        modifiedAt: new Date(entry.mtimeMs).toISOString(),
+      }));
+  } catch (error) {
+    if (notFound(error)) throw new FolderFsError('not_found', '폴더가 없습니다');
+    throw folderError(error);
   }
-  const shown = entries.filter((e) => !HIDDEN.has(e.name)).slice(0, FOLDER_LIST_MAX);
-  return Promise.all(
-    shown.map(async (e): Promise<FolderEntry> => {
-      const path = joinRel(rel, e.name);
-      try {
-        // 링크는 가리키는 것을 본다 — 폴더를 가리키면 폴더로 펼친다(밖이면 펼칠 때 거부된다).
-        const st = await fsp.stat(join(abs, e.name));
-        return { path, isDir: st.isDirectory(), size: st.isFile() ? st.size : null, modifiedAt: st.mtime.toISOString() };
-      } catch {
-        return { path, isDir: e.isDirectory() };
-      }
-    }),
-  );
 }
 
 export async function readFolderFile(root: string, path: string): Promise<{ bytes: Uint8Array; sha: string; size: number }> {
-  const abs = await inside(root, path);
-  const st = await statOrNull(abs);
-  if (!st) throw new FolderFsError('not_found', '파일이 없습니다');
-  if (!st.isFile()) throw new FolderFsError('not_file', '파일이 아닙니다');
-  if (st.size > FOLDER_READ_MAX) throw new FolderFsError('too_large', '파일이 너무 큽니다', { size: st.size });
-  const bytes = await fsp.readFile(abs);
-  return { bytes, sha: sha1(bytes), size: bytes.length };
+  const target = await rooted(root, path);
+  let source: RootedSource | undefined;
+  try {
+    source = target.grant.openSource(target.relativePath);
+    if (source.size > FOLDER_READ_MAX) {
+      throw new FolderFsError('too_large', '파일이 너무 큽니다', { size: source.size });
+    }
+    const bytes = readAll(source);
+    return { bytes, sha: sha1(bytes), size: bytes.length };
+  } catch (error) {
+    if (errorCode(error) === 'EINVAL' || errorCode(error) === 'EISDIR') {
+      throw new FolderFsError('not_file', '파일이 아닙니다');
+    }
+    throw folderError(error);
+  } finally {
+    source?.close();
+  }
 }
 
 export async function saveFolderFile(
@@ -143,39 +215,84 @@ export async function saveFolderFile(
 ): Promise<{ sha: string }> {
   const rel = cleanRel(path);
   if (!rel) throw new FolderFsError('forbidden', '폴더 자체에는 쓸 수 없습니다');
-  const abs = await inside(root, rel);
-  if (baseSha !== null) {
-    const cur = await currentSha(abs);
-    if (cur !== baseSha) throw new FolderFsError('changed', '그사이 파일이 바뀌었습니다', { current_sha: cur });
+  const target = await rooted(root, rel, true);
+  let current: RootedSource | null = null;
+  try {
+    let overwrite = true;
+    let expected;
+    if (baseSha !== null) {
+      const value = await currentSha(target);
+      current = value.source;
+      if (value.sha !== baseSha) {
+        throw new FolderFsError('changed', '그사이 파일이 바뀌었습니다', { current_sha: value.sha });
+      }
+      overwrite = baseSha !== '';
+      expected = current?.identity;
+    }
+    target.grant.mkdirs(dirname(target.relativePath) === '.' ? '' : dirname(target.relativePath));
+    if (current) {
+      target.grant.writeExpected(target.relativePath, bytes, current.identity);
+    } else if (baseSha === null) {
+      // Legacy unconditional writes also work on write-only files.
+      target.grant.write(target.relativePath, bytes);
+    } else {
+      await atomicWorkspaceWrite(target, bytes, {
+        overwrite,
+        ...(expected ? { expected } : {}),
+        ...(!overwrite ? { creationMode: 0o666 & ~process.umask() } : {}),
+      });
+    }
+    return { sha: sha1(bytes) };
+  } catch (error) {
+    if (errorCode(error) === 'FILE_SOURCE_CHANGED' || (baseSha === '' && errorCode(error) === 'EEXIST')) {
+      throw new FolderFsError('changed', '그사이 파일이 바뀌었습니다');
+    }
+    throw folderError(error);
+  } finally {
+    current?.close();
   }
-  await fsp.mkdir(await inside(root, rel.split('/').slice(0, -1).join('/')), { recursive: true });
-  await fsp.writeFile(abs, bytes);
-  return { sha: sha1(bytes) };
 }
 
 export async function statFolderFiles(root: string, paths: string[]): Promise<Record<string, FolderStat>> {
-  const out: Record<string, FolderStat> = {};
-  for (const path of paths) {
+  const output: Record<string, FolderStat> = {};
+  for (const input of paths) {
     try {
-      const abs = await inside(root, path);
-      const st = await statOrNull(abs);
-      if (!st) out[path] = { kind: 'missing' };
-      else if (st.isDirectory()) out[path] = { kind: 'dir', mtime: st.mtimeMs };
-      else if (!st.isFile()) out[path] = { kind: 'other' };
-      else out[path] = { kind: 'file', size: st.size, mtime: st.mtimeMs, sha: await currentSha(abs) };
+      const path = await rooted(root, input);
+      const info = path.grant.stat(path.relativePath);
+      if (info.type === 'directory') output[input] = { kind: 'dir', mtime: info.mtimeMs };
+      else if (info.type !== 'file') output[input] = { kind: 'other' };
+      else {
+        const value = await currentSha(path);
+        try {
+          output[input] = { kind: 'file', size: info.size, mtime: info.mtimeMs, sha: value.sha };
+        } finally {
+          value.source?.close();
+        }
+      }
     } catch {
-      out[path] = { kind: 'missing' };
+      output[input] = { kind: 'missing' };
     }
   }
-  return out;
+  return output;
 }
 
 export async function readFolderRaw(root: string, path: string): Promise<Uint8Array> {
-  const abs = await inside(root, path);
-  const st = await statOrNull(abs);
-  if (!st || !st.isFile()) throw new FolderFsError('not_found', '파일이 없습니다');
-  if (st.size > FOLDER_RAW_MAX) throw new FolderFsError('too_large', '파일이 너무 큽니다', { size: st.size });
-  return fsp.readFile(abs);
+  const target = await rooted(root, path);
+  let source: RootedSource | undefined;
+  try {
+    source = target.grant.openSource(target.relativePath);
+    if (source.size > FOLDER_RAW_MAX) {
+      throw new FolderFsError('too_large', '파일이 너무 큽니다', { size: source.size });
+    }
+    return readAll(source);
+  } catch (error) {
+    if (notFound(error) || errorCode(error) === 'EINVAL' || errorCode(error) === 'EISDIR') {
+      throw new FolderFsError('not_found', '파일이 없습니다');
+    }
+    throw folderError(error);
+  } finally {
+    source?.close();
+  }
 }
 
 export type FolderFsOp =
@@ -184,40 +301,117 @@ export type FolderFsOp =
   | { op: 'copy'; src: string; dst: string }
   | { op: 'delete'; paths: string[] };
 
-export async function runFolderOp(root: string, op: FolderFsOp, deps: FolderFsDeps = {}): Promise<void> {
-  if (op.op === 'mkdir') {
-    await fsp.mkdir(await inside(root, op.path), { recursive: true });
-    return;
-  }
-  if (op.op === 'rename' || op.op === 'copy') {
-    if (!cleanRel(op.src) || !cleanRel(op.dst)) throw new FolderFsError('forbidden', '폴더 자체는 옮길 수 없습니다');
-    const src = await inside(root, op.src);
-    const dst = await inside(root, op.dst);
-    if (await statOrNull(dst)) throw new FolderFsError('exists', '같은 이름이 이미 있습니다');
-    if (op.op === 'rename') await fsp.rename(src, dst);
-    else await fsp.cp(src, dst, { recursive: true, errorOnExist: true, force: false });
-    return;
-  }
-  for (const path of op.paths) {
-    if (!cleanRel(path)) throw new FolderFsError('forbidden', '연결한 폴더 자체는 여기서 지울 수 없습니다');
-    const abs = await inside(root, path);
-    if (deps.trash) await deps.trash(abs);
-    else await fsp.rm(abs, { recursive: true, force: true });
+async function assertMissing(path: RootedResolvedPath): Promise<void> {
+  try {
+    path.grant.stat(path.relativePath);
+    throw new FolderFsError('exists', '같은 이름이 이미 있습니다');
+  } catch (error) {
+    if (notFound(error)) return;
+    throw error;
   }
 }
 
-/** 한 번의 IPC 호출 — 렌더러의 IDE 호스트가 부른다. */
+function copyTree(grant: RootGrant, source: string, target: string): void {
+  for (const entry of grant.list(source)) {
+    if (entry.type === 'symlink') continue;
+    const childSource = joinRel(source, entry.name);
+    const childTarget = joinRel(target, entry.name);
+    if (entry.type === 'directory') {
+      grant.mkdirs(childTarget);
+      copyTree(grant, childSource, childTarget);
+      if (platform !== 'win32') grant.setMode(childTarget, entry.mode);
+    } else if (entry.type === 'file') {
+      grant.copyFileNoReplace(childSource, childTarget);
+    }
+  }
+}
+
+export async function runFolderOp(root: string, op: FolderFsOp, deps: FolderFsDeps = {}): Promise<void> {
+  if (op.op === 'mkdir') {
+    const target = await rooted(root, op.path, true);
+    target.grant.mkdirs(target.relativePath);
+    return;
+  }
+  if (op.op === 'rename' || op.op === 'copy') {
+    const sourceRel = cleanRel(op.src);
+    const targetRel = cleanRel(op.dst);
+    if (!sourceRel || !targetRel) throw new FolderFsError('forbidden', '폴더 자체는 옮길 수 없습니다');
+    const source = await rooted(root, sourceRel);
+    const target = await rooted(root, targetRel, true);
+    if (source.grant !== target.grant) throw new FolderFsError('forbidden', '연결한 폴더 밖의 경로입니다');
+    await assertMissing(target);
+    try {
+      if (op.op === 'rename') {
+        source.grant.renameNoReplace(source.relativePath, target.relativePath);
+      } else {
+        const info = source.grant.stat(source.relativePath);
+        if (info.type === 'directory') {
+          if (target.relativePath.startsWith(`${source.relativePath}/`)) {
+            throw new FolderFsError('forbidden', '폴더를 자기 안으로 복사할 수 없습니다');
+          }
+          source.grant.mkdirs(target.relativePath);
+          copyTree(source.grant, source.relativePath, target.relativePath);
+          if (platform !== 'win32') source.grant.setMode(target.relativePath, info.mode);
+        } else if (info.type === 'file') {
+          source.grant.mkdirs(dirname(target.relativePath) === '.' ? '' : dirname(target.relativePath));
+          source.grant.copyFileNoReplace(source.relativePath, target.relativePath);
+        } else {
+          throw new FolderFsError('not_file', '복사할 수 있는 파일 또는 폴더가 아닙니다');
+        }
+      }
+      return;
+    } catch (error) {
+      throw folderError(error);
+    }
+  }
+  for (const input of op.paths) {
+    const rel = cleanRel(input);
+    if (!rel) throw new FolderFsError('forbidden', '연결한 폴더 자체는 여기서 지울 수 없습니다');
+    const path = await rooted(root, rel);
+    let quarantine;
+    try {
+      quarantine = path.grant.beginQuarantine(path.relativePath);
+    } catch (error) {
+      throw folderError(error);
+    }
+    try {
+      if (deps.trash) await deps.trash(quarantine.path);
+      else await rm(quarantine.path, { recursive: true, force: true });
+    } catch (error) {
+      try {
+        quarantine.rollback();
+      } catch (rollbackError) {
+        throw new FolderFsError('io_error', '삭제 작업에 실패했습니다. 원본은 복구 경로에 남아 있습니다.', {
+          recovery_path: quarantine.path,
+          rollback_code: errorCode(rollbackError),
+        });
+      }
+      throw folderError(error);
+    } finally {
+      quarantine.close();
+    }
+  }
+}
+
 export async function folderFsCall(
   root: string,
   op: string,
   args: Record<string, unknown>,
   deps: FolderFsDeps = {},
+  scopeKey: string = DEFAULT_SCOPE,
+): Promise<unknown> {
+  return grantScope.run(scopeKey, () => folderFsCallInScope(root, op, args, deps));
+}
+
+async function folderFsCallInScope(
+  root: string,
+  op: string,
+  args: Record<string, unknown>,
+  deps: FolderFsDeps,
 ): Promise<unknown> {
   switch (op) {
-    case 'list':
-      return listFolder(root, String(args.dir ?? ''));
-    case 'read':
-      return readFolderFile(root, String(args.path ?? ''));
+    case 'list': return listFolder(root, String(args.dir ?? ''));
+    case 'read': return readFolderFile(root, String(args.path ?? ''));
     case 'save':
       return saveFolderFile(
         root,
@@ -225,18 +419,14 @@ export async function folderFsCall(
         args.bytes instanceof Uint8Array ? args.bytes : new Uint8Array(),
         typeof args.baseSha === 'string' ? args.baseSha : null,
       );
-    case 'stat':
-      return statFolderFiles(root, Array.isArray(args.paths) ? args.paths.map(String) : []);
-    case 'raw':
-      return readFolderRaw(root, String(args.path ?? ''));
-    case 'fs':
-      return runFolderOp(root, args.op as FolderFsOp, deps);
+    case 'stat': return statFolderFiles(root, Array.isArray(args.paths) ? args.paths.map(String) : []);
+    case 'raw': return readFolderRaw(root, String(args.path ?? ''));
+    case 'fs': return runFolderOp(root, args.op as FolderFsOp, deps);
     case 'reveal': {
-      const abs = await inside(root, String(args.path ?? ''));
-      deps.reveal?.(abs);
+      const path = await rooted(root, String(args.path ?? ''));
+      deps.reveal?.(path.displayPath);
       return null;
     }
-    default:
-      throw new FolderFsError('bad_request', `알 수 없는 작업: ${op}`);
+    default: throw new FolderFsError('bad_request', `알 수 없는 작업: ${op}`);
   }
 }

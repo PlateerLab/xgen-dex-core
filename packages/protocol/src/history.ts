@@ -1,3 +1,4 @@
+import { parseStoredGeneratedContent } from './generated-content';
 /**
  * Conversation history + past-conversation listing.
  *
@@ -314,18 +315,23 @@ export class HistoryApi {
     const res = await this.http.get<{ in_out_logs?: RawIoLog[]; running?: boolean }>(
       `/api/chat/io-logs?${params}`,
     );
-    const turns = (res.in_out_logs ?? []).map((r) => ({
-      logId: r.log_id,
-      ioId: r.io_id,
-      interactionId: r.interaction_id,
-      workflowId: r.workflow_id,
-      workflowName: r.workflow_name,
-      input: turnInputText(r.input_data),
-      output: toDisplayText(r.output_data),
-      attachments: rowAttachments(r),
-      updatedAt: r.updated_at,
-      process: toHistoryProcess(r.process),
-    }));
+    const turns = (res.in_out_logs ?? []).map((r) => {
+      const stored = parseStoredGeneratedContent(toDisplayText(r.output_data));
+      return {
+        logId: r.log_id,
+        ioId: r.io_id,
+        interactionId: r.interaction_id,
+        workflowId: r.workflow_id,
+        workflowName: r.workflow_name,
+        input: turnInputText(r.input_data),
+        output: stored.visibleText,
+        generatedContent: [...stored.text, ...stored.media],
+        malformedGeneratedContent: stored.malformed,
+        attachments: rowAttachments(r),
+        updatedAt: r.updated_at,
+        process: toHistoryProcess(r.process),
+      };
+    });
     // 구버전 서버(필드 없음)에서는 false — "모른다" 를 "돌고 있다" 로 읽으면
     // 작성기가 영원히 잠긴다. 모르면 평소처럼 쓸 수 있어야 한다.
     return { turns, running: res.running === true };

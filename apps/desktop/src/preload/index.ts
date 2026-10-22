@@ -447,7 +447,8 @@ const api = {
       wf: string,
       path: string,
       purpose?: WorkspaceBinaryPurpose,
-    ): Promise<WorkspaceBinary> => ipcRenderer.invoke(CHANNELS.agentWsBinary, wf, path, purpose),
+      opts?: { maxBytes?: number },
+    ): Promise<WorkspaceBinary> => ipcRenderer.invoke(CHANNELS.agentWsBinary, wf, path, purpose, opts),
     /** 문서(docx·pptx·xlsx·hwp)의 서버 렌더 페이지 목록 — [파일 저장소] 와 같은 렌더러. */
     workspaceDocPreview: (wf: string, path: string): Promise<WorkspaceDocPreview> =>
       ipcRenderer.invoke(CHANNELS.agentWsDocPreview, wf, path),
@@ -611,8 +612,15 @@ const api = {
 
   /** 답에 딸린 파일(파일 저장소의 결과물·API 응답 임시 파일). `preview` 는 그림을 화면에 그릴 때. */
   chatFiles: {
-    download: (item: ChatDownload, opts?: { preview?: boolean }): Promise<WorkspaceBinary> =>
+    download: (item: ChatDownload, opts?: { preview?: boolean; maxBytes?: number }): Promise<WorkspaceBinary> =>
       ipcRenderer.invoke(CHANNELS.chatFileDownload, item, opts),
+  },
+
+  generatedContent: {
+    verifyText: (proof: string | null, text: string) =>
+      ipcRenderer.invoke(CHANNELS.generatedContentVerifyText, proof, text),
+    verifyBytes: (proof: string | null, bytes: Uint8Array, contentType: string) =>
+      ipcRenderer.invoke(CHANNELS.generatedContentVerifyBytes, proof, bytes, contentType),
   },
 
   chat: {

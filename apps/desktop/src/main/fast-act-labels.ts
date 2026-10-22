@@ -625,6 +625,16 @@ export function typedValue(found: string, instruction: string, label?: string): 
 }
 
 /**
+ * 선택 상자가 이미 말한 값인가 — 말에서 뽑은 값(따옴표 값은 그대로, 아니면 칸 이름을 뗀 것)을 지금 값과 띄어쓰기 없이 비교한다.
+ * 말 전체에서 지금 값을 찾았더니 "「배송비 무료 …」 선택해줘" 의 동사 "선택" 을 지금 값 "선택" 으로 봤다(10/22 BO 리허설).
+ */
+export function keepsValue(found: string | null, instruction: string, label: string, current: string): boolean {
+  const value = found && (quotedText(instruction) ? found : valueToPick(found, label));
+  const bare = (s: string) => s.replace(/\s+/g, '');
+  return !!value && bare(value) === bare(current);
+}
+
+/**
  * 페이지에서 실행한다 — 글자도 aria-label·title 도 없는 아이콘 버튼에 개발자가 붙인 속성(data-slot·data-testid·
  * 아이콘의 data-testid·id)으로 aria-label 을 붙인다("menu-button" → "menu button"). 붙인 수를 돌려준다.
  *

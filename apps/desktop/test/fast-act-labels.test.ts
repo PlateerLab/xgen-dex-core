@@ -28,6 +28,7 @@ import {
   withoutLabel,
   withoutLeadingLabel,
   typedValue,
+  keepsValue,
 } from '../src/main/fast-act-labels';
 import type { ElementRefs } from '../src/main/fast-act';
 
@@ -141,6 +142,21 @@ test('「」로 밝힌 값은 칸 이름처럼 보여도 그대로 넣는다', (
   assert.equal(typedValue('배송비 무료 / 반품비 0원', '배송비정책에 「배송비 무료 / 반품비 0원」 넣어줘', '배송비정책'), '배송비 무료 / 반품비 0원');
   // 따옴표가 없으면 판단 모델이 같이 고른 칸 이름은 지금처럼 뗀다.
   assert.equal(typedValue('상품명은 xgen', '상품명은 xgen 넣어줘', '상품명'), 'xgen');
+});
+
+test('선택 상자가 이미 말한 값인가 — 뽑은 값과 지금 값을 띄어쓰기 없이 비교한다', () => {
+  // 10/22 BO 리허설: "…「배송비 무료 …」 선택해줘" 의 동사 "선택" 을 지금 값 "선택" 으로 봐서 고르지 않고 done 이었다.
+  const fee = '배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)';
+  const said = `배송비정책에 「${fee}」 선택해줘`;
+  assert.equal(keepsValue(fee, said, '배송비정책', '선택'), false);
+  assert.equal(keepsValue(fee, said, '배송비정책', fee), true);
+  assert.equal(keepsValue('2일', '출고소요일 2일로 해줘', '출고소요일', '2일'), true);
+  assert.equal(keepsValue('출고소요일 2일', '출고소요일 2일로 해줘', '출고소요일', '2일'), true);
+  assert.equal(keepsValue('13일', '출고소요일 13일로 해줘', '출고소요일', '3일'), false);
+  assert.equal(keepsValue('일반 상품', '배송상품구분을 일반 상품으로 해줘', '배송상품구분', '일반상품'), true);
+  // 칸 이름뿐이거나 값을 못 뽑았으면 이미 그 값이라고 하지 않는다.
+  assert.equal(keepsValue('배송상품구분', '배송상품구분 눌러줘', '배송상품구분', '일반상품'), false);
+  assert.equal(keepsValue(null, '배송비정책 선택해줘', '배송비정책', '선택'), false);
 });
 
 test('넣을 글자 앞의 칸 이름(조사 포함)을 뗀다 — 남는 글자가 있을 때만', () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { judgedText, quotedText, saysValue, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
+import { judgedText, quotedText, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
 import { maskedDate, plainNumber, matchesInputValue } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
@@ -129,15 +129,6 @@ test('withoutDisabledTwins: 같은 이름의 활성 요소가 있으면 비활�
   };
   assert.deepEqual(Object.keys(withoutDisabledTwins(refs, new Set(['e238', 'e184']))), ['e28', 'e184']);
   assert.deepEqual(Object.keys(withoutDisabledTwins(refs, new Set())), ['e28', 'e238', 'e184']);
-});
-
-test('saysValue: 말에 그 값이 그대로 — 앞이 띄어쓰기·따옴표일 때만', () => {
-  assert.ok(saysValue('배송상품구분을 일반상품으로 설정해줘', '일반상품'));
-  assert.ok(!saysValue('배송상품구분을 비일반상품으로 설정해줘', '일반상품'));
-  assert.ok(saysValue('출고소요일 3일로 해줘', '3일'));
-  assert.ok(!saysValue('출고소요일 13일로 해줘', '3일'));
-  assert.ok(saysValue('구매연령을 「만 19세 이상」으로', '만 19세 이상'));
-  assert.ok(saysValue('배송비정책을 배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)으로', '배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)'));
 });
 
 test('읽기 실패·텍스트 구두점·숫자 부호 차이는 성공으로 숨기지 않는다', () => {

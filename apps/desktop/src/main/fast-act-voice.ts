@@ -23,7 +23,6 @@ import {
   closesCurrentTab,
   allowsDeciderAction,
   judgedText,
-  saysValue,
   LONG_INSTRUCTION,
   withoutDisabledTwins,
   namedField,
@@ -61,6 +60,7 @@ import {
   checkStates,
   withoutLabel,
   typedValue,
+  keepsValue,
   NAME_ICON_BUTTONS_SCRIPT,
   type FieldLabel,
 } from './fast-act-labels';
@@ -1394,7 +1394,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     // 선택 상자가 이미 말한 값이다("배송상품구분 (현재: 일반상품)" 에 "배송상품구분을 일반상품으로 설정해줘") — 누르지 않고 그렇다고
     // 답한다. 이미 정해진 값의 칸은 대개 비활성이라 '못 함' 으로 끝나 LLM 이 다시 시도했다(10/19 BO, BrowserFill 58줄 중 3줄).
     const already = element.role === 'combobox' ? (element.name ?? '').match(/\(현재: (.+)\)$/)?.[1] : undefined;
-    if (already && !th.partial && saysValue(text, already)) {
+    const boxLabel = snap.labels[pick.ref] || (element.name ?? '').replace(/\s*\(현재: .+\)$/, '');
+    const wanted = already && !th.partial ? await this.typedText(post, text, origin, scr, utterance, boxLabel).catch(() => null) : null;
+    if (already && keepsValue(wanted, text, boxLabel, already)) {
       const kept = await this.record(text, element, 'click', null, th, now() - t0, 0, page, pick, snap.ms);
       kept.sentence = `${josa(kept.display, '은', '는')} 이미 ${josa(`"${already}"`, '으로', '로')} 되어 있어요.`;
       return { acted: true, kind: 'press', target: kept.label, ms: now() - t0, effect: 'ok' };

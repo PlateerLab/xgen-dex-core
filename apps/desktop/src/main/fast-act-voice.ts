@@ -1323,9 +1323,33 @@ export class BrowserVoiceAgent implements VoiceAgent {
         cls: { action: cls.action, text: cls.text },
       });
     }
-    // 닫기 후보를 골랐다 — 닫고 끝낸다. 목록이 열린 채 "목록 닫아줘" 를 항목 아님으로 보고 닫은 뒤 다시 판단하면 남은 일이 없는데도
-    // 계정 "X" 를 0.999 로 골랐다(10/22 BO, 판단 모델은 "할 일 없음" 을 고르지 못한다).
-    if (pick && pick.confidence >= th.pick && chrome[pick.ref]?.layer) return this.runChrome(chrome[pick.ref], text, th, guard, abort, page, pick, t0, snap.ms);
+    // 닫기 후보를 골랐다 — 닫는다. 가린 칸에 넣으려고 닫은 것일 수 있어 닫힌 화면에서 한 번 더 판단하되 입력만 잇고, 아니면 닫은 것으로
+    // 끝낸다(afterClose) — 닫기만 하라는 말에 다시 판단하면 남은 일이 없는데도 계정 "X" 를 0.999 로 골랐다(10/22 BO, 판단 모델은
+    // "할 일 없음" 을 고르지 못한다).
+    if (pick && pick.confidence >= th.pick && chrome[pick.ref]?.layer) {
+      const closed = await this.runChrome(chrome[pick.ref], text, th, guard, abort, page, pick, t0, snap.ms);
+      if (!closed.acted) return closed;
+      this.afterClose = true;
+      const again = await this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+      return again.acted ? again : closed;
+    }
+    // 서랍·모달(목록이 아닌 층)이 열렸는데 고른 것이 층 안의 다른 요소이고 말이 그 이름을 부르지 않는다 — 층이 가린 칸을 말한 것이다.
+    // 닫고 뒤 화면으로 다시 판단한다(목록과 같다). 서랍이 열린 채 "모델명 접이식 의자로 바꿔줘" 에 서랍 메뉴 "단품 정보 관리" 를 눌러
+    // 페이지가 바뀌었다(10/22 BO). 이름이 맞는지는 sameField — 두 글자만 겹치는 것("상품")은 다른 것으로 본다.
+    if (layer && !listLayer(snap.refs) && pick && !chrome[pick.ref] && !sameField(text.replace(/\s+/g, ''), snap.refs[pick.ref]?.name ?? '')) {
+      if (th.partial) return no('열린 창 — 말이 끝난 뒤', pick.top);
+      this.layerClosed = true;
+      try {
+        await this.closeLayer(page);
+      } catch {
+        this.snap = null;
+        return no('열린 창을 Esc 로 닫지 못함', pick.top);
+      }
+      const closed = await this.record(text, { role: 'button', name: '열린 창 닫기 (Esc 키)' }, 'click', null, th, now() - t0, 0, page, { confidence: 1 }, snap.ms);
+      closed.sentence = '열린 창을 닫았어요.';
+      this.afterClose = true;
+      return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+    }
     // 앞 지시가 연 선택 목록만 보이는데 이 지시는 목록 항목을 고르지 않는다 — 목록을 닫고 뒤 화면으로 다시 판단한다.
     // 목록만 보이면 모델은 무슨 말에나 항목 하나를 고른다(다른 칸 지시에 "선택" 1.0) — 항목 이름이나 자리("첫 번째")를
     // 말했을 때만 항목을 고른 것으로 본다.

@@ -21,6 +21,8 @@ export type FileField = {
   label: string;
   /** 칸이 화면에 보이는가(숨은 칸이면 영역이 바뀌어야 올라간 것이다). */
   visible: boolean;
+  /** 열린 층(서랍·모달)이 뒤 화면을 aria-hidden 으로 가렸다 — 스냅샷의 다른 칸처럼 후보에서 뺀다. */
+  covered?: boolean;
   /** 칸이 받는 형식(`accept`) — 비면 아무 파일. */
   accept: string;
   /** 칸에 들어 있는 파일 이름. */
@@ -74,7 +76,9 @@ const fileRef = (n: number): string => `e8${String(n + 1).padStart(3, '0')}`;
  * 화면 요소에 파일 칸을 `"<칸 이름> 파일 올리기"` 입력칸으로 넣는다 — 칸 이름과 같은 제목 바로 뒤에(판단 모델이 제목과 함께 본다),
  * 그런 제목이 없으면 맨 뒤에. files = 넣은 줄 번호별 파일 칸.
  */
-export function withFileFields(refs: ElementRefs, fields: FileField[]): { refs: ElementRefs; files: Record<string, FileField> } {
+export function withFileFields(refs: ElementRefs, all: FileField[]): { refs: ElementRefs; files: Record<string, FileField> } {
+  // 가려진 칸은 넣지 않는다 — 서랍이 열린 채 입력칸은 스냅샷에서 빠지고 파일 칸만 남아 "모델명 …" 에 파일 칸을 골랐다(10/22 BO).
+  const fields = all.filter((f) => !f.covered);
   if (!fields.length) return { refs, files: {} };
   const files: Record<string, FileField> = {};
   const line = (f: FileField): [string, ElementRefs[string]] => {
@@ -153,6 +157,7 @@ export const FILE_FIELDS_SCRIPT = `(() => {
       label,
       accept: input.accept || '',
       visible: !!input.getClientRects().length && getComputedStyle(input).visibility !== 'hidden',
+      covered: !!input.closest('[aria-hidden="true"]'),
       files: [...(input.files || [])].map((f) => f.name),
       imgs: [...area.querySelectorAll('img')].map((img) => img.currentSrc || img.src),
       text: squash(area.textContent).slice(0, 2000),

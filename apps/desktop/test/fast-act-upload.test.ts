@@ -76,3 +76,11 @@ test('withFileFields: 파일 칸을 같은 이름 제목 바로 뒤에 입력칸
   assert.equal(files.e8002.n, 1);
   assert.deepEqual(withFileFields(refs, []).refs, refs);
 });
+
+test('withFileFields: 열린 층(서랍·모달)에 가려진 파일 칸은 넣지 않는다', () => {
+  // 10/22 BO: 서랍이 열린 채 "모델명 접이식 의자로 바꿔줘" — 가려진 입력칸은 스냅샷에서 빠지는데 파일 칸만 남아 "추가이미지 파일 올리기" 를 골랐다.
+  const refs = { e94: { role: 'heading', name: '대표이미지 *' } } as ElementRefs;
+  const { refs: out, files } = withFileFields(refs, [{ ...field(0, '대표이미지'), covered: true }, field(1, '첨부')]);
+  assert.deepEqual(Object.keys(out), ['e94', 'e8002']);
+  assert.deepEqual(Object.keys(files), ['e8002']);
+});

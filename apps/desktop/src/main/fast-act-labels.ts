@@ -629,9 +629,8 @@ export function typedValue(found: string, instruction: string, label?: string): 
  * 말 전체에서 지금 값을 찾았더니 "「배송비 무료 …」 선택해줘" 의 동사 "선택" 을 지금 값 "선택" 으로 봤다(10/22 BO 리허설).
  */
 export function keepsValue(found: string | null, instruction: string, label: string, current: string): boolean {
-  const value = found && (quotedText(instruction) ? found : valueToPick(found, label));
   const bare = (s: string) => s.replace(/\s+/g, '');
-  return !!value && bare(value) === bare(current);
+  return !!found && bare(typedValue(found, instruction, label)) === bare(current);
 }
 
 /**

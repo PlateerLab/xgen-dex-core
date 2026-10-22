@@ -1418,7 +1418,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (this.afterClose && action === 'click') return no('닫은 뒤 누르기는 서버에서 화면을 보고', pick.top);
     let typed = resolved.text;
     if (action !== 'click') {
-      const found = await this.typedText(post, text, origin, scr, utterance, snap.labels[pick.ref] || element.name);
+      const found = wanted ?? (await this.typedText(post, text, origin, scr, utterance, snap.labels[pick.ref] || element.name));
       typed = found && typedValue(found, text, snap.labels[pick.ref]);
       if (!typed && clickedField) return no('입력칸 클릭은 하지 않음', pick.top);
       if (!typed) return no(th.partial ? '입력은 글자가 끝난 뒤' : '넣을 글자를 찾지 못함', pick.top);

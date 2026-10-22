@@ -24,11 +24,12 @@ import { lockedByName, NAME_REQUIRED, NAME_TAKEN, startChatLockReason } from './
 import {
   CHAT_IMAGE_ACCEPT,
   CHAT_IMAGE_MAX_COUNT,
-  pastedImageFiles,
+  pastedFiles,
   stageChatFiles,
   type StagedChatImage,
 } from './chat-attach';
 import { DropTracker, dragHasFiles } from './chat-drop';
+import { useDocumentPasteAttach } from './use-paste-attach';
 import { useChatInputCheck } from './use-chat-input-check';
 
 /** 에이전트 고르기의 첫 칸(기본값). */
@@ -207,6 +208,9 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     },
     [replaceStaged],
   );
+  // 작성기에 포커스가 없을 때의 붙여넣기도 받는다(끌어다 놓기처럼 만드는 중에는 받지 않는다).
+  const pasteFilesFromPage = useCallback((files: File[]) => void addFiles(files), [addFiles]);
+  useDocumentPasteAttach(!busy, inputRef, pasteFilesFromPage);
 
   // 끌어다 놓기: 화면 어디에 놓아도 첨부된다(대화 화면과 같은 규칙).
   const dragProps = {
@@ -304,7 +308,7 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     Object.prototype.hasOwnProperty.call(settings, id) ? settings[id] : fallback;
 
   return (
-    <div className={`start-chat${dragOver ? ' dropping' : ''}`} {...dragProps}>
+    <div className={`start-chat${dragOver ? ' dropping' : ''}`} data-paste-root="" {...dragProps}>
       {dragOver && (
         <div className="chat-drop" role="status">
           <div className="chat-drop-card">
@@ -462,7 +466,7 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
             placeholder={staged.length > 0 ? '첨부한 파일로 무엇을 할지 적어 주세요…' : '메시지를 입력하세요…'}
             onChange={(e) => setInput(e.target.value)}
             onPaste={(event) => {
-              const files = pastedImageFiles(event.clipboardData.items);
+              const files = pastedFiles(event.clipboardData);
               if (files.length === 0) return;
               event.preventDefault();
               void addFiles(files);

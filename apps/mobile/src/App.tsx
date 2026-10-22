@@ -57,13 +57,9 @@ import { ensureDeviceId, cachedDeviceId, deviceName, devicePlatform } from './li
 import { friendlyError } from './lib/errors';
 import { diagEntries, diagLog, onDiag } from './lib/diag';
 import {
-  buildClient,
-  clearSession,
+  createMobileAuth,
   loadCredentials,
-  login,
   newInteractionId,
-  restoreSession,
-  saveCredentials,
   wsBaseOf,
   type XgenMobileClient,
 } from './lib/xgen';
@@ -157,56 +153,30 @@ export default function App(): React.ReactElement {
   const [startPreset, setStartPreset] = useState<StartPreset>({ seq: 0 });
   const [chatWsState, setChatWsState] = useState<ChatWsState>('closed');
 
-  const handleLogout = useCallback(async () => {
-    bridgeRef.current?.stop();
-    await clearSession();
-    await saveCredentials(null);
-    // 계정을 나가면 되찾을 대화도 없다 — 다음 사람이 남의 대화로 들어가지 않는다.
-    await AsyncStorage.removeItem(LAST_CHAT_KEY).catch(() => undefined);
-    setClient(null);
-    setActiveAgent(null);
-    activeAgentRef.current = null;
-    setActiveInteraction('');
-    setActiveReadOnly(false);
-    setActiveTitle('');
-    setInitialMessage(null);
-    setSection('conversations');
-  }, []);
+  const authRef = useRef<ReturnType<typeof createMobileAuth> | null>(null);
+  if (!authRef.current) {
+    authRef.current = createMobileAuth((next) => {
+      setClient(next);
+      if (next) return;
+      bridgeRef.current?.stop();
+      bridgeRef.current = null;
+      stopAllUserPc();
+      setActiveAgent(null);
+      activeAgentRef.current = null;
+      setActiveInteraction('');
+      setActiveReadOnly(false);
+      setActiveTitle('');
+      setInitialMessage(null);
+      setSection('conversations');
+    });
+  }
+
+  const handleLogout = useCallback(() => authRef.current!.logout(), []);
 
   // 자동 로그인 체인 — 토큰 검증/회전 → 저장 자격증명 재로그인 → 로그인 화면.
   useEffect(() => {
-    void (async () => {
-      try {
-        const s = await restoreSession();
-        if (s) {
-          const c = buildClient(s, () => void handleLogout());
-          const alive = await c.api.restore(s.accessToken, s.refreshToken).catch((e) => {
-            diagLog(`토큰 복원 실패: ${e instanceof Error ? e.message : String(e)}`);
-            return false;
-          });
-          if (alive) {
-            diagLog('자동 로그인: 저장 토큰 유효');
-            setClient(c);
-            return;
-          }
-          await clearSession();
-        }
-        const cred = await loadCredentials();
-        if (cred) {
-          try {
-            const session = await login(cred.serverUrl, cred.email, cred.password);
-            diagLog('자동 로그인: 저장 자격증명으로 재로그인');
-            setClient(buildClient(session, () => void handleLogout()));
-            return;
-          } catch (e) {
-            diagLog(`자동 재로그인 실패: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-      } finally {
-        setBooting(false);
-      }
-    })();
-  }, [handleLogout]);
+    void authRef.current!.bootstrap().finally(() => setBooting(false));
+  }, []);
 
   // 도구 그룹 설정 영속.
   //
@@ -333,11 +303,9 @@ export default function App(): React.ReactElement {
 
   const handleLogin = useCallback(
     async (server: string, email: string, password: string, remember: boolean) => {
-      const session = await login(server, email, password);
-      await saveCredentials(remember ? { serverUrl: session.serverUrl, email, password } : null);
-      setClient(buildClient(session, () => void handleLogout()));
+      await authRef.current!.login(server, email, password, remember);
     },
-    [handleLogout],
+    [],
   );
 
   const openChat = useCallback((agent: Agent, interactionId?: string, opts: OpenChatOptions = {}) => {
@@ -351,8 +319,7 @@ export default function App(): React.ReactElement {
     setSection('chat');
     setDrawer(false);
     // 앱을 껐다 켰을 때 되찾을 자리. 되찾는 데 필요한 것은 에이전트·대화 id 뿐이다(기록만 보는 대화인지, 제목은 덤).
-    void AsyncStorage.setItem(
-      LAST_CHAT_KEY,
+    void authRef.current!.saveLastChat(
       JSON.stringify({
         workflowId: agent.workflowId,
         workflowName: agent.workflowName,
@@ -360,7 +327,7 @@ export default function App(): React.ReactElement {
         ...(opts.readOnly ? { readOnly: true } : {}),
         ...(opts.title ? { title: opts.title } : {}),
       }),
-    );
+    ).catch(() => undefined);
   }, []);
 
   /** 목록의 대화 한 줄을 연다. 목록이 아는 것은 에이전트 id·이름뿐이라 나머지는 비운 자리표시로 연다. */
@@ -387,7 +354,7 @@ export default function App(): React.ReactElement {
     setActiveReadOnly(false);
     setActiveTitle('');
     setInitialMessage(null);
-    void AsyncStorage.removeItem(LAST_CHAT_KEY).catch(() => undefined);
+    void authRef.current!.saveLastChat(null).catch(() => undefined);
   }, []);
 
   const activeKey = activeAgent ? conversationKey({ workflowId: activeAgent.workflowId, interactionId: activeInteraction }) : '';
@@ -409,7 +376,7 @@ export default function App(): React.ReactElement {
     let cancelled = false;
     void AsyncStorage.getItem(LAST_CHAT_KEY).then((raw) => {
       // 그 사이 사용자가 직접 대화를 열었으면 그쪽이 이긴다.
-      if (cancelled || !raw || activeAgentRef.current) return;
+      if (cancelled || !authRef.current!.owns(client) || !raw || activeAgentRef.current) return;
       try {
         const saved = JSON.parse(raw) as {
           workflowId?: string;

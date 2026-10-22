@@ -106,9 +106,19 @@ export class XgenClient {
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
   /** ensureFreshAuth 의 single-flight 가드 — 동시 401 들이 refresh 를 한 번만 태운다. */
   private refreshing: Promise<string | null> | null = null;
+  private restoring: {
+    accessToken: string;
+    refreshToken?: string;
+    generation: number;
+    promise: Promise<'valid' | 'invalid' | 'network'>;
+  } | null = null;
+  private authGeneration = 0;
+  private loggedOut = false;
+  private readonly fetch?: FetchLike;
   user: CurrentUser | null = null;
 
   constructor(opts: XgenClientOptions) {
+    this.fetch = opts.fetch;
     this.http = new HttpClient({
       baseUrl: opts.baseUrl,
       fetch: opts.fetch,
@@ -143,21 +153,57 @@ export class XgenClient {
   }
 
   setBaseUrl(baseUrl: string): void {
+    const previous = this.http.getBaseUrl();
     this.http.setBaseUrl(baseUrl);
+    if (previous !== this.http.getBaseUrl()) {
+      this.authGeneration++;
+      this.refreshing = null;
+    }
+  }
+
+  private beginAuth(): number {
+    this.loggedOut = false;
+    this.refreshing = null;
+    return ++this.authGeneration;
+  }
+
+  /** Revocation must keep the original server even if this client is rebound. */
+  private revoker(): AuthApi {
+    return new AuthApi(new HttpClient({ baseUrl: this.http.getBaseUrl(), fetch: this.fetch }));
+  }
+
+  private supersededAuthError(): Error {
+    const error = new Error('Authentication superseded');
+    // Hosts preserve credentials for cancellation, rather than treating it as
+    // a rejected password or an invalid server session.
+    error.name = 'AbortError';
+    return error;
   }
 
   setTokens(accessToken: string | null, refreshToken?: string): void {
+    this.beginAuth();
     this.http.setToken(accessToken);
     if (refreshToken !== undefined) this.refreshToken = refreshToken;
   }
 
   /** Log in and adopt the returned tokens. */
   async login(email: string, password: string): Promise<LoginResult> {
-    return this.adoptLogin(await this.auth.login(email, password));
+    const generation = this.beginAuth();
+    const revoker = this.revoker();
+    const result = await revoker.login(email, password);
+    return this.adopt(result, generation, revoker);
   }
 
   /** Adopt tokens returned by an external SSO bridge and resolve full identity. */
   async adoptLogin(res: LoginResult): Promise<LoginResult> {
+    return this.adopt(res, this.beginAuth(), this.revoker());
+  }
+
+  private async adopt(res: LoginResult, generation: number, revoker: AuthApi): Promise<LoginResult> {
+    if (generation !== this.authGeneration) {
+      await revoker.logout(res.accessToken, res.refreshToken);
+      throw this.supersededAuthError();
+    }
     this.http.setToken(res.accessToken);
     this.refreshToken = res.refreshToken;
     this.onTokensRotated?.(res.accessToken, res.refreshToken);
@@ -170,10 +216,14 @@ export class XgenClient {
     };
     // Resolve full identity/permissions (best-effort).
     try {
-      const { user } = await this.auth.validate(res.accessToken, res.refreshToken);
-      if (user) this.user = user;
+      const { user } = await revoker.validate(res.accessToken, res.refreshToken);
+      if (generation === this.authGeneration && user) this.user = user;
     } catch {
       /* keep the minimal identity */
+    }
+    if (generation !== this.authGeneration) {
+      await revoker.logout(res.accessToken, res.refreshToken);
+      throw this.supersededAuthError();
     }
     return res;
   }
@@ -192,17 +242,40 @@ export class XgenClient {
    *   'valid'   — 인증 성공 (토큰 회전 반영됨)
    *   'invalid' — 서버가 **응답으로** 거부 (토큰 폐기가 맞다)
    *   'network' — 서버 미응답/네트워크 오류 (토큰을 지우면 안 된다 — 일시
-   *               장애 후 재시작에서 재로그인을 강요하게 된다)
+   *               장애 후 재시작에서 재로그인을 강요하게 된다). 다른 인증
+   *               작업으로 취소된 복원도 이 보존 판정을 쓴다 — 서버 거부가 아니다.
    */
   async restoreDetailed(
     accessToken: string,
     refreshToken?: string,
   ): Promise<'valid' | 'invalid' | 'network'> {
+    const pending = this.restoring;
+    if (pending?.generation === this.authGeneration &&
+      pending.accessToken === accessToken && pending.refreshToken === refreshToken) {
+      return pending.promise;
+    }
+    const generation = this.beginAuth();
+    const promise = this.restoreCurrent(accessToken, refreshToken, generation);
+    this.restoring = { accessToken, refreshToken, generation, promise };
+    try {
+      return await promise;
+    } finally {
+      if (this.restoring?.promise === promise) this.restoring = null;
+    }
+  }
+
+  private async restoreCurrent(
+    accessToken: string,
+    refreshToken: string | undefined,
+    generation: number,
+  ): Promise<'valid' | 'invalid' | 'network'> {
+    const auth = this.revoker();
     this.http.setToken(accessToken);
     this.refreshToken = refreshToken;
     let sawNetworkError = false;
     try {
-      const { user, newAccessToken } = await this.auth.validate(accessToken, refreshToken);
+      const { user, newAccessToken } = await auth.validate(accessToken, refreshToken);
+      if (generation !== this.authGeneration) return 'network';
       if (newAccessToken) {
         this.http.setToken(newAccessToken);
         this.onTokensRotated?.(newAccessToken, refreshToken);
@@ -212,16 +285,19 @@ export class XgenClient {
         return 'valid';
       }
     } catch (err) {
+      if (generation !== this.authGeneration) return 'network';
       sawNetworkError = !rejectedByServer(err);
     }
     // Try an explicit refresh as a fallback.
     if (refreshToken) {
       try {
-        const fresh = await this.auth.refresh(refreshToken);
+        const fresh = await auth.refresh(refreshToken);
+        if (generation !== this.authGeneration) return 'network';
         if (fresh) {
           this.http.setToken(fresh);
           this.onTokensRotated?.(fresh, refreshToken);
-          const { user } = await this.auth.validate(fresh, refreshToken);
+          const { user } = await auth.validate(fresh, refreshToken);
+          if (generation !== this.authGeneration) return 'network';
           if (user) {
             this.user = user;
             return 'valid';
@@ -230,6 +306,7 @@ export class XgenClient {
         // 서버가 응답했고 거부했다 — 명시적 invalid.
         sawNetworkError = false;
       } catch (err) {
+        if (generation !== this.authGeneration) return 'network';
         sawNetworkError = !rejectedByServer(err);
       }
     }
@@ -254,13 +331,15 @@ export class XgenClient {
    * 호스트가 keychain 값을 넘겨줄 수 있다.
    */
   async ensureFreshAuth(fallbackRefreshToken?: string): Promise<string | null> {
+    if (this.loggedOut) return null;
     if (this.refreshing) return this.refreshing;
+    const generation = this.authGeneration;
     const rt = this.refreshToken ?? fallbackRefreshToken;
     if (!rt) return null;
     this.refreshing = (async () => {
       try {
         const fresh = await this.auth.refresh(rt);
-        if (!fresh) return null;
+        if (!fresh || generation !== this.authGeneration) return null;
         this.http.setToken(fresh);
         this.refreshToken = rt;
         this.onTokensRotated?.(fresh, rt);
@@ -268,7 +347,7 @@ export class XgenClient {
       } catch {
         return null;
       } finally {
-        this.refreshing = null;
+        if (generation === this.authGeneration) this.refreshing = null;
       }
     })();
     return this.refreshing;
@@ -281,10 +360,15 @@ export class XgenClient {
 
   async logout(): Promise<void> {
     const token = this.getAccessTokenAfterRotation();
-    if (token) await this.auth.logout(token);
+    const refreshToken = this.refreshToken;
+    const revoker = this.revoker();
+    this.authGeneration++;
+    this.loggedOut = true;
+    this.refreshing = null;
     this.http.setToken(null);
     this.refreshToken = undefined;
     this.user = null;
+    await revoker.logout(token, refreshToken);
   }
 }
 

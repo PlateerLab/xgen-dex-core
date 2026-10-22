@@ -335,6 +335,7 @@ export function prependBrowserContext(
   const envelope = JSON.stringify({
     version: selected.length ? 2 : 1,
     workflow_id: workflowId,
+    active_page_id: pages.find(page => page.page_id === state.activeByWorkflow[workflowId])?.page_id,
     pages,
     ...(selected.length ? { selections: selected } : {}),
   });

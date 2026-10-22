@@ -105,10 +105,12 @@ export interface ConnectorConfig {
   /** Device-local voice OUTPUT (TTS) toggle. Default true. Server gate applies. */
   voiceOutput?: boolean;
   /**
-   * 단계별 브라우저 조작(실험). 기본 false.
+   * 빠른 브라우저 조작(실험). 기본 false.
    *
-   * 현재 채팅 모델이 계획하고 BrowserInteract(step)이 XGEN 판단 모델로 대상을 고른 뒤
-   * 실행·검증한다. 음성도 최종 인식 뒤 계획한다. 판단 모델이 없으면 기존 도구를 사용한다.
+   * 켜면 "검색 눌러" 같은 단순한 브라우저 조작은 서버 에이전트를 거치지 않고 XGEN 판단 모델
+   * (`/api/base/v1/decision/systemone`)에 물어 이 PC 에서 바로 실행하고, 마이크는 말하는 도중에
+   * 조작한다. 여러 단계 작업이나 못 한 말은 서버 에이전트가 계획해 BrowserInteract(step)·BrowserFill 로
+   * 실행한다. 판단 모델이 없는 서버면 늘 서버 에이전트로 넘어간다.
    */
   fastAct?: boolean;
   /**

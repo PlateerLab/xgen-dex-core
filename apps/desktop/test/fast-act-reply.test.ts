@@ -3,6 +3,15 @@ import test from 'node:test';
 import { actionRow, actionSentence, josa, replyFor } from '../src/main/fast-act-reply';
 import type { VoiceAction } from '../src/main/fast-act-voice';
 import { Segmenter, type VoiceAgent } from '../src/main/voice-segmenter';
+import { rememberServerReply, voiceNeedsChatContext } from '../src/main/fast-act-chat';
+
+test('음성은 대화를 모르거나 직전 서버 답이 있으면 채팅의 맥락 검사를 거친다', () => {
+  assert.equal(voiceNeedsChatContext(), true);
+  assert.equal(voiceNeedsChatContext('voice-new'), false);
+  rememberServerReply('voice-question', '어느 상품에 입력할까요?');
+  assert.equal(voiceNeedsChatContext('voice-question'), true);
+  assert.equal(voiceNeedsChatContext('voice-new'), false);
+});
 
 const act = (over: Partial<VoiceAction>): VoiceAction => ({
   said: '블로그 탭',
@@ -112,6 +121,45 @@ test('판단 중 오류가 나도 final 은 끝나고 그 말은 서버로 넘�
   assert.equal(seg.unhandled, '블로그 탭 눌러줘 그리고 첫 글');
 });
 
+test('확인하지 못한 조작과 남은 요청은 버리지 않고 서버로 넘긴다', async () => {
+  let calls = 0;
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: 0, conf: 1 }),
+    readiness: async (texts) => texts.map(() => ({ ready: 'multi', p: 1 })),
+    handle: async () => {
+      calls++;
+      return { acted: true, kind: 'type', target: '제목', ms: 0, effect: 'none' };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  const text = '제목 입력하고 배송도 선택해줘';
+  await seg.final(text);
+  assert.equal(seg.unhandled, text);
+  assert.equal(calls, 1);
+});
+
+test('음성 중간 조작 실패 뒤 최종 인식도 끝나고 뒷말까지 서버로 넘긴다', async () => {
+  let calls = 0;
+  let failed!: () => void;
+  const failure = new Promise<void>((resolve) => { failed = resolve; });
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: 0, conf: 1 }),
+    readiness: async (texts) => texts.map(() => ({ ready: 'act_now', p: 1 })),
+    handle: async () => {
+      calls++;
+      return { acted: true, kind: 'type', target: '제목', ms: 0, effect: 'none' };
+    },
+  };
+  const seg = new Segmenter(agent, (event) => { if (event.type === 'decide') failed(); });
+  seg.partial('제목 입력해줘');
+  await failure;
+  await seg.final('제목 입력해줘 그리고 배송도 선택해줘');
+  assert.equal(seg.unhandled, '제목 입력해줘 그리고 배송도 선택해줘');
+  assert.equal(calls, 1);
+});
+
 test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 분명하면 누르고, 아니면 서버로 넘기지 않는다', async () => {
   const run = async (tailPick: { target: string; conf: number } | null) => {
     const handled: string[] = [];
@@ -166,11 +214,24 @@ test('고르지 못하고 물어볼 말이 있으면 한 일 뒤에 그대로 �
     display: '"협력사명 검색어" 입력칸',
     action: 'type_submit',
     text: '플래티어 3',
-    tell: '"플래티어 3"과 정확히 같은 항목이 없어요. 플래티어 2, 플래티어 중 어느 것을 고를까요?',
+    tell: '"플래티어 3"과 정확히 같은 항목이 없어요. 비슷한 항목: 플래티어 2, 플래티어.',
+    ask: '어느 것을 고를까요?',
   });
   assert.equal(
     actionSentence(searched),
-    '"플래티어 3"을 검색했어요. "플래티어 3"과 정확히 같은 항목이 없어요. 플래티어 2, 플래티어 중 어느 것을 고를까요?',
+    '"플래티어 3"을 검색했어요. "플래티어 3"과 정확히 같은 항목이 없어요. 비슷한 항목: 플래티어 2, 플래티어. 어느 것을 고를까요?',
+  );
+  // BrowserFill 을 부른 LLM 에게는 묻지 않는다 — 까닭만.
+  assert.equal(
+    replyFor([searched], true),
+    '"플래티어 3"을 검색했어요. "플래티어 3"과 정확히 같은 항목이 없어요. 비슷한 항목: 플래티어 2, 플래티어.',
+  );
+});
+
+test('열려 있던 팝업 창이 다시 불렸으면 새 탭이라 하지 않는다', () => {
+  assert.equal(
+    actionSentence(act({ display: '"협력사" 선택 상자', navigated: true, newTab: true, reusedTab: true, title: '협력사 조회 - X2BEE ADMIN' })),
+    '"협력사" 선택 상자를 눌렀어요. "협력사 조회 - X2BEE ADMIN" 페이지가 열려 있던 창에서 다시 열렸어요.',
   );
 });
 

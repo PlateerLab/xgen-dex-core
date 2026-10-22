@@ -1,5 +1,6 @@
 import { app, BrowserWindow, WebContentsView, session, webContents, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   BrowserConnectionEvent,
   BrowserCreateRequest,
@@ -29,6 +30,9 @@ import { CdpPageProxy } from './cdp-page-proxy';
 import { allowedBrowserUrl, browserPartition } from './browser-security';
 import type { BrowserHistoryRuntimeEvent } from './browser-history';
 import { BrowserSessionStore } from './browser-session';
+import { runFrameCommand, snapshotFrames } from './browser-frames';
+import { diag } from './diag-log';
+import { guardBrowserCommand, prepareBrowserApproval, validateBrowserApproval, requestedBrowserCommit, browserCommitConfirmationAsked, browserCommitQuestion, type BrowserCommitAction } from './browser-action-guard';
 
 interface BrowserPageRuntime {
   info: BrowserPageInfo;
@@ -37,6 +41,9 @@ interface BrowserPageRuntime {
   proxy: CdpPageProxy | null;
   automationReset: Promise<void> | null;
   view?: WebContentsView;
+  /** 마지막 스냅샷이 iframe 요소에 매긴 번호 → DOM 노드(browser-frames). */
+  frameRefs?: Map<string, number>;
+  actionTail?: Promise<unknown>;
 }
 
 interface PendingBrowserConnection {
@@ -113,7 +120,82 @@ export class BrowserRuntimeError extends Error {
 }
 
 export class BrowserRuntime {
+  private pageScope = new AsyncLocalStorage<{ pageId: string; signal: AbortSignal }>();
+
+  /** A fill may touch its form and its popups, never a different visible tab. */
+  withPageScope<T>(pageId: string, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+    return this.pageScope.run({ pageId, signal }, run);
+  }
+
+  get actionSignal(): AbortSignal | undefined {
+    return this.pageScope.getStore()?.signal;
+  }
+
+  private assertPageScope(pageId?: string): void {
+    const scope = this.pageScope.getStore();
+    if (!scope) return;
+    if (scope.signal.aborted) throw new BrowserRuntimeError('browser_denied', '폼 입력이 중단되었습니다.');
+    let page = pageId ? this.pages.get(pageId)?.info : undefined;
+    for (let depth = 0; page && depth <= this.pages.size; depth++) {
+      if (page.pageId === scope.pageId && this.pages.has(scope.pageId)) return;
+      page = page.mode === 'popup' && page.openerPageId ? this.pages.get(page.openerPageId)?.info : undefined;
+    }
+    throw new BrowserRuntimeError('browser_denied', 'BrowserFill 대상 폼과 그 팝업만 조작할 수 있습니다.');
+  }
+
   private sessionPersistence = false;
+  private actionApprovals = new Map<string, { id: string; pageId: string; expires: number; frameCount?: number; signal?: AbortSignal }>();
+  private pendingActions = new Map<string, { pageId: string; action: BrowserCommitAction; offered: boolean }>();
+
+  private pendingQuestions = new Map<string, Promise<void>>();
+
+  noteBrowserActionReply(workflowId: string, interactionId: string, reply: string): void {
+    const scope = JSON.stringify([workflowId, interactionId]);
+    const pending = this.pendingActions.get(scope);
+    if (pending) {
+      pending.offered = browserCommitConfirmationAsked(reply, pending.action);
+      return;
+    }
+    const action = browserCommitQuestion(reply);
+    const page = this.pages.get(this.activeByWorkflow.get(workflowId) ?? '');
+    const contents = page?.contents;
+    if (!action || !page || !contents || contents.isDestroyed()) return;
+    // Capture the target before the user replies, including when the agent correctly asked before clicking.
+    const preparation = prepareBrowserApproval(contents.mainFrame.framesInSubtree, scope, randomUUID(), action, true).then(found => {
+      if (found) this.pendingActions.set(scope, { pageId: page.info.pageId, action, offered: true });
+    }).finally(() => { if (this.pendingQuestions.get(scope) === preparation) this.pendingQuestions.delete(scope); });
+    this.pendingQuestions.set(scope, preparation);
+  }
+
+  /** Called only by chatStart with the user's original message, before the server turn. */
+  async prepareUserBrowserAction(workflowId: string, interactionId: string, input: unknown, signal: AbortSignal): Promise<void> {
+    const scope = JSON.stringify([workflowId, interactionId]);
+    this.actionApprovals.delete(scope);
+    await this.pendingQuestions.get(scope);
+    const activePage = this.pages.get(this.activeByWorkflow.get(workflowId) ?? '');
+    const action = requestedBrowserCommit(input, activePage?.info.title);
+    const pending = this.pendingActions.get(scope);
+    const pendingPage = pending?.offered ? pending.pageId : undefined;
+    this.pendingActions.delete(scope);
+    if (!action || signal.aborted || !workflowId || !interactionId) return;
+    const pageId = action === 'confirm' ? pendingPage : this.state().activeByWorkflow[workflowId];
+    const page = pageId ? this.pages.get(pageId) : undefined;
+    if (!page || page.info.workflowId !== workflowId || (action === 'confirm' && !pendingPage)) return;
+    const id = randomUUID();
+    this.actionApprovals.set(scope, { id, pageId: page.info.pageId, expires: 0, signal });
+    const contents = page.contents;
+    if (!contents || contents.isDestroyed()) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const idle = await Promise.race([
+      (page.actionTail ?? Promise.resolve()).then(() => true),
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 1500); }),
+    ]).finally(() => clearTimeout(timer));
+    if (!idle || signal.aborted) return;
+    const found = await prepareBrowserApproval(contents.mainFrame.framesInSubtree, scope, id, action);
+    // Ambiguous buttons across frames need a new, specific request.
+    if (found && !signal.aborted && this.actionApprovals.get(scope)?.id === id)
+      this.actionApprovals.set(scope, { id, pageId: page.info.pageId, expires: Date.now() + 120_000, frameCount: contents.mainFrame.framesInSubtree.length, signal });
+  }
 
   constructor(private readonly sessionStore?: BrowserSessionStore) {}
 
@@ -1009,6 +1091,7 @@ export class BrowserRuntime {
     createBackground = true,
   ): Promise<BrowserPageRuntime> {
     this.requireEnabled();
+    this.assertPageScope(pageId);
     if (pageId) {
       const exact = this.pages.get(pageId);
       if (!exact || (workflowId && exact.info.workflowId !== workflowId)) {
@@ -1068,6 +1151,7 @@ export class BrowserRuntime {
     const contents = await this.requireConnectedContents(runtime);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      this.assertPageScope(pageId);
       return await Promise.race([
         contents.mainFrame.executeJavaScript(code) as Promise<T>,
         new Promise<never>((_, reject) => {
@@ -1088,6 +1172,7 @@ export class BrowserRuntime {
     command: string[],
     timeoutMs?: number,
     generation?: number,
+    context?: { interactionId?: string; signal?: AbortSignal; instruction?: string },
   ): Promise<{ page: BrowserPageInfo; result: unknown }> {
     const runtime = await this.resolvePage(workflowId, pageId, true);
     await runtime.automationReset;
@@ -1136,36 +1221,101 @@ export class BrowserRuntime {
         },
       };
     };
-    try {
-      const result = await this.runner.run(
-        runtime.info.pageId,
-        runtime.proxy,
-        command,
-        timeoutMs,
-        () => {
-          runtime.info.generation += 1;
-          this.emit();
-        },
-      );
-      return closedPopupResult() ?? { page: { ...runtime.info }, result };
-    } catch (error) {
-      // window.close() can cancel the CLI before its successful click response exits.
-      const closed = closedPopupResult();
-      if (closed) return closed;
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith('browser_timeout:')) {
-        throw new BrowserRuntimeError(
-          'browser_timeout',
-          message.slice('browser_timeout:'.length).trim(),
+    const send = (method: string, params?: Record<string, unknown>) => contents.debugger.sendCommand(method, params);
+    const execute = async () => {
+      this.assertPageScope(runtime.info.pageId);
+      if (command[0] !== 'snapshot' && generation !== undefined && generation !== runtime.info.generation)
+        throw new BrowserRuntimeError('browser_stale_ref', '페이지가 변경되어 snapshot ref가 만료되었습니다.');
+      const proxy = runtime.proxy!;
+      const frameRef = command.find((arg) => /^@e\d+$/.test(arg))?.slice(1);
+      const frameNode = frameRef ? runtime.frameRefs?.get(frameRef) : undefined;
+      if (frameNode !== undefined) {
+        await proxy.start(); // debugger 를 붙인다(이미 붙었으면 그대로)
+        const result = await runFrameCommand(send, frameNode, command).catch((error) => {
+          throw new BrowserRuntimeError('browser_denied', `iframe 요소 조작 실패: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        if (result === null)
+          throw new BrowserRuntimeError('browser_denied', `iframe 안 요소에는 ${command[0]} 를 쓸 수 없습니다(click·fill·type·get value 만).`);
+        return { page: { ...runtime.info }, result };
+      }
+      try {
+        const result = await this.runner.run(
+          runtime.info.pageId,
+          proxy,
+          command,
+          timeoutMs,
+          () => {
+            runtime.info.generation += 1;
+            this.emit();
+          },
         );
+        if (command[0] === 'snapshot') await this.addFrameElements(runtime, send, result);
+        return closedPopupResult() ?? { page: { ...runtime.info }, result };
+      } catch (error) {
+        // window.close() can cancel the CLI before its successful click response exits.
+        const closed = closedPopupResult();
+        if (closed) return closed;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith('browser_timeout:')) {
+          throw new BrowserRuntimeError(
+            'browser_timeout',
+            message.slice('browser_timeout:'.length).trim(),
+          );
+        }
+        if (/(@e\d+|ref|element).*(stale|not found|unknown)|stale.*(@e\d+|ref)/i.test(message)) {
+          throw new BrowserRuntimeError('browser_stale_ref', message);
+        }
+        if (/(connect|target|page).*(closed|missing|not found|refused)|no page/i.test(message)) {
+          throw new BrowserRuntimeError('browser_no_page', message);
+        }
+        throw new BrowserRuntimeError('browser_denied', message);
       }
-      if (/(@e\d+|ref|element).*(stale|not found|unknown)|stale.*(@e\d+|ref)/i.test(message)) {
-        throw new BrowserRuntimeError('browser_stale_ref', message);
-      }
-      if (/(connect|target|page).*(closed|missing|not found|refused)|no page/i.test(message)) {
-        throw new BrowserRuntimeError('browser_no_page', message);
-      }
-      throw new BrowserRuntimeError('browser_denied', message);
+    };
+    if (['click', 'dblclick', 'fill', 'type', 'select', 'check', 'uncheck', 'press', 'keyboard', 'keydown', 'keyup', 'mouse', 'drag', 'eval', 'upload', 'download'].includes(command[0])) {
+      const guarded = (runtime.actionTail ?? Promise.resolve()).then(async () => {
+        const scope = JSON.stringify([workflowId, context?.interactionId ?? '']);
+        const grant = this.actionApprovals.get(scope);
+        const approved = command[0] === 'click' && grant?.pageId === runtime.info.pageId && grant.expires > Date.now() && !grant.signal?.aborted &&
+          grant.frameCount === contents.mainFrame.framesInSubtree.length &&
+          await validateBrowserApproval(contents.mainFrame.framesInSubtree, scope, grant.id);
+        return guardBrowserCommand(contents.mainFrame.framesInSubtree, execute, {
+          scope,
+          id: approved ? grant!.id : undefined,
+          instruction: context?.instruction,
+          signal: context?.signal,
+          onBlocked: (action) => {
+            if (action) this.pendingActions.set(scope, { pageId: runtime.info.pageId, action, offered: false });
+            else this.pendingActions.delete(scope);
+          },
+          onConsumed: () => { this.actionApprovals.delete(scope); },
+        });
+      });
+      runtime.actionTail = guarded.catch(() => undefined);
+      return guarded;
+    }
+    return execute();
+  }
+
+  /** 스냅샷 끝에 iframe 속 요소 줄을 붙인다 — 번호는 agent-browser 가 매긴 마지막 번호 다음부터. */
+  private async addFrameElements(
+    runtime: BrowserPageRuntime,
+    send: (method: string, params?: Record<string, unknown>) => Promise<any>,
+    result: unknown,
+  ): Promise<void> {
+    runtime.frameRefs = new Map();
+    const data = (result as { data?: { refs?: Record<string, unknown>; snapshot?: string } } | undefined)?.data;
+    if (!data) return;
+    try {
+      const last = Math.max(0, ...Object.keys(data.refs ?? {}).map((k) => Number(k.slice(1)) || 0));
+      const frames = await snapshotFrames(send, last + 1);
+      if (!frames.lines.length) return;
+      // 요소가 없으면 agent-browser 는 "(no interactive elements)" 한 줄만 준다.
+      const text = (data.snapshot ?? '').trim();
+      data.snapshot = [...(text && !/^\(.*\)$/.test(text) ? [text] : []), ...frames.lines].join('\n');
+      data.refs = { ...data.refs, ...frames.refs };
+      runtime.frameRefs = frames.targets;
+    } catch (error) {
+      diag('browser-frames', 'snapshot-failed', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -1230,6 +1380,9 @@ export class BrowserRuntime {
   }
 
   async closeAll(): Promise<void> {
+    this.actionApprovals.clear();
+    this.pendingActions.clear();
+    this.pendingQuestions.clear();
     this.suspendSessionPersistence();
     const pages = [...this.pages.values()];
     for (const runtime of pages) this.rejectPendingConnection(runtime);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dedupeByLabel, pickElement, type DecisionPost, type DecisionRequest, type ElementRefs } from '../src/main/fast-act';
+import { dedupeByLabel, pickElement, namedField, saidField, sameField, narrowLarge, mentionsAnyName, type DecisionPost, type DecisionRequest, type ElementRefs } from '../src/main/fast-act';
 import { buildScreen, PICK_Q13, stateWith } from '../src/main/fast-act-e13';
 
 test('같은 이름과 이름 없는 서로 다른 ref를 유지한다', () => {
@@ -85,4 +85,69 @@ test('한 방향으로 물은 묶음의 2등은 확률이 낮아도 결승에 �
     }));
   const result = await pickElement(post, '반품기능 제공안함으로 해줘', origin, refs, scr);
   assert.equal(result?.ref, 'r2');
+});
+
+test('팝업이 말과 상관없고 연 탭의 칸을 부르면 연 탭에서 판단한다 — 판정 함수', () => {
+  const category: ElementRefs = { e4: { role: 'button', name: '적용' }, e6: { role: 'treeitem', name: '패션의류/잡화' }, e9: { role: 'textbox', name: '카테고리명 검색어' } };
+  const partner: ElementRefs = { e2: { role: 'textbox', name: '협력사명 검색어' }, e5: { role: 'radio', name: '1 1000002 플래티어 협력사' }, e7: { role: 'button', name: '적용' } };
+  const form: ElementRefs = { e25: { role: 'combobox', name: '협력사' }, e234: { role: 'combobox', name: '출고소요일 (현재: 3일)' } };
+  assert.equal(mentionsAnyName(category, '협력사를 플래티어 협력사로 지정해줘'), false);
+  assert.equal(mentionsAnyName(partner, '출고소요일을 2일로 변경해줘'), false);
+  assert.deepEqual(namedField(form, {}, '출고소요일을 2일로 변경해줘'), { ref: 'e234', name: '출고소요일' });
+  assert.deepEqual(namedField(form, {}, '협력사에 「플래티어 협력사」 지정해줘'), { ref: 'e25', name: '협력사' });
+  // 팝업 안의 일은 팝업에서 — 줄 이름·버튼·검색칸 낱말이 말에 있다.
+  assert.equal(mentionsAnyName(partner, '플래티어 협력사 선택해줘'), true);
+  assert.equal(mentionsAnyName(partner, '적용 눌러줘'), true);
+  assert.equal(mentionsAnyName(category, '패션의류/잡화 펼쳐줘'), true);
+});
+
+test('지시가 부른 칸 이름 — 「」 안의 값은 칸 이름이 아니다', () => {
+  assert.equal(saidField('규격에 「외부 400×285×30mm」 입력해줘'), '규격');
+  assert.equal(saidField('브랜드 원산지 표기나 구매안내에 「16인치 표기는 …」 입력해줘'), '브랜드원산지표기나구매안내');
+  assert.equal(saidField('상품상세 내용에 「… 원산지 중국 …」 입력해줘'), '상품상세내용');
+  assert.equal(saidField('협력사를 플래티어 협력사로 지정해줘'), '협력사');
+  assert.equal(saidField('선물하기를 「해당없음」으로 설정해줘'), '선물하기');
+  assert.equal(saidField('출고소요일을 2일로 변경해줘'), '출고소요일');
+  for (const text of ['실시간계좌이체 체크 해제해줘', '부가 정보 펼쳐줘', '로그인 버튼 눌러줘', '상품 등록 페이지 들어가줘'])
+    assert.equal(saidField(text), null, text);
+});
+
+test('같은 칸 판정 — 품거나 조각 절반 이상 겹치면 같은 칸, 조각 하나만 겹치면 다른 칸', () => {
+  for (const [said, name] of [['최소구매수량', '최소'], ['검색키워드', '검색키워드 내용 ‘,(쉼표)’로 구분하여 입력해 주세요.'],
+    ['출고소요일', '출고소요일 (현재: 3일)'], ['결제수단', '결제가능수단 실시간계좌이체'], ['안전재고수량', '안전재고수량'], ['대표이미지대체텍스트', '대체 텍스트를 입력해주세요(100자 이하)']])
+    assert.equal(sameField(said, name), true, `${said} ~ ${name}`);
+  for (const [said, name] of [['고객센터전화번호', '업체상품번호'], ['규격', '상품상세 내용'], ['무게', '치수'], ['협력사', '플래티어'],
+    ['기본배송비', '최소'], ['판매시작일', '판매기간 YYYY.MM.DD. – YYYY.MM.DD.'], ['색상', '검색키워드 내용 ‘,(쉼표)’로 구분하여 입력해 주세요.']])
+    assert.equal(sameField(said, name), false, `${said} ≁ ${name}`);
+});
+
+test('큰 화면을 줄일 때 남긴 요소의 구역 제목도 남긴다', () => {
+  const refs: ElementRefs = {};
+  const keys: string[] = [];
+  for (let i = 0; i < 130; i++) { keys.push(`f${i}`); refs[`f${i}`] = { role: 'textbox', name: `칸 ${i}` }; }
+  keys.push('h1', 'b1', 'h2', 'r1', 'c1');
+  Object.assign(refs, { h1: { role: 'heading', name: '브랜드 *' }, b1: { role: 'combobox', name: '브랜드' },
+    h2: { role: 'heading', name: '전시카테고리 *' }, r1: { role: 'row', name: '행 선택 플래티어 통합몰' }, c1: { role: 'gridcell', name: '플래티어' } });
+  const kept = narrowLarge(keys, refs, '협력사를 플래티어 협력사로 지정해줘');
+  assert.deepEqual(kept.slice(60), ['h2', 'r1', 'c1']);
+});
+
+test('판단 응답 누락은 클릭이나 질문 아님으로 간주하지 않는다', async () => {
+  const { classify, askedProbability } = await import('../src/main/fast-act');
+  const scr = buildScreen('https://example.test', [{ ref: 'e1', role: 'textbox', name: '이름' }]);
+  await assert.rejects(classify(async () => ({}), '이름에 봄 입력해줘', '', scr));
+  await assert.rejects(classify(async () => ({ action: { choice: 'type' }, ready: { choice: 'act_now', probabilities: { act_now: 1 } } }), '이름에 봄 입력해줘', '', scr));
+  for (const p of [undefined, NaN, -1, 2]) {
+    await assert.rejects(askedProbability(async () => ({ asked: { choice: 'done', probabilities: p === undefined ? undefined : { asks: p } } }), '어느 상품인가요?'));
+  }
+  assert.equal(await askedProbability(async () => ({ asked: { choice: 'done', probabilities: { asks: 0 } } }), '입력했어요.'), 0);
+});
+
+test('순서 요청과 이름 붙은 탭 닫기를 한 번의 현재 화면 조작으로 끝내지 않는다', async () => {
+  const { needsSequentialPlan, closesCurrentTab } = await import('../src/main/fast-act');
+  assert.equal(needsSequentialPlan('카테고리 지정하고, 그다음에 협력사 지정해줘'), true);
+  assert.equal(needsSequentialPlan('메모에 「그리고 다음 날」 입력해줘'), false);
+  assert.equal(closesCurrentTab('협력사 조회 탭 닫아줘'), false);
+  assert.equal(closesCurrentTab('지금 탭 닫아줘'), true);
+  assert.equal(closesCurrentTab('탭 닫아줘'), true);
 });

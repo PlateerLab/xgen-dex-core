@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>브라우저 입력 검증</title>
+<style>body{font:18px system-ui;max-width:680px;padding:32px;background:#f5f7fb;color:#172238}label{display:block;margin:18px 0}input:not([type=checkbox]),textarea,select{display:block;padding:10px;font:inherit;width:90%}h1{font-size:26px}small{display:block;color:#536479}output{display:block;padding:12px;background:white}button{padding:12px;font:inherit}</style>
+<h1>브라우저 입력 검증</h1><p>실제 저장·전송이 없는 로컬 시험 화면입니다.</p>
+<label>이름<input id="name" aria-label="이름"><small>기본 4글자까지 입력됩니다. 긴 이름을 쓰려면 아래 긴 이름 허용을 먼저 체크하세요.</small></label>
+<label><input id="long" type="checkbox"> 긴 이름 허용</label>
+<label>메모<textarea id="memo" aria-label="메모"></textarea></label>
+<label>수량<input id="quantity" type="number" aria-label="수량" value="1"></label>
+<label>배송 방법<select id="delivery" aria-label="배송 방법"><option>일반 배송</option><option>빠른 배송</option></select></label>
+<label><input id="notice" type="checkbox"> 알림 받기</label>
+<label>상세 설명<div id="detail" contenteditable="true" role="textbox" aria-label="상세 설명" style="padding:15px;background:white;border:1px solid #aaa;min-height:80px"></div></label>
+<p>다른 칸의 값이 바뀌지 않았는지도 확인하세요.</p>
+<output id="state"></output>
+<script>
+const nameInput=document.querySelector('#name');
+nameInput.addEventListener('input',()=>{if(!document.querySelector('#long').checked)nameInput.value=nameInput.value.slice(0,4)});
+function state(){const v={name:nameInput.value,long:document.querySelector('#long').checked,memo:document.querySelector('#memo').value,quantity:document.querySelector('#quantity').value,delivery:document.querySelector('#delivery').value,notice:document.querySelector('#notice').checked,detail:document.querySelector('#detail').innerText}; document.querySelector('#state').textContent=JSON.stringify(v);}
+document.addEventListener('input',state);document.addEventListener('change',state);state();
+</script>

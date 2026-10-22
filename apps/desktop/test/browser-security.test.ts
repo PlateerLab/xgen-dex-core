@@ -21,10 +21,12 @@ import { browserStateStore } from '../src/renderer/src/browser-state';
 import {
   BROWSER_TABS_TOOL,
   BROWSER_FILL_TOOL,
+  BROWSER_FORM_VALUES_TOOL,
   BrowserToolProvider,
   browserWaitCommand,
   browserToolSchemas,
   BROWSER_INTERACT_TOOL,
+  BROWSER_SNAPSHOT_TOOL,
 } from '../src/main/browser-tools';
 import {
   BROWSER_PARTITION_PREFIX,
@@ -33,7 +35,7 @@ import {
   browserPathWithinRoots,
 } from '../src/main/browser-security';
 
-test('step execution is advertised only with a decider and dispatched with trusted workflow context', async () => {
+test('step execution is not advertised but still dispatches with a decider and trusted workflow context', async () => {
   const page: BrowserPageInfo = { pageId: 'step-page', workflowId: 'step-workflow', workflowName: 'Step', mode: 'shared', url: 'https://example.com/', title: 'Step', loading: 'idle', canGoBack: false, canGoForward: false, partition: 'test', generation: 1 };
   let pending: Promise<void> | null = null;
   const runtime = {
@@ -47,6 +49,7 @@ test('step execution is advertised only with a decider and dispatched with trust
       return { info: page };
     },
     runAgentCommand: async () => ({ page, result: { data: { refs: {}, snapshot: 'Step page' } } }),
+    pageScript: async () => [],
   } as unknown as BrowserRuntime;
   const provider = new BrowserToolProvider(runtime);
   provider.configure(true);
@@ -54,14 +57,17 @@ test('step execution is advertised only with a decider and dispatched with trust
   assert.doesNotMatch(disabled.description!, /action="step"/);
   await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { action: 'step' }, { workflowId: page.workflowId }), /decider/);
   provider.configure(true, () => [], () => {}, () => async () => ({}));
+  // 9d39783 처럼 LLM 은 BrowserFill 을 먼저 쓴다 — step 은 광고하지 않는다.
   const schema = provider.advertise().find((t) => t.name === BROWSER_INTERACT_TOOL)!;
-  assert.match(schema.description!, /current conversation model/);
+  assert.doesNotMatch(schema.description!, /action="step"/);
   const properties = schema.inputSchema!.properties as Record<string, { enum?: string[] }>;
-  assert.ok(properties.action.enum!.includes('step'));
-  assert.ok(properties.operation.enum!.includes('move'), 'legacy mouse operations stay valid');
+  assert.ok(!properties.action.enum!.includes('step'));
   const args = { action: 'step', operation: 'observe', instruction: '주소 확인', expect: [{ kind: 'url', value: page.url }] };
   const output = await provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId });
   assert.match(JSON.stringify(output), /completed/);
+  assert.equal(output.isError, false);
+  const failed = await provider.callTool(BROWSER_INTERACT_TOOL, { ...args, expect: [{ kind: 'url', value: 'https://example.com/other' }] }, { workflowId: page.workflowId });
+  assert.equal(failed.isError, true);
   await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { ...args, workflow_id: 'other' }, { workflowId: page.workflowId }), /일치하지/);
   const controller = new AbortController();
   controller.abort();
@@ -72,6 +78,24 @@ test('step execution is advertised only with a decider and dispatched with trust
   await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: page.workflowId }), /이전 단계/);
   release();
   await first;
+});
+
+test('legacy fill accepts a string value alias and never silently clears a field for missing text', async () => {
+  const commands: string[][] = [];
+  const runtime = {
+    runAgentCommand: async (_wid: string, _id: string, command: string[]) => {
+      commands.push(command);
+      return { page: null, result: { success: true } };
+    },
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true);
+  const args = { action: 'fill', page_id: 'p', ref: '@e25', value: '플래티어' };
+  await provider.callTool(BROWSER_INTERACT_TOOL, args, { workflowId: 'w' });
+  await provider.callTool(BROWSER_INTERACT_TOOL, { ...args, text: '' }, { workflowId: 'w' });
+  assert.deepEqual(commands, [['fill', '@e25', '플래티어'], ['fill', '@e25', '']]);
+  await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL, { ...args, value: undefined }, { workflowId: 'w' }), /입력할 문자열/);
+  assert.equal(commands.length, 2);
 });
 
 test('browser scheme allowlist normalizes host input and blocks privileged schemes', () => {
@@ -312,6 +336,10 @@ test('popup approval preserves the next original window.open instead of replayin
 
 test('popup tabs keep their WebContents, agent ownership and parent lifecycle', async () => {
   class Contents extends EventEmitter {
+    mainFrame = {
+      executeJavaScript: async (code: string) => code.includes('const allowed ='),
+      get framesInSubtree() { return [this]; },
+    };
     navigationHistory = { canGoBack: () => false, canGoForward: () => false };
     destroyed = false;
     session = 'test-session';
@@ -322,6 +350,8 @@ test('popup tabs keep their WebContents, agent ownership and parent lifecycle', 
       readonly url: string,
     ) {
       super();
+      const owner = this;
+      Object.defineProperty(this.mainFrame, 'detached', { get: () => owner.destroyed });
     }
     isDestroyed = () => this.destroyed;
     getURL = () => this.url;
@@ -662,7 +692,7 @@ test('pageScript uses the main frame and times out without waiting for page load
 });
 
 
-test('BrowserFill setting and step decider independently control advertised tools', () => {
+test('BrowserFill follows the fast-act setting and step is never advertised', () => {
   const savedUrl = process.env.DEX_FAST_ACT_URL;
   delete process.env.DEX_FAST_ACT_URL;
   let enabled = false;
@@ -678,7 +708,7 @@ test('BrowserFill setting and step decider independently control advertised tool
         assert.equal(schemas.some(tool => tool.name === BROWSER_FILL_TOOL), fastAct);
         const interact = schemas.find(tool => tool.name === BROWSER_INTERACT_TOOL)!;
         const properties = interact.inputSchema!.properties as Record<string, { enum?: string[] }>;
-        assert.equal(properties.action.enum!.includes('step'), steps);
+        assert.equal(properties.action.enum!.includes('step'), false);
       }
     }
     provider.configure(false);
@@ -688,4 +718,56 @@ test('BrowserFill setting and step decider independently control advertised tool
     if (savedUrl === undefined) delete process.env.DEX_FAST_ACT_URL;
     else process.env.DEX_FAST_ACT_URL = savedUrl;
   }
+});
+
+test('BrowserFill and BrowserFormValues act on a shared tab only by explicit page_id', async () => {
+  const post = async () => ({});
+  configureFastAct({ enabled: () => true, post });
+  const provider = new BrowserToolProvider(new BrowserRuntime());
+  provider.configure(true);
+  try {
+    for (const name of [BROWSER_FILL_TOOL, BROWSER_FORM_VALUES_TOOL]) {
+      const schema = provider.advertise().find((tool) => tool.name === name)!;
+      assert.ok((schema.inputSchema!.required as string[]).includes('page_id'), name);
+    }
+    // page_id 가 없으면 보이는 탭을 짐작하지 않고 거절한다.
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { workflow_id: 'w', steps: ['상품명에 「a」 입력해줘'] }), /page_id 가 필요합니다/);
+    await assert.rejects(provider.callTool(BROWSER_FORM_VALUES_TOOL, { workflow_id: 'w' }), /page_id 가 필요합니다/);
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { page_id: 'p', steps: ['메모 입력'] }, { workflowId: 'w', remote: true }), /이 PC에서/);
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { page_id: 'p', steps: Array(51).fill('메모 입력') }, { workflowId: 'w' }), /50줄/);
+    await assert.rejects(provider.callTool(BROWSER_FILL_TOOL, { page_id: 'p', steps: [{}] }, { workflowId: 'w' }), /문자열 배열/);
+  } finally {
+    configureFastAct({ enabled: () => false, post });
+  }
+});
+
+test('a fill scope rejects other shared tabs and all access after cancellation', async () => {
+  const runtime = new BrowserRuntime();
+  const internals = runtime as unknown as { enabled: boolean; accountPartition: string; pages: Map<string, { info: BrowserPageInfo }> };
+  internals.enabled = true;
+  internals.accountPartition = 'test';
+  for (const [id, mode, opener] of [['a', 'shared', undefined], ['b', 'shared', undefined], ['popup', 'popup', 'a']] as const) {
+    internals.pages.set(id, { info: { pageId: id, workflowId: 'w', mode, openerPageId: opener } as BrowserPageInfo });
+  }
+  const controller = new AbortController();
+  await runtime.withPageScope('a', controller.signal, async () => {
+    assert.equal((await runtime.resolvePage('w', 'a', false)).info.pageId, 'a');
+    assert.equal((await runtime.resolvePage('w', 'popup', false)).info.pageId, 'popup');
+    await assert.rejects(runtime.resolvePage('w', 'b', false), /대상 폼/);
+    controller.abort();
+    await assert.rejects(runtime.resolvePage('w', 'a', false), /중단/);
+  });
+  assert.equal((await runtime.resolvePage('w', 'b', false)).info.pageId, 'b');
+});
+
+test('BrowserSnapshot gives the server LLM the snapshot text without the duplicate refs map', async () => {
+  const page = { pageId: 'p', workflowId: 'w' } as BrowserPageInfo;
+  const runtime = {
+    runAgentCommand: async () => ({ page, result: { success: true, data: { refs: { e1: { role: 'button', name: '저장' } }, snapshot: '- button "저장" [ref=e1]' } } }),
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true);
+  const output = JSON.stringify(await provider.callTool(BROWSER_SNAPSHOT_TOOL, {}, { workflowId: 'w' }));
+  assert.match(output, /\[ref=e1\]/);
+  assert.doesNotMatch(output, /refs/);
 });

@@ -78,10 +78,19 @@ export class BrowserSessionStore {
         url,
         title,
       }));
+    // 팝업이 앞에 있으면 팝업을 연 탭을 고른 탭으로 남긴다 — 팝업은 저장하지 않으므로.
+    const byId = new Map(state.pages.map((page) => [page.pageId, page]));
+    const openerOf = (pageId: string) => {
+      for (let page = byId.get(pageId); page?.mode === 'popup' && page.openerPageId; page = byId.get(pageId))
+        pageId = page.openerPageId;
+      return pageId;
+    };
     const activeByWorkflow = Object.fromEntries(
-      Object.entries(state.activeByWorkflow).filter(([workflowId, pageId]) =>
-        pages.some((page) => page.pageId === pageId && page.workflowId === workflowId),
-      ),
+      Object.entries(state.activeByWorkflow)
+        .map(([workflowId, pageId]) => [workflowId, openerOf(pageId)])
+        .filter(([workflowId, pageId]) =>
+          pages.some((page) => page.pageId === pageId && page.workflowId === workflowId),
+        ),
     );
     const serialized = JSON.stringify({ version: 1, pages, activeByWorkflow });
     if (this.lastSaved.get(partition) === serialized) return;

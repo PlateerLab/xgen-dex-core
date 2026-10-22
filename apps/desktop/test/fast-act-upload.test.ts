@@ -21,6 +21,8 @@ test('fileNameIn: 말에 든 파일 이름, 뒤 조사는 뺀다', () => {
   assert.equal(fileNameIn('대표이미지를 INNO-20261016-001_대표이미지.png로 업로드해줘'), 'INNO-20261016-001_대표이미지.png');
   assert.equal(fileNameIn('"a.JPG" 올려줘'), 'a.JPG');
   assert.equal(fileNameIn('대표이미지에 상품이미지/a.png를 올려줘'), '상품이미지/a.png');
+  assert.equal(fileNameIn('대표이미지에 「상품이미지/INNO-20261016-001_대표이미지.png」 올려줘'), '상품이미지/INNO-20261016-001_대표이미지.png');
+  assert.equal(fileNameIn('대표이미지에 『상품이미지/a.png』 올려줘'), '상품이미지/a.png');
   assert.equal(fileNameIn('대표이미지 올려줘'), null);
   assert.equal(fileNameIn('버전 1.5로 바꿔줘'), null);
 });

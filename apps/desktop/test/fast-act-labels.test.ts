@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  FIELD_LABEL_SCRIPT,
+  FORM_VALUES_SCRIPT,
+  NAME_ICON_BUTTONS_SCRIPT,
   editableAsTextbox,
   checkOf,
   inDocOrder,
@@ -16,6 +19,7 @@ import {
   checkStates,
   labelClickables,
   labelFields,
+  labelSnapshot,
   locativeAfterLabel,
   refOrder,
   withoutLabel,
@@ -59,6 +63,15 @@ test('요소 번호 순서는 스냅샷 글 순서 그대로, 중복 없이', ()
   assert.deepEqual(refOrder(SNAPSHOT), ['e3', 'e4', 'e1', 'e5', 'e2', 'e6', 'e8', 'e7']);
   assert.deepEqual(refOrder('- link "a" [ref=e2]\n- link "a" [ref=e2]\n- ref=e10x'), ['e2']);
   assert.deepEqual(refOrder(''), []);
+});
+
+test('shared snapshot enrichment preserves field labels and document order for both decider paths', () => {
+  const got = labelSnapshot(REFS, SNAPSHOT, PAGE);
+  assert.equal(got.refs.e3.name, '상품명');
+  assert.equal(got.refs.e1.name, '모델명');
+  assert.equal(got.labels.e1, '모델명');
+  assert.deepEqual(Object.keys(got.refs), refOrder(SNAPSHOT));
+  assert.equal(REFS.e1.name, '', 'the raw snapshot remains unchanged');
 });
 
 test('빈 이름은 칸 이름으로, 안내문·값 이름은 칸 이름을 앞에 붙인다 — 같은 이름끼리 문서 순서로', () => {
@@ -407,8 +420,8 @@ test('누른 선택지가 고른 상태가 되지 않았나 — 선택지는 눌
   assert.equal(choiceMissed('radio', undefined, true), false);
   assert.equal(choiceMissed('checkbox', false, false), true);
   assert.equal(choiceMissed('checkbox', false, true), false);
-  assert.equal(choiceMissed('checkbox', undefined, false), false); // 전 상태를 모르면 판단하지 않는다
-  assert.equal(choiceMissed('radio', undefined, null), false); // 못 읽었으면 판단하지 않는다
+  assert.equal(choiceMissed('checkbox', undefined, false), true); // 전 상태를 모르면 변경 완료를 입증할 수 없다
+  assert.equal(choiceMissed('radio', undefined, null), true); // 못 읽었으면 완료가 아니다
   assert.equal(choiceMissed('button', undefined, false), false);
 });
 
@@ -462,4 +475,11 @@ test('labelToggles: 제목 바로 뒤 이름 없는 접기·펼치기 버튼에 
   assert.equal(out.e7.name, ''); // 앞이 제목이 아니다
   assert.equal(out.e8.name, ''); // 펼침 상태가 없다
   assert.deepEqual(labels, { e92: '부가 정보', e93: '상품이미지 정보' });
+});
+
+
+test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 안 이스케이프 실수를 잡는다', () => {
+  for (const code of [FIELD_LABEL_SCRIPT, FORM_VALUES_SCRIPT, NAME_ICON_BUTTONS_SCRIPT]) {
+    assert.doesNotThrow(() => new Function(`return ${code}`));
+  }
 });

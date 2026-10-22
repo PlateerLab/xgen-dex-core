@@ -35,7 +35,12 @@ const lastServerReply = new Map<string, string>();
 
 /** 서버 턴이 끝났다 — 그 답을 기억한다(index.ts 가 서버 스트림을 다 받은 뒤 부른다). */
 export function rememberServerReply(interactionId: string | undefined, reply: string): void {
-  if (interactionId && reply.trim()) lastServerReply.set(interactionId, reply.trim());
+  if (interactionId && reply.trim()) lastServerReply.set(interactionId, reply.trim().slice(-2_000));
+}
+
+/** Voice must check a preceding server reply through the same chat routing gate. */
+export function voiceNeedsChatContext(interactionId?: string): boolean {
+  return !interactionId || lastServerReply.has(interactionId);
 }
 
 /** 렌더러가 붙인 봉투(브라우저·Teams 컨텍스트)를 떼고 사용자 원문만 남긴다. */
@@ -77,10 +82,10 @@ function finishLocal(
     emit({ kind: 'end' });
     return true;
   }
-  // 이미 한 조작은 "지금 화면 상태" 로만 알린다 — "다시 하지 마라" 식 지시를 붙이면 LLM 이 그 말을 답에
-  // 옮긴다("앞서 실행했다고 하신 동작은 다시 실행하지 않았습니다").
-  const already = actions.map((a) => a.display).join(', ');
-  const rest = `${unhandled}\n\n(현재 화면: 방금 빠른 조작으로 ${already} 을(를) 눌러 둔 상태)`;
+  // 실패한 시도도 기록해, 서버가 이미 반영된 업로드나 토글을 반복하지 않게 한다.
+  const rest = `${unhandled}\n\n(빠른 조작 기록: ${replyFor(actions, true)}\n` +
+    '위 기록에는 완료되지 않은 시도도 있습니다. 현재 화면 값을 확인하고 남은 요청을 브라우저 도구로 마저 수행하세요. ' +
+    '이미 반영된 입력·업로드·선택은 반복하지 마세요.)';
   if (typeof req.input === 'string' && req.input.includes(text)) req.input = req.input.replace(text, rest);
   else req.input = rest;
   diag(SCOPE, '남은 말 서버로', { unhandled, acted: actions.length, voice });
@@ -107,16 +112,23 @@ export async function tryFastAct(
     return false;
   }
   const t0 = now();
+  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   // 직전 턴을 서버가 묻는 말로 끝냈다 — 이 말은 그 물음에 대한 대답이라 서버로. 대화 맥락은 서버 LLM 만 안다.
+  // 다만 화면의 칸 이름을 직접 부른 말은 그 자체로 알아들을 수 있는 새 지시라 여기서 한다(namesField).
   const reply = lastServerReply.get(req.interactionId);
   lastServerReply.delete(req.interactionId);
   if (reply) {
-    const p = await askedProbability(decisionPost()!, reply).catch(() => 0);
-    diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3) });
-    if (p >= ASKED_MIN) return false;
+    const p = await askedProbability(decisionPost()!, reply).catch(() => null);
+    if (p === null || !Number.isFinite(p)) {
+      diag(SCOPE, 'reply-check failed: to server');
+      return false;
+    }
+    // 칸 이름은 물었을 때만 본다 — 숨은 탭이면 꺼내야 해서.
+    const named = p >= ASKED_MIN ? await inner.namesField(text) : null;
+    diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3), named });
+    if (p >= ASKED_MIN && !named) return false;
   }
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
-  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
   const agent: VoiceAgent = {
     get lastTarget() {
@@ -126,7 +138,16 @@ export async function tryFastAct(
     readiness: (texts) => inner.readiness(texts),
     handle: (said, th, guard, abort, utterance) =>
       // DEX_FAST_ACT_DRY=1(개발용) — 판단까지만 하고 실행하지 않는다. 판단 점수를 잴 때 화면·데이터를 바꾸지 않으려고.
-      inner.handle(said, th, async (...a) => !DRY && !signal.aborted && (await guard(...a)), () => signal.aborted || abort(), utterance),
+      inner.handle(
+        said,
+        th,
+        async (...a) => {
+          if (DRY) diag(SCOPE, 'dry-target', { said, target: a[0], kind: a[1], conf: a[2] });
+          return !DRY && !signal.aborted && (await guard(...a));
+        },
+        () => signal.aborted || abort(),
+        utterance,
+      ),
   };
   const decided: Array<{ text: string; outcome: Outcome }> = [];
   const seg = new Segmenter(agent, (e) => {

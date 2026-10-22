@@ -869,8 +869,8 @@ const api = {
   voiceStream: {
     available: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.voiceStreamAvailable),
     /** carry: 앞 발화에서 처리 못 한 말 — 잠깐 쉬어 끊긴 말을 이어 붙여 판단한다. */
-    start: (workflowId: string, carry?: string): Promise<string> =>
-      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry),
+    start: (workflowId: string, carry?: string, interactionId?: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry, interactionId),
     audio: (sessionId: string, pcm: Uint8Array): void => ipcRenderer.send(CHANNELS.voiceStreamAudio, sessionId, pcm),
     end: (sessionId: string): Promise<VoiceStreamResult | null> => ipcRenderer.invoke(CHANNELS.voiceStreamEnd, sessionId),
     cancel: (sessionId: string): void => ipcRenderer.send(CHANNELS.voiceStreamCancel, sessionId),

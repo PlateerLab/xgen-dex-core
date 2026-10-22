@@ -100,6 +100,8 @@ export class Segmenter {
   private lastTried = '';
   private finalText: string | null = null;
   private finished = false;
+  /** An attempted action was not verified; only the server may resume this utterance. */
+  private needsRecovery = false;
   /** 판단 세대 — 최종 인식이 오면 올라간다. 이전 세대의 판단은 끝나도 실행하지 못한다. */
   private epoch = 0;
   /** 지금 돌고 있는 pump 의 세대 (-1 = 없음). */
@@ -219,6 +221,11 @@ export class Segmenter {
     this.finalText = this.latest;
     this.onEvent({ type: 'final', text: this.latest, t: this.clock() });
     const done = new Promise<void>((r) => (this.resolveDone = r));
+    if (this.needsRecovery) {
+      this.unhandled = this.remainder(this.latest) || this.lastSeg;
+      this.finish();
+      return done;
+    }
     if (!this.latest) {
       this.finish();
       return done;
@@ -251,6 +258,11 @@ export class Segmenter {
         this.lastTried = text;
         const isFinal = this.finalText !== null && text === this.finalText;
         const rest = this.remainder(text);
+        if (this.needsRecovery) {
+          this.unhandled = rest || this.lastSeg;
+          if (isFinal) this.finish();
+          break;
+        }
         if (words(rest).length === 0) {
           if (isFinal) this.finish();
           break;
@@ -321,7 +333,8 @@ export class Segmenter {
               if (o?.acted) {
                 this.segStart = this.consumed;
                 this.lastSeg = target;
-                this.consumed = upTo(target);
+                if (o.effect === 'none') this.needsRecovery = true;
+                else this.consumed = upTo(target);
               }
               if (holding) {
                 this.releaseActing?.();
@@ -371,7 +384,8 @@ export class Segmenter {
         if (outcome.acted) {
           // (실행 기록은 handle 직후에 했다) 효과가 없었으면 이 발화의 나머지는 하지 않는다 — 엉뚱한 상태에서 계속하면 더 나빠진다.
           if (outcome.effect && outcome.effect !== 'ok') {
-            this.finish();
+            this.unhandled = this.remainder(this.latest) || used;
+            if (isFinal) this.finish();
             return;
           }
           continue;

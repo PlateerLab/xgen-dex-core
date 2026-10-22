@@ -1,5 +1,6 @@
 /**
- * 결정 모델 연결과 브라우저 탭 헬퍼. 단계별 BrowserInteract와 기존 음성 판단기가 같이 쓴다.
+ * 결정 모델 연결과 브라우저 탭 헬퍼. 빠른 조작(채팅 fast-act-chat·음성 fast-act-voice)과 서버 도구
+ * (BrowserInteract step·BrowserFill)가 같이 쓴다.
  *
  * 설정 `fastAct`(기본 꺼짐)를 켜고 로그인했을 때 켜진다. 결정 모델은 XGEN 판단 API
  * (`/api/base/v1/decision/systemone`)로 부른다. 개발 중에는 `DEX_FAST_ACT_URL` 로 판단 모델
@@ -97,7 +98,8 @@ export function decisionPost(): DecisionPost | null {
       .then(() => diag(SCOPE, 'warm-up ok'))
       .catch((err) => {
         warmed = null;
-        diag(SCOPE, 'warm-up failed', String(err));
+        // 서버가 준 이유(본문)도 남긴다 — 404 만으로는 경로가 없는지, 판단 모델이 없는지 알 수 없었다(10/20).
+        diag(SCOPE, 'warm-up failed', { error: String(err), body: (err as { body?: unknown }).body });
       });
   }
   return post;

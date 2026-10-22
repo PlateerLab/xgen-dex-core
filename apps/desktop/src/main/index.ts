@@ -164,8 +164,8 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
-import { rememberServerReply } from './fast-act-chat';
-import { configureFastAct, decisionPost } from './fast-act-runner';
+import { rememberServerReply, tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
+import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
 import { parseWakeWords } from './voice-wake';
@@ -1768,6 +1768,7 @@ function publishDetachedDone(interactionId: string, output: string): void {
   const chat = detachedChats.get(interactionId);
   if (!chat) return;
   detachedChats.delete(interactionId);
+  getBrowserRuntime().noteBrowserActionReply(chat.workflowId, interactionId, output);
   rememberServerReply(interactionId, output);
   notificationCenter.publish({
     id: `chat-completed-${interactionId}-${Date.now()}`,
@@ -2244,7 +2245,7 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
   // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.browser !== undefined) syncMcp();
+  if (patch.browser !== undefined || patch.fastAct !== undefined) syncMcp();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -2685,14 +2686,14 @@ configureFastAct({
   },
   reveal: revealBrowserPage,
 });
-// 실시간 음성 인식은 유지하되, 조작은 최종 발화를 받은 채팅 모델이 계획한 뒤 실행한다.
+// 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>
   currentUserId()
     ? {
+        planBeforeAct: voiceNeedsChatContext,
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
-        planBeforeAct: () => true,
         wakeWords: () => {
           const c = loadConfig();
           const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
@@ -2707,8 +2708,8 @@ const voiceStreamEmit =
     if (!sender.isDestroyed()) sender.send(CHANNELS.voiceStreamEvent, ev);
   };
 ipcMain.handle(CHANNELS.voiceStreamAvailable, () => voiceStreamAvailable());
-ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string) =>
-  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? ''),
+ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string) =>
+  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId),
 );
 ipcMain.on(CHANNELS.voiceStreamAudio, (_e, sessionId: string, pcm: Uint8Array) => voiceStreams.audio(sessionId, pcm));
 ipcMain.handle(CHANNELS.voiceStreamEnd, (_e, sessionId: string) => voiceStreams.end(sessionId));
@@ -3285,6 +3286,7 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
     /** 스트림이 끊겼다 — 턴은 서버에서 계속 돈다. 끝난 것이 아니므로 완료로 접지 않는다. */
     let detached = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
+      if (kind === 'completed') getBrowserRuntime().noteBrowserActionReply(serverReq.workflowId, serverReq.interactionId, preview);
       if (kind === 'completed') rememberServerReply(serverReq.interactionId, preview); // 빠른 조작이 다음 말이 이 답에 대한 대답인지 본다
       const event: NotificationEvent = {
         id: `chat-${kind}-${streamId}`,
@@ -3312,6 +3314,13 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       notificationCenter.publish(event);
     };
     try {
+      await getBrowserRuntime().prepareUserBrowserAction(serverReq.workflowId, serverReq.interactionId, serverReq.input, controller.signal);
+      if (fastActEnabled()) {
+        const emit = (ev: ChatEvent): void => {
+          if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);
+        };
+        if (await tryFastAct(serverReq, emit, controller.signal)) return;
+      }
       // 에이전트 턴은 **언제나 서버에서** 돈다 — 서버가 workflow 세션을 만들고
       // 그 세션의 sandbox 안에서 실행한다. 커넥터는 그 실행을 호출하는 접속기다.
       //
@@ -3320,7 +3329,7 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 돌아, 모든 기능을 두 번 만들어야 했고 두 번째 구현은 늘 뒤처졌다.
       // 사용자 PC 는 이제 **도구**로만 참여한다(브라우저·Shell·로컬 MCP —
       // 서버 에이전트가 reverse-WS 카탈로그로 호출한다).
-      // 현재 대화 모델이 계획을 맡는다. decider 실행·검증은 BrowserInteract(step) 도구로 돌아온다.
+      // 즉시 처리하지 못한 요청은 서버 모델이 계획하고 브라우저 도구로 실행한다.
       for await (const ev of getClient().chat.stream(serverReq, controller.signal)) {
         if (sender.isDestroyed()) break;
         if (ev.kind === 'text') preview = (preview + ev.content).slice(-2_000);

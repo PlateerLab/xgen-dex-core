@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { judgedText, quotedText, textFromWordAnswers, withoutDisabledTwins } from '../src/main/fast-act';
-import { maskedDate, plainNumber, matchesInputValue } from '../src/main/fast-act-number';
+import { maskedDate, plainNumber, matchesInputValue, richText } from '../src/main/fast-act-number';
 
 test('단위 붙은 말과 한글 자릿수를 숫자만으로 바꾼다', () => {
   assert.equal(plainNumber('20000원'), '20000');
@@ -138,4 +138,11 @@ test('읽기 실패·텍스트 구두점·숫자 부호 차이는 성공으로 �
   assert.equal(matchesInputValue('15', '-15', 'spinbutton', ''), false);
   assert.equal(matchesInputValue('20,000', '20000', 'spinbutton', ''), true);
   assert.equal(matchesInputValue('a\r\nb', 'a\nb', 'textbox', ''), true);
+});
+
+test('서식 편집기 글은 문단 사이 빈 줄을 줄바꿈 하나로 본다', () => {
+  // 10/22 BO Jodit: 줄마다 <p> 가 되어 innerText 가 "\n\n" 으로 읽었다.
+  assert.equal(matchesInputValue(richText('[소재] PP\n\n[색상] 아이보리'), richText('[소재] PP\n[색상] 아이보리'), 'textbox', ''), true);
+  assert.equal(richText('a\\nb'), 'a\nb');
+  assert.equal(matchesInputValue(richText('a\n\nc'), richText('a\nb'), 'textbox', ''), false);
 });

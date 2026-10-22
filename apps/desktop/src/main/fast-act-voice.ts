@@ -65,7 +65,7 @@ import {
   type FieldLabel,
 } from './fast-act-labels';
 import { NOTICE_SCRIPT, type Notice } from './fast-act-notice';
-import { maskedDate, plainNumber, matchesInputValue } from './fast-act-number';
+import { maskedDate, plainNumber, matchesInputValue, richText } from './fast-act-number';
 import { josa } from './fast-act-reply';
 import { PRESS_LOST_SCRIPT, PRESS_WATCH_SCRIPT } from './fast-act-press';
 import { FILE_FIELDS_SCRIPT, accepts, fileNameIn, listFiles, namesFile, uploadLanded, withFileFields, type FileField, type Landed } from './fast-act-upload';
@@ -1547,7 +1547,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
         // 읽을 수 없는 값과 구두점·부호가 달라진 값은 완료로 보지 않는다.
         if (!opened) {
           const inField = await this.valueOf(page.pageId, ref, snap.gen, rich);
-          unfilled = !matchesInputValue(inField, rich ? (typed ?? '').replace(/\\n/g, '\n') : typed ?? '', element.role, element.name ?? '');
+          unfilled = !matchesInputValue(rich && inField !== null ? richText(inField) : inField, rich ? richText(typed ?? '') : typed ?? '', element.role, element.name ?? '');
         }
         if (!opened && !unfilled && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
       }

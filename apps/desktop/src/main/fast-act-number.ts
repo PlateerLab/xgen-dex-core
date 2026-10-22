@@ -139,6 +139,14 @@ export function maskedDate(name: string, text: string): string | null {
   return ok && i + 1 === points.length ? out : null;
 }
 
+/**
+ * 서식 편집기(contenteditable) 글 — 줄마다 문단(<p>)이 되어 innerText 가 문단 사이를 빈 줄("\n\n")로 읽는다(10/22 BO Jodit
+ * 상품상세 "확인하지 못했어요"). LLM 이 적은 "\n" 두 글자도 줄바꿈으로 본다.
+ */
+export function richText(v: string): string {
+  return v.replace(/\\n/g, '\n').replace(/\n(?:[ \t]*\n)+/g, '\n');
+}
+
 /** 숫자·날짜 칸의 표시 형식만 허용한다. 일반 글의 부호나 구두점은 값의 일부다. */
 export function matchesInputValue(actual: string | null, expected: string, role: string, name: string): boolean {
   if (actual === null) return false;

@@ -1,6 +1,4 @@
 import { BrowserWindow, dialog } from 'electron';
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { BrowserFileScopes, BrowserScratch, displayBrowserFileResult } from './browser-file-transfer';
 import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';

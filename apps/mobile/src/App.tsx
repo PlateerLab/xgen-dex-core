@@ -20,6 +20,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StatusBar as RnStatusBar,
   StyleSheet,
@@ -575,10 +576,10 @@ export default function App(): React.ReactElement {
 
   return (
     <PaletteCtx.Provider value={p}>
-      <View style={{ flex: 1, backgroundColor: p.bg, paddingTop: Platform.OS === 'android' ? RnStatusBar.currentHeight ?? 0 : 0 }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: p.bg, ...(Platform.OS === 'android' ? { paddingTop: RnStatusBar.currentHeight ?? 0 } : {}) }}>
         <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
         {body}
-      </View>
+      </SafeAreaView>
     </PaletteCtx.Provider>
   );
 }

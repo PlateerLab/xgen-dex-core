@@ -6,7 +6,7 @@
  * resolved via validate-token (there is no /me endpoint). Access tokens are
  * refreshed with the refresh token.
  */
-import { HttpClient } from './client';
+import { ApiError, HttpClient } from './client';
 import { sha256Hex } from './hash';
 import type { CurrentUser, LoginResult } from './types';
 
@@ -47,7 +47,8 @@ export class AuthApi {
     const res = await this.http.post<RawLoginResponse>(
       '/api/auth/login',
       { email, password: passwordHash, token: null },
-      // login itself must not trigger the onAuthFailure hook
+      // Credential rejection belongs to this login, not an older active session.
+      { auth: false },
     );
     if (!res.success || !res.access_token) {
       throw new Error(res.message || '로그인에 실패했습니다.');
@@ -65,7 +66,7 @@ export class AuthApi {
   async loginWithToken(ssoToken: string): Promise<LoginResult> {
     const res = await this.http.post<RawLoginResponse>('/api/auth/login', {
       token: ssoToken,
-    });
+    }, { auth: false });
     if (!res.success || !res.access_token) {
       throw new Error(res.message || 'SSO 로그인에 실패했습니다.');
     }
@@ -138,11 +139,43 @@ export class AuthApi {
     return res.success ? res.access_token : null;
   }
 
-  async logout(accessToken: string): Promise<void> {
+  async logout(accessToken: string, refreshToken?: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.http.post('/api/auth/logout', { token: accessToken }, { timeoutMs: 8000 });
+      // HttpClient's JSON timeout ends at headers. A stalled response body must
+      // not hold logout (or disposal of an obsolete login) open indefinitely.
+      await Promise.race([
+        this.revoke(accessToken, refreshToken),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 8000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async revoke(accessToken: string, refreshToken?: string): Promise<void> {
+    const options = { auth: false, timeoutMs: 8000 };
+    if (accessToken) {
+      try {
+        await this.http.post('/api/auth/logout', { token: accessToken }, options);
+        return;
+      } catch (error) {
+        // The gateway requires an unexpired access JWT, even when its family
+        // still has a usable refresh token. Network/server failures stay best-effort.
+        if (!(error instanceof ApiError) || ![401, 403].includes(error.status)) return;
+      }
+    }
+    if (!refreshToken) return;
+    try {
+      const res = await this.http.post<RawLoginResponse>(
+        '/api/auth/refresh', { refresh_token: refreshToken }, options,
+      );
+      // Revoke the captured family; never adopt this temporary token locally.
+      if (res.success && res.access_token) {
+        await this.http.post('/api/auth/logout', { token: res.access_token }, options);
+      }
     } catch {
-      /* logout is best-effort */
+      /* logout is best-effort, including expired refresh tokens and offline use */
     }
   }
 

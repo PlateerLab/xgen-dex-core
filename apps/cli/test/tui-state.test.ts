@@ -25,6 +25,40 @@ test('chat reducer accumulates streamed text and updates tool activity in place'
   );
 });
 
+test('생성 표시는 검증과 분리되고 본문이 바뀌면 검증 결과를 지운다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: '답' } });
+  state = chatReducer(state, {
+    type: 'event_received',
+    event: {
+      kind: 'generated_content',
+      data: {
+        indication: 'ai_generated', proof: 'a.b.c', sha256: 'a'.repeat(64),
+        content_type: 'text/plain', byte_length: 3,
+        source_id: '123e4567-e89b-42d3-a456-426614174000',
+      },
+    },
+  });
+  state = chatReducer(state, { type: 'turn_completed' });
+  const answer = state.messages.find((message) => message.role === 'assistant')!;
+  assert.equal(answer.generatedContent?.length, 1);
+  assert.equal(answer.provenanceCheck, undefined, '선언 수신만으로 검증됐다고 표시하지 않는다');
+
+  state = chatReducer(state, { type: 'verification_started', messageId: answer.id, expectedText: '답' });
+  state = chatReducer(state, { type: 'verification_finished', messageId: answer.id, expectedText: '답', status: 'verified' });
+  assert.equal(state.messages.find((message) => message.id === answer.id)?.provenanceCheck, 'verified');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: ' 변경' } });
+  assert.equal(state.messages.find((message) => message.id === answer.id)?.provenanceCheck, undefined);
+});
+
+test('늦게 도착한 검증 결과는 본문 snapshot이 달라지면 버린다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: '현재' } });
+  const answer = state.messages.find((message) => message.role === 'assistant')!;
+  state = chatReducer(state, { type: 'verification_finished', messageId: answer.id, expectedText: '예전', status: 'verified' });
+  assert.equal(state.messages.find((message) => message.id === answer.id)?.provenanceCheck, undefined);
+});
+
 test('history is converted into reusable chat state', () => {
   const state = chatReducer(initialChatState, {
     type: 'history_loaded',
@@ -102,4 +136,26 @@ test('호출 id 가 없는 도구도 호출 하나에 한 줄 — 같은 이름�
     ],
   });
   assert.deepEqual(state.messages.filter((m) => m.role === 'activity').map((m) => m.text), ['Read · 완료', 'Read · 실행 중']);
+});
+
+test('첫 글자 전의 준비 단계는 상태 줄에 보이고, 답이 시작되면 걷힌다', () => {
+  // 서버가 Sandbox·워크스페이스를 불러오는 동안 무엇을 기다리는지 보인다(turn_phase).
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'start' } });
+  assert.equal(state.status, 'Sandbox를 불러오고 있습니다');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 9000 } });
+  assert.equal(state.status, '답변을 준비하고 있습니다');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'text', content: '안녕' } });
+  assert.equal(state.status, undefined);
+  assert.equal(state.phases, undefined);
+});
+
+test('새 에이전트의 첫 실행이면 상태 줄이 조립 중이라고 말하고, 단계가 돌면 그 단계를 먼저 말한다', () => {
+  let state = chatReducer(initialChatState, { type: 'turn_started', interactionId: 'i', input: 'q' });
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'assemble', state: 'start' } });
+  assert.equal(state.status, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'start' } });
+  assert.equal(state.status, 'Sandbox를 불러오고 있습니다');
+  state = chatReducer(state, { type: 'event_received', event: { kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 9000 } });
+  assert.equal(state.status, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
 });

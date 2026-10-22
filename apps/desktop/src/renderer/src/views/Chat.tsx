@@ -24,7 +24,7 @@ import { ShareToTeamsModal } from './ShareToTeams';
 import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
 import type { ChatImageAttachment, SessionState } from '../session-store';
-import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo } from '@dex/protocol';
+import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo, GeneratedContentVerificationStatus } from '@dex/protocol';
 import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
@@ -48,7 +48,7 @@ import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
 import { CitationPanel } from './CitationPanel';
-import { ProcessTimeline, hasProcessFlow, useProcessView } from './ProcessTimeline';
+import { ProcessTimeline, TurnPhaseCard, hasProcessFlow, useProcessView } from './ProcessTimeline';
 import { connectedToolGroups } from './agent-inspector-model';
 import { TurnFiles } from './TurnFiles';
 import { requestBefore } from './turn-files-model';
@@ -292,6 +292,60 @@ const ErrorBlock: React.FC<{ info: XgenErrorInfo }> = ({ info }) => {
         )}
       </div>
       {open && info.detail && <pre className="chat-error-detail">{info.detail}</pre>}
+    </div>
+  );
+};
+
+type ProofState = 'idle' | 'checking' | 'error' | GeneratedContentVerificationStatus;
+
+function proofLabel(state: ProofState): string {
+  switch (state) {
+    case 'verified': return '검증됨';
+    case 'changed': return '본문 변경됨';
+    case 'other_actor': return '다른 생성자';
+    case 'invalid': return '증명 무효';
+    case 'unsigned_legacy': return '서명 없는 이전 답변';
+    case 'unavailable': return '검증 일시 불가';
+    case 'checking': return '검증 중…';
+    case 'error': return '검증 실패';
+    default: return '확인 전';
+  }
+}
+
+const GeneratedContentStatus: React.FC<{ message: SessionState['messages'][number]; text: string }> = ({ message, text }) => {
+  const proof = message.malformedGeneratedContent
+    ? null
+    : message.generatedContent?.find((item) => item.content_type?.toLowerCase() === 'text/plain')?.proof ?? null;
+  const indication = message.malformedGeneratedContent ? '출처 정보 손상' : proof ? 'AI 생성' : '출처/서명 정보 없음';
+  const initial = (): ProofState => message.malformedGeneratedContent ? 'invalid' : proof ? 'idle' : 'unsigned_legacy';
+  const [state, setState] = useState<ProofState>(initial);
+  const request = useRef(0);
+  const currentInput = useRef('');
+  const currentRevision = useRef(message);
+  currentRevision.current = message;
+  currentInput.current = `${proof ?? ''}\u0000${text}`;
+  useEffect(() => {
+    request.current += 1;
+    setState(initial());
+  }, [message, message.malformedGeneratedContent, proof, text]);
+  const verify = async (): Promise<void> => {
+    if (!proof || state === 'checking') return;
+    const id = ++request.current;
+    const input = currentInput.current;
+    const startedFor = message;
+    setState('checking');
+    try {
+      const result = await xgen.generatedContent.verifyText(proof, text);
+      if (request.current === id && currentInput.current === input && currentRevision.current === startedFor) setState(result.status as GeneratedContentVerificationStatus);
+    } catch {
+      if (request.current === id && currentInput.current === input && currentRevision.current === startedFor) setState('error');
+    }
+  };
+  return (
+    <div className="generated-content-status" role="status" aria-label={`${indication} · ${proofLabel(state)}`}>
+      <span>{indication}</span>
+      <span>{proofLabel(state)}</span>
+      {proof && state !== 'checking' && <button type="button" onClick={() => void verify()}>검증</button>}
     </div>
   );
 };
@@ -1620,6 +1674,10 @@ export const Chat: React.FC<{
                           {' '}({formatBytes(m.uploadProgress.loaded)} / {formatBytes(m.uploadProgress.total)})
                         </span>
                       </span>
+                    ) : m.streaming && m.phases?.length && !m.tools?.length ? (
+                      // 답이 시작되기 전 서버의 준비 단계(Sandbox·워크스페이스·패키지·기억). 0.7초 넘게 걸린
+                      // 단계가 없으면 커서 그대로다(빠른 턴은 예전과 같다).
+                      <TurnPhaseCard rows={m.phases} fallback={<span className="cursor" />} />
                     ) : (
                       m.streaming && <span className="cursor" />
                     )
@@ -1708,6 +1766,10 @@ export const Chat: React.FC<{
                     켜고 끄는 것은 서버 설정이고 문구는 정본(@dex/protocol)이 갖는다. */}
                 {disclaimer && m.role === 'assistant' && !m.streaming && !!m.text && !m.error && (
                   <p className="ai-disclaimer">{CHAT_AI_DISCLAIMER_TEXT}</p>
+                )}
+                {m.role === 'assistant' && !m.streaming && !m.error &&
+                  (!!(answerFiles?.text ?? m.text) || m.generatedContent?.some((item) => item.content_type?.toLowerCase() === 'text/plain')) && (
+                  <GeneratedContentStatus message={m} text={answerFiles?.text ?? m.text} />
                 )}
                 {/* 푸터 한 줄 — 좌: 복사/공유(호버에만), 우: 전체 로그(상시).
                     한 row 로 붙어야 답변 하단이 두 줄로 널뛰지 않는다. */}

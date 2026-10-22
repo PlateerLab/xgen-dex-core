@@ -78,10 +78,36 @@ jobs:
       - id: tag
         run: echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+  native-prebuild:
+    name: 네이티브 파일 경계 (${{ matrix.triple }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, triple: linux-x64 }
+          - { os: windows-latest, triple: win32-x64 }
+          - { os: macos-latest, triple: darwin-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci --no-audit --no-fund
+      - run: npm --workspace @dex/native-fs run build
+      - run: npm --workspace @dex/native-fs test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-${{ matrix.triple }}
+          path: packages/native-fs/prebuilds/${{ matrix.triple }}/native-fs.node
+          if-no-files-found: error
+
   # ── 데스크톱 설치본 (OS 별로 그 OS 에서 빌드해야 한다) ──
   desktop:
     name: 데스크톱 (${{ matrix.os }})
-    needs: prepare
+    needs: [prepare, native-prebuild]
     strategy:
       fail-fast: false
       matrix:
@@ -90,6 +116,7 @@ jobs:
           # 올려야 자동 업데이트가 새 버전을 찾는다.
           - os: ubuntu-latest
             flag: --linux
+            triple: linux-x64
             exe: apps/desktop/release/linux-unpacked/xgen-dex
             glob: |
               apps/desktop/release/*.AppImage
@@ -97,6 +124,7 @@ jobs:
               apps/desktop/release/latest-linux.yml
           - os: windows-latest
             flag: --win
+            triple: win32-x64
             exe: apps/desktop/release/win-unpacked/XGen-Dex.exe
             glob: |
               apps/desktop/release/*.exe
@@ -104,6 +132,7 @@ jobs:
               apps/desktop/release/latest.yml
           - os: macos-latest
             flag: --mac
+            triple: darwin-arm64
             exe: apps/desktop/release/mac-arm64/XGen-Dex.app/Contents/MacOS/XGen-Dex
             glob: |
               apps/desktop/release/*.dmg
@@ -123,6 +152,10 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-fs-${{ matrix.triple }}
+          path: packages/native-fs/prebuilds/${{ matrix.triple }}
       - name: 빌드
         run: npm --prefix apps/desktop run build
 
@@ -163,7 +196,7 @@ jobs:
 
   packages:
     name: CLI + 확장
-    needs: prepare
+    needs: [prepare, native-prebuild]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -173,9 +206,17 @@ jobs:
         with: { node-version: 20 }
       - run: npm ci --no-audit --no-fund
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-fs-*
+          path: packages/native-fs/downloaded
+      - name: 모든 지원 플랫폼 바이너리 조립
+        run: node scripts/ci/assemble-native-prebuilds.mjs
+
       # `npm --prefix` 는 pack 의 --pack-destination 과 같이 쓰면 경로를 못 찾는다
       # (prefix 는 설치 루트를 바꾸지 cwd 를 바꾸지 않는다). 디렉터리에서 직접 돈다.
       - name: CLI tarball
+        env: { DEX_NATIVE_RELEASE: '1' }
         run: |
           mkdir -p "$GITHUB_WORKSPACE/dist-release"
           npm --prefix apps/cli run build
@@ -394,9 +435,16 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci --no-audit --no-fund
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-fs-*
+          path: packages/native-fs/downloaded
+      - run: node scripts/ci/assemble-native-prebuilds.mjs
+
       # 배포물은 번들이라 소스가 필요 없다 — 하지만 **여기서 다시 만든다.**
       # 다른 잡이 만든 것을 받아 쓰면 그 사이에 무엇이 바뀌었는지 보장할 수 없다.
       - name: 빌드
+        env: { DEX_NATIVE_RELEASE: '1' }
         run: npm --prefix apps/cli run build
 
       - name: 이미 올라간 버전인지 확인
@@ -445,6 +493,7 @@ jobs:
             exit 1
           fi
           npm i -g "${{ steps.check.outputs.name }}@${{ steps.check.outputs.version }}"
+          dexon --version
           dex --version
           xgen-dex --version
 
@@ -603,11 +652,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
-          name: XGEN Dex v${{ steps.ver.outputs.version }}
+          name: XGEN DexOn v${{ steps.ver.outputs.version }}
           files: artifacts/**/*
           fail_on_unmatched_files: true
           body: |
-            **XGEN Dex** — 데스크톱 · CLI · VSCode 확장. 셋 다 같은 코어에서 나왔고,
+            **XGEN DexOn** (예전 이름 XGEN Dex) — 데스크톱 · CLI · VSCode 확장. 셋 다 같은 코어에서 나왔고,
             이 태그는 **함께 검증된 조합**입니다.
 
             ### 데스크톱
@@ -639,8 +688,8 @@ jobs:
 
             ```
             npm i -g xgen-dex-cli
-            dex            # 대화형 터미널 UI
-            dex --help
+            dexon          # 대화형 터미널 UI (dex · xgen-dex 도 그대로 됩니다)
+            dexon --help
             ```
 
             npm 을 쓸 수 없는 환경이면 아래 `xgen-dex-cli-*.tgz` 를 받아

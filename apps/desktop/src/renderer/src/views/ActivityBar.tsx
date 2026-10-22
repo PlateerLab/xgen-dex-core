@@ -132,7 +132,7 @@ export const ActivityBar: React.FC<{
 
   return (
     <nav className="activity-bar">
-      <div className="ab-logo" title="XGen Dex">
+      <div className="ab-logo" title="XGEN DexOn">
         <XgenMark height={24} variant="color" />
       </div>
 

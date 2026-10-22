@@ -18,6 +18,8 @@ test('chat webview script is valid, IME-aware, and avoids HTML injection', async
   assert.match(script, /showSettings/);
   assert.match(script, /useProfile/);
   assert.match(script, /configureLocalTools/);
+  assert.match(script, /post\('verifyProvenance', \{ messageId: item\.id \}\)/);
+  assert.doesNotMatch(script, /verifyProvenance[^\n]*(proof|sha256)/, 'webview는 proof나 선언 hash를 검증 요청으로 보내지 않는다');
   // 작업 영역 폴더가 대화의 작업 공간 — 옛 로컬 컨트롤 입력(작업 폴더·허용 범위)은 없다.
   assert.match(script, /localToolsFolders/);
   assert.match(script, /workspaceFolders/);

@@ -1,12 +1,12 @@
 {
   "name": "xgen-dex-mobile",
   "private": true,
-  "version": "1.98.0",
-  "description": "XGEN Dex Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS). 서버 세션 채팅 + 모바일 도구.",
+  "version": "1.100.0",
+  "description": "XGEN DexOn Mobile — React Native(Expo) 크로스플랫폼 (Android/iOS). 서버 세션 채팅 + 모바일 도구.",
   "main": "index.js",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/mobile-folders.test.ts test/errors.test.ts test/chat-messages.test.ts test/attachments-apps.test.ts test/viewer-detail.test.ts test/conversations.test.ts",
+    "test": "tsx --test test/auth-lifecycle.test.ts test/chat-ws.test.ts test/tool-bridge.test.ts test/mobile-tools.test.ts test/mobile-folders.test.ts test/bounded-download.test.ts test/errors.test.ts test/chat-messages.test.ts test/attachments-apps.test.ts test/viewer-detail.test.ts test/conversations.test.ts",
     "start": "expo start",
     "prebuild": "expo prebuild",
     "apk": "cd android && ./gradlew assembleRelease",

@@ -28,6 +28,13 @@ import {
   type TimelineRow,
   type ToolEvent,
   type ToolIcon,
+  type TurnPhaseRow,
+  AWAITING_ANSWER_LABEL,
+  PHASE_ICON,
+  awaitingAnswer,
+  phaseLabel,
+  phasesSettledAt,
+  visiblePhaseRows,
 } from '@dex/protocol';
 import { PALETTES, alpha, useP, type Palette } from '../theme';
 import { AssistantMarkdown } from './markdown';
@@ -333,6 +340,105 @@ const ToolRowView: React.FC<{
         {status}
       </Pressable>
       {shown ? <ResultBlock view={shown} /> : null}
+    </View>
+  );
+};
+
+/** 준비 줄 하나. 도구 줄(ToolRowView)과 같은 모양이다. 누를 것이 없다. */
+const PhaseLineView: React.FC<{
+  icon: ToolIcon;
+  label: string;
+  state: 'run' | 'ok' | 'err';
+  since: number;
+  now: number;
+  first: boolean;
+  durationMs?: number;
+}> = ({ icon, label, state, since, now, first, durationMs }) => {
+  const p = useP();
+  const color = kindColor(icon, p);
+  const failed = state === 'err';
+  const pill = (text: string, fg: string, bg: string) => (
+    <View style={{ borderRadius: 999, paddingHorizontal: 8, backgroundColor: bg }}>
+      <Text style={{ color: fg, fontSize: 11, lineHeight: 18, fontVariant: ['tabular-nums'] }}>{text}</Text>
+    </View>
+  );
+  const status =
+    state === 'run' ? (
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+        <ActivityIndicator size="small" color={p.primary} style={{ transform: [{ scale: 0.7 }] }} />
+        <Text style={{ color: p.primary, fontSize: 12, fontWeight: '600', fontVariant: ['tabular-nums'] }}>
+          {fmtSec(now - since)}
+        </Text>
+      </View>
+    ) : failed ? (
+      pill(`실패${durationMs !== undefined ? ` · ${fmtDuration(durationMs)}` : ''}`, p.danger, alpha(p.danger, 12))
+    ) : durationMs !== undefined ? (
+      durationMs >= SLOW_TOOL_MS
+        ? pill(fmtDuration(durationMs), '#B45309', alpha('#F59E0B', 16))
+        : pill(fmtDuration(durationMs), p.muted, p.panel2)
+    ) : null;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        minHeight: 42,
+        borderTopWidth: first ? 0 : 1,
+        borderTopColor: alpha(p.border, 70),
+        backgroundColor: state === 'run' ? alpha(p.primary, 8) : 'transparent',
+      }}
+    >
+      <View
+        style={{ width: 26, height: 26, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: color.bg }}
+      >
+        <Ionicons name={ICONS[icon]} size={14} color={color.fg} />
+      </View>
+      <Text numberOfLines={2} style={{ flex: 1, fontSize: 13.5, color: failed ? p.danger : p.text }}>
+        {label}
+      </Text>
+      {status}
+    </View>
+  );
+};
+
+/**
+ * 턴 준비 카드. 답의 첫 글자 전에 서버가 하는 준비(Sandbox·워크스페이스·패키지·기억)를 도구 줄과
+ * 같은 모양으로 보인다(웹·데스크톱과 같은 규칙·같은 문구, @dex/protocol turn-phases). 캐럿 자리에 선다.
+ * 0.7초 넘게 걸린 단계가 없으면 `fallback`(캐럿)을 그대로 그린다.
+ */
+export const TurnPhaseCard: React.FC<{ rows: readonly TurnPhaseRow[]; fallback?: React.ReactNode }> = ({
+  rows,
+  fallback = null,
+}) => {
+  const p = useP();
+  const now = useNow(true);
+  const visible = visiblePhaseRows(rows, now);
+  if (visible.length === 0) return <>{fallback}</>;
+  const waiting = awaitingAnswer(rows, now);
+  return (
+    <View
+      accessibilityRole="summary"
+      accessibilityLiveRegion="polite"
+      style={{ borderWidth: 1, borderColor: p.border, borderRadius: 12, backgroundColor: p.panel, overflow: 'hidden' }}
+    >
+      {visible.map((r, i) => (
+        <PhaseLineView
+          key={r.phase}
+          icon={PHASE_ICON[r.phase]}
+          label={phaseLabel(r)}
+          state={r.state === 'retry' ? 'run' : r.state}
+          since={r.startedAt}
+          now={now}
+          first={i === 0}
+          durationMs={r.durationMs}
+        />
+      ))}
+      {waiting ? (
+        <PhaseLineView icon="list" label={AWAITING_ANSWER_LABEL} state="run" since={phasesSettledAt(rows)} now={now} first={false} />
+      ) : null}
     </View>
   );
 };

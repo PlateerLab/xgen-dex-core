@@ -1,5 +1,7 @@
-import { INTERRUPTED_NOTE, describeStreamError, formatErrorLine } from '@dex/protocol';
+import { AWAITING_ANSWER_LABEL, INTERRUPTED_NOTE, applyTurnPhase, describeStreamError, formatErrorLine, phaseLabel, type TurnPhaseRow } from '@dex/protocol';
+import { mergeGeneratedContentProvenance, type GeneratedContentProvenance, type GeneratedContentVerificationStatus } from '@dex/protocol';
 import type { ChatEvent, HistoryTurn, ToolEvent } from '@dex/engine';
+import type { ProvenanceCheckState } from './provenance';
 
 export type ChatMessageRole = 'user' | 'assistant' | 'activity' | 'system';
 
@@ -8,6 +10,10 @@ export interface ChatMessage {
   role: ChatMessageRole;
   text: string;
   activityKey?: string;
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
+  provenanceFinal?: boolean;
+  provenanceCheck?: ProvenanceCheckState;
 }
 
 export interface ChatState {
@@ -24,6 +30,11 @@ export interface ChatState {
    */
   remote: boolean;
   status?: string;
+  /**
+   * 답의 첫 글자 전에 서버가 하는 준비 단계(turn_phase: Sandbox·워크스페이스·패키지·기억). 상태 줄에
+   * 지금 무엇을 기다리는지 보이고, 답이나 도구가 오면 지운다(@dex/protocol turn-phases, 웹·앱과 같은 문구).
+   */
+  phases?: TurnPhaseRow[];
 }
 
 export type ChatAction =
@@ -35,12 +46,17 @@ export type ChatAction =
   | { type: 'turn_completed' }
   | { type: 'turn_cancelled' }
   | { type: 'turn_failed'; message: string }
+  | { type: 'verification_started'; messageId: string; expectedText: string }
+  | { type: 'verification_finished'; messageId: string; expectedText: string; status: GeneratedContentVerificationStatus }
+  | { type: 'verification_failed'; messageId: string; expectedText: string }
   | {
       /** 대화 소켓 push — 서버가 주입한 완결 턴(트리거 반응). */
       type: 'server_turn';
       ioId: number;
       input: string;
       output: string;
+      generatedContent?: GeneratedContentProvenance[];
+      malformedGeneratedContent?: boolean;
     }
   | {
       /**
@@ -51,6 +67,8 @@ export type ChatAction =
       interactionId: string;
       running: boolean;
       text?: string;
+      generatedContent?: GeneratedContentProvenance[];
+      malformedGeneratedContent?: boolean;
     };
 
 /**
@@ -77,7 +95,23 @@ function appendAssistant(messages: ChatMessage[], content: string): ChatMessage[
     return [...messages, { id: `assistant-${messages.length}`, role: 'assistant', text: content }];
   }
   const next = [...messages];
-  next[index] = { ...next[index], text: next[index].text + content };
+  next[index] = {
+    ...next[index],
+    text: next[index].text + content,
+    provenanceFinal: false,
+    provenanceCheck: undefined,
+  };
+  return next;
+}
+
+function updateLastAssistant(
+  messages: ChatMessage[],
+  update: (message: ChatMessage) => ChatMessage,
+): ChatMessage[] {
+  const index = lastMessageIndex(messages, (message) => message.role === 'assistant');
+  if (index < 0) return messages;
+  const next = [...messages];
+  next[index] = update(next[index]);
   return next;
 }
 
@@ -99,16 +133,44 @@ function upsertActivity(messages: ChatMessage[], key: string, text: string): Cha
   return next;
 }
 
+/** 준비 단계 상태 줄. 하는 중·다시 시도·실패한 마지막 단계, 다 끝났으면 답변을 기다린다는 줄. */
+function phaseStatusLine(rows: readonly TurnPhaseRow[]): string {
+  // 하는 중·다시 시도·실패한 단계가 먼저, 없으면 첫 실행 알림(새 에이전트), 그것도 없으면 답변을 기다린다.
+  const live = [...rows].reverse().find((r) => r.phase !== 'assemble' && r.state !== 'ok');
+  if (live) return phaseLabel(live);
+  const assemble = rows.find((r) => r.phase === 'assemble' && r.state === 'run');
+  return assemble ? phaseLabel(assemble) : AWAITING_ANSWER_LABEL;
+}
+
+/** 답이 시작됐다. 준비 단계 줄을 걷는다. */
+function clearPhases(state: ChatState): ChatState {
+  return state.phases ? { ...state, phases: undefined, status: undefined } : state;
+}
+
 function eventState(state: ChatState, event: ChatEvent): ChatState {
-  if (event.kind === 'text') return { ...state, messages: appendAssistant(state.messages, event.content) };
+  if (event.kind === 'phase') {
+    const phases = applyTurnPhase(state.phases ?? [], event, Date.now());
+    return { ...state, phases, status: phaseStatusLine(phases) };
+  }
+  if (event.kind === 'text') return { ...clearPhases(state), messages: appendAssistant(state.messages, event.content) };
   if (event.kind === 'summary') {
     const assistantIndex = lastMessageIndex(state.messages, (message) => message.role === 'assistant');
     const assistant = assistantIndex >= 0 ? state.messages[assistantIndex] : undefined;
     return assistant?.text ? state : { ...state, messages: appendAssistant(state.messages, event.text) };
   }
+  if (event.kind === 'generated_content') {
+    return {
+      ...state,
+      messages: updateLastAssistant(state.messages, (message) => ({
+        ...message,
+        generatedContent: mergeGeneratedContentProvenance(message.generatedContent, event.data),
+        provenanceCheck: undefined,
+      })),
+    };
+  }
   if (event.kind === 'tool') {
     const key = event.event.runId ?? event.event.toolName ?? 'tool';
-    return { ...state, messages: upsertActivity(state.messages, key, toolActivityText(event.event)) };
+    return { ...clearPhases(state), messages: upsertActivity(state.messages, key, toolActivityText(event.event)) };
   }
   if (event.kind === 'node_status') {
     return { ...state, status: `${event.event.nodeId} · ${event.event.status}` };
@@ -152,7 +214,7 @@ function eventState(state: ChatState, event: ChatEvent): ChatState {
       status: '연결이 끊겼습니다 — 서버에서 계속 진행 중',
     };
   }
-  if (event.kind === 'end') return { ...state, running: false, remote: false, status: undefined };
+  if (event.kind === 'end') return { ...state, running: false, remote: false, status: undefined, phases: undefined };
   return state;
 }
 
@@ -174,6 +236,12 @@ function historyMessages(turns: HistoryTurn[]): ChatMessage[] {
       { id: `history-user-${index}`, role: 'user', text: turn.input },
       { id: `history-assistant-${index}`, role: 'assistant', text: turn.output },
     ];
+    rows[1] = {
+      ...rows[1],
+      generatedContent: turn.generatedContent,
+      malformedGeneratedContent: turn.malformedGeneratedContent,
+      provenanceFinal: true,
+    };
     // 호출 하나에 한 줄 — 짝은 호출 id 로, id 가 없으면 아직 끝나지 않은 같은 이름의 호출로.
     const calls: Array<{ at: number; id?: string; name: string; done: boolean }> = [];
     for (const item of turn.process ?? []) {
@@ -236,7 +304,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'event_received':
       return eventState(state, action.event);
     case 'turn_completed':
-      return { ...state, running: false, remote: false, status: undefined };
+      return {
+        ...state,
+        running: false,
+        remote: false,
+        status: undefined,
+        messages: updateLastAssistant(state.messages, (message) => ({ ...message, provenanceFinal: true })),
+      };
     case 'turn_cancelled': {
       // 중단은 실패가 아니다 — 받다 만 글은 **덮지 않고**, 그 뒤에 사실을
       // 덧붙인다.
@@ -268,6 +342,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           { id: `failure-${state.messages.length}`, role: 'system', text: action.message },
         ],
       };
+    case 'verification_started':
+    case 'verification_failed':
+    case 'verification_finished':
+      return {
+        ...state,
+        messages: state.messages.map((message) => {
+          if (message.id !== action.messageId || message.text !== action.expectedText) return message;
+          return {
+            ...message,
+            provenanceCheck:
+              action.type === 'verification_started'
+                ? 'checking'
+                : action.type === 'verification_failed'
+                  ? 'failed'
+                  : action.status,
+          };
+        }),
+      };
     case 'remote_running': {
       if (state.interactionId !== action.interactionId) return state;
       // 이 CLI 가 스트림을 쥐고 있으면 그 턴은 '다른 곳' 이 아니다 — 토큰이
@@ -278,9 +370,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (action.running && action.text) {
         // 스냅샷은 매번 처음부터 오므로 **덮어쓴다**. 이어붙이면 같은 글이
         // 재연결 횟수만큼 쌓인다.
-        const msg = { id: REMOTE_PARTIAL_ID, role: 'assistant' as const, text: action.text };
+        const msg = {
+          id: REMOTE_PARTIAL_ID,
+          role: 'assistant' as const,
+          text: action.text,
+          generatedContent: action.generatedContent,
+          malformedGeneratedContent: action.malformedGeneratedContent,
+          provenanceFinal: false,
+        };
         if (idx >= 0) {
-          if (messages[idx].text === action.text) return { ...state, running: true, remote: true };
           messages[idx] = msg;
         } else messages.push(msg);
       } else if (!action.running && idx >= 0) {
@@ -305,7 +403,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: [
           ...state.messages,
           { id: `server-${action.ioId}`, role: 'user', text: action.input },
-          { id: `server-${action.ioId}-out`, role: 'assistant', text: action.output },
+          {
+            id: `server-${action.ioId}-out`, role: 'assistant', text: action.output,
+            generatedContent: action.generatedContent,
+            malformedGeneratedContent: action.malformedGeneratedContent,
+            provenanceFinal: true,
+          },
         ],
       };
     }

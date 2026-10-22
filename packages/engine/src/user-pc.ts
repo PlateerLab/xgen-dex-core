@@ -9,9 +9,9 @@
  * 셸은 기기마다 bash 하나다 — 에이전트가 sandbox 에서 쓰던 셸 지식이 그대로 통하게.
  *
  *   macOS·Linux  bash(없으면 사용자 셸). 지금의 Shell 과 같은 가두기를 쓴다(macOS sandbox-exec,
- *                Linux bwrap 이 될 때) — 쓰기는 연결 폴더 안으로.
- *   Windows      Git Bash 가 있으면 그것. 없으면 내장 bash 해석기(just-bash)가 연결 폴더를
- *                `/<폴더 이름>` 으로 붙이고, 설치된 프로그램은 `powershell`·`cmd` 로 넘겨 실행한다.
+ *                Linux bwrap 이 될 때) — 쓰기는 연결 폴더 안으로. 지원 probe 실패 시 실행하지 않는다.
+ *   Windows      native OS 격리 backend가 없어 명시적 unavailable을 반환한다.
+ *                Git Bash·내장 해석기로 host program을 대신 실행하지 않는다.
  *
  * 어떤 셸인지는 카탈로그 항목의 `meta`(shell·shell_note)로 서버에 알린다 — 서버가 턴 안내에 적는다.
  *
@@ -36,12 +36,13 @@ import {
   type UserPcOutcome,
 } from '@dex/protocol/user-pc-shell';
 import type { McpToolAnnotations } from './mcp-manager';
-import { augmentedPath, buildChildEnv, commonBinDirs } from './exec-resolve';
+import { buildChildEnv, commonBinDirs } from './exec-resolve';
 import {
   gitIdentityEnv,
   prepareWorkspaceShell,
   userToolchains,
   workspaceShellSupported,
+  requireWorkspaceShellSupport,
 } from './workspace-shell';
 
 // 도구 이름·스키마·결과 모양은 휴대폰·브라우저와 같은 약속이다(@dex/protocol/user-pc-shell).
@@ -109,15 +110,13 @@ export function detectUserPcShell(
         kind: 'git-bash',
         file: gitBash,
         label: 'Git Bash',
-        note: 'Windows paths appear as /c/Users/...; programs installed on the PC run too',
+        note: 'Native command execution is unavailable: an OS filesystem confinement backend is required; Git Bash is not a confinement backend. Use the scoped file tools.',
       };
     }
     return {
       kind: 'builtin',
       label: 'bash (built in: file and text commands)',
-      note:
-        'connected folders appear as /<folder name>; programs installed on the PC are not on this ' +
-        'shell, run them with powershell -NoProfile -Command "..." or cmd /c "..."',
+      note: 'Native command execution is unavailable: an OS filesystem confinement backend is required; the builtin interpreter cannot replace it. Use the scoped file tools.',
     };
   }
   const bash = ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash'].find((p) => exists(p));
@@ -127,7 +126,9 @@ export function detectUserPcShell(
     kind: 'posix',
     file,
     label: basename(file),
-    note: confinedMac ? 'commands can write only inside the connected folders' : '',
+    note: confinedMac
+      ? 'commands can write only inside the connected folders after the OS confinement probe succeeds'
+      : 'commands require a successful OS filesystem confinement probe; unavailable otherwise',
   };
 }
 
@@ -324,20 +325,12 @@ async function posixLaunch(shell: UserPcShell, command: string, cwd: string, roo
     );
     return prepareWorkspaceShell(file, args, env, cwd, real, toolchains.mounts);
   }
-  return { file, args, env: buildChildEnv(await augmentedPath()), cleanup: async () => {} };
+  throw new Error('[WORKSPACE_SHELL_UNAVAILABLE] OS filesystem confinement is unavailable; the command was not started.');
 }
 
-async function gitBashLaunch(shell: UserPcShell, command: string): Promise<Launch> {
-  const env = { ...buildChildEnv(await augmentedPath()), CHERE_INVOKING: '1' };
-  return { file: shell.file ?? 'bash.exe', args: ['-lc', command], env, cleanup: async () => {} };
-}
-
-/** 프로세스로 도는 셸(posix·Git Bash) — 작업 하나를 띄우고 그 작업을 돌려준다. */
+/** OS-confined process runner; no native host fallback. */
 async function startProcessJob(shell: UserPcShell, req: UserPcRunRequest, maxRuntimeMs: number): Promise<Job> {
-  const launch =
-    shell.kind === 'git-bash'
-      ? await gitBashLaunch(shell, req.command)
-      : await posixLaunch(shell, req.command, req.cwd, req.roots);
+  const launch = await posixLaunch(shell, req.command, req.cwd, req.roots);
   const group = !IS_WIN;
   const job: Job = {
     id: newJobId(),
@@ -409,55 +402,6 @@ async function startProcessJob(shell: UserPcShell, req: UserPcRunRequest, maxRun
   return job;
 }
 
-/** 내장 bash 해석기(Windows, Git Bash 없음) — 연결 폴더를 `/<이름>` 으로 붙인다. */
-async function startBuiltinJob(shell: UserPcShell, req: UserPcRunRequest, maxRuntimeMs: number): Promise<Job> {
-  const { startBuiltinBash } = await import('./user-pc-builtin');
-  const abort = new AbortController();
-  const job: Job = {
-    id: newJobId(),
-    key: req.key,
-    roots: [...req.roots],
-    cwd: req.cwd,
-    shell: shell.label,
-    out: new Capture(),
-    err: new Capture(),
-    state: 'running',
-    code: null,
-    startedAt: Date.now(),
-    stop: () => {
-      if (job.state !== 'running') return;
-      job.state = 'killed';
-      job.endedAt = Date.now();
-      abort.abort();
-    },
-    done: Promise.resolve(),
-  };
-  job.done = startBuiltinBash({
-    command: req.command,
-    cwd: req.cwd,
-    roots: req.roots,
-    names: req.names,
-    maxRuntimeMs,
-    signal: abort.signal,
-  }).then(
-    (r) => {
-      job.out.push(r.stdout);
-      job.err.push(r.stderr);
-      job.cwd = r.cwd || job.cwd;
-      job.code = r.exitCode;
-      if (job.state === 'running') job.state = 'exited';
-      job.endedAt ??= Date.now();
-    },
-    (e: unknown) => {
-      job.err.push(String((e as Error)?.message ?? e));
-      job.code = 1;
-      if (job.state === 'running') job.state = 'error';
-      job.endedAt ??= Date.now();
-    },
-  );
-  return job;
-}
-
 function waitFor(job: Job, ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (job.state !== 'running') return resolve();
@@ -475,6 +419,12 @@ function waitFor(job: Job, ms: number, signal?: AbortSignal): Promise<void> {
 
 /** 명령 하나를 실행한다 — `waitMs` 안에 끝나면 결과, 아니면 작업으로 넘긴다. */
 export async function runUserPcCommand(req: UserPcRunRequest, shell: UserPcShell = userPcShell()): Promise<UserPcOutcome> {
+  // The builtin interpreter can delegate to native programs, and Git Bash is a
+  // host process. Neither is an OS confinement backend for Windows.
+  if (shell.kind !== 'posix') {
+    throw new Error('[WORKSPACE_SHELL_UNAVAILABLE] OS filesystem confinement is unavailable; the command was not started.');
+  }
+  await requireWorkspaceShellSupport();
   const running = [...jobs.values()].filter((j) => j.key === req.key && j.state === 'running').length;
   if (running >= MAX_RUNNING_JOBS) {
     throw new Error(`${running} commands are still running in this conversation; stop some with job stop first.`);
@@ -482,8 +432,7 @@ export async function runUserPcCommand(req: UserPcRunRequest, shell: UserPcShell
   const waitMs = clampMs(req.waitMs, USER_PC_DEFAULT_WAIT_MS, 1_000, USER_PC_MAX_WAIT_MS);
   const maxRuntimeMs = clampMs(req.maxRuntimeMs, USER_PC_DEFAULT_MAX_RUNTIME_MS, waitMs, USER_PC_MAX_RUNTIME_MS);
   if (req.signal?.aborted) throw new Error('cancelled');
-  const job =
-    shell.kind === 'builtin' ? await startBuiltinJob(shell, req, maxRuntimeMs) : await startProcessJob(shell, req, maxRuntimeMs);
+  const job = await startProcessJob(shell, req, maxRuntimeMs);
   jobs.set(job.id, job);
   evictFinished();
   const onAbort = () => job.stop();

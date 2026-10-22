@@ -81,16 +81,16 @@ function displayText(
   profile: NotificationProfile,
 ): { title: string; body: string } {
   if (profile.privacy === 'hidden') {
-    return { title: 'XGen Dex', body: '새 알림이 있습니다.' };
+    return { title: 'XGEN DexOn', body: '새 알림이 있습니다.' };
   }
   if (profile.privacy === 'sender-only') {
     return {
-      title: event.senderName || event.workflowName || event.title || 'XGen Dex',
+      title: event.senderName || event.workflowName || event.title || 'XGEN DexOn',
       body: '새 알림이 있습니다.',
     };
   }
   return {
-    title: platformText(String(event.title || 'XGen Dex'), 100, 80),
+    title: platformText(String(event.title || 'XGEN DexOn'), 100, 80),
     // macOS 는 긴 본문을 빨리 자르므로 세 플랫폼 공통으로 짧게 유지한다.
     body: platformText(String(event.body || '새 알림이 있습니다.'), 220, 160),
   };
@@ -242,7 +242,7 @@ export class NotificationCenter {
         {
           id: `notification-test-${Date.now()}`,
           type: 'agent.requested',
-          title: 'XGen Dex 테스트 알림',
+          title: 'XGEN DexOn 테스트 알림',
           body: '알림이 정상적으로 표시되고 있습니다.',
           occurredAt: new Date().toISOString(),
           target: { kind: 'settings', section: 'notifications' },

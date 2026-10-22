@@ -1,11 +1,11 @@
-# Dex CLI
+# DexOn CLI
 
-XGEN Dex의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
+XGEN DexOn의 headless CLI이자 VS Code 확장이 사용할 로컬 엔진입니다. 인증·Agent·채팅·대화 기록에
 필요한 transport를 자체 포함하며 Electron이나 React 앱 없이 독립적으로 개발·빌드·실행됩니다.
 
 현재 구현된 범위:
 
-- `dex` 또는 `dex ui`로 실행하는 대화형 터미널 UI
+- `dexon` 또는 `dexon ui`로 실행하는 대화형 터미널 UI
 - 최초 서버 설정, 로그인, profile 전환을 포함한 온보딩
 - 대화 목록 사이드바(마지막으로 말한 순서, 이름 바꾸기·지우기), 시작 화면, History, 스트리밍 채팅과 도구 활동 표시
 - 명령 팔레트와 채팅 취소
@@ -28,24 +28,24 @@ npm run verify
 npm link
 ```
 
-`npm link` 이후 `dex`와 `xgen-dex` 명령을 사용할 수 있습니다. link 없이 실행하려면
+`npm link` 이후 `dexon` · `dex` · `xgen-dex` 명령을 사용할 수 있습니다(셋 다 같은 명령). link 없이 실행하려면
 `node dist/cli.js`를 사용합니다.
 
 ## 시작하기
 
 ```bash
-dex profile set corp --server https://xgen.example.com
-dex login --email me@corp.com
-dex status
-dex agents list
+dexon profile set corp --server https://xgen.example.com
+dexon login --email me@corp.com
+dexon status
+dexon agents list
 ```
 
 대화형 터미널에서는 인자 없이 실행하면 TUI가 열립니다.
 
 ```bash
-dex
+dexon
 # 또는
-dex ui
+dexon ui
 ```
 
 왼쪽은 대화 목록입니다. 웹과 같이 대화가 마지막으로 말한 순서로 한 줄씩 놓이고, 한 줄은
@@ -79,24 +79,24 @@ stdin/stdout이 TTY가 아니거나 `TERM=dumb`, CI 환경이면 자동으로 TU
 stdin으로 받습니다.
 
 ```bash
-printf '%s' "$XGEN_PASSWORD" | dex login --email me@corp.com --password-stdin
+printf '%s' "$XGEN_PASSWORD" | dexon login --email me@corp.com --password-stdin
 ```
 
 채팅 메시지도 프로세스 목록이나 shell history에 노출되지 않도록 stdin으로 보낼 수 있습니다.
 
 ```bash
-echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc
-echo '이 프로젝트를 설명해줘' | dex chat --agent wf_abc --jsonl
+echo '이 프로젝트를 설명해줘' | dexon chat --agent wf_abc
+echo '이 프로젝트를 설명해줘' | dexon chat --agent wf_abc --jsonl
 ```
 
 대화 목록은 TUI 와 같은 순서(마지막으로 말한 순서)로 제목·에이전트·꼬리표를 보여 줍니다.
 `--json`에는 `title`, `customTitle`, `tag`, `agentDeleted` 등이 함께 실립니다.
 
 ```bash
-dex history list
-dex history rename --workflow wf_abc --interaction <id> --title '분기 보고'
-dex history rename --workflow wf_abc --interaction <id> --title ''   # 첫 메시지 제목으로
-dex history delete --workflow wf_abc --interaction <id>
+dexon history list
+dexon history rename --workflow wf_abc --interaction <id> --title '분기 보고'
+dexon history rename --workflow wf_abc --interaction <id> --title ''   # 첫 메시지 제목으로
+dexon history delete --workflow wf_abc --interaction <id>
 ```
 
 ## 이 PC의 파일과 터미널
@@ -105,11 +105,11 @@ dex history delete --workflow wf_abc --interaction <id>
 읽고 쓰고 명령을 실행합니다. 켜고 끄는 설정은 없습니다 — 폴더가 곧 범위입니다.
 
 ```bash
-cd ~/work/my-repo && dex chat --agent wf_abc     # my-repo 가 작업 공간
-dex chat --agent wf_abc --folder ~/work/a,~/work/b   # 폴더를 직접 고른다
-dex chat --agent wf_abc --no-folder              # 이 PC의 파일·터미널 없이
-dex tools list
-dex tools status
+cd ~/work/my-repo && dexon chat --agent wf_abc     # my-repo 가 작업 공간
+dexon chat --agent wf_abc --folder ~/work/a,~/work/b   # 폴더를 직접 고른다
+dexon chat --agent wf_abc --no-folder              # 이 PC의 파일·터미널 없이
+dexon tools list
+dexon tools status
 ```
 
 홈이나 드라이브 루트에서 시작하면 폴더를 연결하지 않습니다(홈 전체를 여는 것은 고른
@@ -129,18 +129,18 @@ Linux)에서는 사용자 권한으로 돌되 작업 폴더를 연결 폴더 안
 대화 없이 도구를 직접 확인하려면 `--folder`(기본은 현재 폴더)를 붙여 호출합니다.
 
 ```bash
-dex tools run ListDir --args '{"path":"."}'
-dex tools run Shell --args '{"command":"npm test","timeout_ms":120000}'
+dexon tools run ListDir --args '{"path":"."}'
+dexon tools run Shell --args '{"command":"npm test","timeout_ms":120000}'
 ```
 
 되돌리기 어려운 명령(`rm -rf` 등)은 실행 전에 묻습니다. 물을 사람이 없는 파이프·스크립트
-실행에서는 거부되니, 꼭 필요할 때만 `dex tools configure --allow-dangerous`로 미리
+실행에서는 거부되니, 꼭 필요할 때만 `dexon tools configure --allow-dangerous`로 미리
 승인하세요.
 
 대화를 이어가려면 같은 interaction ID를 전달합니다.
 
 ```bash
-echo '계속 설명해줘' | dex chat \
+echo '계속 설명해줘' | dexon chat \
   --agent wf_abc \
   --interaction 18a4be66-18bd-4e3b-b1d8-6b402bc79242
 ```
@@ -148,7 +148,7 @@ echo '계속 설명해줘' | dex chat \
 ## VS Code engine mode
 
 ```bash
-dex serve --stdio
+dexon serve --stdio
 ```
 
 이 모드에서 stdout은 protocol frame 전용입니다. 로그는 stderr로만 출력됩니다. 각 frame은
@@ -166,7 +166,7 @@ dex serve --stdio
 
 ## VS Code 확장
 
-`vscode-extension/`에 `dex serve --stdio`만을 엔진으로 사용하는 VS Code 확장이 포함되어
+`vscode-extension/`에 `dexon serve --stdio`만을 엔진으로 사용하는 VS Code 확장이 포함되어
 있습니다. 단일 Workspace Webview에서 Agent 선택·변경, 스트리밍 채팅, 취소, 대화 기록,
 회사/환경 profile 및 로그인 설정 UI를 제공합니다.
 

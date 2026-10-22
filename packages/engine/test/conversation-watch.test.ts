@@ -9,11 +9,27 @@ import { test } from 'node:test';
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws';
 import {
   ConversationWatchHub,
+  sanitizeConversationLiveTurn,
   DEX_ORIGIN_ID,
   WATCH_ORIGIN_ID,
   type ConversationTurn,
   type PeerTurnEvent,
 } from '../src/conversation-watch';
+
+test('재연결 진행분은 generated_content를 본문과 분리해 보존한다', () => {
+  const live = sanitizeConversationLiveTurn({
+    text: '답변',
+    events: [{
+      event: 'generated_content',
+      data: {
+        indication: 'ai_generated', proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain',
+        byte_length: 4, source_id: '123e4567-e89b-42d3-a456-426614174000',
+      },
+    }],
+  });
+  assert.equal(live?.text, '답변');
+  assert.equal(live?.generatedContent?.[0].proof, 'a.b.c');
+});
 
 function until(check: () => boolean, ms = 4000): Promise<void> {
   const started = Date.now();

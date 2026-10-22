@@ -1,8 +1,8 @@
-# Dex terminal UI
+# DexOn terminal UI
 
 ## 실행 조건
 
-`dex`와 `dex ui`는 stdin/stdout이 모두 TTY이고 `TERM`이 `dumb`가 아니며 CI가 아닐 때 TUI를
+`dexon`과 `dexon ui`는 stdin/stdout이 모두 TTY이고 `TERM`이 `dumb`가 아니며 CI가 아닐 때 TUI를
 실행합니다. pipe, redirect, JSON 출력, `serve --stdio`는 기존 headless 경로를 사용합니다.
 
 ## 첫 실행

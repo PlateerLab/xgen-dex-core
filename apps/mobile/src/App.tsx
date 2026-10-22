@@ -20,6 +20,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StatusBar as RnStatusBar,
   StyleSheet,
@@ -56,13 +57,9 @@ import { ensureDeviceId, cachedDeviceId, deviceName, devicePlatform } from './li
 import { friendlyError } from './lib/errors';
 import { diagEntries, diagLog, onDiag } from './lib/diag';
 import {
-  buildClient,
-  clearSession,
+  createMobileAuth,
   loadCredentials,
-  login,
   newInteractionId,
-  restoreSession,
-  saveCredentials,
   wsBaseOf,
   type XgenMobileClient,
 } from './lib/xgen';
@@ -156,56 +153,30 @@ export default function App(): React.ReactElement {
   const [startPreset, setStartPreset] = useState<StartPreset>({ seq: 0 });
   const [chatWsState, setChatWsState] = useState<ChatWsState>('closed');
 
-  const handleLogout = useCallback(async () => {
-    bridgeRef.current?.stop();
-    await clearSession();
-    await saveCredentials(null);
-    // 계정을 나가면 되찾을 대화도 없다 — 다음 사람이 남의 대화로 들어가지 않는다.
-    await AsyncStorage.removeItem(LAST_CHAT_KEY).catch(() => undefined);
-    setClient(null);
-    setActiveAgent(null);
-    activeAgentRef.current = null;
-    setActiveInteraction('');
-    setActiveReadOnly(false);
-    setActiveTitle('');
-    setInitialMessage(null);
-    setSection('conversations');
-  }, []);
+  const authRef = useRef<ReturnType<typeof createMobileAuth> | null>(null);
+  if (!authRef.current) {
+    authRef.current = createMobileAuth((next) => {
+      setClient(next);
+      if (next) return;
+      bridgeRef.current?.stop();
+      bridgeRef.current = null;
+      stopAllUserPc();
+      setActiveAgent(null);
+      activeAgentRef.current = null;
+      setActiveInteraction('');
+      setActiveReadOnly(false);
+      setActiveTitle('');
+      setInitialMessage(null);
+      setSection('conversations');
+    });
+  }
+
+  const handleLogout = useCallback(() => authRef.current!.logout(), []);
 
   // 자동 로그인 체인 — 토큰 검증/회전 → 저장 자격증명 재로그인 → 로그인 화면.
   useEffect(() => {
-    void (async () => {
-      try {
-        const s = await restoreSession();
-        if (s) {
-          const c = buildClient(s, () => void handleLogout());
-          const alive = await c.api.restore(s.accessToken, s.refreshToken).catch((e) => {
-            diagLog(`토큰 복원 실패: ${e instanceof Error ? e.message : String(e)}`);
-            return false;
-          });
-          if (alive) {
-            diagLog('자동 로그인: 저장 토큰 유효');
-            setClient(c);
-            return;
-          }
-          await clearSession();
-        }
-        const cred = await loadCredentials();
-        if (cred) {
-          try {
-            const session = await login(cred.serverUrl, cred.email, cred.password);
-            diagLog('자동 로그인: 저장 자격증명으로 재로그인');
-            setClient(buildClient(session, () => void handleLogout()));
-            return;
-          } catch (e) {
-            diagLog(`자동 재로그인 실패: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-      } finally {
-        setBooting(false);
-      }
-    })();
-  }, [handleLogout]);
+    void authRef.current!.bootstrap().finally(() => setBooting(false));
+  }, []);
 
   // 도구 그룹 설정 영속.
   //
@@ -293,10 +264,19 @@ export default function App(): React.ReactElement {
           fs: folderFs,
           interactionId: context.interactionId,
           signal,
+          transferContext: {
+            workflowId: context.workflowId,
+            interactionId: context.interactionId,
+            deviceId: context.device_id,
+            requestId: context.request_id,
+            requestNonce: context.request_nonce,
+            connectionGeneration: context.connection_generation,
+            protocol: context.protocol,
+          },
           ...(context.remote ? { remoteFrom: context.originName ?? '' } : {}),
           // 복사 도구의 길 — 서버가 보증한 이 호출의 에이전트·대화로 묶는다.
           ...(context.workflowId && context.interactionId
-            ? { workspace: mobileWorkspaceTransfer(client, context.workflowId, context.interactionId) }
+            ? { workspace: mobileWorkspaceTransfer(client) }
             : {}),
         });
       },
@@ -323,11 +303,9 @@ export default function App(): React.ReactElement {
 
   const handleLogin = useCallback(
     async (server: string, email: string, password: string, remember: boolean) => {
-      const session = await login(server, email, password);
-      await saveCredentials(remember ? { serverUrl: session.serverUrl, email, password } : null);
-      setClient(buildClient(session, () => void handleLogout()));
+      await authRef.current!.login(server, email, password, remember);
     },
-    [handleLogout],
+    [],
   );
 
   const openChat = useCallback((agent: Agent, interactionId?: string, opts: OpenChatOptions = {}) => {
@@ -341,8 +319,7 @@ export default function App(): React.ReactElement {
     setSection('chat');
     setDrawer(false);
     // 앱을 껐다 켰을 때 되찾을 자리. 되찾는 데 필요한 것은 에이전트·대화 id 뿐이다(기록만 보는 대화인지, 제목은 덤).
-    void AsyncStorage.setItem(
-      LAST_CHAT_KEY,
+    void authRef.current!.saveLastChat(
       JSON.stringify({
         workflowId: agent.workflowId,
         workflowName: agent.workflowName,
@@ -350,7 +327,7 @@ export default function App(): React.ReactElement {
         ...(opts.readOnly ? { readOnly: true } : {}),
         ...(opts.title ? { title: opts.title } : {}),
       }),
-    );
+    ).catch(() => undefined);
   }, []);
 
   /** 목록의 대화 한 줄을 연다. 목록이 아는 것은 에이전트 id·이름뿐이라 나머지는 비운 자리표시로 연다. */
@@ -377,7 +354,7 @@ export default function App(): React.ReactElement {
     setActiveReadOnly(false);
     setActiveTitle('');
     setInitialMessage(null);
-    void AsyncStorage.removeItem(LAST_CHAT_KEY).catch(() => undefined);
+    void authRef.current!.saveLastChat(null).catch(() => undefined);
   }, []);
 
   const activeKey = activeAgent ? conversationKey({ workflowId: activeAgent.workflowId, interactionId: activeInteraction }) : '';
@@ -399,7 +376,7 @@ export default function App(): React.ReactElement {
     let cancelled = false;
     void AsyncStorage.getItem(LAST_CHAT_KEY).then((raw) => {
       // 그 사이 사용자가 직접 대화를 열었으면 그쪽이 이긴다.
-      if (cancelled || !raw || activeAgentRef.current) return;
+      if (cancelled || !authRef.current!.owns(client) || !raw || activeAgentRef.current) return;
       try {
         const saved = JSON.parse(raw) as {
           workflowId?: string;
@@ -440,7 +417,7 @@ export default function App(): React.ReactElement {
   if (booting) {
     body = (
       <View style={st.boot}>
-        <Text style={st.bootLogo}>XGEN Dex</Text>
+        <Text style={st.bootLogo}>XGEN DexOn</Text>
         <Text style={st.mutedText}>자동 로그인 확인 중…</Text>
       </View>
     );
@@ -527,7 +504,7 @@ export default function App(): React.ReactElement {
           <Pressable style={st.scrim} onPress={() => setDrawer(false)} />
           <View style={st.drawer}>
             <View style={st.drawerHead}>
-              <Text style={st.drawerApp}>XGEN Dex</Text>
+              <Text style={st.drawerApp}>XGEN DexOn</Text>
               <Text style={st.mutedSmall} numberOfLines={1}>
                 {client.session.username} · {shortHost(client.session.serverUrl)}
               </Text>
@@ -566,10 +543,10 @@ export default function App(): React.ReactElement {
 
   return (
     <PaletteCtx.Provider value={p}>
-      <View style={{ flex: 1, backgroundColor: p.bg, paddingTop: Platform.OS === 'android' ? RnStatusBar.currentHeight ?? 0 : 0 }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: p.bg, ...(Platform.OS === 'android' ? { paddingTop: RnStatusBar.currentHeight ?? 0 } : {}) }}>
         <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
         {body}
-      </View>
+      </SafeAreaView>
     </PaletteCtx.Provider>
   );
 }
@@ -671,7 +648,7 @@ function LoginScreen({
 
   return (
     <ScrollView contentContainerStyle={st.loginWrap} keyboardShouldPersistTaps="handled">
-      <Text style={st.bootLogo}>XGEN Dex</Text>
+      <Text style={st.bootLogo}>XGEN DexOn</Text>
       <Text style={[st.mutedText, { marginBottom: 14 }]}>서버 세션 채팅 · 모바일 도구</Text>
       <Field label="서버 주소" value={server} onChange={setServer} placeholder="dev-xgen.x2bee.com" />
       <Field label="이메일" value={email} onChange={setEmail} placeholder="you@company.com" keyboard="email-address" />
@@ -801,7 +778,7 @@ function SettingsSection({
                 <Text style={st.mutedSmall}>{g.description}</Text>
                 {permStates[g.id] === 'denied' ? (
                   <Text style={{ fontSize: 11, color: p.danger, marginTop: 3 }}>
-                    권한이 거부되었습니다 — 휴대폰 설정 &gt; 앱 &gt; XGEN Dex 에서 허용하세요.
+                    권한이 거부되었습니다 — 휴대폰 설정 &gt; 앱 &gt; XGEN DexOn 에서 허용하세요.
                   </Text>
                 ) : null}
               </View>
@@ -830,7 +807,7 @@ function SettingsSection({
       <View style={st.card}>
         <Text style={st.cardTitle}>정보</Text>
         <Text style={st.cardSub}>
-          XGEN Dex Mobile — React Native 크로스플랫폼(Android/iOS). 서버 세션 채팅 + 모바일 도구.
+          XGEN DexOn Mobile — React Native 크로스플랫폼(Android/iOS). 서버 세션 채팅 + 모바일 도구.
           클라우드/브라우저 등 데스크톱 특수 기능은 포함하지 않습니다.
         </Text>
       </View>

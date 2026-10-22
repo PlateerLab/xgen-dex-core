@@ -115,6 +115,20 @@ test('구독 → 실행 → 스트리밍 → 종료 — 전체 왕복', async ()
   chat.close();
 });
 
+test('turn_ended 저장 marker는 숨기고 proof를 별도 메타데이터로 넘긴다', () => {
+  const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
+  const peer: PeerTurnEvent[] = [];
+  makeChat(got, { onPeerTurn: (event) => peer.push(event) });
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  ws.recv({ type: 'subscribed', data: { seq: 0, running: false } });
+  const marker = `<!--XGEN_GENERATED_CONTENT_V1 proof=a.b.c sha256=${'a'.repeat(64)} content_type=text/plain byte_length=2 source_id=123e4567-e89b-42d3-a456-426614174000-->`;
+  ws.recv({ type: 'turn_ended', seq: 1, data: { io_id: 1, input: 'q', output: `답\n${marker}` } });
+  const ended = peer.find((event) => event.kind === 'ended');
+  assert.equal(ended?.kind === 'ended' ? ended.output : '', '답');
+  assert.equal(ended?.kind === 'ended' ? ended.generatedContent?.[0].proof : '', 'a.b.c');
+});
+
 test('폴더를 넘기지 않아도 local_folders 는 빈 목록으로 간다 — 앱은 늘 보낸다', async () => {
   // 필드가 없으면 서버는 옛 앱으로 읽어 예전 규칙을 따른다. 빈 목록은 "폴더 없음"이다.
   const got = { data: [] as string[], tools: [] as string[], errors: [] as string[] };
@@ -179,6 +193,16 @@ test('실행 중 연결 단절 — 실패가 아니라 분리다 (턴은 서버�
   assert.deepEqual(detached, [1], '분리를 알려야 화면이 [진행 중] 을 유지한다');
   assert.equal(running.at(-1), true, '턴은 아직 돈다');
   chat.close();
+});
+
+test('dispatchExec: 첫 글자 전의 준비 단계(turn_phase)는 onPhase 로, 답 본문에는 섞이지 않는다', () => {
+  const phases: unknown[] = [];
+  const got: string[] = [];
+  const cb = { onPhase: (sig: unknown) => phases.push(sig), onData: (t: string) => got.push(t) };
+  assert.equal(dispatchExec('turn_phase', { phase: 'sandbox', state: 'done', elapsed_ms: 12300 }, cb), null);
+  assert.equal(dispatchExec('turn_phase', { phase: 'secrets', state: 'start' }, cb), null);
+  assert.deepEqual(phases, [{ kind: 'phase', phase: 'sandbox', state: 'done', elapsedMs: 12300 }]);
+  assert.deepEqual(got, []);
 });
 
 test('dispatchExec — summary/quota/error 이벤트 매핑', () => {

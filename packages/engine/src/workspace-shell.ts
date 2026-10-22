@@ -4,15 +4,15 @@
  * Whether confinement is used is decided ONCE per process by a probe
  * ({@link workspaceShellSupported}), never per command: a command the
  * confinement rejects is never retried unrestricted. Where the OS offers no
- * usable mechanism (Windows; Linux whose bubblewrap cannot create namespaces,
- * e.g. Ubuntu 24.04's AppArmor default), commands run as the user with the
- * working directory inside a connected folder.
+ * usable mechanism (Windows; restricted macOS; Linux whose bubblewrap cannot
+ * create namespaces), commands are rejected before a process is started.
  */
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
+import { nativeFsStagePath } from './rooted-fs';
 
 export interface WorkspaceShellLaunch {
   file: string;
@@ -88,10 +88,42 @@ function probeBubblewrap(): Promise<boolean> {
   });
 }
 
+async function probeWorkspaceConfinement(): Promise<boolean> {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'xgen-confinement-probe-')));
+  let launch: WorkspaceShellLaunch | undefined;
+  try {
+    const outside = join(base, 'outside-owned-sentinel');
+    const allowed = join(base, 'allowed');
+    await mkdir(allowed);
+    await writeFile(outside, 'synthetic probe');
+    const inside = join(allowed, 'inside-owned-sentinel');
+    await writeFile(inside, 'allowed probe');
+    // Exercise the real policy and a denied read, not merely launcher presence.
+    // The only private file involved is a synthetic probe-owned sentinel.
+    launch = await prepareWorkspaceShell('/bin/sh', ['-c', '/bin/cat "$2" >/dev/null || exit 8; if /bin/cat "$1" >/dev/null 2>&1; then exit 7; fi; printf probe-ok', 'probe', outside, inside],
+      { PATH: '/usr/bin:/bin' }, allowed, [allowed]);
+    return await new Promise<boolean>((resolve) => {
+      let done = false;
+      let output = '';
+      const child = spawn(launch!.file, launch!.args, { cwd: allowed, env: launch!.env, stdio: ['ignore', 'pipe', 'ignore'] });
+      const finish = (value: boolean) => { if (done) return; done = true; clearTimeout(timer); resolve(value); };
+      const timer = setTimeout(() => { child.kill('SIGKILL'); finish(false); }, PROBE_TIMEOUT_MS);
+      child.stdout.on('data', (chunk) => { output += String(chunk); if (output.length > 128) { child.kill('SIGKILL'); finish(false); } });
+      child.on('error', () => finish(false));
+      child.on('close', (code) => finish(code === 0 && output === 'probe-ok'));
+    });
+  } catch {
+    return false;
+  } finally {
+    await launch?.cleanup();
+    await rm(base, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 /**
  * Can commands be confined to the connected folders on this OS?
- * macOS: sandbox-exec present. Linux: bubblewrap present AND able to create
- * its namespaces. Windows: no. Cached for the process lifetime.
+ * macOS: sandbox-exec launches the real policy and denies a probe-owned outside
+ * file. Linux: bubblewrap can create namespaces. Windows: no. Cached per process.
  */
 export function workspaceShellSupported(): Promise<boolean> {
   if (!supportProbe) {
@@ -102,10 +134,17 @@ export function workspaceShellSupported(): Promise<boolean> {
       } catch {
         return false;
       }
-      return process.platform === 'darwin' ? true : probeBubblewrap();
+      if (process.platform === 'linux' && !(await probeBubblewrap())) return false;
+      return probeWorkspaceConfinement();
     })();
   }
   return supportProbe;
+}
+
+export async function requireWorkspaceShellSupport(): Promise<void> {
+  if (!(await workspaceShellSupported())) {
+    throw new Error('[WORKSPACE_SHELL_UNAVAILABLE] OS filesystem confinement is unavailable; the command was not started.');
+  }
 }
 
 /** Tests only — force the probe result (`null` re-probes). */
@@ -308,6 +347,14 @@ export async function prepareWorkspaceShell(
     const toolchains = (await existing(readOnly)).filter(
       (dir) => !roots.some((root) => dir === root || dir.startsWith(`${root}/`)),
     );
+    const stage = nativeFsStagePath();
+    const stageInsideRoot = stage && roots.some((root) => {
+      const rel = relative(root, stage);
+      return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`));
+    });
+    if (stageInsideRoot && roots.includes(stage)) {
+      throw new Error('[WORKSPACE_SHELL_UNAVAILABLE] private transfer stage cannot be a workspace root.');
+    }
     if (mac) {
       const subpath = (p: string) => `(subpath ${JSON.stringify(p)})`;
       const literal = (p: string) => `(literal ${JSON.stringify(p)})`;
@@ -341,6 +388,11 @@ export async function prepareWorkspaceShell(
         '(allow file-read* (literal "/dev/urandom") (literal "/dev/random") (literal "/dev/zero"))',
         '(allow file-read* file-write-data file-ioctl (literal "/dev/null"))',
         `(allow file-write* ${[...roots, scratch].map(subpath).join(' ')})`,
+        // Keep the private native stage unreadable even through a symlink that
+        // lives below an allowed workspace root. Native grants already require
+        // the stage itself to be outside every root; this explicit deny closes
+        // the pathname alias in the shell's broader OS policy.
+        ...(stage ? [`(deny file-read* file-write* ${subpath(stage)})`] : []),
       ].join('\n');
       return {
         file: launcher,
@@ -371,6 +423,7 @@ export async function prepareWorkspaceShell(
     argv.push('--proc', '/proc', '--dev', '/dev');
     for (const dir of toolchains) argv.push('--ro-bind', dir, dir);
     for (const root of roots) argv.push('--bind', root, root);
+    if (stageInsideRoot) argv.push('--tmpfs', stage);
     argv.push('--bind', scratch, scratch);
     argv.push('--chdir', cwd, '--', file, ...commandArgs);
     return { file: launcher, args: argv, env: childEnv, cleanup };

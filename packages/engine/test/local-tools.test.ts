@@ -5,7 +5,7 @@ import { platform, homedir, tmpdir } from 'os';
 import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'fs/promises';
 import { join, resolve } from 'path';
 import { normalizeLocalFolders } from '@dex/engine/local-folders';
-import { setWorkspaceShellSupportForTest } from '@dex/engine/workspace-shell';
+import { workspaceShellSupported } from '@dex/engine/workspace-shell';
 import {
   LOCAL_SERVER,
   LOCAL_CONTROL_TOOL,
@@ -46,9 +46,11 @@ import { bindTestHost, recordingInteraction } from './_host';
 // 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
 const host = recordingInteraction('session');
 bindTestHost({ interaction: host.port });
-// 셸 실행 테스트는 OS 가두기 여부와 무관하게 같은 것을 본다 — 가두기 자체는
-// workspace-shell.test.ts 가 지원하는 OS 에서 따로 검증한다.
-setWorkspaceShellSupportForTest(false);
+// Native command controls run only with an actual working OS confinement backend.
+const confinementAvailable = await workspaceShellSupported();
+function confinedTest(name: string, body: () => Promise<void>) {
+  test(name, { skip: !confinementAvailable && 'OS filesystem confinement unavailable' }, body);
+}
 
 const isWin = platform() === 'win32';
 
@@ -64,6 +66,26 @@ async function folder(prefix = 'xgen-lt-'): Promise<string> {
 }
 
 const inChat = (interactionId: string) => ({ interactionId });
+const transferContext = {
+  workflowId: 'wf-1',
+  interactionId: 'c',
+  deviceId: 'device-1',
+  requestId: 'request-1',
+  requestNonce: 'nonce-1',
+  connectionGeneration: 7,
+  protocol: 2 as const,
+};
+const transferArg = (direction: 'to_workspace' | 'from_workspace', token = 'transfer-token') => ({
+  token,
+  direction,
+  workflow_id: transferContext.workflowId,
+  interaction_id: transferContext.interactionId,
+  device_id: transferContext.deviceId,
+  request_id: transferContext.requestId,
+  request_nonce: transferContext.requestNonce,
+  connection_generation: transferContext.connectionGeneration,
+  protocol: 2 as const,
+});
 
 test('MCP 호출 컨텍스트는 도구 호출 시점의 workflow 식별자를 정규화한다', () => {
   assert.deepEqual(
@@ -183,7 +205,14 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
     upload: async (input) => {
       // 파일은 디스크를 범위로 읽는 소스로 온다(통째로 읽지 않는다).
       const text = new TextDecoder().decode(await input.file.read(0, input.file.size));
-      uploads.push({ name: input.name, relDir: input.relDir, size: input.file.size, wf: input.workflowId, conv: input.interactionId, text });
+      uploads.push({
+        name: input.name,
+        relDir: input.relDir,
+        size: input.file.size,
+        wf: input.transfer.workflow_id,
+        conv: input.transfer.interaction_id,
+        text,
+      });
       const rel = [input.relDir, input.name].filter(Boolean).join('/');
       return { path: `uploads/users_1/c/${rel}`, size: input.file.size, sha256: 'h' };
     },
@@ -191,8 +220,8 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   });
   const r = await p.callTool(
     COPY_TO_WORKSPACE_TOOL,
-    { paths: ['a.docx', join(dir, 'docs'), '/etc/hostname'] },
-    { interactionId: 'c', workflowId: 'wf-1' },
+    { paths: ['a.docx', join(dir, 'docs'), '/etc/hostname'], _workspace_transfer: transferArg('to_workspace') },
+    transferContext,
   );
   assert.equal(r.isError, undefined);
   assert.deepEqual(
@@ -205,9 +234,11 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   );
   assert.match(r.content[0].text, /Skipped 1:\n- \/etc\/hostname: \[PATH_DOMAIN_MISMATCH\]/);
   await assert.rejects(
-    () => p.callTool(COPY_TO_WORKSPACE_TOOL, { paths: ['a.docx'] }, inChat('c')),
-    /어느 대화의 작업 공간/,
-    '호출 문맥에 에이전트가 없으면 옮기지 않는다',
+    () => p.callTool(COPY_TO_WORKSPACE_TOOL, {
+      paths: ['a.docx'], _workspace_transfer: transferArg('to_workspace'),
+    }, inChat('c')),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+    '예약 인자와 실제 frame 문맥이 모두 맞아야 옮긴다',
   );
 });
 
@@ -222,22 +253,66 @@ test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 쓰고, 있는 
       return new TextEncoder().encode('REPORT');
     },
   });
-  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 'tok', name: 'report.docx' };
-  const saved = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'out/report.docx', path: dir, download }, inChat('c'));
+  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 'transfer-token', name: 'report.docx' };
+  const fromArgs = { download, _workspace_transfer: transferArg('from_workspace') };
+  const saved = await p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    source: 'out/report.docx', path: dir, ...fromArgs,
+  }, transferContext);
   assert.equal(saved.isError, undefined);
   assert.equal(await readFile(join(dir, 'report.docx'), 'utf8'), 'REPORT');
-  assert.deepEqual(asked, [{ url: download.url, token: 'tok', name: 'report.docx' }]);
-  const again = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: join(dir, 'report.docx'), download }, inChat('c'));
+  assert.deepEqual(asked, [{
+    url: download.url, token: 'transfer-token', transfer: transferArg('from_workspace'),
+  }]);
+  const again = await p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    source: 'x', path: join(dir, 'report.docx'), ...fromArgs,
+  }, transferContext);
   assert.equal(again.isError, true);
-  const nested = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: 'new/dir/', download }, inChat('c'));
+  const nested = await p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+    source: 'x', path: 'new/dir/', ...fromArgs,
+  }, transferContext);
   assert.equal(nested.isError, undefined);
   assert.equal(await readFile(join(dir, 'new', 'dir', 'report.docx'), 'utf8'), 'REPORT');
-  const old = await p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: dir }, inChat('c'));
-  assert.equal(old.isError, true, '서버가 받을 거리를 싣지 않았다(옛 서버)');
   await assert.rejects(
-    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: '/tmp/out.docx', download }, inChat('c')),
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, { source: 'x', path: dir }, transferContext),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
+  await assert.rejects(
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+      source: 'x', path: '/tmp/out.docx', ...fromArgs,
+    }, transferContext),
     /PATH_DOMAIN_MISMATCH/,
   );
+});
+
+test('작업 공간 복사는 reserved capability와 실제 MCP frame이 다르면 전송 전에 거부한다', async () => {
+  const dir = await folder();
+  await writeFile(join(dir, 'a.txt'), 'A');
+  const { p } = provider({ c: [dir] });
+  let transfers = 0;
+  p.configureWorkspaceTransfer({
+    upload: async () => { transfers++; return { path: 'unexpected', size: 1 }; },
+    download: async () => { transfers++; return new Uint8Array(); },
+  });
+  await assert.rejects(
+    () => p.callTool(COPY_TO_WORKSPACE_TOOL, {
+      paths: ['a.txt'],
+      _workspace_transfer: { ...transferArg('to_workspace'), request_nonce: 'forged' },
+    }, transferContext),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
+  await assert.rejects(
+    () => p.callTool(COPY_FROM_WORKSPACE_TOOL, {
+      path: dir,
+      download: {
+        url: '/api/agentflow/files/artifacts/abc/download',
+        token: 'different-token',
+        name: 'a.txt',
+      },
+      _workspace_transfer: transferArg('from_workspace'),
+    }, transferContext),
+    /WORKSPACE_TRANSFER_CAPABILITY_REQUIRED/,
+  );
+  assert.equal(transfers, 0);
 });
 
 test('ListDir 은 수정 시각(기기 현지 시각)을 함께 보여 준다', async () => {
@@ -396,7 +471,7 @@ test('파일 도구 end-to-end: write→read→list→search + 폴더 밖 거부
   const l = await p.callTool('ListDir', {}, inChat('c'));
   assert.ok(l.content[0].text.includes('a.txt'));
   const sr = await p.callTool('Search', { query: 'NEEDLE', path: dir }, inChat('c'));
-  assert.ok(sr.content[0].text.includes('a.txt:2'));
+  assert.ok(sr.content[0].text.includes('a.txt:2'), sr.content[0].text);
   await assert.rejects(() => p.callTool('ReadFile', { path: '/etc/hostname' }, inChat('c')), /PATH_DOMAIN_MISMATCH/);
   await assert.rejects(() => p.callTool('ReadFile', { path: '~/.bashrc' }, inChat('c')), /PATH_DOMAIN_MISMATCH/);
 });
@@ -505,6 +580,10 @@ test('셸 작업 폴더는 연결된 폴더 안이어야 한다', async () => {
     /PATH_DOMAIN_MISMATCH/,
   );
   const cmd = isWin ? '(Get-Location).Path' : 'pwd';
+  if (!confinementAvailable) {
+    await assert.rejects(p.callTool(SHELL_TOOL, { command: cmd }, inChat('c')), /WORKSPACE_SHELL_UNAVAILABLE/);
+    return;
+  }
   const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
   assert.equal(res.isError, false, JSON.stringify(res));
   assert.ok(res.content[0].text.includes(dir), res.content[0].text);
@@ -531,7 +610,7 @@ test('파일 도구는 연결 폴더 안의 심볼릭 링크 탈출을 거절한
   );
 });
 
-test('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', async () => {
+confinedTest('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Start-Sleep -Seconds 2' : 'sleep 2';
   const started = Date.now();
@@ -548,7 +627,7 @@ test('포그라운드 장기 명령은 자동 ShellJob으로 전환된다', asyn
   await p.callTool(SHELL_JOB_TOOL, { action: 'kill', job_id: jobId }, inChat('c'));
 });
 
-test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
+confinedTest('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Write-Output hello-xgen' : 'echo hello-xgen';
   const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
@@ -556,7 +635,7 @@ test('E2E: 실제 셸로 echo 를 실행해 stdout 을 받는다', async () => {
   assert.match(res.content[0].text, /hello-xgen/);
 });
 
-test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
+confinedTest('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'exit 3' : 'exit 3';
   const res = await p.callTool(SHELL_TOOL, { command: cmd }, inChat('c'));
@@ -565,7 +644,7 @@ test('E2E: 0 아닌 종료 코드는 isError 로 표시된다', async () => {
 
 // ── 강건성: 대화형 hang 방지 · background · 타임아웃 tree-kill ──
 
-test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝난다 (EOF)', async () => {
+confinedTest('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝난다 (EOF)', async () => {
   // stdin 이 열려 있으면 이 명령은 영원히 매달린다 — stdio ignore 로 EOF 를 받아
   // 곧바로 끝나야 한다. 넉넉한 timeout(8s)을 줘도 훨씬 빨리 반환되면 통과.
   const { p } = provider({ c: [await folder()] });
@@ -577,7 +656,7 @@ test('E2E: stdin 을 읽는 대화형 명령이 타임아웃 없이 즉시 끝�
   assert.notEqual(res.isError, true, JSON.stringify(res));
 });
 
-test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 안내가 붙는다', async () => {
+confinedTest('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 안내가 붙는다', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin ? 'Start-Sleep -Seconds 5' : 'sleep 5';
   const started = Date.now();
@@ -588,7 +667,7 @@ test('E2E: 짧은 timeout 을 넘기는 포그라운드 명령은 중단되고 �
   assert.match(res.content[0].text, /background/, '중단 안내가 background 대안을 알려주지 않는다');
 });
 
-test('E2E: background 는 즉시 반환하고, 그 프로세스는 타임아웃에 죽지 않는다', async () => {
+confinedTest('E2E: background 는 즉시 반환하고, 그 프로세스는 타임아웃에 죽지 않는다', async () => {
   const { p } = provider({ c: [await folder()] });
   // 3초 자는 프로세스를 백그라운드로 — 1초 타임아웃보다 오래 살아야 한다.
   const cmd = isWin ? 'Start-Sleep -Seconds 3' : 'sleep 3';
@@ -644,7 +723,7 @@ test('Open 은 위험 스킴을 throw 없이 거절한다', async () => {
   assert.match(res.content[0].text, /스킴|열 수 없습니다/);
 });
 
-test('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async () => {
+confinedTest('E2E: background job → job_id, ShellJob list/poll/kill 로 관리', async () => {
   const { p } = provider({ c: [await folder()] });
   const cmd = isWin
     ? 'Write-Output started-xgen; Start-Sleep -Seconds 3'
@@ -679,7 +758,7 @@ test('ShellJob: 없는 job_id 는 오류', async () => {
   assert.equal(r.isError, true);
 });
 
-test('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 해제하면 멈춘다', async () => {
+confinedTest('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 해제하면 멈춘다', async () => {
   const a = await folder('xgen-job-a-');
   const b = await folder('xgen-job-b-');
   const { p, book } = provider({ 'chat-a': [a, b], 'chat-b': [b] });
@@ -704,7 +783,7 @@ test('백그라운드 작업은 시작한 대화에만 보이고, 그 폴더를 
   assert.match(poll.content[0].text, /연결이 해제된 폴더/);
 });
 
-test('위험 명령 승인은 대화 단위다 — "계속 허용"이 다른 대화로 번지지 않는다', async () => {
+confinedTest('위험 명령 승인은 대화 단위다 — "계속 허용"이 다른 대화로 번지지 않는다', async () => {
   const dir = await folder('xgen-danger-');
   const { p } = provider({ 'chat-a': [dir], 'chat-b': [dir] });
   const before = host.asked.length;

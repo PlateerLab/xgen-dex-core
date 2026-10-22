@@ -24,10 +24,13 @@ import {
   copyTargetDir,
   copyToWorkspaceResult,
   deviceTimeText,
+  requireWorkspaceTransfer,
   workspaceCopySchemas,
   workspaceDownloadOf,
   type CopiedFile,
   type SkippedFile,
+  type WorkspaceTransferCapability,
+  type WorkspaceTransferContext,
 } from '@dex/protocol';
 import { USER_PC_TOOL_NAMES, callUserPc, userPcSchemas } from './user-pc';
 import {
@@ -141,9 +144,21 @@ export interface FolderEntry {
  */
 export interface WorkspaceTransfer {
   /** 폰의 로컬 파일(file://)을 이 대화의 첨부 폴더(하위 `relDir`)로 올린다. 같은 이름은 덮어쓴다. */
-  upload(localUri: string, name: string, relDir: string): Promise<{ path: string; size: number; sha256?: string }>;
+  upload(
+    localUri: string,
+    name: string,
+    relDir: string,
+    transfer: WorkspaceTransferCapability,
+    signal?: AbortSignal,
+  ): Promise<{ path: string; size: number; sha256?: string }>;
   /** 서버가 내어 준 임시 파일을 로컬 파일(file://)로 받는다. */
-  download(url: string, token: string | undefined, name: string): Promise<string>;
+  download(
+    url: string,
+    token: string,
+    name: string,
+    transfer: WorkspaceTransferCapability,
+    signal?: AbortSignal,
+  ): Promise<string>;
   /** 다 쓴 로컬 사본을 지운다. 실패해도 조용히. */
   discard(localUri: string): Promise<void>;
 }
@@ -177,6 +192,8 @@ export interface FolderScope {
   remoteFrom?: string;
   /** 이 호출의 대화 작업 공간(복사 도구). 호출 문맥에 에이전트·대화가 없으면 없다. */
   workspace?: WorkspaceTransfer;
+  /** 인증된 mcp_call frame에서 온 전송 correlation. 모델 인자와 대조할 때만 쓴다. */
+  transferContext?: WorkspaceTransferContext;
   /** 이 호출의 대화 — 사용자 PC 접속의 작업은 그 대화에서만 보인다. */
   interactionId?: string;
   /** 서버의 취소·감시 시한. */
@@ -413,8 +430,10 @@ async function callFolderTool(
  * 경로로 흘려보낸 뒤 지운다 — 문서 제공자 트리의 파일은 다른 앱이 직접 읽을 수 없다.
  */
 async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope): Promise<ToolResult> {
+  checkCopySignal(scope.signal);
   const transfer = scope.workspace;
   if (!transfer) return err('어느 대화의 작업 공간인지 알 수 없어 옮기지 못했습니다.');
+  const capability = requireWorkspaceTransfer(args, 'to_workspace', scope.transferContext);
   const { folders, fs } = scope;
   const inputs = (Array.isArray(args.paths) ? args.paths : [args.paths ?? args.path])
     .map((p) => String(p ?? '').trim())
@@ -437,15 +456,18 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
     }
   };
   const walk = async (folder: MobileFolder, rootRel: string, rootName: string, rel: string, depth: number): Promise<void> => {
+    checkCopySignal(scope.signal);
     let entries: FolderEntry[];
     try {
       entries = await fs.list(folder, rel);
     } catch (e) {
+      checkCopySignal(scope.signal);
       skipped.push({ source: show(folder, rel), reason: e instanceof Error ? e.message : String(e) });
       return;
     }
     // 코드 단위 순서 — 로캘에 따라 순서가 달라지지 않게(엔진의 폴더 걷기와 같다).
     for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      checkCopySignal(scope.signal);
       if (entry.name.startsWith('.')) continue;
       const child = joinRel(rel, entry.name);
       if (entry.isDir) {
@@ -458,6 +480,7 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
     }
   };
   for (const input of inputs) {
+    checkCopySignal(scope.signal);
     let at: ReturnType<typeof resolveFolderPath>;
     try {
       at = resolveFolderPath(folders, input);
@@ -467,24 +490,30 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
     }
     try {
       const st = await fs.stat(at.folder, at.rel);
+      checkCopySignal(scope.signal);
       if (!st.exists) skipped.push({ source: at.display, reason: 'not found' });
       else if (st.isDir) await walk(at.folder, at.rel, pathSegments(at.rel).at(-1) ?? at.folder.name, at.rel, 0);
       else take(at.folder, at.rel, '', st.size);
     } catch (e) {
+      checkCopySignal(scope.signal);
       skipped.push({ source: at.display, reason: e instanceof Error ? e.message : String(e) });
     }
   }
 
   const copied: CopiedFile[] = [];
   for (const item of plan) {
+    checkCopySignal(scope.signal);
     const source = show(item.folder, item.rel);
     let local = '';
     try {
       local = await fs.exportFile(item.folder, item.rel);
+      checkCopySignal(scope.signal);
       const name = pathSegments(item.rel).at(-1) ?? 'file';
-      const res = await transfer.upload(local, name, item.relDir);
+      const res = await transfer.upload(local, name, item.relDir, capability, scope.signal);
+      checkCopySignal(scope.signal);
       copied.push({ source, path: res.path, size: res.size || item.size, ...(res.sha256 ? { sha256: res.sha256 } : {}) });
     } catch (e) {
+      checkCopySignal(scope.signal);
       skipped.push({ source, reason: e instanceof Error ? e.message : String(e) });
     } finally {
       if (local) await transfer.discard(local);
@@ -495,10 +524,15 @@ async function copyToWorkspace(args: Record<string, unknown>, scope: FolderScope
 
 /** 서버가 실어 준 작업 공간 파일 → 연결한 폴더. 있는 파일은 덮어쓰라고 할 때만 바꾼다. */
 async function copyFromWorkspace(args: Record<string, unknown>, scope: FolderScope): Promise<ToolResult> {
+  checkCopySignal(scope.signal);
   const transfer = scope.workspace;
   if (!transfer) return err('어느 대화의 작업 공간인지 알 수 없어 받지 못했습니다.');
+  const capability = requireWorkspaceTransfer(args, 'from_workspace', scope.transferContext);
   const download = workspaceDownloadOf(args);
   if (!download) return err(NO_DOWNLOAD_MESSAGE);
+  if (!download.token || download.token !== capability.token) {
+    throw new Error('WORKSPACE_TRANSFER_CAPABILITY_REQUIRED');
+  }
   const raw = String(args.path ?? '').trim();
   const at = resolveFolderPath(scope.folders, raw);
   let rel = at.rel;
@@ -510,14 +544,31 @@ async function copyFromWorkspace(args: Record<string, unknown>, scope: FolderSco
   if (target.exists && args.overwrite !== true) {
     return err(`${shown} already exists. Pass overwrite=true to replace it, or choose another path.`);
   }
-  const local = await transfer.download(download.url, download.token, download.name);
+  checkCopySignal(scope.signal);
+  const local = await transfer.download(
+    download.url,
+    download.token,
+    download.name,
+    capability,
+    scope.signal,
+  );
   try {
+    checkCopySignal(scope.signal);
     // 있던 파일은 지우지 않고 그 자리에 쓴다 — 먼저 지우면 쓰기가 실패할 때 사용자의 파일이 사라진다.
+    // 문서 제공자에 import 를 넘긴 뒤의 커밋은 되돌릴 수 없다. 취소는 이 호출 직전까지 검사한다.
     await scope.fs.importFile(at.folder, rel, local);
   } finally {
     await transfer.discard(local);
   }
   return ok(`Saved ${download.name} to ${shown}.`);
+}
+
+function checkCopySignal(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const error = new Error('Copy cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  }
 }
 
 export async function callMobileTool(

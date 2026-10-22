@@ -32,6 +32,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, rmSync, writeFileSync
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { configureNativeFsBinding, configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { isSafeExternalUrl } from './external-url';
 import { publicAppUrl } from './app-links';
 import { AppPreviewService, type PreviewTarget } from './app-preview';
@@ -106,7 +107,7 @@ import { localFoldersForRequest, normalizeLocalFolders } from '@dex/engine/local
 import { parseConversationFolders } from '@dex/protocol/conversation-folders';
 import type { ThinkingValue } from '@dex/protocol/conversation-model';
 import { ChatFolderSync } from './chat-folder-sync';
-import { FolderFsError, folderFsCall } from './folder-fs';
+import { FolderFsError, folderFsCall, closeAllFolderFsRoots, closeFolderFsRoot } from './folder-fs';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import { stopAllUserPcJobs } from '@dex/engine/user-pc';
 import {
@@ -195,6 +196,14 @@ app.setName('XGEN-Connector');
 // 실험용 별도 프로필 — 설치본과 데이터 폴더·단일 실행 잠금을 나눠 나란히 띄운다
 // (키체인 서비스 이름도 keychain.ts 에서 같은 값으로 나뉜다).
 if (process.env.DEX_PROFILE) app.setName(`XGEN-Connector-${process.env.DEX_PROFILE}`);
+configureNativeFsBinding(join(__dirname, '../native', `${process.platform}-${process.arch}`, 'native-fs.node'));
+try {
+  const nativeStage = join(app.getPath('userData'), 'native-stage');
+  mkdirSync(nativeStage, { recursive: true, mode: 0o700 });
+  configureNativeFsStage(nativeStage);
+} catch {
+  // Native file operations fail closed independently of chat and account restoration.
+}
 // 시험 전용: 녹음 파일을 마이크로 (Chromium 가짜 장치) — 실시간 음성 경로를 마이크 버튼부터 끝까지 확인할 때.
 if (process.env.DEX_VOICE_TEST === '1' && process.env.DEX_FAKE_MIC) {
   app.commandLine.appendSwitch('use-fake-device-for-media-stream');
@@ -372,6 +381,7 @@ function loadRendererPage(win: BrowserWindow, page: string): void {
 }
 
 function handleAuthFailure(): void {
+  resetNativeFolderGrants();
   getMcpBridge().stop();
   getBrowserRuntime().configure({ enabled: false });
   safeSend(mainWindow, CHANNELS.authFailed);
@@ -450,7 +460,7 @@ function createWindow(): void {
     minWidth: 860,
     minHeight: 600,
     show: false,
-    title: 'XGen Dex',
+    title: 'XGEN DexOn',
     // Hide the generic File/Edit/View/Window/Help bar (Alt still reveals it on
     // Win/Linux) so the app doesn't read as a raw Electron shell.
     autoHideMenuBar: true,
@@ -1385,7 +1395,7 @@ function applyAutoLaunch(enabled: boolean): boolean {
       [
         '[Desktop Entry]',
         'Type=Application',
-        'Name=XGen Dex',
+        'Name=XGEN DexOn',
         `Exec=${exec}`,
         'X-GNOME-Autostart-enabled=true',
         'NoDisplay=false',
@@ -1453,6 +1463,7 @@ function resetPositions(): void {
 
 /** 로컬 설정과 로그인 정보를 지운 뒤 배포 기본값으로 다시 시작한다. */
 async function resetStoredSettings(): Promise<void> {
+  resetNativeFolderGrants();
   getMcpBridge().stop();
   void client?.logout().catch(() => undefined);
   client = null;
@@ -1471,7 +1482,7 @@ function createTray(): boolean {
   try {
     const icon = nativeImage.createFromDataURL(`data:image/png;base64,${TRAY_ICON_B64}`);
     tray = new Tray(icon);
-    tray.setToolTip('XGen Dex');
+    tray.setToolTip('XGEN DexOn');
     rebuildTrayMenu();
     tray.on('click', () => showMain());
     return true;
@@ -1634,6 +1645,14 @@ const chatFolders = new ChatFolderStore(
   join(app.getPath('userData'), 'chat-folders'),
   () => currentAccountKey(),
 );
+const folderFsGrantsByInteraction = new Map<string, Set<string>>();
+let folderFsAccount: string | null = null;
+function resetNativeFolderGrants(): void {
+  closeAllFolderFsRoots();
+  getBrowserToolProvider(getBrowserRuntime()).clearBrowserFileGrants();
+  folderFsGrantsByInteraction.clear();
+  getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
+}
 getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
 // 연결한 폴더 ↔ 에이전트 작업 공간 — 복사 도구(CopyToWorkspace·CopyFromWorkspace)가 이 길로 옮긴다.
 // 올리는 자리는 그 대화의 첨부 폴더다(채팅 첨부와 같은 권한·같은 자리). 같은 파일은 덮어쓴다.
@@ -1676,6 +1695,12 @@ getLocalToolProvider().onRemoteUse((use) => {
   }
 });
 chatFolders.onChange((interactionId) => {
+  getBrowserToolProvider(getBrowserRuntime()).clearBrowserFileGrants(interactionId);
+  const current = new Set(chatFolders.list(interactionId).map((folder) => folder.path));
+  for (const root of folderFsGrantsByInteraction.get(interactionId) ?? []) {
+    if (!current.has(root)) closeFolderFsRoot(root, interactionId);
+  }
+  folderFsGrantsByInteraction.set(interactionId, current);
   // 빠진 폴더에서 돌던 백그라운드 작업을 멈추고, 열린 창들이 목록을 다시 그린다.
   getLocalToolProvider().foldersChanged(interactionId);
   for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
@@ -2083,6 +2108,11 @@ const mcpAdminDelegate: LocalToolDelegate = {
 
 /** Reconcile MCP manager + bridge with config + login state. */
 function syncMcp(): void {
+  const account = currentAccountKey();
+  if (account !== folderFsAccount) {
+    resetNativeFolderGrants();
+    folderFsAccount = account;
+  }
   const cfg = loadConfig();
   setMcpRuntimeLogEnabled(cfg.mcpDebug === true);
   const mcp = getMcpManager();
@@ -2498,6 +2528,8 @@ ipcMain.handle(CHANNELS.authRestore, async () => {
 });
 
 ipcMain.handle(CHANNELS.authLogout, async () => {
+  resetNativeFolderGrants();
+  folderFsAccount = null;
   getMcpBridge().stop();
   teamsHub.stopAll();
   ideTerminals.closeAll();
@@ -2533,9 +2565,11 @@ ipcMain.handle(CHANNELS.avatarUploadAsset, (_e, bytes: Uint8Array, filename: str
   getClient().avatars.uploadAsset(bytes, filename),
 );
 // 고른 zip 을 디스크에서 조각으로 올린다 — 경로는 preload 가 사용자가 고른 파일에서만 얻는다.
-ipcMain.handle(CHANNELS.avatarUploadFile, async (_e, path: string, filename: string) =>
-  getClient().avatars.uploadAsset(await fileSource(path, { name: filename }), filename),
-);
+ipcMain.handle(CHANNELS.avatarUploadFile, async (_e, path: string, filename: string) => {
+  const source = await fileSource(path, { name: filename });
+  try { return await getClient().avatars.uploadAsset(source, filename); }
+  finally { source.close(); }
+});
 ipcMain.handle(CHANNELS.avatarDeleteAsset, (_e, avatarId: string) =>
   getClient().avatars.deleteAsset(avatarId),
 );
@@ -2949,10 +2983,25 @@ ipcMain.on(CHANNELS.ideUnwatch, (_e, key: string) => ideWatches.unwatch(String(k
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),
 );
+const GENERATED_CONTENT_TEXT_MAX_BYTES = 4 * 1024 * 1024;
+const GENERATED_CONTENT_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
+const ipcBinaryMaxBytes = (opts: unknown): number | undefined => {
+  if (opts === undefined) return undefined;
+  if (!opts || typeof opts !== 'object' || Array.isArray(opts)) throw new Error('invalid binary read options');
+  const maxBytes = (opts as { maxBytes?: unknown }).maxBytes;
+  if (maxBytes === undefined) return undefined;
+  if (
+    typeof maxBytes !== 'number' || !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 || maxBytes > GENERATED_CONTENT_MEDIA_MAX_BYTES
+  ) {
+    throw new Error('invalid binary byte limit');
+  }
+  return Number(maxBytes);
+};
 ipcMain.handle(
   CHANNELS.agentWsBinary,
-  (_e, wf: string, path: string, purpose?: 'chat_attachment') =>
-    getClient().agentData.workspaceBinary(wf, path, purpose),
+  (_e, wf: string, path: string, purpose?: 'chat_attachment', opts?: { maxBytes?: number }) =>
+    getClient().agentData.workspaceBinary(wf, path, purpose, { maxBytes: ipcBinaryMaxBytes(opts) }),
 );
 // 문서 미리보기 — [파일 저장소] 와 같은 렌더러(서버)가 그린 페이지 그림. 에이전트 작업 공간의 docx·pptx·xlsx·hwp.
 ipcMain.handle(CHANNELS.agentWsDocPreview, (_e, wf: string, path: string) =>
@@ -2962,9 +3011,30 @@ ipcMain.handle(CHANNELS.agentWsPreviewPage, (_e, wf: string, page: string) =>
   getClient().agentData.workspacePreviewPage(wf, page),
 );
 // 답에 딸린 파일 — 웹 채팅의 다운로드 단추·그림 카드와 같은 것(파일 저장소의 결과물·API 응답 임시 파일).
-ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean }) =>
-  getClient().chatFiles.download(item, { preview: opts?.preview === true }),
+ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean; maxBytes?: number }) =>
+  getClient().chatFiles.download(item, {
+    preview: opts?.preview === true,
+    maxBytes: ipcBinaryMaxBytes(opts),
+  }),
 );
+// 생성물 증명은 렌더러가 가진 현재 본문을 main의 인증된 클라이언트로 검증한다.
+// proof/본문 상한을 IPC 경계에서도 지켜 거대한 값이 프로세스 사이를 오가지 않게 한다.
+ipcMain.handle(CHANNELS.generatedContentVerifyText, (_e, proof: string | null, text: string) => {
+  if (proof !== null && (typeof proof !== 'string' || proof.length > 8_192)) throw new Error('invalid generated-content proof');
+  if (
+    typeof text !== 'string' || text.length > GENERATED_CONTENT_TEXT_MAX_BYTES ||
+    Buffer.byteLength(text, 'utf8') > GENERATED_CONTENT_TEXT_MAX_BYTES
+  ) {
+    throw new Error('generated content text is too large');
+  }
+  return getClient().generatedContent.verifyText(proof, text);
+});
+ipcMain.handle(CHANNELS.generatedContentVerifyBytes, (_e, proof: string | null, bytes: Uint8Array, contentType: string) => {
+  if (proof !== null && (typeof proof !== 'string' || proof.length > 8_192)) throw new Error('invalid generated-content proof');
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > GENERATED_CONTENT_MEDIA_MAX_BYTES) throw new Error('invalid generated-content bytes');
+  if (typeof contentType !== 'string' || contentType.length > 128) throw new Error('invalid generated-content content type');
+  return getClient().generatedContent.verifyBytes(proof, bytes, contentType);
+});
 ipcMain.handle(
   CHANNELS.agentWsUpload,
   (
@@ -3005,8 +3075,9 @@ ipcMain.handle(
   ) => {
     const controller = new AbortController();
     workspaceUploads.set(uploadId, controller);
+    let source: Awaited<ReturnType<typeof fileSource>> | undefined;
     try {
-      const source = await fileSource(path, { name: filename, type: mimeType });
+      source = await fileSource(path, { name: filename, type: mimeType });
       return await getClient().agentData.workspaceUpload(wf, source, filename, mimeType, interactionId, attachmentId, {
         signal: controller.signal,
         onProgress: (p) => {
@@ -3014,6 +3085,7 @@ ipcMain.handle(
         },
       });
     } finally {
+      source?.close();
       workspaceUploads.delete(uploadId);
     }
   },
@@ -3155,18 +3227,22 @@ ipcMain.handle(CHANNELS.teamsUploadAttachment, async (_e, roomId: string) => {
   // 올라갔는데 호출자는 오류만 받아, 올라간 파일을 알 수도 지울 수도 없게 된다
   // (서버에 첨부 삭제 API 가 없다).
   // 파일은 통째로 읽지 않는다 — 조각 업로드가 디스크에서 범위로 읽는다(1GB 까지).
-  const files = [];
-  for (const path of paths) {
-    const source = await fileSource(path);
-    const reason = teamsAttachmentRejectReason(source.name, source.size);
-    if (reason) throw new Error(reason);
-    files.push(source);
+  const files: Awaited<ReturnType<typeof fileSource>>[] = [];
+  try {
+    for (const path of paths) {
+      const source = await fileSource(path);
+      files.push(source);
+      const reason = teamsAttachmentRejectReason(source.name, source.size);
+      if (reason) throw new Error(reason);
+    }
+    const uploaded: TeamsAttachment[] = [];
+    for (const file of files) {
+      uploaded.push(await getClient().teams.uploadAttachment(roomId, file, file.name));
+    }
+    return uploaded;
+  } finally {
+    for (const file of files) file.close();
   }
-  const uploaded: TeamsAttachment[] = [];
-  for (const file of files) {
-    uploaded.push(await getClient().teams.uploadAttachment(roomId, file, file.name));
-  }
-  return uploaded;
 });
 
 /**
@@ -3677,11 +3753,14 @@ ipcMain.handle(
   async (_e, interactionId: unknown, rootId: unknown, op: unknown, args: unknown) => {
     const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === String(rootId ?? ''));
     if (!folder) return { ok: false, code: 'not_found', message: '연결된 폴더를 찾을 수 없습니다', detail: {} };
+    folderFsGrantsByInteraction.set(String(interactionId ?? ''), new Set(
+      chatFolders.list(String(interactionId ?? '')).map((entry) => entry.path),
+    ));
     try {
       const value = await folderFsCall(folder.path, String(op ?? ''), (args ?? {}) as Record<string, unknown>, {
         trash: (abs) => shell.trashItem(abs),
         reveal: (abs) => shell.showItemInFolder(abs),
-      });
+      }, String(interactionId ?? ''));
       return { ok: true, value };
     } catch (err) {
       if (err instanceof FolderFsError) return { ok: false, code: err.code, message: err.message, detail: err.detail };
@@ -4290,7 +4369,7 @@ if (!gotLock) {
           {
             id: `update-ready-${version}`,
             type: 'system.update_ready',
-            title: 'XGen Dex 업데이트',
+            title: 'XGEN DexOn 업데이트',
             body: `새 버전 v${version} — 클릭하면 지금 업데이트합니다.`,
             occurredAt: new Date().toISOString(),
             groupKey: 'system:update',
@@ -4356,6 +4435,7 @@ if (!gotLock) {
     void browserHistoryStore?.flushAll().catch(() => undefined);
   });
   app.on('will-quit', () => {
+    resetNativeFolderGrants();
     globalShortcut.unregisterAll();
     disposeUpdater();
     getMcpBridge().stop();

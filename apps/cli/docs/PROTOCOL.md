@@ -1,6 +1,6 @@
-# Dex CLI stdio protocol v1
+# DexOn CLI stdio protocol v1
 
-`dex serve --stdio`는 장기 실행 엔진 프로세스를 시작합니다. 전송은 UTF-8 NDJSON이고 각 줄은
+`dexon serve --stdio`는 장기 실행 엔진 프로세스를 시작합니다. 전송은 UTF-8 NDJSON이고 각 줄은
 완전한 JSON-RPC 2.0 객체입니다.
 
 ## 전송 규칙

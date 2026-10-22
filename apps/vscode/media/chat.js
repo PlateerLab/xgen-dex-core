@@ -535,6 +535,31 @@
     return indicator;
   }
 
+  // 답의 첫 글자 전 준비 단계(Sandbox·워크스페이스·패키지·기억). 점 대신 도구 줄(⌁) 모양으로.
+  // 줄과 문구는 확장이 정본 규칙(@dex/protocol turn-phases)으로 계산해 보낸다. 여기는 그리기만 한다.
+  function phaseBlock(lines) {
+    const block = document.createElement('div');
+    block.className = 'phase-lines';
+    block.setAttribute('role', 'status');
+    block.setAttribute('aria-live', 'polite');
+    for (const line of lines) {
+      const row = document.createElement('div');
+      row.className = `phase-line ${line.state}`;
+      const icon = document.createElement('span');
+      icon.className = 'activity-icon';
+      icon.textContent = '⌁';
+      const label = document.createElement('span');
+      label.className = 'phase-label';
+      label.textContent = line.label;
+      const time = document.createElement('span');
+      time.className = 'phase-time';
+      time.textContent = line.time;
+      row.append(icon, label, time);
+      block.append(row);
+    }
+    return block;
+  }
+
   function messageElement(item) {
     const article = document.createElement('article');
     article.className = `message ${item.role}`;
@@ -595,10 +620,26 @@
     label.className = 'message-label';
     label.textContent = item.label;
     header.append(label);
+    if (item.role === 'assistant' && item.provenance) {
+      const provenance = document.createElement('button');
+      provenance.type = 'button';
+      provenance.className = 'text-button';
+      provenance.textContent = item.provenance.verified
+        ? `✓ ${item.provenance.label}`
+        : item.provenance.label;
+      provenance.disabled = !item.provenance.canVerify;
+      provenance.setAttribute('aria-label', item.provenance.canVerify
+        ? `${item.provenance.label}. 눌러서 현재 답변 본문으로 다시 확인`
+        : item.provenance.label);
+      if (item.provenance.canVerify) {
+        provenance.addEventListener('click', () => post('verifyProvenance', { messageId: item.id }));
+      }
+      header.append(provenance);
+    }
     if (item.text && item.role !== 'assistant') header.append(copyButton(item.text, '메시지 복사'));
     const content = document.createElement('div');
     content.className = 'message-content';
-    if (!item.text && item.role === 'assistant') content.append(typingIndicator());
+    if (!item.text && item.role === 'assistant') content.append(item.phaseLines && item.phaseLines.length ? phaseBlock(item.phaseLines) : typingIndicator());
     else if (item.role === 'assistant') renderRichText(content, item.text);
     else content.textContent = item.text;
     body.append(header, content);
@@ -680,7 +721,7 @@
       login: {
         icon: '↗',
         title: `${profile?.name || 'XGEN'}에 로그인하세요`,
-        description: '로그인 정보는 dex-cli가 안전하게 처리하며 비밀번호는 저장하지 않습니다.',
+        description: '로그인 정보는 DexOn CLI가 안전하게 처리하며 비밀번호는 저장하지 않습니다.',
         action: 'login',
         label: '로그인',
       },
@@ -693,7 +734,7 @@
       },
       error: {
         icon: '!',
-        title: 'XGEN Dex를 불러오지 못했습니다',
+        title: 'XGEN DexOn을 불러오지 못했습니다',
         description: state.error || 'CLI 엔진 상태를 확인한 다음 다시 시도해 주세요.',
         action: 'refresh',
         label: '다시 시도',

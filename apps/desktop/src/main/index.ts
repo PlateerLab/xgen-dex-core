@@ -1790,7 +1790,6 @@ function publishDetachedDone(interactionId: string, output: string): void {
   const chat = detachedChats.get(interactionId);
   if (!chat) return;
   detachedChats.delete(interactionId);
-  getBrowserRuntime().noteBrowserActionReply(chat.workflowId, interactionId, output);
   rememberServerReply(interactionId, output);
   notificationCenter.publish({
     id: `chat-completed-${interactionId}-${Date.now()}`,
@@ -3394,7 +3393,6 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
     /** 스트림이 끊겼다 — 턴은 서버에서 계속 돈다. 끝난 것이 아니므로 완료로 접지 않는다. */
     let detached = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
-      if (kind === 'completed') getBrowserRuntime().noteBrowserActionReply(serverReq.workflowId, serverReq.interactionId, preview);
       if (kind === 'completed') rememberServerReply(serverReq.interactionId, preview); // 빠른 조작이 다음 말이 이 답에 대한 대답인지 본다
       const event: NotificationEvent = {
         id: `chat-${kind}-${streamId}`,
@@ -3422,7 +3420,6 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       notificationCenter.publish(event);
     };
     try {
-      await getBrowserRuntime().prepareUserBrowserAction(serverReq.workflowId, serverReq.interactionId, serverReq.input, controller.signal);
       if (fastActEnabled()) {
         const emit = (ev: ChatEvent): void => {
           if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);

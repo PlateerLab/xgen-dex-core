@@ -14,7 +14,7 @@
  * 글자만 받는다. 안내문·값은 버리지 않고 칸 이름 뒤에 둔다("검색키워드 내용 ‘,(쉼표)’로…", "배송방법 택배배송").
  * 스냅샷 요소 번호(@eN)와는 역할과 원래 이름이 같은 칸끼리 문서 순서로 맞춘다 — 수가 다르면 그 묶음은 붙이지 않는다.
  */
-import type { ElementRefs } from './fast-act';
+import { quotedText, type ElementRefs } from './fast-act';
 
 /** 칸 이름을 붙이는 역할. */
 const FIELD_ROLES = new Set(['textbox', 'searchbox', 'spinbutton', 'combobox']);
@@ -151,7 +151,7 @@ ${FIELD_HELPERS}
     if (!visible(el) && !((el.type === 'radio' || el.type === 'checkbox') && visible(el.closest('label') || el.parentElement))) continue;
     const box = el.tagName !== 'INPUT' && el.getAttribute('role') === 'combobox'; // div 로 그린 선택 상자(MUI Select)
     const type = el.isContentEditable ? 'editor' : el.tagName === 'SELECT' || box ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text');
-    if (type === 'file' || type === 'submit' || type === 'button') continue;
+    if (type === 'password' || type === 'file' || type === 'submit' || type === 'button') continue;
     const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true';
     if (type === 'radio' || type === 'checkbox') {
       if (!el.checked) continue;
@@ -327,9 +327,31 @@ function cellsOf(refs: ElementRefs, items: Record<string, string>): Array<{ row:
  * 셀 글자가 고를 값과 정확히 같은 항목(행) — 공백만 정리해 비교한다. 조회 팝업에서 "플래티어 협력사" 를 고르라면
  * "플래티어"·"플래티어 2" 행은 아니다(앞부분이 같다고 고르면 다른 협력사가 들어간다).
  */
-export function rowsNamed(refs: ElementRefs, items: Record<string, string>, value: string): string[] {
+export function rowsNamed(refs: ElementRefs, items: Record<string, string>, value: string, code?: string): string[] {
   const want = squash(value);
-  return [...new Set(cellsOf(refs, items).filter((c) => c.name === want).map((c) => c.row))];
+  const cells = cellsOf(refs, items);
+  return [...new Set(cells.filter(c => c.name === want &&
+    (!code || cells.some(id => id.row === c.row && id.name === code))).map(c => c.row))];
+}
+
+/** Search by name, but require the supplied identifier in the same result row. */
+export function popupSearchValue(value: string, label: string): { name: string; code?: string } {
+  const match = /협력사|브랜드/.test(label) && value.match(/^(.+?)\s*\(([A-Za-z0-9_-]*[0-9][A-Za-z0-9_-]*)\)$/);
+  return match ? { name: match[1].trim(), code: match[2] } : { name: value };
+}
+
+/** The parent picker may display code before name instead of the request's name(code). */
+export function popupSelectionMatches(actual: string, name: string, code?: string): boolean {
+  const value = squash(actual);
+  return code ? [squash(`${code} ${name}`), squash(`${name} (${code})`), squash(`${name}(${code})`)].includes(value)
+    : value.includes(squash(name));
+}
+
+/** A verification request must never reopen a picker or alter its current selection. */
+export function isFieldVerification(text: string): boolean {
+  const instruction = text.replace(/「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'|“[^”]*”/g, '');
+  return /(?:확인|검증)(?:해(?:\s*줘|\s*주세요)?|해줄래|해주세요)[.!?…\s]*$/.test(instruction) ||
+    /^\s*(?:verify\b|check\s+(?:if|whether)\b|confirm\s+(?:if|whether)\b)/i.test(instruction);
 }
 
 /** 스냅샷 글에서 비활성 요소 번호 — 줄 뒤 괄호 안의 disabled 표시(`[expanded=false, disabled, ref=e181]`)만 본다. */
@@ -592,6 +614,14 @@ export function withoutLeadingLabel(typed: string, label?: string): string {
     if (rest) return rest[1];
   }
   return typed;
+}
+
+/**
+ * 넣을 값 — 「」로 밝힌 값은 그대로, 아니면 판단 모델이 같이 고른 칸 이름을 뗀다. 「상품 C」 를 칸 "상품명" 의 줄임말로
+ * 보고 떼어 "C" 를 넣었다(10/22 BO BrowserFill).
+ */
+export function typedValue(found: string, instruction: string, label?: string): string {
+  return quotedText(instruction) ? found : withoutLeadingLabel(found, label);
 }
 
 /**

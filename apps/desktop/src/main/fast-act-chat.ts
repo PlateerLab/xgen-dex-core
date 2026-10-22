@@ -14,7 +14,8 @@
  *   · 현재 대화 에이전트의 '공유' 브라우저 탭만 본다.
  */
 import { stripTeamsContext, turnInputText, type ChatEvent, type ChatRequest } from '@dex/protocol';
-import { stripBrowserContext } from '@dex/protocol/browser';
+import { BROWSER_CONTEXT_END, BROWSER_CONTEXT_START, prependBrowserContext, stripBrowserContext } from '@dex/protocol/browser';
+import { getBrowserRuntime } from './browser-runtime';
 import { stripVoiceContext } from '@dex/protocol/voice-context';
 import { diag } from './diag-log';
 import { actionRow, replyFor } from './fast-act-reply';
@@ -86,10 +87,30 @@ function finishLocal(
   const rest = `${unhandled}\n\n(빠른 조작 기록: ${replyFor(actions, true)}\n` +
     '위 기록에는 완료되지 않은 시도도 있습니다. 현재 화면 값을 확인하고 남은 요청을 브라우저 도구로 마저 수행하세요. ' +
     '이미 반영된 입력·업로드·선택은 반복하지 마세요.)';
-  if (typeof req.input === 'string' && req.input.includes(text)) req.input = req.input.replace(text, rest);
+  if (typeof req.input === 'string' && req.input.includes(text)) req.input = refreshBrowserContext(req.input.replace(text, rest), req.workflowId);
   else req.input = rest;
   diag(SCOPE, '남은 말 서버로', { unhandled, acted: actions.length, voice });
   return false;
+}
+
+/**
+ * 빠른 조작이 탭을 바꿨을 수 있다(새 탭을 열거나 팝업·다른 탭으로 옮김) — 서버에 넘기기 전에 브라우저 맥락의 탭 목록과 지금 탭을
+ * 새로 적는다. 맥락은 보낼 때 만들어져, 빠른 조작이 연 새 탭을 모르는 서버가 예전 탭에서 네이버를 열었다(10/21). 화면 선택은 둔다.
+ */
+function refreshBrowserContext(input: string, workflowId: string): string {
+  if (!input.startsWith(BROWSER_CONTEXT_START)) return input;
+  const end = input.indexOf(BROWSER_CONTEXT_END);
+  if (end < 0) return input;
+  try {
+    const old = JSON.parse(input.slice(BROWSER_CONTEXT_START.length, end));
+    const fresh = prependBrowserContext('', workflowId, getBrowserRuntime().state());
+    const now = fresh.startsWith(BROWSER_CONTEXT_START) ? JSON.parse(fresh.slice(BROWSER_CONTEXT_START.length, fresh.indexOf(BROWSER_CONTEXT_END))) : null;
+    if (!now) return input;
+    const envelope = JSON.stringify({ ...old, pages: now.pages, active_page_id: now.active_page_id });
+    return `${BROWSER_CONTEXT_START}\n${envelope}\n${BROWSER_CONTEXT_END}\n${stripBrowserContext(input)}`;
+  } catch {
+    return input;
+  }
 }
 
 /**

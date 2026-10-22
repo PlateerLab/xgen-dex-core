@@ -338,10 +338,6 @@ test('popup approval preserves the next original window.open instead of replayin
 
 test('popup tabs keep their WebContents, agent ownership and parent lifecycle', async () => {
   class Contents extends EventEmitter {
-    mainFrame = {
-      executeJavaScript: async (code: string) => code.includes('const allowed ='),
-      get framesInSubtree() { return [this]; },
-    };
     navigationHistory = { canGoBack: () => false, canGoForward: () => false };
     destroyed = false;
     session = 'test-session';
@@ -352,8 +348,6 @@ test('popup tabs keep their WebContents, agent ownership and parent lifecycle', 
       readonly url: string,
     ) {
       super();
-      const owner = this;
-      Object.defineProperty(this.mainFrame, 'detached', { get: () => owner.destroyed });
     }
     isDestroyed = () => this.destroyed;
     getURL = () => this.url;
@@ -461,6 +455,33 @@ test('popup tabs keep their WebContents, agent ownership and parent lifecycle', 
 
   const agent = (runtime as unknown as { runner: { run: () => Promise<unknown> } }).runner;
   const originalRun = agent.run;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true);
+  agent.run = async () => {
+    const fresh = new PopupView(new Contents(15, 'https://example.com/category'));
+    internals.bindPopupView(page, fresh, fresh.webContents.url);
+    return { success: true };
+  };
+  try {
+    const response = await provider.callTool(BROWSER_INTERACT_TOOL,
+      { action: 'click', page_id: 'parent', ref: '#category' }, { workflowId: 'workflow' });
+    const data = JSON.parse(response.content[0].text!);
+    assert.equal(data.page_id, 'parent');
+    assert.equal(data.result.success, true);
+    assert.equal(data.result.opened_pages.length, 1, 'existing popup must not be reported again');
+    const opened = data.result.opened_pages[0];
+    assert.notEqual(opened.page_id, popup.pageId);
+    assert.equal(opened.url, 'https://example.com/category');
+    assert.equal(typeof opened.title, 'string');
+    assert.match(data.result.next_step, /BrowserSnapshot/);
+    await runtime.close(opened.page_id);
+    agent.run = async () => ({ success: true });
+    const unchanged = await provider.callTool(BROWSER_INTERACT_TOOL,
+      { action: 'click', page_id: 'parent', ref: '#ordinary' }, { workflowId: 'workflow' });
+    assert.deepEqual(JSON.parse(unchanged.content[0].text!).result, { success: true });
+  } finally {
+    agent.run = originalRun;
+  }
   agent.run = async () => {
     child.webContents.close();
     throw new Error('Target closed during click');

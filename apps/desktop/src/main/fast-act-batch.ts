@@ -18,6 +18,7 @@ import { replyFor } from './fast-act-reply';
 import { decisionPost, visiblePage } from './fast-act-runner';
 import { BrowserVoiceAgent } from './fast-act-voice';
 import { FINAL } from './voice-segmenter';
+import { isFieldVerification } from './fast-act-labels';
 
 const SCOPE = 'fast-act';
 const now = (): number => performance.now();
@@ -29,6 +30,7 @@ export type StepResult = {
   /** 한 일(done) 또는 못 한 까닭(failed·skipped). */
   note: string;
   ms: number;
+  read_only?: boolean;
 };
 
 export async function runSteps(
@@ -63,6 +65,10 @@ export async function runSteps(
     const work = runtime.withPageScope(start.pageId, controller.signal, async () => {
       for (let i = 0; i < steps.length && !controller.signal.aborted; i++) {
         const step = steps[i];
+        if (isFieldVerification(step)) {
+          out[i] = { step, status: 'failed', read_only: true, note: '확인 요청은 값을 변경하지 않습니다. 반환된 form_values로 확인하세요.', ms: 0 };
+          continue;
+        }
         const t = now();
         const before = agent.actions.length;
         if (!runtime.get(start.pageId)) { reason = '폼 탭이 닫혔습니다.'; break; }

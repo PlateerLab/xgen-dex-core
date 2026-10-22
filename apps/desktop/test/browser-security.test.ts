@@ -479,6 +479,14 @@ test('popup tabs keep their WebContents, agent ownership and parent lifecycle', 
     const unchanged = await provider.callTool(BROWSER_INTERACT_TOOL,
       { action: 'click', page_id: 'parent', ref: '#ordinary' }, { workflowId: 'workflow' });
     assert.deepEqual(JSON.parse(unchanged.content[0].text!).result, { success: true });
+    // 사용자가 턴을 멈췄으면 그 뒤의 클릭·입력은 실행하지 않는다.
+    let ran = false;
+    agent.run = async () => { ran = true; return { success: true }; };
+    const stopped = new AbortController();
+    stopped.abort();
+    await assert.rejects(provider.callTool(BROWSER_INTERACT_TOOL,
+      { action: 'click', page_id: 'parent', ref: '#ordinary' }, { workflowId: 'workflow', signal: stopped.signal }), /cancelled/);
+    assert.equal(ran, false);
   } finally {
     agent.run = originalRun;
   }

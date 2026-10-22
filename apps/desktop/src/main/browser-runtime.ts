@@ -1184,6 +1184,8 @@ export class BrowserRuntime {
     };
     const send = (method: string, params?: Record<string, unknown>) => contents.debugger.sendCommand(method, params);
     const execute = async () => {
+      // 연결·초기화를 기다리는 사이 사용자가 멈췄으면 실행하지 않는다 — 저장 가드를 걷어낼 때 이 검사도 같이 빠졌다(10/22 리뷰).
+      if (context?.signal?.aborted) throw new BrowserRuntimeError('browser_denied', 'Browser action cancelled.');
       this.assertPageScope(runtime.info.pageId);
       if (command[0] !== 'snapshot' && generation !== undefined && generation !== runtime.info.generation)
         throw new BrowserRuntimeError('browser_stale_ref', '페이지가 변경되어 snapshot ref가 만료되었습니다.');

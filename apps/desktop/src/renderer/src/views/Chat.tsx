@@ -34,10 +34,11 @@ import {
   CHAT_IMAGE_ACCEPT,
   CHAT_IMAGE_MAX_COUNT,
   CHAT_IMAGE_MAX_TOTAL_BYTES,
-  pastedImageFiles,
+  pastedFiles,
   stageChatFiles,
   type StagedChatImage,
 } from './chat-attach';
+import { useDocumentPasteAttach } from './use-paste-attach';
 import { mcpChatStatus } from './mcp-status-model';
 import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
 import { ChatShareModal } from './ChatShareModal';
@@ -697,13 +698,16 @@ export const Chat: React.FC<{
 
   const handleImagePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const files = pastedImageFiles(event.clipboardData.items);
+      const files = pastedFiles(event.clipboardData);
       if (files.length === 0) return;
       event.preventDefault();
       void addImageFiles(files);
     },
     [addImageFiles],
   );
+  // 작성기에 포커스가 없을 때(대화를 읽다가, 보내기를 누른 직후)의 붙여넣기도 받는다.
+  const pasteFilesFromPage = useCallback((files: File[]) => void addImageFiles(files), [addImageFiles]);
+  useDocumentPasteAttach(true, taRef, pasteFilesFromPage);
 
   useEffect(() => {
     if (!imageNotice) return;
@@ -2231,7 +2235,7 @@ export const Chat: React.FC<{
             // IDE 단추는 앱 사이드바가 그린다(ActivityBar 의 IDE 묶음).
             activityBar={false}
             chat={
-              <div className={`chat chat-ide-column${dragOver ? ' dropping' : ''}`} {...dragProps}>
+              <div className={`chat chat-ide-column${dragOver ? ' dropping' : ''}`} data-paste-root="" {...dragProps}>
                 {dropOverlay}
                 {body}
               </div>
@@ -2253,7 +2257,7 @@ export const Chat: React.FC<{
   }
 
   return (
-    <div className={`chat${dragOver ? ' dropping' : ''}`} {...dragProps}>
+    <div className={`chat${dragOver ? ' dropping' : ''}`} data-paste-root="" {...dragProps}>
       {dropOverlay}
       {header}
       {body}

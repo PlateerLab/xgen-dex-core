@@ -1338,6 +1338,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
     // 페이지가 바뀌었다(10/22 BO). 이름이 맞는지는 sameField — 두 글자만 겹치는 것("상품")은 다른 것으로 본다.
     if (layer && !listLayer(snap.refs) && pick && !chrome[pick.ref] && !sameField(text.replace(/\s+/g, ''), snap.refs[pick.ref]?.name ?? '')) {
       if (th.partial) return no('열린 창 — 말이 끝난 뒤', pick.top);
+      // 닫기도 실행이다 — 다른 조작처럼 멈춘 턴·실행 허용을 확인한다.
+      if (abort() || !(await guard('열린 창 닫기 (Esc 키)', 'press', pick.confidence))) return no(GUARDED, pick.top);
       this.layerClosed = true;
       try {
         await this.closeLayer(page);

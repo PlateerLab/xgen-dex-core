@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "XGEN Dex",
+    "name": "XGEN DexOn",
     "slug": "xgen-dex",
-    "version": "1.98.0",
+    "version": "1.102.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",

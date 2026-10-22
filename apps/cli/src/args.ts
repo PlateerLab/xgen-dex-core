@@ -19,6 +19,7 @@ const BOOLEAN_OPTIONS = new Set([
   'stdio',
   'shell',
   'version',
+  'verify-provenance',
 ]);
 
 export interface ParsedArgs {

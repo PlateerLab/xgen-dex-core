@@ -1,4 +1,4 @@
-# XGen Dex
+# XGEN DexOn
 
 A desktop **connector** for [XGEN](https://github.com/PlateerLab) — set your XGEN
 server URL, log in, browse **your agents** (the "Agent 목록"), and **chat** with

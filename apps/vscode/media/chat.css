@@ -1296,6 +1296,44 @@ textarea.start-control {
   background: var(--dex-accent-soft);
 }
 
+/* 답의 첫 글자 전 준비 단계. 도구 줄(.message.activity)과 같은 모양을 말풍선 안에 쌓는다. */
+.phase-lines {
+  display: grid;
+  gap: 4px;
+}
+
+/* 답 아래의 마무리 줄. 본문과 띄운다. */
+.message-content > .phase-lines:not(:first-child) {
+  margin-top: 8px;
+}
+
+.phase-line {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 6px;
+  padding: 3px 8px 3px 5px;
+  align-items: center;
+  border: 1px solid var(--dex-soft-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+  font-size: 11px;
+}
+
+.phase-line.run {
+  color: var(--vscode-foreground);
+}
+
+.phase-line.err {
+  color: var(--vscode-errorForeground);
+}
+
+.phase-time {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 .typing-indicator {
   display: inline-flex;
   height: 18px;

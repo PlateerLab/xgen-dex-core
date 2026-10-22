@@ -10,6 +10,7 @@
  */
 import type { McpServerConfig } from './mcp-types';
 import type { McpServerSecrets } from './mcp-types';
+import type { McpSecretStore } from './secret-stores';
 
 type Kv = Record<string, string>;
 
@@ -81,4 +82,29 @@ export function withResolvedSecrets(cfg: McpServerConfig, secrets?: McpServerSec
   if (headers) out.headers = headers;
   else delete out.headers;
   return out;
+}
+
+function sameKv(a?: Kv, b?: Kv): boolean {
+  const aEntries = Object.entries(a ?? {}).filter(([, value]) => value.length > 0).sort();
+  const bEntries = Object.entries(b ?? {}).filter(([, value]) => value.length > 0).sort();
+  return JSON.stringify(aEntries) === JSON.stringify(bEntries);
+}
+
+/**
+ * Persist and read back one server's secrets before the caller atomically
+ * replaces plaintext config with the returned redacted shape.
+ */
+export async function persistServerSecretsVerified(
+  store: McpSecretStore,
+  incoming: McpServerConfig,
+  stored?: McpServerSecrets | null,
+): Promise<McpServerConfig> {
+  const split = splitServerSecrets(incoming, stored);
+  const saved = await store.save(incoming.name, split.secrets);
+  if (!saved) throw new Error('MCP 비밀값을 보안 저장소에 저장하지 못했습니다. 기존 설정은 유지됩니다.');
+  const verified = await store.get(incoming.name);
+  if (!sameKv(split.secrets.env, verified?.env) || !sameKv(split.secrets.headers, verified?.headers)) {
+    throw new Error('MCP 비밀값 저장 검증에 실패했습니다. 기존 설정은 유지됩니다.');
+  }
+  return split.redacted;
 }

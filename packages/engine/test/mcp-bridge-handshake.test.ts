@@ -46,7 +46,7 @@ for (const status of [401, 404]) {
       bridge.start({
         serverUrl: url,
         userId: 'u1',
-        allowPrivateCertificate: false,
+        serverTrust: [],
         getToken: async () => 'token-that-will-be-rejected',
         // 401 자가치유 경로까지 함께 태운다 — 그 갈래가 close() 를 부르는 쪽이다.
         refreshAuth: async () => 'still-rejected',
@@ -69,3 +69,26 @@ for (const status of [401, 404]) {
     );
   });
 }
+
+test('token이 없으면 소켓이나 재접속 타이머를 만들지 않고 auth_required로 멈춘다', async () => {
+  const { server, url } = await startRejectingServer(500);
+  let requests = 0;
+  server.on('request', () => requests++);
+  const bridge = getMcpBridge();
+  try {
+    bridge.start({
+      serverUrl: url,
+      userId: 'u-no-token',
+      serverTrust: [],
+      getToken: async () => null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(requests, 0);
+    assert.equal(bridge.status().error, 'auth_required');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(requests, 0, 'auth_required 상태에서 backoff 재접속을 만들면 안 된다');
+  } finally {
+    bridge.stop();
+    await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
+  }
+});

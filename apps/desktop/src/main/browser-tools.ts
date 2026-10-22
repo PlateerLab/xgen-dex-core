@@ -2,7 +2,7 @@ import { BrowserWindow, dialog } from 'electron';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
-import { browserPathWithinRoots } from './browser-security';
+import { BrowserFileScopes, BrowserScratch, displayBrowserFileResult } from './browser-file-transfer';
 import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
 import { allowsDeciderAction, type DecisionPost } from './fast-act';
 import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
@@ -27,6 +27,16 @@ export const BROWSER_FILL_TOOL = 'BrowserFill';
 export const BROWSER_FORM_VALUES_TOOL = 'BrowserFormValues';
 /** 경로 없이 캡처하면 저장하는 곳 — 연결 폴더 안의 숨은 폴더(파일 올리기 후보에서도 빠진다). */
 const CAPTURE_DIR = '.xgen-captures';
+
+/** 연결 폴더 안에 그 파일이 이미 있나. */
+function exists(target: Awaited<ReturnType<BrowserFileScopes['resolve']>>): boolean {
+  try {
+    target.grant.openSource(target.relativePath).close();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const BROWSER_TOOL_NAMES = new Set([
   BROWSER_TABS_TOOL,
@@ -398,6 +408,40 @@ function appendValue(command: string[], value: unknown): void {
   command.push(typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+function browserFileError(error: unknown, scratch: BrowserScratch, paths: ReadonlyMap<string, string>): BrowserRuntimeError {
+  const raw = error instanceof Error ? error.message : String(error);
+  const clean = displayBrowserFileResult(raw, scratch, paths) as string;
+  const code = error instanceof BrowserRuntimeError ? error.code : 'browser_denied';
+  return new BrowserRuntimeError(code, clean.replace(/^browser_[a-z_]+:\s*/, ''));
+}
+
+async function runWithFileAbort<T>(
+  signal: AbortSignal,
+  run: () => Promise<T>,
+  cancel: () => Promise<void>,
+): Promise<T> {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  let cancelTask: Promise<void> | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      cancelTask = cancel().catch(() => undefined);
+      void cancelTask.then(() => reject(signal.reason ?? new Error('브라우저 파일 작업이 취소되었습니다.')));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    const value = await Promise.race([run(), aborted]);
+    if (signal.aborted) await cancelTask;
+    signal.throwIfAborted();
+    return value;
+  } catch (error) {
+    if (signal.aborted) await cancelTask;
+    throw error;
+  }
+  finally { if (onAbort) signal.removeEventListener('abort', onAbort); }
+}
+
 const LOAD_STATES = new Set(['load', 'domcontentloaded', 'networkidle']);
 
 /**
@@ -421,6 +465,7 @@ export type BrowserFileRoots = (context?: LocalToolCallContext) => string[];
 export class BrowserToolProvider {
   private enabled = false;
   private fileRoots: BrowserFileRoots = () => [];
+  private fileScopes = new BrowserFileScopes();
   private revealSharedPage: (page: BrowserPageInfo) => void = () => {};
   private stepPost: () => DecisionPost | null = () => null;
   private stepping = new Set<string>();
@@ -438,6 +483,7 @@ export class BrowserToolProvider {
     revealSharedPage: (page: BrowserPageInfo) => void = () => {},
     stepPost: () => DecisionPost | null = () => null,
   ): void {
+    if (!enabled) this.fileScopes.clear();
     this.enabled = enabled;
     this.fileRoots = fileRoots;
     this.revealSharedPage = revealSharedPage;
@@ -447,6 +493,19 @@ export class BrowserToolProvider {
   /** 그 대화에 연결된 폴더 — 빠른 조작이 올릴 파일을 찾을 때(fast-act-upload). */
   roots(context?: LocalToolCallContext): string[] {
     return this.fileRoots(context);
+  }
+
+  clearBrowserFileGrants(interactionId?: string): void {
+    this.fileScopes.clear(interactionId);
+  }
+
+  private scopeKey(context?: LocalToolCallContext): string {
+    return context?.interactionId ?? context?.workflowId ?? 'legacy';
+  }
+
+  private fileSignal(context?: LocalToolCallContext): AbortSignal {
+    const grantSignal = this.fileScopes.signal(this.scopeKey(context));
+    return context?.signal ? AbortSignal.any([grantSignal, context.signal]) : grantSignal;
   }
 
   advertise(): LocalToolSchema[] {
@@ -638,7 +697,7 @@ export class BrowserToolProvider {
     }
   }
 
-  private scopedPath(raw: unknown, context?: LocalToolCallContext): string {
+  private async scopedPath(raw: unknown, context: LocalToolCallContext | undefined, allowMissing: boolean) {
     const roots = this.fileRoots(context);
     if (!roots.length) {
       throw new BrowserRuntimeError(
@@ -646,10 +705,11 @@ export class BrowserToolProvider {
         '이 대화에 연결된 폴더가 없어 이 PC 에 파일을 저장하거나 올릴 수 없습니다.',
       );
     }
-    const path = browserPathWithinRoots(raw, roots);
-    if (!path)
-      throw new BrowserRuntimeError('browser_denied', '파일 경로가 이 대화에 연결된 폴더 밖입니다.');
-    return path;
+    try {
+      return await this.fileScopes.resolve(raw, this.scopeKey(context), roots, allowMissing);
+    } catch (error) {
+      throw new BrowserRuntimeError('browser_denied', error instanceof Error ? error.message : String(error));
+    }
   }
 
   private async capture(
@@ -664,12 +724,29 @@ export class BrowserToolProvider {
       // ponytail: 캡처가 쌓이기만 한다 — 많아지면 오래된 것을 지운다.
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const fallback = `${CAPTURE_DIR}/${action}-${stamp}.${action === 'pdf' ? 'pdf' : 'png'}`;
-      let path = this.scopedPath(args.path ?? fallback, context);
+      let target = await this.scopedPath(args.path ?? fallback, context, true);
       // 있는 파일은 덮어쓰지 않는다 — LLM 이 경로를 browser.png 로 정해 캡처마다 같은 파일을 덮어썼다(10/19). 결과의 path 로 알린다.
-      if (existsSync(path)) path = path.replace(/(\.[^./\\]+)?$/, `-${stamp}$1`);
-      mkdirSync(dirname(path), { recursive: true });
-      command = [action === 'full_screenshot' ? 'screenshot' : action, path];
+      if (args.path !== undefined && exists(target)) {
+        target = await this.scopedPath(String(args.path).replace(/(\.[^./\\]+)?$/, `-${stamp}$1`), context, true);
+      }
+      const signal = this.fileSignal(context);
+      const page = await runWithFileAbort(signal, () =>
+        this.runtime.resolvePage(workflow(args, context), pageId(args), true), async () => undefined);
+      const scratch = await BrowserScratch.create();
+      const privatePath = scratch.path(action === 'pdf' ? 'capture.pdf' : 'capture.png');
+      command = [action === 'full_screenshot' ? 'screenshot' : action, privatePath];
       if (action === 'full_screenshot') command.push('--full');
+      try {
+        const run = await runWithFileAbort(signal, () => this.runtime.runAgentCommand(
+          workflow(args, context), page.info.pageId, command, timeout(args),
+        ), () => this.runtime.cancelAgentCommand(page.info.pageId));
+        await scratch.commit(action === 'pdf' ? 'capture.pdf' : 'capture.png', target, signal);
+        return result(run.page, displayBrowserFileResult(run.result, scratch, new Map([[privatePath, target.displayPath]])));
+      } catch (error) {
+        throw browserFileError(error, scratch, new Map([[privatePath, target.displayPath]]));
+      } finally {
+        await scratch.cleanup();
+      }
     } else if (action === 'console' || action === 'errors') {
       command = [action];
       if (args.clear === true) command.push('--clear');
@@ -735,23 +812,60 @@ export class BrowserToolProvider {
     args: Record<string, unknown>,
     context?: LocalToolCallContext,
   ): Promise<LocalToolResult> {
-    const action = String(args.action ?? '');
+    const requestedAction = String(args.action ?? '');
+    const supportedActions = new Set([
+      'cookies', 'storage', 'upload', 'download', 'viewport', 'device', 'geolocation', 'offline',
+      'headers', 'credentials', 'media', 'network', 'har', 'intercept', 'clipboard', 'eval',
+    ]);
+    if (!supportedActions.has(requestedAction)) {
+      throw new BrowserRuntimeError('browser_denied', '지원하지 않는 브라우저 고급 작업입니다.');
+    }
+    // The helper also accepts network har; normalize that alias before any path handling.
+    const harAlias = requestedAction === 'network' && String(args.operation ?? '').trim() === 'har';
+    const action = harAlias ? 'har' : requestedAction;
     if (!(await approve(action, JSON.stringify(args), this.runtime.actionSignal ?? context?.signal))) {
       throw new BrowserRuntimeError('browser_denied', `사용자가 ${action} 작업을 거부했습니다.`);
     }
-    const operation = String(args.operation ?? '').trim();
+    const operation = String(harAlias ? args.value ?? '' : args.operation ?? '').trim();
     let command: string[] = [action];
     if (operation) command.push(operation);
 
+    let scratch: BrowserScratch | undefined;
+    let outputTarget: Awaited<ReturnType<BrowserFileScopes['resolve']>> | undefined;
+    let outputName = '';
+    let electronName = '';
+    let fileSignal: AbortSignal | undefined;
+    const pathDisplays = new Map<string, string>();
     if (action === 'upload') {
       const paths = Array.isArray(args.paths) ? args.paths : [args.path];
+      if (!paths.length || paths.some((path) => typeof path !== 'string' || !path.trim())) {
+        throw new BrowserRuntimeError('browser_denied', '업로드할 파일 경로가 필요합니다.');
+      }
+      const sources = await Promise.all(paths.map((path) => this.scopedPath(path, context, false)));
+      fileSignal = this.fileSignal(context);
+      scratch = await BrowserScratch.create();
       command = ['upload', String(args.ref ?? '')];
-      for (const path of paths) command.push(this.scopedPath(path, context));
+      try {
+        for (let i = 0; i < sources.length; i++) {
+          const privatePath = await scratch.uploadFrom(sources[i], i, fileSignal);
+          pathDisplays.set(privatePath, sources[i].displayPath);
+          command.push(privatePath);
+        }
+      } catch (error) {
+        await scratch.cleanup();
+        throw error;
+      }
     } else if (action === 'download') {
-      const path = this.scopedPath(args.path, context);
-      const page = await this.runtime.resolvePage(workflow(args, context), pageId(args), true);
-      this.runtime.allowNextDownload(page.info.pageId, path);
-      command = ['download', String(args.ref ?? ''), path];
+      outputTarget = await this.scopedPath(args.path, context, true);
+      fileSignal = this.fileSignal(context);
+      const page = await runWithFileAbort(fileSignal, () =>
+        this.runtime.resolvePage(workflow(args, context), pageId(args), true), async () => undefined);
+      scratch = await BrowserScratch.create();
+      outputName = 'helper-download';
+      electronName = 'electron-download';
+      command = ['download', String(args.ref ?? ''), scratch.path(outputName)];
+      pathDisplays.set(scratch.path(outputName), outputTarget.displayPath);
+      pathDisplays.set(scratch.path(electronName), outputTarget.displayPath);
       args = { ...args, page_id: page.info.pageId };
     } else if (action === 'eval') {
       command = ['eval', String(args.expression ?? args.value ?? '')];
@@ -802,12 +916,25 @@ export class BrowserToolProvider {
     } else if (action === 'media') {
       command = ['set', 'media', String(args.value ?? operation ?? '')];
     } else if (action === 'har') {
-      command = ['network', operation || 'har'];
-      if (args.path !== undefined) command.push(this.scopedPath(args.path, context));
+      if (operation !== 'start' && operation !== 'stop') {
+        throw new BrowserRuntimeError('browser_denied', 'HAR 작업은 start 또는 stop이어야 합니다.');
+      }
+      command = ['network', 'har', operation];
+      if (operation === 'stop') {
+        outputTarget = await this.scopedPath(args.path ?? 'browser.har', context, true);
+        fileSignal = this.fileSignal(context);
+        scratch = await BrowserScratch.create();
+        outputName = 'capture.har';
+        command.push(scratch.path(outputName));
+        pathDisplays.set(scratch.path(outputName), outputTarget.displayPath);
+      }
     } else if (action === 'intercept') {
       command = ['network', 'route'];
       appendValue(command, args.value ?? args.options);
     } else if (action === 'network') {
+      if (operation && operation !== 'requests' && operation !== 'request') {
+        throw new BrowserRuntimeError('browser_denied', '지원하지 않는 네트워크 조회 작업입니다.');
+      }
       command = ['network', operation || 'requests'];
       appendValue(command, args.value ?? args.options);
     } else if (action === 'clipboard') {
@@ -819,14 +946,32 @@ export class BrowserToolProvider {
     const generation = Number.isFinite(Number(args.generation))
       ? Number(args.generation)
       : undefined;
-    const run = await this.runtime.runAgentCommand(
-      workflow(args, context),
-      pageId(args),
-      command,
-      timeout(args),
-      generation,
-    );
-    return result(run.page, run.result);
+    try {
+      const pinnedPage = scratch ? await runWithFileAbort(fileSignal!, () =>
+        this.runtime.resolvePage(workflow(args, context), pageId(args), true), async () => undefined) : undefined;
+      const run = action === 'download'
+        ? await runWithFileAbort(fileSignal!, () => this.runtime.runDownloadCommand(
+          workflow(args, context), pinnedPage!.info.pageId, command, scratch!.path(electronName), timeout(args), generation,
+        ), () => this.runtime.cancelAgentCommand(pinnedPage!.info.pageId))
+        : scratch
+          ? await runWithFileAbort(fileSignal!, () => this.runtime.runAgentCommand(
+            workflow(args, context), pinnedPage!.info.pageId, command, timeout(args), generation,
+          ), () => this.runtime.cancelAgentCommand(pinnedPage!.info.pageId))
+          : await this.runtime.runAgentCommand(
+            workflow(args, context), pageId(args), command, timeout(args), generation,
+          );
+      if (outputTarget && scratch) {
+        const committedName = action === 'download' && 'electronSaved' in run && run.electronSaved
+          ? electronName : outputName;
+        await scratch.commit(committedName, outputTarget, fileSignal);
+      }
+      return result(run.page, scratch ? displayBrowserFileResult(run.result, scratch, pathDisplays) : run.result);
+    } catch (error) {
+      if (scratch) throw browserFileError(error, scratch, pathDisplays);
+      throw error;
+    } finally {
+      await scratch?.cleanup();
+    }
   }
 }
 

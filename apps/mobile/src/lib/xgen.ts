@@ -14,23 +14,11 @@ import * as SecureStore from 'expo-secure-store';
 import { XgenClient } from '@dex/protocol';
 import { diagLog, loggingFetch } from './diag';
 import { uriSource } from './upload-source';
-
-export interface MobileSession {
-  serverUrl: string;
-  accessToken: string;
-  refreshToken?: string;
-  userId: string;
-  username: string;
-}
+import { MobileAuthLifecycle, type MobileSession, type SavedCredentials } from './auth-lifecycle';
+export type { MobileSession, SavedCredentials } from './auth-lifecycle';
 
 const PREF_KEY = 'xgen-session';
 const CRED_KEY = 'xgen-credentials';
-
-export interface SavedCredentials {
-  serverUrl: string;
-  email: string;
-  password: string;
-}
 
 export function normalizeServerUrl(raw: string): string {
   let url = raw.trim().replace(/\/+$/, '');
@@ -72,7 +60,11 @@ type RnWebSocketCtor = new (
   options?: { headers?: Record<string, string> },
 ) => WebSocket;
 
-export function buildClient(session: MobileSession, onAuthFailure?: () => void): XgenMobileClient {
+export function buildClient(
+  session: MobileSession,
+  onAuthFailure: () => void,
+  onTokensRotated: (accessToken: string, refreshToken?: string) => void,
+): XgenMobileClient {
   const api = new XgenClient({
     baseUrl: session.serverUrl,
     accessToken: session.accessToken,
@@ -82,16 +74,14 @@ export function buildClient(session: MobileSession, onAuthFailure?: () => void):
     // 첨부(`{ uri }`)는 조각으로 올린다 — 1GiB 동영상도 끊기면 이어 올린다.
     uriSource,
     // 토큰 회전 시 저장분 갱신 — 다음 WS 연결이 새 토큰 헤더를 집는다.
-    onTokensRotated: (accessToken, refreshToken) => {
-      session.accessToken = accessToken;
-      if (refreshToken !== undefined) session.refreshToken = refreshToken;
-      void AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
-    },
+    onTokensRotated,
   });
   const wsFactory = (url: string): WebSocket => {
     const Ctor = WebSocket as unknown as RnWebSocketCtor;
+    const token = api.getAccessTokenAfterRotation();
+    if (!token) throw new Error('로그아웃된 세션입니다.');
     return new Ctor(url, null, {
-      headers: { Authorization: `Bearer ${session.accessToken}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
   };
   return { api, session, wsFactory };
@@ -113,7 +103,6 @@ export async function login(
     userId: String(r.userId),
     username: r.username,
   };
-  await AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
   return session;
 }
 
@@ -131,6 +120,26 @@ export async function restoreSession(): Promise<MobileSession | null> {
 
 export async function clearSession(): Promise<void> {
   await AsyncStorage.removeItem(PREF_KEY);
+}
+
+export function createMobileAuth(changed: (client: XgenMobileClient | null) => void): MobileAuthLifecycle<XgenMobileClient> {
+  return new MobileAuthLifecycle({
+    readSession: restoreSession,
+    readCredentials: loadCredentials,
+    writeSession: async (session) => {
+      if (session) await AsyncStorage.setItem(PREF_KEY, JSON.stringify(session));
+      else await clearSession();
+    },
+    writeCredentials: saveCredentials,
+    writeLastChat: async (value) => {
+      if (value === null) await AsyncStorage.removeItem('last-chat');
+      else await AsyncStorage.setItem('last-chat', value);
+    },
+    login,
+    build: buildClient,
+    changed,
+    log: diagLog,
+  });
 }
 
 export function newInteractionId(workflowId: string): string {

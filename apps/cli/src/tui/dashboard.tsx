@@ -72,6 +72,7 @@ import type { TuiEngine, TuiSession } from './model';
 import type { LastChat } from './preferences';
 import { useTerminalSize } from './use-terminal-size';
 import { defaultWorkingFolders } from '../folders';
+import { textVerificationCandidate } from './provenance';
 
 /** 사이드바 맨 아래로 내려가기 몇 줄 전에 다음 쪽을 받아 둔다(에이전트 안의 대화). */
 const PREFETCH_ROWS = 3;
@@ -248,6 +249,8 @@ export function Dashboard(props: {
    * 끝나며 보내는 소식이, 그 사이 연 다른 대화에 [중단됨] 을 덧붙이지 않게 한다.
    */
   const viewEpoch = useRef(0);
+  /** 같은 답변 확인을 연달아 눌러도 마지막 요청 결과만 남긴다. */
+  const provenanceVerificationEpoch = useRef(0);
 
   // ── 대화 목록 ──
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -305,7 +308,11 @@ export function Dashboard(props: {
     props.engine.onConversationTurn = (turn) => {
       if (turn.interactionId !== chatInteractionRef.current) return;
       if (turn.source !== 'subagent_report' || !turn.output) return;
-      dispatch({ type: 'server_turn', ioId: turn.ioId, input: turn.input, output: turn.output });
+      dispatch({
+        type: 'server_turn', ioId: turn.ioId, input: turn.input, output: turn.output,
+        generatedContent: turn.generatedContent,
+        malformedGeneratedContent: turn.malformedGeneratedContent,
+      });
     };
     // 같은 소켓이 "지금 도는 턴이 있는가" 와 그 턴의 진행분을 알려 준다.
     props.engine.onConversationRunning = (event) => {
@@ -315,6 +322,8 @@ export function Dashboard(props: {
         interactionId: event.interactionId,
         running: event.running,
         text: typeof event.live?.text === 'string' ? event.live.text : undefined,
+        generatedContent: event.live?.generatedContent,
+        malformedGeneratedContent: event.live?.malformedGeneratedContent,
       });
     };
     // 다른 화면(웹·앱·VS Code)에서 이 대화의 모델을 바꿨다 — 제목 줄이 곧바로 따라간다.
@@ -1096,6 +1105,56 @@ export function Dashboard(props: {
     }).finally(() => { stopping.current = false; });
   };
 
+  /** 마지막 완결 답변을 현재 화면 본문 그대로 확인한다. proof는 화면이나 프롬프트로 보내지 않는다. */
+  const verifyLatestProvenance = async (): Promise<void> => {
+    if (chat.running) {
+      setAttachmentNotice('응답이 끝난 뒤 출처를 확인할 수 있습니다.');
+      return;
+    }
+    const latest = [...chat.messages].reverse().find((message) =>
+      message.role === 'assistant' && message.provenanceFinal,
+    );
+    if (!latest) {
+      setAttachmentNotice('확인할 완결 답변이 없습니다.');
+      return;
+    }
+    const candidate = textVerificationCandidate(latest);
+    if (!candidate.ok) {
+      setAttachmentNotice(
+        candidate.reason === 'malformed'
+          ? '출처 정보가 손상되어 확인하지 않았습니다.'
+          : candidate.reason === 'media_only'
+            ? '실제 미디어 데이터가 없어 본문 출처를 확인하지 않았습니다.'
+            : '본문 서명이 여러 개라 어느 서명을 확인할지 정할 수 없습니다.',
+      );
+      return;
+    }
+    const epoch = viewEpoch.current;
+    const verificationEpoch = ++provenanceVerificationEpoch.current;
+    const profile = props.session.profile;
+    const interactionId = chat.interactionId;
+    const messageId = latest.id;
+    const expectedText = candidate.text;
+    dispatch({ type: 'verification_started', messageId, expectedText });
+    setAttachmentNotice('출처를 확인하는 중…');
+    try {
+      const result = await props.engine.verifyGeneratedText(candidate.proof, expectedText, profile);
+      if (
+        viewEpoch.current !== epoch || provenanceVerificationEpoch.current !== verificationEpoch ||
+        props.session.profile !== profile || chatInteractionRef.current !== interactionId
+      ) return;
+      dispatch({ type: 'verification_finished', messageId, expectedText, status: result.status });
+      setAttachmentNotice('출처 확인이 끝났습니다.');
+    } catch {
+      if (
+        viewEpoch.current !== epoch || provenanceVerificationEpoch.current !== verificationEpoch ||
+        props.session.profile !== profile || chatInteractionRef.current !== interactionId
+      ) return;
+      dispatch({ type: 'verification_failed', messageId, expectedText });
+      setAttachmentNotice('출처를 확인하지 못했습니다. 연결 상태를 확인해 주세요.');
+    }
+  };
+
   /**
    * 메시지를 보낸다. `target` 은 시작 화면이 고른(또는 막 세운) 에이전트다. 그 자리에서는
    * 아직 이 화면의 `selected` 가 바뀌기 전이라 직접 넘긴다.
@@ -1139,6 +1198,11 @@ export function Dashboard(props: {
     if (text === '/thinking') {
       setInput('');
       openThinkingPicker();
+      return;
+    }
+    if (text === '/verify') {
+      setInput('');
+      void verifyLatestProvenance();
       return;
     }
     if (text === '/attachments') {
@@ -1452,6 +1516,14 @@ export function Dashboard(props: {
         },
       },
     ...(deletedCount > 0 ? [{ id: 'purge', label: `${PURGE_LABEL} (${deletedCount})`, run: openPurge }] : []),
+    {
+      id: 'verify-provenance',
+      label: '마지막 답변 출처 확인',
+      run: () => {
+        setPalette(false);
+        void verifyLatestProvenance();
+      },
+    },
       {
         id: 'profile',
         label: '프로필 전환',
@@ -1710,7 +1782,7 @@ export function Dashboard(props: {
     ? `${imeShortcut} 한/영 · Esc 닫기 · Ctrl+Q 종료`
     : focus === 'list'
       ? `${listHelp} · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 대화 · Ctrl+P 프로필 · Ctrl+Q 종료`
-      : `${imeShortcut} 한/영 · Ctrl+O 모델 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 목록 · PgUp/PgDn 스크롤 · /attach 경로 · /attachments · /detach · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`;
+      : `${imeShortcut} 한/영 · Ctrl+O 모델 · Ctrl+N 새 채팅 · Ctrl+K 명령 · Ctrl+H 기록 · Tab 목록 · PgUp/PgDn 스크롤 · /verify 출처 · /attach 경로 · /attachments · /detach · Ctrl+P 프로필 · Esc 취소 · Ctrl+Q 종료`;
 
   return (
     <Box flexDirection="column">

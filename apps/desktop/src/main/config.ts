@@ -6,12 +6,13 @@
  * (see keychain.ts). `XGEN_SERVER_URL` env pre-seeds the base URL on first run.
  */
 import { app } from 'electron';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrowserAddressSearchConfig, BrowserPopupPermissions } from '@dex/protocol/browser';
 import type { AgentViewerSub } from '@dex/protocol/agent-data';
 import type { NotificationSettings } from '@dex/protocol/notifications';
 import { DEPLOYMENT_DEFAULTS } from '@dex/engine/deployment-defaults';
+import type { XgenServerTrust } from '@dex/engine/connection-security';
 
 /** A local MCP server the connector hosts + proxies to the user's XGEN agents. */
 export interface McpServerConfig {
@@ -40,8 +41,10 @@ export interface McpServerConfig {
 export interface ConnectorConfig {
   /** Gateway origin, e.g. "https://xgen.example.com". Empty on first run. */
   serverUrl: string;
-  /** 설정된 서버에서 사설 CA 신뢰 실패만 예외로 허용한다. 기본 false. */
+  /** @deprecated Legacy broad trust flag. Kept only to show migration-required state; never honored. */
   allowPrivateCertificate?: boolean;
+  /** Exact-origin CA/pin records approved by a local user. */
+  serverTrust?: XgenServerTrust[];
   /** 로그인 화면에서 SSO 팝업 로그인을 제공한다. 기본 false. */
   ssoEnabled?: boolean;
   /** 서버 origin 기준 SSO 진입 상대 경로. 예: "/sso/signin". */
@@ -272,7 +275,10 @@ export function loadConfig(): ConnectorConfig {
 
 export function saveConfig(patch: Partial<ConnectorConfig>): ConnectorConfig {
   const next = { ...loadConfig(), ...patch };
-  writeFileSync(configPath(), JSON.stringify(next, null, 2), 'utf-8');
+  const target = configPath();
+  const temporary = `${target}.tmp-${process.pid}`;
+  writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  renameSync(temporary, target);
   return next;
 }
 

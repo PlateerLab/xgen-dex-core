@@ -175,7 +175,7 @@ function getUpdater(): AppUpdater | null {
       defaultId: 0,
       cancelId: 1,
       title: '업데이트 준비됨',
-      message: `XGen Dex ${info.version} 가 다운로드됐습니다.`,
+      message: `XGEN DexOn ${info.version} 가 다운로드됐습니다.`,
       detail: '지금 재시작하면 새 버전이 설치됩니다.',
     });
     if (res.response === 0) {
@@ -370,10 +370,10 @@ async function installXgenPackage(pkg: XgenInstallerPackage): Promise<void> {
       defaultId: 0,
       cancelId: 1,
       title: '업데이트 준비됨',
-      message: `XGen Dex ${pkg.version} 설치 파일을 확인했습니다.`,
+      message: `XGEN DexOn ${pkg.version} 설치 파일을 확인했습니다.`,
       detail:
         process.platform === 'win32'
-          ? 'XGen Dex 종료 후 설치 진행 창을 표시하고 새 버전으로 다시 시작합니다.'
+          ? 'XGEN DexOn 종료 후 설치 진행 창을 표시하고 새 버전으로 다시 시작합니다.'
           : '설치 프로그램을 연 뒤 화면의 안내에 따라 업데이트를 완료해 주세요.',
     });
     if (result.response === 0) {
@@ -395,7 +395,7 @@ async function installXgenPackage(pkg: XgenInstallerPackage): Promise<void> {
           });
           launcher.once('error', reject);
         });
-        notify('XGen Dex 종료 후 설치 진행 창을 표시합니다.');
+        notify('XGEN DexOn 종료 후 설치 진행 창을 표시합니다.');
         appWillInstall();
         app.quit();
         // MCP·브라우저 자식 프로세스가 종료를 늦춰 설치 파일 잠금이 남는 경우를

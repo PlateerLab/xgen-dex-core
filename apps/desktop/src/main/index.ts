@@ -29,12 +29,13 @@ import {
   clipboard,
   powerMonitor,
 } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { configureNativeFsBinding, configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { isSafeExternalUrl } from './external-url';
 import { installModalOverlay } from './modal-overlay';
 import { publicAppUrl } from './app-links';
@@ -87,7 +88,7 @@ import {
   mcpSecretStore,
   mcpOAuthStore,
 } from './keychain';
-import { splitServerSecrets, withResolvedSecrets } from '@dex/engine/mcp-secrets';
+import { persistServerSecretsVerified, withResolvedSecrets } from '@dex/engine/mcp-secrets';
 import { authorizeMcpServer, hasOAuthTokens, clearOAuth } from '@dex/engine/mcp-oauth';
 import {
   initUpdater,
@@ -110,7 +111,7 @@ import { localFoldersForRequest, normalizeLocalFolders } from '@dex/engine/local
 import { parseConversationFolders } from '@dex/protocol/conversation-folders';
 import type { ThinkingValue } from '@dex/protocol/conversation-model';
 import { ChatFolderSync } from './chat-folder-sync';
-import { FolderFsError, folderFsCall } from './folder-fs';
+import { FolderFsError, folderFsCall, closeAllFolderFsRoots, closeFolderFsRoot } from './folder-fs';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import { stopAllUserPcJobs } from '@dex/engine/user-pc';
 import {
@@ -121,7 +122,7 @@ import {
 } from './data-root';
 import { hostname } from 'os';
 import { TRAY_ICON_B64 } from './tray-icon';
-import { getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
+import { canonicalizeMcpServerConfig, getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
 import { clientWorkspaceTransfer } from '@dex/engine/workspace-transfer';
 import { fileSource } from '@dex/engine/file-source';
@@ -144,12 +145,8 @@ import {
   onMcpRuntimeLog,
   setMcpRuntimeLogEnabled,
 } from '@dex/engine/mcp-runtime-log';
-import {
-  buildSsoUrl,
-  parseSsoLoginResponse,
-  shouldAllowPrivateCertificate,
-  shouldIgnorePrivateCertificateError,
-} from '@dex/engine/connection-security';
+import { shouldAllowPrivateCertificate } from '@dex/engine/connection-security';
+import { buildSsoUrl, parseSsoLoginResponse } from '@dex/engine/connection-sso';
 import { createSsoWindowOptions } from './sso-window-options';
 import { getBrowserRuntime } from './browser-runtime';
 import {
@@ -203,6 +200,14 @@ app.setName('XGEN-Connector');
 // 실험용 별도 프로필 — 설치본과 데이터 폴더·단일 실행 잠금을 나눠 나란히 띄운다
 // (키체인 서비스 이름도 keychain.ts 에서 같은 값으로 나뉜다).
 if (process.env.DEX_PROFILE) app.setName(`XGEN-Connector-${process.env.DEX_PROFILE}`);
+configureNativeFsBinding(join(__dirname, '../native', `${process.platform}-${process.arch}`, 'native-fs.node'));
+try {
+  const nativeStage = join(app.getPath('userData'), 'native-stage');
+  mkdirSync(nativeStage, { recursive: true, mode: 0o700 });
+  configureNativeFsStage(nativeStage);
+} catch {
+  // Native file operations fail closed independently of chat and account restoration.
+}
 // 시험 전용: 녹음 파일을 마이크로 (Chromium 가짜 장치) — 실시간 음성 경로를 마이크 버튼부터 끝까지 확인할 때.
 if (process.env.DEX_VOICE_TEST === '1' && process.env.DEX_FAKE_MIC) {
   app.commandLine.appendSwitch('use-fake-device-for-media-stream');
@@ -380,6 +385,7 @@ function loadRendererPage(win: BrowserWindow, page: string): void {
 }
 
 function handleAuthFailure(): void {
+  resetNativeFolderGrants();
   getMcpBridge().stop();
   getBrowserRuntime().configure({ enabled: false });
   safeSend(mainWindow, CHANNELS.authFailed);
@@ -425,23 +431,27 @@ function getClient(): XgenClient {
  * 기본 세션의 인증서 정책을 현재 서버 설정에 맞춰 설치한다. 에이전트 뷰어의 캔버스(webview)도 같은 서버를
  * 자기 세션으로 열므로 같은 정책을 건다: 빠지면 사설 인증서 서버에서 캔버스만 열리지 않는다.
  */
+let certificatePolicyInstalled = false;
+
 function applyCertificatePolicy(): void {
-  const verify = (
-    request: Electron.Request,
-    callback: (verificationResult: number) => void,
-  ): void => {
-    const cfg = loadConfig();
+  // CertificateVerifyProc only exposes a hostname, so it cannot distinguish
+  // two HTTPS origins on different ports. Never grant a custom exception there.
+  session.defaultSession.setCertificateVerifyProc(null);
+  session.fromPartition(CANVAS_PARTITION).setCertificateVerifyProc(null);
+  if (certificatePolicyInstalled) return;
+  certificatePolicyInstalled = true;
+  app.on('certificate-error', (event, _webContents, url, error, certificate, callback) => {
     const allowed = shouldAllowPrivateCertificate(
-      normalizeServerUrl(cfg.serverUrl),
-      cfg.allowPrivateCertificate === true,
-      request.hostname,
-      request.verificationResult,
+      url,
+      loadConfig().serverTrust,
+      error,
+      certificate.data,
+      certificate.validStart,
+      certificate.validExpiry,
     );
-    // 0은 이번 인증서를 승인하고, -3은 Chromium의 원래 판정을 사용한다.
-    callback(allowed ? 0 : -3);
-  };
-  session.defaultSession.setCertificateVerifyProc(verify);
-  session.fromPartition(CANVAS_PARTITION).setCertificateVerifyProc(verify);
+    if (allowed) event.preventDefault();
+    callback(allowed);
+  });
 }
 
 function createWindow(): void {
@@ -454,7 +464,7 @@ function createWindow(): void {
     minWidth: 860,
     minHeight: 600,
     show: false,
-    title: 'XGen Dex',
+    title: 'XGEN DexOn',
     // Hide the generic File/Edit/View/Window/Help bar (Alt still reveals it on
     // Win/Linux) so the app doesn't read as a raw Electron shell.
     autoHideMenuBar: true,
@@ -1387,7 +1397,7 @@ function applyAutoLaunch(enabled: boolean): boolean {
       [
         '[Desktop Entry]',
         'Type=Application',
-        'Name=XGen Dex',
+        'Name=XGEN DexOn',
         `Exec=${exec}`,
         'X-GNOME-Autostart-enabled=true',
         'NoDisplay=false',
@@ -1455,6 +1465,7 @@ function resetPositions(): void {
 
 /** 로컬 설정과 로그인 정보를 지운 뒤 배포 기본값으로 다시 시작한다. */
 async function resetStoredSettings(): Promise<void> {
+  resetNativeFolderGrants();
   getMcpBridge().stop();
   void client?.logout().catch(() => undefined);
   client = null;
@@ -1473,7 +1484,7 @@ function createTray(): boolean {
   try {
     const icon = nativeImage.createFromDataURL(`data:image/png;base64,${TRAY_ICON_B64}`);
     tray = new Tray(icon);
-    tray.setToolTip('XGen Dex');
+    tray.setToolTip('XGEN DexOn');
     rebuildTrayMenu();
     tray.on('click', () => showMain());
     return true;
@@ -1557,13 +1568,9 @@ const mcpHttpFetch: McpHttpFetch = (url, init) =>
 
 /** HTTP MCP 전용 세션에만 사설 인증서 예외를 설치한다. */
 function applyMcpHttpCertificatePolicy(): void {
-  mcpHttpSession().setCertificateVerifyProc((request, callback) => {
-    const allowed = shouldIgnorePrivateCertificateError(
-      loadConfig().allowPrivateCertificate === true,
-      request.verificationResult,
-    );
-    callback(allowed ? 0 : -3);
-  });
+  // Exact-origin exceptions are decided by the app certificate-error handler,
+  // which receives the full URL. The hostname-only verify proc stays default.
+  mcpHttpSession().setCertificateVerifyProc(null);
 }
 
 function currentUserId(): string | null {
@@ -1640,6 +1647,14 @@ const chatFolders = new ChatFolderStore(
   join(app.getPath('userData'), 'chat-folders'),
   () => currentAccountKey(),
 );
+const folderFsGrantsByInteraction = new Map<string, Set<string>>();
+let folderFsAccount: string | null = null;
+function resetNativeFolderGrants(): void {
+  closeAllFolderFsRoots();
+  getBrowserToolProvider(getBrowserRuntime()).clearBrowserFileGrants();
+  folderFsGrantsByInteraction.clear();
+  getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
+}
 getLocalToolProvider().configureFolders((context) => chatFolders.list(context?.interactionId));
 // 연결한 폴더 ↔ 에이전트 작업 공간 — 복사 도구(CopyToWorkspace·CopyFromWorkspace)가 이 길로 옮긴다.
 // 올리는 자리는 그 대화의 첨부 폴더다(채팅 첨부와 같은 권한·같은 자리). 같은 파일은 덮어쓴다.
@@ -1682,6 +1697,12 @@ getLocalToolProvider().onRemoteUse((use) => {
   }
 });
 chatFolders.onChange((interactionId) => {
+  getBrowserToolProvider(getBrowserRuntime()).clearBrowserFileGrants(interactionId);
+  const current = new Set(chatFolders.list(interactionId).map((folder) => folder.path));
+  for (const root of folderFsGrantsByInteraction.get(interactionId) ?? []) {
+    if (!current.has(root)) closeFolderFsRoot(root, interactionId);
+  }
+  folderFsGrantsByInteraction.set(interactionId, current);
   // 빠진 폴더에서 돌던 백그라운드 작업을 멈추고, 열린 창들이 목록을 다시 그린다.
   getLocalToolProvider().foldersChanged(interactionId);
   for (const w of [mainWindow, overlayWindow, quickChatWindow]) {
@@ -1737,6 +1758,7 @@ const ideDeps = (): IdeTerminalDeps | null =>
         token: async () => (await liveAccessToken()) || '',
         refreshAuth: refreshAuthToken,
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+        serverTrust: () => loadConfig().serverTrust ?? [],
       }
     : null;
 /** 채팅 [IDE] 의 터미널 소켓 — 렌더러 대신 main 이 연다(ide-terminal.ts). */
@@ -1855,6 +1877,7 @@ function ensureConversationsWatch(): void {
     baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
     token: async () => liveAccessToken(),
     allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+    serverTrust: () => loadConfig().serverTrust ?? [],
   });
   conversationsWatch.start();
 }
@@ -1870,6 +1893,7 @@ ipcMain.handle(
       baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
       token: async () => liveAccessToken(),
       allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+      serverTrust: () => loadConfig().serverTrust ?? [],
     });
     conversationWatchHub.watch(
       workflowId,
@@ -1954,6 +1978,7 @@ function syncTeams(): void {
       token: async () => (await liveAccessToken()) || '',
       refreshAuth: refreshAuthToken,
       allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+      serverTrust: () => loadConfig().serverTrust ?? [],
       emit: (event) => {
         publishTeamsNotification(event);
         safeSend(mainWindow, CHANNELS.teamsEvent, event);
@@ -1978,6 +2003,66 @@ function syncTeams(): void {
 function txt(text: string, isError = false): LocalToolResult {
   return { content: [{ type: 'text', text }], isError };
 }
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableValue(entry)]),
+  );
+}
+
+function canonicalConfigDigest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex');
+}
+
+function requireFocusedLocalSettings(event: Electron.IpcMainInvokeEvent): void {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
+    throw new Error('이 설정 변경은 이 PC에서 포커스된 설정 화면의 직접 조작이 필요합니다.');
+  }
+}
+
+async function confirmFocusedLocalSettings(
+  event: Electron.IpcMainInvokeEvent,
+  title: string,
+  detail: string,
+): Promise<void> {
+  requireFocusedLocalSettings(event);
+  const result = await dialog.showMessageBox(mainWindow!, {
+    type: 'question',
+    title,
+    message: title,
+    detail,
+    buttons: ['확인', '취소'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (result.response !== 0) throw new Error('사용자가 로컬 설정 변경을 취소했습니다.');
+  requireFocusedLocalSettings(event);
+}
+
+function mcpApprovalSummary(servers: McpServerConfig[], digest: string): string {
+  const rows = servers.map((server) => {
+    if (server.transport === 'stdio') {
+      return [
+        `${server.name}: stdio`,
+        `실행 파일 ${server.command ?? ''}`,
+        `인자 ${JSON.stringify(server.args ?? [])}`,
+        `작업 폴더 ${homedir()}`,
+        `환경 키 ${Object.keys(server.env ?? {}).sort().join(', ') || '(없음)'}`,
+      ].join('\n  ');
+    }
+    const origin = server.url ? new URL(server.url).origin : '';
+    return [
+      `${server.name}: ${server.transport} ${origin}`,
+      `헤더 키 ${Object.keys(server.headers ?? {}).sort().join(', ') || '(없음)'}`,
+    ].join('\n  ');
+  });
+  return `${rows.join('\n')}\n\n설정 digest: ${digest}`;
+}
 const mcpAdminDelegate: LocalToolDelegate = {
   advertise() {
     return loadConfig().mcp
@@ -1987,10 +2072,8 @@ const mcpAdminDelegate: LocalToolDelegate = {
   owns(tool: string) {
     return tool === MCP_ADD_TOOL || tool === MCP_REMOVE_TOOL || tool === MCP_LIST_TOOL;
   },
-  async callTool(tool: string, rawArgs: unknown): Promise<LocalToolResult> {
+  async callTool(tool: string, _rawArgs: unknown, context): Promise<LocalToolResult> {
     if (!loadConfig().mcp) return txt('로컬 MCP 가 꺼져 있습니다 (설정 > MCP).', true);
-    const a = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>;
-
     if (tool === MCP_LIST_TOOL) {
       const servers = loadConfig().mcpServers ?? [];
       const adverts = await getMcpManager()
@@ -2014,77 +2097,26 @@ const mcpAdminDelegate: LocalToolDelegate = {
       return txt(JSON.stringify({ servers: rows }, null, 2));
     }
 
-    if (tool === MCP_REMOVE_TOOL) {
-      const name = String(a.name ?? '').trim();
-      if (!name) return txt('name 이 필요합니다.', true);
-      const prev = loadConfig().mcpServers ?? [];
-      if (!prev.some((sv) => sv.name === name))
-        return txt(`MCP 서버 '${name}' 이(가) 없습니다.`, true);
-      await applyMcpServers(prev.filter((sv) => sv.name !== name));
-      return txt(`MCP 서버 '${name}' 를 제거했습니다 (프로세스 종료·도구 분리).`);
-    }
-
-    // McpAddServer
-    const name = String(a.name ?? '').trim();
-    if (!name) return txt('name 이 필요합니다.', true);
-    const hasUrl = typeof a.url === 'string' && String(a.url).trim() !== '';
-    const transport = (
-      ['stdio', 'http', 'sse'].includes(String(a.transport))
-        ? String(a.transport)
-        : hasUrl
-          ? 'http'
-          : 'stdio'
-    ) as McpServerConfig['transport'];
-    const server: McpServerConfig = { name, transport, enabled: true };
-    if (typeof a.command === 'string' && a.command.trim())
-      server.command = String(a.command).trim();
-    if (Array.isArray(a.args)) server.args = a.args.map((x) => String(x));
-    if (a.env && typeof a.env === 'object')
-      server.env = Object.fromEntries(
-        Object.entries(a.env as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
-      );
-    if (hasUrl) server.url = String(a.url).trim();
-    if (a.headers && typeof a.headers === 'object')
-      server.headers = Object.fromEntries(
-        Object.entries(a.headers as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
-      );
-    if (a.auth === 'oauth' || a.auth === 'none') server.auth = a.auth;
-    if (transport === 'stdio' && !server.command)
-      return txt('stdio 서버는 command 가 필요합니다.', true);
-    if ((transport === 'http' || transport === 'sse') && !server.url)
-      return txt('http/sse 서버는 url 이 필요합니다.', true);
-
-    const prev = loadConfig().mcpServers ?? [];
-    const replaced = prev.some((sv) => sv.name === name);
-    await applyMcpServers([...prev.filter((sv) => sv.name !== name), server]);
-
-    // 연결/도구 검색을 잠깐 기다렸다 결과를 요약한다(첫 실행은 의존성 내려받기로 느릴 수 있음).
-    await new Promise((r) => setTimeout(r, 1500));
-    const adverts = await getMcpManager()
-      .advertise()
-      .catch(() => []);
-    const live = adverts.find((x) => x.name === name);
-    const toolNames = (live?.tools ?? []).map((t) => t.name);
-    const verb = replaced ? '갱신' : '추가';
-    if (server.auth === 'oauth' && !live?.connected) {
-      return txt(
-        `MCP 서버 '${name}' 를 ${verb}했습니다. OAuth 인증이 필요합니다 — 사용자가 설정 > MCP 에서 "브라우저로 인가하기" 를 완료하면 도구가 연결됩니다.`,
-      );
-    }
-    if (live?.error) {
-      return txt(
-        `MCP 서버 '${name}' 를 ${verb}했으나 연결 오류: ${live.error}. 명령/인자/토큰을 확인하세요 (여전히 등록은 유지됨, 재연결 자동 시도).`,
-        true,
-      );
-    }
+    // Bridge/model-originated configuration changes never prove local user
+    // presence. Mutations are accepted only by the focused Settings renderer
+    // IPC path below, where the final canonical config is bound to that click.
     return txt(
-      `MCP 서버 '${name}' 를 ${verb}·연결했습니다. 노출 도구 ${toolNames.length}개: ${toolNames.join(', ') || '(아직 검색 중 — 다음 턴에 반영될 수 있음)'}. 이 도구들은 mcp__${name}__* 로 호출됩니다.`,
+      context?.remote
+        ? '다른 기기나 원격 요청에서는 MCP 설정을 변경할 수 없습니다. 이 PC의 설정 > MCP에서 직접 변경하세요.'
+        : '모델 호출에서는 MCP 설정을 변경할 수 없습니다. 이 PC의 설정 > MCP에서 직접 변경하세요.',
+      true,
     );
+
   },
 };
 
 /** Reconcile MCP manager + bridge with config + login state. */
 function syncMcp(): void {
+  const account = currentAccountKey();
+  if (account !== folderFsAccount) {
+    resetNativeFolderGrants();
+    folderFsAccount = account;
+  }
   const cfg = loadConfig();
   setMcpRuntimeLogEnabled(cfg.mcpDebug === true);
   const mcp = getMcpManager();
@@ -2094,6 +2126,7 @@ function syncMcp(): void {
   mcp.configure(cfg.mcp ? cfg.mcpServers : [], {
     httpFetch: mcpHttpFetch,
     allowPrivateCertificate: cfg.allowPrivateCertificate === true,
+    certificatePolicyKey: canonicalConfigDigest(cfg.serverTrust ?? []),
   });
   // 서버가 도구 목록을 바꾸거나(list_changed) 죽으면 카탈로그를 에이전트에 다시 광고한다.
   mcp.setCatalogChangeListener(() => {
@@ -2143,7 +2176,7 @@ function syncMcp(): void {
     bridge.start({
       serverUrl: normalizeServerUrl(cfg.serverUrl),
       userId,
-      allowPrivateCertificate: cfg.allowPrivateCertificate === true,
+      serverTrust: cfg.serverTrust ?? [],
       // 라이브 토큰 우선 — keychain 만 읽으면 세션 중 회전 시 폐기 토큰을 집는다.
       getToken: async () => (await liveAccessToken()) || null,
       refreshAuth: refreshAuthToken,
@@ -2184,7 +2217,26 @@ ipcMain.handle(CHANNELS.configProbeServer, async (_e, input: string) => {
     });
   });
 });
-ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) => {
+ipcMain.handle(CHANNELS.configSet, async (event, patch: Partial<ConnectorConfig>) => {
+  let approvedTrustDigest: string | undefined;
+  if (patch.allowPrivateCertificate !== undefined || patch.serverTrust !== undefined) {
+    requireFocusedLocalSettings(event);
+    if (patch.allowPrivateCertificate === true && !patch.serverTrust?.length) {
+      throw new Error('기존의 광범위한 사설 인증서 허용은 지원하지 않습니다. 서버별 CA 또는 인증서 pin을 등록하세요.');
+    }
+    approvedTrustDigest = canonicalConfigDigest({
+      serverUrl: patch.serverUrl ?? loadConfig().serverUrl,
+      serverTrust: patch.serverTrust ?? loadConfig().serverTrust ?? [],
+    });
+    const trustRows = (patch.serverTrust ?? loadConfig().serverTrust ?? []).map((record) =>
+      `${record.origin} · CA ${record.ca?.length ?? 0} · pin ${record.certificateSha256?.length ?? 0} · 만료 ${new Date(record.expiresAt).toISOString()}`,
+    );
+    await confirmFocusedLocalSettings(
+      event,
+      '서버 인증서 신뢰 변경',
+      `${trustRows.join('\n') || '사용자 지정 신뢰 없음'}\n\n설정 digest: ${approvedTrustDigest}`,
+    );
+  }
   // Browser popup permissions are main-owned security state. Renderer settings
   // may update the other browser fields, but must neither grant permissions nor
   // erase existing rules when replacing the nested browser object.
@@ -2229,14 +2281,23 @@ ipcMain.handle(CHANNELS.configSet, async (_e, patch: Partial<ConnectorConfig>) =
     patch = { ...patch, autoLogin: false }; // 저장된 자동 로그인은 구 서버 계정
   }
   const next = saveConfig(patch);
+  if (
+    approvedTrustDigest &&
+    approvedTrustDigest !== canonicalConfigDigest({
+      serverUrl: next.serverUrl,
+      serverTrust: next.serverTrust ?? [],
+    })
+  ) {
+    throw new Error('서버 인증서 신뢰 설정이 확인 뒤 변경되었습니다.');
+  }
   if (patch.serverUrl !== undefined) getClient(); // rebind base URL
-  if (patch.serverUrl !== undefined || patch.allowPrivateCertificate !== undefined) {
+  if (patch.serverUrl !== undefined || patch.allowPrivateCertificate !== undefined || patch.serverTrust !== undefined) {
     // 검증 결과는 network service에 캐시되므로 proc을 다시 설치하고 기존
     // 연결을 닫아 다음 요청부터 새 정책을 사용한다.
     applyCertificatePolicy();
     await session.defaultSession.closeAllConnections();
   }
-  if (patch.allowPrivateCertificate !== undefined) {
+  if (patch.allowPrivateCertificate !== undefined || patch.serverTrust !== undefined) {
     applyMcpHttpCertificatePolicy();
     await mcpHttpSession().closeAllConnections();
     syncMcp();
@@ -2472,6 +2533,8 @@ ipcMain.handle(CHANNELS.authRestore, async () => {
 });
 
 ipcMain.handle(CHANNELS.authLogout, async () => {
+  resetNativeFolderGrants();
+  folderFsAccount = null;
   getMcpBridge().stop();
   teamsHub.stopAll();
   ideTerminals.closeAll();
@@ -2507,9 +2570,11 @@ ipcMain.handle(CHANNELS.avatarUploadAsset, (_e, bytes: Uint8Array, filename: str
   getClient().avatars.uploadAsset(bytes, filename),
 );
 // 고른 zip 을 디스크에서 조각으로 올린다 — 경로는 preload 가 사용자가 고른 파일에서만 얻는다.
-ipcMain.handle(CHANNELS.avatarUploadFile, async (_e, path: string, filename: string) =>
-  getClient().avatars.uploadAsset(await fileSource(path, { name: filename }), filename),
-);
+ipcMain.handle(CHANNELS.avatarUploadFile, async (_e, path: string, filename: string) => {
+  const source = await fileSource(path, { name: filename });
+  try { return await getClient().avatars.uploadAsset(source, filename); }
+  finally { source.close(); }
+});
 ipcMain.handle(CHANNELS.avatarDeleteAsset, (_e, avatarId: string) =>
   getClient().avatars.deleteAsset(avatarId),
 );
@@ -2694,6 +2759,7 @@ const voiceStreams = new VoiceStreamHub(() =>
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
+        serverTrust: () => loadConfig().serverTrust ?? [],
         wakeWords: () => {
           const c = loadConfig();
           const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
@@ -3004,10 +3070,25 @@ ipcMain.on(CHANNELS.ideUnwatch, (_e, key: string) => ideWatches.unwatch(String(k
 ipcMain.handle(CHANNELS.agentWsFile, (_e, wf: string, path: string) =>
   getClient().agentData.workspaceFile(wf, path),
 );
+const GENERATED_CONTENT_TEXT_MAX_BYTES = 4 * 1024 * 1024;
+const GENERATED_CONTENT_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
+const ipcBinaryMaxBytes = (opts: unknown): number | undefined => {
+  if (opts === undefined) return undefined;
+  if (!opts || typeof opts !== 'object' || Array.isArray(opts)) throw new Error('invalid binary read options');
+  const maxBytes = (opts as { maxBytes?: unknown }).maxBytes;
+  if (maxBytes === undefined) return undefined;
+  if (
+    typeof maxBytes !== 'number' || !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 || maxBytes > GENERATED_CONTENT_MEDIA_MAX_BYTES
+  ) {
+    throw new Error('invalid binary byte limit');
+  }
+  return Number(maxBytes);
+};
 ipcMain.handle(
   CHANNELS.agentWsBinary,
-  (_e, wf: string, path: string, purpose?: 'chat_attachment') =>
-    getClient().agentData.workspaceBinary(wf, path, purpose),
+  (_e, wf: string, path: string, purpose?: 'chat_attachment', opts?: { maxBytes?: number }) =>
+    getClient().agentData.workspaceBinary(wf, path, purpose, { maxBytes: ipcBinaryMaxBytes(opts) }),
 );
 // 문서 미리보기 — [파일 저장소] 와 같은 렌더러(서버)가 그린 페이지 그림. 에이전트 작업 공간의 docx·pptx·xlsx·hwp.
 ipcMain.handle(CHANNELS.agentWsDocPreview, (_e, wf: string, path: string) =>
@@ -3017,9 +3098,30 @@ ipcMain.handle(CHANNELS.agentWsPreviewPage, (_e, wf: string, page: string) =>
   getClient().agentData.workspacePreviewPage(wf, page),
 );
 // 답에 딸린 파일 — 웹 채팅의 다운로드 단추·그림 카드와 같은 것(파일 저장소의 결과물·API 응답 임시 파일).
-ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean }) =>
-  getClient().chatFiles.download(item, { preview: opts?.preview === true }),
+ipcMain.handle(CHANNELS.chatFileDownload, (_e, item: ChatDownload, opts?: { preview?: boolean; maxBytes?: number }) =>
+  getClient().chatFiles.download(item, {
+    preview: opts?.preview === true,
+    maxBytes: ipcBinaryMaxBytes(opts),
+  }),
 );
+// 생성물 증명은 렌더러가 가진 현재 본문을 main의 인증된 클라이언트로 검증한다.
+// proof/본문 상한을 IPC 경계에서도 지켜 거대한 값이 프로세스 사이를 오가지 않게 한다.
+ipcMain.handle(CHANNELS.generatedContentVerifyText, (_e, proof: string | null, text: string) => {
+  if (proof !== null && (typeof proof !== 'string' || proof.length > 8_192)) throw new Error('invalid generated-content proof');
+  if (
+    typeof text !== 'string' || text.length > GENERATED_CONTENT_TEXT_MAX_BYTES ||
+    Buffer.byteLength(text, 'utf8') > GENERATED_CONTENT_TEXT_MAX_BYTES
+  ) {
+    throw new Error('generated content text is too large');
+  }
+  return getClient().generatedContent.verifyText(proof, text);
+});
+ipcMain.handle(CHANNELS.generatedContentVerifyBytes, (_e, proof: string | null, bytes: Uint8Array, contentType: string) => {
+  if (proof !== null && (typeof proof !== 'string' || proof.length > 8_192)) throw new Error('invalid generated-content proof');
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength > GENERATED_CONTENT_MEDIA_MAX_BYTES) throw new Error('invalid generated-content bytes');
+  if (typeof contentType !== 'string' || contentType.length > 128) throw new Error('invalid generated-content content type');
+  return getClient().generatedContent.verifyBytes(proof, bytes, contentType);
+});
 ipcMain.handle(
   CHANNELS.agentWsUpload,
   (
@@ -3060,8 +3162,9 @@ ipcMain.handle(
   ) => {
     const controller = new AbortController();
     workspaceUploads.set(uploadId, controller);
+    let source: Awaited<ReturnType<typeof fileSource>> | undefined;
     try {
-      const source = await fileSource(path, { name: filename, type: mimeType });
+      source = await fileSource(path, { name: filename, type: mimeType });
       return await getClient().agentData.workspaceUpload(wf, source, filename, mimeType, interactionId, attachmentId, {
         signal: controller.signal,
         onProgress: (p) => {
@@ -3069,6 +3172,7 @@ ipcMain.handle(
         },
       });
     } finally {
+      source?.close();
       workspaceUploads.delete(uploadId);
     }
   },
@@ -3210,18 +3314,22 @@ ipcMain.handle(CHANNELS.teamsUploadAttachment, async (_e, roomId: string) => {
   // 올라갔는데 호출자는 오류만 받아, 올라간 파일을 알 수도 지울 수도 없게 된다
   // (서버에 첨부 삭제 API 가 없다).
   // 파일은 통째로 읽지 않는다 — 조각 업로드가 디스크에서 범위로 읽는다(1GB 까지).
-  const files = [];
-  for (const path of paths) {
-    const source = await fileSource(path);
-    const reason = teamsAttachmentRejectReason(source.name, source.size);
-    if (reason) throw new Error(reason);
-    files.push(source);
+  const files: Awaited<ReturnType<typeof fileSource>>[] = [];
+  try {
+    for (const path of paths) {
+      const source = await fileSource(path);
+      files.push(source);
+      const reason = teamsAttachmentRejectReason(source.name, source.size);
+      if (reason) throw new Error(reason);
+    }
+    const uploaded: TeamsAttachment[] = [];
+    for (const file of files) {
+      uploaded.push(await getClient().teams.uploadAttachment(roomId, file, file.name));
+    }
+    return uploaded;
+  } finally {
+    for (const file of files) file.close();
   }
-  const uploaded: TeamsAttachment[] = [];
-  for (const file of files) {
-    uploaded.push(await getClient().teams.uploadAttachment(roomId, file, file.name));
-  }
-  return uploaded;
 });
 
 /**
@@ -3740,11 +3848,14 @@ ipcMain.handle(
   async (_e, interactionId: unknown, rootId: unknown, op: unknown, args: unknown) => {
     const folder = chatFolders.list(String(interactionId ?? '')).find((f) => f.id === String(rootId ?? ''));
     if (!folder) return { ok: false, code: 'not_found', message: '연결된 폴더를 찾을 수 없습니다', detail: {} };
+    folderFsGrantsByInteraction.set(String(interactionId ?? ''), new Set(
+      chatFolders.list(String(interactionId ?? '')).map((entry) => entry.path),
+    ));
     try {
       const value = await folderFsCall(folder.path, String(op ?? ''), (args ?? {}) as Record<string, unknown>, {
         trash: (abs) => shell.trashItem(abs),
         reveal: (abs) => shell.showItemInFolder(abs),
-      });
+      }, String(interactionId ?? ''));
       return { ok: true, value };
     } catch (err) {
       if (err instanceof FolderFsError) return { ok: false, code: err.code, message: err.message, detail: err.detail };
@@ -3816,7 +3927,8 @@ ipcMain.on(CHANNELS.hotkeyResume, () => registerQuickChatHotkey());
 
 // ── IPC: local MCP ───────────────────────────────────────────────
 ipcMain.handle(CHANNELS.mcpGetEnabled, () => !!loadConfig().mcp);
-ipcMain.handle(CHANNELS.mcpSetEnabled, (_e, enabled: boolean) => {
+ipcMain.handle(CHANNELS.mcpSetEnabled, (event, enabled: boolean) => {
+  requireFocusedLocalSettings(event);
   setMcpEnabled(!!enabled);
   return !!enabled;
 });
@@ -3827,39 +3939,80 @@ ipcMain.handle(CHANNELS.mcpListServers, () => loadConfig().mcpServers ?? []);
  * 저장한다. 제거된 서버의 비밀/OAuth 상태는 정리한다. 저장 후 syncMcp() 로 매니저를 재조정하고
  * broadcast 한다. 반환은 저장된(redacted) 서버 목록.
  */
-async function applyMcpServers(incoming: McpServerConfig[]): Promise<McpServerConfig[]> {
+async function applyMcpServers(
+  incoming: McpServerConfig[],
+  expectedDigest?: string,
+): Promise<McpServerConfig[]> {
   const prev = loadConfig().mcpServers ?? [];
   const redacted: McpServerConfig[] = [];
   for (const s of incoming) {
     if (!s || !s.name) continue;
-    const stored = await mcpSecretStore.get(s.name).catch(() => null);
-    const { redacted: safe, secrets } = splitServerSecrets(s, stored);
-    await mcpSecretStore.save(s.name, secrets).catch(() => {});
-    redacted.push(safe);
+    const stored = await mcpSecretStore.get(s.name);
+    redacted.push(await persistServerSecretsVerified(mcpSecretStore, s, stored));
   }
-  // Clean up secrets + OAuth state for removed servers.
+  if (expectedDigest && expectedDigest !== canonicalConfigDigest(incoming)) {
+    throw new Error('MCP 설정이 확인 뒤 변경되었습니다. 다시 검토해 주세요.');
+  }
+  // Commit the redacted config before deleting removed-server keychain data.
   const keep = new Set(redacted.map((s) => s.name));
+  const next = saveConfig({ mcpServers: redacted });
   for (const p of prev) {
     if (p?.name && !keep.has(p.name)) {
       await mcpSecretStore.clear(p.name).catch(() => {});
       await mcpOAuthStore.clear(p.name).catch(() => {});
     }
   }
-  const next = saveConfig({ mcpServers: redacted });
   syncMcp();
   broadcastConfig(next);
   return next.mcpServers ?? [];
 }
 
-ipcMain.handle(CHANNELS.mcpSaveServers, async (_e, servers) => {
-  const incoming: McpServerConfig[] = Array.isArray(servers) ? servers : [];
-  return applyMcpServers(incoming);
+/** One-time fail-closed migration for pre-keychain plaintext MCP config. */
+async function migrateStoredMcpSecrets(): Promise<boolean> {
+  const cfg = loadConfig();
+  const servers = cfg.mcpServers ?? [];
+  const needsMigration = servers.some((server) =>
+    [...Object.values(server.env ?? {}), ...Object.values(server.headers ?? {})]
+      .some((value) => typeof value === 'string' && value.length > 0),
+  );
+  if (!needsMigration) return true;
+  try {
+    const redacted: McpServerConfig[] = [];
+    for (const server of servers) {
+      const stored = await mcpSecretStore.get(server.name);
+      redacted.push(await persistServerSecretsVerified(mcpSecretStore, server, stored));
+    }
+    saveConfig({ mcpServers: redacted });
+    return true;
+  } catch {
+    // Original plaintext config remains intact. MCPManager detects it and blocks launch.
+    return false;
+  }
+}
+
+ipcMain.handle(CHANNELS.mcpSaveServers, async (event, servers) => {
+  requireFocusedLocalSettings(event);
+  const raw: McpServerConfig[] = Array.isArray(servers) ? servers : [];
+  const incoming = await Promise.all(raw.map(canonicalizeMcpServerConfig));
+  const digest = canonicalConfigDigest(incoming);
+  await confirmFocusedLocalSettings(event, 'MCP 서버 설정 변경', mcpApprovalSummary(incoming, digest));
+  return applyMcpServers(incoming, digest);
 });
 ipcMain.handle(CHANNELS.mcpTestServer, async (e, cfg) => {
+  requireFocusedLocalSettings(e);
+  const canonical = cfg ? await canonicalizeMcpServerConfig(cfg) : cfg;
+  const approvedDigest = canonicalConfigDigest(canonical);
+  if (canonical) {
+    await confirmFocusedLocalSettings(
+      e,
+      'MCP 서버 테스트 실행',
+      mcpApprovalSummary([canonical], approvedDigest),
+    );
+  }
   // OAuth 서버는 테스트가 임시이름(__test__)로 붙어 토큰이 없어 항상 실패하고, DCR 이
   // 돌면 임시이름으로 고아 키체인 항목을 남긴다. 브라우저 인가로 안내하고 단락한다.
-  if (cfg?.auth === 'oauth') {
-    const authed = cfg?.name ? await hasOAuthTokens(String(cfg.name)).catch(() => false) : false;
+  if (canonical?.auth === 'oauth') {
+    const authed = canonical?.name ? await hasOAuthTokens(String(canonical.name)).catch(() => false) : false;
     return {
       ok: authed,
       message: authed
@@ -3870,17 +4023,29 @@ ipcMain.handle(CHANNELS.mcpTestServer, async (e, cfg) => {
   // 첫 실행은 인터프리터·의존성 내려받기로 몇 분이 걸릴 수 있다 — 그동안의
   // 서버 출력을 요청한 창으로 그대로 흘려보낸다.
   // G8a: 폼 값이 redacted('') 여도(저장된 서버를 테스트) 키체인 시크릿으로 채워 테스트.
-  const stored = cfg?.name ? await mcpSecretStore.get(cfg.name).catch(() => null) : null;
-  const resolved = cfg ? withResolvedSecrets(cfg, stored) : cfg;
+  const stored = canonical?.name ? await mcpSecretStore.get(canonical.name).catch(() => null) : null;
+  if (approvedDigest !== canonicalConfigDigest(canonical)) throw new Error('MCP 테스트 설정이 확인 뒤 변경되었습니다.');
+  const resolved = canonical ? withResolvedSecrets(canonical, stored) : canonical;
   return getMcpManager().test(resolved, (lines) => {
     if (!e.sender.isDestroyed())
-      e.sender.send(CHANNELS.mcpTestProgressEvent, { name: cfg?.name, lines });
+      e.sender.send(CHANNELS.mcpTestProgressEvent, { name: canonical?.name, lines });
   });
 });
-ipcMain.handle(CHANNELS.mcpAuthorize, async (_e, cfg) => {
+ipcMain.handle(CHANNELS.mcpAuthorize, async (event, cfg) => {
+  requireFocusedLocalSettings(event);
   // G8b: interactive OAuth 2.1 (PKCE) — opens the browser + loopback listener.
-  const stored = cfg?.name ? await mcpSecretStore.get(cfg.name).catch(() => null) : null;
-  const resolved = cfg ? withResolvedSecrets(cfg, stored) : cfg;
+  const canonical = cfg ? await canonicalizeMcpServerConfig(cfg) : cfg;
+  const digest = canonicalConfigDigest(canonical);
+  if (canonical) {
+    await confirmFocusedLocalSettings(
+      event,
+      'MCP OAuth 연결',
+      mcpApprovalSummary([canonical], digest),
+    );
+  }
+  const stored = canonical?.name ? await mcpSecretStore.get(canonical.name).catch(() => null) : null;
+  if (digest !== canonicalConfigDigest(canonical)) throw new Error('MCP OAuth 설정이 확인 뒤 변경되었습니다.');
+  const resolved = canonical ? withResolvedSecrets(canonical, stored) : canonical;
   const res = await authorizeMcpServer(resolved, { fetch: mcpHttpFetch });
   if (res.ok) syncMcp(); // reconnect now that tokens exist
   return res;
@@ -3888,12 +4053,14 @@ ipcMain.handle(CHANNELS.mcpAuthorize, async (_e, cfg) => {
 ipcMain.handle(CHANNELS.mcpOauthStatus, async (_e, name) => ({
   authorized: await hasOAuthTokens(String(name || '')).catch(() => false),
 }));
-ipcMain.handle(CHANNELS.mcpClearOauth, async (_e, name) => {
+ipcMain.handle(CHANNELS.mcpClearOauth, async (event, name) => {
+  requireFocusedLocalSettings(event);
   await clearOAuth(String(name || '')).catch(() => {});
   syncMcp();
   return { ok: true };
 });
-ipcMain.handle(CHANNELS.mcpRenameSecrets, async (_e, oldName, newName) => {
+ipcMain.handle(CHANNELS.mcpRenameSecrets, async (event, oldName, newName) => {
+  requireFocusedLocalSettings(event);
   // 서버 이름 변경 시 키체인의 시크릿/OAuth 를 old→new 로 이관한다. 안 하면 mcpSaveServers
   // 의 삭제정리(prev-but-not-new)가 옛 이름의 시크릿/토큰을 지워 데이터가 소실된다.
   const from = String(oldName || '');
@@ -4140,11 +4307,12 @@ if (!gotLock) {
 } else {
   app.on('second-instance', () => showMain());
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // 엔진에 이 호스트를 붙인다 — **가장 먼저**. 로컬 도구·MCP 매니저·서버
     // 브릿지가 전부 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히
     // 던진다(조용히 메모리로 폴백해서 사용자의 MCP 인증을 매번 잃는 대신).
     bindDesktopHost();
+    await migrateStoredMcpSecrets();
 
     // 절전에서 깨어났다 — 잠든 사이 서버가 놓은 대화 소켓은 이쪽에서 보기엔 아직 열려 있다.
     // 지금 확인하고 다시 붙어야 그 사이 끝난 턴이 바로 보인다.
@@ -4296,7 +4464,7 @@ if (!gotLock) {
           {
             id: `update-ready-${version}`,
             type: 'system.update_ready',
-            title: 'XGen Dex 업데이트',
+            title: 'XGEN DexOn 업데이트',
             body: `새 버전 v${version} — 클릭하면 지금 업데이트합니다.`,
             occurredAt: new Date().toISOString(),
             groupKey: 'system:update',
@@ -4363,6 +4531,7 @@ if (!gotLock) {
     void browserHistoryStore?.flushAll().catch(() => undefined);
   });
   app.on('will-quit', () => {
+    resetNativeFolderGrants();
     globalShortcut.unregisterAll();
     disposeUpdater();
     getMcpBridge().stop();

@@ -60,6 +60,67 @@ function collectLines(stream: PassThrough): {
   };
 }
 
+test('generatedContent/verifyText enforces UTF-8 bytes and preserves empty or whitespace text', async () => {
+  const engine = new DexEngine(new MemoryConfigStore(), new MemoryCredentialStore());
+  await engine.setProfile('corp', 'http://127.0.0.1');
+  await engine.useProfile('corp');
+  const maxBytes = 4 * 1024 * 1024;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const rpc = new DexRpcServer(engine, { input, output, log: () => {} });
+  try {
+    const collector = collectLines(output);
+    rpc.start();
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n');
+    await collector.waitFor((message) => message.id === 1);
+    const call = async (id: number, text: string): Promise<RpcMessage> => {
+      input.write(`${JSON.stringify({
+        jsonrpc: '2.0', id, method: 'generatedContent/verifyText',
+        params: { proof: null, text, profile: 'corp' },
+      })}\n`);
+      return collector.waitFor((message) => message.id === id);
+    };
+    const errorCode = (message: RpcMessage): unknown => message.error?.data &&
+      (message.error.data as Record<string, unknown>).code;
+
+    assert.equal(errorCode(await call(2, 'a'.repeat(maxBytes))), 'auth_required', '정확히 4 MiB는 입력 검사를 통과한다');
+    assert.equal(errorCode(await call(3, '')), 'auth_required', '빈 본문도 입력 검사를 통과한다');
+    assert.equal(errorCode(await call(4, ' \n\t')), 'auth_required', '공백 본문도 입력 검사를 통과한다');
+    assert.equal(errorCode(await call(5, 'a'.repeat(maxBytes + 1))), 'usage_error');
+    assert.equal(errorCode(await call(6, '가'.repeat(Math.floor(maxBytes / 3) + 1))), 'usage_error');
+
+    const seen: Array<{ proof: string | null; text: string; profile?: string }> = [];
+    engine.verifyGeneratedText = async (proof, text, profile) => {
+      seen.push({ proof, text, profile });
+      return {
+        status: 'unsigned_legacy',
+        signature_valid: false,
+        content_match: false,
+        actor_match: false,
+        statement: null,
+      };
+    };
+    input.write(`${JSON.stringify({
+      jsonrpc: '2.0', id: 7, method: 'generatedContent/verifyText',
+      params: { proof: null, text: '', profile: 'corp' },
+    })}\n`);
+    input.write(`${JSON.stringify({
+      jsonrpc: '2.0', id: 8, method: 'generatedContent/verifyText',
+      params: { proof: 'a.b.c', text: ' \n\t', profile: 'corp' },
+    })}\n`);
+    await collector.waitFor((message) => message.id === 7);
+    await collector.waitFor((message) => message.id === 8);
+    assert.deepEqual(seen, [
+      { proof: null, text: '', profile: 'corp' },
+      { proof: 'a.b.c', text: ' \n\t', profile: 'corp' },
+    ]);
+  } finally {
+    rpc.close();
+    input.destroy();
+    output.destroy();
+  }
+});
+
 test('stdio RPC initializes, lists agents, and streams chat notifications', async () => {
   const mock = await startMockXgen();
   const input = new PassThrough();

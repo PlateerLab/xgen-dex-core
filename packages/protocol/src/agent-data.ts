@@ -12,6 +12,10 @@
 import type { ShareAudience } from './shares';
 import { HttpClient, type UploadFileData, type UploadOptions } from './client';
 import { toAgentWorkflow, type AgentWorkflow } from './agent-workflow';
+import {
+  WORKSPACE_TRANSFER_HEADER,
+  type WorkspaceTransferCapability,
+} from './workspace-copy';
 
 /** 에이전트 뷰어의 하위 탭 — **단일 정의**.
  *
@@ -60,6 +64,8 @@ export interface WorkspaceUploadOptions {
   signal?: AbortSignal;
   /** 보낸 바이트 — 큰 파일(최대 1GiB)의 진행률. */
   onProgress?: UploadOptions['onProgress'];
+  /** CopyToWorkspace 전용 서버 capability. 일반 채팅 첨부에는 넣지 않는다. */
+  transfer?: WorkspaceTransferCapability;
 }
 
 /** 하위 폴더 값 정리 — 빈 칸·`.`·`..` 을 버린다(서버도 다시 검사한다). */
@@ -1007,8 +1013,9 @@ export class AgentDataApi {
     workflowId: string,
     path: string,
     purpose?: WorkspaceBinaryPurpose,
+    opts: { maxBytes?: number; signal?: AbortSignal } = {},
   ): Promise<WorkspaceBinary> {
-    return this.http.getBinary(this.workspaceRawPath(workflowId, path, purpose));
+    return this.http.getBinary(this.workspaceRawPath(workflowId, path, purpose), opts);
   }
 
   /**
@@ -1071,10 +1078,25 @@ export class AgentDataApi {
     const relpath = workspaceRelDir(opts.relDir);
     if (relpath) query.set('relpath', relpath);
     if (opts.replace) query.set('replace', '1');
+    const transfer = opts.transfer;
+    if (transfer) {
+      if (
+        transfer.direction !== 'to_workspace' || transfer.workflow_id !== workflowId ||
+        transfer.interaction_id !== interactionId || !transfer.token || /[\r\n]/.test(transfer.token)
+      ) {
+        return Promise.reject(new Error('WORKSPACE_TRANSFER_CAPABILITY_REQUIRED'));
+      }
+      query.set('workspace_transfer', '1');
+    }
     return this.http.upload<WorkspaceUploadResult>(
       `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage/upload?${query}`,
       [{ name: 'file', file: source, filename, type: mimeType }],
-      { timeoutMs: 600_000, signal: opts.signal, onProgress: opts.onProgress },
+      {
+        timeoutMs: 600_000,
+        signal: opts.signal,
+        onProgress: opts.onProgress,
+        ...(transfer ? { headers: { [WORKSPACE_TRANSFER_HEADER]: transfer.token } } : {}),
+      },
     );
   }
 }

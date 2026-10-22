@@ -11,7 +11,7 @@
               │
               │ JSON-RPC 2.0 over UTF-8 NDJSON
               ▼
-        dex serve --stdio
+        dexon serve --stdio
               │
               ▼
        DexEngine / OS keychain / XGEN
@@ -21,7 +21,7 @@
 
 - 확장은 XGEN HTTP/SSE endpoint를 직접 호출하지 않습니다.
 - protocol version은 CLI와 동일한 `1`로 고정합니다.
-- stdout은 protocol frame 전용이고 stderr는 `XGEN Dex` Output Channel로 전달합니다.
+- stdout은 protocol frame 전용이고 stderr는 `XGEN DexOn` Output Channel로 전달합니다.
 - profile, credential, 로컬 도구 설정의 실제 저장과 실행은 CLI가 소유합니다.
 - 채팅 stream은 확장이 생성한 `streamId`로 notification을 라우팅합니다.
 

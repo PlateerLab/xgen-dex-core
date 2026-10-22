@@ -193,7 +193,7 @@ export function App({
     return (
       <Box flexDirection="column">
         <Header />
-        <Loading label="Dex를 준비하는 중..." />
+        <Loading label="DexOn을 준비하는 중..." />
         <Footer text="Ctrl+Q 종료" />
       </Box>
     );

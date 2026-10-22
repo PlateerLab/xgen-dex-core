@@ -15,6 +15,6 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/native-fs.test.ts test/native-fs.windows.test.ts"
   }
 }

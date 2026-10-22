@@ -10,6 +10,7 @@ import { dirname, join } from 'path'
 import { mkdtempSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { getMcpManager, tailLines, throttle, waitWhileProgressing } from '@dex/engine/mcp-manager'
+import { mcpSecretStore } from '@dex/engine/host'
 import { bindTestHost, recordingInteraction } from './_host';
 
 // 엔진은 호스트가 붙어야 돈다 — 안 붙이면 명확히 던진다(조용한 폴백 없음).
@@ -116,13 +117,14 @@ test('한 번 실패한 서버도 다시 붙으면 오류가 지워진다', asyn
   // 사용자 사례: uv 를 나중에 설치했는데 예전 실패 문구가 계속 떠 있었다.
   const marker = join(mkdtempSync(join(tmpdir(), 'flaky-')), 'installed')
   const mgr = getMcpManager()
+  await mcpSecretStore.save('flaky', { env: { FLAKY_MARKER: marker } })
   mgr.configure([
     {
       name: 'flaky',
       transport: 'stdio',
       command: process.execPath,
       args: [join(here, 'fixtures', 'flaky-mcp-server.mjs')],
-      env: { FLAKY_MARKER: marker },
+      env: { FLAKY_MARKER: '' },
     },
   ])
 

@@ -11,6 +11,8 @@ import {
   type BrowserConnectionEvent,
   type BrowserPageInfo,
 } from '@dex/protocol/browser';
+import { AgentBrowserRunner, assertAgentBrowserCommandArgs } from '../src/main/agent-browser-runner';
+import type { CdpPageProxy } from '../src/main/cdp-page-proxy';
 import { BrowserRuntime } from '../src/main/browser-runtime';
 import { BROWSER_TABS_TOOL, BrowserToolProvider, browserWaitCommand } from '../src/main/browser-tools';
 import {
@@ -363,6 +365,40 @@ test('upload/download paths stay inside the conversation folders', async () => {
   assert.equal(browserPathWithinRoots('shot.png', [root]), join(root, 'shot.png'));
   // 폴더가 없는 대화에서는 어떤 경로도 허락하지 않는다.
   assert.equal(browserPathWithinRoots(join(root, 'a.txt'), []), null);
+});
+
+test('agent-browser global options cannot be smuggled through positional browser arguments', async () => {
+  const runner = new AgentBrowserRunner();
+  let starts = 0;
+  const proxy = { start: async () => { starts += 1; return 9222; } } as CdpPageProxy;
+  for (const command of [
+    ['fill', '@e1', '--session', 'other'],
+    ['fill', '@e1', '--cdp', '9223'],
+    ['click', '--profile'],
+    ['type', '@e1', '--state'],
+    ['wait', '--text', '--config'],
+    ['eval', '--download-path'],
+    ['fill', '@e1', '--allow-file-access'],
+    ['fill', '@e1', '--help'],
+    ['fill', '@e1', '--', '--session'],
+  ]) {
+    await assert.rejects(
+      () => runner.run('page', proxy, command),
+      /browser_denied: agent-browser 전역 옵션/,
+      command.join(' '),
+    );
+  }
+  assert.equal(starts, 0, 'rejected arguments must not start the CDP proxy');
+});
+
+test('agent-browser command guard keeps command-local flags and ordinary text', () => {
+  for (const command of [
+    ['wait', '--text', 'a --session b'],
+    ['wait', '--url', '**/dashboard'],
+    ['snapshot', '-i', '--depth', '2'],
+    ['screenshot', '/tmp/capture.png', '--full'],
+    ['fill', '@e1', '--session=other'],
+  ]) assert.doesNotThrow(() => assertAgentBrowserCommandArgs(command));
 });
 
 test('an agent-created shared page requests visible browser UI', async () => {

@@ -2,4 +2,5 @@
 // (실제 사고 재현: uvx 가 패키지를 못 찾거나 서버가 ImportError 로 죽는 경우)
 process.stderr.write('ModuleNotFoundError: No module named "mcp_server_thing"\n')
 process.stderr.write('  hint: pip install mcp-server-thing\n')
+if (process.env.FAIL_SECRET) process.stderr.write(`  credential=${process.env.FAIL_SECRET}\n`)
 process.exit(1)

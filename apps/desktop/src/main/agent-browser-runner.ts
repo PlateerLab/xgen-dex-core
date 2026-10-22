@@ -10,6 +10,35 @@ export const AGENT_BROWSER_VERSION = '0.27.3';
 const DEFAULT_TIMEOUT = 30_000;
 const OUTPUT_LIMIT = 4 * 1024 * 1024;
 
+// agent-browser 0.27.3 scans the entire argv for global flags in
+// parse_flags/clean_args, even after a command's positional arguments. Its
+// parser does not implement `--` as an end-of-options marker. A selector or
+// text value matching one of these tokens would therefore change the session,
+// CDP target, browser profile/state, or another process-wide setting.
+const GLOBAL_AGENT_BROWSER_OPTIONS = new Set([
+  '--json', '--headed', '--debug', '--ignore-https-errors', '--allow-file-access',
+  '--hide-scrollbars', '--auto-connect', '--annotate', '--content-boundaries',
+  '--confirm-interactive', '--no-auto-dialog', '-v', '--verbose', '-q', '--quiet',
+  '--offline', '--quick', '--fix',
+  '--session', '--headers', '--executable-path', '--cdp', '--extension',
+  '--init-script', '--enable', '--profile', '--state', '--proxy', '--proxy-bypass',
+  '--args', '--user-agent', '-p', '--provider', '--device', '--session-name',
+  '--color-scheme', '--download-path', '--max-output', '--allowed-domains',
+  '--action-policy', '--confirm-actions', '--config', '--engine',
+  '--screenshot-dir', '--screenshot-quality', '--screenshot-format',
+  '--idle-timeout', '--model',
+  // main.rs also scans argv for these switches before command parsing.
+  '--help', '-h', '--version', '-V', '--all', '--with-deps',
+]);
+
+export function assertAgentBrowserCommandArgs(command: readonly string[]): void {
+  for (const arg of command) {
+    if (GLOBAL_AGENT_BROWSER_OPTIONS.has(arg)) {
+      throw new Error(`browser_denied: agent-browser 전역 옵션은 명령 인자로 사용할 수 없습니다: ${arg}`);
+    }
+  }
+}
+
 interface QueueState {
   tail: Promise<unknown>;
   active: ChildProcess | null;
@@ -112,6 +141,7 @@ export class AgentBrowserRunner {
     timeoutMs = DEFAULT_TIMEOUT,
     onRecover: () => void = () => {},
   ): Promise<unknown> {
+    assertAgentBrowserCommandArgs(command);
     let queue = this.queues.get(pageId);
     if (!queue) {
       queue = { tail: Promise.resolve(), active: null, cancelled: false };

@@ -28,10 +28,11 @@ interface Calls {
   renamed: Array<{ workflowId: string; interactionId: string; title: string }>;
   deleted: Array<{ workflowId: string; interactionId: string }>;
   purged: number;
+  verified: Array<{ proof: string | null; text: string; profile?: string }>;
 }
 
 function newCalls(): Calls {
-  return { created: [], sent: [], nameChecks: [], renamed: [], deleted: [], purged: 0 };
+  return { created: [], sent: [], nameChecks: [], renamed: [], deleted: [], purged: 0, verified: [] };
 }
 
 function conversation(over: Partial<Conversation> = {}): Conversation {
@@ -221,6 +222,16 @@ function fakeEngine(
       // 이 가짜 서버에서는 도는 턴이 없다 — 이력만 그린다.
       return { turns: await this.historyTurns('wf_abc', 'int-1'), running: false };
     },
+    async verifyGeneratedText(proof, text, profile) {
+      calls.verified.push({ proof, text, profile });
+      return {
+        status: proof ? 'verified' : 'unsigned_legacy',
+        signature_valid: !!proof,
+        content_match: !!proof && text.length >= 0,
+        actor_match: !!proof,
+        statement: null,
+      };
+    },
     async stopChat(): Promise<ChatStopResult> {
       return { stopped: true };
     },
@@ -405,6 +416,59 @@ test('TUI boots an authenticated profile and streams a chat turn', async () => {
     view.stdin.write('\r');
     frame = await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
     assert.match(frame, /You said: hello/);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('/verify는 proof가 없는 이전 답변도 현재 표시 본문과 활성 프로필로 확인한다', async () => {
+  const calls = newCalls();
+  const view = render(<App engine={fakeEngine(undefined, [], calls)} />);
+  try {
+    await chooseSalesAgent(view);
+    view.stdin.write('hello');
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('You said: hello'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('/verify');
+    view.stdin.write('\r');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('서명 정보 없음'));
+    assert.match(frame, /서명 정보 없음/);
+    assert.deepEqual(calls.verified, [{ proof: null, text: 'You said: hello', profile: 'corp' }]);
+  } finally {
+    view.cleanup();
+  }
+});
+
+test('/verify는 text proof가 있는 빈 완결 답변도 빈 bytes 그대로 확인한다', async () => {
+  const calls = newCalls();
+  const engine = fakeEngine(undefined, [], calls);
+  engine.chat = async function* (input) {
+    yield {
+      kind: 'generated_content',
+      data: {
+        indication: 'ai_generated', proof: 'a.b.c', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        content_type: 'text/plain', byte_length: 0,
+        source_id: '123e4567-e89b-42d3-a456-426614174000',
+      },
+    };
+    yield { kind: 'end' };
+    return await engine.resolveChatInput(input);
+  };
+  const view = render(<App engine={engine} />);
+  try {
+    await chooseSalesAgent(view);
+    view.stdin.write('empty');
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+    view.stdin.write('\r');
+    await waitForFrame(view.lastFrame, (value) => value.includes('AI 생성 표시'));
+    await waitForSettled(view.lastFrame);
+    view.stdin.write('/verify');
+    view.stdin.write('\r');
+    const frame = await waitForFrame(view.lastFrame, (value) => value.includes('본문 출처 확인됨'));
+    assert.match(frame, /본문 출처 확인됨/);
+    assert.deepEqual(calls.verified, [{ proof: 'a.b.c', text: '', profile: 'corp' }]);
   } finally {
     view.cleanup();
   }

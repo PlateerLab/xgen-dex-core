@@ -9,10 +9,15 @@ import {
   awaitingAnswer,
   parseAgentTrigger,
   phaseLabel,
+  startPhaseRows,
+  tailPhaseRows,
   phasesSettledAt,
   triggerRowLabel,
   visiblePhaseRows,
   type AgentTrigger,
+  type GeneratedContentProvenance,
+  type GeneratedContentVerification,
+  type GeneratedContentVerificationStatus,
   type TurnPhaseRow,
 } from '@dex/protocol';
 import type { ConversationSnapshot, ToolEvent } from '@dex/rpc';
@@ -38,6 +43,113 @@ export interface ChatMessage {
   phaseLines?: PhaseLine[];
   /** assistant. 답이 다 나온 뒤의 단계 줄(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리). 답 아래에 그린다. */
   tailLines?: PhaseLine[];
+  /** 확장 프로세스 전용. proof는 webview 상태로 보내지 않는다. */
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
+  provenanceFinal?: boolean;
+  provenanceCheck?: GeneratedContentVerificationStatus | 'checking' | 'failed';
+}
+
+export interface ChatMessageView extends Omit<ChatMessage, 'generatedContent' | 'malformedGeneratedContent' | 'provenanceFinal' | 'provenanceCheck'> {
+  provenance?: {
+    label: string;
+    status: GeneratedContentVerificationStatus | 'declared' | 'missing' | 'malformed' | 'checking' | 'failed';
+    canVerify: boolean;
+    verified: boolean;
+  };
+}
+
+export type TextVerificationCandidate =
+  | { ok: true; proof: string | null; text: string }
+  | { ok: false; reason: 'malformed' | 'media_only' | 'ambiguous' };
+
+export function textVerificationCandidate(message: ChatMessage): TextVerificationCandidate {
+  if (message.malformedGeneratedContent) return { ok: false, reason: 'malformed' };
+  const declarations = message.generatedContent ?? [];
+  if (declarations.length === 0) return { ok: true, proof: null, text: message.text };
+  const text = declarations.filter((item) => item.content_type === 'text/plain' && !item.artifact_path);
+  if (text.length === 0) return { ok: false, reason: 'media_only' };
+  if (text.length !== 1) return { ok: false, reason: 'ambiguous' };
+  return { ok: true, proof: text[0].proof, text: message.text };
+}
+
+/** Run a verifier against the captured visible text and discard a late/stale result. */
+export async function verifyMessageProvenance(
+  message: ChatMessage,
+  verify: (proof: string | null, text: string) => Promise<GeneratedContentVerification>,
+  isCurrent: () => boolean,
+): Promise<boolean> {
+  const candidate = textVerificationCandidate(message);
+  if (!candidate.ok || !message.provenanceFinal) return false;
+  const expectedText = candidate.text;
+  message.provenanceCheck = 'checking';
+  try {
+    const result = await verify(candidate.proof, expectedText);
+    if (!isCurrent() || message.text !== expectedText) return false;
+    message.provenanceCheck = result.status;
+  } catch {
+    if (!isCurrent() || message.text !== expectedText) return false;
+    message.provenanceCheck = 'failed';
+  }
+  return true;
+}
+
+function provenanceView(message: ChatMessage): ChatMessageView['provenance'] {
+  const checked = message.provenanceCheck;
+  if (checked === 'checking') return { label: '본문 출처 확인 중', status: checked, canVerify: false, verified: false };
+  if (checked === 'verified') return { label: '본문 출처 확인됨', status: checked, canVerify: true, verified: true };
+  if (checked === 'changed') return { label: '본문이 바뀌어 확인되지 않음', status: checked, canVerify: true, verified: false };
+  if (checked === 'other_actor') return { label: '다른 계정의 서명', status: checked, canVerify: true, verified: false };
+  if (checked === 'invalid') return { label: '서명이 유효하지 않음', status: checked, canVerify: true, verified: false };
+  if (checked === 'unsigned_legacy') return { label: '서명 정보 없음', status: checked, canVerify: true, verified: false };
+  if (checked === 'unavailable') return { label: '출처 확인을 사용할 수 없음', status: checked, canVerify: true, verified: false };
+  if (checked === 'failed') return { label: '본문 출처 확인 실패', status: checked, canVerify: true, verified: false };
+  if (message.malformedGeneratedContent) {
+    return { label: '출처 정보 손상', status: 'malformed', canVerify: false, verified: false };
+  }
+  if ((message.generatedContent?.length ?? 0) > 0) {
+    const candidate = textVerificationCandidate(message);
+    return {
+      label: candidate.ok ? 'AI 생성 표시 · 확인 전' : candidate.reason === 'media_only' ? 'AI 생성 표시(미디어) · 본문 확인 불가' : 'AI 생성 표시 · 본문 확인 불가',
+      status: 'declared',
+      canVerify: candidate.ok && message.provenanceFinal === true,
+      verified: false,
+    };
+  }
+  if (message.provenanceFinal) {
+    return { label: '출처 정보 없음', status: 'missing', canVerify: true, verified: false };
+  }
+  return undefined;
+}
+
+/** Strip proofs before crossing into the untrusted webview. */
+export function messageForView(message: ChatMessage): ChatMessageView {
+  const {
+    generatedContent: _generatedContent,
+    malformedGeneratedContent: _malformedGeneratedContent,
+    provenanceFinal: _provenanceFinal,
+    provenanceCheck: _provenanceCheck,
+    ...visible
+  } = message;
+  const provenance = provenanceView(message);
+  return provenance ? { ...visible, provenance } : visible;
+}
+
+/** Add live phase lines before stripping extension-only proofs from every message. */
+export function messagesForView(
+  messages: readonly ChatMessage[],
+  assistantMessageId: string | undefined,
+  phaseRows: readonly TurnPhaseRow[],
+  now: number,
+): ChatMessageView[] {
+  const lines = phaseLines(startPhaseRows(phaseRows), now);
+  const tail = phaseLines(tailPhaseRows(phaseRows), now);
+  return messages.map((item) => {
+    if (item.id !== assistantMessageId) return item;
+    if (!item.text && !item.tools?.length && lines.length > 0) return { ...item, phaseLines: lines };
+    if (item.text && tail.length > 0) return { ...item, tailLines: tail };
+    return item;
+  }).map(messageForView);
 }
 
 /** 준비 단계 한 줄. 웹뷰가 그대로 그린다. */
@@ -87,6 +199,9 @@ export function historyTurnMessages(turns: ConversationSnapshot['turns'], agentN
   return turns.flatMap((turn) => {
     const user = message('user', '나', turn.input);
     const assistant = message('assistant', agentName, turn.output);
+    assistant.generatedContent = turn.generatedContent;
+    assistant.malformedGeneratedContent = turn.malformedGeneratedContent;
+    assistant.provenanceFinal = true;
     const tools = (turn.process ?? []).flatMap((item) => (item.kind === 'tool' ? [item.event] : []));
     if (tools.length === 0) return [user, assistant];
     assistant.tools = tools;

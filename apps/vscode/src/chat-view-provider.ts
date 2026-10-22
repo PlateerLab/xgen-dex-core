@@ -1,4 +1,12 @@
-import { applyTurnPhase, describeStreamError, formatErrorLine, startPhaseRows, tailPhaseRows, type TurnPhaseRow } from '@dex/protocol';
+import {
+  applyTurnPhase,
+  describeStreamError,
+  formatErrorLine,
+  mergeGeneratedContentProvenance,
+  type GeneratedContentVerification,
+  type GeneratedContentProvenance,
+  type TurnPhaseRow,
+} from '@dex/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { DexService } from './dex-service';
@@ -21,7 +29,16 @@ import type {
   RpcNotification,
   ToolEvent,
 } from '@dex/rpc';
-import { describeTool, historyTurnMessages, message, phaseLines, type ChatMessage } from './chat-messages';
+import {
+  describeTool,
+  historyTurnMessages,
+  message,
+  messagesForView,
+  textVerificationCandidate,
+  verifyMessageProvenance,
+  type ChatMessage,
+  type ChatMessageView,
+} from './chat-messages';
 import {
   CONVERSATION_PAGE_LIMIT,
   SEARCH_LIMIT,
@@ -154,7 +171,7 @@ interface ChatViewState {
   auth?: AuthStatus;
   agents: Agent[];
   agent?: Agent;
-  messages: ChatMessage[];
+  messages: ChatMessageView[];
   running: boolean;
   refreshing: boolean;
   status?: string;
@@ -243,6 +260,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /** 다른 곳에서 도는 턴의 진행분을 담은 말풍선 — 매번 덮어쓸 대상. */
   private remotePartialId: string | undefined;
   private error: string | undefined;
+  /** 본문·출처·계정 범위가 바뀔 때 올라가 늦은 검증 응답을 폐기한다. */
+  private provenanceEpoch = 0;
   /** 설정에서 [이전] 을 누르면 돌아갈 화면. */
   private returnScreen: MainScreen = 'conversations';
   /** 에이전트가 사라진 대화를 열었다: 기록만 보이고 보낼 수 없다. */
@@ -344,6 +363,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   async refreshSession(): Promise<void> {
     const version = ++this.refreshVersion;
+    // 계정·프로필을 다시 확인하는 동안 이전 주체의 검증 결과를 화면에 남기지 않는다.
+    this.clearProvenanceChecks();
     const previousScreen = this.screen;
     this.refreshing = true;
     this.error = undefined;
@@ -1670,7 +1691,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (notification.method === 'chat/serverTurn') {
       // 서버가 주입한 완결 턴(트리거 반응) — 새로고침 없이 흐른다.
       const p = notification.params as
-        | { interactionId?: string; ioId?: number; input?: string; output?: string; source?: string }
+        | {
+            interactionId?: string; ioId?: number; input?: string; output?: string; source?: string;
+            generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean;
+          }
         | undefined;
       if (
         p &&
@@ -1682,9 +1706,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (!this.toolMessages.has(key)) {
           this.toolMessages.set(key, 'seen'); // io_id 중복 push 멱등
           this.messages.push(message('user', '나', String(p.input ?? '')));
-          this.messages.push(
-            message('assistant', this.selectedAgent?.workflowName ?? 'Agent', String(p.output)),
-          );
+          const assistant = message('assistant', this.selectedAgent?.workflowName ?? 'Agent', String(p.output));
+          assistant.generatedContent = p.generatedContent;
+          assistant.malformedGeneratedContent = p.malformedGeneratedContent;
+          assistant.provenanceFinal = true;
+          this.messages.push(assistant);
           this.postState();
         }
       }
@@ -1698,13 +1724,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // 안내와 **빈 자리**가 함께 있었다 — 서버는 열심히 돌고 있는데 보여 줄
       // 것이 없었다. 이제 진행분을 받아 그 자리를 채운다.
       const p = notification.params as
-        | { interactionId?: string; running?: boolean; live?: { text?: string } | null }
+        | {
+            interactionId?: string; running?: boolean;
+            live?: {
+              text?: string; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean;
+            } | null;
+          }
         | undefined;
       if (!p || p.interactionId !== this.interactionId) return;
       if (!p.running) return; // 끝났다는 소식은 완결 턴/폴링이 다룬다.
       if (!this.remoteRunning) this.watchRemoteRun();
       const text = typeof p.live?.text === 'string' ? p.live.text : '';
-      if (text) this.showRemotePartial(text);
+      if (text) this.showRemotePartial(text, p.live?.generatedContent, p.live?.malformedGeneratedContent);
       return;
     }
     if (notification.method === 'conversation/modelChanged') {
@@ -1737,7 +1768,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.status = undefined;
       this.clearPhases();
       const assistant = this.messages.find((item) => item.id === this.assistantMessageId);
-      if (assistant && !assistant.text) assistant.text = '응답 내용이 없습니다.';
+      if (assistant) {
+        if (!assistant.text) assistant.text = '응답 내용이 없습니다.';
+        assistant.provenanceFinal = true;
+      }
       void this.setRunning(false);
       this.postState();
       // 답이 끝났다: 서버가 정한 제목·순서로 목록 첫 쪽을 맞춘다(방금 만든 대화의 제목도 여기서 바로잡힌다).
@@ -1775,20 +1809,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.phaseTicker = undefined;
   }
 
-  /** 웹뷰에 보낼 메시지. 답이 시작되기 전의 답변 말풍선에만 준비 줄을 싣는다(원본은 건드리지 않는다). */
-  private messagesForView(): ChatMessage[] {
-    if (this.phaseRows.length === 0) return this.messages;
-    const now = Date.now();
-    // 답 전의 단계는 점 대신, 답 뒤의 단계(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리)는 답 아래에.
-    const lines = phaseLines(startPhaseRows(this.phaseRows), now);
-    const tail = phaseLines(tailPhaseRows(this.phaseRows), now);
-    if (lines.length === 0 && tail.length === 0) return this.messages;
-    return this.messages.map((item) => {
-      if (item.id !== this.assistantMessageId) return item;
-      if (!item.text && !item.tools?.length && lines.length > 0) return { ...item, phaseLines: lines };
-      if (item.text && tail.length > 0) return { ...item, tailLines: tail };
-      return item;
-    });
+  /** 웹뷰에 보낼 메시지: 준비·후반 단계 줄을 더하고 proof를 제거한다. */
+  private messagesForView(): ChatMessageView[] {
+    return messagesForView(this.messages, this.assistantMessageId, this.phaseRows, Date.now());
   }
 
   private applyEvent(event: ChatEvent): void {
@@ -1796,6 +1819,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     else if (event.kind === 'text' || event.kind === 'tool') this.clearPhases();
     if (event.kind === 'text') this.updateAssistant(event.content);
     else if (event.kind === 'summary') this.updateAssistant(event.text);
+    else if (event.kind === 'generated_content') {
+      const assistant = this.messages.find((item) => item.id === this.assistantMessageId);
+      if (assistant) {
+        assistant.generatedContent = mergeGeneratedContentProvenance(assistant.generatedContent, event.data);
+        assistant.provenanceCheck = undefined;
+        this.provenanceEpoch += 1;
+      }
+    }
     else if (event.kind === 'tool') this.updateTool(event.event);
     else if (event.kind === 'node_status') this.status = `${event.event.nodeId} · ${event.event.status}`;
     else if (event.kind === 'quota') this.messages.push(message('system', '사용량', `사용량 ${event.level}`));
@@ -1821,14 +1852,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * 여러 번 쌓인다. 그래서 전용 말풍선 하나를 두고 매번 덮어쓴다. 턴이 끝나면
    * 완결 턴이 히스토리로 와서 이 자리를 대신한다(pollRemoteRun 이 다시 그린다).
    */
-  private showRemotePartial(text: string): void {
+  private showRemotePartial(
+    text: string,
+    generatedContent?: GeneratedContentProvenance[],
+    malformedGeneratedContent?: boolean,
+  ): void {
     const name = this.selectedAgent?.workflowName ?? 'Agent';
     const existing = this.messages.find((item) => item.id === this.remotePartialId);
     if (existing) {
-      if (existing.text === text) return;
       existing.text = text;
+      existing.generatedContent = generatedContent;
+      existing.malformedGeneratedContent = malformedGeneratedContent;
+      existing.provenanceFinal = false;
+      existing.provenanceCheck = undefined;
+      this.provenanceEpoch += 1;
     } else {
       const msg = message('assistant', name, text);
+      msg.generatedContent = generatedContent;
+      msg.malformedGeneratedContent = malformedGeneratedContent;
       this.remotePartialId = msg.id;
       this.messages.push(msg);
     }
@@ -1837,7 +1878,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private updateAssistant(chunk: string): void {
     const assistant = this.messages.find((item) => item.id === this.assistantMessageId);
-    if (assistant) assistant.text += chunk;
+    if (assistant) {
+      assistant.text += chunk;
+      assistant.provenanceFinal = false;
+      assistant.provenanceCheck = undefined;
+      this.provenanceEpoch += 1;
+    }
+  }
+
+  private clearProvenanceChecks(): void {
+    this.provenanceEpoch += 1;
+    for (const item of this.messages) item.provenanceCheck = undefined;
+  }
+
+  private async verifyProvenance(messageId: string): Promise<void> {
+    const item = this.messages.find((message) => message.id === messageId && message.role === 'assistant');
+    if (!item || !item.provenanceFinal) return;
+    const candidate = textVerificationCandidate(item);
+    if (!candidate.ok) return;
+    const profile = this.activeProfileParams().profile;
+    const auth = this.auth;
+    const interactionId = this.interactionId;
+    const workflowId = this.selectedAgent?.workflowId;
+    // 같은 메시지에 연달아 요청하면 마지막 요청만 결과를 적용한다.
+    this.provenanceEpoch += 1;
+    const epoch = this.provenanceEpoch;
+    const expectedText = candidate.text;
+    item.provenanceCheck = 'checking';
+    this.postState();
+    const stillCurrent = (): boolean =>
+      this.auth === auth &&
+      this.activeProfileParams().profile === profile &&
+      this.interactionId === interactionId &&
+      this.selectedAgent?.workflowId === workflowId &&
+      this.messages.find((message) => message.id === messageId) === item &&
+      this.provenanceEpoch === epoch &&
+      item.text === expectedText;
+    const applied = await verifyMessageProvenance(
+      item,
+      (proof, text) => this.service.request<GeneratedContentVerification>('generatedContent/verifyText', {
+        profile,
+        proof,
+        text,
+      }),
+      stillCurrent,
+    );
+    if (applied) this.postState();
   }
 
   private updateTool(event: ToolEvent): void {
@@ -1871,6 +1957,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const data = raw as Record<string, unknown>;
     if (data.type === 'ready') this.postState();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
+    else if (data.type === 'verifyProvenance' && typeof data.messageId === 'string') void this.verifyProvenance(data.messageId);
     else if (data.type === 'checkInput') void this.answerInputCheck(data);
     else if (data.type === 'attach') void this.attachFiles();
     else if (data.type === 'pickModel') void this.pickModel();

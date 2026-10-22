@@ -1,3 +1,4 @@
+import { parseGeneratedContentEvent } from './generated-content';
 /**
  * Chat streaming against an XGEN agent.
  *
@@ -122,6 +123,7 @@ export const TURN_EVENT_NAMES = [
   'llm_contract_error',
   'canvas_command',
   'download_artifact',
+  'generated_content',
   'quota_exceeded',
   'quota_warning',
   'execution_suspended',
@@ -297,6 +299,10 @@ export function turnEventToChatEvent(
       return { kind: 'log', data: d ?? raw };
     case 'execution_io':
       return d ? { kind: 'execution_io', executionIoId: Number(d.execution_io_id ?? 0) } : null;
+    case 'generated_content': {
+      const provenance = parseGeneratedContentEvent(d);
+      return provenance ? { kind: 'generated_content', data: provenance } : null;
+    }
     case 'download_artifact':
       return d ? { kind: 'download', data: d } : null;
     case 'canvas_command':

@@ -397,6 +397,12 @@ export class DexRpcServer {
           optionalString(params, 'profile'),
         );
       }
+      case 'generatedContent/verifyText': {
+        if (typeof params.text !== 'string' || (params.proof !== null && typeof params.proof !== 'string')) {
+          throw new RpcFailure(-32602, 'proof and observed text are required');
+        }
+        return this.engine.verifyGeneratedText(params.proof as string | null, params.text, optionalString(params, 'profile'));
+      }
       case 'history/turns':
         return this.engine.historyTurns(
           requiredString(params, 'workflowId'),

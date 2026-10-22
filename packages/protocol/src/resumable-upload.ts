@@ -47,6 +47,11 @@ export interface ResumableSource {
   read(offset: number, length: number): Promise<Uint8Array>;
   /** Object identity for in-memory session reuse (e.g. the Blob itself). */
   identity?: object;
+  /**
+   * Stable, opaque identity for persisted session reuse. Disk sources use filesystem identity so
+   * a different file with the same display metadata cannot inherit already-uploaded chunks.
+   */
+  resumeIdentity?: string;
 }
 
 /** A Blob/File as an upload source. */
@@ -290,7 +295,16 @@ export class ResumableUploader {
   }
 
   private fingerprint(src: ResumableSource): string {
-    return `xgen.resumable:${this.base}|${src.name}|${src.size}|${src.lastModified ?? ''}|${src.type}`;
+    // v2 intentionally does not read v1 pipe-delimited keys. JSON preserves field boundaries even
+    // when names, MIME types, URLs, or opaque identities contain separators.
+    return `xgen.resumable:v2:${JSON.stringify([
+      this.base,
+      src.name,
+      src.size,
+      src.lastModified ?? null,
+      src.type,
+      src.resumeIdentity ?? null,
+    ])}`;
   }
 
   private async status(id: string, signal?: AbortSignal): Promise<{ session: Session; received: Set<number> } | null> {

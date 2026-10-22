@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import type { ConnectorDevice, ConversationModelState, ThinkingValue } from '@dex/protocol';
+import type { ConnectorDevice, ConversationModelState, GeneratedContentVerification, ThinkingValue } from '@dex/protocol';
 import { hostname } from 'node:os';
 import { ConversationWatchHub, DEX_ORIGIN_ID, type ConversationTurn } from './conversation-watch';
 import { ConversationsWatch, type ConversationListEvent } from './conversations-watch';
 import { UNCHECKED_INPUT, UPLOAD_MAX_BYTES, XgenClient, type ChatInputCheck, type LiveTurnSnapshot } from '@dex/protocol';
-import { fileSource, readFileHead } from './file-source';
+import { FileSourceNotRegularError, fileSource } from './file-source';
 import type { ConfigStore } from './config-store';
 import { validateProfileName, validateServerUrl } from './config-store';
 import type { CredentialStore } from './credential-store';
@@ -224,8 +223,8 @@ export class DexEngine {
     this.localToolBridge.start({
       serverUrl: record.serverUrl,
       userId,
-      // CLI 는 사내 인증서를 아직 설정으로 받지 않는다 — 기본은 검증이다.
-      allowPrivateCertificate: false,
+      // CLI 는 사내 trust material을 아직 설정으로 받지 않는다 — 표준 검증만 사용한다.
+      serverTrust: [],
       // 멀티 디바이스 — 데스크톱 앱과 같은 계정으로 붙어도 서로를 밀어내지 않는다.
       deviceId: this.deviceId,
       deviceName: `${hostname()} · CLI`,
@@ -671,6 +670,20 @@ export class DexEngine {
       .turns;
   }
 
+  async verifyGeneratedText(
+    proof: string | null,
+    text: string,
+    requestedProfile?: string,
+  ): Promise<GeneratedContentVerification> {
+    const maxTextBytes = 4 * 1024 * 1024;
+    if ((proof !== null && (typeof proof !== 'string' || proof.length > 8192)) ||
+        typeof text !== 'string' || text.length > maxTextBytes ||
+        Buffer.byteLength(text, 'utf8') > maxTextBytes) {
+      throw new DexError('usage_error', '출처 검증 입력이 유효하지 않거나 너무 큽니다.');
+    }
+    return this.withAuthRetry(requestedProfile, (client) => client.generatedContent.verifyText(proof, text));
+  }
+
   /**
    * 지난 턴 + **지금 도는 턴이 있는가**. 기기를 옮겨 들어온 화면이 "진행 중" 을
    * 복원하려면 이 값이 있어야 한다 — 서버 실행은 연결이 아니라 대화에 매여 있다.
@@ -726,39 +739,48 @@ export class DexEngine {
     path: string;
   }): Promise<ChatAttachmentDescriptor> {
     const filePath = resolve(input.path);
-    const info = await stat(filePath);
-    if (!info.isFile()) throw new DexError('usage_error', `파일이 아닙니다: ${input.path}`);
-    if (info.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
     const name = basename(filePath);
-    // 형식은 앞부분만 보고 정하고, 본문은 조각 업로드가 범위로 읽는다(통째로 메모리에 올리지 않는다).
-    const detected = detectAttachment(await readFileHead(filePath, 16), name);
-    const source = await fileSource(filePath, { name, type: detected.mimeType });
-    const attachmentId = `att-${randomUUID()}`;
-    const uploaded = await this.withAuthRetry(input.profile, (client) =>
-      client.agentData.workspaceUpload(
-        input.workflowId,
-        source,
+    const source = await fileSource(filePath, { name }).catch((error: unknown) => {
+      if (error instanceof FileSourceNotRegularError) {
+        throw new DexError('usage_error', `파일이 아닙니다: ${input.path}`);
+      }
+      throw error;
+    });
+    try {
+      if (source.size > UPLOAD_MAX_BYTES) throw new DexError('usage_error', '첨부 파일 한 개는 1GiB를 넘을 수 없습니다.');
+      // 형식 판별과 본문 업로드가 같은 open native handle 을 읽는다. 경로를
+      // 다시 열어 서로 다른 파일의 head/body 를 합치는 일을 허용하지 않는다.
+      const detected = detectAttachment(await source.read(0, 16), name);
+      source.type = detected.mimeType;
+      const attachmentId = `att-${randomUUID()}`;
+      const uploaded = await this.withAuthRetry(input.profile, (client) =>
+        client.agentData.workspaceUpload(
+          input.workflowId,
+          source,
+          name,
+          detected.mimeType,
+          input.interactionId,
+          attachmentId,
+        ),
+      );
+      if (uploaded.status === 'pending_approval') {
+        throw new DexError('usage_error', '파일 업로드가 승인 대기 중입니다. 승인 후 다시 첨부해 주세요.');
+      }
+      if (!uploaded.workspace_path) {
+        throw new DexError('protocol_mismatch', 'Workspace 업로드 응답에 경로가 없습니다.');
+      }
+      return {
+        kind: detected.kind,
+        attachment_id: attachmentId,
         name,
-        detected.mimeType,
-        input.interactionId,
-        attachmentId,
-      ),
-    );
-    if (uploaded.status === 'pending_approval') {
-      throw new DexError('usage_error', '파일 업로드가 승인 대기 중입니다. 승인 후 다시 첨부해 주세요.');
+        mime_type: detected.mimeType,
+        size: uploaded.size ?? source.size,
+        sha256: uploaded.sha256,
+        workspace_path: uploaded.workspace_path,
+      };
+    } finally {
+      await source.close();
     }
-    if (!uploaded.workspace_path) {
-      throw new DexError('protocol_mismatch', 'Workspace 업로드 응답에 경로가 없습니다.');
-    }
-    return {
-      kind: detected.kind,
-      attachment_id: attachmentId,
-      name,
-      mime_type: detected.mimeType,
-      size: uploaded.size ?? source.size,
-      sha256: uploaded.sha256,
-      workspace_path: uploaded.workspace_path,
-    };
   }
 
   async *chat(input: ChatInput, signal?: AbortSignal): AsyncGenerator<ChatEvent, ResolvedChatInput> {

@@ -11,12 +11,14 @@ test('CLI arguments support commands, values, equals, and boolean flags', () => 
     '--page=2',
     '--check',
     '--json',
+    '--verify-provenance',
   ]);
   assert.deepEqual(args.positionals, ['agents', 'list']);
   assert.equal(option(args, 'profile'), 'corp');
   assert.equal(positiveIntegerOption(args, 'page'), 2);
   assert.equal(flag(args, 'check'), true);
   assert.equal(flag(args, 'json'), true);
+  assert.equal(flag(args, 'verify-provenance'), true);
 });
 
 test('CLI arguments reject missing option values', () => {

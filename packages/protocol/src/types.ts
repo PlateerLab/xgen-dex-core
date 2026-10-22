@@ -7,6 +7,7 @@
  * tooling.
  */
 
+import type { GeneratedContentProvenance } from './generated-content';
 import type { XgenErrorInfo } from './errors';
 import type { TurnPhaseSignal } from './turn-phases';
 
@@ -119,6 +120,7 @@ export type ChatEvent =
   | { kind: 'log'; data: unknown }
   | { kind: 'execution_io'; executionIoId: number }
   | { kind: 'download'; data: Record<string, unknown> }
+  | { kind: 'generated_content'; data: GeneratedContentProvenance }
   | { kind: 'quota'; level: 'warning' | 'exceeded'; data: Record<string, unknown> }
   /**
    * 에이전트가 **자기 워크플로 그래프를 고쳤다**(WorkflowSelf 자기진화). 캔버스를
@@ -306,6 +308,9 @@ export interface HistoryTurn {
    * 본문만 그린다. 스트림으로 받은 순서와 같은 모양이라 타임라인이 그대로 그린다.
    */
   process?: HistoryFlowItem[];
+  /** Declarations are unverified until checked against observed output bytes. */
+  generatedContent?: GeneratedContentProvenance[];
+  malformedGeneratedContent?: boolean;
 }
 
 /** 작업 과정 한 칸 — 글 한 조각 또는 도구 사건 하나(시각은 epoch ms). */

@@ -17,6 +17,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync,
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { previousWindowsRelease, stableVersion } from './installer-release.mjs';
 
 if (process.platform !== 'win32') {
   console.log('Windows 설치본 확인은 Windows 에서만 합니다 — 건너뜀');
@@ -25,8 +26,10 @@ if (process.platform !== 'win32') {
 
 const DESKTOP = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const release = join(DESKTOP, 'release');
-const setup = readdirSync(release).find((f) => /^XGen-Dex-Setup-.*\.exe$/.test(f));
-if (!setup) throw new Error(`설치본이 없습니다: ${release}`);
+const candidateVersion = JSON.parse(readFileSync(join(DESKTOP, 'package.json'), 'utf8')).version;
+if (!stableVersion(candidateVersion)) throw new Error('검증 후보 버전이 정식 버전 형식이 아닙니다');
+const setup = `XGen-Dex-Setup-${candidateVersion}.exe`;
+if (!existsSync(join(release, setup))) throw new Error(`검증 후보 설치본이 없습니다: ${setup}`);
 const installer = join(release, setup);
 // 공백 없는 곳 — NSIS 의 /D= 는 따옴표 없이 마지막 인자여야 한다.
 const base = process.env.RUNNER_TEMP && !/\s/.test(process.env.RUNNER_TEMP) ? process.env.RUNNER_TEMP : tmpdir();
@@ -130,9 +133,16 @@ async function getJson(url) {
     }
   }
 }
-const latest = await getJson('https://api.github.com/repos/PlateerLab/xgen-dex-core/releases/latest');
-const asset = (latest.assets ?? []).find((a) => /^XGen-Dex-Setup-.*\.exe$/.test(a.name));
-if (!asset) fail(`이전 릴리스(${latest.tag_name})에 Windows 설치본이 없습니다`);
+const published = [];
+for (let page = 1; page <= 5; page++) {
+  const batch = await getJson(`https://api.github.com/repos/PlateerLab/xgen-dex-core/releases?per_page=100&page=${page}`);
+  if (!Array.isArray(batch)) fail('릴리스 목록 형식이 잘못되었습니다');
+  published.push(...batch);
+  if (batch.length < 100) break;
+}
+const baseline = previousWindowsRelease(published, candidateVersion);
+if (!baseline) fail(`${candidateVersion}보다 낮은 정식 Windows 설치본이 없어 업그레이드를 검증하지 못했습니다`);
+const { release: latest, asset } = baseline;
 const previous = join(base, asset.name);
 console.log(`이전 릴리스 ${latest.tag_name}: ${asset.name} 내려받기`);
 const res = await fetch(asset.browser_download_url);
@@ -146,8 +156,7 @@ try {
 } catch (err) {
   // 이전 판의 설치 프로그램이 이 러너에서 죽으면(26.12 아래 템플릿의 그 버그) 올라오기를 볼 수 없다 — 숨기지 않고 알린다.
   if (err.status === 3221225477) {
-    console.log(`::warning::이전 릴리스 설치 프로그램이 이 러너에서 0xC0000005 로 죽어 올라오기는 확인하지 못했습니다(${latest.tag_name})`);
-    process.exit(0);
+    fail(`이전 릴리스 설치 프로그램이 이 러너에서 0xC0000005 로 죽어 올라오기를 검증하지 못했습니다(${latest.tag_name})`);
   }
   fail(`이전 릴리스 설치 → 종료 코드 ${err.status ?? err.signal}`);
 }

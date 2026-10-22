@@ -620,6 +620,22 @@
     label.className = 'message-label';
     label.textContent = item.label;
     header.append(label);
+    if (item.role === 'assistant' && item.provenance) {
+      const provenance = document.createElement('button');
+      provenance.type = 'button';
+      provenance.className = 'text-button';
+      provenance.textContent = item.provenance.verified
+        ? `✓ ${item.provenance.label}`
+        : item.provenance.label;
+      provenance.disabled = !item.provenance.canVerify;
+      provenance.setAttribute('aria-label', item.provenance.canVerify
+        ? `${item.provenance.label}. 눌러서 현재 답변 본문으로 다시 확인`
+        : item.provenance.label);
+      if (item.provenance.canVerify) {
+        provenance.addEventListener('click', () => post('verifyProvenance', { messageId: item.id }));
+      }
+      header.append(provenance);
+    }
     if (item.text && item.role !== 'assistant') header.append(copyButton(item.text, '메시지 복사'));
     const content = document.createElement('div');
     content.className = 'message-content';

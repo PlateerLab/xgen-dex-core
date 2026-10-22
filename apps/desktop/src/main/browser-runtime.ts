@@ -152,7 +152,17 @@ export class BrowserRuntime {
   private alertedConnections = new Set<string>();
   private hardenedPartitions = new Set<string>();
   private allowedSharedContents = new Set<number>();
-  private downloadPermit: { pageId: string; path: string; expiresAt: number } | null = null;
+  private downloadPermits = new Map<string, {
+    path: string;
+    expiresAt: number;
+    started: boolean;
+    completed: boolean;
+    cancel?: () => void;
+    done: Promise<void>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }>();
+  private downloadQueues = new Map<string, Promise<unknown>>();
   private popupPermissions = new Map<string, BrowserPopupPermission>();
   private sessionPopupPermissions = new Set<string>();
   private pendingPopups = new Map<string, PendingBrowserPopup>();
@@ -354,14 +364,19 @@ export class BrowserRuntime {
     // A page cannot initiate an unreviewed local download. BrowserAdvanced can
     // temporarily opt into one explicitly scoped path.
     browserSession.on('will-download', (event, item, contents) => {
-      const permit = this.downloadPermit;
-      const page = permit ? this.pages.get(permit.pageId) : null;
-      if (!permit || permit.expiresAt < Date.now() || page?.contents?.id !== contents.id) {
+      const pageId = [...this.pages.values()].find((page) => page.contents?.id === contents.id)?.info.pageId;
+      const permit = pageId ? this.downloadPermits.get(pageId) : undefined;
+      if (!permit || permit.expiresAt < Date.now() || permit.started) {
         event.preventDefault();
         return;
       }
-      this.downloadPermit = null;
+      permit.started = true;
+      permit.cancel = () => item.cancel();
       item.setSavePath(permit.path);
+      item.once('done', (_event, state) => {
+        if (state === 'completed') { permit.completed = true; permit.resolve(); }
+        else permit.reject(new BrowserRuntimeError('browser_denied', `다운로드가 ${state} 상태로 끝났습니다.`));
+      });
     });
   }
 
@@ -1141,9 +1156,21 @@ export class BrowserRuntime {
     }
   }
 
+  /** Stop a file command when its connected-folder grant is revoked. */
+  async cancelAgentCommand(pageId: string): Promise<void> {
+    await this.runner.cancelPage(pageId);
+    const runtime = this.pages.get(pageId);
+    if (runtime) {
+      runtime.info.generation += 1;
+      this.emit();
+    }
+    this.revokeDownload(pageId);
+  }
+
   async close(pageId: string): Promise<void> {
     const runtime = this.pages.get(pageId);
     if (!runtime) return;
+    this.revokeDownload(pageId);
     for (const [token, pending] of this.pendingSelections) {
       if (pending.pageId === pageId) this.pendingSelections.delete(token);
     }
@@ -1175,14 +1202,66 @@ export class BrowserRuntime {
     if (win && !win.isDestroyed()) win.destroy();
   }
 
-  allowNextDownload(pageId: string, path: string): void {
-    if (!this.pages.has(pageId)) {
-      throw new BrowserRuntimeError(
-        'browser_page_not_found',
-        `페이지 ${pageId}를 찾지 못했습니다.`,
-      );
+  private revokeDownload(pageId: string): void {
+    const permit = this.downloadPermits.get(pageId);
+    if (!permit) return;
+    this.downloadPermits.delete(pageId);
+    if (permit.started && !permit.completed) {
+      try { permit.cancel?.(); } catch { /* already ended */ }
+      permit.reject(new BrowserRuntimeError('browser_denied', '다운로드가 중단되었습니다.'));
     }
-    this.downloadPermit = { pageId, path, expiresAt: Date.now() + 30_000 };
+  }
+
+  /** Electron and agent-browser may each save a download; callers give them separate private paths. */
+  async runDownloadCommand(
+    workflowId: string,
+    pageId: string,
+    command: string[],
+    electronPath: string,
+    timeoutMs?: number,
+    generation?: number,
+  ): Promise<{ page: BrowserPageInfo; result: unknown; electronSaved: boolean }> {
+    const previous = this.downloadQueues.get(pageId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(async () => {
+      let resolveDone!: () => void;
+      let rejectDone!: (error: Error) => void;
+      const done = new Promise<void>((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
+      // An unsuccessful command may never start a download; suppress an orphan rejection.
+      void done.catch(() => undefined);
+      const permit = {
+        path: electronPath,
+        expiresAt: Date.now() + 120_000,
+        started: false,
+        completed: false,
+        done,
+        resolve: resolveDone,
+        reject: rejectDone,
+      };
+      this.downloadPermits.set(pageId, permit);
+      try {
+        const run = await this.runAgentCommand(workflowId, pageId, command, timeoutMs, generation);
+        if (permit.started) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              done,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new BrowserRuntimeError('browser_timeout', '다운로드 완료를 기다리는 시간이 지났습니다.')), 120_000);
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        return { ...run, electronSaved: permit.started };
+      } finally {
+        this.revokeDownload(pageId);
+      }
+    });
+    const tail = task.then(() => undefined, () => undefined);
+    this.downloadQueues.set(pageId, tail);
+    try { return await task; }
+    finally { if (this.downloadQueues.get(pageId) === tail) this.downloadQueues.delete(pageId); }
   }
 
   async closeWorkflow(workflowId: string): Promise<void> {
@@ -1197,7 +1276,8 @@ export class BrowserRuntime {
     for (const runtime of pages) this.rejectPendingConnection(runtime);
     this.pages.clear();
     this.activeByWorkflow.clear();
-    this.downloadPermit = null;
+    for (const pageId of this.downloadPermits.keys()) this.revokeDownload(pageId);
+    this.downloadQueues.clear();
     this.allowedSharedContents.clear();
     this.sessionPopupPermissions.clear();
     this.pendingSelections.clear();

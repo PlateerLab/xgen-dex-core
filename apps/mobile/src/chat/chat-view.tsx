@@ -77,6 +77,7 @@ import {
   appendAssistantText,
   assistantPlaceholder,
   attachDownload,
+  attachGeneratedContent,
   attachProcessById,
   attachPhase,
   attachTool,
@@ -405,6 +406,9 @@ export function ChatView({
           } else if (ev?.kind === 'phase') {
             // 다른 화면이 시작한 턴의 준비 단계도 같은 줄로 보인다.
             setMessages((prev) => attachPhase(ensureRemotePartial(prev), ev));
+          } else if (ev?.kind === 'generated_content') {
+            remoteTurnRef.current = true;
+            setMessages((prev) => attachGeneratedContent(ensureRemotePartial(prev), ev.data));
           }
           return;
         }
@@ -438,7 +442,12 @@ export function ChatView({
           setMessages((prev) => [
             ...dropRemotePartials(prev),
             userMessage(turn.input),
-            { ...assistantPlaceholder({ streaming: false }), text: turn.output },
+            {
+              ...assistantPlaceholder({ streaming: false }),
+              text: turn.output,
+              generatedContent: turn.generatedContent,
+              malformedGeneratedContent: turn.malformedGeneratedContent,
+            },
           ]);
         } else {
           // 서버는 완결 행을 turn_ended 보다 먼저 민다 — 진행분과 질문을 이 턴으로 바꿔 끼운다
@@ -454,6 +463,7 @@ export function ChatView({
         onData: (text) => setMessages((prev) => appendAssistantText(prev, text)),
         onTool: (ev) => setMessages((prev) => attachTool(prev, ev)),
         onDownload: (data) => setMessages((prev) => attachDownload(prev, data)),
+        onGeneratedContent: (data) => setMessages((prev) => attachGeneratedContent(prev, data)),
         // 첫 글자 전의 준비 단계(Sandbox·워크스페이스·패키지·기억). 캐럿 대신 무엇을 기다리는지 보인다.
         onPhase: (signal) => setMessages((prev) => attachPhase(prev, signal)),
         // 이 턴의 실행 id — 같은 턴이 완결 행·이력으로 다시 와도 한 번만, 소켓 구멍도 이것으로 메운다.

@@ -1,9 +1,12 @@
 /** SessionStore — multi-session runtime: 전환해도 진행 중 스트림/전사가 유지된다. */
 import assert from 'assert'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import {
   SessionStore,
   mergeMissedTurns,
+  reconcileFlow,
   isKeepable,
   openSessions,
   agentSessions,
@@ -13,9 +16,11 @@ import {
   type SessionState,
   type SessionTransport,
 } from '../src/renderer/src/session-store'
-import type { Agent, ChatEvent, HistoryAttachment, HistoryFlowItem } from '@dex/protocol'
+import type { Agent, ChatEvent, GeneratedContentProvenance, HistoryAttachment, HistoryFlowItem } from '@dex/protocol'
 import { INTERRUPTED_NOTE } from '@dex/protocol'
 import type { BrowserSelectionResult } from '@dex/protocol/browser'
+
+const DESKTOP_ROOT = join(__dirname, '..')
 
 function agent(workflowId: string, name = workflowId): Agent {
   return {
@@ -48,7 +53,7 @@ interface FakeStream {
 const ME = 'dex-me'
 
 function makeStore(
-  history: Record<string, Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[] }>> = {},
+  history: Record<string, Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[] }>> = {},
   running: Record<string, boolean> = {},
 ) {
   const streams: FakeStream[] = []
@@ -158,6 +163,23 @@ test('send 는 사용자·assistant 메시지를 넣고 스트림을 연다', ()
   assert.deepEqual(s.messages.map((m) => m.role), ['user', 'assistant'])
   assert.equal(s.messages[0].text, '질문')
   assert.equal(streams.length, 1)
+})
+
+test('generated_content 이벤트는 검증 결과와 분리된 선언으로 답에 보존된다', () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.send(key, '질문')
+  const provenance = {
+    indication: 'ai_generated' as const,
+    proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain', byte_length: 2,
+    source_id: '123e4567-e89b-42d3-a456-426614174000',
+  }
+  streams[0].onEvent({ kind: 'generated_content', data: provenance })
+  streams[0].onEvent({ kind: 'text', content: '답' })
+  streams[0].onEvent({ kind: 'end' })
+  const answer = store.get(key)!.messages[1]
+  assert.deepEqual(answer.generatedContent, [provenance])
+  assert.equal('verification' in answer, false, '선언 수신만으로 검증됨 상태가 생기지 않는다')
 })
 
 test('send 는 붙인 이미지 여러 장을 멀티모달 입력과 사용자 메시지에 보존한다', () => {
@@ -571,6 +593,26 @@ test('openResume 는 서버가 되살린 작업 과정을 답에 붙인다 — �
   assert.equal(answer.lastEventAt, 1620)
 })
 
+test('openResume 는 서명된 정본과 다른 이력 과정의 글을 버리고 같은 본문을 표시한다', async () => {
+  const process: HistoryFlowItem[] = [
+    { kind: 'text', text: '오래된 이력 답', at: 1000 },
+    { kind: 'tool', at: 1500, event: { eventType: 'tool_call', toolName: 'Read', toolUseId: 'u1' } },
+  ]
+  const canonical = '  정본 답\n'
+  const provenance: GeneratedContentProvenance = {
+    indication: 'ai_generated', proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain', byte_length: 8,
+    source_id: '123e4567-e89b-42d3-a456-426614174000',
+  }
+  const { store } = makeStore({ signed: [{ input: 'q', output: canonical, ioId: 9, process, generatedContent: [provenance] }] })
+  store.openResume(agent('A'), 'signed')
+  await flush()
+  const answer = store.get('signed')!.messages[1]
+  assert.equal(answer.text, canonical)
+  assert.equal(answer.flow?.filter((f) => f.kind === 'text').map((f) => f.text).join(''), canonical)
+  assert.deepEqual(answer.flow?.map((f) => f.kind), ['tool', 'text'])
+  assert.equal(answer.generatedContent?.[0].proof, provenance.proof)
+})
+
 test('openResume 는 Geny 이력 이미지를 복원하고 세션 종료 때 미리보기 URL을 해제한다', async () => {
   const restored: HistoryAttachment[] = []
   const released: string[] = []
@@ -969,6 +1011,52 @@ test('다른 화면의 턴이 끝나면 완결 본문으로 덮어쓴다', () =>
   assert.equal(s?.messages[1].text, '완전한 답')
   assert.ok(!s?.messages[1].streaming, '커서가 남으면 안 된다')
   assert.equal(s?.remote, false)
+})
+
+test('다른 화면의 generated_content 선언은 종료 프레임 뒤에도 답에 남는다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '질문' })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key, event: 'generated_content',
+    data: {
+      indication: 'ai_generated', proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain', byte_length: 2,
+      source_id: '123e4567-e89b-42d3-a456-426614174000',
+    },
+  })
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, output: '답' })
+  assert.equal(store.get(key)?.messages[1].generatedContent?.[0].proof, 'a.b.c')
+})
+
+test('서명된 완결 본문이 진행분과 다르면 타임라인의 오래된 글을 버리고 정본만 보인다', () => {
+  const { store } = makeStore()
+  const key = store.openNew(agent('A'))
+  store.applyPeerEvent({ kind: 'started', interactionId: key, input: '질문' })
+  store.applyPeerEvent({ kind: 'exec', interactionId: key, event: 'message', data: { type: 'data', content: '오래된 답' } })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key, event: 'tool',
+    data: { event_type: 'tool_call', tool_name: 'Read', tool_use_id: 'r1' },
+  })
+  store.applyPeerEvent({
+    kind: 'exec', interactionId: key, event: 'generated_content',
+    data: {
+      indication: 'ai_generated', proof: 'a.b.c', sha256: 'a'.repeat(64), content_type: 'text/plain', byte_length: 8,
+      source_id: '123e4567-e89b-42d3-a456-426614174000',
+    },
+  })
+  const canonical = '  정본 답\n'
+  store.applyPeerEvent({ kind: 'ended', interactionId: key, output: canonical })
+  const answer = store.get(key)!.messages[1]
+  assert.equal(answer.text, canonical, '검증 입력은 정본 본문이다')
+  assert.equal(answer.flow?.filter((f) => f.kind === 'text').map((f) => f.text).join(''), canonical, '기본 타임라인도 같은 정본을 표시한다')
+  assert.deepEqual(answer.flow?.map((f) => f.kind), ['tool', 'text'], '도구 사건만 보존한다')
+  assert.equal(answer.generatedContent?.[0].proof, 'a.b.c', 'signed metadata 경로에서도 정본과 proof를 함께 보존한다')
+})
+
+test('빈 정본은 오래된 타임라인 글을 모두 지우고 도구 사건만 보존한다', () => {
+  const tool = { kind: 'tool' as const, at: 2, event: { eventType: 'tool_call' as const, toolName: 'Read', toolUseId: 'r1' } }
+  const reconciled = reconcileFlow([{ kind: 'text', text: 'stale', at: 1 }, tool, { kind: 'text', text: ' tail ', at: 3 }], '')
+  assert.deepEqual(reconciled, [tool])
 })
 
 // ── 어디서 열어도 같은 작업 과정 (2026-10-01 사용자 보고) ───────────────
@@ -1570,4 +1658,28 @@ test('대화 목록의 제목·지워짐 표시를 열린 세션에 맞춘다(�
   assert.equal(store.get('c-9')?.title, '새 이름')
   assert.equal(store.activeKey, 'c-9')
   off()
+})
+
+test('생성물 검증은 IPC와 실제 파일 읽기 모두 같은 100MiB 상한을 적용한다', () => {
+  const main = readFileSync(join(DESKTOP_ROOT, 'src/main/index.ts'), 'utf8')
+  const preload = readFileSync(join(DESKTOP_ROOT, 'src/preload/index.ts'), 'utf8')
+  const files = readFileSync(join(DESKTOP_ROOT, 'src/renderer/src/views/TurnFiles.tsx'), 'utf8')
+  const verifyText = main.slice(
+    main.indexOf('CHANNELS.generatedContentVerifyText'),
+    main.indexOf('CHANNELS.generatedContentVerifyBytes'),
+  )
+  assert.match(verifyText, /text\.length > GENERATED_CONTENT_TEXT_MAX_BYTES/)
+  assert.match(verifyText, /Buffer\.byteLength\(text, 'utf8'\)/)
+  assert.ok(
+    verifyText.indexOf('text.length > GENERATED_CONTENT_TEXT_MAX_BYTES') < verifyText.indexOf("Buffer.byteLength(text, 'utf8')"),
+    'UTF-8 byte count 전에 값싼 문자 길이 검사를 한다',
+  )
+  assert.match(main, /const GENERATED_CONTENT_MEDIA_MAX_BYTES = 100 \* 1024 \* 1024/)
+  assert.match(main, /typeof maxBytes !== 'number' \|\| !Number\.isSafeInteger\(maxBytes\)/)
+  assert.match(main, /maxBytes < 0 \|\| maxBytes > GENERATED_CONTENT_MEDIA_MAX_BYTES/)
+  assert.match(main, /maxBytes > GENERATED_CONTENT_MEDIA_MAX_BYTES/)
+  assert.match(main, /bytes\.byteLength > GENERATED_CONTENT_MEDIA_MAX_BYTES/)
+  assert.match(preload, /purpose\?: WorkspaceBinaryPurpose,[\s\S]*opts\?: \{ maxBytes\?: number \}/)
+  assert.match(preload, /opts\?: \{ preview\?: boolean; maxBytes\?: number \}/)
+  assert.equal((files.match(/maxBytes: GENERATED_CONTENT_MEDIA_MAX_BYTES/g) ?? []).length, 2)
 })

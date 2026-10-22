@@ -14,7 +14,9 @@ import { browserStateStore } from './browser-state';
 import { teamsContextStore } from './teams-context';
 import { genyHistoryWorkspacePath } from '@dex/protocol/history';
 
-import { DEX_ORIGIN_ID } from '@dex/engine/conversation-watch';
+// 렌더러 화면별 origin 표식. Node 전용 conversation-watch를 import하면 그 모듈의
+// WebSocket/TLS 의존성이 브라우저 번들로 유입된다.
+const DEX_ORIGIN_ID = `dex-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 const HISTORY_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 

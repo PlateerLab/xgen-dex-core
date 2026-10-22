@@ -301,6 +301,15 @@ function fakeTransfer() {
   };
 }
 
+const transferContext = {
+  workflowId: 'wf-1', interactionId: 'conv', deviceId: 'mobile-1', requestId: 'request-1',
+  requestNonce: 'nonce-1', connectionGeneration: 7, protocol: 2 as const,
+};
+const transferArg = (direction: 'to_workspace' | 'from_workspace', token = 'transfer-token') => ({
+  token, direction, workflow_id: 'wf-1', interaction_id: 'conv', device_id: 'mobile-1',
+  request_id: 'request-1', request_nonce: 'nonce-1', connection_generation: 7, protocol: 2 as const,
+});
+
 test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 이름부터 구조째, 사본은 지운다', async () => {
   const s = scope();
   const tree = new Map([
@@ -314,9 +323,12 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
   const r = await callMobileTool(
     fakePort(),
     'CopyToWorkspace',
-    { paths: ['/Notes/a.pdf', '/Notes/KakaoTalk', '/Notes/없음.txt'] },
+    {
+      paths: ['/Notes/a.pdf', '/Notes/KakaoTalk', '/Notes/없음.txt'],
+      _workspace_transfer: transferArg('to_workspace'),
+    },
     undefined,
-    { ...s, workspace: transfer },
+    { ...s, workspace: transfer, transferContext },
   );
   assert.equal(r.isError, undefined);
   assert.deepEqual(transfer.uploads.map((u) => u.split('|').slice(0, 2).join('|')), [
@@ -337,26 +349,96 @@ test('CopyToWorkspace — 파일은 첨부 폴더 바로 아래로, 폴더는 �
 test('CopyFromWorkspace — 서버가 실은 파일을 폴더에 두고, 있는 파일은 덮어쓰라고 할 때만 바꾼다', async () => {
   const s = scope();
   const transfer = fakeTransfer();
-  const download = { url: '/api/agentflow/files/artifacts/abc/download', token: 't', name: 'report.docx' };
-  const ctx = { ...s, workspace: transfer };
-  const saved = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'out/report.docx', path: '/Notes', download }, undefined, ctx);
+  const download = {
+    url: '/api/agentflow/files/artifacts/abc/download', token: 'transfer-token', name: 'report.docx',
+  };
+  const fromArgs = { download, _workspace_transfer: transferArg('from_workspace') };
+  const ctx = { ...s, workspace: transfer, transferContext };
+  const saved = await callMobileTool(fakePort(), 'CopyFromWorkspace', {
+    source: 'out/report.docx', path: '/Notes', ...fromArgs,
+  }, undefined, ctx);
   assert.equal(saved.content[0].text, 'Saved report.docx to /Notes/report.docx.');
   assert.match(s.fs.files.get(notes.uri)?.get('report.docx') ?? '', /copy of file:\/\/\/cache\/xgen-copy\/report\.docx/);
-  const again = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'x', path: '/Notes/report.docx', download }, undefined, ctx);
+  const again = await callMobileTool(fakePort(), 'CopyFromWorkspace', {
+    source: 'x', path: '/Notes/report.docx', ...fromArgs,
+  }, undefined, ctx);
   assert.equal(again.isError, true);
   const over = await callMobileTool(
     fakePort(),
     'CopyFromWorkspace',
-    { source: 'x', path: '/Notes/report.docx', download, overwrite: true },
+    { source: 'x', path: '/Notes/report.docx', overwrite: true, ...fromArgs },
     undefined,
     ctx,
   );
   assert.equal(over.isError, undefined);
-  const nested = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'x', path: '/Photos/결과/', download }, undefined, ctx);
+  const nested = await callMobileTool(fakePort(), 'CopyFromWorkspace', {
+    source: 'x', path: '/Photos/결과/', ...fromArgs,
+  }, undefined, ctx);
   assert.equal(nested.content[0].text, 'Saved report.docx to /Photos/결과/report.docx.');
   const old = await callMobileTool(fakePort(), 'CopyFromWorkspace', { source: 'x', path: '/Notes' }, undefined, ctx);
   assert.equal(old.isError, true, '옛 서버는 받을 거리를 싣지 않는다');
   assert.equal(transfer.discarded.length, 3, '받은 사본은 폴더에 넣은 뒤 지운다');
+});
+
+test('mobile workspace transfer는 frame correlation 또는 download token 불일치면 전송하지 않는다', async () => {
+  const s = scope();
+  s.fs.files.set(notes.uri, new Map([['a.txt', 'a']]));
+  const transfer = fakeTransfer();
+  const badContext = await callMobileTool(fakePort(), 'CopyToWorkspace', {
+    paths: ['/Notes/a.txt'],
+    _workspace_transfer: { ...transferArg('to_workspace'), connection_generation: 8 },
+  }, undefined, { ...s, workspace: transfer, transferContext });
+  assert.equal(badContext.isError, true);
+  const badToken = await callMobileTool(fakePort(), 'CopyFromWorkspace', {
+    path: '/Notes/out.txt',
+    download: {
+      url: '/api/agentflow/files/artifacts/abc/download', token: 'different', name: 'out.txt',
+    },
+    _workspace_transfer: transferArg('from_workspace'),
+  }, undefined, { ...s, workspace: transfer, transferContext });
+  assert.equal(badToken.isError, true);
+  assert.deepEqual(transfer.uploads, []);
+});
+
+test('mobile copy cancellation never imports a late download or starts the next upload', async () => {
+  const s = scope();
+  s.fs.files.set(notes.uri, new Map([['a.txt', 'a'], ['b.txt', 'b']]));
+  const controller = new AbortController();
+  const transfer = fakeTransfer();
+  let calls = 0;
+  const result = await callMobileTool(fakePort(), 'CopyToWorkspace', {
+    paths: ['/Notes/a.txt', '/Notes/b.txt'], _workspace_transfer: transferArg('to_workspace'),
+  }, undefined, {
+    ...s, signal: controller.signal, transferContext, workspace: {
+      ...transfer,
+      async upload(_uri, _name, _dir, _capability, signal) {
+        assert.equal(signal, controller.signal); calls++; controller.abort();
+        return { path: 'owned/a.txt', size: 1 };
+      },
+    },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(calls, 1);
+  assert.equal(transfer.discarded.length, 1);
+  const downloadAbort = new AbortController();
+  const received = await callMobileTool(fakePort(), 'CopyFromWorkspace', {
+    path: '/Notes/a.txt', overwrite: true,
+    download: {
+      url: '/api/agentflow/files/artifacts/abc/download', token: 'transfer-token', name: 'a.txt',
+    },
+    _workspace_transfer: transferArg('from_workspace'),
+  }, undefined, {
+    ...s, signal: downloadAbort.signal, transferContext, workspace: {
+      ...transfer,
+      async download(_url, _token, _name, _capability, signal) {
+        assert.equal(signal, downloadAbort.signal); downloadAbort.abort();
+        return 'file:///private-cache/late.bin';
+      },
+    },
+  });
+  assert.equal(received.isError, true);
+  assert.equal(s.fs.files.get(notes.uri)?.get('a.txt'), 'a');
+  assert.ok(transfer.discarded.includes('file:///private-cache/late.bin'));
 });
 
 // ── 사용자 PC 접속(UserPc) — 서버의 내부 호출로 연결 폴더에서 bash 명령을 돌린다 ─────────────

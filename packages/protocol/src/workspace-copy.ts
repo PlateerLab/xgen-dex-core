@@ -17,6 +17,84 @@
 
 export const COPY_TO_WORKSPACE_TOOL = 'CopyToWorkspace';
 export const COPY_FROM_WORKSPACE_TOOL = 'CopyFromWorkspace';
+export const WORKSPACE_TRANSFER_ARG = '_workspace_transfer';
+export const WORKSPACE_TRANSFER_HEADER = 'X-XGEN-Workspace-Transfer';
+export const WORKSPACE_TRANSFER_FEATURE = 'workspace_transfer_cap_v1';
+
+export type WorkspaceTransferDirection = 'to_workspace' | 'from_workspace';
+
+/** 서버가 한 MCP 호출과 한 전송 방향에만 발급한 일회성 capability. */
+export interface WorkspaceTransferCapability {
+  token: string;
+  direction: WorkspaceTransferDirection;
+  workflow_id: string;
+  interaction_id: string;
+  device_id: string;
+  request_id: string;
+  request_nonce: string;
+  connection_generation: number;
+  protocol: 2;
+}
+
+/** 인증된 bridge frame에서 얻은 값. 모델이 만든 tool args와 섞지 않는다. */
+export interface WorkspaceTransferContext {
+  workflowId?: string;
+  interactionId?: string;
+  deviceId?: string;
+  requestId?: string;
+  requestNonce?: string;
+  connectionGeneration?: number;
+  protocol?: number;
+}
+
+const TRANSFER_ERROR = 'WORKSPACE_TRANSFER_CAPABILITY_REQUIRED';
+
+/** 예약 인자를 엄격히 읽고 실제 bridge 호출과 묶는다. 불완전하거나 다른 호출의 값이면 실행하지 않는다. */
+export function requireWorkspaceTransfer(
+  args: Record<string, unknown>,
+  direction: WorkspaceTransferDirection,
+  context: WorkspaceTransferContext | undefined,
+): WorkspaceTransferCapability {
+  const raw = args[WORKSPACE_TRANSFER_ARG];
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const exactText = (input: unknown): string | null => {
+    if (typeof input !== 'string' || !input || input.trim() !== input || /[\r\n]/.test(input)) return null;
+    return input;
+  };
+  const token = exactText(value.token);
+  const workflowId = exactText(value.workflow_id);
+  const interactionId = exactText(value.interaction_id);
+  const deviceId = exactText(value.device_id);
+  const requestId = exactText(value.request_id);
+  const requestNonce = exactText(value.request_nonce);
+  const generation = typeof value.connection_generation === 'number'
+    ? value.connection_generation
+    : Number.NaN;
+  if (
+    !token || value.direction !== direction || !workflowId || !interactionId || !deviceId ||
+    !requestId || !requestNonce || !Number.isSafeInteger(generation) || Number(generation) < 1 ||
+    value.protocol !== 2 ||
+    workflowId !== context?.workflowId || interactionId !== context?.interactionId ||
+    deviceId !== context?.deviceId || requestId !== context?.requestId ||
+    requestNonce !== context?.requestNonce || generation !== context?.connectionGeneration ||
+    context?.protocol !== 2
+  ) {
+    throw new Error(TRANSFER_ERROR);
+  }
+  return {
+    token,
+    direction,
+    workflow_id: workflowId,
+    interaction_id: interactionId,
+    device_id: deviceId,
+    request_id: requestId,
+    request_nonce: requestNonce,
+    connection_generation: generation,
+    protocol: 2,
+  };
+}
 
 /** 한 번의 복사가 옮길 수 있는 양. 넘는 것은 건너뛰고 결과에 이유를 적는다. */
 export const WORKSPACE_COPY_LIMITS = {

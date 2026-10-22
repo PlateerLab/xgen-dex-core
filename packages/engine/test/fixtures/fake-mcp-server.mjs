@@ -3,8 +3,18 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { writeFileSync } from 'node:fs'
 
 const argv = process.argv.slice(2)
+const markerAt = argv.indexOf('--exit-marker')
+const marker = markerAt >= 0 ? argv[markerAt + 1] : ''
+if (marker) {
+  const mark = () => { try { writeFileSync(marker, 'closed') } catch {} }
+  process.once('SIGTERM', mark)
+  process.once('SIGINT', mark)
+  process.once('exit', mark)
+}
 const server = new Server({ name: 'fake', version: '1.0.0' }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -14,6 +24,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: `argv=${JSON.stringify(argv)} env=${process.env.FAKE_TOKEN ?? ''}`,
       inputSchema: { type: 'object', properties: {} },
     },
+    {
+      name: 'slow',
+      description: 'waits forever until the transport is cancelled',
+      inputSchema: { type: 'object', properties: {} },
+    },
   ],
 }))
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  if (request.params.name === 'slow') await new Promise(() => {})
+  return { content: [{ type: 'text', text: JSON.stringify(argv) }] }
+})
 await server.connect(new StdioServerTransport())

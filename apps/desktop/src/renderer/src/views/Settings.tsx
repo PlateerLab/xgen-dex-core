@@ -147,9 +147,7 @@ export const Settings: React.FC<{
   const [tab, setTab] = useState<Tab>('general');
   const [diagCopied, setDiagCopied] = useState(false);
   const [serverUrl, setServerUrl] = useState(config.serverUrl);
-  const [allowPrivateCertificate, setAllowPrivateCertificate] = useState(
-    config.allowPrivateCertificate ?? false,
-  );
+  const [allowPrivateCertificate] = useState(false);
   const [ssoEnabled, setSsoEnabled] = useState(config.ssoEnabled ?? false);
   const [ssoPath, setSsoPath] = useState(config.ssoPath ?? '/sso/signin');
   const [theme, setTheme] = useState<Theme>(config.theme ?? 'system');
@@ -621,17 +619,12 @@ export const Settings: React.FC<{
               )}
             </label>
 
-            <label className="setup-option settings-option">
-              <input
-                type="checkbox"
-                checked={allowPrivateCertificate}
-                onChange={(e) => setAllowPrivateCertificate(e.target.checked)}
-              />
+            <div className="setup-option settings-option">
               <span>
-                사설 인증서 허용
-                <small>설정한 서버의 사설 CA 신뢰 오류만 허용합니다.</small>
+                서버별 사설 인증서 신뢰
+                <small>기존의 전체 인증서 예외는 비활성화되었습니다. 승인된 서버별 CA/pin만 사용합니다.</small>
               </span>
-            </label>
+            </div>
             <label className="setup-option settings-option">
               <input
                 type="checkbox"

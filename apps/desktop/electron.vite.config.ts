@@ -3,6 +3,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 // 내장 bash 해석기(just-bash)는 번들에 녹이고, 이 목록의 패키지만 뺀다(XD 와 같은 목록).
 import { JUST_BASH_LEFT_OUT_PACKAGES } from '../../packages/engine/src/user-pc-bundle';
+import { copyNativeAssets } from '../../scripts/native-assets.mjs';
 
 /**
  * 공용 패키지는 **소스로 번들**한다 (런타임 의존이 아니다).
@@ -15,6 +16,7 @@ import { JUST_BASH_LEFT_OUT_PACKAGES } from '../../packages/engine/src/user-pc-b
 const dexAliases = {
   '@dex/protocol': resolve(__dirname, '../../packages/protocol/src/index.ts'),
   '@dex/engine': resolve(__dirname, '../../packages/engine/src/index.ts'),
+  '@dex/native-fs': resolve(__dirname, '../../packages/native-fs/src/index.ts'),
   '@dex/rpc': resolve(__dirname, '../../packages/rpc/src/index.ts'),
   // 채팅의 [IDE] 보기(React). 렌더러만 쓴다.
   '@dex/ide': resolve(__dirname, '../../packages/ide/src/index.ts'),
@@ -51,7 +53,10 @@ export default defineConfig({
   main: {
     define: deploymentDefaultDefines,
     resolve: { alias: [dexSubpathAlias, ...aliasEntries()] },
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), {
+      name: 'dex-native-assets',
+      closeBundle: () => copyNativeAssets(resolve(__dirname, 'out/native'), false),
+    }],
     // keytar (native), ws + the MCP SDK (spawns stdio children / ESM) must stay
     // external so they resolve from node_modules at runtime.
     // bufferutil/utf-8-validate: ws 의 optional native 가속 — ws 가 번들되면

@@ -13,6 +13,7 @@ import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServerConfig } from './mcp-types';
 import { mcpSecretStore } from './host';
 import { withResolvedSecrets } from './mcp-secrets';
+import { containsPlaintextSecrets, McpSecretRedactor } from './mcp-redaction';
 import { oauthTransportOptions } from './mcp-oauth';
 import { homedir } from 'os';
 import {
@@ -56,6 +57,7 @@ export type McpHttpFetch = (url: string | URL, init?: RequestInit) => Promise<Re
 export interface McpNetworkOptions {
   httpFetch?: McpHttpFetch;
   allowPrivateCertificate?: boolean;
+  certificatePolicyKey?: string;
 }
 
 interface ServerState {
@@ -64,6 +66,8 @@ interface ServerState {
   onProgress?: (lines: string[]) => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any | null;
+  transport?: { close?: () => Promise<void> } | null;
+  redactor?: McpSecretRedactor;
   tools: McpToolSchema[];
   error?: string;
   connecting?: Promise<void>;
@@ -73,6 +77,38 @@ interface ServerState {
 function tokenize(cmd: string): string[] {
   const m = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
   return m.map((t) => t.replace(/^["']|["']$/g, ''));
+}
+
+/** Resolve the exact executable/argv or HTTP origin that a local user approves. */
+export async function canonicalizeMcpServerConfig(
+  config: McpServerConfig,
+): Promise<McpServerConfig> {
+  const normalized: McpServerConfig = {
+    ...config,
+    name: String(config.name ?? '').trim(),
+    ...(config.env ? { env: Object.fromEntries(Object.entries(config.env).sort(([a], [b]) => a.localeCompare(b))) } : {}),
+    ...(config.headers ? { headers: Object.fromEntries(Object.entries(config.headers).sort(([a], [b]) => a.localeCompare(b))) } : {}),
+  };
+  if (!normalized.name) throw new Error('MCP 서버 name이 필요합니다.');
+  if (normalized.transport === 'stdio') {
+    const [command, ...parsedArgs] = normalized.args
+      ? [String(normalized.command ?? '').trim()]
+      : tokenize(String(normalized.command ?? ''));
+    if (!command) throw new Error('stdio server has no command');
+    const path = await augmentedPath();
+    const executable = resolveExecutable(command, path);
+    if (!executable) throw new ExecNotFoundError(diagnoseMissing(command, path));
+    normalized.command = executable;
+    normalized.args = normalized.args ? normalized.args.map(String) : parsedArgs;
+    return normalized;
+  }
+  if (!normalized.url) throw new Error(`${normalized.transport} server has no url`);
+  const url = new URL(normalized.url);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(url.hostname))) {
+    throw new Error('원격 MCP 서버는 HTTPS origin이어야 합니다.');
+  }
+  normalized.url = url.toString();
+  return normalized;
 }
 
 /**
@@ -118,6 +154,7 @@ interface StderrTap {
 function collectStderr(
   transport: { stderr?: NodeJS.ReadableStream | null },
   onData?: (tail: string[]) => void,
+  redact: (value: unknown) => string = String,
   cap = 64 * 1024,
 ): StderrTap {
   let buf = '';
@@ -127,9 +164,9 @@ function collectStderr(
     buf += String(chunk);
     if (buf.length > cap) buf = buf.slice(-cap); // 무한 로그 서버 방어
     last = Date.now();
-    onData?.(tailLines(buf));
+    onData?.(tailLines(redact(buf)));
   });
-  return { text: () => buf, lastAt: () => last };
+  return { text: () => redact(buf), lastAt: () => last };
 }
 
 /** 진행 상황을 최대 `everyMs` 간격으로만 흘려보낸다 (다운로드 로그는 빠르다). */
@@ -245,6 +282,7 @@ export class MCPManager {
   private states = new Map<string, ServerState>();
   private httpFetch: McpHttpFetch | undefined;
   private allowPrivateCertificate = false;
+  private certificatePolicyKey = '';
   /** 서버가 도구 목록을 바꾸거나(list_changed) 죽었을 때(onclose) 카탈로그를 다시
    *  광고하도록 호출된다 (index 가 bridge.refreshCatalog 로 배선). */
   private onCatalogChange: (() => void) | undefined;
@@ -258,9 +296,11 @@ export class MCPManager {
    *  reconnects changed configs lazily). Does NOT connect yet. */
   configure(servers: McpServerConfig[] | undefined, options: McpNetworkOptions = {}): void {
     const certificatePolicyChanged =
-      this.allowPrivateCertificate !== (options.allowPrivateCertificate === true);
+      this.allowPrivateCertificate !== (options.allowPrivateCertificate === true) ||
+      this.certificatePolicyKey !== (options.certificatePolicyKey ?? '');
     this.httpFetch = options.httpFetch;
     this.allowPrivateCertificate = options.allowPrivateCertificate === true;
+    this.certificatePolicyKey = options.certificatePolicyKey ?? '';
     const next = new Map<string, McpServerConfig>();
     for (const s of servers || []) if (s && s.name) next.set(s.name, s);
     for (const [name, st] of [...this.states]) {
@@ -296,8 +336,20 @@ export class MCPManager {
       } = await loadSdk();
       // G8a: rehydrate secret env/headers from the encrypted keychain (config.json
       // only holds redacted values). Falls back to config for pre-migration users.
-      const secrets = await mcpSecretStore.get(name).catch(() => null);
+      let secrets;
+      try {
+        secrets = await mcpSecretStore.get(name);
+      } catch {
+        throw new Error('MCP 비밀 저장소를 읽을 수 없어 서버 시작을 차단했습니다.');
+      }
+      if (!name.startsWith('__test__') && containsPlaintextSecrets(st.config)) {
+        throw new Error(
+          'MCP_SECRET_MIGRATION_REQUIRED: 평문 비밀값을 키체인으로 안전하게 이전하기 전에는 서버를 시작할 수 없습니다.',
+        );
+      }
       const cfg = withResolvedSecrets(st.config, secrets);
+      const redactor = new McpSecretRedactor({ env: cfg.env, headers: cfg.headers });
+      st.redactor = redactor;
       let transport;
       let tap: StderrTap | null = null;
       if (cfg.transport === 'stdio') {
@@ -335,7 +387,11 @@ export class MCPManager {
         // 첫 실행은 인터프리터·의존성 내려받기로 오래 걸린다 — 진행 상황을
         // 화면으로 흘려보내야 사용자가 '멈췄나?' 하지 않는다.
         const notify = st.onProgress ? throttle(st.onProgress, 300) : undefined;
-        tap = collectStderr(transport as { stderr?: NodeJS.ReadableStream | null }, notify);
+        tap = collectStderr(
+          transport as { stderr?: NodeJS.ReadableStream | null },
+          notify,
+          (value) => redactor.text(value, 64 * 1024),
+        );
       } else if (cfg.transport === 'sse') {
         if (!cfg.url) throw new Error('sse server has no url');
         if (!SSEClientTransport) throw new Error('이 빌드에서 SSE 전송을 사용할 수 없습니다.');
@@ -357,6 +413,7 @@ export class MCPManager {
         );
       }
       const client = new Client({ name: 'xgen-dex', version: '1.0.0' }, { capabilities: {} });
+      st.transport = transport;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let listed: any;
       try {
@@ -380,6 +437,7 @@ export class MCPManager {
         throw e;
       }
       st.client = client;
+      st.transport = transport;
       st.tools = (listed?.tools || []).map((t: McpToolSchema) => ({
         name: t.name,
         description: t.description,
@@ -428,9 +486,21 @@ export class MCPManager {
     try {
       await st.connecting;
     } catch (e) {
-      st.error = String((e as Error).message);
+      st.error = st.redactor?.text(e) ?? String((e as Error).message);
       st.client = null;
-      throw e;
+      try {
+        await st.transport?.close?.();
+      } catch {
+        /* failed startup still owns transport cleanup */
+      }
+      st.transport = null;
+      const rawHints = (e as { hints?: unknown }).hints;
+      const hints = Array.isArray(rawHints)
+        ? rawHints.map((hint) => st.redactor?.text(hint) ?? String(hint))
+        : undefined;
+      const safe = new Error(st.error) as Error & { hints?: string[] };
+      if (hints?.length) safe.hints = hints;
+      throw safe;
     } finally {
       st.connecting = undefined;
     }
@@ -440,12 +510,19 @@ export class MCPManager {
     const st = this.states.get(name);
     if (!st) return;
     const c = st.client;
+    const transport = st.transport;
     st.client = null;
+    st.transport = null;
     st.tools = [];
     try {
       await c?.close?.();
     } catch {
       /* ignore */
+    }
+    try {
+      await transport?.close?.();
+    } catch {
+      /* client.close normally owns transport cleanup; this is a final fallback. */
     }
   }
 
@@ -484,7 +561,7 @@ export class MCPManager {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async callTool(name: string, tool: string, args: any): Promise<any> {
+  async callTool(name: string, tool: string, args: any, signal?: AbortSignal): Promise<any> {
     // 턴이 도는 도중에 사용자가 이 서버를 지웠거나 로컬 MCP 스위치를 껐을 수 있다
     // (그러면 configure() 가 상태를 통째로 비운다). 그때 connect() 의
     // "unknown MCP server" 는 모델에게 **자기가 이름을 잘못 지어냈다**는 신호로
@@ -500,17 +577,28 @@ export class MCPManager {
     const st = this.states.get(name);
     if (!st?.client) throw new Error(`MCP server ${name} not connected`);
     try {
-      return await withTimeout(
-        st.client.callTool({ name: tool, arguments: args || {} }),
-        120000,
-        `callTool ${name}.${tool}`,
+      const result = await st.client.callTool(
+        { name: tool, arguments: args || {} },
+        undefined,
+        { signal, timeout: 120000, maxTotalTimeout: 120000 },
       );
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      return st.redactor?.value(result) ?? result;
     } catch (e) {
       // The server may have died mid-call; drop the client so the NEXT call
       // reconnects fresh instead of hanging on a stale transport.
       await this.disconnect(name);
-      throw e;
+      throw new Error(st.redactor?.text(e) ?? String((e as Error).message));
     }
+  }
+
+  /** Sanitize any last-mile bridge/UI/log value with this server's resolved secrets. */
+  sanitizeOutput(name: string, value: unknown): unknown {
+    return this.states.get(name)?.redactor?.value(value) ?? new McpSecretRedactor().value(value);
+  }
+
+  sanitizeError(name: string, value: unknown): string {
+    return this.states.get(name)?.redactor?.text(value) ?? String(value instanceof Error ? value.message : value);
   }
 
   /** One-shot connect → list → disconnect, for the settings "테스트" button. */

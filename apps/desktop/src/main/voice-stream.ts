@@ -19,7 +19,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
-import { xgenWebSocketTlsOptions } from '@dex/engine/connection-security';
+import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/connection-security';
 import { diag } from './diag-log';
 import { FORMAT } from './fast-act-e13';
 import { fastActEnabled } from './fast-act-runner';
@@ -37,6 +37,7 @@ export type VoiceStreamDeps = {
   baseUrl: () => string;
   token: () => Promise<string>;
   allowPrivateCertificate: () => boolean;
+  serverTrust?: () => readonly XgenServerTrust[];
   /** 호출어 목록 — null 이면 호출어로만 듣기가 꺼져 있다. */
   wakeWords: () => string[] | null;
 };
@@ -156,7 +157,7 @@ class VoiceSession {
     if (!base || !token) throw new Error('XGEN 로그인이 필요합니다');
     const ws = new WebSocket(`${base}/api/audio/stt/stream?session_key=${encodeURIComponent(`dex-voice-${this.id}`)}`, {
       headers: { Authorization: `Bearer ${token}` },
-      ...xgenWebSocketTlsOptions(this.deps.allowPrivateCertificate()),
+      ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
     });
     this.ws = ws;
     ws.on('open', () =>

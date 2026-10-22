@@ -644,6 +644,7 @@ export class McpBridge {
       const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, isLocal);
       context.deadlineAt = Date.now() + deadlineMs;
       let watchdog: NodeJS.Timeout | null = null;
+      let deadlineHit = false;
       try {
         // Built-in (connector-hosted) tools dispatch locally; everything else
         // goes to the configured MCP server via MCPManager. Same wire contract.
@@ -653,6 +654,7 @@ export class McpBridge {
         const timedOut = new Promise<never>((_resolve, reject) => {
           watchdog = setTimeout(() => {
             // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
+            deadlineHit = true;
             reject(new LocalDeadlineError(String(tool), deadlineMs));
             controller.abort();
           }, deadlineMs);
@@ -673,7 +675,8 @@ export class McpBridge {
       const mayReply =
         current === call &&
         !call.terminal &&
-        !controller.signal.aborted &&
+        // 감시 시한으로 끊은 것은 알린다 — 안 알리면 서버가 자기 시한까지 기다렸다(2026-10-23 승인 창 대기 → XGEN-900).
+        (!controller.signal.aborted || deadlineHit) &&
         this.ws === from &&
         from.readyState === WebSocket.OPEN &&
         this.protocolReady &&

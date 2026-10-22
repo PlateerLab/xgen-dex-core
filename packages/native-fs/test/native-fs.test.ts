@@ -325,15 +325,18 @@ test('trusted private-stage output reads stay pinned and never grant the stage s
   await mkdir(scratch, { mode: 0o700 });
   await writeFile(join(scratch, 'capture.har'), 'capture');
   const source = openPrivateStageSource('browser-output/capture.har');
-  t.after(() => source.close());
-  assert.equal(Buffer.from(source.read(0, source.size)).toString(), 'capture');
-  assert.throws(() => openNativeRoot(scratch), { code: 'EACCES' });
-  assert.throws(() => openPrivateStageSource('../capture.har'), { code: 'PATH_DOMAIN_MISMATCH' });
-  if (platform !== 'win32') {
-    await symlink(value.rootPath, join(scratch, 'outside'), 'dir');
-    assert.throws(
-      () => openPrivateStageSource('browser-output/outside/missing.txt'),
-      (error: NodeJS.ErrnoException) => error.code === 'ELOOP' || error.code === 'ENOTDIR',
-    );
+  try {
+    assert.equal(Buffer.from(source.read(0, source.size)).toString(), 'capture');
+    assert.throws(() => openNativeRoot(scratch), { code: 'EACCES' });
+    assert.throws(() => openPrivateStageSource('../capture.har'), { code: 'PATH_DOMAIN_MISMATCH' });
+    if (platform !== 'win32') {
+      await symlink(value.rootPath, join(scratch, 'outside'), 'dir');
+      assert.throws(
+        () => openPrivateStageSource('browser-output/outside/missing.txt'),
+        (error: NodeJS.ErrnoException) => error.code === 'ELOOP' || error.code === 'ENOTDIR',
+      );
+    }
+  } finally {
+    source.close();
   }
 });

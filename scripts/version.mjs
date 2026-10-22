@@ -24,6 +24,7 @@ const PACKAGES = [
   'package.json',
   'packages/engine/package.json',
   'packages/ide/package.json',
+  'packages/native-fs/package.json',
   'packages/protocol/package.json',
   'packages/rpc/package.json',
   'apps/cli/package.json',
@@ -45,6 +46,21 @@ const IOS_PLIST = 'apps/mobile/ios/XGENDex/Info.plist';
 
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8');
 const write = (rel, text) => writeFileSync(join(ROOT, rel), text);
+const DEPENDENCY_GROUPS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+const packageNames = () => new Set(PACKAGES.map((rel) => JSON.parse(read(rel)).name));
+
+/** 내부 패키지는 외부 범위와 별개로 이 릴리스의 정확한 버전을 가리킨다. */
+function internalDependencies(entry, names) {
+  return DEPENDENCY_GROUPS.flatMap((group) => Object.entries(entry[group] ?? {})
+    .filter(([name]) => names.has(name))
+    .map(([name, version]) => ({ group, name, version })));
+}
+
+function setInternalDependencies(entry, names, version) {
+  const dependencies = internalDependencies(entry, names);
+  for (const { group, name } of dependencies) entry[group][name] = version;
+  return dependencies.length > 0;
+}
 
 export function buildNumber(version) {
   const [major, minor, patch] = version.split('.').map(Number);
@@ -69,9 +85,16 @@ function plistValue(text, key) {
 /** 지금 적혀 있는 버전들 — [위치, 값]. */
 export function collect() {
   const found = [];
-  for (const rel of PACKAGES) found.push([rel, JSON.parse(read(rel)).version]);
+  const names = packageNames();
+  const collectEntry = (where, entry) => {
+    found.push([where, entry.version]);
+    for (const { group, name, version } of internalDependencies(entry, names)) {
+      found.push([`${where} ${group}.${name}`, version]);
+    }
+  };
+  for (const rel of PACKAGES) collectEntry(rel, JSON.parse(read(rel)));
   for (const rel of LOCKS) {
-    for (const [key, entry] of lockEntries(JSON.parse(read(rel)))) found.push([`${rel} ${key}`, entry.version]);
+    for (const [key, entry] of lockEntries(JSON.parse(read(rel)))) collectEntry(`${rel} ${key}`, entry);
   }
   found.push([`${EXPO_APP} expo.version`, JSON.parse(read(EXPO_APP)).expo?.version]);
   const plist = read(IOS_PLIST);
@@ -89,18 +112,22 @@ export function check() {
   return { version, wrong };
 }
 
-/** package.json 은 모양을 건드리지 않으려고 최상위 version 한 줄만 바꾼다. */
-function setPackage(rel, version) {
+/** 내부 의존성이 없으면 package.json 의 최상위 version 한 줄만 바꾼다. */
+function setPackage(rel, version, names) {
   const text = read(rel);
   const next = text.replace(/("version"\s*:\s*")[^"]*(")/, `$1${version}$2`);
   if (JSON.parse(next).version !== version) throw new Error(`${rel}: 최상위 version 을 찾지 못했습니다`);
-  write(rel, next);
+  const pkg = JSON.parse(next);
+  write(rel, setInternalDependencies(pkg, names, version) ? `${JSON.stringify(pkg, null, 2)}\n` : next);
 }
 
 /** 잠금 파일은 npm 이 쓰는 모양(2칸 JSON + 줄바꿈) 그대로 다시 쓴다. */
-function setLock(rel, version) {
+function setLock(rel, version, names) {
   const lock = JSON.parse(read(rel));
-  for (const [, entry] of lockEntries(lock)) entry.version = version;
+  for (const [, entry] of lockEntries(lock)) {
+    entry.version = version;
+    setInternalDependencies(entry, names, version);
+  }
   write(rel, `${JSON.stringify(lock, null, 2)}\n`);
 }
 
@@ -126,8 +153,9 @@ function setPlist(version) {
 
 export function set(version) {
   if (!SEMVER.test(version)) throw new Error(`버전은 x.y.z 여야 합니다: ${version}`);
-  for (const rel of PACKAGES) setPackage(rel, version);
-  for (const rel of LOCKS) setLock(rel, version);
+  const names = packageNames();
+  for (const rel of PACKAGES) setPackage(rel, version, names);
+  for (const rel of LOCKS) setLock(rel, version, names);
   setExpo(version);
   setPlist(version);
 }

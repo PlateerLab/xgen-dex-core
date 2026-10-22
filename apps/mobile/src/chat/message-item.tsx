@@ -18,6 +18,8 @@ import {
   chatAnswerFiles,
   parseAgentTrigger,
   INTERRUPTED_TEXT,
+  startPhaseRows,
+  tailPhaseRows,
   type GeneratedContentVerificationStatus,
   type ToolEvent,
 } from '@dex/protocol';
@@ -316,14 +318,20 @@ export const MessageItem: React.FC<{
           timelineView
         ) : text ? (
           <AssistantMarkdown text={text} />
-        ) : live && m.phases?.length && tools.length === 0 ? (
+        ) : live && m.phases && startPhaseRows(m.phases).length > 0 && tools.length === 0 ? (
           // 답이 시작되기 전 서버의 준비 단계(Sandbox·워크스페이스·패키지·기억). 0.7초 넘게 걸린 단계가 없으면
           // 캐럿 그대로다(빠른 턴은 예전과 같다).
-          <TurnPhaseCard rows={m.phases} fallback={<Caret />} />
+          <TurnPhaseCard rows={startPhaseRows(m.phases)} fallback={<Caret />} />
         ) : live ? (
           <Caret />
         ) : null}
         {!!text && live && !timeline ? <Caret /> : null}
+        {/* 답이 다 나온 뒤의 기다림(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리). 턴이 끝나면 물러난다. */}
+        {live && m.phases && tailPhaseRows(m.phases).length > 0 ? (
+          <View style={{ marginTop: 8 }}>
+            <TurnPhaseCard rows={tailPhaseRows(m.phases)} tail />
+          </View>
+        ) : null}
       </Pressable>
 
       <AnswerFiles

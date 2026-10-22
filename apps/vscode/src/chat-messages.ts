@@ -9,6 +9,8 @@ import {
   awaitingAnswer,
   parseAgentTrigger,
   phaseLabel,
+  startPhaseRows,
+  tailPhaseRows,
   phasesSettledAt,
   triggerRowLabel,
   visiblePhaseRows,
@@ -39,6 +41,8 @@ export interface ChatMessage {
    * (:func:`phaseLines`). 있으면 웹뷰가 점 대신 도구 줄 모양으로 그린다.
    */
   phaseLines?: PhaseLine[];
+  /** assistant. 답이 다 나온 뒤의 단계 줄(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리). 답 아래에 그린다. */
+  tailLines?: PhaseLine[];
   /** 확장 프로세스 전용. proof는 webview 상태로 보내지 않는다. */
   generatedContent?: GeneratedContentProvenance[];
   malformedGeneratedContent?: boolean;
@@ -129,6 +133,23 @@ export function messageForView(message: ChatMessage): ChatMessageView {
   } = message;
   const provenance = provenanceView(message);
   return provenance ? { ...visible, provenance } : visible;
+}
+
+/** Add live phase lines before stripping extension-only proofs from every message. */
+export function messagesForView(
+  messages: readonly ChatMessage[],
+  assistantMessageId: string | undefined,
+  phaseRows: readonly TurnPhaseRow[],
+  now: number,
+): ChatMessageView[] {
+  const lines = phaseLines(startPhaseRows(phaseRows), now);
+  const tail = phaseLines(tailPhaseRows(phaseRows), now);
+  return messages.map((item) => {
+    if (item.id !== assistantMessageId) return item;
+    if (!item.text && !item.tools?.length && lines.length > 0) return { ...item, phaseLines: lines };
+    if (item.text && tail.length > 0) return { ...item, tailLines: tail };
+    return item;
+  }).map(messageForView);
 }
 
 /** 준비 단계 한 줄. 웹뷰가 그대로 그린다. */

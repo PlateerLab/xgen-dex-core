@@ -1,4 +1,4 @@
-import { AWAITING_ANSWER_LABEL, INTERRUPTED_NOTE, applyTurnPhase, describeStreamError, formatErrorLine, phaseLabel, type TurnPhaseRow } from '@dex/protocol';
+import { AWAITING_ANSWER_LABEL, INTERRUPTED_NOTE, applyTurnPhase, describeStreamError, formatErrorLine, isTailPhase, phaseLabel, type TurnPhaseRow } from '@dex/protocol';
 import { mergeGeneratedContentProvenance, type GeneratedContentProvenance, type GeneratedContentVerificationStatus } from '@dex/protocol';
 import type { ChatEvent, HistoryTurn, ToolEvent } from '@dex/engine';
 import type { ProvenanceCheckState } from './provenance';
@@ -135,6 +135,12 @@ function upsertActivity(messages: ChatMessage[], key: string, text: string): Cha
 
 /** 준비 단계 상태 줄. 하는 중·다시 시도·실패한 마지막 단계, 다 끝났으면 답변을 기다린다는 줄. */
 function phaseStatusLine(rows: readonly TurnPhaseRow[]): string {
+  // 답이 다 나온 뒤의 단계(파일 점검·기억 저장·실행 기록·작업 폴더 저장·마무리)는 하는 중인 것, 없으면 마지막 것.
+  const tail = rows.filter((r) => isTailPhase(r.phase));
+  if (tail.length > 0) {
+    const liveTail = [...tail].reverse().find((r) => r.state !== 'ok');
+    return phaseLabel(liveTail ?? tail[tail.length - 1]);
+  }
   // 하는 중·다시 시도·실패한 단계가 먼저, 없으면 첫 실행 알림(새 에이전트), 그것도 없으면 답변을 기다린다.
   const live = [...rows].reverse().find((r) => r.phase !== 'assemble' && r.state !== 'ok');
   if (live) return phaseLabel(live);

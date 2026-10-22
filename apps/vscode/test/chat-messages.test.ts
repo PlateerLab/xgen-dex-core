@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { HistoryTurn } from '@dex/protocol';
-import { historyTurnMessages, messageForView, phaseLines, textVerificationCandidate, verifyMessageProvenance } from '../src/chat-messages';
+import { historyTurnMessages, messageForView, messagesForView, phaseLines, textVerificationCandidate, verifyMessageProvenance } from '../src/chat-messages';
 
 const turn = (rest: Partial<HistoryTurn>): HistoryTurn => ({
   logId: 1, ioId: 1, interactionId: 'c', workflowId: 'wf', workflowName: 'gitlab',
@@ -161,4 +161,44 @@ test('준비 단계 줄: 0.7초 넘은 단계만, 다 끝났는데 답이 아직
   assert.deepEqual(phaseLines(rows, 12_500), [{ label: 'Sandbox를 불러왔습니다', state: 'ok', time: '12.3초' }]);
   assert.deepEqual(phaseLines(rows, 15_400).at(-1), { label: '답변을 준비하고 있습니다', state: 'run', time: '3초' });
   assert.deepEqual(phaseLines([{ phase: 'workspace', state: 'run', startedAt: 0 }], 300), [], '빠른 단계는 보이지 않는다');
+});
+
+test('답 뒤의 단계 줄: 답변 준비 줄을 잇지 않고 걸린 시간을 보인다', () => {
+  const rows = [{ phase: 'publish' as const, state: 'ok' as const, startedAt: 0, durationMs: 41_200 }];
+  assert.deepEqual(phaseLines(rows, 60_000), [{ label: '작업 폴더를 저장했습니다', state: 'ok', time: '41.2초' }]);
+});
+
+test('후반 단계가 있는 live 답변도 모든 webview 메시지에서 proof를 제거한다', () => {
+  const rows = historyTurnMessages([
+    turn({ output: '완료', generatedContent: [{
+      indication: 'ai_generated', proof: 'secret.proof.value', sha256: 'a'.repeat(64),
+      content_type: 'text/plain', byte_length: 6,
+      source_id: '123e4567-e89b-42d3-a456-426614174000',
+    }] }),
+  ], 'Agent');
+  const answer = rows[1];
+  answer.provenanceCheck = 'verified';
+  const tail = [{ phase: 'publish' as const, state: 'run' as const, startedAt: 0 }];
+  const visible = messagesForView(rows, answer.id, tail, 2_000);
+  assert.equal(visible[1].tailLines?.[0].label, '작업 폴더를 저장하고 있습니다');
+  assert.equal(visible[1].phaseLines, undefined);
+  assert.equal(visible[1].provenance?.verified, true);
+  assert.equal(answer.tailLines, undefined, '원본 메시지에 일시적인 단계 줄을 남기지 않는다');
+  for (const projected of [visible, messagesForView(rows, 'other', tail, 2_000), messagesForView(rows, answer.id, [], 2_000), messagesForView(rows, answer.id, tail, 100)]) {
+    assert.equal(JSON.stringify(projected).includes('secret.proof.value'), false);
+    assert.equal('generatedContent' in projected[1], false);
+    assert.equal('provenanceCheck' in projected[1], false);
+  }
+});
+
+test('답 전의 준비 줄과 후반 줄을 구분하며 지난 메시지에는 준비 줄을 붙이지 않는다', () => {
+  const [user, answer] = historyTurnMessages([turn({ input: '질문', output: '' })], 'Agent');
+  const phases = [
+    { phase: 'sandbox' as const, state: 'run' as const, startedAt: 0 },
+    { phase: 'publish' as const, state: 'run' as const, startedAt: 0 },
+  ];
+  const visible = messagesForView([user, answer], answer.id, phases, 2_000);
+  assert.equal(visible[1].phaseLines?.length, 1);
+  assert.equal(visible[1].tailLines, undefined);
+  assert.equal(visible[0].phaseLines, undefined);
 });

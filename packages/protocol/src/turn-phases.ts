@@ -19,7 +19,24 @@ import type { ToolIcon } from './process-timeline';
  * 첫 대화는 실행 환경·작업 공간·도구를 처음 세우고 모델도 캐시 없이 시작해 오래 걸린다. 이 줄은 기다리지 않고
  * 바로 서고, 답이 시작될 때까지 머리 줄로 남는다(그 아래 단계 줄이 이어진다).
  */
-export type TurnPhaseName = 'assemble' | 'sandbox' | 'workspace' | 'packages' | 'memory';
+export type TurnPhaseName =
+  | 'assemble' | 'sandbox' | 'workspace' | 'packages' | 'memory'
+  | 'review' | 'remember' | 'record' | 'publish' | 'finish';
+
+/**
+ * 답이 다 나온 뒤의 단계(2026-10-20). 답에 쓴 파일 점검·대화 기억 쓰기·실행 기록 정리(런타임 4.95), 작업 폴더
+ * 저장·마무리 기록(서버). 마지막 글자 뒤에도 턴이 한동안 끝나지 않는데, 그동안 커서만 깜박여 무엇을 하는지
+ * 몰랐다. 이 줄들은 답 **아래**에 선다(답 전의 단계 카드와 따로). 웹과 같은 문구다.
+ */
+const TAIL_PHASES: ReadonlySet<TurnPhaseName> = new Set<TurnPhaseName>(['review', 'remember', 'record', 'publish', 'finish']);
+
+export const isTailPhase = (phase: TurnPhaseName): boolean => TAIL_PHASES.has(phase);
+
+/** 답 전의 단계 줄(첫 실행 알림·실행 환경·작업 공간·패키지·기억). */
+export const startPhaseRows = (rows: readonly TurnPhaseRow[]): TurnPhaseRow[] => rows.filter((r) => !isTailPhase(r.phase));
+
+/** 답 뒤의 단계 줄. */
+export const tailPhaseRows = (rows: readonly TurnPhaseRow[]): TurnPhaseRow[] => rows.filter((r) => isTailPhase(r.phase));
 export type TurnPhaseState = 'start' | 'done' | 'retry' | 'error';
 
 /** 서버가 보낸 준비 단계 알림 하나. */
@@ -45,7 +62,9 @@ export interface TurnPhaseRow {
   attempts?: number;
 }
 
-const PHASES: readonly TurnPhaseName[] = ['assemble', 'sandbox', 'workspace', 'packages', 'memory'];
+const PHASES: readonly TurnPhaseName[] = [
+  'assemble', 'sandbox', 'workspace', 'packages', 'memory', 'review', 'remember', 'record', 'publish', 'finish',
+];
 const STATES: readonly TurnPhaseState[] = ['start', 'done', 'retry', 'error'];
 
 /**
@@ -129,19 +148,49 @@ export function nextPhaseReveal(rows: readonly TurnPhaseRow[], now: number): num
 export function awaitingAnswer(rows: readonly TurnPhaseRow[], now: number): boolean {
   // 첫 실행 알림이 도는 동안은 그 줄이 이미 "기다리는 중" 을 말한다(겹쳐 띄우지 않는다).
   if (rows.some((r) => r.phase === 'assemble' && r.state === 'run')) return false;
-  const steps = rows.filter((r) => r.phase !== 'assemble');
+  const steps = rows.filter((r) => r.phase !== 'assemble' && !isTailPhase(r.phase));
   if (steps.length === 0 || steps.some((r) => r.state === 'run' || r.state === 'retry')) return false;
   return now - phasesSettledAt(steps) >= PHASE_VISIBLE_MS;
 }
 
 /** 마지막 단계가 끝난 시각("답변을 준비하고 있습니다" 줄의 경과를 여기서 센다). 첫 실행 알림 줄은 빼고 센다. */
 export function phasesSettledAt(rows: readonly TurnPhaseRow[]): number {
-  const steps = rows.filter((r) => r.phase !== 'assemble');
+  const steps = rows.filter((r) => r.phase !== 'assemble' && !isTailPhase(r.phase));
   return steps.length ? Math.max(...steps.map((r) => r.startedAt + (r.durationMs ?? 0))) : 0;
 }
 
 /** 준비 단계마다의 이름표(하는 중 · 끝남 · 다시 시도 · 못 함). 웹과 같은 문구다. */
 const LABELS: Record<TurnPhaseName, Record<TurnPhaseRow['state'], string>> = {
+  review: {
+    run: '답에 쓴 파일을 점검하고 있습니다',
+    ok: '답에 쓴 파일을 점검했습니다',
+    retry: '답에 쓴 파일을 점검하고 있습니다',
+    err: '답에 쓴 파일을 점검하지 못했습니다',
+  },
+  remember: {
+    run: '대화를 기억에 저장하고 있습니다',
+    ok: '대화를 기억에 저장했습니다',
+    retry: '대화를 기억에 저장하고 있습니다',
+    err: '대화를 기억에 저장하지 못했습니다',
+  },
+  record: {
+    run: '실행 기록을 정리하고 있습니다',
+    ok: '실행 기록을 정리했습니다',
+    retry: '실행 기록을 정리하고 있습니다',
+    err: '실행 기록을 정리하지 못했습니다',
+  },
+  publish: {
+    run: '작업 폴더를 저장하고 있습니다',
+    ok: '작업 폴더를 저장했습니다',
+    retry: '작업 폴더를 저장하고 있습니다',
+    err: '작업 폴더를 저장하지 못했습니다',
+  },
+  finish: {
+    run: '마무리하고 있습니다',
+    ok: '마무리했습니다',
+    retry: '마무리하고 있습니다',
+    err: '마무리하지 못했습니다',
+  },
   assemble: {
     run: 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!',
     ok: 'Geny를 조립했어요',
@@ -188,6 +237,11 @@ export const AWAITING_ANSWER_LABEL = '답변을 준비하고 있습니다';
 
 /** 준비 단계별 아이콘. 도구 줄과 같은 색 배지를 쓴다. "답변을 준비" 줄은 list 다. */
 export const PHASE_ICON: Readonly<Record<TurnPhaseName, ToolIcon>> = {
+  review: 'search',
+  remember: 'edit',
+  record: 'list',
+  publish: 'file',
+  finish: 'list',
   assemble: 'external',
   sandbox: 'terminal',
   workspace: 'file',

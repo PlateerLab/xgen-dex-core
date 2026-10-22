@@ -1,6 +1,6 @@
 {
   "name": "@dex/native-fs",
-  "version": "1.100.0",
+  "version": "1.101.1",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",

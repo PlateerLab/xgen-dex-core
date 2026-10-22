@@ -33,8 +33,7 @@ import {
   describeTool,
   historyTurnMessages,
   message,
-  messageForView,
-  phaseLines,
+  messagesForView,
   textVerificationCandidate,
   verifyMessageProvenance,
   type ChatMessage,
@@ -1810,16 +1809,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.phaseTicker = undefined;
   }
 
-  /** 웹뷰에 보낼 메시지. 답이 시작되기 전의 답변 말풍선에만 준비 줄을 싣는다(원본은 건드리지 않는다). */
+  /** 웹뷰에 보낼 메시지: 준비·후반 단계 줄을 더하고 proof를 제거한다. */
   private messagesForView(): ChatMessageView[] {
-    let messages = this.messages;
-    if (this.phaseRows.length === 0) return messages.map(messageForView);
-    const lines = phaseLines(this.phaseRows, Date.now());
-    if (lines.length === 0) return messages.map(messageForView);
-    messages = this.messages.map((item) =>
-      item.id === this.assistantMessageId && !item.text && !item.tools?.length ? { ...item, phaseLines: lines } : item,
-    );
-    return messages.map(messageForView);
+    return messagesForView(this.messages, this.assistantMessageId, this.phaseRows, Date.now());
   }
 
   private applyEvent(event: ChatEvent): void {

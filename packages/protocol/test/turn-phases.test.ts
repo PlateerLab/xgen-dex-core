@@ -15,6 +15,8 @@ import {
   nextPhaseReveal,
   phaseHeadline,
   phaseLabel,
+  startPhaseRows,
+  tailPhaseRows,
   visiblePhaseRows,
   type TurnPhaseRow,
   type TurnPhaseSignal,
@@ -89,4 +91,17 @@ test('새 에이전트의 첫 실행(assemble)은 기다리지 않고 바로 머
   assert.deepEqual(visiblePhaseRows(rows, 20_000).map((r) => r.phase), ['assemble', 'sandbox']);
   assert.equal(awaitingAnswer(rows, 20_000), false, '조립 줄이 이미 기다리는 중을 말한다');
   assert.equal(phaseHeadline(rows, 20_000)?.label, 'Geny를 조립하고 있어요! 첫 생성에는 시간이 좀 걸려요!');
+});
+
+test('답이 다 나온 뒤의 단계는 답 아래 줄로 따로 모이고, 답 전의 카드와 답변 준비 판정을 건드리지 않는다', () => {
+  const rows = run([],
+    [0, { phase: 'sandbox', state: 'start' }],
+    [3_000, { phase: 'sandbox', state: 'done', elapsedMs: 3_000 }],
+    [60_000, { phase: 'publish', state: 'start' }],
+  );
+  assert.deepEqual(startPhaseRows(rows).map((r) => r.phase), ['sandbox']);
+  assert.deepEqual(tailPhaseRows(rows).map((r) => r.phase), ['publish']);
+  assert.equal(phaseLabel(visiblePhaseRows(tailPhaseRows(rows), 61_000)[0]), '작업 폴더를 저장하고 있습니다');
+  assert.equal(awaitingAnswer(rows, 61_000), true, '답 뒤의 단계는 답 전 판정에 섞이지 않는다');
+  assert.deepEqual(visiblePhaseRows(tailPhaseRows(rows), 60_300), [], '빨리 끝나는 마무리는 번쩍이지 않는다');
 });

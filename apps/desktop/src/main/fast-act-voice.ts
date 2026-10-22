@@ -43,7 +43,7 @@ import {
 } from './fast-act';
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
-import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, withChrome, type ChromeAction } from './fast-act-chrome';
+import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeAllowed, withChrome, type ChromeAction } from './fast-act-chrome';
 import {
   FIELD_LABEL_SCRIPT,
   checkOf,
@@ -287,6 +287,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
   private revealed = false;
   private leftPopup = false;
   private layerClosed = false;
+  /** 열린 층·목록을 닫고 다시 판단하는 중 — 이때는 입력만 이어서 한다(아래 handleOnce). */
+  private afterClose = false;
   /** 이름 확인으로 막은 뒤 다시 고를 칸 — 말한 칸 이름과 맞는 칸이 화면에 하나뿐일 때(한 지시에 한 번). */
   private namedRetry: string | null | undefined;
   /** 실행 직전 이 에이전트의 탭과 그 세대 — 누른 것이 새 탭을 열었는지, 열려 있던 팝업을 다시 불렀는지 볼 때 쓴다. */
@@ -457,8 +459,27 @@ export class BrowserVoiceAgent implements VoiceAgent {
   }
 
   /** 페이지 요소 앞에 브라우저 자체 조작을 붙인 요소 목록(fast-act-chrome). */
-  private withChrome(page: NonNullable<ReturnType<typeof visiblePage>>, refs: ElementRefs): { refs: ElementRefs; chrome: Record<string, ChromeAction> } {
-    return withChrome(this.workflowId, page, refs);
+  private withChrome(
+    page: NonNullable<ReturnType<typeof visiblePage>>,
+    refs: ElementRefs,
+    closeLayer?: { name: string; run: () => Promise<void> },
+  ): { refs: ElementRefs; chrome: Record<string, ChromeAction> } {
+    return withChrome(this.workflowId, page, refs, closeLayer);
+  }
+
+  /**
+   * 열린 층을 Esc 로 닫는다 — 페이지 안의 초점 요소에 먼저 보낸다(앱 창에 초점이 없으면 CDP 키 입력이 웹뷰에 닿지 않아 서랍이
+   * 닫히지 않았다, 10/21 BO). 그래도 열려 있으면 키 입력으로 한 번 더. 끝내 열려 있으면 실패로 던진다.
+   */
+  private async closeLayer(page: NonNullable<ReturnType<typeof visiblePage>>): Promise<void> {
+    const runtime = getBrowserRuntime();
+    await runtime.pageScript(this.workflowId, page.pageId, ESC_SCRIPT, PAGE_SCRIPT_MS).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, LAYER_WAIT_MS));
+    if (await this.layerOpen(page.pageId)) {
+      await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Escape'], 10_000).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, LAYER_WAIT_MS));
+    }
+    if (await this.layerOpen(page.pageId)) throw new Error('열린 창을 Esc 로 닫지 못함');
   }
 
   /**
@@ -1105,6 +1126,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     text: string,
     th: Thresholds,
     guard: Guard,
+    abort: () => boolean,
     page: NonNullable<ReturnType<typeof visiblePage>>,
     pick: { confidence: number; top?: unknown },
     t0: number,
@@ -1113,7 +1135,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const no = (reason: string): Outcome => ({ acted: false, reason, ms: now() - t0, detail: pick.top });
     if (pick.confidence < CHROME_PICK) return no(`브라우저 조작 확신 낮음 ${pick.confidence.toFixed(2)}`);
     if (ch.close && (th.partial || pick.confidence < CHROME_CLOSE_PICK)) return no(`탭 닫기는 말이 끝난 뒤 확신 ${CHROME_CLOSE_PICK} 이상에서`);
-    if (!(await guard(ch.name, 'press', pick.confidence))) return no(GUARDED);
+    if (abort() || !(await guard(ch.name, 'press', pick.confidence))) return no(GUARDED);
     const decideMs = now() - t0;
     this.beforeAct(page);
     const tAct = now();
@@ -1126,6 +1148,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     const element = { role: ch.role, name: ch.name } as ElementRefs[string];
     const done = await this.record(text, element, 'click', null, th, decideMs, now() - tAct, page, pick, snapMs);
+    if (ch.layer) {
+      done.sentence = ch.name.includes('목록') ? '열린 목록을 닫았어요.' : '열린 창을 닫았어요.';
+      diag(SCOPE, 'layer-closed', { text });
+      this.layerClosed = true;
+    }
     return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
   }
 
@@ -1137,6 +1164,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     this.revealed = false;
     this.leftPopup = false;
     this.layerClosed = false;
+    this.afterClose = false;
     this.namedRetry = undefined;
     const from = this.actions.length;
     // 되물었으면(팝업·트리에서 고르지 못함, 선택되지 않음 — tell) 실행은 했어도 요청을 마친 것이 아니다.
@@ -1217,33 +1245,12 @@ export class BrowserVoiceAgent implements VoiceAgent {
         this.snap = null;
       }
     }
-    // 닫으라는 말인데 페이지에 열린 층(모달·대화창·메뉴 서랍)이 있다 — Esc 로 닫고 층이 사라졌는지 본다. 열린 층은 뒤 화면을
-    // aria-hidden 으로 가려 그 층을 연 버튼이 스냅샷에 없어서, 닫을 요소를 고르지 못하고 엉뚱한 것을 눌렀다(10/21 BO 사이드바).
-    // 닫히지 않으면 평소처럼 요소를 고른다.
-    if (!th.partial && !this.layerClosed && CLOSE_WORD.test(text) && !TAB_WORD.test(text) && (await this.layerOpen(page.pageId))) {
-      this.layerClosed = true;
-      const tAct = now();
-      // 페이지 안에서 초점 요소에 Esc 를 보낸다 — 앱 창에 초점이 없으면 CDP 키 입력이 웹뷰에 닿지 않아 서랍이 닫히지 않았다(10/21 BO).
-      // 그래도 열려 있으면 키 입력으로 한 번 더.
-      const runtime = getBrowserRuntime();
-      await runtime.pageScript(this.workflowId, page.pageId, ESC_SCRIPT, PAGE_SCRIPT_MS).catch(() => undefined);
-      await new Promise((r) => setTimeout(r, LAYER_WAIT_MS));
-      if (await this.layerOpen(page.pageId)) {
-        await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Escape'], 10_000).catch(() => undefined);
-        await new Promise((r) => setTimeout(r, LAYER_WAIT_MS));
-      }
-      if (!(await this.layerOpen(page.pageId))) {
-        diag(SCOPE, 'layer-closed', { text });
-        const done = await this.record(text, { role: 'button', name: '열린 창 닫기 (Esc)' }, 'click', null, th, tAct - t0, now() - tAct, page, { confidence: 1 }, snap.ms);
-        done.sentence = '열린 창을 Esc 로 닫았어요.';
-        return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
-      }
-      // 닫지 못했다 — 열린 층의 버튼은 스냅샷에 없어 고르면 엉뚱한 것을 누른다. 서버가 화면을 보고 닫게 한다.
-      this.snap = null;
-      return no('열린 창을 Esc 로 닫지 못함');
-    }
     const origin = originOf(page.url);
-    const { refs: allRefs, chrome } = this.withChrome(page, snap.refs);
+    // 열린 층(선택 목록·서랍·모달)이 뒤 화면을 가렸다 — 닫기를 후보로 둔다(chromeActions). 판단 모델이 닫기를 고르면 닫으라는
+    // 말이라 닫고 끝낸다(runChrome). 다른 것을 고르면 목록은 아래 listLayer 가 닫고 다시 판단한다.
+    const layer = !this.layerClosed && (await this.layerOpen(page.pageId));
+    const closeName = listLayer(snap.refs) ? '열린 목록 닫기 (Esc 키)' : '열린 창 닫기 (Esc 키)';
+    const { refs: allRefs, chrome } = this.withChrome(page, snap.refs, layer ? { name: closeName, run: () => this.closeLayer(page) } : undefined);
     const scr = this.screenOf(origin, allRefs);
 
     if (needsSequentialPlan(text)) return no('순서가 있는 여러 요청은 서버에서 이어서 처리');
@@ -1291,14 +1298,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
         ([k, r]) =>
           !LANDMARK.has(r.role) &&
           !(wantsType && typedKey.length >= 2 && (r.name ?? '').replace(/\s/g, '').includes(typedKey)) &&
-          !(chrome[k] && !chrome[k].word.test(text)) &&
-          // 입력 요청은 브라우저 자체 조작(뒤로·새로고침·새 탭)으로 풀지 않는다 — 입력칸이 안 보일 때 새로고침을 골라
-          // 채우던 폼이 지워졌다(10/16 BO).
-          !(wantsType && chrome[k]) &&
+          !(chrome[k] && !chromeAllowed(chrome[k], text, wantsType)) &&
           !(pressOnly && TYPABLE.has(r.role)),
       ),
     );
-    const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? typable : pickable, snap.disabled);
+    // 입력 요청이어도 열린 층 닫기는 후보에 둔다 — 층이 입력칸을 가렸으면 닫아야 넣을 수 있다.
+    const layerRefs = Object.fromEntries(Object.entries(pickable).filter(([k]) => chrome[k]?.layer));
+    const candidates = withoutDisabledTwins(wantsType && Object.keys(typable).length ? { ...layerRefs, ...typable } : pickable, snap.disabled);
     const retry = this.namedRetry && this.namedRetry in snap.refs ? this.namedRetry : null;
     const picked = retry ? { ref: retry, confidence: 1, top: [], calls: 0, ms: 0 } : await pickElement(post, judgedText(text), origin, candidates, scr);
     const pick = picked && pooledPick(picked, snap.items);
@@ -1317,6 +1323,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
         cls: { action: cls.action, text: cls.text },
       });
     }
+    // 닫기 후보를 골랐다 — 닫고 끝낸다. 목록이 열린 채 "목록 닫아줘" 를 항목 아님으로 보고 닫은 뒤 다시 판단하면 남은 일이 없는데도
+    // 계정 "X" 를 0.999 로 골랐다(10/22 BO, 판단 모델은 "할 일 없음" 을 고르지 못한다).
+    if (pick && pick.confidence >= th.pick && chrome[pick.ref]?.layer) return this.runChrome(chrome[pick.ref], text, th, guard, abort, page, pick, t0, snap.ms);
     // 앞 지시가 연 선택 목록만 보이는데 이 지시는 목록 항목을 고르지 않는다 — 목록을 닫고 뒤 화면으로 다시 판단한다.
     // 목록만 보이면 모델은 무슨 말에나 항목 하나를 고른다(다른 칸 지시에 "선택" 1.0) — 항목 이름이나 자리("첫 번째")를
     // 말했을 때만 항목을 고른 것으로 본다.
@@ -1329,11 +1338,21 @@ export class BrowserVoiceAgent implements VoiceAgent {
       // 중간 인식이면 항목 이름을 아직 말하는 중일 수 있다 — 닫지도 고르지도 않고 말이 끝나길 기다린다.
       if (th.partial) return no('열린 목록 — 말이 끝난 뒤', pick?.top);
       this.listClosed = true;
-      if (await this.closeList(page)) return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+      if (await this.closeList(page)) {
+        // 닫은 목록도 한 일로 남기고, 다시 판단은 입력일 때만 잇는다(afterClose) — "목록 닫아줘" 를 닫은 뒤 다시 판단해
+        // 계정 "X" 버튼을 눌렀다(10/22 BO). 입력이 아니면 닫은 기록과 함께 서버로 넘어간다.
+        const closed = await this.record(text, { role: 'button', name: '열린 목록 닫기 (Esc 키)' }, 'click', null, th, now() - t0, 0, page, { confidence: 1 }, snap.ms);
+        closed.sentence = '열린 목록을 닫았어요.';
+        this.afterClose = true;
+        return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
+      }
     }
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     const ch = chrome[pick.ref];
-    if (ch) return this.runChrome(ch, text, th, guard, page, pick, t0, snap.ms);
+    // 층을 닫은 뒤 다시 판단할 때는 누르지 않는다 — 닫기만 하라는 말이면 닫힌 화면에 맞는 대상이 없어 비슷한 버튼("X")을
+    // 높은 확신으로 눌렀다(10/22 BO, 판단 모델은 "해당 없음" 을 고르지 못한다). 입력만 이어서 한다.
+    if (ch && this.afterClose) return no('닫은 뒤 누르기는 서버에서 화면을 보고', pick.top);
+    if (ch) return this.runChrome(ch, text, th, guard, abort, page, pick, t0, snap.ms);
     const fileField = snap.files[pick.ref];
     if (fileField) return this.upload(text, fileField, th, guard, page, t0);
     const element = snap.refs[pick.ref];
@@ -1368,6 +1387,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const clickedField = resolved.action === 'click' && !pressOnly && TEXT_FIELD.has(element.role);
     const typing = clickedField ? 'type' : resolved.action;
     const action: ActionKind = typing === 'type' && searching && isSearchField(element) ? 'type_submit' : typing;
+    if (this.afterClose && action === 'click') return no('닫은 뒤 누르기는 서버에서 화면을 보고', pick.top);
     let typed = resolved.text;
     if (action !== 'click') {
       const found = await this.typedText(post, text, origin, scr, utterance, snap.labels[pick.ref] || element.name);

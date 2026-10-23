@@ -161,9 +161,10 @@ ${FIELD_HELPERS}
       out.push({ field: groupOf(el) || el.name || '', type, value: option, disabled });
       continue;
     }
-    // 편집기 innerText 는 문단 사이를 늘 빈 줄로 읽는다 — 넣은 글(줄바꿈 하나)과 같게 접는다. 아니면 LLM 이 빈 줄을 고치려 같은
-    // 상세를 거듭 넣었다(10/23 demo-test-20, 8번 → 턴 토큰 예산 초과).
-    const value = type === 'editor' ? (el.innerText || '').replace(/\\n(?:[ \\t]*\\n)+/g, '\\n') : box ? squash(el.textContent) : type === 'select' ? [...el.selectedOptions].map((o) => o.text).join(', ') : el.value;
+    // 편집기 innerText 는 문단 경계를 줄바꿈 2개로, 빈 문단 하나를 3개 더로 읽는다(<p>a</p><p><br></p><p>b</p> → 5개). 넣은 글의
+    // 줄바꿈 수(1 + 빈 문단 수)로 되돌린다 — 아니면 LLM 이 빈 줄을 고치려 같은 상세를 거듭 넣었다(10/23 demo-test-20, 8번 →
+    // 턴 토큰 예산 초과). 일부러 넣은 빈 줄은 남는다.
+    const value = type === 'editor' ? (el.innerText || '').replace(/\\n{2,}/g, (m) => '\\n'.repeat(1 + Math.round((m.length - 2) / 3))) : box ? squash(el.textContent) : type === 'select' ? [...el.selectedOptions].map((o) => o.text).join(', ') : el.value;
     out.push({ field: own(el) || labelOf(el) || hintOf(el) || el.name || '', type, value, placeholder: el.placeholder || undefined, disabled });
   }
   // 검색 팝업으로 고르는 칸(협력사·브랜드)은 입력칸이 아니라 name·value 속성을 단 글자 상자다(10/20 BO <span name="entrNm">).

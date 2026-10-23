@@ -372,27 +372,6 @@ export async function classify(
   return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, onscreen: a.onscreen?.probabilities?.yes, ms: now() - t0 };
 }
 
-/**
- * 직전 서버 답이 사용자에게 묻거나 고르라며 끝나는가 — 그 확률. 그렇다면 바로 다음 말은 그 물음에 대한 대답이라 빠른 조작이 새
- * 지시로 실행하면 안 된다(10/19 BO: "어느 상품에 작성할까요?" 다음의 "001 데스크 정리함으로 써서 넣어줘" 를 업체상품번호에
- * 넣음). "사용자 말이 대답인가" 로 물으면 판단 모델이 0.006 으로 답했다 — 서버 답만 보고 묻는다.
- */
-export async function askedProbability(post: DecisionPost, assistant: string): Promise<number> {
-  const a = await post({
-    state: `Assistant: ${assistant}`,
-    questions: {
-      asked: {
-        type: 'choice',
-        instructions: "Does the assistant's message end by asking the user a question or asking the user to choose something?",
-        criteria: { asks: 'yes, it asks the user', done: 'no, it reports what was done' },
-      },
-    },
-  });
-  const p = a.asked?.probabilities?.asks;
-  if (p === undefined || !Number.isFinite(p) || p < 0 || p > 1) throw new Error('직전 답의 질문 여부를 확인하지 못했어요.');
-  return p;
-}
-
 export type Pick = {
   ref: string;
   confidence: number;

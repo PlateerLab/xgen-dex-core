@@ -161,7 +161,7 @@ ${FIELD_HELPERS}
       out.push({ field: groupOf(el) || el.name || '', type, value: option, disabled });
       continue;
     }
-    const value = type === 'editor' ? (el.innerText || '').slice(0, 2000) : box ? squash(el.textContent) : type === 'select' ? [...el.selectedOptions].map((o) => o.text).join(', ') : el.value;
+    const value = type === 'editor' ? el.innerText || '' : box ? squash(el.textContent) : type === 'select' ? [...el.selectedOptions].map((o) => o.text).join(', ') : el.value;
     out.push({ field: own(el) || labelOf(el) || hintOf(el) || el.name || '', type, value, placeholder: el.placeholder || undefined, disabled });
   }
   // 검색 팝업으로 고르는 칸(협력사·브랜드)은 입력칸이 아니라 name·value 속성을 단 글자 상자다(10/20 BO <span name="entrNm">).

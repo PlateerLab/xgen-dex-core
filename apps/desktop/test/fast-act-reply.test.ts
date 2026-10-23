@@ -3,13 +3,10 @@ import test from 'node:test';
 import { actionRow, actionSentence, josa, replyFor } from '../src/main/fast-act-reply';
 import type { VoiceAction } from '../src/main/fast-act-voice';
 import { Segmenter, type VoiceAgent } from '../src/main/voice-segmenter';
-import { rememberServerReply, voiceNeedsChatContext } from '../src/main/fast-act-chat';
+import { voiceNeedsChatContext } from '../src/main/fast-act-chat';
 
-test('음성은 대화를 모르거나 직전 서버 답이 있으면 채팅의 맥락 검사를 거친다', () => {
+test('음성은 대화를 모를 때만 채팅 경로로 넘긴다', () => {
   assert.equal(voiceNeedsChatContext(), true);
-  assert.equal(voiceNeedsChatContext('voice-new'), false);
-  rememberServerReply('voice-question', '어느 상품에 입력할까요?');
-  assert.equal(voiceNeedsChatContext('voice-question'), true);
   assert.equal(voiceNeedsChatContext('voice-new'), false);
 });
 

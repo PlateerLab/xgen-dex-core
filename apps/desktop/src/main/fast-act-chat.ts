@@ -19,7 +19,6 @@ import { getBrowserRuntime } from './browser-runtime';
 import { stripVoiceContext } from '@dex/protocol/voice-context';
 import { diag } from './diag-log';
 import { actionRow, replyFor } from './fast-act-reply';
-import { askedProbability } from './fast-act';
 import { decisionPost, visiblePage } from './fast-act-runner';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, type Outcome, type VoiceAgent } from './voice-segmenter';
@@ -28,20 +27,9 @@ import { takeVoiceTurn } from './voice-turns';
 const SCOPE = 'fast-act';
 const DRY = process.env.DEX_FAST_ACT_DRY === '1';
 const now = (): number => performance.now();
-/** 직전 서버 답이 이 확률 이상으로 묻는 답이면 다음 말은 서버로 넘긴다(askedProbability). */
-const ASKED_MIN = 0.5;
-
-/** 대화별 직전 서버 답(끝 2,000자) — 바로 다음 말이 그 답에 대한 대답인지 한 번 본다. */
-const lastServerReply = new Map<string, string>();
-
-/** 서버 턴이 끝났다 — 그 답을 기억한다(index.ts 가 서버 스트림을 다 받은 뒤 부른다). */
-export function rememberServerReply(interactionId: string | undefined, reply: string): void {
-  if (interactionId && reply.trim()) lastServerReply.set(interactionId, reply.trim().slice(-2_000));
-}
-
-/** Voice must check a preceding server reply through the same chat routing gate. */
+/** 대화를 모르는 음성은 말하는 도중 실행하지 않고 채팅 경로로 넘긴다. */
 export function voiceNeedsChatContext(interactionId?: string): boolean {
-  return !interactionId || lastServerReply.has(interactionId);
+  return !interactionId;
 }
 
 /** 렌더러가 붙인 봉투(브라우저·Teams 컨텍스트)를 떼고 사용자 원문만 남긴다. */
@@ -134,21 +122,6 @@ export async function tryFastAct(
   }
   const t0 = now();
   const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
-  // 직전 턴을 서버가 묻는 말로 끝냈다 — 이 말은 그 물음에 대한 대답이라 서버로. 대화 맥락은 서버 LLM 만 안다.
-  // 다만 화면의 칸 이름을 직접 부른 말은 그 자체로 알아들을 수 있는 새 지시라 여기서 한다(namesField).
-  const reply = lastServerReply.get(req.interactionId);
-  lastServerReply.delete(req.interactionId);
-  if (reply) {
-    const p = await askedProbability(decisionPost()!, reply).catch(() => null);
-    if (p === null || !Number.isFinite(p)) {
-      diag(SCOPE, 'reply-check failed: to server');
-      return false;
-    }
-    // 칸 이름은 물었을 때만 본다 — 숨은 탭이면 꺼내야 해서.
-    const named = p >= ASKED_MIN ? await inner.namesField(text) : null;
-    diag(SCOPE, 'reply-check', { text, reply: reply.slice(-80), p: +p.toFixed(3), named });
-    if (p >= ASKED_MIN && !named) return false;
-  }
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
   const agent: VoiceAgent = {

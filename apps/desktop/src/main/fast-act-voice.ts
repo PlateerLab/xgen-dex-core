@@ -300,25 +300,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
     private onAct?: (a: VoiceAction) => void,
     /** 채팅 턴의 대화 — 올릴 파일을 그 대화에 연결된 폴더에서 찾는다. 없으면(음성) 파일 올리기는 서버로 넘긴다. */
     private interactionId?: string,
+    /** BrowserFill 한 줄 — LLM 이 이미 칸 하나씩 나눠 보냈다. 여러 단계·글쓰기 판단(gate_intent, 학습 안 됨)을 다시 하지 않는다
+     *  (10/23 리허설: 긴 경로의 「…png」 파일 업로드 줄을 0.21 로 보고 거절). */
+    private oneStep = false,
   ) {}
 
   get lastTarget(): string | null {
     return this.last;
-  }
-
-  /**
-   * 말이 부른 지금 화면의 칸 이름(없으면 null) — 그러면 직전 서버 답이 질문이었어도 그 자체로 알아들을 수 있는 새 지시다
-   * (10/20 BO: "임시저장할까요?" 다음의 "출고소요일을 2일로 변경해줘" 가 서버로 갔다). "응"·"001로 해줘" 는 칸을 부르지 않는다.
-   * 버튼은 보지 않는다 — "확인"·"적용" 같은 짧은 이름이 대답에도 들어간다. 스냅샷은 뒤따르는 판단이 그대로 쓴다.
-   */
-  async namesField(text: string): Promise<string | null> {
-    let got = await this.snapshot().catch(() => null);
-    // 숨은 탭(1×1)은 칸 이름이 구역 제목으로 붙는다 — 꺼내서 다시 읽는다(handle 과 같이 한 번만).
-    if (got?.snap.hidden && !this.revealed) {
-      await this.reveal(got.page);
-      got = await this.snapshot().catch(() => null);
-    }
-    return (got && namedField(got.snap.refs, got.snap.labels, text)?.name) ?? null;
   }
 
   /** 숨은 탭을 화면에 꺼내 크기가 잡힐 때까지 기다리고, 화면 기억을 비운다 — 한 지시에 한 번만. */
@@ -1233,7 +1221,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
         runtime.activate(page.openerPageId);
         this.snap = null;
         let opener = await this.snapshot().catch(() => null);
-        // 숨은 탭(1×1)은 칸 이름이 구역 제목으로 붙는다 — 꺼내서 다시 읽는다(namesField 와 같다).
+        // 숨은 탭(1×1)은 칸 이름이 구역 제목으로 붙는다 — 꺼내서 다시 읽는다.
         if (opener?.snap.hidden && !this.revealed) {
           await this.reveal(opener.page);
           opener = await this.snapshot().catch(() => null);
@@ -1262,7 +1250,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
     // 여러 단계 작업("자료 읽고 … 화면에 입력해줘")·글쓰기("상품상세 써서 넣어줘")는 서버로 — ready 가 act_now 라도.
     // 10/19 BO: 칸 지시 71개는 act 최저 0.94, 자료를 읽고 채우라는 말·글쓰기는 0.33 이하.
-    if (FORMAT === 'e13' && !(cls.single! >= SINGLE_MIN)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
+    if (FORMAT === 'e13' && !this.oneStep && !(cls.single! >= SINGLE_MIN)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
     // 말한 대상이 화면에 없다(다른 페이지로 가야 함) — 서버로. 10/19 BO: 칸 지시 29개는 0.977 이상, 화면에 없는 페이지로 가라는
     // 말("임시저장한 상품 확인 페이지로", "상품 승인 관리 페이지로", "대시보드로")은 0.01~0.04.
     if (FORMAT === 'e13' && !(cls.onscreen! >= ONSCREEN_MIN)) return no(`화면에 없는 대상 ${cls.onscreen}`);

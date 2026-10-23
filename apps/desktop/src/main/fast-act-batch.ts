@@ -49,7 +49,7 @@ export async function runSteps(
     throw new Error(`page_id ${pageId} 는 이 대화의 공유 탭이 아닙니다 — BrowserTabs list 에서 폼이 열린 공유 탭(mode shared)의 page_id 를 주세요.`);
   const t0 = now();
   // 한 에이전트로 — 읽어 둔 화면을 다음 줄이 이어 쓴다.
-  const agent = new BrowserVoiceAgent(workflowId, t0, undefined, interactionId);
+  const agent = new BrowserVoiceAgent(workflowId, t0, undefined, interactionId, true);
   const out: StepResult[] = steps.map(step => ({ step, status: 'skipped', note: '아직 실행하지 않음', ms: 0 }));
   const controller = new AbortController();
   let stop!: () => void;

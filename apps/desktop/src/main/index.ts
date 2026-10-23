@@ -161,7 +161,7 @@ import {
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
 import { getBrowserToolProvider } from './browser-tools';
-import { rememberServerReply, tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
+import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
@@ -1790,7 +1790,6 @@ function publishDetachedDone(interactionId: string, output: string): void {
   const chat = detachedChats.get(interactionId);
   if (!chat) return;
   detachedChats.delete(interactionId);
-  rememberServerReply(interactionId, output);
   notificationCenter.publish({
     id: `chat-completed-${interactionId}-${Date.now()}`,
     type: 'chat.completed',
@@ -3393,7 +3392,6 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
     /** 스트림이 끊겼다 — 턴은 서버에서 계속 돈다. 끝난 것이 아니므로 완료로 접지 않는다. */
     let detached = false;
     const publishTerminal = (kind: 'completed' | 'failed', detail?: string): void => {
-      if (kind === 'completed') rememberServerReply(serverReq.interactionId, preview); // 빠른 조작이 다음 말이 이 답에 대한 대답인지 본다
       const event: NotificationEvent = {
         id: `chat-${kind}-${streamId}`,
         type: kind === 'completed' ? 'chat.completed' : 'chat.failed',

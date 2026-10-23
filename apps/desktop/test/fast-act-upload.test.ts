@@ -47,6 +47,9 @@ test('uploadLanded: 미리보기·파일 이름·보이는 칸만 올라간 것�
   assert.equal(uploadLanded(before, { ...before, broken: ['https://cdn/x.png'], text: 'a.png' }, 'a.png'), 'broken');
   // 불러온 미리보기가 있으면 깨진 것과 함께 있어도 올라간 것이다.
   assert.equal(uploadLanded(before, { ...before, imgs: ['blob:y'], broken: ['https://cdn/x.png'] }, 'a.png'), 'preview');
+  // 업로드 전에 불러오는 중이던 이미지가 다 불러와진 것은 새 미리보기가 아니다(커밋 훅 지적).
+  const loading = { ...before, loading: ['https://cdn/old.png'] };
+  assert.equal(uploadLanded(loading, { ...before, imgs: ['https://cdn/old.png'] }, 'a.png'), null);
   // 원래 깨져 있던 이미지는 새것이 아니다.
   const old = { ...before, broken: ['https://cdn/old.png'] };
   assert.equal(uploadLanded(old, { ...old, text: 'a.png (1.2MB) 삭제' }, 'a.png'), 'name');

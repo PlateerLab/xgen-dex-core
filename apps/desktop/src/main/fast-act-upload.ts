@@ -31,6 +31,8 @@ export type FileField = {
   imgs: string[];
   /** 불러오기를 마쳤는데 그림이 없는 이미지 주소(깨진 미리보기). */
   broken?: string[];
+  /** 아직 불러오는 중인 이미지 주소 — 업로드 전부터 있던 것을 새 미리보기로 보지 않게. */
+  loading?: string[];
   /** 영역 글자. */
   text: string;
 };
@@ -106,7 +108,7 @@ export function withFileFields(refs: ElementRefs, all: FileField[]): { refs: Ele
 
 /** 올리기 전과 뒤의 같은 칸 — 올라갔다고 볼 근거, 없으면 null. */
 export function uploadLanded(before: FileField, after: FileField, file: string): Landed | null {
-  const seen = [...before.imgs, ...(before.broken ?? [])];
+  const seen = [...before.imgs, ...(before.broken ?? []), ...(before.loading ?? [])];
   if (after.imgs.some((src) => !seen.includes(src))) return 'preview';
   // 새 미리보기가 깨졌다 — 대체 글이 파일 이름이라 아래 'name' 으로 올라간 것처럼 보였다(10/23 BO: 저장된 상품의 대표이미지가 비어 있었다).
   if ((after.broken ?? []).some((src) => !seen.includes(src))) return 'broken';
@@ -166,6 +168,7 @@ export const FILE_FIELDS_SCRIPT = `(() => {
       files: [...(input.files || [])].map((f) => f.name),
       imgs: [...area.querySelectorAll('img')].filter((img) => img.complete && img.naturalWidth).map((img) => img.currentSrc || img.src),
       broken: [...area.querySelectorAll('img')].filter((img) => img.complete && !img.naturalWidth).map((img) => img.currentSrc || img.src),
+      loading: [...area.querySelectorAll('img')].filter((img) => !img.complete).map((img) => img.currentSrc || img.src),
       text: squash(area.textContent).slice(0, 2000),
     };
   });

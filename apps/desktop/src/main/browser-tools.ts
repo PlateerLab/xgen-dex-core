@@ -268,7 +268,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
         'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
         'Returns complete, per-step results (done / failed / skipped), remaining_steps, and form_values read once after the batch. ' +
-        'Results list a done step only by its number i and the field it acted on; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
+        'Results list a done step by its number i, the field it acted on and the value read from it (value, cut at 40 characters) — a later done row supersedes an earlier failed row for the same field; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
         'form_values has one line per field: name [type] [비활성] [형식 "…"]: "value" (type text and enabled fields carry no tag). ' +
         'Use these returned values directly; do not call BrowserFormValues or BrowserSnapshot just to recheck a completed batch. ' +
         'Do not replay done steps. For remaining_steps, compare form_values first: a failed step may already have applied. Retry only missing or incorrect values, grouping them in BrowserFill. ' +

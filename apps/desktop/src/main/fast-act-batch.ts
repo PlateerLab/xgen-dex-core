@@ -41,14 +41,22 @@ export type StepResult = {
   notices?: string[];
 };
 
+/** 성공한 줄에 싣는 값의 길이 상한 — 상품상세 같은 긴 글은 앞부분만. */
+const BRIEF_VALUE = 40;
+
 /**
- * LLM 에 돌려줄 줄별 결과 — 성공한 줄은 번호(i)와 다룬 칸만, 못 한 줄은 지시·까닭·요청값·관측값을 모두 남긴다.
+ * LLM 에 돌려줄 줄별 결과 — 성공한 줄은 번호(i)·다룬 칸·짧은 값만, 못 한 줄은 지시·까닭·요청값·관측값을 모두 남긴다.
  * 결과는 대화 기록에 쌓여 LLM 호출마다 다시 들어간다(10/23 demo-test-21: BrowserFill 11회가 도구 결과의 62%).
  * 화면 알림은 성공한 줄에도 남긴다 — 다음 칸 입력에 영향을 줄 수 있다.
  */
 export function briefResults(results: StepResult[]): Record<string, unknown>[] {
   return results.map((r, k) => {
-    if (r.status === 'done') return { i: k + 1, status: r.status, ...(r.target ? { target: r.target } : { step: r.step }), ...(r.notices ? { notices: r.notices } : {}) };
+    if (r.status === 'done') {
+      // 칸에서 읽은 값(없으면 넣은 값)을 짧게 — 값이 없으면 LLM 이 앞선 실패 줄의 관측값을 최종 상태로 읽었다(10/23 demo-test-23).
+      const seen = r.observed ?? r.requested;
+      const value = seen == null ? undefined : seen.length > BRIEF_VALUE ? seen.slice(0, BRIEF_VALUE) + '…' : seen;
+      return { i: k + 1, status: r.status, ...(r.target ? { target: r.target } : { step: r.step }), ...(value !== undefined ? { value } : {}), ...(r.notices ? { notices: r.notices } : {}) };
+    }
     const { ms: _ms, ...rest } = r;
     return { i: k + 1, ...rest };
   });

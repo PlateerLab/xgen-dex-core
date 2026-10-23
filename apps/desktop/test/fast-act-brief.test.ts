@@ -10,13 +10,21 @@ test('BrowserFill 결과는 성공한 줄을 번호와 칸만 남기고, 못 한
     { step: '정상가에 「29900」 입력해줘', status: 'done', note: '…', ms: 1300, target: '"정상가" 입력칸', notices: ['구간 내 마진율을 입력해 주세요.'] },
     { step: '모델명에 「X」 입력해줘', status: 'skipped', note: '시간 한도 도달', ms: 0 },
   ]);
-  assert.deepEqual(rows[0], { i: 1, status: 'done', target: '"상품명" 입력칸' });
+  // 성공한 줄도 칸에서 읽은 값을 짧게 남긴다 — 앞선 실패 줄의 값을 최종 상태로 오해하지 않게(10/23 demo-test-23).
+  assert.deepEqual(rows[0], { i: 1, status: 'done', target: '"상품명" 입력칸', value: 'A' });
   assert.deepEqual(rows[1], {
     i: 2, status: 'failed', step: '판매기간에 「2026.10.16. – 2026.12.31.」 입력해줘', note: '알림을 닫았어요.', target: '"판매기간" 입력칸',
     requested: '2026.10.16. – 2026.12.31.', observed: '', notices: ['익일 이후로 판매기간을 선택해 주세요.'],
   });
   // 성공했어도 화면 알림은 남긴다.
   assert.deepEqual(rows[2], { i: 3, status: 'done', target: '"정상가" 입력칸', notices: ['구간 내 마진율을 입력해 주세요.'] });
+  // 긴 값은 앞부분만, 선택지는 선택 상태를.
+  const more = briefResults([
+    { step: '상품상세 내용에 「…」 입력해줘', status: 'done', note: '…', ms: 1, target: '"상품상세 내용" 입력칸', requested: 'x'.repeat(100), observed: 'x'.repeat(100) },
+    { step: '가격비교를 노출안함으로 바꿔줘', status: 'done', note: '…', ms: 1, target: '"가격비교 노출안함" 선택지', observed: '선택됨' },
+  ]);
+  assert.equal(more[0].value, 'x'.repeat(40) + '…');
+  assert.equal(more[1].value, '선택됨');
   assert.deepEqual(rows[3], { i: 4, status: 'skipped', step: '모델명에 「X」 입력해줘', note: '시간 한도 도달' });
 });
 

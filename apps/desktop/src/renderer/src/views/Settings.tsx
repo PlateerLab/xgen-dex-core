@@ -1051,9 +1051,9 @@ export const Settings: React.FC<{
                   )}
                   <div className="field-row">
                     <span>
-                      단계별 브라우저 조작 (실험)
+                      빠른 조작 (실험)
                       <span className="small muted" style={{ marginLeft: 8 }}>
-                        채팅 모델이 계획하고 decider가 실행·검증
+                        단순한 조작은 서버 에이전트 없이 바로 실행
                       </span>
                     </span>
                     <label className="switch">
@@ -1071,10 +1071,9 @@ export const Settings: React.FC<{
                   </div>
                   {fastActOn && (
                     <p className="settings-hint">
-                      현재 채팅 모델이 작업을 작은 단계로 나누고, XGEN 판단 모델이 현재 화면에서
-                      대상을 골라 실행합니다. 입력값과 화면 변화 등 완료 조건을 확인한 뒤 다음
-                      단계로 진행하며, 확인이 실패하면 채팅 모델이 남은 계획을 수정합니다.
-                      음성 요청도 인식이 끝난 뒤 같은 순서로 처리합니다.
+                      "검색 눌러", "로그인 버튼 클릭" 처럼 지금 화면에서 한 번에 끝나는 말은 XGEN 판단
+                      모델이 누를 곳을 골라 바로 실행합니다. 마이크는 말하는 도중에 조작합니다. 판단이
+                      애매하거나 서버에 판단 모델이 없으면 평소처럼 에이전트가 처리합니다.
                     </p>
                   )}
                   {fastActOn && decisionModel && decisionModel.choices.length > 1 && (

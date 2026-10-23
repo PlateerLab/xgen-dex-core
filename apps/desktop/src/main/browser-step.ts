@@ -2,7 +2,6 @@ import type { BrowserPageInfo } from '@dex/protocol/browser';
 import type { BrowserRuntime } from './browser-runtime';
 import { pickElement, quotedText, type DecisionPost, type ElementRefs } from './fast-act';
 import { buildScreen, FORMAT } from './fast-act-e13';
-import { BROWSER_ACTION_BLOCKED, type allowsBrowserAction } from './browser-action-guard';
 import { FIELD_LABEL_SCRIPT, NAME_ICON_BUTTONS_SCRIPT, checkOf, labelSnapshot, type FieldLabel } from './fast-act-labels';
 
 export const BROWSER_STEP_GUIDE =
@@ -143,16 +142,14 @@ export async function executeBrowserStep(
   page: BrowserPageInfo,
   args: Record<string, unknown>,
   reveal: (page: BrowserPageInfo) => void,
-  guardAction: typeof allowsBrowserAction,
+  guardAction: (instruction: string, target: string) => boolean,
   signal?: AbortSignal,
-  interactionId?: string,
 ): Promise<{ page: BrowserPageInfo; result: Record<string, unknown> }> {
   const step = parseStep(args);
   const original = { ...page };
   const pagesBefore = new Set(runtime.state().pages.map((p) => p.pageId));
   let attempted = false;
   let executionError: string | undefined;
-  let denied = false;
   let observation = null as Snapshot | null; // snapshot() 이 채운다 — as 로 써야 null 로 좁혀지지 않는다
   let beforeText: unknown;
   const cancelled = (): void => {
@@ -160,7 +157,7 @@ export async function executeBrowserStep(
   };
   const run = async (p: BrowserPageInfo, command: string[], generation?: number) => {
     cancelled();
-    return runtime.runAgentCommand(p.workflowId, p.pageId, command, 5_000, generation, { interactionId, signal, instruction: step.operation === 'click' ? step.instruction : undefined });
+    return runtime.runAgentCommand(p.workflowId, p.pageId, command, 5_000, generation);
   };
   // 요소만(-i) 읽는다 — 판단 모델 후보도, LLM 에 돌려주는 observation 도 빠른 조작·BrowserSnapshot 과 같은 화면이다.
   const snapshot = async (p: BrowserPageInfo): Promise<Snapshot> => {
@@ -223,6 +220,8 @@ export async function executeBrowserStep(
     if (step.operation === 'click' && step.expect.some(c => c.kind === 'text'))
       beforeText = dataValue((await run(before.page, ['get', 'text', 'body'])).result, 'text');
     if (step.operation !== 'observe') {
+      if (!guardAction(step.instruction, ''))
+        throw new Error('This action requires the existing confirmation path.');
       let command: string[];
       if (step.operation === 'keypress') command = ['press', step.key!];
       else {
@@ -235,9 +234,8 @@ export async function executeBrowserStep(
                 ? new Set(['checkbox', 'radio', 'switch'])
                 : undefined;
         const chosen = await pick(before, step.instruction, roles);
-        // Click permission is checked against the actual DOM and host-held user approval.
-        if (step.operation !== 'click' && !guardAction(step.operation, chosen.element, '', step.instruction))
-          throw new Error(BROWSER_ACTION_BLOCKED);
+        if (!guardAction(step.instruction, chosen.element.name ?? ''))
+          throw new Error('This target requires the existing confirmation path.');
         command = [step.operation, chosen.ref];
         if (step.operation === 'fill') command.push(step.text!);
         if (step.operation === 'select') command.push(step.value!);
@@ -252,8 +250,6 @@ export async function executeBrowserStep(
       } catch (error) {
         // window.close() can interrupt the command response after its parent callback ran.
         executionError = error instanceof Error ? error.message : String(error);
-        denied = executionError.includes(BROWSER_ACTION_BLOCKED) || executionError.startsWith('browser_denied:');
-        if (denied) throw error;
       }
     }
     let checks: Array<Check & { passed: boolean; actual?: unknown; changed?: boolean }> = [];
@@ -339,7 +335,7 @@ export async function executeBrowserStep(
     return {
       page,
       result: {
-        status: signal?.aborted || !attempted || denied ? 'blocked' : 'needs_replan',
+        status: signal?.aborted || !attempted ? 'blocked' : 'needs_replan',
         mutation_attempted: attempted,
         error: error instanceof Error ? error.message : String(error),
         observation: observation?.snapshot,

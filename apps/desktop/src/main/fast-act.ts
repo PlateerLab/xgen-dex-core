@@ -18,7 +18,6 @@
  */
 
 import { isUnitWord, plainNumber } from './fast-act-number';
-export { allowsBrowserAction as allowsDeciderAction } from './browser-action-guard';
 import {
   MAX_LINES,
   PICK_Q13,
@@ -33,6 +32,15 @@ import {
 
 export type ElementRef = { role: string; name?: string };
 export type ElementRefs = Record<string, ElementRef>;
+
+const DANGEROUS_BROWSER_TARGET =
+  /(삭제|지우기|비우기|제거|탈퇴|해지|로그아웃|초기화|영구|결제하기|구매하기|주문하기|delete|remove|erase|empty|log ?out|reset|uninstall|purchase|checkout|pay now)/i;
+const DANGEROUS_BROWSER_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
+
+/** 「」 안은 넣을 값이다 — "「삭제 금지 상품」 입력해줘" 의 삭제는 요청이 아니다. */
+export function allowsDeciderAction(instruction: string, target: string): boolean {
+  return !DANGEROUS_BROWSER_REQUEST.test(instruction.replace(/「[^」]*」/g, '')) && !DANGEROUS_BROWSER_TARGET.test(target);
+}
 
 export type ChoiceQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> };
 export type ChoiceAnswer = {
@@ -178,14 +186,6 @@ export function quotedText(instruction: string): string | null {
   // 「…」 를 다른 따옴표로 닫기도 한다(10/19 LLM: 「… » 입력해줘) — 짝이 없으면 마지막 닫는 꼴 따옴표까지.
   if (end >= instruction.length && '「『'.includes(instruction[at])) end = Math.max(...[...'」』»”"’'].map((c) => instruction.lastIndexOf(c)));
   return end > at && end < instruction.length ? instruction.slice(at + 1, end).trim() || null : null;
-}
-
-/**
- * 말에 그 값이 그대로 있나 — 값 앞이 말 처음·띄어쓰기·따옴표·괄호일 때만("출고소요일 13일로" 에 "3일" 은 아니다).
- */
-export function saysValue(instruction: string, value: string): boolean {
-  const v = value.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
-  return !!v && new RegExp(`(?:^|[\\s「『"“'‘(])${v}`).test(instruction);
 }
 
 /** 이보다 긴 지시는 따옴표 안 글이 없으면 판단 모델에 보내지 않는다 — 판단 서버가 422 로 거절했다(10/19, 594자). */
@@ -370,27 +370,6 @@ export async function classify(
   }
   const gate = e13 ? (a.ready?.probabilities?.act_now ?? 0) : gateScore(a);
   return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, onscreen: a.onscreen?.probabilities?.yes, ms: now() - t0 };
-}
-
-/**
- * 직전 서버 답이 사용자에게 묻거나 고르라며 끝나는가 — 그 확률. 그렇다면 바로 다음 말은 그 물음에 대한 대답이라 빠른 조작이 새
- * 지시로 실행하면 안 된다(10/19 BO: "어느 상품에 작성할까요?" 다음의 "001 데스크 정리함으로 써서 넣어줘" 를 업체상품번호에
- * 넣음). "사용자 말이 대답인가" 로 물으면 판단 모델이 0.006 으로 답했다 — 서버 답만 보고 묻는다.
- */
-export async function askedProbability(post: DecisionPost, assistant: string): Promise<number> {
-  const a = await post({
-    state: `Assistant: ${assistant}`,
-    questions: {
-      asked: {
-        type: 'choice',
-        instructions: "Does the assistant's message end by asking the user a question or asking the user to choose something?",
-        criteria: { asks: 'yes, it asks the user', done: 'no, it reports what was done' },
-      },
-    },
-  });
-  const p = a.asked?.probabilities?.asks;
-  if (p === undefined || !Number.isFinite(p) || p < 0 || p > 1) throw new Error('직전 답의 질문 여부를 확인하지 못했어요.');
-  return p;
 }
 
 export type Pick = {

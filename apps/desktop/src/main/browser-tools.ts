@@ -5,10 +5,9 @@ import { BrowserRuntime, BrowserRuntimeError } from './browser-runtime';
 import { allowsDeciderAction, type DecisionPost } from './fast-act';
 import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
 import { diag } from './diag-log';
-import { BROWSER_COMMIT_GUIDE } from './browser-action-guard';
 import { fastActConfigured } from './fast-act-runner';
-import { FORM_VALUES_SCRIPT } from './fast-act-labels';
-import { MAX_FILL_STEPS } from './fast-act-batch';
+import { FORM_VALUES_SCRIPT, formLines } from './fast-act-labels';
+import { MAX_FILL_STEPS, briefResults, runSteps } from './fast-act-batch';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -135,7 +134,8 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
-        'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' + BROWSER_COMMIT_GUIDE,
+        'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' +
+        'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -205,7 +205,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       name: BROWSER_ADVANCED_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation. ' + BROWSER_COMMIT_GUIDE,
+        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -260,12 +260,20 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
         'Skip fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") — each step costs seconds. ' +
+        'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields such as 협력사 and 표준카테고리 come before prices. ' +
         'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
         'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
         'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
+        'For a supplied supplier/brand code, keep it with the name inside the value (플래티어 협력사(1000002)); the picker searches the name and matches both name and code. ' +
+        'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
         'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
-        'Returns complete (true only when every step is done — a step is done only when the value was read back on the page) and per-step status: done / failed / skipped (with the reason). Unless complete, the request is not finished — finish the failed steps yourself with BrowserSnapshot + BrowserInteract. ' +
+        'Returns complete, per-step results (done / failed / skipped), remaining_steps, and form_values read once after the batch. ' +
+        'Results list a done step by its number i, the field it acted on and the value read from it (value, cut at 40 characters) — a later done row supersedes an earlier failed row for the same field; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
+        'form_values has one line per field: name [type] [비활성] [형식 "…"]: "value" (type text and enabled fields carry no tag). ' +
+        'Use these returned values directly; do not call BrowserFormValues or BrowserSnapshot just to recheck a completed batch. ' +
+        'Do not replay done steps. For remaining_steps, compare form_values first: a failed step may already have applied. Retry only missing or incorrect values, grouping them in BrowserFill. ' +
+        'Use BrowserSnapshot + BrowserInteract only when the returned values are unavailable or insufficient to resolve a remaining field. complete describes this batch, not whether the whole form is ready to save. ' +
         'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
         'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」 ("상품상세 내용에 「…」 입력해줘"), ' +
         'using real line breaks between paragraphs (not the two characters \\ and n) — it replaces the editor content and each line becomes a paragraph. ' +
@@ -285,7 +293,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       description:
         'Read every field of the form on a page: field label, current value, chosen radio/checkbox/option, placeholder and disabled state, ' +
         'plus fields picked in a search popup (협력사, 브랜드 …). Read-only. ' +
-        'Use it to see what a form holds before deciding steps, and to check the result after BrowserFill — instead of BrowserAdvanced eval. ' +
+        'Use it before planning inputs, or when BrowserFill reports form_values_error. BrowserFill already returns current form_values; do not read them again after a batch. ' +
         'Pass the page_id of the tab to read (BrowserTabs list shows it).',
       inputSchema: {
         type: 'object',
@@ -379,6 +387,18 @@ function timeout(args: Record<string, unknown>): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** 조작이 새 탭(팝업)을 열었으면 명령 결과에 붙인다. */
+function runResult(run: { page: BrowserPageInfo; result: unknown; openedPages?: BrowserPageInfo[] }): LocalToolResult {
+  if (!run.openedPages?.length) return result(run.page, run.result);
+  return result(run.page, {
+    ...(run.result as object),
+    opened_pages: run.openedPages.map((page) => ({
+      page_id: page.pageId, title: page.title, url: page.url, loading: page.loading,
+    })),
+    next_step: 'A new page opened. Use BrowserSnapshot with its opened_pages page_id. Do not click the opener again or call BrowserTabs to rediscover it.',
+  });
+}
+
 function result(page: BrowserPageInfo | null, payload: unknown): LocalToolResult {
   return {
     content: [
@@ -393,8 +413,6 @@ function result(page: BrowserPageInfo | null, payload: unknown): LocalToolResult
             generation: page?.generation,
             result: payload,
           },
-          null,
-          2,
         ),
       },
     ],
@@ -595,7 +613,7 @@ export class BrowserToolProvider {
     }
     const command = browserWaitCommand(args.wait_for ?? args.waitFor);
     const run = await this.runtime.runAgentCommand(wid, page.info.pageId, command, timeout(args));
-    return result(run.page, run.result);
+    return runResult(run);
   }
 
   private async snapshot(
@@ -617,7 +635,7 @@ export class BrowserToolProvider {
     // 네이버 메일쓰기 화면 한 번에 15,000자 중 8,700자였고, 한 차례에 스냅샷이 여섯 번 쌓였다(10/20).
     const data = (run.result as { data?: Record<string, unknown> } | undefined)?.data;
     if (data && typeof data.snapshot === 'string') delete data.refs;
-    return result(run.page, run.result);
+    return runResult(run);
   }
 
   private async interact(
@@ -671,9 +689,9 @@ export class BrowserToolProvider {
       command,
       timeout(args),
       generation,
-      { interactionId: context?.interactionId, signal: context?.signal },
+      { signal: context?.signal },
     );
-    return result(run.page, run.result);
+    return runResult(run);
   }
 
   private async step(args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {
@@ -687,7 +705,7 @@ export class BrowserToolProvider {
       const state = this.runtime.state();
       const id = pageId(args) ?? state.activeByWorkflow[wid];
       const page = await this.runtime.resolvePage(wid, id, false);
-      const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal, context?.interactionId);
+      const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal);
       diag('browser-step', 'result', { operation: args.operation, status: done.result.status, mutation_attempted: done.result.mutation_attempted });
       return { ...result(done.page, done.result), isError: done.result.status !== 'completed' };
     } finally {
@@ -772,8 +790,6 @@ export class BrowserToolProvider {
       throw new BrowserRuntimeError('browser_denied', `steps 는 ${MAX_FILL_STEPS}줄 이하의 문자열 배열이어야 합니다.`);
     const steps = (Array.isArray(args.steps) ? args.steps : []).map((s) => String(s).trim()).filter(Boolean);
     if (!steps.length) throw new BrowserRuntimeError('browser_denied', 'steps 가 비었습니다.');
-    // fast-act-voice 가 이 파일을 가져다 쓰므로 부를 때 가져온다(순환 참조).
-    const { runSteps } = await import('./fast-act-batch');
     const wid = workflow(args, context);
     // 공유 탭은 page_id 를 밝혀야만 다룬다(formValues 와 같다) — 보이는 탭을 짐작해 바꾸지 않는다.
     const id = pageId(args);
@@ -781,16 +797,29 @@ export class BrowserToolProvider {
     const originalPage = this.runtime.get(id);
     if (this.stepping.has(wid)) throw new BrowserRuntimeError('browser_denied', '이 브라우저의 이전 단계 결과를 기다린 뒤 다음 단계를 호출하세요.');
     this.stepping.add(wid);
-    let results;
     try {
-      results = await runSteps(wid, id, context?.interactionId, steps, context?.signal, context?.deadlineAt);
+      const results = await runSteps(wid, id, context?.interactionId, steps, context?.signal, context?.deadlineAt);
+      let form_values: unknown = null;
+      let form_values_error: string | undefined;
+      try {
+        const remainingMs = (context?.deadlineAt ?? Infinity) - Date.now();
+        if (context?.signal?.aborted || remainingMs <= 0) throw new Error('입력이 중단되었거나 시간 한도에 도달했습니다.');
+        form_values = await this.runtime.pageScript(wid, id, FORM_VALUES_SCRIPT, Math.min(5_000, remainingMs));
+      } catch (error) {
+        // Reading the final state must not erase partial input results or invite a full replay.
+        form_values_error = error instanceof Error ? error.message : String(error);
+      }
+      return result(this.runtime.get(id) ?? originalPage ?? null, {
+        complete: results.every((r) => r.status === 'done'),
+        results: briefResults(results),
+        remaining_steps: results.filter((r) => r.status !== 'done' && !r.read_only).map((r) => r.step),
+        form_values: formLines(form_values),
+        ...(form_values_error ? { form_values_error } : {}),
+        recovery: 'For read_only steps, inspect the returned form_values; do not retry them as mutations. Use form_values as the final observed state; do not read the whole form again. Do not repeat done steps. For remaining_steps, retry only values still missing or incorrect; failed steps may already have applied. If form_values_error is present, read current values before retrying. If complete, report the result without another verification call.',
+      });
     } finally {
       this.stepping.delete(wid);
     }
-    // 요청 전체는 모든 줄이 done 일 때만 마친 것이다 — 한 줄이라도 못 했으면 LLM 이 마저 해야 한다.
-    const page = this.runtime.get(id);
-    return result(page ?? originalPage ?? null, { complete: results.every((r) => r.status === 'done'), results,
-      recovery: 'done 줄은 반복하지 마세요. failed 줄은 일부 반영됐을 수 있으므로 현재 값을 먼저 읽고, failed·skipped의 남은 작업만 BrowserSnapshot과 BrowserInteract로 완료하세요.' });
   }
 
   private async formValues(
@@ -803,7 +832,7 @@ export class BrowserToolProvider {
     if (!id) throw new BrowserRuntimeError('browser_no_page', 'page_id 가 필요합니다 — BrowserTabs list 로 읽을 탭의 page_id 를 확인하세요.');
     const page = await this.runtime.resolvePage(wid, id, false);
     const fields = await this.runtime.pageScript(wid, page.info.pageId, FORM_VALUES_SCRIPT, timeout(args) ?? 5_000);
-    return result(page.info, fields);
+    return result(page.info, formLines(fields));
   }
 
   private async advanced(
@@ -963,7 +992,7 @@ export class BrowserToolProvider {
           ? electronName : outputName;
         await scratch.commit(committedName, outputTarget, fileSignal);
       }
-      return result(run.page, scratch ? displayBrowserFileResult(run.result, scratch, pathDisplays) : run.result);
+      return scratch ? result(run.page, displayBrowserFileResult(run.result, scratch, pathDisplays)) : runResult(run);
     } catch (error) {
       if (scratch) throw browserFileError(error, scratch, pathDisplays);
       throw error;

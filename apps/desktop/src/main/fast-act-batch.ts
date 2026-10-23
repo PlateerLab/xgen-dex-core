@@ -18,6 +18,7 @@ import { replyFor } from './fast-act-reply';
 import { decisionPost, visiblePage } from './fast-act-runner';
 import { BrowserVoiceAgent } from './fast-act-voice';
 import { FINAL } from './voice-segmenter';
+import { isFieldVerification } from './fast-act-labels';
 
 const SCOPE = 'fast-act';
 const now = (): number => performance.now();
@@ -29,7 +30,37 @@ export type StepResult = {
   /** 한 일(done) 또는 못 한 까닭(failed·skipped). */
   note: string;
   ms: number;
+  read_only?: boolean;
+  /** 줄이 처음 다룬 칸(고른 요소의 표기). */
+  target?: string;
+  /** 넣은 값 — 누르기만 한 줄은 없다. */
+  requested?: string;
+  /** 실행 뒤 읽은 값·선택 상태(null = 읽지 못함). */
+  observed?: string | null;
+  /** 줄 실행 중 화면에 뜬 알림 문구. */
+  notices?: string[];
 };
+
+/** 성공한 줄에 싣는 값의 길이 상한 — 상품상세 같은 긴 글은 앞부분만. */
+const BRIEF_VALUE = 40;
+
+/**
+ * LLM 에 돌려줄 줄별 결과 — 성공한 줄은 번호(i)·다룬 칸·짧은 값만, 못 한 줄은 지시·까닭·요청값·관측값을 모두 남긴다.
+ * 결과는 대화 기록에 쌓여 LLM 호출마다 다시 들어간다(10/23 demo-test-21: BrowserFill 11회가 도구 결과의 62%).
+ * 화면 알림은 성공한 줄에도 남긴다 — 다음 칸 입력에 영향을 줄 수 있다.
+ */
+export function briefResults(results: StepResult[]): Record<string, unknown>[] {
+  return results.map((r, k) => {
+    if (r.status === 'done') {
+      // 칸에서 읽은 값(없으면 넣은 값)을 짧게 — 값이 없으면 LLM 이 앞선 실패 줄의 관측값을 최종 상태로 읽었다(10/23 demo-test-23).
+      const seen = r.observed ?? r.requested;
+      const value = seen == null ? undefined : seen.length > BRIEF_VALUE ? seen.slice(0, BRIEF_VALUE) + '…' : seen;
+      return { i: k + 1, status: r.status, ...(r.target ? { target: r.target } : { step: r.step }), ...(value !== undefined ? { value } : {}), ...(r.notices ? { notices: r.notices } : {}) };
+    }
+    const { ms: _ms, ...rest } = r;
+    return { i: k + 1, ...rest };
+  });
+}
 
 export async function runSteps(
   workflowId: string,
@@ -47,7 +78,7 @@ export async function runSteps(
     throw new Error(`page_id ${pageId} 는 이 대화의 공유 탭이 아닙니다 — BrowserTabs list 에서 폼이 열린 공유 탭(mode shared)의 page_id 를 주세요.`);
   const t0 = now();
   // 한 에이전트로 — 읽어 둔 화면을 다음 줄이 이어 쓴다.
-  const agent = new BrowserVoiceAgent(workflowId, t0, undefined, interactionId);
+  const agent = new BrowserVoiceAgent(workflowId, t0, undefined, interactionId, true);
   const out: StepResult[] = steps.map(step => ({ step, status: 'skipped', note: '아직 실행하지 않음', ms: 0 }));
   const controller = new AbortController();
   let stop!: () => void;
@@ -63,6 +94,10 @@ export async function runSteps(
     const work = runtime.withPageScope(start.pageId, controller.signal, async () => {
       for (let i = 0; i < steps.length && !controller.signal.aborted; i++) {
         const step = steps[i];
+        if (isFieldVerification(step)) {
+          out[i] = { step, status: 'failed', read_only: true, note: '확인 요청은 값을 변경하지 않습니다. 반환된 form_values로 확인하세요.', ms: 0 };
+          continue;
+        }
         const t = now();
         const before = agent.actions.length;
         if (!runtime.get(start.pageId)) { reason = '폼 탭이 닫혔습니다.'; break; }
@@ -75,7 +110,18 @@ export async function runSteps(
           const acted = agent.actions.slice(before);
           const ok = last.acted && last.effect === 'ok';
           const note = acted.length ? replyFor(acted, true) : last.acted ? ok ? '요청한 상태를 확인함' : '실행 결과를 확인하지 못함' : last.reason;
-          out[i] = { step, status: ok ? 'done' : 'failed', note, ms: Math.round(now() - t) };
+          const end = acted[acted.length - 1];
+          const notices = acted.flatMap((a) => a.notices ?? []);
+          out[i] = {
+            step,
+            status: ok ? 'done' : 'failed',
+            note,
+            ms: Math.round(now() - t),
+            ...(acted[0] ? { target: acted[0].display } : {}),
+            ...(end?.text != null ? { requested: end.text } : {}),
+            ...(end && end.observed !== undefined ? { observed: end.observed } : {}),
+            ...(notices.length ? { notices } : {}),
+          };
         } catch (err) {
           if (controller.signal.aborted) break;
           out[i] = { step, status: 'failed', note: `${err instanceof Error ? err.message : String(err)}. 현재 값을 확인한 뒤 남은 작업만 수행하세요.`, ms: Math.round(now() - t) };

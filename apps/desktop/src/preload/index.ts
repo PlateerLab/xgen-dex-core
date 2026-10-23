@@ -142,6 +142,7 @@ export interface McpRuntimeLogEntryLike {
   tool?: string;
   ok?: boolean;
   durationMs?: number;
+  resultChars?: number;
 }
 
 /** Live avatar/chat state pushed from the main window to the floating overlay. */

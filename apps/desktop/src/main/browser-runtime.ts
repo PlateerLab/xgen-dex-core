@@ -32,7 +32,6 @@ import type { BrowserHistoryRuntimeEvent } from './browser-history';
 import { BrowserSessionStore } from './browser-session';
 import { runFrameCommand, snapshotFrames } from './browser-frames';
 import { diag } from './diag-log';
-import { guardBrowserCommand, prepareBrowserApproval, validateBrowserApproval, requestedBrowserCommit, browserCommitConfirmationAsked, browserCommitQuestion, type BrowserCommitAction } from './browser-action-guard';
 
 interface BrowserPageRuntime {
   info: BrowserPageInfo;
@@ -43,7 +42,6 @@ interface BrowserPageRuntime {
   view?: WebContentsView;
   /** 마지막 스냅샷이 iframe 요소에 매긴 번호 → DOM 노드(browser-frames). */
   frameRefs?: Map<string, number>;
-  actionTail?: Promise<unknown>;
 }
 
 interface PendingBrowserConnection {
@@ -144,58 +142,6 @@ export class BrowserRuntime {
   }
 
   private sessionPersistence = false;
-  private actionApprovals = new Map<string, { id: string; pageId: string; expires: number; frameCount?: number; signal?: AbortSignal }>();
-  private pendingActions = new Map<string, { pageId: string; action: BrowserCommitAction; offered: boolean }>();
-
-  private pendingQuestions = new Map<string, Promise<void>>();
-
-  noteBrowserActionReply(workflowId: string, interactionId: string, reply: string): void {
-    const scope = JSON.stringify([workflowId, interactionId]);
-    const pending = this.pendingActions.get(scope);
-    if (pending) {
-      pending.offered = browserCommitConfirmationAsked(reply, pending.action);
-      return;
-    }
-    const action = browserCommitQuestion(reply);
-    const page = this.pages.get(this.activeByWorkflow.get(workflowId) ?? '');
-    const contents = page?.contents;
-    if (!action || !page || !contents || contents.isDestroyed()) return;
-    // Capture the target before the user replies, including when the agent correctly asked before clicking.
-    const preparation = prepareBrowserApproval(contents.mainFrame.framesInSubtree, scope, randomUUID(), action, true).then(found => {
-      if (found) this.pendingActions.set(scope, { pageId: page.info.pageId, action, offered: true });
-    }).finally(() => { if (this.pendingQuestions.get(scope) === preparation) this.pendingQuestions.delete(scope); });
-    this.pendingQuestions.set(scope, preparation);
-  }
-
-  /** Called only by chatStart with the user's original message, before the server turn. */
-  async prepareUserBrowserAction(workflowId: string, interactionId: string, input: unknown, signal: AbortSignal): Promise<void> {
-    const scope = JSON.stringify([workflowId, interactionId]);
-    this.actionApprovals.delete(scope);
-    await this.pendingQuestions.get(scope);
-    const activePage = this.pages.get(this.activeByWorkflow.get(workflowId) ?? '');
-    const action = requestedBrowserCommit(input, activePage?.info.title);
-    const pending = this.pendingActions.get(scope);
-    const pendingPage = pending?.offered ? pending.pageId : undefined;
-    this.pendingActions.delete(scope);
-    if (!action || signal.aborted || !workflowId || !interactionId) return;
-    const pageId = action === 'confirm' ? pendingPage : this.state().activeByWorkflow[workflowId];
-    const page = pageId ? this.pages.get(pageId) : undefined;
-    if (!page || page.info.workflowId !== workflowId || (action === 'confirm' && !pendingPage)) return;
-    const id = randomUUID();
-    this.actionApprovals.set(scope, { id, pageId: page.info.pageId, expires: 0, signal });
-    const contents = page.contents;
-    if (!contents || contents.isDestroyed()) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const idle = await Promise.race([
-      (page.actionTail ?? Promise.resolve()).then(() => true),
-      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 1500); }),
-    ]).finally(() => clearTimeout(timer));
-    if (!idle || signal.aborted) return;
-    const found = await prepareBrowserApproval(contents.mainFrame.framesInSubtree, scope, id, action);
-    // Ambiguous buttons across frames need a new, specific request.
-    if (found && !signal.aborted && this.actionApprovals.get(scope)?.id === id)
-      this.actionApprovals.set(scope, { id, pageId: page.info.pageId, expires: Date.now() + 120_000, frameCount: contents.mainFrame.framesInSubtree.length, signal });
-  }
 
   constructor(private readonly sessionStore?: BrowserSessionStore) {}
 
@@ -1187,8 +1133,8 @@ export class BrowserRuntime {
     command: string[],
     timeoutMs?: number,
     generation?: number,
-    context?: { interactionId?: string; signal?: AbortSignal; instruction?: string },
-  ): Promise<{ page: BrowserPageInfo; result: unknown }> {
+    context?: { signal?: AbortSignal },
+  ): Promise<{ page: BrowserPageInfo; result: unknown; openedPages?: BrowserPageInfo[] }> {
     const runtime = await this.resolvePage(workflowId, pageId, true);
     await runtime.automationReset;
     if (generation !== undefined && generation !== runtime.info.generation) {
@@ -1238,9 +1184,25 @@ export class BrowserRuntime {
     };
     const send = (method: string, params?: Record<string, unknown>) => contents.debugger.sendCommand(method, params);
     const execute = async () => {
+      // 연결·초기화를 기다리는 사이 사용자가 멈췄으면 실행하지 않는다 — 저장 가드를 걷어낼 때 이 검사도 같이 빠졌다(10/22 리뷰).
+      if (context?.signal?.aborted) throw new BrowserRuntimeError('browser_denied', 'Browser action cancelled.');
       this.assertPageScope(runtime.info.pageId);
       if (command[0] !== 'snapshot' && generation !== undefined && generation !== runtime.info.generation)
         throw new BrowserRuntimeError('browser_stale_ref', '페이지가 변경되어 snapshot ref가 만료되었습니다.');
+      const pagesBefore = new Set(this.pages.keys());
+      const interactionResult = async (result: unknown) => {
+        const newlyOpened = () => this.list(workflowId).filter((page) =>
+          page.openerPageId === runtime.info.pageId && !pagesBefore.has(page.pageId));
+        let openedPages = newlyOpened();
+        // A new WebContents may still report about:blank before its first navigation.
+        const until = Date.now() + 1500;
+        while (openedPages.some(page => !page.url || page.url === 'about:blank') && Date.now() < until && !context?.signal?.aborted) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          openedPages = newlyOpened();
+        }
+        return { page: { ...runtime.info }, result,
+          ...(openedPages.length ? { openedPages } : {}) };
+      };
       const proxy = runtime.proxy!;
       const frameRef = command.find((arg) => /^@e\d+$/.test(arg))?.slice(1);
       const frameNode = frameRef ? runtime.frameRefs?.get(frameRef) : undefined;
@@ -1251,7 +1213,7 @@ export class BrowserRuntime {
         });
         if (result === null)
           throw new BrowserRuntimeError('browser_denied', `iframe 안 요소에는 ${command[0]} 를 쓸 수 없습니다(click·fill·type·get value 만).`);
-        return { page: { ...runtime.info }, result };
+        return interactionResult(result);
       }
       try {
         const result = await this.runner.run(
@@ -1265,7 +1227,7 @@ export class BrowserRuntime {
           },
         );
         if (command[0] === 'snapshot') await this.addFrameElements(runtime, send, result);
-        return closedPopupResult() ?? { page: { ...runtime.info }, result };
+        return closedPopupResult() ?? interactionResult(result);
       } catch (error) {
         // window.close() can cancel the CLI before its successful click response exits.
         const closed = closedPopupResult();
@@ -1286,28 +1248,6 @@ export class BrowserRuntime {
         throw new BrowserRuntimeError('browser_denied', message);
       }
     };
-    if (['click', 'dblclick', 'fill', 'type', 'select', 'check', 'uncheck', 'press', 'keyboard', 'keydown', 'keyup', 'mouse', 'drag', 'eval', 'upload', 'download'].includes(command[0])) {
-      const guarded = (runtime.actionTail ?? Promise.resolve()).then(async () => {
-        const scope = JSON.stringify([workflowId, context?.interactionId ?? '']);
-        const grant = this.actionApprovals.get(scope);
-        const approved = command[0] === 'click' && grant?.pageId === runtime.info.pageId && grant.expires > Date.now() && !grant.signal?.aborted &&
-          grant.frameCount === contents.mainFrame.framesInSubtree.length &&
-          await validateBrowserApproval(contents.mainFrame.framesInSubtree, scope, grant.id);
-        return guardBrowserCommand(contents.mainFrame.framesInSubtree, execute, {
-          scope,
-          id: approved ? grant!.id : undefined,
-          instruction: context?.instruction,
-          signal: context?.signal,
-          onBlocked: (action) => {
-            if (action) this.pendingActions.set(scope, { pageId: runtime.info.pageId, action, offered: false });
-            else this.pendingActions.delete(scope);
-          },
-          onConsumed: () => { this.actionApprovals.delete(scope); },
-        });
-      });
-      runtime.actionTail = guarded.catch(() => undefined);
-      return guarded;
-    }
     return execute();
   }
 
@@ -1459,9 +1399,6 @@ export class BrowserRuntime {
   }
 
   async closeAll(): Promise<void> {
-    this.actionApprovals.clear();
-    this.pendingActions.clear();
-    this.pendingQuestions.clear();
     this.suspendSessionPersistence();
     const pages = [...this.pages.values()];
     for (const runtime of pages) this.rejectPendingConnection(runtime);

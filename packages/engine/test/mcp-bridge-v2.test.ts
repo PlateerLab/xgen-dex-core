@@ -241,3 +241,45 @@ test('local dispatch receives trusted frame correlation for transfer validation'
     bridge.stop();
   }
 });
+
+test('local deadline replies with a correlated failure instead of leaving the server waiting', async () => {
+  const bridge = getMcpBridge();
+  bridge.stop();
+  const internal = bridge as unknown as BridgeInternals;
+  const ws = socket();
+  internal.ws = ws;
+  internal.pendingCatalogId = 'catalog-d';
+  await internal.onMessage(JSON.stringify({
+    type: 'ready', catalog_id: 'catalog-d', tool_count: 1,
+    protocol_version: 2, connection_generation: 9,
+  }), ws);
+
+  const manager = getMcpManager();
+  const originalCall = manager.callTool.bind(manager);
+  const originalSanitizeError = manager.sanitizeError.bind(manager);
+  let signal: AbortSignal | undefined;
+  (manager as unknown as { callTool: typeof manager.callTool }).callTool = async (_server, _tool, _args, nextSignal) => {
+    signal = nextSignal;
+    return new Promise(() => {});
+  };
+  (manager as unknown as { sanitizeError: typeof manager.sanitizeError }).sanitizeError = (_name, value) => String(value);
+
+  // 2026-10-23 리허설: 승인 창 대기 중 감시 시한이 끊었는데 회신이 없어 서버가 XGEN-900 까지 기다렸다.
+  const keepAlive = setTimeout(() => {}, 5_000); // 감시 타이머는 unref 라 테스트가 먼저 끝나지 않게
+  await internal.onMessage(JSON.stringify({
+    type: 'mcp_call', request_id: 'd1', server: 'fake', tool: 'stuck', args: {}, deadline_ms: 1_500,
+    protocol_version: 2, connection_generation: 9, request_nonce: 'nonce-d',
+  }), ws);
+  assert.equal(signal?.aborted, true, 'the stuck work is aborted');
+  const reply = JSON.parse(ws.sent.at(-1) ?? '{}');
+  assert.equal(reply.type, 'mcp_result');
+  assert.equal(reply.request_id, 'd1');
+  assert.equal(reply.request_nonce, 'nonce-d');
+  assert.equal(reply.connection_generation, 9);
+  assert.equal(reply.ok, false);
+  clearTimeout(keepAlive);
+
+  (manager as unknown as { callTool: typeof manager.callTool }).callTool = originalCall;
+  (manager as unknown as { sanitizeError: typeof manager.sanitizeError }).sanitizeError = originalSanitizeError;
+  bridge.stop();
+});

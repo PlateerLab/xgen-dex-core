@@ -21,18 +21,24 @@ export type FileField = {
   label: string;
   /** 칸이 화면에 보이는가(숨은 칸이면 영역이 바뀌어야 올라간 것이다). */
   visible: boolean;
+  /** 열린 층(서랍·모달)이 뒤 화면을 aria-hidden 으로 가렸다 — 스냅샷의 다른 칸처럼 후보에서 뺀다. */
+  covered?: boolean;
   /** 칸이 받는 형식(`accept`) — 비면 아무 파일. */
   accept: string;
   /** 칸에 들어 있는 파일 이름. */
   files: string[];
-  /** 영역 안 이미지 주소. */
+  /** 영역 안 이미지 주소 — 불러오기를 마치고 그림이 있는 것만(불러오는 중이면 어느 쪽에도 없다). */
   imgs: string[];
+  /** 불러오기를 마쳤는데 그림이 없는 이미지 주소(깨진 미리보기). */
+  broken?: string[];
+  /** 아직 불러오는 중인 이미지 주소 — 업로드 전부터 있던 것을 새 미리보기로 보지 않게. */
+  loading?: string[];
   /** 영역 글자. */
   text: string;
 };
 
 /** 올라갔다고 볼 근거. */
-export type Landed = 'preview' | 'name' | 'picked';
+export type Landed = 'preview' | 'name' | 'picked' | 'broken';
 
 const FILE_EXT = 'png|jpe?g|gif|webp|bmp|svg|heic|mp4|mov|avi|webm|pdf|xlsx?|csv|docx?|pptx?|hwp|zip|txt';
 
@@ -74,7 +80,9 @@ const fileRef = (n: number): string => `e8${String(n + 1).padStart(3, '0')}`;
  * 화면 요소에 파일 칸을 `"<칸 이름> 파일 올리기"` 입력칸으로 넣는다 — 칸 이름과 같은 제목 바로 뒤에(판단 모델이 제목과 함께 본다),
  * 그런 제목이 없으면 맨 뒤에. files = 넣은 줄 번호별 파일 칸.
  */
-export function withFileFields(refs: ElementRefs, fields: FileField[]): { refs: ElementRefs; files: Record<string, FileField> } {
+export function withFileFields(refs: ElementRefs, all: FileField[]): { refs: ElementRefs; files: Record<string, FileField> } {
+  // 가려진 칸은 넣지 않는다 — 서랍이 열린 채 입력칸은 스냅샷에서 빠지고 파일 칸만 남아 "모델명 …" 에 파일 칸을 골랐다(10/22 BO).
+  const fields = all.filter((f) => !f.covered);
   if (!fields.length) return { refs, files: {} };
   const files: Record<string, FileField> = {};
   const line = (f: FileField): [string, ElementRefs[string]] => {
@@ -100,7 +108,10 @@ export function withFileFields(refs: ElementRefs, fields: FileField[]): { refs: 
 
 /** 올리기 전과 뒤의 같은 칸 — 올라갔다고 볼 근거, 없으면 null. */
 export function uploadLanded(before: FileField, after: FileField, file: string): Landed | null {
-  if (after.imgs.some((src) => !before.imgs.includes(src))) return 'preview';
+  const seen = [...before.imgs, ...(before.broken ?? []), ...(before.loading ?? [])];
+  if (after.imgs.some((src) => !seen.includes(src))) return 'preview';
+  // 새 미리보기가 깨졌다 — 대체 글이 파일 이름이라 아래 'name' 으로 올라간 것처럼 보였다(10/23 BO: 저장된 상품의 대표이미지가 비어 있었다).
+  if ((after.broken ?? []).some((src) => !seen.includes(src))) return 'broken';
   const name = squash(file);
   const stem = name.replace(/\.[^.]+$/, '');
   const shows = (t: string): boolean => squash(t).includes(name) || squash(t).includes(stem);
@@ -153,8 +164,11 @@ export const FILE_FIELDS_SCRIPT = `(() => {
       label,
       accept: input.accept || '',
       visible: !!input.getClientRects().length && getComputedStyle(input).visibility !== 'hidden',
+      covered: !!input.closest('[aria-hidden="true"]'),
       files: [...(input.files || [])].map((f) => f.name),
-      imgs: [...area.querySelectorAll('img')].map((img) => img.currentSrc || img.src),
+      imgs: [...area.querySelectorAll('img')].filter((img) => img.complete && img.naturalWidth).map((img) => img.currentSrc || img.src),
+      broken: [...area.querySelectorAll('img')].filter((img) => img.complete && !img.naturalWidth).map((img) => img.currentSrc || img.src),
+      loading: [...area.querySelectorAll('img')].filter((img) => !img.complete).map((img) => img.currentSrc || img.src),
       text: squash(area.textContent).slice(0, 2000),
     };
   });

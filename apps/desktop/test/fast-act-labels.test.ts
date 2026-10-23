@@ -14,6 +14,9 @@ import {
   nearNames,
   rowsNamed,
   valueToPick,
+  popupSearchValue,
+  popupSelectionMatches,
+  isFieldVerification,
   choiceMissed,
   disabledOf,
   checkStates,
@@ -24,6 +27,8 @@ import {
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
+  typedValue,
+  keepsValue,
 } from '../src/main/fast-act-labels';
 import type { ElementRefs } from '../src/main/fast-act';
 
@@ -129,6 +134,29 @@ test('검색 의도는 말에서 붙인 칸 이름을 빼고 본다', () => {
   assert.equal(withoutLabel('검색어에 노트북 넣고 검색해줘', '검색어').includes('검색'), true);
   assert.equal(withoutLabel('검색에 노트북 넣고 검색해줘', '검색').includes('검색'), true);
   assert.equal(withoutLabel('xgen 검색해줘', undefined), 'xgen 검색해줘');
+});
+
+test('「」로 밝힌 값은 칸 이름처럼 보여도 그대로 넣는다', () => {
+  // 10/22 BO: BrowserFill "상품명에 「상품 C」 입력해줘" 가 "C" 를, "모델명에 「모델 X」 입력해줘" 가 "X" 를 넣고 done 이었다.
+  assert.equal(typedValue('상품 C', '상품명에 「상품 C」 입력해줘', '상품명'), '상품 C');
+  assert.equal(typedValue('배송비 무료 / 반품비 0원', '배송비정책에 「배송비 무료 / 반품비 0원」 넣어줘', '배송비정책'), '배송비 무료 / 반품비 0원');
+  // 따옴표가 없으면 판단 모델이 같이 고른 칸 이름은 지금처럼 뗀다.
+  assert.equal(typedValue('상품명은 xgen', '상품명은 xgen 넣어줘', '상품명'), 'xgen');
+});
+
+test('선택 상자가 이미 말한 값인가 — 뽑은 값과 지금 값을 띄어쓰기 없이 비교한다', () => {
+  // 10/22 BO 리허설: "…「배송비 무료 …」 선택해줘" 의 동사 "선택" 을 지금 값 "선택" 으로 봐서 고르지 않고 done 이었다.
+  const fee = '배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)';
+  const said = `배송비정책에 「${fee}」 선택해줘`;
+  assert.equal(keepsValue(fee, said, '배송비정책', '선택'), false);
+  assert.equal(keepsValue(fee, said, '배송비정책', fee), true);
+  assert.equal(keepsValue('2일', '출고소요일 2일로 해줘', '출고소요일', '2일'), true);
+  assert.equal(keepsValue('출고소요일 2일', '출고소요일 2일로 해줘', '출고소요일', '2일'), true);
+  assert.equal(keepsValue('13일', '출고소요일 13일로 해줘', '출고소요일', '3일'), false);
+  assert.equal(keepsValue('일반 상품', '배송상품구분을 일반 상품으로 해줘', '배송상품구분', '일반상품'), true);
+  // 칸 이름뿐이거나 값을 못 뽑았으면 이미 그 값이라고 하지 않는다.
+  assert.equal(keepsValue('배송상품구분', '배송상품구분 눌러줘', '배송상품구분', '일반상품'), false);
+  assert.equal(keepsValue(null, '배송비정책 선택해줘', '배송비정책', '선택'), false);
 });
 
 test('넣을 글자 앞의 칸 이름(조사 포함)을 뗀다 — 남는 글자가 있을 때만', () => {
@@ -482,4 +510,35 @@ test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 
   for (const code of [FIELD_LABEL_SCRIPT, FORM_VALUES_SCRIPT, NAME_ICON_BUTTONS_SCRIPT]) {
     assert.doesNotThrow(() => new Function(`return ${code}`));
   }
+});
+
+ test('supplier and brand searches keep codes as row constraints, not name queries', () => {
+  assert.deepEqual(popupSearchValue('플래티어 협력사(1000002)', '협력사'), { name: '플래티어 협력사', code: '1000002' });
+  assert.deepEqual(popupSearchValue('플래티어(LA2438)', '브랜드'), { name: '플래티어', code: 'LA2438' });
+  assert.deepEqual(popupSearchValue('업체(주)', '협력사'), { name: '업체(주)' });
+  assert.deepEqual(popupSearchValue('상품(2024)', '상품명'), { name: '상품(2024)' });
+  const refs = {
+    a: { role: 'cell', name: '플래티어' }, b: { role: 'cell', name: '1000001' },
+    c: { role: 'cell', name: '플래티어' }, d: { role: 'cell', name: '1000002' },
+    e: { role: 'cell', name: '플래티어 협력사' }, f: { role: 'cell', name: '1000003' },
+  };
+  const items = { a: 'r1', b: 'r1', c: 'r2', d: 'r2', e: 'r3', f: 'r3' };
+  assert.deepEqual(rowsNamed(refs, items, '플래티어', '1000002'), ['r2']);
+  assert.deepEqual(rowsNamed(refs, items, '플래티어 협력사', '1000002'), []);
+  assert.deepEqual(rowsNamed(refs, items, '플래티어', '9999999'), []);
+});
+
+test('verification requests are read-only while literal values and confirm buttons remain actions', () => {
+  for (const text of ['협력사에 플래티어 협력사가 선택되어 있는지 확인해줘', '브랜드에 플래티어가 선택되어 있는지 확인해줘', '현재 값을 확인해 주세요.', '입력값 검증해줘', 'verify the selected supplier'])
+    assert.equal(isFieldVerification(text), true, text);
+  for (const text of ['협력사를 플래티어 협력사(1000002)로 지정해줘', '확인 버튼 눌러줘', '상품명에 「확인해줘」 입력해줘', '체크박스 체크해줘'])
+    assert.equal(isFieldVerification(text), false, text);
+});
+
+test('popup completion checks the selected name and identifier in the parent value', () => {
+  assert.equal(popupSelectionMatches('1000002 플래티어 협력사', '플래티어 협력사', '1000002'), true);
+  assert.equal(popupSelectionMatches('LA2438 플래티어', '플래티어', 'LA2438'), true);
+  assert.equal(popupSelectionMatches('플래티어(LA2438)', '플래티어', 'LA2438'), true);
+  assert.equal(popupSelectionMatches('1000001 플래티어', '플래티어 협력사', '1000002'), false);
+  assert.equal(popupSelectionMatches('10000020 플래티어 협력사', '플래티어 협력사', '1000002'), false);
 });

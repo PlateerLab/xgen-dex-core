@@ -112,6 +112,14 @@ test('지시가 부른 칸 이름 — 「」 안의 값은 칸 이름이 아니�
     assert.equal(saidField(text), null, text);
 });
 
+test('열린 서랍에서 고른 항목이 말과 맞는가 — 말이 항목 이름을 품어야 하고, "상품" 같은 두 글자만 겹치면 아니다', () => {
+  // 10/22 BO: 서랍이 열린 채 "모델명 접이식 의자로 바꿔줘" 에 서랍 메뉴 "단품 정보 관리" 를 눌러 페이지가 바뀌었다.
+  const said = (t: string) => t.replace(/\s+/g, '');
+  assert.equal(sameField(said('모델명 접이식 의자로 바꿔줘'), '단품 정보 관리'), false);
+  assert.equal(sameField(said('상품 등록 들어가줘'), '상품 등록'), true);
+  assert.equal(sameField(said('상품 정보 관리 들어가줘'), '상품 등록'), false);
+});
+
 test('같은 칸 판정 — 품거나 조각 절반 이상 겹치면 같은 칸, 조각 하나만 겹치면 다른 칸', () => {
   for (const [said, name] of [['최소구매수량', '최소'], ['검색키워드', '검색키워드 내용 ‘,(쉼표)’로 구분하여 입력해 주세요.'],
     ['출고소요일', '출고소요일 (현재: 3일)'], ['결제수단', '결제가능수단 실시간계좌이체'], ['안전재고수량', '안전재고수량'], ['대표이미지대체텍스트', '대체 텍스트를 입력해주세요(100자 이하)']])
@@ -133,14 +141,10 @@ test('큰 화면을 줄일 때 남긴 요소의 구역 제목도 남긴다', () 
 });
 
 test('판단 응답 누락은 클릭이나 질문 아님으로 간주하지 않는다', async () => {
-  const { classify, askedProbability } = await import('../src/main/fast-act');
+  const { classify } = await import('../src/main/fast-act');
   const scr = buildScreen('https://example.test', [{ ref: 'e1', role: 'textbox', name: '이름' }]);
   await assert.rejects(classify(async () => ({}), '이름에 봄 입력해줘', '', scr));
   await assert.rejects(classify(async () => ({ action: { choice: 'type' }, ready: { choice: 'act_now', probabilities: { act_now: 1 } } }), '이름에 봄 입력해줘', '', scr));
-  for (const p of [undefined, NaN, -1, 2]) {
-    await assert.rejects(askedProbability(async () => ({ asked: { choice: 'done', probabilities: p === undefined ? undefined : { asks: p } } }), '어느 상품인가요?'));
-  }
-  assert.equal(await askedProbability(async () => ({ asked: { choice: 'done', probabilities: { asks: 0 } } }), '입력했어요.'), 0);
 });
 
 test('순서 요청과 이름 붙은 탭 닫기를 한 번의 현재 화면 조작으로 끝내지 않는다', async () => {

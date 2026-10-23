@@ -3,7 +3,6 @@ import test from 'node:test';
 import type { BrowserPageInfo } from '@dex/protocol/browser';
 import { executeBrowserStep } from '../src/main/browser-step';
 import { allowsDeciderAction, type DecisionPost, type ElementRefs } from '../src/main/fast-act';
-import { BROWSER_ACTION_BLOCKED } from '../src/main/browser-action-guard';
 import { FIELD_LABEL_SCRIPT, type FieldLabel } from '../src/main/fast-act-labels';
 
 function fixture() {
@@ -258,42 +257,6 @@ test('quoted action words in a field value do not block an exact fill', async ()
   assert.equal(f.commands.filter(c => c[0] === 'fill').length, 1);
 });
 
-test('commit requests delegate to the runtime guard; planner confirmed=true grants nothing', async () => {
-  for (const name of ['저장', '임시저장', '등록', '승인요청']) {
-    const f = fixture();
-    f.onClick(() => { throw new Error(BROWSER_ACTION_BLOCKED); });
-    const done = await execute(f, {
-      operation: 'click', instruction: `「${name}」 버튼 눌러줘`, confirmed: true,
-      expect: [{ kind: 'text', value: '완료' }],
-    });
-    assert.equal(done.result.status, 'blocked', name);
-    assert.equal(done.result.mutation_attempted, true);
-    assert.equal(f.commands.filter(c => c[0] === 'click').length, 1);
-  }
-});
-
-test('a runtime safety block cannot be reported completed from an already satisfied check', async () => {
-  const f = fixture();
-  f.onClick(() => { throw new Error(BROWSER_ACTION_BLOCKED); });
-  const done = await execute(f, {
-    operation: 'click', instruction: '확인 클릭',
-    expect: [{ kind: 'text', value: '검색 결과 플래티어' }],
-  });
-  assert.equal(done.result.status, 'blocked');
-  assert.equal(done.result.mutation_attempted, true);
-});
-
-test('a guard inspection failure cannot become success from existing page text', async () => {
-  const f = fixture();
-  f.onClick(() => { throw new Error('browser_denied: 브라우저 동작 안전 검사 시간 초과.'); });
-  const done = await execute(f, {
-    operation: 'click', instruction: '확인 클릭',
-    expect: [{ kind: 'text', value: '검색 결과 플래티어' }],
-  });
-  assert.equal(done.result.status, 'blocked');
-  assert.equal(done.result.mutation_attempted, true);
-});
-
 test('pre-existing menu text cannot verify a click, and the click is never replayed', async () => {
   const f = fixture();
   f.setBodyText('메일쓰기 임시보관함');
@@ -457,16 +420,18 @@ test('cancellation during a decision prevents the mutation', async () => {
   );
 });
 
-test('dangerous requests reach the shared runtime guard without replay', async () => {
+test('dangerous requests keep their existing confirmation path', async () => {
   const f = fixture();
-  f.onClick(() => { throw new Error(BROWSER_ACTION_BLOCKED); });
   const done = await execute(f, {
     operation: 'click',
     instruction: '모두 삭제해',
     expect: [{ kind: 'text', value: '완료' }],
   });
   assert.equal(done.result.status, 'blocked');
-  assert.equal(f.commands.filter((c) => c[0] === 'click').length, 1);
+  assert.equal(
+    f.commands.some((c) => c[0] === 'click'),
+    false,
+  );
 });
 
 test('malformed and missing completion checks are rejected before any browser command', async () => {

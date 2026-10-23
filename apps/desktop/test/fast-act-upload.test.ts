@@ -43,6 +43,16 @@ test('uploadLanded: 미리보기·파일 이름·보이는 칸만 올라간 것�
   // 숨은 칸에 파일만 들어가고 화면이 그대로면 올라간 것이 아니다(10/19 BO).
   assert.equal(uploadLanded(before, { ...before, files: ['a.png'] }, 'a.png'), null);
   assert.equal(uploadLanded(before, { ...before, text: '파일 형식이 올바르지 않습니다' }, 'a.png'), null);
+  // 새 미리보기가 깨졌다(불러오기 실패) — 대체 글이 파일 이름이어도 올라간 것이 아니다(10/23 BO: 저장된 상품의 대표이미지가 비어 있었다).
+  assert.equal(uploadLanded(before, { ...before, broken: ['https://cdn/x.png'], text: 'a.png' }, 'a.png'), 'broken');
+  // 불러온 미리보기가 있으면 깨진 것과 함께 있어도 올라간 것이다.
+  assert.equal(uploadLanded(before, { ...before, imgs: ['blob:y'], broken: ['https://cdn/x.png'] }, 'a.png'), 'preview');
+  // 업로드 전에 불러오는 중이던 이미지가 다 불러와진 것은 새 미리보기가 아니다(커밋 훅 지적).
+  const loading = { ...before, loading: ['https://cdn/old.png'] };
+  assert.equal(uploadLanded(loading, { ...before, imgs: ['https://cdn/old.png'] }, 'a.png'), null);
+  // 원래 깨져 있던 이미지는 새것이 아니다.
+  const old = { ...before, broken: ['https://cdn/old.png'] };
+  assert.equal(uploadLanded(old, { ...old, text: 'a.png (1.2MB) 삭제' }, 'a.png'), 'name');
 });
 
 test('listFiles: 하위 폴더까지, 숨은 폴더는 빼고', async () => {
@@ -75,4 +85,12 @@ test('withFileFields: 파일 칸을 같은 이름 제목 바로 뒤에 입력칸
   assert.equal(out.e8003.name, '파일 올리기');
   assert.equal(files.e8002.n, 1);
   assert.deepEqual(withFileFields(refs, []).refs, refs);
+});
+
+test('withFileFields: 열린 층(서랍·모달)에 가려진 파일 칸은 넣지 않는다', () => {
+  // 10/22 BO: 서랍이 열린 채 "모델명 접이식 의자로 바꿔줘" — 가려진 입력칸은 스냅샷에서 빠지는데 파일 칸만 남아 "추가이미지 파일 올리기" 를 골랐다.
+  const refs = { e94: { role: 'heading', name: '대표이미지 *' } } as ElementRefs;
+  const { refs: out, files } = withFileFields(refs, [{ ...field(0, '대표이미지'), covered: true }, field(1, '첨부')]);
+  assert.deepEqual(Object.keys(out), ['e94', 'e8002']);
+  assert.deepEqual(Object.keys(files), ['e8002']);
 });

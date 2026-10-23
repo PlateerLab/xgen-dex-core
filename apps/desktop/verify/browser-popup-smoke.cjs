@@ -6,6 +6,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const { BrowserRuntime } = require('../src/main/browser-runtime.ts');
+const { BrowserToolProvider, BROWSER_INTERACT_TOOL } = require('../src/main/browser-tools.ts');
 const { executeBrowserStep } = require('../src/main/browser-step.ts');
 const { allowsDeciderAction } = require('../src/main/fast-act.ts');
 const { installModalOverlay } = require('../src/main/modal-overlay.ts');
@@ -110,9 +111,16 @@ async function main() {
     });
     assert.equal(runtime.list('smoke').length, 1, 'approval must not replay the URL');
 
-    await guest.executeJavaScript("document.querySelector('#open').click()");
-    await waitFor(() => runtime.list('smoke').some((page) => page.mode === 'popup'));
+    const provider = new BrowserToolProvider(runtime);
+    provider.configure(true);
+    const opened = JSON.parse((await provider.callTool(BROWSER_INTERACT_TOOL,
+      { action: 'click', page_id: parent.pageId, ref: '#open' }, { workflowId: 'smoke' })).content[0].text);
+    assert.equal(opened.page_id, parent.pageId);
+    assert.equal(opened.result.opened_pages.length, 1);
     const popup = runtime.list('smoke').find((page) => page.mode === 'popup');
+    assert.equal(opened.result.opened_pages[0].page_id, popup.pageId);
+    assert.equal(opened.result.opened_pages[0].url, `${origin}/vendor`);
+    assert.match(opened.result.next_step, /BrowserSnapshot/);
     const popupRuntime = await runtime.resolvePage('smoke', popup.pageId, false);
     const child = popupRuntime.contents;
     runtime.updatePopupSurface(popup.pageId, { x: 0, y: 50, width: 600, height: 400 });

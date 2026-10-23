@@ -101,6 +101,51 @@ async function focusGuest(contents: WebContents): Promise<void> {
   contents.focus();
 }
 
+/** 문서가 준비된 뒤 load(이미지·외부 CSS 까지 다 받음)를 더 기다리는 시간. */
+const LOAD_GRACE_MS = 2_000;
+/** 페이지가 스스로 주소를 옮겼을 때 옮겨 간 문서를 기다리는 상한. */
+const REDIRECT_READY_MAX_MS = 15_000;
+
+const loadAborted = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'ERR_ABORTED';
+
+/**
+ * 주소를 열고 문서가 준비되면(dom-ready) 돌아온다. loadURL 은 load 이벤트까지 기다려서, 화면은 0.1초에 떴는데
+ * 느린 이미지 하나(20초)만큼 도구가 묶였다 — 10/23 BO 상품 등록 시연의 Navigate 25.2초가 이 모양이었다(재현 실측).
+ * 문서가 준비된 뒤엔 load 를 graceMs 만 더 기다린다. 기다리는 사이 페이지가 스스로 주소를 옮겨 loadURL 이
+ * ERR_ABORTED 로 끝나는 것도 실패로 보지 않는다(같은 시연에서 15.2초 기다린 끝에 실패) — 옮겨 간 문서를 기다린다.
+ */
+export async function loadUntilReady(contents: WebContents, url: string, graceMs = LOAD_GRACE_MS): Promise<void> {
+  if (typeof contents.on !== 'function' || typeof contents.once !== 'function') return contents.loadURL(url);
+  let ready!: () => void;
+  const domReady = new Promise<'ready'>((resolve) => {
+    ready = () => resolve('ready');
+  });
+  // 문서를 바꾼 뒤의 dom-ready 만 센다 — 이전 문서의 dom-ready 로 일찍 돌아가지 않게.
+  const arm = (): void => {
+    contents.once('dom-ready', ready);
+  };
+  contents.on('did-navigate', arm);
+  const load = contents.loadURL(url).then(
+    () => 'loaded' as const,
+    (error: unknown) => ({ error }),
+  );
+  const within = <T,>(ms: number, value: T): Promise<T> => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  try {
+    const first = await Promise.race([load, domReady]);
+    if (first === 'loaded') return;
+    if (first === 'ready') {
+      const settled = await Promise.race([load, within(graceMs, 'grace' as const)]);
+      if (typeof settled === 'object' && !loadAborted(settled.error)) throw settled.error;
+      return;
+    }
+    if (!loadAborted(first.error)) throw first.error;
+    if (contents.isLoading?.()) await Promise.race([domReady, within(REDIRECT_READY_MAX_MS, 'timeout' as const)]);
+  } finally {
+    contents.removeListener('did-navigate', arm);
+    contents.removeListener('dom-ready', ready);
+  }
+}
+
 export class BrowserRuntimeError extends Error {
   constructor(
     readonly code:
@@ -1086,7 +1131,7 @@ export class BrowserRuntime {
           'browser_denied',
           'http/https/about:blank 주소만 열 수 있습니다.',
         );
-      await contents.loadURL(url);
+      await loadUntilReady(contents, url);
     } else if (request.action === 'back' && contents.navigationHistory.canGoBack()) {
       contents.navigationHistory.goBack();
     } else if (request.action === 'forward' && contents.navigationHistory.canGoForward()) {

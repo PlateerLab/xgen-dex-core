@@ -13,7 +13,8 @@ import {
 } from '@dex/protocol/browser';
 import { AgentBrowserRunner, assertAgentBrowserCommandArgs } from '../src/main/agent-browser-runner';
 import type { CdpPageProxy } from '../src/main/cdp-page-proxy';
-import { BrowserRuntime } from '../src/main/browser-runtime';
+import { BrowserRuntime, loadUntilReady } from '../src/main/browser-runtime';
+import type { WebContents } from 'electron';
 import { configureFastAct } from '../src/main/fast-act-runner';
 import { EventEmitter } from 'node:events';
 import React from 'react';
@@ -197,6 +198,79 @@ test('shared navigation asks for its agent and resumes after the webview connect
     events.map((event) => event.phase),
     ['required', 'connected'],
   );
+});
+
+/** loadURL 이 load 이벤트까지 붙잡는 웹뷰 흉내 — 문서 이동(did-navigate)·준비(dom-ready)는 직접 낸다. */
+function loadingContents(): EventEmitter & {
+  loadURL: (url: string) => Promise<void>;
+  isLoading: () => boolean;
+  finish: () => void;
+  fail: (code: string) => void;
+} {
+  const contents = new EventEmitter() as ReturnType<typeof loadingContents>;
+  contents.isLoading = () => true;
+  contents.loadURL = () =>
+    new Promise<void>((resolve, reject) => {
+      contents.finish = resolve;
+      contents.fail = (code) => reject(Object.assign(new Error(`${code} loading`), { code }));
+    });
+  return contents;
+}
+
+test('goto returns once the document is ready instead of waiting for a slow resource', async () => {
+  const contents = loadingContents();
+  const started = Date.now();
+  const going = loadUntilReady(contents as unknown as WebContents, 'https://example.com/', 30);
+  contents.emit('did-navigate');
+  contents.emit('dom-ready');
+  await going;
+  assert.ok(Date.now() - started < 1_000);
+  contents.finish();
+});
+
+test('goto ignores a dom-ready from the previous document', async () => {
+  const contents = loadingContents();
+  let done = false;
+  const going = loadUntilReady(contents as unknown as WebContents, 'https://example.com/', 30).then(() => {
+    done = true;
+  });
+  contents.emit('dom-ready');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(done, false);
+  contents.finish();
+  await going;
+  assert.equal(done, true);
+});
+
+test('goto is not a failure when the page moves itself on while loading', async () => {
+  const afterReady = loadingContents();
+  const first = loadUntilReady(afterReady as unknown as WebContents, 'https://example.com/', 1_000);
+  afterReady.emit('did-navigate');
+  afterReady.emit('dom-ready');
+  afterReady.fail('ERR_ABORTED');
+  await first;
+
+  const beforeReady = loadingContents();
+  const second = loadUntilReady(beforeReady as unknown as WebContents, 'https://example.com/', 30);
+  beforeReady.fail('ERR_ABORTED');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  beforeReady.emit('did-navigate');
+  beforeReady.emit('dom-ready');
+  await second;
+});
+
+test('goto still fails when the page cannot be loaded', async () => {
+  const contents = loadingContents();
+  const going = loadUntilReady(contents as unknown as WebContents, 'https://no-such-host.example/', 30);
+  contents.fail('ERR_NAME_NOT_RESOLVED');
+  await assert.rejects(going, /ERR_NAME_NOT_RESOLVED/);
+
+  const errorPage = loadingContents();
+  const shown = loadUntilReady(errorPage as unknown as WebContents, 'https://no-such-host.example/', 1_000);
+  errorPage.emit('did-navigate');
+  errorPage.emit('dom-ready');
+  errorPage.fail('ERR_NAME_NOT_RESOLVED');
+  await assert.rejects(shown, /ERR_NAME_NOT_RESOLVED/);
 });
 
 test('popup approval preserves the next original window.open instead of replaying its URL', async () => {

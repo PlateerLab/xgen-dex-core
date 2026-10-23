@@ -1370,6 +1370,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const fileField = snap.files[pick.ref];
     if (fileField) return this.upload(text, fileField, th, guard, page, t0);
     const element = snap.refs[pick.ref];
+    // 이름도 칸 이름표도 없는 요소는 말이 가리킬 수 없다 — 고른 근거가 없어 누르지 않는다. 실행한 두 번 모두 틀렸다
+    // (10/23 BO "진행해줘" → 헤더 🔍 button "" 0.774, 10/22 배송비정책 문장 → 협력사 조회 팝업 radio "" 0.824).
+    if (!element.name?.trim() && !snap.labels[pick.ref]?.trim()) return no('이름 없는 요소 — 서버에서 화면을 보고', pick.top);
     // 말하는 중인데 고른 요소 이름으로 말이 끝난다 — 그 끝 어절은 아직 자라는 중일 수 있다("…선택." → "…선택해 줘.").
     // 10/18 BO 협력사 찾기: 중간 결과 "첫 번째 협력사 선택." 에 표 머리글 "선택" 0.96 을 눌렀다(끝난 말로는 행). 기다리면
     // 늦어질 뿐이라 다음 말이나 최종에서 다시 본다.

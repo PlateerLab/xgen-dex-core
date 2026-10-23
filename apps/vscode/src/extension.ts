@@ -260,7 +260,8 @@ async function login(service: DexService, requestedProfile?: string): Promise<bo
       service.request<AuthStatus>('auth/login', { profile: profile.name, email: email.trim(), password: secret }),
     );
     await vscode.workspace.getConfiguration('xgenDex').update('profile', profile.name, vscode.ConfigurationTarget.Global);
-    await vscode.window.showInformationMessage(`${auth.user?.username ?? email} 계정으로 로그인했습니다.`);
+    void vscode.window.showInformationMessage(`${auth.user?.username ?? email} 계정으로 로그인했습니다. 확장을 다시 시작합니다.`);
+    await reloadAfterAuthChange(service);
     return true;
   } catch (error) {
     await showError(service, '로그인하지 못했습니다.', error);
@@ -303,11 +304,21 @@ async function logout(service: DexService): Promise<boolean> {
   if (choice !== '로그아웃') return false;
   try {
     await service.request('auth/logout', service.profileParams());
-    await vscode.window.showInformationMessage('XGEN DexOn에서 로그아웃했습니다.');
+    void vscode.window.showInformationMessage('XGEN DexOn에서 로그아웃했습니다. 확장을 다시 시작합니다.');
+    await reloadAfterAuthChange(service);
     return true;
   } catch (error) {
     await showError(service, '로그아웃하지 못했습니다.', error);
     return false;
+  }
+}
+
+async function reloadAfterAuthChange(service: DexService): Promise<void> {
+  try {
+    // 창을 다시 로드해야 확장과 CLI 프로세스가 저장된 인증 상태로 함께 초기화된다.
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  } catch (error) {
+    await showError(service, '인증 상태는 변경했지만 확장을 다시 시작하지 못했습니다. VS Code 창을 다시 로드하세요.', error);
   }
 }
 

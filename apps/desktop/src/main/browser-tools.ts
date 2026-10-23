@@ -6,8 +6,8 @@ import { allowsDeciderAction, type DecisionPost } from './fast-act';
 import { BROWSER_STEP_GUIDE, browserStepProperties, executeBrowserStep } from './browser-step';
 import { diag } from './diag-log';
 import { fastActConfigured } from './fast-act-runner';
-import { FORM_VALUES_SCRIPT } from './fast-act-labels';
-import { MAX_FILL_STEPS, runSteps } from './fast-act-batch';
+import { FORM_VALUES_SCRIPT, formLines } from './fast-act-labels';
+import { MAX_FILL_STEPS, briefResults, runSteps } from './fast-act-batch';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -268,6 +268,8 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
         'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
         'Returns complete, per-step results (done / failed / skipped), remaining_steps, and form_values read once after the batch. ' +
+        'Results list a done step only by its number i and the field it acted on; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
+        'form_values has one line per field: name [type] [비활성] [형식 "…"]: "value" (type text and enabled fields carry no tag). ' +
         'Use these returned values directly; do not call BrowserFormValues or BrowserSnapshot just to recheck a completed batch. ' +
         'Do not replay done steps. For remaining_steps, compare form_values first: a failed step may already have applied. Retry only missing or incorrect values, grouping them in BrowserFill. ' +
         'Use BrowserSnapshot + BrowserInteract only when the returned values are unavailable or insufficient to resolve a remaining field. complete describes this batch, not whether the whole form is ready to save. ' +
@@ -808,9 +810,9 @@ export class BrowserToolProvider {
       }
       return result(this.runtime.get(id) ?? originalPage ?? null, {
         complete: results.every((r) => r.status === 'done'),
-        results,
+        results: briefResults(results),
         remaining_steps: results.filter((r) => r.status !== 'done' && !r.read_only).map((r) => r.step),
-        form_values,
+        form_values: formLines(form_values),
         ...(form_values_error ? { form_values_error } : {}),
         recovery: 'For read_only steps, inspect the returned form_values; do not retry them as mutations. Use form_values as the final observed state; do not read the whole form again. Do not repeat done steps. For remaining_steps, retry only values still missing or incorrect; failed steps may already have applied. If form_values_error is present, read current values before retrying. If complete, report the result without another verification call.',
       });
@@ -829,7 +831,7 @@ export class BrowserToolProvider {
     if (!id) throw new BrowserRuntimeError('browser_no_page', 'page_id 가 필요합니다 — BrowserTabs list 로 읽을 탭의 page_id 를 확인하세요.');
     const page = await this.runtime.resolvePage(wid, id, false);
     const fields = await this.runtime.pageScript(wid, page.info.pageId, FORM_VALUES_SCRIPT, timeout(args) ?? 5_000);
-    return result(page.info, fields);
+    return result(page.info, formLines(fields));
   }
 
   private async advanced(

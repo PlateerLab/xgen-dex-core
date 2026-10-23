@@ -31,7 +31,28 @@ export type StepResult = {
   note: string;
   ms: number;
   read_only?: boolean;
+  /** 줄이 처음 다룬 칸(고른 요소의 표기). */
+  target?: string;
+  /** 넣은 값 — 누르기만 한 줄은 없다. */
+  requested?: string;
+  /** 실행 뒤 읽은 값·선택 상태(null = 읽지 못함). */
+  observed?: string | null;
+  /** 줄 실행 중 화면에 뜬 알림 문구. */
+  notices?: string[];
 };
+
+/**
+ * LLM 에 돌려줄 줄별 결과 — 성공한 줄은 번호(i)와 다룬 칸만, 못 한 줄은 지시·까닭·요청값·관측값을 모두 남긴다.
+ * 결과는 대화 기록에 쌓여 LLM 호출마다 다시 들어간다(10/23 demo-test-21: BrowserFill 11회가 도구 결과의 62%).
+ * 화면 알림은 성공한 줄에도 남긴다 — 다음 칸 입력에 영향을 줄 수 있다.
+ */
+export function briefResults(results: StepResult[]): Record<string, unknown>[] {
+  return results.map((r, k) => {
+    if (r.status === 'done') return { i: k + 1, status: r.status, ...(r.target ? { target: r.target } : { step: r.step }), ...(r.notices ? { notices: r.notices } : {}) };
+    const { ms: _ms, ...rest } = r;
+    return { i: k + 1, ...rest };
+  });
+}
 
 export async function runSteps(
   workflowId: string,
@@ -81,7 +102,18 @@ export async function runSteps(
           const acted = agent.actions.slice(before);
           const ok = last.acted && last.effect === 'ok';
           const note = acted.length ? replyFor(acted, true) : last.acted ? ok ? '요청한 상태를 확인함' : '실행 결과를 확인하지 못함' : last.reason;
-          out[i] = { step, status: ok ? 'done' : 'failed', note, ms: Math.round(now() - t) };
+          const end = acted[acted.length - 1];
+          const notices = acted.flatMap((a) => a.notices ?? []);
+          out[i] = {
+            step,
+            status: ok ? 'done' : 'failed',
+            note,
+            ms: Math.round(now() - t),
+            ...(acted[0] ? { target: acted[0].display } : {}),
+            ...(end?.text != null ? { requested: end.text } : {}),
+            ...(end && end.observed !== undefined ? { observed: end.observed } : {}),
+            ...(notices.length ? { notices } : {}),
+          };
         } catch (err) {
           if (controller.signal.aborted) break;
           out[i] = { step, status: 'failed', note: `${err instanceof Error ? err.message : String(err)}. 현재 값을 확인한 뒤 남은 작업만 수행하세요.`, ms: Math.round(now() - t) };

@@ -236,6 +236,8 @@ export type VoiceAction = {
   ask?: string;
   /** 답 문장을 정해 둔 경우(누르지 않은 까닭, 파일 올린 결과) — 답은 "눌렀어요" 대신 이 문장이다. */
   sentence?: string;
+  /** 실행 뒤 칸에서 읽은 값(입력) 또는 선택 상태(선택지) — 못 읽었으면 null. BrowserFill 결과의 관측값. */
+  observed?: string | null;
 };
 
 /** labels = 칸 이름이 연결되지 않은 입력칸에 화면에서 찾아 붙인 칸 이름(요소 번호별, fast-act-labels). */
@@ -785,6 +787,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       const value = await this.valueOf(s.page.pageId, `@${pick.ref}`, s.snap.gen);
       if (!matchesInputValue(value, typed, element.role, element.name ?? '')) {
         const missed = await this.record(text, element, action, typed, th, tAct - t0, now() - tAct, s.page, pick, s.snap.ms);
+        missed.observed = value;
         missed.tell = `${missed.display}에 넣은 값을 확인하지 못했어요.`;
         return missed;
       }
@@ -1484,6 +1487,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     let opened = false;
     let rich = false;
     let unfilled = false;
+    let observed: string | null | undefined;
     try {
       if (action === 'click') {
         const watched = await runtime.pageScript<boolean>(this.workflowId, page.pageId, PRESS_WATCH_SCRIPT, PAGE_SCRIPT_MS).catch(() => false);
@@ -1538,6 +1542,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
         // 읽을 수 없는 값과 구두점·부호가 달라진 값은 완료로 보지 않는다.
         if (!opened) {
           const inField = await this.valueOf(page.pageId, ref, snap.gen, rich);
+          observed = rich && inField !== null ? richText(inField) : inField;
           unfilled = !matchesInputValue(rich && inField !== null ? richText(inField) : inField, rich ? richText(typed ?? '') : typed ?? '', element.role, element.name ?? '');
         }
         if (!opened && !unfilled && action === 'type_submit') await runtime.runAgentCommand(this.workflowId, page.pageId, ['press', 'Enter'], 10_000);
@@ -1551,13 +1556,13 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     const done = opened ? 'click' : action;
     const recorded = await this.record(text, acted, done, opened ? null : typed, th, decideMs, now() - tAct, page, pick, snap.ms);
+    if (observed !== undefined) recorded.observed = observed;
     // 누른 선택지가 고른 상태가 되지 않았다(다른 칸 값에 막힌 선택지) — "눌렀어요" 로 끝내지 않고 알린다.
     const choiceRole = toggles && check ? (snap.refs[check.ref]?.role ?? 'checkbox') : element.role;
     const before = toggles && check ? check.checked : choiceRole === 'checkbox' ? snap.states[pick.ref] : undefined;
-    const missed =
-      done === 'click' &&
-      (choiceRole === 'radio' || choiceRole === 'checkbox') &&
-      choiceMissed(choiceRole, before, await this.checkedOf(page.pageId, ref, snap.gen));
+    const checkedNow = done === 'click' && (choiceRole === 'radio' || choiceRole === 'checkbox') ? await this.checkedOf(page.pageId, ref, snap.gen) : undefined;
+    if (checkedNow !== undefined) recorded.observed = checkedNow === null ? null : checkedNow ? '선택됨' : '선택 안 됨';
+    const missed = checkedNow !== undefined && choiceMissed(choiceRole, before, checkedNow);
     if (missed) {
       recorded.tell = `${josa(recorded.display, '이', '가')} 선택되지 않았어요. 지금은 고를 수 없는 상태인 것 같아요.`;
       diag(SCOPE, 'choice-missed', { text, ref, role: choiceRole });

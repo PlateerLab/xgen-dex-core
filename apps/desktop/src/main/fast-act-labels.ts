@@ -134,6 +134,24 @@ ${FIELD_HELPERS}
  * BrowserAdvanced eval 로 DOM 을 직접 읽었다(10/19~20 세션의 eval 31번 중 절반 넘게). 정해진 코드로 같은 것을 읽어 준다.
  * 라디오·체크박스는 고른 것만, 무리 이름(무리 바로 앞 제목)을 칸 이름으로 단다.
  */
+/**
+ * FORM_VALUES_SCRIPT 결과를 칸마다 한 줄로 — `이름 [type] [비활성] [형식 "…"]: "값"`. 기본(text·활성)은 적지 않고, 값은 JSON
+ * 문자열이라 줄바꿈·따옴표가 줄을 깨지 않는다. 같은 키를 칸마다 반복하던 JSON 의 약 40% 크기다(10/23 BO 67칸 5,014 → 2,092자).
+ */
+export function formLines(fields: unknown): unknown {
+  if (!Array.isArray(fields)) return fields;
+  return fields
+    .map((f: { field?: string; type?: string; value?: unknown; disabled?: boolean; placeholder?: string }) => {
+      const tags = [
+        ...(f.type && f.type !== 'text' ? [f.type] : []),
+        ...(f.disabled ? ['비활성'] : []),
+        ...(f.placeholder ? [`형식 ${JSON.stringify(f.placeholder)}`] : []),
+      ];
+      return `${f.field ?? ''}${tags.map((t) => ` [${t}]`).join('')}: ${JSON.stringify(f.value ?? '')}`;
+    })
+    .join('\n');
+}
+
 export const FORM_VALUES_SCRIPT = `(() => {
 ${FIELD_HELPERS}
   const ALL = 'input:not([type=hidden]),textarea,select,[contenteditable]:not([contenteditable=false]),[role=combobox]:not(input)';

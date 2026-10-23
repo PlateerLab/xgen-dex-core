@@ -27,14 +27,16 @@ export type FileField = {
   accept: string;
   /** 칸에 들어 있는 파일 이름. */
   files: string[];
-  /** 영역 안 이미지 주소. */
+  /** 영역 안 이미지 주소 — 불러오기를 마치고 그림이 있는 것만(불러오는 중이면 어느 쪽에도 없다). */
   imgs: string[];
+  /** 불러오기를 마쳤는데 그림이 없는 이미지 주소(깨진 미리보기). */
+  broken?: string[];
   /** 영역 글자. */
   text: string;
 };
 
 /** 올라갔다고 볼 근거. */
-export type Landed = 'preview' | 'name' | 'picked';
+export type Landed = 'preview' | 'name' | 'picked' | 'broken';
 
 const FILE_EXT = 'png|jpe?g|gif|webp|bmp|svg|heic|mp4|mov|avi|webm|pdf|xlsx?|csv|docx?|pptx?|hwp|zip|txt';
 
@@ -104,7 +106,10 @@ export function withFileFields(refs: ElementRefs, all: FileField[]): { refs: Ele
 
 /** 올리기 전과 뒤의 같은 칸 — 올라갔다고 볼 근거, 없으면 null. */
 export function uploadLanded(before: FileField, after: FileField, file: string): Landed | null {
-  if (after.imgs.some((src) => !before.imgs.includes(src))) return 'preview';
+  const seen = [...before.imgs, ...(before.broken ?? [])];
+  if (after.imgs.some((src) => !seen.includes(src))) return 'preview';
+  // 새 미리보기가 깨졌다 — 대체 글이 파일 이름이라 아래 'name' 으로 올라간 것처럼 보였다(10/23 BO: 저장된 상품의 대표이미지가 비어 있었다).
+  if ((after.broken ?? []).some((src) => !seen.includes(src))) return 'broken';
   const name = squash(file);
   const stem = name.replace(/\.[^.]+$/, '');
   const shows = (t: string): boolean => squash(t).includes(name) || squash(t).includes(stem);
@@ -159,7 +164,8 @@ export const FILE_FIELDS_SCRIPT = `(() => {
       visible: !!input.getClientRects().length && getComputedStyle(input).visibility !== 'hidden',
       covered: !!input.closest('[aria-hidden="true"]'),
       files: [...(input.files || [])].map((f) => f.name),
-      imgs: [...area.querySelectorAll('img')].map((img) => img.currentSrc || img.src),
+      imgs: [...area.querySelectorAll('img')].filter((img) => img.complete && img.naturalWidth).map((img) => img.currentSrc || img.src),
+      broken: [...area.querySelectorAll('img')].filter((img) => img.complete && !img.naturalWidth).map((img) => img.currentSrc || img.src),
       text: squash(area.textContent).slice(0, 2000),
     };
   });

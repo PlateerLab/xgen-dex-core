@@ -43,6 +43,13 @@ test('uploadLanded: 미리보기·파일 이름·보이는 칸만 올라간 것�
   // 숨은 칸에 파일만 들어가고 화면이 그대로면 올라간 것이 아니다(10/19 BO).
   assert.equal(uploadLanded(before, { ...before, files: ['a.png'] }, 'a.png'), null);
   assert.equal(uploadLanded(before, { ...before, text: '파일 형식이 올바르지 않습니다' }, 'a.png'), null);
+  // 새 미리보기가 깨졌다(불러오기 실패) — 대체 글이 파일 이름이어도 올라간 것이 아니다(10/23 BO: 저장된 상품의 대표이미지가 비어 있었다).
+  assert.equal(uploadLanded(before, { ...before, broken: ['https://cdn/x.png'], text: 'a.png' }, 'a.png'), 'broken');
+  // 불러온 미리보기가 있으면 깨진 것과 함께 있어도 올라간 것이다.
+  assert.equal(uploadLanded(before, { ...before, imgs: ['blob:y'], broken: ['https://cdn/x.png'] }, 'a.png'), 'preview');
+  // 원래 깨져 있던 이미지는 새것이 아니다.
+  const old = { ...before, broken: ['https://cdn/old.png'] };
+  assert.equal(uploadLanded(old, { ...old, text: 'a.png (1.2MB) 삭제' }, 'a.png'), 'name');
 });
 
 test('listFiles: 하위 폴더까지, 숨은 폴더는 빼고', async () => {

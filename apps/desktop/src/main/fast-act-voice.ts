@@ -1055,6 +1055,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (landed === 'preview') return say(`${into} 올렸어요. 미리보기가 보여요.`, true);
     if (landed === 'name') return say(`${into} 올렸어요. 칸에 파일 이름이 보여요.`, true);
     if (landed === 'picked') return say(`${into} 골라 두었어요.`, true);
+    if (landed === 'broken') return say(`${into} 넣었지만 미리보기 이미지가 깨져 있어요. 업로드가 끝나지 않은 것 같아요.`);
     return say(`${into} 넣었는데 화면에 바뀐 것이 없어 올라갔는지 모르겠어요.`, false, '확인해 주실래요?');
   }
 

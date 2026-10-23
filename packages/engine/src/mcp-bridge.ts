@@ -693,6 +693,7 @@ export class McpBridge {
         tool: String(tool),
         ok: payload.ok === true,
         durationMs: Date.now() - startedAt,
+        resultChars: JSON.stringify((payload.ok ? payload.result : payload.error) ?? '').length,
       });
       if (!mayReply) return;
       try {

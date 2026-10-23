@@ -410,8 +410,6 @@ function result(page: BrowserPageInfo | null, payload: unknown): LocalToolResult
             generation: page?.generation,
             result: payload,
           },
-          null,
-          2,
         ),
       },
     ],

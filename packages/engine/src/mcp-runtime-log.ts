@@ -14,6 +14,8 @@ export interface McpRuntimeLogEntry {
   tool?: string;
   ok?: boolean;
   durationMs?: number;
+  /** 서버로 보낸 결과(또는 오류)의 글자 수 — 턴 입력 토큰을 무엇이 쓰는지 본다. */
+  resultChars?: number;
 }
 
 const entries: McpRuntimeLogEntry[] = [];

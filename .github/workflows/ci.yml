@@ -11,6 +11,10 @@ name: CI
 #   - 이 파일을 고친 PR 은 **고친 잡만** 한 번 더 돈다(공통 부분을 고쳤을 때만 전부).
 #   - 같은 PR 에 새로 푸시하면 이전 실행은 취소된다.
 # 릴리스 빌드는 release.yml 한 곳에서 한 번만 만든다.
+#
+# 리눅스 러너는 ubuntu-24.04 로 고정한다(ubuntu-latest 를 쓰지 않는다). 10/24 부터 ubuntu-latest 가 26.04 를 주자
+# 24.04 에서 건너뛰던 engine 가두기(bubblewrap) 테스트 4개가 돌기 시작해 실패했다. 이미지가 바뀌면 리눅스 설치본·
+# 네이티브 모듈도 새 glibc 로 빌드돼 옛 배포판에서 안 뜰 수 있다 — 올릴 때는 일부러, 따로 올린다.
 
 on:
   pull_request:
@@ -22,7 +26,7 @@ concurrency:
 jobs:
   changes:
     name: 바뀐 영역 · 버전 일치
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       core: ${{ steps.areas.outputs.core }}
       mobile: ${{ steps.areas.outputs.mobile }}
@@ -43,7 +47,7 @@ jobs:
     name: 계약 · 타입 · 테스트
     needs: changes
     if: needs.changes.outputs.core == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -105,7 +109,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x64, os: ubuntu-latest, flag: --linux, exe: apps/desktop/release/linux-unpacked/xgen-dex }
+          - { name: linux-x64, os: ubuntu-24.04, flag: --linux, exe: apps/desktop/release/linux-unpacked/xgen-dex }
           - { name: windows-x64, os: windows-latest, flag: --win, exe: apps/desktop/release/win-unpacked/XGen-Dex.exe }
           - { name: macos-arm64, os: macos-latest, flag: --mac, exe: apps/desktop/release/mac-arm64/XGen-Dex.app/Contents/MacOS/XGen-Dex }
     runs-on: ${{ matrix.os }}
@@ -166,7 +170,7 @@ jobs:
     name: 모바일 (타입 · 테스트)
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -186,7 +190,7 @@ jobs:
     name: 안드로이드 컴파일
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

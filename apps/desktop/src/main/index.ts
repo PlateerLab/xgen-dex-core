@@ -160,7 +160,8 @@ import {
   seedCanvasAuth,
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
-import { getBrowserToolProvider } from './browser-tools';
+import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
+import { BrowserConfirmCenter } from './browser-confirm';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
@@ -172,6 +173,7 @@ import type {
   BrowserHistoryRemoveRequest,
   BrowserHistorySuggestionsRequest,
   BrowserPageInfo,
+  BrowserConfirmResolveRequest,
   BrowserPopupPermission,
   BrowserPopupResolveRequest,
 } from '@dex/protocol/browser';
@@ -1639,6 +1641,29 @@ getLocalToolProvider().configureNotificationHandler(async (title, body, context)
   }).shown;
 });
 
+// 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 채팅 카드로 묻는다(browser-confirm). 창이 가려져 있으면 알림만 —
+// 포커스는 뺏지 않고, 알림을 누르면 그 대화로 간다.
+const browserConfirms = new BrowserConfirmCenter({
+  waitMs: CONFIRM_WAIT_MS,
+  push: (requests) => safeSend(mainWindow, CHANNELS.browserConfirmEvent, requests),
+  notify: (request, workflowName) => {
+    notificationCenter.publish({
+      id: `browser-confirm-${request.requestId}`,
+      type: 'agent.requested',
+      title: '확인창 버튼을 눌러도 될까요?',
+      body: `${request.dialogText.slice(0, 80)} — [${request.press}]`,
+      occurredAt: new Date(request.createdAt).toISOString(),
+      workflowId: request.workflowId,
+      workflowName,
+      interactionId: request.interactionId,
+      groupKey: `agent:${request.workflowId}`,
+      target: request.interactionId
+        ? { kind: 'chat', workflowId: request.workflowId, workflowName: workflowName || request.workflowId, interactionId: request.interactionId }
+        : { kind: 'none' },
+    });
+  },
+});
+
 // ── 대화별 폴더 연결 ──────────────────────────────────────────────
 // 채팅 헤더의 [폴더 연결]로 고른 폴더가 그 대화의 작업 공간이다. 이 PC 의 파일·
 // 터미널 도구는 호출마다 그 대화의 폴더를 여기서 찾고, 없으면 거부한다.
@@ -2146,6 +2171,7 @@ function syncMcp(): void {
     (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
     revealBrowserPage,
     decisionPost,
+    browserConfirms.ask,
   );
   getLocalToolProvider().configureDelegate(browserTools);
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
@@ -3569,6 +3595,16 @@ ipcMain.handle(CHANNELS.browserSelectionComplete, (event, request) => {
 ipcMain.handle(CHANNELS.browserSelectionCancel, (event, token: string) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) return false;
   return getBrowserRuntime().cancelSelection(token, event.sender.id);
+});
+ipcMain.handle(CHANNELS.browserConfirmList, (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return [];
+  return browserConfirms.list();
+});
+ipcMain.handle(CHANNELS.browserConfirmResolve, (event, request: BrowserConfirmResolveRequest) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('browser_denied: 허용되지 않은 확인창 응답입니다.');
+  }
+  return browserConfirms.resolve(request);
 });
 ipcMain.handle(CHANNELS.browserPopupResolve, (event, request: BrowserPopupResolveRequest) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {

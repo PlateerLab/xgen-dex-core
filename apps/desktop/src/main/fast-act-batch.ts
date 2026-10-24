@@ -11,6 +11,16 @@
  * 보이는 탭을 짐작하면 다른 턴·다른 기기의 요청이 사용자가 지금 보는 탭을 바꾼다. 빠른 조작은 보이는 탭에서 일하므로
  * 줄마다 그 탭을 앞으로 꺼낸다 — 줄을 하고 나서 팝업이 남았으면(고르다 만 조회 팝업) 뒤 줄이 팝업 안에서 실행되지 않게
  * (10/19: LLM 이 미리 열어 둔 협력사 팝업에서 "모델명 … 입력해줘" 가 "협력사명 검색어" 칸에 들어감).
+ *
+ * 이미 그 값인 칸의 줄은 판단 모델을 부르지 않고 그대로 둔다(heldValue) — 줄마다 수 초라, 박소민 시연 프롬프트가
+ * "이미 원하는 값인 칸은 다시 입력하지 말 것" 을 따로 적어 두었다(10/24).
+ *
+ * 사이트 확인창("…하시겠습니까?" 확인·취소)이 떠 있으면 남은 줄을 멈춘다 — 줄의 판단 모델은 그 창의 확인을 묻지 않고 누를 수
+ * 있다. 누를지는 BrowserInteract 가 사용자에게 묻는다(browser-confirm).
+ *
+ * 알림을 닫고 실패한 줄은 한 번 다시 한다(noticeRetry). 10/22~23 박소민 시연 기록에서 알림이 뜬 줄 13개 중 12개는 그 줄의 값이
+ * 아니라 다른 칸 때문이었다 — 앞 칸의 검사 알림("판매가보다 큰 정상가를…")이 이 줄의 클릭을 가로챘거나, 먼저 채울 칸("가격정보
+ * 입력전에 협력사를 먼저…")이 남아 있었다. 그 줄마다 LLM 이 BrowserFill 을 다시 불러 Fill 이 3~5회가 됐다.
  */
 import { getBrowserRuntime } from './browser-runtime';
 import { diag } from './diag-log';
@@ -18,7 +28,10 @@ import { replyFor } from './fast-act-reply';
 import { decisionPost, visiblePage } from './fast-act-runner';
 import { BrowserVoiceAgent } from './fast-act-voice';
 import { FINAL } from './voice-segmenter';
-import { isFieldVerification } from './fast-act-labels';
+import { FORM_VALUES_SCRIPT, isFieldVerification } from './fast-act-labels';
+import { saidField } from './fast-act';
+import { fileNameIn } from './fast-act-upload';
+import { CONFIRM_DIALOG_SCRIPT, isPageDialog } from './browser-confirm';
 
 const SCOPE = 'fast-act';
 const now = (): number => performance.now();
@@ -39,6 +52,10 @@ export type StepResult = {
   observed?: string | null;
   /** 줄 실행 중 화면에 뜬 알림 문구. */
   notices?: string[];
+  /** 칸이 이미 그 값이라 손대지 않았다. */
+  unchanged?: boolean;
+  /** 알림을 닫고 실패해 한 번 다시 했다 — 상태·까닭은 다시 한 결과, 알림은 두 번 것 모두. */
+  retried?: boolean;
 };
 
 /** 성공한 줄에 싣는 값의 길이 상한 — 상품상세 같은 긴 글은 앞부분만. */
@@ -55,12 +72,94 @@ export function briefResults(results: StepResult[]): Record<string, unknown>[] {
       // 칸에서 읽은 값(없으면 넣은 값)을 짧게 — 값이 없으면 LLM 이 앞선 실패 줄의 관측값을 최종 상태로 읽었다(10/23 demo-test-23).
       const seen = r.observed ?? r.requested;
       const value = seen == null ? undefined : seen.length > BRIEF_VALUE ? seen.slice(0, BRIEF_VALUE) + '…' : seen;
-      return { i: k + 1, status: r.status, ...(r.target ? { target: r.target } : { step: r.step }), ...(value !== undefined ? { value } : {}), ...(r.notices ? { notices: r.notices } : {}) };
+      return {
+        i: k + 1,
+        status: r.status,
+        ...(r.target ? { target: r.target } : { step: r.step }),
+        ...(value !== undefined ? { value } : {}),
+        ...(r.unchanged ? { unchanged: true } : {}),
+        ...(r.retried ? { retried: true } : {}),
+        ...(r.notices ? { notices: r.notices } : {}),
+      };
     }
     const { ms: _ms, ...rest } = r;
     return { i: k + 1, ...rest };
   });
 }
+
+const SEARCH_WORD = /(검색|조회|찾아|search|find|look up)/i;
+const bare = (s: string): string => s.replace(/\s+/g, '');
+
+/** 「」 값과 칸 이름을 밝힌 줄의 칸 이름·값 — "판매가에 「12900」 입력해줘". 검색하라는 줄은 값이 같아도 할 일이 남아 뺀다. */
+function heldTarget(step: string): { said: string; wanted: string } | null {
+  const quotes = [...step.matchAll(/「([^」]*)」/g)];
+  if (quotes.length !== 1 || !quotes[0][1].trim() || SEARCH_WORD.test(step.replace(quotes[0][0], ''))) return null;
+  const said = saidField(step);
+  return said ? { said, wanted: quotes[0][1] } : null;
+}
+
+/** 띄어쓰기 차이와 숫자의 쉼표("12,900")만 같은 값으로 본다. */
+function sameValue(current: string, wanted: string): boolean {
+  const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
+  if (squash(current) === squash(wanted)) return true;
+  const number = (s: string) => s.replace(/,/g, '').trim();
+  const numeric = (s: string) => /^-?\d+(?:\.\d+)?$/.test(number(s));
+  return numeric(current) && numeric(wanted) && Number(number(current)) === Number(number(wanted));
+}
+
+/**
+ * 줄이 부른 칸이 이미 「」 값인가 — FORM_VALUES_SCRIPT 결과에서 칸 이름이 같은 칸(없으면 이름을 품거나 품기는 칸)이 하나뿐이고
+ * 값이 같을 때만. 둘 이상이면(체크박스 무리, "구매제한" 과 "최대 구매제한 수량") 판단 모델에 맡긴다 — 틀리게 건너뛰면 칸이 비는데
+ * 실행하면 같은 값을 다시 넣을 뿐이다.
+ */
+export function heldValue(step: string, fields: unknown): { field: string; value: string } | null {
+  const target = heldTarget(step);
+  if (!target || !Array.isArray(fields)) return null;
+  const named = fields.filter((f): f is { field: string; value?: unknown } => typeof f?.field === 'string' && bare(f.field).length >= 2);
+  const exact = named.filter((f) => bare(f.field) === target.said);
+  const near = exact.length ? exact : named.filter((f) => bare(f.field).includes(target.said) || target.said.includes(bare(f.field)));
+  if (near.length !== 1) return null;
+  const value = String(near[0].value ?? '');
+  return sameValue(value, target.wanted) ? { field: near[0].field, value } : null;
+}
+
+/** 칸 이름으로 알림 문구와 맞춰 볼 만한 길이. */
+const namedField = (step: string): string | null => {
+  const field = saidField(step);
+  return field && field.length >= 2 ? field : null;
+};
+
+/**
+ * 알림을 닫고 실패한 줄을 언제 다시 할지 — 그 뒤에 다시 할 줄의 번호(i 자신이면 바로), 다시 하지 않으면 null.
+ * - 알림이 뒤 줄의 칸을 부르면("가격정보 입력전에 협력사를 먼저 입력해 주세요" + 뒤에 "협력사를 「…」로 지정해줘") 그 줄 뒤로 미룬다.
+ * - 알림이 이 줄의 칸을 부르면("익일 이후로 판매기간을 선택해 주세요" ← "판매기간에 「…」") 넣은 값이 거절된 것이다 — 다시 하지 않고
+ *   부른 LLM 이 값을 고친다.
+ * - 알림이 앞에서 못 한 줄의 칸을 부르면 먼저 채울 칸이 비어 있다 — 다시 해도 같은 알림이라 하지 않는다.
+ * - 그 밖은 앞 칸의 검사 알림이 이 줄의 클릭을 가로챈 것이라 바로 다시 한다. 알림을 닫은 뒤에는 같은 검사가 다시 뜨지 않았다
+ *   (10/23 54628: 가로채인 체크박스 다음 줄의 체크박스 둘은 그대로 됐다).
+ * 파일 올리기 줄은 다시 하지 않는다 — 올라간 것을 못 알아본 것이면 같은 파일이 두 번 올라간다.
+ * 미룬 줄은 그 뒤 줄이 됐을 때만 다시 한다(runSteps).
+ */
+export function noticeRetry(steps: string[], i: number, notices: string[], failed: ReadonlySet<number> = new Set()): number | null {
+  if (!notices.length || fileNameIn(steps[i])) return null;
+  const said = bare(notices.join(' '));
+  const names = (j: number) => {
+    const field = namedField(steps[j]);
+    return !!field && said.includes(field);
+  };
+  for (let j = steps.length - 1; j > i; j--) if (names(j)) return j;
+  for (let j = 0; j < i; j++) if (failed.has(j) && names(j)) return null;
+  return names(i) ? null : i;
+}
+
+/** 다시 한 줄의 결과 — 상태·까닭은 다시 한 것, 알림은 두 번 것 모두, 걸린 시간은 합. */
+function retriedRow(first: StepResult, again: StepResult): StepResult {
+  const notices = [...new Set([...(first.notices ?? []), ...(again.notices ?? [])])];
+  return { ...again, ms: first.ms + again.ms, retried: true, ...(notices.length ? { notices } : {}) };
+}
+
+/** 다시 하기는 남은 시간이 이만큼 있을 때만 — 뒤 줄이 시간 한도에 걸리지 않게. */
+const RETRY_MIN_LEFT_MS = 15_000;
 
 export async function runSteps(
   workflowId: string,
@@ -92,41 +191,82 @@ export async function runSteps(
   if (signal?.aborted) cancel();
   try {
     const work = runtime.withPageScope(start.pageId, controller.signal, async () => {
-      for (let i = 0; i < steps.length && !controller.signal.aborted; i++) {
+      // 폼 값은 처음 한 번 읽는다. 앞 줄이 화면을 바꾼 뒤에는 그 값이 낡았을 수 있어, 건너뛸 것 같은 줄에서만 다시 읽어 확인한다.
+      const readFields = () => runtime.pageScript<unknown>(workflowId, start.pageId, FORM_VALUES_SCRIPT, 3_000).catch(() => null);
+      let fields = steps.some((step) => heldTarget(step)) ? await readFields() : null;
+      let fresh = true;
+      // 실행 순서 — 알림 때문에 다시 할 줄은 바로 뒤나 먼저 채울 칸의 줄 뒤에 끼운다(noticeRetry). 줄마다 한 번만.
+      const order = steps.map((_, i) => i);
+      const firstTry = new Map<number, StepResult>();
+      const waitFor = new Map<number, number>();
+      for (let k = 0; k < order.length && !controller.signal.aborted; k++) {
+        const i = order[k];
         const step = steps[i];
+        const first = firstTry.get(i);
+        // 먼저 채울 칸의 줄을 못 했으면 미룬 줄은 다시 해도 같은 알림이다 — 처음 결과를 둔다.
+        const prereq = waitFor.get(i);
+        if (first && prereq !== undefined && out[prereq].status !== 'done') continue;
         if (isFieldVerification(step)) {
           out[i] = { step, status: 'failed', read_only: true, note: '확인 요청은 값을 변경하지 않습니다. 반환된 form_values로 확인하세요.', ms: 0 };
           continue;
         }
         const t = now();
-        const before = agent.actions.length;
-        if (!runtime.get(start.pageId)) { reason = '폼 탭이 닫혔습니다.'; break; }
-        // A deadline may arrive during an upload or click. Never label that step safe to replay.
-        out[i] = { step, status: 'failed', note: '실행 중 중단됨. 일부 반영됐을 수 있으므로 현재 값을 확인한 뒤 남은 작업만 수행하세요.', ms: 0 };
-        try {
-          if (visiblePage(workflowId)?.pageId !== start.pageId) runtime.activate(start.pageId);
-          const last = await agent.handle(step, FINAL, async () => !controller.signal.aborted, () => controller.signal.aborted);
-          if (controller.signal.aborted) break;
-          const acted = agent.actions.slice(before);
-          const ok = last.acted && last.effect === 'ok';
-          const note = acted.length ? replyFor(acted, true) : last.acted ? ok ? '요청한 상태를 확인함' : '실행 결과를 확인하지 못함' : last.reason;
-          const end = acted[acted.length - 1];
-          const notices = acted.flatMap((a) => a.notices ?? []);
-          out[i] = {
-            step,
-            status: ok ? 'done' : 'failed',
-            note,
-            ms: Math.round(now() - t),
-            ...(acted[0] ? { target: acted[0].display } : {}),
-            ...(end?.text != null ? { requested: end.text } : {}),
-            ...(end && end.observed !== undefined ? { observed: end.observed } : {}),
-            ...(notices.length ? { notices } : {}),
-          };
-        } catch (err) {
-          if (controller.signal.aborted) break;
-          out[i] = { step, status: 'failed', note: `${err instanceof Error ? err.message : String(err)}. 현재 값을 확인한 뒤 남은 작업만 수행하세요.`, ms: Math.round(now() - t) };
+        let held = heldValue(step, fields);
+        if (held && !fresh) {
+          fields = await readFields();
+          fresh = true;
+          held = heldValue(step, fields);
         }
+        if (controller.signal.aborted) break;
+        if (held) {
+          out[i] = { step, status: 'done', note: `이미 「${held.value}」 — 손대지 않음`, ms: Math.round(now() - t), target: `"${held.field}" 칸`, observed: held.value, unchanged: true };
+        } else {
+          const before = agent.actions.length;
+          if (!runtime.get(start.pageId)) { reason = '폼 탭이 닫혔습니다.'; break; }
+          const dialog = await runtime.pageScript<unknown>(workflowId, start.pageId, CONFIRM_DIALOG_SCRIPT, 1_500).catch(() => null);
+          if (controller.signal.aborted) break;
+          if (isPageDialog(dialog)) {
+            reason = `확인창이 떠 있어 멈춤("${dialog.text.slice(0, 80)}", 버튼 ${dialog.buttons.join('·')}). 누르려면 BrowserInteract click — 확정 버튼은 사용자 확인을 받습니다.`;
+            break;
+          }
+          fresh = false;
+          // A deadline may arrive during an upload or click. Never label that step safe to replay.
+          out[i] = { step, status: 'failed', note: '실행 중 중단됨. 일부 반영됐을 수 있으므로 현재 값을 확인한 뒤 남은 작업만 수행하세요.', ms: 0 };
+          try {
+            if (visiblePage(workflowId)?.pageId !== start.pageId) runtime.activate(start.pageId);
+            const last = await agent.handle(step, FINAL, async () => !controller.signal.aborted, () => controller.signal.aborted);
+            if (controller.signal.aborted) break;
+            const acted = agent.actions.slice(before);
+            const ok = last.acted && last.effect === 'ok';
+            const note = acted.length ? replyFor(acted, true) : last.acted ? ok ? '요청한 상태를 확인함' : '실행 결과를 확인하지 못함' : last.reason;
+            const end = acted[acted.length - 1];
+            const notices = acted.flatMap((a) => a.notices ?? []);
+            out[i] = {
+              step,
+              status: ok ? 'done' : 'failed',
+              note,
+              ms: Math.round(now() - t),
+              ...(acted[0] ? { target: acted[0].display } : {}),
+              ...(end?.text != null ? { requested: end.text } : {}),
+              ...(end && end.observed !== undefined ? { observed: end.observed } : {}),
+              ...(notices.length ? { notices } : {}),
+            };
+          } catch (err) {
+            if (controller.signal.aborted) break;
+            out[i] = { step, status: 'failed', note: `${err instanceof Error ? err.message : String(err)}. 현재 값을 확인한 뒤 남은 작업만 수행하세요.`, ms: Math.round(now() - t) };
+          }
+        }
+        if (first) out[i] = retriedRow(first, out[i]);
         diag(SCOPE, 'batch-step', out[i]);
+        const row = out[i];
+        const failed = new Set(out.flatMap((r, j) => (r.status === 'failed' ? [j] : [])));
+        const after = !first && row.status === 'failed' && row.notices && Date.now() < stopAt - RETRY_MIN_LEFT_MS ? noticeRetry(steps, i, row.notices, failed) : null;
+        if (after !== null) {
+          firstTry.set(i, row);
+          if (after !== i) waitFor.set(i, after);
+          order.splice(after === i ? k + 1 : order.lastIndexOf(after) + 1, 0, i);
+          diag(SCOPE, 'batch-retry', { step: i + 1, after: after + 1, notices: row.notices });
+        }
       }
     });
     await Promise.race([work, stopped]);

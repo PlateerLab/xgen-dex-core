@@ -280,6 +280,10 @@ export const CHANNELS = {
   browserSelectionComplete: 'browser:selectionComplete',
   browserSelectionCancel: 'browser:selectionCancel',
   browserPopupResolve: 'browser:popupResolve',
+  /** 확인창 카드 — 목록 읽기(renderer → main), 목록이 바뀜(main → renderer), 답(renderer → main). */
+  browserConfirmList: 'browser:confirmList',
+  browserConfirmEvent: 'browser:confirmEvent',
+  browserConfirmResolve: 'browser:confirmResolve',
   browserHistorySuggestions: 'browser:historySuggestions',
   browserHistoryList: 'browser:historyList',
   browserHistoryRemove: 'browser:historyRemove',

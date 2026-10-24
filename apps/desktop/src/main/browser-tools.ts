@@ -280,7 +280,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Put the remaining fields in this call too rather than filling them one by one with BrowserInteract. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
-        'Skip fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") — each step costs seconds. ' +
+        'Fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") need no step; one sent anyway with its value in 「」 is left untouched and reported done with unchanged: true. ' +
         'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields such as 협력사 and 표준카테고리 come before prices. ' +
         'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
         'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +

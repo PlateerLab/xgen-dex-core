@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { briefResults } from '../src/main/fast-act-batch';
+import { briefResults, heldValue } from '../src/main/fast-act-batch';
 import { formLines } from '../src/main/fast-act-labels';
 
 test('BrowserFill 결과는 성공한 줄을 번호와 칸만 남기고, 못 한 줄은 근거를 모두 남긴다', () => {
@@ -44,4 +44,38 @@ test('폼 값은 칸마다 한 줄 — 기본 type(text)·활성은 생략, 값�
     '상품상세 내용 [editor]: "a\\nb \\"c\\""',
   ].join('\n'));
   assert.equal(formLines('not a list'), 'not a list');
+});
+
+test('BrowserFill 줄이 부른 칸이 이미 「」 값이면 건너뛸 칸으로 본다', () => {
+  const fields = [
+    { field: '상품명', type: 'text', value: '[시연] 파우치' },
+    { field: '판매가', type: 'text', value: '12,900' },
+    { field: '구매연령', type: 'select', value: '전체' },
+    { field: '구매제한', type: 'radio', value: '제한' },
+    { field: '최대 구매제한 수량', type: 'text', value: '5' },
+    { field: '결제수단', type: 'checkbox', value: '신용카드' },
+    { field: '결제수단', type: 'checkbox', value: '네이버페이' },
+    { field: '협력사', type: 'picked', value: '1000002 플래티어 협력사' },
+    { field: '상품상세 내용', type: 'editor', value: '첫 문단\n둘째 문단' },
+  ];
+  assert.deepEqual(heldValue('상품명에 「[시연] 파우치」 입력해줘', fields), { field: '상품명', value: '[시연] 파우치' });
+  // 숫자의 쉼표·띄어쓰기 차이는 같은 값이다.
+  assert.deepEqual(heldValue('판매가에 「12900」 입력해줘', fields), { field: '판매가', value: '12,900' });
+  assert.deepEqual(heldValue('구매연령을 「전체」로 바꿔줘', fields), { field: '구매연령', value: '전체' });
+  assert.deepEqual(heldValue('상품상세 내용에 「첫 문단\n둘째 문단」 입력해줘', fields), { field: '상품상세 내용', value: '첫 문단\n둘째 문단' });
+  // 이름이 같은 칸이 있으면 품는 칸("구매제한")은 보지 않는다.
+  assert.deepEqual(heldValue('최대 구매제한 수량에 「5」 입력해줘', fields), { field: '최대 구매제한 수량', value: '5' });
+  // 값이 다르거나, 칸이 여럿이거나(체크박스 무리), 「」 값이 없거나, 검색할 줄이면 판단 모델에 맡긴다.
+  assert.equal(heldValue('판매가에 「13900」 입력해줘', fields), null);
+  assert.equal(heldValue('결제수단에 「신용카드」 체크해줘', fields), null);
+  assert.equal(heldValue('구매연령을 전체로 바꿔줘', fields), null);
+  assert.equal(heldValue('상품명에 「[시연] 파우치」 입력하고 검색해줘', fields), null);
+  assert.equal(heldValue('협력사를 「플래티어 협력사(1000002)」로 지정해줘', fields), null);
+  assert.equal(heldValue('모델명에 「X」 입력해줘', fields), null);
+  assert.equal(heldValue('상품명에 「[시연] 파우치」 입력해줘', null), null);
+  // 건너뛴 줄은 결과에 손대지 않았다고 남긴다.
+  assert.deepEqual(
+    briefResults([{ step: '판매가에 「12900」 입력해줘', status: 'done', note: '이미 「12,900」 — 손대지 않음', ms: 3, target: '"판매가" 칸', observed: '12,900', unchanged: true }]),
+    [{ i: 1, status: 'done', target: '"판매가" 칸', value: '12,900', unchanged: true }],
+  );
 });

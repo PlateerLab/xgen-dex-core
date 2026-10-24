@@ -117,7 +117,11 @@ const SETTLE_QUIET_MS = 300;
 /** 조작이 시작한 새 문서·요청을 기다리는 상한. */
 const SETTLE_MAX_MS = 5_000;
 
-const loadAborted = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'ERR_ABORTED';
+// 설명 없이 번호만 오는 중단도 있다 — 로그인이 풀린 BO 상품 등록 goto 가 로그인 화면으로 옮겨 가며 " (-3) loading" 으로 끝났다(10/24).
+const loadAborted = (error: unknown): boolean => {
+  const failure = error as { code?: unknown; errno?: unknown } | null;
+  return failure?.code === 'ERR_ABORTED' || failure?.errno === -3;
+};
 
 /**
  * 주소를 열고 문서가 준비되면(dom-ready) 돌아온다. loadURL 은 load 이벤트까지 기다려서, 화면은 0.1초에 떴는데

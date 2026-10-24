@@ -205,14 +205,14 @@ function loadingContents(): EventEmitter & {
   loadURL: (url: string) => Promise<void>;
   isLoading: () => boolean;
   finish: () => void;
-  fail: (code: string) => void;
+  fail: (code: string, errno?: number) => void;
 } {
   const contents = new EventEmitter() as ReturnType<typeof loadingContents>;
   contents.isLoading = () => true;
   contents.loadURL = () =>
     new Promise<void>((resolve, reject) => {
       contents.finish = resolve;
-      contents.fail = (code) => reject(Object.assign(new Error(`${code} loading`), { code }));
+      contents.fail = (code, errno) => reject(Object.assign(new Error(`${code} loading`), { code, errno }));
     });
   return contents;
 }
@@ -257,6 +257,15 @@ test('goto is not a failure when the page moves itself on while loading', async 
   beforeReady.emit('did-navigate');
   beforeReady.emit('dom-ready');
   await second;
+
+  // Electron 이 설명 없이 번호(-3)만 주는 중단도 같다.
+  const bareCode = loadingContents();
+  const third = loadUntilReady(bareCode as unknown as WebContents, 'https://example.com/', 30);
+  bareCode.fail('', -3);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  bareCode.emit('did-navigate');
+  bareCode.emit('dom-ready');
+  await third;
 });
 
 test('goto still fails when the page cannot be loaded', async () => {

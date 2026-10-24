@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { briefResults, heldValue } from '../src/main/fast-act-batch';
+import { briefResults, heldValue, noticeRetry } from '../src/main/fast-act-batch';
 import { formLines } from '../src/main/fast-act-labels';
 
 test('BrowserFill 결과는 성공한 줄을 번호와 칸만 남기고, 못 한 줄은 근거를 모두 남긴다', () => {
@@ -78,4 +78,41 @@ test('BrowserFill 줄이 부른 칸이 이미 「」 값이면 건너뛸 칸으�
     briefResults([{ step: '판매가에 「12900」 입력해줘', status: 'done', note: '이미 「12,900」 — 손대지 않음', ms: 3, target: '"판매가" 칸', observed: '12,900', unchanged: true }]),
     [{ i: 1, status: 'done', target: '"판매가" 칸', value: '12,900', unchanged: true }],
   );
+});
+
+test('알림을 닫고 실패한 줄은 먼저 채울 칸 뒤로 미루거나 바로 다시 하고, 값이 거절된 줄은 다시 하지 않는다', () => {
+  const PREREQ = ['가격정보 입력전에 협력사를 먼저 입력해 주세요.'];
+  const steps = [
+    '정상가에 「39900」 입력해줘', // 0
+    '판매가에 「32900」 입력해줘', // 1
+    '결제가능수단에서 실시간계좌이체 체크 해제해줘', // 2
+    '협력사를 「플래티어 협력사」로 지정해줘', // 3
+    '판매기간에 「2026.10.16. – 2026.12.31.」 입력해줘', // 4
+    '대표이미지에 「cover.png」 올려줘', // 5
+  ];
+  // 알림이 뒤 줄의 칸(협력사)을 부른다 — 그 줄 뒤로. 가로채인 체크박스도 같다.
+  assert.equal(noticeRetry(steps, 1, PREREQ), 3);
+  assert.equal(noticeRetry(steps, 2, PREREQ), 3);
+  // 먼저 채울 칸이 이 배치에 없으면 바로 다시 한다(10/23 54628: 협력사는 따로 채움).
+  assert.equal(noticeRetry(steps.slice(0, 3), 1, PREREQ), 1);
+  // 앞 칸의 검사 알림이 클릭을 가로챘다 — 바로 다시.
+  assert.equal(noticeRetry(steps, 2, ['판매가보다 큰 정상가를 입력해 주세요.']), 2);
+  // 뒤 줄의 칸을 부르면 이 줄의 칸을 같이 불러도 미룬다(정상가를 판매가보다 늦게 적은 배치).
+  assert.equal(noticeRetry(['판매가에 「32900」 입력해줘', '정상가에 「39900」 입력해줘'], 0, ['판매가보다 큰 정상가를 입력해 주세요.']), 1);
+  // 먼저 채울 칸의 줄을 앞에서 못 했으면 다시 하지 않는다. 했으면 그 칸의 검사가 가로챈 것이라 바로 다시.
+  const later = ['협력사에 「플래티어 협력사」 입력해줘', '판매가에 「32900」 입력해줘', '정상가에 「39900」 입력해줘'];
+  assert.equal(noticeRetry(later, 2, PREREQ, new Set([0, 1])), null);
+  assert.equal(noticeRetry(later, 2, PREREQ, new Set([1])), 2);
+  // 이 줄의 칸을 부르면 넣은 값이 거절된 것 — 다시 하지 않는다.
+  assert.equal(noticeRetry(steps, 4, ['익일 이후로 판매기간을 선택해 주세요.']), null);
+  // 파일 올리기 줄·알림 없는 줄은 다시 하지 않는다.
+  assert.equal(noticeRetry(steps, 5, ['이미지 용량을 확인해 주세요.']), null);
+  assert.equal(noticeRetry(steps, 2, []), null);
+});
+
+test('다시 한 줄은 retried 를 남긴다', () => {
+  const [row] = briefResults([
+    { step: '결제가능수단에서 실시간계좌이체 체크 해제해줘', status: 'done', note: '…', ms: 2500, target: '"실시간계좌이체" 체크박스', observed: '선택 안 됨', retried: true, notices: ['판매가보다 큰 정상가를 입력해 주세요.'] },
+  ]);
+  assert.deepEqual(row, { i: 1, status: 'done', target: '"실시간계좌이체" 체크박스', value: '선택 안 됨', retried: true, notices: ['판매가보다 큰 정상가를 입력해 주세요.'] });
 });

@@ -24,6 +24,22 @@ export const BROWSER_FILL_TOOL = 'BrowserFill';
 export const BROWSER_FORM_VALUES_TOOL = 'BrowserFormValues';
 /** 경로 없이 캡처하면 저장하는 곳 — 연결 폴더 안의 숨은 폴더(파일 올리기 후보에서도 빠진다). */
 const CAPTURE_DIR = '.xgen-captures';
+/**
+ * 페이지를 옮긴 조작의 결과에 붙이는 스냅샷의 글자 상한. 결과에 화면이 없으면 서버 모델은 이동·클릭마다
+ * BrowserSnapshot 을 한 번 더 불렀다 — LLM 한 턴(약 3초)이 더 든다(10/23 BO 시연: 도구 18회 중 2회).
+ * BO 상품 등록 폼이 14,440자였다(10/24) — 목표 화면이 잘리면 모델은 결국 전체를 다시 읽는다.
+ */
+const PAGE_AFTER_MAX_CHARS = 20_000;
+/** 붙일 스냅샷 한 번의 시간 상한 — 넘으면 조작 결과만 돌려준다(조작은 이미 끝났다). */
+const PAGE_AFTER_TIMEOUT_MS = 8_000;
+/** 페이지를 옮길 수 있는 조작. 실제로 옮겨 갔을(generation 이 바뀐) 때만 스냅샷을 붙인다. */
+const PAGE_MOVING_ACTIONS = new Set(['click', 'double_click', 'keypress']);
+/**
+ * 이동 뒤 문서가 준비되고 나서 SPA 가 스크립트를 돌려 첫 데이터 요청을 보내기까지 기다리는 틈 — 이 안에 시작한
+ * 요청은 끝날 때까지 기다린 뒤 화면을 읽는다. BO 메인은 문서 준비 뒤 약 250ms 에 메뉴·대시보드 요청을 보냈고,
+ * 그 전에 읽은 화면은 버튼 35개 중 7개뿐이었다(10/24 실측). Playwright MCP 의 조작 뒤 기본 대기도 500ms 다.
+ */
+const DOCUMENT_REQUEST_PROBE_MS = 500;
 
 /** 연결 폴더 안에 그 파일이 이미 있나. */
 function exists(target: Awaited<ReturnType<BrowserFileScopes['resolve']>>): boolean {
@@ -96,7 +112,10 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     {
       name: BROWSER_NAVIGATE_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
-      description: 'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait.',
+      description:
+        'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait. ' +
+        'goto/back/forward/reload return once the new document is ready, with its interactive snapshot (snapshot, and generation at the top level) — ' +
+        'use those refs directly instead of calling BrowserSnapshot.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -135,7 +154,9 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       description:
         (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' +
-        'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs.',
+        'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs. ' +
+        'When a click or keypress takes the page to a new document or route, the result carries the new page\'s snapshot and its generation — use those refs; earlier refs are no longer valid. ' +
+        'When the page stays, no snapshot is attached and earlier refs keep working.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -165,7 +186,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           value: {},
           direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
           amount: { type: 'integer' },
-          generation: { type: 'integer', description: 'Generation returned by BrowserSnapshot.' },
+          generation: { type: 'integer', description: 'Generation returned with the snapshot whose refs you use.' },
           timeout_ms: { type: 'integer' },
           x: { type: 'number' },
           y: { type: 'number' },
@@ -604,12 +625,14 @@ export class BrowserToolProvider {
     const action = String(args.action ?? 'goto');
     const page = await this.runtime.resolvePage(wid, id, true);
     if (action !== 'wait') {
+      const since = this.runtime.requestMark();
       const updated = await this.runtime.navigate({
         pageId: page.info.pageId,
         action: action as 'goto' | 'back' | 'forward' | 'reload' | 'stop',
         url: typeof args.url === 'string' ? args.url : undefined,
       });
-      return result(updated, { navigated: action });
+      const after = action === 'stop' ? null : await this.pageAfter(wid, updated.pageId, { since, probeMs: DOCUMENT_REQUEST_PROBE_MS });
+      return result(after?.page ?? updated, { navigated: action, ...after?.fields });
     }
     const command = browserWaitCommand(args.wait_for ?? args.waitFor);
     const run = await this.runtime.runAgentCommand(wid, page.info.pageId, command, timeout(args));
@@ -683,15 +706,62 @@ export class BrowserToolProvider {
     const generation = Number.isFinite(Number(args.generation))
       ? Number(args.generation)
       : undefined;
+    const wid = workflow(args, context);
+    const before = PAGE_MOVING_ACTIONS.has(action)
+      ? (await this.runtime.resolvePage(wid, pageId(args), true)).info.generation
+      : undefined;
+    const since = before === undefined ? undefined : this.runtime.requestMark();
     const run = await this.runtime.runAgentCommand(
-      workflow(args, context),
+      wid,
       pageId(args),
       command,
       timeout(args),
       generation,
       { signal: context?.signal },
     );
-    return runResult(run);
+    if (before === undefined || run.openedPages?.length || (run.result as { popup_closed?: unknown } | null)?.popup_closed)
+      return runResult(run);
+    const after = await this.pageAfter(wid, run.page.pageId, { before, since, signal: context?.signal });
+    return after ? result(after.page, { ...(run.result as object), ...after.fields }) : runResult(run);
+  }
+
+  /**
+   * 페이지를 옮긴 조작 뒤의 화면 — 조작이 시작한 문서·요청이 끝나면(settle) interactive 스냅샷을 떠서 결과에
+   * 붙일 값으로 돌려준다. before(조작 전 generation)를 주면 페이지가 그대로일 때 null: 스냅샷은 generation 을
+   * 올려 앞 스냅샷의 ref 를 무효로 만드니, 페이지가 안 바뀌었으면 모델이 들고 있는 ref 를 살려 둔다. 스냅샷이
+   * 실패하거나 사용자가 멈춰도 null — 조작은 이미 끝났으니 조작 결과만 돌려준다.
+   */
+  private async pageAfter(
+    wid: string,
+    id: string,
+    options: { before?: number; since?: number; probeMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ page: BrowserPageInfo; fields: Record<string, unknown> } | null> {
+    const { before, since, probeMs, signal } = options;
+    await this.runtime.settle(id, { since, probeMs, signal });
+    if (before !== undefined) {
+      if (this.runtime.get(id)?.generation === before) return null;
+      // 옮겨 간 화면도 이동과 같다 — 새 화면의 스크립트가 데이터를 부를 틈을 준다. BO 공지 '더보기'는 경로가 바뀐
+      // 직후 읽으면 22자(목록 없음), 1.5초 뒤엔 5,645자였다(10/24 실측).
+      await this.runtime.settle(id, { since, probeMs: DOCUMENT_REQUEST_PROBE_MS, signal });
+    }
+    if (signal?.aborted) return null;
+    try {
+      const run = await this.runtime.runAgentCommand(wid, id, ['snapshot', '-i', '-c'], PAGE_AFTER_TIMEOUT_MS);
+      const text = (run.result as { data?: { snapshot?: unknown } } | null)?.data?.snapshot;
+      if (typeof text !== 'string') return null;
+      if (text.length <= PAGE_AFTER_MAX_CHARS) return { page: run.page, fields: { snapshot: text } };
+      const cut = text.lastIndexOf('\n', PAGE_AFTER_MAX_CHARS);
+      return {
+        page: run.page,
+        fields: {
+          snapshot: text.slice(0, cut > 0 ? cut : PAGE_AFTER_MAX_CHARS),
+          snapshot_truncated: `Showing the first ${PAGE_AFTER_MAX_CHARS} of ${text.length} characters. Call BrowserSnapshot for the whole page.`,
+        },
+      };
+    } catch (error) {
+      diag('browser-agent', `조작 뒤 스냅샷 생략 page=${id}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private async step(args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {

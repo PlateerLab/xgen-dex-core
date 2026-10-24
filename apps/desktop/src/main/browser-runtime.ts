@@ -42,6 +42,8 @@ interface BrowserPageRuntime {
   view?: WebContentsView;
   /** 마지막 스냅샷이 iframe 요소에 매긴 번호 → DOM 노드(browser-frames). */
   frameRefs?: Map<string, number>;
+  /** 마지막 스냅샷의 ref → 역할·이름. 확인창 가드가 누를 요소를 알아본다(browser-confirm). */
+  refNames?: Map<string, { role?: string; name?: string }>;
   /** 메인 프레임이 새 문서로 옮겨 가는 중(이동 시작 ~ dom-ready). 그동안 보이는 것은 이전 문서다. */
   documentPending?: boolean;
   /** 보낸 뒤 아직 끝나지 않은 XHR·fetch → 보낸 순번(requestMark). settle 이 조작 뒤에 시작한 것만 기다린다. */
@@ -1252,6 +1254,11 @@ export class BrowserRuntime {
     }
   }
 
+  /** 마지막 스냅샷이 그 ref 에 적은 역할·이름(@ 있든 없든). */
+  refTarget(pageId: string, ref: string | undefined): { role?: string; name?: string } | undefined {
+    return ref ? this.pages.get(pageId)?.refNames?.get(ref.replace(/^@/, '')) : undefined;
+  }
+
   async runAgentCommand(
     workflowId: string,
     pageId: string | undefined,
@@ -1351,7 +1358,11 @@ export class BrowserRuntime {
             this.emit();
           },
         );
-        if (command[0] === 'snapshot') await this.addFrameElements(runtime, send, result);
+        if (command[0] === 'snapshot') {
+          await this.addFrameElements(runtime, send, result);
+          const refs = (result as { data?: { refs?: Record<string, { role?: string; name?: string }> } } | undefined)?.data?.refs;
+          runtime.refNames = new Map(Object.entries(refs ?? {}));
+        }
         return closedPopupResult() ?? interactionResult(result);
       } catch (error) {
         // window.close() can cancel the CLI before its successful click response exits.

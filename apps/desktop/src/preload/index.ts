@@ -87,6 +87,8 @@ import type { VoiceStreamEvent, VoiceStreamResult } from '../main/voice-stream';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
+  BrowserConfirmRequest,
+  BrowserConfirmResolveRequest,
   BrowserConnectionEvent,
   BrowserCreateRequest,
   BrowserHistoryListRequest,
@@ -582,6 +584,15 @@ const api = {
       ipcRenderer.invoke(CHANNELS.browserSelectionCancel, token),
     resolvePopup: (request: BrowserPopupResolveRequest): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.browserPopupResolve, request),
+    /** 에이전트가 누르려는 사이트 확인창 버튼 — 답을 기다리는 카드 목록과 답(main browser-confirm). */
+    confirmList: (): Promise<BrowserConfirmRequest[]> => ipcRenderer.invoke(CHANNELS.browserConfirmList),
+    resolveConfirm: (request: BrowserConfirmResolveRequest): Promise<boolean> =>
+      ipcRenderer.invoke(CHANNELS.browserConfirmResolve, request),
+    onConfirm: (cb: (requests: BrowserConfirmRequest[]) => void): (() => void) => {
+      const handler = (_event: unknown, requests: BrowserConfirmRequest[]) => cb(requests);
+      ipcRenderer.on(CHANNELS.browserConfirmEvent, handler);
+      return () => ipcRenderer.removeListener(CHANNELS.browserConfirmEvent, handler);
+    },
     historySuggestions: (
       request: BrowserHistorySuggestionsRequest,
     ): Promise<BrowserHistorySuggestion[]> =>

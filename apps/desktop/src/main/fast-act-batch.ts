@@ -14,6 +14,9 @@
  *
  * 이미 그 값인 칸의 줄은 판단 모델을 부르지 않고 그대로 둔다(heldValue) — 줄마다 수 초라, 박소민 시연 프롬프트가
  * "이미 원하는 값인 칸은 다시 입력하지 말 것" 을 따로 적어 두었다(10/24).
+ *
+ * 사이트 확인창("…하시겠습니까?" 확인·취소)이 떠 있으면 남은 줄을 멈춘다 — 줄의 판단 모델은 그 창의 확인을 묻지 않고 누를 수
+ * 있다. 누를지는 BrowserInteract 가 사용자에게 묻는다(browser-confirm).
  */
 import { getBrowserRuntime } from './browser-runtime';
 import { diag } from './diag-log';
@@ -23,6 +26,7 @@ import { BrowserVoiceAgent } from './fast-act-voice';
 import { FINAL } from './voice-segmenter';
 import { FORM_VALUES_SCRIPT, isFieldVerification } from './fast-act-labels';
 import { saidField } from './fast-act';
+import { CONFIRM_DIALOG_SCRIPT, isPageDialog } from './browser-confirm';
 
 const SCOPE = 'fast-act';
 const now = (): number => performance.now();
@@ -166,6 +170,12 @@ export async function runSteps(
         }
         const before = agent.actions.length;
         if (!runtime.get(start.pageId)) { reason = '폼 탭이 닫혔습니다.'; break; }
+        const dialog = await runtime.pageScript<unknown>(workflowId, start.pageId, CONFIRM_DIALOG_SCRIPT, 1_500).catch(() => null);
+        if (controller.signal.aborted) break;
+        if (isPageDialog(dialog)) {
+          reason = `확인창이 떠 있어 멈춤("${dialog.text.slice(0, 80)}", 버튼 ${dialog.buttons.join('·')}). 누르려면 BrowserInteract click — 확정 버튼은 사용자 확인을 받습니다.`;
+          break;
+        }
         fresh = false;
         // A deadline may arrive during an upload or click. Never label that step safe to replay.
         out[i] = { step, status: 'failed', note: '실행 중 중단됨. 일부 반영됐을 수 있으므로 현재 값을 확인한 뒤 남은 작업만 수행하세요.', ms: 0 };

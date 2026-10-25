@@ -182,7 +182,8 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' +
         'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs. ' +
         'When a click or keypress takes the page to a new document or route, the result carries the new page\'s snapshot and its generation — use those refs; earlier refs are no longer valid. ' +
-        'When the page stays, no snapshot is attached and earlier refs keep working; a dialog or alert left on the page comes back as dialog/alerts. ' +
+        'When the page stays, no snapshot is attached and earlier refs keep working; a dialog or alert left on the page comes back as dialog/alerts — ' +
+        'its buttons are not in an earlier snapshot, so take BrowserSnapshot for their refs before clicking one. ' +
         'Pressing the confirm button of a site confirmation dialog (취소·닫기 plus another button) first asks the user on this PC; on refusal you get user_denied or their instructions — never press it another way.',
       inputSchema: {
         type: 'object',
@@ -694,6 +695,22 @@ export class BrowserToolProvider {
     if (!this.enabled)
       throw new BrowserRuntimeError('browser_disabled', '브라우저 접근이 꺼져 있습니다.');
     const args = objectArgs(raw);
+    try {
+      return await this.dispatch(tool, args, context);
+    } catch (error) {
+      // 서버는 기기 오류 글을 버리고 코드만 모델에 알린다 — 무엇이 막혔는지 이 PC 진단 기록에 남긴다(10/26 dev: 확인창이 뜬 뒤
+      // BrowserInteract 가 124ms 만에 browser_denied 로 끝났는데 action 도 이유도 남지 않았다). 인자 값·오류 글은 넣지 않는다 —
+      // 입력한 글자가 실릴 수 있다.
+      diag('browser-tool', 'failed', {
+        tool,
+        action: typeof args.action === 'string' ? args.action.slice(0, 40) : undefined,
+        code: error instanceof BrowserRuntimeError ? error.code : error instanceof Error ? error.name : 'unknown',
+      });
+      throw error;
+    }
+  }
+
+  private async dispatch(tool: string, args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {
     if (tool === BROWSER_TABS_TOOL) return this.tabs(args, context);
     if (tool === BROWSER_NAVIGATE_TOOL) return this.navigate(args, context);
     if (tool === BROWSER_SNAPSHOT_TOOL) return this.snapshot(args, context);

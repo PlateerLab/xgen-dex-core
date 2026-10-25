@@ -1,26 +1,21 @@
 /**
- * useVoiceLoop — 켜 두면 끌 때까지 계속 듣는 실시간 음성 (실험, 말하는 도중 실행).
- *
- * 마이크를 계속 열어 두고(PCM16 16 kHz) RMS 로 말 시작·끝을 잡는다. 말이 시작되면 main 의 voice-stream
- * 세션을 열어 앞 0.5초부터 흘리고(조작은 main 이 말하는 도중에 한다), 말이 끝나면 세션을 닫아 결과
- * (최종 글자·실행한 조작·못 한 말)를 onResult 로 준다. 앞 말을 마무리하는 사이에 다음 말이 시작되면
- * 그 소리를 모아 두었다가 바로 다음 세션으로 넘긴다 — 명령마다 마이크를 다시 켤 필요가 없다.
- *
- * isPaused() 가 true 인 동안(예: TTS 가 말하는 중)은 소리를 버린다 — 제 목소리를 명령으로 듣지 않게.
+ * 실시간 STT 캡처. Silero ON은 로컬 감지, OFF는 서버 final로 발화 구간을 마친다.
+ * 로컬 감지에서는 최대 1.2초 pre-roll을 포함한다. 현재 main은 최종 발화 뒤 채팅 계획까지 조작을 보류한다.
+ * isPaused() 동안 입력을 무음으로 바꾸고 전송을 쉬며, 캡처 종료는 진행 중인 발화를 취소한다.
  */
 import { useEffect, useRef, useState } from 'react';
 import { xgen } from '../bridge';
-import { startPcmCapture, type PcmCapture } from './pcm-capture';
+import { startProcessedCapture, type ProcessedCapture } from './processed-capture';
 import type { VoiceStreamResult } from '../../../main/voice-stream';
 
 export type VoiceLoopState = 'idle' | 'armed' | 'hearing' | 'thinking';
 
-const RMS_THRESHOLD = 0.015; // 무음 바닥 대비 발화 판정 임계 (핸즈프리와 같은 값)
-const START_MS = 150; // 이 시간 이상 임계 초과 → 말 시작
-const END_MS = 1200; // 이 시간 이상 임계 미만 → 말 끝 (0.9초면 "기획전 좀 [쉼] 보여줘" 가 갈려 짧은 조각을 STT 가 잘못 알아듣는다)
-const MIN_UTTERANCE_MS = 400; // 너무 짧은 소리(잡음 클릭)는 버린다
+// shortcut: 기존 대기값을 Silero 종료 후 추가 hold로 사용한다. 현장 끝점 지연·문장 분리 검증 후 조정한다.
+const END_MS = 1200;
+const MIN_UTTERANCE_MS = 400; // 감지 확정 후 세션 경과 시간이며 실제 발성 길이는 아니다.
 const MAX_UTTERANCE_MS = 30_000; // 폭주 방지 상한
-const PREROLL_MS = 1000; // 말 시작 판정 전 소리 — 첫 음절은 약해 임계를 늦게 넘는다(0.5초면 "기획전 좀" 이 잘림)
+// shortcut: 감지 전 PCM 보관 길이. 현장 첫 음절 보존 검증 후 조정한다.
+const PREROLL_MS = 1200;
 const CARRY_MAX_MS = 6_000; // 앞 말을 마무리하는 동안 모아 둘 다음 말의 최대 길이
 /**
  * 처리 못 한 말(조작 없음)은 이만큼 기다렸다가 넘긴다 — 그 사이 다음 말이 시작되면 앞 말을 이어 붙여
@@ -30,7 +25,7 @@ const JOIN_MS = 1_200;
 
 const chunkMs = (b: Uint8Array): number => (b.byteLength / 2 / 16000) * 1000;
 
-/** 실시간 음성(말하는 도중 실행)을 쓸 수 있는가 — 빠른 브라우저 조작 설정을 바꾸면 다시 확인한다. */
+/** 기존 빠른 조작 설정에 따른 실시간 음성 경로를 쓸 수 있는가 — 빠른 브라우저 조작 설정을 바꾸면 다시 확인한다. */
 export function useVoiceStreamAvailable(): boolean {
   const [avail, setAvail] = useState(false);
   useEffect(() => {
@@ -54,13 +49,15 @@ export function useVoiceStreamAvailable(): boolean {
 export function useVoiceLoop(opts: {
   enabled: boolean;
   workflowId?: string;
+  interactionId?: string;
   isPaused?: () => boolean;
   onPartial?: (text: string) => void;
   /** 호출어로만 듣기에서 지금 말에 호출어를 들었다. */
   onWake?: () => void;
   onResult: (r: VoiceStreamResult) => void | Promise<void>;
-}): { state: VoiceLoopState } {
+}): { state: VoiceLoopState; error: string | null } {
   const [state, setState] = useState<VoiceLoopState>('idle');
+  const [error, setError] = useState<string | null>(null);
   const cb = useRef(opts);
   cb.current = opts;
 
@@ -71,7 +68,8 @@ export function useVoiceLoop(opts: {
       return;
     }
     let alive = true;
-    let cap: PcmCapture | null = null;
+    setError(null);
+    let cap: ProcessedCapture | null = null;
     let phase: VoiceLoopState = 'armed';
     const set = (s: VoiceLoopState): void => {
       phase = s;
@@ -83,7 +81,7 @@ export function useVoiceLoop(opts: {
     let sid: string | null = null;
     let starting = false;
     let pending: Uint8Array[] = []; // 세션이 열리는 동안 들어온 소리
-    let aboveSince = 0;
+    let localVad = false;
     let belowSince = 0;
     let utteranceStart = 0;
     let carried = false; // thinking 중에 다음 말이 시작됐다
@@ -121,7 +119,7 @@ export function useVoiceLoop(opts: {
       belowSince = 0;
       set('hearing');
       void xgen.voiceStream
-        .start(workflowId, carryText)
+        .start(workflowId, carryText, cb.current.interactionId)
         .then((id) => {
           starting = false;
           if (!alive) return void xgen.voiceStream.cancel(id);
@@ -129,10 +127,10 @@ export function useVoiceLoop(opts: {
           for (const b of pending.splice(0)) xgen.voiceStream.audio(id, b);
           if (phase !== 'hearing') finish(); // 열리는 사이에 말이 끝났다
         })
-        .catch(() => {
+        .catch((cause) => {
           starting = false;
           pending = [];
-          if (alive) set('armed');
+          if (alive) { setError(String(cause)); cap?.cancel(); set('idle'); }
         });
     };
     const finish = (): void => {
@@ -167,60 +165,63 @@ export function useVoiceLoop(opts: {
     };
     const off = xgen.voiceStream.onEvent((ev) => {
       if (ev.type === 'partial' && ev.sessionId === sid) cb.current.onPartial?.(ev.text);
+      else if (ev.type === 'utterance_end' && ev.sessionId === sid && !localVad && phase === 'hearing') finish();
+      else if (ev.type === 'error' && ev.sessionId === sid) { setError(ev.error); cap?.cancel(); xgen.voiceStream.cancel(sid); sid = null; set('idle'); }
       else if (ev.type === 'wake' && ev.sessionId === sid) cb.current.onWake?.();
     });
 
-    void startPcmCapture((pcm, rms) => {
+    void startProcessedCapture(({ pcm, inSpeech, events, vad }) => {
+      localVad = vad;
       if (!alive) return;
       const now = Date.now();
       if (cb.current.isPaused?.()) {
         // 앱이 말하는 중 — 듣지 않는다. 진행 중인 말이 있으면 끝낸다.
-        aboveSince = 0;
         buffer = [];
         bufferMs = 0;
         if (phase === 'hearing') finish();
         return;
       }
-      const loud = rms >= RMS_THRESHOLD;
+      const loud = !vad || inSpeech || events.some(e => e.type === 'speech_start');
       if (phase === 'armed' || phase === 'thinking') {
-        // 평소엔 앞 0.5초만 남기고, 마무리하는 사이 다음 말이 시작됐으면 그 말을 통째로(최대 6초) 모아 둔다.
+        // 평소엔 앞 1.2초만 남기고, 마무리하는 사이 다음 말이 시작됐으면 그 말을 통째로(최대 6초) 모아 둔다.
         keep(pcm, carried ? CARRY_MAX_MS : PREROLL_MS);
         if (loud) {
-          if (!aboveSince) aboveSince = now;
-          if (now - aboveSince >= START_MS) {
-            aboveSince = 0;
-            if (phase === 'armed') begin();
-            else carried = true;
-          }
-        } else if (!carried) aboveSince = 0;
+          if (phase === 'armed') begin();
+          else carried = true;
+        }
         return;
       }
       // hearing
       if (sid) xgen.voiceStream.audio(sid, pcm);
       else if (starting) pending.push(pcm);
-      if (!loud) {
+      if (vad && !loud) {
         if (!belowSince) belowSince = now;
         if (now - belowSince >= END_MS) finish();
       } else belowSince = 0;
       if (now - utteranceStart >= MAX_UTTERANCE_MS) finish();
-    })
+    }, (cause) => {
+      if (!alive) return;
+      setError(cause.message);
+      if (sid) xgen.voiceStream.cancel(sid);
+      sid = null; set('idle');
+    }, () => cb.current.isPaused?.() === true)
       .then((c) => {
-        if (!alive) return c.stop();
+        if (!alive) return c.cancel();
         cap = c;
         set('armed');
       })
-      .catch(() => set('idle'));
+      .catch((cause) => { if (alive) { setError(String(cause)); set('idle'); } });
 
     return () => {
       alive = false;
       if (held) clearTimeout(held.timer);
       off();
-      cap?.stop();
+      cap?.cancel();
       if (sid) xgen.voiceStream.cancel(sid);
       setState('idle');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts.enabled, opts.workflowId]);
+  }, [opts.enabled, opts.workflowId, opts.interactionId]);
 
-  return { state };
+  return { state, error };
 }

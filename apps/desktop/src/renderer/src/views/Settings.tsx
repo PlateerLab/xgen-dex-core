@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useModalDismiss } from './use-modal-dismiss';
+import { ModalPortal } from './ModalPortal';
 import { xgen } from '../bridge';
 import {
   BROWSER_SEARCH_PROVIDERS,
@@ -8,6 +9,7 @@ import {
 } from '@dex/protocol/browser';
 import type { ConnectorConfig } from '../../../main/config';
 import type { CurrentUser } from '@dex/protocol';
+import type { DecisionModelState } from '@dex/protocol/decision';
 import { HotkeyCapture } from './HotkeyCapture';
 import { SettingsSection } from './SettingsSection';
 import { SshSettings } from './SshSettings';
@@ -173,8 +175,14 @@ export const Settings: React.FC<{
 
   const [browserOn, setBrowserOn] = useState(config.browser?.enabled === true);
   const [browserNewTabUrl, setBrowserNewTabUrl] = useState(config.browser?.newTabUrl ?? '');
-  // 빠른 브라우저 조작(실험) — 단순한 조작은 XGEN 판단 모델로 이 PC 에서 바로 실행.
+  // 채팅 모델의 단계 계획을 XGEN 판단 모델로 실행·검증한다.
   const [fastActOn, setFastActOn] = useState(config.fastAct === true);
+  // 판단 모델은 서버 전체 설정(DECISION_MODEL) — 관리자에게만 보인다(아니면 null).
+  const [decisionModel, setDecisionModel] = useState<DecisionModelState | null>(null);
+  const [decisionModelError, setDecisionModelError] = useState('');
+  useEffect(() => {
+    if (fastActOn) void xgen.decision.model().then(setDecisionModel);
+  }, [fastActOn]);
   const savedBrowserNewTabUrl = useRef(config.browser?.newTabUrl ?? '');
   const [browserNewTabUrlError, setBrowserNewTabUrlError] = useState('');
   const [browserSearchOn, setBrowserSearchOn] = useState(
@@ -1068,6 +1076,34 @@ export const Settings: React.FC<{
                       애매하거나 서버에 판단 모델이 없으면 평소처럼 에이전트가 처리합니다.
                     </p>
                   )}
+                  {fastActOn && decisionModel && decisionModel.choices.length > 1 && (
+                    <div className="field">
+                      <span>
+                        판단 모델
+                        <span className="small muted" style={{ marginLeft: 8 }}>
+                          서버 전체에 적용 · 관리자
+                        </span>
+                      </span>
+                      <Selector
+                        value={decisionModel.current}
+                        onChange={(value) => {
+                          const previous = decisionModel;
+                          setDecisionModel({ ...decisionModel, current: value });
+                          setDecisionModelError('');
+                          xgen.decision.setModel(value).catch(() => {
+                            setDecisionModel(previous);
+                            setDecisionModelError('판단 모델을 바꾸지 못했습니다.');
+                          });
+                        }}
+                        options={decisionModel.choices.map((choice) => ({
+                          value: choice.value,
+                          label: choice.label,
+                        }))}
+                        ariaLabel="판단 모델 선택"
+                      />
+                      {decisionModelError && <p className="settings-hint">{decisionModelError}</p>}
+                    </div>
+                  )}
                   <p className="settings-hint warn">
                     페이지 내용은 신뢰하지 않는 데이터로 처리됩니다. 쿠키·스토리지, 업로드·다운로드,
                     클립보드, credentials, 요청 변조와 raw eval은 실행 직전 이 PC에서 별도 승인을
@@ -1094,14 +1130,20 @@ export const Settings: React.FC<{
     return (
       <div className="settings-page">
         <div className="settings-page-inner">{body}</div>
-        {voiceModal}
+        {voiceModal && <ModalPortal onClose={() => setShowVoice(false)}>{voiceModal}</ModalPortal>}
       </div>
     );
   }
   return (
-    <>
+    <ModalPortal onClose={onClose}>
       <div className="modal-backdrop" onClick={onClose}>
-        <div className="modal wide settings-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal wide settings-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="설정"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-head">
             <h2>설정</h2>
             <button className="link" onClick={onClose}>
@@ -1112,6 +1154,6 @@ export const Settings: React.FC<{
         </div>
       </div>
       {voiceModal}
-    </>
+    </ModalPortal>
   );
 };

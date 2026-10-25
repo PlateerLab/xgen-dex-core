@@ -46,6 +46,14 @@ export const CHANNELS = {
 
   // Voice (STT/TTS) — renderer captures audio, main proxies to the backend
   // (secrets stay server-side). Audio crosses IPC as Uint8Array + mime.
+  audioProcessStart: 'voice:process:start',
+  audioProcessPush: 'voice:process:push',
+  audioProcessFinish: 'voice:process:finish',
+  audioProcessCancel: 'voice:process:cancel',
+  audioProcessStatus: 'voice:process:status',
+  audioRuntimeCheck: 'voice:runtime:check',
+  audioRuntimeInstall: 'voice:runtime:install',
+  audioRuntimeProgress: 'voice:runtime:progress',
   voiceConfig: 'voice:config', // GET /api/admin/user → preferences.stt/tts (hints)
   voiceTranscribe: 'voice:transcribe', // audio bytes → POST /api/audio/stt/transcribe → text
   voiceSpeak: 'voice:speak', // text → POST /api/audio/tts/speak → audio bytes
@@ -69,6 +77,10 @@ export const CHANNELS = {
   sshUpdateServer: 'ssh:updateServer',
   sshDeleteServer: 'ssh:deleteServer',
   sshTestServer: 'ssh:testServer',
+
+  // 판단 모델(System One) — 서버 설정 DECISION_MODEL. 관리자만 조회·변경된다.
+  decisionModel: 'decision:model',
+  decisionSetModel: 'decision:setModel',
 
   // Teams — 사람 사이의 대화. REST 는 요청/응답, 실시간은 teamsEvent push.
   teamsRooms: 'teams:rooms',
@@ -232,6 +244,10 @@ export const CHANNELS = {
   chatEvent: 'chat:event',
   //: '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). 이력은 보존.
   chatEndSession: 'chat:end-session',
+  /** 에이전트가 진행 전에 묻는 카드(UserConfirm) — 목록 읽기(renderer → main), 목록이 바뀜(main → renderer), 답(renderer → main). */
+  chatUserConfirmList: 'chat:userConfirmList',
+  chatUserConfirmEvent: 'chat:userConfirmEvent',
+  chatUserConfirmResolve: 'chat:userConfirmResolve',
   //: 대화별 폴더 연결 — 목록·추가(네이티브 선택 창)·해제·파일 관리자로 열기.
   chatFoldersList: 'chat-folders:list',
   chatFoldersAdd: 'chat-folders:add',
@@ -260,6 +276,7 @@ export const CHANNELS = {
   browserCreate: 'browser:create',
   browserEnsureShared: 'browser:ensureShared',
   browserBindShared: 'browser:bindShared',
+  browserPopupSurface: 'browser:popupSurface',
   browserNavigate: 'browser:navigate',
   browserActivate: 'browser:activate',
   browserSelectionBegin: 'browser:selectionBegin',
@@ -267,6 +284,10 @@ export const CHANNELS = {
   browserSelectionComplete: 'browser:selectionComplete',
   browserSelectionCancel: 'browser:selectionCancel',
   browserPopupResolve: 'browser:popupResolve',
+  /** 확인창 카드 — 목록 읽기(renderer → main), 목록이 바뀜(main → renderer), 답(renderer → main). */
+  browserConfirmList: 'browser:confirmList',
+  browserConfirmEvent: 'browser:confirmEvent',
+  browserConfirmResolve: 'browser:confirmResolve',
   browserHistorySuggestions: 'browser:historySuggestions',
   browserHistoryList: 'browser:historyList',
   browserHistoryRemove: 'browser:historyRemove',

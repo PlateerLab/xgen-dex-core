@@ -127,6 +127,24 @@ test('CopyTo upload만 marker query와 transfer header를 보내고 artifact dow
   );
 });
 
+test('작업 공간에 올리는 이름과 하위 폴더는 NFC — 맥의 NFD 한글 이름을 모델이 다시 적어도 같은 파일', async () => {
+  const sent: Array<{ path: string; filename: string }> = [];
+  const http = {
+    async upload(path: string, form: Array<{ filename: string }>) {
+      sent.push({ path, filename: form[0].filename });
+      return { workspace_path: 'uploads/conv/x' };
+    },
+  };
+  const agent = new AgentDataApi(http as never);
+  await agent.workspaceUpload(
+    'wf-1', new Uint8Array([1]), '신상품_정보.xlsx'.normalize('NFD'), 'application/octet-stream', 'conv-1', 'a-1',
+    { relDir: '이노베이션데이/신제품'.normalize('NFD') },
+  );
+  assert.equal(sent[0].filename, '신상품_정보.xlsx'.normalize('NFC'));
+  assert.equal(new URL(sent[0].path, 'https://x').searchParams.get('relpath'), '이노베이션데이/신제품'.normalize('NFC'));
+  assert.equal(workspaceRelDir('보고서/'.normalize('NFD')), '보고서'.normalize('NFC'));
+});
+
 test('수정 시각은 기기 현지 시각 한 줄로', () => {
   const at = new Date(2026, 9, 2, 9, 5).getTime();
   assert.equal(deviceTimeText(at), '2026-10-02 09:05');

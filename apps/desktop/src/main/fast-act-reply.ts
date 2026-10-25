@@ -21,6 +21,10 @@ function hasBatchim(word: string): boolean | null {
 
 /** 말 + 조사 — josa('"블로그" 탭', '을', '를') → '"블로그" 탭을'. 받침을 모르면 '을(를)'. */
 export function josa(word: string, withBatchim: string, without: string): string {
+  // ㄹ 받침 뒤에는 '으로' 가 아니라 '로'다 — "3일로", "서울로"(숫자는 1·7·8 이 일·칠·팔).
+  const ch = word.replace(/["'“”‘’)\]\s.,!?…]+$/u, '').slice(-1);
+  const code = ch.charCodeAt(0) - 0xac00;
+  if (withBatchim === '으로' && ((code >= 0 && code <= 11171 && code % 28 === 8) || /[178]/.test(ch))) return `${word}${without}`;
   const b = hasBatchim(word);
   return `${word}${b === null ? `${withBatchim}(${without})` : b ? withBatchim : without}`;
 }
@@ -43,26 +47,29 @@ function pageName(a: VoiceAction): string | null {
   return host && (a.newTab || host !== hostOf(a.from)) ? host : null;
 }
 
-/** 조작 하나의 답 문장. */
-export function actionSentence(a: VoiceAction): string {
+/** 조작 하나의 답 문장. forAgent = BrowserFill 을 부른 LLM 이 읽는다 — 사용자에게 묻는 말(ask)은 넣지 않는다. */
+export function actionSentence(a: VoiceAction, forAgent = false): string {
   const q = a.text !== null ? `"${a.text}"` : '';
   let did: string;
-  if (a.action === 'click' || a.text === null) did = `${josa(a.display, '을', '를')} 눌렀어요.`;
+  if (a.sentence) did = a.sentence;
+  else if (a.action === 'click' || a.text === null) did = `${josa(a.display, '을', '를')} 눌렀어요.`;
   else if (a.action === 'type') did = `${a.display}에 ${josa(q, '을', '를')} 입력했어요.`;
   // 검색칸의 이름은 대개 안내 문구("검색어를 입력하고 버튼을 누르세요")라 답에 옮기지 않는다.
   else if (/검색|search/i.test(a.display)) did = `${josa(q, '을', '를')} 검색했어요.`;
   else did = `${a.display}에 ${josa(q, '을', '를')} 입력하고 Enter 키를 눌렀어요.`;
   if (a.dismissed) did = `가리던 팝업을 닫고 ${did}`;
   const page = a.navigated ? pageName(a) : null;
-  const sentence = page ? `${did} ${page} 페이지가 ${a.newTab ? '새 탭에서 ' : ''}열렸어요.` : did;
+  const where = a.reusedTab ? '열려 있던 창에서 다시 ' : a.newTab ? '새 탭에서 ' : '';
+  const sentence = page ? `${did} ${page} 페이지가 ${where}열렸어요.` : did;
+  const ask = a.ask && !forAgent ? [a.ask] : [];
   // 화면이 띄운 알림(입력 검사 등)은 닫았어도 사용자가 알아야 한다 — 문구 그대로.
   const notices = (a.notices ?? []).filter(Boolean).map((n) => `화면에 뜬 알림 ${josa(`"${n}"`, '을', '를')} 닫았어요.`);
-  return [sentence, ...notices].join(' ');
+  return [sentence, ...notices, ...(a.tell ? [a.tell] : []), ...ask].join(' ');
 }
 
 /** 빠른 조작으로 끝낸 턴의 답 — 한 문단으로(문단을 나누면 채팅은 마지막 문단만 답으로 보여 준다). */
-export function replyFor(actions: VoiceAction[]): string {
-  return actions.map(actionSentence).join(' ');
+export function replyFor(actions: VoiceAction[], forAgent = false): string {
+  return actions.map((a) => actionSentence(a, forAgent)).join(' ');
 }
 
 /** 작업 과정 한 줄 — 무엇을 어떻게, 걸린 시간. 음성이면 말하는 도중이었는지도. */

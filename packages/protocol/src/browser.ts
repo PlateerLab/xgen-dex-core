@@ -1,6 +1,6 @@
 /** Shared browser contracts used by the main process, preload and renderer. */
 
-export type BrowserPageMode = 'shared' | 'background';
+export type BrowserPageMode = 'shared' | 'background' | 'popup';
 
 export type BrowserLoadingState = 'idle' | 'loading' | 'error';
 
@@ -80,6 +80,8 @@ export interface BrowserPageInfo {
   partition: string;
   /** Changes when navigation/process replacement invalidates snapshot refs. */
   generation: number;
+  /** Original parent page of a popup tab. */
+  openerPageId?: string;
 }
 
 export interface BrowserState {
@@ -138,7 +140,7 @@ export interface BrowserConnectionEvent {
 export interface BrowserCreateRequest {
   workflowId: string;
   workflowName?: string;
-  mode?: BrowserPageMode;
+  mode?: 'shared' | 'background';
   url?: string;
 }
 
@@ -256,6 +258,36 @@ export interface BrowserPopupResolveRequest {
   decision: BrowserPopupDecision;
 }
 
+/** 확인창 카드의 답 — 이번만 누르기 / 이 대화에서 같은 창은 다시 묻지 않기 / 누르지 않기. */
+export type BrowserConfirmChoice = 'once' | 'conversation' | 'deny';
+
+/**
+ * 에이전트가 사이트 확인창("…하시겠습니까?" 확인·취소)의 확정 버튼을 누르기 전에 채팅에 띄우는 카드(desktop
+ * browser-confirm). 페이지 값은 싣지 않는다 — 창 문구·버튼 이름·탭 제목과 origin 만.
+ */
+export interface BrowserConfirmRequest {
+  requestId: string;
+  workflowId: string;
+  interactionId?: string;
+  tool: string;
+  dialogText: string;
+  buttons: string[];
+  /** 누르려는 버튼(또는 키) 이름. */
+  press: string;
+  pageTitle?: string;
+  pageOrigin?: string;
+  createdAt: number;
+  /** 이때까지 답이 없으면 누르지 않는다. */
+  expiresAt: number;
+}
+
+export interface BrowserConfirmResolveRequest {
+  requestId: string;
+  choice: BrowserConfirmChoice;
+  /** 누르지 않을 때 에이전트에게 전할 말. */
+  message?: string;
+}
+
 /** Exact http(s) origin used as the popup permission key. */
 export function browserOrigin(raw: unknown): string | null {
   const normalized = normalizeBrowserUrl(raw);
@@ -333,6 +365,7 @@ export function prependBrowserContext(
   const envelope = JSON.stringify({
     version: selected.length ? 2 : 1,
     workflow_id: workflowId,
+    active_page_id: pages.find(page => page.page_id === state.activeByWorkflow[workflowId])?.page_id,
     pages,
     ...(selected.length ? { selections: selected } : {}),
   });

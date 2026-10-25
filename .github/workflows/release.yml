@@ -18,6 +18,10 @@ name: Release
 #
 # 사람이 태그를 직접 올린 경우(v*)에도 돈다. 그때는 버전을 올리지 않고 태그의
 # 버전이 모든 앱·패키지에서 같은지만 확인한다.
+#
+# 리눅스 러너는 ubuntu-24.04 로 고정한다(ubuntu-latest 를 쓰지 않는다). 10/24 부터 ubuntu-latest 가 26.04 를 주자
+# 24.04 에서 건너뛰던 engine 가두기(bubblewrap) 테스트 4개가 돌기 시작해 실패했다. 이미지가 바뀌면 리눅스 설치본·
+# 네이티브 모듈도 새 glibc 로 빌드돼 옛 배포판에서 안 뜰 수 있다 — 올릴 때는 일부러, 따로 올린다.
 
 on:
   workflow_dispatch:
@@ -40,7 +44,7 @@ jobs:
   # ── 버전 올리기 · 태그 (수동 실행) / 태그 확인 (태그 푸시) ──
   prepare:
     name: 버전 · 태그
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -85,7 +89,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, triple: linux-x64 }
+          - { os: ubuntu-24.04, triple: linux-x64 }
           - { os: windows-latest, triple: win32-x64 }
           - { os: macos-latest, triple: darwin-arm64 }
     runs-on: ${{ matrix.os }}
@@ -114,7 +118,7 @@ jobs:
         include:
           # latest*.yml + blockmap 은 electron-updater 의 피드다 — 설치본과 함께
           # 올려야 자동 업데이트가 새 버전을 찾는다.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             flag: --linux
             triple: linux-x64
             exe: apps/desktop/release/linux-unpacked/xgen-dex
@@ -197,7 +201,7 @@ jobs:
   packages:
     name: CLI + 확장
     needs: [prepare, native-prebuild]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -247,7 +251,7 @@ jobs:
   android:
     needs: prepare
     name: 모바일 — 안드로이드 APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -419,7 +423,7 @@ jobs:
   npm:
     name: npm 배포
     needs: [prepare, packages]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       # --provenance 는 이 권한 없이는 실패한다. 출처 증명이 붙으면 npm 페이지에
@@ -633,7 +637,7 @@ jobs:
     if: >-
       always() && needs.desktop.result == 'success' &&
       needs.packages.result == 'success' && needs.android.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:

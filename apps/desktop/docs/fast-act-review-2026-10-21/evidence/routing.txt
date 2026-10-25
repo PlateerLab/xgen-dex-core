@@ -1,0 +1,46 @@
+[app.log]
+[fast-act] warm-up ok
+[fast-act] skip: 열린 브라우저 탭 없음
+[fast-act] reply-check {"text":"메모에 봄 테스트 입력해줘","reply":"http://127.0.0.1:18764 페이지를 새 탭으로 열었습니다. 입력 동작을 검증하시면 됩니다.","p":0.028,"named":null}
+[fast-act] start {"text":"메모에 봄 테스트 입력해줘","at":1792512648037}
+[voice-act] classify {"text":"메모에 봄 테스트 입력해줘","ready":"act_now","gate":1,"intent":{"act":0.9995309711416974,"answer":0.00019105111957208736,"multi":0.0002779777387305825},"onscreen":0.9998977001301063}
+[voice-act] act {"said":"메모에 봄 테스트 입력해줘","label":"textbox \"메모\"","display":"\"메모\" 입력칸","action":"type","text":"봄 테스트","partial":false,"decideMs":493,"actMs":385,"at":1631,"url":"http://127.0.0.1:18764/","from":"http://127.0.0.1:18764/","navigated":false,"snapMs":357,"pick":0.998,"top":[["e5 textbox \"메모\"",0.998],["e8 textbox \"상세 설명\"",0.002],["e4 textbox \"이름\"",0]]}
+[fast-act] done {"text":"메모에 봄 테스트 입력해줘","ms":2236,"acted":["textbox \"메모\""],"unhandled":null,"decisions":["메모에 봄 테스트 입력해줘 → 실행 textbox \"메모\""]}
+[fast-act] start {"text":"이름을 푸른바다연구소로 바꿔줘","at":1792512698355}
+[voice-act] classify {"text":"이름을 푸른바다연구소로 바꿔줘","ready":"act_now","gate":1,"intent":{"act":0.9992485996575312,"answer":0.00008475450690988085,"multi":0.0006666458355589851},"onscreen":0.9998977001440684}
+[voice-act] act {"said":"이름을 푸른바다연구소로 바꿔줘","label":"textbox \"이름\"","display":"\"이름\" 입력칸","action":"type","text":"푸른바다연구소","partial":false,"decideMs":608,"actMs":356,"at":965,"url":"http://127.0.0.1:18764/","from":"http://127.0.0.1:18764/","navigated":false,"snapMs":122,"pick":1,"top":[["e4 textbox \"이름\"",1],["e5 textbox \"메모\"",0],["e6 spinbutton \"수량\"",0]]}
+[voice-act] type-missed {"text":"이름을 푸른바다연구소로 바꿔줘","ref":"@e4","typed":"푸른바다연구소"}
+[fast-act] done {"text":"이름을 푸른바다연구소로 바꿔줘","ms":1572,"acted":["textbox \"이름\""],"unhandled":"이름을 푸른바다연구소로 바꿔줘","decisions":["이름을 푸른바다연구소로 바꿔줘 → 실행 textbox \"이름\""]}
+[fast-act] 남은 말 서버로 {"unhandled":"이름을 푸른바다연구소로 바꿔줘","acted":1,"voice":false}
+[fast-act] reply-check {"text":"여기 메모를 둘째 탭 기록으로 바꿔줘","reply":"이름을 **푸른바다연구소**로 변경했고, 화면에서 입력값을 확인했습니다. 긴 이름 허용 옵션도 켜야 입력이 반영되어 함께 설정했습니다.","p":0.001,"named":null}
+[fast-act] start {"text":"여기 메모를 둘째 탭 기록으로 바꿔줘","at":1792512766866}
+[voice-act] classify {"text":"여기 메모를 둘째 탭 기록으로 바꿔줘","ready":"act_now","gate":0.99,"intent":{"act":0.9845695340510076,"answer":0.0004805638165880922,"multi":0.014949902132404417},"onscreen":0.9940889322437428}
+[fast-act] to server {"text":"여기 메모를 둘째 탭 기록으로 바꿔줘","ms":1165,"acted":[],"unhandled":"여기 메모를 둘째 탭 기록으로 바꿔줘","decisions":["여기 메모를 둘째 탭 기록으로 바꿔줘 → 넣을 글자를 찾지 못함"]}
+[fast-act] reply-check {"text":"여기 메모에 다시 확인했습니다 입력해줘","reply":"둘째 탭의 메모를 **둘째 탭 기록**으로 바꿨고, 입력값을 확인했습니다.","p":0.001,"named":null}
+[fast-act] start {"text":"여기 메모에 다시 확인했습니다 입력해줘","at":1792512800952}
+[voice-act] classify {"text":"여기 메모에 다시 확인했습니다 입력해줘","ready":"act_now","gate":1,"intent":{"act":0.9981416379444492,"answer":0.0018101239102766042,"multi":0.00004823814527408003},"onscreen":0.999906854084613}
+[voice-act] act {"said":"여기 메모에 다시 확인했습니다 입력해줘","label":"textbox \"메모\"","display":"\"메모\" 입력칸","action":"type","text":"다시 확인했습니다","partial":false,"decideMs":500,"actMs":399,"at":1363,"url":"http://127.0.0.1:18764/","from":"http://127.0.0.1:18764/","navigated":false,"snapMs":153,"pick":0.996,"top":[["e5 textbox \"메모\"",0.996],["e8 textbox \"상세 설명\"",0.004],["e4 textbox \"이름\"",0]]}
+[fast-act] done {"text":"여기 메모에 다시 확인했습니다 입력해줘","ms":1970,"acted":["textbox \"메모\""],"unhandled":null,"decisions":["여기 메모에 다시 확인했습니다 입력해줘 → 실행 textbox \"메모\""]}
+[fast-act] start {"text":"메모에 순서 확인 입력하고, 그다음 수량을 7로 바꿔줘","at":1792512824564}
+[fast-act] to server {"text":"메모에 순서 확인 입력하고, 그다음 수량을 7로 바꿔줘","ms":419,"acted":[],"unhandled":"메모에 순서 확인 입력하고, 그다음 수량을 7로 바꿔줘","decisions":["메모에 순서 확인 입력하고, 그다음 수량을 7로 바꿔줘 → 순서가 있는 여러 요청은 서버에서 이어서 처리"]}
+[fast-act] reply-check {"text":"상세 설명에 삭제하지 않고 보관합니다 입력해줘","reply":"첫째 탭에서 메모를 **순서 확인**으로 입력한 뒤, 수량을 **7**로 바꿨고 두 값 모두 화면에서 확인했습니다.","p":0,"named":null}
+[fast-act] start {"text":"상세 설명에 삭제하지 않고 보관합니다 입력해줘","at":1792512876223}
+[voice-act] boundary {"done":"상세 설명에 삭제하지 않고 보관합니다","rest":["입력해줘"],"none":0.998,"best":0,"p":0.002}
+[voice-act] classify {"text":"상세 설명에 삭제하지 않고 보관합니다 입력해줘","ready":"act_now","gate":0.96,"intent":{"act":0.9347939341882862,"answer":0.06361353219432019,"multi":0.0015925336173935251},"onscreen":0.9996200154820644}
+[voice-act] act {"said":"상세 설명에 삭제하지 않고 보관합니다 입력해줘","label":"textbox \"상세 설명\"","display":"\"상세 설명\" 입력칸","action":"type","text":"삭제하지 않고 보관합니다","partial":false,"decideMs":554,"actMs":834,"at":1947,"url":"http://127.0.0.1:18764/","from":"http://127.0.0.1:18764/","navigated":false,"snapMs":160,"pick":1,"top":[["e8 textbox \"상세 설명\"",1],["e5 textbox \"메모\"",0],["e7 combobox \"배송 방법\"",0]]}
+[fast-act] done {"text":"상세 설명에 삭제하지 않고 보관합니다 입력해줘","ms":2550,"acted":["textbox \"상세 설명\""],"unhandled":null,"decisions":["상세 설명에 삭제하지 않고 보관합니다 입력해줘 → 실행 textbox \"상세 설명\""]}
+[fast-act] start {"text":"지금 화면에서 이름은 초록바다연구센터, 메모는 일괄 입력 확인, 수량은 12, 배송 방법은 빠른 배송으로 해줘. 알림 받기도 켜고 상세 설명은 안전하게 보관합니다로 작성해줘. 모든 항목을 화면에서 확인해줘.","at":1792512922399}
+[voice-act] classify {"text":"지금 화면에서 이름은 초록바다연구센터, 메모는 일괄 입력 확인, 수량은 12, 배송 방법은 빠른 배송으로 해줘. 알림 받기도 켜고 상세 설명은 안전하게 보관합니다로 작성해줘. 모든 항목을 화면에서 확인해줘.","ready":"act_now","gate":1,"intent":{"act":0.03731279538834894,"answer":0.0003774135691985546,"multi":0.9623097910424525},"onscreen":0.9989012691672803}
+[fast-act] to server {"text":"지금 화면에서 이름은 초록바다연구센터, 메모는 일괄 입력 확인, 수량은 12, 배송 방법은 빠른 배송으로 해줘. 알림 받기도 켜고 상세 설명은 안전하게 보관합니다로 작성해줘. 모든 항목을 화면에서 확인해줘.","ms":628,"acted":[],"unhandled":"지금 화면에서 이름은 초록바다연구센터, 메모는 일괄 입력 확인, 수량은 12, 배송 방법은 빠른 배송으로 해줘. 알림 받기도 켜고 상세 설명은 안전하게 보관합니다로 작성해줘. 모든 항목을 화면에서 확인해줘.","decisions":["지금 화면에서 이름은 초록바다연구센터, 메모는 일괄 입력 확인, 수량은 12, 배송 방법은 빠른 배송으로 해줘. 알림 받기도 켜고 상세 설명은 안전하게 보관합니다로 작성해줘. 모든 항목을 화면에서 확인해줘. → 여러 단계·글쓰기 작업 0.03731279538834894"]}
+[app-final.log]
+[fast-act] warm-up ok
+[fast-act] start {"text":"알림 받기 체크해줘","at":1792513137131}
+[voice-act] classify {"text":"알림 받기 체크해줘","ready":"act_now","gate":1,"intent":{"act":0.9998519511188881,"answer":0.000016699233694739836,"multi":0.00013134964741711865},"onscreen":0.9999531611106218}
+[voice-act] revealed-hidden-tab {"text":"알림 받기 체크해줘"}
+[voice-act] classify {"text":"알림 받기 체크해줘","ready":"act_now","gate":1,"intent":{"act":0.9998519511188881,"answer":0.000016699233694739836,"multi":0.00013134964741711865},"onscreen":0.9999531611106218}
+[voice-act] act {"said":"알림 받기 체크해줘","label":"checkbox \" 알림 받기\"","display":"\"알림 받기\" 체크박스","action":"click","text":null,"partial":false,"decideMs":402,"actMs":118,"at":998,"url":"http://127.0.0.1:18764/","from":"http://127.0.0.1:18764/","navigated":false,"snapMs":121,"pick":1,"top":[["e3 checkbox \" 알림 받기\"",1],["e10 option \"빠른 배송\"",0],["e7 combobox \"배송 방법\"",0]]}
+[fast-act] done {"text":"알림 받기 체크해줘","ms":1709,"acted":["checkbox \" 알림 받기\""],"unhandled":null,"decisions":["알림 받기 체크해줘 → 실행 checkbox \" 알림 받기\""]}
+[fast-act] start {"text":"알림 받기 체크해줘","at":1792513169881}
+[voice-act] classify {"text":"알림 받기 체크해줘","ready":"act_now","gate":1,"intent":{"act":0.9998693451408656,"answer":0.000014737267918896203,"multi":0.00011591759121548051},"onscreen":0.9999531611106218}
+[voice-act] act {"said":"알림 받기 체크해줘","label":"checkbox \" 알림 받기\"","display":"\"알림 받기\" 체크박스","action":"click","text":null,"partial":false,"decideMs":395,"actMs":0,"at":396,"url":"http://127.0.0.1:18764/","from":"http://127.0.0.1:18764/","navigated":false,"snapMs":108,"pick":1,"top":[["e3 checkbox \" 알림 받기\"",1],["e10 option \"빠른 배송\"",0],["e7 combobox \"배송 방법\"",0]]}
+[fast-act] done {"text":"알림 받기 체크해줘","ms":1002,"acted":["checkbox \" 알림 받기\""],"unhandled":null,"decisions":["알림 받기 체크해줘 → 실행 checkbox \" 알림 받기\""]}

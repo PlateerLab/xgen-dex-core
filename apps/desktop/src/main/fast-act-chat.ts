@@ -14,7 +14,8 @@
  *   · 현재 대화 에이전트의 '공유' 브라우저 탭만 본다.
  */
 import { stripTeamsContext, turnInputText, type ChatEvent, type ChatRequest } from '@dex/protocol';
-import { stripBrowserContext } from '@dex/protocol/browser';
+import { BROWSER_CONTEXT_END, BROWSER_CONTEXT_START, prependBrowserContext, stripBrowserContext } from '@dex/protocol/browser';
+import { getBrowserRuntime } from './browser-runtime';
 import { stripVoiceContext } from '@dex/protocol/voice-context';
 import { diag } from './diag-log';
 import { actionRow, replyFor } from './fast-act-reply';
@@ -24,7 +25,12 @@ import { Segmenter, type Outcome, type VoiceAgent } from './voice-segmenter';
 import { takeVoiceTurn } from './voice-turns';
 
 const SCOPE = 'fast-act';
+const DRY = process.env.DEX_FAST_ACT_DRY === '1';
 const now = (): number => performance.now();
+/** 대화를 모르는 음성은 말하는 도중 실행하지 않고 채팅 경로로 넘긴다. */
+export function voiceNeedsChatContext(interactionId?: string): boolean {
+  return !interactionId;
+}
 
 /** 렌더러가 붙인 봉투(브라우저·Teams 컨텍스트)를 떼고 사용자 원문만 남긴다. */
 function userText(req: ChatRequest): string | null {
@@ -65,14 +71,34 @@ function finishLocal(
     emit({ kind: 'end' });
     return true;
   }
-  // 이미 한 조작은 "지금 화면 상태" 로만 알린다 — "다시 하지 마라" 식 지시를 붙이면 LLM 이 그 말을 답에
-  // 옮긴다("앞서 실행했다고 하신 동작은 다시 실행하지 않았습니다").
-  const already = actions.map((a) => a.display).join(', ');
-  const rest = `${unhandled}\n\n(현재 화면: 방금 빠른 조작으로 ${already} 을(를) 눌러 둔 상태)`;
-  if (typeof req.input === 'string' && req.input.includes(text)) req.input = req.input.replace(text, rest);
+  // 실패한 시도도 기록해, 서버가 이미 반영된 업로드나 토글을 반복하지 않게 한다.
+  const rest = `${unhandled}\n\n(빠른 조작 기록: ${replyFor(actions, true)}\n` +
+    '위 기록에는 완료되지 않은 시도도 있습니다. 현재 화면 값을 확인하고 남은 요청을 브라우저 도구로 마저 수행하세요. ' +
+    '이미 반영된 입력·업로드·선택은 반복하지 마세요.)';
+  if (typeof req.input === 'string' && req.input.includes(text)) req.input = refreshBrowserContext(req.input.replace(text, rest), req.workflowId);
   else req.input = rest;
   diag(SCOPE, '남은 말 서버로', { unhandled, acted: actions.length, voice });
   return false;
+}
+
+/**
+ * 빠른 조작이 탭을 바꿨을 수 있다(새 탭을 열거나 팝업·다른 탭으로 옮김) — 서버에 넘기기 전에 브라우저 맥락의 탭 목록과 지금 탭을
+ * 새로 적는다. 맥락은 보낼 때 만들어져, 빠른 조작이 연 새 탭을 모르는 서버가 예전 탭에서 네이버를 열었다(10/21). 화면 선택은 둔다.
+ */
+function refreshBrowserContext(input: string, workflowId: string): string {
+  if (!input.startsWith(BROWSER_CONTEXT_START)) return input;
+  const end = input.indexOf(BROWSER_CONTEXT_END);
+  if (end < 0) return input;
+  try {
+    const old = JSON.parse(input.slice(BROWSER_CONTEXT_START.length, end));
+    const fresh = prependBrowserContext('', workflowId, getBrowserRuntime().state());
+    const now = fresh.startsWith(BROWSER_CONTEXT_START) ? JSON.parse(fresh.slice(BROWSER_CONTEXT_START.length, fresh.indexOf(BROWSER_CONTEXT_END))) : null;
+    if (!now) return input;
+    const envelope = JSON.stringify({ ...old, pages: now.pages, active_page_id: now.active_page_id });
+    return `${BROWSER_CONTEXT_START}\n${envelope}\n${BROWSER_CONTEXT_END}\n${stripBrowserContext(input)}`;
+  } catch {
+    return input;
+  }
 }
 
 /**
@@ -95,8 +121,8 @@ export async function tryFastAct(
     return false;
   }
   const t0 = now();
+  const inner = new BrowserVoiceAgent(req.workflowId, t0, undefined, req.interactionId);
   diag(SCOPE, 'start', { text, at: Date.now() }); // 렌더러 전송 → main 도착 지연을 재기 위한 벽시계
-  const inner = new BrowserVoiceAgent(req.workflowId, t0);
   // 사용자가 턴을 멈추면 그 뒤로는 실행하지 않는다.
   const agent: VoiceAgent = {
     get lastTarget() {
@@ -105,13 +131,29 @@ export async function tryFastAct(
     boundary: (utterance, done, rest) => inner.boundary(utterance, done, rest),
     readiness: (texts) => inner.readiness(texts),
     handle: (said, th, guard, abort, utterance) =>
-      inner.handle(said, th, async (...a) => !signal.aborted && (await guard(...a)), () => signal.aborted || abort(), utterance),
+      // DEX_FAST_ACT_DRY=1(개발용) — 판단까지만 하고 실행하지 않는다. 판단 점수를 잴 때 화면·데이터를 바꾸지 않으려고.
+      inner.handle(
+        said,
+        th,
+        async (...a) => {
+          if (DRY) diag(SCOPE, 'dry-target', { said, target: a[0], kind: a[1], conf: a[2] });
+          return !DRY && !signal.aborted && (await guard(...a));
+        },
+        () => signal.aborted || abort(),
+        utterance,
+      ),
   };
   const decided: Array<{ text: string; outcome: Outcome }> = [];
   const seg = new Segmenter(agent, (e) => {
     if (e.type === 'decide') decided.push({ text: e.text, outcome: e.outcome });
   });
   await seg.final(text);
+  if (DRY) {
+    diag(SCOPE, 'dry', { text, decisions: decided.map((d) => `${d.text} → ${d.outcome.acted ? `실행 ${d.outcome.target}` : d.outcome.reason}`) });
+    emit({ kind: 'text', content: '(판단만 했어요 — DEX_FAST_ACT_DRY)' });
+    emit({ kind: 'end' });
+    return true;
+  }
   if (signal.aborted && inner.actions.length === 0) return true;
   const ms = Math.round(now() - t0);
   diag(SCOPE, inner.actions.length ? 'done' : 'to server', {

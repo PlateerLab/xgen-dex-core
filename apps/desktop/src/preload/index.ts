@@ -1,3 +1,5 @@
+import type { AudioAsset, AudioInstallProgress, AudioRuntimeStatus } from '../main/audio-runtime-manager';
+import type { ProcessedAudio } from '../main/audio-preprocessor';
 /**
  * Preload — the ONLY bridge between the sandboxed renderer and the native shell.
  *
@@ -76,6 +78,7 @@ import type { ChatFeedback } from '@dex/protocol/feedback';
 import type { ConversationModelState } from '@dex/protocol/conversation-model';
 import type { ChatInputCheck } from '@dex/protocol/chat-guardrails';
 import type { SshConfig, SshServer, SshServerInput, SshTestResult } from '@dex/protocol/ssh';
+import type { DecisionModelState } from '@dex/protocol/decision';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
@@ -84,6 +87,8 @@ import type { VoiceStreamEvent, VoiceStreamResult } from '../main/voice-stream';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
+  BrowserConfirmRequest,
+  BrowserConfirmResolveRequest,
   BrowserConnectionEvent,
   BrowserCreateRequest,
   BrowserHistoryListRequest,
@@ -98,10 +103,12 @@ import type {
   BrowserSelectionCompleteRequest,
   BrowserSelectionInspectRequest,
   BrowserSelectionPreview,
+  BrowserSelectionRect,
   BrowserSelectionResult,
   BrowserSelectionSession,
   BrowserState,
 } from '@dex/protocol/browser';
+import type { UserConfirmRequest, UserConfirmResolveRequest } from '@dex/protocol/user-confirm';
 
 /** 인앱 탐색기 — 파일 저장소 폴더의 직계 자식 하나. */
 export interface WorkspaceEntryLike {
@@ -123,7 +130,7 @@ export interface McpBridgeStatusLike {
     name: string;
     connected: boolean;
     error?: string;
-    tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+    tools: Array<{ name: string; title?: string; description?: string; inputSchema?: Record<string, unknown> }>;
   }>;
 }
 
@@ -138,6 +145,7 @@ export interface McpRuntimeLogEntryLike {
   tool?: string;
   ok?: boolean;
   durationMs?: number;
+  resultChars?: number;
 }
 
 /** Live avatar/chat state pushed from the main window to the floating overlay. */
@@ -557,6 +565,8 @@ const api = {
       ipcRenderer.invoke(CHANNELS.browserEnsureShared, workflowId, workflowName),
     bindShared: (pageId: string, webContentsId: number): Promise<BrowserPageInfo> =>
       ipcRenderer.invoke(CHANNELS.browserBindShared, pageId, webContentsId),
+    popupSurface: (pageId: string, rect: BrowserSelectionRect | null): Promise<void> =>
+      ipcRenderer.invoke(CHANNELS.browserPopupSurface, pageId, rect),
     navigate: (request: BrowserNavigateRequest): Promise<BrowserPageInfo> =>
       ipcRenderer.invoke(CHANNELS.browserNavigate, request),
     activate: (pageId: string): Promise<BrowserPageInfo> =>
@@ -575,6 +585,15 @@ const api = {
       ipcRenderer.invoke(CHANNELS.browserSelectionCancel, token),
     resolvePopup: (request: BrowserPopupResolveRequest): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.browserPopupResolve, request),
+    /** 에이전트가 누르려는 사이트 확인창 버튼 — 답을 기다리는 카드 목록과 답(main browser-confirm). */
+    confirmList: (): Promise<BrowserConfirmRequest[]> => ipcRenderer.invoke(CHANNELS.browserConfirmList),
+    resolveConfirm: (request: BrowserConfirmResolveRequest): Promise<boolean> =>
+      ipcRenderer.invoke(CHANNELS.browserConfirmResolve, request),
+    onConfirm: (cb: (requests: BrowserConfirmRequest[]) => void): (() => void) => {
+      const handler = (_event: unknown, requests: BrowserConfirmRequest[]) => cb(requests);
+      ipcRenderer.on(CHANNELS.browserConfirmEvent, handler);
+      return () => ipcRenderer.removeListener(CHANNELS.browserConfirmEvent, handler);
+    },
     historySuggestions: (
       request: BrowserHistorySuggestionsRequest,
     ): Promise<BrowserHistorySuggestion[]> =>
@@ -659,6 +678,15 @@ const api = {
     /** '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). best-effort. */
     endSession: (workflowId: string, interactionId: string): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.chatEndSession, workflowId, interactionId),
+    /** 에이전트가 진행 전에 묻는 카드 — 답을 기다리는 카드 목록과 답(main user-confirm). */
+    userConfirmList: (): Promise<UserConfirmRequest[]> => ipcRenderer.invoke(CHANNELS.chatUserConfirmList),
+    resolveUserConfirm: (request: UserConfirmResolveRequest): Promise<boolean> =>
+      ipcRenderer.invoke(CHANNELS.chatUserConfirmResolve, request),
+    onUserConfirm: (cb: (requests: UserConfirmRequest[]) => void): (() => void) => {
+      const handler = (_event: unknown, requests: UserConfirmRequest[]) => cb(requests);
+      ipcRenderer.on(CHANNELS.chatUserConfirmEvent, handler);
+      return () => ipcRenderer.removeListener(CHANNELS.chatUserConfirmEvent, handler);
+    },
   },
 
   /**
@@ -853,12 +881,26 @@ const api = {
     },
   },
 
-  /** 실험: 말하는 도중 실행 — 마이크 소리를 실시간으로 보내면 main 이 중간 결과로 브라우저를 조작한다. */
+  /** 캡처 중 로컬 음성 전처리. */
+  audioProcessor: {
+    status: (): Promise<AudioRuntimeStatus> => ipcRenderer.invoke(CHANNELS.audioProcessStatus),
+    checkUpdate: (): Promise<AudioAsset> => ipcRenderer.invoke(CHANNELS.audioRuntimeCheck),
+    install: (): Promise<AudioRuntimeStatus> => ipcRenderer.invoke(CHANNELS.audioRuntimeInstall),
+    onProgress: (callback: (progress: AudioInstallProgress) => void): (() => void) => {
+      const listener = (_event: unknown, progress: AudioInstallProgress) => callback(progress);
+      ipcRenderer.on(CHANNELS.audioRuntimeProgress, listener);
+      return () => { ipcRenderer.removeListener(CHANNELS.audioRuntimeProgress, listener); };
+    },
+    start: (): Promise<{ id: string; noise: boolean; vad: boolean }> => ipcRenderer.invoke(CHANNELS.audioProcessStart),
+    push: (id: string, pcm: Uint8Array): Promise<ProcessedAudio> => ipcRenderer.invoke(CHANNELS.audioProcessPush, id, pcm),
+    finish: (id: string): Promise<ProcessedAudio> => ipcRenderer.invoke(CHANNELS.audioProcessFinish, id),
+    cancel: (id: string): void => ipcRenderer.send(CHANNELS.audioProcessCancel, id),
+  },
   voiceStream: {
     available: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.voiceStreamAvailable),
     /** carry: 앞 발화에서 처리 못 한 말 — 잠깐 쉬어 끊긴 말을 이어 붙여 판단한다. */
-    start: (workflowId: string, carry?: string): Promise<string> =>
-      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry),
+    start: (workflowId: string, carry?: string, interactionId?: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry, interactionId),
     audio: (sessionId: string, pcm: Uint8Array): void => ipcRenderer.send(CHANNELS.voiceStreamAudio, sessionId, pcm),
     end: (sessionId: string): Promise<VoiceStreamResult | null> => ipcRenderer.invoke(CHANNELS.voiceStreamEnd, sessionId),
     cancel: (sessionId: string): void => ipcRenderer.send(CHANNELS.voiceStreamCancel, sessionId),
@@ -898,6 +940,12 @@ const api = {
     /** Dialled by the XGEN server (that is where the agent runs), through the jump path. */
     testServer: (name: string): Promise<SshTestResult> =>
       ipcRenderer.invoke(CHANNELS.sshTestServer, name),
+  },
+
+  /** 판단 모델(System One) — 서버 전체 설정. 관리자가 아니면 model() 이 null. */
+  decision: {
+    model: (): Promise<DecisionModelState | null> => ipcRenderer.invoke(CHANNELS.decisionModel),
+    setModel: (value: string): Promise<void> => ipcRenderer.invoke(CHANNELS.decisionSetModel, value),
   },
 
   /** Floating avatar overlay (Geny-style). Used by the main window

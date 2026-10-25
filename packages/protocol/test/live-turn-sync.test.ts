@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveTurnFlow, liveTurnProcess, parseSubscribed } from '../src/chat';
-import { HistoryApi, turnAttachments, turnInputText } from '../src/history';
+import { HistoryApi, turnAttachments, turnInputText, turnOutputText } from '../src/history';
 import { appendFlowItem, buildSteps } from '../src/process-timeline';
 import type { HttpClient } from '../src/client';
 
@@ -90,6 +90,42 @@ test('도는 턴의 기록 — 질문은 본문, 첨부는 봉투에서 되살�
       bucket: 'geny-workspace',
     },
   ]);
+});
+
+const PRE_ROW = '{"node_id": "pre", "node_name": "PreAgent", "inputs": {}, "result": ""}';
+
+test('서버가 미리 만든 기록 행의 답 자리는 빈 답이다 — 답변 말풍선을 만들지 않는다', async () => {
+  assert.equal(turnOutputText(PRE_ROW), '');
+  assert.equal(turnOutputText({ node_id: 'pre', node_name: 'PreAgent', inputs: {}, result: null }), '');
+  const http = {
+    get: async () => ({
+      running: true,
+      in_out_logs: [
+        {
+          log_id: 1,
+          io_id: 8,
+          interaction_id: 'iid',
+          workflow_id: 'wf',
+          workflow_name: 'wf',
+          input_data: '신상품 등록해 줘',
+          output_data: PRE_ROW,
+          attachments: [],
+          updated_at: '',
+        },
+      ],
+    }),
+  } as unknown as HttpClient;
+  const snap = await new HistoryApi(http).snapshot('wf', 'iid');
+  assert.equal(snap.turns[0].input, '신상품 등록해 줘');
+  assert.equal(snap.turns[0].output, '');
+});
+
+test('답이 있는 모양과 사람이 쓴 JSON 은 그대로 둔다', () => {
+  const filled = '{"node_id": "agent", "node_name": "Agent", "inputs": {}, "result": "등록했습니다"}';
+  assert.equal(turnOutputText(filled), filled);
+  const pasted = '{"node_id": "pre", "result": "", "model": "haiku"}';
+  assert.equal(turnOutputText(pasted), pasted);
+  assert.equal(turnOutputText('평범한 답'), '평범한 답');
 });
 
 const tool = (id: string, type: string, extra: Record<string, unknown> = {}) => ({

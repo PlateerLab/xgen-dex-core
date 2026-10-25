@@ -41,7 +41,7 @@ export interface VoiceAgent {
   /** 같은 발화 안에서 마지막으로 실행한 대상 표기 (같은 걸 두 번 누르지 않게). */
   readonly lastTarget: string | null;
   boundary(utterance: string, done: string, rest: string[]): Promise<{ start: number; conf: number }>;
-  /** 말 여러 개의 실행 준비 판단을 한 번에 — 학습된 질문(act_now / wait / not_ui)과 act_now 확률. */
+  /** 말 여러 개의 실행 준비 판단을 한 번에 — 학습된 질문(act_now / wait / not_ui, 여러 단계·글쓰기 작업이면 multi)과 act_now 확률. */
   readiness(texts: string[]): Promise<Array<{ ready: string; p: number }>>;
   /** pressOnly = 누를 것만 고른다(입력칸은 후보에서 뺀다). */
   handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome>;
@@ -100,6 +100,8 @@ export class Segmenter {
   private lastTried = '';
   private finalText: string | null = null;
   private finished = false;
+  /** An attempted action was not verified; only the server may resume this utterance. */
+  private needsRecovery = false;
   /** 판단 세대 — 최종 인식이 오면 올라간다. 이전 세대의 판단은 끝나도 실행하지 못한다. */
   private epoch = 0;
   /** 지금 돌고 있는 pump 의 세대 (-1 = 없음). */
@@ -164,8 +166,19 @@ export class Segmenter {
     const prefixes: string[] = [];
     for (let k = w.length - 1; k >= 2 && prefixes.length < 3; k--) prefixes.push(w.slice(0, k).join(' '));
     if (!prefixes.length) return null;
-    const r = await this.agent.readiness(prefixes).catch(() => []);
-    for (let i = 0; i < prefixes.length; i++) if (r[i]?.ready === 'act_now' && r[i].p >= th.intent) return prefixes[i];
+    // 말 전체도 묻는다 — 여러 단계·글쓰기 작업이면 앞부분만 떼어 실행하지 않는다(10/19 BO: "PDF에 있는 상품 설명으로 상품상세
+    // 써서 넣어줘" 의 "… 써서" 를 따로 실행해 상품상세에 "상품" 을 넣음). 그러면 말 전체가 handle 로 가서 서버로 넘어간다.
+    const r = await this.agent.readiness([cand, ...prefixes]).catch(() => []);
+    if (r[0]?.ready === 'multi') return null;
+    // 남은 말이 새 요청인지 실행 전에 묻는다 — 앞부분만 떼어 보면 완결된 말이라도("임시저장한 상품 확인" 0.98) 남은 말이 그
+    // 꼬리면("페이지로 이동해줘") 한 요청이다. 실행한 뒤에 물으면 이미 엉뚱한 것(임시저장 버튼)을 누른 뒤다(10/19 BO). 긴 앞부분부터
+    // 보고, 남은 말이 꼬리면 더 짧은 앞부분을 본다("전시안함 선택하고 선물하기 해당없음으로 | 해줘" → "전시안함 선택하고 | …").
+    for (let i = 0; i < prefixes.length; i++) {
+      if (r[i + 1]?.ready !== 'act_now' || r[i + 1].p < th.intent) continue;
+      const rest = w.slice(words(prefixes[i]).length);
+      const b = await this.agent.boundary(cand, prefixes[i], rest).catch(() => ({ start: 0, conf: 0 }));
+      if (b.start >= 0) return prefixes[i];
+    }
     return null;
   }
 
@@ -208,6 +221,11 @@ export class Segmenter {
     this.finalText = this.latest;
     this.onEvent({ type: 'final', text: this.latest, t: this.clock() });
     const done = new Promise<void>((r) => (this.resolveDone = r));
+    if (this.needsRecovery) {
+      this.unhandled = this.remainder(this.latest) || this.lastSeg;
+      this.finish();
+      return done;
+    }
     if (!this.latest) {
       this.finish();
       return done;
@@ -240,6 +258,11 @@ export class Segmenter {
         this.lastTried = text;
         const isFinal = this.finalText !== null && text === this.finalText;
         const rest = this.remainder(text);
+        if (this.needsRecovery) {
+          this.unhandled = rest || this.lastSeg;
+          if (isFinal) this.finish();
+          break;
+        }
         if (words(rest).length === 0) {
           if (isFinal) this.finish();
           break;
@@ -310,7 +333,8 @@ export class Segmenter {
               if (o?.acted) {
                 this.segStart = this.consumed;
                 this.lastSeg = target;
-                this.consumed = upTo(target);
+                if (o.effect === 'none') this.needsRecovery = true;
+                else this.consumed = upTo(target);
               }
               if (holding) {
                 this.releaseActing?.();
@@ -360,7 +384,8 @@ export class Segmenter {
         if (outcome.acted) {
           // (실행 기록은 handle 직후에 했다) 효과가 없었으면 이 발화의 나머지는 하지 않는다 — 엉뚱한 상태에서 계속하면 더 나빠진다.
           if (outcome.effect && outcome.effect !== 'ok') {
-            this.finish();
+            this.unhandled = this.remainder(this.latest) || used;
+            if (isFinal) this.finish();
             return;
           }
           continue;

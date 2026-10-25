@@ -12,12 +12,17 @@
  * Node-agnostic: works for agent_geny / agent_xgen because the
  * store drives the single execute-stream endpoint.
  */
+import { startProcessedCapture, pcmWav, type ProcessedCapture } from '../voice/processed-capture';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
 import { useChatInputCheck } from './use-chat-input-check';
 import { sessionStore } from '../session';
 import { CONTEXT_LIMIT_CHOICES, teamsContextStore, useContextChip } from '../teams-context';
 import { browserSelectionStore, useBrowserSelections } from '../browser-selection-store';
+import { useBrowserConfirms } from '../browser-confirm-store';
+import { ConfirmCard } from './ConfirmCard';
+import { useUserConfirms } from '../user-confirm-store';
+import { UserConfirmCard } from './UserConfirmCard';
 import { notificationStore, useNotifications } from '../notifications';
 import { notificationChatKey } from '@dex/protocol/notifications';
 import { ShareToTeamsModal } from './ShareToTeams';
@@ -47,6 +52,7 @@ import { Tooltip } from './Tooltip';
 import { OPEN_CHAT_FOLDERS_EVENT } from '../ide/dex-ide-host';
 import { Markdown } from './Markdown';
 import { ToolLogModal } from './ToolLogModal';
+import { ModalPortal } from './ModalPortal';
 import { FeedbackModal, type FeedbackDraft } from './FeedbackModal';
 import { CitationPanel } from './CitationPanel';
 import { ProcessTimeline, TurnPhaseCard, hasProcessFlow, useProcessView } from './ProcessTimeline';
@@ -395,6 +401,10 @@ export const Chat: React.FC<{
   activeSessionKey.current = session.key;
   const stagedImagesRef = useRef<StagedChatImage[]>([]);
   const browserSelections = useBrowserSelections(session.key);
+  // 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 묻는 카드(main browser-confirm).
+  const confirms = useBrowserConfirms(session.interactionId, agent.workflowId);
+  // 에이전트가 일을 이어 가기 전에 묻는 카드(main user-confirm) — 같은 자리, 확인창 카드가 있으면 그 뒤에.
+  const userConfirms = useUserConfirms(session.interactionId, agent.workflowId);
   const browserSelectionsRef = useRef<BrowserSelectionResult[]>(browserSelections);
   browserSelectionsRef.current = browserSelections;
   const [preparingImages, setPreparingImages] = useState(0);
@@ -489,10 +499,10 @@ export const Chat: React.FC<{
   const ttsOn = !!voiceCfg?.tts?.enabled && localVoice.output;
 
   // Mic capture refs.
-  const mediaRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const streamRef = useRef<MediaStream | null>(null);
-  // 실험: 말하는 도중 실행 — 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 스트림으로 동작한다.
+  const mediaRef = useRef<ProcessedCapture | null>(null);
+  const recordingGeneration = useRef(0);
+  const finishRecordingRef = useRef<(() => Promise<void>) | null>(null);
+  // 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 STT 스트림으로 동작한다.
   const streamVoice = useVoiceStreamAvailable();
   // 켜면 끌 때까지 계속 듣는다 — 말할 때마다 조작하고, 화면 조작으로 끝난 말은 채팅·TTS 없이 기록만 남긴다.
   const [voiceLoopOn, setVoiceLoopOn] = useState(false);
@@ -1047,58 +1057,54 @@ export const Chat: React.FC<{
     sessionStore.stop(session.key);
   }, [session.key, session.messages, stopTts]);
 
-  // ── STT: push-to-talk mic capture (getUserMedia + MediaRecorder) ──
+  // PCM is processed locally before the ordinary WAV transcription API too.
+  useEffect(() => () => { recordingGeneration.current++; mediaRef.current?.cancel(); }, []);
   const startRecording = useCallback(async () => {
     if (recording || transcribing) return;
+    const generation = ++recordingGeneration.current;
+    const chunks: Uint8Array[] = [];
+    let heard = false;
+    let vad = false;
+    let durationBytes = 0;
+    setRecording(true);
+    setVoiceError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      chunksRef.current = [];
-      const mr = new MediaRecorder(stream);
-      mr.ondataavailable = (e) => {
-        if (e.data && e.data.size) chunksRef.current.push(e.data);
-      };
-      mr.onstop = async () => {
-        streamRef.current?.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-        const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' });
-        chunksRef.current = [];
-        if (!blob.size) return;
-        setTranscribing(true);
+      const capture = await startProcessedCapture((chunk) => {
+        chunks.push(chunk.pcm); vad = chunk.vad;
+        heard ||= chunk.events.some(event => event.type === 'speech_start');
+        durationBytes += chunk.pcm.length;
+        if (durationBytes >= 32000 * 30) void finishRecordingRef.current?.();
+      }, (error) => { setVoiceError(error.message); setRecording(false); });
+      if (generation !== recordingGeneration.current) { capture.cancel(); return; }
+      mediaRef.current = capture;
+      finishRecordingRef.current = async () => {
+        finishRecordingRef.current = null;
+        setRecording(false); setTranscribing(true);
         try {
-          const lang = voiceCfg?.stt?.language || undefined;
-          const t = (await xgen.voice.transcribe(blob, lang)).trim();
-          if (t) send(t);
-        } catch {
-          /* transcription failed — leave the input untouched */
-        } finally {
-          setTranscribing(false);
-        }
+          await capture.stop();
+          mediaRef.current = null;
+          if (generation !== recordingGeneration.current || (vad && !heard)) return;
+          const blob = pcmWav(chunks);
+          if (blob.size <= 44) return;
+          const text = (await xgen.voice.transcribe(blob, voiceCfg?.stt?.language || undefined)).trim();
+          if (generation === recordingGeneration.current && text) send(text);
+        } catch (error) { setVoiceError(String(error)); }
+        finally { setTranscribing(false); }
       };
-      mr.start();
-      mediaRef.current = mr;
-      setRecording(true);
-    } catch {
-      // Permission denied / no mic — reset state.
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-      setRecording(false);
-    }
+    } catch (error) { setVoiceError(String(error)); setRecording(false); }
   }, [recording, transcribing, voiceCfg, send]);
 
   const stopRecording = useCallback(() => {
-    const mr = mediaRef.current;
-    if (mr && mr.state !== 'inactive') mr.stop();
-    mediaRef.current = null;
-    setRecording(false);
+    if (finishRecordingRef.current) void finishRecordingRef.current();
+    else { recordingGeneration.current++; setRecording(false); }
   }, []);
 
-  // ── 실험: 계속 듣기 — 빠른 브라우저 조작이 켜져 있으면 마이크 버튼이 켜기/끄기다(voice-loop). 말이 시작되면 main 이
-  //    실시간 STT 로 듣고 말하는 도중에 조작한다. 말이 끝나면: 화면 조작으로 끝났으면 기록만(채팅·TTS 없음),
-  //    아니면(질문·여러 단계·못 한 말) 채팅으로 보낸다. 앱이 TTS 로 말하는 동안은 듣지 않는다.
-  const { state: loopState } = useVoiceLoop({
+  // 계속 듣기: 빠른 브라우저 조작 설정에서 실시간 STT를 사용한다.
+  // 현재 main은 최종 발화 뒤 채팅 계획까지 조작을 보류하며, TTS 재생 중에는 입력 전송을 쉰다.
+  const { state: loopState, error: loopError } = useVoiceLoop({
     enabled: streamVoice && voiceLoopOn,
     workflowId: agent.workflowId,
+    interactionId: session.interactionId,
     isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
     onPartial: (t) => setInput(t),
     onWake: () => markCalled(true),
@@ -1142,6 +1148,7 @@ export const Chat: React.FC<{
       await send(r.text, { voice: true });
     },
   });
+  useEffect(() => { if (loopError) { setVoiceError(loopError); setVoiceLoopOn(false); } }, [loopError]);
   useEffect(() => {
     if (!voiceLoopOn) {
       setVoiceLog([]);
@@ -1319,6 +1326,28 @@ export const Chat: React.FC<{
       alive = false;
     };
   }, [agent.workflowId, processView]);
+  // 이 PC 가 광고하는 도구의 사람용 이름(title) — 모델이 부르는 이름(mcp_<서버>_<도구>)으로 찾는다.
+  const [toolTitles, setToolTitles] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!processView) return;
+    let alive = true;
+    void xgen.mcp
+      .status()
+      .then((status) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const server of status.servers) {
+          for (const tool of server.tools) if (tool.title) map[`mcp_${server.name}_${tool.name}`] = tool.title;
+        }
+        setToolTitles(map);
+      })
+      .catch(() => {
+        // 이름을 못 받아도 카드는 도구 설명으로 그린다
+      });
+    return () => {
+      alive = false;
+    };
+  }, [processView]);
   const agentNotificationMuted = !!notificationSnapshot.profile.mutedAgents[agent.workflowId];
   const chatNotificationMuted =
     !!notificationSnapshot.profile.mutedChats[
@@ -1663,11 +1692,11 @@ export const Chat: React.FC<{
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
                       <>
-                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />}
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} toolTitles={toolTitles} />}
                         <ErrorBlock info={m.errorInfo} />
                       </>
                     ) : processView && hasProcessFlow(m) ? (
-                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
+                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} toolTitles={toolTitles} />
                     ) : m.text ? (
                       <Markdown text={answerFiles?.text ?? m.text} />
                     ) : m.streaming && m.uploadProgress ? (
@@ -1893,17 +1922,23 @@ export const Chat: React.FC<{
       </div>
 
       <div className="chat-input">
+        {confirms[0] && <ConfirmCard key={confirms[0].requestId} request={confirms[0]} more={confirms.length - 1} />}
+        {!confirms[0] && userConfirms[0] && (
+          <UserConfirmCard key={userConfirms[0].requestId} request={userConfirms[0]} more={userConfirms.length - 1} />
+        )}
         {voiceError && (
           <div className="voice-error small" title={voiceError}>
             음성 재생 실패: {voiceError}
           </div>
         )}
         {logFor && (
-          <ToolLogModal
-            events={logFor.events}
-            initialOpen={logFor.initialOpen}
-            onClose={() => setLogFor(null)}
-          />
+          <ModalPortal onClose={() => setLogFor(null)}>
+            <ToolLogModal
+              events={logFor.events}
+              initialOpen={logFor.initialOpen}
+              onClose={() => setLogFor(null)}
+            />
+          </ModalPortal>
         )}
         {citationFor && <CitationPanel citation={citationFor} onClose={() => setCitationFor(null)} />}
         {feedbackFor !== null && (

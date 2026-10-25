@@ -8,6 +8,9 @@
  * transport lives here in the main process (Node fetch), so tokens stay out of
  * the renderer.
  */
+import { AudioProcessor } from './audio-preprocessor';
+import { AudioRuntimeManager } from './audio-runtime-manager';
+import { diag } from './diag-log';
 import {
   app,
   BrowserWindow,
@@ -34,6 +37,7 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configureNativeFsBinding, configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { isSafeExternalUrl } from './external-url';
+import { installModalOverlay } from './modal-overlay';
 import { publicAppUrl } from './app-links';
 import { AppPreviewService, type PreviewTarget } from './app-preview';
 import { shootAppPreview } from './app-preview-shot';
@@ -132,6 +136,7 @@ import {
   MCP_ADD_TOOL,
   MCP_REMOVE_TOOL,
   MCP_LIST_TOOL,
+  joinDelegates,
   type LocalToolDelegate,
   type LocalToolResult,
 } from '@dex/engine/local-tools';
@@ -156,9 +161,11 @@ import {
   seedCanvasAuth,
 } from './canvas-embed';
 import { BrowserHistoryStore } from './browser-history';
-import { getBrowserToolProvider } from './browser-tools';
-import { tryFastAct } from './fast-act-chat';
-import { configureFastAct, fastActEnabled } from './fast-act-runner';
+import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
+import { BrowserConfirmCenter } from './browser-confirm';
+import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
+import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
+import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
 import { parseWakeWords } from './voice-wake';
@@ -168,9 +175,11 @@ import type {
   BrowserHistoryRemoveRequest,
   BrowserHistorySuggestionsRequest,
   BrowserPageInfo,
+  BrowserConfirmResolveRequest,
   BrowserPopupPermission,
   BrowserPopupResolveRequest,
 } from '@dex/protocol/browser';
+import type { UserConfirmResolveRequest } from '@dex/protocol/user-confirm';
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
 import { IdeTerminalHub, type IdeTerminalDeps } from './ide-terminal';
@@ -481,6 +490,7 @@ function createWindow(): void {
     },
   });
 
+  getBrowserRuntime().setPopupHostWindow(mainWindow);
   mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     // 에이전트 뷰어 [워크플로우] 탭의 캔버스: 자기 세션으로, 설정된 서버의 /canvas 만(canvas-embed).
     if (params.partition === CANVAS_PARTITION) {
@@ -570,10 +580,7 @@ function createWindow(): void {
       mainWindow.hide();
     }
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    openExternalSafe(url);
-    return { action: 'deny' };
-  });
+  installModalOverlay(mainWindow, openExternalSafe);
   // 데스크톱 창은 우리 렌더러만 띄운다 — 그 밖으로 가려는 이동(창 안 앱이 top 을 옮기는 것
   // 포함)은 막고, 웹 주소면 기본 브라우저로 넘긴다.
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -1637,6 +1644,51 @@ getLocalToolProvider().configureNotificationHandler(async (title, body, context)
   }).shown;
 });
 
+// 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 채팅 카드로 묻는다(browser-confirm). 창이 가려져 있으면 알림만 —
+// 포커스는 뺏지 않고, 알림을 누르면 그 대화로 간다.
+const browserConfirms = new BrowserConfirmCenter({
+  waitMs: CONFIRM_WAIT_MS,
+  push: (requests) => safeSend(mainWindow, CHANNELS.browserConfirmEvent, requests),
+  notify: (request, workflowName) => {
+    notificationCenter.publish({
+      id: `browser-confirm-${request.requestId}`,
+      type: 'agent.requested',
+      title: '확인창 버튼을 눌러도 될까요?',
+      body: `${request.dialogText.slice(0, 80)} — [${request.press}]`,
+      occurredAt: new Date(request.createdAt).toISOString(),
+      workflowId: request.workflowId,
+      workflowName,
+      interactionId: request.interactionId,
+      groupKey: `agent:${request.workflowId}`,
+      target: request.interactionId
+        ? { kind: 'chat', workflowId: request.workflowId, workflowName: workflowName || request.workflowId, interactionId: request.interactionId }
+        : { kind: 'none' },
+    });
+  },
+});
+
+// 에이전트가 일을 이어 가기 전에 묻는 카드(UserConfirm 도구, user-confirm) — 확인창 카드와 같은 자리에 뜨고, 알림도 같다.
+const userConfirms = new UserConfirmCenter({
+  push: (requests) => safeSend(mainWindow, CHANNELS.chatUserConfirmEvent, requests),
+  notify: (request, workflowName) => {
+    notificationCenter.publish({
+      id: `user-confirm-${request.requestId}`,
+      type: 'agent.requested',
+      title: '에이전트가 진행해도 될지 묻습니다',
+      body: request.question.slice(0, 120),
+      occurredAt: new Date(request.createdAt).toISOString(),
+      workflowId: request.workflowId,
+      workflowName,
+      interactionId: request.interactionId,
+      groupKey: `agent:${request.workflowId}`,
+      target: request.interactionId
+        ? { kind: 'chat', workflowId: request.workflowId, workflowName: workflowName || request.workflowId, interactionId: request.interactionId }
+        : { kind: 'none' },
+    });
+  },
+});
+const userConfirmTools = new UserConfirmTools(userConfirms);
+
 // ── 대화별 폴더 연결 ──────────────────────────────────────────────
 // 채팅 헤더의 [폴더 연결]로 고른 폴더가 그 대화의 작업 공간이다. 이 PC 의 파일·
 // 터미널 도구는 호출마다 그 대화의 폴더를 여기서 찾고, 없으면 거부한다.
@@ -2143,8 +2195,10 @@ function syncMcp(): void {
     // 스크린샷·PDF·업로드 경로도 파일 도구와 같은 범위 — 그 대화에 연결된 폴더.
     (context) => chatFolders.list(context?.interactionId).map((folder) => folder.path),
     revealBrowserPage,
+    decisionPost,
+    browserConfirms.ask,
   );
-  getLocalToolProvider().configureDelegate(browserTools);
+  getLocalToolProvider().configureDelegate(joinDelegates(browserTools, userConfirmTools));
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
@@ -2301,7 +2355,7 @@ ipcMain.handle(CHANNELS.configSet, async (event, patch: Partial<ConnectorConfig>
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
   // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.browser !== undefined) syncMcp();
+  if (patch.browser !== undefined || patch.fastAct !== undefined) syncMcp();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -2612,6 +2666,74 @@ ipcMain.handle(CHANNELS.agentsNameTaken, (_e, name: string) => getClient().agent
 // The renderer captures audio via getUserMedia and hands bytes to main; main
 // proxies to the backend with the Bearer token. Secrets never reach here.
 ipcMain.handle(CHANNELS.voiceConfig, () => getClient().voice.getVoiceConfig());
+const audioProcessors = new Map<number, { id: string; processor: AudioProcessor; cleanup: () => void }>();
+const audioLogged = new WeakSet<AudioProcessor>();
+const audioSettings = () => ({ noise: loadConfig().voiceNoiseReduction === true, vad: loadConfig().voiceLocalVad === true });
+let audioRuntimeManager: AudioRuntimeManager | undefined;
+const getAudioRuntime = () => audioRuntimeManager ??= new AudioRuntimeManager(
+  join(app.getPath('userData'), 'audio-runtimes'), app.getAppPath(), process.resourcesPath,
+  (url, options) => net.fetch(url, options),
+);
+ipcMain.handle(CHANNELS.audioProcessStatus, () => getAudioRuntime().status());
+ipcMain.handle(CHANNELS.audioRuntimeCheck, () => getAudioRuntime().check());
+ipcMain.handle(CHANNELS.audioRuntimeInstall, (event) => getAudioRuntime().install(progress => {
+  if (!event.sender.isDestroyed()) event.sender.send(CHANNELS.audioRuntimeProgress, progress);
+}));
+ipcMain.handle(CHANNELS.audioProcessStart, async (e) => {
+  const owner = e.sender.id;
+  audioProcessors.get(owner)?.cleanup();
+  const id = crypto.randomUUID();
+  const settings = audioSettings();
+  const processor = new AudioProcessor(settings, getAudioRuntime().runtime());
+  const cleanup = () => {
+    e.sender.removeListener('destroyed', cleanup);
+    if (audioProcessors.get(owner)?.id === id) {
+      diag('audio-preprocess', 'capture-closed', { id });
+      processor.cancel(); audioProcessors.delete(owner);
+    }
+  };
+  audioProcessors.set(owner, { id, processor, cleanup });
+  e.sender.once('destroyed', cleanup);
+  try {
+    await processor.open();
+    if (e.sender.isDestroyed() || audioProcessors.get(owner)?.id !== id) throw new Error('음성 캡처가 취소됐습니다.');
+    diag('audio-preprocess', 'ready', { id, noise: settings.noise ? 'rnnoise' : 'off', vad: settings.vad ? 'silero' : 'off', mode: settings.noise || settings.vad ? 'python' : 'bypass' });
+    return { id, ...settings };
+  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); cleanup(); throw error; }
+});
+const ownedAudio = (owner: number, id: string) => {
+  const entry = audioProcessors.get(owner);
+  if (!entry || entry.id !== id) throw new Error('음성 캡처가 종료됐습니다.');
+  return entry.processor;
+};
+ipcMain.handle(CHANNELS.audioProcessPush, async (e, id: string, pcm: Uint8Array) => {
+  const processor = ownedAudio(e.sender.id, id);
+  try {
+    const result = await processor.push(pcm);
+    if (result.pcm.byteLength && !audioLogged.has(processor)) {
+      audioLogged.add(processor);
+      diag('audio-preprocess', 'pcm-active', { id, noise: processor.settings.noise, vad: processor.settings.vad, inputBytes: pcm.byteLength, outputBytes: result.pcm.byteLength });
+    }
+    for (const event of result.events) diag('audio-preprocess', event.type, { id, offsetBytes: event.offset_bytes });
+    return result;
+  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); throw error; }
+});
+ipcMain.handle(CHANNELS.audioProcessFinish, async (e, id: string) => {
+  const processor = ownedAudio(e.sender.id, id);
+  try {
+    const result = await processor.finish();
+    diag('audio-preprocess', 'drained', { id, tailBytes: result.pcm.byteLength });
+    for (const event of result.events) diag('audio-preprocess', event.type, { id, offsetBytes: event.offset_bytes });
+    return result;
+  } catch (error) { diag('audio-preprocess', 'error', { id, error: String(error) }); throw error; }
+  finally { if (audioProcessors.get(e.sender.id)?.id === id) audioProcessors.get(e.sender.id)?.cleanup(); }
+});
+ipcMain.on(CHANNELS.audioProcessCancel, (e, id: string) => {
+  if (audioProcessors.get(e.sender.id)?.id !== id) return;
+  audioProcessors.get(e.sender.id)?.cleanup();
+});
+app.on('before-quit', () => { for (const entry of audioProcessors.values()) entry.cleanup(); audioProcessors.clear(); });
+
 
 // ── SSH (개인별 서버) ──────────────────────────────────────────────
 // 얇은 통과 계층이다. 서버가 검증하고(이름 규칙·점프 그래프·자격증명 유무),
@@ -2633,6 +2755,20 @@ ipcMain.handle(CHANNELS.sshDeleteServer, (_e, name: string) =>
 ipcMain.handle(CHANNELS.sshTestServer, (_e, name: string) =>
   getClient().ssh.testServer(name),
 );
+// 판단 모델 선택기 — 권한이 없거나 옛 서버면 null 이라 화면은 선택기를 그리지 않는다.
+ipcMain.handle(CHANNELS.decisionModel, () =>
+  getClient()
+    .decision.model()
+    .then((state) => {
+      diag('decision', 'model', { current: state.current, choices: state.choices.map((c) => c.value) });
+      return state;
+    })
+    .catch((err) => {
+      diag('decision', 'model unavailable', String(err));
+      return null;
+    }),
+);
+ipcMain.handle(CHANNELS.decisionSetModel, (_e, value: string) => getClient().decision.setModel(value));
 ipcMain.handle(
   CHANNELS.voiceTranscribe,
   (_e, bytes: Uint8Array, mime: string, language?: string) => {
@@ -2645,9 +2781,8 @@ ipcMain.handle(
     return getClient().voice.transcribe(blob, language);
   },
 );
-// 빠른 브라우저 조작(실험) — 설정 fastAct 를 켜고 로그인했을 때 XGEN 판단 API 로 묻는다.
-// 판단 결과로 바로 조작하고, 실패하면 늘 서버 에이전트로 넘어가므로 401 이 로그아웃으로 번지지 않게
-// auth: false 로 부르고, 인증 오류면 토큰을 한 번 회전해 다시 묻는다.
+// 단계별 브라우저 조작 — 현재 채팅 모델이 계획하고 이 판단 API로 실행 대상을 고른다.
+// 도구 오류가 로그아웃으로 번지지 않게 auth: false로 부르고 인증 오류는 토큰 회전 뒤 한 번 재시도한다.
 configureFastAct({
   enabled: () => loadConfig().fastAct === true && !!currentUserId(),
   post: async (body) => {
@@ -2665,10 +2800,11 @@ configureFastAct({
   },
   reveal: revealBrowserPage,
 });
-// 실험: 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다.
+// 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>
   currentUserId()
     ? {
+        planBeforeAct: voiceNeedsChatContext,
         baseUrl: () => normalizeServerUrl(loadConfig().serverUrl),
         token: async () => (await liveAccessToken()) || '',
         allowPrivateCertificate: () => loadConfig().allowPrivateCertificate === true,
@@ -2687,8 +2823,8 @@ const voiceStreamEmit =
     if (!sender.isDestroyed()) sender.send(CHANNELS.voiceStreamEvent, ev);
   };
 ipcMain.handle(CHANNELS.voiceStreamAvailable, () => voiceStreamAvailable());
-ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string) =>
-  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? ''),
+ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string) =>
+  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId),
 );
 ipcMain.on(CHANNELS.voiceStreamAudio, (_e, sessionId: string, pcm: Uint8Array) => voiceStreams.audio(sessionId, pcm));
 ipcMain.handle(CHANNELS.voiceStreamEnd, (_e, sessionId: string) => voiceStreams.end(sessionId));
@@ -3333,6 +3469,12 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       notificationCenter.publish(event);
     };
     try {
+      if (fastActEnabled()) {
+        const emit = (ev: ChatEvent): void => {
+          if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);
+        };
+        if (await tryFastAct(serverReq, emit, controller.signal)) return;
+      }
       // 에이전트 턴은 **언제나 서버에서** 돈다 — 서버가 workflow 세션을 만들고
       // 그 세션의 sandbox 안에서 실행한다. 커넥터는 그 실행을 호출하는 접속기다.
       //
@@ -3341,14 +3483,7 @@ ipcMain.handle(CHANNELS.chatStart, async (e, streamId: string, req) => {
       // 돌아, 모든 기능을 두 번 만들어야 했고 두 번째 구현은 늘 뒤처졌다.
       // 사용자 PC 는 이제 **도구**로만 참여한다(브라우저·Shell·로컬 MCP —
       // 서버 에이전트가 reverse-WS 카탈로그로 호출한다).
-      // 실험: 빠른 브라우저 조작 (설정 fastAct) — 단순한 브라우저 조작이면
-      // 이 PC 에서 끝내고 서버 턴을 만들지 않는다. 아니면 그대로 서버로.
-      if (fastActEnabled()) {
-        const emit = (ev: ChatEvent): void => {
-          if (!sender.isDestroyed()) sender.send(CHANNELS.chatEvent, streamId, ev);
-        };
-        if (await tryFastAct(serverReq, emit, controller.signal)) return;
-      }
+      // 즉시 처리하지 못한 요청은 서버 모델이 계획하고 브라우저 도구로 실행한다.
       for await (const ev of getClient().chat.stream(serverReq, controller.signal)) {
         if (sender.isDestroyed()) break;
         if (ev.kind === 'text') preview = (preview + ev.content).slice(-2_000);
@@ -3455,6 +3590,12 @@ ipcMain.handle(CHANNELS.browserBindShared, (_e, pageId: string, webContentsId: n
   getBrowserRuntime().bindSharedPage(pageId, webContentsId),
 );
 ipcMain.handle(CHANNELS.browserNavigate, (_e, request) => getBrowserRuntime().navigate(request));
+ipcMain.handle(CHANNELS.browserPopupSurface, (event, pageId: string, rect) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('browser_denied: 허용되지 않은 브라우저 표시 요청입니다.');
+  }
+  getBrowserRuntime().updatePopupSurface(pageId, rect);
+});
 ipcMain.handle(CHANNELS.browserActivate, (_e, pageId: string) =>
   getBrowserRuntime().activate(pageId),
 );
@@ -3479,6 +3620,26 @@ ipcMain.handle(CHANNELS.browserSelectionComplete, (event, request) => {
 ipcMain.handle(CHANNELS.browserSelectionCancel, (event, token: string) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) return false;
   return getBrowserRuntime().cancelSelection(token, event.sender.id);
+});
+ipcMain.handle(CHANNELS.browserConfirmList, (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return [];
+  return browserConfirms.list();
+});
+ipcMain.handle(CHANNELS.browserConfirmResolve, (event, request: BrowserConfirmResolveRequest) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('browser_denied: 허용되지 않은 확인창 응답입니다.');
+  }
+  return browserConfirms.resolve(request);
+});
+ipcMain.handle(CHANNELS.chatUserConfirmList, (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return [];
+  return userConfirms.list();
+});
+ipcMain.handle(CHANNELS.chatUserConfirmResolve, (event, request: UserConfirmResolveRequest) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('user_denied: 허용되지 않은 확인 카드 응답입니다.');
+  }
+  return userConfirms.resolve(request);
 });
 ipcMain.handle(CHANNELS.browserPopupResolve, (event, request: BrowserPopupResolveRequest) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
@@ -4429,6 +4590,7 @@ if (!gotLock) {
     /* stay resident in the tray */
   });
   app.on('before-quit', () => {
+    getBrowserRuntime().suspendSessionPersistence();
     quitRequested = true;
     appQuitting = true;
     saveOverlayGeometry(true); // don't drop a pending move/resize on quit

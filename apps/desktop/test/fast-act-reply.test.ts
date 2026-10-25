@@ -3,6 +3,12 @@ import test from 'node:test';
 import { actionRow, actionSentence, josa, replyFor } from '../src/main/fast-act-reply';
 import type { VoiceAction } from '../src/main/fast-act-voice';
 import { Segmenter, type VoiceAgent } from '../src/main/voice-segmenter';
+import { voiceNeedsChatContext } from '../src/main/fast-act-chat';
+
+test('음성은 대화를 모를 때만 채팅 경로로 넘긴다', () => {
+  assert.equal(voiceNeedsChatContext(), true);
+  assert.equal(voiceNeedsChatContext('voice-new'), false);
+});
 
 const act = (over: Partial<VoiceAction>): VoiceAction => ({
   said: '블로그 탭',
@@ -24,6 +30,10 @@ test('조사는 받침을 따르고, 모르면 둘 다 적는다', () => {
   assert.equal(josa('"xgen"', '을', '를'), '"xgen"을');
   assert.equal(josa('"naver"', '을', '를'), '"naver"를');
   assert.equal(josa('"3"', '을', '를'), '"3"을');
+  assert.equal(josa('"3일"', '으로', '로'), '"3일"로');
+  assert.equal(josa('"일반상품"', '으로', '로'), '"일반상품"으로');
+  assert.equal(josa('"전체"', '으로', '로'), '"전체"로');
+  assert.equal(josa('"7"', '으로', '로'), '"7"로');
   assert.equal(josa('"2"', '을', '를'), '"2"를');
   assert.equal(josa('"google"', '을', '를'), '"google"을(를)');
 });
@@ -108,6 +118,45 @@ test('판단 중 오류가 나도 final 은 끝나고 그 말은 서버로 넘�
   assert.equal(seg.unhandled, '블로그 탭 눌러줘 그리고 첫 글');
 });
 
+test('확인하지 못한 조작과 남은 요청은 버리지 않고 서버로 넘긴다', async () => {
+  let calls = 0;
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: 0, conf: 1 }),
+    readiness: async (texts) => texts.map(() => ({ ready: 'multi', p: 1 })),
+    handle: async () => {
+      calls++;
+      return { acted: true, kind: 'type', target: '제목', ms: 0, effect: 'none' };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  const text = '제목 입력하고 배송도 선택해줘';
+  await seg.final(text);
+  assert.equal(seg.unhandled, text);
+  assert.equal(calls, 1);
+});
+
+test('음성 중간 조작 실패 뒤 최종 인식도 끝나고 뒷말까지 서버로 넘긴다', async () => {
+  let calls = 0;
+  let failed!: () => void;
+  const failure = new Promise<void>((resolve) => { failed = resolve; });
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: 0, conf: 1 }),
+    readiness: async (texts) => texts.map(() => ({ ready: 'act_now', p: 1 })),
+    handle: async () => {
+      calls++;
+      return { acted: true, kind: 'type', target: '제목', ms: 0, effect: 'none' };
+    },
+  };
+  const seg = new Segmenter(agent, (event) => { if (event.type === 'decide') failed(); });
+  seg.partial('제목 입력해줘');
+  await failure;
+  await seg.final('제목 입력해줘 그리고 배송도 선택해줘');
+  assert.equal(seg.unhandled, '제목 입력해줘 그리고 배송도 선택해줘');
+  assert.equal(calls, 1);
+});
+
 test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 분명하면 누르고, 아니면 서버로 넘기지 않는다', async () => {
   const run = async (tailPick: { target: string; conf: number } | null) => {
     const handled: string[] = [];
@@ -117,7 +166,8 @@ test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 
       get lastTarget() {
         return lastTarget;
       },
-      boundary: async () => ({ start: -1, conf: 0.999 }),
+      // 앞부분을 실행하기 전 확인에는 새 요청(검색해줘), 실행한 뒤에는 꼬리말로 답한다 — 꼬리말 처리를 보려고.
+      boundary: async () => (lastTarget ? { start: -1, conf: 0.999 } : { start: 0, conf: 0.9 }),
       readiness: async (texts) =>
         texts.map((t) => ({ ready: t === '브랜드명에 삼성 입력하고' ? 'act_now' : 'wait', p: 0.9 })),
       handle: async (text, _th, guard) => {
@@ -153,4 +203,74 @@ test('앞 요청의 꼬리라는 남은 말도 그것만으로 누를 대상이 
     pressed: null,
     unhandled: null,
   });
+});
+
+test('고르지 못하고 물어볼 말이 있으면 한 일 뒤에 그대로 붙인다', () => {
+  const searched = act({
+    label: 'textbox "협력사명 검색어"',
+    display: '"협력사명 검색어" 입력칸',
+    action: 'type_submit',
+    text: '플래티어 3',
+    tell: '"플래티어 3"과 정확히 같은 항목이 없어요. 비슷한 항목: 플래티어 2, 플래티어.',
+    ask: '어느 것을 고를까요?',
+  });
+  assert.equal(
+    actionSentence(searched),
+    '"플래티어 3"을 검색했어요. "플래티어 3"과 정확히 같은 항목이 없어요. 비슷한 항목: 플래티어 2, 플래티어. 어느 것을 고를까요?',
+  );
+  // BrowserFill 을 부른 LLM 에게는 묻지 않는다 — 까닭만.
+  assert.equal(
+    replyFor([searched], true),
+    '"플래티어 3"을 검색했어요. "플래티어 3"과 정확히 같은 항목이 없어요. 비슷한 항목: 플래티어 2, 플래티어.',
+  );
+});
+
+test('열려 있던 팝업 창이 다시 불렸으면 새 탭이라 하지 않는다', () => {
+  assert.equal(
+    actionSentence(act({ display: '"협력사" 선택 상자', navigated: true, newTab: true, reusedTab: true, title: '협력사 조회 - X2BEE ADMIN' })),
+    '"협력사" 선택 상자를 눌렀어요. "협력사 조회 - X2BEE ADMIN" 페이지가 열려 있던 창에서 다시 열렸어요.',
+  );
+});
+
+test('누르지 않은 요소는 그 까닭만 답한다 — 한 일처럼 "눌렀어요" 라 하지 않는다', () => {
+  const skipped = act({
+    label: 'checkbox "네이버페이"',
+    display: '"네이버페이" 체크박스',
+    sentence: '"네이버페이" 체크박스는 이미 체크돼 있어요.',
+  });
+  assert.equal(actionSentence(skipped), '"네이버페이" 체크박스는 이미 체크돼 있어요.');
+});
+
+test('말 전체가 여러 단계 작업이면 앞부분만 떼어 실행하지 않고 통째로 판단한다', async () => {
+  const handled: string[] = [];
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: -1, conf: 0 }),
+    readiness: async (texts) => texts.map((t) => ({ ready: t.endsWith('넣어줘') ? 'multi' : 'act_now', p: 0.96 })),
+    handle: async (text) => {
+      handled.push(text);
+      return { acted: false, reason: '여러 단계 작업 0.94', ms: 0 };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  await seg.final('PDF에 있는 상품 설명으로 상품상세 써서 넣어줘');
+  assert.deepEqual(handled, ['PDF에 있는 상품 설명으로 상품상세 써서 넣어줘']);
+  assert.equal(seg.unhandled, 'PDF에 있는 상품 설명으로 상품상세 써서 넣어줘');
+});
+
+test('앞부분만 떼면 완결된 말이라도 남은 말이 그 꼬리면 쪼개지 않고 통째로 판단한다', async () => {
+  const handled: string[] = [];
+  const agent: VoiceAgent = {
+    lastTarget: null,
+    boundary: async () => ({ start: -1, conf: 0.97 }),
+    readiness: async (texts) => texts.map((t) => ({ ready: t === '임시저장한 상품 확인' || t.endsWith('이동해줘') ? 'act_now' : 'wait', p: 0.98 })),
+    handle: async (text) => {
+      handled.push(text);
+      return { acted: false, reason: '요소 확신 낮음 0.4', ms: 0 };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  await seg.final('임시저장한 상품 확인 페이지로 이동해줘');
+  assert.deepEqual(handled, ['임시저장한 상품 확인 페이지로 이동해줘']);
+  assert.equal(seg.unhandled, '임시저장한 상품 확인 페이지로 이동해줘');
 });

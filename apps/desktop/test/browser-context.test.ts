@@ -35,12 +35,20 @@ test('browser preamble applies only to enabled workflows with live pages', () =>
   const decorated = prependBrowserContext('원문', 'wf', state);
   assert.ok(decorated.startsWith(BROWSER_CONTEXT_START));
   assert.match(decorated, /"page_id":"p1"/);
+  assert.match(decorated, /"active_page_id":"p1"/);
   assert.match(decorated, /https:\/\/example\.com\/private\/path/);
   assert.ok(!decorated.includes('secret'));
   assert.ok(!decorated.includes('#frag'));
   assert.equal(stripBrowserContext(decorated), '원문');
   assert.equal(prependBrowserContext('원문', 'other', state), '원문');
   assert.equal(prependBrowserContext('원문', 'wf', { ...state, enabled: false }), '원문');
+});
+
+test('browser context identifies the active tab even when titles and URLs are identical', () => {
+  const pages = [state.pages[0], { ...state.pages[0], pageId: 'p2' }];
+  const decorated = prependBrowserContext('임시저장해줘', 'wf', { ...state, pages, activeByWorkflow: { wf: 'p2' } });
+  assert.match(decorated, /"active_page_id":"p2"/);
+  assert.doesNotMatch(prependBrowserContext('원문', 'wf', { ...state, activeByWorkflow: { wf: 'missing' } }), /active_page_id/);
 });
 
 test('browser URL sanitizer accepts only web/about and removes query + fragment', () => {

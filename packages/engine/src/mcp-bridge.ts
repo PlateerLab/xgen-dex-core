@@ -464,6 +464,8 @@ export class McpBridge {
         .map((t) => ({
           server: LOCAL_SERVER,
           name: t.name,
+          // 사람에게 보여 줄 이름(MCP Tool.title). 모델에게 가지 않는다.
+          ...(t.title ? { title: t.title } : {}),
           description: t.description,
           inputSchema: t.inputSchema,
           // 서버에 함께 알리는 사실(UserPc 셸 이름 등). 모델에게 가는 설명이 아니다.
@@ -619,7 +621,7 @@ export class McpBridge {
         terminal: false,
       };
       this.inflight.set(requestKey, call);
-      const context = {
+      const context: import('./local-tools').LocalToolCallContext = {
         ...localToolCallContext(msg.context),
         deviceId: this.deviceId || 'legacy',
         requestId: requestKey,
@@ -642,7 +644,9 @@ export class McpBridge {
       // 감시 시한 — 이 호출은 반드시 이 안에 답한다. 도구 안의 어느 단계(폴더 확인·실행 준비·확인 창…)가
       // 멈춰도 서버가 끝없이 기다리지 않게(2026-10-07: 결과 없는 Shell 호출 다섯 번).
       const deadlineMs = localDeadlineMs(String(tool), msg.deadline_ms, isLocal);
+      context.deadlineAt = Date.now() + deadlineMs;
       let watchdog: NodeJS.Timeout | null = null;
+      let deadlineHit = false;
       try {
         // Built-in (connector-hosted) tools dispatch locally; everything else
         // goes to the configured MCP server via MCPManager. Same wire contract.
@@ -652,6 +656,7 @@ export class McpBridge {
         const timedOut = new Promise<never>((_resolve, reject) => {
           watchdog = setTimeout(() => {
             // 사유가 먼저 — 끊긴 작업이 내는 결과가 이 사유를 덮지 않게.
+            deadlineHit = true;
             reject(new LocalDeadlineError(String(tool), deadlineMs));
             controller.abort();
           }, deadlineMs);
@@ -672,7 +677,8 @@ export class McpBridge {
       const mayReply =
         current === call &&
         !call.terminal &&
-        !controller.signal.aborted &&
+        // 감시 시한으로 끊은 것은 알린다 — 안 알리면 서버가 자기 시한까지 기다렸다(2026-10-23 승인 창 대기 → XGEN-900).
+        (!controller.signal.aborted || deadlineHit) &&
         this.ws === from &&
         from.readyState === WebSocket.OPEN &&
         this.protocolReady &&
@@ -689,6 +695,7 @@ export class McpBridge {
         tool: String(tool),
         ok: payload.ok === true,
         durationMs: Date.now() - startedAt,
+        resultChars: JSON.stringify((payload.ok ? payload.result : payload.error) ?? '').length,
       });
       if (!mayReply) return;
       try {

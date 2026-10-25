@@ -1,15 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  FIELD_LABEL_SCRIPT,
+  FORM_VALUES_SCRIPT,
+  NAME_ICON_BUTTONS_SCRIPT,
   editableAsTextbox,
   checkOf,
+  inDocOrder,
   itemOf,
+  labelChoices,
+  labelSearchTerms,
+  labelToggles,
+  nearNames,
+  rowsNamed,
+  rowsToPick,
+  optionNamed,
+  optionNames,
+  valueToPick,
+  popupSearchValue,
+  popupSelectionMatches,
+  isFieldVerification,
+  choiceMissed,
+  disabledOf,
+  checkStates,
   labelClickables,
   labelFields,
+  labelSnapshot,
   locativeAfterLabel,
   refOrder,
   withoutLabel,
   withoutLeadingLabel,
+  typedValue,
+  keepsValue,
+  treeMissNote,
 } from '../src/main/fast-act-labels';
 import type { ElementRefs } from '../src/main/fast-act';
 
@@ -51,6 +74,15 @@ test('요소 번호 순서는 스냅샷 글 순서 그대로, 중복 없이', ()
   assert.deepEqual(refOrder(''), []);
 });
 
+test('shared snapshot enrichment preserves field labels and document order for both decider paths', () => {
+  const got = labelSnapshot(REFS, SNAPSHOT, PAGE);
+  assert.equal(got.refs.e3.name, '상품명');
+  assert.equal(got.refs.e1.name, '모델명');
+  assert.equal(got.labels.e1, '모델명');
+  assert.deepEqual(Object.keys(got.refs), refOrder(SNAPSHOT));
+  assert.equal(REFS.e1.name, '', 'the raw snapshot remains unchanged');
+});
+
 test('빈 이름은 칸 이름으로, 안내문·값 이름은 칸 이름을 앞에 붙인다 — 같은 이름끼리 문서 순서로', () => {
   const { refs, labels } = labelFields(REFS, refOrder(SNAPSHOT), PAGE);
   assert.equal(Object.keys(labels).length, 6);
@@ -58,8 +90,8 @@ test('빈 이름은 칸 이름으로, 안내문·값 이름은 칸 이름을 앞
   assert.equal(refs.e1.name, '모델명');
   assert.equal(refs.e6.name, '제조사');
   assert.equal(refs.e5.name, '검색키워드 내용 ‘,(쉼표)’로 구분하여 입력해 주세요.');
-  assert.equal(refs.e2.name, '구매연령 전체');
-  assert.equal(refs.e8.name, '계약형태 전체');
+  assert.equal(refs.e2.name, '구매연령 (현재: 전체)');
+  assert.equal(refs.e8.name, '계약형태 (현재: 전체)');
   assert.equal(labels.e5, '검색키워드 내용');
   // 다른 역할은 그대로, 원본은 바꾸지 않는다
   assert.equal(refs.e7.name, '상품명');
@@ -88,8 +120,8 @@ test('스냅샷과 페이지의 수가 다른 묶음은 붙이지 않는다', ()
   assert.equal(Object.keys(labels).length, 2);
   assert.equal(refs.e3.name, '');
   assert.equal(refs.e1.name, '');
-  assert.equal(refs.e2.name, '구매연령 전체');
-  assert.equal(refs.e8.name, '계약형태 전체');
+  assert.equal(refs.e2.name, '구매연령 (현재: 전체)');
+  assert.equal(refs.e8.name, '계약형태 (현재: 전체)');
 });
 
 test('스냅샷 글이 없으면 아무것도 붙이지 않는다', () => {
@@ -106,6 +138,29 @@ test('검색 의도는 말에서 붙인 칸 이름을 빼고 본다', () => {
   assert.equal(withoutLabel('검색어에 노트북 넣고 검색해줘', '검색어').includes('검색'), true);
   assert.equal(withoutLabel('검색에 노트북 넣고 검색해줘', '검색').includes('검색'), true);
   assert.equal(withoutLabel('xgen 검색해줘', undefined), 'xgen 검색해줘');
+});
+
+test('「」로 밝힌 값은 칸 이름처럼 보여도 그대로 넣는다', () => {
+  // 10/22 BO: BrowserFill "상품명에 「상품 C」 입력해줘" 가 "C" 를, "모델명에 「모델 X」 입력해줘" 가 "X" 를 넣고 done 이었다.
+  assert.equal(typedValue('상품 C', '상품명에 「상품 C」 입력해줘', '상품명'), '상품 C');
+  assert.equal(typedValue('배송비 무료 / 반품비 0원', '배송비정책에 「배송비 무료 / 반품비 0원」 넣어줘', '배송비정책'), '배송비 무료 / 반품비 0원');
+  // 따옴표가 없으면 판단 모델이 같이 고른 칸 이름은 지금처럼 뗀다.
+  assert.equal(typedValue('상품명은 xgen', '상품명은 xgen 넣어줘', '상품명'), 'xgen');
+});
+
+test('선택 상자가 이미 말한 값인가 — 뽑은 값과 지금 값을 띄어쓰기 없이 비교한다', () => {
+  // 10/22 BO 리허설: "…「배송비 무료 …」 선택해줘" 의 동사 "선택" 을 지금 값 "선택" 으로 봐서 고르지 않고 done 이었다.
+  const fee = '배송비 무료 / 반품비 6000원 (인천 도서지역 3000원)';
+  const said = `배송비정책에 「${fee}」 선택해줘`;
+  assert.equal(keepsValue(fee, said, '배송비정책', '선택'), false);
+  assert.equal(keepsValue(fee, said, '배송비정책', fee), true);
+  assert.equal(keepsValue('2일', '출고소요일 2일로 해줘', '출고소요일', '2일'), true);
+  assert.equal(keepsValue('출고소요일 2일', '출고소요일 2일로 해줘', '출고소요일', '2일'), true);
+  assert.equal(keepsValue('13일', '출고소요일 13일로 해줘', '출고소요일', '3일'), false);
+  assert.equal(keepsValue('일반 상품', '배송상품구분을 일반 상품으로 해줘', '배송상품구분', '일반상품'), true);
+  // 칸 이름뿐이거나 값을 못 뽑았으면 이미 그 값이라고 하지 않는다.
+  assert.equal(keepsValue('배송상품구분', '배송상품구분 눌러줘', '배송상품구분', '일반상품'), false);
+  assert.equal(keepsValue(null, '배송비정책 선택해줘', '배송비정책', '선택'), false);
 });
 
 test('넣을 글자 앞의 칸 이름(조사 포함)을 뗀다 — 남는 글자가 있을 때만', () => {
@@ -161,7 +216,7 @@ test('제목 아래 하나뿐인 누름 상자는 그 제목을 이름으로 한
   const { refs, labels } = labelClickables(boxRefs(), BOX_SNAPSHOT);
   assert.deepEqual(labels, { e4: '협력사', e8: '브랜드' });
   assert.deepEqual(refs.e4, { role: 'combobox', name: '협력사' });
-  assert.deepEqual(refs.e8, { role: 'combobox', name: '브랜드 LA5298 모디바' });
+  assert.deepEqual(refs.e8, { role: 'combobox', name: '브랜드 (현재: LA5298 모디바)' });
   // 메뉴 버튼·입력칸을 감싼 상자·제 글이 있는 끌어 놓기 칸·제목 아래 여러 장(카드)은 그대로.
   assert.deepEqual(refs.e2, { role: 'button', name: '협력사' });
   assert.deepEqual(refs.e14, { role: 'generic', name: '' });
@@ -268,4 +323,254 @@ test("칸 이름 바로 뒤의 '의' 는 '에' 로 — 띄어쓰기는 보지 �
   assert.equal(locativeAfterLabel('삼성의 노트북 입력해줘', '상품명'), '삼성의 노트북 입력해줘');
   assert.equal(locativeAfterLabel('상품명의미 입력해줘', '상품명'), '상품명의미 입력해줘');
   assert.equal(locativeAfterLabel('상품명의 삼성 입력해줘', undefined), '상품명의 삼성 입력해줘');
+});
+
+test('요소 목록을 문서 순서로 — 제목 바로 뒤에 그 제목의 선택지가 오게, 스냅샷에 없는 요소는 뒤에', () => {
+  // refs 키는 e1, e10, e100… 순이다(10/19 BO 상품 등록: "선물하기 해당" 이 직구상품 여부의 "해당" 으로 눌렸다).
+  const refs: ElementRefs = {
+    e100: { role: 'radio', name: '해당' },
+    e101: { role: 'radio', name: '해당' },
+    e38: { role: 'heading', name: '직구상품 여부' },
+    e39: { role: 'heading', name: '선물하기' },
+    c1: { role: 'button', name: '뒤로' },
+  };
+  const ordered = inDocOrder(refs, ['e38', 'e100', 'e39', 'e101', 'e7']);
+  assert.deepEqual(Object.keys(ordered), ['e38', 'e100', 'e39', 'e101', 'c1']);
+  assert.equal(ordered.e39, refs.e39);
+});
+
+test('제목 아래 선택지(radio)는 이름 앞에 그 제목을 — 이름이 같은 선택지를 이름만으로 가른다', () => {
+  // 10/19 BO 상품 등록 "반품기능 제공안함으로 해줘": 한 방향으로 묻는 창에서 앞의 취소기능 "제공안함" 이 1.0 이라 반품기능 것은 결승에도 못 갔다.
+  const snapshot = [
+    '- heading "취소기능" [level=6, ref=e71]',
+    '- LabelText "제공" [ref=e208] clickable [cursor:pointer]',
+    '  - radio "제공" [checked=true, ref=e270]',
+    '- LabelText "제공안함" [ref=e209] clickable [cursor:pointer]',
+    '  - radio "제공안함" [checked=false, ref=e271]',
+    '- heading "반품기능" [level=6, ref=e73]',
+    '- LabelText "제공안함" [ref=e213] clickable [cursor:pointer]',
+    '  - radio "제공안함" [checked=false, ref=e275]',
+    '- button "저장" [ref=e3]',
+    '- radio "따로" [checked=false, ref=e9]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e270: { role: 'radio', name: '제공' },
+    e271: { role: 'radio', name: '제공안함' },
+    e275: { role: 'radio', name: '제공안함' },
+    e9: { role: 'radio', name: '따로' },
+  };
+  const { refs: out, labels } = labelChoices(refs, snapshot);
+  assert.equal(out.e270.name, '취소기능 제공');
+  assert.equal(out.e271.name, '취소기능 제공안함');
+  assert.equal(out.e275.name, '반품기능 제공안함');
+  assert.equal(out.e9.name, '따로'); // 바로 앞이 제목이 아니면 그대로
+  assert.deepEqual(labels, { e270: '취소기능', e271: '취소기능', e275: '반품기능' });
+});
+
+test('labelChoices: 제목 아래 체크박스도 제목을 이름 앞에(10/19 BO "구매연령 전체로" → 결제수단 "전체")', () => {
+  const snapshot = [
+    '- heading "결제가능수단 *" [level=6, ref=e62]',
+    '- LabelText [ref=e136] clickable [cursor:pointer]',
+    '  - checkbox "전체" [checked=false, ref=e188]',
+    '- LabelText [ref=e189] clickable [cursor:pointer]',
+    '  - checkbox "신용카드" [checked=true, ref=e258]',
+    '- row "1 플래티어" [ref=e30]',
+    '  - checkbox [checked=false, ref=e31]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e188: { role: 'checkbox', name: '전체' },
+    e258: { role: 'checkbox', name: '신용카드' },
+    e31: { role: 'checkbox', name: '' },
+  };
+  const { refs: out } = labelChoices(refs, snapshot);
+  assert.equal(out.e188.name, '결제가능수단 전체');
+  assert.equal(out.e258.name, '결제가능수단 신용카드');
+  assert.equal(out.e31.name, ''); // 표 행의 체크박스는 그대로
+});
+
+test('검색 기준 선택 상자 바로 뒤의 이름 없는 입력칸은 "기준 검색어" — 기준 상자와 가른다', () => {
+  // 10/19 BO 협력사 조회 팝업: [협력사명 ▾][      ] 의 입력칸이 이름이 없어 "플래티어로 조회해줘" 에 협력사구분 상자를 눌렀다.
+  const snapshot = [
+    '- heading "협력사정보" [level=6, ref=e8]',
+    '- generic "협력사명" [ref=e17] clickable [onclick]',
+    '  - combobox "협력사명" [expanded=false, ref=e24]',
+    '- generic "" [ref=e18] clickable [onclick]',
+    '  - textbox [ref=e25]',
+    '- button "조회" [ref=e10]',
+    '- textbox [ref=e30]',
+    '- combobox "전체" [ref=e31]',
+    '- textbox "메모" [ref=e32]',
+  ].join('\n');
+  const refs: ElementRefs = {
+    e24: { role: 'combobox', name: '협력사명' },
+    e25: { role: 'textbox', name: '' },
+    e30: { role: 'textbox' },
+    e31: { role: 'combobox', name: '전체' },
+    e32: { role: 'textbox', name: '메모' },
+  };
+  const { refs: out, labels } = labelSearchTerms(refs, snapshot);
+  assert.equal(out.e25.name, '협력사명 검색어');
+  assert.equal(out.e30.name, undefined); // 앞이 선택 상자가 아니면 그대로
+  assert.equal(out.e32.name, '메모'); // 이름이 있으면 그대로
+  assert.deepEqual(labels, { e25: '협력사명' });
+});
+
+// 10/19 BO 협력사 조회 팝업에서 "플래티어" 로 조회한 결과.
+const PARTNER_ROWS: ElementRefs = {
+  e33: { role: 'row', name: '1 1000401 플래티어' },
+  e45: { role: 'gridcell', name: '플래티어 2' },
+  e34: { role: 'row', name: '2 1000002 플래티어' },
+  e51: { role: 'gridcell', name: '플래티어  협력사' },
+  e35: { role: 'row', name: '3 1000001 플래티어' },
+  e57: { role: 'gridcell', name: '플래티어' },
+  e58: { role: 'gridcell', name: '상품공급업자' },
+};
+const PARTNER_ITEMS = { e33: 'e33', e45: 'e33', e34: 'e34', e51: 'e34', e35: 'e35', e57: 'e35', e58: 'e35' };
+
+test('셀 글자가 고를 값과 정확히 같은 행만 — 공백만 정리하고, 앞부분이 같은 이름은 아니다', () => {
+  assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 협력사'), ['e34']);
+  assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어'), ['e35']);
+  assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), []);
+});
+
+test('열린 목록에서 「」 값과 글자가 같은 항목 하나만 — 판단 모델의 확신에 맡기지 않는다', () => {
+  // 10/25 BO: "출고소요일을 「1일」로 바꿔줘" 가 "1일" 0.81·"2일" 0.19 로 문턱 아래라 목록만 열고 실패했다.
+  const days = { e2: { role: 'option', name: '오늘발송' }, e3: { role: 'option', name: '1일' }, e4: { role: 'option', name: '2일' } };
+  assert.equal(optionNamed(days, '1일'), 'e3');
+  assert.equal(optionNamed(days, ' 1일 '), 'e3');
+  assert.equal(optionNamed(days, '1'), null);
+  assert.equal(optionNamed({ ...days, e5: { role: 'option', name: '1일' } }, '1일'), null);
+  assert.deepEqual(optionNames({ ...days, e5: { role: 'option', name: '1일' } }), ['오늘발송', '1일', '2일']);
+});
+
+test('정확히 같은 행이 없을 때 물어볼 후보 — 고를 값과 낱말이 겹치는 셀 글자, 중복 없이', () => {
+  assert.deepEqual(nearNames(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), ['플래티어 2', '플래티어 협력사', '플래티어']);
+  assert.deepEqual(nearNames(PARTNER_ROWS, PARTNER_ITEMS, '삼성'), []);
+});
+
+test('조회 팝업에서 고를 값 — 칸 이름을 떼고, 칸 이름뿐이면 고를 값이 없다', () => {
+  // 10/19 BO: "협력사 눌러줘" 에서 칸 이름 "협력사" 를 고를 값으로 뽑아 팝업에서 "협력사" 로 조회했다.
+  assert.equal(valueToPick('협력사', '협력사'), null);
+  assert.equal(valueToPick('협력사 플래티어 협력사', '협력사'), '플래티어 협력사');
+  assert.equal(valueToPick('플래티어 협력사', '협력사'), '플래티어 협력사');
+  assert.equal(valueToPick('', '협력사'), null);
+});
+
+test('누른 선택지가 고른 상태가 되지 않았나 — 선택지는 눌러서 선택돼야, 체크박스는 전 상태를 알 때 바뀌어야', () => {
+  // 10/19 BO: 직구상품 여부가 "해당" 이면 선물하기를 고를 수 없는데, 누르고 "눌렀어요" 로 성공이라 답했다.
+  assert.equal(choiceMissed('radio', undefined, false), true);
+  assert.equal(choiceMissed('radio', undefined, true), false);
+  assert.equal(choiceMissed('checkbox', false, false), true);
+  assert.equal(choiceMissed('checkbox', false, true), false);
+  assert.equal(choiceMissed('checkbox', undefined, false), true); // 전 상태를 모르면 변경 완료를 입증할 수 없다
+  assert.equal(choiceMissed('radio', undefined, null), true); // 못 읽었으면 완료가 아니다
+  assert.equal(choiceMissed('button', undefined, false), false);
+});
+
+test('스냅샷에서 비활성 요소 — 괄호 안 disabled 표시만, 이름에 든 글자는 아니다', () => {
+  // 10/19 BO 상품 등록: 협력사를 정하기 전에는 부가세·배송수단 상자가 잠겨 있는데, 눌러 놓고 "눌렀어요" 라 답했다.
+  const snapshot = [
+    '- combobox "과세" [expanded=false, disabled, ref=e181]',
+    '- textbox [disabled, ref=e153]: 0',
+    '- combobox "구매연령 전체" [expanded=false, ref=e169]',
+    '- button "disabled 안내" [ref=e9]',
+  ].join('\n');
+  assert.deepEqual([...disabledOf(snapshot)], ['e181', 'e153']);
+});
+
+test('스냅샷에서 체크박스·선택지의 지금 상태 — checked 표시가 있는 요소만', () => {
+  // 10/19 BO: 결제가능수단은 처음부터 모두 체크돼 있어 "네이버페이 체크해줘" 가 오히려 풀었다.
+  const snapshot = [
+    '- checkbox "네이버페이" [checked=true, ref=e257]',
+    '- checkbox "페이코" [checked=false, ref=e259]',
+    '- radio "해당" [checked=true, disabled, ref=e243]',
+    '- button "저장" [ref=e3]',
+  ].join('\n');
+  assert.deepEqual(checkStates(snapshot), { e257: true, e259: false, e243: true });
+});
+
+test('labelToggles: 제목 바로 뒤 이름 없는 접기·펼치기 버튼에 제목으로 이름, 상태는 따로(10/19 BO)', () => {
+  const snapshot = [
+    '      - heading "부가 정보" [level=3, ref=e18]',
+    '      - generic',
+    '        - button [expanded=false, ref=e92]',
+    '      - heading "상품이미지 정보" [level=3, ref=e19]',
+    '      - generic',
+    '        - button [expanded=true, ref=e93]',
+    '      - button "AI입력" [ref=e6]',
+    '      - button [expanded=false, ref=e7]',
+    '      - button [ref=e8]',
+  ].join('\n');
+  const refs = {
+    e18: { role: 'heading', name: '부가 정보' },
+    e92: { role: 'button', name: '' },
+    e19: { role: 'heading', name: '상품이미지 정보' },
+    e93: { role: 'button', name: '' },
+    e6: { role: 'button', name: 'AI입력' },
+    e7: { role: 'button', name: '' },
+    e8: { role: 'button', name: '' },
+  } as ElementRefs;
+  const { refs: out, labels, open } = labelToggles(refs, snapshot);
+  assert.equal(out.e92.name, '부가 정보 펼치기·접기');
+  assert.equal(out.e93.name, '상품이미지 정보 펼치기·접기');
+  assert.deepEqual(open, { e92: false, e93: true });
+  assert.equal(out.e7.name, ''); // 앞이 제목이 아니다
+  assert.equal(out.e8.name, ''); // 펼침 상태가 없다
+  assert.deepEqual(labels, { e92: '부가 정보', e93: '상품이미지 정보' });
+});
+
+
+test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 안 이스케이프 실수를 잡는다', () => {
+  for (const code of [FIELD_LABEL_SCRIPT, FORM_VALUES_SCRIPT, NAME_ICON_BUTTONS_SCRIPT]) {
+    assert.doesNotThrow(() => new Function(`return ${code}`));
+  }
+});
+
+ test('popup searches keep a trailing code as a row constraint, whatever the field is called', () => {
+  assert.deepEqual(popupSearchValue('플래티어 협력사(1000002)'), { name: '플래티어 협력사', code: '1000002' });
+  assert.deepEqual(popupSearchValue('플래티어(LA2438)'), { name: '플래티어', code: 'LA2438' });
+  assert.deepEqual(popupSearchValue('업체(주)'), { name: '업체(주)' });
+  assert.deepEqual(popupSearchValue('상품(2024)'), { name: '상품', code: '2024' });
+  const refs = {
+    a: { role: 'cell', name: '플래티어' }, b: { role: 'cell', name: '1000001' },
+    c: { role: 'cell', name: '플래티어' }, d: { role: 'cell', name: '1000002' },
+    e: { role: 'cell', name: '플래티어 협력사' }, f: { role: 'cell', name: '1000003' },
+  };
+  const items = { a: 'r1', b: 'r1', c: 'r2', d: 'r2', e: 'r3', f: 'r3' };
+  assert.deepEqual(rowsNamed(refs, items, '플래티어', '1000002'), ['r2']);
+  assert.deepEqual(rowsNamed(refs, items, '플래티어 협력사', '1000002'), []);
+  assert.deepEqual(rowsNamed(refs, items, '플래티어', '9999999'), []);
+  assert.deepEqual(rowsToPick(refs, items, '플래티어(1000002)', popupSearchValue('플래티어(1000002)')), ['r2']);
+  // 괄호까지가 이름인 값 — 같은 행에 식별자 셀이 없으면 값 전체로 찾는다.
+  const named = { a: { role: 'cell', name: '상품(2024)' }, b: { role: 'cell', name: '상품' } };
+  assert.deepEqual(rowsToPick(named, { a: 'r1', b: 'r2' }, '상품(2024)', popupSearchValue('상품(2024)')), ['r1']);
+});
+
+test('verification requests are read-only while literal values and confirm buttons remain actions', () => {
+  for (const text of ['협력사에 플래티어 협력사가 선택되어 있는지 확인해줘', '브랜드에 플래티어가 선택되어 있는지 확인해줘', '현재 값을 확인해 주세요.', '입력값 검증해줘', 'verify the selected supplier'])
+    assert.equal(isFieldVerification(text), true, text);
+  for (const text of ['협력사를 플래티어 협력사(1000002)로 지정해줘', '확인 버튼 눌러줘', '상품명에 「확인해줘」 입력해줘', '체크박스 체크해줘'])
+    assert.equal(isFieldVerification(text), false, text);
+});
+
+test('popup completion checks the selected name and identifier in the parent value', () => {
+  assert.equal(popupSelectionMatches('1000002 플래티어 협력사', '플래티어 협력사', '1000002'), true);
+  assert.equal(popupSelectionMatches('LA2438 플래티어', '플래티어', 'LA2438'), true);
+  assert.equal(popupSelectionMatches('플래티어(LA2438)', '플래티어', 'LA2438'), true);
+  assert.equal(popupSelectionMatches('1000001 플래티어', '플래티어 협력사', '1000002'), false);
+  assert.equal(popupSelectionMatches('10000020 플래티어 협력사', '플래티어 협력사', '1000002'), false);
+});
+
+test('트리 맨 위에서 못 고르면 끝 이름만 준 줄에는 전체 경로로 보내라고 알린다', () => {
+  // 10/23 BO: 끝 이름만 보낸 줄이 실패하자 LLM 이 조회 버튼만 누르는 줄로 한 번 더 헛돌았다.
+  assert.equal(
+    treeMissNote('표준카테고리 선택 버튼을 눌러 조회 창에서 「사무용품 전문관」을 검색하고 적용해줘', ['문구/오피스', '가전디지털']),
+    '고를 항목을 정하지 못했어요. 후보: 문구/오피스, 가전디지털. 트리는 맨 위 항목부터 전체 경로로 보내 주세요(예: 「상위 > 하위」).',
+  );
+  // 전체 경로를 준 줄은 경로 탓이 아니다 — 후보만 알린다.
+  assert.equal(
+    treeMissNote('표준카테고리를 「문구/오피스 > 사무용품 전문관」으로 지정해줘', ['문구/오피스']),
+    '고를 항목을 정하지 못했어요. 후보: 문구/오피스.',
+  );
+  assert.match(treeMissNote('카테고리를 「의류」로 지정해줘', []), /^고를 항목을 정하지 못했어요\. 트리는/);
 });

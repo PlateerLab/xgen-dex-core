@@ -1,0 +1,237 @@
+[
+  {
+    "request": "http://127.0.0.1:18764 페이지를 열어줘. 입력 동작을 검증할 거야.",
+    "response": "http://127.0.0.1:18764 페이지를 새 탭으로 열었습니다. 입력 동작을 검증하시면 됩니다.",
+    "tools": [
+      {
+        "name": "mcp_local_BrowserGuide",
+        "input": {}
+      },
+      {
+        "name": "mcp_local_BrowserTabs",
+        "input": {
+          "action": "create",
+          "mode": "shared",
+          "url": "http://127.0.0.1:18764"
+        }
+      }
+    ]
+  },
+  {
+    "request": "이름을 푸른바다연구소로 바꿔줘\n\n(빠른 조작 기록: \"이름\" 입력칸에 \"푸른바다연구소\"를 입력했어요. \"이름\" 입력칸에 \"푸른바다연구소\"를 넣었는데 칸에서 그 값을 확인하지 못했어요.\n위 기록에는 완료되지 않은 시도도 있습니다. 현재 화면 값을 확인하고 남은 요청을 브라우저 도구로 마저 수행하세요. 이미 반영된 입력·업로드·선택은 반복하지 마세요.)",
+    "response": "이름을 **푸른바다연구소**로 변경했고, 화면에서 입력값을 확인했습니다. 긴 이름 허용 옵션도 켜야 입력이 반영되어 함께 설정했습니다.",
+    "tools": [
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7",
+          "action": "fill",
+          "ref": "@e4",
+          "text": "푸른바다연구소",
+          "generation": 4
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7",
+          "action": "check",
+          "ref": "@e2",
+          "generation": 5
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7",
+          "action": "fill",
+          "ref": "@e4",
+          "text": "푸른바다연구소",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      }
+    ]
+  },
+  {
+    "request": "여기 메모를 둘째 탭 기록으로 바꿔줘",
+    "response": "둘째 탭의 메모를 **둘째 탭 기록**으로 바꿨고, 입력값을 확인했습니다.",
+    "tools": [
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "fill",
+          "ref": "@e5",
+          "text": "둘째 탭 기록",
+          "generation": 3
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817"
+        }
+      }
+    ]
+  },
+  {
+    "request": "메모에 순서 확인 입력하고, 그다음 수량을 7로 바꿔줘",
+    "response": "첫째 탭에서 메모를 **순서 확인**으로 입력한 뒤, 수량을 **7**로 바꿨고 두 값 모두 화면에서 확인했습니다.",
+    "tools": [
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7",
+          "action": "fill",
+          "ref": "@e5",
+          "text": "순서 확인",
+          "generation": 10
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7",
+          "action": "fill",
+          "ref": "@e6",
+          "text": "7",
+          "generation": 11
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "9aea1c24-9bda-462e-a163-be97d50b60b7"
+        }
+      }
+    ]
+  },
+  {
+    "request": "지금 화면에서 이름은 초록바다연구센터, 메모는 일괄 입력 확인, 수량은 12, 배송 방법은 빠른 배송으로 해줘. 알림 받기도 켜고 상세 설명은 안전하게 보관합니다로 작성해줘. 모든 항목을 화면에서 확인해줘.",
+    "response": "현재 둘째 탭에서 요청하신 값을 모두 입력하고 화면에서 확인했습니다.\n\n- 이름: 초록바다연구센터\n- 메모: 일괄 입력 확인\n- 수량: 12\n- 배송 방법: 빠른 배송\n- 알림 받기: 켜짐\n- 상세 설명: 안전하게 보관합니다\n\n긴 이름 입력을 위해 **긴 이름 허용**도 켰습니다.",
+    "tools": [
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817"
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "check",
+          "ref": "@e2",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "fill",
+          "ref": "@e4",
+          "text": "초록바다연구센터",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "fill",
+          "ref": "@e5",
+          "text": "일괄 입력 확인",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "fill",
+          "ref": "@e6",
+          "text": "12",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "select",
+          "ref": "@e7",
+          "value": "빠른 배송",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "check",
+          "ref": "@e3",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserInteract",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817",
+          "action": "fill",
+          "ref": "@e8",
+          "text": "안전하게 보관합니다",
+          "generation": 6
+        }
+      },
+      {
+        "name": "mcp_local_BrowserSnapshot",
+        "input": {
+          "page_id": "b4b5a37b-b2e0-42d8-b91a-b95369f3a817"
+        }
+      }
+    ]
+  }
+]

@@ -33,6 +33,15 @@ import {
 export type ElementRef = { role: string; name?: string };
 export type ElementRefs = Record<string, ElementRef>;
 
+const DANGEROUS_BROWSER_TARGET =
+  /(삭제|지우기|비우기|제거|탈퇴|해지|로그아웃|초기화|영구|결제하기|구매하기|주문하기|delete|remove|erase|empty|log ?out|reset|uninstall|purchase|checkout|pay now)/i;
+const DANGEROUS_BROWSER_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
+
+/** 「」 안은 넣을 값이다 — "「삭제 금지 상품」 입력해줘" 의 삭제는 요청이 아니다. */
+export function allowsDeciderAction(instruction: string, target: string): boolean {
+  return !DANGEROUS_BROWSER_REQUEST.test(instruction.replace(/「[^」]*」/g, '')) && !DANGEROUS_BROWSER_TARGET.test(target);
+}
+
 export type ChoiceQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> };
 export type ChoiceAnswer = {
   choice: string;
@@ -85,6 +94,15 @@ function gateScore(answers: Record<string, ChoiceAnswer>): number {
   return ps.reduce((a, b) => a + b, 0) / ps.length;
 }
 
+const ONSCREEN_Q: ChoiceQuestion = {
+  type: 'choice',
+  instructions: 'Is the thing the user wants to click, choose or type into shown on this screen, so that one action on it finishes the request?',
+  criteria: { yes: 'yes, it is on this screen', no: 'no, it is not on this screen (needs navigation, search or more steps)' },
+};
+
+/** 클릭·입력 하나(act)인지, 글쓰기(answer)·여러 단계(multi)인지 — E13 의 학습된 ready 에는 뒤 둘이 없어 같이 묻는다. */
+export const GATE_INTENT_Q = GATE_QUESTIONS.gate_intent.q;
+
 const ACTION_QUESTION: ChoiceQuestion = {
   type: 'choice',
   instructions: "What kind of single page action does the user's message ask for?",
@@ -117,6 +135,7 @@ const ROLE_KO: Record<string, string> = {
   textbox: '입력칸',
   searchbox: '검색칸',
   combobox: '선택 상자',
+  file: '파일 칸',
   checkbox: '체크박스',
   radio: '선택지',
   tab: '탭',
@@ -155,9 +174,30 @@ export function chunkKeys(keys: string[], size = CHUNK): string[][] {
 }
 
 /** 따옴표로 감싼 문구 — 있으면 입력할 글자로 그대로 쓴다. */
+/** 여는 따옴표별 닫는 따옴표 — 짝이 맞는 것만 닫는다(「…」 안의 "…" 는 글자다). */
+const QUOTE_CLOSE: Record<string, string> = { '"': '"“”', '“': '"“”', '”': '"“”', "'": "'‘’", '‘': "'‘’", '’': "'‘’", '「': '」', '『': '』' };
+
 export function quotedText(instruction: string): string | null {
-  const m = instruction.match(/["“”'‘’「『]([^"“”'‘’」』]+)["“”'‘’」』]/);
-  return m ? m[1].trim() || null : null;
+  const at = instruction.search(/["“”'‘’「『]/);
+  if (at < 0) return null;
+  const close = QUOTE_CLOSE[instruction[at]];
+  let end = at + 1;
+  while (end < instruction.length && !close.includes(instruction[end])) end++;
+  // 「…」 를 다른 따옴표로 닫기도 한다(10/19 LLM: 「… » 입력해줘) — 짝이 없으면 마지막 닫는 꼴 따옴표까지.
+  if (end >= instruction.length && '「『'.includes(instruction[at])) end = Math.max(...[...'」』»”"’'].map((c) => instruction.lastIndexOf(c)));
+  return end > at && end < instruction.length ? instruction.slice(at + 1, end).trim() || null : null;
+}
+
+/** 이보다 긴 지시는 따옴표 안 글이 없으면 판단 모델에 보내지 않는다 — 판단 서버가 422 로 거절했다(10/19, 594자). */
+export const LONG_INSTRUCTION = 300;
+
+/**
+ * 판단에 쓸 말 — 따옴표 안이 길면(40자 넘게·여러 줄) "…" 로 줄인다. 넣을 글자(따옴표 안)는 그대로 쓰고, 무엇을 할지·어느
+ * 칸인지는 줄인 말로 묻는다 — 상품상세 소개글 안의 "원산지: 대한민국" 때문에 칸을 원산지로 골랐다(10/19 BO).
+ */
+export function judgedText(instruction: string): string {
+  const q = quotedText(instruction);
+  return q && (q.length > 40 || q.includes('\n')) ? instruction.replace(q, '…') : instruction;
 }
 
 /**
@@ -280,6 +320,12 @@ export type Classification = {
   text: string | null;
   /** E13 실행 준비 판단의 선택 (act_now | wait | not_ui). E10 이면 없음. */
   ready?: string;
+  /** 클릭·입력 하나로 끝나는 일일 확률(gate_intent 의 act) — E13 의 ready 에는 여러 단계·글쓰기 선택지가 없다. */
+  single?: number;
+  /** gate_intent 의 확률 전체(act·answer·multi) — 로그용. */
+  intent?: Record<string, number>;
+  /** 말한 대상이 이 화면에 있어 한 번에 끝날 확률(onscreen). */
+  onscreen?: number;
   ms: number;
 };
 
@@ -300,7 +346,11 @@ export async function classify(
   const questions: Record<string, ChoiceQuestion> = { action: ACTION_QUESTION };
   // E13: 학습된 실행 준비 판단(act_now / wait / not_ui)이 판별을 맡는다. E10 은 학습 안 된 판별 질문 두 개.
   const e13 = scr !== null;
-  if (e13) questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS };
+  // ready 에는 여러 단계·글쓰기 선택지가 없어 "자료 읽고 … 화면에 입력해줘" 도 act_now 였다(10/19) — 같이 묻는다.
+  if (e13) (questions.ready = { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }), (questions.gate_intent = GATE_INTENT_Q);
+  // 말한 대상이 이 화면에 있나 — ready 는 할 일이 분명하면 act_now 라, 화면에 없는 페이지로 가라는 말도 비슷한 이름의 버튼을
+  // 눌렀다("임시저장한 상품 확인 페이지로 이동해줘" → 임시저장 버튼). 학습되지 않은 질문이다.
+  if (e13) questions.onscreen = ONSCREEN_Q;
   else for (const [k, g] of Object.entries(GATE_QUESTIONS)) questions[k] = g.q;
   if (candidates.length > 1) {
     const criteria: Record<string, string> = {};
@@ -308,7 +358,10 @@ export async function classify(
     questions.text = { type: 'choice', instructions: TEXT_INSTR, criteria };
   }
   const a = await post({ state: decisionState(instruction, origin, scr), questions });
-  const action = (a.action?.choice ?? 'click') as ActionKind;
+  if (!['click', 'type', 'type_submit'].includes(a.action?.choice)) throw new Error('조작 판단 응답이 없거나 잘못됐어요.');
+  if (e13 && [a.ready?.probabilities?.act_now, a.gate_intent?.probabilities?.act, a.onscreen?.probabilities?.yes].some((p) => p === undefined || !Number.isFinite(p) || p < 0 || p > 1))
+    throw new Error('빠른 조작 판단 확률을 확인하지 못했어요.');
+  const action = a.action.choice as ActionKind;
   let text: string | null = null;
   if (action !== 'click') {
     text = quoted ?? (candidates.length === 1 ? candidates[0] : null);
@@ -316,7 +369,7 @@ export async function classify(
     if (!text && picked) text = candidates[Number(picked.slice(1))] ?? null;
   }
   const gate = e13 ? (a.ready?.probabilities?.act_now ?? 0) : gateScore(a);
-  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, ms: now() - t0 };
+  return { gate, action, text, ready: e13 ? a.ready?.choice : undefined, single: a.gate_intent?.probabilities?.act, intent: a.gate_intent?.probabilities, onscreen: a.onscreen?.probabilities?.yes, ms: now() - t0 };
 }
 
 export type Pick = {
@@ -329,16 +382,71 @@ export type Pick = {
 };
 
 /**
- * 표기가 같은 요소는 하나만 남긴다 (앞쪽 것). 같은 이름의 링크가 여럿이면
- * (아이콘 링크 + 글자 링크 등) 확률이 그 사이에 나뉘어 확신도가 낮게 나오는데,
- * 어느 것을 눌러도 같은 곳이라 나눌 이유가 없다.
+ * 같은 이름의 활성 요소가 있는 비활성 요소를 뺀다 — 고른 값을 보여만 주는 칸이다. BO 표준카테고리는 고르는 선택 상자와
+ * 같은 이름의 비활성 입력칸(상품속성 정보)이 있어, "표준카테고리를 … 지정해줘" 에 판단 모델이 비활성 칸을 0.997 로 골랐다(10/19).
+ * 같은 이름이 없는 비활성 요소는 남긴다 — 고르면 "비활성이라 누르지 않았어요" 로 답한다.
+ */
+export function withoutDisabledTwins(refs: ElementRefs, disabled: Set<string>): ElementRefs {
+  const key = (r: ElementRef): string => (r.name ?? '').replace(/\s+/g, '');
+  const enabled = new Set(Object.entries(refs).filter(([k, r]) => !disabled.has(k) && key(r)).map(([, r]) => key(r)));
+  return Object.fromEntries(Object.entries(refs).filter(([k, r]) => !disabled.has(k) || !enabled.has(key(r))));
+}
+
+/** 말이 부른 칸 — 입력칸·선택 상자·체크·라디오의 이름이나 칸 이름표 전체가 말에 있으면. 선택 상자 이름 뒤의 지금 값(" (현재: 3일)")은 뗀다. */
+export function namedField(refs: ElementRefs, labels: Record<string, string>, text: string): { ref: string; name: string } | null {
+  const said = text.replace(/\s+/g, '');
+  for (const [ref, el] of Object.entries(refs)) {
+    if (!TYPABLE_ROLES.has(el.role) && el.role !== 'checkbox' && el.role !== 'radio') continue;
+    for (const raw of [el.name, labels[ref]]) {
+      const name = (raw ?? '').replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
+      if (name.length >= 2 && said.includes(name)) return { ref, name };
+    }
+  }
+  return null;
+}
+
+/**
+ * 지시가 부른 칸 이름 — "X에 「…」 입력해줘", "X를 …로 지정해줘" 의 X(띄어쓰기 없이). 그런 꼴이 아니면 null.
+ * 「」 안은 값이라 보지 않는다.
+ */
+export function saidField(text: string): string | null {
+  const outside = text.replace(/「[^」]*」/g, '「」');
+  const m =
+    outside.match(/^\s*(.+?)\s*(?:에|에서|을|를|은|는)\s*「」/) ??
+    outside.match(/^\s*(.+?)\s*(?:을|를|은|는)\s+.+?(?:으로|로)\s*(?:지정|선택|바꾸|바꿔|변경|설정)/);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+/**
+ * 고른 요소 이름이 지시가 부른 칸 이름과 같은 칸인지 — 한쪽이 다른 쪽을 품거나, 세 글자 이상 이어서 겹치거나, 부른 이름의 두 글자 조각
+ * 절반 이상이 요소 이름에 있다.
+ * 조각 하나만 겹치는 것은 다른 칸이다("고객센터 전화번호" 를 "업체상품번호" 에 넣었다 — "번호" 만 겹침, 10/21 BO 002).
+ */
+export function sameField(said: string, name: string): boolean {
+  const key = name.replace(/\s*\(현재: .*\)$/, '').replace(/\s+/g, '');
+  if (!key || !said) return false;
+  if (key.includes(said) || said.includes(key)) return true;
+  // 세 글자 이상 이어서 겹치면 같은 칸("대표이미지 대체 텍스트" ~ "대체 텍스트를 입력해주세요").
+  if ([...said].slice(0, -2).some((_, i) => key.includes(said.slice(i, i + 3)))) return true;
+  const pairs = [...said].slice(0, -1).map((_, i) => said.slice(i, i + 2));
+  return pairs.length > 0 && pairs.filter((p) => key.includes(p)).length * 2 >= pairs.length;
+}
+
+/** 화면의 어떤 요소 이름의 낱말(2자 이상)이라도 말에 나오는지 — 팝업이 이 말과 상관있는지 본다. */
+export function mentionsAnyName(refs: ElementRefs, text: string): boolean {
+  const said = text.replace(/\s+/g, '');
+  return Object.values(refs).some((r) => (r.name ?? '').split(/\s+/).some((w) => w.length >= 2 && said.includes(w)));
+}
+
+/**
+ * 같은 ref만 중복이다. 이름과 역할이 같아도 서로 다른 칸·팝업·링크일 수 있으므로
+ * 이름 없는 요소를 포함해 서로 다른 ref는 모두 유지한다. 기존 호출부를 위해 함수 이름은 유지한다.
  */
 export function dedupeByLabel(refs: ElementRefs, keys: string[]): string[] {
   const seen = new Set<string>();
   return keys.filter((k) => {
-    const l = elementLabel(refs[k]);
-    if (seen.has(l)) return false;
-    seen.add(l);
+    if (!Object.hasOwn(refs, k) || seen.has(k)) return false;
+    seen.add(k);
     return true;
   });
 }
@@ -375,24 +483,22 @@ function argmax(probs: Record<string, number>): [string, number] | null {
   return best;
 }
 
-/** 한 방향으로만 물은 묶음에서 2등이 이만큼 받았으면 결승에도 올린다 — 편향은 0.98 → 0.2 까지 뒤집었다(아래). */
-const RUNNER_UP = 0.1;
-
 /**
- * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 근소한 2등도. 한 방향
- * 질문은 앞자리 편향이 있어 근소한 차이는 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼
- * "협력사" 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98).
+ * 묶음 라운드에서 결승에 올릴 요소 — 1등, 그리고 한 방향으로만 물었으면(묶음이 여럿) 2등도. 한 방향 질문은
+ * 앞자리 편향이 있어 차이를 순서가 정한다(10/16 BO: "협력사 칸 눌러줘" 에 같은 묶음의 메뉴 버튼 "협력사"
+ * 0.61·0.80, 폼 칸 "협력사" 0.39·0.20 — 두 방향으로 묻는 결승에 같이 올리면 폼 칸 0.98). 2등 확률에 문턱을
+ * 두지 않는다: 10/19 BO "반품기능 제공안함으로 해줘" 에 앞의 "취소기능 제공안함" 0.926, 맞는 칸 0.071 이었다.
  */
 function contenders(probs: Record<string, number>, oneWay: boolean): string[] {
   const [first, second] = Object.entries(probs).sort((a, b) => b[1] - a[1]);
   if (!first) return [];
-  return oneWay && second && second[1] >= RUNNER_UP ? [first[0], second[0]] : [first[0]];
+  return oneWay && second && second[1] > 0 ? [first[0], second[0]] : [first[0]];
 }
 
 /**
- * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). 표기가 같은
- * 요소를 합친 뒤 25개씩 묶어 묶음마다 승자를 뽑고(한 요청), 승자가 여럿이면
- * 승자끼리 한 번 더 고른다. 묶음·결승 모두 순서를 뒤집은 질문과 평균한다.
+ * 2단계 — 스냅샷 요소 중 하나를 고른다 ("무조건 하나 고르기"). ref 중복만
+ * 제거한 뒤 25개씩 묶는다. 한 방향 묶음의 1등과 기준을 넘긴 2등을 결승에 올리고,
+ * 결승에서는 순서를 뒤집은 질문과 평균한다. 묶음이 하나면 그것이 결승이다.
  */
 export async function pickElement(
   post: DecisionPost,
@@ -453,7 +559,7 @@ const bigramsOf = (s: string): Set<string> => {
  * 화면 앞쪽(머리·메뉴) 60개와 말과 글자(두 글자 묶음)가 많이 겹치는 60개만 후보로 남긴다 — 읽는 순서는 지킨다.
  * 앞쪽을 남기는 건 이름이 안 겹치는 간접 표현("인기 상품 순위" → 랭킹존)이 대개 메뉴를 가리키기 때문이다.
  */
-function narrowLarge(keys: string[], refs: ElementRefs, instruction: string): string[] {
+export function narrowLarge(keys: string[], refs: ElementRefs, instruction: string): string[] {
   if (keys.length <= 2 * MAX_LINES) return keys;
   const said = bigramsOf(instruction);
   const score = (k: string): number => {
@@ -469,7 +575,13 @@ function narrowLarge(keys: string[], refs: ElementRefs, instruction: string): st
     .sort((a, b) => b.s - a.s || a.i - b.i)
     .slice(0, MAX_LINES)
     .map((x) => x.k);
-  const keep = new Set([...head, ...matched]);
+  // 남긴 요소마다 바로 앞 구역 제목도 남긴다 — 제목이 빠지면 뒤쪽 표의 칸이 앞 구역 아래 붙어 보였다
+  // (10/21 BO: 전시카테고리 표의 "플래티어" 칸이 "브랜드 *" 제목 아래에 놓였다).
+  const titles = matched.flatMap((k) => {
+    for (let i = keys.indexOf(k) - 1; i >= 0; i--) if (refs[keys[i]]?.role === 'heading') return [keys[i]];
+    return [];
+  });
+  const keep = new Set([...head, ...matched, ...titles]);
   return keys.filter((k) => keep.has(k));
 }
 
@@ -523,7 +635,21 @@ async function pickWindowed(
     const confidence = keys.length === 1 ? 1 : 0;
     return { ref: winners[0], confidence, top: [], calls: windows.length, ms: now() - t0 };
   }
-  const state = stateWith(buildScreen(scr.origin, winners.map((k) => byRef.get(k)!), scr.size), instruction);
+  // 결승 화면에는 승자마다 바로 앞 제목도 싣는다(후보는 아니다) — 승자만 실으면 이름이 같은 선택지가 똑같은 줄이
+  // 된다(10/19 BO 상품 등록 "반품기능 제공안함으로 해줘" 에 결승 화면이 "제공안함" 두 줄이라 취소기능 것을 골랐다).
+  const pos = new Map(scr.all.map((r, i) => [r.ref, i]));
+  const lines = new Set<string>();
+  for (const k of winners) {
+    const i = pos.get(k) ?? -1;
+    for (let j = i - 1; j >= 0; j--) {
+      if (scr.all[j].role === 'heading') {
+        lines.add(scr.all[j].ref);
+        break;
+      }
+    }
+    lines.add(k);
+  }
+  const state = stateWith(buildScreen(scr.origin, [...lines].map((k) => byRef.get(k)!), scr.size), instruction);
   const fin = await post({ state, questions: pairQuestions(refs, winners, 'q', true) });
   const finProbs = pairProbs(fin, 'q');
   const best = argmax(finProbs);
@@ -554,4 +680,15 @@ export function decisionClient(baseUrl: string, timeoutMs = 5000): DecisionPost 
     const data = (await res.json()) as { answers: Record<string, ChoiceAnswer> };
     return data.answers;
   };
+}
+
+/** shortcut: 명시적인 순서 연결어만 보류한다. 암묵적 복합 지시는 판단 모델 보정이 필요하다. */
+export function needsSequentialPlan(text: string): boolean {
+  const instruction = text.replace(/「[^」]*」|“[^”]*”|"[^"]*"|'[^']*'/g, '');
+  return /(?:그\s*다음|그\s*후|한\s*다음|한\s*뒤|그리고|\bthen\b)/i.test(instruction);
+}
+
+/** 이름 붙은 다른 탭 닫기는 서버가 탭 목록을 확인하도록 넘긴다. */
+export function closesCurrentTab(text: string): boolean {
+  return /^(?:(?:이|현재|지금)\s*)?(?:탭|페이지)(?:을|를)?\s*닫(?:아(?:\s*줘|주세요)?|기)(?:요)?[.!]?$/i.test(text.trim()) || /^(?:please\s+)?close (?:the |this |current )?tab[.!]?$/i.test(text.trim());
 }

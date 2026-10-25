@@ -5707,6 +5707,16 @@ button {
 .confirm-card-page {
   color: var(--muted);
 }
+/* 진행 전 확인 카드(views/UserConfirmCard)의 검토 내용 — 초안이 길면 카드 안에서 스크롤한다. */
+.confirm-card-details {
+  max-height: 40vh;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .confirm-card-options {
   display: flex;
   flex-direction: column;

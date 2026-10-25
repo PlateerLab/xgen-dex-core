@@ -240,6 +240,19 @@ export interface LocalToolDelegate {
   ): Promise<LocalToolResult>;
 }
 
+/** delegate 여럿을 하나로 — 광고는 차례로 이어 붙이고, 호출은 그 도구를 가진 첫 delegate 로 보낸다. */
+export function joinDelegates(...delegates: LocalToolDelegate[]): LocalToolDelegate {
+  return {
+    advertise: () => delegates.flatMap((delegate) => delegate.advertise()),
+    owns: (tool) => delegates.some((delegate) => delegate.owns(tool)),
+    callTool: async (tool, args, context) => {
+      const owner = delegates.find((delegate) => delegate.owns(tool));
+      if (!owner) throw new Error(`unknown local tool: ${tool}`);
+      return owner.callTool(tool, args, context);
+    },
+  };
+}
+
 export type LocalNotificationHandler = (
   title: string,
   body: string,
@@ -1233,7 +1246,7 @@ export class LocalToolProvider {
     this.missingFolderMessage = options.missingMessage || NO_FOLDER_MESSAGE;
   }
 
-  /** 폴더와 무관한 이 PC 도구(브라우저). 자기 설정으로 스스로 게이트한다. */
+  /** 폴더와 무관한 이 PC 도구(브라우저·사용자 확인). 자기 설정으로 스스로 게이트한다 — 여럿이면 joinDelegates 로 묶는다. */
   configureDelegate(delegate: LocalToolDelegate | null): void {
     this.delegate = delegate;
   }

@@ -21,6 +21,8 @@ import { CONTEXT_LIMIT_CHOICES, teamsContextStore, useContextChip } from '../tea
 import { browserSelectionStore, useBrowserSelections } from '../browser-selection-store';
 import { useBrowserConfirms } from '../browser-confirm-store';
 import { ConfirmCard } from './ConfirmCard';
+import { useUserConfirms } from '../user-confirm-store';
+import { UserConfirmCard } from './UserConfirmCard';
 import { notificationStore, useNotifications } from '../notifications';
 import { notificationChatKey } from '@dex/protocol/notifications';
 import { ShareToTeamsModal } from './ShareToTeams';
@@ -401,6 +403,8 @@ export const Chat: React.FC<{
   const browserSelections = useBrowserSelections(session.key);
   // 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 묻는 카드(main browser-confirm).
   const confirms = useBrowserConfirms(session.interactionId, agent.workflowId);
+  // 에이전트가 일을 이어 가기 전에 묻는 카드(main user-confirm) — 같은 자리, 확인창 카드가 있으면 그 뒤에.
+  const userConfirms = useUserConfirms(session.interactionId, agent.workflowId);
   const browserSelectionsRef = useRef<BrowserSelectionResult[]>(browserSelections);
   browserSelectionsRef.current = browserSelections;
   const [preparingImages, setPreparingImages] = useState(0);
@@ -1897,6 +1901,9 @@ export const Chat: React.FC<{
 
       <div className="chat-input">
         {confirms[0] && <ConfirmCard key={confirms[0].requestId} request={confirms[0]} more={confirms.length - 1} />}
+        {!confirms[0] && userConfirms[0] && (
+          <UserConfirmCard key={userConfirms[0].requestId} request={userConfirms[0]} more={userConfirms.length - 1} />
+        )}
         {voiceError && (
           <div className="voice-error small" title={voiceError}>
             음성 재생 실패: {voiceError}

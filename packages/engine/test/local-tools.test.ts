@@ -14,6 +14,7 @@ import {
   SHELL_TOOL,
   SHELL_JOB_TOOL,
   LocalToolProvider,
+  joinDelegates,
   coerceOpenArgs,
   coerceShellArgs,
   openerInvocation,
@@ -349,6 +350,21 @@ test('LocalControl 은 이 대화의 폴더와 쓸 수 있는 도구를 알려 �
   });
   const browserOnly = (await p.callTool(LOCAL_CONTROL_TOOL, {}, inChat('chat-b'))).structuredContent;
   assert.deepEqual(browserOnly?.tools, [{ name: 'mcp_local_BrowserTabs', description: '' }]);
+});
+
+test('joinDelegates 는 광고를 이어 붙이고 호출을 그 도구를 가진 delegate 로 보낸다', async () => {
+  const { p } = provider();
+  const one = (name: string) => ({
+    advertise: () => [{ name }],
+    owns: (tool: string) => tool === name,
+    callTool: async (tool: string) => ({ content: [{ type: 'text' as const, text: `${name}:${tool}` }] }),
+  });
+  p.configureDelegate(joinDelegates(one('BrowserTabs'), one('UserConfirm')));
+  const names = p.advertise().map((tool) => tool.name);
+  assert.ok(names.includes('BrowserTabs') && names.includes('UserConfirm'));
+  assert.equal((await p.callTool('UserConfirm', {}, inChat('chat-a'))).content[0].text, 'UserConfirm:UserConfirm');
+  assert.equal((await p.callTool('BrowserTabs', {}, inChat('chat-a'))).content[0].text, 'BrowserTabs:BrowserTabs');
+  await assert.rejects(() => joinDelegates(one('BrowserTabs')).callTool('Nope', {}), /unknown local tool: Nope/);
 });
 
 test('폴더가 없는 대화에서는 파일·터미널·클립보드·알림 모두 거부한다', async () => {

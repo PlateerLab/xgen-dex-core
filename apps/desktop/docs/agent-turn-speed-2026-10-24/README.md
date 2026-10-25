@@ -167,7 +167,7 @@ xgen-agent-runtime 브랜치 `feature/fold-superseded-snapshots`, 커밋 `5ba1db
 | 칸은 한 번에 모아서(상세·대표이미지·배송비정책 포함) | 1·2단계 + 범용 수정 | 규칙이 있어도 54600 Fill 17회. 25~28 은 첫 Fill 에 26~27줄을 모았지만 재시도로 3~5회. 재시도의 큰 원인은 앞 칸의 검증 알림("협력사를 먼저", 정상가, 마진율)이 다음 줄의 클릭을 가로챈 것(최소 8줄) | **4e 완료** — 알림을 닫고 실패한 줄은 먼저 채울 칸의 줄 뒤나 바로 한 번 다시 한다 |
 | 입력 결과로만 확인, 화면 다시 읽지 않기 | 1·2단계가 다룸 | Fill 직후 Snapshot 이 run 마다 1~4회. Fill 결과에 이미 `form_values` 가 있다 | 반영 뒤 측정. 필요하면 결과에 "다시 읽을 필요 없음" 표시 |
 | 이미 원하는 값인 칸은 다시 입력하지 않기 | 범용 수정 | 54606 한 Fill 에서 약 21칸 재입력(38s), "그대로 두어줘" 줄도 눌렀다. 반대로 배송비정책은 placeholder "선택" 을 값으로 봐 done 을 냈다(거짓 성공, 3건) | **4a 완료**(「」 값). 4h(placeholder·할 일 없는 줄)는 조사만 — placeholder 거짓 성공 3건은 모두 박소민 수정 bb54f23d(10/22 18:07, 말에서 뽑은 값으로 비교) 이전 실행이고 10/23 에는 다시 없었다. "그대로 두어줘" 줄은 전체 Fill 입력에서 1번(이미 선택된 라디오를 눌러 피해 없음)이라 규칙을 더하지 않았다 |
-| 자료는 처음 한 번만, 엑셀 열은 한 번에 | 도구·설정 문제 | (a) fast-act-* 는 `enable_memory` 가 꺼져 매 턴 이전 대화가 없다 — 다시 읽을 수밖에 없다. (b) 켠 run 은 내용이 남아 있었지만 첫 읽기가 셀 좌표 형식이고 날짜가 serial(46327)이라 다시 읽었다. 54628 은 serial 을 못 바꿔 틀린 판매기간을 넣고 done | 4f — 엑셀을 머리글→값 행으로, 날짜를 바꿔 주는 읽기. 등록 workflow 의 memory 설정 확인 |
+| 자료는 처음 한 번만, 엑셀 열은 한 번에 | 도구·설정 문제 | (a) fast-act-* 는 `enable_memory` 가 꺼져 매 턴 이전 대화가 없다 — 다시 읽을 수밖에 없다. (b) 켠 run 은 내용이 남아 있었지만 첫 읽기가 셀 좌표 형식이고 날짜가 serial(46327)이라 다시 읽었다. 54628 은 serial 을 못 바꿔 틀린 판매기간을 넣고 done | **4f 코드 완료** — 엑셀 한 장을 읽기까지 턴마다 도구 4.6번. 가져오기(UserPc get)의 경로 처리와 한글 파일 이름 두 가지를 고쳤다. serial 날짜는 기기 python 으로 읽은 3번에서만 나왔다. memory 설정은 박소민 확인 |
 | 표준카테고리는 전체 경로로 | 범용 수정 | 끝 이름만 줘서 3번 실패(54583, 54585) | 4d — 끝 이름으로 트리를 찾아 고르기. DeX 설명의 BO 예시를 일반 예시로 |
 | 판매시작일은 오늘 이후 | 범용 수정 | 1번(54567), 알림을 보고 모델이 스스로 고쳤다 | 낮음 — 알림이 모델에 닿는 것은 확인됨 |
 | 결제수단은 없는 것만 해제, "전체" 는 건드리지 않기 | 범용 수정 | 확인 불가(1줄, 결과가 잘림). 결제수단의 실제 문제는 알림 가로채기와 요소 확신 낮음(0.52~0.59) | 4b — 낮음 |
@@ -257,6 +257,26 @@ DeX 에도 BO 전용 문구가 있다: `fast-act-labels.ts:360` 의 `/협력사|
 - 한계: 알림 문구가 칸 이름을 쓰지 않으면("가격 정보를 확인해 주세요") 바로 다시 한 번 하고 끝난다. 먼저 채울 칸이 이 배치에 없으면 다시 해도 같은 알림이다 — 54628 처럼 협력사를 따로 채우는 순서는 LLM 이 알림을 보고 고친다.
 - 테스트: `test/fast-act-brief.test.ts` 2개 추가. desktop 743개 중 737개 통과·실패 0(나머지는 건너뜀), typecheck·typecheck:node 통과.
 
+### 4f. 자료 읽기: 가져온 파일이 모델이 적은 그 경로에 있게 한다 (코드 완료, 반영 전)
+
+- 왜: 10/22~23 기록에서 엑셀을 읽은 턴이 42개다. 처음 제대로 읽기까지 턴마다 파일 도구를 평균 4.6번 불렀다(목록 보기 → 가져오기 → python, 사이에 실패). 도구 실행은 턴마다 합쳐 0.5~3.9초지만 호출마다 LLM 왕복이 하나씩 붙는다(그 run 들의 왕복 평균 2~27초).
+- 실패를 종류별로 셌다. 앞의 둘이 도구 쪽 버그다.
+
+| 실패 | 횟수 | 원인 |
+|---|---|---|
+| python 이 `prod.xlsx` 를 열다 `IsADirectoryError`, 다시 가져오다 `cannot overwrite directory` | 8턴 10번 + 3턴 | `UserPc get` 이 `sandbox_path` 를 늘 폴더로 만들었다. 모델은 cp 처럼 파일 경로(`prod.xlsx`, `/tmp/a.xlsx`, `data.xlsx`)를 줘서 `prod.xlsx/신상품_정보.xlsx` 가 됐다 |
+| `FileNotFoundError: '…/신상품_정보.xlsx'` | 9턴 11번(12번 중) | 맥이 주는 한글 이름(NFD, 자모 분리)이 sandbox 에 그대로 남았다. 모델이 다시 적는 이름은 NFC 라 리눅스에서는 다른 파일이다. 채팅 첨부는 이미 NFC 로 맞추고 있었고, 기기 폴더 복사만 빠져 있었다. 10/23 오전부터 파일 이름이 영어(`new_product_info.xlsx`)로 바뀐 뒤에는 이 실패가 없다 |
+| `could not move into /workspace/…: Permission denied` | 4턴 | 모델이 sandbox 밖 절대 경로(`/workspace/…`, 기기 경로)를 줬다. 파일은 이미 sandbox 에 있는데 실패만 돌려줬다 |
+| 기기 python 오류(`init_import_site`, `No module named 'encodings'`, `xcrun: unable to load libxcrun`) | 7턴 10번 | 박소민 맥의 UserPc 셸 안에서 python 이 뜨지 않았다. 원인은 확인하지 못했다(아래 "확인되지 않은 것") |
+
+- serial 날짜(46327)는 기기 python 으로 읽은 3번(54599, 54627, 54628)에서만 나왔다. python 이 안 떠서 모델이 xlsx 의 XML 을 직접 풀었기 때문이다. sandbox 의 openpyxl 로 읽은 30여 번에는 serial 이 한 번도 없었다(날짜는 `2026-11-01` 이나 datetime 으로 나왔다). 그래서 날짜를 바꿔 주는 새 읽기 도구는 만들지 않았다 — 가져오기만 제대로 되면 모델은 sandbox 에서 읽는다.
+- 바꾼 것
+  - xgen-workflow `editor/geny_bridge/user_pc.py` `_move_in_sandbox`(브랜치 `fix/connector-browser-guide` c19bdebe): 파일 하나를 가져오면서 `sandbox_path` 가 그 파일과 같은 확장자로 끝나면 그 이름의 파일로 놓는다. 그 이름의 폴더가 이미 있으면 그 안에 넣는다(mv 와 같다). 그 밖에는 지금처럼 폴더. 옮기지 못하면 실패 글에 파일이 지금 있는 sandbox 경로를 적는다. 결과 경로는 정규화한다(`…/workspace/./data/…` → `…/workspace/data/…`).
+  - DeX `packages/protocol/src/agent-data.ts` `workspaceUpload`(1185242f): 작업 공간에 올리는 이름과 하위 폴더를 NFC 로 맞춘다. 모든 올리기(데스크톱 엔진의 CopyToWorkspace, 모바일, 채팅 첨부)가 이 한 곳을 지난다.
+- 설정(박소민): fast-act-* workflow 는 `enable_memory` 가 꺼져 있어 매 턴 첫 요청이 5.3~6.0k 토큰으로 시작한다 — 앞 턴에 읽은 엑셀이 없으니 매 턴 다시 읽는다. 여러 턴에 걸친 등록이면 memory 를 켜야 "처음 한 번만 읽기" 가 가능하다. 켠 run(demo-test-20~28)은 둘째 턴부터 대부분 0~1번이었다.
+- 한계: 목록 보기 → 가져오기 → python 의 3번은 남는다. 반영 뒤 같은 요청으로 턴당 파일 도구 수를 다시 세야 한다. 기기 python 오류는 그대로다.
+- 테스트: xgen-workflow `tests/test_user_pc_host.py` 3개 추가(옮기기 스크립트를 실제 bash 로 돌림: 파일 이름, 이미 있는 폴더·보통 폴더·여러 파일, 옮기기 실패). 관련 테스트 110개 통과. DeX protocol 테스트 1개 추가, 374개 통과, typecheck 통과.
+
 ## 에이전트 지침 제안 (BO 상품 등록 에이전트, 사이트 전용)
 
 범용 수정과 별개로 이 에이전트의 system_prompt 에 넣을 문장. 영상 기준 도구 18회 → 5회 안팎.
@@ -275,3 +295,4 @@ DeX 에도 BO 전용 문구가 있다: `fast-act-labels.ts:360` 의 `/협력사|
 - 1단계 안내문 변경이 실제 모델 행동(BrowserFill 선택, 한 응답 다중 호출)을 바꾸는지 — 서버 반영 뒤 같은 요청으로 측정해야 한다.
 - 2a: 로그아웃 상태에서 로그인 버튼 클릭이 메인 화면을 붙여 오는지. 모델이 붙은 화면을 쓰고 BrowserSnapshot 을 안 부르는지.
 - 2b: 접기가 캐시 적중(`cache_read_tokens`)과 정확도에 주는 영향 — 같은 요청을 접기 전후로 돌려 비교.
+- 4f: 박소민 맥의 UserPc 셸에서 python 이 뜨지 않은 까닭. 가두기 프로필(`workspace-shell.ts`)은 `/Library/Frameworks` 읽기를 허용하지만 `/Applications/Xcode.app` 은 허용하지 않는다 — `/usr/bin/python3` 이 Xcode 를 가리키면 xcrun 이 실패한다(이 맥의 engine 테스트에서도 같은 libxcrun 실패를 봤다). python.org 3.14 의 `init_import_site` 실패는 그 기기에서 재현해야 한다.

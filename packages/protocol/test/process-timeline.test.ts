@@ -110,6 +110,21 @@ test('기본 도구가 아니면 등록된 설명 첫 마디, 없으면 이름�
   assert.equal(describeTool('mcp__connector__Read', { file_path: '/x/workspace/uploads/a.json' }).text, '파일 읽기 · uploads/a.json');
 });
 
+test('도구가 정한 사람용 이름(title)을 설명보다 먼저 쓰고, 해시 값 인자는 보이지 않는다', () => {
+  const digest = { args_digest: 'e4722acd0e20b16768602f223882150e0a7e01d8c4c2b6d8f0a1b2c3d4e5f607' };
+  // 서버가 입력 대신 다이제스트만 보낸 기기 도구 — 지금 화면에 영어 설명과 해시가 보이던 줄
+  assert.equal(
+    describeTool('mcp_local_BrowserInteract', digest, 'Interact with a page using refs.').text,
+    'Interact with a page using refs',
+  );
+  assert.equal(describeTool('mcp_local_BrowserInteract', digest, 'Interact with a page.', '화면 조작').text, '화면 조작');
+  assert.equal(describeTool('lookup_order', { order_id: 'O-1' }, '주문 조회.', '주문 조회').text, '주문 조회 · order_id O-1');
+  assert.equal(describeTool('UserPc', digest).text, 'UserPc');
+  // 기본 도구도 입력이 다이제스트뿐이면 끝에 `·` 를 남기지 않는다
+  assert.equal(describeTool('ToolSearch', digest).text, '사용할 도구 찾기');
+  assert.equal(describeTool('ToolSearch', { query: 'UserConfirm' }).text, '사용할 도구 찾기 · UserConfirm');
+});
+
 // ── 결과 모양 ─────────────────────────────────────────────────────────
 
 test('안쪽 객체에 이름이 있으면 카드로, 바깥의 참/거짓은 함께 보인다', () => {

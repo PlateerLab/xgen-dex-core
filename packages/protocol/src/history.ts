@@ -209,6 +209,32 @@ export function turnInputText(v: unknown): string {
   return toDisplayText(v);
 }
 
+/** 서버가 턴 시작 때 미리 만든 기록 행의 답 자리 키 — `{node_id, node_name, inputs, result}`. */
+const NODE_PLACEHOLDER_KEYS = new Set(['node_id', 'node_name', 'inputs', 'result']);
+
+/**
+ * 턴의 답 → **표시할 답변**.
+ *
+ * 서버는 턴을 시작하면서 기록 행을 미리 만들고 답 자리에 `{"node_id": "pre", …, "result": ""}` 를
+ * 넣어 둔다. io-logs 는 result 가 비면 이 JSON 을 그대로 돌려줘, 도는 중에 연 대화(또는 끝내 답을
+ * 못 쓴 턴)에 JSON 이 답변 말풍선으로 그려졌다(2026-10-26 실측). result 가 빈 이 모양은 "아직 답 없음" 이다.
+ */
+export function turnOutputText(v: unknown): string {
+  const text = toDisplayText(v);
+  const s = text.trim();
+  if (!s.startsWith('{') || !s.includes('"node_id"')) return text;
+  try {
+    const d = JSON.parse(s) as unknown;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return text;
+    const o = d as Record<string, unknown>;
+    const keys = Object.keys(o);
+    if (!keys.includes('node_id') || !keys.includes('result') || !keys.every((k) => NODE_PLACEHOLDER_KEYS.has(k))) return text;
+    return o.result == null || o.result === '' ? '' : text;
+  } catch {
+    return text;
+  }
+}
+
 /** 질문에 붙은 파일 — 말풍선에 이름표로 그린다. 내용은 서버 워크스페이스에 있다. */
 export interface TurnAttachment {
   name: string;
@@ -316,7 +342,7 @@ export class HistoryApi {
       `/api/chat/io-logs?${params}`,
     );
     const turns = (res.in_out_logs ?? []).map((r) => {
-      const stored = parseStoredGeneratedContent(toDisplayText(r.output_data));
+      const stored = parseStoredGeneratedContent(turnOutputText(r.output_data));
       return {
         logId: r.log_id,
         ioId: r.io_id,

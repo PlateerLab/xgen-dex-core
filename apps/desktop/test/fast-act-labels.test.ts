@@ -13,6 +13,9 @@ import {
   labelToggles,
   nearNames,
   rowsNamed,
+  rowsToPick,
+  optionNamed,
+  optionNames,
   valueToPick,
   popupSearchValue,
   popupSelectionMatches,
@@ -430,6 +433,16 @@ test('셀 글자가 고를 값과 정확히 같은 행만 — 공백만 정리�
   assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), []);
 });
 
+test('열린 목록에서 「」 값과 글자가 같은 항목 하나만 — 판단 모델의 확신에 맡기지 않는다', () => {
+  // 10/25 BO: "출고소요일을 「1일」로 바꿔줘" 가 "1일" 0.81·"2일" 0.19 로 문턱 아래라 목록만 열고 실패했다.
+  const days = { e2: { role: 'option', name: '오늘발송' }, e3: { role: 'option', name: '1일' }, e4: { role: 'option', name: '2일' } };
+  assert.equal(optionNamed(days, '1일'), 'e3');
+  assert.equal(optionNamed(days, ' 1일 '), 'e3');
+  assert.equal(optionNamed(days, '1'), null);
+  assert.equal(optionNamed({ ...days, e5: { role: 'option', name: '1일' } }, '1일'), null);
+  assert.deepEqual(optionNames({ ...days, e5: { role: 'option', name: '1일' } }), ['오늘발송', '1일', '2일']);
+});
+
 test('정확히 같은 행이 없을 때 물어볼 후보 — 고를 값과 낱말이 겹치는 셀 글자, 중복 없이', () => {
   assert.deepEqual(nearNames(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), ['플래티어 2', '플래티어 협력사', '플래티어']);
   assert.deepEqual(nearNames(PARTNER_ROWS, PARTNER_ITEMS, '삼성'), []);
@@ -513,11 +526,11 @@ test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 
   }
 });
 
- test('supplier and brand searches keep codes as row constraints, not name queries', () => {
-  assert.deepEqual(popupSearchValue('플래티어 협력사(1000002)', '협력사'), { name: '플래티어 협력사', code: '1000002' });
-  assert.deepEqual(popupSearchValue('플래티어(LA2438)', '브랜드'), { name: '플래티어', code: 'LA2438' });
-  assert.deepEqual(popupSearchValue('업체(주)', '협력사'), { name: '업체(주)' });
-  assert.deepEqual(popupSearchValue('상품(2024)', '상품명'), { name: '상품(2024)' });
+ test('popup searches keep a trailing code as a row constraint, whatever the field is called', () => {
+  assert.deepEqual(popupSearchValue('플래티어 협력사(1000002)'), { name: '플래티어 협력사', code: '1000002' });
+  assert.deepEqual(popupSearchValue('플래티어(LA2438)'), { name: '플래티어', code: 'LA2438' });
+  assert.deepEqual(popupSearchValue('업체(주)'), { name: '업체(주)' });
+  assert.deepEqual(popupSearchValue('상품(2024)'), { name: '상품', code: '2024' });
   const refs = {
     a: { role: 'cell', name: '플래티어' }, b: { role: 'cell', name: '1000001' },
     c: { role: 'cell', name: '플래티어' }, d: { role: 'cell', name: '1000002' },
@@ -527,6 +540,10 @@ test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 
   assert.deepEqual(rowsNamed(refs, items, '플래티어', '1000002'), ['r2']);
   assert.deepEqual(rowsNamed(refs, items, '플래티어 협력사', '1000002'), []);
   assert.deepEqual(rowsNamed(refs, items, '플래티어', '9999999'), []);
+  assert.deepEqual(rowsToPick(refs, items, '플래티어(1000002)', popupSearchValue('플래티어(1000002)')), ['r2']);
+  // 괄호까지가 이름인 값 — 같은 행에 식별자 셀이 없으면 값 전체로 찾는다.
+  const named = { a: { role: 'cell', name: '상품(2024)' }, b: { role: 'cell', name: '상품' } };
+  assert.deepEqual(rowsToPick(named, { a: 'r1', b: 'r2' }, '상품(2024)', popupSearchValue('상품(2024)')), ['r1']);
 });
 
 test('verification requests are read-only while literal values and confirm buttons remain actions', () => {

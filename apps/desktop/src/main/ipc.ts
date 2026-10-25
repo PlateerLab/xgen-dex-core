@@ -244,6 +244,10 @@ export const CHANNELS = {
   chatEvent: 'chat:event',
   //: '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). 이력은 보존.
   chatEndSession: 'chat:end-session',
+  /** 에이전트가 진행 전에 묻는 카드(UserConfirm) — 목록 읽기(renderer → main), 목록이 바뀜(main → renderer), 답(renderer → main). */
+  chatUserConfirmList: 'chat:userConfirmList',
+  chatUserConfirmEvent: 'chat:userConfirmEvent',
+  chatUserConfirmResolve: 'chat:userConfirmResolve',
   //: 대화별 폴더 연결 — 목록·추가(네이티브 선택 창)·해제·파일 관리자로 열기.
   chatFoldersList: 'chat-folders:list',
   chatFoldersAdd: 'chat-folders:add',

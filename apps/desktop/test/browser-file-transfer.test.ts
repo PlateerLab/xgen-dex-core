@@ -130,6 +130,31 @@ test('capture and HAR stop pass only private paths to the helper and commit to c
   }
 });
 
+test('upload asks nothing but only takes files from the conversation folders', async () => {
+  const root = join(parent, 'upload-scope-root');
+  await mkdir(root);
+  await writeFile(join(parent, 'outside.png'), 'PNG');
+  let calls = 0;
+  const runtime = {
+    resolvePage: async () => ({ info: { pageId: 'page' } }),
+    runAgentCommand: async () => { calls++; return { page: null, result: {} }; },
+  } as unknown as BrowserRuntime;
+  const context = { workflowId: 'wf', interactionId: 'upload-scope' };
+  const args = { action: 'upload', page_id: 'page', ref: '@e1', path: join(parent, 'outside.png') };
+  const unlinked = new BrowserToolProvider(runtime);
+  unlinked.configure(true, () => []);
+  await assert.rejects(unlinked.callTool(BROWSER_ADVANCED_TOOL, args, context), /연결된 폴더가 없어/);
+  const linked = new BrowserToolProvider(runtime);
+  linked.configure(true, () => [root]);
+  try {
+    await assert.rejects(linked.callTool(BROWSER_ADVANCED_TOOL, args, context), /browser_denied|PATH_DOMAIN_MISMATCH|폴더/);
+    await assert.rejects(linked.callTool(BROWSER_ADVANCED_TOOL, { ...args, path: '../outside.png' }, context));
+    assert.equal(calls, 0);
+  } finally {
+    linked.clearBrowserFileGrants();
+  }
+});
+
 test('advanced rejects unadvertised file commands and network routes before invoking helper', async () => {
   let calls = 0;
   const provider = new BrowserToolProvider({ runAgentCommand: async () => { calls++; } } as unknown as BrowserRuntime);

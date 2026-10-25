@@ -108,6 +108,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
   return [
     {
       name: BROWSER_TABS_TOOL,
+      title: '브라우저 탭',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
@@ -133,6 +134,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_NAVIGATE_TOOL,
+      title: '페이지 이동',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait. ' +
@@ -156,6 +158,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_SNAPSHOT_TOOL,
+      title: '화면 읽기',
       annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Return the accessibility snapshot and fresh @eN refs for a page. Pass the returned generation to ref-based interactions so stale refs are rejected.',
@@ -172,13 +175,15 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_INTERACT_TOOL,
+      title: '화면 조작',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' +
         'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs. ' +
         'When a click or keypress takes the page to a new document or route, the result carries the new page\'s snapshot and its generation — use those refs; earlier refs are no longer valid. ' +
-        'When the page stays, no snapshot is attached and earlier refs keep working; a dialog or alert left on the page comes back as dialog/alerts. ' +
+        'When the page stays, no snapshot is attached and earlier refs keep working; a dialog or alert left on the page comes back as dialog/alerts — ' +
+        'its buttons are not in an earlier snapshot, so take BrowserSnapshot for their refs before clicking one. ' +
         'Pressing the confirm button of a site confirmation dialog (취소·닫기 plus another button) first asks the user on this PC; on refusal you get user_denied or their instructions — never press it another way.',
       inputSchema: {
         type: 'object',
@@ -222,6 +227,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_CAPTURE_TOOL,
+      title: '화면 캡처',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description: 'Capture screenshot/full screenshot/PDF or inspect console/page errors.',
       inputSchema: {
@@ -247,9 +253,10 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_ADVANCED_TOOL,
+      title: '브라우저 고급 조작',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
+        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations require a local confirmation; uploading files from the connected folders does not.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -290,28 +297,31 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_FILL_TOOL,
+      title: '칸 채우기',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Fill many fields of a form on a shared browser tab fast — pass that tab\'s page_id (BrowserTabs list, mode shared); it is brought to the front while filling. ' +
         'Each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
-        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
+        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "거래처를 「한빛상사」로 지정해줘", "대표이미지에 images/a.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
         `search popups, collapsed sections and file uploads from the connected folders. Use at most ${MAX_FILL_STEPS} steps per call. ` +
         'Use it to put values into fields of the page that is open now — not for going to another page, pressing buttons that are not a field value, or reading the page. ' +
         'Every step names the field and the exact value, never a vague one ("자료에 맞는 것", "적절한 값"). ' +
-        'If you need to look at the choices to decide a value (a list, popup or tree), look first with the other browser tools, then put the decided value in a step — the step makes the pick itself. ' +
+        'A value you already have (from the data or the user) goes straight into a step as written — do not open a list, popup or tree first to see its choices; ' +
+        'the step opens it, finds that value and picks it. ' +
+        'Look at the choices with the other browser tools only when no value is given and you must choose one yourself, then put the chosen value in a step. ' +
         'Put the remaining fields in this call too rather than filling them one by one with BrowserInteract. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
         'Fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") need no step; one sent anyway with its value in 「」 is left untouched and reported done with unchanged: true. ' +
-        'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields such as 협력사 and 표준카테고리 come before prices. ' +
+        'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields near the top come before the prices and other fields below them. ' +
         'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
-        'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
+        'Put every value to type inside 「」 so it is typed exactly ("제조사에 「한빛 제조 (주)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
-        'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
-        'For a supplied supplier/brand code, keep it with the name inside the value (플래티어 협력사(1000002)); the picker searches the name and matches both name and code. ' +
-        'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
+        'Fields picked in a search popup (거래처, 브랜드 …) and file uploads are steps too ("브랜드를 「한빛」으로 지정해줘", "대표이미지에 images/a.png 올려줘") — ' +
         'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
+        'For a supplied identifier code, keep it with the name inside the value ("거래처를 「한빛상사(10023)」로 지정해줘"); the picker searches the name and matches both name and code. ' +
+        'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
         'Returns complete, per-step results (done / failed / skipped), remaining_steps, and form_values read once after the batch. ' +
         'Results list a done step by its number i, the field it acted on and the value read from it (value, cut at 40 characters) — a later done row supersedes an earlier failed row for the same field; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
         'form_values has one line per field: name [type] [비활성] [형식 "…"]: "value" (type text and enabled fields carry no tag). ' +
@@ -321,7 +331,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
         'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」 ("상품상세 내용에 「…」 입력해줘"), ' +
         'using real line breaks between paragraphs (not the two characters \\ and n) — it replaces the editor content and each line becomes a paragraph. ' +
-        'Category trees are steps too, with the full path: "표준카테고리를 「문구/오피스 > 사무용품 전문관」으로 지정해줘" — the step opens the tree, expands each level and applies.',
+        'Category trees are steps too, with the full path: "카테고리를 「생활용품 > 주방용품」으로 지정해줘" — the step opens the tree, expands each level and applies.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -333,10 +343,11 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_FORM_VALUES_TOOL,
+      title: '입력값 확인',
       annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Read every field of the form on a page: field label, current value, chosen radio/checkbox/option, placeholder and disabled state, ' +
-        'plus fields picked in a search popup (협력사, 브랜드 …). Read-only. ' +
+        'plus fields picked in a search popup (거래처, 브랜드 …). Read-only. ' +
         'Use it before planning inputs, or when BrowserFill reports form_values_error. BrowserFill already returns current form_values; do not read them again after a batch. ' +
         'Pass the page_id of the tab to read (BrowserTabs list shows it).',
       inputSchema: {
@@ -349,10 +360,11 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
 }
 
 const sensitiveSessionApprovals = new Set<string>();
+// upload 은 묻지 않는다 — 올릴 파일은 그 대화에 연결된 폴더 안에서만 고를 수 있고(scopedPath),
+// 폴더를 연결한 것이 곧 허락이다. 같은 폴더의 파일을 BrowserFill 로 올릴 때도 묻지 않는다.
 const sensitive = new Set([
   'cookies',
   'storage',
-  'upload',
   'download',
   'geolocation',
   'headers',
@@ -362,9 +374,11 @@ const sensitive = new Set([
   'eval',
 ]);
 
+export const browserActionNeedsApproval = (action: string): boolean => sensitive.has(action);
+
 async function approve(action: string, detail: string, signal?: AbortSignal): Promise<boolean> {
   if (signal?.aborted) return false;
-  if (!sensitive.has(action) || sensitiveSessionApprovals.has(action)) return true;
+  if (!browserActionNeedsApproval(action) || sensitiveSessionApprovals.has(action)) return true;
   const options = {
     type: 'warning' as const,
     buttons: ['거부', '이번만 허용', '이 앱 세션 동안 허용'],
@@ -681,6 +695,22 @@ export class BrowserToolProvider {
     if (!this.enabled)
       throw new BrowserRuntimeError('browser_disabled', '브라우저 접근이 꺼져 있습니다.');
     const args = objectArgs(raw);
+    try {
+      return await this.dispatch(tool, args, context);
+    } catch (error) {
+      // 서버는 기기 오류 글을 버리고 코드만 모델에 알린다 — 무엇이 막혔는지 이 PC 진단 기록에 남긴다(10/26 dev: 확인창이 뜬 뒤
+      // BrowserInteract 가 124ms 만에 browser_denied 로 끝났는데 action 도 이유도 남지 않았다). 인자 값·오류 글은 넣지 않는다 —
+      // 입력한 글자가 실릴 수 있다.
+      diag('browser-tool', 'failed', {
+        tool,
+        action: typeof args.action === 'string' ? args.action.slice(0, 40) : undefined,
+        code: error instanceof BrowserRuntimeError ? error.code : error instanceof Error ? error.name : 'unknown',
+      });
+      throw error;
+    }
+  }
+
+  private async dispatch(tool: string, args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {
     if (tool === BROWSER_TABS_TOOL) return this.tabs(args, context);
     if (tool === BROWSER_NAVIGATE_TOOL) return this.navigate(args, context);
     if (tool === BROWSER_SNAPSHOT_TOOL) return this.snapshot(args, context);

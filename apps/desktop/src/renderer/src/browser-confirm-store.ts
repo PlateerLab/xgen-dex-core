@@ -38,12 +38,12 @@ class BrowserConfirmStore {
 
 export const browserConfirmStore = new BrowserConfirmStore();
 
-/** 그 대화의 카드 — 오래된 것부터. */
-export function confirmsFor(
-  requests: BrowserConfirmRequest[],
+/** 그 대화의 카드 — 오래된 것부터. 진행 전 확인 카드(user-confirm-store)도 같은 규칙이다. */
+export function confirmsFor<T extends { workflowId: string; interactionId?: string; createdAt: number }>(
+  requests: T[],
   interactionId: string,
   workflowId?: string,
-): BrowserConfirmRequest[] {
+): T[] {
   return requests
     .filter((request) => (request.interactionId ? request.interactionId === interactionId : !!workflowId && request.workflowId === workflowId))
     .sort((a, b) => a.createdAt - b.createdAt);

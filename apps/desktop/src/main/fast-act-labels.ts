@@ -355,10 +355,34 @@ export function rowsNamed(refs: ElementRefs, items: Record<string, string>, valu
     (!code || cells.some(id => id.row === c.row && id.name === code))).map(c => c.row))];
 }
 
-/** Search by name, but require the supplied identifier in the same result row. */
-export function popupSearchValue(value: string, label: string): { name: string; code?: string } {
-  const match = /협력사|브랜드/.test(label) && value.match(/^(.+?)\s*\(([A-Za-z0-9_-]*[0-9][A-Za-z0-9_-]*)\)$/);
+/**
+ * 열린 목록에서 「」 로 적은 값과 글자가 같은 항목 — 공백만 정리해 비교하고, 하나뿐일 때만. 값을 그대로 적은 줄은 판단 모델의
+ * 확신에 맡기지 않는다(10/25 BO: "출고소요일을 「1일」로 바꿔줘" 가 "1일" 0.81·"2일" 0.19 로 문턱 아래라 목록만 열고 실패했다).
+ */
+export function optionNamed(options: ElementRefs, value: string): string | null {
+  const want = squash(value);
+  const hits = Object.keys(options).filter((ref) => squash(options[ref].name ?? '') === want);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** 목록에서 값을 고르지 못했을 때 알릴 항목 이름 — 앞에서부터, 다시 보낼 줄에 그대로 쓸 수 있게 이름만. */
+export function optionNames(options: ElementRefs, max = 8): string[] {
+  return [...new Set(Object.values(options).map((o) => squash(o.name ?? '')).filter(Boolean))].slice(0, max);
+}
+
+/**
+ * 조회 팝업에서 찾을 이름과 식별자 — 값 끝 괄호 안이 숫자 섞인 영숫자면("한빛상사(10023)") 이름으로 찾고 같은 행의 식별자로
+ * 맞춘다. 칸 이름으로 가르지 않는다 — 괄호까지가 이름인 값("상품(2024)")은 rowsToPick 이 값 전체로 한 번 더 찾는다.
+ */
+export function popupSearchValue(value: string): { name: string; code?: string } {
+  const match = value.match(/^(.+?)\s*\(([A-Za-z0-9_-]*[0-9][A-Za-z0-9_-]*)\)$/);
   return match ? { name: match[1].trim(), code: match[2] } : { name: value };
+}
+
+/** 조회 결과에서 고를 행 — 이름과 같은 행에 식별자 셀이 있는 행, 그런 행이 없으면 셀 글자가 값 전체와 같은 행. */
+export function rowsToPick(refs: ElementRefs, items: Record<string, string>, value: string, search: { name: string; code?: string }): string[] {
+  const rows = rowsNamed(refs, items, search.name, search.code);
+  return rows.length || !search.code ? rows : rowsNamed(refs, items, value);
 }
 
 /** The parent picker may display code before name instead of the request's name(code). */

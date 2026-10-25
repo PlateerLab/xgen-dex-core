@@ -136,6 +136,7 @@ import {
   MCP_ADD_TOOL,
   MCP_REMOVE_TOOL,
   MCP_LIST_TOOL,
+  joinDelegates,
   type LocalToolDelegate,
   type LocalToolResult,
 } from '@dex/engine/local-tools';
@@ -162,6 +163,7 @@ import {
 import { BrowserHistoryStore } from './browser-history';
 import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
 import { BrowserConfirmCenter } from './browser-confirm';
+import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
@@ -177,6 +179,7 @@ import type {
   BrowserPopupPermission,
   BrowserPopupResolveRequest,
 } from '@dex/protocol/browser';
+import type { UserConfirmResolveRequest } from '@dex/protocol/user-confirm';
 import { systemMetricsSampler } from './system-metrics';
 import { TeamsSocketHub } from './teams-ws';
 import { IdeTerminalHub, type IdeTerminalDeps } from './ide-terminal';
@@ -1664,6 +1667,28 @@ const browserConfirms = new BrowserConfirmCenter({
   },
 });
 
+// 에이전트가 일을 이어 가기 전에 묻는 카드(UserConfirm 도구, user-confirm) — 확인창 카드와 같은 자리에 뜨고, 알림도 같다.
+const userConfirms = new UserConfirmCenter({
+  push: (requests) => safeSend(mainWindow, CHANNELS.chatUserConfirmEvent, requests),
+  notify: (request, workflowName) => {
+    notificationCenter.publish({
+      id: `user-confirm-${request.requestId}`,
+      type: 'agent.requested',
+      title: '에이전트가 진행해도 될지 묻습니다',
+      body: request.question.slice(0, 120),
+      occurredAt: new Date(request.createdAt).toISOString(),
+      workflowId: request.workflowId,
+      workflowName,
+      interactionId: request.interactionId,
+      groupKey: `agent:${request.workflowId}`,
+      target: request.interactionId
+        ? { kind: 'chat', workflowId: request.workflowId, workflowName: workflowName || request.workflowId, interactionId: request.interactionId }
+        : { kind: 'none' },
+    });
+  },
+});
+const userConfirmTools = new UserConfirmTools(userConfirms);
+
 // ── 대화별 폴더 연결 ──────────────────────────────────────────────
 // 채팅 헤더의 [폴더 연결]로 고른 폴더가 그 대화의 작업 공간이다. 이 PC 의 파일·
 // 터미널 도구는 호출마다 그 대화의 폴더를 여기서 찾고, 없으면 거부한다.
@@ -2173,7 +2198,7 @@ function syncMcp(): void {
     decisionPost,
     browserConfirms.ask,
   );
-  getLocalToolProvider().configureDelegate(browserTools);
+  getLocalToolProvider().configureDelegate(joinDelegates(browserTools, userConfirmTools));
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
@@ -3605,6 +3630,16 @@ ipcMain.handle(CHANNELS.browserConfirmResolve, (event, request: BrowserConfirmRe
     throw new Error('browser_denied: 허용되지 않은 확인창 응답입니다.');
   }
   return browserConfirms.resolve(request);
+});
+ipcMain.handle(CHANNELS.chatUserConfirmList, (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return [];
+  return userConfirms.list();
+});
+ipcMain.handle(CHANNELS.chatUserConfirmResolve, (event, request: UserConfirmResolveRequest) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('user_denied: 허용되지 않은 확인 카드 응답입니다.');
+  }
+  return userConfirms.resolve(request);
 });
 ipcMain.handle(CHANNELS.browserPopupResolve, (event, request: BrowserPopupResolveRequest) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {

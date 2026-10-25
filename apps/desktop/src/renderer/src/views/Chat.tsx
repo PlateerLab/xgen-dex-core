@@ -21,6 +21,8 @@ import { CONTEXT_LIMIT_CHOICES, teamsContextStore, useContextChip } from '../tea
 import { browserSelectionStore, useBrowserSelections } from '../browser-selection-store';
 import { useBrowserConfirms } from '../browser-confirm-store';
 import { ConfirmCard } from './ConfirmCard';
+import { useUserConfirms } from '../user-confirm-store';
+import { UserConfirmCard } from './UserConfirmCard';
 import { notificationStore, useNotifications } from '../notifications';
 import { notificationChatKey } from '@dex/protocol/notifications';
 import { ShareToTeamsModal } from './ShareToTeams';
@@ -401,6 +403,8 @@ export const Chat: React.FC<{
   const browserSelections = useBrowserSelections(session.key);
   // 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 묻는 카드(main browser-confirm).
   const confirms = useBrowserConfirms(session.interactionId, agent.workflowId);
+  // 에이전트가 일을 이어 가기 전에 묻는 카드(main user-confirm) — 같은 자리, 확인창 카드가 있으면 그 뒤에.
+  const userConfirms = useUserConfirms(session.interactionId, agent.workflowId);
   const browserSelectionsRef = useRef<BrowserSelectionResult[]>(browserSelections);
   browserSelectionsRef.current = browserSelections;
   const [preparingImages, setPreparingImages] = useState(0);
@@ -1322,6 +1326,28 @@ export const Chat: React.FC<{
       alive = false;
     };
   }, [agent.workflowId, processView]);
+  // 이 PC 가 광고하는 도구의 사람용 이름(title) — 모델이 부르는 이름(mcp_<서버>_<도구>)으로 찾는다.
+  const [toolTitles, setToolTitles] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!processView) return;
+    let alive = true;
+    void xgen.mcp
+      .status()
+      .then((status) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const server of status.servers) {
+          for (const tool of server.tools) if (tool.title) map[`mcp_${server.name}_${tool.name}`] = tool.title;
+        }
+        setToolTitles(map);
+      })
+      .catch(() => {
+        // 이름을 못 받아도 카드는 도구 설명으로 그린다
+      });
+    return () => {
+      alive = false;
+    };
+  }, [processView]);
   const agentNotificationMuted = !!notificationSnapshot.profile.mutedAgents[agent.workflowId];
   const chatNotificationMuted =
     !!notificationSnapshot.profile.mutedChats[
@@ -1666,11 +1692,11 @@ export const Chat: React.FC<{
                       // 하면 되는지 한 줄, 그리고 문의할 때 말할 코드. 원문은
                       // 지우지 않고 접어 둔다(개발자·지원이 펼친다).
                       <>
-                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />}
+                        {processView && hasProcessFlow(m) && <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} toolTitles={toolTitles} />}
                         <ErrorBlock info={m.errorInfo} />
                       </>
                     ) : processView && hasProcessFlow(m) ? (
-                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} />
+                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} toolTitles={toolTitles} />
                     ) : m.text ? (
                       <Markdown text={answerFiles?.text ?? m.text} />
                     ) : m.streaming && m.uploadProgress ? (
@@ -1897,6 +1923,9 @@ export const Chat: React.FC<{
 
       <div className="chat-input">
         {confirms[0] && <ConfirmCard key={confirms[0].requestId} request={confirms[0]} more={confirms.length - 1} />}
+        {!confirms[0] && userConfirms[0] && (
+          <UserConfirmCard key={userConfirms[0].requestId} request={userConfirms[0]} more={userConfirms.length - 1} />
+        )}
         {voiceError && (
           <div className="voice-error small" title={voiceError}>
             음성 재생 실패: {voiceError}

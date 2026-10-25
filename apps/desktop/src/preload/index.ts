@@ -108,6 +108,7 @@ import type {
   BrowserSelectionSession,
   BrowserState,
 } from '@dex/protocol/browser';
+import type { UserConfirmRequest, UserConfirmResolveRequest } from '@dex/protocol/user-confirm';
 
 /** 인앱 탐색기 — 파일 저장소 폴더의 직계 자식 하나. */
 export interface WorkspaceEntryLike {
@@ -129,7 +130,7 @@ export interface McpBridgeStatusLike {
     name: string;
     connected: boolean;
     error?: string;
-    tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+    tools: Array<{ name: string; title?: string; description?: string; inputSchema?: Record<string, unknown> }>;
   }>;
 }
 
@@ -677,6 +678,15 @@ const api = {
     /** '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). best-effort. */
     endSession: (workflowId: string, interactionId: string): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.chatEndSession, workflowId, interactionId),
+    /** 에이전트가 진행 전에 묻는 카드 — 답을 기다리는 카드 목록과 답(main user-confirm). */
+    userConfirmList: (): Promise<UserConfirmRequest[]> => ipcRenderer.invoke(CHANNELS.chatUserConfirmList),
+    resolveUserConfirm: (request: UserConfirmResolveRequest): Promise<boolean> =>
+      ipcRenderer.invoke(CHANNELS.chatUserConfirmResolve, request),
+    onUserConfirm: (cb: (requests: UserConfirmRequest[]) => void): (() => void) => {
+      const handler = (_event: unknown, requests: UserConfirmRequest[]) => cb(requests);
+      ipcRenderer.on(CHANNELS.chatUserConfirmEvent, handler);
+      return () => ipcRenderer.removeListener(CHANNELS.chatUserConfirmEvent, handler);
+    },
   },
 
   /**

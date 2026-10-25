@@ -301,7 +301,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       description:
         'Fill many fields of a form on a shared browser tab fast — pass that tab\'s page_id (BrowserTabs list, mode shared); it is brought to the front while filling. ' +
         'Each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
-        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 「플래티어 협력사」로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
+        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "거래처를 「한빛상사」로 지정해줘", "대표이미지에 images/a.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
         `search popups, collapsed sections and file uploads from the connected folders. Use at most ${MAX_FILL_STEPS} steps per call. ` +
         'Use it to put values into fields of the page that is open now — not for going to another page, pressing buttons that are not a field value, or reading the page. ' +
@@ -313,13 +313,13 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
         'Fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") need no step; one sent anyway with its value in 「」 is left untouched and reported done with unchanged: true. ' +
-        'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields such as 협력사 and 표준카테고리 come before prices. ' +
+        'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields near the top come before the prices and other fields below them. ' +
         'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
-        'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
+        'Put every value to type inside 「」 so it is typed exactly ("제조사에 「한빛 제조 (주)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
-        'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 「플래티어」로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
+        'Fields picked in a search popup (거래처, 브랜드 …) and file uploads are steps too ("브랜드를 「한빛」으로 지정해줘", "대표이미지에 images/a.png 올려줘") — ' +
         'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
-        'For a supplied supplier/brand code, keep it with the name inside the value ("협력사를 「플래티어 협력사(1000002)」로 지정해줘"); the picker searches the name and matches both name and code. ' +
+        'For a supplied identifier code, keep it with the name inside the value ("거래처를 「한빛상사(10023)」로 지정해줘"); the picker searches the name and matches both name and code. ' +
         'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
         'Returns complete, per-step results (done / failed / skipped), remaining_steps, and form_values read once after the batch. ' +
         'Results list a done step by its number i, the field it acted on and the value read from it (value, cut at 40 characters) — a later done row supersedes an earlier failed row for the same field; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
@@ -330,7 +330,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Never include save/submit/approval steps (임시저장, 등록, 승인요청): ask the user first. ' +
         'Long text you write yourself (product detail, 상품상세) also goes in as a step with the text inside 「」 ("상품상세 내용에 「…」 입력해줘"), ' +
         'using real line breaks between paragraphs (not the two characters \\ and n) — it replaces the editor content and each line becomes a paragraph. ' +
-        'Category trees are steps too, with the full path: "표준카테고리를 「문구/오피스 > 사무용품 전문관」으로 지정해줘" — the step opens the tree, expands each level and applies.',
+        'Category trees are steps too, with the full path: "카테고리를 「생활용품 > 주방용품」으로 지정해줘" — the step opens the tree, expands each level and applies.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -346,7 +346,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Read every field of the form on a page: field label, current value, chosen radio/checkbox/option, placeholder and disabled state, ' +
-        'plus fields picked in a search popup (협력사, 브랜드 …). Read-only. ' +
+        'plus fields picked in a search popup (거래처, 브랜드 …). Read-only. ' +
         'Use it before planning inputs, or when BrowserFill reports form_values_error. BrowserFill already returns current form_values; do not read them again after a batch. ' +
         'Pass the page_id of the tab to read (BrowserTabs list shows it).',
       inputSchema: {

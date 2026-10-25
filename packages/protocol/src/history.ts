@@ -228,7 +228,7 @@ export function turnOutputText(v: unknown): string {
     if (!d || typeof d !== 'object' || Array.isArray(d)) return text;
     const o = d as Record<string, unknown>;
     const keys = Object.keys(o);
-    if (!keys.includes('node_id') || !keys.every((k) => NODE_PLACEHOLDER_KEYS.has(k))) return text;
+    if (!keys.includes('node_id') || !keys.includes('result') || !keys.every((k) => NODE_PLACEHOLDER_KEYS.has(k))) return text;
     return o.result == null || o.result === '' ? '' : text;
   } catch {
     return text;

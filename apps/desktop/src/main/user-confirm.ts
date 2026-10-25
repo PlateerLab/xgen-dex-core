@@ -1,7 +1,7 @@
 /**
  * 에이전트가 일을 이어 가기 전에 사용자에게 묻는 기기 도구(`UserConfirm`) — 답은 같은 턴의 도구 결과로 돌아간다.
  *
- * 10/25 박소민 시나리오("내 확인을 받아 백오피스에 등록해 줘")에서 에이전트는 초안을 답변으로 쓰고 "진행이라고 답해 달라" 며
+ * 10/25 실측("내 확인을 받아 등록해 줘" 같은 요청)에서 에이전트는 초안을 답변으로 쓰고 "진행이라고 답해 달라" 며
  * 턴을 끝냈다. 사용자가 "진행해줘" 를 보내면 새 턴이 처음부터 다시 시작했다 — 대화 기록을 다시 읽고, 브라우저 안내를 다시
  * 부르고, 무엇을 하던 중이었는지 다시 정했다. 이 도구는 그 왕복을 한 턴 안의 카드 하나로 바꾼다.
  *
@@ -43,7 +43,7 @@ export function userConfirmToolSchema(): LocalToolSchema {
     inputSchema: {
       type: 'object',
       properties: {
-        question: { type: 'string', maxLength: QUESTION_MAX, description: 'One line, e.g. "이 내용으로 BO 에 입력하고 임시저장할까요?"' },
+        question: { type: 'string', maxLength: QUESTION_MAX, description: 'One line, e.g. "이 내용으로 입력하고 저장할까요?"' },
         details: { type: 'string', maxLength: DETAILS_MAX, description: 'What the user reviews: the draft, the values to enter, what will happen.' },
       },
       required: ['question'],

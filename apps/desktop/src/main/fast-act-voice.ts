@@ -50,7 +50,7 @@ import {
   labelSnapshot,
   locativeAfterLabel,
   nearNames,
-  rowsNamed,
+  rowsToPick,
   valueToPick,
   optionNamed,
   optionNames,
@@ -837,7 +837,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     const found = await this.typedText(post, text, origin, this.screenOf(origin, s.snap.refs), utterance, label);
     const value = found && valueToPick(found, label);
     if (!value) return (diag(SCOPE, 'popup-skip', { why: '고를 값 없음', found, label, refs: Object.keys(s.snap.refs).length, url: s.page.url }), null);
-    const search = popupSearchValue(value, label);
+    const search = popupSearchValue(value);
     const runtime = getBrowserRuntime();
     const popup = s.page;
     let last: VoiceAction | null = null;
@@ -858,7 +858,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     let rows: string[] = [];
     for (const until = now() + ROWS_WAIT_MS; ; ) {
       s = await this.snapshot(true).catch(() => null);
-      rows = s ? rowsNamed(s.snap.refs, s.snap.items, search.name, search.code) : [];
+      rows = s ? rowsToPick(s.snap.refs, s.snap.items, value, search) : [];
       if (rows.length || now() > until) break;
       await new Promise((r) => setTimeout(r, 250));
     }
@@ -983,7 +983,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
   /**
    * 판단 모델이 파일 칸 줄("대표이미지 파일 올리기")을 골랐다 — 그 칸에 파일을 올린다(fast-act-upload). 파일은 대화에 연결된
    * 폴더에서 칸이 받는 형식의 것 가운데 판단 모델이 고른다(말에 파일 이름이 그대로 있으면 그 파일). 올리기는 브라우저 도구
-   * upload 로 한다(같은 폴더 범위·같은 확인 창 — 세션에 한 번 허용하면 그 뒤로는 묻지 않는다). 파일을 정하지 못하면 묻는다.
+   * upload 로 한다(같은 폴더 범위 — 폴더를 연결한 것이 허락이라 따로 묻지 않는다). 파일을 정하지 못하면 묻는다.
    */
   private async upload(
     text: string,
@@ -1057,7 +1057,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       diag(SCOPE, 'upload-failed', { file, why });
-      return say(`${josa(`"${file}"`, '을', '를')} 올리지 못했어요. ${/거부/.test(why) ? '올리기를 허용하지 않으셨어요.' : why.slice(0, 120)}`);
+      return say(`${josa(`"${file}"`, '을', '를')} 올리지 못했어요. ${why.slice(0, 120)}`);
     }
     // 올라갔는지 — 그 칸 영역이 바뀌기를 기다린다.
     let landed: Landed | null = null;

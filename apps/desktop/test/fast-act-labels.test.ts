@@ -13,6 +13,7 @@ import {
   labelToggles,
   nearNames,
   rowsNamed,
+  rowsToPick,
   optionNamed,
   optionNames,
   valueToPick,
@@ -525,11 +526,11 @@ test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 
   }
 });
 
- test('supplier and brand searches keep codes as row constraints, not name queries', () => {
-  assert.deepEqual(popupSearchValue('플래티어 협력사(1000002)', '협력사'), { name: '플래티어 협력사', code: '1000002' });
-  assert.deepEqual(popupSearchValue('플래티어(LA2438)', '브랜드'), { name: '플래티어', code: 'LA2438' });
-  assert.deepEqual(popupSearchValue('업체(주)', '협력사'), { name: '업체(주)' });
-  assert.deepEqual(popupSearchValue('상품(2024)', '상품명'), { name: '상품(2024)' });
+ test('popup searches keep a trailing code as a row constraint, whatever the field is called', () => {
+  assert.deepEqual(popupSearchValue('플래티어 협력사(1000002)'), { name: '플래티어 협력사', code: '1000002' });
+  assert.deepEqual(popupSearchValue('플래티어(LA2438)'), { name: '플래티어', code: 'LA2438' });
+  assert.deepEqual(popupSearchValue('업체(주)'), { name: '업체(주)' });
+  assert.deepEqual(popupSearchValue('상품(2024)'), { name: '상품', code: '2024' });
   const refs = {
     a: { role: 'cell', name: '플래티어' }, b: { role: 'cell', name: '1000001' },
     c: { role: 'cell', name: '플래티어' }, d: { role: 'cell', name: '1000002' },
@@ -539,6 +540,10 @@ test('페이지 스크립트는 문법이 맞는 JS 다 — 템플릿 문자열 
   assert.deepEqual(rowsNamed(refs, items, '플래티어', '1000002'), ['r2']);
   assert.deepEqual(rowsNamed(refs, items, '플래티어 협력사', '1000002'), []);
   assert.deepEqual(rowsNamed(refs, items, '플래티어', '9999999'), []);
+  assert.deepEqual(rowsToPick(refs, items, '플래티어(1000002)', popupSearchValue('플래티어(1000002)')), ['r2']);
+  // 괄호까지가 이름인 값 — 같은 행에 식별자 셀이 없으면 값 전체로 찾는다.
+  const named = { a: { role: 'cell', name: '상품(2024)' }, b: { role: 'cell', name: '상품' } };
+  assert.deepEqual(rowsToPick(named, { a: 'r1', b: 'r2' }, '상품(2024)', popupSearchValue('상품(2024)')), ['r1']);
 });
 
 test('verification requests are read-only while literal values and confirm buttons remain actions', () => {

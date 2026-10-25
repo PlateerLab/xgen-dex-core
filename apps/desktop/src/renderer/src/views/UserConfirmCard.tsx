@@ -1,7 +1,8 @@
 /**
  * 에이전트가 일을 이어 가기 전에 묻는 카드 — 채팅 입력창 위, 사이트 확인창 카드(ConfirmCard)와 같은 자리·모양(main user-confirm).
  *
- * 1·2 로 고른다 — 1 진행, 2 고칠 점 적기(Enter 로 보냄). Esc 는 말 없이 진행하지 않기. 카드가 뜨면 첫 고르기에 초점을 준다
+ * 1·2 로 고른다 — 1 진행, 2 고칠 점 적기(Enter 로 보냄). Esc 는 적는 중이면 적기만 닫고(적던 말을 버리고 거절하지 않게),
+ * 아니면 말 없이 진행하지 않기. 카드가 뜨면 첫 고르기에 초점을 준다
  * (앱 안 초점만 — 창을 앞으로 꺼내지 않는다).
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
@@ -44,7 +45,10 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
     if (event.nativeEvent.isComposing) return;
     if (event.key === 'Escape') {
       event.preventDefault();
-      void answer('revise');
+      if (saying) {
+        setSaying(false);
+        first.current?.focus({ preventScroll: true });
+      } else void answer('revise');
       return;
     }
     if (saying) return;

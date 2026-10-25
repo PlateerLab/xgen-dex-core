@@ -255,7 +255,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       title: '브라우저 고급 조작',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
-        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
+        'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations require a local confirmation; uploading files from the connected folders does not.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -359,10 +359,11 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
 }
 
 const sensitiveSessionApprovals = new Set<string>();
+// upload 은 묻지 않는다 — 올릴 파일은 그 대화에 연결된 폴더 안에서만 고를 수 있고(scopedPath),
+// 폴더를 연결한 것이 곧 허락이다. 같은 폴더의 파일을 BrowserFill 로 올릴 때도 묻지 않는다.
 const sensitive = new Set([
   'cookies',
   'storage',
-  'upload',
   'download',
   'geolocation',
   'headers',
@@ -372,9 +373,11 @@ const sensitive = new Set([
   'eval',
 ]);
 
+export const browserActionNeedsApproval = (action: string): boolean => sensitive.has(action);
+
 async function approve(action: string, detail: string, signal?: AbortSignal): Promise<boolean> {
   if (signal?.aborted) return false;
-  if (!sensitive.has(action) || sensitiveSessionApprovals.has(action)) return true;
+  if (!browserActionNeedsApproval(action) || sensitiveSessionApprovals.has(action)) return true;
   const options = {
     type: 'warning' as const,
     buttons: ['거부', '이번만 허용', '이 앱 세션 동안 허용'],

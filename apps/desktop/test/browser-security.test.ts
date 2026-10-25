@@ -30,6 +30,7 @@ import {
   browserToolSchemas,
   BROWSER_INTERACT_TOOL,
   BROWSER_SNAPSHOT_TOOL,
+  browserActionNeedsApproval,
 } from '../src/main/browser-tools';
 import {
   BROWSER_PARTITION_PREFIX,
@@ -678,6 +679,15 @@ test('upload/download paths stay inside the conversation folders', async () => {
   assert.equal(browserPathWithinRoots('shot.png', [root]), join(root, 'shot.png'));
   // 폴더가 없는 대화에서는 어떤 경로도 허락하지 않는다.
   assert.equal(browserPathWithinRoots(join(root, 'a.txt'), []), null);
+});
+
+test('uploading from the conversation folders does not ask; other sensitive actions still do', () => {
+  // 올릴 파일은 위의 폴더 범위에서만 고른다 — 폴더를 연결한 것이 허락이라 확인창을 띄우지 않는다.
+  assert.equal(browserActionNeedsApproval('upload'), false);
+  for (const action of ['cookies', 'storage', 'download', 'credentials', 'eval', 'clipboard']) {
+    assert.equal(browserActionNeedsApproval(action), true, action);
+  }
+  assert.equal(browserActionNeedsApproval('viewport'), false);
 });
 
 test('agent-browser global options cannot be smuggled through positional browser arguments', async () => {

@@ -13,6 +13,8 @@ import {
   labelToggles,
   nearNames,
   rowsNamed,
+  optionNamed,
+  optionNames,
   valueToPick,
   popupSearchValue,
   popupSelectionMatches,
@@ -428,6 +430,16 @@ test('셀 글자가 고를 값과 정확히 같은 행만 — 공백만 정리�
   assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 협력사'), ['e34']);
   assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어'), ['e35']);
   assert.deepEqual(rowsNamed(PARTNER_ROWS, PARTNER_ITEMS, '플래티어 3'), []);
+});
+
+test('열린 목록에서 「」 값과 글자가 같은 항목 하나만 — 판단 모델의 확신에 맡기지 않는다', () => {
+  // 10/25 BO: "출고소요일을 「1일」로 바꿔줘" 가 "1일" 0.81·"2일" 0.19 로 문턱 아래라 목록만 열고 실패했다.
+  const days = { e2: { role: 'option', name: '오늘발송' }, e3: { role: 'option', name: '1일' }, e4: { role: 'option', name: '2일' } };
+  assert.equal(optionNamed(days, '1일'), 'e3');
+  assert.equal(optionNamed(days, ' 1일 '), 'e3');
+  assert.equal(optionNamed(days, '1'), null);
+  assert.equal(optionNamed({ ...days, e5: { role: 'option', name: '1일' } }, '1일'), null);
+  assert.deepEqual(optionNames({ ...days, e5: { role: 'option', name: '1일' } }), ['오늘발송', '1일', '2일']);
 });
 
 test('정확히 같은 행이 없을 때 물어볼 후보 — 고를 값과 낱말이 겹치는 셀 글자, 중복 없이', () => {

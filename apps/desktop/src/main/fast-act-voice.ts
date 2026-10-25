@@ -52,6 +52,8 @@ import {
   nearNames,
   rowsNamed,
   valueToPick,
+  optionNamed,
+  optionNames,
   popupSearchValue,
   popupSelectionMatches,
   isFieldVerification,
@@ -738,9 +740,22 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     const origin = originOf(s.page.url);
     const t0 = now();
-    const pick = await pickElement(post, judgedText(text), origin, options, this.screenOf(origin, s.snap.refs));
-    diag(SCOPE, 'choose-after-open', { text, pick: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
-    if (!pick || pick.confidence < Math.max(th.pick, CHOOSE_PICK)) return null;
+    const quoted = quotedText(text);
+    const exact = quoted ? optionNamed(options, quoted) : null;
+    const pick = exact
+      ? { ref: exact, confidence: 1, top: [[`${exact} exact`, 1]] as Array<[string, number]>, calls: 0, ms: 0 }
+      : await pickElement(post, judgedText(text), origin, options, this.screenOf(origin, s.snap.refs));
+    diag(SCOPE, 'choose-after-open', { text, exact: !!exact, pick: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
+    if (!pick || pick.confidence < Math.max(th.pick, CHOOSE_PICK)) {
+      // 값을 「」 로 적었는데 고르지 못했다 — 열어 둔 목록은 다음 줄을 가로챈다(10/25 BO: 다음 줄 "배송비정책을 …" 이
+      // "열린 목록 닫기" 만 누르고 실패했다). 닫고, 다시 보낼 수 있게 항목 이름을 알린다. 「」 없는 말(음성)은 다음 말이
+      // 항목을 고르도록 열어 둔다.
+      if (quoted && (await this.closeList(s.page))) {
+        const last = this.actions.at(-1);
+        if (last) last.tell = `목록에 「${quoted}」${josa(quoted, '과', '와').slice(quoted.length)} 글자가 같은 항목이 없어 고르지 못했어요. 항목: ${optionNames(options).join(', ')}.`;
+      }
+      return null;
+    }
     const element = s.snap.refs[pick.ref];
     // 지금 값을 다시 고르는 것은 할 일이 아니다 — "배송비정책 선택해줘" 의 '선택' 은 자리표시 항목 "선택" 과 글자가 같을
     // 뿐 고르라는 값이 아니었다(10/16 BO: 1.0). 목록은 열어 둔다.

@@ -165,6 +165,8 @@ export const NO_FOLDER_MESSAGE =
 
 export interface LocalToolSchema {
   name: string;
+  /** 사람에게 보여 줄 이름(MCP Tool.title) — 작업 과정의 도구 줄 제목. 모델에게 가는 설명이 아니다. */
+  title?: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
   /** 서버에 함께 알리는 사실(예: UserPc 셸 이름). 모델에게 가는 설명이 아니다. */
@@ -507,6 +509,7 @@ export const SYNCED_WORKSPACE_NOTE =
 export function localControlToolSchema(): LocalToolSchema {
   return {
     name: LOCAL_CONTROL_TOOL,
+    title: '이 PC 도구 목록',
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     description:
       `List the tools the user's own computer provides to this conversation and the ` +
@@ -522,6 +525,7 @@ export function localControlToolSchema(): LocalToolSchema {
 export function mcpAddServerToolSchema(): LocalToolSchema {
   return {
     name: MCP_ADD_TOOL,
+    title: 'MCP 서버 추가',
     annotations: { readOnlyHint: false, openWorldHint: true },
     description:
       "Register (or update) a local MCP server ON THE USER'S OWN COMPUTER (this connector) and attach " +
@@ -575,6 +579,7 @@ export function mcpAddServerToolSchema(): LocalToolSchema {
 export function mcpRemoveServerToolSchema(): LocalToolSchema {
   return {
     name: MCP_REMOVE_TOOL,
+    title: 'MCP 서버 제거',
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     description:
       'Remove a local MCP server (by name) from this connector: stop its process/connection and detach ' +
@@ -591,6 +596,7 @@ export function mcpRemoveServerToolSchema(): LocalToolSchema {
 export function mcpListServersToolSchema(): LocalToolSchema {
   return {
     name: MCP_LIST_TOOL,
+    title: 'MCP 서버 목록',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     description:
       'List the local MCP servers registered on this connector with their transport, enabled/connected ' +
@@ -602,6 +608,7 @@ export function mcpListServersToolSchema(): LocalToolSchema {
 export function shellToolSchema(): LocalToolSchema {
   return {
     name: SHELL_TOOL,
+    title: '명령 실행',
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     description:
       `Run ONE command in a terminal on the USER'S OWN COMPUTER (the device running this app), ` +
@@ -676,6 +683,7 @@ export function shellToolSchema(): LocalToolSchema {
 export function shellJobToolSchema(): LocalToolSchema {
   return {
     name: SHELL_JOB_TOOL,
+    title: '백그라운드 명령',
     annotations: { readOnlyHint: false, openWorldHint: true },
     description:
       `Manage long-running background jobs started with Shell(background:true) on the USER'S OWN ` +
@@ -705,6 +713,7 @@ export function shellJobToolSchema(): LocalToolSchema {
 export function openToolSchema(): LocalToolSchema {
   return {
     name: OPEN_TOOL,
+    title: '파일·주소 열기',
     annotations: { readOnlyHint: false, openWorldHint: true },
     description:
       `Open a file, folder, or URL on the USER'S OWN COMPUTER with its default application. ` +
@@ -1035,6 +1044,7 @@ export async function resolveWithinRootsReal(
 export function readFileToolSchema(): LocalToolSchema {
   return {
     name: READ_FILE_TOOL,
+    title: '파일 읽기',
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     description:
       "Read a text file on the USER'S OWN COMPUTER, inside the folders connected to this " +
@@ -1062,6 +1072,7 @@ export function readFileToolSchema(): LocalToolSchema {
 export function writeFileToolSchema(): LocalToolSchema {
   return {
     name: WRITE_FILE_TOOL,
+    title: '파일 쓰기',
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     description:
       "Write (or append to) a text file on the USER'S OWN COMPUTER, inside the folders " +
@@ -1086,6 +1097,7 @@ export function writeFileToolSchema(): LocalToolSchema {
 export function listDirToolSchema(): LocalToolSchema {
   return {
     name: LIST_DIR_TOOL,
+    title: '폴더 보기',
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     description:
       "List a directory on the USER'S OWN COMPUTER (inside the folders connected to this " +
@@ -1103,6 +1115,7 @@ export function listDirToolSchema(): LocalToolSchema {
 export function searchToolSchema(): LocalToolSchema {
   return {
     name: SEARCH_TOOL,
+    title: '파일 찾기',
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     description:
       "Recursively search text files under a folder on the USER'S OWN COMPUTER (inside the " +
@@ -1123,6 +1136,7 @@ export function searchToolSchema(): LocalToolSchema {
 export function clipboardToolSchema(): LocalToolSchema {
   return {
     name: CLIPBOARD_TOOL,
+    title: '클립보드',
     annotations: { readOnlyHint: false, openWorldHint: false },
     description:
       "Read or write the USER'S system clipboard (plain text). Available while a folder is " +
@@ -1144,6 +1158,7 @@ export function clipboardToolSchema(): LocalToolSchema {
 export function notifyToolSchema(): LocalToolSchema {
   return {
     name: NOTIFY_TOOL,
+    title: '알림 보내기',
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     description:
       "Show a desktop notification on the USER'S OWN COMPUTER. Available while a folder is " +

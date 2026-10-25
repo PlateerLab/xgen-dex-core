@@ -108,6 +108,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
   return [
     {
       name: BROWSER_TABS_TOOL,
+      title: '브라우저 탭',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Manage XGEN browser pages on the user desktop. Use create with mode shared to open and reveal a visible browser tab without asking the user to open it first; background is agent-only. ' +
@@ -133,6 +134,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_NAVIGATE_TOOL,
+      title: '페이지 이동',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait. ' +
@@ -156,6 +158,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_SNAPSHOT_TOOL,
+      title: '화면 읽기',
       annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Return the accessibility snapshot and fresh @eN refs for a page. Pass the returned generation to ref-based interactions so stale refs are rejected.',
@@ -172,6 +175,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_INTERACT_TOOL,
+      title: '화면 조작',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
@@ -222,6 +226,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_CAPTURE_TOOL,
+      title: '화면 캡처',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description: 'Capture screenshot/full screenshot/PDF or inspect console/page errors.',
       inputSchema: {
@@ -247,6 +252,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_ADVANCED_TOOL,
+      title: '브라우저 고급 조작',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Advanced browser controls: cookies, storage, upload/download, viewport/device, geolocation, offline, headers, credentials, media, network/HAR/interception, clipboard, or eval. Sensitive operations always require a local confirmation.',
@@ -290,6 +296,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_FILL_TOOL,
+      title: '칸 채우기',
       annotations: { readOnlyHint: false, openWorldHint: true },
       description:
         'Fill many fields of a form on a shared browser tab fast — pass that tab\'s page_id (BrowserTabs list, mode shared); it is brought to the front while filling. ' +
@@ -335,6 +342,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     },
     {
       name: BROWSER_FORM_VALUES_TOOL,
+      title: '입력값 확인',
       annotations: { readOnlyHint: true, openWorldHint: true },
       description:
         'Read every field of the form on a page: field label, current value, chosen radio/checkbox/option, placeholder and disabled state, ' +

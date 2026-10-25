@@ -130,7 +130,7 @@ export interface McpBridgeStatusLike {
     name: string;
     connected: boolean;
     error?: string;
-    tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+    tools: Array<{ name: string; title?: string; description?: string; inputSchema?: Record<string, unknown> }>;
   }>;
 }
 

@@ -154,6 +154,9 @@ export function parseToolInput(input: unknown): Record<string, unknown> {
 }
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const HEX_DIGEST = /^[0-9a-f]{32,}$/i;
+/** 이름표 뒤 `· 내용` — 내용이 없으면(서버가 입력을 다이제스트로만 보낸 경우 등) 이름만. */
+const withDetail = (label: string, detail: string): string => (detail ? `${label} · ${detail}` : label);
 const workspaceTail = (p: string): string => p.split('/workspace/').pop() ?? p;
 
 /** 셸 명령 요약 — 한 줄이면 명령 그대로, 여러 줄이면 언어 · 줄 수 · 불러온 모듈. */
@@ -186,7 +189,8 @@ export function summarizeArgs(input: Record<string, unknown>, max = 2): string {
   for (const [k, v] of Object.entries(input)) {
     if (v === null || v === undefined || typeof v === 'object' || typeof v === 'boolean') continue;
     const s = String(v).replace(/\s+/g, ' ').trim();
-    if (!s) continue;
+    // 해시 값(서버가 입력 대신 보내는 다이제스트 등)은 사람에게 뜻이 없다.
+    if (!s || HEX_DIGEST.test(s)) continue;
     parts.push(`${k} ${clip(s, 40)}`);
     if (parts.length >= max) break;
   }
@@ -201,8 +205,16 @@ export function descriptionHeadline(description: string | undefined): string {
   return clip(first.replace(/[.。]$/, ''), 48);
 }
 
-/** 도구 카드 한 줄. `description` 은 에이전트에 등록된 도구 설명(모르면 비움). */
-export function describeTool(name: string, rawInput: unknown, description?: string): { icon: ToolIcon; text: string } {
+/**
+ * 도구 카드 한 줄. `description` 은 에이전트에 등록된 도구 설명, `title` 은 도구가 정한 사람용 이름
+ * (MCP Tool.title)이다 — 모르면 비움. 이름이 있으면 설명 첫 마디보다 먼저 쓴다.
+ */
+export function describeTool(
+  name: string,
+  rawInput: unknown,
+  description?: string,
+  title?: string,
+): { icon: ToolIcon; text: string } {
   const input = parseToolInput(rawInput);
   const short = shortToolName(name);
   const str = (...keys: string[]): string => {
@@ -217,28 +229,28 @@ export function describeTool(name: string, rawInput: unknown, description?: stri
       return { icon: 'package', text: `파이썬 패키지 준비${pkgs ? ` · ${clip(pkgs, 60)}` : ''}` };
     }
     case 'Glob':
-      return { icon: 'search', text: `파일 찾기 · ${str('pattern')}` };
+      return { icon: 'search', text: withDetail('파일 찾기', str('pattern')) };
     case 'Grep':
-      return { icon: 'search', text: `내용 찾기 · ${str('pattern')}` };
+      return { icon: 'search', text: withDetail('내용 찾기', str('pattern')) };
     case 'ToolSearch':
-      return { icon: 'search', text: `사용할 도구 찾기 · ${str('query')}` };
+      return { icon: 'search', text: withDetail('사용할 도구 찾기', str('query')) };
     case 'Read':
-      return { icon: 'file', text: `파일 읽기 · ${workspaceTail(str('file_path', 'path'))}` };
+      return { icon: 'file', text: withDetail('파일 읽기', workspaceTail(str('file_path', 'path'))) };
     case 'Write':
-      return { icon: 'edit', text: `파일 쓰기 · ${workspaceTail(str('file_path', 'path'))}` };
+      return { icon: 'edit', text: withDetail('파일 쓰기', workspaceTail(str('file_path', 'path'))) };
     case 'Edit':
     case 'MultiEdit':
-      return { icon: 'edit', text: `파일 수정 · ${workspaceTail(str('file_path', 'path'))}` };
+      return { icon: 'edit', text: withDetail('파일 수정', workspaceTail(str('file_path', 'path'))) };
     case 'WebFetch':
-      return { icon: 'web', text: `웹 페이지 열기 · ${clip(str('url'), 60)}` };
+      return { icon: 'web', text: withDetail('웹 페이지 열기', clip(str('url'), 60)) };
     case 'WebSearch':
-      return { icon: 'web', text: `웹 검색 · ${str('query')}` };
+      return { icon: 'web', text: withDetail('웹 검색', str('query')) };
     case 'TodoWrite':
       return { icon: 'list', text: '할 일 목록 갱신' };
     default: {
-      const label = descriptionHeadline(description) || short;
+      const label = title?.trim() || descriptionHeadline(description) || short;
       const args = summarizeArgs(input);
-      return { icon: 'external', text: args ? `${label} · ${args}` : label };
+      return { icon: 'external', text: withDetail(label, args) };
     }
   }
 }

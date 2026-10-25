@@ -29,6 +29,7 @@ const ASK_IN_REPLY = '진행하지 말고, 확인할 내용을 답변에 써서 
 export function userConfirmToolSchema(): LocalToolSchema {
   return {
     name: USER_CONFIRM_TOOL,
+    title: '사용자 확인',
     annotations: { readOnlyHint: true, openWorldHint: false },
     // 첫 줄은 숨김 목록(ToolSearch 카탈로그)에 그대로 실린다 — 72자 안에서 무엇을 하는지 말한다.
     description:

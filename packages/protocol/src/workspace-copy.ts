@@ -108,6 +108,7 @@ export const WORKSPACE_COPY_LIMITS = {
 
 interface ToolSchema {
   name: string;
+  title: string;
   description: string;
   inputSchema: Record<string, unknown>;
   annotations: { readOnlyHint: boolean; destructiveHint?: boolean; openWorldHint: boolean };
@@ -121,6 +122,7 @@ export function workspaceCopySchemas(device: 'computer' | 'phone'): ToolSchema[]
   return [
     {
       name: COPY_TO_WORKSPACE_TOOL,
+      title: '작업 공간으로 복사',
       annotations: { readOnlyHint: false, openWorldHint: false },
       description:
         `Copy files or folders from ${where} (inside the folders connected to this conversation) into YOUR ` +
@@ -142,6 +144,7 @@ export function workspaceCopySchemas(device: 'computer' | 'phone'): ToolSchema[]
     },
     {
       name: COPY_FROM_WORKSPACE_TOOL,
+      title: device === 'phone' ? '폰에 저장' : 'PC에 저장',
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       description:
         `Save a file from YOUR workspace (sandbox) onto ${where}, inside a folder connected to this ` +

@@ -464,6 +464,8 @@ export class McpBridge {
         .map((t) => ({
           server: LOCAL_SERVER,
           name: t.name,
+          // 사람에게 보여 줄 이름(MCP Tool.title). 모델에게 가지 않는다.
+          ...(t.title ? { title: t.title } : {}),
           description: t.description,
           inputSchema: t.inputSchema,
           // 서버에 함께 알리는 사실(UserPc 셸 이름 등). 모델에게 가는 설명이 아니다.

@@ -184,8 +184,9 @@ const ToolRow: React.FC<{
   open: boolean;
   onToggle: () => void;
   description?: string;
-}> = ({ row, now, open, onToggle, description }) => {
-  const d = describeTool(row.name, row.input, description);
+  title?: string;
+}> = ({ row, now, open, onToggle, description, title }) => {
+  const d = describeTool(row.name, row.input, description, title);
   const external = d.icon === 'external';
   const view = row.phase === 'run' ? null : resultView(row.error ?? row.result);
   // 기본 도구가 돌려준 키·값뿐인 JSON(환경 id 같은 것)은 잡음이다 — 표·카드·글 첫 줄만 보인다.
@@ -309,7 +310,9 @@ export const ProcessTimeline: React.FC<{
   msg: ChatMsg;
   /** 에이전트에 등록된 도구 설명(도구 이름 → 설명). 있으면 도구 행 이름표에 쓴다. */
   toolDescriptions?: Readonly<Record<string, string>>;
-}> = ({ msg, toolDescriptions }) => {
+  /** 도구가 정한 사람용 이름(도구 이름 → title). 설명보다 먼저 쓴다. */
+  toolTitles?: Readonly<Record<string, string>>;
+}> = ({ msg, toolDescriptions, toolTitles }) => {
   const streaming = !!msg.streaming;
   const now = useNow(streaming);
   // 펼침: 사용자가 누르기 전에는 실행 중이면 펼치고, 끝나면 접는다.
@@ -325,6 +328,7 @@ export const ProcessTimeline: React.FC<{
   const startedAt = msg.startedAt ?? msg.flow?.[0]?.at ?? now;
   const lastAt = msg.lastEventAt ?? startedAt;
   const describe = (name: string) => toolDescriptions?.[name] ?? toolDescriptions?.[shortToolName(name)];
+  const titleOf = (name: string) => toolTitles?.[name] ?? toolTitles?.[`mcp_${shortToolName(name)}`];
 
   // 마지막 단계에 도구가 없으면 그 뒤 본문은 최종 답이다.
   let answer = '';
@@ -370,6 +374,7 @@ export const ProcessTimeline: React.FC<{
                 row={row}
                 now={now}
                 description={describe(row.name)}
+                title={titleOf(row.name)}
                 open={openRows.has(row.key)}
                 onToggle={() =>
                   setOpenRows((prev) => {

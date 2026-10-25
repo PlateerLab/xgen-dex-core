@@ -294,12 +294,14 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       description:
         'Fill many fields of a form on a shared browser tab fast — pass that tab\'s page_id (BrowserTabs list, mode shared); it is brought to the front while filling. ' +
         'Each step is one short instruction in the user\'s language for EXACTLY ONE field ' +
-        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 플래티어 협력사로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
+        '(e.g. "판매가에 「12900」 입력해줘", "구매연령 전체로 바꿔줘", "협력사를 「플래티어 협력사」로 지정해줘", "대표이미지에 INNO-001_대표이미지.png 올려줘"). ' +
         'A local decision model runs the steps in order (a few seconds each, versus many seconds per BrowserInteract), handling dropdowns, ' +
         `search popups, collapsed sections and file uploads from the connected folders. Use at most ${MAX_FILL_STEPS} steps per call. ` +
         'Use it to put values into fields of the page that is open now — not for going to another page, pressing buttons that are not a field value, or reading the page. ' +
         'Every step names the field and the exact value, never a vague one ("자료에 맞는 것", "적절한 값"). ' +
-        'If you need to look at the choices to decide a value (a list, popup or tree), look first with the other browser tools, then put the decided value in a step — the step makes the pick itself. ' +
+        'A value you already have (from the data or the user) goes straight into a step as written — do not open a list, popup or tree first to see its choices; ' +
+        'the step opens it, finds that value and picks it. ' +
+        'Look at the choices with the other browser tools only when no value is given and you must choose one yourself, then put the chosen value in a step. ' +
         'Put the remaining fields in this call too rather than filling them one by one with BrowserInteract. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
@@ -308,10 +310,10 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
         'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
         'For fields with a shown format (placeholder such as "YYYY.MM.DD. – YYYY.MM.DD."), write the value in that format ("판매기간에 「2026.11.10. – 2027.03.31.」 입력해줘"). ' +
-        'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 플래티어로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
-        'For a supplied supplier/brand code, keep it with the name inside the value (플래티어 협력사(1000002)); the picker searches the name and matches both name and code. ' +
-        'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
+        'Fields picked in a search popup (협력사, 브랜드 …) and file uploads are steps too ("브랜드를 「플래티어」로 지정해줘", "대표이미지에 상품이미지/a.png 올려줘") — ' +
         'the step opens the popup, searches, picks and applies — you do not need to do it by hand. ' +
+        'For a supplied supplier/brand code, keep it with the name inside the value ("협력사를 「플래티어 협력사(1000002)」로 지정해줘"); the picker searches the name and matches both name and code. ' +
+        'Never send verification requests such as 선택되어 있는지 확인해줘; use returned form_values. ' +
         'Returns complete, per-step results (done / failed / skipped), remaining_steps, and form_values read once after the batch. ' +
         'Results list a done step by its number i, the field it acted on and the value read from it (value, cut at 40 characters) — a later done row supersedes an earlier failed row for the same field; failed or skipped steps keep the step, the reason, the requested value and the value observed in the field. ' +
         'form_values has one line per field: name [type] [비활성] [형식 "…"]: "value" (type text and enabled fields carry no tag). ' +

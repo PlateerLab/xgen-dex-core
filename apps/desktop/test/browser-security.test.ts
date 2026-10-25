@@ -889,6 +889,15 @@ test('BrowserFill and BrowserFormValues act on a shared tab only by explicit pag
   }
 });
 
+test('BrowserFill examples put the value a popup picks inside 「」', () => {
+  // 10/25 BO: 따옴표 없는 예시대로 "협력사를 플래티어 협력사로 선택해줘" 를 보냈다 — 칸 이름과 같은 "협력사" 가 빠져
+  // 이름이 "플래티어" 인 다른 협력사가 골라진 채 done 으로 돌아왔다.
+  const fill = browserToolSchemas().find((t) => t.name === BROWSER_FILL_TOOL)!;
+  const examples = [...fill.description!.matchAll(/"([^"]*지정해줘)"/g)].map((m) => m[1]);
+  assert.ok(examples.length >= 2, String(examples.length));
+  for (const example of examples) assert.match(example, /「[^」]+」/, example);
+});
+
 test('a fill scope rejects other shared tabs and all access after cancellation', async () => {
   const runtime = new BrowserRuntime();
   const internals = runtime as unknown as { enabled: boolean; accountPartition: string; pages: Map<string, { info: BrowserPageInfo }> };

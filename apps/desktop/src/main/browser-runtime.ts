@@ -42,6 +42,12 @@ interface BrowserPageRuntime {
   view?: WebContentsView;
   /** 마지막 스냅샷이 iframe 요소에 매긴 번호 → DOM 노드(browser-frames). */
   frameRefs?: Map<string, number>;
+  /** 마지막 스냅샷의 ref → 역할·이름. 확인창 가드가 누를 요소를 알아본다(browser-confirm). */
+  refNames?: Map<string, { role?: string; name?: string }>;
+  /** 메인 프레임이 새 문서로 옮겨 가는 중(이동 시작 ~ dom-ready). 그동안 보이는 것은 이전 문서다. */
+  documentPending?: boolean;
+  /** 보낸 뒤 아직 끝나지 않은 XHR·fetch → 보낸 순번(requestMark). settle 이 조작 뒤에 시작한 것만 기다린다. */
+  requests?: Map<number, number>;
 }
 
 interface PendingBrowserConnection {
@@ -99,6 +105,62 @@ async function focusGuest(contents: WebContents): Promise<void> {
       .catch(() => false);
   }
   contents.focus();
+}
+
+/** 문서가 준비된 뒤 load(이미지·외부 CSS 까지 다 받음)를 더 기다리는 시간. */
+const LOAD_GRACE_MS = 2_000;
+/** 페이지가 스스로 주소를 옮겼을 때 옮겨 간 문서를 기다리는 상한. */
+const REDIRECT_READY_MAX_MS = 15_000;
+
+/** 조작 뒤 그 조작이 일으킨 이동이 시작될 틈. 이 안에 시작하지 않은 이동은 기다리지 않는다. */
+const SETTLE_PROBE_MS = 200;
+/** 조작이 보낸 요청이 끝난 뒤 그 응답이 일으킬 이동·다음 요청을 기다리는 틈. */
+const SETTLE_QUIET_MS = 300;
+/** 조작이 시작한 새 문서·요청을 기다리는 상한. */
+const SETTLE_MAX_MS = 5_000;
+
+// 설명 없이 번호만 오는 중단도 있다 — 로그인이 풀린 BO 상품 등록 goto 가 로그인 화면으로 옮겨 가며 " (-3) loading" 으로 끝났다(10/24).
+const loadAborted = (error: unknown): boolean => {
+  const failure = error as { code?: unknown; errno?: unknown } | null;
+  return failure?.code === 'ERR_ABORTED' || failure?.errno === -3;
+};
+
+/**
+ * 주소를 열고 문서가 준비되면(dom-ready) 돌아온다. loadURL 은 load 이벤트까지 기다려서, 화면은 0.1초에 떴는데
+ * 느린 이미지 하나(20초)만큼 도구가 묶였다 — 10/23 BO 상품 등록 시연의 Navigate 25.2초가 이 모양이었다(재현 실측).
+ * 문서가 준비된 뒤엔 load 를 graceMs 만 더 기다린다. 기다리는 사이 페이지가 스스로 주소를 옮겨 loadURL 이
+ * ERR_ABORTED 로 끝나는 것도 실패로 보지 않는다(같은 시연에서 15.2초 기다린 끝에 실패) — 옮겨 간 문서를 기다린다.
+ */
+export async function loadUntilReady(contents: WebContents, url: string, graceMs = LOAD_GRACE_MS): Promise<void> {
+  if (typeof contents.on !== 'function' || typeof contents.once !== 'function') return contents.loadURL(url);
+  let ready!: () => void;
+  const domReady = new Promise<'ready'>((resolve) => {
+    ready = () => resolve('ready');
+  });
+  // 문서를 바꾼 뒤의 dom-ready 만 센다 — 이전 문서의 dom-ready 로 일찍 돌아가지 않게.
+  const arm = (): void => {
+    contents.once('dom-ready', ready);
+  };
+  contents.on('did-navigate', arm);
+  const load = contents.loadURL(url).then(
+    () => 'loaded' as const,
+    (error: unknown) => ({ error }),
+  );
+  const within = <T,>(ms: number, value: T): Promise<T> => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  try {
+    const first = await Promise.race([load, domReady]);
+    if (first === 'loaded') return;
+    if (first === 'ready') {
+      const settled = await Promise.race([load, within(graceMs, 'grace' as const)]);
+      if (typeof settled === 'object' && !loadAborted(settled.error)) throw settled.error;
+      return;
+    }
+    if (!loadAborted(first.error)) throw first.error;
+    if (contents.isLoading?.()) await Promise.race([domReady, within(REDIRECT_READY_MAX_MS, 'timeout' as const)]);
+  } finally {
+    contents.removeListener('did-navigate', arm);
+    contents.removeListener('dom-ready', ready);
+  }
 }
 
 export class BrowserRuntimeError extends Error {
@@ -168,6 +230,7 @@ export class BrowserRuntime {
   private pendingConnections = new Map<string, PendingBrowserConnection>();
   private alertedConnections = new Set<string>();
   private hardenedPartitions = new Set<string>();
+  private requestSeq = 0;
   private allowedSharedContents = new Set<number>();
   private downloadPermits = new Map<string, {
     path: string;
@@ -431,6 +494,11 @@ export class BrowserRuntime {
     browserSession.setPermissionCheckHandler(() => false);
     if (this.hardenedPartitions.has(partition)) return;
     this.hardenedPartitions.add(partition);
+    // 페이지가 보낸 XHR·fetch 를 센다(settle). 요청을 붙잡지 않는 관찰 이벤트만 쓴다 — onBeforeRequest 는
+    // 요청마다 콜백을 기다려 모든 요청을 늦춘다.
+    browserSession.webRequest.onSendHeaders((details) => this.requestStarted(details));
+    browserSession.webRequest.onCompleted((details) => this.requestFinished(details));
+    browserSession.webRequest.onErrorOccurred((details) => this.requestFinished(details));
     // A page cannot initiate an unreviewed local download. BrowserAdvanced can
     // temporarily opt into one explicitly scoped path.
     browserSession.on('will-download', (event, item, contents) => {
@@ -553,6 +621,8 @@ export class BrowserRuntime {
       void this.resetAutomation(runtime);
     }
     runtime.contents = contents;
+    runtime.requests = undefined; // 앞 contents 의 요청은 끝나도 이 페이지로 찾아오지 못한다.
+    runtime.documentPending = false;
     this.resolvePendingConnection(runtime, contents);
     const isCurrent = () => runtime.contents?.id === contents.id;
     this.installPopupHandler(runtime, contents);
@@ -590,11 +660,19 @@ export class BrowserRuntime {
     contents.on('will-redirect', (event, url) => {
       if (!allowedBrowserUrl(url)) event.preventDefault();
     });
+    contents.on('did-start-navigation', (details) => {
+      if (isCurrent() && details?.isMainFrame && !details.isSameDocument) runtime.documentPending = true;
+    });
+    contents.on('dom-ready', () => {
+      if (isCurrent()) runtime.documentPending = false;
+    });
     contents.on('did-start-loading', () => {
       if (isCurrent()) this.patch(runtime, { loading: 'loading', error: undefined });
     });
     contents.on('did-stop-loading', () => {
       if (!isCurrent()) return;
+      // 문서 없이 끝난 이동(다운로드·204·취소)도 여기서 기다림을 푼다.
+      runtime.documentPending = false;
       updateLocation();
       this.patch(runtime, { loading: 'idle', error: undefined });
     });
@@ -621,7 +699,9 @@ export class BrowserRuntime {
       emitHistory('title');
     });
     contents.on('did-fail-load', (_event, code, description, validatedUrl, isMainFrame) => {
+      // -3(ERR_ABORTED)은 다음 이동이 앞 이동을 끊은 것 — 다음 이동이 아직 진행 중이라 기다림을 풀지 않는다.
       if (!isCurrent() || !isMainFrame || code === -3) return;
+      runtime.documentPending = false;
       this.patch(runtime, {
         loading: 'error',
         error: description,
@@ -899,6 +979,53 @@ export class BrowserRuntime {
     return this.pages.has(pageId) ? { ...this.pages.get(pageId)!.info } : null;
   }
 
+  private requestStarted(details: { id: number; resourceType: string; webContentsId?: number }): void {
+    if (details.resourceType !== 'xhr') return; // fetch 도 xhr 로 온다. 이미지·스크립트·WebSocket 은 화면 전환을 늦추지 않는다.
+    const runtime = [...this.pages.values()].find((page) => page.contents?.id === details.webContentsId);
+    if (runtime) (runtime.requests ??= new Map()).set(details.id, ++this.requestSeq);
+  }
+
+  private requestFinished(details: { id: number; webContentsId?: number }): void {
+    [...this.pages.values()].find((page) => page.contents?.id === details.webContentsId)?.requests?.delete(details.id);
+  }
+
+  /** 지금까지 보낸 XHR·fetch 의 순번 — 조작 전에 받아 settle 에 주면 그 뒤에 시작한 요청만 기다린다. */
+  requestMark(): number {
+    return this.requestSeq;
+  }
+
+  /**
+   * 조작 뒤 화면을 읽기 전에 조작이 시작한 일을 기다린다(상한 maxMs).
+   * - 메인 프레임이 새 문서로 옮겨 가는 중이면 그 문서가 준비될(dom-ready) 때까지 — 이동이 응답을 기다리는 동안
+   *   보이는 것은 이전 문서라, 바로 읽으면 옮겨 가기 전 화면의 ref 를 새 generation 으로 내준다.
+   * - since(requestMark)를 주면 그 뒤에 이 페이지가 보낸 XHR·fetch 가 끝나고 quietMs 동안 새 요청·이동이 없을
+   *   때까지 — SPA 는 응답을 받은 뒤에야 라우터가 화면을 옮긴다(BO 로그인: 클릭 280ms 뒤 그대로, 1.5초 뒤 이동).
+   *   Playwright MCP 도 조작이 보낸 요청을 최대 5초 기다린 뒤 화면을 읽는다.
+   */
+  async settle(
+    pageId: string,
+    options: { since?: number; probeMs?: number; quietMs?: number; maxMs?: number; signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const runtime = this.pages.get(pageId);
+    if (!runtime) return;
+    const { since, probeMs = SETTLE_PROBE_MS, quietMs = SETTLE_QUIET_MS, maxMs = SETTLE_MAX_MS, signal } = options;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const requesting = () => since !== undefined && [...(runtime.requests?.values() ?? [])].some((seq) => seq > since);
+    await sleep(probeMs);
+    const deadline = Date.now() + maxMs;
+    let sawRequests = false;
+    while (runtime.contents && !runtime.contents.isDestroyed() && Date.now() < deadline && !signal?.aborted) {
+      if (runtime.documentPending) await sleep(50);
+      else if (requesting()) {
+        sawRequests = true;
+        await sleep(50);
+      } else if (sawRequests) {
+        sawRequests = false; // 이 틈에 다시 바빠지면 위에서 다시 기다린다.
+        await sleep(Math.min(quietMs, Math.max(0, deadline - Date.now())));
+      } else return;
+    }
+  }
+
   activate(pageId: string): BrowserPageInfo {
     this.requireEnabled();
     const runtime = this.pages.get(pageId);
@@ -1086,7 +1213,7 @@ export class BrowserRuntime {
           'browser_denied',
           'http/https/about:blank 주소만 열 수 있습니다.',
         );
-      await contents.loadURL(url);
+      await loadUntilReady(contents, url);
     } else if (request.action === 'back' && contents.navigationHistory.canGoBack()) {
       contents.navigationHistory.goBack();
     } else if (request.action === 'forward' && contents.navigationHistory.canGoForward()) {
@@ -1125,6 +1252,11 @@ export class BrowserRuntime {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** 마지막 스냅샷이 그 ref 에 적은 역할·이름(@ 있든 없든). */
+  refTarget(pageId: string, ref: string | undefined): { role?: string; name?: string } | undefined {
+    return ref ? this.pages.get(pageId)?.refNames?.get(ref.replace(/^@/, '')) : undefined;
   }
 
   async runAgentCommand(
@@ -1226,7 +1358,11 @@ export class BrowserRuntime {
             this.emit();
           },
         );
-        if (command[0] === 'snapshot') await this.addFrameElements(runtime, send, result);
+        if (command[0] === 'snapshot') {
+          await this.addFrameElements(runtime, send, result);
+          const refs = (result as { data?: { refs?: Record<string, { role?: string; name?: string }> } } | undefined)?.data?.refs;
+          runtime.refNames = new Map(Object.entries(refs ?? {}));
+        }
         return closedPopupResult() ?? interactionResult(result);
       } catch (error) {
         // window.close() can cancel the CLI before its successful click response exits.

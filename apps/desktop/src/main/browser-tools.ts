@@ -8,6 +8,19 @@ import { diag } from './diag-log';
 import { fastActConfigured } from './fast-act-runner';
 import { FORM_VALUES_SCRIPT, formLines } from './fast-act-labels';
 import { MAX_FILL_STEPS, briefResults, runSteps } from './fast-act-batch';
+import {
+  CONFIRM_DIALOG_SCRIPT,
+  ConfirmDeclined,
+  ConfirmGrants,
+  PAGE_MESSAGES_SCRIPT,
+  confirmPress,
+  declinedMessage,
+  isPageDialog,
+  type ConfirmAnswer,
+  type ConfirmAsker,
+  type PageDialog,
+  type PageMessages,
+} from './browser-confirm';
 import type {
   LocalToolCallContext,
   LocalToolResult,
@@ -24,6 +37,31 @@ export const BROWSER_FILL_TOOL = 'BrowserFill';
 export const BROWSER_FORM_VALUES_TOOL = 'BrowserFormValues';
 /** 경로 없이 캡처하면 저장하는 곳 — 연결 폴더 안의 숨은 폴더(파일 올리기 후보에서도 빠진다). */
 const CAPTURE_DIR = '.xgen-captures';
+/**
+ * 페이지를 옮긴 조작의 결과에 붙이는 스냅샷의 글자 상한. 결과에 화면이 없으면 서버 모델은 이동·클릭마다
+ * BrowserSnapshot 을 한 번 더 불렀다 — LLM 한 턴(약 3초)이 더 든다(10/23 BO 시연: 도구 18회 중 2회).
+ * BO 상품 등록 폼이 14,440자였다(10/24) — 목표 화면이 잘리면 모델은 결국 전체를 다시 읽는다.
+ */
+const PAGE_AFTER_MAX_CHARS = 20_000;
+/** 붙일 스냅샷 한 번의 시간 상한 — 넘으면 조작 결과만 돌려준다(조작은 이미 끝났다). */
+const PAGE_AFTER_TIMEOUT_MS = 8_000;
+/** 페이지를 옮길 수 있는 조작. 실제로 옮겨 갔을(generation 이 바뀐) 때만 스냅샷을 붙인다. */
+const PAGE_MOVING_ACTIONS = new Set(['click', 'double_click', 'keypress']);
+/**
+ * 이동 뒤 문서가 준비되고 나서 SPA 가 스크립트를 돌려 첫 데이터 요청을 보내기까지 기다리는 틈 — 이 안에 시작한
+ * 요청은 끝날 때까지 기다린 뒤 화면을 읽는다. BO 메인은 문서 준비 뒤 약 250ms 에 메뉴·대시보드 요청을 보냈고,
+ * 그 전에 읽은 화면은 버튼 35개 중 7개뿐이었다(10/24 실측). Playwright MCP 의 조작 뒤 기본 대기도 500ms 다.
+ */
+const DOCUMENT_REQUEST_PROBE_MS = 500;
+/**
+ * 확인창 카드의 답을 기다리는 상한. 턴 전체가 시작부터 300초 예산이고 기다리는 동안에도 줄어든다(xgen-workflow
+ * execution_budget, 10/24 확인) — 늦게 끊겨 결과 없이 취소되느니 이 안에 "답이 없어 누르지 않음" 을 돌려준다.
+ */
+export const CONFIRM_WAIT_MS = 90_000;
+/** 확인창·화면 문구를 읽는 스크립트의 시간 상한 — 그린 화면에서는 수 ms 다. */
+const DIALOG_SCRIPT_MS = 1_500;
+/** 확인창을 누를 수 있는 agent-browser 명령. */
+const PRESS_COMMANDS = new Set(['click', 'dblclick', 'press', 'mouse']);
 
 /** 연결 폴더 안에 그 파일이 이미 있나. */
 function exists(target: Awaited<ReturnType<BrowserFileScopes['resolve']>>): boolean {
@@ -96,7 +134,10 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
     {
       name: BROWSER_NAVIGATE_TOOL,
       annotations: { readOnlyHint: false, openWorldHint: true },
-      description: 'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait.',
+      description:
+        'Navigate one XGEN browser page: goto/back/forward/reload/stop/wait. ' +
+        'goto/back/forward/reload return once the new document is ready, with its interactive snapshot (snapshot, and generation at the top level) — ' +
+        'use those refs directly instead of calling BrowserSnapshot.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -135,7 +176,10 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
       description:
         (steps ? `${BROWSER_STEP_GUIDE} ` : '') +
         'Interact with a page using refs from BrowserSnapshot: click/fill/type/keypress/select/check/uncheck/hover/drag/scroll/mouse. ' +
-        'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs.',
+        'If opened_pages is returned, inspect that page_id with BrowserSnapshot instead of clicking the opener again or listing tabs. ' +
+        'When a click or keypress takes the page to a new document or route, the result carries the new page\'s snapshot and its generation — use those refs; earlier refs are no longer valid. ' +
+        'When the page stays, no snapshot is attached and earlier refs keep working; a dialog or alert left on the page comes back as dialog/alerts. ' +
+        'Pressing the confirm button of a site confirmation dialog (취소·닫기 plus another button) first asks the user on this PC; on refusal you get user_denied or their instructions — never press it another way.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -165,7 +209,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
           value: {},
           direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
           amount: { type: 'integer' },
-          generation: { type: 'integer', description: 'Generation returned by BrowserSnapshot.' },
+          generation: { type: 'integer', description: 'Generation returned with the snapshot whose refs you use.' },
           timeout_ms: { type: 'integer' },
           x: { type: 'number' },
           y: { type: 'number' },
@@ -259,7 +303,7 @@ export function browserToolSchemas(steps = false): LocalToolSchema[] {
         'Put the remaining fields in this call too rather than filling them one by one with BrowserInteract. ' +
         'A step naming two fields fills only one of them: write "공급원가에 「17430」 입력해줘" and "정상가에 「29900」 입력해줘" as two steps, not "공급원가 17430원, 정상가 29900원 입력해줘"; ' +
         'for checkbox groups, one step per box. ' +
-        'Skip fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") — each step costs seconds. ' +
+        'Fields that already show the wanted value (a default radio or a box named "… (현재: 일반상품)") need no step; one sent anyway with its value in 「」 is left untouched and reported done with unchanged: true. ' +
         'Steps run in the order given: list the fields in screen order, top to bottom, so search-popup fields such as 협력사 and 표준카테고리 come before prices. ' +
         'A field that another choice turns on gets its own step after that choice: "구매제한을 제한으로 설정해줘", then "최대 구매제한 수량에 「5」 입력해줘" — not both in one step. ' +
         'Put every value to type inside 「」 so it is typed exactly ("제조사에 「이노데모 제조사 (가상)」 입력해줘") — unquoted, words that repeat the field name are dropped. ' +
@@ -485,6 +529,8 @@ export class BrowserToolProvider {
   private revealSharedPage: (page: BrowserPageInfo) => void = () => {};
   private stepPost: () => DecisionPost | null = () => null;
   private stepping = new Set<string>();
+  private askConfirm: ConfirmAsker | null = null;
+  private confirmGrants = new ConfirmGrants();
 
   constructor(private runtime: BrowserRuntime) {}
 
@@ -498,12 +544,14 @@ export class BrowserToolProvider {
     fileRoots: BrowserFileRoots = () => [],
     revealSharedPage: (page: BrowserPageInfo) => void = () => {},
     stepPost: () => DecisionPost | null = () => null,
+    askConfirm: ConfirmAsker | null = null,
   ): void {
     if (!enabled) this.fileScopes.clear();
     this.enabled = enabled;
     this.fileRoots = fileRoots;
     this.revealSharedPage = revealSharedPage;
     this.stepPost = stepPost;
+    this.askConfirm = askConfirm;
   }
 
   /** 그 대화에 연결된 폴더 — 빠른 조작이 올릴 파일을 찾을 때(fast-act-upload). */
@@ -513,6 +561,92 @@ export class BrowserToolProvider {
 
   clearBrowserFileGrants(interactionId?: string): void {
     this.fileScopes.clear(interactionId);
+    this.confirmGrants.clear(interactionId);
+  }
+
+  /** 맨 위 대화상자가 사이트 확인창이면 그 문구·버튼. 읽지 못하면 null(그린 화면에서는 실패하지 않는다). */
+  private async confirmDialog(wid: string, id: string): Promise<PageDialog | null> {
+    try {
+      const found = await this.runtime.pageScript<unknown>(wid, id, CONFIRM_DIALOG_SCRIPT, DIALOG_SCRIPT_MS);
+      return isPageDialog(found) ? found : null;
+    } catch (error) {
+      diag('browser-confirm', `확인창 검사 생략 page=${id}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  /** 조작 뒤 화면에 남은 대화상자와 경고 문구 — 없거나 읽지 못하면 빈 객체. */
+  private async pageMessages(wid: string, id: string): Promise<PageMessages> {
+    try {
+      return (await this.runtime.pageScript<PageMessages>(wid, id, PAGE_MESSAGES_SCRIPT, DIALOG_SCRIPT_MS)) ?? {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * 확인창의 확정 버튼을 누를 명령이면 사용자에게 카드로 묻는다(browser-confirm). 허락하지 않으면 browser_denied 로 던진다 —
+   * 다른 화면에서 보낸 턴, 카드를 띄울 수 없을 때, CONFIRM_WAIT_MS 안에 답이 없을 때도 누르지 않는다.
+   */
+  private async confirmGate(
+    tool: string,
+    wid: string,
+    id: string | undefined,
+    command: string[],
+    context?: LocalToolCallContext,
+  ): Promise<void> {
+    if (!PRESS_COMMANDS.has(command[0] ?? '')) return;
+    const page = await this.runtime.resolvePage(wid, id, true);
+    const dialog = await this.confirmDialog(wid, page.info.pageId);
+    if (!dialog) return;
+    const press = confirmPress(dialog, { command, target: this.runtime.refTarget(page.info.pageId, command[1]) });
+    if (!press || this.confirmGrants.has(wid, context?.interactionId, dialog)) return;
+    diag('browser-confirm', 'ask', { tool, press, dialog: dialog.text.slice(0, 80), remote: !!context?.remote });
+    if (context?.remote)
+      throw new BrowserRuntimeError('browser_denied', declinedMessage(press, dialog, undefined, '다른 화면에서 보낸 요청이라 이 PC 에서 확인받지 못해'));
+    const answer = await this.waitConfirm(
+      {
+        workflowId: wid,
+        workflowName: context?.workflowName,
+        interactionId: context?.interactionId,
+        tool,
+        dialog,
+        press,
+        pageTitle: page.info.title,
+        pageUrl: page.info.url,
+      },
+      context?.signal,
+    );
+    diag('browser-confirm', 'answer', { choice: answer.choice, timedOut: !!answer.timedOut, said: !!answer.message });
+    if (answer.choice === 'conversation') this.confirmGrants.add(wid, context?.interactionId, dialog);
+    if (answer.choice !== 'deny') return;
+    // 할 말을 남겼으면 그 말대로 하게 둔다(다시 눌러도 된다고 했을 수 있다). 말 없이 거절했거나 답이 없으면 사람의 거부로
+    // 알려 같은 턴에 다시 묻지 않게 한다.
+    if (answer.message) throw new BrowserRuntimeError('browser_denied', declinedMessage(press, dialog, answer.message));
+    throw new ConfirmDeclined(declinedMessage(press, dialog, undefined, answer.timedOut ? `사용자가 ${CONFIRM_WAIT_MS / 1000}초 안에 답하지 않아` : undefined));
+  }
+
+  private async waitConfirm(request: Parameters<ConfirmAsker>[0], signal?: AbortSignal): Promise<ConfirmAnswer> {
+    if (!this.askConfirm) return { choice: 'deny' };
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.askConfirm(request, controller.signal),
+        new Promise<ConfirmAnswer>((resolve) => {
+          timer = setTimeout(() => resolve({ choice: 'deny', timedOut: true }), CONFIRM_WAIT_MS);
+        }),
+      ]);
+    } catch (error) {
+      diag('browser-confirm', `카드 실패: ${error instanceof Error ? error.message : String(error)}`);
+      return { choice: 'deny' };
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      controller.abort();
+    }
   }
 
   private scopeKey(context?: LocalToolCallContext): string {
@@ -604,12 +738,14 @@ export class BrowserToolProvider {
     const action = String(args.action ?? 'goto');
     const page = await this.runtime.resolvePage(wid, id, true);
     if (action !== 'wait') {
+      const since = this.runtime.requestMark();
       const updated = await this.runtime.navigate({
         pageId: page.info.pageId,
         action: action as 'goto' | 'back' | 'forward' | 'reload' | 'stop',
         url: typeof args.url === 'string' ? args.url : undefined,
       });
-      return result(updated, { navigated: action });
+      const after = action === 'stop' ? null : await this.pageAfter(wid, updated.pageId, { since, probeMs: DOCUMENT_REQUEST_PROBE_MS });
+      return result(after?.page ?? updated, { navigated: action, ...after?.fields });
     }
     const command = browserWaitCommand(args.wait_for ?? args.waitFor);
     const run = await this.runtime.runAgentCommand(wid, page.info.pageId, command, timeout(args));
@@ -683,15 +819,66 @@ export class BrowserToolProvider {
     const generation = Number.isFinite(Number(args.generation))
       ? Number(args.generation)
       : undefined;
+    const wid = workflow(args, context);
+    await this.confirmGate(BROWSER_INTERACT_TOOL, wid, pageId(args), command, context);
+    const before = PAGE_MOVING_ACTIONS.has(action)
+      ? (await this.runtime.resolvePage(wid, pageId(args), true)).info.generation
+      : undefined;
+    const since = before === undefined ? undefined : this.runtime.requestMark();
     const run = await this.runtime.runAgentCommand(
-      workflow(args, context),
+      wid,
       pageId(args),
       command,
       timeout(args),
       generation,
       { signal: context?.signal },
     );
-    return runResult(run);
+    if (before === undefined || run.openedPages?.length || (run.result as { popup_closed?: unknown } | null)?.popup_closed)
+      return runResult(run);
+    const after = await this.pageAfter(wid, run.page.pageId, { before, since, signal: context?.signal });
+    // 누른 뒤 뜬 창·경고 문구 — 없으면 막힌 저장을 모델이 모른 채 다시 눌렀다(10/22 trace 54448: 필수 칸 검사에 두 번 막힘).
+    const messages = context?.signal?.aborted ? {} : await this.pageMessages(wid, (after?.page ?? run.page).pageId);
+    if (after) return result(after.page, { ...(run.result as object), ...after.fields, ...messages });
+    return Object.keys(messages).length ? result(run.page, { ...(run.result as object), ...messages }) : runResult(run);
+  }
+
+  /**
+   * 페이지를 옮긴 조작 뒤의 화면 — 조작이 시작한 문서·요청이 끝나면(settle) interactive 스냅샷을 떠서 결과에
+   * 붙일 값으로 돌려준다. before(조작 전 generation)를 주면 페이지가 그대로일 때 null: 스냅샷은 generation 을
+   * 올려 앞 스냅샷의 ref 를 무효로 만드니, 페이지가 안 바뀌었으면 모델이 들고 있는 ref 를 살려 둔다. 스냅샷이
+   * 실패하거나 사용자가 멈춰도 null — 조작은 이미 끝났으니 조작 결과만 돌려준다.
+   */
+  private async pageAfter(
+    wid: string,
+    id: string,
+    options: { before?: number; since?: number; probeMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ page: BrowserPageInfo; fields: Record<string, unknown> } | null> {
+    const { before, since, probeMs, signal } = options;
+    await this.runtime.settle(id, { since, probeMs, signal });
+    if (before !== undefined) {
+      if (this.runtime.get(id)?.generation === before) return null;
+      // 옮겨 간 화면도 이동과 같다 — 새 화면의 스크립트가 데이터를 부를 틈을 준다. BO 공지 '더보기'는 경로가 바뀐
+      // 직후 읽으면 22자(목록 없음), 1.5초 뒤엔 5,645자였다(10/24 실측).
+      await this.runtime.settle(id, { since, probeMs: DOCUMENT_REQUEST_PROBE_MS, signal });
+    }
+    if (signal?.aborted) return null;
+    try {
+      const run = await this.runtime.runAgentCommand(wid, id, ['snapshot', '-i', '-c'], PAGE_AFTER_TIMEOUT_MS);
+      const text = (run.result as { data?: { snapshot?: unknown } } | null)?.data?.snapshot;
+      if (typeof text !== 'string') return null;
+      if (text.length <= PAGE_AFTER_MAX_CHARS) return { page: run.page, fields: { snapshot: text } };
+      const cut = text.lastIndexOf('\n', PAGE_AFTER_MAX_CHARS);
+      return {
+        page: run.page,
+        fields: {
+          snapshot: text.slice(0, cut > 0 ? cut : PAGE_AFTER_MAX_CHARS),
+          snapshot_truncated: `Showing the first ${PAGE_AFTER_MAX_CHARS} of ${text.length} characters. Call BrowserSnapshot for the whole page.`,
+        },
+      };
+    } catch (error) {
+      diag('browser-agent', `조작 뒤 스냅샷 생략 page=${id}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private async step(args: Record<string, unknown>, context?: LocalToolCallContext): Promise<LocalToolResult> {
@@ -705,6 +892,10 @@ export class BrowserToolProvider {
       const state = this.runtime.state();
       const id = pageId(args) ?? state.activeByWorkflow[wid];
       const page = await this.runtime.resolvePage(wid, id, false);
+      // 판단 모델이 고르는 단계는 확인창 버튼을 묻지 않고 누를 수 있다 — 확인창이 떠 있으면 BrowserInteract 로 넘긴다.
+      const dialog = await this.confirmDialog(wid, page.info.pageId);
+      if (dialog)
+        throw new BrowserRuntimeError('browser_denied', `확인창이 떠 있습니다("${dialog.text.slice(0, 80)}", 버튼 ${dialog.buttons.join('·')}). 누르려면 BrowserInteract click 을 쓰세요 — 확정 버튼은 사용자 확인을 받습니다.`);
       const done = await executeBrowserStep(this.runtime, post, page.info, args, this.revealSharedPage, allowsDeciderAction, context?.signal);
       diag('browser-step', 'result', { operation: args.operation, status: done.result.status, mutation_attempted: done.result.mutation_attempted });
       return { ...result(done.page, done.result), isError: done.result.status !== 'completed' };
@@ -809,7 +1000,9 @@ export class BrowserToolProvider {
         // Reading the final state must not erase partial input results or invite a full replay.
         form_values_error = error instanceof Error ? error.message : String(error);
       }
+      const messages = context?.signal?.aborted ? {} : await this.pageMessages(wid, id);
       return result(this.runtime.get(id) ?? originalPage ?? null, {
+        ...messages,
         complete: results.every((r) => r.status === 'done'),
         results: briefResults(results),
         remaining_steps: results.filter((r) => r.status !== 'done' && !r.read_only).map((r) => r.step),

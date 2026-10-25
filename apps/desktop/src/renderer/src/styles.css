@@ -5671,6 +5671,100 @@ button {
 }
 
 /* 음성 재생 실패 알림 (컴포저 위, 일시 표시) */
+/* 사이트 확인창의 확정 버튼을 누르기 전에 묻는 카드(views/ConfirmCard). */
+.confirm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.confirm-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.confirm-card-left {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.confirm-card-dialog {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--border);
+  background: var(--input-bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.confirm-card-buttons,
+.confirm-card-page {
+  color: var(--muted);
+}
+.confirm-card-options {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.confirm-card-options button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.confirm-card-options button:hover,
+.confirm-card-options button:focus-visible,
+.confirm-card-options button.selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  outline: none;
+}
+.confirm-card-key {
+  flex: 0 0 auto;
+  min-width: 16px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+.confirm-card-say {
+  display: flex;
+  gap: 6px;
+}
+.confirm-card-say textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+}
+.confirm-card-say button {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
 .voice-error {
   max-width: 900px;
   margin: 0 auto 6px;

@@ -412,6 +412,17 @@ export function valueToPick(typed: string, label: string): string | null {
   return value && value !== squash(label) ? value : null;
 }
 
+/**
+ * 트리 맨 위에서 고를 항목을 정하지 못했을 때의 말. 말에 경로 구분(>)이 없으면 끝 이름만 준 것이다 — 판단 모델은 보이는
+ * 항목만 고르므로 "사무용품 전문관" 이 "문구/오피스" 아래 있는 줄 모른다. 전체 경로로 다시 보내라고 알린다(10/23 BO: 끝 이름만
+ * 보낸 줄이 실패하자 LLM 이 "표준카테고리 조회 버튼을 눌러줘" 로 한 번 더 헛돈 뒤에야 전체 경로를 보냈다).
+ */
+export function treeMissNote(text: string, top: readonly string[]): string {
+  const near = top.length ? ` 후보: ${top.join(', ')}.` : '';
+  const leafOnly = !text.includes('>');
+  return `고를 항목을 정하지 못했어요.${near}${leafOnly ? ' 트리는 맨 위 항목부터 전체 경로로 보내 주세요(예: 「상위 > 하위」).' : ''}`;
+}
+
 /** 정확히 같은 항목이 없을 때 물어볼 후보 — 고를 값과 낱말(두 글자 이상)이 겹치는 셀 글자, 앞에서부터. */
 export function nearNames(refs: ElementRefs, items: Record<string, string>, value: string, max = 5): string[] {
   const words = new Set(squash(value).split(' ').filter((w) => w.length >= 2));

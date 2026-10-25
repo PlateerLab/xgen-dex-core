@@ -61,6 +61,7 @@ import {
   withoutLabel,
   typedValue,
   keepsValue,
+  treeMissNote,
   NAME_ICON_BUTTONS_SCRIPT,
   type FieldLabel,
 } from './fast-act-labels';
@@ -940,6 +941,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       diag(SCOPE, 'tree-pick', { path, top: pick?.top });
       if (!pick || pick.confidence < th.pick) {
         const top = (pick?.top ?? []).map(([label]) => String(label).replace(/^e\d+ treeitem "(.*)"$/, '$1')).slice(0, 3);
+        if (!path.length) return ask(treeMissNote(text, top), '어느 항목을 고를까요?');
         return ask(`고를 항목을 정하지 못했어요.${top.length ? ` 후보: ${top.join(', ')}.` : ''}`, '어느 항목을 고를까요?');
       }
       const item = s.snap.refs[pick.ref];

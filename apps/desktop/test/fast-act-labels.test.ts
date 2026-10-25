@@ -29,6 +29,7 @@ import {
   withoutLeadingLabel,
   typedValue,
   keepsValue,
+  treeMissNote,
 } from '../src/main/fast-act-labels';
 import type { ElementRefs } from '../src/main/fast-act';
 
@@ -541,4 +542,18 @@ test('popup completion checks the selected name and identifier in the parent val
   assert.equal(popupSelectionMatches('플래티어(LA2438)', '플래티어', 'LA2438'), true);
   assert.equal(popupSelectionMatches('1000001 플래티어', '플래티어 협력사', '1000002'), false);
   assert.equal(popupSelectionMatches('10000020 플래티어 협력사', '플래티어 협력사', '1000002'), false);
+});
+
+test('트리 맨 위에서 못 고르면 끝 이름만 준 줄에는 전체 경로로 보내라고 알린다', () => {
+  // 10/23 BO: 끝 이름만 보낸 줄이 실패하자 LLM 이 조회 버튼만 누르는 줄로 한 번 더 헛돌았다.
+  assert.equal(
+    treeMissNote('표준카테고리 선택 버튼을 눌러 조회 창에서 「사무용품 전문관」을 검색하고 적용해줘', ['문구/오피스', '가전디지털']),
+    '고를 항목을 정하지 못했어요. 후보: 문구/오피스, 가전디지털. 트리는 맨 위 항목부터 전체 경로로 보내 주세요(예: 「상위 > 하위」).',
+  );
+  // 전체 경로를 준 줄은 경로 탓이 아니다 — 후보만 알린다.
+  assert.equal(
+    treeMissNote('표준카테고리를 「문구/오피스 > 사무용품 전문관」으로 지정해줘', ['문구/오피스']),
+    '고를 항목을 정하지 못했어요. 후보: 문구/오피스.',
+  );
+  assert.match(treeMissNote('카테고리를 「의류」로 지정해줘', []), /^고를 항목을 정하지 못했어요\. 트리는/);
 });

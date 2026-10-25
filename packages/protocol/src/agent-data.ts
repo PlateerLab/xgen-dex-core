@@ -68,9 +68,10 @@ export interface WorkspaceUploadOptions {
   transfer?: WorkspaceTransferCapability;
 }
 
-/** 하위 폴더 값 정리 — 빈 칸·`.`·`..` 을 버린다(서버도 다시 검사한다). */
+/** 하위 폴더 값 정리 — 빈 칸·`.`·`..` 을 버리고, 한글은 NFC 로 맞춘다(서버도 다시 검사한다). */
 export function workspaceRelDir(value: string | undefined): string {
   return String(value ?? '')
+    .normalize('NFC')
     .replace(/\\/g, '/')
     .split('/')
     .map((part) => part.trim())
@@ -1059,6 +1060,11 @@ export class AgentDataApi {
    * `{ uri, name, type }` 을 받아 파일을 디스크에서 그대로 흘려보낸다(본문을 JS 메모리에 올리지 않음).
    * 데스크톱·CLI 는 디스크의 파일을 범위로 읽는 `ResumableSource` 를 넘긴다 — 1GiB 파일도 메모리에 다 올리지 않는다.
    * 전송은 `HttpClient.upload` 의 조각 업로드(재개 가능)다.
+   *
+   * 이름과 하위 폴더는 **NFC** 로 올린다. 맥이 주는 한글 이름(NFD)이 작업 공간에 그대로 남으면, 모델이 같은
+   * 이름을 다시 적을 때(NFC) 리눅스 sandbox 에서는 다른 파일이다. 채팅 첨부(렌더러 `workspaceFileName`)만
+   * 맞추고 기기 폴더 복사(CopyToWorkspace)는 맞추지 않아, 10/22~23 BO 실행에서 가져온 `신상품_정보.xlsx` 를
+   * python 으로 열다 "No such file" 이 9턴 11번 났다.
    */
   workspaceUpload(
     workflowId: string,
@@ -1090,7 +1096,7 @@ export class AgentDataApi {
     }
     return this.http.upload<WorkspaceUploadResult>(
       `/api/agentflow/geny-workspace/${encodeURIComponent(workflowId)}/storage/upload?${query}`,
-      [{ name: 'file', file: source, filename, type: mimeType }],
+      [{ name: 'file', file: source, filename: filename.normalize('NFC'), type: mimeType }],
       {
         timeoutMs: 600_000,
         signal: opts.signal,

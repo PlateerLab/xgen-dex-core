@@ -177,6 +177,34 @@ test('settle does not wait for an in-page route change or for longer than its li
   assert.ok(Date.now() - started < 1_000);
 });
 
+test('upload stages survive in-page routes and are released on a new document or tab close', async () => {
+  const { runtime, contents } = boundRuntime();
+  let cleaned = 0;
+  const stage = () => ({ cleanup: async () => { cleaned++; } });
+  const document = runtime.uploadDocument('p1');
+  assert.equal(await runtime.retainUpload('p1', document, stage()), true);
+
+  contents.emit('did-navigate-in-page', {}, 'https://example.com/next', true);
+  assert.equal(cleaned, 0);
+  contents.emit('did-navigate');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cleaned, 1);
+
+  assert.equal(await runtime.retainUpload('p1', document, stage()), false);
+  assert.equal(cleaned, 2);
+  assert.equal(await runtime.retainUpload('p1', runtime.uploadDocument('p1'), stage()), true);
+  await runtime.close('p1');
+  assert.equal(cleaned, 3);
+});
+
+test('closing every browser page releases retained uploads', async () => {
+  const { runtime } = boundRuntime();
+  let cleaned = 0;
+  await runtime.retainUpload('p1', runtime.uploadDocument('p1'), { cleanup: async () => { cleaned++; } });
+  await runtime.closeAll();
+  assert.equal(cleaned, 1);
+});
+
 // BO 로그인 버튼: 클릭 280ms 뒤에도 주소 그대로 — 로그인 응답을 받은 뒤에야 라우터가 옮겼다(10/24 실측).
 test('settle waits for the requests an action sent and for the move their response starts', async () => {
   const { runtime, contents, request, respond } = boundRuntime();

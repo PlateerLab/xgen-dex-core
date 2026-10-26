@@ -150,6 +150,7 @@ import { shouldAllowPrivateCertificate } from '@dex/engine/connection-security';
 import { buildSsoUrl, parseSsoLoginResponse } from '@dex/engine/connection-sso';
 import { createSsoWindowOptions } from './sso-window-options';
 import { getBrowserRuntime } from './browser-runtime';
+import { BrowserScratch } from './browser-file-transfer';
 import {
   CANVAS_PARTITION,
   canvasUrl,
@@ -4378,6 +4379,9 @@ if (!gotLock) {
     // 브릿지가 전부 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히
     // 던진다(조용히 메모리로 폴백해서 사용자의 MCP 인증을 매번 잃는 대신).
     bindDesktopHost();
+    // 단일 실행 잠금을 얻은 뒤에만 지운다. 같은 프로필의 살아 있는 탭이 쓰는 파일은 없어야 한다.
+    await BrowserScratch.cleanupOrphans().catch((error) =>
+      diag('browser-file', `남은 브라우저 임시 파일 정리 실패: ${error instanceof Error ? error.message : String(error)}`));
     await migrateStoredMcpSecrets();
 
     // 절전에서 깨어났다 — 잠든 사이 서버가 놓은 대화 소켓은 이쪽에서 보기엔 아직 열려 있다.

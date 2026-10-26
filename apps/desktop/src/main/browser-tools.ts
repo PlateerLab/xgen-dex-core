@@ -1196,9 +1196,11 @@ export class BrowserToolProvider {
     const generation = Number.isFinite(Number(args.generation))
       ? Number(args.generation)
       : undefined;
+    let retainedUpload = false;
     try {
       const pinnedPage = scratch ? await runWithFileAbort(fileSignal!, () =>
         this.runtime.resolvePage(workflow(args, context), pageId(args), true), async () => undefined) : undefined;
+      const uploadDocument = action === 'upload' ? this.runtime.uploadDocument(pinnedPage!.info.pageId) : undefined;
       const run = action === 'download'
         ? await runWithFileAbort(fileSignal!, () => this.runtime.runDownloadCommand(
           workflow(args, context), pinnedPage!.info.pageId, command, scratch!.path(electronName), timeout(args), generation,
@@ -1215,12 +1217,14 @@ export class BrowserToolProvider {
           ? electronName : outputName;
         await scratch.commit(committedName, outputTarget, fileSignal);
       }
+      if (action === 'upload' && scratch)
+        retainedUpload = await this.runtime.retainUpload(pinnedPage!.info.pageId, uploadDocument!, scratch);
       return scratch ? result(run.page, displayBrowserFileResult(run.result, scratch, pathDisplays)) : runResult(run);
     } catch (error) {
       if (scratch) throw browserFileError(error, scratch, pathDisplays);
       throw error;
     } finally {
-      await scratch?.cleanup();
+      if (!retainedUpload) await scratch?.cleanup();
     }
   }
 }

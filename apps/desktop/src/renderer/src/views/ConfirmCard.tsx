@@ -2,7 +2,7 @@
  * 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 채팅 입력창 위에 뜨는 카드(main browser-confirm).
  *
  * 1·2·3 으로 고른다 — 1 이번만 누르기, 2 이 대화에서 같은 창은 다시 묻지 않기, 3 누르지 않고 할 말 적기(Enter 로 보냄).
- * Esc 는 말 없이 누르지 않기. 카드가 뜨면 첫 고르기에 초점을 준다(앱 안 초점만 — 창을 앞으로 꺼내지 않는다).
+ * Esc 는 입력 중이면 작성 내용을 유지하고 입력창만 닫고, 아니면 누르지 않기. 카드가 뜨면 첫 고르기에 초점을 준다(앱 안 초점만 — 창을 앞으로 꺼내지 않는다).
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { BrowserConfirmChoice, BrowserConfirmRequest } from '@dex/protocol/browser';
@@ -14,6 +14,7 @@ export function ConfirmCard({ request, more = 0 }: { request: BrowserConfirmRequ
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const card = useRef<HTMLDivElement>(null);
   const first = useRef<HTMLButtonElement>(null);
   const say = useRef<HTMLTextAreaElement>(null);
 
@@ -44,7 +45,10 @@ export function ConfirmCard({ request, more = 0 }: { request: BrowserConfirmRequ
     if (event.nativeEvent.isComposing) return;
     if (event.key === 'Escape') {
       event.preventDefault();
-      void answer('deny');
+      if (saying) {
+        setSaying(false);
+        first.current?.focus({ preventScroll: true });
+      } else void answer('deny');
       return;
     }
     if (saying) return;
@@ -57,12 +61,12 @@ export function ConfirmCard({ request, more = 0 }: { request: BrowserConfirmRequ
 
   const left = Math.max(0, Math.ceil((request.expiresAt - now) / 1000));
   return (
-    <div className="confirm-card" role="alertdialog" aria-label="확인창 버튼을 눌러도 될지 묻는 카드" onKeyDown={onKeyDown}>
-      <div className="confirm-card-head">
+    <div ref={card} className="confirm-card" role="alertdialog" aria-label="확인창 버튼을 눌러도 될지 묻는 카드" tabIndex={-1} onKeyDown={onKeyDown}>
+      <div className="confirm-card-head" onClick={() => card.current?.focus({ preventScroll: true })}>
         <strong>에이전트가 확인창의 [{request.press}] 을(를) 누르려고 합니다</strong>
         <span className="confirm-card-left">{left}초 뒤 누르지 않음{more ? ` · 대기 ${more}개 더` : ''}</span>
       </div>
-      <blockquote className="confirm-card-dialog">
+      <blockquote className="confirm-card-dialog" onClick={() => card.current?.focus({ preventScroll: true })}>
         {request.dialogText || '(문구 없음)'}
         {request.buttons.length > 0 && <span className="confirm-card-buttons"> 버튼: {request.buttons.join(' · ')}</span>}
       </blockquote>
@@ -84,6 +88,7 @@ export function ConfirmCard({ request, more = 0 }: { request: BrowserConfirmRequ
           </button>
         ))}
       </div>
+      <div className="confirm-card-left">Esc · {saying ? '입력 닫기 (작성 내용 유지)' : '누르지 않기'}</div>
       {saying && (
         <form
           className="confirm-card-say"

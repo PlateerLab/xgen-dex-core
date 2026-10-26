@@ -15,6 +15,7 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const card = useRef<HTMLDivElement>(null);
   const first = useRef<HTMLButtonElement>(null);
   const say = useRef<HTMLTextAreaElement>(null);
 
@@ -61,12 +62,29 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
 
   const left = Math.max(0, Math.ceil((request.expiresAt - now) / 1000));
   return (
-    <div className="confirm-card" role="alertdialog" aria-label="에이전트가 진행해도 될지 묻는 카드" onKeyDown={onKeyDown}>
-      <div className="confirm-card-head">
+    <div
+      ref={card}
+      className="confirm-card"
+      role="alertdialog"
+      aria-label="에이전트가 진행해도 될지 묻는 카드"
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+    >
+      <div
+        className="confirm-card-head"
+        onClick={() => card.current?.focus({ preventScroll: true })}
+      >
         <strong>{request.question}</strong>
         <span className="confirm-card-left">{leftText(left)} 뒤 진행하지 않음{more ? ` · 대기 ${more}개 더` : ''}</span>
       </div>
-      {request.details && <div className="confirm-card-details">{request.details}</div>}
+      {request.details && (
+        <div
+          className="confirm-card-details"
+          onClick={() => card.current?.focus({ preventScroll: true })}
+        >
+          {request.details}
+        </div>
+      )}
       <div className="confirm-card-options">
         {USER_CONFIRM_OPTIONS.map((option, index) => (
           <button
@@ -82,6 +100,7 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
           </button>
         ))}
       </div>
+      <div className="confirm-card-left">Esc · {saying ? '입력 닫기' : '진행하지 않기'}</div>
       {saying && (
         <form
           className="confirm-card-say"

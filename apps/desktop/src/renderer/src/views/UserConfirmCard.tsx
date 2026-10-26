@@ -1,7 +1,7 @@
 /**
  * 에이전트가 일을 이어 가기 전에 묻는 카드 — 채팅 입력창 위, 사이트 확인창 카드(ConfirmCard)와 같은 자리·모양(main user-confirm).
  *
- * 1·2 로 고른다 — 1 진행, 2 고칠 점 적기(Enter 로 보냄). Esc 는 적는 중이면 적기만 닫고(적던 말을 버리고 거절하지 않게),
+ * 1·2 로 고른다 — 1 진행, 2 고칠 점 적기(Enter 로 보냄). Esc 는 적는 중이면 입력창만 닫고(적던 말은 유지),
  * 아니면 말 없이 진행하지 않기. 카드가 뜨면 첫 고르기에 초점을 준다
  * (앱 안 초점만 — 창을 앞으로 꺼내지 않는다).
  */
@@ -100,7 +100,7 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
           </button>
         ))}
       </div>
-      <div className="confirm-card-left">Esc · {saying ? '입력 닫기' : '진행하지 않기'}</div>
+      <div className="confirm-card-left">Esc · {saying ? '입력 닫기 (작성 내용 유지)' : '진행하지 않기'}</div>
       {saying && (
         <form
           className="confirm-card-say"
@@ -114,7 +114,7 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
             rows={2}
             value={message}
             disabled={busy}
-            placeholder="고칠 점 (예: 키워드에 '선물용' 추가해 줘). 비워 두면 진행하지 않기만 합니다."
+            placeholder="고칠 점을 적어 주세요. 아무것도 적지 않고 보내면 이번 작업을 진행하지 않습니다."
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {

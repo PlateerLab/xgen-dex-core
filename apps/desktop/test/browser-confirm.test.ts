@@ -186,4 +186,7 @@ test('the chat shows its own cards with the three choices', () => {
   assert.match(html, /누르기 \(이번만\)/);
   assert.match(html, /이 대화에서 같은 창은 다시 묻지 않기/);
   assert.match(html, /누르지 않고 다르게 하라고 말하기/);
+  assert.match(html, /Esc · 누르지 않기/);
+  assert.match(html, /tabindex="-1"/);
+  assert.equal((html.match(/<button /g) ?? []).length, 3);
 });

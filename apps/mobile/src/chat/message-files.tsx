@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
 import {
   answerTurnFiles,
+  chatDownloadKey,
   chatDownloadRequest,
   formatFileSize,
   isChatImageName,
@@ -262,6 +263,15 @@ function mediaProofFor(message: ChatMessage, artifactPath: string | undefined): 
   );
 }
 
+/**
+ * 다운로드의 생성물 증명. 이 답의 generated_content 선언이 먼저, 없으면 표식·이벤트에 딸려 온 증명
+ * (새 파일 저장소 결과물은 증명이 표식에 붙어 온다. 웹 채팅과 같다).
+ */
+function downloadProofFor(message: ChatMessage, item: ChatDownload): GeneratedContentProvenance | undefined {
+  if (message.malformedGeneratedContent) return undefined;
+  return mediaProofFor(message, item.path ?? item.downloadUrl) ?? item.provenance;
+}
+
 /** 질문에 붙인 파일 — 말풍선 안. 작업 공간에 올라간 것은 그림은 작게 보이고, 누르면 연다. */
 export const AttachmentChips: React.FC<{
   client: XgenMobileClient;
@@ -373,8 +383,8 @@ export const AnswerFiles: React.FC<{
   };
   const downloadCard = (item: ChatDownload) => {
     const source = downloadSource(client, item);
-    const provenance = mediaProofFor(message, item.path ?? item.downloadUrl);
-    return <FileCard key={item.artifactId ?? `${item.storageId}:${item.fileId}`} name={item.name} size={item.size} onPress={() => openDownload(item)} proofAction={source && provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />;
+    const provenance = downloadProofFor(message, item);
+    return <FileCard key={chatDownloadKey(item)} name={item.name} size={item.size} onPress={() => openDownload(item)} proofAction={source && provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />;
   };
 
   const images: React.ReactNode[] = [];
@@ -390,9 +400,9 @@ export const AnswerFiles: React.FC<{
   }
   for (const item of extra) {
     const source = isChatImageName(item.name) ? downloadSource(client, item) : null;
-    const key = item.artifactId ?? `${item.storageId}:${item.fileId}`;
+    const key = chatDownloadKey(item);
     if (source) {
-      const provenance = mediaProofFor(message, item.path ?? item.downloadUrl);
+      const provenance = downloadProofFor(message, item);
       images.push(
         <InlineImage key={key} source={source} name={item.name} size={item.size} onPress={() => openDownload(item)} fallback={downloadCard(item)} footerAction={provenance ? <MediaProofAction client={client} source={source} provenance={provenance} /> : undefined} />,
       );

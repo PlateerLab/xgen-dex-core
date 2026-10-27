@@ -11,6 +11,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   answerTurnFiles,
+  chatDownloadKey,
   isChatImageName,
   sharedNames,
   sharedTreeFetch,
@@ -40,8 +41,8 @@ function blobOf(bytes: Uint8Array, contentType: string): Blob {
 /** 작업 공간 목록 — 대화를 열 때 답마다 묻던 것을 동시 요청 하나로 묶는다. */
 const workspaceTree = sharedTreeFetch((workflowId: string) => xgen.agentData.workspaceTree(workflowId));
 
-/** 다운로드 한 개의 열쇠 — 같은 파일이면 같다. */
-const downloadKey = (d: ChatDownload): string => d.artifactId ?? `${d.storageId}:${d.fileId}`;
+/** 다운로드 한 개의 열쇠. 같은 파일이면 같다(새 파일 저장소 항목은 `filestore:<번호>`). */
+const downloadKey = chatDownloadKey;
 
 function mediaProofFor(msg: ChatMsg, artifactPath: string | undefined): GeneratedContentProvenance | undefined {
   if (!artifactPath || msg.malformedGeneratedContent) return undefined;
@@ -50,6 +51,15 @@ function mediaProofFor(msg: ChatMsg, artifactPath: string | undefined): Generate
     item.content_type?.toLowerCase() !== 'text/plain'
     && item.artifact_path?.replace(/^\/+/, '') === normalized,
   );
+}
+
+/**
+ * 다운로드의 생성물 증명. 이 답의 generated_content 선언이 먼저, 없으면 표식·이벤트에 딸려 온 증명
+ * (새 파일 저장소 결과물은 증명이 표식에 붙어 온다. 웹 채팅과 같다).
+ */
+function downloadProofFor(msg: ChatMsg, item: ChatDownload): GeneratedContentProvenance | undefined {
+  if (msg.malformedGeneratedContent) return undefined;
+  return mediaProofFor(msg, item.path ?? item.downloadUrl) ?? item.provenance;
 }
 
 type MediaProofState = 'idle' | 'checking' | 'error' | GeneratedContentVerificationStatus;
@@ -268,7 +278,7 @@ export const TurnFiles: React.FC<{
   };
 
   const downloadProof = (item: ChatDownload) => {
-    const provenance = mediaProofFor(msg, item.path ?? item.downloadUrl);
+    const provenance = downloadProofFor(msg, item);
     return provenance ? (
       <MediaProofButton
         provenance={provenance}

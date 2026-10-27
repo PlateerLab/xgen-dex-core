@@ -28,6 +28,7 @@ import {
 } from '../src/chat/message-model';
 import { attachDownload, attachGeneratedContent, attachmentMarks } from '../src/chat/message-model';
 import { dispatchExec } from '../src/lib/chat-ws';
+import { chatAnswerFiles, chatDownloadRequest } from '@dex/protocol';
 
 const live = (text: string, events: unknown[] = []) => ({ text, events });
 
@@ -467,6 +468,21 @@ test('파일 저장소 결과물(download_artifact)은 도는 답에, 끝났으�
   const got: Record<string, unknown>[] = [];
   dispatchExec('download_artifact', payload, { onDownload: (d) => got.push(d) });
   assert.deepEqual(got, [payload], '스트림의 download_artifact 가 화면까지 온다');
+});
+
+test('새 파일 저장소 결과물(backend: filestore)도 한 번만 붙고, 받는 길은 filestore 항목 주소다', () => {
+  const live = [userMessage('보고서'), assistantPlaceholder()];
+  const payload = { backend: 'filestore', item_id: 18, file_name: '보고서.docx', path: 'filestore/u/보고서.docx' };
+  const once = attachDownload(live, payload);
+  assert.deepEqual(once[1].downloads, [{ name: '보고서.docx', itemId: 18, path: 'filestore/u/보고서.docx' }]);
+  assert.equal(attachDownload(once, payload), once, '같은 파일은 다시 붙이지 않는다');
+  assert.deepEqual(chatDownloadRequest(once[1].downloads![0], { preview: true }), {
+    path: '/api/filestore/items/18/download',
+    headers: {},
+  });
+  const restored = chatAnswerFiles('끝.\n📎 다운로드: [File: 보고서.docx]__[Path: filestore/u/보고서.docx]__[FilestoreItemId: 18]', once[1].downloads);
+  assert.equal(restored.text, '끝.', '이력 본문의 표식은 걷는다');
+  assert.equal(restored.downloads.length, 1, '스트림으로 받은 것과 이력 표식은 단추 하나');
 });
 
 test('첨부 이름표는 작업 공간 자리를 함께 싣는다 — 눌러서 다시 연다', () => {

@@ -1,6 +1,6 @@
 {
   "name": "@dex/engine",
-  "version": "1.106.0",
+  "version": "1.107.0",
   "private": true,
   "type": "module",
   "description": "이 기기에서 실제로 무언가를 하는 것 — 로컬 도구 · MCP · 서버 브릿지. Electron 은 모른다.",
@@ -15,7 +15,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@dex/native-fs": "1.106.0",
+    "@dex/native-fs": "1.107.0",
     "just-bash": "3.6.0",
     "ws": "^8.21.0",
     "@modelcontextprotocol/sdk": "^1.29.0"

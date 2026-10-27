@@ -7,6 +7,36 @@ import type { VoiceStreamResult, VoiceStreamEvent } from '../src/main/voice-stre
 import type { CaptureChunk } from '../src/renderer/src/voice/processed-capture';
 import type { useVoiceLoop } from '../src/renderer/src/voice/voice-loop';
 import type { VoiceTrace } from '../src/main/voice-trace';
+import { createVoiceInputTracker } from '../src/renderer/src/voice/voice-input';
+
+test('completed voice actions clear their composer preview, including blocked actions', () => {
+  for (const command of ['PPT 내려줘.', 'PPT 띄워줘.']) {
+    const tracker = createVoiceInputTracker();
+    assert.equal(tracker.preview(command), true);
+    assert.equal(tracker.complete()(command), '');
+  }
+});
+
+test('typing during a voice action survives subsequent partials and completion', () => {
+  const tracker = createVoiceInputTracker();
+  tracker.preview('PPT 내려줘.');
+  tracker.edited();
+  assert.equal(tracker.preview('PPT 내려줘'), false);
+  const clear = tracker.complete();
+  assert.equal(clear('내가 수정한 내용'), '내가 수정한 내용');
+  assert.equal(clear('PPT 내려줘.'), 'PPT 내려줘.');
+});
+
+test('a delayed action result does not erase a newer utterance or later typing', () => {
+  const tracker = createVoiceInputTracker();
+  tracker.preview('PPT 내려줘.');
+  const clearOld = tracker.complete();
+  tracker.preview('PPT 내려줘.');
+  assert.equal(clearOld('PPT 내려줘.'), 'PPT 내려줘.');
+  const clearNew = tracker.complete();
+  tracker.edited();
+  assert.equal(clearNew('PPT 내려줘.'), 'PPT 내려줘.');
+});
 
 // Run the actual hook with deterministic capture/IPC, without a microphone or STT service.
 async function loop(responseKey: string | null) {
@@ -122,5 +152,15 @@ test('continuation waiting and carry-over are logged while retaining the existin
   assert.equal(f.traces[1].reason, 'joined_next_utterance');
   assert.equal(f.traces[1].text, '임시 저장');
   assert.equal(f.starts[1][1], '임시 저장');
+  f.dispose();
+});
+
+test('a blocked attempt is delivered immediately without continuation carry', async () => {
+  const f = await loop(null);
+  await f.finish({ blocked: '숨겨지지 않음', text: 'PPT 내려줘.', unhandled: 'PPT 내려줘.' });
+  assert.deepEqual(f.results, [{ text: 'PPT 내려줘.', key: null }]);
+  await f.speak();
+  assert.equal(f.starts[1][1], '');
+  assert.equal(f.traces.some(trace => trace.stage === 'carry'), false);
   f.dispose();
 });

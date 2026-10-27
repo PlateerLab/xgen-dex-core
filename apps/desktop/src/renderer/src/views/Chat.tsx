@@ -94,6 +94,7 @@ import type { AgentViewerSub } from './workspace-layout';
 import { IdeView } from '@dex/ide';
 import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
 import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
+import { createVoiceInputTracker } from '../voice/voice-input';
 import { createConfirmVoiceResponder, type VoiceConfirmTarget } from '../voice/confirm-response';
 import { VoiceLoopBar, type VoiceLogEntry } from '../voice/VoiceLoopBar';
 import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
@@ -398,6 +399,7 @@ export const Chat: React.FC<{
   }, [busy, session.key]);
 
   const [input, setInput] = useState('');
+  const voiceInputTracker = useMemo(createVoiceInputTracker, []);
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
   const [stagedImages, setStagedImages] = useState<StagedChatImage[]>([]);
@@ -1129,12 +1131,20 @@ export const Chat: React.FC<{
     interactionId: session.interactionId,
     responseKey: voiceConfirmId,
     isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
-    onPartial: (t) => { if (!voiceConfirmRef.current) setInput(t); },
+    onPartial: (t) => { if (!voiceConfirmRef.current && voiceInputTracker.preview(t)) setInput(t); },
     onWake: () => markCalled(true),
     onResult: async (r, recordedRequestId) => {
+      const clearVoiceInput = voiceInputTracker.complete();
       const trace = (reason: string): void => {
         if (r.traceId) xgen.voiceStream.trace({ id: r.traceId, stage: 'route', text: r.text, requestId: recordedRequestId, reason });
       };
+      if (r.blocked) {
+        setInput(clearVoiceInput);
+        trace('action_blocked');
+        markCalled(false);
+        logVoice('skip', r.blocked);
+        return;
+      }
       if (r.wake === 'called') {
         trace('wake_only');
         // 호출어만 들었다 — 다음 말 하나는 호출어 없이 받는다(main 이 같은 시간만큼 기다린다).
@@ -1149,17 +1159,18 @@ export const Chat: React.FC<{
       if (!r.text) { trace(r.wake === 'ignored' ? 'wake_required' : 'empty_text'); return; }
       if (recordedRequestId) trace('confirmation_check');
       if (await respondToConfirm(r.text, recordedRequestId, trace)) { trace('confirmation_consumed'); return; }
+      if (r.actions.length && !r.unhandled) {
+        setInput(clearVoiceInput);
+        trace('browser_actions_handled');
+        const line = r.actions.map((a) => (a.text ? `${a.display}에 "${a.text}"` : a.display)).join(' → ');
+        logVoice('act', line);
+        return;
+      }
       setInput('');
       // 한두 글자짜리 처리 못 한 말("그.", "음")은 말버릇·잡음 — 채팅으로 보내지 않는다.
       if (!r.actions.length && r.text.replace(/[\s.,!?。…]/g, '').length <= 2) {
         trace('short_text');
         logVoice('skip', r.text);
-        return;
-      }
-      if (r.actions.length && !r.unhandled) {
-        trace('browser_actions_handled');
-        const line = r.actions.map((a) => (a.text ? `${a.display}에 "${a.text}"` : a.display)).join(' → ');
-        logVoice('act', line);
         return;
       }
       // 계속 듣기는 주변 소리도 듣는다 — 주변 소리·인식 환각으로 보이는 말은 채팅으로 보내지 않는다:
@@ -2163,7 +2174,7 @@ export const Chat: React.FC<{
                 ? '첨부한 화면이나 요소에 대해 질문해 보세요…'
                 : '메시지를 입력하세요…'
             }
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { voiceInputTracker.edited(); setInput(e.target.value); }}
             onPaste={handleImagePaste}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

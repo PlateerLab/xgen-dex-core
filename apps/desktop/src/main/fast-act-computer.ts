@@ -17,6 +17,7 @@ import { diag } from './diag-log';
 import {
   DANGEROUS_BROWSER_REQUEST as DANGEROUS_REQUEST,
   DANGEROUS_BROWSER_TARGET as DANGEROUS,
+  GATE_INTENT_Q,
   classify,
   decisionState,
   elementDisplay,
@@ -43,6 +44,7 @@ import {
   type AxSnapshot,
 } from './mac-ax';
 import { GUARDED, mentions, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
+import { PresentationVoiceAgent } from './voice-presentation';
 
 const SCOPE = 'voice-computer';
 /** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이 — 브라우저 칸과 같다. */
@@ -119,15 +121,13 @@ export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' 
     add({ role: 'button', name: '이전 슬라이드·장 (← 키)', run: key('left'), sentence: '이전 장으로 돌아갔어요.' });
   }
   // "내리기" 를 이름에 둔다 — "앱 숨기기" 만이면 "ppt 내려줘" 가 발표 끝내기(Esc)로 가서 앱 창이 앞에 남았다
-  // (10/18 dev 판단 모델: 내려줘류 7문장 0/7 → 7/7, 발표 끝내기·다음·이전·DeX 앞으로 문장은 그대로). 말을 듣는
-  // DeX 를 먼저 앞으로 가져온 뒤 숨긴다 — 맨 앞 앱을 숨기면 macOS 가 뒤에 있던 앱을 비동기로 앞에 올려, 숨긴 뒤
-  // 가져오면 그 앱(10/18 슬라이드 쇼: iTerm2)에 밀렸다.
+  // (10/18 dev 판단 모델: 내려줘류 7문장 0/7 → 7/7). 숨김 확인 전에는 초점을 바꾸지 않는다.
   add({
     role: 'button',
     name: `${ax.app} 내리기 (앱 숨기기)`,
     run: async () => {
-      showDex();
       await axHide(ax.pid);
+      showDex();
     },
     sentence: `${ax.app} 앱을 내렸어요.`,
   });
@@ -297,9 +297,9 @@ export class ComputerVoiceAgent implements VoiceAgent {
       texts.map(async (t) => {
         const a = await post({
           state: decisionState(t, s.origin, s.scr),
-          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS } },
+          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }, gate_intent: GATE_INTENT_Q },
         }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
-        return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
+        return { ready: (a.gate_intent?.probabilities?.act ?? 0) < 0.9 ? 'multi' : (a.ready?.choice ?? 'wait'), p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
   }
@@ -335,6 +335,8 @@ export class ComputerVoiceAgent implements VoiceAgent {
     const cls = await classify(post, text, s.origin, s.scr);
     const rc = cls.gate.toFixed(2);
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
+    if (!((cls.single ?? 0) >= 0.9)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
+    if (!((cls.onscreen ?? 0) >= 0.5)) return no(`화면에 없는 대상 ${cls.onscreen}`);
     // 말이 끝났는데 요소 이름만 말한 경우 — 브라우저 칸과 같은 규칙(아래에서 확신·이름 겹침을 본다).
     const namedOnly = !th.partial && cls.ready === 'wait';
     if ((th.partial && cls.ready !== 'act_now') || (cls.gate < th.intent && !namedOnly)) {
@@ -380,7 +382,8 @@ export class ComputerVoiceAgent implements VoiceAgent {
       else await axPress(pick.ref, s.gen);
     } catch (err) {
       this.forget();
-      return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`, pick.top);
+      const reason = `실행 실패 ${err instanceof Error ? err.message : String(err)}`;
+      return { acted: false, reason, detail: pick.top, ms: now() - t0, stop: !reason.includes(AX_STALE) };
     }
     const done = await this.record(text, element, th, decideMs, now() - tAct, pick, s, sys?.sentence);
     return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
@@ -430,6 +433,7 @@ export class RoutedVoiceAgent implements VoiceAgent {
   readonly actions: VoiceAction[];
   private computer: ComputerVoiceAgent;
   private launcher: LauncherVoiceAgent;
+  private presentation: PresentationVoiceAgent;
 
   constructor(
     private browser: BrowserVoiceAgent,
@@ -439,6 +443,7 @@ export class RoutedVoiceAgent implements VoiceAgent {
     this.actions = browser.actions;
     this.computer = new ComputerVoiceAgent(t0, browser.actions, onAct);
     this.launcher = new LauncherVoiceAgent(t0, browser.actions, onAct);
+    this.presentation = new PresentationVoiceAgent(t0, browser.actions, () => deps?.showDex(), onAct);
   }
 
   get lastTarget(): string | null {
@@ -464,6 +469,14 @@ export class RoutedVoiceAgent implements VoiceAgent {
   }
 
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome> {
+    if (computerActEnabled()) {
+      try {
+        const presentation = await this.presentation.handle(text, th, guard, abort);
+        if (presentation) return presentation;
+      } catch (error) {
+        return { acted: false, stop: true, reason: `발표 조작 확인 실패: ${error instanceof Error ? error.message : String(error)}`, ms: 0 };
+      }
+    }
     const o = await (await this.route()).handle(text, th, guard, abort, utterance, pressOnly);
     // 실행은 맨 앞 앱을 바꿀 수 있다(앱 열기·숨기기) — 다음 판단이 옛 맨 앞 앱을 보지 않게.
     if (o.acted) frontCache = null;

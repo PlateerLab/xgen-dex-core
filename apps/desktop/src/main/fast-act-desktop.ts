@@ -22,7 +22,7 @@ import { execFile } from 'node:child_process';
 import { listInstalledApps, type InstalledApp } from '@dex/engine/app-launch';
 import { openWithDefaultApp } from '@dex/engine/local-tools';
 import { diag } from './diag-log';
-import { classify, decisionState, pickElement, type DecisionPost, type ElementRefs } from './fast-act';
+import { classify, decisionState, GATE_INTENT_Q, pickElement, type DecisionPost, type ElementRefs } from './fast-act';
 import { CHROME_PICK } from './fast-act-chrome';
 import { READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost } from './fast-act-runner';
@@ -270,9 +270,9 @@ export class LauncherVoiceAgent implements VoiceAgent {
       texts.map(async (t) => {
         const a = await post({
           state: decisionState(t, LAUNCHER_ORIGIN, scr),
-          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS } },
+          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }, gate_intent: GATE_INTENT_Q },
         }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
-        return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
+        return { ready: (a.gate_intent?.probabilities?.act ?? 0) < 0.9 ? 'multi' : (a.ready?.choice ?? 'wait'), p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
   }
@@ -287,6 +287,8 @@ export class LauncherVoiceAgent implements VoiceAgent {
     const cls = await classify(post, text, LAUNCHER_ORIGIN, scr);
     const rc = cls.gate.toFixed(2);
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
+    if (!((cls.single ?? 0) >= 0.9)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
+    if (!((cls.onscreen ?? 0) >= 0.5)) return no(`화면에 없는 대상 ${cls.onscreen}`);
     if ((th.partial && cls.ready !== 'act_now') || cls.gate < th.intent) return no(`기다림 ${cls.ready} ${rc}`);
     if (abort()) return no('판단 취소(새 인식)');
     const pick = await pickElement(post, text, LAUNCHER_ORIGIN, refs, scr);

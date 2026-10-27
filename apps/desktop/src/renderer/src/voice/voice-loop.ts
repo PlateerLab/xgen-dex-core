@@ -97,7 +97,7 @@ export function useVoiceLoop(opts: {
     };
     const deliver = (r: VoiceStreamResult): void => {
       if (!isCurrent()) { trace(r, 'deliver', 'stale_context'); return; }
-      if (!r.actions.length && r.unhandled) {
+      if (!r.blocked && !r.actions.length && r.unhandled) {
         trace(r, 'deliver', 'waiting_for_continuation', JOIN_MS);
         held = { r, timer: setTimeout(() => {
           const h = held;

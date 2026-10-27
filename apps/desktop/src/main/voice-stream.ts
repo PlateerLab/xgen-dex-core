@@ -58,6 +58,8 @@ export type VoiceStreamEvent =
 export type TimelineEntry = { t: number; type: string; text?: string; detail?: string };
 
 export type VoiceStreamResult = {
+  /** A local attempt failed; consume this result without automatic retry or chat fallback. */
+  blocked?: string;
   /** Present only in opt-in diagnostics so renderer decisions can use the same stream ID. */
   traceId?: string;
   text: string;
@@ -358,6 +360,7 @@ class VoiceSession {
     if (!this.deferActions) await this.seg.final(text);
     this.close();
     const result: VoiceStreamResult = {
+      ...(this.seg.failure ? { blocked: this.seg.failure } : {}),
       ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}),
       text,
       actions: [...this.agent.actions],
@@ -367,7 +370,7 @@ class VoiceSession {
       wake: !this.wake ? 'off' : this.heardWake && !text ? 'called' : 'heard',
     };
     traceVoice({ id: this.id, stage: 'result', text, carry: this.carry, reason: result.wake === 'called' ? 'wake_only' : this.agent.actions.length ? 'browser_actions' : 'transcribed' });
-    if (text && !this.deferActions) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
+    if (text && !this.deferActions && !this.seg.failure) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
     diag(SCOPE, 'end', {
       id: this.id,
       text,

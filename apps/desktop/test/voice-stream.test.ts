@@ -97,6 +97,18 @@ function fixture(debug = false) {
       assert.ok(result);
       return { result, events };
     },
+    /** The server's final (and done) lose the end of what its partial already heard. */
+    async truncatedFinal(partial: string, final: string) {
+      const events: VoiceStreamEvent[] = [];
+      const id = await hub.start('wf', event => events.push(event), '', false, 'chat', true);
+      const socket = sockets.at(-1)!;
+      socket.hear(partial);
+      socket.text = final;
+      socket.emit('message', JSON.stringify({ type: 'final', text: final }));
+      const result = await hub.end(id);
+      assert.ok(result);
+      return { result, events };
+    },
     /** A session opened to carry the previous unhandled words, ending before any new speech arrives. */
     async carriedSilence(carry: string) {
       const id = await hub.start('wf', () => {}, carry, false, 'chat', false);
@@ -286,4 +298,12 @@ test('a carried session that hears nothing returns the carried words once instea
   assert.equal(result.actions.length, 0);
   assert.equal(f.calls.final, 0, 'the previous session already judged these words');
   assert.equal(f.calls.remember, 0, 'the previous session already remembered these words');
+});
+
+test('a truncated final still ends the utterance and keeps the fuller partial text', async () => {
+  const f = fixture();
+  const { result, events } = await f.truncatedFinal('헤이 엑스젠 지금 PPT 장표 내려줘.', '헤이 엑스젠 지금');
+  assert.equal(events.filter(event => event.type === 'utterance_end').length, 1);
+  assert.equal(result.text, '지금 PPT 장표 내려줘.');
+  assert.equal(result.wake, 'heard');
 });

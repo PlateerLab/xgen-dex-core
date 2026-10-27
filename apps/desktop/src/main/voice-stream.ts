@@ -252,15 +252,21 @@ class VoiceSession {
       // "…테스트 상품입니다. 입력해줘." 가 "…테스트 상", "헤이 엑스젠 전시 카테고리 추가해줘." 가 "헤이 엑스젠"
       // 이었다(10/16 합성 음성 24문장 중 5개 — 모두 문장 끝 부호 없이 끝났고, 온전한 확정 19개는 모두 부호로 맺었다).
       // 가장 많이 들은 중간 결과의 잘린 앞 토막인 확정·중간 결과는 버리고, 끝에는 그 중간 결과를 쓴다.
-      if (truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial)) {
+      // 잘린 확정도 서버의 말 끝이다 — 글자만 그 중간 결과로 바꿔 이 토막을 마친다. 확정째 버리면 로컬 감지가 꺼진
+      // 계속 듣기에서 말 끝(utterance_end)이 오지 않아 세션이 30초 상한까지 남았다(10/28 "헤이 엑스젠 지금 PPT 장표
+      // 내려줘." → 확정 "헤이 엑스젠 지금", 장표가 안 내려감).
+      const cut = truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial);
+      if (cut) {
         traceVoice({ id: this.id, stage: 'drop', source: m.type, text: m.text, reason: 'truncated_text' });
         this.mark(`cut_${m.type}_dropped`, m.text);
-        return;
+        if (m.type !== 'final') return;
       }
       if (m.type === 'final') this.lastFinal = m.text;
       else this.fullPartial = m.text.trim();
       // 서버의 partial 은 이 세션에서 들은 전체(누적), final 은 방금 끝난 토막만이다.
-      const heard = m.type === 'partial' ? m.text.trim() : (this.closedText = `${this.closedText} ${m.text}`.trim());
+      const heard = m.type === 'partial'
+        ? m.text.trim()
+        : (this.closedText = cut ? this.fullPartial : `${this.closedText} ${m.text}`.trim());
       this.lastHeard = heard;
       // 호출어 전의 말은 화면에도 내지 않는다(입력창에 사람에게 한 말이 적히지 않게).
       const said = this.sttOnly ? heard : this.gate(heard);

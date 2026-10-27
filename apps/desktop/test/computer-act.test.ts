@@ -118,6 +118,7 @@ test('다른 맥 앱 후보 — 실행 중인 앱은 시스템 후보 뒤(맨 �
     tail: { e8001: { role: 'button', name: '계산기 (Calculator) 앱 실행 (맥 데스크탑 앱)' } },
     apps: { e9011: { name: '카카오톡', label: '카카오톡', path: '/Applications/KakaoTalk.app', pid: 20 }, e8001: { name: '계산기', label: '계산기 (Calculator)', path: '/System/Applications/Calculator.app' } },
     controls: {},
+    commands: {},
   };
   const ax = {
     gen: 1, app: 'Microsoft PowerPoint', bundleId: '', pid: 30, presenting: false, window: '프레젠테이션1', windowFrame: [0, 0, 800, 600],

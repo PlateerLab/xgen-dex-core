@@ -94,6 +94,7 @@ import type { AgentViewerSub } from './workspace-layout';
 import { IdeView } from '@dex/ide';
 import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
 import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
+import { useVoiceLoopOwner } from '../voice/voice-loop-owner';
 import { createVoiceInputTracker } from '../voice/voice-input';
 import { createConfirmVoiceResponder, type VoiceConfirmTarget } from '../voice/confirm-response';
 import { VoiceLoopBar, type VoiceLogEntry } from '../voice/VoiceLoopBar';
@@ -526,7 +527,8 @@ export const Chat: React.FC<{
   // 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 STT 스트림으로 동작한다.
   const streamVoice = useVoiceStreamAvailable();
   // 켜면 끌 때까지 계속 듣는다 — 말할 때마다 조작하고, 화면 조작으로 끝난 말은 채팅·TTS 없이 기록만 남긴다.
-  const [voiceLoopOn, setVoiceLoopOn] = useState(false);
+  // 켜짐은 화면 하나가 맡는다 — 말로 새 채팅을 열면 시작 화면·새 대화가 이어 듣는다(voice-loop-owner).
+  const [voiceLoopOn, toggleVoiceLoop, stopVoiceLoop] = useVoiceLoopOwner(session.key);
   const [voiceLog, setVoiceLog] = useState<VoiceLogEntry[]>([]);
   const logVoice = useCallback(
     (kind: VoiceLogEntry['kind'], text: string) => setVoiceLog((log) => [...log.slice(-2), { kind, text, at: Date.now() }]),
@@ -1201,9 +1203,9 @@ export const Chat: React.FC<{
     if (loopError) {
       if (voiceErrTimer.current) clearTimeout(voiceErrTimer.current);
       setVoiceError(`음성 입력 오류: ${loopError} 마이크를 다시 켜 주세요.`);
-      setVoiceLoopOn(false);
+      stopVoiceLoop();
     }
-  }, [loopError]);
+  }, [loopError, stopVoiceLoop]);
   useEffect(() => {
     if (!voiceLoopOn) {
       setVoiceLog([]);
@@ -1223,12 +1225,12 @@ export const Chat: React.FC<{
 
   const toggleMic = useCallback(() => {
     if (streamVoice) {
-      setVoiceLoopOn((v) => !v);
+      toggleVoiceLoop();
       return;
     }
     if (recording) stopRecording();
     else void startRecording();
-  }, [streamVoice, recording, startRecording, stopRecording]);
+  }, [streamVoice, toggleVoiceLoop, recording, startRecording, stopRecording]);
 
   // Load voice config (server hints) + device-local overrides; track live changes.
   useEffect(() => {

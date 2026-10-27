@@ -6,6 +6,8 @@ import {
   NAME_REQUIRED,
   NAME_TAKEN,
   OPTIONS_LOADING,
+  VOICE_AGENT_NAME,
+  freeAgentName,
   lockedByName,
   startChatLockReason,
 } from '../src/renderer/src/views/start-chat-model';
@@ -37,4 +39,11 @@ test('새 에이전트: 이름이 있고 겹치지 않고 모델 목록이 있�
 test('고른 에이전트: 골라져 있으면 열리고, 아니면 고르라고 한다', () => {
   assert.equal(startChatLockReason({ ...base, isNew: false, name: '', agentSelected: true }), null);
   assert.equal(startChatLockReason({ ...base, isNew: false, agentSelected: false }), AGENT_REQUIRED);
+});
+
+test('말로 보낼 때 붙이는 이름: 겹치지 않는 첫 이름, 모두 겹치면 null', async () => {
+  const used = new Set([VOICE_AGENT_NAME, `${VOICE_AGENT_NAME} 2`]);
+  assert.equal(await freeAgentName(async (n) => used.has(n)), `${VOICE_AGENT_NAME} 3`);
+  assert.equal(await freeAgentName(async () => false), VOICE_AGENT_NAME);
+  assert.equal(await freeAgentName(async () => true, VOICE_AGENT_NAME, 3), null);
 });

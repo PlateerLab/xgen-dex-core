@@ -44,6 +44,7 @@ import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeActions, chromeAllowed, chromeRefs, type ChromeAction } from './fast-act-chrome';
 import { NO_DESKTOP, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
+import { runDexCommand } from './fast-act-dex';
 import { namedControl, namedControlOk, presentationRepick, runPresentation, weakSlidePick } from './voice-presentation';
 import {
   FIELD_LABEL_SCRIPT,
@@ -1428,6 +1429,17 @@ export class BrowserVoiceAgent implements VoiceAgent {
     // 높은 확신으로 눌렀다(10/22 BO, 판단 모델은 "해당 없음" 을 고르지 못한다). 입력만 이어서 한다.
     if (ch && this.afterClose) return no('닫은 뒤 누르기는 서버에서 화면을 보고', pick.top);
     if (ch) return this.runChrome(ch, text, th, guard, abort, page, pick, t0, snap.ms);
+    const cmd = desk.commands[pick.ref];
+    if (cmd) {
+      return runDexCommand(cmd, { said: text, th, guard, abort, pick, t0, sessionT0: this.t0, push: (a) => {
+        this.version++;
+        this.snap = null;
+        this.last = a.label;
+        this.lastAction = 'click';
+        this.actions.push(a);
+        this.onAct?.(a);
+      } });
+    }
     if (desk.apps[pick.ref]) {
       return runOpen(post, text, th, guard, pick, allRefs[pick.ref].name ?? '', t0, this.t0, (a) => {
         this.version++;

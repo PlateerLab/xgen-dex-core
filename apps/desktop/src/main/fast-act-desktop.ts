@@ -29,6 +29,7 @@ import { classify, decisionState, GATE_INTENT_Q, pickElement, type DecisionPost,
 import { CHROME_PICK } from './fast-act-chrome';
 import { READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost } from './fast-act-runner';
+import { dexCommandRefs, runDexCommand, type DexCommand } from './fast-act-dex';
 import type { VoiceAction } from './fast-act-voice';
 import { endedShow, namedControl, namedControlOk, presentationControls, restartShow, runPresentation, weakSlidePick, type PresentationControl } from './voice-presentation';
 import { axActivate, axApps, axSnapshot, type AxApp } from './mac-ax';
@@ -115,10 +116,19 @@ export function installedApps(): Promise<InstalledApp[]> {
 
 /** 앱 하나 — 고르면 이것을 연다. label = 설치된 앱의 "표시 이름 (번들 이름)", hidden = 실행 중인데 숨겨 둔 앱. */
 export type DesktopApp = { name: string; label: string; path: string; pid?: number; hidden?: boolean };
-/** 화면에 붙일 앱 후보 — head 는 맨 위(발표 조작·실행 중), tail 은 맨 끝(설치됨). controls = head 의 발표 조작. */
-export type DesktopCands = { head: ElementRefs; tail: ElementRefs; apps: Record<string, DesktopApp>; controls: Record<string, PresentationControl> };
+/**
+ * 화면에 붙일 앱 후보 — head 는 맨 위(DeX 명령·발표 조작·실행 중), tail 은 맨 끝(설치됨). controls = head 의 발표 조작,
+ * commands = head 의 DeX 자체 명령(DeX 가 맨 앞일 때만, fast-act-dex).
+ */
+export type DesktopCands = {
+  head: ElementRefs;
+  tail: ElementRefs;
+  apps: Record<string, DesktopApp>;
+  controls: Record<string, PresentationControl>;
+  commands: Record<string, DexCommand>;
+};
 
-export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {}, controls: {} };
+export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {}, controls: {}, commands: {} };
 
 const labelOf = (a: InstalledApp): string => (a.displayName ? `${a.displayName} (${a.name})` : a.name);
 
@@ -143,14 +153,15 @@ async function appList(exceptPid: number | null): Promise<DesktopApp[]> {
 }
 
 /**
- * 화면에 붙일 앱 후보 — 꺼져 있으면 없음. frontPid = 지금 맨 앞 앱(그 앱 화면에서 판단할 때 — 이미 앞에 있으니 뺀다).
- * headStart = 맨 위 후보의 첫 번호(앞의 시스템 후보 다음).
+ * 화면에 붙일 앱 후보 — 꺼져 있으면 없음. frontPid = 지금 맨 앞 앱(그 앱 화면에서 판단할 때 — 이미 앞에 있으니 뺀다),
+ * null 이면 DeX 가 맨 앞이라 DeX 자체 명령을 맨 위에 둔다. headStart = 맨 위 후보의 첫 번호(앞의 시스템 후보 다음).
  */
 export async function desktopCands(frontPid: number | null, headStart: number): Promise<DesktopCands> {
   if (!desktopActEnabled()) return NO_DESKTOP;
+  const dex = frontPid === null ? dexCommandRefs(headStart) : { refs: {}, commands: {} };
   // 발표 조작은 맨 앞 앱(PPT 쇼가 맨 앞일 때)도 — 앱 후보만 맨 앞 앱을 뺀다.
-  const { refs, controls } = presentationControls(await runningApps(), headStart);
-  const out: DesktopCands = { head: { ...refs }, tail: {}, apps: {}, controls };
+  const { refs, controls } = presentationControls(await runningApps(), headStart + Object.keys(dex.refs).length);
+  const out: DesktopCands = { head: { ...dex.refs, ...refs }, tail: {}, apps: {}, controls, commands: dex.commands };
   for (const a of await appList(frontPid)) {
     const head = a.pid !== undefined;
     const into = head ? out.head : out.tail;
@@ -336,6 +347,10 @@ export class LauncherVoiceAgent implements VoiceAgent {
       return runPresentation(ctl, { said: text, th, guard, abort, pick: chosen, t0, sessionT0: this.t0, push: (a) => { running = null; this.actions.push(a); this.onAct?.(a); } });
     }
     if (named) return no(`기다림 ${cls.ready} ${rc} (발표 조작 이름 아님)`, pick?.top);
+    const cmd = pick && c.commands[pick.ref];
+    if (pick && cmd) {
+      return runDexCommand(cmd, { said: text, th, guard, abort, pick, t0, sessionT0: this.t0, push: (a) => { this.actions.push(a); this.onAct?.(a); } });
+    }
     if (pick?.ref === WEB_REF) return no(`웹 페이지 요청 ${pick.confidence.toFixed(2)}`, pick.top);
     if (!pick || !c.apps[pick.ref] || pick.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     return runOpen(

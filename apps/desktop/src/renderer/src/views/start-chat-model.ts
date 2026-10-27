@@ -29,3 +29,17 @@ export function startChatLockReason(state: {
 export function lockedByName(reason: string | null): boolean {
   return reason === NAME_REQUIRED || reason === NAME_TAKEN;
 }
+
+/** 말로 보낼 때 이름이 비어 있으면 붙이는 이름(새 에이전트, 새 에이전트 2 …). */
+export const VOICE_AGENT_NAME = '새 에이전트';
+
+/**
+ * 겹치지 않는 이름 — 말로는 이름 칸을 채울 수 없어 시작 화면이 붙인다(이름은 나중에 바꿀 수 있다). 모두 겹치면 null.
+ */
+export async function freeAgentName(taken: (name: string) => Promise<boolean>, base = VOICE_AGENT_NAME, max = 50): Promise<string | null> {
+  for (let i = 1; i <= max; i++) {
+    const name = i === 1 ? base : `${base} ${i}`;
+    if (!(await taken(name))) return name;
+  }
+  return null;
+}

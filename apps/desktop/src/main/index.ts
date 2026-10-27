@@ -171,6 +171,7 @@ import { classifyConfirmSpeech } from './voice-confirm';
 import type { VoiceConfirmTarget } from '@dex/protocol/voice-confirm';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureComputerAct } from './fast-act-computer';
+import { configureDexCommands } from './fast-act-dex';
 import { stopMacAx } from './mac-ax';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer, DecisionPost } from './fast-act';
@@ -2825,6 +2826,13 @@ configureComputerAct({
   enabled: () => loadConfig().computerAct === true,
   showDex: showDexFront,
 });
+// 빠른 조작의 DeX 자체 명령("새 에이전트 만들어 줘" → 시작 화면) — 렌더러가 사이드바 [새 채팅] 처럼 연다.
+configureDexCommands((id) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  showMain();
+  safeSend(mainWindow, CHANNELS.dexCommandEvent, id);
+  return true;
+});
 ipcMain.handle(CHANNELS.voiceConfirmIntent, async (_e, requestId: string, text: string) => {
   const target = (): VoiceConfirmTarget | null => {
     const browser = browserConfirms.list().find(r => r.requestId === requestId && r.expiresAt > Date.now());
@@ -3935,6 +3943,22 @@ ipcMain.handle(CHANNELS.chatFoldersMoveHere, async (e, interactionId: string) =>
     notifyFolderRemote(id);
   }
   return chatFolders.view(id);
+});
+/**
+ * 새 대화에 다른 대화의 폴더 연결을 잇는다(시작 화면이 첫 메시지 전에) — 경로 문자열은 받지 않고 그 대화에 이미 연결된
+ * 폴더(사용자가 선택 창에서 고른 것) 가운데 고른 id 만 옮겨 온다. 범위가 넓어지지 않는다.
+ */
+ipcMain.handle(CHANNELS.chatFoldersInherit, async (_e, fromId: string, toId: string, folderIds: string[]) => {
+  const from = String(fromId ?? '').trim();
+  const to = String(toId ?? '').trim();
+  if (!from || !to || from === to) throw new Error('대화를 찾지 못했습니다.');
+  const pick = new Set((Array.isArray(folderIds) ? folderIds : []).map(String));
+  const folders = chatFolders.list(from).filter((f) => pick.has(f.id));
+  if (folders.length) {
+    const out = await chatFolderSync.add(to, normalizeLocalFolders([...chatFolders.list(to), ...folders]));
+    if (!out.ok) notifyFolderRemote(to);
+  }
+  return chatFolders.view(to);
 });
 ipcMain.handle(CHANNELS.chatFoldersRemove, (_e, interactionId: string, folderId: string) => {
   const id = String(interactionId ?? '').trim();

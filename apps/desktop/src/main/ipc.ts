@@ -269,6 +269,10 @@ export const CHANNELS = {
   chatFoldersFs: 'chat-folders:fs',
   /** 에이전트의 폴더 도구가 폴더를 바꿨다(셸·파일 쓰기) — main → renderer. 인자는 대화 id. */
   chatFoldersTouched: 'chat-folders:touched',
+  /** 새 대화에 지금 대화의 폴더 연결을 잇는다(시작 화면) — 그 대화에 연결된 폴더만 옮겨 온다. */
+  chatFoldersInherit: 'chat-folders:inherit',
+  /** 빠른 조작의 DeX 자체 명령(fast-act-dex) — main → renderer. 인자는 명령 id. */
+  dexCommandEvent: 'dex:commandEvent',
 
   // Sandboxed browser pages + stable main-process runtime.
   browserState: 'browser:state',

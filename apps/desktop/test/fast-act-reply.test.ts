@@ -290,8 +290,8 @@ test('세 요청을 이어 말하면 긴 앞부분 안의 첫 요청부터 — �
     get lastTarget() {
       return lastTarget;
     },
-    // 새 요청은 '이달의'·'드라마' 에서 시작한다
-    boundary: async (_u, _done, rest) => ({ start: rest.findIndex((w) => w === '이달의' || w === '드라마'), conf: 0.95 }),
+    // 새 요청은 '이달의'·'드라마' 에서 시작한다 — 둘 다 남아 있으면 실제 모델처럼 '드라마' 를 고른다(10/27: 0.62)
+    boundary: async (_u, _done, rest) => ({ start: rest.includes('드라마') ? rest.indexOf('드라마') : rest.indexOf('이달의'), conf: 0.95 }),
     // 동사로 끝난 말만 '지금'
     readiness: async (texts) => texts.map((t) => ({ ready: /(들어가서|누르고|눌러줘)$/.test(t) ? 'act_now' : 'wait', p: 0.97 })),
     handle: async (text, _th, guard) => {

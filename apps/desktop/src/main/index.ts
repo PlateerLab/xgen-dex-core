@@ -167,12 +167,16 @@ import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
 import { BrowserConfirmCenter } from './browser-confirm';
 import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
 import { DesktopToolProvider } from './desktop-tools';
+import { classifyConfirmSpeech } from './voice-confirm';
+import type { VoiceConfirmTarget } from '@dex/protocol/voice-confirm';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureComputerAct } from './fast-act-computer';
+import { configureDexCommands } from './fast-act-dex';
 import { stopMacAx } from './mac-ax';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
-import type { ChoiceAnswer } from './fast-act';
+import type { ChoiceAnswer, DecisionPost } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
+import { traceVoice, type VoiceTrace } from './voice-trace';
 import { parseWakeWords } from './voice-wake';
 import { allowedBrowserUrl } from './browser-security';
 import type {
@@ -2798,29 +2802,48 @@ ipcMain.handle(
     return getClient().voice.transcribe(blob, language);
   },
 );
-// 단계별 브라우저 조작 — 현재 채팅 모델이 계획하고 이 판단 API로 실행 대상을 고른다.
+// 브라우저 조작과 확인 응답에서 같은 판단 API·인증 재시도를 쓴다.
 // 도구 오류가 로그아웃으로 번지지 않게 auth: false로 부르고 인증 오류는 토큰 회전 뒤 한 번 재시도한다.
+const postDecision: DecisionPost = async (body) => {
+  const ask = () => getClient().decision.systemone(body.state, body.questions, { timeoutMs: 8_000, auth: false });
+  let res;
+  try {
+    res = await ask();
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if ((status !== 401 && status !== 403) || !(await refreshAuthToken())) throw err;
+    res = await ask();
+  }
+  return res.answers as Record<string, ChoiceAnswer>;
+};
 configureFastAct({
   enabled: () => loadConfig().fastAct === true && !!currentUserId(),
-  post: async (body) => {
-    const ask = () => getClient().decision.systemone(body.state, body.questions, { timeoutMs: 8_000, auth: false });
-    let res;
-    try {
-      res = await ask();
-    } catch (err) {
-      const status = (err as { status?: number }).status;
-      if ((status !== 401 && status !== 403) || !(await refreshAuthToken())) throw err;
-      res = await ask();
-    }
-    // 고속 조작은 choice 질문만 보낸다.
-    return res.answers as Record<string, ChoiceAnswer>;
-  },
+  post: postDecision,
   reveal: revealBrowserPage,
 });
 // 실험: 말로 다른 맥 앱 조작 — 맨 앞 앱이 DeX 가 아니면 말하는 도중 조작이 그 앱을 대상으로 한다(fast-act-computer.ts).
 configureComputerAct({
   enabled: () => loadConfig().computerAct === true,
   showDex: showDexFront,
+});
+// 빠른 조작의 DeX 자체 명령("새 에이전트 만들어 줘" → 시작 화면) — 렌더러가 사이드바 [새 채팅] 처럼 연다.
+configureDexCommands((id) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  showMain();
+  safeSend(mainWindow, CHANNELS.dexCommandEvent, id);
+  return true;
+});
+ipcMain.handle(CHANNELS.voiceConfirmIntent, async (_e, requestId: string, text: string) => {
+  const target = (): VoiceConfirmTarget | null => {
+    const browser = browserConfirms.list().find(r => r.requestId === requestId && r.expiresAt > Date.now());
+    if (browser) return { kind: 'browser', request: browser };
+    const user = userConfirms.list().find(r => r.requestId === requestId && r.expiresAt > Date.now());
+    return user ? { kind: 'user', request: user } : null;
+  };
+  const current = target();
+  if (!current) return 'unclear';
+  const intent = await classifyConfirmSpeech(current, text, postDecision);
+  return target() ? intent : 'unclear';
 });
 // 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>
@@ -2836,6 +2859,7 @@ const voiceStreams = new VoiceStreamHub(() =>
           const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
           return words.length ? words : null;
         },
+        transcribe: (wav) => getClient().voice.transcribe(new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'ko'),
       }
     : null,
 );
@@ -2845,12 +2869,19 @@ const voiceStreamEmit =
     if (!sender.isDestroyed()) sender.send(CHANNELS.voiceStreamEvent, ev);
   };
 ipcMain.handle(CHANNELS.voiceStreamAvailable, () => voiceStreamAvailable());
-ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string) =>
-  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId),
-);
+ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string, confirmRequestId?: string) => {
+  if (confirmRequestId) {
+    const request = [...browserConfirms.list(), ...userConfirms.list()].find(r => r.requestId === confirmRequestId);
+    if (!request || request.workflowId !== workflowId || (request.interactionId && request.interactionId !== interactionId) || request.expiresAt <= Date.now())
+      throw new Error('확인 요청이 이미 종료되었습니다. 현재 카드를 확인해 주세요.');
+  }
+  // Card replies keep the wake setting while deferring all fast browser actions.
+  return voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId, !!confirmRequestId);
+});
 ipcMain.on(CHANNELS.voiceStreamAudio, (_e, sessionId: string, pcm: Uint8Array) => voiceStreams.audio(sessionId, pcm));
 ipcMain.handle(CHANNELS.voiceStreamEnd, (_e, sessionId: string) => voiceStreams.end(sessionId));
 ipcMain.on(CHANNELS.voiceStreamCancel, (_e, sessionId: string) => voiceStreams.cancel(sessionId));
+ipcMain.on(CHANNELS.voiceStreamTrace, (_e, event: VoiceTrace) => traceVoice(event));
 ipcMain.handle(CHANNELS.voiceStreamTestText, (e, workflowId: string, text: string) =>
   voiceStreams.testText(workflowId, text, voiceStreamEmit(e.sender)),
 );
@@ -3913,6 +3944,22 @@ ipcMain.handle(CHANNELS.chatFoldersMoveHere, async (e, interactionId: string) =>
     notifyFolderRemote(id);
   }
   return chatFolders.view(id);
+});
+/**
+ * 새 대화에 다른 대화의 폴더 연결을 잇는다(시작 화면이 첫 메시지 전에) — 경로 문자열은 받지 않고 그 대화에 이미 연결된
+ * 폴더(사용자가 선택 창에서 고른 것) 가운데 고른 id 만 옮겨 온다. 범위가 넓어지지 않는다.
+ */
+ipcMain.handle(CHANNELS.chatFoldersInherit, async (_e, fromId: string, toId: string, folderIds: string[]) => {
+  const from = String(fromId ?? '').trim();
+  const to = String(toId ?? '').trim();
+  if (!from || !to || from === to) throw new Error('대화를 찾지 못했습니다.');
+  const pick = new Set((Array.isArray(folderIds) ? folderIds : []).map(String));
+  const folders = chatFolders.list(from).filter((f) => pick.has(f.id));
+  if (folders.length) {
+    const out = await chatFolderSync.add(to, normalizeLocalFolders([...chatFolders.list(to), ...folders]));
+    if (!out.ok) notifyFolderRemote(to);
+  }
+  return chatFolders.view(to);
 });
 ipcMain.handle(CHANNELS.chatFoldersRemove, (_e, interactionId: string, folderId: string) => {
   const id = String(interactionId ?? '').trim();

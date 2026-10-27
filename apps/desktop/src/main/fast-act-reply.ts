@@ -50,7 +50,8 @@ function pageName(a: VoiceAction): string | null {
 /** 조작 하나의 답 문장. forAgent = BrowserFill 을 부른 LLM 이 읽는다 — 사용자에게 묻는 말(ask)은 넣지 않는다. */
 export function actionSentence(a: VoiceAction, forAgent = false): string {
   const q = a.text !== null ? `"${a.text}"` : '';
-  if (a.app) return `${josa(a.display, '을', '를')} 열었어요.`;
+  // 앱을 열지 않고 다른 일을 했으면(쇼를 다시 띄움) 그 문장 — 10/27 실측: "PPT 다시 띄워줘" 가 "… 앱을 열었어요." 로 답했다.
+  if (a.app) return a.sentence ?? `${josa(a.display, '을', '를')} 열었어요.`;
   let did: string;
   if (a.sentence) did = a.sentence;
   else if (a.action === 'click' || a.text === null) did = `${josa(a.display, '을', '를')} 눌렀어요.`;

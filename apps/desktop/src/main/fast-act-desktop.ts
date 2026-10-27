@@ -13,6 +13,8 @@
  *     고른 숨긴 PowerPoint 를 "발표 자료 다시 띄워줘" 에 Keynote 로 바꿔 열었다(10/27: 8문장 중 5·엉뚱한 실행 1 → 8·0,
  *     다른 앱 요청 10문장은 그대로 10).
  *   · 브라우저 탭이 없는 DeX 앞 화면 — 맨 위에 웹 후보(WEB_CAND). 앱 후보만 있으면 사이트 요청이 브라우저·비슷한 이름의 앱을 열었다.
+ *   · 발표 중인 PowerPoint — 맨 위에 다음·이전 장, 쇼 끝내고 내리기(voice-presentation). 쇼를 끝내고 내린 PowerPoint 를
+ *     "다시 띄우기" 로 고르면 앱만 보이지 않고 현재 슬라이드부터 쇼를 다시 시작한다.
  * 측정(10/18 dev 판단 모델, 네이버 첫 화면, 앱 요청 17 + 페이지 요청 14): 실행 중인 앱 6개일 때 26/31·엉뚱한 실행 3,
  * 16개일 때 28/31·0. 페이지 요청은 모두 그대로였고, 나머지는 확신이 낮아 서버 에이전트로 간다.
  * 앱 이름은 보이는 이름("계산기")과 번들 이름("Calculator") 둘 다 싣는다 — 사람은 한국어로 부른다(Spotlight 표시 이름).
@@ -23,11 +25,13 @@ import { execFile } from 'node:child_process';
 import { listInstalledApps, type InstalledApp } from '@dex/engine/app-launch';
 import { openWithDefaultApp } from '@dex/engine/local-tools';
 import { diag } from './diag-log';
-import { classify, decisionState, pickElement, type DecisionPost, type ElementRefs } from './fast-act';
+import { classify, decisionState, GATE_INTENT_Q, pickElement, type DecisionPost, type ElementRefs } from './fast-act';
 import { CHROME_PICK } from './fast-act-chrome';
 import { READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost } from './fast-act-runner';
+import { dexCommandRefs, runDexCommand, type DexCommand } from './fast-act-dex';
 import type { VoiceAction } from './fast-act-voice';
+import { endedShow, namedControl, namedControlOk, presentationControls, restartShow, runPresentation, weakSlidePick, type PresentationControl } from './voice-presentation';
 import { axActivate, axApps, axSnapshot, type AxApp } from './mac-ax';
 import { GUARDED, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
@@ -112,20 +116,49 @@ export function installedApps(): Promise<InstalledApp[]> {
 
 /** 앱 하나 — 고르면 이것을 연다. label = 설치된 앱의 "표시 이름 (번들 이름)", hidden = 실행 중인데 숨겨 둔 앱. */
 export type DesktopApp = { name: string; label: string; path: string; pid?: number; hidden?: boolean };
-/** 화면에 붙일 앱 후보 — head 는 맨 위(실행 중), tail 은 맨 끝(설치됨). */
-export type DesktopCands = { head: ElementRefs; tail: ElementRefs; apps: Record<string, DesktopApp> };
+/**
+ * 화면에 붙일 앱 후보 — head 는 맨 위(DeX 명령·발표 조작·실행 중), tail 은 맨 끝(설치됨). controls = head 의 발표 조작,
+ * commands = head 의 DeX 자체 명령(DeX 가 맨 앞일 때만, fast-act-dex).
+ */
+export type DesktopCands = {
+  head: ElementRefs;
+  tail: ElementRefs;
+  apps: Record<string, DesktopApp>;
+  controls: Record<string, PresentationControl>;
+  commands: Record<string, DexCommand>;
+};
 
-export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {} };
+export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {}, controls: {}, commands: {} };
 
 const labelOf = (a: InstalledApp): string => (a.displayName ? `${a.displayName} (${a.name})` : a.name);
 
-/** 앱 후보 이름 — 화면 후보와 앱 목록(openPickedApp)이 같이 쓴다. */
+/**
+ * 앱 후보 이름 — 화면 후보와 앱 목록(openPickedApp)이 같이 쓴다. 쇼를 끝내고 내린 앱은 고르면 쇼를 다시 시작하므로 그렇게 적는다 —
+ * 앱 이름만 두면 "PPT 다시 열어서 발표 모드로 전환해 줘" 가 PowerPoint 0.58 · Figma 0.42 로 갈려 하지 않았다(10/28 맥).
+ */
 export const candName = (a: DesktopApp): string =>
   a.pid === undefined
     ? `${a.label} 앱 실행 (맥 데스크탑 앱)`
     : a.hidden
-      ? `${a.name} 앱 다시 띄우기 (맥 데스크탑 앱)`
+      ? endedShow(a.pid)
+        ? `${a.name} 앱 다시 띄우기 — 내린 슬라이드 쇼(발표 화면) 다시 시작 (맥 데스크탑 앱)`
+        : `${a.name} 앱 다시 띄우기 (맥 데스크탑 앱)`
       : `${a.name} 앱으로 전환 (맥 데스크탑 앱)`;
+
+/**
+ * 화면 판단에서 앱 후보가 이겼다 — 확신은 상위 앱 후보들의 확률 합으로 본다. 화면 판단은 앱이냐(페이지 요소·DeX 명령·웹·발표
+ * 조작이 아니냐)를 정하고, 어느 앱인지는 앱 목록 고르기(openPickedApp)가 다시 정한다. 1위 확률만 보면 앱끼리 갈린 말은 앱 목록이
+ * 확실히 고를 것도 하지 않았다(10/28 맥, dev 판단 모델: "PPT 다시 열어서 발표 모드로 전환해 줘" PowerPoint 0.59 · Figma 0.41 →
+ * 앱 목록 PowerPoint 1.00, "키노트 실행해 줘" Keynote 0.50 · LetsView 0.50 → 앱 목록 Keynote 1.00).
+ */
+export function appPick<P extends { ref: string; confidence: number; top?: Array<[string, number]> }>(pick: P, apps: Record<string, unknown>): P {
+  if (!apps[pick.ref]) return pick;
+  const rest = (pick.top ?? []).reduce((sum, [label, p]) => {
+    const ref = label.split(' ')[0];
+    return ref !== pick.ref && apps[ref] ? sum + p : sum;
+  }, 0);
+  return { ...pick, confidence: Math.min(1, pick.confidence + rest) };
+}
 
 /** 실행 중인 앱(맨 앞 앱·DeX 제외) 다음에 설치된 앱(실행 중인 것·DeX 제외). */
 async function appList(exceptPid: number | null): Promise<DesktopApp[]> {
@@ -140,12 +173,15 @@ async function appList(exceptPid: number | null): Promise<DesktopApp[]> {
 }
 
 /**
- * 화면에 붙일 앱 후보 — 꺼져 있으면 없음. frontPid = 지금 맨 앞 앱(그 앱 화면에서 판단할 때 — 이미 앞에 있으니 뺀다).
- * headStart = 맨 위 후보의 첫 번호(앞의 시스템 후보 다음).
+ * 화면에 붙일 앱 후보 — 꺼져 있으면 없음. frontPid = 지금 맨 앞 앱(그 앱 화면에서 판단할 때 — 이미 앞에 있으니 뺀다),
+ * null 이면 DeX 가 맨 앞이라 DeX 자체 명령을 맨 위에 둔다. headStart = 맨 위 후보의 첫 번호(앞의 시스템 후보 다음).
  */
 export async function desktopCands(frontPid: number | null, headStart: number): Promise<DesktopCands> {
   if (!desktopActEnabled()) return NO_DESKTOP;
-  const out: DesktopCands = { head: {}, tail: {}, apps: {} };
+  const dex = frontPid === null ? dexCommandRefs(headStart) : { refs: {}, commands: {} };
+  // 발표 조작은 맨 앞 앱(PPT 쇼가 맨 앞일 때)도 — 앱 후보만 맨 앞 앱을 뺀다.
+  const { refs, controls } = presentationControls(await runningApps(), headStart + Object.keys(dex.refs).length);
+  const out: DesktopCands = { head: { ...dex.refs, ...refs }, tail: {}, apps: {}, controls, commands: dex.commands };
   for (const a of await appList(frontPid)) {
     const head = a.pid !== undefined;
     const into = head ? out.head : out.tail;
@@ -154,6 +190,11 @@ export async function desktopCands(frontPid: number | null, headStart: number): 
     out.apps[ref] = a;
   }
   return out;
+}
+
+/** 발표 조작 뒤 — 실행 중인 앱 목록(발표 중 여부)을 새로 읽게. */
+export function forgetRunning(): void {
+  running = null;
 }
 
 /** 앱을 열거나 앞으로 가져와 맨 앞에 올 때까지 기다리고, 창이 뜨기를 잠깐 기다린다. */
@@ -186,7 +227,7 @@ async function bringFront(a: DesktopApp): Promise<AxApp> {
  * 앱 후보가 이겼다 — 앱 목록만 놓고 어느 앱인지 다시 고르고, 열어서 맨 앞에 올 때까지 기다린다. 확신이 낮거나
  * 열지 못하면 throw(서버 에이전트로 넘어간다). web = 목록 맨 앞에 둘 웹 후보(WEB_CAND) — 그것을 고르면 열지 않는다.
  */
-export async function openPickedApp(post: DecisionPost, said: string, web?: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number }> {
+export async function openPickedApp(post: DecisionPost, said: string, web?: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number; sentence?: string }> {
   const t0 = now();
   const list = await appList(null);
   const lead = web ? 1 : 0;
@@ -200,6 +241,11 @@ export async function openPickedApp(post: DecisionPost, said: string, web?: stri
   if (web && pick?.ref === 'e1') throw new Error('웹 페이지 요청');
   if (!pick || !target || pick.confidence < CHROME_PICK) throw new Error(`앱 확신 낮음 ${pick?.confidence.toFixed(2) ?? '-'}`);
   const pickMs = now() - t0;
+  if (target.hidden && endedShow(target.pid)) {
+    await restartShow(target.pid!);
+    running = null;
+    return { app: target.name, pid: target.pid!, pickMs, openMs: now() - t0 - pickMs, sentence: '발표 화면을 현재 슬라이드부터 다시 띄웠어요.' };
+  }
   const front = await bringFront(target);
   return { app: target.name, pid: front.pid, pickMs, openMs: now() - t0 - pickMs };
 }
@@ -287,16 +333,20 @@ export class LauncherVoiceAgent implements VoiceAgent {
       texts.map(async (t) => {
         const a = await post({
           state: decisionState(t, LAUNCHER_ORIGIN, scr),
-          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS } },
+          questions: { ready: { type: 'choice', instructions: READY_Q, criteria: READY_OPTS }, gate_intent: GATE_INTENT_Q },
         }).catch(() => ({}) as Record<string, { choice?: string; probabilities?: Record<string, number> }>);
-        return { ready: a.ready?.choice ?? 'wait', p: a.ready?.probabilities?.act_now ?? 0 };
+        return { ready: (a.gate_intent?.probabilities?.act ?? 0) < 0.9 ? 'multi' : (a.ready?.choice ?? 'wait'), p: a.ready?.probabilities?.act_now ?? 0 };
       }),
     );
   }
 
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean): Promise<Outcome> {
     const t0 = now();
-    const no = (reason: string, detail?: unknown): Outcome => ({ acted: false, reason, ms: now() - t0, detail });
+    const no = (reason: string, detail?: unknown): Outcome => {
+      // 고르고도 하지 않았다 — 무엇과 갈렸는지 남긴다(실행 기록에는 이유만 남는다).
+      if (detail) diag(SCOPE, 'launcher-skip', { text, reason, top: detail });
+      return { acted: false, reason, ms: now() - t0, detail };
+    };
     const post = decisionPost();
     if (!post) return no('결정 모델 없음');
     const { c, refs, scr } = await this.screen();
@@ -304,17 +354,37 @@ export class LauncherVoiceAgent implements VoiceAgent {
     const cls = await classify(post, text, LAUNCHER_ORIGIN, scr);
     const rc = cls.gate.toFixed(2);
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
-    if ((th.partial && cls.ready !== 'act_now') || cls.gate < th.intent) return no(`기다림 ${cls.ready} ${rc}`);
+    if (!((cls.single ?? 0) >= 0.9)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
+    // 발표 조작 이름만 말했다("다음 장") — 고른 것이 발표 조작일 때만 아래에서 실행한다.
+    const off = !((cls.onscreen ?? 0) >= 0.5);
+    const waiting = (th.partial && cls.ready !== 'act_now') || cls.gate < th.intent;
+    const named = (off || waiting) && namedControl(th, cls.ready, c.controls);
+    if (off && !named) return no(`화면에 없는 대상 ${cls.onscreen}`);
+    if (waiting && !named) return no(`기다림 ${cls.ready} ${rc}`);
     if (abort()) return no('판단 취소(새 인식)');
     const pick = await pickElement(post, text, LAUNCHER_ORIGIN, refs, scr);
+    if (process.env.DEX_VOICE_TEST === '1') diag(SCOPE, 'debug-screen', { text, cands: Object.keys(refs).length, refs, top: pick?.top });
+    // 다음·이전 장이 1위인데 2위와 갈렸다 — 둘만 놓고 다시 고른다(voice-presentation).
+    const slide = pick && (await weakSlidePick(post, text, LAUNCHER_ORIGIN, c.controls, pick, refs).catch(() => null));
+    const chosen = slide ?? pick;
+    const ctl = chosen && c.controls[chosen.ref];
+    if (chosen && ctl && (!named || namedControlOk(text, ctl))) {
+      return runPresentation(ctl, { said: text, th, guard, abort, pick: chosen, t0, sessionT0: this.t0, push: (a) => { running = null; this.actions.push(a); this.onAct?.(a); } });
+    }
+    if (named) return no(`기다림 ${cls.ready} ${rc} (발표 조작 이름 아님)`, pick?.top);
+    const cmd = pick && c.commands[pick.ref];
+    if (pick && cmd) {
+      return runDexCommand(cmd, { said: text, th, guard, abort, pick, t0, sessionT0: this.t0, push: (a) => { this.actions.push(a); this.onAct?.(a); } });
+    }
     if (pick?.ref === WEB_REF) return no(`웹 페이지 요청 ${pick.confidence.toFixed(2)}`, pick.top);
-    if (!pick || !c.apps[pick.ref] || pick.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    const app = pick && c.apps[pick.ref] ? appPick(pick, c.apps) : null;
+    if (!pick || !app || app.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${(app ?? pick)?.confidence.toFixed(2)}`, pick?.top);
     return runOpen(
       post,
       text,
       th,
       guard,
-      pick,
+      app,
       refs[pick.ref].name ?? '',
       t0,
       this.t0,
@@ -356,6 +426,7 @@ export async function runOpen(
     return no(`앱 열기 안 함 — ${err instanceof Error ? err.message : String(err)}`);
   }
   const a = openedAction(text, opened.app, th.partial, decideMs + opened.pickMs, opened.openMs, now() - sessionT0);
+  if (opened.sentence) a.sentence = opened.sentence;
   push(a);
   diag(SCOPE, 'act', { ...a, pick: Number(pick.confidence.toFixed(3)), top: pick.top });
   // 남은 말은 연 앱 화면에서 다시 나눈다(voice-segmenter) — "PPT 열어서 새 프레젠테이션 만들어줘".

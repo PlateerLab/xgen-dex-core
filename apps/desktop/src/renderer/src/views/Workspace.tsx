@@ -237,6 +237,9 @@ export const Workspace: React.FC<{
   }, [layout]);
   const layoutRef = useRef(layout);
   const layoutHostRef = useRef<HTMLDivElement | null>(null);
+  /** 마지막으로 앞에 섰던 대화(interactionId) — 시작 화면을 열 때 그 대화의 폴더를 잇는다. */
+  const lastChatRef = useRef<string | null>(null);
+  const [startFrom, setStartFrom] = useState<string | null>(null);
   const asideRef = useRef<HTMLElement | null>(null);
   const suppressClickRef = useRef(false);
   const notificationContextRef = useRef('');
@@ -712,10 +715,21 @@ export const Workspace: React.FC<{
    * 탭 종류 이름 'agent-create' 는 저장된 배치와 맞추려고 그대로 둔다(예전의 새 에이전트 화면 자리다).
    */
   const openStartChat = useCallback(() => {
+    // 연 대화를 기억한다 — 새 대화가 그 대화의 폴더 연결을 잇는다(StartChat).
+    setStartFrom(lastChatRef.current);
     setLayout((current) =>
       addWorkspaceTab(current, current.focusedGroupId, { id: 'agent-create', kind: 'agent-create' }),
     );
   }, []);
+
+  // 빠른 조작의 DeX 자체 명령(main fast-act-dex) — 말로 "새 에이전트 만들어 줘" 하면 [새 채팅] 과 같이 시작 화면을 연다.
+  useEffect(
+    () =>
+      xgen.dexCommands?.onCommand((id) => {
+        if (id === 'new-chat') openStartChat();
+      }),
+    [openStartChat],
+  );
 
   // 처음 켰을 때 열린 탭이 하나도 없으면 시작 화면으로 들어선다. 예전에는 마지막 에이전트와의 새 대화를
   // 열었다. 저장된 탭이 있으면(되살리는 중이어도) 그 배치를 그대로 둔다.
@@ -1073,6 +1087,10 @@ export const Workspace: React.FC<{
     return group?.tabs.find((tab) => tab.id === group.activeTabId) ?? null;
   })();
   const viewKey = focusedTab?.kind === 'chat' && focusedTab.sessionKey ? focusedTab.sessionKey : null;
+  useEffect(() => {
+    const iid = viewKey ? sessionMap.get(viewKey)?.interactionId : null;
+    if (iid) lastChatRef.current = iid;
+  }, [viewKey, sessionMap]);
   const viewIsIde = useIsIdeMode(viewKey);
   const viewIde = useIdeStore(viewKey);
   const ideInView = viewIsIde ? viewIde : null;
@@ -1188,6 +1206,8 @@ export const Workspace: React.FC<{
         <div className="pane-fill">
           <StartChat
             key={active.id}
+            voiceKey={`start:${active.id}`}
+            fromInteractionId={startFrom}
             // 대화가 열리고 첫 메시지가 갔다. 시작 화면 탭은 닫고 그 대화 탭이 앞에 선다.
             onStarted={() => closeTab(active)}
           />

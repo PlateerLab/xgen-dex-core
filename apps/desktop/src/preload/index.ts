@@ -84,6 +84,7 @@ import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
 import type { ChatFolderRemote, ChatFolderView } from '../main/chat-folders';
 import type { VoiceStreamEvent, VoiceStreamResult } from '../main/voice-stream';
+import type { VoiceTrace } from '../main/voice-trace';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
@@ -109,6 +110,7 @@ import type {
   BrowserState,
 } from '@dex/protocol/browser';
 import type { UserConfirmRequest, UserConfirmResolveRequest } from '@dex/protocol/user-confirm';
+import type { VoiceConfirmIntent } from '@dex/protocol/voice-confirm';
 
 /** 인앱 탐색기 — 파일 저장소 폴더의 직계 자식 하나. */
 export interface WorkspaceEntryLike {
@@ -689,6 +691,15 @@ const api = {
     },
   },
 
+  /** 빠른 조작의 DeX 자체 명령(main fast-act-dex) — "새 에이전트 만들어 줘" 를 말하면 'new-chat'. */
+  dexCommands: {
+    onCommand: (cb: (id: string) => void): (() => void) => {
+      const h = (_e: unknown, id: string) => cb(id);
+      ipcRenderer.on(CHANNELS.dexCommandEvent, h);
+      return () => ipcRenderer.removeListener(CHANNELS.dexCommandEvent, h);
+    },
+  },
+
   /**
    * 대화별 폴더 연결 — 그 대화에서 에이전트가 이 PC 의 파일과 터미널을 쓸 수 있는
    * 범위. 폴더는 네이티브 선택 창으로만 더해진다(경로 문자열을 받지 않는다).
@@ -699,6 +710,9 @@ const api = {
     /** 선택 창을 열어 고른 폴더를 더한다. 취소하면 목록이 그대로 돌아온다. */
     add: (interactionId: string): Promise<ChatFolderView[]> =>
       ipcRenderer.invoke(CHANNELS.chatFoldersAdd, interactionId),
+    /** 새 대화(toId)에 다른 대화(fromId)에 연결된 폴더 가운데 고른 것을 잇는다(시작 화면). */
+    inherit: (fromId: string, toId: string, folderIds: string[]): Promise<ChatFolderView[]> =>
+      ipcRenderer.invoke(CHANNELS.chatFoldersInherit, fromId, toId, folderIds),
     remove: (interactionId: string, folderId: string): Promise<ChatFolderView[]> =>
       ipcRenderer.invoke(CHANNELS.chatFoldersRemove, interactionId, folderId),
     /** 폴더를 파일 관리자로 연다. */
@@ -860,6 +874,8 @@ const api = {
   /** Voice — STT (mic→text) and TTS (text→audio). Audio is captured in the
    *  renderer (getUserMedia) and shuttled to main as bytes; secrets stay in main. */
   voice: {
+    confirmIntent: (requestId: string, text: string): Promise<VoiceConfirmIntent> =>
+      ipcRenderer.invoke(CHANNELS.voiceConfirmIntent, requestId, text),
     /** preferences.stt / preferences.tts (UI hints only — no secrets). */
     getConfig: (): Promise<VoiceConfig> => ipcRenderer.invoke(CHANNELS.voiceConfig),
     /** Send a recorded clip → transcript text. */
@@ -897,10 +913,14 @@ const api = {
     cancel: (id: string): void => ipcRenderer.send(CHANNELS.audioProcessCancel, id),
   },
   voiceStream: {
+    trace: (event: VoiceTrace): void => {
+      try { ipcRenderer.send(CHANNELS.voiceStreamTrace, event); }
+      catch { /* Diagnostic transport must not interrupt a voice response. */ }
+    },
     available: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.voiceStreamAvailable),
     /** carry: 앞 발화에서 처리 못 한 말 — 잠깐 쉬어 끊긴 말을 이어 붙여 판단한다. */
-    start: (workflowId: string, carry?: string, interactionId?: string): Promise<string> =>
-      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry, interactionId),
+    start: (workflowId: string, carry?: string, interactionId?: string, confirmRequestId?: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry, interactionId, confirmRequestId),
     audio: (sessionId: string, pcm: Uint8Array): void => ipcRenderer.send(CHANNELS.voiceStreamAudio, sessionId, pcm),
     end: (sessionId: string): Promise<VoiceStreamResult | null> => ipcRenderer.invoke(CHANNELS.voiceStreamEnd, sessionId),
     cancel: (sessionId: string): void => ipcRenderer.send(CHANNELS.voiceStreamCancel, sessionId),

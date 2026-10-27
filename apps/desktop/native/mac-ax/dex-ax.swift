@@ -292,7 +292,7 @@ let keyCodes: [String: CGKeyCode] = [
   "escape": 53, "esc": 53, "left": 123, "right": 124, "down": 125, "up": 126, "pageup": 116, "pagedown": 121,
 ]
 
-func keys(_ combo: String) -> [String: Any] {
+func keys(_ combo: String, pid: pid_t? = nil) -> [String: Any] {
   let parts = combo.lowercased().split(separator: "+").map(String.init)
   var flags: CGEventFlags = []
   var key: CGKeyCode?
@@ -307,25 +307,48 @@ func keys(_ combo: String) -> [String: Any] {
   }
   guard let k = key else { return ["ok": false, "error": "모르는 키: \(combo)"] }
   let src = CGEventSource(stateID: .hidSystemState)
-  for down in [true, false] {
-    let e = CGEvent(keyboardEventSource: src, virtualKey: k, keyDown: down)
-    e?.flags = flags
-    e?.post(tap: .cghidEventTap)
+  guard let down = CGEvent(keyboardEventSource: src, virtualKey: k, keyDown: true),
+    let up = CGEvent(keyboardEventSource: src, virtualKey: k, keyDown: false)
+  else { return ["ok": false, "error": "키 이벤트를 만들지 못함"] }
+  for event in [down, up] {
+    event.flags = flags
+    if let target = pid { event.postToPid(target) }
+    else { event.post(tap: .cghidEventTap) }
   }
   return ["ok": true]
 }
 
+func visibleAppWindows(_ pid: pid_t) -> Int? {
+  guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+  return windows.filter { window in
+    guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+      let bounds = window[kCGWindowBounds as String] as? [String: Any]
+    else { return false }
+    let width = (bounds["Width"] as? NSNumber)?.doubleValue ?? 0
+    let height = (bounds["Height"] as? NSNumber)?.doubleValue ?? 0
+    let alpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+    return width > 100 && height > 80 && alpha > 0
+  }.count
+}
+
 func hide(_ pid: pid_t?) -> [String: Any] {
   guard let a = app(pid) else { return ["ok": false, "error": "앱을 찾지 못함"] }
-  // NSRunningApplication.hide() 는 런루프 없는 이 도우미에서 숨기고도 false 를 돌려줬다(10/18 PowerPoint 슬라이드 쇼 —
-  // 실패로 알고 DeX 를 앞으로 안 가져와 뒤의 다른 앱이 앞에 왔다). 접근성 속성으로 숨기고, 그 속성을 다시 읽어 확인한다.
+  // hide()는 실제로 숨기고도 false를 반환할 수 있어, 런루프를 돌린 뒤 창 상태로 확인한다.
   let axApp = AXUIElementCreateApplication(a.processIdentifier)
-  if AXUIElementSetAttributeValue(axApp, kAXHiddenAttribute as CFString, kCFBooleanTrue) != .success { _ = a.hide() }
-  for _ in 0..<20 {
-    if (attr(axApp, kAXHiddenAttribute) as? Bool) == true { return ["ok": true] }
-    usleep(50_000)
+  _ = a.hide()
+  var gone = 0
+  var visible: Int?
+  var hidden = false
+  for _ in 0..<30 {
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    hidden = (attr(axApp, kAXHiddenAttribute) as? Bool) == true || NSRunningApplication(processIdentifier: a.processIdentifier)?.isHidden == true
+    visible = visibleAppWindows(a.processIdentifier)
+    gone = hidden && visible == 0 ? gone + 1 : 0
+    if gone >= 5 {
+      return ["ok": true, "hidden": true, "visibleWindows": 0]
+    }
   }
-  return ["ok": false, "error": "숨겨지지 않음"]
+  return ["ok": false, "hidden": hidden, "visibleWindows": visible ?? -1, "error": "앱 창이 화면에서 사라졌는지 확인하지 못해 숨기기를 완료하지 않았습니다."]
 }
 
 func minimize(_ pid: pid_t?) -> [String: Any] {
@@ -343,6 +366,143 @@ func activate(_ pid: pid_t?) -> [String: Any] {
   return ["ok": a.activate()]
 }
 
+/// Only slide-number markers are compared; presenter clocks must not count as a slide change.
+func slideMarker(_ window: AXUIElement) -> String? {
+  var markers = Set<String>()
+  let deadline = nowMs() + 200
+  var visited = 0
+  func walk(_ el: AXUIElement, _ depth: Int) {
+    visited += 1
+    if depth > 18 || visited > 800 || nowMs() > deadline { return }
+    for key in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+      if let value = str(el, key), value.count < 160,
+        value.range(of: #"(?i)(?:slide|슬라이드|장표)\s*\d+|\b\d+\s*(?:/|of)\s*\d+\b"#, options: .regularExpression) != nil {
+        markers.insert(value)
+      }
+    }
+    for child in children(el) { walk(child, depth + 1) }
+  }
+  walk(window, 0)
+  return markers.isEmpty ? nil : markers.sorted().joined(separator: " | ")
+}
+
+func powerPointShowWindows(_ axApp: AXUIElement) -> [AXUIElement] {
+  // A maximized editor is not a slide show. Match PowerPoint's show-window titles.
+  return ((attr(axApp, kAXWindowsAttribute) as? [AXUIElement]) ?? []).filter { window in
+    let title = (str(window, kAXTitleAttribute) ?? "").lowercased()
+    return ["powerpoint slide show", "powerpoint presenter view", "powerpoint 슬라이드 쇼", "powerpoint 발표자 보기"].contains { title.hasPrefix($0) }
+  }
+}
+
+func focusPowerPointShowWindow(_ axApp: AXUIElement, _ pid: pid_t) -> AXUIElement? {
+  let windows = powerPointShowWindows(axApp)
+  if frontApp()?.processIdentifier == pid, let focused = attr(axApp, kAXFocusedWindowAttribute),
+    let window = windows.first(where: { CFEqual($0, focused) }) { return window }
+  guard let window = windows.first else { return nil }
+  _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+  _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+  _ = AXUIElementSetAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, window)
+  let deadline = nowMs() + 1000
+  repeat {
+    if frontApp()?.processIdentifier == pid, let focused = attr(axApp, kAXFocusedWindowAttribute),
+      CFEqual(window, focused) { return window }
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+  } while nowMs() < deadline
+  return nil
+}
+
+func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
+  guard ["next", "previous", "hide", "show"].contains(operation), let pid = pid, pid > 0,
+    let target = NSRunningApplication(processIdentifier: pid),
+    target.bundleIdentifier?.lowercased() == "com.microsoft.powerpoint"
+  else { return ["ok": false, "error": "발표 조작 대상 PowerPoint를 찾지 못함"] }
+  guard AXIsProcessTrusted() else { return ["ok": false, "error": "접근성 권한이 필요합니다"] }
+  let axApp = AXUIElementCreateApplication(pid)
+  // sent = 키·숨기기를 실제로 보냈다. 보내기 전에 멈추면 false — 호출한 쪽이 서버로 넘겨도 같은 조작이 두 번 되지 않는다.
+  func result(_ verified: Bool, _ reason: String = "", sent: Bool = false) -> [String: Any] {
+    return ["ok": true, "pid": pid, "action": operation, "verified": verified, "sent": sent, "reason": reason]
+  }
+  let hidden = (attr(axApp, kAXHiddenAttribute) as? Bool) ?? target.isHidden
+  if (operation == "next" || operation == "previous") && (hidden || powerPointShowWindows(axApp).isEmpty) {
+    return result(false, "발표 화면이 보이지 않아 슬라이드 키를 보내지 않았습니다.")
+  }
+  _ = target.activate()
+  let focusDeadline = nowMs() + 1500
+  while frontApp()?.processIdentifier != pid && nowMs() < focusDeadline {
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+  }
+  guard frontApp()?.processIdentifier == pid,
+    ((attr(axApp, kAXHiddenAttribute) as? Bool) ?? target.isHidden) == false
+  else { return result(false, "PowerPoint가 입력 대상인지 확인하지 못해 중단했습니다.") }
+  if operation == "hide" {
+    if !powerPointShowWindows(axApp).isEmpty {
+      guard focusPowerPointShowWindow(axApp, pid) != nil else {
+        return result(false, "발표 창의 초점을 확인하지 못해 쇼 종료 키를 보내지 않았습니다.")
+      }
+      let sent = keys("escape", pid: pid)
+      guard sent["ok"] as? Bool == true else { return result(false, "쇼 종료 키를 보내지 못했습니다.") }
+      let deadline = nowMs() + 2000
+      while !powerPointShowWindows(axApp).isEmpty && nowMs() < deadline {
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+      }
+      guard powerPointShowWindows(axApp).isEmpty else { return result(false, "슬라이드 쇼가 종료되지 않아 XGEN으로 전환하지 않았습니다.", sent: true) }
+    }
+    let hideStarted = nowMs()
+    var lastCount: Int?
+    // The editor can reappear while the show exits. Retry only the idempotent hide, never Escape.
+    for attempt in 1...3 {
+      guard powerPointShowWindows(axApp).isEmpty else { return result(false, "슬라이드 쇼가 다시 열려 숨김을 중단했습니다.", sent: true) }
+      let reply = hide(pid)
+      lastCount = reply["visibleWindows"] as? Int
+      if reply["ok"] as? Bool == true {
+        var out = result(true, sent: true)
+        out["visibleWindows"] = 0
+        out["hideAttempts"] = attempt
+        out["settleMs"] = Int(nowMs() - hideStarted)
+        return out
+      }
+    }
+    var out = result(false, "쇼는 종료됐지만 PowerPoint 창 숨김을 확인하지 못했습니다. XGEN으로 전환하지 않았어요.", sent: true)
+    if let count = lastCount, count >= 0 { out["visibleWindows"] = count }
+    out["hideAttempts"] = 3
+    out["settleMs"] = Int(nowMs() - hideStarted)
+    return out
+  }
+  if operation == "show" {
+    if !powerPointShowWindows(axApp).isEmpty {
+      guard focusPowerPointShowWindow(axApp, pid) != nil else {
+        return result(false, "발표 창의 초점을 확인하지 못했습니다.")
+      }
+      return result(true, sent: true)
+    }
+    let sent = keys("cmd+return", pid: pid)
+    guard sent["ok"] as? Bool == true else { return result(false, "현재 슬라이드부터 시작 키를 보내지 못했습니다.") }
+    let deadline = nowMs() + 3000
+    while powerPointShowWindows(axApp).isEmpty && nowMs() < deadline {
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+    guard !powerPointShowWindows(axApp).isEmpty else { return result(false, "현재 슬라이드부터 쇼가 시작됐는지 확인하지 못했습니다. 자동으로 재시작하지 않습니다.", sent: true) }
+    return result(true, sent: true)
+  }
+  guard let showWindow = focusPowerPointShowWindow(axApp, pid) else {
+    return result(false, "발표 창의 초점을 확인하지 못해 슬라이드 키를 보내지 않았습니다.")
+  }
+  let before = slideMarker(showWindow)
+  guard frontApp()?.processIdentifier == pid, let focused = attr(axApp, kAXFocusedWindowAttribute), CFEqual(showWindow, focused) else {
+    return result(false, "입력 대상 창이 바뀌어 슬라이드 키를 보내지 않았습니다.")
+  }
+  let sent = keys(operation == "next" ? "right" : "left", pid: pid)
+  guard sent["ok"] as? Bool == true else { return result(false, sent["error"] as? String ?? "키 전송 실패") }
+  // 장 번호는 발표자 보기에만 보이기도 하고, 애니메이션 단계·마지막 장에서는 그대로다 — 바뀌면 확인, 아니면 키만 보낸 것으로.
+  guard let before = before else { return result(false, "장 번호를 읽지 못해 키만 보냈습니다.", sent: true) }
+  let deadline = nowMs() + 1200
+  while nowMs() < deadline {
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    if let after = slideMarker(showWindow), before != after { return result(true, sent: true) }
+  }
+  return result(false, "슬라이드 키를 한 번 보냈지만 장 번호는 그대로입니다(애니메이션·마지막 장일 수 있음).", sent: true)
+}
+
 func runningApps() -> [String: Any] {
   // 런루프 없이 도는 이 도우미에서 NSWorkspace 목록은 실행·종료 알림을 받지 못해 낡는다 — 잠깐 돌려 갱신한다.
   RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
@@ -353,6 +513,7 @@ func runningApps() -> [String: Any] {
       "app": a.localizedName ?? "", "bundleId": a.bundleIdentifier ?? "", "pid": a.processIdentifier,
       "path": a.bundleURL?.path ?? "", "front": a.processIdentifier == frontPid,
       "hidden": (attr(axApp, kAXHiddenAttribute) as? Bool) ?? a.isHidden,
+      "presenting": a.bundleIdentifier?.lowercased() == "com.microsoft.powerpoint" && !powerPointShowWindows(axApp).isEmpty,
     ]
   }
   return ["ok": true, "apps": list]
@@ -416,6 +577,7 @@ while let line = readLine() {
   case "hide": res = hide(pid)
   case "minimize": res = minimize(pid)
   case "activate": res = activate(pid)
+  case "presentation": res = presentation(pid, (req["action"] as? String) ?? "")
   case "apps": res = runningApps()
   case "focus": res = focus((req["ref"] as? String) ?? "")
   case "setvalue": res = setValue((req["ref"] as? String) ?? "", (req["text"] as? String) ?? "")

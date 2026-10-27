@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  ChatFilesApi,
   chatAnswerFiles,
+  chatDownloadKey,
   chatDownloadRequest,
   extractChatDownloads,
   isChatImageName,
@@ -88,4 +90,84 @@ test('답이 건넨 결과물 이름은 파일 저장소 것만 — API 응답 �
     ]),
     ['도면_표시.png'],
   );
+});
+
+// ── 새 파일 저장소(filestore) 표식: 웹(@xgen/api-client filestore-download-artifacts.test.ts)과 같은 사례 ──
+
+const proof = 'header.payload.signature';
+const sha256 = 'a'.repeat(64);
+const sourceId = '00000000-0000-4000-8000-000000000001';
+const envelope = `__[Provenance: ${proof}]__[SHA256: ${sha256}]__[ContentType: image/png]__[ByteLength: 12]__[SourceId: ${sourceId}]`;
+
+test('새 저장소 번호와 옛 저장소 번호는 같은 숫자라도 다른 파일이다', () => {
+  const text =
+    '📎 다운로드: [File: new.txt]__[Path: filestore/blob]__[FilestoreItemId: 7]\n' +
+    '📎 다운로드: [File: old.txt]__[Path: file-storage/1/old]__[StorageId: 1]__[FileId: 7]';
+  const items = extractChatDownloads(text);
+  assert.deepEqual(items, [
+    { name: 'new.txt', itemId: 7, path: 'filestore/blob' },
+    { name: 'old.txt', path: 'file-storage/1/old', storageId: 1, fileId: 7 },
+  ]);
+  assert.deepEqual(items.map(chatDownloadKey), ['filestore:7', '1:7'], '옛 열쇠의 모양은 그대로다');
+  assert.equal(stripChatDownloadMarkers(text, items).trim(), '');
+});
+
+test('이력에서 되살린 새 저장소 결과물과 스트림 이벤트는 단추 하나가 된다', () => {
+  const restored = extractChatDownloads('[File: result.txt]__[Path: filestore/blob]__[FilestoreItemId: 18]');
+  assert.equal(mergeChatDownload(restored, { backend: 'filestore', item_id: 18, file_name: 'result.txt' }), restored);
+  const live = mergeChatDownload([], { backend: 'filestore', item_id: 18, file_name: 'result.txt', path: 'filestore/blob' });
+  const { text, downloads } = chatAnswerFiles('결과입니다.\n\n📎 다운로드: [File: result.txt]__[Path: filestore/blob]__[FilestoreItemId: 18]', live);
+  assert.equal(downloads.length, 1);
+  assert.equal(text, '결과입니다.');
+});
+
+test('새 저장소 번호가 어긋나면 버리고, 옛 저장소 번호로 물러서지 않는다', () => {
+  for (const item_id of [true, false, 0, -1, 1.5, {}, null, '7a']) {
+    assert.deepEqual(mergeChatDownload([], { backend: 'filestore', item_id, storage_id: 1, file_id: 1 }), []);
+  }
+});
+
+test('모르는 새 저장소 표식은 통째로 남긴다(앞부분만 걷지 않는다)', () => {
+  const text = '[File: x]__[Path: filestore/blob]__[FilestoreItemId: 18]';
+  assert.equal(stripChatDownloadMarkers(text, [{ name: 'x', fileId: 2, storageId: 1 }]), text);
+  assert.equal(stripChatDownloadMarkers(text, [{ name: 'x', itemId: 19 }]), text);
+});
+
+test('새 저장소 표식의 생성물 증명은 이벤트와 같게 읽고, 꼬리까지 걷는다', () => {
+  const text = `[File: generated.png]__[Path: filestore/blob]__[FilestoreItemId: 7]${envelope}`;
+  const restored = extractChatDownloads(text);
+  const streamed = mergeChatDownload([], {
+    backend: 'filestore', item_id: 7, file_name: 'generated.png', path: 'filestore/blob',
+    indication: 'ai_generated', proof, sha256, content_type: 'image/png', byte_length: 12, source_id: sourceId,
+  });
+  assert.deepEqual(restored, streamed);
+  assert.equal(restored[0].provenance?.proof, proof);
+  assert.equal(restored[0].provenance?.byte_length, 12);
+  assert.equal(stripChatDownloadMarkers(text, restored), '');
+});
+
+test('옛 저장소 표식 뒤의 생성물 증명도 함께 걷는다(꼬리가 본문에 남지 않는다)', () => {
+  const text = `그렸어요.\n${fullMarker}${envelope}`;
+  const { text: shown, downloads } = chatAnswerFiles(text);
+  assert.equal(shown, '그렸어요.');
+  assert.equal(downloads[0].storageId, 109);
+  assert.equal(downloads[0].provenance?.source_id, sourceId);
+});
+
+test('새 저장소 결과물은 filestore 항목 주소로 받는다(그림 미리보기도 원본 그대로)', async () => {
+  const item = { name: 'a.png', itemId: 42 };
+  assert.deepEqual(chatDownloadRequest(item), { path: '/api/filestore/items/42/download', headers: {} });
+  assert.deepEqual(chatDownloadRequest(item, { preview: true }), { path: '/api/filestore/items/42/download', headers: {} });
+  assert.equal(chatDownloadRequest({ name: 'x', itemId: 0, storageId: 1, fileId: 2 }), null, '어긋난 번호는 옛 길로 가지 않는다');
+  assert.deepEqual(sharedNames([item, { name: 'r.json', artifactId: 'a1', downloadUrl: '/api/agentflow/files/artifacts/a1' }]), ['a.png']);
+
+  const calls: string[] = [];
+  const api = new ChatFilesApi({
+    async getBinary(path: string) {
+      calls.push(path);
+      return { bytes: new Uint8Array([1]), contentType: 'image/png' };
+    },
+  } as never);
+  await api.download(item, { preview: true });
+  assert.deepEqual(calls, ['/api/filestore/items/42/download']);
 });

@@ -44,7 +44,7 @@ import {
   type AxSnapshot,
 } from './mac-ax';
 import { GUARDED, mentions, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
-import { configurePresentation, dexToFront, namedControl, namedControlOk, presentationRepick, runPresentation } from './voice-presentation';
+import { configurePresentation, dexToFront, namedControl, namedControlOk, presentationRepick, runPresentation, weakSlidePick } from './voice-presentation';
 
 const SCOPE = 'voice-computer';
 /** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이 — 브라우저 칸과 같다. */
@@ -369,11 +369,13 @@ export class ComputerVoiceAgent implements VoiceAgent {
         top: pick?.top,
       });
     }
-    if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    // 다음·이전 장이 1위인데 2위와 갈렸다 — 둘만 놓고 다시 고른다(voice-presentation).
+    const slide = pick && (await weakSlidePick(post, text, s.origin, s.desk.controls, pick, s.refs).catch(() => null));
+    if (!pick || (pick.confidence < th.pick && !slide)) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     // 발표 중에 앱 요소가 이겼다 — 발표 조작과 그 요소만 놓고 다시 고른다(voice-presentation).
-    const repick = !s.desk.controls[pick.ref] && !s.desk.apps[pick.ref] && !s.system[pick.ref]
+    const repick = slide ?? (!s.desk.controls[pick.ref] && !s.desk.apps[pick.ref] && !s.system[pick.ref]
       ? await presentationRepick(post, text, s.origin, s.desk.controls, pick.ref, s.refs[pick.ref]).catch(() => null)
-      : null;
+      : null);
     const chosen = repick ?? pick;
     const ctl = s.desk.controls[chosen.ref];
     if (ctl && (!namedOnly || namedControlOk(text, ctl))) {

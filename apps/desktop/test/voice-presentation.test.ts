@@ -20,6 +20,7 @@ function fixture() {
     native: { sent: true, verified: true } as Native | Error,
     pick: { ref: 'e9001', confidence: 1 } as { ref: string; confidence: number } | null,
     front: 999 as number,
+    asked: null as string[] | null,
   };
   const calls: Array<[number, PresentationAction]> = [];
   let shows = 0;
@@ -28,7 +29,12 @@ function fixture() {
     exports: m, performance, setTimeout, process: { env: {}, pid: 999 },
     require(name: string) {
       if (name === './diag-log') return { diag: () => {} };
-      if (name === './fast-act') return { pickElement: async () => state.pick && { ...state.pick, top: [] } };
+      if (name === './fast-act') return {
+        pickElement: async (_post: unknown, _said: string, _origin: string, refs: Record<string, unknown>) => {
+          state.asked = Object.keys(refs);
+          return state.pick && { ...state.pick, top: [] };
+        },
+      };
       if (name === './fast-act-e13') return { buildScreen: () => ({}) };
       if (name === './mac-ax') return {
         axFront: async () => ({ pid: state.front }),
@@ -65,6 +71,8 @@ test('발표 중이고 숨기지 않은 PowerPoint 에만 다음·이전·쇼 �
   assert.deepEqual(Object.keys(refs), ['e9006', 'e9007', 'e9008']);
   assert.deepEqual(Object.values(controls).map((c) => [c.action, c.app.pid]), [['next', 30], ['previous', 30], ['hide', 30]]);
   assert.equal(refs.e9006.name, '다음 슬라이드·다음 장 (PowerPoint 슬라이드 쇼)');
+  // "앞 장" 이 먼저 — "이전 슬라이드·이전 장" 이면 "앞 장 다시 보여줘" 가 다음 장·DeX 앞으로 갔다(10/27)
+  assert.equal(refs.e9007.name, '앞 장·이전 슬라이드 (PowerPoint 슬라이드 쇼)');
   assert.equal(refs.e9008.name, '슬라이드 쇼 끝내고 PowerPoint 내리기 (발표 화면 내리기)');
   // 편집 중·숨김·다른 앱은 후보가 없다 — 브라우저·앱 요청 화면이 그대로다.
   assert.deepEqual(Object.keys(f.m.presentationControls!([f.ppt({ presenting: false }), f.ppt({ pid: 31, hidden: true }), orca], 9001).refs), []);
@@ -77,7 +85,8 @@ test('말이 끝난 뒤에만, 고른 확신이 기준 이상일 때만 실행�
   // "유튜브 열어줘" → 내리기 0.920(10/27) 같은 확신으로는 쇼를 끝내지 않는다
   assert.equal((await f.run('hide', { confidence: 0.92 })).acted, false);
   assert.deepEqual(f.calls, []);
-  assert.equal((await f.run('next', { guard: false })).reason, GUARDED);
+  const guarded = await f.run('next', { guard: false });
+  assert.equal(!guarded.acted && guarded.reason, GUARDED);
   assert.deepEqual(f.calls, []);
 });
 
@@ -86,6 +95,8 @@ test('보낸 키는 실행으로 친다 — 장 번호를 확인하지 못하면
   const ok = await f.run('next');
   assert.equal(ok.acted, true);
   assert.equal(f.actions.at(-1)?.sentence, '다음 장으로 넘겼어요.');
+  // 앱을 연 기록(app)이 아니다 — 답이 "… 를 열었어요." 가 되지 않게
+  assert.equal(f.actions.at(-1)?.app, undefined);
   f.state.native = { sent: true, verified: false, reason: '장 번호를 읽지 못해 키만 보냈습니다.' };
   const unverified = await f.run('previous');
   assert.equal(unverified.acted, true);
@@ -153,6 +164,30 @@ test('페이지 요소와 다시 고르기 — 발표 조작이 기준 이상으
   // 발표 중이 아니면 묻지 않는다
   f.state.pick = { ref: 'e9001', confidence: 1 };
   assert.equal(await f.m.presentationRepick!(async () => { throw new Error('asked'); }, '다음', 'naver', {}, 'e17', el), null);
+});
+
+test('다음·이전 장이 1위인데 2위와 갈렸으면 다음·이전 장과 2위만 놓고 다시 고른다 — 내리기는 올리지 않는다', async () => {
+  const f = fixture();
+  const { refs, controls } = f.m.presentationControls!([f.ppt()], 9011);
+  const screen = { ...refs, e8012: { role: 'button', name: 'HOP 앱 실행 (맥 데스크탑 앱)' }, e12: { role: 'button', name: '이전 슬라이드' } };
+  const top = (ref: string, p: number, rival = 'e8012', q = 0.42): Array<[string, number]> => [[`${ref} button "x"`, p], [`${rival} button "y"`, q], ['e12 button "이전 슬라이드"', 0.008]];
+  const weak = (ref: string, p: number, t = top(ref, p)) => f.m.weakSlidePick!(async () => ({}), '이전 장으로 돌아가줘', 'app', controls, { ref, confidence: p, top: t, calls: 1, ms: 0 }, screen);
+  // 발표자 보기 실측(10/27): 이전 장 0.57 · "HOP 앱 실행" 0.42
+  f.state.pick = { ref: 'e9012', confidence: 0.98 };
+  assert.equal((await weak('e9012', 0.57))?.ref, 'e9012');
+  assert.deepEqual(f.state.asked, ['e9011', 'e9012', 'e8012']);
+  // 다시 골라도 2위가 이기거나 확신이 모자라면 그대로(서버로)
+  f.state.pick = { ref: 'e8012', confidence: 0.9 };
+  assert.equal(await weak('e9012', 0.57), null);
+  f.state.pick = { ref: 'e9012', confidence: 0.8 };
+  assert.equal(await weak('e9012', 0.57), null);
+  // 묻지 않는 경우 — 내리기, 이미 확신 있음, 둘이 갈린 게 아님(셋 이상으로 흩어짐)
+  f.state.asked = null;
+  f.state.pick = { ref: 'e9013', confidence: 1 };
+  assert.equal(await weak('e9013', 0.6), null);
+  assert.equal(await weak('e9012', 0.93), null);
+  assert.equal(await weak('e9012', 0.45, top('e9012', 0.45, 'e8012', 0.3)), null);
+  assert.equal(f.state.asked, null);
 });
 
 test('presentation hide uses a fresh helper per request and rejects mismatched replies', async () => {

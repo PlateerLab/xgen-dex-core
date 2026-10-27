@@ -30,7 +30,7 @@ import { CHROME_PICK } from './fast-act-chrome';
 import { READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost } from './fast-act-runner';
 import type { VoiceAction } from './fast-act-voice';
-import { endedShow, namedControl, namedControlOk, presentationControls, restartShow, runPresentation, type PresentationControl } from './voice-presentation';
+import { endedShow, namedControl, namedControlOk, presentationControls, restartShow, runPresentation, weakSlidePick, type PresentationControl } from './voice-presentation';
 import { axActivate, axApps, axSnapshot, type AxApp } from './mac-ax';
 import { GUARDED, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
@@ -328,9 +328,12 @@ export class LauncherVoiceAgent implements VoiceAgent {
     if (waiting && !named) return no(`기다림 ${cls.ready} ${rc}`);
     if (abort()) return no('판단 취소(새 인식)');
     const pick = await pickElement(post, text, LAUNCHER_ORIGIN, refs, scr);
-    const ctl = pick && c.controls[pick.ref];
-    if (pick && ctl && (!named || namedControlOk(text, ctl))) {
-      return runPresentation(ctl, { said: text, th, guard, abort, pick, t0, sessionT0: this.t0, push: (a) => { running = null; this.actions.push(a); this.onAct?.(a); } });
+    // 다음·이전 장이 1위인데 2위와 갈렸다 — 둘만 놓고 다시 고른다(voice-presentation).
+    const slide = pick && (await weakSlidePick(post, text, LAUNCHER_ORIGIN, c.controls, pick, refs).catch(() => null));
+    const chosen = slide ?? pick;
+    const ctl = chosen && c.controls[chosen.ref];
+    if (chosen && ctl && (!named || namedControlOk(text, ctl))) {
+      return runPresentation(ctl, { said: text, th, guard, abort, pick: chosen, t0, sessionT0: this.t0, push: (a) => { running = null; this.actions.push(a); this.onAct?.(a); } });
     }
     if (named) return no(`기다림 ${cls.ready} ${rc} (발표 조작 이름 아님)`, pick?.top);
     if (pick?.ref === WEB_REF) return no(`웹 페이지 요청 ${pick.confidence.toFixed(2)}`, pick.top);

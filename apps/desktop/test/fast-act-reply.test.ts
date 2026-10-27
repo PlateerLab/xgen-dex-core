@@ -96,6 +96,8 @@ test('맥 앱을 연 것은 열었다고', () => {
   const opened = act({ said: 'PPT 열어줘', label: 'app "Microsoft PowerPoint"', display: 'Microsoft PowerPoint 앱', app: 'Microsoft PowerPoint' });
   assert.equal(actionSentence(opened), 'Microsoft PowerPoint 앱을 열었어요.');
   assert.equal(actionRow(opened, false), 'Microsoft PowerPoint 앱 · 열기 · 판단 672ms · 실행 64ms');
+  // 쇼를 끝내고 내린 앱을 다시 띄우면 쇼를 다시 시작한다 — 연 것이 아니라 그 문장으로
+  assert.equal(actionSentence({ ...opened, sentence: '발표 화면을 현재 슬라이드부터 다시 띄웠어요.' }), '발표 화면을 현재 슬라이드부터 다시 띄웠어요.');
 });
 
 test('답에는 시간·판단 점수가 없고, 작업 과정 줄에만 있다', () => {

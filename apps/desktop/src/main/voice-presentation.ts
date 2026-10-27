@@ -12,9 +12,13 @@
  *   · 그래도 페이지 요소가 이기면 발표 조작과 그 요소만 놓고 다시 고른다(presentationRepick) — 페이지 요청 13문장은 모두 그대로,
  *     "PPT 다음 장."·"다음 슬라이드"·"앞 장 다시 보여줘" 는 발표 조작으로. 맨 "다음 장" 이 "다음 콘텐츠 보기" 와 맞서면 페이지가
  *     이긴다(0.67) — DeX 화면을 보고 하는 말일 수 있어 그대로 둔다.
+ *   · 이전 장 이름이 "이전 슬라이드·이전 장" 이면 "앞 장 다시 보여줘"·"앞 장으로 가줘"·"앞 슬라이드 보여줘" 가 다음 장(DeX 앞 화면),
+ *     "XGen Dex 앞으로 가져오기" 0.99(PPT 쇼 앞)로 갔다 — "앞" 을 앞으로로 읽는다. "앞 장·이전 슬라이드" 로 세 화면(쇼·발표자 보기·
+ *     DeX 앞) 모두 이전 장, 앱·DeX·내리기·서버 요청은 그대로(10/27 판단만 측정, 화면마다 24~25문장). "이전 장" 까지 넣으면
+ *     발표자 보기에서 "이전 장으로 돌아가줘" 가 서버로 갔다. "방금 장 다시 보여줘" 는 발표자 보기에서 아직 다음 장(0.91).
  */
 import { diag } from './diag-log';
-import { pickElement, type DecisionPost, type ElementRefs } from './fast-act';
+import { pickElement, type DecisionPost, type ElementRefs, type Pick } from './fast-act';
 import { buildScreen } from './fast-act-e13';
 import type { VoiceAction } from './fast-act-voice';
 import { axFront, axPresentation, type AxApp, type PresentationAction } from './mac-ax';
@@ -28,10 +32,13 @@ const CONTROL_PICK = 0.9;
  * 0.986 이상, 10/27).
  */
 const HIDE_PICK = 0.97;
+/** 다음·이전 장이 1위인데 확신이 모자랄 때 다시 고르는 조건 — 1·2위가 확률을 이만큼 나눠 가졌을 때만(둘이 갈렸다). */
+const SPLIT = 0.9;
 /** 내린 뒤 DeX 가 맨 앞에 왔는지 보는 시간 — 맨 앞 앱을 숨기면 macOS 가 뒤의 앱을 비동기로 올린다(10/18 iTerm2). */
 const FRONT_CHECK_MS = 800;
 
 export type PresentationControl = { app: AxApp; action: Exclude<PresentationAction, 'show'>; name: string };
+type RepickResult = { ref: string; confidence: number; top: Array<[string, number]> } | null;
 
 const now = (): number => performance.now();
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -59,7 +66,7 @@ export function presentationControls(apps: AxApp[], start: number): { refs: Elem
     if (!name || !app.presenting || app.hidden) continue;
     for (const [action, label] of [
       ['next', `다음 슬라이드·다음 장 (${name} 슬라이드 쇼)`],
-      ['previous', `이전 슬라이드·이전 장 (${name} 슬라이드 쇼)`],
+      ['previous', `앞 장·이전 슬라이드 (${name} 슬라이드 쇼)`],
       ['hide', `슬라이드 쇼 끝내고 ${name} 내리기 (발표 화면 내리기)`],
     ] as const) {
       const ref = `e${start + Object.keys(controls).length}`;
@@ -91,8 +98,41 @@ export async function presentationRepick(
   controls: Record<string, PresentationControl>,
   ref: string,
   element: { role: string; name?: string },
-): Promise<{ ref: string; confidence: number; top: Array<[string, number]> } | null> {
+): Promise<RepickResult> {
   if (!Object.keys(controls).length) return null;
+  return repickAgainst(post, said, origin, controls, ref, element);
+}
+
+/**
+ * 다음·이전 장이 1위인데 확신이 모자라고 2위와 확률을 나눠 가졌다 — 다음·이전 장과 그 2위만 놓고 다시 고른다. 발표자 보기에서
+ * "이전 장으로 돌아가줘" 가 이전 장 0.57 · "HOP 앱 실행" 0.42 로 갈려 서버로 갔고, 서버는 브라우저 뒤로 가기를 했다(10/27).
+ * 쇼를 끝내는 내리기는 되돌리기 어려워 이렇게 올리지 않는다(다시 고르는 후보에서도 뺀다). 다시 볼 일이 아니면 묻지 않고 null.
+ */
+export async function weakSlidePick(
+  post: DecisionPost,
+  said: string,
+  origin: string,
+  controls: Record<string, PresentationControl>,
+  pick: Pick,
+  refs: ElementRefs,
+): Promise<RepickResult> {
+  const ctl = controls[pick.ref];
+  if (!ctl || ctl.action === 'hide' || pick.confidence >= CONTROL_PICK) return null;
+  const rival = pick.top.find(([label]) => !controls[label.split(' ')[0]]);
+  const ref = rival?.[0].split(' ')[0];
+  if (!rival || !ref || !refs[ref] || pick.confidence + rival[1] < SPLIT) return null;
+  const slides = Object.fromEntries(Object.entries(controls).filter(([, c]) => c.action !== 'hide'));
+  return repickAgainst(post, said, origin, slides, ref, refs[ref]);
+}
+
+async function repickAgainst(
+  post: DecisionPost,
+  said: string,
+  origin: string,
+  controls: Record<string, PresentationControl>,
+  ref: string,
+  element: { role: string; name?: string },
+): Promise<RepickResult> {
   const refs: ElementRefs = {
     ...Object.fromEntries(Object.entries(controls).map(([r, c]) => [r, { role: 'button', name: c.name }])),
     [ref]: { role: element.role, name: element.name ?? '' },
@@ -174,11 +214,11 @@ export async function runPresentation(c: PresentationControl, r: PresentationRun
     actMs: Math.round(now() - tAct),
     at: Math.round(now() - r.sessionT0),
     navigated: false,
-    app: c.app.app,
+    // app 은 넣지 않는다 — 앱을 연 기록으로 읽혀 "… 를 열었어요." 로 답했다(10/27 실측).
     sentence: SENTENCE[c.action][res.verified ? 0 : 1],
   };
   r.push(a);
-  diag('voice-presentation', 'act', { ...a, pid: c.app.pid, operation: c.action, verified: res.verified, pick: Number(r.pick.confidence.toFixed(3)) });
+  diag('voice-presentation', 'act', { ...a, app: c.app.app, pid: c.app.pid, operation: c.action, verified: res.verified, pick: Number(r.pick.confidence.toFixed(3)) });
   // 내리면 맨 앞이 DeX 로 바뀐다 — 남은 말은 새 화면에서 다시 나눈다.
   return { acted: true, kind: 'press', target: a.label, ms: now() - r.t0, effect: 'ok', ...(c.action === 'hide' ? { reread: true } : {}) };
 }

@@ -44,7 +44,7 @@ import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeActions, chromeAllowed, chromeRefs, type ChromeAction } from './fast-act-chrome';
 import { NO_DESKTOP, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
-import { namedControl, namedControlOk, presentationRepick, runPresentation } from './voice-presentation';
+import { namedControl, namedControlOk, presentationRepick, runPresentation, weakSlidePick } from './voice-presentation';
 import {
   FIELD_LABEL_SCRIPT,
   checkOf,
@@ -1354,9 +1354,11 @@ export class BrowserVoiceAgent implements VoiceAgent {
     }
     // 발표 조작을 골랐거나, 발표 중에 페이지 요소가 이겼는데 발표 조작과 그 요소만 놓고 다시 고르면 발표 조작이 이긴다 —
     // 페이지의 "다음 …" 요소가 "다음 장" 류를 가져갔다(voice-presentation).
-    const repick = pick && pick.confidence >= th.pick && snap.refs[pick.ref]
+    // 다음·이전 장이 1위인데 2위와 갈렸을 때도 둘만 놓고 다시 고른다.
+    const slide = pick && (await weakSlidePick(post, judgedText(text), origin, desk.controls, pick, candidates).catch(() => null));
+    const repick = slide ?? (pick && pick.confidence >= th.pick && snap.refs[pick.ref]
       ? await presentationRepick(post, judgedText(text), origin, desk.controls, pick.ref, snap.refs[pick.ref]).catch(() => null)
-      : null;
+      : null);
     const shown = repick ?? pick;
     const ctl = shown && desk.controls[shown.ref];
     if (shown && ctl && (!namedOnly || namedControlOk(text, ctl))) {

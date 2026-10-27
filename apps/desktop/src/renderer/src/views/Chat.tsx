@@ -241,6 +241,9 @@ function cleanForSpeech(text: string): string {
     .trim();
 }
 
+/** 호출어만 부르고 멈췄을 때 들었다는 대답. 재생하는 동안은 듣기를 쉬므로 짧은 한마디로 둔다. */
+const WAKE_ACK = '네';
+
 /** 스트리밍 텍스트에서 "완결 문장까지" 잘라낼 위치를 찾는다 (없으면 0).
  *  문장부호(./!/?/…/。/！/？) + 공백/개행, 또는 빈 줄 경계. 너무 짧은 조각
  *  (MIN_TTS_CHUNK 미만)은 다음 경계까지 기다린다. */
@@ -543,6 +546,8 @@ export const Chat: React.FC<{
   // 재마운트되면 처음부터 다시 읽지 않도록, 마지막 answer 의 현재 길이에서 시작.
   const spokenRef = useRef<number | null>(null);
   const lastAsstIdxRef = useRef(-1);
+  // 호출어 대답(WAKE_ACK)의 합성 — 부를 때마다 합성하면 그만큼(0.7~1초) 늦으니 호출어로 듣는 동안 한 번 해 둔다.
+  const wakeAckRef = useRef<Promise<Blob> | null>(null);
 
   useEffect(() => {
     if (!mcpDebug) {
@@ -1113,6 +1118,10 @@ export const Chat: React.FC<{
       if (r.wake === 'called') {
         // 호출어만 들었다 — 다음 말 하나는 호출어 없이 받는다(main 이 같은 시간만큼 기다린다).
         markCalled(true, WAKE_WINDOW_MS);
+        if (ttsOnRef.current && !mutedRef.current) {
+          ttsQueueRef.current.push({ text: WAKE_ACK, audio: wakeAckRef.current ?? undefined });
+          void playNext();
+        }
         return;
       }
       if (r.wake !== 'off') markCalled(false);
@@ -1155,6 +1164,16 @@ export const Chat: React.FC<{
       markCalled(false);
     }
   }, [voiceLoopOn, markCalled]);
+  useEffect(() => {
+    wakeAckRef.current = null;
+    if (!voiceLoopOn || !wakeWord || !ttsOn) return;
+    const audio = xgen.voice.speak(WAKE_ACK);
+    // 합성이 실패하면 부를 때 다시 합성한다(playNext 가 text 로).
+    audio.catch(() => {
+      if (wakeAckRef.current === audio) wakeAckRef.current = null;
+    });
+    wakeAckRef.current = audio;
+  }, [voiceLoopOn, wakeWord, ttsOn, voiceCfg]);
 
   const toggleMic = useCallback(() => {
     if (streamVoice) {

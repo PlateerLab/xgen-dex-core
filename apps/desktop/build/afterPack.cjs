@@ -14,6 +14,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
 const fs = require('node:fs');
+const { buildMacAx } = require('./mac-ax.cjs');
 
 /** Keep only the native helper(s) that can run in this artifact. The npm
  * package contains every OS binary; shipping all of them adds ~55MB and makes
@@ -134,10 +135,14 @@ module.exports = async function afterPack(context) {
     return;
   }
   if (context.electronPlatformName !== 'darwin') return;
-  if (process.env.CSC_LINK || process.env.CSC_IDENTITY) return;
 
   const appName = context.packager.appInfo.productFilename;
   const appPath = path.join(context.appOutDir, `${appName}.app`);
+  // 다른 앱 조작(접근성) 도우미 — 서명 전에 넣어야 앱 서명에 같이 묶인다.
+  const archNames = { 1: ['x64'], 3: ['arm64'], 4: ['arm64', 'x64'] };
+  buildMacAx(path.join(appPath, 'Contents', 'Resources', 'mac-ax', 'dex-ax'), archNames[context.arch] || ['arm64']);
+  if (process.env.CSC_LINK || process.env.CSC_IDENTITY) return;
+
   console.log(`[afterPack] ad-hoc signing ${appPath}`);
   // --deep so the nested Electron Framework + Helper bundles are covered.
   execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {

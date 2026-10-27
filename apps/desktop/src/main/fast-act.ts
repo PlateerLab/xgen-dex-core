@@ -33,9 +33,9 @@ import {
 export type ElementRef = { role: string; name?: string };
 export type ElementRefs = Record<string, ElementRef>;
 
-const DANGEROUS_BROWSER_TARGET =
+export const DANGEROUS_BROWSER_TARGET =
   /(삭제|지우기|비우기|제거|탈퇴|해지|로그아웃|초기화|영구|결제하기|구매하기|주문하기|delete|remove|erase|empty|log ?out|reset|uninstall|purchase|checkout|pay now)/i;
-const DANGEROUS_BROWSER_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
+export const DANGEROUS_BROWSER_REQUEST = /(삭제|지워|지우|비워|비우|제거|탈퇴|해지|로그아웃|초기화|결제해|구매해|주문해|delete|remove|erase|empty|log ?out|reset)/i;
 
 /** 「」 안은 넣을 값이다 — "「삭제 금지 상품」 입력해줘" 의 삭제는 요청이 아니다. */
 export function allowsDeciderAction(instruction: string, target: string): boolean {
@@ -142,6 +142,8 @@ const ROLE_KO: Record<string, string> = {
   menuitem: '메뉴',
   option: '항목',
   heading: '제목',
+  row: '목록 항목',
+  switch: '스위치',
 };
 
 /** 사용자에게 보이는 표기: `"장바구니" 링크`. */

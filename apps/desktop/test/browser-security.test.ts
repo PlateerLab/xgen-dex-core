@@ -684,10 +684,16 @@ test('upload/download paths stay inside the conversation folders', async () => {
 test('uploading from the conversation folders does not ask; other sensitive actions still do', () => {
   // 올릴 파일은 위의 폴더 범위에서만 고른다 — 폴더를 연결한 것이 허락이라 확인창을 띄우지 않는다.
   assert.equal(browserActionNeedsApproval('upload'), false);
-  for (const action of ['cookies', 'storage', 'download', 'credentials', 'eval', 'clipboard']) {
+  for (const action of ['cookies', 'storage', 'download', 'credentials', 'clipboard']) {
     assert.equal(browserActionNeedsApproval(action), true, action);
+    assert.equal(browserActionNeedsApproval(action, true), true, `${action} remote`);
   }
   assert.equal(browserActionNeedsApproval('viewport'), false);
+});
+
+test('eval does not ask on turns from this PC; turns from another device still ask', () => {
+  assert.equal(browserActionNeedsApproval('eval'), false);
+  assert.equal(browserActionNeedsApproval('eval', true), true);
 });
 
 test('agent-browser global options cannot be smuggled through positional browser arguments', async () => {

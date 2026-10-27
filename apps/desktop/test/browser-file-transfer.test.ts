@@ -36,6 +36,77 @@ test('browser upload reads a pinned source and preserves its filename in private
   }
 });
 
+test('browser upload keeps its private copy readable after the command returns', async () => {
+  const root = join(parent, 'retained-upload-root');
+  await mkdir(root);
+  await writeFile(join(root, 'cover.png'), 'private-image');
+  let staged = '';
+  let retained: BrowserScratch | undefined;
+  const runtime = {
+    resolvePage: async () => ({ info: { pageId: 'page-upload' } }),
+    uploadDocument: () => 0,
+    runAgentCommand: async (_workflow: string, _page: string, command: string[]) => {
+      staged = command[2];
+      assert.equal(await readFile(staged, 'utf8'), 'private-image');
+      return { page: null, result: {} };
+    },
+    retainUpload: async (_page: string, _document: number, scratch: BrowserScratch) => {
+      retained = scratch;
+      return true;
+    },
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true, () => [root]);
+  try {
+    await provider.callTool(BROWSER_ADVANCED_TOOL, { action: 'upload', page_id: 'page-upload', ref: '@e1', path: 'cover.png' },
+      { workflowId: 'wf', interactionId: 'retained-upload' });
+    assert.ok(retained);
+    assert.equal(await readFile(staged, 'utf8'), 'private-image');
+  } finally {
+    await retained?.cleanup();
+    provider.clearBrowserFileGrants();
+  }
+  await assert.rejects(readFile(staged));
+});
+
+test('failed browser upload removes its private copy', async () => {
+  const root = join(parent, 'failed-upload-root');
+  await mkdir(root);
+  await writeFile(join(root, 'cover.png'), 'private-image');
+  let staged = '';
+  const runtime = {
+    resolvePage: async () => ({ info: { pageId: 'page-upload' } }),
+    uploadDocument: () => 0,
+    runAgentCommand: async (_workflow: string, _page: string, command: string[]) => {
+      staged = command[2];
+      throw new Error('upload failed');
+    },
+    retainUpload: () => { throw new Error('failed upload must not be retained'); },
+  } as unknown as BrowserRuntime;
+  const provider = new BrowserToolProvider(runtime);
+  provider.configure(true, () => [root]);
+  try {
+    await assert.rejects(provider.callTool(BROWSER_ADVANCED_TOOL,
+      { action: 'upload', page_id: 'page-upload', ref: '@e1', path: 'cover.png' },
+      { workflowId: 'wf', interactionId: 'failed-upload' }));
+    await assert.rejects(readFile(staged));
+  } finally {
+    provider.clearBrowserFileGrants();
+  }
+});
+
+test('browser stage startup cleanup removes orphan uploads but keeps other stage data', async () => {
+  const orphan = await BrowserScratch.create();
+  const upload = orphan.path('upload-0');
+  await mkdir(upload);
+  await writeFile(join(upload, 'cover.png'), 'orphan');
+  const other = join(nativeFsStagePath(), 'other-stage');
+  await mkdir(other);
+  await BrowserScratch.cleanupOrphans();
+  await assert.rejects(readFile(join(upload, 'cover.png')));
+  assert.ok((await stat(other)).isDirectory());
+});
+
 test('browser output commits through the pinned root after its pathname is replaced', async () => {
   const root = join(parent, 'output-root');
   const moved = join(parent, 'output-root-moved');

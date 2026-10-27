@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { mkdir, mkdtemp, open, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { UPLOAD_MAX_BYTES } from '@dex/protocol';
@@ -80,6 +80,15 @@ export class BrowserScratch {
     const stage = nativeFsStagePath();
     if (!stage) throw new Error('브라우저 파일 작업에 필요한 비공개 파일 영역이 없습니다.');
     return new BrowserScratch(await mkdtemp(join(stage, 'browser-')));
+  }
+
+  static async cleanupOrphans(): Promise<void> {
+    const stage = nativeFsStagePath();
+    if (!stage) return;
+    const entries = await readdir(stage, { withFileTypes: true });
+    await Promise.all(entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('browser-'))
+      .map((entry) => rm(join(stage, entry.name), { recursive: true, force: true })));
   }
 
   path(name: string): string {

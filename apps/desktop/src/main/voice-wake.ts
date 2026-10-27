@@ -48,6 +48,18 @@ export function parseWakeWords(setting: string | undefined): string[] {
     .filter((w) => symbolize(w).sym.length >= MIN_SYMBOLS);
 }
 
+/**
+ * STT 인식 힌트(XGEN STT start.context) — 호출어를 인식기에 미리 알려, 처음 듣는 말을 흔한 말("독수리"·"떡순이")로
+ * 적지 않게 한다. 10/18 dev Qwen3-ASR 실측(합성 음성 빠른 말·잡음·먼 거리 54개): "엑스젠" 힌트 없이 37/54, 있으면 52/54.
+ * 한 단어를 두 표기로 주면("엑스젠, XGEN") 불분명한 소리에서 힌트가 통째로 받아 적혀서, 인식 언어(한국어)로 적힌
+ * 호출어만 주고 다른 호출어를 품은 것("헤이 엑스젠" ⊃ "엑스젠")은 뺀다. 한글 호출어가 없으면 있는 그대로.
+ */
+export function sttHint(words: string[]): string {
+  const ko = words.filter((w) => /[가-힣]/.test(w));
+  const pool = ko.length ? ko : words;
+  return pool.filter((w) => !pool.some((o) => o !== w && w.includes(o))).join(', ');
+}
+
 export type WakeMatch = { start: number; end: number; distance: number };
 
 /** 말에서 호출어 구간(글자 위치, end 는 그 다음 글자)을 찾는다. 여러 호출어 중 가장 가까운 것. */

@@ -92,6 +92,12 @@ test('닫은 알림창 문구는 답에 그대로 전한다', () => {
   assert.equal(actionRow(act({ notices: ['a'] }), false), '"블로그" 탭 · 클릭 · 알림 닫음(1) · 판단 672ms · 실행 64ms');
 });
 
+test('맥 앱을 연 것은 열었다고', () => {
+  const opened = act({ said: 'PPT 열어줘', label: 'app "Microsoft PowerPoint"', display: 'Microsoft PowerPoint 앱', app: 'Microsoft PowerPoint' });
+  assert.equal(actionSentence(opened), 'Microsoft PowerPoint 앱을 열었어요.');
+  assert.equal(actionRow(opened, false), 'Microsoft PowerPoint 앱 · 열기 · 판단 672ms · 실행 64ms');
+});
+
 test('답에는 시간·판단 점수가 없고, 작업 과정 줄에만 있다', () => {
   const actions = [act({}), act({ display: '"첫 글" 링크', said: '첫 글 열어' })];
   const reply = replyFor(actions);
@@ -273,4 +279,47 @@ test('앞부분만 떼면 완결된 말이라도 남은 말이 그 꼬리면 쪼
   await seg.final('임시저장한 상품 확인 페이지로 이동해줘');
   assert.deepEqual(handled, ['임시저장한 상품 확인 페이지로 이동해줘']);
   assert.equal(seg.unhandled, '임시저장한 상품 확인 페이지로 이동해줘');
+});
+
+test('앱을 옮긴 실행 뒤에는 첫 단어 뒤를 다시 나눈다 — 앱 이름 뒤의 다음 요청은 그 앱에서, 없으면 끝', async () => {
+  const run = async (said: string, start: (rest: string[]) => number) => {
+    const handled: string[] = [];
+    const asked: Array<[string, string[]]> = [];
+    let lastTarget: string | null = null;
+    const agent: VoiceAgent = {
+      get lastTarget() {
+        return lastTarget;
+      },
+      boundary: async (_u, done, rest) => {
+        asked.push([done, rest]);
+        return { start: start(rest), conf: 1 };
+      },
+      // 실행 준비 판단은 가장 긴 앞부분까지 '지금' — 앱 열기에 다음 요청의 앞머리가 묻는다.
+      readiness: async (texts) => texts.map(() => ({ ready: 'act_now', p: 0.99 })),
+      handle: async (text, _th, guard) => {
+        handled.push(text);
+        if (!lastTarget) {
+          if (!(await guard('Microsoft PowerPoint 앱으로 전환', 'press', 1))) return { acted: false, reason: 'guarded', ms: 0 };
+          lastTarget = 'app "Microsoft PowerPoint"';
+          return { acted: true, kind: 'press', target: lastTarget, ms: 0, effect: 'ok', reread: true };
+        }
+        if (!(await guard('새 프레젠테이션', 'press', 1))) return { acted: false, reason: 'guarded', ms: 0 };
+        lastTarget = 'button "새 프레젠테이션"';
+        return { acted: true, kind: 'press', target: lastTarget, ms: 0, effect: 'ok' };
+      },
+    };
+    const seg = new Segmenter(agent, () => undefined);
+    await seg.final(said);
+    return { handled, asked, unhandled: seg.unhandled };
+  };
+  const two = await run('PPT 열어서 새 프레젠테이션 만들어줘', (rest) => rest.indexOf('새'));
+  assert.deepEqual(two.handled, ['PPT 열어서', '새 프레젠테이션 만들어줘']);
+  // 앱을 연 뒤 첫 단어만 처리한 것으로 치고 나머지를 다시 나눈다
+  assert.deepEqual(two.asked.at(-1), ['PPT', ['열어서', '새', '프레젠테이션', '만들어줘']]);
+  assert.equal(two.unhandled, null);
+  // 다음 요청이 없으면 나머지("앱 열어줘 지금")를 새 앱 화면에서 누르지 않는다
+  const one = await run('PPT 앱 열어줘 지금', () => -1);
+  assert.deepEqual(one.handled, ['PPT 앱 열어줘 지금']);
+  assert.deepEqual(one.asked.at(-1), ['PPT', ['앱', '열어줘', '지금']]);
+  assert.equal(one.unhandled, null);
 });

@@ -33,6 +33,12 @@ export type Outcome =
       ms: number;
       /** ok = 실행됨, none = 눌렀는데 변화 없음 */
       effect?: 'ok' | 'none';
+      /**
+       * 다른 앱으로 옮겼다(맥 앱 열기) — 실행한 토막에 다음 요청이 묻어 있을 수 있다. 첫 단어만 처리한 것으로 치고
+       * 나머지를 그 앱 화면에서 다시 나눈다: "PPT 열어서 새 프레젠테이션 만들어줘" 는 앞부분 "PPT 열어서 새 프레젠테이션"
+       * 이 이미 실행 준비 '지금' 이라 통째로 앱 열기에 쓰이고 "만들어줘" 만 꼬리로 남았다(10/18).
+       */
+      reread?: boolean;
     };
 
 export type Guard = (target: string, kind: ActKind, conf?: number) => Promise<boolean>;
@@ -96,6 +102,8 @@ export class Segmenter {
   private segStart: string | null = null;
   /** 마지막으로 실행을 일으킨 말 토막. */
   private lastSeg = '';
+  /** 앱을 옮긴 실행 뒤 남은 말을 다시 나누는 중(Outcome.reread) — 다음 요청이 없으면 꼬리로 누르지 않고 끝낸다. */
+  private rereading = false;
   private latest = '';
   private lastTried = '';
   private finalText: string | null = null;
@@ -284,11 +292,21 @@ export class Segmenter {
           if (b.start < 0) {
             // 중간 인식에서는 자르지 않는다 — 뒷말이 아직 안 들어와서 꼬리말처럼 보일 수 있다.
             if (!isFinal) break;
+            // 앱을 옮긴 토막의 나머지("PPT 앱 열어줘" 의 "앱 열어줘")는 이미 한 요청의 일부다 — 새 앱 화면에서 누르지 않는다.
+            if (this.rereading) {
+              this.rereading = false;
+              this.consumed = text;
+              this.finish();
+              break;
+            }
             // 꼬리말이라도 앞에서 실행한 토막에 그 뜻이 빠졌을 수 있다 — "삼성 입력하고 검색해줘" 는 한 요청으로
             // 읽히지만(10/16 BO 브랜드 찾기: none 0.999) 실행한 것은 "삼성 입력하고" 까지였다. 남은 말만으로 누를
             // 대상이 분명할 때만 누르고, 아니면 꼬리말로 친다(서버로 넘기지 않는다).
             tail = true;
-          } else cand = words(rest).slice(b.start).join(' ');
+          } else {
+            cand = words(rest).slice(b.start).join(' ');
+            this.rereading = false;
+          }
         }
         let used = cand;
         if (!outcome) {
@@ -318,9 +336,9 @@ export class Segmenter {
           };
           const abort = (): boolean => my !== this.epoch || (!isFinal && this.latest !== text);
           const tw = words(text);
-          /** 처리한 것으로 칠 글자 — 앞부분만 실행했으면 그 끝 단어까지. */
-          const upTo = (target: string): string =>
-            tw.slice(0, tw.length - (words(cand).length - words(target).length)).join(' ');
+          /** 처리한 것으로 칠 글자 — 앞부분만 실행했으면 그 끝 단어까지(n = 처리한 앞 단어 수). */
+          const upTo = (target: string, n = words(target).length): string =>
+            tw.slice(0, tw.length - (words(cand).length - n)).join(' ');
           const run = async (target: string): Promise<Outcome> => {
             let o: Outcome | undefined;
             try {
@@ -332,9 +350,11 @@ export class Segmenter {
               // 실행했으면 세대가 바뀌었어도 기록한다 — 화면은 이미 바뀌었다.
               if (o?.acted) {
                 this.segStart = this.consumed;
-                this.lastSeg = target;
+                const reread = !!o.reread && words(target).length > 1;
+                this.lastSeg = reread ? words(target)[0] : target;
                 if (o.effect === 'none') this.needsRecovery = true;
-                else this.consumed = upTo(target);
+                else this.consumed = upTo(target, reread ? 1 : undefined);
+                this.rereading = reread && o.effect !== 'none';
               }
               if (holding) {
                 this.releaseActing?.();

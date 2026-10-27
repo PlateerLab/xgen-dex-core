@@ -23,10 +23,11 @@ import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/conne
 import { diag } from './diag-log';
 import { FORMAT } from './fast-act-e13';
 import { fastActEnabled } from './fast-act-runner';
+import { RoutedVoiceAgent } from './fast-act-computer';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import { Segmenter, norm } from './voice-segmenter';
 import { rememberVoiceTurn } from './voice-turns';
-import { findWake, restAfter, WAKE_WINDOW_MS } from './voice-wake';
+import { findWake, restAfter, sttHint, WAKE_WINDOW_MS } from './voice-wake';
 
 const SCOPE = 'voice-stream';
 const FRAME = 640; // 20 ms @ 16 kHz PCM16
@@ -113,7 +114,7 @@ class VoiceSession {
   private closed = false;
   private wakeDone: (() => void) | null = null;
   private readonly t0 = now();
-  private readonly agent: BrowserVoiceAgent;
+  private readonly agent: RoutedVoiceAgent;
   private readonly seg: Segmenter;
   private readonly deferActions: boolean;
   private readonly timeline: TimelineEntry[] = [];
@@ -139,7 +140,9 @@ class VoiceSession {
   ) {
     this.woke = !wake || wake.awake;
     this.deferActions = sttOnly || deps.planBeforeAct?.(interactionId) === true;
-    this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }), interactionId);
+    // 맨 앞 앱이 DeX 가 아니고 다른 앱 조작(computerAct)이 켜져 있으면 그 앱을, 아니면 이 에이전트의 브라우저 칸을 조작한다.
+    const onAct = (action: VoiceAction): void => emit({ sessionId: id, type: 'act', action });
+    this.agent = new RoutedVoiceAgent(new BrowserVoiceAgent(workflowId, this.t0, onAct, interactionId), this.t0, onAct);
     if (!this.deferActions && this.woke) this.agent.prefetch();
     this.seg = new Segmenter(
       this.agent,
@@ -166,8 +169,19 @@ class VoiceSession {
       ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
     });
     this.ws = ws;
+    // 호출어로만 듣기면 호출어를 인식 힌트로 준다 — 힌트를 모르는 서버는 이 키를 무시한다.
+    const context = this.wake ? sttHint(this.wake.words) : '';
     ws.on('open', () =>
-      ws.send(JSON.stringify({ type: 'start', format: 'pcm16', sample_rate: 16000, language: 'ko', mode: 'partials' })),
+      ws.send(
+        JSON.stringify({
+          type: 'start',
+          format: 'pcm16',
+          sample_rate: 16000,
+          language: 'ko',
+          mode: 'partials',
+          ...(context && { context }),
+        }),
+      ),
     );
     ws.on('message', (raw) => this.onMessage(String(raw)));
     ws.on('error', (err) => this.fail(String(err)));
@@ -206,7 +220,7 @@ class VoiceSession {
   }
 
   private onMessage(raw: string): void {
-    let m: { type?: string; text?: string; code?: string; message?: string };
+    let m: { type?: string; text?: string; code?: string; message?: string; context?: string };
     try {
       m = JSON.parse(raw);
     } catch {
@@ -214,7 +228,8 @@ class VoiceSession {
     }
     if (m.type === 'ready') {
       this.ready = true;
-      this.mark('ready');
+      // 서버가 적용한 인식 힌트 — 키가 없으면 힌트를 모르는 서버다.
+      this.mark('ready', undefined, m.context === undefined ? undefined : `힌트 "${m.context}"`);
       // shortcut: 500ms 무음을 앞에 붙여 테스트 녹음의 첫 인사말 누락을 우회한다. 서버 시작 구간 원인 해결 후 제거를 검토한다.
       // 서버 VAD가 원인인지는 미확인이고 실제 마이크에서의 필요성도 미검증이다. 대기 없이 무음 PCM을 먼저 전송한다.
       for (let i = 0; i < 25; i++) this.ws?.send(Buffer.alloc(FRAME));

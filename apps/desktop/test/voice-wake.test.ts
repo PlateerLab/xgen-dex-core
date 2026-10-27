@@ -4,7 +4,13 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { afterWake, DEFAULT_WAKE_WORDS, findWake, parseWakeWords } from '../src/main/voice-wake';
+import {
+  afterWake,
+  DEFAULT_WAKE_WORDS,
+  findWake,
+  parseWakeWords,
+  sttHint,
+} from '../src/main/voice-wake';
 
 const words = parseWakeWords(DEFAULT_WAKE_WORDS);
 
@@ -57,4 +63,13 @@ test('설정 글은 쉼표·줄바꿈으로 나누고 너무 짧은 호출어는
   ]);
   assert.deepEqual(parseWakeWords(undefined), ['헤이 엑스젠', 'Hey XGEN']);
   assert.deepEqual(parseWakeWords(''), []);
+});
+
+test('인식 힌트는 한글 호출어 하나의 표기로 — 다른 호출어를 품은 것은 뺀다', () => {
+  assert.equal(sttHint(parseWakeWords(DEFAULT_WAKE_WORDS)), '헤이 엑스젠');
+  assert.equal(sttHint(parseWakeWords('XGEN, 엑스젠')), '엑스젠');
+  assert.equal(sttHint(parseWakeWords('헤이 엑스젠, Hey XGEN, 엑스젠, XGEN')), '엑스젠');
+  assert.equal(sttHint(parseWakeWords('엑스젠, 자비스')), '엑스젠, 자비스');
+  assert.equal(sttHint(parseWakeWords('Hey XGEN')), 'Hey XGEN');
+  assert.equal(sttHint([]), '');
 });

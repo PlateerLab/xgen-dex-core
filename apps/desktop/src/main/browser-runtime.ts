@@ -48,6 +48,8 @@ interface BrowserPageRuntime {
   documentPending?: boolean;
   /** 보낸 뒤 아직 끝나지 않은 XHR·fetch → 보낸 순번(requestMark). settle 이 조작 뒤에 시작한 것만 기다린다. */
   requests?: Map<number, number>;
+  /** 전체 문서가 교체될 때만 증가한다. SPA 주소 변경은 업로드 File 을 유지한다. */
+  uploadDocument?: number;
 }
 
 interface PendingBrowserConnection {
@@ -217,6 +219,7 @@ export class BrowserRuntime {
   private accountPartition = '';
   private sharedNewTabUrl = 'about:blank';
   private pages = new Map<string, BrowserPageRuntime>();
+  private uploadStages = new Map<string, Set<{ cleanup(): Promise<void> }>>();
   private activeByWorkflow = new Map<string, string>();
   private runner = new AgentBrowserRunner();
   private notify: (state: BrowserState) => void = () => {};
@@ -373,6 +376,34 @@ export class BrowserRuntime {
       activeByWorkflow: Object.fromEntries(this.activeByWorkflow),
       popupRequests: [...this.pendingPopups.values()].map(({ request }) => ({ ...request })),
     };
+  }
+
+  uploadDocument(pageId: string): number {
+    const page = this.pages.get(pageId);
+    if (!page?.contents || page.contents.isDestroyed())
+      throw new BrowserRuntimeError('browser_page_not_found', '업로드할 브라우저 페이지가 종료되었습니다.');
+    return page.uploadDocument ?? 0;
+  }
+
+  async retainUpload(pageId: string, document: number, scratch: { cleanup(): Promise<void> }): Promise<boolean> {
+    const page = this.pages.get(pageId);
+    if (!page?.contents || page.contents.isDestroyed() || (page.uploadDocument ?? 0) !== document) {
+      await scratch.cleanup();
+      return false;
+    }
+    const stages = this.uploadStages.get(pageId) ?? new Set();
+    stages.add(scratch);
+    this.uploadStages.set(pageId, stages);
+    return true;
+  }
+
+  private async releaseUploadStages(pageId: string): Promise<void> {
+    const stages = this.uploadStages.get(pageId);
+    if (!stages) return;
+    this.uploadStages.delete(pageId);
+    await Promise.all([...stages].map((scratch) => scratch.cleanup().catch((error) => {
+      diag('browser-file', `업로드 임시 파일 정리 실패 page=${pageId}: ${error instanceof Error ? error.message : String(error)}`);
+    })));
   }
 
   private normalizedPopupPermissions(
@@ -618,6 +649,8 @@ export class BrowserRuntime {
     if (runtime.contents?.id === contents.id) return;
     if (runtime.contents && runtime.contents.id !== contents.id) {
       runtime.info.generation += 1;
+      runtime.uploadDocument = (runtime.uploadDocument ?? 0) + 1;
+      void this.releaseUploadStages(runtime.info.pageId);
       void this.resetAutomation(runtime);
     }
     runtime.contents = contents;
@@ -687,7 +720,12 @@ export class BrowserRuntime {
       runtime.info.generation += 1;
       updateLocation();
     };
-    contents.on('did-navigate', navigated);
+    contents.on('did-navigate', () => {
+      if (!isCurrent()) return;
+      runtime.uploadDocument = (runtime.uploadDocument ?? 0) + 1;
+      void this.releaseUploadStages(runtime.info.pageId);
+      navigated();
+    });
     contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
       if (!isMainFrame) return;
       navigated();
@@ -711,6 +749,8 @@ export class BrowserRuntime {
     contents.on('render-process-gone', (_event, details) => {
       if (!isCurrent()) return;
       runtime.info.generation += 1;
+      runtime.uploadDocument = (runtime.uploadDocument ?? 0) + 1;
+      void this.releaseUploadStages(runtime.info.pageId);
       this.patch(runtime, { loading: 'error', error: `renderer ${details.reason}` });
       // Keep the page-scoped CDP proxy alive. The same WebContents can recover
       // after a renderer replacement/reload, and retaining its loopback port
@@ -720,6 +760,8 @@ export class BrowserRuntime {
       if (!isCurrent()) return;
       this.clearPendingPopupsForPage(runtime.info.pageId, false);
       runtime.info.generation += 1;
+      runtime.uploadDocument = (runtime.uploadDocument ?? 0) + 1;
+      void this.releaseUploadStages(runtime.info.pageId);
       runtime.contents = null;
       void this.resetAutomation(runtime);
       if (runtime.info.mode !== 'shared') void this.close(runtime.info.pageId);
@@ -1424,6 +1466,7 @@ export class BrowserRuntime {
   async close(pageId: string): Promise<void> {
     const runtime = this.pages.get(pageId);
     if (!runtime) return;
+    const uploadCleanup = this.releaseUploadStages(pageId);
     this.revokeDownload(pageId);
     for (const [token, pending] of this.pendingSelections) {
       if (pending.pageId === pageId) this.pendingSelections.delete(token);
@@ -1463,6 +1506,7 @@ export class BrowserRuntime {
     if (win && !win.isDestroyed()) win.destroy();
     if (runtime.view && runtime.contents && !runtime.contents.isDestroyed())
       runtime.contents.close();
+    await uploadCleanup;
   }
 
   private revokeDownload(pageId: string): void {
@@ -1548,6 +1592,7 @@ export class BrowserRuntime {
     this.clearPendingPopups(false);
     await Promise.all(pages.map((runtime) => runtime.automationReset));
     await this.runner.closeAll();
+    await Promise.all([...this.uploadStages.keys()].map((pageId) => this.releaseUploadStages(pageId)));
     this.emit();
     await Promise.all(
       pages.map(async (runtime) => {

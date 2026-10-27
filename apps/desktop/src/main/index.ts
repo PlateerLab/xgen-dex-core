@@ -28,6 +28,7 @@ import {
   session,
   clipboard,
   powerMonitor,
+  systemPreferences,
 } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -150,6 +151,7 @@ import { shouldAllowPrivateCertificate } from '@dex/engine/connection-security';
 import { buildSsoUrl, parseSsoLoginResponse } from '@dex/engine/connection-sso';
 import { createSsoWindowOptions } from './sso-window-options';
 import { getBrowserRuntime } from './browser-runtime';
+import { BrowserScratch } from './browser-file-transfer';
 import {
   CANVAS_PARTITION,
   canvasUrl,
@@ -164,7 +166,10 @@ import { BrowserHistoryStore } from './browser-history';
 import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
 import { BrowserConfirmCenter } from './browser-confirm';
 import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
+import { DesktopToolProvider } from './desktop-tools';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
+import { configureComputerAct } from './fast-act-computer';
+import { stopMacAx } from './mac-ax';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
 import type { ChoiceAnswer } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
@@ -2158,6 +2163,14 @@ const mcpAdminDelegate: LocalToolDelegate = {
   },
 };
 
+let desktopTools: DesktopToolProvider | null = null;
+
+/** DeX 메인 창을 보이고 다른 앱보다 앞으로. */
+function showDexFront(): void {
+  showMain();
+  app.focus({ steal: true });
+}
+
 /** Reconcile MCP manager + bridge with config + login state. */
 function syncMcp(): void {
   const account = currentAccountKey();
@@ -2198,7 +2211,9 @@ function syncMcp(): void {
     decisionPost,
     browserConfirms.ask,
   );
-  getLocalToolProvider().configureDelegate(joinDelegates(browserTools, userConfirmTools));
+  // 데스크탑 앱 도구(DesktopApps·Snapshot·Interact) — 말로 다른 앱 조작과 같은 설정(computerAct)이 켠다.
+  desktopTools ??= new DesktopToolProvider({ enabled: () => loadConfig().computerAct === true, showDex: showDexFront });
+  getLocalToolProvider().configureDelegate(joinDelegates(browserTools, userConfirmTools, desktopTools));
   // 로컬 MCP 자기관리 도구(McpAddServer 등) — cfg.mcp 스위치로 delegate 가 스스로 게이트한다.
   getLocalToolProvider().configureMcpAdmin(mcpAdminDelegate);
   const bridge = getMcpBridge();
@@ -2351,11 +2366,13 @@ ipcMain.handle(CHANNELS.configSet, async (event, patch: Partial<ConnectorConfig>
     await mcpHttpSession().closeAllConnections();
     syncMcp();
   }
+  // 다른 앱 조작은 접근성 권한이 있어야 한다 — 켤 때 시스템 권한 창을 띄운다(이미 있으면 아무것도 안 뜬다).
+  if (patch.computerAct === true && process.platform === 'darwin') systemPreferences.isTrustedAccessibilityClient(true);
   if (patch.autoUpdate !== undefined) setAutoUpdate(!!patch.autoUpdate);
   if (patch.updateServer !== undefined) setUpdateServer(patch.updateServer);
   // 로컬 셸 접근 토글/설정: 프로바이더를 재구성하고 카탈로그를 다시 광고한다
-  // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다).
-  if (patch.browser !== undefined || patch.fastAct !== undefined) syncMcp();
+  // (켜면 브릿지가 없던 경우 뜨고, 끄면 도구가 카탈로그에서 빠진다). 데스크탑 앱 도구는 computerAct 를 따른다.
+  if (patch.browser !== undefined || patch.fastAct !== undefined || patch.computerAct !== undefined) syncMcp();
   if (patch.theme) nativeTheme.themeSource = patch.theme;
   if (patch.linuxClickThrough !== undefined) {
     // 즉시 재적용: 클릭 통과가 켜진 오버레이는 마우스 이벤트를 못 받아
@@ -2799,6 +2816,11 @@ configureFastAct({
     return res.answers as Record<string, ChoiceAnswer>;
   },
   reveal: revealBrowserPage,
+});
+// 실험: 말로 다른 맥 앱 조작 — 맨 앞 앱이 DeX 가 아니면 말하는 도중 조작이 그 앱을 대상으로 한다(fast-act-computer.ts).
+configureComputerAct({
+  enabled: () => loadConfig().computerAct === true,
+  showDex: showDexFront,
 });
 // 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>
@@ -4378,6 +4400,9 @@ if (!gotLock) {
     // 브릿지가 전부 이 포트들 위에서 돌고, 붙기 전에 건드리면 엔진이 명확히
     // 던진다(조용히 메모리로 폴백해서 사용자의 MCP 인증을 매번 잃는 대신).
     bindDesktopHost();
+    // 단일 실행 잠금을 얻은 뒤에만 지운다. 같은 프로필의 살아 있는 탭이 쓰는 파일은 없어야 한다.
+    await BrowserScratch.cleanupOrphans().catch((error) =>
+      diag('browser-file', `남은 브라우저 임시 파일 정리 실패: ${error instanceof Error ? error.message : String(error)}`));
     await migrateStoredMcpSecrets();
 
     // 절전에서 깨어났다 — 잠든 사이 서버가 놓은 대화 소켓은 이쪽에서 보기엔 아직 열려 있다.
@@ -4605,5 +4630,6 @@ if (!gotLock) {
     stopAllUserPcJobs();
     void getBrowserRuntime().closeAll();
     void getMcpManager().closeAll();
+    stopMacAx();
   });
 }

@@ -172,6 +172,7 @@ export const Settings: React.FC<{
     MEMORY_MAP_CHOICES.find((c) => c.setting === config.memoryMap)?.value ?? 'agent',
   );
   const isLinux = /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent);
+  const isMac = /mac/i.test(navigator.platform);
 
   const [browserOn, setBrowserOn] = useState(config.browser?.enabled === true);
   const [browserNewTabUrl, setBrowserNewTabUrl] = useState(config.browser?.newTabUrl ?? '');
@@ -183,6 +184,8 @@ export const Settings: React.FC<{
   useEffect(() => {
     if (fastActOn) void xgen.decision.model().then(setDecisionModel);
   }, [fastActOn]);
+  // 말로 다른 앱도 조작(맥, 실험) — 맨 앞 앱이 DeX 가 아니면 그 앱을 조작한다. 접근성 권한이 필요하다.
+  const [computerActOn, setComputerActOn] = useState(config.computerAct === true);
   const savedBrowserNewTabUrl = useRef(config.browser?.newTabUrl ?? '');
   const [browserNewTabUrlError, setBrowserNewTabUrlError] = useState('');
   const [browserSearchOn, setBrowserSearchOn] = useState(
@@ -1103,6 +1106,36 @@ export const Settings: React.FC<{
                       />
                       {decisionModelError && <p className="settings-hint">{decisionModelError}</p>}
                     </div>
+                  )}
+                  {fastActOn && isMac && (
+                    <div className="field-row">
+                      <span>
+                        다른 앱도 말로 조작 (실험)
+                        <span className="small muted" style={{ marginLeft: 8 }}>
+                          맨 앞 앱이 DeX 가 아니면 그 앱을 조작
+                        </span>
+                      </span>
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={computerActOn}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setComputerActOn(enabled);
+                            void apply({ computerAct: enabled });
+                          }}
+                        />
+                        <span className="track" />
+                      </label>
+                    </div>
+                  )}
+                  {fastActOn && isMac && computerActOn && (
+                    <p className="settings-hint">
+                      발표 중인 PowerPoint 에 "장표 내려줘", "다음 장" 처럼 말하면 그 앱의 메뉴·버튼과 발표 끝내기·앱
+                      숨기기·DeX 앞으로 같은 조작 중에서 골라 실행합니다. 닫기·종료·저장·삭제 같은 항목은 누르지 않고,
+                      글자 입력은 에이전트가 처리합니다. 처음 켜면 시스템 설정 &gt; 개인정보 보호 및 보안 &gt; 손쉬운
+                      사용에서 XGen Dex 를 허용해야 합니다.
+                    </p>
                   )}
                   <p className="settings-hint warn">
                     페이지 내용은 신뢰하지 않는 데이터로 처리됩니다. 쿠키·스토리지, 업로드·다운로드,

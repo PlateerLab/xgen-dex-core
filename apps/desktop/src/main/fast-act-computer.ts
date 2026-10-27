@@ -474,7 +474,8 @@ export class RoutedVoiceAgent implements VoiceAgent {
         const presentation = await this.presentation.handle(text, th, guard, abort);
         if (presentation) return presentation;
       } catch (error) {
-        return { acted: false, stop: true, reason: `발표 조작 확인 실패: ${error instanceof Error ? error.message : String(error)}`, ms: 0 };
+        // Native attempts return terminal outcomes themselves; discovery errors do not own the request.
+        diag(SCOPE, 'presentation-preflight-failed', { reason: error instanceof Error ? error.message : String(error) });
       }
     }
     const o = await (await this.route()).handle(text, th, guard, abort, utterance, pressOnly);

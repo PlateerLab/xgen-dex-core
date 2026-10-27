@@ -4,7 +4,7 @@ import { screenOf } from './fast-act-desktop';
 import { decisionPost } from './fast-act-runner';
 import type { VoiceAction } from './fast-act-voice';
 import { axApps, axPresentation, type AxApp, type PresentationAction } from './mac-ax';
-import { CONTINUATION, GUARDED, mentions, type Guard, type Outcome, type Thresholds } from './voice-segmenter';
+import { CONTINUATION, GUARDED, type Guard, type Outcome, type Thresholds } from './voice-segmenter';
 
 type Control = { app: AxApp; action: PresentationAction; name: string };
 const CONFIDENCE = 0.9;
@@ -42,7 +42,7 @@ export class PresentationVoiceAgent {
     const no = (reason: string, stop = false): Outcome => ({ acted: false, reason, ms: performance.now() - t0, ...(stop ? { stop: true } : {}) });
     const post = decisionPost();
     if (!post) return null;
-    this.apps ??= axApps();
+    this.apps ??= axApps().catch(error => { this.apps = null; throw error; });
     const apps = await this.apps;
     const { refs, controls } = presentationControls(apps);
     if (!Object.keys(controls).length) return null;
@@ -60,10 +60,11 @@ export class PresentationVoiceAgent {
     }
     if (abort()) return no(GUARDED);
     const control = pick && controls[pick.ref];
-    // Final noun commands such as "PPT 다음 장" use the same named-control allowance as the ordinary agent.
+    // Only the noun-command exception needs an explicit, unambiguous direction.
+    const next = text.includes('다음');
+    const previous = text.includes('이전');
     const namedStep = !th.partial && cls.ready === 'wait' && !!control &&
-      (control.action === 'next' || control.action === 'previous') &&
-      mentions(text, control.name.slice(control.app.app.length));
+      (control.action === 'next' ? next && !previous : control.action === 'previous' && previous && !next);
     const ready = cls.ready === 'act_now' && cls.gate >= CONFIDENCE && (cls.single ?? 0) >= CONFIDENCE;
     const targetKnown = !!control && !!pick && pick.confidence >= CONFIDENCE && (cls.onscreen ?? 0) >= CONFIDENCE;
     const accepted = targetKnown && (ready || namedStep);

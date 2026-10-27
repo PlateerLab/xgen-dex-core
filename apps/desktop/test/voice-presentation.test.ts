@@ -22,6 +22,7 @@ function fixture() {
   let verified = true;
   let classification = { ready: 'act_now', gate: 1, single: 1, onscreen: 1 };
   let shows = 0;
+  let appsError: Error | null = null;
   const calls: Array<[number, PresentationAction]> = [];
   const actions: VoiceAction[] = [];
   const exported: { PresentationVoiceAgent?: typeof PresentationVoiceAgent; presentationControls?: typeof presentationControls } = {};
@@ -36,7 +37,7 @@ function fixture() {
       if (name === './fast-act-desktop') return { screenOf: () => ({}) };
       if (name === './fast-act-runner') return { decisionPost: () => async () => ({}) };
       if (name === './mac-ax') return {
-        axApps: async () => apps.map(a => ({ ...a })),
+        axApps: async () => { if (appsError) throw appsError; return apps.map(a => ({ ...a })); },
         axPresentation: async (pid: number, action: PresentationAction) => {
           calls.push([pid, action]);
           return { verified, reason: verified ? undefined : '숨겨지지 않음' };
@@ -53,6 +54,7 @@ function fixture() {
     set ref(value: string) { ref = value; },
     set verified(value: boolean) { verified = value; },
     set apps(value: AxApp[]) { apps = value; },
+    set appsError(value: Error | null) { appsError = value; },
     set classification(value: typeof classification) { classification = value; },
     get shows() { return shows; },
     handle: (partial = false, text = 'PPT 다음 장 넘겨줘.') => agent.handle(text, partial ? PARTIAL : FINAL, async () => true, () => false),
@@ -146,13 +148,61 @@ test('a final named slide command may be ready=wait without lowering target conf
 });
 
 test('a named next-slide phrase cannot use the allowance for previous or hide', async () => {
-  for (const ref of ['e9002', 'e9003']) {
+  for (const [text, ref] of [
+    ['PPT 다음 장.', 'e9002'], ['PPT 다음 장.', 'e9003'],
+    ['PPT 다음 슬라이드.', 'e9002'], ['PPT 이전 슬라이드.', 'e9001'],
+    ['PPT 슬라이드.', 'e9001'], ['PPT 다음 아니 이전 슬라이드.', 'e9001'],
+  ]) {
     const f = fixture();
     f.ref = ref;
     f.classification = { ready: 'wait', gate: 0.1, single: 0.1, onscreen: 1 };
-    const result = await f.handle(false, 'PPT 다음 장.');
+    const result = await f.handle(false, text);
     assert.ok(result && !result.acted && result.stop);
     assert.equal(f.calls.length, 0);
+  }
+});
+
+test('named slide directions remain available with shared slide nouns', async () => {
+  for (const [text, ref, action] of [['PPT 다음 슬라이드.', 'e9001', 'next'], ['PPT 이전 슬라이드.', 'e9002', 'previous']] as const) {
+    const f = fixture();
+    f.ref = ref;
+    f.classification = { ready: 'wait', gate: 0.1, single: 0.1, onscreen: 1 };
+    assert.equal((await f.handle(false, text))?.acted, true);
+    assert.deepEqual(f.calls, [[30, action]]);
+  }
+});
+
+test('a failed app lookup can recover on the next presentation attempt', async () => {
+  const f = fixture();
+  f.appsError = new Error('lookup timeout');
+  await assert.rejects(f.handle(), /lookup timeout/);
+  assert.deepEqual(f.calls, []);
+  f.appsError = null;
+  assert.equal((await f.handle())?.acted, true);
+  assert.deepEqual(f.calls, [[30, 'next']]);
+});
+
+test('routed preflight failures fall through but terminal presentation outcomes do not', async () => {
+  const code = readFileSync(new URL('../src/main/fast-act-computer.ts', import.meta.url), 'utf8');
+  const routed = ts.transpileModule(code.slice(code.indexOf('export class RoutedVoiceAgent')), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  for (const mode of ['lookup', 'classify', 'native'] as const) {
+    let ordinaryCalls = 0;
+    const terminal = { acted: false, stop: true, reason: 'native failure', ms: 0 };
+    const ordinary = { acted: false, reason: 'ordinary route', ms: 0 };
+    const exported: Partial<typeof import('../src/main/fast-act-computer')> = {};
+    runInNewContext(routed, {
+      exports: exported, deps: {}, SCOPE: 'test', diag: () => {}, frontCache: null,
+      computerActEnabled: () => true, externalFront: async () => null, visiblePage: () => true,
+      ComputerVoiceAgent: class {}, LauncherVoiceAgent: class {},
+      PresentationVoiceAgent: class { async handle() { if (mode === 'native') return terminal; throw new Error(mode); } },
+    });
+    const browser = { actions: [], workflow: 'test', handle: async () => { ordinaryCalls++; return ordinary; } };
+    const agent = new exported.RoutedVoiceAgent!(browser as unknown as ConstructorParameters<NonNullable<typeof exported.RoutedVoiceAgent>>[0], 0);
+    const result = await agent.handle('상품 설명을 써줘.', FINAL, async () => true, () => false, '상품 설명을 써줘.');
+    assert.equal(result, mode === 'native' ? terminal : ordinary);
+    assert.equal(ordinaryCalls, mode === 'native' ? 0 : 1);
   }
 });
 

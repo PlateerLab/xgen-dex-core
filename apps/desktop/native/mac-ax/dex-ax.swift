@@ -367,7 +367,7 @@ func activate(_ pid: pid_t?) -> [String: Any] {
 }
 
 /// Only slide-number markers are compared; presenter clocks must not count as a slide change.
-func slideMarker(_ axApp: AXUIElement) -> String? {
+func slideMarker(_ window: AXUIElement) -> String? {
   var markers = Set<String>()
   let deadline = nowMs() + 200
   var visited = 0
@@ -382,7 +382,7 @@ func slideMarker(_ axApp: AXUIElement) -> String? {
     }
     for child in children(el) { walk(child, depth + 1) }
   }
-  for window in (attr(axApp, kAXWindowsAttribute) as? [AXUIElement]) ?? [] { walk(window, 0) }
+  walk(window, 0)
   return markers.isEmpty ? nil : markers.sorted().joined(separator: " | ")
 }
 
@@ -392,6 +392,23 @@ func powerPointShowWindows(_ axApp: AXUIElement) -> [AXUIElement] {
     let title = (str(window, kAXTitleAttribute) ?? "").lowercased()
     return ["powerpoint slide show", "powerpoint presenter view", "powerpoint 슬라이드 쇼", "powerpoint 발표자 보기"].contains { title.hasPrefix($0) }
   }
+}
+
+func focusPowerPointShowWindow(_ axApp: AXUIElement, _ pid: pid_t) -> AXUIElement? {
+  let windows = powerPointShowWindows(axApp)
+  if frontApp()?.processIdentifier == pid, let focused = attr(axApp, kAXFocusedWindowAttribute),
+    let window = windows.first(where: { CFEqual($0, focused) }) { return window }
+  guard let window = windows.first else { return nil }
+  _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+  _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+  _ = AXUIElementSetAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, window)
+  let deadline = nowMs() + 1000
+  repeat {
+    if frontApp()?.processIdentifier == pid, let focused = attr(axApp, kAXFocusedWindowAttribute),
+      CFEqual(window, focused) { return window }
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+  } while nowMs() < deadline
+  return nil
 }
 
 func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
@@ -418,6 +435,9 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
   else { return result(false, "PowerPoint가 입력 대상인지 확인하지 못해 중단했습니다.") }
   if operation == "hide" {
     if !powerPointShowWindows(axApp).isEmpty {
+      guard focusPowerPointShowWindow(axApp, pid) != nil else {
+        return result(false, "발표 창의 초점을 확인하지 못해 쇼 종료 키를 보내지 않았습니다.")
+      }
       let sent = keys("escape", pid: pid)
       guard sent["ok"] as? Bool == true else { return result(false, "쇼 종료 키를 보내지 못했습니다.") }
       let deadline = nowMs() + 2000
@@ -448,7 +468,12 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
     return out
   }
   if operation == "show" {
-    if !powerPointShowWindows(axApp).isEmpty { return result(true) }
+    if !powerPointShowWindows(axApp).isEmpty {
+      guard focusPowerPointShowWindow(axApp, pid) != nil else {
+        return result(false, "발표 창의 초점을 확인하지 못했습니다.")
+      }
+      return result(true)
+    }
     let sent = keys("cmd+return", pid: pid)
     guard sent["ok"] as? Bool == true else { return result(false, "현재 슬라이드부터 시작 키를 보내지 못했습니다.") }
     let deadline = nowMs() + 3000
@@ -458,13 +483,19 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
     guard !powerPointShowWindows(axApp).isEmpty else { return result(false, "현재 슬라이드부터 쇼가 시작됐는지 확인하지 못했습니다. 자동으로 재시작하지 않습니다.") }
     return result(true)
   }
-  let before = slideMarker(axApp)
+  guard let showWindow = focusPowerPointShowWindow(axApp, pid) else {
+    return result(false, "발표 창의 초점을 확인하지 못해 슬라이드 키를 보내지 않았습니다.")
+  }
+  let before = slideMarker(showWindow)
+  guard frontApp()?.processIdentifier == pid, let focused = attr(axApp, kAXFocusedWindowAttribute), CFEqual(showWindow, focused) else {
+    return result(false, "입력 대상 창이 바뀌어 슬라이드 키를 보내지 않았습니다.")
+  }
   let sent = keys(operation == "next" ? "right" : "left", pid: pid)
   guard sent["ok"] as? Bool == true else { return result(false, sent["error"] as? String ?? "키 전송 실패") }
   let deadline = nowMs() + 1200
   while nowMs() < deadline {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-    if let before = before, let after = slideMarker(axApp), before != after { return result(true) }
+    if let before = before, let after = slideMarker(showWindow), before != after { return result(true) }
   }
   return result(false, "PowerPoint에 슬라이드 키를 한 번 보냈지만 장 변경은 확인하지 못했습니다. 자동으로 재전송하지 않습니다.")
 }

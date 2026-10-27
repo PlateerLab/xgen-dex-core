@@ -49,6 +49,10 @@ async function loop(responseKey: string | null) {
   const results: { text: string; key: string | null }[] = [];
   const cancelled: string[] = [];
   const traces: VoiceTrace[] = [];
+  const timers = new Map<number, () => void>();
+  let nextTimer = 0;
+  const stateChanges: unknown[] = [];
+  let captureCancels = 0;
   const opts: Parameters<typeof useVoiceLoop>[0] = {
     enabled: true, workflowId: 'wf', interactionId: 'chat', responseKey,
     onResult: (r, key) => { results.push({ text: r.text, key }); },
@@ -58,10 +62,12 @@ async function loop(responseKey: string | null) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   runInNewContext(source, {
-    exports: exported, Date: { now: () => now }, setTimeout, clearTimeout,
+    exports: exported, Date: { now: () => now },
+    setTimeout: (fn: () => void) => { const id = ++nextTimer; timers.set(id, fn); return id; },
+    clearTimeout: (id: number) => { timers.delete(id); },
     require: (name: string) => {
       if (name === 'react') return {
-        useState: (value: unknown) => [value, () => {}],
+        useState: (value: unknown) => [value, (next: unknown) => { stateChanges.push(next); }],
         useRef: (current: unknown) => ({ current }),
         useEffect: (effect: () => (() => void) | undefined) => { cleanup = effect(); },
       };
@@ -75,7 +81,7 @@ async function loop(responseKey: string | null) {
       } } };
       if (name === './processed-capture') return { startProcessedCapture: async (handler: typeof chunk) => {
         chunk = handler;
-        return { cancel: () => {}, stop: async () => {} };
+        return { cancel: () => { captureCancels++; }, stop: async () => {} };
       } };
       throw new Error(`unexpected import: ${name}`);
     },
@@ -87,7 +93,11 @@ async function loop(responseKey: string | null) {
   now = 1_000;
   event({ sessionId: 'speech', type: 'utterance_end' });
   return {
-    opts, starts, results, cancelled, traces,
+    opts, starts, results, cancelled, traces, stateChanges,
+    error: () => event({ sessionId: 'speech', type: 'error', error: 'stt_upstream_error' }),
+    runTimers: () => { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } },
+    endSpeech: () => { now += 1_000; event({ sessionId: 'speech', type: 'utterance_end' }); },
+    get captureCancels() { return captureCancels; },
     speak: async () => {
       chunk({ pcm: new Uint8Array(640), inSpeech: true, events: [], vad: false });
       await Promise.resolve();
@@ -114,6 +124,50 @@ test('a result arriving after the visible card changed is discarded before effec
   f.opts.responseKey = 'second';
   await f.finish();
   assert.deepEqual(f.results, []);
+  f.dispose();
+});
+
+test('STT errors retry listening, stop after repeated failures, and do not deliver a failed result', async () => {
+  const f = await loop(null);
+  f.error();
+  await f.finish({ text: '불완전한 문장' });
+  assert.deepEqual(f.results, []);
+  assert.equal(f.captureCancels, 0);
+  assert.ok(f.stateChanges.some(v => typeof v === 'string' && v.includes('다시 말씀')));
+  f.runTimers();
+  await f.speak();
+  f.error();
+  f.runTimers();
+  await f.speak();
+  f.error();
+  assert.equal(f.captureCancels, 1);
+  assert.ok(f.stateChanges.some(v => typeof v === 'string' && v.includes('반복 실패')));
+  f.dispose();
+});
+
+test('stopping during retry cancels the retry timer', async () => {
+  const f = await loop(null);
+  f.error();
+  f.dispose();
+  const count = f.stateChanges.length;
+  f.runTimers();
+  assert.equal(f.stateChanges.length, count);
+});
+
+test('a successful utterance after an error resets the failure count', async () => {
+  const f = await loop(null);
+  f.error();
+  f.runTimers();
+  await f.speak();
+  f.endSpeech();
+  await f.finish({ text: '다시 말한 내용' });
+  assert.deepEqual(f.results, [{ text: '다시 말한 내용', key: null }]);
+  await f.speak();
+  f.error();
+  f.runTimers();
+  await f.speak();
+  f.error();
+  assert.equal(f.captureCancels, 0);
   f.dispose();
 });
 

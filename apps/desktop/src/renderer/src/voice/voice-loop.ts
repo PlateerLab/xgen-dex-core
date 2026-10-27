@@ -23,6 +23,8 @@ const CARRY_MAX_MS = 6_000; // 앞 말을 마무리하는 동안 모아 둘 다�
  * 한 번에 판단한다(말 사이 잠깐 쉬면 "기획전 좀" / "보여줘" 로 끊긴다).
  */
 const JOIN_MS = 1_200;
+const RETRY_MS = 2_000;
+const MAX_STT_ERRORS = 3;
 
 const chunkMs = (b: Uint8Array): number => (b.byteLength / 2 / 16000) * 1000;
 
@@ -58,9 +60,10 @@ export function useVoiceLoop(opts: {
   /** 호출어로만 듣기에서 지금 말에 호출어를 들었다. */
   onWake?: () => void;
   onResult: (r: VoiceStreamResult, responseKey: string | null) => void | Promise<void>;
-}): { state: VoiceLoopState; error: string | null } {
+}): { state: VoiceLoopState; error: string | null; notice: string | null } {
   const [state, setState] = useState<VoiceLoopState>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const cb = useRef(opts);
   cb.current = opts;
 
@@ -74,6 +77,7 @@ export function useVoiceLoop(opts: {
     let alive = true;
     const isCurrent = (): boolean => alive && (cb.current.responseKey ?? null) === responseKey;
     setError(null);
+    setNotice(null);
     let cap: ProcessedCapture | null = null;
     let phase: VoiceLoopState = 'armed';
     const set = (s: VoiceLoopState): void => {
@@ -84,6 +88,9 @@ export function useVoiceLoop(opts: {
     let buffer: Uint8Array[] = [];
     let bufferMs = 0;
     let sid: string | null = null;
+    let activeId: string | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let sttErrors = 0;
     let starting = false;
     let pending: Uint8Array[] = []; // 세션이 열리는 동안 들어온 소리
     let localVad = false;
@@ -139,6 +146,7 @@ export function useVoiceLoop(opts: {
           starting = false;
           if (!isCurrent()) return void xgen.voiceStream.cancel(id);
           sid = id;
+          activeId = id;
           for (const b of pending.splice(0)) xgen.voiceStream.audio(id, b);
           if (phase !== 'hearing') finish(); // 열리는 사이에 말이 끝났다
         })
@@ -169,14 +177,17 @@ export function useVoiceLoop(opts: {
       void xgen.voiceStream
         .end(id)
         .then((r) => {
-          if (r) {
+          if (r && activeId === id) {
+            sttErrors = 0;
+            setNotice(null);
             if (alive) deliver(r);
             else trace(r, 'deliver', 'capture_closed');
           }
         })
         .catch(() => undefined)
         .finally(() => {
-          if (!isCurrent()) return;
+          if (!isCurrent() || activeId !== id) return;
+          activeId = null;
           if (carried) begin(); // 마무리하는 사이에 다음 말이 시작됐다 — 모아 둔 소리부터 이어서
           else set('armed');
         });
@@ -185,13 +196,38 @@ export function useVoiceLoop(opts: {
       if (!isCurrent()) return;
       if (ev.type === 'partial' && ev.sessionId === sid) cb.current.onPartial?.(ev.text);
       else if (ev.type === 'utterance_end' && ev.sessionId === sid && !localVad && phase === 'hearing') finish();
-      else if (ev.type === 'error' && ev.sessionId === sid) { setError(ev.error); cap?.cancel(); xgen.voiceStream.cancel(sid); sid = null; set('idle'); }
+      else if (ev.type === 'error' && ev.sessionId === activeId) {
+        xgen.voiceStream.cancel(ev.sessionId);
+        sid = null;
+        activeId = null;
+        buffer = [];
+        bufferMs = 0;
+        carried = false;
+        if (++sttErrors >= MAX_STT_ERRORS) {
+          cap?.cancel();
+          setNotice(null);
+          setError(`음성 인식에 반복 실패했습니다. (${ev.error})`);
+          set('idle');
+        } else {
+          setNotice('음성 인식 연결이 끊겼습니다. 잠시 후 방금 한 말을 다시 말씀해 주세요.');
+          set('thinking');
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            if (!isCurrent()) return;
+            buffer = [];
+            bufferMs = 0;
+            carried = false;
+            set('armed');
+          }, RETRY_MS);
+        }
+      }
       else if (ev.type === 'wake' && ev.sessionId === sid) cb.current.onWake?.();
     });
 
     void startProcessedCapture(({ pcm, inSpeech, events, vad }) => {
       localVad = vad;
       if (!isCurrent()) return;
+      if (retryTimer) return;
       const now = Date.now();
       if (cb.current.isPaused?.()) {
         // 앱이 말하는 중 — 듣지 않는다. 진행 중인 말이 있으면 끝낸다.
@@ -220,9 +256,10 @@ export function useVoiceLoop(opts: {
       if (now - utteranceStart >= MAX_UTTERANCE_MS) finish();
     }, (cause) => {
       if (!isCurrent()) return;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       setError(cause.message);
-      if (sid) xgen.voiceStream.cancel(sid);
-      sid = null; set('idle');
+      if (activeId) xgen.voiceStream.cancel(activeId);
+      sid = null; activeId = null; set('idle');
     }, () => cb.current.isPaused?.() === true)
       .then((c) => {
         if (!isCurrent()) return c.cancel();
@@ -234,13 +271,14 @@ export function useVoiceLoop(opts: {
     return () => {
       alive = false;
       if (held) clearTimeout(held.timer);
+      if (retryTimer) clearTimeout(retryTimer);
       off();
       cap?.cancel();
-      if (sid) xgen.voiceStream.cancel(sid);
+      if (activeId) xgen.voiceStream.cancel(activeId);
       setState('idle');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opts.enabled, opts.workflowId, opts.interactionId, opts.responseKey]);
 
-  return { state, error };
+  return { state, error, notice };
 }

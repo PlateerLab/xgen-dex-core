@@ -855,7 +855,7 @@ export const Chat: React.FC<{
       // 합성/재생 실패 — 원인(예: 'TTS upstream 404: voice_profile_not_found...')
       // 을 잠깐 보여 준다. 큐의 다음 문장은 계속 시도한다.
       const msg = e instanceof Error && e.message ? e.message : '음성 합성에 실패했습니다.';
-      setVoiceError(msg);
+      setVoiceError(`음성 재생 실패: ${msg}`);
       if (voiceErrTimer.current) clearTimeout(voiceErrTimer.current);
       voiceErrTimer.current = setTimeout(() => setVoiceError(null), 6000);
     } finally {
@@ -1125,7 +1125,7 @@ export const Chat: React.FC<{
 
   // 계속 듣기: 빠른 브라우저 조작 설정에서 실시간 STT를 사용한다.
   // 현재 main은 최종 발화 뒤 채팅 계획까지 조작을 보류하며, TTS 재생 중에는 입력 전송을 쉰다.
-  const { state: loopState, error: loopError } = useVoiceLoop({
+  const { state: loopState, error: loopError, notice: loopNotice } = useVoiceLoop({
     enabled: streamVoice && voiceLoopOn,
     workflowId: agent.workflowId,
     interactionId: session.interactionId,
@@ -1197,7 +1197,13 @@ export const Chat: React.FC<{
       await send(r.text, { voice: true });
     },
   });
-  useEffect(() => { if (loopError) { setVoiceError(loopError); setVoiceLoopOn(false); } }, [loopError]);
+  useEffect(() => {
+    if (loopError) {
+      if (voiceErrTimer.current) clearTimeout(voiceErrTimer.current);
+      setVoiceError(`음성 입력 오류: ${loopError} 마이크를 다시 켜 주세요.`);
+      setVoiceLoopOn(false);
+    }
+  }, [loopError]);
   useEffect(() => {
     if (!voiceLoopOn) {
       setVoiceLog([]);
@@ -1986,9 +1992,10 @@ export const Chat: React.FC<{
           <UserConfirmCard key={userConfirms[0].requestId} request={userConfirms[0]} more={userConfirms.length - 1} voiceEnabled={sttOn} />
         )}
         {confirmVoiceNotice && <div className="voice-error small" role="status">{confirmVoiceNotice}</div>}
+        {voiceLoopOn && loopNotice && <div className="voice-error small" role="status">{loopNotice}</div>}
         {voiceError && (
           <div className="voice-error small" title={voiceError}>
-            음성 재생 실패: {voiceError}
+            {voiceError}
           </div>
         )}
         {logFor && (

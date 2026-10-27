@@ -73,3 +73,19 @@ test('인식 힌트는 한글 호출어 하나의 표기로 — 다른 호출어
   assert.equal(sttHint(parseWakeWords('Hey XGEN')), 'Hey XGEN');
   assert.equal(sttHint([]), '');
 });
+
+test('엑스젠 호출어에 관측된 오인식 문구를 별칭으로 추가하지 않는다', () => {
+  const short = parseWakeWords('엑스젠, XGEN');
+  assert.equal(findWake('액세젠.', short), null);
+  assert.equal(afterWake('액세젠, 취소해줘.', short), null);
+  assert.equal(afterWake('엑스젠, 진행해줘.', short), '진행해줘.');
+});
+
+test('일반 단어나 다른 사용자 호출어를 엑스젠으로 간주하지 않는다', () => {
+  const short = parseWakeWords('엑스젠, XGEN');
+  for (const text of ['accidents.', '액세서리를 보여줘.', '액션 영화를 보자.', '엑셀 파일을 열어줘.']) {
+    assert.equal(findWake(text, short), null, text);
+  }
+  assert.equal(findWake('액세젠.', parseWakeWords('자비스')), null);
+  assert.equal(findWake('액세젠.', parseWakeWords('XGEN')), null);
+});

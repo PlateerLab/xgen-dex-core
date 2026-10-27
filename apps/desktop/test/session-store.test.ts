@@ -439,6 +439,22 @@ test('도구가 파일 저장소에 올린 결과물(download)은 그 답에 한
   assert.deepEqual(last.downloads, [{ name: 'a_1.png', storageId: 3, fileId: 9, path: undefined }])
 })
 
+test('새 파일 저장소 결과물(backend: filestore)도 그 답에 한 번만 쌓이고, 옛 저장소 번호와 섞지 않는다', () => {
+  const { store, streams } = makeStore()
+  const k = store.openNew(agent('A'))
+  store.send(k, '보고서')
+  const data = { backend: 'filestore', item_id: 9, file_name: '보고서.docx', path: 'filestore/u/보고서.docx' }
+  streams[0].onEvent({ kind: 'download', data })
+  streams[0].onEvent({ kind: 'download', data })
+  streams[0].onEvent({ kind: 'download', data: { file_name: 'old.png', storage_id: 3, file_id: 9 } })
+  streams[0].onEvent({ kind: 'end' })
+  const last = store.get(k)!.messages.at(-1)!
+  assert.deepEqual(last.downloads, [
+    { name: '보고서.docx', itemId: 9, path: 'filestore/u/보고서.docx' },
+    { name: 'old.png', storageId: 3, fileId: 9, path: undefined },
+  ])
+})
+
 test('다른 세션으로 전환해도 진행 중 스트림이 죽지 않고 백그라운드로 누적된다', () => {
   const { store, streams } = makeStore()
   const kA = store.openNew(agent('A'))

@@ -281,6 +281,33 @@ test('앞부분만 떼면 완결된 말이라도 남은 말이 그 꼬리면 쪼
   assert.equal(seg.unhandled, '임시저장한 상품 확인 페이지로 이동해줘');
 });
 
+test('세 요청을 이어 말하면 긴 앞부분 안의 첫 요청부터 — 가운데 요청을 건너뛰지 않는다', async () => {
+  // 10/27 네이버: "블로그 들어가서 이달의 블로그 누르고" 를 한 토막으로 실행해 블로그만 누르고 이달의 블로그를 건너뛰었다.
+  const targets: Record<string, string> = { 블로그: '블로그', 이달의: '이달의 블로그', 드라마: '드라마' };
+  const handled: string[] = [];
+  let lastTarget: string | null = null;
+  const agent: VoiceAgent = {
+    get lastTarget() {
+      return lastTarget;
+    },
+    // 새 요청은 '이달의'·'드라마' 에서 시작한다 — 둘 다 남아 있으면 실제 모델처럼 '드라마' 를 고른다(10/27: 0.62)
+    boundary: async (_u, _done, rest) => ({ start: rest.includes('드라마') ? rest.indexOf('드라마') : rest.indexOf('이달의'), conf: 0.95 }),
+    // 동사로 끝난 말만 '지금'
+    readiness: async (texts) => texts.map((t) => ({ ready: /(들어가서|누르고|눌러줘)$/.test(t) ? 'act_now' : 'wait', p: 0.97 })),
+    handle: async (text, _th, guard) => {
+      handled.push(text);
+      const name = targets[text.split(' ')[0]];
+      if (!name || !(await guard(name, 'press', 0.99))) return { acted: false, reason: 'guarded', ms: 0 };
+      lastTarget = `link "${name}"`;
+      return { acted: true, kind: 'press', target: lastTarget, ms: 0, effect: 'ok' };
+    },
+  };
+  const seg = new Segmenter(agent, () => undefined);
+  await seg.final('블로그 들어가서 이달의 블로그 누르고 드라마 탭 눌러줘');
+  assert.deepEqual(handled, ['블로그 들어가서', '이달의 블로그 누르고', '드라마 탭 눌러줘']);
+  assert.equal(seg.unhandled, null);
+});
+
 test('앱을 옮긴 실행 뒤에는 첫 단어 뒤를 다시 나눈다 — 앱 이름 뒤의 다음 요청은 그 앱에서, 없으면 끝', async () => {
   const run = async (said: string, start: (rest: string[]) => number) => {
     const handled: string[] = [];

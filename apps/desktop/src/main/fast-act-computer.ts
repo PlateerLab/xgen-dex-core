@@ -99,7 +99,8 @@ export async function externalFront(): Promise<AxFront | null> {
   return f && f.pid !== process.pid ? f : null;
 }
 
-type SystemAction = { role: string; name: string; run: () => Promise<void> };
+/** sentence = 답 문장 — 후보 이름("… (Esc 키)")을 그대로 읽으면 답이 어색하다. */
+type SystemAction = { role: string; name: string; run: () => Promise<void>; sentence: string };
 /** 시스템 후보 수의 상한 — 다른 앱 후보 번호를 그 뒤(e9001 + 이것)부터 매긴다. */
 const SYSTEM_MAX = 10;
 
@@ -110,9 +111,12 @@ export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' 
   // 키는 맨 앞 앱으로 간다 — 이 판단기는 그 앱이 맨 앞일 때만 쓰인다.
   const key = (combo: string) => (): Promise<void> => axKeys(combo);
   if (ax.presenting) {
-    add({ role: 'button', name: '발표(전체 화면) 끝내기 (Esc 키)', run: key('escape') });
-    add({ role: 'button', name: '다음 슬라이드·장 (→ 키)', run: key('right') });
-    add({ role: 'button', name: '이전 슬라이드·장 (← 키)', run: key('left') });
+    // 이미 발표 중이면 "발표 모드로 바꿔줘" 는 할 일이 없다 — 이 후보가 없으면 판단 모델이 보이지 않는 메뉴의
+    // `보기 > 슬라이드 쇼`(처음부터 다시)·`슬라이드 다시 사용` 을 골랐다(10/27 dev 판단 모델, 숨겼다 다시 띄운 쇼).
+    add({ role: 'button', name: '발표(전체 화면) 계속하기 — 이미 발표 중', run: async () => undefined, sentence: '이미 발표 중이에요.' });
+    add({ role: 'button', name: '발표(전체 화면) 끝내기 (Esc 키)', run: key('escape'), sentence: '발표를 끝냈어요.' });
+    add({ role: 'button', name: '다음 슬라이드·장 (→ 키)', run: key('right'), sentence: '다음 장으로 넘겼어요.' });
+    add({ role: 'button', name: '이전 슬라이드·장 (← 키)', run: key('left'), sentence: '이전 장으로 돌아갔어요.' });
   }
   // "내리기" 를 이름에 둔다 — "앱 숨기기" 만이면 "ppt 내려줘" 가 발표 끝내기(Esc)로 가서 앱 창이 앞에 남았다
   // (10/18 dev 판단 모델: 내려줘류 7문장 0/7 → 7/7, 발표 끝내기·다음·이전·DeX 앞으로 문장은 그대로). 말을 듣는
@@ -125,18 +129,26 @@ export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' 
       showDex();
       await axHide(ax.pid);
     },
+    sentence: `${ax.app} 앱을 내렸어요.`,
   });
-  if (ax.window !== undefined && !ax.presenting) add({ role: 'button', name: `${ax.app} 창 최소화`, run: () => axMinimize(ax.pid) });
-  add({ role: 'button', name: `${DEX_NAME} 앞으로 가져오기`, run: async () => showDex() });
+  if (ax.window !== undefined && !ax.presenting) {
+    add({ role: 'button', name: `${ax.app} 창 최소화`, run: () => axMinimize(ax.pid), sentence: `${ax.app} 창을 최소화했어요.` });
+  }
+  add({ role: 'button', name: `${DEX_NAME} 앞으로 가져오기`, run: async () => showDex(), sentence: `${DEX_NAME} 창을 앞으로 가져왔어요.` });
   return out;
 }
 
-/** 앱 요소 → 후보. 위험한 항목·누를 수 없는 요소·이름 없는 요소는 빼고, 틀은 창 안 좌표로 바꾼다. */
-export function appRefs(ax: Pick<AxSnapshot, 'refs' | 'windowFrame'>): { refs: ElementRefs; list: ScreenRef[]; size?: number[] } {
+/**
+ * 앱 요소 → 후보. 위험한 항목·누를 수 없는 요소·이름 없는 요소는 빼고, 틀은 창 안 좌표로 바꾼다.
+ * 발표(전체 화면) 중에는 메뉴바가 보이지 않으니 메뉴 항목도 뺀다(창 안 요소만, 앞의 windowCount 개).
+ */
+export function appRefs(
+  ax: Pick<AxSnapshot, 'refs' | 'windowFrame'> & Partial<Pick<AxSnapshot, 'presenting' | 'windowCount'>>,
+): { refs: ElementRefs; list: ScreenRef[]; size?: number[] } {
   const wf = ax.windowFrame;
   const refs: ElementRefs = {};
   const list: ScreenRef[] = [];
-  for (const r of ax.refs) {
+  for (const r of ax.presenting && ax.windowCount !== undefined ? ax.refs.slice(0, ax.windowCount) : ax.refs) {
     const name = (r.name ?? '').trim();
     if (!name || NO_PRESS.has(r.role) || DANGEROUS.test(name) || MAC_DANGEROUS.test(name)) continue;
     let frame: number[] | undefined;
@@ -370,7 +382,7 @@ export class ComputerVoiceAgent implements VoiceAgent {
       this.forget();
       return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`, pick.top);
     }
-    const done = await this.record(text, element, th, decideMs, now() - tAct, pick, s);
+    const done = await this.record(text, element, th, decideMs, now() - tAct, pick, s, sys?.sentence);
     return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
   }
 
@@ -382,6 +394,7 @@ export class ComputerVoiceAgent implements VoiceAgent {
     actMs: number,
     pick: { confidence: number; top?: unknown },
     s: MacSnap,
+    sentence?: string,
   ): Promise<VoiceAction> {
     const at = now() - this.t0;
     this.forget();
@@ -398,6 +411,7 @@ export class ComputerVoiceAgent implements VoiceAgent {
       actMs: Math.round(actMs),
       at: Math.round(at),
       navigated: false,
+      ...(sentence ? { sentence } : {}),
     };
     this.actions.push(done);
     this.onAct?.(done);

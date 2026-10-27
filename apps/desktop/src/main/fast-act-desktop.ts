@@ -6,8 +6,12 @@
  *   · 실행 중인 앱 — 화면 맨 위 후보 "<앱> 앱으로 전환 (맥 데스크탑 앱)". 맨 앞 앱과 DeX 자신은 뺀다.
  *   · 설치된 앱 — 화면 맨 끝 "<앱> 앱 실행 (맥 데스크탑 앱)". 맨 위에 두면 맥 앱 이름(날씨·메일·주식 …)이 페이지 요소를
  *     가로챘다("날씨 눌러줘" → 날씨 앱). 맨 위의 "다른 맥 앱 열기" 하나로 대신하면 실행 중이 아닌 앱을 거의 못 골랐다.
+ *   · 숨겨 둔 앱(앱 내리기·⌘H) — "<앱> 앱 다시 띄우기 (맥 데스크탑 앱)". "앱으로 전환" 이면 발표 중 내린 PowerPoint 를
+ *     "장표 다시 올려줘"·"발표 화면 다시 보여줘" 로 못 골랐다(10/27: 8문장 중 5 → 8).
  *   · 앱 후보가 이기면 앱 목록(실행 중 + 설치됨)만 놓고 한 번 더 고른다 — 큰 화면에서는 앱끼리 헷갈린다("워드 켜줘" →
- *     PowerPoint 전환 0.98, 앱 목록에서는 Word 1.00).
+ *     PowerPoint 전환 0.98, 앱 목록에서는 Word 1.00). 목록도 화면 후보와 같은 문구다 — 앱 이름만 두면 첫 판단이 맞게
+ *     고른 숨긴 PowerPoint 를 "발표 자료 다시 띄워줘" 에 Keynote 로 바꿔 열었다(10/27: 8문장 중 5·엉뚱한 실행 1 → 8·0,
+ *     다른 앱 요청 10문장은 그대로 10).
  * 측정(10/18 dev 판단 모델, 네이버 첫 화면, 앱 요청 17 + 페이지 요청 14): 실행 중인 앱 6개일 때 26/31·엉뚱한 실행 3,
  * 16개일 때 28/31·0. 페이지 요청은 모두 그대로였고, 나머지는 확신이 낮아 서버 에이전트로 간다.
  * 앱 이름은 보이는 이름("계산기")과 번들 이름("Calculator") 둘 다 싣는다 — 사람은 한국어로 부른다(Spotlight 표시 이름).
@@ -95,8 +99,8 @@ export function installedApps(): Promise<InstalledApp[]> {
   return installed.p;
 }
 
-/** 앱 하나 — 고르면 이것을 연다. */
-export type DesktopApp = { name: string; label: string; path: string; pid?: number };
+/** 앱 하나 — 고르면 이것을 연다. label = 설치된 앱의 "표시 이름 (번들 이름)", hidden = 실행 중인데 숨겨 둔 앱. */
+export type DesktopApp = { name: string; label: string; path: string; pid?: number; hidden?: boolean };
 /** 화면에 붙일 앱 후보 — head 는 맨 위(실행 중), tail 은 맨 끝(설치됨). */
 export type DesktopCands = { head: ElementRefs; tail: ElementRefs; apps: Record<string, DesktopApp> };
 
@@ -104,12 +108,22 @@ export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {} };
 
 const labelOf = (a: InstalledApp): string => (a.displayName ? `${a.displayName} (${a.name})` : a.name);
 
+/** 앱 후보 이름 — 화면 후보와 앱 목록(openPickedApp)이 같이 쓴다. */
+export const candName = (a: DesktopApp): string =>
+  a.pid === undefined
+    ? `${a.label} 앱 실행 (맥 데스크탑 앱)`
+    : a.hidden
+      ? `${a.name} 앱 다시 띄우기 (맥 데스크탑 앱)`
+      : `${a.name} 앱으로 전환 (맥 데스크탑 앱)`;
+
 /** 실행 중인 앱(맨 앞 앱·DeX 제외) 다음에 설치된 앱(실행 중인 것·DeX 제외). */
 async function appList(exceptPid: number | null): Promise<DesktopApp[]> {
   const [run, inst] = await Promise.all([runningApps(), installedApps()]);
   const paths = new Set(run.map((a) => a.path));
   return [
-    ...run.filter((a) => a.pid !== process.pid && a.pid !== exceptPid).map((a) => ({ name: a.app, label: a.app, path: a.path, pid: a.pid })),
+    ...run
+      .filter((a) => a.pid !== process.pid && a.pid !== exceptPid)
+      .map((a) => ({ name: a.app, label: a.app, path: a.path, pid: a.pid, hidden: a.hidden })),
     ...inst.filter((a) => !paths.has(a.path) && a.path !== SELF_BUNDLE).map((a) => ({ name: a.displayName ?? a.name, label: labelOf(a), path: a.path })),
   ];
 }
@@ -125,7 +139,7 @@ export async function desktopCands(frontPid: number | null, headStart: number): 
     const head = a.pid !== undefined;
     const into = head ? out.head : out.tail;
     const ref = `e${(head ? headStart : TAIL_START) + Object.keys(into).length}`;
-    into[ref] = { role: 'button', name: head ? `${a.name} 앱으로 전환 (맥 데스크탑 앱)` : `${a.label} 앱 실행 (맥 데스크탑 앱)` };
+    into[ref] = { role: 'button', name: candName(a) };
     out.apps[ref] = a;
   }
   return out;
@@ -164,10 +178,10 @@ async function bringFront(a: DesktopApp): Promise<AxApp> {
 export async function openPickedApp(post: DecisionPost, said: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number }> {
   const t0 = now();
   const list = await appList(null);
-  const refs: ElementRefs = Object.fromEntries(list.map((a, i) => [`e${i + 1}`, { role: 'button', name: a.label }]));
+  const refs: ElementRefs = Object.fromEntries(list.map((a, i) => [`e${i + 1}`, { role: 'button', name: candName(a) }]));
   const pick = await pickElement(post, said, LIST_ORIGIN, refs, screenOf(LIST_ORIGIN, refs));
   const target = pick ? list[Number(pick.ref.slice(1)) - 1] : undefined;
-  diag(SCOPE, 'pick-app', { said, app: target?.label, conf: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
+  diag(SCOPE, 'pick-app', { said, app: target && candName(target), conf: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
   if (!pick || !target || pick.confidence < CHROME_PICK) throw new Error(`앱 확신 낮음 ${pick?.confidence.toFixed(2) ?? '-'}`);
   const pickMs = now() - t0;
   const front = await bringFront(target);

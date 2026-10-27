@@ -39,7 +39,7 @@ test('a delayed action result does not erase a newer utterance or later typing',
 });
 
 // Run the actual hook with deterministic capture/IPC, without a microphone or STT service.
-async function loop(responseKey: string | null, firstUtteranceMs = 1_000) {
+async function loop(responseKey: string | null, firstUtteranceMs = 1_000, endFirst = true) {
   let now = 0;
   let cleanup: (() => void) | undefined;
   let chunk!: (c: CaptureChunk) => void;
@@ -53,6 +53,8 @@ async function loop(responseKey: string | null, firstUtteranceMs = 1_000) {
   let nextTimer = 0;
   const stateChanges: unknown[] = [];
   let captureCancels = 0;
+  let ends = 0;
+  const sent: { session: number; bytes: number }[] = [];
   const opts: Parameters<typeof useVoiceLoop>[0] = {
     enabled: true, workflowId: 'wf', interactionId: 'chat', responseKey,
     onResult: (r, key) => { results.push({ text: r.text, key }); },
@@ -74,8 +76,8 @@ async function loop(responseKey: string | null, firstUtteranceMs = 1_000) {
       if (name === '../bridge') return { xgen: { voiceStream: {
         trace: (event: VoiceTrace) => { traces.push(event); },
         start: async (...args: unknown[]) => { starts.push(args); return 'speech'; },
-        audio: () => {},
-        end: () => new Promise<VoiceStreamResult>(r => { complete = r; }),
+        audio: (_id: string, b: Uint8Array) => { sent.push({ session: starts.length, bytes: b.byteLength }); },
+        end: () => { ends++; return new Promise<VoiceStreamResult>(r => { complete = r; }); },
         cancel: (id: string) => { cancelled.push(id); },
         onEvent: (handler: typeof event) => { event = handler; return () => {}; },
       } } };
@@ -90,14 +92,24 @@ async function loop(responseKey: string | null, firstUtteranceMs = 1_000) {
   await Promise.resolve();
   chunk({ pcm: new Uint8Array(640), inSpeech: true, events: [], vad: false });
   await Promise.resolve();
-  now = firstUtteranceMs;
-  event({ sessionId: 'speech', type: 'utterance_end' });
+  if (endFirst) {
+    now = firstUtteranceMs;
+    event({ sessionId: 'speech', type: 'utterance_end' });
+  }
   return {
     opts, starts, results, cancelled, traces, stateChanges,
     error: () => event({ sessionId: 'speech', type: 'error', error: 'stt_upstream_error' }),
     runTimers: () => { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } },
     endSpeech: (durationMs = 1_000) => { now += durationMs; event({ sessionId: 'speech', type: 'utterance_end' }); },
     get captureCancels() { return captureCancels; },
+    get ends() { return ends; },
+    sent,
+    chunk: async (bytes: number) => {
+      chunk({ pcm: new Uint8Array(bytes), inSpeech: true, events: [], vad: false });
+      await Promise.resolve();
+    },
+    advance: (ms: number) => { now += ms; },
+    partial: (text: string) => event({ sessionId: 'speech', type: 'partial', text }),
     speak: async () => {
       chunk({ pcm: new Uint8Array(640), inSpeech: true, events: [], vad: false });
       await Promise.resolve();
@@ -234,5 +246,57 @@ test('a blocked attempt is delivered immediately without continuation carry', as
   await f.speak();
   assert.equal(f.starts[1][1], '');
   assert.equal(f.traces.some(trace => trace.stage === 'carry'), false);
+  f.dispose();
+});
+
+test('a carried utterance with no continuation is delivered when the join wait ends, without waiting for the server', async () => {
+  const f = await loop(null);
+  const said = '지금 몇 시인지 알려줘.';
+  await f.finish({ traceId: 'speech', text: said, unhandled: said });
+  assert.deepEqual(f.results, []);
+  await f.speak(); // local VAD off: the next session opens on silence and carries the held words
+  await Promise.resolve();
+  assert.equal(f.starts[1][1], said);
+  f.advance(2_000);
+  await f.speak();
+  assert.equal(f.ends, 1, 'still waiting for a continuation');
+  f.advance(800);
+  await f.speak();
+  assert.equal(f.ends, 2);
+  await f.finish({ traceId: 'speech', text: said, unhandled: said });
+  assert.deepEqual(f.results, [{ text: said, key: null }]);
+  assert.equal(f.traces.at(-1)!.reason, 'no_continuation');
+  f.dispose();
+});
+
+test('a continuation heard in the carried session waits for the server end of speech', async () => {
+  const f = await loop(null);
+  await f.finish({ text: '기획전 좀', unhandled: '기획전 좀' });
+  await f.speak();
+  await Promise.resolve();
+  f.partial('기획전 좀 보여줘');
+  f.advance(5_000);
+  await f.speak();
+  assert.equal(f.ends, 1);
+  f.endSpeech();
+  await f.finish({ text: '기획전 좀 보여줘.', unhandled: '기획전 좀 보여줘.' });
+  assert.deepEqual(f.results, []);
+  f.runTimers();
+  assert.deepEqual(f.results, [{ text: '기획전 좀 보여줘.', key: null }]);
+  f.dispose();
+});
+
+test('without local VAD the next session first hears the last audio sent before the server ended the previous one', async () => {
+  const f = await loop(null, 0, false);
+  await Promise.resolve();
+  // 100 ms chunks with distinct sizes: the wake word, then the first syllable of the command
+  for (const bytes of [3_200, 3_202, 3_204, 3_206, 3_208]) { f.advance(100); await f.chunk(bytes); }
+  f.endSpeech(0); // the server's end of speech arrives after the command started
+  await f.chunk(3_210); // heard while the first session finishes
+  await f.finish({ text: '', wake: 'called' });
+  await Promise.resolve();
+  assert.equal(f.starts.length, 2);
+  const next = f.sent.filter(s => s.session === 2).map(s => s.bytes);
+  assert.deepEqual(next.slice(0, 4), [3_204, 3_206, 3_208, 3_210]);
   f.dispose();
 });

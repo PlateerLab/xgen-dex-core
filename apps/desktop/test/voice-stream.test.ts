@@ -97,6 +97,13 @@ function fixture(debug = false) {
       assert.ok(result);
       return { result, events };
     },
+    /** A session opened to carry the previous unhandled words, ending before any new speech arrives. */
+    async carriedSilence(carry: string) {
+      const id = await hub.start('wf', () => {}, carry, false, 'chat', false);
+      const result = await hub.end(id);
+      assert.ok(result);
+      return result;
+    },
   };
 }
 
@@ -268,4 +275,15 @@ test('detailed diagnostics correlate raw STT, wake remainder, carry and final re
   const disabled = fixture();
   assert.equal((await disabled.utterance('엑스젠, 진행해줘.')).result.traceId, undefined);
   assert.equal(disabled.traces.length, 0);
+});
+
+test('a carried session that hears nothing returns the carried words once instead of dropping them', async () => {
+  const f = fixture();
+  const result = await f.carriedSilence('지금 몇 시인지 알려줘.');
+  assert.equal(result.text, '지금 몇 시인지 알려줘.');
+  assert.equal(result.unhandled, '지금 몇 시인지 알려줘.');
+  assert.equal(result.wake, 'heard');
+  assert.equal(result.actions.length, 0);
+  assert.equal(f.calls.final, 0, 'the previous session already judged these words');
+  assert.equal(f.calls.remember, 0, 'the previous session already remembered these words');
 });

@@ -356,21 +356,24 @@ class VoiceSession {
       traceVoice({ id: this.id, stage: 'result', text: '', reason: 'wake_required' });
       return { ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}), text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
     }
-    const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : '');
-    if (!this.deferActions) await this.seg.final(text);
+    // 이어 붙인 세션에서 새 말을 못 들었다 — 앞 말을 그대로 돌려준다(앞 세션이 이미 판단·기록했다).
+    // 예전에는 빈 글자를 돌려줘 앞 말이 사라졌다(계속 듣기에서 말한 뒤 조용하면 채팅 요청이 안 갔다).
+    const carriedOnly = !heard && !!this.carry;
+    const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : this.carry);
+    if (!this.deferActions && !carriedOnly) await this.seg.final(text);
     this.close();
     const result: VoiceStreamResult = {
       ...(this.seg.failure ? { blocked: this.seg.failure } : {}),
       ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}),
       text,
       actions: [...this.agent.actions],
-      unhandled: this.seg.unhandled,
+      unhandled: carriedOnly ? text : this.seg.unhandled,
       audioEndMs: this.audioEndMs,
       timeline: this.timeline,
       wake: !this.wake ? 'off' : this.heardWake && !text ? 'called' : 'heard',
     };
     traceVoice({ id: this.id, stage: 'result', text, carry: this.carry, reason: result.wake === 'called' ? 'wake_only' : this.agent.actions.length ? 'browser_actions' : 'transcribed' });
-    if (text && !this.deferActions && !this.seg.failure) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
+    if (text && !carriedOnly && !this.deferActions && !this.seg.failure) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
     diag(SCOPE, 'end', {
       id: this.id,
       text,

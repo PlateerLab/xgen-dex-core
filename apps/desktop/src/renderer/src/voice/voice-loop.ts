@@ -17,12 +17,23 @@ const MIN_UTTERANCE_MS = 400; // 감지 확정 후 세션 경과 시간이며 �
 const MAX_UTTERANCE_MS = 30_000; // 폭주 방지 상한
 // shortcut: 감지 전 PCM 보관 길이. 현장 첫 음절 보존 검증 후 조정한다.
 const PREROLL_MS = 1200;
+/**
+ * 로컬 감지가 꺼져 있으면 서버가 말 끝을 알리기까지(약 0.2초) 다음 말의 첫 음절이 앞 세션으로 가서 버려진다 —
+ * "엑스젠 [쉼] 제목을…" 이 "녹을…" 로 들렸다(10/28 실측). 앞 세션에 보낸 마지막 이만큼을 다음 세션 앞에 다시 붙인다.
+ * 서버는 말이 끝나고 조용한 뒤에 말 끝을 알리므로 평소에는 무음이 붙는다.
+ */
+const TAIL_MS = 300;
 const CARRY_MAX_MS = 6_000; // 앞 말을 마무리하는 동안 모아 둘 다음 말의 최대 길이
 /**
  * 처리 못 한 말(조작 없음)은 이만큼 기다렸다가 넘긴다 — 그 사이 다음 말이 시작되면 앞 말을 이어 붙여
  * 한 번에 판단한다(말 사이 잠깐 쉬면 "기획전 좀" / "보여줘" 로 끊긴다).
  */
 const JOIN_MS = 1_200;
+/**
+ * 앞 말을 이어 붙여 연 세션이 새 글자를 기다리는 시간 — 이어 말한 소리의 첫 중간 결과가 서버에서 오기까지 1~1.5초 걸린다
+ * (10/28 실측, 서버 중간 결과 주기 1.2초). 짧으면 문장 사이에 쉰 긴 요청이 둘로 갈려 뒷말이 "답하는 중" 으로 버려진다.
+ */
+const JOIN_WAIT_MS = JOIN_MS + 1_500;
 const RETRY_MS = 2_000;
 const MAX_STT_ERRORS = 3;
 
@@ -87,6 +98,8 @@ export function useVoiceLoop(opts: {
     /** 말 시작 전(armed) 소리, 또는 앞 말을 마무리하는 동안(thinking) 들어온 소리. */
     let buffer: Uint8Array[] = [];
     let bufferMs = 0;
+    let tail: Uint8Array[] = []; // 지금 세션에 보낸 마지막 TAIL_MS
+    let tailMs = 0;
     let sid: string | null = null;
     let activeId: string | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -99,12 +112,18 @@ export function useVoiceLoop(opts: {
     let carried = false; // thinking 중에 다음 말이 시작됐다
     /** 넘기기를 기다리는 처리 못 한 말. 다음 말이 시작되면 그 세션 앞에 붙는다. */
     let held: { r: VoiceStreamResult; timer: ReturnType<typeof setTimeout> } | null = null;
-    const trace = (r: VoiceStreamResult, stage: VoiceTrace['stage'], reason: string, waitMs?: number): void => {
+    /**
+     * 앞 말을 이어 붙여 연 세션이 이 시각까지 새 글자를 못 받으면 마친다 — 이어 말하지 않았다. 로컬 감지가 꺼져 있으면
+     * 조용해도 다음 세션이 바로 열리고 서버는 새 글자가 있어야 말 끝을 알려서, 이것 없이는 30초 상한까지 기다렸다.
+     */
+    let joinUntil = 0;
+    let endWithoutJoin = false; // 위 이유로 마친 세션의 결과는 다시 기다리지 않고 바로 넘긴다
+    const trace =(r: VoiceStreamResult, stage: VoiceTrace['stage'], reason: string, waitMs?: number): void => {
       if (r.traceId) xgen.voiceStream.trace({ id: r.traceId, stage, text: r.text, requestId: responseKey, reason, waitMs });
     };
-    const deliver = (r: VoiceStreamResult): void => {
+    const deliver = (r: VoiceStreamResult, immediate = false): void => {
       if (!isCurrent()) { trace(r, 'deliver', 'stale_context'); return; }
-      if (!r.blocked && !r.actions.length && r.unhandled) {
+      if (!immediate && !r.blocked && !r.actions.length && r.unhandled) {
         trace(r, 'deliver', 'waiting_for_continuation', JOIN_MS);
         held = { r, timer: setTimeout(() => {
           const h = held;
@@ -116,7 +135,7 @@ export function useVoiceLoop(opts: {
         }, JOIN_MS) };
         return;
       }
-      trace(r, 'deliver', 'immediate');
+      trace(r, 'deliver', immediate ? 'no_continuation' : 'immediate');
       void cb.current.onResult(r, responseKey);
     };
 
@@ -133,10 +152,14 @@ export function useVoiceLoop(opts: {
         carryText = held.r.text;
         held = null;
       }
+      joinUntil = carryText ? Date.now() + JOIN_WAIT_MS : 0;
+      endWithoutJoin = false;
       starting = true;
       pending = buffer;
       buffer = [];
       bufferMs = 0;
+      tail = [];
+      tailMs = 0;
       utteranceStart = Date.now();
       belowSince = 0;
       set('hearing');
@@ -162,7 +185,10 @@ export function useVoiceLoop(opts: {
         return;
       }
       const id = sid;
+      const immediate = endWithoutJoin;
       sid = null;
+      joinUntil = 0;
+      endWithoutJoin = false;
       if (!id) {
         set('armed');
         return;
@@ -175,13 +201,19 @@ export function useVoiceLoop(opts: {
       }
       set('thinking');
       carried = false;
+      if (!localVad) {
+        buffer = tail; // 다음 세션은 서버가 말 끝을 알리는 사이에 이 세션으로 간 소리부터 듣는다
+        bufferMs = tailMs;
+      }
+      tail = [];
+      tailMs = 0;
       void xgen.voiceStream
         .end(id)
         .then((r) => {
           if (r && activeId === id) {
             sttErrors = 0;
             setNotice(null);
-            if (alive) deliver(r);
+            if (alive) deliver(r, immediate);
             else trace(r, 'deliver', 'capture_closed');
           }
         })
@@ -195,7 +227,10 @@ export function useVoiceLoop(opts: {
     };
     const off = xgen.voiceStream.onEvent((ev) => {
       if (!isCurrent()) return;
-      if (ev.type === 'partial' && ev.sessionId === sid) cb.current.onPartial?.(ev.text);
+      if (ev.type === 'partial' && ev.sessionId === sid) {
+        joinUntil = 0; // 이어 말했다 — 앞 말과 함께 서버의 말 끝을 기다린다
+        cb.current.onPartial?.(ev.text);
+      }
       else if (ev.type === 'utterance_end' && ev.sessionId === sid && !localVad && phase === 'hearing') finish();
       else if (ev.type === 'error' && ev.sessionId === activeId) {
         xgen.voiceStream.cancel(ev.sessionId);
@@ -204,6 +239,10 @@ export function useVoiceLoop(opts: {
         buffer = [];
         bufferMs = 0;
         carried = false;
+        joinUntil = 0;
+        endWithoutJoin = false;
+        tail = [];
+        tailMs = 0;
         if (++sttErrors >= MAX_STT_ERRORS) {
           cap?.cancel();
           setNotice(null);
@@ -250,6 +289,14 @@ export function useVoiceLoop(opts: {
       // hearing
       if (sid) xgen.voiceStream.audio(sid, pcm);
       else if (starting) pending.push(pcm);
+      tail.push(pcm);
+      tailMs += chunkMs(pcm);
+      while (tailMs - chunkMs(tail[0]) > TAIL_MS && tail.length > 1) tailMs -= chunkMs(tail.shift()!);
+      if (joinUntil && now >= joinUntil) {
+        endWithoutJoin = true;
+        finish();
+        return;
+      }
       if (vad && !loud) {
         if (!belowSince) belowSince = now;
         if (now - belowSince >= END_MS) finish();

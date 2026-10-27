@@ -5,7 +5,14 @@
  *
  *   파일 저장소의 결과물   도구(문서 편집·표 내보내기·그림 생성)가 사용자의 파일 저장소 '결과물' 폴더에
  *                          올린 것. 스트림에서는 `download_artifact` 이벤트로, 이력에서는 서버가 답 끝에
- *                          붙인 표식 `📎 다운로드: [File: 이름]__[Path: …]__[StorageId: n]__[FileId: n]` 으로 온다.
+ *                          붙인 표식으로 온다. 표식은 두 가지다.
+ *                            새 파일 저장소(filestore)  `📎 다운로드: [File: 이름]__[Path: …]__[FilestoreItemId: n]`
+ *                                                      이벤트는 `{ backend: 'filestore', item_id: n, … }`.
+ *                                                      받는 길은 `/api/filestore/items/<n>/download`.
+ *                            옛 파일 저장소(이전 이력)   `📎 다운로드: [File: 이름]__[Path: …]__[StorageId: n]__[FileId: n]`
+ *                          둘 다 뒤에 생성물 증명(`__[Provenance: …]__[SHA256: …]__[ContentType: …]__[ByteLength: n]
+ *                          __[SourceId: …]`)이 붙을 수 있다. 증명까지 한 표식으로 읽고 함께 걷는다.
+ *                          두 저장소의 번호는 서로 다른 것이다(같은 7 이라도 다른 파일)이니 섞지 않는다.
  *   API 응답 임시 파일     API 도구가 받은 파일 — `[이름](/api/agentflow/files/artifacts/<id>/download#token=…)`.
  *
  * 에이전트가 자기 작업 공간에 만든 파일은 따로 고른다(turn-files).
@@ -15,11 +22,14 @@
  * 그대로 보였고 받을 단추는 없었다.
  */
 import type { HttpClient } from './client';
+import { parseGeneratedContentEvent, type GeneratedContentProvenance } from './generated-content';
 import { WORKSPACE_TRANSFER_HEADER } from './workspace-copy';
 
 export interface ChatDownload {
   name: string;
-  /** 파일 저장소의 결과물. */
+  /** 새 파일 저장소(filestore)의 결과물(`FilestoreItemId`). 옛 저장소의 번호와 섞지 않는다. */
+  itemId?: number;
+  /** 옛 파일 저장소의 결과물(이전 이력). */
   storageId?: number;
   fileId?: number;
   path?: string;
@@ -29,12 +39,17 @@ export interface ChatDownload {
   contentType?: string;
   size?: number;
   expiresAt?: string;
+  /** 표식·이벤트에 딸려 온 생성물 증명(엄격히 맞는 것만). 바이트 검증 전에는 표시 정보일 뿐이다. */
+  provenance?: GeneratedContentProvenance;
 }
 
 /** `download_artifact` 이벤트의 모양 그대로(snake_case). 모양이 어긋난 값은 버린다. */
 export interface ChatDownloadPayload {
   file_name?: unknown;
   path?: unknown;
+  /** `'filestore'` 면 새 파일 저장소의 결과물이다(`item_id`). */
+  backend?: unknown;
+  item_id?: unknown;
   storage_id?: unknown;
   file_id?: unknown;
   artifact_id?: unknown;
@@ -42,10 +57,31 @@ export interface ChatDownloadPayload {
   content_type?: unknown;
   size?: unknown;
   expires_at?: unknown;
+  /** 생성물 증명(generated_content 와 같은 모양). */
+  indication?: unknown;
+  generated_by?: unknown;
+  proof?: unknown;
+  sha256?: unknown;
+  byte_length?: unknown;
+  source_id?: unknown;
 }
 
-const DOWNLOAD_MARKER_RE =
-  /(?:📎\s*다운로드:\s*)?\[File:\s*(.+?)\s*\]__\[Path:\s*([^\]]*)\s*\](?:__\[StorageId:\s*(\d+)\s*\]__\[FileId:\s*(\d+)\s*\])?/g;
+/** 표식 뒤에 붙을 수 있는 생성물 증명. 그룹: 증명·SHA256·형식·크기·출처 ID. */
+const PROVENANCE_SUFFIX =
+  String.raw`(?:__\[Provenance:\s*([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\s*\]__\[SHA256:\s*([0-9a-f]{64})\s*\]__\[ContentType:\s*([a-z0-9][a-z0-9!#$&^_.+\-/]{0,126})\s*\]__\[ByteLength:\s*(0|[1-9]\d*)\s*\]__\[SourceId:\s*([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*\])?`;
+/** 새 파일 저장소 표식. 그룹: 이름·경로·항목 번호, 그 뒤 증명 다섯. */
+const FILESTORE_MARKER_RE = new RegExp(
+  String.raw`(?:📎\s*다운로드:\s*)?\[File:\s*(.+?)\s*\]__\[Path:\s*([^\]]*)\s*\]__\[FilestoreItemId:\s*(\d+)\s*\]` +
+    PROVENANCE_SUFFIX,
+  'g',
+);
+/** 옛 파일 저장소 표식. 그룹: 이름·경로·저장소 번호·파일 번호, 그 뒤 증명 다섯. */
+const DOWNLOAD_MARKER_RE = new RegExp(
+  String.raw`(?:📎\s*다운로드:\s*)?\[File:\s*(.+?)\s*\]__\[Path:\s*([^\]]*)\s*\](?:__\[StorageId:\s*(\d+)\s*\]__\[FileId:\s*(\d+)\s*\])?` +
+    PROVENANCE_SUFFIX,
+  'g',
+);
+const FILESTORE_ID_TAIL = '__[FilestoreItemId:';
 const API_ARTIFACT_LINK_RE =
   /\[([^\]]+)\]\((\/api\/agentflow\/files\/artifacts\/([0-9a-fA-F-]{36})\/download(?:[?#]token=[A-Za-z0-9_-]+)?)\)/g;
 const API_ARTIFACT_CAPABILITY_RE =
@@ -65,13 +101,49 @@ function positiveInt(value: unknown): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** 새 저장소 번호. 숫자나 숫자 글자만(true 가 1 이 되지 않게). 웹과 같은 검사다. */
+function itemIdOf(value: unknown): number | null {
+  return typeof value === 'number' || typeof value === 'string' ? positiveInt(value) : null;
+}
+
 function nameOf(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : '파일';
+}
+
+/** 증명이 맞는 모양일 때만 붙인다. 어긋난 증명은 버리고 파일은 그대로 둔다. */
+function withProvenance(payload: ChatDownloadPayload): { provenance?: GeneratedContentProvenance } {
+  const provenance = parseGeneratedContentEvent(payload);
+  return provenance ? { provenance } : {};
+}
+
+/**
+ * 다운로드 한 개의 열쇠. 같은 파일이면 같다. 새 저장소 번호는 `filestore:` 를 붙여 옛 저장소의
+ * `저장소:파일` 열쇠와 섞이지 않게 한다(옛 열쇠의 모양은 그대로다).
+ */
+export function chatDownloadKey(item: ChatDownload): string {
+  if (item.artifactId) return item.artifactId;
+  if (item.itemId) return `filestore:${item.itemId}`;
+  return `${item.storageId}:${item.fileId}`;
 }
 
 /** 받은 항목 하나를 더한다. 이미 있으면(같은 저장소 파일·같은 임시 파일) 그대로 돌려준다. */
 export function mergeChatDownload(existing: readonly ChatDownload[], payload: ChatDownloadPayload): ChatDownload[] {
   const list = existing as ChatDownload[];
+  if (payload.backend === 'filestore') {
+    // 새 저장소의 결과물. 번호가 어긋나면 버린다. 옛 저장소 번호(storage_id·file_id)로 물러서지 않는다
+    // (같은 숫자라도 다른 파일이다).
+    const itemId = itemIdOf(payload.item_id);
+    if (itemId === null || list.some((item) => item.itemId === itemId)) return list;
+    return [
+      ...list,
+      {
+        name: nameOf(payload.file_name),
+        itemId,
+        path: typeof payload.path === 'string' ? payload.path : undefined,
+        ...withProvenance(payload),
+      },
+    ];
+  }
   const artifactId = typeof payload.artifact_id === 'string' ? payload.artifact_id.trim() : '';
   const downloadUrl = typeof payload.download_url === 'string' ? payload.download_url.trim() : '';
   const expected = `/api/agentflow/files/artifacts/${artifactId}/download`;
@@ -90,6 +162,7 @@ export function mergeChatDownload(existing: readonly ChatDownload[], payload: Ch
         contentType: typeof payload.content_type === 'string' ? payload.content_type : undefined,
         size: typeof payload.size === 'number' ? payload.size : undefined,
         expiresAt: typeof payload.expires_at === 'string' ? payload.expires_at : undefined,
+        ...withProvenance(payload),
       },
     ];
   }
@@ -104,17 +177,48 @@ export function mergeChatDownload(existing: readonly ChatDownload[], payload: Ch
       path: typeof payload.path === 'string' ? payload.path : undefined,
       storageId,
       fileId,
+      ...withProvenance(payload),
     },
   ];
+}
+
+/** 표식의 증명 다섯 그룹(있으면)을 이벤트와 같은 모양으로. */
+function markerProvenance(groups: readonly (string | undefined)[]): ChatDownloadPayload {
+  const [proof, sha256, contentType, byteLength, sourceId] = groups;
+  if (!proof) return {};
+  return {
+    indication: 'ai_generated',
+    proof,
+    sha256,
+    content_type: contentType,
+    byte_length: byteLength,
+    source_id: sourceId,
+  };
 }
 
 /** 본문(이력의 답)에 남은 표식에서 파일을 되살린다. */
 export function extractChatDownloads(text: unknown): ChatDownload[] {
   if (typeof text !== 'string' || !text) return [];
   let out: ChatDownload[] = [];
+  for (const m of text.matchAll(FILESTORE_MARKER_RE)) {
+    out = mergeChatDownload(out, {
+      backend: 'filestore',
+      file_name: m[1],
+      path: m[2],
+      item_id: m[3],
+      ...markerProvenance(m.slice(4, 9)),
+    });
+  }
   for (const m of text.matchAll(DOWNLOAD_MARKER_RE)) {
+    // 번호가 없는 것은 새 저장소 표식의 앞부분이거나 받을 길이 없는 표식이다.
     if (!m[3] || !m[4]) continue;
-    out = mergeChatDownload(out, { file_name: m[1], path: m[2], storage_id: m[3], file_id: m[4] });
+    out = mergeChatDownload(out, {
+      file_name: m[1],
+      path: m[2],
+      storage_id: m[3],
+      file_id: m[4],
+      ...markerProvenance(m.slice(5, 10)),
+    });
   }
   for (const m of text.matchAll(API_ARTIFACT_LINK_RE)) {
     out = mergeChatDownload(out, { file_name: m[1], download_url: m[2], artifact_id: m[3] });
@@ -126,8 +230,17 @@ export function extractChatDownloads(text: unknown): ChatDownload[] {
 export function stripChatDownloadMarkers(text: string, downloads: readonly ChatDownload[] | undefined): string {
   if (!text || !downloads?.length) return text;
   const keys = new Set(downloads.filter((d) => d.fileId && d.storageId).map((d) => `${d.fileId}:${d.storageId}`));
+  const itemIds = new Set(downloads.filter((d) => d.itemId).map((d) => d.itemId));
   const out = text
-    .replace(DOWNLOAD_MARKER_RE, (marker, rawName: string, rawPath: string, sid?: string, fid?: string) => {
+    // 새 저장소 표식은 번호로만 걷는다. 이름이 같아도 번호를 모르면 남긴다.
+    .replace(FILESTORE_MARKER_RE, (marker, _name: string, _path: string, id: string) =>
+      itemIds.has(Number(id)) ? '' : marker,
+    )
+    .replace(DOWNLOAD_MARKER_RE, (marker, rawName: string, rawPath: string, sid?: string, fid?: string, ...rest: unknown[]) => {
+      // 남은 새 저장소 표식(모르는 번호)의 앞부분은 옛 표식처럼 보인다. 걷으면 번호만 남으니 그대로 둔다.
+      const offset = rest[rest.length - 2] as number;
+      const whole = rest[rest.length - 1] as string;
+      if (!sid && whole.startsWith(FILESTORE_ID_TAIL, offset + marker.length)) return marker;
       const key = sid && fid ? `${Number(fid)}:${Number(sid)}` : null;
       const name = rawName.trim();
       const path = rawPath.trim();
@@ -151,16 +264,14 @@ export function chatAnswerFiles(
   text: string,
   live?: readonly ChatDownload[],
 ): { text: string; downloads: ChatDownload[] } {
-  let downloads: ChatDownload[] = live ? [...live] : [];
+  const downloads: ChatDownload[] = live ? [...live] : [];
+  const seen = new Set(downloads.map(chatDownloadKey));
   for (const d of extractChatDownloads(text)) {
-    downloads = mergeChatDownload(downloads, {
-      file_name: d.name,
-      path: d.path,
-      storage_id: d.storageId,
-      file_id: d.fileId,
-      artifact_id: d.artifactId,
-      download_url: d.downloadUrl,
-    });
+    // 되살린 것은 이미 거른 항목이다. 열쇠가 같으면(스트림으로 받은 그 파일) 한 번만.
+    const key = chatDownloadKey(d);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    downloads.push(d);
   }
   return { text: stripChatDownloadMarkers(text, downloads), downloads };
 }
@@ -179,7 +290,7 @@ export function withoutShownFiles(downloads: readonly ChatDownload[], shownNames
 
 /** 답이 파일 저장소로 직접 건넨 결과물의 이름 — API 응답 임시 파일은 에이전트가 고른 결과물이 아니라 뺀다. */
 export function sharedNames(downloads: readonly ChatDownload[]): string[] {
-  return downloads.filter((d) => d.storageId && d.fileId).map((d) => d.name);
+  return downloads.filter((d) => d.itemId || (d.storageId && d.fileId)).map((d) => d.name);
 }
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
@@ -203,6 +314,11 @@ export function chatDownloadRequest(item: ChatDownload, opts: { preview?: boolea
     const cap = resolveArtifactCapability(item.downloadUrl);
     if (cap) return { path: cap.requestUrl, headers: cap.headers };
     return item.downloadUrl.startsWith('/api/agentflow/files/artifacts/') ? { path: item.downloadUrl, headers: {} } : null;
+  }
+  if (item.itemId != null) {
+    // 새 저장소는 미리보기도 원본 그대로 받는다(웹 채팅의 그림 카드와 같다). 증명 검증도 원본 바이트여야 한다.
+    const itemId = itemIdOf(item.itemId);
+    return itemId === null ? null : { path: `/api/filestore/items/${itemId}/download`, headers: {} };
   }
   if (item.fileId && item.storageId) {
     return { path: `/api/storage/file/${opts.preview ? 'preview' : 'download'}/${item.fileId}`, headers: {} };

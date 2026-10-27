@@ -43,7 +43,7 @@ import {
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeActions, chromeAllowed, chromeRefs, type ChromeAction } from './fast-act-chrome';
-import { NO_DESKTOP, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
+import { NO_DESKTOP, appPick, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
 import { runDexCommand } from './fast-act-dex';
 import { namedControl, namedControlOk, presentationRepick, runPresentation, weakSlidePick } from './voice-presentation';
 import {
@@ -105,6 +105,15 @@ const listLayer = (refs: ElementRefs): boolean => {
 const CHOOSE_PICK = 0.85;
 /** 페이지 요소가 하나도 없을 때(아직 안 불린 탭) 다시 읽기 전에 기다리는 시간. */
 const EMPTY_PAGE_WAIT_MS = 800;
+const NO_TAB = '열린 브라우저 탭 없음';
+const UNREADABLE = '페이지 요소를 읽지 못함';
+const SNAP_FAILED = '스냅샷 실패';
+/**
+ * 판단할 페이지가 없었다(탭 없음·읽기 실패·요소 없는 페이지) — 페이지 밖 후보(DeX 명령·발표 조작·앱)로 다시 판단할 수 있다
+ * (fast-act-computer RoutedVoiceAgent). 10/28 맥: 지난 세션의 꺼진 로컬 앱 탭(127.0.0.1, 요소 없음)이 보이는 페이지로 잡혀
+ * "새 에이전트 만들어 줘" 가 판단도 못 하고 채팅으로 갔다.
+ */
+export const noPageReason = (reason: string): boolean => reason === NO_TAB || reason === UNREADABLE || reason.startsWith(SNAP_FAILED);
 /** 조회 팝업에서 결과 표가 그려지기를 기다리는 한도(pickInPopup). */
 const ROWS_WAIT_MS = 2_500;
 /** 파일을 넣은 뒤 그 칸이 바뀌기를(미리보기·파일 이름) 기다리는 한도(upload). */
@@ -1242,10 +1251,10 @@ export class BrowserVoiceAgent implements VoiceAgent {
         s = await this.snapshot();
       }
     } catch (err) {
-      return no(`스냅샷 실패 ${String(err)}`);
+      return no(`${SNAP_FAILED} ${String(err)}`);
     }
-    if (!s) return no('열린 브라우저 탭 없음');
-    if (!Object.keys(s.snap.refs).length) return no('페이지 요소를 읽지 못함');
+    if (!s) return no(NO_TAB);
+    if (!Object.keys(s.snap.refs).length) return no(UNREADABLE);
     const { snap, page } = s;
     // 팝업이 앞에 있는데 말이 팝업의 어떤 이름도 부르지 않고 팝업을 연 탭의 칸을 부른다 — 그 탭에서 판단한다. 팝업만 보면 모델은
     // 무슨 말에나 팝업 요소를 골랐다(10/21 BO: 표준카테고리 조회가 열린 채 "협력사를 플래티어 협력사로 지정해줘" → 팝업의 [적용],
@@ -1423,7 +1432,8 @@ export class BrowserVoiceAgent implements VoiceAgent {
         return this.handleOnce(text, th, guard, abort, utterance, pressOnly);
       }
     }
-    if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    // 앱 후보는 앱 후보끼리 나눈 확률을 합해 본다(appPick) — 어느 앱인지는 앱 목록이 다시 고른다.
+    if (!pick || appPick(pick, desk.apps).confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     const ch = chrome[pick.ref];
     // 층을 닫은 뒤 다시 판단할 때는 누르지 않는다 — 닫기만 하라는 말이면 닫힌 화면에 맞는 대상이 없어 비슷한 버튼("X")을
     // 높은 확신으로 눌렀다(10/22 BO, 판단 모델은 "해당 없음" 을 고르지 못한다). 입력만 이어서 한다.
@@ -1441,7 +1451,7 @@ export class BrowserVoiceAgent implements VoiceAgent {
       } });
     }
     if (desk.apps[pick.ref]) {
-      return runOpen(post, text, th, guard, pick, allRefs[pick.ref].name ?? '', t0, this.t0, (a) => {
+      return runOpen(post, text, th, guard, appPick(pick, desk.apps), allRefs[pick.ref].name ?? '', t0, this.t0, (a) => {
         this.version++;
         this.snap = null;
         this.last = a.label;

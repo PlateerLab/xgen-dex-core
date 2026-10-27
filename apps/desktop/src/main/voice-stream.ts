@@ -34,6 +34,10 @@ const SCOPE = 'voice-stream';
 const FRAME = 640; // 20 ms @ 16 kHz PCM16
 /** stop 뒤 done 을 기다리는 최대 시간. */
 const DONE_WAIT_MS = 2_500;
+/** 말 끝 되찾기(recoverTail)에 모아 두는 소리 상한 — 60초. 넘은 세션은 되찾지 않는다. */
+const RECOVER_MAX_BYTES = 16_000 * 2 * 60;
+/** 말 끝 되찾기 — 다시 받아 적기를 기다리는 최대 시간. 넘으면 서버 스트리밍이 준 글자 그대로. */
+const RECOVER_WAIT_MS = 4_000;
 const WAKE_DEBUG_MAX_CHARS = 24;
 
 export type VoiceStreamDeps = {
@@ -45,6 +49,8 @@ export type VoiceStreamDeps = {
   wakeWords: () => string[] | null;
   /** 중간 인식의 조작을 보류하고 최종 글자만 돌려준다(시험용 — 데스크톱은 말하는 도중 실행한다). */
   planBeforeAct?: (interactionId?: string) => boolean;
+  /** 소리(16 kHz 모노 WAV)를 한 번에 받아 적는다(파일 STT) — 스트리밍 STT 가 말 끝을 잃었을 때 되찾는 데 쓴다. */
+  transcribe?: (wav: Buffer) => Promise<string>;
 };
 
 export type VoiceStreamEvent =
@@ -129,6 +135,13 @@ class VoiceSession {
   private woke: boolean;
   /** 이 세션에서 호출어를 들었다. */
   private heardWake = false;
+  /** 서버에 보낸 소리 — 말 끝 되찾기(recoverTail)용, 상한(RECOVER_MAX_BYTES)까지만 모은다. */
+  private sentAudio: Buffer[] = [];
+  private sentBytes = 0;
+  /** 서버 결과가 앞서 들은 것의 잘린 앞 토막으로 줄었다 — 말 끝을 잃었을 수 있다(recoverTail). */
+  private diverged = false;
+  /** 줄어든 그 글 — 서버가 확정한 앞부분이다(그 뒤의 서버 글은 믿을 수 없다). */
+  private agreed = '';
   /** 호출어가 끝난 글자 위치 — 인식기가 고쳐 써서 호출어를 못 찾을 때 이 뒤부터 쓴다. */
   private wakeEnd = 0;
 
@@ -257,6 +270,9 @@ class VoiceSession {
       // 내려줘." → 확정 "헤이 엑스젠 지금", 장표가 안 내려감).
       const cut = truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial);
       if (cut) {
+        this.diverged = true;
+        if (m.type === 'partial') this.agreed = m.text.trim();
+        else if (!this.agreed) this.agreed = `${this.closedText} ${m.text}`.trim();
         traceVoice({ id: this.id, stage: 'drop', source: m.type, text: m.text, reason: 'truncated_text' });
         this.mark(`cut_${m.type}_dropped`, m.text);
         if (m.type !== 'final') return;
@@ -303,6 +319,8 @@ class VoiceSession {
     while (this.pending.length >= FRAME) {
       const frame = Buffer.from(this.pending.subarray(0, FRAME));
       this.pending = this.pending.subarray(FRAME);
+      if (this.sentBytes < RECOVER_MAX_BYTES) this.sentAudio.push(frame);
+      this.sentBytes += FRAME;
       if (this.ready && this.ws?.readyState === WebSocket.OPEN) this.ws.send(frame);
       else if (this.early.length < 500) this.early.push(frame);
     }
@@ -336,7 +354,7 @@ class VoiceSession {
     });
     traceVoice({ id: this.id, stage: 'finalize', reason: this.doneText !== null ? 'done_received' : this.closed ? 'connection_closed' : 'done_timeout', waitMs: Math.round(now() - waitStarted) });
     const done = this.droppedRepeat ? this.closedText : this.doneText;
-    const raw = (truncated(done ?? '', this.fullPartial) ? this.fullPartial : done) || this.lastHeard;
+    const raw = await this.recoverTail((truncated(done ?? '', this.fullPartial) ? this.fullPartial : done) || this.lastHeard);
     const heard = this.sttOnly ? raw : this.gate(raw);
     traceVoice({ id: this.id, stage: 'gate', source: 'result', text: raw, afterWake: heard, carry: this.carry, reason: heard === null ? 'wake_required' : heard ? 'accepted' : 'wake_only' });
     // Temporary opt-in diagnosis: never log a prefix of a long background conversation.
@@ -393,6 +411,30 @@ class VoiceSession {
     return result;
   }
 
+  /**
+   * 서버 스트리밍 STT 가 말 끝을 잃었다 — 결과가 줄어든 세션(diverged)이면 같은 소리를 한 번에 다시 받아 적고, 그 글이 서버가
+   * 확정한 앞부분(agreed)을 그대로 이어 가면 그 뒤를 붙인다(extendTranscript). 앞은 이미 화면에 보였고 판단도 끝난 글이라 바꾸지 않는다.
+   *
+   * 10/28 맥(합성 음성, dev Qwen3-ASR): 서버는 연속한 두 가설이 합의한 앞부분만 확정한다(LocalAgreement). 말이 길어지자 모델이
+   * 호출어를 "헤이 엑스젠" 에서 "Hey XGen." 으로 바꿔 적어 첫 글자부터 갈라졌고, 그 뒤로는 아무것도 확정되지 않았다. 말 끝의
+   * 재전사는 버려지거나(→ "…에이전트로 정리해 줘. 배포 화면도 열어 줘." 가 "…소개문을", "…상품 등록까지 해 줘." 가 "…상품 등록")
+   * 갈라진 곳부터 이어 붙어 말이 겹쳤다(→ "…만드는 에이전트 받아 소개문을 만드는 에이전트로 정리해줘 …"). 같은 소리를 한 번에 받아
+   * 적으면 끝까지 온전히 나왔다.
+   */
+  private async recoverTail(raw: string): Promise<string> {
+    const transcribe = this.deps.transcribe;
+    if (!this.diverged || this.sttOnly || !transcribe || !this.woke || !raw.trim() || this.sentBytes > RECOVER_MAX_BYTES) return raw;
+    const t = now();
+    const again = await Promise.race([
+      transcribe(pcm16Wav(Buffer.concat(this.sentAudio))).catch(() => ''),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), RECOVER_WAIT_MS)),
+    ]);
+    const out = extendTranscript(this.agreed || raw, again, this.wake?.words ?? []);
+    traceVoice({ id: this.id, stage: 'recover', text: again, reason: out ? 'extended' : again ? 'not_extension' : 'no_text', waitMs: Math.round(now() - t) });
+    this.mark('recover', again, out ? 'extended' : 'kept');
+    return out ?? raw;
+  }
+
   /** 시험 전용: STT 없이 글자로 바로 판단·실행 — 인식 오류를 뺀 판단만 잴 때. */
   async decideText(text: string): Promise<VoiceStreamResult> {
     this.audioEndMs = 0;
@@ -413,6 +455,57 @@ class VoiceSession {
 
 /** 비교용 — 띄어쓰기·문장부호를 뺀 글자. */
 const bare = (t: string): string => t.replace(/[\s.,!?。…]+/g, '');
+/** 비교용 소문자 — 글자 수가 바뀌는 글자는 그대로 둔다(자리를 원문에 되짚어야 한다). */
+const fold = (t: string): string => [...t].map((c) => (c.toLowerCase().length === c.length ? c.toLowerCase() : c)).join('');
+
+/**
+ * 다시 받아 적은 글에서 지금 글이 시작해도 되는 자리(띄어쓰기·부호 뺀 글자 수) — 지금 글은 호출어로 시작했는데 다시 받아 적은
+ * 글의 맨 앞 호출어는 목록에 없는 표기로 적혔을 때만("Hey XGen." — 목록이 한글뿐). 그 밖에는 맨 앞부터 같아야 한다.
+ */
+const RECOVER_LEAD_MAX = 12;
+
+/**
+ * again(같은 소리를 다시 받아 적은 글)이 current 를 그대로 이어 가면 current 뒤에 이어지는 부분을 붙인 글, 아니면 null.
+ * 띄어쓰기·문장부호는 보지 않고, 맨 앞 호출어는 서로 다르게 적혀도 된다("헤이 엑스젠" / "Hey XGen."). current 끝의 문장 끝
+ * 부호는 말이 이어지면 뗀다(중간 결과가 말을 맺은 것으로 적었을 뿐이다).
+ */
+export function extendTranscript(current: string, again: string, words: string[]): string | null {
+  const wakeAt = (t: string) => {
+    const m = words.length ? findWake(t, words) : null;
+    return m && m.start <= 3 ? m : null;
+  };
+  const cw = wakeAt(current);
+  const aw = wakeAt(again);
+  // 영문 대소문자도 보지 않는다 — 중간 결과는 "ppt 다시 열어.", 다시 받아 적은 글은 "PPT 다시 열어서 …" 였다(10/28 맥).
+  const cur = fold(bare(cw ? restAfter(current, cw.end) : current));
+  const rest = aw ? restAfter(again, aw.end) : again;
+  const at = cur.length >= 4 ? fold(bare(rest)).indexOf(cur) : -1;
+  if (at < 0 || at > (cw && !aw ? RECOVER_LEAD_MAX : 0) || bare(rest).length < at + cur.length + 2) return null;
+  let n = 0;
+  let i = 0;
+  for (; i < rest.length && n < at + cur.length; i++) if (!SEP.test(rest[i])) n++;
+  const tail = rest.slice(i).trimEnd();
+  const head = current.trimEnd().replace(/[.?!。…]+$/, '');
+  return /^\s/.test(tail) ? `${head} ${tail.trim()}` : `${head}${tail}`;
+}
+
+/** 16 kHz 모노 PCM16 → WAV. */
+function pcm16Wav(pcm: Buffer): Buffer {
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0, 'ascii');
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write('WAVEfmt ', 8, 'ascii');
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(16_000, 24);
+  h.writeUInt32LE(32_000, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36, 'ascii');
+  h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
 
 let seq = 0;
 

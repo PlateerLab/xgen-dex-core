@@ -16,9 +16,11 @@ const source = ts.transpileModule(readFileSync(new URL('../src/main/voice-stream
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
 
-function fixture(debug = false) {
+function fixture(debug = false, recover?: (wav: Buffer) => Promise<string>) {
   let time = 100_000;
   let words: string[] | null = ['엑스젠'];
+  const transcribe = recover;
+  const transcribed: Buffer[] = [];
   const calls = { prefetch: 0, partial: 0, confirm: 0, final: 0, remember: 0 };
   const logs: { message: string; data: Record<string, unknown> }[] = [];
   const traces: VoiceTrace[] = [];
@@ -79,12 +81,14 @@ function fixture(debug = false) {
   const hub = new exported.VoiceStreamHub!(() => ({
     baseUrl: () => 'https://synthetic.invalid', token: async () => 'synthetic',
     allowPrivateCertificate: () => false, wakeWords: () => words, planBeforeAct: () => false,
+    transcribe: transcribe && ((wav: Buffer) => { transcribed.push(wav); return transcribe!(wav); }),
   }));
   return {
     calls,
     logs,
     traces,
     starts,
+    transcribed,
     set words(value: string[] | null) { words = value; },
     advance(ms: number) { time += ms; },
     async utterance(text: string, rawStt = false) {
@@ -103,6 +107,19 @@ function fixture(debug = false) {
       const id = await hub.start('wf', event => events.push(event), '', false, 'chat', true);
       const socket = sockets.at(-1)!;
       socket.hear(partial);
+      socket.text = final;
+      socket.emit('message', JSON.stringify({ type: 'final', text: final }));
+      const result = await hub.end(id);
+      assert.ok(result);
+      return { result, events };
+    },
+    /** The server's partials shrink back to an earlier prefix (its agreement diverged) and its final keeps only that prefix. */
+    async regressed(partials: string[], final: string, audio = Buffer.alloc(0)) {
+      const events: VoiceStreamEvent[] = [];
+      const id = await hub.start('wf', event => events.push(event), '', false, 'chat', true);
+      hub.audio(id, audio);
+      const socket = sockets.at(-1)!;
+      for (const p of partials) socket.hear(p);
       socket.text = final;
       socket.emit('message', JSON.stringify({ type: 'final', text: final }));
       const result = await hub.end(id);
@@ -306,4 +323,62 @@ test('a truncated final still ends the utterance and keeps the fuller partial te
   assert.equal(events.filter(event => event.type === 'utterance_end').length, 1);
   assert.equal(result.text, '지금 PPT 장표 내려줘.');
   assert.equal(result.wake, 'heard');
+});
+
+test('a stream whose partials shrank recovers the lost end from one re-transcription of the same audio', async () => {
+  // 10/28 dev STT: the model rewrote the wake phrase as "Hey XGen." mid-utterance, nothing further was committed and the final
+  // re-transcription was discarded — the command lost "정리해 줘. 배포 화면도 열어 줘.".
+  const f = fixture(false, async () => 'Hey XGen. 상품 자료를 입력 받아 소개문을 만드는 에이전트로 정리해 줘. 배포 화면도 열어 줘.');
+  const audio = Buffer.alloc(640 * 3, 1);
+  const { result } = await f.regressed(
+    ['헤이 엑스젠 상품 자료를 입력받아 소개문을 만드는 에이전트로.', '헤이 엑스젠 상품 자료를 입력받아 소개문을'],
+    '헤이 엑스젠 상품 자료를 입력받아 소개문을',
+    audio,
+  );
+  assert.equal(result.text, '상품 자료를 입력받아 소개문을 만드는 에이전트로 정리해 줘. 배포 화면도 열어 줘.');
+  assert.equal(f.transcribed.length, 1);
+  const wav = f.transcribed[0];
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.readUInt32LE(24), 16000);
+  assert.deepEqual(wav.subarray(44), audio);
+});
+
+test('after the stream diverged its later text is replaced from the agreed prefix, so a duplicated seam does not survive', async () => {
+  const f = fixture(false, async () => 'Hey XGen. 상품 자료를 입력 받아 소개문을 만드는 에이전트로 정리해 줘. 배포 화면도 열어 줘.');
+  const { result } = await f.regressed(
+    ['헤이 엑스젠 상품 자료를 입력받아 소개문을 만드는 에이전트로.', '헤이 엑스젠 상품 자료를 입력받아 소개문을 만드는 에이전트'],
+    '헤이 엑스젠 상품 자료를 입력받아 소개문을 만드는 에이전트 받아 소개문을 만드는 에이전트로 정리해줘 배포 화면도 열어 줘.',
+  );
+  assert.equal(result.text, '상품 자료를 입력받아 소개문을 만드는 에이전트로 정리해 줘. 배포 화면도 열어 줘.');
+});
+
+test('the re-transcription is used only when it continues what was already heard', async () => {
+  const f = fixture(false, async () => '헤이 엑스젠 오늘 날씨 알려 줘.');
+  const { result } = await f.regressed(['헤이 엑스젠 상품 자료를 입력받아 소개문을 만드는', '헤이 엑스젠 상품 자료를'], '헤이 엑스젠 상품 자료를');
+  assert.equal(result.text, '상품 자료를 입력받아 소개문을 만드는');
+  const failing = fixture(false, async () => { throw new Error('stt down'); });
+  const r2 = await failing.regressed(['헤이 엑스젠 상품 자료를 입력받아 소개문을 만드는', '헤이 엑스젠 상품 자료를'], '헤이 엑스젠 상품 자료를');
+  assert.equal(r2.result.text, '상품 자료를 입력받아 소개문을 만드는');
+});
+
+test('a stream that never shrank is not re-transcribed', async () => {
+  const f = fixture(false, async () => assert.fail('must not re-transcribe'));
+  const { result } = await f.utterance('엑스젠, 진행해줘.');
+  assert.equal(result.text, '진행해줘.');
+  assert.equal(f.transcribed.length, 0);
+});
+
+test('extendTranscript joins only the continuation, across a differently spelled wake phrase', async () => {
+  const { extendTranscript } = await import('../src/main/voice-stream');
+  const words = wake.parseWakeWords('헤이 엑스젠, Hey XGEN, 엑스젠, XGEN');
+  assert.equal(
+    extendTranscript('헤이 엑스젠 이 폴더의 신상품 자료를 읽고 내 확인을 받아 100 피스의 상품 등록', '헤이 엑젠, 이 폴더의 신상품 자료를 읽고 내 확인을 받아 100피스의 상품 등록까지 해줘.', words),
+    '헤이 엑스젠 이 폴더의 신상품 자료를 읽고 내 확인을 받아 100 피스의 상품 등록까지 해줘.',
+  );
+  assert.equal(extendTranscript('헤이 엑스젠 소개문을 만드는 에이전트로.', 'Hey XGen. 소개문을 만드는 에이전트로 정리해 줘.', words), '헤이 엑스젠 소개문을 만드는 에이전트로 정리해 줘.');
+  assert.equal(extendTranscript('헤이 엑스젠 소개문을 만드는', '헤이 엑스젠 소개문을 만드는.', words), null);
+  assert.equal(extendTranscript('헤이 엑스젠 소개문을 만드는', '헤이 엑스젠 상품 소개문을 만드는 에이전트', words), null);
+  assert.equal(extendTranscript('헤이 엑스젠 네', '헤이 엑스젠 네, 진행해 주세요.', words), null);
+  // 영문 대소문자만 다르게 적혀도 이어 붙인다
+  assert.equal(extendTranscript('헤이 엑스젠 ppt 다시 열어.', '헤이 엑젠, PPT 다시 열어서 발표 모드로 전환해 줘.', words), '헤이 엑스젠 ppt 다시 열어서 발표 모드로 전환해 줘.');
 });

@@ -88,6 +88,8 @@ export const norm = (s: string): string =>
 const words = (s: string): string[] => norm(s).split(' ').filter(Boolean);
 /** 비교용 — 문장부호를 뗀 글자. 인식기는 중간 결과에도 마침표를 붙여 "버튼." 과 "버튼" 이 다른 단어가 된다. */
 export const bare = (s: string): string => s.replace(/[.,!?。…]+/g, '');
+/** 비교용 — 문장부호·띄어쓰기를 뺀 글자. */
+const compact = (s: string): string => bare(s).replace(/\s/g, '');
 /**
  * 중간 결과를 통째로 믿는다(기본). XGEN 은 서버가 연속 두 가설의 일치로 확정한 글자를 낸다.
  * 10/5 벤치(사람 67·이어 말하기 52, XGEN STT): 정확도 88.1%/80.8%(안 믿을 때 88.1%/71.2%), 말 끝→실행 중앙
@@ -326,6 +328,17 @@ export class Segmenter {
               start = inner.start;
             }
             cand = words(rest).slice(start).join(' ');
+            // 앱을 옮긴 토막의 나머지가 그 말머리를 되풀이하며 다시 시작한다 — 인식기가 말을 겹쳐 적은 것이다("지금, 지금 PPT
+            // 장표 내려줘."). 새 요청으로 보면 방금 한 요청을 새 화면에서 또 한다(10/28 맥: 쇼를 내린 뒤 남은 "지금 PPT 장표
+            // 내려줘." 로 PowerPoint 를 다시 띄웠다). 앞 요청의 일부로 보고 끝낸다.
+            const pre = compact([this.lastSeg, ...words(rest).slice(0, start)].join(' '));
+            if (this.rereading && pre && compact(cand).startsWith(pre)) {
+              if (!isFinal) break;
+              this.rereading = false;
+              this.consumed = text;
+              this.finish();
+              break;
+            }
             this.rereading = false;
           }
         }

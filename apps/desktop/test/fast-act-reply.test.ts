@@ -352,3 +352,39 @@ test('앱을 옮긴 실행 뒤에는 첫 단어 뒤를 다시 나눈다 — 앱 
   assert.deepEqual(one.asked.at(-1), ['PPT', ['앱', '열어줘', '지금']]);
   assert.equal(one.unhandled, null);
 });
+
+test('앱을 옮긴 실행 뒤 남은 말이 말머리를 되풀이해 다시 시작하면 새 요청이 아니다 — 인식기가 겹쳐 적은 말', async () => {
+  // 10/28 맥: 인식이 "지금, 지금 PPT 장표 내려줘." 로 와서 쇼를 내린 뒤, 경계 판단이 둘째 "지금" 을 새 요청으로 골라
+  // 남은 "지금 PPT 장표 내려줘." 로 PowerPoint 를 다시 띄웠다.
+  const run = async (said: string, start: (rest: string[]) => number) => {
+    const handled: string[] = [];
+    let lastTarget: string | null = null;
+    const agent: VoiceAgent = {
+      get lastTarget() {
+        return lastTarget;
+      },
+      boundary: async (_u, _done, rest) => ({ start: start(rest), conf: 0.71 }),
+      // 앞부분만으로는 실행하지 않는다 — 말 전체를 한 번 실행한 뒤 앱을 옮긴 나머지를 다시 나누는 경로만 본다.
+      readiness: async (texts) => texts.map((_, i) => ({ ready: i ? 'wait' : 'act_now', p: 0.99 })),
+      handle: async (text, _th, guard) => {
+        handled.push(text);
+        const name = lastTarget ? 'Microsoft PowerPoint 앱 다시 띄우기' : '슬라이드 쇼 끝내고 PowerPoint 내리기';
+        if (!(await guard(name, 'press', 0.998))) return { acted: false, reason: 'guarded', ms: 0 };
+        const first = !lastTarget;
+        lastTarget = name;
+        return { acted: true, kind: 'press', target: name, ms: 0, effect: 'ok', ...(first ? { reread: true } : {}) };
+      },
+    };
+    const seg = new Segmenter(agent, () => undefined);
+    await seg.final(said);
+    return { handled, unhandled: seg.unhandled };
+  };
+  const stutter = await run('지금, 지금 PPT 장표 내려줘.', () => 0);
+  assert.deepEqual(stutter.handled, ['지금, 지금 PPT 장표 내려줘.']);
+  assert.equal(stutter.unhandled, null);
+  const twice = await run('PPT 장표 PPT 장표 내려줘.', (rest) => rest.indexOf('PPT'));
+  assert.deepEqual(twice.handled, ['PPT 장표 PPT 장표 내려줘.']);
+  // 말머리를 되풀이하지 않는 다음 요청은 그대로 새 화면에서 한다
+  const next = await run('장표 내리고 새 에이전트 만들어줘', (rest) => rest.indexOf('새'));
+  assert.deepEqual(next.handled, ['장표 내리고 새 에이전트 만들어줘', '새 에이전트 만들어줘']);
+});

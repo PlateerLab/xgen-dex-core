@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DEX_COMMANDS, configureDexCommands, dexCommandRefs, runDexCommand } from '../src/main/fast-act-dex';
-import type { VoiceAction } from '../src/main/fast-act-voice';
+import { noPageReason, type VoiceAction } from '../src/main/fast-act-voice';
 import { FINAL, PARTIAL } from '../src/main/voice-segmenter';
 
 const newChat = DEX_COMMANDS.find((c) => c.id === 'new-chat')!;
@@ -72,4 +72,10 @@ test('창이 없으면 실행한 것으로 치지 않는다', async () => {
     push: () => assert.fail('push'),
   });
   assert.equal(outcome.acted, false);
+});
+
+test('보이는 탭을 읽지 못한 이유만 페이지 밖 후보(DeX 명령·발표·앱)로 다시 판단한다', () => {
+  // 10/28 맥: 꺼진 로컬 앱 탭(요소 없음)이 보이는 페이지로 잡혀 "새 에이전트 만들어 줘" 가 판단 없이 채팅으로 갔다.
+  for (const r of ['페이지 요소를 읽지 못함', '열린 브라우저 탭 없음', '스냅샷 실패 Error: target closed']) assert.equal(noPageReason(r), true, r);
+  for (const r of ['화면 조작 아님 0.10', '여러 단계·글쓰기 작업 0.2', '화면에 없는 대상 0.01', '기다림 wait 0.40']) assert.equal(noPageReason(r), false, r);
 });

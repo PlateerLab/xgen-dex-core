@@ -28,9 +28,9 @@ import {
 } from './fast-act';
 import { CHROME_PICK } from './fast-act-chrome';
 import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13, type ScreenRef } from './fast-act-e13';
-import { LauncherVoiceAgent, NO_DESKTOP, configureDesktopAct, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
+import { LauncherVoiceAgent, NO_DESKTOP, appPick, configureDesktopAct, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
 import { decisionPost, visiblePage } from './fast-act-runner';
-import { TYPING_WORD, type BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
+import { TYPING_WORD, noPageReason, type BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
 import {
   AX_STALE,
   axFront,
@@ -371,7 +371,8 @@ export class ComputerVoiceAgent implements VoiceAgent {
     }
     // 다음·이전 장이 1위인데 2위와 갈렸다 — 둘만 놓고 다시 고른다(voice-presentation).
     const slide = pick && (await weakSlidePick(post, text, s.origin, s.desk.controls, pick, s.refs).catch(() => null));
-    if (!pick || (pick.confidence < th.pick && !slide)) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    // 앱 후보는 앱 후보끼리 나눈 확률을 합해 본다(appPick) — 어느 앱인지는 앱 목록이 다시 고른다.
+    if (!pick || (appPick(pick, s.desk.apps).confidence < th.pick && !slide)) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     // 발표 중에 앱 요소가 이겼다 — 발표 조작과 그 요소만 놓고 다시 고른다(voice-presentation).
     const repick = slide ?? (!s.desk.controls[pick.ref] && !s.desk.apps[pick.ref] && !s.system[pick.ref]
       ? await presentationRepick(post, text, s.origin, s.desk.controls, pick.ref, s.refs[pick.ref]).catch(() => null)
@@ -387,7 +388,7 @@ export class ComputerVoiceAgent implements VoiceAgent {
     }
     if (off) return no(`화면에 없는 대상 ${cls.onscreen}`, pick.top);
     if (s.desk.apps[pick.ref]) {
-      return runOpen(post, text, th, guard, pick, s.refs[pick.ref].name ?? '', t0, this.t0, (a) => {
+      return runOpen(post, text, th, guard, appPick(pick, s.desk.apps), s.refs[pick.ref].name ?? '', t0, this.t0, (a) => {
         this.forget();
         this.actions.push(a);
         this.onAct?.(a);
@@ -492,7 +493,13 @@ export class RoutedVoiceAgent implements VoiceAgent {
   }
 
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome> {
-    const o = await (await this.route()).handle(text, th, guard, abort, utterance, pressOnly);
+    const agent = await this.route();
+    let o = await agent.handle(text, th, guard, abort, utterance, pressOnly);
+    // 보이는 탭이 있는데 읽을 페이지가 없었다(꺼진 로컬 앱 탭·읽기 실패) — 탭 없는 화면처럼 DeX 명령·발표 조작·앱 후보로 판단한다.
+    if (!o.acted && agent === this.browser && computerActEnabled() && noPageReason(o.reason)) {
+      diag(SCOPE, 'no-page-fallback', { text, reason: o.reason });
+      o = await this.launcher.handle(text, th, guard, abort);
+    }
     // 실행은 맨 앞 앱을 바꿀 수 있다(앱 열기·숨기기) — 다음 판단이 옛 맨 앞 앱을 보지 않게.
     if (o.acted) frontCache = null;
     return o;

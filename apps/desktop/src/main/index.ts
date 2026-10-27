@@ -2859,6 +2859,7 @@ const voiceStreams = new VoiceStreamHub(() =>
           const words = c.voiceWake === true ? parseWakeWords(c.voiceWakeWords?.trim() || undefined) : [];
           return words.length ? words : null;
         },
+        transcribe: (wav) => getClient().voice.transcribe(new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'ko'),
       }
     : null,
 );

@@ -1,6 +1,6 @@
 import { diag } from './diag-log';
 
-const STAGES = ['start', 'ready', 'stt', 'gate', 'drop', 'finalize', 'result', 'deliver', 'carry', 'route'] as const;
+const STAGES = ['start', 'ready', 'stt', 'gate', 'drop', 'finalize', 'result', 'deliver', 'carry', 'route', 'recover'] as const;
 const TEXT_LIMIT = 300;
 
 export type VoiceTrace = {

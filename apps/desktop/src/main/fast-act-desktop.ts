@@ -132,13 +132,33 @@ export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {}, controls
 
 const labelOf = (a: InstalledApp): string => (a.displayName ? `${a.displayName} (${a.name})` : a.name);
 
-/** 앱 후보 이름 — 화면 후보와 앱 목록(openPickedApp)이 같이 쓴다. */
+/**
+ * 앱 후보 이름 — 화면 후보와 앱 목록(openPickedApp)이 같이 쓴다. 쇼를 끝내고 내린 앱은 고르면 쇼를 다시 시작하므로 그렇게 적는다 —
+ * 앱 이름만 두면 "PPT 다시 열어서 발표 모드로 전환해 줘" 가 PowerPoint 0.58 · Figma 0.42 로 갈려 하지 않았다(10/28 맥).
+ */
 export const candName = (a: DesktopApp): string =>
   a.pid === undefined
     ? `${a.label} 앱 실행 (맥 데스크탑 앱)`
     : a.hidden
-      ? `${a.name} 앱 다시 띄우기 (맥 데스크탑 앱)`
+      ? endedShow(a.pid)
+        ? `${a.name} 앱 다시 띄우기 — 내린 슬라이드 쇼(발표 화면) 다시 시작 (맥 데스크탑 앱)`
+        : `${a.name} 앱 다시 띄우기 (맥 데스크탑 앱)`
       : `${a.name} 앱으로 전환 (맥 데스크탑 앱)`;
+
+/**
+ * 화면 판단에서 앱 후보가 이겼다 — 확신은 상위 앱 후보들의 확률 합으로 본다. 화면 판단은 앱이냐(페이지 요소·DeX 명령·웹·발표
+ * 조작이 아니냐)를 정하고, 어느 앱인지는 앱 목록 고르기(openPickedApp)가 다시 정한다. 1위 확률만 보면 앱끼리 갈린 말은 앱 목록이
+ * 확실히 고를 것도 하지 않았다(10/28 맥, dev 판단 모델: "PPT 다시 열어서 발표 모드로 전환해 줘" PowerPoint 0.59 · Figma 0.41 →
+ * 앱 목록 PowerPoint 1.00, "키노트 실행해 줘" Keynote 0.50 · LetsView 0.50 → 앱 목록 Keynote 1.00).
+ */
+export function appPick<P extends { ref: string; confidence: number; top?: Array<[string, number]> }>(pick: P, apps: Record<string, unknown>): P {
+  if (!apps[pick.ref]) return pick;
+  const rest = (pick.top ?? []).reduce((sum, [label, p]) => {
+    const ref = label.split(' ')[0];
+    return ref !== pick.ref && apps[ref] ? sum + p : sum;
+  }, 0);
+  return { ...pick, confidence: Math.min(1, pick.confidence + rest) };
+}
 
 /** 실행 중인 앱(맨 앞 앱·DeX 제외) 다음에 설치된 앱(실행 중인 것·DeX 제외). */
 async function appList(exceptPid: number | null): Promise<DesktopApp[]> {
@@ -322,7 +342,11 @@ export class LauncherVoiceAgent implements VoiceAgent {
 
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean): Promise<Outcome> {
     const t0 = now();
-    const no = (reason: string, detail?: unknown): Outcome => ({ acted: false, reason, ms: now() - t0, detail });
+    const no = (reason: string, detail?: unknown): Outcome => {
+      // 고르고도 하지 않았다 — 무엇과 갈렸는지 남긴다(실행 기록에는 이유만 남는다).
+      if (detail) diag(SCOPE, 'launcher-skip', { text, reason, top: detail });
+      return { acted: false, reason, ms: now() - t0, detail };
+    };
     const post = decisionPost();
     if (!post) return no('결정 모델 없음');
     const { c, refs, scr } = await this.screen();
@@ -339,6 +363,7 @@ export class LauncherVoiceAgent implements VoiceAgent {
     if (waiting && !named) return no(`기다림 ${cls.ready} ${rc}`);
     if (abort()) return no('판단 취소(새 인식)');
     const pick = await pickElement(post, text, LAUNCHER_ORIGIN, refs, scr);
+    if (process.env.DEX_VOICE_TEST === '1') diag(SCOPE, 'debug-screen', { text, cands: Object.keys(refs).length, refs, top: pick?.top });
     // 다음·이전 장이 1위인데 2위와 갈렸다 — 둘만 놓고 다시 고른다(voice-presentation).
     const slide = pick && (await weakSlidePick(post, text, LAUNCHER_ORIGIN, c.controls, pick, refs).catch(() => null));
     const chosen = slide ?? pick;
@@ -352,13 +377,14 @@ export class LauncherVoiceAgent implements VoiceAgent {
       return runDexCommand(cmd, { said: text, th, guard, abort, pick, t0, sessionT0: this.t0, push: (a) => { this.actions.push(a); this.onAct?.(a); } });
     }
     if (pick?.ref === WEB_REF) return no(`웹 페이지 요청 ${pick.confidence.toFixed(2)}`, pick.top);
-    if (!pick || !c.apps[pick.ref] || pick.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    const app = pick && c.apps[pick.ref] ? appPick(pick, c.apps) : null;
+    if (!pick || !app || app.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${(app ?? pick)?.confidence.toFixed(2)}`, pick?.top);
     return runOpen(
       post,
       text,
       th,
       guard,
-      pick,
+      app,
       refs[pick.ref].name ?? '',
       t0,
       this.t0,

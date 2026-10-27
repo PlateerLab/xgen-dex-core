@@ -185,7 +185,10 @@ export class Segmenter {
       if (r[i + 1]?.ready !== 'act_now' || r[i + 1].p < th.intent) continue;
       const rest = w.slice(words(prefixes[i]).length);
       const b = await this.agent.boundary(cand, prefixes[i], rest).catch(() => ({ start: 0, conf: 0 }));
-      if (b.start >= 0) return prefixes[i];
+      // 그 앞부분에도 요청이 둘 들어 있을 수 있다 — 세 요청을 이어 말하면 긴 앞부분이 앞의 둘을 삼킨다("블로그 들어가서 이달의
+      // 블로그 누르고 | 드라마 탭 눌러줘" 는 블로그만 누르고 이달의 블로그를 처리한 것으로 쳐서 건너뛰었다, 10/27 네이버).
+      // 앞부분 안에서 다시 찾아 가장 앞 요청부터 실행한다.
+      if (b.start >= 0) return (await this.readyPrefix(prefixes[i], th)) ?? prefixes[i];
     }
     return null;
   }

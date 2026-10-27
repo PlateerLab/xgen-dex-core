@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { createConfirmVoiceResponder, type VoiceConfirmTarget } from '../src/renderer/src/voice/confirm-response';
 import type { VoiceConfirmIntent } from '@dex/protocol/voice-confirm';
+
+test('manual recording can be stopped after its card closes while the agent remains busy', () => {
+  const source = ts.createSourceFile('Chat.tsx', readFileSync(new URL('../src/renderer/src/views/Chat.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let disabled: ts.Expression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxOpeningElement(node) && node.tagName.getText(source) === 'button') {
+      const attrs = node.attributes.properties.filter(ts.isJsxAttribute);
+      if (attrs.some(a => a.name.getText(source) === 'onClick' && a.initializer?.getText(source) === '{toggleMic}')) {
+        const value = attrs.find(a => a.name.getText(source) === 'disabled')?.initializer;
+        if (value && ts.isJsxExpression(value)) disabled = value.expression;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(disabled, 'the actual microphone button must expose its disabled state');
+  const state = { streamVoice: false, recording: true, transcribing: false, busy: true, voiceConfirm: {} as object | null };
+  const isDisabled = () => runInNewContext(disabled!.getText(source), state);
+  assert.equal(isDisabled(), false, 'recording can stop while the card is open');
+  state.voiceConfirm = null;
+  assert.equal(isDisabled(), false, 'closing the card must not disable recording stop');
+  state.recording = false;
+  assert.equal(isDisabled(), true, 'busy agent still prevents starting a new manual recording');
+  state.busy = false;
+  state.transcribing = true;
+  assert.equal(isDisabled(), true, 'transcription still prevents another manual recording');
+  state.streamVoice = true;
+  assert.equal(isDisabled(), false, 'continuous listening can still be toggled');
+});
 
 function fixture(kind: 'browser' | 'user' = 'browser') {
   let target: VoiceConfirmTarget | null = kind === 'browser'
@@ -57,10 +89,10 @@ test('ambiguous speech stays on the card; ordinary speech without a card is not 
 
 test('expired, removed, replaced and pre-card recordings never resolve a card', async () => {
   const f = fixture();
-  await f.respond('네', null);
-  await f.respond('네', 'other');
+  assert.equal(await f.respond('네', null), true);
+  assert.equal(await f.respond('네', 'other'), true);
   f.target!.request.expiresAt = Date.now() - 1;
-  await f.respond('네', 'first');
+  assert.equal(await f.respond('네', 'first'), true);
   f.target = null;
   assert.equal(await f.respond('네', 'first'), true);
   assert.deepEqual(f.answers, []);

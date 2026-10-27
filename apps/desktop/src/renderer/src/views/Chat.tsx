@@ -2214,7 +2214,7 @@ export const Chat: React.FC<{
             <button
               className={`composer-mic${recording || voiceLoopOn ? ' recording' : ''}`}
               onClick={toggleMic}
-              disabled={streamVoice ? false : transcribing || (busy && !voiceConfirm)}
+              disabled={streamVoice || recording ? false : transcribing || (busy && !voiceConfirm)}
               title={
                 streamVoice
                   ? voiceLoopOn

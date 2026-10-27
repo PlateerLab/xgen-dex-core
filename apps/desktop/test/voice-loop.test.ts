@@ -39,7 +39,7 @@ test('a delayed action result does not erase a newer utterance or later typing',
 });
 
 // Run the actual hook with deterministic capture/IPC, without a microphone or STT service.
-async function loop(responseKey: string | null) {
+async function loop(responseKey: string | null, firstUtteranceMs = 1_000) {
   let now = 0;
   let cleanup: (() => void) | undefined;
   let chunk!: (c: CaptureChunk) => void;
@@ -90,13 +90,13 @@ async function loop(responseKey: string | null) {
   await Promise.resolve();
   chunk({ pcm: new Uint8Array(640), inSpeech: true, events: [], vad: false });
   await Promise.resolve();
-  now = 1_000;
+  now = firstUtteranceMs;
   event({ sessionId: 'speech', type: 'utterance_end' });
   return {
     opts, starts, results, cancelled, traces, stateChanges,
     error: () => event({ sessionId: 'speech', type: 'error', error: 'stt_upstream_error' }),
     runTimers: () => { for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } },
-    endSpeech: () => { now += 1_000; event({ sessionId: 'speech', type: 'utterance_end' }); },
+    endSpeech: (durationMs = 1_000) => { now += durationMs; event({ sessionId: 'speech', type: 'utterance_end' }); },
     get captureCancels() { return captureCancels; },
     speak: async () => {
       chunk({ pcm: new Uint8Array(640), inSpeech: true, events: [], vad: false });
@@ -152,6 +152,24 @@ test('stopping during retry cancels the retry timer', async () => {
   const count = f.stateChanges.length;
   f.runTimers();
   assert.equal(f.stateChanges.length, count);
+});
+
+test('errors from cancelled short utterances do not interrupt listening', async () => {
+  const f = await loop(null, 100);
+  for (let i = 0; i < 3; i++) {
+    const count = f.stateChanges.length;
+    f.error();
+    f.runTimers();
+    assert.equal(f.stateChanges.length, count);
+    assert.equal(f.captureCancels, 0);
+    if (i < 2) {
+      await f.speak();
+      f.endSpeech(100);
+    }
+  }
+  assert.equal(f.starts.length, 3);
+  assert.equal(f.cancelled.length, 3);
+  f.dispose();
 });
 
 test('a successful utterance after an error resets the failure count', async () => {

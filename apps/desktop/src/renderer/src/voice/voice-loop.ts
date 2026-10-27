@@ -168,6 +168,7 @@ export function useVoiceLoop(opts: {
         return;
       }
       if (Date.now() - utteranceStart < MIN_UTTERANCE_MS) {
+        activeId = null;
         xgen.voiceStream.cancel(id);
         set('armed');
         return;

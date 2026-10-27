@@ -12,6 +12,7 @@
  *     PowerPoint 전환 0.98, 앱 목록에서는 Word 1.00). 목록도 화면 후보와 같은 문구다 — 앱 이름만 두면 첫 판단이 맞게
  *     고른 숨긴 PowerPoint 를 "발표 자료 다시 띄워줘" 에 Keynote 로 바꿔 열었다(10/27: 8문장 중 5·엉뚱한 실행 1 → 8·0,
  *     다른 앱 요청 10문장은 그대로 10).
+ *   · 브라우저 탭이 없는 DeX 앞 화면 — 맨 위에 웹 후보(WEB_CAND). 앱 후보만 있으면 사이트 요청이 브라우저·비슷한 이름의 앱을 열었다.
  * 측정(10/18 dev 판단 모델, 네이버 첫 화면, 앱 요청 17 + 페이지 요청 14): 실행 중인 앱 6개일 때 26/31·엉뚱한 실행 3,
  * 16개일 때 28/31·0. 페이지 요청은 모두 그대로였고, 나머지는 확신이 낮아 서버 에이전트로 간다.
  * 앱 이름은 보이는 이름("계산기")과 번들 이름("Calculator") 둘 다 싣는다 — 사람은 한국어로 부른다(Spotlight 표시 이름).
@@ -45,6 +46,16 @@ const POLL_MS = 150;
 const TAIL_START = 8001;
 const LIST_ORIGIN = '맥 앱 (실행 중·설치됨)';
 const LAUNCHER_ORIGIN = 'XGen Dex';
+/**
+ * 브라우저 탭이 없는 DeX 앞 화면(LauncherVoiceAgent)의 맨 위 후보 — 사이트·웹 검색 요청을 받는 자리. 앱 후보만 있으면
+ * "네이버 들어가서 …" 가 Safari 실행 0.86, "네이버 열어줘" 가 Finder 전환 1.00 으로 갔다(10/27: 웹 요청 12개 중 11개가
+ * 앱 실행, Safari 가 실제로 켜짐). 이 후보가 이기면 서버 에이전트가 DeX 브라우저로 연다(빠른 조작은 주소로 가는 법이 없다).
+ * 앱 목록 고르기에도 같은 후보를 둔다 — 첫 판단에서 앱이 이겨도 앱 목록에서 웹으로 갈 수 있게.
+ * 측정(10/27 dev 판단 모델, 웹 요청 22 + 앱 요청 26): 웹 요청의 앱 실행 12 → 3, 앱 요청 맞게 23 → 25(틀린 앱 0 → 1:
+ * "메일 앱 열어줘" → Outlook), 숨긴 PowerPoint 다시 띄우기 8문장은 8 그대로.
+ */
+export const WEB_CAND = '웹사이트 열기·검색 (DeX 브라우저)';
+const WEB_REF = 'e9001';
 const now = (): number => performance.now();
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 /** DeX 자신의 번들 — 설치된 앱 후보에서 뺀다. */
@@ -173,15 +184,20 @@ async function bringFront(a: DesktopApp): Promise<AxApp> {
 
 /**
  * 앱 후보가 이겼다 — 앱 목록만 놓고 어느 앱인지 다시 고르고, 열어서 맨 앞에 올 때까지 기다린다. 확신이 낮거나
- * 열지 못하면 throw(서버 에이전트로 넘어간다).
+ * 열지 못하면 throw(서버 에이전트로 넘어간다). web = 목록 맨 앞에 둘 웹 후보(WEB_CAND) — 그것을 고르면 열지 않는다.
  */
-export async function openPickedApp(post: DecisionPost, said: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number }> {
+export async function openPickedApp(post: DecisionPost, said: string, web?: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number }> {
   const t0 = now();
   const list = await appList(null);
-  const refs: ElementRefs = Object.fromEntries(list.map((a, i) => [`e${i + 1}`, { role: 'button', name: candName(a) }]));
+  const lead = web ? 1 : 0;
+  const refs: ElementRefs = Object.fromEntries([
+    ...(web ? [['e1', { role: 'button', name: web }] as const] : []),
+    ...list.map((a, i) => [`e${i + 1 + lead}`, { role: 'button', name: candName(a) }] as const),
+  ]);
   const pick = await pickElement(post, said, LIST_ORIGIN, refs, screenOf(LIST_ORIGIN, refs));
-  const target = pick ? list[Number(pick.ref.slice(1)) - 1] : undefined;
-  diag(SCOPE, 'pick-app', { said, app: target && candName(target), conf: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
+  const target = pick ? list[Number(pick.ref.slice(1)) - 1 - lead] : undefined;
+  diag(SCOPE, 'pick-app', { said, app: target ? candName(target) : pick && refs[pick.ref]?.name, conf: pick && Number(pick.confidence.toFixed(3)), top: pick?.top });
+  if (web && pick?.ref === 'e1') throw new Error('웹 페이지 요청');
   if (!pick || !target || pick.confidence < CHROME_PICK) throw new Error(`앱 확신 낮음 ${pick?.confidence.toFixed(2) ?? '-'}`);
   const pickMs = now() - t0;
   const front = await bringFront(target);
@@ -227,8 +243,9 @@ export class LauncherVoiceAgent implements VoiceAgent {
   }
 
   private async screen(): Promise<{ c: DesktopCands; refs: ElementRefs; scr: Screen13 }> {
-    const c = await desktopCands(null, 9001);
-    const refs = { ...c.head, ...c.tail };
+    const c = await desktopCands(null, 9002);
+    const web: ElementRefs = Object.keys(c.apps).length ? { [WEB_REF]: { role: 'button', name: WEB_CAND } } : {};
+    const refs = { ...web, ...c.head, ...c.tail };
     return { c, refs, scr: screenOf(LAUNCHER_ORIGIN, refs) };
   }
 
@@ -290,11 +307,23 @@ export class LauncherVoiceAgent implements VoiceAgent {
     if ((th.partial && cls.ready !== 'act_now') || cls.gate < th.intent) return no(`기다림 ${cls.ready} ${rc}`);
     if (abort()) return no('판단 취소(새 인식)');
     const pick = await pickElement(post, text, LAUNCHER_ORIGIN, refs, scr);
+    if (pick?.ref === WEB_REF) return no(`웹 페이지 요청 ${pick.confidence.toFixed(2)}`, pick.top);
     if (!pick || !c.apps[pick.ref] || pick.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
-    return runOpen(post, text, th, guard, pick, refs[pick.ref].name ?? '', t0, this.t0, (a) => {
-      this.actions.push(a);
-      this.onAct?.(a);
-    });
+    return runOpen(
+      post,
+      text,
+      th,
+      guard,
+      pick,
+      refs[pick.ref].name ?? '',
+      t0,
+      this.t0,
+      (a) => {
+        this.actions.push(a);
+        this.onAct?.(a);
+      },
+      WEB_CAND,
+    );
   }
 }
 
@@ -313,6 +342,8 @@ export async function runOpen(
   t0: number,
   sessionT0: number,
   push: (a: VoiceAction) => void,
+  /** 앱 목록 고르기에 같이 둘 웹 후보 — 탭 없는 화면(LauncherVoiceAgent)만 넘긴다. */
+  web?: string,
 ): Promise<Outcome> {
   const no = (reason: string): Outcome => ({ acted: false, reason, ms: now() - t0, detail: pick.top });
   if (pick.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${pick.confidence.toFixed(2)}`);
@@ -320,7 +351,7 @@ export async function runOpen(
   const decideMs = now() - t0;
   let opened: Awaited<ReturnType<typeof openPickedApp>>;
   try {
-    opened = await openPickedApp(post, text);
+    opened = await openPickedApp(post, text, web);
   } catch (err) {
     return no(`앱 열기 안 함 — ${err instanceof Error ? err.message : String(err)}`);
   }

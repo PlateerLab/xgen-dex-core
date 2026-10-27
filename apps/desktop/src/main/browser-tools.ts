@@ -371,14 +371,17 @@ const sensitive = new Set([
   'credentials',
   'intercept',
   'clipboard',
-  'eval',
 ]);
+// eval 은 이 PC에서 보낸 턴이면 묻지 않는다 — 에이전트가 화면 상태를 확인하는 데 자주 써서 턴마다 창이 떴고(10/27),
+// 그 페이지에서는 이미 누르고 입력할 수 있다. 다른 기기에서 보낸 턴(remote)은 PC 앞의 사람이 허락하도록 계속 묻는다.
+const sensitiveWhenRemote = new Set(['eval']);
 
-export const browserActionNeedsApproval = (action: string): boolean => sensitive.has(action);
+export const browserActionNeedsApproval = (action: string, remote = false): boolean =>
+  sensitive.has(action) || (remote && sensitiveWhenRemote.has(action));
 
-async function approve(action: string, detail: string, signal?: AbortSignal): Promise<boolean> {
+async function approve(action: string, detail: string, signal?: AbortSignal, remote = false): Promise<boolean> {
   if (signal?.aborted) return false;
-  if (!browserActionNeedsApproval(action) || sensitiveSessionApprovals.has(action)) return true;
+  if (!browserActionNeedsApproval(action, remote) || sensitiveSessionApprovals.has(action)) return true;
   const options = {
     type: 'warning' as const,
     buttons: ['거부', '이번만 허용', '이 앱 세션 동안 허용'],
@@ -1073,7 +1076,7 @@ export class BrowserToolProvider {
     // The helper also accepts network har; normalize that alias before any path handling.
     const harAlias = requestedAction === 'network' && String(args.operation ?? '').trim() === 'har';
     const action = harAlias ? 'har' : requestedAction;
-    if (!(await approve(action, JSON.stringify(args), this.runtime.actionSignal ?? context?.signal))) {
+    if (!(await approve(action, JSON.stringify(args), this.runtime.actionSignal ?? context?.signal, !!context?.remote))) {
       throw new BrowserRuntimeError('browser_denied', `사용자가 ${action} 작업을 거부했습니다.`);
     }
     const operation = String(harAlias ? args.value ?? '' : args.operation ?? '').trim();

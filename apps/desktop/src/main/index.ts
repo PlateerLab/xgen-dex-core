@@ -165,10 +165,13 @@ import { BrowserHistoryStore } from './browser-history';
 import { CONFIRM_WAIT_MS, getBrowserToolProvider } from './browser-tools';
 import { BrowserConfirmCenter } from './browser-confirm';
 import { UserConfirmCenter, UserConfirmTools } from './user-confirm';
+import { classifyConfirmSpeech } from './voice-confirm';
+import type { VoiceConfirmTarget } from '@dex/protocol/voice-confirm';
 import { tryFastAct, voiceNeedsChatContext } from './fast-act-chat';
 import { configureFastAct, decisionPost, fastActEnabled } from './fast-act-runner';
-import type { ChoiceAnswer } from './fast-act';
+import type { ChoiceAnswer, DecisionPost } from './fast-act';
 import { VoiceStreamHub, voiceStreamAvailable, type VoiceStreamEvent } from './voice-stream';
+import { traceVoice, type VoiceTrace } from './voice-trace';
 import { parseWakeWords } from './voice-wake';
 import { allowedBrowserUrl } from './browser-security';
 import type {
@@ -2782,24 +2785,36 @@ ipcMain.handle(
     return getClient().voice.transcribe(blob, language);
   },
 );
-// 단계별 브라우저 조작 — 현재 채팅 모델이 계획하고 이 판단 API로 실행 대상을 고른다.
+// 브라우저 조작과 확인 응답에서 같은 판단 API·인증 재시도를 쓴다.
 // 도구 오류가 로그아웃으로 번지지 않게 auth: false로 부르고 인증 오류는 토큰 회전 뒤 한 번 재시도한다.
+const postDecision: DecisionPost = async (body) => {
+  const ask = () => getClient().decision.systemone(body.state, body.questions, { timeoutMs: 8_000, auth: false });
+  let res;
+  try {
+    res = await ask();
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if ((status !== 401 && status !== 403) || !(await refreshAuthToken())) throw err;
+    res = await ask();
+  }
+  return res.answers as Record<string, ChoiceAnswer>;
+};
 configureFastAct({
   enabled: () => loadConfig().fastAct === true && !!currentUserId(),
-  post: async (body) => {
-    const ask = () => getClient().decision.systemone(body.state, body.questions, { timeoutMs: 8_000, auth: false });
-    let res;
-    try {
-      res = await ask();
-    } catch (err) {
-      const status = (err as { status?: number }).status;
-      if ((status !== 401 && status !== 403) || !(await refreshAuthToken())) throw err;
-      res = await ask();
-    }
-    // 고속 조작은 choice 질문만 보낸다.
-    return res.answers as Record<string, ChoiceAnswer>;
-  },
+  post: postDecision,
   reveal: revealBrowserPage,
+});
+ipcMain.handle(CHANNELS.voiceConfirmIntent, async (_e, requestId: string, text: string) => {
+  const target = (): VoiceConfirmTarget | null => {
+    const browser = browserConfirms.list().find(r => r.requestId === requestId && r.expiresAt > Date.now());
+    if (browser) return { kind: 'browser', request: browser };
+    const user = userConfirms.list().find(r => r.requestId === requestId && r.expiresAt > Date.now());
+    return user ? { kind: 'user', request: user } : null;
+  };
+  const current = target();
+  if (!current) return 'unclear';
+  const intent = await classifyConfirmSpeech(current, text, postDecision);
+  return target() ? intent : 'unclear';
 });
 // 말하는 도중 실행 (voice-stream.ts) — 빠른 브라우저 조작이 켜져 있을 때만 쓸 수 있다. 못 한 말은 채팅으로 서버에 넘어간다.
 const voiceStreams = new VoiceStreamHub(() =>
@@ -2824,12 +2839,19 @@ const voiceStreamEmit =
     if (!sender.isDestroyed()) sender.send(CHANNELS.voiceStreamEvent, ev);
   };
 ipcMain.handle(CHANNELS.voiceStreamAvailable, () => voiceStreamAvailable());
-ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string) =>
-  voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId),
-);
+ipcMain.handle(CHANNELS.voiceStreamStart, (e, workflowId: string, carry?: string, interactionId?: string, confirmRequestId?: string) => {
+  if (confirmRequestId) {
+    const request = [...browserConfirms.list(), ...userConfirms.list()].find(r => r.requestId === confirmRequestId);
+    if (!request || request.workflowId !== workflowId || (request.interactionId && request.interactionId !== interactionId) || request.expiresAt <= Date.now())
+      throw new Error('확인 요청이 이미 종료되었습니다. 현재 카드를 확인해 주세요.');
+  }
+  // Card replies keep the wake setting while deferring all fast browser actions.
+  return voiceStreams.start(workflowId, voiceStreamEmit(e.sender), carry ?? '', false, interactionId, !!confirmRequestId);
+});
 ipcMain.on(CHANNELS.voiceStreamAudio, (_e, sessionId: string, pcm: Uint8Array) => voiceStreams.audio(sessionId, pcm));
 ipcMain.handle(CHANNELS.voiceStreamEnd, (_e, sessionId: string) => voiceStreams.end(sessionId));
 ipcMain.on(CHANNELS.voiceStreamCancel, (_e, sessionId: string) => voiceStreams.cancel(sessionId));
+ipcMain.on(CHANNELS.voiceStreamTrace, (_e, event: VoiceTrace) => traceVoice(event));
 ipcMain.handle(CHANNELS.voiceStreamTestText, (e, workflowId: string, text: string) =>
   voiceStreams.testText(workflowId, text, voiceStreamEmit(e.sender)),
 );

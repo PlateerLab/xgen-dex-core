@@ -9,7 +9,7 @@ import type { BrowserConfirmChoice, BrowserConfirmRequest } from '@dex/protocol/
 import { xgen } from '../bridge';
 import { CONFIRM_OPTIONS } from '../browser-confirm-store';
 
-export function ConfirmCard({ request, more = 0 }: { request: BrowserConfirmRequest; more?: number }) {
+export function ConfirmCard({ request, more = 0, voiceEnabled = false }: { request: BrowserConfirmRequest; more?: number; voiceEnabled?: boolean }) {
   const [saying, setSaying] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -88,7 +88,7 @@ export function ConfirmCard({ request, more = 0 }: { request: BrowserConfirmRequ
           </button>
         ))}
       </div>
-      <div className="confirm-card-left">Esc · {saying ? '입력 닫기 (작성 내용 유지)' : '누르지 않기'}</div>
+      <div className="confirm-card-left">Esc · {saying ? '입력 닫기 (작성 내용 유지)' : '누르지 않기'}{voiceEnabled && ' · 마이크로 “이번만 눌러”, “누르지 마” 또는 고칠 내용'}</div>
       {saying && (
         <form
           className="confirm-card-say"

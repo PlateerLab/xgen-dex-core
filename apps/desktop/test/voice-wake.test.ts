@@ -58,3 +58,19 @@ test('설정 글은 쉼표·줄바꿈으로 나누고 너무 짧은 호출어는
   assert.deepEqual(parseWakeWords(undefined), ['헤이 엑스젠', 'Hey XGEN']);
   assert.deepEqual(parseWakeWords(''), []);
 });
+
+test('엑스젠 호출어에 관측된 오인식 문구를 별칭으로 추가하지 않는다', () => {
+  const short = parseWakeWords('엑스젠, XGEN');
+  assert.equal(findWake('액세젠.', short), null);
+  assert.equal(afterWake('액세젠, 취소해줘.', short), null);
+  assert.equal(afterWake('엑스젠, 진행해줘.', short), '진행해줘.');
+});
+
+test('일반 단어나 다른 사용자 호출어를 엑스젠으로 간주하지 않는다', () => {
+  const short = parseWakeWords('엑스젠, XGEN');
+  for (const text of ['accidents.', '액세서리를 보여줘.', '액션 영화를 보자.', '엑셀 파일을 열어줘.']) {
+    assert.equal(findWake(text, short), null, text);
+  }
+  assert.equal(findWake('액세젠.', parseWakeWords('자비스')), null);
+  assert.equal(findWake('액세젠.', parseWakeWords('XGEN')), null);
+});

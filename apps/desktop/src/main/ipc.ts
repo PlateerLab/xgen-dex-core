@@ -56,6 +56,7 @@ export const CHANNELS = {
   audioRuntimeProgress: 'voice:runtime:progress',
   voiceConfig: 'voice:config', // GET /api/admin/user → preferences.stt/tts (hints)
   voiceTranscribe: 'voice:transcribe', // audio bytes → POST /api/audio/stt/transcribe → text
+  voiceConfirmIntent: 'voice:confirm-intent', // pending request ID + transcript → decider intent
   voiceSpeak: 'voice:speak', // text → POST /api/audio/tts/speak → audio bytes
   // 실험: 말하는 도중 실행 — 마이크 PCM16 을 main 이 XGEN 실시간 STT 로 흘리고 중간 결과로 조작(voice-stream.ts).
   // 빠른 브라우저 조작(설정 fastAct)이 켜져 있을 때만 available.
@@ -65,6 +66,7 @@ export const CHANNELS = {
   voiceStreamEnd: 'voice:stream:end', // sessionId → { text, actions, unhandled, … }
   voiceStreamCancel: 'voice:stream:cancel', // (send) sessionId
   voiceStreamEvent: 'voice:stream:event', // main → renderer: ready / partial / act / error
+  voiceStreamTrace: 'voice:stream:trace', // renderer routing → opt-in file diagnostics
   voiceStreamTestFile: 'voice:stream:test-file', // DEX_VOICE_TEST=1 전용: 녹음 파일을 마이크 대신
   voiceStreamTestText: 'voice:stream:test-text', // DEX_VOICE_TEST=1 전용: STT 없이 글자로 판단·실행
 

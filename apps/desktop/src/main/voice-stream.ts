@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/connection-security';
 import { diag } from './diag-log';
+import { traceVoice } from './voice-trace';
 import { FORMAT } from './fast-act-e13';
 import { fastActEnabled } from './fast-act-runner';
 import { BrowserVoiceAgent, type VoiceAction } from './fast-act-voice';
@@ -32,6 +33,7 @@ const SCOPE = 'voice-stream';
 const FRAME = 640; // 20 ms @ 16 kHz PCM16
 /** stop 뒤 done 을 기다리는 최대 시간. */
 const DONE_WAIT_MS = 2_500;
+const WAKE_DEBUG_MAX_CHARS = 24;
 
 export type VoiceStreamDeps = {
   baseUrl: () => string;
@@ -55,6 +57,8 @@ export type VoiceStreamEvent =
 export type TimelineEntry = { t: number; type: string; text?: string; detail?: string };
 
 export type VoiceStreamResult = {
+  /** Present only in opt-in diagnostics so renderer decisions can use the same stream ID. */
+  traceId?: string;
   text: string;
   actions: VoiceAction[];
   unhandled: string | null;
@@ -136,9 +140,10 @@ class VoiceSession {
     private sttOnly = false,
     private wake: WakeGate | null = null,
     interactionId?: string,
+    deferActions = false,
   ) {
     this.woke = !wake || wake.awake;
-    this.deferActions = sttOnly || deps.planBeforeAct?.(interactionId) === true;
+    this.deferActions = deferActions || sttOnly || deps.planBeforeAct?.(interactionId) === true;
     this.agent = new BrowserVoiceAgent(workflowId, this.t0, (action) => emit({ sessionId: id, type: 'act', action }), interactionId);
     if (!this.deferActions && this.woke) this.agent.prefetch();
     this.seg = new Segmenter(
@@ -166,9 +171,11 @@ class VoiceSession {
       ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
     });
     this.ws = ws;
-    ws.on('open', () =>
-      ws.send(JSON.stringify({ type: 'start', format: 'pcm16', sample_rate: 16000, language: 'ko', mode: 'partials' })),
-    );
+    ws.on('open', () => {
+      const context = this.wake?.words.join(', ') || undefined;
+      traceVoice({ id: this.id, stage: 'start', context, carry: this.carry, reason: this.deferActions ? 'actions_deferred' : 'actions_enabled' });
+      ws.send(JSON.stringify({ type: 'start', format: 'pcm16', sample_rate: 16000, language: 'ko', mode: 'partials', context }));
+    });
     ws.on('message', (raw) => this.onMessage(String(raw)));
     ws.on('error', (err) => this.fail(String(err)));
     ws.on('close', (code) => {
@@ -206,13 +213,16 @@ class VoiceSession {
   }
 
   private onMessage(raw: string): void {
-    let m: { type?: string; text?: string; code?: string; message?: string };
+    let m: { type?: string; text?: string; code?: string; message?: string; context?: string };
     try {
       m = JSON.parse(raw);
     } catch {
       return;
     }
+    if ((m.type === 'partial' || m.type === 'final' || m.type === 'done') && typeof m.text === 'string')
+      traceVoice({ id: this.id, stage: 'stt', source: m.type, text: m.text });
     if (m.type === 'ready') {
+      traceVoice({ id: this.id, stage: 'ready', context: m.context });
       this.ready = true;
       this.mark('ready');
       // shortcut: 500ms 무음을 앞에 붙여 테스트 녹음의 첫 인사말 누락을 우회한다. 서버 시작 구간 원인 해결 후 제거를 검토한다.
@@ -227,6 +237,7 @@ class VoiceSession {
       // 보내고 done 도 두 번 이어 붙인다("창을 닫아줘. 창을 닫아줘." — 그러면 되풀이 환각으로 걸러져 말이 무시됐다).
       // 정지 뒤에 바로 앞 확정과 같은 글자가 오면 버린다.
       if (m.type === 'final' && this.stopSent && bare(m.text) === bare(this.lastFinal)) {
+        traceVoice({ id: this.id, stage: 'drop', source: m.type, text: m.text, reason: 'repeat_final' });
         this.droppedRepeat = true;
         this.mark('repeat_final_dropped', m.text);
         return;
@@ -236,6 +247,7 @@ class VoiceSession {
       // 이었다(10/16 합성 음성 24문장 중 5개 — 모두 문장 끝 부호 없이 끝났고, 온전한 확정 19개는 모두 부호로 맺었다).
       // 가장 많이 들은 중간 결과의 잘린 앞 토막인 확정·중간 결과는 버리고, 끝에는 그 중간 결과를 쓴다.
       if (truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial)) {
+        traceVoice({ id: this.id, stage: 'drop', source: m.type, text: m.text, reason: 'truncated_text' });
         this.mark(`cut_${m.type}_dropped`, m.text);
         return;
       }
@@ -246,6 +258,7 @@ class VoiceSession {
       this.lastHeard = heard;
       // 호출어 전의 말은 화면에도 내지 않는다(입력창에 사람에게 한 말이 적히지 않게).
       const said = this.sttOnly ? heard : this.gate(heard);
+      traceVoice({ id: this.id, stage: 'gate', source: m.type, text: heard, afterWake: said, carry: this.carry, reason: said === null ? 'wake_required' : said ? 'accepted' : 'wake_only' });
       if (said === null) {
         if (m.type === 'final') this.emit({ sessionId: this.id, type: 'utterance_end' });
         return;
@@ -303,26 +316,45 @@ class VoiceSession {
     this.audioEndMs = Math.round(now() - this.t0);
     this.mark('audio_end');
     if (this.ready) this.sendStop(); // 아직 준비 전이면 ready 에서 보낸다
+    const waitStarted = now();
     await new Promise<void>((resolve) => {
       if (this.closed || this.doneText !== null) return resolve();
       this.wakeDone = resolve;
       setTimeout(resolve, DONE_WAIT_MS);
     });
+    traceVoice({ id: this.id, stage: 'finalize', reason: this.doneText !== null ? 'done_received' : this.closed ? 'connection_closed' : 'done_timeout', waitMs: Math.round(now() - waitStarted) });
     const done = this.droppedRepeat ? this.closedText : this.doneText;
     const raw = (truncated(done ?? '', this.fullPartial) ? this.fullPartial : done) || this.lastHeard;
     const heard = this.sttOnly ? raw : this.gate(raw);
+    traceVoice({ id: this.id, stage: 'gate', source: 'result', text: raw, afterWake: heard, carry: this.carry, reason: heard === null ? 'wake_required' : heard ? 'accepted' : 'wake_only' });
+    // Temporary opt-in diagnosis: never log a prefix of a long background conversation.
+    const diagnosticText = raw.trim();
+    if (process.env.DEX_WAKE_DEBUG === '1' && this.wake && diagnosticText.length > 0 && diagnosticText.length <= WAKE_DEBUG_MAX_CHARS) {
+      const match = findWake(raw, this.wake.words);
+      diag(SCOPE, 'wake-debug', {
+        id: this.id,
+        heard: diagnosticText,
+        words: this.wake.words,
+        wake: heard === null ? 'ignored' : this.heardWake && !heard ? 'called' : 'heard',
+        followUp: this.wake.awake,
+        detected: this.heardWake,
+        match: match ? { text: raw.slice(match.start, match.end), distance: match.distance } : null,
+      });
+    }
     if (heard === null) {
       // 호출어 없는 말 — 판단·실행·기록 없이 버린다(글자도 돌려주지 않는다). 사람에게 한 말이라 로그에도
-      // 글자를 남기지 않는다 — 시험 빌드에서만 원문을 남긴다.
+      // 글자를 남기지 않는다 — 위의 짧은 발화 진단과 시험 모드에서만 원문을 남긴다.
       this.close();
       const test = process.env.DEX_VOICE_TEST === '1' ? { heard: raw } : {};
       diag(SCOPE, 'end', { id: this.id, wake: 'ignored', chars: raw.length, ...test });
-      return { text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
+      traceVoice({ id: this.id, stage: 'result', text: '', reason: 'wake_required' });
+      return { ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}), text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
     }
     const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : '');
     if (!this.deferActions) await this.seg.final(text);
     this.close();
     const result: VoiceStreamResult = {
+      ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}),
       text,
       actions: [...this.agent.actions],
       unhandled: this.seg.unhandled,
@@ -330,6 +362,7 @@ class VoiceSession {
       timeline: this.timeline,
       wake: !this.wake ? 'off' : this.heardWake && !text ? 'called' : 'heard',
     };
+    traceVoice({ id: this.id, stage: 'result', text, carry: this.carry, reason: result.wake === 'called' ? 'wake_only' : this.agent.actions.length ? 'browser_actions' : 'transcribed' });
     if (text && !this.deferActions) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
     diag(SCOPE, 'end', {
       id: this.id,
@@ -374,14 +407,14 @@ export class VoiceStreamHub {
 
   constructor(private deps: () => VoiceStreamDeps | null) {}
 
-  async start(workflowId: string, emit: (e: VoiceStreamEvent) => void, carry = '', sttOnly = false, interactionId?: string): Promise<string> {
+  async start(workflowId: string, emit: (e: VoiceStreamEvent) => void, carry = '', sttOnly = false, interactionId?: string, deferActions = false): Promise<string> {
     const deps = this.deps();
     if (!deps) throw new Error('XGEN 로그인이 필요합니다');
     const id = `${Date.now().toString(36)}-${++seq}`;
     const words = sttOnly ? null : deps.wakeWords();
     // 앞 말에서 이어진 말(carry 는 받은 말에서만 생긴다)과 호출어 직후의 말은 호출어 없이 받는다.
     const awake = !!carry.trim() || Date.now() < (this.wakeUntil.get(workflowId) ?? 0);
-    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null, interactionId);
+    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null, interactionId, deferActions);
     this.sessions.set(id, s);
     try { await s.open(); }
     catch (error) { s.close(); this.sessions.delete(id); throw error; }
@@ -408,6 +441,7 @@ export class VoiceStreamHub {
   }
 
   cancel(id: string): void {
+    traceVoice({ id, stage: 'drop', reason: 'session_cancelled' });
     this.sessions.get(id)?.close();
     this.sessions.delete(id);
   }

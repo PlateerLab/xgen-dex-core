@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { xgen } from '../bridge';
 import { startProcessedCapture, type ProcessedCapture } from './processed-capture';
 import type { VoiceStreamResult } from '../../../main/voice-stream';
+import type { VoiceTrace } from '../../../main/voice-trace';
 
 export type VoiceLoopState = 'idle' | 'armed' | 'hearing' | 'thinking';
 
@@ -50,11 +51,13 @@ export function useVoiceLoop(opts: {
   enabled: boolean;
   workflowId?: string;
   interactionId?: string;
+  /** Bind speech to the visible confirmation; changing cards cancels the old capture. */
+  responseKey?: string | null;
   isPaused?: () => boolean;
   onPartial?: (text: string) => void;
   /** 호출어로만 듣기에서 지금 말에 호출어를 들었다. */
   onWake?: () => void;
-  onResult: (r: VoiceStreamResult) => void | Promise<void>;
+  onResult: (r: VoiceStreamResult, responseKey: string | null) => void | Promise<void>;
 }): { state: VoiceLoopState; error: string | null } {
   const [state, setState] = useState<VoiceLoopState>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -63,11 +66,13 @@ export function useVoiceLoop(opts: {
 
   useEffect(() => {
     const workflowId = opts.workflowId;
+    const responseKey = opts.responseKey ?? null;
     if (!opts.enabled || !workflowId) {
       setState('idle');
       return;
     }
     let alive = true;
+    const isCurrent = (): boolean => alive && (cb.current.responseKey ?? null) === responseKey;
     setError(null);
     let cap: ProcessedCapture | null = null;
     let phase: VoiceLoopState = 'armed';
@@ -87,16 +92,25 @@ export function useVoiceLoop(opts: {
     let carried = false; // thinking 중에 다음 말이 시작됐다
     /** 넘기기를 기다리는 처리 못 한 말. 다음 말이 시작되면 그 세션 앞에 붙는다. */
     let held: { r: VoiceStreamResult; timer: ReturnType<typeof setTimeout> } | null = null;
+    const trace = (r: VoiceStreamResult, stage: VoiceTrace['stage'], reason: string, waitMs?: number): void => {
+      if (r.traceId) xgen.voiceStream.trace({ id: r.traceId, stage, text: r.text, requestId: responseKey, reason, waitMs });
+    };
     const deliver = (r: VoiceStreamResult): void => {
+      if (!isCurrent()) { trace(r, 'deliver', 'stale_context'); return; }
       if (!r.actions.length && r.unhandled) {
+        trace(r, 'deliver', 'waiting_for_continuation', JOIN_MS);
         held = { r, timer: setTimeout(() => {
           const h = held;
           held = null;
-          if (alive && h) void cb.current.onResult(h.r);
+          if (h) {
+            trace(h.r, 'deliver', isCurrent() ? 'continuation_wait_finished' : 'stale_context');
+            if (isCurrent()) void cb.current.onResult(h.r, responseKey);
+          }
         }, JOIN_MS) };
         return;
       }
-      void cb.current.onResult(r);
+      trace(r, 'deliver', 'immediate');
+      void cb.current.onResult(r, responseKey);
     };
 
     const keep = (pcm: Uint8Array, maxMs: number): void => {
@@ -107,6 +121,7 @@ export function useVoiceLoop(opts: {
     const begin = (): void => {
       let carryText = '';
       if (held) {
+        trace(held.r, 'carry', 'joined_next_utterance');
         clearTimeout(held.timer);
         carryText = held.r.text;
         held = null;
@@ -119,10 +134,10 @@ export function useVoiceLoop(opts: {
       belowSince = 0;
       set('hearing');
       void xgen.voiceStream
-        .start(workflowId, carryText, cb.current.interactionId)
+        .start(workflowId, carryText, cb.current.interactionId, responseKey ?? undefined)
         .then((id) => {
           starting = false;
-          if (!alive) return void xgen.voiceStream.cancel(id);
+          if (!isCurrent()) return void xgen.voiceStream.cancel(id);
           sid = id;
           for (const b of pending.splice(0)) xgen.voiceStream.audio(id, b);
           if (phase !== 'hearing') finish(); // 열리는 사이에 말이 끝났다
@@ -130,7 +145,7 @@ export function useVoiceLoop(opts: {
         .catch((cause) => {
           starting = false;
           pending = [];
-          if (alive) { setError(String(cause)); cap?.cancel(); set('idle'); }
+          if (isCurrent()) { setError(String(cause)); cap?.cancel(); set('idle'); }
         });
     };
     const finish = (): void => {
@@ -154,16 +169,20 @@ export function useVoiceLoop(opts: {
       void xgen.voiceStream
         .end(id)
         .then((r) => {
-          if (alive && r) deliver(r);
+          if (r) {
+            if (alive) deliver(r);
+            else trace(r, 'deliver', 'capture_closed');
+          }
         })
         .catch(() => undefined)
         .finally(() => {
-          if (!alive) return;
+          if (!isCurrent()) return;
           if (carried) begin(); // 마무리하는 사이에 다음 말이 시작됐다 — 모아 둔 소리부터 이어서
           else set('armed');
         });
     };
     const off = xgen.voiceStream.onEvent((ev) => {
+      if (!isCurrent()) return;
       if (ev.type === 'partial' && ev.sessionId === sid) cb.current.onPartial?.(ev.text);
       else if (ev.type === 'utterance_end' && ev.sessionId === sid && !localVad && phase === 'hearing') finish();
       else if (ev.type === 'error' && ev.sessionId === sid) { setError(ev.error); cap?.cancel(); xgen.voiceStream.cancel(sid); sid = null; set('idle'); }
@@ -172,7 +191,7 @@ export function useVoiceLoop(opts: {
 
     void startProcessedCapture(({ pcm, inSpeech, events, vad }) => {
       localVad = vad;
-      if (!alive) return;
+      if (!isCurrent()) return;
       const now = Date.now();
       if (cb.current.isPaused?.()) {
         // 앱이 말하는 중 — 듣지 않는다. 진행 중인 말이 있으면 끝낸다.
@@ -200,17 +219,17 @@ export function useVoiceLoop(opts: {
       } else belowSince = 0;
       if (now - utteranceStart >= MAX_UTTERANCE_MS) finish();
     }, (cause) => {
-      if (!alive) return;
+      if (!isCurrent()) return;
       setError(cause.message);
       if (sid) xgen.voiceStream.cancel(sid);
       sid = null; set('idle');
     }, () => cb.current.isPaused?.() === true)
       .then((c) => {
-        if (!alive) return c.cancel();
+        if (!isCurrent()) return c.cancel();
         cap = c;
         set('armed');
       })
-      .catch((cause) => { if (alive) { setError(String(cause)); set('idle'); } });
+      .catch((cause) => { if (isCurrent()) { setError(String(cause)); set('idle'); } });
 
     return () => {
       alive = false;
@@ -221,7 +240,7 @@ export function useVoiceLoop(opts: {
       setState('idle');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts.enabled, opts.workflowId, opts.interactionId]);
+  }, [opts.enabled, opts.workflowId, opts.interactionId, opts.responseKey]);
 
   return { state, error };
 }

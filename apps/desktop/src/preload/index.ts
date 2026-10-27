@@ -84,6 +84,7 @@ import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
 import type { ChatFolderRemote, ChatFolderView } from '../main/chat-folders';
 import type { VoiceStreamEvent, VoiceStreamResult } from '../main/voice-stream';
+import type { VoiceTrace } from '../main/voice-trace';
 import type { RemoteFolderUse } from '@dex/engine/local-tools';
 import type { SystemMetrics } from '@dex/protocol/system-metrics';
 import type {
@@ -109,6 +110,7 @@ import type {
   BrowserState,
 } from '@dex/protocol/browser';
 import type { UserConfirmRequest, UserConfirmResolveRequest } from '@dex/protocol/user-confirm';
+import type { VoiceConfirmIntent } from '@dex/protocol/voice-confirm';
 
 /** 인앱 탐색기 — 파일 저장소 폴더의 직계 자식 하나. */
 export interface WorkspaceEntryLike {
@@ -860,6 +862,8 @@ const api = {
   /** Voice — STT (mic→text) and TTS (text→audio). Audio is captured in the
    *  renderer (getUserMedia) and shuttled to main as bytes; secrets stay in main. */
   voice: {
+    confirmIntent: (requestId: string, text: string): Promise<VoiceConfirmIntent> =>
+      ipcRenderer.invoke(CHANNELS.voiceConfirmIntent, requestId, text),
     /** preferences.stt / preferences.tts (UI hints only — no secrets). */
     getConfig: (): Promise<VoiceConfig> => ipcRenderer.invoke(CHANNELS.voiceConfig),
     /** Send a recorded clip → transcript text. */
@@ -897,10 +901,14 @@ const api = {
     cancel: (id: string): void => ipcRenderer.send(CHANNELS.audioProcessCancel, id),
   },
   voiceStream: {
+    trace: (event: VoiceTrace): void => {
+      try { ipcRenderer.send(CHANNELS.voiceStreamTrace, event); }
+      catch { /* Diagnostic transport must not interrupt a voice response. */ }
+    },
     available: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.voiceStreamAvailable),
     /** carry: 앞 발화에서 처리 못 한 말 — 잠깐 쉬어 끊긴 말을 이어 붙여 판단한다. */
-    start: (workflowId: string, carry?: string, interactionId?: string): Promise<string> =>
-      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry, interactionId),
+    start: (workflowId: string, carry?: string, interactionId?: string, confirmRequestId?: string): Promise<string> =>
+      ipcRenderer.invoke(CHANNELS.voiceStreamStart, workflowId, carry, interactionId, confirmRequestId),
     audio: (sessionId: string, pcm: Uint8Array): void => ipcRenderer.send(CHANNELS.voiceStreamAudio, sessionId, pcm),
     end: (sessionId: string): Promise<VoiceStreamResult | null> => ipcRenderer.invoke(CHANNELS.voiceStreamEnd, sessionId),
     cancel: (sessionId: string): void => ipcRenderer.send(CHANNELS.voiceStreamCancel, sessionId),

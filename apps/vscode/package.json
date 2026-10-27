@@ -2,7 +2,7 @@
   "name": "xgen-dex-vscode",
   "displayName": "XGEN DexOn",
   "description": "Use XGEN DexOn agents in Visual Studio Code through the DexOn CLI engine.",
-  "version": "1.106.0",
+  "version": "1.107.0",
   "publisher": "xgen",
   "license": "Apache-2.0",
   "engines": {

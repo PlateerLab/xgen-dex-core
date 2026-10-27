@@ -29,6 +29,11 @@ test('발표 중이면 계속하기·발표 끝내기·다음·이전을 붙이�
   assert.deepEqual(Object.keys(sys), ['e9001', 'e9002', 'e9003', 'e9004', 'e9005', 'e9006']);
 });
 
+test('발표 조작 후보가 있는 앱(발표 중인 PowerPoint)은 같은 일을 하는 키·숨기기 후보를 두지 않는다', () => {
+  const sys = systemActions({ app: 'Microsoft PowerPoint', pid: 1, presenting: true, window: 'PowerPoint 슬라이드 쇼' }, () => undefined, true);
+  assert.deepEqual(names(sys), ['발표(전체 화면) 계속하기 — 이미 발표 중', '발표(전체 화면) 끝내기 (Esc 키)', 'XGen Dex 앞으로 가져오기']);
+});
+
 test('답은 후보 이름 대신 한 일을 말하는 문장 — 키 이름("(Esc 키)")을 읽지 않는다', () => {
   const sys = systemActions({ app: 'PowerPoint', pid: 1, presenting: true }, () => undefined);
   assert.deepEqual(Object.values(sys).map((a) => a.sentence), [
@@ -112,6 +117,7 @@ test('다른 맥 앱 후보 — 실행 중인 앱은 시스템 후보 뒤(맨 �
     head: { e9011: { role: 'button', name: '카카오톡 앱으로 전환 (맥 데스크탑 앱)' } },
     tail: { e8001: { role: 'button', name: '계산기 (Calculator) 앱 실행 (맥 데스크탑 앱)' } },
     apps: { e9011: { name: '카카오톡', label: '카카오톡', path: '/Applications/KakaoTalk.app', pid: 20 }, e8001: { name: '계산기', label: '계산기 (Calculator)', path: '/System/Applications/Calculator.app' } },
+    controls: {},
   };
   const ax = {
     gen: 1, app: 'Microsoft PowerPoint', bundleId: '', pid: 30, presenting: false, window: '프레젠테이션1', windowFrame: [0, 0, 800, 600],

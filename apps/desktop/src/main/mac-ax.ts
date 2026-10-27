@@ -170,12 +170,17 @@ export async function axActivate(pid: number): Promise<void> {
   await call('activate', { pid });
 }
 
-export async function axPresentation(pid: number, action: PresentationAction): Promise<{ verified: boolean; reason?: string; visibleWindows?: number; hideAttempts?: number; settleMs?: number }> {
+/**
+ * 발표 조작(dex-ax presentation) — sent = 키·숨기기를 실제로 보냈나(보내기 전 확인에서 멈췄으면 false), verified = 결과를
+ * 확인했나(다음·이전은 쇼 창의 장 번호가 바뀜 — 번호를 읽지 못하면 false 여도 키는 갔다).
+ */
+export async function axPresentation(pid: number, action: PresentationAction): Promise<{ sent: boolean; verified: boolean; reason?: string; visibleWindows?: number; hideAttempts?: number; settleMs?: number }> {
   // Isolate the show-exit/hide sequence from the helper that owns AX element handles.
   const reply = action === 'hide' ? await hidePresentation(pid) : await call('presentation', { pid, action }, 8_000);
-  if (reply.pid !== pid || reply.action !== action || typeof reply.verified !== 'boolean')
+  if (reply.pid !== pid || reply.action !== action || typeof reply.verified !== 'boolean' || typeof reply.sent !== 'boolean')
     throw new Error('발표 조작 결과의 대상과 상태를 확인하지 못했습니다.');
   return {
+    sent: reply.sent,
     verified: reply.verified,
     ...(typeof reply.reason === 'string' ? { reason: reply.reason } : {}),
     ...(typeof reply.visibleWindows === 'number' && Number.isInteger(reply.visibleWindows) && reply.visibleWindows >= 0 ? { visibleWindows: reply.visibleWindows } : {}),

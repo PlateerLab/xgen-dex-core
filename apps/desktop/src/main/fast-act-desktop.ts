@@ -13,6 +13,8 @@
  *     고른 숨긴 PowerPoint 를 "발표 자료 다시 띄워줘" 에 Keynote 로 바꿔 열었다(10/27: 8문장 중 5·엉뚱한 실행 1 → 8·0,
  *     다른 앱 요청 10문장은 그대로 10).
  *   · 브라우저 탭이 없는 DeX 앞 화면 — 맨 위에 웹 후보(WEB_CAND). 앱 후보만 있으면 사이트 요청이 브라우저·비슷한 이름의 앱을 열었다.
+ *   · 발표 중인 PowerPoint — 맨 위에 다음·이전 장, 쇼 끝내고 내리기(voice-presentation). 쇼를 끝내고 내린 PowerPoint 를
+ *     "다시 띄우기" 로 고르면 앱만 보이지 않고 현재 슬라이드부터 쇼를 다시 시작한다.
  * 측정(10/18 dev 판단 모델, 네이버 첫 화면, 앱 요청 17 + 페이지 요청 14): 실행 중인 앱 6개일 때 26/31·엉뚱한 실행 3,
  * 16개일 때 28/31·0. 페이지 요청은 모두 그대로였고, 나머지는 확신이 낮아 서버 에이전트로 간다.
  * 앱 이름은 보이는 이름("계산기")과 번들 이름("Calculator") 둘 다 싣는다 — 사람은 한국어로 부른다(Spotlight 표시 이름).
@@ -28,6 +30,7 @@ import { CHROME_PICK } from './fast-act-chrome';
 import { READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-act-e13';
 import { decisionPost } from './fast-act-runner';
 import type { VoiceAction } from './fast-act-voice';
+import { endedShow, namedControl, namedControlOk, presentationControls, restartShow, runPresentation, type PresentationControl } from './voice-presentation';
 import { axActivate, axApps, axSnapshot, type AxApp } from './mac-ax';
 import { GUARDED, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
 
@@ -112,10 +115,10 @@ export function installedApps(): Promise<InstalledApp[]> {
 
 /** 앱 하나 — 고르면 이것을 연다. label = 설치된 앱의 "표시 이름 (번들 이름)", hidden = 실행 중인데 숨겨 둔 앱. */
 export type DesktopApp = { name: string; label: string; path: string; pid?: number; hidden?: boolean };
-/** 화면에 붙일 앱 후보 — head 는 맨 위(실행 중), tail 은 맨 끝(설치됨). */
-export type DesktopCands = { head: ElementRefs; tail: ElementRefs; apps: Record<string, DesktopApp> };
+/** 화면에 붙일 앱 후보 — head 는 맨 위(발표 조작·실행 중), tail 은 맨 끝(설치됨). controls = head 의 발표 조작. */
+export type DesktopCands = { head: ElementRefs; tail: ElementRefs; apps: Record<string, DesktopApp>; controls: Record<string, PresentationControl> };
 
-export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {} };
+export const NO_DESKTOP: DesktopCands = { head: {}, tail: {}, apps: {}, controls: {} };
 
 const labelOf = (a: InstalledApp): string => (a.displayName ? `${a.displayName} (${a.name})` : a.name);
 
@@ -145,7 +148,9 @@ async function appList(exceptPid: number | null): Promise<DesktopApp[]> {
  */
 export async function desktopCands(frontPid: number | null, headStart: number): Promise<DesktopCands> {
   if (!desktopActEnabled()) return NO_DESKTOP;
-  const out: DesktopCands = { head: {}, tail: {}, apps: {} };
+  // 발표 조작은 맨 앞 앱(PPT 쇼가 맨 앞일 때)도 — 앱 후보만 맨 앞 앱을 뺀다.
+  const { refs, controls } = presentationControls(await runningApps(), headStart);
+  const out: DesktopCands = { head: { ...refs }, tail: {}, apps: {}, controls };
   for (const a of await appList(frontPid)) {
     const head = a.pid !== undefined;
     const into = head ? out.head : out.tail;
@@ -154,6 +159,11 @@ export async function desktopCands(frontPid: number | null, headStart: number): 
     out.apps[ref] = a;
   }
   return out;
+}
+
+/** 발표 조작 뒤 — 실행 중인 앱 목록(발표 중 여부)을 새로 읽게. */
+export function forgetRunning(): void {
+  running = null;
 }
 
 /** 앱을 열거나 앞으로 가져와 맨 앞에 올 때까지 기다리고, 창이 뜨기를 잠깐 기다린다. */
@@ -186,7 +196,7 @@ async function bringFront(a: DesktopApp): Promise<AxApp> {
  * 앱 후보가 이겼다 — 앱 목록만 놓고 어느 앱인지 다시 고르고, 열어서 맨 앞에 올 때까지 기다린다. 확신이 낮거나
  * 열지 못하면 throw(서버 에이전트로 넘어간다). web = 목록 맨 앞에 둘 웹 후보(WEB_CAND) — 그것을 고르면 열지 않는다.
  */
-export async function openPickedApp(post: DecisionPost, said: string, web?: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number }> {
+export async function openPickedApp(post: DecisionPost, said: string, web?: string): Promise<{ app: string; pid: number; pickMs: number; openMs: number; sentence?: string }> {
   const t0 = now();
   const list = await appList(null);
   const lead = web ? 1 : 0;
@@ -200,6 +210,11 @@ export async function openPickedApp(post: DecisionPost, said: string, web?: stri
   if (web && pick?.ref === 'e1') throw new Error('웹 페이지 요청');
   if (!pick || !target || pick.confidence < CHROME_PICK) throw new Error(`앱 확신 낮음 ${pick?.confidence.toFixed(2) ?? '-'}`);
   const pickMs = now() - t0;
+  if (target.hidden && endedShow(target.pid)) {
+    await restartShow(target.pid!);
+    running = null;
+    return { app: target.name, pid: target.pid!, pickMs, openMs: now() - t0 - pickMs, sentence: '발표 화면을 현재 슬라이드부터 다시 띄웠어요.' };
+  }
   const front = await bringFront(target);
   return { app: target.name, pid: front.pid, pickMs, openMs: now() - t0 - pickMs };
 }
@@ -305,10 +320,19 @@ export class LauncherVoiceAgent implements VoiceAgent {
     const rc = cls.gate.toFixed(2);
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
     if (!((cls.single ?? 0) >= 0.9)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
-    if (!((cls.onscreen ?? 0) >= 0.5)) return no(`화면에 없는 대상 ${cls.onscreen}`);
-    if ((th.partial && cls.ready !== 'act_now') || cls.gate < th.intent) return no(`기다림 ${cls.ready} ${rc}`);
+    // 발표 조작 이름만 말했다("다음 장") — 고른 것이 발표 조작일 때만 아래에서 실행한다.
+    const off = !((cls.onscreen ?? 0) >= 0.5);
+    const waiting = (th.partial && cls.ready !== 'act_now') || cls.gate < th.intent;
+    const named = (off || waiting) && namedControl(th, cls.ready, c.controls);
+    if (off && !named) return no(`화면에 없는 대상 ${cls.onscreen}`);
+    if (waiting && !named) return no(`기다림 ${cls.ready} ${rc}`);
     if (abort()) return no('판단 취소(새 인식)');
     const pick = await pickElement(post, text, LAUNCHER_ORIGIN, refs, scr);
+    const ctl = pick && c.controls[pick.ref];
+    if (pick && ctl && (!named || namedControlOk(text, ctl))) {
+      return runPresentation(ctl, { said: text, th, guard, abort, pick, t0, sessionT0: this.t0, push: (a) => { running = null; this.actions.push(a); this.onAct?.(a); } });
+    }
+    if (named) return no(`기다림 ${cls.ready} ${rc} (발표 조작 이름 아님)`, pick?.top);
     if (pick?.ref === WEB_REF) return no(`웹 페이지 요청 ${pick.confidence.toFixed(2)}`, pick.top);
     if (!pick || !c.apps[pick.ref] || pick.confidence < CHROME_PICK) return no(`앱 후보 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
     return runOpen(
@@ -358,6 +382,7 @@ export async function runOpen(
     return no(`앱 열기 안 함 — ${err instanceof Error ? err.message : String(err)}`);
   }
   const a = openedAction(text, opened.app, th.partial, decideMs + opened.pickMs, opened.openMs, now() - sessionT0);
+  if (opened.sentence) a.sentence = opened.sentence;
   push(a);
   diag(SCOPE, 'act', { ...a, pick: Number(pick.confidence.toFixed(3)), top: pick.top });
   // 남은 말은 연 앱 화면에서 다시 나눈다(voice-segmenter) — "PPT 열어서 새 프레젠테이션 만들어줘".

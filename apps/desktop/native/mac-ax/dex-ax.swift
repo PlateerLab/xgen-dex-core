@@ -418,8 +418,9 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
   else { return ["ok": false, "error": "발표 조작 대상 PowerPoint를 찾지 못함"] }
   guard AXIsProcessTrusted() else { return ["ok": false, "error": "접근성 권한이 필요합니다"] }
   let axApp = AXUIElementCreateApplication(pid)
-  func result(_ verified: Bool, _ reason: String = "") -> [String: Any] {
-    return ["ok": true, "pid": pid, "action": operation, "verified": verified, "reason": reason]
+  // sent = 키·숨기기를 실제로 보냈다. 보내기 전에 멈추면 false — 호출한 쪽이 서버로 넘겨도 같은 조작이 두 번 되지 않는다.
+  func result(_ verified: Bool, _ reason: String = "", sent: Bool = false) -> [String: Any] {
+    return ["ok": true, "pid": pid, "action": operation, "verified": verified, "sent": sent, "reason": reason]
   }
   let hidden = (attr(axApp, kAXHiddenAttribute) as? Bool) ?? target.isHidden
   if (operation == "next" || operation == "previous") && (hidden || powerPointShowWindows(axApp).isEmpty) {
@@ -444,24 +445,24 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
       while !powerPointShowWindows(axApp).isEmpty && nowMs() < deadline {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
       }
-      guard powerPointShowWindows(axApp).isEmpty else { return result(false, "슬라이드 쇼가 종료되지 않아 XGEN으로 전환하지 않았습니다.") }
+      guard powerPointShowWindows(axApp).isEmpty else { return result(false, "슬라이드 쇼가 종료되지 않아 XGEN으로 전환하지 않았습니다.", sent: true) }
     }
     let hideStarted = nowMs()
     var lastCount: Int?
     // The editor can reappear while the show exits. Retry only the idempotent hide, never Escape.
     for attempt in 1...3 {
-      guard powerPointShowWindows(axApp).isEmpty else { return result(false, "슬라이드 쇼가 다시 열려 숨김을 중단했습니다.") }
+      guard powerPointShowWindows(axApp).isEmpty else { return result(false, "슬라이드 쇼가 다시 열려 숨김을 중단했습니다.", sent: true) }
       let reply = hide(pid)
       lastCount = reply["visibleWindows"] as? Int
       if reply["ok"] as? Bool == true {
-        var out = result(true)
+        var out = result(true, sent: true)
         out["visibleWindows"] = 0
         out["hideAttempts"] = attempt
         out["settleMs"] = Int(nowMs() - hideStarted)
         return out
       }
     }
-    var out = result(false, "쇼는 종료됐지만 PowerPoint 창 숨김을 확인하지 못했습니다. XGEN으로 전환하지 않았어요.")
+    var out = result(false, "쇼는 종료됐지만 PowerPoint 창 숨김을 확인하지 못했습니다. XGEN으로 전환하지 않았어요.", sent: true)
     if let count = lastCount, count >= 0 { out["visibleWindows"] = count }
     out["hideAttempts"] = 3
     out["settleMs"] = Int(nowMs() - hideStarted)
@@ -472,7 +473,7 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
       guard focusPowerPointShowWindow(axApp, pid) != nil else {
         return result(false, "발표 창의 초점을 확인하지 못했습니다.")
       }
-      return result(true)
+      return result(true, sent: true)
     }
     let sent = keys("cmd+return", pid: pid)
     guard sent["ok"] as? Bool == true else { return result(false, "현재 슬라이드부터 시작 키를 보내지 못했습니다.") }
@@ -480,8 +481,8 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
     while powerPointShowWindows(axApp).isEmpty && nowMs() < deadline {
       RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
     }
-    guard !powerPointShowWindows(axApp).isEmpty else { return result(false, "현재 슬라이드부터 쇼가 시작됐는지 확인하지 못했습니다. 자동으로 재시작하지 않습니다.") }
-    return result(true)
+    guard !powerPointShowWindows(axApp).isEmpty else { return result(false, "현재 슬라이드부터 쇼가 시작됐는지 확인하지 못했습니다. 자동으로 재시작하지 않습니다.", sent: true) }
+    return result(true, sent: true)
   }
   guard let showWindow = focusPowerPointShowWindow(axApp, pid) else {
     return result(false, "발표 창의 초점을 확인하지 못해 슬라이드 키를 보내지 않았습니다.")
@@ -492,12 +493,14 @@ func presentation(_ pid: pid_t?, _ operation: String) -> [String: Any] {
   }
   let sent = keys(operation == "next" ? "right" : "left", pid: pid)
   guard sent["ok"] as? Bool == true else { return result(false, sent["error"] as? String ?? "키 전송 실패") }
+  // 장 번호는 발표자 보기에만 보이기도 하고, 애니메이션 단계·마지막 장에서는 그대로다 — 바뀌면 확인, 아니면 키만 보낸 것으로.
+  guard let before = before else { return result(false, "장 번호를 읽지 못해 키만 보냈습니다.", sent: true) }
   let deadline = nowMs() + 1200
   while nowMs() < deadline {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-    if let before = before, let after = slideMarker(showWindow), before != after { return result(true) }
+    if let after = slideMarker(showWindow), before != after { return result(true, sent: true) }
   }
-  return result(false, "PowerPoint에 슬라이드 키를 한 번 보냈지만 장 변경은 확인하지 못했습니다. 자동으로 재전송하지 않습니다.")
+  return result(false, "슬라이드 키를 한 번 보냈지만 장 번호는 그대로입니다(애니메이션·마지막 장일 수 있음).", sent: true)
 }
 
 func runningApps() -> [String: Any] {

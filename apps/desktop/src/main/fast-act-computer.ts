@@ -44,7 +44,7 @@ import {
   type AxSnapshot,
 } from './mac-ax';
 import { GUARDED, mentions, type Guard, type Outcome, type Thresholds, type VoiceAgent } from './voice-segmenter';
-import { PresentationVoiceAgent } from './voice-presentation';
+import { configurePresentation, dexToFront, namedControl, namedControlOk, presentationRepick, runPresentation } from './voice-presentation';
 
 const SCOPE = 'voice-computer';
 /** 판단에 쓰는 스냅샷의 최대 나이, 뒤에서 새로 읽기 시작하는 나이 — 브라우저 칸과 같다. */
@@ -81,6 +81,7 @@ let helperFound = false;
 export function configureComputerAct(d: ComputerActDeps): void {
   deps = d;
   configureDesktopAct(computerActEnabled);
+  configurePresentation(d.showDex);
 }
 
 export function computerActEnabled(): boolean {
@@ -106,8 +107,11 @@ type SystemAction = { role: string; name: string; run: () => Promise<void>; sent
 /** 시스템 후보 수의 상한 — 다른 앱 후보 번호를 그 뒤(e9001 + 이것)부터 매긴다. */
 const SYSTEM_MAX = 10;
 
-/** 화면 밖 조작 — 번호는 앱 요소(e1…)와 겹치지 않게 e9001 부터. */
-export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' | 'window'>, showDex: () => void): Record<string, SystemAction> {
+/**
+ * 화면 밖 조작 — 번호는 앱 요소(e1…)와 겹치지 않게 e9001 부터. presenter = 이 앱의 발표 조작(다음·이전·쇼 끝내고 내리기,
+ * voice-presentation)이 화면 후보에 있다 — 같은 일을 하는 키·숨기기 후보는 두지 않는다.
+ */
+export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' | 'window'>, showDex: () => void, presenter = false): Record<string, SystemAction> {
   const out: Record<string, SystemAction> = {};
   const add = (a: SystemAction): void => void (out[`e${9001 + Object.keys(out).length}`] = a);
   // 키는 맨 앞 앱으로 간다 — 이 판단기는 그 앱이 맨 앞일 때만 쓰인다.
@@ -117,20 +121,24 @@ export function systemActions(ax: Pick<AxSnapshot, 'app' | 'pid' | 'presenting' 
     // `보기 > 슬라이드 쇼`(처음부터 다시)·`슬라이드 다시 사용` 을 골랐다(10/27 dev 판단 모델, 숨겼다 다시 띄운 쇼).
     add({ role: 'button', name: '발표(전체 화면) 계속하기 — 이미 발표 중', run: async () => undefined, sentence: '이미 발표 중이에요.' });
     add({ role: 'button', name: '발표(전체 화면) 끝내기 (Esc 키)', run: key('escape'), sentence: '발표를 끝냈어요.' });
-    add({ role: 'button', name: '다음 슬라이드·장 (→ 키)', run: key('right'), sentence: '다음 장으로 넘겼어요.' });
-    add({ role: 'button', name: '이전 슬라이드·장 (← 키)', run: key('left'), sentence: '이전 장으로 돌아갔어요.' });
+    if (!presenter) {
+      add({ role: 'button', name: '다음 슬라이드·장 (→ 키)', run: key('right'), sentence: '다음 장으로 넘겼어요.' });
+      add({ role: 'button', name: '이전 슬라이드·장 (← 키)', run: key('left'), sentence: '이전 장으로 돌아갔어요.' });
+    }
   }
   // "내리기" 를 이름에 둔다 — "앱 숨기기" 만이면 "ppt 내려줘" 가 발표 끝내기(Esc)로 가서 앱 창이 앞에 남았다
-  // (10/18 dev 판단 모델: 내려줘류 7문장 0/7 → 7/7). 숨김 확인 전에는 초점을 바꾸지 않는다.
-  add({
-    role: 'button',
-    name: `${ax.app} 내리기 (앱 숨기기)`,
-    run: async () => {
-      await axHide(ax.pid);
-      showDex();
-    },
-    sentence: `${ax.app} 앱을 내렸어요.`,
-  });
+  // (10/18 dev 판단 모델: 내려줘류 7문장 0/7 → 7/7). 숨긴 것을 확인한 뒤 DeX 를 앞으로 — 뒤의 앱이 늦게 올라와 덮으면 한 번 더.
+  if (!presenter) {
+    add({
+      role: 'button',
+      name: `${ax.app} 내리기 (앱 숨기기)`,
+      run: async () => {
+        await axHide(ax.pid);
+        await dexToFront(showDex);
+      },
+      sentence: `${ax.app} 앱을 내렸어요.`,
+    });
+  }
   if (ax.window !== undefined && !ax.presenting) {
     add({ role: 'button', name: `${ax.app} 창 최소화`, run: () => axMinimize(ax.pid), sentence: `${ax.app} 창을 최소화했어요.` });
   }
@@ -184,7 +192,7 @@ function originOf(ax: AxSnapshot): string {
 
 /** 화면 — 시스템 후보·실행 중인 다른 앱(맨 위, 정렬 안 함), 앱 요소(읽는 순서), 설치된 앱(틀이 없어 맨 끝). */
 export function buildSnap(ax: AxSnapshot, desk: DesktopCands = NO_DESKTOP): MacSnap {
-  const system = systemActions(ax, () => deps?.showDex());
+  const system = systemActions(ax, () => deps?.showDex(), Object.values(desk.controls).some((c) => c.app.pid === ax.pid));
   const toRefs = (r: ElementRefs) => Object.entries(r).map(([ref, v]) => ({ ref, role: v.role, name: v.name ?? '' }));
   const head = [...Object.entries(system).map(([ref, a]) => ({ ref, role: a.role, name: a.name })), ...toRefs(desk.head)];
   const { refs, list, size } = appRefs(ax);
@@ -336,7 +344,9 @@ export class ComputerVoiceAgent implements VoiceAgent {
     const rc = cls.gate.toFixed(2);
     if (cls.ready === 'not_ui') return no(`화면 조작 아님 ${rc}`);
     if (!((cls.single ?? 0) >= 0.9)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
-    if (!((cls.onscreen ?? 0) >= 0.5)) return no(`화면에 없는 대상 ${cls.onscreen}`);
+    // 발표 조작 이름만 말했다("다음 장") — 판단 모델은 화면 밖으로 본다. 고른 것이 발표 조작일 때만 아래에서 실행한다.
+    const off = !((cls.onscreen ?? 0) >= 0.5) && namedControl(th, cls.ready, s.desk.controls);
+    if (!((cls.onscreen ?? 0) >= 0.5) && !off) return no(`화면에 없는 대상 ${cls.onscreen}`);
     // 말이 끝났는데 요소 이름만 말한 경우 — 브라우저 칸과 같은 규칙(아래에서 확신·이름 겹침을 본다).
     const namedOnly = !th.partial && cls.ready === 'wait';
     if ((th.partial && cls.ready !== 'act_now') || (cls.gate < th.intent && !namedOnly)) {
@@ -360,6 +370,20 @@ export class ComputerVoiceAgent implements VoiceAgent {
       });
     }
     if (!pick || pick.confidence < th.pick) return no(`요소 확신 낮음 ${pick?.confidence.toFixed(2)}`, pick?.top);
+    // 발표 중에 앱 요소가 이겼다 — 발표 조작과 그 요소만 놓고 다시 고른다(voice-presentation).
+    const repick = !s.desk.controls[pick.ref] && !s.desk.apps[pick.ref] && !s.system[pick.ref]
+      ? await presentationRepick(post, text, s.origin, s.desk.controls, pick.ref, s.refs[pick.ref]).catch(() => null)
+      : null;
+    const chosen = repick ?? pick;
+    const ctl = s.desk.controls[chosen.ref];
+    if (ctl && (!namedOnly || namedControlOk(text, ctl))) {
+      return runPresentation(ctl, { said: text, th, guard, abort, pick: chosen, t0, sessionT0: this.t0, push: (a) => {
+        this.forget();
+        this.actions.push(a);
+        this.onAct?.(a);
+      } });
+    }
+    if (off) return no(`화면에 없는 대상 ${cls.onscreen}`, pick.top);
     if (s.desk.apps[pick.ref]) {
       return runOpen(post, text, th, guard, pick, s.refs[pick.ref].name ?? '', t0, this.t0, (a) => {
         this.forget();
@@ -382,8 +406,7 @@ export class ComputerVoiceAgent implements VoiceAgent {
       else await axPress(pick.ref, s.gen);
     } catch (err) {
       this.forget();
-      const reason = `실행 실패 ${err instanceof Error ? err.message : String(err)}`;
-      return { acted: false, reason, detail: pick.top, ms: now() - t0, stop: !reason.includes(AX_STALE) };
+      return no(`실행 실패 ${err instanceof Error ? err.message : String(err)}`, pick.top);
     }
     const done = await this.record(text, element, th, decideMs, now() - tAct, pick, s, sys?.sentence);
     return { acted: true, kind: 'press', target: done.label, ms: now() - t0, effect: 'ok' };
@@ -433,7 +456,6 @@ export class RoutedVoiceAgent implements VoiceAgent {
   readonly actions: VoiceAction[];
   private computer: ComputerVoiceAgent;
   private launcher: LauncherVoiceAgent;
-  private presentation: PresentationVoiceAgent;
 
   constructor(
     private browser: BrowserVoiceAgent,
@@ -443,7 +465,6 @@ export class RoutedVoiceAgent implements VoiceAgent {
     this.actions = browser.actions;
     this.computer = new ComputerVoiceAgent(t0, browser.actions, onAct);
     this.launcher = new LauncherVoiceAgent(t0, browser.actions, onAct);
-    this.presentation = new PresentationVoiceAgent(t0, browser.actions, () => deps?.showDex(), onAct);
   }
 
   get lastTarget(): string | null {
@@ -469,15 +490,6 @@ export class RoutedVoiceAgent implements VoiceAgent {
   }
 
   async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean, utterance: string, pressOnly?: boolean): Promise<Outcome> {
-    if (computerActEnabled()) {
-      try {
-        const presentation = await this.presentation.handle(text, th, guard, abort);
-        if (presentation) return presentation;
-      } catch (error) {
-        // Native attempts return terminal outcomes themselves; discovery errors do not own the request.
-        diag(SCOPE, 'presentation-preflight-failed', { reason: error instanceof Error ? error.message : String(error) });
-      }
-    }
     const o = await (await this.route()).handle(text, th, guard, abort, utterance, pressOnly);
     // 실행은 맨 앞 앱을 바꿀 수 있다(앱 열기·숨기기) — 다음 판단이 옛 맨 앞 앱을 보지 않게.
     if (o.acted) frontCache = null;

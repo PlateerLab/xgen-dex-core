@@ -44,6 +44,7 @@ import { FORMAT, READY_OPTS, READY_Q, buildScreen, type Screen13 } from './fast-
 import { decisionPost, originOf, revealForAct, visiblePage, waitSettled } from './fast-act-runner';
 import { CHROME_CLOSE_PICK, CHROME_PICK, LANDMARK, TAB_WORD, chromeActions, chromeAllowed, chromeRefs, type ChromeAction } from './fast-act-chrome';
 import { NO_DESKTOP, desktopCands, runOpen, type DesktopCands } from './fast-act-desktop';
+import { namedControl, namedControlOk, presentationRepick, runPresentation } from './voice-presentation';
 import {
   FIELD_LABEL_SCRIPT,
   checkOf,
@@ -1287,7 +1288,9 @@ export class BrowserVoiceAgent implements VoiceAgent {
     if (FORMAT === 'e13' && !this.oneStep && !(cls.single! >= SINGLE_MIN)) return no(`여러 단계·글쓰기 작업 ${cls.single}`);
     // 말한 대상이 화면에 없다(다른 페이지로 가야 함) — 서버로. 10/19 BO: 칸 지시 29개는 0.977 이상, 화면에 없는 페이지로 가라는
     // 말("임시저장한 상품 확인 페이지로", "상품 승인 관리 페이지로", "대시보드로")은 0.01~0.04.
-    if (FORMAT === 'e13' && !(cls.onscreen! >= ONSCREEN_MIN)) return no(`화면에 없는 대상 ${cls.onscreen}`);
+    // 발표 조작 이름만 말한 말("다음 장")도 화면 밖으로 본다 — 고른 것이 발표 조작일 때만 아래에서 실행한다(voice-presentation).
+    const off = FORMAT === 'e13' && !(cls.onscreen! >= ONSCREEN_MIN) && namedControl(th, cls.ready, desk.controls);
+    if (FORMAT === 'e13' && !(cls.onscreen! >= ONSCREEN_MIN) && !off) return no(`화면에 없는 대상 ${cls.onscreen}`);
     // 말이 끝났는데 동사 없이 요소 이름만 말한 경우("이달의 블로그 탭", "검색 버튼") — 모델은 '기다림' 으로
     // 답하지만, 더 올 말이 없으니 그 요소를 누르라는 뜻으로 본다. 대신 고른 확신이 높고 말이 그 이름을
     // 가리킬 때만 한다(아래).
@@ -1349,6 +1352,24 @@ export class BrowserVoiceAgent implements VoiceAgent {
         cls: { action: cls.action, text: cls.text },
       });
     }
+    // 발표 조작을 골랐거나, 발표 중에 페이지 요소가 이겼는데 발표 조작과 그 요소만 놓고 다시 고르면 발표 조작이 이긴다 —
+    // 페이지의 "다음 …" 요소가 "다음 장" 류를 가져갔다(voice-presentation).
+    const repick = pick && pick.confidence >= th.pick && snap.refs[pick.ref]
+      ? await presentationRepick(post, judgedText(text), origin, desk.controls, pick.ref, snap.refs[pick.ref]).catch(() => null)
+      : null;
+    const shown = repick ?? pick;
+    const ctl = shown && desk.controls[shown.ref];
+    if (shown && ctl && (!namedOnly || namedControlOk(text, ctl))) {
+      return runPresentation(ctl, { said: text, th, guard, abort, pick: shown, t0, sessionT0: this.t0, push: (a) => {
+        this.version++;
+        this.snap = null;
+        this.last = a.label;
+        this.lastAction = 'click';
+        this.actions.push(a);
+        this.onAct?.(a);
+      } });
+    }
+    if (off) return no(`화면에 없는 대상 ${cls.onscreen}`, pick?.top);
     // 닫기 후보를 골랐다 — 닫는다. 가린 칸에 넣으려고 닫은 것일 수 있어 닫힌 화면에서 한 번 더 판단하되 입력만 잇고, 아니면 닫은 것으로
     // 끝낸다(afterClose) — 닫기만 하라는 말에 다시 판단하면 남은 일이 없는데도 계정 "X" 를 0.999 로 골랐다(10/22 BO, 판단 모델은
     // "할 일 없음" 을 고르지 못한다).

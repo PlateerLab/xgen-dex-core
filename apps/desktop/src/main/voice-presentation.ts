@@ -1,120 +1,192 @@
+/**
+ * 발표(PowerPoint 슬라이드 쇼) 조작 — 다음·이전 장, 쇼 끝내고 내리기. 발표 중인 PowerPoint 가 있을 때만 화면 후보
+ * (fast-act-desktop desktopCands)에 붙어 판단기 셋(브라우저 칸·다른 앱·탭 없음)이 페이지·앱 후보와 같이 고른다. 발표 화면이
+ * 다른 모니터에 있고 DeX 가 맨 앞이어도 된다. 실행은 PID 를 정해 도우미의 presentation 명령으로 — 쇼 창에 초점을 맞춘 뒤 키를
+ * 보내고, 내리기는 쇼 종료를 확인한 뒤 앱을 숨긴다(발표자 보기를 쓰는 두 화면에서는 쇼를 둔 채 숨기면 청중 화면이 남았다, #250).
+ *
+ * 측정(10/27 dev 판단 모델 e13-s7 — 네이버 화면·DeX 앞 화면·PPT 쇼 화면):
+ *   · 발표 후보만 따로 묻기(후보 넷 + "다른 작업")는 다른 요청을 발표 조작으로 실행했다 — "크롬 열어줘" → 내리기 0.967,
+ *     "뒤로 가줘" → 이전 장 1.000. 판단 모델은 "해당 없음" 을 고르지 못한다. 화면 후보에 섞으면 앱·탭·페이지 요청은 제자리로 간다.
+ *   · 이름: "슬라이드 쇼 끝내고 … 내리기" 로 내리기류 5문장이 0.48~0.94 → 1.00. "다음 슬라이드·다음 장 (… 슬라이드 쇼)" 가
+ *     "슬라이드 쇼 다음 장" 보다 페이지의 "다음 …" 요소에 덜 졌다(네이버 다음 계열 7문장 중 5 → 2 패배).
+ *   · 그래도 페이지 요소가 이기면 발표 조작과 그 요소만 놓고 다시 고른다(presentationRepick) — 페이지 요청 13문장은 모두 그대로,
+ *     "PPT 다음 장."·"다음 슬라이드"·"앞 장 다시 보여줘" 는 발표 조작으로. 맨 "다음 장" 이 "다음 콘텐츠 보기" 와 맞서면 페이지가
+ *     이긴다(0.67) — DeX 화면을 보고 하는 말일 수 있어 그대로 둔다.
+ */
 import { diag } from './diag-log';
-import { classify, pickElement, type ElementRefs } from './fast-act';
-import { screenOf } from './fast-act-desktop';
-import { decisionPost } from './fast-act-runner';
+import { pickElement, type DecisionPost, type ElementRefs } from './fast-act';
+import { buildScreen } from './fast-act-e13';
 import type { VoiceAction } from './fast-act-voice';
-import { axApps, axPresentation, type AxApp, type PresentationAction } from './mac-ax';
-import { CONTINUATION, GUARDED, type Guard, type Outcome, type Thresholds } from './voice-segmenter';
+import { axFront, axPresentation, type AxApp, type PresentationAction } from './mac-ax';
+import { GUARDED, mentions, type Guard, type Outcome, type Thresholds } from './voice-segmenter';
 
-type Control = { app: AxApp; action: PresentationAction; name: string };
-const CONFIDENCE = 0.9;
-const NONE = 'e9999';
+/** 발표 앱 — 번들 → 후보에 쓰는 이름. 쇼 창 판별·키는 도우미(dex-ax presentation)가 이 앱 기준으로 한다. */
+const PRESENTERS: Record<string, string> = { 'com.microsoft.powerpoint': 'PowerPoint' };
+const CONTROL_PICK = 0.9;
+/**
+ * 내리기는 쇼를 끝낸다 — 더 높은 확신에서만. DeX 앞 화면에서 "유튜브 열어줘" 가 내리기 0.920 이었다(내리기 말 15개는
+ * 0.986 이상, 10/27).
+ */
+const HIDE_PICK = 0.97;
+/** 내린 뒤 DeX 가 맨 앞에 왔는지 보는 시간 — 맨 앞 앱을 숨기면 macOS 가 뒤의 앱을 비동기로 올린다(10/18 iTerm2). */
+const FRONT_CHECK_MS = 800;
 
-export function presentationControls(apps: AxApp[]): { refs: ElementRefs; controls: Record<string, Control> } {
+export type PresentationControl = { app: AxApp; action: Exclude<PresentationAction, 'show'>; name: string };
+
+const now = (): number => performance.now();
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+let showDex: () => void = () => undefined;
+
+/** DeX 를 앞으로 가져오는 함수 — fast-act-computer configureComputerAct 가 넘긴다. */
+export function configurePresentation(fn: () => void): void {
+  showDex = fn;
+}
+
+/** 이 도우미로 쇼를 끝내고 내린 앱 — "다시 띄우기" 를 고르면 앱만 보이지 않고 현재 슬라이드부터 쇼를 다시 시작한다. */
+const ended = new Set<number>();
+
+export function endedShow(pid: number | undefined): boolean {
+  return pid !== undefined && ended.has(pid);
+}
+
+/** 발표 중인 앱마다 다음·이전·내리기 — 번호는 start 부터(화면 맨 위 후보 자리). */
+export function presentationControls(apps: AxApp[], start: number): { refs: ElementRefs; controls: Record<string, PresentationControl> } {
   const refs: ElementRefs = {};
-  const controls: Record<string, Control> = {};
-  for (const app of apps.filter(a => a.bundleId.toLowerCase() === 'com.microsoft.powerpoint')) {
+  const controls: Record<string, PresentationControl> = {};
+  for (const app of apps) {
+    const name = PRESENTERS[app.bundleId.toLowerCase()];
+    if (!name || !app.presenting || app.hidden) continue;
     for (const [action, label] of [
-      ['next', '다음 장·다음 슬라이드로 넘기기'],
-      ['previous', '이전 장·이전 슬라이드로 돌아가기'],
-      ['hide', 'PPT·장표·발표 화면 내리기 (쇼 종료 후 앱 숨기기)'],
-      ['show', 'PPT·장표·발표 화면 띄우기 (현재 슬라이드부터 쇼 시작)'],
+      ['next', `다음 슬라이드·다음 장 (${name} 슬라이드 쇼)`],
+      ['previous', `이전 슬라이드·이전 장 (${name} 슬라이드 쇼)`],
+      ['hide', `슬라이드 쇼 끝내고 ${name} 내리기 (발표 화면 내리기)`],
     ] as const) {
-      const ref = `e${9001 + Object.keys(controls).length}`;
-      const name = `${app.app} ${label}`;
-      refs[ref] = { role: 'button', name };
-      controls[ref] = { app, action, name };
+      const ref = `e${start + Object.keys(controls).length}`;
+      refs[ref] = { role: 'button', name: label };
+      controls[ref] = { app, action, name: label };
     }
   }
-  refs[NONE] = { role: 'button', name: '다른 작업 — PowerPoint의 다음 장·이전 장·내리기·다시 띄우기 요청이 아님' };
+  for (const pid of ended) if (!apps.some((a) => a.pid === pid)) ended.delete(pid);
   return { refs, controls };
 }
 
-/** One running target and at most one native attempt per utterance, independent of monitor focus. */
-export class PresentationVoiceAgent {
-  private apps: Promise<AxApp[]> | null = null;
-  private attempted = false;
+/**
+ * 말이 끝났는데 발표 조작 이름만 말했다("다음 장", "다음 슬라이드") — 판단 모델은 기다림·화면 밖(onscreen 0.16~0.32)으로
+ * 답한다. 발표 중이면 고른 것이 발표 조작이고 말이 그 이름을 가리킬 때만 실행한다(namedControlOk).
+ */
+export function namedControl(th: Thresholds, ready: string | undefined, controls: Record<string, PresentationControl>): boolean {
+  return !th.partial && ready === 'wait' && Object.keys(controls).length > 0;
+}
 
-  constructor(private t0: number, private actions: VoiceAction[], private showDex: () => void, private onAct?: (a: VoiceAction) => void) {}
+export function namedControlOk(text: string, c: PresentationControl): boolean {
+  return mentions(text, c.name);
+}
 
-  async handle(text: string, th: Thresholds, guard: Guard, abort: () => boolean): Promise<Outcome | null> {
-    const t0 = performance.now();
-    const no = (reason: string, stop = false): Outcome => ({ acted: false, reason, ms: performance.now() - t0, ...(stop ? { stop: true } : {}) });
-    const post = decisionPost();
-    if (!post) return null;
-    this.apps ??= axApps().catch(error => { this.apps = null; throw error; });
-    const apps = await this.apps;
-    const { refs, controls } = presentationControls(apps);
-    if (!Object.keys(controls).length) return null;
-    const origin = '실행 중인 PowerPoint 발표 화면 (다른 모니터·백그라운드 포함)';
-    const scr = screenOf(origin, refs);
-    const cls = await classify(post, text, origin, scr);
-    if (cls.ready === 'not_ui' || cls.ready === 'multi' || (cls.onscreen ?? 0) < 0.5) {
-      if (process.env.DEX_WAKE_DEBUG === '1')
-        diag('voice-presentation', 'pass-through', { text: text.slice(0, 300), ready: cls.ready, single: cls.single, onscreen: cls.onscreen });
-      return null;
-    }
-    const pick = await pickElement(post, text, origin, refs, scr);
-    if (pick?.ref === NONE && pick.confidence >= CONFIDENCE) {
-      return null;
-    }
-    if (abort()) return no(GUARDED);
-    const control = pick && controls[pick.ref];
-    // Only the noun-command exception needs an explicit, unambiguous direction.
-    const next = text.includes('다음');
-    const previous = text.includes('이전');
-    const namedStep = !th.partial && cls.ready === 'wait' && !!control &&
-      (control.action === 'next' ? next && !previous : control.action === 'previous' && previous && !next);
-    const ready = cls.ready === 'act_now' && cls.gate >= CONFIDENCE && (cls.single ?? 0) >= CONFIDENCE;
-    const targetKnown = !!control && !!pick && pick.confidence >= CONFIDENCE && (cls.onscreen ?? 0) >= CONFIDENCE;
-    const accepted = targetKnown && (ready || namedStep);
-    if (process.env.DEX_WAKE_DEBUG === '1') {
-      diag('voice-presentation', 'decision', {
-        text: text.slice(0, 300), partial: th.partial, ready: cls.ready,
-        act: cls.gate, single: cls.single, onscreen: cls.onscreen,
-        pick: pick?.confidence, ref: pick?.ref, action: control?.action, pid: control?.app.pid,
-        namedStep, accepted,
-        reason: accepted ? 'accepted' : !control ? 'no_control' : !targetKnown ? 'target_confidence' : 'readiness',
-      });
-    }
-    if (!control || !pick || !accepted) {
-      if (!targetKnown) return null;
-      return no(th.partial ? '기다림 — 발표 명령 확정 전' : '발표 조작의 대상과 동작을 확실히 고르지 못했어요.', !th.partial);
-    }
-    // Partial STT can revise "next" into "previous". Presentation actions wait for final speech.
-    if (th.partial) return no('기다림 — 발표 명령은 말이 끝난 뒤 실행');
-    if (this.attempted) return no(CONTINUATION);
-    if ((control.action === 'next' || control.action === 'previous') && (control.app.hidden || !control.app.presenting)) {
-      return no('발표 화면이 보이지 않아요. PowerPoint 발표 화면을 먼저 띄워 주세요.', true);
-    }
-    if (!(await guard(control.name, 'press', pick.confidence)) || abort()) return no(GUARDED);
-    if (this.attempted) return no(CONTINUATION);
-    this.attempted = true;
-    diag('voice-presentation', 'attempt', { text, pid: control.app.pid, action: control.action, app: control.app.app, pick: pick.confidence });
-    const actStarted = performance.now();
-    try {
-      const result = await axPresentation(control.app.pid, control.action);
-      diag('voice-presentation', 'native-result', { pid: control.app.pid, action: control.action, ...result });
-      if (!result.verified) return no(result.reason || '발표 화면의 변경을 확인하지 못했어요. 같은 명령을 자동으로 반복하지 않습니다.', true);
-      if (control.action === 'hide') this.showDex();
-      const sentences = {
-        next: '다음 장으로 넘겼어요.', previous: '이전 장으로 돌아갔어요.',
-        hide: '슬라이드 쇼를 종료하고 PowerPoint를 내렸어요.', show: 'PowerPoint 발표 화면을 띄웠어요.',
-      };
-      const action: VoiceAction = {
-        said: text, label: control.name, display: control.name, action: 'click', text: null, partial: false,
-        decideMs: Math.round(actStarted - t0), actMs: Math.round(performance.now() - actStarted),
-        at: Math.round(performance.now() - this.t0), navigated: false, app: control.app.app,
-        sentence: sentences[control.action],
-      };
-      this.actions.push(action);
-      this.onAct?.(action);
-      diag('voice-presentation', 'verified', { ...action, pid: control.app.pid, operation: control.action });
-      return { acted: true, kind: 'press', target: action.label, effect: 'ok', ms: performance.now() - t0 };
-    } catch (error) {
-      const reason = `발표 조작을 중단했어요: ${error instanceof Error ? error.message : String(error)}`;
-      diag('voice-presentation', 'failed', { pid: control.app.pid, action: control.action, reason });
-      return no(reason, true);
-    }
+/** 발표 중에 화면 요소가 이겼다 — 발표 조작과 그 요소만 놓고 다시 고른다. 발표 조작이 확신 있게 이기면 그 고르기. */
+export async function presentationRepick(
+  post: DecisionPost,
+  said: string,
+  origin: string,
+  controls: Record<string, PresentationControl>,
+  ref: string,
+  element: { role: string; name?: string },
+): Promise<{ ref: string; confidence: number; top: Array<[string, number]> } | null> {
+  if (!Object.keys(controls).length) return null;
+  const refs: ElementRefs = {
+    ...Object.fromEntries(Object.entries(controls).map(([r, c]) => [r, { role: 'button', name: c.name }])),
+    [ref]: { role: element.role, name: element.name ?? '' },
+  };
+  const scr = buildScreen(origin, Object.entries(refs).map(([r, v]) => ({ ref: r, role: v.role, name: v.name ?? '' })));
+  const p = await pickElement(post, said, origin, refs, scr);
+  diag('voice-presentation', 'repick', { said, element: element.name, pick: p && refs[p.ref]?.name, conf: p && Number(p.confidence.toFixed(3)) });
+  return p && controls[p.ref] && p.confidence >= CONTROL_PICK ? p : null;
+}
+
+/** DeX 를 앞으로 — 숨긴 앱 뒤의 앱이 늦게 올라와 DeX 를 덮었으면 한 번 더. */
+export async function dexToFront(show: () => void = showDex): Promise<void> {
+  show();
+  for (const t = now(); now() - t < FRONT_CHECK_MS; await sleep(100)) {
+    const f = await axFront().catch(() => null);
+    if (f?.pid === process.pid) return;
   }
+  show();
+}
+
+const SENTENCE: Record<PresentationControl['action'], [string, string]> = {
+  // [확인됨, 키만 보냄(장 번호를 읽지 못했거나 그대로 — 애니메이션·마지막 장)]
+  next: ['다음 장으로 넘겼어요.', '다음 장 키를 보냈어요.'],
+  previous: ['이전 장으로 돌아갔어요.', '이전 장 키를 보냈어요.'],
+  hide: ['슬라이드 쇼를 끝내고 PowerPoint 를 내렸어요.', ''],
+};
+
+export type PresentationRun = {
+  said: string;
+  th: Thresholds;
+  guard: Guard;
+  abort: () => boolean;
+  pick: { confidence: number; top?: unknown };
+  /** 판단 시작 시각(now) — 판단·실행 시간을 나눈다. */
+  t0: number;
+  /** 음성 세션 시작 시각 — 기록의 at. */
+  sessionT0: number;
+  push: (a: VoiceAction) => void;
+};
+
+/**
+ * 고른 발표 조작을 실행한다. 말이 끝난 뒤에만(중간 인식은 "다음" 이 "이전" 으로 바뀔 수 있다). 키를 보내기 전에 멈췄으면
+ * 못 한 것으로 돌려 서버로 넘기고, 보낸 뒤 확인하지 못했거나 결과를 모르면 stop — 서버가 같은 조작을 다시 해 두 장을 넘기거나
+ * 쇼를 다시 열지 않게 한다.
+ */
+export async function runPresentation(c: PresentationControl, r: PresentationRun): Promise<Outcome> {
+  const no = (reason: string, stop = false): Outcome => ({ acted: false, reason, ms: now() - r.t0, detail: r.pick.top, ...(stop ? { stop: true } : {}) });
+  if (r.th.partial) return no('기다림 — 발표 조작은 말이 끝난 뒤');
+  const min = c.action === 'hide' ? HIDE_PICK : CONTROL_PICK;
+  if (r.pick.confidence < min) return no(`발표 조작 확신 낮음 ${r.pick.confidence.toFixed(2)}`);
+  if (!(await r.guard(c.name, 'press', r.pick.confidence)) || r.abort()) return no(GUARDED);
+  const decideMs = now() - r.t0;
+  const tAct = now();
+  let res: Awaited<ReturnType<typeof axPresentation>>;
+  try {
+    res = await axPresentation(c.app.pid, c.action);
+  } catch (err) {
+    // 도우미가 답하지 않았다 — 키가 갔는지 모른다.
+    const reason = `발표 조작 결과를 확인하지 못했어요: ${err instanceof Error ? err.message : String(err)}`;
+    diag('voice-presentation', 'failed', { pid: c.app.pid, action: c.action, reason });
+    return no(reason, true);
+  }
+  diag('voice-presentation', 'native-result', { pid: c.app.pid, action: c.action, ...res });
+  const slide = c.action !== 'hide';
+  if (!res.sent) return no(res.reason || '발표 화면에 키를 보내지 않았어요.');
+  if (!res.verified && !slide) return no(res.reason || '발표 화면을 내렸는지 확인하지 못했어요.', true);
+  if (c.action === 'hide') {
+    ended.add(c.app.pid);
+    await dexToFront();
+  }
+  const a: VoiceAction = {
+    said: r.said,
+    label: c.name,
+    display: c.name,
+    action: 'click',
+    text: null,
+    partial: false,
+    decideMs: Math.round(decideMs),
+    actMs: Math.round(now() - tAct),
+    at: Math.round(now() - r.sessionT0),
+    navigated: false,
+    app: c.app.app,
+    sentence: SENTENCE[c.action][res.verified ? 0 : 1],
+  };
+  r.push(a);
+  diag('voice-presentation', 'act', { ...a, pid: c.app.pid, operation: c.action, verified: res.verified, pick: Number(r.pick.confidence.toFixed(3)) });
+  // 내리면 맨 앞이 DeX 로 바뀐다 — 남은 말은 새 화면에서 다시 나눈다.
+  return { acted: true, kind: 'press', target: a.label, ms: now() - r.t0, effect: 'ok', ...(c.action === 'hide' ? { reread: true } : {}) };
+}
+
+/** 쇼를 끝내고 내린 앱을 다시 띄운다 — 현재 슬라이드부터 쇼(⌘↩). 확인하지 못하면 throw(앱 열기와 같이 서버로). */
+export async function restartShow(pid: number): Promise<void> {
+  const res = await axPresentation(pid, 'show');
+  diag('voice-presentation', 'native-result', { pid, action: 'show', ...res });
+  if (!res.verified) throw new Error(res.reason || '쇼를 다시 시작하지 못함');
+  ended.delete(pid);
 }

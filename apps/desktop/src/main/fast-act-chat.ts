@@ -155,6 +155,11 @@ export async function tryFastAct(
     if (e.type === 'decide') decided.push({ text: e.text, outcome: e.outcome });
   });
   await seg.final(text);
+  if (seg.failure) {
+    emit({ kind: 'text', content: seg.failure });
+    emit({ kind: 'end' });
+    return true;
+  }
   if (DRY) {
     diag(SCOPE, 'dry', { text, decisions: decided.map((d) => `${d.text} → ${d.outcome.acted ? `실행 ${d.outcome.target}` : d.outcome.reason}`) });
     emit({ kind: 'text', content: '(판단만 했어요 — DEX_FAST_ACT_DRY)' });

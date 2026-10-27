@@ -3471,6 +3471,48 @@ button {
   overflow-x: auto;
   padding: 2px 1px 3px;
 }
+/* 시작 화면: 새 대화에 이어 연결할 폴더(이 화면을 연 대화의 폴더) — 칩마다 빼기. */
+.start-chat-folders {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 1px 4px;
+  font-size: 11.5px;
+}
+.start-chat-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 260px;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+}
+.start-chat-folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.start-chat-folder button {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.start-chat-folder button:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.start-chat-folders-hint {
+  color: var(--muted);
+}
 .composer-image {
   position: relative;
   flex: 0 0 112px;

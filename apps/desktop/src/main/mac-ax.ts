@@ -6,7 +6,7 @@
  * 설치본은 Contents/Resources/mac-ax/dex-ax(afterPack 이 빌드), 개발 실행은 native/mac-ax/bin/dex-ax
  * (`npm run build:mac-ax`). macOS 가 아니거나 도우미가 없으면 macAxAvailable() 이 false 다.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { join } from 'node:path';
 import { app } from 'electron';
@@ -18,7 +18,8 @@ const TIMEOUT_MS = 4_000;
 export type AxFront = { app: string; bundleId: string; pid: number; presenting: boolean };
 /** frame 은 화면 전역 좌표 [x, y, w, h](왼쪽 위 원점). 메뉴 항목에는 없다. */
 export type AxRef = { ref: string; role: string; name: string; frame?: number[]; /** 입력칸의 지금 값(200자까지). */ value?: string };
-export type AxApp = { app: string; bundleId: string; pid: number; path: string; front: boolean; hidden: boolean };
+export type AxApp = { app: string; bundleId: string; pid: number; path: string; front: boolean; hidden: boolean; presenting?: boolean };
+export type PresentationAction = 'next' | 'previous' | 'hide' | 'show';
 export type AxSnapshot = AxFront & {
   /** 스냅샷 번호 — 도우미는 마지막 스냅샷의 요소만 들고 있어 그 뒤 스냅샷이 오면 번호(e1…)가 다른 요소를 가리킨다. */
   gen: number;
@@ -167,6 +168,43 @@ export async function axMinimize(pid: number): Promise<void> {
 
 export async function axActivate(pid: number): Promise<void> {
   await call('activate', { pid });
+}
+
+/**
+ * 발표 조작(dex-ax presentation) — sent = 키·숨기기를 실제로 보냈나(보내기 전 확인에서 멈췄으면 false), verified = 결과를
+ * 확인했나(다음·이전은 쇼 창의 장 번호가 바뀜 — 번호를 읽지 못하면 false 여도 키는 갔다).
+ */
+export async function axPresentation(pid: number, action: PresentationAction): Promise<{ sent: boolean; verified: boolean; reason?: string; visibleWindows?: number; hideAttempts?: number; settleMs?: number }> {
+  // Isolate the show-exit/hide sequence from the helper that owns AX element handles.
+  const reply = action === 'hide' ? await hidePresentation(pid) : await call('presentation', { pid, action }, 8_000);
+  if (reply.pid !== pid || reply.action !== action || typeof reply.verified !== 'boolean' || typeof reply.sent !== 'boolean')
+    throw new Error('발표 조작 결과의 대상과 상태를 확인하지 못했습니다.');
+  return {
+    sent: reply.sent,
+    verified: reply.verified,
+    ...(typeof reply.reason === 'string' ? { reason: reply.reason } : {}),
+    ...(typeof reply.visibleWindows === 'number' && Number.isInteger(reply.visibleWindows) && reply.visibleWindows >= 0 ? { visibleWindows: reply.visibleWindows } : {}),
+    ...(typeof reply.hideAttempts === 'number' && Number.isInteger(reply.hideAttempts) && reply.hideAttempts >= 1 && reply.hideAttempts <= 3 ? { hideAttempts: reply.hideAttempts } : {}),
+    ...(typeof reply.settleMs === 'number' && Number.isInteger(reply.settleMs) && reply.settleMs >= 0 ? { settleMs: reply.settleMs } : {}),
+  };
+}
+
+async function hidePresentation(pid: number): Promise<Reply> {
+  const path = helperPath();
+  if (!path) throw new Error('맥 접근성 도우미 없음');
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    const worker = execFile(path, [], { timeout: 12_000, maxBuffer: 64 * 1024, encoding: 'utf8' }, (error, stdout) => {
+      if (error) { reject(error); return; }
+      try {
+        const reply: Reply = JSON.parse(stdout.trim());
+        if (!reply || reply.id !== id || reply.ok !== true) throw new Error(reply?.error ?? 'PPT 숨김 도우미 응답 오류');
+        resolve(reply);
+      } catch (error) { reject(error); }
+    });
+    worker.stdin?.on('error', reject);
+    worker.stdin?.end(`${JSON.stringify({ cmd: 'presentation', pid, action: 'hide', id })}\n`);
+  });
 }
 
 /** 실행 중인 일반 앱(Dock 에 보이는 앱). */

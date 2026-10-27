@@ -11,16 +11,23 @@
  *
  * 첫 메시지와 함께 파일을 줄 수 있다(2026-10-11): [+]·붙여넣기·끌어다 놓기. 검사는 대화 화면과
  * 같은 곳(chat-attach)에서 하고, 올려 둔 파일은 첫 메시지와 함께 그 대화로 간다.
+ *
+ * 말로도 시작한다(2026-10-28). 대화 화면에서 켜 둔 계속 듣기는 이 화면이 이어 듣고(voice-loop-owner — 말로 "새 에이전트
+ * 만들어 줘" 하면 열린다, main fast-act-dex), 들은 말이 첫 메시지가 되며 연 대화가 다시 이어 듣는다. 말로는 이름 칸을
+ * 채울 수 없으니 비어 있으면 겹치지 않는 이름("새 에이전트", "새 에이전트 2" …)을 붙인다.
+ *
+ * 이 화면을 연 대화에 폴더가 연결돼 있으면 새 대화도 그 폴더로 시작한다(같은 작업 공간에서 새 대화). 무엇을 잇는지
+ * 입력창 위에 보이고 빼낼 수 있다. 경로는 main 이 그 대화의 연결에서만 옮긴다(chatFolders.inherit).
  */
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, AgentCreateOptions } from '@dex/protocol';
 import { xgen } from '../bridge';
 import { sessionStore } from '../session';
 import { agentDirectory, useAgentDirectory } from '../agent-directory';
-import { CloseIcon, DocIcon, PlusIcon, SendIcon } from '../brand/icons';
+import { CloseIcon, DocIcon, FolderIcon, MicIcon, PlusIcon, SendIcon } from '../brand/icons';
 import { Selector, type SelectorOption } from './Selector';
 import { ordered, readPick, SettingField, writePick } from './agent-create-fields';
-import { lockedByName, NAME_REQUIRED, NAME_TAKEN, startChatLockReason } from './start-chat-model';
+import { freeAgentName, lockedByName, NAME_REQUIRED, NAME_TAKEN, startChatLockReason } from './start-chat-model';
 import {
   CHAT_IMAGE_ACCEPT,
   CHAT_IMAGE_MAX_COUNT,
@@ -31,13 +38,35 @@ import {
 import { DropTracker, dragHasFiles } from './chat-drop';
 import { useDocumentPasteAttach } from './use-paste-attach';
 import { useChatInputCheck } from './use-chat-input-check';
+import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
+import { useVoiceLoopOwner, voiceLoopOwner } from '../voice/voice-loop-owner';
+import { VoiceLoopBar } from '../voice/VoiceLoopBar';
+import { createVoiceInputTracker } from '../voice/voice-input';
+import { parseWakeWords } from '../../../main/voice-wake';
+import type { ChatFolderView } from '../../../main/chat-folders';
 
 /** 에이전트 고르기의 첫 칸(기본값). */
 const NEW_AGENT = '__new_agent__';
 /** 적는 동안 이름이 겹치는지 묻는 간격. */
 const NAME_CHECK_DELAY_MS = 300;
+/**
+ * 이 화면의 계속 듣기가 main 에 대는 이름 — 아직 에이전트가 없다. main 은 이 이름의 브라우저 탭을 찾지 못하니
+ * 탭 없는 화면(앱·DeX 명령 후보)에서 판단하고, 호출어만 말한 뒤 기다리는 시간도 이 이름으로 잰다.
+ */
+const START_VOICE_KEY = 'start-chat';
 
-export function StartChat({ onStarted }: { onStarted: () => void }) {
+export function StartChat({
+  onStarted,
+  voiceKey = 'start:agent-create',
+  fromInteractionId = null,
+}: {
+  /** 대화가 열렸다 — 그 대화 세션 키. */
+  onStarted: (sessionKey: string) => void;
+  /** 계속 듣기를 맡을 때의 이름(voice-loop-owner). */
+  voiceKey?: string;
+  /** 이 화면을 연 대화 — 폴더 연결을 잇는다. */
+  fromInteractionId?: string | null;
+}) {
   const dir = useAgentDirectory();
   const [choice, setChoice] = useState<string>(NEW_AGENT);
   const [options, setOptions] = useState<AgentCreateOptions | null>(null);
@@ -61,6 +90,21 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
   const nameRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const alive = useRef(true);
+  // 연 대화의 폴더 — 새 대화로 잇는다(빼낼 수 있다).
+  const [folders, setFolders] = useState<ChatFolderView[]>([]);
+  useEffect(() => {
+    if (!fromInteractionId) return undefined;
+    let cancelled = false;
+    void xgen.chatFolders
+      ?.list(fromInteractionId)
+      .then((list) => {
+        if (!cancelled) setFolders(list.filter((f) => !f.missing));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [fromInteractionId]);
 
   useEffect(() => {
     alive.current = true;
@@ -242,13 +286,30 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     },
   };
 
-  const send = useCallback(async () => {
+  /** voiceText = 말로 보낸다 — 이름이 비어 있으면 겹치지 않는 이름을 붙인다(말로는 이름 칸을 채울 수 없다). */
+  const send = useCallback(async (voiceText?: string) => {
     if (busy || preparing > 0) return;
-    if (locked) {
-      explainLock();
+    let agentName = name;
+    if (voiceText !== undefined && isNew && !name.trim()) {
+      const free = await freeAgentName((n) => xgen.agents.nameTaken(n)).catch(() => null);
+      if (!alive.current) return;
+      if (!free) {
+        setError(NAME_REQUIRED);
+        return;
+      }
+      agentName = free;
+      setName(free);
+    }
+    const reason =
+      voiceText === undefined
+        ? lockReason
+        : startChatLockReason({ isNew, name: agentName, nameTaken: agentName === name && nameTaken, optionsReady: !!options, optionsError, agentSelected: !!selectedAgent });
+    if (reason) {
+      if (voiceText === undefined) explainLock();
+      else setError(reason);
       return;
     }
-    const text = input.trim();
+    const text = (voiceText ?? input).trim();
     const files = stagedRef.current;
     if (!text && files.length === 0) return;
     // 통제 정책: 첫 메시지가 막힐 글이면 에이전트를 만들지도, 대화를 열지도 않는다. 이유는 작성기 위에 선다.
@@ -258,7 +319,7 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
     try {
       let agent: Agent;
       if (isNew) {
-        const trimmed = name.trim();
+        const trimmed = agentName.trim();
         // 만들기 직전에 한 번 더 묻는다(적는 사이 누가 같은 이름을 만들었을 수 있다).
         if (await xgen.agents.nameTaken(trimmed)) {
           if (!alive.current) return;
@@ -295,14 +356,83 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
         return;
       }
       const key = sessionStore.openNew(agent);
+      // 폴더는 첫 메시지 전에 — 첫 요청부터 그 폴더를 쓴다(main 이 요청마다 이 대화의 폴더를 싣는다).
+      const iid = sessionStore.get(key)?.interactionId;
+      if (fromInteractionId && iid && folders.length) {
+        await xgen.chatFolders
+          .inherit(
+            fromInteractionId,
+            iid,
+            folders.map((f) => f.id),
+          )
+          .catch(() => undefined);
+      }
       sessionStore.send(key, text, null, files);
-      onStarted();
+      // 이 화면이 듣고 있었으면 연 대화가 이어 듣는다.
+      voiceLoopOwner.pass(voiceKey, key);
+      onStarted(key);
     } catch (err: unknown) {
       if (alive.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (alive.current) setBusy(false);
     }
-  }, [busy, preparing, locked, explainLock, input, isNew, name, provider, model, settings, selectedAgent, onStarted, policy]);
+  }, [busy, preparing, lockReason, explainLock, input, isNew, name, nameTaken, options, optionsError, provider, model, settings, selectedAgent, onStarted, policy, fromInteractionId, folders, voiceKey]);
+
+  // 계속 듣기 — 대화 화면에서 켜 둔 채 이 화면이 열리면 이어 듣는다. 들은 말이 첫 메시지다.
+  const streamVoice = useVoiceStreamAvailable();
+  const [loopOn, toggleLoop, stopLoop] = useVoiceLoopOwner(voiceKey, true);
+  const [wakeWord, setWakeWord] = useState<string | null>(null);
+  const [called, setCalled] = useState(false);
+  const voiceInput = useMemo(() => createVoiceInputTracker(), []);
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  useEffect(() => {
+    const read = (cfg: { voiceWake?: boolean; voiceWakeWords?: string }) =>
+      setWakeWord(cfg.voiceWake === true ? (parseWakeWords(cfg.voiceWakeWords?.trim() || undefined)[0] ?? null) : null);
+    void xgen.config
+      ?.get()
+      .then(read)
+      .catch(() => undefined);
+    return xgen.config?.onChange?.(read);
+  }, []);
+  const { state: loopState, error: loopError, notice: loopNotice } = useVoiceLoop({
+    enabled: streamVoice && loopOn,
+    workflowId: START_VOICE_KEY,
+    responseKey: null,
+    isPaused: () => busyRef.current,
+    onPartial: (t) => {
+      if (voiceInput.preview(t)) setInput(t);
+    },
+    onWake: () => setCalled(true),
+    onResult: async (r) => {
+      const clear = voiceInput.complete();
+      if (r.wake === 'called') {
+        setCalled(true);
+        return;
+      }
+      if (r.wake !== 'off') setCalled(false);
+      if (r.blocked || !r.text) {
+        setInput(clear);
+        return;
+      }
+      // 화면 조작으로 끝난 말(앱 열기 등)은 보내지 않는다. 한두 글자짜리 말은 말버릇·잡음이다.
+      if ((r.actions.length && !r.unhandled) || r.text.replace(/[\s.,!?。…]/g, '').length <= 2) {
+        setInput(clear);
+        return;
+      }
+      if (busyRef.current) return;
+      setInput(r.text);
+      await sendRef.current(r.text);
+    },
+  });
+  useEffect(() => {
+    if (loopError) {
+      setError(`음성 입력 오류: ${loopError} 마이크를 다시 켜 주세요.`);
+      stopLoop();
+    }
+  }, [loopError, stopLoop]);
 
   const valueOf = (id: string, fallback: unknown) =>
     Object.prototype.hasOwnProperty.call(settings, id) ? settings[id] : fallback;
@@ -443,6 +573,27 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
             ))}
           </div>
         )}
+        {folders.length > 0 && (
+          <div className="start-chat-folders" aria-label="새 대화에 연결할 폴더">
+            {folders.map((folder) => (
+              <span className="start-chat-folder" key={folder.id} title={folder.path}>
+                <FolderIcon size={13} />
+                <span className="start-chat-folder-name">{folder.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setFolders((list) => list.filter((f) => f.id !== folder.id))}
+                  title={`${folder.name} 연결하지 않기`}
+                  aria-label={`${folder.name} 연결하지 않기`}
+                >
+                  <CloseIcon size={11} />
+                </button>
+              </span>
+            ))}
+            <span className="start-chat-folders-hint">지금 대화의 폴더로 시작합니다</span>
+          </div>
+        )}
+        {loopOn && loopNotice && <div className="voice-error small" role="status">{loopNotice}</div>}
+        {loopOn && <VoiceLoopBar state={loopState} wakeWord={wakeWord} called={called} />}
         {policy.notice && (
           <div
             className={policy.notice.tone === 'block' ? 'sensitive-warn blocked' : 'sensitive-warn'}
@@ -464,7 +615,10 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
             readOnly={locked}
             tabIndex={locked ? -1 : undefined}
             placeholder={staged.length > 0 ? '첨부한 파일로 무엇을 할지 적어 주세요…' : '메시지를 입력하세요…'}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              voiceInput.edited();
+              setInput(e.target.value);
+            }}
             onPaste={(event) => {
               const files = pastedFiles(event.clipboardData);
               if (files.length === 0) return;
@@ -496,6 +650,17 @@ export function StartChat({ onStarted }: { onStarted: () => void }) {
           >
             <PlusIcon size={17} />
           </button>
+          {streamVoice && (
+            <button
+              type="button"
+              className={`composer-mic${loopOn ? ' recording' : ''}`}
+              onClick={toggleLoop}
+              title={loopOn ? '계속 듣기 끄기' : '계속 듣기 — 말한 것을 첫 메시지로 보냅니다'}
+              aria-label="음성 입력"
+            >
+              <MicIcon size={16} />
+            </button>
+          )}
           <button
             className="composer-send"
             onClick={() => void send()}

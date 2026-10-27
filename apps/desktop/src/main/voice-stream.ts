@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { xgenWebSocketTlsOptions, type XgenServerTrust } from '@dex/engine/connection-security';
 import { diag } from './diag-log';
+import { traceVoice } from './voice-trace';
 import { FORMAT } from './fast-act-e13';
 import { fastActEnabled } from './fast-act-runner';
 import { RoutedVoiceAgent } from './fast-act-computer';
@@ -33,6 +34,11 @@ const SCOPE = 'voice-stream';
 const FRAME = 640; // 20 ms @ 16 kHz PCM16
 /** stop 뒤 done 을 기다리는 최대 시간. */
 const DONE_WAIT_MS = 2_500;
+/** 말 끝 되찾기(recoverTail)에 모아 두는 소리 상한 — 60초. 넘은 세션은 되찾지 않는다. */
+const RECOVER_MAX_BYTES = 16_000 * 2 * 60;
+/** 말 끝 되찾기 — 다시 받아 적기를 기다리는 최대 시간. 넘으면 서버 스트리밍이 준 글자 그대로. */
+const RECOVER_WAIT_MS = 4_000;
+const WAKE_DEBUG_MAX_CHARS = 24;
 
 export type VoiceStreamDeps = {
   baseUrl: () => string;
@@ -43,6 +49,8 @@ export type VoiceStreamDeps = {
   wakeWords: () => string[] | null;
   /** 중간 인식의 조작을 보류하고 최종 글자만 돌려준다(시험용 — 데스크톱은 말하는 도중 실행한다). */
   planBeforeAct?: (interactionId?: string) => boolean;
+  /** 소리(16 kHz 모노 WAV)를 한 번에 받아 적는다(파일 STT) — 스트리밍 STT 가 말 끝을 잃었을 때 되찾는 데 쓴다. */
+  transcribe?: (wav: Buffer) => Promise<string>;
 };
 
 export type VoiceStreamEvent =
@@ -56,6 +64,10 @@ export type VoiceStreamEvent =
 export type TimelineEntry = { t: number; type: string; text?: string; detail?: string };
 
 export type VoiceStreamResult = {
+  /** A local attempt failed; consume this result without automatic retry or chat fallback. */
+  blocked?: string;
+  /** Present only in opt-in diagnostics so renderer decisions can use the same stream ID. */
+  traceId?: string;
   text: string;
   actions: VoiceAction[];
   unhandled: string | null;
@@ -123,6 +135,13 @@ class VoiceSession {
   private woke: boolean;
   /** 이 세션에서 호출어를 들었다. */
   private heardWake = false;
+  /** 서버에 보낸 소리 — 말 끝 되찾기(recoverTail)용, 상한(RECOVER_MAX_BYTES)까지만 모은다. */
+  private sentAudio: Buffer[] = [];
+  private sentBytes = 0;
+  /** 서버 결과가 앞서 들은 것의 잘린 앞 토막으로 줄었다 — 말 끝을 잃었을 수 있다(recoverTail). */
+  private diverged = false;
+  /** 줄어든 그 글 — 서버가 확정한 앞부분이다(그 뒤의 서버 글은 믿을 수 없다). */
+  private agreed = '';
   /** 호출어가 끝난 글자 위치 — 인식기가 고쳐 써서 호출어를 못 찾을 때 이 뒤부터 쓴다. */
   private wakeEnd = 0;
 
@@ -137,9 +156,10 @@ class VoiceSession {
     private sttOnly = false,
     private wake: WakeGate | null = null,
     interactionId?: string,
+    deferActions = false,
   ) {
     this.woke = !wake || wake.awake;
-    this.deferActions = sttOnly || deps.planBeforeAct?.(interactionId) === true;
+    this.deferActions = deferActions || sttOnly || deps.planBeforeAct?.(interactionId) === true;
     // 맨 앞 앱이 DeX 가 아니고 다른 앱 조작(computerAct)이 켜져 있으면 그 앱을, 아니면 이 에이전트의 브라우저 칸을 조작한다.
     const onAct = (action: VoiceAction): void => emit({ sessionId: id, type: 'act', action });
     this.agent = new RoutedVoiceAgent(new BrowserVoiceAgent(workflowId, this.t0, onAct, interactionId), this.t0, onAct);
@@ -169,20 +189,11 @@ class VoiceSession {
       ...xgenWebSocketTlsOptions(base, this.deps.serverTrust?.()),
     });
     this.ws = ws;
-    // 호출어로만 듣기면 호출어를 인식 힌트로 준다 — 힌트를 모르는 서버는 이 키를 무시한다.
-    const context = this.wake ? sttHint(this.wake.words) : '';
-    ws.on('open', () =>
-      ws.send(
-        JSON.stringify({
-          type: 'start',
-          format: 'pcm16',
-          sample_rate: 16000,
-          language: 'ko',
-          mode: 'partials',
-          ...(context && { context }),
-        }),
-      ),
-    );
+    ws.on('open', () => {
+      const context = this.wake ? sttHint(this.wake.words) || undefined : undefined;
+      traceVoice({ id: this.id, stage: 'start', context, carry: this.carry, reason: this.deferActions ? 'actions_deferred' : 'actions_enabled' });
+      ws.send(JSON.stringify({ type: 'start', format: 'pcm16', sample_rate: 16000, language: 'ko', mode: 'partials', context }));
+    });
     ws.on('message', (raw) => this.onMessage(String(raw)));
     ws.on('error', (err) => this.fail(String(err)));
     ws.on('close', (code) => {
@@ -226,7 +237,10 @@ class VoiceSession {
     } catch {
       return;
     }
+    if ((m.type === 'partial' || m.type === 'final' || m.type === 'done') && typeof m.text === 'string')
+      traceVoice({ id: this.id, stage: 'stt', source: m.type, text: m.text });
     if (m.type === 'ready') {
+      traceVoice({ id: this.id, stage: 'ready', context: m.context });
       this.ready = true;
       // 서버가 적용한 인식 힌트 — 키가 없으면 힌트를 모르는 서버다.
       this.mark('ready', undefined, m.context === undefined ? undefined : `힌트 "${m.context}"`);
@@ -242,6 +256,7 @@ class VoiceSession {
       // 보내고 done 도 두 번 이어 붙인다("창을 닫아줘. 창을 닫아줘." — 그러면 되풀이 환각으로 걸러져 말이 무시됐다).
       // 정지 뒤에 바로 앞 확정과 같은 글자가 오면 버린다.
       if (m.type === 'final' && this.stopSent && bare(m.text) === bare(this.lastFinal)) {
+        traceVoice({ id: this.id, stage: 'drop', source: m.type, text: m.text, reason: 'repeat_final' });
         this.droppedRepeat = true;
         this.mark('repeat_final_dropped', m.text);
         return;
@@ -250,17 +265,28 @@ class VoiceSession {
       // "…테스트 상품입니다. 입력해줘." 가 "…테스트 상", "헤이 엑스젠 전시 카테고리 추가해줘." 가 "헤이 엑스젠"
       // 이었다(10/16 합성 음성 24문장 중 5개 — 모두 문장 끝 부호 없이 끝났고, 온전한 확정 19개는 모두 부호로 맺었다).
       // 가장 많이 들은 중간 결과의 잘린 앞 토막인 확정·중간 결과는 버리고, 끝에는 그 중간 결과를 쓴다.
-      if (truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial)) {
+      // 잘린 확정도 서버의 말 끝이다 — 글자만 그 중간 결과로 바꿔 이 토막을 마친다. 확정째 버리면 로컬 감지가 꺼진
+      // 계속 듣기에서 말 끝(utterance_end)이 오지 않아 세션이 30초 상한까지 남았다(10/28 "헤이 엑스젠 지금 PPT 장표
+      // 내려줘." → 확정 "헤이 엑스젠 지금", 장표가 안 내려감).
+      const cut = truncated(m.type === 'final' ? `${this.closedText} ${m.text}` : m.text, this.fullPartial);
+      if (cut) {
+        this.diverged = true;
+        if (m.type === 'partial') this.agreed = m.text.trim();
+        else if (!this.agreed) this.agreed = `${this.closedText} ${m.text}`.trim();
+        traceVoice({ id: this.id, stage: 'drop', source: m.type, text: m.text, reason: 'truncated_text' });
         this.mark(`cut_${m.type}_dropped`, m.text);
-        return;
+        if (m.type !== 'final') return;
       }
       if (m.type === 'final') this.lastFinal = m.text;
       else this.fullPartial = m.text.trim();
       // 서버의 partial 은 이 세션에서 들은 전체(누적), final 은 방금 끝난 토막만이다.
-      const heard = m.type === 'partial' ? m.text.trim() : (this.closedText = `${this.closedText} ${m.text}`.trim());
+      const heard = m.type === 'partial'
+        ? m.text.trim()
+        : (this.closedText = cut ? this.fullPartial : `${this.closedText} ${m.text}`.trim());
       this.lastHeard = heard;
       // 호출어 전의 말은 화면에도 내지 않는다(입력창에 사람에게 한 말이 적히지 않게).
       const said = this.sttOnly ? heard : this.gate(heard);
+      traceVoice({ id: this.id, stage: 'gate', source: m.type, text: heard, afterWake: said, carry: this.carry, reason: said === null ? 'wake_required' : said ? 'accepted' : 'wake_only' });
       if (said === null) {
         if (m.type === 'final') this.emit({ sessionId: this.id, type: 'utterance_end' });
         return;
@@ -293,6 +319,8 @@ class VoiceSession {
     while (this.pending.length >= FRAME) {
       const frame = Buffer.from(this.pending.subarray(0, FRAME));
       this.pending = this.pending.subarray(FRAME);
+      if (this.sentBytes < RECOVER_MAX_BYTES) this.sentAudio.push(frame);
+      this.sentBytes += FRAME;
       if (this.ready && this.ws?.readyState === WebSocket.OPEN) this.ws.send(frame);
       else if (this.early.length < 500) this.early.push(frame);
     }
@@ -318,34 +346,58 @@ class VoiceSession {
     this.audioEndMs = Math.round(now() - this.t0);
     this.mark('audio_end');
     if (this.ready) this.sendStop(); // 아직 준비 전이면 ready 에서 보낸다
+    const waitStarted = now();
     await new Promise<void>((resolve) => {
       if (this.closed || this.doneText !== null) return resolve();
       this.wakeDone = resolve;
       setTimeout(resolve, DONE_WAIT_MS);
     });
+    traceVoice({ id: this.id, stage: 'finalize', reason: this.doneText !== null ? 'done_received' : this.closed ? 'connection_closed' : 'done_timeout', waitMs: Math.round(now() - waitStarted) });
     const done = this.droppedRepeat ? this.closedText : this.doneText;
-    const raw = (truncated(done ?? '', this.fullPartial) ? this.fullPartial : done) || this.lastHeard;
+    const raw = await this.recoverTail((truncated(done ?? '', this.fullPartial) ? this.fullPartial : done) || this.lastHeard);
     const heard = this.sttOnly ? raw : this.gate(raw);
+    traceVoice({ id: this.id, stage: 'gate', source: 'result', text: raw, afterWake: heard, carry: this.carry, reason: heard === null ? 'wake_required' : heard ? 'accepted' : 'wake_only' });
+    // Temporary opt-in diagnosis: never log a prefix of a long background conversation.
+    const diagnosticText = raw.trim();
+    if (process.env.DEX_WAKE_DEBUG === '1' && this.wake && diagnosticText.length > 0 && diagnosticText.length <= WAKE_DEBUG_MAX_CHARS) {
+      const match = findWake(raw, this.wake.words);
+      diag(SCOPE, 'wake-debug', {
+        id: this.id,
+        heard: diagnosticText,
+        words: this.wake.words,
+        wake: heard === null ? 'ignored' : this.heardWake && !heard ? 'called' : 'heard',
+        followUp: this.wake.awake,
+        detected: this.heardWake,
+        match: match ? { text: raw.slice(match.start, match.end), distance: match.distance } : null,
+      });
+    }
     if (heard === null) {
       // 호출어 없는 말 — 판단·실행·기록 없이 버린다(글자도 돌려주지 않는다). 사람에게 한 말이라 로그에도
-      // 글자를 남기지 않는다 — 시험 빌드에서만 원문을 남긴다.
+      // 글자를 남기지 않는다 — 위의 짧은 발화 진단과 시험 모드에서만 원문을 남긴다.
       this.close();
       const test = process.env.DEX_VOICE_TEST === '1' ? { heard: raw } : {};
       diag(SCOPE, 'end', { id: this.id, wake: 'ignored', chars: raw.length, ...test });
-      return { text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
+      traceVoice({ id: this.id, stage: 'result', text: '', reason: 'wake_required' });
+      return { ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}), text: '', actions: [], unhandled: null, audioEndMs: this.audioEndMs, timeline: [], wake: 'ignored' };
     }
-    const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : '');
-    if (!this.deferActions) await this.seg.final(text);
+    // 이어 붙인 세션에서 새 말을 못 들었다 — 앞 말을 그대로 돌려준다(앞 세션이 이미 판단·기록했다).
+    // 예전에는 빈 글자를 돌려줘 앞 말이 사라졌다(계속 듣기에서 말한 뒤 조용하면 채팅 요청이 안 갔다).
+    const carriedOnly = !heard && !!this.carry;
+    const text = norm(heard ? (this.carry ? `${this.carry} ${heard}` : heard) : this.carry);
+    if (!this.deferActions && !carriedOnly) await this.seg.final(text);
     this.close();
     const result: VoiceStreamResult = {
+      ...(this.seg.failure ? { blocked: this.seg.failure } : {}),
+      ...(process.env.DEX_WAKE_DEBUG === '1' ? { traceId: this.id } : {}),
       text,
       actions: [...this.agent.actions],
-      unhandled: this.seg.unhandled,
+      unhandled: carriedOnly ? text : this.seg.unhandled,
       audioEndMs: this.audioEndMs,
       timeline: this.timeline,
       wake: !this.wake ? 'off' : this.heardWake && !text ? 'called' : 'heard',
     };
-    if (text && !this.deferActions) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
+    traceVoice({ id: this.id, stage: 'result', text, carry: this.carry, reason: result.wake === 'called' ? 'wake_only' : this.agent.actions.length ? 'browser_actions' : 'transcribed' });
+    if (text && !carriedOnly && !this.deferActions && !this.seg.failure) rememberVoiceTurn({ workflowId: this.workflowId, text, actions: result.actions, unhandled: result.unhandled, at: Date.now() });
     diag(SCOPE, 'end', {
       id: this.id,
       text,
@@ -357,6 +409,30 @@ class VoiceSession {
       decisions: this.timeline.filter((e) => e.type === 'decide').map((e) => `${e.t}ms ${e.text} → ${e.detail}`),
     });
     return result;
+  }
+
+  /**
+   * 서버 스트리밍 STT 가 말 끝을 잃었다 — 결과가 줄어든 세션(diverged)이면 같은 소리를 한 번에 다시 받아 적고, 그 글이 서버가
+   * 확정한 앞부분(agreed)을 그대로 이어 가면 그 뒤를 붙인다(extendTranscript). 앞은 이미 화면에 보였고 판단도 끝난 글이라 바꾸지 않는다.
+   *
+   * 10/28 맥(합성 음성, dev Qwen3-ASR): 서버는 연속한 두 가설이 합의한 앞부분만 확정한다(LocalAgreement). 말이 길어지자 모델이
+   * 호출어를 "헤이 엑스젠" 에서 "Hey XGen." 으로 바꿔 적어 첫 글자부터 갈라졌고, 그 뒤로는 아무것도 확정되지 않았다. 말 끝의
+   * 재전사는 버려지거나(→ "…에이전트로 정리해 줘. 배포 화면도 열어 줘." 가 "…소개문을", "…상품 등록까지 해 줘." 가 "…상품 등록")
+   * 갈라진 곳부터 이어 붙어 말이 겹쳤다(→ "…만드는 에이전트 받아 소개문을 만드는 에이전트로 정리해줘 …"). 같은 소리를 한 번에 받아
+   * 적으면 끝까지 온전히 나왔다.
+   */
+  private async recoverTail(raw: string): Promise<string> {
+    const transcribe = this.deps.transcribe;
+    if (!this.diverged || this.sttOnly || !transcribe || !this.woke || !raw.trim() || this.sentBytes > RECOVER_MAX_BYTES) return raw;
+    const t = now();
+    const again = await Promise.race([
+      transcribe(pcm16Wav(Buffer.concat(this.sentAudio))).catch(() => ''),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), RECOVER_WAIT_MS)),
+    ]);
+    const out = extendTranscript(this.agreed || raw, again, this.wake?.words ?? []);
+    traceVoice({ id: this.id, stage: 'recover', text: again, reason: out ? 'extended' : again ? 'not_extension' : 'no_text', waitMs: Math.round(now() - t) });
+    this.mark('recover', again, out ? 'extended' : 'kept');
+    return out ?? raw;
   }
 
   /** 시험 전용: STT 없이 글자로 바로 판단·실행 — 인식 오류를 뺀 판단만 잴 때. */
@@ -379,6 +455,57 @@ class VoiceSession {
 
 /** 비교용 — 띄어쓰기·문장부호를 뺀 글자. */
 const bare = (t: string): string => t.replace(/[\s.,!?。…]+/g, '');
+/** 비교용 소문자 — 글자 수가 바뀌는 글자는 그대로 둔다(자리를 원문에 되짚어야 한다). */
+const fold = (t: string): string => [...t].map((c) => (c.toLowerCase().length === c.length ? c.toLowerCase() : c)).join('');
+
+/**
+ * 다시 받아 적은 글에서 지금 글이 시작해도 되는 자리(띄어쓰기·부호 뺀 글자 수) — 지금 글은 호출어로 시작했는데 다시 받아 적은
+ * 글의 맨 앞 호출어는 목록에 없는 표기로 적혔을 때만("Hey XGen." — 목록이 한글뿐). 그 밖에는 맨 앞부터 같아야 한다.
+ */
+const RECOVER_LEAD_MAX = 12;
+
+/**
+ * again(같은 소리를 다시 받아 적은 글)이 current 를 그대로 이어 가면 current 뒤에 이어지는 부분을 붙인 글, 아니면 null.
+ * 띄어쓰기·문장부호는 보지 않고, 맨 앞 호출어는 서로 다르게 적혀도 된다("헤이 엑스젠" / "Hey XGen."). current 끝의 문장 끝
+ * 부호는 말이 이어지면 뗀다(중간 결과가 말을 맺은 것으로 적었을 뿐이다).
+ */
+export function extendTranscript(current: string, again: string, words: string[]): string | null {
+  const wakeAt = (t: string) => {
+    const m = words.length ? findWake(t, words) : null;
+    return m && m.start <= 3 ? m : null;
+  };
+  const cw = wakeAt(current);
+  const aw = wakeAt(again);
+  // 영문 대소문자도 보지 않는다 — 중간 결과는 "ppt 다시 열어.", 다시 받아 적은 글은 "PPT 다시 열어서 …" 였다(10/28 맥).
+  const cur = fold(bare(cw ? restAfter(current, cw.end) : current));
+  const rest = aw ? restAfter(again, aw.end) : again;
+  const at = cur.length >= 4 ? fold(bare(rest)).indexOf(cur) : -1;
+  if (at < 0 || at > (cw && !aw ? RECOVER_LEAD_MAX : 0) || bare(rest).length < at + cur.length + 2) return null;
+  let n = 0;
+  let i = 0;
+  for (; i < rest.length && n < at + cur.length; i++) if (!SEP.test(rest[i])) n++;
+  const tail = rest.slice(i).trimEnd();
+  const head = current.trimEnd().replace(/[.?!。…]+$/, '');
+  return /^\s/.test(tail) ? `${head} ${tail.trim()}` : `${head}${tail}`;
+}
+
+/** 16 kHz 모노 PCM16 → WAV. */
+function pcm16Wav(pcm: Buffer): Buffer {
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0, 'ascii');
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write('WAVEfmt ', 8, 'ascii');
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(16_000, 24);
+  h.writeUInt32LE(32_000, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36, 'ascii');
+  h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
 
 let seq = 0;
 
@@ -389,14 +516,14 @@ export class VoiceStreamHub {
 
   constructor(private deps: () => VoiceStreamDeps | null) {}
 
-  async start(workflowId: string, emit: (e: VoiceStreamEvent) => void, carry = '', sttOnly = false, interactionId?: string): Promise<string> {
+  async start(workflowId: string, emit: (e: VoiceStreamEvent) => void, carry = '', sttOnly = false, interactionId?: string, deferActions = false): Promise<string> {
     const deps = this.deps();
     if (!deps) throw new Error('XGEN 로그인이 필요합니다');
     const id = `${Date.now().toString(36)}-${++seq}`;
     const words = sttOnly ? null : deps.wakeWords();
     // 앞 말에서 이어진 말(carry 는 받은 말에서만 생긴다)과 호출어 직후의 말은 호출어 없이 받는다.
     const awake = !!carry.trim() || Date.now() < (this.wakeUntil.get(workflowId) ?? 0);
-    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null, interactionId);
+    const s = new VoiceSession(id, workflowId, deps, emit, carry.trim(), sttOnly, words ? { words, awake } : null, interactionId, deferActions);
     this.sessions.set(id, s);
     try { await s.open(); }
     catch (error) { s.close(); this.sessions.delete(id); throw error; }
@@ -423,6 +550,7 @@ export class VoiceStreamHub {
   }
 
   cancel(id: string): void {
+    traceVoice({ id, stage: 'drop', reason: 'session_cancelled' });
     this.sessions.get(id)?.close();
     this.sessions.delete(id);
   }

@@ -24,7 +24,7 @@ export const NEEDS_CONFIRM = '확인 필요';
 export type ActKind = 'press' | 'type';
 
 export type Outcome =
-  | { acted: false; reason: string; ms: number; detail?: unknown }
+  | { acted: false; reason: string; ms: number; detail?: unknown; stop?: boolean }
   | {
       acted: true;
       kind: ActKind;
@@ -88,6 +88,8 @@ export const norm = (s: string): string =>
 const words = (s: string): string[] => norm(s).split(' ').filter(Boolean);
 /** 비교용 — 문장부호를 뗀 글자. 인식기는 중간 결과에도 마침표를 붙여 "버튼." 과 "버튼" 이 다른 단어가 된다. */
 export const bare = (s: string): string => s.replace(/[.,!?。…]+/g, '');
+/** 비교용 — 문장부호·띄어쓰기를 뺀 글자. */
+const compact = (s: string): string => bare(s).replace(/\s/g, '');
 /**
  * 중간 결과를 통째로 믿는다(기본). XGEN 은 서버가 연속 두 가설의 일치로 확정한 글자를 낸다.
  * 10/5 벤치(사람 67·이어 말하기 52, XGEN STT): 정확도 88.1%/80.8%(안 믿을 때 88.1%/71.2%), 말 끝→실행 중앙
@@ -117,6 +119,8 @@ export class Segmenter {
   private resolveDone: (() => void) | null = null;
   /** 최종 판단에서도 처리하지 못한 남은 말 — 서버 LLM 으로 넘길 부분. */
   unhandled: string | null = null;
+  /** Terminal local failure: do not reinterpret or forward this utterance automatically. */
+  failure: string | null = null;
   /**
    * 실행 중인 조작 — guard 를 통과한 뒤 handle 이 돌아올 때까지. 최종 인식이 와서 새 세대가 시작돼도
    * 이전 세대의 실행은 이미 화면을 바꾸고 있으므로, 새 세대는 그 실행이 끝나고 기록된 뒤에 남은 말을 본다
@@ -232,6 +236,11 @@ export class Segmenter {
     this.finalText = this.latest;
     this.onEvent({ type: 'final', text: this.latest, t: this.clock() });
     const done = new Promise<void>((r) => (this.resolveDone = r));
+    if (this.failure) {
+      this.unhandled = null;
+      this.finish();
+      return done;
+    }
     if (this.needsRecovery) {
       this.unhandled = this.remainder(this.latest) || this.lastSeg;
       this.finish();
@@ -265,6 +274,7 @@ export class Segmenter {
       for (;;) {
         if (this.acting) await this.acting; // 이전 세대의 실행이 끝나고 기록될 때까지
         if (my !== this.epoch) return; // 최종 인식이 와서 새 세대가 이어받았다
+        if (this.failure) { this.finish(); break; }
         const text = this.latest;
         this.lastTried = text;
         const isFinal = this.finalText !== null && text === this.finalText;
@@ -318,6 +328,17 @@ export class Segmenter {
               start = inner.start;
             }
             cand = words(rest).slice(start).join(' ');
+            // 앱을 옮긴 토막의 나머지가 그 말머리를 되풀이하며 다시 시작한다 — 인식기가 말을 겹쳐 적은 것이다("지금, 지금 PPT
+            // 장표 내려줘."). 새 요청으로 보면 방금 한 요청을 새 화면에서 또 한다(10/28 맥: 쇼를 내린 뒤 남은 "지금 PPT 장표
+            // 내려줘." 로 PowerPoint 를 다시 띄웠다). 앞 요청의 일부로 보고 끝낸다.
+            const pre = compact([this.lastSeg, ...words(rest).slice(0, start)].join(' '));
+            if (this.rereading && pre && compact(cand).startsWith(pre)) {
+              if (!isFinal) break;
+              this.rereading = false;
+              this.consumed = text;
+              this.finish();
+              break;
+            }
             this.rereading = false;
           }
         }
@@ -360,6 +381,10 @@ export class Segmenter {
               // 판단·실행 중 오류(결정 모델 응답 없음 등) — 못 한 것으로 친다. 던지면 final() 이 끝나지 않는다.
               o = { acted: false, reason: `오류 ${err instanceof Error ? err.message : String(err)}`, ms: 0 };
             } finally {
+              if (o && !o.acted && o.stop) {
+                this.failure = o.reason;
+                this.unhandled = null;
+              }
               // 실행했으면 세대가 바뀌었어도 기록한다 — 화면은 이미 바뀌었다.
               if (o?.acted) {
                 this.segStart = this.consumed;
@@ -384,7 +409,7 @@ export class Segmenter {
           if (first) {
             outcome = await run(first);
             if (outcome.acted) used = first;
-            else outcome = await run(cand); // 앞부분을 못 하면 통째로
+            else if (!outcome.stop) outcome = await run(cand); // 실행 실패가 아닌 미완성 앞부분만 통째로 다시 본다
           } else {
             outcome = await run(cand);
             // 중간 결과에서 기다리라고 하면, 짧은 앞부분이 이미 요청인지 본다.
@@ -400,6 +425,7 @@ export class Segmenter {
         }
         if (my !== this.epoch) return;
         this.onEvent({ type: 'decide', text: used, partial: !isFinal, outcome, t: this.clock() });
+        if (this.failure) { this.finish(); break; }
         if (!outcome.acted && outcome.reason === CONTINUATION && !this.stillHeard(used)) {
           // 판단하는 사이 인식이 정정됐다 — 처리한 것으로 치지 않고 최신 결과로 다시 본다.
           if (this.latest === text && !isFinal) break;

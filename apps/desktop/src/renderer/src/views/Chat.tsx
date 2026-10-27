@@ -94,6 +94,9 @@ import type { AgentViewerSub } from './workspace-layout';
 import { IdeView } from '@dex/ide';
 import { ideStoreFor, peekIdeStore, useIdeMode, useResolvedTheme } from '../ide/ide-sessions';
 import { useVoiceLoop, useVoiceStreamAvailable } from '../voice/voice-loop';
+import { useVoiceLoopOwner } from '../voice/voice-loop-owner';
+import { createVoiceInputTracker } from '../voice/voice-input';
+import { createConfirmVoiceResponder, type VoiceConfirmTarget } from '../voice/confirm-response';
 import { VoiceLoopBar, type VoiceLogEntry } from '../voice/VoiceLoopBar';
 import { DEFAULT_VOICE_REPLY_STYLE } from '@dex/protocol/voice-context';
 import { parseWakeWords, WAKE_WINDOW_MS } from '../../../main/voice-wake';
@@ -397,6 +400,7 @@ export const Chat: React.FC<{
   }, [busy, session.key]);
 
   const [input, setInput] = useState('');
+  const voiceInputTracker = useMemo(createVoiceInputTracker, []);
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
   const [stagedImages, setStagedImages] = useState<StagedChatImage[]>([]);
@@ -408,6 +412,21 @@ export const Chat: React.FC<{
   const confirms = useBrowserConfirms(session.interactionId, agent.workflowId);
   // 에이전트가 일을 이어 가기 전에 묻는 카드(main user-confirm) — 같은 자리, 확인창 카드가 있으면 그 뒤에.
   const userConfirms = useUserConfirms(session.interactionId, agent.workflowId);
+  const voiceConfirm: VoiceConfirmTarget | null = confirms[0]
+    ? { kind: 'browser', request: confirms[0] }
+    : userConfirms[0] ? { kind: 'user', request: userConfirms[0] } : null;
+  const voiceConfirmRef = useRef(voiceConfirm);
+  voiceConfirmRef.current = voiceConfirm;
+  const [confirmVoiceNotice, setConfirmVoiceNotice] = useState('');
+  const respondToConfirm = useMemo(() => createConfirmVoiceResponder({
+    current: () => voiceConfirmRef.current,
+    decide: (requestId, text) => xgen.voice.confirmIntent(requestId, text),
+    browser: answer => xgen.browser.resolveConfirm(answer),
+    user: answer => xgen.chat.resolveUserConfirm(answer),
+    notice: setConfirmVoiceNotice,
+  }), []);
+  const voiceConfirmId = voiceConfirm?.request.requestId ?? null;
+  useEffect(() => setConfirmVoiceNotice(''), [voiceConfirmId]);
   const browserSelectionsRef = useRef<BrowserSelectionResult[]>(browserSelections);
   browserSelectionsRef.current = browserSelections;
   const [preparingImages, setPreparingImages] = useState(0);
@@ -508,7 +527,8 @@ export const Chat: React.FC<{
   // 빠른 브라우저 조작이 켜져 있을 때만 마이크가 실시간 STT 스트림으로 동작한다.
   const streamVoice = useVoiceStreamAvailable();
   // 켜면 끌 때까지 계속 듣는다 — 말할 때마다 조작하고, 화면 조작으로 끝난 말은 채팅·TTS 없이 기록만 남긴다.
-  const [voiceLoopOn, setVoiceLoopOn] = useState(false);
+  // 켜짐은 화면 하나가 맡는다 — 말로 새 채팅을 열면 시작 화면·새 대화가 이어 듣는다(voice-loop-owner).
+  const [voiceLoopOn, toggleVoiceLoop, stopVoiceLoop] = useVoiceLoopOwner(session.key);
   const [voiceLog, setVoiceLog] = useState<VoiceLogEntry[]>([]);
   const logVoice = useCallback(
     (kind: VoiceLogEntry['kind'], text: string) => setVoiceLog((log) => [...log.slice(-2), { kind, text, at: Date.now() }]),
@@ -837,7 +857,7 @@ export const Chat: React.FC<{
       // 합성/재생 실패 — 원인(예: 'TTS upstream 404: voice_profile_not_found...')
       // 을 잠깐 보여 준다. 큐의 다음 문장은 계속 시도한다.
       const msg = e instanceof Error && e.message ? e.message : '음성 합성에 실패했습니다.';
-      setVoiceError(msg);
+      setVoiceError(`음성 재생 실패: ${msg}`);
       if (voiceErrTimer.current) clearTimeout(voiceErrTimer.current);
       voiceErrTimer.current = setTimeout(() => setVoiceError(null), 6000);
     } finally {
@@ -1066,6 +1086,7 @@ export const Chat: React.FC<{
   useEffect(() => () => { recordingGeneration.current++; mediaRef.current?.cancel(); }, []);
   const startRecording = useCallback(async () => {
     if (recording || transcribing) return;
+    const recordedRequestId = voiceConfirmRef.current?.request.requestId ?? null;
     const generation = ++recordingGeneration.current;
     const chunks: Uint8Array[] = [];
     let heard = false;
@@ -1092,12 +1113,12 @@ export const Chat: React.FC<{
           const blob = pcmWav(chunks);
           if (blob.size <= 44) return;
           const text = (await xgen.voice.transcribe(blob, voiceCfg?.stt?.language || undefined)).trim();
-          if (generation === recordingGeneration.current && text) send(text);
+          if (generation === recordingGeneration.current && text && !(await respondToConfirm(text, recordedRequestId))) send(text);
         } catch (error) { setVoiceError(String(error)); }
         finally { setTranscribing(false); }
       };
     } catch (error) { setVoiceError(String(error)); setRecording(false); }
-  }, [recording, transcribing, voiceCfg, send]);
+  }, [recording, transcribing, voiceCfg, send, respondToConfirm]);
 
   const stopRecording = useCallback(() => {
     if (finishRecordingRef.current) void finishRecordingRef.current();
@@ -1106,16 +1127,28 @@ export const Chat: React.FC<{
 
   // 계속 듣기: 빠른 브라우저 조작 설정에서 실시간 STT를 사용한다.
   // 현재 main은 최종 발화 뒤 채팅 계획까지 조작을 보류하며, TTS 재생 중에는 입력 전송을 쉰다.
-  const { state: loopState, error: loopError } = useVoiceLoop({
+  const { state: loopState, error: loopError, notice: loopNotice } = useVoiceLoop({
     enabled: streamVoice && voiceLoopOn,
     workflowId: agent.workflowId,
     interactionId: session.interactionId,
+    responseKey: voiceConfirmId,
     isPaused: () => playingRef.current || ttsQueueRef.current.length > 0,
-    onPartial: (t) => setInput(t),
+    onPartial: (t) => { if (!voiceConfirmRef.current && voiceInputTracker.preview(t)) setInput(t); },
     onWake: () => markCalled(true),
-    onResult: async (r) => {
-      setInput('');
+    onResult: async (r, recordedRequestId) => {
+      const clearVoiceInput = voiceInputTracker.complete();
+      const trace = (reason: string): void => {
+        if (r.traceId) xgen.voiceStream.trace({ id: r.traceId, stage: 'route', text: r.text, requestId: recordedRequestId, reason });
+      };
+      if (r.blocked) {
+        setInput(clearVoiceInput);
+        trace('action_blocked');
+        markCalled(false);
+        logVoice('skip', r.blocked);
+        return;
+      }
       if (r.wake === 'called') {
+        trace('wake_only');
         // 호출어만 들었다 — 다음 말 하나는 호출어 없이 받는다(main 이 같은 시간만큼 기다린다).
         markCalled(true, WAKE_WINDOW_MS);
         if (ttsOnRef.current && !mutedRef.current) {
@@ -1125,15 +1158,21 @@ export const Chat: React.FC<{
         return;
       }
       if (r.wake !== 'off') markCalled(false);
-      if (!r.text) return;
-      // 한두 글자짜리 처리 못 한 말("그.", "음")은 말버릇·잡음 — 채팅으로 보내지 않는다.
-      if (!r.actions.length && r.text.replace(/[\s.,!?。…]/g, '').length <= 2) {
-        logVoice('skip', r.text);
-        return;
-      }
+      if (!r.text) { trace(r.wake === 'ignored' ? 'wake_required' : 'empty_text'); return; }
+      if (recordedRequestId) trace('confirmation_check');
+      if (await respondToConfirm(r.text, recordedRequestId, trace)) { trace('confirmation_consumed'); return; }
       if (r.actions.length && !r.unhandled) {
+        setInput(clearVoiceInput);
+        trace('browser_actions_handled');
         const line = r.actions.map((a) => (a.text ? `${a.display}에 "${a.text}"` : a.display)).join(' → ');
         logVoice('act', line);
+        return;
+      }
+      setInput('');
+      // 한두 글자짜리 처리 못 한 말("그.", "음")은 말버릇·잡음 — 채팅으로 보내지 않는다.
+      if (!r.actions.length && r.text.replace(/[\s.,!?。…]/g, '').length <= 2) {
+        trace('short_text');
+        logVoice('skip', r.text);
         return;
       }
       // 계속 듣기는 주변 소리도 듣는다 — 주변 소리·인식 환각으로 보이는 말은 채팅으로 보내지 않는다:
@@ -1146,18 +1185,27 @@ export const Chat: React.FC<{
       for (const x of sentences) counts.set(x, (counts.get(x) ?? 0) + 1);
       const repeated = [...counts.values()].some((n) => n >= 3);
       if ((letters.length >= 6 && hangul / letters.length < 0.3) || repeated) {
+        trace('noise_filter');
         logVoice('noise', r.text);
         return;
       }
       if (busy) {
+        trace('chat_busy');
         logVoice('busy', r.text);
         return;
       }
       logVoice('chat', r.text);
+      trace('chat_requested');
       await send(r.text, { voice: true });
     },
   });
-  useEffect(() => { if (loopError) { setVoiceError(loopError); setVoiceLoopOn(false); } }, [loopError]);
+  useEffect(() => {
+    if (loopError) {
+      if (voiceErrTimer.current) clearTimeout(voiceErrTimer.current);
+      setVoiceError(`음성 입력 오류: ${loopError} 마이크를 다시 켜 주세요.`);
+      stopVoiceLoop();
+    }
+  }, [loopError, stopVoiceLoop]);
   useEffect(() => {
     if (!voiceLoopOn) {
       setVoiceLog([]);
@@ -1177,12 +1225,12 @@ export const Chat: React.FC<{
 
   const toggleMic = useCallback(() => {
     if (streamVoice) {
-      setVoiceLoopOn((v) => !v);
+      toggleVoiceLoop();
       return;
     }
     if (recording) stopRecording();
     else void startRecording();
-  }, [streamVoice, recording, startRecording, stopRecording]);
+  }, [streamVoice, toggleVoiceLoop, recording, startRecording, stopRecording]);
 
   // Load voice config (server hints) + device-local overrides; track live changes.
   useEffect(() => {
@@ -1941,13 +1989,15 @@ export const Chat: React.FC<{
       </div>
 
       <div className="chat-input">
-        {confirms[0] && <ConfirmCard key={confirms[0].requestId} request={confirms[0]} more={confirms.length - 1} />}
+        {confirms[0] && <ConfirmCard key={confirms[0].requestId} request={confirms[0]} more={confirms.length - 1} voiceEnabled={sttOn} />}
         {!confirms[0] && userConfirms[0] && (
-          <UserConfirmCard key={userConfirms[0].requestId} request={userConfirms[0]} more={userConfirms.length - 1} />
+          <UserConfirmCard key={userConfirms[0].requestId} request={userConfirms[0]} more={userConfirms.length - 1} voiceEnabled={sttOn} />
         )}
+        {confirmVoiceNotice && <div className="voice-error small" role="status">{confirmVoiceNotice}</div>}
+        {voiceLoopOn && loopNotice && <div className="voice-error small" role="status">{loopNotice}</div>}
         {voiceError && (
           <div className="voice-error small" title={voiceError}>
-            음성 재생 실패: {voiceError}
+            {voiceError}
           </div>
         )}
         {logFor && (
@@ -2133,7 +2183,7 @@ export const Chat: React.FC<{
                 ? '첨부한 화면이나 요소에 대해 질문해 보세요…'
                 : '메시지를 입력하세요…'
             }
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { voiceInputTracker.edited(); setInput(e.target.value); }}
             onPaste={handleImagePaste}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -2184,7 +2234,7 @@ export const Chat: React.FC<{
             <button
               className={`composer-mic${recording || voiceLoopOn ? ' recording' : ''}`}
               onClick={toggleMic}
-              disabled={streamVoice ? false : transcribing || busy}
+              disabled={streamVoice || recording ? false : transcribing || (busy && !voiceConfirm)}
               title={
                 streamVoice
                   ? voiceLoopOn

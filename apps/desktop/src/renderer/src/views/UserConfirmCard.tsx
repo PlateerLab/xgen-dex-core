@@ -10,7 +10,7 @@ import type { UserConfirmChoice, UserConfirmRequest } from '@dex/protocol/user-c
 import { xgen } from '../bridge';
 import { USER_CONFIRM_OPTIONS, leftText } from '../user-confirm-store';
 
-export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmRequest; more?: number }) {
+export function UserConfirmCard({ request, more = 0, voiceEnabled = false }: { request: UserConfirmRequest; more?: number; voiceEnabled?: boolean }) {
   const [saying, setSaying] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -100,7 +100,7 @@ export function UserConfirmCard({ request, more = 0 }: { request: UserConfirmReq
           </button>
         ))}
       </div>
-      <div className="confirm-card-left">Esc · {saying ? '입력 닫기 (작성 내용 유지)' : '진행하지 않기'}</div>
+      <div className="confirm-card-left">Esc · {saying ? '입력 닫기 (작성 내용 유지)' : '진행하지 않기'}{voiceEnabled && ' · 마이크로 “진행해”, “진행하지 마” 또는 고칠 내용'}</div>
       {saying && (
         <form
           className="confirm-card-say"

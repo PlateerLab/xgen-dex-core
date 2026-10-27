@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appRefs, buildSnap, systemActions } from '../src/main/fast-act-computer';
-import { candName } from '../src/main/fast-act-desktop';
+import { appPick, candName } from '../src/main/fast-act-desktop';
 import { buildScreen } from '../src/main/fast-act-e13';
 
 const names = (o: Record<string, { name: string }>): string[] => Object.values(o).map((a) => a.name);
@@ -27,6 +27,11 @@ test('발표 중이면 계속하기·발표 끝내기·다음·이전을 붙이�
     'XGen Dex 앞으로 가져오기',
   ]);
   assert.deepEqual(Object.keys(sys), ['e9001', 'e9002', 'e9003', 'e9004', 'e9005', 'e9006']);
+});
+
+test('발표 조작 후보가 있는 앱(발표 중인 PowerPoint)은 같은 일을 하는 키·숨기기 후보를 두지 않는다', () => {
+  const sys = systemActions({ app: 'Microsoft PowerPoint', pid: 1, presenting: true, window: 'PowerPoint 슬라이드 쇼' }, () => undefined, true);
+  assert.deepEqual(names(sys), ['발표(전체 화면) 계속하기 — 이미 발표 중', '발표(전체 화면) 끝내기 (Esc 키)', 'XGen Dex 앞으로 가져오기']);
 });
 
 test('답은 후보 이름 대신 한 일을 말하는 문장 — 키 이름("(Esc 키)")을 읽지 않는다', () => {
@@ -112,6 +117,8 @@ test('다른 맥 앱 후보 — 실행 중인 앱은 시스템 후보 뒤(맨 �
     head: { e9011: { role: 'button', name: '카카오톡 앱으로 전환 (맥 데스크탑 앱)' } },
     tail: { e8001: { role: 'button', name: '계산기 (Calculator) 앱 실행 (맥 데스크탑 앱)' } },
     apps: { e9011: { name: '카카오톡', label: '카카오톡', path: '/Applications/KakaoTalk.app', pid: 20 }, e8001: { name: '계산기', label: '계산기 (Calculator)', path: '/System/Applications/Calculator.app' } },
+    controls: {},
+    commands: {},
   };
   const ax = {
     gen: 1, app: 'Microsoft PowerPoint', bundleId: '', pid: 30, presenting: false, window: '프레젠테이션1', windowFrame: [0, 0, 800, 600],
@@ -135,4 +142,18 @@ test('다른 맥 앱 이름 — 설치됨은 실행, 실행 중은 전환, 숨�
     candName({ name: 'Microsoft PowerPoint', label: 'Microsoft PowerPoint', path: '/Applications/Microsoft PowerPoint.app', pid: 30, hidden: true }),
     'Microsoft PowerPoint 앱 다시 띄우기 (맥 데스크탑 앱)',
   );
+});
+
+test('앱 후보끼리 갈린 확률은 합해서 본다 — 어느 앱인지는 앱 목록이 다시 고른다', () => {
+  // 10/28 맥: "PPT 다시 열어서 발표 모드로 전환해 줘" PowerPoint 0.59 · Figma 0.41 → 앱 목록에서 PowerPoint 1.00
+  const apps = { e9008: {}, e8009: {}, e9017: {} };
+  const split = { ref: 'e9008', confidence: 0.59, top: [['e9008 button "PowerPoint"', 0.59], ['e8009 button "Figma"', 0.41], ['e9017 button "메모"', 0]] as Array<[string, number]> };
+  assert.equal(appPick(split, apps).confidence, 1);
+  assert.equal(appPick(split, apps).ref, 'e9008');
+  // 앱과 다른 후보(웹·DeX 명령·페이지 요소)가 갈린 것은 합하지 않는다
+  const web = { ref: 'e9008', confidence: 0.55, top: [['e9008 button "PowerPoint"', 0.55], ['e9001 button "웹사이트 열기"', 0.45]] as Array<[string, number]> };
+  assert.equal(appPick(web, apps).confidence, 0.55);
+  // 앱이 아닌 것을 골랐으면 그대로
+  const page = { ref: 'e12', confidence: 0.5, top: [['e12 link "로그인"', 0.5], ['e9008 button "PowerPoint"', 0.5]] as Array<[string, number]> };
+  assert.equal(appPick(page, apps), page);
 });

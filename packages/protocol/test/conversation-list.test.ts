@@ -175,6 +175,19 @@ test('방금 말한 대화는 맨 위로, 비교 묶음·주인은 지키고 모
   assert.equal(unknown.list, current)
 })
 
+test('즐겨찾기가 먼저: 서버 순서와 같고, 방금 말한 일반 대화는 즐겨찾기 아래 맨 위로', () => {
+  const fav = (iid: string, at: string) => conv(iid, at, { isFavorite: true })
+  assert.equal(parseConversation({ interaction_id: 'c1', workflow_id: 'wf', is_favorite: true })?.isFavorite, true)
+  assert.equal(parseConversation({ interaction_id: 'c1', workflow_id: 'wf' })?.isFavorite, false)
+  const page = [fav('c2', '2026-10-02T00:00:00Z'), fav('c1', '2026-10-01T00:00:00Z'), conv('c9', '2026-10-09T00:00:00Z')]
+  assert.deepEqual(ids(sortConversations([...page].reverse())), ['c2', 'c1', 'c9'])
+  // 첫 쪽을 다시 읽어도 서버가 준 순서(즐겨찾기 먼저)를 시각 순으로 흩지 않는다.
+  assert.deepEqual(ids(mergeConversationPage(page, [conv('c10', '2026-10-10T00:00:00Z')], 'head')), ['c2', 'c1', 'c10', 'c9'])
+  const list = [...page, conv('c8', '2026-10-08T00:00:00Z')]
+  assert.deepEqual(ids(touchConversation(list, conv('c8', '2026-10-11T00:00:00Z')).list), ['c2', 'c1', 'c8', 'c9'])
+  assert.deepEqual(ids(touchConversation(list, fav('c1', '2026-10-11T00:00:00Z')).list), ['c1', 'c2', 'c9', 'c8'])
+})
+
 test('지우기·이름 바꾸기는 (에이전트, 대화) 둘 다로 가린다', () => {
   const list = [conv('c1', '2026-10-01T00:00:00Z', { workflowId: 'wf-a' }), conv('c1', '2026-10-01T00:00:00Z', { workflowId: 'wf-b' })]
   assert.deepEqual(removeConversation(list, 'wf-a', 'c1').map((c) => c.workflowId), ['wf-b'])

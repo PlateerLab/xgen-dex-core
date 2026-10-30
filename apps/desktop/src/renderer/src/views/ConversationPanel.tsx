@@ -601,6 +601,11 @@ export const ConversationPanel: React.FC<{
     const title = conversationDisplayTitle(c);
     const metaLine = (
       <span className="conv-row-agent">
+        {c.isFavorite && (
+          <span className="conv-row-favorite" role="img" aria-label="즐겨찾기" title="즐겨찾기">
+            ★
+          </span>
+        )}
         {showAgent &&
           (c.agentDeleted ? (
             <span className="conv-tag deleted">{DELETED_AGENT_LABEL}</span>

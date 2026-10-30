@@ -240,13 +240,23 @@ async function loadTransportsAndError(): Promise<{
   };
 }
 
+/** OAuth 서버의 Authorization 은 OAuth 토큰 몫이다. SDK 는 requestInit 헤더를 토큰
+ *  헤더 위에 덮어쓰므로, 고정 키 모드에서 남은 헤더가 있으면 토큰이 서버에 가지 않는다. */
+export function withoutAuthorizationHeader(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'authorization'));
+}
+
 /** Attach an OAuth provider to a transport option bag when the server uses OAuth. */
 export function oauthTransportOptions(
   cfg: McpServerConfig,
-  base: { requestInit?: RequestInit; fetch?: McpHttpFetch },
+  base: { requestInit?: { headers?: Record<string, string> }; fetch?: McpHttpFetch },
 ): { requestInit?: RequestInit; fetch?: McpHttpFetch; authProvider?: unknown } {
   if (cfg.auth !== 'oauth') return base;
-  return { ...base, authProvider: makeSilentOAuthProvider(cfg.name) as unknown };
+  const headers = base.requestInit?.headers;
+  const requestInit = headers
+    ? { ...base.requestInit, headers: withoutAuthorizationHeader(headers) }
+    : base.requestInit;
+  return { ...base, requestInit, authProvider: makeSilentOAuthProvider(cfg.name) as unknown };
 }
 
 /** Run the interactive OAuth authorization for a server. Opens the browser, runs

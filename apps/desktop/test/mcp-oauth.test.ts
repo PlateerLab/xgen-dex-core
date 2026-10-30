@@ -20,6 +20,16 @@ test('oauthTransportOptions: auth!=oauth 는 그대로, oauth 는 authProvider �
   assert.deepEqual(opts.requestInit, base.requestInit)
 })
 
+test('oauthTransportOptions: oauth 는 남은 Authorization 헤더를 대소문자 무관하게 뺀다', () => {
+  const base = { requestInit: { headers: { Authorization: 'Bearer static', authorization: 'Bearer x', X: '1' } } }
+  const plain: McpServerConfig = { name: 's', transport: 'http', url: 'https://x' }
+  assert.deepEqual(oauthTransportOptions(plain, base), base)
+
+  const oauth: McpServerConfig = { ...plain, auth: 'oauth' }
+  const opts = oauthTransportOptions(oauth, base) as { requestInit?: RequestInit }
+  assert.deepEqual(opts.requestInit?.headers, { X: '1' })
+})
+
 test('ConnectorOAuthProvider: redirectUrl 과 clientMetadata 형태', () => {
   const p = new ConnectorOAuthProvider('srv', 41234, true)
   assert.equal(p.redirectUrl, 'http://127.0.0.1:41234/callback')

@@ -14,7 +14,7 @@ import type { McpServerConfig } from './mcp-types';
 import { mcpSecretStore } from './host';
 import { withResolvedSecrets } from './mcp-secrets';
 import { containsPlaintextSecrets, McpSecretRedactor } from './mcp-redaction';
-import { oauthTransportOptions } from './mcp-oauth';
+import { oauthTransportOptions, withoutAuthorizationHeader } from './mcp-oauth';
 import { homedir } from 'os';
 import {
   augmentedPath,
@@ -108,6 +108,13 @@ export async function canonicalizeMcpServerConfig(
     throw new Error('원격 MCP 서버는 HTTPS origin이어야 합니다.');
   }
   normalized.url = url.toString();
+  // OAuth 서버는 Authorization 을 보내지 않는다 — 고정 키 모드에서 남은 줄은 저장도
+  // 승인도 하지 않는다 (저장하면 키체인의 옛 키도 함께 지워진다).
+  if (normalized.auth === 'oauth' && normalized.headers) {
+    const headers = withoutAuthorizationHeader(normalized.headers);
+    if (Object.keys(headers).length) normalized.headers = headers;
+    else delete normalized.headers;
+  }
   return normalized;
 }
 

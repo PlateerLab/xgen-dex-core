@@ -41,4 +41,7 @@ export interface McpOAuthState {
   tokens?: unknown;
   clientInformation?: unknown;
   codeVerifier?: string;
+  /** 인가받은 MCP URL. 상태는 서버 이름으로 저장되므로, 같은 이름의 URL 이 바뀌면
+   *  이 값으로 옛 서버의 토큰임을 알아본다. */
+  serverUrl?: string;
 }

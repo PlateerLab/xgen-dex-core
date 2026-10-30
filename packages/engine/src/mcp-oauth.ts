@@ -20,7 +20,7 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import type { McpServerConfig } from './mcp-types';
+import type { McpOAuthState, McpServerConfig } from './mcp-types';
 import { interaction, mcpOAuthStore } from './host';
 import type { McpHttpFetch } from './mcp-manager';
 
@@ -302,6 +302,7 @@ export async function authorizeMcpServer(
       codeVerifier: undefined,
       tokens: undefined,
       clientInformation: undefined,
+      serverUrl: cfg.url,
     });
 
     const provider = new ConnectorOAuthProvider(
@@ -356,6 +357,17 @@ export async function authorizeMcpServer(
     loop.cancel();
     loop.server.close();
   }
+}
+
+/** 저장하려는 설정에서 다시 쓰이지 않을 OAuth 상태인지 — OAuth 가 아니게 됐거나
+ *  인가받은 URL 과 다른 URL 을 가리킬 때다. 남겨 두면 나중에 OAuth 로 돌아왔을 때
+ *  배지는 "인가됨"인데 연결은 옛 토큰으로 실패한다. `prevUrl` 은 serverUrl 을
+ *  기록하기 전에 인가받은 상태를 위한 것이다. */
+export function isStaleOAuthState(next: McpServerConfig, state: McpOAuthState, prevUrl?: string): boolean {
+  if (!state.tokens && !state.clientInformation && !state.codeVerifier) return false;
+  if (next.auth !== 'oauth') return true;
+  const issuedFor = state.serverUrl ?? prevUrl;
+  return !!issuedFor && issuedFor !== next.url;
 }
 
 /** Whether a server currently has stored OAuth tokens. */

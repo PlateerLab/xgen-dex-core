@@ -4,6 +4,7 @@ import assert from 'assert'
 import { test } from 'node:test'
 import {
   ConnectorOAuthProvider,
+  isStaleOAuthState,
   makeSilentOAuthProvider,
   oauthTransportOptions,
 } from '@dex/engine/mcp-oauth'
@@ -18,6 +19,32 @@ test('oauthTransportOptions: auth!=oauth 는 그대로, oauth 는 authProvider �
   const opts = oauthTransportOptions(oauth, base) as { authProvider?: unknown; requestInit?: unknown }
   assert.ok(opts.authProvider, 'authProvider 가 부착되지 않았다')
   assert.deepEqual(opts.requestInit, base.requestInit)
+})
+
+test('oauthTransportOptions: oauth 는 남은 Authorization 헤더를 대소문자 무관하게 뺀다', () => {
+  const base = { requestInit: { headers: { Authorization: 'Bearer static', authorization: 'Bearer x', X: '1' } } }
+  const plain: McpServerConfig = { name: 's', transport: 'http', url: 'https://x' }
+  assert.deepEqual(oauthTransportOptions(plain, base), base)
+
+  const oauth: McpServerConfig = { ...plain, auth: 'oauth' }
+  const opts = oauthTransportOptions(oauth, base) as { requestInit?: RequestInit }
+  assert.deepEqual(opts.requestInit?.headers, { X: '1' })
+})
+
+test('isStaleOAuthState: OAuth 를 끄거나 인가받은 URL 이 바뀌면 옛 상태를 버린다', () => {
+  const url = 'https://a.example/mcp'
+  const oauth: McpServerConfig = { name: 's', transport: 'http', url, auth: 'oauth' }
+  const authed = { tokens: { access_token: 't' }, clientInformation: { client_id: 'c' }, serverUrl: url }
+
+  assert.equal(isStaleOAuthState(oauth, {}), false, '상태가 없으면 지울 것도 없다')
+  assert.equal(isStaleOAuthState(oauth, authed), false)
+  assert.equal(isStaleOAuthState({ ...oauth, auth: undefined }, authed), true, '고정 키 모드로 바꿈')
+  assert.equal(isStaleOAuthState({ ...oauth, url: 'https://b.example/mcp' }, authed), true, 'URL 바뀜')
+  // serverUrl 을 기록하기 전에 인가받은 상태는 직전 설정의 URL 과 비교한다
+  const legacy = { tokens: { access_token: 't' } }
+  assert.equal(isStaleOAuthState(oauth, legacy, url), false)
+  assert.equal(isStaleOAuthState(oauth, legacy, 'https://old.example/mcp'), true)
+  assert.equal(isStaleOAuthState(oauth, legacy), false, '비교할 URL 이 없으면 둔다 (이름 변경 직후)')
 })
 
 test('ConnectorOAuthProvider: redirectUrl 과 clientMetadata 형태', () => {

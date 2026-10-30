@@ -54,6 +54,16 @@ test('presence 승인용 canonical config는 executable/argv와 HTTPS origin을 
   )
 })
 
+test('canonical config: OAuth 서버는 남은 Authorization 헤더를 빼고, 고정 키 서버는 그대로 둔다', async () => {
+  const base = { name: 'r', transport: 'http' as const, url: 'https://mcp.example.com/mcp' }
+  const oauth = await canonicalizeMcpServerConfig({ ...base, auth: 'oauth', headers: { authorization: '', X: '1' } })
+  assert.deepEqual(oauth.headers, { X: '1' })
+  const onlyAuth = await canonicalizeMcpServerConfig({ ...base, auth: 'oauth', headers: { Authorization: '' } })
+  assert.equal('headers' in onlyAuth, false)
+  const token = await canonicalizeMcpServerConfig({ ...base, headers: { Authorization: 'Bearer k' } })
+  assert.deepEqual(token.headers, { Authorization: 'Bearer k' })
+})
+
 test('args 없이 한 줄 명령이면 따옴표 인식 분해로 동작한다 (기존 경로)', async () => {
   const mgr = getMcpManager()
   const res = await mgr.test({

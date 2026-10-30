@@ -402,9 +402,10 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
     [status],
   );
 
+  // 메인이 실제로 저장한 목록으로 화면을 맞춘다. 저장 전에 바꾸면 확인 창 취소·저장
+  // 실패 때도 화면엔 바뀐 설정이 남고, 다시 열면 옛 설정(예: OAuth)으로 돌아가 보인다.
   const persist = async (next: McpServerConfig[]) => {
-    setServers(next);
-    await xgen.mcp.saveServers(next);
+    setServers(await xgen.mcp.saveServers(next));
   };
 
   const startEdit = (i: number | 'new') => {

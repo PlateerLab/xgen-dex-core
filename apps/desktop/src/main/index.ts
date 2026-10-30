@@ -90,7 +90,7 @@ import {
   mcpOAuthStore,
 } from './keychain';
 import { persistServerSecretsVerified, withResolvedSecrets } from '@dex/engine/mcp-secrets';
-import { authorizeMcpServer, hasOAuthTokens, clearOAuth } from '@dex/engine/mcp-oauth';
+import { authorizeMcpServer, hasOAuthTokens, clearOAuth, isStaleOAuthState } from '@dex/engine/mcp-oauth';
 import {
   initUpdater,
   setAutoUpdate,
@@ -4079,11 +4079,15 @@ async function applyMcpServers(
   expectedDigest?: string,
 ): Promise<McpServerConfig[]> {
   const prev = loadConfig().mcpServers ?? [];
+  const prevUrl = new Map(prev.filter((p) => p?.name).map((p) => [p.name, p.url]));
   const redacted: McpServerConfig[] = [];
+  // 인증 방식이나 URL 이 바뀌어 다시 쓰이지 않을 OAuth 상태 — 설정을 커밋한 뒤 지운다.
+  const staleOAuth: string[] = [];
   for (const s of incoming) {
     if (!s || !s.name) continue;
     const stored = await mcpSecretStore.get(s.name);
     redacted.push(await persistServerSecretsVerified(mcpSecretStore, s, stored));
+    if (isStaleOAuthState(s, await mcpOAuthStore.load(s.name), prevUrl.get(s.name))) staleOAuth.push(s.name);
   }
   if (expectedDigest && expectedDigest !== canonicalConfigDigest(incoming)) {
     throw new Error('MCP 설정이 확인 뒤 변경되었습니다. 다시 검토해 주세요.');
@@ -4097,6 +4101,7 @@ async function applyMcpServers(
       await mcpOAuthStore.clear(p.name).catch(() => {});
     }
   }
+  for (const name of staleOAuth) await mcpOAuthStore.clear(name).catch(() => {});
   syncMcp();
   broadcastConfig(next);
   return next.mcpServers ?? [];

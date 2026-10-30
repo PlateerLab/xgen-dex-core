@@ -372,6 +372,11 @@ export interface Conversation {
   title: string;
   /** 사용자가 이름을 붙였는가. */
   customTitle: boolean;
+  /**
+   * 즐겨찾기(2026-10-30, 사용자별). 목록은 즐겨찾기가 먼저, 그 안에서 마지막으로 말한 순서다.
+   * 옛 서버는 싣지 않는다(= 즐겨찾기 아님).
+   */
+  isFavorite?: boolean;
   tag: ConversationTag | null;
   /** 에이전트가 사라졌다: 이어 갈 수 없고 기록만 볼 수 있다. */
   agentDeleted: boolean;

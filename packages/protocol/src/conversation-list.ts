@@ -155,6 +155,7 @@ export function parseConversation(raw: unknown): Conversation | null {
     updatedAt: str(r.updated_at),
     title: str(r.title),
     customTitle: r.custom_title === true,
+    isFavorite: r.is_favorite === true,
     tag: TAGS.has(tag) ? (tag as ConversationTag) : null,
     agentDeleted: r.agent_deleted === true,
     agentOwnerId: typeof r.agent_owner_id === 'number' ? r.agent_owner_id : null,
@@ -252,9 +253,17 @@ const stamp = (v: string | null | undefined): number => {
   return Number.isFinite(t) ? t : 0;
 };
 
-/** 마지막으로 말한 순서, 같은 시각이면 나중에 생긴 대화가 위(서버와 같은 순서). */
+const favoriteRank = (c: Pick<Conversation, 'isFavorite'>): number => (c.isFavorite === true ? 1 : 0);
+
+/**
+ * 즐겨찾기가 먼저, 그 안에서 마지막으로 말한 순서, 같은 시각이면 나중에 생긴 대화가 위
+ * (서버와 같은 순서 — 서버 커서도 이 순서로 이어진다).
+ */
 export function sortConversations(list: Conversation[]): Conversation[] {
-  return [...list].sort((a, b) => stamp(b.updatedAt) - stamp(a.updatedAt) || (b.id ?? 0) - (a.id ?? 0));
+  return [...list].sort((a, b) =>
+    favoriteRank(b) - favoriteRank(a)
+    || stamp(b.updatedAt) - stamp(a.updatedAt)
+    || (b.id ?? 0) - (a.id ?? 0));
 }
 
 /**
@@ -276,7 +285,8 @@ export function mergeConversationPage(
 }
 
 /**
- * "이 대화에서 방금 말했다": 목록 맨 위로. 모르는 대화면 `known: false`
+ * "이 대화에서 방금 말했다": 자기 무리(즐겨찾기 · 나머지)의 맨 위로. 즐겨찾기가 아닌 대화가
+ * 즐겨찾기 위로 올라가지 않는다. 모르는 대화면 `known: false`
  * (화면이 첫 쪽을 다시 읽는다. 숨겨야 하는 대화인지는 서버만 안다).
  */
 export function touchConversation(
@@ -296,7 +306,11 @@ export function touchConversation(
     id: item.id || prev.id,
     agentOwnerId: item.agentOwnerId ?? prev.agentOwnerId,
   };
-  return { list: [next, ...current.slice(0, idx), ...current.slice(idx + 1)], known: true };
+  const rest = [...current.slice(0, idx), ...current.slice(idx + 1)];
+  // 맨 위가 아니라 자기 무리의 맨 위: 앞에 남는 것은 (일반 대화라면) 즐겨찾기뿐이다.
+  const at = favoriteRank(next) ? 0 : rest.findIndex((c) => !favoriteRank(c));
+  const cut = at < 0 ? rest.length : at;
+  return { list: [...rest.slice(0, cut), next, ...rest.slice(cut)], known: true };
 }
 
 export function removeConversation(current: Conversation[], workflowId: string, interactionId: string): Conversation[] {

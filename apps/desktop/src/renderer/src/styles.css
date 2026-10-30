@@ -10244,6 +10244,13 @@ button.sm {
 .conv-row-live {
   margin: 0 0 0 auto;
 }
+/* 즐겨찾기(웹 사이드바와 같은 노란 별). 별을 켜고 끄는 것은 웹 [채팅 기록 관리]에서 한다. */
+.conv-row-favorite {
+  flex-shrink: 0;
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 15px;
+}
 .conv-row-title {
   min-width: 0;
   overflow: hidden;

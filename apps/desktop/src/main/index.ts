@@ -53,6 +53,7 @@ import {
   type TtsSpeakOptions,
   type SshServerInput,
   type ChatStopResult,
+  type SteerStatus,
   type AppApiDeclaration,
   type AppStoreListParams,
   describeError,
@@ -90,7 +91,7 @@ import {
   mcpOAuthStore,
 } from './keychain';
 import { persistServerSecretsVerified, withResolvedSecrets } from '@dex/engine/mcp-secrets';
-import { authorizeMcpServer, hasOAuthTokens, clearOAuth } from '@dex/engine/mcp-oauth';
+import { authorizeMcpServer, hasOAuthTokens, clearOAuth, isStaleOAuthState } from '@dex/engine/mcp-oauth';
 import {
   initUpdater,
   setAutoUpdate,
@@ -3616,6 +3617,21 @@ ipcMain.handle(
   },
 );
 
+/**
+ * 도는 턴에 사용자 메시지를 넣는다 — 기다리거나 [정지] 하지 않고 덧붙인다. 서버가 다음 반복 경계에서 그 턴의
+ * 대화에 넣고, 결말(들어감·돌아옴)은 그 턴의 스트림에 `steer` 이벤트로 온다. 받았는가만 돌려준다.
+ */
+ipcMain.handle(
+  CHANNELS.chatSteer,
+  async (_e, interactionId: string, text: string, clientMsgId?: string): Promise<SteerStatus> => {
+    try {
+      return await getClient().chat.steer(String(interactionId || ''), String(text || ''), clientMsgId);
+    } catch {
+      return 'failed';
+    }
+  },
+);
+
 // '진행 중 대화' 삭제 → 서버 세션 RAM(executor + 라우팅)을 완전 정리한다. 이력은 보존.
 // best-effort — 서버 미도달/미인증이어도 로컬 삭제 UX 는 막지 않는다.
 ipcMain.handle(CHANNELS.chatEndSession, async (_e, workflowId: string, interactionId: string) => {
@@ -4079,11 +4095,15 @@ async function applyMcpServers(
   expectedDigest?: string,
 ): Promise<McpServerConfig[]> {
   const prev = loadConfig().mcpServers ?? [];
+  const prevUrl = new Map(prev.filter((p) => p?.name).map((p) => [p.name, p.url]));
   const redacted: McpServerConfig[] = [];
+  // 인증 방식이나 URL 이 바뀌어 다시 쓰이지 않을 OAuth 상태 — 설정을 커밋한 뒤 지운다.
+  const staleOAuth: string[] = [];
   for (const s of incoming) {
     if (!s || !s.name) continue;
     const stored = await mcpSecretStore.get(s.name);
     redacted.push(await persistServerSecretsVerified(mcpSecretStore, s, stored));
+    if (isStaleOAuthState(s, await mcpOAuthStore.load(s.name), prevUrl.get(s.name))) staleOAuth.push(s.name);
   }
   if (expectedDigest && expectedDigest !== canonicalConfigDigest(incoming)) {
     throw new Error('MCP 설정이 확인 뒤 변경되었습니다. 다시 검토해 주세요.');
@@ -4097,6 +4117,7 @@ async function applyMcpServers(
       await mcpOAuthStore.clear(p.name).catch(() => {});
     }
   }
+  for (const name of staleOAuth) await mcpOAuthStore.clear(name).catch(() => {});
   syncMcp();
   broadcastConfig(next);
   return next.mcpServers ?? [];

@@ -29,8 +29,10 @@ import type {
   ChatRequest,
   Citation,
   GeneratedContentProvenance,
-  HistoryAttachment, HistoryFlowItem,
+  HistoryAttachment, HistoryFlowItem, HistorySteer,
   LiveTurnSnapshot,
+  SteerOutcome,
+  SteerStatus,
   ToolEvent,
   TurnAttachment,
   TurnPhaseRow,
@@ -207,10 +209,62 @@ function historyFileCards(items: readonly HistoryAttachment[] | undefined): Chat
     .map((a) => ({ kind: 'file' as const, name: a.name, size: a.size, mime: a.contentType, dataUrl: '', workspacePath: workspacePathOf(a.path) }));
 }
 
+/**
+ * 도는 턴에 넣은 사용자 메시지 하나 — 답 말풍선 안 그 자리(offset)에 그린다. 실시간 `steer` 이벤트와
+ * 히스토리의 `steers` 가 같은 모양이다. offset 이 없으면 아직 전달 대기다.
+ */
+export interface ChatSteer {
+  text: string;
+  /** 답의 몇 번째 글자 뒤에 들어갔는가. */
+  offset?: number;
+  status: 'pending' | 'delivered';
+  /** 보낼 때 이 창이 붙인 id — 결말을 맞춘다. */
+  clientMsgId?: string;
+}
+
+/** 히스토리의 steers → 답 메시지 칸(있을 때만 — 없는 턴의 모양은 예전과 같다). */
+export function historySteers(steers: HistorySteer[] | undefined): { steers?: ChatSteer[] } {
+  return steers && steers.length > 0
+    ? { steers: steers.map((st) => ({ text: st.text, offset: st.offset, status: 'delivered' as const, ...(st.clientMsgId ? { clientMsgId: st.clientMsgId } : {}) })) }
+    : {};
+}
+
+/** 넣은 글 하나의 결말을 답의 steers 에 반영한다. 돌아온 글은 거두고 턴이 끝난 뒤 보낼 목록에 넣는다. */
+function applySteerOutcome(
+  steers: ChatSteer[] | undefined,
+  outcome: SteerOutcome,
+  rt: { pendingSteers?: Map<string, string>; deferredSteers?: string[] },
+): ChatSteer[] | undefined {
+  const cid = outcome.clientMsgId;
+  const list = steers ?? [];
+  if (outcome.status === 'delivered') {
+    if (cid) rt.pendingSteers?.delete(cid);
+    const known = !!cid && list.some((st) => st.clientMsgId === cid);
+    return known
+      ? list.map((st) => (st.clientMsgId === cid ? { ...st, status: 'delivered' as const, offset: outcome.offset } : st))
+      : [...list, { text: outcome.text, offset: outcome.offset, status: 'delivered' as const, ...(cid ? { clientMsgId: cid } : {}) }];
+  }
+  if (!cid || !rt.pendingSteers?.delete(cid)) return steers; // 이 창이 보낸 글이 아니다
+  rt.deferredSteers = [...(rt.deferredSteers ?? []), outcome.text];
+  const rest = list.filter((st) => st.clientMsgId !== cid);
+  return rest.length > 0 ? rest : undefined;
+}
+
+/** 이 id 의 전달 대기 글을 모든 답에서 거둔다. */
+function withoutSteer(messages: ChatMsg[], clientMsgId: string): ChatMsg[] {
+  return messages.map((m) => {
+    if (!m.steers?.some((st) => st.clientMsgId === clientMsgId)) return m;
+    const kept = m.steers.filter((st) => st.clientMsgId !== clientMsgId);
+    return { ...m, steers: kept.length > 0 ? kept : undefined };
+  });
+}
+
 /** One rendered chat message (mirrors the old Chat.Msg shape). */
 export interface ChatMsg {
   role: 'user' | 'assistant';
   text: string;
+  /** 이 답(턴)이 도는 동안 사용자가 넣은 메시지(steer). */
+  steers?: ChatSteer[];
   tools?: ToolEvent[];
   /**
    * 텍스트와 도구 이벤트를 **받은 순서대로** 담는다 — 작업 과정 타임라인(ProcessTimeline)이
@@ -533,6 +587,11 @@ export interface SessionState {
    * (작성기 대신 안내, 보내기·대화 소켓 없음).
    */
   agentDeleted?: boolean;
+  /**
+   * [정지] 로 끝난 턴에 들어가지 못한 추가 지시 — 작성기가 받아 입력창에 되돌리고 {@link SessionStore.takeSteerReturn}
+   * 으로 비운다(그만둔 턴의 말을 멋대로 보내지 않는다).
+   */
+  steerReturn?: string;
 }
 
 /** 대화 목록이 알려 주는 대화의 사실. 열린 세션의 제목·지워짐 표시를 맞춘다. */
@@ -646,7 +705,7 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
     // ioId — 그 답변이 서버에 남은 실행 한 건. 답변 평가가 이 값을 키로 쓴다(옛 preload 는 안 준다).
-  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }>>;
+  ): Promise<Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean; steers?: HistorySteer[] }>>;
   /**
    * 지난 턴 + **지금 도는 턴이 있는가** — 창을 연 첫 순간의 상태.
    *
@@ -659,11 +718,16 @@ export interface SessionTransport {
     interactionId: string,
     name?: string,
   ) => Promise<{
-    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean }>;
+    turns: Array<{ input: string; output: string; ioId?: number; attachments?: HistoryAttachment[]; process?: HistoryFlowItem[]; generatedContent?: GeneratedContentProvenance[]; malformedGeneratedContent?: boolean; steers?: HistorySteer[] }>;
     running: boolean;
   }>;
   /** 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴. */
   stopChat?: (interactionId: string) => Promise<unknown>;
+  /**
+   * 도는 턴에 사용자 메시지를 넣는다 — 받았는가만 답한다(결말은 그 턴의 스트림 `steer`). 없으면(옛 preload)
+   * 실행 중 보내기는 예전처럼 막힌다.
+   */
+  steer?: (interactionId: string, text: string, clientMsgId?: string) => Promise<SteerStatus>;
   /** Download one server-issued Geny history reference into a renderer preview URL. */
   historyImage?: (
     workflowId: string,
@@ -718,6 +782,10 @@ interface Runtime {
   settleTimer?: ReturnType<typeof setTimeout>;
   citations: Citation[];
   historyImageUrls: Set<string>;
+  /** 이 창이 보냈지만 결말(들어감·돌아옴)을 아직 못 들은 추가 지시 — clientMsgId → 글. */
+  pendingSteers?: Map<string, string>;
+  /** 이 턴에 들어가지 못한 추가 지시 — 턴이 끝나면 다음 턴으로(정지했으면 입력창으로). */
+  deferredSteers?: string[];
 }
 
 export function newInteractionId(workflowId: string, now: number): string {
@@ -1057,6 +1125,7 @@ export class SessionStore {
         if (output) msgs.push({
           role: 'assistant',
           text: output,
+          ...historySteers(tn.steers),
           executionIoId: tn.ioId,
           generatedContent: tn.generatedContent,
           malformedGeneratedContent: tn.malformedGeneratedContent,
@@ -1450,6 +1519,8 @@ export class SessionStore {
         nl.downloads = mergeChatDownload(last.downloads ?? [], ev.data);
       } else if (ev.kind === 'generated_content') {
         nl.generatedContent = mergeGeneratedContentProvenance(last.generatedContent, ev.data);
+      } else if (ev.kind === 'steer') {
+        nl.steers = applySteerOutcome(last.steers, ev.steer, rt);
       } else if (ev.kind === 'summary' && !nl.text) nl.text = ev.text;
       else if (ev.kind === 'tool') {
         rt.tools = [...rt.tools, ev.event];
@@ -1500,12 +1571,110 @@ export class SessionStore {
       rememberTurnProcess(this.processMemory, done?.interactionId ?? key, done?.messages[done.messages.length - 1], this.now());
     }
     if (ev.kind === 'detached') rt.ownDetached = true;
+    if (ev.kind === 'end' || ev.kind === 'error') this.finishSteers(key, false);
     if (ev.kind === 'end' || ev.kind === 'error' || ev.kind === 'detached') {
       rt.cancel = null;
       // 분리된 턴을 멈추는 길은 남겨 둔다 — [정지] 는 스트림이 아니라 대화를 향한다.
       if (ev.kind !== 'detached') rt.stopServer = null;
     }
     this.emit();
+  }
+
+  /**
+   * 이 창이 스트리밍하는 턴에 사용자 메시지를 넣는다(steer) — 기다리거나 [정지] 하지 않고 덧붙인다.
+   * 답 말풍선 끝에 "전달 대기" 로 먼저 보이고, 결말(steer 이벤트)이 오면 그 자리로 옮겨 가거나 거둬진다.
+   * 서버가 받지 못하면(턴이 끝나는 중·옛 서버) 턴이 끝난 뒤 다음 턴으로 보낸다.
+   *
+   * 돌려주는 값: 넣을 수 있는 상태였는가(이 창의 스트림 · 받는 길 · 글). false 면 작성기가 글을 그대로 둔다.
+   */
+  steer(key: string, text: string): boolean {
+    const s = this.map.get(key);
+    const rt = this.rt.get(key);
+    const body = text.trim();
+    const steerFn = this.transport.steer;
+    if (!s || !rt || !steerFn || !body || !s.streaming || s.remote || rt.stopping || !rt.cancel) return false;
+    const last = s.messages[s.messages.length - 1];
+    if (!last || last.role !== 'assistant' || !last.streaming) return false;
+    const clientMsgId = `steer-${this.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const turnToken = rt.turnToken;
+    rt.pendingSteers = rt.pendingSteers ?? new Map();
+    rt.pendingSteers.set(clientMsgId, body);
+    this.patch(key, (cur) => {
+      const messages = cur.messages.slice();
+      const tail = messages[messages.length - 1];
+      if (tail?.role !== 'assistant') return cur;
+      messages[messages.length - 1] = { ...tail, steers: [...(tail.steers ?? []), { text: body, status: 'pending', clientMsgId }] };
+      return { ...cur, messages };
+    });
+    this.emit();
+    void Promise.resolve()
+      .then(() => steerFn(s.interactionId, body, clientMsgId))
+      .catch((): SteerStatus => 'failed')
+      .then((status) => {
+        if (status === 'queued') return; // 결말은 그 턴의 스트림(steer)으로 온다
+        if (!rt.pendingSteers?.delete(clientMsgId)) return; // 그새 결말이 왔다
+        this.patch(key, (cur) => ({ ...cur, messages: withoutSteer(cur.messages, clientMsgId) }));
+        if (rt.turnToken === turnToken && this.map.get(key)?.streaming) {
+          rt.deferredSteers = [...(rt.deferredSteers ?? []), body];
+        } else {
+          this.sendFollowUp(key, body); // 턴은 이미 끝났다
+        }
+        this.emit();
+      });
+    return true;
+  }
+
+  /** 작성기가 [정지] 로 돌아온 추가 지시를 입력창에 옮긴 뒤 부른다. */
+  takeSteerReturn(key: string): void {
+    if (!this.map.get(key)?.steerReturn) return;
+    this.patch(key, (cur) => ({ ...cur, steerReturn: undefined }));
+    this.emit();
+  }
+
+  /**
+   * 턴이 끝났다 — 들어가지 못한 추가 지시(돌아온 것 + 결말을 못 들은 것)를 거둔다. 정지했으면 작성기로
+   * 돌려주고(steerReturn), 아니면 다음 턴으로 보낸다.
+   */
+  private finishSteers(key: string, userStopped: boolean): void {
+    const rt = this.rt.get(key);
+    if (!rt) return;
+    const left = [...(rt.deferredSteers ?? []), ...(rt.pendingSteers?.values() ?? [])];
+    rt.deferredSteers = [];
+    rt.pendingSteers?.clear();
+    const s = this.map.get(key);
+    if (s?.messages.some((m) => m.steers?.some((st) => st.status !== 'delivered'))) {
+      this.patch(key, (cur) => ({
+        ...cur,
+        messages: cur.messages.map((m) => {
+          if (!m.steers?.some((st) => st.status !== 'delivered')) return m;
+          const kept = m.steers.filter((st) => st.status === 'delivered');
+          return { ...m, steers: kept.length > 0 ? kept : undefined };
+        }),
+      }));
+    }
+    if (left.length === 0) return;
+    const text = left.join('\n\n');
+    if (userStopped) {
+      this.patch(key, (cur) => ({ ...cur, steerReturn: cur.steerReturn ? `${cur.steerReturn}\n${text}` : text }));
+    } else {
+      this.sendFollowUp(key, text);
+    }
+  }
+
+  /** 턴이 끝난 뒤 그 턴에 들어가지 못한 글을 새 턴으로 — 스트림 정리가 끝난 다음 틱에. */
+  private sendFollowUp(key: string, text: string): void {
+    setTimeout(() => {
+      const s = this.map.get(key);
+      if (!s || s.streaming || s.remote) {
+        // 다른 턴이 돌고 있다 — 보내지 않고 작성기로 돌려준다.
+        if (s) {
+          this.patch(key, (cur) => ({ ...cur, steerReturn: cur.steerReturn ? `${cur.steerReturn}\n${text}` : text }));
+          this.emit();
+        }
+        return;
+      }
+      this.send(key, text);
+    }, 0);
   }
 
   /**
@@ -1530,6 +1699,8 @@ export class SessionStore {
       rt.cancel = null;
       rt.stopServer = null;
     }
+    // 그만둔 턴에 아직 들어가지 못한 추가 지시는 보내지 않고 작성기로 돌려준다.
+    this.finishSteers(key, true);
     // 서버에 닿지 못해도 화면은 멈춘 것으로 둔다 — 되돌리면 사용자가 누른
     // 버튼이 되살아나는 것처럼 보인다.
     rt.stopping = !!stopServer;

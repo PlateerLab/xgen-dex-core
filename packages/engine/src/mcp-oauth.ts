@@ -20,7 +20,7 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import type { McpServerConfig } from './mcp-types';
+import type { McpOAuthState, McpServerConfig } from './mcp-types';
 import { interaction, mcpOAuthStore } from './host';
 import type { McpHttpFetch } from './mcp-manager';
 
@@ -240,13 +240,23 @@ async function loadTransportsAndError(): Promise<{
   };
 }
 
+/** OAuth 서버의 Authorization 은 OAuth 토큰 몫이다. SDK 는 requestInit 헤더를 토큰
+ *  헤더 위에 덮어쓰므로, 고정 키 모드에서 남은 헤더가 있으면 토큰이 서버에 가지 않는다. */
+export function withoutAuthorizationHeader(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'authorization'));
+}
+
 /** Attach an OAuth provider to a transport option bag when the server uses OAuth. */
 export function oauthTransportOptions(
   cfg: McpServerConfig,
-  base: { requestInit?: RequestInit; fetch?: McpHttpFetch },
+  base: { requestInit?: { headers?: Record<string, string> }; fetch?: McpHttpFetch },
 ): { requestInit?: RequestInit; fetch?: McpHttpFetch; authProvider?: unknown } {
   if (cfg.auth !== 'oauth') return base;
-  return { ...base, authProvider: makeSilentOAuthProvider(cfg.name) as unknown };
+  const headers = base.requestInit?.headers;
+  const requestInit = headers
+    ? { ...base.requestInit, headers: withoutAuthorizationHeader(headers) }
+    : base.requestInit;
+  return { ...base, requestInit, authProvider: makeSilentOAuthProvider(cfg.name) as unknown };
 }
 
 /** Run the interactive OAuth authorization for a server. Opens the browser, runs
@@ -292,6 +302,7 @@ export async function authorizeMcpServer(
       codeVerifier: undefined,
       tokens: undefined,
       clientInformation: undefined,
+      serverUrl: cfg.url,
     });
 
     const provider = new ConnectorOAuthProvider(
@@ -346,6 +357,17 @@ export async function authorizeMcpServer(
     loop.cancel();
     loop.server.close();
   }
+}
+
+/** 저장하려는 설정에서 다시 쓰이지 않을 OAuth 상태인지 — OAuth 가 아니게 됐거나
+ *  인가받은 URL 과 다른 URL 을 가리킬 때다. 남겨 두면 나중에 OAuth 로 돌아왔을 때
+ *  배지는 "인가됨"인데 연결은 옛 토큰으로 실패한다. `prevUrl` 은 serverUrl 을
+ *  기록하기 전에 인가받은 상태를 위한 것이다. */
+export function isStaleOAuthState(next: McpServerConfig, state: McpOAuthState, prevUrl?: string): boolean {
+  if (!state.tokens && !state.clientInformation && !state.codeVerifier) return false;
+  if (next.auth !== 'oauth') return true;
+  const issuedFor = state.serverUrl ?? prevUrl;
+  return !!issuedFor && issuedFor !== next.url;
 }
 
 /** Whether a server currently has stored OAuth tokens. */

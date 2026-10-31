@@ -44,6 +44,7 @@ function payloadFor(name: string): Record<string, unknown> {
   if (name === 'node_status') return { node_id: 'n1', status: 'running' };
   if (name === 'tool') return { event_type: 'tool_call', tool_name: 'Bash' };
   if (name === 'turn_phase') return { phase: 'sandbox', state: 'start', attempt: 1 };
+  if (name === 'steer') return { status: 'delivered', client_msg_id: 'c1', text: '테스트도', offset: 3 };
   return { k: 'v' };
 }
 

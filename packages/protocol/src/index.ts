@@ -416,6 +416,9 @@ export type { HttpClientOptions, UploadFileData, UploadFormPart, UploadOptions }
 export { SseParser } from './sse';
 export { frameToChatEvent, turnEventToChatEvent } from './chat';
 export { STREAM_IDLE_MS, TURN_EVENT_NAMES, TURN_MESSAGE_TYPES, parseSubscribed } from './chat';
+// 도는 턴에 넣은 사용자 메시지 — 결말(steer 이벤트)과 히스토리의 steers.
+export { parseSteerOutcome, parseHistorySteers, splitBySteers } from './chat';
+export type { SteerPart } from './chat';
 export type { LiveTurnSnapshot, SubscribedState } from './chat';
 // 다른 화면에서 도는 턴 — 질문 본문·첨부, 진행분의 작업 과정. 앱·웹이 같은 모양으로 그린다.
 export { liveTurnFlow, liveTurnProcess } from './chat';

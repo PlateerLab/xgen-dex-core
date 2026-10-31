@@ -78,6 +78,12 @@ export const sessionStore = new SessionStore({
     xgen.history.snapshot(workflowId, interactionId, name),
   // 스트림을 쥐고 있지 않은 대화의 [정지] — 다른 기기에서 시작한 턴.
   stopChat: (interactionId) => xgen.chat.stop(interactionId),
+  // 도는 턴에 사용자 메시지를 넣는다(결말은 그 턴의 스트림). 옛 preload 면 없다 — 실행 중 보내기는 예전처럼 막힌다.
+  // 쓸 때 읽는다(getter): 브리지는 모듈을 읽는 순간에는 없을 수 있다(테스트·창 준비 전).
+  get steer() {
+    const steer = xgen?.chat?.steer;
+    return steer ? (interactionId: string, text: string, clientMsgId?: string) => steer(interactionId, text, clientMsgId) : undefined;
+  },
   // 대화 소켓 감시 — 서버 주입 턴(트리거 반응)을 실시간으로 받는다.
   watchConversation: (workflowId, workflowName, interactionId) =>
     void xgen?.chatWatch?.start(workflowId, workflowName, interactionId),

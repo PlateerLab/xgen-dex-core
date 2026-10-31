@@ -243,6 +243,8 @@ export const CHANNELS = {
   //: 사람이 누른 [정지] — 스트림을 놓고 서버 실행도 멈춘다. abort 만으로는
   //  멈추지 않는다(서버는 연결 끊김을 취소로 읽지 않는다).
   chatStop: 'chat:stop',
+  //: 도는 턴에 사용자 메시지를 넣는다 — 기다리거나 [정지] 하지 않고 덧붙인다. 결말은 그 턴의 스트림(steer).
+  chatSteer: 'chat:steer',
   chatEvent: 'chat:event',
   //: '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). 이력은 보존.
   chatEndSession: 'chat:end-session',

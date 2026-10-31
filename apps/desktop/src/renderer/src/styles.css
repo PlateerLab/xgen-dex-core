@@ -3618,6 +3618,33 @@ button {
   border: 1px solid var(--error-border);
   box-shadow: none;
 }
+/* 도는 턴에 넣는 추가 지시 — [중지] 왼쪽, 입력창에 글이 있을 때만. */
+.composer-send.steer {
+  margin-right: 4px;
+}
+/* 답 말풍선 안, 넣은 말이 들어간 자리 — 오른쪽 정렬의 작은 사용자 말. 전달 대기는 흐리게. */
+.steer-note {
+  display: flex;
+  flex-direction: column;
+  align-self: flex-end;
+  margin: 8px 0 8px auto;
+  max-width: 85%;
+  padding: 6px 10px;
+  border-radius: 10px 10px 2px 10px;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  white-space: pre-wrap;
+  word-break: break-word;
+  width: fit-content;
+}
+.steer-note.waiting {
+  opacity: 0.6;
+}
+.steer-note-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 2px;
+}
 /* 화면 첨부 토글 — 켜져 있으면 한눈에 보여야 한다. 켜 둔 것을 잊고
    민감한 화면을 보내는 것이 이 기능의 유일한 위험이다. */
 .composer-attach,

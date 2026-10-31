@@ -28,9 +28,9 @@ import { notificationChatKey } from '@dex/protocol/notifications';
 import { ShareToTeamsModal } from './ShareToTeams';
 import { TeamsRoomList } from './TeamsRoomPicker';
 import { useModalDismiss } from './use-modal-dismiss';
-import type { ChatImageAttachment, SessionState } from '../session-store';
+import type { ChatImageAttachment, ChatSteer, SessionState } from '../session-store';
 import type { ChatFeedback, ToolEvent, Citation, VoiceConfig, XgenErrorInfo, GeneratedContentVerificationStatus } from '@dex/protocol';
-import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError, startPhaseRows, tailPhaseRows } from '@dex/protocol';
+import { CHAT_AI_DISCLAIMER_TEXT, CHAT_SHARE_TEXT, INTERRUPTED_NOTE, INTERRUPTED_TEXT, chatAnswerFiles, describeError, splitBySteers, startPhaseRows, tailPhaseRows } from '@dex/protocol';
 import type { BrowserSelectionResult } from '@dex/protocol/browser';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { collapseToolSteps, nextToolIndex } from '@dex/protocol/tool-activity';
@@ -386,6 +386,8 @@ export const Chat: React.FC<{
   const remote = session.remote;
   /** 이 대화에 도는 턴이 있는가 — 여기서 시작했든 다른 곳에서 시작했든. */
   const busy = streaming || remote;
+  // 이 창이 받는 중인 자기 턴 — 입력창의 글을 그 턴에 넣을 수 있다(steer).
+  const steerable = streaming && !remote;
   /**
    * 에이전트가 지워진 대화(2026-10-09). 같은 채팅 화면이지만 지난 기록만 보인다: 머리 단추와
    * 작성기 대신 안내 한 줄. 이어 갈 에이전트가 없다.
@@ -400,6 +402,13 @@ export const Chat: React.FC<{
   }, [busy, session.key]);
 
   const [input, setInput] = useState('');
+  // [정지] 로 끝난 턴에 들어가지 못한 추가 지시 — 입력창에 되돌린다(보내지 않는다).
+  const steerReturn = session.steerReturn;
+  useEffect(() => {
+    if (!steerReturn) return;
+    setInput((current) => (current ? `${current}\n${steerReturn}` : steerReturn));
+    sessionStore.takeSteerReturn(session.key);
+  }, [steerReturn, session.key]);
   const voiceInputTracker = useMemo(createVoiceInputTracker, []);
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
@@ -989,7 +998,18 @@ export const Chat: React.FC<{
       const attachmentBytes =
         images.reduce((sum, image) => sum + image.size, 0) +
         selections.reduce((sum, selection) => sum + selection.image.size, 0);
-      if ((!text && attachmentCount === 0) || busy || preparingImages > 0) return;
+      if (busy) {
+        // 이 창이 받는 중인 자기 턴이면 그 턴에 넣는다(steer) — 기다리거나 [정지] 하지 않고 덧붙인다.
+        // 첨부는 넣을 수 없다(글만). 다른 곳에서 도는 턴·옛 preload 면 예전처럼 보내지 않는다.
+        if (!text || attachmentCount > 0 || remote || !streaming) return;
+        if (!(await policy.confirm(text))) {
+          if (override !== undefined) setInput(text);
+          return;
+        }
+        if (sessionStore.steer(session.key, text) && override === undefined) setInput('');
+        return;
+      }
+      if ((!text && attachmentCount === 0) || preparingImages > 0) return;
       // 통제 정책: 막힐 글은 보내지 않는다. Enter · 음성 · 빠른 채팅(override)도 이 길로 온다.
       // override 로 온 글이 막히면 작성기에 옮겨 두어 이유를 보고 고쳐 보내게 한다.
       if (text && !(await policy.confirm(text))) {
@@ -1034,7 +1054,7 @@ export const Chat: React.FC<{
       }
       await dispatch(text, images, selections, !!opts?.voice);
     },
-    [input, busy, preparingImages, session.key, dispatch, replaceStagedImages, policy],
+    [input, busy, streaming, remote, preparingImages, session.key, dispatch, replaceStagedImages, policy],
   );
 
   /** 확인창의 [보내기] — 승인 기록을 남기고 그대로 이어서 보낸다. */
@@ -1763,9 +1783,20 @@ export const Chat: React.FC<{
                         <ErrorBlock info={m.errorInfo} />
                       </>
                     ) : processView && hasProcessFlow(m) ? (
-                      <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} toolTitles={toolTitles} />
-                    ) : m.text ? (
-                      <Markdown text={answerFiles?.text ?? m.text} />
+                      <>
+                        <ProcessTimeline msg={m} toolDescriptions={toolDescriptions} toolTitles={toolTitles} />
+                        {/* 작업 과정으로 그린 답 — 넣은 말은 그 아래 넣은 순서대로. */}
+                        {m.steers?.map((st, i) => <SteerNote key={`steer-${i}`} steer={st} />)}
+                      </>
+                    ) : m.text || m.steers?.length ? (
+                      m.steers?.length ? (
+                        // 넣은 말이 들어간 자리에서 답을 나눠 그 사이에 끼운다(실시간·다시 연 대화가 같은 자리).
+                        splitBySteers(answerFiles?.text ?? m.text, m.steers).map((part, i) => (part.kind === 'text'
+                          ? <Markdown key={`part-${i}`} text={part.text} />
+                          : <SteerNote key={`steer-${i}`} steer={part.steer} />))
+                      ) : (
+                        <Markdown text={answerFiles?.text ?? m.text} />
+                      )
                     ) : m.streaming && m.uploadProgress ? (
                       // 큰 첨부(최대 1GiB)를 올리는 동안 — 답은 다 올린 뒤에 시작된다.
                       <span className="chat-upload-progress" role="status">
@@ -2252,6 +2283,18 @@ export const Chat: React.FC<{
               {transcribing ? '…' : recording ? <StopIcon size={15} /> : <MicIcon size={16} />}
             </button>
           )}
+          {busy && steerable && !!input.trim() && stagedImages.length === 0 && browserSelections.length === 0 && (
+            // 도는 턴에 넣는다 — 기다리거나 [정지] 하지 않고 덧붙인다. 에이전트가 다음 단계에서 읽는다.
+            <button
+              className="composer-send steer"
+              onClick={() => void send()}
+              disabled={policy.blocked}
+              title={policy.blocked ? '통제 정책에 걸려 보낼 수 없습니다' : '추가 지시 — 지금 하는 작업에 덧붙입니다 (Enter)'}
+              aria-label="추가 지시 보내기"
+            >
+              <SendIcon size={17} />
+            </button>
+          )}
           {busy ? (
             <button
               className="composer-send stop"
@@ -2426,3 +2469,15 @@ export const Chat: React.FC<{
     </div>
   );
 };
+
+
+/** 도는 턴에 넣은 사용자 말 한 줄 — 답 말풍선 안 그 자리. 전달 대기면 흐리게. */
+function SteerNote({ steer }: { steer: ChatSteer }) {
+  const waiting = steer.status !== 'delivered';
+  return (
+    <div className={`steer-note${waiting ? ' waiting' : ''}`} role="note">
+      <span className="steer-note-label">{waiting ? '추가 지시 · 전달 대기 중' : '추가 지시'}</span>
+      <span className="steer-note-text">{steer.text}</span>
+    </div>
+  );
+}

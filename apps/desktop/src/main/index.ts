@@ -53,6 +53,7 @@ import {
   type TtsSpeakOptions,
   type SshServerInput,
   type ChatStopResult,
+  type SteerStatus,
   type AppApiDeclaration,
   type AppStoreListParams,
   describeError,
@@ -3612,6 +3613,21 @@ ipcMain.handle(
       return await getClient().chat.stop(interactionId);
     } catch (err) {
       return { stopped: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
+
+/**
+ * 도는 턴에 사용자 메시지를 넣는다 — 기다리거나 [정지] 하지 않고 덧붙인다. 서버가 다음 반복 경계에서 그 턴의
+ * 대화에 넣고, 결말(들어감·돌아옴)은 그 턴의 스트림에 `steer` 이벤트로 온다. 받았는가만 돌려준다.
+ */
+ipcMain.handle(
+  CHANNELS.chatSteer,
+  async (_e, interactionId: string, text: string, clientMsgId?: string): Promise<SteerStatus> => {
+    try {
+      return await getClient().chat.steer(String(interactionId || ''), String(text || ''), clientMsgId);
+    } catch {
+      return 'failed';
     }
   },
 );

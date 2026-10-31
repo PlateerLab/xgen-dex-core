@@ -15,7 +15,7 @@ import { parseGeneratedContentEvent } from './generated-content';
 import { describeStreamError } from './errors';
 import { ApiError, HttpClient } from './client';
 import { SseParser } from './sse';
-import type { ChatEvent, ChatRequest, ChatStopResult, ToolEvent } from './types';
+import type { ChatEvent, ChatRequest, ChatStopResult, HistorySteer, SteerOutcome, SteerStatus, ToolEvent } from './types';
 import type { TimelineFlowItem } from './process-timeline';
 import { parseTurnPhase } from './turn-phases';
 
@@ -129,6 +129,7 @@ export const TURN_EVENT_NAMES = [
   'execution_suspended',
   'turn_queued',
   'turn_phase',
+  'steer',
 ] as const;
 
 /**
@@ -276,6 +277,64 @@ export function liveTurnFlow(live: LiveTurnSnapshot): TimelineFlowItem[] {
  * @param payload 파싱된 payload. WS 는 이미 객체를 들고 있다.
  * @param raw     원문(있으면). `log` 는 파싱 실패 시 원문을 그대로 싣는다.
  */
+/** `steer` payload → {@link SteerOutcome}. 모양이 맞지 않으면 null. */
+export function parseSteerOutcome(raw: unknown): SteerOutcome | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (r.status !== 'delivered' && r.status !== 'rejected') return null;
+  const out: SteerOutcome = { status: r.status, text: typeof r.text === 'string' ? r.text : '' };
+  if (typeof r.id === 'string' && r.id) out.id = r.id;
+  if (typeof r.client_msg_id === 'string' && r.client_msg_id) out.clientMsgId = r.client_msg_id;
+  if (r.status === 'delivered' && typeof r.offset === 'number' && Number.isFinite(r.offset) && r.offset >= 0) {
+    out.offset = Math.floor(r.offset);
+  }
+  return out;
+}
+
+/** 답 본문을 넣은 말이 들어간 자리마다 나눈 조각 — {@link splitBySteers}. */
+export type SteerPart<S> = { kind: 'text'; text: string } | { kind: 'steer'; steer: S };
+
+/**
+ * 답 본문을 도는 턴에 넣은 사용자 말(steer)이 들어간 자리(offset)마다 나눈다 — 앱·웹이 같은 규칙으로 그린다.
+ * 자리 순서대로(같은 자리는 넣은 순서), 본문보다 긴 자리는 끝에, 자리가 없는 말(전달 대기)은 맨 끝에 둔다.
+ */
+export function splitBySteers<S extends { offset?: number }>(text: string, steers: readonly S[] | undefined): SteerPart<S>[] {
+  const all = steers ?? [];
+  const placed = all
+    .map((steer, i) => ({ steer, i }))
+    .filter(({ steer }) => typeof steer.offset === 'number')
+    .sort((a, b) => (a.steer.offset as number) - (b.steer.offset as number) || a.i - b.i);
+  const waiting = all.filter((steer) => typeof steer.offset !== 'number');
+  const parts: SteerPart<S>[] = [];
+  let at = 0;
+  for (const { steer } of placed) {
+    const cut = Math.min(Math.max(steer.offset as number, at), text.length);
+    if (cut > at) parts.push({ kind: 'text', text: text.slice(at, cut) });
+    parts.push({ kind: 'steer', steer });
+    at = cut;
+  }
+  if (at < text.length) parts.push({ kind: 'text', text: text.slice(at) });
+  for (const steer of waiting) parts.push({ kind: 'steer', steer });
+  return parts;
+}
+
+/** 히스토리 행(io-logs · 대화 소켓)의 `steers` → {@link HistorySteer} 목록. 없거나 깨졌으면 빈 목록. */
+export function parseHistorySteers(raw: unknown): HistorySteer[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HistorySteer[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const text = typeof r.text === 'string' ? r.text : '';
+    if (!text.trim()) continue;
+    const offset = typeof r.offset === 'number' && Number.isFinite(r.offset) && r.offset >= 0 ? Math.floor(r.offset) : 0;
+    const steer: HistorySteer = { text, offset };
+    if (typeof r.client_msg_id === 'string' && r.client_msg_id) steer.clientMsgId = r.client_msg_id;
+    out.push(steer);
+  }
+  return out;
+}
+
 export function turnEventToChatEvent(
   name: string | undefined,
   payload: Record<string, unknown> | null,
@@ -325,6 +384,11 @@ export function turnEventToChatEvent(
     case 'turn_phase':
       // 답의 첫 글자 전에 서버가 하는 준비(Sandbox·워크스페이스·패키지·기억). 그릴 수 없는 값은 버린다.
       return parseTurnPhase(d);
+    case 'steer': {
+      // 도는 턴에 넣은 사용자 메시지의 결말. 모양이 맞지 않으면 버린다.
+      const steer = parseSteerOutcome(d);
+      return steer ? { kind: 'steer', steer } : null;
+    }
     case 'execution_suspended':
       return {
         kind: 'error',
@@ -431,6 +495,30 @@ export class ChatApi {
         reason: 'error',
         detail: error instanceof Error ? error.message : String(error),
       };
+    }
+  }
+
+  /**
+   * 도는 턴에 사용자 메시지를 넣는다 — 기다리거나 [정지] 하지 않고 덧붙인다
+   * (`POST /api/agentflow/execute/steer/{interaction_id}`). 어느 전송로로 시작한 턴이든, 다른 파드가
+   * 돌리는 턴이든 같은 길이다. 받았는가만 답하고, 결말은 그 턴의 스트림에 `steer` 이벤트로 온다.
+   * 던지지 않는다 — 옛 서버(경로 없음)·네트워크 오류는 `failed`.
+   */
+  async steer(interactionId: string, text: string, clientMsgId?: string): Promise<SteerStatus> {
+    const id = interactionId.trim();
+    if (!id || !text.trim()) return 'invalid';
+    try {
+      const res = await this.http.post<{ status?: string }>(
+        `/api/agentflow/execute/steer/${encodeURIComponent(id)}`,
+        { text, ...(clientMsgId ? { client_msg_id: clientMsgId } : {}) },
+      );
+      const status = res?.status;
+      return status === 'queued' || status === 'not_running' || status === 'closed'
+        || status === 'unsupported' || status === 'invalid'
+        ? status
+        : 'failed';
+    } catch {
+      return 'failed';
     }
   }
 

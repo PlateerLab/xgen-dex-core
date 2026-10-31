@@ -152,6 +152,13 @@ export type ChatEvent =
    * 서버가 기록하지 않는 알림이라 히스토리·스냅샷에는 없다.
    */
   | ({ kind: 'phase' } & TurnPhaseSignal)
+  /**
+   * 도는 턴에 넣은 사용자 메시지의 결말(xgen-workflow `steer`, 2026-10-31). 에이전트가 일하는 동안
+   * 보낸 말은 다음 반복 경계(지금 모델 호출과 그 도구들이 끝난 자리)에서 그 턴의 대화에 들어간다.
+   * `delivered` 면 `offset`(그때까지 나간 답 글자 수)에서 답을 나눠 그 말을 끼워 그린다 — 히스토리의
+   * `steers` 와 같은 뜻이다. `rejected` 면 턴이 이미 끝나는 중이었다: 화면이 다음 턴으로 보낸다.
+   */
+  | { kind: 'steer'; steer: SteerOutcome }
   // detail 은 **원문 그대로** 유지한다(로그·디버깅). info 는 사용자에게 보여줄
   // 형태(코드·제목·안내) — 화면은 info 를, 로그는 detail 을 본다.
   | { kind: 'error'; detail: string; info?: XgenErrorInfo }
@@ -311,6 +318,11 @@ export interface HistoryTurn {
   /** Declarations are unverified until checked against observed output bytes. */
   generatedContent?: GeneratedContentProvenance[];
   malformedGeneratedContent?: boolean;
+  /**
+   * 이 턴이 도는 동안 사용자가 넣은 메시지 — 답의 몇 번째 글자 뒤(offset)에 들어갔는지와 함께
+   * (스트림의 `steer` 이벤트와 같은 뜻). 그런 메시지가 없던 턴·구버전 서버는 싣지 않는다.
+   */
+  steers?: HistorySteer[];
 }
 
 /** 작업 과정 한 칸 — 글 한 조각 또는 도구 사건 하나(시각은 epoch ms). */
@@ -332,6 +344,35 @@ export interface ConversationSnapshot {
 }
 
 /** [정지] 요청의 결과. `stopped=false` 는 실패가 아니라 사실의 종류다. */
+/** 도는 턴에 넣은 사용자 메시지 하나의 결말 — {@link ChatEvent} `steer`. */
+export interface SteerOutcome {
+  status: 'delivered' | 'rejected';
+  /** 서버가 붙인 메시지 id. */
+  id?: string;
+  /** 보낼 때 화면이 붙인 id — 어느 말인지 맞춘다. */
+  clientMsgId?: string;
+  text: string;
+  /** delivered 만: 답의 몇 번째 글자 뒤에 들어갔는가. */
+  offset?: number;
+}
+
+/**
+ * {@link ChatApi.steer} 의 답 — 받았는가만 말한다(결말은 그 턴의 스트림에 `steer` 로 온다).
+ * - `queued` — 받았다. 다음 반복 경계에서 들어간다.
+ * - `not_running` — 도는 턴이 없다: 새 턴으로 보낸다.
+ * - `closed` · `unsupported` · `failed` — 이 턴에는 넣지 못한다: 턴이 끝난 뒤 다음 턴으로 보낸다.
+ * - `invalid` — 빈 글 · 너무 긴 글.
+ */
+export type SteerStatus = 'queued' | 'not_running' | 'closed' | 'unsupported' | 'invalid' | 'failed';
+
+/** 지난 턴에 들어간 사용자 메시지 — 히스토리(io-logs `steers`)·대화 소켓 행이 싣는다. */
+export interface HistorySteer {
+  text: string;
+  /** 답의 몇 번째 글자 뒤에 들어갔는가. */
+  offset: number;
+  clientMsgId?: string;
+}
+
 export interface ChatStopResult {
   stopped: boolean;
   /**

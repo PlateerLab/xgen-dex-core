@@ -26,6 +26,7 @@ import type {
   AppStoreListResult,
   MyAppsResult,
   ChatStopResult,
+  SteerStatus,
   ConversationSnapshot,
   CurrentUser,
   TeamsAttachment,
@@ -677,6 +678,12 @@ const api = {
      */
     stop: (interactionId: string): Promise<ChatStopResult> =>
       ipcRenderer.invoke(CHANNELS.chatStop, interactionId),
+    /**
+     * 도는 턴에 사용자 메시지를 넣는다 — 받았는가만 답한다(결말은 그 턴의 스트림 `steer`).
+     * `queued` 가 아니면 이 턴에는 들어가지 못한다: 턴이 끝난 뒤 다음 턴으로 보낸다.
+     */
+    steer: (interactionId: string, text: string, clientMsgId?: string): Promise<SteerStatus> =>
+      ipcRenderer.invoke(CHANNELS.chatSteer, interactionId, text, clientMsgId),
     /** '진행 중 대화' 삭제 시 서버 세션 RAM 을 완전 정리(evict). best-effort. */
     endSession: (workflowId: string, interactionId: string): Promise<boolean> =>
       ipcRenderer.invoke(CHANNELS.chatEndSession, workflowId, interactionId),

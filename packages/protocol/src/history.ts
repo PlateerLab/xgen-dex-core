@@ -16,9 +16,11 @@ import type {
   ConversationSnapshot,
   HistoryAttachment,
   HistoryFlowItem,
+  HistorySteer,
   HistoryTurn,
   ToolEvent,
 } from './types';
+import { parseHistorySteers } from './chat';
 import { stripBrowserContext } from './browser';
 import {
   conversationMatchesKind,
@@ -46,6 +48,8 @@ interface RawIoLog {
   updated_at: string;
   /** 서버가 실행 기록에서 되살린 작업 과정 — 도구를 쓴 턴에만. */
   process?: unknown;
+  /** 이 턴이 도는 동안 넣은 사용자 메시지(xgen-workflow turn_steer) — 없으면 예전 턴. */
+  steers?: unknown;
 }
 
 /**
@@ -316,6 +320,12 @@ const CONVERSATION_PAGE_SIZE = 40;
 /** `conversations()` 가 끝까지 따라가는 쪽 수 상한. 사이드바가 아닌 호출자(검색·복원)용. */
 const CONVERSATIONS_ALL_MAX_PAGES = 10;
 
+/** 행의 steers → `{ steers }`(있을 때만) — 없는 턴의 모양은 예전과 같다. */
+function steersOf(raw: unknown): { steers?: HistorySteer[] } {
+  const steers = parseHistorySteers(raw);
+  return steers.length > 0 ? { steers } : {};
+}
+
 export class HistoryApi {
   constructor(private http: HttpClient) {}
 
@@ -356,6 +366,7 @@ export class HistoryApi {
         attachments: rowAttachments(r),
         updatedAt: r.updated_at,
         process: toHistoryProcess(r.process),
+        ...(steersOf(r.steers)),
       };
     });
     // 구버전 서버(필드 없음)에서는 false — "모른다" 를 "돌고 있다" 로 읽으면

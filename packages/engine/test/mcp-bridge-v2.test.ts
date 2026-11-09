@@ -283,3 +283,68 @@ test('local deadline replies with a correlated failure instead of leaving the se
   (manager as unknown as { sanitizeError: typeof manager.sanitizeError }).sanitizeError = originalSanitizeError;
   bridge.stop();
 });
+
+test('v1 서버의 호출은 실행하지 않고 바로 실패로 답한다 — 답 없이 버리면 턴이 멈춘다', async () => {
+  // 2026-11-06 체험존(v1 서버) + DeX 1.102.0 이상: BrowserNavigate·BrowserTabs 가 결과 없이 멈췄다.
+  const bridge = getMcpBridge();
+  bridge.stop();
+  const internal = bridge as unknown as BridgeInternals;
+  const ws = socket();
+  internal.ws = ws;
+  internal.pendingCatalogId = 'catalog-v1';
+  (bridge as unknown as { stopped: boolean }).stopped = false;
+
+  const manager = getMcpManager();
+  const provider = getLocalToolProvider();
+  const originalManagerCall = manager.callTool.bind(manager);
+  const originalLocalCall = provider.callTool.bind(provider);
+  let executed = 0;
+  (manager as unknown as { callTool: typeof manager.callTool }).callTool = async () => {
+    executed++;
+    return { content: [] };
+  };
+  (provider as unknown as { callTool: typeof provider.callTool }).callTool = async () => {
+    executed++;
+    return { content: [] };
+  };
+  try {
+    // v1 서버의 ready — protocol_version·connection_generation 이 없다.
+    await internal.onMessage(JSON.stringify({ type: 'ready', catalog_id: 'catalog-v1', tool_count: 21 }), ws);
+    assert.equal(internal.protocolReady, false);
+    assert.equal(bridge.status().error, 'unsupported_mcp_protocol');
+
+    const v1Call = {
+      type: 'mcp_call', request_id: 'v1-tabs', server: LOCAL_SERVER, tool: 'BrowserTabs', args: {},
+      context: { workflow_id: 'wf', interaction_id: 'it' }, deadline_ms: 120_000,
+    };
+    const startedAt = Date.now();
+    await internal.onMessage(JSON.stringify(v1Call), ws);
+    assert.ok(Date.now() - startedAt < 100, 'answers immediately, not at the server deadline');
+    assert.equal(executed, 0, 'nothing runs on this device');
+    const reply = JSON.parse(ws.sent.at(-1) ?? '{}');
+    assert.deepEqual(Object.keys(reply).sort(), ['error', 'ok', 'request_id', 'type']);
+    assert.equal(reply.type, 'mcp_result');
+    assert.equal(reply.request_id, 'v1-tabs');
+    assert.equal(reply.ok, false);
+    assert.match(reply.error, /UNSUPPORTED_SERVER/);
+    assert.match(reply.error, /다시 시도하지 말고/);
+
+    // 지난 연결에서 온 v1 프레임에는 답하지 않는다.
+    const old = socket();
+    await internal.onMessage(JSON.stringify({ ...v1Call, request_id: 'from-old-socket' }), old);
+    assert.equal(old.sent.length, 0);
+    assert.equal(ws.sent.some((frame) => frame.includes('from-old-socket')), false);
+
+    // v2 프레임은 세대·nonce 가 어긋나도 예전처럼 조용히 버린다(지난 세대의 늦은 프레임).
+    const before = ws.sent.length;
+    await internal.onMessage(JSON.stringify({
+      ...v1Call, request_id: 'v2-stale', protocol_version: 2, connection_generation: 3, request_nonce: 'n',
+    }), ws);
+    assert.equal(ws.sent.length, before);
+    assert.equal(executed, 0);
+  } finally {
+    (manager as unknown as { callTool: typeof manager.callTool }).callTool = originalManagerCall;
+    (provider as unknown as { callTool: typeof provider.callTool }).callTool = originalLocalCall;
+    bridge.stop();
+  }
+});

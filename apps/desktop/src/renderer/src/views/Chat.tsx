@@ -44,7 +44,7 @@ import {
   type StagedChatImage,
 } from './chat-attach';
 import { useDocumentPasteAttach } from './use-paste-attach';
-import { mcpChatStatus } from './mcp-status-model';
+import { mcpChatStatus, mcpServerMismatchNotice } from './mcp-status-model';
 import { FolderConnectButton, FolderConnectModal, useChatFolders } from './ChatFolders';
 import { ChatShareModal } from './ChatShareModal';
 import { ModelPicker } from './ModelPicker';
@@ -578,11 +578,9 @@ export const Chat: React.FC<{
   // 호출어 대답(WAKE_ACK)의 합성 — 부를 때마다 합성하면 그만큼(0.7~1초) 늦으니 호출어로 듣는 동안 한 번 해 둔다.
   const wakeAckRef = useRef<Promise<Blob> | null>(null);
 
+  // 연결 상태는 디버그가 아니어도 받는다 — 서버가 이 DeX 와 맞지 않으면(mcpServerMismatchNotice) 누구에게나
+  // 입력창 위에 알린다. 상태 단추 자체는 MCP 디버그를 켠 때만 보인다.
   useEffect(() => {
-    if (!mcpDebug) {
-      setMcpStatus(null);
-      return;
-    }
     let alive = true;
     void xgen.mcp
       .status()
@@ -593,7 +591,7 @@ export const Chat: React.FC<{
       alive = false;
       off();
     };
-  }, [mcpDebug]);
+  }, []);
 
   useEffect(() => {
     if (!mcpDebug) {
@@ -1389,6 +1387,7 @@ export const Chat: React.FC<{
   useEffect(() => xgen.quickChat.onQuickSend((t, o) => send(t, o?.voice ? { voice: true } : undefined)), [send]);
 
   const mcpIndicator = mcpChatStatus(mcpStatus);
+  const serverMismatch = mcpServerMismatchNotice(mcpStatus);
   // 작업 과정 표시는 답마다가 아니라 채팅 헤더의 [작업 과정] 한 곳에서 켜고 끈다(모든 대화에 적용)
   const [processView, toggleProcessView] = useProcessView();
   // 타임라인 카드 이름표에 쓸 도구 설명 — 이 에이전트에 연결된 도구 목록(상세보기 [도구] 탭과 같은 출처)
@@ -2068,6 +2067,12 @@ export const Chat: React.FC<{
         {imageNotice && (
           <div className="voice-error small" title={imageNotice} role="status">
             {imageNotice}
+          </div>
+        )}
+        {serverMismatch && !readOnly && (
+          <div className="sensitive-warn" role="alert">
+            <strong>서버 업데이트 필요</strong>
+            <span>{serverMismatch}</span>
           </div>
         )}
         {readOnly ? (

@@ -22,6 +22,11 @@
 import WebSocket from 'ws';
 import { WORKSPACE_TRANSFER_FEATURE } from '@dex/protocol';
 import { LocalDeadlineError, localDeadlineMs } from '@dex/protocol/connector-deadline';
+import {
+  CONNECTOR_PROTOCOL_VERSION,
+  legacyCallRejection,
+  UNSUPPORTED_CONNECTOR_PROTOCOL,
+} from '@dex/protocol/connector-protocol';
 import { getMcpManager, type McpServerAdvert } from './mcp-manager';
 import {
   getLocalToolProvider,
@@ -538,7 +543,7 @@ export class McpBridge {
     if (msg.type === 'ready') {
       if (msg.catalog_id !== this.pendingCatalogId) return;
       if (
-        msg.protocol_version !== 2 ||
+        msg.protocol_version !== CONNECTOR_PROTOCOL_VERSION ||
         !Number.isSafeInteger(msg.connection_generation) ||
         Number(msg.connection_generation) < 1 ||
         from !== this.ws
@@ -546,7 +551,7 @@ export class McpBridge {
         this.catalogSynced = false;
         this.protocolReady = false;
         this.connectionGeneration = null;
-        this.lastError = 'unsupported_mcp_protocol';
+        this.lastError = UNSUPPORTED_CONNECTOR_PROTOCOL;
         this.emit();
         return;
       }
@@ -595,7 +600,10 @@ export class McpBridge {
         generation === this.connectionGeneration &&
         requestKey.length > 0 &&
         nonce.length > 0;
-      if (!validCorrelation) return;
+      if (!validCorrelation) {
+        this.rejectLegacyCall(msg, from);
+        return;
+      }
       if (this.inflight.has(requestKey)) {
         try {
           from.send(JSON.stringify({
@@ -713,6 +721,40 @@ export class McpBridge {
       }
     }
     // 'pong' / 'ready' — nothing to do.
+  }
+
+  /**
+   * v2 를 모르는 서버(1.102.0 보다 옛 서버)의 호출 — **실행하지 않고** 바로 실패로 답한다.
+   *
+   * 예전에는 답 없이 버렸다. 서버는 도구 목록을 그대로 에이전트에게 주므로 에이전트는 도구를 부르고,
+   * 서버는 자기 시한까지 기다리고, 사용자는 멈춘 턴만 본다(2026-11-06 체험존: BrowserTabs 가 결과 없음).
+   * 지금 연결에서 온 v1 프레임에만 답한다 — 지난 연결·지난 세대의 프레임은 그대로 버린다.
+   */
+  private rejectLegacyCall(
+    msg: { type?: string; request_id?: string; server?: string; tool?: string; protocol_version?: number },
+    from?: WebSocket,
+  ): void {
+    const reply = legacyCallRejection(msg);
+    if (!reply || !from || from !== this.ws || from.readyState !== WebSocket.OPEN) return;
+    if (!this.protocolReady && this.lastError !== UNSUPPORTED_CONNECTOR_PROTOCOL) {
+      this.lastError = UNSUPPORTED_CONNECTOR_PROTOCOL;
+      this.emit();
+    }
+    try {
+      from.send(JSON.stringify(reply));
+    } catch {
+      /* socket gone */
+    }
+    appendMcpRuntimeLog({
+      kind: 'result',
+      message: '서버가 이 DeX 의 도구 연결 방식(v2)을 몰라 실행하지 않음',
+      requestId: reply.request_id,
+      server: String(msg.server),
+      tool: String(msg.tool),
+      ok: false,
+      durationMs: 0,
+      resultChars: JSON.stringify(reply.error).length,
+    });
   }
 }
 

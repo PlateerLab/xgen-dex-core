@@ -9,7 +9,12 @@
  * 에이전트에 노출된다.
  */
 
-import { LocalDeadlineError, localDeadlineMs } from '@dex/protocol';
+import {
+  LocalDeadlineError,
+  localDeadlineMs,
+  legacyCallRejection,
+  UNSUPPORTED_CONNECTOR_PROTOCOL,
+} from '@dex/protocol';
 import type { ToolAdvert, ToolResult } from './mobile-tools';
 
 export type BridgeState = 'off' | 'connecting' | 'connected' | 'error';
@@ -360,7 +365,10 @@ export class MobileToolBridge {
       ) {
         this.protocolReady = false;
         this.connectionGeneration = null;
-        this.emit({ state: 'error', toolCount: 0, error: 'unsupported_mcp_protocol' });
+        // 지금 연결의 서버는 hello 를 받았다(v1 일 뿐이다) — ready 워치독이 6초마다 다시 붙게 두지 않는다.
+        // 다시 붙어도 같은 서버는 같은 v1 ready 를 준다.
+        if (from === this.ws) this.clearAckWatchdog();
+        this.emit({ state: 'error', toolCount: 0, error: UNSUPPORTED_CONNECTOR_PROTOCOL });
         return;
       }
       this.clearAckWatchdog();
@@ -408,7 +416,20 @@ export class MobileToolBridge {
         server.trim().length > 0 &&
         typeof tool === 'string' &&
         tool.trim().length > 0;
-      if (!validCorrelation) return;
+      if (!validCorrelation) {
+        // v2 를 모르는 서버(v1)의 호출 — 실행하지 않고 바로 실패로 답한다. 답이 없으면 서버가 자기 시한까지
+        // 기다려 턴이 멈춘다. 지금 연결에서 온 v1 프레임에만 답한다(데스크톱 McpBridge 와 같은 규칙).
+        const reply = legacyCallRejection(msg);
+        if (reply && from !== undefined && from === this.ws && from.readyState === WebSocket.OPEN) {
+          try {
+            from.send(JSON.stringify(reply));
+          } catch {
+            /* socket gone */
+          }
+          this.opts.log?.(`v1 서버 호출 거절: ${String(tool)}`);
+        }
+        return;
+      }
       if (this.inflight.has(requestId)) {
         try {
           from.send(JSON.stringify({

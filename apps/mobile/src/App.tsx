@@ -31,7 +31,13 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { conversationKey, type Agent, type Conversation } from '@dex/protocol';
+import {
+  conversationKey,
+  UNSUPPORTED_CONNECTOR_PROTOCOL,
+  unsupportedConnectorProtocolNotice,
+  type Agent,
+  type Conversation,
+} from '@dex/protocol';
 import { type ChatWsState } from './lib/chat-ws';
 import { ChatView } from './chat/chat-view';
 import { newInitialMessage, type InitialMessage } from './chat/initial-message';
@@ -734,7 +740,9 @@ function SettingsSection({
       : bridgeStatus.state === 'connecting'
         ? '연결 중…'
         : bridgeStatus.state === 'error'
-          ? `오류: ${bridgeStatus.error ?? ''}`
+          ? bridgeStatus.error === UNSUPPORTED_CONNECTOR_PROTOCOL
+            ? unsupportedConnectorProtocolNotice('이 휴대폰의 도구')
+            : `오류: ${bridgeStatus.error ?? ''}`
           : '꺼짐';
 
   return (

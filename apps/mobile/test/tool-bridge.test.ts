@@ -467,7 +467,51 @@ test('protocol v2 ready 전과 잘못된 generation/nonce 호출은 실행하지
   await tick();
 
   assert.equal(calls, 0);
-  assert.equal(ws.sent.some((f) => f.type === 'mcp_result'), false);
+  // v1 호출(protocol_version 없음)만 실행 없이 바로 실패로 답한다 — v2 인데 어긋난 프레임은 그대로 버린다.
+  const results = ws.sent.filter((f) => f.type === 'mcp_result');
+  assert.equal(results.length, 1);
+  assert.equal(results[0].request_id, 'legacy');
+  assert.equal(results[0].ok, false);
+  assert.match(String(results[0].error), /UNSUPPORTED_SERVER/);
+  bridge.stop();
+});
+
+test('v1 서버 — ready 를 받았으니 워치독을 풀고, 호출에는 실행 없이 바로 실패로 답한다', async () => {
+  // 2026-11-06 체험존(v1 서버): 답 없이 버린 호출을 서버가 끝없이 기다려 턴이 멈췄다.
+  let calls = 0;
+  const statuses: Array<{ state: string; error?: string }> = [];
+  const bridge = new MobileToolBridge({
+    wsBase: 'wss://gw.example',
+    userId: '7',
+    catalog: () => CATALOG,
+    call: async () => {
+      calls++;
+      return { content: [{ type: 'text', text: 'unexpected' }] };
+    },
+    onStatus: (s) => statuses.push({ state: s.state, error: s.error }),
+    wsFactory: (url) => new FakeWs(url) as unknown as WebSocket,
+    heartbeatMs: 0,
+  });
+  const bridgeAny = bridge as unknown as { ackWatchdog: ReturnType<typeof setTimeout> | null };
+  bridge.start();
+  const ws = FakeWs.last as FakeWs;
+  ws.open();
+  await tick();
+  ws.recv({ type: 'ready', catalog_id: ws.sent[0].catalog_id, tool_count: 1 });
+  assert.equal(bridgeAny.ackWatchdog, null, 'v1 ready 도 받은 것 — 6초마다 다시 붙지 않는다');
+  assert.deepEqual(statuses.at(-1), { state: 'error', error: 'unsupported_mcp_protocol' });
+
+  ws.recv({
+    type: 'mcp_call', request_id: 'v1-call', server: 'mobile', tool: 'Notify', args: {},
+    context: { workflow_id: 'wf' }, deadline_ms: 120_000,
+  });
+  await tick();
+  assert.equal(calls, 0);
+  const reply = ws.sent.at(-1) as Record<string, unknown>;
+  assert.equal(reply.type, 'mcp_result');
+  assert.equal(reply.request_id, 'v1-call');
+  assert.equal(reply.ok, false);
+  assert.equal('protocol_version' in reply, false, 'v1 서버가 읽는 형식 그대로');
   bridge.stop();
 });
 

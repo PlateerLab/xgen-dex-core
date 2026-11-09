@@ -393,6 +393,8 @@ export * from './conversation-folder-sync';
 // 사용자 PC 접속(UserPc)의 기기 쪽 약속과 휴대폰·브라우저의 내장 셸.
 export * from './user-pc-shell';
 export * from './connector-deadline';
+// 커넥터 프로토콜 v2 — 모르는 서버(v1)의 호출에는 실행 없이 바로 실패로 답한다.
+export * from './connector-protocol';
 export * from './conversation-model';
 // 대화 목록(2026-10-09): 마지막으로 말한 순서, 제목·꼬리표, 목록 규칙. 모든 앱이 같은 모양으로 그린다.
 export * from './conversation-list';

@@ -28,6 +28,9 @@ export interface McpServerConfig {
   auth?: 'none' | 'oauth';
   /** Off servers are never connected/advertised. Default true. */
   enabled?: boolean;
+  /** MCP 카탈로그로 설치한 서버의 출처(catalog_id · revision · 비밀이 아닌 변수 값).
+   *  업데이트 판단과 사용 기록(server_enabled/disabled/updated/removed)에 쓴다. */
+  catalog?: { catalog_id: string; revision: number; values?: Record<string, string> };
 }
 
 /** 서버에 붙을 때만 풀어 쓰는 비밀. 설정 파일에는 절대 평문으로 남지 않는다. */

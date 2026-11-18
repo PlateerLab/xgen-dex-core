@@ -83,6 +83,9 @@ import type { DecisionModelState } from '@dex/protocol/decision';
 import type { AvatarConfig, AvatarDescriptor } from '@dex/protocol/preferences';
 import type { StoreAvatar } from '@dex/protocol/avatars';
 import type { ConnectorConfig, McpServerConfig } from '../main/config';
+import type { CatalogItem, CatalogValues } from '@dex/protocol/mcp-catalog';
+import type { RuntimePlan } from '@dex/engine/mcp-runtime-manager';
+import type { CatalogInstallProgress, CatalogInstallResult } from '@dex/engine/mcp-catalog-install';
 import type { ChatFolderRemote, ChatFolderView } from '../main/chat-folders';
 import type { VoiceStreamEvent, VoiceStreamResult } from '../main/voice-stream';
 import type { VoiceTrace } from '../main/voice-trace';
@@ -1314,6 +1317,37 @@ const api = {
     /** 서버 이름 변경 시 키체인 시크릿/OAuth 를 old→new 로 이관(저장 전에 호출). */
     renameSecrets: (oldName: string, newName: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke(CHANNELS.mcpRenameSecrets, oldName, newName),
+  },
+
+  /** MCP 카탈로그 — 관리자가 미리 정의한 MCP 를 변수만 넣어 설치한다(런타임 자동 설치 포함). */
+  mcpCatalog: {
+    /** 게시된 항목(ETag 캐시). force 면 캐시 무시. 서버에 못 닿으면 마지막 목록 + error. */
+    list: (
+      force?: boolean,
+    ): Promise<{ items: CatalogItem[]; fetchedAt: number | null; stale: boolean; error?: string }> =>
+      ipcRenderer.invoke(CHANNELS.mcpCatalogList, force),
+    /** 이 항목의 런타임이 이 PC 에 있는지, 없으면 무엇을 받을지. */
+    runtime: (catalogId: string): Promise<RuntimePlan> =>
+      ipcRenderer.invoke(CHANNELS.mcpCatalogRuntime, catalogId),
+    install: (req: {
+      jobId: string;
+      catalogId: string;
+      values: CatalogValues;
+      mode?: 'install' | 'update';
+      serverName?: string;
+    }): Promise<CatalogInstallResult> => ipcRenderer.invoke(CHANNELS.mcpCatalogInstall, req),
+    cancel: (jobId: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.mcpCatalogCancel, jobId),
+    onProgress: (cb: (p: CatalogInstallProgress & { jobId: string }) => void): (() => void) => {
+      const h = (_e: unknown, p: CatalogInstallProgress & { jobId: string }) => cb(p);
+      ipcRenderer.on(CHANNELS.mcpCatalogProgressEvent, h);
+      return () => ipcRenderer.removeListener(CHANNELS.mcpCatalogProgressEvent, h);
+    },
+    /** 업데이트 폼 — 저장된 비밀이 아닌 값과, 저장돼 있는 비밀 변수의 **이름**만. */
+    stored: (serverName: string): Promise<{ values: Record<string, string>; secretsSet: string[] }> =>
+      ipcRenderer.invoke(CHANNELS.mcpCatalogStored, serverName),
+    pickPath: (opts: { directory?: boolean; title?: string }): Promise<string | null> =>
+      ipcRenderer.invoke(CHANNELS.mcpCatalogPickPath, opts),
+    viewed: (catalogId: string): Promise<boolean> => ipcRenderer.invoke(CHANNELS.mcpCatalogViewed, catalogId),
   },
 
   /** Global hotkeys (recorder support). */

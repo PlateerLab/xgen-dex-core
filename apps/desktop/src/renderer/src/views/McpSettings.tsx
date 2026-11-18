@@ -9,6 +9,7 @@ import { xgen, copyText } from '../bridge';
 import type { McpServerConfig } from '../../../main/config';
 import type { McpBridgeStatusLike, McpRuntimeLogEntryLike } from '../../../preload/index';
 import { Selector } from './Selector';
+import { McpCatalog } from './McpCatalog';
 import {
   McpImportError,
   parseMcpConfig,
@@ -354,6 +355,8 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
   const [importText, setImportText] = useState('');
   const [importMsg, setImportMsg] = useState<{ ok?: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // 내 서버 | 카탈로그 — 카탈로그는 관리자가 미리 정의한 MCP 를 변수만 넣어 설치한다.
+  const [view, setView] = useState<'servers' | 'catalog'>('servers');
 
   useEffect(() => {
     xgen.mcp
@@ -431,7 +434,12 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
     }
     const next = [...servers];
     if (editing === 'new') next.push(c);
-    else if (typeof editing === 'number') next[editing] = c;
+    else if (typeof editing === 'number') {
+      // 카탈로그로 설치한 서버는 출처(catalog)를 지킨다 — 폼에는 없는 칸이라 빠뜨리면
+      // 업데이트 표시와 사용 기록이 끊긴다.
+      const original = servers[editing];
+      next[editing] = original?.catalog ? { ...c, catalog: original.catalog } : c;
+    }
     await persist(next);
     setEditing(null);
     // 저장하면 곧바로 붙여 결과(도구 수/오류)를 보여준다.
@@ -628,8 +636,31 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
       .catch(() => undefined);
   };
 
+  const tabs = (
+    <div className="mcp-view-tabs">
+      <div className="seg" role="tablist" aria-label="MCP 보기">
+        <button role="tab" aria-selected={view === 'servers'} className={view === 'servers' ? 'active' : ''} onClick={() => setView('servers')}>
+          내 서버{servers.length ? ` ${servers.length}` : ''}
+        </button>
+        <button role="tab" aria-selected={view === 'catalog'} className={view === 'catalog' ? 'active' : ''} onClick={() => setView('catalog')}>
+          카탈로그
+        </button>
+      </div>
+    </div>
+  );
+
+  const catalogBody = (
+    <McpCatalog
+      servers={servers}
+      onInstalled={() => {
+        xgen.mcp.listServers().then(setServers).catch(() => undefined);
+        xgen.mcp.refresh().then(setStatus).catch(() => undefined);
+      }}
+    />
+  );
+
   // 본문은 모달/임베드(설정 [MCP] 탭) 양쪽에서 같은 것을 쓴다.
-  const body = (
+  const serversBody = (
     <>
       <p className="small muted" style={{ margin: '0 0 8px' }}>
         내 PC에서 MCP 서버를 실행해, 선택된 세션의 에이전트가 그 도구를 사용하게 합니다. 로그인
@@ -682,6 +713,11 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
                 <div className="mcp-item-name">
                   {s.name}
                   <span className="mcp-badge">{s.transport}</span>
+                  {s.catalog && (
+                    <span className="mcp-badge" title={`카탈로그 ${s.catalog.catalog_id} · 판 ${s.catalog.revision}`}>
+                      카탈로그
+                    </span>
+                  )}
                   {st && (
                     <span
                       className={`mcp-dot ${st.connected ? 'ok' : 'off'}`}
@@ -940,6 +976,13 @@ export const McpSettings: React.FC<{ onClose: () => void; embedded?: boolean }> 
           </div>
         </div>
       )}
+    </>
+  );
+
+  const body = (
+    <>
+      {tabs}
+      {view === 'catalog' ? catalogBody : serversBody}
     </>
   );
 

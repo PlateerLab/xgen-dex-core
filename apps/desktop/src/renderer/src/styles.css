@@ -10999,3 +10999,293 @@ button.sm {
 .field-row.audio-option-row { border-top: none; }
 .audio-runtime-row, .audio-runtime-actions { flex-wrap: wrap; }
 .audio-runtime-actions { margin-left: auto; justify-content: flex-end; }
+
+/* ─── MCP 카탈로그 ───
+   카드 목록 → 상세(설치 안내 · 런타임 · 변수) → 단계별 진행. 서버 목록 행(.mcp-item)과
+   같은 표면(panel-2 · border · radius-md)을 써서 두 탭이 한 화면처럼 보이게 한다. */
+.mcp-view-tabs {
+  display: flex;
+  margin: 0 0 10px;
+}
+.mcp-cat-toolbar {
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mcp-cat-search {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.mcp-cat-search:focus {
+  outline: none;
+  border-color: var(--primary-end);
+  box-shadow: 0 0 0 3px var(--violet-ring);
+}
+.mcp-cat-chips {
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.mcp-cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+.mcp-cat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.mcp-cat-card:hover {
+  border-color: var(--primary-soft-border);
+  box-shadow: var(--shadow-sm);
+}
+.mcp-cat-card-head,
+.mcp-cat-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.mcp-cat-card-title,
+.mcp-cat-detail-title {
+  min-width: 0;
+}
+.mcp-cat-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.mcp-cat-card-desc {
+  color: var(--text-secondary);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mcp-cat-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+.mcp-cat-icon {
+  flex-shrink: 0;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+}
+.mcp-cat-icon-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-color: var(--primary-soft-border);
+}
+.mcp-cat-state {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+}
+.mcp-cat-state.ok {
+  color: var(--success);
+}
+.mcp-cat-state.update {
+  color: var(--warning);
+}
+.mcp-cat-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mcp-cat-detail > .link {
+  align-self: flex-start;
+}
+.mcp-cat-desc {
+  margin: 0;
+  line-height: 1.5;
+}
+.mcp-cat-installed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+.mcp-cat-installed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-cat-guide {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  font-size: 13px;
+  max-height: 32vh;
+  overflow-y: auto;
+}
+.mcp-cat-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  line-height: 1.5;
+}
+.mcp-cat-runtime.ok {
+  color: var(--text);
+}
+.mcp-cat-runtime.warn {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+}
+.mcp-cat-runtime .mcp-dot {
+  display: inline-block;
+  margin-right: 4px;
+}
+.mcp-dot.pending {
+  background: var(--warning);
+}
+.mcp-cat-steps-manual {
+  margin: 2px 0 4px;
+  padding-left: 18px;
+}
+.mcp-cat-form {
+  margin-top: 0;
+}
+.mcp-cat-form .picker-row input {
+  flex: 1;
+  min-width: 0;
+}
+.mcp-cat-required {
+  color: var(--error);
+}
+.mcp-cat-bool {
+  padding: 6px 0;
+}
+.mcp-cat-progress {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+.mcp-cat-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mcp-cat-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.mcp-cat-step.pending .mcp-cat-step-label {
+  color: var(--muted);
+}
+.mcp-cat-step-body {
+  flex: 1;
+  min-width: 0;
+}
+.mcp-cat-step-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.mcp-cat-step-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid var(--gray-300);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 1px;
+}
+.mcp-cat-step-icon.ok {
+  border-color: var(--success);
+  color: var(--success);
+}
+.mcp-cat-step-icon.failed {
+  border-color: var(--error);
+  color: var(--error);
+}
+.mcp-cat-step-icon.skipped {
+  color: var(--muted);
+}
+.mcp-cat-step-icon.running {
+  border-color: var(--primary-soft-border);
+  border-top-color: var(--primary);
+  animation: mcp-cat-spin 0.9s linear infinite;
+}
+@keyframes mcp-cat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.mcp-cat-bar {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.mcp-cat-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+.mcp-cat-result {
+  margin-top: 10px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.mcp-cat-log pre {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0 0;
+}

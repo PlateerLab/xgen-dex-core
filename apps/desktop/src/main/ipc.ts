@@ -364,6 +364,15 @@ export const CHANNELS = {
   mcpOauthStatus: 'mcp:oauthStatus',
   mcpClearOauth: 'mcp:clearOauth',
   mcpRenameSecrets: 'mcp:renameSecrets',
+  // MCP 카탈로그 — 게시 목록 · 런타임 확인 · 설치/업데이트(진행 이벤트) · 취소 · 저장된 값 · 경로 선택 · 열람 기록
+  mcpCatalogList: 'mcpCatalog:list',
+  mcpCatalogRuntime: 'mcpCatalog:runtime',
+  mcpCatalogInstall: 'mcpCatalog:install',
+  mcpCatalogCancel: 'mcpCatalog:cancel',
+  mcpCatalogProgressEvent: 'mcpCatalog:progress',
+  mcpCatalogStored: 'mcpCatalog:stored',
+  mcpCatalogPickPath: 'mcpCatalog:pickPath',
+  mcpCatalogViewed: 'mcpCatalog:viewed',
   diagText: 'diag:text',
   diagCopy: 'diag:copy',
   /** 탐색기의 에이전트 섹션 — 이 계정의 개인 에이전트 (서버 목록). */

@@ -126,6 +126,14 @@ import { hostname } from 'os';
 import { TRAY_ICON_B64 } from './tray-icon';
 import { canonicalizeMcpServerConfig, getMcpManager, type McpHttpFetch } from '@dex/engine/mcp-manager';
 import { getMcpBridge } from '@dex/engine/mcp-bridge';
+import {
+  activateManagedRuntimes,
+  clearCatalogVars,
+  kickCatalogEvents,
+  recordCatalogSave,
+  registerMcpCatalogIpc,
+  renameCatalogVars,
+} from './mcp-catalog-host';
 import { clientWorkspaceTransfer } from '@dex/engine/workspace-transfer';
 import { fileSource } from '@dex/engine/file-source';
 import { fileResumeStore } from './upload-resume-store';
@@ -2234,6 +2242,8 @@ function syncMcp(): void {
   // 로그인한 계정의 폴더 장부를 서버 사본과 맞춘다(계정마다 한 번) — 꺼져 있는 동안 다른
   // 기기로 옮겨 간 대화는 잊고, 이 기능 이전에 붙인 폴더는 올린다.
   if (userId) void chatFolderSync.reconcile();
+  // 이 계정에 쌓여 있던 MCP 카탈로그 사용 기록을 보낸다(오프라인 동안 쌓인 것 포함).
+  if (userId) kickCatalogEvents();
   // The bridge is the single conduit for BOTH external MCP servers and this PC's
   // folder tools. It runs whenever someone is logged in: which conversation may
   // use the folder tools is decided per call by that conversation's folders,
@@ -4115,6 +4125,7 @@ async function applyMcpServers(
     if (p?.name && !keep.has(p.name)) {
       await mcpSecretStore.clear(p.name).catch(() => {});
       await mcpOAuthStore.clear(p.name).catch(() => {});
+      await clearCatalogVars(p.name);
     }
   }
   for (const name of staleOAuth) await mcpOAuthStore.clear(name).catch(() => {});
@@ -4152,7 +4163,11 @@ ipcMain.handle(CHANNELS.mcpSaveServers, async (event, servers) => {
   const incoming = await Promise.all(raw.map(canonicalizeMcpServerConfig));
   const digest = canonicalConfigDigest(incoming);
   await confirmFocusedLocalSettings(event, 'MCP 서버 설정 변경', mcpApprovalSummary(incoming, digest));
-  return applyMcpServers(incoming, digest);
+  const before = loadConfig().mcpServers ?? [];
+  const saved = await applyMcpServers(incoming, digest);
+  // 카탈로그로 설치한 서버의 켜기 · 끄기 · 삭제 · 직접 편집을 사용 기록으로 남긴다.
+  recordCatalogSave(before, saved);
+  return saved;
 });
 ipcMain.handle(CHANNELS.mcpTestServer, async (e, cfg) => {
   requireFocusedLocalSettings(e);
@@ -4231,6 +4246,7 @@ ipcMain.handle(CHANNELS.mcpRenameSecrets, async (event, oldName, newName) => {
     if (oauth && (oauth.tokens || oauth.clientInformation || oauth.codeVerifier)) {
       await mcpOAuthStore.save(to, oauth);
     }
+    await renameCatalogVars(from, to);
     // 옛 이름은 mcpSaveServers 의 삭제정리가 처리한다(중복 제거).
   } catch {
     /* best-effort — 저장은 계속 진행 */
@@ -4242,6 +4258,35 @@ ipcMain.handle(CHANNELS.mcpRuntimeLogs, () => mcpRuntimeLogs());
 ipcMain.handle(CHANNELS.mcpClearRuntimeLogs, () => {
   clearMcpRuntimeLogs();
   return true;
+});
+
+// ── IPC: MCP 카탈로그 ────────────────────────────────────────────
+// 런타임 내려받기는 Chromium 네트워크 스택(net.fetch)으로 — OS 프록시 · 인증서 정책을 따른다.
+const runtimeFetch = (url: string, init?: RequestInit) => net.fetch(url, init);
+registerMcpCatalogIpc({
+  ipcMain,
+  channels: {
+    list: CHANNELS.mcpCatalogList,
+    runtime: CHANNELS.mcpCatalogRuntime,
+    install: CHANNELS.mcpCatalogInstall,
+    cancel: CHANNELS.mcpCatalogCancel,
+    progress: CHANNELS.mcpCatalogProgressEvent,
+    stored: CHANNELS.mcpCatalogStored,
+    pickPath: CHANNELS.mcpCatalogPickPath,
+    viewed: CHANNELS.mcpCatalogViewed,
+  },
+  client: getClient,
+  accountKey: currentAccountKey,
+  deviceId: ensureDeviceId,
+  mainWindow: () => mainWindow,
+  listServers: () => loadConfig().mcpServers ?? [],
+  applyServers: (servers) => applyMcpServers(servers),
+  requireFocused: requireFocusedLocalSettings,
+  confirm: confirmFocusedLocalSettings,
+  approvalSummary: mcpApprovalSummary,
+  digest: canonicalConfigDigest,
+  fetch: runtimeFetch,
+  diag: (message) => diag('mcp-catalog', message),
 });
 
 // ── 계정 키 ──────────────────────────────────────────────────────
@@ -4472,6 +4517,13 @@ if (!gotLock) {
     await BrowserScratch.cleanupOrphans().catch((error) =>
       diag('browser-file', `남은 브라우저 임시 파일 정리 실패: ${error instanceof Error ? error.message : String(error)}`));
     await migrateStoredMcpSecrets();
+    // 카탈로그가 앱 폴더에 설치해 둔 Node · uv · Python 을 PATH 에 건다 — 그 런타임으로 저장된
+    // 서버가 첫 syncMcp 에서 바로 뜨도록(그 전에 PATH 를 만들면 못 찾는다).
+    try {
+      activateManagedRuntimes(runtimeFetch);
+    } catch (error) {
+      diag('mcp-catalog', `managed runtimes not activated: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     // 절전에서 깨어났다 — 잠든 사이 서버가 놓은 대화 소켓은 이쪽에서 보기엔 아직 열려 있다.
     // 지금 확인하고 다시 붙어야 그 사이 끝난 턴이 바로 보인다.

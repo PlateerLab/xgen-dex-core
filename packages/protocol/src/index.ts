@@ -40,6 +40,7 @@ import { PreferencesApi } from './preferences';
 import { SshApi } from './ssh';
 import { TeamsApi } from './teams';
 import { VoiceApi } from './voice';
+import { McpCatalogApi } from './mcp-catalog';
 import { ApiError, HttpClient, type FetchLike, type HttpClientOptions } from './client';
 import type { CurrentUser, LoginResult } from './types';
 
@@ -101,6 +102,8 @@ export class XgenClient {
   readonly chatShares: ChatSharesApi;
   /** 판단 모델(System One) — 선택지별 확률만 돌려주는 빠른 판단. */
   readonly decision: DecisionApi;
+  /** MCP 카탈로그 — 게시된 항목(304 인식)과 사용 기록(/api/dashboard/mcp/catalog). */
+  readonly mcpCatalog: McpCatalogApi;
 
   private refreshToken?: string;
   private readonly onTokensRotated?: (accessToken: string, refreshToken?: string) => void;
@@ -150,6 +153,7 @@ export class XgenClient {
     this.ide = new IdeApi(this.http);
     this.chatShares = new ChatSharesApi(this.http);
     this.decision = new DecisionApi(this.http);
+    this.mcpCatalog = new McpCatalogApi(this.http);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -491,3 +495,5 @@ export {
 } from './voice-context';
 
 export * from './generated-content';
+// MCP 카탈로그 — 항목 · 변수 규칙 · 게시 목록(304) · 사용 기록. 화면과 메인이 같은 규칙을 쓴다.
+export * from './mcp-catalog';

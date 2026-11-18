@@ -37,6 +37,13 @@ export * from './mcp-manager';
 export * from './mcp-secrets';
 export * from './mcp-oauth';
 export * from './mcp-runtime-log';
+// ── MCP 카탈로그 — 런타임 자동 설치 · 설치 흐름 · 사용 기록 ──
+export * from './mcp-runtime-pins';
+export * from './mcp-runtime-manager';
+export * from './mcp-catalog-install';
+export * from './mcp-catalog-events';
+export * from './archive-extract';
+export * from './proc-run';
 
 // ── 서버로 도구를 광고하는 유일한 통로 ──
 export * from './mcp-bridge';

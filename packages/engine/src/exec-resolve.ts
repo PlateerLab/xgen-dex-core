@@ -222,10 +222,33 @@ export function mergePaths(...sources: Array<string | null | undefined>): string
   return out.join(delimiter);
 }
 
-/** GUI 실행에서도 사용자 도구를 찾을 수 있는 PATH. */
-export async function augmentedPath(): Promise<string> {
+// ── 앱이 설치한 런타임 ───────────────────────────────────────────────
+//
+// MCP 카탈로그가 Node · uv · Python 을 앱 데이터 폴더에 직접 설치하면(관리자 권한 ·
+// 패키지 매니저 없이) 그 bin 폴더를 PATH **맨 앞**에 둔다. 앱이 런타임을 받는 것은
+// 시스템에 없거나 카탈로그가 요구하는 판보다 낮을 때뿐이라, 앞에 두어야 그 판이 쓰인다
+// (npx 는 `#!/usr/bin/env node` 라 자식 PATH 의 node 를 집는다).
+let managedBinDirs: string[] = [];
+
+/** 앱이 설치한 런타임의 bin 폴더들(우선순위 순). 바꾸면 PATH 캐시를 버린다. */
+export function setManagedBinDirs(dirs: string[]): void {
+  managedBinDirs = dirs.filter(Boolean);
+  loginPathCache = null;
+}
+
+export function managedBinDirList(): string[] {
+  return [...managedBinDirs];
+}
+
+/** 앱이 설치한 런타임을 **뺀** PATH — 시스템에 이미 있는 런타임을 찾을 때 쓴다. */
+export async function systemPath(): Promise<string> {
   const login = await loginShellPath();
   return mergePaths(login, process.env.PATH, commonBinDirs().join(delimiter));
+}
+
+/** GUI 실행에서도 사용자 도구를 찾을 수 있는 PATH(앱이 설치한 런타임이 맨 앞). */
+export async function augmentedPath(): Promise<string> {
+  return mergePaths(managedBinDirs.join(delimiter), await systemPath());
 }
 
 /**

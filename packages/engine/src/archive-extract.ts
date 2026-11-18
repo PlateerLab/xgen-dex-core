@@ -16,7 +16,11 @@ import { dirname, join, posix, resolve, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as zlib from 'node:zlib';
-import * as tar from 'tar';
+/**
+ * `tar` 는 쓸 때만 불러온다 — CLI 번들은 서드파티를 external 로 두고 `tar` 를 싣지 않는다.
+ * 엔진 index 를 불러오기만 해도 깨지지 않게, 런타임 설치(데스크톱)에서만 로드한다.
+ */
+const loadTar = (): Promise<typeof import('tar')> => import('tar');
 
 export class UnsafeArchiveError extends Error {
   constructor(message: string) {
@@ -93,6 +97,7 @@ function checkAbort(signal?: AbortSignal): void {
 // ── tar.gz ──────────────────────────────────────────────────────────
 
 async function extractTarGz(archive: string, dest: string, opts: ExtractOptions): Promise<void> {
+  const tar = await loadTar();
   let expanded = 0;
   let entries = 0;
   let problem: Error | undefined;

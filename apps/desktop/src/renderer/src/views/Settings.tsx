@@ -1151,7 +1151,7 @@ export const Settings: React.FC<{
 
         {/* ─── MCP — 내 PC 에서 호스팅하는 MCP 서버 관리 (임베드) ─── */}
         {tab === 'mcp' && (
-          <SettingsSection plain title="MCP 서버">
+          <SettingsSection plain title="MCP">
             <McpSettings embedded onClose={() => undefined} />
           </SettingsSection>
         )}

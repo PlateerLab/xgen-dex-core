@@ -164,9 +164,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: xd-${{ matrix.name }}
-          if-no-files-found: ignore
+          if-no-files-found: error
           path: |
             apps/xd/release/*.exe
             apps/xd/release/*.dmg
             apps/xd/release/*.AppImage
             apps/xd/release/*.deb
+            apps/xd/release/*.blockmap
+            apps/xd/release/xd*.yml

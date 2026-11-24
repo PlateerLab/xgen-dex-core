@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { draftStorage } from './draft-storage';
+import { localDraftStorage } from './draft-storage';
 import { confirmsChatDispatch, draftField, draftKey } from '@dex/protocol';
 import { randomUUID } from 'node:crypto';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -1808,6 +1808,7 @@ export function Dashboard(props: {
 
 
 function useDraft<T extends string | unknown[]>(key: string, empty: T) {
-  const field = useMemo(() => draftField(draftStorage, key, empty), [key]);
+  const storage = localDraftStorage();
+  const field = useMemo(() => draftField(storage, key, empty), [storage, key]);
   return [useSyncExternalStore(field.subscribe, field.get), field.set] as const;
 }

@@ -11,6 +11,8 @@
  * 보내면 새 에이전트는 만들고, 그 에이전트로 새 대화를 열어 적은 글을 첫 메시지로 보낸다
  * (채팅 화면이 소켓이 붙을 때 한 번 보낸다. initial-message).
  */
+import { draftKey } from '@dex/protocol';
+import { useDraft } from '../chat/use-draft';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -92,7 +94,7 @@ export function StartScreen({
   const [edits, setEdits] = useState<Record<string, unknown>>({});
 
   // ── 입력창 ──
-  const [text, setText] = useState('');
+  const [text, setText] = useDraft<string>(draftKey(client.session.serverUrl, client.session.userId, 'start', selected), '');
   const [busy, setBusy] = useState(false);
   /** 잠긴 입력창을 눌렀다: 풀릴 때까지 지금의 잠금 이유를 보여 준다. */
   const [showLock, setShowLock] = useState(false);

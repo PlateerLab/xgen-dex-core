@@ -16,6 +16,8 @@
  *
  * 전송·재연결·다른 기기 턴의 규칙은 예전 그대로다(chat-ws). 화면만 바뀐다.
  */
+import { draftKey } from '@dex/protocol';
+import { useDraft } from './use-draft';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -163,8 +165,9 @@ export function ChatView({
     return -1;
   }, [messages]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [input, setInput] = useState('');
-  const [attachments, setAttachments] = useState<MobileChatAttachment[]>([]);
+  const scope = draftKey(client.session.serverUrl, client.session.userId, agent?.workflowId ?? '', interactionId);
+  const [input, setInput] = useDraft<string>(scope + ':text', '');
+  const [attachments, setAttachments] = useDraft<MobileChatAttachment[]>(scope + ':files', []);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const [uploading, setUploading] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
@@ -247,7 +250,6 @@ export function ChatView({
     stoppedRef.current = false;
     setRunning(false);
     setMessages([]);
-    setAttachments([]);
     setAttachmentStatus('');
     setUnseen(0);
     setLoadingHistory(true);

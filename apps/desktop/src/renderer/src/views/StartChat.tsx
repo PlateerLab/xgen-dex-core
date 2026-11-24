@@ -19,6 +19,8 @@
  * 이 화면을 연 대화에 폴더가 연결돼 있으면 새 대화도 그 폴더로 시작한다(같은 작업 공간에서 새 대화). 무엇을 잇는지
  * 입력창 위에 보이고 빼낼 수 있다. 경로는 main 이 그 대화의 연결에서만 옮긴다(chatFolders.inherit).
  */
+import { draftKey } from '@dex/protocol';
+import { useDraft } from './use-draft';
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, AgentCreateOptions } from '@dex/protocol';
 import { xgen } from '../bridge';
@@ -57,10 +59,12 @@ const START_VOICE_KEY = 'start-chat';
 
 export function StartChat({
   onStarted,
+  draftScope,
   voiceKey = 'start:agent-create',
   fromInteractionId = null,
 }: {
   /** 대화가 열렸다 — 그 대화 세션 키. */
+  draftScope: string;
   onStarted: (sessionKey: string) => void;
   /** 계속 듣기를 맡을 때의 이름(voice-loop-owner). */
   voiceKey?: string;
@@ -77,7 +81,7 @@ export function StartChat({
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [advanced, setAdvanced] = useState(false);
   const [nameCheck, setNameCheck] = useState<{ name: string; taken: boolean } | null>(null);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useDraft<string>(draftKey(draftScope, 'start', voiceKey, choice), '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameAlert, setNameAlert] = useState(false);

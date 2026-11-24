@@ -449,6 +449,7 @@ export default function App(): React.ReactElement {
         <View style={st.content}>
           <View style={[st.section, section !== 'chat' && st.off]}>
             <ChatView
+              key={JSON.stringify([client.session.serverUrl, client.session.userId, activeAgent?.workflowId, activeInteraction])}
               client={client}
               agent={activeAgent}
               interactionId={activeInteraction}

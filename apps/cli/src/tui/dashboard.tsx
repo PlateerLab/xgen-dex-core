@@ -245,7 +245,7 @@ export function Dashboard(props: {
   const attachmentEpoch = useRef(0);
   const uploadBusy = useRef(false);
   const [attachments, setAttachments] = useDraft<ChatAttachmentDescriptor[]>(scope + ':files', []);
-  const [attachmentInteractionId, setAttachmentInteractionId] = useState<string>();
+  const [attachmentInteractionId, setAttachmentInteractionId] = useDraft<string>(scope + ':attachment-room', '');
   const [attachmentNotice, setAttachmentNotice] = useState('');
   // 통제 정책 [채팅 입력시 차단] 사전 검사. 걸리면 작성기가 잠기고 이유가 위에 선다.
   const policy = useChatInputPolicy(props.engine, input, selected?.workflowId, props.session.profile);
@@ -355,7 +355,7 @@ export function Dashboard(props: {
   const [modelPicker, setModelPicker] = useState(false);
   const [thinkingPicker, setThinkingPicker] = useState(false);
   const draftInteractionId = useRef(randomUUID());
-  const modelTarget = chat.interactionId ?? attachmentInteractionId ?? draftInteractionId.current;
+  const modelTarget = chat.interactionId || attachmentInteractionId || draftInteractionId.current;
   const modelTargetRef = useRef(modelTarget);
   modelTargetRef.current = modelTarget;
   /**
@@ -937,7 +937,6 @@ export function Dashboard(props: {
   /** 첨부와 입력을 비운다(다른 대화로 옮기거나 새 채팅). */
   const clearComposer = (): void => {
     attachmentEpoch.current += 1;
-    setAttachmentInteractionId(undefined);
     setAttachmentNotice('');
   };
 
@@ -1217,7 +1216,7 @@ export function Dashboard(props: {
     if (text === '/detach') {
       attachmentEpoch.current += 1;
       setAttachments([]);
-      setAttachmentInteractionId(undefined);
+      setAttachmentInteractionId('');
       setAttachmentNotice('첨부를 모두 제거했습니다.');
       setInput('');
       return;
@@ -1247,7 +1246,7 @@ export function Dashboard(props: {
       dispatch({ type: 'turn_started', interactionId: resolved.interactionId, input: text });
       attachmentEpoch.current += 1;
       setAttachments([]);
-      setAttachmentInteractionId(undefined);
+      setAttachmentInteractionId('');
       setAttachmentNotice('');
       // 방금 말한 대화는 목록 맨 위로, 그 에이전트 줄도 맨 위로. 처음 말한 대화면 서버가 알기 전이라
       // 여기서 한 줄을 세운다(그 에이전트의 대화 수도 하나 는다).
@@ -1304,7 +1303,7 @@ export function Dashboard(props: {
       else {
         if (attachments.length > 0) {
           setAttachments(attachments);
-          setAttachmentInteractionId(chat.interactionId ?? attachmentInteractionId);
+          setAttachmentInteractionId(chat.interactionId || attachmentInteractionId || modelTarget);
           setAttachmentNotice(`${attachments.length}개 파일을 다시 보낼 수 있습니다.`);
         }
         dispatch({ type: 'turn_failed', message: publicError(error).message });

@@ -6,7 +6,7 @@ const draftStorage: DeviceDraftStorage = {
   write: (key, value) => value === null ? localStorage.removeItem(key) : localStorage.setItem(key, value),
 };
 
-export function useDraft<T extends string | unknown[]>(key: string, empty: T) {
-  const field = useMemo(() => draftField(draftStorage, key, empty), [key]);
+export function useDraft<T extends string | unknown[]>(key: string, empty: T, storage = draftStorage) {
+  const field = useMemo(() => draftField(storage, key, empty), [key, storage]);
   return [useSyncExternalStore(field.subscribe, field.get), field.set] as const;
 }

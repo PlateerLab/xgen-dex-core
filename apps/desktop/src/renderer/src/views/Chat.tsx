@@ -13,6 +13,7 @@
  * store drives the single execute-stream endpoint.
  */
 import { draftKey } from '@dex/protocol';
+import { attachmentStorage } from './attachment-storage';
 import { useDraft } from './use-draft';
 import { startProcessedCapture, pcmWav, type ProcessedCapture } from '../voice/processed-capture';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -415,10 +416,11 @@ export const Chat: React.FC<{
   const voiceInputTracker = useMemo(createVoiceInputTracker, []);
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
-  const [stagedImages, setStagedImages] = useState<StagedChatImage[]>([]);
+  const [stagedImages, setStagedImages] = useDraft<StagedChatImage[]>(draftKey(draftScope, agent.workflowId, session.interactionId, 'files'), [], attachmentStorage);
   const activeSessionKey = useRef(session.key);
   activeSessionKey.current = session.key;
-  const stagedImagesRef = useRef<StagedChatImage[]>([]);
+  const stagedImagesRef = useRef(stagedImages);
+  stagedImagesRef.current = stagedImages;
   const browserSelections = useBrowserSelections(session.key);
   // 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 묻는 카드(main browser-confirm).
   const confirms = useBrowserConfirms(session.interactionId, agent.workflowId);
@@ -722,7 +724,7 @@ export const Chat: React.FC<{
   const replaceStagedImages = useCallback((next: StagedChatImage[]) => {
     stagedImagesRef.current = next;
     setStagedImages(next);
-  }, []);
+  }, [setStagedImages]);
 
   const addImageFiles = useCallback(
     async (files: File[]) => {

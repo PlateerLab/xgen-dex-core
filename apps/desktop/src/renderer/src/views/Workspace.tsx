@@ -1131,6 +1131,7 @@ export const Workspace: React.FC<{
           <Chat
             key={chat.key}
             session={chat}
+            draftScope={JSON.stringify([config.serverUrl, user.userId])}
             myName={user.username || '나'}
             mcpDebug={config.mcpDebug === true}
             onOpenFile={(workflowId, rel, name) => openFileViewer('agent', workflowId, rel, name)}
@@ -1206,6 +1207,7 @@ export const Workspace: React.FC<{
         <div className="pane-fill">
           <StartChat
             key={active.id}
+            draftScope={JSON.stringify([config.serverUrl, user.userId])}
             voiceKey={`start:${active.id}`}
             fromInteractionId={startFrom}
             // 대화가 열리고 첫 메시지가 갔다. 시작 화면 탭은 닫고 그 대화 탭이 앞에 선다.

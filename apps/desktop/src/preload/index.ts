@@ -7,6 +7,7 @@ import type { ProcessedAudio } from '../main/audio-preprocessor';
  * callback), and updater. Tokens and network calls stay in the main process;
  * the renderer only ever sees typed results and streamed ChatEvents.
  */
+import { rememberDraftFile, resolveDraftFile, forgetDraftFile } from './draft-file';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { CHANNELS } from '../main/ipc';
 import type { ChatDownload } from '@dex/protocol/chat-files';
@@ -177,7 +178,7 @@ const stagedFiles = new Map<string, string>();
 let stagedSeq = 0;
 
 function stagedPath(ref: string): string {
-  const path = stagedFiles.get(ref);
+  const path = stagedFiles.get(ref) ?? resolveDraftFile(ref);
   if (!path) throw new Error('첨부한 파일을 찾지 못했습니다. 파일을 다시 첨부해 주세요.');
   return path;
 }
@@ -185,7 +186,7 @@ function stagedPath(ref: string): string {
 const api = {
   files: {
     /** 디스크에 있는 File 이면 표를 돌려준다(붙여 넣은 그림처럼 메모리에만 있으면 null). */
-    stage: (file: File): string | null => {
+    stage: (file: File, forDraft = false): string | null => {
       let path = '';
       try {
         path = webUtils.getPathForFile(file);
@@ -193,12 +194,14 @@ const api = {
         path = '';
       }
       if (!path) return null;
+      if (forDraft) return rememberDraftFile(path);
       const ref = `file-${Date.now().toString(36)}-${(stagedSeq += 1)}`;
       stagedFiles.set(ref, path);
       return ref;
     },
     release: (ref: string): void => {
       stagedFiles.delete(ref);
+      forgetDraftFile(ref);
     },
   },
 

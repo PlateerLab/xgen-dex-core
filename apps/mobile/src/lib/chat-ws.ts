@@ -498,6 +498,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
             workflow_id: opts.workflowId,
             workflow_name: opts.workflowName,
             after: null,
+            all_agent_execution: true,
             origin_id: originId,
             // **남의 턴도 실시간으로 보겠다**는 선언. 콜백을 받은 화면만 말한다 —
             // 서버는 말하지 않은 화면에 전파 프레임을 보내지 않는다.

@@ -328,6 +328,7 @@ export class ConversationWatchHub {
             // **남의 턴도 실시간으로 보겠다**는 선언. 서버는 이 말을 한 화면에만
             // 전파 프레임을 보낸다 — 옛 화면과 새 화면이 같은 서버에 붙는다.
             live_exec: true,
+            observe_all_agents: true,
           },
         }),
       );

@@ -467,6 +467,7 @@ export const Chat: React.FC<{
   // 사용자가 친 문장을 여기에 들고 있는다 (입력창은 이미 비워졌으므로).
   const [ctxConfirm, setCtxConfirm] = useState<{
     text: string;
+    consumeDraft: boolean;
     count: number;
     roomName: string;
     images: StagedChatImage[];
@@ -942,6 +943,7 @@ export const Chat: React.FC<{
       images: StagedChatImage[] = [],
       selections: BrowserSelectionResult[] = [],
       voice = false,
+      consumeDraft = true,
     ) => {
       let shot: { dataUrl?: string; sourceName?: string; width?: number; height?: number } | null =
         null;
@@ -984,10 +986,18 @@ export const Chat: React.FC<{
           const existing = stagedImagesRef.current;
           replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
         },
-        voice ? { voiceStyle: voiceStyleRef.current } : undefined,
+        {
+          voiceStyle: voice ? voiceStyleRef.current : undefined,
+          onAccepted: consumeDraft ? () => {
+            setInput(current => current.trim() === text ? '' : current);
+            const sent = new Set(images.map(item => item.id));
+            setStagedImages(current => current.filter(item => !sent.has(item.id)));
+            for (const selection of selections) browserSelectionStore.remove(session.key, selection.id);
+          } : undefined,
+        },
       );
     },
-    [session.key, screenCaptureOn, jumpToBottom],
+    [session.key, screenCaptureOn, jumpToBottom, setInput, setStagedImages, replaceStagedImages],
   );
 
   const send = useCallback(
@@ -1029,11 +1039,6 @@ export const Chat: React.FC<{
         setImageNotice('브라우저 캡처를 포함한 첨부 파일 전체 크기는 4GiB를 넘을 수 없습니다.');
         return;
       }
-      if (override === undefined) {
-        setInput('');
-        replaceStagedImages([]);
-        browserSelectionStore.clear(session.key);
-      }
 
       // Teams 문맥이 붙어 있는데 아직 승인 전이면 **먼저 묻는다**. 남이 쓴 글이
       // 에이전트로 나가는 것이므로, 몇 건이 나가는지 보여 주고 동의를 받는다.
@@ -1045,6 +1050,7 @@ export const Chat: React.FC<{
           // 방 이름까지 들고 간다 — 확인창을 칩 상태에 매달아 두면, 그 사이
           // 칩이 사라질 때 붙잡아 둔 사용자의 문장까지 함께 증발한다.
           setCtxConfirm({
+            consumeDraft: override === undefined,
             text,
             count,
             roomName: pendingChip.roomName,
@@ -1055,7 +1061,7 @@ export const Chat: React.FC<{
         }
         // 실을 게 없으면 물을 것도 없다 — 그냥 보낸다.
       }
-      await dispatch(text, images, selections, !!opts?.voice);
+      await dispatch(text, images, selections, !!opts?.voice, override === undefined);
     },
     [input, busy, streaming, remote, preparingImages, session.key, dispatch, replaceStagedImages, policy],
   );
@@ -1066,7 +1072,7 @@ export const Chat: React.FC<{
     if (!held) return;
     teamsContextStore.approve(session.key);
     setCtxConfirm(null);
-    await dispatch(held.text, held.images, held.browserSelections);
+    await dispatch(held.text, held.images, held.browserSelections, false, held.consumeDraft);
   }, [ctxConfirm, session.key, dispatch]);
 
   /** 확인창의 [취소] — 사용자가 친 문장을 입력창에 그대로 돌려준다. */
@@ -1084,7 +1090,7 @@ export const Chat: React.FC<{
             CHAT_IMAGE_MAX_COUNT,
           ),
         );
-        browserSelectionStore.restore(session.key, held.browserSelections);
+        // Browser selections remain staged until admission.
       }
       return null;
     });

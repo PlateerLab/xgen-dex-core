@@ -67,7 +67,7 @@ export function StartScreen({
   visible: boolean;
   preset: StartPreset;
   /** 고른(또는 막 만든) 에이전트로 새 대화를 열고 `text` 를 첫 메시지로 보낸다. */
-  onStart: (agent: Agent, text: string) => void;
+  onStart: (agent: Agent, text: string, onAccepted: () => void) => void;
 }): React.ReactElement {
   const p = useP();
   const st = useMemo(() => makeStyles(p), [p]);
@@ -200,8 +200,7 @@ export function StartScreen({
     setShowLock(false);
     if (!newAgent) {
       if (!selectedAgent) return;
-      setText('');
-      onStart(selectedAgent, body);
+      onStart(selectedAgent, body, () => setText(current => current.trim() === body ? '' : current));
       return;
     }
     const trimmed = name.trim();
@@ -236,11 +235,10 @@ export function StartScreen({
         updatedAt: '',
         hasAgentGeny: true,
       };
-      setText('');
       setName('');
       setEdits({});
       setAdvanced(false);
-      onStart(agent, body);
+      onStart(agent, body, () => setText(current => current.trim() === body ? '' : current));
     } catch (e) {
       setError(friendlyError(e, '에이전트 생성에 실패했습니다.'));
     } finally {

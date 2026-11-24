@@ -1,5 +1,6 @@
 import {
   applyTurnPhase,
+  confirmsChatDispatch,
   describeStreamError,
   formatErrorLine,
   mergeGeneratedContentProvenance,
@@ -247,6 +248,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private attachments: ChatAttachmentDescriptor[] = [];
   private uploadingAttachments = false;
   private streamId: string | undefined;
+  private acceptDraft?: () => void;
   /**
    * 이 확장이 아니라 **다른 곳**(웹·앱·CLI)에서 시작한 턴이 이 대화에서 돌고
    * 있는가. 서버 실행은 연결이 아니라 대화에 매여 있어서, 여기서 스트림을 쥐고
@@ -650,7 +652,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.readOnly = conversation.agentDeleted === true;
       this.openedConversation = conversation;
       this.interactionId = conversation.interactionId;
-      this.attachments = [];
+      this.attachments = this.context.globalState.get<ChatAttachmentDescriptor[]>(this.attachmentKey()) ?? [];
       this.syncConversationWatch();
       this.messages = historyTurnMessages(turns, conversation.workflowName);
       this.status = snapshot.running
@@ -1432,11 +1434,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // 만드는 사이 다른 화면으로 옮겼으면 그 화면을 빼앗지 않는다. 에이전트는 목록에 남는다.
       if (session !== this.start.session || this.screen !== 'start') return;
     }
+    const source = this.composerKey('start');
     await this.clearConversation();
     this.selectedAgent = agent;
     this.screen = 'chat';
     this.resetStart();
-    await this.send(text);
+    await this.send(text, source);
   }
 
   private async createStartAgent(raw: Record<string, unknown>): Promise<Agent | undefined> {
@@ -1490,7 +1493,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private async send(input: string): Promise<void> {
+  private composerKey(screen: 'start' | 'chat', room = this.interactionId): string | undefined {
+    if (!this.auth?.authenticated || !this.auth.user) return undefined;
+    const account = [this.auth.serverUrl, this.auth.profile, this.auth.user.userId];
+    if (screen === 'start') return JSON.stringify([...account, 'start', this.start.agentId || '']);
+    if (this.selectedAgent) return JSON.stringify([...account, this.selectedAgent.workflowId, room || 'new']);
+    return undefined;
+  }
+
+  private attachmentKey(room = this.interactionId): string {
+    return 'chat.attachments.' + this.composerKey('chat', room);
+  }
+
+  private saveAttachments(): void {
+    if (this.composerKey('chat')) void this.context.globalState.update(this.attachmentKey(), this.attachments.length ? [...this.attachments] : undefined);
+  }
+
+  private async send(input: string, source = this.composerKey('chat')): Promise<void> {
     const text = input.trim();
     if ((!text && this.attachments.length === 0) || !this.selectedAgent || this.streamId || this.uploadingAttachments || this.readOnly) {
       return;
@@ -1510,7 +1529,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.status = '응답을 기다리는 중...';
     this.clearPhases();
     const attachments = [...this.attachments];
-    this.attachments = [];
+    this.acceptDraft = () => {
+      if (this.streamId !== streamId) return;
+      this.acceptDraft = undefined;
+      const sent = new Set(attachments.map(item => item.attachment_id));
+      this.attachments = this.attachments.filter(item => !sent.has(item.attachment_id));
+      this.saveAttachments();
+      void this.view?.webview.postMessage({ type: 'draftAccepted', key: source, text });
+      this.postState();
+    };
     this.messages.push(message('user', '나', text || `첨부 파일 ${attachments.length}개`));
     const assistant = message('assistant', agent.workflowName, '');
     this.messages.push(assistant);
@@ -1542,7 +1569,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     } catch (error) {
       if (this.streamId !== streamId) return;
       this.streamId = undefined;
-      this.attachments = [...attachments, ...this.attachments];
+      this.acceptDraft = undefined;
       this.status = undefined;
       this.updateAssistant(`오류: ${errorMessage(error)}`);
       await this.setRunning(false);
@@ -1570,6 +1597,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         });
         if (!isCurrent()) return;
         this.attachments.push(uploaded);
+        this.saveAttachments();
+        this.rememberConversation();
         this.postState();
       }
       this.status = undefined;
@@ -1674,6 +1703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.readOnly = conversation.agentDeleted === true;
     this.openedConversation = conversation;
     this.interactionId = saved.interactionId;
+    this.attachments = this.context.globalState.get<ChatAttachmentDescriptor[]>(this.attachmentKey()) ?? [];
     this.syncConversationWatch();
     this.messages = historyTurnMessages(turns, name);
     this.screen = 'chat';
@@ -1758,6 +1788,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (notification.method === 'chat/event') {
       const params = notification.params as ChatEventNotification;
       if (params?.streamId !== this.streamId) return;
+      if (confirmsChatDispatch(params.event.kind)) this.acceptDraft?.();
       this.applyEvent(params.event);
       return;
     }
@@ -1965,6 +1996,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     else if (data.type === 'pickThinking') void this.pickThinking();
     else if (data.type === 'removeAttachment' && typeof data.id === 'string') {
       this.attachments = this.attachments.filter((item) => item.attachment_id !== data.id);
+      this.saveAttachments();
       this.postState();
     }
     else if (data.type === 'showConversations') void this.showConversations();
@@ -2177,9 +2209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     });
     const agents = agentSection(this.agentsWithChats(), this.agentCount, now);
     const state: ChatViewState = {
-      draftKey: this.auth?.authenticated && this.auth.user && agent
-        ? JSON.stringify([this.auth.serverUrl, this.auth.profile, this.auth.user.userId, agent.workflowId, this.interactionId || 'new'])
-        : undefined,
+      draftKey: this.composerKey(this.screen === 'start' ? 'start' : 'chat'),
       screen: this.screen,
       profiles: this.profiles,
       auth: this.auth,

@@ -1497,7 +1497,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (!this.auth?.authenticated || !this.auth.user) return undefined;
     const account = [this.auth.serverUrl, this.auth.profile, this.auth.user.userId];
     if (screen === 'start') return JSON.stringify([...account, 'start', this.start.agentId || '']);
-    if (this.selectedAgent) return JSON.stringify([...account, this.selectedAgent.workflowId, room || 'new']);
+    if (this.selectedAgent) return JSON.stringify([...account, this.selectedAgent.workflowId, room || this.modelTarget() || 'new']);
     return undefined;
   }
 
@@ -1688,8 +1688,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       .catch(() => undefined);
     if (!snapshot) return false;
     const turns = snapshot.turns ?? [];
-    // 돌고 있지도 않고 남긴 것도 없는 대화는 되살릴 값이 없다.
-    if (!snapshot.running && turns.length === 0) return false;
+    const account = this.auth;
+    const fileScope = account?.authenticated && account.user && JSON.stringify([
+      account.serverUrl, account.profile, account.user.userId, saved.workflowId, saved.interactionId,
+    ]);
+    const savedFiles = fileScope ? this.context.globalState.get<ChatAttachmentDescriptor[]>('chat.attachments.' + fileScope) : undefined;
+    if (!snapshot.running && turns.length === 0 && !savedFiles?.length) return false;
     const conversation =
       listed ??
       conversationStub({

@@ -1699,3 +1699,20 @@ test('생성물 검증은 IPC와 실제 파일 읽기 모두 같은 100MiB 상�
   assert.match(preload, /opts\?: \{ preview\?: boolean; maxBytes\?: number \}/)
   assert.equal((files.match(/maxBytes: GENERATED_CONTENT_MEDIA_MAX_BYTES/g) ?? []).length, 2)
 })
+
+test('composer receipt survives switching the foreground session and fires only on server evidence', () => {
+  const { store, streams } = makeStore()
+  const key = store.openNew(agent('A'))
+  let accepted = 0
+  const send = () => store.send(key, 'draft', null, [], [], undefined, {onAccepted: () => { accepted++ }})
+  send()
+  streams[0].onEvent({kind: 'error', detail: 'offline'})
+  assert.equal(accepted, 0)
+  send()
+  store.openNew(agent('B'))
+  streams[0].onEvent({kind: 'text', content: 'old turn'})
+  assert.equal(accepted, 0)
+  streams[1].onEvent({kind: 'execution_io', executionIoId: 1})
+  streams[1].onEvent({kind: 'text', content: 'ok'})
+  assert.equal(accepted, 1)
+})

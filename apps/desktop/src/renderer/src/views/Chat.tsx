@@ -12,6 +12,9 @@
  * Node-agnostic: works for agent_geny / agent_xgen because the
  * store drives the single execute-stream endpoint.
  */
+import { draftKey } from '@dex/protocol';
+import { attachmentStorage } from './attachment-storage';
+import { useDraft } from './use-draft';
 import { startProcessedCapture, pcmWav, type ProcessedCapture } from '../voice/processed-capture';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { xgen, copyText } from '../bridge';
@@ -367,12 +370,13 @@ export const Chat: React.FC<{
   session: SessionState;
   /** 로그인 사용자 표시 이름 — Teams 로 공유할 때 낙관적 렌더에 쓴다. */
   myName: string;
+  draftScope: string;
   mcpDebug?: boolean;
   /** 헤더 [...] 메뉴 → 에이전트 뷰어 탭을 연다 (메모리/작업/도구/스토리지/전체로그). */
   onOpenViewer?: (sub: AgentViewerSub) => void;
   /** 에이전트 작업 공간 파일을 파일 뷰어 탭으로 연다 (답변 아래 "이 답변에서 만든 파일"). */
   onOpenFile?: (workflowId: string, rel: string, name: string) => void;
-}> = ({ session, myName, mcpDebug = false, onOpenViewer, onOpenFile }) => {
+}> = ({ session, myName, draftScope, mcpDebug = false, onOpenViewer, onOpenFile }) => {
   const { agent } = session;
   const messages = session.messages;
   const lastAssistantIndex = messages.reduce((at, msg, idx) => (msg.role === 'assistant' ? idx : at), -1);
@@ -401,7 +405,7 @@ export const Chat: React.FC<{
     if (!busy) peekIdeStore(session.key)?.notifyRemoteChange();
   }, [busy, session.key]);
 
-  const [input, setInput] = useState('');
+  const [input, setInput] = useDraft<string>(draftKey(draftScope, agent.workflowId, session.interactionId, 'text'), '');
   // [정지] 로 끝난 턴에 들어가지 못한 추가 지시 — 입력창에 되돌린다(보내지 않는다).
   const steerReturn = session.steerReturn;
   useEffect(() => {
@@ -412,10 +416,11 @@ export const Chat: React.FC<{
   const voiceInputTracker = useMemo(createVoiceInputTracker, []);
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
-  const [stagedImages, setStagedImages] = useState<StagedChatImage[]>([]);
+  const [stagedImages, setStagedImages] = useDraft<StagedChatImage[]>(draftKey(draftScope, agent.workflowId, session.interactionId, 'files'), [], attachmentStorage);
   const activeSessionKey = useRef(session.key);
   activeSessionKey.current = session.key;
-  const stagedImagesRef = useRef<StagedChatImage[]>([]);
+  const stagedImagesRef = useRef(stagedImages);
+  stagedImagesRef.current = stagedImages;
   const browserSelections = useBrowserSelections(session.key);
   // 에이전트가 사이트 확인창의 확정 버튼을 누르기 전에 묻는 카드(main browser-confirm).
   const confirms = useBrowserConfirms(session.interactionId, agent.workflowId);
@@ -719,7 +724,7 @@ export const Chat: React.FC<{
   const replaceStagedImages = useCallback((next: StagedChatImage[]) => {
     stagedImagesRef.current = next;
     setStagedImages(next);
-  }, []);
+  }, [setStagedImages]);
 
   const addImageFiles = useCallback(
     async (files: File[]) => {

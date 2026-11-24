@@ -166,6 +166,7 @@ interface AgentDrill {
 }
 
 interface ChatViewState {
+  draftKey?: string;
   screen: ViewScreen;
   profiles: ProfileSummary[];
   auth?: AuthStatus;
@@ -2176,6 +2177,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     });
     const agents = agentSection(this.agentsWithChats(), this.agentCount, now);
     const state: ChatViewState = {
+      draftKey: this.auth?.authenticated && this.auth.user && agent
+        ? JSON.stringify([this.auth.serverUrl, this.auth.profile, this.auth.user.userId, agent.workflowId, this.interactionId || 'new'])
+        : undefined,
       screen: this.screen,
       profiles: this.profiles,
       auth: this.auth,

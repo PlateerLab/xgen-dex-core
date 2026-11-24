@@ -234,12 +234,22 @@
     policyTimers[scope] = window.setTimeout(() => post('checkInput', { scope, text }), state.inputCheckDelayMs || 350);
   }
 
+  let composerKey;
+  function saveComposer() {
+    if (!composerKey) return;
+    try {
+      if (elements.input.value) localStorage.setItem(composerKey, elements.input.value);
+      else localStorage.removeItem(composerKey);
+    } catch { /* storage unavailable in this webview */ }
+  }
+  elements.input.addEventListener('input', saveComposer);
   function send() {
     const text = elements.input.value.trim();
     if ((!text && !(state.attachments || []).length) || state.running || !state.agent || state.readOnly) return;
     if (policyBlocked('chat', text)) return;
     post('send', { text });
     elements.input.value = '';
+    saveComposer();
     renderPolicy('chat');
   }
 
@@ -1799,6 +1809,12 @@
     }
     if (event.data?.type !== 'state') return;
     state = event.data.state;
+    const key = state.screen === 'chat' && state.draftKey ? 'xgen:draft:' + state.draftKey : undefined;
+    if (composerKey !== key) {
+      composerKey = key;
+      elements.input.value = '';
+      try { if (key) elements.input.value = localStorage.getItem(key) || ''; } catch {}
+    }
     // 목록 화면을 떠나면 검색 창도 닫는다.
     if (searchBox && state.screen !== 'conversations') closeSearch();
     render();

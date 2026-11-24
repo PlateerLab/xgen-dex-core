@@ -37,7 +37,7 @@ export function fileTooLargeText(name: string, fromDisk: boolean): string {
 /** 디스크에 있는 File 이면 preload 의 표, 아니면 null(브리지가 없는 시험·옛 preload 도 null). */
 function stageOnDisk(file: File): string | null {
   try {
-    return xgen?.files?.stage?.(file) ?? null;
+    return xgen?.files?.stage?.(file, true) ?? null;
   } catch {
     return null;
   }

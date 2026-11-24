@@ -19,6 +19,9 @@
  * 이 화면을 연 대화에 폴더가 연결돼 있으면 새 대화도 그 폴더로 시작한다(같은 작업 공간에서 새 대화). 무엇을 잇는지
  * 입력창 위에 보이고 빼낼 수 있다. 경로는 main 이 그 대화의 연결에서만 옮긴다(chatFolders.inherit).
  */
+import { draftKey } from '@dex/protocol';
+import { attachmentStorage } from './attachment-storage';
+import { useDraft } from './use-draft';
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, AgentCreateOptions } from '@dex/protocol';
 import { xgen } from '../bridge';
@@ -57,10 +60,12 @@ const START_VOICE_KEY = 'start-chat';
 
 export function StartChat({
   onStarted,
+  draftScope,
   voiceKey = 'start:agent-create',
   fromInteractionId = null,
 }: {
   /** 대화가 열렸다 — 그 대화 세션 키. */
+  draftScope: string;
   onStarted: (sessionKey: string) => void;
   /** 계속 듣기를 맡을 때의 이름(voice-loop-owner). */
   voiceKey?: string;
@@ -77,12 +82,13 @@ export function StartChat({
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [advanced, setAdvanced] = useState(false);
   const [nameCheck, setNameCheck] = useState<{ name: string; taken: boolean } | null>(null);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useDraft<string>(draftKey(draftScope, 'start', voiceKey, choice), '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameAlert, setNameAlert] = useState(false);
-  const [staged, setStaged] = useState<StagedChatImage[]>([]);
-  const stagedRef = useRef<StagedChatImage[]>([]);
+  const [staged, setStaged] = useDraft<StagedChatImage[]>(draftKey(draftScope, 'start', voiceKey, choice, 'files'), [], attachmentStorage);
+  const stagedRef = useRef(staged);
+  stagedRef.current = staged;
   const [preparing, setPreparing] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const dragDepth = useRef(new DropTracker());
@@ -230,7 +236,7 @@ export function StartChat({
   const replaceStaged = useCallback((next: StagedChatImage[]) => {
     stagedRef.current = next;
     setStaged(next);
-  }, []);
+  }, [setStaged]);
 
   const addFiles = useCallback(
     async (files: File[]) => {
@@ -368,6 +374,8 @@ export function StartChat({
           .catch(() => undefined);
       }
       sessionStore.send(key, text, null, files);
+      setInput('');
+      replaceStaged([]);
       // 이 화면이 듣고 있었으면 연 대화가 이어 듣는다.
       voiceLoopOwner.pass(voiceKey, key);
       onStarted(key);
@@ -376,7 +384,7 @@ export function StartChat({
     } finally {
       if (alive.current) setBusy(false);
     }
-  }, [busy, preparing, lockReason, explainLock, input, isNew, name, nameTaken, options, optionsError, provider, model, settings, selectedAgent, onStarted, policy, fromInteractionId, folders, voiceKey]);
+  }, [busy, preparing, lockReason, explainLock, input, isNew, name, nameTaken, options, optionsError, provider, model, settings, selectedAgent, onStarted, policy, fromInteractionId, folders, voiceKey, setInput, replaceStaged]);
 
   // 계속 듣기 — 대화 화면에서 켜 둔 채 이 화면이 열리면 이어 듣는다. 들은 말이 첫 메시지다.
   const streamVoice = useVoiceStreamAvailable();

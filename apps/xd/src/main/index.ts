@@ -44,7 +44,7 @@ ensureLayout(layout);
 // userData 를 루트 안으로 — 단일 실행 잠금이 userData 에 있으므로 "루트 하나에 앱 하나" 가 된다.
 app.setPath('userData', layout.electron);
 configureNativeFsBinding(join(__dirname, '../native', process.platform + '-' + process.arch, 'native-fs.node'));
-const privateStage = join(layout.state, 'native-stage');
+const privateStage = join(layout.electron, 'native-stage');
 mkdirSync(privateStage, { recursive: true, mode: 0o700 });
 configureNativeFsStage(privateStage);
 

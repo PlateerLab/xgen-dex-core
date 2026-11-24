@@ -1,4 +1,5 @@
 import { resolve } from 'path';
+import { copyNativeAssets } from '../../scripts/native-assets.mjs';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 // 엔진의 내장 bash 해석기(just-bash)는 번들에 녹이고, 이 목록의 패키지만 뺀다(Dex 와 같은 목록).
@@ -20,6 +21,7 @@ const dexAliases = [
   { find: '@dex/ide/ide.css', replacement: resolve(__dirname, '../../packages/ide/src/ide.css') },
   { find: /^@dex\/(protocol|engine|rpc|ide)\/(.*)$/, replacement: resolve(__dirname, '../../packages/$1/src/$2.ts') },
   { find: '@dex/protocol', replacement: resolve(__dirname, '../../packages/protocol/src/index.ts') },
+  { find: '@dex/native-fs', replacement: resolve(__dirname, '../../packages/native-fs/src/index.ts') },
   { find: '@dex/engine', replacement: resolve(__dirname, '../../packages/engine/src/index.ts') },
   { find: '@dex/rpc', replacement: resolve(__dirname, '../../packages/rpc/src/index.ts') },
   { find: '@dex/ide', replacement: resolve(__dirname, '../../packages/ide/src/index.ts') },
@@ -37,7 +39,10 @@ const reactAliases = [
 export default defineConfig({
   main: {
     resolve: { alias: dexAliases },
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), {
+      name: 'xd-native-assets',
+      closeBundle: () => copyNativeAssets(resolve(__dirname, 'out/native'), false),
+    }],
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') },

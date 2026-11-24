@@ -336,7 +336,7 @@ test('작업 공간 IDE: 에이전트가 쓴 파일을 열어 고쳐 저장하�
   // 마크다운은 그린 쪽(미리보기 — Dex 의 뷰어)부터 보인다
   await win.locator('.fv-root', { hasText: 'alpha beta' }).waitFor({ timeout: 30_000 });
   await shot(win, '15-ide-preview');
-  await win.getByRole('button', { name: '편집', exact: true }).click();
+  await win.getByTitle('편집기로 고치기', { exact: true }).click();
   const editor = win.locator('.monaco-editor').first();
   await editor.waitFor({ timeout: 60_000 });
   await win.locator('.monaco-editor .view-lines', { hasText: 'alpha beta' }).waitFor();

@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { folderId } from '../src/shared/folder-id';
 import { decodeText, expand, globMatcher, IdeService, replace, replaceText, search, searchRegExp, searchText, tree } from '../src/main/ide-service';
+
+configureNativeFsStage(mkdtempSync(join(tmpdir(), 'xd-ide-stage-')));
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'xd-ide-'));

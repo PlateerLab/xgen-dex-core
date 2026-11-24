@@ -5,6 +5,7 @@
  * 잠금. 루트 폴더와 그 아래 구조는 data-root.ts 가 정한다.
  */
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { configureNativeFsBinding, configureNativeFsStage } from '@dex/engine/rooted-fs';
 import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -42,6 +43,10 @@ const layout = rootLayout(chosen.root);
 ensureLayout(layout);
 // userData 를 루트 안으로 — 단일 실행 잠금이 userData 에 있으므로 "루트 하나에 앱 하나" 가 된다.
 app.setPath('userData', layout.electron);
+configureNativeFsBinding(join(__dirname, '../native', process.platform + '-' + process.arch, 'native-fs.node'));
+const privateStage = join(layout.state, 'native-stage');
+mkdirSync(privateStage, { recursive: true, mode: 0o700 });
+configureNativeFsStage(privateStage);
 
 function isHttps(url: string): boolean {
   try {

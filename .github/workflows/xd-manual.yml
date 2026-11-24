@@ -37,6 +37,7 @@ jobs:
           path: apps/xd/engine/.cache/python
           key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
       - run: npm ci --no-audit --no-fund
+      - run: npm --workspace @dex/native-fs run build
       # 화면 코드가 Dex 의 의존(react 등)을 쓴다. Dex 의 Electron 은 여기서 쓰지 않는다.
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
         env:
@@ -135,6 +136,7 @@ jobs:
           path: apps/xd/engine/.cache/python
           key: xd-python-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/xd/engine/bundle/bundle.json') }}
       - run: npm ci --no-audit --no-fund
+      - run: npm --workspace @dex/native-fs run build
       - run: npm --prefix apps/desktop ci --no-audit --no-fund
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'

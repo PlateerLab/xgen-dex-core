@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { draftField, draftKey, type DeviceDraftStorage } from '../src/device-draft';
+import { confirmsChatDispatch, draftField, draftKey, type DeviceDraftStorage } from '../src/device-draft';
 
 function device(): DeviceDraftStorage {
   const data = new Map<string, string>();
@@ -32,4 +32,17 @@ test('late mobile read cannot overwrite new input', async () => {
   field.set('edited');
   resolve('"old"'); await Promise.resolve();
   assert.equal(field.get(), 'edited');
+});
+
+test('late receipt targets the original device field and preserves a newer edit', () => {
+  const store = device();
+  const first = draftField<string>(store, 'room', '');
+  first.set('sent');
+  const reopened = draftField<string>(store, 'room', '');
+  reopened.set('next draft');
+  first.set(current => current === 'sent' ? '' : current);
+  assert.equal(reopened.get(), 'next draft');
+  assert.equal(store.read('room'), '"next draft"');
+  for (const kind of ['error', 'detached', 'end', 'status', 'queued']) assert.equal(confirmsChatDispatch(kind), false);
+  for (const kind of ['text', 'tool', 'execution_io']) assert.equal(confirmsChatDispatch(kind), true);
 });

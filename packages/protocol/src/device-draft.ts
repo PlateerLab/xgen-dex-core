@@ -8,10 +8,33 @@ export function draftKey(...parts: (string | number)[]): string {
   return 'xgen:draft:v1:' + JSON.stringify(parts);
 }
 
-export function draftField<T extends string | unknown[]>(storage: DeviceDraftStorage, key: string, empty: T) {
+type DraftValue = string | unknown[];
+type Field<T extends DraftValue> = ReturnType<typeof createField<T>>;
+// An in-flight acknowledgement and a reopened editor must see the same value.
+const scopes = new WeakMap<DeviceDraftStorage, Map<string, { deref(): Field<DraftValue> | undefined }>>();
+
+export function draftField<T extends DraftValue>(storage: DeviceDraftStorage, key: string, empty: T): Field<T> {
+  let entries = scopes.get(storage);
+  if (!entries) scopes.set(storage, entries = new Map());
+  const existing = entries.get(key)?.deref();
+  if (existing) return existing as Field<T>;
+  const field = createField(storage, key, empty);
+  const shared = field as Field<DraftValue>;
+  for (const [name, ref] of entries) if (!ref.deref()) entries.delete(name);
+  if (typeof WeakRef === 'function') entries.set(key, new WeakRef(shared));
+  else {
+    // Older mobile engines lack weak references. Bound their resident cache.
+    if (entries.size >= 64) entries.delete(entries.keys().next().value!);
+    entries.set(key, { deref: () => shared });
+  }
+  return field;
+}
+
+function createField<T extends DraftValue>(storage: DeviceDraftStorage, key: string, empty: T) {
   let value = empty;
   let loaded = false;
   let edited = false;
+  let writing: Promise<void> | undefined;
   const listeners = new Set<() => void>();
   function restore(raw: string | null) {
     if (!raw || edited) return;
@@ -42,10 +65,20 @@ export function draftField<T extends string | unknown[]>(storage: DeviceDraftSto
       value = typeof next === 'function' ? next(value) : next;
       edited = true;
       try {
-        const write = storage.write(key, value.length ? JSON.stringify(value) : null);
-        if (write) void write.catch(() => console.warn('Could not save the local chat draft'));
+        const raw = value.length ? JSON.stringify(value) : null;
+        const write = writing ? writing.then(() => storage.write(key, raw)) : storage.write(key, raw);
+        if (write) {
+          const done = write.catch(() => console.warn('Could not save the local chat draft'));
+          writing = done;
+          void done.then(() => { if (writing === done) writing = undefined; });
+        }
       } catch { console.warn('Could not save the local chat draft'); }
       for (const notify of listeners) notify();
     },
   };
+}
+
+/** Only events produced by an admitted execution can consume a device draft. */
+export function confirmsChatDispatch(kind: string): boolean {
+  return kind === 'execution_io' || kind === 'text' || kind === 'tool' || kind === 'generated_content';
 }

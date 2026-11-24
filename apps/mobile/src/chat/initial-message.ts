@@ -13,6 +13,7 @@ export interface InitialMessage {
   workflowId: string;
   interactionId: string;
   text: string;
+  onAccepted?: () => void;
 }
 
 let seq = 0;

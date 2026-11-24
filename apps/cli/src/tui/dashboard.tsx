@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { draftStorage } from './draft-storage';
-import { draftField, draftKey } from '@dex/protocol';
+import { localDraftStorage } from './draft-storage';
+import { confirmsChatDispatch, draftField, draftKey } from '@dex/protocol';
 import { randomUUID } from 'node:crypto';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
@@ -1241,12 +1241,9 @@ export function Dashboard(props: {
         localFolders: defaultWorkingFolders(),
       });
       if (!here()) return;
-      setInput('');
       setScrollUp(0);
       dispatch({ type: 'turn_started', interactionId: resolved.interactionId, input: text });
       attachmentEpoch.current += 1;
-      setAttachments([]);
-      setAttachmentInteractionId('');
       setAttachmentNotice('');
       // 방금 말한 대화는 목록 맨 위로, 그 에이전트 줄도 맨 위로. 처음 말한 대화면 서버가 알기 전이라
       // 여기서 한 줄을 세운다(그 에이전트의 대화 수도 하나 는다).
@@ -1286,7 +1283,15 @@ export function Dashboard(props: {
       const active = new AbortController();
       controller.current = active;
       let detached = false;
+      let accepted = false;
       for await (const event of props.engine.chat(resolved, active.signal)) {
+        if (!accepted && confirmsChatDispatch(event.kind)) {
+          accepted = true;
+          setInput(current => current.trim() === text ? '' : current);
+          const sent = new Set(attachments.map(item => item.attachment_id));
+          setAttachments(current => current.filter(item => !sent.has(item.attachment_id)));
+          setAttachmentInteractionId(current => current === attachmentInteractionId ? '' : current);
+        }
         if (event.kind === 'detached') detached = true;
         if (here()) dispatch({ type: 'event_received', event });
       }
@@ -1302,8 +1307,6 @@ export function Dashboard(props: {
       if (controller.current?.signal.aborted) dispatch({ type: 'turn_cancelled' });
       else {
         if (attachments.length > 0) {
-          setAttachments(attachments);
-          setAttachmentInteractionId(chat.interactionId || attachmentInteractionId || modelTarget);
           setAttachmentNotice(`${attachments.length}개 파일을 다시 보낼 수 있습니다.`);
         }
         dispatch({ type: 'turn_failed', message: publicError(error).message });
@@ -1707,6 +1710,8 @@ export function Dashboard(props: {
                 ],
           )
         }
+        draftText={input}
+        onDraftChange={setInput}
         onStart={startChat}
       />
     ) : (
@@ -1803,6 +1808,7 @@ export function Dashboard(props: {
 
 
 function useDraft<T extends string | unknown[]>(key: string, empty: T) {
-  const field = useMemo(() => draftField(draftStorage, key, empty), [key]);
+  const storage = localDraftStorage();
+  const field = useMemo(() => draftField(storage, key, empty), [storage, key]);
   return [useSyncExternalStore(field.subscribe, field.get), field.set] as const;
 }

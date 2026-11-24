@@ -235,21 +235,21 @@
   }
 
   let composerKey;
+  let composerElement = elements.input;
   function saveComposer() {
     if (!composerKey) return;
     try {
-      if (elements.input.value) localStorage.setItem(composerKey, elements.input.value);
+      if (composerElement.value) localStorage.setItem(composerKey, composerElement.value);
       else localStorage.removeItem(composerKey);
     } catch { /* storage unavailable in this webview */ }
   }
   elements.input.addEventListener('input', saveComposer);
+  elements.startInput.addEventListener('input', saveComposer);
   function send() {
     const text = elements.input.value.trim();
     if ((!text && !(state.attachments || []).length) || state.running || !state.agent || state.readOnly) return;
     if (policyBlocked('chat', text)) return;
     post('send', { text });
-    elements.input.value = '';
-    saveComposer();
     renderPolicy('chat');
   }
 
@@ -1374,7 +1374,6 @@
     if (fresh) {
       startSession = start.session;
       elements.startName.value = '';
-      elements.startInput.value = '';
       elements.startAdvanced.open = false;
       startChoicesKey = '';
       startOptionsKey = '';
@@ -1807,13 +1806,22 @@
       renderPolicy(scope);
       return;
     }
+    if (event.data?.type === 'draftAccepted' && typeof event.data.key === 'string') {
+      const key = 'xgen:draft:' + event.data.key;
+      try {
+        if (localStorage.getItem(key)?.trim() === event.data.text) localStorage.removeItem(key);
+      } catch {}
+      if (key === composerKey && composerElement.value.trim() === event.data.text) composerElement.value = '';
+      return;
+    }
     if (event.data?.type !== 'state') return;
     state = event.data.state;
-    const key = state.screen === 'chat' && state.draftKey ? 'xgen:draft:' + state.draftKey : undefined;
+    const key = (state.screen === 'chat' || state.screen === 'start') && state.draftKey ? 'xgen:draft:' + state.draftKey : undefined;
     if (composerKey !== key) {
       composerKey = key;
-      elements.input.value = '';
-      try { if (key) elements.input.value = localStorage.getItem(key) || ''; } catch {}
+      composerElement = state.screen === 'start' ? elements.startInput : elements.input;
+      composerElement.value = '';
+      try { if (key) composerElement.value = localStorage.getItem(key) || ''; } catch {}
     }
     // 목록 화면을 떠나면 검색 창도 닫는다.
     if (searchBox && state.screen !== 'conversations') closeSearch();

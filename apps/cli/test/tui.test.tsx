@@ -1,5 +1,20 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const previousDirectory = process.env.DEX_CLI_HOME;
+let directory: string;
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), 'dex-tui-device-'));
+  process.env.DEX_CLI_HOME = directory;
+});
+afterEach(() => {
+  if (previousDirectory === undefined) delete process.env.DEX_CLI_HOME;
+  else process.env.DEX_CLI_HOME = previousDirectory;
+  rmSync(directory, { recursive: true, force: true });
+});
 import { useState } from 'react';
 import { render } from 'ink-testing-library';
 import type { ProfileSummary } from '@dex/engine';

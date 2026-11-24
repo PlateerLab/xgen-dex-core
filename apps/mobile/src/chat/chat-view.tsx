@@ -167,6 +167,8 @@ export function ChatView({
   const [loadingHistory, setLoadingHistory] = useState(false);
   const scope = draftKey(client.session.serverUrl, client.session.userId, agent?.workflowId ?? '', interactionId);
   const [input, setInput] = useDraft<string>(scope + ':text', '');
+  const acceptedDraft = useRef<(() => void) | null>(null);
+  const acknowledgeDraft = () => { const done = acceptedDraft.current; acceptedDraft.current = null; done?.(); };
   const [attachments, setAttachments] = useDraft<MobileChatAttachment[]>(scope + ':files', []);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -462,14 +464,14 @@ export function ChatView({
         setRunning(false);
       },
       callbacks: {
-        onData: (text) => setMessages((prev) => appendAssistantText(prev, text)),
-        onTool: (ev) => setMessages((prev) => attachTool(prev, ev)),
+        onData: (text) => { acknowledgeDraft(); setMessages((prev) => appendAssistantText(prev, text)); },
+        onTool: (ev) => { acknowledgeDraft(); setMessages((prev) => attachTool(prev, ev)); },
         onDownload: (data) => setMessages((prev) => attachDownload(prev, data)),
         onGeneratedContent: (data) => setMessages((prev) => attachGeneratedContent(prev, data)),
         // 첫 글자 전의 준비 단계(Sandbox·워크스페이스·패키지·기억). 캐럿 대신 무엇을 기다리는지 보인다.
         onPhase: (signal) => setMessages((prev) => attachPhase(prev, signal)),
         // 이 턴의 실행 id — 같은 턴이 완결 행·이력으로 다시 와도 한 번만, 소켓 구멍도 이것으로 메운다.
-        onExecutionIo: (ioId) => setMessages((prev) => markExecutionIo(prev, ioId) ?? prev),
+        onExecutionIo: (ioId) => { acknowledgeDraft(); setMessages((prev) => markExecutionIo(prev, ioId) ?? prev); },
         onEnd: () => {
           const interrupted = stoppedRef.current;
           stoppedRef.current = false;
@@ -487,6 +489,7 @@ export function ChatView({
           });
         },
         onError: (message) => {
+          acceptedDraft.current = null;
           stoppedRef.current = false;
           setRunning(false);
           setMessages((prev) => setError(prev, describeStreamError(message)));
@@ -555,14 +558,20 @@ export function ChatView({
 
   // ── 보내기 ─────────────────────────────────────────────────
   /** 한 턴을 보낸다. 입력창에서도, 시작 화면의 첫 메시지에서도 이 길 하나로. */
-  const sendText = useCallback(async (text: string, sending: MobileChatAttachment[]): Promise<void> => {
+  const sendText = useCallback(async (text: string, sending: MobileChatAttachment[], afterAdmission?: () => void): Promise<void> => {
     if ((!text && sending.length === 0) || runningRef.current || uploadBusy.current || !chatRef.current) return;
     // 통제 정책: 막힐 글이면 보내지 않고 입력창에 되돌린다(시작 화면에서 넘어온 첫 메시지도 이 길이다).
     if (text && !(await policyRef.current.confirm(text))) {
       setInput((cur) => (cur.trim() ? cur : text));
-      setAttachments((current) => [...sending, ...current]);
       return;
     }
+    if (runningRef.current) return;
+    acceptedDraft.current = () => {
+      setInput(current => current.trim() === text ? '' : current);
+      const sent = new Set(sending.map(item => item.attachment_id));
+      setAttachments(current => current.filter(item => !sent.has(item.attachment_id)));
+      afterAdmission?.();
+    };
     setRunning(true);
     stoppedRef.current = false;
     jumpToBottom();
@@ -582,10 +591,10 @@ export function ChatView({
     } catch (e) {
       setRunning(false);
       // 올려둔 첨부는 돌려준다 — 다시 고르게 만들지 않는다.
-      setAttachments((current) => [...sending, ...current]);
+      acceptedDraft.current = null;
       setMessages((prev) => setError(prev, describeError(e)));
     }
-  }, [interactionId, jumpToBottom, setRunning]);
+  }, [interactionId, jumpToBottom, setRunning, setInput, setAttachments]);
 
   const send = useCallback(async (): Promise<void> => {
     const text = input.trim();
@@ -593,8 +602,6 @@ export function ChatView({
     // 막힐 글은 입력창을 비우지 않는다(이유는 작성기 위에 이미 서 있다).
     if (text && !(await policyRef.current.confirm(text))) return;
     const sending = [...attachments];
-    setInput('');
-    setAttachments([]);
     setAttachmentStatus('');
     await sendText(text, sending);
   }, [attachments, input, running, sendText]);
@@ -608,7 +615,8 @@ export function ChatView({
     if (!msg) return;
     initialSentRef.current?.(msg.id);
     if (s === 'connected' && !runningRef.current && !uploadBusy.current && chatRef.current) {
-      void sendText(msg.text.trim(), []);
+      setInput(cur => cur.trim() ? cur : msg.text);
+      void sendText(msg.text.trim(), [], msg.onAccepted);
       return;
     }
     // 지금 보낼 수 없다(이 에이전트는 모바일 채팅을 못 하거나 연결이 끊겼다). 적은 글은 입력창에 남긴다.

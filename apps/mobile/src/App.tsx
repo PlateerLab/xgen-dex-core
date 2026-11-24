@@ -84,6 +84,7 @@ interface OpenChatOptions {
   title?: string;
   /** 시작 화면에서 적은 첫 메시지. 채팅 소켓이 처음 붙을 때 한 번 보낸다. */
   firstMessage?: string;
+  onAccepted?: () => void;
 }
 
 /**
@@ -321,7 +322,7 @@ export default function App(): React.ReactElement {
     setActiveInteraction(iid);
     setActiveReadOnly(!!opts.readOnly);
     setActiveTitle(opts.title ?? '');
-    setInitialMessage(opts.firstMessage ? newInitialMessage(agent.workflowId, iid, opts.firstMessage) : null);
+    setInitialMessage(opts.firstMessage ? { ...newInitialMessage(agent.workflowId, iid, opts.firstMessage), onAccepted: opts.onAccepted } : null);
     setSection('chat');
     setDrawer(false);
     // 앱을 껐다 켰을 때 되찾을 자리. 되찾는 데 필요한 것은 에이전트·대화 id 뿐이다(기록만 보는 대화인지, 제목은 덤).
@@ -487,7 +488,7 @@ export default function App(): React.ReactElement {
               client={client}
               visible={section === 'start'}
               preset={startPreset}
-              onStart={(agent, text) => openChat(agent, undefined, { firstMessage: text })}
+              onStart={(agent, text, onAccepted) => openChat(agent, undefined, { firstMessage: text, onAccepted })}
             />
           </View>
           <View style={[st.section, section !== 'apps' && st.off]}>

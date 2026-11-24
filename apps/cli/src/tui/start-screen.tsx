@@ -45,6 +45,8 @@ type NameState = 'empty' | 'checking' | 'free' | 'taken' | 'unknown';
 export function StartScreen(props: {
   engine: TuiEngine;
   profile: string;
+  draftText?: string;
+  onDraftChange?: (value: string) => void;
   agents: Agent[];
   /** 이 화면이 키를 받는가. */
   focused: boolean;
@@ -79,7 +81,9 @@ export function StartScreen(props: {
   const [choice, setChoice] = useState('');
   const [cursorKey, setCursorKey] = useState('name');
   const [advanced, setAdvanced] = useState(false);
-  const [message, setMessage] = useState('');
+  const [localMessage, setLocalMessage] = useState('');
+  const message = props.draftText ?? localMessage;
+  const setMessage = props.onDraftChange ?? setLocalMessage;
   const [nameState, setNameState] = useState<NameState>('empty');
   /** 잠긴 채로 보내려 했다: 무엇이 모자란지 보여 준다. */
   const [tried, setTried] = useState(false);

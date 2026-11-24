@@ -1,3 +1,4 @@
+import { confirmsChatDispatch } from '@dex/protocol/device-draft';
 import { stripVoiceContext } from '@dex/protocol/voice-context';
 /**
  * SessionStore — the connector's multi-session runtime, lifted OUT of the React
@@ -1258,7 +1259,7 @@ export class SessionStore {
     browserSelections: BrowserSelectionResult[] = [],
     onUploadError?: () => void,
     /** 음성으로 보낸 턴이면 음성 대화 지침(사용자 문장 앞 봉투) — 비우면 붙이지 않는다. */
-    opts?: { voiceStyle?: string },
+    opts?: { voiceStyle?: string; onAccepted?: () => void },
   ): void {
     const s = this.map.get(key);
     const rt = this.rt.get(key);
@@ -1341,7 +1342,15 @@ export class SessionStore {
           input: preparedInput,
           interactionId: s.interactionId,
         },
-        (ev) => { if (rt.turnToken === turnToken) this.onEvent(key, ev); },
+        (ev) => {
+          if (rt.turnToken !== turnToken) return;
+          if (opts?.onAccepted && confirmsChatDispatch(ev.kind)) {
+            const accept = opts.onAccepted;
+            opts.onAccepted = undefined;
+            accept();
+          }
+          this.onEvent(key, ev);
+        },
         { browserSelections, voiceStyle: opts?.voiceStyle },
       );
       rt.cancel = handle.cancel;

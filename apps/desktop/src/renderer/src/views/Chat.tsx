@@ -12,11 +12,11 @@
  * Node-agnostic: works for agent_geny / agent_xgen because the
  * store drives the single execute-stream endpoint.
  */
-import { draftKey } from '@dex/protocol';
+import { deviceOutbox, draftKey, newRequestId } from '@dex/protocol';
 import { attachmentStorage } from './attachment-storage';
 import { useDraft } from './use-draft';
 import { startProcessedCapture, pcmWav, type ProcessedCapture } from '../voice/processed-capture';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { xgen, copyText } from '../bridge';
 import { useChatInputCheck } from './use-chat-input-check';
 import { sessionStore } from '../session';
@@ -405,7 +405,7 @@ export const Chat: React.FC<{
     if (!busy) peekIdeStore(session.key)?.notifyRemoteChange();
   }, [busy, session.key]);
 
-  const [input, setInput] = useDraft<string>(draftKey(draftScope, agent.workflowId, session.interactionId, 'text'), '');
+  const [input, setInput, flushInput] = useDraft<string>(draftKey(draftScope, agent.workflowId, session.interactionId, 'text'), '');
   // [정지] 로 끝난 턴에 들어가지 못한 추가 지시 — 입력창에 되돌린다(보내지 않는다).
   const steerReturn = session.steerReturn;
   useEffect(() => {
@@ -416,7 +416,13 @@ export const Chat: React.FC<{
   const voiceInputTracker = useMemo(createVoiceInputTracker, []);
   // 로컬 그림 첨부 — 서버에 미리 업로드하지 않고, 전송 순간 멀티모달 content 로
   // 함께 보낸다. 대기 중인 data URL 은 이 Chat 컴포넌트와 열린 세션에만 남는다.
-  const [stagedImages, setStagedImages] = useDraft<StagedChatImage[]>(draftKey(draftScope, agent.workflowId, session.interactionId, 'files'), [], attachmentStorage);
+  const [stagedImages, setStagedImages, flushImages] = useDraft<StagedChatImage[]>(draftKey(draftScope, agent.workflowId, session.interactionId, 'files'), [], attachmentStorage);
+  const outbox = useMemo(() => deviceOutbox<StagedChatImage>(
+    attachmentStorage, draftKey(draftScope, agent.workflowId, session.interactionId, 'pending'),
+  ), [draftScope, agent.workflowId, session.interactionId]);
+  const pendingSends = useSyncExternalStore(outbox.subscribe, outbox.snapshot);
+  useEffect(() => outbox.watch((workflow, room, ids) => xgen.history.acceptedRequests(workflow, room, ids)), [outbox]);
+  const submitting = useRef(new Set<string>());
   const activeSessionKey = useRef(session.key);
   activeSessionKey.current = session.key;
   const stagedImagesRef = useRef(stagedImages);
@@ -970,34 +976,47 @@ export const Chat: React.FC<{
         width: selection.image.width,
         height: selection.image.height,
       }));
-      // 보낼 때는 항상 맨 아래로 내려가 답이 나오는 것을 보여 준다(위를 읽던 중이었어도).
-      jumpToBottom(false);
-      // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
-      // 답변은 백그라운드에서 계속 도착한다.
-      sessionStore.send(
-        session.key,
-        text,
-        shot,
-        [...images, ...selectionImages],
-        selections,
-        () => {
-          if (activeSessionKey.current !== session.key) return;
-          setInput((current) => current || text);
-          const existing = stagedImagesRef.current;
-          replaceStagedImages([...images.filter((item) => !existing.some((old) => old.id === item.id)), ...existing]);
-        },
-        {
-          voiceStyle: voice ? voiceStyleRef.current : undefined,
-          onAccepted: consumeDraft ? () => {
-            setInput(current => current.trim() === text ? '' : current);
-            const sent = new Set(images.map(item => item.id));
-            setStagedImages(current => current.filter(item => !sent.has(item.id)));
-            for (const selection of selections) browserSelectionStore.remove(session.key, selection.id);
-          } : undefined,
-        },
-      );
+      if (activeSessionKey.current !== session.key) return;
+      if (submitting.current.has(session.key)) return;
+      submitting.current.add(session.key);
+      try {
+        const requestId = newRequestId();
+        const files = [...images, ...selectionImages];
+        try {
+          await outbox.stage({id: requestId, workflowId: agent.workflowId, interactionId: session.interactionId, text, files});
+        } catch {
+          setImageNotice('이 기기에 전송 내용을 보관하지 못했습니다. 다시 시도해 주세요.');
+          return;
+        }
+        if (activeSessionKey.current !== session.key) return;
+        if (consumeDraft) {
+          setInput(current => current.trim() === text ? '' : current);
+          const sent = new Set(images.map(item => item.id));
+          setStagedImages(current => current.filter(item => !sent.has(item.id)));
+          try { await Promise.all([flushInput(), flushImages()]); }
+          catch { setImageNotice('전송 내용을 보관했습니다. 기기 저장 공간을 확인해 주세요.'); return; }
+          for (const selection of selections) browserSelectionStore.remove(session.key, selection.id);
+        }
+        // 보낼 때는 항상 맨 아래로 내려가 답이 나오는 것을 보여 준다(위를 읽던 중이었어도).
+        jumpToBottom(false);
+        // 전송·스트림 수명은 스토어가 소유한다 — 이 뷰가 언마운트돼도(세션 전환)
+        // 답변은 백그라운드에서 계속 도착한다.
+        sessionStore.send(
+          session.key,
+          text,
+          shot,
+          [...images, ...selectionImages],
+          selections,
+          undefined,
+          {
+            requestId,
+            voiceStyle: voice ? voiceStyleRef.current : undefined,
+            onAccepted: () => { void outbox.remove([requestId]).catch(() => {}); },
+          },
+        );
+      } finally { submitting.current.delete(session.key); }
     },
-    [session.key, screenCaptureOn, jumpToBottom, setInput, setStagedImages, replaceStagedImages],
+    [session.key, session.interactionId, agent.workflowId, outbox, screenCaptureOn, jumpToBottom, setInput, setStagedImages, flushInput, flushImages],
   );
 
   const send = useCallback(
@@ -2167,6 +2186,19 @@ export const Chat: React.FC<{
             if (files.length > 0) void addImageFiles(files);
           }}
         />
+        {!busy && pendingSends.length > 0 && (
+          <details><summary>접수 미확인 {pendingSends.length}건</summary>
+            {pendingSends.map(row => <div key={row.id}>
+              {row.text.slice(0, 80) || '첨부 파일'}
+              <button type="button" disabled={!!input || !!stagedImages.length || !!browserSelections.length} onClick={() => {
+                setInput(row.text);
+                setStagedImages(row.files);
+                void Promise.all([flushInput(), flushImages()]).then(() => outbox.remove([row.id])).catch(() => {});
+              }}>입력창으로 가져오기</button>
+              <button type="button" onClick={() => void outbox.remove([row.id]).catch(() => {})}>보관본 삭제</button>
+            </div>)}
+          </details>
+        )}
         {stagedImages.length > 0 && (
           <div className="composer-images" aria-label={`전송 대기 파일 ${stagedImages.length}개`}>
             {stagedImages.map((image) => (

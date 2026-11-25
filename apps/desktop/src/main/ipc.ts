@@ -136,6 +136,7 @@ export const CHANNELS = {
   historyTurns: 'history:turns',
   /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 [진행 중] 복원. */
   historySnapshot: 'history:snapshot',
+  historyReceipts: 'history:receipts',
   historyConversations: 'history:conversations',
   // 대화 목록(2026-10-09): 마지막으로 말한 순서로 한 쪽씩, 이름 바꾸기·지우기·사라진 에이전트 대화 정리.
   historyConversationPage: 'history:conversation-page',

@@ -329,6 +329,12 @@ function steersOf(raw: unknown): { steers?: HistorySteer[] } {
 export class HistoryApi {
   constructor(private http: HttpClient) {}
 
+  async acceptedRequests(workflowId: string, interactionId: string, ids: string[]): Promise<string[]> {
+    const query = new URLSearchParams({workflow_id:workflowId, interaction_id:interactionId, receipt_ids:ids.join(',')});
+    const result = await this.http.get<{accepted_request_ids?: string[]}>(`/api/chat/io-logs?${query}`);
+    return result.accepted_request_ids ?? [];
+  }
+
   /** Ordered turns of one conversation. */
   async turns(workflowId: string, interactionId: string, workflowName?: string): Promise<HistoryTurn[]> {
     return (await this.snapshot(workflowId, interactionId, workflowName)).turns;

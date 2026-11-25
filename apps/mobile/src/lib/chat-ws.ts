@@ -146,6 +146,7 @@ export interface ChatWsHandle {
     input: string,
     attachments?: MobileChatAttachment[],
     localFolders?: ChatWsLocalFolder[],
+    requestId?: string,
   ): Promise<void>;
   stop(): void;
   close(): void;
@@ -364,7 +365,6 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
    * 구독 확립 때 받은 번호 기준선. 이 번호까지의 진행은 구독 응답의 진행분(live)에 이미 들어 있다 — 그 뒤에
    * 도착한 같은 번호의 진행 프레임을 또 이어 붙이면 글이 두 번 찍힌다.
    */
-  let seqBaseline = 0;
   /** 마지막으로 무엇이든 받은 시각. */
   let lastFrameAt = now();
   /** 받은 프레임 수 — 복귀 확인이 "물은 뒤 무엇이든 왔는가" 를 시계 없이 가른다. */
@@ -552,7 +552,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       ) {
         const seq = (frame as { seq?: number }).seq;
         // 구독 응답의 진행분에 이미 든 진행이다 — 다시 이어 붙이면 글이 두 번 찍힌다.
-        if (frame.type === 'exec' && typeof seq === 'number' && seqBaseline > 0 && seq <= seqBaseline) return;
+        if (typeof seq === 'number' && seq <= lastSeq) return;
         if (typeof seq === 'number') {
           if (!(lastSeq === 0 || seq === lastSeq + 1)) opts.onPeerTurn?.({ kind: 'gap' });
           lastSeq = seq;
@@ -591,7 +591,6 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
         lastSeq = typeof (frame.data as { seq?: unknown } | undefined)?.seq === 'number'
           ? ((frame.data as { seq: number }).seq)
           : 0;
-        seqBaseline = lastSeq;
         startWatch(socket);
         // 다른 기기에서 시작한 턴이 아직 도는가, 그리고 돈다면 **어디까지 왔나**.
         // 앞의 것이 없으면 폰에서는 대화가 끝난 것처럼 보여 그 위에 새 턴을 얹게
@@ -696,6 +695,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
       input: string,
       attachments: MobileChatAttachment[] = [],
       localFolders: ChatWsLocalFolder[] = [],
+      requestId = newRequestId(),
     ): Promise<void> {
       return new Promise<void>((resolve, reject) => {
         if (!(state === 'connected' && subscribed && ws?.readyState === WebSocket.OPEN)) {
@@ -712,7 +712,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
             JSON.stringify({
               type: 'execute',
               data: {
-                client_request_id: newRequestId(),
+                client_request_id: requestId,
                 input_data: attachments.length ? { input_str: input, attachments } : input,
                 selected_files: [],
                 additional_params: {},

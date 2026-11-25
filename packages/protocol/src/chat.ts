@@ -129,6 +129,7 @@ export const TURN_EVENT_NAMES = [
   'quota_exceeded',
   'quota_warning',
   'execution_suspended',
+  'turn_accepted',
   'turn_queued',
   'turn_phase',
   'steer',

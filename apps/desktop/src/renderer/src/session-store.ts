@@ -1259,7 +1259,7 @@ export class SessionStore {
     browserSelections: BrowserSelectionResult[] = [],
     onUploadError?: () => void,
     /** 음성으로 보낸 턴이면 음성 대화 지침(사용자 문장 앞 봉투) — 비우면 붙이지 않는다. */
-    opts?: { voiceStyle?: string; onAccepted?: () => void },
+    opts?: { requestId?: string; voiceStyle?: string; onAccepted?: () => void },
   ): void {
     const s = this.map.get(key);
     const rt = this.rt.get(key);
@@ -1340,6 +1340,7 @@ export class SessionStore {
           workflowId: s.agent.workflowId,
           workflowName: s.agent.workflowName,
           input: preparedInput,
+          requestId: opts?.requestId,
           interactionId: s.interactionId,
         },
         (ev) => {

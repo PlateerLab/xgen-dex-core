@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { localDraftStorage } from './draft-storage';
-import { confirmsChatDispatch, draftField, draftKey } from '@dex/protocol';
+import { confirmsChatDispatch, deviceOutbox, draftField, draftKey } from '@dex/protocol';
 import { randomUUID } from 'node:crypto';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
@@ -241,11 +241,16 @@ export function Dashboard(props: {
   const [chat, dispatch] = useReducer(chatReducer, initialChatState);
   const scope = draftKey(props.session.serverUrl, props.session.profile, props.session.username,
     (view === 'start' ? startAgent : selected)?.workflowId ?? '', view === 'start' ? 'start' : chat.interactionId ?? '');
-  const [input, setInput] = useDraft<string>(scope + ':text', '');
+  const [input, setInput, flushInput] = useDraft<string>(scope + ':text', '');
+  const outboxKey = draftKey(props.session.serverUrl, props.session.profile, props.session.username, 'pending-sends');
+  const outbox = useMemo(() => deviceOutbox<ChatAttachmentDescriptor>(localDraftStorage(), outboxKey), [outboxKey]);
+  const pending = useSyncExternalStore(outbox.subscribe, outbox.snapshot);
+  useEffect(() => outbox.watch((wf, room, ids) => props.engine.acceptedRequests?.(wf, room, ids, props.session.profile) ?? Promise.resolve([])), [outbox, props.engine, props.session.profile]);
   const attachmentEpoch = useRef(0);
   const uploadBusy = useRef(false);
-  const [attachments, setAttachments] = useDraft<ChatAttachmentDescriptor[]>(scope + ':files', []);
-  const [attachmentInteractionId, setAttachmentInteractionId] = useDraft<string>(scope + ':attachment-room', '');
+  const submitting = useRef(new Set<string>());
+  const [attachments, setAttachments, flushFiles] = useDraft<ChatAttachmentDescriptor[]>(scope + ':files', []);
+  const [attachmentInteractionId, setAttachmentInteractionId, flushRoom] = useDraft<string>(scope + ':attachment-room', '');
   const [attachmentNotice, setAttachmentNotice] = useState('');
   // 통제 정책 [채팅 입력시 차단] 사전 검사. 걸리면 작성기가 잠기고 이유가 위에 선다.
   const policy = useChatInputPolicy(props.engine, input, selected?.workflowId, props.session.profile);
@@ -1165,6 +1170,22 @@ export function Dashboard(props: {
   const send = async (value: string, target: AgentRef | undefined = selected): Promise<void> => {
     const text = value.trim();
     if (!target || readOnly || chat.running || stopping.current || uploadBusy.current) return;
+    const recovery = /^\/(recover|discard-send) (\d+)$/.exec(text);
+    if (recovery) {
+      const row = pending.filter(item => item.workflowId === target.workflowId && item.interactionId === modelTarget)[Number(recovery[2]) - 1];
+      if (!row) { setAttachmentNotice('해당 보관본을 찾을 수 없습니다.'); return; }
+      if (recovery[1] === 'recover') {
+        if (attachments.length) { setAttachmentNotice('현재 첨부를 먼저 정리해 주세요.'); return; }
+        setInput(row.text);
+        setAttachments(row.files);
+        setAttachmentInteractionId(row.interactionId);
+      } else setInput('');
+      try {
+        await Promise.all([flushInput(), flushFiles(), flushRoom()]);
+        await outbox.remove([row.id]);
+      } catch { setAttachmentNotice('저장 공간을 확인해 주세요. 보관본을 유지했습니다.'); }
+      return;
+    }
     if (text.startsWith('/attach ')) {
       const path = text.slice('/attach '.length).trim().replace(/^['"]|['"]$/g, '');
       if (!path) return;
@@ -1227,7 +1248,11 @@ export function Dashboard(props: {
     const epoch = viewEpoch.current;
     /** 이 턴을 보낸 화면에 아직 있는가. 다른 대화로 옮겼으면 그 화면을 건드리지 않는다. */
     const here = (): boolean => viewEpoch.current === epoch;
+    const submissionKey = draftKey(target.workflowId, modelTarget ?? '');
+    if (submitting.current.has(submissionKey)) return;
+    submitting.current.add(submissionKey);
     let known = true;
+    const requestId = randomUUID();
     try {
       const resolved = await props.engine.resolveChatInput({
         profile: props.session.profile,
@@ -1236,10 +1261,19 @@ export function Dashboard(props: {
         // 새 대화면 미리 정해 둔 번호 — Ctrl+O 로 먼저 고른 모델이 첫 턴부터 붙는다.
         interactionId: modelTarget,
         input: text,
+        requestId,
         attachments,
         // TUI 를 연 폴더가 이 대화의 작업 공간이다(홈·루트에서 열었으면 없음).
         localFolders: defaultWorkingFolders(),
       });
+      if (!here()) return;
+      await outbox.stage({id: requestId, text, files: attachments, workflowId: resolved.workflowId, interactionId: resolved.interactionId});
+      if (!here()) return;
+      setInput(current => current.trim() === text ? '' : current);
+      const sent = new Set(attachments.map(item => item.attachment_id));
+      setAttachments(current => current.filter(item => !sent.has(item.attachment_id)));
+      setAttachmentInteractionId(current => current === attachmentInteractionId ? '' : current);
+      await Promise.all([flushInput(), flushFiles(), flushRoom()]);
       if (!here()) return;
       setScrollUp(0);
       dispatch({ type: 'turn_started', interactionId: resolved.interactionId, input: text });
@@ -1287,10 +1321,7 @@ export function Dashboard(props: {
       for await (const event of props.engine.chat(resolved, active.signal)) {
         if (!accepted && confirmsChatDispatch(event.kind)) {
           accepted = true;
-          setInput(current => current.trim() === text ? '' : current);
-          const sent = new Set(attachments.map(item => item.attachment_id));
-          setAttachments(current => current.filter(item => !sent.has(item.attachment_id)));
-          setAttachmentInteractionId(current => current === attachmentInteractionId ? '' : current);
+          void outbox.remove([requestId]).catch(() => {});
         }
         if (event.kind === 'detached') detached = true;
         if (here()) dispatch({ type: 'event_received', event });
@@ -1312,6 +1343,7 @@ export function Dashboard(props: {
         dispatch({ type: 'turn_failed', message: publicError(error).message });
       }
     } finally {
+      submitting.current.delete(submissionKey);
       if (here()) controller.current = null;
       // 처음 말한 대화: 이제 서버가 안다. 서버가 지은 제목·순서로 목록을 맞춘다.
       if (!known) void refreshFirstPage();
@@ -1729,6 +1761,9 @@ export function Dashboard(props: {
             viewport.current = { lineCount, height };
           }}
         />
+        {!chat.running && pending.filter(row => row.workflowId === selected?.workflowId && row.interactionId === modelTarget).map((row, index) => (
+          <Text key={row.id} color="yellow">접수 미확인 {index + 1} · {row.text.slice(0, 32) || '첨부 파일'} · /recover {index + 1} 또는 /discard-send {index + 1}</Text>
+        ))}
         {attachmentNotice ? <Text color="cyan">📎 {attachmentNotice}</Text> : null}
         {policy.notice ? (
           <Text color={policy.notice.tone === 'block' ? 'red' : 'yellow'}>
@@ -1810,5 +1845,5 @@ export function Dashboard(props: {
 function useDraft<T extends string | unknown[]>(key: string, empty: T) {
   const storage = localDraftStorage();
   const field = useMemo(() => draftField(storage, key, empty), [storage, key]);
-  return [useSyncExternalStore(field.subscribe, field.get), field.set] as const;
+  return [useSyncExternalStore(field.subscribe, field.get), field.set, field.flush] as const;
 }

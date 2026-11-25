@@ -1446,6 +1446,26 @@
   }
 
   function renderChat() {
+    const pending = byId('pending-sends');
+    pending.replaceChildren();
+    for (const item of state.running ? [] : (state.pendingSends || [])) {
+      const row = document.createElement('div');
+      row.textContent = '접수 미확인 · ' + (item.text.slice(0, 60) || '첨부 파일') + ' ';
+      for (const restore of [true, false]) {
+        const button = document.createElement('button');
+        button.textContent = restore ? '입력창으로 가져오기' : '보관본 삭제';
+        button.onclick = () => {
+          if (restore) {
+            if (composerElement.value || state.attachments?.length || !composerKey) return;
+            try { localStorage.setItem(composerKey, item.text); } catch { return; }
+            composerElement.value = item.text;
+          }
+          post('pendingAction', {id: item.id, key: state.draftKey, restore});
+        };
+        row.appendChild(button);
+      }
+      pending.appendChild(row);
+    }
     showScreen('chat');
     const agent = state.agent;
     if (!agent) {
@@ -1810,7 +1830,11 @@
       const key = 'xgen:draft:' + event.data.key;
       try {
         if (localStorage.getItem(key)?.trim() === event.data.text) localStorage.removeItem(key);
-      } catch {}
+      } catch {
+        post('draftTransferred', {id: event.data.id, saved: false});
+        return;
+      }
+      post('draftTransferred', {id: event.data.id, saved: true});
       if (key === composerKey && composerElement.value.trim() === event.data.text) composerElement.value = '';
       return;
     }

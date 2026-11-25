@@ -21,6 +21,7 @@ import type {
 } from '@dex/engine';
 
 export interface TuiEngine {
+  acceptedRequests?(wf: string, room: string, ids: string[], profile?: string): Promise<string[]>;
   listProfiles(): Promise<ProfileSummary[]>;
   setProfile(name: string, serverUrl: string): Promise<ProfileSummary>;
   useProfile(name: string): Promise<ProfileSummary>;

@@ -35,6 +35,7 @@ function createField<T extends DraftValue>(storage: DeviceDraftStorage, key: str
   let loaded = false;
   let edited = false;
   let writing: Promise<void> | undefined;
+  let persisted = Promise.resolve();
   const listeners = new Set<() => void>();
   function restore(raw: string | null) {
     if (!raw || edited) return;
@@ -49,6 +50,7 @@ function createField<T extends DraftValue>(storage: DeviceDraftStorage, key: str
   }
   return {
     get: () => value,
+    flush: () => persisted,
     subscribe(notify: () => void) {
       listeners.add(notify);
       if (!loaded) {
@@ -67,12 +69,16 @@ function createField<T extends DraftValue>(storage: DeviceDraftStorage, key: str
       try {
         const raw = value.length ? JSON.stringify(value) : null;
         const write = writing ? writing.then(() => storage.write(key, raw)) : storage.write(key, raw);
+        persisted = Promise.resolve(write);
         if (write) {
           const done = write.catch(() => console.warn('Could not save the local chat draft'));
           writing = done;
           void done.then(() => { if (writing === done) writing = undefined; });
         }
-      } catch { console.warn('Could not save the local chat draft'); }
+      } catch (error) {
+        persisted = Promise.reject(error);
+        void persisted.catch(() => console.warn('Could not save the local chat draft'));
+      }
       for (const notify of listeners) notify();
     },
   };

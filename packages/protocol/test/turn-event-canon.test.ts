@@ -40,6 +40,7 @@ function payloadFor(name: string): Record<string, unknown> {
     indication: 'ai_generated', proof: 'header.payload.signature', sha256: 'a'.repeat(64),
     content_type: 'text/plain', byte_length: 3, source_id: '12345678-1234-4123-8123-123456789abc',
   };
+  if (name === 'turn_accepted') return {request_id: 'request-id', run: 'run-id'};
   if (name === 'execution_io') return { execution_io_id: 7 };
   if (name === 'node_status') return { node_id: 'n1', status: 'running' };
   if (name === 'tool') return { event_type: 'tool_call', tool_name: 'Bash' };

@@ -624,6 +624,7 @@ test('끊긴 내 턴의 진행이 다시 붙은 소켓으로 다른 화면의 �
   // 기준선 이하의 진행은 구독 응답의 진행분에 이미 들었다 — 다시 이어 붙이지 않는다.
   second.recv({ type: 'exec', seq: 20, data: { event: 'message', data: { type: 'data', content: '중복' } } });
   second.recv({ type: 'exec', seq: 21, data: { event: 'message', data: { type: 'data', content: ' 이어서' } } });
+  second.recv({ type: 'exec', seq: 21, data: { event: 'message', data: { type: 'data', content: ' 이어서' } } });
   second.recv({ type: 'turn_ended', seq: 22, data: { io_id: 5, input: '질문', output: '여기까지 이어서' } });
   const execs = peer.filter((e) => e.kind === 'exec');
   assert.equal(execs.length, 1, '기준선 이하 진행은 버린다');

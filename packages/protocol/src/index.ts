@@ -500,3 +500,4 @@ export * from './mcp-catalog';
 export * from './device-draft';
 
 export { newRequestId } from './request-id';
+export {deviceOutbox, type DeviceOutbox, type PendingStorage, type PendingSend} from './outgoing';

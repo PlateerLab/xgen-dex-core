@@ -514,6 +514,11 @@ export class DexRpcServer {
           requiredString(params, 'interactionId'),
           optionalString(params, 'profile'),
         );
+      case 'history/receipts':
+        return this.engine.acceptedRequests(
+          requiredString(params, 'workflowId'), requiredString(params, 'interactionId'),
+          optionalStringArray(params, 'ids') ?? [], optionalString(params, 'profile'),
+        );
       case 'history/snapshot':
         return this.engine.historySnapshot(
           requiredString(params, 'workflowId'),
@@ -546,6 +551,7 @@ export class DexRpcServer {
       workflowName: optionalString(params, 'workflowName'),
       interactionId: optionalString(params, 'interactionId'),
       input: rawInput as ChatInput['input'],
+      requestId: optionalString(params, 'requestId'),
       attachments: Array.isArray(params.attachments)
         ? params.attachments.filter((item): item is NonNullable<ChatInput['attachments']>[number] =>
             !!item && typeof item === 'object' && !Array.isArray(item)) as NonNullable<ChatInput['attachments']>

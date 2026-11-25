@@ -8,5 +8,5 @@ const draftStorage: DeviceDraftStorage = {
 
 export function useDraft<T extends string | unknown[]>(key: string, empty: T, storage = draftStorage) {
   const field = useMemo(() => draftField(storage, key, empty), [key, storage]);
-  return [useSyncExternalStore(field.subscribe, field.get), field.set] as const;
+  return [useSyncExternalStore(field.subscribe, field.get), field.set, field.flush] as const;
 }

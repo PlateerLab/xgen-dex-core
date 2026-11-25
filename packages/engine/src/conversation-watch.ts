@@ -346,7 +346,8 @@ export class ConversationWatchHub {
     });
 
     ws.on('message', (raw) => {
-      if (entry.ws === ws) entry.lastFrameAt = Date.now();
+      if (entry.ws !== ws || entry.closed) return;
+      entry.lastFrameAt = Date.now();
       let frame: { type?: string; seq?: number; origin_id?: string; data?: Record<string, unknown> };
       try {
         frame = JSON.parse(String(raw));
@@ -362,6 +363,7 @@ export class ConversationWatchHub {
         || frame?.type === 'turn_ended'
         || (frame?.type === 'exec' && typeof frame.seq === 'number')
       ) {
+        if (typeof frame.seq === "number" && frame.seq <= entry.lastSeq) return;
         this.checkSeq(interactionId, entry, frame.seq);
         const d = frame.data ?? {};
         // 누가 시작한 턴인가 — 화면이 자기 스트림의 메아리를 가른다(WATCH_ORIGIN_ID 설명).

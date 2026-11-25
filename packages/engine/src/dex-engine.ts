@@ -688,6 +688,10 @@ export class DexEngine {
    * 지난 턴 + **지금 도는 턴이 있는가**. 기기를 옮겨 들어온 화면이 "진행 중" 을
    * 복원하려면 이 값이 있어야 한다 — 서버 실행은 연결이 아니라 대화에 매여 있다.
    */
+  async acceptedRequests(workflow: string, room: string, ids: string[], profile?: string) {
+    return this.withAuthRetry(profile, client => client.history.acceptedRequests(workflow, room, ids));
+  }
+
   async historySnapshot(
     workflowId: string,
     interactionId: string,
@@ -725,6 +729,7 @@ export class DexEngine {
       workflowId,
       workflowName,
       input: input.input,
+      requestId: input.requestId ?? randomUUID(),
       interactionId: input.interactionId?.trim() || randomUUID(),
       attachments: input.attachments ?? [],
       localFolders: input.localFolders ?? [],
@@ -838,6 +843,7 @@ export class DexEngine {
             // 이 **화면**의 표식 — 대화 소켓이 쓰는 값과 같다. 서버는 이 표식으로
             // 시작한 턴의 전파를 이 화면에 되돌려 보내지 않는다.
             originId: DEX_ORIGIN_ID,
+            requestId: resolved.requestId,
           },
           signal,
         )) {

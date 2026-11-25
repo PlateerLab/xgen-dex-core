@@ -1,16 +1,27 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { dataDirectory } from '@dex/engine';
-import type { DeviceDraftStorage } from '@dex/protocol';
+import type { PendingStorage } from '@dex/protocol';
 
-let current: { dir: string; store: DeviceDraftStorage } | undefined;
+let current: { dir: string; store: PendingStorage } | undefined;
 
-export function localDraftStorage(): DeviceDraftStorage {
+export function localDraftStorage(): PendingStorage {
   const dir = join(dataDirectory(), 'drafts');
   if (current?.dir === dir) return current.store;
-  const filename = (key: string) => join(dir, createHash('sha256').update(key).digest('hex'));
-  const store: DeviceDraftStorage = {
+  const hash = (key: string) => createHash('sha256').update(key).digest('hex');
+  const filename = (key: string) => {
+    const match = /^(.*\/pending\/)([a-zA-Z0-9_-]{1,128})$/.exec(key);
+    return join(dir, match ? hash(match[1]) + '.' + match[2] : hash(key));
+  };
+  const store: PendingStorage = {
+    keys(prefix) {
+      const start = hash(prefix) + '.';
+      try {
+        return readdirSync(dir).filter(name => name.startsWith(start) && /^[a-zA-Z0-9_-]{1,128}$/.test(name.slice(start.length)))
+          .map(name => prefix + name.slice(start.length));
+      } catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []; throw err; }
+    },
     read(key) {
       try { return readFileSync(filename(key), 'utf8'); }
       catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null; throw err; }

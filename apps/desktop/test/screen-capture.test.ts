@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import ts from 'typescript';
 
 const ROOT = join(__dirname, '..');
 const CAPTURE = readFileSync(join(ROOT, 'src/main/screen-capture.ts'), 'utf8');
@@ -117,11 +118,22 @@ test('전송 직전에 찍는다', () => {
 test('캡처 실패가 대화를 막지 않는다', () => {
   // 캡처는 덤이다. 못 찍었다고 사용자의 질문이 사라지면 그게 더 나쁘다.
   // 실패해도 setCaptureNotice 로 알릴 뿐 return 하지 않고 sessionStore.send 로 이어진다.
-  assert.match(DISPATCH, /setCaptureNotice/, '실패를 알리지 않는다');
-  assert.ok(
-    !/\breturn;/.test(DISPATCH.slice(DISPATCH.indexOf('if (screenCaptureOn)'))),
-    '캡처 실패 시 전송을 중단한다',
-  );
+  const source = ts.createSourceFile('Chat.tsx', CHAT, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let captureBranch: ts.IfStatement | undefined;
+  function visit(node: ts.Node) {
+    if (ts.isIfStatement(node) && node.expression.getText(source) === 'screenCaptureOn' &&
+        node.getStart(source) >= DISPATCH_START && node.end <= DISPATCH_START + DISPATCH.length) {
+      captureBranch = node;
+    } else ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(captureBranch, '실제 전송의 화면 캡처 조건을 찾지 못했다');
+  assert.match(captureBranch.thenStatement.getText(source), /setCaptureNotice/, '실패를 알리지 않는다');
+  function assertContinues(node: ts.Node) {
+    assert.ok(!ts.isReturnStatement(node) && !ts.isThrowStatement(node), '캡처 실패 시 전송을 중단한다');
+    ts.forEachChild(node, assertContinues);
+  }
+  assertContinues(captureBranch.thenStatement);
 });
 
 test('화면 캡처는 Teams 문맥 확인이 끝난 뒤에 찍는다', () => {

@@ -331,6 +331,8 @@ const api = {
   },
 
   history: {
+    acceptedRequests: (wf: string, room: string, ids: string[]): Promise<string[]> =>
+      ipcRenderer.invoke(CHANNELS.historyReceipts, wf, room, ids),
     turns: (workflowId: string, interactionId: string, name?: string): Promise<HistoryTurn[]> =>
       ipcRenderer.invoke(CHANNELS.historyTurns, workflowId, interactionId, name),
     /** 지난 턴 + **지금 도는 턴이 있는가** — 기기를 옮겨 들어온 창의 복원용. */

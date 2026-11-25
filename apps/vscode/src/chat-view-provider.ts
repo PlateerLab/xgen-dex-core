@@ -1,6 +1,9 @@
 import {
   applyTurnPhase,
   confirmsChatDispatch,
+  deviceOutbox,
+  type PendingStorage,
+  type DeviceOutbox,
   describeStreamError,
   formatErrorLine,
   mergeGeneratedContentProvenance,
@@ -168,6 +171,7 @@ interface AgentDrill {
 
 interface ChatViewState {
   draftKey?: string;
+  pendingSends?: {id: string; text: string}[];
   screen: ViewScreen;
   profiles: ProfileSummary[];
   auth?: AuthStatus;
@@ -248,6 +252,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private attachments: ChatAttachmentDescriptor[] = [];
   private uploadingAttachments = false;
   private streamId: string | undefined;
+  private readonly pendingStorage: PendingStorage = {
+    keys: prefix => this.context.globalState.keys().filter(key => key.startsWith(prefix)),
+    read: key => this.context.globalState.get<string>(key) ?? null,
+    write: async (key, value) => { await this.context.globalState.update(key, value ?? undefined); },
+  };
+  private pendingBox?: DeviceOutbox<ChatAttachmentDescriptor>;
+  private pendingKey?: string;
+  private unwatchPending?: () => void;
+  private draftTransfer?: {id: string; finish: (ok: boolean) => void};
+
+  private syncPending(): void {
+    const key = this.view && this.screen === 'chat' ? this.composerKey('chat') : undefined;
+    if (key === this.pendingKey) return;
+    this.unwatchPending?.();
+    this.pendingKey = key;
+    this.pendingBox = undefined;
+    if (!key) return;
+    const box = deviceOutbox<ChatAttachmentDescriptor>(this.pendingStorage, 'chat.pending.' + key);
+    this.pendingBox = box;
+    const profile = this.activeProfileParams();
+    const off = box.subscribe(() => this.postState());
+    const stop = box.watch((workflowId, interactionId, ids) =>
+      this.service.request<string[]>('history/receipts', {...profile, workflowId, interactionId, ids}));
+    this.unwatchPending = () => { off(); stop(); };
+  }
+
   private acceptDraft?: () => void;
   /**
    * 이 확장이 아니라 **다른 곳**(웹·앱·CLI)에서 시작한 턴이 이 대화에서 돌고
@@ -358,7 +388,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // 그 목록이 대화의 폴더로 실린다.
     vscode.workspace.onDidChangeWorkspaceFolders(() => this.postState(), undefined, this.context.subscriptions);
     webviewView.onDidDispose(() => {
-      if (this.view === webviewView) this.view = undefined;
+      if (this.view === webviewView) { this.view = undefined; this.syncPending(); }
     });
     this.postState();
     void this.refreshSession();
@@ -668,6 +698,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   dispose(): void {
+    this.unwatchPending?.();
+    this.draftTransfer?.finish(false);
     this.clearPhases();
     this.stopWatchingRemoteRun();
     this.removeNotificationListener();
@@ -1529,14 +1561,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.status = '응답을 기다리는 중...';
     this.clearPhases();
     const attachments = [...this.attachments];
-    this.acceptDraft = () => {
-      if (this.streamId !== streamId) return;
-      this.acceptDraft = undefined;
+    const interactionId = this.modelTarget();
+    const key = this.composerKey('chat');
+    if (!interactionId || !key || !source) { this.streamId = undefined; return; }
+    const box = this.pendingBox ?? deviceOutbox<ChatAttachmentDescriptor>(this.pendingStorage, 'chat.pending.' + key);
+    try {
+      await box.stage({id: streamId, text, files: attachments, workflowId: agent.workflowId, interactionId});
+      if (this.streamId !== streamId || this.composerKey('chat') !== key) return;
+      const transferred = await new Promise<boolean>(resolve => {
+        const finish = (ok: boolean) => {
+          clearTimeout(timer);
+          if (this.draftTransfer?.id === streamId) this.draftTransfer = undefined;
+          resolve(ok);
+        };
+        const timer = setTimeout(() => finish(false), 5000);
+        this.draftTransfer = {id: streamId, finish};
+        void this.view?.webview.postMessage({type: 'draftAccepted', key: source, text, id: streamId}).then(ok => {
+          if (!ok) finish(false);
+        }, () => finish(false));
+      });
+      if (!transferred) throw new Error('전송 확인 전에 입력창이 닫혔습니다. 접수 미확인 보관본을 확인해 주세요.');
+      if (this.streamId !== streamId || this.composerKey('chat') !== key) return;
       const sent = new Set(attachments.map(item => item.attachment_id));
       this.attachments = this.attachments.filter(item => !sent.has(item.attachment_id));
-      this.saveAttachments();
-      void this.view?.webview.postMessage({ type: 'draftAccepted', key: source, text });
+      await this.context.globalState.update(this.attachmentKey(), this.attachments.length ? [...this.attachments] : undefined);
+    } catch (error) {
+      if (this.streamId !== streamId) return;
+      this.streamId = undefined;
+      this.status = errorMessage(error);
       this.postState();
+      return;
+    }
+    this.acceptDraft = () => {
+      this.acceptDraft = undefined;
+      void box.remove([streamId]).catch(() => {});
     };
     this.messages.push(message('user', '나', text || `첨부 파일 ${attachments.length}개`));
     const assistant = message('assistant', agent.workflowName, '');
@@ -1550,10 +1608,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const started = await this.service.request<ChatStartResult>('chat/start', {
         ...this.activeProfileParams(),
         streamId,
+        requestId: streamId,
         workflowId: agent.workflowId,
         workflowName: agent.workflowName,
         // 새 대화면 미리 정해 둔 번호 — 먼저 고른 모델이 첫 턴부터 붙는다.
-        ...(this.modelTarget() ? { interactionId: this.modelTarget() } : {}),
+        interactionId,
         input: text,
         attachments,
         // 열린 작업 영역 폴더가 이 대화의 작업 공간이다. 에이전트의 파일·터미널
@@ -1991,7 +2050,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private onWebviewMessage(raw: unknown): void {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
     const data = raw as Record<string, unknown>;
-    if (data.type === 'ready') this.postState();
+    if (data.type === 'draftTransferred' && this.draftTransfer?.id === data.id) this.draftTransfer?.finish(data.saved === true);
+    else if (data.type === 'pendingAction' && data.key === this.composerKey('chat') && !this.streamId && !this.remoteRunning) {
+      const row = this.pendingBox?.snapshot().find(item => item.id === data.id);
+      if (!row || !this.pendingBox) return;
+      if (data.restore === true) {
+        if (this.attachments.length) return;
+        this.attachments = row.files;
+        this.saveAttachments();
+      }
+      void this.pendingBox.remove([row.id]).catch(() => {});
+    }
+    else if (data.type === 'ready') this.postState();
     else if (data.type === 'send' && typeof data.text === 'string') void this.send(data.text);
     else if (data.type === 'verifyProvenance' && typeof data.messageId === 'string') void this.verifyProvenance(data.messageId);
     else if (data.type === 'checkInput') void this.answerInputCheck(data);
@@ -2198,6 +2268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private postState(): void {
+    this.syncPending();
     this.syncModel();
     const agent = this.selectedAgent;
     const activeKey = agent && this.interactionId ? conversationKey({ workflowId: agent.workflowId, interactionId: this.interactionId }) : undefined;
@@ -2213,6 +2284,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     });
     const agents = agentSection(this.agentsWithChats(), this.agentCount, now);
     const state: ChatViewState = {
+      pendingSends: this.pendingBox?.snapshot().map(({id, text}) => ({id, text})),
       draftKey: this.composerKey(this.screen === 'start' ? 'start' : 'chat'),
       screen: this.screen,
       profiles: this.profiles,
@@ -2557,6 +2629,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     <div id="chat-readonly" class="readonly-notice hidden" role="note">지워진 에이전트입니다. 지난 대화만 볼 수 있습니다.</div>
     <footer id="chat-composer" class="composer-shell">
       <div class="composer-card">
+        <div id="pending-sends"></div>
         <div id="attachments" class="chat-attachments" aria-live="polite"></div>
         <textarea id="input" rows="2" placeholder="Agent에게 메시지 보내기" aria-label="메시지"></textarea>
         <div id="input-policy" class="input-policy hidden" role="status" aria-live="polite"></div>

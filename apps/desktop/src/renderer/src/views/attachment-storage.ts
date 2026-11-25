@@ -1,4 +1,4 @@
-import type { DeviceDraftStorage } from '@dex/protocol';
+import type { PendingStorage } from '@dex/protocol';
 
 // Inline pasted images can exceed the localStorage quota. Keep them in IndexedDB.
 let db: Promise<IDBDatabase> | undefined;
@@ -12,7 +12,15 @@ function database() {
   return db;
 }
 
-export const attachmentStorage: DeviceDraftStorage = {
+export const attachmentStorage: PendingStorage = {
+  async keys(prefix) {
+    const db = await database();
+    return new Promise<string[]>((resolve, reject) => {
+      const request = db.transaction('drafts').objectStore('drafts').getAllKeys(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+      request.onsuccess = () => resolve(request.result.filter((key): key is string => typeof key === 'string'));
+      request.onerror = () => reject(request.error);
+    });
+  },
   async read(key) {
     const db = await database();
     return new Promise<string | null>((resolve, reject) => {

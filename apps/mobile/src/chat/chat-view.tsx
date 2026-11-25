@@ -16,9 +16,9 @@
  *
  * 전송·재연결·다른 기기 턴의 규칙은 예전 그대로다(chat-ws). 화면만 바뀐다.
  */
-import { draftKey } from '@dex/protocol';
-import { useDraft } from './use-draft';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { deviceOutbox, draftKey, newRequestId } from '@dex/protocol';
+import { draftStorage, useDraft } from './use-draft';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -166,10 +166,13 @@ export function ChatView({
   }, [messages]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const scope = draftKey(client.session.serverUrl, client.session.userId, agent?.workflowId ?? '', interactionId);
-  const [input, setInput] = useDraft<string>(scope + ':text', '');
+  const [input, setInput, flushInput] = useDraft<string>(scope + ':text', '');
+  const outbox = useMemo(() => deviceOutbox<MobileChatAttachment>(draftStorage, scope + ':pending'), [scope]);
+  const pendingSends = useSyncExternalStore(outbox.subscribe, outbox.snapshot);
+  useEffect(() => outbox.watch((wf, room, ids) => client.api.history.acceptedRequests(wf, room, ids)), [outbox, client]);
   const acceptedDraft = useRef<(() => void) | null>(null);
   const acknowledgeDraft = () => { const done = acceptedDraft.current; acceptedDraft.current = null; done?.(); };
-  const [attachments, setAttachments] = useDraft<MobileChatAttachment[]>(scope + ':files', []);
+  const [attachments, setAttachments, flushFiles] = useDraft<MobileChatAttachment[]>(scope + ':files', []);
   const [attachmentStatus, setAttachmentStatus] = useState('');
   const [uploading, setUploading] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
@@ -202,7 +205,9 @@ export function ChatView({
 
   /** `running` 의 ref 사본 — 소켓 콜백은 렌더 사이에도 온다. */
   const runningRef = useRef(false);
+  const runningRevision = useRef(0);
   const setRunning = useCallback((v: boolean): void => {
+    runningRevision.current++;
     runningRef.current = v;
     setRunningState(v);
   }, []);
@@ -258,6 +263,7 @@ export function ChatView({
     historyReadyRef.current = false;
     atBottomRef.current = true;
     setAtBottom(true);
+    const historyRevision = runningRevision.current;
     void client.api.history
       .snapshot(agent.workflowId, interactionId, agent.workflowName)
       .then((snap) => {
@@ -267,7 +273,7 @@ export function ChatView({
         // 서버는 실행을 연결이 아니라 대화에 매어 둔다 — 웹에서 시작한 턴이
         // 이 화면을 여는 순간에도 돌 수 있다. 모르고 새 턴을 얹으면 같은
         // 대화에서 둘이 겹친다.
-        if (snap.running) {
+        if (snap.running && historyRevision === runningRevision.current) {
           runningElsewhereRef.current = true;
           setRunning(true);
         }
@@ -566,14 +572,26 @@ export function ChatView({
       setInput((cur) => (cur.trim() ? cur : text));
       return;
     }
-    if (runningRef.current) return;
-    acceptedDraft.current = () => {
-      setInput(current => current.trim() === text ? '' : current);
-      const sent = new Set(sending.map(item => item.attachment_id));
-      setAttachments(current => current.filter(item => !sent.has(item.attachment_id)));
-      afterAdmission?.();
-    };
+    if (runningRef.current || !agent || !chatRef.current) return;
+    const socket = chatRef.current;
+    const requestId = newRequestId();
     setRunning(true);
+    try {
+      await outbox.stage({id: requestId, workflowId: agent.workflowId, interactionId, text, files: sending});
+    } catch {
+      setRunning(false);
+      setAttachmentStatus('전송 내용을 기기에 저장하지 못했습니다.');
+      return;
+    }
+    if (chatRef.current !== socket) return;
+    setInput(current => current.trim() === text ? '' : current);
+    const sent = new Set(sending.map(item => item.attachment_id));
+    setAttachments(current => current.filter(item => !sent.has(item.attachment_id)));
+    try { await Promise.all([flushInput(), flushFiles()]); }
+    catch { setRunning(false); setAttachmentStatus('전송 내용을 보관했습니다. 기기 저장 공간을 확인해 주세요.'); return; }
+    if (chatRef.current !== socket) return;
+    afterAdmission?.();
+    acceptedDraft.current = () => { void outbox.remove([requestId]).catch(() => {}); };
     stoppedRef.current = false;
     jumpToBottom();
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
@@ -588,14 +606,14 @@ export function ChatView({
     ]);
     try {
       // 보내는 순간의 폴더 — 빈 목록도 보낸다(서버가 파일 도구를 감춘다).
-      await chatRef.current.execute(text, sending, toWire(folderStore.list(interactionId)));
+      await socket.execute(text, sending, toWire(folderStore.list(interactionId)), requestId);
     } catch (e) {
       setRunning(false);
       // 올려둔 첨부는 돌려준다 — 다시 고르게 만들지 않는다.
       acceptedDraft.current = null;
       setMessages((prev) => setError(prev, describeError(e)));
     }
-  }, [interactionId, jumpToBottom, setRunning, setInput, setAttachments]);
+  }, [agent, outbox, interactionId, jumpToBottom, setRunning, setInput, setAttachments, flushInput, flushFiles]);
 
   const send = useCallback(async (): Promise<void> => {
     const text = input.trim();
@@ -989,6 +1007,21 @@ export function ChatView({
             <ModelChip state={model.state} saving={model.saving} onPress={() => setModelSheet(true)} />
             <ThinkingChip state={model.state} saving={model.saving} onPress={() => setThinkingSheet(true)} />
           </View>
+          {!running && pendingSends.map(row => (
+            <View key={row.id}>
+              <Text style={{color: p.text}}>접수 미확인 · {row.text.slice(0, 60) || '첨부 파일'}</Text>
+              <View style={{flexDirection: 'row', gap: 12}}>
+                <Pressable accessibilityRole="button" disabled={!!input || !!attachments.length} onPress={() => {
+                  setInput(row.text);
+                  setAttachments(row.files);
+                  void Promise.all([flushInput(), flushFiles()]).then(() => outbox.remove([row.id])).catch(() => {});
+                }}><Text style={{color: p.text}}>입력창으로 가져오기</Text></Pressable>
+                <Pressable accessibilityRole="button" onPress={() => void outbox.remove([row.id]).catch(() => {})}>
+                  <Text style={{color: p.text}}>보관본 삭제</Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
           {attachments.length > 0 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: 6 }}>
               {attachments.map((item) => (

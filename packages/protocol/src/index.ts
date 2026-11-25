@@ -498,3 +498,5 @@ export * from './generated-content';
 // MCP 카탈로그 — 항목 · 변수 규칙 · 게시 목록(304) · 사용 기록. 화면과 메인이 같은 규칙을 쓴다.
 export * from './mcp-catalog';
 export * from './device-draft';
+
+export { newRequestId } from './request-id';

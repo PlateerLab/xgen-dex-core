@@ -22,6 +22,7 @@
  *   - `execution_target: 'sandbox'` — 실행은 항상 서버 sandbox. 모바일은 로컬
  *     워크스페이스 실행이 없다 (도구만 모바일에서 돈다).
  */
+import { newRequestId } from '@dex/protocol';
 import {
   parseSubscribed,
   parseStoredGeneratedContent,
@@ -61,6 +62,7 @@ export interface ExecCallbacks {
    * 이 턴이 서버에 남은 실행 한 건의 id — 답에 붙여 둔다. 같은 턴이 다른 길(완결 행·이력)로 다시 와도 한 번만
    * 그리고, 소켓 구멍을 이력으로 메울 때 "어디까지 그렸나" 를 이 id 로 안다(없으면 메우지 못한다).
    */
+  onAccepted?: () => void;
   onExecutionIo?: (ioId: number) => void;
   /** 도구가 파일 저장소에 올린 결과물(`download_artifact`) — 답 아래에 그림·단추로 그린다. */
   onDownload?: (data: Record<string, unknown>) => void;
@@ -281,6 +283,9 @@ export function dispatchExec(
   switch (ev.kind) {
     case 'tool':
       cb.onTool?.(ev.event);
+      return null;
+    case 'turn_accepted':
+      cb.onAccepted?.();
       return null;
     case 'execution_io':
       if (ev.executionIoId > 0) cb.onExecutionIo?.(ev.executionIoId);
@@ -707,6 +712,7 @@ export function connectChatWs(opts: ChatWsOptions): ChatWsHandle {
             JSON.stringify({
               type: 'execute',
               data: {
+                client_request_id: newRequestId(),
                 input_data: attachments.length ? { input_str: input, attachments } : input,
                 selected_files: [],
                 additional_params: {},

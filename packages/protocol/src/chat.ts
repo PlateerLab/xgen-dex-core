@@ -1,3 +1,4 @@
+import { newRequestId } from './request-id';
 import { parseGeneratedContentEvent } from './generated-content';
 /**
  * Chat streaming against an XGEN agent.
@@ -25,6 +26,7 @@ function toRequestBody(req: ChatRequest): Record<string, unknown> {
     workflow_id: req.workflowId,
     input_data: req.input,
     interaction_id: req.interactionId,
+    client_request_id: req.requestId ?? newRequestId(),
     selected_collections: req.selectedCollections ?? [],
     selected_files: req.selectedFiles ?? [],
     include_logs: req.includeLogs ?? true,
@@ -147,6 +149,8 @@ export const TURN_MESSAGE_TYPES = ['data', 'summary', 'end', 'error'] as const;
  * 답변**이 함께 보인다 — 서버는 열심히 돌고 있는데 화면은 비어 있는 상태다.
  */
 export interface LiveTurnSnapshot {
+  runId?: string;
+  seq?: number;
   /** 지금까지의 답변 본문. 빈 문자열일 수 있다 — 아직 한 글자도 안 나온 턴이다. */
   text: string;
   /**
@@ -191,6 +195,8 @@ export function parseSubscribed(data: unknown): SubscribedState {
   if (running && rawLive && typeof rawLive === 'object') {
     const l = rawLive as Record<string, unknown>;
     live = {
+      ...(typeof l.run === 'string' ? { runId: l.run } : {}),
+      ...(typeof l.seq === 'number' ? { seq: l.seq } : {}),
       text: typeof l.text === 'string' ? l.text : '',
       events: Array.isArray(l.events) ? l.events : [],
       ...(typeof l.started_at === 'number' ? { startedAt: l.started_at } : {}),
@@ -356,6 +362,9 @@ export function turnEventToChatEvent(
         : null;
     case 'log':
       return { kind: 'log', data: d ?? raw };
+    case 'turn_accepted':
+      return typeof d?.request_id === 'string' && typeof d.run === 'string'
+        ? { kind: 'turn_accepted', requestId: d.request_id, runId: d.run } : null;
     case 'execution_io':
       return d ? { kind: 'execution_io', executionIoId: Number(d.execution_io_id ?? 0) } : null;
     case 'generated_content': {

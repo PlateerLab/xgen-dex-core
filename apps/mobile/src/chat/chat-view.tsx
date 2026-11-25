@@ -471,6 +471,7 @@ export function ChatView({
         // 첫 글자 전의 준비 단계(Sandbox·워크스페이스·패키지·기억). 캐럿 대신 무엇을 기다리는지 보인다.
         onPhase: (signal) => setMessages((prev) => attachPhase(prev, signal)),
         // 이 턴의 실행 id — 같은 턴이 완결 행·이력으로 다시 와도 한 번만, 소켓 구멍도 이것으로 메운다.
+        onAccepted: acknowledgeDraft,
         onExecutionIo: (ioId) => { acknowledgeDraft(); setMessages((prev) => markExecutionIo(prev, ioId) ?? prev); },
         onEnd: () => {
           const interrupted = stoppedRef.current;

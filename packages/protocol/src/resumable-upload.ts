@@ -1,3 +1,4 @@
+import { newRequestId } from './request-id';
 /**
  * Resumable chunked upload — the client side of backend-gateway `/api/uploads`.
  *
@@ -168,14 +169,7 @@ function abortError(): Error {
   return e;
 }
 
-function randomId(): string {
-  const c = (globalThis as { crypto?: Crypto }).crypto;
-  if (c?.randomUUID) return c.randomUUID();
-  const b = new Uint8Array(16);
-  if (c?.getRandomValues) c.getRandomValues(b);
-  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
-  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-}
+
 
 function errorCode(body: unknown): string | undefined {
   const b = body as { error?: { code?: string }; detail?: { code?: string } } | undefined;
@@ -499,7 +493,7 @@ export class ResumableUploader {
 
   /** Ask the gateway to send the request; follow a long-running dispatch to its result. */
   private async dispatch(req: Record<string, unknown>, opts: ResumableSendOptions): Promise<Response> {
-    const dispatchId = randomId();
+    const dispatchId = newRequestId();
     const payload = JSON.stringify({ dispatch_id: dispatchId, ...req });
     // The original request's headers go along (the gateway forwards them); body headers are ours.
     const extra: Record<string, string> = {};

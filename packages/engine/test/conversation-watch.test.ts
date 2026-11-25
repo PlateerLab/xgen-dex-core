@@ -199,3 +199,18 @@ test('깨어나 확인할 때 답이 없는 소켓은 버리고 새로 붙는다
     srv.wss.close();
   }
 });
+
+test('live snapshot and repeated deltas share one sequence watermark', async () => {
+  const srv = await server(ws => {
+    ws.send(JSON.stringify({type: 'subscribed', data: {seq: 10, running: true}}));
+    for (const seq of [9,10,11,11,12]) ws.send(JSON.stringify({type: 'exec', seq, data: {event: 'message', data: seq}}));
+  });
+  const peers: PeerTurnEvent[] = [];
+  const hub = new ConversationWatchHub(() => {}, () => {}, ev => peers.push(ev));
+  hub.setDeps({baseUrl: () => srv.base, token: async () => 't', allowPrivateCertificate: () => false});
+  hub.watch('wf','wf','room');
+  try {
+    await until(() => peers.some(ev => ev.kind === 'exec' && ev.data === 12));
+    assert.deepEqual(peers.map(ev => ev.kind === 'exec' ? ev.data : ev.kind), [11,12]);
+  } finally {hub.stopAll(); srv.wss.close();}
+});

@@ -57,6 +57,7 @@ export interface AuthStatus {
 }
 
 export interface ChatInput {
+  requestId?: string;
   profile?: string;
   workflowId: string;
   workflowName?: string;
@@ -81,6 +82,7 @@ export interface ChatAttachmentDescriptor {
 }
 
 export interface ResolvedChatInput {
+  requestId?: string;
   profile: string;
   workflowId: string;
   workflowName: string;

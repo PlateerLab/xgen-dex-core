@@ -2912,6 +2912,8 @@ ipcMain.handle(
   (_e, workflowId: string, interactionId: string, name?: string) =>
     getClient().history.turns(workflowId, interactionId, name),
 );
+ipcMain.handle(CHANNELS.historyReceipts, (_e, wf: string, room: string, ids: string[]) =>
+  getClient().history.acceptedRequests(wf,room,ids));
 ipcMain.handle(
   CHANNELS.historySnapshot,
   (_e, workflowId: string, interactionId: string, name?: string) =>

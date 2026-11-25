@@ -80,5 +80,5 @@ function createField<T extends DraftValue>(storage: DeviceDraftStorage, key: str
 
 /** Only events produced by an admitted execution can consume a device draft. */
 export function confirmsChatDispatch(kind: string): boolean {
-  return kind === 'execution_io' || kind === 'text' || kind === 'tool' || kind === 'generated_content';
+  return kind === 'turn_accepted' || kind === 'execution_io' || kind === 'text' || kind === 'tool' || kind === 'generated_content';
 }

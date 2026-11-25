@@ -118,6 +118,7 @@ export type ChatEvent =
   | { kind: 'tool'; event: ToolEvent } // tool / agent activity
   | { kind: 'node_status'; event: NodeStatusEvent }
   | { kind: 'log'; data: unknown }
+  | { kind: 'turn_accepted'; requestId: string; runId: string }
   | { kind: 'execution_io'; executionIoId: number }
   | { kind: 'download'; data: Record<string, unknown> }
   | { kind: 'generated_content'; data: GeneratedContentProvenance }
@@ -218,6 +219,7 @@ export interface ChatRequest {
    * 되돌려 보내지 않는다(자기 스트림으로 이미 받고 있으므로).
    */
   originId?: string;
+  requestId?: string;
   /**
    * 이 대화에 연결된 이 기기의 폴더. 앱(데스크톱·모바일·CLI·VSCode)은 **늘**
    * 보낸다 — 빈 목록은 "연결된 폴더 없음"이라 서버가 폴더 도구를 감추고, 필드가

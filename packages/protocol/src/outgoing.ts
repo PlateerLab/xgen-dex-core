@@ -87,6 +87,11 @@ export class DeviceOutbox<F> {
   watch(check: (wf: string, room: string, ids: string[]) => Promise<string[]>) {
     let closed = false;
     let timer: ReturnType<typeof setTimeout>;
+    const schedule = (delay: number) => {
+      timer = setTimeout(poll, delay);
+      // A background receipt check must not keep a terminal or extension host alive.
+      (timer as unknown as {unref?: () => void}).unref?.();
+    };
     const poll = async () => {
       try {
         await this.update();
@@ -110,9 +115,9 @@ export class DeviceOutbox<F> {
       } catch {
         /* Keep the local copy until admission can be verified. */
       }
-      if (!closed) timer = setTimeout(poll, 15000);
+      if (!closed) schedule(15000);
     };
-    timer = setTimeout(poll, 500);
+    schedule(500);
     return () => {
       closed = true;
       clearTimeout(timer);

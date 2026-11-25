@@ -192,7 +192,9 @@ test('입력창 아래 모델 칩 — 누르면 VS Code 빠른 선택, 다른 �
   assert.match(provider, /'conversation\/modelChanged'/);
   assert.match(provider, /showQuickPick/);
   // 새 대화도 첫 말 전에 고를 수 있고, 첫 턴이 그 번호로 나가야 고른 모델이 붙는다.
-  assert.match(provider, /interactionId: this\.modelTarget\(\)/);
+  const send = provider.slice(provider.indexOf('private async send(input:'), provider.indexOf('private async attachFiles'));
+  assert.match(send, /const interactionId = this\.modelTarget\(\)/);
+  assert.match(send, /'chat\/start', \{[\s\S]*?\n        interactionId,/);
 });
 
 test('⋯ 메뉴는 [채팅 기록 관리] 와 [제거], 관리 탭은 엔진 RPC 로만 부르고 문자열 HTML 을 쓰지 않는다', async () => {
